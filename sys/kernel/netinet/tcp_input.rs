@@ -86,7 +86,8 @@
 /* <CODE> */
 //! TCP input: `netinet/tcp_input.c`'s path parameters and round-trip timing (N6.6a3:
 //! `tcp_xmit_timer`, `tcp_mss`, `tcp_hdrsz`, `tcp_mss_update`, `tcp_newreno_partialack`;
-//! `tcp_input` itself, its options and the SYN cache's add and get follow at N6.6a4).
+//! N6.6a4: `tcp_dooptions`, `tcp_pulloutofband`, `tcp_mss_adv`; `tcp_input` itself
+//! follows).
 //!
 //! Upstream: sys/netinet/tcp_input.c @ 3ce1f3f79392
 //! LZ: sys/netinet/tcp_input.rs@3c62ede68802
@@ -122,31 +123,280 @@ use core::mem::size_of;
 use core::sync::atomic::Ordering;
 
 use hal::sys::net_if::IFF_LOOPBACK;
+use hal::sys::netinet_in::SockaddrIn;
 use hal::sys::netinet_ip::Ip;
 use hal::sys::netinet_ip6::{IPV6_MMTU, Ip6Frag, Ip6Hdr};
-use hal::sys::netinet_tcp::{TCPOLEN_SIGLEN, TCPOLEN_TSTAMP_APPA, Tcphdr};
+use hal::sys::netinet_tcp::{
+    TCP_MAX_WINSHIFT, TCPOLEN_MAXSEG, TCPOLEN_SACK_PERMITTED, TCPOLEN_SIGLEN, TCPOLEN_SIGNATURE,
+    TCPOLEN_TIMESTAMP, TCPOLEN_TSTAMP_APPA, TCPOLEN_WINDOW, TCPOPT_EOL, TCPOPT_MAXSEG, TCPOPT_NOP,
+    TCPOPT_SACK, TCPOPT_SACK_PERMITTED, TCPOPT_SIGNATURE, TCPOPT_TIMESTAMP, TCPOPT_WINDOW, TH_SYN,
+    Tcphdr,
+};
+use hal::sys::netinet6_in6::SockaddrIn6;
 use hal::sys::socket::{AF_INET, AF_INET6};
+use libkern::timingsafe_bcmp;
 
+use crate::assert::kpanic;
+use crate::crypto::md5::MD5_DIGEST_LENGTH;
 use crate::net::if_::{if_get, unhandled_af};
+use crate::net::ipsec_hooks::{SOCKADDR_UNION_LEN, TdbHold, ipsec};
+use crate::net::mbuf::{M_DONTWAIT, Mbuf, m_copyback};
+use crate::net::route::Rtentry;
+use crate::net::rtable::rtable_l2;
 use crate::net::sockbuf::SB_MAX_VAR;
 use crate::netinet::in_pcb::in_pcbrtentry;
+use crate::netinet::ip_output::ip_load;
 use crate::netinet::ip_var::ip_mtudisc;
+use crate::netinet::tcp_fsm::{TCPS_LISTEN, tcps_havercvdsyn};
 use crate::netinet::tcp_output::tcp_output;
+use crate::netinet::tcp_sack::tcp_sack_option;
 use crate::netinet::tcp_seq::seq_gt;
-use crate::netinet::tcp_subr::{TCP_DO_RFC3390, TCP_MSSDFLT};
+use crate::netinet::tcp_subr::{TCP_DO_RFC3390, TCP_MSSDFLT, tcp_signature};
 use crate::netinet::tcp_timer::{TCPT_REXMT, TCPTV_REXMTMAX, tcp_timer_disarm, tcpt_rangeset};
 use crate::netinet::tcp_var::{
-    TCP_RTT_BASE_SHIFT, TCP_RTT_MAX, TCP_RTT_SHIFT, TCP_RTTVAR_SHIFT, TF_NOOPT, TF_PMTUD_PEND,
-    TF_RCVD_TSTMP, TF_REQ_TSTMP, TF_SIGNATURE, TcpState, TcpstatCounters, Tp, tcp_rexmtval,
-    tcp_time, tcpstat_inc,
+    TCP_RTT_BASE_SHIFT, TCP_RTT_MAX, TCP_RTT_SHIFT, TCP_RTTVAR_SHIFT, TCPOOB_HAVEDATA, TF_NOOPT,
+    TF_PMTUD_PEND, TF_RCVD_SCALE, TF_RCVD_TSTMP, TF_REQ_TSTMP, TF_SACK_PERMIT, TF_SIGNATURE,
+    TcpOptInfo, TcpState, TcpstatCounters, Tp, tcp_rexmtval, tcp_time, tcpstat_inc,
 };
+use crate::netinet6::ip6_output::ip6_load;
 use crate::proc::ProcGlue;
 use crate::timeout::hz;
 
-/// `AF_INET` as the `int` of `tp->pf`.
+/// `AF_INET` as the `int` of `af` and `tp->pf`.
 const AF_INET_I32: i32 = AF_INET as i32;
-/// `AF_INET6` as the `int` of `tp->pf`.
+/// `AF_INET6` as the `int` of `af` and `tp->pf`.
 const AF_INET6_I32: i32 = AF_INET6 as i32;
+
+/// The `union sockaddr_union` of an address `tcp_dooptions` asks IPsec's SA for: the C's
+/// `memset` of the union and the stores of `sa_len`, `sa_family` and the address (`sin_addr` at
+/// 4, `sin6_addr` at 8).
+fn sig_union(len: usize, family: u8, at: usize, addr: &[u8]) -> [u8; SOCKADDR_UNION_LEN] {
+    let mut u = [0u8; SOCKADDR_UNION_LEN];
+    u[0] = len as u8;
+    u[1] = family;
+    u[at..at + addr.len()].copy_from_slice(addr);
+    u
+}
+
+/// `tcp_dooptions`: parses the options `cp` (the C's pointer and count; NULL is the empty
+/// slice) of segment `th` (host order) for the control block whose state is `st` into `oi`
+/// (and the window scale, timestamp and SACK permitted flags of `st`), feeds the SACK blocks
+/// to `tcp_sack_option`, and checks the TCP MD5 signature against the SA of the segment's
+/// addresses (IPv4 or IPv6 by `st.pf`, read from the IP header at the front of `m`).
+/// `false` (the C's -1) drops the segment.
+///
+/// Every option is read inside its own length, which the walk bounds by what is left of
+/// `cp`: a length below 2 or past the block ends the walk, a known option of the wrong length
+/// is skipped, as the C's `continue`.
+#[allow(clippy::too_many_arguments, reason = "the C's prototype")]
+#[must_use = "false drops the segment"]
+pub fn tcp_dooptions(
+    st: &mut TcpState,
+    cp: &[u8],
+    th: &Tcphdr,
+    m: &Mbuf,
+    iphlen: i32,
+    oi: &mut TcpOptInfo,
+    rtableid: u32,
+    now: u64,
+) -> bool {
+    // TCP_SIGNATURE: the signature option's 16 bytes, where they lie in `cp`.
+    let mut sigp: Option<&[u8]> = None;
+    let syn = th.th_flags & TH_SYN != 0;
+
+    let mut cp = cp;
+    while let Some(&opt) = cp.first() {
+        if opt == TCPOPT_EOL {
+            break;
+        }
+        let optlen = if opt == TCPOPT_NOP {
+            1
+        } else {
+            let Some(&l) = cp.get(1) else {
+                break;
+            };
+            let l = usize::from(l);
+            if l < 2 || l > cp.len() {
+                break;
+            }
+            l
+        };
+        // `cnt -= optlen, cp += optlen`, the C's step, taken before the option's `continue`s.
+        let (o, rest) = cp.split_at(optlen);
+        cp = rest;
+        match opt {
+            TCPOPT_MAXSEG => {
+                if optlen != usize::from(TCPOLEN_MAXSEG) || !syn || tcps_havercvdsyn(st.t_state) {
+                    continue;
+                }
+                oi.maxseg = u16::from_be_bytes([o[2], o[3]]);
+            }
+
+            TCPOPT_WINDOW => {
+                if optlen != usize::from(TCPOLEN_WINDOW) || !syn || tcps_havercvdsyn(st.t_state) {
+                    continue;
+                }
+                st.set_flags(TF_RCVD_SCALE);
+                st.requested_s_scale = o[2].min(TCP_MAX_WINSHIFT);
+            }
+
+            TCPOPT_TIMESTAMP => {
+                if optlen != usize::from(TCPOLEN_TIMESTAMP) {
+                    continue;
+                }
+                oi.ts_present = true;
+                oi.ts_val = u32::from_be_bytes([o[2], o[3], o[4], o[5]]);
+                oi.ts_ecr = u32::from_be_bytes([o[6], o[7], o[8], o[9]]);
+
+                if !syn || tcps_havercvdsyn(st.t_state) {
+                    continue;
+                }
+                // A timestamp received in a SYN makes it ok to send timestamp requests and
+                // replies.
+                st.set_flags(TF_RCVD_TSTMP);
+                st.ts_recent = oi.ts_val;
+                st.ts_recent_age = now;
+            }
+
+            TCPOPT_SACK_PERMITTED => {
+                if st.sack_enable == 0
+                    || optlen != usize::from(TCPOLEN_SACK_PERMITTED)
+                    || !syn
+                    || tcps_havercvdsyn(st.t_state)
+                {
+                    continue;
+                }
+                // MUST only be set on SYN
+                st.set_flags(TF_SACK_PERMIT);
+            }
+            TCPOPT_SACK => tcp_sack_option(st, th, o),
+            // TCP_SIGNATURE
+            TCPOPT_SIGNATURE => {
+                if optlen != usize::from(TCPOLEN_SIGNATURE) {
+                    continue;
+                }
+
+                // A second signature option must carry the same digest (compared in constant
+                // time, as the C's timingsafe_bcmp); `goto bad` holds no SA yet.
+                if let Some(s) = sigp
+                    && timingsafe_bcmp(s, &o[2..18])
+                {
+                    return false;
+                }
+
+                sigp = Some(&o[2..18]);
+            }
+            _ => {}
+        }
+    }
+
+    // TCP_SIGNATURE: the SA's reference, given back by the hold's drop (`tdb_unref`, on the
+    // `bad:` path and after the check alike).
+    let mut tdb: Option<TdbHold> = None;
+    if st.has_flags(TF_SIGNATURE) {
+        let (src, dst) = match st.pf {
+            0 | AF_INET_I32 => {
+                let ip = ip_load(m);
+                let sin = size_of::<SockaddrIn>();
+                (
+                    sig_union(sin, AF_INET, 4, &ip.ip_src.s_addr.to_ne_bytes()),
+                    sig_union(sin, AF_INET, 4, &ip.ip_dst.s_addr.to_ne_bytes()),
+                )
+            }
+            AF_INET6_I32 => {
+                let ip6 = ip6_load(m);
+                let sin6 = size_of::<SockaddrIn6>();
+                (
+                    sig_union(sin6, AF_INET6, 8, &ip6.ip6_src.s6_addr),
+                    sig_union(sin6, AF_INET6, 8, &ip6.ip6_dst.s6_addr),
+                )
+            }
+            _ => ([0; SOCKADDR_UNION_LEN], [0; SOCKADDR_UNION_LEN]),
+        };
+
+        tdb = ipsec().and_then(|legs| {
+            legs.tcp_signature_tdb(rtable_l2(rtableid), &src, &dst)
+                .map(|t| TdbHold::new(legs, t))
+        });
+
+        // We don't have an SA for this peer, so we turn off TF_SIGNATURE on the listen
+        // socket
+        if tdb.is_none() && st.t_state == TCPS_LISTEN {
+            st.clear_flags(TF_SIGNATURE);
+        }
+    }
+
+    // A signature where none is expected, or none where one is: refused.
+    if sigp.is_some() != st.has_flags(TF_SIGNATURE) {
+        tcpstat_inc(TcpstatCounters::TcpsRcvbadsig);
+        return false;
+    }
+
+    if let Some(sigp) = sigp {
+        let Some(t) = &tdb else {
+            tcpstat_inc(TcpstatCounters::TcpsRcvbadsig);
+            return false;
+        };
+
+        let mut sig = [0u8; MD5_DIGEST_LENGTH];
+        if !tcp_signature(t.tdb(), st.pf, m, th, iphlen, true, &mut sig) {
+            return false;
+        }
+
+        // The digest compared in constant time (timingsafe_bcmp), never with `==`.
+        if timingsafe_bcmp(&sig, sigp) {
+            tcpstat_inc(TcpstatCounters::TcpsRcvbadsig);
+            return false;
+        }
+
+        tcpstat_inc(TcpstatCounters::TcpsRcvgoodsig);
+    }
+
+    // tdb_unref(tdb): the hold's drop.
+    true
+}
+
+/// `tcp_pulloutofband`: pull out of band byte out of a segment so it doesn't appear in the
+/// user's data queue. It is still reflected in the segment length for sequencing purposes.
+/// The byte `urgent - 1` past `off` of the chain `m` is kept in the control block whose state
+/// is `st` (`sototcpcb(so)`, the segment's: the caller's) and taken out of its mbuf's data.
+pub fn tcp_pulloutofband(st: &mut TcpState, urgent: u32, m: &mut Mbuf, off: i32) {
+    // `off + urgent - 1` in the C's `int`.
+    let mut cnt = off.wrapping_add(urgent as i32).wrapping_sub(1);
+    let mut m = m;
+
+    while cnt >= 0 {
+        let len = m.m_len().get() as i32;
+        if len > cnt {
+            let at = cnt as usize;
+            // A read-only cluster (one another mbuf shares) gets a copy of its own before the
+            // bytes move: m_copyback of the byte over itself (the C moves them in the shared
+            // one).
+            if m.data_mut().is_none() {
+                let b = m.data()[at];
+                if m_copyback(m, cnt, &[b], M_DONTWAIT).is_err() {
+                    // No cluster for the copy: the byte stays in the data (see the
+                    // deviations).
+                    return;
+                }
+            }
+            let Some(d) = m.data_mut() else {
+                kpanic(format_args!("tcp_pulloutofband: the copy is read-only"));
+            };
+            st.t_iobc = d[at];
+            st.t_oobflags |= TCPOOB_HAVEDATA;
+            d.copy_within(at + 1.., at);
+            m.m_len().set(m.m_len().get() - 1);
+            return;
+        }
+        cnt -= len;
+        m = match m.next_mut() {
+            Some(n) => n,
+            None => break,
+        };
+    }
+    kpanic(format_args!("tcp_pulloutofband"));
+}
 
 /// `tcp_xmit_timer`: collect new round-trip time estimate and update averages and current
 /// timeout.
@@ -436,6 +686,34 @@ pub fn tcp_newreno_partialack<G: ProcGlue>(tp: &mut Tp<'_, '_, G>, th: &Tcphdr) 
     }
     st.snd_cwnd += u64::from(st.t_maxseg);
 }
+
+/// `tcp_mss_adv`: the segment size a SYN-ACK offers over the route `rt` to the peer of family
+/// `af` (`syn_cache_add`'s `sc_ourmaxseg`): the interface's MTU less the headers, at least
+/// `tcp_mssdflt`; `tcp_mssdflt` without a route or its interface.
+pub fn tcp_mss_adv(rt: Option<&Rtentry>, af: i32) -> i32 {
+    let mssdflt = TCP_MSSDFLT.load(Ordering::Relaxed);
+
+    let Some(rt) = rt else {
+        return mssdflt;
+    };
+
+    let Some(ifp) = if_get(rt.rt_ifidx.get()) else {
+        return mssdflt;
+    };
+
+    let iphlen = match af {
+        AF_INET_I32 => size_of::<Ip>() as i32,
+        AF_INET6_I32 => size_of::<Ip6Hdr>() as i32,
+        _ => unhandled_af(af),
+    };
+    // The C's `u_int` MTU less the headers, truncated to the `int` it is assigned to.
+    let mss = (ifp.if_mtu.get() as i32)
+        .wrapping_sub(iphlen)
+        .wrapping_sub(size_of::<Tcphdr>() as i32);
+    // if_put(ifp): the kernel's if_get lends the interface without a count.
+
+    mss.max(mssdflt)
+}
 /* </CODE> */
 
 /* <TESTS> */
@@ -628,6 +906,502 @@ mod tests {
         assert_eq!(nxt, 4000);
         assert_eq!(cwnd, 8000 - 1000 + 1460);
         testtcp::close(so, inp);
+    }
+
+    // tcp_dooptions and tcp_pulloutofband (N6.6a4).
+
+    use hal::sys::netinet_in::{IPPROTO_TCP, InAddr};
+    use hal::sys::netinet_tcp::{TCPOLEN_SACK, TH_ACK};
+
+    use crate::crypto::md5::Md5Ctx;
+    use crate::net::mbuf::{M_COPYALL, MT_DATA, MbufBox, m_clget, m_copym, m_gethdr};
+    use crate::netinet::tcp_fsm::{
+        TCPS_CLOSED, TCPS_ESTABLISHED, TCPS_SYN_RECEIVED, TCPS_SYN_SENT,
+    };
+    use crate::netinet::tcp_subr::testtcp::{SIG_KEY, SIG_NET, stat};
+    use crate::netinet::tcp_var::{TCPOOB_HADDATA, TcpstatCounters as C};
+
+    /// An IPv4 packet from `src` to `dst` carrying the TCP header `th` (network order, its
+    /// `th_off` set here from `opts`), the options `opts` (a multiple of 4 bytes) and `data`,
+    /// in one mbuf (a cluster when `MHLEN` is too small).
+    fn seg4(src: [u8; 4], dst: [u8; 4], th: Tcphdr, opts: &[u8], data: &[u8]) -> MbufBox {
+        let thlen = size_of::<Tcphdr>() + opts.len();
+        assert_eq!(thlen % 4, 0, "whole option words");
+        let len = 20 + thlen + data.len();
+        let mut ip = Ip {
+            ip_tos: 0,
+            ip_len: (len as u16).to_be(),
+            ip_ttl: 64,
+            ip_p: IPPROTO_TCP as u8,
+            ip_src: InAddr {
+                s_addr: u32::from_ne_bytes(src),
+            },
+            ip_dst: InAddr {
+                s_addr: u32::from_ne_bytes(dst),
+            },
+            ..Ip::default()
+        };
+        ip.set_ip_v(4);
+        ip.set_ip_hl(5);
+        let mut th = th;
+        th.set_th_off((thlen / 4) as u8);
+        let mut p = std::vec![0u8; len];
+        assert!(hal::pod::put(&mut p, 0, &ip));
+        assert!(hal::pod::put(&mut p, 20, &th));
+        p[40..40 + opts.len()].copy_from_slice(opts);
+        p[20 + thlen..].copy_from_slice(data);
+        let mut m = m_gethdr(M_DONTWAIT, MT_DATA).expect("an mbuf");
+        if len > crate::net::mbuf::MHLEN {
+            assert!(m_clget(&mut m, M_DONTWAIT, len as u32), "a cluster");
+        }
+        m.m_len().set(len as u32);
+        m.m_pkthdr().len.set(len as i32);
+        m.data_mut()
+            .expect("a new mbuf is writable")
+            .copy_from_slice(&p);
+        m
+    }
+
+    /// The RFC 2385 digest of a segment made by [`seg4`] under [`SIG_KEY`], computed here
+    /// over the bytes (an MD5 of its own, not `tcp_signature`'s): the pseudo header, the TCP
+    /// header with a zero checksum, the data, the key.
+    fn digest4(src: [u8; 4], dst: [u8; 4], th: &Tcphdr, thlen: usize, data: &[u8]) -> [u8; 16] {
+        let mut ctx = Md5Ctx::new();
+        let mut pseudo = [0u8; 12];
+        pseudo[..4].copy_from_slice(&src);
+        pseudo[4..8].copy_from_slice(&dst);
+        pseudo[9] = IPPROTO_TCP as u8;
+        pseudo[10..].copy_from_slice(&((thlen + data.len()) as u16).to_be_bytes());
+        ctx.update(&pseudo);
+        let mut h = [0u8; 20];
+        let mut th0 = *th;
+        th0.th_sum = 0;
+        th0.set_th_off((thlen / 4) as u8);
+        assert!(hal::pod::put(&mut h, 0, &th0));
+        ctx.update(&h);
+        ctx.update(data);
+        ctx.update(SIG_KEY);
+        ctx.finalize()
+    }
+
+    /// The header `th` (network order) as `tcp_input` leaves it: host order.
+    fn host(th: &Tcphdr, thlen: usize) -> Tcphdr {
+        let mut h = *th;
+        h.th_seq = u32::from_be(h.th_seq);
+        h.th_ack = u32::from_be(h.th_ack);
+        h.th_win = u16::from_be(h.th_win);
+        h.th_urp = u16::from_be(h.th_urp);
+        h.set_th_off((thlen / 4) as u8);
+        h
+    }
+
+    /// A header with `flags`, from port 7000 to 80.
+    fn hdr(flags: u8) -> Tcphdr {
+        Tcphdr {
+            th_sport: 7000u16.to_be(),
+            th_dport: 80u16.to_be(),
+            th_seq: 5000u32.to_be(),
+            th_ack: 1001u32.to_be(),
+            th_flags: flags,
+            th_win: 4096u16.to_be(),
+            ..Tcphdr::default()
+        }
+    }
+
+    /// `tcp_dooptions` of `opts` for a segment with `flags` on a block in state `state`
+    /// (SACK enabled), without a signature: the state's flags and values it sets, and its
+    /// answer.
+    fn dooptions(state: i32, flags: u8, opts: &[u8]) -> (bool, TcpState, TcpOptInfo) {
+        let mut st = TcpState::new();
+        st.t_state = state;
+        st.sack_enable = 1;
+        st.pf = AF_INET_I32;
+        let th = hdr(flags);
+        let m = seg4([10, 9, 100, 2], [10, 9, 100, 1], th, &[], &[]);
+        let mut oi = TcpOptInfo::default();
+        let ok = tcp_dooptions(&mut st, opts, &host(&th, 20), &m, 20, &mut oi, 0, 777);
+        (ok, st, oi)
+    }
+
+    const MSS1460: [u8; 4] = [TCPOPT_MAXSEG, TCPOLEN_MAXSEG, 0x05, 0xb4];
+    const WS: [u8; 3] = [TCPOPT_WINDOW, TCPOLEN_WINDOW, 7];
+    const SACKP: [u8; 2] = [TCPOPT_SACK_PERMITTED, TCPOLEN_SACK_PERMITTED];
+    const TS: [u8; 10] = [TCPOPT_TIMESTAMP, TCPOLEN_TIMESTAMP, 0, 0, 1, 2, 0, 0, 3, 4];
+
+    #[test]
+    fn dooptions_takes_the_syn_options_before_the_syn_is_received() {
+        let (_g, _p) = testtcp::setup();
+        let mut opts = std::vec::Vec::new();
+        for o in [&MSS1460[..], &WS, &SACKP, &TS] {
+            opts.extend_from_slice(o);
+        }
+        for state in [TCPS_CLOSED, TCPS_LISTEN, TCPS_SYN_SENT] {
+            let (ok, st, oi) = dooptions(state, TH_SYN, &opts);
+            assert!(ok, "state {state}");
+            assert_eq!(oi.maxseg, 1460);
+            assert!(st.has_flags(TF_RCVD_SCALE) && st.requested_s_scale == 7);
+            assert!(st.has_flags(TF_SACK_PERMIT));
+            assert!(oi.ts_present && (oi.ts_val, oi.ts_ecr) == (0x102, 0x304));
+            assert!(st.has_flags(TF_RCVD_TSTMP));
+            assert_eq!((st.ts_recent, st.ts_recent_age), (0x102, 777));
+        }
+        // A window shift past TCP_MAX_WINSHIFT is cut to it.
+        let (_, st, _) = dooptions(TCPS_LISTEN, TH_SYN, &[TCPOPT_WINDOW, 3, 200]);
+        assert_eq!(st.requested_s_scale, TCP_MAX_WINSHIFT);
+        // SACK permitted only when the block enables SACK.
+        let mut st = TcpState::new();
+        st.t_state = TCPS_LISTEN;
+        let th = hdr(TH_SYN);
+        let m = seg4([10, 9, 100, 2], [10, 9, 100, 1], th, &[], &[]);
+        let mut oi = TcpOptInfo::default();
+        assert!(tcp_dooptions(
+            &mut st,
+            &SACKP,
+            &host(&th, 20),
+            &m,
+            20,
+            &mut oi,
+            0,
+            1
+        ));
+        assert!(!st.has_flags(TF_SACK_PERMIT));
+    }
+
+    #[test]
+    fn dooptions_ignores_the_syn_options_elsewhere() {
+        let (_g, _p) = testtcp::setup();
+        let mut opts = std::vec::Vec::new();
+        for o in [&MSS1460[..], &WS, &SACKP, &TS] {
+            opts.extend_from_slice(o);
+        }
+        // Once the SYN is received, or on a segment without SYN: the timestamps are taken
+        // for the segment, nothing else.
+        for (state, flags) in [
+            (TCPS_ESTABLISHED, TH_SYN),
+            (TCPS_SYN_RECEIVED, TH_SYN | TH_ACK),
+            (TCPS_LISTEN, TH_ACK),
+        ] {
+            let (ok, st, oi) = dooptions(state, flags, &opts);
+            assert!(ok);
+            assert_eq!(oi.maxseg, 0, "state {state} flags {flags:#x}");
+            assert_eq!(st.t_flags, 0);
+            assert_eq!(st.requested_s_scale, 0);
+            assert!(oi.ts_present && oi.ts_val == 0x102);
+            assert_eq!(st.ts_recent, 0);
+        }
+    }
+
+    #[test]
+    fn dooptions_stops_at_a_short_or_malformed_option() {
+        let (_g, _p) = testtcp::setup();
+        // (options, the MSS taken): the walk's bounds, each from the C's loop.
+        #[rustfmt::skip]
+        let table: [(&[u8], u16); 12] = [
+            (&[], 0),
+            // NOPs are one byte each; EOL ends the block.
+            (&[TCPOPT_NOP, TCPOPT_NOP, 2, 4, 0x02, 0x00], 512),
+            (&[TCPOPT_EOL, 2, 4, 0x02, 0x00], 0),
+            // A kind without its length byte, a length of 0 or 1, a length past the block:
+            // the walk stops there.
+            (&[2], 0),
+            (&[TCPOPT_NOP, 2], 0),
+            (&[99, 0, 2, 4, 0x02, 0x00], 0),
+            (&[99, 1, 2, 4, 0x02, 0x00], 0),
+            (&[2, 4, 0x02], 0),
+            (&[99, 9, 2, 4, 0x02, 0x00], 0),
+            // An unknown option of a valid length is skipped over.
+            (&[99, 3, 0xff, 2, 4, 0x02, 0x00], 512),
+            // An MSS of the wrong length is skipped (continue), the next one taken.
+            (&[2, 3, 0x05, 2, 4, 0x02, 0x00], 512),
+            // The last MSS wins.
+            (&[2, 4, 0x02, 0x00, 2, 4, 0x05, 0xb4], 1460),
+        ];
+        for (opts, mss) in table {
+            let (ok, _st, oi) = dooptions(TCPS_LISTEN, TH_SYN, opts);
+            assert!(ok);
+            assert_eq!(oi.maxseg, mss, "options {opts:?}");
+        }
+        // A timestamp of the wrong length is not one.
+        let (_, st, oi) = dooptions(
+            TCPS_LISTEN,
+            TH_SYN,
+            &[TCPOPT_TIMESTAMP, 9, 1, 2, 3, 4, 5, 6, 7],
+        );
+        assert!(!oi.ts_present && !st.has_flags(TF_RCVD_TSTMP));
+    }
+
+    /// The C's walk of an option block written again here, by indices over the whole block:
+    /// each option's kind, offset and length, up to where the C stops.
+    fn walk(cp: &[u8]) -> std::vec::Vec<(u8, usize, usize)> {
+        let mut v = std::vec::Vec::new();
+        let (mut i, mut cnt) = (0usize, cp.len() as i32);
+        while cnt > 0 {
+            let opt = cp[i];
+            if opt == TCPOPT_EOL {
+                break;
+            }
+            let optlen = if opt == TCPOPT_NOP {
+                1
+            } else {
+                if cnt < 2 {
+                    break;
+                }
+                let l = i32::from(cp[i + 1]);
+                if l < 2 || l > cnt {
+                    break;
+                }
+                l
+            };
+            v.push((opt, i, optlen as usize));
+            cnt -= optlen;
+            i += optlen as usize;
+        }
+        v
+    }
+
+    #[test]
+    fn dooptions_never_reads_past_the_option_block() {
+        let (_g, _p) = testtcp::setup();
+        // A property over 20,000 random blocks (xorshift, fixed seed): the block cut at `n`
+        // from a buffer whose tail beyond holds a valid MSS of 0xbeef; the walk's answer is
+        // the reference walk's over the cut (the last MSS of length 4 there), so nothing past
+        // `n` is ever read, and no block panics.
+        let mut x: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut next = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        for _ in 0..20_000 {
+            let n = (next() % 41) as usize;
+            let mut buf = [0u8; 44];
+            for b in buf.iter_mut().take(n) {
+                // Kinds and lengths near the interesting values.
+                *b = match next() % 4 {
+                    0 => (next() % 6) as u8,
+                    1 => [2, 3, 4, 5, 8, 19][(next() % 6) as usize],
+                    _ => next() as u8,
+                };
+            }
+            buf[n..n + 4].copy_from_slice(&[2, 4, 0xbe, 0xef]);
+            let cut = &buf[..n];
+            let want = walk(cut)
+                .iter()
+                .filter(|&&(o, _, l)| o == TCPOPT_MAXSEG && l == 4)
+                .last()
+                .map_or(0, |&(_, i, _)| u16::from_be_bytes([cut[i + 2], cut[i + 3]]));
+            let (_ok, _st, oi) = dooptions(TCPS_LISTEN, TH_SYN, cut);
+            assert_eq!(oi.maxseg, want, "block {cut:?}");
+        }
+    }
+
+    /// A segment of the signature tests: from 10.9.SIG_NET.2:7000 to .1:80 with `opts` and
+    /// "signed", and the host-order header `tcp_input` hands `tcp_dooptions`.
+    fn sig_seg(opts: &[u8]) -> (MbufBox, Tcphdr) {
+        let th = hdr(TH_ACK);
+        let m = seg4(
+            [10, 9, SIG_NET, 2],
+            [10, 9, SIG_NET, 1],
+            th,
+            opts,
+            b"signed",
+        );
+        (m, host(&th, 20 + opts.len()))
+    }
+
+    /// The signature option of the digest `d`, then two NOPs (a 20-byte block).
+    fn sig_opt(d: &[u8; 16]) -> [u8; 20] {
+        let mut o = [TCPOPT_NOP; 20];
+        o[0] = TCPOPT_SIGNATURE;
+        o[1] = TCPOLEN_SIGNATURE;
+        o[2..18].copy_from_slice(d);
+        o
+    }
+
+    #[test]
+    fn dooptions_checks_the_signature_in_constant_time() {
+        let (_g, _p) = testtcp::setup();
+        let legs = testtcp::sig_legs();
+        let src = [10, 9, SIG_NET, 2];
+        let dst = [10, 9, SIG_NET, 1];
+        let good = digest4(src, dst, &hdr(TH_ACK), 40, b"signed");
+        let check = |opts: &[u8], signed: bool, state: i32| {
+            let (m, th) = sig_seg(opts);
+            let mut st = TcpState::new();
+            st.t_state = state;
+            st.pf = AF_INET_I32;
+            if signed {
+                st.set_flags(TF_SIGNATURE);
+            }
+            let mut oi = TcpOptInfo::default();
+            let unrefs = legs.unrefs.load(Ordering::Relaxed);
+            let (bad, goodc) = (stat(C::TcpsRcvbadsig), stat(C::TcpsRcvgoodsig));
+            let ok = tcp_dooptions(&mut st, opts, &th, &m, 20, &mut oi, 0, 1);
+            (
+                ok,
+                stat(C::TcpsRcvbadsig) - bad,
+                stat(C::TcpsRcvgoodsig) - goodc,
+                legs.unrefs.load(Ordering::Relaxed) - unrefs,
+            )
+        };
+        // The right digest: accepted, counted good, the SA given back.
+        let (ok, bad, goodc, unrefs) = check(&sig_opt(&good), true, TCPS_ESTABLISHED);
+        assert!(ok && bad == 0 && goodc >= 1 && unrefs >= 1);
+        // One bit off in the first byte, or in the last: refused, counted bad, given back.
+        for at in [0, 15] {
+            let mut d = good;
+            d[at] ^= 0x01;
+            let (ok, bad, _, unrefs) = check(&sig_opt(&d), true, TCPS_ESTABLISHED);
+            assert!(!ok && bad >= 1 && unrefs >= 1, "byte {at}");
+        }
+        // A signed connection's segment without the option, or an option where none is
+        // expected: refused and counted.
+        let (ok, bad, ..) = check(&[TCPOPT_NOP; 4], true, TCPS_ESTABLISHED);
+        assert!(!ok && bad >= 1);
+        let (ok, bad, ..) = check(&sig_opt(&good), false, TCPS_ESTABLISHED);
+        assert!(!ok && bad >= 1);
+        // Two signature options that differ: refused before any SA is looked up (the C's
+        // `goto bad`, uncounted); the same digest twice is one signature.
+        let mut two = [TCPOPT_NOP; 36];
+        two[..18].copy_from_slice(&sig_opt(&good)[..18]);
+        two[18..36].copy_from_slice(&sig_opt(&good)[..18]);
+        let goodsig = digest4(src, dst, &hdr(TH_ACK), 56, b"signed");
+        two[2..18].copy_from_slice(&goodsig);
+        two[20..36].copy_from_slice(&goodsig);
+        let (ok, ..) = check(&two, true, TCPS_ESTABLISHED);
+        assert!(ok, "the same digest twice");
+        let mut d = goodsig;
+        d[7] ^= 0x80;
+        two[20..36].copy_from_slice(&d);
+        let (ok, _, _, unrefs) = check(&two, true, TCPS_ESTABLISHED);
+        assert!(!ok);
+        assert_eq!(unrefs, 0, "no SA taken");
+    }
+
+    #[test]
+    fn dooptions_turns_the_signature_off_on_a_listener_without_an_sa() {
+        let (_g, _p) = testtcp::setup();
+        let _legs = testtcp::sig_legs();
+        // Between addresses the legs have no SA for: a listener's TF_SIGNATURE goes, the
+        // unsigned SYN is accepted; an established connection keeps it and refuses.
+        let th = hdr(TH_SYN);
+        let m = seg4([10, 9, 100, 2], [10, 9, 100, 1], th, &[], &[]);
+        for (state, ok_want, flag_want) in
+            [(TCPS_LISTEN, true, false), (TCPS_ESTABLISHED, false, true)]
+        {
+            let mut st = TcpState::new();
+            st.t_state = state;
+            st.pf = AF_INET_I32;
+            st.set_flags(TF_SIGNATURE);
+            let mut oi = TcpOptInfo::default();
+            let ok = tcp_dooptions(&mut st, &[], &host(&th, 20), &m, 20, &mut oi, 0, 1);
+            assert_eq!((ok, st.has_flags(TF_SIGNATURE)), (ok_want, flag_want));
+        }
+    }
+
+    #[test]
+    fn dooptions_feeds_the_sack_blocks_to_the_scoreboard() {
+        let (_g, _p) = testtcp::setup();
+        let mut st = TcpState::new();
+        st.t_state = TCPS_ESTABLISHED;
+        st.pf = AF_INET_I32;
+        st.sack_enable = 1;
+        st.t_maxseg = 1000;
+        st.snd_una = 1000;
+        st.snd_max = 5000;
+        st.snd_nxt = 5000;
+        let mut opts = std::vec![TCPOPT_NOP, TCPOPT_NOP, TCPOPT_SACK, TCPOLEN_SACK + 2];
+        opts.extend_from_slice(&2000u32.to_be_bytes());
+        opts.extend_from_slice(&3000u32.to_be_bytes());
+        let mut th = hdr(TH_ACK);
+        th.th_ack = 1000u32.to_be();
+        let m = seg4([10, 9, 100, 2], [10, 9, 100, 1], th, &opts, &[]);
+        let mut oi = TcpOptInfo::default();
+        assert!(tcp_dooptions(
+            &mut st,
+            &opts,
+            &host(&th, 32),
+            &m,
+            20,
+            &mut oi,
+            0,
+            1
+        ));
+        let h = st.snd_holes.get().expect("a hole");
+        assert_eq!((h.start, h.end), (1000, 2000));
+        assert_eq!(st.snd_numholes, 1);
+    }
+
+    /// A chain of two mbufs: "0123456789" then "abcdefghij".
+    fn chain() -> MbufBox {
+        let mut m = m_gethdr(M_DONTWAIT, MT_DATA).expect("an mbuf");
+        m.m_len().set(10);
+        m.m_pkthdr().len.set(20);
+        m.data_mut()
+            .expect("writable")
+            .copy_from_slice(b"0123456789");
+        let mut n = crate::net::mbuf::m_get(M_DONTWAIT, MT_DATA).expect("an mbuf");
+        n.m_len().set(10);
+        n.data_mut()
+            .expect("writable")
+            .copy_from_slice(b"abcdefghij");
+        assert!(m.m_next.set(n).is_none());
+        m
+    }
+
+    /// The bytes of the chain `m`, mbuf by mbuf.
+    fn bytes(m: &Mbuf) -> std::vec::Vec<std::vec::Vec<u8>> {
+        let mut v = std::vec![m.data().to_vec()];
+        let mut n = m.m_next().get();
+        while let Some(x) = n {
+            v.push(x.data().to_vec());
+            n = x.m_next().get();
+        }
+        v
+    }
+
+    #[test]
+    fn pulloutofband_takes_the_byte_out_of_its_mbuf() {
+        let (_g, _p) = testtcp::setup();
+        // (off, urgent): the byte at off + urgent - 1, in the first mbuf or the second.
+        for (off, urgent, iobc, want) in [
+            (2, 3, b'4', [&b"012356789"[..], b"abcdefghij"]),
+            (0, 1, b'0', [&b"123456789"[..], b"abcdefghij"]),
+            (5, 5, b'9', [&b"012345678"[..], b"abcdefghij"]),
+            (8, 6, b'd', [&b"0123456789"[..], b"abcefghij"]),
+            (10, 10, b'j', [&b"0123456789"[..], b"abcdefghi"]),
+        ] {
+            let mut m = chain();
+            let mut st = TcpState::new();
+            st.t_oobflags = TCPOOB_HADDATA;
+            tcp_pulloutofband(&mut st, urgent, &mut m, off);
+            assert_eq!(st.t_iobc, iobc, "off {off} urgent {urgent}");
+            assert_eq!(st.t_oobflags, TCPOOB_HADDATA | TCPOOB_HAVEDATA);
+            assert_eq!(bytes(&m), want);
+            // The packet's length is not the C's to change: m_len alone.
+            assert_eq!(m.m_pkthdr().len.get(), 20);
+        }
+    }
+
+    #[test]
+    fn pulloutofband_copies_a_shared_cluster_first() {
+        let (_g, _p) = testtcp::setup();
+        let mut m = m_gethdr(M_DONTWAIT, MT_DATA).expect("an mbuf");
+        assert!(m_clget(&mut m, M_DONTWAIT, 300));
+        let data: std::vec::Vec<u8> = (0..300).map(|i| i as u8).collect();
+        m.m_len().set(300);
+        m.m_pkthdr().len.set(300);
+        m.data_mut().expect("writable").copy_from_slice(&data);
+        let mut copy = m_copym(&mut m, 0, M_COPYALL, M_DONTWAIT).expect("a copy");
+        assert!(copy.data_mut().is_none(), "the cluster is shared");
+        let mut st = TcpState::new();
+        tcp_pulloutofband(&mut st, 101, &mut copy, 0);
+        assert_eq!(st.t_iobc, 100);
+        let mut want = data.clone();
+        want.remove(100);
+        assert_eq!(copy.data(), &want[..]);
+        assert_eq!(m.data(), &data[..], "the other mbuf's data untouched");
     }
 }
 /* </TESTS> */

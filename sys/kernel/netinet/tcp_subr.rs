@@ -2154,7 +2154,8 @@ mod tests {
         let tcpcbs = testtcp::tcpcbs();
         let (so, inp) = testtcp::conn();
         assert_eq!(testtcp::tcpcbs(), tcpcbs + 1);
-        // The pcb's handles: ours, the socket's anchor, and one per timer (D-11).
+        // The pcb's handles: ours, the socket's anchor, its so_pcb slot's, and one per timer
+        // (D-11).
         let handles = PoolArc::count(&inp);
         testtcp::with_tp(&inp, |mut tp| {
             let st = &*tp.st;
@@ -2192,10 +2193,12 @@ mod tests {
         drop(so);
         // tcp_free: the item back, its five handles of the pcb gone with its timers.
         assert_eq!(testtcp::tcpcbs(), tcpcbs);
+        // The anchor's, the socket's typed so_pcb slot's (N6.6a4, emptied by in_pcbdetach)
+        // and the timers'.
         assert_eq!(
             PoolArc::count(&inp),
-            handles - TCPT_NTIMERS - 1,
-            "the timers' and the anchor's"
+            handles - TCPT_NTIMERS - 2,
+            "the timers', the anchor's and so_pcb's"
         );
         // The pcb is detached: its socket's lock finds no pcb any more.
         {

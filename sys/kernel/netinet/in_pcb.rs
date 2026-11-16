@@ -1798,6 +1798,8 @@ pub fn in_pcballoc<G: ProcGlue>(
     drop(g);
 
     so.set_legacy_pcb(core::ptr::from_ref::<Inpcb<G>>(&inp).expose_provenance());
+    // so->so_pcb of a kernel protocol's socket, counted, for sotoinpcb (N6.6a4).
+    drop(so.set_inet_pcb(Some(PoolArc::erase(inp.clone()))));
 
     Ok(inp)
 }
@@ -2137,6 +2139,9 @@ pub fn in_pcbdetach<G: ProcGlue>(inp: InpcbRef<G>, net: &NetHeld<'_>) {
     // soassertlocked(so) (in_pcb.c:589), before anything changes.
     inp.assert_route_locked("in_pcbdetach");
     so.set_legacy_pcb(0);
+    // so->so_pcb = NULL of a kernel protocol's socket: its count of the pcb given back (the
+    // caller's handle keeps the pcb), before sofree looks at it.
+    drop(so.set_inet_pcb(None));
     sofree_legacy(so);
     // rtfree(inp->inp_route.ro_rt): the cache's handle dropped.
     drop(inp.route().take_rt());
@@ -2185,6 +2190,17 @@ pub fn in_pcbsolock<'a, G: ProcGlue>(
     }
     kassert!(so.legacy_pcb() == core::ptr::from_ref(inp).addr());
     Some(w)
+}
+
+/// `in_pcbref(sotoinpcb(so))` of a kernel protocol's socket: its pcb (`so_pcb`, the slot
+/// [`in_pcballoc`] fills and `in_pcbdetach` empties), counted for the caller; `None` once
+/// detached, and for a `bsd` protocol's socket (whose `so_pcb` is an address only). The
+/// caller holds the socket's lock (`soassertlocked`), so the slot does not change meanwhile.
+pub fn sotoinpcb<G: ProcGlue>(so: &Socket<G>) -> Option<InpcbRef<G>> {
+    let pcb = so.pcb_read();
+    pcb.as_ref()?
+        .downcast_ref::<Inpcb<G>>()
+        .and_then(PoolArc::from_ref)
 }
 
 /// `in_pcbsolock` held C-style, for `bsd`'s adapter (its protocols release the lock in

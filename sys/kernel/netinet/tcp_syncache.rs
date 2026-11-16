@@ -85,9 +85,10 @@
 
 /* <CODE> */
 //! TCP compressed state engine: `netinet/tcp_input.c`'s SYN cache, which holds the state of
-//! embryonic connections in `SYN_RECEIVED` (part 1: the sets, the removal, the insertion, the
-//! lookup, the retransmit timer, the SYN-ACK, and the cleanup, reset and unreachable paths;
-//! `syn_cache_add` and `syn_cache_get` follow at N6.6a4 with `tcp_input`).
+//! embryonic connections in `SYN_RECEIVED`: the sets, the removal, the insertion, the
+//! lookup, the retransmit timer, the SYN-ACK, the cleanup, reset and unreachable paths
+//! (N6.6a2), and the entries made by a listener's SYN and turned into a connection by the
+//! ACK of their SYN-ACK (`syn_cache_add`, `syn_cache_get`, N6.6a4).
 //!
 //! Upstream: sys/netinet/tcp_input.c @ 3ce1f3f79392
 //! LZ: sys/netinet/tcp_input.rs@3c62ede68802
@@ -121,6 +122,21 @@
 //!   both refusals.
 //! - `syn_cache_unreach` takes the addresses as `SynCacheSa`s (LZ: raw pointers copied in by
 //!   an `unsafe fn`); its caller (`tcp_ctlinput`, N6.6a3) copies them.
+//! - An entry found by `syn_cache_add` or `syn_cache_get` that is another listener's (a
+//!   listener bound over the first one's address and port while a handshake was in flight:
+//!   the lookup compares the addresses, not the listener) has its `[s]` members under that
+//!   listener's lock, which the caller does not hold; the C reads and writes them anyway (a
+//!   data race against the C's own `[s]` legend). Here a duplicate SYN to such an entry is
+//!   counted (`tcps_sc_dupesyn`) and dropped, the entry's own timer resending its SYN-ACK,
+//!   and an ACK for it is answered as one for no entry (an RST, `badsyn`), the entry left to
+//!   its listener; neither touches the other listener's members.
+//! - `syn_cache_add` returns the segment back in `Err` for the C's -1 (the caller drops
+//!   it); `syn_cache_get` answers `SynCacheGet` for the C's NULL, `(struct socket *)-1` and
+//!   the new socket, the listener's lock consumed by every path (the C unlocks it on each).
+//! - `syn_cache_get` reads `sc_rxtshift` (an `[S]` member the C reads with `READ_ONCE` after
+//!   the removal) under the mutex, right before `syn_cache_rm`, whose timer delete stops the
+//!   only writer; a new socket whose protocol made no pcb, or no control block, is reset and
+//!   aborted (LZ's way out where the C reads through NULL).
 //!
 //! ## Redesign
 //! - An entry is a counted "syncache" item (`PoolArc`, the C's `sc_refcnt`) whose `[S]`
@@ -137,10 +153,22 @@
 //!   (the lists take the guard as their witness while the array is borrowed; the pcb table's
 //!   shape): two word moves a use. The entry records its set and bucket by index where the C
 //!   kept pointers (`sc_set`, `sc_buckethead`; LZ a raw pointer).
-//! - `syn_cache_insert` sets the entry's timer (`Timeout::set_shared`, the wheel's lock) under
-//!   `syn_cache_mtx`, where the C's `syn_cache_add` sets it bare before taking the mutex:
-//!   N6.6a4's `syn_cache_add` may move the set before the mutex, leaving the insertion its
-//!   `add_msec` alone.
+//! - The entry's timer is set by [`syn_cache_timer_set`] (`Timeout::set_shared`, the wheel's
+//!   lock), which `syn_cache_add` calls outside `syn_cache_mtx` once the SYN-ACK is sent, the
+//!   insertion keeping its `add_msec` alone under the mutex (N6.6a4; N6.6a2 set it under the
+//!   mutex). The C's `timeout_set_flags` takes no lock and runs before the SYN-ACK: an entry
+//!   whose SYN-ACK fails never had a timer to give back here. The wheel's lock pair the set
+//!   takes is the kernel `Timeout`'s, which the C's lacks (docs/ROADMAP.md's N12 row).
+//! - N6.6a4: `syn_cache_add` fills the entry inside `syn_cache_alloc`, after the pool gave the
+//!   item (the C's order: the route to the peer looked up only for an entry that exists), its
+//!   `[I]` members built at once and its `[s]` ones (the route, the IP options, the
+//!   timestamp) in the cell of the listener's lock; the option parser runs on a `TcpState` on
+//!   the stack (the C's `struct tcpcb tb`), the listener's `sack_enable` copied into it, so a
+//!   signed listener (no SACK) never makes a SACK-permitted entry (tcp_output's 40-byte
+//!   option room). `syn_cache_get` makes the connection on the socket `sonewconn` returns
+//!   locked detached: attached to a witness for the set-up, its pcb reached by `sotoinpcb`
+//!   (counted, the C's `in_pcbref`), detached again for the caller, the listener's lock let
+//!   go last, as the C's.
 //! - The listener's list (`t_sc`) is a `PinRing`, so an entry leaves it without naming the
 //!   control block, as the C's `LIST_REMOVE`; a bucket is a `PinList` (`TAILQ`).
 
@@ -150,42 +178,58 @@ use core::sync::atomic::{AtomicI32, Ordering};
 use hal::malloc::{M_NOWAIT, M_WAITOK, MArray};
 use hal::mutex::MutexedGuard;
 use hal::netlock::{NETLOCK, NetHeld};
+use hal::pod;
 use hal::pool::{AnyArc, PR_NOWAIT, PoolArc};
 use hal::rwlock::WitnessPart;
 use hal::sys::endian::{htonl, htons, ntohl};
 use hal::sys::errno::Errno;
 use hal::sys::mbuf::MT_DATA;
-use hal::sys::netinet_in::IPPROTO_TCP;
+use hal::sys::netinet_in::{INADDR_ANY, IPPROTO_TCP, SockaddrIn};
 use hal::sys::netinet_ip::Ip;
 use hal::sys::netinet_ip6::{IPV6_VERSION, IPV6_VERSION_MASK, Ip6Hdr};
 use hal::sys::netinet_tcp::{
-    TCPOLEN_SIGLEN, TCPOLEN_SIGNATURE, TCPOLEN_TSTAMP_APPA, TCPOLEN_WINDOW, TCPOPT_EOL,
-    TCPOPT_MAXSEG, TCPOPT_NOP, TCPOPT_SACK_PERMIT_HDR, TCPOPT_SIGNATURE, TCPOPT_TSTAMP_HDR,
-    TCPOPT_WINDOW, TH_ACK, TH_ECE, TH_SYN, Tcphdr,
+    TCP_MAX_WINSHIFT, TCP_MAXWIN, TCPOLEN_SIGLEN, TCPOLEN_SIGNATURE, TCPOLEN_TSTAMP_APPA,
+    TCPOLEN_WINDOW, TCPOPT_EOL, TCPOPT_MAXSEG, TCPOPT_NOP, TCPOPT_SACK_PERMIT_HDR,
+    TCPOPT_SIGNATURE, TCPOPT_TSTAMP_HDR, TCPOPT_WINDOW, TH_ACK, TH_CWR, TH_ECE, TH_RST, TH_SYN,
+    TcpSeq, Tcphdr,
 };
+use hal::sys::netinet6_in6::{In6Addr, SockaddrIn6, in6_is_addr_unspecified};
 use hal::sys::socket::{AF_INET, AF_INET6};
 
 use crate::assert::{kassert, kpanic};
 use crate::net::domain::net;
 use crate::net::ipsec_hooks::{SOCKADDR_UNION_LEN, ipsec};
 use crate::net::mbuf::{
-    M_DONTWAIT, M_TCP_CSUM_OUT, MAX_LINKHDR, MCLBYTES, MHLEN, Mbuf, MbufBox, m_clget, m_gethdr,
+    M_DONTWAIT, M_TCP_CSUM_OUT, MAX_LINKHDR, MCLBYTES, MHLEN, Mbuf, MbufBox, PF_TAG_DIVERTED,
+    m_clget, m_gethdr,
 };
+use crate::net::pf_hooks::pf;
 use crate::net::rtable::rtable_l2;
-use crate::netinet::in_pcb::{Inpcb, InpcbRef, in_pcbsolock};
+use crate::net::sockbuf::{SB_MAX_VAR, SS_ISCONNECTED};
+use crate::net::socket::{SoLocked, solock_attach, sonewconn, sounlock_detached};
+use crate::netinet::in_pcb::{INP_IPV6, Inpcb, InpcbRef, in_pcbset_addr, in_pcbsolock, sotoinpcb};
+use crate::netinet::ip_input::ip_srcroute;
 use crate::netinet::ip_output::ip_output;
 use crate::netinet::ip_var::{IP_DEFTTL, IP_MTUDISC, ip_mtudisc};
-use crate::netinet::tcp_seq::{seq_gt, seq_lt};
-use crate::netinet::tcp_subr::{TCP_DO_ECN, put_hdr, tcp_signature};
+use crate::netinet::tcp_fsm::{TCPS_LISTEN, TCPS_SYN_RECEIVED};
+use crate::netinet::tcp_input::{tcp_dooptions, tcp_mss, tcp_mss_adv, tcp_mss_update};
+use crate::netinet::tcp_seq::{seq_gt, seq_leq, seq_lt, tcp_rcvseqinit, tcp_sendseqinit};
+use crate::netinet::tcp_subr::{
+    TCP_DO_ECN, TCP_DO_RFC1323, put_hdr, tcp_drop, tcp_free, tcp_respond, tcp_signature,
+    tcp_template,
+};
 use crate::netinet::tcp_timer::{
-    TCP_BACKOFF, TCP_KEEPINIT, TCP_MAXRXTSHIFT, TCPTV_MIN, TCPTV_REXMTMAX, TCPTV_SRTTDFLT,
-    tcpt_rangeset,
+    TCP_BACKOFF, TCP_KEEPINIT, TCP_MAXRXTSHIFT, TCPT_KEEP, TCPT_REXMT, TCPTV_MIN, TCPTV_REXMTMAX,
+    TCPTV_SRTTDFLT, tcp_timer_arm, tcpt_rangeset,
 };
 use crate::netinet::tcp_var::{
     SCF_ECN_PERMIT, SCF_SACK_PERMIT, SCF_SIGNATURE, SCF_TIMESTAMP, SCF_UNREACH, ScListener, ScTpq,
     SynCache, SynCacheHead, SynCacheInit, SynCacheSa, SynCaches, TCP_SYN_BUCKET_SIZE,
-    TCP_SYN_HASH_SIZE, TcpstatCounters, Tp, tcp_now, tcpstat_inc,
+    TCP_SYN_HASH_SIZE, TF_ECN_PERMIT, TF_NODELAY, TF_NOPUSH, TF_RCVD_SCALE, TF_RCVD_TSTMP,
+    TF_REQ_SCALE, TF_REQ_TSTMP, TF_SACK_PERMIT, TF_SIGNATURE, TcpOptInfo, TcpState,
+    TcpstatCounters, Tp, intotcpcb, tcp_now, tcpstat_inc,
 };
+use crate::netinet6::in6_pcb::in6_pcbset_addr;
 use crate::netinet6::in6_src::in6_selecthlim;
 use crate::netinet6::ip6_output::ip6_output;
 use crate::netinet6::ip6_var::IP6_DEFHLIM;
@@ -215,6 +259,20 @@ impl<G: ProcGlue> Drop for ScRemoved<G> {
         drop(self.listener.take());
         drop(self.list.take());
     }
+}
+
+/// What [`syn_cache_get`] found; on all three the listening socket has been unlocked.
+pub enum SynCacheGet<G: ProcGlue> {
+    /// `NULL`: the SYN was not in the cache (or is another listener's, see the deviations);
+    /// the segment back, for the caller's RST.
+    NotFound(MbufBox),
+    /// `(struct socket *)(-1)`: the connection could not be created and is aborted, or the
+    /// ACK did not match and the SYN-ACK was sent again; the segment consumed.
+    Aborted,
+    /// The new connection in `SYN_RECEIVED`: its pcb, counted (the C's `in_pcbref`), its
+    /// socket's `so_lock` held detached by the running process (`sonewconn`'s socket,
+    /// returned locked); the segment back, for the caller to go on with.
+    Socket(InpcbRef<G>, MbufBox),
 }
 
 /// \[a\] `tcp_syn_cache_limit`: global entry limit.
@@ -326,20 +384,35 @@ pub fn syn_cache_lock<G: ProcGlue>() -> ScGuard<'static, G> {
 }
 
 /// `pool_get(&syn_cache_pool, PR_NOWAIT|PR_ZERO)` and `refcnt_init` of `syn_cache_add`: a new
-/// entry of the listener `inp` with the `[I]` members `init` and the `[s]` ones `l`, its
-/// listener counted (`sc_inplisten = in_pcbref(tp->t_inpcb)`); `None` when the pool is empty
-/// (or `inp` no pool item).
+/// entry of the listener `inp`, its listener counted (`sc_inplisten = in_pcbref(tp->t_inpcb)`),
+/// its `[I]` and `[s]` members those `fill` makes (`syn_cache_add`'s stores before the entry
+/// is shared: run only once the pool has given an item, as the C fills it after `pool_get`);
+/// `None` when the pool is empty (or `inp` no pool item), `fill` not run.
 pub fn syn_cache_alloc<G: ProcGlue>(
     inp: &Inpcb<G>,
-    init: SynCacheInit,
-    l: ScListener,
+    fill: impl FnOnce() -> (SynCacheInit, ScListener),
 ) -> Option<PoolArc<SynCache<G>>> {
     let t = &net::<G>().tcp;
     let listen = inp.socket().so_lock.lock().id();
     let listener = PoolArc::from_ref(inp)?;
     t.syn_cache_pool.get_homed(PR_NOWAIT, || {
+        let (init, l) = fill();
         SynCache::new(t.syn_cache.id(), listen, init, l, Some(listener))
     })
+}
+
+/// `timeout_set_flags(&sc->sc_timer, syn_cache_timer, sc, KCLOCK_NONE, TIMEOUT_PROC |
+/// TIMEOUT_MPSAFE)` of `syn_cache_add`: the entry's retransmit timer, holding a counted
+/// handle of the entry while it is in the cache (`syn_cache_rm`'s `clear()` gives it back).
+/// Set before [`syn_cache_insert`] and outside `syn_cache_mtx`, as the C sets it (the
+/// wheel's lock is taken here, where the C's `timeout_set` takes none).
+pub fn syn_cache_timer_set<G: ProcGlue>(sc: &PoolArc<SynCache<G>>) {
+    sc.sc_timer.set_shared(
+        syn_cache_timer::<G>,
+        PoolArc::erase(sc.clone()),
+        KCLOCK_NONE,
+        TIMEOUT_PROC | TIMEOUT_MPSAFE,
+    );
 }
 
 /// `syn_cache_init`: the two sets' buckets and the "syncache" pool (at boot, from `tcp_init`).
@@ -369,8 +442,9 @@ pub fn syn_cache_init<G: ProcGlue>() {
         .init_recorded(hal::intr::IPL_SOFTNET, 0, "syncache");
 }
 
-/// `syn_cache_insert`: puts the new entry `sc` (its `[I]` members and its listener set) into
-/// the active set and onto the list of the listener `tp`, its timer started: the C's
+/// `syn_cache_insert`: puts the new entry `sc` (its `[I]` members and its listener set, its
+/// timer set by [`syn_cache_timer_set`]) into the active set and onto the list of the
+/// listener `tp`, its timer started: the C's
 /// sequence (a reseed of an empty, used-up set, the bucket and the cache limits that toss an
 /// oldest entry, the set's swap). The tossed entries' handles come back in `tossed` for the
 /// caller to drop after the mutex.
@@ -476,14 +550,8 @@ pub fn syn_cache_insert<G: ProcGlue>(
             tcpt_rangeset(TCPTV_SRTTDFLT * TCP_BACKOFF[0], TCPTV_MIN, TCPTV_REXMTMAX) as u32;
         s.sc_rxtcur
     };
-    // The timer's handle, for as long as the entry is in the cache (`syn_cache_rm` gives it
-    // back): set here where the C's `syn_cache_add` sets the timer, before it is added.
-    sc.sc_timer.set_shared(
-        syn_cache_timer::<G>,
-        PoolArc::erase(sc.clone()),
-        KCLOCK_NONE,
-        TIMEOUT_PROC | TIMEOUT_MPSAFE,
-    );
+    // The timer holds the entry's handle since `syn_cache_timer_set` (the caller's, before the
+    // mutex); `syn_cache_rm` gives it back.
     let _ = hal::pin::project(sc.as_pin(), |s| &s.sc_timer).add_msec(u64::from(rxtcur));
 
     // Link it from tcpcb entry: the lists' handle, forgotten until syn_cache_rm adopts it.
@@ -646,6 +714,327 @@ pub fn syn_cache_lookup<G: ProcGlue>(
     None
 }
 
+/// Whether the entry `sc` is the listener `inp`'s (`sc_inplisten`), under the mutex: the
+/// listener whose socket lock keys its `[s]` members.
+fn sc_of<G: ProcGlue>(g: &ScGuard<'_, G>, sc: &SynCache<G>, inp: &Inpcb<G>) -> bool {
+    sc.sc_s
+        .get(g)
+        .sc_inplisten
+        .as_ref()
+        .is_some_and(|l| core::ptr::eq::<Inpcb<G>>(&**l, inp))
+}
+
+/// `in_pcbset_addr(inp, src, dst, rtableid)` of a new connection: the foreign address and
+/// port `src`, the local ones `dst`, each `union syn_cache_sa` read whole as the family of
+/// the pcb (`in6_pcbset_addr` for an `INP_IPV6` one).
+fn set_addr<G: ProcGlue>(
+    inp: &Inpcb<G>,
+    src: &SynCacheSa,
+    dst: &SynCacheSa,
+    rtableid: u32,
+) -> Result<(), Errno> {
+    if inp.has_flags(INP_IPV6) {
+        match (
+            pod::at::<SockaddrIn6>(src, 0),
+            pod::at::<SockaddrIn6>(dst, 0),
+        ) {
+            (Some(f), Some(l)) => in6_pcbset_addr(inp, &f, &l, rtableid),
+            _ => Err(Errno::EINVAL),
+        }
+    } else {
+        match (pod::at::<SockaddrIn>(src, 0), pod::at::<SockaddrIn>(dst, 0)) {
+            (Some(f), Some(l)) => in_pcbset_addr(inp, &f, &l, rtableid),
+            _ => Err(Errno::EINVAL),
+        }
+    }
+}
+
+/// `syn_cache_get`: called when we receive an ACK (`th`, host order, in `m`) for the
+/// listener `listeninp`, whose socket `listenso` holds locked. We look up the connection in
+/// the syn cache, and if its there, we pull it out of the cache and turn it into a full-blown
+/// connection in the SYN-RECEIVED state: a socket from `sonewconn` on the listener's queue,
+/// its control block set up as it would have been had the connection been made when the SYN
+/// arrived. See [`SynCacheGet`] for the three outcomes; the listener is unlocked on all of
+/// them (the C's `in_pcbsounlock(listeninp, listenso)` on each path, by the drop of
+/// `listenso` here).
+#[allow(clippy::too_many_arguments, reason = "the C's prototype")]
+pub fn syn_cache_get<G: ProcGlue>(
+    src: &SynCacheSa,
+    dst: &SynCacheSa,
+    th: &Tcphdr,
+    listeninp: &Inpcb<G>,
+    mut listenso: SoLocked<'_>,
+    mut m: MbufBox,
+    now: u64,
+    do_ecn: bool,
+    net: &NetHeld<'_>,
+) -> SynCacheGet<G> {
+    // NET_ASSERT_LOCKED(): `net` is its proof. The listener is a kernel protocol's socket,
+    // held by a witness (D-1): its parts open the entry's `[s]` members and its control block.
+    let Some(mut lil) = listenso.inet() else {
+        drop(listenso);
+        return SynCacheGet::NotFound(m);
+    };
+
+    let mut g = syn_cache_lock::<G>();
+    let Some(sc) = syn_cache_lookup(&mut g, src, dst, listeninp.inp_rtableid.get()) else {
+        drop(g);
+        drop(lil);
+        drop(listenso);
+        return SynCacheGet::NotFound(m);
+    };
+    // Another listener's entry: its `[s]` members are under that listener's lock, which is
+    // not held (see the deviations).
+    if !sc_of(&g, &sc, listeninp) {
+        drop(g);
+        drop(sc);
+        drop(lil);
+        drop(listenso);
+        return SynCacheGet::NotFound(m);
+    }
+
+    // Verify the sequence and ack numbers. Try getting the correct response again.
+    let i = sc.sc_i;
+    // `sc_irs + 1 + sc_win`: the `long` sum, compared modulo 2^32 (SEQ_GT's cast).
+    let edge = i.sc_irs.wrapping_add(1).wrapping_add(i.sc_win as u32);
+    if th.th_ack != i.sc_iss.wrapping_add(1)
+        || seq_leq(th.th_seq, i.sc_irs)
+        || seq_gt(th.th_seq, edge)
+    {
+        // refcnt_take(&sc->sc_refcnt): the lookup's handle.
+        drop(g);
+        let _ = syn_cache_respond(&sc, Some(m), now, do_ecn, &mut lil.syn, net);
+        drop(lil);
+        drop(listenso);
+        // syn_cache_put(sc)
+        drop(sc);
+        return SynCacheGet::Aborted;
+    }
+
+    // `READ_ONCE(sc->sc_rxtshift)`, read before the removal: the entry's timer is stopped by
+    // it, so the value is the one the C reads after.
+    let rxtshift = sc.sc_s.get(&g).sc_rxtshift;
+    // Remove this cache entry
+    let removed = syn_cache_rm(&mut g, &sc);
+    drop(g);
+    drop(removed);
+
+    // Ok, create the full blown connection, and set things up as they would have been set up
+    // if we had created the connection when the SYN arrived. If we can't create the
+    // connection, abort it.
+    let listenso_ref = listeninp.socket();
+    let reset_abort = |m: &MbufBox| {
+        tcp_respond::<G>(
+            None,
+            m.data(),
+            Some(th),
+            0,
+            th.th_ack,
+            TH_RST,
+            m.m_pkthdr().ph_rtableid.get(),
+            now,
+            net,
+        );
+    };
+    let Some(so) = sonewconn(listenso_ref, SS_ISCONNECTED, M_DONTWAIT, Some(net)) else {
+        // resetandabort: no socket, no pcb, no control block.
+        reset_abort(&m);
+        drop(lil);
+        drop(listenso);
+        drop(m);
+        drop(sc);
+        tcpstat_inc(TcpstatCounters::TcpsScAborted);
+        return SynCacheGet::Aborted;
+    };
+    // soassertlocked(so): sonewconn returns it locked, detached.
+    // inpcb does refcount socket, both so and inp cannot go away
+    let Some(inp) = sotoinpcb(&so) else {
+        // The protocol's attach left no pcb: resetandabort with the socket alone (LZ's way
+        // out where the C reads through NULL).
+        reset_abort(&m);
+        sounlock_detached(&so);
+        drop(lil);
+        drop(listenso);
+        drop(m);
+        drop(sc);
+        tcpstat_inc(TcpstatCounters::TcpsScAborted);
+        return SynCacheGet::Aborted;
+    };
+    let mut w = solock_attach(&so, net);
+    let ok = match w.inet() {
+        None => {
+            reset_abort(&m);
+            false
+        }
+        Some(mut il) => match intotcpcb(&inp, &mut il) {
+            None => {
+                reset_abort(&m);
+                false
+            }
+            Some(mut tp) => {
+                let listenflags = intotcpcb(listeninp, &mut lil).map_or(0, |l| l.st.t_flags);
+                let l = sc.sc_l.get_mut(&mut lil.syn);
+                // 'abort: Some(reset) when the connection cannot be made.
+                let fail = 'abort: {
+                    // We need to copy the required security levels from the listen pcb. Ditto
+                    // for any other IPsec-related information.
+                    inp.inp_seclevel.set(listeninp.inp_seclevel.get());
+                    if inp.has_flags(INP_IPV6) {
+                        kassert!(listeninp.has_flags(INP_IPV6));
+
+                        let mut ip6: Ip6Hdr = inp.inp_ipv6.get();
+                        ip6.ip6_hlim = listeninp.inp_ipv6.get::<Ip6Hdr>().ip6_hlim;
+                        inp.inp_ipv6.set(ip6);
+                        inp.inp_hops.set(listeninp.inp_hops.get());
+                    } else {
+                        kassert!(!listeninp.has_flags(INP_IPV6));
+
+                        let mut ip = inp.inp_ip.get();
+                        ip.ip_ttl = listeninp.inp_ip.get().ip_ttl;
+                        inp.inp_ip.set(ip);
+                        let mut opts = inp.options();
+                        *opts = ip_srcroute(&mut m);
+                        if opts.is_none() {
+                            *opts = l.sc_ipopts.take();
+                        }
+                    }
+
+                    // inherit rtable from listening socket
+                    let mut rtableid = i.sc_rtableid;
+                    // NPF > 0
+                    if m.m_pkthdr().pf.flags.get() & PF_TAG_DIVERTED != 0 {
+                        let divert = pf().and_then(|p| p.find_divert(&m));
+                        kassert!(divert.is_some());
+                        if let Some(d) = divert {
+                            rtableid = u32::from(d.rdomain);
+                        }
+                    }
+                    if set_addr(&inp, src, dst, rtableid).is_err() {
+                        break 'abort Some(true);
+                    }
+
+                    // Give the new socket our cached route reference.
+                    inp.set_route(core::mem::take(&mut l.sc_route));
+
+                    let st = &mut *tp.st;
+                    st.t_flags = listenflags & (TF_NOPUSH | TF_NODELAY);
+                    if i.sc_request_r_scale != 15 {
+                        st.requested_s_scale = i.sc_requested_s_scale;
+                        st.request_r_scale = i.sc_request_r_scale;
+                        st.set_flags(TF_REQ_SCALE | TF_RCVD_SCALE);
+                    }
+                    if i.sc_fixflags & SCF_TIMESTAMP != 0 {
+                        st.set_flags(TF_REQ_TSTMP | TF_RCVD_TSTMP);
+                    }
+
+                    match tcp_template(&mut tp) {
+                        Some(t) => tp.st.t_template = Some(t),
+                        None => break 'abort Some(false),
+                    }
+                    let st = &mut *tp.st;
+                    // ISSET(): the flag's bit, not 1 (TCP_SACK_ENABLE reads it back so).
+                    st.sack_enable = i32::from(i.sc_fixflags & SCF_SACK_PERMIT);
+                    st.ts_modulate = i.sc_modulate;
+                    st.ts_recent = l.sc_timestamp as u32;
+                    st.iss = i.sc_iss;
+                    st.irs = i.sc_irs;
+                    tcp_sendseqinit(st);
+                    st.snd_last = st.snd_una;
+                    // TCP_ECN
+                    if i.sc_fixflags & SCF_ECN_PERMIT != 0 {
+                        st.set_flags(TF_ECN_PERMIT);
+                        tcpstat_inc(TcpstatCounters::TcpsEcnAccepts);
+                    }
+                    if i.sc_fixflags & SCF_SACK_PERMIT != 0 {
+                        st.set_flags(TF_SACK_PERMIT);
+                    }
+                    // TCP_SIGNATURE
+                    if i.sc_fixflags & SCF_SIGNATURE != 0 {
+                        st.set_flags(TF_SIGNATURE);
+                    }
+                    tcp_rcvseqinit(st);
+                    st.t_state = TCPS_SYN_RECEIVED;
+                    st.t_rcvtime = now;
+                    st.t_sndtime = now;
+                    st.t_rcvacktime = now;
+                    st.t_sndacktime = now;
+                    tcp_timer_arm(
+                        &mut tp,
+                        TCPT_KEEP,
+                        TCP_KEEPINIT.load(Ordering::Relaxed) as u64,
+                    );
+                    tcpstat_inc(TcpstatCounters::TcpsAccepts);
+
+                    // sets t_maxseg
+                    let _ = tcp_mss(&mut tp, i32::from(i.sc_peermaxseg));
+                    if i.sc_peermaxseg != 0 {
+                        tcp_mss_update(&mut tp);
+                    }
+                    let st = &mut *tp.st;
+                    // Reset initial window to 1 segment for retransmit
+                    if rxtshift > 0 {
+                        st.snd_cwnd = u64::from(st.t_maxseg);
+                    }
+                    st.snd_wl1 = i.sc_irs;
+                    st.rcv_up = i.sc_irs.wrapping_add(1);
+
+                    // This is what would have happened in tcp_output() when the SYN,ACK was
+                    // sent.
+                    st.snd_up = st.snd_una;
+                    st.snd_nxt = st.iss.wrapping_add(1);
+                    st.snd_max = st.snd_nxt;
+                    let rxtcur = st.t_rxtcur;
+                    tcp_timer_arm(&mut tp, TCPT_REXMT, rxtcur as u64);
+                    let st = &mut *tp.st;
+                    // `rcv_nxt + sc_win`, the `long` sum, compared and stored modulo 2^32.
+                    let adv = st.rcv_nxt.wrapping_add(i.sc_win as u32);
+                    if i.sc_win > 0 && seq_gt(adv, st.rcv_adv) {
+                        st.rcv_adv = adv;
+                    }
+                    st.last_ack_sent = st.rcv_nxt;
+                    None
+                };
+                match fail {
+                    None => true,
+                    Some(reset) => {
+                        if reset {
+                            // resetandabort:
+                            reset_abort(&m);
+                        }
+                        // abort: tcp_drop destroys the socket.
+                        let closed = tcp_drop(tp, Some(Errno::ECONNABORTED));
+                        tcp_free(&inp, &mut il.pcb, closed);
+                        false
+                    }
+                }
+            }
+        },
+    };
+
+    if !ok {
+        // in_pcbsounlock(inp, so); in_pcbsounlock(listeninp, listenso); in_pcbunref(inp);
+        // m_freem(m); syn_cache_put(sc)
+        drop(w);
+        drop(lil);
+        drop(listenso);
+        drop(inp);
+        drop(m);
+        drop(sc);
+        tcpstat_inc(TcpstatCounters::TcpsScAborted);
+        return SynCacheGet::Aborted;
+    }
+
+    // The new socket returned locked: its witness detached again.
+    w.detach();
+    drop(lil);
+    // in_pcbsounlock(listeninp, listenso)
+    drop(listenso);
+    tcpstat_inc(TcpstatCounters::TcpsScCompleted);
+    // syn_cache_put(sc)
+    drop(sc);
+    SynCacheGet::Socket(inp, m)
+}
+
 /// `syn_cache_reset`: called when we get a RST for a non-existent connection, so that we can
 /// see if the connection is in the syn cache. If it is, zap it. `th` in host order.
 pub fn syn_cache_reset<G: ProcGlue>(
@@ -707,6 +1096,230 @@ pub fn syn_cache_unreach<G: ProcGlue>(
     tcpstat_inc(TcpstatCounters::TcpsScUnreach);
     drop(removed);
     drop(sc);
+}
+
+/// `syn_cache_add`: given a LISTEN socket (its control block `tp`, locked) and an inbound SYN
+/// request (`th`, host order, in `m`, from `src` to `dst`, its options `optp` and the ones
+/// `tcp_input` parsed in `oi`), add this to the syn cache, and send back a segment
+/// `<SEQ=ISS><ACK=RCV_NXT><CTL=SYN,ACK>` to the source; a duplicate SYN resends the SYN,ACK
+/// of the entry it finds. `Err` (the C's -1: the options refused or no entry to be had) gives
+/// the segment back to the caller, who drops it; otherwise it was consumed (the SYN,ACK's
+/// `syn_cache_respond` frees it).
+///
+/// IMPORTANT NOTE: We do _NOT_ ACK data that might accompany the SYN. Doing so would require
+/// that we hold onto the data and deliver it to the application. However, if we are the
+/// target of a SYN-flood DoS attack, an attacker could send data which would eventually
+/// consume all available buffer space if it were ACKed. By not ACKing the data, we avoid
+/// this DoS scenario.
+#[allow(clippy::too_many_arguments, reason = "the C's prototype")]
+pub fn syn_cache_add<G: ProcGlue>(
+    src: &SynCacheSa,
+    dst: &SynCacheSa,
+    th: &Tcphdr,
+    iphlen: i32,
+    tp: &mut Tp<'_, '_, G>,
+    mut m: MbufBox,
+    optp: Option<&[u8]>,
+    oi: &mut TcpOptInfo,
+    issp: Option<TcpSeq>,
+    now: u64,
+    do_ecn: bool,
+) -> Result<(), MbufBox> {
+    // soassertlocked(so): `tp` holds the listener's socket lock in parts.
+    let so = tp.so;
+    let inp = tp.inp;
+    let rtableid = inp.inp_rtableid.get();
+
+    // RFC1122 4.2.3.10, p. 104: discard bcast/mcast SYN
+    //
+    // Note this check is performed in tcp_input() very early on.
+
+    // Initialize some local state.
+    let win = so.so_rcv.sbspace().min(i64::from(TCP_MAXWIN));
+
+    // `struct tcpcb tb`, zeroed on the stack: the option parser's view of the listener.
+    let mut tb = TcpState::new();
+    if optp.is_some() || tp.st.has_flags(TF_SIGNATURE) {
+        tb.pf = tp.st.pf;
+        tb.sack_enable = tp.st.sack_enable;
+        tb.t_flags = if TCP_DO_RFC1323.load(Ordering::Relaxed) != 0 {
+            TF_REQ_SCALE | TF_REQ_TSTMP
+        } else {
+            0
+        };
+        // TCP_SIGNATURE
+        if tp.st.has_flags(TF_SIGNATURE) {
+            tb.set_flags(TF_SIGNATURE);
+        }
+        tb.t_state = TCPS_LISTEN;
+        if !tcp_dooptions(
+            &mut tb,
+            optp.unwrap_or(&[]),
+            th,
+            &m,
+            iphlen,
+            oi,
+            rtableid,
+            now,
+        ) {
+            return Err(m);
+        }
+    }
+
+    // Remember the IP options, if any.
+    let ipopts = match sa_family(src) {
+        AF_INET => ip_srcroute(&mut m),
+        _ => None,
+    };
+
+    // See if we already have an entry for this connection. If we do, resend the SYN,ACK. We
+    // do not count this as a retransmission (XXX though maybe we should).
+    let mut g = syn_cache_lock::<G>();
+    if let Some(sc) = syn_cache_lookup(&mut g, src, dst, rtableid) {
+        // refcnt_take(&sc->sc_refcnt): the lookup's handle.
+        let ours = sc_of(&g, &sc, inp);
+        drop(g);
+        tcpstat_inc(TcpstatCounters::TcpsScDupesyn);
+        if !ours {
+            // Another listener's entry: its `[s]` members and its SYN,ACK are under that
+            // listener's lock (see the deviations); its timer resends the SYN,ACK.
+            drop(ipopts);
+            drop(m);
+            drop(sc);
+            return Ok(());
+        }
+        let l = sc.sc_l.get_mut(&mut *tp.syn);
+        if ipopts.is_some() {
+            // If we were remembering a previous source route, forget it and use the new one
+            // we've been given.
+            l.sc_ipopts = ipopts;
+        }
+        l.sc_timestamp = u64::from(tb.ts_recent);
+        if syn_cache_respond(&sc, Some(m), now, do_ecn, tp.syn, tp.net).is_ok() {
+            tcpstat_inc(TcpstatCounters::TcpsSndacks);
+            tcpstat_inc(TcpstatCounters::TcpsSndtotal);
+        }
+        // syn_cache_put(sc)
+        drop(sc);
+        return Ok(());
+    }
+    drop(g);
+
+    // Fill in the cache, and put the necessary IP and TCP options into the reply: done once
+    // the pool has given an item (`syn_cache_alloc` runs this after `pool_get`, as the C
+    // fills the entry after it), the route looked up into the entry's own cache.
+    let sb_max = SB_MAX_VAR.load(Ordering::Relaxed);
+    let net = tp.net;
+    let fill = || {
+        let family = sa_family(src);
+        let mut l = ScListener {
+            sc_ipopts: ipopts,
+            sc_timestamp: u64::from(tb.ts_recent),
+            ..ScListener::default()
+        };
+        let rt = match family {
+            AF_INET if sa_word(src, 4) != INADDR_ANY => {
+                let peer = sa_word(src, 4).to_ne_bytes();
+                let us = sa_word(dst, 4).to_ne_bytes();
+                l.sc_route.mpath4(peer, Some(us), rtableid, net)
+            }
+            AF_INET6
+                if !in6_is_addr_unspecified(&In6Addr {
+                    s6_addr: sa_addr6(src),
+                }) =>
+            {
+                l.sc_route
+                    .mpath6(&sa_addr6(src), Some(&sa_addr6(dst)), rtableid, net)
+            }
+            _ => None,
+        };
+        let ourmaxseg = tcp_mss_adv(rt, i32::from(family)) as u16;
+
+        let mut init = SynCacheInit {
+            sc_win: win,
+            sc_src: *src,
+            sc_dst: *dst,
+            sc_irs: th.th_seq,
+            sc_iss: issp.unwrap_or_else(hal::random::arc4random),
+            sc_rtableid: rtableid,
+            sc_peermaxseg: oi.maxseg,
+            sc_ourmaxseg: ourmaxseg,
+            ..SynCacheInit::default()
+        };
+        if tb.t_flags & (TF_REQ_TSTMP | TF_RCVD_TSTMP) == (TF_REQ_TSTMP | TF_RCVD_TSTMP) {
+            init.sc_fixflags |= SCF_TIMESTAMP;
+            init.sc_modulate = hal::random::arc4random();
+        }
+        if tb.t_flags & (TF_RCVD_SCALE | TF_REQ_SCALE) == (TF_RCVD_SCALE | TF_REQ_SCALE) {
+            init.sc_requested_s_scale = tb.requested_s_scale;
+            init.sc_request_r_scale = 0;
+            // Pick the smallest possible scaling factor that will still allow us to scale up
+            // to sb_max.
+            //
+            // We do this because there are broken firewalls that will corrupt the window
+            // scale option, leading to the other endpoint believing that our advertised
+            // window is unscaled. At scale factors larger than 5 the unscaled window will
+            // drop below 1500 bytes, leading to serious problems when traversing these
+            // broken firewalls.
+            //
+            // With the default sbmax of 256K, a scale factor of 3 will be chosen by this
+            // algorithm. Those who choose a larger sbmax should watch out for the
+            // compatibility problems mentioned above.
+            //
+            // RFC1323: The Window field in a SYN (i.e., a <SYN> or <SYN,ACK>) segment itself
+            // is never scaled.
+            while init.sc_request_r_scale < TCP_MAX_WINSHIFT
+                && u64::from(TCP_MAXWIN << init.sc_request_r_scale) < sb_max
+            {
+                init.sc_request_r_scale += 1;
+            }
+        } else {
+            init.sc_requested_s_scale = 15;
+            init.sc_request_r_scale = 15;
+        }
+        // TCP_ECN: if both ECE and CWR flag bits are set, peer is ECN capable.
+        if do_ecn && th.th_flags & (TH_ECE | TH_CWR) == (TH_ECE | TH_CWR) {
+            init.sc_fixflags |= SCF_ECN_PERMIT;
+        }
+        // Set SCF_SACK_PERMIT if peer did send a SACK_PERMITTED option (i.e., if
+        // tcp_dooptions() did set TF_SACK_PERMIT); the listener's sack_enable came with tb,
+        // so a signed listener (no SACK) never makes a SACK-permitted entry.
+        if tb.sack_enable != 0 && tb.has_flags(TF_SACK_PERMIT) {
+            init.sc_fixflags |= SCF_SACK_PERMIT;
+        }
+        // TCP_SIGNATURE
+        if tb.has_flags(TF_SIGNATURE) {
+            init.sc_fixflags |= SCF_SIGNATURE;
+        }
+        (init, l)
+    };
+    // sc->sc_inplisten = in_pcbref(tp->t_inpcb): the entry counts its listener.
+    let Some(sc) = syn_cache_alloc(inp, fill) else {
+        // m_free(ipopts): with the closure, which never ran.
+        return Err(m);
+    };
+
+    if syn_cache_respond(&sc, Some(m), now, do_ecn, tp.syn, tp.net).is_ok() {
+        // The entry's timer, set as the C's timeout_set_flags (outside the mutex), only for
+        // an entry that goes into the cache.
+        syn_cache_timer_set(&sc);
+        let mut tossed = None;
+        let mut g = syn_cache_lock::<G>();
+        // Socket lock prevents another insert after our syn_cache_lookup() and before
+        // syn_cache_insert().
+        syn_cache_insert(&mut g, &sc, tp, &mut tossed);
+        drop(g);
+        drop(tossed);
+        tcpstat_inc(TcpstatCounters::TcpsSndacks);
+        tcpstat_inc(TcpstatCounters::TcpsSndtotal);
+    } else {
+        // in_pcbunref(sc->sc_inplisten); syn_cache_put(sc): the last handle, the listener's
+        // with it.
+        drop(sc);
+        tcpstat_inc(TcpstatCounters::TcpsScDropped);
+    }
+
+    Ok(())
 }
 
 /// `syn_cache_respond`: sends the SYN-ACK of the entry `sc` (the incoming segment `m`, if any,
@@ -1054,11 +1667,13 @@ mod tests {
             sc_request_r_scale: 15,
             ..SynCacheInit::default()
         };
-        syn_cache_alloc(inp, init, ScListener::default()).expect("a syn cache entry")
+        syn_cache_alloc(inp, || (init, ScListener::default())).expect("a syn cache entry")
     }
 
-    /// `syn_cache_insert` of `sc` on the listener `inp`, the tossed entries dropped after.
+    /// `syn_cache_insert` of `sc` on the listener `inp` (its timer set first, as
+    /// `syn_cache_add` sets it), the tossed entries dropped after.
     fn insert(inp: &Inpcb<G>, sc: &PoolArc<SynCache<G>>) {
+        syn_cache_timer_set(sc);
         testtcp::with_tp(inp, |tp| {
             let mut tossed = None;
             let mut g = net::<G>().tcp.syn_cache.lock();
@@ -1319,7 +1934,7 @@ mod tests {
             sc_timestamp: 0x0102_0304,
             ..ScListener::default()
         };
-        let sc = syn_cache_alloc(&inp, init, l()).expect("an entry");
+        let sc = syn_cache_alloc(&inp, || (init, l())).expect("an entry");
         let sent = d.sent.load(Ordering::Relaxed);
         let r = testtcp::with_lock(&inp, |_, il| {
             syn_cache_respond(&sc, None, 500, true, &mut il.syn, &il.net)
@@ -1358,15 +1973,16 @@ mod tests {
         assert_eq!(&p[60..64], &0x0102_0304u32.to_be_bytes(), "sc_timestamp");
 
         // Without ECN asked, no ECE; with no option but the MSS, th_off 6.
-        let bare = syn_cache_alloc(
-            &inp,
-            SynCacheInit {
-                sc_fixflags: SCF_ECN_PERMIT,
-                sc_request_r_scale: 15,
-                ..init
-            },
-            l(),
-        )
+        let bare = syn_cache_alloc(&inp, || {
+            (
+                SynCacheInit {
+                    sc_fixflags: SCF_ECN_PERMIT,
+                    sc_request_r_scale: 15,
+                    ..init
+                },
+                l(),
+            )
+        })
         .expect("an entry");
         let r = testtcp::with_lock(&inp, |_, il| {
             syn_cache_respond(&bare, None, 500, false, &mut il.syn, &il.net)
@@ -1378,14 +1994,15 @@ mod tests {
 
         // A signed entry with no IPsec to give its SA: EPERM, nothing sent (the kernel's
         // tests register no Ipsec legs, so the EINVAL and tdb_unref path has no double).
-        let signed = syn_cache_alloc(
-            &inp,
-            SynCacheInit {
-                sc_fixflags: SCF_SIGNATURE | SCF_TIMESTAMP,
-                ..init
-            },
-            l(),
-        )
+        let signed = syn_cache_alloc(&inp, || {
+            (
+                SynCacheInit {
+                    sc_fixflags: SCF_SIGNATURE | SCF_TIMESTAMP,
+                    ..init
+                },
+                l(),
+            )
+        })
         .expect("an entry");
         let sent = d.sent.load(Ordering::Relaxed);
         let r = testtcp::with_lock(&inp, |_, il| {
