@@ -2976,6 +2976,22 @@ pub(crate) mod testinet {
         }
     }
 
+    /// The IPv6 test domain (`AF_INET6`), for the sockets of the IPv6 tests' protocols
+    /// (the TCP tests' listeners): its family is what `dom_family` reads.
+    pub(crate) struct Inet6Dom;
+
+    impl Domain<G> for Inet6Dom {
+        fn family(&self) -> i32 {
+            i32::from(hal::sys::socket::PF_INET6)
+        }
+        fn name(&self) -> &'static str {
+            "inet6"
+        }
+        fn protocols(&self) -> &'static [&'static dyn Protocol<G>] {
+            &[]
+        }
+    }
+
     impl Protocol<G> for UdpProto {
         fn domain(&self) -> &'static dyn Domain<G> {
             &InetDom

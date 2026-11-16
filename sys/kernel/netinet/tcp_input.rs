@@ -4191,9 +4191,26 @@ mod tests {
         );
         let iss = u32::from_be(sa.th_seq);
         assert!(lso.queued_first().is_none(), "no connection yet");
+        // The same SYN again: the entry's SYN-ACK sent again (tcps_sc_dupesyn, and
+        // tcps_sndacks for the SYN-ACK), no second entry.
+        let (dupe, acks, added2) = (
+            stat(C::TcpsScDupesyn),
+            stat(C::TcpsSndacks),
+            stat(C::TcpsScAdded),
+        );
+        deliver(syn(TH_SYN, 777, 0, &sackp, &[]));
+        assert_eq!(stat(C::TcpsScDupesyn), dupe + 1);
+        assert_eq!(stat(C::TcpsSndacks), acks + 1);
+        assert_eq!(stat(C::TcpsScAdded), added2);
+        assert_eq!(sent(d), 2);
+        let (_ip, sad, _o, _p) = last(d);
+        assert_eq!(
+            (sad.th_flags, u32::from_be(sad.th_seq)),
+            (TH_SYN | TH_ACK, iss)
+        );
         // An ACK that is not of our SYN-ACK: the SYN-ACK sent again, no connection made.
         deliver(syn(TH_ACK, 778, iss.wrapping_add(2), &[], &[]));
-        assert_eq!(sent(d), 2, "the SYN-ACK again");
+        assert_eq!(sent(d), 3, "the SYN-ACK again");
         let (_ip, sa2, _o, _p) = last(d);
         assert_eq!(
             (sa2.th_flags, u32::from_be(sa2.th_seq)),
@@ -4682,6 +4699,428 @@ mod tests {
         testtcp::close(so, inp);
     }
 
+    // N6.6a4's review, finding 2: the paths the first tests left out, IPv6 first.
+
+    use crate::netinet::in_pcb::INP_IPV6;
+    use crate::netinet::tcp_fsm::{TCPS_CLOSING, TCPS_FIN_WAIT_1, TCPS_FIN_WAIT_2, TCPS_LAST_ACK};
+    use crate::netinet::tcp_var::TF_SENTFIN;
+
+    /// The bytes of an IPv6 packet from `src` to `dst` (hop limit 64) carrying the TCP header
+    /// `th` (network order, its `th_off` set here from `opts`), the options `opts` (a multiple
+    /// of 4 bytes) and `data`.
+    fn pkt6(src: In6Addr, dst: In6Addr, th: Tcphdr, opts: &[u8], data: &[u8]) -> std::vec::Vec<u8> {
+        let thlen = size_of::<Tcphdr>() + opts.len();
+        assert_eq!(thlen % 4, 0, "whole option words");
+        let mut th = th;
+        th.set_th_off((thlen / 4) as u8);
+        let ip6 = Ip6Hdr {
+            ip6_flow: 0x6000_0000u32.to_be(),
+            ip6_plen: ((thlen + data.len()) as u16).to_be(),
+            ip6_nxt: IPPROTO_TCP as u8,
+            ip6_hlim: 64,
+            ip6_src: src,
+            ip6_dst: dst,
+        };
+        let mut p = std::vec![0u8; 40 + thlen + data.len()];
+        assert!(hal::pod::put(&mut p, 0, &ip6));
+        assert!(hal::pod::put(&mut p, 40, &th));
+        p[60..40 + thlen].copy_from_slice(opts);
+        p[40 + thlen..].copy_from_slice(data);
+        p
+    }
+
+    /// The packet `p` in one mbuf (a cluster when `MHLEN` is too small).
+    fn mbuf_of(p: &[u8]) -> MbufBox {
+        let mut m = m_gethdr(M_DONTWAIT, MT_DATA).expect("an mbuf");
+        if p.len() > crate::net::mbuf::MHLEN {
+            assert!(m_clget(&mut m, M_DONTWAIT, p.len() as u32), "a cluster");
+        }
+        m.m_len().set(p.len() as u32);
+        m.m_pkthdr().len.set(p.len() as i32);
+        m.data_mut()
+            .expect("a new mbuf is writable")
+            .copy_from_slice(p);
+        m
+    }
+
+    /// [`pkt6`] in an mbuf, its checksum taken as verified by the interface.
+    fn seg6(src: In6Addr, dst: In6Addr, th: Tcphdr, opts: &[u8], data: &[u8]) -> MbufBox {
+        csum_ok(mbuf_of(&pkt6(src, dst, th, opts, data)))
+    }
+
+    /// The ones' complement TCP checksum of the IPv6 packet `p` over the pseudo header of RFC
+    /// 8200 section 8.1 (the addresses, the upper-layer length, the next header), computed
+    /// here from the bytes with the checksum field as it stands: 0 for a correct one.
+    fn cksum6(p: &[u8]) -> u16 {
+        let tcp = &p[40..];
+        let mut sum = 0u32;
+        let mut add = |b: &[u8]| {
+            for c in b.chunks(2) {
+                sum += u32::from(u16::from_be_bytes([c[0], c.get(1).copied().unwrap_or(0)]));
+            }
+        };
+        add(&p[8..40]);
+        add(&(tcp.len() as u32).to_be_bytes());
+        add(&[0, 0, 0, IPPROTO_TCP as u8]);
+        add(tcp);
+        while sum >> 16 != 0 {
+            sum = (sum & 0xffff) + (sum >> 16);
+        }
+        !(sum as u16)
+    }
+
+    /// The RFC 2385 digest of an IPv6 segment under [`SIG_KEY`], computed here over the
+    /// bytes: the IPv6 pseudo header (the addresses, the TCP length, three zeros, the next
+    /// header), the TCP header with a zero checksum, the data, the key.
+    fn digest6(src: In6Addr, dst: In6Addr, th: &Tcphdr, thlen: usize, data: &[u8]) -> [u8; 16] {
+        let mut ctx = Md5Ctx::new();
+        let mut pseudo = [0u8; 40];
+        pseudo[..16].copy_from_slice(&src.s6_addr);
+        pseudo[16..32].copy_from_slice(&dst.s6_addr);
+        pseudo[32..36].copy_from_slice(&((thlen + data.len()) as u32).to_be_bytes());
+        pseudo[39] = IPPROTO_TCP as u8;
+        ctx.update(&pseudo);
+        let mut h = [0u8; 20];
+        let mut th0 = *th;
+        th0.th_sum = 0;
+        th0.set_th_off((thlen / 4) as u8);
+        assert!(hal::pod::put(&mut h, 0, &th0));
+        ctx.update(&h);
+        ctx.update(data);
+        ctx.update(SIG_KEY);
+        ctx.finalize()
+    }
+
+    #[test]
+    fn input_completes_a_handshake_over_ipv6() {
+        let (_g, _p) = testtcp::setup();
+        let n = 131;
+        let (us, peer) = (testtcp::a6(n, 1), testtcp::a6(n, 2));
+        let d = testtcp::iface6(b"tid1", n);
+        // What the interface sent already (the address's MLD reports).
+        let base = sent(d);
+        let (lso, linp) = testtcp::listen6_at(us, 80);
+        assert!(linp.has_flags(INP_IPV6));
+        // The listener's hop limit and hops: what the new connection inherits.
+        let mut lip6: Ip6Hdr = linp.inp_ipv6.get();
+        lip6.ip6_hlim = 33;
+        linp.inp_ipv6.set(lip6);
+        linp.inp_hops.set(7);
+        let seg = |flags, seq, ack, opts: &[u8], data: &[u8]| {
+            let mut th = peer_th(flags, seq, ack, 16384);
+            th.th_sport = 5800u16.to_be();
+            th.th_dport = 80u16.to_be();
+            seg6(peer, us, th, opts, data)
+        };
+        // The SYN (an MSS of 1400): its SYN-ACK over IPv6, our MSS the route's interface's
+        // (1500 less the IPv6 and TCP headers: tcp_mss_adv's AF_INET6, over mpath6's route).
+        deliver_af(
+            seg(TH_SYN, 9000, 0, &[TCPOPT_MAXSEG, 4, 0x05, 0x78], &[]),
+            AF_INET6_I32,
+        );
+        assert_eq!(sent(d), base + 1, "the SYN-ACK");
+        let (ip6, sa, o, _p) = last6(d);
+        assert_eq!(
+            (ip6.ip6_src.s6_addr, ip6.ip6_dst.s6_addr),
+            (us.s6_addr, peer.s6_addr)
+        );
+        assert_eq!(
+            (
+                sa.th_flags,
+                u32::from_be(sa.th_ack),
+                u16::from_be(sa.th_dport)
+            ),
+            (TH_SYN | TH_ACK, 9001, 5800)
+        );
+        assert_eq!(&o[..4], &[TCPOPT_MAXSEG, 4, 0x05, 0xa0], "an MSS of 1440");
+        let iss = u32::from_be(sa.th_seq);
+        // The ACK: the connection made, an IPv6 one, from the entry and the listener.
+        deliver_af(
+            seg(TH_ACK, 9001, iss.wrapping_add(1), &[], &[]),
+            AF_INET6_I32,
+        );
+        let (child, cinp) = child_of(&lso).expect("the new connection");
+        assert!(cinp.has_flags(INP_IPV6));
+        assert_eq!(
+            (cinp.inp_laddr6.bytes(), cinp.inp_faddr6.bytes()),
+            (us.s6_addr, peer.s6_addr)
+        );
+        assert_eq!(
+            (cinp.inp_lport.get(), cinp.inp_fport.get()),
+            (80u16.to_be(), 5800u16.to_be())
+        );
+        let hlim = cinp.inp_ipv6.get::<Ip6Hdr>().ip6_hlim;
+        assert_eq!((hlim, cinp.inp_hops.get()), (33, 7), "the listener's");
+        let (state, una, nxt, maxseg, pf) = peek(&cinp, |st| {
+            (st.t_state, st.snd_una, st.rcv_nxt, st.t_maxseg, st.pf)
+        });
+        assert_eq!(state, TCPS_ESTABLISHED);
+        assert_eq!((una, nxt), (iss.wrapping_add(1), 9001));
+        assert_eq!(maxseg, 1400);
+        assert_eq!(pf, AF_INET6_I32);
+        // Data on it over IPv6.
+        deliver_af(
+            seg(TH_ACK | TH_PUSH, 9001, iss.wrapping_add(1), &[], b"v6"),
+            AF_INET6_I32,
+        );
+        assert_eq!(received(&child), b"v6");
+        testtcp::close(child, cinp);
+        testtcp::close_listener(lso, linp);
+    }
+
+    #[test]
+    fn input_resets_an_ipv6_segment_for_no_connection() {
+        let (_g, _p) = testtcp::setup();
+        let n = 132;
+        let (us, peer) = (testtcp::a6(n, 1), testtcp::a6(n, 2));
+        let d = testtcp::iface6(b"tid2", n);
+        // What the interface sent already (the address's MLD reports).
+        let base = sent(d);
+        let noport = stat(C::TcpsNoport);
+        // An ACK: a reset at its acknowledgment, back to its source.
+        deliver_af(
+            seg6(peer, us, peer_th(TH_ACK, 42, 4242, 16384), &[], &[]),
+            AF_INET6_I32,
+        );
+        assert_eq!(stat(C::TcpsNoport), noport + 1);
+        assert_eq!(sent(d), base + 1);
+        let (ip6, rst, _o, _p) = last6(d);
+        assert_eq!(
+            (ip6.ip6_src.s6_addr, ip6.ip6_dst.s6_addr),
+            (us.s6_addr, peer.s6_addr)
+        );
+        assert_eq!((rst.th_flags, u32::from_be(rst.th_seq)), (TH_RST, 4242));
+        assert_eq!(
+            (u16::from_be(rst.th_sport), u16::from_be(rst.th_dport)),
+            (7000, 80)
+        );
+        // A SYN: a reset acknowledging it.
+        deliver_af(
+            seg6(peer, us, peer_th(TH_SYN, 77, 0, 16384), &[], &[]),
+            AF_INET6_I32,
+        );
+        assert_eq!(stat(C::TcpsNoport), noport + 2);
+        assert_eq!(sent(d), base + 2);
+        let (_ip6, rst, _o, _p) = last6(d);
+        assert_eq!(
+            (
+                rst.th_flags,
+                u32::from_be(rst.th_seq),
+                u32::from_be(rst.th_ack)
+            ),
+            (TH_RST | TH_ACK, 0, 78)
+        );
+    }
+
+    #[test]
+    fn input_checks_ipv6_checksums_and_drops_multicast() {
+        let (_g, _p) = testtcp::setup();
+        let n = 133;
+        let (so, inp, d) = estab6(b"tid3", n);
+        let (us, peer) = (testtcp::a6(n, 1), testtcp::a6(n, 2));
+        let th = peer_th(TH_ACK | TH_PUSH, 5000, 1000, 65535);
+        // A checksum computed here: verified in software (in6_cksum), the data taken.
+        let mut p = pkt6(peer, us, th, &[], b"sum");
+        let sum = cksum6(&p);
+        p[56..58].copy_from_slice(&sum.to_be_bytes());
+        assert_eq!(cksum6(&p), 0);
+        let (sw, bad) = (stat(C::TcpsInswcsum), stat(C::TcpsRcvbadsum));
+        deliver_af(mbuf_of(&p), AF_INET6_I32);
+        assert_eq!(stat(C::TcpsInswcsum), sw + 1);
+        assert_eq!(received(&so), b"sum");
+        // One bit off: refused and counted, nothing taken.
+        let th = peer_th(TH_ACK | TH_PUSH, 5003, 1000, 65535);
+        let mut p = pkt6(peer, us, th, &[], b"bad");
+        let sum = cksum6(&p) ^ 0x0100;
+        p[56..58].copy_from_slice(&sum.to_be_bytes());
+        deliver_af(mbuf_of(&p), AF_INET6_I32);
+        assert_eq!(stat(C::TcpsInswcsum), sw + 2);
+        assert_eq!(stat(C::TcpsRcvbadsum), bad + 1);
+        assert_eq!(received(&so), b"sum");
+        // To a multicast address: dropped before any lookup, uncounted, unanswered.
+        let mut all = In6Addr::default();
+        all.s6_addr[0] = 0xff;
+        all.s6_addr[1] = 0x02;
+        all.s6_addr[15] = 1;
+        let (miss, noport, before) = (stat(C::TcpsPcbhashmiss), stat(C::TcpsNoport), sent(d));
+        deliver_af(
+            seg6(peer, all, peer_th(TH_SYN, 1, 0, 16384), &[], &[]),
+            AF_INET6_I32,
+        );
+        assert_eq!(stat(C::TcpsPcbhashmiss), miss, "no lookup");
+        assert_eq!(stat(C::TcpsNoport), noport);
+        assert_eq!(sent(d), before, "no reset");
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn input_checks_a_signed_ipv6_connection_s_segments() {
+        let (_g, _p) = testtcp::setup();
+        let _legs = sig_legs();
+        let (so, inp, _d) = estab6(b"tid6", SIG_NET);
+        testtcp::with_tp(&inp, |tp| {
+            tp.st.sack_enable = 0;
+            tp.st.set_flags(TF_SIGNATURE);
+            ((), None)
+        });
+        let (us, peer) = (testtcp::a6(SIG_NET, 1), testtcp::a6(SIG_NET, 2));
+        // The SA is found by the sockaddr_in6s of the addresses (the address at offset 8),
+        // and the digest checked over the IPv6 pseudo header.
+        let th = peer_th(TH_ACK, 5000, 1000, 65535);
+        let good = digest6(peer, us, &th, 40, b"signed6");
+        let (goodc, badc) = (stat(C::TcpsRcvgoodsig), stat(C::TcpsRcvbadsig));
+        deliver_af(
+            seg6(peer, us, th, &sig_opt(&good), b"signed6"),
+            AF_INET6_I32,
+        );
+        assert_eq!(received(&so), b"signed6");
+        assert_eq!(stat(C::TcpsRcvgoodsig), goodc + 1);
+        // One bit off: dropped and counted.
+        let th = peer_th(TH_ACK, 5007, 1000, 65535);
+        let mut bad = digest6(peer, us, &th, 40, b"forged");
+        bad[3] ^= 0x10;
+        deliver_af(seg6(peer, us, th, &sig_opt(&bad), b"forged"), AF_INET6_I32);
+        assert_eq!(received(&so), b"signed6");
+        assert_eq!(stat(C::TcpsRcvbadsig), badc + 1);
+        testtcp::close(so, inp);
+    }
+
+    /// Sets `TCP_DO_ECN` for a test, restored by the drop.
+    struct EcnOn(i32);
+
+    impl EcnOn {
+        fn new() -> Self {
+            Self(TCP_DO_ECN.swap(1, Ordering::Relaxed))
+        }
+    }
+
+    impl Drop for EcnOn {
+        fn drop(&mut self) {
+            TCP_DO_ECN.store(self.0, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn input_syn_sent_takes_the_syn_ack_and_its_options() {
+        let (_g, _p) = testtcp::setup();
+        let n = 139;
+        let (so, inp, d) = estab(b"tid9", n);
+        let _ecn = EcnOn::new();
+        // Our SYN (1000) sent with window scaling (2), timestamps and SACK requested.
+        testtcp::with_tp(&inp, |tp| {
+            let st = &mut *tp.st;
+            st.t_state = TCPS_SYN_SENT;
+            st.snd_una = 1000;
+            st.snd_nxt = 1001;
+            st.snd_max = 1001;
+            st.irs = 0;
+            st.rcv_nxt = 0;
+            st.rcv_adv = 0;
+            st.rcv_up = 0;
+            st.set_flags(TF_REQ_SCALE | TF_REQ_TSTMP);
+            st.request_r_scale = 2;
+            st.sack_enable = 1;
+            ((), None)
+        });
+        let (connects, ecn) = (stat(C::TcpsConnects), stat(C::TcpsEcnAccepts));
+        // The SYN-ACK (ECE, not CWR): an MSS of 1300, a shift of 3, SACK permitted, a
+        // timestamp.
+        let mut opts = std::vec![
+            TCPOPT_MAXSEG,
+            4,
+            0x05,
+            0x14,
+            TCPOPT_NOP,
+            TCPOPT_WINDOW,
+            TCPOLEN_WINDOW,
+            3,
+            TCPOPT_NOP,
+            TCPOPT_NOP,
+            TCPOPT_SACK_PERMITTED,
+            2,
+        ];
+        opts.extend_from_slice(&ts_opt(0x300, 0));
+        let before = sent(d);
+        deliver(from_peer(
+            n,
+            peer_th(TH_SYN | TH_ACK | TH_ECE, 7000, 1001, 16384),
+            &opts,
+            &[],
+        ));
+        assert_eq!(stat(C::TcpsConnects), connects + 1);
+        assert_eq!(stat(C::TcpsEcnAccepts), ecn + 1);
+        assert!(so.has_state(crate::net::sockbuf::SS_ISCONNECTED));
+        let (state, una, irs, nxt, maxseg) = peek(&inp, |st| {
+            (st.t_state, st.snd_una, st.irs, st.rcv_nxt, st.t_maxseg)
+        });
+        assert_eq!(state, TCPS_ESTABLISHED);
+        assert_eq!((una, irs, nxt), (1001, 7000, 7001));
+        assert_eq!(
+            maxseg,
+            1300 - u16::from(TCPOLEN_TSTAMP_APPA),
+            "the peer's MSS less the timestamps' room"
+        );
+        let (snd_scale, rcv_scale, sack, flags, ts_recent) = peek(&inp, |st| {
+            (
+                st.snd_scale,
+                st.rcv_scale,
+                st.sack_enable,
+                st.t_flags,
+                st.ts_recent,
+            )
+        });
+        assert_eq!((snd_scale, rcv_scale), (3, 2));
+        assert_eq!(sack, TF_SACK_PERMIT as i32, "kept, the peer permits it");
+        for f in [TF_RCVD_SCALE, TF_SACK_PERMIT, TF_RCVD_TSTMP, TF_ECN_PERMIT] {
+            assert_ne!(flags & f, 0, "flag {f:#x}");
+        }
+        assert_eq!(ts_recent, 0x300);
+        // Our ACK of it, at once, echoing its timestamp.
+        assert_eq!(sent(d), before + 1);
+        let (_ip, a, o, _p) = last(d);
+        assert_eq!(
+            (a.th_flags & TH_ACK, u32::from_be(a.th_ack)),
+            (TH_ACK, 7001)
+        );
+        assert_eq!(ts_of(&o).map(|t| t.1), Some(0x300));
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn input_drops_a_syn_over_the_listen_queue_limit() {
+        let (_g, _p) = testtcp::setup();
+        let n = 126;
+        let (lso, linp, d) = listener(b"tic3", n, 80);
+        // One connection made and queued.
+        deliver(to80(n, 5710, TH_SYN, 500, 0, &[], &[]));
+        let (_ip, sa, _o, _p) = last(d);
+        let iss = u32::from_be(sa.th_seq);
+        deliver(to80(n, 5710, TH_ACK, 501, iss.wrapping_add(1), &[], &[]));
+        assert_eq!(lso.qlen(), 1);
+        // listen(s, 0) with sominconn 0: a limit of 0, which the queue is over.
+        struct Minconn(i32);
+        impl Drop for Minconn {
+            fn drop(&mut self) {
+                crate::net::socket::SOMINCONN_VAR.store(self.0, Ordering::Relaxed);
+            }
+        }
+        let m = Minconn(crate::net::socket::SOMINCONN_VAR.swap(0, Ordering::Relaxed));
+        {
+            let mut w = crate::net::socket::solock(&lso);
+            crate::net::socket::solisten(&lso, &mut w, 0).expect("listen");
+        }
+        drop(m);
+        assert_eq!(lso.qlimit(), 0);
+        let (dropsyn, added, before) = (stat(C::TcpsDropsyn), stat(C::TcpsScAdded), sent(d));
+        deliver(to80(n, 5711, TH_SYN, 600, 0, &[], &[]));
+        assert_eq!(stat(C::TcpsDropsyn), dropsyn + 1);
+        assert_eq!(stat(C::TcpsScAdded), added, "no entry");
+        assert_eq!(sent(d), before, "no SYN-ACK");
+        let (child, cinp) = child_of(&lso).expect("the queued connection");
+        testtcp::close(child, cinp);
+        testtcp::close_listener(lso, linp);
+    }
+
     /// Fails the test protocol's attaches (`testtcp::FAIL_ATTACH`), for a test, until the
     /// drop.
     struct FailAttach;
@@ -4737,6 +5176,234 @@ mod tests {
         deliver(to80(n, 5700, TH_ACK, 401, iss.wrapping_add(1), &[], &[]));
         assert_eq!(stat(C::TcpsBadsyn), badsyn + 1);
         testtcp::close_listener(lso, linp);
+    }
+
+    #[test]
+    fn input_paws_drops_an_old_timestamp() {
+        let (_g, _p) = testtcp::setup();
+        let n = 134;
+        let (so, inp, d) = estab(b"tid4", n);
+        testtcp::with_tp(&inp, |tp| {
+            tp.st.set_flags(TF_REQ_TSTMP | TF_RCVD_TSTMP);
+            tp.st.ts_recent = 1000;
+            tp.st.ts_recent_age = crate::netinet::tcp_var::tcp_now();
+            ((), None)
+        });
+        let seg = |seq: u32, opts: &[u8], data: &[u8]| {
+            from_peer(n, peer_th(TH_ACK | TH_PUSH, seq, 1000, 65535), opts, data)
+        };
+        let (paws, dup, dupb, before) = (
+            stat(C::TcpsPawsdrop),
+            stat(C::TcpsRcvduppack),
+            stat(C::TcpsRcvdupbyte),
+            sent(d),
+        );
+        // An older timestamp, laid out as appendix A recommends (read by the header checks,
+        // without tcp_dooptions): dropped, counted, acknowledged.
+        deliver(seg(5000, &ts_opt(500, 0), b"old"));
+        assert_eq!(stat(C::TcpsPawsdrop), paws + 1);
+        assert_eq!(
+            (
+                stat(C::TcpsRcvduppack) - dup,
+                stat(C::TcpsRcvdupbyte) - dupb
+            ),
+            (1, 3)
+        );
+        assert!(received(&so).is_empty());
+        assert_eq!(sent(d), before + 1, "dropafterack");
+        // A newer one: taken by header prediction, its timestamp recorded.
+        let pred = stat(C::TcpsPreddat);
+        deliver(seg(5000, &ts_opt(1500, 0), b"new"));
+        assert_eq!(stat(C::TcpsPreddat), pred + 1);
+        assert_eq!(received(&so), b"new");
+        assert_eq!(peek(&inp, |st| st.ts_recent), 1500);
+        // An older one laid out otherwise (no NOPs before it, two after): through
+        // tcp_dooptions, the same answer.
+        let mut o = [TCPOPT_NOP; 12];
+        o[..10].copy_from_slice(&ts_opt(700, 0)[2..]);
+        deliver(seg(5003, &o, b"old2"));
+        assert_eq!(stat(C::TcpsPawsdrop), paws + 2);
+        assert_eq!(received(&so), b"new");
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn input_trims_what_falls_before_and_after_the_window() {
+        let (_g, _p) = testtcp::setup();
+        // Two bytes received already at the front: dropped, the rest taken.
+        let (so, inp, _d) = estab(b"tic5", 127);
+        let (pd, pdb) = (stat(C::TcpsRcvpartduppack), stat(C::TcpsRcvpartdupbyte));
+        deliver(from_peer(
+            127,
+            peer_th(TH_ACK | TH_PUSH, 4998, 1000, 65535),
+            &[],
+            b"xxhello",
+        ));
+        assert_eq!(
+            (
+                stat(C::TcpsRcvpartduppack) - pd,
+                stat(C::TcpsRcvpartdupbyte) - pdb
+            ),
+            (1, 2)
+        );
+        assert_eq!(received(&so), b"hello");
+        assert_eq!(peek(&inp, |st| st.rcv_nxt), 5005);
+        testtcp::close(so, inp);
+        // Four bytes past a window of ten (a ten-byte receive buffer, nothing advertised
+        // beyond it): cut off, the ten taken.
+        let (so, inp, _d) = estab(b"tic6", 128);
+        crate::net::socket::soreserve(&so, 16384, 10).expect("a ten-byte buffer");
+        testtcp::with_tp(&inp, |tp| {
+            tp.st.rcv_adv = 5000;
+            ((), None)
+        });
+        let (aw, awb) = (stat(C::TcpsRcvpackafterwin), stat(C::TcpsRcvbyteafterwin));
+        deliver(from_peer(
+            128,
+            peer_th(TH_ACK | TH_PUSH, 5000, 1000, 65535),
+            &[],
+            b"0123456789abcd",
+        ));
+        assert_eq!(
+            (
+                stat(C::TcpsRcvpackafterwin) - aw,
+                stat(C::TcpsRcvbyteafterwin) - awb
+            ),
+            (1, 4)
+        );
+        assert_eq!(received(&so), b"0123456789");
+        assert_eq!(peek(&inp, |st| st.rcv_nxt), 5010);
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn input_reassembles_out_of_order_segments() {
+        let (_g, _p) = testtcp::setup();
+        let n = 129;
+        let (so, inp, d) = estab(b"tic4", n);
+        let (oo, before) = (stat(C::TcpsRcvoopack), sent(d));
+        // The second segment first: held, a duplicate ACK at once.
+        deliver(from_peer(
+            n,
+            peer_th(TH_ACK | TH_PUSH, 5005, 1000, 65535),
+            &[],
+            b"world",
+        ));
+        assert_eq!(stat(C::TcpsRcvoopack), oo + 1);
+        assert!(received(&so).is_empty(), "held for the hole");
+        assert_eq!(sent(d), before + 1);
+        let (_ip, a, _o, _p) = last(d);
+        assert_eq!(u32::from_be(a.th_ack), 5000);
+        // The first: both delivered, acknowledged together.
+        deliver(from_peer(
+            n,
+            peer_th(TH_ACK | TH_PUSH, 5000, 1000, 65535),
+            &[],
+            b"hello",
+        ));
+        assert_eq!(received(&so), b"helloworld");
+        assert_eq!(peek(&inp, |st| st.rcv_nxt), 5010);
+        assert_eq!(sent(d), before + 2);
+        let (_ip, a, _o, _p) = last(d);
+        assert_eq!(u32::from_be(a.th_ack), 5010);
+        testtcp::close(so, inp);
+    }
+
+    /// `inp`'s connection in `state` with our FIN sent (1000: `snd_max` 1001) and the peer's
+    /// sequence space received up to `rcv` (5001 once its FIN is in).
+    fn fin_sent(inp: &Inpcb<G>, state: i32, rcv: u32) {
+        testtcp::with_tp(inp, |tp| {
+            let st = &mut *tp.st;
+            st.t_state = state;
+            st.snd_nxt = 1001;
+            st.snd_max = 1001;
+            st.rcv_nxt = rcv;
+            st.set_flags(TF_SENTFIN);
+            ((), None)
+        });
+    }
+
+    #[test]
+    fn input_moves_the_closing_states_on_the_acks_and_fins() {
+        let (_g, _p) = testtcp::setup();
+        // FIN_WAIT_1, our FIN acknowledged: FIN_WAIT_2.
+        let n = 136;
+        let (so, inp, d) = estab(b"tie0", n);
+        fin_sent(&inp, TCPS_FIN_WAIT_1, 5000);
+        deliver(from_peer(n, peer_th(TH_ACK, 5000, 1001, 65535), &[], &[]));
+        assert_eq!(
+            peek(&inp, |st| (st.t_state, st.snd_una)),
+            (TCPS_FIN_WAIT_2, 1001)
+        );
+        // FIN_WAIT_2, the peer's FIN: TIME_WAIT, the FIN acknowledged.
+        let before = sent(d);
+        deliver(from_peer(
+            n,
+            peer_th(TH_ACK | TH_FIN, 5000, 1001, 65535),
+            &[],
+            &[],
+        ));
+        assert_eq!(
+            peek(&inp, |st| (st.t_state, st.rcv_nxt)),
+            (TCPS_TIME_WAIT, 5001)
+        );
+        assert_eq!(sent(d), before + 1);
+        let (_ip, a, _o, _p) = last(d);
+        assert_eq!(
+            (a.th_flags & TH_ACK, u32::from_be(a.th_ack)),
+            (TH_ACK, 5001)
+        );
+        // TIME_WAIT, the FIN again: acknowledged again, still TIME_WAIT.
+        deliver(from_peer(
+            n,
+            peer_th(TH_ACK | TH_FIN, 5000, 1001, 65535),
+            &[],
+            &[],
+        ));
+        assert_eq!(peek(&inp, |st| st.t_state), TCPS_TIME_WAIT);
+        assert_eq!(sent(d), before + 2);
+        testtcp::close(so, inp);
+
+        // CLOSING (both FINs out, ours unacknowledged), the ACK of ours: TIME_WAIT.
+        let n = 137;
+        let (so, inp, _d) = estab(b"tie1", n);
+        fin_sent(&inp, TCPS_CLOSING, 5001);
+        deliver(from_peer(n, peer_th(TH_ACK, 5001, 1001, 65535), &[], &[]));
+        assert_eq!(peek(&inp, |st| st.t_state), TCPS_TIME_WAIT);
+        testtcp::close(so, inp);
+
+        // LAST_ACK, the ACK of our FIN: closed, the control block freed.
+        let n = 138;
+        let (so, inp, _d) = estab(b"tie2", n);
+        fin_sent(&inp, TCPS_LAST_ACK, 5001);
+        let cbs = tcpcbs();
+        deliver(from_peer(n, peer_th(TH_ACK, 5001, 1001, 65535), &[], &[]));
+        assert!(!has_tcpcb(&inp), "closed");
+        assert_eq!(tcpcbs(), cbs - 1);
+        drop((so, inp));
+    }
+
+    #[test]
+    fn input_resets_data_after_the_user_is_gone() {
+        let (_g, _p) = testtcp::setup();
+        let n = 135;
+        let (so, inp, d) = estab(b"tid5", n);
+        // FIN_WAIT_1 and no file left (SS_NOFDREF): new data closes it and resets the peer.
+        fin_sent(&inp, TCPS_FIN_WAIT_1, 5000);
+        so.st_set(SS_NOFDREF);
+        let (after, cbs, before) = (stat(C::TcpsRcvafterclose), tcpcbs(), sent(d));
+        deliver(from_peer(
+            n,
+            peer_th(TH_ACK | TH_PUSH, 5000, 1000, 65535),
+            &[],
+            b"late",
+        ));
+        assert_eq!(stat(C::TcpsRcvafterclose), after + 1);
+        assert_eq!(tcpcbs(), cbs - 1, "closed");
+        assert_eq!(sent(d), before + 1);
+        let (_ip, rst, _o, _p) = last(d);
+        assert_eq!((rst.th_flags, u32::from_be(rst.th_seq)), (TH_RST, 1000));
+        drop((so, inp));
     }
 }
 /* </TESTS> */

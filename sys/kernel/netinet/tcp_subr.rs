@@ -1556,16 +1556,19 @@ pub(crate) mod testtcp {
     /// The driver of a test interface: its packets' count and the last one's bytes.
     pub(crate) type Wire = testinet::InetDriver;
 
-    /// The host tests' TCP protocol over the test domain (`testinet`'s `InetDom`): the
-    /// kernel's TCP is registered at N6.6a5, so a listener of this one gives `sonewconn` an
-    /// attach that makes the kernel's control block (`tcp_attach`'s `in_pcballoc` in the
-    /// family's table and `tcp_newtcpcb`; on `ENOBUFS` the pcb detached again, as
-    /// tcp_usrreq.c:500-507: the socket's typed `so_pcb` and the pcb count each other until
-    /// `in_pcbdetach`), a listen that puts it in LISTEN, and a detach and an abort that close
-    /// it.
+    /// The host tests' TCP protocols over the test domains (`testinet`'s `InetDom` and
+    /// `Inet6Dom`): the kernel's TCP is registered at N6.6a5, so a listener of these gives
+    /// `sonewconn` an attach that makes the kernel's control block (`tcp_attach`'s
+    /// `in_pcballoc` in the family's table and `tcp_newtcpcb`; on `ENOBUFS` the pcb detached
+    /// again, as tcp_usrreq.c:500-507: the socket's typed `so_pcb` and the pcb count each
+    /// other until `in_pcbdetach`), a listen that puts it in LISTEN, and a detach and an abort
+    /// that close it.
     pub(crate) struct TcpProto;
 
-    /// [`TcpProto`]'s requests.
+    /// [`TcpProto`] over IPv6.
+    pub(crate) struct Tcp6Proto;
+
+    /// [`TcpProto`]'s and [`Tcp6Proto`]'s requests.
     struct TcpReqs;
 
     /// A test's switch: the next attaches fail after the pcb is made, as when
@@ -1576,6 +1579,24 @@ pub(crate) mod testtcp {
     impl crate::net::proto::Protocol<G> for TcpProto {
         fn domain(&self) -> &'static dyn crate::net::domain::Domain<G> {
             &testinet::InetDom
+        }
+        fn ty(&self) -> i16 {
+            hal::sys::socket::SOCK_STREAM as i16
+        }
+        fn protocol(&self) -> i16 {
+            IPPROTO_TCP as i16
+        }
+        fn flags(&self) -> i16 {
+            crate::net::proto::PR_CONNREQUIRED | crate::net::proto::PR_WANTRCVD
+        }
+        fn usrreqs(&self) -> Option<&'static dyn crate::net::proto::Usrreqs<G>> {
+            Some(&TcpReqs)
+        }
+    }
+
+    impl crate::net::proto::Protocol<G> for Tcp6Proto {
+        fn domain(&self) -> &'static dyn crate::net::domain::Domain<G> {
+            &testinet::Inet6Dom
         }
         fn ty(&self) -> i16 {
             hal::sys::socket::SOCK_STREAM as i16
@@ -1736,6 +1757,21 @@ pub(crate) mod testtcp {
                         s_addr: u32::from_ne_bytes(addr),
                     },
                 );
+            },
+            port,
+        )
+    }
+
+    /// A listener of [`Tcp6Proto`] bound to [`addr`]:`port`.
+    pub(crate) fn listen6_at(
+        addr: hal::sys::netinet6_in6::In6Addr,
+        port: u16,
+    ) -> (SocketRef<G>, InpcbRef<G>) {
+        listen_proto(
+            &Tcp6Proto,
+            &crate::net::domain::net::<G>().tcp.tcb6table,
+            |g, inp| {
+                inp.set_laddr6(g, addr);
             },
             port,
         )
@@ -1909,11 +1945,9 @@ pub(crate) mod testtcp {
         a
     }
 
-    /// [`estab`] over IPv6: an `INP_IPV6` control block in `tcb6table` from
-    /// [2001:db8:`n`::1]:7000 to [2001:db8:`n`::2]:80 over a new interface `name` (MTU 1500,
-    /// not Ethernet, so no neighbor to resolve) with 2001:db8:`n`::1/64 and its routes; the
-    /// segment size taken from the route (1440), the template an IPv6 header.
-    pub(crate) fn estab6(name: &[u8], n: u8) -> (SocketRef<G>, InpcbRef<G>, &'static Wire) {
+    /// A new test interface `name` (MTU 1500, not Ethernet, so no neighbor to resolve) with
+    /// 2001:db8:`n`::1/64 and its routes: its wire.
+    pub(crate) fn iface6(name: &[u8], n: u8) -> &'static Wire {
         use hal::sys::net_if::{IFF_MULTICAST, IFF_RUNNING, IFF_UP};
 
         let d: &'static Wire = std::boxed::Box::leak(std::boxed::Box::default());
@@ -1930,7 +1964,15 @@ pub(crate) mod testtcp {
         }
         crate::netinet6::in6::tests::add(ifp, a6(n, 1), 64).expect("SIOCAIFADDR_IN6");
         ifp.if_flags.set(IFF_UP | IFF_RUNNING | IFF_MULTICAST);
+        d
+    }
 
+    /// [`estab`] over IPv6: an `INP_IPV6` control block in `tcb6table` from
+    /// [2001:db8:`n`::1]:7000 to [2001:db8:`n`::2]:80 over a new interface `name` (MTU 1500,
+    /// not Ethernet, so no neighbor to resolve) with 2001:db8:`n`::1/64 and its routes; the
+    /// segment size taken from the route (1440), the template an IPv6 header.
+    pub(crate) fn estab6(name: &[u8], n: u8) -> (SocketRef<G>, InpcbRef<G>, &'static Wire) {
+        let d = iface6(name, n);
         let (so, inp) = testinet::pcb(&crate::net::domain::net::<G>().tcp.tcb6table);
         inp.set_flags(INP_IPV6);
         {
@@ -2031,7 +2073,8 @@ pub(crate) mod testtcp {
     /// other segment passes it, as the C's with IPsec and no policy.
     pub(crate) const SPD_DENY: [u8; 4] = [10, 9, 72, 66];
 
-    /// The subnet whose addresses [`SigLegs`] has an SA between: 10.9.`SIG_NET`.0/24.
+    /// The subnet whose addresses [`SigLegs`] has an SA between: 10.9.`SIG_NET`.0/24, and
+    /// over IPv6 2001:db8:`SIG_NET`::/64 ([`a6`]`(SIG_NET, h)`).
     pub(crate) const SIG_NET: u8 = 71;
     /// The SA's MD5 key.
     pub(crate) const SIG_KEY: &[u8] = b"N6.6a3 tcp md5 key";
@@ -2041,7 +2084,8 @@ pub(crate) mod testtcp {
     /// IPsec's legs for the host tests of `TCP_SIGNATURE`: no policy (the C with IPSEC and no
     /// SA: not in use, every SPD lookup empty, every check passing, the sysctl names
     /// `EOPNOTSUPP` as without IPSEC), and one SA, between the addresses of
-    /// 10.9.[`SIG_NET`].0/24, keyed [`SIG_KEY`]; the references given back are counted. The
+    /// 10.9.[`SIG_NET`].0/24 (or of 2001:db8:[`SIG_NET`]::/64), keyed [`SIG_KEY`]; the
+    /// references given back are counted. The
     /// bridge is set once for the run ([`sig_legs`], `register_ipsec`): the other tests'
     /// addresses find no SA, so their `tcp_output` and `syn_cache_respond` answer `EPERM` as
     /// without the legs, and every other leg behaves as the C without an SA.
@@ -2153,7 +2197,16 @@ pub(crate) mod testtcp {
             let inet = |u: &[u8; SOCKADDR_UNION_LEN]| {
                 u[0] == 16 && u[1] == AF_INET && u[4..7] == net && u[8..] == [0; 20]
             };
-            (inet(src) && inet(dst)).then(|| {
+            // And over IPv6, 2001:db8:SIG_NET::/64: a sockaddr_in6, the address at 8.
+            let net6 = a6(SIG_NET, 0).s6_addr;
+            let inet6 = |u: &[u8; SOCKADDR_UNION_LEN]| {
+                u[0] == 28
+                    && u[1] == hal::sys::socket::AF_INET6
+                    && u[2..8] == [0; 6]
+                    && u[8..16] == net6[..8]
+                    && u[24..] == [0; 4]
+            };
+            ((inet(src) && inet(dst)) || (inet6(src) && inet6(dst))).then(|| {
                 crate::net::ipsec_hooks::TdbRef::new(self.key.get().expect("registered"), &SIG_SA)
             })
         }
