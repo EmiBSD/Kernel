@@ -17,6 +17,11 @@ arm64 := "aarch64-emibsd-none-softfloat"
 devtools_rust_bin_arm64 := toolchain_dir + "/" + devtools_rust + "-aarch64-apple-darwin-arm64/bin"
 export PATH := devtools_rust_bin_arm64 + ":" + env_var_or_default("PATH", "/usr/bin:/bin:/opt/homebrew/bin")
 export RUSTC := devtools_rust_bin_arm64 + "/rustc"
+# Every rustc runs through tools/rustc-remap.sh, which remaps the toolchain directory and
+# cargo's registry so no path of the build machine lands in a binary (Userland's report of
+# 2026-11-15 on a release's BOOTAA64.EFI).
+export EMIBSD_TOOLCHAIN_DIR := toolchain_dir
+export RUSTC_WRAPPER := justfile_directory() + "/tools/rustc-remap.sh"
 # DevTools' LLVM for arm64 (the pinned release `devtools_llvm`, unpacked by `just toolchain`):
 # the kernel's linker (DevTools' Rust has no rust-lld), efiboot's llvm-objcopy, and the
 # userland's and the comp set's compiler, linker and binutils (`EMIBSD_LLVM_BIN`, read by
