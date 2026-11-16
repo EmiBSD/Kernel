@@ -1455,9 +1455,10 @@ fn signature_digest(
 /// The host tests' TCP globals reset (testing.md's rule for a global that holds kernel memory
 /// or pool items): the SYN cache's sets, which hold an earlier test's bucket arrays and
 /// possibly its entries, forgotten without being freed (`syn_cache_init` makes them again in
-/// this test's memory), and the debug ring zeroed (under `RING_TEST`). The pcb tables are
-/// reset by `in_pcbinit` itself; the counters (compared by difference, and bumped by other
-/// modules' tests meanwhile) and the ISN secret (set once) hold no memory and stay.
+/// this test's memory), the debug ring zeroed (under `RING_TEST`) and `tcp_input`'s two rate
+/// limiters started again (`tcp_input_test_reset`). The pcb tables are reset by `in_pcbinit`
+/// itself; the counters (compared by difference, and bumped by other modules' tests
+/// meanwhile) and the ISN secret (set once) hold no memory and stay.
 #[cfg(test)]
 pub(crate) fn tcp_test_reset<G: ProcGlue>() {
     let mut g = crate::net::domain::net::<G>().tcp.syn_cache.lock();
@@ -1473,6 +1474,8 @@ pub(crate) fn tcp_test_reset<G: ProcGlue>() {
     r.tcp_debug = [const { crate::netinet::tcp_debug::TcpDebug::zeroed() };
         crate::netinet::tcp_debug::TCP_NDEBUG];
     r.tcp_debx = 0;
+    drop(r);
+    crate::netinet::tcp_input::tcp_input_test_reset();
 }
 
 /// The host tests' TCP connections: control blocks of the kernel's TCP over the Internet

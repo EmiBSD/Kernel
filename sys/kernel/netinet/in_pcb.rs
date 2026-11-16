@@ -2194,8 +2194,12 @@ pub fn in_pcbsolock<'a, G: ProcGlue>(
 
 /// `in_pcbref(sotoinpcb(so))` of a kernel protocol's socket: its pcb (`so_pcb`, the slot
 /// [`in_pcballoc`] fills and `in_pcbdetach` empties), counted for the caller; `None` once
-/// detached, and for a `bsd` protocol's socket (whose `so_pcb` is an address only). The
-/// caller holds the socket's lock (`soassertlocked`), so the slot does not change meanwhile.
+/// detached, and for a `bsd` protocol's socket (whose `so_pcb` is an address only). It takes
+/// no witness and counts the handle (brief 3.2 had a witness and no count): the C's
+/// `soassertlocked` is the caller's, who holds the socket's lock so the slot does not change
+/// meanwhile, and the count is one atomic increment per call: once per connection in
+/// `syn_cache_get` (from N6.6a5 also once per user request), never per segment, whose
+/// handle is the lookup's.
 pub fn sotoinpcb<G: ProcGlue>(so: &Socket<G>) -> Option<InpcbRef<G>> {
     let pcb = so.pcb_read();
     pcb.as_ref()?

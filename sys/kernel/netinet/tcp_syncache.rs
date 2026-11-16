@@ -161,8 +161,10 @@
 //!   the new socket, the listener's lock consumed by every path (the C unlocks it on each).
 //! - `syn_cache_get` reads `sc_rxtshift` (an `[S]` member the C reads with `READ_ONCE` after
 //!   the removal) under the mutex, right before `syn_cache_rm`, whose timer delete stops the
-//!   only writer; a new socket whose protocol made no pcb, or no control block, is reset and
-//!   aborted (LZ's way out where the C reads through NULL).
+//!   only writer. A new socket without a pcb or a control block cannot come from TCP's attach
+//!   (it makes both or fails, and `sonewconn` with it): a `kassert`, and in the other builds
+//!   the child is taken off the listener's queue and aborted by its protocol (`soabort`) and
+//!   the peer reset, where the C reads through NULL.
 //!
 //! ## Redesign
 //! - An entry is a counted "syncache" item (`PoolArc`, the C's `sc_refcnt`) whose `[S]`
@@ -232,7 +234,7 @@ use crate::net::mbuf::{
 use crate::net::pf_hooks::pf;
 use crate::net::rtable::rtable_l2;
 use crate::net::sockbuf::{SB_MAX_VAR, SS_ISCONNECTED};
-use crate::net::socket::{SoLocked, solock_attach, sonewconn, sounlock_detached};
+use crate::net::socket::{Onq, SoLocked, Socket, soabort, solock_attach, sonewconn, soqremque};
 use crate::netinet::in_pcb::{INP_IPV6, Inpcb, InpcbRef, in_pcbset_addr, in_pcbsolock, sotoinpcb};
 use crate::netinet::ip_input::ip_srcroute;
 use crate::netinet::ip_output::ip_output;
@@ -775,6 +777,16 @@ fn set_addr<G: ProcGlue>(
     }
 }
 
+/// A connection `sonewconn` made that `syn_cache_get` cannot set up (no pcb or no control
+/// block: unreachable for TCP, whose attach makes both or fails), its lock held by `w`: taken
+/// off the listener's completed queue and aborted by its protocol (`soabort`), as `soclose`
+/// disposes of a queued connection; the queue's handle dropped after.
+fn syn_cache_abort_child<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) {
+    let queued = soqremque(so, Onq::Q);
+    soabort(so, w);
+    drop(queued);
+}
+
 /// `syn_cache_get`: called when we receive an ACK (`th`, host order, in `m`) for the
 /// listener `listeninp`, whose socket `listenso` holds locked. We look up the connection in
 /// the syn cache, and if its there, we pull it out of the cache and turn it into a full-blown
@@ -875,12 +887,18 @@ pub fn syn_cache_get<G: ProcGlue>(
         return SynCacheGet::Aborted;
     };
     // soassertlocked(so): sonewconn returns it locked, detached.
-    // inpcb does refcount socket, both so and inp cannot go away
-    let Some(inp) = sotoinpcb(&so) else {
-        // The protocol's attach left no pcb: resetandabort with the socket alone (LZ's way
-        // out where the C reads through NULL).
+    // inpcb does refcount socket, both so and inp cannot go away. sonewconn succeeds only once
+    // the protocol's attach made the pcb and its control block (TCP's makes both or fails):
+    // the exits for a child without them are unreachable for a TCP socket (a kassert), and
+    // in the other builds the child is taken off the listener's queue and aborted by its
+    // protocol, as soclose disposes of a queued connection, and the peer reset.
+    let inp = sotoinpcb(&so);
+    kassert!(inp.is_some());
+    let Some(inp) = inp else {
         reset_abort(&m);
-        sounlock_detached(&so);
+        let mut w = solock_attach(&so, net);
+        syn_cache_abort_child(&so, &mut w);
+        drop(w);
         drop(lil);
         drop(listenso);
         drop(m);
@@ -889,16 +907,12 @@ pub fn syn_cache_get<G: ProcGlue>(
         return SynCacheGet::Aborted;
     };
     let mut w = solock_attach(&so, net);
-    let ok = match w.inet() {
-        None => {
-            reset_abort(&m);
-            false
-        }
+    // Ok: made; Err(true): the child has no control block (see above); Err(false): aborted,
+    // the connection dropped.
+    let made: Result<(), bool> = match w.inet() {
+        None => Err(true),
         Some(mut il) => match intotcpcb(&inp, &mut il) {
-            None => {
-                reset_abort(&m);
-                false
-            }
+            None => Err(true),
             Some(mut tp) => {
                 let listenflags = intotcpcb(listeninp, &mut lil).map_or(0, |l| l.st.t_flags);
                 // The entry's `[s]` members, opened by this listener's lock when the entry is
@@ -1037,7 +1051,7 @@ pub fn syn_cache_get<G: ProcGlue>(
                     None
                 };
                 match fail {
-                    None => true,
+                    None => Ok(()),
                     Some(reset) => {
                         if reset {
                             // resetandabort:
@@ -1046,14 +1060,20 @@ pub fn syn_cache_get<G: ProcGlue>(
                         // abort: tcp_drop destroys the socket.
                         let closed = tcp_drop(tp, Some(Errno::ECONNABORTED));
                         tcp_free(&inp, &mut il.pcb, closed);
-                        false
+                        Err(false)
                     }
                 }
             }
         },
     };
 
-    if !ok {
+    if let Err(unset) = made {
+        if unset {
+            // A child without a control block (unreachable for TCP, above).
+            kassert!(!unset);
+            reset_abort(&m);
+            syn_cache_abort_child(&so, &mut w);
+        }
         // in_pcbsounlock(inp, so); in_pcbsounlock(listeninp, listenso); in_pcbunref(inp);
         // m_freem(m); syn_cache_put(sc)
         drop(w);

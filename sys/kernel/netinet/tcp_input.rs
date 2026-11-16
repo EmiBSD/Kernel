@@ -352,24 +352,15 @@ enum TcpInputEnd<'a, 'w, G: ProcGlue> {
     Reuse(TcpSeq, Closed),
 }
 
-/// What the exits leave to the frame that holds the socket lock.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum After {
-    /// `in_pcbsounlock(inp, so)`.
-    Unlock,
-    /// `*solocked = so`: the socket kept locked for the caller's next segment.
-    HandBack,
-    /// `goto findpcb` with the socket unlocked and `reuse` set.
-    Findpcb(TcpSeq),
-}
-
-/// What a pcb's frame of `tcp_input_solocked` leaves to the lookup loop.
+/// What the exits leave to the frame that holds the socket lock (which [`settle`] lets go
+/// or keeps), and what that frame leaves to the lookup loop.
 enum TcpInputNext<G: ProcGlue> {
-    /// Done; nothing held (the socket unlocked, or never locked).
+    /// Done; nothing held (`in_pcbsounlock(inp, so)`, or the socket never locked).
     Done,
-    /// Done; the socket's lock kept, detached (`*solocked = so`).
+    /// Done; the socket's lock kept, detached (`*solocked = so`), for the caller's next
+    /// segment.
     HandBack,
-    /// `goto findpcb` (`TIME_WAIT` reused): the socket unlocked.
+    /// `goto findpcb` (`TIME_WAIT` reused) with `reuse` set: the socket unlocked.
     Findpcb(TcpSeq),
     /// `syn_cache_get`'s new connection, its pcb counted and its socket locked detached: the
     /// segment goes on there (the listener's reference dropped by the caller).
@@ -709,8 +700,12 @@ fn tcp_input_solocked<G: ProcGlue>(
             match next {
                 TcpInputNext::Done => return,
                 TcpInputNext::HandBack => {
-                    if let Some(k) = solocked {
-                        *k = Some(SoKept { inp: Some(inp) });
+                    let kept = SoKept { inp: Some(inp) };
+                    // `done` hands back only to a caller that keeps the socket (`keep`):
+                    // without one, the holding's drop unlocks it (in_pcbsounlock).
+                    match solocked {
+                        Some(k) => *k = Some(kept),
+                        None => drop(kept),
                     }
                     return;
                 }
@@ -754,15 +749,15 @@ fn tcp_input_pcb<G: ProcGlue>(
         (None, None) => false,
     };
     if low {
-        let a = s.finish_notp::<G>(NoTpExit::Drop, None, net);
-        return settle(w, a);
+        let next = s.finish_notp::<G>(NoTpExit::Drop, None, net);
+        return settle(w, next);
     }
 
     // A kernel control block belongs to a kernel protocol's socket, held by a witness (D-1);
     // without one there is no control block to find (the C's NULL).
     let Some(mut il) = w.inet() else {
-        let a = s.finish_notp::<G>(NoTpExit::DropWithResetRatelim, None, net);
-        return settle(w, a);
+        let next = s.finish_notp::<G>(NoTpExit::DropWithResetRatelim, None, net);
+        return settle(w, next);
     };
     let end = 'end: {
         let Some(mut tp) = intotcpcb(inp, &mut il) else {
@@ -888,12 +883,12 @@ fn tcp_input_pcb<G: ProcGlue>(
 
         tcp_input_tcb(s, inp, tp)
     };
-    let (closed, a) = s.finish(end, net);
+    let (closed, next) = s.finish(end, net);
     if let Some(c) = closed {
         tcp_free(inp, &mut il.pcb, c);
     }
     drop(il);
-    settle(w, a)
+    settle(w, next)
 }
 
 /// The frame of `syn_cache_get`'s new connection (`inp`, its socket locked again, `w`): its
@@ -906,37 +901,29 @@ fn tcp_input_child<G: ProcGlue>(
     net: &NetHeld<'_>,
 ) -> TcpInputNext<G> {
     let Some(mut il) = w.inet() else {
-        let a = s.finish_notp::<G>(NoTpExit::BadSyn, None, net);
-        return settle(w, a);
+        let next = s.finish_notp::<G>(NoTpExit::BadSyn, None, net);
+        return settle(w, next);
     };
     let end = match intotcpcb(inp, &mut il) {
         Some(tp) => tcp_input_tcb(s, inp, tp),
         None => TcpInputEnd::NoTp(NoTpExit::BadSyn),
     };
-    let (closed, a) = s.finish(end, net);
+    let (closed, next) = s.finish(end, net);
     if let Some(c) = closed {
         tcp_free(inp, &mut il.pcb, c);
     }
     drop(il);
-    settle(w, a)
+    settle(w, next)
 }
 
-/// The socket lock as the labels left it: kept for the caller (detached), or let go.
-fn settle<G: ProcGlue>(w: SoLocked<'_>, a: After) -> TcpInputNext<G> {
-    match a {
-        After::HandBack => {
-            w.detach();
-            TcpInputNext::HandBack
-        }
-        After::Unlock => {
-            drop(w);
-            TcpInputNext::Done
-        }
-        After::Findpcb(iss) => {
-            drop(w);
-            TcpInputNext::Findpcb(iss)
-        }
+/// The socket lock as the labels left it (`next`): kept for the caller, detached, on
+/// `HandBack`; let go otherwise.
+fn settle<G: ProcGlue>(w: SoLocked<'_>, next: TcpInputNext<G>) -> TcpInputNext<G> {
+    match next {
+        TcpInputNext::HandBack => w.detach(),
+        _ => drop(w),
     }
+    next
 }
 
 impl TcpInputState {
@@ -1215,21 +1202,21 @@ impl TcpInputState {
         &mut self,
         end: TcpInputEnd<'_, '_, G>,
         net: &NetHeld<'_>,
-    ) -> (Option<Closed>, After) {
+    ) -> (Option<Closed>, TcpInputNext<G>) {
         match end {
             TcpInputEnd::Tp(exit, tp) => (None, self.finish_tp(exit, tp, net)),
             TcpInputEnd::NoTp(exit) => (None, self.finish_notp::<G>(exit, None, net)),
             TcpInputEnd::Closed(exit, c) => (Some(c), self.finish_notp::<G>(exit, None, net)),
-            TcpInputEnd::Reuse(iss, c) => (Some(c), After::Findpcb(iss)),
+            TcpInputEnd::Reuse(iss, c) => (Some(c), TcpInputNext::Findpcb(iss)),
         }
     }
 
     /// `*solocked = so` or `in_pcbsounlock(inp, so)`: the common return.
-    fn done(&self) -> After {
+    fn done<G: ProcGlue>(&self) -> TcpInputNext<G> {
         if self.keep {
-            After::HandBack
+            TcpInputNext::HandBack
         } else {
-            After::Unlock
+            TcpInputNext::Done
         }
     }
 
@@ -1239,7 +1226,7 @@ impl TcpInputState {
         exit: TcpInputExit,
         mut tp: Tp<'_, '_, G>,
         net: &NetHeld<'_>,
-    ) -> After {
+    ) -> TcpInputNext<G> {
         let mut exit = exit;
         loop {
             let notp = match exit {
@@ -1281,7 +1268,7 @@ impl TcpInputState {
         exit: NoTpExit,
         tp: Option<&Tp<'_, '_, G>>,
         net: &NetHeld<'_>,
-    ) -> After {
+    ) -> TcpInputNext<G> {
         let mut exit = exit;
         let mut tp = tp;
         loop {
@@ -1344,7 +1331,7 @@ impl TcpInputState {
                         // m_freem(m)
                         drop(m);
                     }
-                    return After::Unlock;
+                    return TcpInputNext::Done;
                 }
                 NoTpExit::Drop => {
                     // Drop space held by incoming segment and return.
@@ -1360,7 +1347,7 @@ impl TcpInputState {
                         );
                     }
                     drop(self.m.take());
-                    return After::Unlock;
+                    return TcpInputNext::Done;
                 }
             }
         }
@@ -3040,6 +3027,23 @@ pub fn tcp_mss_adv(rt: Option<&Rtentry>, af: i32) -> i32 {
 
     mss.max(mssdflt)
 }
+
+/// The host tests' reset of `tcp_input`'s rate limiters (`tcp_rst_ppslim`'s and
+/// `tcp_ackdrop_ppslim`'s pairs, `tcp_test_reset`'s): a test's resets or dropped ACKs do not
+/// use up the next test's second.
+#[cfg(test)]
+pub(crate) fn tcp_input_test_reset() {
+    ppsratecheck_locked(|l| {
+        for pps in [&TCP_RST_PPS, &TCP_ACKDROP_PPS] {
+            let p = pps.get_mut(l.witness_mut());
+            p.last = Timeval {
+                tv_sec: 0,
+                tv_usec: 0,
+            };
+            p.count = 0;
+        }
+    });
+}
 /* </CODE> */
 
 /* <TESTS> */
@@ -3546,7 +3550,7 @@ mod tests {
     }
 
     #[test]
-    fn dooptions_checks_the_signature_in_constant_time() {
+    fn dooptions_checks_the_signature_and_gives_the_sa_back() {
         let (_g, _p) = testtcp::setup();
         let legs = testtcp::sig_legs();
         let src = [10, 9, SIG_NET, 2];
@@ -3573,20 +3577,20 @@ mod tests {
         };
         // The right digest: accepted, counted good, the SA given back.
         let (ok, bad, goodc, unrefs) = check(&sig_opt(&good), true, TCPS_ESTABLISHED);
-        assert!(ok && bad == 0 && goodc >= 1 && unrefs >= 1);
+        assert!(ok && bad == 0 && goodc == 1 && unrefs == 1);
         // One bit off in the first byte, or in the last: refused, counted bad, given back.
         for at in [0, 15] {
             let mut d = good;
             d[at] ^= 0x01;
             let (ok, bad, _, unrefs) = check(&sig_opt(&d), true, TCPS_ESTABLISHED);
-            assert!(!ok && bad >= 1 && unrefs >= 1, "byte {at}");
+            assert!(!ok && bad == 1 && unrefs == 1, "byte {at}");
         }
         // A signed connection's segment without the option, or an option where none is
         // expected: refused and counted.
         let (ok, bad, ..) = check(&[TCPOPT_NOP; 4], true, TCPS_ESTABLISHED);
-        assert!(!ok && bad >= 1);
+        assert!(!ok && bad == 1);
         let (ok, bad, ..) = check(&sig_opt(&good), false, TCPS_ESTABLISHED);
-        assert!(!ok && bad >= 1);
+        assert!(!ok && bad == 1);
         // Two signature options that differ: refused before any SA is looked up (the C's
         // `goto bad`, uncounted); the same digest twice is one signature.
         let mut two = [TCPOPT_NOP; 36];
@@ -4565,24 +4569,46 @@ mod tests {
     fn input_drops_what_the_inbound_policy_refuses() {
         let (_g, _p) = testtcp::setup();
         let _legs = sig_legs();
-        let (_ifp, d) = crate::netinet::in_pcb::testinet::iface(b"tiac", [10, 9, 72, 1]);
-        let nosec = stat(C::TcpsRcvnosec);
-        let noport = stat(C::TcpsNoport);
-        let m = csum_ok(seg4(
+        // A connection with the refused source: 10.9.72.1:7000 to SPD_DENY:80.
+        let (so, inp, d) = testtcp::estab_to(b"tiac", 72, testtcp::SPD_DENY);
+        let (nosec, noport, miss) = (
+            stat(C::TcpsRcvnosec),
+            stat(C::TcpsNoport),
+            stat(C::TcpsPcbhashmiss),
+        );
+        // Without a pcb (port 7001): the exact lookup missed, then the policy refuses it
+        // before the missing port is counted or reset.
+        let mut th = peer_th(TH_SYN, 1, 0, 4096);
+        th.th_dport = 7001u16.to_be();
+        deliver(csum_ok(seg4(
             testtcp::SPD_DENY,
             [10, 9, 72, 1],
-            peer_th(TH_SYN, 1, 0, 4096),
+            th,
             &[],
             &[],
-        ));
-        deliver(m);
+        )));
         assert_eq!(stat(C::TcpsRcvnosec), nosec + 1);
+        assert_eq!(stat(C::TcpsPcbhashmiss), miss + 1);
         assert_eq!(
             stat(C::TcpsNoport),
             noport,
             "dropped before the port is looked at"
         );
         assert_eq!(sent(d), 0, "no reset");
+        // With the connection's pcb: found, refused all the same, its data not taken.
+        let m = csum_ok(seg4(
+            testtcp::SPD_DENY,
+            [10, 9, 72, 1],
+            peer_th(TH_ACK | TH_PUSH, 5000, 1000, 65535),
+            &[],
+            b"x",
+        ));
+        deliver(m);
+        assert_eq!(stat(C::TcpsRcvnosec), nosec + 2);
+        assert_eq!(stat(C::TcpsPcbhashmiss), miss + 1, "the pcb found");
+        assert!(received(&so).is_empty());
+        assert_eq!(peek(&inp, |st| st.rcv_nxt), 5000);
+        assert_eq!(sent(d), 0, "no ACK");
         // Another source on the same net is not refused: no connection, a reset.
         let m = csum_ok(seg4(
             [10, 9, 72, 67],
@@ -4592,8 +4618,10 @@ mod tests {
             &[],
         ));
         deliver(m);
+        assert_eq!(stat(C::TcpsRcvnosec), nosec + 2);
         assert_eq!(stat(C::TcpsNoport), noport + 1);
         assert_eq!(sent(d), 1);
+        testtcp::close(so, inp);
     }
 
     #[test]
