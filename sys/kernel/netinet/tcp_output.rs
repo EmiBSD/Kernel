@@ -124,6 +124,11 @@
 //!   pcb's family (an IPv4 pcb's IPv6 options and an IPv6 pcb's IPv4 options are never set:
 //!   `ip_ctloutput` and `ip6_ctloutput` are reached by family), after the test's cheaper terms.
 //! - `ip6_plen` is stored in host order, as the C stores it (`ip6_output` writes it again).
+//! - The refusal of a signed connection that permits SACK (`EINVAL`), which the C compiles
+//!   only under `TCP_SIGNATURE && DIAGNOSTIC`, is made in every build, following GENERIC's
+//!   `DIAGNOSTIC` build (conf/GENERIC:12): `EINVAL` is what OpenBSD's userland sees; without
+//!   the check such a SYN's options would pass the 40 bytes (the C writes past its buffer,
+//!   here the bounded writes' `panic(9)`). `tcp_ctloutput` keeps the pair from being made.
 //! - `TCP_SACK_DEBUG` (not in GENERIC) is the cargo feature `tcp_sack_debug`:
 //!   `tcp_print_holes` and its call in [`tcp_sack_output`]. `TCPDEBUG` is not configured
 //!   (the `SO_DEBUG` trace calls `tcp_trace`, as the C does without it). Configured:
@@ -176,7 +181,7 @@ use hal::sys::socket::{AF_INET, AF_INET6, SO_DEBUG};
 
 use crate::assert::{kassert, kpanic};
 use crate::crypto::md5::MD5_DIGEST_LENGTH;
-use crate::net::ipsec_hooks::{SOCKADDR_UNION_LEN, ipsec};
+use crate::net::ipsec_hooks::{SOCKADDR_UNION_LEN, TdbHold, ipsec};
 use crate::net::mbuf::{
     M_DONTWAIT, M_FLOWID, M_PKTHDR, M_TCP_CSUM_OUT, M_TCP_TSO, MAX_LINKHDR, MAXMCLBYTES, MCLBYTES,
     MHLEN, Mbuf, MbufBox, m_clget, m_gethdr, m_trailingspace,
@@ -367,8 +372,9 @@ pub fn tcp_output<G: ProcGlue>(tp: &mut Tp<'_, '_, G>) -> Result<(), Errno> {
     // TCP_ECN
     let do_ecn = TCP_DO_ECN.load(Ordering::Relaxed) != 0;
 
-    // TCP_SIGNATURE && DIAGNOSTIC
-    if cfg!(feature = "diagnostic") && tp.st.sack_enable != 0 && tp.st.has_flags(TF_SIGNATURE) {
+    // TCP_SIGNATURE && DIAGNOSTIC: a signed connection that permits SACK is refused, in every
+    // build (GENERIC's DIAGNOSTIC, the deviations).
+    if tp.st.sack_enable != 0 && tp.st.has_flags(TF_SIGNATURE) {
         return Err(Errno::EINVAL);
     }
 
@@ -412,6 +418,8 @@ pub fn tcp_output<G: ProcGlue>(tp: &mut Tp<'_, '_, G>) -> Result<(), Errno> {
         // before the answer is handled.
         let mut holes = core::mem::replace(&mut tp.st.snd_holes, SlistLink::new());
         let pass = tcp_output_pass(tp, &mut holes, sendalot, once);
+        // Nothing the pass calls makes a hole: the state's list is still the empty one.
+        kassert!(!tp.st.snd_holes.is_some());
         tp.st.snd_holes = holes;
         let (error, win, packetlen) = match pass {
             Pass::Done(r) => return r,
@@ -1121,21 +1129,20 @@ fn tcp_output_pass<G: ProcGlue>(
             size_of::<Ip>() as i32
         };
 
-        let legs = ipsec();
-        let Some(tdb) =
-            legs.and_then(|s| s.tcp_signature_tdb(rtable_l2(inp.inp_rtableid.get()), &src, &dst))
-        else {
+        // The lookup's reference to the SA, given back by the hold's drop on every way out
+        // of this block (the C's tdb_unref after the digest, or after m_freem on EINVAL).
+        let Some(hold) = ipsec().and_then(|s| {
+            s.tcp_signature_tdb(rtable_l2(inp.inp_rtableid.get()), &src, &dst)
+                .map(|t| TdbHold::new(s, t))
+        }) else {
             drop(m);
             return Pass::Done(Err(Errno::EPERM));
         };
 
         let mut sig = [0u8; MD5_DIGEST_LENGTH];
-        let ok = tcp_signature(&tdb, af, &m, &th, iphlen, false, &mut sig);
-        if !ok {
+        if !tcp_signature(hold.tdb(), af, &m, &th, iphlen, false, &mut sig) {
             drop(m);
-            if let Some(s) = legs {
-                s.tdb_unref(tdb);
-            }
+            drop(hold);
             return Pass::Done(Err(Errno::EINVAL));
         }
         let at = hdrlen as usize - optlen + sigoff;
@@ -1143,9 +1150,7 @@ fn tcp_output_pass<G: ProcGlue>(
             kpanic(format_args!("tcp_output: a new header mbuf is read-only"));
         };
         d[at..at + MD5_DIGEST_LENGTH].copy_from_slice(&sig);
-        if let Some(s) = legs {
-            s.tdb_unref(tdb);
-        }
+        drop(hold);
     }
 
     // Defer checksumming until later (ip_output() or hardware)
@@ -1730,10 +1735,39 @@ mod tests {
         let (so, inp, d) = estab(b"tout8", 28);
         queue(&so, &pattern(10));
         let before = sent(d);
-        let (r, nxt) = output(&inp, |tp| tp.st.set_flags(TF_SIGNATURE), |tp| tp.st.snd_nxt);
-        // No IPsec legs in the host tests: gettdbbysrcdst finds no SA, EPERM before the
-        // segment leaves, the state as it was.
+        let (r, nxt) = output(
+            &inp,
+            |tp| {
+                // TCP_MD5SIG clears sack_enable (tcp_ctloutput): the state the C reaches.
+                tp.st.sack_enable = 0;
+                tp.st.set_flags(TF_SIGNATURE);
+            },
+            |tp| tp.st.snd_nxt,
+        );
+        // No SA between these addresses: gettdbbysrcdst finds none, EPERM before the segment
+        // leaves, the state as it was.
         assert_eq!(r, Err(Errno::EPERM));
+        assert_eq!(sent(d), before);
+        assert_eq!(nxt, 1000);
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn a_signed_connection_that_permits_sack_is_refused_in_every_build() {
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, d) = estab(b"touta", 70);
+        queue(&so, &pattern(10));
+        let before = sent(d);
+        let (r, nxt) = output(
+            &inp,
+            |tp| {
+                tp.st.sack_enable = 1;
+                tp.st.set_flags(TF_SIGNATURE);
+            },
+            |tp| tp.st.snd_nxt,
+        );
+        // GENERIC's DIAGNOSTIC check: EINVAL, nothing sent, nothing changed.
+        assert_eq!(r, Err(Errno::EINVAL));
         assert_eq!(sent(d), before);
         assert_eq!(nxt, 1000);
         testtcp::close(so, inp);
