@@ -4332,9 +4332,18 @@ mod tests {
     }
 
     /// The SYN cache entry of another listener completed on this one, over the interface
-    /// `name` of 10.9.`n`.1: the SYN's, the duplicate SYN's and the ACK's timestamps `ts`, and
-    /// the new connection's `ts_recent` after the ACK, `want_ts_recent`.
-    fn another_listener_s_entry(name: &[u8], n: u8, ts: [u32; 3], want_ts_recent: u32) {
+    /// `name` of 10.9.`n`.1: the SYN's and the duplicate SYN's timestamps `ts[0]` and `ts[1]`,
+    /// the mismatched ACK's `ts[2]`, the completing ACK's `ack_ts` (none: no timestamp
+    /// option); the new connection's `ts_recent` after that ACK is `want_ts_recent`, and a
+    /// next segment (timestamped `want_ts_recent + 0x80` when `ack_ts` is some) is taken by
+    /// header prediction.
+    fn another_listener_s_entry(
+        name: &[u8],
+        n: u8,
+        ts: [u32; 3],
+        ack_ts: Option<u32>,
+        want_ts_recent: u32,
+    ) {
         let (_g, _p) = testtcp::setup();
         let (_ifp, d) = crate::netinet::in_pcb::testinet::iface(name, [10, 9, n, 1]);
         // Listener A, on the wildcard, takes the SYN: an MSS of 1400, SACK permitted, a
@@ -4383,8 +4392,9 @@ mod tests {
             (TH_SYN | TH_ACK, iss, 3001)
         );
         assert_eq!(ts_of(&o2).map(|t| t.1), Some(ts[1]));
-        // An ACK whose numbers do not match: dropped, no SYN-ACK, nothing made, nothing
-        // counted, the entry left.
+        // An ACK whose numbers do not match: answered with the entry's SYN-ACK again (the
+        // C's, tcp_input.c:3546), echoing the duplicate SYN's stored timestamp; nothing
+        // made, nothing counted, the entry left.
         let (aborted, completed) = (stat(C::TcpsScAborted), stat(C::TcpsScCompleted));
         deliver(to80(
             n,
@@ -4395,17 +4405,24 @@ mod tests {
             &ts_opt(ts[2], 0),
             &[],
         ));
-        assert_eq!(sent(d), 2, "nothing sent");
+        assert_eq!(sent(d), 3, "the SYN-ACK again");
+        let (_ip, sa3, o3, _p) = last(d);
+        assert_eq!(
+            (sa3.th_flags, u32::from_be(sa3.th_seq)),
+            (TH_SYN | TH_ACK, iss)
+        );
+        assert_eq!(ts_of(&o3).map(|t| t.1), Some(ts[1]));
         assert!(aso.queued_first().is_none() && bso.queued_first().is_none());
         assert_eq!(stat(C::TcpsScAborted), aborted);
         // The ACK of the SYN-ACK: the connection made on B from the entry.
+        let ack_opts = ack_ts.map(|t| ts_opt(t, 0));
         deliver(to80(
             n,
             5600,
             TH_ACK,
             3001,
             iss.wrapping_add(1),
-            &ts_opt(ts[2], 0),
+            ack_opts.as_ref().map_or(&[][..], |o| &o[..]),
             &[],
         ));
         assert_eq!(stat(C::TcpsScCompleted), completed + 1);
@@ -4439,6 +4456,21 @@ mod tests {
             assert_ne!(flags & f, 0, "flag {f:#x}");
         }
         assert_eq!(ts_recent, want_ts_recent);
+        // The next segment, in sequence with a newer timestamp: taken by header prediction
+        // (TSTMP_GEQ(ts_val, ts_recent), tcp_input.c:922).
+        let next_opts = ack_ts.map(|_| ts_opt(want_ts_recent.wrapping_add(0x80), 0));
+        let pred = stat(C::TcpsPreddat);
+        deliver(to80(
+            n,
+            5600,
+            TH_ACK | TH_PUSH,
+            3001,
+            iss.wrapping_add(1),
+            next_opts.as_ref().map_or(&[][..], |o| &o[..]),
+            b"next",
+        ));
+        assert_eq!(received(&child), b"next");
+        assert_eq!(stat(C::TcpsPreddat), pred + 1, "header prediction");
         // The entry is gone: once the connection is closed, the same ACK again finds none
         // and is reset by the listener.
         testtcp::close(child, cinp);
@@ -4457,17 +4489,23 @@ mod tests {
 
     #[test]
     fn input_completes_another_listener_s_entry_on_this_one() {
-        // The child's ts_recent starts at 0 (the C's: the SYN's), and this ACK's timestamp
-        // step records the ACK's, as the C's does.
-        another_listener_s_entry(b"tib0", 121, [0x100, 0x180, 0x200], 0x200);
+        // An ACK without a timestamp leaves the child's ts_recent what syn_cache_get gave
+        // it: the entry's, the duplicate SYN's (tcp_input.c:3865 and :3633).
+        another_listener_s_entry(b"tib0", 121, [0x100, 0x180, 0x200], None, 0x180);
     }
 
     #[test]
-    fn input_completes_another_listener_s_entry_ts_recent_0_past_2_31() {
-        // tcp_syncache.rs's Deviations: an ACK timestamp 2^31 or more past 0, not older
-        // than the SYN's, is not recorded over a ts_recent of 0 (TSTMP_GEQ(ts_val, 0) is
-        // false), where the C records it over the SYN's (0x8000_0200 here).
-        another_listener_s_entry(b"tib1", 122, [0x8000_0100, 0x8000_0180, 0x8000_0200], 0);
+    fn input_completes_another_listener_s_entry_and_predicts_past_2_31() {
+        // Timestamps 2^31 or more past 0: the child's ts_recent the SYN's, so the ACK's
+        // timestamp step records the ACK's (TSTMP_GEQ against 0 would refuse it) and header
+        // prediction takes the next segment.
+        another_listener_s_entry(
+            b"tib1",
+            122,
+            [0x8000_0100, 0x8000_0180, 0x8000_0200],
+            Some(0x8000_0300),
+            0x8000_0300,
+        );
     }
 
     #[test]

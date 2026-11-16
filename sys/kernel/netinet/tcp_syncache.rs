@@ -129,30 +129,28 @@
 //!   own, the child made on the current listener (:3562-3567), and reads and writes the
 //!   entry's `[s]` members (`sc_route`, `sc_ipopts`, `sc_timestamp`) under the current
 //!   listener's lock where its legend puts them under the entry's listener's: a data race
-//!   in the C. Here those members are never opened without their own listener's lock, and
-//!   the visible behaviour is the C's but for these differences:
-//!   - an ACK of the SYN-ACK makes the connection on the current listener, from the
-//!     entry's `[I]` and `[S]` members, without the `[s]` ones: the child's route cache
-//!     starts empty (looked up when first used, where the C hands over the entry's cached
-//!     route), its IP options are only this ACK's source route (`ip_srcroute`; the C falls
-//!     back to the SYN's, `sc_ipopts`), and its `ts_recent` is 0 where the C's is the
-//!     SYN's timestamp. PAWS drops nothing on this ACK in either (the C's `ts_recent_age`
-//!     is 0 and `tcp_now` starts at a random 63-bit offset, so an older timestamp only
-//!     invalidates `ts_recent`, tcp_input.c:1279-1291), and the ACK's timestamp step
-//!     (`TSTMP_GEQ(ts_val, ts_recent)`, its `th_seq` at `last_ack_sent`) records the ACK's
-//!     timestamp as the C's does, except one 2^31 or more past 0 that is not older than
-//!     the SYN's: the C records it, `ts_recent` stays 0 here, so our segments echo 0 and
-//!     PAWS stays off until one of the peer's timestamps falls below 2^31 (the C's own
-//!     state after that invalidation; `input_completes_another_listener_s_entry_*`);
-//!   - an ACK whose numbers do not match the entry gets no SYN-ACK (the C resends it from
-//!     the `[s]` members; the entry's own timer resends it here) and is dropped, the entry
-//!     left in the cache, as the C leaves it;
-//!   - a duplicate SYN is counted (`tcps_sc_dupesyn`) and answered by a SYN-ACK built from
-//!     what the C would have stored in the `[s]` members first (this SYN's timestamp and
-//!     IP options, over a route cache of its own; `tcps_sndacks` and `tcps_sndtotal` on
-//!     success), but the entry's members keep the first SYN's values (the C overwrites
-//!     them), so its timer's later SYN-ACKs echo the first SYN's timestamp, and without
-//!     IP options on this SYN the SYN-ACK carries none (the C's carries the first SYN's).
+//!   in the C. Here the timestamp is an `[a]` member (`tcp_var::SynCache::sc_timestamp`, an
+//!   atomic word), so it is stored and read as the C does whichever listener's the entry is:
+//!   the child's `ts_recent` is the SYN's timestamp (tcp_input.c:3633), a duplicate SYN
+//!   stores its own (:3865), and the SYN-ACKs echo it. The route cache and the IP options
+//!   stay in the `[s]` cell, never opened without their own listener's lock, and the C's
+//!   behaviour holds but for these differences, all in those two members:
+//!   - an ACK of the SYN-ACK makes the connection on the current listener without them:
+//!     the child's route cache starts empty, where the C hands over the entry's cached
+//!     route (not visible: `in_pcbrtentry` looks up the same route from the same addresses
+//!     when it is first used, `tcp_mss` in `syn_cache_get` already), and its IP options are
+//!     only this ACK's source route (`ip_srcroute`), where the C falls back to the SYN's
+//!     (`sc_ipopts`);
+//!   - an ACK whose numbers do not match the entry is answered with the entry's SYN-ACK, as
+//!     the C does (:3546), sent over a stand-in for the `[s]` members: a route cache of its
+//!     own and no IP options, where the C's carries the SYN's source route;
+//!   - a duplicate SYN is counted (`tcps_sc_dupesyn`) and answered with the entry's SYN-ACK
+//!     over a stand-in holding this SYN's IP options (none if it has none, where the C's
+//!     carries the first SYN's), the entry's own `sc_ipopts` left as the first SYN's (the C
+//!     replaces them with this SYN's when it has some, so the entry's timer sends those).
+//!   The IP options are a source route only, recorded only under `net.inet.ip.sourceroute=1`
+//!   (`ip_srcroute` answers none otherwise, and `ip_dooptions` drops a source-routed packet,
+//!   ip_input.c:1254 and :1474): with the default sysctl these differences show nothing.
 //!   The entry's `[s]` members are dropped with the entry by whoever drops its last handle:
 //!   that drop owns the whole value, as the C's last `syn_cache_put` frees `sc_ipopts` and
 //!   the route unlocked.
@@ -189,8 +187,9 @@
 //!   takes is the kernel `Timeout`'s, which the C's lacks (docs/ROADMAP.md's N12 row).
 //! - N6.6a4: `syn_cache_add` fills the entry inside `syn_cache_alloc`, after the pool gave the
 //!   item (the C's order: the route to the peer looked up only for an entry that exists), its
-//!   `[I]` members built at once and its `[s]` ones (the route, the IP options, the
-//!   timestamp) in the cell of the listener's lock; the option parser runs on a `TcpState` on
+//!   `[I]` members built at once and its `[s]` ones (the route, the IP options) in the cell
+//!   of the listener's lock, the SYN's timestamp stored in the entry's `[a]` word before it
+//!   is shared (N6.6a4's review fixes: the C's `[s]` member); the option parser runs on a `TcpState` on
 //!   the stack (the C's `struct tcpcb tb`), the listener's `sack_enable` copied into it, so a
 //!   signed listener (no SACK) never makes a SACK-permitted entry (tcp_output's 40-byte
 //!   option room). `syn_cache_get` makes the connection on the socket `sonewconn` returns
@@ -294,8 +293,8 @@ pub enum SynCacheGet<G: ProcGlue> {
     /// `NULL`: the SYN was not in the cache; the segment back, for the caller's RST.
     NotFound(MbufBox),
     /// `(struct socket *)(-1)`: the connection could not be created and is aborted, or the
-    /// ACK did not match and the SYN-ACK was sent again (not for another listener's entry,
-    /// see the deviations); the segment consumed.
+    /// ACK did not match and the SYN-ACK was sent again (for another listener's entry over
+    /// a stand-in for its `[s]` members, see the deviations); the segment consumed.
     Aborted,
     /// The new connection in `SYN_RECEIVED`: its pcb, counted (the C's `in_pcbref`), its
     /// socket's `so_lock` held detached by the running process (`sonewconn`'s socket,
@@ -840,9 +839,13 @@ pub fn syn_cache_get<G: ProcGlue>(
         if ours {
             let _ = syn_cache_respond(&sc, Some(m), now, do_ecn, &mut lil.syn, net);
         } else {
-            // The SYN-ACK is built from the entry's `[s]` members: another listener's entry
-            // is not answered here (its own timer resends the SYN-ACK).
-            drop(m);
+            // Another listener's entry: its `[s]` members are under that listener's lock,
+            // which is not held. The SYN-ACK is sent over a stand-in for them, a route cache
+            // of its own and no IP options (see the deviations); the timestamp is the
+            // entry's own word.
+            let mut l = ScListener::default();
+            let _ = syn_cache_respond_with(&sc, Some(m), now, do_ecn, &mut l, net);
+            drop(l);
         }
         drop(lil);
         drop(listenso);
@@ -989,9 +992,8 @@ pub fn syn_cache_get<G: ProcGlue>(
                     // ISSET(): the flag's bit, not 1 (TCP_SACK_ENABLE reads it back so).
                     st.sack_enable = i32::from(i.sc_fixflags & SCF_SACK_PERMIT);
                     st.ts_modulate = i.sc_modulate;
-                    // Another listener's entry: 0, which this ACK's timestamp step replaces
-                    // by a timestamp below 2^31 only (the deviations).
-                    st.ts_recent = l.as_ref().map_or(0, |l| l.sc_timestamp as u32);
+                    // The entry's word, whichever listener's it is (the `[a]` member).
+                    st.ts_recent = sc.sc_timestamp.load(Ordering::Relaxed) as u32;
                     st.iss = i.sc_iss;
                     st.irs = i.sc_irs;
                     tcp_sendseqinit(st);
@@ -1242,14 +1244,16 @@ pub fn syn_cache_add<G: ProcGlue>(
         let ours = sc_of(&g, &sc, inp);
         drop(g);
         tcpstat_inc(TcpstatCounters::TcpsScDupesyn);
+        // sc->sc_timestamp = tb.ts_recent: the `[a]` word, whichever listener's the entry is.
+        sc.sc_timestamp
+            .store(u64::from(tb.ts_recent), Ordering::Relaxed);
         if !ours {
             // Another listener's entry: its `[s]` members are under that listener's lock,
-            // which is not held (see the deviations). The SYN,ACK is sent from what the C
-            // would have stored in them first (this SYN's timestamp and IP options), over a
-            // route cache of its own; the entry's members stay as they are.
+            // which is not held (see the deviations). The SYN,ACK is sent over a stand-in for
+            // them holding what the C would have stored first (this SYN's IP options), with
+            // a route cache of its own; the entry's `[s]` members stay as they are.
             let mut l = ScListener {
                 sc_ipopts: ipopts,
-                sc_timestamp: u64::from(tb.ts_recent),
                 ..ScListener::default()
             };
             if syn_cache_respond_with(&sc, Some(m), now, do_ecn, &mut l, tp.net).is_ok() {
@@ -1267,7 +1271,6 @@ pub fn syn_cache_add<G: ProcGlue>(
             // we've been given.
             l.sc_ipopts = ipopts;
         }
-        l.sc_timestamp = u64::from(tb.ts_recent);
         if syn_cache_respond(&sc, Some(m), now, do_ecn, tp.syn, tp.net).is_ok() {
             tcpstat_inc(TcpstatCounters::TcpsSndacks);
             tcpstat_inc(TcpstatCounters::TcpsSndtotal);
@@ -1287,7 +1290,6 @@ pub fn syn_cache_add<G: ProcGlue>(
         let family = sa_family(src);
         let mut l = ScListener {
             sc_ipopts: ipopts,
-            sc_timestamp: u64::from(tb.ts_recent),
             ..ScListener::default()
         };
         let rt = match family {
@@ -1371,6 +1373,9 @@ pub fn syn_cache_add<G: ProcGlue>(
         // m_free(ipopts): with the closure, which never ran.
         return Err(m);
     };
+    // sc->sc_timestamp = tb.ts_recent, before the entry is shared (the SYN-ACK echoes it).
+    sc.sc_timestamp
+        .store(u64::from(tb.ts_recent), Ordering::Relaxed);
 
     if syn_cache_respond(&sc, Some(m), now, do_ecn, tp.syn, tp.net).is_ok() {
         // The entry's timer, set as the C's timeout_set_flags (outside the mutex), only for
@@ -1411,9 +1416,10 @@ pub fn syn_cache_respond<G: ProcGlue>(
 }
 
 /// [`syn_cache_respond`] over the `[s]` members `l`: the entry's own (its listener's lock
-/// opened them), or, for an entry of another listener whose lock is not held, the values the
-/// C would have stored in them first (`syn_cache_add`'s duplicate SYN: its timestamp and IP
-/// options, a route cache of its own).
+/// opened them), or, for an entry of another listener whose lock is not held, a stand-in:
+/// a route cache of its own and the IP options the C would have stored first
+/// (`syn_cache_add`'s duplicate SYN: its own; `syn_cache_get`'s mismatched ACK: none). The
+/// timestamp is the entry's `[a]` word in both.
 fn syn_cache_respond_with<G: ProcGlue>(
     sc: &SynCache<G>,
     m: Option<MbufBox>,
@@ -1539,7 +1545,7 @@ fn syn_cache_respond_with<G: ProcGlue>(
         let words = [
             htonl(TCPOPT_TSTAMP_HDR),
             htonl((now as u32).wrapping_add(i.sc_modulate)),
-            htonl(l.sc_timestamp as u32),
+            htonl(sc.sc_timestamp.load(Ordering::Relaxed) as u32),
         ];
         for w in words {
             opts[o..o + 4].copy_from_slice(&w.to_ne_bytes());
@@ -2017,11 +2023,9 @@ mod tests {
             sc_fixflags: SCF_SACK_PERMIT | SCF_TIMESTAMP | SCF_ECN_PERMIT,
             ..SynCacheInit::default()
         };
-        let l = || ScListener {
-            sc_timestamp: 0x0102_0304,
-            ..ScListener::default()
-        };
+        let l = ScListener::default;
         let sc = syn_cache_alloc(&inp, || (init, l())).expect("an entry");
+        sc.sc_timestamp.store(0x0102_0304, Ordering::Relaxed);
         let sent = d.sent.load(Ordering::Relaxed);
         let r = testtcp::with_lock(&inp, |_, il| {
             syn_cache_respond(&sc, None, 500, true, &mut il.syn, &il.net)

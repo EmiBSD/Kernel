@@ -124,7 +124,11 @@
 //!   one `Guarded` cell keyed to the SYN cache's mutex ([`ScState`]: the set's and the
 //!   bucket's index replace `sc_set` and `sc_buckethead`, the listener a counted handle), its
 //!   `[s]` members one `ExclGuarded` cell keyed to the listener's `so_lock` in part `SYN`
-//!   ([`ScListener`]: the route, the timestamp, the IP options' chain). The two sets
+//!   ([`ScListener`]: the route and the IP options' chain). The C's `[s]` `sc_timestamp` is
+//!   an `[a]` member here, a relaxed `AtomicU64` beside the cells (N6.6a4's review fixes):
+//!   a duplicate SYN to an entry of another listener stores it and `syn_cache_get` reads it
+//!   for every child without that listener's lock, as the C does (a race in the C, an
+//!   atomic word here, the IDIOMS row of a scalar read without the lock). The two sets
 //!   ([`SynCaches`]) are the data of the glue's `Mutexed` (`syn_cache_mtx`, `IPL_SOFTNET`),
 //!   their bucket arrays `MArray`s of pinned lists that leave the guard for a call and come
 //!   back (the pcb table's shape).
@@ -141,6 +145,7 @@
 //!   row).
 
 use core::pin::Pin;
+use core::sync::atomic::AtomicU64;
 
 use hal::intr::IPL_SOFTNET;
 use hal::malloc::MArray;
@@ -681,8 +686,6 @@ pub struct ScState<G: ProcGlue> {
 pub struct ScListener {
     /// \[s\] Cached route.
     pub sc_route: Route,
-    /// \[s\] Timestamp from SYN.
-    pub sc_timestamp: u64,
     /// \[s\] IP options.
     pub sc_ipopts: Option<MbufBox>,
 }
@@ -701,6 +704,12 @@ pub struct SynCache<G: ProcGlue> {
     pub sc_s: Guarded<ScState<G>>,
     /// \[s\] The members the listen socket's lock guards.
     pub sc_l: ExclGuarded<ScListener>,
+    /// \[a\] Timestamp from SYN (the C's `[s]` `sc_timestamp`): stored by `syn_cache_add`
+    /// before the entry is shared and by a duplicate SYN, read by the SYN-ACK and by
+    /// `syn_cache_get`, all `Relaxed` (one word, no other memory published with it); a
+    /// duplicate SYN to an entry of another listener writes it without that listener's lock,
+    /// as the C does.
+    pub sc_timestamp: AtomicU64,
     /// \[I\] The members set when the entry is made.
     pub sc_i: SynCacheInit,
 }
@@ -721,8 +730,9 @@ impl<G: ProcGlue> SynCache<G> {
     /// A new entry with the `[I]` members `init` (`pool_get(PR_ZERO)` and `syn_cache_add`'s
     /// stores before the entry is shared): its `[S]` cell keyed to `syn_cache_mtx` (`mtx`),
     /// holding the listener's handle (`sc_inplisten = in_pcbref(tp->t_inpcb)`), its `[s]` cell
-    /// to the listen socket's `so_lock` (`listen`) in part `SYN`, its timer not set
-    /// (`syn_cache_insert` sets it).
+    /// to the listen socket's `so_lock` (`listen`) in part `SYN`, its timestamp 0
+    /// (`syn_cache_add` stores the SYN's before the entry is shared), its timer not set
+    /// (`syn_cache_timer_set` sets it).
     pub fn new(
         mtx: LockId,
         listen: LockId,
@@ -750,6 +760,7 @@ impl<G: ProcGlue> SynCache<G> {
                 },
             ),
             sc_l: ExclGuarded::keyed(listen, so_part::SYN, l),
+            sc_timestamp: AtomicU64::new(0),
             sc_i: init,
         }
     }
