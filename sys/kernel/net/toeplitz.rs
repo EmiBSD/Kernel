@@ -102,6 +102,9 @@
 //! the receive-side scaling keys that drivers program into hardware ([`stoeplitz_to_key`]).
 //!
 //! ## Deviations
+//! - [`stoeplitz_init`] called a second time keeps the first key and cache (the system cache is
+//!   set once): the C, which `main()` calls once, would draw a new key and refill the cache
+//!   in place under its readers. Only the host tests call it twice.
 //! - `const struct stoeplitz_cache *const stoeplitz_cache` (a pointer to the static
 //!   `stoeplitz_syskey_cache`) is the function [`stoeplitz_cache`]: the system cache once
 //!   [`stoeplitz_init`] filled it, an all-zero cache before (every hash 0, as the C's static

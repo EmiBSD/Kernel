@@ -61,6 +61,13 @@
 //!
 //! ## Deviations
 //! - `TCP_TIME(sec)` is the `const fn` [`tcp_time`] (the C macro row of `docs/C_TO_RUST.md`).
+//! - `tcpstat_inc`, `tcpstat_add` and `tcpstat_pkt` take no `splnet()` around the update
+//!   (the C's inline functions do): `Counters::enter`'s generation update is a load then a
+//!   store, so an `IPL_NET` interrupt that counts on the same CPU between the two loses no
+//!   increment (each counter is its own atomic add) but can leave the generation even while
+//!   the interrupted update is unfinished, and a `net.inet.tcp.stats` reader may then accept
+//!   that CPU's copy with the interrupted update half done, a snapshot the C's `splnet` rules
+//!   out. The counters stay exact; only one read's coherence across counters is weaker.
 //!
 //! ## Redesign
 //! - N6.6a1 (D-16): `tcpcounters` (the C's `struct cpumem *` from `counters_alloc`) is
