@@ -1666,6 +1666,89 @@ pub(crate) mod testtcp {
         rtrequest(RTM_ADD, &mut info, RTP_STATIC, None, 0, &net).expect("the route");
     }
 
+    /// 2001:db8:`n`::`h`.
+    pub(crate) fn a6(n: u8, h: u8) -> hal::sys::netinet6_in6::In6Addr {
+        let mut a = hal::sys::netinet6_in6::In6Addr::default();
+        a.s6_addr[..4].copy_from_slice(&[0x20, 0x01, 0x0d, 0xb8]);
+        a.s6_addr[5] = n;
+        a.s6_addr[15] = h;
+        a
+    }
+
+    /// [`estab`] over IPv6: an `INP_IPV6` control block in `tcb6table` from
+    /// [2001:db8:`n`::1]:7000 to [2001:db8:`n`::2]:80 over a new interface `name` (MTU 1500,
+    /// not Ethernet, so no neighbor to resolve) with 2001:db8:`n`::1/64 and its routes; the
+    /// segment size taken from the route (1440), the template an IPv6 header.
+    pub(crate) fn estab6(name: &[u8], n: u8) -> (SocketRef<G>, InpcbRef<G>, &'static Wire) {
+        use hal::sys::net_if::{IFF_MULTICAST, IFF_RUNNING, IFF_UP};
+
+        let d: &'static Wire = std::boxed::Box::leak(std::boxed::Box::default());
+        let ifp = crate::net::if_::test_ifnet_with(name, d);
+        // Not running when the address comes: no DAD (in6if_do_dad), so no neighbor
+        // solicitation of a timer reaches this wire during a test, and the address is not
+        // tentative.
+        ifp.if_flags.set(IFF_MULTICAST);
+        ifp.if_mtu.set(1500);
+        crate::net::if_::if_alloc_sadl(ifp);
+        {
+            let _w = NETLOCK.write();
+            crate::net::if_::IFNETLIST.insert_tail(ifp);
+        }
+        crate::netinet6::in6::tests::add(ifp, a6(n, 1), 64).expect("SIOCAIFADDR_IN6");
+        ifp.if_flags.set(IFF_UP | IFF_RUNNING | IFF_MULTICAST);
+
+        let (so, inp) = testinet::pcb(&crate::net::domain::net::<G>().tcp.tcb6table);
+        inp.set_flags(INP_IPV6);
+        {
+            let t = &crate::net::domain::net::<G>().tcp.tcb6table;
+            let mut g = t.lock();
+            inp.set_laddr6(&g, a6(n, 1));
+            inp.set_faddr6(&g, a6(n, 2));
+            inp.set_lport(&g, htons(7000));
+            inp.set_fport(&g, htons(80));
+            crate::netinet::in_pcb::in_pcbrehash(&mut g, &inp);
+        }
+        with_lock(&inp, |inp, il| {
+            assert!(tcp_newtcpcb(inp, il, M_WAIT).is_some(), "a control block");
+        });
+        crate::net::socket::soreserve(&so, 16384, 16384).expect("the buffers");
+        with_tp(&inp, |mut tp| {
+            tp.st
+                .clear_flags(crate::netinet::tcp_var::TF_REQ_SCALE | TF_REQ_TSTMP);
+            let m = tcp_template(&mut tp).expect("a template");
+            tp.st.t_template = Some(m);
+            let _ = crate::netinet::tcp_input::tcp_mss(&mut tp, 0);
+            let st = &mut *tp.st;
+            st.t_state = crate::netinet::tcp_fsm::TCPS_ESTABLISHED;
+            st.iss = 1000;
+            st.snd_una = 1000;
+            st.snd_nxt = 1000;
+            st.snd_max = 1000;
+            st.snd_up = 1000;
+            st.irs = 4999;
+            st.rcv_nxt = 5000;
+            st.rcv_up = 5000;
+            st.rcv_adv = 5000 + 16384;
+            st.snd_wnd = 65535;
+            st.max_sndwnd = 65535;
+            st.t_rcvtime = crate::netinet::tcp_var::tcp_now();
+            ((), None)
+        });
+        (so, inp, d)
+    }
+
+    /// The last packet `d` sent, an IPv6 one: its header, the TCP header, the TCP options and
+    /// the payload.
+    pub(crate) fn last6(d: &Wire) -> (Ip6Hdr, Tcphdr, std::vec::Vec<u8>, std::vec::Vec<u8>) {
+        let p = d.last.lock().expect("the capture").clone();
+        let ip6: Ip6Hdr = pod::at(&p, 0).expect("an IPv6 header");
+        let th: Tcphdr = pod::at(&p, 40).expect("a TCP header");
+        let thlen = usize::from(th.th_off()) * 4;
+        let opts = p[60..40 + thlen].to_vec();
+        let data = p[40 + thlen..].to_vec();
+        (ip6, th, opts, data)
+    }
+
     /// Appends `bytes` to the send buffer of `so`, as `sosend` leaves them for `tcp_output`.
     pub(crate) fn queue(so: &crate::net::socket::Socket<G>, bytes: &[u8]) {
         let mut m = m_gethdr(M_WAIT, hal::sys::mbuf::MT_DATA).expect("an mbuf");
@@ -2474,6 +2557,76 @@ mod tests {
         // A dead host: every connection to it is told (no quote).
         ctl(PRC_HOSTDEAD, peer, None);
         assert_eq!(errors(&inp), (Some(Errno::EHOSTDOWN), None));
+        testtcp::close(so, inp);
+    }
+
+    /// `tcp6_ctlinput(cmd, sin6(peer), 0, ip6cp)` under the shared net lock, the parameter
+    /// `icmp6_notify_error` lends: the quoted packet's IPv6 header (from 2001:db8:`n`::1 to
+    /// 2001:db8:`n`::2) and the TCP header's first eight bytes (7000 to 80, `seq`) at 40.
+    fn ctl6(cmd: i32, n: u8, seq: u32) {
+        use core::cell::Cell;
+        use hal::sys::netinet_icmp6::Icmp6Hdr;
+
+        use crate::netinet::tcp_subr::testtcp::a6;
+        use crate::netinet6::icmp6::Ip6CtlParam;
+
+        let (ours, peer) = (a6(n, 1), a6(n, 2));
+        let ip6 = Ip6Hdr {
+            ip6_plen: 8u16.to_be(),
+            ip6_nxt: IPPROTO_TCP as u8,
+            ip6_hlim: 64,
+            ip6_src: ours,
+            ip6_dst: peer,
+            ..Ip6Hdr::default()
+        };
+        let mut b = [0u8; 48];
+        assert!(pod::put(&mut b, 0, &ip6));
+        b[40..42].copy_from_slice(&7000u16.to_be_bytes());
+        b[42..44].copy_from_slice(&80u16.to_be_bytes());
+        b[44..48].copy_from_slice(&seq.to_be_bytes());
+        let m = crate::net::mbuf::m_devget(&b, 0).expect("the quote");
+        let p = Ip6CtlParam {
+            m: &m,
+            icmp6: Icmp6Hdr::default(),
+            ip6,
+            off: 40,
+            src: SockaddrIn6::with_addr(ours),
+            finaldst: Cell::new(peer),
+            cmdarg: None,
+            nxt: IPPROTO_TCP as u8,
+        };
+        let mut sa = [0u8; 28];
+        assert!(pod::put(&mut sa, 0, &SockaddrIn6::with_addr(peer)));
+        let w = NETLOCK.read();
+        let net = NetHeld::of(&w).expect("the net lock");
+        tcp6_ctlinput::<testinet::G>(
+            cmd,
+            SockaddrView::new(&sa).expect("a sockaddr_in6"),
+            0,
+            CtlArg::Ip6(&p),
+            &net,
+        );
+    }
+
+    #[test]
+    fn the_ipv6_control_input_checks_the_quoted_sequence_number() {
+        use crate::net::proto::PRC_UNREACH_HOST;
+        use crate::netinet::tcp_fsm::TCPS_SYN_RECEIVED;
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, _d) = testtcp::estab6(b"tsub6", 81);
+        testtcp::with_tp(&inp, |tp| {
+            tp.st.t_state = TCPS_SYN_RECEIVED;
+            tp.st.snd_max = 1300;
+            ((), None)
+        });
+        // Below snd_una and at snd_max: not a segment in flight, nothing told.
+        for seq in [999, 1300] {
+            ctl6(PRC_UNREACH_HOST, 81, seq);
+            assert_eq!(errors(&inp), (None, None), "seq {seq}");
+        }
+        // In flight: tcp_notify keeps the error.
+        ctl6(PRC_UNREACH_HOST, 81, 1000);
+        assert_eq!(errors(&inp), (Some(Errno::EHOSTUNREACH), None));
         testtcp::close(so, inp);
     }
 

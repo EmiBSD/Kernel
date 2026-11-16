@@ -1497,6 +1497,63 @@ mod tests {
     }
 
     #[test]
+    fn an_ipv6_segment_goes_out_as_the_c_builds_it() {
+        use crate::netinet::tcp_subr::testtcp::{a6, estab6, last6};
+        use crate::netinet6::ip6_var::IP6_DEFHLIM;
+
+        /// `tcp_do_ecn` on for the test, off again whatever happens.
+        struct Ecn;
+        impl Drop for Ecn {
+            fn drop(&mut self) {
+                TCP_DO_ECN.store(0, Ordering::Relaxed);
+            }
+        }
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, d) = estab6(b"tout6v", 82);
+        let data = pattern(200);
+        queue(&so, &data);
+        let ect = stat(C::TcpsEcnSndect);
+        let before = sent(d);
+        let _ecn = Ecn;
+        TCP_DO_ECN.store(1, Ordering::Relaxed);
+        let (r, maxseg) = output(
+            &inp,
+            |tp| tp.st.set_flags(TF_ECN_PERMIT),
+            |tp| tp.st.t_maxseg,
+        );
+        drop(_ecn);
+        assert_eq!(r, Ok(()));
+        assert_eq!(maxseg, 1500 - 40 - 20, "tcp_mss for IPv6");
+        assert_eq!(sent(d), before + 1);
+        let (ip6, th, opts, payload) = last6(d);
+        // The IPv6 header: its payload length (ip6_output's, network order), TCP next, the
+        // default hop limit, the ECT(0) codepoint in the flow word (ECN permitted, new data).
+        assert_eq!(u16::from_be(ip6.ip6_plen), 20 + 200);
+        assert_eq!(ip6.ip6_nxt, IPPROTO_TCP as u8);
+        assert_eq!(i32::from(ip6.ip6_hlim), IP6_DEFHLIM.load(Ordering::Relaxed));
+        assert_eq!(
+            u32::from_be(ip6.ip6_flow) >> 20,
+            0x600 | u32::from(IPTOS_ECN_ECT0),
+            "version 6, traffic class ECT(0)"
+        );
+        assert_eq!((ip6.ip6_src, ip6.ip6_dst), (a6(82, 1), a6(82, 2)));
+        assert_eq!(stat(C::TcpsEcnSndect), ect + 1);
+        // The TCP header and the data, as IPv4's.
+        assert_eq!(
+            (u16::from_be(th.th_sport), u16::from_be(th.th_dport)),
+            (7000, 80)
+        );
+        assert_eq!(
+            (u32::from_be(th.th_seq), u32::from_be(th.th_ack)),
+            (1000, 5000)
+        );
+        assert_eq!(th.th_flags, TH_ACK | TH_PUSH);
+        assert!(opts.is_empty());
+        assert_eq!(payload, data);
+        testtcp::close(so, inp);
+    }
+
+    #[test]
     fn a_syn_carries_its_options_in_the_cs_order() {
         let (_g, _p) = testtcp::setup();
         let (so, inp, d) = estab(b"tout1", 21);
