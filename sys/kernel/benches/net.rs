@@ -200,8 +200,9 @@
 //!   50): one listener of the kernel's TCP (a control block on a socket of the pcb rows'
 //!   domain, its socket lock held for the run as `syn_cache_add`'s caller holds it):
 //!   - `syncache.add.lookup`: an entry made (`syn_cache_alloc`: the "syncache" item, the
-//!     listener's handle), inserted (`syn_cache_insert`: the hash, the bucket and cache
-//!     limits, the timer set and added, the two lists), found (`syn_cache_lookup`, its handle)
+//!     listener's handle), its timer set (`syn_cache_timer_set`, before the mutex since
+//!     N6.6a4, as `syn_cache_add`), inserted (`syn_cache_insert`: the hash, the bucket and
+//!     cache limits, the timer added, the two lists), found (`syn_cache_lookup`, its handle)
 //!     and removed (`syn_cache_rm`: the lists' handle adopted, the timer deleted and cleared)
 //!     under one `syn_cache_mtx` hold, the handles dropped after it (the entry freed: the C's
 //!     last `syn_cache_put`).
@@ -3335,6 +3336,7 @@ fn syncache_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64,
     use kernel::netinet::tcp_subr::{tcp_init, tcp_newtcpcb};
     use kernel::netinet::tcp_syncache::{
         syn_cache_alloc, syn_cache_insert, syn_cache_lock, syn_cache_lookup, syn_cache_rm,
+        syn_cache_timer_set,
     };
     use kernel::netinet::tcp_var::{ScListener, SynCacheInit};
 
@@ -3403,9 +3405,10 @@ fn syncache_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64,
             let t0 = Instant::now();
             for _ in 0..OPS {
                 let sc = need(
-                    syn_cache_alloc(&inp, black_box(init), ScListener::default()),
+                    syn_cache_alloc(&inp, || (black_box(init), ScListener::default())),
                     "an entry",
                 );
+                syn_cache_timer_set(&sc);
                 let mut tossed = None;
                 let mut g = syn_cache_lock::<G>();
                 syn_cache_insert(&mut g, &sc, &tp, &mut tossed);

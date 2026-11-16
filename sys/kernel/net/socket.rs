@@ -743,6 +743,18 @@ impl<G: ProcGlue> Socket<G> {
         self.pcb.replace(pcb)
     }
 
+    /// `so->so_pcb = inp` of a kernel internet protocol's socket (`in_pcballoc`; `None`,
+    /// `in_pcbdetach`'s NULL), its caller holding the socket's lock (the protocol's attach and
+    /// detach): the pcb counted in the slot the kernel's protocols read ([`Socket::pcb`]),
+    /// beside the address `bsd`'s word keeps for both. A `bsd` protocol's socket keeps the
+    /// address alone: `pcb` comes back untouched, for its caller to drop.
+    pub(crate) fn set_inet_pcb(&self, pcb: Option<AnyArc>) -> Option<AnyArc> {
+        if self.legacy_lock {
+            return pcb;
+        }
+        self.pcb.replace(pcb)
+    }
+
     /// `so->so_pcb` of a `bsd` protocol (its control block's address, 0 for none).
     #[inline]
     pub fn legacy_pcb(&self) -> usize {
@@ -1073,6 +1085,26 @@ impl<'a> SoLocked<'a> {
             self.lock.detach(w);
         }
     }
+
+    /// The socket lock handed back to its taker still held (the C's `*solocked = so` of
+    /// `tcp_input_solocked`, `syn_cache_get`'s new socket returned locked): the witness of
+    /// `so_lock` detached, the lock held by the running process until [`solock_attach`] or
+    /// [`sounlock_detached`]; the net lock's proof was the caller's and stays so. `panic(9)`
+    /// for a holding that is not a witness of `so_lock` (a `bsd` protocol's socket, or one
+    /// `bsd`'s caller lent).
+    pub fn detach(mut self) {
+        if !matches!(self.net, NetHold::Lent(_) | NetHold::None) {
+            kpanic(format_args!(
+                "SoLocked::detach: the net lock is this holding's own"
+            ));
+        }
+        match &self.so {
+            SoHold::Witness(_) => self.detach_so(),
+            SoHold::None | SoHold::Detached | SoHold::Lent | SoHold::Attached(_) => kpanic(
+                format_args!("SoLocked::detach: no witness of so_lock to detach"),
+            ),
+        }
+    }
 }
 
 impl Drop for SoLocked<'_> {
@@ -1174,6 +1206,26 @@ pub fn solocked_legacy<'a, G: ProcGlue>(
 /// never let go here. The drop lets `so_lock` go (`in_pcbsounlock`).
 pub fn solock_net<'a, G: ProcGlue>(so: &'a Socket<G>, net: &'a NetHeld<'a>) -> SoLocked<'a> {
     SoLocked::take(so, NetHold::Lent(net))
+}
+
+/// `so`'s lock as [`solock_net`] gives it, from the detached holding of `so_lock` the running
+/// process keeps (`tcp_input_mlist`'s socket kept locked between two segments, the socket
+/// `sonewconn` returned locked): the holding attached back to a witness
+/// (`DetachableRwlock::attach`, one compare-and-swap, no wait), the caller's proof of the net
+/// lock `net` carried. Its drop lets `so_lock` go; [`SoLocked::detach`] keeps it held,
+/// detached again. `panic(9)` for a `bsd` protocol's socket (held C-style, never by a
+/// witness) and when the running process holds no detached holding of `so_lock`.
+pub fn solock_attach<'a, G: ProcGlue>(so: &'a Socket<G>, net: &'a NetHeld<'a>) -> SoLocked<'a> {
+    if so.legacy_lock {
+        kpanic(format_args!(
+            "solock_attach: socket {so:p} of a bsd protocol"
+        ));
+    }
+    SoLocked {
+        lock: &so.so_lock,
+        so: SoHold::Witness(so.so_lock.attach()),
+        net: NetHold::Lent(net),
+    }
 }
 
 /// `solock_shared(so)`: the shared net lock (internet domains), then the socket's lock.
