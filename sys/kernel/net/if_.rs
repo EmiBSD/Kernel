@@ -4828,6 +4828,65 @@ pub(crate) mod tests {
         assert_eq!(group(IFG_ALL), None);
     }
 
+    /// D-9 of N6.5e: a detach takes the list's handles of the multicast records off; a record
+    /// no membership holds a handle of any more (nd6's proxy join, whose handle it dropped)
+    /// is freed there, one a membership still holds stays readable and is freed with that
+    /// membership's handle, whose `in_delmulti` finds no interface (the C's `free` at the
+    /// last reference).
+    #[test]
+    fn a_detach_frees_the_groups_no_membership_holds_and_the_last_leave_the_others() {
+        use crate::netinet::in_::{in_addmulti, in_delmulti};
+        use crate::netinet::in_var::M_IPMADDR;
+        let _g = setup();
+        let (ifp, _) = fresh_ifnet(b"tmd0");
+        if_attach(ifp);
+        let group = |n: u8| hal::sys::netinet_in::InAddr {
+            s_addr: u32::from_ne_bytes([224, 0, 0, n]),
+        };
+        let out = crate::testutil::malloc_out(M_IPMADDR);
+        // Local groups (224.0.0.X): no IGMP report.
+        let (held, dropped) = {
+            let w = NETLOCK.write();
+            let net = NetHeld::of(&w).expect("the net lock's witness");
+            let held = in_addmulti(&group(251), ifp, &net).expect("joined");
+            let dropped = in_addmulti(&group(252), ifp, &net).expect("joined");
+            (held, dropped)
+        };
+        let two = crate::testutil::malloc_out(M_IPMADDR) - out;
+        assert!(two > 0);
+        assert_eq!(dropped.inm_refcnt().read(), 1, "its membership counted");
+        drop(dropped);
+        assert_eq!(
+            crate::testutil::malloc_out(M_IPMADDR),
+            out + two,
+            "kept by the list"
+        );
+
+        with_smr_thread(|| detach_locked(ifp));
+        assert_eq!(
+            crate::testutil::malloc_out(M_IPMADDR),
+            out + two / 2,
+            "the record no membership holds freed by the detach"
+        );
+        assert_eq!(
+            hal::malloc::MArc::count(&held),
+            1,
+            "the membership's handle alone"
+        );
+        assert_eq!(held.inm_addr(), group(251), "still readable");
+
+        {
+            let w = NETLOCK.write();
+            let net = NetHeld::of(&w).expect("the net lock's witness");
+            in_delmulti(held, &net);
+        }
+        assert_eq!(
+            crate::testutil::malloc_out(M_IPMADDR),
+            out,
+            "freed with the last membership's handle"
+        );
+    }
+
     /// `if_detach(ifp)` under the kernel lock, as its callers hold it (a driver's detach,
     /// `SIOCIFDESTROY`): bpf(4)'s `bpfdetach` asserts it.
     fn detach_locked(ifp: &'static Ifnet) {

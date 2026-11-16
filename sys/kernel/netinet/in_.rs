@@ -1531,6 +1531,18 @@ mod tests {
         grace();
     }
 
+    /// `in_lookupmulti` under a witness of another interface's `if_maddrlock`: `panic(9)`
+    /// (the C's `rw_assert_anylock`, here the list's key in every build).
+    #[test]
+    #[should_panic(expected = "Guarded: a witness of another lock")]
+    fn in_lookupmulti_under_another_interface_s_lock_is_panic() {
+        let _g = setup();
+        let (ifp, _) = iface();
+        let (other, _) = iface();
+        let r = other.rt().if_maddrlock.read();
+        let _ = in_lookupmulti(&a([224, 0, 0, 1]), ifp, &r);
+    }
+
     #[test]
     fn the_helpers_answer_as_the_c() {
         let mut m = InAddr::default();

@@ -3887,6 +3887,7 @@ mod tests {
 
         // Two sockets join g on if1: one record, the driver told once; a second join of the same
         // socket is EADDRINUSE.
+        let mout = crate::testutil::malloc_out(crate::netinet::in_var::M_IPMADDR);
         let adds = d1.adds();
         set(&a, IPV6_JOIN_GROUP, &mreq(g, i1)).expect("a joins");
         set(&b, IPV6_JOIN_GROUP, &mreq(g, i1)).expect("b joins");
@@ -3915,6 +3916,11 @@ mod tests {
         testinet::release(so2, b);
         assert!(!in6_hasmulti(&g, if1));
         testinet::release(so1, a);
+        assert_eq!(
+            crate::testutil::malloc_out(crate::netinet::in_var::M_IPMADDR),
+            mout,
+            "the records and the memberships' arrays freed"
+        );
     }
 
     #[test]

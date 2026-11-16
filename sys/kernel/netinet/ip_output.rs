@@ -2588,7 +2588,9 @@ pub(crate) mod tests {
             "no membership, the defaults: freed"
         );
 
-        // Sixteen groups grow the vector from IP_MIN_MEMBERSHIPS to 2 * 16 - 1.
+        // Sixteen groups grow the vector from IP_MIN_MEMBERSHIPS to 2 * 16 - 1, its
+        // memberships' handles moved (one record of M_IPMADDR each, until the detach).
+        let mout = crate::testutil::malloc_out(crate::netinet::in_var::M_IPMADDR);
         let groups: Vec<[u8; 4]> = (0..16u8).map(|i| [224, 1, 3, i]).collect();
         for g in &groups {
             set(&inp, o, IP_ADD_MEMBERSHIP, &mreq(*g, here)).expect("joined");
@@ -2615,7 +2617,9 @@ pub(crate) mod tests {
             assert_eq!(left, want);
         }
 
-        // The detach leaves every group (`ip_freemoptions`).
+        // The detach leaves every group (`ip_freemoptions`), and the records go with their
+        // last handles.
+        assert!(crate::testutil::malloc_out(crate::netinet::in_var::M_IPMADDR) > mout);
         testinet::release(so, inp);
         for g in &groups {
             let a = InAddr {
@@ -2623,6 +2627,11 @@ pub(crate) mod tests {
             };
             assert!(!in_hasmulti(&a, ifp), "{g:?}");
         }
+        assert_eq!(
+            crate::testutil::malloc_out(crate::netinet::in_var::M_IPMADDR),
+            mout,
+            "the fifteen records freed"
+        );
     }
 
     #[test]

@@ -705,6 +705,57 @@ mod tests {
         assert_eq!(size_of::<Mutexed<In6Memberships>>(), 64);
     }
 
+    /// `In6Memberships` over the memberships' handles (N6.5e's 5e2): a join past the array's
+    /// four slots doubles it, moving the handles (none lost, none added); the newest
+    /// matching one is taken with the gap closed in the order of the joins; the rest come off
+    /// the newest first, and every handle is the test's again at the end.
+    #[test]
+    fn memberships_grow_by_moving_their_handles() {
+        let _g = crate::net::if_::tests::setup();
+        static D: crate::net::if_::TestDriver = crate::net::if_::TestDriver::new();
+        let ifp = crate::net::if_::test_ifnet_with(b"tms0", &D);
+        let recs: std::vec::Vec<MArc<In6Multi>> = (0..6u8)
+            .map(|n| {
+                let m = in6_multi_alloc(ifp).expect("a record");
+                let mut a = In6Addr::new([0xff, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+                a.s6_addr[15] = n;
+                m.in6m_sin.set(SockaddrIn6::with_addr(a));
+                m
+            })
+            .collect();
+        let last = |m: &In6Multi| m.in6m_addr().s6_addr[15];
+        let mut set = In6Memberships::new();
+        for m in &recs {
+            set.reserve().expect("room");
+            assert!(set.push(m.clone()).is_ok());
+        }
+        assert_eq!(set.len(), 6);
+        assert_eq!(
+            set.iter().map(last).collect::<std::vec::Vec<_>>(),
+            [0, 1, 2, 3, 4, 5]
+        );
+        assert!(
+            recs.iter().all(|m| MArc::count(m) == 2),
+            "moved, not copied"
+        );
+
+        let two = set.take_newest(|m| last(m) == 2).expect("member 2");
+        assert!(MArc::ptr_eq(&two, &recs[2]));
+        assert_eq!(
+            set.iter().map(last).collect::<std::vec::Vec<_>>(),
+            [0, 1, 3, 4, 5]
+        );
+        assert!(set.take_newest(|m| last(m) == 2).is_none());
+        drop(two);
+        let mut order = std::vec::Vec::new();
+        while let Some(m) = set.pop_last() {
+            order.push(last(&m));
+        }
+        assert_eq!(order, [5, 4, 3, 1, 0], "the newest first");
+        assert!(set.is_empty());
+        assert!(recs.iter().all(|m| MArc::count(m) == 1));
+    }
+
     #[test]
     fn the_address_words_read_as_the_c_structure() {
         let w = Sin6Words::new();

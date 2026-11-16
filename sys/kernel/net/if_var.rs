@@ -1975,5 +1975,104 @@ mod tests {
         assert!(if_rxr_needrefill(&r));
         assert_eq!((if_rxr_inuse(&r), if_rxr_cwm(&r)), (3, 8));
     }
+
+    /// A multicast record of `ifp` for group 224.0.0.`n`, the allocator's one handle.
+    fn group_of(ifp: &Ifnet, n: u8) -> MArc<InMulti> {
+        let inm = crate::netinet::in_var::in_multi_alloc(ifp);
+        inm.inm_sin.set(hal::sys::netinet_in::SockaddrIn {
+            sin_len: 16,
+            sin_family: hal::sys::socket::AF_INET,
+            sin_addr: hal::sys::netinet_in::InAddr {
+                s_addr: u32::from_ne_bytes([224, 0, 0, n]),
+            },
+            ..hal::sys::netinet_in::SockaddrIn::default()
+        });
+        inm
+    }
+
+    /// The groups of `list` in its order, by the last byte of each IPv4 group (6 for an IPv6
+    /// record), read under `w`.
+    fn groups_on<W: Witness + ?Sized>(list: &IfmaList, w: &W) -> std::vec::Vec<u8> {
+        list.iter(w)
+            .map(|m| match m {
+                IfmaddrRef::In(inm) => inm.inm_addr().s_addr.to_ne_bytes()[3],
+                IfmaddrRef::In6(_) => 6,
+            })
+            .collect()
+    }
+
+    /// The multicast list of N6.5e's 5e2: `TAILQ_INSERT_HEAD`'s order (the newest first, every
+    /// walk's), the list's one handle per record, `TAILQ_REMOVE` from the middle, the head
+    /// and the tail with the removed record's own cell emptied, `None` for a record not on
+    /// it, and `pop_head` (`if_detach`'s) to the end; the family is the handle's arm.
+    #[test]
+    fn a_multicast_list_links_at_its_head_and_unlinks_anywhere() {
+        let _g = crate::net::if_::tests::setup();
+        static D: crate::net::if_::TestDriver = crate::net::if_::TestDriver::new();
+        let ifp = crate::net::if_::test_ifnet_with(b"tml0", &D);
+        let r: std::vec::Vec<MArc<InMulti>> = (1..=3).map(|n| group_of(ifp, n)).collect();
+        let r6 = crate::netinet6::in6_var::in6_multi_alloc(ifp).expect("an IPv6 record");
+        let list = ifp.if_maddrlist();
+
+        let mut w = ifp.rt().if_maddrlock.write();
+        assert!(list.is_empty(&w));
+        for inm in &r {
+            list.insert_head(&mut w, IfmaddrRef::In(inm.clone()));
+        }
+        list.insert_head(&mut w, IfmaddrRef::In6(r6.clone()));
+        assert_eq!(groups_on(list, &w), [6, 3, 2, 1], "the newest first");
+        assert!(
+            r.iter().all(|m| MArc::count(m) == 2),
+            "the list's and the test's"
+        );
+        let first = list.first(&w).expect("the head");
+        assert!(InMulti::of(first).is_none() && In6Multi::of(first).is_some());
+        assert_eq!(first.count(), 2);
+
+        // From the middle: its handle back, its own cell emptied.
+        let mid = list.remove(&mut w, &r[1].inm_ifma).expect("on the list");
+        assert!(mid.is(&r[1].inm_ifma));
+        assert!(
+            IfmaList::next(&w, &mid).is_none(),
+            "no reference of its successor"
+        );
+        assert_eq!(groups_on(list, &w), [6, 3, 1]);
+        drop(mid);
+        assert_eq!(MArc::count(&r[1]), 1, "the test's alone");
+        assert!(
+            list.remove(&mut w, &r[1].inm_ifma).is_none(),
+            "not on the list"
+        );
+
+        // The head, then the tail.
+        assert!(list.remove(&mut w, &r6.in6m_ifma).is_some());
+        assert!(list.remove(&mut w, &r[0].inm_ifma).is_some());
+        assert_eq!(groups_on(list, &w), [3]);
+
+        // `pop_head` to the end, each popped record unlinked.
+        list.insert_head(&mut w, IfmaddrRef::In(r[0].clone()));
+        let p = list.pop_head(&mut w).expect("the head");
+        assert!(p.is(&r[0].inm_ifma) && IfmaList::next(&w, &p).is_none());
+        let q = list.pop_head(&mut w).expect("the last");
+        assert!(q.is(&r[2].inm_ifma));
+        assert!(list.pop_head(&mut w).is_none() && list.is_empty(&w));
+        drop((p, q, w));
+        assert!(r.iter().all(|m| MArc::count(m) == 1));
+        assert_eq!(MArc::count(&r6), 1);
+    }
+
+    /// The list's cells are keyed to its interface's `if_maddrlock`: a witness of another
+    /// interface's opens none (the C's `rw_assert_anylock` of `in_lookupmulti`, in every
+    /// build here).
+    #[test]
+    #[should_panic(expected = "Guarded: a witness of another lock")]
+    fn a_multicast_list_opens_only_under_its_interface_s_lock() {
+        let _g = crate::net::if_::tests::setup();
+        static D: crate::net::if_::TestDriver = crate::net::if_::TestDriver::new();
+        let a = crate::net::if_::test_ifnet_with(b"tml1", &D);
+        let b = crate::net::if_::test_ifnet_with(b"tml2", &D);
+        let r = b.rt().if_maddrlock.read();
+        let _ = a.if_maddrlist().first(&r);
+    }
 }
 /* </TESTS> */
