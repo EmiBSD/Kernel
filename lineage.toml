@@ -16427,6 +16427,18 @@ status = "redesigned"
 notes = "N6.4a: ip_var.h's kernel half: the ip_output flags, IPMTUDISCTIMEOUT, enum ipstat_counters and ipcounters (ip_input.c's; LZ's static array of atomics in bsd's ip_input.rs) as a hal::percpu::Counters with #[inline] ipstat_inc/add/dec; struct ip_moptions as the part ip_output reads (IpMoptions: ifidx, ttl, loop; the memberships stay bsd's until N6.4c1); ip_mtudisc and ipmultipath (ip_input.c's atomics, extern in the header) for the kernel's ip_output and routes (N6.4a's 4', the ip_multipath leg gone; bsd's ip_input.rs re-exports them; LZ items sys/netinet/ip_input.rs::IPCOUNTERS, ::ip_mtudisc and ::IPMULTIPATH, whose `moved` rows wait for the kernel module that lists ip_input.rs, N6.4c2: lz check refuses rows under bsd's adapted ip_input.rs); ipqent, ipq and ipoffnxt moved here at N6.4c2 (Ipqent with its header fields in cells, Ipq, the IpqentList/IpqList adapters, the Ipoffnxt image), mtod_ip stays bsd's; tests: the counters per index and the reference-backed flags; N6.4c1: struct ip_moptions whole (IpMoptions with its memberships, an MArray of M_IPMOPTS, imo_max_memberships its length, IpMoptions::output for a set made for one ip_output call) and ip_defttl (IP_DEFTTL, moved from bsd's ip_input.rs)"
 
 [[module]]
+rust = "sys/kernel/netinet/tcp_debug.rs"
+crate = "kernel"
+lz = ["sys/netinet/tcp_debug.rs"]
+status = "redesigned"
+notes = "N6.6a2: tcp_debug.h's records and tcp_debug.c's tcp_trace over the kernel's TcpState; the ring and tcp_debx the data of a hal Mutexed (tcp_debug_mtx; LZ: a StaticCell under unsafe), the headers read by hal::pod::at; LZ's record kept (D-6: not the C's struct tcp_debug, no _tcp_debug/_tcp_debx symbol, trpt(8) reads nothing, as before); bsd's sys/netinet/tcp_debug.rs stays for bsd's TCP until N6.6a5; review nit 5: the IPVERSION << 4 sniffing named a deviation (the C never matches; inherited from LZ, invisible); RING_TEST serialises the tests that read the ring"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_debug.rs::TCP_DEBUG_MTX"
+native = ["TCP_DEBUG"]
+kind = "merged"
+
+[[module]]
 rust = "sys/kernel/netinet/tcp_fsm.rs"
 crate = "kernel"
 lz = ["sys/netinet/tcp_fsm.rs"]
@@ -16456,18 +16468,145 @@ native = ["hdr"]
 kind = "merged"
 
 [[module]]
+rust = "sys/kernel/netinet/tcp_sack.rs"
+crate = "kernel"
+lz = ["sys/netinet/tcp_input.rs"]
+status = "redesigned"
+notes = "N6.6a2 (D-13): tcp_input.c's reassembly (tcp_reass, tcp_flush_queue) and SACK (tcp_seq_subtract, tcp_update_sack_list, tcp_sack_option, tcp_del_sackholes, tcp_clean_sackreport, tcp_sack_partialack) over owned SlistLink chains of tcpqe and sackhl BoxPool items, walked by a cursor on the link that owns the current entry (insert and remove where it stands, O(1)); TAILQ_LAST + TAILQ_REMOVE when tcpqe is exhausted a walk to the last entry, O(n) (named for N12); bsd's copies stay in sys/netinet/tcp_input.rs for bsd's TCP until N6.6a5"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_input.rs::tcpqe_get"
+native = ["tcp_reass"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_input.rs::tcpqe_put"
+native = ["tcp_reass", "tcp_flush_queue"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_input.rs::sackhole_get"
+native = ["tcp_sack_option"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_input.rs::sackhole_put"
+native = ["tcp_sack_option", "tcp_del_sackholes"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_input.rs::same_hole"
+native = []
+kind = "dropped"
+reason = "the hole walk keeps a cursor on the link that owns the current hole: unlinking it is one step whether or not it is the first, so no comparison of p and cur is made (the C's p != cur test)"
+
+[[module]]
 rust = "sys/kernel/netinet/tcp_seq.rs"
 crate = "kernel"
 lz = ["sys/netinet/tcp_seq.rs"]
 status = "redesigned"
-notes = "N6.6a1: tcp_seq.h's comparisons and TCP_ISSINCR/TCP_ISSINCR2; tcp_rcvseqinit and tcp_sendseqinit take LZ's Tcpcb and stay in bsd's sys/netinet/tcp_seq.rs until the kernel's tcp_var (N6.6a2)"
+notes = "N6.6a1: tcp_seq.h's comparisons and TCP_ISSINCR/TCP_ISSINCR2; tcp_rcvseqinit and tcp_sendseqinit take LZ's Tcpcb and stay in bsd's sys/netinet/tcp_seq.rs until the kernel's tcp_var (N6.6a2); N6.6a2: tcp_rcvseqinit and tcp_sendseqinit over the kernel's TcpState (bsd's copies over LZ's Tcpcb stay for bsd's TCP until N6.6a5)"
+
+[[module]]
+rust = "sys/kernel/netinet/tcp_subr.rs"
+crate = "kernel"
+lz = ["sys/netinet/tcp_subr.rs"]
+status = "redesigned"
+notes = "N6.6a2: tcp_subr.c's call-closed part in the kernel, beside bsd's TCP (unregistered until N6.6a5, D-2): the globals (tunables, the tcpqe and sackhl BoxPools with their hard limits, tcp_iss the data of tcp_timer_mtx, tcp_secret and its SHA-512 context OnceStatics, tcp_starttime); bsd's sys/netinet/tcp_subr.rs stays live until the switch; N6.6a2 commit 2: tcp_template (the template taken out and given back filled), tcp_respond (headers written in place with hal::pod, the pcb's route and IPv6 options lent; the caller's net proof), tcp_free (the slot emptied: the C's pool_put after Closed), Closed, tcp_rscale and tcp_set_iss_tsm over TcpState, tcp_signature (the key lent by Ipsec's tdb_amxkey leg; signature_digest testable with a fixed key); the five tcp_signature_tdb_* xform functions stay bsd's (D-10, N8); N6.6a2 commit 4: tcp_init<G> (pools, hard limits, the tables, the secret OnceStatics, syn_cache_init; tcp6_mtudisc_callback's registration with N6.6a3's ctlinput), tcp_newtcpcb (the TcpState built in the pool item's init, the five timers bound to the pcb, the slot set, the block returned opened as a Tp), tcp_close (Tp by value -> Closed: queue, timers, SYN cache, holes, template, soisdisconnected, in_pcbdetach, tcps_closed in the C's order; the pool_put is tcp_free's), tcp_freeq one entry at a time; testtcp, the host tests' TCP fixture; review nits 1, 2, 6, 8: tcp_secret_ctx gone (the ISN context made per call over TCP_SECRET, kpanic before tcp_init), the stack copy wiped; tcp_template must_use; tests pin the ISS inputs order and the two pools hard limits; tcp_test_reset (the SYN cache sets forgotten, the ring zeroed) called by testtcp::setup"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_subr.rs::TCPCOUNTERS"
+native = ["sys/kernel/netinet/tcp_var.rs::TCPCOUNTERS"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_subr.rs::TCP_TIMER_MTX"
+native = ["TCP_ISS"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_subr.rs::mbuf_put"
+native = ["put_hdr"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_subr.rs::read_from"
+native = ["read_hdr"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_subr.rs::tcphdr_bytes"
+native = ["put_hdr"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_subr.rs::TCP_SECRET_CTX"
+native = ["tcp_set_iss_tsm"]
+kind = "merged"
+
+[[module]]
+rust = "sys/kernel/netinet/tcp_syncache.rs"
+crate = "kernel"
+lz = ["sys/netinet/tcp_input.rs"]
+status = "redesigned"
+notes = "N6.6a2: tcp_input.c's SYN cache, part 1 (syn_cache_hash, _rm, _init, _insert, _timer, _cleanup, _lookup, _reset, _unreach, _respond; syn_cache_add and syn_cache_get at N6.6a4): entries counted SynCache<G> items (the lists' handle forgotten at insert and adopted by rm, the timer's from Timeout::set_shared at insert given back by clear() in rm, the listener a handle in the [S] cell); rm returns ScRemoved for the caller to drop after the mutex (the C's last syn_cache_put unlocked); the sets the data of the glue's Mutexed, the bucket arrays MArrays taken out of the guard for a call; t_sc a PinRing (LIST_REMOVE names no head); syn_cache_timer clones the listener under the mutex and re-arms there, then the shared net lock and in_pcbsolock for the SYN-ACK; syn_cache_respond's [s] members through the listener's SYN part, the signature's SA through the Ipsec leg; bsd's copies stay in sys/netinet/tcp_input.rs for bsd's TCP until N6.6a5; N6.6a2 commit 5: syn_cache_alloc (LZ's helper: the item with the listener counted) and syn_cache_lock (mtx_enter(&syn_cache_mtx)) public for 6a4's syn_cache_add and the bench row syncache.add.lookup; tests: the hash, an entry's life (insert, lookup, reset window, unreach twice, the listener's close), the bucket and cache limits with the set swap, the timer's retransmission captured on the wire and both expiries, the pool at its baseline; review S3, S4, nits 1, 3, 4, 8: the SYN-ACK option layout tested (WS, SACK permitted, timestamps, ECE; the bare MSS; EPERM for a signed entry without IPsec), the 40-byte option buffer invariant (no SACK with a signature) kassert-ed and named for 6a5 tcp_ctloutput, the seed wiped, set_shared under the mutex named for 6a4, ScListenerParts dropped (tcp_subr put_hdr reused), the limits test restoring by a drop guard"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_input.rs::syn_cache_put"
+native = ["ScRemoved"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_input.rs::tcp_syn_hash_size"
+native = ["sys/kernel/netinet/tcp_var.rs::SynCaches"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_input.rs::TCP_SYN_USE_LIMIT"
+native = ["sys/kernel/netinet/tcp_var.rs::SynCaches"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_input.rs::TCP_SYN_CACHE"
+native = ["sys/kernel/netinet/tcp_var.rs::SynCaches"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_input.rs::TCP_SYN_CACHE_ACTIVE"
+native = ["sys/kernel/netinet/tcp_var.rs::SynCaches"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_input.rs::SYN_CACHE_POOL"
+native = ["sys/kernel/netinet/tcp_var.rs::TcpTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_input.rs::SYN_CACHE_MTX"
+native = ["sys/kernel/netinet/tcp_var.rs::TcpTables"]
+kind = "merged"
 
 [[module]]
 rust = "sys/kernel/netinet/tcp_timer.rs"
 crate = "kernel"
 lz = ["sys/netinet/tcp_timer.rs"]
 status = "redesigned"
-notes = "N6.6a1: tcp_timer.h's timer numbers, time constants and TCPT_RANGESET (tcpt_rangeset); the callouts, the arm/disarm helpers, tcp_backoff[] and the keepalive variables stay in bsd's sys/netinet/tcp_timer.rs until N6.6a2-6a3"
+notes = "N6.6a1: tcp_timer.h's timer numbers, time constants and TCPT_RANGESET (tcpt_rangeset); the callouts, the arm/disarm helpers, tcp_backoff[] and the keepalive variables stay in bsd's sys/netinet/tcp_timer.rs until N6.6a2-6a3; N6.6a2 (D-11): the keepalive variables, tcp_backoff[], tcp_totbackoff, tcp_delack_msecs; TCP_TIMER_INIT/ARM/DISARM/ISARMED (one counted pcb handle per timer for the tcpcb's life, given to Timeout::set_shared; arm and disarm count nothing), tcp_canceltimers, tcp_timer_freesack over the owned hole list, tcp_timer_enter with tcp_timer_leave as one function taking the work as a closure (the holdings on its stack, Closed freed by tcp_free before the socket lock goes), tcp_timer_funcs<G>() (TCP_TIMER_FUNCS) naming the five callouts, whose work is N6.6a3's (a live timer of the kernel's unregistered TCP firing is panic(9) until then; their entry through tcp_timer_enter is whole); review S1: tcp_timer_2msl whole (freesack, the re-arm or tcp_close, the SO_DEBUG trace with no snapshot after a close); the four callouts left are rexmt, persist, keep, delack"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_timer.rs::TCP_TIMER_FUNCS"
+native = ["tcp_timer_funcs"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_timer.rs::TimerEnter"
+native = ["tcp_timer_enter"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_timer.rs::tcp_timer_leave"
+native = ["tcp_timer_enter"]
+kind = "merged"
 
 [[module]]
 rust = "sys/kernel/netinet/tcp_tso.rs"
@@ -16486,7 +16625,7 @@ rust = "sys/kernel/netinet/tcp_var.rs"
 crate = "kernel"
 lz = ["sys/netinet/tcp_var.rs"]
 status = "redesigned"
-notes = "N6.6a1: tcp_var.h's constants (TF_*, TCPOOB_*, the SYN cache's sizes and SCF_*, the RTT scales), TCP_TIME, enum tcpstat_counters and tcpcounters as a hal::percpu::Counters (D-16; LZ's TCPCOUNTERS, a static array of shared atomics in sys/netinet/tcp_subr.rs, moved here: its row waits for the kernel's tcp_subr at N6.6a2, since lz check refuses a row for a file this module does not list); bsd's tcp_var.rs re-exports them and keeps the structures until N6.6a2"
+notes = "N6.6a1: tcp_var.h's constants (TF_*, TCPOOB_*, the SYN cache's sizes and SCF_*, the RTT scales), TCP_TIME, enum tcpstat_counters and tcpcounters as a hal::percpu::Counters (D-16; LZ's TCPCOUNTERS, a static array of shared atomics in sys/netinet/tcp_subr.rs, moved here: its row waits for the kernel's tcp_subr at N6.6a2, since lz check refuses a row for a file this module does not list); bsd's tcp_var.rs re-exports them and keeps the structures until N6.6a2; N6.6a2 (D-12, D-13, D-15): the structures: Tcpcb<G> (a tcpcb BoxPool item the pcb's slot Inpcb::inp_tcpcb owns; t_timer and t_sc outside, every other member a plain field of TcpState in one ExclGuarded keyed to so_lock part TCP; t_inpcb gone, the Tp the functions take carries the pcb), the reassembly entries and SACK holes as owned SlistLink chains of tcpqe/sackhl BoxPool items, SynCache<G> a counted syncache item ([I] plain in SynCacheInit, [S] one Guarded ScState keyed to syn_cache_mtx with the set and bucket by index and the listener counted, [s] one ExclGuarded ScListener keyed to the listener's so_lock part SYN), SynCacheSet/SynCaches the data of the glue's Mutexed, TcpTables<G> the glue's TCP globals; intotcpcb(inp, &mut InetLocked) -> Option<Tp>; bsd's tcp_var.rs keeps LZ's structures for bsd's TCP until N6.6a5"
 
 [[module]]
 rust = "sys/kernel/netinet/icmp_var.rs"
@@ -16505,7 +16644,7 @@ rust = "sys/kernel/netinet/in_pcb.rs"
 lz = ["sys/netinet/in_pcb.rs"]
 status = "redesigned"
 crate = "kernel"
-notes = "sizes (D-3, D-4): inpcb 536 bytes, 552 with the counted item's header; inp_mou as one cell (the C's union of inp_moptions and inp_moptions6) would save 40 B per pcb (N12); N6.6a0: in_pcbsolock(inp, net) -> Option<SoLocked> (so_lock taken as the socket's protocol takes it, socket.rs's solock_net: a witness for a kernel protocol, opened in parts by SoLocked::inet; the caller's proof carried; the drop is in_pcbsounlock); LZ's detached pair renamed in_pcbsolock_detached / in_pcbsounlock_detached for bsd's adapter (N6.6a5/6.6b); in_pcbnotifyall takes the caller's net proof and lends notify the &mut SoLocked; N6.6a0 (D-15, the user's decision of 2026-11-16): inp_options is the kernel's hal::slot::LoanSlot<Option<MbufBox>>, lent by Inpcb::options under the socket lock's check and freed by in_pcbdetach (its free_opts closure gone); inpcb 552 bytes, 568 with the item's header (+16)"
+notes = "sizes (D-3, D-4): inpcb 536 bytes, 552 with the counted item's header; inp_mou as one cell (the C's union of inp_moptions and inp_moptions6) would save 40 B per pcb (N12); N6.6a0: in_pcbsolock(inp, net) -> Option<SoLocked> (so_lock taken as the socket's protocol takes it, socket.rs's solock_net: a witness for a kernel protocol, opened in parts by SoLocked::inet; the caller's proof carried; the drop is in_pcbsounlock); LZ's detached pair renamed in_pcbsolock_detached / in_pcbsounlock_detached for bsd's adapter (N6.6a5/6.6b); in_pcbnotifyall takes the caller's net proof and lends notify the &mut SoLocked; N6.6a0 (D-15, the user's decision of 2026-11-16): inp_options is the kernel's hal::slot::LoanSlot<Option<MbufBox>>, lent by Inpcb::options under the socket lock's check and freed by in_pcbdetach (its free_opts closure gone); inpcb 552 bytes, 568 with the item's header (+16); N6.6a2: the kernel tcpcb slot Inpcb::inp_tcpcb (Guarded<Option<PoolBox<Tcpcb<G>>>> keyed (so_lock, PCB), 32 B); the diet (the user, 2026-11-16): inp_moptions and inp_moptions6 one cell inp_mou (the C union, Mou tagged by family, lent by moptions()/moptions6() as a MouLoan; 48 B for 80): inpcb 552 bytes, 568 with the item header (600 before the diet, S12 584), 560 once bsd inp_ppcb goes"
 
 [[module.fn]]
 lz = "sys/netinet/in_pcb.rs::in_pcbsounlock"
