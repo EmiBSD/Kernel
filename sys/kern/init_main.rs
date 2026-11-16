@@ -193,8 +193,10 @@ pub static NCPUSFOUND: AtomicI32 = AtomicI32::new(1);
 /// `__guard_local`: the stack protector's guard word, in `.openbsd.randomdata` so boot(8)
 /// fills it; `random_start` reads it (volatile: the loader, not the program, wrote it) to see
 /// whether the boot loader supplied entropy. Rust code has no stack protector of its own.
+/// Only the kernel exports the name: a host test binary linked on EmiBSD (or OpenBSD) gets
+/// its own `__guard_local` from `crtbegin.o`, and a second definition does not link.
 #[cfg_attr(target_os = "none", unsafe(link_section = ".openbsd.randomdata"))]
-#[unsafe(export_name = "__guard_local")]
+#[cfg_attr(target_os = "none", unsafe(export_name = "__guard_local"))]
 pub static GUARD_LOCAL: i64 = 0;
 /// `pdevinit_done` (`DIAGNOSTIC`): the pseudo-devices are attached; `if_clone_attach` checks
 /// it.
