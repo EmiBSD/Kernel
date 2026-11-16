@@ -107,6 +107,14 @@
 //! - `NXCALL` is 0 on arm64 (only `psp(4)` needs `xcall`): no `cpu_xcall_establish`.
 //! - `cpu_info[]` holds `CiPtr`s (another CPU reads them); APs' `cpu_info`s come from
 //!   `malloc(9)` and live forever, as in C.
+//! - `cpu_init`'s SVE setup opens FP together with SVE around its write of `ZCR_EL1`, and puts
+//!   FP's trap back as it was. The C (cpu.c:1844-1856) opens `CPACR_EL1.ZEN` alone, but FP
+//!   traps at that point on every CPU (cpu0: `efi_attach`'s `efi_leave` ran
+//!   `fpu_kernel_exit` before the CPUs attach, mainbus.c:131-135; the others: `cpu_hatch`
+//!   traps it itself), and a write of `ZCR_EL1` traps while FP does: on a processor with SVE
+//!   the kernel dies in cpu0's attach with "FP exception in kernel" (esr 0x1fe00000). OpenBSD
+//!   8.0 does the same on QEMU's `neoverse-n2` (`diff-openbsd probe`, 2026-11-16); the
+//!   user's decision of 2026-11-16 is to fix it here and hand the fix to LZ.
 
 use core::arch::asm;
 use core::cell::Cell;
@@ -2310,16 +2318,23 @@ pub fn cpu_init() {
     // Setup SVE with the default 128-bit vector length.
     if CPU_ID_AA64PFR0.load(Ordering::Relaxed) & ID_AA64PFR0_SVE_MASK >= ID_AA64PFR0_SVE_IMPL {
         let mut cpacr = read_specialreg!("cpacr_el1");
-        cpacr &= !CPACR_ZEN_MASK;
-        cpacr |= CPACR_ZEN_TRAP_EL0;
-        // SAFETY: SVE is enabled at EL1 just long enough to write ZCR_EL1 (by encoding,
-        // the assembler wants SVE for the name), then trapped again.
+        // FP's trap as it is now, put back below: a write of ZCR_EL1 traps while FP does, and
+        // FP traps here on every CPU (see the module's deviations).
+        let fpen = cpacr & CPACR_FPEN_MASK;
+        cpacr &= !(CPACR_ZEN_MASK | CPACR_FPEN_MASK);
+        cpacr |= CPACR_ZEN_TRAP_EL0 | CPACR_FPEN_TRAP_EL0;
+        // SAFETY: FP and SVE are enabled at EL1 just long enough to write ZCR_EL1 (by
+        // encoding, the assembler wants SVE for the name); then SVE is trapped again and
+        // FP's trap is the value read above. Between the two writes of CPACR_EL1 only
+        // ZCR_EL1 is written: no FP or SVE register is read or changed (the kernel is built
+        // without FP code), and EL0 stays trapped throughout, so no process's FP state can
+        // be seen or touched through the window.
         unsafe {
             write_specialreg!("cpacr_el1", cpacr);
             asm!("isb", options(nomem, nostack, preserves_flags));
             write_specialreg!("s3_0_c1_c2_0", 0);
-            cpacr &= !CPACR_ZEN_MASK;
-            cpacr |= CPACR_ZEN_TRAP_ALL1;
+            cpacr &= !(CPACR_ZEN_MASK | CPACR_FPEN_MASK);
+            cpacr |= CPACR_ZEN_TRAP_ALL1 | fpen;
             write_specialreg!("cpacr_el1", cpacr);
             asm!("isb", options(nomem, nostack, preserves_flags));
         }
