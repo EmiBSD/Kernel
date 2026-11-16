@@ -78,11 +78,12 @@
 //!   set's bucket array, `sc_set` a reference to one of the two static sets.
 //!   `struct syn_cache_set`'s `scs_buckethead` is the `malloc`ed bucket array as a slice, as
 //!   `inpt_hashtbl` is in `in_pcb.rs`.
-//! - `tcpcounters` (`struct cpumem *`) is the static array of atomics `TCPCOUNTERS`
-//!   (`tcp_subr.rs`); `tcpstat_inc`, `tcpstat_add` and `tcpstat_pkt` bump it without the
-//!   `splnet()` (atomics, as for `udpstat_inc`).
-//! - `TCP_REXMTVAL(tp)` and `TCP_TIME(sec)` are the functions `tcp_rexmtval` and `tcp_time`
-//!   (the C macro row of `docs/C_TO_RUST.md`); `intotcpcb`/`sototcpcb` return `Option`.
+//! - N6.6a1: the constants (`TF_*`, `TCPOOB_*`, the SYN cache's sizes and `SCF_*`, the
+//!   round-trip scales), `TCP_TIME`, `enum tcpstat_counters` and `tcpcounters` with
+//!   `tcpstat_inc`/`tcpstat_add`/`tcpstat_pkt` are the kernel's (`kernel::netinet::tcp_var`,
+//!   `tcpcounters` per CPU), re-exported here; the structures follow at N6.6a2.
+//! - `TCP_REXMTVAL(tp)` is the function `tcp_rexmtval` (the C macro row of
+//!   `docs/C_TO_RUST.md`); `intotcpcb`/`sototcpcb` return `Option`.
 //! - `TCPCTL_NAMES` is for `sysctl(8)` and is not compiled; `struct tcp_ident_mapping` has
 //!   its trailing padding as a named member (`AbiPod`).
 //! - The `INET6` declarations (`tcp6_usrreqs`, `tcb6table`, `tcp6_ctlinput`,
@@ -101,7 +102,7 @@ use crate::net::route::RouteCell;
 use crate::netinet::in_pcb::{Inpcb, sotoinpcb};
 use crate::netinet::ip_ipsp::SockaddrUnion;
 use crate::netinet::tcp::{MAX_SACK_BLKS, TcpSeq, Tcphdr};
-use crate::netinet::tcp_subr::{TCP_STARTTIME, TCPCOUNTERS};
+use crate::netinet::tcp_subr::TCP_STARTTIME;
 use crate::netinet::tcp_timer::TCPT_NTIMERS;
 use crate::queue_adapter;
 use crate::sys::errno::Errno;
@@ -111,95 +112,6 @@ use crate::sys::refcnt::Refcnt;
 use crate::sys::socketvar::Socket;
 use crate::sys::timeout::Timeout;
 
-// t_flags.
-
-/// Ack peer immediately.
-pub const TF_ACKNOW: u32 = 0x0001;
-/// Don't delay packets to coalesce.
-pub const TF_NODELAY: u32 = 0x0004;
-/// Don't use tcp options.
-pub const TF_NOOPT: u32 = 0x0008;
-/// Have sent FIN.
-pub const TF_SENTFIN: u32 = 0x0010;
-/// Have/will request window scaling.
-pub const TF_REQ_SCALE: u32 = 0x0020;
-/// Other side has requested scaling.
-pub const TF_RCVD_SCALE: u32 = 0x0040;
-/// Have/will request timestamps.
-pub const TF_REQ_TSTMP: u32 = 0x0080;
-/// A timestamp was received in SYN.
-pub const TF_RCVD_TSTMP: u32 = 0x0100;
-/// Other side said I could SACK.
-pub const TF_SACK_PERMIT: u32 = 0x0200;
-/// Require TCP MD5 signature.
-pub const TF_SIGNATURE: u32 = 0x0400;
-/// Other side said I could ECN (`TCP_ECN`).
-pub const TF_ECN_PERMIT: u32 = 0x0000_8000;
-/// Send ECE in subsequent segs (`TCP_ECN`).
-pub const TF_RCVD_CE: u32 = 0x0001_0000;
-/// Send CWR in next seg (`TCP_ECN`).
-pub const TF_SEND_CWR: u32 = 0x0002_0000;
-/// Disable ECN for this connection (`TCP_ECN`).
-pub const TF_DISABLE_ECN: u32 = 0x0004_0000;
-/// No outstanding ACK on last send.
-pub const TF_LASTIDLE: u32 = 0x0010_0000;
-/// Path MTU Discovery pending.
-pub const TF_PMTUD_PEND: u32 = 0x0040_0000;
-/// Call tcp_output after tcp_input.
-pub const TF_NEEDOUTPUT: u32 = 0x0080_0000;
-/// Don't push.
-pub const TF_NOPUSH: u32 = 0x0200_0000;
-/// Retransmit timer armed.
-pub const TF_TMR_REXMT: u32 = 0x0400_0000;
-/// Retransmit persistence timer armed.
-pub const TF_TMR_PERSIST: u32 = 0x0800_0000;
-/// Keep alive timer armed.
-pub const TF_TMR_KEEP: u32 = 0x1000_0000;
-/// 2*msl quiet time timer armed.
-pub const TF_TMR_2MSL: u32 = 0x2000_0000;
-/// Delayed ack timer armed.
-pub const TF_TMR_DELACK: u32 = 0x4000_0000;
-/// Used to shift with TCPT values.
-pub const TF_TIMER: u32 = TF_TMR_REXMT;
-
-// t_oobflags.
-
-/// `TCPOOB_HAVEDATA`.
-pub const TCPOOB_HAVEDATA: u8 = 0x01;
-/// `TCPOOB_HADDATA`.
-pub const TCPOOB_HADDATA: u8 = 0x02;
-
-/// `TCP_SYN_HASH_SIZE`.
-pub const TCP_SYN_HASH_SIZE: i32 = 293;
-/// `TCP_SYN_BUCKET_SIZE`.
-pub const TCP_SYN_BUCKET_SIZE: i32 = 35;
-
-/// We've had an unreach error (`sc_dynflags`).
-pub const SCF_UNREACH: u32 = 0x0001;
-/// Peer will do timestamps (`sc_fixflags`).
-pub const SCF_TIMESTAMP: u16 = 0x0010;
-/// Permit sack.
-pub const SCF_SACK_PERMIT: u16 = 0x0020;
-/// Permit ecn.
-pub const SCF_ECN_PERMIT: u16 = 0x0040;
-/// Enforce tcp signatures.
-pub const SCF_SIGNATURE: u16 = 0x0080;
-
-// The smoothed round-trip time and estimated variance are stored as fixed point numbers
-// scaled by the values below. For convenience, these scales are also used in smoothing the
-// average (smoothed = (1/scale)sample + ((scale-1)/scale)smoothed). With these scales, srtt
-// has 5 bits to the right of the binary point, and thus an "ALPHA" of 0.875. rttvar has 4
-// bits to the right of the binary point, and is smoothed with an ALPHA of 0.75.
-
-/// Shift for srtt; 5 bits frac.
-pub const TCP_RTT_SHIFT: i32 = 3;
-/// Shift for rttvar; 4 bits.
-pub const TCP_RTTVAR_SHIFT: i32 = 2;
-/// Remaining 2 bit shift.
-pub const TCP_RTT_BASE_SHIFT: i32 = 2;
-/// Maximum rtt.
-pub const TCP_RTT_MAX: i32 = 1 << 18;
-
 pub use hal::sys::netinet_tcp_var::{
     TCPCTL_ACK_ON_PUSH, TCPCTL_ALWAYS_KEEPALIVE, TCPCTL_BADDYNAMIC, TCPCTL_DROP, TCPCTL_ECN,
     TCPCTL_IDENT, TCPCTL_KEEPIDLE, TCPCTL_KEEPINITTIME, TCPCTL_KEEPINTVL, TCPCTL_MAXID,
@@ -207,6 +119,15 @@ pub use hal::sys::netinet_tcp_var::{
     TCPCTL_ROOTONLY, TCPCTL_RSTPPSLIMIT, TCPCTL_SACK, TCPCTL_SACKHOLE_LIMIT, TCPCTL_SENDSPACE,
     TCPCTL_SLOWHZ, TCPCTL_STATS, TCPCTL_SYN_BUCKET_LIMIT, TCPCTL_SYN_CACHE_LIMIT,
     TCPCTL_SYN_HASH_SIZE, TCPCTL_SYN_USE_LIMIT, TCPCTL_TSO,
+};
+pub use kernel::netinet::tcp_var::{
+    SCF_ECN_PERMIT, SCF_SACK_PERMIT, SCF_SIGNATURE, SCF_TIMESTAMP, SCF_UNREACH, TCP_RTT_BASE_SHIFT,
+    TCP_RTT_MAX, TCP_RTT_SHIFT, TCP_RTTVAR_SHIFT, TCP_SYN_BUCKET_SIZE, TCP_SYN_HASH_SIZE,
+    TCPCOUNTERS, TCPOOB_HADDATA, TCPOOB_HAVEDATA, TCPS_NCOUNTERS, TF_ACKNOW, TF_DISABLE_ECN,
+    TF_ECN_PERMIT, TF_LASTIDLE, TF_NEEDOUTPUT, TF_NODELAY, TF_NOOPT, TF_NOPUSH, TF_PMTUD_PEND,
+    TF_RCVD_CE, TF_RCVD_SCALE, TF_RCVD_TSTMP, TF_REQ_SCALE, TF_REQ_TSTMP, TF_SACK_PERMIT,
+    TF_SEND_CWR, TF_SENTFIN, TF_SIGNATURE, TF_TIMER, TF_TMR_2MSL, TF_TMR_DELACK, TF_TMR_KEEP,
+    TF_TMR_PERSIST, TF_TMR_REXMT, TcpstatCounters, tcp_time, tcpstat_add, tcpstat_inc, tcpstat_pkt,
 };
 
 /// `struct sackblk`.
@@ -739,259 +660,11 @@ unsafe impl Sync for SynCacheSet {}
 
 pub use hal::sys::netinet_tcp_var::{TcpIdentMapping, Tcpstat};
 
-/// `enum tcpstat_counters`: the index of each counter in `tcpcounters`, in the order of the
-/// members of [`Tcpstat`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(usize)]
-pub enum TcpstatCounters {
-    /// `tcps_connattempt`.
-    TcpsConnattempt,
-    /// `tcps_accepts`.
-    TcpsAccepts,
-    /// `tcps_connects`.
-    TcpsConnects,
-    /// `tcps_drops`.
-    TcpsDrops,
-    /// `tcps_conndrops`.
-    TcpsConndrops,
-    /// `tcps_closed`.
-    TcpsClosed,
-    /// `tcps_segstimed`.
-    TcpsSegstimed,
-    /// `tcps_rttupdated`.
-    TcpsRttupdated,
-    /// `tcps_delack`.
-    TcpsDelack,
-    /// `tcps_timeoutdrop`.
-    TcpsTimeoutdrop,
-    /// `tcps_rexmttimeo`.
-    TcpsRexmttimeo,
-    /// `tcps_persisttimeo`.
-    TcpsPersisttimeo,
-    /// `tcps_persistdrop`.
-    TcpsPersistdrop,
-    /// `tcps_keeptimeo`.
-    TcpsKeeptimeo,
-    /// `tcps_keepprobe`.
-    TcpsKeepprobe,
-    /// `tcps_keepdrops`.
-    TcpsKeepdrops,
-    /// `tcps_sndtotal`.
-    TcpsSndtotal,
-    /// `tcps_sndpack`.
-    TcpsSndpack,
-    /// `tcps_sndbyte`.
-    TcpsSndbyte,
-    /// `tcps_sndrexmitpack`.
-    TcpsSndrexmitpack,
-    /// `tcps_sndrexmitbyte`.
-    TcpsSndrexmitbyte,
-    /// `tcps_sndrexmitfast`.
-    TcpsSndrexmitfast,
-    /// `tcps_sndacks`.
-    TcpsSndacks,
-    /// `tcps_sndprobe`.
-    TcpsSndprobe,
-    /// `tcps_sndurg`.
-    TcpsSndurg,
-    /// `tcps_sndwinup`.
-    TcpsSndwinup,
-    /// `tcps_sndctrl`.
-    TcpsSndctrl,
-    /// `tcps_rcvtotal`.
-    TcpsRcvtotal,
-    /// `tcps_rcvpack`.
-    TcpsRcvpack,
-    /// `tcps_rcvbyte`.
-    TcpsRcvbyte,
-    /// `tcps_rcvbadsum`.
-    TcpsRcvbadsum,
-    /// `tcps_rcvbadoff`.
-    TcpsRcvbadoff,
-    /// `tcps_rcvmemdrop`.
-    TcpsRcvmemdrop,
-    /// `tcps_rcvnosec`.
-    TcpsRcvnosec,
-    /// `tcps_rcvshort`.
-    TcpsRcvshort,
-    /// `tcps_rcvduppack`.
-    TcpsRcvduppack,
-    /// `tcps_rcvdupbyte`.
-    TcpsRcvdupbyte,
-    /// `tcps_rcvpartduppack`.
-    TcpsRcvpartduppack,
-    /// `tcps_rcvpartdupbyte`.
-    TcpsRcvpartdupbyte,
-    /// `tcps_rcvoopack`.
-    TcpsRcvoopack,
-    /// `tcps_rcvoobyte`.
-    TcpsRcvoobyte,
-    /// `tcps_rcvpackafterwin`.
-    TcpsRcvpackafterwin,
-    /// `tcps_rcvbyteafterwin`.
-    TcpsRcvbyteafterwin,
-    /// `tcps_rcvafterclose`.
-    TcpsRcvafterclose,
-    /// `tcps_rcvwinprobe`.
-    TcpsRcvwinprobe,
-    /// `tcps_rcvdupack`.
-    TcpsRcvdupack,
-    /// `tcps_rcvacktoomuch`.
-    TcpsRcvacktoomuch,
-    /// `tcps_rcvacktooold`.
-    TcpsRcvacktooold,
-    /// `tcps_rcvackpack`.
-    TcpsRcvackpack,
-    /// `tcps_rcvackbyte`.
-    TcpsRcvackbyte,
-    /// `tcps_rcvwinupd`.
-    TcpsRcvwinupd,
-    /// `tcps_pawsdrop`.
-    TcpsPawsdrop,
-    /// `tcps_predack`.
-    TcpsPredack,
-    /// `tcps_preddat`.
-    TcpsPreddat,
-    /// `tcps_pcbhashmiss`.
-    TcpsPcbhashmiss,
-    /// `tcps_noport`.
-    TcpsNoport,
-    /// `tcps_closing`.
-    TcpsClosing,
-    /// `tcps_badsyn`.
-    TcpsBadsyn,
-    /// `tcps_dropsyn`.
-    TcpsDropsyn,
-    /// `tcps_rcvbadsig`.
-    TcpsRcvbadsig,
-    /// `tcps_rcvgoodsig`.
-    TcpsRcvgoodsig,
-    /// `tcps_inswcsum`.
-    TcpsInswcsum,
-    /// `tcps_outswcsum`.
-    TcpsOutswcsum,
-    /// `tcps_ecn_accepts`.
-    TcpsEcnAccepts,
-    /// `tcps_ecn_rcvece`.
-    TcpsEcnRcvece,
-    /// `tcps_ecn_rcvcwr`.
-    TcpsEcnRcvcwr,
-    /// `tcps_ecn_rcvce`.
-    TcpsEcnRcvce,
-    /// `tcps_ecn_sndect`.
-    TcpsEcnSndect,
-    /// `tcps_ecn_sndece`.
-    TcpsEcnSndece,
-    /// `tcps_ecn_sndcwr`.
-    TcpsEcnSndcwr,
-    /// `tcps_cwr_ecn`.
-    TcpsCwrEcn,
-    /// `tcps_cwr_frecovery`.
-    TcpsCwrFrecovery,
-    /// `tcps_cwr_timeout`.
-    TcpsCwrTimeout,
-    /// `tcps_sc_added`.
-    TcpsScAdded,
-    /// `tcps_sc_completed`.
-    TcpsScCompleted,
-    /// `tcps_sc_timed_out`.
-    TcpsScTimedOut,
-    /// `tcps_sc_overflowed`.
-    TcpsScOverflowed,
-    /// `tcps_sc_reset`.
-    TcpsScReset,
-    /// `tcps_sc_unreach`.
-    TcpsScUnreach,
-    /// `tcps_sc_bucketoverflow`.
-    TcpsScBucketoverflow,
-    /// `tcps_sc_aborted`.
-    TcpsScAborted,
-    /// `tcps_sc_dupesyn`.
-    TcpsScDupesyn,
-    /// `tcps_sc_dropped`.
-    TcpsScDropped,
-    /// `tcps_sc_collisions`.
-    TcpsScCollisions,
-    /// `tcps_sc_retransmitted`.
-    TcpsScRetransmitted,
-    /// `tcps_sc_seedrandom`.
-    TcpsScSeedrandom,
-    /// `tcps_sc_hash_size`.
-    TcpsScHashSize,
-    /// `tcps_sc_entry_count`.
-    TcpsScEntryCount,
-    /// `tcps_sc_entry_limit`.
-    TcpsScEntryLimit,
-    /// `tcps_sc_bucket_maxlen`.
-    TcpsScBucketMaxlen,
-    /// `tcps_sc_bucket_limit`.
-    TcpsScBucketLimit,
-    /// `tcps_sc_uses_left`.
-    TcpsScUsesLeft,
-    /// `tcps_conndrained`.
-    TcpsConndrained,
-    /// `tcps_sack_recovery_episode`.
-    TcpsSackRecoveryEpisode,
-    /// `tcps_sack_rexmits`.
-    TcpsSackRexmits,
-    /// `tcps_sack_rexmit_bytes`.
-    TcpsSackRexmitBytes,
-    /// `tcps_sack_rcv_opts`.
-    TcpsSackRcvOpts,
-    /// `tcps_sack_snd_opts`.
-    TcpsSackSndOpts,
-    /// `tcps_sack_drop_opts`.
-    TcpsSackDropOpts,
-    /// `tcps_outswtso`.
-    TcpsOutswtso,
-    /// `tcps_outhwtso`.
-    TcpsOuthwtso,
-    /// `tcps_outpkttso`.
-    TcpsOutpkttso,
-    /// `tcps_outbadtso`.
-    TcpsOutbadtso,
-    /// `tcps_inswlro`.
-    TcpsInswlro,
-    /// `tcps_inhwlro`.
-    TcpsInhwlro,
-    /// `tcps_inpktlro`.
-    TcpsInpktlro,
-    /// `tcps_inbadlro`.
-    TcpsInbadlro,
-    /// `tcps_ncounters`.
-    TcpsNcounters,
-}
-
-/// `tcps_ncounters`.
-pub const TCPS_NCOUNTERS: usize = TcpstatCounters::TcpsNcounters as usize;
-
-/// `tcpstat_inc`.
-pub fn tcpstat_inc(c: TcpstatCounters) {
-    TCPCOUNTERS[c as usize].fetch_add(1, Ordering::Relaxed);
-}
-
-/// `tcpstat_add`.
-pub fn tcpstat_add(c: TcpstatCounters, v: u64) {
-    TCPCOUNTERS[c as usize].fetch_add(v, Ordering::Relaxed);
-}
-
-/// `tcpstat_pkt`: one more packet in `pcounter`, `v` more bytes in `bcounter`
-/// (`counters_pkt`).
-pub fn tcpstat_pkt(pcounter: TcpstatCounters, bcounter: TcpstatCounters, v: u64) {
-    TCPCOUNTERS[pcounter as usize].fetch_add(1, Ordering::Relaxed);
-    TCPCOUNTERS[bcounter as usize].fetch_add(v, Ordering::Relaxed);
-}
-
 /// `tcp_now`: TCP time ticks in 63 bit milliseconds with 63 bit random offset.
 pub fn tcp_now() -> u64 {
     TCP_STARTTIME
         .load(Ordering::Relaxed)
         .wrapping_add(getnsecruntime() / 1_000_000)
-}
-
-/// `TCP_TIME(sec)`: `tcp_now()` is in milliseconds.
-pub const fn tcp_time(sec: i32) -> i32 {
-    sec * 1000
 }
 
 /// `TCP_REXMTVAL(tp)`: the initial retransmission should happen at rtt + 4 * rttvar.
@@ -1037,13 +710,6 @@ mod tests {
         tp.t_rttvar.set(4);
         assert_eq!(tcp_rexmtval(&tp), 3);
         assert_eq!(tcp_time(30), 30_000);
-    }
-
-    #[test]
-    fn counters_cover_the_structure() {
-        // Every member of struct tcpstat has a counter; the last one is tcps_inbadlro.
-        assert_eq!(TCPS_NCOUNTERS, 107);
-        assert_eq!(TcpstatCounters::TcpsInbadlro as usize, 106);
     }
 }
 /* </TESTS> */

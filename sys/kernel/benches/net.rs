@@ -1943,7 +1943,6 @@ impl kernel::net::if_::Inet for BenchInet {
         _af: hal::sys::types::SaFamily,
     ) {
     }
-    fn tcpstat_lro(&self, _hw: bool) {}
     fn ip6_randomid(&self) -> u32 {
         // idgen32 never answers 0; the rows do not fragment.
         1

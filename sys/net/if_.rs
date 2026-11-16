@@ -165,7 +165,6 @@ use crate::net::if_var::{IfnetHead, IfnetLegacy, LegacyNetDriver, Niqueue};
 use crate::net::route::{Rtentry, as_static};
 use crate::netinet::tcp_input::tcp_input_mlist;
 use crate::netinet::tcp_output::tcp_if_output_tso;
-use crate::netinet::tcp_var::{TcpstatCounters, tcpstat_inc};
 #[cfg(feature = "inet6")]
 use crate::netinet6::nd6::In6Ntop;
 use crate::sys::errno::Errno;
@@ -364,14 +363,6 @@ impl kernel::net::if_::Inet for BsdNetLegs {
         tcp_input_mlist(&l, i32::from(af));
     }
 
-    fn tcpstat_lro(&self, hw: bool) {
-        tcpstat_inc(if hw {
-            TcpstatCounters::TcpsInhwlro
-        } else {
-            TcpstatCounters::TcpsInbadlro
-        });
-    }
-
     fn ip6_randomid(&self) -> u32 {
         crate::netinet6::ip6_output::ip6_id_generate()
     }
@@ -411,14 +402,10 @@ impl kernel::net::if_::Inet for BsdNetLegs {
         error
     }
 
-    fn proto_outswcsum(&self, tcp: bool) {
-        if tcp {
-            tcpstat_inc(TcpstatCounters::TcpsOutswcsum);
-        } else {
-            crate::netinet::udp_var::udpstat_inc(
-                crate::netinet::udp_var::UdpstatCounters::UdpsOutswcsum,
-            );
-        }
+    fn udpstat_outswcsum(&self) {
+        crate::netinet::udp_var::udpstat_inc(
+            crate::netinet::udp_var::UdpstatCounters::UdpsOutswcsum,
+        );
     }
 
     fn with_net_held(&self, f: &mut dyn FnMut(&hal::netlock::NetHeld<'_>)) {

@@ -48,11 +48,15 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! TCP FSM state definitions, per RFC 793, September 1981: `<netinet/tcp_fsm.h>`.
+//! TCP FSM state definitions, per RFC 793, September 1981: `<netinet/tcp_fsm.h>`'s kernel
+//! part, the state predicates and the two tables `tcp_output.c` and `tcp_debug.c` compile.
 //!
 //! Upstream: sys/netinet/tcp_fsm.h @ 3ce1f3f79392
+//! LZ: sys/netinet/tcp_fsm.rs@3c62ede68802
 //!
-//! Status: `ported`.
+//! The states themselves (`TCP_NSTATES`, `TCPS_*`) are what userland reads (`tcp_info`'s
+//! `tcpi_state`, `kinfo_file`'s `t_state`, pf's state table): they are
+//! `hal::sys::netinet_tcp_fsm`'s and re-exported here.
 //!
 //! ## Deviations
 //! - `TCPS_HAVERCVDSYN(s)`, `TCPS_HAVEESTABLISHED(s)` and `TCPS_HAVERCVDFIN(s)` are `const fn`s
@@ -60,10 +64,13 @@
 //! - The tables the C compiles only into the file that defines `TCPOUTFLAGS` (`tcp_output.c`)
 //!   or `TCPSTATES` (`tcp_debug.c`) are always present: `tcp_outflags[]` is
 //!   [`TCP_OUTFLAGS`] and `tcpstates[]` is [`TCPSTATES`], a table of byte strings without the
-//!   NUL (kernel strings are bytes, `docs/C_TO_RUST.md`).
+//!   NUL.
+//!
+//! ## Redesign
+//! - N6.6a1: LZ's module moved into the kernel whole (it holds no state and no `unsafe`);
+//!   `bsd`'s importers reach it under LZ's path through `sys/netinet/mod.rs`'s re-export.
 
-use crate::netinet::tcp::{TH_ACK, TH_FIN, TH_RST, TH_SYN};
-
+use hal::sys::netinet_tcp::{TH_ACK, TH_FIN, TH_RST, TH_SYN};
 pub use hal::sys::netinet_tcp_fsm::{
     TCP_NSTATES, TCPS_CLOSE_WAIT, TCPS_CLOSED, TCPS_CLOSING, TCPS_ESTABLISHED, TCPS_FIN_WAIT_1,
     TCPS_FIN_WAIT_2, TCPS_LAST_ACK, TCPS_LISTEN, TCPS_SYN_RECEIVED, TCPS_SYN_SENT, TCPS_TIME_WAIT,
@@ -134,7 +141,11 @@ mod tests {
         assert_eq!(TCPSTATES[TCPS_SYN_RECEIVED as usize], b"SYN_RCVD");
         assert_eq!(TCPSTATES[TCPS_TIME_WAIT as usize], b"TIME_WAIT");
         assert_eq!(TCP_OUTFLAGS[TCPS_CLOSED as usize], TH_RST | TH_ACK);
+        assert_eq!(TCP_OUTFLAGS[TCPS_LISTEN as usize], 0);
+        assert_eq!(TCP_OUTFLAGS[TCPS_SYN_SENT as usize], TH_SYN);
+        assert_eq!(TCP_OUTFLAGS[TCPS_SYN_RECEIVED as usize], TH_SYN | TH_ACK);
         assert_eq!(TCP_OUTFLAGS[TCPS_LAST_ACK as usize], TH_FIN | TH_ACK);
+        assert_eq!(TCP_OUTFLAGS[TCPS_TIME_WAIT as usize], TH_ACK);
         assert_eq!(TCPS_TIME_WAIT as usize + 1, TCP_NSTATES);
     }
 

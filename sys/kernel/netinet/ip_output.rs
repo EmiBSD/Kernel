@@ -72,8 +72,9 @@
 //!   every packet before registration (`NPF == 0`); a packet pf tagged `PF_TAG_REROUTE`
 //!   reruns the route lookup (the C's `goto reroute` is a labelled loop).
 //! - Not configured, a comment at its site: `MROUTING` (`ip_mforward`).
-//! - The TCP and UDP counters of software checksums (`tcps_outswcsum`, `udps_outswcsum`,
-//!   N6.6) are `Inet` legs (`icmp_mtudisc_clone` is ICMP's own since N6.4c2).
+//! - The UDP counter of software checksums (`udps_outswcsum`) is the `Inet` leg
+//!   `udpstat_outswcsum` until UDP moves (N6.6b); TCP's (`tcps_outswcsum`) is the kernel's
+//!   `tcpstat_inc` since N6.6a1 (`icmp_mtudisc_clone` is ICMP's own since N6.4c2).
 //! - `ip_ctloutput` with `IPSEC` configured: the four IPsec levels are set and read (no
 //!   `EOPNOTSUPP`); `IP_IPSEC_LOCAL_ID` and `IP_IPSEC_REMOTE_ID` answer `EOPNOTSUPP` as the C.
 //!   A `PRCO_GETOPT` without an answer mbuf is `panic(9)` (`sogetopt` always hands one over;
@@ -215,6 +216,7 @@ use crate::netinet::ip_var::{
     IP_ALLOWBROADCAST, IP_DEFTTL, IP_FORWARDING, IP_FORWARDING_IPSEC, IP_MTUDISC, IP_RAWOUTPUT,
     IpMoptions, IpstatCounters, ip_mtudisc, ipstat_add, ipstat_inc,
 };
+use crate::netinet::tcp_var::{TcpstatCounters, tcpstat_inc};
 use crate::proc::{ProcGlue, Thread, suser};
 
 /// `sizeof(struct ip)`: the header without options.
@@ -1725,16 +1727,14 @@ pub fn in_proto_cksum_out(m: &mut Mbuf, ifp: Option<&Ifnet>) {
 
     if flags & M_TCP_CSUM_OUT != 0 {
         if !in_ifcap_cksum(m, ifp, IFCAP_CSUM_TCPv4) || ip.ip_hl() != 5 {
-            if let Some(i) = inet() {
-                i.proto_outswcsum(true);
-            }
+            tcpstat_inc(TcpstatCounters::TcpsOutswcsum);
             in_delayed_cksum(m);
             m.m_pkthdr().csum_flags.set(flags & !M_TCP_CSUM_OUT); // Clear
         }
     } else if flags & M_UDP_CSUM_OUT != 0 {
         if !in_ifcap_cksum(m, ifp, IFCAP_CSUM_UDPv4) || ip.ip_hl() != 5 {
             if let Some(i) = inet() {
-                i.proto_outswcsum(false);
+                i.udpstat_outswcsum();
             }
             in_delayed_cksum(m);
             m.m_pkthdr().csum_flags.set(flags & !M_UDP_CSUM_OUT); // Clear

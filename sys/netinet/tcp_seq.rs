@@ -59,44 +59,19 @@
 //! Status: `ported`.
 //!
 //! ## Deviations
-//! - `SEQ_LT`, `SEQ_LEQ`, `SEQ_GT`, `SEQ_GEQ` are `const fn`s over [`TcpSeq`]. The C's
+//! - `SEQ_LT`, `SEQ_LEQ`, `SEQ_GT`, `SEQ_GEQ` are `const fn`s over `TcpSeq`. The C's
 //!   `(int)((a)-(b))` is `a.wrapping_sub(b) as i32`: the unsigned difference wraps and is read
 //!   as a signed number, exactly as the C cast does.
 //! - `tcp_rcvseqinit(tp)` and `tcp_sendseqinit(tp)` are functions over the control block of
 //!   `netinet/tcp_var.rs`.
+//! - N6.6a1: the comparisons and `TCP_ISSINCR`/`TCP_ISSINCR2` are the kernel's
+//!   (`kernel::netinet::tcp_seq`), re-exported here; the two functions over the control block
+//!   stay until the kernel's `tcp_var` (N6.6a2).
 //! - `extern tcp_seq tcp_iss` is `TCP_ISS` in `netinet/tcp_subr.rs`, where the C defines it.
 
-use crate::netinet::tcp::TcpSeq;
+pub use kernel::netinet::tcp_seq::{TCP_ISSINCR, TCP_ISSINCR2, seq_geq, seq_gt, seq_leq, seq_lt};
+
 use crate::netinet::tcp_var::Tcpcb;
-
-/// `TCP_ISSINCR`: increment for `tcp_iss` each second.
-pub const TCP_ISSINCR: u32 = 125 * 1024;
-/// `TCP_ISSINCR2`: increment for `tcp_iss` each second.
-pub const TCP_ISSINCR2: u32 = 1024 * 1024;
-
-/// `SEQ_LT(a, b)`: `a` comes before `b`.
-#[inline]
-pub const fn seq_lt(a: TcpSeq, b: TcpSeq) -> bool {
-    (a.wrapping_sub(b) as i32) < 0
-}
-
-/// `SEQ_LEQ(a, b)`: `a` comes before `b` or is `b`.
-#[inline]
-pub const fn seq_leq(a: TcpSeq, b: TcpSeq) -> bool {
-    (a.wrapping_sub(b) as i32) <= 0
-}
-
-/// `SEQ_GT(a, b)`: `a` comes after `b`.
-#[inline]
-pub const fn seq_gt(a: TcpSeq, b: TcpSeq) -> bool {
-    (a.wrapping_sub(b) as i32) > 0
-}
-
-/// `SEQ_GEQ(a, b)`: `a` comes after `b` or is `b`.
-#[inline]
-pub const fn seq_geq(a: TcpSeq, b: TcpSeq) -> bool {
-    (a.wrapping_sub(b) as i32) >= 0
-}
 
 /// `tcp_rcvseqinit(tp)`: initialize the receive sequence numbers from the initial receive
 /// sequence number.
@@ -123,23 +98,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn comparisons_wrap_around() {
-        assert!(seq_lt(1, 2) && seq_leq(1, 2) && !seq_gt(1, 2) && !seq_geq(1, 2));
-        assert!(seq_leq(7, 7) && seq_geq(7, 7) && !seq_lt(7, 7) && !seq_gt(7, 7));
-        // 0xffff_fff0 is 32 before 0x10 once the counter wraps.
-        assert!(seq_lt(0xffff_fff0, 0x10) && seq_gt(0x10, 0xffff_fff0));
-        assert!(seq_leq(u32::MAX, 0) && seq_geq(0, u32::MAX));
-        // Half the space away: the C's (int) of 0x8000_0000 is negative.
-        assert!(seq_lt(0, 0x8000_0000) && seq_lt(0x8000_0000, 0));
-        assert!(seq_gt(0, 0x7fff_ffff + 2) && seq_lt(0, 0x7fff_ffff));
-    }
-
-    #[test]
-    #[ignore = "needs OPENBSD_SRC (just test-ref)"]
-    fn values_match_the_c_header() {
-        let defs = crate::reftest::defines("sys/netinet/tcp_seq.h");
-        let ours = crate::reftest::assert_defines!(defs; TCP_ISSINCR, TCP_ISSINCR2);
-        crate::reftest::assert_complete(&defs, "TCP_", &ours);
+    fn the_sequence_numbers_start_at_the_initial_ones() {
+        let inp: &'static crate::netinet::in_pcb::Inpcb = std::boxed::Box::leak(
+            std::boxed::Box::new(crate::netinet::in_pcb::Inpcb::new(None, None)),
+        );
+        let tp = Tcpcb::new(inp);
+        tp.irs.set(u32::MAX);
+        tcp_rcvseqinit(&tp);
+        assert_eq!((tp.rcv_nxt.get(), tp.rcv_adv.get()), (0, 0));
+        tp.iss.set(77);
+        tcp_sendseqinit(&tp);
+        assert_eq!(
+            (
+                tp.snd_up.get(),
+                tp.snd_max.get(),
+                tp.snd_nxt.get(),
+                tp.snd_una.get()
+            ),
+            (77, 77, 77, 77)
+        );
+        assert!(seq_lt(tp.snd_una.get(), 78));
     }
 }
 /* </TESTS> */

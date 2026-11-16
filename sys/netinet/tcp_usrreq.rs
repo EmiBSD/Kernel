@@ -169,8 +169,8 @@ use crate::netinet::tcp_output::tcp_output;
 use crate::netinet::tcp_seq::tcp_sendseqinit;
 use crate::netinet::tcp_subr::{
     SACKHL_POOL, TCP_ACK_ON_PUSH, TCP_DO_ECN, TCP_DO_RFC1323, TCP_DO_RFC3390, TCP_DO_SACK,
-    TCP_DO_TSO, TCP_MSSDFLT, TCP_REASS_LIMIT, TCPCOUNTERS, TCPQE_POOL, tcp_close, tcp_drop,
-    tcp_newtcpcb, tcp_rscale, tcp_sackhole_limit, tcp_set_iss_tsm, tcp_template,
+    TCP_DO_TSO, TCP_MSSDFLT, TCP_REASS_LIMIT, TCPQE_POOL, tcp_close, tcp_drop, tcp_newtcpcb,
+    tcp_rscale, tcp_sackhole_limit, tcp_set_iss_tsm, tcp_template,
 };
 use crate::netinet::tcp_timer::{
     TCP_ALWAYS_KEEPALIVE, TCP_KEEPIDLE, TCP_KEEPIDLE_SEC, TCP_KEEPINIT, TCP_KEEPINIT_SEC,
@@ -178,7 +178,7 @@ use crate::netinet::tcp_timer::{
     TCPTV_KEEPIDLE, TCPTV_KEEPINIT, TCPTV_KEEPINTVL, tcp_timer_arm,
 };
 use crate::netinet::tcp_var::{
-    TCP_RTT_BASE_SHIFT, TCP_RTT_SHIFT, TCP_RTTVAR_SHIFT, TCPCTL_ACK_ON_PUSH,
+    TCP_RTT_BASE_SHIFT, TCP_RTT_SHIFT, TCP_RTTVAR_SHIFT, TCPCOUNTERS, TCPCTL_ACK_ON_PUSH,
     TCPCTL_ALWAYS_KEEPALIVE, TCPCTL_BADDYNAMIC, TCPCTL_DROP, TCPCTL_ECN, TCPCTL_IDENT,
     TCPCTL_KEEPIDLE, TCPCTL_KEEPINITTIME, TCPCTL_KEEPINTVL, TCPCTL_MSSDFLT, TCPCTL_REASS_LIMIT,
     TCPCTL_RFC1323, TCPCTL_RFC3390, TCPCTL_ROOTONLY, TCPCTL_RSTPPSLIMIT, TCPCTL_SACK,
@@ -1428,10 +1428,7 @@ tcpstat_fields!(
 
 /// `tcp_sysctl_tcpstat`: `net.inet.tcp.stats`, the counters and the SYN cache's state.
 fn tcp_sysctl_tcpstat(oldp: usize, oldlenp: &mut usize, newp: usize) -> Result<(), Errno> {
-    let mut counters = [0u64; TCPS_NCOUNTERS];
-    for (c, v) in counters.iter_mut().zip(TCPCOUNTERS.iter()) {
-        *c = v.load(Ordering::Relaxed);
-    }
+    let counters = TCPCOUNTERS.read();
     let mut tcpstat = tcpstat_from_counters(&counters);
 
     mtx_enter(&SYN_CACHE_MTX);
@@ -1893,7 +1890,7 @@ mod tests {
 
     /// The counter of `c`.
     fn tcpstat(c: TcpstatCounters) -> u64 {
-        TCPCOUNTERS[c as usize].load(Ordering::Relaxed)
+        TCPCOUNTERS.read()[c as usize]
     }
 
     #[test]
