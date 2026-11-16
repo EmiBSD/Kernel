@@ -112,6 +112,13 @@
 //! - `syn_cache_respond` returns `Result<(), Errno>` (the C's 0 or errno); without a listener
 //!   it uses `ip6_defhlim`, what the C's `in6_selecthlim(NULL)` returns. Its `DIAGNOSTIC`
 //!   check of `max_linkhdr` is the feature `diagnostic`'s.
+//! - `syn_cache_respond` builds its options in a 40-byte buffer, the TCP header's option room:
+//!   MSS 4, window scale 4, the signature 20 and the timestamps 12 fill it, so a signed entry
+//!   with `SCF_SACK_PERMIT` (4 more) would not fit. The C relies on the same exclusion:
+//!   `tcp_ctloutput` refuses `TCP_SACK_ENABLE` on a signed socket and `TCP_MD5SIG` on one with
+//!   SACK (tcp_usrreq.c:396-398, :418-420), and `syn_cache_add` copies only what the
+//!   listener allows; it is checked here (`kassert!`), and N6.6a5's `tcp_ctloutput` must keep
+//!   both refusals.
 //! - `syn_cache_unreach` takes the addresses as `SynCacheSa`s (LZ: raw pointers copied in by
 //!   an `unsafe fn`); its caller (`tcp_ctlinput`, N6.6a3) copies them.
 //!
@@ -130,6 +137,10 @@
 //!   (the lists take the guard as their witness while the array is borrowed; the pcb table's
 //!   shape): two word moves a use. The entry records its set and bucket by index where the C
 //!   kept pointers (`sc_set`, `sc_buckethead`; LZ a raw pointer).
+//! - `syn_cache_insert` sets the entry's timer (`Timeout::set_shared`, the wheel's lock) under
+//!   `syn_cache_mtx`, where the C's `syn_cache_add` sets it bare before taking the mutex:
+//!   N6.6a4's `syn_cache_add` may move the set before the mutex, leaving the insertion its
+//!   `add_msec` alone.
 //! - The listener's list (`t_sc`) is a `PinRing`, so an entry leaves it without naming the
 //!   control block, as the C's `LIST_REMOVE`; a bucket is a `PinList` (`TAILQ`).
 
@@ -159,14 +170,14 @@ use crate::assert::{kassert, kpanic};
 use crate::net::domain::net;
 use crate::net::ipsec_hooks::{SOCKADDR_UNION_LEN, ipsec};
 use crate::net::mbuf::{
-    M_DONTWAIT, M_TCP_CSUM_OUT, MAX_LINKHDR, MCLBYTES, MHLEN, MbufBox, m_clget, m_gethdr,
+    M_DONTWAIT, M_TCP_CSUM_OUT, MAX_LINKHDR, MCLBYTES, MHLEN, Mbuf, MbufBox, m_clget, m_gethdr,
 };
 use crate::net::rtable::rtable_l2;
 use crate::netinet::in_pcb::{Inpcb, InpcbRef, in_pcbsolock};
 use crate::netinet::ip_output::ip_output;
 use crate::netinet::ip_var::{IP_DEFTTL, IP_MTUDISC, ip_mtudisc};
 use crate::netinet::tcp_seq::{seq_gt, seq_lt};
-use crate::netinet::tcp_subr::{TCP_DO_ECN, tcp_signature};
+use crate::netinet::tcp_subr::{TCP_DO_ECN, put_hdr, tcp_signature};
 use crate::netinet::tcp_timer::{
     TCP_BACKOFF, TCP_KEEPINIT, TCP_MAXRXTSHIFT, TCPTV_MIN, TCPTV_REXMTMAX, TCPTV_SRTTDFLT,
     tcpt_rangeset,
@@ -400,6 +411,8 @@ pub fn syn_cache_insert<G: ProcGlue>(
         {
             *w = u32::from_ne_bytes([b[0], b[1], b[2], b[3]]);
         }
+        // The seed's copy on the stack wiped: the set's words are its storage.
+        libkern::explicit_bzero(&mut seed);
         tcpstat_inc(TcpstatCounters::TcpsScSeedrandom);
     }
 
@@ -789,7 +802,10 @@ pub fn syn_cache_respond<G: ProcGlue>(
     th.th_win = htons(i.sc_win as u16);
     // th_sum already 0, th_urp already 0
 
-    // Tack on the TCP options, after the headers (zeroed, as the C's memset).
+    // Tack on the TCP options, after the headers (zeroed, as the C's memset). They fit the 40
+    // bytes of a TCP header's option room because a signed connection does not permit SACK
+    // (the module's deviations: tcp_ctloutput refuses the pair).
+    kassert!(i.sc_fixflags & SCF_SIGNATURE == 0 || i.sc_fixflags & SCF_SACK_PERMIT == 0);
     let mut opts = [0u8; 40];
     let mut o = 0usize;
     opts[..4].copy_from_slice(&[
@@ -834,9 +850,9 @@ pub fn syn_cache_respond<G: ProcGlue>(
     };
     d.fill(0);
     if af == AF_INET {
-        put(d, 0, &ip);
+        put_hdr(d, 0, &ip);
     } else {
-        put(d, 0, &ip6);
+        put_hdr(d, 0, &ip6);
     }
 
     if i.sc_fixflags & SCF_SIGNATURE != 0 {
@@ -889,7 +905,7 @@ pub fn syn_cache_respond<G: ProcGlue>(
     let Some(d) = m.data_mut() else {
         kpanic(format_args!("syn_cache_respond: a new mbuf is read-only"));
     };
-    put(d, hlen, &th);
+    put_hdr(d, hlen, &th);
     d[hlen + size_of::<Tcphdr>()..tlen].copy_from_slice(&opts[..optlen]);
 
     let ph = m.m_pkthdr();
@@ -915,13 +931,12 @@ pub fn syn_cache_respond<G: ProcGlue>(
             None => ip.ip_ttl = IP_DEFTTL.load(Ordering::Relaxed) as u8,
         }
         if let Some(d) = m.data_mut() {
-            put(d, 0, &ip);
+            put_hdr(d, 0, &ip);
         }
-        let ScListenerParts { route, ipopts } = parts(l);
         ip_output(
             m,
-            ipopts,
-            Some(route),
+            l.sc_ipopts.as_deref().map(Mbuf::data),
+            Some(&mut l.sc_route),
             if ip_mtudisc.load(Ordering::Relaxed) != 0 {
                 IP_MTUDISC
             } else {
@@ -941,7 +956,7 @@ pub fn syn_cache_respond<G: ProcGlue>(
         } as u8;
         // leave flowlabel = 0, it is legal and require no state mgmt
         if let Some(d) = m.data_mut() {
-            put(d, 0, &ip6);
+            put_hdr(d, 0, &ip6);
         }
         ip6_output(
             m,
@@ -955,31 +970,6 @@ pub fn syn_cache_respond<G: ProcGlue>(
     };
     drop(inp);
     error
-}
-
-/// The `[s]` members `ip_output` takes at once: the route mutably, the options' bytes.
-struct ScListenerParts<'a> {
-    route: &'a mut crate::net::route::Route,
-    ipopts: Option<&'a [u8]>,
-}
-
-/// [`ScListenerParts`] of `l`.
-fn parts(l: &mut crate::netinet::tcp_var::ScListener) -> ScListenerParts<'_> {
-    ScListenerParts {
-        route: &mut l.sc_route,
-        ipopts: l.sc_ipopts.as_deref().map(crate::net::mbuf::Mbuf::data),
-    }
-}
-
-/// Writes the header `v` at `off` of `d`, sized for it (`panic(9)` otherwise).
-fn put<T: hal::user::AbiPod>(d: &mut [u8], off: usize, v: &T) {
-    if !pod::put(d, off, v) {
-        kpanic(format_args!(
-            "syn_cache_respond: a header of {} bytes at {off} of {}",
-            size_of::<T>(),
-            d.len()
-        ));
-    }
 }
 /* </CODE> */
 
@@ -1169,9 +1159,26 @@ mod tests {
         assert_eq!(entries(), base, "every entry back in the pool");
     }
 
+    /// What the limits test changes, put back by its drop (an assertion that fails unwinds
+    /// through it).
+    struct Restore;
+
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TCP_SYN_BUCKET_LIMIT.store(3 * TCP_SYN_BUCKET_SIZE, Ordering::Relaxed);
+            TCP_SYN_CACHE_LIMIT.store(TCP_SYN_HASH_SIZE * TCP_SYN_BUCKET_SIZE, Ordering::Relaxed);
+            let mut g = syn_cache_lock::<G>();
+            g.tcp_syn_hash_size = TCP_SYN_HASH_SIZE;
+            for s in &mut g.sets {
+                s.scs_use = 0;
+            }
+        }
+    }
+
     #[test]
     fn the_limits_toss_the_oldest_and_the_sets_swap() {
         let (_g, _p) = testtcp::setup();
+        let _restore = Restore;
         let base = entries();
         let (so, inp) = testtcp::conn();
         let dst = sa([10, 0, 0, 1], 80);
@@ -1216,13 +1223,6 @@ mod tests {
             lookup(&e[1], &dst).is_some(),
             "the passive set's entries stay"
         );
-        {
-            let mut g = net::<G>().tcp.syn_cache.lock();
-            g.tcp_syn_hash_size = TCP_SYN_HASH_SIZE;
-            for s in &mut g.sets {
-                s.scs_use = 0;
-            }
-        }
         testtcp::close(so, inp);
         assert_eq!(entries(), base);
     }
@@ -1290,6 +1290,107 @@ mod tests {
         syn_cache_timer::<G>(&PoolArc::erase(sc2.clone()));
         assert_eq!(count(TcpstatCounters::TcpsScTimedOut) - timed_out, 2);
         drop((arg, sc, sc2));
+        testtcp::close(so, inp);
+        assert_eq!(entries(), base);
+    }
+
+    #[test]
+    fn the_syn_ack_carries_the_options_the_entry_allows() {
+        let (_g, _p) = testtcp::setup();
+        let (_ifp, d) = testinet::iface(b"tsyo0", [10, 9, 4, 1]);
+        let base = entries();
+        let (so, inp) = testtcp::conn();
+        let init = SynCacheInit {
+            sc_src: sa([10, 9, 4, 2], 5555),
+            sc_dst: sa([10, 9, 4, 1], 80),
+            sc_irs: 77,
+            sc_iss: 88,
+            sc_win: 1000,
+            sc_modulate: 10,
+            sc_ourmaxseg: 1400,
+            sc_request_r_scale: 3,
+            sc_fixflags: SCF_SACK_PERMIT | SCF_TIMESTAMP | SCF_ECN_PERMIT,
+            ..SynCacheInit::default()
+        };
+        let l = || ScListener {
+            sc_timestamp: 0x0102_0304,
+            ..ScListener::default()
+        };
+        let sc = syn_cache_alloc(&inp, init, l()).expect("an entry");
+        let sent = d.sent.load(Ordering::Relaxed);
+        let r = testtcp::with_lock(&inp, |_, il| {
+            syn_cache_respond(&sc, None, 500, true, &mut il.syn, &il.net)
+        });
+        assert_eq!(r, Ok(()));
+        assert_eq!(d.sent.load(Ordering::Relaxed), sent + 1);
+        let p = d.last.lock().expect("the capture").clone();
+        // MSS 4, SACK permitted 4, window scale 4, timestamps 12: 24 option bytes.
+        assert_eq!(p.len(), 20 + 20 + 24);
+        let ip: Ip = pod::at(&p, 0).expect("the IP header");
+        assert_eq!(u16::from_be(ip.ip_len), 64);
+        assert_eq!(ip.ip_src.s_addr, u32::from_ne_bytes([10, 9, 4, 1]));
+        assert_eq!(ip.ip_ttl, inp.inp_ip.get().ip_ttl, "the listener's ttl");
+        let th: Tcphdr = pod::at(&p, 20).expect("the TCP header");
+        assert_eq!(th.th_off(), 11);
+        assert_eq!(
+            th.th_flags,
+            TH_SYN | TH_ACK | TH_ECE,
+            "ECE: the peer does ECN"
+        );
+        assert_eq!((u32::from_be(th.th_seq), u32::from_be(th.th_ack)), (88, 78));
+        assert_eq!(u16::from_be(th.th_win), 1000);
+        assert_eq!(&p[40..44], &[TCPOPT_MAXSEG, 4, 0x05, 0x78]);
+        assert_eq!(
+            &p[44..48],
+            &[TCPOPT_NOP, TCPOPT_NOP, 4, 2],
+            "SACK permitted"
+        );
+        assert_eq!(&p[48..52], &[TCPOPT_NOP, TCPOPT_WINDOW, TCPOLEN_WINDOW, 3]);
+        assert_eq!(
+            &p[52..56],
+            &[TCPOPT_NOP, TCPOPT_NOP, 8, 10],
+            "the timestamps"
+        );
+        assert_eq!(&p[56..60], &510u32.to_be_bytes(), "now + sc_modulate");
+        assert_eq!(&p[60..64], &0x0102_0304u32.to_be_bytes(), "sc_timestamp");
+
+        // Without ECN asked, no ECE; with no option but the MSS, th_off 6.
+        let bare = syn_cache_alloc(
+            &inp,
+            SynCacheInit {
+                sc_fixflags: SCF_ECN_PERMIT,
+                sc_request_r_scale: 15,
+                ..init
+            },
+            l(),
+        )
+        .expect("an entry");
+        let r = testtcp::with_lock(&inp, |_, il| {
+            syn_cache_respond(&bare, None, 500, false, &mut il.syn, &il.net)
+        });
+        assert_eq!(r, Ok(()));
+        let p = d.last.lock().expect("the capture").clone();
+        let th: Tcphdr = pod::at(&p, 20).expect("the TCP header");
+        assert_eq!((th.th_off(), th.th_flags), (6, TH_SYN | TH_ACK));
+
+        // A signed entry with no IPsec to give its SA: EPERM, nothing sent (the kernel's
+        // tests register no Ipsec legs, so the EINVAL and tdb_unref path has no double).
+        let signed = syn_cache_alloc(
+            &inp,
+            SynCacheInit {
+                sc_fixflags: SCF_SIGNATURE | SCF_TIMESTAMP,
+                ..init
+            },
+            l(),
+        )
+        .expect("an entry");
+        let sent = d.sent.load(Ordering::Relaxed);
+        let r = testtcp::with_lock(&inp, |_, il| {
+            syn_cache_respond(&signed, None, 500, false, &mut il.syn, &il.net)
+        });
+        assert_eq!(r, Err(Errno::EPERM));
+        assert_eq!(d.sent.load(Ordering::Relaxed), sent);
+        drop((sc, bare, signed));
         testtcp::close(so, inp);
         assert_eq!(entries(), base);
     }

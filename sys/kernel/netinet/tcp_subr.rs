@@ -385,7 +385,7 @@ pub fn tcp_template<G: ProcGlue>(tp: &mut Tp<'_, '_, G>) -> Option<MbufBox> {
 
 /// Writes the header `v` at `off` of `d`, the data of an mbuf this file just sized for it
 /// (`MHLEN` holds an IPv6 and a TCP header with their options: the C's `CTASSERT`s).
-fn put_hdr<T: hal::user::AbiPod>(d: &mut [u8], off: usize, v: &T) {
+pub(crate) fn put_hdr<T: hal::user::AbiPod>(d: &mut [u8], off: usize, v: &T) {
     if !pod::put(d, off, v) {
         kpanic(format_args!(
             "tcp: a header of {} bytes at {off} of {}",
