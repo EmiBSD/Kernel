@@ -919,3 +919,269 @@ status = "applied"
 emibsd = "dd1571e99cc3"
 method = "reimplemented"
 reason = "native builds with DevTools' per-arch releases on the renamed target aarch64-emibsd-none-softfloat since dd1571e9 (decision 49; justfile, .cargo/config.toml, rust-toolchain.toml as a tripwire, the docs), and hal's arm64 fpu.rs, which took the FPU code, carries the renamed target in its Deviations note; bsd's sys/arch/arm64/arm64/fpu.rs (adapted) no longer has that note; amd64 stays frozen by decision 44; LZ's rustup links and hardware-lab rule are LZ's"
+
+[[commit]]
+lz = "30073a1ab1a3"
+subject = "rules: fix each subagent's effort in its definition"
+modules = []
+status = "applied"
+emibsd = "17ee912be08f"
+method = "reimplemented"
+reason = "native fixed every subagent's effort in its frontmatter in 17ee912b (subagents.md, Effort); LZ's roles are LZ's"
+
+[[commit]]
+lz = "a2348da4719a"
+subject = "rules: maxTurns for the read-only subagents, a guard hook for the writing ones"
+modules = []
+status = "applied"
+emibsd = "9cc0cca467f3"
+method = "reimplemented"
+reason = "native capped the read-only subagents' turns in 9cc0cca4 and added the writing roles' guard hook in 1c1885d0 (subagents.md, Turns and Guard hook)"
+
+[[commit]]
+lz = "07402dd1f096"
+subject = "build: DevTools' Rust and LLVM pins to +emibsd.5/+emibsd.6, no rustup"
+modules = []
+status = "applied"
+emibsd = "d820957a190b"
+method = "reimplemented"
+reason = "native pinned DevTools' rust +emibsd.5 and llvm +emibsd.6 in d820957a and has run their cargo and rustc straight from ~/devel/emibsd/toolchains, with no rustup, since dd1571e9 (decision 49); LZ's rules and SETUP wording are LZ's"
+
+[[commit]]
+lz = "61642ab59e0b"
+subject = "docs: technical-debt milestones TD1..TD6, TD1 self-hosting first"
+modules = []
+status = "not-applicable"
+reason = "LZ's own docs/ROADMAP.md and docs/STATUS.md (its technical-debt milestones TD0..TD6); native keeps its own ROADMAP and STATUS"
+
+[[commit]]
+lz = "f05e32c52f9a"
+subject = "docs: TD restated: self-hosting in TD1a..TD1d, TD2 bootstrap without Apple"
+modules = []
+status = "not-applicable"
+reason = "LZ's own docs/ROADMAP.md and docs/STATUS.md (its technical-debt milestones TD0..TD6); native keeps its own ROADMAP and STATUS"
+
+[[commit]]
+lz = "da06fd624a31"
+subject = "xtask: libcrypto and libssl built shared, as OpenBSD's base installs them"
+modules = []
+status = "not-applicable"
+reason = "LZ's test userland (libcrypto and libssl shared, for its self-hosting disk); nothing in native's smokes needs them shared, and native's smokes move to Userland's released sets at the N6 close (the user, 2026-11-15)"
+
+[[commit]]
+lz = "94fe8febe050"
+subject = "xtask: --memory for every VM, --timeout for a smoke"
+modules = []
+status = "applied"
+emibsd = "487f49314961"
+method = "reimplemented"
+reason = "native's xtask has --memory for qemu and smoke since 487f4931 and --timeout for smoke since b4f60146 (xtask.md)"
+
+[[commit]]
+lz = "1d075360b8ca"
+subject = "docs: TD1b and TD2 follow the Userland repository's make world"
+modules = []
+status = "not-applicable"
+reason = "LZ's own docs/ROADMAP.md and docs/STATUS.md (its technical-debt milestones TD0..TD6); native keeps its own ROADMAP and STATUS"
+
+[[commit]]
+lz = "3123e2b35daa"
+subject = "xtask: smoke-all reads a smoke's --timeout"
+modules = []
+status = "applied"
+emibsd = "b4f601467827"
+method = "reimplemented"
+reason = "native's smoke-all sums each smoke's own --timeout since b4f60146 (smokeall.rs boot_limits, with its test)"
+
+[[commit]]
+lz = "e513c245a006"
+subject = "xtask: selfhost disk and just smoke-selfhost-kernel (TD1a criterion)"
+modules = []
+status = "not-applicable"
+reason = "LZ's self-hosting tooling (the selfhost disk, its in-VM build and ci recipes, TD1b's base tools): xtask and justfile parts native does not have; native builds nothing inside a VM yet, and when it does it starts from Userland's released sets (the user, 2026-11-15)"
+
+[[commit]]
+lz = "107b9ec5a000"
+subject = "build: just rust-bin, DevTools' Rust bin/ for scripts"
+modules = []
+status = "applied"
+emibsd = "dd1571e99cc3"
+method = "reimplemented"
+reason = "native's justfile has the rust-bin recipe since dd1571e9 (decision 49)"
+
+[[commit]]
+lz = "603e0a159933"
+subject = "xtask: selfhost's build raises the data limit and streams cargo's lines"
+modules = []
+status = "not-applicable"
+reason = "LZ's self-hosting tooling (the selfhost disk, its in-VM build and ci recipes, TD1b's base tools): xtask and justfile parts native does not have; native builds nothing inside a VM yet, and when it does it starts from Userland's released sets (the user, 2026-11-15)"
+
+[[commit]]
+lz = "169daf17260e"
+subject = "xtask: the userland and comp built by DevTools' clang, not Apple's"
+modules = []
+status = "applied"
+emibsd = "3e21c6cae381"
+method = "reimplemented"
+reason = "native's userland and comp are built by DevTools' clang and lld through $EMIBSD_LLVM_BIN since 3e21c6ca"
+
+[[commit]]
+lz = "4257ba99b141"
+subject = "kern: accept the ELF note name EmiBSD beside OpenBSD (Kernel's decision 48)"
+modules = ["sys/kern/exec_elf.rs"]
+status = "applied"
+emibsd = "b2a15ba679d2"
+method = "reimplemented"
+reason = "security-review.md area (exec_elf), not a security fix: the change is native's own decision 48, made here first as b2a15ba6 (ELF_NOTE_NAMES holds EmiBSD with OpenBSD's id; its test and Security-Review are that commit's); LZ's docs, ports.toml and test-userland halves are LZ's"
+security = true
+
+[[commit]]
+lz = "b3939f867540"
+subject = "rules: porter memory, lessons of the __thrsleep port"
+modules = []
+status = "not-applicable"
+reason = "LZ's porter agent memory"
+
+[[commit]]
+lz = "eb50f8f1e8e2"
+subject = "xtask: the selfhost disk carries the base system, not only comp's usr/"
+modules = []
+status = "not-applicable"
+reason = "LZ's self-hosting tooling (the selfhost disk, its in-VM build and ci recipes, TD1b's base tools): xtask and justfile parts native does not have; native builds nothing inside a VM yet, and when it does it starts from Userland's released sets (the user, 2026-11-15)"
+
+[[commit]]
+lz = "c2a414dc616a"
+subject = "xtask: the base's build tools for make build (TD1b)"
+modules = []
+status = "not-applicable"
+reason = "LZ's self-hosting tooling (the selfhost disk, its in-VM build and ci recipes, TD1b's base tools): xtask and justfile parts native does not have; native builds nothing inside a VM yet, and when it does it starts from Userland's released sets (the user, 2026-11-15)"
+
+[[commit]]
+lz = "c08c3d35eaf8"
+subject = "build: smoke-buildtools, the TD1b tools in a chroot on base.ffs"
+modules = []
+status = "not-applicable"
+reason = "LZ's self-hosting tooling (the selfhost disk, its in-VM build and ci recipes, TD1b's base tools): xtask and justfile parts native does not have; native builds nothing inside a VM yet, and when it does it starts from Userland's released sets (the user, 2026-11-15)"
+
+[[commit]]
+lz = "0377bd625a3e"
+subject = "build: restore smoke-ntfs and smoke-tcpbench in the smokes list"
+modules = []
+status = "not-applicable"
+reason = "native's smokes list has smoke-ntfs and smoke-tcpbench (justfile, the smokes variable); LZ restored its own list"
+
+[[commit]]
+lz = "0f07a8bac5db"
+subject = "rules: debugger memory, the hvf PAN/EPAN lesson"
+modules = []
+status = "not-applicable"
+reason = "LZ's debugger agent memory (the hvf PAN/EPAN lesson); the fix it describes is df8508cf1682, which has its own record"
+
+[[commit]]
+lz = "8074550c55b4"
+subject = "Merge branch 'debug/hvf-arm64' into build/devtools-direct"
+modules = []
+status = "not-applicable"
+reason = "a merge commit (debug/hvf-arm64): what it brings is df8508cf1682, 0f07a8bac5db and 0377bd625a3e, each with its own record"
+
+[[commit]]
+lz = "9885af92e5ee"
+subject = "docs: --accel hvf works since the direct map's UXN fix"
+modules = []
+status = "not-applicable"
+reason = "LZ's own docs/ROADMAP.md and docs/STATUS.md (its technical-debt milestones TD0..TD6); native keeps its own ROADMAP and STATUS"
+
+[[commit]]
+lz = "0285ec561e1e"
+subject = "docs: TD1a met"
+modules = []
+status = "not-applicable"
+reason = "LZ's own docs/ROADMAP.md and docs/STATUS.md (its technical-debt milestones TD0..TD6); native keeps its own ROADMAP and STATUS"
+
+[[commit]]
+lz = "18b410b1f406"
+subject = "xtask: boot image 256 MiB, as 192 MiB filled up"
+modules = []
+status = "applied"
+emibsd = "d58badddf675"
+method = "reimplemented"
+reason = "native's boot image is 256 MiB since d58baddd (boot.rs IMAGE_SECTORS)"
+
+[[commit]]
+lz = "f37b1892dd23"
+subject = "xtask: ctags, hexdump, rpcgen, mandoc and mktemp in the base's TD1b tools"
+modules = []
+status = "not-applicable"
+reason = "LZ's self-hosting tooling (the selfhost disk, its in-VM build and ci recipes, TD1b's base tools): xtask and justfile parts native does not have; native builds nothing inside a VM yet, and when it does it starts from Userland's released sets (the user, 2026-11-15)"
+
+[[commit]]
+lz = "d3236cd9193d"
+subject = "xtask: selfhost-userland, TD1b's disk with EmiBSD's own triple"
+modules = []
+status = "not-applicable"
+reason = "LZ's self-hosting tooling (the selfhost disk, its in-VM build and ci recipes, TD1b's base tools): xtask and justfile parts native does not have; native builds nothing inside a VM yet, and when it does it starts from Userland's released sets (the user, 2026-11-15)"
+
+[[commit]]
+lz = "e2970ab8910e"
+subject = "xtask: TD1b renames __OpenBSD__ in the disk's base headers too"
+modules = []
+status = "not-applicable"
+reason = "LZ's self-hosting tooling (the selfhost disk, its in-VM build and ci recipes, TD1b's base tools): xtask and justfile parts native does not have; native builds nothing inside a VM yet, and when it does it starts from Userland's released sets (the user, 2026-11-15)"
+
+[[commit]]
+lz = "62f902b1482a"
+subject = "docs: TD1b's in-VM build on EmiBSD's own triple"
+modules = []
+status = "not-applicable"
+reason = "LZ's own docs/ROADMAP.md and docs/STATUS.md (its technical-debt milestones TD0..TD6); native keeps its own ROADMAP and STATUS"
+
+[[commit]]
+lz = "fe671d67a0f4"
+subject = "docs: TD restated as the kernel's debt, TD0..TD6"
+modules = []
+status = "not-applicable"
+reason = "LZ's own docs/ROADMAP.md and docs/STATUS.md (its technical-debt milestones TD0..TD6); native keeps its own ROADMAP and STATUS"
+
+[[commit]]
+lz = "9d4cb89548e3"
+subject = "xtask: TDk's disk from Userland's released base and comp sets"
+modules = []
+status = "not-applicable"
+reason = "LZ's self-hosting tooling (the selfhost disk, its in-VM build and ci recipes, TD1b's base tools): xtask and justfile parts native does not have; native builds nothing inside a VM yet, and when it does it starts from Userland's released sets (the user, 2026-11-15)"
+
+[[commit]]
+lz = "d1869ca019b3"
+subject = "xtask: TD1b's build tools, base.ffs and smoke-buildtools out"
+modules = []
+status = "not-applicable"
+reason = "LZ's self-hosting tooling (the selfhost disk, its in-VM build and ci recipes, TD1b's base tools): xtask and justfile parts native does not have; native builds nothing inside a VM yet, and when it does it starts from Userland's released sets (the user, 2026-11-15)"
+
+[[commit]]
+lz = "ed8cc8b3e223"
+subject = "xtask: TD0's inventory, a ports.toml row for every kernel .c"
+modules = []
+status = "not-applicable"
+reason = "LZ's ports.toml inventory and its ports check; native tracks LZ files in lineage.toml, not C files"
+
+[[commit]]
+lz = "1d6edcc7fe33"
+subject = "build: bump toolchain to rust 1.99.1+emibsd.6, llvm 23.1.4+emibsd.7"
+modules = []
+status = "applied"
+emibsd = "edd763497c3e"
+method = "reimplemented"
+reason = "native pinned rust 1.99.1+emibsd.6 and llvm 23.1.4+emibsd.7 in edd76349, with smoke-devtools-native passing on them (also on a BTI CPU model)"
+
+[[commit]]
+lz = "ca3ae53d00b3"
+subject = "xtask: TDk's disk from Userland 2026.11.6 alone, back under hvf"
+modules = []
+status = "not-applicable"
+reason = "LZ's self-hosting tooling (the selfhost disk, its in-VM build and ci recipes, TD1b's base tools): xtask and justfile parts native does not have; native builds nothing inside a VM yet, and when it does it starts from Userland's released sets (the user, 2026-11-15)"
+
+[[commit]]
+lz = "e8249449d905"
+subject = "docs: TD0 met"
+modules = []
+status = "not-applicable"
+reason = "LZ's own docs/ROADMAP.md and docs/STATUS.md (its technical-debt milestones TD0..TD6); native keeps its own ROADMAP and STATUS"
