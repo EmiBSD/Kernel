@@ -350,7 +350,7 @@ use crate::assert::{kassert, kpanic};
 use crate::net::if_var::{
     AtomicCell, Cloner, DETACHED_IOCTL, DETACHED_QSTART, IF_TXMIT_DEFAULT, IFC_NCOUNTERS,
     IFNET_SLOWTIMO, IfCounterArray, IfCounters, IfRt, IfTmplist, IfaList, Ifaddr, IfaddrRef,
-    IfgGroup, IfgMembers, IfgRef, IfgSet, Ifnet, IfnetList, NetDriver, Netstack, Niqueue,
+    IfgGroup, IfgMembers, IfgRef, IfgSet, IfmaList, Ifnet, IfnetList, NetDriver, Netstack, Niqueue,
     counters_pkt,
 };
 use crate::net::ifq::{
@@ -1189,6 +1189,7 @@ pub fn if_attach_common(ifp: &'static Ifnet) {
         iqs: OnceStatic::new(),
         if_addrlist: IfaList::new(),
         if_maddrlock: RawRwlock::new("maddr"),
+        if_maddrlist: OnceStatic::new(),
         if_slowtimo: crate::timeout::Timeout::unset(),
         if_watchdogtask: Task::unset(),
         if_linkstatetask: Task::unset(),
@@ -1202,6 +1203,14 @@ pub fn if_attach_common(ifp: &'static Ifnet) {
         kpanic(format_args!("if_attach_common: attached twice"));
     }
     let rt = ifp.rt();
+    // TAILQ_INIT(&ifp->if_maddrlist): keyed to if_maddrlock where it now stays.
+    if rt
+        .if_maddrlist
+        .set(IfmaList::new(&rt.if_maddrlock))
+        .is_err()
+    {
+        kpanic(format_args!("if_attach_common: attached twice"));
+    }
     rt.if_refcnt.init();
     ifq_init_tasks(&rt.if_snd);
     ifiq_init_tasks(&rt.if_rcv);
@@ -2215,6 +2224,16 @@ pub fn if_detach(ifp: &'static Ifnet) {
                 ifa.ifa_ifp.set(None);
                 route::ifafree(lst);
             }
+        }
+
+        // The multicast records still on the interface's list leave it (D-9 of N6.5e; the C
+        // leaves the list to the dying interface and frees a record at its last
+        // `in_delmulti`, which finds no interface any more): the list's handles go here, so
+        // that a record a membership still holds is freed with that membership's last handle
+        // (its `in_delmulti`), and one no membership holds now.
+        let mut w = ifp.rt().if_maddrlock.write();
+        while let Some(ifma) = ifp.if_maddrlist().pop_head(&mut w) {
+            drop(ifma);
         }
     }
 
@@ -4462,8 +4481,6 @@ pub(crate) mod tests {
         softnet_test_install();
         if_idxmap_test_reset();
         ifnet_test_reset();
-        crate::netinet::in_var::in_var_test_reset();
-        crate::netinet6::in6_var::in6_var_test_reset();
         crate::netinet::igmp::igmp_test_reset();
         crate::netinet::if_ether::arp_test_reset();
         crate::netinet6::nd6::nd6_test_reset();

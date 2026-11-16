@@ -85,6 +85,10 @@
 //!   bytes (a 64-byte bucket) where the C's and LZ's are 16 (the `MArray` handle carries its
 //!   length, malloc type and allocator; the D-3 class, docs/SCAFFOLDING.md's pool-size row);
 //!   the vector's is the C's, `imo_max_memberships` pointers.
+//! - N6.5e's 5e2: each slot holds the membership's counted handle of its record
+//!   (`hal::malloc::MArc`, still 8 bytes with `None` its niche), which `in_addmulti` gives
+//!   and `in_delmulti` takes back, where it held a `&'static` record; growing the vector moves
+//!   the handles into the new one.
 //! - N6.4c2, the reassembly records: LZ's `struct ipqent` and `struct ipq` were pool items
 //!   written whole through `unsafe` and linked on `bsd`'s `LIST`s (`IpqList`, `Ipqehead`) by
 //!   `&'static` references, the fragment's header reached through the raw `ipqe_ip`
@@ -103,7 +107,7 @@
 use core::cell::Cell;
 use core::sync::atomic::AtomicI32;
 
-use hal::malloc::MArray;
+use hal::malloc::{MArc, MArray};
 use hal::owned::{OwnedSlist, SlistLink};
 use hal::percpu::Counters;
 use hal::pool::{BoxPool, Pooled};
@@ -221,8 +225,10 @@ pub const IPS_NCOUNTERS: usize = IpstatCounters::IpsNcounters as usize;
 #[derive(Default)]
 pub struct IpMoptions {
     /// `imo_membership`: group memberships, `imo_max_memberships` slots (`M_IPMOPTS`), the
-    /// first `imo_num_memberships` in use; `None` in a set made for one `ip_output` call.
-    pub imo_membership: Option<MArray<Option<&'static InMulti>>>,
+    /// first `imo_num_memberships` in use, each the membership's handle of its record
+    /// (`in_addmulti`'s, which `in_delmulti` takes back); `None` in a set made for one
+    /// `ip_output` call.
+    pub imo_membership: Option<MArray<Option<MArc<InMulti>>>>,
     /// `imo_ifidx`: ifp index for outgoing multicasts.
     pub imo_ifidx: u16,
     /// `imo_ttl`: TTL for outgoing multicasts.
@@ -257,11 +263,11 @@ impl IpMoptions {
 
     /// `imo_membership[i]` of a slot in use (`i < imo_num_memberships`); `None` beyond.
     #[inline]
-    pub fn membership(&self, i: usize) -> Option<&'static InMulti> {
+    pub fn membership(&self, i: usize) -> Option<&InMulti> {
         if i >= usize::from(self.imo_num_memberships) {
             return None;
         }
-        self.imo_membership.as_ref()?.get(i).copied().flatten()
+        self.imo_membership.as_ref()?.get(i)?.as_deref()
     }
 }
 
@@ -438,7 +444,7 @@ mod tests {
         // The C's and LZ's struct ip_moptions is 16 bytes (a pointer, then 8 bytes of
         // scalars); here the vector's handle is 40 (the module's Redesign).
         assert_eq!(core::mem::size_of::<IpMoptions>(), 48);
-        assert_eq!(core::mem::size_of::<Option<&'static InMulti>>(), 8);
+        assert_eq!(core::mem::size_of::<Option<MArc<InMulti>>>(), 8);
         let set = IpMoptions::output(3, 9, 0);
         assert_eq!(set.imo_max_memberships(), 0);
         assert!(set.membership(0).is_none());

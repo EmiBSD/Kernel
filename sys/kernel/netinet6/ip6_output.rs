@@ -2001,11 +2001,11 @@ fn join_group<G: ProcGlue>(
     im6o.im6o_memberships.reserve()?;
     let in6m = in6_addmulti(&group, ifp.ifp(), net)?;
     drop(ifp); // if_put(ifp)
-    let pushed = im6o.im6o_memberships.push(in6m);
-    if pushed.is_err() {
+    if let Err(in6m) = im6o.im6o_memberships.push(in6m) {
         in6_delmulti(in6m, net);
+        return Err(Errno::ENOBUFS);
     }
-    pushed
+    Ok(())
 }
 
 /// `ip6_setmoptions`' `IPV6_LEAVE_GROUP`: drops a multicast group membership, on the

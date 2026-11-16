@@ -6335,7 +6335,7 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 rust = "sys/net/if_pfsync.rs"
 lz = ["sys/net/if_pfsync.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/bpf.rs", "sys/kernel/netinet/ip_var.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/bpf.rs", "sys/kernel/netinet/ip_var.rs", "sys/kernel/netinet/in_.rs", "sys/kernel/netinet/in_var.rs"]
 
 [[module]]
 rust = "sys/net/if_types.rs"
@@ -6708,7 +6708,7 @@ adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/
 rust = "sys/netinet6/in6.rs"
 lz = ["sys/netinet6/in6.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/hal/sys/netinet6_in6.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/in6.rs", "sys/kernel/netinet6/nd6.rs", "sys/kernel/netinet6/ip6_output.rs", "sys/hal/netlock.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/hal/sys/netinet6_in6.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/in6.rs", "sys/kernel/netinet6/nd6.rs", "sys/kernel/netinet6/ip6_output.rs", "sys/hal/netlock.rs", "sys/kernel/netinet6/in6_var.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6_pcb.rs"
@@ -6762,7 +6762,7 @@ adapted_by = ["sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/in6_src.rs"
 rust = "sys/netinet6/mld6.rs"
 lz = ["sys/netinet6/mld6.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/mld6.rs", "sys/kernel/netinet6/in6_proto.rs", "sys/hal/netlock.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/mld6.rs", "sys/kernel/netinet6/in6_proto.rs", "sys/hal/netlock.rs", "sys/kernel/netinet6/in6.rs"]
 
 [[module]]
 rust = "sys/netinet6/nd6.rs"
@@ -7386,7 +7386,7 @@ rust = "sys/kernel/net/if_var.rs"
 crate = "kernel"
 lz = ["sys/net/if_var.rs"]
 status = "redesigned"
-notes = "N6.3a1: struct ifnet embedded zero-valid in bsd's softcs (atomics with LZ's get/set, links, lists, set-once cells; what is not valid at zero built by if_attach_common into IfRt), the nine hooks as the NetDriver trait (bsd's LegacyNetDriver), struct ifaddr/ifmaddr over hal::link::SaLink, Netstack lent &mut, Cloner; niqueue stays bsd's (its mbuf_queue); if_counters an inline atomic array (hal's per-CPU Counters is 32 KiB an interface); N6.5e (5e1): struct ifaddr's generic part (Ifaddr: ifa_ifp, ifa_flags, ifa_metric), IfaddrRef (In/In6 MArc handles, Linked for enc(4)'s IfaddrLinked/LinkedIfa), IfaList (if_addrlist in IfRt, a chain of handles in net cells); ifa_in/ifa_in6 back-links and the SaLinks of the internet records gone; Ifmaddr's unread ifma_addr gone"
+notes = "N6.3a1: struct ifnet embedded zero-valid in bsd's softcs (atomics with LZ's get/set, links, lists, set-once cells; what is not valid at zero built by if_attach_common into IfRt), the nine hooks as the NetDriver trait (bsd's LegacyNetDriver), struct ifaddr/ifmaddr over hal::link::SaLink, Netstack lent &mut, Cloner; niqueue stays bsd's (its mbuf_queue); if_counters an inline atomic array (hal's per-CPU Counters is 32 KiB an interface); N6.5e (5e1): struct ifaddr's generic part (Ifaddr: ifa_ifp, ifa_flags, ifa_metric), IfaddrRef (In/In6 MArc handles, Linked for enc(4)'s IfaddrLinked/LinkedIfa), IfaList (if_addrlist in IfRt, a chain of handles in net cells); ifa_in/ifa_in6 back-links and the SaLinks of the internet records gone; Ifmaddr's unread ifma_addr gone; N6.5e (5e2): if_maddrlock a RawRwlock taken through witnesses (bsd's six C-style helpers gone); struct ifmaddr's generic part (Ifmaddr: the list cell keyed to if_maddrlock, ifma_refcnt the memberships, ifma_ifidx), IfmaddrRef (In/In6 MArc handles of M_IPMADDR records), IfmaList (if_maddrlist, a chain of handles in IfRt's set-once cell, keyed after placement; insert_head O(1), remove O(n) with the predecessor cloned, pop_head for if_detach); ifma_in/ifma_in6 back-links gone; LZ's queue_adapter!-made IfMaddrlist is IfmaList (lz check's item parser does not see a macro-made type: a renamed row is refused, so lz trace cannot place it)"
 
 [[module.fn]]
 lz = "sys/net/if_var.rs::Netstack::default"
@@ -16532,7 +16532,7 @@ rust = "sys/kernel/netinet6/in6.rs"
 crate = "kernel"
 lz = ["sys/netinet6/in6.rs"]
 status = "redesigned"
-notes = "N6.5a: in6.c in the kernel: the address ioctls over the request's bytes (pod::at/put at the in6_ifreq/in6_aliasreq offsets; LZ's 14 unsafe over caddr_t gone), KERNEL_LOCK then NET_LOCK as in6.c (D-17) with the net lock detached across the driver's SIOCSIFADDR and lent to the route steps (NetHolding: Detached for in6_ioctl and the ioctl paths, Held for if_up); in6_update_ifa/in6_purgeaddr/in6_unlink_ifa/in6_ifinit over the kernel's routes; in6_addmulti/in6_delmulti/in6_hasmulti/in6_lookupmulti with if_maddrlock and the kernel lock C-style; in6_ifawithscope's RFC 6724 rules over the records' words; ND's dad_start/dad_stop/expire_timer_update through temporary Inet legs (N6.5b); SIOCGIFINFO_IN6/SIOCGNBRINFO_IN6 answered by bsd's in6_control until N6.5b; 12 tests (LZ's 16 in6.c tests re-expressed over the kernel's interfaces, the ioctl table, the link-local companion, routes and memberships, the recycled records)"
+notes = "N6.5a: in6.c in the kernel: the address ioctls over the request's bytes (pod::at/put at the in6_ifreq/in6_aliasreq offsets; LZ's 14 unsafe over caddr_t gone), KERNEL_LOCK then NET_LOCK as in6.c (D-17) with the net lock detached across the driver's SIOCSIFADDR and lent to the route steps (NetHolding: Detached for in6_ioctl and the ioctl paths, Held for if_up); in6_update_ifa/in6_purgeaddr/in6_unlink_ifa/in6_ifinit over the kernel's routes; in6_addmulti/in6_delmulti/in6_hasmulti/in6_lookupmulti with if_maddrlock and the kernel lock C-style; in6_ifawithscope's RFC 6724 rules over the records' words; ND's dad_start/dad_stop/expire_timer_update through temporary Inet legs (N6.5b); SIOCGIFINFO_IN6/SIOCGNBRINFO_IN6 answered by bsd's in6_control until N6.5b; 12 tests (LZ's 16 in6.c tests re-expressed over the kernel's interfaces, the ioctl table, the link-local companion, routes and memberships, the recycled records); N6.5e (5e2): in6_lookupmulti, in6_addmulti, in6_delmulti and in6_joingroup over the counted multicast handles (in_.rs's shape); the never-reused deviation closed"
 
 [[module.fn]]
 lz = "sys/netinet6/in6.rs::in6_leavegroup"
@@ -16567,7 +16567,7 @@ rust = "sys/kernel/netinet6/in6_var.rs"
 crate = "kernel"
 lz = ["sys/netinet6/in6_var.rs"]
 status = "redesigned"
-notes = "N6.5a: in6_var.h's _KERNEL half: In6Ifaddr and In6Multi as recycled &'static records (IA6_FREE, INM6_FREE; never freed: D-2, the vmstat -m high-water mark flagged), reached by Ifaddr::ifa_in6/Ifmaddr::ifma_in6 back-links (ifatoia6/ifmatoin6m one load, LZ's 2 casts and 3 unsafe impl Sync gone), Sin6Words over hal::link::SaWords named by the generic SaLinks, In6AddrlifetimeCell, ia6_memberships as In6Memberships (an M_IPMADDR array of the records, D-11) in a Mutexed; in6_ifaddr_alloc/in6_ifafree/in6_multi_alloc/in6_multi_free, in6_var_test_reset (bsd's setup_net and the kernel setups); the IA6_*/IFA_IN6 helpers and IN6_ARE_* macros; 3 tests; N6.5c: struct in6_multi_mship merged into In6Memberships (the socket's memberships are an In6Memberships too, in Ip6Moptions; reserve before join, take_newest for the C's LIST_INSERT_HEAD order); N6.5e (5e1): an address is an MArc<In6Ifaddr> (in6_ifaddr_alloc the creation reference), freed at its last handle; IA6_FREE, in6_ifafree and reset gone; ia_dstaddr_linked the C's NULL ifa_dstaddr; ia_list/ia_tmplist the chain's cells"
+notes = "N6.5a: in6_var.h's _KERNEL half: In6Ifaddr and In6Multi as recycled &'static records (IA6_FREE, INM6_FREE; never freed: D-2, the vmstat -m high-water mark flagged), reached by Ifaddr::ifa_in6/Ifmaddr::ifma_in6 back-links (ifatoia6/ifmatoin6m one load, LZ's 2 casts and 3 unsafe impl Sync gone), Sin6Words over hal::link::SaWords named by the generic SaLinks, In6AddrlifetimeCell, ia6_memberships as In6Memberships (an M_IPMADDR array of the records, D-11) in a Mutexed; in6_ifaddr_alloc/in6_ifafree/in6_multi_alloc/in6_multi_free, in6_var_test_reset (bsd's setup_net and the kernel setups); the IA6_*/IFA_IN6 helpers and IN6_ARE_* macros; 3 tests; N6.5c: struct in6_multi_mship merged into In6Memberships (the socket's memberships are an In6Memberships too, in Ip6Moptions; reserve before join, take_newest for the C's LIST_INSERT_HEAD order); N6.5e (5e1): an address is an MArc<In6Ifaddr> (in6_ifaddr_alloc the creation reference), freed at its last handle; IA6_FREE, in6_ifafree and reset gone; ia_dstaddr_linked the C's NULL ifa_dstaddr; ia_list/ia_tmplist the chain's cells; N6.5e (5e2): a multicast record is an MArc<In6Multi> (in6_multi_alloc(ifp)), freed at its last handle; INM6_FREE, in6_multi_free, in6_var_test_reset and inm6_free_count gone; In6Memberships holds the memberships' handles (push gives the handle back on failure, reserve and take_newest move them)"
 
 [[module.fn]]
 lz = "sys/netinet6/in6_var.rs::In6MultiMship"
@@ -17224,7 +17224,7 @@ rust = "sys/kernel/netinet/in_var.rs"
 crate = "kernel"
 lz = ["sys/netinet/in_var.rs"]
 status = "redesigned"
-notes = "N6.4a: in_var.h's kernel half: struct in_ifaddr and struct in_multi reached from their generic part by a back-link (Ifaddr::ifa_in, Ifmaddr::ifma_in) set at creation, ifatoia/ifmatoinm without a cast; their sockaddr_in members SinWords (SaWords linked by SaLink::set_words, N6.4a's R2) with LZ's get/set and a one-word addr; the records never freed but recycled through two free lists (in_ifaddr_alloc, in_ifafree, in_multi_alloc, in_multi_free; the mount's idiom, R1); ia_list dropped; tests: the words read as the C structure; N6.5e (5e1): an address is an MArc<InIfaddr> (in_ifaddr_alloc the creation reference), freed at its last handle; IA_FREE, in_ifafree and reset gone; ia_list/ia_tmplist the chain's cells; test_in_ifaddr for the tests and benches"
+notes = "N6.4a: in_var.h's kernel half: struct in_ifaddr and struct in_multi reached from their generic part by a back-link (Ifaddr::ifa_in, Ifmaddr::ifma_in) set at creation, ifatoia/ifmatoinm without a cast; their sockaddr_in members SinWords (SaWords linked by SaLink::set_words, N6.4a's R2) with LZ's get/set and a one-word addr; the records never freed but recycled through two free lists (in_ifaddr_alloc, in_ifafree, in_multi_alloc, in_multi_free; the mount's idiom, R1); ia_list dropped; tests: the words read as the C structure; N6.5e (5e1): an address is an MArc<InIfaddr> (in_ifaddr_alloc the creation reference), freed at its last handle; IA_FREE, in_ifafree and reset gone; ia_list/ia_tmplist the chain's cells; test_in_ifaddr for the tests and benches; N6.5e (5e2): a multicast record is an MArc<InMulti> (in_multi_alloc(ifp), its list cell keyed to the interface's if_maddrlock), freed at its last handle; INM_FREE, in_multi_free, in_var_test_reset and inm_free_count gone; InMulti::of and ifmatoinm match the IfmaddrRef arm; ia_allhosts a ReadMostly of the membership's handle"
 
 [[module.fn]]
 lz = "sys/netinet/in_var.rs::InAliasreqIfrau"
@@ -17251,7 +17251,7 @@ rust = "sys/kernel/netinet/in_.rs"
 crate = "kernel"
 lz = ["sys/netinet/in_.rs"]
 status = "redesigned"
-notes = "N6.4a: in.c: the address ioctls over the request's bytes (hal::pod at the C's offsets), NET_LOCK detached with the proof lent around the route steps and never across the driver's SIOCSIFADDR/SIOCSIFDSTADDR (a zeroed ifreq image, D-14; wg's wg_up may net_unlock); in_ifinit, in_purgeaddr, the host and prefix routes, in_broadcast (route.rs's copy gone), the multicast records with IGMP's join/leave, in_ifdetach; in_nam2sin/in_sa2sin answer a copy; bsd's sys/netinet/in_.rs keeps LZ's raw shapes as wrappers; tests: the ioctls table (EPERM, ENXIO, EOPNOTSUPP, EINVAL, EADDRNOTAVAIL), the routes and membership an address brings and takes, the record recycled, the memberships counted with the report and the leave message on the wire, the helpers"
+notes = "N6.4a: in.c: the address ioctls over the request's bytes (hal::pod at the C's offsets), NET_LOCK detached with the proof lent around the route steps and never across the driver's SIOCSIFADDR/SIOCSIFDSTADDR (a zeroed ifreq image, D-14; wg's wg_up may net_unlock); in_ifinit, in_purgeaddr, the host and prefix routes, in_broadcast (route.rs's copy gone), the multicast records with IGMP's join/leave, in_ifdetach; in_nam2sin/in_sa2sin answer a copy; bsd's sys/netinet/in_.rs keeps LZ's raw shapes as wrappers; tests: the ioctls table (EPERM, ENXIO, EOPNOTSUPP, EINVAL, EADDRNOTAVAIL), the routes and membership an address brings and takes, the record recycled, the memberships counted with the report and the leave message on the wire, the helpers; N6.5e (5e2): in_lookupmulti lends from the caller's witness of if_maddrlock, in_addmulti answers the membership's handle (a new record's or a clone of the list's), in_delmulti consumes it and at the last membership takes the list's off the list, both dropped at its end (the C's free); the never-reused deviation closed (if_detach empties the list)"
 
 [[module.fn]]
 lz = "sys/netinet/in_.rs::in_ifaddr_alloc"

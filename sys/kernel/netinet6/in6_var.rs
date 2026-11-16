@@ -100,13 +100,6 @@
 //! preferred/expire only.
 //!
 //! ## Deviations
-//! - A multicast record is never freed: the last `in6_delmulti` of a membership
-//!   ([`in6_multi_free`]) puts it on a free list, which the next allocation
-//!   ([`in6_multi_alloc`]) takes from before a new `malloc(9)` (`kernel::netinet::in_var`'s
-//!   shape, N6.4a's R1; D-2 of N6.5): `&'static` is then true for every holder (the
-//!   interface's list, the addresses' memberships, the pcbs' and pf's copies), and `vmstat
-//!   -m`'s `in_multi` row counts the records ever alive at once (a high-water mark) where the
-//!   C's falls after a leave. Counted handles follow the addresses' at N6.5e's 5e2.
 //! - The `ia_list` TAILQ entry is dropped: nothing links the records through it at the pin
 //!   (no `in6_ifaddr` list head exists in netinet6). The record's `ia_list` member is the
 //!   generic part's `ifa_list`.
@@ -120,9 +113,15 @@
 //!   `ifmatoin6m`: pointer casts checked by the address family, one `unsafe` each, and three
 //!   `unsafe impl Sync`) -> an address is held by a counted handle whose arm is its family
 //!   (`kernel::net::if_var::IfaddrRef::In6`, N6.5e): [`ifatoia6`] and [`In6Ifaddr::of`] match
-//!   the arm. A multicast record is still reached from its generic part through a back-link
-//!   set at creation (`Ifmaddr::ifma_in6`: one load where the C casts, the cast's family test
-//!   the link's presence: only `in6.c` makes `AF_INET6` records), until 5e2.
+//!   the arm. A multicast record likewise (`kernel::net::if_var::IfmaddrRef::In6`, N6.5e's
+//!   5e2): [`ifmatoin6m`] and [`In6Multi::of`].
+//! - A multicast record is one `malloc(9)` block of `M_IPMADDR` (`hal::malloc::MArc`, N6.5e's
+//!   5e2), made by [`in6_multi_alloc`] for its interface (its list cell keyed to that
+//!   interface's `if_maddrlock`) and freed with its last handle (`in6_delmulti`'s `free`): the
+//!   interface's list holds one, each membership one ([`In6Memberships`]' slots, nd6's proxy
+//!   join none: its membership is counted in `in6m_refcnt` alone, as the C's discarded
+//!   pointer). N6.5a's free list (and with it the high-water mark of `vmstat -m`'s
+//!   `in_multi` row) and the generic part's back-link to the record are gone.
 //! - An address is one `malloc(9)` block of `M_IFADDR` (`hal::malloc::MArc`, N6.5e), freed
 //!   with its last handle (`ifafree`'s `free`): `vmstat -m`'s `ifaddr` row falls with the live
 //!   addresses as the C's; the free list, its mutex and `in6_ifafree` are gone. The generic
@@ -146,14 +145,13 @@
 //!   one per purge, control path only (named in `kernel::netinet6::in6`'s lock table).
 //!
 //! **Lock and spl transitions** against the C: an address's allocation and last release are
-//! the C's `malloc` and `free`; the multicast free list's mutex once per allocation and per
-//! last release (the C's `malloc`/`free` take the allocator's); the memberships' mutex once
+//! the C's `malloc` and `free`, and so are a multicast record's (N6.5e's 5e2: the free
+//! list's mutex pair per allocation and per last release is gone); the memberships' mutex once
 //! per join and once per purge (above the C's none: the net lock serves it).
 
 use hal::intr::IPL_SOFTNET;
 use hal::link::{Link, SaBytes, SaWords};
-use hal::list::{List, ListEntry};
-use hal::malloc::{M_NOWAIT, M_WAITOK, MArc, MArray, MBox};
+use hal::malloc::{M_NOWAIT, M_WAITOK, MArc, MArray};
 use hal::mutex::Mutexed;
 use hal::refcnt::Refcnt;
 use hal::rwlock::Guarded;
@@ -165,7 +163,7 @@ use hal::sys::types::Time;
 
 use crate::assert::kpanic;
 use crate::net::if_::{IF_TMPLIST_LOCK, M_IFADDR};
-use crate::net::if_var::{AtomicCell, Ifaddr, IfaddrRef, Ifmaddr, Ifnet};
+use crate::net::if_var::{AtomicCell, Ifaddr, IfaddrRef, Ifmaddr, IfmaddrRef, Ifnet};
 use crate::netinet::in_var::M_IPMADDR;
 
 /// The size of a `struct sockaddr_in6`, its `sin6_len`.
@@ -294,11 +292,12 @@ impl In6AddrlifetimeCell {
 /// an address's `ia6_memberships`, and N6.5c's socket options): the records, the first
 /// [`len`](Self::len) slots of an `M_IPMADDR` array doubled when full (the module's
 /// deviations). A join appends, a leave finds its member (the C's `LIST_FOREACH`, O(n)) and
-/// closes the gap.
+/// closes the gap. Each slot holds the membership's handle of its record (`in6_addmulti`'s,
+/// which `in6_delmulti` takes back).
 #[derive(Default)]
 pub struct In6Memberships {
-    /// The records; `None` before the first join.
-    v: Option<MArray<Option<&'static In6Multi>>>,
+    /// The records' handles; `None` before the first join.
+    v: Option<MArray<Option<MArc<In6Multi>>>>,
     /// How many of `v`'s slots are in use.
     n: usize,
 }
@@ -322,29 +321,30 @@ impl In6Memberships {
     }
 
     /// The records, in the order they were joined.
-    pub fn iter(&self) -> impl Iterator<Item = &'static In6Multi> + '_ {
+    pub fn iter(&self) -> impl Iterator<Item = &In6Multi> + '_ {
         self.v
             .as_deref()
             .into_iter()
-            .flat_map(|v| v.iter().take(self.n).copied().flatten())
+            .flat_map(|v| v.iter().take(self.n).flatten().map(|m| &**m))
     }
 
     /// The C's `imm = malloc(sizeof(*imm), M_IPMADDR, M_NOWAIT)` before the join: room for one
     /// more membership, the array allocated (4 slots) or doubled when full, under the
     /// owner's mutex (malloc(9) allows `M_NOWAIT` there, and the old array is freed there
-    /// once copied); `Err(ENOBUFS)` when it cannot be had, before anything is joined.
+    /// once its handles moved); `Err(ENOBUFS)` when it cannot be had, before anything is
+    /// joined (and nothing moved: `MArray::new` fills the array only once it has it).
     pub fn reserve(&mut self) -> Result<(), hal::sys::errno::Errno> {
         let cap = self.v.as_deref().map_or(0, <[_]>::len);
         if self.n < cap {
             return Ok(());
         }
-        let old = self.v.as_deref().unwrap_or(&[]);
+        let old = self.v.as_deref_mut().unwrap_or(&mut []);
         let Some(nv) = MArray::new(M_IPMADDR, M_NOWAIT, (cap * 2).max(4), |i| {
-            old.get(i).copied().flatten()
+            old.get_mut(i).and_then(Option::take)
         }) else {
             return Err(hal::sys::errno::Errno::ENOBUFS);
         };
-        // The old array freed once copied.
+        // The old array, emptied, freed.
         self.v = Some(nv);
         Ok(())
     }
@@ -357,11 +357,13 @@ impl In6Memberships {
     /// (`kernel::netinet6::ip6_output`'s `join_group`, the C's `in6_joingroup` and
     /// `LIST_INSERT_HEAD` of `im6o_memberships`). Between a joiner's reserve and its push
     /// nothing else takes room in its set (a purge or a leave only frees it), so the room is
-    /// still there and the push cannot fail. Were it gone, the push reserves again
-    /// (`Err(ENOBUFS)` if that fails, the caller then leaving the group): a fallback no
-    /// caller reaches.
-    pub fn push(&mut self, in6m: &'static In6Multi) -> Result<(), hal::sys::errno::Errno> {
-        self.reserve()?;
+    /// still there and the push cannot fail. Were it gone, the push reserves again (the
+    /// handle given back if that fails, the C's `ENOBUFS`, the caller then leaving the group
+    /// with it): a fallback no caller reaches.
+    pub fn push(&mut self, in6m: MArc<In6Multi>) -> Result<(), MArc<In6Multi>> {
+        if self.reserve().is_err() {
+            return Err(in6m);
+        }
         match self.v.as_deref_mut().and_then(|v| v.get_mut(self.n)) {
             Some(slot) => *slot = Some(in6m),
             None => kpanic(format_args!(
@@ -374,8 +376,8 @@ impl In6Memberships {
     }
 
     /// `LIST_FIRST` and `LIST_REMOVE` of the list's head, the newest membership
-    /// (`LIST_INSERT_HEAD`'s): its record, its slot emptied.
-    pub fn pop_last(&mut self) -> Option<&'static In6Multi> {
+    /// (`LIST_INSERT_HEAD`'s): its record's handle, its slot emptied.
+    pub fn pop_last(&mut self) -> Option<MArc<In6Multi>> {
         let n = self.n.checked_sub(1)?;
         let last = self.v.as_deref_mut()?.get_mut(n)?.take();
         self.n = n;
@@ -383,18 +385,21 @@ impl In6Memberships {
     }
 
     /// `LIST_FOREACH` from the list's head, the newest first (`LIST_INSERT_HEAD`'s order),
-    /// to the first membership `matches` accepts, then `LIST_REMOVE` of it: its record, the
-    /// newer ones moved down one slot (the gap closed, the order kept). O(n) as the C's walk.
+    /// to the first membership `matches` accepts, then `LIST_REMOVE` of it: its record's
+    /// handle, the newer ones moved down one slot (the gap closed, the order kept). O(n) as
+    /// the C's walk.
     pub fn take_newest(
         &mut self,
-        mut matches: impl FnMut(&'static In6Multi) -> bool,
-    ) -> Option<&'static In6Multi> {
+        mut matches: impl FnMut(&In6Multi) -> bool,
+    ) -> Option<MArc<In6Multi>> {
         let n = self.n;
         let v = self.v.as_deref_mut()?;
-        let i = (0..n).rev().find(|&i| v[i].is_some_and(&mut matches))?;
+        let i = (0..n)
+            .rev()
+            .find(|&i| v[i].as_deref().is_some_and(&mut matches))?;
         let found = v[i].take();
-        v.copy_within(i + 1..n, i);
-        v[n - 1] = None;
+        // The emptied slot moves to the end of the ones in use.
+        v[i..n].rotate_left(1);
         self.n = n - 1;
         found
     }
@@ -473,7 +478,8 @@ impl In6Ifaddr {
     }
 }
 
-/// `struct in6_multi`: IPv6 multicast address structure.
+/// `struct in6_multi`: IPv6 multicast address structure. Held by counted handles (`MArc`,
+/// the module's redesign).
 pub struct In6Multi {
     /// `in6m_ifma`: protocol-independent info.
     pub in6m_ifma: Ifmaddr,
@@ -483,19 +489,17 @@ pub struct In6Multi {
     pub in6m_state: AtomicCell<u32>,
     /// \[m\] `in6m_timer`: MLD6 membership report.
     pub in6m_timer: AtomicCell<u32>,
-    /// The free list's entry (the module's deviations).
-    in6m_free: ListEntry<In6Multi>,
 }
 
 impl In6Multi {
-    /// A record every member of which is zero (`M_ZERO`).
-    const fn new() -> Self {
+    /// A record of `ifp` every member of which is zero (`M_ZERO`), its list cell keyed to
+    /// `ifp`'s `if_maddrlock`.
+    fn new(ifp: &Ifnet) -> Self {
         Self {
-            in6m_ifma: Ifmaddr::new(),
+            in6m_ifma: Ifmaddr::new(ifp),
             in6m_sin: Sin6Words::new(),
             in6m_state: AtomicCell::new(),
             in6m_timer: AtomicCell::new(),
-            in6m_free: ListEntry::new(),
         }
     }
 
@@ -517,25 +521,16 @@ impl In6Multi {
         self.in6m_sin.addr()
     }
 
-    /// `ifmatoin6m(ifma)` for a record that may not be an IPv6 one: `None` for another
-    /// family's.
+    /// `ifmatoin6m(ifma)` for a record that may not be an IPv6 one: its handle, `None` for
+    /// another family's (the handle's arm).
     #[inline]
-    pub fn of(ifma: &Ifmaddr) -> Option<&'static In6Multi> {
-        ifma.ifma_in6.get()
+    pub fn of(ifma: &IfmaddrRef) -> Option<&MArc<In6Multi>> {
+        match ifma {
+            IfmaddrRef::In6(in6m) => Some(in6m),
+            IfmaddrRef::In(_) => None,
+        }
     }
 }
-
-hal::list_adapter!(
-    /// The free list of IPv6 multicast records (the module's deviations).
-    Inm6FreeList: In6Multi, in6m_free
-);
-
-// The free list's mutex is IPL_SOFTNET: every taker runs at or below the softnet level,
-// never from a hardware interrupt: the allocation (`in6_addmulti`, process context or the
-// softnet tasks) and `in6_multi_free` (`in6_delmulti`'s).
-
-/// The IPv6 multicast records no interface has any more, for [`in6_multi_alloc`].
-static INM6_FREE: Mutexed<List<Inm6FreeList>> = Mutexed::new(IPL_SOFTNET, List::new());
 
 /// `ifatoia6(ifa)`: the IPv6 address an `AF_INET6` interface address is the first member of;
 /// `panic(9)` for another family's (where the C would cast it).
@@ -548,9 +543,9 @@ pub fn ifatoia6(ifa: &IfaddrRef) -> &In6Ifaddr {
 }
 
 /// `ifmatoin6m(ifma)`: the IPv6 multicast record an `AF_INET6` multicast address is the
-/// first member of; `panic(9)` for another family's.
+/// first member of; `panic(9)` for another family's (where the C would cast it).
 #[inline]
-pub fn ifmatoin6m(ifma: &Ifmaddr) -> &'static In6Multi {
+pub fn ifmatoin6m(ifma: &IfmaddrRef) -> &In6Multi {
     match In6Multi::of(ifma) {
         Some(in6m) => in6m,
         None => kpanic(format_args!("ifmatoin6m: not an inet6 record")),
@@ -649,44 +644,11 @@ pub fn in6_ifaddr_alloc(ifp: &'static Ifnet, now: Time) -> MArc<In6Ifaddr> {
     }
 }
 
-/// `malloc(sizeof(*in6m), M_IPMADDR, M_NOWAIT | M_ZERO)` (`in6_addmulti`'s new record), a
-/// record off the free list first; `None` when the allocator has none (the C's `ENOBUFS`).
-pub fn in6_multi_alloc() -> Option<&'static In6Multi> {
-    let reused = INM6_FREE.lock().pop_head();
-    if let Some(in6m) = reused {
-        let ifma = &in6m.in6m_ifma;
-        if List::<crate::net::if_var::IfMaddrlist>::is_linked(ifma) {
-            kpanic(format_args!("in6_multi_alloc: a recycled record on a list"));
-        }
-        ifma.ifma_ifidx.set(0);
-        in6m.in6m_sin.set(SockaddrIn6::default());
-        in6m.in6m_state.set(0);
-        in6m.in6m_timer.set(0);
-        Some(in6m)
-    } else {
-        let in6m = MBox::leak(MBox::new(M_IPMADDR, M_NOWAIT, In6Multi::new())?);
-        in6m.in6m_ifma.ifma_in6.set(Some(in6m));
-        Some(in6m)
-    }
-}
-
-/// `free(in6m, M_IPMADDR, sizeof(*in6m))`: the record onto the free list (the module's
-/// deviations).
-pub(crate) fn in6_multi_free(in6m: &'static In6Multi) {
-    INM6_FREE.lock().insert_tail(in6m);
-}
-
-/// Forgets the multicast records' free list without touching its records, which an earlier
-/// test's memory holds (`setup_real_memory`'s rule, testing.md).
-#[cfg(any(test, feature = "doubles"))]
-pub fn in6_var_test_reset() {
-    *INM6_FREE.lock() = List::new();
-}
-
-/// The multicast records' free list's length, for the tests.
-#[cfg(test)]
-pub(crate) fn inm6_free_count() -> usize {
-    INM6_FREE.lock().iter().count()
+/// `malloc(sizeof(*in6m), M_IPMADDR, M_NOWAIT | M_ZERO)` (`in6_addmulti`'s new record) for
+/// a group of `ifp`: one handle, the block freed with the last (`free(in6m, M_IPMADDR,
+/// sizeof(*in6m))`); `None` when the allocator has none (the C's `ENOBUFS`).
+pub fn in6_multi_alloc(ifp: &Ifnet) -> Option<MArc<In6Multi>> {
+    MArc::new(M_IPMADDR, M_NOWAIT, In6Multi::new(ifp))
 }
 /* </CODE> */
 
@@ -710,7 +672,12 @@ mod tests {
         // 16-byte handle) where the C has two TAILQ entries (32), and its addresses' words
         // with no link to them; IPv6's NULL ifa_dstaddr is one bool. `rt_ifa` grows from a
         // pointer to a cell of the handle: +24 on the route. Ifmaddr loses its unread
-        // ifma_addr (24).
+        // ifma_addr (24). 5e2: a multicast record is an MArc block of M_IPMADDR too; its
+        // generic part holds the chain's cell (32, a TAILQ entry's 16 in the C), the count and
+        // the index, no back-links and no free list's entry: InMulti 112 -> 80 (block 96),
+        // In6Multi 112 -> 80 (block 96, the C's in6_multi 80); InIfaddr's `ia_allhosts` is a
+        // `ReadMostly` of the membership's handle (16 where the Link was 8): 192 -> 200 (block
+        // 216, the same 256 bucket).
         let sizes = [
             size_of::<Ifaddr>(),
             size_of::<IfaddrRef>(),
@@ -725,14 +692,16 @@ mod tests {
         ];
         assert_eq!(sizes[..3], [16, 16, 16]);
         assert_eq!(sizes[3], 72, "IfaddrLinked");
-        assert_eq!((sizes[4], sizes[5]), (192, 312), "InIfaddr, In6Ifaddr");
-        assert_eq!(sizes[6..9], [48, 112, 112]);
+        assert_eq!((sizes[4], sizes[5]), (200, 312), "InIfaddr, In6Ifaddr");
+        assert_eq!(sizes[6..9], [40, 80, 80], "Ifmaddr, InMulti, In6Multi");
         assert_eq!(
             sizes[9], 328,
             "Rtentry (304 before: rt_ifa was an 8-byte Link)"
         );
         assert_eq!(size_of::<hal::rwlock::Guarded<Option<IfaddrRef>>>(), 32);
         assert_eq!(size_of::<hal::malloc::MArc<InIfaddr>>(), 8);
+        assert_eq!(size_of::<crate::net::if_var::IfmaddrRef>(), 16);
+        assert_eq!(size_of::<Option<crate::net::if_var::IfmaddrRef>>(), 16);
         assert_eq!(size_of::<Mutexed<In6Memberships>>(), 64);
     }
 

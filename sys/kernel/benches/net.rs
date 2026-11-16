@@ -3375,7 +3375,6 @@ fn nd6_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
         maxplen: 128,
         sasize: 28,
     }]);
-    kernel::netinet6::in6_var::in6_var_test_reset();
     nd6_test_reset();
     dad_test_reset();
     nd6_init();
@@ -3538,7 +3537,6 @@ fn inet6_output_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, 
         maxplen: 128,
         sasize: 28,
     }]);
-    kernel::netinet6::in6_var::in6_var_test_reset();
     kernel::netinet6::nd6::nd6_test_reset();
     kernel::netinet6::nd6_nbr::dad_test_reset();
     kernel::netinet6::nd6::nd6_init();
@@ -3675,7 +3673,6 @@ fn inet6_input_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f
         maxplen: 128,
         sasize: 28,
     }]);
-    kernel::netinet6::in6_var::in6_var_test_reset();
     kernel::netinet6::nd6::nd6_test_reset();
     kernel::netinet6::nd6_nbr::dad_test_reset();
     kernel::netinet6::frag6::frag6_test_reset();

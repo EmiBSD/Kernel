@@ -155,8 +155,9 @@
 //!   `SS_PRIV` and the kernel copy of the request, handed whole to the kernel's `in6_control`
 //!   (ND's two requests included since N6.5b; `bsd`'s tests call the kernel's `in6_ioctl` over
 //!   the request's bytes).
-//! - `in6_addmulti` and `in6_delmulti` keep LZ's signatures, the net lock's proof made through
-//!   the `SaToken` (their callers hold it: the MLD tests of `netinet6/mld6.rs`). The socket
+//! - `in6_addmulti` and `in6_delmulti` keep LZ's arguments, the net lock's proof made through
+//!   the `SaToken` (their callers hold it: the MLD tests of `netinet6/mld6.rs`); the record is
+//!   the kernel's counted handle (N6.5e: the membership's, answered and taken back). The socket
 //!   options' `in6_joingroup` and `in6_leavegroup` are the kernel's since N6.5c
 //!   (`kernel::netinet6::ip6_output`, over `In6Memberships`).
 
@@ -167,6 +168,7 @@ use crate::sys::errno::Errno;
 use crate::sys::mbuf::{Mbuf, mtod};
 use crate::sys::socket::Sockaddr;
 use crate::sys::socketvar::{SS_PRIV, Socket};
+use hal::malloc::MArc;
 
 pub use hal::sys::netinet6_in6::*;
 pub use kernel::netinet6::in6::{
@@ -213,13 +215,15 @@ pub fn in6_control(
     kernel::netinet6::in6::in6_control(so.has_state(SS_PRIV), cmd, data, ifp)
 }
 
-/// `in6_addmulti(addr, ifp, &error)`: the kernel's, under the net lock the caller holds.
-pub fn in6_addmulti(addr: &In6Addr, ifp: &'static Ifnet) -> Result<&'static In6Multi, Errno> {
+/// `in6_addmulti(addr, ifp, &error)`: the kernel's, under the net lock the caller holds; the
+/// membership's handle of the record.
+pub fn in6_addmulti(addr: &In6Addr, ifp: &'static Ifnet) -> Result<MArc<In6Multi>, Errno> {
     kernel::netinet6::in6::in6_addmulti(addr, ifp, net_held("in6_addmulti").net())
 }
 
-/// `in6_delmulti(in6m)`: the kernel's, under the net lock the caller holds.
-pub fn in6_delmulti(in6m: &'static In6Multi) {
+/// `in6_delmulti(in6m)`: the kernel's, under the net lock the caller holds; the membership's
+/// handle given back.
+pub fn in6_delmulti(in6m: MArc<In6Multi>) {
     kernel::netinet6::in6::in6_delmulti(in6m, net_held("in6_delmulti").net());
 }
 /* </CODE> */

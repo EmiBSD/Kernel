@@ -469,7 +469,7 @@ pub fn igmp_input(m: MbufBox, off: i32, net: &NetHeld<'_>) -> Option<MbufBox> {
 fn igmp_query(ifp: &Ifnet, dst: u32, timer: u32) -> bool {
     let mut running = false;
     let w = ifp.rt().if_maddrlock.write();
-    for inm in ifp.if_maddrlist.iter().filter_map(InMulti::of) {
+    for inm in ifp.if_maddrlist().iter(&w).filter_map(InMulti::of) {
         let group = inm.inm_addr().s_addr;
         if timer == 0 {
             if inm.inm_timer.get() == 0 && !in_local_group(group) {
@@ -778,7 +778,7 @@ fn igmp_checktimer(ifp: &Ifnet, pktlist: &mut Option<MBox<PktNode>>) -> bool {
     let mut type_ = 0;
 
     let w = ifp.rt().if_maddrlock.write();
-    for inm in ifp.if_maddrlist.iter().filter_map(InMulti::of) {
+    for inm in ifp.if_maddrlist().iter(&w).filter_map(InMulti::of) {
         let timer = inm.inm_timer.get();
         if timer == 0 {
             // do nothing

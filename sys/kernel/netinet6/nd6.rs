@@ -1265,10 +1265,14 @@ pub fn nd6_rtrequest(ifp: &'static Ifnet, req: u8, rt: &Rtentry, net: &NetHeld<'
                 let llsol = nd6_llsol(&rt_key_in6(rt), ifp);
 
                 hal::klock::kernel_lock();
-                // in6_lookupmulti's if_maddrlock, read (the module's deviations).
+                // in6_lookupmulti's if_maddrlock, read (the module's deviations). The C
+                // keeps the uncounted pointer past the lookup (its kernel lock alone keeps
+                // it); here a handle cloned before the witness ends, which in6_delmulti
+                // consumes (the proxy's join holds none: RTM_ADD drops the one in6_addmulti
+                // gives, as the C discards its pointer).
                 let in6m = {
                     let r = ifp.rt().if_maddrlock.read();
-                    in6_lookupmulti(&llsol, ifp, &r)
+                    in6_lookupmulti(&llsol, ifp, &r).cloned()
                 };
                 if let Some(in6m) = in6m {
                     in6_delmulti(in6m, net);
@@ -1397,7 +1401,9 @@ fn nd6_rtrequest_add(ifp: &'static Ifnet, req: u8, rt: &Rtentry, net: &NetHeld<'
         let llsol = nd6_llsol(&key, ifp);
 
         hal::klock::kernel_lock();
-        let _ = in6_addmulti(&llsol, ifp, net);
+        // The membership counted in the record (`in6m_refcnt`); its handle dropped here, as
+        // the C discards the pointer: the list keeps the record, RTM_DELETE leaves it.
+        drop(in6_addmulti(&llsol, ifp, net));
         hal::klock::kernel_unlock();
     }
 }

@@ -425,7 +425,7 @@ pub fn mld6_input(m: MbufBox, off: i32, net: &NetHeld<'_>) {
 
             let mut pktlist: Option<MBox<PktNode>> = None;
             let w = ifp.rt().if_maddrlock.write();
-            for in6m in ifp.if_maddrlist.iter().filter_map(In6Multi::of) {
+            for in6m in ifp.if_maddrlist().iter(&w).filter_map(In6Multi::of) {
                 let addr = in6m.in6m_addr();
                 if in6_are_addr_equal(&addr, &all_nodes)
                     || __ipv6_addr_mc_scope(&addr) < __IPV6_ADDR_SCOPE_LINKLOCAL
@@ -531,7 +531,7 @@ fn mld6_checktimer(ifp: &Ifnet, pktlist: &mut Option<MBox<PktNode>>) -> bool {
     let mut running = false;
 
     let w = ifp.rt().if_maddrlock.write();
-    for in6m in ifp.if_maddrlist.iter().filter_map(In6Multi::of) {
+    for in6m in ifp.if_maddrlist().iter(&w).filter_map(In6Multi::of) {
         let timer = in6m.in6m_timer.get();
         if timer == 0 {
             // do nothing
