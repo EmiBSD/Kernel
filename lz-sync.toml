@@ -1272,3 +1272,13 @@ status = "applied"
 emibsd = "d8a10ef623c7"
 method = "cherry-pick-conflicts"
 reason = "the smokeall.rs half only: a hung recipe's process tree is listed from one ps -ax cut down to the tree's lines, since OpenBSD's ps -p takes one pid; the rest (smoke-selfhost-ci, /src/ci.sh, selfhost --rev, LZ's docs) is LZ's self-hosting tooling, which native does not have"
+
+[[commit]]
+lz = "df8508cf1682"
+subject = "arch/arm64: no adopted kernel mapping is executable at EL0"
+modules = ["sys/hal/arch/arm64/pmap/backend.rs"]
+status = "applied"
+emibsd = "7c34f5b526cc"
+method = "reimplemented"
+reason = "security fix (kernel memory executable from EL0's point of view in the adopted tables; with FEAT_PAN3 every privileged read of it faults): hal's pmap already took execution away below the direct map's level-0 table entries (PXNTable and UXNTable, HPD cleared), and native's kernel boots under hvf where LZ's crashed; the fix is taken at the leaf too, in pmap_kernel_nonglobal's pass (ATTR_UXN with ATTR_nG on every kernel block and page before the switch), and pmap_kernel_nonglobal_check panics at postinit on a kernel leaf without it, so every boot proves the rule"
+security = true
