@@ -367,3 +367,4 @@ metadata:
 - Deleting a bsd module whose `mod` line carries `#[forbid(unsafe_code)]` in `mod.rs`: remove the attribute line too, or it lands on the next `pub mod` (N6.6a1: it fell on tcp_input, which has `unsafe`).
 - The reference symlinks show as `??` in `git status` (the .gitignore patterns end in `/`, which a symlink does not match): stage by name, never with a pattern (N6.6a1).
 - macOS has no `timeout(1)`: bound a test run with `perl -e 'alarm 40; exec @ARGV' <test binary> <filter>` to find which test of a hanging run spins (N6.6a1).
+- A lineage.toml editor must not normalise blank lines globally (`replace('\n\n\n', '\n\n')`): it removed 13 unrelated ones at N6.6a1; restore with difflib over the base (pure-blank `delete` opcodes) and delete a block with its own trailing blank line only.
