@@ -817,6 +817,8 @@ pub fn tcp_timer_2msl<G: ProcGlue>(arg: &AnyArc) {
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
+    use hal::sys::netinet_tcp::{TH_ACK, TH_RST};
+
     use super::*;
     use crate::netinet::tcp_subr::testtcp;
 
@@ -866,8 +868,8 @@ mod tests {
         let (_g, _p) = testtcp::setup();
         let (so, inp) = testtcp::conn();
         let arg = PoolArc::erase(inp.clone());
-        // Each check of tcp_timer_enter stops the callout before its work (which is N6.6a3's
-        // and panics): a disarmed timer (its flag clear) ...
+        // Each check of tcp_timer_enter stops the callout before its work (which would send
+        // a retransmission here): a disarmed timer (its flag clear) ...
         tcp_timer_rexmt::<testtcp::G>(&arg);
         // ... a rescheduled one (its flag set, the timeout pending again) ...
         testtcp::with_tp(&inp, |mut tp| {
@@ -986,6 +988,304 @@ mod tests {
             drop(inp);
             drop(so);
         }
+    }
+
+    /// Makes timer `t` of `inp`'s connection come due: its timeout taken off the wheel with
+    /// its flag kept (what the wheel leaves when it runs the callout).
+    fn due(inp: &Inpcb<testtcp::G>, t: usize) {
+        testtcp::with_tp(inp, |tp| {
+            let _ = tp.cb.t_timer[t].del();
+            tp.st.set_flags(TF_TIMER << t);
+            ((), None)
+        });
+    }
+
+    #[test]
+    fn the_retransmit_timer_backs_off_and_sends_again_from_snd_una() {
+        use crate::netinet::tcp_var::{TF_SEND_CWR, TcpstatCounters as C};
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, d) = testtcp::estab(b"ttmr0", 30);
+        let data = testtcp::pattern(300);
+        testtcp::queue(&so, &data);
+        let arg = PoolArc::erase(inp.clone());
+        // The segment out, its retransmit timer running.
+        let r = testtcp::with_tp(&inp, |mut tp| {
+            (crate::netinet::tcp_output::tcp_output(&mut tp), None)
+        });
+        assert_eq!(r, Ok(()));
+        let first = testtcp::sent(d);
+        let timeo = testtcp::stat(C::TcpsRexmttimeo);
+        due(&inp, TCPT_REXMT);
+        tcp_timer_rexmt::<testtcp::G>(&arg);
+        let (shift, rxtcur, expect, cwnd, maxseg, nxt, cwr, pending) =
+            testtcp::with_tp(&inp, |tp| {
+                let st = &*tp.st;
+                // TCPT_RANGESET(rto * tcp_backoff[1], t_rttmin, TCPTV_REXMTMAX).
+                let rto = (tcp_rexmtval(st) as u32).max(st.t_rttmin);
+                (
+                    (
+                        st.t_rxtshift,
+                        st.t_rxtcur,
+                        tcpt_rangeset(rto * 2, st.t_rttmin, TCPTV_REXMTMAX as u32) as i32,
+                        st.snd_cwnd,
+                        u64::from(st.t_maxseg),
+                        st.snd_nxt,
+                        st.has_flags(TF_SEND_CWR),
+                        tp.cb.t_timer[TCPT_REXMT].pending(),
+                    ),
+                    None,
+                )
+            });
+        assert_eq!(shift, 1);
+        assert_eq!(rxtcur, expect, "the timeout backed off");
+        assert_eq!(cwnd, maxseg, "slow start from one segment");
+        assert!(cwr && pending, "CWR to send, the timer running again");
+        assert_eq!(
+            nxt, 1300,
+            "snd_nxt pulled back to snd_una, then past the resend"
+        );
+        assert_eq!(testtcp::sent(d), first + 1, "the data again");
+        let (_ip, th, _o, payload) = testtcp::last(d);
+        assert_eq!(u32::from_be(th.th_seq), 1000);
+        assert_eq!(payload, data);
+        assert_eq!(testtcp::stat(C::TcpsRexmttimeo), timeo + 1);
+        drop(arg);
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn the_retransmit_timer_drops_past_its_last_shift_with_the_soft_error() {
+        use crate::netinet::tcp_var::TcpstatCounters as C;
+        let (_g, _p) = testtcp::setup();
+        let tcpcbs = testtcp::tcpcbs();
+        for (name, n, soft, want) in [
+            (b"ttmr1", 31, None, Errno::ETIMEDOUT),
+            (b"ttmr2", 36, Some(Errno::EHOSTUNREACH), Errno::EHOSTUNREACH),
+        ] {
+            let (so, inp, d) = testtcp::estab(name, n);
+            let arg = PoolArc::erase(inp.clone());
+            testtcp::with_tp(&inp, |tp| {
+                tp.st.t_rxtshift = TCP_MAXRXTSHIFT as i16;
+                tp.st.t_softerror = soft;
+                ((), None)
+            });
+            so.st_set(crate::net::sockbuf::SS_NOFDREF);
+            let (drops, before) = (testtcp::stat(C::TcpsTimeoutdrop), testtcp::sent(d));
+            due(&inp, TCPT_REXMT);
+            tcp_timer_rexmt::<testtcp::G>(&arg);
+            assert_eq!(testtcp::stat(C::TcpsTimeoutdrop), drops + 1);
+            assert_eq!(so.error(), Some(want));
+            // Synchronized: tcp_drop's RST (CLOSED's flags) before the close.
+            assert_eq!(testtcp::sent(d), before + 1);
+            let (_ip, th, _o, _p) = testtcp::last(d);
+            assert_eq!(th.th_flags, TH_RST | TH_ACK);
+            assert_eq!(testtcp::tcpcbs(), tcpcbs, "the control block freed");
+            drop(arg);
+            drop(inp);
+            drop(so);
+        }
+    }
+
+    #[test]
+    fn the_retransmit_timeout_keeps_the_macros_int_order() {
+        // TCPT_RANGESET assigns the u_int product to the int t_rxtcur first: past INT_MAX it
+        // is negative, under neither bound (the unsigned minimum and the int maximum), and
+        // stays (the C's); clamping the product unsigned would give TCPTV_REXMTMAX.
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, _d) = testtcp::estab(b"ttmr7", 37);
+        let arg = PoolArc::erase(inp.clone());
+        testtcp::with_tp(&inp, |tp| {
+            // TCP_REXMTVAL = ((2^30 >> 3) + 0) >> 2 = 2^25; tcp_backoff[6] = 64: 2^31.
+            tp.st.t_srtt = 1 << 30;
+            tp.st.t_rttvar = 0;
+            tp.st.t_rxtshift = 5;
+            ((), None)
+        });
+        due(&inp, TCPT_REXMT);
+        tcp_timer_rexmt::<testtcp::G>(&arg);
+        let rxtcur = testtcp::with_tp(&inp, |tp| (tp.st.t_rxtcur, None));
+        assert_eq!(rxtcur, i32::MIN);
+        drop(arg);
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn a_path_mtu_notice_kept_by_tcp_ctlinput_is_acted_on_by_the_retransmit_timer() {
+        let (_g, _p) = testtcp::setup();
+        // A peer behind a gateway, whose route icmp_mtudisc clones into a host route.
+        let (so, inp, _d) = testtcp::estab_to(b"ttmr3", 32, [10, 20, 32, 2]);
+        let arg = PoolArc::erase(inp.clone());
+        testtcp::with_tp(&inp, |tp| {
+            let st = tp.st;
+            st.snd_max = 1300;
+            st.set_flags(TF_PMTUD_PEND);
+            st.t_pmtud_th_seq = 1000;
+            st.t_pmtud_nextmtu = u32::from(1000u16.to_be());
+            st.t_pmtud_ip_len = 1040u16.to_be();
+            st.t_pmtud_ip_hl = 5;
+            ((), None)
+        });
+        due(&inp, TCPT_REXMT);
+        tcp_timer_rexmt::<testtcp::G>(&arg);
+        // No back off: the notice made the route's MTU 1000 (icmp_mtudisc) and tcp_mtudisc
+        // took the segment size from it, for every connection to the peer.
+        let (pend, shift, maxseg) = testtcp::with_tp(&inp, |tp| {
+            (
+                (
+                    tp.st.has_flags(TF_PMTUD_PEND),
+                    tp.st.t_rxtshift,
+                    tp.st.t_maxseg,
+                ),
+                None,
+            )
+        });
+        assert!(!pend, "the notice consumed");
+        assert_eq!(shift, 0, "no retransmission back off");
+        assert_eq!(maxseg, 1000 - 40, "the new path MTU less the headers");
+        drop(arg);
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn the_persist_timer_forces_a_byte_into_a_closed_window_then_drops() {
+        use crate::netinet::tcp_var::TcpstatCounters as C;
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, d) = testtcp::estab(b"ttmr4", 33);
+        let data = testtcp::pattern(100);
+        testtcp::queue(&so, &data);
+        let arg = PoolArc::erase(inp.clone());
+        let (r, persisting) = testtcp::with_tp(&inp, |mut tp| {
+            tp.st.snd_wnd = 0;
+            let r = crate::netinet::tcp_output::tcp_output(&mut tp);
+            ((r, tcp_timer_isarmed(tp.st, TCPT_PERSIST)), None)
+        });
+        assert_eq!((r, persisting), (Ok(()), true), "persisting");
+        let (before, probes) = (testtcp::sent(d), testtcp::stat(C::TcpsSndprobe));
+        due(&inp, TCPT_PERSIST);
+        tcp_timer_persist::<testtcp::G>(&arg);
+        assert_eq!(testtcp::sent(d), before + 1, "a window probe");
+        assert_eq!(testtcp::stat(C::TcpsSndprobe), probes + 1);
+        let (_ip, th, _o, payload) = testtcp::last(d);
+        assert_eq!(u32::from_be(th.th_seq), 1000);
+        assert_eq!(payload, &data[..1], "one byte");
+        let (force, nxt, max, shift) = testtcp::with_tp(&inp, |tp| {
+            let st = &*tp.st;
+            ((st.t_force, st.snd_nxt, st.snd_max, st.t_rxtshift), None)
+        });
+        assert!(!force);
+        assert_eq!((nxt, max), (1000, 1001), "persist state: snd_max only");
+        assert_eq!(shift, 2, "backed off again");
+
+        // At the last shift, silent past tcp_maxpersistidle: dropped.
+        testtcp::with_tp(&inp, |tp| {
+            let st = tp.st;
+            st.t_rxtshift = TCP_MAXRXTSHIFT as i16;
+            st.t_rcvtime = 0;
+            ((), None)
+        });
+        so.st_set(crate::net::sockbuf::SS_NOFDREF);
+        let pdrops = testtcp::stat(C::TcpsPersistdrop);
+        due(&inp, TCPT_PERSIST);
+        tcp_timer_persist::<testtcp::G>(&arg);
+        assert_eq!(testtcp::stat(C::TcpsPersistdrop), pdrops + 1);
+        assert_eq!(so.error(), Some(Errno::ETIMEDOUT));
+        drop(arg);
+        drop(inp);
+        drop(so);
+    }
+
+    #[test]
+    fn the_keep_alive_timer_probes_an_idle_connection_and_drops_an_embryonic_one() {
+        use crate::netinet::tcp_fsm::TCPS_SYN_SENT;
+        use crate::netinet::tcp_var::TcpstatCounters as C;
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, d) = testtcp::estab(b"ttmr5", 34);
+        let arg = PoolArc::erase(inp.clone());
+        // Keep alive off: re-armed with tcp_keepidle, nothing sent.
+        let before = testtcp::sent(d);
+        due(&inp, TCPT_KEEP);
+        tcp_timer_keep::<testtcp::G>(&arg);
+        assert_eq!(testtcp::sent(d), before);
+        let armed = testtcp::with_tp(&inp, |tp| (tp.cb.t_timer[TCPT_KEEP].pending(), None));
+        assert!(armed);
+
+        // Keep alive on: a probe at snd_una - 1 acknowledging rcv_nxt.
+        so.set_options_legacy(SO_KEEPALIVE, true);
+        let probes = testtcp::stat(C::TcpsKeepprobe);
+        due(&inp, TCPT_KEEP);
+        tcp_timer_keep::<testtcp::G>(&arg);
+        assert_eq!(testtcp::sent(d), before + 1);
+        assert_eq!(testtcp::stat(C::TcpsKeepprobe), probes + 1);
+        let (_ip, th, _o, payload) = testtcp::last(d);
+        assert_eq!(th.th_flags, TH_ACK);
+        assert_eq!(
+            (u32::from_be(th.th_seq), u32::from_be(th.th_ack)),
+            (999, 5000)
+        );
+        assert!(payload.is_empty());
+
+        // Not established yet: dropped, no RST (nothing received).
+        testtcp::with_tp(&inp, |tp| {
+            tp.st.t_state = TCPS_SYN_SENT;
+            ((), None)
+        });
+        so.st_set(crate::net::sockbuf::SS_NOFDREF);
+        let (kd, cd) = (
+            testtcp::stat(C::TcpsKeepdrops),
+            testtcp::stat(C::TcpsConndrops),
+        );
+        due(&inp, TCPT_KEEP);
+        tcp_timer_keep::<testtcp::G>(&arg);
+        assert_eq!(testtcp::sent(d), before + 1, "no RST before a SYN came");
+        assert_eq!(
+            (
+                testtcp::stat(C::TcpsKeepdrops),
+                testtcp::stat(C::TcpsConndrops)
+            ),
+            (kd + 1, cd + 1)
+        );
+        assert_eq!(so.error(), Some(Errno::ETIMEDOUT));
+        drop(arg);
+        drop(inp);
+        drop(so);
+    }
+
+    #[test]
+    fn the_delayed_ack_timer_sends_the_ack() {
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, d) = testtcp::estab(b"ttmr6", 35);
+        let arg = PoolArc::erase(inp.clone());
+        let before = testtcp::sent(d);
+        due(&inp, TCPT_DELACK);
+        tcp_timer_delack::<testtcp::G>(&arg);
+        assert_eq!(testtcp::sent(d), before + 1);
+        let (_ip, th, _o, _p) = testtcp::last(d);
+        assert_eq!(th.th_flags, TH_ACK);
+        assert_eq!(u32::from_be(th.th_ack), 5000);
+        let (acknow, armed) = testtcp::with_tp(&inp, |tp| {
+            (
+                (
+                    tp.st.has_flags(TF_ACKNOW),
+                    tcp_timer_isarmed(tp.st, TCPT_DELACK),
+                ),
+                None,
+            )
+        });
+        assert!(!acknow && !armed);
+        drop(arg);
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn slowtimo_advances_the_iss() {
+        let (_g, _p) = testtcp::setup();
+        let before = *TCP_ISS.lock();
+        tcp_slowtimo();
+        assert_eq!(
+            *TCP_ISS.lock(),
+            before.wrapping_add(TCP_ISSINCR2 / 2),
+            "TCP_ISSINCR2 / PR_SLOWHZ"
+        );
     }
 }
 /* </TESTS> */

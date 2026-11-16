@@ -1389,3 +1389,413 @@ pub fn tcp_setpersist<G: ProcGlue>(tp: &mut Tp<'_, '_, G>) {
     }
 }
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    // Host tests of the kernel's `tcp_output`: the segments as the wire sees them (headers,
+    // options, payload, the state after them) over a test interface, the SACK hole's
+    // retransmission and its list back in the control block, TSO's cut, the persist state,
+    // and the signature's refusal without an SA.
+
+    use super::*;
+    use crate::netinet::tcp_fsm::TCPS_SYN_SENT;
+    use crate::netinet::tcp_subr::testtcp::{self, estab, last, pattern, queue, sent, stat};
+    use crate::netinet::tcp_var::{TF_NODELAY, TcpstatCounters as C, Tp};
+
+    type G = testtcp::G;
+
+    /// Runs `tcp_output` on `inp`'s connection after `prep`, the answer and a reader's view
+    /// of the state after it (`look`).
+    fn output<R>(
+        inp: &Inpcb<G>,
+        prep: impl FnOnce(&mut Tp<'_, '_, G>),
+        look: impl FnOnce(&Tp<'_, '_, G>) -> R,
+    ) -> (Result<(), Errno>, R) {
+        testtcp::with_tp(inp, |mut tp| {
+            prep(&mut tp);
+            let r = tcp_output(&mut tp);
+            ((r, look(&tp)), None)
+        })
+    }
+
+    #[test]
+    fn a_data_segment_goes_out_as_the_c_builds_it() {
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, d) = estab(b"tout0", 20);
+        let data = pattern(300);
+        queue(&so, &data);
+        let (pack, byte, total, timed) = (
+            stat(C::TcpsSndpack),
+            stat(C::TcpsSndbyte),
+            stat(C::TcpsSndtotal),
+            stat(C::TcpsSegstimed),
+        );
+        let before = sent(d);
+        let (r, after) = output(
+            &inp,
+            |_| {},
+            |tp| {
+                let st = &*tp.st;
+                (
+                    (st.snd_nxt, st.snd_max, st.t_rtseq, st.t_rtttime != 0),
+                    (st.rcv_adv, st.last_ack_sent, st.has_flags(TF_ACKNOW)),
+                    (
+                        tcp_timer_isarmed(st, TCPT_REXMT),
+                        tp.cb.t_timer[TCPT_REXMT].pending(),
+                        st.t_pmtud_mtu_sent,
+                    ),
+                )
+            },
+        );
+        assert_eq!(r, Ok(()));
+        assert_eq!(sent(d), before + 1, "one segment");
+        let (ip, th, opts, payload) = last(d);
+        // The IP header: the length, the pcb's TTL and TOS, the template's addresses.
+        assert_eq!(u16::from_be(ip.ip_len), 340);
+        assert_eq!(ip.ip_ttl, inp.inp_ip.get().ip_ttl);
+        assert_eq!(ip.ip_tos, 0);
+        assert_eq!(ip.ip_p, IPPROTO_TCP as u8);
+        assert_eq!(ip.ip_src.s_addr, u32::from_ne_bytes([10, 9, 20, 1]));
+        assert_eq!(ip.ip_dst.s_addr, u32::from_ne_bytes([10, 9, 20, 2]));
+        // The TCP header: the ports, our next byte, the peer's next, ACK and PUSH (all the
+        // buffer goes), the window of the receive buffer, no options.
+        assert_eq!(
+            (u16::from_be(th.th_sport), u16::from_be(th.th_dport)),
+            (7000, 80)
+        );
+        assert_eq!(
+            (u32::from_be(th.th_seq), u32::from_be(th.th_ack)),
+            (1000, 5000)
+        );
+        assert_eq!((th.th_off(), th.th_x2()), (5, 0));
+        assert_eq!(th.th_flags, TH_ACK | TH_PUSH);
+        assert_eq!(u16::from_be(th.th_win), 16384);
+        assert_eq!(th.th_urp, 0);
+        assert!(opts.is_empty());
+        assert_eq!(payload, data, "the send buffer's bytes");
+        // The state: the sequence space advanced, the segment timed, the retransmit timer
+        // running, the window advertised, the ACK owed sent.
+        let ((nxt, max, rtseq, timing), (adv, lastack, acknow), (rexmt, pending, mtu)) = after;
+        assert_eq!((nxt, max, rtseq, timing), (1300, 1300, 1000, true));
+        assert_eq!((adv, lastack, acknow), (5000 + 16384, 5000, false));
+        assert_eq!((rexmt, pending, mtu), (true, true, 340));
+        assert_eq!(stat(C::TcpsSndpack), pack + 1);
+        assert_eq!(stat(C::TcpsSndbyte), byte + 300);
+        assert_eq!(stat(C::TcpsSndtotal), total + 1);
+        assert_eq!(stat(C::TcpsSegstimed), timed + 1);
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn a_syn_carries_its_options_in_the_cs_order() {
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, d) = estab(b"tout1", 21);
+        let t0 = tcp_now();
+        let (r, nxt) = output(
+            &inp,
+            |tp| {
+                let st = &mut *tp.st;
+                st.t_state = TCPS_SYN_SENT;
+                st.snd_una = 1000;
+                st.snd_nxt = 1000;
+                st.snd_max = 1000;
+                st.set_flags(TF_REQ_SCALE | TF_REQ_TSTMP);
+                st.request_r_scale = 3;
+                st.ts_modulate = 0x10;
+                st.ts_recent = 0;
+            },
+            |tp| (tp.st.snd_nxt, tp.st.snd_max),
+        );
+        let t1 = tcp_now();
+        assert_eq!(r, Ok(()));
+        let (_ip, th, opts, payload) = last(d);
+        assert_eq!(th.th_flags, TH_SYN, "SYN_SENT's flags");
+        assert_eq!(u32::from_be(th.th_seq), 1000, "the iss");
+        assert_eq!(th.th_off(), (20 + 24) / 4);
+        assert!(payload.is_empty());
+        // MSS (the interface's 1500 less the headers), SACK permitted, window scale 3, the
+        // timestamps (our clock and its modulation, the peer's 0): the C's order.
+        assert_eq!(
+            &opts[..4],
+            &[
+                TCPOPT_MAXSEG,
+                4,
+                1460u16.to_be_bytes()[0],
+                1460u16.to_be_bytes()[1]
+            ]
+        );
+        assert_eq!(&opts[4..8], &TCPOPT_SACK_PERMIT_HDR.to_be_bytes());
+        assert_eq!(
+            &opts[8..12],
+            &[TCPOPT_NOP, TCPOPT_WINDOW, TCPOLEN_WINDOW, 3]
+        );
+        assert_eq!(&opts[12..16], &TCPOPT_TSTAMP_HDR.to_be_bytes());
+        let tsval = u32::from_be_bytes([opts[16], opts[17], opts[18], opts[19]]);
+        assert!(
+            (t0 as u32).wrapping_add(0x10) <= tsval && tsval <= (t1 as u32).wrapping_add(0x10),
+            "TSval {tsval} from the clock"
+        );
+        assert_eq!(&opts[20..24], &[0, 0, 0, 0]);
+        assert_eq!(nxt, (1001, 1001), "the SYN takes one sequence number");
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn a_pure_ack_carries_snd_max_and_clears_what_it_owed() {
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, d) = estab(b"tout2", 22);
+        let acks = stat(C::TcpsSndacks);
+        let (r, (acknow, delack)) = output(
+            &inp,
+            |tp| {
+                // A retransmission started (snd_nxt pulled back), an ACK owed.
+                tp.st.snd_max = 1500;
+                tp.st.set_flags(TF_ACKNOW);
+                tcp_timer_arm(tp, TCPT_DELACK, 200);
+            },
+            |tp| {
+                (
+                    tp.st.has_flags(TF_ACKNOW),
+                    tcp_timer_isarmed(tp.st, TCPT_DELACK),
+                )
+            },
+        );
+        assert_eq!(r, Ok(()));
+        let (_ip, th, opts, payload) = last(d);
+        assert_eq!(th.th_flags, TH_ACK);
+        assert_eq!(u32::from_be(th.th_seq), 1500, "no data: snd_max");
+        assert!(opts.is_empty() && payload.is_empty());
+        assert!(!acknow && !delack, "the ACK sent, the delayed ACK disarmed");
+        assert_eq!(stat(C::TcpsSndacks), acks + 1);
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn nothing_to_send_is_nothing_sent_and_a_closed_window_persists() {
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, d) = estab(b"tout3", 23);
+        let before = sent(d);
+        let (r, persist) = output(&inp, |_| {}, |tp| tcp_timer_isarmed(tp.st, TCPT_PERSIST));
+        assert_eq!((r, persist), (Ok(()), false), "no reason to send");
+        assert_eq!(sent(d), before);
+
+        // Data, but the peer's window is shut: the persist timer starts.
+        queue(&so, &pattern(100));
+        let (r, (persist, shift)) = output(
+            &inp,
+            |tp| tp.st.snd_wnd = 0,
+            |tp| (tcp_timer_isarmed(tp.st, TCPT_PERSIST), tp.st.t_rxtshift),
+        );
+        assert_eq!(r, Ok(()));
+        assert_eq!(sent(d), before, "nothing into a closed window");
+        assert_eq!(
+            (persist, shift),
+            (true, 1),
+            "tcp_setpersist backed off once"
+        );
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn the_sack_option_reports_the_receivers_blocks() {
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, d) = estab(b"tout4", 24);
+        let snd = stat(C::TcpsSackSndOpts);
+        let (r, ()) = output(
+            &inp,
+            |tp| {
+                let st = &mut *tp.st;
+                st.sack_enable = 1;
+                st.set_flags(TF_SACK_PERMIT | TF_ACKNOW);
+                st.rcv_numsacks = 2;
+                st.sackblks[0] = crate::netinet::tcp_var::Sackblk {
+                    start: 6000,
+                    end: 6100,
+                };
+                st.sackblks[1] = crate::netinet::tcp_var::Sackblk {
+                    start: 6200,
+                    end: 6300,
+                };
+            },
+            |_| (),
+        );
+        assert_eq!(r, Ok(()));
+        let (_ip, th, opts, _payload) = last(d);
+        assert_eq!(th.th_off(), (20 + 20) / 4);
+        let mut want = std::vec::Vec::new();
+        want.extend_from_slice(&(TCPOPT_SACK_HDR | (2 * 8 + 2)).to_be_bytes());
+        for v in [6000u32, 6100, 6200, 6300] {
+            want.extend_from_slice(&v.to_be_bytes());
+        }
+        assert_eq!(opts, want, "two NOPs, SACK, 18, the two blocks");
+        assert_eq!(stat(C::TcpsSackSndOpts), snd + 1);
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn a_sack_hole_is_retransmitted_from_its_rxmit_and_the_holes_stay() {
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, d) = estab(b"tout5", 25);
+        // 2000 bytes in flight from snd_una 1000; the peer holds 2000..3000 (a hole at
+        // 1500..2000 with three duplicate ACKs).
+        let data = pattern(2000);
+        queue(&so, &data);
+        let rex = stat(C::TcpsSackRexmits);
+        let (r, (rxmit, holes, nxt)) = output(
+            &inp,
+            |tp| {
+                let st = &mut *tp.st;
+                st.sack_enable = 1;
+                st.snd_nxt = 3000;
+                st.snd_max = 3000;
+                st.t_dupacks = 3;
+                let h = crate::netinet::tcp_subr::SACKHL_POOL
+                    .get(hal::pool::PR_WAITOK, || Sackhole::new(1500, 2000, 3, 1500))
+                    .expect("a hole");
+                let _ = st.snd_holes.set(h);
+            },
+            |tp| {
+                let h = tp.st.snd_holes.get().expect("the hole is back");
+                (h.rxmit, h.next.get().is_none(), tp.st.snd_nxt)
+            },
+        );
+        assert_eq!(r, Ok(()));
+        let (_ip, th, _opts, payload) = last(d);
+        assert_eq!(u32::from_be(th.th_seq), 1500, "from the hole's rxmit");
+        assert_eq!(payload, &data[500..1000], "the hole's bytes");
+        assert_eq!(rxmit, 2000, "rxmit advanced by the segment");
+        assert!(holes, "one hole, back in the control block");
+        assert_eq!(nxt, 3000, "a hole's retransmission leaves snd_nxt");
+        assert_eq!(stat(C::TcpsSackRexmits), rex + 1);
+        testtcp::with_tp(&inp, |tp| {
+            crate::netinet::tcp_timer::tcp_timer_freesack(tp.st);
+            ((), None)
+        });
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn a_large_send_goes_as_tso_unless_the_pcb_has_ip_options() {
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, d) = estab(b"tout6", 26);
+        let data = pattern(4000);
+        queue(&so, &data);
+        let pack = stat(C::TcpsSndpack);
+        let before = sent(d);
+        let (r, nxt) = output(
+            &inp,
+            |tp| {
+                tp.st.set_flags(TF_NODELAY);
+                tp.st.snd_cwnd = 65535;
+            },
+            |tp| tp.st.snd_nxt,
+        );
+        assert_eq!(r, Ok(()));
+        // Two passes: a TSO packet of two segments (the interface cuts it in software),
+        // then the 1080 bytes left; three packets on the wire, two counted sends.
+        assert_eq!(stat(C::TcpsSndpack), pack + 2);
+        assert_eq!(sent(d), before + 3);
+        assert_eq!(nxt, 5000);
+        let (_ip, th, _opts, payload) = last(d);
+        assert_eq!(u32::from_be(th.th_seq), 1000 + 2920);
+        assert_eq!(payload, &data[2920..]);
+        testtcp::close(so, inp);
+
+        // The same send from a pcb with IP options: no TSO, three passes.
+        let (so, inp, d) = estab(b"tout7", 27);
+        queue(&so, &data);
+        testtcp::with_lock(&inp, |inp, _il| {
+            *inp.options() = crate::net::mbuf::m_get(M_DONTWAIT, hal::sys::mbuf::MT_SOOPTS);
+        });
+        let pack = stat(C::TcpsSndpack);
+        let before = sent(d);
+        let (r, ()) = output(
+            &inp,
+            |tp| {
+                tp.st.set_flags(TF_NODELAY);
+                tp.st.snd_cwnd = 65535;
+            },
+            |_| (),
+        );
+        assert_eq!(r, Ok(()));
+        assert_eq!(stat(C::TcpsSndpack), pack + 3, "segment by segment");
+        assert_eq!(sent(d), before + 3);
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn a_signed_connection_without_its_sa_sends_nothing() {
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, d) = estab(b"tout8", 28);
+        queue(&so, &pattern(10));
+        let before = sent(d);
+        let (r, nxt) = output(&inp, |tp| tp.st.set_flags(TF_SIGNATURE), |tp| tp.st.snd_nxt);
+        // No IPsec legs in the host tests: gettdbbysrcdst finds no SA, EPERM before the
+        // segment leaves, the state as it was.
+        assert_eq!(r, Err(Errno::EPERM));
+        assert_eq!(sent(d), before);
+        assert_eq!(nxt, 1000);
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn the_persist_timer_backs_off_up_to_the_last_shift() {
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, _d) = estab(b"tout9", 29);
+        let shifts = testtcp::with_tp(&inp, |mut tp| {
+            let mut v = std::vec::Vec::new();
+            for _ in 0..14 {
+                tcp_timer_disarm(&mut tp, TCPT_PERSIST);
+                tcp_setpersist(&mut tp);
+                v.push(tp.st.t_rxtshift);
+            }
+            (v, None)
+        });
+        assert_eq!(
+            shifts,
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 12, 12],
+            "t_rxtshift capped at TCP_MAXRXTSHIFT"
+        );
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn sack_output_skips_old_and_short_holes_and_adjust_moves_snd_nxt() {
+        let (_g, _p) = testtcp::setup();
+        let mut st = TcpState::new();
+        st.sack_enable = 1;
+        st.snd_una = 1000;
+        let hole = |s, e, d, r| {
+            crate::netinet::tcp_subr::SACKHL_POOL
+                .get(hal::pool::PR_WAITOK, || Sackhole::new(s, e, d, r))
+                .expect("a hole")
+        };
+        // Old (rxmit below snd_una), too few dups, done (rxmit at end), then the one.
+        let mut holes = SlistLink::new();
+        let mut h4 = hole(4000, 4500, 3, 4100);
+        let mut h3 = hole(3000, 3500, 3, 3500);
+        let mut h2 = hole(2000, 2500, 1, 2000);
+        let mut h1 = hole(500, 900, 3, 600);
+        let _ = h4.next.set(hole(5000, 5100, 3, 5000));
+        let _ = h3.next.set(h4);
+        let _ = h2.next.set(h3);
+        let _ = h1.next.set(h2);
+        let _ = holes.set(h1);
+        let p = tcp_sack_output(&st, &mut holes).expect("a hole to resend");
+        assert_eq!((p.start, p.rxmit), (4000, 4100));
+        st.sack_enable = 0;
+        assert!(tcp_sack_output(&st, &mut holes).is_none(), "SACK off");
+
+        // snd_nxt between two holes moves to the next one's start; past the last hole's end
+        // to rcv_lastsack; inside a hole it stays.
+        st.rcv_lastsack = 6000;
+        for (nxt, want) in [(2600, 3000), (5100, 6000), (2100, 2100), (6000, 6000)] {
+            st.snd_nxt = nxt;
+            tcp_sack_adjust(&mut st, &holes);
+            assert_eq!(st.snd_nxt, want, "snd_nxt {nxt}");
+        }
+        drop(holes);
+    }
+}
+/* </TESTS> */

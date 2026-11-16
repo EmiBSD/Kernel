@@ -1559,6 +1559,156 @@ pub(crate) mod testtcp {
     pub(crate) fn tcpcbs() -> u64 {
         crate::net::domain::net::<G>().tcp.tcpcb_pool.nout()
     }
+
+    /// The driver of a test interface: its packets' count and the last one's bytes.
+    pub(crate) type Wire = testinet::InetDriver;
+
+    /// An established connection from 10.9.`n`.1:7000 to 10.9.`n`.2:80 over a new test
+    /// interface `name` (MTU 1500): the socket's buffers 16 KB each, no options requested,
+    /// the segment size taken from the route (`tcp_mss`: 1460, the window 14600), the template
+    /// made, our sequence space at 1000 and the peer's at 5000, its window 65535 and ours
+    /// (16384) advertised.
+    pub(crate) fn estab(name: &[u8], n: u8) -> (SocketRef<G>, InpcbRef<G>, &'static Wire) {
+        estab_to(name, n, [10, 9, n, 2])
+    }
+
+    /// [`estab`] to the peer `peer`; one off the interface's net goes through a gateway,
+    /// 10.9.`n`.254 (`route add 10.20.n/24 10.9.n.254`, made here for `peer` in 10.20/16).
+    pub(crate) fn estab_to(
+        name: &[u8],
+        n: u8,
+        peer: [u8; 4],
+    ) -> (SocketRef<G>, InpcbRef<G>, &'static Wire) {
+        use hal::sys::netinet_in::InAddr;
+
+        let (_ifp, d) = testinet::iface(name, [10, 9, n, 1]);
+        if peer[..2] == [10, 20] {
+            gateway_route(n, peer[2]);
+        }
+        let (so, inp) = conn();
+        {
+            let t = &crate::net::domain::net::<G>().tcp.tcbtable;
+            let mut g = t.lock();
+            inp.set_laddr(
+                &g,
+                InAddr {
+                    s_addr: u32::from_ne_bytes([10, 9, n, 1]),
+                },
+            );
+            inp.set_faddr(
+                &g,
+                InAddr {
+                    s_addr: u32::from_ne_bytes(peer),
+                },
+            );
+            inp.set_lport(&g, htons(7000));
+            inp.set_fport(&g, htons(80));
+            crate::netinet::in_pcb::in_pcbrehash(&mut g, &inp);
+        }
+        crate::net::socket::soreserve(&so, 16384, 16384).expect("the buffers");
+        with_tp(&inp, |mut tp| {
+            tp.st
+                .clear_flags(crate::netinet::tcp_var::TF_REQ_SCALE | TF_REQ_TSTMP);
+            let m = tcp_template(&mut tp).expect("a template");
+            tp.st.t_template = Some(m);
+            let _ = crate::netinet::tcp_input::tcp_mss(&mut tp, 0);
+            let st = &mut *tp.st;
+            st.t_state = crate::netinet::tcp_fsm::TCPS_ESTABLISHED;
+            st.iss = 1000;
+            st.snd_una = 1000;
+            st.snd_nxt = 1000;
+            st.snd_max = 1000;
+            st.snd_up = 1000;
+            st.irs = 4999;
+            st.rcv_nxt = 5000;
+            st.rcv_up = 5000;
+            st.rcv_adv = 5000 + 16384;
+            st.snd_wnd = 65535;
+            st.max_sndwnd = 65535;
+            st.t_rcvtime = crate::netinet::tcp_var::tcp_now();
+            ((), None)
+        });
+        (so, inp, d)
+    }
+
+    /// `route add 10.20.p.0/24 10.9.n.254` (through the interface of 10.9.`n`.1).
+    fn gateway_route(n: u8, p: u8) {
+        use hal::sys::net_route::{
+            RTAX_DST, RTAX_GATEWAY, RTAX_NETMASK, RTF_GATEWAY, RTF_STATIC, RTF_UP, RTM_ADD,
+            RTP_STATIC,
+        };
+
+        use crate::net::proto::SockaddrView;
+        use crate::net::route::{RtAddrinfo, rt_plentosa, rtrequest};
+
+        let sin = |a: [u8; 4]| {
+            let mut b = [0u8; 16];
+            b[0] = 16;
+            b[1] = AF_INET;
+            b[4..8].copy_from_slice(&a);
+            b
+        };
+        let (dst, gw, us) = (
+            sin([10, 20, p, 0]),
+            sin([10, 9, n, 254]),
+            sin([10, 9, n, 1]),
+        );
+        let mut mask = crate::net::rtable::SaCopy::zeroed();
+        let w = NETLOCK.write();
+        let net = NetHeld::of(&w).expect("the net lock");
+        let mut info = RtAddrinfo::new();
+        info.rti_info[RTAX_DST] = SockaddrView::new(&dst);
+        info.rti_info[RTAX_NETMASK] = rt_plentosa(AF_INET, Some(24), &mut mask);
+        info.rti_info[RTAX_GATEWAY] = SockaddrView::new(&gw);
+        let r = net.reader();
+        info.rti_ifa = crate::net::if_::ifa_ifwithaddr(&net, &r, &us, 0);
+        info.rti_flags = RTF_GATEWAY | RTF_STATIC | RTF_UP;
+        rtrequest(RTM_ADD, &mut info, RTP_STATIC, None, 0, &net).expect("the route");
+    }
+
+    /// Appends `bytes` to the send buffer of `so`, as `sosend` leaves them for `tcp_output`.
+    pub(crate) fn queue(so: &crate::net::socket::Socket<G>, bytes: &[u8]) {
+        let mut m = m_gethdr(M_WAIT, hal::sys::mbuf::MT_DATA).expect("an mbuf");
+        if bytes.len() > crate::net::mbuf::MHLEN {
+            assert!(
+                crate::net::mbuf::m_clget(&mut m, M_WAIT, bytes.len() as u32),
+                "a cluster"
+            );
+        }
+        m.m_len().set(bytes.len() as u32);
+        m.m_pkthdr().len.set(bytes.len() as i32);
+        m.data_mut()
+            .expect("a new mbuf is writable")
+            .copy_from_slice(bytes);
+        so.so_snd.lock().sbappendstream(m);
+    }
+
+    /// The bytes `n` of a send buffer's test data: `n` mod 251, so offsets show.
+    pub(crate) fn pattern(len: usize) -> std::vec::Vec<u8> {
+        (0..len).map(|i| (i % 251) as u8).collect()
+    }
+
+    /// The last packet `d` sent: its IP header, its TCP header, the TCP options and the
+    /// payload (an IPv4 packet with a 20-byte IP header).
+    pub(crate) fn last(d: &Wire) -> (Ip, Tcphdr, std::vec::Vec<u8>, std::vec::Vec<u8>) {
+        let p = d.last.lock().expect("the capture").clone();
+        let ip: Ip = pod::at(&p, 0).expect("an IP header");
+        let th: Tcphdr = pod::at(&p, 20).expect("a TCP header");
+        let thlen = usize::from(th.th_off()) * 4;
+        let opts = p[40..20 + thlen].to_vec();
+        let data = p[20 + thlen..].to_vec();
+        (ip, th, opts, data)
+    }
+
+    /// The packets `d` has sent so far.
+    pub(crate) fn sent(d: &Wire) -> u32 {
+        d.sent.load(Ordering::Relaxed)
+    }
+
+    /// The counter `c` of `net.inet.tcp.stats` now (summed over the CPUs).
+    pub(crate) fn stat(c: TcpstatCounters) -> u64 {
+        crate::netinet::tcp_var::TCPCOUNTERS.read()[c as usize]
+    }
 }
 /* </CODE> */
 
@@ -2032,6 +2182,279 @@ mod tests {
             .collect();
         assert_eq!(q.iter().flatten().count(), 2, "tcpqe: tcp_reass_limit");
         assert_eq!(h.iter().flatten().count(), 2, "sackhl: tcp_sackhole_limit");
+    }
+
+    /// The socket of `inp` locked under the shared net lock (a control input's holding),
+    /// for `f`.
+    fn with_so<R>(
+        inp: &Inpcb<testinet::G>,
+        f: impl FnOnce(&mut SoLocked<'_>, &NetHeld<'_>) -> R,
+    ) -> R {
+        let w = NETLOCK.read();
+        let net = NetHeld::of(&w).expect("the net lock");
+        let mut so = crate::netinet::in_pcb::in_pcbsolock(inp, &net).expect("attached");
+        f(&mut so, &net)
+    }
+
+    /// The connection's soft error and its socket's error.
+    fn errors(inp: &Inpcb<testinet::G>) -> (Option<Errno>, Option<Errno>) {
+        let soft = testtcp::with_tp(inp, |tp| (tp.st.t_softerror, None));
+        (soft, inp.socket().error())
+    }
+
+    #[test]
+    fn tcp_drop_resets_a_synchronized_connection_and_reports_the_error() {
+        use crate::netinet::tcp_fsm::TCPS_SYN_SENT;
+        let (_g, _p) = testtcp::setup();
+        let tcpcbs = testtcp::tcpcbs();
+        // Synchronized: an RST (CLOSED's flags) before the close, tcps_drops.
+        let (so, inp, d) = testtcp::estab(b"tsub0", 60);
+        so.st_set(crate::net::sockbuf::SS_NOFDREF);
+        let (drops, before) = (testtcp::stat(TcpstatCounters::TcpsDrops), testtcp::sent(d));
+        testtcp::with_tp(&inp, |tp| {
+            let closed = tcp_drop(tp, Some(Errno::ECONNABORTED));
+            ((), Some(closed))
+        });
+        assert_eq!(testtcp::sent(d), before + 1);
+        let (_ip, th, _o, _p) = testtcp::last(d);
+        assert_eq!(th.th_flags, TH_RST | TH_ACK);
+        assert_eq!(testtcp::stat(TcpstatCounters::TcpsDrops), drops + 1);
+        assert_eq!(so.error(), Some(Errno::ECONNABORTED));
+        drop((so, inp));
+        assert_eq!(testtcp::tcpcbs(), tcpcbs, "the control block freed");
+
+        // Not synchronized: no RST, tcps_conndrops; a timeout reports the soft error.
+        let (so, inp, d) = testtcp::estab(b"tsub1", 61);
+        so.st_set(crate::net::sockbuf::SS_NOFDREF);
+        let (cdrops, before) = (
+            testtcp::stat(TcpstatCounters::TcpsConndrops),
+            testtcp::sent(d),
+        );
+        testtcp::with_tp(&inp, |tp| {
+            tp.st.t_state = TCPS_SYN_SENT;
+            tp.st.t_softerror = Some(Errno::EHOSTDOWN);
+            let closed = tcp_drop(tp, Some(Errno::ETIMEDOUT));
+            ((), Some(closed))
+        });
+        assert_eq!(testtcp::sent(d), before);
+        assert_eq!(testtcp::stat(TcpstatCounters::TcpsConndrops), cdrops + 1);
+        assert_eq!(
+            so.error(),
+            Some(Errno::EHOSTDOWN),
+            "the soft error for a timeout"
+        );
+        drop((so, inp));
+        assert_eq!(testtcp::tcpcbs(), tcpcbs);
+    }
+
+    #[test]
+    fn tcp_notify_keeps_soft_errors_and_gives_up_on_a_failing_open() {
+        use crate::netinet::tcp_fsm::TCPS_SYN_SENT;
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, _d) = testtcp::estab(b"tsub2", 62);
+        // Established: an unreachable is ignored.
+        with_so(&inp, |w, _| tcp_notify(&inp, w, Some(Errno::EHOSTUNREACH)));
+        assert_eq!(errors(&inp), (None, None));
+        // Another error: kept soft.
+        with_so(&inp, |w, _| tcp_notify(&inp, w, Some(Errno::ECONNREFUSED)));
+        assert_eq!(errors(&inp), (Some(Errno::ECONNREFUSED), None));
+        // Opening, retransmitted four times, a soft error already: reported to the socket.
+        testtcp::with_tp(&inp, |tp| {
+            tp.st.t_state = TCPS_SYN_SENT;
+            tp.st.t_rxtshift = 4;
+            ((), None)
+        });
+        with_so(&inp, |w, _| tcp_notify(&inp, w, Some(Errno::EHOSTUNREACH)));
+        assert_eq!(
+            errors(&inp),
+            (Some(Errno::ECONNREFUSED), Some(Errno::EHOSTUNREACH))
+        );
+        testtcp::close(so, inp);
+    }
+
+    /// An ICMP message of type `ty` and code `code`, its next-hop MTU `mtu`, returning our
+    /// segment from 10.9.`n`.1:7000 to `peer`:80 with sequence number `seq`: its IPv4 header
+    /// and the TCP header's first eight bytes.
+    fn quote(ty: u8, code: u8, mtu: u16, n: u8, peer: [u8; 4], seq: u32) -> std::vec::Vec<u8> {
+        let mut msg = std::vec![ty, code, 0, 0, 0, 0];
+        msg.extend_from_slice(&mtu.to_be_bytes());
+        let ip = Ip {
+            ip_vhl: 0x45,
+            ip_len: htons(1040),
+            ip_ttl: 64,
+            ip_p: IPPROTO_TCP as u8,
+            ip_src: InAddr {
+                s_addr: u32::from_ne_bytes([10, 9, n, 1]),
+            },
+            ip_dst: InAddr {
+                s_addr: u32::from_ne_bytes(peer),
+            },
+            ..Ip::default()
+        };
+        let mut b = [0u8; 20];
+        assert!(pod::put(&mut b, 0, &ip));
+        msg.extend_from_slice(&b);
+        msg.extend_from_slice(&7000u16.to_be_bytes());
+        msg.extend_from_slice(&80u16.to_be_bytes());
+        msg.extend_from_slice(&seq.to_be_bytes());
+        msg
+    }
+
+    /// `tcp_ctlinput(cmd, sin(peer), 0, msg)` under the shared net lock (`icmp_input`'s).
+    fn ctl(cmd: i32, peer: [u8; 4], msg: Option<&[u8]>) {
+        let mut sin = [0u8; 16];
+        sin[0] = 16;
+        sin[1] = AF_INET;
+        sin[4..8].copy_from_slice(&peer);
+        let w = NETLOCK.read();
+        let net = NetHeld::of(&w).expect("the net lock");
+        let arg = msg.map_or(CtlArg::None, CtlArg::Ip);
+        tcp_ctlinput::<testinet::G>(
+            cmd,
+            SockaddrView::new(&sin).expect("a sockaddr_in"),
+            0,
+            arg,
+            &net,
+        );
+    }
+
+    #[test]
+    fn the_control_input_checks_the_quoted_sequence_number() {
+        use crate::net::proto::PRC_UNREACH_HOST;
+        use crate::netinet::tcp_fsm::TCPS_SYN_RECEIVED;
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, _d) = testtcp::estab(b"tsub3", 63);
+        let peer = [10, 9, 63, 2];
+        testtcp::with_tp(&inp, |tp| {
+            tp.st.t_state = TCPS_SYN_RECEIVED;
+            tp.st.snd_max = 1300;
+            ((), None)
+        });
+        // Below snd_una and at snd_max: not a segment in flight, nothing told.
+        for seq in [999, 1300] {
+            ctl(PRC_UNREACH_HOST, peer, Some(&quote(3, 1, 0, 63, peer, seq)));
+            assert_eq!(errors(&inp), (None, None), "seq {seq}");
+        }
+        // In flight: tcp_notify keeps the error.
+        ctl(
+            PRC_UNREACH_HOST,
+            peer,
+            Some(&quote(3, 1, 0, 63, peer, 1000)),
+        );
+        assert_eq!(errors(&inp), (Some(Errno::EHOSTUNREACH), None));
+        // Source quench, a code past PRC_NCMDS, another family: ignored.
+        testtcp::with_tp(&inp, |tp| {
+            tp.st.t_softerror = None;
+            ((), None)
+        });
+        ctl(PRC_QUENCH, peer, Some(&quote(4, 0, 0, 63, peer, 1000)));
+        ctl(
+            PRC_NCMDS as i32,
+            peer,
+            Some(&quote(3, 1, 0, 63, peer, 1000)),
+        );
+        assert_eq!(errors(&inp), (None, None));
+        // A dead host: every connection to it is told (no quote).
+        ctl(PRC_HOSTDEAD, peer, None);
+        assert_eq!(errors(&inp), (Some(Errno::EHOSTDOWN), None));
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn a_redirect_flushes_the_cached_route_of_every_connection_to_the_peer() {
+        use crate::net::proto::PRC_REDIRECT_HOST;
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, _d) = testtcp::estab(b"tsub4", 64);
+        let cached = |inp: &Inpcb<testinet::G>| {
+            testtcp::with_lock(inp, |inp, _il| inp.route().rt().is_some())
+        };
+        assert!(cached(&inp), "tcp_mss cached the route");
+        ctl(
+            PRC_REDIRECT_HOST,
+            [10, 9, 64, 2],
+            Some(&quote(5, 1, 0, 64, [10, 9, 64, 2], 1000)),
+        );
+        assert!(!cached(&inp), "in_pcbrtchange");
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn a_path_mtu_message_lowers_the_segment_or_waits_for_the_retransmit_timer() {
+        let (_g, _p) = testtcp::setup();
+        let peer = [10, 20, 65, 2];
+        let (so, inp, _d) = testtcp::estab_to(b"tsub5", 65, peer);
+        let set = |mtu_sent: u32, acked: u32| {
+            testtcp::with_tp(&inp, |tp| {
+                let st = tp.st;
+                st.snd_max = 1300;
+                st.t_pmtud_mtu_sent = mtu_sent;
+                st.t_pmtud_mss_acked = acked;
+                ((), None)
+            });
+        };
+        let look = || {
+            testtcp::with_tp(&inp, |tp| {
+                let st = &*tp.st;
+                (
+                    (
+                        st.t_maxseg,
+                        st.has_flags(TF_PMTUD_PEND),
+                        st.t_pmtud_th_seq,
+                        st.t_pmtud_nextmtu,
+                    ),
+                    None,
+                )
+            })
+        };
+        // A segment not in flight: ignored whatever the MTU.
+        set(1500, 0);
+        ctl(PRC_MSGSIZE, peer, Some(&quote(3, 4, 1000, 65, peer, 1300)));
+        assert_eq!(look(), (1460, false, 0, 0));
+        // A next-hop MTU at or past the largest packet sent: dropped (1400, below the
+        // interface's 1500, would lower the segment if it were taken).
+        set(1400, 0);
+        ctl(PRC_MSGSIZE, peer, Some(&quote(3, 4, 1400, 65, peer, 1000)));
+        assert_eq!(look(), (1460, false, 0, 0));
+        set(1500, 0);
+        // Larger than the headers and what was acknowledged: the route's MTU lowered
+        // (icmp_mtudisc), and every connection to the peer takes it (tcp_mtudisc).
+        ctl(PRC_MSGSIZE, peer, Some(&quote(3, 4, 1000, 65, peer, 1000)));
+        assert_eq!(look().0, 1000 - 40);
+        // Smaller: kept for the retransmit timer, an older segment's notice over a newer one.
+        set(1500, 1400);
+        ctl(PRC_MSGSIZE, peer, Some(&quote(3, 4, 900, 65, peer, 1100)));
+        assert_eq!(look(), (960, true, 1100, u32::from(900u16.to_be())));
+        ctl(PRC_MSGSIZE, peer, Some(&quote(3, 4, 800, 65, peer, 1200)));
+        assert_eq!(
+            look(),
+            (960, true, 1100, u32::from(900u16.to_be())),
+            "newer: kept"
+        );
+        ctl(PRC_MSGSIZE, peer, Some(&quote(3, 4, 700, 65, peer, 1050)));
+        assert_eq!(
+            look(),
+            (960, true, 1050, u32::from(700u16.to_be())),
+            "older: taken"
+        );
+        let (ip_len, ip_hl) = testtcp::with_tp(&inp, |tp| {
+            ((tp.st.t_pmtud_ip_len, tp.st.t_pmtud_ip_hl), None)
+        });
+        assert_eq!((ip_len, ip_hl), (htons(1040), 5), "the returned header's");
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn tcp_init_registers_the_ipv6_path_mtu_callback() {
+        let (_g, _p) = testtcp::setup();
+        let cbs = crate::netinet6::icmp6::ICMP6_MTUDISC_CALLBACKS.read();
+        let mine: crate::netinet6::icmp6::Mtudisc6Fn = tcp6_mtudisc_callback::<testinet::G>;
+        assert!(
+            cbs.as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .any(|f| core::ptr::fn_addr_eq(*f, mine)),
+            "tcp6_mtudisc_callback registered"
+        );
     }
 }
 /* </TESTS> */

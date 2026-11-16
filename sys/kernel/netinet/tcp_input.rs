@@ -437,3 +437,197 @@ pub fn tcp_newreno_partialack<G: ProcGlue>(tp: &mut Tp<'_, '_, G>, th: &Tcphdr) 
     st.snd_cwnd += u64::from(st.t_maxseg);
 }
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    // Host tests of the kernel's tcp_input.c helpers: the round-trip estimator's fixed point
+    // against values worked by hand from the C's formulas, the header size, the segment size
+    // from the route and the peer's offer, the buffers rounded to it, and NewReno's partial
+    // ACK.
+
+    use super::*;
+    use crate::netinet::tcp_subr::testtcp::{self, estab, last, pattern, queue, sent};
+    use crate::netinet::tcp_var::TF_RCVD_TSTMP;
+
+    #[test]
+    fn xmit_timer_smooths_as_the_cs_fixed_point() {
+        // (srtt, rttvar, rttmin, rtt) -> (srtt, rttvar, rxtcur), worked from tcp_xmit_timer:
+        // the first sample unsmoothed (srtt = (rtt + 1) << 5, rttvar = (rtt + 1) << 3), then
+        // delta = (rtt << 2) - (srtt >> 3), rttvar += |delta| - (rttvar >> 2), and the
+        // timeout TCP_REXMTVAL clamped to [max(rttmin, rtt + 2 * (1000 / hz)), 64000].
+        #[rustfmt::skip]
+        let table: [((i32, i32, u32, i32), (i32, i32, i32)); 7] = [
+            ((0, 0, 1000, 10), (352, 88, 1000)),
+            ((352, 88, 1000, 20), (388, 102, 1000)),
+            ((352, 88, 10, 20), (388, 102, 40)),
+            // A negative sample counts as 0, one past TCP_RTT_MAX as the maximum.
+            ((0, 0, 10, -5), (32, 8, 20)),
+            ((0, 0, 10, TCP_RTT_MAX + 7), ((TCP_RTT_MAX + 1) << 5, (TCP_RTT_MAX + 1) << 3, 64000)),
+            // A smoothed estimate driven to or below zero restarts at 1 << 2.
+            ((-100, 40, 10, 0), (4, 43, 20)),
+            // The floor of the timeout: the sample plus two ticks (hz 100: 20 ms), above
+            // TCP_REXMTVAL's 115.
+            ((3200, 80, 10, 100), (3200, 60, 120)),
+        ];
+        for ((srtt, rttvar, rttmin, rtt), want) in table {
+            let mut st = TcpState::new();
+            st.t_srtt = srtt;
+            st.t_rttvar = rttvar;
+            st.t_rttmin = rttmin;
+            st.t_rtttime = 5;
+            st.t_rxtshift = 3;
+            st.t_softerror = Some(hal::sys::errno::Errno::EHOSTDOWN);
+            tcp_xmit_timer(&mut st, rtt);
+            assert_eq!(
+                (st.t_srtt, st.t_rttvar, st.t_rxtcur),
+                want,
+                "srtt {srtt} rttvar {rttvar} rttmin {rttmin} rtt {rtt}"
+            );
+            assert_eq!((st.t_rtttime, st.t_rxtshift), (0, 0));
+            assert_eq!(st.t_softerror, None, "the soft error forgotten");
+        }
+    }
+
+    #[test]
+    fn hdrsz_counts_the_options_every_segment_carries() {
+        let mut st = TcpState::new();
+        for (pf, flags, want) in [
+            (AF_INET_I32, 0, 40),
+            (AF_INET6_I32, 0, 60),
+            (0, 0, 20),
+            (AF_INET_I32, TF_REQ_TSTMP, 40),
+            (AF_INET_I32, TF_REQ_TSTMP | TF_RCVD_TSTMP, 52),
+            (AF_INET_I32, TF_REQ_TSTMP | TF_RCVD_TSTMP | TF_NOOPT, 40),
+            (
+                AF_INET6_I32,
+                TF_REQ_TSTMP | TF_RCVD_TSTMP | TF_SIGNATURE,
+                92,
+            ),
+        ] {
+            st.pf = pf;
+            st.t_flags = flags;
+            assert_eq!(tcp_hdrsz(&st), want, "pf {pf} flags {flags:#x}");
+        }
+    }
+
+    #[test]
+    fn mss_takes_the_route_and_clamps_the_peers_offer() {
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, _d) = estab(b"tin0", 40);
+        let got = testtcp::with_tp(&inp, |mut tp| {
+            let mut v = std::vec::Vec::new();
+            // No offer yet: the interface's 1500 less 40, offered and used; rfc3390=2's
+            // initial window min(10 * mss, max(2 * mss, 14600)).
+            tp.st.t_peermss = 0;
+            v.push((
+                tcp_mss(&mut tp, 0),
+                tp.st.t_maxseg,
+                tp.st.t_maxopd,
+                tp.st.snd_cwnd,
+            ));
+            // The peer offers 536: used, our offer stays 1460.
+            v.push((
+                tcp_mss(&mut tp, 536),
+                tp.st.t_maxseg,
+                tp.st.t_maxopd,
+                tp.st.snd_cwnd,
+            ));
+            // An offer below 216 counts as 216.
+            v.push((
+                tcp_mss(&mut tp, 100),
+                tp.st.t_maxseg,
+                tp.st.t_maxopd,
+                tp.st.snd_cwnd,
+            ));
+            // Timestamps on both sides take 12 bytes of every segment.
+            tp.st.t_peermss = 0;
+            tp.st.set_flags(TF_REQ_TSTMP | TF_RCVD_TSTMP);
+            v.push((
+                tcp_mss(&mut tp, 0),
+                tp.st.t_maxseg,
+                tp.st.t_maxopd,
+                tp.st.snd_cwnd,
+            ));
+            (v, None)
+        });
+        assert_eq!(
+            got,
+            [
+                (1460, 1460, 1460, 14600),
+                (1460, 536, 536, 5360),
+                (1460, 216, 216, 2160),
+                (1460, 1448, 1460, 14480),
+            ]
+        );
+        // A path MTU change (offer -1): the window cut by the ratio, the notice forgotten.
+        let got = testtcp::with_tp(&inp, |mut tp| {
+            let st = &mut *tp.st;
+            st.t_flags = 0;
+            st.t_maxseg = 1460;
+            st.snd_cwnd = 10 * 1460;
+            st.t_peermss = 1000;
+            st.set_flags(TF_PMTUD_PEND);
+            st.t_pmtud_mtu_sent = 1500;
+            let r = tcp_mss(&mut tp, -1);
+            let st = &*tp.st;
+            (
+                (
+                    r,
+                    st.t_maxseg,
+                    st.snd_cwnd,
+                    st.has_flags(TF_PMTUD_PEND),
+                    st.t_pmtud_mtu_sent,
+                ),
+                None,
+            )
+        });
+        assert_eq!(got, (1000, 1000, 10 * 1000, false, 0));
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn mss_update_rounds_the_buffers_to_the_segment() {
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, _d) = estab(b"tin1", 41);
+        testtcp::with_tp(&inp, |mut tp| {
+            tcp_mss_update(&mut tp);
+            ((), None)
+        });
+        // 16384 rounded up to a multiple of 1460.
+        assert_eq!(so.so_snd.hiwat(), 12 * 1460);
+        assert_eq!(so.so_rcv.hiwat(), 12 * 1460);
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn a_partial_ack_resends_from_it_and_deflates_the_window() {
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, d) = estab(b"tin2", 42);
+        let data = pattern(3000);
+        queue(&so, &data);
+        let before = sent(d);
+        let (nxt, cwnd) = testtcp::with_tp(&inp, |mut tp| {
+            let st = &mut *tp.st;
+            st.snd_nxt = 4000;
+            st.snd_max = 4000;
+            st.snd_cwnd = 8000;
+            let th = Tcphdr {
+                th_ack: 2000,
+                ..Tcphdr::default()
+            };
+            tcp_newreno_partialack(&mut tp, &th);
+            ((tp.st.snd_nxt, tp.st.snd_cwnd), None)
+        });
+        // One segment from the partial ACK (cwnd: one segment past it), snd_nxt back to
+        // where it was, the window less the 1000 acknowledged plus one segment.
+        assert_eq!(sent(d), before + 1);
+        let (_ip, th, _o, payload) = last(d);
+        assert_eq!(u32::from_be(th.th_seq), 2000);
+        assert_eq!(payload, &data[1000..2460]);
+        assert_eq!(nxt, 4000);
+        assert_eq!(cwnd, 8000 - 1000 + 1460);
+        testtcp::close(so, inp);
+    }
+}
+/* </TESTS> */

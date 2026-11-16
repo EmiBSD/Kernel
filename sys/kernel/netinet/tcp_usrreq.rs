@@ -242,3 +242,71 @@ pub fn tcp_update_rcvspace<G: ProcGlue>(tp: &Tp<'_, '_, G>) {
     drop(g);
 }
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    // Host tests of the socket buffers' scaling: the send buffer with the data in flight,
+    // the C's sum across the sequence space's wrap, the receive buffer's step.
+
+    use super::*;
+    use crate::netinet::tcp_subr::testtcp::{self, estab};
+
+    #[test]
+    fn the_send_buffer_scales_with_the_data_in_flight() {
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, _d) = estab(b"tusr0", 50);
+        // The user's size is tcp_sendspace (soreserve's 16384): automatic scaling, by the
+        // 10000 bytes in flight, rounded up to the segment (1460).
+        testtcp::with_tp(&inp, |tp| {
+            tp.st.snd_max = tp.st.snd_una.wrapping_add(10000);
+            tcp_update_sndspace(&tp);
+            ((), None)
+        });
+        assert_eq!(so.so_snd.hiwat(), (16384u64 + 10000).div_ceil(1460) * 1460);
+
+        // Across the wrap: snd_una near 2^32, snd_max past 0. The C sums
+        // sb_wat + snd_max - snd_una in u_long, a value past sb_max: the buffer asks for
+        // sb_max rounded up, which sbreserve refuses, and stays as it was (LZ's
+        // sb_wat + (snd_max - snd_una) would have grown it by the 512 bytes in flight).
+        let before = so.so_snd.hiwat();
+        testtcp::with_tp(&inp, |tp| {
+            tp.st.snd_una = 0xffff_ff00;
+            tp.st.snd_max = 0x100;
+            tcp_update_sndspace(&tp);
+            ((), None)
+        });
+        assert_eq!(so.so_snd.hiwat(), before, "the C's sum: sbreserve refused");
+        testtcp::with_tp(&inp, |tp| {
+            tp.st.snd_una = 1000;
+            tp.st.snd_max = 1000;
+            ((), None)
+        });
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn the_receive_buffer_grows_by_a_step_when_nearly_filled() {
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, _d) = estab(b"tusr1", 51);
+        // Less than 7/8 of the buffer in a round trip: unchanged.
+        testtcp::with_tp(&inp, |tp| {
+            tp.st.rfbuf_cnt = 16384 / 8 * 7;
+            tcp_update_rcvspace(&tp);
+            ((), None)
+        });
+        assert_eq!(so.so_rcv.hiwat(), 16384);
+        // More: tcp_autorcvbuf_inc more, rounded up to the segment.
+        testtcp::with_tp(&inp, |tp| {
+            tp.st.rfbuf_cnt = 16384 / 8 * 7 + 1;
+            tcp_update_rcvspace(&tp);
+            ((), None)
+        });
+        assert_eq!(
+            so.so_rcv.hiwat(),
+            (16384u64 + u64::from(TCP_AUTORCVBUF_INC)).div_ceil(1460) * 1460
+        );
+        testtcp::close(so, inp);
+    }
+}
+/* </TESTS> */
