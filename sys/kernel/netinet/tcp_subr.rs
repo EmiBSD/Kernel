@@ -95,7 +95,9 @@
 //! to a received segment. `tcp_newtcpcb`, `tcp_close`, `tcp_free` and `tcp_freeq` create and
 //! tear down control blocks. `tcp_set_iss_tsm` derives initial sequence numbers and timestamp
 //! modulators from a keyed hash of the connection (RFC 1948). With `TCP_SIGNATURE`,
-//! `tcp_signature` computes the RFC 2385 MD5 digest.
+//! `tcp_signature` computes the RFC 2385 MD5 digest. `tcp_mtudisc` and
+//! `tcp_mtudisc_increase` take a path MTU change: the route renewed, the segment size taken
+//! again, the unacknowledged data sent again.
 //!
 //! Locks used to protect struct members in this file: \[I\] immutable after creation,
 //! \[T\] `tcp_timer_mtx` (global tcp timer data structures), \[a\] atomic.
@@ -108,9 +110,17 @@
 //!   machine's `NMBCLUSTERS` (`mbinit` runs before `domaininit`), since the kernel crate
 //!   names no machine constant: the same number. Before `mbinit` (a host test without the
 //!   mbuf layer) no limit is set.
-//! - `tcp_init`'s `icmp6_mtudisc_callback_register(tcp6_mtudisc_callback)` arrives with
-//!   `tcp6_mtudisc_callback` (N6.6a3, with `tcp_ctlinput`); until then the kernel's TCP is
-//!   unregistered and nothing calls `tcp_init` but the host tests.
+//! - `tcp_ctlinput` and `tcp6_ctlinput` take the address as the `SockaddrView` the protocol
+//!   switch lends (an IPv4 one read as a `sockaddr_in` padded with zeroes past its bytes, as
+//!   `bsd`'s adapter pads it), the argument as `CtlArg` (an argument of the other family, or
+//!   an ICMP message too short for the header it returns and the eight TCP bytes after it,
+//!   calls nothing: `icmp_input` hands no such message on), and the caller's proof of the
+//!   net lock (the C's callers hold it). `tcp6_mtudisc_callback` takes it too
+//!   (`icmp6_mtudisc_update`'s). The functions are reached by no protocol switch until the
+//!   switch (N6.6a5), when `Protocol::ctlinput` passes its callers' proof.
+//! - The notify functions (`tcp_notify`, `tcp_mtudisc` and `tcp_mtudisc_increase` in their
+//!   notify forms) do nothing for a pcb without a control block (the C's `tcp_notify`
+//!   dereferences it: a TCP pcb in the table has one under its socket lock).
 //! - `tcp_newtcpcb` returns the new control block opened ([`Tp`]) or `None`, the C's pointer
 //!   or NULL; `tcp_close` answers [`Closed`] for the C's NULL; `tcp_freeq` returns `bool`
 //!   (the C's 0 or 1).
@@ -145,6 +155,21 @@
 //!   cache and IPv6 options to the output call. `tcp_signature`'s key is lent by IPsec's
 //!   `tdb_amxkey` leg to the MD5 update, never copied (D-9); the digest is compared with
 //!   `timingsafe_bcmp` by its callers.
+//! - N6.6a3: `tcp_mtudisc` and `tcp_mtudisc_increase` take the control block held ([`Tp`]),
+//!   called so by `tcp_output` (the C passes `tp->t_inpcb` and the callee finds `tp` again
+//!   through `intotcpcb`); their notify forms for the pcb walks ([`tcp_mtudisc_notify`],
+//!   [`tcp_mtudisc_increase_notify`]) open the block under the socket lock the walk lends,
+//!   and do nothing for a pcb without one (the C's `tp == NULL` test). `in_pcbrtentry`
+//!   answers a counted route, held where the C holds the cache's pointer.
+//! - N6.6a3: `tcp_drop` consumes the control block and answers `tcp_close`'s [`Closed`].
+//!   The control inputs (LZ's `unsafe fn`s over raw `sockaddr` and `void *` contracts, 17
+//!   `unsafe` in all) read the ICMP quote through `hal::pod` (the IPv4 header, the eight TCP
+//!   bytes, `icmp_nextmtu`) and the ICMPv6 parameter by reference; the connection is locked
+//!   by `in_pcbsolock` under the caller's proof and opened by `intotcpcb`, and the C's
+//!   `notify` function pointer is a closure (the walks') or [`tcp_notify`]'s work on the block
+//!   the lookup opened (the per-connection path, whose notify is always `tcp_notify`). The
+//!   path MTU branch's socket lock is let go before the walk, as the C's. `tcp_init`
+//!   registers `tcp6_mtudisc_callback` with ICMPv6.
 
 use core::mem::size_of;
 use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
@@ -156,42 +181,67 @@ use hal::once::OnceStatic;
 use hal::pod;
 use hal::pool::{BoxPool, PR_NOWAIT, PR_WAITOK, PoolArc};
 use hal::rwlock::WitnessPart;
-use hal::sys::endian::{htonl, htons};
+use hal::sys::endian::{htonl, htons, ntohl, ntohs};
+use hal::sys::errno::Errno;
 use hal::sys::mbuf::MT_HEADER;
-use hal::sys::netinet_in::IPPROTO_TCP;
+use hal::sys::net_route::{RTF_HOST, RTV_MTU};
+use hal::sys::netinet_in::{INADDR_ANY, IPPROTO_TCP, SockaddrIn};
 use hal::sys::netinet_ip::{Ip, Ippseudo};
+use hal::sys::netinet_ip_icmp::ICMP_MINLEN;
 use hal::sys::netinet_ip_var::Ipovly;
 use hal::sys::netinet_ip6::{IPV6_FLOWLABEL_MASK, Ip6Hdr, Ip6HdrPseudo};
 use hal::sys::netinet_tcp::{
     TCP_MAX_WINSHIFT, TCP_MAXWIN, TCP_MSS, TCPOLEN_TSTAMP_APPA, TCPOPT_TSTAMP_HDR, TH_ACK, TH_RST,
     TcpSeq, Tcphdr,
 };
+use hal::sys::netinet6_in6::{SA6_ANY, SockaddrIn6, in6_is_addr_unspecified, in6_is_addr_v4mapped};
 use hal::sys::socket::{AF_INET, AF_INET6};
 
 use crate::assert::kpanic;
 use crate::crypto::md5::{MD5_DIGEST_LENGTH, Md5Ctx};
 use crate::crypto::sha2::{SHA512_DIGEST_LENGTH, Sha512Ctx};
-use crate::net::ipsec_hooks::{TdbRef, ipsec};
+use crate::net::ipsec_hooks::{SOCKADDR_UNION_LEN, TdbRef, ipsec};
 use crate::net::mbuf::{
-    M_DONTWAIT, M_TCP_CSUM_OUT, M_WAIT, MAX_LINKHDR, Mbuf, MbufBox, m_apply, m_get, m_gethdr,
+    M_DONTWAIT, M_TCP_CSUM_OUT, M_WAIT, MAX_LINKHDR, Mbuf, MbufBox, m_apply, m_copydata, m_get,
+    m_gethdr,
+};
+use crate::net::proto::{
+    CtlArg, PRC_HOSTDEAD, PRC_MSGSIZE, PRC_MTUINC, PRC_NCMDS, PRC_QUENCH, SockaddrView,
+    prc_is_redirect,
 };
 use crate::net::rtable::rtable_l2;
-use crate::net::socket::{InetLocked, soisdisconnected};
-use crate::netinet::in_pcb::{INP_IPV6, Inpcb, in_pcbdetach, in_pcbinit};
+use crate::net::socket::{
+    InetLocked, SoLocked, so_timeo_wakeup, soisdisconnected, sorwakeup, sowwakeup,
+};
+use crate::netinet::in_pcb::{
+    INP_IPV6, Inpcb, in_pcbdetach, in_pcbinit, in_pcblookup, in_pcbnotifyall, in_pcbrtchange,
+    in_pcbrtentry, in_pcbsolock,
+};
+use crate::netinet::ip_icmp::icmp_mtudisc;
+use crate::netinet::ip_input::INETCTLERRMAP;
 use crate::netinet::ip_output::ip_output;
 use crate::netinet::ip_var::{IP_DEFTTL, IP_MTUDISC, ip_mtudisc};
-use crate::netinet::tcp_syncache::{syn_cache_cleanup, syn_cache_init};
+use crate::netinet::tcp_fsm::{
+    TCPS_CLOSED, TCPS_ESTABLISHED, tcps_haveestablished, tcps_havercvdsyn,
+};
+use crate::netinet::tcp_input::{tcp_hdrsz, tcp_mss};
+use crate::netinet::tcp_output::tcp_output;
+use crate::netinet::tcp_seq::{seq_geq, seq_lt};
+use crate::netinet::tcp_syncache::{syn_cache_cleanup, syn_cache_init, syn_cache_unreach};
 use crate::netinet::tcp_timer::TCPTV_SRTTDFLT;
 use crate::netinet::tcp_timer::{
     TCPT_NTIMERS, TCPTV_MIN, TCPTV_REXMTMAX, TCPTV_SRTTBASE, tcp_canceltimers, tcp_timer_freesack,
     tcp_timer_init, tcpt_rangeset,
 };
 use crate::netinet::tcp_var::{
-    Sackhole, TCP_RTT_BASE_SHIFT, TCP_RTTVAR_SHIFT, TF_NOOPT, TF_RCVD_TSTMP, TF_REQ_SCALE,
-    TF_REQ_TSTMP, TcpState, Tcpcb, Tcpqent, TcpstatCounters, Tp, intotcpcb, tcp_rexmtval,
-    tcpstat_inc,
+    Sackhole, SynCacheSa, TCP_RTT_BASE_SHIFT, TCP_RTTVAR_SHIFT, TF_NOOPT, TF_PMTUD_PEND,
+    TF_RCVD_TSTMP, TF_REQ_SCALE, TF_REQ_TSTMP, TcpState, Tcpcb, Tcpqent, TcpstatCounters, Tp,
+    intotcpcb, tcp_rexmtval, tcpstat_inc,
 };
+use crate::netinet6::icmp6::{icmp6_mtudisc_callback_register, icmp6_mtudisc_update};
+use crate::netinet6::in6_pcb::{in6_pcblookup, in6_pcbnotify};
 use crate::netinet6::in6_src::{in6_clearscope, in6_selecthlim};
+use crate::netinet6::ip6_input::INET6CTLERRMAP;
 use crate::netinet6::ip6_output::ip6_output;
 use crate::netinet6::ip6_var::{IP6_DEFHLIM, Ip6Pktopts};
 use crate::proc::ProcGlue;
@@ -306,7 +356,7 @@ pub fn tcp_init<G: ProcGlue>() {
         kpanic(format_args!("tcp_init"));
     }
 
-    // icmp6_mtudisc_callback_register(tcp6_mtudisc_callback): N6.6a3's (the deviations).
+    icmp6_mtudisc_callback_register(tcp6_mtudisc_callback::<G>);
 
     // Initialize the compressed state engine.
     syn_cache_init::<G>();
@@ -670,6 +720,28 @@ pub fn tcp_newtcpcb<'a, 'w, G: ProcGlue>(
     intotcpcb(inp, il)
 }
 
+/// `tcp_drop`: drop a TCP connection, reporting the specified error (`errno`, `None` for the
+/// C's 0). If connection is synchronized, then send a RST to peer. The control block is
+/// consumed: closed by `tcp_close`, whose [`Closed`] the caller frees (the C's NULL).
+pub fn tcp_drop<G: ProcGlue>(mut tp: Tp<'_, '_, G>, errno: Option<Errno>) -> Closed {
+    let so = tp.so;
+
+    if tcps_havercvdsyn(tp.st.t_state) {
+        tp.st.t_state = TCPS_CLOSED;
+        // The RST is best effort, as the C's (void).
+        let _ = tcp_output(&mut tp);
+        tcpstat_inc(TcpstatCounters::TcpsDrops);
+    } else {
+        tcpstat_inc(TcpstatCounters::TcpsConndrops);
+    }
+    let mut errno = errno;
+    if errno == Some(Errno::ETIMEDOUT) && tp.st.t_softerror.is_some() {
+        errno = tp.st.t_softerror;
+    }
+    so.set_error(errno);
+    tcp_close(tp)
+}
+
 /// `tcp_close`: close a TCP control block: discard all space held by the tcp, discard
 /// internet protocol block, wake up any sleepers. The block is consumed: [`Closed`] tells the
 /// frame that owns the socket lock's parts to free it ([`tcp_free`]) before it unlocks, the
@@ -732,6 +804,514 @@ pub fn tcp_rscale(st: &mut TcpState, hiwat: u64) {
         && u64::from(TCP_MAXWIN) << st.request_r_scale < hiwat
     {
         st.request_r_scale += 1;
+    }
+}
+
+/// `tcp_notify`: notify a tcp user of an asynchronous error; store error as soft error, but
+/// wake up user (for now, won't do anything until can select for soft error). The notify
+/// form of the pcb walks: the control block of `inp`, whose socket `w` locks (the C's
+/// `soassertlocked`), if it has one.
+pub fn tcp_notify<G: ProcGlue>(inp: &Inpcb<G>, w: &mut SoLocked<'_>, error: Option<Errno>) {
+    with_tcpcb(inp, w, |tp| tcp_notify_tp(tp, error));
+}
+
+/// [`tcp_notify`]'s work on the control block held (the control inputs' own lookups hold it
+/// already: their notify is always `tcp_notify`).
+fn tcp_notify_tp<G: ProcGlue>(tp: &mut Tp<'_, '_, G>, error: Option<Errno>) {
+    let so = tp.so;
+    let st = &mut *tp.st;
+
+    // Ignore some errors if we are hooked up. If connection hasn't completed, has
+    // retransmitted several times, and receives a second error, give up now. This is better
+    // than waiting a long time to establish a connection that can never complete.
+    if st.t_state == TCPS_ESTABLISHED
+        && matches!(
+            error,
+            Some(Errno::EHOSTUNREACH | Errno::ENETUNREACH | Errno::EHOSTDOWN)
+        )
+    {
+        return;
+    } else if !tcps_haveestablished(st.t_state) && st.t_rxtshift > 3 && st.t_softerror.is_some() {
+        so.set_error(error);
+    } else {
+        st.t_softerror = error;
+    }
+    // wakeup((caddr_t) &so->so_timeo)
+    so_timeo_wakeup(so);
+    sorwakeup(so);
+    sowwakeup(so);
+}
+
+/// The returned TCP header's first eight bytes (ports and sequence number, network order)
+/// as a header whose other members are zero (the C reads only those through its pointer).
+fn th_of8(b: &[u8; 8]) -> Tcphdr {
+    Tcphdr {
+        th_sport: u16::from_ne_bytes([b[0], b[1]]),
+        th_dport: u16::from_ne_bytes([b[2], b[3]]),
+        th_seq: u32::from_ne_bytes([b[4], b[5], b[6], b[7]]),
+        ..Tcphdr::default()
+    }
+}
+
+/// A socket address's bytes as `union syn_cache_sa`'s (zero past what the view holds).
+fn sa_union(sa: &[u8]) -> SynCacheSa {
+    let mut u = [0u8; SOCKADDR_UNION_LEN];
+    let n = sa.len().min(u.len());
+    u[..n].copy_from_slice(&sa[..n]);
+    u
+}
+
+/// Whether a control input's error is one an embryonic connection is told of
+/// (`syn_cache_unreach`).
+fn unreach_errno(e: Option<Errno>) -> bool {
+    matches!(
+        e,
+        Some(Errno::EHOSTUNREACH | Errno::ENETUNREACH | Errno::EHOSTDOWN)
+    )
+}
+
+/// `tcp6_ctlinput`: an ICMPv6 error about a segment we sent (`INET6`; compiled always, as
+/// `netinet6` is): `arg` the error's parameter (`struct ip6ctlparam`), or none; the caller's
+/// proof of the net lock `net` (the C's callers hold it).
+pub fn tcp6_ctlinput<G: ProcGlue>(
+    cmd: i32,
+    sa: SockaddrView<'_>,
+    rdomain: u32,
+    arg: CtlArg<'_>,
+    net: &NetHeld<'_>,
+) {
+    let mut rtchange = false;
+
+    if sa.family() != AF_INET6 || usize::from(sa.len()) != size_of::<SockaddrIn6>() {
+        return;
+    }
+    let Some(sa6) = pod::at::<SockaddrIn6>(sa.bytes(), 0) else {
+        return;
+    };
+    if in6_is_addr_unspecified(&sa6.sin6_addr) || in6_is_addr_v4mapped(&sa6.sin6_addr) {
+        return;
+    }
+    // The argument of this family only (an IPv4 quote is never handed to an IPv6 entry).
+    let mut d = match arg {
+        CtlArg::Ip6(p) => Some(p),
+        CtlArg::None => None,
+        CtlArg::Ip(_) => return,
+    };
+    if cmd as u32 as usize >= PRC_NCMDS {
+        return;
+    } else if cmd == PRC_QUENCH {
+        // Don't honor ICMP Source Quench messages meant for TCP connections.
+        // XXX there's no PRC_QUENCH in IPv6
+        return;
+    } else if prc_is_redirect(cmd) {
+        rtchange = true;
+        d = None;
+    } else if cmd == PRC_MSGSIZE {
+        // special code is present, see below
+    } else if cmd == PRC_HOSTDEAD {
+        d = None;
+    } else if INET6CTLERRMAP[cmd as usize].is_none() {
+        return;
+    }
+    let errno = INET6CTLERRMAP[cmd as usize];
+
+    // if the parameter is from icmp6, decode it.
+    let sa6_src = d.map_or(SA6_ANY, |p| p.src);
+
+    let Some(p) = d else {
+        // in_rtchange for a redirect, tcp_notify otherwise.
+        let mut notify: NotifyFn<G> = if rtchange {
+            rtchange_notify::<G>
+        } else {
+            tcp_notify::<G>
+        };
+        in6_pcbnotify(
+            &crate::net::domain::net::<G>().tcp.tcb6table,
+            &sa6,
+            0,
+            Some(&sa6_src),
+            0,
+            rdomain,
+            cmd,
+            net,
+            Some(&mut notify),
+        );
+        return;
+    };
+
+    // XXX: We assume that when ip6 is non NULL, M and OFF are valid (the parameter carries
+    // the quoted header with them).
+    let (m, off) = (p.m, p.off);
+
+    // check if we can safely examine src and dst ports (the C's `int` against the `size_t`
+    // sum, unsigned)
+    if (m.m_pkthdr().len.get() as u64) < (off as u64).wrapping_add(8) {
+        return;
+    }
+
+    let mut b = [0u8; 8];
+    m_copydata(m, off, &mut b);
+    let th = th_of8(&b);
+
+    // Check to see if we have a valid TCP connection corresponding to the address in the
+    // ICMPv6 message payload.
+    let inp = in6_pcblookup(
+        &crate::net::domain::net::<G>().tcp.tcb6table,
+        &sa6.sin6_addr,
+        th.th_dport,
+        &sa6_src.sin6_addr,
+        th.th_sport,
+        rdomain,
+    );
+    if cmd == PRC_MSGSIZE {
+        // Depending on the value of "valid" and routing table size (mtudisc_{hi,lo}wat), we
+        // will:
+        // - recalculate the new MTU and create the corresponding routing entry, or
+        // - ignore the MTU change notification.
+        icmp6_mtudisc_update(p, inp.is_some(), net);
+        drop(inp); // in_pcbunref
+        return;
+    }
+    let mut had_tp = false;
+    if let Some(i) = inp.as_deref()
+        && let Some(mut w) = in_pcbsolock(i, net)
+        && let Some(mut il) = w.inet()
+        && let Some(mut tp) = intotcpcb(i, &mut il)
+    {
+        had_tp = true;
+        let seq = ntohl(th.th_seq);
+        if seq_geq(seq, tp.st.snd_una) && seq_lt(seq, tp.st.snd_max) {
+            tcp_notify_tp(&mut tp, errno);
+        }
+    }
+    // in_pcbsounlock (the holding's drop above), in_pcbunref
+    drop(inp);
+
+    if !had_tp && unreach_errno(errno) {
+        let mut src = [0u8; SOCKADDR_UNION_LEN];
+        put_hdr(&mut src, 0, &sa6_src);
+        syn_cache_unreach::<G>(&src, &sa_union(sa.bytes()), &th, rdomain, net);
+    }
+}
+
+/// What `tcp_ctlinput` reads of an ICMP message that returned an IPv4 header: the header,
+/// the TCP header's first eight bytes after it, and the message's `icmp_nextmtu` (network
+/// order).
+struct Quote {
+    /// The returned IP header (`&icp->icmp_ip`).
+    ip: Ip,
+    /// The returned TCP header's ports and sequence number.
+    th: Tcphdr,
+    /// `icp->icmp_nextmtu`.
+    nextmtu: u16,
+}
+
+/// The [`Quote`] of `msg`, the ICMP message from its type byte (`CtlArg::Ip`); `None` when
+/// the message is shorter than the header it returns and the TCP bytes the C reads after it,
+/// or returns a header shorter than 20 bytes (`icmp_input` hands no such message on: the C
+/// would read past the message; here nothing is done).
+fn tcp_quote(msg: &[u8]) -> Option<Quote> {
+    let ip: Ip = pod::at(msg, ICMP_MINLEN)?;
+    let hl = usize::from(ip.ip_hl()) << 2;
+    if hl < size_of::<Ip>() {
+        return None;
+    }
+    let at = ICMP_MINLEN + hl;
+    let t: [u8; 8] = msg.get(at..at + 8)?.try_into().ok()?;
+    // icmp_nextmtu: the second half of icmp_hun's ih_pmtu, bytes 6 and 7.
+    let nextmtu = u16::from_ne_bytes([msg[6], msg[7]]);
+    Some(Quote {
+        ip,
+        th: th_of8(&t),
+        nextmtu,
+    })
+}
+
+/// The notify function the control inputs hand their walks (the C's `void (*notify)(struct
+/// inpcb *, int)`): the connection, its socket held in parts, the error.
+type NotifyFn<G> = fn(&Inpcb<G>, &mut SoLocked<'_>, Option<Errno>);
+
+/// `in_rtchange` as a [`NotifyFn`]: the cached route let go (the socket's holding unused).
+fn rtchange_notify<G: ProcGlue>(inp: &Inpcb<G>, _w: &mut SoLocked<'_>, errno: Option<Errno>) {
+    in_pcbrtchange(inp, errno);
+}
+
+/// `tcp_ctlinput`: an ICMP error about a segment we sent: `arg` the ICMP message that
+/// returned the segment's IP header (from its type byte), or none; the caller's proof of the
+/// net lock `net` (the C's callers hold it).
+pub fn tcp_ctlinput<G: ProcGlue>(
+    cmd: i32,
+    sa: SockaddrView<'_>,
+    rdomain: u32,
+    arg: CtlArg<'_>,
+    net: &NetHeld<'_>,
+) {
+    let mut notify: NotifyFn<G> = tcp_notify::<G>;
+
+    if sa.family() != AF_INET {
+        return;
+    }
+    // satosin(sa): the address's bytes as a sockaddr_in (zero past what the view holds).
+    let mut sinb = [0u8; size_of::<SockaddrIn>()];
+    let n = sa.bytes().len().min(sinb.len());
+    sinb[..n].copy_from_slice(&sa.bytes()[..n]);
+    let Some(sin) = pod::at::<SockaddrIn>(&sinb, 0) else {
+        return;
+    };
+    let faddr = sin.sin_addr;
+    if faddr.s_addr == INADDR_ANY {
+        return;
+    }
+
+    // The argument of this family only (an IPv6 parameter is never handed to an IPv4
+    // entry); its quote is read where the C reads it.
+    let mut ip = match arg {
+        CtlArg::Ip(msg) => Some(msg),
+        CtlArg::None => None,
+        CtlArg::Ip6(_) => return,
+    };
+
+    if cmd as u32 as usize >= PRC_NCMDS {
+        return;
+    }
+    let errno = INETCTLERRMAP[cmd as usize];
+    if cmd == PRC_QUENCH {
+        // Don't honor ICMP Source Quench messages meant for TCP connections.
+        return;
+    } else if prc_is_redirect(cmd) {
+        notify = rtchange_notify::<G>;
+        ip = None;
+    } else if cmd == PRC_MSGSIZE
+        && ip_mtudisc.load(Ordering::Relaxed) != 0
+        && let Some(msg) = ip
+    {
+        // The quote `icmp_input` checked holds the header and the TCP bytes the C reads.
+        let Some(q) = tcp_quote(msg) else {
+            return;
+        };
+        // Verify that the packet in the icmp payload refers to an existing TCP connection.
+        let seq = ntohl(q.th.th_seq);
+        let inp = in_pcblookup(
+            &crate::net::domain::net::<G>().tcp.tcbtable,
+            q.ip.ip_dst,
+            q.th.th_dport,
+            q.ip.ip_src,
+            q.th.th_sport,
+            rdomain,
+        );
+        // `Some(true)`: go on to the walk with tcp_mtudisc; else return (no matching
+        // connection, a Next-Hop MTU too large, or a notice recorded for later).
+        let go_on = inp.as_deref().and_then(|i| {
+            let mut w = in_pcbsolock(i, net)?;
+            let mut il = w.inet()?;
+            let tp = intotcpcb(i, &mut il)?;
+            let st = tp.st;
+            if !(seq_geq(seq, st.snd_una) && seq_lt(seq, st.snd_max)) {
+                // ignore if we don't have a matching connection
+                return None;
+            }
+            // If the ICMP message advertises a Next-Hop MTU equal or larger than the maximum
+            // packet size we have ever sent, drop the message.
+            let mtu = u32::from(ntohs(q.nextmtu));
+            if mtu >= st.t_pmtud_mtu_sent {
+                return Some(false);
+            }
+            if mtu >= tcp_hdrsz(st).wrapping_add(st.t_pmtud_mss_acked) {
+                // Calculate new MTU, and create corresponding route (traditional PMTUD).
+                st.clear_flags(TF_PMTUD_PEND);
+                icmp_mtudisc(q.nextmtu, &q.ip, i.inp_rtableid.get(), net);
+                Some(true)
+            } else {
+                // Record the information got in the ICMP message; act on it later. If we had
+                // already recorded an ICMP message, replace the old one only if the new
+                // message refers to an older TCP segment
+                if st.has_flags(TF_PMTUD_PEND) {
+                    if seq_lt(st.t_pmtud_th_seq, seq) {
+                        return Some(false);
+                    }
+                } else {
+                    st.set_flags(TF_PMTUD_PEND);
+                }
+                st.t_pmtud_th_seq = seq;
+                st.t_pmtud_nextmtu = u32::from(q.nextmtu);
+                st.t_pmtud_ip_len = q.ip.ip_len;
+                st.t_pmtud_ip_hl = u16::from(q.ip.ip_hl());
+                Some(false)
+            }
+        });
+        // in_pcbsounlock (the holding's drop in the closure), in_pcbunref
+        drop(inp);
+        if go_on != Some(true) {
+            return;
+        }
+        notify = tcp_mtudisc_notify::<G>;
+        ip = None;
+    } else if cmd == PRC_MTUINC {
+        notify = tcp_mtudisc_increase_notify::<G>;
+        ip = None;
+    } else if cmd == PRC_HOSTDEAD {
+        ip = None;
+    } else if errno.is_none() {
+        return;
+    }
+
+    let Some(msg) = ip else {
+        in_pcbnotifyall(
+            &crate::net::domain::net::<G>().tcp.tcbtable,
+            &sin,
+            rdomain,
+            errno,
+            net,
+            notify,
+        );
+        return;
+    };
+
+    // The returned segment's own connection: its notify is tcp_notify (every other one
+    // cleared `ip` above).
+    let Some(q) = tcp_quote(msg) else {
+        return;
+    };
+    let inp = in_pcblookup(
+        &crate::net::domain::net::<G>().tcp.tcbtable,
+        q.ip.ip_dst,
+        q.th.th_dport,
+        q.ip.ip_src,
+        q.th.th_sport,
+        rdomain,
+    );
+    let mut had_tp = false;
+    if let Some(i) = inp.as_deref()
+        && let Some(mut w) = in_pcbsolock(i, net)
+        && let Some(mut il) = w.inet()
+        && let Some(mut tp) = intotcpcb(i, &mut il)
+    {
+        had_tp = true;
+        let seq = ntohl(q.th.th_seq);
+        if seq_geq(seq, tp.st.snd_una) && seq_lt(seq, tp.st.snd_max) {
+            tcp_notify_tp(&mut tp, errno);
+        }
+    }
+    // in_pcbsounlock (the holding's drop above), in_pcbunref
+    drop(inp);
+
+    if !had_tp && unreach_errno(INETCTLERRMAP[cmd as usize]) {
+        let src = SockaddrIn {
+            sin_len: size_of::<SockaddrIn>() as u8,
+            sin_family: AF_INET,
+            sin_port: q.th.th_sport,
+            sin_addr: q.ip.ip_src,
+            ..SockaddrIn::default()
+        };
+        let mut srcu = [0u8; SOCKADDR_UNION_LEN];
+        put_hdr(&mut srcu, 0, &src);
+        syn_cache_unreach::<G>(&srcu, &sa_union(sa.bytes()), &q.th, rdomain, net);
+    }
+}
+
+/// `tcp6_mtudisc_callback`: path MTU discovery handler of `icmp6_mtudisc_update` (`INET6`),
+/// registered by `tcp_init`: every connection to `sin6` takes the new MTU (`tcp_mtudisc`).
+pub fn tcp6_mtudisc_callback<G: ProcGlue>(sin6: &SockaddrIn6, rdomain: u32, net: &NetHeld<'_>) {
+    let mut f = |inp: &Inpcb<G>, w: &mut SoLocked<'_>, e: Option<Errno>| {
+        tcp_mtudisc_notify(inp, w, e);
+    };
+    in6_pcbnotify(
+        &crate::net::domain::net::<G>().tcp.tcb6table,
+        sin6,
+        0,
+        Some(&SA6_ANY),
+        0,
+        rdomain,
+        PRC_MSGSIZE,
+        net,
+        Some(&mut f),
+    );
+}
+
+/// `tcp_mtudisc`: on receipt of path MTU corrections, flush old route and replace it with the
+/// new one. Retransmit all unacknowledged packets, to ensure that all packets will be
+/// received. `errno` is the notification's (`None` for `tcp_output`'s -1: no error to
+/// report); the C's `inpcb` argument is the control block's, held (the notify form is
+/// [`tcp_mtudisc_notify`]).
+pub fn tcp_mtudisc<G: ProcGlue>(tp: &mut Tp<'_, '_, G>, errno: Option<Errno>) {
+    let inp = tp.inp;
+    let mut change = false;
+
+    let orig_maxseg = tp.st.t_maxseg;
+
+    if let Some(mut rt) = in_pcbrtentry(inp, tp.net) {
+        let orig_mtulock = rt.rt_locks().get() & RTV_MTU;
+
+        // If this was not a host route, remove and realloc.
+        if !rt.rt_flags.isset(RTF_HOST) {
+            in_pcbrtchange(inp, errno);
+            match in_pcbrtentry(inp, tp.net) {
+                Some(r) => rt = r,
+                None => return,
+            }
+        }
+        if orig_mtulock < rt.rt_locks().get() & RTV_MTU {
+            change = true;
+        }
+    }
+    tcp_mss(tp, -1);
+    if orig_maxseg > tp.st.t_maxseg {
+        change = true;
+    }
+
+    // Resend unacknowledged packets
+    tp.st.snd_nxt = tp.st.snd_una;
+    if change || errno.is_some_and(|e| e.as_i32() > 0) {
+        // The C ignores the result: the segments go again at the next chance.
+        let _ = tcp_output(tp);
+    }
+}
+
+/// `tcp_mtudisc_increase`: a path MTU estimate grew (`PRC_MTUINC`): a host route is dropped
+/// for a new one, and the segment size taken again (`tcp_mss(tp, -1)`, which also sets the
+/// congestion window). The notify form is [`tcp_mtudisc_increase_notify`].
+pub fn tcp_mtudisc_increase<G: ProcGlue>(tp: &mut Tp<'_, '_, G>, errno: Option<Errno>) {
+    let Some(rt) = in_pcbrtentry(tp.inp, tp.net) else {
+        return;
+    };
+    // If this was a host route, remove and realloc.
+    if rt.rt_flags.isset(RTF_HOST) {
+        in_pcbrtchange(tp.inp, errno);
+    }
+    drop(rt);
+
+    // also takes care of congestion window
+    tcp_mss(tp, -1);
+}
+
+/// `tcp_mtudisc` as a notify function (`in_pcbnotifyall`'s, `in6_pcbnotify`'s): the control
+/// block of `inp`, whose socket `w` locks, if it has one (`intotcpcb`).
+pub fn tcp_mtudisc_notify<G: ProcGlue>(inp: &Inpcb<G>, w: &mut SoLocked<'_>, errno: Option<Errno>) {
+    with_tcpcb(inp, w, |tp| tcp_mtudisc(tp, errno));
+}
+
+/// `tcp_mtudisc_increase` as a notify function, as [`tcp_mtudisc_notify`].
+pub fn tcp_mtudisc_increase_notify<G: ProcGlue>(
+    inp: &Inpcb<G>,
+    w: &mut SoLocked<'_>,
+    errno: Option<Errno>,
+) {
+    with_tcpcb(inp, w, |tp| tcp_mtudisc_increase(tp, errno));
+}
+
+/// The control block of `inp` opened under its socket lock `w` for a notify function (the
+/// C's `intotcpcb(inp)` at their start); nothing without one (a socket a close detached, or
+/// one held C-style, which no kernel protocol's is).
+fn with_tcpcb<G: ProcGlue>(
+    inp: &Inpcb<G>,
+    w: &mut SoLocked<'_>,
+    f: impl FnOnce(&mut Tp<'_, '_, G>),
+) {
+    let Some(mut il) = w.inet() else {
+        return;
+    };
+    if let Some(mut tp) = intotcpcb(inp, &mut il) {
+        f(&mut tp);
     }
 }
 
@@ -968,6 +1548,356 @@ pub(crate) mod testtcp {
     /// The items out of the "tcpcb" pool.
     pub(crate) fn tcpcbs() -> u64 {
         crate::net::domain::net::<G>().tcp.tcpcb_pool.nout()
+    }
+
+    /// The driver of a test interface: its packets' count and the last one's bytes.
+    pub(crate) type Wire = testinet::InetDriver;
+
+    /// An established connection from 10.9.`n`.1:7000 to 10.9.`n`.2:80 over a new test
+    /// interface `name` (MTU 1500): the socket's buffers 16 KB each, no options requested,
+    /// the segment size taken from the route (`tcp_mss`: 1460, the window 14600), the template
+    /// made, our sequence space at 1000 and the peer's at 5000, its window 65535 and ours
+    /// (16384) advertised.
+    pub(crate) fn estab(name: &[u8], n: u8) -> (SocketRef<G>, InpcbRef<G>, &'static Wire) {
+        estab_to(name, n, [10, 9, n, 2])
+    }
+
+    /// [`estab`] to the peer `peer`; one off the interface's net goes through a gateway,
+    /// 10.9.`n`.254 (`route add 10.20.n/24 10.9.n.254`, made here for `peer` in 10.20/16).
+    pub(crate) fn estab_to(
+        name: &[u8],
+        n: u8,
+        peer: [u8; 4],
+    ) -> (SocketRef<G>, InpcbRef<G>, &'static Wire) {
+        use hal::sys::netinet_in::InAddr;
+
+        let (_ifp, d) = testinet::iface(name, [10, 9, n, 1]);
+        if peer[..2] == [10, 20] {
+            gateway_route(n, peer[2]);
+        }
+        let (so, inp) = conn();
+        {
+            let t = &crate::net::domain::net::<G>().tcp.tcbtable;
+            let mut g = t.lock();
+            inp.set_laddr(
+                &g,
+                InAddr {
+                    s_addr: u32::from_ne_bytes([10, 9, n, 1]),
+                },
+            );
+            inp.set_faddr(
+                &g,
+                InAddr {
+                    s_addr: u32::from_ne_bytes(peer),
+                },
+            );
+            inp.set_lport(&g, htons(7000));
+            inp.set_fport(&g, htons(80));
+            crate::netinet::in_pcb::in_pcbrehash(&mut g, &inp);
+        }
+        crate::net::socket::soreserve(&so, 16384, 16384).expect("the buffers");
+        with_tp(&inp, |mut tp| {
+            tp.st
+                .clear_flags(crate::netinet::tcp_var::TF_REQ_SCALE | TF_REQ_TSTMP);
+            let m = tcp_template(&mut tp).expect("a template");
+            tp.st.t_template = Some(m);
+            let _ = crate::netinet::tcp_input::tcp_mss(&mut tp, 0);
+            let st = &mut *tp.st;
+            st.t_state = crate::netinet::tcp_fsm::TCPS_ESTABLISHED;
+            st.iss = 1000;
+            st.snd_una = 1000;
+            st.snd_nxt = 1000;
+            st.snd_max = 1000;
+            st.snd_up = 1000;
+            st.irs = 4999;
+            st.rcv_nxt = 5000;
+            st.rcv_up = 5000;
+            st.rcv_adv = 5000 + 16384;
+            st.snd_wnd = 65535;
+            st.max_sndwnd = 65535;
+            st.t_rcvtime = crate::netinet::tcp_var::tcp_now();
+            ((), None)
+        });
+        (so, inp, d)
+    }
+
+    /// `route add 10.20.p.0/24 10.9.n.254` (through the interface of 10.9.`n`.1).
+    fn gateway_route(n: u8, p: u8) {
+        use hal::sys::net_route::{
+            RTAX_DST, RTAX_GATEWAY, RTAX_NETMASK, RTF_GATEWAY, RTF_STATIC, RTF_UP, RTM_ADD,
+            RTP_STATIC,
+        };
+
+        use crate::net::proto::SockaddrView;
+        use crate::net::route::{RtAddrinfo, rt_plentosa, rtrequest};
+
+        let sin = |a: [u8; 4]| {
+            let mut b = [0u8; 16];
+            b[0] = 16;
+            b[1] = AF_INET;
+            b[4..8].copy_from_slice(&a);
+            b
+        };
+        let (dst, gw, us) = (
+            sin([10, 20, p, 0]),
+            sin([10, 9, n, 254]),
+            sin([10, 9, n, 1]),
+        );
+        let mut mask = crate::net::rtable::SaCopy::zeroed();
+        let w = NETLOCK.write();
+        let net = NetHeld::of(&w).expect("the net lock");
+        let mut info = RtAddrinfo::new();
+        info.rti_info[RTAX_DST] = SockaddrView::new(&dst);
+        info.rti_info[RTAX_NETMASK] = rt_plentosa(AF_INET, Some(24), &mut mask);
+        info.rti_info[RTAX_GATEWAY] = SockaddrView::new(&gw);
+        let r = net.reader();
+        info.rti_ifa = crate::net::if_::ifa_ifwithaddr(&net, &r, &us, 0);
+        info.rti_flags = RTF_GATEWAY | RTF_STATIC | RTF_UP;
+        rtrequest(RTM_ADD, &mut info, RTP_STATIC, None, 0, &net).expect("the route");
+    }
+
+    /// 2001:db8:`n`::`h`.
+    pub(crate) fn a6(n: u8, h: u8) -> hal::sys::netinet6_in6::In6Addr {
+        let mut a = hal::sys::netinet6_in6::In6Addr::default();
+        a.s6_addr[..4].copy_from_slice(&[0x20, 0x01, 0x0d, 0xb8]);
+        a.s6_addr[5] = n;
+        a.s6_addr[15] = h;
+        a
+    }
+
+    /// [`estab`] over IPv6: an `INP_IPV6` control block in `tcb6table` from
+    /// [2001:db8:`n`::1]:7000 to [2001:db8:`n`::2]:80 over a new interface `name` (MTU 1500,
+    /// not Ethernet, so no neighbor to resolve) with 2001:db8:`n`::1/64 and its routes; the
+    /// segment size taken from the route (1440), the template an IPv6 header.
+    pub(crate) fn estab6(name: &[u8], n: u8) -> (SocketRef<G>, InpcbRef<G>, &'static Wire) {
+        use hal::sys::net_if::{IFF_MULTICAST, IFF_RUNNING, IFF_UP};
+
+        let d: &'static Wire = std::boxed::Box::leak(std::boxed::Box::default());
+        let ifp = crate::net::if_::test_ifnet_with(name, d);
+        // Not running when the address comes: no DAD (in6if_do_dad), so no neighbor
+        // solicitation of a timer reaches this wire during a test, and the address is not
+        // tentative.
+        ifp.if_flags.set(IFF_MULTICAST);
+        ifp.if_mtu.set(1500);
+        crate::net::if_::if_alloc_sadl(ifp);
+        {
+            let _w = NETLOCK.write();
+            crate::net::if_::IFNETLIST.insert_tail(ifp);
+        }
+        crate::netinet6::in6::tests::add(ifp, a6(n, 1), 64).expect("SIOCAIFADDR_IN6");
+        ifp.if_flags.set(IFF_UP | IFF_RUNNING | IFF_MULTICAST);
+
+        let (so, inp) = testinet::pcb(&crate::net::domain::net::<G>().tcp.tcb6table);
+        inp.set_flags(INP_IPV6);
+        {
+            let t = &crate::net::domain::net::<G>().tcp.tcb6table;
+            let mut g = t.lock();
+            inp.set_laddr6(&g, a6(n, 1));
+            inp.set_faddr6(&g, a6(n, 2));
+            inp.set_lport(&g, htons(7000));
+            inp.set_fport(&g, htons(80));
+            crate::netinet::in_pcb::in_pcbrehash(&mut g, &inp);
+        }
+        with_lock(&inp, |inp, il| {
+            assert!(tcp_newtcpcb(inp, il, M_WAIT).is_some(), "a control block");
+        });
+        crate::net::socket::soreserve(&so, 16384, 16384).expect("the buffers");
+        with_tp(&inp, |mut tp| {
+            tp.st
+                .clear_flags(crate::netinet::tcp_var::TF_REQ_SCALE | TF_REQ_TSTMP);
+            let m = tcp_template(&mut tp).expect("a template");
+            tp.st.t_template = Some(m);
+            let _ = crate::netinet::tcp_input::tcp_mss(&mut tp, 0);
+            let st = &mut *tp.st;
+            st.t_state = crate::netinet::tcp_fsm::TCPS_ESTABLISHED;
+            st.iss = 1000;
+            st.snd_una = 1000;
+            st.snd_nxt = 1000;
+            st.snd_max = 1000;
+            st.snd_up = 1000;
+            st.irs = 4999;
+            st.rcv_nxt = 5000;
+            st.rcv_up = 5000;
+            st.rcv_adv = 5000 + 16384;
+            st.snd_wnd = 65535;
+            st.max_sndwnd = 65535;
+            st.t_rcvtime = crate::netinet::tcp_var::tcp_now();
+            ((), None)
+        });
+        (so, inp, d)
+    }
+
+    /// The last packet `d` sent, an IPv6 one: its header, the TCP header, the TCP options and
+    /// the payload.
+    pub(crate) fn last6(d: &Wire) -> (Ip6Hdr, Tcphdr, std::vec::Vec<u8>, std::vec::Vec<u8>) {
+        let p = d.last.lock().expect("the capture").clone();
+        let ip6: Ip6Hdr = pod::at(&p, 0).expect("an IPv6 header");
+        let th: Tcphdr = pod::at(&p, 40).expect("a TCP header");
+        let thlen = usize::from(th.th_off()) * 4;
+        let opts = p[60..40 + thlen].to_vec();
+        let data = p[40 + thlen..].to_vec();
+        (ip6, th, opts, data)
+    }
+
+    /// Appends `bytes` to the send buffer of `so`, as `sosend` leaves them for `tcp_output`.
+    pub(crate) fn queue(so: &crate::net::socket::Socket<G>, bytes: &[u8]) {
+        let mut m = m_gethdr(M_WAIT, hal::sys::mbuf::MT_DATA).expect("an mbuf");
+        if bytes.len() > crate::net::mbuf::MHLEN {
+            assert!(
+                crate::net::mbuf::m_clget(&mut m, M_WAIT, bytes.len() as u32),
+                "a cluster"
+            );
+        }
+        m.m_len().set(bytes.len() as u32);
+        m.m_pkthdr().len.set(bytes.len() as i32);
+        m.data_mut()
+            .expect("a new mbuf is writable")
+            .copy_from_slice(bytes);
+        so.so_snd.lock().sbappendstream(m);
+    }
+
+    /// The bytes `n` of a send buffer's test data: `n` mod 251, so offsets show.
+    pub(crate) fn pattern(len: usize) -> std::vec::Vec<u8> {
+        (0..len).map(|i| (i % 251) as u8).collect()
+    }
+
+    /// The last packet `d` sent: its IP header, its TCP header, the TCP options and the
+    /// payload (an IPv4 packet with a 20-byte IP header).
+    pub(crate) fn last(d: &Wire) -> (Ip, Tcphdr, std::vec::Vec<u8>, std::vec::Vec<u8>) {
+        let p = d.last.lock().expect("the capture").clone();
+        let ip: Ip = pod::at(&p, 0).expect("an IP header");
+        let th: Tcphdr = pod::at(&p, 20).expect("a TCP header");
+        let thlen = usize::from(th.th_off()) * 4;
+        let opts = p[40..20 + thlen].to_vec();
+        let data = p[20 + thlen..].to_vec();
+        (ip, th, opts, data)
+    }
+
+    /// The packets `d` has sent so far.
+    pub(crate) fn sent(d: &Wire) -> u32 {
+        d.sent.load(Ordering::Relaxed)
+    }
+
+    /// The counter `c` of `net.inet.tcp.stats` now (summed over the CPUs).
+    pub(crate) fn stat(c: TcpstatCounters) -> u64 {
+        crate::netinet::tcp_var::TCPCOUNTERS.read()[c as usize]
+    }
+
+    /// The subnet whose addresses [`SigLegs`] has an SA between: 10.9.`SIG_NET`.0/24.
+    pub(crate) const SIG_NET: u8 = 71;
+    /// The SA's MD5 key.
+    pub(crate) const SIG_KEY: &[u8] = b"N6.6a3 tcp md5 key";
+    /// The SA, a `u32` standing for `bsd`'s `struct tdb`.
+    static SIG_SA: u32 = 0x5a5a;
+
+    /// IPsec's legs for the host tests of `TCP_SIGNATURE`: no policy (the C with IPSEC and no
+    /// SA: not in use, every SPD lookup empty, every check passing, the sysctl names
+    /// `EOPNOTSUPP` as without IPSEC), and one SA, between the addresses of
+    /// 10.9.[`SIG_NET`].0/24, keyed [`SIG_KEY`]; the references given back are counted. The
+    /// bridge is set once for the run ([`sig_legs`], `register_ipsec`): the other tests'
+    /// addresses find no SA, so their `tcp_output` and `syn_cache_respond` answer `EPERM` as
+    /// without the legs, and every other leg behaves as the C without an SA.
+    pub(crate) struct SigLegs {
+        /// `tdb_unref` calls.
+        pub(crate) unrefs: core::sync::atomic::AtomicU32,
+        /// The capability `register_ipsec` gave.
+        key: std::sync::OnceLock<&'static crate::net::ipsec_hooks::TdbKey>,
+    }
+
+    /// The legs, registered by [`sig_legs`].
+    static SIG_LEGS: SigLegs = SigLegs {
+        unrefs: core::sync::atomic::AtomicU32::new(0),
+        key: std::sync::OnceLock::new(),
+    };
+
+    /// [`SigLegs`], registered as IPsec's legs on the first call.
+    pub(crate) fn sig_legs() -> &'static SigLegs {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            let key = crate::net::ipsec_hooks::register_ipsec(&SIG_LEGS)
+                .expect("no other IPsec legs in the kernel's host tests");
+            assert!(SIG_LEGS.key.set(key).is_ok());
+        });
+        &SIG_LEGS
+    }
+
+    impl SigLegs {
+        /// Whether `tdb` is the test's SA.
+        fn ours(&self, tdb: &crate::net::ipsec_hooks::TdbRef) -> bool {
+            let key = self.key.get().expect("registered");
+            let sa = tdb.get(key);
+            core::ptr::addr_eq(core::ptr::from_ref(sa), core::ptr::from_ref(&SIG_SA))
+        }
+    }
+
+    impl crate::net::ipsec_hooks::Ipsec for SigLegs {
+        fn enc_getifa(&self, _rtableid: u32, _unit: u32) -> Option<crate::net::if_var::IfaddrRef> {
+            None
+        }
+        fn in_use(&self) -> bool {
+            false
+        }
+        fn ip_output_lookup(
+            &self,
+            _m: &Mbuf,
+            _hlen: i32,
+            _seclevel: Option<&crate::net::ipsec_hooks::IpsecLevel>,
+            _ipsecflowinfo: u32,
+        ) -> Result<Option<crate::net::ipsec_hooks::TdbRef>, crate::net::ipsec_hooks::SpdError>
+        {
+            Ok(None)
+        }
+        fn ip_output_send(
+            &self,
+            _tdb: &crate::net::ipsec_hooks::TdbRef,
+            _m: MbufBox,
+            _ro: &mut crate::net::route::Route,
+            _rtableid: u32,
+            _fwd: bool,
+        ) -> Result<(), Errno> {
+            panic!("no SPD lookup answers an SA")
+        }
+        fn ip6_output_lookup(
+            &self,
+            _m: &Mbuf,
+            _seclevel: Option<&crate::net::ipsec_hooks::IpsecLevel>,
+        ) -> Result<Option<crate::net::ipsec_hooks::TdbRef>, crate::net::ipsec_hooks::SpdError>
+        {
+            Ok(None)
+        }
+        fn ip6_output_send(
+            &self,
+            _tdb: &crate::net::ipsec_hooks::TdbRef,
+            _m: MbufBox,
+            _ro: &mut crate::net::route::Route,
+            _rtableid: u32,
+            _fwd: bool,
+        ) -> Result<(), Errno> {
+            panic!("no SPD lookup answers an SA")
+        }
+        fn tdb_unref(&self, tdb: crate::net::ipsec_hooks::TdbRef) {
+            assert!(self.ours(&tdb), "the test's SA");
+            self.unrefs.fetch_add(1, Ordering::Relaxed);
+        }
+        fn adjust_mtu(&self, _m: &Mbuf, _mtu: u32) {}
+        fn tcp_signature_tdb(
+            &self,
+            _rdomain: u32,
+            src: &[u8; SOCKADDR_UNION_LEN],
+            dst: &[u8; SOCKADDR_UNION_LEN],
+        ) -> Option<crate::net::ipsec_hooks::TdbRef> {
+            let net = [10, 9, SIG_NET];
+            let inet = |u: &[u8; SOCKADDR_UNION_LEN]| {
+                u[0] == 16 && u[1] == AF_INET && u[4..7] == net && u[8..] == [0; 20]
+            };
+            (inet(src) && inet(dst)).then(|| {
+                crate::net::ipsec_hooks::TdbRef::new(self.key.get().expect("registered"), &SIG_SA)
+            })
+        }
+        fn tdb_amxkey(&self, tdb: &crate::net::ipsec_hooks::TdbRef, f: &mut dyn FnMut(&[u8])) {
+            assert!(self.ours(tdb), "the test's SA");
+            f(SIG_KEY);
+        }
     }
 }
 /* </CODE> */
@@ -1442,6 +2372,372 @@ mod tests {
             .collect();
         assert_eq!(q.iter().flatten().count(), 2, "tcpqe: tcp_reass_limit");
         assert_eq!(h.iter().flatten().count(), 2, "sackhl: tcp_sackhole_limit");
+    }
+
+    /// The socket of `inp` locked under the shared net lock (a control input's holding),
+    /// for `f`.
+    fn with_so<R>(
+        inp: &Inpcb<testinet::G>,
+        f: impl FnOnce(&mut SoLocked<'_>, &NetHeld<'_>) -> R,
+    ) -> R {
+        let w = NETLOCK.read();
+        let net = NetHeld::of(&w).expect("the net lock");
+        let mut so = crate::netinet::in_pcb::in_pcbsolock(inp, &net).expect("attached");
+        f(&mut so, &net)
+    }
+
+    /// The connection's soft error and its socket's error.
+    fn errors(inp: &Inpcb<testinet::G>) -> (Option<Errno>, Option<Errno>) {
+        let soft = testtcp::with_tp(inp, |tp| (tp.st.t_softerror, None));
+        (soft, inp.socket().error())
+    }
+
+    #[test]
+    fn tcp_drop_resets_a_synchronized_connection_and_reports_the_error() {
+        use crate::netinet::tcp_fsm::TCPS_SYN_SENT;
+        let (_g, _p) = testtcp::setup();
+        let tcpcbs = testtcp::tcpcbs();
+        // Synchronized: an RST (CLOSED's flags) before the close, tcps_drops.
+        let (so, inp, d) = testtcp::estab(b"tsub0", 60);
+        so.st_set(crate::net::sockbuf::SS_NOFDREF);
+        let (drops, before) = (testtcp::stat(TcpstatCounters::TcpsDrops), testtcp::sent(d));
+        testtcp::with_tp(&inp, |tp| {
+            let closed = tcp_drop(tp, Some(Errno::ECONNABORTED));
+            ((), Some(closed))
+        });
+        assert_eq!(testtcp::sent(d), before + 1);
+        let (_ip, th, _o, _p) = testtcp::last(d);
+        assert_eq!(th.th_flags, TH_RST | TH_ACK);
+        assert_eq!(testtcp::stat(TcpstatCounters::TcpsDrops), drops + 1);
+        assert_eq!(so.error(), Some(Errno::ECONNABORTED));
+        drop((so, inp));
+        assert_eq!(testtcp::tcpcbs(), tcpcbs, "the control block freed");
+
+        // Not synchronized: no RST, tcps_conndrops; a timeout reports the soft error.
+        let (so, inp, d) = testtcp::estab(b"tsub1", 61);
+        so.st_set(crate::net::sockbuf::SS_NOFDREF);
+        let (cdrops, before) = (
+            testtcp::stat(TcpstatCounters::TcpsConndrops),
+            testtcp::sent(d),
+        );
+        testtcp::with_tp(&inp, |tp| {
+            tp.st.t_state = TCPS_SYN_SENT;
+            tp.st.t_softerror = Some(Errno::EHOSTDOWN);
+            let closed = tcp_drop(tp, Some(Errno::ETIMEDOUT));
+            ((), Some(closed))
+        });
+        assert_eq!(testtcp::sent(d), before);
+        assert_eq!(testtcp::stat(TcpstatCounters::TcpsConndrops), cdrops + 1);
+        assert_eq!(
+            so.error(),
+            Some(Errno::EHOSTDOWN),
+            "the soft error for a timeout"
+        );
+        drop((so, inp));
+        assert_eq!(testtcp::tcpcbs(), tcpcbs);
+    }
+
+    #[test]
+    fn tcp_notify_keeps_soft_errors_and_gives_up_on_a_failing_open() {
+        use crate::netinet::tcp_fsm::TCPS_SYN_SENT;
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, _d) = testtcp::estab(b"tsub2", 62);
+        // Established: an unreachable is ignored.
+        with_so(&inp, |w, _| tcp_notify(&inp, w, Some(Errno::EHOSTUNREACH)));
+        assert_eq!(errors(&inp), (None, None));
+        // Another error: kept soft.
+        with_so(&inp, |w, _| tcp_notify(&inp, w, Some(Errno::ECONNREFUSED)));
+        assert_eq!(errors(&inp), (Some(Errno::ECONNREFUSED), None));
+        // Opening, retransmitted four times, a soft error already: reported to the socket.
+        testtcp::with_tp(&inp, |tp| {
+            tp.st.t_state = TCPS_SYN_SENT;
+            tp.st.t_rxtshift = 4;
+            ((), None)
+        });
+        with_so(&inp, |w, _| tcp_notify(&inp, w, Some(Errno::EHOSTUNREACH)));
+        assert_eq!(
+            errors(&inp),
+            (Some(Errno::ECONNREFUSED), Some(Errno::EHOSTUNREACH))
+        );
+        testtcp::close(so, inp);
+    }
+
+    /// An ICMP message of type `ty` and code `code`, its next-hop MTU `mtu`, returning our
+    /// segment from 10.9.`n`.1:7000 to `peer`:80 with sequence number `seq`: its IPv4 header
+    /// and the TCP header's first eight bytes.
+    fn quote(ty: u8, code: u8, mtu: u16, n: u8, peer: [u8; 4], seq: u32) -> std::vec::Vec<u8> {
+        let mut msg = std::vec![ty, code, 0, 0, 0, 0];
+        msg.extend_from_slice(&mtu.to_be_bytes());
+        let ip = Ip {
+            ip_vhl: 0x45,
+            ip_len: htons(1040),
+            ip_ttl: 64,
+            ip_p: IPPROTO_TCP as u8,
+            ip_src: InAddr {
+                s_addr: u32::from_ne_bytes([10, 9, n, 1]),
+            },
+            ip_dst: InAddr {
+                s_addr: u32::from_ne_bytes(peer),
+            },
+            ..Ip::default()
+        };
+        let mut b = [0u8; 20];
+        assert!(pod::put(&mut b, 0, &ip));
+        msg.extend_from_slice(&b);
+        msg.extend_from_slice(&7000u16.to_be_bytes());
+        msg.extend_from_slice(&80u16.to_be_bytes());
+        msg.extend_from_slice(&seq.to_be_bytes());
+        msg
+    }
+
+    /// `tcp_ctlinput(cmd, sin(peer), 0, msg)` under the shared net lock (`icmp_input`'s).
+    fn ctl(cmd: i32, peer: [u8; 4], msg: Option<&[u8]>) {
+        let mut sin = [0u8; 16];
+        sin[0] = 16;
+        sin[1] = AF_INET;
+        sin[4..8].copy_from_slice(&peer);
+        let w = NETLOCK.read();
+        let net = NetHeld::of(&w).expect("the net lock");
+        let arg = msg.map_or(CtlArg::None, CtlArg::Ip);
+        tcp_ctlinput::<testinet::G>(
+            cmd,
+            SockaddrView::new(&sin).expect("a sockaddr_in"),
+            0,
+            arg,
+            &net,
+        );
+    }
+
+    #[test]
+    fn the_control_input_checks_the_quoted_sequence_number() {
+        use crate::net::proto::PRC_UNREACH_HOST;
+        use crate::netinet::tcp_fsm::TCPS_SYN_RECEIVED;
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, _d) = testtcp::estab(b"tsub3", 63);
+        let peer = [10, 9, 63, 2];
+        testtcp::with_tp(&inp, |tp| {
+            tp.st.t_state = TCPS_SYN_RECEIVED;
+            tp.st.snd_max = 1300;
+            ((), None)
+        });
+        // Below snd_una and at snd_max: not a segment in flight, nothing told.
+        for seq in [999, 1300] {
+            ctl(PRC_UNREACH_HOST, peer, Some(&quote(3, 1, 0, 63, peer, seq)));
+            assert_eq!(errors(&inp), (None, None), "seq {seq}");
+        }
+        // In flight: tcp_notify keeps the error.
+        ctl(
+            PRC_UNREACH_HOST,
+            peer,
+            Some(&quote(3, 1, 0, 63, peer, 1000)),
+        );
+        assert_eq!(errors(&inp), (Some(Errno::EHOSTUNREACH), None));
+        // Source quench, a code past PRC_NCMDS, another family: ignored.
+        testtcp::with_tp(&inp, |tp| {
+            tp.st.t_softerror = None;
+            ((), None)
+        });
+        ctl(PRC_QUENCH, peer, Some(&quote(4, 0, 0, 63, peer, 1000)));
+        ctl(
+            PRC_NCMDS as i32,
+            peer,
+            Some(&quote(3, 1, 0, 63, peer, 1000)),
+        );
+        assert_eq!(errors(&inp), (None, None));
+        // A dead host: every connection to it is told (no quote).
+        ctl(PRC_HOSTDEAD, peer, None);
+        assert_eq!(errors(&inp), (Some(Errno::EHOSTDOWN), None));
+        testtcp::close(so, inp);
+    }
+
+    /// `tcp6_ctlinput(cmd, sin6(peer), 0, ip6cp)` under the shared net lock, the parameter
+    /// `icmp6_notify_error` lends: the quoted packet's IPv6 header (from 2001:db8:`n`::1 to
+    /// 2001:db8:`n`::2) and the TCP header's first eight bytes (7000 to 80, `seq`) at 40.
+    fn ctl6(cmd: i32, n: u8, seq: u32) {
+        use core::cell::Cell;
+        use hal::sys::netinet_icmp6::Icmp6Hdr;
+
+        use crate::netinet::tcp_subr::testtcp::a6;
+        use crate::netinet6::icmp6::Ip6CtlParam;
+
+        let (ours, peer) = (a6(n, 1), a6(n, 2));
+        let ip6 = Ip6Hdr {
+            ip6_plen: 8u16.to_be(),
+            ip6_nxt: IPPROTO_TCP as u8,
+            ip6_hlim: 64,
+            ip6_src: ours,
+            ip6_dst: peer,
+            ..Ip6Hdr::default()
+        };
+        let mut b = [0u8; 48];
+        assert!(pod::put(&mut b, 0, &ip6));
+        b[40..42].copy_from_slice(&7000u16.to_be_bytes());
+        b[42..44].copy_from_slice(&80u16.to_be_bytes());
+        b[44..48].copy_from_slice(&seq.to_be_bytes());
+        let m = crate::net::mbuf::m_devget(&b, 0).expect("the quote");
+        let p = Ip6CtlParam {
+            m: &m,
+            icmp6: Icmp6Hdr::default(),
+            ip6,
+            off: 40,
+            src: SockaddrIn6::with_addr(ours),
+            finaldst: Cell::new(peer),
+            cmdarg: None,
+            nxt: IPPROTO_TCP as u8,
+        };
+        let mut sa = [0u8; 28];
+        assert!(pod::put(&mut sa, 0, &SockaddrIn6::with_addr(peer)));
+        let w = NETLOCK.read();
+        let net = NetHeld::of(&w).expect("the net lock");
+        tcp6_ctlinput::<testinet::G>(
+            cmd,
+            SockaddrView::new(&sa).expect("a sockaddr_in6"),
+            0,
+            CtlArg::Ip6(&p),
+            &net,
+        );
+    }
+
+    #[test]
+    fn the_ipv6_control_input_checks_the_quoted_sequence_number() {
+        use crate::net::proto::PRC_UNREACH_HOST;
+        use crate::netinet::tcp_fsm::TCPS_SYN_RECEIVED;
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, _d) = testtcp::estab6(b"tsub6", 81);
+        testtcp::with_tp(&inp, |tp| {
+            tp.st.t_state = TCPS_SYN_RECEIVED;
+            tp.st.snd_max = 1300;
+            ((), None)
+        });
+        // Below snd_una and at snd_max: not a segment in flight, nothing told.
+        for seq in [999, 1300] {
+            ctl6(PRC_UNREACH_HOST, 81, seq);
+            assert_eq!(errors(&inp), (None, None), "seq {seq}");
+        }
+        // In flight: tcp_notify keeps the error.
+        ctl6(PRC_UNREACH_HOST, 81, 1000);
+        assert_eq!(errors(&inp), (Some(Errno::EHOSTUNREACH), None));
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn an_ipv6_dead_host_is_told_and_an_ipv6_redirect_flushes_the_route() {
+        use crate::net::proto::PRC_REDIRECT_HOST;
+        use crate::netinet::tcp_fsm::TCPS_SYN_RECEIVED;
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, _d) = testtcp::estab6(b"tsub7", 83);
+        testtcp::with_tp(&inp, |tp| {
+            tp.st.t_state = TCPS_SYN_RECEIVED;
+            ((), None)
+        });
+        // A dead host: tcp_notify for every connection to it (the quote set aside).
+        ctl6(PRC_HOSTDEAD, 83, 999);
+        assert_eq!(errors(&inp), (Some(Errno::EHOSTDOWN), None));
+        // A redirect: in_rtchange, the cached route let go.
+        let cached = |inp: &Inpcb<testinet::G>| {
+            testtcp::with_lock(inp, |inp, _il| inp.route().rt().is_some())
+        };
+        assert!(cached(&inp), "tcp_mss cached the route");
+        ctl6(PRC_REDIRECT_HOST, 83, 1000);
+        assert!(!cached(&inp), "in_rtchange");
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn a_redirect_flushes_the_cached_route_of_every_connection_to_the_peer() {
+        use crate::net::proto::PRC_REDIRECT_HOST;
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, _d) = testtcp::estab(b"tsub4", 64);
+        let cached = |inp: &Inpcb<testinet::G>| {
+            testtcp::with_lock(inp, |inp, _il| inp.route().rt().is_some())
+        };
+        assert!(cached(&inp), "tcp_mss cached the route");
+        ctl(
+            PRC_REDIRECT_HOST,
+            [10, 9, 64, 2],
+            Some(&quote(5, 1, 0, 64, [10, 9, 64, 2], 1000)),
+        );
+        assert!(!cached(&inp), "in_pcbrtchange");
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn a_path_mtu_message_lowers_the_segment_or_waits_for_the_retransmit_timer() {
+        let (_g, _p) = testtcp::setup();
+        let peer = [10, 20, 65, 2];
+        let (so, inp, _d) = testtcp::estab_to(b"tsub5", 65, peer);
+        let set = |mtu_sent: u32, acked: u32| {
+            testtcp::with_tp(&inp, |tp| {
+                let st = tp.st;
+                st.snd_max = 1300;
+                st.t_pmtud_mtu_sent = mtu_sent;
+                st.t_pmtud_mss_acked = acked;
+                ((), None)
+            });
+        };
+        let look = || {
+            testtcp::with_tp(&inp, |tp| {
+                let st = &*tp.st;
+                (
+                    (
+                        st.t_maxseg,
+                        st.has_flags(TF_PMTUD_PEND),
+                        st.t_pmtud_th_seq,
+                        st.t_pmtud_nextmtu,
+                    ),
+                    None,
+                )
+            })
+        };
+        // A segment not in flight: ignored whatever the MTU.
+        set(1500, 0);
+        ctl(PRC_MSGSIZE, peer, Some(&quote(3, 4, 1000, 65, peer, 1300)));
+        assert_eq!(look(), (1460, false, 0, 0));
+        // A next-hop MTU at or past the largest packet sent: dropped (1400, below the
+        // interface's 1500, would lower the segment if it were taken).
+        set(1400, 0);
+        ctl(PRC_MSGSIZE, peer, Some(&quote(3, 4, 1400, 65, peer, 1000)));
+        assert_eq!(look(), (1460, false, 0, 0));
+        set(1500, 0);
+        // Larger than the headers and what was acknowledged: the route's MTU lowered
+        // (icmp_mtudisc), and every connection to the peer takes it (tcp_mtudisc).
+        ctl(PRC_MSGSIZE, peer, Some(&quote(3, 4, 1000, 65, peer, 1000)));
+        assert_eq!(look().0, 1000 - 40);
+        // Smaller: kept for the retransmit timer, an older segment's notice over a newer one.
+        set(1500, 1400);
+        ctl(PRC_MSGSIZE, peer, Some(&quote(3, 4, 900, 65, peer, 1100)));
+        assert_eq!(look(), (960, true, 1100, u32::from(900u16.to_be())));
+        ctl(PRC_MSGSIZE, peer, Some(&quote(3, 4, 800, 65, peer, 1200)));
+        assert_eq!(
+            look(),
+            (960, true, 1100, u32::from(900u16.to_be())),
+            "newer: kept"
+        );
+        ctl(PRC_MSGSIZE, peer, Some(&quote(3, 4, 700, 65, peer, 1050)));
+        assert_eq!(
+            look(),
+            (960, true, 1050, u32::from(700u16.to_be())),
+            "older: taken"
+        );
+        let (ip_len, ip_hl) = testtcp::with_tp(&inp, |tp| {
+            ((tp.st.t_pmtud_ip_len, tp.st.t_pmtud_ip_hl), None)
+        });
+        assert_eq!((ip_len, ip_hl), (htons(1040), 5), "the returned header's");
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn tcp_init_registers_the_ipv6_path_mtu_callback() {
+        let (_g, _p) = testtcp::setup();
+        let cbs = crate::netinet6::icmp6::ICMP6_MTUDISC_CALLBACKS.read();
+        let mine: crate::netinet6::icmp6::Mtudisc6Fn = tcp6_mtudisc_callback::<testinet::G>;
+        assert!(
+            cbs.as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .any(|f| core::ptr::fn_addr_eq(*f, mine)),
+            "tcp6_mtudisc_callback registered"
+        );
     }
 }
 /* </TESTS> */

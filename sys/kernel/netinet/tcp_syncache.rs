@@ -302,7 +302,7 @@ pub fn syn_cache_rm<G: ProcGlue>(g: &mut ScGuard<'_, G>, sc: &SynCache<G>) -> Sc
     // MUTEX_ASSERT_LOCKED(&syn_cache_mtx): the guard is the mutex's (the cells check it).
     let (set, bucket) = {
         let s = sc.sc_s.get(&*g);
-        (s.sc_set, s.sc_bucket)
+        (usize::from(s.sc_set), s.sc_bucket as usize)
     };
     with_buckets(g, set, |b, g| {
         b[bucket].sch_bucket.remove(g, sc);
@@ -416,11 +416,13 @@ pub fn syn_cache_insert<G: ProcGlue>(
     }
 
     let hash = syn_cache_hash(&sc.sc_i.sc_src, &sc.sc_i.sc_dst, &g.sets[active].scs_random);
-    let bucket = (hash % g.sets[active].scs_size as u32) as usize;
+    // The index is below `scs_size`, an `int`: it fits the entry's `u32`.
+    let bucket32 = hash % g.sets[active].scs_size as u32;
+    let bucket = bucket32 as usize;
     {
         let s = sc.sc_s.get_mut(&mut *g);
         s.sc_hash = hash;
-        s.sc_bucket = bucket;
+        s.sc_bucket = bucket32;
     }
 
     // Make sure that we don't overflow the per-bucket limit or the total cache size limit.
@@ -493,7 +495,8 @@ pub fn syn_cache_insert<G: ProcGlue>(
         b[bucket].sch_bucket.insert_tail(g, sc.as_pin());
         b[bucket].sch_length += 1;
     });
-    sc.sc_s.get_mut(&mut *g).sc_set = active;
+    // `active` is 0 or 1 (`tcp_syn_cache_active`).
+    sc.sc_s.get_mut(&mut *g).sc_set = active as u8;
     g.sets[active].scs_count += 1;
     g.sets[active].scs_use -= 1;
 

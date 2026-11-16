@@ -4530,8 +4530,9 @@ pub(crate) mod tests {
         assert_eq!(p.fd().fd_nuserevents.load(Ordering::SeqCst), 0);
     }
 
-    /// Serialises the tests that drive the timeout wheel (one wheel per process).
-    static WHEEL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// Serialises the tests that drive the timeout wheel (one wheel per process); TCP's
+    /// wheel test (`kernel::netinet::tcp_timer`) takes it too, after `timeout`'s own.
+    pub(crate) static WHEEL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn wheel() -> std::sync::MutexGuard<'static, ()> {
         let g = WHEEL.lock().unwrap_or_else(|e| e.into_inner());

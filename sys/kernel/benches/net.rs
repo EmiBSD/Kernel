@@ -205,6 +205,22 @@
 //!     and removed (`syn_cache_rm`: the lists' handle adopted, the timer deleted and cleared)
 //!     under one `syn_cache_mtx` hold, the handles dropped after it (the entry freed: the C's
 //!     last `syn_cache_put`).
+//! - The TCP output rows (N6.6a3; "before" = `bsd`'s TCP over LZ's shape, the rows
+//!   `bsd.tcp.output.segment` and `bsd.tcp.timer.arm.disarm` of N6.6a0's scratch harness;
+//!   measured at the N6 close, decision 50): one established connection of the kernel's TCP
+//!   from 127.0.0.1:7000 to 127.0.0.1:80 over lo0 (a control block on a socket of the pcb
+//!   rows' domain, its buffers 16 KB, its template, the segment size from lo0's MTU), its
+//!   socket lock held for the run under the shared net lock, as a callout holds it:
+//!   - `tcp.output.segment`: `tcp_output` of 100 bytes the send buffer holds (the send
+//!     decision, the header mbuf, the template, the copy out of the send buffer under its
+//!     mutex, the retransmit timer armed, `tcp_update_sndspace`, `ip_output` through the
+//!     route cache's loan to lo0's input queue) and the segment taken off lo0's queue; the
+//!     append before it and the peer's ACK after it (the data dropped, `snd_una` at
+//!     `snd_max`, the retransmit timer stopped) are outside the timing. The "before" row
+//!     times `tcp_send`'s append and drains an Ethernet interface instead of lo0's queue.
+//!   - `tcp.timer.arm.disarm`: `TCP_TIMER_ARM` and `TCP_TIMER_DISARM` of the keep alive
+//!     timer (the flag, `timeout_add_msec` and `timeout_del` under the wheel's lock; no count
+//!     of the pcb, D-11, where the C takes `in_pcbref` and gives it back).
 //! - The IPv4 input rows (N6.4c2; "before" = `bsd`'s `ipv4_input`, `ipintr` and `ip_reass`
 //!   over LZ's shape at the slice's base, in a scratch test; measured at the N6.4 close,
 //!   decision 50): lo0 with 127.0.0.1/8 (`in_ioctl`), the glue's `inetsw[]` a UDP entry with
@@ -715,6 +731,7 @@ fn main() {
         .chain(ARP_ROWS.iter())
         .chain(INPCB_ROWS.iter())
         .chain(SYNCACHE_ROWS.iter())
+        .chain(TCP_ROWS.iter())
         .chain(INET6_ROWS.iter())
         .chain(ND6_ROWS.iter())
         .chain(INET6_OUTPUT_ROWS.iter())
@@ -992,6 +1009,7 @@ fn main() {
     arp_rows(&wanted, &report);
     inpcb_rows(&wanted, &report);
     syncache_rows(&wanted, &report);
+    tcp_rows(&wanted, &report);
     inet6_rows(&wanted, &report);
     nd6_rows(&wanted, &report);
     inet6_output_rows(&wanted, &report);
@@ -3413,6 +3431,187 @@ fn syncache_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64,
     drop(w);
     core::mem::forget((so, inp));
 }
+const TCP_ROWS: [&str; 2] = ["tcp.output.segment", "tcp.timer.arm.disarm"];
+
+/// The TCP output rows (N6.6a3): see the file's documentation.
+fn tcp_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
+    use hal::netlock::NetHeld;
+    use hal::sys::endian::htons;
+    use hal::sys::netinet_in::InAddr;
+    use hal::sys::sockio::SIOCAIFADDR;
+    use kernel::net::if_loop::{LOOP_CLONER, loop_clone_create};
+    use kernel::net::ifq::ifiq_test_take;
+    use kernel::net::mbuf::{M_WAIT, MT_DATA, m_gethdr, ml_dequeue};
+    use kernel::net::socket::{SoInit, soalloc, soreserve};
+    use kernel::netinet::in_pcb::{
+        Inpcbtable, in_init, in_pcballoc, in_pcbinit, in_pcbrehash, in_pcbsolock,
+    };
+    use kernel::netinet::tcp_fsm::TCPS_ESTABLISHED;
+    use kernel::netinet::tcp_input::tcp_mss;
+    use kernel::netinet::tcp_output::tcp_output;
+    use kernel::netinet::tcp_subr::{tcp_newtcpcb, tcp_template};
+    use kernel::netinet::tcp_timer::{TCPT_KEEP, TCPT_REXMT, tcp_timer_arm, tcp_timer_disarm};
+
+    if !TCP_ROWS.iter().any(|n| wanted(n)) {
+        return;
+    }
+    let (_g, _p) = kernel::fs::testfs::test_thread_cached(64 << 20, 64);
+    testutil::kernel_maps_install();
+    mbinit(&BENCH_NMBCLUST);
+    let _ = kernel::net::if_::register_inet(&BENCH_INET);
+    // IPv4's entry point (ip_init's, which the rows do not run): the double's protocol.
+    let _ = kernel::netinet::ip_input::IPV4_INPUT.set(kernel::net::if_::test_proto_count);
+    kernel::net::if_::if_test_reset();
+    kernel::net::rtable::rtable_test_reset();
+    kernel::net::route::rtlabel_test_reset();
+    kernel::net::route::route_init();
+    kernel::net::rtable::rtable_init_doms(&[kernel::net::rtable::RtDom {
+        family: hal::sys::socket::AF_INET,
+        rtoffset: 4,
+        maxplen: 32,
+        sasize: 16,
+    }]);
+    kernel::netinet::ip_id::ip_randomid_init();
+    kernel::net::domain::soinit::<G>();
+    in_init::<G>();
+    kernel::netinet::tcp_subr::tcp_init::<G>();
+
+    // lo0 with 127.0.0.1/8, as the ip.output.lo row makes it.
+    hal::klock::kernel_lock();
+    let made = loop_clone_create(&LOOP_CLONER, 0);
+    hal::klock::kernel_unlock();
+    if made.is_err() {
+        eprintln!("net: no lo0");
+        std::process::exit(1);
+    }
+    let lo = need(
+        kernel::net::if_::IFNETLIST
+            .iter()
+            .find(|i| i.if_xname.get()[..4] == *b"lo0\0"),
+        "lo0 listed",
+    );
+    let mut req = [0u8; 64];
+    req[16..18].copy_from_slice(&[16, 2]);
+    req[20..24].copy_from_slice(&[127, 0, 0, 1]);
+    req[48..50].copy_from_slice(&[16, 2]);
+    req[52..56].copy_from_slice(&[255, 0, 0, 0]);
+    if kernel::netinet::in_::in_ioctl(SIOCAIFADDR, &mut req, Some(lo), true).is_err() {
+        eprintln!("net: lo0 refused 127.0.0.1");
+        std::process::exit(1);
+    }
+
+    // A connection 127.0.0.1:7000 -> 127.0.0.1:80 of the kernel's TCP on a socket of the pcb
+    // rows' domain, established: its buffers 16 KB, its template, the segment size from lo0.
+    let t: &'static Inpcbtable<G> = Box::leak(Box::new(Inpcbtable::new()));
+    in_pcbinit(t, 16);
+    let so = need(
+        soalloc(
+            &BenchUdp,
+            M_WAIT,
+            SoInit {
+                so_type: hal::sys::socket::SOCK_STREAM,
+                state: 0,
+                options: 0,
+                linger: 0,
+                timeo: 0,
+                euid: 0,
+                ruid: 0,
+                egid: 0,
+                rgid: 0,
+                cpid: 1,
+            },
+        ),
+        "a socket",
+    );
+    let inp = need(in_pcballoc(&so, t, M_WAIT).ok(), "a pcb");
+    {
+        let mut g = t.lock();
+        let lh = InAddr {
+            s_addr: u32::from_ne_bytes([127, 0, 0, 1]),
+        };
+        inp.set_laddr(&g, lh);
+        inp.set_faddr(&g, lh);
+        inp.set_lport(&g, htons(7000));
+        inp.set_fport(&g, htons(80));
+        in_pcbrehash(&mut g, &inp);
+    }
+    if soreserve(&so, 16384, 16384).is_err() {
+        eprintln!("net: no socket buffers");
+        std::process::exit(1);
+    }
+    let payload = [0x5au8; 100];
+
+    let w = NETLOCK.read();
+    let net = need(NetHeld::of(&w), "the net lock");
+    let mut solocked = need(in_pcbsolock(&inp, &net), "the socket's lock");
+    let mut il = need(solocked.inet(), "a kernel protocol's lock");
+    let mut tp = need(tcp_newtcpcb(&inp, &mut il, M_WAIT), "a control block");
+    let m = need(tcp_template(&mut tp), "a template");
+    tp.st.t_template = Some(m);
+    let _ = tcp_mss(&mut tp, 0);
+    tp.st.t_state = TCPS_ESTABLISHED;
+    tp.st.iss = 1000;
+    tp.st.snd_una = 1000;
+    tp.st.snd_nxt = 1000;
+    tp.st.snd_max = 1000;
+    tp.st.snd_up = 1000;
+    tp.st.rcv_nxt = 5000;
+    tp.st.rcv_adv = 5000 + 16384;
+    tp.st.snd_wnd = 65535;
+    tp.st.max_sndwnd = 65535;
+
+    if wanted(TCP_ROWS[0]) {
+        let r = measure(OPS / 10, || {
+            let mut total = Duration::ZERO;
+            for _ in 0..OPS / 10 {
+                // The data the user's send leaves (outside the timing: the C's row counts
+                // tcp_send's append; this one starts at tcp_output).
+                let mut d = need(m_gethdr(M_WAIT, MT_DATA), "an mbuf");
+                d.m_len().set(payload.len() as u32);
+                d.m_pkthdr().len.set(payload.len() as i32);
+                need(d.data_mut(), "a writable mbuf").copy_from_slice(&payload);
+                so.so_snd.lock().sbappendstream(d);
+                let t0 = Instant::now();
+                if tcp_output(black_box(&mut tp)).is_err() {
+                    eprintln!("net: tcp_output failed");
+                    std::process::exit(1);
+                }
+                let mut ml = ifiq_test_take(lo.if_rcv());
+                let seg = need(ml_dequeue(&mut ml), "the looped segment");
+                total += t0.elapsed();
+                drop(black_box(seg));
+                // The peer's ACK, as tcp_input leaves it (outside the timing: the C's ACK is
+                // tcp.input.ack's): the data dropped, snd_una at snd_max, the retransmit
+                // timer stopped.
+                so.so_snd.lock().sbdrop(payload.len() as i32);
+                tp.st.snd_una = tp.st.snd_max;
+                tcp_timer_disarm(&mut tp, TCPT_REXMT);
+            }
+            total
+        });
+        report(TCP_ROWS[0], r);
+    }
+    if wanted(TCP_ROWS[1]) {
+        let r = measure(OPS, || {
+            let t0 = Instant::now();
+            for _ in 0..OPS {
+                tcp_timer_arm(&mut tp, TCPT_KEEP, black_box(75_000));
+                tcp_timer_disarm(&mut tp, TCPT_KEEP);
+            }
+            t0.elapsed()
+        });
+        report(TCP_ROWS[1], r);
+    }
+    // The connection closed and freed; the socket and pcb stay in the doubles' memory, which
+    // the next fixture forgets.
+    let closed = kernel::netinet::tcp_subr::tcp_close(tp);
+    kernel::netinet::tcp_subr::tcp_free(&inp, &mut il.pcb, closed);
+    drop(il);
+    drop(solocked);
+    drop(w);
+    core::mem::forget((so, inp));
+}
+
 const INET6_ROWS: [&str; 1] = ["in6.selectsrc"];
 
 /// The IPv6 address rows (N6.5a): see the file's documentation.

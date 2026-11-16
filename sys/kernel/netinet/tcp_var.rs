@@ -130,6 +130,15 @@
 //!   back (the pcb table's shape).
 //! - The glue's TCP globals (the pools, the SYN cache, `tcbtable` and `tcb6table`) are one
 //!   [`TcpTables`] in its `NetTables`: a control block is generic over the glue, as the pcb.
+//! - N6.6a3's diet (the user's of 2026-11-16, D-7 brought forward from N12): the SYN cache
+//!   entry's set and bucket are a `u8` and a `u32` index (the set is 0 or 1, the bucket below
+//!   the `int` `scs_size`), the `[S]` cell 64 -> 56 bytes, the "syncache" item 464 -> 456
+//!   (the C's 336). The control block stays 1000 (the C's 736): its state is 344 bytes with 3
+//!   of padding (rustc already orders the members), and what it carries beyond the C is
+//!   `hal`'s and the timeout's: the five timeouts' 48 bytes each over the C's (the pinned
+//!   entry's lock identity, the `[T]` cell's key, the shared argument beside the raw one), the
+//!   `PinRing`'s 32 over a `LIST_HEAD` and the state cell's 16-byte key (docs/ROADMAP.md's N12
+//!   row).
 
 use core::pin::Pin;
 
@@ -659,10 +668,10 @@ pub struct ScState<G: ProcGlue> {
     pub sc_dynflags: u32,
     /// \[S\] `sc_hash`.
     pub sc_hash: u32,
-    /// \[S\] `sc_set`: our syn cache set, by its index in the two sets.
-    pub sc_set: usize,
+    /// \[S\] `sc_set`: our syn cache set, by its index in the two sets (0 or 1).
+    pub sc_set: u8,
     /// \[S\] `sc_buckethead`: our bucket, by its index in the set's array.
-    pub sc_bucket: usize,
+    pub sc_bucket: u32,
     /// \[S\] Inpcb for listening socket, counted (the C's `in_pcbref` kept by the entry).
     pub sc_inplisten: Option<InpcbRef<G>>,
 }
@@ -1358,16 +1367,33 @@ mod tests {
         assert_eq!(size_of::<CSynCache>(), 336);
         // The items, against the C's 736, 32, 24 and 336: "tcpcb" 1000 (the five kernel
         // timeouts are 120 bytes each, the C's 72: the pinned entry's lock identity, the
-        // `[T]` cell's key and the shared argument, +240; the state's cell key +16),
+        // `[T]` cell's key and the shared argument, +240; the state's cell key +16; the
+        // state itself is 344, 3 bytes of padding, 24 below the C's members it holds: no
+        // reorder or narrower member of the kernel's own brings it under 336),
         // "tcpqe" 48 (the mbuf's box is two words, the header a copy, LZ's choice), "sackhl"
-        // 24 as the C, "syncache" 464 (448 and the counted item's 16-byte header: the
-        // timeout +48, the two pinned entries' identities, the two cells' keys). D-7: the
-        // diet is N12's.
+        // 24 as the C, "syncache" 456 (440 and the counted item's 16-byte header: the
+        // timeout +48, the two pinned entries' identities, the two cells' keys; N6.6a3's
+        // diet: the set's and the bucket's indices a `u8` and a `u32`, the `[S]` cell 64 ->
+        // 56). What is left is `hal`'s and the timeout's (docs/ROADMAP.md's N12 row).
         assert_eq!(size_of::<Tcpcb<G>>(), 1000);
         assert_eq!(size_of::<TcpState>(), 344);
         assert_eq!(size_of::<Tcpqent>(), 48);
         assert_eq!(size_of::<Sackhole>(), 24);
-        assert_eq!(size_of::<SynCache<G>>(), 448);
+        assert_eq!(size_of::<SynCache<G>>(), 440);
+        assert_eq!(size_of::<Guarded<ScState<G>>>(), 56);
+    }
+
+    #[test]
+    fn the_pools_report_the_items_vmstat_shows() {
+        // `vmstat -m`'s size column of TCP's four pools (`pr_size`): a box's item is its
+        // value, a counted item ("syncache") carries the count and its pool beside it.
+        use crate::netinet::tcp_subr::{SACKHL_POOL, TCPQE_POOL, testtcp};
+        let (_g, _p) = testtcp::setup();
+        let t = &crate::net::domain::net::<testtcp::G>().tcp;
+        assert_eq!(t.tcpcb_pool.item_size(), Some(1000), "tcpcb");
+        assert_eq!(t.syn_cache_pool.item_size(), Some(456), "syncache");
+        assert_eq!(TCPQE_POOL.item_size(), Some(48), "tcpqe");
+        assert_eq!(SACKHL_POOL.item_size(), Some(24), "sackhl");
     }
 
     #[test]
