@@ -64,34 +64,10 @@
 
 use crate::netinet::tcp::{TH_ACK, TH_FIN, TH_RST, TH_SYN};
 
-/// `TCP_NSTATES`: the number of states.
-pub const TCP_NSTATES: usize = 11;
-
-/// Closed.
-pub const TCPS_CLOSED: i32 = 0;
-/// Listening for connection.
-pub const TCPS_LISTEN: i32 = 1;
-/// Active, have sent syn.
-pub const TCPS_SYN_SENT: i32 = 2;
-/// Have sent and received syn.
-pub const TCPS_SYN_RECEIVED: i32 = 3;
-// States < TCPS_ESTABLISHED are those where connections not established.
-/// Established.
-pub const TCPS_ESTABLISHED: i32 = 4;
-/// Received fin, waiting for close.
-pub const TCPS_CLOSE_WAIT: i32 = 5;
-// States > TCPS_CLOSE_WAIT are those where user has closed.
-/// Have closed, sent fin.
-pub const TCPS_FIN_WAIT_1: i32 = 6;
-/// Closed, exchanged FIN; await ACK.
-pub const TCPS_CLOSING: i32 = 7;
-/// Had fin and close; await FIN ACK.
-pub const TCPS_LAST_ACK: i32 = 8;
-// States > TCPS_CLOSE_WAIT && < TCPS_FIN_WAIT_2 await ACK of FIN.
-/// Have closed, fin is acked.
-pub const TCPS_FIN_WAIT_2: i32 = 9;
-/// In 2*msl quiet wait after close.
-pub const TCPS_TIME_WAIT: i32 = 10;
+pub use hal::sys::netinet_tcp_fsm::{
+    TCP_NSTATES, TCPS_CLOSE_WAIT, TCPS_CLOSED, TCPS_CLOSING, TCPS_ESTABLISHED, TCPS_FIN_WAIT_1,
+    TCPS_FIN_WAIT_2, TCPS_LAST_ACK, TCPS_LISTEN, TCPS_SYN_RECEIVED, TCPS_SYN_SENT, TCPS_TIME_WAIT,
+};
 
 /// `TCPS_HAVERCVDSYN(s)`: the connection has received a SYN.
 #[inline]

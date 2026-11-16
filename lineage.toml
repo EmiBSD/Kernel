@@ -6627,11 +6627,6 @@ status = "adapted"
 adapted_by = ["sys/kernel/cred.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_.rs"]
 
 [[module]]
-rust = "sys/netinet/tcp.rs"
-lz = ["sys/netinet/tcp.rs"]
-status = "inherited"
-
-[[module]]
 rust = "sys/netinet/tcp_debug.rs"
 lz = ["sys/netinet/tcp_debug.rs"]
 status = "inherited"
@@ -6639,7 +6634,8 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet/tcp_fsm.rs"
 lz = ["sys/netinet/tcp_fsm.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/sys/netinet_tcp_fsm.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp_input.rs"
@@ -6680,7 +6676,7 @@ adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/socket.rs", "sys/kernel/ne
 rust = "sys/netinet/tcp_var.rs"
 lz = ["sys/netinet/tcp_var.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/route.rs", "sys/kernel/netinet/in_pcb.rs"]
+adapted_by = ["sys/kernel/net/route.rs", "sys/kernel/netinet/in_pcb.rs", "sys/hal/sys/netinet_tcp_var.rs"]
 
 [[module]]
 rust = "sys/netinet/udp.rs"
@@ -8763,7 +8759,21 @@ rust = "sys/hal/sys/netinet_tcp.rs"
 crate = "hal"
 lz = ["sys/netinet/tcp.rs"]
 status = "redesigned"
-notes = "N6.3c2 (D-N6.3c-21, early for N6.4-N6.6): the image the kernel's Ethernet layer reads, as an abi_pod! with its const size assert: struct tcphdr (20) with th_off; bsd keeps its copy until the protocol moves"
+notes = "N6.3c2 (D-N6.3c-21, early for N6.4-N6.6): the image the kernel's Ethernet layer reads, as an abi_pod! with its const size assert: struct tcphdr (20) with th_off; bsd keeps its copy until the protocol moves; N6.6a0: tcp.h whole (the flags, the options, TCP_* user options, TCPI_OPT_*, struct tcp_info as an abi_pod! of the C's 212 bytes, Tcphdr's LZ accessors), bsd's sys/netinet/tcp.rs deleted and re-exported from here by sys/netinet/mod.rs; its tests re-expressed over bytes_of (no transmute)"
+
+[[module]]
+rust = "sys/hal/sys/netinet_tcp_fsm.rs"
+crate = "hal"
+lz = ["sys/netinet/tcp_fsm.rs"]
+status = "redesigned"
+notes = "N6.6a0: tcp_fsm.h's TCP_NSTATES and TCPS_* (what tcp_info's tcpi_state, kinfo_file's t_state and pf read), for the kernel's TCP; bsd's tcp_fsm.rs re-exports them and keeps the predicates and the two tables until the kernel's tcp_fsm (N6.6a1)"
+
+[[module]]
+rust = "sys/hal/sys/netinet_tcp_var.rs"
+crate = "hal"
+lz = ["sys/netinet/tcp_var.rs"]
+status = "redesigned"
+notes = "N6.6a0: tcp_var.h's userland part: TCPCTL_* (net.inet.tcp's names), struct tcpstat (net.inet.tcp.stats, an abi_pod! with the C's five 4-byte holes named _pad0.._pad4, zero as the C's memset leaves them) and struct tcp_ident_mapping (ident and drop, an abi_pod! whose trailing hole is LZ's _pad; LZ's hand-written unsafe impl AbiPod goes); sizes and offsets pinned against the C (clang static asserts, aarch64-unknown-openbsd); bsd's tcp_var.rs re-exports them"
 
 [[module]]
 rust = "sys/hal/sys/netinet_udp.rs"
