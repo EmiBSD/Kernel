@@ -147,6 +147,13 @@
 //!   tcpipv6hdr` for IPv6); `ostate` is an `i32`, the type of `t_state` here, and the record
 //!   keeps the C's `short`.
 //!
+//! - The header sniffing of a record without a family (`PF_UNSPEC`, no control block's)
+//!   compares the version nibble masked out of the first byte with `IPVERSION << 4`, LZ's
+//!   choice: the C's `case IPVERSION` (4) against `ip6_vfc & IPV6_VERSION_MASK` (0x40 for
+//!   IPv4) never matches, so the C leaves such an IPv4 record's headers zeroed where this
+//!   module copies them. Inherited from LZ; the ring is read by no one (trpt(8) finds no
+//!   symbol, above), so nothing sees the difference.
+//!
 //! ## Redesign
 //! - The ring and `tcp_debx` are the data of a `hal::mutex::Mutexed` (`tcp_debug_mtx`,
 //!   `IPL_SOFTNET`), where LZ had a `StaticCell` changed under a separate mutex by an
@@ -500,6 +507,11 @@ pub fn tcp_trace(
     // TCPDEBUG: the console printout of the record; not configured.
 }
 
+/// The host tests that read the ring take this first, so another's records do not land in
+/// the middle of theirs (the ring is one global).
+#[cfg(test)]
+pub(crate) static RING_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 const _: () = assert!(size_of::<Tcpiphdr>() == 40);
 const _: () = assert!(size_of::<Tcpipv6hdr>() == 60);
 /* </CODE> */
@@ -511,6 +523,7 @@ mod tests {
 
     #[test]
     fn trace_fills_the_ring_and_wraps_by_family() {
+        let _ring = RING_TEST.lock().unwrap_or_else(|e| e.into_inner());
         let mut st = TcpState::new();
         st.t_state = 4;
         st.snd_una = 77;

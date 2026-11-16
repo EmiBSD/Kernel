@@ -94,12 +94,17 @@
 //! rescheduled meanwhile, then runs the timer's work.
 //!
 //! ## Deviations
-//! - The work of the retransmit, persist, keep alive and delayed ACK callouts is N6.6a3's (it
-//!   calls `tcp_output` and `tcp_drop`, the cycle that sub-slice moves): until then the
-//!   kernel's TCP is unregistered (N6.6a5), no kernel control block exists outside the host
-//!   tests, and a live timer of those four that fires is `panic(9)` naming the sub-slice
+//! - The work of the retransmit, persist, keep alive and delayed ACK callouts is N6.6a3's: the
+//!   delayed ACK's calls `tcp_output`, the retransmit and persist ones `tcp_output` and
+//!   `tcp_drop`, the keep alive one `tcp_drop` (the cycle that sub-slice moves). Until then
+//!   the kernel's TCP is unregistered (N6.6a5), no kernel control block exists outside the
+//!   host tests, and a live timer of those four that fires is `panic(9)` naming the sub-slice
 //!   (`docs/SCAFFOLDING.md`). Their entry through [`tcp_timer_enter`] (the checks that make a
-//!   fire after `tcp_close`, after a disarm or after a re-arm do nothing) is whole.
+//!   fire after `tcp_close`, after a disarm or after a re-arm do nothing) is whole, and the
+//!   2*MSL callout is whole (its callees are this slice's: `tcp_timer_freesack`,
+//!   `TCP_TIMER_ARM`, `tcp_close`, `tcp_trace`).
+//! - The 2*MSL callout's trace after a close records the closed block's address with no
+//!   snapshot (the C passes `tp`, NULL after `tcp_close`, beside the freed `otp`).
 //! - `TCPT_RANGESET` is the function [`tcpt_rangeset`] (the C macro row of
 //!   `docs/C_TO_RUST.md`); it returns the value instead of assigning an lvalue. Timer numbers
 //!   are `usize` (they index `t_timer[]`), times in milliseconds `i32` (the C's `int`
@@ -130,15 +135,18 @@
 //!   over it, as the pcb): five `SharedFn`s by `TCPT_*` index, as `softintr_hand`.
 //! - `tcp_timer_freesack` empties the owned hole list one hole at a time.
 
-use core::sync::atomic::AtomicI32;
+use core::sync::atomic::{AtomicI32, Ordering};
 
 use hal::netlock::{NETLOCK, NetHeld};
 use hal::pool::{AnyArc, PoolArc};
+use hal::sys::socket::SO_DEBUG;
 
 use crate::assert::{kassert, kpanic};
 use crate::netinet::in_pcb::{Inpcb, in_pcbsolock};
-use crate::netinet::tcp_subr::{Closed, tcp_free};
-use crate::netinet::tcp_var::{TF_TIMER, TcpState, Tcpcb, Tp, intotcpcb, tcp_time};
+use crate::netinet::tcp_debug::{TA_TIMER, tcp_trace};
+use crate::netinet::tcp_fsm::TCPS_TIME_WAIT;
+use crate::netinet::tcp_subr::{Closed, tcp_close, tcp_free};
+use crate::netinet::tcp_var::{TF_TIMER, TcpState, Tcpcb, Tp, intotcpcb, tcp_now, tcp_time};
 use crate::proc::ProcGlue;
 use crate::timeout::{KCLOCK_NONE, SharedFn, TIMEOUT_MPSAFE, TIMEOUT_PROC};
 
@@ -386,10 +394,46 @@ pub fn tcp_timer_keep<G: ProcGlue>(arg: &AnyArc) {
     });
 }
 
-/// `tcp_timer_2msl`: the 2*MSL timer (its work N6.6a3's).
+/// `tcp_timer_2msl`: the 2*MSL timer: past TIME_WAIT, or idle past the keep alive probes,
+/// the connection is closed; otherwise the timer runs again in `tcp_keepintvl`.
 pub fn tcp_timer_2msl<G: ProcGlue>(arg: &AnyArc) {
-    tcp_timer_enter(timer_inpcb::<G>(arg), TCPT_2MSL, |_| {
-        n6_6a3("tcp_timer_2msl")
+    tcp_timer_enter(timer_inpcb::<G>(arg), TCPT_2MSL, |mut tp| {
+        // otp and ostate when the socket has SO_DEBUG: the block's address, its state.
+        let otp = (tp.so.options() & SO_DEBUG != 0).then(|| {
+            (
+                core::ptr::from_ref::<Tcpcb<G>>(&tp.cb).addr(),
+                tp.st.t_state,
+            )
+        });
+        tcp_timer_freesack(tp.st);
+
+        let keepintvl = TCP_KEEPINTVL.load(Ordering::Relaxed);
+        let maxidle = TCPTV_KEEPCNT * keepintvl;
+        let now = tcp_now();
+        // The C compares the `uint64_t` difference with the `int` bound, converted.
+        if tp.st.t_state != TCPS_TIME_WAIT
+            && (maxidle == 0 || now.wrapping_sub(tp.st.t_rcvtime) <= maxidle as u64)
+        {
+            tcp_timer_arm(&mut tp, TCPT_2MSL, u64::try_from(keepintvl).unwrap_or(0));
+            if let Some((otp, ostate)) = otp {
+                tcp_trace(
+                    TA_TIMER,
+                    ostate,
+                    Some(tp.st),
+                    otp,
+                    None,
+                    TCPT_2MSL as i32,
+                    0,
+                );
+            }
+            None
+        } else {
+            let closed = tcp_close(tp);
+            if let Some((otp, ostate)) = otp {
+                tcp_trace(TA_TIMER, ostate, None, otp, None, TCPT_2MSL as i32, 0);
+            }
+            Some(closed)
+        }
     });
 }
 /* </CODE> */
@@ -485,6 +529,87 @@ mod tests {
         tcp_timer_freesack(&mut st);
         assert!(!st.snd_holes.is_some());
         assert_eq!(crate::netinet::tcp_subr::SACKHL_POOL.nout(), out);
+    }
+
+    #[test]
+    fn the_2msl_timer_rearms_a_live_connection_and_closes_an_idle_or_time_wait_one() {
+        use crate::net::sockbuf::SS_NOFDREF;
+        use crate::netinet::tcp_debug::{RING_TEST, TCP_DEBUG, TCP_NDEBUG, TcpDebugCb};
+        use crate::netinet::tcp_fsm::TCPS_ESTABLISHED;
+        use crate::netinet::tcp_var::{Sackhole, TF_TMR_2MSL};
+
+        let (_g, _p) = testtcp::setup();
+        let _ring = RING_TEST.lock().unwrap_or_else(|e| e.into_inner());
+        let last = || {
+            let r = TCP_DEBUG.lock();
+            r.tcp_debug[(r.tcp_debx + TCP_NDEBUG - 1) % TCP_NDEBUG]
+        };
+        let tcpcbs = testtcp::tcpcbs();
+        for (state, idle) in [(TCPS_ESTABLISHED, true), (TCPS_TIME_WAIT, false)] {
+            let (so, inp) = testtcp::conn();
+            so.set_options_legacy(SO_DEBUG, true);
+            let arg = PoolArc::erase(inp.clone());
+            // A timer that came due: its flag set, the timeout no longer pending; a hole.
+            let addr = testtcp::with_tp(&inp, |tp| {
+                tp.st.t_state = TCPS_ESTABLISHED;
+                tp.st.t_rcvtime = tcp_now();
+                tp.st.set_flags(TF_TMR_2MSL);
+                let h = crate::netinet::tcp_subr::SACKHL_POOL
+                    .get(hal::pool::PR_WAITOK, || Sackhole::new(1, 2, 1, 1))
+                    .expect("a hole");
+                let _ = tp.st.snd_holes.set(h);
+                (
+                    core::ptr::from_ref::<Tcpcb<testtcp::G>>(&tp.cb).addr(),
+                    None,
+                )
+            });
+            // Heard from recently, not in TIME_WAIT: run again, the holes freed.
+            tcp_timer_2msl::<testtcp::G>(&arg);
+            let (armed, pending, holes) = testtcp::with_tp(&inp, |tp| {
+                (
+                    (
+                        tcp_timer_isarmed(tp.st, TCPT_2MSL),
+                        tp.cb.t_timer[TCPT_2MSL].pending(),
+                        tp.st.snd_holes.is_some(),
+                    ),
+                    None,
+                )
+            });
+            assert!(armed && pending && !holes, "re-armed, the holes freed");
+            let td = last();
+            assert_eq!((td.td_act, td.td_req), (TA_TIMER, TCPT_2MSL as i16));
+            assert_eq!((td.td_tcb, td.td_ostate), (addr, TCPS_ESTABLISHED as i16));
+            assert_eq!(td.td_cb.t_flags & TF_TMR_2MSL, TF_TMR_2MSL, "the snapshot");
+
+            // Idle past the keep alive probes, or in TIME_WAIT: closed and freed.
+            so.st_set(SS_NOFDREF);
+            testtcp::with_tp(&inp, |mut tp| {
+                tcp_timer_disarm(&mut tp, TCPT_2MSL);
+                tp.st.set_flags(TF_TMR_2MSL);
+                tp.st.t_state = state;
+                if idle {
+                    tp.st.t_rcvtime = 0;
+                }
+                ((), None)
+            });
+            tcp_timer_2msl::<testtcp::G>(&arg);
+            assert_eq!(testtcp::tcpcbs(), tcpcbs, "the control block freed");
+            let td = last();
+            assert_eq!((td.td_tcb, td.td_ostate), (addr, state as i16));
+            assert_eq!(
+                td.td_cb,
+                TcpDebugCb::zeroed(),
+                "no snapshot after the close"
+            );
+            {
+                let w = NETLOCK.read();
+                let net = NetHeld::of(&w).expect("the net lock");
+                assert!(in_pcbsolock(&inp, &net).is_none(), "detached");
+            }
+            drop(arg);
+            drop(inp);
+            drop(so);
+        }
     }
 }
 /* </TESTS> */

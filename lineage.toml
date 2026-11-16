@@ -16431,7 +16431,7 @@ rust = "sys/kernel/netinet/tcp_debug.rs"
 crate = "kernel"
 lz = ["sys/netinet/tcp_debug.rs"]
 status = "redesigned"
-notes = "N6.6a2: tcp_debug.h's records and tcp_debug.c's tcp_trace over the kernel's TcpState; the ring and tcp_debx the data of a hal Mutexed (tcp_debug_mtx; LZ: a StaticCell under unsafe), the headers read by hal::pod::at; LZ's record kept (D-6: not the C's struct tcp_debug, no _tcp_debug/_tcp_debx symbol, trpt(8) reads nothing, as before); bsd's sys/netinet/tcp_debug.rs stays for bsd's TCP until N6.6a5"
+notes = "N6.6a2: tcp_debug.h's records and tcp_debug.c's tcp_trace over the kernel's TcpState; the ring and tcp_debx the data of a hal Mutexed (tcp_debug_mtx; LZ: a StaticCell under unsafe), the headers read by hal::pod::at; LZ's record kept (D-6: not the C's struct tcp_debug, no _tcp_debug/_tcp_debx symbol, trpt(8) reads nothing, as before); bsd's sys/netinet/tcp_debug.rs stays for bsd's TCP until N6.6a5; review nit 5: the IPVERSION << 4 sniffing named a deviation (the C never matches; inherited from LZ, invisible); RING_TEST serialises the tests that read the ring"
 
 [[module.fn]]
 lz = "sys/netinet/tcp_debug.rs::TCP_DEBUG_MTX"
@@ -16586,7 +16586,7 @@ rust = "sys/kernel/netinet/tcp_timer.rs"
 crate = "kernel"
 lz = ["sys/netinet/tcp_timer.rs"]
 status = "redesigned"
-notes = "N6.6a1: tcp_timer.h's timer numbers, time constants and TCPT_RANGESET (tcpt_rangeset); the callouts, the arm/disarm helpers, tcp_backoff[] and the keepalive variables stay in bsd's sys/netinet/tcp_timer.rs until N6.6a2-6a3; N6.6a2 (D-11): the keepalive variables, tcp_backoff[], tcp_totbackoff, tcp_delack_msecs; TCP_TIMER_INIT/ARM/DISARM/ISARMED (one counted pcb handle per timer for the tcpcb's life, given to Timeout::set_shared; arm and disarm count nothing), tcp_canceltimers, tcp_timer_freesack over the owned hole list, tcp_timer_enter with tcp_timer_leave as one function taking the work as a closure (the holdings on its stack, Closed freed by tcp_free before the socket lock goes), tcp_timer_funcs<G>() (TCP_TIMER_FUNCS) naming the five callouts, whose work is N6.6a3's (a live timer of the kernel's unregistered TCP firing is panic(9) until then; their entry through tcp_timer_enter is whole)"
+notes = "N6.6a1: tcp_timer.h's timer numbers, time constants and TCPT_RANGESET (tcpt_rangeset); the callouts, the arm/disarm helpers, tcp_backoff[] and the keepalive variables stay in bsd's sys/netinet/tcp_timer.rs until N6.6a2-6a3; N6.6a2 (D-11): the keepalive variables, tcp_backoff[], tcp_totbackoff, tcp_delack_msecs; TCP_TIMER_INIT/ARM/DISARM/ISARMED (one counted pcb handle per timer for the tcpcb's life, given to Timeout::set_shared; arm and disarm count nothing), tcp_canceltimers, tcp_timer_freesack over the owned hole list, tcp_timer_enter with tcp_timer_leave as one function taking the work as a closure (the holdings on its stack, Closed freed by tcp_free before the socket lock goes), tcp_timer_funcs<G>() (TCP_TIMER_FUNCS) naming the five callouts, whose work is N6.6a3's (a live timer of the kernel's unregistered TCP firing is panic(9) until then; their entry through tcp_timer_enter is whole); review S1: tcp_timer_2msl whole (freesack, the re-arm or tcp_close, the SO_DEBUG trace with no snapshot after a close); the four callouts left are rexmt, persist, keep, delack"
 
 [[module.fn]]
 lz = "sys/netinet/tcp_timer.rs::TCP_TIMER_FUNCS"
