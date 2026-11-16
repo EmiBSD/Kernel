@@ -517,7 +517,7 @@ paid_by = "N7"
 [[bridge]]
 trait = "Inet"
 for = ["sys/kernel/net/if_.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet6/nd6.rs", "sys/kernel/netinet6/ip6_output.rs"]
-paid_by = "N6"
+paid_by = "N8"
 
 # bsd: what the kernel's network code asks of IPsec (N8): enc_getifa for rtsock.c's
 # rtm_getifa (the enc(4) address a route to a PF_KEY destination uses, #ifdef IPSEC; N6.5e: a

@@ -2604,7 +2604,10 @@ pub fn tcp_dooptions(
             };
 
             let mut sig = [0u8; 16];
-            if !tcp_signature(t, tp.pf.get(), m, th, iphlen, true, &mut sig) {
+            // The lookup's reference, lent as the counted handle the key's lend takes; given
+            // back below by `tdb_unref(tdb)`.
+            let t = kernel::net::ipsec_hooks::TdbRef::new(crate::net::if_enc::tdb_key(), t);
+            if !tcp_signature(&t, tp.pf.get(), m, th, iphlen, true, &mut sig) {
                 break 'bad false;
             }
 
@@ -4396,7 +4399,10 @@ fn syn_cache_respond(
         o += 2;
 
         let mut sig = [0u8; 16];
-        if !tcp_signature(tdb, i32::from(family), m, &th, hlen as i32, false, &mut sig) {
+        // The lookup's reference, lent as the counted handle the key's lend takes; given back
+        // by `tdb_unref(Some(tdb))` below.
+        let t = kernel::net::ipsec_hooks::TdbRef::new(crate::net::if_enc::tdb_key(), tdb);
+        if !tcp_signature(&t, i32::from(family), m, &th, hlen as i32, false, &mut sig) {
             m_freem(m);
             tdb_unref(Some(tdb));
             return Err(Errno::EINVAL);

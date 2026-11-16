@@ -197,7 +197,9 @@ pub trait Ipsec: Sync {
     /// `gettdbbysrcdst(rdomain, 0, src, dst, IPPROTO_TCP)` (`TCP_SIGNATURE`'s SA, N6.6a0 for
     /// the kernel's TCP): the SA between `src` and `dst`, each a `union sockaddr_union` read
     /// whole ([`SOCKADDR_UNION_LEN`] bytes, never cut at `sa_len`), with the lookup's
-    /// reference ([`TdbHold`] gives it back). Default: `None`, the C without `IPSEC`.
+    /// reference in the returned [`TdbRef`], which the caller gives back by
+    /// [`Ipsec::tdb_unref`] (directly, or through a `TdbHold` made of it, whose drop calls
+    /// it). Default: `None`, the C without `IPSEC`.
     fn tcp_signature_tdb(
         &self,
         _rdomain: u32,

@@ -377,7 +377,7 @@ pub static BSD_IPSEC: BsdIpsec = BsdIpsec;
 pub static BSD_TDB_KEY: hal::once::OnceStatic<&'static TdbKey> = hal::once::OnceStatic::new();
 
 /// The key, which every leg is called after (`ifinit` registered them and kept it).
-fn tdb_key() -> &'static TdbKey {
+pub(crate) fn tdb_key() -> &'static TdbKey {
     match BSD_TDB_KEY.get() {
         Some(k) => k,
         None => panic(format_args!("ipsec: a leg called before its registration")),
@@ -386,7 +386,7 @@ fn tdb_key() -> &'static TdbKey {
 
 /// The SA a [`TdbRef`] names (`bsd`'s `&'static Tdb` the lookup gave the kernel); `panic(9)`
 /// for any other object, which no leg ever hands out.
-fn tdb_of(t: &TdbRef) -> &'static Tdb {
+pub(crate) fn tdb_of(t: &TdbRef) -> &'static Tdb {
     let any: &'static dyn core::any::Any = t.get(tdb_key());
     match any.downcast_ref::<Tdb>() {
         Some(tdb) => tdb,
@@ -526,7 +526,7 @@ impl kernel::net::ipsec_hooks::Ipsec for BsdIpsec {
 
     /// The SA's MD5 key lent to `f` (`tcp_signature`'s), the `TdbRef` keeping the SA.
     fn tdb_amxkey(&self, tdb: &TdbRef, f: &mut dyn FnMut(&[u8])) {
-        crate::netinet::tcp_subr::tdb_amxkey_lend(tdb_of(tdb), f);
+        crate::netinet::tcp_subr::tdb_amxkey_lend(tdb, f);
     }
 
     fn init(&self) {

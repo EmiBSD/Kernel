@@ -994,9 +994,12 @@ impl<'a> SoLocked<'a> {
                 3
             }
             SoHold::Attached(w) => {
+                // Only `solocked_legacy` attaches, and only under a lent net lock, whose
+                // waits and unlocks are refused before they release `so_lock`.
                 self.lock.detach(w);
-                self.lock.exit_write_detached();
-                4
+                kpanic(format_args!(
+                    "sounlock: an attached holding of bsd's caller is not let go"
+                ))
             }
         }
     }
@@ -1012,10 +1015,6 @@ impl<'a> SoLocked<'a> {
             3 => {
                 self.lock.enter_write_detached();
                 SoHold::Lent
-            }
-            4 => {
-                self.lock.enter_write_detached();
-                SoHold::Attached(self.lock.attach())
             }
             _ => SoHold::None,
         };

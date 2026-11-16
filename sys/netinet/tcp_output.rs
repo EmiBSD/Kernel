@@ -1026,7 +1026,10 @@ pub fn tcp_output(tp: &'static Tcpcb) -> Result<(), Errno> {
                 };
 
                 let mut sig = [0u8; 16];
-                if !tcp_signature(tdb, tp.pf.get(), m, &th, iphlen, false, &mut sig) {
+                // The lookup's reference, lent as the counted handle the key's lend takes;
+                // given back by `tdb_unref(Some(tdb))` below.
+                let t = kernel::net::ipsec_hooks::TdbRef::new(crate::net::if_enc::tdb_key(), tdb);
+                if !tcp_signature(&t, tp.pf.get(), m, &th, iphlen, false, &mut sig) {
                     m_freem(m);
                     tdb_unref(Some(tdb));
                     return Err(Errno::EINVAL);
