@@ -434,7 +434,13 @@ pub(crate) fn openbsd_qemu(root: &Path, arch: Arch, mode: &Boot<'_>) -> Result<C
             ("virtio-blk-pci", "virtio-net-pci")
         }
         Arch::Arm64 => {
-            cmd.args(["-M", "virt,acpi=off", "-cpu", "cortex-a72"]);
+            // `probe` follows `EMIBSD_CPU` (hwopts), to see what OpenBSD itself does on
+            // another CPU model; the scenarios keep the smokes' `cortex-a72`.
+            let cpu = match mode {
+                Boot::Probe(_) => crate::hwopts::arm64_cpu()?,
+                _ => String::from("cortex-a72"),
+            };
+            cmd.args(["-M", "virt,acpi=off", "-cpu", &cpu]);
             ("virtio-blk-device", "virtio-net-device")
         }
     };
