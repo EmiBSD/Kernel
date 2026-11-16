@@ -247,9 +247,14 @@
 //!   route cache's cell (72), the IPv4 multicast options' and (N6.5c, +64) the IPv6 packet
 //!   and multicast options' (40 each), the IPv4 options' slot (24, N6.6a0: +16 over `bsd`'s
 //!   word), the anchor (16), the IPv4 and IPv6 members side by
-//!   side (the C's unions), the hash slots (8). docs/SCAFFOLDING.md's pool-size row; a diet is
-//!   N12's: `inp_mou` as one cell (the C's union of `inp_moptions` and `inp_moptions6`, a
-//!   family-tagged value) would save 40 B per pcb (N12).
+//!   side (the C's unions), the hash slots (8). docs/SCAFFOLDING.md's pool-size row.
+//! - N6.6a2's diet (the user's request of 2026-11-16, to keep the item within 584 B with the
+//!   kernel's tcpcb slot, +32): `inp_mou` is one cell, the C's union of `inp_moptions` and
+//!   `inp_moptions6` tagged by family ([`Mou`], lent by [`Inpcb::moptions`] and
+//!   [`Inpcb::moptions6`] as a [`MouLoan`] of the family's member; a loan of the other
+//!   family's is `panic(9)`, where the C would read the union as the wrong member): 48 B
+//!   where the two cells were 80. The item is 568 B (552 and the header), 560 once `bsd`'s
+//!   `inp_ppcb` word goes (N6.6a5).
 //! - The IPv6 packet and multicast options are the kernel's typed cells since N6.5c (D-10),
 //!   lent by [`Inpcb::outputopts6`] and [`Inpcb::moptions6`] under the socket lock (the C's
 //!   union of `inp_options` and `inp_outputopts6` is two members here, as in LZ).
@@ -924,14 +929,13 @@ pub struct Inpcb<G: ProcGlue> {
     inp_outputopts6: ReadMostly<Option<MBox<Ip6Pktopts>>>,
     /// `inp_hops`.
     pub inp_hops: AtomicCell<i32>,
-    /// \[N\] `inp_moptions`: IPv4 multicast options (`ip_setmoptions`'s `M_IPMOPTS`
-    /// allocation), reached only through [`Inpcb::moptions`], which checks the socket lock,
-    /// and copied by [`Inpcb::moptions_out`].
-    inp_moptions: ReadMostly<Option<MBox<IpMoptions>>>,
-    /// \[N\] `inp_moptions6`: IPv6 multicast options (`ip6_setmoptions`'s `M_IPMOPTS`
-    /// allocation), reached only through [`Inpcb::moptions6`], which checks the socket lock,
-    /// and copied by [`Inpcb::moptions6_out`].
-    inp_moptions6: ReadMostly<Option<MBox<Ip6Moptions>>>,
+    /// \[N\] `inp_mou`: the multicast options, IPv4's (`inp_moptions`, `ip_setmoptions`'s
+    /// `M_IPMOPTS` allocation) or IPv6's (`inp_moptions6`, `ip6_setmoptions`'s), the C's union
+    /// as one cell tagged by family, reached only through [`Inpcb::moptions`] and
+    /// [`Inpcb::moptions6`], which check the socket lock, and copied by
+    /// [`Inpcb::moptions_out`] and [`Inpcb::moptions6_out`] (N6.6a2's diet: one cell where
+    /// N6.4c1 and N6.5c kept two, -32 B).
+    inp_mou: ReadMostly<Mou>,
     /// \[N\] `inp_seclevel`: IPsec level of socket.
     pub inp_seclevel: SeclevelCell,
     /// `inp_ip_minttl`: minimum TTL or drop (`inp_ip6_minhlim` for IPv6).
@@ -1006,8 +1010,7 @@ impl<G: ProcGlue> Inpcb<G> {
             inp_options: LoanSlot::new(None),
             inp_outputopts6: ReadMostly::new(None),
             inp_hops: AtomicCell::new(),
-            inp_moptions: ReadMostly::new(None),
-            inp_moptions6: ReadMostly::new(None),
+            inp_mou: ReadMostly::new(Mou::None),
             inp_seclevel: SeclevelCell::new(),
             inp_ip_minttl: AtomicCell::new(),
             inp_cksum6: AtomicCell::new(),
@@ -1071,9 +1074,9 @@ impl<G: ProcGlue> Inpcb<G> {
     /// options are `[N]`: written under the socket lock, as `soassertlocked` defines it for an
     /// internet socket; checked here as [`Inpcb::route`] checks the route cache, a loan being
     /// a move out of the cell and back. `panic(9)` without the lock.
-    pub fn moptions(&self) -> InpLoan<'_, Option<MBox<IpMoptions>>> {
+    pub fn moptions(&self) -> MouLoan<'_, IpMoptions> {
         self.assert_route_locked("inp_moptions");
-        InpLoan::of(&self.inp_moptions)
+        MouLoan::of(&self.inp_mou)
     }
 
     /// The multicast options `ip_output` reads (the interface, the TTL, the loopback switch),
@@ -1082,10 +1085,10 @@ impl<G: ProcGlue> Inpcb<G> {
     /// sleep, which no reader of the cell may do while it holds it).
     #[inline]
     pub fn moptions_out(&self) -> Option<IpMoptions> {
-        self.inp_moptions
-            .read()
-            .as_deref()
-            .map(|imo| IpMoptions::output(imo.imo_ifidx, imo.imo_ttl, imo.imo_loop))
+        match &*self.inp_mou.read() {
+            Mou::V4(imo) => Some(IpMoptions::output(imo.imo_ifidx, imo.imo_ttl, imo.imo_loop)),
+            Mou::None | Mou::V6(_) => None,
+        }
     }
 
     /// `&inp->inp_options`: the IPv4 options, lent until the loan drops (the C's `struct mbuf
@@ -1139,9 +1142,9 @@ impl<G: ProcGlue> Inpcb<G> {
     /// `&inp->inp_moptions6`: the IPv6 multicast options, lent until the loan drops (the C's
     /// `struct ip6_moptions **` of `ip6_setmoptions`), checked as [`Inpcb::moptions`].
     /// `panic(9)` without the socket lock.
-    pub fn moptions6(&self) -> InpLoan<'_, Option<MBox<Ip6Moptions>>> {
+    pub fn moptions6(&self) -> MouLoan<'_, Ip6Moptions> {
         self.assert_route_locked("inp_moptions6");
-        InpLoan::of(&self.inp_moptions6)
+        MouLoan::of(&self.inp_mou)
     }
 
     /// The multicast options `ip6_output` and the source selection read (the interface, the
@@ -1149,10 +1152,14 @@ impl<G: ProcGlue> Inpcb<G> {
     /// when the socket has none. A read, as [`Inpcb::moptions_out`].
     #[inline]
     pub fn moptions6_out(&self) -> Option<Ip6Moptions> {
-        self.inp_moptions6
-            .read()
-            .as_deref()
-            .map(|im6o| Ip6Moptions::output(im6o.im6o_ifidx, im6o.im6o_hlim, im6o.im6o_loop))
+        match &*self.inp_mou.read() {
+            Mou::V6(im6o) => Some(Ip6Moptions::output(
+                im6o.im6o_ifidx,
+                im6o.im6o_hlim,
+                im6o.im6o_loop,
+            )),
+            Mou::None | Mou::V4(_) => None,
+        }
     }
 
     /// Whether this thread holds the socket lock that guards `inp_route`: this pcb's
@@ -1359,6 +1366,103 @@ impl<T: Default> core::ops::DerefMut for InpLoan<'_, T> {
 impl<T: Default> Drop for InpLoan<'_, T> {
     fn drop(&mut self) {
         drop(self.cell.replace(core::mem::take(&mut self.val)));
+    }
+}
+
+/// `inp_mou`: the C's union of `inp_moptions` and `inp_moptions6`, tagged by family (a pcb is
+/// one family for its life: `INP_IPV6` is set by `in_pcballoc`).
+#[derive(Default)]
+pub enum Mou {
+    /// No multicast options (the C's NULL).
+    #[default]
+    None,
+    /// An IPv4 pcb's `inp_moptions`.
+    V4(MBox<IpMoptions>),
+    /// An IPv6 pcb's `inp_moptions6`.
+    V6(MBox<Ip6Moptions>),
+}
+
+/// The two members of [`Mou`]: what a [`MouLoan`] lends of the cell.
+pub trait MouMember: Sized + 'static {
+    /// The member's name, for the refusal of the other family's options.
+    const NAME: &'static str;
+    /// The member, out of the union: `Err` gives back the other family's options.
+    fn of(m: Mou) -> Result<Option<MBox<Self>>, Mou>;
+    /// The union holding the member.
+    fn into_mou(v: Option<MBox<Self>>) -> Mou;
+}
+
+impl MouMember for IpMoptions {
+    const NAME: &'static str = "inp_moptions";
+    fn of(m: Mou) -> Result<Option<MBox<Self>>, Mou> {
+        match m {
+            Mou::None => Ok(None),
+            Mou::V4(b) => Ok(Some(b)),
+            other @ Mou::V6(_) => Err(other),
+        }
+    }
+    fn into_mou(v: Option<MBox<Self>>) -> Mou {
+        v.map_or(Mou::None, Mou::V4)
+    }
+}
+
+impl MouMember for Ip6Moptions {
+    const NAME: &'static str = "inp_moptions6";
+    fn of(m: Mou) -> Result<Option<MBox<Self>>, Mou> {
+        match m {
+            Mou::None => Ok(None),
+            Mou::V6(b) => Ok(Some(b)),
+            other @ Mou::V4(_) => Err(other),
+        }
+    }
+    fn into_mou(v: Option<MBox<Self>>) -> Mou {
+        v.map_or(Mou::None, Mou::V6)
+    }
+}
+
+/// One family's multicast options, out of the pcb's `inp_mou` until this drops
+/// ([`Inpcb::moptions`], [`Inpcb::moptions6`]), as an [`InpLoan`]: the cell holds `None`
+/// meanwhile, and the member goes back on drop. A loan of the other family's member is
+/// `panic(9)` (the C's union read as the wrong member).
+pub struct MouLoan<'a, T: MouMember> {
+    /// Where the member goes back.
+    cell: &'a ReadMostly<Mou>,
+    /// The member.
+    val: Option<MBox<T>>,
+}
+
+impl<'a, T: MouMember> MouLoan<'a, T> {
+    /// The member of `cell`, taken out (the caller checked the socket lock).
+    fn of(cell: &'a ReadMostly<Mou>) -> Self {
+        match T::of(cell.update(core::mem::take)) {
+            Ok(val) => Self { cell, val },
+            Err(other) => {
+                drop(cell.replace(other));
+                kpanic(format_args!(
+                    "{}: the multicast options of a pcb of the other family",
+                    T::NAME
+                ))
+            }
+        }
+    }
+}
+
+impl<T: MouMember> core::ops::Deref for MouLoan<'_, T> {
+    type Target = Option<MBox<T>>;
+    fn deref(&self) -> &Option<MBox<T>> {
+        &self.val
+    }
+}
+
+impl<T: MouMember> core::ops::DerefMut for MouLoan<'_, T> {
+    fn deref_mut(&mut self) -> &mut Option<MBox<T>> {
+        &mut self.val
+    }
+}
+
+impl<T: MouMember> Drop for MouLoan<'_, T> {
+    fn drop(&mut self) {
+        drop(self.cell.replace(T::into_mou(self.val.take())));
     }
 }
 
@@ -3045,17 +3149,10 @@ mod tests {
             ),
             ("inp_options", size_of::<LoanSlot<Option<MbufBox>>>()),
             ("inp_route", size_of::<ReadMostly<Route>>()),
-            (
-                "inp_moptions",
-                size_of::<ReadMostly<Option<MBox<IpMoptions>>>>(),
-            ),
+            ("inp_mou", size_of::<ReadMostly<Mou>>()),
             (
                 "inp_outputopts6",
                 size_of::<ReadMostly<Option<MBox<Ip6Pktopts>>>>(),
-            ),
-            (
-                "inp_moptions6",
-                size_of::<ReadMostly<Option<MBox<Ip6Moptions>>>>(),
             ),
             ("inp_refcnt", 4),
             ("inp_anchor", size_of::<ReadMostly<Option<InpcbRef<G>>>>()),
@@ -3075,17 +3172,19 @@ mod tests {
             size_of::<Inpcb<G>>(),
             size_of::<Route>()
         );
-        // 584 bytes, 600 with the counted item's header (the count and the pool), against the
+        // 552 bytes, 568 with the counted item's header (the count and the pool), against the
         // C's struct inpcb of 328 (LP64) and LZ's 352 (the module's Redesign): the three
         // pinned entries (96: a lock identity each besides the two links), the route cache's
-        // cell (72), the three options' cells (40 each: the box carries its malloc type and
-        // allocator; N6.5c's two IPv6 ones were 8-byte words before), the IPv4 options' slot
-        // (24: the claim word and the chain's box, N6.6a0's D-15, a word of bsd's before), the
-        // anchor (16) and the kernel's tcpcb slot (32: the cell's key and the box, N6.6a2's
-        // D-12, beside bsd's 8-byte word until N6.6a5, which leaves 576 and 592) are the
-        // growth (D-7: the diet is N12's).
-        assert_eq!(sum, 583);
-        assert_eq!(size_of::<Inpcb<G>>(), 584);
+        // cell (72), the multicast options' one cell (48: the C's union `inp_mou`, the box
+        // carrying its malloc type and allocator and the family's tag; N6.6a2's diet, two cells
+        // of 40 before), the IPv6 packet options' cell (40), the IPv4 options' slot (24: the
+        // claim word and the chain's box, N6.6a0's D-15, a word of bsd's before), the anchor
+        // (16) and the kernel's tcpcb slot (32: the cell's 16-byte key and the 16-byte box,
+        // N6.6a2's D-12, beside bsd's 8-byte word until N6.6a5, which leaves 544 and 560) are
+        // the growth; the item stays within the brief's bound of 584 (S12).
+        assert_eq!(sum, 551);
+        assert_eq!(size_of::<Inpcb<G>>(), 552);
+        assert!(size_of::<Inpcb<G>>() + 16 <= 584, "S12: the \"inpcb\" item");
 
         // The C's struct inpcb on LP64, as repr(C) lays out in_pcb.h's members in order (the
         // pointers as words, the unions as their largest member's words).
@@ -3427,7 +3526,7 @@ mod tests {
         assert_eq!(nout(), before + 1);
         assert_eq!(
             crate::net::domain::net::<Tg>().inpcb.pool.item_size(),
-            Some(600),
+            Some(568),
             "vmstat -m's size of an \"inpcb\" item: the value and the counted item's header"
         );
         assert_eq!(inp.legacy_count(), 1, "refcnt_init: the socket's");
@@ -3588,6 +3687,51 @@ mod tests {
         assert!(kept, "the loan put the chain back");
         assert_eq!(held, before + 1);
         assert_eq!(after, before, "in_pcbdetach freed the options");
+    }
+
+    #[test]
+    fn the_multicast_options_share_one_cell_by_family() {
+        // N6.6a2's diet: inp_moptions and inp_moptions6 are the C's union, one cell tagged by
+        // family. An IPv4 pcb's options are its moptions, invisible to moptions6_out; the
+        // loan gives the cell back with the member it holds.
+        let (_g, _p) = testinet::setup();
+        let (so, inp) = testinet::pcb(testinet::table(16));
+        let w = NETLOCK.write();
+        let imo =
+            MBox::new(M_IPMOPTS_TEST, M_WAITOK, IpMoptions::output(3, 7, 1)).expect("the options");
+        let before = inp.moptions().is_none();
+        *inp.moptions() = Some(imo);
+        let out = inp.moptions_out();
+        let out6 = inp.moptions6_out();
+        let kept = inp.moptions().as_deref().map(|m| m.imo_ttl);
+        let freed = inp.moptions().take().is_some();
+        let after = inp.moptions_out().is_none();
+        drop(w);
+        assert!(before);
+        assert_eq!(
+            out.map(|o| (o.imo_ifidx, o.imo_ttl, o.imo_loop)),
+            Some((3, 7, 1))
+        );
+        assert!(out6.is_none(), "the other family's member");
+        assert_eq!(kept, Some(7), "the loan put the member back");
+        assert!(freed && after);
+        testinet::release(so, inp);
+    }
+
+    /// `M_IPMOPTS` (`malloc.h`), the multicast options' type.
+    const M_IPMOPTS_TEST: i32 = 53;
+
+    #[test]
+    #[should_panic(expected = "inp_moptions6: the multicast options of a pcb of the other family")]
+    fn an_ipv4_pcbs_options_are_not_lent_as_ipv6_ones() {
+        let (_g, _p) = testinet::setup();
+        let (_so, inp) = testinet::pcb(testinet::table(16));
+        let w = NETLOCK.write();
+        *inp.moptions() = MBox::new(M_IPMOPTS_TEST, M_WAITOK, IpMoptions::output(1, 1, 0));
+        // The C's union read as the other member: refused (the net lock is a RAII witness,
+        // let go by the unwind).
+        let _ = inp.moptions6();
+        drop(w);
     }
 
     #[test]
