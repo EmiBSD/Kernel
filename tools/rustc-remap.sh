@@ -16,14 +16,17 @@
 #
 # RUSTC_WRAPPER for every build the justfile runs: cargo calls it as
 # `rustc-remap.sh <rustc> <args...>`. It runs DevTools' rustc with the same arguments plus
-# two path remappings, so the paths of the build machine never land in a binary (panic
+# three path remappings, so the paths of the build machine never land in a binary (panic
 # locations, debug info): DevTools' toolchain directory (its `core`, `alloc` and the rest of
 # rust-src) becomes /emibsd/toolchains, and cargo's registry under the builder's home becomes
-# /cargo. The tree's own sources are already relative (cargo passes workspace paths that way).
+# /cargo, and rustc's working directory (the tree's root, which rustc records beside the
+# relative paths cargo passes for workspace sources) becomes /usr/src. A later remapping wins
+# where two match, so the working directory comes first.
 # Additive: RUSTFLAGS and .cargo/config.toml's rustflags reach rustc as before.
 # Userland's report of 2026-11-15: a release's BOOTAA64.EFI carried the builder's home path.
 
 : "${EMIBSD_TOOLCHAIN_DIR:?rustc-remap.sh: EMIBSD_TOOLCHAIN_DIR is not set (run through just)}"
 exec "$@" \
+    "--remap-path-prefix=${PWD}=/usr/src" \
     "--remap-path-prefix=${EMIBSD_TOOLCHAIN_DIR}=/emibsd/toolchains" \
     "--remap-path-prefix=${HOME}/.cargo=/cargo"
