@@ -1214,7 +1214,7 @@ modules = [
     "sys/sys/scsiio.rs",
 ]
 status = "applied"
-emibsd = "b893bbc3834d"
+emibsd = "67589c4dd788"
 method = "cherry-pick-conflicts"
 reason = "comments only: native dropped the expanded OpenBSD, NetBSD and FreeBSD id lines at N0 (decision 20) and lz check strips them on both sides, so of LZ's 1,139 files only the forms N0 left need a change here: 18 whole-line id comments (KAME's, and unexpanded NetBSD ones) in 15 files and LZ's seven doc lines that said the id line was kept; no .S file or linker script here has one; layout.rs refuses an id line outside the code zone, with LZ's test adapted (reimplemented: native's layout check differs); gen-syscalls writes none since N0; amd64's mpconfig.rs takes its one comment line uncompiled (decision 44); LZ's rules, CLAUDE.md, agents, PORTING.md and ports.toml halves are LZ's (native's rust-kernel.md already says the lines are gone)"
 
@@ -1223,6 +1223,34 @@ lz = "b64b4fc5c1e6"
 subject = "dev/ic: start the timeout wheel in pckbc's tests"
 modules = ["sys/dev/ic/pckbc.rs"]
 status = "applied"
-emibsd = "67589c4dd788"
+emibsd = "963df12e9c8c"
 method = "cherry-pick"
 reason = "test code only: pckbc's test setup starts the wheel under the timeout test lock, as pms and the others do; here the path is the legacy shim sys/sys/timeout.rs (kern::kern_timeout), whose timeout_startup starts the kernel crate's wheel; closes the host-test flake STATUS listed for dev::ic::pckbc"
+
+[[commit]]
+lz = "61d8207191d5"
+subject = "kern: export __guard_local only from the kernel"
+modules = ["sys/kern/init_main.rs"]
+status = "applied"
+emibsd = "0d590593b08e"
+method = "cherry-pick"
+reason = "applied as LZ wrote it to the adapted init_main.rs: the C name is exported only for target_os none, so a host test binary links on EmiBSD, where crtbegin.o defines the name too; the kernel image is unchanged"
+
+[[commit]]
+lz = "bb055fdc30ff"
+subject = "netinet6: nd6_expire_timer_update truncates to int before clamping, as in C"
+modules = ["sys/kernel/netinet6/nd6.rs"]
+status = "applied"
+emibsd = "02da298e2bc9"
+method = "reimplemented"
+reason = "nd6 is the kernel crate's since N6.5b: nd6_expire_timer_update already truncated to int before clamping, with its test (a_lifetime_past_int_max_seconds_schedules_the_expiry_at_once); nd6_timer's rearm takes the C's order here (nd6.c:304-306); bsd's adapted nd6.rs has neither function"
+
+[[commit]]
+lz = "dbf34ea809c2"
+subject = "dev: read random_start's kernel text words unaligned"
+modules = ["sys/dev/rnd.rs"]
+status = "applied"
+emibsd = "8200ebd705a7"
+method = "cherry-pick-conflicts"
+reason = "security-review.md area (dev/rnd), not a security fix: random_start reads the same 2048 words of kernel text with read_unaligned instead of through an aligned slice nothing guaranteed (undefined on amd64 when etext is off a 4-byte boundary); applied as LZ wrote it with reduced context, the Deviations line naming LZ's external bugs log as LZ's; one unsafe block before and after; reviewed by the main session in the commit's Security-Review, the independent reviewer reads it with df8508cf1682's"
+security = true
