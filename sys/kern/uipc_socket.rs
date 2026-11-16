@@ -154,27 +154,38 @@ pub fn sofree(so: &Socket, keep_lock: bool) {
     kernel::net::socket::sofree_legacy(so);
 }
 
+/// The proof of the net lock `bsd`'s caller holds on an internet socket, lent for one
+/// request (`solocked_legacy`'s `net`); `None` for the other sockets, whose lock is their
+/// `so_lock`.
+fn net_lend(so: &Socket, what: &str) -> Option<hal::netlock::NetLend> {
+    so.is_inet().then(|| crate::net::if_::net_held(what))
+}
+
 /// `sobind(so, nam, p)`, the socket locked by the caller.
 pub fn sobind(so: &Socket, nam: &Mbuf, p: &Proc) -> Result<(), Errno> {
-    let mut w = kernel::net::socket::solocked_legacy(so);
+    let lend = net_lend(so, "sobind");
+    let mut w = kernel::net::socket::solocked_legacy(so, lend.as_ref().map(|l| l.net()));
     kernel::net::socket::sobind(so, &mut w, nam, p)
 }
 
 /// `solisten(so, backlog)`, the socket locked by the caller.
 pub fn solisten(so: &Socket, backlog: i32) -> Result<(), Errno> {
-    let mut w = kernel::net::socket::solocked_legacy(so);
+    let lend = net_lend(so, "solisten");
+    let mut w = kernel::net::socket::solocked_legacy(so, lend.as_ref().map(|l| l.net()));
     kernel::net::socket::solisten(so, &mut w, backlog)
 }
 
 /// `soaccept(so, nam)`, the socket locked by the caller.
 pub fn soaccept(so: &Socket, nam: &Mbuf) -> Result<(), Errno> {
-    let mut w = kernel::net::socket::solocked_legacy(so);
+    let lend = net_lend(so, "soaccept");
+    let mut w = kernel::net::socket::solocked_legacy(so, lend.as_ref().map(|l| l.net()));
     kernel::net::socket::soaccept(so, &mut w, mut_of(nam))
 }
 
 /// `soconnect(so, nam)`, the socket locked by the caller.
 pub fn soconnect(so: &Socket, nam: &Mbuf) -> Result<(), Errno> {
-    let mut w = kernel::net::socket::solocked_legacy(so);
+    let lend = net_lend(so, "soconnect");
+    let mut w = kernel::net::socket::solocked_legacy(so, lend.as_ref().map(|l| l.net()));
     kernel::net::socket::soconnect(so, &mut w, nam)
 }
 

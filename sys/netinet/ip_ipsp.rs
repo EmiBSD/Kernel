@@ -3235,6 +3235,98 @@ mod tests {
     }
 
     #[test]
+    fn the_kernel_s_legs_find_a_tcp_signature_sa_and_lend_its_key() {
+        // The Ipsec legs the kernel's TCP calls (N6.6a0): gettdbbysrcdst over the unions
+        // taken whole, the lookup's reference in the TdbRef until tdb_unref, the MD5 key lent
+        // to a closure; the inbound check passes every segment while no SA or flow is in use.
+        use kernel::net::ipsec_hooks::Ipsec;
+
+        let _g = setup();
+        let legs = &crate::net::if_enc::BSD_IPSEC;
+        let sa = tdb(0x4000, A, C, crate::netinet::in_::IPPROTO_TCP);
+        let mut ii = IpsecInit {
+            ii_enckey: &[],
+            ii_authkey: b"0123456789abcdef",
+            ii_enckeylen: 0,
+            ii_authkeylen: 16,
+            ii_encalg: 0,
+            ii_authalg: 0,
+            ii_compalg: 0,
+        };
+        let init = crate::netinet::tcp_subr::tcp_signature_tdb_init(sa, &XFORMSW[0], &mut ii);
+        let found = legs.tcp_signature_tdb(0, su(A).as_bytes(), su(C).as_bytes());
+        let held = sa.tdb_refcnt.r_refs.load(Ordering::Relaxed);
+        let mut key = Vec::new();
+        if let Some(t) = &found {
+            legs.tdb_amxkey(t, &mut |k| key.extend_from_slice(k));
+        }
+        let other = legs.tcp_signature_tdb(0, su(A).as_bytes(), su(B).as_bytes());
+        let was_found = found.is_some();
+        if let Some(t) = found {
+            legs.tdb_unref(t);
+        }
+        let back = sa.tdb_refcnt.r_refs.load(Ordering::Relaxed);
+        let m = crate::net::if_::tests::test_packet(&[0x45, 0, 0, 20]);
+        let passed = legs.spd_check_in(m, i32::from(AF_INET), 20, None).is_ok();
+        crate::kern::uipc_mbuf::m_freem(Some(m));
+        let _ = crate::netinet::tcp_subr::tcp_signature_tdb_zeroize(sa);
+        tdb_delete(sa);
+        assert_eq!(init, Ok(()));
+        assert!(was_found, "the SA between A and C");
+        assert_eq!(held, 2, "the lookup's reference held by the TdbRef");
+        assert_eq!(key, b"0123456789abcdef", "the key lent whole");
+        assert!(other.is_none(), "no SA between A and B");
+        assert_eq!(back, 1, "the reference given back");
+        assert!(passed, "no IPsec in use: no check");
+    }
+
+    #[test]
+    fn the_kernel_s_inbound_check_refuses_an_unprotected_segment_while_ipsec_is_in_use() {
+        // Ipsec::spd_check_in (N6.6a0's review, should-fix 3): a TCP segment from A to C with
+        // no IPSEC_IN_DONE tag, for a socket whose levels require ESP and AH. While no SA or
+        // flow is configured the C's block does not run: accepted. With IPsec in use the SPD
+        // finds no policy and the socket's levels refuse the unprotected segment; a socket
+        // that only takes what is available accepts it.
+        use kernel::net::ipsec_hooks::Ipsec;
+
+        use crate::netinet::in_::{IPSEC_LEVEL_AVAIL, IPSEC_LEVEL_REQUIRE};
+
+        let _g = setup();
+        let legs = &crate::net::if_enc::BSD_IPSEC;
+        let mut b = [0u8; 40];
+        b[0] = 0x45;
+        b[2..4].copy_from_slice(&40u16.to_be_bytes());
+        b[8] = 64;
+        b[9] = crate::netinet::in_::IPPROTO_TCP as u8;
+        b[12..16].copy_from_slice(&A);
+        b[16..20].copy_from_slice(&C);
+        b[20..22].copy_from_slice(&40000u16.to_be_bytes());
+        b[22..24].copy_from_slice(&80u16.to_be_bytes());
+        b[32] = 0x50;
+        let m = crate::net::if_::tests::test_packet(&b);
+        let level = |l: i32| IpsecLevel {
+            sl_auth: l as u8,
+            sl_esp_trans: l as u8,
+            sl_esp_network: l as u8,
+            sl_ipcomp: IPSEC_LEVEL_AVAIL as u8,
+        };
+        let (require, avail) = (level(IPSEC_LEVEL_REQUIRE), level(IPSEC_LEVEL_AVAIL));
+        let af = i32::from(crate::sys::socket::AF_INET);
+        let idle = legs.spd_check_in(m, af, 20, Some(&require));
+        IPSEC_IN_USE.store(1, Ordering::Relaxed);
+        let refused = legs.spd_check_in(m, af, 20, Some(&require));
+        let accepted = legs.spd_check_in(m, af, 20, Some(&avail));
+        IPSEC_IN_USE.store(0, Ordering::Relaxed);
+        crate::kern::uipc_mbuf::m_freem(Some(m));
+        assert!(idle.is_ok(), "no IPsec in use: no check");
+        assert!(
+            refused.is_err(),
+            "IPsec in use: an unprotected segment refused"
+        );
+        assert!(accepted.is_ok(), "a socket that takes what is available");
+    }
+
+    #[test]
     fn the_tables_grow_and_keep_every_tdb() {
         let _g = setup();
         let all: Vec<&'static Tdb> = (0..200u32)

@@ -377,7 +377,7 @@ pub static BSD_IPSEC: BsdIpsec = BsdIpsec;
 pub static BSD_TDB_KEY: hal::once::OnceStatic<&'static TdbKey> = hal::once::OnceStatic::new();
 
 /// The key, which every leg is called after (`ifinit` registered them and kept it).
-fn tdb_key() -> &'static TdbKey {
+pub(crate) fn tdb_key() -> &'static TdbKey {
     match BSD_TDB_KEY.get() {
         Some(k) => k,
         None => panic(format_args!("ipsec: a leg called before its registration")),
@@ -386,7 +386,7 @@ fn tdb_key() -> &'static TdbKey {
 
 /// The SA a [`TdbRef`] names (`bsd`'s `&'static Tdb` the lookup gave the kernel); `panic(9)`
 /// for any other object, which no leg ever hands out.
-fn tdb_of(t: &TdbRef) -> &'static Tdb {
+pub(crate) fn tdb_of(t: &TdbRef) -> &'static Tdb {
     let any: &'static dyn core::any::Any = t.get(tdb_key());
     match any.downcast_ref::<Tdb>() {
         Some(tdb) => tdb,
@@ -479,6 +479,54 @@ impl kernel::net::ipsec_hooks::Ipsec for BsdIpsec {
 
     fn local_check(&self, m: &Mbuf, hlen: i32, proto: i32, af: i32) -> bool {
         crate::netinet::ipsec_input::ipsec_local_check(m, hlen, proto, af).is_err()
+    }
+
+    /// `tcp_input`'s `#ifdef IPSEC` block for the kernel's TCP (N6.6a0): nothing while no SA
+    /// or flow is configured (`ipsec_in_use`), else `ipsec_input_check`.
+    fn spd_check_in(
+        &self,
+        m: &Mbuf,
+        af: i32,
+        hlen: i32,
+        seclevel: Option<&IpsecLevel>,
+    ) -> Result<(), SpdError> {
+        use crate::netinet::ip_spd::SpdError as BsdSpdError;
+        if crate::netinet::ip_ipsp::IPSEC_IN_USE.load(core::sync::atomic::Ordering::Relaxed) == 0 {
+            return Ok(());
+        }
+        match crate::netinet::ipsec_input::ipsec_input_check(m, hlen, af, seclevel) {
+            Ok(()) => Ok(()),
+            Err(BsdSpdError::Drop) => Err(SpdError::Drop),
+            Err(BsdSpdError::Errno(e)) => Err(SpdError::Errno(e)),
+        }
+    }
+
+    /// `gettdbbysrcdst(rdomain, 0, src, dst, IPPROTO_TCP)` for the kernel's TCP_SIGNATURE
+    /// (N6.6a0): the unions taken whole, the lookup's reference in the `TdbRef`.
+    fn tcp_signature_tdb(
+        &self,
+        rdomain: u32,
+        src: &[u8; kernel::net::ipsec_hooks::SOCKADDR_UNION_LEN],
+        dst: &[u8; kernel::net::ipsec_hooks::SOCKADDR_UNION_LEN],
+    ) -> Option<TdbRef> {
+        let union_of = |b: &[u8; kernel::net::ipsec_hooks::SOCKADDR_UNION_LEN]| {
+            let mut su = crate::netinet::ip_ipsp::SockaddrUnion::new();
+            *su.as_bytes_mut() = *b;
+            su
+        };
+        crate::netinet::ip_ipsp::gettdbbysrcdst(
+            rdomain,
+            0,
+            &union_of(src),
+            &union_of(dst),
+            crate::netinet::in_::IPPROTO_TCP as u8,
+        )
+        .map(|t| TdbRef::new(tdb_key(), t))
+    }
+
+    /// The SA's MD5 key lent to `f` (`tcp_signature`'s), the `TdbRef` keeping the SA.
+    fn tdb_amxkey(&self, tdb: &TdbRef, f: &mut dyn FnMut(&[u8])) {
+        crate::netinet::tcp_subr::tdb_amxkey_lend(tdb, f);
     }
 
     fn init(&self) {

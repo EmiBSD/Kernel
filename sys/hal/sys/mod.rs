@@ -94,6 +94,10 @@ pub mod netinet_ip_var;
 #[forbid(unsafe_code)]
 pub mod netinet_tcp;
 #[forbid(unsafe_code)]
+pub mod netinet_tcp_fsm;
+#[forbid(unsafe_code)]
+pub mod netinet_tcp_var;
+#[forbid(unsafe_code)]
 pub mod netinet_udp;
 /// `<sys/param.h>`'s page size for the headers moved here (`ioccom.h`'s `IOCPARM_MAX`): the
 /// machine's (`<machine/param.h>`), so `crate::sys::param::PAGE_SIZE` names the same constant in

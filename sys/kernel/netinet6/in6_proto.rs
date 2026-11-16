@@ -300,11 +300,6 @@ impl<G: ProcGlue> Domain<G> for Inet6Domain<G> {
     fn protocols(&self) -> &'static [&'static dyn Protocol<G>] {
         inet6sw::<G>()
     }
-    /// The IPv6 sockets' protocols are `bsd`'s (TCP, UDP, raw IPv6, divert, until N6.6): the
-    /// kernel holds their sockets by a detached holding of `so_lock`.
-    fn legacy(&self) -> bool {
-        true
-    }
     fn sasize(&self) -> u32 {
         size_of::<SockaddrIn6>() as u32
     }
@@ -385,6 +380,10 @@ impl<G: ProcGlue> Protocol<G> for Icmp6Protocol<G> {
     }
     fn usrreqs(&self) -> Option<&'static dyn Usrreqs<G>> {
         raw6_protocol::<G>()?.usrreqs()
+    }
+    /// The raw IPv6 entry's: an ICMPv6 socket is a raw socket served by its requests.
+    fn legacy(&self) -> bool {
+        raw6_protocol::<G>().is_some_and(Protocol::legacy)
     }
     fn ctlinput(&self, cmd: i32, sa: SockaddrView<'_>, rdomain: u32, arg: CtlArg<'_>) {
         if let Some(r) = raw6_protocol::<G>() {
@@ -830,7 +829,8 @@ mod tests {
         let dom = &Inet6Domain::<G>::NEW;
         assert_eq!((dom.family(), dom.name()), (i32::from(AF_INET6), "inet6"));
         assert_eq!((dom.sasize(), dom.rtoffset(), dom.maxplen()), (28, 8, 128));
-        assert!(dom.legacy() && dom.rights().is_none());
+        assert!(dom.rights().is_none());
+        assert_eq!(icmp6.legacy(), RAW6.legacy(), "the raw entry's");
         assert_eq!(dom.protocols().len(), SW6.len());
         for pr in [ip6 as &dyn Protocol<G>, icmp6, dest6, route6, frag6] {
             assert_eq!(pr.domain().family(), i32::from(AF_INET6));

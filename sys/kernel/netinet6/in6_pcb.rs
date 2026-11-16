@@ -197,10 +197,11 @@ use crate::net::pf_hooks::{PF_DIVERT_REPLY, PF_DIVERT_TO, pf};
 use crate::net::proto::{PRC_HOSTDEAD, PRC_NCMDS, prc_is_redirect};
 use crate::net::route::Rtentry;
 use crate::net::rtable::rtable_l2;
+use crate::net::socket::SoLocked;
 use crate::netinet::in_pcb::{
     Addr6, INP_IPV6, INPLOOKUP_IPV6, INPLOOKUP_WILDCARD, InpGuard, Inpaddru, Inpcb, InpcbRef,
     Inpcbtable, hash_chain_find, in_pcb_iterator, in_pcbbind_locked, in_pcblookup_local,
-    in_pcbrehash, in_pcbrtchange, in_pcbsolock, in_pcbsounlock,
+    in_pcbrehash, in_pcbrtchange, in_pcbsolock,
 };
 use crate::netinet6::in6::in6_nam2sin6;
 use crate::netinet6::in6_src::{in6_embedscope, in6_pcbselsrc, in6_recoverscope, in6_selecthlim};
@@ -211,9 +212,9 @@ use crate::netinet6::ip6_output::ro_sin6;
 use crate::netinet6::ip6_var::Ip6Pktopts;
 use crate::proc::{ProcGlue, Thread};
 
-/// `in6_pcbnotify`'s notify function: called on each pcb that matches, with the error the
-/// command maps to (`inet6ctlerrmap`).
-pub type In6PcbNotify<'a, G> = dyn FnMut(&Inpcb<G>, Option<Errno>) + 'a;
+/// `in6_pcbnotify`'s notify function: called on each pcb that matches, its socket locked
+/// (the witness lent), with the error the command maps to (`inet6ctlerrmap`).
+pub type In6PcbNotify<'a, G> = dyn FnMut(&Inpcb<G>, &mut SoLocked<'_>, Option<Errno>) + 'a;
 
 /// `zeroin6_addr`: the unspecified address.
 pub static ZEROIN6_ADDR: In6Addr = In6Addr { s6_addr: [0; 16] };
@@ -491,8 +492,8 @@ pub fn in6_setpeeraddr<G: ProcGlue>(inp: &Inpcb<G>) -> SockaddrIn6 {
 /// indications go to every reference to the destination (`in_pcbrtchange` invalidates the
 /// route cache of redirected ones). The caller must filter any cmds that are uninteresting
 /// (e.g., no error in the map). `notify` reports the errno of `inet6ctlerrmap` to each
-/// matching socket, with the socket locked; the C's `cmdarg`, which it does not use, is not
-/// taken.
+/// matching socket, with the socket locked (`in_pcbsolock` under the caller's net lock,
+/// `net`); the C's `cmdarg`, which it does not use, is not taken.
 #[allow(clippy::too_many_arguments, reason = "the C's signature")]
 pub fn in6_pcbnotify<G: ProcGlue>(
     table: &Inpcbtable<G>,
@@ -502,6 +503,7 @@ pub fn in6_pcbnotify<G: ProcGlue>(
     lport_arg: u32,
     rtable: u32,
     cmd: i32,
+    net: &NetHeld<'_>,
     notify: Option<&mut In6PcbNotify<'_, G>>,
 ) {
     let mut fport = fport_arg as u16;
@@ -537,7 +539,8 @@ pub fn in6_pcbnotify<G: ProcGlue>(
         sa6_src.sin6_addr = IN6ADDR_ANY;
     }
     let errno = INET6CTLERRMAP[cmd as usize];
-    let mut rtchange_fn = in_pcbrtchange::<G>;
+    let mut rtchange_fn =
+        |inp: &Inpcb<G>, _w: &mut SoLocked<'_>, e: Option<Errno>| in_pcbrtchange::<G>(inp, e);
     let notify: &mut In6PcbNotify<'_, G> = match notify {
         _ if rtchange => &mut rtchange_fn,
         Some(n) => n,
@@ -582,11 +585,11 @@ pub fn in6_pcbnotify<G: ProcGlue>(
         }
 
         drop(g);
-        let so = in_pcbsolock(&i);
-        if so.is_some() && (by_addr || cached_route_to(&i, &dst.sin6_addr)) {
-            notify(&i, errno);
+        if let Some(mut w) = in_pcbsolock(&i, net)
+            && (by_addr || cached_route_to(&i, &dst.sin6_addr))
+        {
+            notify(&i, &mut w, errno);
         }
-        in_pcbsounlock(Some(&i), so);
         g = table.lock();
         inp = Some(i);
     }
@@ -954,11 +957,14 @@ mod tests {
         // The errors of a command about `dst`, as a softnet's ctlinput (the shared net lock).
         let notify = |cmd: i32, dst: In6Addr| -> Vec<Option<Errno>> {
             let mut got = Vec::new();
-            let mut record = |inp: &Inpcb<Tg>, e: Option<Errno>| {
-                assert!(core::ptr::eq(inp, &*a), "the connection to {dst:?}");
+            let mut locked = true;
+            let mut record = |inp: &Inpcb<Tg>, w: &mut SoLocked<'_>, e: Option<Errno>| {
+                // A kernel protocol's socket (the test's): its so_lock witness, the parts.
+                locked &= core::ptr::eq(inp, &*a) && w.inet().is_some();
                 got.push(e);
             };
-            let _r = NETLOCK.read();
+            let r = NETLOCK.read();
+            let net = NetHeld::of(&r).expect("the net lock's witness");
             in6_pcbnotify(
                 table,
                 &SockaddrIn6::with_addr(dst),
@@ -967,8 +973,12 @@ mod tests {
                 u32::from(htons(1000)),
                 0,
                 cmd,
+                &net,
                 Some(&mut record),
             );
+            drop(net);
+            drop(r);
+            assert!(locked, "the connection to {dst:?}, locked by a witness");
             got
         };
         assert_eq!(notify(PRC_MSGSIZE, f), [Some(Errno::EMSGSIZE)]);

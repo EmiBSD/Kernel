@@ -469,7 +469,7 @@ pub fn tcp_output(tp: &'static Tcpcb) -> Result<(), Errno> {
             let maxseg = i64::from(tp.t_maxseg.get());
             // `inp_options` and `inp_outputopts6` (one union slot in C, two members here).
             if TCP_DO_TSO.load(Ordering::Relaxed) != 0
-                && inp.options().is_none()
+                && !inp.has_options()
                 && !inp.has_outputopts6()
                 && !tp.has_flags(TF_SIGNATURE)
                 && len >= 2 * maxseg
@@ -1026,7 +1026,10 @@ pub fn tcp_output(tp: &'static Tcpcb) -> Result<(), Errno> {
                 };
 
                 let mut sig = [0u8; 16];
-                if !tcp_signature(tdb, tp.pf.get(), m, &th, iphlen, false, &mut sig) {
+                // The lookup's reference, lent as the counted handle the key's lend takes;
+                // given back by `tdb_unref(Some(tdb))` below.
+                let t = kernel::net::ipsec_hooks::TdbRef::new(crate::net::if_enc::tdb_key(), tdb);
+                if !tcp_signature(&t, tp.pf.get(), m, &th, iphlen, false, &mut sig) {
                     m_freem(m);
                     tdb_unref(Some(tdb));
                     return Err(Errno::EINVAL);
@@ -1201,9 +1204,10 @@ pub fn tcp_output(tp: &'static Tcpcb) -> Result<(), Errno> {
                 ip.ip_tos |= IPTOS_ECN_ECT0;
             }
             mtod_ip_store(m, &ip);
+            let opts = inp.options();
             ip_output(
                 m,
-                inp.options(),
+                opts.as_deref(),
                 Some(&mut *inp.route()),
                 if ip_mtudisc.load(Ordering::Relaxed) != 0 {
                     IP_MTUDISC

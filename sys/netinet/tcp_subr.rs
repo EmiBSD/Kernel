@@ -1319,7 +1319,7 @@ fn tcphdr_bytes(th: &Tcphdr) -> [u8; 20] {
 /// `doswap` the header's sequence numbers, window and urgent pointer are in host order and
 /// are swapped back first.
 pub fn tcp_signature(
-    tdb: &Tdb,
+    tdb: &kernel::net::ipsec_hooks::TdbRef,
     af: i32,
     m: &Mbuf,
     th: &Tcphdr,
@@ -1395,11 +1395,30 @@ pub fn tcp_signature(
         return false;
     }
 
-    // SAFETY: the caller holds the TDB, whose key lives until its `xf_zeroize`.
-    ctx.update(unsafe { tdb.tdb_amxkey() });
+    tdb_amxkey_lend(tdb, &mut |key| ctx.update(key));
     *sig = ctx.finalize();
 
     true
+}
+
+/// The SA's authentication key (`tdb->tdb_amxkey`, `tdb_amxkeylen` bytes) lent to `f`
+/// (`tcp_signature`'s `MD5Update`, here and in the kernel's TCP through the `Ipsec` leg),
+/// never copied out by this function. `tdb` is a counted reference of the SA (a
+/// `kernel::net::ipsec_hooks::TdbRef`), borrowed for the call.
+pub(crate) fn tdb_amxkey_lend(tdb: &kernel::net::ipsec_hooks::TdbRef, f: &mut dyn FnMut(&[u8])) {
+    let sa = crate::net::if_enc::tdb_of(tdb);
+    // SAFETY: `tdb_amxkey`'s contract is that the key is not freed while the slice lives;
+    // the key is freed only by the transform's `xf_zeroize`, which only `tdb_free` calls
+    // (sys/netinet/ip_ipsp.rs:2785-2789), which only the last `tdb_unref` calls (:2714-2721,
+    // the C's ip_ipsp.c:1045-1052 and :1112-1118). `tdb` is a `TdbRef`: one value per
+    // reference a lookup took (it is neither `Copy` nor `Clone`, and only the holder of the
+    // registration's `TdbKey`, `bsd`'s legs and this file's callers wrapping their own
+    // lookup's reference, can make one: sys/kernel/net/ipsec_hooks.rs, `TdbRef::new`), given
+    // back only by value (`Ipsec::tdb_unref`, or the caller's own `tdb_unref` after the
+    // borrow ends). This function borrows it for its whole body, so that reference is still
+    // counted when `f` returns: the last `tdb_unref`, and with it the key's free, cannot have
+    // run, and the slice stays valid for `f`.
+    f(unsafe { sa.tdb_amxkey() });
 }
 /* </CODE> */
 

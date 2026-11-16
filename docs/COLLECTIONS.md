@@ -205,6 +205,7 @@ Orders of the C's algorithms the `hal` types wrap (`subr_pool.c`, `kern_malloc.c
 |---|---|---|
 | `TypedPool::get_shared`, `get_homed`, `BoxPool::get`, `get_idle`, `get_linked` | `pool_get` | O(1) amortized: the per-CPU cache or the page's free list; a page grow when empty (`pool_allocator`, O(items per page) to carve it) |
 | drop of a `PoolBox`, the last `PoolArc` | `pool_put` | O(1) amortized; a page release when it empties |
+| `TypedPool::set_hardlimit`, `BoxPool::set_hardlimit` (N6.6a0) | `pool_sethardlimit` | O(1): the pool's lock pair and one compare with `pr_nout` |
 | `PoolArc::from_ref`, `try_from_ref`, `clone`, `count`, `ptr_eq`, `try_last`, `get_mut`, `erase`, `leak`, `as_pin`, `as_ptr` | the refcount | O(1), one atomic |
 | `PoolBox::leak`, `as_pin`, `as_ptr`, `ptr_eq` | | O(1) |
 | `StaticArena::extend`, `init_arena` | | O(N) once, at init |
@@ -233,6 +234,8 @@ Orders of the C's algorithms the `hal` types wrap (`subr_pool.c`, `kern_malloc.c
 | `SyncLink::get`, `set`, `replace`, `addr`, `is_none`, `points_to` | O(1): one atomic load, store or swap (`fd_cdir`, `fd_rdir`, `s_ttyvp`) |
 | `SaWords::read` (a record's own socket address copied, N6.5e) | O(1): at most four relaxed loads (`SA_READ_MAX` bytes) |
 | `Guarded::new_net` (a net cell, N6.5e), its `get`, `get_mut` | O(1): `const` to make; an access is one key compare, as every `Guarded`'s |
+| `LoanSlot::update`, `replace`, `take` (a value lent out and put back, never shared: `inp_options`, N6.6a0) | O(1): one compare-and-swap in and one store out (the `ReadMostly` writer's claim), spinning while another user holds it; no readers |
+| `ExclGuarded::get`, `get_mut` (a `Guarded` of a `Send`-only value, opened by exclusive witnesses only, N6.6a0) | O(1): the key compare of every `Guarded` |
 | `IfaList::first`, `IfaList::next`, `IfaList::iter` a step (an interface's addresses, N6.5e) | O(1): the cell's key compare, the handle's arm, one load |
 | `IfaList::insert_tail`, `IfaList::remove` (`ifa_add`, `ifa_del`) | O(n): a walk to the last address or to the predecessor, one handle clone and drop for that one's cell (the C's `TAILQ` is O(1); control paths only, D-4) |
 | `IfaList::for_each_safe` (`TAILQ_FOREACH_SAFE`) | O(1) a step plus a reader made and two handle clones (the current and the next) per step, so that the body may take the writer |
@@ -243,6 +246,7 @@ Orders of the C's algorithms the `hal` types wrap (`subr_pool.c`, `kern_malloc.c
 | `NetHeld::writer` and its drop (`NET_ASSERT_LOCKED_EXCLUSIVE()`) | O(1): one load of the lock word, one uncontended relaxed compare-and-swap; one relaxed store at the drop |
 | `SaToken::lend_net` and the drop of its `NetLend` (`bsd`'s `NET_ASSERT_LOCKED()` before a call into the kernel, N6.5e) | O(1): one load of the lock word; on the write holding one uncontended read-modify-write of the lend count, and one at the drop; on a read holding a compare-and-swap of the lock word (the joined share, which every reader writes: contended), and one at the drop (`rw_exit_read`). A pair the C lacks, per `bsd` call; per packet on `bsd`'s TCP/UDP/raw output and divert (until N6.6), pf's route-to and `rtalloc`, IP-in-IP and wg(4) (until N8): the list in `sys/hal/netlock.rs`'s notes |
 | A write witness's release (`WriteWitness` drop, sleeps, `unlocked`, `downgrade`) | the lock's own, plus one address compare (the net lock's lend and borrow checks, two relaxed loads, for `NETLOCK` alone) |
+| `DetachableRwlock::detach`, `attach` (a witness given up for a detached holding and taken back, N6.6a0), `enter_write_detached`, `exit_write_detached` | O(1): one store (`detach`) or one compare-and-swap (`attach`, the exits) of the detached word, on the lock's line, beside the lock's own enter or exit; `attach` never waits |
 
 ## `alloc` in the `kernel` crate (six sites, test code apart)
 

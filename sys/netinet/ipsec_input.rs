@@ -1417,6 +1417,23 @@ fn tagged_tdb(m: &Mbuf) -> Option<&'static Tdb> {
     gettdb(tdbi.rdomain, tdbi.spi, &tdbi.dst, tdbi.proto)
 }
 
+/// The `#ifdef IPSEC` block of `tcp_input` and `udp_input` (the kernel's `Ipsec` leg,
+/// N6.6a0): the inbound policy check of a segment against the inner-most IPsec SA it went
+/// through and the socket's levels (`seclevel`, `None` without a pcb); the caller checks
+/// `ipsec_in_use` first.
+pub fn ipsec_input_check(
+    m: &Mbuf,
+    hlen: i32,
+    af: i32,
+    seclevel: Option<&crate::netinet::ip_ipsp::IpsecLevel>,
+) -> Result<(), SpdError> {
+    let tdb = tagged_tdb(m);
+    let error = ipsp_spd_lookup(m, af, hlen, IPSP_DIRECTION_IN, tdb, seclevel, None, None);
+    tdb_unref(tdb);
+
+    error
+}
+
 /// `ipsec_forward_check`: IPsec policy check for forwarded packets. Look at inner-most IPsec
 /// SA used.
 pub fn ipsec_forward_check(m: &Mbuf, hlen: i32, af: i32) -> Result<(), SpdError> {

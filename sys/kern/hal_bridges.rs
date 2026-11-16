@@ -53,7 +53,8 @@ use hal::prf::Printf;
 use crate::dev::cons::{cngetc, cnpollc, cnputc};
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::subr_pool::{
-    pool_cache_init, pool_get, pool_get_idle, pool_init, pool_put, pool_sethiwat, pool_wakeup,
+    pool_cache_init, pool_get, pool_get_idle, pool_init, pool_put, pool_sethardlimit,
+    pool_sethiwat, pool_wakeup,
 };
 use crate::kern::subr_prf::printf;
 use crate::sys::pool::Pool;
@@ -90,6 +91,10 @@ impl RawPool for Pool {
 
     fn set_hiwat(&self, n: u32) {
         pool_sethiwat(self, n);
+    }
+
+    fn set_hardlimit(&self, n: u32) -> Result<(), crate::sys::errno::Errno> {
+        pool_sethardlimit(self, n)
     }
 
     fn cache_init(&self) {
@@ -302,6 +307,10 @@ struct BsdRandom;
 impl hal::pmap::Random for BsdRandom {
     fn random_u32(&self) -> u32 {
         crate::dev::rnd::arc4random()
+    }
+
+    fn random_buf(&self, buf: &mut [u8]) {
+        crate::dev::rnd::arc4random_buf(buf);
     }
 
     fn enqueue_randomness(&self, val: u32) {

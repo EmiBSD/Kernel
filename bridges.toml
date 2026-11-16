@@ -47,6 +47,8 @@ paid_by = "N7"
 # TypedPool so vmstat -m lists it; safe traits (PoolBackend, RawPool), the same boot contract.
 # N6.0: create_with with a PageSource, the pa_alloc/pa_free half of pool_allocator as a safe
 # trait the kernel implements (N6.1's MbufPages), over subr_pool.rs's POOL_ALLOCATOR_SOURCE.
+# N6.6a0: pool_sethardlimit (RawPool::set_hardlimit, EINVAL below the items out; TCP's "tcpqe"
+# and "sackhl" limits and net.inet.tcp.reasslimit/sackholelimit, from 6a2).
 # hal::pool::PoolBackend
 [[bridge]]
 trait = "PoolBackend"
@@ -169,7 +171,9 @@ paid_by = "N10"
 # and, N3.5 S1, hal::random's arc4random/arc4random_uniform (the kernel map's randomisation),
 # implemented by sys/kern/hal_bridges.rs (BsdRandom). N4.7b: enqueue_randomness (the terminal's
 # every input character, tty.c's ttyinput), hal::random::enqueue_randomness; N4.8a: kernel::tc's
-# (the new counter's first readings, the clock steps).
+# (the new counter's first readings, the clock steps). N6.6a0: random_buf (rnd.c's
+# arc4random_buf, one lock pair for the buffer), hal::random::arc4random_buf, for TCP's ISS
+# secret and the SYN cache's hash seeds (from 6a2).
 # hal::pmap::Random
 [[bridge]]
 trait = "Random"
@@ -393,7 +397,12 @@ paid_by = "N8"
 # N6.4c1 find_divert, inp_remove_divert_state and inp_unlink, N6.4c2 ouraddr and ip_input.c's
 # pf_test and pf_find_divert; N6.5c ip6_output.c's pf_test, N6.5d ip6_input.c's (pf_test,
 # ouraddr), ip6_forward.c's (pf_test in the forward direction) and icmp6.c's
-# (pkt_addr_changed). Paid when pf moves (N8).
+# (pkt_addr_changed). N6.6a0, for the kernel's TCP (its callers from N6.6a3/a4): inp_lookup
+# (pf_inp_lookup: pf's count turned into an erased kernel handle, AnyArc), inp_link
+# (pf_inp_link) and mbuf_link_inpcb_of (pf_mbuf_link_inpcb), the kernel's pcb erased as
+# &(dyn Any + Sync) (the trait is not generic over the glue); bsd keeps its legacy counts of
+# the pcb for sk_inp and pkthdr_pf.inp until pf moves (docs/SCAFFOLDING.md). Paid when pf
+# moves (N8).
 # kernel::net::pf_hooks::Pf
 [[bridge]]
 trait = "Pf"
@@ -497,7 +506,10 @@ paid_by = "N7"
 # Inet6Tables), the last of the IPv6 legs but ip6_randomid (N8).
 # Registered by bsd's boot before the first interface (N6.3a1's
 # adapter commit); before that every leg does nothing, the C without INET/INET6.
-# N6.4 takes the IPv4 legs, N6.5 the IPv6 ones, N6.6a tcp_input_mlist; the row goes at N6.6b.
+# N6.4 takes the IPv4 legs, N6.5 the IPv6 ones; N6.6a takes tcp_input_mlist (6a5),
+# tcpstat_lro, tcp_if_output_tso and proto_outswcsum's TCP half (6a1); N6.6b UDP's half of
+# proto_outswcsum. ip6_randomid stays until crypto's idgen moves (N8), so the row is not paid
+# at N6.6b as once planned (N6.6a's inventory, G).
 # with_net_held outlives it: at N6.6b it moves onto the NetDriver bridge (the interface whose
 # output lost the proof lends it; bsd's wrappers then make theirs with net_held), and it goes
 # with that bridge's output reshaped to carry the proof (N7), as docs/SCAFFOLDING.md's row says.
@@ -505,7 +517,7 @@ paid_by = "N7"
 [[bridge]]
 trait = "Inet"
 for = ["sys/kernel/net/if_.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet6/nd6.rs", "sys/kernel/netinet6/ip6_output.rs"]
-paid_by = "N6"
+paid_by = "N8"
 
 # bsd: what the kernel's network code asks of IPsec (N8): enc_getifa for rtsock.c's
 # rtm_getifa (the enc(4) address a route to a PF_KEY destination uses, #ifdef IPSEC; N6.5e: a
@@ -525,6 +537,12 @@ paid_by = "N6"
 # sys/netinet6/ip6_output.rs, D-18; N6.5d's ip6_forward calls the same two).
 # N6.5d: ip6_input.c's #ifdef IPSEC point (forward_check of ip6_input_if) and ip6_forward.c's
 # (the two output legs above).
+# N6.6a0, for the kernel's TCP (its callers from N6.6a2/a4): spd_check_in (tcp_input's #ifdef
+# IPSEC block: ipsec_in_use, then sys/netinet/ipsec_input.rs's ipsec_input_check, the inner-most
+# tag's gettdb, ipsp_spd_lookup in, tdb_unref; UDP's at N6.6b), tcp_signature_tdb
+# (gettdbbysrcdst over two whole sockaddr_unions, IPPROTO_TCP) and tdb_amxkey (the SA's MD5 key
+# lent to a closure by sys/netinet/tcp_subr.rs's tdb_amxkey_lend, never copied out; the
+# TCP_SIGNATURE xform's five functions stay bsd's, D-10).
 # kernel::net::ipsec_hooks::Ipsec
 [[bridge]]
 trait = "Ipsec"

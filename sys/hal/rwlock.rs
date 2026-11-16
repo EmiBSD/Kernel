@@ -783,6 +783,34 @@ impl DetachableRwlock {
         self.detached.store(w.me, Ordering::Release);
     }
 
+    /// The running process's detached holding taken back as a witness, the inverse of
+    /// [`DetachableRwlock::detach`]: the lock stays held, by the running process, and is now
+    /// released by the witness (its drop, or `detach` again). For a lock kept across calls
+    /// and opened again in each (`tcp_input_mlist`'s socket over a run of segments of one
+    /// connection; `sonewconn`'s socket, returned locked detached, then held by a caller
+    /// that keys cells to it). One compare-and-swap, no wait. `panic(9)` when the running
+    /// process holds no detached holding of this lock (not held, held by another process,
+    /// held through a witness, or attached already).
+    ///
+    /// At most one witness: the swap clears `detached`, so a second `attach` finds it 0 and
+    /// panics; a witness made by the lock itself or by `attach` never sets it (the type's
+    /// invariant), so `attach` cannot run beside one.
+    pub fn attach(&self) -> WriteWitness<'_> {
+        let me = rw_self();
+        if self
+            .detached
+            .compare_exchange(me, 0, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            self.lock.panic(format_args!(
+                "attach when not held detached by this process"
+            ));
+        }
+        // `detached` was `me`: by the invariant the running process holds the lock for
+        // writing, with `me` the writer word in the lock's word, which the witness releases.
+        WriteWitness::new(&self.lock, me)
+    }
+
     /// `rwsleep_nsec(ident, lock, prio, wmesg, nsecs)` of the running process's detached
     /// holding: queued on `ident`, released, asleep, then taken again detached before the
     /// sleep's result is returned. `panic(9)` without such a holding.
@@ -1711,6 +1739,75 @@ fn another_part(p: u8, cell: u8) -> ! {
 // once (`T: Sync`) and the one writer, on any CPU, write it, moving it out included (`T:
 // Send`); the type's invariant keeps the writer and the readers apart, as `Rwlocked`'s.
 unsafe impl<T: Send + Sync> Sync for Guarded<T> {}
+
+/// A [`Guarded`] cell for a value that is `Send` but not `Sync` (an mbuf chain: the tcpcb's
+/// header template, a SYN cache entry's IP options, N6.6a2): opened, mutably or shared, only
+/// through an **exclusive** witness of its lock and part, so one thread at a time reaches the
+/// value, as through a `Mutexed`'s guard; a read witness opens nothing (it does not compile:
+/// [`Exclusive`] is sealed, implemented only by hal's exclusive witnesses). `Sync` for
+/// `T: Send` (N6.6a0, D-15's cell (c)).
+///
+/// ```compile_fail
+/// use hal::rwlock::{ExclGuarded, RawRwlock};
+/// fn main() {
+///     let l = RawRwlock::new("cell");
+///     let c = ExclGuarded::new_keyed(&l, core::cell::Cell::new(1u32));
+///     let r = l.read();
+///     let _ = c.get(&r);
+/// }
+/// ```
+pub struct ExclGuarded<T>(Guarded<T>);
+
+// SAFETY: `&ExclGuarded<T>` reaches the value only through `get` and `get_mut`, which take an
+// exclusive witness (`W: Exclusive`, a sealed trait: `WriteWitness`, `MutexedGuard`,
+// `WitnessPart`, `KernelWitness`, `SchedHold`, `NetWriter`, each held by one thread at a time
+// and not `Send`, a part borrowing its whole witness) and check, through `Guarded::get` or
+// `Guarded::get_mut`, that it opens this cell (its lock and part). At any moment at most one
+// such witness exists for the cell's lock and part, held by one thread; every reference into
+// the value borrows that witness, so all live references into it are on that one thread: no
+// `&T` is shared between threads, and `T: Sync` is not needed. The value may be reached from
+// a different thread at a different time, and moved out there (`get_mut` and `mem::replace`),
+// which is moving a `T` between threads: `T: Send`. The inner `Guarded`'s own invariant (no
+// `&mut` beside a `&`) holds for the same reason as for any `Guarded`.
+unsafe impl<T: Send> Sync for ExclGuarded<T> {}
+
+impl<T> ExclGuarded<T> {
+    /// `value`, kept under the lock whose identity is `id`, in `part` (`0..WITNESS_PARTS`; a
+    /// part past it is `panic(9)`), as [`Guarded::keyed`].
+    pub fn keyed(id: LockId, part: u8, value: T) -> Self {
+        Self(Guarded::keyed(id, part, value))
+    }
+
+    /// `value`, kept under `lock` (part 0), as [`Guarded::new_keyed`].
+    pub fn new_keyed(lock: &RawRwlock, value: T) -> Self {
+        Self(Guarded::new_keyed(lock, value))
+    }
+
+    /// The value, shared, for the holder of `w`, an exclusive witness that opens the cell;
+    /// any other is `panic(9)` ([`Guarded::get`]'s check).
+    #[inline]
+    pub fn get<'a, W: Exclusive + ?Sized>(&'a self, w: &'a W) -> &'a T {
+        self.0.get(w)
+    }
+
+    /// The value, mutably, for the holder of `w`, an exclusive witness that opens the cell;
+    /// any other is `panic(9)` ([`Guarded::get_mut`]).
+    #[inline]
+    pub fn get_mut<'a, W: Exclusive + ?Sized>(&'a self, w: &'a mut W) -> &'a mut T {
+        self.0.get_mut(w)
+    }
+
+    /// The value, through the exclusive reference to the cell (its maker's, before it is
+    /// shared, or its last user's).
+    pub fn get_mut_owned(&mut self) -> &mut T {
+        self.0.get_mut_owned()
+    }
+
+    /// The value, consuming the cell.
+    pub fn into_inner(self) -> T {
+        self.0.into_inner()
+    }
+}
 
 /// `rwlock_obj_pool`: the lock objects, made by [`init_shared`].
 static RWOBJ_POOL: TypedPool<RawRwlock> = TypedPool::new();
@@ -3103,6 +3200,7 @@ mod tests {
     }
     #[test]
     fn a_detached_holding_excludes_witnesses_and_ends_where_it_is_released() {
+        testutil::install();
         let l = DetachableRwlock::new("split");
         assert!(!l.held_detached());
         l.enter_write_detached();
@@ -3134,6 +3232,121 @@ mod tests {
         let l = DetachableRwlock::new("split");
         let w = l.lock().write();
         let _w = std::mem::ManuallyDrop::new(w);
+        l.exit_write_detached();
+    }
+
+    #[test]
+    fn a_detached_holding_attached_opens_the_cells_and_detaches_again() {
+        testutil::install();
+        let l = DetachableRwlock::new("split");
+        let cell = Guarded::keyed(l.lock().id(), 1, 7u32);
+        l.enter_write_detached();
+        let mut w = l.attach();
+        assert!(!l.held_detached());
+        assert_eq!(l.lock().status(), RW_WRITE);
+        {
+            let [_p0, mut p1] = w.split::<2>();
+            *cell.get_mut(&mut p1) += 1;
+        }
+        // Kept across a "call": detached, then attached again.
+        l.detach(w);
+        assert!(l.held_detached());
+        let mut w = l.attach();
+        {
+            let [_p0, p1] = w.split::<2>();
+            assert_eq!(*cell.get(&p1), 8);
+        }
+        drop(w);
+        assert_eq!(l.lock().status(), 0);
+        assert!(l.lock().try_write().is_some());
+    }
+
+    #[test]
+    #[should_panic(expected = "attach when not held detached")]
+    fn attach_without_a_detached_holding_panics() {
+        testutil::install();
+        let l = DetachableRwlock::new("split");
+        let _w = l.attach();
+    }
+
+    #[test]
+    #[should_panic(expected = "attach when not held detached")]
+    fn attach_beside_a_witness_panics() {
+        testutil::install();
+        let l = DetachableRwlock::new("split");
+        let w = l.lock().write();
+        let _w = std::mem::ManuallyDrop::new(w);
+        let _a = l.attach();
+    }
+
+    #[test]
+    #[should_panic(expected = "attach when not held detached")]
+    fn a_second_attach_panics() {
+        testutil::install();
+        let l = DetachableRwlock::new("split");
+        l.enter_write_detached();
+        let w = l.attach();
+        let _w = std::mem::ManuallyDrop::new(w);
+        let _a = l.attach();
+    }
+
+    #[test]
+    fn an_excl_cell_holds_a_send_only_value_opened_by_exclusive_witnesses() {
+        fn is_sync<T: Sync>() {}
+        // A `Cell` is `Send`, not `Sync`: the cell is `Sync` all the same.
+        is_sync::<ExclGuarded<core::cell::Cell<u32>>>();
+        testutil::install();
+        let l = RawRwlock::new("excl");
+        let a = ExclGuarded::keyed(l.id(), 1, core::cell::Cell::new(1u32));
+        let b = ExclGuarded::keyed(l.id(), 2, std::vec![1u8]);
+        let mut w = l.write();
+        a.get(&w).set(2);
+        {
+            let [_p0, mut p1, mut p2] = w.split::<3>();
+            a.get_mut(&mut p1).set(3);
+            b.get_mut(&mut p2).push(2);
+            assert_eq!(a.get(&p1).get(), 3);
+        }
+        assert_eq!(b.get(&w).as_slice(), [1, 2]);
+        drop(w);
+        // Another thread, another time: the value is reached there under its own witness.
+        thread::scope(|s| {
+            s.spawn(|| {
+                testutil::install();
+                let w = l.write();
+                a.get(&w).set(4);
+            });
+        });
+        let w = l.write();
+        assert_eq!(a.get(&w).get(), 4);
+    }
+
+    #[test]
+    #[should_panic(expected = "a witness of another lock")]
+    fn an_excl_cell_refuses_another_lock_s_witness() {
+        testutil::install();
+        let l = RawRwlock::new("excl");
+        let other = RawRwlock::new("other");
+        let a = ExclGuarded::new_keyed(&l, 1u32);
+        let w = other.write();
+        let _ = a.get(&w);
+    }
+
+    #[test]
+    fn attach_of_another_process_holding_panics() {
+        testutil::install();
+        let l = DetachableRwlock::new("split");
+        l.enter_write_detached();
+        std::thread::scope(|s| {
+            let r = s
+                .spawn(|| {
+                    testutil::install();
+                    let _w = l.attach();
+                })
+                .join();
+            assert!(r.is_err());
+        });
+        assert!(l.held_detached());
         l.exit_write_detached();
     }
 }

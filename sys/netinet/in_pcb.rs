@@ -178,7 +178,6 @@ use kernel::netinet::in_pcb as k;
 
 use crate::kern::proc_glue::BsdProcGlue;
 use crate::kern::subr_prf::panic;
-use crate::kern::uipc_mbuf::m_freem;
 use crate::net::if_::net_held;
 use crate::net::route::{Rtentry, as_static};
 use crate::net::toeplitz::stoeplitz_ip4port;
@@ -190,7 +189,7 @@ use crate::netinet6::in6_pcb::{
     in6_pcb_newflow, in6_pcbset_addr, in6_setpeeraddr, in6_setsockaddr,
 };
 use crate::sys::errno::Errno;
-use crate::sys::mbuf::{Mbuf, mtod, of_parked};
+use crate::sys::mbuf::{Mbuf, mtod, park, unpark};
 use crate::sys::proc::Proc;
 use crate::sys::socket::AF_INET;
 #[cfg(feature = "inet6")]
@@ -332,9 +331,14 @@ pub fn in_pcballoc(
 
 /// The members `bsd` keeps in the kernel's pcb (its words), read and written here.
 pub trait InpcbLegacy {
-    /// `inp->inp_options`: the IPv4 options, a parked mbuf chain.
-    fn options(&self) -> Option<&'static Mbuf>;
-    /// `inp->inp_options = m` (the old chain is the caller's to free).
+    /// `inp->inp_options != NULL`, under the socket lock (the kernel's loan, checked).
+    fn has_options(&self) -> bool;
+    /// `f` with `inp->inp_options` lent for the call (the transports' `ip_output` argument).
+    fn with_options<R>(&self, f: impl FnOnce(Option<&Mbuf>) -> R) -> R;
+    /// `inp->inp_options` taken out, parked for `bsd` (`NULL` left behind).
+    fn take_options(&self) -> Option<&'static Mbuf>;
+    /// `inp->inp_options = m` (a parked chain given over to the kernel's cell; an old chain,
+    /// which the C's callers never leave, is freed).
     fn set_options(&self, m: Option<&'static Mbuf>);
     /// `inp->inp_icmp6filt`'s pointer.
     fn icmp6filt_ptr(&self) -> Option<NonNull<Icmp6Filter>>;
@@ -345,13 +349,21 @@ pub trait InpcbLegacy {
 }
 
 impl InpcbLegacy for Inpcb {
-    fn options(&self) -> Option<&'static Mbuf> {
-        NonNull::new(self.inp_options.get_mut().cast::<Mbuf>()).map(of_parked)
+    fn has_options(&self) -> bool {
+        self.options().is_some()
+    }
+
+    fn with_options<R>(&self, f: impl FnOnce(Option<&Mbuf>) -> R) -> R {
+        let opts = self.options();
+        f(opts.as_deref())
+    }
+
+    fn take_options(&self) -> Option<&'static Mbuf> {
+        core::mem::take(&mut *self.options()).map(park)
     }
 
     fn set_options(&self, m: Option<&'static Mbuf>) {
-        self.inp_options
-            .set(m.map_or(ptr::null(), |m| ptr::from_ref(m).cast()));
+        drop(core::mem::replace(&mut *self.options(), m.map(unpark)));
     }
 
     fn icmp6filt_ptr(&self) -> Option<NonNull<Icmp6Filter>> {
@@ -443,31 +455,24 @@ pub fn in_pcbdisconnect(inp: &'static Inpcb) {
     }
 }
 
-/// What `in_pcbdetach` frees of `bsd`'s members of an IPv4 pcb (its options), at the C's
-/// point (an IPv6 pcb's options are the kernel's, which frees them).
-fn free_legacy_opts(inp: &Inpcb) {
-    let opts = inp.options();
-    inp.set_options(None);
-    m_freem(opts);
-}
-
 /// `in_pcbdetach`: unlinks `inp` from its socket and its table and drops the socket's
 /// reference.
 pub fn in_pcbdetach(inp: &'static Inpcb) {
     let Some(h) = hal::pool::PoolArc::from_ref(inp) else {
         panic(format_args!("in_pcbdetach: inpcb {inp:p} not a pool item"));
     };
-    k::in_pcbdetach(h, net_held("in_pcbdetach").net(), free_legacy_opts);
+    k::in_pcbdetach(h, net_held("in_pcbdetach").net());
 }
 
-/// `in_pcbsolock`: locks the socket of `inp`; `None` when it is detached.
+/// `in_pcbsolock`: locks the socket of `inp`; `None` when it is detached (the kernel's
+/// detached form: `bsd`'s protocols unlock in another function).
 pub fn in_pcbsolock(inp: &'static Inpcb) -> Option<&'static Socket> {
-    k::in_pcbsolock(inp)
+    k::in_pcbsolock_detached(inp)
 }
 
 /// `in_pcbsounlock`: unlocks what `in_pcbsolock` locked.
 pub fn in_pcbsounlock(inp: Option<&Inpcb>, so: Option<&Socket>) {
-    k::in_pcbsounlock(inp, so);
+    k::in_pcbsounlock_detached(inp, so);
 }
 
 /// `in_pcbref`: takes a reference to `inp`.
@@ -582,7 +587,10 @@ pub fn in_pcbnotifyall(
     let Some(notify) = notify else {
         return;
     };
-    k::in_pcbnotifyall(table, dst, rtable, errno, |inp, e| {
+    // The caller's net lock, proved for the walk; each matching socket locked by the kernel
+    // (a detached holding: the protocols are `bsd`'s, which need no witness).
+    let lend = net_held("in_pcbnotifyall");
+    k::in_pcbnotifyall(table, dst, rtable, errno, lend.net(), |inp, _w, e| {
         notify(inp_static(inp), e)
     });
 }
@@ -826,6 +834,104 @@ pub(crate) mod tests {
         let t: &'static Inpcbtable = Box::leak(Box::new(Inpcbtable::new()));
         in_pcbinit(t, hashsize);
         t
+    }
+
+    #[test]
+    fn pf_s_legs_link_a_kernel_pcb_to_a_packet_with_counts_of_their_own() {
+        // The Pf legs the kernel's TCP calls (N6.6a0): the outgoing packet names the pcb with
+        // pf's count (pf_mbuf_link_inpcb), unlinked with it; a packet without a state key
+        // finds no pcb (pf_inp_lookup) and links none (pf_inp_link).
+        use kernel::net::pf_hooks::Pf;
+
+        let (_g, _t, _p) = setup();
+        let t = table(16);
+        let inp = pcb(t);
+        let before = inp.legacy_count();
+        let m = crate::net::if_::tests::test_packet(&[0x45, 0, 0, 20]);
+        let legs = &crate::net::pf::BSD_PF;
+        legs.mbuf_link_inpcb_of(m, inp);
+        let linked = (m.m_pkthdr().pf.inp.get(), inp.legacy_count());
+        legs.mbuf_unlink_inpcb(&m.m_pkthdr().pf);
+        let unlinked = (m.m_pkthdr().pf.inp.get(), inp.legacy_count());
+        let found = legs.inp_lookup(m).is_none();
+        legs.inp_link(m, inp);
+        let after_link = inp.legacy_count();
+        crate::kern::uipc_mbuf::m_freem(Some(m));
+        release(inp);
+        teardown();
+        assert_eq!(linked, (ptr::from_ref(inp).addr(), before + 1));
+        assert_eq!(unlinked, (0, before));
+        assert!(found, "no state key: no pcb");
+        assert_eq!(after_link, before, "no state key: nothing linked");
+    }
+
+    #[test]
+    fn pf_s_legs_link_and_find_a_kernel_pcb_through_a_valid_state_key() {
+        // The Pf legs with a valid state key on the packet (N6.6a0's review, should-fix 2 and
+        // 3): inp_link links the key to the pcb with pf's own count and unlinks the key from
+        // the packet; inp_lookup answers that pcb as the kernel's handle, its count the
+        // handle's alone (pf's legacy count unchanged), as the C's one in_pcbref.
+        use kernel::net::pf_hooks::Pf;
+
+        use crate::net::pf::{
+            PF_STATE_KEY_PL, pf_alloc_state_key, pf_mbuf_link_state_key, pf_mbuf_statekey,
+            pf_state_key_unlink_inpcb, pf_state_key_unref,
+        };
+
+        let (_g, _t, _p) = setup();
+        crate::kern::subr_pool::pool_init(
+            &PF_STATE_KEY_PL,
+            size_of::<crate::net::pfvar_priv::PfStateKey>(),
+            64,
+            crate::machine::intr::IPL_SOFTNET,
+            0,
+            "pfstkey",
+            None,
+        );
+        let t = table(16);
+        let inp = pcb(t);
+        let before = inp.legacy_count();
+        let sk = pf_alloc_state_key(crate::sys::pool::PR_NOWAIT).expect("a state key");
+        sk.sk_removed.set(0);
+        let legs = &crate::net::pf::BSD_PF;
+
+        // pf_inp_link: the key linked to the pcb (pf's count), the packet's key let go.
+        let m = crate::net::if_::tests::test_packet(&[0x45, 0, 0, 20]);
+        pf_mbuf_link_state_key(m, sk);
+        legs.inp_link(m, inp);
+        let linked = sk.sk_inp.get().is_some_and(|i| ptr::eq(i, inp));
+        let after_link = inp.legacy_count();
+        let unlinked_from_packet = pf_mbuf_statekey(m).is_none();
+
+        // pf_inp_lookup: the pcb found through the key, one count (the handle's).
+        pf_mbuf_link_state_key(m, sk);
+        let found = legs.inp_lookup(m);
+        let same = found
+            .as_ref()
+            .and_then(|h| h.downcast_ref::<Inpcb>())
+            .is_some_and(|i| ptr::eq(i, inp));
+        let during = inp.legacy_count();
+        drop(found);
+        let after_lookup = inp.legacy_count();
+
+        // A key no longer valid: no pcb, and the key unlinked from the packet.
+        sk.sk_removed.set(1);
+        let stale = legs.inp_lookup(m).is_none() && pf_mbuf_statekey(m).is_none();
+
+        pf_state_key_unlink_inpcb(sk);
+        let after_unlink = inp.legacy_count();
+        pf_state_key_unref(Some(sk));
+        crate::kern::uipc_mbuf::m_freem(Some(m));
+        release(inp);
+        teardown();
+        assert!(linked, "inp_link: the key names the pcb");
+        assert_eq!(after_link, before + 1, "inp_link: pf's count");
+        assert!(unlinked_from_packet, "inp_link: the packet's key let go");
+        assert!(same, "inp_lookup: the linked pcb");
+        assert_eq!(during, before + 1, "inp_lookup: no legacy count of its own");
+        assert_eq!(after_lookup, before + 1);
+        assert!(stale, "a key not valid: no pcb, unlinked");
+        assert_eq!(after_unlink, before, "pf's count dropped with the link");
     }
 
     #[test]

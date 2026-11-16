@@ -26,6 +26,7 @@
 //! their LZ paths here as re-exports, for `bsd`'s importers (docs/SCAFFOLDING.md).
 
 pub use hal::sys::netinet_ip as ip;
+pub use hal::sys::netinet_tcp as tcp;
 pub use kernel::netinet::{in_cksum, in_systm, in4_cksum, inet_nat64, ip_ecn, ip_id};
 
 pub mod icmp6;
@@ -56,7 +57,6 @@ pub mod ip_var;
 pub mod ipsec_input;
 pub mod ipsec_output;
 pub mod raw_ip;
-pub mod tcp;
 pub mod tcp_debug;
 #[forbid(unsafe_code)]
 pub mod tcp_fsm;

@@ -1434,11 +1434,13 @@ pub fn nfs_timer(arg: *mut c_void) {
             } else {
                 nmp.nm_nam.get()
             };
-            let mut w = kernel::net::socket::solocked_legacy(so);
+            let lend = crate::net::if_::net_held("nfs_timer");
+            let mut w = kernel::net::socket::solocked_legacy(so, Some(lend.net()));
             let error = so
                 .usrreqs()
                 .send(so, &mut w, Some(crate::sys::mbuf::unpark(m)), nam, None);
             drop(w);
+            drop(lend);
             if let Err(error) = error {
                 if nfsignore_soerror(nmp.nm_soflags.get(), error) {
                     so.set_error(None);

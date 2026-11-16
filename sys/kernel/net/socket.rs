@@ -182,6 +182,27 @@
 //!   UNIX domain's collector as the C reads it) beside the word `bsd`'s protocols keep
 //!   (`legacy_pcb`), and the splice state a set-once box. No `Guarded` cell is keyed to two
 //!   locks (D-N6.2-U1, shape B).
+//! - N6.6a0 (D-1): the socket lock's form is per protocol ([`Protocol::legacy`], recorded
+//!   at `soalloc` for the socket's life). A `bsd` protocol's socket is held by detached
+//!   holdings of `so_lock` (an internet one by the net lock alone for `solock`), as before. A
+//!   kernel protocol's socket is held by a witness of `so_lock`, an internet one's under
+//!   either holding of the net lock: [`solock`] takes `so_lock` after the exclusive net lock
+//!   where the C takes the net lock alone (`solock`, uipc_socket2.c:324-336), so the `[s]`
+//!   cells of the socket, the pcb, the tcpcb and the SYN cache entries key to one lock and
+//!   open in parts at once ([`SoLocked::inet`], [`InetLocked`], [`so_part`]). The extra
+//!   holding never waits: every other holder of that `so_lock` holds the net lock shared
+//!   (`in_pcbsolock`, [`solock_shared`], [`solock_nonet`]'s callers), which the exclusive
+//!   holding excludes. Order: the net lock, then `so_lock`, a listener's before its child's;
+//!   nothing takes them the other way. `sosleep_nsec`'s exclusive case lets `so_lock` go
+//!   around the sleep as the shared case does (a sleeper keeping it would block its own
+//!   waker). `bsd`'s C-style callers lend their proof of the net lock ([`solocked_legacy`]):
+//!   a kernel protocol's socket gets their detached holding attached for the request
+//!   (`hal::rwlock::DetachableRwlock::attach`) or `so_lock` taken for it, and the lent net
+//!   lock is never let go (a wait or an unlock under it is `panic(9)`; none of `bsd`'s six
+//!   callers waits). Cost against the C: one uncontended `so_lock` pair per exclusive-lock
+//!   request of a kernel internet socket (`setsockopt`, `getsockopt`, `soclose`'s steps),
+//!   nothing per packet. No internet protocol is the kernel's before N6.6a5 (TCP), so no
+//!   socket changes its lock at N6.6a0.
 //! - The connection queues (`so_q0`, `so_q`, `so_head`, `so_onq`, the lengths) are under one
 //!   leaf mutex per socket, `cq` (D-N6.2-1): the listener's `q0`/`q` (pinned lists of the
 //!   children, keyed to the listener's `cq`), the child's `head` (counted: the C's raw
@@ -222,11 +243,11 @@ use core::sync::atomic::{
 
 use hal::intr::IPL_SOFTNET;
 use hal::mutex::{Mutexed, MutexedGuard};
-use hal::netlock::NETLOCK;
+use hal::netlock::{NETLOCK, NetHeld};
 use hal::once::OnceStatic;
 use hal::pinlist::{PinEntry, PinList};
 use hal::pool::{AnyArc, PoolArc, PoolBox, PoolHome};
-use hal::rwlock::{Guarded, ReadWitness, WriteWitness};
+use hal::rwlock::{Divisible, Guarded, ReadWitness, WitnessPart, WriteWitness};
 use hal::sleep::{INFSLP, PCATCH, wakeup, wakeup_one};
 use hal::slot::ReadMostly;
 use hal::sys::errno::Errno;
@@ -348,8 +369,9 @@ pub struct Socket<G: ProcGlue> {
     proto: &'static dyn Protocol<G>,
     /// \[I\] `so_proto->pr_domain->dom_family`, read by every lock.
     family: i32,
-    /// \[I\] The domain is `bsd`'s: `so_lock` is held by detached holdings
-    /// ([`Domain::legacy`](crate::net::domain::Domain::legacy)).
+    /// \[I\] The protocol is `bsd`'s: `so_lock` is held by detached holdings
+    /// ([`Protocol::legacy`]); a kernel protocol's socket is held by a witness of it, an
+    /// internet one's under either holding of the net lock (D-1).
     legacy_lock: bool,
     /// \[I\] `so_type`: generic type, see `socket.h`.
     so_type: i32,
@@ -456,7 +478,7 @@ impl<G: ProcGlue> Socket<G> {
             home: PoolHome::new(),
             proto: prp,
             family: prp.domain().family(),
-            legacy_lock: prp.domain().legacy(),
+            legacy_lock: prp.legacy(),
             so_type: init.so_type,
             euid: init.euid,
             ruid: init.ruid,
@@ -815,15 +837,17 @@ impl<G: ProcGlue> Drop for Socket<G> {
 }
 
 /// The net lock's part of a socket lock.
-enum NetHold {
+enum NetHold<'a> {
     /// None (a per-socket domain, or `solock_nonet`).
     None,
     /// `NET_LOCK()`.
     Excl(WriteWitness<'static>),
     /// `NET_LOCK_SHARED()`.
     Shared(ReadWitness<'static>),
-    /// The net lock `bsd`'s caller holds C-style ([`solocked_legacy`]), either mode.
-    Lent,
+    /// The net lock the caller holds, proved by the proof it passes: `bsd`'s C-style holding
+    /// lent ([`solocked_legacy`]), or a kernel caller's own holding ([`solock_net`],
+    /// [`solock_nonet`], [`solock_pair`]). Never let go here: the holding is the caller's.
+    Lent(&'a NetHeld<'a>),
 }
 
 /// `so_lock`'s part of a socket lock.
@@ -839,6 +863,43 @@ enum SoHold<'a> {
     /// The detached holding of `bsd`'s caller, lent for a request ([`solocked_legacy`]):
     /// released and taken again around a wait, never let go by the drop.
     Lent,
+    /// The detached holding of `bsd`'s caller on a kernel protocol's socket, attached for a
+    /// request ([`solocked_legacy`]): a witness while the request runs, detached back to the
+    /// caller by the drop.
+    Attached(WriteWitness<'a>),
+}
+
+/// Which part of a kernel internet socket's `so_lock` witness opens which `[s]` cells
+/// ([`SoLocked::inet`]): the socket's, the pcb's, the tcpcb's, the SYN cache entries'
+/// (`hal::rwlock::Guarded::keyed(so_lock's id, part, ..)`). One lock serialises them all in
+/// the C; the parts let a request hold a reference into each at once.
+pub mod so_part {
+    /// The socket's own cells.
+    pub const SO: u8 = 0;
+    /// The pcb's slots (`inp_ppcb`).
+    pub const PCB: u8 = 1;
+    /// The tcpcb's state.
+    pub const TCP: u8 = 2;
+    /// The `[s]` members of the listener's SYN cache entries.
+    pub const SYN: u8 = 3;
+}
+
+/// The socket lock of a kernel internet protocol's socket opened in parts
+/// ([`SoLocked::inet`]): one exclusive part of the `so_lock` witness for each object the lock
+/// serialises ([`so_part`]), and the proof of the net lock the socket lock holds (either
+/// mode, or the one `bsd`'s caller lent). It borrows the [`SoLocked`] mutably, so the socket
+/// cannot be unlocked or slept on while it lives.
+pub struct InetLocked<'w> {
+    /// Part [`so_part::SO`].
+    pub so: WitnessPart<'w>,
+    /// Part [`so_part::PCB`].
+    pub pcb: WitnessPart<'w>,
+    /// Part [`so_part::TCP`].
+    pub tcp: WitnessPart<'w>,
+    /// Part [`so_part::SYN`].
+    pub syn: WitnessPart<'w>,
+    /// The net lock's proof.
+    pub net: NetHeld<'w>,
 }
 
 /// `solock(so)` held: the witness of the socket's lock. Its drop is `sounlock`.
@@ -846,16 +907,18 @@ enum SoHold<'a> {
 pub struct SoLocked<'a> {
     /// The socket's `so_lock`, to take it again after a release.
     lock: &'a hal::rwlock::DetachableRwlock,
-    /// `so_lock` held (or not, for an internet socket under the net lock alone).
+    /// `so_lock` held (or not, for a `bsd` protocol's internet socket under the net lock
+    /// alone).
     so: SoHold<'a>,
-    /// The net lock (internet sockets).
-    net: NetHold,
+    /// The net lock (internet sockets). Declared after `so`: dropped after it, so `so_lock`
+    /// is let go first.
+    net: NetHold<'a>,
 }
 
 impl<'a> SoLocked<'a> {
-    /// The socket's `so_lock` taken as `so`'s domain takes it: with a witness for the
-    /// kernel's domains, by a detached holding for `bsd`'s.
-    fn take<G: ProcGlue>(so: &'a Socket<G>, net: NetHold) -> Self {
+    /// The socket's `so_lock` taken as `so`'s protocol takes it: with a witness for the
+    /// kernel's protocols, by a detached holding for `bsd`'s.
+    fn take<G: ProcGlue>(so: &'a Socket<G>, net: NetHold<'a>) -> Self {
         let hold = if so.legacy_lock {
             so.so_lock.enter_write_detached();
             SoHold::Detached
@@ -870,12 +933,12 @@ impl<'a> SoLocked<'a> {
     }
 
     /// The witness of `so_lock`, for the cells keyed to it (the UNIX domain's control
-    /// block); `None` for an internet socket locked by the net lock alone, and for a socket
-    /// of a domain still in `bsd` (a detached holding).
+    /// block); `None` for a `bsd` protocol's socket (a detached holding, or an internet one
+    /// locked by the net lock alone).
     #[inline]
     pub fn so_lock(&mut self) -> Option<&mut WriteWitness<'a>> {
         match &mut self.so {
-            SoHold::Witness(w) => Some(w),
+            SoHold::Witness(w) | SoHold::Attached(w) => Some(w),
             SoHold::None | SoHold::Detached | SoHold::Lent => None,
         }
     }
@@ -884,8 +947,46 @@ impl<'a> SoLocked<'a> {
     #[inline]
     pub fn so_lock_ref(&self) -> Option<&WriteWitness<'a>> {
         match &self.so {
-            SoHold::Witness(w) => Some(w),
+            SoHold::Witness(w) | SoHold::Attached(w) => Some(w),
             SoHold::None | SoHold::Detached | SoHold::Lent => None,
+        }
+    }
+
+    /// The socket lock of a kernel internet protocol's socket opened in its parts
+    /// ([`InetLocked`]): the `so_lock` witness split in four, beside the net lock's proof.
+    /// `None` without a witness of `so_lock` (a `bsd` protocol's socket) or without a proof
+    /// of the net lock (`solock_nonet`, whose caller holds it; the other sockets).
+    pub fn inet(&mut self) -> Option<InetLocked<'_>> {
+        let SoLocked { so, net, .. } = self;
+        let net = match net {
+            NetHold::Excl(w) => NetHeld::of(w)?,
+            NetHold::Shared(w) => NetHeld::of(w)?,
+            NetHold::Lent(n) => n.reborrow(),
+            NetHold::None => return None,
+        };
+        let w = match so {
+            SoHold::Witness(w) | SoHold::Attached(w) => w,
+            SoHold::None | SoHold::Detached | SoHold::Lent => return None,
+        };
+        let [so, pcb, tcp, syn] = w.split::<4>();
+        Some(InetLocked {
+            so,
+            pcb,
+            tcp,
+            syn,
+            net,
+        })
+    }
+
+    /// The proof of the net lock this socket lock holds or carries (either mode): `None`
+    /// for a socket of a per-socket domain. For the caller that locks a second socket under
+    /// this one's net lock (`soclose`'s queued children).
+    pub fn net_proof(&self) -> Option<NetHeld<'_>> {
+        match &self.net {
+            NetHold::Excl(w) => NetHeld::of(w),
+            NetHold::Shared(w) => NetHeld::of(w),
+            NetHold::Lent(n) => Some(n.reborrow()),
+            NetHold::None => None,
         }
     }
 
@@ -904,6 +1005,14 @@ impl<'a> SoLocked<'a> {
             SoHold::Lent => {
                 self.lock.exit_write_detached();
                 3
+            }
+            SoHold::Attached(w) => {
+                // Only `solocked_legacy` attaches, and only under a lent net lock, whose
+                // waits and unlocks are refused before they release `so_lock`.
+                self.lock.detach(w);
+                kpanic(format_args!(
+                    "sounlock: an attached holding of bsd's caller is not let go"
+                ))
             }
         }
     }
@@ -929,9 +1038,14 @@ impl<'a> SoLocked<'a> {
     /// around accept's wait), the same locks taken again in their order before returning:
     /// `so_lock` released first, then the net lock; the net lock taken again first.
     pub fn unlocked<R>(&mut self, f: impl FnOnce() -> R) -> R {
+        if let NetHold::Lent(_) = self.net {
+            kpanic(format_args!(
+                "sounlock: the net lock lent by the caller is not let go"
+            ));
+        }
         let had_so = self.release_so();
         let net = match mem::replace(&mut self.net, NetHold::None) {
-            NetHold::None => 0,
+            NetHold::None | NetHold::Lent(_) => 0,
             NetHold::Excl(w) => {
                 drop(w);
                 1
@@ -940,27 +1054,11 @@ impl<'a> SoLocked<'a> {
                 drop(w);
                 2
             }
-            NetHold::Lent if hal::netlock::write_held() => {
-                hal::netlock::unlock();
-                3
-            }
-            NetHold::Lent => {
-                hal::netlock::unlock_shared();
-                4
-            }
         };
         let r = f();
         self.net = match net {
             1 => NetHold::Excl(NETLOCK.write()),
             2 => NetHold::Shared(NETLOCK.read()),
-            3 => {
-                hal::netlock::lock();
-                NetHold::Lent
-            }
-            4 => {
-                hal::netlock::lock_shared();
-                NetHold::Lent
-            }
             _ => NetHold::None,
         };
         self.retake_so(had_so);
@@ -979,52 +1077,87 @@ impl<'a> SoLocked<'a> {
 
 impl Drop for SoLocked<'_> {
     /// `sounlock(so)`: `so_lock` let go (a detached holding by its exit; a witness by its
-    /// drop), then the net lock.
+    /// drop; an attached one detached back to `bsd`'s caller), then the net lock.
     fn drop(&mut self) {
-        if let SoHold::Detached = self.so {
-            self.lock.exit_write_detached();
+        match mem::replace(&mut self.so, SoHold::None) {
+            SoHold::Detached => self.lock.exit_write_detached(),
+            SoHold::Attached(w) => self.lock.detach(w),
+            SoHold::None | SoHold::Witness(_) | SoHold::Lent => {}
         }
     }
 }
 
-/// `solock(so)`: the net lock for the internet domains, the socket's lock for the others.
+/// `solock(so)`: the net lock for the internet domains, the socket's lock for the others. A
+/// kernel internet protocol's socket holds `so_lock` too, by a witness taken after the
+/// exclusive net lock (D-1): the C serialises it by the net lock alone, which no cell can be
+/// keyed to beside `so_lock`; the extra holding is uncontended, since every other holder of
+/// that `so_lock` holds the net lock shared (`in_pcbsolock`, `solock_shared`,
+/// `solock_nonet`'s callers), which this holding excludes.
 pub fn solock<G: ProcGlue>(so: &Socket<G>) -> SoLocked<'_> {
     if so.is_inet() {
+        let net = NetHold::Excl(NETLOCK.write());
+        let hold = if so.legacy_lock {
+            SoHold::None
+        } else {
+            SoHold::Witness(so.so_lock.lock().write())
+        };
         SoLocked {
             lock: &so.so_lock,
-            so: SoHold::None,
-            net: NetHold::Excl(NETLOCK.write()),
+            so: hold,
+            net,
         }
     } else {
         SoLocked::take(so, NetHold::None)
     }
 }
 
-/// The lock `bsd`'s caller holds C-style on a socket of one of `bsd`'s domains (`solock(so)`
-/// of `bsd`'s adapters: the net lock of an internet socket, a detached holding of `so_lock`
-/// for the others), lent as a witness for a request that wants one (`sobind`, `soconnect`,
-/// `solisten` of nfs and `bsd`'s tests): its drop lets nothing go; a wait releases and takes
-/// the holdings again, as the C's. `panic(9)` for a socket of a kernel domain, whose cells
-/// need a witness of its own lock, and for a lock the caller does not hold.
-pub fn solocked_legacy<G: ProcGlue>(so: &Socket<G>) -> SoLocked<'_> {
-    if !so.legacy_lock {
-        kpanic(format_args!(
-            "solocked_legacy: socket {so:p} of a kernel domain"
-        ));
-    }
+/// The lock `bsd`'s caller holds C-style on a socket (`solock(so)` of `bsd`'s adapters: the
+/// net lock of an internet socket, with or without a detached holding of `so_lock`; a
+/// detached holding of `so_lock` for the per-socket domains still in `bsd`), lent as a
+/// witness for a request that wants one (`sobind`, `soconnect`, `solisten` of nfs and `bsd`'s
+/// tests, `kern.file`'s fill, nfs's send). An internet socket's caller lends its proof of the
+/// net lock, `net` (`SaToken::lend_net`), which the witness carries for [`SoLocked::inet`]
+/// and never lets go (a wait or an unlock under it is `panic(9)`). Of a kernel protocol's
+/// internet socket (D-1), the caller's detached holding of `so_lock` is attached for the
+/// request and detached back by the drop; without one, the caller holds the net lock
+/// exclusively (`bsd`'s `solock`), and `so_lock` is taken for the request, uncontended, as
+/// [`solock`] takes it. A `bsd` protocol's socket gets the holdings as they are: the drop
+/// lets nothing go. `panic(9)` for an internet socket without `net`, for the other kernel
+/// domains' sockets (their requests are the kernel's), and for a lock the caller does not
+/// hold.
+pub fn solocked_legacy<'a, G: ProcGlue>(
+    so: &'a Socket<G>,
+    net: Option<&'a NetHeld<'a>>,
+) -> SoLocked<'a> {
     if so.is_inet() {
-        kassert!(hal::netlock::status() != 0);
-        let hold = if so.so_lock.held_detached() {
-            SoHold::Lent
+        let Some(net) = net else {
+            kpanic(format_args!(
+                "solocked_legacy: socket {so:p}: the net lock is not lent"
+            ));
+        };
+        let hold = if so.legacy_lock {
+            if so.so_lock.held_detached() {
+                SoHold::Lent
+            } else {
+                SoHold::None
+            }
+        } else if so.so_lock.held_detached() {
+            SoHold::Attached(so.so_lock.attach())
         } else {
-            SoHold::None
+            kassert!(hal::netlock::write_held());
+            SoHold::Witness(so.so_lock.lock().write())
         };
         SoLocked {
             lock: &so.so_lock,
             so: hold,
-            net: NetHold::Lent,
+            net: NetHold::Lent(net),
         }
     } else {
+        if !so.legacy_lock {
+            kpanic(format_args!(
+                "solocked_legacy: socket {so:p} of a kernel domain"
+            ));
+        }
         kassert!(so.so_lock.held_detached());
         SoLocked {
             lock: &so.so_lock,
@@ -1032,6 +1165,15 @@ pub fn solocked_legacy<G: ProcGlue>(so: &Socket<G>) -> SoLocked<'_> {
             net: NetHold::None,
         }
     }
+}
+
+/// `so`'s lock taken under the caller's proof of the net lock, `net` (`in_pcbsolock`'s: the
+/// C's `rw_enter_write(&so->so_lock)` of an internet socket whose caller holds the net lock,
+/// either mode): `so_lock` as `so`'s protocol takes it (a witness for the kernel's, whose
+/// cells [`SoLocked::inet`] opens; a detached holding for `bsd`'s), the proof carried and
+/// never let go here. The drop lets `so_lock` go (`in_pcbsounlock`).
+pub fn solock_net<'a, G: ProcGlue>(so: &'a Socket<G>, net: &'a NetHeld<'a>) -> SoLocked<'a> {
+    SoLocked::take(so, NetHold::Lent(net))
 }
 
 /// `solock_shared(so)`: the shared net lock (internet domains), then the socket's lock.
@@ -1044,12 +1186,24 @@ pub fn solock_shared<G: ProcGlue>(so: &Socket<G>) -> SoLocked<'_> {
     SoLocked::take(so, net)
 }
 
-/// `solock_nonet(so)`: the socket's lock; an internet socket's caller holds the net lock.
-pub fn solock_nonet<G: ProcGlue>(so: &Socket<G>) -> SoLocked<'_> {
-    if so.is_inet() {
-        kassert!(hal::netlock::status() != 0);
+/// `solock_nonet(so)`: the socket's lock; an internet socket's caller holds the net lock and
+/// passes its proof, `net` (a listener's: `sonewconn`'s new socket, `soclose`'s queued
+/// children), which the lock carries for [`SoLocked::inet`] and never lets go: a protocol's
+/// request on the socket (`pru_attach`, `pru_abort`) can prove it. `panic(9)` for an
+/// internet socket without the proof; the other sockets need none (`None`).
+pub fn solock_nonet<'a, G: ProcGlue>(
+    so: &'a Socket<G>,
+    net: Option<&'a NetHeld<'a>>,
+) -> SoLocked<'a> {
+    if !so.is_inet() {
+        return SoLocked::take(so, NetHold::None);
     }
-    SoLocked::take(so, NetHold::None)
+    let Some(net) = net else {
+        kpanic(format_args!(
+            "solock_nonet: socket {so:p}: no proof of the net lock"
+        ));
+    };
+    SoLocked::take(so, NetHold::Lent(net))
 }
 
 /// `solock_persocket(so)`: whether `so` has a lock of its own (it is not an internet one).
@@ -1059,29 +1213,44 @@ pub fn solock_persocket<G: ProcGlue>(so: &Socket<G>) -> bool {
 }
 
 /// `solock_pair(so1, so2)`: locks two sockets of one type, in address order; the second
-/// witness is `None` when they are one socket. The first witness holds the shared net lock
-/// of an internet pair.
+/// witness is `None` when they are one socket. An internet pair's caller holds the net lock
+/// (the C's `NET_LOCK_SHARED()` at the top of `solock_pair`, taken by the caller here so both
+/// witnesses can carry its proof, `net`, for [`SoLocked::inet`]); `panic(9)` for an internet
+/// pair without it. The other pairs need none (`None`).
 pub fn solock_pair<'a, G: ProcGlue>(
     so1: &'a Socket<G>,
     so2: &'a Socket<G>,
+    net: Option<&'a NetHeld<'a>>,
 ) -> (SoLocked<'a>, Option<SoLocked<'a>>) {
     kassert!(so1.so_type == so2.so_type);
 
-    let net = if so1.is_inet() {
-        NetHold::Shared(NETLOCK.read())
-    } else {
-        NetHold::None
+    let hold = || {
+        if !so1.is_inet() {
+            return NetHold::None;
+        }
+        match net {
+            Some(n) => NetHold::Lent(n),
+            None => kpanic(format_args!(
+                "solock_pair: socket {so1:p}: no proof of the net lock"
+            )),
+        }
     };
     if core::ptr::eq(so1, so2) {
-        return (SoLocked::take(so1, net), None);
+        return (SoLocked::take(so1, hold()), None);
     }
     if core::ptr::from_ref(so1) < core::ptr::from_ref(so2) {
-        let a = SoLocked::take(so1, net);
-        (a, Some(SoLocked::take(so2, NetHold::None)))
+        let a = SoLocked::take(so1, hold());
+        (a, Some(SoLocked::take(so2, hold())))
     } else {
-        let b = SoLocked::take(so2, NetHold::None);
-        (SoLocked::take(so1, net), Some(b))
+        let b = SoLocked::take(so2, hold());
+        (SoLocked::take(so1, hold()), Some(b))
     }
+}
+
+/// The shared net lock an internet pair of `so1`'s domain is locked under (`solock_pair`'s
+/// `NET_LOCK_SHARED()`), taken by its caller before the pair: `None` for the other domains.
+fn pair_netlock<G: ProcGlue>(so1: &Socket<G>) -> Option<ReadWitness<'static>> {
+    so1.is_inet().then(|| NETLOCK.read())
 }
 
 /// `soassertlocked(so)`'s and `soassertlocked_readonly(so)`'s question, for the paths
@@ -1115,19 +1284,23 @@ pub fn sosleep_nsec<I: ?Sized>(
             w.retake_so(had_so);
             r
         }
-        NetHold::Excl(n) => n.sleep_nsec(ident, prio, wmesg, nsecs),
-        NetHold::Lent => {
-            if hal::netlock::status() == hal::rwlock::RW_READ {
-                let had_so = w.release_so();
-                let r = hal::netlock::sleep_nsec(ident, prio, wmesg, nsecs);
-                w.retake_so(had_so);
-                r
-            } else {
-                hal::netlock::sleep_nsec(ident, prio, wmesg, nsecs)
-            }
+        NetHold::Excl(_) => {
+            // The exclusive net lock's sleep. A kernel protocol's socket holds `so_lock` too
+            // (D-1): let go around the sleep as the shared case lets it go, since a sleeper
+            // keeping it would block its own waker; the net lock is taken again first.
+            let had_so = w.release_so();
+            let r = match &mut w.net {
+                NetHold::Excl(n) => n.sleep_nsec(ident, prio, wmesg, nsecs),
+                _ => Ok(()),
+            };
+            w.retake_so(had_so);
+            r
         }
+        NetHold::Lent(_) => kpanic(format_args!(
+            "sosleep_nsec: the net lock lent by the caller is not let go"
+        )),
         NetHold::None => match &mut w.so {
-            SoHold::Witness(s) => s.sleep_nsec(ident, prio, wmesg, nsecs),
+            SoHold::Witness(s) | SoHold::Attached(s) => s.sleep_nsec(ident, prio, wmesg, nsecs),
             SoHold::Detached | SoHold::Lent => w.lock.sleep_detached(ident, prio, wmesg, nsecs),
             SoHold::None => kpanic(format_args!("sosleep_nsec: socket not locked")),
         },
@@ -1350,6 +1523,7 @@ pub fn sonewconn<G: ProcGlue>(
     head: &Socket<G>,
     connstatus: u32,
     wait: i32,
+    net: Option<&NetHeld<'_>>,
 ) -> Option<SocketRef<G>> {
     let soqueue = if connstatus != 0 { Onq::Q } else { Onq::Q0 };
 
@@ -1379,8 +1553,10 @@ pub fn sonewconn<G: ProcGlue>(
         },
     )?;
 
-    // Lock order will be `head' -> `so' while these sockets are linked.
-    let mut w = solock_nonet(&so);
+    // Lock order will be `head' -> `so' while these sockets are linked. An internet
+    // listener's caller holds the net lock (`net`, its proof): the new socket's lock carries
+    // it, so `pru_attach` can prove it.
+    let mut w = solock_nonet(&so, net);
 
     let ok = 'fail: {
         // Inherit watermarks but those may get clamped in low mem situations.
@@ -1727,11 +1903,11 @@ pub fn soclose<G: ProcGlue>(so: &Socket<G>, flags: i32) -> Result<(), Errno> {
                 w = solock_shared(so);
             }
             while let Some(so2) = soq_first(so, Onq::Q) {
-                let mut w2 = solock_nonet(&so2);
-                let Some(queued) = soqremque(&so2, Onq::Q) else {
-                    continue;
-                };
                 if persocket {
+                    let mut w2 = solock_nonet(&so2, None);
+                    let Some(queued) = soqremque(&so2, Onq::Q) else {
+                        continue;
+                    };
                     drop(w);
                     soabort(&so2, &mut w2);
                     drop(w2);
@@ -1739,6 +1915,12 @@ pub fn soclose<G: ProcGlue>(so: &Socket<G>, flags: i32) -> Result<(), Errno> {
                     drop(so2);
                     w = solock_shared(so);
                 } else {
+                    // The listener's net lock, proved for the child's `pru_abort`.
+                    let net = w.net_proof();
+                    let mut w2 = solock_nonet(&so2, net.as_ref());
+                    let Some(queued) = soqremque(&so2, Onq::Q) else {
+                        continue;
+                    };
                     soabort(&so2, &mut w2);
                     drop(w2);
                     drop(queued);
@@ -1816,7 +1998,9 @@ pub fn soconnect<G: ProcGlue>(
 
 /// `soconnect2(so1, so2)`: connects two sockets of one protocol to each other.
 pub fn soconnect2<G: ProcGlue>(so1: &Socket<G>, so2: &Socket<G>) -> Result<(), Errno> {
-    let (mut w1, mut w2) = solock_pair(so1, so2);
+    let r = pair_netlock(so1);
+    let net = r.as_ref().and_then(NetHeld::of);
+    let (mut w1, mut w2) = solock_pair(so1, so2, net.as_ref());
     so1.usrreqs().connect2(so1, &mut w1, so2, w2.as_mut())
 }
 
@@ -2916,7 +3100,9 @@ pub fn sosplice<G: ProcGlue>(
 
     let rl = so.so_rcv.sblock(crate::net::sockbuf::SBL_WAIT)?;
     let sl = sosp.so_snd.sblock(crate::net::sockbuf::SBL_WAIT)?;
-    let (mut w1, w2) = solock_pair(so, &sosp);
+    let r = pair_netlock(so);
+    let net = r.as_ref().and_then(NetHeld::of);
+    let (mut w1, w2) = solock_pair(so, &sosp, net.as_ref());
 
     let error: Result<(), Errno> = 'release: {
         if so.has_options(SO_ACCEPTCONN) || sosp.has_options(SO_ACCEPTCONN) {
@@ -4014,6 +4200,11 @@ mod tests {
 
     /// `attach` refuses when set.
     static ATTACH_FAILS: AtomicBool = AtomicBool::new(false);
+    /// Whether the last `attach` could open its socket lock's parts (a kernel internet
+    /// socket locked with a proof of the net lock).
+    static ATTACH_PARTS: AtomicBool = AtomicBool::new(false);
+    /// The same for the last `abort`.
+    static ABORT_PARTS: AtomicBool = AtomicBool::new(false);
 
     struct TestDom;
     struct TestProto;
@@ -4056,10 +4247,11 @@ mod tests {
         fn attach(
             &self,
             _so: &Socket<Procs>,
-            _w: &mut SoLocked<'_>,
+            w: &mut SoLocked<'_>,
             _proto: i32,
             _wait: i32,
         ) -> Result<(), Errno> {
+            ATTACH_PARTS.store(w.inet().is_some(), Ordering::Relaxed);
             if ATTACH_FAILS.load(Ordering::Relaxed) {
                 Err(Errno::ENOBUFS)
             } else {
@@ -4091,6 +4283,7 @@ mod tests {
             Ok(())
         }
         fn abort(&self, so: &Socket<Procs>, w: &mut SoLocked<'_>) {
+            ABORT_PARTS.store(w.inet().is_some(), Ordering::Relaxed);
             soisdisconnected(so);
             sofree_kept(so, w);
         }
@@ -4175,7 +4368,7 @@ mod tests {
         let _g = net_setup();
         let head = socket(0);
         head.qlimit.store(5, Ordering::Relaxed);
-        let child = sonewconn(&head, 0, crate::net::mbuf::M_WAIT).expect("a connection");
+        let child = sonewconn(&head, 0, crate::net::mbuf::M_WAIT, None).expect("a connection");
         sounlock_detached(&child);
         assert_eq!(head.qlens(), (1, 0));
         assert_eq!(PoolArc::count(&child), 3);
@@ -4220,7 +4413,7 @@ mod tests {
         let head = socket(0);
         head.qlimit.store(5, Ordering::Relaxed);
         ATTACH_FAILS.store(true, Ordering::Relaxed);
-        let child = sonewconn(&head, 0, crate::net::mbuf::M_WAIT);
+        let child = sonewconn(&head, 0, crate::net::mbuf::M_WAIT, None);
         ATTACH_FAILS.store(false, Ordering::Relaxed);
         assert!(child.is_none());
         assert_eq!(head.qlens(), (0, 0));
@@ -4242,9 +4435,9 @@ mod tests {
             solisten(&head, &mut w, 5).expect("listen");
         }
         assert!(head.has_options(SO_ACCEPTCONN));
-        let a = sonewconn(&head, 0, crate::net::mbuf::M_WAIT).expect("a");
+        let a = sonewconn(&head, 0, crate::net::mbuf::M_WAIT, None).expect("a");
         sounlock_detached(&a);
-        let b = sonewconn(&head, SS_ISCONNECTED, crate::net::mbuf::M_WAIT).expect("b");
+        let b = sonewconn(&head, SS_ISCONNECTED, crate::net::mbuf::M_WAIT, None).expect("b");
         sounlock_detached(&b);
         assert_eq!(head.qlens(), (1, 1));
         drop(a);
@@ -4281,7 +4474,7 @@ mod tests {
 
     /// A complete connection on `head`'s queue (sonewconn, then promoted).
     fn connection(head: &Socket<Procs>) -> SocketRef<Procs> {
-        let c = sonewconn(head, 0, crate::net::mbuf::M_WAIT).expect("a connection");
+        let c = sonewconn(head, 0, crate::net::mbuf::M_WAIT, None).expect("a connection");
         sounlock_detached(&c);
         soisconnected(&c);
         c
@@ -4385,7 +4578,7 @@ mod tests {
         let before = nout();
         for round in 0..200 {
             let head = listener(5);
-            let c = sonewconn(&head, 0, crate::net::mbuf::M_WAIT).expect("a connection");
+            let c = sonewconn(&head, 0, crate::net::mbuf::M_WAIT, None).expect("a connection");
             sounlock_detached(&c);
             // Both sides start together.
             let start = std::sync::Barrier::new(2);
@@ -4507,12 +4700,12 @@ mod tests {
         let a = socket(0);
         let b = socket(0);
         {
-            let (_w1, w2) = solock_pair(&a, &a);
+            let (_w1, w2) = solock_pair(&a, &a, None);
             assert!(w2.is_none());
             assert_ne!(a.so_lock.lock().status(), 0);
         }
         {
-            let (_w1, w2) = solock_pair(&a, &b);
+            let (_w1, w2) = solock_pair(&a, &b, None);
             assert!(w2.is_some());
             assert_ne!(a.so_lock.lock().status(), 0);
             assert_ne!(b.so_lock.lock().status(), 0);
@@ -4523,6 +4716,286 @@ mod tests {
             s.st_set(SS_NOFDREF);
             drop(sofree(&s, solock(&s), false));
         }
+    }
+
+    /// An internet domain of the tests (N6.6a0, D-1): a protocol of the kernel's, whose
+    /// sockets hold `so_lock` by a witness, and one of `bsd`'s, held by detached holdings.
+    struct TestInetDom;
+    struct KernInet;
+    struct BsdInet;
+
+    static INET_PROTOS: [&dyn Protocol<Procs>; 2] = [&KernInet, &BsdInet];
+
+    impl Domain<Procs> for TestInetDom {
+        fn family(&self) -> i32 {
+            i32::from(PF_INET)
+        }
+        fn name(&self) -> &'static str {
+            "inet"
+        }
+        fn protocols(&self) -> &'static [&'static dyn Protocol<Procs>] {
+            &INET_PROTOS
+        }
+    }
+
+    impl Protocol<Procs> for KernInet {
+        fn domain(&self) -> &'static dyn Domain<Procs> {
+            &TestInetDom
+        }
+        fn ty(&self) -> i16 {
+            hal::sys::socket::SOCK_STREAM as i16
+        }
+        fn protocol(&self) -> i16 {
+            6
+        }
+        fn flags(&self) -> i16 {
+            crate::net::proto::PR_CONNREQUIRED
+        }
+        fn usrreqs(&self) -> Option<&'static dyn Usrreqs<Procs>> {
+            Some(&TestUsr)
+        }
+    }
+
+    impl Protocol<Procs> for BsdInet {
+        fn domain(&self) -> &'static dyn Domain<Procs> {
+            &TestInetDom
+        }
+        fn ty(&self) -> i16 {
+            hal::sys::socket::SOCK_STREAM as i16
+        }
+        fn protocol(&self) -> i16 {
+            7
+        }
+        fn flags(&self) -> i16 {
+            crate::net::proto::PR_CONNREQUIRED
+        }
+        fn usrreqs(&self) -> Option<&'static dyn Usrreqs<Procs>> {
+            Some(&TestUsr)
+        }
+        fn legacy(&self) -> bool {
+            true
+        }
+    }
+
+    /// A socket of `prp`, an internet protocol of the tests.
+    fn inet_socket(prp: &'static dyn Protocol<Procs>) -> SocketRef<Procs> {
+        soalloc(
+            prp,
+            crate::net::mbuf::M_WAIT,
+            SoInit {
+                so_type: hal::sys::socket::SOCK_STREAM,
+                state: 0,
+                options: 0,
+                linger: 0,
+                timeo: 0,
+                euid: 0,
+                ruid: 0,
+                egid: 0,
+                rgid: 0,
+                cpid: 1,
+            },
+        )
+        .expect("a socket")
+    }
+
+    /// The test's socket decommissioned and freed.
+    fn inet_free(so: SocketRef<Procs>) {
+        so.st_set(SS_NOFDREF);
+        drop(sofree(&so, solock(&so), false));
+    }
+
+    #[test]
+    fn a_kernel_inet_socket_holds_so_lock_under_the_exclusive_net_lock() {
+        let _g = net_setup();
+        let so = inet_socket(&KernInet);
+        let cell = Guarded::keyed(so.so_lock.lock().id(), so_part::PCB, 5u32);
+        let tcp = Guarded::keyed(so.so_lock.lock().id(), so_part::TCP, 0u64);
+        {
+            let mut w = solock(&so);
+            assert_eq!(hal::netlock::status(), hal::rwlock::RW_WRITE);
+            assert_eq!(so.so_lock.lock().status(), hal::rwlock::RW_WRITE);
+            assert!(w.so_lock().is_some());
+            let mut l = w.inet().expect("the parts");
+            // Two objects' cells open at once through their parts.
+            let p = cell.get_mut(&mut l.pcb);
+            let t = tcp.get_mut(&mut l.tcp);
+            *p += 1;
+            *t = u64::from(*p);
+            let r = l.net.reader();
+            drop(r);
+        }
+        assert_eq!(so.so_lock.lock().status(), 0);
+        assert_eq!(hal::netlock::status(), 0);
+        {
+            // solock_shared: the shared net lock, the same witness.
+            let mut w = solock_shared(&so);
+            assert_eq!(hal::netlock::status(), hal::rwlock::RW_READ);
+            let l = w.inet().expect("the parts");
+            assert_eq!((*cell.get(&l.pcb), *tcp.get(&l.tcp)), (6, 6));
+        }
+        assert_eq!(so.so_lock.lock().status(), 0);
+        inet_free(so);
+    }
+
+    #[test]
+    fn a_bsd_inet_socket_is_locked_by_the_net_lock_alone() {
+        let _g = net_setup();
+        let so = inet_socket(&BsdInet);
+        {
+            let mut w = solock(&so);
+            assert_eq!(hal::netlock::status(), hal::rwlock::RW_WRITE);
+            assert_eq!(so.so_lock.lock().status(), 0);
+            assert!(w.so_lock().is_none() && w.inet().is_none());
+        }
+        {
+            // solock_shared: so_lock held detached, no witness.
+            let mut w = solock_shared(&so);
+            assert!(so.so_lock.held_detached());
+            assert!(w.inet().is_none());
+        }
+        assert_eq!(so.so_lock.lock().status(), 0);
+        inet_free(so);
+    }
+
+    #[test]
+    fn bsd_lends_its_holdings_of_a_kernel_inet_socket_for_a_request() {
+        let _g = net_setup();
+        let so = inet_socket(&KernInet);
+        // Nothing asserted while the detached holdings are held: a failure would leave them
+        // held for the next test.
+        hal::netlock::lock();
+        // The caller's detached holding of so_lock: attached for the request, detached back.
+        so.so_lock.enter_write_detached();
+        let attached = hal::netlock::lend_detached(|net| {
+            let mut w = solocked_legacy(&so, Some(net));
+            let attached = !so.so_lock.held_detached();
+            let parts = w.inet().is_some();
+            drop(w);
+            attached && parts
+        });
+        let kept = so.so_lock.held_detached();
+        so.so_lock.exit_write_detached();
+        // The exclusive net lock alone: so_lock taken for the request, let go by the drop.
+        let taken = hal::netlock::lend_detached(|net| {
+            let mut w = solocked_legacy(&so, Some(net));
+            let held = so.so_lock.lock().status() == hal::rwlock::RW_WRITE;
+            let parts = w.inet().is_some();
+            drop(w);
+            held && parts && so.so_lock.lock().status() == 0
+        });
+        hal::netlock::unlock();
+        assert!(attached, "the caller's holding attached for the request");
+        assert!(kept, "the caller's holding detached back");
+        assert!(taken, "so_lock taken for the request and let go");
+        inet_free(so);
+    }
+
+    #[test]
+    fn bsd_lends_its_holdings_of_a_bsd_inet_socket_as_they_are() {
+        let _g = net_setup();
+        let so = inet_socket(&BsdInet);
+        hal::netlock::lock();
+        so.so_lock.enter_write_detached();
+        let (lent, kept) = hal::netlock::lend_detached(|net| {
+            let mut w = solocked_legacy(&so, Some(net));
+            let lent = w.so_lock().is_none() && w.inet().is_none();
+            drop(w);
+            (lent, so.so_lock.held_detached())
+        });
+        so.so_lock.exit_write_detached();
+        hal::netlock::unlock();
+        assert!(lent && kept);
+        inet_free(so);
+    }
+
+    #[test]
+    #[should_panic(expected = "the net lock is not lent")]
+    fn an_inet_socket_lent_without_the_net_lock_s_proof_panics() {
+        let _g = net_setup();
+        let so = inet_socket(&KernInet);
+        let _w = solocked_legacy(&so, None);
+    }
+
+    #[test]
+    fn a_kernel_inet_listener_s_children_are_locked_with_its_proof() {
+        // N6.6a0's review, should-fix 1: sonewconn's pru_attach and soclose's pru_abort of a
+        // queued child reach a kernel internet protocol under the listener's net lock, and
+        // the child's lock carries its proof (solock_nonet's), so the protocol can prove it.
+        let _g = net_setup();
+        let head = inet_socket(&KernInet);
+        soreserve(&head, 4096, 4096).expect("reserve");
+        head.qlimit.store(5, Ordering::Relaxed);
+        {
+            let mut w = solock(&head);
+            solisten(&head, &mut w, 5).expect("listen");
+        }
+        ATTACH_PARTS.store(false, Ordering::Relaxed);
+        ABORT_PARTS.store(false, Ordering::Relaxed);
+        let child = {
+            let w = solock(&head);
+            let net = w.net_proof();
+            sonewconn(
+                &head,
+                SS_ISCONNECTED,
+                crate::net::mbuf::M_WAIT,
+                net.as_ref(),
+            )
+        }
+        .expect("a connection");
+        sounlock_detached(&child);
+        let attached = ATTACH_PARTS.load(Ordering::Relaxed);
+        drop(child);
+        // The queued child aborted under the listener's lock and proof.
+        soclose(&head, 0).expect("close");
+        let aborted = ABORT_PARTS.load(Ordering::Relaxed);
+        assert!(attached, "pru_attach: the parts open");
+        assert!(aborted, "pru_abort: the parts open");
+        assert_eq!(head.qlens(), (0, 0));
+    }
+
+    #[test]
+    #[should_panic(expected = "no proof of the net lock")]
+    fn an_inet_socket_locked_nonet_without_a_proof_panics() {
+        let _g = net_setup();
+        let so = inet_socket(&KernInet);
+        let _w = solock_nonet(&so, None);
+    }
+
+    #[test]
+    fn a_kernel_inet_socket_asleep_under_the_exclusive_net_lock_lets_so_lock_go() {
+        let _g = net_setup();
+        let so = inet_socket(&KernInet);
+        let started = AtomicBool::new(false);
+        let (slept, free) = std::thread::scope(|sc| {
+            let t = sc.spawn(|| {
+                let mut w = solock(&so);
+                // Set holding the net lock, which the sleep lets go only once queued.
+                started.store(true, Ordering::Release);
+                let r = sosleep_nsec(
+                    &mut w,
+                    so.timeo_chan(),
+                    crate::net::sockbuf::PSOCK,
+                    "test",
+                    INFSLP,
+                );
+                let held = so.so_lock.lock().status() == hal::rwlock::RW_WRITE
+                    && hal::netlock::status() == hal::rwlock::RW_WRITE;
+                drop(w);
+                r.is_ok() && held
+            });
+            while !started.load(Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+            // The net lock is free only once the sleeper sleeps on it.
+            let net = NETLOCK.write();
+            let free = so.so_lock.lock().try_write().is_some();
+            wakeup(so.timeo_chan());
+            drop(net);
+            (t.join().unwrap_or(false), free)
+        });
+        assert!(free, "so_lock let go while asleep");
+        assert!(slept, "woken, both locks taken again");
+        inet_free(so);
     }
 
     #[test]

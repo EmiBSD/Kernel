@@ -384,6 +384,14 @@ impl<'a> NetHeld<'a> {
         (w.lock_id() == NETLOCK.id()).then(Self::new)
     }
 
+    /// The proof again, for a borrow of this one: it cannot outlive this proof, so it cannot
+    /// outlive the holding (a socket lock that carries the proof `bsd`'s caller lent and hands
+    /// it to the parts it opens, `kernel::net::socket::SoLocked::inet`). No atomic.
+    #[inline]
+    pub fn reborrow(&self) -> NetHeld<'_> {
+        NetHeld::new()
+    }
+
     /// The proof, for `hal` code that has established the holding itself.
     pub(crate) fn new() -> Self {
         Self {

@@ -283,9 +283,14 @@ pub fn in6_pcbnotify(
     // The command's argument is not used (as in C): the protocols read theirs from the
     // `ip6ctlparam`.
     let _ = cmdarg;
+    // The caller's net lock, proved for the walk; each matching socket locked by the kernel
+    // (a detached holding: the protocols are `bsd`'s, which need no witness).
+    let lend = crate::net::if_::net_held("in6_pcbnotify");
     match notify {
         Some(n) => {
-            let mut f = |inp: &Inpcb, e: Option<Errno>| n(inp_static(inp), e);
+            let mut f = |inp: &Inpcb,
+                         _w: &mut kernel::net::socket::SoLocked<'_>,
+                         e: Option<Errno>| { n(inp_static(inp), e) };
             k6::in6_pcbnotify(
                 table,
                 dst,
@@ -294,10 +299,21 @@ pub fn in6_pcbnotify(
                 lport_arg,
                 rtable,
                 cmd,
+                lend.net(),
                 Some(&mut f),
             );
         }
-        None => k6::in6_pcbnotify(table, dst, fport_arg, src, lport_arg, rtable, cmd, None),
+        None => k6::in6_pcbnotify(
+            table,
+            dst,
+            fport_arg,
+            src,
+            lport_arg,
+            rtable,
+            cmd,
+            lend.net(),
+            None,
+        ),
     }
 }
 
