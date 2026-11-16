@@ -460,14 +460,15 @@ pub fn in_pcbdetach(inp: &'static Inpcb) {
     k::in_pcbdetach(h, net_held("in_pcbdetach").net(), free_legacy_opts);
 }
 
-/// `in_pcbsolock`: locks the socket of `inp`; `None` when it is detached.
+/// `in_pcbsolock`: locks the socket of `inp`; `None` when it is detached (the kernel's
+/// detached form: `bsd`'s protocols unlock in another function).
 pub fn in_pcbsolock(inp: &'static Inpcb) -> Option<&'static Socket> {
-    k::in_pcbsolock(inp)
+    k::in_pcbsolock_detached(inp)
 }
 
 /// `in_pcbsounlock`: unlocks what `in_pcbsolock` locked.
 pub fn in_pcbsounlock(inp: Option<&Inpcb>, so: Option<&Socket>) {
-    k::in_pcbsounlock(inp, so);
+    k::in_pcbsounlock_detached(inp, so);
 }
 
 /// `in_pcbref`: takes a reference to `inp`.
@@ -582,7 +583,10 @@ pub fn in_pcbnotifyall(
     let Some(notify) = notify else {
         return;
     };
-    k::in_pcbnotifyall(table, dst, rtable, errno, |inp, e| {
+    // The caller's net lock, proved for the walk; each matching socket locked by the kernel
+    // (a detached holding: the protocols are `bsd`'s, which need no witness).
+    let lend = net_held("in_pcbnotifyall");
+    k::in_pcbnotifyall(table, dst, rtable, errno, lend.net(), |inp, _w, e| {
         notify(inp_static(inp), e)
     });
 }

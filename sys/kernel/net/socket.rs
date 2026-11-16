@@ -1155,6 +1155,15 @@ pub fn solocked_legacy<'a, G: ProcGlue>(
     }
 }
 
+/// `so`'s lock taken under the caller's proof of the net lock, `net` (`in_pcbsolock`'s: the
+/// C's `rw_enter_write(&so->so_lock)` of an internet socket whose caller holds the net lock,
+/// either mode): `so_lock` as `so`'s protocol takes it (a witness for the kernel's, whose
+/// cells [`SoLocked::inet`] opens; a detached holding for `bsd`'s), the proof carried and
+/// never let go here. The drop lets `so_lock` go (`in_pcbsounlock`).
+pub fn solock_net<'a, G: ProcGlue>(so: &'a Socket<G>, net: &'a NetHeld<'a>) -> SoLocked<'a> {
+    SoLocked::take(so, NetHold::Lent(net))
+}
+
 /// `solock_shared(so)`: the shared net lock (internet domains), then the socket's lock.
 pub fn solock_shared<G: ProcGlue>(so: &Socket<G>) -> SoLocked<'_> {
     let net = if so.is_inet() {

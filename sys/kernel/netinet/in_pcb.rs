@@ -269,6 +269,15 @@
 //!   (O(1) a step, docs/COLLECTIONS.md); [`in_pcb_iterator`] takes the previous answer by
 //!   value and gives the next one counted, so the C's `in_pcbunref` of the previous pcb is
 //!   the drop of its handle under the table mutex, as the C's `pool_put` under it.
+//! - N6.6a0 (D-1): [`in_pcbsolock`] answers the socket's lock as a [`SoLocked`] under the
+//!   caller's proof of the net lock: a witness of `so_lock` for a kernel protocol's socket
+//!   (its `[s]` cells open through [`SoLocked::inet`]'s parts), a detached holding for a
+//!   `bsd` protocol's; its drop is `in_pcbsounlock`. LZ's pair, taken in one function and
+//!   released in another, stays for `bsd`'s adapter as [`in_pcbsolock_detached`] and
+//!   [`in_pcbsounlock_detached`] until the transports move (N6.6a5, N6.6b).
+//!   [`in_pcbnotifyall`] and `in6_pcbnotify` lock through the new form and lend `notify` the
+//!   witness. A kernel TCP request never calls `in_pcbsolock` on the socket it holds (the
+//!   C's `tcp_timer_rexmt` lets its socket go before `in_pcbnotifyall`).
 //!
 //! Lock and spl transitions per operation, against the C (`in_pcb.c`):
 //!
@@ -335,7 +344,7 @@ use crate::net::proto::PR_CONNREQUIRED;
 use crate::net::route::{Route, Rtentry, rtdeletemsg};
 use crate::net::rtable::{rtable_exists, rtable_getsource, rtable_l2};
 use crate::net::sockbuf::SS_NOFDREF;
-use crate::net::socket::{Socket, SocketRef, sofree_legacy, soref};
+use crate::net::socket::{SoLocked, Socket, SocketRef, sofree_legacy, solock_net, soref};
 use crate::netinet::in_::{in_broadcast, in_ifp2ia, in_nam2sin};
 use crate::netinet::in_var::ifatoia;
 use crate::netinet::ip_output::ip_freemoptions;
@@ -1990,9 +1999,32 @@ pub fn in_pcbdetach<G: ProcGlue>(
     drop(inp);
 }
 
-/// `in_pcbsolock`: locks the socket of `inp` (the caller holds the net lock); `None` when it
-/// is detached.
-pub fn in_pcbsolock<G: ProcGlue>(inp: &Inpcb<G>) -> Option<&Socket<G>> {
+/// `in_pcbsolock(inp)`: the socket of `inp` locked under the caller's net lock (`net`, either
+/// mode); `None` when it is detached (a close ran first: its socket has no pcb any more). The
+/// lock is `so_lock`, taken as the socket's protocol takes it (`solock_net`): a witness for
+/// the kernel's protocols, whose `[s]` cells [`SoLocked::inet`] opens, a detached holding for
+/// `bsd`'s. Its drop is `in_pcbsounlock`. Lock order: the net lock, then `so_lock`; the
+/// caller holds no other socket's lock and not this one's (a second holding would wait for
+/// itself, N6.6a0's S2).
+pub fn in_pcbsolock<'a, G: ProcGlue>(
+    inp: &'a Inpcb<G>,
+    net: &'a NetHeld<'a>,
+) -> Option<SoLocked<'a>> {
+    let so = inp.socket_opt()?;
+    let w = solock_net(so, net);
+    if so.legacy_pcb() == 0 {
+        drop(w);
+        return None;
+    }
+    kassert!(so.legacy_pcb() == core::ptr::from_ref(inp).addr());
+    Some(w)
+}
+
+/// `in_pcbsolock` held C-style, for `bsd`'s adapter (its protocols release the lock in
+/// another function, `in_pcbsounlock`): `so_lock` by a detached holding, the caller holding
+/// the net lock (checked: `panic(9)` without it); `None` when the socket is detached. Until
+/// the transports move (N6.6a5, N6.6b).
+pub fn in_pcbsolock_detached<G: ProcGlue>(inp: &Inpcb<G>) -> Option<&Socket<G>> {
     // NET_ASSERT_LOCKED(): this process's write holding or a read holding.
     if !matches!(hal::netlock::status(), RW_WRITE | hal::rwlock::RW_READ) {
         kpanic(format_args!(
@@ -2009,8 +2041,8 @@ pub fn in_pcbsolock<G: ProcGlue>(inp: &Inpcb<G>) -> Option<&Socket<G>> {
     Some(so)
 }
 
-/// `in_pcbsounlock`: unlocks what [`in_pcbsolock`] locked.
-pub fn in_pcbsounlock<G: ProcGlue>(inp: Option<&Inpcb<G>>, so: Option<&Socket<G>>) {
+/// `in_pcbsounlock` of what [`in_pcbsolock_detached`] locked.
+pub fn in_pcbsounlock_detached<G: ProcGlue>(inp: Option<&Inpcb<G>>, so: Option<&Socket<G>>) {
     let Some(so) = so else {
         return;
     };
@@ -2107,13 +2139,15 @@ pub fn in_setpeeraddr<G: ProcGlue>(inp: &Inpcb<G>) -> SockaddrIn {
 /// with address `dst`. The "usual action" will be taken, depending on the ctlinput cmd. The
 /// caller must filter any cmds that are uninteresting (e.g., no error in the map). Calls the
 /// protocol specific routine `notify` to report any errors for each matching socket, with
-/// the socket locked.
+/// the socket locked (`in_pcbsolock` under the caller's net lock, `net`; its witness lent to
+/// `notify`).
 pub fn in_pcbnotifyall<G: ProcGlue>(
     table: &Inpcbtable<G>,
     dst: &SockaddrIn,
     rtable: u32,
     errno: Option<Errno>,
-    mut notify: impl FnMut(&Inpcb<G>, Option<Errno>),
+    net: &NetHeld<'_>,
+    mut notify: impl FnMut(&Inpcb<G>, &mut SoLocked<'_>, Option<Errno>),
 ) {
     if dst.sin_addr.s_addr == INADDR_ANY {
         return;
@@ -2133,11 +2167,9 @@ pub fn in_pcbnotifyall<G: ProcGlue>(
             continue;
         }
         drop(g);
-        let so = in_pcbsolock(&i);
-        if so.is_some() {
-            notify(&i, errno);
+        if let Some(mut w) = in_pcbsolock(&i, net) {
+            notify(&i, &mut w, errno);
         }
-        in_pcbsounlock(Some(&i), so);
         g = table.lock();
         inp = Some(i);
     }
@@ -3360,7 +3392,7 @@ mod tests {
         {
             let _r = NETLOCK.read();
             assert!(
-                in_pcbsolock(&keep).is_none(),
+                in_pcbsolock_detached(&keep).is_none(),
                 "the socket is gone: drop the segment"
             );
         }
@@ -3417,11 +3449,43 @@ mod tests {
     }
 
     #[test]
+    fn in_pcbsolock_holds_a_kernel_socket_by_a_witness_until_its_pcb_goes() {
+        // The test's protocol is a kernel one: its socket is locked by a witness of so_lock
+        // under the caller's net lock, the parts open; once detached, the socket is not
+        // locked (the C's so_pcb == NULL), and nothing is left held.
+        let (_g, _p) = testinet::setup();
+        let t = testinet::table(16);
+        let (so, inp) = testinet::pcb(t);
+        let keep = inp.clone();
+        let sock = keep.socket_opt().map(|s| core::ptr::from_ref(s).addr());
+        let (held, parts) = {
+            let r = NETLOCK.read();
+            let net = NetHeld::of(&r).expect("the net lock's witness");
+            let mut w = in_pcbsolock(&keep, &net).expect("attached");
+            let held = keep.socket().so_lock_legacy().lock().status() == hal::rwlock::RW_WRITE;
+            let parts = w.inet().is_some();
+            drop(w);
+            (held, parts)
+        };
+        assert!(held && parts, "a witness of so_lock, opened in parts");
+        assert_eq!(keep.socket().so_lock_legacy().lock().status(), 0);
+        testinet::release(so, inp);
+        let gone = {
+            let r = NETLOCK.read();
+            let net = NetHeld::of(&r).expect("the net lock's witness");
+            in_pcbsolock(&keep, &net).is_none()
+        };
+        assert!(gone, "the socket is detached: nothing to lock");
+        assert_eq!(keep.socket().so_lock_legacy().lock().status(), 0);
+        assert!(sock.is_some());
+    }
+
+    #[test]
     #[should_panic(expected = "in_pcbsolock: inpcb")]
-    fn in_pcbsolock_needs_the_net_lock() {
+    fn in_pcbsolock_detached_needs_the_net_lock() {
         let (_g, _p) = testinet::setup();
         let (_so, inp) = testinet::pcb(testinet::table(16));
-        let _ = in_pcbsolock(&inp);
+        let _ = in_pcbsolock_detached(&inp);
     }
 
     #[test]
