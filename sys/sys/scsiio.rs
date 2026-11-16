@@ -24,7 +24,7 @@
 //! Upstream: sys/sys/scsiio.h @ 3ce1f3f79392
 //!
 //! The original file carries no licence text, only its `$OpenBSD$` and `$NetBSD$` lines
-//! (kept above); the user accepted it for kernel ports on 2026-10-04.
+//! (not kept); the user accepted it for kernel ports on 2026-10-04.
 //!
 //! ## Deviations
 //! - The structures are `#[repr(C)]` ABI types with LP64 sizes and offsets checked at

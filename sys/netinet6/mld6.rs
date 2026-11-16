@@ -1,4 +1,3 @@
-/*	$KAME: mld6.c,v 1.26 2001/02/16 14:50:35 itojun Exp $	*/
 /* <LICENSES> */
 /*
  * Copyright (c) 2026 Emilio Navarrete Lineros <enavarre@outlook.com>

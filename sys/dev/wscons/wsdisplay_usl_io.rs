@@ -24,7 +24,7 @@
 //! Upstream: sys/dev/wscons/wsdisplay_usl_io.h @ 3ce1f3f79392
 //!
 //! ## Deviations
-//! - The header has no licence text; its `$OpenBSD$` and `$NetBSD$` lines are kept.
+//! - The header has no licence text, only its `$OpenBSD$` and `$NetBSD$` lines (not kept).
 //! - The `_IO*` numbers are `sys/sys/ioccom.rs`'s `const fn`s; `vtmode_t` is
 //!   [`VtMode`]; `unchar`/`ushort` are `u8`/`u16`.
 

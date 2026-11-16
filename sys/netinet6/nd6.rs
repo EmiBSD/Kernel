@@ -1,5 +1,3 @@
-/*	$KAME: nd6.h,v 1.95 2002/06/08 11:31:06 itojun Exp $	*/
-/*	$KAME: nd6.c,v 1.280 2002/06/08 19:52:07 itojun Exp $	*/
 /* <LICENSES> */
 /*
  * Copyright (c) 2026 Emilio Navarrete Lineros <enavarre@outlook.com>

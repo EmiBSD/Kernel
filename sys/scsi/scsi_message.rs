@@ -24,7 +24,7 @@
 //!
 //! Upstream: sys/scsi/scsi_message.h @ 3ce1f3f79392
 //!
-//! The original file carries no licence text, only its `$OpenBSD$` line (kept above); every
+//! The original file carries no licence text, only its `$OpenBSD$` line (not kept); every
 //! notice in the reference tree is accepted (the user's rule of 2026-10-04).
 //!
 //! ## Deviations

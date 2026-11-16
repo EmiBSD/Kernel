@@ -24,7 +24,7 @@
 //! Upstream: sys/sys/cdio.h @ 3ce1f3f79392
 //!
 //! The original file carries no licence text, only its `$OpenBSD$` and `$NetBSD$` lines
-//! (kept above); every notice in the reference tree is accepted (the user's rule of
+//! (not kept); every notice in the reference tree is accepted (the user's rule of
 //! 2026-10-04).
 //!
 //! ## Deviations

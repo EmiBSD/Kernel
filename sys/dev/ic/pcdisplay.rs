@@ -23,7 +23,7 @@
 //! Upstream: sys/dev/ic/pcdisplay.h @ 3ce1f3f79392
 //!
 //! The original file carries no licence text, only its `$OpenBSD$` and `$NetBSD$` lines
-//! (kept above).
+//! (not kept).
 //!
 //! ## Deviations
 //! - None: every define is here, as a `u32` (the attribute type of the emulops).
