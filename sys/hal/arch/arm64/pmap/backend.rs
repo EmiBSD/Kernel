@@ -167,7 +167,10 @@
 //!   block and page its root reaches ([`pmap_kernel_nonglobal`], before the switch's
 //!   `tlbi vmalle1is`), the leaves the pmap makes carry it already (`pmap_pte_update`,
 //!   `kernel_leaf`), and `postinit` walks the kernel's tables again and panics on a global
-//!   one ([`pmap_kernel_nonglobal_check`]). The cost is the C's: kernel TLB entries are tagged
+//!   one ([`pmap_kernel_nonglobal_check`]). The same two passes give every such leaf
+//!   `ATTR_UXN` and prove it (LZ's df8508cf1682: no adopted kernel mapping executable at EL0,
+//!   which FEAT_PAN3 turns into a fault on every privileged read). The cost is the C's:
+//!   kernel TLB entries are tagged
 //!   with the running pair's ASID, refilled after a switch to another ASID. The C's walk-free `memset` of the
 //!   root is the steal's zeroing; it extracts the first page's address once and adds
 //!   `PAGE_SIZE`, here each page's address is extracted.
@@ -596,6 +599,15 @@ fn walk_kernel_leaves(table: Paddr, level: usize, leaf: &mut impl FnMut(&'static
 /// converted is a misprogramming the Arm ARM leaves undefined), so a leaf with
 /// [`ATTR_CONTIGUOUS`] set panics instead: no table of this tree sets it, and a boot loader's
 /// that did would be caught here, before the switch.
+///
+/// The same pass sets `ATTR_UXN` on every one of them (LZ's df8508cf1682, the C's rule:
+/// `ap_bits_kern` and `locore0.S` give every kernel mapping `ATTR_UXN`): no kernel mapping is
+/// executable at EL0. A boot loader's leaf without it (Limine's direct map blocks are AP 00
+/// with UXN clear) is execute-only at EL0, and on a processor with FEAT_PAN3
+/// (`SCTLR_EL1.EPAN`, set by `cpu_init` as the C does) every privileged read of such a page
+/// faults. The direct map's table entries already take execution away below them (see the
+/// deviations); the leaf's own bit makes the rule hold whatever a table says, and it is a
+/// permission taken away, another change a live entry may take without break-before-make.
 fn pmap_kernel_nonglobal(root: Paddr) {
     walk_kernel_leaves(root, 0, &mut |e, d| {
         if d & ATTR_CONTIGUOUS != 0 {
@@ -604,20 +616,27 @@ fn pmap_kernel_nonglobal(root: Paddr) {
                 ptr::from_ref(e)
             ));
         }
-        if d & ATTR_nG == 0 {
-            e.store(d | ATTR_nG, Ordering::Release);
+        if d & (ATTR_nG | ATTR_UXN) != (ATTR_nG | ATTR_UXN) {
+            e.store(d | ATTR_nG | ATTR_UXN, Ordering::Release);
         }
     });
 }
 
-/// The boot-time proof of [`pmap_kernel_nonglobal`]'s rule: panics on a block or page of the
+/// The boot-time proof of [`pmap_kernel_nonglobal`]'s rules: panics on a block or page of the
 /// kernel's tables without `ATTR_nG`, which would match every ASID and so stay in the TLB
-/// while user code runs under `pmap_tramp`.
+/// while user code runs under `pmap_tramp`, and on one without `ATTR_UXN`, which would be
+/// executable at EL0 (and unreadable by the kernel under FEAT_PAN3).
 fn pmap_kernel_nonglobal_check(root: Paddr) {
     walk_kernel_leaves(root, 0, &mut |e, d| {
         if d & ATTR_nG == 0 {
             hal_panic(format_args!(
                 "pmap_postinit: the global kernel mapping {d:#x} at {:p}",
+                ptr::from_ref(e)
+            ));
+        }
+        if d & ATTR_UXN == 0 {
+            hal_panic(format_args!(
+                "pmap_postinit: the kernel mapping {d:#x} at {:p} is executable at EL0",
                 ptr::from_ref(e)
             ));
         }
