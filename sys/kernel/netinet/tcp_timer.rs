@@ -1277,6 +1277,69 @@ mod tests {
     }
 
     #[test]
+    fn the_wheel_runs_the_callouts_and_one_frees_the_control_block() {
+        use std::time::{Duration, Instant};
+
+        use crate::netinet::tcp_fsm::TCPS_SYN_SENT;
+
+        // The wheel is the process's: the tests that tick it serialise on timeout's lock and
+        // kevent's, both taken before the net tests' memory, as theirs are.
+        let _t = crate::timeout::tests::LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _e = crate::event::tests::WHEEL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::timeout::startup(100, 10_000, 10_000_000);
+        crate::timeout::start_mp_thread_for_tests();
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, d) = testtcp::estab(b"ttmr9", 39);
+        // Hardclock by hand until `done` (the softclockmp thread runs TCP's callouts, which
+        // are TIMEOUT_PROC | TIMEOUT_MPSAFE), ten seconds at most.
+        let tick_until = |done: &dyn Fn() -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !done() && Instant::now() < deadline {
+                crate::timeout::tick_once();
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            done()
+        };
+
+        // A delayed ACK armed for 10 ms: tcp_timer_delack from the wheel sends the ACK.
+        let before = testtcp::sent(d);
+        testtcp::with_tp(&inp, |mut tp| {
+            tcp_timer_arm(&mut tp, TCPT_DELACK, 10);
+            ((), None)
+        });
+        assert!(
+            tick_until(&|| testtcp::sent(d) > before),
+            "the delayed ACK went out"
+        );
+        let (_ip, th, _o, _p) = testtcp::last(d);
+        assert_eq!((th.th_flags, u32::from_be(th.th_ack)), (TH_ACK, 5000));
+        let armed = testtcp::with_tp(&inp, |tp| (tcp_timer_isarmed(tp.st, TCPT_DELACK), None));
+        assert!(!armed, "the callout's flag cleared");
+
+        // An embryonic connection's keep alive armed for 10 ms: tcp_drop and tcp_close from
+        // the wheel's thread, the control block freed there.
+        let tcpcbs = testtcp::tcpcbs();
+        testtcp::with_tp(&inp, |mut tp| {
+            tp.st.t_state = TCPS_SYN_SENT;
+            tcp_timer_arm(&mut tp, TCPT_KEEP, 10);
+            ((), None)
+        });
+        so.st_set(crate::net::sockbuf::SS_NOFDREF);
+        assert!(
+            tick_until(&|| testtcp::tcpcbs() < tcpcbs),
+            "the control block freed by the callout"
+        );
+        assert_eq!(so.error(), Some(Errno::ETIMEDOUT));
+        assert_eq!(testtcp::sent(d), before + 1, "no RST before a SYN came");
+        drop(inp);
+        drop(so);
+    }
+
+    #[test]
     fn slowtimo_advances_the_iss() {
         let (_g, _p) = testtcp::setup();
         let before = *TCP_ISS.lock();
