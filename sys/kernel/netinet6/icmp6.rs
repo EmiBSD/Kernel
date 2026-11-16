@@ -306,8 +306,9 @@ const ICMP6_HDR_LEN: usize = size_of::<Icmp6Hdr>();
 const M_PCB: i32 = 4;
 
 /// `void (*mc_func)(struct sockaddr_in6 *, u_int)`: a path MTU change callback (the
-/// destination and the routing table).
-pub type Mtudisc6Fn = fn(&SockaddrIn6, u32);
+/// destination and the routing table), with the proof of the net lock `icmp6_mtudisc_update`
+/// runs under (the C's callers hold it; TCP's callback locks sockets under it, N6.6a3).
+pub type Mtudisc6Fn = fn(&SockaddrIn6, u32, &NetHeld<'_>);
 
 /// `struct ip6ctlparam`: the argument of an IPv6 protocol's control input (`pr_ctlinput`),
 /// consulted only with the `AF_INET6` family, valid for the call.
@@ -479,12 +480,13 @@ pub fn icmp6_mtudisc_callback_register(func: Mtudisc6Fn) {
     drop(old);
 }
 
-/// The callbacks registered, called with `sin6` and `rtableid`.
-fn icmp6_mtudisc_notify(sin6: &SockaddrIn6, rtableid: u32) {
+/// The callbacks registered, called with `sin6`, `rtableid` and the caller's proof of the
+/// net lock.
+fn icmp6_mtudisc_notify(sin6: &SockaddrIn6, rtableid: u32, net: &NetHeld<'_>) {
     let cbs = ICMP6_MTUDISC_CALLBACKS.read();
     if let Some(a) = cbs.as_ref() {
         for f in a.iter() {
-            f(sin6, rtableid);
+            f(sin6, rtableid, net);
         }
     }
 }
@@ -1199,7 +1201,7 @@ pub fn icmp6_mtudisc_update(ip6cp: &Ip6CtlParam<'_>, validated: bool, net: &NetH
     // rtfree(rt): the clone's handle dropped above.
 
     // Notify protocols that the MTU for this destination has changed.
-    icmp6_mtudisc_notify(&sin6, rtableid);
+    icmp6_mtudisc_notify(&sin6, rtableid, net);
 }
 
 /// `icmp6_reflect(mp, off, sa)`: reflect the ip6 packet back to the source. `off` points to
@@ -2593,7 +2595,7 @@ pub(crate) mod tests {
     fn path_mtu_discovery_clones_a_host_route_and_lowers_its_mtu() {
         let (_g, ifp) = net6();
         static CALLED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-        fn cb(_: &SockaddrIn6, _: u32) {
+        fn cb(_: &SockaddrIn6, _: u32, _: &NetHeld<'_>) {
             CALLED.fetch_add(1, Ordering::Relaxed);
         }
         icmp6_mtudisc_callback_register(cb);

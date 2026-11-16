@@ -1130,8 +1130,9 @@ pub unsafe fn tcp_ctlinput(cmd: i32, sa: *const Sockaddr, rdomain: u32, v: *mut 
 }
 
 /// `tcp6_mtudisc_callback`: path MTU discovery handler of `icmp6_mtudisc_update`.
-/// `INET6`; compiled always, as `netinet6` is.
-pub fn tcp6_mtudisc_callback(sin6: &SockaddrIn6, rdomain: u32) {
+/// `INET6`; compiled always, as `netinet6` is. The kernel's proof of the net lock is not
+/// read: `bsd`'s `in6_pcbnotify` adapter finds its own (the `SaToken`).
+pub fn tcp6_mtudisc_callback(sin6: &SockaddrIn6, rdomain: u32, _net: &hal::netlock::NetHeld<'_>) {
     in6_pcbnotify(
         &TCB6TABLE,
         sin6,

@@ -91,18 +91,16 @@
 //! `_DISARM` and `_ISARMED` are [`tcp_timer_init`], [`tcp_timer_arm`], [`tcp_timer_disarm`]
 //! and [`tcp_timer_isarmed`]; every callout enters through [`tcp_timer_enter`], which takes
 //! the shared net lock and the socket lock and ignores a timer that was canceled or
-//! rescheduled meanwhile, then runs the timer's work.
+//! rescheduled meanwhile, then runs the timer's work. [`tcp_slowtimo`], the protocol's
+//! 500 ms routine, only advances `tcp_iss`.
 //!
 //! ## Deviations
-//! - The work of the retransmit, persist, keep alive and delayed ACK callouts is N6.6a3's: the
-//!   delayed ACK's calls `tcp_output`, the retransmit and persist ones `tcp_output` and
-//!   `tcp_drop`, the keep alive one `tcp_drop` (the cycle that sub-slice moves). Until then
-//!   the kernel's TCP is unregistered (N6.6a5), no kernel control block exists outside the
-//!   host tests, and a live timer of those four that fires is `panic(9)` naming the sub-slice
-//!   (`docs/SCAFFOLDING.md`). Their entry through [`tcp_timer_enter`] (the checks that make a
-//!   fire after `tcp_close`, after a disarm or after a re-arm do nothing) is whole, and the
-//!   2*MSL callout is whole (its callees are this slice's: `tcp_timer_freesack`,
-//!   `TCP_TIMER_ARM`, `tcp_close`, `tcp_trace`).
+//! - A keep alive probe of a connection without a template sends nothing (the C dereferences
+//!   `tp->t_template`; every connection past its SYN has one: `tcp_connect` and
+//!   `syn_cache_get` fail without it), as LZ's.
+//! - The retransmit timer's path MTU notice (`TF_PMTUD_PEND`) gives the pcb's count back
+//!   when the callout returns (the wheel's clone, D-11), after `icmp_mtudisc` and the walk,
+//!   where the C's `in_pcbunref` runs before them; no interface reports the count.
 //! - The 2*MSL callout's trace after a close records the closed block's address with no
 //!   snapshot (the C passes `tp`, NULL after `tcp_close`, beside the freed `otp`).
 //! - `TCPT_RANGESET` is the function [`tcpt_rangeset`] (the C macro row of
@@ -134,21 +132,54 @@
 //! - `tcp_timer_funcs[]` is [`tcp_timer_funcs`], a function of the glue (a callout is generic
 //!   over it, as the pcb): five `SharedFn`s by `TCPT_*` index, as `softintr_hand`.
 //! - `tcp_timer_freesack` empties the owned hole list one hole at a time.
+//! - N6.6a3: the four other callouts' work (LZ's over `&'static Tcpcb`): the work answers a
+//!   [`TimerWork`]: the block kept, closed (`tcp_drop`, `tcp_close`: freed by the entry
+//!   before the socket lock goes), or the retransmit timer's [`PmtudNotice`], which the entry
+//!   acts on once the socket lock is let go and before the net lock is (`icmp_mtudisc`, then
+//!   `in_pcbnotifyall` with `tcp_mtudisc`, which locks each connection's socket, this one's
+//!   included: the C unlocks first for the same reason). The trace's `otp` is the block's
+//!   address, `ostate` its state before the work (`trace_start`). The C's mixed `int`,
+//!   `u_int` and `uint64_t` comparisons and `TCPT_RANGESET`'s order are kept where the types
+//!   mix (the retransmit timeout, the persist and keep alive idle bounds).
 
+use core::mem::size_of;
 use core::sync::atomic::{AtomicI32, Ordering};
 
 use hal::netlock::{NETLOCK, NetHeld};
 use hal::pool::{AnyArc, PoolArc};
-use hal::sys::socket::SO_DEBUG;
+use hal::sys::errno::Errno;
+use hal::sys::net_route::{RTF_HOST, RTV_MTU};
+use hal::sys::netinet_in::SockaddrIn;
+use hal::sys::netinet_ip::Ip;
+use hal::sys::socket::{AF_INET, AF_INET6, SO_DEBUG, SO_KEEPALIVE};
 
 use crate::assert::{kassert, kpanic};
-use crate::netinet::in_pcb::{Inpcb, in_pcbsolock};
+use crate::net::proto::PR_SLOWHZ;
+use crate::netinet::in_pcb::{
+    INP_IPV6, Inpcb, in_losing, in_pcbnotifyall, in_pcbrtchange, in_pcbrtentry, in_pcbsolock,
+};
+use crate::netinet::ip_icmp::{icmp_mtudisc, icmp_mtudisc_clone};
+use crate::netinet::ip_var::ip_mtudisc;
 use crate::netinet::tcp_debug::{TA_TIMER, tcp_trace};
-use crate::netinet::tcp_fsm::TCPS_TIME_WAIT;
-use crate::netinet::tcp_subr::{Closed, tcp_close, tcp_free};
-use crate::netinet::tcp_var::{TF_TIMER, TcpState, Tcpcb, Tp, intotcpcb, tcp_now, tcp_time};
+use crate::netinet::tcp_fsm::{
+    TCPS_CLOSING, TCPS_SYN_RECEIVED, TCPS_SYN_SENT, TCPS_TIME_WAIT, tcps_haveestablished,
+};
+use crate::netinet::tcp_output::{tcp_output, tcp_setpersist};
+use crate::netinet::tcp_seq::{TCP_ISSINCR2, seq_geq, seq_lt};
+use crate::netinet::tcp_subr::{
+    Closed, TCP_DO_ECN, TCP_ISS, tcp_close, tcp_drop, tcp_free, tcp_mtudisc_notify, tcp_respond,
+};
+use crate::netinet::tcp_var::{
+    TCP_RTT_SHIFT, TF_ACKNOW, TF_DISABLE_ECN, TF_PMTUD_PEND, TF_SEND_CWR, TF_TIMER, TcpState,
+    Tcpcb, TcpstatCounters, Tp, intotcpcb, tcp_now, tcp_rexmtval, tcp_time, tcpstat_inc,
+};
 use crate::proc::ProcGlue;
 use crate::timeout::{KCLOCK_NONE, SharedFn, TIMEOUT_MPSAFE, TIMEOUT_PROC};
+
+/// `AF_INET` as the `int` of `tp->pf`.
+const AF_INET_I32: i32 = AF_INET as i32;
+/// `AF_INET6` as the `int` of `tp->pf`.
+const AF_INET6_I32: i32 = AF_INET6 as i32;
 
 // Definitions of the TCP timers.
 
@@ -205,6 +236,33 @@ pub const TCP_DELACK_MSECS: i32 = 200;
 
 /// `tcp_totbackoff`: sum of `tcp_backoff[]`.
 pub const TCP_TOTBACKOFF: i32 = 511;
+
+/// What a callout's work leaves for [`tcp_timer_enter`] to finish.
+pub enum TimerWork {
+    /// The control block stays.
+    Kept,
+    /// The work closed it (`tcp_close`, `tcp_drop`): it is freed before the socket lock
+    /// goes.
+    Closed(Closed),
+    /// The retransmit timer's path MTU notice (`TF_PMTUD_PEND`), acted on once the socket
+    /// lock is let go, under the net lock.
+    Mtudisc(PmtudNotice),
+}
+
+/// The retransmit timer's path MTU notice: the fake ICMP message `icmp_mtudisc` reads (its
+/// next-hop MTU, network order, and the returned header's length, header length and
+/// destination), the peer every connection to which is told (`in_pcbnotifyall`), and the
+/// routing table.
+pub struct PmtudNotice {
+    /// `icmp.icmp_nextmtu`.
+    pub nextmtu: u16,
+    /// `icmp.icmp_ip`.
+    pub oip: Ip,
+    /// The peer, as `in_pcbnotifyall`'s destination.
+    pub sin: SockaddrIn,
+    /// `inp->inp_rtableid`.
+    pub rtableid: u32,
+}
 
 /// \[a\] `tcp_always_keepalive`: assume `SO_KEEPALIVE` always set.
 pub static TCP_ALWAYS_KEEPALIVE: AtomicI32 = AtomicI32::new(0);
@@ -297,13 +355,15 @@ pub fn tcp_timer_isarmed(st: &TcpState, timer: usize) -> bool {
 /// `inp`; nothing more for a socket gone (detached by a close that ran first), a control
 /// block gone, or a timeout that was canceled (its flag clear) or rescheduled (pending
 /// again) meanwhile; otherwise the flag is cleared and `work` runs with the control block.
-/// What `work` closed is freed before the socket lock goes (`tcp_free`); then the locks are
-/// let go in the C's order (the socket's, then the net lock), and the wheel drops its clone
-/// of the pcb's handle after the callout (`in_pcbunref`).
+/// What `work` closed is freed before the socket lock goes (`tcp_free`); a path MTU notice
+/// it leaves runs once the socket lock is let go, under the net lock (the retransmit timer's
+/// `TF_PMTUD_PEND` path: `icmp_mtudisc` and the walk that tells every connection to the
+/// peer); then the net lock is let go, and the wheel drops its clone of the pcb's handle
+/// after the callout (`in_pcbunref`).
 pub fn tcp_timer_enter<G: ProcGlue>(
     inp: &Inpcb<G>,
     timer: usize,
-    work: impl FnOnce(Tp<'_, '_, G>) -> Option<Closed>,
+    work: impl FnOnce(Tp<'_, '_, G>) -> TimerWork,
 ) {
     kassert!(timer < TCPT_NTIMERS);
 
@@ -313,26 +373,46 @@ pub fn tcp_timer_enter<G: ProcGlue>(
             "tcp_timer_enter: the net lock's witness proves no holding"
         ));
     };
-    let Some(mut so) = in_pcbsolock(inp, &net) else {
-        return;
-    };
-    // A kernel control block belongs to a kernel protocol's socket, always held by a
-    // witness (D-1): there is no other case to enter.
-    let Some(mut il) = so.inet() else {
-        return;
-    };
-    let Some(tp) = intotcpcb(inp, &mut il) else {
-        return;
-    };
-    // Ignore canceled timeouts or timeouts that have been rescheduled.
-    if !tp.st.has_flags(TF_TIMER << timer) || tp.cb.t_timer[timer].pending() {
-        return;
-    }
-    tp.st.clear_flags(TF_TIMER << timer);
+    let notice = {
+        let Some(mut so) = in_pcbsolock(inp, &net) else {
+            return;
+        };
+        // A kernel control block belongs to a kernel protocol's socket, always held by a
+        // witness (D-1): there is no other case to enter.
+        let Some(mut il) = so.inet() else {
+            return;
+        };
+        let Some(tp) = intotcpcb(inp, &mut il) else {
+            return;
+        };
+        // Ignore canceled timeouts or timeouts that have been rescheduled.
+        if !tp.st.has_flags(TF_TIMER << timer) || tp.cb.t_timer[timer].pending() {
+            return;
+        }
+        tp.st.clear_flags(TF_TIMER << timer);
 
-    if let Some(closed) = work(tp) {
-        tcp_free(inp, &mut il.pcb, closed);
+        match work(tp) {
+            TimerWork::Kept => None,
+            TimerWork::Closed(closed) => {
+                tcp_free(inp, &mut il.pcb, closed);
+                None
+            }
+            TimerWork::Mtudisc(n) => Some(n),
+        }
+        // in_pcbsounlock: the socket lock's holding goes here.
+    };
+    if let Some(n) = notice {
+        icmp_mtudisc(n.nextmtu, &n.oip, n.rtableid, &net);
+        in_pcbnotifyall(
+            &crate::net::domain::net::<G>().tcp.tcbtable,
+            &n.sin,
+            n.rtableid,
+            Some(Errno::EMSGSIZE),
+            &net,
+            tcp_mtudisc_notify::<G>,
+        );
     }
+    // NET_UNLOCK_SHARED: the witness's drop.
 }
 
 /// The pcb a TCP timer was set with ([`tcp_timer_init`]): the wheel's clone of its handle,
@@ -344,18 +424,46 @@ fn timer_inpcb<G: ProcGlue>(arg: &AnyArc) -> &Inpcb<G> {
     }
 }
 
-/// The work of a callout that is N6.6a3's (the module's deviations).
-fn n6_6a3(callout: &str) -> ! {
-    kpanic(format_args!(
-        "{callout}: the callout's work is N6.6a3's (the kernel's TCP is unregistered until N6.6a5)"
-    ))
+/// `otp` and `ostate` when the socket has `SO_DEBUG`: the control block's address and its
+/// state as the callout found them, for the trace after its work.
+fn trace_start<G: ProcGlue>(tp: &Tp<'_, '_, G>) -> Option<(usize, i32)> {
+    (tp.so.options() & SO_DEBUG != 0).then(|| {
+        (
+            core::ptr::from_ref::<Tcpcb<G>>(&tp.cb).addr(),
+            tp.st.t_state,
+        )
+    })
 }
 
-/// `tcp_timer_delack`: callout to process delayed ACKs for a TCPCB (its work N6.6a3's).
+/// `tcp_timer_delack`: callout to process delayed ACKs for a TCPCB.
 pub fn tcp_timer_delack<G: ProcGlue>(arg: &AnyArc) {
-    tcp_timer_enter(timer_inpcb::<G>(arg), TCPT_DELACK, |_| {
-        n6_6a3("tcp_timer_delack")
+    // If tcp_output() wasn't able to transmit the ACK for whatever reason, it will restart
+    // the delayed ACK callout.
+    tcp_timer_enter(timer_inpcb::<G>(arg), TCPT_DELACK, |mut tp| {
+        let otp = trace_start(&tp);
+        tp.st.set_flags(TF_ACKNOW);
+        let _ = tcp_output(&mut tp);
+        if let Some((otp, ostate)) = otp {
+            tcp_trace(
+                TA_TIMER,
+                ostate,
+                Some(tp.st),
+                otp,
+                None,
+                TCPT_DELACK as i32,
+                0,
+            );
+        }
+        TimerWork::Kept
     });
+}
+
+/// `tcp_slowtimo`: tcp protocol timeout routine called every 500 ms (`pr_slowtimo`): it
+/// advances `tcp_iss` (the connections' own timers are callouts).
+pub fn tcp_slowtimo() {
+    let mut iss = TCP_ISS.lock();
+    // increment iss
+    *iss = iss.wrapping_add(TCP_ISSINCR2 / PR_SLOWHZ as u32);
 }
 
 /// `tcp_canceltimers`: cancel all timers for TCP `tp`.
@@ -373,24 +481,298 @@ pub fn tcp_timer_freesack(st: &mut TcpState) {
     }
 }
 
-/// `tcp_timer_rexmt`: the retransmit timer (its work N6.6a3's).
+/// `tcp_timer_rexmt`: the retransmit timer: the retransmission backed off (or the
+/// connection dropped past `TCP_MAXRXTSHIFT`), path MTU discovery turned off for a peer that
+/// seems to swallow large segments, the estimate and the congestion window reset, the
+/// unacknowledged data sent again; a path MTU notice `tcp_ctlinput` kept for this segment
+/// (`TF_PMTUD_PEND`) is acted on instead.
 pub fn tcp_timer_rexmt<G: ProcGlue>(arg: &AnyArc) {
-    tcp_timer_enter(timer_inpcb::<G>(arg), TCPT_REXMT, |_| {
-        n6_6a3("tcp_timer_rexmt")
+    tcp_timer_enter(timer_inpcb::<G>(arg), TCPT_REXMT, |mut tp| {
+        let inp = tp.inp;
+        let st = &mut *tp.st;
+        if st.has_flags(TF_PMTUD_PEND)
+            && seq_geq(st.t_pmtud_th_seq, st.snd_una)
+            && seq_lt(
+                st.t_pmtud_th_seq,
+                st.snd_una.wrapping_add(u32::from(st.t_maxseg)),
+            )
+        {
+            // TF_PMTUD_PEND is set in tcp_ctlinput() which is IPv4 only
+            kassert!(!inp.has_flags(INP_IPV6));
+            st.clear_flags(TF_PMTUD_PEND);
+
+            let rtableid = inp.inp_rtableid.get();
+
+            // XXX create fake icmp message with relevant entries: its next-hop MTU and the
+            // returned header's length, header length and destination, all icmp_mtudisc
+            // reads of it.
+            let mut oip = Ip {
+                ip_len: st.t_pmtud_ip_len,
+                ip_dst: inp.inp_faddr.get(),
+                ..Ip::default()
+            };
+            oip.set_ip_hl(st.t_pmtud_ip_hl as u8);
+
+            // Notify all connections to the same peer about new mss and trigger retransmit:
+            // after the socket lock is let go (in_pcbsounlock, in_pcbunref).
+            let sin = SockaddrIn {
+                sin_len: size_of::<SockaddrIn>() as u8,
+                sin_family: AF_INET,
+                sin_addr: inp.inp_faddr.get(),
+                ..SockaddrIn::default()
+            };
+            return TimerWork::Mtudisc(PmtudNotice {
+                nextmtu: st.t_pmtud_nextmtu as u16,
+                oip,
+                sin,
+                rtableid,
+            });
+        }
+
+        tcp_timer_freesack(st);
+        st.t_rxtshift += 1;
+        if i32::from(st.t_rxtshift) > TCP_MAXRXTSHIFT {
+            st.t_rxtshift = TCP_MAXRXTSHIFT as i16;
+            tcpstat_inc(TcpstatCounters::TcpsTimeoutdrop);
+            let errno = st.t_softerror.unwrap_or(Errno::ETIMEDOUT);
+            return TimerWork::Closed(tcp_drop(tp, Some(errno)));
+        }
+        let otp = trace_start(&tp);
+        let st = &mut *tp.st;
+        tcpstat_inc(TcpstatCounters::TcpsRexmttimeo);
+        // `uint32_t rto`, the `u_int` minimum.
+        let mut rto = tcp_rexmtval(st) as u32;
+        if rto < st.t_rttmin {
+            rto = st.t_rttmin;
+        }
+        // TCPT_RANGESET(tp->t_rxtcur, rto * tcp_backoff[], tp->t_rttmin, TCPTV_REXMTMAX):
+        // the `u_int` product assigned to the `int` first, then compared with the `u_int`
+        // minimum (unsigned) and the `int` maximum, in the macro's order.
+        let mut rxtcur = rto.wrapping_mul(TCP_BACKOFF[st.t_rxtshift as usize] as u32) as i32;
+        if (rxtcur as u32) < st.t_rttmin {
+            rxtcur = st.t_rttmin as i32;
+        } else if rxtcur > TCPTV_REXMTMAX {
+            rxtcur = TCPTV_REXMTMAX;
+        }
+        st.t_rxtcur = rxtcur;
+        tcp_timer_arm(&mut tp, TCPT_REXMT, rxtcur as u64);
+
+        // If we are losing and we are trying path MTU discovery, try turning it off. This
+        // will avoid black holes in the network which suppress or fail to send "packet too
+        // big" ICMP messages. We should ideally do lots more sophisticated searching to find
+        // the right value here...
+        if ip_mtudisc.load(Ordering::Relaxed) != 0
+            && tcps_haveestablished(tp.st.t_state)
+            && i32::from(tp.st.t_rxtshift) > TCP_MAXRXTSHIFT / 6
+        {
+            'leave: {
+                // No data to send means path mtu is not a problem
+                if tp.so.so_snd.cc() == 0 {
+                    break 'leave;
+                }
+
+                // Check if path MTU discovery is disabled already
+                if in_pcbrtentry(inp, tp.net).is_some_and(|rt| {
+                    rt.rt_flags.isset(RTF_HOST) && rt.rt_locks().get() & RTV_MTU != 0
+                }) {
+                    break 'leave;
+                }
+
+                let rt = match tp.st.pf {
+                    // We can not turn off path MTU for IPv6. Do nothing for now, maybe lower
+                    // to minimum MTU.
+                    AF_INET6_I32 => None,
+                    AF_INET_I32 => icmp_mtudisc_clone(
+                        inp.inp_faddr.get(),
+                        inp.inp_rtableid.get(),
+                        false,
+                        tp.net,
+                    ),
+                    _ => None,
+                };
+                if let Some(rt) = rt {
+                    // Disable path MTU discovery
+                    if rt.rt_locks().get() & RTV_MTU == 0 {
+                        rt.rt_locks().set(rt.rt_locks().get() | RTV_MTU);
+                        in_pcbrtchange(inp, None);
+                    }
+                    // rtfree(rt): the handle's drop.
+                    drop(rt);
+                }
+            }
+        }
+
+        // If losing, let the lower level know and try for a better route. Also, if we
+        // backed off this far, our srtt estimate is probably bogus. Clobber it so we'll take
+        // the next rtt measurement as our srtt; move the current srtt into rttvar to keep the
+        // current retransmit times until then.
+        if i32::from(tp.st.t_rxtshift) > TCP_MAXRXTSHIFT / 4 {
+            in_losing(inp, tp.net);
+            let st = &mut *tp.st;
+            st.t_rttvar = st.t_rttvar.wrapping_add(st.t_srtt >> TCP_RTT_SHIFT);
+            st.t_srtt = 0;
+        }
+        let st = &mut *tp.st;
+        st.snd_nxt = st.snd_una;
+        // Note: We overload snd_last to function also as the snd_last variable described in
+        // RFC 2582
+        st.snd_last = st.snd_max;
+        // If timing a segment in this window, stop the timer.
+        st.t_rtttime = 0;
+        // TCP_ECN: if ECN is enabled, there might be a broken firewall which blocks ecn
+        // packets. fall back to non-ecn.
+        if (st.t_state == TCPS_SYN_SENT || st.t_state == TCPS_SYN_RECEIVED)
+            && TCP_DO_ECN.load(Ordering::Relaxed) != 0
+            && !st.has_flags(TF_DISABLE_ECN)
+        {
+            st.set_flags(TF_DISABLE_ECN);
+        }
+        // Close the congestion window down to one segment (we'll open it by one segment for
+        // each ack we get). Since we probably have a window's worth of unacked data
+        // accumulated, this "slow start" keeps us from dumping all that data as back-to-back
+        // packets (which might overwhelm an intermediate gateway).
+        //
+        // There are two phases to the opening: Initially we open by one mss on each ack.
+        // This makes the window size increase exponentially with time. If the window is
+        // larger than the path can handle, this exponential growth results in dropped
+        // packet(s) almost immediately. To get more time between drops but still "push" the
+        // network to take advantage of improving conditions, we switch from exponential to
+        // linear window opening at some threshold size. For a threshold, we use half the
+        // current window size, truncated to a multiple of the mss.
+        //
+        // (the minimum cwnd that will give us exponential growth is 2 mss. We don't allow
+        // the threshold to go below this.)
+        {
+            let maxseg = u64::from(st.t_maxseg);
+            let win = (st.snd_wnd.min(st.snd_cwnd) / 2 / maxseg).max(2);
+            st.snd_cwnd = maxseg;
+            st.snd_ssthresh = win * maxseg;
+            st.t_dupacks = 0;
+            // TCP_ECN
+            st.snd_last = st.snd_max;
+            st.set_flags(TF_SEND_CWR);
+            // #if 1 /* TCP_ECN */
+            tcpstat_inc(TcpstatCounters::TcpsCwrTimeout);
+        }
+        let _ = tcp_output(&mut tp);
+        if let Some((otp, ostate)) = otp {
+            tcp_trace(
+                TA_TIMER,
+                ostate,
+                Some(tp.st),
+                otp,
+                None,
+                TCPT_REXMT as i32,
+                0,
+            );
+        }
+        TimerWork::Kept
     });
 }
 
-/// `tcp_timer_persist`: the persist timer (its work N6.6a3's).
+/// `tcp_timer_persist`: the persist timer: a window probe forced out (`t_force`), or the
+/// connection dropped once the probes have gone unanswered as long as a full retransmit
+/// backoff.
 pub fn tcp_timer_persist<G: ProcGlue>(arg: &AnyArc) {
-    tcp_timer_enter(timer_inpcb::<G>(arg), TCPT_PERSIST, |_| {
-        n6_6a3("tcp_timer_persist")
+    tcp_timer_enter(timer_inpcb::<G>(arg), TCPT_PERSIST, |mut tp| {
+        if tcp_timer_isarmed(tp.st, TCPT_REXMT) {
+            return TimerWork::Kept;
+        }
+
+        let otp = trace_start(&tp);
+        tcpstat_inc(TcpstatCounters::TcpsPersisttimeo);
+        // Hack: if the peer is dead/unreachable, we do not time out if the window is closed.
+        // After a full backoff, drop the connection if the idle time (no responses to
+        // probes) reaches the maximum backoff that we would use if retransmitting.
+        let st = &*tp.st;
+        let mut rto = tcp_rexmtval(st) as u32;
+        if rto < st.t_rttmin {
+            rto = st.t_rttmin;
+        }
+        let now = tcp_now();
+        let idle = now.wrapping_sub(st.t_rcvtime);
+        // The `uint64_t` idle time against the `int` maximum (converted) and the `u_int`
+        // product `rto * tcp_totbackoff` (widened).
+        if i32::from(st.t_rxtshift) == TCP_MAXRXTSHIFT
+            && (idle >= TCP_MAXPERSISTIDLE.load(Ordering::Relaxed) as u64
+                || idle >= u64::from(rto.wrapping_mul(TCP_TOTBACKOFF as u32)))
+        {
+            tcpstat_inc(TcpstatCounters::TcpsPersistdrop);
+            return TimerWork::Closed(tcp_drop(tp, Some(Errno::ETIMEDOUT)));
+        }
+        tcp_setpersist(&mut tp);
+        tp.st.t_force = true;
+        let _ = tcp_output(&mut tp);
+        tp.st.t_force = false;
+        if let Some((otp, ostate)) = otp {
+            tcp_trace(
+                TA_TIMER,
+                ostate,
+                Some(tp.st),
+                otp,
+                None,
+                TCPT_PERSIST as i32,
+                0,
+            );
+        }
+        TimerWork::Kept
     });
 }
 
-/// `tcp_timer_keep`: the keep alive timer (its work N6.6a3's).
+/// `tcp_timer_keep`: the keep alive (and connection establishment) timer: a connection not
+/// yet established is dropped; an idle one with keep alive on is probed, and dropped when
+/// the probes go unanswered.
 pub fn tcp_timer_keep<G: ProcGlue>(arg: &AnyArc) {
-    tcp_timer_enter(timer_inpcb::<G>(arg), TCPT_KEEP, |_| {
-        n6_6a3("tcp_timer_keep")
+    tcp_timer_enter(timer_inpcb::<G>(arg), TCPT_KEEP, |mut tp| {
+        let otp = trace_start(&tp);
+        tcpstat_inc(TcpstatCounters::TcpsKeeptimeo);
+        if !tcps_haveestablished(tp.st.t_state) {
+            tcpstat_inc(TcpstatCounters::TcpsKeepdrops);
+            return TimerWork::Closed(tcp_drop(tp, Some(Errno::ETIMEDOUT)));
+        }
+        if (TCP_ALWAYS_KEEPALIVE.load(Ordering::Relaxed) != 0 || tp.so.has_options(SO_KEEPALIVE))
+            && tp.st.t_state <= TCPS_CLOSING
+        {
+            let keepidle = TCP_KEEPIDLE.load(Ordering::Relaxed);
+            let keepintvl = TCP_KEEPINTVL.load(Ordering::Relaxed);
+            let maxidle = TCPTV_KEEPCNT.wrapping_mul(keepintvl);
+            let now = tcp_now();
+            // The `uint64_t` idle time against the `int` sum, converted.
+            if maxidle > 0
+                && now.wrapping_sub(tp.st.t_rcvtime) >= keepidle.wrapping_add(maxidle) as u64
+            {
+                tcpstat_inc(TcpstatCounters::TcpsKeepdrops);
+                return TimerWork::Closed(tcp_drop(tp, Some(Errno::ETIMEDOUT)));
+            }
+            // Send a packet designed to force a response if the peer is up and reachable:
+            // either an ACK if the connection is still alive, or an RST if the peer has
+            // closed the connection due to timeout or reboot. Using sequence number
+            // tp->snd_una-1 causes the transmitted zero-length segment to lie outside the
+            // receive window; by the protocol spec, this requires the correspondent TCP to
+            // respond.
+            tcpstat_inc(TcpstatCounters::TcpsKeepprobe);
+            let (ack, seq) = (tp.st.rcv_nxt, tp.st.snd_una.wrapping_sub(1));
+            // A connection past SYN has its template (the deviations).
+            if let Some(t) = tp.st.t_template.as_ref() {
+                tcp_respond(Some(&tp), t.data(), None, ack, seq, 0, 0, now, tp.net);
+            }
+            tcp_timer_arm(&mut tp, TCPT_KEEP, keepintvl as u64);
+        } else {
+            let keepidle = TCP_KEEPIDLE.load(Ordering::Relaxed);
+            tcp_timer_arm(&mut tp, TCPT_KEEP, keepidle as u64);
+        }
+        if let Some((otp, ostate)) = otp {
+            tcp_trace(
+                TA_TIMER,
+                ostate,
+                Some(tp.st),
+                otp,
+                None,
+                TCPT_KEEP as i32,
+                0,
+            );
+        }
+        TimerWork::Kept
     });
 }
 
@@ -398,13 +780,7 @@ pub fn tcp_timer_keep<G: ProcGlue>(arg: &AnyArc) {
 /// the connection is closed; otherwise the timer runs again in `tcp_keepintvl`.
 pub fn tcp_timer_2msl<G: ProcGlue>(arg: &AnyArc) {
     tcp_timer_enter(timer_inpcb::<G>(arg), TCPT_2MSL, |mut tp| {
-        // otp and ostate when the socket has SO_DEBUG: the block's address, its state.
-        let otp = (tp.so.options() & SO_DEBUG != 0).then(|| {
-            (
-                core::ptr::from_ref::<Tcpcb<G>>(&tp.cb).addr(),
-                tp.st.t_state,
-            )
-        });
+        let otp = trace_start(&tp);
         tcp_timer_freesack(tp.st);
 
         let keepintvl = TCP_KEEPINTVL.load(Ordering::Relaxed);
@@ -426,13 +802,13 @@ pub fn tcp_timer_2msl<G: ProcGlue>(arg: &AnyArc) {
                     0,
                 );
             }
-            None
+            TimerWork::Kept
         } else {
             let closed = tcp_close(tp);
             if let Some((otp, ostate)) = otp {
                 tcp_trace(TA_TIMER, ostate, None, otp, None, TCPT_2MSL as i32, 0);
             }
-            Some(closed)
+            TimerWork::Closed(closed)
         }
     });
 }
