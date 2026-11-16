@@ -898,8 +898,9 @@ pub fn random_start(goodseed: bool) {
     // unaligned (amd64): read each one unaligned (see the module's deviations).
     let text = (etext() - 32 * 1024 * size_of::<u32>()) as *const u32;
     ENTROPY_POOL.add_entropy_words((0..8192 / size_of::<u32>()).map(|i| {
-        // SAFETY: the 8 KB that start 128 KB before `etext` are kernel text, mapped readable
-        // for the kernel's lifetime and never written; `read_unaligned` needs no alignment.
+        // SAFETY: the 8 KB that start 128 KB before `etext` are kernel text (the text is
+        // megabytes long, so `text.add(i)` stays inside it), mapped readable for the kernel's
+        // lifetime and never written; `read_unaligned` needs no alignment.
         unsafe { text.add(i).read_unaligned() }
     }));
 
