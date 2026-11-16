@@ -106,6 +106,14 @@
 //!   read-only first mbuf goes through `m_copyback` (the kernel's `ip_store`): its failure
 //!   (no cluster for the copy) is `ENOBUFS` and the packet is dropped as the C's other
 //!   `ENOBUFS` are, where the C writes in place.
+//! - The C stores `th_seq` and `th_flags` through a `struct tcphdr *` whatever `th_off`
+//!   says; here the two fields are written byte by byte where they fall inside the data:
+//!   in a new segment, inside the `hlen - iphlen` bytes of header copied into it (with a
+//!   `th_off` below 5 the C's stores past them land in the mbuf's storage outside the
+//!   packet, which nobody sends), and in the original, the `th_flags` byte at its offset in
+//!   the first mbuf's data (with a `th_off` below 4 that byte is the payload's, as in the C).
+//!   A packet that reached the cut with a short header (a forwarded one that hardware LRO
+//!   marked `M_TCP_TSO`) goes out cut as the C cuts it, never a panic.
 //! - `tcp_if_output_tso` calls the interface's `if_output` through its driver (`NetDriver`;
 //!   a missing driver panics, where the C would jump through NULL); an empty `*mp` returns
 //!   `Ok(())`, which the C does not check.
@@ -117,8 +125,10 @@
 //!   `unsafe`); here the packet is an owned `MbufBox` and the list the kernel's `MbufList`:
 //!   the segments are built and appended, the trimmed original goes to the list's head
 //!   last (`push_head`, O(1)), so the list's order is the C's (the original first, then the
-//!   segments in order) and an error drops everything at once (the C's `ml_purge`). The
-//!   headers are copies written back with `hal::pod` (`th_load`/`th_store`), no `unsafe`.
+//!   segments in order) and an error drops everything at once (the C's `ml_purge`). The IP
+//!   headers are copies written back with `hal::pod` (`ip_store`/`ip6_store`); the TCP
+//!   header's two changed fields are stored byte by byte into the data (`th_put`,
+//!   `th_flags_clear`), no `unsafe`.
 //! - LZ's `pub unsafe fn tcp_if_output_tso(.., dst: *const Sockaddr, ..)` (the raw output
 //!   hook's contract, two `unsafe` calls) takes the kernel's `SockaddrView` and calls the
 //!   driver's safe `output` and the kernel's `if_output_ml`. It was the `Inet` bridge's leg
@@ -161,25 +171,44 @@ enum NetHdr {
     V6(Ip6Hdr),
 }
 
+/// `th_seq`'s offset in `struct tcphdr`.
+const TH_SEQ_OFF: usize = 4;
+/// `th_flags`'s offset in `struct tcphdr`.
+const TH_FLAGS_OFF: usize = 13;
+
 /// The TCP header at byte `off` of `m`'s data, copied out; `None` when the data ends before
 /// it does.
 fn th_load(m: &Mbuf, off: usize) -> Option<Tcphdr> {
     pod::at::<Tcphdr>(m.data(), off)
 }
 
-/// `th` written back at byte `off` of `m`'s data: in place when the data is writable, through
-/// `m_copyback` (a copy of a shared cluster first) when it is not; `false`, nothing written,
-/// when no cluster can be had for that copy.
+/// The C's store of `bytes` at offset `at` of a TCP header whose bytes in the packet are
+/// `th`: the part that falls inside `th` written, the rest (past a short header's data, where
+/// the C's store reaches the mbuf's storage outside the packet) dropped.
+fn th_put(th: &mut [u8], at: usize, bytes: &[u8]) {
+    for (i, b) in bytes.iter().enumerate() {
+        if let Some(d) = th.get_mut(at + i) {
+            *d = *b;
+        }
+    }
+}
+
+/// `CLR(th->th_flags, TH_PUSH|TH_FIN)` on the header at byte `off` of `m`'s first mbuf: the
+/// byte cleared in place when the data is writable, through `m_copyback` (a copy of a shared
+/// cluster first) when it is not, nothing when the first mbuf's data ends before it (the C's
+/// store then lands outside the packet); `false` when no cluster can be had for the copy.
 #[must_use]
-fn th_store(m: &mut Mbuf, off: usize, th: &Tcphdr) -> bool {
-    if let Some(d) = m.data_mut()
-        && pod::put(d, off, th)
-    {
+fn th_flags_clear(m: &mut Mbuf, off: usize) -> bool {
+    let at = off + TH_FLAGS_OFF;
+    let Some(&flags) = m.data().get(at) else {
+        return true;
+    };
+    let cleared = flags & !(TH_PUSH | TH_FIN);
+    if let Some(d) = m.data_mut() {
+        d[at] = cleared;
         return true;
     }
-    let mut b = [0u8; size_of::<Tcphdr>()];
-    let _ = pod::put(&mut b, 0, th);
-    m_copyback(m, off as i32, &b, M_DONTWAIT).is_ok()
+    m_copyback(m, at as i32, &[cleared], M_DONTWAIT).is_ok()
 }
 
 /// `tcp_softtso_chop(ml, m0, ifp, mss)`: cuts the TSO packet `m0` (an IPv4 TCP segment
@@ -254,7 +283,7 @@ fn softtso_cut(ml: &mut MbufList, m0: MbufBox, ifp: &Ifnet, mss: u32) -> Result<
     if (m0.m_len().get() as usize) < thmin {
         m0 = m_pullup(m0, thmin as i32).ok_or(Errno::ENOBUFS)?;
     }
-    let Some(mut th) = th_load(&m0, iphlen) else {
+    let Some(th) = th_load(&m0, iphlen) else {
         kpanic(format_args!(
             "tcp_softtso_chop: no TCP header after the pullup"
         ));
@@ -282,23 +311,19 @@ fn softtso_cut(ml: &mut MbufList, m0: MbufBox, ifp: &Ifnet, mss: u32) -> Result<
         m_align(&m, hlen);
 
         // copy and adjust TCP header
-        match m.data_mut() {
-            Some(d) => m_copydata(&m0, iphlen as i32, &mut d[iphlen..hlen as usize]),
-            None => kpanic(format_args!(
+        let Some(d) = m.data_mut() else {
+            kpanic(format_args!(
                 "tcp_softtso_chop: a new header mbuf is read-only"
-            )),
-        }
-        let Some(mut mhth) = th_load(&m, iphlen) else {
-            kpanic(format_args!("tcp_softtso_chop: no room for the TCP header"));
+            ));
         };
-        mhth.th_seq = u32::from_be(th.th_seq)
-            .wrapping_add((off - hlen) as u32)
-            .to_be();
-        if off + len < tlen {
-            mhth.th_flags &= !(TH_PUSH | TH_FIN);
-        }
-        if !th_store(&mut m, iphlen, &mhth) {
-            return Err(Errno::ENOBUFS);
+        let mhth = &mut d[iphlen..hlen as usize];
+        m_copydata(&m0, iphlen as i32, mhth);
+        let seq = u32::from_be(th.th_seq).wrapping_add((off - hlen) as u32);
+        th_put(mhth, TH_SEQ_OFF, &seq.to_be_bytes());
+        if off + len < tlen
+            && let Some(f) = mhth.get_mut(TH_FLAGS_OFF)
+        {
+            *f &= !(TH_PUSH | TH_FIN);
         }
 
         // add mbuf chain with payload
@@ -338,8 +363,7 @@ fn softtso_cut(ml: &mut MbufList, m0: MbufBox, ifp: &Ifnet, mss: u32) -> Result<
     // each segment (in order).
     if hlen + firstlen < tlen {
         m_adj(&m0, hlen + firstlen - tlen);
-        th.th_flags &= !(TH_PUSH | TH_FIN);
-        if !th_store(&mut m0, iphlen, &th) {
+        if !th_flags_clear(&mut m0, iphlen) {
             return Err(Errno::ENOBUFS);
         }
     }
@@ -727,6 +751,83 @@ mod tests {
             Err(Errno::ENOPROTOOPT)
         );
         assert_eq!(ml_len(&ml), 0);
+    }
+
+    #[test]
+    fn a_short_tcp_header_is_cut_as_the_c_cuts_it() {
+        // th_off below 5 (a forwarded packet hardware LRO marked M_TCP_TSO may carry one):
+        // the C copies hlen - iphlen bytes of header into each segment and stores th_seq and
+        // th_flags at their offsets; the bytes inside the copied header change, the stores
+        // past it reach no packet; the original's th_flags byte is cleared where it lies.
+        let _g = setup();
+        let ifp = test_ifnet_with(b"ttso4", &REC);
+        for th_off in [4u8, 2, 0] {
+            let thlen = usize::from(th_off) * 4;
+            let mut m0 = tso_packet(4, 300, 100, 5, 0);
+            m0.data_mut().expect("writable")[32] = th_off << 4;
+            let orig = bytes(&m0);
+            let (hlen, tlen) = (20 + thlen, orig.len());
+            let mut ml = MbufList::new();
+            assert_eq!(
+                tcp_softtso_chop(&mut ml, m0, ifp, 100),
+                Ok(()),
+                "th_off {th_off}"
+            );
+            let segs: Vec<Vec<u8>> = core::iter::from_fn(|| ml_dequeue(&mut ml))
+                .map(|m| bytes(&m))
+                .collect();
+            assert_eq!(segs.len(), (tlen - hlen).div_ceil(100), "th_off {th_off}");
+            for (k, b) in segs.iter().enumerate() {
+                let dlen = min(100, tlen - hlen - k * 100);
+                assert_eq!(b.len(), hlen + dlen, "th_off {th_off} segment {k}");
+                // The payload, but for th_sum's two bytes (packet offsets 36 and 37), which the
+                // software checksum writes there when the header is shorter, and, in the
+                // original, th_flags' byte (33, checked below).
+                let skip = |o: usize| (36..38).contains(&o) || (k == 0 && o == 33);
+                let mask = |v: &[u8], at: usize| -> Vec<u8> {
+                    v.iter()
+                        .enumerate()
+                        .map(|(i, &x)| if skip(at + i) { 0 } else { x })
+                        .collect()
+                };
+                assert_eq!(
+                    mask(&b[hlen..], hlen),
+                    mask(&orig[hlen + k * 100..hlen + k * 100 + dlen], hlen),
+                    "th_off {th_off} segment {k}"
+                );
+                if k == 0 {
+                    continue;
+                }
+                // The new segment's header: the original's bytes, the sequence number and the
+                // flags changed where they fall inside it.
+                let mut want = orig[20..hlen].to_vec();
+                let seq = SEQ.wrapping_add((k * 100) as u32).to_be_bytes();
+                for (i, s) in seq.iter().enumerate() {
+                    if let Some(w) = want.get_mut(4 + i) {
+                        *w = *s;
+                    }
+                }
+                let last = k + 1 == segs.len();
+                if let Some(f) = want.get_mut(13)
+                    && !last
+                {
+                    *f &= !(TH_PUSH | TH_FIN);
+                }
+                // The checksum is the software's (in_proto_cksum_out at the C's offset).
+                for i in 16..18 {
+                    if i < want.len() {
+                        want[i] = b[20 + i];
+                    }
+                }
+                assert_eq!(&b[20..hlen], &want[..], "th_off {th_off} segment {k}");
+            }
+            // The original: its th_flags byte, header or payload, lost PUSH and FIN.
+            assert_eq!(
+                segs[0][33],
+                orig[33] & !(TH_PUSH | TH_FIN),
+                "th_off {th_off}"
+            );
+        }
     }
 
     #[test]
