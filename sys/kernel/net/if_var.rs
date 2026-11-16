@@ -207,8 +207,9 @@
 //!   The functions the C calls holding it (`in_lookupmulti`, `in6_lookupmulti`,
 //!   `igmp_joingroup`, `igmp_leavegroup`, `mld6_start_listening`, `mld6_stop_listening`)
 //!   take the witness and check it is the interface's (`rw_assert_wrlock`,
-//!   `rw_assert_anylock`, made in every build as the `kassert!` they were); the cost is the
-//!   C's: one enter and one exit of the same lock.
+//!   `rw_assert_anylock`): the lookups through the list's cells, keyed to the lock, in every
+//!   build; IGMP's and MLD's join and leave by a `kassert!`, under `diagnostic` as the C's
+//!   `DIAGNOSTIC` assertions. The cost is the C's: one enter and one exit of the same lock.
 //! - `struct netstack` is owned by its softnet thread and lent `&mut` ([`Netstack`]), where
 //!   LZ's `&Netstack` with `Cell` lists needed `unsafe impl Sync`; `ns_route` (`route.c`'s
 //!   `struct route`) is not cached per softnet until N6.3b: `bsd`'s `ip_input`/`ip6_input`
@@ -1584,14 +1585,6 @@ impl IfmaddrRef {
         let me: &Ifmaddr = self;
         core::ptr::eq(me, ifma)
     }
-
-    /// The handles of the record alive now (a snapshot), for the tests.
-    pub fn count(&self) -> usize {
-        match self {
-            IfmaddrRef::In(inm) => MArc::count(inm),
-            IfmaddrRef::In6(in6m) => MArc::count(in6m),
-        }
-    }
 }
 
 /// `TAILQ_HEAD(, ifmaddr) if_maddrlist`: an interface's multicast records, the newest first
@@ -1602,6 +1595,16 @@ impl IfmaddrRef {
 /// ([`IfmaList::remove`]) or the interface's detach ([`IfmaList::pop_head`]). A walk lends
 /// `&'w IfmaddrRef`s for the life of a witness of the lock, uncounted as the C's pointers,
 /// O(1) a step; a change takes the write witness.
+///
+/// A record a walk lends cannot outlive the witness it borrows:
+///
+/// ```compile_fail,E0515
+/// use kernel::net::if_var::{IfmaddrRef, Ifnet};
+/// fn kept(ifp: &Ifnet) -> Option<&IfmaddrRef> {
+///     let r = ifp.rt().if_maddrlock.read();
+///     ifp.if_maddrlist().first(&r)
+/// }
+/// ```
 pub struct IfmaList {
     /// `tqh_first`.
     head: Guarded<Option<IfmaddrRef>>,
@@ -1635,12 +1638,6 @@ impl IfmaList {
         w: &'w W,
     ) -> impl Iterator<Item = &'w IfmaddrRef> {
         core::iter::successors(self.first(w), move |m| Self::next(w, m))
-    }
-
-    /// `TAILQ_EMPTY`.
-    #[inline]
-    pub fn is_empty<W: Witness + ?Sized>(&self, w: &W) -> bool {
-        self.head.get(w).is_none()
     }
 
     /// `TAILQ_INSERT_HEAD`: `ifma`'s handle linked first, the list's reference; O(1). `ifma`
@@ -2015,7 +2012,7 @@ mod tests {
         let list = ifp.if_maddrlist();
 
         let mut w = ifp.rt().if_maddrlock.write();
-        assert!(list.is_empty(&w));
+        assert!(list.first(&w).is_none(), "TAILQ_EMPTY");
         for inm in &r {
             list.insert_head(&mut w, IfmaddrRef::In(inm.clone()));
         }
@@ -2026,8 +2023,8 @@ mod tests {
             "the list's and the test's"
         );
         let first = list.first(&w).expect("the head");
-        assert!(InMulti::of(first).is_none() && In6Multi::of(first).is_some());
-        assert_eq!(first.count(), 2);
+        assert!(InMulti::of(first).is_none());
+        assert_eq!(In6Multi::of(first).map(MArc::count), Some(2));
 
         // From the middle: its handle back, its own cell emptied.
         let mid = list.remove(&mut w, &r[1].inm_ifma).expect("on the list");
@@ -2055,7 +2052,7 @@ mod tests {
         assert!(p.is(&r[0].inm_ifma) && IfmaList::next(&w, &p).is_none());
         let q = list.pop_head(&mut w).expect("the last");
         assert!(q.is(&r[2].inm_ifma));
-        assert!(list.pop_head(&mut w).is_none() && list.is_empty(&w));
+        assert!(list.pop_head(&mut w).is_none() && list.first(&w).is_none());
         drop((p, q, w));
         assert!(r.iter().all(|m| MArc::count(m) == 1));
         assert_eq!(MArc::count(&r6), 1);
