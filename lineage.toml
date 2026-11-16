@@ -16507,6 +16507,48 @@ native = ["put_hdr"]
 kind = "merged"
 
 [[module]]
+rust = "sys/kernel/netinet/tcp_syncache.rs"
+crate = "kernel"
+lz = ["sys/netinet/tcp_input.rs"]
+status = "redesigned"
+notes = "N6.6a2: tcp_input.c's SYN cache, part 1 (syn_cache_hash, _rm, _init, _insert, _timer, _cleanup, _lookup, _reset, _unreach, _respond; syn_cache_add and syn_cache_get at N6.6a4): entries counted SynCache<G> items (the lists' handle forgotten at insert and adopted by rm, the timer's from Timeout::set_shared at insert given back by clear() in rm, the listener a handle in the [S] cell); rm returns ScRemoved for the caller to drop after the mutex (the C's last syn_cache_put unlocked); the sets the data of the glue's Mutexed, the bucket arrays MArrays taken out of the guard for a call; t_sc a PinRing (LIST_REMOVE names no head); syn_cache_timer clones the listener under the mutex and re-arms there, then the shared net lock and in_pcbsolock for the SYN-ACK; syn_cache_respond's [s] members through the listener's SYN part, the signature's SA through the Ipsec leg; bsd's copies stay in sys/netinet/tcp_input.rs for bsd's TCP until N6.6a5"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_input.rs::syn_cache_put"
+native = ["ScRemoved"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_input.rs::tcp_syn_hash_size"
+native = ["sys/kernel/netinet/tcp_var.rs::SynCaches"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_input.rs::TCP_SYN_USE_LIMIT"
+native = ["sys/kernel/netinet/tcp_var.rs::SynCaches"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_input.rs::TCP_SYN_CACHE"
+native = ["sys/kernel/netinet/tcp_var.rs::SynCaches"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_input.rs::TCP_SYN_CACHE_ACTIVE"
+native = ["sys/kernel/netinet/tcp_var.rs::SynCaches"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_input.rs::SYN_CACHE_POOL"
+native = ["sys/kernel/netinet/tcp_var.rs::TcpTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_input.rs::SYN_CACHE_MTX"
+native = ["sys/kernel/netinet/tcp_var.rs::TcpTables"]
+kind = "merged"
+
+[[module]]
 rust = "sys/kernel/netinet/tcp_timer.rs"
 crate = "kernel"
 lz = ["sys/netinet/tcp_timer.rs"]

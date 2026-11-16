@@ -45,6 +45,7 @@ pub mod tcp_fsm;
 pub mod tcp_lro;
 pub mod tcp_seq;
 pub mod tcp_subr;
+pub mod tcp_syncache;
 pub mod tcp_timer;
 pub mod tcp_tso;
 pub mod tcp_var;

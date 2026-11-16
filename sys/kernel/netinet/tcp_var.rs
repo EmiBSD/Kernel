@@ -139,7 +139,7 @@ use hal::mutex::Mutexed;
 use hal::netlock::NetHeld;
 use hal::owned::SlistLink;
 use hal::percpu::Counters;
-use hal::pinlist::{PinEntry, PinList};
+use hal::pinlist::{PinEntry, PinList, PinRing};
 use hal::pool::{BoxPool, PoolHome, Pooled, TypedPool};
 use hal::rwlock::{ExclGuarded, Guarded, LockId, WitnessPart};
 use hal::sys::errno::Errno;
@@ -569,8 +569,9 @@ pub struct Tcpcb<G: ProcGlue> {
     /// \[T\] `t_timer`: tcp timers, each holding a counted handle of the pcb from
     /// `tcp_timer_init` to the control block's free (D-11).
     pub t_timer: [Timeout; TCPT_NTIMERS],
-    /// \[S\] `t_sc`: list of SYN cache entries by this tcb.
-    pub t_sc: PinList<ScTpq<G>>,
+    /// \[S\] `t_sc`: list of SYN cache entries by this tcb (a ring: an entry leaves it without
+    /// naming the control block, as the C's `LIST_REMOVE`).
+    pub t_sc: PinRing<ScTpq<G>>,
     /// \[s\] Every other member, keyed to the socket's `so_lock` in part `TCP`.
     pub st: ExclGuarded<TcpState>,
 }
@@ -581,7 +582,7 @@ impl<G: ProcGlue> Tcpcb<G> {
     pub fn new(so_lock: LockId) -> Self {
         Self {
             t_timer: [const { Timeout::unset() }; TCPT_NTIMERS],
-            t_sc: PinList::new(),
+            t_sc: PinRing::new(),
             st: ExclGuarded::keyed(so_lock, so_part::TCP, TcpState::new()),
         }
     }
@@ -702,16 +703,23 @@ hal::pin_adapter!(
 );
 
 hal::pin_adapter!(
-    /// `LIST_HEAD(, syn_cache) t_sc`, through `sc_tpq`.
+    /// `LIST_HEAD(, syn_cache) t_sc` (a ring), through `sc_tpq`.
     impl[G: ProcGlue] pub ScTpq<G>: SynCache<G>, sc_tpq
 );
 
 impl<G: ProcGlue> SynCache<G> {
     /// A new entry with the `[I]` members `init` (`pool_get(PR_ZERO)` and `syn_cache_add`'s
-    /// stores before the entry is shared): its `[S]` cell keyed to `syn_cache_mtx` (`mtx`), its
-    /// `[s]` cell to the listen socket's `so_lock` (`listen`) in part `SYN`, its timer not set
+    /// stores before the entry is shared): its `[S]` cell keyed to `syn_cache_mtx` (`mtx`),
+    /// holding the listener's handle (`sc_inplisten = in_pcbref(tp->t_inpcb)`), its `[s]` cell
+    /// to the listen socket's `so_lock` (`listen`) in part `SYN`, its timer not set
     /// (`syn_cache_insert` sets it).
-    pub fn new(mtx: LockId, listen: LockId, init: SynCacheInit, l: ScListener) -> Self {
+    pub fn new(
+        mtx: LockId,
+        listen: LockId,
+        init: SynCacheInit,
+        l: ScListener,
+        inplisten: Option<InpcbRef<G>>,
+    ) -> Self {
         Self {
             sc_home: PoolHome::new(),
             sc_bucketq: PinEntry::new(),
@@ -728,7 +736,7 @@ impl<G: ProcGlue> SynCache<G> {
                     sc_hash: 0,
                     sc_set: 0,
                     sc_bucket: 0,
-                    sc_inplisten: None,
+                    sc_inplisten: inplisten,
                 },
             ),
             sc_l: ExclGuarded::keyed(listen, so_part::SYN, l),
