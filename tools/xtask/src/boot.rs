@@ -862,7 +862,8 @@ pub(crate) fn qemu_command(
             } else {
                 "virtio-blk-device"
             };
-            cmd.args(["-M", &machine, "-cpu", "cortex-a72"]);
+            let cpu = crate::hwopts::arm64_cpu()?;
+            cmd.args(["-M", &machine, "-cpu", &cpu]);
             // M16g: the boot image as a USB stick (`distrib.rs`); no CD on arm64.
             match removable_boot_args(boot_medium(), image) {
                 Some(_) if boot_medium() == BootMedium::Cdrom => {

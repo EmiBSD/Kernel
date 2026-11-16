@@ -749,6 +749,26 @@ pub(crate) fn virt_machine() -> String {
     )
 }
 
+/// The `-cpu` model of an arm64 VM: `cortex-a72` (ARMv8.0, what every smoke boots), or the
+/// environment's `EMIBSD_CPU` for a one-off run on another model (for example `neoverse-n2`,
+/// which has BTI, to check that user programs carry their landing pads; DevTools' request of
+/// 2026-11-16). Letters, digits, `-`, `_`, `,` and `=` only; anything else is refused.
+pub(crate) fn arm64_cpu() -> Result<String> {
+    match std::env::var("EMIBSD_CPU") {
+        Ok(v) if !v.trim().is_empty() => {
+            let v = v.trim();
+            if v.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ',' | '='))
+            {
+                Ok(v.to_string())
+            } else {
+                Err(format!("EMIBSD_CPU: {v:?} is not a QEMU CPU model").into())
+            }
+        }
+        _ => Ok(String::from("cortex-a72")),
+    }
+}
+
 /// [`virt_machine`] for the given ACPI, GIC version and SMMU choices.
 fn virt_machine_arg(acpi: bool, gic: u8, smmu: bool) -> String {
     let mut m = String::from(if acpi {
