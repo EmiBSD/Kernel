@@ -239,7 +239,7 @@ use crate::netinet::tcp_var::{
     intotcpcb, tcp_rexmtval, tcpstat_inc,
 };
 use crate::netinet6::icmp6::{icmp6_mtudisc_callback_register, icmp6_mtudisc_update};
-use crate::netinet6::in6_pcb::{In6PcbNotify, in6_pcblookup, in6_pcbnotify};
+use crate::netinet6::in6_pcb::{in6_pcblookup, in6_pcbnotify};
 use crate::netinet6::in6_src::{in6_clearscope, in6_selecthlim};
 use crate::netinet6::ip6_input::INET6CTLERRMAP;
 use crate::netinet6::ip6_output::ip6_output;
@@ -919,13 +919,12 @@ pub fn tcp6_ctlinput<G: ProcGlue>(
     let sa6_src = d.map_or(SA6_ANY, |p| p.src);
 
     let Some(p) = d else {
-        // in_pcbrtchange for a redirect, tcp_notify otherwise.
-        let mut rtc =
-            |inp: &Inpcb<G>, _w: &mut SoLocked<'_>, e: Option<Errno>| in_pcbrtchange(inp, e);
-        let mut tn = |inp: &Inpcb<G>, w: &mut SoLocked<'_>, e: Option<Errno>| {
-            tcp_notify(inp, w, e);
+        // in_rtchange for a redirect, tcp_notify otherwise.
+        let mut notify: NotifyFn<G> = if rtchange {
+            rtchange_notify::<G>
+        } else {
+            tcp_notify::<G>
         };
-        let notify: &mut In6PcbNotify<'_, G> = if rtchange { &mut rtc } else { &mut tn };
         in6_pcbnotify(
             &crate::net::domain::net::<G>().tcp.tcb6table,
             &sa6,
@@ -935,7 +934,7 @@ pub fn tcp6_ctlinput<G: ProcGlue>(
             rdomain,
             cmd,
             net,
-            Some(notify),
+            Some(&mut notify),
         );
         return;
     };
@@ -1028,17 +1027,13 @@ fn tcp_quote(msg: &[u8]) -> Option<Quote> {
     })
 }
 
-/// The notify function `tcp_ctlinput` hands its walk.
-#[derive(Clone, Copy)]
-enum Notify {
-    /// `tcp_notify`.
-    Tcp,
-    /// `in_pcbrtchange`.
-    Rtchange,
-    /// `tcp_mtudisc`.
-    Mtudisc,
-    /// `tcp_mtudisc_increase`.
-    MtudiscIncrease,
+/// The notify function the control inputs hand their walks (the C's `void (*notify)(struct
+/// inpcb *, int)`): the connection, its socket held in parts, the error.
+type NotifyFn<G> = fn(&Inpcb<G>, &mut SoLocked<'_>, Option<Errno>);
+
+/// `in_rtchange` as a [`NotifyFn`]: the cached route let go (the socket's holding unused).
+fn rtchange_notify<G: ProcGlue>(inp: &Inpcb<G>, _w: &mut SoLocked<'_>, errno: Option<Errno>) {
+    in_pcbrtchange(inp, errno);
 }
 
 /// `tcp_ctlinput`: an ICMP error about a segment we sent: `arg` the ICMP message that
@@ -1051,7 +1046,7 @@ pub fn tcp_ctlinput<G: ProcGlue>(
     arg: CtlArg<'_>,
     net: &NetHeld<'_>,
 ) {
-    let mut notify = Notify::Tcp;
+    let mut notify: NotifyFn<G> = tcp_notify::<G>;
 
     if sa.family() != AF_INET {
         return;
@@ -1084,7 +1079,7 @@ pub fn tcp_ctlinput<G: ProcGlue>(
         // Don't honor ICMP Source Quench messages meant for TCP connections.
         return;
     } else if prc_is_redirect(cmd) {
-        notify = Notify::Rtchange;
+        notify = rtchange_notify::<G>;
         ip = None;
     } else if cmd == PRC_MSGSIZE
         && ip_mtudisc.load(Ordering::Relaxed) != 0
@@ -1149,10 +1144,10 @@ pub fn tcp_ctlinput<G: ProcGlue>(
         if go_on != Some(true) {
             return;
         }
-        notify = Notify::Mtudisc;
+        notify = tcp_mtudisc_notify::<G>;
         ip = None;
     } else if cmd == PRC_MTUINC {
-        notify = Notify::MtudiscIncrease;
+        notify = tcp_mtudisc_increase_notify::<G>;
         ip = None;
     } else if cmd == PRC_HOSTDEAD {
         ip = None;
@@ -1167,12 +1162,7 @@ pub fn tcp_ctlinput<G: ProcGlue>(
             rdomain,
             errno,
             net,
-            |inp: &Inpcb<G>, w: &mut SoLocked<'_>, e: Option<Errno>| match notify {
-                Notify::Tcp => tcp_notify(inp, w, e),
-                Notify::Rtchange => in_pcbrtchange(inp, e),
-                Notify::Mtudisc => tcp_mtudisc_notify(inp, w, e),
-                Notify::MtudiscIncrease => tcp_mtudisc_increase_notify(inp, w, e),
-            },
+            notify,
         );
         return;
     };
@@ -2627,6 +2617,29 @@ mod tests {
         // In flight: tcp_notify keeps the error.
         ctl6(PRC_UNREACH_HOST, 81, 1000);
         assert_eq!(errors(&inp), (Some(Errno::EHOSTUNREACH), None));
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn an_ipv6_dead_host_is_told_and_an_ipv6_redirect_flushes_the_route() {
+        use crate::net::proto::PRC_REDIRECT_HOST;
+        use crate::netinet::tcp_fsm::TCPS_SYN_RECEIVED;
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, _d) = testtcp::estab6(b"tsub7", 83);
+        testtcp::with_tp(&inp, |tp| {
+            tp.st.t_state = TCPS_SYN_RECEIVED;
+            ((), None)
+        });
+        // A dead host: tcp_notify for every connection to it (the quote set aside).
+        ctl6(PRC_HOSTDEAD, 83, 999);
+        assert_eq!(errors(&inp), (Some(Errno::EHOSTDOWN), None));
+        // A redirect: in_rtchange, the cached route let go.
+        let cached = |inp: &Inpcb<testinet::G>| {
+            testtcp::with_lock(inp, |inp, _il| inp.route().rt().is_some())
+        };
+        assert!(cached(&inp), "tcp_mss cached the route");
+        ctl6(PRC_REDIRECT_HOST, 83, 1000);
+        assert!(!cached(&inp), "in_rtchange");
         testtcp::close(so, inp);
     }
 
