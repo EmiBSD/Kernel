@@ -1395,11 +1395,19 @@ pub fn tcp_signature(
         return false;
     }
 
-    // SAFETY: the caller holds the TDB, whose key lives until its `xf_zeroize`.
-    ctx.update(unsafe { tdb.tdb_amxkey() });
+    tdb_amxkey_lend(tdb, &mut |key| ctx.update(key));
     *sig = ctx.finalize();
 
     true
+}
+
+/// The SA's authentication key (`tdb->tdb_amxkey`, `tdb_amxkeylen` bytes) lent to `f`
+/// (`tcp_signature`'s `MD5Update`, here and in the kernel's TCP through the `Ipsec` leg),
+/// never copied out by this function. The caller holds a reference of the SA (a lookup's,
+/// `gettdbbysrcdst`'s).
+pub(crate) fn tdb_amxkey_lend(tdb: &Tdb, f: &mut dyn FnMut(&[u8])) {
+    // SAFETY: the caller holds the TDB, whose key lives until its `xf_zeroize`.
+    f(unsafe { tdb.tdb_amxkey() });
 }
 /* </CODE> */
 

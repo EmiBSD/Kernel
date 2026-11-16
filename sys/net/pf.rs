@@ -10282,6 +10282,27 @@ impl kernel::net::pf_hooks::Pf for BsdPf {
         pf_inp_unlink_slot(slot);
     }
 
+    /// `tcp_input`'s `pf_inp_lookup(m)` for the kernel's TCP (N6.6a0): pf's count of the pcb
+    /// (`in_pcbref`) turned into the kernel's handle while it holds the pcb, then dropped.
+    fn inp_lookup(&self, m: &Mbuf) -> Option<hal::pool::AnyArc> {
+        let inp = pf_inp_lookup(m)?;
+        let h = hal::pool::PoolArc::from_ref(inp);
+        crate::netinet::in_pcb::in_pcbunref(Some(inp));
+        h.map(hal::pool::PoolArc::erase)
+    }
+
+    /// `tcp_input`'s `pf_inp_link(m, inp)` for the kernel's TCP (N6.6a0): pf links its state
+    /// key to the pcb with a count of its own (`pf_state_key_link_inpcb`'s `in_pcbref`).
+    fn inp_link(&self, m: &Mbuf, inp: &(dyn core::any::Any + Sync)) {
+        pf_inp_link(m, Some(inp_of_kernel(inp)));
+    }
+
+    /// `tcp_output`'s `pf_mbuf_link_inpcb(m, inp)` for the kernel's TCP (N6.6a0): the
+    /// header's word with a count of pf's (`pf_link_inpcb`'s `in_pcbref`).
+    fn mbuf_link_inpcb_of(&self, m: &Mbuf, inp: &(dyn core::any::Any + Sync)) {
+        pf_mbuf_link_inpcb(m, Some(inp_of_kernel(inp)));
+    }
+
     /// `if_enqueue`'s `pf_delay_pkt(m, ifidx)`.
     fn delay_pkt(&self, m: kernel::net::mbuf::MbufBox, ifidx: u32) -> Result<(), Errno> {
         pf_delay_pkt(crate::sys::mbuf::park(m), ifidx)
@@ -10325,6 +10346,17 @@ impl kernel::net::pf_hooks::Pf for BsdPf {
 
 /// The `Pf` legs `mbinit` registers.
 pub static BSD_PF: BsdPf = BsdPf;
+
+/// The kernel's pcb behind a leg's erased argument, held the way `bsd` holds a pcb
+/// (`inp_static`: the kernel's caller keeps it, by its handle or its socket's lock, for the
+/// call, and pf counts it before it keeps it). `panic(9)` for a pcb of another glue.
+fn inp_of_kernel(inp: &(dyn core::any::Any + Sync)) -> &'static Inpcb {
+    let inp: &dyn core::any::Any = inp;
+    match inp.downcast_ref::<Inpcb>() {
+        Some(inp) => crate::netinet::in_pcb::inp_static(inp),
+        None => panic(format_args!("pf: a pcb that is not the kernel's inpcb")),
+    }
+}
 
 /// The socket's `inp_pf_sk`.
 fn inpcb_pf_sk(inp: &Inpcb) -> Option<&'static PfStateKey> {

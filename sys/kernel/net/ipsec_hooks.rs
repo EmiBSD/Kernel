@@ -45,9 +45,14 @@ use hal::bridges::AlreadyRegistered;
 use hal::once::OnceStatic;
 use hal::sys::errno::Errno;
 
+use crate::assert::kpanic;
 use crate::net::if_var::IfaddrRef;
 use crate::net::mbuf::{Mbuf, MbufBox};
 use crate::net::route::Route;
+
+/// `sizeof(union sockaddr_union)`: its largest member, a `struct sockaddr_in6` (the SA
+/// lookups' address arguments, [`Ipsec::tcp_signature_tdb`]'s).
+pub const SOCKADDR_UNION_LEN: usize = core::mem::size_of::<hal::sys::netinet6_in6::SockaddrIn6>();
 
 /// `struct ipsec_level`: the security levels of a socket (`inp_seclevel`, `ip_ipsp.h`), the
 /// argument `ip_output` passes to the SPD lookup.
@@ -171,6 +176,45 @@ pub trait Ipsec: Sync {
     fn local_check(&self, _m: &Mbuf, _hlen: i32, _proto: i32, _af: i32) -> bool {
         false
     }
+    /// `tcp_input`'s `#ifdef IPSEC` block (N6.6a0 for the kernel's TCP; `udp_input`'s at
+    /// N6.6b): while IPsec is in use, the inbound policy check of the segment `m` of family
+    /// `af`, its IP header `hlen` bytes long, against the SA its innermost
+    /// `PACKET_TAG_IPSEC_IN_DONE` tag names (`gettdb`, that lookup's reference given back by
+    /// `tdb_unref`) and the socket's levels (`seclevel`, `None` without a pcb):
+    /// `ipsp_spd_lookup(.., IPSP_DIRECTION_IN, ..)`, IPsec's own sequence on its side. `Err`
+    /// refuses the segment (the caller counts `tcps_rcvnosec` and drops it). Default: `Ok`,
+    /// the C without `IPSEC`.
+    fn spd_check_in(
+        &self,
+        _m: &Mbuf,
+        _af: i32,
+        _hlen: i32,
+        _seclevel: Option<&IpsecLevel>,
+    ) -> Result<(), SpdError> {
+        Ok(())
+    }
+
+    /// `gettdbbysrcdst(rdomain, 0, src, dst, IPPROTO_TCP)` (`TCP_SIGNATURE`'s SA, N6.6a0 for
+    /// the kernel's TCP): the SA between `src` and `dst`, each a `union sockaddr_union` read
+    /// whole ([`SOCKADDR_UNION_LEN`] bytes, never cut at `sa_len`), with the lookup's
+    /// reference ([`TdbHold`] gives it back). Default: `None`, the C without `IPSEC`.
+    fn tcp_signature_tdb(
+        &self,
+        _rdomain: u32,
+        _src: &[u8; SOCKADDR_UNION_LEN],
+        _dst: &[u8; SOCKADDR_UNION_LEN],
+    ) -> Option<TdbRef> {
+        None
+    }
+
+    /// The SA's authentication key (`tdb->tdb_amxkey`, `tdb_amxkeylen` bytes) lent to `f`
+    /// for `tcp_signature`'s `MD5Update`: never copied into kernel memory by the leg, alive
+    /// while the reference `tdb` names is held (the key goes at the SA's `xf_zeroize`, after
+    /// its last `tdb_unref`). Without IPsec no [`TdbRef`] exists: the default is `panic(9)`.
+    fn tdb_amxkey(&self, _tdb: &TdbRef, _f: &mut dyn FnMut(&[u8])) {
+        kpanic(format_args!("tdb_amxkey: an SA without IPsec"))
+    }
+
     /// `ipsec_init()` (`ip_init`, N6.4c2). Default: nothing.
     fn init(&self) {}
     /// `ipsec_sysctl(name, namelen, oldp, oldlenp, newp, newlen)`: the IPsec names of

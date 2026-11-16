@@ -481,6 +481,54 @@ impl kernel::net::ipsec_hooks::Ipsec for BsdIpsec {
         crate::netinet::ipsec_input::ipsec_local_check(m, hlen, proto, af).is_err()
     }
 
+    /// `tcp_input`'s `#ifdef IPSEC` block for the kernel's TCP (N6.6a0): nothing while no SA
+    /// or flow is configured (`ipsec_in_use`), else `ipsec_input_check`.
+    fn spd_check_in(
+        &self,
+        m: &Mbuf,
+        af: i32,
+        hlen: i32,
+        seclevel: Option<&IpsecLevel>,
+    ) -> Result<(), SpdError> {
+        use crate::netinet::ip_spd::SpdError as BsdSpdError;
+        if crate::netinet::ip_ipsp::IPSEC_IN_USE.load(core::sync::atomic::Ordering::Relaxed) == 0 {
+            return Ok(());
+        }
+        match crate::netinet::ipsec_input::ipsec_input_check(m, hlen, af, seclevel) {
+            Ok(()) => Ok(()),
+            Err(BsdSpdError::Drop) => Err(SpdError::Drop),
+            Err(BsdSpdError::Errno(e)) => Err(SpdError::Errno(e)),
+        }
+    }
+
+    /// `gettdbbysrcdst(rdomain, 0, src, dst, IPPROTO_TCP)` for the kernel's TCP_SIGNATURE
+    /// (N6.6a0): the unions taken whole, the lookup's reference in the `TdbRef`.
+    fn tcp_signature_tdb(
+        &self,
+        rdomain: u32,
+        src: &[u8; kernel::net::ipsec_hooks::SOCKADDR_UNION_LEN],
+        dst: &[u8; kernel::net::ipsec_hooks::SOCKADDR_UNION_LEN],
+    ) -> Option<TdbRef> {
+        let union_of = |b: &[u8; kernel::net::ipsec_hooks::SOCKADDR_UNION_LEN]| {
+            let mut su = crate::netinet::ip_ipsp::SockaddrUnion::new();
+            *su.as_bytes_mut() = *b;
+            su
+        };
+        crate::netinet::ip_ipsp::gettdbbysrcdst(
+            rdomain,
+            0,
+            &union_of(src),
+            &union_of(dst),
+            crate::netinet::in_::IPPROTO_TCP as u8,
+        )
+        .map(|t| TdbRef::new(tdb_key(), t))
+    }
+
+    /// The SA's MD5 key lent to `f` (`tcp_signature`'s), the `TdbRef` keeping the SA.
+    fn tdb_amxkey(&self, tdb: &TdbRef, f: &mut dyn FnMut(&[u8])) {
+        crate::netinet::tcp_subr::tdb_amxkey_lend(tdb_of(tdb), f);
+    }
+
     fn init(&self) {
         crate::netinet::ipsec_input::ipsec_init();
     }

@@ -33,10 +33,12 @@
 //! N6.4a adds `pf_test` for `ip_output` (`kernel::netinet::ip_output`, ip_output.c's
 //! `NPF > 0` block), a default that passes every packet, the C with `NPF == 0`.
 
+use core::any::Any;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use hal::bridges::AlreadyRegistered;
 use hal::once::OnceStatic;
+use hal::pool::AnyArc;
 
 use hal::sys::errno::Errno;
 use hal::sys::types::SaFamily;
@@ -125,6 +127,27 @@ pub trait Pf: Sync {
     /// `pf_inp_unlink(inp)`: the state key linked to the socket whose pf word is `slot` is
     /// unlinked from it, and its reference to the pcb dropped. Default: nothing.
     fn inp_unlink(&self, _slot: &PfSlot) {}
+
+    /// `pf_inp_lookup(m)` (`tcp_input`'s `#if NPF > 0` block, N6.6a0 for the kernel's TCP):
+    /// the pcb the packet's state key is linked to (pf's `sk_inp`), with a reference for the
+    /// caller: the kernel's pcb (`Inpcb<G>`) as an erased counted handle, which the caller
+    /// downcasts. `None` when the packet's state key is not valid (then unlinked from the
+    /// packet, as the C's) or names no pcb. Default: `None`, the C without pf.
+    fn inp_lookup(&self, _m: &Mbuf) -> Option<AnyArc> {
+        None
+    }
+
+    /// `pf_inp_link(m, inp)` (`tcp_input`'s): the packet's state key linked to `inp`, the
+    /// pcb of the socket that took the packet (pf keeps its own reference of it), then the
+    /// key's reference dropped from the packet; a packet without a valid key has its key
+    /// unlinked only. `inp` is the kernel's `Inpcb<G>`, erased (the trait is not generic
+    /// over the glue). Default: nothing.
+    fn inp_link(&self, _m: &Mbuf, _inp: &(dyn Any + Sync)) {}
+
+    /// `pf_mbuf_link_inpcb(m, inp)` (`tcp_output`'s): the outgoing packet `m` names the pcb
+    /// `inp` (a reference of pf's in its header's `pkthdr_pf.inp`, so the state pf makes for
+    /// it can link to the socket); `inp` erased as for [`Pf::inp_link`]. Default: nothing.
+    fn mbuf_link_inpcb_of(&self, _m: &Mbuf, _inp: &(dyn Any + Sync)) {}
 }
 
 /// `PF_DIVERT_TO`: `pfvar.h`'s divert type.

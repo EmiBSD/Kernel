@@ -833,6 +833,35 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn pf_s_legs_link_a_kernel_pcb_to_a_packet_with_counts_of_their_own() {
+        // The Pf legs the kernel's TCP calls (N6.6a0): the outgoing packet names the pcb with
+        // pf's count (pf_mbuf_link_inpcb), unlinked with it; a packet without a state key
+        // finds no pcb (pf_inp_lookup) and links none (pf_inp_link).
+        use kernel::net::pf_hooks::Pf;
+
+        let (_g, _t, _p) = setup();
+        let t = table(16);
+        let inp = pcb(t);
+        let before = inp.legacy_count();
+        let m = crate::net::if_::tests::test_packet(&[0x45, 0, 0, 20]);
+        let legs = &crate::net::pf::BSD_PF;
+        legs.mbuf_link_inpcb_of(m, inp);
+        let linked = (m.m_pkthdr().pf.inp.get(), inp.legacy_count());
+        legs.mbuf_unlink_inpcb(&m.m_pkthdr().pf);
+        let unlinked = (m.m_pkthdr().pf.inp.get(), inp.legacy_count());
+        let found = legs.inp_lookup(m).is_none();
+        legs.inp_link(m, inp);
+        let after_link = inp.legacy_count();
+        crate::kern::uipc_mbuf::m_freem(Some(m));
+        release(inp);
+        teardown();
+        assert_eq!(linked, (ptr::from_ref(inp).addr(), before + 1));
+        assert_eq!(unlinked, (0, before));
+        assert!(found, "no state key: no pcb");
+        assert_eq!(after_link, before, "no state key: nothing linked");
+    }
+
+    #[test]
     fn the_port_bitmaps_and_their_defaults() {
         let (_g, _t, _p) = setup();
         let m: Box<[AtomicU32; DP_MAPSIZE]> = Box::new([const { AtomicU32::new(0) }; DP_MAPSIZE]);
