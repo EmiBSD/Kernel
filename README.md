@@ -55,7 +55,7 @@
 
 ```mermaid
 flowchart LR
-    obsd["OpenBSD-src (mirror)"] -- "the specification, read-only" --> k["Kernel"]
+    obsd["ext-openbsd-src (mirror)"] -- "the specification, read-only" --> k["Kernel"]
     lz["LandingZone"] -- "the tree at lz-origin,<br/>then every commit as lz-sync" --> k
     dev["DevTools"] -- "upstream LLVM and Rust,<br/>once the system builds itself" --> k
     k -- "the kernel image (the ABI linked in),<br/>boot(8) and efiboot, bsd.rd" --> os["OS"]
