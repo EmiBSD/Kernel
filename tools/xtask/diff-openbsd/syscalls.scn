@@ -8,6 +8,10 @@
 # terminal, sendsyslog(2) and kern.tty. `tcp` (N6.6a5, D-5) follows `tty`, for the same
 # reason: TCP over 127.0.0.1 and ::1, its socket options, TCP_INFO's states, the
 # net.inet.tcp values that do not depend on the run, and TCPCTL_DROP of its own connection.
+# `udp` (N6.6b0, D-9) follows `tcp`, for the same reason: UDP over 127.0.0.1 and ::1 (bind,
+# the names, a datagram each way, the destination address and port as control messages,
+# connect's rules, the send errors, a connected socket's ECONNREFUSED from a closed port),
+# and net.inet.udp's integers and the statistics' size.
 
 ## probes
 ! mkdir /mnt/sc
@@ -28,6 +32,7 @@ $ difftest syscalls sysctl
 $ difftest syscalls ostype
 $ difftest syscalls tty
 $ difftest syscalls tcp
+$ difftest syscalls udp
 $ ls -1a
 ! cd /
 

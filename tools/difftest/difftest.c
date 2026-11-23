@@ -53,6 +53,10 @@
 #include <netinet/tcp.h>
 #include <netinet/tcp_timer.h>
 #include <netinet/tcp_var.h>
+#include <netinet/ip.h>
+#include <netinet/ip_var.h>
+#include <netinet/udp.h>
+#include <netinet/udp_var.h>
 
 #include <dirent.h>
 #include <errno.h>
@@ -1972,6 +1976,170 @@ t_tcp(void)
 	close(l);
 }
 
+/*
+ * UDP between two sockets of family `fam` on the loopback address `sa` (its port
+ * set): bind, the names, a datagram each way with its sender's address, the
+ * control messages of the destination address and port, connect's rules, the
+ * send errors. Only what does not depend on the run is printed (no picked port).
+ */
+static void
+udp_pair(const char *fam, struct sockaddr *sa, socklen_t salen)
+{
+	struct sockaddr_storage ss, peer;
+	struct msghdr msg;
+	struct iovec iov;
+	struct cmsghdr *cm;
+	union {
+		struct cmsghdr hdr;
+		char buf[CMSG_SPACE(sizeof(struct sockaddr_in6)) +
+		    CMSG_SPACE(sizeof(u_int16_t)) + CMSG_SPACE(sizeof(int))];
+	} cmsgbuf;
+	char buf[64], name[96];
+	socklen_t len;
+	int s, c, s2, one = 1, v;
+	u_int16_t port;
+
+	printf("-- %s\n", fam);
+	s = socket(sa->sa_family, SOCK_DGRAM, 0);
+	OK("socket", s >= 0);
+	R("bind", bind(s, sa, salen));
+	s2 = socket(sa->sa_family, SOCK_DGRAM, 0);
+	R("bind again", bind(s2, sa, salen));
+	close(s2);
+	len = sizeof(ss);
+	R("getsockname", getsockname(s, (struct sockaddr *)&ss, &len));
+	R("getsockname len", len);
+	port = sa->sa_family == AF_INET ?
+	    ((struct sockaddr_in *)&ss)->sin_port :
+	    ((struct sockaddr_in6 *)&ss)->sin6_port;
+	R("getsockname port", ntohs(port));
+	len = sizeof(v);
+	R("SO_TYPE", getsockopt(s, SOL_SOCKET, SO_TYPE, &v, &len) == 0 ? v : -1);
+
+	c = socket(sa->sa_family, SOCK_DGRAM, 0);
+	R("write unconnected", write(c, "x", 1));
+	R("sendto", sendto(c, "hello", 5, 0, sa, salen));
+	len = sizeof(peer);
+	memset(buf, 0, sizeof(buf));
+	R("recvfrom", recvfrom(s, buf, sizeof(buf), 0, (struct sockaddr *)&peer,
+	    &len));
+	printf("data: %s\n", buf);
+	R("recvfrom family", peer.ss_family);
+	R("recvfrom len", len);
+
+	/* The destination address and port as control messages. */
+	if (sa->sa_family == AF_INET) {
+		R("IP_RECVDSTADDR", setsockopt(s, IPPROTO_IP, IP_RECVDSTADDR,
+		    &one, sizeof(one)));
+		R("IP_RECVDSTPORT", setsockopt(s, IPPROTO_IP, IP_RECVDSTPORT,
+		    &one, sizeof(one)));
+	} else {
+		R("IPV6_RECVPKTINFO", setsockopt(s, IPPROTO_IPV6,
+		    IPV6_RECVPKTINFO, &one, sizeof(one)));
+		R("IPV6_RECVDSTPORT", setsockopt(s, IPPROTO_IPV6,
+		    IPV6_RECVDSTPORT, &one, sizeof(one)));
+	}
+	R("sendto again", sendto(c, "again", 5, 0, sa, salen));
+	memset(&msg, 0, sizeof(msg));
+	iov.iov_base = buf;
+	iov.iov_len = sizeof(buf);
+	msg.msg_iov = &iov;
+	msg.msg_iovlen = 1;
+	msg.msg_control = cmsgbuf.buf;
+	msg.msg_controllen = sizeof(cmsgbuf.buf);
+	R("recvmsg", recvmsg(s, &msg, 0));
+	for (cm = CMSG_FIRSTHDR(&msg); cm != NULL; cm = CMSG_NXTHDR(&msg, cm)) {
+		snprintf(name, sizeof(name), "cmsg level %d type %d len",
+		    cm->cmsg_level, cm->cmsg_type);
+		R(name, cm->cmsg_len);
+		if (cm->cmsg_type == IP_RECVDSTPORT ||
+		    cm->cmsg_type == IPV6_RECVDSTPORT) {
+			memcpy(&port, CMSG_DATA(cm), sizeof(port));
+			R("dst port", ntohs(port));
+		}
+	}
+
+	/* Connected: send(2), the peer's name, and the refusals. */
+	R("connect", connect(c, sa, salen));
+	R("send", send(c, "conn", 4, 0));
+	R("recv", recv(s, buf, sizeof(buf), 0));
+	len = sizeof(peer);
+	R("getpeername", getpeername(c, (struct sockaddr *)&peer, &len));
+	R("sendto connected", sendto(c, "x", 1, 0, sa, salen));
+	R("connect again", connect(c, sa, salen));
+	if (sa->sa_family == AF_INET) {
+		((struct sockaddr_in *)sa)->sin_port = 0;
+		R("sendto port 0", sendto(s, "x", 1, 0, sa, salen));
+		((struct sockaddr_in *)sa)->sin_port = port;
+	} else {
+		((struct sockaddr_in6 *)sa)->sin6_port = 0;
+		R("sendto port 0", sendto(s, "x", 1, 0, sa, salen));
+		((struct sockaddr_in6 *)sa)->sin6_port = port;
+	}
+	R("shutdown wr", shutdown(c, SHUT_WR));
+	R("send after shutdown", send(c, "x", 1, 0));
+	close(c);
+
+	/* A connected socket's datagram to a closed port: the error on its next call. */
+	c = socket(sa->sa_family, SOCK_DGRAM, 0);
+	if (sa->sa_family == AF_INET)
+		((struct sockaddr_in *)sa)->sin_port = htons(47139);
+	else
+		((struct sockaddr_in6 *)sa)->sin6_port = htons(47139);
+	R("connect closed port", connect(c, sa, salen));
+	R("send closed port", send(c, "x", 1, 0));
+	usleep(200000);
+	R("recv after unreachable", recv(c, buf, sizeof(buf), MSG_DONTWAIT));
+	close(c);
+	close(s);
+}
+
+static void
+udp_sysctl(const char *name, int id)
+{
+	int mib[4] = { CTL_NET, PF_INET, IPPROTO_UDP, id };
+	int v = -1;
+	size_t len = sizeof(v);
+
+	R(name, sysctl(mib, 4, &v, &len, NULL, 0) == 0 ? v : -1);
+}
+
+static void
+t_udp(void)
+{
+	struct sockaddr_in sin;
+	struct sockaddr_in6 sin6;
+	int mib[4] = { CTL_NET, PF_INET, IPPROTO_UDP, UDPCTL_STATS };
+	size_t len;
+
+	section("udp");
+	signal(SIGPIPE, SIG_IGN);
+	memset(&sin, 0, sizeof(sin));
+	sin.sin_len = sizeof(sin);
+	sin.sin_family = AF_INET;
+	sin.sin_port = htons(47131);
+	sin.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	udp_pair("inet", (struct sockaddr *)&sin, sizeof(sin));
+	memset(&sin6, 0, sizeof(sin6));
+	sin6.sin6_len = sizeof(sin6);
+	sin6.sin6_family = AF_INET6;
+	sin6.sin6_port = htons(47132);
+	sin6.sin6_addr = in6addr_loopback;
+	udp_pair("inet6", (struct sockaddr *)&sin6, sizeof(sin6));
+
+	printf("-- net.inet.udp\n");
+	udp_sysctl("checksum", UDPCTL_CHECKSUM);
+	udp_sysctl("recvspace", UDPCTL_RECVSPACE);
+	udp_sysctl("sendspace", UDPCTL_SENDSPACE);
+	len = 0;
+	R("stats", sysctl(mib, 4, NULL, &len, NULL, 0));
+	R("stats len", len);
+	R("stats write", sysctl(mib, 4, NULL, NULL, &len, sizeof(len)));
+	mib[3] = UDPCTL_MAXID;
+	len = 0;
+	R("unknown", sysctl(mib, 4, NULL, &len, NULL, 0));
+}
+
 static const struct {
 	const char *name;
 	void (*fn)(void);
@@ -1992,6 +2160,7 @@ static const struct {
 	{ "ostype", t_ostype },
 	{ "tty", t_tty },
 	{ "tcp", t_tcp },
+	{ "udp", t_udp },
 	{ "entry", t_entry },
 };
 
