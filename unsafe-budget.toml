@@ -27,7 +27,7 @@ total = 0
 
 [[subsystem]]
 name = "arch/amd64"
-total = 773
+total = 774
 
 [[subsystem]]
 name = "arch/arm64"
