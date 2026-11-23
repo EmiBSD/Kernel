@@ -122,7 +122,8 @@
 //! N6.4c2 the domain and `ip_protox[]` are the kernel's (`kernel::netinet::in_proto`), and so
 //! are the IP, ICMP and IGMP entries, which have no row here since N6.5d (`bsd`'s
 //! `pffindproto`, the last reader of their data-only rows, went with `bsd`'s `ip6_init`),
-//! and TCP's since N6.6a5 (`kernel::netinet::in_proto::TcpProtocol`);
+//! and TCP's since N6.6a5 (`kernel::netinet::in_proto::TcpProtocol`), UDP's since N6.6b0
+//! (`UdpProtocol`);
 //! `bsd`'s `sys/kern/uipc_domain.rs` hands the kernel the table of its entries and the
 //! kernel's.
 //!
@@ -148,38 +149,25 @@ use crate::net::if_pfsync::{pfsync_input4, pfsync_sysctl};
 use crate::netinet::in_::IPPROTO_IPV6;
 use crate::netinet::in_::{
     IPPROTO_AH, IPPROTO_DIVERT, IPPROTO_ESP, IPPROTO_IPCOMP, IPPROTO_IPV4, IPPROTO_PFSYNC,
-    IPPROTO_RAW, IPPROTO_UDP, SockaddrIn,
+    IPPROTO_RAW, SockaddrIn,
 };
 use crate::netinet::in_pcb::in_init;
 use crate::netinet::ip_divert::{DIVERT_USRREQS, divert_init, divert_sysctl};
 use crate::netinet::ip_ipip::{ipip_init, ipip_input, ipip_sysctl};
-use crate::netinet::ip_output::ip_ctloutput;
 use crate::netinet::ipsec_input::{
     ah_sysctl, ah4_ctlinput, ah46_input, esp_sysctl, esp4_ctlinput, esp46_input, ipcomp_sysctl,
     ipcomp46_input,
 };
 use crate::netinet::raw_ip::{RIP_USRREQS, rip_ctloutput, rip_init, rip_input};
-use crate::netinet::udp_usrreq::{UDP_USRREQS, udp_ctlinput, udp_init, udp_input, udp_sysctl};
 use crate::sys::domain::Domain;
-use crate::sys::protosw::{PR_ADDR, PR_ATOMIC, PR_MPINPUT, PR_MPSYSCTL, PR_SPLICE, Protosw};
-use crate::sys::socket::{AF_INET, SOCK_DGRAM, SOCK_RAW};
+use crate::sys::protosw::{PR_ADDR, PR_ATOMIC, PR_MPINPUT, PR_MPSYSCTL, Protosw};
+use crate::sys::socket::{AF_INET, SOCK_RAW};
 
 /// `inetsw[]`'s rows that are `bsd`'s, in the C's order (the IP, ICMP and IGMP entries between
 /// them are the kernel's: `sys/kern/uipc_domain.rs`'s `INET_PROTOS` is the whole table).
-pub static INETSW: [Protosw; 9 + cfg!(feature = "inet6") as usize] = [
-    // IP: the kernel's (kernel::netinet::in_proto::IpProtocol).
-    Protosw {
-        pr_type: SOCK_DGRAM as i16,
-        pr_protocol: IPPROTO_UDP as i16,
-        pr_flags: PR_ATOMIC | PR_ADDR | PR_SPLICE | PR_MPINPUT | PR_MPSYSCTL,
-        pr_input: Some(udp_input),
-        pr_ctlinput: Some(udp_ctlinput),
-        pr_ctloutput: Some(ip_ctloutput),
-        pr_usrreqs: Some(&UDP_USRREQS),
-        pr_init: Some(udp_init),
-        pr_sysctl: Some(udp_sysctl),
-        ..Protosw::new(&INETDOMAIN)
-    },
+pub static INETSW: [Protosw; 8 + cfg!(feature = "inet6") as usize] = [
+    // IP, UDP, TCP: the kernel's (kernel::netinet::in_proto's IpProtocol, UdpProtocol,
+    // TcpProtocol).
     Protosw {
         pr_type: SOCK_RAW as i16,
         pr_protocol: IPPROTO_RAW as i16,

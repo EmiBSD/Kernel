@@ -2003,6 +2003,9 @@ mod tests {
 
     #[test]
     fn ipv6_interface_ioctls() {
+        // Fresh kernel memory first: filedesc_init's pools need the backend, which this
+        // test got only when an earlier test of the run had registered it.
+        let _g = crate::kern::subr_pool::tests::setup_real_memory();
         crate::kern::kern_descrip::filedesc_init();
         let route = pledged(PLEDGE_STDIO | PLEDGE_ROUTE);
         drop(route.set_cred(kernel::cred::crget()));

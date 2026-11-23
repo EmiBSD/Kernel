@@ -244,10 +244,10 @@
 //! joined read share; `bsd`'s calls into the kernel pay it once per call, until they move.
 //! The calls made once per packet (on a shared holding, a contended pair each), with the
 //! milestone that takes their caller out of `bsd`:
-//! - `bsd`'s TCP output through `ip_output`/`ip6_output` (N6.6a); UDP's and the raw
-//!   sockets' unconnected sends through `in_pcbselsrc` (`sys/netinet/udp_usrreq.rs:1217`,
-//!   `raw_ip.rs:423`) and `in6_pcbselsrc` (`sys/netinet6/udp6_output.rs:197-199`,
-//!   `raw_ip6.rs:664-666`), and divert's `ipv4_input`/`ipv6_input` and (N6.5e's 5e1) its
+//! - `bsd`'s TCP output through `ip_output`/`ip6_output` (N6.6a); the raw sockets'
+//!   unconnected sends through `in_pcbselsrc` (`raw_ip.rs:423`) and `in6_pcbselsrc`
+//!   (`raw_ip6.rs:664-666`; UDP's sends, and their lend to `ip_output`/`ip6_output`, are the
+//!   kernel's since N6.6b0), and divert's `ipv4_input`/`ipv6_input` and (N6.5e's 5e1) its
 //!   `divert_packet`'s walk of an inbound packet's interface addresses
 //!   (`sys/netinet/ip_divert.rs`, `sys/netinet6/ip6_divert.rs`) (N6.6b);
 //! - pf(4)'s route-to, `rtalloc_mpath` (`sys/net/pf.rs:8184`, `:8376`) and

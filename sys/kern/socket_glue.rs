@@ -901,7 +901,7 @@ mod tests {
 
         let (_g, _t, _p) = crate::netinet::in_pcb::tests::setup();
         kernel::netinet::tcp_subr::tcp_init::<crate::kern::proc_glue::BsdProcGlue>();
-        crate::netinet::udp_usrreq::udp_init();
+        kernel::netinet::udp_usrreq::udp_init::<crate::kern::proc_glue::BsdProcGlue>();
         for ty in [SOCK_STREAM, SOCK_DGRAM] {
             let so = crate::kern::uipc_socket::socreate(i32::from(AF_INET), ty, 0)
                 .expect("an internet socket");

@@ -100,6 +100,8 @@ pub mod netinet_tcp_var;
 #[forbid(unsafe_code)]
 pub mod netinet_udp;
 #[forbid(unsafe_code)]
+pub mod netinet_udp_var;
+#[forbid(unsafe_code)]
 pub mod nfs_nfs;
 #[forbid(unsafe_code)]
 pub mod nfs_nfsproto;

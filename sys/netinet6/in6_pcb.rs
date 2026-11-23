@@ -385,7 +385,6 @@ pub(crate) mod tests {
     use crate::netinet::in_pcb::{in_pcballoc, in_pcbdetach, in_pcbinit};
     use crate::netinet6::in6::IN6ADDR_ANY;
     use crate::netinet6::in6::tests::a6;
-    use crate::netinet6::in6_proto::INET6SW;
     use crate::sys::endian::htons;
     use crate::sys::mbuf::mtod;
     use crate::sys::mbuf::{M_DONTWAIT, M_WAIT, MT_SONAME};
@@ -400,10 +399,19 @@ pub(crate) mod tests {
         t
     }
 
+    /// A data-only raw IPv6 row of the inet6 domain: sockets of `bsd`'s protocols' kind for
+    /// these tests, by their row and not by an index of `INET6SW`, whose rows move to the
+    /// kernel one by one (N6.6b0).
+    static RAW6_ROW: crate::sys::protosw::Protosw = crate::sys::protosw::Protosw {
+        pr_type: SOCK_RAW as i16,
+        pr_protocol: crate::netinet::in_::IPPROTO_RAW as i16,
+        pr_flags: crate::sys::protosw::PR_ATOMIC | crate::sys::protosw::PR_ADDR,
+        ..crate::sys::protosw::Protosw::new(&crate::netinet6::in6_proto::INET6DOMAIN)
+    };
+
     /// An `INP_IPV6` control block of a raw IPv6 socket in `table`.
     fn pcb6(table: &'static Inpcbtable) -> &'static Inpcb {
-        // INET6SW[2]: the raw IPv6 row (bsd's rows only since N6.5d).
-        let so = soalloc(&INET6SW[2], SOCK_RAW, M_WAIT).expect("socket");
+        let so = soalloc(&RAW6_ROW, SOCK_RAW, M_WAIT).expect("socket");
         in_pcballoc(so, table, M_WAIT).expect("in_pcballoc");
         let inp = pcb_of(so);
         assert!(inp.has_flags(INP_IPV6), "in_pcballoc marks PF_INET6 pcbs");
@@ -708,7 +716,7 @@ pub(crate) mod tests {
         use crate::sys::systm::{net_lock_shared, net_unlock_shared};
 
         let (_g, _t, _p) = setup();
-        crate::netinet::udp_usrreq::udp_init();
+        kernel::netinet::udp_usrreq::udp_init::<crate::kern::proc_glue::BsdProcGlue>();
         let ifp = test_if6(b"tnfy6");
         add_default_route(ifp, a6("fd00:77::fe"));
 

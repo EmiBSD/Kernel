@@ -401,12 +401,14 @@ paid_by = "N8"
 # (pf_inp_lookup: pf's count turned into an erased kernel handle, AnyArc), inp_link
 # (pf_inp_link) and mbuf_link_inpcb_of (pf_mbuf_link_inpcb), the kernel's pcb erased as
 # &(dyn Any + Sync) (the trait is not generic over the glue); bsd keeps its legacy counts of
-# the pcb for sk_inp and pkthdr_pf.inp until pf moves (docs/SCAFFOLDING.md). Paid when pf
+# the pcb for sk_inp and pkthdr_pf.inp until pf moves (docs/SCAFFOLDING.md). N6.6b0: the
+# kernel's UDP calls inp_lookup, inp_link and mbuf_link_inpcb_of as TCP does, and the `for`
+# list names the TCP files that call the legs since N6.6a (D-12's correction). Paid when pf
 # moves (N8).
 # kernel::net::pf_hooks::Pf
 [[bridge]]
 trait = "Pf"
-for = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet6/in6_pcb.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet6/icmp6.rs", "sys/kernel/netinet6/ip6_output.rs", "sys/kernel/netinet6/ip6_input.rs", "sys/kernel/netinet6/ip6_forward.rs"]
+for = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet6/in6_pcb.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet6/icmp6.rs", "sys/kernel/netinet6/ip6_output.rs", "sys/kernel/netinet6/ip6_input.rs", "sys/kernel/netinet6/ip6_forward.rs", "sys/kernel/netinet/tcp_input.rs", "sys/kernel/netinet/tcp_output.rs", "sys/kernel/netinet/tcp_syncache.rs", "sys/kernel/netinet/udp_usrreq.rs", "sys/kernel/netinet6/udp6_output.rs"]
 paid_by = "N8"
 
 # bsd: the protocols still in bsd (inet's inetsw[], inet6's, route's, pfkey's), implemented
@@ -428,9 +430,11 @@ paid_by = "N8"
 # input, options and requests ICMPv6's entry lends), IPsec, IP-in-IP and divert.
 # N6.6a5: TCP's entries are the kernel's (TcpProtocol, Tcp6Protocol, their requests
 # TcpUsrreqs), and pr_ctlinput carries the caller's proof of the net lock (its six callers
-# hold one; TCP's control input locks sockets under it). Paid when pfkeyv2's domain and
+# hold one; TCP's control input locks sockets under it). N6.6b0: UDP's entries are the
+# kernel's (UdpProtocol, Udp6Protocol, their requests UdpUsrreqs); bsd's inetsw[] and
+# inet6sw[] keep raw IP, divert, IPsec, IP-in-IP and pfsync. Paid when pfkeyv2's domain and
 # inetsw[]'s and inet6sw[]'s AH/ESP/IPCOMP/IPIP entries, its last legacy implementers, move
-# (N8); inet's and inet6's other transports and raw sockets at N6.6b, route's flip at N6.3b.
+# (N8); inet's and inet6's raw sockets and divert at N6.6b1, route's flip at N6.3b.
 # kernel::net::proto::Protocol
 [[bridge]]
 trait = "Protocol"
@@ -512,7 +516,8 @@ paid_by = "N7"
 # calls the kernel's through tcp_init's registration, tcp_input::tcp_input_mlist_softnet),
 # tcpstat_lro, tcp_if_output_tso and proto_outswcsum's TCP half (6a1: the kernel's tcp_var
 # counts tcps_inhwlro, tcps_inbadlro and tcps_outswcsum itself, the kernel's tcp_tso answers
-# if_output_tso, and the leg left is udpstat_outswcsum); N6.6b takes udpstat_outswcsum.
+# if_output_tso, and the leg left is udpstat_outswcsum); N6.6b0 took udpstat_outswcsum (the
+# kernel's ip_output and ip6_output count udps_outswcsum themselves, kernel::netinet::udp_var).
 # ip6_randomid is payable since idgen moved into kernel::crypto (N6.7a0, D-2); paying it is
 # N6.8's planning, so the row is not paid at N6.6b as once planned (N6.6a's inventory, G).
 # with_net_held outlives it: at N6.6b it moves onto the NetDriver bridge (the interface whose
@@ -521,7 +526,7 @@ paid_by = "N7"
 # kernel::net::if_::Inet
 [[bridge]]
 trait = "Inet"
-for = ["sys/kernel/net/if_.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet6/nd6.rs", "sys/kernel/netinet6/ip6_output.rs"]
+for = ["sys/kernel/net/if_.rs", "sys/kernel/netinet6/nd6.rs", "sys/kernel/netinet6/ip6_output.rs"]
 paid_by = "N8"
 
 # bsd: what the kernel's network code asks of IPsec (N8): enc_getifa for rtsock.c's
@@ -548,10 +553,33 @@ paid_by = "N8"
 # (gettdbbysrcdst over two whole sockaddr_unions, IPPROTO_TCP) and tdb_amxkey (the SA's MD5 key
 # lent to a closure by sys/netinet/tcp_subr.rs's tdb_amxkey_lend, never copied out; the
 # TCP_SIGNATURE xform's five functions stay bsd's, D-10).
+# N6.6b0, for the kernel's UDP (D-4): spd_check_in_flow (udp_input's #ifdef IPSEC block:
+# ipsec_in_use, then sys/netinet/ipsec_input.rs's ipsec_input_check_flow, the inner-most
+# tag's gettdb, ipsp_spd_lookup in, the SA's tdb_ids->id_flow read before tdb_unref; a second
+# leg so TCP's spd_check_in reads no ids), udpencap_input (espstat_inc(esps_udpencin), then
+# ipsec_common_input(.., IPPROTO_ESP, 1, ns) over the parked packet, the inner protocol's
+# packet handed back as Protosw::input does) and udpencap_ctlinput (bsd's udpencap_ctlinput,
+# re-signed safe over the ICMP message's bytes, each length checked); udpencap_enable and
+# esp_enable are kernel atomics beside udpencap_port (kernel::net::ipsec_hooks), bsd
+# re-exporting them. The `for` list also names the kernel's TCP files that call the legs
+# since N6.6a (tcp_input's spd_check_in, tcp_subr's, tcp_output's and tcp_syncache's
+# signature SA and key).
 # kernel::net::ipsec_hooks::Ipsec
 [[bridge]]
 trait = "Ipsec"
-for = ["sys/kernel/net/rtsock.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet6/ip6_output.rs", "sys/kernel/netinet6/ip6_input.rs", "sys/kernel/netinet6/ip6_forward.rs"]
+for = ["sys/kernel/net/rtsock.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet6/ip6_output.rs", "sys/kernel/netinet6/ip6_input.rs", "sys/kernel/netinet6/ip6_forward.rs", "sys/kernel/netinet/tcp_input.rs", "sys/kernel/netinet/tcp_subr.rs", "sys/kernel/netinet/tcp_output.rs", "sys/kernel/netinet/tcp_syncache.rs", "sys/kernel/netinet/udp_usrreq.rs"]
+paid_by = "N8"
+
+# bsd: wg(4)'s inp_upcall (N6.6b0, D-3): the hook the kernel's UDP calls before the socket
+# buffer (udp_sbappend), kernel::netinet::in_pcb::InpUpcallFn, a safe fn type (the C's
+# function pointer and argument, in_pcb.h's inp_upcall and inp_upcall_arg; no trait: one
+# pointer, not a table), implemented by sys/net/if_wg.rs's wg_input (re-signed from an unsafe
+# fn over raw header pointers: the packet given over and copies of its headers) and set on
+# wg's socket by wg_bind (Inpcb::set_upcall). Paid when wg moves (N8).
+# kernel::netinet::in_pcb::InpUpcallFn
+[[bridge]]
+trait = "InpUpcall"
+for = ["sys/kernel/netinet/udp_usrreq.rs"]
 paid_by = "N8"
 
 # bsd: pf's traffic conditioners (hfsc, fq_codel: struct ifq_ops over their void *ifq_q),
