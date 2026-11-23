@@ -1100,8 +1100,21 @@ pub unsafe fn udp_ctlinput(cmd: i32, sa: *const Sockaddr, rdomain: u32, v: *mut 
             && udpencap_port_local != 0
             && i32::from(uhp.uh_sport) == udpencap_port_local
         {
-            // SAFETY: this function's own contract, passed on.
-            unsafe { udpencap_ctlinput(cmd, sa, rdomain, v) };
+            let hl = usize::from(iph.ip_hl()) << 2;
+            // SAFETY: this function's own contract (`PrCtlinputFn`'s AF_INET clause): `v` is
+            // `ICMP_MINLEN` into one contiguous ICMP message, valid and only read for the
+            // call, that holds the ICMP header, the returned header whole (`hl` bytes, its own
+            // `ip_hl`, as read above) and 8 bytes after it; the slice is that message from its
+            // type byte, `ICMP_MINLEN + hl + 8` bytes, read-only.
+            let icmp = unsafe {
+                core::slice::from_raw_parts(
+                    v.cast::<u8>()
+                        .cast_const()
+                        .sub(hal::sys::netinet_ip_icmp::ICMP_MINLEN),
+                    hal::sys::netinet_ip_icmp::ICMP_MINLEN + hl + 8,
+                )
+            };
+            udpencap_ctlinput(rdomain, icmp);
             return;
         }
         let inp = in_pcblookup(

@@ -501,6 +501,61 @@ impl kernel::net::ipsec_hooks::Ipsec for BsdIpsec {
         }
     }
 
+    /// `udp_input`'s `#ifdef IPSEC` block for the kernel's UDP (N6.6b0): nothing while no SA
+    /// or flow is configured (`ipsec_in_use`: the flow 0), else `ipsec_input_check_flow`.
+    fn spd_check_in_flow(
+        &self,
+        m: &Mbuf,
+        af: i32,
+        hlen: i32,
+        seclevel: Option<&IpsecLevel>,
+    ) -> Result<u32, SpdError> {
+        use crate::netinet::ip_spd::SpdError as BsdSpdError;
+        if crate::netinet::ip_ipsp::IPSEC_IN_USE.load(core::sync::atomic::Ordering::Relaxed) == 0 {
+            return Ok(0);
+        }
+        match crate::netinet::ipsec_input::ipsec_input_check_flow(m, hlen, af, seclevel) {
+            Ok(flow) => Ok(flow),
+            Err(BsdSpdError::Drop) => Err(SpdError::Drop),
+            Err(BsdSpdError::Errno(e)) => Err(SpdError::Errno(e)),
+        }
+    }
+
+    /// The kernel's `udp_input` hands a UDP-encapsulated ESP datagram over (N6.6b0):
+    /// `espstat_inc(esps_udpencin)`, then `ipsec_common_input(.., IPPROTO_ESP, 1, ns)` over
+    /// the packet parked for it; the inner protocol's packet back in `*mp` when it answers
+    /// one (`Protosw::input`'s hand-back).
+    fn udpencap_input(
+        &self,
+        mp: &mut Option<kernel::net::mbuf::MbufBox>,
+        skip: i32,
+        protoff: i32,
+        af: i32,
+        ns: Option<&mut kernel::net::if_var::Netstack>,
+    ) -> i32 {
+        use crate::netinet::in_::{IPPROTO_DONE, IPPROTO_ESP};
+        crate::netinet::ip_esp::espstat_inc(crate::netinet::ip_esp::EspstatCounters::EspsUdpencin);
+        let mut m = mp.take().map(park);
+        let nxt = crate::netinet::ipsec_input::ipsec_common_input(
+            &mut m,
+            skip,
+            protoff,
+            af,
+            IPPROTO_ESP,
+            true,
+            ns,
+        );
+        if nxt != IPPROTO_DONE {
+            *mp = m.map(crate::sys::mbuf::unpark);
+        }
+        nxt
+    }
+
+    /// `udpencap_ctlinput` over the ICMP message's bytes (N6.6b0).
+    fn udpencap_ctlinput(&self, rdomain: u32, icmp: &[u8]) {
+        crate::netinet::ipsec_input::udpencap_ctlinput(rdomain, icmp);
+    }
+
     /// `gettdbbysrcdst(rdomain, 0, src, dst, IPPROTO_TCP)` for the kernel's TCP_SIGNATURE
     /// (N6.6a0): the unions taken whole, the lookup's reference in the `TdbRef`.
     fn tcp_signature_tdb(

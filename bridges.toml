@@ -548,10 +548,21 @@ paid_by = "N8"
 # (gettdbbysrcdst over two whole sockaddr_unions, IPPROTO_TCP) and tdb_amxkey (the SA's MD5 key
 # lent to a closure by sys/netinet/tcp_subr.rs's tdb_amxkey_lend, never copied out; the
 # TCP_SIGNATURE xform's five functions stay bsd's, D-10).
+# N6.6b0, for the kernel's UDP (D-4): spd_check_in_flow (udp_input's #ifdef IPSEC block:
+# ipsec_in_use, then sys/netinet/ipsec_input.rs's ipsec_input_check_flow, the inner-most
+# tag's gettdb, ipsp_spd_lookup in, the SA's tdb_ids->id_flow read before tdb_unref; a second
+# leg so TCP's spd_check_in reads no ids), udpencap_input (espstat_inc(esps_udpencin), then
+# ipsec_common_input(.., IPPROTO_ESP, 1, ns) over the parked packet, the inner protocol's
+# packet handed back as Protosw::input does) and udpencap_ctlinput (bsd's udpencap_ctlinput,
+# re-signed safe over the ICMP message's bytes, each length checked); udpencap_enable and
+# esp_enable are kernel atomics beside udpencap_port (kernel::net::ipsec_hooks), bsd
+# re-exporting them. The `for` list also names the kernel's TCP files that call the legs
+# since N6.6a (tcp_input's spd_check_in, tcp_subr's, tcp_output's and tcp_syncache's
+# signature SA and key).
 # kernel::net::ipsec_hooks::Ipsec
 [[bridge]]
 trait = "Ipsec"
-for = ["sys/kernel/net/rtsock.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet6/ip6_output.rs", "sys/kernel/netinet6/ip6_input.rs", "sys/kernel/netinet6/ip6_forward.rs"]
+for = ["sys/kernel/net/rtsock.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet6/ip6_output.rs", "sys/kernel/netinet6/ip6_input.rs", "sys/kernel/netinet6/ip6_forward.rs", "sys/kernel/netinet/tcp_input.rs", "sys/kernel/netinet/tcp_subr.rs", "sys/kernel/netinet/tcp_output.rs", "sys/kernel/netinet/tcp_syncache.rs"]
 paid_by = "N8"
 
 # bsd: pf's traffic conditioners (hfsc, fq_codel: struct ifq_ops over their void *ifq_q),
