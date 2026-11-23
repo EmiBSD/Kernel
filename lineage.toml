@@ -8740,6 +8740,13 @@ status = "redesigned"
 notes = "N6.3c2 (D-N6.3c-21, early for N6.4-N6.6): the image the kernel's Ethernet layer reads, as an abi_pod! with its const size assert: struct udphdr (8); bsd keeps its copy until the protocol moves"
 
 [[module]]
+rust = "sys/hal/sys/netinet_udp_var.rs"
+crate = "hal"
+lz = ["sys/netinet/udp_var.rs"]
+status = "redesigned"
+notes = "N6.6b0: udp_var.h's userland part: UDPCTL_* (net.inet.udp's names), struct udpstat (net.inet.udp.stats, 13 u_long, an abi_pod!) and struct udpiphdr (ipovly + udphdr, 28 bytes, an abi_pod!); sizes and offsets pinned against the C; enum udpstat_counters and udpstat_inc are kernel::netinet::udp_var's"
+
+[[module]]
 rust = "sys/hal/sys/net_if_arp.rs"
 crate = "hal"
 lz = ["sys/net/if_arp.rs"]
