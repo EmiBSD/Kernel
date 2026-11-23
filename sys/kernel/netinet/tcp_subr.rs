@@ -2003,6 +2003,11 @@ pub(crate) mod testtcp {
     /// The source [`SigLegs`]'s inbound policy refuses (`tcp_input`'s SPD check): every
     /// other segment passes it, as the C's with IPsec and no policy.
     pub(crate) const SPD_DENY: [u8; 4] = [10, 9, 72, 66];
+    /// The source whose datagrams [`SigLegs`]'s inbound policy passes with an SA's flow id
+    /// ([`SPD_FLOW_ID`], UDP's `IP_IPSECFLOWINFO`, N6.6b0); every other source has none.
+    pub(crate) const SPD_FLOW: [u8; 4] = [10, 9, 72, 67];
+    /// The flow id of [`SPD_FLOW`]'s SA.
+    pub(crate) const SPD_FLOW_ID: u32 = 0x0bad_f00d;
 
     /// The subnet whose addresses [`SigLegs`] has an SA between: 10.9.`SIG_NET`.0/24, and
     /// over IPv6 2001:db8:`SIG_NET`::/64 ([`a6`]`(SIG_NET, h)`).
@@ -2023,6 +2028,12 @@ pub(crate) mod testtcp {
     pub(crate) struct SigLegs {
         /// `tdb_unref` calls.
         pub(crate) unrefs: core::sync::atomic::AtomicU32,
+        /// `udpencap_ctlinput` calls (UDP's path MTU branch, N6.6b0).
+        pub(crate) udpencap_ctl: core::sync::atomic::AtomicU32,
+        /// `udpencap_input` calls: `skip`, `protoff`, `af` and the packet's first bytes (at
+        /// most 26), the packet freed (N6.6b0).
+        #[allow(clippy::type_complexity, reason = "a test's record")]
+        pub(crate) udpencap_in: std::sync::Mutex<std::vec::Vec<(i32, i32, i32, std::vec::Vec<u8>)>>,
         /// The capability `register_ipsec` gave.
         key: std::sync::OnceLock<&'static crate::net::ipsec_hooks::TdbKey>,
     }
@@ -2030,6 +2041,8 @@ pub(crate) mod testtcp {
     /// The legs, registered by [`sig_legs`].
     static SIG_LEGS: SigLegs = SigLegs {
         unrefs: core::sync::atomic::AtomicU32::new(0),
+        udpencap_ctl: core::sync::atomic::AtomicU32::new(0),
+        udpencap_in: std::sync::Mutex::new(std::vec::Vec::new()),
         key: std::sync::OnceLock::new(),
     };
 
@@ -2117,6 +2130,45 @@ pub(crate) mod testtcp {
                 }
                 _ => Ok(()),
             }
+        }
+        fn spd_check_in_flow(
+            &self,
+            m: &Mbuf,
+            _af: i32,
+            _hlen: i32,
+            _seclevel: Option<&crate::net::ipsec_hooks::IpsecLevel>,
+        ) -> Result<u32, crate::net::ipsec_hooks::SpdError> {
+            // SPD_DENY refused, SPD_FLOW's SA giving its flow id, no SA for the others.
+            match pod::at::<Ip>(m.data(), 0) {
+                Some(ip) if ip.ip_v() == 4 && ip.ip_src.s_addr.to_ne_bytes() == SPD_DENY => {
+                    Err(crate::net::ipsec_hooks::SpdError::Drop)
+                }
+                Some(ip) if ip.ip_v() == 4 && ip.ip_src.s_addr.to_ne_bytes() == SPD_FLOW => {
+                    Ok(SPD_FLOW_ID)
+                }
+                _ => Ok(0),
+            }
+        }
+        fn udpencap_input(
+            &self,
+            mp: &mut Option<MbufBox>,
+            skip: i32,
+            protoff: i32,
+            af: i32,
+            _ns: Option<&mut crate::net::if_var::Netstack>,
+        ) -> i32 {
+            if let Some(m) = mp.take() {
+                let n = (m.m_pkthdr().len.get() as usize).min(26);
+                let mut head = std::vec![0u8; n];
+                crate::net::mbuf::m_copydata(&m, 0, &mut head);
+                if let Ok(mut r) = self.udpencap_in.lock() {
+                    r.push((skip, protoff, af, head));
+                }
+            }
+            hal::sys::netinet_in::IPPROTO_DONE
+        }
+        fn udpencap_ctlinput(&self, _rdomain: u32, _icmp: &[u8]) {
+            self.udpencap_ctl.fetch_add(1, Ordering::Relaxed);
         }
         fn tcp_signature_tdb(
             &self,

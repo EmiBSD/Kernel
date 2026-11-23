@@ -1930,10 +1930,98 @@ fn inet() -> bool {
     );
     ok &= !err && n == 4 && buf[..4] == *b"udp!";
     ok &= from[4..8] == INET_ADDR && from[2..4] != [0, 0];
+    ok &= udp_probes(u1, u2, &to);
 
     for fd in [u1, r, u2] {
         ok &= call(SYS_CLOSE, fd, 0, 0) == (0, false);
     }
+    ok
+}
+
+/// difftest's `udp` probes (N6.6b0, D-9) over `inet`'s two UDP sockets, `u1` bound to `to`
+/// and `u2` the sender, bound to an ephemeral port by its first `sendto(2)`, unconnected:
+/// the bind collision, `write(2)` and `sendto(2)` refusals, a
+/// connected exchange with the peer's name, `sendto(2)` on a connected socket, and
+/// `net.inet.udp`'s sendspace and statistics' size. Every errno the C answers.
+fn udp_probes(u1: usize, u2: usize, to: &[u8; 16]) -> bool {
+    /// `SYS_connect`.
+    const SYS_CONNECT: usize = 98;
+    /// `EADDRINUSE`, `EDESTADDRREQ`, `EADDRNOTAVAIL`, `EISCONN`.
+    const EADDRINUSE: usize = 48;
+    const EDESTADDRREQ: usize = 39;
+    const EADDRNOTAVAIL: usize = 49;
+    const EISCONN: usize = 56;
+    /// `CTL_NET`, `IPPROTO_UDP`, `UDPCTL_SENDSPACE`, `UDPCTL_STATS`.
+    const CTL_NET: i32 = 4;
+    const IPPROTO_UDP: i32 = 17;
+    const UDPCTL_SENDSPACE: i32 = 4;
+    const UDPCTL_STATS: i32 = 5;
+    let call = |n, a, b, c| syscall3(n, a, b, c);
+    let sendto = |fd: usize, sa: &[u8; 16]| {
+        syscall6(
+            SYS_SENDTO,
+            [fd, b"x".as_ptr() as usize, 1, 0, sa.as_ptr() as usize, 16],
+        )
+    };
+    let mut ok = true;
+
+    let (u3, err) = call(SYS_SOCKET, AF_INET, SOCK_DGRAM, 0);
+    if err {
+        return false;
+    }
+    ok &= call(SYS_BIND, u3, to.as_ptr() as usize, 16) == (EADDRINUSE, true);
+    ok &= call(SYS_WRITE, u3, b"x".as_ptr() as usize, 1) == (EDESTADDRREQ, true);
+    ok &= sendto(u3, &sockaddr_in(INET_ADDR, 0)) == (EADDRNOTAVAIL, true);
+
+    // Connected: send(2) without an address, the peer's name, an address refused.
+    ok &= call(SYS_CONNECT, u2, to.as_ptr() as usize, 16) == (0, false);
+    ok &= call(SYS_WRITE, u2, b"conn".as_ptr() as usize, 4) == (4, false);
+    let mut buf = [0u8; 16];
+    ok &= call(SYS_READ, u1, buf.as_mut_ptr() as usize, buf.len()) == (4, false);
+    ok &= buf[..4] == *b"conn";
+    let mut peer = [0u8; 16];
+    let mut len: u32 = 16;
+    ok &= call(
+        SYS_GETPEERNAME,
+        u2,
+        peer.as_mut_ptr() as usize,
+        &mut len as *mut u32 as usize,
+    ) == (0, false);
+    ok &= len == 16 && peer[..8] == to[..8];
+    ok &= sendto(u2, to) == (EISCONN, true);
+
+    // net.inet.udp.sendspace, and struct udpstat's size.
+    let mut v = 0i32;
+    let mut vlen = 4usize;
+    let name = [CTL_NET, AF_INET as i32, IPPROTO_UDP, UDPCTL_SENDSPACE];
+    ok &= syscall6(
+        SYS_SYSCTL,
+        [
+            name.as_ptr() as usize,
+            4,
+            &mut v as *mut i32 as usize,
+            &mut vlen as *mut usize as usize,
+            0,
+            0,
+        ],
+    ) == (0, false);
+    ok &= v == 9216;
+    let stats = [CTL_NET, AF_INET as i32, IPPROTO_UDP, UDPCTL_STATS];
+    let mut slen = 0usize;
+    ok &= syscall6(
+        SYS_SYSCTL,
+        [
+            stats.as_ptr() as usize,
+            4,
+            0,
+            &mut slen as *mut usize as usize,
+            0,
+            0,
+        ],
+    ) == (0, false);
+    ok &= slen == 104;
+
+    ok &= call(SYS_CLOSE, u3, 0, 0) == (0, false);
     ok
 }
 

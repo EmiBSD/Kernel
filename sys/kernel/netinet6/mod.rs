@@ -42,4 +42,5 @@ pub mod nd6;
 pub mod nd6_nbr;
 pub mod nd6_rtr;
 pub mod route6;
+pub mod udp6_output;
 /* </CODE> */
