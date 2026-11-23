@@ -513,8 +513,8 @@ paid_by = "N7"
 # tcpstat_lro, tcp_if_output_tso and proto_outswcsum's TCP half (6a1: the kernel's tcp_var
 # counts tcps_inhwlro, tcps_inbadlro and tcps_outswcsum itself, the kernel's tcp_tso answers
 # if_output_tso, and the leg left is udpstat_outswcsum); N6.6b takes udpstat_outswcsum.
-# ip6_randomid stays until crypto's idgen moves (N8), so the row is not paid
-# at N6.6b as once planned (N6.6a's inventory, G).
+# ip6_randomid is payable since idgen moved into kernel::crypto (N6.7a0, D-2); paying it is
+# N6.8's planning, so the row is not paid at N6.6b as once planned (N6.6a's inventory, G).
 # with_net_held outlives it: at N6.6b it moves onto the NetDriver bridge (the interface whose
 # output lost the proof lends it; bsd's wrappers then make theirs with net_held), and it goes
 # with that bridge's output reshaped to carry the proof (N7), as docs/SCAFFOLDING.md's row says.

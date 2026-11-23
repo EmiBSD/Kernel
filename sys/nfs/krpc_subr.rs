@@ -109,7 +109,6 @@ use crate::kern::uipc_mbuf::{
 };
 use crate::kern::uipc_socket::{sobind, soclose, socreate, soreceive, sosend, sosetopt};
 use crate::kern::uipc_socket2::{solock_shared, sounlock_shared};
-use crate::machine::copy::AbiPod;
 use crate::machine::intr::IPL_NONE;
 use crate::netinet::in_::{
     INADDR_ANY, IP_PORTRANGE, IP_PORTRANGE_DEFAULT, IP_PORTRANGE_LOW, IPPROTO_IP, IPPROTO_UDP,
@@ -194,8 +193,19 @@ struct RpcCall {
     verf_authlen: u32,
 }
 
-// SAFETY: `#[repr(C)]` of `u32`s only: no padding, every bit pattern valid.
-unsafe impl AbiPod for RpcCall {}
+hal::abi_pod!(RpcCall {
+    rp_xid: u32,
+    rp_direction: u32,
+    rp_rpcvers: u32,
+    rp_prog: u32,
+    rp_vers: u32,
+    rp_proc: u32,
+    auth_authtype: u32,
+    auth_authlen: u32,
+    rpc_unix: [u32; 5],
+    verf_authtype: u32,
+    verf_authlen: u32,
+});
 
 /// The words of `struct rpc_reply`: `rp_xid`, `rp_direction`, `rp_astatus`, then the union:
 /// `rp_errno`, or `rp_auth.authtype`, `rp_auth.authlen` and `rp_status`.

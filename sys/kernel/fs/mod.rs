@@ -46,6 +46,7 @@ pub mod mount;
 #[cfg(feature = "msdosfs")]
 pub mod msdosfs;
 pub mod namei;
+pub mod nfs;
 pub mod physio;
 #[cfg(any(test, feature = "msdosfs", feature = "cd9660", feature = "udf"))]
 pub mod pod;

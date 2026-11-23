@@ -78,9 +78,9 @@
 //! - `nfs_mountroot` ignores the swap file's size (it is only printed under `DEBUG`) and the
 //!   `#ifdef notyet` swap credentials; `nfs_boot_init` returns a `Result` that is a panic
 //!   here, since the C's cannot fail either.
-//! - `nfs_sysctl` reads `name[0]` only when there is one; `fs.nfs.nfsstats` is copied out of
-//!   and into the counters as the 78 words of `struct nfsstats` (`Nfsstats::snapshot`,
-//!   `restore`).
+//! - `nfs_sysctl` reads `name[0]` only when there is one; `vfs.nfs.nfsstats` is copied out of
+//!   and into the kernel's counters as `hal`'s image of `struct nfsstats`
+//!   (`NfsCounters::snapshot`, `restore`).
 //! - `mountnfs`' failure path also clears `mnt_data`, which the C leaves pointing at the freed
 //!   `nfsmount` of a mount about to be freed.
 //! - `nfs_statfs` frees its credential on every path (the C does through `nfsmout`).
@@ -981,7 +981,7 @@ pub fn nfs_sysctl(
         return Err(Errno::EOPNOTSUPP);
     };
 
-    const STATS_SIZE: usize = crate::nfs::nfs::Nfsstats::NWORDS * size_of::<u64>();
+    const STATS_SIZE: usize = size_of::<crate::nfs::nfs::Nfsstats>();
     match first {
         NFS_NFSSTATS => {
             if oldp == 0 {
@@ -994,26 +994,19 @@ pub fn nfs_sysctl(
                 return Err(Errno::ENOMEM);
             }
 
-            let words = NFSSTATS.snapshot();
-            let mut bytes = [0u8; STATS_SIZE];
-            let (chunks, _) = bytes.as_chunks_mut::<{ size_of::<u64>() }>();
-            for (chunk, w) in chunks.iter_mut().zip(words) {
-                *chunk = w.to_ne_bytes();
-            }
-            copyout(&bytes, oldp)?;
+            let st = NFSSTATS.snapshot();
+            copyout(hal::user::bytes_of(core::slice::from_ref(&st)), oldp)?;
 
             if newp != 0 && newlen != STATS_SIZE {
                 return Err(Errno::EINVAL);
             }
 
             if newp != 0 {
+                let mut bytes = [0u8; STATS_SIZE];
                 copyin(newp, &mut bytes)?;
-                let mut words = [0u64; crate::nfs::nfs::Nfsstats::NWORDS];
-                let (chunks, _) = bytes.as_chunks::<{ size_of::<u64>() }>();
-                for (w, chunk) in words.iter_mut().zip(chunks) {
-                    *w = u64::from_ne_bytes(*chunk);
+                if let Some(st) = hal::user::pod_from_bytes(&bytes) {
+                    NFSSTATS.restore(&st);
                 }
-                NFSSTATS.restore(&words);
             }
             Ok(())
         }

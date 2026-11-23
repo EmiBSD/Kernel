@@ -53,13 +53,20 @@
 /* <CODE> */
 //! `<nfs/rpcv2.h>`: definitions for Sun RPC version 2, from "RPC: Remote Procedure Call
 //! Protocol Specification" (RFC 1057): the message, authentication and reply constants and the
-//! MOUNT program's numbers.
+//! MOUNT program's numbers. An installed header (`/usr/include/nfs/rpcv2.h`), so its image is
+//! `hal`'s (N6.7a0, D-10), beside the other headers userland reads.
 //!
 //! Upstream: sys/nfs/rpcv2.h @ 3ce1f3f79392
+//! LZ: sys/nfs/rpcv2.rs@3c62ede68802
 //!
 //! ## Deviations
 //! - None: constants only. They are `u32` (the XDR words they become through
 //!   `txdr_unsigned`), the sizes `usize`.
+//!
+//! ## Redesign
+//! - LZ's `bsd` module `sys/nfs/rpcv2.rs` -> `hal::sys::nfs_rpcv2`, unchanged constants, so
+//!   that the kernel's nfs client (`kernel::fs::nfs`) and `bsd`'s server name one copy; `bsd`'s
+//!   `nfs::rpcv2` re-exports this module.
 
 /// `RPC_VER2`: version number.
 pub const RPC_VER2: u32 = 2;

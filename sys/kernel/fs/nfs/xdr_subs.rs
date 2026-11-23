@@ -55,29 +55,36 @@
 //! by "XDR: External Data Representation Standard" (RFC 1014).
 //!
 //! Upstream: sys/nfs/xdr_subs.h @ 3ce1f3f79392
+//! LZ: sys/nfs/xdr_subs.rs@3c62ede68802
 //!
 //! A raw XDR word is a `u32` as it lies in an mbuf (network byte order, read with the
 //! machine's order): `fxdr_unsigned(w)` is the host value, `txdr_unsigned(v)` the raw word.
-//! The C's type argument (`fxdr_unsigned(int, *tl)`) is a cast at the call site
-//! (`fxdr_unsigned(tl.get(0)) as i32`); `txdr_unsigned` of a negative `int` is
-//! `txdr_unsigned(x as u32)`, the same bits.
+//! The C's type argument (`fxdr_unsigned(int, *tl)`) is a cast at the call site;
+//! `txdr_unsigned` of a negative `int` is `txdr_unsigned(x as u32)`, the same bits.
 //!
 //! ## Deviations
 //! - The statement macros `fxdr_nfsv2time(f, t)`, `fxdr_nfsv3time(f, t)`,
 //!   `txdr_nfsv3time(f, t)`, `txdr_hyper(f, t)` are functions that return the converted
 //!   value; `fxdr_hyper(f)` takes the two raw words. `txdr_nfsv2time`, declared here, is
-//!   defined in `nfs_subs.rs` as in C.
+//!   defined in `nfs_subs` as in C (re-exported here).
 //! - [`xdr_bytes`] and [`xdr_get`] are Rust helpers: the bytes of a wire structure, and a
 //!   wire structure read from bytes (the C casts the pointer).
+//!
+//! ## Redesign
+//! - LZ's `bsd` module -> the kernel's (N6.7a0): the client (`kernel::fs::nfs`) and `bsd`'s
+//!   server name this one (`bsd`'s `nfs::xdr_subs` re-exports it). The byte views of a wire
+//!   structure are `hal::user`'s `bytes_of` and `bytes_of_mut` over an `AbiPod` type (LZ: two
+//!   raw-pointer `unsafe` blocks over its own `AbiPod`).
 
-use core::{ptr, slice};
+use core::slice;
 
-use crate::machine::copy::AbiPod;
-use crate::nfs::nfsproto::{Nfsv2Time, Nfsv3Time};
-use crate::sys::time::Timespec;
+use hal::user::{AbiPod, bytes_of, bytes_of_mut, zeroed};
+
+use crate::clock::Timespec;
+use crate::sys::nfs_nfsproto::{Nfsv2Time, Nfsv3Time};
 use crate::sys::types::Time;
 
-pub use crate::nfs::nfs_subs::txdr_nfsv2time;
+pub use super::nfs_subs::txdr_nfsv2time;
 
 /// `fxdr_unsigned(t, v)`: the host value of the raw XDR word `v` (`ntohl`).
 #[inline]
@@ -137,22 +144,17 @@ pub const fn txdr_hyper(f: u64) -> [u32; 2] {
 
 /// The bytes of a wire structure.
 pub fn xdr_bytes<T: AbiPod>(v: &T) -> &[u8] {
-    // SAFETY: `T: AbiPod` has no padding, so its `size_of::<T>()` bytes are initialised and
-    // may be read as `u8`s while `v` is borrowed.
-    unsafe { slice::from_raw_parts(ptr::from_ref(v).cast::<u8>(), size_of::<T>()) }
+    bytes_of(slice::from_ref(v))
 }
 
 /// A wire structure read from the start of `b`; when `b` is shorter than the structure (a
 /// version 2 reply read into a structure sized for version 3), the rest is zero.
 pub fn xdr_get<T: AbiPod>(b: &[u8]) -> T {
-    let n = b.len().min(size_of::<T>());
-    let mut v = core::mem::MaybeUninit::<T>::zeroed();
-    // SAFETY: `n` bytes are readable from `b` and fit in `v`; `T: AbiPod`, so the all-zero
-    // bytes with any prefix written over them are a valid `T`.
-    unsafe {
-        ptr::copy_nonoverlapping(b.as_ptr(), v.as_mut_ptr().cast::<u8>(), n);
-        v.assume_init()
-    }
+    let mut v = zeroed::<T>();
+    let dst = bytes_of_mut(slice::from_mut(&mut v));
+    let n = b.len().min(dst.len());
+    dst[..n].copy_from_slice(&b[..n]);
+    v
 }
 /* </CODE> */
 
