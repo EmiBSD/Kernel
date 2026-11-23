@@ -1939,7 +1939,8 @@ fn inet() -> bool {
 }
 
 /// difftest's `udp` probes (N6.6b0, D-9) over `inet`'s two UDP sockets, `u1` bound to `to`
-/// and `u2` unbound so far: the bind collision, `write(2)` and `sendto(2)` refusals, a
+/// and `u2` the sender, bound to an ephemeral port by its first `sendto(2)`, unconnected:
+/// the bind collision, `write(2)` and `sendto(2)` refusals, a
 /// connected exchange with the peer's name, `sendto(2)` on a connected socket, and
 /// `net.inet.udp`'s sendspace and statistics' size. Every errno the C answers.
 fn udp_probes(u1: usize, u2: usize, to: &[u8; 16]) -> bool {

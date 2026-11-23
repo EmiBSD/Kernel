@@ -1994,6 +1994,7 @@ udp_pair(const char *fam, struct sockaddr *sa, socklen_t salen)
 		char buf[CMSG_SPACE(sizeof(struct sockaddr_in6)) +
 		    CMSG_SPACE(sizeof(u_int16_t)) + CMSG_SPACE(sizeof(int))];
 	} cmsgbuf;
+	struct timeval tv = { 2, 0 };
 	char buf[64], name[96];
 	socklen_t len;
 	int s, c, s2, one = 1, v;
@@ -2080,16 +2081,19 @@ udp_pair(const char *fam, struct sockaddr *sa, socklen_t salen)
 	R("send after shutdown", send(c, "x", 1, 0));
 	close(c);
 
-	/* A connected socket's datagram to a closed port: the error on its next call. */
+	/*
+	 * A connected socket's datagram to a closed port: the error on its next call, a
+	 * receive that waits for it (at most 2 s) rather than a sleep and a non-blocking one.
+	 */
 	c = socket(sa->sa_family, SOCK_DGRAM, 0);
+	R("rcvtimeo", setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)));
 	if (sa->sa_family == AF_INET)
 		((struct sockaddr_in *)sa)->sin_port = htons(47139);
 	else
 		((struct sockaddr_in6 *)sa)->sin6_port = htons(47139);
 	R("connect closed port", connect(c, sa, salen));
 	R("send closed port", send(c, "x", 1, 0));
-	usleep(200000);
-	R("recv after unreachable", recv(c, buf, sizeof(buf), MSG_DONTWAIT));
+	R("recv after unreachable", recv(c, buf, sizeof(buf), 0));
 	close(c);
 	close(s);
 }
