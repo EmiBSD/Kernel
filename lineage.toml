@@ -6903,7 +6903,14 @@ rust = "sys/kernel/fs/nfs/nfs_subs.rs"
 crate = "kernel"
 lz = ["sys/nfs/nfs_subs.rs"]
 status = "redesigned"
-notes = "N6.7a0: the XDR words, the type tables, NFSSTATS and txdr_nfsv2time (bsd's nfs_subs re-exports them for the server)"
+notes = "N6.7a0: the XDR words, the type tables, NFSSTATS and txdr_nfsv2time (bsd's nfs_subs re-exports them for the server); the cursors' methods of nfs_subs.c: XdrWriter::{reqhead, from_uio (nfsm_uiotombuf), buftombuf, strtombuf, fhtom, v3attrbuild} over one append body, XdrReader::mbuftouio (each piece by the glue's uiomove_out); bsd's functions of the same work stay for its client until 7a5"
+
+[[module]]
+rust = "sys/kernel/fs/nfs/nfsm_subs.rs"
+crate = "kernel"
+lz = ["sys/nfs/nfsm_subs.rs"]
+status = "redesigned"
+notes = "N6.7a0: the client's cursors: XdrReader (nmi_md/nmi_dpos as a borrowed mbuf and an offset; nfsm_dissect, nfsm_adv, nfsm_strsiz, nfsm_mtouio; copies out, never a view into an mbuf, never an mbuf inserted; EBADRPC at the chain's end; at(offset) for the reply and the server's request) and XdrWriter (the chain owned, MChainBuilder behind and the tail being filled; nfsm_build, nfsm_strtom; with_first for a caller's head); LZ's XdrIn/XdrOut/NfsmInfo and the server's nfsd_* stay bsd's until 7a5 and 7b"
 
 [[module]]
 rust = "sys/kernel/fs/nfs/nfsproto.rs"

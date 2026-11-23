@@ -29,6 +29,7 @@
 #[allow(clippy::module_inception)] // OpenBSD's layout: sys/nfs/nfs.h
 pub mod nfs;
 pub mod nfs_subs;
+pub mod nfsm_subs;
 pub mod nfsproto;
 pub mod xdr_subs;
 
