@@ -35,3 +35,11 @@ date	brief	model	in_tokens	out_tokens	cost_usd	seconds	finish	file
 20261028	vnode-handle/BRIEF.md	~openai/gpt-sol-latest	9743	1781	0.0422	36	stop	20261028-201415-openai_gpt-sol-latest.md
 20261030	n5.5a1-create-remove/BRIEF.md	google/gemini-4-argon	9976	2189	0.0418	31	stop	20261030-232833-google_gemini-4-argon.md
 20261030	n5.5a1-create-remove/BRIEF.md	~openai/gpt-sol-latest	8057	1612	0.0363	25	stop	20261030-232833-openai_gpt-sol-latest.md
+20261107	heads-up/BRIEF.md	google/gemini-4-argon	4675	2399	0.0333	35	stop	20261107-154505-google_gemini-4-argon.md
+20261107	heads-up/BRIEF.md	~openai/gpt-sol-latest	4232	1083	0.0214	20	stop	20261107-154505-openai_gpt-sol-latest.md
+20261108	n6.2-socket-lock/BRIEF.md	google/gemini-4-argon	8004	5967	0.0757	82	stop	20261108-093233-google_gemini-4-argon.md
+20261108	n6.2-socket-lock/BRIEF.md	~openai/gpt-sol-latest	6338	2107	0.0369	36	stop	20261108-093233-openai_gpt-sol-latest.md
+20261108	n6.2-peek4k/BRIEF.md	google/gemini-4-argon	10416	2493	0.0458	36	stop	20261108-164353-google_gemini-4-argon.md
+20261108	n6.2-peek4k/BRIEF.md	~openai/gpt-sol-latest	8301	1324	0.0340	25	stop	20261108-164353-openai_gpt-sol-latest.md
+20261115	insight/BRIEF.md	google/gemini-4-argon	5531	4168	0.0527	72	stop	20261115-114938-google_gemini-4-argon.md
+20261115	insight/BRIEF.md	~openai/gpt-sol-latest	4735	1730	0.0291	33	stop	20261115-114938-openai_gpt-sol-latest.md

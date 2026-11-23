@@ -251,3 +251,4 @@ metadata:
 - After a test closes a connection through input (an RST, TIME_WAIT reuse), `testtcp::with_lock`/`with_tp` panic ("an attached socket"): ask `in_pcbsolock` directly and treat `None` as no control block (N6.6a4's `has_tcpcb`).
 - A pool count captured after a fixture made its own block (the listener's tcpcb) is the baseline plus one: compare the final count with `cbs - 1`, not `cbs` (N6.6a4's handshake test).
 - A signature or SPD refusal test needs SigLegs registered first (`testtcp::sig_legs()`); SigLegs refuses what `SPD_DENY` (10.9.72.66) sends since N6.6a4, and every other source passes (N6.6a4).
+- The user-copy double's `0x1_0000..0x3_0000` is mfs's image (any brief's `0x1_8000` collides): kernel::thrsleep's tests took `0xdc00..0xe000`, beside futex's `0xd000..` (both under sched's SERIAL); sched's test tids 80-91 are taken, thrsleep's are 180-191 (lz-sync thrsleep).
