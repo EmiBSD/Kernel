@@ -708,7 +708,7 @@ pub(crate) mod tests {
         use crate::sys::systm::{net_lock_shared, net_unlock_shared};
 
         let (_g, _t, _p) = setup();
-        crate::netinet::udp_usrreq::udp_init();
+        kernel::netinet::udp_usrreq::udp_init::<crate::kern::proc_glue::BsdProcGlue>();
         let ifp = test_if6(b"tnfy6");
         add_default_route(ifp, a6("fd00:77::fe"));
 

@@ -262,6 +262,7 @@ use crate::netinet::in_pcb::{
 use crate::netinet::ip_output::in_ifcap_cksum;
 use crate::netinet::ip_var::ip_mtudisc;
 use crate::netinet::tcp_var::{TcpstatCounters, tcpstat_inc};
+use crate::netinet::udp_var::{UdpstatCounters, udpstat_inc};
 use crate::netinet6::in6::{in6_addmulti, in6_delmulti, in6_hasmulti};
 use crate::netinet6::in6_cksum::in6_cksum;
 use crate::netinet6::in6_src::in6_selectroute;
@@ -2530,9 +2531,7 @@ pub fn in6_proto_cksum_out(m: &mut Mbuf, ifp: Option<&Ifnet>) {
         }
     } else if flags & M_UDP_CSUM_OUT != 0 {
         if no_hw(IFCAP_CSUM_UDPv6, IPPROTO_UDP) {
-            if let Some(i) = inet() {
-                i.udpstat_outswcsum();
-            }
+            udpstat_inc(UdpstatCounters::UdpsOutswcsum);
             in6_delayed_cksum(m, IPPROTO_UDP as u8);
             m.m_pkthdr().csum_flags.set(flags & !M_UDP_CSUM_OUT); // Clear
         }

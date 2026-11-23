@@ -242,7 +242,7 @@
 //!   members in the size test; the three queue entries 48, the two address unions 32,
 //!   `struct route` 72, `struct refcnt` 8, the header union 40); LZ's `Inpcb` was 352 (measured: a replica of its members over
 //!   this tree's types, LZ's `Route` of 72 and `Refcnt` of 8; the tree's at 2baa2aff, with
-//!   `RouteCell`, the same); here 544, 560 with the counted item's header (the pool and the
+//!   `RouteCell`, the same); here 536, 552 with the counted item's header (the pool and the
 //!   count): the three pinned entries (96: a lock identity each beside the two links), the
 //!   route cache's cell (72), the IPv4 multicast options' and (N6.5c, +64) the IPv6 packet
 //!   and multicast options' (40 each), the IPv4 options' slot (24, N6.6a0: +16 over `bsd`'s
@@ -254,7 +254,8 @@
 //!   [`Inpcb::moptions6`] as a [`MouLoan`] of the family's member; a loan of the other
 //!   family's is `panic(9)`, where the C would read the union as the wrong member): 48 B
 //!   where the two cells were 80. The item was 568 B (552 and the header); 560 since N6.6a5,
-//!   `bsd`'s `inp_ppcb` word gone with `bsd`'s TCP.
+//!   `bsd`'s `inp_ppcb` word gone with `bsd`'s TCP; 552 since N6.6b0, `inp_upcall`'s function
+//!   a fn pointer (D-3) where it was an erased fat pointer.
 //! - The IPv6 packet and multicast options are the kernel's typed cells since N6.5c (D-10),
 //!   lent by [`Inpcb::outputopts6`] and [`Inpcb::moptions6`] under the socket lock (the C's
 //!   union of `inp_options` and `inp_outputopts6` is two members here, as in LZ).
@@ -534,12 +535,13 @@ pub type InpUpcallFn = fn(
 ) -> Option<MbufBox>;
 
 /// `inp_upcall` and `inp_upcall_arg`, set once ([`Inpcb::set_upcall`]): a hook that sees UDP
-/// datagrams before the socket buffer (wg(4)'s `wg_input`, set by `wg_bind`). The function is
-/// `bsd`'s, erased (`bsd`'s UDP input names its type to call it); the argument a word.
+/// datagrams before the socket buffer (wg(4)'s `wg_input`, set by `wg_bind`), the C's
+/// pointer and argument (N6.6b0: the function a safe [`InpUpcallFn`], where it was `bsd`'s
+/// `unsafe fn` erased behind `dyn Any`); the argument a word.
 #[derive(Clone, Copy)]
 pub struct InpUpcall {
     /// `inp_upcall`.
-    pub f: &'static (dyn core::any::Any + Send + Sync),
+    pub f: InpUpcallFn,
     /// `inp_upcall_arg`: the argument's address.
     pub arg: usize,
 }
@@ -1275,11 +1277,7 @@ impl<G: ProcGlue> Inpcb<G> {
 
     /// `inp->inp_upcall = f; inp->inp_upcall_arg = arg` (wg(4)'s `wg_bind` on its new
     /// socket); `Err` when an upcall is set already.
-    pub fn set_upcall(
-        &self,
-        f: &'static (dyn core::any::Any + Send + Sync),
-        arg: usize,
-    ) -> Result<(), Errno> {
+    pub fn set_upcall(&self, f: InpUpcallFn, arg: usize) -> Result<(), Errno> {
         self.inp_upcall
             .set(InpUpcall { f, arg })
             .map_err(|_| Errno::EBUSY)
@@ -3327,7 +3325,7 @@ mod tests {
             size_of::<Inpcb<G>>(),
             size_of::<Route>()
         );
-        // 544 bytes, 560 with the counted item's header (the count and the pool), against the
+        // 536 bytes, 552 with the counted item's header (the count and the pool), against the
         // C's struct inpcb of 328 (LP64) and LZ's 352 (the module's Redesign): the three
         // pinned entries (96: a lock identity each besides the two links), the route cache's
         // cell (72), the multicast options' one cell (48: the C's union `inp_mou`, the box
@@ -3336,9 +3334,11 @@ mod tests {
         // claim word and the chain's box, N6.6a0's D-15, a word of bsd's before), the anchor
         // (16) and the kernel's tcpcb slot (32: the cell's 16-byte key and the 16-byte box,
         // N6.6a2's D-12; bsd's 8-byte word beside it went at N6.6a5: 552 and 568 before) are
-        // the growth; the item stays within the brief's bound of 584 (S12).
-        assert_eq!(sum, 543);
-        assert_eq!(size_of::<Inpcb<G>>(), 544);
+        // the growth; the item stays within the brief's bound of 584 (S12). N6.6b0 (D-3): the
+        // upcall's function a fn pointer, where it was an erased fat pointer: 536, 552 with the
+        // header (544 and 560 before).
+        assert_eq!(sum, 535);
+        assert_eq!(size_of::<Inpcb<G>>(), 536);
         assert!(size_of::<Inpcb<G>>() + 16 <= 584, "S12: the \"inpcb\" item");
 
         // The C's struct inpcb on LP64, as repr(C) lays out in_pcb.h's members in order (the
@@ -3681,7 +3681,7 @@ mod tests {
         assert_eq!(nout(), before + 1);
         assert_eq!(
             crate::net::domain::net::<Tg>().inpcb.pool.item_size(),
-            Some(560),
+            Some(552),
             "vmstat -m's size of an \"inpcb\" item: the value and the counted item's header"
         );
         assert_eq!(inp.legacy_count(), 1, "refcnt_init: the socket's");

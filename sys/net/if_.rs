@@ -359,12 +359,6 @@ impl kernel::net::if_::Inet for BsdNetLegs {
         crate::netinet6::ip6_output::ip6_id_generate()
     }
 
-    fn udpstat_outswcsum(&self) {
-        crate::netinet::udp_var::udpstat_inc(
-            crate::netinet::udp_var::UdpstatCounters::UdpsOutswcsum,
-        );
-    }
-
     fn with_net_held(&self, f: &mut dyn FnMut(&hal::netlock::NetHeld<'_>)) {
         f(net_held("if_input_proto").net());
     }

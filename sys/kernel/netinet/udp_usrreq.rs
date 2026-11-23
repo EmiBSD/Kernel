@@ -242,11 +242,11 @@ use crate::netinet::in_::{in_control, in_nam2sin};
 use crate::netinet::in_pcb::InpUpcall;
 use crate::netinet::in_pcb::{
     IN6P_CONTROLOPTS, IN6P_RECVDSTPORT, INP_CONTROLOPTS, INP_IPSECFLOWINFO, INP_IPV6,
-    INP_RECVDSTPORT, InpHold, InpUpcallFn, Inpcb, InpcbRef, Inpcbtable, in_pcb_iterator,
-    in_pcb_iterator_abort, in_pcbaddrisavail, in_pcballoc, in_pcbbind, in_pcbconnect, in_pcbdetach,
-    in_pcbdisconnect, in_pcbinit, in_pcblookup, in_pcblookup_listen, in_pcbnotifyall,
-    in_pcbrtchange, in_pcbselsrc, in_pcbsolock, in_pcbunset_laddr, in_setpeeraddr, in_setsockaddr,
-    in_sysctl_ports, sotoinpcb_locked,
+    INP_RECVDSTPORT, InpHold, Inpcb, InpcbRef, Inpcbtable, in_pcb_iterator, in_pcb_iterator_abort,
+    in_pcbaddrisavail, in_pcballoc, in_pcbbind, in_pcbconnect, in_pcbdetach, in_pcbdisconnect,
+    in_pcbinit, in_pcblookup, in_pcblookup_listen, in_pcbnotifyall, in_pcbrtchange, in_pcbselsrc,
+    in_pcbsolock, in_pcbunset_laddr, in_setpeeraddr, in_setsockaddr, in_sysctl_ports,
+    sotoinpcb_locked,
 };
 use crate::netinet::in4_cksum::in4_cksum;
 use crate::netinet::ip_icmp::icmp_error;
@@ -798,14 +798,6 @@ fn udp_input_mcast<G: ProcGlue>(
     drop(last);
 }
 
-/// `inp_upcall` of `inp`, when set: the function and its argument.
-#[inline]
-fn upcall_of<G: ProcGlue>(inp: &Inpcb<G>) -> Option<(InpUpcallFn, usize)> {
-    let InpUpcall { f, arg } = inp.upcall()?;
-    let a: &dyn core::any::Any = f;
-    a.downcast_ref::<InpUpcallFn>().map(|f| (*f, arg))
-}
-
 /// The control message `n` put at the end of the chain `opts` (the C's walk to the last
 /// `m_next`; a NULL `n` appends nothing).
 fn opts_append(opts: &mut Option<MbufBox>, n: Option<MbufBox>) {
@@ -847,7 +839,7 @@ fn udp_sbappend<G: ProcGlue>(
 
     let hlen = hlen + size_of::<Udphdr>() as i32;
 
-    if let Some((f, arg)) = upcall_of(inp) {
+    if let Some(InpUpcall { f, arg }) = inp.upcall() {
         match f(arg, m, ip, ip6, uh, hlen, ns) {
             Some(n) => m = n,
             None => return,

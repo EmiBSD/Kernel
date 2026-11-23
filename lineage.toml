@@ -5528,7 +5528,7 @@ kind = "moved"
 rust = "sys/kern/kern_sysctl.rs"
 lz = ["sys/kern/kern_sysctl.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/log.rs", "sys/kernel/tty.rs", "sys/kernel/sysctl.rs", "sys/kernel/clockintr.rs", "sys/kernel/tc.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/unix.rs", "sys/kernel/net/syscalls.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/tcp_var.rs", "sys/kernel/netinet/tcp_usrreq.rs"]
+adapted_by = ["sys/kernel/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/log.rs", "sys/kernel/tty.rs", "sys/kernel/sysctl.rs", "sys/kernel/clockintr.rs", "sys/kernel/tc.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/unix.rs", "sys/kernel/net/syscalls.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/tcp_var.rs", "sys/kernel/netinet/tcp_usrreq.rs", "sys/kernel/netinet/udp_usrreq.rs"]
 notes = "N4.6b: the bsd half of sysctl(2): kern.file, the helpers over bsd copyin/copyout for the nodes still in bsd, and sysctl_register_legacy (Node/ProcNode adapters, the CTL_* trees, the kern/hw leaves, directories and kern_vars/hw_vars entries whose state is bsd's, hw.machine, physmem), BsdDiskExport (the DiskExport bridge), native_sysctl (the KernelApi entry); the dispatcher, the vslock and kern.proc moved into sys/kernel/sysctl.rs; adapted, not redesigned, until kern.file moves (N5/N6): its unsafe blocks (three at N4.6b: the bound address mbuf viewed as a slice, in_pcb_iterator and its abort; two since N6.4c1, DISKLIST's insert and remove, the pcb's gone with the kernel's pcb) keep the file from the forbid a redesigned bsd module needs (lz check, ZERO_UNSAFE section 5); N4.8a: kern.clockintr and kern.timecounter are the kernel's ClockintrNode and TcNode in KERN_NODES (LZ's kern.clockintr unported! closed)"
 
 
@@ -5794,7 +5794,7 @@ adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/fs/vnop
 rust = "sys/kern/uipc_domain.rs"
 lz = ["sys/kern/uipc_domain.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/proto.rs", "sys/kernel/net/unix.rs", "sys/kernel/net/syscalls.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet/in_proto.rs", "sys/kernel/netinet6/icmp6.rs", "sys/kernel/netinet6/in6_proto.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/proto.rs", "sys/kernel/net/unix.rs", "sys/kernel/net/syscalls.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet/in_proto.rs", "sys/kernel/netinet6/icmp6.rs", "sys/kernel/netinet6/in6_proto.rs", "sys/kernel/netinet/udp_usrreq.rs"]
 
 [[module]]
 rust = "sys/kern/uipc_mbuf.rs"
@@ -6283,7 +6283,7 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/n
 rust = "sys/net/if_.rs"
 lz = ["sys/net/if_.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs", "sys/hal/netlock.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/file.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/net/if_loop.rs", "sys/kernel/net/if_ethersubr.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_.rs", "sys/kernel/netinet/igmp.rs", "sys/kernel/netinet/in_var.rs", "sys/kernel/netinet/if_ether.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/in6_ifattach.rs", "sys/kernel/netinet6/in6_var.rs", "sys/kernel/netinet6/nd6.rs", "sys/kernel/netinet6/ip6_output.rs", "sys/kernel/netinet6/icmp6.rs", "sys/kernel/netinet6/ip6_input.rs", "sys/kernel/netinet6/in6_proto.rs", "sys/kernel/netinet/in_proto.rs", "sys/kernel/netinet/tcp_subr.rs"]
+adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs", "sys/hal/netlock.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/file.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/net/if_loop.rs", "sys/kernel/net/if_ethersubr.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_.rs", "sys/kernel/netinet/igmp.rs", "sys/kernel/netinet/in_var.rs", "sys/kernel/netinet/if_ether.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/in6_ifattach.rs", "sys/kernel/netinet6/in6_var.rs", "sys/kernel/netinet6/nd6.rs", "sys/kernel/netinet6/ip6_output.rs", "sys/kernel/netinet6/icmp6.rs", "sys/kernel/netinet6/ip6_input.rs", "sys/kernel/netinet6/in6_proto.rs", "sys/kernel/netinet/in_proto.rs", "sys/kernel/netinet/tcp_subr.rs", "sys/kernel/netinet/udp_usrreq.rs"]
 notes = "M7b: module if_ (if is a Rust keyword); every constant, if_nameindex, if_clonereq, if_rxring(_info), if_rxrinfo, if_data, if_status_description with LINK_STATE_DESCRIPTIONS (a slice, no NULL terminator), if_msghdr, ifa_msghdr, if_announcemsghdr, if_ieee80211_data/msghdr, if_nameindex_msg, ifg_req, ifg_attrib, ifgroupreq, ifreq, ifaliasreq, ifmediareq, ifkalivereq, ifconf, if_laddrreq, if_afreq, if_parent, if_sffpage; the unions are #[repr(C)] unions with safe accessors for the ifr_*/ifgr_*/ifc_*/ifra_* shorthands; IF_Kbps/Mbps/Gbps, IFQ_PRIO2TOS/TOS2PRIO, LINK_STATE_IS_UP, LINK_STATE_DESC_MATCH as const fns; CTL_IFQ_NAMES waits for sys/sysctl.h; the prototypes are net/if.c's functions in the same module (M7b)"
 
 [[module]]
@@ -6303,7 +6303,7 @@ adapted_by = ["sys/hal/sys/net_if.rs"]
 rust = "sys/net/if_enc.rs"
 lz = ["sys/net/if_enc.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet6/ip6_output.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet6/ip6_output.rs", "sys/kernel/netinet/udp_usrreq.rs"]
 
 [[module]]
 rust = "sys/net/if_ethersubr.rs"
@@ -6360,7 +6360,7 @@ adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/
 rust = "sys/net/if_wg.rs"
 lz = ["sys/net/if_wg.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/task.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/bpf.rs", "sys/kernel/netinet/in_pcb.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/task.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/bpf.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/udp_usrreq.rs"]
 notes = "one change of its own besides the call sites: wg_tag's t_done is an AtomicBool stored Release after t_mbuf and loaded Acquire by wg_queue_dequeue, the C's unordered plain int closed on the user's decision of 2026-11-08 ahead of N8's redesign"
 
 [[module]]
@@ -6373,7 +6373,7 @@ adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/
 rust = "sys/net/pf.rs"
 lz = ["sys/net/pf.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/crypto/sha2.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/sched.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet6/ip6_forward.rs", "sys/kernel/netinet/tcp_usrreq.rs", "sys/kernel/netinet/tcp_subr.rs"]
+adapted_by = ["sys/kernel/crypto/sha2.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/sched.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet6/ip6_forward.rs", "sys/kernel/netinet/tcp_usrreq.rs", "sys/kernel/netinet/tcp_subr.rs", "sys/kernel/netinet/udp_usrreq.rs"]
 
 [[module]]
 rust = "sys/net/pf_if.rs"
@@ -6525,13 +6525,13 @@ notes = "M7b: module in_ (in is a Rust keyword), with in.c; every constant, the 
 rust = "sys/netinet/in_pcb.rs"
 lz = ["sys/netinet/in_pcb.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_proto.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/in6_pcb.rs", "sys/hal/netlock.rs", "sys/kernel/netinet/tcp_var.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_proto.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/in6_pcb.rs", "sys/hal/netlock.rs", "sys/kernel/netinet/tcp_var.rs", "sys/kernel/netinet/udp_usrreq.rs"]
 
 [[module]]
 rust = "sys/netinet/in_proto.rs"
 lz = ["sys/netinet/in_proto.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/netinet/in_proto.rs"]
+adapted_by = ["sys/kernel/netinet/in_proto.rs", "sys/kernel/netinet/udp_usrreq.rs"]
 
 [[module]]
 rust = "sys/netinet/in_var.rs"
@@ -6614,13 +6614,13 @@ notes = "N6.4a: the userland half re-exported from hal::sys::netinet_ip_var, the
 rust = "sys/netinet/ipsec_input.rs"
 lz = ["sys/netinet/ipsec_input.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/bpf.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/bpf.rs", "sys/kernel/netinet/udp_usrreq.rs"]
 
 [[module]]
 rust = "sys/netinet/ipsec_output.rs"
 lz = ["sys/netinet/ipsec_output.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/netinet/in_pcb.rs"]
+adapted_by = ["sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/udp_usrreq.rs"]
 
 [[module]]
 rust = "sys/netinet/raw_ip.rs"
@@ -6634,22 +6634,6 @@ lz = ["sys/netinet/tcp_subr.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/netinet/tcp_subr.rs", "sys/kernel/netinet/tcp_tso.rs", "sys/kernel/net/mbuf.rs"]
 notes = "N6.6a5: TCP is the kernel's (sys/kernel/netinet/tcp_subr.rs and the other kernel TCP modules); what stays is IPsec's XF_TCPSIGNATURE transform (tcp_signature_tdb_attach, _init, _zeroize, _input, _output), tdb_amxkey_lend (the Ipsec leg's key loan) and the software TSO adapter over parked mbufs for bsd's IPsec output halves (tcp_softtso_chop, from bsd's tcp_output.rs), until IPsec moves at N8"
-
-[[module]]
-rust = "sys/netinet/udp.rs"
-lz = ["sys/netinet/udp.rs"]
-status = "inherited"
-
-[[module]]
-rust = "sys/netinet/udp_usrreq.rs"
-lz = ["sys/netinet/udp_usrreq.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/icmp6.rs"]
-
-[[module]]
-rust = "sys/netinet/udp_var.rs"
-lz = ["sys/netinet/udp_var.rs"]
-status = "inherited"
 
 [[module]]
 rust = "sys/netinet6/icmp6.rs"
@@ -6667,13 +6651,13 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/n
 rust = "sys/netinet6/in6_pcb.rs"
 lz = ["sys/netinet6/in6_pcb.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet6/in6_pcb.rs", "sys/hal/sys/netinet6_in6.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/icmp6.rs", "sys/kernel/netinet6/in6_proto.rs", "sys/hal/netlock.rs", "sys/kernel/net/if_var.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet6/in6_pcb.rs", "sys/hal/sys/netinet6_in6.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/icmp6.rs", "sys/kernel/netinet6/in6_proto.rs", "sys/hal/netlock.rs", "sys/kernel/net/if_var.rs", "sys/kernel/netinet/udp_usrreq.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6_proto.rs"
 lz = ["sys/netinet6/in6_proto.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/frag6.rs", "sys/kernel/netinet6/dest6.rs", "sys/kernel/netinet6/route6.rs", "sys/kernel/netinet6/icmp6.rs", "sys/kernel/netinet6/in6_proto.rs"]
+adapted_by = ["sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/frag6.rs", "sys/kernel/netinet6/dest6.rs", "sys/kernel/netinet6/route6.rs", "sys/kernel/netinet6/icmp6.rs", "sys/kernel/netinet6/in6_proto.rs", "sys/kernel/netinet/udp_usrreq.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6_src.rs"
@@ -6729,12 +6713,6 @@ rust = "sys/netinet6/raw_ip6.rs"
 lz = ["sys/netinet6/raw_ip6.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/cred.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/icmp6.rs"]
-
-[[module]]
-rust = "sys/netinet6/udp6_output.rs"
-lz = ["sys/netinet6/udp6_output.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/in6_proto.rs"]
 
 [[module]]
 rust = "sys/nfs/krpc_subr.rs"
@@ -16744,6 +16722,58 @@ lz = ["sys/netinet/udp_usrreq.rs"]
 status = "redesigned"
 notes = "N6.6b0: udp_usrreq.c in the kernel: udp_input (the pcb pf linked, then in_pcblookup, then in_pcblookup_listen, as an InpHold; the multicast fan-out over in_pcb_iterator with the mutex dropped around each append; no socket lock on input), udp_sbappend (the upcall, the control messages, sbappendaddr under sb_mtx), udp_ctlinput/udp6_ctlinput over SockaddrView and CtlArg with the caller's NetHeld (the PMTU branch's uh_sport compared without htons, as the C), udp_output (the control walk over the mbuf's bytes in the C's integer types, udpiphdr written with hal::pod, uh_sum kept), the requests as UdpUsrreqs (decision 46: INET/INET6, one send_id) borrowing the pcb from the socket's locked slot (N6.6a5's idiom), udp_ctloutput (the rows' ip_ctloutput/ip6_ctloutput with the pcb borrowed), udp_sysctl (the bitmaps through in_pcb::in_sysctl_ports, stats summed from the per-CPU counters); udbtable/udb6table are NetTables members reached by accessors; unregistered until the switch"
 
+[[module.fn]]
+lz = "sys/netinet/udp_usrreq.rs::UDP_USRREQS"
+native = ["UdpUsrreqs::INET"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/netinet/udp_usrreq.rs::UDP6_USRREQS"
+native = ["UdpUsrreqs::INET6"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/netinet/udp_usrreq.rs::UDBTABLE"
+native = ["udbtable"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/netinet/udp_usrreq.rs::UDB6TABLE"
+native = ["udb6table"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/netinet/udp_usrreq.rs::UDPCOUNTERS"
+native = ["sys/kernel/netinet/udp_var.rs::UDPCOUNTERS"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/netinet/udp_usrreq.rs::sin6_bytes"
+native = ["SrcAddr::inet6"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/udp_usrreq.rs::curproc_or_panic"
+native = ["with_curproc"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/netinet/udp_usrreq.rs::uh_read"
+native = []
+kind = "dropped"
+reason = "udp_input reads the UDP header once, through ip6_exthdr_get's bytes and hal::pod::at, into a copy; udp_ctlinput reads the returned ports from the ICMP message's checked bytes"
+
+[[module.fn]]
+lz = "sys/netinet/udp_usrreq.rs::uh_set_sum"
+native = []
+kind = "dropped"
+reason = "the checksum the C stores through its pointer is stored in udp_input's copy of the header; the packet's own bytes are never written, so the restore before the ICMP error (save_ip, savesum) is the packet as it came"
+
+[[module.fn]]
+lz = "sys/netinet/udp_usrreq.rs::inpcb_of"
+native = ["udp_inp"]
+kind = "renamed"
+
 [[module]]
 rust = "sys/kernel/netinet/udp_var.rs"
 crate = "kernel"
@@ -17307,6 +17337,12 @@ crate = "kernel"
 lz = ["sys/netinet6/udp6_output.rs"]
 status = "redesigned"
 notes = "N6.6b0: udp6_output.c in the kernel: the caller's NetHeld passed to in6_pcbselsrc, in_pcbbind, in6_pcbaddrisavail and ip6_output; the sticky options lent once per send (let go around in6_pcbaddrisavail only, which reads them itself), the multicast options copied once; the headers written with hal::pod"
+
+[[module.fn]]
+lz = "sys/netinet6/udp6_output.rs::curproc_or_panic"
+native = []
+kind = "dropped"
+reason = "udp6_send asks the glue for curproc where it binds (G::with_curproc, panic(9) without one, as before)"
 
 [[module]]
 rust = "sys/kernel/netinet6/route6.rs"

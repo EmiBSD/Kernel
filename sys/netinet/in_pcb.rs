@@ -215,28 +215,6 @@ pub type Inpcbtable = k::Inpcbtable<BsdProcGlue>;
 /// The table mutex held.
 pub type InpGuard<'a> = k::InpGuard<'a, BsdProcGlue>;
 
-/// `inp_upcall`: a hook that sees UDP datagrams before the socket buffer
-/// (`(arg, m, ip, ip6, uh, hlen, ns)`); returns the packet to append, or `None` when it took
-/// it.
-///
-/// # Safety
-///
-/// `arg` is the pcb's `inp_upcall_arg`; `ip` (or `ip6`) points at the packet's IP header and
-/// `uh` at its UDP header, both readable for the call.
-pub type InpUpcallFn = unsafe fn(
-    *mut core::ffi::c_void,
-    &'static Mbuf,
-    *const crate::netinet::ip::Ip,
-    *const core::ffi::c_void,
-    *const core::ffi::c_void,
-    i32,
-    Option<&mut crate::net::if_var::Netstack>,
-) -> Option<&'static Mbuf>;
-
-/// An [`InpUpcallFn`] as the kernel's pcb keeps it (`Inpcb::set_upcall`'s erased function):
-/// a `static` of its setter's (wg(4)'s `WG_UPCALL`).
-pub struct InpUpcallEntry(pub InpUpcallFn);
-
 /// The per-pcb hook of `in_pcbnotifyall` and the protocols' `ctlinput`s (`udp_notify`,
 /// `in_pcbrtchange`): the control block and the errno of the event (`None` for 0).
 pub type InpNotifyFn = fn(&'static Inpcb, Option<Errno>);
@@ -341,8 +319,6 @@ pub trait InpcbLegacy {
     fn icmp6filt_ptr(&self) -> Option<NonNull<Icmp6Filter>>;
     /// `inp->inp_icmp6filt = f`.
     fn set_icmp6filt_ptr(&self, f: Option<NonNull<Icmp6Filter>>);
-    /// `inp->inp_upcall`, `inp->inp_upcall_arg` (wg(4)'s, set once).
-    fn upcall_pair(&self) -> Option<(InpUpcallFn, *mut core::ffi::c_void)>;
 }
 
 impl InpcbLegacy for Inpcb {
@@ -370,15 +346,6 @@ impl InpcbLegacy for Inpcb {
     fn set_icmp6filt_ptr(&self, f: Option<NonNull<Icmp6Filter>>) {
         self.inp_icmp6filt
             .set(f.map_or(ptr::null(), |p| p.as_ptr().cast_const().cast()));
-    }
-
-    fn upcall_pair(&self) -> Option<(InpUpcallFn, *mut core::ffi::c_void)> {
-        let u = self.upcall()?;
-        let f = u.f.downcast_ref::<InpUpcallEntry>()?;
-        Some((
-            f.0,
-            ptr::with_exposed_provenance_mut::<core::ffi::c_void>(u.arg),
-        ))
     }
 }
 
@@ -738,7 +705,6 @@ pub(crate) mod tests {
     use crate::machine::Machine;
     use crate::machine::cpu::Cpu;
     use crate::netinet::in_::{IPPORT_RESERVED, IPPORT_USERRESERVED, IPPROTO_TCP, IPPROTO_UDP};
-    use crate::netinet::in_proto::INETSW;
     use crate::sys::endian::htons;
     use crate::sys::mbuf::M_WAIT;
     use crate::sys::mbuf::{M_DONTWAIT, MT_SONAME};
@@ -788,9 +754,19 @@ pub(crate) mod tests {
         }
     }
 
+    /// A data-only UDP row of the internet domain: sockets of `bsd`'s protocols' kind (held
+    /// C-style) for the adapters' tests, since the kernel's UDP is the table's entry
+    /// (N6.6b0, `kernel::netinet::in_proto::UdpProtocol`).
+    static UDP_ROW: crate::sys::protosw::Protosw = crate::sys::protosw::Protosw {
+        pr_type: SOCK_DGRAM as i16,
+        pr_protocol: IPPROTO_UDP as i16,
+        pr_flags: crate::sys::protosw::PR_ATOMIC | crate::sys::protosw::PR_ADDR,
+        ..crate::sys::protosw::Protosw::new(&crate::netinet::in_proto::INETDOMAIN)
+    };
+
     /// A UDP socket with a control block in `table`.
     fn pcb(table: &'static Inpcbtable) -> &'static Inpcb {
-        let so = soalloc(&INETSW[0], SOCK_DGRAM, M_WAIT).expect("socket");
+        let so = soalloc(&UDP_ROW, SOCK_DGRAM, M_WAIT).expect("socket");
         in_pcballoc(so, table, M_WAIT).expect("in_pcballoc");
         sotoinpcb(so).expect("attached")
     }
@@ -1110,7 +1086,7 @@ pub(crate) mod tests {
     #[cfg(feature = "inet6")]
     pub(crate) mod inet6 {
         use std::sync::Mutex as StdMutex;
-        use std::{assert, assert_eq, assert_ne, vec, vec::Vec};
+        use std::{assert, assert_eq, assert_ne, vec::Vec};
 
         use core::mem::size_of;
         use core::ptr;
@@ -1120,13 +1096,12 @@ pub(crate) mod tests {
         use crate::kern::uipc_mbuf::{m_freem, m_get};
         use crate::kern::uipc_socket::{soclose, socreate};
         use crate::kern::uipc_socket2::{solock, sounlock};
-        use crate::net::if_::tests::{test_ifnet, test_packet};
+        use crate::net::if_::tests::test_ifnet;
         use crate::net::if_var::Ifnet;
         use crate::net::route::Rtentry;
         use crate::netinet::in_pcb::*;
         use crate::netinet6::in6::tests::a6;
         use crate::netinet6::in6::{IN6ADDR_ANY, In6Addr, SockaddrIn6, in6_prefixlen2mask};
-        use crate::netinet6::in6_cksum::in6_cksum;
         use crate::netinet6::in6_pcb::in6_pcblookup;
         use crate::netinet6::in6_var::{IN6_IFF_TENTATIVE, In6Aliasreq, SIOCAIFADDR_IN6};
         use crate::netinet6::nd6::ND6_INFINITE_LIFETIME;
@@ -1238,36 +1213,10 @@ pub(crate) mod tests {
             m
         }
 
-        /// The packet `fd00:77::2 -> fd00:77::1` of next header `nxt` carrying `payload` (a
-        /// transport header and its data), received on `ifp`; the transport checksum at
-        /// `cksum_off` in `payload` is filled in unless `cksum_off` is `None`.
-        pub(crate) fn packet6(
-            ifp: &Ifnet,
-            nxt: u8,
-            payload: &[u8],
-            cksum_off: Option<usize>,
-        ) -> &'static Mbuf {
-            let mut v = vec![0x60, 0, 0, 0];
-            v.extend_from_slice(&(payload.len() as u16).to_be_bytes());
-            v.extend_from_slice(&[nxt, 64]);
-            v.extend_from_slice(&a6("fd00:77::2").s6_addr);
-            v.extend_from_slice(&a6("fd00:77::1").s6_addr);
-            v.extend_from_slice(payload);
-            if let Some(off) = cksum_off {
-                let m = test_packet(&v);
-                let sum = in6_cksum(m, nxt, 40, payload.len() as u32);
-                m_freem(m);
-                v[40 + off..42 + off].copy_from_slice(&sum.to_ne_bytes());
-            }
-            let m = test_packet(&v);
-            m.m_pkthdr().ph_ifidx.set(ifp.if_index.get());
-            m
-        }
-
         #[test]
         fn inet6_bind_pick_connect_and_lookups() {
             let (_g, _t, p) = setup();
-            crate::netinet::udp_usrreq::udp_init();
+            kernel::netinet::udp_usrreq::udp_init::<crate::kern::proc_glue::BsdProcGlue>();
             let _ifp = test_if6(b"tpcb6");
             let ours = a6("fd00:77::1");
 
@@ -1381,15 +1330,15 @@ pub(crate) mod tests {
         #[test]
         fn kern_file_reports_an_inet6_socket() {
             use crate::kern::kern_sysctl::fill_file;
-            use crate::netinet::udp_usrreq::{udp_bind, udp_init};
             use crate::sys::sysctl::KinfoFile;
 
             let (_g, _t, p) = setup();
-            udp_init();
+            kernel::netinet::udp_usrreq::udp_init::<crate::kern::proc_glue::BsdProcGlue>();
             let _ifp = test_if6(b"tkf6");
             let so = socreate(i32::from(AF_INET6), SOCK_DGRAM, 0).expect("socket");
+            let inp = sotoinpcb(so).expect("attached");
+            locked(|| in_pcbbind(inp, Some(nam6(sin6(a6("fd00:77::1"), 5353))), p)).expect("bind");
             solock(so);
-            udp_bind(so, nam6(sin6(a6("fd00:77::1"), 5353)), p).expect("bind");
             let mut kf = KinfoFile::zeroed();
             fill_file(&mut kf, None, None, 0, None, None, p, Some(so), false);
             sounlock(so);
