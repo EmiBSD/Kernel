@@ -16738,6 +16738,20 @@ native = ["sys/kernel/net/sockbuf.rs::SbGuard::copym_first", "sys/kernel/net/soc
 kind = "merged"
 
 [[module]]
+rust = "sys/kernel/netinet/udp_usrreq.rs"
+crate = "kernel"
+lz = ["sys/netinet/udp_usrreq.rs"]
+status = "redesigned"
+notes = "N6.6b0: udp_usrreq.c in the kernel: udp_input (the pcb pf linked, then in_pcblookup, then in_pcblookup_listen, as an InpHold; the multicast fan-out over in_pcb_iterator with the mutex dropped around each append; no socket lock on input), udp_sbappend (the upcall, the control messages, sbappendaddr under sb_mtx), udp_ctlinput/udp6_ctlinput over SockaddrView and CtlArg with the caller's NetHeld (the PMTU branch's uh_sport compared without htons, as the C), udp_output (the control walk over the mbuf's bytes in the C's integer types, udpiphdr written with hal::pod, uh_sum kept), the requests as UdpUsrreqs (decision 46: INET/INET6, one send_id) borrowing the pcb from the socket's locked slot (N6.6a5's idiom), udp_ctloutput (the rows' ip_ctloutput/ip6_ctloutput with the pcb borrowed), udp_sysctl (the bitmaps through in_pcb::in_sysctl_ports, stats summed from the per-CPU counters); udbtable/udb6table are NetTables members reached by accessors; unregistered until the switch"
+
+[[module]]
+rust = "sys/kernel/netinet/udp_var.rs"
+crate = "kernel"
+lz = ["sys/netinet/udp_var.rs"]
+status = "redesigned"
+notes = "N6.6b0: udp_var.h's kernel part: enum udpstat_counters (UdpstatCounters), udps_ncounters, udpcounters as hal::percpu::Counters (TCPCOUNTERS' form) and udpstat_inc; the userland part is hal::sys::netinet_udp_var's"
+
+[[module]]
 rust = "sys/kernel/netinet/tcp_usrreq.rs"
 crate = "kernel"
 lz = ["sys/netinet/tcp_usrreq.rs"]
@@ -17286,6 +17300,13 @@ crate = "kernel"
 lz = ["sys/netinet6/dest6.rs"]
 status = "redesigned"
 notes = "N6.5d: dest6.c in the kernel: the option walk over the header's bytes lent by the mbuf that holds them (ip6_exthdr_get, LZ's raw pointer reads gone), each step's two bytes read before ip6_unknown_opt may consume the packet; the C's bounds kept, one test case per bound, mutation-checked; LZ's 4 tests re-expressed"
+
+[[module]]
+rust = "sys/kernel/netinet6/udp6_output.rs"
+crate = "kernel"
+lz = ["sys/netinet6/udp6_output.rs"]
+status = "redesigned"
+notes = "N6.6b0: udp6_output.c in the kernel: the caller's NetHeld passed to in6_pcbselsrc, in_pcbbind, in6_pcbaddrisavail and ip6_output; the sticky options lent once per send (let go around in6_pcbaddrisavail only, which reads them itself), the multicast options copied once; the headers written with hal::pod"
 
 [[module]]
 rust = "sys/kernel/netinet6/route6.rs"

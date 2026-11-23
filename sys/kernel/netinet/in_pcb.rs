@@ -331,7 +331,7 @@ use hal::mutex::{Mutexed, MutexedGuard};
 use hal::netlock::{NETLOCK, NetHeld};
 use hal::once::OnceStatic;
 use hal::pinlist::{PinEntry, PinList};
-use hal::pool::{PR_NOWAIT, PR_WAITOK, PoolArc, PoolBox, PoolHome, TypedPool};
+use hal::pool::{AnyArc, PR_NOWAIT, PR_WAITOK, PoolArc, PoolBox, PoolHome, TypedPool};
 use hal::rwlock::{Guarded, RW_WRITE, Witness, WitnessPart};
 use hal::slot::{LoanSlot, ReadMostly, SlotLoan};
 use hal::sys::errno::Errno;
@@ -517,6 +517,22 @@ const fn inpcbhash_loadfactor(x: i32) -> i32 {
 /// `M_PCB`: protocol control blocks (`malloc.h`; `hashinit`'s type here).
 const M_PCB: i32 = 4;
 
+/// `inp_upcall`'s type (`in_pcb.h`): the hook that sees a UDP datagram before the socket
+/// buffer (wg(4)'s `wg_input`), called with its argument, the packet (given over), copies of
+/// its IP or IPv6 header and of its UDP header, the length of both headers and the softnet's
+/// stack; it answers the packet for the socket buffer, or `None` once it took it. A safe
+/// `fn` of the kernel's (N6.6b0, D-3): `bsd`'s wg(4) implements it (bridges.toml's
+/// `InpUpcall` row, paid by N8).
+pub type InpUpcallFn = fn(
+    arg: usize,
+    m: MbufBox,
+    ip: Option<&Ip>,
+    ip6: Option<&hal::sys::netinet_ip6::Ip6Hdr>,
+    uh: &hal::sys::netinet_udp::Udphdr,
+    hlen: i32,
+    ns: Option<&mut crate::net::if_var::Netstack>,
+) -> Option<MbufBox>;
+
 /// `inp_upcall` and `inp_upcall_arg`, set once ([`Inpcb::set_upcall`]): a hook that sees UDP
 /// datagrams before the socket buffer (wg(4)'s `wg_input`, set by `wg_bind`). The function is
 /// `bsd`'s, erased (`bsd`'s UDP input names its type to call it); the argument a word.
@@ -530,6 +546,40 @@ pub struct InpUpcall {
 
 /// A counted control block: `in_pcbref` is a clone, `in_pcbunref` a drop.
 pub type InpcbRef<G> = PoolArc<Inpcb<G>>;
+
+/// The pcb a packet is for, counted (the C's `in_pcbref`): the lookup's handle, or the one
+/// pf's `pf_inp_lookup` returned, kept erased so it is counted once, as the C's (TCP's and,
+/// since N6.6b0, UDP's input).
+pub(crate) enum InpHold<G: ProcGlue> {
+    /// `in_pcblookup`'s, `in_pcblookup_listen`'s, `syn_cache_get`'s.
+    Pcb(InpcbRef<G>),
+    /// `pf_inp_lookup`'s: a handle of an `Inpcb<G>`, checked when it is made.
+    Pf(AnyArc),
+}
+
+impl<G: ProcGlue> InpHold<G> {
+    /// pf's answer, when it is a pcb of this glue (anything else is no pcb).
+    pub(crate) fn pf(a: AnyArc) -> Option<Self> {
+        a.downcast_ref::<Inpcb<G>>()?;
+        Some(Self::Pf(a))
+    }
+}
+
+impl<G: ProcGlue> core::ops::Deref for InpHold<G> {
+    type Target = Inpcb<G>;
+
+    #[inline]
+    fn deref(&self) -> &Inpcb<G> {
+        match self {
+            Self::Pcb(h) => h,
+            Self::Pf(a) => match a.downcast_ref::<Inpcb<G>>() {
+                Some(inp) => inp,
+                // InpHold::pf checked it.
+                None => kpanic(format_args!("inpcb: pf's handle is not a pcb")),
+            },
+        }
+    }
+}
 
 /// The table mutex held (`mtx_enter(&table->inpt_mtx)`): the witness of the queue and the
 /// hash chains, and the \[t\] members' setters' proof.
