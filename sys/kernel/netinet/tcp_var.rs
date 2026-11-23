@@ -1485,5 +1485,42 @@ mod tests {
         }
         assert_eq!(defs["TF_TIMER"], "TF_TMR_REXMT");
     }
+
+    #[test]
+    fn kinfo_reports_what_kern_file_prints_of_the_control_block() {
+        use crate::netinet::tcp_subr::testtcp;
+
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, _d) = testtcp::estab(b"tvar0", 161);
+        let want = testtcp::with_tp(&inp, |tp| {
+            let k = TcpKinfo {
+                tcpcb: core::ptr::from_ref::<Tcpcb<testtcp::G>>(&tp.cb).addr(),
+                t_state: tp.st.t_state,
+                rcv_wnd: tp.st.rcv_wnd,
+                snd_wnd: tp.st.snd_wnd,
+                snd_cwnd: tp.st.snd_cwnd,
+            };
+            (k, None)
+        });
+        let got = {
+            let mut w = crate::net::socket::solock(&so);
+            kinfo(&inp, &mut w)
+        };
+        assert_eq!(got, Some(want));
+        assert_eq!(want.t_state, crate::netinet::tcp_fsm::TCPS_ESTABLISHED);
+        assert_eq!(want.snd_wnd, 65535);
+        // Closed: no control block, nothing to report (the C would print NULL's members).
+        so.st_set(crate::net::sockbuf::SS_NOFDREF);
+        testtcp::with_tp(&inp, |tp| {
+            ((), Some(crate::netinet::tcp_subr::tcp_close(tp)))
+        });
+        let after = {
+            let mut w = crate::net::socket::solock(&so);
+            kinfo(&inp, &mut w)
+        };
+        assert_eq!(after, None);
+        drop(inp);
+        drop(so);
+    }
 }
 /* </TESTS> */

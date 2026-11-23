@@ -2282,5 +2282,547 @@ mod tests {
         );
         testtcp::close(so, inp);
     }
+
+    /// An option mbuf (`MT_SOOPTS`) holding `bytes`.
+    fn optm(bytes: &[u8]) -> MbufBox {
+        let mut m = m_get(M_WAIT, crate::net::mbuf::MT_SOOPTS).expect("an mbuf");
+        m.m_len().set(bytes.len() as u32);
+        m.data_mut().expect("writable").copy_from_slice(bytes);
+        m
+    }
+
+    /// `setsockopt(so, IPPROTO_TCP, opt, &v, sizeof(int))` through `tcp_ctloutput`.
+    fn set(so: &Socket<testtcp::G>, opt: i32, v: i32) -> Result<(), Errno> {
+        let mut w = crate::net::socket::solock(so);
+        let mut m = optm(&v.to_ne_bytes());
+        tcp_ctloutput(PRCO_SETOPT, so, &mut w, IPPROTO_TCP, opt, Some(&mut m))
+    }
+
+    /// `getsockopt(so, IPPROTO_TCP, opt, ..)` through `tcp_ctloutput`: the answer's bytes.
+    fn get(so: &Socket<testtcp::G>, opt: i32) -> Result<Vec<u8>, Errno> {
+        let mut w = crate::net::socket::solock(so);
+        let mut m = optm(&[]);
+        tcp_ctloutput(PRCO_GETOPT, so, &mut w, IPPROTO_TCP, opt, Some(&mut m))?;
+        Ok(m.data().to_vec())
+    }
+
+    /// [`get`] of an `int` option.
+    fn get_int(so: &Socket<testtcp::G>, opt: i32) -> i32 {
+        let b = get(so, opt).expect("the option");
+        i32::from_ne_bytes(b[..4].try_into().expect("an int"))
+    }
+
+    #[test]
+    fn tcp_ctloutput_keeps_the_c_s_options_and_errnos() {
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, _d) = estab(b"tusr3", 152);
+        // TCP_NODELAY and TCP_NOPUSH answer their flag's bit, as the C's `t_flags & TF_x`.
+        assert_eq!(set(&so, TCP_NODELAY, 1), Ok(()));
+        assert_eq!(get_int(&so, TCP_NODELAY), TF_NODELAY as i32);
+        assert_eq!(set(&so, TCP_NODELAY, 0), Ok(()));
+        assert_eq!(get_int(&so, TCP_NODELAY), 0);
+        assert_eq!(set(&so, TCP_NOPUSH, 7), Ok(()));
+        assert_eq!(get_int(&so, TCP_NOPUSH), TF_NOPUSH as i32);
+        assert_eq!(set(&so, TCP_NOPUSH, 0), Ok(()), "established: tcp_output");
+        assert_eq!(get_int(&so, TCP_NOPUSH), 0);
+        // A value shorter than an int, or none: EINVAL.
+        {
+            let mut w = crate::net::socket::solock(&so);
+            let mut m = optm(&[1, 0]);
+            let r = tcp_ctloutput(
+                PRCO_SETOPT,
+                &so,
+                &mut w,
+                IPPROTO_TCP,
+                TCP_NODELAY,
+                Some(&mut m),
+            );
+            assert_eq!(r, Err(Errno::EINVAL));
+            let r = tcp_ctloutput(PRCO_SETOPT, &so, &mut w, IPPROTO_TCP, TCP_MAXSEG, None);
+            assert_eq!(r, Err(Errno::EINVAL));
+        }
+        // TCP_MAXSEG: within (0, t_maxseg] only.
+        let maxseg = get_int(&so, TCP_MAXSEG);
+        assert_eq!(maxseg, 1460, "estab's segment, from the route");
+        assert_eq!(set(&so, TCP_MAXSEG, 0), Err(Errno::EINVAL));
+        assert_eq!(set(&so, TCP_MAXSEG, maxseg + 1), Err(Errno::EINVAL));
+        assert_eq!(set(&so, TCP_MAXSEG, maxseg), Ok(()));
+        assert_eq!(set(&so, TCP_MAXSEG, 536), Ok(()));
+        assert_eq!(get_int(&so, TCP_MAXSEG), 536);
+        // Established: SACK and the signature are refused (EPERM).
+        assert_eq!(set(&so, TCP_SACK_ENABLE, 0), Err(Errno::EPERM));
+        assert_eq!(set(&so, TCP_MD5SIG, 1), Err(Errno::EPERM));
+        assert_eq!(get_int(&so, TCP_MD5SIG), 0);
+        // Unknown options.
+        assert_eq!(set(&so, 0x7f, 1), Err(Errno::ENOPROTOOPT));
+        assert_eq!(get(&so, 0x7f), Err(Errno::ENOPROTOOPT));
+        testtcp::close(so, inp);
+
+        // Before the connection: TCP_MD5SIG clears sack_enable, and TCP_SACK_ENABLE is
+        // refused while the signature is on (the user's 6a3 decision: in every build).
+        let so = testtcp::socket(&TcpProto);
+        let inp = sotoinpcb(&so).expect("its pcb");
+        assert_eq!(get_int(&so, TCP_SACK_ENABLE), 1, "tcp_do_sack");
+        assert_eq!(set(&so, TCP_MD5SIG, 1), Ok(()));
+        assert_eq!(get_int(&so, TCP_MD5SIG), TF_SIGNATURE as i32);
+        assert_eq!(get_int(&so, TCP_SACK_ENABLE), 0, "cleared by TCP_MD5SIG");
+        assert_eq!(set(&so, TCP_SACK_ENABLE, 1), Err(Errno::EPERM));
+        assert_eq!(set(&so, TCP_MD5SIG, 0), Ok(()));
+        assert_eq!(set(&so, TCP_SACK_ENABLE, 1), Ok(()));
+        assert_eq!(get_int(&so, TCP_SACK_ENABLE), 1);
+        so.st_set(SS_NOFDREF);
+        {
+            let mut w = crate::net::socket::solock(&so);
+            tcp_detach(&so, &mut w).expect("the control block");
+        }
+        drop(inp);
+    }
+
+    #[test]
+    fn tcp_info_gives_the_privileged_members_to_root_alone() {
+        let (_g, p) = testtcp::setup();
+        let (so, inp, _d) = estab(b"tusr5", 154);
+        let info = || -> TcpInfo {
+            let b = get(&so, TCP_INFO).expect("TCP_INFO");
+            assert_eq!(b.len(), size_of::<TcpInfo>());
+            hal::pod::at(&b, 0).expect("the structure")
+        };
+        let root = info();
+        assert_eq!(i32::from(root.tcpi_state), TCPS_ESTABLISHED);
+        assert_eq!(root.tcpi_snd_mss, 1460);
+        assert_eq!(root.tcpi_snd_wnd, 65535, "root sees the window");
+        assert_eq!(root.tcpi_rcv_nxt, 1, "relative to irs");
+        assert_eq!(root.tcpi_so_rcv_sb_hiwat, 16384);
+        // Another user: the members from tcpi_snd_wnd on stay zero.
+        let mut cr = crate::cred::Ucred::new();
+        cr.cr_uid.set(1000);
+        cr.cr_ruid.set(1000);
+        let old = p.set_cred(crate::cred::CredRef::new(cr));
+        let user = info();
+        drop(p.set_cred(old.expect("root's credentials")));
+        assert_eq!(i32::from(user.tcpi_state), TCPS_ESTABLISHED);
+        assert_eq!(user.tcpi_snd_mss, 1460);
+        assert_eq!(
+            (
+                user.tcpi_snd_wnd,
+                user.tcpi_rcv_nxt,
+                user.tcpi_so_rcv_sb_hiwat
+            ),
+            (0, 0, 0),
+            "nothing privileged for a user"
+        );
+        testtcp::close(so, inp);
+    }
+
+    /// `struct tcp_ident_mapping` of a connection from `l` to `f` (`sockaddr_in`s), with the
+    /// storages' `ss_len` left 0: the C reads them whole, by family.
+    fn mapping(f: ([u8; 4], u16), l: ([u8; 4], u16)) -> TcpIdentMapping {
+        let mut t = TcpIdentMapping::zeroed();
+        let sin = |(a, p): ([u8; 4], u16)| SockaddrIn {
+            sin_len: 0,
+            sin_family: AF_INET,
+            sin_port: p.to_be(),
+            sin_addr: InAddr {
+                s_addr: u32::from_ne_bytes(a),
+            },
+            ..SockaddrIn::default()
+        };
+        let mut b = [0u8; size_of::<hal::sys::socket::SockaddrStorage>()];
+        assert!(hal::pod::put(&mut b, 0, &sin(f)));
+        t.faddr = hal::pod::at(&b, 0).expect("a storage");
+        assert!(hal::pod::put(&mut b, 0, &sin(l)));
+        t.laddr = hal::pod::at(&b, 0).expect("a storage");
+        t
+    }
+
+    /// `sysctl(net.inet.tcp.ident or .drop)` with the mapping at the user address `u`.
+    fn ident(u: usize, drop: bool, oldlen: usize, newlen: usize) -> Result<usize, Errno> {
+        let mut len = oldlen;
+        let mut r = SysctlReq {
+            oldp: if drop { 0 } else { u },
+            oldlenp: &mut len,
+            newp: if drop { u } else { 0 },
+            newlen,
+        };
+        let name = if drop { TCPCTL_DROP } else { TCPCTL_IDENT };
+        tcp_sysctl::<testtcp::G>(&[name], &mut r).map(|()| len)
+    }
+
+    #[test]
+    fn tcp_ident_answers_the_ids_and_drop_ends_the_connection() {
+        let (_g, _p) = testtcp::setup();
+        let n = 153;
+        let (so, inp, _d) = estab(b"tusr4", n);
+        let u = crate::testutil::USER_BASE + 0x3_e000;
+        let size = size_of::<TcpIdentMapping>();
+        let put = |t: &TcpIdentMapping| {
+            UserPtr::<TcpIdentMapping>::new(u)
+                .copyout(t)
+                .expect("copyout")
+        };
+        let back = || UserPtr::<TcpIdentMapping>::new(u).copyin().expect("copyin");
+        let conn = mapping(([10, 9, n, 2], 80), ([10, 9, n, 1], 7000));
+
+        // ident: the connection did not connect out (no SS_CONNECTOUT): -1, -1.
+        put(&conn);
+        assert_eq!(ident(u, false, size, 0), Ok(size));
+        assert_eq!((back().ruid, back().euid), (-1, -1));
+        so.st_set(SS_CONNECTOUT);
+        put(&conn);
+        assert_eq!(ident(u, false, size, 0), Ok(size));
+        let (euid, ruid, ..) = so.creds();
+        assert_eq!((back().ruid, back().euid), (ruid as i32, euid as i32));
+        // No connection: the listen lookup's miss counted, -1, -1.
+        let miss = stat(C::TcpsPcbhashmiss);
+        put(&mapping(([10, 9, n, 2], 81), ([10, 9, n, 1], 7000)));
+        assert_eq!(ident(u, false, size, 0), Ok(size));
+        assert_eq!(stat(C::TcpsPcbhashmiss), miss + 1);
+        assert_eq!((back().ruid, back().euid), (-1, -1));
+        // ident's checks, in the C's order.
+        assert_eq!(ident(0, false, size, 0), Err(Errno::EINVAL));
+        assert_eq!(ident(u, false, size - 1, 0), Err(Errno::ENOMEM));
+        let mut len = size;
+        let mut r = SysctlReq {
+            oldp: u,
+            oldlenp: &mut len,
+            newp: u,
+            newlen: 0,
+        };
+        assert_eq!(
+            tcp_sysctl::<testtcp::G>(&[TCPCTL_IDENT], &mut r),
+            Err(Errno::EINVAL)
+        );
+        // Families: both AF_INET, or both AF_INET6; anything else EAFNOSUPPORT.
+        let mut mixed = conn;
+        mixed.laddr.ss_family = AF_INET6;
+        put(&mixed);
+        assert_eq!(ident(u, false, size, 0), Err(Errno::EAFNOSUPPORT));
+        mixed.faddr.ss_family = 99;
+        put(&mixed);
+        assert_eq!(ident(u, false, size, 0), Err(Errno::EAFNOSUPPORT));
+
+        // drop's checks: no old value, a new one, the whole mapping.
+        put(&conn);
+        assert_eq!(ident(u, true, 4, size), Err(Errno::EINVAL));
+        assert_eq!(ident(0, true, 0, size), Err(Errno::EPERM));
+        assert_eq!(ident(u, true, 0, size - 1), Err(Errno::ENOMEM));
+        // A listener is not dropped (ESRCH).
+        let (lso, linp) = testtcp::listen_on(n, 81);
+        put(&mapping(([0, 0, 0, 0], 0), ([10, 9, n, 1], 81)));
+        assert_eq!(ident(u, true, 0, size), Err(Errno::ESRCH));
+        testtcp::close_listener(lso, linp);
+        // The connection dropped: its control block freed, the error reported; then none.
+        let cbs = testtcp::tcpcbs();
+        put(&conn);
+        assert_eq!(ident(u, true, 0, size), Ok(0));
+        assert_eq!(testtcp::tcpcbs(), cbs - 1);
+        assert_eq!(so.error(), Some(Errno::ECONNABORTED));
+        assert_eq!(ident(u, true, 0, size), Err(Errno::ESRCH));
+        so.st_set(SS_NOFDREF);
+        drop(inp);
+        drop(so);
+    }
+
+    /// `sysctl(net.inet.tcp.<name>)` of an `int`: the old value at `u`, the new one from
+    /// `u + 8` when `new` is given.
+    fn int_sysctl(name: i32, u: usize, new: Option<i32>) -> Result<i32, Errno> {
+        let mut len = size_of::<i32>();
+        if let Some(v) = new {
+            UserPtr::<i32>::new(u + 8).copyout(&v).expect("copyout");
+        }
+        let mut r = SysctlReq {
+            oldp: u,
+            oldlenp: &mut len,
+            newp: if new.is_some() { u + 8 } else { 0 },
+            newlen: if new.is_some() { size_of::<i32>() } else { 0 },
+        };
+        tcp_sysctl::<testtcp::G>(&[name], &mut r)?;
+        Ok(UserPtr::<i32>::new(u).copyin().expect("copyin"))
+    }
+
+    #[test]
+    fn sysctl_keeps_the_bounds_the_locks_and_the_pools_limits() {
+        let (_g, _p) = testtcp::setup();
+        // 8 KiB for the ports' bitmaps, below the user window's end.
+        let u = crate::testutil::USER_BASE + 0x3_a000;
+        // The SYN cache's tunables: bounded, the sets told under the mutex.
+        let t = &net::<testtcp::G>().tcp;
+        let hash = t.tcp_syn_hash_size.load(Ordering::Relaxed);
+        assert_eq!(int_sysctl(TCPCTL_SYN_HASH_SIZE, u, None), Ok(hash));
+        assert_eq!(
+            int_sysctl(TCPCTL_SYN_HASH_SIZE, u, Some(0)),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(
+            int_sysctl(TCPCTL_SYN_HASH_SIZE, u, Some(100_001)),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(
+            int_sysctl(TCPCTL_SYN_HASH_SIZE, u, Some(hash + 1)),
+            Ok(hash)
+        );
+        assert_eq!(t.tcp_syn_hash_size.load(Ordering::Relaxed), hash + 1);
+        assert!(
+            syn_cache_lock::<testtcp::G>()
+                .sets
+                .iter()
+                .all(|s| s.scs_use == 0),
+            "a size change switches the sets as soon as possible"
+        );
+        assert_eq!(
+            int_sysctl(TCPCTL_SYN_HASH_SIZE, u, Some(hash)),
+            Ok(hash + 1)
+        );
+        let limit = t.tcp_syn_use_limit.load(Ordering::Relaxed);
+        assert_eq!(
+            int_sysctl(TCPCTL_SYN_USE_LIMIT, u, Some(-1)),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(int_sysctl(TCPCTL_SYN_USE_LIMIT, u, Some(5)), Ok(limit));
+        assert!(
+            syn_cache_lock::<testtcp::G>()
+                .sets
+                .iter()
+                .all(|s| s.scs_use <= 5)
+        );
+        assert_eq!(int_sysctl(TCPCTL_SYN_USE_LIMIT, u, Some(limit)), Ok(5));
+
+        // The reassembly limit is the "tcpqe" pool's hard limit: refused below the items out.
+        let reass = TCP_REASS_LIMIT.load(Ordering::Relaxed);
+        let held = TCPQE_POOL
+            .get(hal::pool::PR_WAITOK, || crate::netinet::tcp_var::Tcpqent {
+                tcpqe_q: hal::owned::SlistLink::new(),
+                tcpqe_tcp: hal::sys::netinet_tcp::Tcphdr::default(),
+                tcpqe_m: None,
+            })
+            .expect("an entry");
+        assert_eq!(
+            int_sysctl(TCPCTL_REASS_LIMIT, u, Some(0)),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(TCP_REASS_LIMIT.load(Ordering::Relaxed), reass, "unchanged");
+        drop(held);
+        assert_eq!(
+            int_sysctl(TCPCTL_REASS_LIMIT, u, Some(reass + 1)),
+            Ok(reass)
+        );
+        assert_eq!(TCP_REASS_LIMIT.load(Ordering::Relaxed), reass + 1);
+        assert_eq!(
+            int_sysctl(TCPCTL_REASS_LIMIT, u, Some(reass)),
+            Ok(reass + 1)
+        );
+
+        // The ports' bitmaps: read whole; rootonly refuses a new value at securelevel > 0.
+        let buflen = DP_MAPSIZE * size_of::<u32>();
+        let map = |name: i32, newp: usize| -> Result<(), Errno> {
+            let mut len = buflen;
+            let mut r = SysctlReq {
+                oldp: u,
+                oldlenp: &mut len,
+                newp,
+                newlen: if newp != 0 { buflen } else { 0 },
+            };
+            tcp_sysctl::<testtcp::G>(&[name], &mut r)
+        };
+        assert_eq!(map(TCPCTL_BADDYNAMIC, 0), Ok(()));
+        let word0 = BADDYNAMICPORTS.tcp[0].load(Ordering::Relaxed);
+        assert_eq!(UserPtr::<u32>::new(u).copyin(), Ok(word0));
+        let level = SECURELEVEL.swap(1, Ordering::Relaxed);
+        let refused = map(TCPCTL_ROOTONLY, u);
+        let read = map(TCPCTL_ROOTONLY, 0);
+        SECURELEVEL.store(level, Ordering::Relaxed);
+        assert_eq!((refused, read), (Err(Errno::EPERM), Ok(())));
+        // A write (the same bytes back) under the exclusive net lock.
+        assert_eq!(map(TCPCTL_BADDYNAMIC, u), Ok(()));
+        assert_eq!(BADDYNAMICPORTS.tcp[0].load(Ordering::Relaxed), word0);
+    }
+
+    #[test]
+    fn the_requests_walk_the_close_states_and_the_oob_byte() {
+        let (_g, _p) = testtcp::setup();
+        // A user close in CLOSE_WAIT: LAST_ACK and our FIN.
+        let (so, inp, d) = estab(b"tusr6", 155);
+        testtcp::with_tp(&inp, |tp| {
+            tp.st.t_state = TCPS_CLOSE_WAIT;
+            ((), None)
+        });
+        {
+            let mut w = crate::net::socket::solock(&so);
+            tcp_disconnect(&so, &mut w).expect("disconnect");
+        }
+        assert_eq!(peek(&inp, |st| st.t_state), TCPS_LAST_ACK);
+        let (_ip, fin, _o, _p) = last(d);
+        assert_eq!(fin.th_flags & TH_FIN, TH_FIN);
+        testtcp::close(so, inp);
+
+        // A shutdown in FIN_WAIT_2: disconnected, the 2MSL timer armed (not left for ever).
+        let (so, inp, _d) = estab(b"tusr7", 156);
+        testtcp::with_tp(&inp, |tp| {
+            tp.st.t_state = TCPS_FIN_WAIT_2;
+            ((), None)
+        });
+        {
+            let mut w = crate::net::socket::solock(&so);
+            tcp_shutdown(&so, &mut w).expect("shutdown");
+        }
+        assert!(so.has_state(crate::net::sockbuf::SS_ISDISCONNECTED));
+        assert!(peek(&inp, |st| st
+            .has_flags(crate::netinet::tcp_var::TF_TMR_2MSL)));
+        testtcp::close(so, inp);
+
+        // SO_LINGER with a zero linger: the disconnect drops (a RST), freeing the block.
+        let (so, inp, d) = estab(b"tusr8", 157);
+        let cbs = testtcp::tcpcbs();
+        {
+            let mut w = crate::net::socket::solock(&so);
+            so.set_options(&w, SO_LINGER, true);
+            tcp_disconnect(&so, &mut w).expect("disconnect");
+        }
+        let (_ip, rst, _o, _p) = last(d);
+        assert_eq!(
+            rst.th_flags & hal::sys::netinet_tcp::TH_RST,
+            hal::sys::netinet_tcp::TH_RST
+        );
+        assert_eq!(testtcp::tcpcbs(), cbs - 1);
+        so.st_set(SS_NOFDREF);
+        drop(inp);
+        drop(so);
+
+        // The out-of-band byte: read once (MSG_PEEK keeps it), then EINVAL.
+        let (so, inp, _d) = estab(b"tusr9", 158);
+        testtcp::with_tp(&inp, |tp| {
+            tp.st.t_oobflags = TCPOOB_HAVEDATA;
+            tp.st.t_iobc = b'x';
+            ((), None)
+        });
+        so.set_oobmark(1);
+        let oob = |flags: i32| -> Result<u8, Errno> {
+            let mut w = crate::net::socket::solock(&so);
+            let mut m = optm(&[]);
+            tcp_rcvoob(&so, &mut w, &mut m, flags)?;
+            Ok(m.data()[0])
+        };
+        assert_eq!(oob(MSG_PEEK), Ok(b'x'));
+        assert_eq!(oob(0), Ok(b'x'));
+        assert_eq!(oob(0), Err(Errno::EINVAL), "TCPOOB_HADDATA");
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn connect_refuses_what_the_c_refuses_and_attach_undoes_a_failure() {
+        let (_g, _p) = testtcp::setup();
+        let n = 159;
+        let (_ifp, _d) = testinet::iface(b"tusra", [10, 9, n, 1]);
+        let so = testtcp::socket(&TcpProto);
+        for a in [
+            [0, 0, 0, 0],
+            [255, 255, 255, 255],
+            [224, 0, 0, 1],
+            [10, 9, n, 255],
+        ] {
+            let mut w = crate::net::socket::solock(&so);
+            assert_eq!(
+                tcp_connect(&so, &mut w, &nam4(a, 80)),
+                Err(Errno::EINVAL),
+                "{a:?}"
+            );
+        }
+        so.st_set(SS_NOFDREF);
+        {
+            let mut w = crate::net::socket::solock(&so);
+            tcp_detach(&so, &mut w).expect("the control block");
+        }
+        drop(so);
+
+        // tcp_newtcpcb without an item: ENOBUFS, the pcb detached again (the socket's slot
+        // and the pcb count each other until in_pcbdetach), SS_NOFDREF as it was.
+        let pcbs = || tcbtable::<testtcp::G>().count();
+        for nofd in [false, true] {
+            let so = crate::net::socket::soalloc(
+                &TcpProto,
+                M_WAIT,
+                crate::net::socket::SoInit {
+                    so_type: hal::sys::socket::SOCK_STREAM,
+                    state: 0,
+                    options: 0,
+                    linger: 0,
+                    timeo: 0,
+                    euid: 0,
+                    ruid: 0,
+                    egid: 0,
+                    rgid: 0,
+                    cpid: 1,
+                },
+            )
+            .expect("a socket");
+            if nofd {
+                so.st_set(SS_NOFDREF);
+            }
+            let before = pcbs();
+            crate::testutil::fail_pool("tcpcb", 1);
+            let r = {
+                let mut w = crate::net::socket::solock(&so);
+                tcp_attach(&so, &mut w, 0, M_WAIT)
+            };
+            crate::testutil::fail_pool("tcpcb", 0);
+            assert_eq!(r, Err(Errno::ENOBUFS));
+            assert_eq!(pcbs(), before, "the pcb freed");
+            assert!(!so.has_pcb());
+            assert_eq!(so.has_state(SS_NOFDREF), nofd);
+            so.st_set(SS_NOFDREF);
+            drop(so);
+        }
+    }
+
+    #[test]
+    fn the_protocol_rows_are_the_c_s_and_the_softnet_reaches_tcp_input_mlist() {
+        use crate::net::proto::{
+            PR_ABRTACPTDIS, PR_CONNREQUIRED, PR_MPINPUT, PR_MPSYSCTL, PR_SPLICE, PR_WANTRCVD,
+            Protocol,
+        };
+        use crate::netinet::in_proto::TcpProtocol;
+        use crate::netinet6::in6_proto::Tcp6Protocol;
+
+        let (_g, _p) = testtcp::setup();
+        let flags =
+            PR_CONNREQUIRED | PR_WANTRCVD | PR_ABRTACPTDIS | PR_SPLICE | PR_MPINPUT | PR_MPSYSCTL;
+        let v4: &dyn Protocol<testtcp::G> = &TcpProtocol::<testtcp::G>::NEW;
+        let v6: &dyn Protocol<testtcp::G> = &Tcp6Protocol::<testtcp::G>::NEW;
+        for (pr, family) in [(v4, i32::from(AF_INET)), (v6, i32::from(AF_INET6))] {
+            assert_eq!(i32::from(pr.ty()), hal::sys::socket::SOCK_STREAM);
+            assert_eq!(i32::from(pr.protocol()), IPPROTO_TCP);
+            assert_eq!(pr.flags(), flags);
+            assert_eq!(pr.domain().family(), family);
+            assert!(!pr.legacy(), "a kernel protocol: so_lock by a witness");
+            assert!(pr.has_ctloutput() && pr.has_sysctl() && pr.usrreqs().is_some());
+            let mut len = 0;
+            let mut r = SysctlReq {
+                oldp: 0,
+                oldlenp: &mut len,
+                newp: 0,
+                newlen: 0,
+            };
+            assert_eq!(pr.sysctl(&[TCPCTL_STATS, 0], &mut r), Err(Errno::ENOTDIR));
+        }
+        // tcp_send is the two tables' one send: sosplice splices them into each other.
+        let send = |pr: &dyn Protocol<testtcp::G>| pr.usrreqs().map(|u| u.send_id());
+        assert_eq!(send(v4), send(v6));
+        assert_ne!(send(v4), Some(0));
+
+        // if_input_process's call: a softnet's batch through tcp_init's registration.
+        let n = 160;
+        let (so, inp, _d) = estab(b"tusrb", n);
+        let mut ml = crate::net::mbuf::MbufList::new();
+        let m = from_peer(n, 7000, TH_ACK, 5000, 1000, &[], b"abc");
+        m.m_pkthdr().ph_cookie.set(20);
+        crate::net::mbuf::ml_enqueue(&mut ml, m);
+        {
+            let w = NETLOCK.read();
+            let net = NetHeld::of(&w).expect("the net lock");
+            crate::netinet::tcp_input::tcp_input_mlist_softnet(&mut ml, i32::from(AF_INET), &net);
+        }
+        assert_eq!(received(&so), b"abc");
+        testtcp::close(so, inp);
+    }
 }
 /* </TESTS> */

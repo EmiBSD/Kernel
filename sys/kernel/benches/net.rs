@@ -222,6 +222,12 @@
 //!   - `tcp.timer.arm.disarm`: `TCP_TIMER_ARM` and `TCP_TIMER_DISARM` of the keep alive
 //!     timer (the flag, `timeout_add_msec` and `timeout_del` under the wheel's lock; no count
 //!     of the pcb, D-11, where the C takes `in_pcbref` and gives it back).
+//!   - `tcp.usr.send.lo` (N6.6a5; "before" = the same scratch harness's
+//!     `bsd.tcp.output.segment`, which timed `tcp_send`'s append with the output): the user
+//!     request `tcp_send` of 100 bytes, the socket's lock the run's holding as `sosend`'s
+//!     (the pcb's counted handle, the lock opened in parts, the append under the send
+//!     buffer's mutex, `tcp_output` to lo0's queue), and the segment taken off the queue; the
+//!     peer's ACK outside the timing, as above.
 //! - The IPv4 input rows (N6.4c2; "before" = `bsd`'s `ipv4_input`, `ipintr` and `ip_reass`
 //!   over LZ's shape at the slice's base, in a scratch test; measured at the N6.4 close,
 //!   decision 50): lo0 with 127.0.0.1/8 (`in_ioctl`), the glue's `inetsw[]` a UDP entry with
@@ -3428,7 +3434,11 @@ fn syncache_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64,
     drop(w);
     core::mem::forget((so, inp));
 }
-const TCP_ROWS: [&str; 2] = ["tcp.output.segment", "tcp.timer.arm.disarm"];
+const TCP_ROWS: [&str; 3] = [
+    "tcp.output.segment",
+    "tcp.timer.arm.disarm",
+    "tcp.usr.send.lo",
+];
 
 /// The TCP output rows (N6.6a3): see the file's documentation.
 fn tcp_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
@@ -3448,6 +3458,8 @@ fn tcp_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
     use kernel::netinet::tcp_output::tcp_output;
     use kernel::netinet::tcp_subr::{tcp_newtcpcb, tcp_template};
     use kernel::netinet::tcp_timer::{TCPT_KEEP, TCPT_REXMT, tcp_timer_arm, tcp_timer_disarm};
+    use kernel::netinet::tcp_usrreq::tcp_send;
+    use kernel::netinet::tcp_var::intotcpcb;
 
     if !TCP_ROWS.iter().any(|n| wanted(n)) {
         return;
@@ -3599,8 +3611,40 @@ fn tcp_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
         });
         report(TCP_ROWS[1], r);
     }
+    drop(il);
+    if wanted(TCP_ROWS[2]) {
+        let r = measure(OPS / 10, || {
+            let mut total = Duration::ZERO;
+            for _ in 0..OPS / 10 {
+                // The user's data in its mbuf, as sosend hands it over (outside the timing).
+                let mut d = need(m_gethdr(M_WAIT, MT_DATA), "an mbuf");
+                d.m_len().set(payload.len() as u32);
+                d.m_pkthdr().len.set(payload.len() as i32);
+                need(d.data_mut(), "a writable mbuf").copy_from_slice(&payload);
+                let t0 = Instant::now();
+                if tcp_send(&so, &mut solocked, Some(black_box(d)), None).is_err() {
+                    eprintln!("net: tcp_send failed");
+                    std::process::exit(1);
+                }
+                let mut ml = ifiq_test_take(lo.if_rcv());
+                let seg = need(ml_dequeue(&mut ml), "the looped segment");
+                total += t0.elapsed();
+                drop(black_box(seg));
+                // The peer's ACK, outside the timing, as tcp.output.segment's.
+                so.so_snd.lock().sbdrop(payload.len() as i32);
+                let mut il = need(solocked.inet(), "a kernel protocol's lock");
+                let mut tp = need(intotcpcb(&inp, &mut il), "the control block");
+                tp.st.snd_una = tp.st.snd_max;
+                tcp_timer_disarm(&mut tp, TCPT_REXMT);
+            }
+            total
+        });
+        report(TCP_ROWS[2], r);
+    }
     // The connection closed and freed; the socket and pcb stay in the doubles' memory, which
     // the next fixture forgets.
+    let mut il = need(solocked.inet(), "a kernel protocol's lock");
+    let tp = need(intotcpcb(&inp, &mut il), "the control block");
     let closed = kernel::netinet::tcp_subr::tcp_close(tp);
     kernel::netinet::tcp_subr::tcp_free(&inp, &mut il.pcb, closed);
     drop(il);
