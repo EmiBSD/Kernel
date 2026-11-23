@@ -166,7 +166,7 @@ use crate::file::FileGlue;
 use crate::proc::ProcGlue;
 
 /// `M_MOUNT`: the malloc type of `struct mount` (`<sys/malloc.h>`).
-pub const M_MOUNT: i32 = 5;
+pub const M_MOUNT: i32 = 20;
 /// `M_WAITOK` (`<sys/malloc.h>`).
 const M_WAITOK: i32 = 0x0001;
 
@@ -905,6 +905,16 @@ mod tests {
 
     use super::*;
     use crate::fs::testfs::TestGlue;
+
+    /// `M_MOUNT` is the C's malloc type, so `vmstat -m` counts a `struct mount` under
+    /// "mount", not under "rtable" (5 is `M_RTABLE`; the kernel's value was 5 from N5 to
+    /// this fix).
+    #[test]
+    #[ignore = "reads reference/openbsd-src (just test-ref)"]
+    fn m_mount_is_the_c_s_type() {
+        let defs = crate::reftest::defines("sys/sys/malloc.h");
+        let _ = crate::reftest::assert_defines!(defs; M_MOUNT);
+    }
 
     /// `vfs_stall`'s walk (D-N5.3-7): a successor that leaves the list while the body runs
     /// (an unmount while `vfs_busy` slept) restarts the walk past the mounts the body marked,

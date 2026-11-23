@@ -730,8 +730,8 @@ mod tests {
         assert_eq!(drops.load(Ordering::Relaxed), 1);
     }
 
-    /// `M_UVMAMAP`, a type of the C's table.
-    const M_UVMAMAP: i32 = 105;
+    /// `M_UVMAMAP`, a type of the C's table (`<sys/malloc.h>`: 98).
+    const M_UVMAMAP: i32 = 98;
 
     #[test]
     fn an_array_holds_its_elements_under_its_type_and_drops_each() {
