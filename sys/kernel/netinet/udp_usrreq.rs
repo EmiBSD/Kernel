@@ -121,8 +121,9 @@
 //!   table and never called for UDP (no `PR_WANTRCVD`, no connection queue), are `panic(9)`,
 //!   as `bsd`'s wrapper of a NULL entry was.
 //! - With the `Ipsec` legs not registered (the C without `IPSEC`, the host tests' default)
-//!   the encapsulation block is skipped and the datagram goes to the sockets; the kernel
-//!   registers them at boot.
+//!   the encapsulation block is skipped and the datagram goes to the sockets, and
+//!   `udp_ctlinput`'s path MTU block (`udpencap_pmtu`) is not taken: the control input goes
+//!   on to the socket lookup; the kernel registers them at boot.
 //!
 //! ## Redesign
 //! - N6.6b0: LZ's `bsd` module over `&'static Socket`, parked mbufs, raw header pointers
@@ -223,7 +224,7 @@ use crate::assert::{kassert, kpanic};
 use crate::net::domain::net;
 use crate::net::if_::unhandled_af;
 use crate::net::if_var::{Ifnet, Netstack};
-use crate::net::ipsec_hooks::{ESP_ENABLE, UDPENCAP_ENABLE, UDPENCAP_PORT, ipsec};
+use crate::net::ipsec_hooks::{ESP_ENABLE, Ipsec, UDPENCAP_ENABLE, UDPENCAP_PORT, ipsec};
 use crate::net::mbuf::{
     M_BCAST, M_COPYALL, M_DONTWAIT, M_FLOWID, M_MCAST, M_UDP_CSUM_IN_BAD, M_UDP_CSUM_IN_OK,
     M_UDP_CSUM_OUT, Mbuf, MbufBox, PF_TAG_DIVERTED, m_adj, m_copydata, m_copym, m_prepend,
@@ -1105,19 +1106,7 @@ pub fn udp_ctlinput<G: ProcGlue>(
         return;
     };
     let (uh_sport, uh_dport) = ports_of([b0, b1, b2, b3]);
-    // IPSEC: atomic_load_int(&udpencap_port).
-    let udpencap_port_local = UDPENCAP_PORT.load(Ordering::Relaxed);
-    // PMTU discovery for udpencap: the 16-bit network-order port against the host-order
-    // variable, the C's comparison (no htons).
-    if cmd == PRC_MSGSIZE
-        && ip_mtudisc.load(Ordering::Relaxed) != 0
-        && UDPENCAP_ENABLE.load(Ordering::Relaxed) != 0
-        && udpencap_port_local != 0
-        && i32::from(uh_sport) == udpencap_port_local
-    {
-        if let Some(legs) = ipsec() {
-            legs.udpencap_ctlinput(rdomain, msg);
-        }
+    if udpencap_pmtu(ipsec(), cmd, uh_sport, rdomain, msg) {
         return;
     }
     let inp = in_pcblookup(
@@ -1135,6 +1124,36 @@ pub fn udp_ctlinput<G: ProcGlue>(
     }
     // in_pcbsounlock (the holding's drop above), in_pcbunref
     drop(inp);
+}
+
+/// `udp_ctlinput`'s `#ifdef IPSEC` block, PMTU discovery for udpencap: a path MTU message
+/// whose returned datagram left from `udpencap_port` (`uh_sport`, the 16-bit network-order
+/// value, against the host-order variable: the C's comparison, no `htons`) goes to IPsec's
+/// leg with the ICMP message `msg`, and `true` ends the control input. `false` without the
+/// legs (`legs` is `ipsec()`; the C without `IPSEC` has no such block and goes on to the
+/// socket lookup) or for any other message.
+fn udpencap_pmtu(
+    legs: Option<&dyn Ipsec>,
+    cmd: i32,
+    uh_sport: u16,
+    rdomain: u32,
+    msg: &[u8],
+) -> bool {
+    let Some(legs) = legs else {
+        return false;
+    };
+    // atomic_load_int(&udpencap_port)
+    let udpencap_port_local = UDPENCAP_PORT.load(Ordering::Relaxed);
+    if cmd == PRC_MSGSIZE
+        && ip_mtudisc.load(Ordering::Relaxed) != 0
+        && UDPENCAP_ENABLE.load(Ordering::Relaxed) != 0
+        && udpencap_port_local != 0
+        && i32::from(uh_sport) == udpencap_port_local
+    {
+        legs.udpencap_ctlinput(rdomain, msg);
+        return true;
+    }
+    false
 }
 
 /// `udp_output`: sends datagram `m` from `inp` to `addr` (or its peer), with the source
@@ -2745,6 +2764,37 @@ mod tests {
         );
 
         close(so);
+    }
+
+    #[test]
+    fn the_path_mtu_branch_is_ipsecs_only_with_its_legs() {
+        let (_g, _p) = testudp::setup();
+        let legs = crate::netinet::tcp_subr::testtcp::sig_legs();
+        let n = 207;
+        let raw = quote(
+            [10, 9, n, 1],
+            4500u16.to_ne_bytes(),
+            [10, 9, n, 2],
+            4500,
+            1300,
+        );
+        // The quote's source port as udp_ctlinput reads it (ports_of: its bytes as they are).
+        let sport = 4500u16;
+        let before = legs.udpencap_ctl.load(Ordering::Relaxed);
+        // Without the legs (the C without IPSEC has no such block): not taken, so
+        // udp_ctlinput goes on to the socket lookup.
+        assert!(!udpencap_pmtu(None, PRC_MSGSIZE, sport, 0, &raw));
+        // With them: IPsec's, once; another message or another port is not.
+        assert!(udpencap_pmtu(ipsec(), PRC_MSGSIZE, sport, 0, &raw));
+        assert!(!udpencap_pmtu(ipsec(), PRC_HOSTDEAD, sport, 0, &raw));
+        assert!(!udpencap_pmtu(
+            ipsec(),
+            PRC_MSGSIZE,
+            4500u16.to_be(),
+            0,
+            &raw
+        ));
+        assert_eq!(legs.udpencap_ctl.load(Ordering::Relaxed), before + 1);
     }
 
     #[test]
