@@ -5163,23 +5163,6 @@ mod tests {
         testtcp::close_listener(lso, linp);
     }
 
-    /// Fails the test protocol's attaches (`testtcp::FAIL_ATTACH`), for a test, until the
-    /// drop.
-    struct FailAttach;
-
-    impl FailAttach {
-        fn new() -> Self {
-            testtcp::FAIL_ATTACH.store(true, Ordering::Relaxed);
-            Self
-        }
-    }
-
-    impl Drop for FailAttach {
-        fn drop(&mut self) {
-            testtcp::FAIL_ATTACH.store(false, Ordering::Relaxed);
-        }
-    }
-
     #[test]
     fn input_resets_a_handshake_whose_socket_cannot_be_made() {
         let (_g, _p) = testtcp::setup();
@@ -5197,11 +5180,12 @@ mod tests {
             stat(C::TcpsScAborted),
             stat(C::TcpsScCompleted),
         );
-        // The ACK, while the new socket's attach fails after its pcb is made (sonewconn
-        // fails): resetandabort, the peer reset at its acknowledgment, the entry gone.
-        let fail = FailAttach::new();
+        // The ACK, while the new socket's attach fails after its pcb is made (tcp_attach's
+        // tcp_newtcpcb finds no "tcpcb" item, so sonewconn fails): resetandabort, the peer
+        // reset at its acknowledgment, the entry gone.
+        crate::testutil::fail_pool("tcpcb", 1);
         deliver(to80(n, 5700, TH_ACK, 401, iss.wrapping_add(1), &[], &[]));
-        drop(fail);
+        crate::testutil::fail_pool("tcpcb", 0);
         assert_eq!(stat(C::TcpsScAborted), aborted + 1);
         assert_eq!(stat(C::TcpsScCompleted), completed);
         let (_ip, rst, _o, _p) = last(d);

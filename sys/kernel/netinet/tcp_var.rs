@@ -145,7 +145,7 @@
 //!   row).
 
 use core::pin::Pin;
-use core::sync::atomic::AtomicU64;
+use core::sync::atomic::{AtomicI32, AtomicU64};
 
 use hal::intr::IPL_SOFTNET;
 use hal::malloc::MArray;
@@ -825,17 +825,13 @@ impl<G: ProcGlue> Default for SynCacheSet<G> {
     }
 }
 
-/// What `syn_cache_mtx` keeps (\[S\]): `tcp_syn_cache[2]`, `tcp_syn_cache_active`, and the
-/// two `[S]` tunables of `tcp_input.c`.
+/// What `syn_cache_mtx` keeps (\[S\]): `tcp_syn_cache[2]` and `tcp_syn_cache_active` (the
+/// two `[S]` tunables of `tcp_input.c` are [`TcpTables`]' atomics, written under it).
 pub struct SynCaches<G: ProcGlue> {
     /// `tcp_syn_cache[2]`.
     pub sets: [SynCacheSet<G>; 2],
     /// `tcp_syn_cache_active`: the index of the active set.
     pub active: usize,
-    /// `tcp_syn_hash_size`: size of hash table.
-    pub tcp_syn_hash_size: i32,
-    /// `tcp_syn_use_limit`: reseed after uses.
-    pub tcp_syn_use_limit: i32,
 }
 
 impl<G: ProcGlue> SynCaches<G> {
@@ -844,8 +840,6 @@ impl<G: ProcGlue> SynCaches<G> {
         Self {
             sets: [SynCacheSet::new(), SynCacheSet::new()],
             active: 0,
-            tcp_syn_hash_size: TCP_SYN_HASH_SIZE,
-            tcp_syn_use_limit: 100_000,
         }
     }
 }
@@ -867,6 +861,11 @@ pub struct TcpTables<G: ProcGlue> {
     pub(crate) syn_cache_pool: TypedPool<SynCache<G>>,
     /// `syn_cache_mtx`: tcp syn cache global mutex, and the `[S]` globals.
     pub(crate) syn_cache: Mutexed<SynCaches<G>>,
+    /// \[S\] `tcp_syn_hash_size`: size of hash table. Written under `syn_cache_mtx` (`[S]`)
+    /// and read without it (`tcp_sysctl`'s `atomic_load_int`, `syn_cache_init`), as the C.
+    pub tcp_syn_hash_size: AtomicI32,
+    /// \[S\] `tcp_syn_use_limit`: reseed after uses; as `tcp_syn_hash_size`.
+    pub tcp_syn_use_limit: AtomicI32,
     /// `tcbtable`.
     pub tcbtable: Inpcbtable<G>,
     /// `tcb6table`.
@@ -880,6 +879,8 @@ impl<G: ProcGlue> TcpTables<G> {
             tcpcb_pool: BoxPool::new(),
             syn_cache_pool: TypedPool::new(),
             syn_cache: Mutexed::new(IPL_SOFTNET, SynCaches::new()),
+            tcp_syn_hash_size: AtomicI32::new(TCP_SYN_HASH_SIZE),
+            tcp_syn_use_limit: AtomicI32::new(100_000),
             tcbtable: Inpcbtable::new(),
             tcb6table: Inpcbtable::new(),
         }

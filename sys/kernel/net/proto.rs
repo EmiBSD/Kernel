@@ -128,6 +128,44 @@ pub const PR_MPINPUT: i16 = 0x0080;
 /// mp-safe sysctl(2) handler.
 pub const PR_MPSYSCTL: i16 = 0x0200;
 
+// The requests of pr_usrreqs (`PRU_*`), as the protocols' traces name them (`tcp_trace`'s
+// `req`).
+
+/// `PRU_ATTACH`: attach protocol to up.
+pub const PRU_ATTACH: i32 = 0;
+/// `PRU_DETACH`: detach protocol from up.
+pub const PRU_DETACH: i32 = 1;
+/// `PRU_BIND`: bind socket to address.
+pub const PRU_BIND: i32 = 2;
+/// `PRU_LISTEN`: listen for connection.
+pub const PRU_LISTEN: i32 = 3;
+/// `PRU_CONNECT`: establish connection to peer.
+pub const PRU_CONNECT: i32 = 4;
+/// `PRU_ACCEPT`: accept connection from peer.
+pub const PRU_ACCEPT: i32 = 5;
+/// `PRU_DISCONNECT`: disconnect from peer.
+pub const PRU_DISCONNECT: i32 = 6;
+/// `PRU_SHUTDOWN`: won't send any more data.
+pub const PRU_SHUTDOWN: i32 = 7;
+/// `PRU_RCVD`: have taken data; more room now.
+pub const PRU_RCVD: i32 = 8;
+/// `PRU_SEND`: send this data.
+pub const PRU_SEND: i32 = 9;
+/// `PRU_ABORT`: abort (fast DISCONNECT, DETATCH).
+pub const PRU_ABORT: i32 = 10;
+/// `PRU_CONTROL`: control operations on protocol.
+pub const PRU_CONTROL: i32 = 11;
+/// `PRU_SENSE`: return status into m.
+pub const PRU_SENSE: i32 = 12;
+/// `PRU_RCVOOB`: retrieve out of band data.
+pub const PRU_RCVOOB: i32 = 13;
+/// `PRU_SENDOOB`: send out of band data.
+pub const PRU_SENDOOB: i32 = 14;
+/// `PRU_SOCKADDR`: fetch socket's address.
+pub const PRU_SOCKADDR: i32 = 15;
+/// `PRU_PEERADDR`: fetch peer's address.
+pub const PRU_PEERADDR: i32 = 16;
+
 // The commands of pr_ctlinput (`PRC_*`).
 
 /// Route changed.

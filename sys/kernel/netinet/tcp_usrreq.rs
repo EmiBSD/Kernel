@@ -84,46 +84,216 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! TCP user requests: `netinet/tcp_usrreq.c`'s socket buffer scaling (N6.6a3:
-//! `tcp_update_sndspace`, `tcp_update_rcvspace` and the buffer sizes they read; the requests,
-//! `tcp_ctloutput`, `tcp_sysctl` and `tcp_ident` follow at N6.6a5).
+//! TCP user requests and socket options: `netinet/tcp_usrreq.c`.
 //!
 //! Upstream: sys/netinet/tcp_usrreq.c @ 3ce1f3f79392
 //! LZ: sys/netinet/tcp_usrreq.rs@3c62ede68802
 //!
-//! The send buffer grows with the data in flight, so that what the peer has not acknowledged
-//! is not counted against the limit the user asked for; the receive buffer grows by a step
-//! when most of it was filled within about one round trip. Both shrink back to their
-//! defaults when mbufs run low, and keep a socket writable or readable that `poll(2)` found
-//! so.
+//! The `pr_usrreqs` of TCP sockets ([`TcpUsrreqs`]): attaching makes the internet and TCP
+//! control blocks and the socket buffers; listen, connect (a SYN sent), accept, send (the
+//! data appended to the send buffer, then `tcp_output`), shutdown and disconnect (the FIN
+//! states walked by [`tcp_usrclosed`]), abort (`tcp_drop`), out-of-band data and the
+//! addresses. [`tcp_ctloutput`] serves the `IPPROTO_TCP` socket options (`TCP_NODELAY`,
+//! `TCP_NOPUSH`, `TCP_MAXSEG`, `TCP_SACK_ENABLE`, `TCP_INFO`, `TCP_MD5SIG`) and hands the
+//! others to IP; [`tcp_sysctl`] is `net.inet.tcp`, [`tcp_ident`] its `ident` and `drop`
+//! requests. The send buffer grows with the data in flight, so that what the peer has not
+//! acknowledged is not counted against the limit the user asked for; the receive buffer
+//! grows by a step when most of it was filled within about one round trip. Both shrink back
+//! to their defaults when mbufs run low, and keep a socket writable or readable that
+//! `poll(2)` found so.
+//!
+//! Locks used to protect global variables in this file: \[I\] immutable after creation.
 //!
 //! ## Deviations
 //! - `tcp_sendspace`, `tcp_recvspace` and `tcp_autorcvbuf_inc` are \[I\] `u32` statics, as
 //!   LZ's; the first two keep their lowercase names (`TCP_SENDSPACE` and `TCP_RECVSPACE` are
-//!   this file's constants).
+//!   this file's constants). `tcpctl_vars[]` points at the `AtomicI32`s of the files that
+//!   define them.
+//! - `tcp_ctloutput` answers `ECONNRESET` for a socket whose control block is gone (a
+//!   close ran first), where the C dereferences `intotcpcb(inp)` unchecked (LZ's).
+//! - `INET6` is configured: the `PF_INET6` attach, `ip6_ctloutput`, the IPv6 checks of
+//!   `tcp_connect` and `tcp_ident`'s `AF_INET6` case. `TCP_ECN` and `TCP_SIGNATURE` are
+//!   configured. `SMALL_KERNEL` is not set: `tcpctl_vars`, `tcp_sysctl_tcpstat` and
+//!   `tcp_sysctl` are compiled.
 //!
 //! ## Redesign
-//! - N6.6a3: the two functions are the kernel's, over the kernel's control block (opened as
-//!   [`Tp`]) and socket buffers; `bsd`'s copies in `sys/netinet/tcp_usrreq.rs` stay for
-//!   `bsd`'s TCP until the switch (N6.6a5). The buffer's mutex is held across the
-//!   computation and the reserve, as the C's `sb_mtx`; the counts and marks are read under it
-//!   from the buffer's words.
-//! - The sums keep the C's `u_long` order and wrap (`sb_wat + snd_max - snd_una`, which LZ
-//!   computed as `sb_wat + (snd_max - snd_una)`: across the sequence space's wrap the C's
-//!   difference is past `sb_max` and the buffer goes to `sb_max` for that call), and the
-//!   marks' comparisons are the C's unsigned ones (`sb_cc >= sb_lowat` and `nmax < sb_lowat`
-//!   with the `long` mark converted, where LZ compared them signed).
+//! - N6.6a3: `tcp_update_sndspace` and `tcp_update_rcvspace` are the kernel's, over the
+//!   kernel's control block (opened as [`Tp`]) and socket buffers. The buffer's mutex is
+//!   held across the computation and the reserve, as the C's `sb_mtx`; the counts and marks
+//!   are read under it from the buffer's words. The sums keep the C's `u_long` order and wrap
+//!   (`sb_wat + snd_max - snd_una`, which LZ computed as `sb_wat + (snd_max - snd_una)`:
+//!   across the sequence space's wrap the C's difference is past `sb_max` and the buffer goes
+//!   to `sb_max` for that call), and the marks' comparisons are the C's unsigned ones
+//!   (`sb_cc >= sb_lowat` and `nmax < sb_lowat` with the `long` mark converted, where LZ
+//!   compared them signed).
+//! - N6.6a5: LZ's `tcp_usrreqs`/`tcp6_usrreqs` tables of functions over `&'static Socket`
+//!   and parked mbufs are [`TcpUsrreqs`] (decision 46: `impl Usrreqs`), one type whose two
+//!   values differ only in `pru_control` (`in_control`, `in6_control`), as the C's two tables
+//!   share every other function. Each request takes the socket's lock as a witness
+//!   ([`SoLocked`], the C's `soassertlocked`), opens it in parts ([`SoLocked::inet`]) and
+//!   reaches the control block through them (`intotcpcb`): `tcp_sogetpcb`'s two pointers are
+//!   the pcb's counted handle (`sotoinpcb`, one atomic pair per request where the C loads a
+//!   pointer: the slot is read without the socket lock by `kern.file` and `fstat`, so it is
+//!   a counted cell, N6.6a4; the N12 row) and a [`Tp`].
+//! - `tp = tcp_close(tp)`, `tp = tcp_drop(tp, e)` and the `tcp_dodisconnect`/
+//!   `tcp_usrclosed` answers (a block or NULL) are [`TpOrClosed`]: the request that owns the
+//!   socket lock's parts frees a [`Closed`] block (`tcp_free`) before it unlocks, so a use of
+//!   the block after its close does not compile. `SO_DEBUG`'s `otp` is the block's address
+//!   before the request, never followed.
+//! - `tcp_ident` reads the two `sockaddr_storage`s whole and takes `sockaddr_in` or
+//!   `sockaddr_in6` from their first bytes by family (`hal::pod::at`), never cut at
+//!   `sa_len`: the C's casts. `TCPCTL_DROP` drops the connection under its socket's lock
+//!   taken by `in_pcbsolock` (the C's), the pcb counted by the lookup until after the unlock.
+//! - `tcp_sysctl`'s port bitmaps go through the C's `malloc(M_SYSCTL)` buffer (an `MArray`,
+//!   where LZ put 8 KiB on the stack); `tcp_sysctl_tcpstat` builds `struct tcpstat` from the
+//!   per-CPU counters in the C's `ASSIGN` order and copies its bytes out (`hal::sys`'s image,
+//!   holes named). `tcp_syn_hash_size` and `tcp_syn_use_limit` are atomics beside the SYN
+//!   cache's mutex (`TcpTables`), written under it and read without it, as the C's
+//!   `atomic_load_int`.
+//! - `sosplice`'s `pru_send` comparison is the address of one static (`TCP_SEND_ID`), the
+//!   same for both tables, as the C's two tables share `tcp_send`.
 
-use core::sync::atomic::Ordering;
+use core::marker::PhantomData;
+use core::mem::size_of;
+use core::sync::atomic::{AtomicI32, Ordering};
 
-use crate::net::sockbuf::{SB_MAX_VAR, sbchecklowmem};
-use crate::netinet::tcp_var::Tp;
-use crate::proc::ProcGlue;
+use hal::malloc::{M_WAITOK, MArray};
+use hal::netlock::{NETLOCK, NetHeld};
+use hal::pool::PoolArc;
+use hal::rwlock::RW_INTR;
+use hal::sys::errno::Errno;
+use hal::sys::netinet_in::{INADDR_ANY, INADDR_BROADCAST, IPPROTO_TCP, SockaddrIn, in_multicast};
+use hal::sys::netinet_tcp::{
+    TCP_INFO, TCP_MAXSEG, TCP_MD5SIG, TCP_MSS, TCP_NODELAY, TCP_NOPUSH, TCP_SACK_ENABLE,
+    TCPI_OPT_ECN, TCPI_OPT_SACK, TCPI_OPT_TIMESTAMPS, TCPI_OPT_WSCALE, TcpInfo,
+};
+use hal::sys::netinet_tcp_var::{
+    TCPCTL_ACK_ON_PUSH, TCPCTL_ALWAYS_KEEPALIVE, TCPCTL_BADDYNAMIC, TCPCTL_DROP, TCPCTL_ECN,
+    TCPCTL_IDENT, TCPCTL_KEEPIDLE, TCPCTL_KEEPINITTIME, TCPCTL_KEEPINTVL, TCPCTL_MSSDFLT,
+    TCPCTL_REASS_LIMIT, TCPCTL_RFC1323, TCPCTL_RFC3390, TCPCTL_ROOTONLY, TCPCTL_RSTPPSLIMIT,
+    TCPCTL_SACK, TCPCTL_SACKHOLE_LIMIT, TCPCTL_STATS, TCPCTL_SYN_BUCKET_LIMIT,
+    TCPCTL_SYN_CACHE_LIMIT, TCPCTL_SYN_HASH_SIZE, TCPCTL_SYN_USE_LIMIT, TCPCTL_TSO,
+    TcpIdentMapping, Tcpstat,
+};
+use hal::sys::netinet6_in6::{
+    In6Addr, SockaddrIn6, in6_is_addr_multicast, in6_is_addr_unspecified,
+};
+use hal::sys::socket::{
+    AF_INET, AF_INET6, MSG_PEEK, PF_INET, PF_INET6, SO_ACCEPTCONN, SO_DEBUG, SO_LINGER,
+    SO_OOBINLINE,
+};
+use hal::sys::stat::Stat;
+use hal::sys::sysctl::SysctlBoundedArgs;
+use hal::user::{AbiPod, UserPtr, bytes_of};
+
+use crate::assert::kpanic;
+use crate::net::domain::net;
+use crate::net::if_var::Ifnet;
+use crate::net::mbuf::{M_WAIT, MLEN, Mbuf, MbufBox, mclgetl};
+use crate::net::proto::{
+    PRCO_GETOPT, PRCO_SETOPT, PRU_ABORT, PRU_ACCEPT, PRU_ATTACH, PRU_BIND, PRU_CONNECT, PRU_DETACH,
+    PRU_DISCONNECT, PRU_LISTEN, PRU_PEERADDR, PRU_RCVD, PRU_RCVOOB, PRU_SEND, PRU_SENDOOB,
+    PRU_SENSE, PRU_SHUTDOWN, PRU_SOCKADDR, Usrreqs,
+};
+use crate::net::sockbuf::{
+    SB_MAX_VAR, SS_CANTSENDMORE, SS_CONNECTOUT, SS_ISCONNECTED, SS_ISCONNECTING, SS_NOFDREF,
+    SS_PRIV, SS_RCVATMARK, sbchecklowmem, sbcheckreserve,
+};
+use crate::net::socket::{
+    InetLocked, SoLocked, Socket, socantsendmore, soisconnecting, soisdisconnected,
+    soisdisconnecting, soreserve,
+};
+use crate::netinet::in_::{in_broadcast, in_control, in_nam2sin};
+use crate::netinet::in_pcb::{
+    BADDYNAMICPORTS, Baddynamicports, DP_MAPSIZE, INP_IPV6, Inpcb, InpcbRef, ROOTONLYPORTS,
+    in_pcballoc, in_pcbbind, in_pcbconnect, in_pcbdetach, in_pcbdisconnect, in_pcblookup,
+    in_pcblookup_listen, in_pcbsolock, in_pcbunset_faddr, in_setpeeraddr, in_setsockaddr,
+    sotoinpcb,
+};
+use crate::netinet::ip_output::ip_ctloutput;
+use crate::netinet::tcp_debug::{TA_USER, tcp_trace};
+use crate::netinet::tcp_fsm::{
+    TCPS_CLOSE_WAIT, TCPS_CLOSED, TCPS_ESTABLISHED, TCPS_FIN_WAIT_1, TCPS_FIN_WAIT_2,
+    TCPS_LAST_ACK, TCPS_LISTEN, TCPS_SYN_RECEIVED, TCPS_SYN_SENT, tcps_haveestablished,
+};
+use crate::netinet::tcp_input::TCP_RST_PPSLIM;
+use crate::netinet::tcp_output::tcp_output;
+use crate::netinet::tcp_seq::tcp_sendseqinit;
+use crate::netinet::tcp_subr::{
+    Closed, SACKHL_POOL, TCP_ACK_ON_PUSH, TCP_DO_ECN, TCP_DO_RFC1323, TCP_DO_RFC3390, TCP_DO_SACK,
+    TCP_DO_TSO, TCP_MSSDFLT, TCP_REASS_LIMIT, TCPQE_POOL, tcp_close, tcp_drop, tcp_free,
+    tcp_newtcpcb, tcp_rscale, tcp_sackhole_limit, tcp_set_iss_tsm, tcp_template,
+};
+use crate::netinet::tcp_syncache::{TCP_SYN_BUCKET_LIMIT, TCP_SYN_CACHE_LIMIT, syn_cache_lock};
+use crate::netinet::tcp_timer::{
+    TCP_ALWAYS_KEEPALIVE, TCP_KEEPIDLE, TCP_KEEPIDLE_SEC, TCP_KEEPINIT, TCP_KEEPINIT_SEC,
+    TCP_KEEPINTVL, TCP_KEEPINTVL_SEC, TCP_LINGERTIME, TCPT_2MSL, TCPT_KEEP, TCPTV_KEEPCNT,
+    TCPTV_KEEPIDLE, TCPTV_KEEPINIT, TCPTV_KEEPINTVL, tcp_timer_arm,
+};
+use crate::netinet::tcp_var::{
+    TCP_RTT_BASE_SHIFT, TCP_RTT_SHIFT, TCP_RTTVAR_SHIFT, TCPCOUNTERS, TCPOOB_HADDATA,
+    TCPOOB_HAVEDATA, TCPS_NCOUNTERS, TF_ECN_PERMIT, TF_NODELAY, TF_NOPUSH, TF_RCVD_SCALE,
+    TF_RCVD_TSTMP, TF_REQ_SCALE, TF_REQ_TSTMP, TF_SACK_PERMIT, TF_SIGNATURE, TcpState,
+    TcpstatCounters, Tp, intotcpcb, tcp_now, tcp_time, tcpstat_inc,
+};
+use crate::netinet6::in6::{in6_control, in6_nam2sin6};
+use crate::netinet6::in6_pcb::{
+    in6_pcblookup, in6_pcblookup_listen, in6_setpeeraddr, in6_setsockaddr,
+};
+use crate::netinet6::in6_src::in6_embedscope;
+use crate::netinet6::ip6_output::ip6_ctloutput;
+use crate::proc::{ProcGlue, Thread, suser};
+use crate::sysctl::{
+    M_SYSCTL, SECURELEVEL, SYSCTL_LOCK, SysctlReq, bounded_arr, int, int_bounded, rdstruct,
+    structure,
+};
 
 /// `TCP_SENDSPACE`.
 const TCP_SENDSPACE: u32 = 1024 * 16;
 /// `TCP_RECVSPACE`.
 const TCP_RECVSPACE: u32 = 1024 * 16;
+
+/// What a function that may close the control block answers (the C's `tp` or NULL): the
+/// block, still open, or the token of its close, which the request that owns the socket
+/// lock's parts frees ([`tcp_free`]).
+pub enum TpOrClosed<'a, 'w, G: ProcGlue> {
+    /// The control block, still attached.
+    Open(Tp<'a, 'w, G>),
+    /// The block closed (`tcp_close`'s NULL).
+    Closed(Closed),
+}
+
+impl<G: ProcGlue> TpOrClosed<'_, '_, G> {
+    /// The open block's members, for the trace after the request (`None` once closed).
+    fn st(&self) -> Option<&TcpState> {
+        match self {
+            TpOrClosed::Open(tp) => Some(&*tp.st),
+            TpOrClosed::Closed(_) => None,
+        }
+    }
+}
+
+/// `tcp_usrreqs` and `tcp6_usrreqs`: TCP's user requests, the two tables differing in
+/// `pru_control` only.
+pub struct TcpUsrreqs<G: ProcGlue> {
+    /// The IPv6 table (`in6_control`).
+    inet6: bool,
+    /// The glue.
+    _g: PhantomData<fn() -> G>,
+}
+
+impl<G: ProcGlue> TcpUsrreqs<G> {
+    /// `tcp_usrreqs`.
+    pub const INET: Self = Self {
+        inet6: false,
+        _g: PhantomData,
+    };
+    /// `tcp6_usrreqs`.
+    pub const INET6: Self = Self {
+        inet6: true,
+        _g: PhantomData,
+    };
+}
 
 /// \[I\] `tcp_sendspace`.
 #[allow(non_upper_case_globals)] // TCP_SENDSPACE is a constant of this file
@@ -133,6 +303,1382 @@ pub static tcp_sendspace: u32 = TCP_SENDSPACE;
 pub static tcp_recvspace: u32 = TCP_RECVSPACE;
 /// \[I\] `tcp_autorcvbuf_inc`.
 pub static TCP_AUTORCVBUF_INC: u32 = 16 * 1024;
+
+/// The identity of `tcp_send` for `sosplice` (`pru_send != pru_send`): both tables answer
+/// this static's address.
+static TCP_SEND_ID: u8 = 0;
+
+/// `tcpctl_vars[]`.
+static TCPCTL_VARS: [SysctlBoundedArgs; 14] = [
+    SysctlBoundedArgs::new(
+        TCPCTL_KEEPINITTIME,
+        &TCP_KEEPINIT_SEC,
+        1,
+        3 * TCPTV_KEEPINIT / tcp_time(1),
+    ),
+    SysctlBoundedArgs::new(
+        TCPCTL_KEEPIDLE,
+        &TCP_KEEPIDLE_SEC,
+        1,
+        5 * TCPTV_KEEPIDLE / tcp_time(1),
+    ),
+    SysctlBoundedArgs::new(
+        TCPCTL_KEEPINTVL,
+        &TCP_KEEPINTVL_SEC,
+        1,
+        3 * TCPTV_KEEPINTVL / tcp_time(1),
+    ),
+    SysctlBoundedArgs::new(TCPCTL_RFC1323, &TCP_DO_RFC1323, 0, 1),
+    SysctlBoundedArgs::new(TCPCTL_SACK, &TCP_DO_SACK, 0, 1),
+    SysctlBoundedArgs::new(TCPCTL_MSSDFLT, &TCP_MSSDFLT, TCP_MSS, 65535),
+    SysctlBoundedArgs::new(TCPCTL_RSTPPSLIMIT, &TCP_RST_PPSLIM, 1, 1000 * 1000),
+    SysctlBoundedArgs::new(TCPCTL_ACK_ON_PUSH, &TCP_ACK_ON_PUSH, 0, 1),
+    // TCP_ECN
+    SysctlBoundedArgs::new(TCPCTL_ECN, &TCP_DO_ECN, 0, 1),
+    SysctlBoundedArgs::new(TCPCTL_SYN_CACHE_LIMIT, &TCP_SYN_CACHE_LIMIT, 1, 1000 * 1000),
+    SysctlBoundedArgs::new(TCPCTL_SYN_BUCKET_LIMIT, &TCP_SYN_BUCKET_LIMIT, 1, i32::MAX),
+    SysctlBoundedArgs::new(TCPCTL_RFC3390, &TCP_DO_RFC3390, 0, 2),
+    SysctlBoundedArgs::new(TCPCTL_ALWAYS_KEEPALIVE, &TCP_ALWAYS_KEEPALIVE, 0, 1),
+    SysctlBoundedArgs::new(TCPCTL_TSO, &TCP_DO_TSO, 0, 1),
+];
+
+/// The pcb of a TCP socket (`tcp_sogetpcb`'s first half): counted for the request; without
+/// one, the socket's pending error or `EINVAL`.
+fn tcp_sogetinp<G: ProcGlue>(so: &Socket<G>) -> Result<InpcbRef<G>, Errno> {
+    sotoinpcb(so).ok_or_else(|| so.error().unwrap_or(Errno::EINVAL))
+}
+
+/// The socket lock of a request opened in its parts (the C's `soassertlocked`): a kernel TCP
+/// socket is always held by a witness under a proof of the net lock.
+fn inet<'w>(w: &'w mut SoLocked<'_>) -> InetLocked<'w> {
+    match w.inet() {
+        Some(il) => il,
+        None => kpanic(format_args!(
+            "tcp: the socket lock is not held as a kernel protocol's"
+        )),
+    }
+}
+
+/// `tcp_sogetpcb`: when a TCP is attached to a socket, then there will be a (struct inpcb)
+/// pointed at by the socket, and this structure will point at a subsidiary (struct tcpcb):
+/// the control block of `inp`, opened through `il`, or the socket's pending error or `EINVAL`.
+fn tcp_sogetpcb<'a, 'w, G: ProcGlue>(
+    so: &Socket<G>,
+    inp: &'a Inpcb<G>,
+    il: &'a mut InetLocked<'w>,
+) -> Result<Tp<'a, 'w, G>, Errno> {
+    intotcpcb(inp, il).ok_or_else(|| so.error().unwrap_or(Errno::EINVAL))
+}
+
+/// `otp` and `ostate` of a request on a socket with `SO_DEBUG`: the control block's address
+/// and its state before the request.
+fn trace_start<G: ProcGlue>(tp: &Tp<'_, '_, G>) -> Option<(usize, i32)> {
+    tp.so.has_options(SO_DEBUG).then(|| {
+        (
+            core::ptr::from_ref::<crate::netinet::tcp_var::Tcpcb<G>>(&tp.cb).addr(),
+            tp.st.t_state,
+        )
+    })
+}
+
+/// The `tcp_trace(TA_USER, ostate, tp, otp, NULL, req, 0)` at the end of a request, `st` the
+/// block's members after it (`None` once closed).
+fn trace_end(start: Option<(usize, i32)>, st: Option<&TcpState>, req: i32) {
+    if let Some((otp, ostate)) = start {
+        tcp_trace(TA_USER, ostate, st, otp, None, req, 0);
+    }
+}
+
+/// The `tcp_trace(TA_USER, tp->t_state, tp, tp, NULL, req, 0)` of the requests that change no
+/// state (`accept`, `sense`, `sockaddr`, `peeraddr`, `rcvoob`), on a socket with `SO_DEBUG`.
+fn trace_now<G: ProcGlue>(tp: &Tp<'_, '_, G>, req: i32) {
+    trace_end(trace_start(tp), Some(tp.st), req);
+}
+
+/// `curproc`, which the socket requests run as (`panic(9)` without one: a request reaches a
+/// protocol from a system call).
+fn with_curproc<G: ProcGlue, R>(func: &str, f: impl FnOnce(&Thread<G>) -> R) -> R {
+    G::with_curproc(|p| match p {
+        Some(p) => f(p),
+        None => kpanic(format_args!("{func}: no curproc")),
+    })
+}
+
+/// `addr` written into the name mbuf `nam` (`m_len` its size).
+fn set_nam<T: AbiPod>(nam: &mut Mbuf, addr: &T) {
+    let bytes = bytes_of(core::slice::from_ref(addr));
+    nam.m_len().set(bytes.len() as u32);
+    match nam.data_mut() {
+        Some(d) => d.copy_from_slice(bytes),
+        None => kpanic(format_args!("tcp: a read-only name mbuf")),
+    }
+}
+
+/// `in_setsockaddr(inp, nam)`: the local address of `inp`, of its family, into `nam`.
+fn tcp_setsockaddr<G: ProcGlue>(inp: &Inpcb<G>, nam: &mut Mbuf) {
+    if inp.has_flags(INP_IPV6) {
+        set_nam(nam, &in6_setsockaddr(inp));
+    } else {
+        set_nam(nam, &in_setsockaddr(inp));
+    }
+}
+
+/// `in_setpeeraddr(inp, nam)`: the foreign address of `inp`, of its family, into `nam`.
+fn tcp_setpeeraddr<G: ProcGlue>(inp: &Inpcb<G>, nam: &mut Mbuf) {
+    if inp.has_flags(INP_IPV6) {
+        set_nam(nam, &in6_setpeeraddr(inp));
+    } else {
+        set_nam(nam, &in_setpeeraddr(inp));
+    }
+}
+
+/// `tcp_fill_info`: export internal TCP state information via a struct tcp_info without
+/// leaking any sensitive information. Sequence numbers are reported relative to the initial
+/// sequence number. `m` receives the structure (a cluster first when it does not fit an
+/// mbuf, `M_WAITOK`; `ENOMEM` without one); the members from `tcpi_snd_wnd` on only for a
+/// privileged caller.
+pub fn tcp_fill_info<G: ProcGlue>(tp: &Tp<'_, '_, G>, m: &mut Mbuf) -> Result<(), Errno> {
+    let so = tp.so;
+    let st = &*tp.st;
+    // msec => usec
+    let t: u32 = 1000;
+
+    if size_of::<TcpInfo>() > MLEN && !mclgetl(m, M_WAIT, size_of::<TcpInfo>() as u32) {
+        return Err(Errno::ENOMEM);
+    }
+    let mut ti = TcpInfo::default();
+    let now = tcp_now();
+    // (now - since) * t in uint64_t, stored in a u_int32_t member.
+    let ago = |since: u64| now.wrapping_sub(since).wrapping_mul(u64::from(t)) as u32;
+
+    ti.tcpi_state = st.t_state as u8;
+    if st.t_flags & TF_REQ_TSTMP != 0 && st.t_flags & TF_RCVD_TSTMP != 0 {
+        ti.tcpi_options |= TCPI_OPT_TIMESTAMPS;
+    }
+    if st.has_flags(TF_SACK_PERMIT) {
+        ti.tcpi_options |= TCPI_OPT_SACK;
+    }
+    if st.t_flags & TF_REQ_SCALE != 0 && st.t_flags & TF_RCVD_SCALE != 0 {
+        ti.tcpi_options |= TCPI_OPT_WSCALE;
+        ti.tcpi_snd_wscale = st.snd_scale;
+        ti.tcpi_rcv_wscale = st.rcv_scale;
+    }
+    // TCP_ECN
+    if st.has_flags(TF_ECN_PERMIT) {
+        ti.tcpi_options |= TCPI_OPT_ECN;
+    }
+
+    ti.tcpi_rto = (st.t_rxtcur as u32).wrapping_mul(t);
+    ti.tcpi_snd_mss = u32::from(st.t_maxseg);
+    ti.tcpi_rcv_mss = u32::from(st.t_peermss);
+
+    ti.tcpi_last_data_sent = ago(st.t_sndtime);
+    ti.tcpi_last_ack_sent = ago(st.t_sndacktime);
+    ti.tcpi_last_data_recv = ago(st.t_rcvtime);
+    ti.tcpi_last_ack_recv = ago(st.t_rcvacktime);
+
+    // ((uint64_t)t_srtt * t) >> shift: the int widened with its sign, as the C's cast.
+    ti.tcpi_rtt = ((st.t_srtt as u64).wrapping_mul(u64::from(t))
+        >> (TCP_RTT_SHIFT + TCP_RTT_BASE_SHIFT)) as u32;
+    ti.tcpi_rttvar = ((st.t_rttvar as u64).wrapping_mul(u64::from(t))
+        >> (TCP_RTTVAR_SHIFT + TCP_RTT_BASE_SHIFT)) as u32;
+    ti.tcpi_snd_ssthresh = st.snd_ssthresh as u32;
+    ti.tcpi_snd_cwnd = st.snd_cwnd as u32;
+
+    ti.tcpi_rcv_space = st.rcv_wnd as u32;
+
+    // Provide only minimal information for unprivileged processes.
+    if with_curproc::<G, _>("tcp_fill_info", |p| suser(p).is_ok()) {
+        // FreeBSD-specific extension fields for tcp_info.
+        ti.tcpi_snd_wnd = st.snd_wnd as u32;
+        ti.tcpi_snd_nxt = st.snd_nxt.wrapping_sub(st.iss);
+        ti.tcpi_rcv_nxt = st.rcv_nxt.wrapping_sub(st.irs);
+        // missing tcpi_toe_tid
+        ti.tcpi_snd_rexmitpack = st.t_sndrexmitpack;
+        ti.tcpi_rcv_ooopack = st.t_rcvoopack;
+        ti.tcpi_snd_zerowin = st.t_sndzerowin;
+
+        // OpenBSD extensions
+        ti.tcpi_rttmin = st.t_rttmin.wrapping_mul(t);
+        ti.tcpi_max_sndwnd = st.max_sndwnd as u32;
+        ti.tcpi_rcv_adv = st.rcv_adv.wrapping_sub(st.irs);
+        ti.tcpi_rcv_up = st.rcv_up.wrapping_sub(st.irs);
+        ti.tcpi_snd_una = st.snd_una.wrapping_sub(st.iss);
+        ti.tcpi_snd_up = st.snd_up.wrapping_sub(st.iss);
+        ti.tcpi_snd_wl1 = st.snd_wl1.wrapping_sub(st.iss);
+        ti.tcpi_snd_wl2 = st.snd_wl2.wrapping_sub(st.iss);
+        ti.tcpi_snd_max = st.snd_max.wrapping_sub(st.iss);
+
+        ti.tcpi_ts_recent = st.ts_recent; // XXX value from the wire
+        ti.tcpi_ts_recent_age = ago(st.ts_recent_age);
+        ti.tcpi_rfbuf_cnt = st.rfbuf_cnt;
+        ti.tcpi_rfbuf_ts = ago(st.rfbuf_ts);
+
+        let g = so.so_rcv.lock();
+        ti.tcpi_so_rcv_sb_cc = so.so_rcv.cc() as u32;
+        ti.tcpi_so_rcv_sb_hiwat = so.so_rcv.hiwat() as u32;
+        ti.tcpi_so_rcv_sb_lowat = so.so_rcv.lowat() as u32;
+        ti.tcpi_so_rcv_sb_wat = so.so_rcv.wat() as u32;
+        drop(g);
+        let g = so.so_snd.lock();
+        ti.tcpi_so_snd_sb_cc = so.so_snd.cc() as u32;
+        ti.tcpi_so_snd_sb_hiwat = so.so_snd.hiwat() as u32;
+        ti.tcpi_so_snd_sb_lowat = so.so_snd.lowat() as u32;
+        ti.tcpi_so_snd_sb_wat = so.so_snd.wat() as u32;
+        drop(g);
+    }
+
+    set_nam(m, &ti);
+    Ok(())
+}
+
+/// The `int` an option mbuf carries (`*mtod(m, int *)`); `None` for a missing or short one
+/// (the C's `m == NULL || m->m_len < sizeof(int)`).
+fn opt_int(m: Option<&Mbuf>) -> Option<i32> {
+    let d = m?.data();
+    let b: [u8; size_of::<i32>()] = d.get(..size_of::<i32>())?.try_into().ok()?;
+    Some(i32::from_ne_bytes(b))
+}
+
+/// `m->m_len = sizeof(int); *mtod(m, int *) = v` of a `PRCO_GETOPT` answer.
+fn opt_set_int(m: Option<&mut Mbuf>, v: i32) {
+    match m {
+        Some(m) => set_nam(m, &v),
+        None => kpanic(format_args!("tcp_ctloutput: no mbuf for PRCO_GETOPT")),
+    }
+}
+
+/// `tcp_ctloutput`: the `IPPROTO_TCP` socket options of `so`, locked by `w`; the other levels
+/// go to IP. `m` holds a `PRCO_SETOPT`'s value and receives a `PRCO_GETOPT`'s answer.
+pub fn tcp_ctloutput<G: ProcGlue>(
+    op: i32,
+    so: &Socket<G>,
+    w: &mut SoLocked<'_>,
+    level: i32,
+    optname: i32,
+    m: Option<&mut Mbuf>,
+) -> Result<(), Errno> {
+    let Some(inp) = sotoinpcb(so) else {
+        return Err(Errno::ECONNRESET);
+    };
+    let mut il = inet(w);
+    if level != IPPROTO_TCP {
+        if inp.has_flags(INP_IPV6) {
+            return ip6_ctloutput(op, &inp, level, optname, m, &il.net);
+        }
+        let mut options = inp.options();
+        return ip_ctloutput(op, &inp, &mut options, level, optname, m, &il.net);
+    }
+    let Some(mut tp) = intotcpcb(&inp, &mut il) else {
+        // The C dereferences the control block unchecked; a socket being closed has none.
+        return Err(Errno::ECONNRESET);
+    };
+
+    match op {
+        PRCO_SETOPT => {
+            let v = opt_int(m.as_deref());
+            let st = &mut *tp.st;
+            match optname {
+                TCP_NODELAY => match v {
+                    None => Err(Errno::EINVAL),
+                    Some(0) => {
+                        st.clear_flags(TF_NODELAY);
+                        Ok(())
+                    }
+                    Some(_) => {
+                        st.set_flags(TF_NODELAY);
+                        Ok(())
+                    }
+                },
+
+                TCP_NOPUSH => match v {
+                    None => Err(Errno::EINVAL),
+                    Some(0) => {
+                        if st.has_flags(TF_NOPUSH) {
+                            st.clear_flags(TF_NOPUSH);
+                            if tcps_haveestablished(st.t_state) {
+                                return tcp_output(&mut tp);
+                            }
+                        }
+                        Ok(())
+                    }
+                    Some(_) => {
+                        st.set_flags(TF_NOPUSH);
+                        Ok(())
+                    }
+                },
+
+                TCP_MAXSEG => match v {
+                    Some(i) if i > 0 && i <= i32::from(st.t_maxseg) => {
+                        st.t_maxseg = i as u16;
+                        Ok(())
+                    }
+                    _ => Err(Errno::EINVAL),
+                },
+
+                TCP_SACK_ENABLE => {
+                    let Some(i) = v else {
+                        return Err(Errno::EINVAL);
+                    };
+                    if tcps_haveestablished(st.t_state) {
+                        return Err(Errno::EPERM);
+                    }
+                    if st.has_flags(TF_SIGNATURE) {
+                        return Err(Errno::EPERM);
+                    }
+                    st.sack_enable = i32::from(i != 0);
+                    Ok(())
+                }
+                // TCP_SIGNATURE
+                TCP_MD5SIG => {
+                    let Some(i) = v else {
+                        return Err(Errno::EINVAL);
+                    };
+                    if tcps_haveestablished(st.t_state) {
+                        return Err(Errno::EPERM);
+                    }
+                    if i != 0 {
+                        st.set_flags(TF_SIGNATURE);
+                        st.sack_enable = 0;
+                    } else {
+                        st.clear_flags(TF_SIGNATURE);
+                    }
+                    Ok(())
+                }
+                _ => Err(Errno::ENOPROTOOPT),
+            }
+        }
+
+        PRCO_GETOPT => {
+            let st = &*tp.st;
+            match optname {
+                TCP_NODELAY => {
+                    opt_set_int(m, (st.t_flags & TF_NODELAY) as i32);
+                    Ok(())
+                }
+                TCP_NOPUSH => {
+                    opt_set_int(m, (st.t_flags & TF_NOPUSH) as i32);
+                    Ok(())
+                }
+                TCP_MAXSEG => {
+                    opt_set_int(m, i32::from(st.t_maxseg));
+                    Ok(())
+                }
+                TCP_SACK_ENABLE => {
+                    opt_set_int(m, st.sack_enable);
+                    Ok(())
+                }
+                TCP_INFO => match m {
+                    Some(m) => tcp_fill_info(&tp, m),
+                    None => kpanic(format_args!("tcp_ctloutput: no mbuf for TCP_INFO")),
+                },
+                // TCP_SIGNATURE
+                TCP_MD5SIG => {
+                    opt_set_int(m, (st.t_flags & TF_SIGNATURE) as i32);
+                    Ok(())
+                }
+                _ => Err(Errno::ENOPROTOOPT),
+            }
+        }
+
+        _ => Ok(()),
+    }
+}
+
+/// `tcp_attach`: attach TCP protocol to socket, allocating internet protocol control block,
+/// tcp control block, buffer space, and entering LISTEN state to accept connections.
+pub fn tcp_attach<G: ProcGlue>(
+    so: &Socket<G>,
+    w: &mut SoLocked<'_>,
+    _proto: i32,
+    wait: i32,
+) -> Result<(), Errno> {
+    if so.has_pcb() {
+        return Err(Errno::EISCONN);
+    }
+    if so.so_snd.hiwat() == 0
+        || so.so_rcv.hiwat() == 0
+        || sbcheckreserve(so.so_snd.wat(), u64::from(tcp_sendspace)).is_err()
+        || sbcheckreserve(so.so_rcv.wat(), u64::from(tcp_recvspace)).is_err()
+    {
+        soreserve(so, u64::from(tcp_sendspace), u64::from(tcp_recvspace))?;
+    }
+
+    let t = &net::<G>().tcp;
+    let table = if so.dom_family() == i32::from(PF_INET6) {
+        &t.tcb6table
+    } else {
+        &t.tcbtable
+    };
+    let inp = in_pcballoc(so, table, wait)?;
+    let mut il = inet(w);
+    let Some(tp) = tcp_newtcpcb(&inp, &mut il, wait) else {
+        // The socket's typed slot and the pcb count each other until in_pcbdetach: detach
+        // it, keeping the socket (in_pcbdetach's sofree is refused while it has a file).
+        let nofd = so.has_state(SS_NOFDREF); // XXX
+
+        so.st_clear(SS_NOFDREF); // don't free the socket yet
+        in_pcbdetach(inp, &il.net);
+        if nofd {
+            so.st_set(SS_NOFDREF);
+        }
+        return Err(Errno::ENOBUFS);
+    };
+    tp.st.t_state = TCPS_CLOSED;
+    tp.st.pf = if inp.has_flags(INP_IPV6) {
+        i32::from(PF_INET6)
+    } else {
+        i32::from(PF_INET)
+    };
+    if so.has_options(SO_LINGER) && so.linger() == 0 {
+        so.set_linger_legacy(TCP_LINGERTIME);
+    }
+
+    if so.has_options(SO_DEBUG) {
+        let otp = core::ptr::from_ref::<crate::netinet::tcp_var::Tcpcb<G>>(&tp.cb).addr();
+        tcp_trace(TA_USER, TCPS_CLOSED, Some(tp.st), otp, None, PRU_ATTACH, 0);
+    }
+    Ok(())
+}
+
+/// `tcp_detach`: detach the TCP protocol from the socket. If the protocol state is
+/// non-embryonic, then can't do this directly: have to initiate a PRU_DISCONNECT, which may
+/// finish later; embryonic TCB's can just be discarded here.
+pub fn tcp_detach<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) -> Result<(), Errno> {
+    let inp = tcp_sogetinp(so)?;
+    let mut il = inet(w);
+    let tp = tcp_sogetpcb(so, &inp, &mut il)?;
+    let start = trace_start(&tp);
+
+    let end = tcp_dodisconnect(tp);
+
+    trace_end(start, end.st(), PRU_DETACH);
+    if let TpOrClosed::Closed(c) = end {
+        tcp_free(&inp, &mut il.pcb, c);
+    }
+    Ok(())
+}
+
+/// `tcp_bind`: give the socket an address.
+pub fn tcp_bind<G: ProcGlue>(
+    so: &Socket<G>,
+    w: &mut SoLocked<'_>,
+    nam: &Mbuf,
+    p: &Thread<G>,
+) -> Result<(), Errno> {
+    let inp = tcp_sogetinp(so)?;
+    let mut il = inet(w);
+    let tp = tcp_sogetpcb(so, &inp, &mut il)?;
+    let start = trace_start(&tp);
+
+    let error = in_pcbbind(&inp, Some(nam), p, tp.net);
+
+    trace_end(start, Some(tp.st), PRU_BIND);
+    error
+}
+
+/// `tcp_listen`: prepare to accept connections.
+pub fn tcp_listen<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) -> Result<(), Errno> {
+    let inp = tcp_sogetinp(so)?;
+    let mut il = inet(w);
+    let tp = tcp_sogetpcb(so, &inp, &mut il)?;
+    let start = trace_start(&tp);
+
+    let error = if inp.inp_lport.get() == 0 {
+        with_curproc::<G, _>("tcp_listen", |p| in_pcbbind(&inp, None, p, tp.net))
+    } else {
+        Ok(())
+    };
+    // If the in_pcbbind() above is called, the tp->pf should still be whatever it was
+    // before.
+    if error.is_ok() {
+        tp.st.t_state = TCPS_LISTEN;
+    }
+
+    trace_end(start, Some(tp.st), PRU_LISTEN);
+    error
+}
+
+/// `tcp_connect`: initiate connection to peer. Create a template for use in transmissions
+/// on this connection. Enter SYN_SENT state, and mark socket as connecting. Start keep-alive
+/// timer, and seed output sequence space. Send initial segment on connection.
+pub fn tcp_connect<G: ProcGlue>(
+    so: &Socket<G>,
+    w: &mut SoLocked<'_>,
+    nam: &Mbuf,
+) -> Result<(), Errno> {
+    let inp = tcp_sogetinp(so)?;
+    let mut il = inet(w);
+    let mut tp = tcp_sogetpcb(so, &inp, &mut il)?;
+    let start = trace_start(&tp);
+
+    let error = tcp_connect_tp(&mut tp, nam);
+
+    trace_end(start, Some(tp.st), PRU_CONNECT);
+    error
+}
+
+/// `tcp_connect`'s work between its traces.
+fn tcp_connect_tp<G: ProcGlue>(tp: &mut Tp<'_, '_, G>, nam: &Mbuf) -> Result<(), Errno> {
+    let (inp, so) = (tp.inp, tp.so);
+    if inp.has_flags(INP_IPV6) {
+        let sin6 = in6_nam2sin6(nam)?;
+        if in6_is_addr_unspecified(&sin6.sin6_addr) || in6_is_addr_multicast(&sin6.sin6_addr) {
+            return Err(Errno::EINVAL);
+        }
+    } else {
+        let sin = in_nam2sin(nam)?;
+        let a = sin.sin_addr.s_addr;
+        if a == INADDR_ANY
+            || a == INADDR_BROADCAST
+            || in_multicast(a)
+            || in_broadcast(sin.sin_addr, inp.inp_rtableid.get(), tp.net)
+        {
+            return Err(Errno::EINVAL);
+        }
+    }
+    with_curproc::<G, _>("tcp_connect", |p| in_pcbconnect(inp, nam, p, tp.net))?;
+
+    let template = tcp_template(tp);
+    tp.st.t_template = template;
+    if tp.st.t_template.is_none() {
+        in_pcbunset_faddr(inp);
+        if in_pcbdisconnect(inp) {
+            // in_pcbdisconnect's in_pcbdetach of a socket without a file.
+            match PoolArc::from_ref(inp) {
+                Some(h) => in_pcbdetach(h, tp.net),
+                None => kpanic(format_args!("tcp_connect: inpcb {inp:p}: not a pool item")),
+            }
+        }
+        return Err(Errno::ENOBUFS);
+    }
+
+    so.st_set(SS_CONNECTOUT);
+
+    // Compute window scaling to request.
+    tcp_rscale(tp.st, SB_MAX_VAR.load(Ordering::Relaxed));
+
+    soisconnecting(so);
+    tcpstat_inc(TcpstatCounters::TcpsConnattempt);
+    tp.st.t_state = TCPS_SYN_SENT;
+    tcp_timer_arm(tp, TCPT_KEEP, TCP_KEEPINIT.load(Ordering::Relaxed) as u64);
+    tcp_set_iss_tsm(tp);
+    tcp_sendseqinit(tp.st);
+    tp.st.snd_last = tp.st.snd_una;
+    tcp_output(tp)
+}
+
+/// `tcp_accept`: accept a connection. Essentially all the work is done at higher levels;
+/// just return the address of the peer, storing through addr.
+pub fn tcp_accept<G: ProcGlue>(
+    so: &Socket<G>,
+    w: &mut SoLocked<'_>,
+    nam: &mut Mbuf,
+) -> Result<(), Errno> {
+    let inp = tcp_sogetinp(so)?;
+    let mut il = inet(w);
+    let tp = tcp_sogetpcb(so, &inp, &mut il)?;
+
+    tcp_setpeeraddr(&inp, nam);
+
+    trace_now(&tp, PRU_ACCEPT);
+    Ok(())
+}
+
+/// `tcp_disconnect`: initiate disconnect from peer. If connection never passed embryonic
+/// stage, just drop; else if don't need to let data drain, then can just drop anyways, else
+/// have to begin TCP shutdown process: mark socket disconnecting, drain unread data, state
+/// switch to reflect user close, and send segment (e.g. FIN) to peer. Socket will be really
+/// disconnected when peer sends FIN and acks ours.
+///
+/// SHOULD IMPLEMENT LATER PRU_CONNECT VIA REALLOC TCPCB.
+pub fn tcp_disconnect<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) -> Result<(), Errno> {
+    let inp = tcp_sogetinp(so)?;
+    let mut il = inet(w);
+    let tp = tcp_sogetpcb(so, &inp, &mut il)?;
+    let start = trace_start(&tp);
+
+    let end = tcp_dodisconnect(tp);
+
+    trace_end(start, end.st(), PRU_DISCONNECT);
+    if let TpOrClosed::Closed(c) = end {
+        tcp_free(&inp, &mut il.pcb, c);
+    }
+    Ok(())
+}
+
+/// `tcp_shutdown`: mark the connection as being incapable of further output.
+pub fn tcp_shutdown<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) -> Result<(), Errno> {
+    let inp = tcp_sogetinp(so)?;
+    let mut il = inet(w);
+    let tp = tcp_sogetpcb(so, &inp, &mut il)?;
+    let start = trace_start(&tp);
+
+    let (end, error) = if so.so_snd.has_state(SS_CANTSENDMORE) {
+        (TpOrClosed::Open(tp), Ok(()))
+    } else {
+        socantsendmore(so);
+        match tcp_usrclosed(tp) {
+            TpOrClosed::Open(mut tp) => {
+                let error = tcp_output(&mut tp);
+                (TpOrClosed::Open(tp), error)
+            }
+            closed => (closed, Ok(())),
+        }
+    };
+
+    trace_end(start, end.st(), PRU_SHUTDOWN);
+    if let TpOrClosed::Closed(c) = end {
+        tcp_free(&inp, &mut il.pcb, c);
+    }
+    error
+}
+
+/// `tcp_rcvd`: after a receive, possibly send window update to peer.
+pub fn tcp_rcvd<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) {
+    let Ok(inp) = tcp_sogetinp(so) else {
+        return;
+    };
+    let mut il = inet(w);
+    let Ok(mut tp) = tcp_sogetpcb(so, &inp, &mut il) else {
+        return;
+    };
+    let start = trace_start(&tp);
+
+    // soreceive() calls this function when a user receives ancillary data on a listening
+    // socket. We don't call tcp_output in such a case, since there is no header template
+    // for a listening socket and hence the kernel will panic.
+    if so.state() & (SS_ISCONNECTED | SS_ISCONNECTING) != 0 {
+        let _ = tcp_output(&mut tp);
+    }
+
+    trace_end(start, Some(tp.st), PRU_RCVD);
+}
+
+/// `tcp_send`: do a send by putting data in output queue and updating urgent marker if URG
+/// set. Possibly send more data. The data and the control are consumed.
+pub fn tcp_send<G: ProcGlue>(
+    so: &Socket<G>,
+    w: &mut SoLocked<'_>,
+    m: Option<MbufBox>,
+    control: Option<MbufBox>,
+) -> Result<(), Errno> {
+    if control.as_ref().is_some_and(|c| c.m_len().get() != 0) {
+        // m_freem(control), m_freem(m): both dropped.
+        return Err(Errno::EINVAL);
+    }
+    drop(control);
+
+    let inp = tcp_sogetinp(so)?;
+    let mut il = inet(w);
+    let mut tp = tcp_sogetpcb(so, &inp, &mut il)?;
+    let start = trace_start(&tp);
+
+    if let Some(m) = m {
+        so.so_snd.lock().sbappendstream(m);
+    }
+
+    let error = tcp_output(&mut tp);
+
+    trace_end(start, Some(tp.st), PRU_SEND);
+    error
+}
+
+/// `tcp_abort`: abort the TCP.
+pub fn tcp_abort<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) {
+    let Ok(inp) = tcp_sogetinp(so) else {
+        return;
+    };
+    let mut il = inet(w);
+    let Ok(tp) = tcp_sogetpcb(so, &inp, &mut il) else {
+        return;
+    };
+    let start = trace_start(&tp);
+
+    let c = tcp_drop(tp, Some(Errno::ECONNABORTED));
+
+    trace_end(start, None, PRU_ABORT);
+    tcp_free(&inp, &mut il.pcb, c);
+}
+
+/// `tcp_sense`: the send buffer's size as the optimal block size.
+pub fn tcp_sense<G: ProcGlue>(
+    so: &Socket<G>,
+    w: &mut SoLocked<'_>,
+    ub: &mut Stat,
+) -> Result<(), Errno> {
+    let inp = tcp_sogetinp(so)?;
+    let mut il = inet(w);
+    let tp = tcp_sogetpcb(so, &inp, &mut il)?;
+
+    let g = so.so_snd.lock();
+    ub.st_blksize = so.so_snd.hiwat() as _;
+    drop(g);
+
+    trace_now(&tp, PRU_SENSE);
+    Ok(())
+}
+
+/// `tcp_rcvoob`: the out-of-band byte into `m` (`MSG_PEEK` leaves it unread).
+pub fn tcp_rcvoob<G: ProcGlue>(
+    so: &Socket<G>,
+    w: &mut SoLocked<'_>,
+    m: &mut Mbuf,
+    flags: i32,
+) -> Result<(), Errno> {
+    let inp = tcp_sogetinp(so)?;
+    let mut il = inet(w);
+    let tp = tcp_sogetpcb(so, &inp, &mut il)?;
+
+    let st = &mut *tp.st;
+    let error = if (so.oobmark() == 0 && !so.so_rcv.has_state(SS_RCVATMARK))
+        || so.has_options(SO_OOBINLINE)
+        || st.t_oobflags & TCPOOB_HADDATA != 0
+    {
+        Err(Errno::EINVAL)
+    } else if st.t_oobflags & TCPOOB_HAVEDATA == 0 {
+        Err(Errno::EWOULDBLOCK)
+    } else {
+        set_nam(m, &st.t_iobc);
+        if flags & MSG_PEEK == 0 {
+            st.t_oobflags ^= TCPOOB_HAVEDATA | TCPOOB_HADDATA;
+        }
+        Ok(())
+    };
+    trace_now(&tp, PRU_RCVOOB);
+    error
+}
+
+/// `tcp_sendoob`: urgent data: appended to the send buffer, the urgent pointer past it, and
+/// sent at once. The data and the control are consumed.
+pub fn tcp_sendoob<G: ProcGlue>(
+    so: &Socket<G>,
+    w: &mut SoLocked<'_>,
+    m: Option<MbufBox>,
+    control: Option<MbufBox>,
+) -> Result<(), Errno> {
+    if control.as_ref().is_some_and(|c| c.m_len().get() != 0) {
+        return Err(Errno::EINVAL);
+    }
+    drop(control);
+
+    let inp = tcp_sogetinp(so)?;
+    let mut il = inet(w);
+    let mut tp = tcp_sogetpcb(so, &inp, &mut il)?;
+    let start = trace_start(&tp);
+
+    let error = if so.so_snd.sbspace() < -512 {
+        drop(m);
+        Err(Errno::ENOBUFS)
+    } else {
+        // According to RFC961 (Assigned Protocols), the urgent pointer points to the last
+        // octet of urgent data. We continue, however, to consider it to indicate the first
+        // octet of data past the urgent section. Otherwise, snd_up should be one lower.
+        if let Some(m) = m {
+            so.so_snd.lock().sbappendstream(m);
+        }
+        tp.st.snd_up = tp.st.snd_una.wrapping_add(so.so_snd.cc() as u32);
+        tp.st.t_force = true;
+        let error = tcp_output(&mut tp);
+        tp.st.t_force = false;
+        error
+    };
+
+    trace_end(start, Some(tp.st), PRU_SENDOOB);
+    error
+}
+
+/// `tcp_sockaddr`: the local address into `nam`.
+pub fn tcp_sockaddr<G: ProcGlue>(
+    so: &Socket<G>,
+    w: &mut SoLocked<'_>,
+    nam: &mut Mbuf,
+) -> Result<(), Errno> {
+    let inp = tcp_sogetinp(so)?;
+    let mut il = inet(w);
+    let tp = tcp_sogetpcb(so, &inp, &mut il)?;
+
+    tcp_setsockaddr(&inp, nam);
+
+    trace_now(&tp, PRU_SOCKADDR);
+    Ok(())
+}
+
+/// `tcp_peeraddr`: the foreign address into `nam`.
+pub fn tcp_peeraddr<G: ProcGlue>(
+    so: &Socket<G>,
+    w: &mut SoLocked<'_>,
+    nam: &mut Mbuf,
+) -> Result<(), Errno> {
+    let inp = tcp_sogetinp(so)?;
+    let mut il = inet(w);
+    let tp = tcp_sogetpcb(so, &inp, &mut il)?;
+
+    tcp_setpeeraddr(&inp, nam);
+
+    trace_now(&tp, PRU_PEERADDR);
+    Ok(())
+}
+
+/// `tcp_dodisconnect`: initiate (or continue) disconnect. If embryonic state, just send
+/// reset (once). If in ``let data drain'' option and linger null, just drop. Otherwise
+/// (hard), mark socket disconnecting and drop current input data; switch states based on
+/// user close, and send segment to peer (with FIN).
+pub fn tcp_dodisconnect<'a, 'w, G: ProcGlue>(tp: Tp<'a, 'w, G>) -> TpOrClosed<'a, 'w, G> {
+    let so = tp.so;
+
+    if !tcps_haveestablished(tp.st.t_state) {
+        TpOrClosed::Closed(tcp_close(tp))
+    } else if so.has_options(SO_LINGER) && so.linger() == 0 {
+        TpOrClosed::Closed(tcp_drop(tp, None))
+    } else {
+        soisdisconnecting(so);
+        so.so_rcv.lock().sbflush();
+        match tcp_usrclosed(tp) {
+            TpOrClosed::Open(mut tp) => {
+                let _ = tcp_output(&mut tp);
+                TpOrClosed::Open(tp)
+            }
+            closed => closed,
+        }
+    }
+}
+
+/// `tcp_usrclosed`: user issued close, and wish to trail through shutdown states: if never
+/// received SYN, just forget it. If got a SYN from peer, but haven't sent FIN, then go to
+/// FIN_WAIT_1 state to send peer a FIN. If already got a FIN from peer, then almost done; go
+/// to LAST_ACK state. In all other cases, have already sent FIN to peer (e.g. after
+/// PRU_SHUTDOWN), and just have to play tedious game waiting for peer to send FIN or not
+/// respond to keep-alives, etc. We can let the user exit from the close as soon as the FIN
+/// is acked.
+pub fn tcp_usrclosed<'a, 'w, G: ProcGlue>(mut tp: Tp<'a, 'w, G>) -> TpOrClosed<'a, 'w, G> {
+    match tp.st.t_state {
+        TCPS_CLOSED | TCPS_LISTEN | TCPS_SYN_SENT => {
+            tp.st.t_state = TCPS_CLOSED;
+            return TpOrClosed::Closed(tcp_close(tp));
+        }
+        TCPS_SYN_RECEIVED | TCPS_ESTABLISHED => tp.st.t_state = TCPS_FIN_WAIT_1,
+        TCPS_CLOSE_WAIT => tp.st.t_state = TCPS_LAST_ACK,
+        _ => {}
+    }
+    if tp.st.t_state >= TCPS_FIN_WAIT_2 {
+        soisdisconnected(tp.so);
+        // If we are in FIN_WAIT_2, we arrived here because the application did a shutdown
+        // of the send side. Like the case of a transition from FIN_WAIT_1 to FIN_WAIT_2
+        // after a full close, we start a timer to make sure sockets are not left in
+        // FIN_WAIT_2 forever.
+        if tp.st.t_state == TCPS_FIN_WAIT_2 {
+            let maxidle = TCPTV_KEEPCNT.wrapping_mul(TCP_KEEPIDLE.load(Ordering::Relaxed));
+            tcp_timer_arm(&mut tp, TCPT_2MSL, maxidle as u64);
+        }
+    }
+    TpOrClosed::Open(tp)
+}
+
+/// The looked-up addresses of [`tcp_ident`]: `fin`/`lin`, or the IPv6 ports with `f6`/`l6`
+/// (their scopes embedded).
+enum IdentAddrs {
+    /// `AF_INET`.
+    V4(SockaddrIn, SockaddrIn),
+    /// `AF_INET6`.
+    V6 {
+        /// `fin6->sin6_port`.
+        fport: u16,
+        /// `f6`.
+        f6: In6Addr,
+        /// `lin6->sin6_port`.
+        lport: u16,
+        /// `l6`.
+        l6: In6Addr,
+    },
+}
+
+/// The `T` at the start of a `sockaddr_storage`, the storage read whole (the C's cast).
+fn storage_as<T: AbiPod>(ss: &hal::sys::socket::SockaddrStorage) -> Option<T> {
+    hal::pod::at(bytes_of(core::slice::from_ref(ss)), 0)
+}
+
+/// `tcp_ident`: look up a socket for ident or tcpdrop, ... (`TCPCTL_IDENT`: the user ids of
+/// the connection's socket when it connected out, -1 otherwise; `TCPCTL_DROP`, `dodrop`: the
+/// connection dropped, `ESRCH` for none or a listener).
+pub fn tcp_ident<G: ProcGlue>(req: &mut SysctlReq<'_>, dodrop: bool) -> Result<(), Errno> {
+    let size = size_of::<TcpIdentMapping>();
+    let mut tir: TcpIdentMapping = if dodrop {
+        if req.oldp != 0 || *req.oldlenp != 0 {
+            return Err(Errno::EINVAL);
+        }
+        if req.newp == 0 {
+            return Err(Errno::EPERM);
+        }
+        if req.newlen < size {
+            return Err(Errno::ENOMEM);
+        }
+        UserPtr::<TcpIdentMapping>::new(req.newp).copyin()?
+    } else {
+        if req.oldp == 0 {
+            return Err(Errno::EINVAL);
+        }
+        if *req.oldlenp < size {
+            return Err(Errno::ENOMEM);
+        }
+        if req.newp != 0 || req.newlen != 0 {
+            return Err(Errno::EINVAL);
+        }
+        UserPtr::<TcpIdentMapping>::new(req.oldp).copyin()?
+    };
+
+    let shared = NETLOCK.read();
+    let Some(net) = NetHeld::of(&shared) else {
+        kpanic(format_args!("tcp_ident: the net lock"));
+    };
+
+    let addrs = match tir.faddr.ss_family {
+        AF_INET6 => {
+            if tir.laddr.ss_family != AF_INET6 {
+                return Err(Errno::EAFNOSUPPORT);
+            }
+            let (Some(fin6), Some(lin6)) = (
+                storage_as::<SockaddrIn6>(&tir.faddr),
+                storage_as::<SockaddrIn6>(&tir.laddr),
+            ) else {
+                kpanic(format_args!(
+                    "tcp_ident: a sockaddr_storage shorter than sockaddr_in6"
+                ));
+            };
+            let mut f6 = In6Addr::default();
+            if in6_embedscope(&mut f6, &fin6, 0, 0).is_err() {
+                return Err(Errno::EINVAL); // ?
+            }
+            let mut l6 = In6Addr::default();
+            if in6_embedscope(&mut l6, &lin6, 0, 0).is_err() {
+                return Err(Errno::EINVAL); // ?
+            }
+            IdentAddrs::V6 {
+                fport: fin6.sin6_port,
+                f6,
+                lport: lin6.sin6_port,
+                l6,
+            }
+        }
+        AF_INET => {
+            if tir.laddr.ss_family != AF_INET {
+                return Err(Errno::EAFNOSUPPORT);
+            }
+            let (Some(fin), Some(lin)) = (
+                storage_as::<SockaddrIn>(&tir.faddr),
+                storage_as::<SockaddrIn>(&tir.laddr),
+            ) else {
+                kpanic(format_args!(
+                    "tcp_ident: a sockaddr_storage shorter than sockaddr_in"
+                ));
+            };
+            IdentAddrs::V4(fin, lin)
+        }
+        _ => return Err(Errno::EAFNOSUPPORT),
+    };
+
+    let t = &crate::net::domain::net::<G>().tcp;
+    let mut inp = match addrs {
+        IdentAddrs::V6 {
+            fport,
+            f6,
+            lport,
+            l6,
+        } => in6_pcblookup(&t.tcb6table, &f6, fport, &l6, lport, tir.rdomain),
+        IdentAddrs::V4(fin, lin) => in_pcblookup(
+            &t.tcbtable,
+            fin.sin_addr,
+            fin.sin_port,
+            lin.sin_addr,
+            lin.sin_port,
+            tir.rdomain,
+        ),
+    };
+
+    if dodrop {
+        let error = match inp.as_deref() {
+            Some(i) => tcp_ident_drop(i, &net),
+            None => Err(Errno::ESRCH),
+        };
+        // in_pcbsounlock (tcp_ident_drop's), NET_UNLOCK_SHARED, in_pcbunref.
+        drop(shared);
+        drop(inp);
+        return error;
+    }
+
+    if inp.is_none() {
+        tcpstat_inc(TcpstatCounters::TcpsPcbhashmiss);
+        inp = match addrs {
+            IdentAddrs::V6 { lport, l6, .. } => {
+                in6_pcblookup_listen(&t.tcb6table, &l6, lport, None, tir.rdomain)
+            }
+            IdentAddrs::V4(_, lin) => {
+                in_pcblookup_listen(&t.tcbtable, lin.sin_addr, lin.sin_port, None, tir.rdomain)
+            }
+        };
+    }
+
+    let (ruid, euid) = match inp
+        .as_deref()
+        .and_then(|i| in_pcbsolock(i, &net).map(|w| (i, w)))
+    {
+        Some((i, w)) => {
+            let so = i.socket();
+            let ids = if so.has_state(SS_CONNECTOUT) {
+                let (euid, ruid, ..) = so.creds();
+                (ruid as i32, euid as i32)
+            } else {
+                (-1, -1)
+            };
+            // in_pcbsounlock
+            drop(w);
+            ids
+        }
+        None => (-1, -1),
+    };
+    tir.ruid = ruid;
+    tir.euid = euid;
+
+    drop(shared);
+    drop(inp);
+
+    *req.oldlenp = size;
+    UserPtr::<TcpIdentMapping>::new(req.oldp).copyout(&tir)
+}
+
+/// `TCPCTL_DROP`'s work on the found pcb `inp`, under the shared net lock (`net`): its socket
+/// locked (`in_pcbsolock`), the connection dropped unless the socket is a listener; `ESRCH`
+/// for a socket detached, without a control block or listening.
+fn tcp_ident_drop<G: ProcGlue>(inp: &Inpcb<G>, net: &NetHeld<'_>) -> Result<(), Errno> {
+    let Some(mut so) = in_pcbsolock(inp, net) else {
+        return Err(Errno::ESRCH);
+    };
+    let listening = inp.socket().has_options(SO_ACCEPTCONN);
+    let mut il = inet(&mut so);
+    match intotcpcb(inp, &mut il) {
+        Some(tp) if !listening => {
+            let c = tcp_drop(tp, Some(Errno::ECONNABORTED));
+            tcp_free(inp, &mut il.pcb, c);
+            Ok(())
+        }
+        _ => Err(Errno::ESRCH),
+    }
+}
+
+/// `ASSIGN(field)` of `tcp_sysctl_tcpstat` for every member, in the counters' order.
+macro_rules! tcpstat_assign {
+    ($counters:expr; $($f:ident),* $(,)?) => {{
+        let counters: &[u64; TCPS_NCOUNTERS] = $counters;
+        let mut tcpstat = Tcpstat::default();
+        let mut i = 0;
+        $(
+            tcpstat.$f = counters[i] as _;
+            i += 1;
+        )*
+        const _: () = assert!([$(stringify!($f)),*].len() == TCPS_NCOUNTERS);
+        let _ = i;
+        tcpstat
+    }};
+}
+
+/// `tcp_sysctl_tcpstat`: `net.inet.tcp.stats`, the counters summed over the CPUs and the SYN
+/// cache's state (its active set, under its mutex).
+fn tcp_sysctl_tcpstat<G: ProcGlue>(req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    let counters = TCPCOUNTERS.read();
+    let mut tcpstat = tcpstat_assign!(&counters;
+        tcps_connattempt,
+        tcps_accepts,
+        tcps_connects,
+        tcps_drops,
+        tcps_conndrops,
+        tcps_closed,
+        tcps_segstimed,
+        tcps_rttupdated,
+        tcps_delack,
+        tcps_timeoutdrop,
+        tcps_rexmttimeo,
+        tcps_persisttimeo,
+        tcps_persistdrop,
+        tcps_keeptimeo,
+        tcps_keepprobe,
+        tcps_keepdrops,
+        tcps_sndtotal,
+        tcps_sndpack,
+        tcps_sndbyte,
+        tcps_sndrexmitpack,
+        tcps_sndrexmitbyte,
+        tcps_sndrexmitfast,
+        tcps_sndacks,
+        tcps_sndprobe,
+        tcps_sndurg,
+        tcps_sndwinup,
+        tcps_sndctrl,
+        tcps_rcvtotal,
+        tcps_rcvpack,
+        tcps_rcvbyte,
+        tcps_rcvbadsum,
+        tcps_rcvbadoff,
+        tcps_rcvmemdrop,
+        tcps_rcvnosec,
+        tcps_rcvshort,
+        tcps_rcvduppack,
+        tcps_rcvdupbyte,
+        tcps_rcvpartduppack,
+        tcps_rcvpartdupbyte,
+        tcps_rcvoopack,
+        tcps_rcvoobyte,
+        tcps_rcvpackafterwin,
+        tcps_rcvbyteafterwin,
+        tcps_rcvafterclose,
+        tcps_rcvwinprobe,
+        tcps_rcvdupack,
+        tcps_rcvacktoomuch,
+        tcps_rcvacktooold,
+        tcps_rcvackpack,
+        tcps_rcvackbyte,
+        tcps_rcvwinupd,
+        tcps_pawsdrop,
+        tcps_predack,
+        tcps_preddat,
+        tcps_pcbhashmiss,
+        tcps_noport,
+        tcps_closing,
+        tcps_badsyn,
+        tcps_dropsyn,
+        tcps_rcvbadsig,
+        tcps_rcvgoodsig,
+        tcps_inswcsum,
+        tcps_outswcsum,
+        tcps_ecn_accepts,
+        tcps_ecn_rcvece,
+        tcps_ecn_rcvcwr,
+        tcps_ecn_rcvce,
+        tcps_ecn_sndect,
+        tcps_ecn_sndece,
+        tcps_ecn_sndcwr,
+        tcps_cwr_ecn,
+        tcps_cwr_frecovery,
+        tcps_cwr_timeout,
+        tcps_sc_added,
+        tcps_sc_completed,
+        tcps_sc_timed_out,
+        tcps_sc_overflowed,
+        tcps_sc_reset,
+        tcps_sc_unreach,
+        tcps_sc_bucketoverflow,
+        tcps_sc_aborted,
+        tcps_sc_dupesyn,
+        tcps_sc_dropped,
+        tcps_sc_collisions,
+        tcps_sc_retransmitted,
+        tcps_sc_seedrandom,
+        tcps_sc_hash_size,
+        tcps_sc_entry_count,
+        tcps_sc_entry_limit,
+        tcps_sc_bucket_maxlen,
+        tcps_sc_bucket_limit,
+        tcps_sc_uses_left,
+        tcps_conndrained,
+        tcps_sack_recovery_episode,
+        tcps_sack_rexmits,
+        tcps_sack_rexmit_bytes,
+        tcps_sack_rcv_opts,
+        tcps_sack_snd_opts,
+        tcps_sack_drop_opts,
+        tcps_outswtso,
+        tcps_outhwtso,
+        tcps_outpkttso,
+        tcps_outbadtso,
+        tcps_inswlro,
+        tcps_inhwlro,
+        tcps_inpktlro,
+        tcps_inbadlro,
+    );
+
+    let g = syn_cache_lock::<G>();
+    let set = &g.sets[g.active];
+    tcpstat.tcps_sc_hash_size = set.scs_size as u64;
+    tcpstat.tcps_sc_entry_count = set.scs_count as u64;
+    tcpstat.tcps_sc_entry_limit = TCP_SYN_CACHE_LIMIT.load(Ordering::Relaxed) as u64;
+    tcpstat.tcps_sc_bucket_maxlen = 0;
+    if let Some(heads) = set.scs_buckethead.as_ref() {
+        for head in heads
+            .iter()
+            .take(usize::try_from(set.scs_size).unwrap_or(0))
+        {
+            if tcpstat.tcps_sc_bucket_maxlen < u64::from(head.sch_length) {
+                tcpstat.tcps_sc_bucket_maxlen = u64::from(head.sch_length);
+            }
+        }
+    }
+    tcpstat.tcps_sc_bucket_limit = TCP_SYN_BUCKET_LIMIT.load(Ordering::Relaxed) as u64;
+    tcpstat.tcps_sc_uses_left = set.scs_use;
+    drop(g);
+
+    rdstruct(req, bytes_of(core::slice::from_ref(&tcpstat)))
+}
+
+/// `TCPCTL_ROOTONLY` and `TCPCTL_BADDYNAMIC`: the TCP half of a port bitmap, copied out
+/// under the shared net lock and back under the exclusive one, through the C's `M_SYSCTL`
+/// buffer.
+fn tcp_sysctl_ports(req: &mut SysctlReq<'_>, ports: &Baddynamicports) -> Result<(), Errno> {
+    let buflen = DP_MAPSIZE * size_of::<u32>();
+    let Some(mut buf) = MArray::new(M_SYSCTL, M_WAITOK, buflen, |_| 0u8) else {
+        return Err(Errno::ENOMEM);
+    };
+
+    let shared = NETLOCK.read();
+    for (b, w) in buf
+        .as_chunks_mut::<{ size_of::<u32>() }>()
+        .0
+        .iter_mut()
+        .zip(&ports.tcp)
+    {
+        *b = w.load(Ordering::Relaxed).to_ne_bytes();
+    }
+    drop(shared);
+
+    let error = structure(req, &mut buf);
+
+    if error.is_ok() && req.newp != 0 {
+        let excl = NETLOCK.write();
+        for (b, w) in buf
+            .as_chunks::<{ size_of::<u32>() }>()
+            .0
+            .iter()
+            .zip(&ports.tcp)
+        {
+            w.store(u32::from_ne_bytes(*b), Ordering::Relaxed);
+        }
+        drop(excl);
+    }
+
+    // free(buf, M_SYSCTL, buflen)
+    drop(buf);
+    error
+}
+
+/// `tcp_sysctl`: sysctl for tcp variables.
+pub fn tcp_sysctl<G: ProcGlue>(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    // All sysctl names at this level are terminal.
+    let [n] = *name else {
+        return Err(Errno::ENOTDIR);
+    };
+
+    match n {
+        TCPCTL_ROOTONLY | TCPCTL_BADDYNAMIC => {
+            if n == TCPCTL_ROOTONLY && req.newp != 0 && SECURELEVEL.load(Ordering::Relaxed) > 0 {
+                return Err(Errno::EPERM);
+            }
+            let ports = if n == TCPCTL_ROOTONLY {
+                &ROOTONLYPORTS
+            } else {
+                &BADDYNAMICPORTS
+            };
+            tcp_sysctl_ports(req, ports)
+        }
+        TCPCTL_IDENT => tcp_ident::<G>(req, false),
+
+        TCPCTL_DROP => tcp_ident::<G>(req, true),
+
+        TCPCTL_REASS_LIMIT | TCPCTL_SACKHOLE_LIMIT => {
+            let reass = n == TCPCTL_REASS_LIMIT;
+            let var = if reass {
+                &TCP_REASS_LIMIT
+            } else {
+                &tcp_sackhole_limit
+            };
+
+            let oval = var.load(Ordering::Relaxed);
+            let nval = AtomicI32::new(oval);
+            int(req, &nval)?;
+            let nval = nval.into_inner();
+
+            if oval != nval {
+                let sysctl_lock = SYSCTL_LOCK.write_flags(RW_INTR)?;
+                let mut error = Ok(());
+                if nval != var.load(Ordering::Relaxed) {
+                    // pool_sethardlimit(pool, nval): the int as the C's u_int.
+                    error = if reass {
+                        TCPQE_POOL.set_hardlimit(nval as u32)
+                    } else {
+                        SACKHL_POOL.set_hardlimit(nval as u32)
+                    };
+                    if error.is_ok() {
+                        var.store(nval, Ordering::Relaxed);
+                    }
+                }
+                drop(sysctl_lock);
+                return error;
+            }
+
+            Ok(())
+        }
+        TCPCTL_STATS => tcp_sysctl_tcpstat::<G>(req),
+
+        TCPCTL_SYN_USE_LIMIT => {
+            let t = &net::<G>().tcp;
+            let oval = t.tcp_syn_use_limit.load(Ordering::Relaxed);
+            let nval = AtomicI32::new(oval);
+            int_bounded(req, &nval, 0, i32::MAX)?;
+            let nval = nval.into_inner();
+            if oval != nval {
+                // Global tcp_syn_use_limit is used when reseeding a new cache. Also update
+                // the value in active cache.
+                let mut g = syn_cache_lock::<G>();
+                for set in &mut g.sets {
+                    if set.scs_use > i64::from(nval) {
+                        set.scs_use = i64::from(nval);
+                    }
+                }
+                t.tcp_syn_use_limit.store(nval, Ordering::Relaxed);
+                drop(g);
+            }
+            Ok(())
+        }
+
+        TCPCTL_SYN_HASH_SIZE => {
+            let t = &net::<G>().tcp;
+            let oval = t.tcp_syn_hash_size.load(Ordering::Relaxed);
+            let nval = AtomicI32::new(oval);
+            int_bounded(req, &nval, 1, 100_000)?;
+            let nval = nval.into_inner();
+            if oval != nval {
+                // If global hash size has been changed, switch sets as soon as possible.
+                // Then the actual hash array will be reallocated.
+                let mut g = syn_cache_lock::<G>();
+                for set in &mut g.sets {
+                    if set.scs_size != nval {
+                        set.scs_use = 0;
+                    }
+                }
+                t.tcp_syn_hash_size.store(nval, Ordering::Relaxed);
+                drop(g);
+            }
+            Ok(())
+        }
+
+        _ => {
+            let error = bounded_arr(&TCPCTL_VARS, name, req);
+            match n {
+                TCPCTL_KEEPINITTIME => TCP_KEEPINIT.store(
+                    TCP_KEEPINIT_SEC.load(Ordering::Relaxed) * tcp_time(1),
+                    Ordering::Relaxed,
+                ),
+                TCPCTL_KEEPIDLE => TCP_KEEPIDLE.store(
+                    TCP_KEEPIDLE_SEC.load(Ordering::Relaxed) * tcp_time(1),
+                    Ordering::Relaxed,
+                ),
+                TCPCTL_KEEPINTVL => TCP_KEEPINTVL.store(
+                    TCP_KEEPINTVL_SEC.load(Ordering::Relaxed) * tcp_time(1),
+                    Ordering::Relaxed,
+                ),
+                _ => {}
+            }
+            error
+        }
+    }
+}
 
 /// `roundup(x, y)`: `x` rounded up to a multiple of `y`, in the C's `u_long` arithmetic.
 #[inline]
@@ -241,16 +1787,429 @@ pub fn tcp_update_rcvspace<G: ProcGlue>(tp: &Tp<'_, '_, G>) {
 
     drop(g);
 }
+
+impl<G: ProcGlue> Usrreqs<G> for TcpUsrreqs<G> {
+    fn attach(
+        &self,
+        so: &Socket<G>,
+        w: &mut SoLocked<'_>,
+        proto: i32,
+        wait: i32,
+    ) -> Result<(), Errno> {
+        tcp_attach(so, w, proto, wait)
+    }
+    fn detach(&self, so: &Socket<G>, w: &mut SoLocked<'_>) -> Result<(), Errno> {
+        tcp_detach(so, w)
+    }
+    fn bind(
+        &self,
+        so: &Socket<G>,
+        w: &mut SoLocked<'_>,
+        nam: &Mbuf,
+        p: &Thread<G>,
+    ) -> Result<(), Errno> {
+        tcp_bind(so, w, nam, p)
+    }
+    fn listen(&self, so: &Socket<G>, w: &mut SoLocked<'_>) -> Result<(), Errno> {
+        tcp_listen(so, w)
+    }
+    fn connect(&self, so: &Socket<G>, w: &mut SoLocked<'_>, nam: &Mbuf) -> Result<(), Errno> {
+        tcp_connect(so, w, nam)
+    }
+    fn accept(&self, so: &Socket<G>, w: &mut SoLocked<'_>, nam: &mut Mbuf) -> Result<(), Errno> {
+        tcp_accept(so, w, nam)
+    }
+    fn disconnect(&self, so: &Socket<G>, w: &mut SoLocked<'_>) -> Result<(), Errno> {
+        tcp_disconnect(so, w)
+    }
+    fn shutdown(&self, so: &Socket<G>, w: &mut SoLocked<'_>) -> Result<(), Errno> {
+        tcp_shutdown(so, w)
+    }
+    fn rcvd(&self, so: &Socket<G>, w: &mut SoLocked<'_>) {
+        tcp_rcvd(so, w);
+    }
+    fn send(
+        &self,
+        so: &Socket<G>,
+        w: &mut SoLocked<'_>,
+        top: Option<MbufBox>,
+        _addr: Option<&Mbuf>,
+        control: Option<MbufBox>,
+    ) -> Result<(), Errno> {
+        tcp_send(so, w, top, control)
+    }
+    fn abort(&self, so: &Socket<G>, w: &mut SoLocked<'_>) {
+        tcp_abort(so, w);
+    }
+    fn send_id(&self) -> usize {
+        core::ptr::from_ref(&TCP_SEND_ID).addr()
+    }
+    /// `in_control` (`tcp_usrreqs`) or `in6_control` (`tcp6_usrreqs`).
+    fn control(
+        &self,
+        so: &Socket<G>,
+        cmd: u64,
+        data: &mut [u8],
+        ifp: Option<&'static Ifnet>,
+    ) -> Result<(), Errno> {
+        if self.inet6 {
+            in6_control(so.has_state(SS_PRIV), cmd, data, ifp)
+        } else {
+            in_control(so.has_state(SS_PRIV), cmd, data, ifp)
+        }
+    }
+    fn sense(&self, so: &Socket<G>, w: &mut SoLocked<'_>, ub: &mut Stat) -> Result<(), Errno> {
+        tcp_sense(so, w, ub)
+    }
+    fn rcvoob(
+        &self,
+        so: &Socket<G>,
+        w: &mut SoLocked<'_>,
+        m: &mut Mbuf,
+        flags: i32,
+    ) -> Result<(), Errno> {
+        tcp_rcvoob(so, w, m, flags)
+    }
+    fn sendoob(
+        &self,
+        so: &Socket<G>,
+        w: &mut SoLocked<'_>,
+        top: Option<MbufBox>,
+        _addr: Option<&Mbuf>,
+        control: Option<MbufBox>,
+    ) -> Result<(), Errno> {
+        tcp_sendoob(so, w, top, control)
+    }
+    fn sockaddr(&self, so: &Socket<G>, w: &mut SoLocked<'_>, addr: &mut Mbuf) -> Result<(), Errno> {
+        tcp_sockaddr(so, w, addr)
+    }
+    fn peeraddr(&self, so: &Socket<G>, w: &mut SoLocked<'_>, addr: &mut Mbuf) -> Result<(), Errno> {
+        tcp_peeraddr(so, w, addr)
+    }
+    /// `in_flowid`.
+    fn flowid(&self, so: &Socket<G>, _w: &mut SoLocked<'_>) -> i32 {
+        sotoinpcb(so).map_or(0, |inp| i32::from(inp.inp_flowid.get()))
+    }
+}
 /* </CODE> */
 
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
-    // Host tests of the socket buffers' scaling: the send buffer with the data in flight,
-    // the C's sum across the sequence space's wrap, the receive buffer's step.
+    // Host tests of TCP's user requests over the test interfaces (`testtcp`'s fixtures, whose
+    // protocols' requests are these): an active open walked to TIME_WAIT with data both ways
+    // (bsd's `active_open_data_and_close`, re-expressed); the socket buffers' scaling; the
+    // statistics and variables of `net.inet.tcp` (bsd's `sysctl_reads_...`). The passive
+    // open through the SYN cache, the reset of a segment to a closed port and IPv6's open and
+    // reset are `tcp_input`'s tests, whose listeners attach through `tcp_attach`.
+
+    use std::vec::Vec;
+
+    use hal::netlock::{NETLOCK, NetHeld};
+    use hal::sys::netinet_in::InAddr;
+    use hal::sys::netinet_ip::Ip;
+    use hal::sys::netinet_tcp::{TH_ACK, TH_FIN, TH_SYN, Tcphdr};
 
     use super::*;
-    use crate::netinet::tcp_subr::testtcp::{self, estab};
+    use crate::net::mbuf::{M_DONTWAIT, M_TCP_CSUM_IN_OK, MT_DATA, MT_SONAME, m_get, m_gethdr};
+    use crate::net::sockbuf::SS_CANTRCVMORE;
+    use crate::netinet::in_pcb::testinet;
+    use crate::netinet::tcp_fsm::TCPS_TIME_WAIT;
+    use crate::netinet::tcp_input::tcp_input;
+    use crate::netinet::tcp_subr::testtcp::{self, TcpProto, estab, last, stat};
+    use crate::netinet::tcp_var::TcpstatCounters as C;
+
+    /// A `sockaddr_in` of `addr`:`port` in a name mbuf (`MT_SONAME`).
+    fn nam4(addr: [u8; 4], port: u16) -> MbufBox {
+        let sin = SockaddrIn {
+            sin_len: size_of::<SockaddrIn>() as u8,
+            sin_family: AF_INET,
+            sin_port: port.to_be(),
+            sin_addr: InAddr {
+                s_addr: u32::from_ne_bytes(addr),
+            },
+            ..SockaddrIn::default()
+        };
+        let mut m = m_get(M_WAIT, MT_SONAME).expect("an mbuf");
+        set_nam(&mut m, &sin);
+        m
+    }
+
+    /// A segment from 10.9.`n`.2:80 to 10.9.`n`.1:`lport` with the header fields given (host
+    /// order), the options `opts` and `data`, its checksum taken as verified by the interface.
+    #[allow(clippy::too_many_arguments, reason = "the header's fields")]
+    fn from_peer(
+        n: u8,
+        lport: u16,
+        flags: u8,
+        seq: u32,
+        ack: u32,
+        opts: &[u8],
+        data: &[u8],
+    ) -> MbufBox {
+        let thlen = size_of::<Tcphdr>() + opts.len();
+        let len = 20 + thlen + data.len();
+        let mut ip = Ip {
+            ip_len: (len as u16).to_be(),
+            ip_ttl: 64,
+            ip_p: IPPROTO_TCP as u8,
+            ip_src: InAddr {
+                s_addr: u32::from_ne_bytes([10, 9, n, 2]),
+            },
+            ip_dst: InAddr {
+                s_addr: u32::from_ne_bytes([10, 9, n, 1]),
+            },
+            ..Ip::default()
+        };
+        ip.set_ip_v(4);
+        ip.set_ip_hl(5);
+        let mut th = Tcphdr {
+            th_sport: 80u16.to_be(),
+            th_dport: lport.to_be(),
+            th_seq: seq.to_be(),
+            th_ack: ack.to_be(),
+            th_flags: flags,
+            th_win: 16384u16.to_be(),
+            ..Tcphdr::default()
+        };
+        th.set_th_off((thlen / 4) as u8);
+        let mut p = std::vec![0u8; len];
+        assert!(hal::pod::put(&mut p, 0, &ip));
+        assert!(hal::pod::put(&mut p, 20, &th));
+        p[40..40 + opts.len()].copy_from_slice(opts);
+        p[20 + thlen..].copy_from_slice(data);
+        let mut m = m_gethdr(M_DONTWAIT, MT_DATA).expect("an mbuf");
+        m.m_len().set(len as u32);
+        m.m_pkthdr().len.set(len as i32);
+        m.data_mut().expect("writable").copy_from_slice(&p);
+        let ph = m.m_pkthdr();
+        ph.csum_flags.set(ph.csum_flags.get() | M_TCP_CSUM_IN_OK);
+        m
+    }
+
+    /// `ip_input`'s delivery of the IPv4 segment `m` to `tcp_input`, under the shared net
+    /// lock.
+    fn deliver(m: MbufBox) {
+        let w = NETLOCK.read();
+        let net = NetHeld::of(&w).expect("the net lock");
+        let mut off = 20;
+        let mut mp = Some(m);
+        let _ = tcp_input::<testtcp::G>(
+            &mut mp,
+            &mut off,
+            IPPROTO_TCP,
+            i32::from(AF_INET),
+            None,
+            &net,
+        );
+        drop(w);
+        assert!(mp.is_none(), "the segment consumed");
+    }
+
+    /// What `f` reads off the control block of `inp`.
+    fn peek<R>(inp: &Inpcb<testtcp::G>, f: impl FnOnce(&TcpState) -> R) -> R {
+        testtcp::with_tp(inp, |tp| (f(tp.st), None))
+    }
+
+    /// The bytes in the receive buffer of `so`.
+    fn received(so: &Socket<testtcp::G>) -> Vec<u8> {
+        let n = so.so_rcv.cc() as usize;
+        let g = so.so_rcv.lock();
+        let mut v = std::vec![0u8; n];
+        g.copydata_first(0, &mut v);
+        v
+    }
+
+    /// `data` in an mbuf of its own.
+    fn data(bytes: &[u8]) -> MbufBox {
+        let mut m = m_get(M_WAIT, MT_DATA).expect("an mbuf");
+        m.m_len().set(bytes.len() as u32);
+        m.data_mut().expect("writable").copy_from_slice(bytes);
+        m
+    }
+
+    #[test]
+    fn an_active_open_carries_data_both_ways_and_closes() {
+        let (_g, _p) = testtcp::setup();
+        let n = 150;
+        let (_ifp, d) = testinet::iface(b"tusr2", [10, 9, n, 1]);
+        let so = testtcp::socket(&TcpProto);
+        let inp = sotoinpcb(&so).expect("its pcb");
+        let attempts = stat(C::TcpsConnattempt);
+
+        // connect(2): SYN_SENT, the SYN out with our MSS first.
+        {
+            let mut w = crate::net::socket::solock(&so);
+            tcp_connect(&so, &mut w, &nam4([10, 9, n, 2], 80)).expect("connect");
+        }
+        assert_eq!(stat(C::TcpsConnattempt), attempts + 1);
+        assert_eq!(peek(&inp, |st| st.t_state), TCPS_SYN_SENT);
+        assert!(so.has_state(SS_ISCONNECTING));
+        assert!(so.has_state(SS_CONNECTOUT));
+        let (_ip, syn, opts, _p) = last(d);
+        assert_eq!(syn.th_flags, TH_SYN);
+        assert_eq!(u16::from_be(syn.th_dport), 80);
+        let lport = u16::from_be(syn.th_sport);
+        let iss = u32::from_be(syn.th_seq);
+        assert_eq!(&opts[..2], &[2, 4], "the MSS option first");
+
+        // The SYN-ACK with an MSS of 1000: ESTABLISHED, its ACK out.
+        let piss = 0x1000_0000u32;
+        let mss = [2, 4, 0x03, 0xe8];
+        deliver(from_peer(
+            n,
+            lport,
+            TH_SYN | TH_ACK,
+            piss,
+            iss.wrapping_add(1),
+            &mss,
+            &[],
+        ));
+        assert_eq!(
+            peek(&inp, |st| (st.t_state, st.t_maxseg)),
+            (TCPS_ESTABLISHED, 1000)
+        );
+        assert!(so.has_state(SS_ISCONNECTED));
+        let (_ip, ack, _o, _p) = last(d);
+        assert_eq!(ack.th_flags, TH_ACK);
+        assert_eq!(u32::from_be(ack.th_ack), piss.wrapping_add(1));
+
+        // Data out (tcp_send), then the peer's data acknowledging it.
+        {
+            let mut w = crate::net::socket::solock(&so);
+            tcp_send(&so, &mut w, Some(data(b"hello")), None).expect("send");
+        }
+        let (_ip, out, _o, payload) = last(d);
+        assert_eq!(out.th_flags & TH_ACK, TH_ACK);
+        assert_eq!(u32::from_be(out.th_seq), iss.wrapping_add(1));
+        assert_eq!(payload, b"hello");
+        deliver(from_peer(
+            n,
+            lport,
+            TH_ACK,
+            piss.wrapping_add(1),
+            iss.wrapping_add(6),
+            &[],
+            b"world",
+        ));
+        assert_eq!(received(&so), b"world");
+        assert_eq!(
+            peek(&inp, |st| (st.snd_una, st.rcv_nxt)),
+            (iss.wrapping_add(6), piss.wrapping_add(6))
+        );
+
+        // shutdown(2): FIN_WAIT_1 and our FIN; its ACK, then the peer's FIN: TIME_WAIT.
+        {
+            let mut w = crate::net::socket::solock(&so);
+            tcp_shutdown(&so, &mut w).expect("shutdown");
+        }
+        assert_eq!(peek(&inp, |st| st.t_state), TCPS_FIN_WAIT_1);
+        let (_ip, fin, _o, _p) = last(d);
+        assert_eq!(fin.th_flags & TH_FIN, TH_FIN);
+        assert_eq!(u32::from_be(fin.th_seq), iss.wrapping_add(6));
+        deliver(from_peer(
+            n,
+            lport,
+            TH_ACK,
+            piss.wrapping_add(6),
+            iss.wrapping_add(7),
+            &[],
+            &[],
+        ));
+        assert_eq!(peek(&inp, |st| st.t_state), TCPS_FIN_WAIT_2);
+        deliver(from_peer(
+            n,
+            lport,
+            TH_FIN | TH_ACK,
+            piss.wrapping_add(6),
+            iss.wrapping_add(7),
+            &[],
+            &[],
+        ));
+        assert_eq!(peek(&inp, |st| st.t_state), TCPS_TIME_WAIT);
+        assert!(so.so_rcv.has_state(SS_CANTRCVMORE));
+        let (_ip, last_ack, _o, _p) = last(d);
+        assert_eq!(u32::from_be(last_ack.th_ack), piss.wrapping_add(7));
+
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn sysctl_reads_the_statistics_and_the_variables() {
+        let (_g, _p) = testtcp::setup();
+        let u = crate::testutil::USER_BASE + 0x3_d000;
+        let req = |oldp: usize, len: &mut usize, newp: usize, newlen: usize| -> Result<(), Errno> {
+            let mut r = SysctlReq {
+                oldp,
+                oldlenp: len,
+                newp,
+                newlen,
+            };
+            tcp_sysctl::<testtcp::G>(&[TCPCTL_STATS], &mut r)
+        };
+        // The size alone, then the structure: the counters as they stand.
+        let mut len = 0;
+        assert_eq!(req(0, &mut len, 0, 0), Ok(()));
+        assert_eq!(len, size_of::<Tcpstat>());
+        let before = stat(C::TcpsConnattempt);
+        assert_eq!(req(u, &mut len, 0, 0), Ok(()));
+        let after = stat(C::TcpsConnattempt);
+        let got: Tcpstat = crate::testutil::user_bytes(u, len)
+            .and_then(|b| hal::user::pod_from_bytes(&b))
+            .expect("the structure");
+        assert!((before..=after).contains(&u64::from(got.tcps_connattempt)));
+        let limit = TCP_SYN_CACHE_LIMIT.load(Ordering::Relaxed);
+        assert_eq!(got.tcps_sc_entry_limit, limit as u64);
+        // Short room: ENOMEM; a new value: EPERM.
+        let mut short = len - 1;
+        assert_eq!(req(u, &mut short, 0, 0), Err(Errno::ENOMEM));
+        let size = len;
+        assert_eq!(req(0, &mut len, u, size), Err(Errno::EPERM));
+
+        // A variable of tcpctl_vars: read, then a write out of its bounds refused.
+        let int_req = |name: i32, oldp: usize, newp: usize| -> Result<(), Errno> {
+            let mut len = size_of::<i32>();
+            let mut r = SysctlReq {
+                oldp,
+                oldlenp: &mut len,
+                newp,
+                newlen: if newp != 0 { size_of::<i32>() } else { 0 },
+            };
+            tcp_sysctl::<testtcp::G>(&[name], &mut r)
+        };
+        assert_eq!(int_req(TCPCTL_MSSDFLT, u, 0), Ok(()));
+        let v: i32 = UserPtr::<i32>::new(u).copyin().expect("the value");
+        assert_eq!(v, TCP_MSSDFLT.load(Ordering::Relaxed));
+        UserPtr::<i32>::new(u + 8)
+            .copyout(&(TCP_MSS - 1))
+            .expect("a value");
+        assert_eq!(int_req(TCPCTL_MSSDFLT, 0, u + 8), Err(Errno::EINVAL));
+        assert_eq!(v, TCP_MSSDFLT.load(Ordering::Relaxed), "unchanged");
+        // TCPCTL_KEEPINITTIME in seconds sets tcp_keepinit in milliseconds.
+        let old = TCP_KEEPINIT_SEC.load(Ordering::Relaxed);
+        UserPtr::<i32>::new(u + 8).copyout(&7).expect("a value");
+        assert_eq!(int_req(TCPCTL_KEEPINITTIME, 0, u + 8), Ok(()));
+        assert_eq!(TCP_KEEPINIT.load(Ordering::Relaxed), tcp_time(7));
+        UserPtr::<i32>::new(u + 8).copyout(&old).expect("a value");
+        assert_eq!(int_req(TCPCTL_KEEPINITTIME, 0, u + 8), Ok(()));
+        assert_eq!(TCP_KEEPINIT.load(Ordering::Relaxed), tcp_time(old));
+        // Names: one component only, and known.
+        let mut len = 0;
+        let mut r = SysctlReq {
+            oldp: 0,
+            oldlenp: &mut len,
+            newp: 0,
+            newlen: 0,
+        };
+        assert_eq!(
+            tcp_sysctl::<testtcp::G>(&[TCPCTL_STATS, 1], &mut r),
+            Err(Errno::ENOTDIR)
+        );
+        assert_eq!(
+            tcp_sysctl::<testtcp::G>(&[99], &mut r),
+            Err(Errno::EOPNOTSUPP)
+        );
+    }
 
     #[test]
     fn the_send_buffer_scales_with_the_data_in_flight() {

@@ -16746,7 +16746,7 @@ rust = "sys/kernel/netinet/tcp_usrreq.rs"
 crate = "kernel"
 lz = ["sys/netinet/tcp_usrreq.rs"]
 status = "redesigned"
-notes = "N6.6a3: tcp_usrreq.c's socket buffer scaling for the kernel's tcp_output and tcp_input: tcp_update_sndspace, tcp_update_rcvspace and the [I] sizes tcp_sendspace, tcp_recvspace, tcp_autorcvbuf_inc, over the kernel's Tp and sockbufs (the buffer's mutex across the computation and the reserve, as the C's sb_mtx); the sums in the C's u_long order (LZ summed sb_wat + (snd_max - snd_una)) and the marks compared unsigned as the C's; the requests, tcp_ctloutput, tcp_sysctl and tcp_ident are N6.6a5's; bsd's tcp_usrreq.rs stays for bsd's TCP until then"
+notes = "N6.6a3: tcp_usrreq.c's socket buffer scaling (tcp_update_sndspace, tcp_update_rcvspace; the sums in the C's u_long order, the marks compared unsigned). N6.6a5: the requests as TcpUsrreqs (impl Usrreqs, one type for tcp_usrreqs and tcp6_usrreqs, which differ in pru_control only), each over the socket lock's witness opened in parts (intotcpcb) and the pcb's counted handle (sotoinpcb); tcp_close/tcp_drop answers a Closed token the request frees (TpOrClosed); tcp_ctloutput, tcp_fill_info, tcp_ident (the storages read whole by family), tcp_sysctl_tcpstat (the C's ASSIGN order) and tcp_sysctl (the port bitmaps through the C's M_SYSCTL buffer, the SYN cache tunables atomics beside its mutex)"
 
 [[module]]
 rust = "sys/kernel/netinet/tcp_var.rs"
