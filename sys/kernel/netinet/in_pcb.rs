@@ -291,6 +291,11 @@
 //!   [`in_pcbnotifyall`] and `in6_pcbnotify` lock through the new form and lend `notify` the
 //!   witness. A kernel TCP request never calls `in_pcbsolock` on the socket it holds (the
 //!   C's `tcp_timer_rexmt` lets its socket go before `in_pcbnotifyall`).
+//! - N6.6b0: [`in_sysctl_ports`] is the `*CTL_ROOTONLY`/`*CTL_BADDYNAMIC` block that
+//!   `tcp_sysctl` and `udp_sysctl` write identically in the C (the securelevel refusal, the
+//!   `M_SYSCTL` buffer, the shared then the exclusive net lock), one function for the two
+//!   protocols' halves of the bitmaps beside the bitmaps themselves (N6.6a5's
+//!   `tcp_sysctl_ports`, its second user UDP's).
 //!
 //! Lock and spl transitions per operation, against the C (`in_pcb.c`):
 //!
@@ -323,7 +328,7 @@ use hal::intr::IPL_SOFTNET;
 use hal::link::PtrWord;
 use hal::malloc::{M_NOWAIT, M_WAITOK, MArray, MBox};
 use hal::mutex::{Mutexed, MutexedGuard};
-use hal::netlock::NetHeld;
+use hal::netlock::{NETLOCK, NetHeld};
 use hal::once::OnceStatic;
 use hal::pinlist::{PinEntry, PinList};
 use hal::pool::{PR_NOWAIT, PR_WAITOK, PoolArc, PoolBox, PoolHome, TypedPool};
@@ -371,6 +376,7 @@ use crate::netinet6::in6_pcb::{
 use crate::netinet6::ip6_output::{ip6_freemoptions, ip6_freepcbopts};
 use crate::netinet6::ip6_var::{Ip6Moptions, Ip6Pktopts};
 use crate::proc::{ProcGlue, Thread, suser};
+use crate::sysctl::{M_SYSCTL, SECURELEVEL, SysctlReq, structure};
 
 // flags in inp_flags:
 
@@ -1747,6 +1753,53 @@ pub fn in_rootonly(port: u16, proto: u16) -> bool {
         IPPROTO_UDP => i32::from(port) < IPPORT_RESERVED || dp_isset(&ROOTONLYPORTS.udp, port),
         _ => false,
     }
+}
+
+/// The `*CTL_ROOTONLY` and `*CTL_BADDYNAMIC` names of `tcp_sysctl` and `udp_sysctl` (N6.6b0:
+/// the two C functions' identical blocks, one function): the `proto` half (`IPPROTO_TCP` or
+/// `IPPROTO_UDP`) of `rootonlyports` (`rootonly`) or `baddynamicports`, a write refused at
+/// `securelevel` > 0 for `rootonly` (`EPERM`), copied out under the shared net lock and back
+/// under the exclusive one, through the C's `malloc(M_SYSCTL, M_WAITOK | M_ZERO)` buffer.
+/// Another `proto` has no half: `EOPNOTSUPP` (no C caller passes one).
+pub fn in_sysctl_ports(req: &mut SysctlReq<'_>, proto: u16, rootonly: bool) -> Result<(), Errno> {
+    if rootonly && req.newp != 0 && SECURELEVEL.load(Ordering::Relaxed) > 0 {
+        return Err(Errno::EPERM);
+    }
+    let ports = if rootonly {
+        &ROOTONLYPORTS
+    } else {
+        &BADDYNAMICPORTS
+    };
+    let half = match i32::from(proto) {
+        IPPROTO_TCP => &ports.tcp,
+        IPPROTO_UDP => &ports.udp,
+        _ => return Err(Errno::EOPNOTSUPP),
+    };
+
+    let buflen = DP_MAPSIZE * core::mem::size_of::<u32>();
+    let Some(mut buf) = MArray::new(M_SYSCTL, M_WAITOK, buflen, |_| 0u8) else {
+        return Err(Errno::ENOMEM);
+    };
+
+    let shared = NETLOCK.read();
+    for (b, w) in buf.as_chunks_mut::<4>().0.iter_mut().zip(half) {
+        *b = w.load(Ordering::Relaxed).to_ne_bytes();
+    }
+    drop(shared);
+
+    let error = structure(req, &mut buf);
+
+    if error.is_ok() && req.newp != 0 {
+        let excl = NETLOCK.write();
+        for (b, w) in buf.as_chunks::<4>().0.iter().zip(half) {
+            w.store(u32::from_ne_bytes(*b), Ordering::Relaxed);
+        }
+        drop(excl);
+    }
+
+    // free(buf, M_SYSCTL, buflen)
+    drop(buf);
+    error
 }
 
 /// `in_pcballoc`: a new control block for `so` in `table`, its address in the socket's
