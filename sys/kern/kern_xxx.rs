@@ -57,7 +57,8 @@
 //! `SYSCALL_DEBUG`, feature `syscall_debug`). `__stack_smash_handler` arrives with its
 //! subsystem. M11a: `sys_reboot` stops the secondary CPUs (`MULTIPROCESSOR`). M13:
 //! `do_powerdown`, `powerdown_task` and `powerbutton_event`, the power button's path from
-//! acpi(4) to init.
+//! acpi(4) to init. `sys_sysarch`, the `sysent[]` row of `sysarch(2)` (the C's
+//! `sys_machdep.c`, LZ 0925b8a94390), is a forward to the kernel's `kernel::sysarch`.
 //!
 //! ## Deviations
 //! - `KASSERT((howto & RB_NOSYNC) || curproc != NULL)`: `curproc` arrives with M5; the
@@ -77,7 +78,7 @@ use crate::kern::subr_prf::printf;
 use crate::sys::errno::Errno;
 use crate::sys::proc::Proc;
 use crate::sys::signal::SIGUSR2;
-use crate::sys::syscallargs::SysRebootArgs;
+use crate::sys::syscallargs::{SysRebootArgs, SysSysarchArgs};
 use crate::sys::systm::{SysArgs, sysargs};
 use crate::sys::task::Task;
 use crate::sys::types::Register;
@@ -104,6 +105,13 @@ pub fn native_reboot(nr: Register, opt: i32, rval: &mut [Register; 2]) -> hal::s
         [opt as Register, 0, 0, 0, 0, 0],
         rval,
     )
+}
+
+/// `sysarch(2)`'s `sysent[]` row: the kernel's ([`kernel::sysarch::sys_sysarch`]: a pledged
+/// process through `pledge_fail`, else `EINVAL` for every op on arm64).
+pub fn sys_sysarch(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
+    let uap: &SysSysarchArgs = sysargs(v);
+    kernel::sysarch::sys_sysarch(p, uap.op.get(), uap.parms.get().addr())
 }
 
 /// `reboot`: the kernel's (`kernel::reboot::reboot`: the clock bookkeeping stopped,
@@ -229,3 +237,61 @@ pub fn scdebug_ret(p: &Proc, code: Register, error: i32, retval: &[Register; 2])
     let _ = printf(format_args!("\n"));
 }
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    // `sysarch(2)`'s row of `sysent[]`: its shape against syscalls.master (two arguments, no
+    // `NOLOCK`), the kernel's answer through it (`EINVAL`, never `sys_nosys`'s `ENOSYS`), and
+    // the real `pledge_fail` under "error" (`ENOSYS`, before any kill: a host thread is never
+    // sent its `SIGABRT`).
+
+    use std::assert_eq;
+
+    use super::*;
+    use crate::kern::init_sysent::SYSENT;
+    use crate::kern::proc_glue::{test_process, test_thread};
+    use crate::sys::pledge::{PLEDGE_ERROR, PLEDGE_PROTEXEC};
+    use crate::sys::proc::PS_PLEDGE;
+    use crate::sys::syscall::SYS_sysarch;
+
+    /// A thread of a process of its own, pledged to `promises` when some are given.
+    fn thread(promises: Option<u64>) -> &'static Proc {
+        let pr = test_process(1);
+        let p = test_thread(pr);
+        pr.set_main_static(hal::pin::pin_static(p));
+        if let Some(promises) = promises {
+            pr.ps_flags.fetch_or(PS_PLEDGE, Ordering::Relaxed);
+            pr.ps_pledge.store(promises, Ordering::Relaxed);
+            p.p_pledge.set(promises);
+        }
+        p
+    }
+
+    #[test]
+    fn sysarch_row_answers_einval() {
+        let row = &SYSENT[SYS_sysarch as usize];
+        assert_eq!(row.sy_narg, 2);
+        assert_eq!(row.sy_flags, 0, "STD, the kernel lock held");
+        assert_eq!(row.sy_argsize as usize, size_of::<SysSysarchArgs>());
+        let p = thread(None);
+        let mut rv = [0; 2];
+        for op in [0, 2, -1i32] {
+            let v: SysArgs = [op as Register, 0, 0, 0, 0, 0];
+            assert_eq!((row.sy_call)(p, &v, &mut rv), Err(Errno::EINVAL), "op {op}");
+        }
+    }
+
+    #[test]
+    fn sysarch_row_pledged_goes_through_pledge_fail() {
+        let p = thread(Some(PLEDGE_PROTEXEC | PLEDGE_ERROR));
+        let mut rv = [0; 2];
+        let v: SysArgs = [0, 0, 0, 0, 0, 0];
+        assert_eq!(
+            (SYSENT[SYS_sysarch as usize].sy_call)(p, &v, &mut rv),
+            Err(Errno::ENOSYS),
+            "pledge_fail under \"error\""
+        );
+    }
+}
+/* </TESTS> */

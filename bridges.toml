@@ -379,7 +379,7 @@ paid_by = "N7"
 # kernel::proc::ProcGlue
 [[bridge]]
 trait = "ProcGlue"
-for = ["sys/kernel/proc.rs", "sys/kernel/event.rs", "sys/kernel/sched.rs", "sys/kernel/sig.rs", "sys/kernel/fork.rs", "sys/kernel/exit.rs", "sys/kernel/acct.rs", "sys/kernel/prot.rs", "sys/kernel/resource.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/net/unix.rs", "sys/kernel/net/syscalls.rs"]
+for = ["sys/kernel/proc.rs", "sys/kernel/event.rs", "sys/kernel/sched.rs", "sys/kernel/sig.rs", "sys/kernel/fork.rs", "sys/kernel/exit.rs", "sys/kernel/acct.rs", "sys/kernel/prot.rs", "sys/kernel/resource.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/net/unix.rs", "sys/kernel/net/syscalls.rs", "sys/kernel/sysarch.rs"]
 paid_by = "N8"
 
 # bsd: pf(4)'s mbuf legs (net/pf.c's pf_mbuf_link_state_key, pf_mbuf_link_inpcb,

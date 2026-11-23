@@ -1131,6 +1131,12 @@ lz = ["sys/arch/amd64/amd64/spl.rs"]
 status = "inherited"
 
 [[module]]
+rust = "sys/arch/amd64/amd64/sys_machdep.rs"
+lz = ["sys/arch/amd64/amd64/sys_machdep.rs"]
+status = "inherited"
+notes = "lz-sync of LZ 0925b8a94390, frozen (decision 44): LZ's text, not compiled (no amd64 kernel is built before N10), 1 unsafe (amd64_iopl's write of the trap frame's rflags through p_md.md_regs); N10 writes AMD64_IOPL (suser, the securelevel test, the copyin of struct amd64_iopl_args, PSL_IOPL) in kernel::sysarch with 0 unsafe and deletes this file; option APERTURE (OpenBSD's amd64 GENERIC configures it, LZ takes the #else) is N10's to settle"
+
+[[module]]
 rust = "sys/arch/amd64/amd64/trap.rs"
 lz = ["sys/arch/amd64/amd64/trap.rs"]
 status = "adapted"
@@ -5554,8 +5560,8 @@ status = "inherited"
 rust = "sys/kern/kern_xxx.rs"
 lz = ["sys/kern/kern_xxx.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/reboot.rs"]
-notes = "M2: reboot() and rebooting; the curproc KASSERT returns with M5, stop_periodic_resettodr reported unported; sys_reboot, __stack_smash_handler, scdebug_*, sys_sysctl come with their subsystems; M8: sys_reboot (suser, then reboot); M8: reboot calls stop_periodic_resettodr; M8: scdebug_call/scdebug_ret and scdebug (option SYSCALL_DEBUG, feature syscall_debug), called from mi_syscall/mi_syscall_return; M11a: sys_reboot calls sched_stop_secondary_cpus with MULTIPROCESSOR; M13: do_powerdown, powerdown_task and powerbutton_event (acpi(4)'s power button; SUSPEND's resuming() is false while subr_suspend.c is not ported); N4.8a: rebooting and reboot() are kernel::reboot's"
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/reboot.rs", "sys/kernel/sysarch.rs"]
+notes = "M2: reboot() and rebooting; the curproc KASSERT returns with M5, stop_periodic_resettodr reported unported; sys_reboot, __stack_smash_handler, scdebug_*, sys_sysctl come with their subsystems; M8: sys_reboot (suser, then reboot); M8: reboot calls stop_periodic_resettodr; M8: scdebug_call/scdebug_ret and scdebug (option SYSCALL_DEBUG, feature syscall_debug), called from mi_syscall/mi_syscall_return; M11a: sys_reboot calls sched_stop_secondary_cpus with MULTIPROCESSOR; M13: do_powerdown, powerdown_task and powerbutton_event (acpi(4)'s power button; SUSPEND's resuming() is false while subr_suspend.c is not ported); N4.8a: rebooting and reboot() are kernel::reboot's; lz-sync 0925b8a94390: sys_sysarch, sysarch(2)'s sysent row, a forward to kernel::sysarch (with its two tests: the row's shape and answer, the real pledge_fail under \"error\")"
 
 [[module]]
 rust = "sys/kern/sched_bsd.rs"
@@ -14447,6 +14453,13 @@ crate = "kernel"
 lz = ["sys/kern/sys_futex.rs"]
 status = "redesigned"
 notes = "N4.6c: futex(2) (FUTEX_WAIT/WAKE/REQUEUE and their _PRIVATE forms) into the kernel crate, 0 unsafe (LZ 9): a waiter is a Futex pinned on its stack on a hal::pinlist::PinList bound to its bucket's RawRwlock (futexlk), linked meaning waiting (the C's ft_proc != NULL); the key four addresses compared (FutexKey), ft_fsq the bucket's index; the waker wakes the waiter's own channel (kernel::sched::wakeup_n_locked under one SCHED_LOCK hold) instead of wakeup_proc of a thread pointer; FUTEX_REQUEUE across buckets through PinList::move_where_across (never unlinked while it moves); the word read with UserPtr<u32>::copyin32 (hal::user::UserCopy)"
+
+[[module]]
+rust = "sys/kernel/sysarch.rs"
+crate = "kernel"
+lz = ["sys/arch/arm64/arm64/sys_machdep.rs"]
+status = "redesigned"
+notes = "lz-sync of LZ 0925b8a94390 (sysarch(2), arm64's sys_machdep.c) into the kernel crate, 0 unsafe (LZ 0): sys_sysarch generic over ProcGlue with the arguments typed (op, parms as an address), a pledged process refused first through ProcGlue::pledge_fail(p, EINVAL, 0) (kern_pledge is bsd's until N8), then EINVAL for every op (arm64 has none; parms never read); bsd's sysent row 165 is a forward in sys/kern/kern_xxx.rs (Legacy in the ABI); LZ's MachineSysarch trait, machine::sys_sysarch and its host double are not taken (the C links one function by name; the pledge test is the same in both machines' C, written once here); amd64's AMD64_IOPL is N10's (LZ's amd64 file is kept frozen, sys/arch/amd64/amd64/sys_machdep.rs)"
 
 [[module]]
 rust = "sys/kernel/thrsleep.rs"
