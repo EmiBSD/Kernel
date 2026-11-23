@@ -5629,7 +5629,7 @@ notes = "pool_init/destroy/get/put with do_get/do_put, the page management, the 
 rust = "sys/kern/subr_prf.rs"
 lz = ["sys/kern/subr_prf.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs", "sys/kernel/log.rs", "sys/kernel/tty.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs", "sys/kernel/log.rs", "sys/kernel/tty.rs", "sys/kernel/prf.rs"]
 notes = "format engine is core::fmt (fmt::Arguments replaces fmt+va_list, so printf/vprintf and snprintf/vsnprintf pair up); %b is the Bitmask Display adaptor, %s of a byte string is Str; kprintf!/kprintln!/log!/db_printf! macros; M8 (tty.c): kputchar takes the tty (TOTTY through tputchar, constty redirection with TOCONS), uprintf, ttyprintf; M10e: tprintf_open/tprintf_close/tprintf under feature nfsclient or nfsserver (tpr_t is sys/sys/tprintf.rs's Tpr, an Option<&'static Session>; tprintf takes fmt::Arguments; host test: handles follow PS_CONTROLT and s_ttyvp, the session is held until tprintf_close, the message is logged at LOG_INFO); v_putc fixed to cnputc; panicbuf is a single buffer (per-CPU ci_panicbuf in M5) and panicstr_claim is the trap handlers' atomic_cas_ptr on panicstr; db_panic defaults to 0 (ddb-lite has no command loop); KASSERT/KDASSERT live here as kassert!/kdassert!; M11e: kprintf_mutex (IPL_HIGH) around printf, vprintf and the TOCONS half of log/addlog, MUTEX_ASSERT_LOCKED for TOCONS in kprintf, splhigh around the TOLOG half of log/addlog"
 
 [[module]]
@@ -6788,7 +6788,7 @@ adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/cred.rs", "sys/kernel/fs/vnode.r
 rust = "sys/nfs/nfs_socket.rs"
 lz = ["sys/nfs/nfs_socket.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/sig.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/sig.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/prf.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_srvcache.rs"
@@ -12578,12 +12578,6 @@ adapted_by = ["sys/kernel/tc.rs"]
 notes = "M5: struct timecounter (driver-written fields are Cells; M13: tc_name too, set to dv_xname by acpitimer/acpihpet), struct timekeep, TK_VERSION; tc_lock (rwlock) and timekeep_object (M6) are not here; N4.8a: the drivers' struct timecounter implements kernel::tc::Timecounter and links its TcEntry (tc_entry), made by kern_tc's tc_init"
 
 [[module]]
-rust = "sys/sys/tprintf.rs"
-lz = ["sys/sys/tprintf.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
-
-[[module]]
 rust = "sys/sys/tree.rs"
 lz = ["sys/sys/tree.rs"]
 status = "redesigned"
@@ -18054,10 +18048,12 @@ rust = "sys/kernel/benches/vm.rs"
 crate = "kernel"
 reason = "decision 42, phase 1: host microbenchmarks of kernel::vm's hot paths (fault, fork, exec, map/unmap, primitives) over the doubles (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
 
-[[extra]]
+[[module]]
 rust = "sys/kernel/prf.rs"
 crate = "kernel"
-reason = "N3.3 fix-up: the kernel crate's printf (hal::prf) and unported!(name), bsd's project helper sys/kern/unported.rs for the moved code (printed once per site through printf(9), yields ENOSYS; scope-and-stubs.md); no LZ source"
+lz = ["sys/kern/subr_prf.rs", "sys/sys/tprintf.rs"]
+status = "redesigned"
+notes = "N3.3 fix-up: the kernel crate's printf (hal::prf) and unported!(name), bsd's project helper sys/kern/unported.rs for the moved code (printed once per site through printf(9), yields ENOSYS; scope-and-stubs.md). N6.7a0 (D-4): subr_prf.c's tprintf_open, tprintf and tprintf_close and tprintf.h's tpr_t (Tpr<G>), over the kernel's session_tty, ttycheckoutq, tputchar, msgbuf_putchar and logwakeup: logpri(LOG_INFO)'s <6> to the log, each byte to the terminal when ttycheckoutq allows and to the log but NUL, CR and DEL; bsd's three and sys/sys/tprintf.rs gone (nfs_msg the one caller)"
 
 [[extra]]
 rust = "sys/kernel/assert.rs"

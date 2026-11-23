@@ -141,8 +141,6 @@ pub mod time;
 #[forbid(unsafe_code)]
 pub mod timeout;
 pub mod timetc;
-#[forbid(unsafe_code)]
-pub mod tprintf;
 pub mod tree;
 #[forbid(unsafe_code)]
 pub mod tty;

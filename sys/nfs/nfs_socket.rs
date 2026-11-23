@@ -109,7 +109,7 @@ use crate::kern::kern_timeout::timeout_add;
 #[cfg(feature = "nfsclient")]
 use crate::kern::kern_timeout::timeout_del;
 use crate::kern::subr_pool::{pool_get, pool_put};
-use crate::kern::subr_prf::{Str, panic, tprintf, tprintf_close, tprintf_open};
+use crate::kern::subr_prf::{Str, panic};
 use crate::kern::uipc_mbuf::{
     MAX_HDR, m_adj, m_copyback, m_copym, m_freem, m_get, m_gethdr, m_trailingspace,
 };
@@ -208,6 +208,7 @@ use crate::sys::uio::Iovec;
 use crate::sys::uio::{Uio, UioRw, UioSeg};
 #[cfg(feature = "nfsclient")]
 use crate::sys::vnode::Vnode;
+use kernel::prf::{tprintf, tprintf_close, tprintf_open};
 
 /// `NFS_CWNDSCALE`: the scale of the congestion window and of the sent count. There is a
 /// congestion window for outstanding rpcs maintained per mount point. The cwnd size is
