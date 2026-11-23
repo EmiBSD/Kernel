@@ -8650,6 +8650,13 @@ status = "redesigned"
 notes = "N6.5a: netinet6/nd6.h's userland part: ND6_LLINFO_*, ND6_INFINITE_LIFETIME, nd_ifinfo (8), in6_nbrinfo (56), in6_ndireq (24) as abi_pod! images (ndp(8)'s requests); bsd's nd6.rs keeps its copies until N6.5b"
 
 [[module]]
+rust = "sys/hal/sys/netinet6_raw_ip6.rs"
+crate = "hal"
+lz = ["sys/netinet6/raw_ip6.rs"]
+status = "redesigned"
+notes = "N6.6b1: netinet6/raw_ip6.h's userland part: RIPV6CTL_STATS, RIPV6CTL_MAXID and struct rip6stat (7 u64, 56 bytes) as an abi_pod! with the C's CTASSERT, RIP6S_NCOUNTERS; a layout test and a reference-backed one; bsd's raw_ip6.rs keeps its copies until the switch (N6.6b1's second phase)"
+
+[[module]]
 rust = "sys/hal/sys/netinet_icmp6.rs"
 crate = "hal"
 lz = ["sys/netinet/icmp6.rs"]
@@ -8675,6 +8682,13 @@ lz = ["sys/netinet/ip6.rs"]
 status = "redesigned"
 notes = "N6.3c2 (D-N6.3c-21, early for N6.4-N6.6): the image the kernel's Ethernet layer reads, as an abi_pod! with its const size assert: struct ip6_hdr (40). N6.5a: netinet/ip6.h whole (N6.4a's R3): the twelve extension-header and option images (ip6_hdr_pseudo 40, ip6_ext, ip6_hbh, ip6_dest, ip6_opt 2, ip6_opt_jumbo 6, ip6_opt_nsap 4, ip6_opt_tunnel 3, ip6_opt_router 4, ip6_rthdr 4, ip6_rthdr0 8, ip6_frag 8) as abi_pod!s, IPV6_*, IP6TOS_*, IP6OPT_*, IP6_ALERT_*, IP6F_* and IP6OPT_TYPE; Ip6Hdr's vfc/hops accessors; LZ's four tests; ip6_exthdr_get stays with the mbufs (bsd's ip6.rs, which keeps its copy until N6.5c/d)"
 
+
+[[module]]
+rust = "sys/hal/sys/netinet_ip_divert.rs"
+crate = "hal"
+lz = ["sys/netinet/ip_divert.rs"]
+status = "redesigned"
+notes = "N6.6b1: netinet/ip_divert.h's userland part: DIVERTCTL_* and struct divstat (5 u_long, 40 bytes) as an abi_pod! with the C's CTASSERT, DIVS_NCOUNTERS; a layout test and a reference-backed one; bsd's ip_divert.rs keeps its copies until the switch (N6.6b1's second phase)"
 
 [[module]]
 rust = "sys/hal/sys/netinet_ip_icmp.rs"
@@ -8703,6 +8717,13 @@ lz = "sys/netinet/ip_icmp.rs::Icmp::icmp_data"
 native = []
 kind = "dropped"
 reason = "the address of the data past struct icmp had no reader in LZ; ICMP reads a message through the mbuf's bytes (kernel::netinet::ip_icmp)"
+
+[[module]]
+rust = "sys/hal/sys/netinet_ip_mroute.rs"
+crate = "hal"
+lz = ["sys/netinet/raw_ip.rs"]
+status = "redesigned"
+notes = "N6.6b1: the ten MRT_* socket option names of netinet/ip_mroute.h, which LZ's raw_ip.rs defined (the header was not ported); MROUTING is not configured, so the structures are not here; a reference-backed test; bsd's raw_ip.rs keeps its copies until the switch (N6.6b1's second phase)"
 
 [[module]]
 rust = "sys/hal/sys/netinet_ip_var.rs"

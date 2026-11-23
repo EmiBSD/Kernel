@@ -70,6 +70,8 @@ pub mod netinet6_mld6;
 #[forbid(unsafe_code)]
 pub mod netinet6_nd6;
 #[forbid(unsafe_code)]
+pub mod netinet6_raw_ip6;
+#[forbid(unsafe_code)]
 pub mod netinet_icmp6;
 #[forbid(unsafe_code)]
 pub mod netinet_icmp_var;
@@ -88,7 +90,11 @@ pub mod netinet_ip;
 #[forbid(unsafe_code)]
 pub mod netinet_ip6;
 #[forbid(unsafe_code)]
+pub mod netinet_ip_divert;
+#[forbid(unsafe_code)]
 pub mod netinet_ip_icmp;
+#[forbid(unsafe_code)]
+pub mod netinet_ip_mroute;
 #[forbid(unsafe_code)]
 pub mod netinet_ip_var;
 #[forbid(unsafe_code)]
