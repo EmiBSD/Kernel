@@ -63,9 +63,9 @@
 use libkern::explicit_bzero;
 
 use super::wipe;
-use crate::dev::rnd::{arc4random, arc4random_buf};
-use crate::kern::kern_tc::getuptime;
 use crate::sys::types::Time;
+use crate::tc::getuptime;
+use hal::random::{arc4random, arc4random_buf};
 
 /// `IDGEN32_ROUNDS`: Feistel rounds of the permutation.
 pub const IDGEN32_ROUNDS: u32 = 31;
@@ -237,6 +237,7 @@ mod tests {
 
     #[test]
     fn idgen32_ids_distinct_nonzero() {
+        crate::testutil::install();
         let mut ctx = Idgen32Ctx::zeroed();
         ctx.init();
         let hibit = ctx.id32_hibit;
@@ -251,6 +252,7 @@ mod tests {
 
     #[test]
     fn idgen32_permute_is_injective_on_a_range() {
+        crate::testutil::install();
         let mut ctx = Idgen32Ctx::zeroed();
         arc4random_buf(&mut ctx.id32_key);
         let out: HashSet<u32> = (0..65536u32).map(|i| ctx.permute(i)).collect();
@@ -260,6 +262,7 @@ mod tests {
 
     #[test]
     fn idgen32_rekey_flips_hibit() {
+        crate::testutil::install();
         let mut ctx = Idgen32Ctx::zeroed();
         ctx.init();
         let hibit = ctx.id32_hibit;
@@ -295,6 +298,7 @@ mod tests {
 
     #[test]
     fn zeroize_wipes_the_key_and_the_counters() {
+        crate::testutil::install();
         // What `Drop` runs, and what `init` runs on the context it replaces.
         let mut ctx = Idgen32Ctx::zeroed();
         ctx.init();

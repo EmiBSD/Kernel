@@ -41,8 +41,7 @@ pub use kernel::crypto::ecb3_enc;
 #[forbid(unsafe_code)]
 pub mod gmac;
 pub use kernel::crypto::hmac;
-#[forbid(unsafe_code)]
-pub mod idgen;
+pub use kernel::crypto::idgen;
 pub use kernel::crypto::md5;
 pub use kernel::crypto::podd;
 pub use kernel::crypto::poly1305;

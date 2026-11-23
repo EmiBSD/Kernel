@@ -2515,7 +2515,8 @@ lz = ["sys/crypto/hmac.rs"]
 status = "redesigned"
 
 [[module]]
-rust = "sys/crypto/idgen.rs"
+rust = "sys/kernel/crypto/idgen.rs"
+crate = "kernel"
 lz = ["sys/crypto/idgen.rs"]
 status = "redesigned"
 
@@ -6703,7 +6704,7 @@ adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/
 rust = "sys/netinet6/ip6_output.rs"
 lz = ["sys/netinet6/ip6_output.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/idgen.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet6/mld6.rs", "sys/kernel/netinet6/ip6_output.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/hal/netlock.rs", "sys/kernel/netinet/tcp_tso.rs"]
+adapted_by = ["sys/kernel/crypto/idgen.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet6/mld6.rs", "sys/kernel/netinet6/ip6_output.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/hal/netlock.rs", "sys/kernel/netinet/tcp_tso.rs"]
 
 [[module]]
 rust = "sys/netinet6/ip6_var.rs"
@@ -6740,7 +6741,7 @@ adapted_by = ["sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kern
 rust = "sys/nfs/krpc_subr.rs"
 lz = ["sys/nfs/krpc_subr.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/idgen.rs", "sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/kernel/crypto/idgen.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs.rs"
@@ -6805,7 +6806,7 @@ adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mou
 rust = "sys/nfs/nfs_subs.rs"
 lz = ["sys/nfs/nfs_subs.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/idgen.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/types.rs", "sys/kernel/cred.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/kernel/crypto/idgen.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/types.rs", "sys/kernel/cred.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_syscalls.rs"
