@@ -194,6 +194,9 @@ mod tests {
             SYS_getthrid,
             SYS___thrsigdivert,
             SYS_adjfreq,
+            // __thrsleep(2)/__thrwakeup(2): bucket mutexes and SCHED_LOCK, as futex(2)
+            SYS___thrsleep,
+            SYS___thrwakeup,
             SYS___set_tcb,
             SYS___get_tcb,
             // the `files` audit

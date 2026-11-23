@@ -116,6 +116,7 @@ pub mod termios;
 #[cfg(any(test, feature = "doubles"))]
 pub mod testutil;
 pub mod thread;
+pub mod thrsleep;
 pub mod time;
 pub mod timeout;
 pub mod tty;

@@ -56,14 +56,16 @@
 //! Sleep and wakeup: `kern/kern_synch.c`, as `bsd`'s adapter of `kernel::sched`.
 //!
 //! Upstream: sys/kern/kern_synch.c @ 3ce1f3f79392
-//! LZ: sys/kern/kern_synch.rs@3c62ede68802
+//! LZ: sys/kern/kern_synch.rs@9fd12af2c575
 //!
 //! The sleep queues, `sleep_setup`, `sleep_finish`, `wakeup_n`, `wakeup_proc`, `unsleep`,
 //! `endtsleep` and `tsleep_nsec` are `kernel::sched`'s (N4.5a). This module keeps LZ's
 //! signatures for `bsd`'s callers (a wait channel as any pointer, compared, never followed):
 //! `tsleep`, `msleep` and `rwsleep` with their interlocks, the `wakeup` family, the reference
 //! counts (`refcnt_*`), the condition variables (`cond_init`, `cond_wait`) and
-//! `sched_yield(2)`. `sleep_signal_check`, the signal half of a `PCATCH` sleep, is
+//! `sched_yield(2)`. `__thrsleep(2)` and `__thrwakeup(2)` (LZ's port, taken by `lz-sync`) are
+//! `kernel::thrsleep`'s; their `sysent` rows here only decode the arguments and put the
+//! call's value in `*retval`. `sleep_signal_check`, the signal half of a `PCATCH` sleep, is
 //! `kernel::sched`'s since N4.5b (over `kernel::sig`).
 //!
 //! ## Deviations
@@ -106,7 +108,8 @@ use crate::sys::param::{PCATCH, PNORELOCK, PRIMASK, PWAIT};
 use crate::sys::proc::{Cond, Proc, ProcExt};
 use crate::sys::refcnt::Refcnt;
 use crate::sys::rwlock::Rwlock;
-use crate::sys::systm::{COLD, INFSLP, SAFEPRI, SysArgs};
+use crate::sys::syscallargs::{SysThrsleepArgs, SysThrwakeupArgs};
+use crate::sys::systm::{COLD, INFSLP, SAFEPRI, SysArgs, sysargs};
 use crate::sys::types::Register;
 
 pub use crate::sys::proc::cond_signal_handler;
@@ -333,8 +336,31 @@ pub fn wakeup_one<T: ?Sized>(chan: *const T) {
     wakeup_n(chan, 1);
 }
 
-// thrsleep_unlock, tslp_init, thrsleep_bucket, thrsleep, sys___thrsleep, tslp_wakeups,
-// sys___thrwakeup: the syscalls (M6).
+/// `__thrsleep(2)`: `kernel::thrsleep`'s, its error the call's value (`*retval`); the system
+/// call itself always succeeds.
+#[allow(non_snake_case)] // the generator finds the C's name, `sys___thrsleep`
+pub fn sys___thrsleep(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
+    let uap: &SysThrsleepArgs = sysargs(v);
+    retval[0] = kernel::thrsleep::sys___thrsleep(
+        p,
+        uap.ident.get().addr() as isize,
+        uap.clock_id.get(),
+        uap.tp.get().addr(),
+        uap.lock.get().addr(),
+        uap.abort.get().addr(),
+    ) as Register;
+    Ok(())
+}
+
+/// `__thrwakeup(2)`: `kernel::thrsleep`'s, its error the call's value (`*retval`); the system
+/// call itself always succeeds.
+#[allow(non_snake_case)] // the generator finds the C's name, `sys___thrwakeup`
+pub fn sys___thrwakeup(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
+    let uap: &SysThrwakeupArgs = sysargs(v);
+    retval[0] = kernel::thrsleep::sys___thrwakeup(p, uap.ident.get().addr() as isize, uap.n.get())
+        as Register;
+    Ok(())
+}
 
 /// `refcnt_init`.
 pub fn refcnt_init(r: &Refcnt) {
@@ -412,3 +438,123 @@ pub fn cond_wait(c: &Cond, wmesg: &'static str) {
     }
 }
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    // Host tests for the `__thrsleep(2)`/`__thrwakeup(2)` rows: each argument register
+    // reaches `kernel::thrsleep`, and its answer is `*retval` with the call itself `Ok`.
+
+    use std::sync::MutexGuard;
+
+    use hal::user::UserPtr;
+    use kernel::clock::Timespec;
+
+    use super::*;
+    use crate::kern::proc_glue::{procinit, test_process, test_thread};
+    use crate::kern::subr_pool::tests::setup_real_memory;
+
+    /// Words of the user-copy double: the lock, the abort word and a `struct timespec`.
+    const UMEM: usize = kernel::testutil::USER_BASE + 0xd000;
+    /// The lock word.
+    const ULOCK: usize = UMEM;
+    /// The abort word.
+    const UABORT: usize = UMEM + 0x10;
+    /// The timeout.
+    const UTS: usize = UMEM + 0x20;
+    /// `CLOCK_MONOTONIC`.
+    const MONOTONIC: Register = 3;
+
+    /// Real memory and the process pools and hashes.
+    fn setup() -> MutexGuard<'static, ()> {
+        let guard = setup_real_memory();
+        procinit();
+        guard
+    }
+
+    /// A thread of a fresh process `pid`.
+    fn thread(pid: i32) -> &'static Proc {
+        test_thread(test_process(pid))
+    }
+
+    /// The lock word.
+    fn lock() -> i32 {
+        UserPtr::<i32>::new(ULOCK).copyin().unwrap()
+    }
+
+    /// A system call row run by `p`: its `*retval`, the call itself `Ok`.
+    fn call(
+        row: fn(&Proc, &SysArgs, &mut [Register; 2]) -> Result<(), Errno>,
+        p: &Proc,
+        a: &[Register],
+    ) -> Register {
+        let mut v: SysArgs = [0; 6];
+        v[..a.len()].copy_from_slice(a);
+        let mut rv: [Register; 2] = [-1, -1];
+        assert_eq!(row(p, &v, &mut rv), Ok(()));
+        rv[0]
+    }
+
+    #[test]
+    fn the_rows_decode_every_argument_and_answer_in_retval() {
+        let _g = setup();
+        let p = thread(1100);
+        let lock_reg = ULOCK as Register;
+
+        // tp (a time already passed) and lock: unlocked, then EWOULDBLOCK.
+        UserPtr::<i32>::new(ULOCK).copyout(&1).unwrap();
+        UserPtr::<Timespec>::new(UTS)
+            .copyout(&Timespec::new(0, 0))
+            .unwrap();
+        let rv = call(
+            sys___thrsleep,
+            p,
+            &[0x1000, MONOTONIC, UTS as Register, lock_reg, 0],
+        );
+        assert_eq!(rv, Errno::EWOULDBLOCK.as_i32() as Register);
+        assert_eq!(lock(), 0);
+
+        // clock_id reaches clock_gettime: an unknown clock is EINVAL, nothing unlocked.
+        UserPtr::<i32>::new(ULOCK).copyout(&1).unwrap();
+        let rv = call(
+            sys___thrsleep,
+            p,
+            &[0x1000, 99, UTS as Register, lock_reg, 0],
+        );
+        assert_eq!(rv, Errno::EINVAL.as_i32() as Register);
+        assert_eq!(lock(), 1);
+
+        // abort: EINTR after the unlock.
+        UserPtr::<u32>::new(UABORT).copyout(&1).unwrap();
+        let rv = call(
+            sys___thrsleep,
+            p,
+            &[0x1000, MONOTONIC, 0, lock_reg, UABORT as Register],
+        );
+        assert_eq!(rv, Errno::EINTR.as_i32() as Register);
+        assert_eq!(lock(), 0);
+
+        // ident: 0 is EINVAL for both.
+        assert_eq!(
+            call(sys___thrsleep, p, &[0, MONOTONIC, 0, 0, 0]),
+            Errno::EINVAL.as_i32() as Register
+        );
+        assert_eq!(
+            call(sys___thrwakeup, p, &[0, 1]),
+            Errno::EINVAL.as_i32() as Register
+        );
+        // n and the process: nobody of this process sleeps on the ident, whatever n (a
+        // negative n read from its register); the broadcast is 0. A sleeper is beyond this
+        // fixture (no scheduler): how n counts the woken is kernel::thrsleep's wake-n test.
+        let q = thread(1101);
+        for n in [1, 0, -1] {
+            assert_eq!(
+                call(sys___thrwakeup, q, &[0x1000, n]),
+                Errno::ESRCH.as_i32() as Register,
+                "n {n}"
+            );
+        }
+        assert_eq!(call(sys___thrwakeup, q, &[-1, 1]), 0);
+    }
+}
+/* </TESTS> */

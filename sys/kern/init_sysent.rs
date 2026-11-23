@@ -57,7 +57,7 @@ use crate::kern::kern_sig::{
     sys___thrsigdivert, sys_kill, sys_sigaction, sys_sigaltstack, sys_sigpending, sys_sigprocmask,
     sys_sigreturn, sys_sigsuspend, sys_thrkill,
 };
-use crate::kern::kern_synch::sys_sched_yield;
+use crate::kern::kern_synch::{sys___thrsleep, sys___thrwakeup, sys_sched_yield};
 use crate::kern::kern_sysctl::sys_sysctl;
 use crate::kern::kern_time::{
     sys_adjfreq, sys_adjtime, sys_clock_getres, sys_clock_gettime, sys_clock_settime,
@@ -275,22 +275,22 @@ pub static SYSENT: [Sysent; SYS_MAXSYSCALL] = [
     Sysent::new(2, size_of::<SysNanosleepArgs>(), SY_NOLOCK, sys_nanosleep), // 91 = nanosleep
     Sysent::new(3, size_of::<SysFcntlArgs>(), SY_NOLOCK, sys_fcntl), // 92 = fcntl
     Sysent::new(4, size_of::<SysAccept4Args>(), SY_NOLOCK, sys_accept4), // 93 = accept4
-    Sysent::new(5, size_of::<SysThrsleepArgs>(), SY_NOLOCK, sys_nosys), // 94 = __thrsleep (sys___thrsleep not ported)
-    Sysent::new(1, size_of::<SysFsyncArgs>(), 0, sys_fsync),            // 95 = fsync
+    Sysent::new(5, size_of::<SysThrsleepArgs>(), SY_NOLOCK, sys___thrsleep), // 94 = __thrsleep
+    Sysent::new(1, size_of::<SysFsyncArgs>(), 0, sys_fsync), // 95 = fsync
     Sysent::new(3, size_of::<SysSetpriorityArgs>(), 0, sys_setpriority), // 96 = setpriority
-    Sysent::new(3, size_of::<SysSocketArgs>(), SY_NOLOCK, sys_socket),  // 97 = socket
+    Sysent::new(3, size_of::<SysSocketArgs>(), SY_NOLOCK, sys_socket), // 97 = socket
     Sysent::new(3, size_of::<SysConnectArgs>(), SY_NOLOCK, sys_connect), // 98 = connect
-    Sysent::new(3, size_of::<SysGetdentsArgs>(), 0, sys_getdents),      // 99 = getdents
+    Sysent::new(3, size_of::<SysGetdentsArgs>(), 0, sys_getdents), // 99 = getdents
     Sysent::new(2, size_of::<SysGetpriorityArgs>(), 0, sys_getpriority), // 100 = getpriority
-    Sysent::new(2, size_of::<SysPipe2Args>(), SY_NOLOCK, sys_pipe2),    // 101 = pipe2
-    Sysent::new(3, size_of::<SysDup3Args>(), SY_NOLOCK, sys_dup3),      // 102 = dup3
-    Sysent::new(1, size_of::<SysSigreturnArgs>(), 0, sys_sigreturn),    // 103 = sigreturn
-    Sysent::new(3, size_of::<SysBindArgs>(), SY_NOLOCK, sys_bind),      // 104 = bind
+    Sysent::new(2, size_of::<SysPipe2Args>(), SY_NOLOCK, sys_pipe2), // 101 = pipe2
+    Sysent::new(3, size_of::<SysDup3Args>(), SY_NOLOCK, sys_dup3), // 102 = dup3
+    Sysent::new(1, size_of::<SysSigreturnArgs>(), 0, sys_sigreturn), // 103 = sigreturn
+    Sysent::new(3, size_of::<SysBindArgs>(), SY_NOLOCK, sys_bind), // 104 = bind
     Sysent::new(5, size_of::<SysSetsockoptArgs>(), SY_NOLOCK, sys_setsockopt), // 105 = setsockopt
-    Sysent::new(2, size_of::<SysListenArgs>(), SY_NOLOCK, sys_listen),  // 106 = listen
-    Sysent::new(4, size_of::<SysChflagsatArgs>(), 0, sys_chflagsat),    // 107 = chflagsat
-    Sysent::new(2, size_of::<SysPledgeArgs>(), SY_NOLOCK, sys_pledge),  // 108 = pledge
-    Sysent::new(4, size_of::<SysPpollArgs>(), SY_NOLOCK, sys_ppoll),    // 109 = ppoll
+    Sysent::new(2, size_of::<SysListenArgs>(), SY_NOLOCK, sys_listen), // 106 = listen
+    Sysent::new(4, size_of::<SysChflagsatArgs>(), 0, sys_chflagsat), // 107 = chflagsat
+    Sysent::new(2, size_of::<SysPledgeArgs>(), SY_NOLOCK, sys_pledge), // 108 = pledge
+    Sysent::new(4, size_of::<SysPpollArgs>(), SY_NOLOCK, sys_ppoll), // 109 = ppoll
     Sysent::new(6, size_of::<SysPselectArgs>(), SY_NOLOCK, sys_pselect), // 110 = pselect
     Sysent::new(1, size_of::<SysSigsuspendArgs>(), SY_NOLOCK, sys_sigsuspend), // 111 = sigsuspend
     Sysent::new(3, size_of::<SysSendsyslogArgs>(), SY_NOLOCK, sys_sendsyslog), // 112 = sendsyslog
@@ -495,15 +495,15 @@ pub static SYSENT: [Sysent; SYS_MAXSYSCALL] = [
     Sysent::new(0, 0, SY_NOLOCK, sys_sched_yield), // 298 = sched_yield
     Sysent::new(0, 0, SY_NOLOCK, sys_getthrid), // 299 = getthrid
     Sysent::new(0, 0, 0, sys_nosys), // 300 = obsolete t32___thrsleep
-    Sysent::new(2, size_of::<SysThrwakeupArgs>(), SY_NOLOCK, sys_nosys), // 301 = __thrwakeup (sys___thrwakeup not ported)
-    Sysent::new(1, size_of::<SysThrexitArgs>(), 0, sys___threxit),       // 302 = __threxit
+    Sysent::new(2, size_of::<SysThrwakeupArgs>(), SY_NOLOCK, sys___thrwakeup), // 301 = __thrwakeup
+    Sysent::new(1, size_of::<SysThrexitArgs>(), 0, sys___threxit), // 302 = __threxit
     Sysent::new(
         3,
         size_of::<SysThrsigdivertArgs>(),
         SY_NOLOCK,
         sys___thrsigdivert,
     ), // 303 = __thrsigdivert
-    Sysent::new(2, size_of::<SysGetcwdArgs>(), 0, sys___getcwd),         // 304 = __getcwd
+    Sysent::new(2, size_of::<SysGetcwdArgs>(), 0, sys___getcwd), // 304 = __getcwd
     Sysent::new(2, size_of::<SysAdjfreqArgs>(), SY_NOLOCK, sys_adjfreq), // 305 = adjfreq
     Sysent::new(0, 0, 0, sys_nosys), // 306 = obsolete getfsstat53
     Sysent::new(0, 0, 0, sys_nosys), // 307 = obsolete statfs53

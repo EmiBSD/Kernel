@@ -1282,3 +1282,28 @@ emibsd = "7c34f5b526cc"
 method = "reimplemented"
 reason = "security fix (kernel memory executable from EL0's point of view in the adopted tables; with FEAT_PAN3 every privileged read of it faults): hal's pmap already took execution away below the direct map's level-0 table entries (PXNTable and UXNTable, HPD cleared), and native's kernel boots under hvf where LZ's crashed; the fix is taken at the leaf too, in pmap_kernel_nonglobal's pass (ATTR_UXN with ATTR_nG on every kernel block and page before the switch), and pmap_kernel_nonglobal_check panics at postinit on a kernel leaf without it, so every boot proves the rule"
 security = true
+
+[[commit]]
+lz = "9fd12af2c575"
+subject = "kern: port __thrsleep and __thrwakeup (kern_synch.c)"
+modules = ["sys/kernel/thrsleep.rs", "sys/hal/spinlock.rs", "sys/kern/kern_synch.rs", "sys/kern/init_main.rs", "sys/kern/init_sysent.rs", "sys/sys/syscall_mi.rs", "sys/kernel/syscall.rs"]
+status = "applied"
+emibsd = "3ae222fee1e9"
+method = "reimplemented"
+reason = "the sleep queues are kernel::sched's since N4.5a, so LZ's kern_synch.rs hunk is re-implemented in the kernel crate as sys/kernel/thrsleep.rs with 0 unsafe (LZ 5): the record pinned on a PinList under each bucket's Mutexed<()>, linked meaning queued, the wakeup by the record's channel as futex(2)'s; bsd's kern_synch.rs keeps the two sysent rows (forwards, Legacy in the ABI), init_sysent.rs regenerated (rows 94 and 301), main's unported!(tslp_init) gone, SY_NOLOCK_DEFERRED emptied in kernel::syscall and the two calls on syscall_mi.rs's audited list; LZ's two arch spinlock.rs are sys/hal/spinlock.rs (one definition for both machines), LZ's sys/machine/spinlock.rs trait, its mod.rs hunks and sys/arch/host/mod.rs impl are its machine contract's structure and are not taken; ports.toml and LZ's docs are LZ's"
+
+[[commit]]
+lz = "7f3d210b570c"
+subject = "xtask: smoke-thrsleep, threads that sleep in __thrsleep(2)"
+modules = []
+status = "applied"
+emibsd = "bfca21065565"
+method = "cherry-pick-conflicts"
+reason = "tools/thrtest (thrtest.c, Makefile) as LZ wrote it; OWN_PROGRAMS gains it by hand beside native's mmapstress and bench; smoke-thrsleep in native's recipe form (smoke-mmap's precondition on the program, --features qemu, decision 44's amd64 skip) with LZ's --timeout 400, twelve expectations and two rejects, and in smokes (LZ's hunk joined two names, smoke-ntfssmoke-tcpbench, which is not taken); its comment says what the program reaches: thrtest is static, so its stress half (FILE locks, pthread mutexes: futex(2)) never calls __thrsleep, only its direct checks do; not run before the N6 close (decision 23), no userland build"
+
+[[commit]]
+lz = "84b7b03e58c3"
+subject = "Merge __thrsleep/__thrwakeup (TD1a) into build/devtools-direct"
+modules = []
+status = "not-applicable"
+reason = "merge commit; its content arrived with the records of its parents' commits"

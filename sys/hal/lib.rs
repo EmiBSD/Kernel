@@ -163,6 +163,8 @@ pub mod slot;
 pub mod smr;
 #[forbid(unsafe_code)]
 pub mod softintr;
+#[forbid(unsafe_code)]
+pub mod spinlock;
 #[cfg(test)]
 pub(crate) mod testutil;
 pub mod thread;
