@@ -383,3 +383,8 @@ metadata:
 - A brief that asks for a docs/ROADMAP.md clause (an N10 item) still meets the role's ban on editing ROADMAP: write the exact text to the scratchpad and hand it to the main session in HANDOFF and the report (sysarch sync).
 - `cargo xtask lz trace` takes `<lz path>:<item>` with ONE colon (it prints the `::` form back); a native path alone is refused (sysarch sync).
 - A host test that reaches `sys_nosys` through `SYSENT` panics in kernel::assert (the SIGSYS path needs a real thread): a mutation putting a row back to `sys_nosys` is killed by panic, not by an ENOSYS assertion (sysarch sync).
+- The worktree guard refuses a heredoc script chained with grep/git/sed in one command ("too complex"): write the script with Write into the scratchpad and run `python3 <file>` alone (N6.7a0).
+- lz check's item parser does not see items a `macro_rules!` expands to: a struct and methods named in `[[module.fn]]` rows (or covering LZ items) must be written out, not generated (N6.7a0's NfsCounters).
+- No git pre-commit hook is installed in this repo's checkouts: run `just cargo fmt --all` and `cargo xtask lz check` yourself; two steps edited at once commit apart by staging each step's files and its own lineage.toml edits only (N6.7a0).
+- Splitting a LICENSES zone by `index(' */\n')` matches the `/* <LICENSES> */` marker line itself; cut the blocks by line numbers and check each original block is a substring of its source zone (N6.7a0).
+- `proptest` is allowlisted but not in Cargo.lock (a download): property tests are seeded xorshift loops over thousands of cases (N6.7a0's XDR reader).
