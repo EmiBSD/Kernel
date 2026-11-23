@@ -162,7 +162,8 @@ use hal::netlock::NetHeld;
 use hal::once::OnceStatic;
 use hal::sys::errno::Errno;
 use hal::sys::netinet_in::{
-    IPPROTO_DONE, IPPROTO_ICMP, IPPROTO_IGMP, IPPROTO_MAX, IPPROTO_RAW, IPPROTO_TCP, SockaddrIn,
+    IPPROTO_DIVERT, IPPROTO_DONE, IPPROTO_ICMP, IPPROTO_IGMP, IPPROTO_MAX, IPPROTO_RAW,
+    IPPROTO_TCP, SockaddrIn,
 };
 use hal::sys::socket::{AF_INET, PF_INET, SOCK_RAW, SOCK_STREAM};
 
@@ -175,6 +176,7 @@ use crate::net::proto::{
     PR_SPLICE, PR_WANTRCVD, Protocol, SockaddrView, Usrreqs,
 };
 use crate::net::socket::{SoLocked, Socket};
+use crate::netinet::ip_divert::{DivertUsrreqs, divert_init, divert_sysctl};
 use crate::netinet::raw_ip::{RipUsrreqs, rip_ctloutput, rip_init, rip_input};
 use crate::netinet::tcp_input::tcp_input;
 use crate::netinet::tcp_subr::{tcp_ctlinput, tcp_init};
@@ -514,6 +516,56 @@ impl<G: ProcGlue> Protocol<G> for RipProtocol<G> {
         if self.wild {
             rip_init::<G>();
         }
+    }
+}
+
+/// `inetsw[]`'s divert(4) entry (N6.6b1; `NPF`): no input (pf hands it the packets,
+/// `divert_packet`), `rip_ctloutput`, `divert_usrreqs`, `divert_init`, `divert_sysctl`.
+pub struct DivertProtocol<G: ProcGlue>(PhantomData<fn() -> G>);
+
+impl<G: ProcGlue> DivertProtocol<G> {
+    /// The entry.
+    pub const NEW: Self = Self(PhantomData);
+}
+
+impl<G: ProcGlue> Protocol<G> for DivertProtocol<G> {
+    fn domain(&self) -> &'static dyn Domain<G> {
+        inetdomain::<G>()
+    }
+    fn ty(&self) -> i16 {
+        SOCK_RAW as i16
+    }
+    fn protocol(&self) -> i16 {
+        IPPROTO_DIVERT as i16
+    }
+    fn flags(&self) -> i16 {
+        PR_ATOMIC | PR_ADDR | PR_MPSYSCTL
+    }
+    fn usrreqs(&self) -> Option<&'static dyn Usrreqs<G>> {
+        Some(&DivertUsrreqs::<G>::NEW)
+    }
+    fn has_ctloutput(&self) -> bool {
+        true
+    }
+    fn ctloutput(
+        &self,
+        op: i32,
+        so: &Socket<G>,
+        w: &mut SoLocked<'_>,
+        level: i32,
+        optname: i32,
+        m: Option<&mut Mbuf>,
+    ) -> Result<(), Errno> {
+        rip_ctloutput(op, so, w, level, optname, m)
+    }
+    fn has_sysctl(&self) -> bool {
+        true
+    }
+    fn sysctl(&self, name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+        divert_sysctl(name, req)
+    }
+    fn init(&self) {
+        divert_init::<G>();
     }
 }
 

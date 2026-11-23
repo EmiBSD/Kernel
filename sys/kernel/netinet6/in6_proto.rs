@@ -152,8 +152,8 @@ use hal::netlock::NetHeld;
 use hal::once::OnceStatic;
 use hal::sys::errno::Errno;
 use hal::sys::netinet_in::{
-    IPPROTO_DSTOPTS, IPPROTO_FRAGMENT, IPPROTO_ICMPV6, IPPROTO_IPV6, IPPROTO_MAX, IPPROTO_RAW,
-    IPPROTO_ROUTING, IPPROTO_TCP,
+    IPPROTO_DIVERT, IPPROTO_DSTOPTS, IPPROTO_FRAGMENT, IPPROTO_ICMPV6, IPPROTO_IPV6, IPPROTO_MAX,
+    IPPROTO_RAW, IPPROTO_ROUTING, IPPROTO_TCP,
 };
 use hal::sys::netinet6_in6::SockaddrIn6;
 use hal::sys::socket::{AF_INET6, PF_INET6, SOCK_RAW, SOCK_STREAM};
@@ -170,6 +170,7 @@ use crate::net::socket::{SoLocked, Socket};
 use crate::netinet::tcp_input::tcp_input;
 use crate::netinet::tcp_subr::tcp6_ctlinput;
 use crate::netinet::tcp_usrreq::{TcpUsrreqs, tcp_ctloutput, tcp_sysctl};
+use crate::netinet6::ip6_divert::{Divert6Usrreqs, divert6_init};
 use crate::netinet6::raw_ip6::{
     Rip6Usrreqs, rip6_ctlinput, rip6_ctloutput, rip6_init, rip6_input, rip6_sysctl,
 };
@@ -525,6 +526,50 @@ impl<G: ProcGlue> Protocol<G> for Rip6Protocol<G> {
         if self.wild {
             rip6_init::<G>();
         }
+    }
+}
+
+/// `inet6sw[]`'s divert6 entry (N6.6b1; `NPF`): no input (pf hands it the packets,
+/// `divert6_packet`), `rip6_ctloutput`, `divert6_usrreqs`, `divert6_init`; no sysctl.
+pub struct Divert6Protocol<G: ProcGlue>(PhantomData<fn() -> G>);
+
+impl<G: ProcGlue> Divert6Protocol<G> {
+    /// The entry.
+    pub const NEW: Self = Self(PhantomData);
+}
+
+impl<G: ProcGlue> Protocol<G> for Divert6Protocol<G> {
+    fn domain(&self) -> &'static dyn Domain<G> {
+        inet6domain::<G>()
+    }
+    fn ty(&self) -> i16 {
+        SOCK_RAW as i16
+    }
+    fn protocol(&self) -> i16 {
+        IPPROTO_DIVERT as i16
+    }
+    fn flags(&self) -> i16 {
+        PR_ATOMIC | PR_ADDR | PR_MPSYSCTL
+    }
+    fn usrreqs(&self) -> Option<&'static dyn Usrreqs<G>> {
+        Some(&Divert6Usrreqs::<G>::NEW)
+    }
+    fn has_ctloutput(&self) -> bool {
+        true
+    }
+    fn ctloutput(
+        &self,
+        op: i32,
+        so: &Socket<G>,
+        w: &mut SoLocked<'_>,
+        level: i32,
+        optname: i32,
+        m: Option<&mut Mbuf>,
+    ) -> Result<(), Errno> {
+        rip6_ctloutput(op, so, w, level, optname, m)
+    }
+    fn init(&self) {
+        divert6_init::<G>();
     }
 }
 

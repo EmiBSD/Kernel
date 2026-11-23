@@ -17532,6 +17532,23 @@ kind = "dropped"
 reason = "sysctl(8)'s name table, userland's (<netinet6/raw_ip6.h>'s RIPM6CTL_NAMES); the kernel answers the names by number (rip6_sysctl)"
 
 [[module]]
+rust = "sys/kernel/netinet6/ip6_divert.rs"
+crate = "kernel"
+lz = ["sys/netinet6/ip6_divert.rs"]
+status = "redesigned"
+notes = "N6.6b1 (built beside bsd's, unregistered until the switch): ip6_divert.c in the kernel, in IPv4 divert's shape and over its helpers (divert_lookup, divert_append, divert_min_hdrlen, divert_local_ifidx): Divert6Usrreqs (detach, bind, shutdown are divert's); divert6_packet with pf's proof, the interface's first IPv6 address, markers skipped (D-11); divert6_output's sanity checks, ip6_lasthdr, the local route's check, in6_proto_cksum_out and ipv6_input, or ip6_output; counts in divcounters as the C (DIV6COUNTERS stays zero); the row is kernel::netinet6::in6_proto's Divert6Protocol"
+
+[[module.fn]]
+lz = "sys/netinet6/ip6_divert.rs::DIVB6TABLE"
+native = ["divb6table"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/netinet6/ip6_divert.rs::DIVERT6_USRREQS"
+native = ["Divert6Usrreqs"]
+kind = "renamed"
+
+[[module]]
 rust = "sys/kernel/netinet/in_proto.rs"
 crate = "kernel"
 lz = ["sys/netinet/in_proto.rs"]
@@ -17575,6 +17592,23 @@ lz = "sys/netinet/raw_ip.rs::nam_sin"
 native = []
 kind = "dropped"
 reason = "the kernel's in_nam2sin answers the sockaddr_in by value (no pointer to read unaligned)"
+
+[[module]]
+rust = "sys/kernel/netinet/ip_divert.rs"
+crate = "kernel"
+lz = ["sys/netinet/ip_divert.rs"]
+status = "redesigned"
+notes = "N6.6b1 (built beside bsd's, unregistered until the switch): ip_divert.c in the kernel, generic over the glue: DivertUsrreqs over the socket lock's parts and the locked slot (attach sets INP_HDRINCL; detach, bind and shutdown shared with divert6); divert_packet takes pf's proof of the net lock: the first pcb of the port and routing domain under the table's mutex, iterator markers skipped (LZ's deviation, D-11), one count, the interface's first IPv4 address through in_ifp2ia, no lend; divert_output over raw IP's rip_chkhdr, the minimum header by protocol, PF_TAG_DIVERTED_PACKET, inbound only to a valid RTF_LOCAL route (EADDRNOTAVAIL) with both checksums recomputed and ipv4_input, outbound ip_output (IP_ALLOWBROADCAST | IP_RAWOUTPUT); DIVCOUNTERS per CPU, divert_sendspace and divert_recvspace AtomicI32 tunables; struct divstat's image and names are hal::sys::netinet_ip_divert's; the row is kernel::netinet::in_proto's DivertProtocol"
+
+[[module.fn]]
+lz = "sys/netinet/ip_divert.rs::DIVBTABLE"
+native = ["divbtable"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/netinet/ip_divert.rs::DIVERT_USRREQS"
+native = ["DivertUsrreqs"]
+kind = "renamed"
 
 [[module]]
 rust = "sys/kernel/netinet/ip_icmp.rs"
