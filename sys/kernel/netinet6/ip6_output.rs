@@ -105,10 +105,10 @@
 //!   `test`, which passes every packet before registration; a packet pf tagged
 //!   `PF_TAG_REROUTE` reruns the route lookup (the C's `goto reroute` is a labelled loop).
 //! - Not configured, a comment at its site: `MROUTING` (`ip6_mforward`).
-//! - The UDP counter of software checksums (`udps_outswcsum`) is the `Inet` leg
-//!   `udpstat_outswcsum` (until N6.6b; TCP's is the kernel's `tcpstat_inc` since N6.6a1), and
-//!   `idgen32` (`crypto/idgen.c`, `bsd`'s until crypto moves) is reached through the `Inet`
-//!   leg `ip6_randomid`, `bsd`'s generator.
+//! - `idgen32` (`crypto/idgen.c`, `bsd`'s until crypto moves) is reached through the `Inet`
+//!   leg `ip6_randomid`, `bsd`'s generator. The counters of software checksums are the
+//!   kernel's: UDP's (`udps_outswcsum`) `udpstat_inc` since N6.6b0 (the `Inet` leg
+//!   `udpstat_outswcsum` before it), TCP's `tcpstat_inc` since N6.6a1.
 //! - `in6_proto_cksum_out` stores no pseudo-header checksum when `ip6_lasthdr` finds the chain
 //!   invalid (the C would write at offset -1 plus the field offset), as LZ.
 //! - `ip6_ctloutput`'s `PRCO_GETOPT` without an answer mbuf is `panic(9)` (`sogetopt` always

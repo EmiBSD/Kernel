@@ -1420,8 +1420,8 @@ fn tagged_tdb(m: &Mbuf) -> Option<&'static Tdb> {
     gettdb(tdbi.rdomain, tdbi.spi, &tdbi.dst, tdbi.proto)
 }
 
-/// The `#ifdef IPSEC` block of `tcp_input` and `udp_input` (the kernel's `Ipsec` leg,
-/// N6.6a0): the inbound policy check of a segment against the inner-most IPsec SA it went
+/// The `#ifdef IPSEC` block of `tcp_input` (the kernel's `Ipsec` leg, N6.6a0; `udp_input`'s
+/// is [`ipsec_input_check_flow`], N6.6b0): the inbound policy check of a segment against the inner-most IPsec SA it went
 /// through and the socket's levels (`seclevel`, `None` without a pcb); the caller checks
 /// `ipsec_in_use` first.
 pub fn ipsec_input_check(

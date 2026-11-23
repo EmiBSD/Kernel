@@ -97,13 +97,13 @@
 //! array.
 //!
 //! ## Deviations
-//! - The table's entries are the kernel's IPv6, TCP (N6.6a5), ICMPv6, destination options,
-//!   routing header and fragment header ([`Ip6Protocol`], [`Tcp6Protocol`],
-//!   [`Icmp6Protocol`], [`Dest6Protocol`], [`Route6Protocol`], [`Frag6Protocol`]) and `bsd`'s
-//!   UDP, raw IPv6, AH, ESP, IPComp, IPv4 and IPv6 in IPv6, divert and the raw wildcard
-//!   (`bsd`'s `inet6sw[]` rows through the `Protocol` bridge impl) in the C's order; `bsd`
-//!   assembles the slice and records it ([`inet6sw_set`], `sys/kern/uipc_domain.rs`), until
-//!   the transports move (N6.6b, N8).
+//! - The table's entries are the kernel's IPv6, UDP (N6.6b0), TCP (N6.6a5), ICMPv6,
+//!   destination options, routing header and fragment header ([`Ip6Protocol`],
+//!   [`Udp6Protocol`], [`Tcp6Protocol`], [`Icmp6Protocol`], [`Dest6Protocol`],
+//!   [`Route6Protocol`], [`Frag6Protocol`]) and `bsd`'s raw IPv6, AH, ESP, IPComp, IPv4 and
+//!   IPv6 in IPv6, divert and the raw wildcard (`bsd`'s `inet6sw[]` rows through the
+//!   `Protocol` bridge impl) in the C's order; `bsd` assembles the slice and records it
+//!   ([`inet6sw_set`], `sys/kern/uipc_domain.rs`), until the transports move (N6.6b1, N8).
 //!   `IPSEC` is configured (AH, ESP and IPComp after the fragment header, `bsd`'s); so is
 //!   `NPF` (divert's entry, `bsd`'s). `NGIF` is 0 (`ipip_input` serves `IPPROTO_IPV4` and
 //!   `IPPROTO_IPV6`); `MPLS`, `NCARP`, `NETHERIP` and `NGRE` are not configured, their entries

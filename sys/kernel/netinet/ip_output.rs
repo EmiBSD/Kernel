@@ -72,9 +72,10 @@
 //!   every packet before registration (`NPF == 0`); a packet pf tagged `PF_TAG_REROUTE`
 //!   reruns the route lookup (the C's `goto reroute` is a labelled loop).
 //! - Not configured, a comment at its site: `MROUTING` (`ip_mforward`).
-//! - The UDP counter of software checksums (`udps_outswcsum`) is the `Inet` leg
-//!   `udpstat_outswcsum` until UDP moves (N6.6b); TCP's (`tcps_outswcsum`) is the kernel's
-//!   `tcpstat_inc` since N6.6a1 (`icmp_mtudisc_clone` is ICMP's own since N6.4c2).
+//! - The counters of software checksums are the kernel's: UDP's (`udps_outswcsum`)
+//!   `udpstat_inc` since N6.6b0 (the `Inet` leg `udpstat_outswcsum` before it), TCP's
+//!   (`tcps_outswcsum`) `tcpstat_inc` since N6.6a1 (`icmp_mtudisc_clone` is ICMP's own
+//!   since N6.4c2).
 //! - `ip_ctloutput` with `IPSEC` configured: the four IPsec levels are set and read (no
 //!   `EOPNOTSUPP`); `IP_IPSEC_LOCAL_ID` and `IP_IPSEC_REMOTE_ID` answer `EOPNOTSUPP` as the C.
 //!   A `PRCO_GETOPT` without an answer mbuf is `panic(9)` (`sogetopt` always hands one over;

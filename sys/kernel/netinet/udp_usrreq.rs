@@ -115,7 +115,8 @@
 //!   ESP and its path MTU) are configured; `PIPEX` is not, a comment at its sites.
 //!   `SMALL_KERNEL` is not set: the sysctl handlers are compiled.
 //! - The requests the C reaches through `sotoinpcb(so)` unchecked (`udp_bind`,
-//!   `udp_connect`, `udp_disconnect`, `in_sockaddr`, `in_peeraddr`, `in_flowid`) are
+//!   `udp_connect`, `udp_disconnect`, `in_sockaddr`, `in_peeraddr`, `in_flowid`) and
+//!   `pr_ctloutput` (`ip_ctloutput`/`ip6_ctloutput`'s `sotoinpcb(so)`, [`udp_ctloutput`]) are
 //!   `panic(9)` on a socket without a pcb, where the C dereferences NULL, as LZ's; none is
 //!   reached after the close that detaches it. `pru_rcvd` and `pru_abort`, NULL in the C's
 //!   table and never called for UDP (no `PR_WANTRCVD`, no connection queue), are `panic(9)`,
@@ -124,6 +125,13 @@
 //!   the encapsulation block is skipped and the datagram goes to the sockets, and
 //!   `udp_ctlinput`'s path MTU block (`udpencap_pmtu`) is not taken: the control input goes
 //!   on to the socket lookup; the kernel registers them at boot.
+//! - The UDP encapsulation of ESP moves the IP header over the UDP header in the first mbuf,
+//!   which `m_pullup` gives back as it was when it already holds `skip` bytes; the C's
+//!   `bcopy` writes into it whatever its storage. Here a first mbuf whose storage is
+//!   read-only (`M_READONLY`: a cluster without `M_EXTWR`, or one another mbuf shares;
+//!   `data_mut` answers none) is counted `udps_hdrops` and dropped, as `m_pullup`'s failure
+//!   is, instead of being written in place. Whether an input path hands `udp_input` such a
+//!   first mbuf is not proven (the review's N1).
 //!
 //! ## Redesign
 //! - N6.6b0: LZ's `bsd` module over `&'static Socket`, parked mbufs, raw header pointers
@@ -186,6 +194,10 @@
 //! | input, unicast | `ipsec_in_use` loaded; the lookup's `inpt_mtx` pair and count pair | a dynamic call each to `Pf::inp_lookup` and `Ipsec::spd_check_in_flow` (the latter loads `ipsec_in_use`); the same mutex and count |
 //! | input, multicast | per pcb one iterator step, per match a count pair and the mutex dropped | the same (`step_over`, O(1) a step) |
 //! | input, the upcall (wg) | an indirect call | the same (N6.6b0's bridge row `InpUpcall`) |
+//! | input, every datagram | the IP or IPv6 header and the UDP header read through pointers into the packet | each copied (`ip_load`/`ip6_load` and the `Udphdr`: 28 or 48 bytes) |
+//! | input to a connected socket, send from one | `pf_inp_link`, `pf_mbuf_link_inpcb` called directly | a dynamic call each to `Pf::inp_link`, `Pf::mbuf_link_inpcb_of` (`udp6_output`'s too) |
+//! | input, ESP in UDP | `ipsec_common_input` called | a dynamic call to `Ipsec::udpencap_input`, and `bsd`'s park and unpark of the packet (`sys/net/if_enc.rs`'s leg, N8) |
+//! | `setsockopt`/`getsockopt` at a protocol level | the exclusive net lock | + one uncontended `so_lock` pair (`solock` of a kernel protocol's socket, N6.6a0's D-1) |
 
 use core::marker::PhantomData;
 use core::mem::{offset_of, size_of};
@@ -511,10 +523,10 @@ pub fn udp_input<G: ProcGlue>(
             };
 
             // remove the UDP header: the IP header moved up over it (the first `skip` bytes
-            // are the first mbuf's, `m_pullup`'s; `ip_input` made them writable).
+            // are the first mbuf's, `m_pullup`'s).
             let Some(d) = m.data_mut() else {
-                // A read-only first mbuf, which `m_pullup` gave back as it was: dropped as
-                // its failure.
+                // A read-only first mbuf (`M_READONLY`), which `m_pullup` gave back as it
+                // was (the C writes into it): dropped as its failure (Deviations).
                 udpstat_inc(UdpstatCounters::UdpsHdrops);
                 return IPPROTO_DONE;
             };
