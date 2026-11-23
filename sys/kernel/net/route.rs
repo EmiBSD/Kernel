@@ -3206,7 +3206,6 @@ pub(crate) mod tests {
     }
 
     impl if_::Inet for TestInet {
-        fn tcp_input_mlist(&self, _ml: &mut crate::net::mbuf::MbufList, _af: SaFamily) {}
         fn ip6_randomid(&self) -> u32 {
             // idgen32 never answers 0.
             self.ids

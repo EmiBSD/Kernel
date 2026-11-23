@@ -83,9 +83,10 @@
 //! Upstream: sys/netinet6/in6_proto.c @ 3ce1f3f79392
 //!
 //! Since N6.5d the IPv6 domain, `ip6_protox[]` and the IPv6, ICMPv6, destination options,
-//! routing header and fragment header entries are the kernel's (`kernel::netinet6::in6_proto`).
-//! The rows here are `bsd`'s ten in the C's order: UDP, TCP, raw IPv6, AH, ESP and IPComp,
-//! IPv4 and IPv6 in IPv6, divert and the raw wildcard; `bsd`'s `sys/kern/uipc_domain.rs` hands
+//! routing header and fragment header entries are the kernel's (`kernel::netinet6::in6_proto`),
+//! and TCP's since N6.6a5 (`Tcp6Protocol`). The rows here are `bsd`'s nine in the C's order:
+//! UDP, raw IPv6, AH, ESP and IPComp, IPv4 and IPv6 in IPv6, divert and the raw wildcard;
+//! `bsd`'s `sys/kern/uipc_domain.rs` hands
 //! the kernel the table of its entries and these rows, and the rows' `pr_domain` is this
 //! file's `inet6domain` (`bsd`'s `struct domain`, whose protocols are that table).
 //!
@@ -107,15 +108,12 @@ use core::mem::{offset_of, size_of};
 
 use crate::netinet::in_::{
     IPPROTO_AH, IPPROTO_DIVERT, IPPROTO_ESP, IPPROTO_IPCOMP, IPPROTO_IPV4, IPPROTO_IPV6,
-    IPPROTO_RAW, IPPROTO_TCP, IPPROTO_UDP,
+    IPPROTO_RAW, IPPROTO_UDP,
 };
 use crate::netinet::ip_ipip::ipip_input;
 use crate::netinet::ipsec_input::{
     ah_sysctl, ah46_input, esp_sysctl, esp46_input, ipcomp_sysctl, ipcomp46_input,
 };
-use crate::netinet::tcp_input::tcp_input;
-use crate::netinet::tcp_subr::tcp6_ctlinput;
-use crate::netinet::tcp_usrreq::{TCP6_USRREQS, tcp_ctloutput, tcp_sysctl};
 use crate::netinet::udp_usrreq::{UDP6_USRREQS, udp_input, udp_sysctl, udp6_ctlinput};
 use crate::netinet6::in6::SockaddrIn6;
 use crate::netinet6::ip6_divert::{DIVERT6_USRREQS, divert6_init};
@@ -124,11 +122,8 @@ use crate::netinet6::raw_ip6::{
     RIP6_USRREQS, rip6_ctlinput, rip6_ctloutput, rip6_init, rip6_input, rip6_sysctl,
 };
 use crate::sys::domain::Domain;
-use crate::sys::protosw::{
-    PR_ABRTACPTDIS, PR_ADDR, PR_ATOMIC, PR_CONNREQUIRED, PR_MPINPUT, PR_MPSYSCTL, PR_SPLICE,
-    PR_WANTRCVD, Protosw,
-};
-use crate::sys::socket::{AF_INET6, SOCK_DGRAM, SOCK_RAW, SOCK_STREAM};
+use crate::sys::protosw::{PR_ADDR, PR_ATOMIC, PR_MPINPUT, PR_MPSYSCTL, PR_SPLICE, Protosw};
+use crate::sys::socket::{AF_INET6, SOCK_DGRAM, SOCK_RAW};
 
 /// Nominal space allocated to a raw ip6 socket: send.
 pub const RIPV6SNDQ: u64 = 8192;
@@ -143,7 +138,7 @@ pub const RIP6_RECVSPACE: u64 = RIPV6RCVQ;
 /// `inet6sw[]`'s rows that are `bsd`'s, in the C's order (the IPv6, ICMPv6 and extension
 /// header entries between them are the kernel's: `sys/kern/uipc_domain.rs`'s `INET6_PROTOS`
 /// is the whole table).
-pub static INET6SW: [Protosw; 10] = [
+pub static INET6SW: [Protosw; 9] = [
     // IPV6: the kernel's (kernel::netinet6::in6_proto::Ip6Protocol).
     Protosw {
         pr_type: SOCK_DGRAM as i16,
@@ -154,22 +149,6 @@ pub static INET6SW: [Protosw; 10] = [
         pr_ctloutput: Some(ip6_ctloutput),
         pr_usrreqs: Some(&UDP6_USRREQS),
         pr_sysctl: Some(udp_sysctl),
-        ..Protosw::new(&INET6DOMAIN)
-    },
-    Protosw {
-        pr_type: SOCK_STREAM as i16,
-        pr_protocol: IPPROTO_TCP as i16,
-        pr_flags: PR_CONNREQUIRED
-            | PR_WANTRCVD
-            | PR_ABRTACPTDIS
-            | PR_SPLICE
-            | PR_MPINPUT
-            | PR_MPSYSCTL,
-        pr_input: Some(tcp_input),
-        pr_ctlinput: Some(tcp6_ctlinput),
-        pr_ctloutput: Some(tcp_ctloutput),
-        pr_usrreqs: Some(&TCP6_USRREQS),
-        pr_sysctl: Some(tcp_sysctl),
         ..Protosw::new(&INET6DOMAIN)
     },
     Protosw {

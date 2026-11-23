@@ -116,10 +116,10 @@
 //! - `syn_cache_respond` builds its options in a 40-byte buffer, the TCP header's option room:
 //!   MSS 4, window scale 4, the signature 20 and the timestamps 12 fill it, so a signed entry
 //!   with `SCF_SACK_PERMIT` (4 more) would not fit. The C relies on the same exclusion:
-//!   `tcp_ctloutput` refuses `TCP_SACK_ENABLE` on a signed socket and `TCP_MD5SIG` on one with
-//!   SACK (tcp_usrreq.c:396-398, :418-420), and `syn_cache_add` copies only what the
-//!   listener allows; it is checked here (`kassert!`), and N6.6a5's `tcp_ctloutput` must keep
-//!   both refusals.
+//!   `tcp_ctloutput` refuses `TCP_SACK_ENABLE` on a signed socket and clears `sack_enable`
+//!   when it sets `TCP_MD5SIG` (tcp_usrreq.c:396-398, :418-420), and `syn_cache_add` copies
+//!   only what the listener allows; it is checked here (`kassert!`), and the kernel's
+//!   `tcp_ctloutput` (N6.6a5) keeps both.
 //! - `syn_cache_unreach` takes the addresses as `SynCacheSa`s (LZ: raw pointers copied in by
 //!   an `unsafe fn`); its caller (`tcp_ctlinput`, N6.6a3) copies them.
 //! - An entry found by `syn_cache_add` or `syn_cache_get` may be another listener's: one

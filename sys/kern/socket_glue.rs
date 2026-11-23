@@ -900,7 +900,7 @@ mod tests {
         use crate::sys::socket::{AF_INET, SOCK_DGRAM, SOCK_STREAM};
 
         let (_g, _t, _p) = crate::netinet::in_pcb::tests::setup();
-        crate::netinet::tcp_subr::tcp_init();
+        kernel::netinet::tcp_subr::tcp_init::<crate::kern::proc_glue::BsdProcGlue>();
         crate::netinet::udp_usrreq::udp_init();
         for ty in [SOCK_STREAM, SOCK_DGRAM] {
             let so = crate::kern::uipc_socket::socreate(i32::from(AF_INET), ty, 0)

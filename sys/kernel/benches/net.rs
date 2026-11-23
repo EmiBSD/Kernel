@@ -1968,12 +1968,6 @@ const ROUTE_ROWS: [&str; 8] = [
 struct BenchInet;
 
 impl kernel::net::if_::Inet for BenchInet {
-    fn tcp_input_mlist(
-        &self,
-        _ml: &mut kernel::net::mbuf::MbufList,
-        _af: hal::sys::types::SaFamily,
-    ) {
-    }
     fn ip6_randomid(&self) -> u32 {
         // idgen32 never answers 0; the rows do not fragment.
         1

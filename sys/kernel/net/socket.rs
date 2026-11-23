@@ -619,8 +619,8 @@ impl<G: ProcGlue> Socket<G> {
         }
     }
 
-    /// `so->so_linger = v` by `bsd`'s protocols (`tcp_disconnect`'s `TCP_LINGERTIME`).
-    pub fn set_linger_legacy(&self, v: i16) {
+    /// `so->so_linger = v` by a protocol, the socket locked (`tcp_attach`'s `TCP_LINGERTIME`).
+    pub(crate) fn set_linger(&self, v: i16) {
         self.linger.store(v, Ordering::Relaxed);
     }
 

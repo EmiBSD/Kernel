@@ -121,10 +121,11 @@
 //! LZ: sys/netinet/in_proto.rs@3c62ede68802
 //!
 //! ## Deviations
-//! - The table's entries are the kernel's IP, ICMP and IGMP ([`IpProtocol`], [`IcmpProtocol`],
-//!   [`IgmpProtocol`]) and `bsd`'s transports and IPsec (`bsd`'s `inetsw[]` rows through the
-//!   `Protocol` bridge impl) in the C's order; `bsd` assembles the slice and records it
-//!   ([`inetsw_set`], `sys/kern/uipc_domain.rs`), until the transports move (N6.6, N8).
+//! - The table's entries are the kernel's IP, TCP, ICMP and IGMP ([`IpProtocol`],
+//!   [`TcpProtocol`] since N6.6a5, [`IcmpProtocol`], [`IgmpProtocol`]) and `bsd`'s other
+//!   transports and IPsec (`bsd`'s `inetsw[]` rows through the `Protocol` bridge impl) in the
+//!   C's order; `bsd` assembles the slice and records it ([`inetsw_set`],
+//!   `sys/kern/uipc_domain.rs`), until the transports move (N6.6b, N8).
 //!   `IPSEC` is configured (AH, ESP and IPComp after IGMP, `bsd`'s), `NPFSYNC` and `NPF`
 //!   (pfsync's and divert's entries, `bsd`'s); `NGIF` is 0 (`ipip_input` serves
 //!   `IPPROTO_IPV4` and, with `INET6`, `IPPROTO_IPV6`); `MPLS`, `NGRE`, `NCARP` and
@@ -161,16 +162,23 @@ use hal::netlock::NetHeld;
 use hal::once::OnceStatic;
 use hal::sys::errno::Errno;
 use hal::sys::netinet_in::{
-    IPPROTO_DONE, IPPROTO_ICMP, IPPROTO_IGMP, IPPROTO_MAX, IPPROTO_RAW, SockaddrIn,
+    IPPROTO_DONE, IPPROTO_ICMP, IPPROTO_IGMP, IPPROTO_MAX, IPPROTO_RAW, IPPROTO_TCP, SockaddrIn,
 };
-use hal::sys::socket::{AF_INET, PF_INET, SOCK_RAW};
+use hal::sys::socket::{AF_INET, PF_INET, SOCK_RAW, SOCK_STREAM};
 
 use crate::assert::kpanic;
 use crate::net::domain::{Domain, net};
 use crate::net::if_var::Netstack;
 use crate::net::mbuf::{Mbuf, MbufBox};
-use crate::net::proto::{PR_ADDR, PR_ATOMIC, PR_MPSYSCTL, Protocol, Usrreqs};
+use crate::net::proto::{
+    CtlArg, PR_ABRTACPTDIS, PR_ADDR, PR_ATOMIC, PR_CONNREQUIRED, PR_MPINPUT, PR_MPSYSCTL,
+    PR_SPLICE, PR_WANTRCVD, Protocol, SockaddrView, Usrreqs,
+};
 use crate::net::socket::{SoLocked, Socket};
+use crate::netinet::tcp_input::tcp_input;
+use crate::netinet::tcp_subr::{tcp_ctlinput, tcp_init};
+use crate::netinet::tcp_timer::tcp_slowtimo;
+use crate::netinet::tcp_usrreq::{TcpUsrreqs, tcp_ctloutput, tcp_sysctl};
 use crate::proc::ProcGlue;
 use crate::sysctl::SysctlReq;
 
@@ -359,6 +367,80 @@ impl<G: ProcGlue> Protocol<G> for IpProtocol<G> {
     }
     fn slowtimo(&self) {
         crate::netinet::ip_input::ip_slowtimo();
+    }
+}
+
+/// `inetsw[]`'s TCP entry: `tcp_input`, `tcp_ctlinput`, `tcp_ctloutput`, `tcp_usrreqs`,
+/// `tcp_init`, `tcp_slowtimo`, `tcp_sysctl` (N6.6a5; `bsd`'s row until then).
+pub struct TcpProtocol<G: ProcGlue>(PhantomData<fn() -> G>);
+
+impl<G: ProcGlue> TcpProtocol<G> {
+    /// The entry.
+    pub const NEW: Self = Self(PhantomData);
+}
+
+impl<G: ProcGlue> Protocol<G> for TcpProtocol<G> {
+    fn domain(&self) -> &'static dyn Domain<G> {
+        inetdomain::<G>()
+    }
+    fn ty(&self) -> i16 {
+        SOCK_STREAM as i16
+    }
+    fn protocol(&self) -> i16 {
+        IPPROTO_TCP as i16
+    }
+    fn flags(&self) -> i16 {
+        PR_CONNREQUIRED | PR_WANTRCVD | PR_ABRTACPTDIS | PR_SPLICE | PR_MPINPUT | PR_MPSYSCTL
+    }
+    fn usrreqs(&self) -> Option<&'static dyn Usrreqs<G>> {
+        Some(&TcpUsrreqs::<G>::INET)
+    }
+    fn ctlinput(
+        &self,
+        cmd: i32,
+        sa: SockaddrView<'_>,
+        rdomain: u32,
+        arg: CtlArg<'_>,
+        net: &NetHeld<'_>,
+    ) {
+        tcp_ctlinput::<G>(cmd, sa, rdomain, arg, net);
+    }
+    fn input(
+        &self,
+        mp: &mut Option<MbufBox>,
+        offp: &mut i32,
+        proto: i32,
+        af: i32,
+        ns: Option<&mut Netstack>,
+        net: &NetHeld<'_>,
+    ) -> i32 {
+        tcp_input::<G>(mp, offp, proto, af, ns, net)
+    }
+    fn has_ctloutput(&self) -> bool {
+        true
+    }
+    fn ctloutput(
+        &self,
+        op: i32,
+        so: &Socket<G>,
+        w: &mut SoLocked<'_>,
+        level: i32,
+        optname: i32,
+        m: Option<&mut Mbuf>,
+    ) -> Result<(), Errno> {
+        tcp_ctloutput(op, so, w, level, optname, m)
+    }
+    fn has_sysctl(&self) -> bool {
+        true
+    }
+    fn sysctl(&self, name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+        tcp_sysctl::<G>(name, req)
+    }
+    fn init(&self) {
+        tcp_init::<G>();
+    }
+    fn slowtimo(&self) {
+        tcp_slowtimo();
     }
 }
 

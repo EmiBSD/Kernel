@@ -301,8 +301,18 @@ pub trait Protocol<G: ProcGlue>: Sync + 'static {
         false
     }
     /// `pr_ctlinput(cmd, sa, rdomain, arg)`: control input (from below), the argument by its
-    /// family ([`CtlArg`]). Nothing when the C's entry is NULL.
-    fn ctlinput(&self, _cmd: i32, _sa: SockaddrView<'_>, _rdomain: u32, _arg: CtlArg<'_>) {}
+    /// family ([`CtlArg`]), the caller's proof of the net lock `net` (its callers hold it:
+    /// ICMP's and ICMPv6's input, `pfctlinput`; TCP's control input locks sockets under it,
+    /// N6.6a5). Nothing when the C's entry is NULL.
+    fn ctlinput(
+        &self,
+        _cmd: i32,
+        _sa: SockaddrView<'_>,
+        _rdomain: u32,
+        _arg: CtlArg<'_>,
+        _net: &NetHeld<'_>,
+    ) {
+    }
     /// `pr_input(mp, offp, proto, af, ns)`: the protocol's input of the packet `*mp` whose
     /// header is at `*offp`, under the net lock (`net`); `IPPROTO_DONE` once the packet is
     /// consumed, or the next protocol with `*mp` and `*offp` at its header. The C's NULL entry

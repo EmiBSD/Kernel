@@ -172,7 +172,7 @@
 //!   registers `tcp6_mtudisc_callback` with ICMPv6.
 
 use core::mem::size_of;
-use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
 
 use hal::intr::IPL_SOFTNET;
 use hal::mutex::Mutexed;
@@ -307,15 +307,19 @@ pub static SACKHL_POOL: BoxPool<Sackhole> = BoxPool::new();
 
 /// \[I\] `tcp_secret`.
 pub(crate) static TCP_SECRET: OnceStatic<[u8; 16]> = OnceStatic::new();
-/// `tcp_timer_mtx` and what it keeps: \[T\] `tcp_iss`, updated by timer and connection.
-pub static TCP_ISS: Mutexed<TcpSeq> = Mutexed::new(IPL_SOFTNET, 0);
+/// `tcp_timer_mtx`: global tcp timer data structures (`tcp_iss`'s writers).
+pub static TCP_TIMER_MTX: Mutexed<()> = Mutexed::new(IPL_SOFTNET, ());
+/// \[T\] `tcp_iss`: updated by timer and connection under [`TCP_TIMER_MTX`], read without
+/// it by pf (`pf_tcp_iss`'s `READ_ONCE`): a word, loaded and stored relaxed by the
+/// mutex's holders, so the reader costs a load as the C's.
+pub static TCP_ISS: AtomicU32 = AtomicU32::new(0);
 /// \[I\] `tcp_starttime`: random offset for `tcp_now()`.
 pub static TCP_STARTTIME: AtomicU64 = AtomicU64::new(0);
 
 /// `tcp_init`: TCP initialization (from `domaininit`; a second call, a test glue's, leaves
 /// what exists as it is).
 pub fn tcp_init<G: ProcGlue>() {
-    *TCP_ISS.lock() = 1; // wrong
+    TCP_ISS.store(1, Ordering::Relaxed); // wrong
     // 0 is treated special so add 1, 63 bits to count is enough
     let mut start = [0u8; 8];
     hal::random::arc4random_buf(&mut start);
@@ -357,6 +361,8 @@ pub fn tcp_init<G: ProcGlue>() {
     }
 
     icmp6_mtudisc_callback_register(tcp6_mtudisc_callback::<G>);
+    // The softnet's tcp_input_mlist (if.c calls it directly; the glue generic's hop).
+    crate::netinet::tcp_input::tcp_input_mlist_register::<G>();
 
     // Initialize the compressed state engine.
     syn_cache_init::<G>();
@@ -1321,9 +1327,13 @@ pub fn tcp_set_iss_tsm<G: ProcGlue>(tp: &mut Tp<'_, '_, G>) {
     let rdomain = rtable_l2(inp.inp_rtableid.get());
 
     let iss = {
-        let mut g = TCP_ISS.lock();
-        *g = g.wrapping_add(TCP_ISS_CONN_INC);
-        *g
+        let g = TCP_TIMER_MTX.lock();
+        let iss = TCP_ISS
+            .load(Ordering::Relaxed)
+            .wrapping_add(TCP_ISS_CONN_INC);
+        TCP_ISS.store(iss, Ordering::Relaxed);
+        drop(g);
+        iss
     };
 
     // The context is not `Copy`: the clone is the C's struct copy, wiped at its drop.
@@ -1458,9 +1468,10 @@ fn signature_digest(
 /// this test's memory), the debug ring zeroed (under `RING_TEST`) and `tcp_input`'s two rate
 /// limiters started again (`tcp_input_test_reset`). The pcb tables are reset by `in_pcbinit`
 /// itself; the counters (compared by difference, and bumped by other modules' tests
-/// meanwhile) and the ISN secret (set once) hold no memory and stay.
-#[cfg(test)]
-pub(crate) fn tcp_test_reset<G: ProcGlue>() {
+/// meanwhile) and the ISN secret (set once) hold no memory and stay. `bsd`'s host tests run
+/// the kernel's TCP over their glue since N6.6a5 and call it from their network setup.
+#[cfg(any(test, feature = "doubles"))]
+pub fn tcp_test_reset<G: ProcGlue>() {
     let mut g = crate::net::domain::net::<G>().tcp.syn_cache.lock();
     core::mem::forget(core::mem::replace(
         &mut *g,
@@ -2521,7 +2532,7 @@ mod tests {
             inp.set_lport(&g, htons(1111));
             inp.set_fport(&g, htons(2222));
         }
-        let before = *TCP_ISS.lock();
+        let before = TCP_ISS.load(Ordering::Relaxed);
         let (iss, tsm) = testtcp::with_tp(&inp, |mut tp| {
             tcp_set_iss_tsm(&mut tp);
             ((tp.st.iss, tp.st.ts_modulate), None)

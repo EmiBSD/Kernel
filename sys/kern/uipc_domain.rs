@@ -84,10 +84,11 @@ use kernel::net::domain::Domain as KDomain;
 use kernel::net::mbuf::MbufBox;
 use kernel::net::proto::{CtlArg, Protocol, SockaddrView, Usrreqs};
 use kernel::net::socket::SoLocked;
-use kernel::netinet::in_proto::{IcmpProtocol, IgmpProtocol, InetDomain, IpProtocol};
+use kernel::netinet::in_proto::{IcmpProtocol, IgmpProtocol, InetDomain, IpProtocol, TcpProtocol};
 #[cfg(feature = "inet6")]
 use kernel::netinet6::in6_proto::{
     Dest6Protocol, Frag6Protocol, Icmp6Protocol, Inet6Domain, Ip6Protocol, Route6Protocol,
+    Tcp6Protocol,
 };
 
 use crate::kern::kern_sysctl::sysctl_vslock;
@@ -130,64 +131,64 @@ macro_rules! protocols {
     ($sw:ident; $($i:literal)*) => { [$(&$sw[$i] as &dyn Protocol<G>),*] };
 }
 
-/// `inetsw[]` as the kernel's protocols, in the C's order: the kernel's IP, ICMP and IGMP
-/// entries (`kernel::netinet::in_proto`), `bsd`'s rows for the rest.
+/// `inetsw[]` as the kernel's protocols, in the C's order: the kernel's IP, TCP, ICMP and
+/// IGMP entries (`kernel::netinet::in_proto`), `bsd`'s rows for the rest.
 #[cfg(not(feature = "inet6"))]
 pub(crate) static INET_PROTOS: [&dyn Protocol<G>; 13] = [
     &IpProtocol::<G>::NEW,
     &INETSW[0],
+    &TcpProtocol::<G>::NEW,
     &INETSW[1],
-    &INETSW[2],
     &IcmpProtocol::<G>::NEW,
-    &INETSW[3],
+    &INETSW[2],
     &IgmpProtocol::<G>::NEW,
+    &INETSW[3],
     &INETSW[4],
     &INETSW[5],
     &INETSW[6],
     &INETSW[7],
     &INETSW[8],
-    &INETSW[9],
 ];
-/// `inetsw[]` as the kernel's protocols, in the C's order: the kernel's IP, ICMP and IGMP
-/// entries (`kernel::netinet::in_proto`), `bsd`'s rows for the rest.
+/// `inetsw[]` as the kernel's protocols, in the C's order: the kernel's IP, TCP, ICMP and
+/// IGMP entries (`kernel::netinet::in_proto`), `bsd`'s rows for the rest.
 #[cfg(feature = "inet6")]
 pub(crate) static INET_PROTOS: [&dyn Protocol<G>; 14] = [
     &IpProtocol::<G>::NEW,
     &INETSW[0],
+    &TcpProtocol::<G>::NEW,
     &INETSW[1],
-    &INETSW[2],
     &IcmpProtocol::<G>::NEW,
+    &INETSW[2],
     &INETSW[3],
-    &INETSW[4],
     &IgmpProtocol::<G>::NEW,
+    &INETSW[4],
     &INETSW[5],
     &INETSW[6],
     &INETSW[7],
     &INETSW[8],
     &INETSW[9],
-    &INETSW[10],
 ];
 
-/// `inet6sw[]` as the kernel's protocols, in the C's order: the kernel's IPv6, ICMPv6,
+/// `inet6sw[]` as the kernel's protocols, in the C's order: the kernel's IPv6, TCP, ICMPv6,
 /// destination options, routing header and fragment header entries
 /// (`kernel::netinet6::in6_proto`), `bsd`'s rows for the rest.
 #[cfg(feature = "inet6")]
 pub(crate) static INET6_PROTOS: [&dyn Protocol<G>; 15] = [
     &Ip6Protocol::<G>::NEW,
     &INET6SW[0],
+    &Tcp6Protocol::<G>::NEW,
     &INET6SW[1],
-    &INET6SW[2],
     &Icmp6Protocol::<G>::NEW,
     &Dest6Protocol::<G>::NEW,
     &Route6Protocol::<G>::NEW,
     &Frag6Protocol::<G>::NEW,
+    &INET6SW[2],
     &INET6SW[3],
     &INET6SW[4],
     &INET6SW[5],
     &INET6SW[6],
     &INET6SW[7],
     &INET6SW[8],
-    &INET6SW[9],
 ];
 /// `pfkeysw[]` as the kernel's protocols.
 static PFKEY_PROTOS: [&dyn Protocol<G>; 1] = protocols!(PFKEYSW; 0);
@@ -320,7 +321,14 @@ impl Protocol<G> for Protosw {
     fn legacy(&self) -> bool {
         true
     }
-    fn ctlinput(&self, cmd: i32, sa: SockaddrView<'_>, rdomain: u32, arg: CtlArg<'_>) {
+    fn ctlinput(
+        &self,
+        cmd: i32,
+        sa: SockaddrView<'_>,
+        rdomain: u32,
+        arg: CtlArg<'_>,
+        _net: &hal::netlock::NetHeld<'_>,
+    ) {
         let Some(ctlinput) = self.pr_ctlinput else {
             return;
         };
@@ -753,7 +761,9 @@ mod tests {
         let ctl = |pr: &Protosw, sa: &[u8], ip: Option<&[u8]>| {
             let sa = SockaddrView::new(sa).expect("an address");
             let arg = ip.map_or(CtlArg::None, CtlArg::Ip);
-            Protocol::<G>::ctlinput(pr, PRC_MSGSIZE, sa, 0, arg);
+            let w = hal::netlock::NETLOCK.read();
+            let net = hal::netlock::NetHeld::of(&w).expect("the net lock");
+            Protocol::<G>::ctlinput(pr, PRC_MSGSIZE, sa, 0, arg, &net);
         };
         let mut sin = [0u8; 16];
         sin[..2].copy_from_slice(&[16, AF_INET]);
@@ -805,7 +815,9 @@ mod tests {
             sin6[..2].copy_from_slice(&[28, crate::sys::socket::AF_INET6]);
             let ctl6 = |pr: &Protosw| {
                 let sa = SockaddrView::new(&sin6).expect("an address");
-                Protocol::<G>::ctlinput(pr, PRC_MSGSIZE, sa, 0, CtlArg::Ip6(&p));
+                let w = hal::netlock::NETLOCK.read();
+                let net = hal::netlock::NetHeld::of(&w).expect("the net lock");
+                Protocol::<G>::ctlinput(pr, PRC_MSGSIZE, sa, 0, CtlArg::Ip6(&p), &net);
             };
             ctl6(&inet6);
             assert_eq!(calls(), (4, 2));
@@ -848,12 +860,17 @@ mod tests {
             pffindproto::<G>(f, 200, SOCK_RAW),
             &INETSW[INETSW.len() - 1]
         ));
-        assert!(is(pffindproto::<G>(f, IPPROTO_RAW, SOCK_RAW), &INETSW[2]));
+        assert!(is(pffindproto::<G>(f, IPPROTO_RAW, SOCK_RAW), &INETSW[1]));
         assert!(is(pffindtype::<G>(f, SOCK_DGRAM), &INETSW[0]));
+        // TCP's entry is the kernel's (N6.6a5): its sockets held by a witness of so_lock.
+        let tcp = pffindtype::<G>(f, crate::sys::socket::SOCK_STREAM).expect("TCP");
+        assert_eq!(i32::from(tcp.protocol()), crate::netinet::in_::IPPROTO_TCP);
+        assert!(INETSW.iter().all(|r| !ptr::addr_eq(tcp, r)), "the kernel's");
+        assert!(!tcp.legacy() && tcp.usrreqs().is_some() && tcp.has_ctloutput());
     }
 
     /// The IPv6 domain the kernel's socket layer walks: the kernel's `Inet6Domain`, its table
-    /// the kernel's five entries among `bsd`'s ten rows in the C's order, found by the
+    /// the kernel's six entries among `bsd`'s nine rows in the C's order, found by the
     /// kernel's `pffindproto`/`pffindtype` (`bsd`'s rows are its `INET6SW` itself, ICMPv6's
     /// entry the kernel's with the raw sockets' requests), and `ip6_init`'s `ip6_protox[]`
     /// over it.
@@ -878,13 +895,16 @@ mod tests {
             (dom.name(), dom.sasize(), dom.rtoffset(), dom.maxplen()),
             ("inet6", 28, 8, 128)
         );
-        // Every entry sockets can be made of is served by `bsd`'s requests (its own rows, and
-        // ICMPv6's, which lends raw IPv6's): held by detached holdings of `so_lock`.
+        // Every entry sockets can be made of but TCP's is served by `bsd`'s requests (its own
+        // rows, and ICMPv6's, which lends raw IPv6's): held by detached holdings of `so_lock`;
+        // TCP's is the kernel's (N6.6a5), held by a witness.
         assert!(
             dom.protocols()
                 .iter()
                 .filter(|p| p.usrreqs().is_some())
-                .all(|p| p.legacy())
+                .all(
+                    |p| p.legacy() != (i32::from(p.protocol()) == crate::netinet::in_::IPPROTO_TCP)
+                )
         );
         // (type, protocol) of each entry, in6_proto.c's order.
         let rows: std::vec::Vec<(i32, i32)> = dom
@@ -918,10 +938,15 @@ mod tests {
             a.is_some_and(|a| ptr::addr_eq(a, b))
         };
         assert!(is(kfindproto::<G>(f, IPPROTO_UDP, SOCK_DGRAM), &INET6SW[0]));
-        assert!(is(kfindtype::<G>(f, SOCK_STREAM), &INET6SW[1]));
-        assert!(is(kfindproto::<G>(f, IPPROTO_RAW, SOCK_RAW), &INET6SW[2]));
+        let tcp6 = kfindtype::<G>(f, SOCK_STREAM).expect("TCP");
         assert!(
-            is(kfindproto::<G>(f, 200, SOCK_RAW), &INET6SW[9]),
+            INET6SW.iter().all(|r| !ptr::addr_eq(tcp6, r)),
+            "the kernel's"
+        );
+        assert!(!tcp6.legacy() && tcp6.domain().family() == f);
+        assert!(is(kfindproto::<G>(f, IPPROTO_RAW, SOCK_RAW), &INET6SW[1]));
+        assert!(
+            is(kfindproto::<G>(f, 200, SOCK_RAW), &INET6SW[8]),
             "the raw wildcard"
         );
         // ICMPv6's entry is the kernel's, the raw sockets' requests and options its own.
@@ -935,9 +960,9 @@ mod tests {
         // the raw protocol for the rest.
         inet6sw_init::<G>();
         assert!(is(inet6_protocol::<G>(IPPROTO_UDP), &INET6SW[0]));
-        assert!(is(inet6_protocol::<G>(IPPROTO_IPV6), &INET6SW[7]));
-        assert!(is(inet6_protocol::<G>(99), &INET6SW[2]));
-        assert!(is(raw6_protocol::<G>(), &INET6SW[2]));
+        assert!(is(inet6_protocol::<G>(IPPROTO_IPV6), &INET6SW[6]));
+        assert!(is(inet6_protocol::<G>(99), &INET6SW[1]));
+        assert!(is(raw6_protocol::<G>(), &INET6SW[1]));
         for n in [
             IPPROTO_ICMPV6,
             IPPROTO_DSTOPTS,

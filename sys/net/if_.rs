@@ -163,7 +163,6 @@ use crate::kern::uipc_mbuf::{m_freem, ml_dequeue, ml_purge};
 use crate::net::bpf::{BpfTap, bpf_mtap_af, bpf_mtap_ether};
 use crate::net::if_var::{IfnetHead, IfnetLegacy, LegacyNetDriver, Niqueue};
 use crate::net::route::{Rtentry, as_static};
-use crate::netinet::tcp_input::tcp_input_mlist;
 #[cfg(feature = "inet6")]
 use crate::netinet6::nd6::In6Ntop;
 use crate::sys::errno::Errno;
@@ -356,12 +355,6 @@ pub fn ipv6_input_proto(
 }
 
 impl kernel::net::if_::Inet for BsdNetLegs {
-    fn tcp_input_mlist(&self, ml: &mut kernel::net::mbuf::MbufList, af: SaFamily) {
-        let l = MbufList::new();
-        l.change(|b| kernel::net::mbuf::ml_enlist(b, ml));
-        tcp_input_mlist(&l, i32::from(af));
-    }
-
     fn ip6_randomid(&self) -> u32 {
         crate::netinet6::ip6_output::ip6_id_generate()
     }
@@ -933,6 +926,9 @@ pub(crate) mod tests {
         // free an earlier test's record (`rti_delete`) into this test's memory. (The address
         // and membership records are counted handles since N6.5e: no free list to forget.)
         kernel::netinet::igmp::igmp_test_reset();
+        // Nor the kernel's TCP's SYN cache sets, debug ring and rate limiters (N6.6a5: bsd's
+        // tests run the kernel's TCP over their glue).
+        kernel::netinet::tcp_subr::tcp_test_reset::<crate::kern::proc_glue::BsdProcGlue>();
         kernel::netinet::if_ether::arp_test_reset();
         // ND's neighbor cache and DAD records (N6.5b), as ARP's.
         kernel::netinet6::nd6::nd6_test_reset();

@@ -23,11 +23,16 @@
 //! because `in` is a Rust keyword (`docs/C_TO_RUST.md`).
 //!
 //! The modules the kernel's `kernel::netinet` and `hal::sys::netinet_*` absorbed (N6.4a) keep
-//! their LZ paths here as re-exports, for `bsd`'s importers (docs/SCAFFOLDING.md).
+//! their LZ paths here as re-exports, for `bsd`'s importers (docs/SCAFFOLDING.md); TCP is the
+//! kernel's since N6.6a5 (`tcp_seq` and `tcp_var` re-exported for pf, the drivers' TSO and
+//! LRO counters and IPsec's output; `tcp_subr` keeps the TCP_SIGNATURE transform, IPsec's,
+//! until N8).
 
 pub use hal::sys::netinet_ip as ip;
 pub use hal::sys::netinet_tcp as tcp;
-pub use kernel::netinet::{in_cksum, in_systm, in4_cksum, inet_nat64, ip_ecn, ip_id, tcp_fsm};
+pub use kernel::netinet::{
+    in_cksum, in_systm, in4_cksum, inet_nat64, ip_ecn, ip_id, tcp_fsm, tcp_seq, tcp_var,
+};
 
 pub mod icmp6;
 #[forbid(unsafe_code)]
@@ -57,15 +62,7 @@ pub mod ip_var;
 pub mod ipsec_input;
 pub mod ipsec_output;
 pub mod raw_ip;
-pub mod tcp_debug;
-pub mod tcp_input;
-pub mod tcp_output;
-#[forbid(unsafe_code)]
-pub mod tcp_seq;
 pub mod tcp_subr;
-pub mod tcp_timer;
-pub mod tcp_usrreq;
-pub mod tcp_var;
 #[forbid(unsafe_code)]
 pub mod udp;
 pub mod udp_usrreq;

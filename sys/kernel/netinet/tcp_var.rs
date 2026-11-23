@@ -163,7 +163,7 @@ use crate::assert::kpanic;
 use crate::net::ipsec_hooks::SOCKADDR_UNION_LEN;
 use crate::net::mbuf::MbufBox;
 use crate::net::route::Route;
-use crate::net::socket::{InetLocked, Socket, so_part};
+use crate::net::socket::{InetLocked, SoLocked, Socket, so_part};
 use crate::netinet::in_pcb::{Inpcb, InpcbRef, Inpcbtable};
 use crate::netinet::tcp_subr::{SACKHL_POOL, TCP_STARTTIME, TCPQE_POOL};
 use crate::netinet::tcp_timer::TCPT_NTIMERS;
@@ -913,6 +913,22 @@ pub struct Tp<'a, 'w, G: ProcGlue> {
     pub net: &'a NetHeld<'w>,
 }
 
+/// The TCP members of a `struct kinfo_file` ([`kinfo`]: `fill_file`'s `intotcpcb(inpcb)`
+/// block, read by fstat(1) and netstat(1)), in the control block's types.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TcpKinfo {
+    /// `inp_ppcb`: the control block's address (printed for a privileged reader only).
+    pub tcpcb: usize,
+    /// `t_state`.
+    pub t_state: i32,
+    /// `rcv_wnd`.
+    pub rcv_wnd: u64,
+    /// `snd_wnd`.
+    pub snd_wnd: u64,
+    /// `snd_cwnd`.
+    pub snd_cwnd: u64,
+}
+
 /// `enum tcpstat_counters`: the index of each counter in `tcpcounters`, in the order of the
 /// members of [`Tcpstat`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1209,6 +1225,22 @@ pub fn intotcpcb<'a, 'w, G: ProcGlue>(
         st,
         syn,
         net,
+    })
+}
+
+/// The TCP members `kern.file` reports of `inp` (`fill_file`'s `inp_ppcb` and `intotcpcb`
+/// block), read under its socket's lock `w` (the caller's `in_pcbsolock` or `solock`, lent
+/// as a witness); `None` for a socket whose lock is not a kernel protocol's or without a
+/// control block (the C would print NULL's members).
+pub fn kinfo<G: ProcGlue>(inp: &Inpcb<G>, w: &mut SoLocked<'_>) -> Option<TcpKinfo> {
+    let mut il = w.inet()?;
+    let tp = intotcpcb(inp, &mut il)?;
+    Some(TcpKinfo {
+        tcpcb: core::ptr::from_ref::<Tcpcb<G>>(&tp.cb).addr(),
+        t_state: tp.st.t_state,
+        rcv_wnd: tp.st.rcv_wnd,
+        snd_wnd: tp.st.snd_wnd,
+        snd_cwnd: tp.st.snd_cwnd,
     })
 }
 /* </CODE> */

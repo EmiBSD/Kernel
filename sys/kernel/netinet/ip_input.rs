@@ -2474,6 +2474,7 @@ pub(crate) mod tests {
             _sa: SockaddrView<'_>,
             _rdomain: u32,
             _arg: crate::net::proto::CtlArg<'_>,
+            _net: &NetHeld<'_>,
         ) {
             self.ctl.store(cmd, Ordering::Relaxed);
         }

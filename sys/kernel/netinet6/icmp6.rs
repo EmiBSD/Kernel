@@ -853,7 +853,7 @@ pub fn icmp6_input<G: ProcGlue>(
         };
 
         match next {
-            Next::Deliver(prc) => match icmp6_notify_error::<G>(m, off, icmp6len, prc) {
+            Next::Deliver(prc) => match icmp6_notify_error::<G>(m, off, icmp6len, prc, net) {
                 Some(mm) => m = mm,
                 // In this case, m should've been freed.
                 None => return IPPROTO_DONE,
@@ -986,6 +986,7 @@ fn icmp6_notify_error<G: ProcGlue>(
     off: i32,
     icmp6len: i32,
     code: i32,
+    net: &NetHeld<'_>,
 ) -> Option<MbufBox> {
     const HDRS: usize = ICMP6_HDR_LEN + IP6_HDR_LEN;
     if icmp6len < HDRS as i32 {
@@ -1131,6 +1132,7 @@ fn icmp6_notify_error<G: ProcGlue>(
             view(&dst),
             m.m_pkthdr().ph_rtableid.get(),
             CtlArg::Ip6(&ip6cp),
+            net,
         );
     }
     let fd = ip6cp.finaldst.get();
@@ -1512,7 +1514,7 @@ pub fn icmp6_redirect_input<G: ProcGlue>(m: MbufBox, off: i32, net: &NetHeld<'_>
         }
         // finally update cached route in each socket via pfctlinput
         let sdst = sin6_bytes(&sin6_of(reddst6));
-        pfctlinput::<G>(PRC_REDIRECT_HOST, view(&sdst));
+        pfctlinput::<G>(PRC_REDIRECT_HOST, view(&sdst), net);
         false
     };
 

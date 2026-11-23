@@ -242,7 +242,7 @@
 //!   members in the size test; the three queue entries 48, the two address unions 32,
 //!   `struct route` 72, `struct refcnt` 8, the header union 40); LZ's `Inpcb` was 352 (measured: a replica of its members over
 //!   this tree's types, LZ's `Route` of 72 and `Refcnt` of 8; the tree's at 2baa2aff, with
-//!   `RouteCell`, the same); here 552, 568 with the counted item's header (the pool and the
+//!   `RouteCell`, the same); here 544, 560 with the counted item's header (the pool and the
 //!   count): the three pinned entries (96: a lock identity each beside the two links), the
 //!   route cache's cell (72), the IPv4 multicast options' and (N6.5c, +64) the IPv6 packet
 //!   and multicast options' (40 each), the IPv4 options' slot (24, N6.6a0: +16 over `bsd`'s
@@ -253,8 +253,8 @@
 //!   `inp_moptions6` tagged by family ([`Mou`], lent by [`Inpcb::moptions`] and
 //!   [`Inpcb::moptions6`] as a [`MouLoan`] of the family's member; a loan of the other
 //!   family's is `panic(9)`, where the C would read the union as the wrong member): 48 B
-//!   where the two cells were 80. The item is 568 B (552 and the header), 560 once `bsd`'s
-//!   `inp_ppcb` word goes (N6.6a5).
+//!   where the two cells were 80. The item was 568 B (552 and the header); 560 since N6.6a5,
+//!   `bsd`'s `inp_ppcb` word gone with `bsd`'s TCP.
 //! - The IPv6 packet and multicast options are the kernel's typed cells since N6.5c (D-10),
 //!   lent by [`Inpcb::outputopts6`] and [`Inpcb::moptions6`] under the socket lock (the C's
 //!   union of `inp_options` and `inp_outputopts6` is two members here, as in LZ).
@@ -263,9 +263,10 @@
 //!   under the socket lock's check and freed by [`in_pcbdetach`]; `bsd`'s transports reach
 //!   it through their adapter's loans (`InpcbLegacy`). The re-keying of the pcb's `[s]`
 //!   members to `so_lock`'s witness is N6.6b's.
-//! - `bsd`'s own members (the ICMPv6 filter, the per-protocol pcb) are words `bsd` keeps
-//!   (`hal::link::PtrWord`), which the kernel never reads (the filter is N6.6b's, the tcpcb
-//!   N6.6a2's); `inp_upcall` is set once (`hal::once::OnceStatic`), as wg(4) sets
+//! - `bsd`'s own member, the ICMPv6 filter, is a word `bsd` keeps (`hal::link::PtrWord`),
+//!   which the kernel never reads (N6.6b's; the per-protocol pcb's word went with `bsd`'s
+//!   TCP at N6.6a5, the kernel's slot being the tcpcb's); `inp_upcall` is set once
+//!   (`hal::once::OnceStatic`), as wg(4) sets
 //!   it on a new socket; `inp_pf_sk` is pf's word ([`PfSlot`]).
 //! - The table: [`Inpcbtable`] holds the queue (a pinned list keyed to its mutex) and the
 //!   SipHash keys; its mutex holds the hash arrays (`MArray`s of pinned lists, `hashinit`'s),
@@ -285,7 +286,8 @@
 //!   (its `[s]` cells open through [`SoLocked::inet`]'s parts), a detached holding for a
 //!   `bsd` protocol's; its drop is `in_pcbsounlock`. LZ's pair, taken in one function and
 //!   released in another, stays for `bsd`'s adapter as [`in_pcbsolock_detached`] and
-//!   [`in_pcbsounlock_detached`] until the transports move (N6.6a5, N6.6b).
+//!   [`in_pcbsounlock_detached`] until the other transports move (N6.6b; TCP, the kernel's
+//!   since N6.6a5, uses neither).
 //!   [`in_pcbnotifyall`] and `in6_pcbnotify` lock through the new form and lend `notify` the
 //!   witness. A kernel TCP request never calls `in_pcbsolock` on the socket it holds (the
 //!   C's `tcp_timer_rexmt` lets its socket go before `in_pcbnotifyall`).
@@ -901,11 +903,8 @@ pub struct Inpcb<G: ProcGlue> {
     pub inp_lport: TWord<u16>,
     /// \[I\] `inp_socket`: back pointer to socket, counted (`None` for an iterator).
     inp_socket: Option<SocketRef<G>>,
-    /// \[s\] `inp_ppcb`: pointer to per-protocol pcb (`bsd`'s tcpcb, until N6.6a5).
-    pub inp_ppcb: PtrWord<c_void>,
-    /// \[s\] `inp_ppcb` of the kernel's TCP (N6.6a2, D-12): the control block this pcb owns,
-    /// keyed to the socket's `so_lock` in part `PCB` ([`Inpcb::tcpcb`]); beside `bsd`'s word
-    /// until the switch (N6.6a5).
+    /// \[s\] `inp_ppcb` of TCP (N6.6a2, D-12): the control block this pcb owns, keyed to the
+    /// socket's `so_lock` in part `PCB` ([`Inpcb::tcpcb`]); `bsd`'s word went at N6.6a5.
     inp_tcpcb: Guarded<Option<PoolBox<Tcpcb<G>>>>,
     /// \[s\] `inp_route`: cached route, reached only through [`Inpcb::route`] and
     /// [`Inpcb::set_route`], which check the socket lock.
@@ -999,7 +998,6 @@ impl<G: ProcGlue> Inpcb<G> {
             inp_fport: TWord::new(),
             inp_lport: TWord::new(),
             inp_socket: so,
-            inp_ppcb: PtrWord::new(),
             inp_tcpcb,
             inp_route: ReadMostly::new(Route::new()),
             inp_refcnt: AtomicU32::new(1),
@@ -2210,7 +2208,7 @@ pub fn sotoinpcb<G: ProcGlue>(so: &Socket<G>) -> Option<InpcbRef<G>> {
 /// `in_pcbsolock` held C-style, for `bsd`'s adapter (its protocols release the lock in
 /// another function, `in_pcbsounlock`): `so_lock` by a detached holding, the caller holding
 /// the net lock (checked: `panic(9)` without it); `None` when the socket is detached. Until
-/// the transports move (N6.6a5, N6.6b).
+/// the other transports move (N6.6b; TCP's are the kernel's since N6.6a5).
 pub fn in_pcbsolock_detached<G: ProcGlue>(inp: &Inpcb<G>) -> Option<&Socket<G>> {
     // NET_ASSERT_LOCKED(): this process's write holding or a read holding.
     if !matches!(hal::netlock::status(), RW_WRITE | hal::rwlock::RW_READ) {
@@ -3178,7 +3176,7 @@ mod tests {
             ("2 x In6AddrCell", 32),
             ("2 x port", 4),
             ("inp_socket", size_of::<Option<SocketRef<G>>>()),
-            ("2 x PtrWord", 2 * size_of::<PtrWord<c_void>>()),
+            ("inp_icmp6filt", size_of::<PtrWord<c_void>>()),
             (
                 "inp_tcpcb",
                 size_of::<Guarded<Option<PoolBox<crate::netinet::tcp_var::Tcpcb<G>>>>>(),
@@ -3208,7 +3206,7 @@ mod tests {
             size_of::<Inpcb<G>>(),
             size_of::<Route>()
         );
-        // 552 bytes, 568 with the counted item's header (the count and the pool), against the
+        // 544 bytes, 560 with the counted item's header (the count and the pool), against the
         // C's struct inpcb of 328 (LP64) and LZ's 352 (the module's Redesign): the three
         // pinned entries (96: a lock identity each besides the two links), the route cache's
         // cell (72), the multicast options' one cell (48: the C's union `inp_mou`, the box
@@ -3216,10 +3214,10 @@ mod tests {
         // of 40 before), the IPv6 packet options' cell (40), the IPv4 options' slot (24: the
         // claim word and the chain's box, N6.6a0's D-15, a word of bsd's before), the anchor
         // (16) and the kernel's tcpcb slot (32: the cell's 16-byte key and the 16-byte box,
-        // N6.6a2's D-12, beside bsd's 8-byte word until N6.6a5, which leaves 544 and 560) are
+        // N6.6a2's D-12; bsd's 8-byte word beside it went at N6.6a5: 552 and 568 before) are
         // the growth; the item stays within the brief's bound of 584 (S12).
-        assert_eq!(sum, 551);
-        assert_eq!(size_of::<Inpcb<G>>(), 552);
+        assert_eq!(sum, 543);
+        assert_eq!(size_of::<Inpcb<G>>(), 544);
         assert!(size_of::<Inpcb<G>>() + 16 <= 584, "S12: the \"inpcb\" item");
 
         // The C's struct inpcb on LP64, as repr(C) lays out in_pcb.h's members in order (the
@@ -3562,7 +3560,7 @@ mod tests {
         assert_eq!(nout(), before + 1);
         assert_eq!(
             crate::net::domain::net::<Tg>().inpcb.pool.item_size(),
-            Some(568),
+            Some(560),
             "vmstat -m's size of an \"inpcb\" item: the value and the counted item's header"
         );
         assert_eq!(inp.legacy_count(), 1, "refcnt_init: the socket's");

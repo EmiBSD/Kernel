@@ -197,6 +197,7 @@ use core::mem::size_of;
 use core::sync::atomic::{AtomicI32, Ordering};
 
 use hal::netlock::NetHeld;
+use hal::once::OnceStatic;
 use hal::pool::AnyArc;
 use hal::rwlock::Guarded;
 use hal::sys::errno::Errno;
@@ -612,6 +613,32 @@ pub fn tcp_input_mlist<G: ProcGlue>(ml: &mut MbufList, af: i32, net: &NetHeld<'_
 
     // in_pcbsounlock(NULL, so)
     drop(so);
+}
+
+/// The [`tcp_input_mlist`] of the glue whose `tcp_init` ran first: how the softnet, which is
+/// not generic over the glue (`kernel::net::if_`'s `if_input_process`), reaches the kernel's
+/// TCP (the glue generic's hop, docs/SCAFFOLDING.md, as `rtsock`'s `ROUTE_INPUT`).
+static TCP_INPUT_MLIST: OnceStatic<fn(&mut MbufList, i32, &NetHeld<'_>)> = OnceStatic::new();
+
+/// `tcp_init`'s half of the softnet's call: `tcp_input_mlist::<G>` registered for
+/// [`tcp_input_mlist_softnet`] (a second glue's call keeps the first).
+pub(crate) fn tcp_input_mlist_register<G: ProcGlue>() {
+    let _ = TCP_INPUT_MLIST.set(tcp_input_mlist::<G>);
+}
+
+/// `tcp_input_mlist(&ns.ns_tcp_ml, af)` of `if_input_process`: the segments `tcp_input`
+/// queued on the softnet's list `ml`, under its shared net lock (`net`). Before `tcp_init`
+/// no segment can have been queued (only TCP's `pr_input` queues them); a list found then is
+/// purged, as no protocol takes it.
+pub fn tcp_input_mlist_softnet(ml: &mut MbufList, af: i32, net: &NetHeld<'_>) {
+    match TCP_INPUT_MLIST.get() {
+        Some(f) => f(ml, af, net),
+        None => {
+            while let Some(m) = ml_dequeue(ml) {
+                drop(m);
+            }
+        }
+    }
 }
 
 /// `tcp_input_solocked`: TCP input routine, follows pages 65-76 of the protocol specification
@@ -3031,7 +3058,7 @@ pub fn tcp_mss_adv(rt: Option<&Rtentry>, af: i32) -> i32 {
 /// The host tests' reset of `tcp_input`'s rate limiters (`tcp_rst_ppslim`'s and
 /// `tcp_ackdrop_ppslim`'s pairs, `tcp_test_reset`'s): a test's resets or dropped ACKs do not
 /// use up the next test's second.
-#[cfg(test)]
+#[cfg(any(test, feature = "doubles"))]
 pub(crate) fn tcp_input_test_reset() {
     ppsratecheck_locked(|l| {
         for pps in [&TCP_RST_PPS, &TCP_ACKDROP_PPS] {

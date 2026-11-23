@@ -152,6 +152,10 @@
 //!   `atomic_load_int`.
 //! - `sosplice`'s `pru_send` comparison is the address of one static (`TCP_SEND_ID`), the
 //!   same for both tables, as the C's two tables share `tcp_send`.
+//! - The switch (N6.6a5): `inetsw[]`'s and `inet6sw[]`'s TCP rows are the kernel's
+//!   (`in_proto::TcpProtocol`, `in6_proto::Tcp6Protocol`) with these requests; LZ's
+//!   `tcbtable`/`tcb6table` statics are the glue's `TcpTables` members, reached by
+//!   [`tcbtable`] and [`tcb6table`] (pf's socket lookup and `kern.file`'s walk, `bsd`'s).
 
 use core::marker::PhantomData;
 use core::mem::size_of;
@@ -205,10 +209,10 @@ use crate::net::socket::{
 };
 use crate::netinet::in_::{in_broadcast, in_control, in_nam2sin};
 use crate::netinet::in_pcb::{
-    BADDYNAMICPORTS, Baddynamicports, DP_MAPSIZE, INP_IPV6, Inpcb, InpcbRef, ROOTONLYPORTS,
-    in_pcballoc, in_pcbbind, in_pcbconnect, in_pcbdetach, in_pcbdisconnect, in_pcblookup,
-    in_pcblookup_listen, in_pcbsolock, in_pcbunset_faddr, in_setpeeraddr, in_setsockaddr,
-    sotoinpcb,
+    BADDYNAMICPORTS, Baddynamicports, DP_MAPSIZE, INP_IPV6, Inpcb, InpcbRef, Inpcbtable,
+    ROOTONLYPORTS, in_pcballoc, in_pcbbind, in_pcbconnect, in_pcbdetach, in_pcbdisconnect,
+    in_pcblookup, in_pcblookup_listen, in_pcbsolock, in_pcbunset_faddr, in_setpeeraddr,
+    in_setsockaddr, sotoinpcb,
 };
 use crate::netinet::ip_output::ip_ctloutput;
 use crate::netinet::tcp_debug::{TA_USER, tcp_trace};
@@ -307,6 +311,17 @@ pub static TCP_AUTORCVBUF_INC: u32 = 16 * 1024;
 /// The identity of `tcp_send` for `sosplice` (`pru_send != pru_send`): both tables answer
 /// this static's address.
 static TCP_SEND_ID: u8 = 0;
+
+/// `tcbtable`: the glue's IPv4 TCP control blocks (`TcpTables`; pf's socket lookup and
+/// `kern.file`'s walk read it).
+pub fn tcbtable<G: ProcGlue>() -> &'static Inpcbtable<G> {
+    &net::<G>().tcp.tcbtable
+}
+
+/// `tcb6table`: the glue's IPv6 TCP control blocks, as [`tcbtable`].
+pub fn tcb6table<G: ProcGlue>() -> &'static Inpcbtable<G> {
+    &net::<G>().tcp.tcb6table
+}
 
 /// `tcpctl_vars[]`.
 static TCPCTL_VARS: [SysctlBoundedArgs; 14] = [
@@ -731,7 +746,7 @@ pub fn tcp_attach<G: ProcGlue>(
         i32::from(PF_INET)
     };
     if so.has_options(SO_LINGER) && so.linger() == 0 {
-        so.set_linger_legacy(TCP_LINGERTIME);
+        so.set_linger(TCP_LINGERTIME);
     }
 
     if so.has_options(SO_DEBUG) {

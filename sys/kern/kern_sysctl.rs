@@ -164,8 +164,6 @@ use crate::netinet::in_pcb::{
 };
 use crate::netinet::ip_divert::DIVBTABLE;
 use crate::netinet::raw_ip::RAWCBTABLE;
-use crate::netinet::tcp_usrreq::TCBTABLE;
-use crate::netinet::tcp_var::intotcpcb;
 use crate::netinet::udp_usrreq::UDBTABLE;
 use crate::sys::disk::{DS_DISKNAMELEN, Disk, Diskstats};
 use crate::sys::errno::Errno;
@@ -191,8 +189,8 @@ use crate::sys::vnode::{Vattr, Vnode, makeimode};
 use crate::unported;
 #[cfg(feature = "inet6")]
 use crate::{
-    netinet::tcp_usrreq::TCB6TABLE, netinet::udp_usrreq::UDB6TABLE,
-    netinet6::ip6_divert::DIVB6TABLE, netinet6::raw_ip6::RAWIN6PCBTABLE,
+    netinet::udp_usrreq::UDB6TABLE, netinet6::ip6_divert::DIVB6TABLE,
+    netinet6::raw_ip6::RAWIN6PCBTABLE,
 };
 use hal::klock;
 use hal::user::UserPtr;
@@ -843,8 +841,9 @@ fn fill_file_socket(
             return;
         };
         soassertlocked(so);
+        let tcp = tcp_kinfo(so, inpcb, w);
         if show_pointers {
-            kf.inp_ppcb = ptrtoint64(inpcb.inp_ppcb.get_mut());
+            kf.inp_ppcb = tcp.map_or(0, |t| t.tcpcb as u64);
         }
         kf.inp_lport = u32::from(inpcb.inp_lport.get());
         kf.inp_laddru[0] = inpcb.inp_laddr.get().s_addr;
@@ -854,16 +853,17 @@ fn fill_file_socket(
         if so.so_type() == SOCK_RAW {
             kf.inp_proto = u32::from(inpcb.inp_ip.get().ip_p);
         }
-        if i32::from(so.proto().protocol()) == IPPROTO_TCP {
-            fill_file_tcpcb(kf, inpcb);
+        if let Some(t) = tcp {
+            fill_file_tcpcb(kf, &t);
         }
     } else if family == i32::from(AF_INET6) {
         let Some(inpcb) = sotoinpcb(so) else {
             return;
         };
         soassertlocked(so);
+        let tcp = tcp_kinfo(so, inpcb, w);
         if show_pointers {
-            kf.inp_ppcb = ptrtoint64(inpcb.inp_ppcb.get_mut());
+            kf.inp_ppcb = tcp.map_or(0, |t| t.tcpcb as u64);
         }
         kf.inp_lport = u32::from(inpcb.inp_lport.get());
         let laddr6: crate::netinet6::in6::In6Addr = inpcb.inp_laddr6.get();
@@ -879,8 +879,8 @@ fn fill_file_socket(
         if so.so_type() == SOCK_RAW {
             kf.inp_proto = u32::from(inpcb.inp_ipv6.get::<crate::netinet::ip6::Ip6Hdr>().ip6_nxt);
         }
-        if i32::from(so.proto().protocol()) == IPPROTO_TCP {
-            fill_file_tcpcb(kf, inpcb);
+        if let Some(t) = tcp {
+            fill_file_tcpcb(kf, &t);
         }
     } else if family == i32::from(AF_UNIX) {
         let Some(k) = kernel::net::unix::unp_kinfo(so, w) else {
@@ -904,17 +904,28 @@ fn fill_file_socket(
     }
 }
 
+/// The kernel's TCP control block of a TCP socket's `inpcb` (`fill_file`'s `inp_ppcb` and
+/// `intotcpcb(inpcb)`, read under the socket's lock `w` by `kernel::netinet::tcp_var::kinfo`,
+/// N6.6a5); `None` for another protocol's socket (whose `inp_ppcb` is NULL) and for one
+/// without a control block (the C would dereference NULL; its members stay zero).
+fn tcp_kinfo(
+    so: &Socket,
+    inpcb: &Inpcb,
+    w: &mut kernel::net::socket::SoLocked<'_>,
+) -> Option<kernel::netinet::tcp_var::TcpKinfo> {
+    if i32::from(so.proto().protocol()) != IPPROTO_TCP {
+        return None;
+    }
+    kernel::netinet::tcp_var::kinfo(inpcb, w)
+}
+
 /// The TCP members of `kinfo_file` (`fill_file`'s `intotcpcb(inpcb)` block, shared by the
-/// `AF_INET` and `AF_INET6` cases); a control block without a `tcpcb` (the C would
-/// dereference NULL) leaves them zero.
-fn fill_file_tcpcb(kf: &mut KinfoFile, inpcb: &Inpcb) {
-    let Some(tcpcb) = intotcpcb(inpcb) else {
-        return;
-    };
-    kf.t_rcv_wnd = tcpcb.rcv_wnd.get();
-    kf.t_snd_wnd = tcpcb.snd_wnd.get();
-    kf.t_snd_cwnd = tcpcb.snd_cwnd.get();
-    kf.t_state = tcpcb.t_state.get() as u32;
+/// `AF_INET` and `AF_INET6` cases).
+fn fill_file_tcpcb(kf: &mut KinfoFile, t: &kernel::netinet::tcp_var::TcpKinfo) {
+    kf.t_rcv_wnd = t.rcv_wnd;
+    kf.t_snd_wnd = t.snd_wnd;
+    kf.t_snd_cwnd = t.snd_cwnd;
+    kf.t_state = t.t_state as u32;
 }
 
 /// The output of a `sysctl_file` walk: the C's `kf`, `dp`, `buflen`, `elem_count` and
@@ -1136,9 +1147,9 @@ pub fn sysctl_file(name: &[i32], where_: usize, sizep: &mut usize, p: &Proc) -> 
         KERN_FILE_BYFILE => {
             // use the inp-tables to pick up closed connections, too
             if arg == DTYPE_SOCKET {
-                w.fillinptable(&TCBTABLE)?;
+                w.fillinptable(kernel::netinet::tcp_usrreq::tcbtable::<BsdProcGlue>())?;
                 #[cfg(feature = "inet6")]
-                w.fillinptable(&TCB6TABLE)?;
+                w.fillinptable(kernel::netinet::tcp_usrreq::tcb6table::<BsdProcGlue>())?;
                 w.fillinptable(&UDBTABLE)?;
                 #[cfg(feature = "inet6")]
                 w.fillinptable(&UDB6TABLE)?;
