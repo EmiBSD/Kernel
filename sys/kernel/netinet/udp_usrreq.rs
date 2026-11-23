@@ -218,7 +218,7 @@ use hal::sys::socket::{
     SO_REUSEPORT, SO_TIMESTAMP, cmsg_align, cmsg_len,
 };
 use hal::sys::sysctl::SysctlBoundedArgs;
-use hal::user::{AbiPod, bytes_of};
+use hal::user::bytes_of;
 
 use crate::assert::{kassert, kpanic};
 use crate::net::domain::net;
@@ -246,8 +246,8 @@ use crate::netinet::in_pcb::{
     INP_RECVDSTPORT, InpHold, Inpcb, InpcbRef, Inpcbtable, in_pcb_iterator, in_pcb_iterator_abort,
     in_pcbaddrisavail, in_pcballoc, in_pcbbind, in_pcbconnect, in_pcbdetach, in_pcbdisconnect,
     in_pcbinit, in_pcblookup, in_pcblookup_listen, in_pcbnotifyall, in_pcbrtchange, in_pcbselsrc,
-    in_pcbsolock, in_pcbunset_laddr, in_setpeeraddr, in_setsockaddr, in_sysctl_ports,
-    sotoinpcb_locked,
+    in_pcbsolock, in_pcbunset_laddr, in_setpeeraddr, in_setsockaddr, in_sysctl_ports, inet,
+    set_nam, sotoinpcb_locked, with_curproc,
 };
 use crate::netinet::in4_cksum::in4_cksum;
 use crate::netinet::ip_icmp::icmp_error;
@@ -302,11 +302,11 @@ impl<G: ProcGlue> UdpUsrreqs<G> {
 }
 
 /// \[a\] `udpcksum`.
-pub static UDPCKSUM: AtomicI32 = AtomicI32::new(1);
+static UDPCKSUM: AtomicI32 = AtomicI32::new(1);
 /// \[a\] `udp_sendspace`: really max datagram size.
-pub static UDP_SENDSPACE: AtomicI32 = AtomicI32::new(9216);
+static UDP_SENDSPACE: AtomicI32 = AtomicI32::new(9216);
 /// \[a\] `udp_recvspace`: 40 1K datagrams.
-pub static UDP_RECVSPACE: AtomicI32 = AtomicI32::new(40 * (1024 + size_of::<SockaddrIn>() as i32));
+static UDP_RECVSPACE: AtomicI32 = AtomicI32::new(40 * (1024 + size_of::<SockaddrIn>() as i32));
 
 /// `udpctl_vars[]`.
 static UDPCTL_VARS: [SysctlBoundedArgs; 3] = [
@@ -330,42 +330,12 @@ pub fn udb6table<G: ProcGlue>() -> &'static Inpcbtable<G> {
     &net::<G>().udb6table
 }
 
-/// The socket lock of a request opened in its parts (the C's `soassertlocked`): a kernel UDP
-/// socket is always held by a witness under a proof of the net lock.
-fn inet<'w>(w: &'w mut SoLocked<'_>) -> InetLocked<'w> {
-    match w.inet() {
-        Some(il) => il,
-        None => kpanic(format_args!(
-            "udp: the socket lock is not held as a kernel protocol's"
-        )),
-    }
-}
-
 /// `sotoinpcb(so)` of the requests that dereference it unchecked: the pcb borrowed from the
 /// socket's locked slot; `panic(9)` without one, where the C dereferences NULL.
 fn udp_inp<'a, G: ProcGlue>(so: &'a Socket<G>, pcb: &'a WitnessPart<'_>) -> &'a Inpcb<G> {
     match sotoinpcb_locked(so, pcb) {
         Some(inp) => inp,
         None => kpanic(format_args!("udp socket {so:p}: no inpcb")),
-    }
-}
-
-/// `curproc`, which the socket requests run as (`panic(9)` without one: a request reaches a
-/// protocol from a system call or a kernel thread).
-fn with_curproc<G: ProcGlue, R>(func: &str, f: impl FnOnce(&Thread<G>) -> R) -> R {
-    G::with_curproc(|p| match p {
-        Some(p) => f(p),
-        None => kpanic(format_args!("{func}: no curproc")),
-    })
-}
-
-/// `addr` written into the name mbuf `nam` (`m_len` its size).
-fn set_nam<T: AbiPod>(nam: &mut Mbuf, addr: &T) {
-    let bytes = bytes_of(core::slice::from_ref(addr));
-    nam.m_len().set(bytes.len() as u32);
-    match nam.data_mut() {
-        Some(d) => d.copy_from_slice(bytes),
-        None => kpanic(format_args!("udp: a read-only name mbuf")),
     }
 }
 
@@ -888,7 +858,7 @@ fn udp_sbappend<G: ProcGlue>(
 
 /// `udp_notify`: notify a udp user of an asynchronous error; just wake up so that he can
 /// collect error status. The socket `w` locks (the C's walks lock it).
-pub fn udp_notify<G: ProcGlue>(inp: &Inpcb<G>, _w: &mut SoLocked<'_>, errno: Option<Errno>) {
+fn udp_notify<G: ProcGlue>(inp: &Inpcb<G>, _w: &mut SoLocked<'_>, errno: Option<Errno>) {
     let so = inp.socket();
     so.set_error(errno);
     sorwakeup(so);
@@ -1456,7 +1426,7 @@ pub fn udp_connect<G: ProcGlue>(
 
 /// `udp_disconnect`: the socket's peer and local address forgotten; `ENOTCONN` without a
 /// peer.
-pub fn udp_disconnect<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) -> Result<(), Errno> {
+fn udp_disconnect<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) -> Result<(), Errno> {
     let mut il = inet(w);
     let detach = {
         let inp = udp_inp(so, &il.pcb);
@@ -1483,7 +1453,7 @@ pub fn udp_disconnect<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) -> Resu
 }
 
 /// `udp_shutdown`: no more sending.
-pub fn udp_shutdown<G: ProcGlue>(so: &Socket<G>, _w: &mut SoLocked<'_>) -> Result<(), Errno> {
+fn udp_shutdown<G: ProcGlue>(so: &Socket<G>, _w: &mut SoLocked<'_>) -> Result<(), Errno> {
     socantsendmore(so);
     Ok(())
 }
@@ -1686,6 +1656,7 @@ pub(crate) mod testudp {
     use hal::netlock::{NETLOCK, NetHeld};
     use hal::sys::mbuf::{MT_CONTROL, MT_DATA, MT_SONAME};
     use hal::sys::socket::SOCK_DGRAM;
+    use hal::user::AbiPod;
 
     use super::*;
     use crate::net::mbuf::{M_WAIT, m_get, m_gethdr};

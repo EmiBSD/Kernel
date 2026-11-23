@@ -123,7 +123,7 @@ use crate::assert::kpanic;
 use crate::net::mbuf::{M_DONTWAIT, M_FLOWID, M_UDP_CSUM_OUT, Mbuf, MbufBox, m_prepend};
 use crate::net::pf_hooks::pf;
 use crate::net::sockbuf::{SS_ISCONNECTED, SS_PRIV};
-use crate::netinet::in_pcb::{IN6P_MINMTU, Inpcb, in_pcbbind};
+use crate::netinet::in_pcb::{IN6P_MINMTU, Inpcb, in_pcbbind, with_curproc};
 use crate::netinet::udp_var::{UdpstatCounters, udpstat_inc};
 use crate::netinet6::in6::in6_nam2sin6;
 use crate::netinet6::in6_pcb::in6_pcbaddrisavail;
@@ -228,10 +228,7 @@ fn udp6_send<G: ProcGlue>(
         let laddr = in6_pcbselsrc(&sin6, inp, pi, mopts.as_ref().map(|o| o.im6o_ifidx), net)?;
 
         if inp.inp_lport.get() == 0 {
-            G::with_curproc(|p| match p {
-                Some(p) => in_pcbbind(inp, None, p, net),
-                None => kpanic(format_args!("udp6_output: no curproc")),
-            })?;
+            with_curproc::<G, _>("udp6_output", |p| in_pcbbind(inp, None, p, net))?;
         }
 
         let laddr6 = inp.inp_laddr6.get::<In6Addr>();

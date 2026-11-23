@@ -221,7 +221,7 @@ use crate::netinet::in_::{in_broadcast, in_control, in_nam2sin};
 use crate::netinet::in_pcb::{
     INP_IPV6, Inpcb, Inpcbtable, in_pcballoc, in_pcbbind, in_pcbconnect, in_pcbdetach,
     in_pcbdisconnect, in_pcblookup, in_pcblookup_listen, in_pcbsolock, in_pcbunset_faddr,
-    in_setpeeraddr, in_setsockaddr, in_sysctl_ports, sotoinpcb_locked,
+    in_setpeeraddr, in_setsockaddr, in_sysctl_ports, inet, set_nam, sotoinpcb_locked, with_curproc,
 };
 use crate::netinet::ip_output::ip_ctloutput;
 use crate::netinet::tcp_debug::{TA_USER, tcp_trace};
@@ -363,17 +363,6 @@ static TCPCTL_VARS: [SysctlBoundedArgs; 14] = [
     SysctlBoundedArgs::new(TCPCTL_TSO, &TCP_DO_TSO, 0, 1),
 ];
 
-/// The socket lock of a request opened in its parts (the C's `soassertlocked`): a kernel TCP
-/// socket is always held by a witness under a proof of the net lock.
-fn inet<'w>(w: &'w mut SoLocked<'_>) -> InetLocked<'w> {
-    match w.inet() {
-        Some(il) => il,
-        None => kpanic(format_args!(
-            "tcp: the socket lock is not held as a kernel protocol's"
-        )),
-    }
-}
-
 /// `tcp_sogetpcb`: when a TCP is attached to a socket, then there will be a (struct inpcb)
 /// pointed at by the socket, and this structure will point at a subsidiary (struct tcpcb):
 /// both borrowed through the socket lock's parts (`il`) for as long as the answer lives, the
@@ -430,25 +419,6 @@ fn trace_end(start: Option<(usize, i32)>, st: Option<&TcpState>, req: i32) {
 /// state (`accept`, `sense`, `sockaddr`, `peeraddr`, `rcvoob`), on a socket with `SO_DEBUG`.
 fn trace_now<G: ProcGlue>(tp: &Tp<'_, '_, G>, req: i32) {
     trace_end(trace_start(tp), Some(tp.st), req);
-}
-
-/// `curproc`, which the socket requests run as (`panic(9)` without one: a request reaches a
-/// protocol from a system call).
-fn with_curproc<G: ProcGlue, R>(func: &str, f: impl FnOnce(&Thread<G>) -> R) -> R {
-    G::with_curproc(|p| match p {
-        Some(p) => f(p),
-        None => kpanic(format_args!("{func}: no curproc")),
-    })
-}
-
-/// `addr` written into the name mbuf `nam` (`m_len` its size).
-fn set_nam<T: AbiPod>(nam: &mut Mbuf, addr: &T) {
-    let bytes = bytes_of(core::slice::from_ref(addr));
-    nam.m_len().set(bytes.len() as u32);
-    match nam.data_mut() {
-        Some(d) => d.copy_from_slice(bytes),
-        None => kpanic(format_args!("tcp: a read-only name mbuf")),
-    }
 }
 
 /// `in_setsockaddr(inp, nam)`: the local address of `inp`, of its family, into `nam`.

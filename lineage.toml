@@ -16754,8 +16754,8 @@ kind = "merged"
 
 [[module.fn]]
 lz = "sys/netinet/udp_usrreq.rs::curproc_or_panic"
-native = ["with_curproc"]
-kind = "renamed"
+native = ["sys/kernel/netinet/in_pcb.rs::with_curproc"]
+kind = "merged"
 
 [[module.fn]]
 lz = "sys/netinet/udp_usrreq.rs::uh_read"
@@ -16810,8 +16810,8 @@ kind = "renamed"
 
 [[module.fn]]
 lz = "sys/netinet/tcp_usrreq.rs::curproc_or_panic"
-native = ["with_curproc"]
-kind = "renamed"
+native = ["sys/kernel/netinet/in_pcb.rs::with_curproc"]
+kind = "merged"
 
 [[module.fn]]
 lz = "sys/netinet/tcp_usrreq.rs::tcpstat_fields"
@@ -17340,9 +17340,8 @@ notes = "N6.6b0: udp6_output.c in the kernel: the caller's NetHeld passed to in6
 
 [[module.fn]]
 lz = "sys/netinet6/udp6_output.rs::curproc_or_panic"
-native = []
-kind = "dropped"
-reason = "udp6_send asks the glue for curproc where it binds (G::with_curproc, panic(9) without one, as before)"
+native = ["sys/kernel/netinet/in_pcb.rs::with_curproc"]
+kind = "merged"
 
 [[module]]
 rust = "sys/kernel/netinet6/route6.rs"

@@ -76,7 +76,7 @@
 //! - `NBPFILTER` and `NPF` are configured: `wg_clone_create` attaches a `DLT_LOOP` tap and
 //!   `wg_deliver_in`/`wg_qstart` tap with `bpf_mtap_af`; `wg_decap` calls
 //!   `pf_pkt_addr_changed`.
-//! - [`wg_input`] is the UDP pcb's `inp_upcall`, the kernel's safe
+//! - `wg_input` is the UDP pcb's `inp_upcall`, the kernel's safe
 //!   `kernel::netinet::in_pcb::InpUpcallFn` (N6.6b0): the packet given over (parked at
 //!   entry) and copies of its IP or IPv6 header and its UDP header, where the C passes
 //!   pointers into the packet; the softc's address as the argument.
@@ -3184,7 +3184,7 @@ pub fn wg_index_drop(arg: *mut c_void, key0: u32) {
 /// message. `arg` is the softc's address `wg_bind` gave the socket; `ip` (or `ip6`) and `uh`
 /// are the kernel's copies of the packet's headers. Always consumes the packet, which is
 /// parked at entry (`bsd`'s mbufs).
-pub fn wg_input(
+fn wg_input(
     arg: usize,
     m: kernel::net::mbuf::MbufBox,
     ip: Option<&Ip>,

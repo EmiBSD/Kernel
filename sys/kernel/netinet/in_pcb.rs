@@ -292,11 +292,16 @@
 //!   [`in_pcbnotifyall`] and `in6_pcbnotify` lock through the new form and lend `notify` the
 //!   witness. A kernel TCP request never calls `in_pcbsolock` on the socket it holds (the
 //!   C's `tcp_timer_rexmt` lets its socket go before `in_pcbnotifyall`).
-//! - N6.6b0: [`in_sysctl_ports`] is the `*CTL_ROOTONLY`/`*CTL_BADDYNAMIC` block that
+//! - N6.6b0: `in_sysctl_ports` is the `*CTL_ROOTONLY`/`*CTL_BADDYNAMIC` block that
 //!   `tcp_sysctl` and `udp_sysctl` write identically in the C (the securelevel refusal, the
 //!   `M_SYSCTL` buffer, the shared then the exclusive net lock), one function for the two
 //!   protocols' halves of the bitmaps beside the bitmaps themselves (N6.6a5's
 //!   `tcp_sysctl_ports`, its second user UDP's).
+//! - N6.6b0's review: the internet protocols' request helpers, one copy each beside
+//!   [`sotoinpcb_locked`] where TCP and UDP had one each: `inet` (the socket lock opened in
+//!   its parts, `panic(9)` held otherwise), `with_curproc` (LZ's `curproc_or_panic` of
+//!   `tcp_usrreq`, `udp_usrreq` and `udp6_output`) and `set_nam` (an address into a request's
+//!   name mbuf).
 //!
 //! Lock and spl transitions per operation, against the C (`in_pcb.c`):
 //!
@@ -349,6 +354,7 @@ use hal::sys::netinet6_in6::{In6Addr, in6_is_addr_unspecified};
 use hal::sys::socket::{
     AF_INET, SO_ACCEPTCONN, SO_BINDANY, SO_REUSEADDR, SO_REUSEPORT, SOCK_DGRAM,
 };
+use hal::user::{AbiPod, bytes_of};
 use libkern::siphash::AtomicSiphashKey;
 
 use crate::assert::kassert;
@@ -363,7 +369,9 @@ use crate::net::proto::PR_CONNREQUIRED;
 use crate::net::route::{Route, Rtentry, rtdeletemsg};
 use crate::net::rtable::{rtable_exists, rtable_getsource, rtable_l2};
 use crate::net::sockbuf::SS_NOFDREF;
-use crate::net::socket::{SoLocked, Socket, SocketRef, so_part, sofree_legacy, solock_net, soref};
+use crate::net::socket::{
+    InetLocked, SoLocked, Socket, SocketRef, so_part, sofree_legacy, solock_net, soref,
+};
 use crate::net::toeplitz::stoeplitz_ip4port;
 use crate::netinet::in_::{in_broadcast, in_ifp2ia, in_nam2sin};
 use crate::netinet::in_var::ifatoia;
@@ -1809,7 +1817,11 @@ pub fn in_rootonly(port: u16, proto: u16) -> bool {
 /// `securelevel` > 0 for `rootonly` (`EPERM`), copied out under the shared net lock and back
 /// under the exclusive one, through the C's `malloc(M_SYSCTL, M_WAITOK | M_ZERO)` buffer.
 /// Another `proto` has no half: `EOPNOTSUPP` (no C caller passes one).
-pub fn in_sysctl_ports(req: &mut SysctlReq<'_>, proto: u16, rootonly: bool) -> Result<(), Errno> {
+pub(crate) fn in_sysctl_ports(
+    req: &mut SysctlReq<'_>,
+    proto: u16,
+    rootonly: bool,
+) -> Result<(), Errno> {
     if rootonly && req.newp != 0 && SECURELEVEL.load(Ordering::Relaxed) > 0 {
         return Err(Errno::EPERM);
     }
@@ -2317,6 +2329,39 @@ pub fn sotoinpcb_locked<'a, G: ProcGlue>(
     pcb: &'a WitnessPart<'_>,
 ) -> Option<&'a Inpcb<G>> {
     so.pcb_locked(pcb)?.downcast_ref::<Inpcb<G>>()
+}
+
+/// The socket lock of an internet protocol's user request opened in its parts (the C's
+/// `soassertlocked`): a kernel protocol's socket is always held by a witness under a proof
+/// of the net lock, so anything else is `panic(9)`. TCP's and UDP's requests (N6.6b0).
+pub(crate) fn inet<'w>(w: &'w mut SoLocked<'_>) -> InetLocked<'w> {
+    match w.inet() {
+        Some(il) => il,
+        None => kpanic(format_args!(
+            "inet: the socket lock is not held as a kernel protocol's"
+        )),
+    }
+}
+
+/// `curproc`, which an internet protocol's user requests run as, named `func` in the
+/// `panic(9)` without one (a request reaches a protocol from a system call or a kernel
+/// thread). TCP's and UDP's requests, `udp6_output` (N6.6b0).
+pub(crate) fn with_curproc<G: ProcGlue, R>(func: &str, f: impl FnOnce(&Thread<G>) -> R) -> R {
+    G::with_curproc(|p| match p {
+        Some(p) => f(p),
+        None => kpanic(format_args!("{func}: no curproc")),
+    })
+}
+
+/// `addr` written into the name mbuf `nam` of a request (`m_len` its size): the
+/// `in_setsockaddr`/`in_setpeeraddr` answers of TCP's and UDP's requests (N6.6b0).
+pub(crate) fn set_nam<T: AbiPod>(nam: &mut Mbuf, addr: &T) {
+    let bytes = bytes_of(core::slice::from_ref(addr));
+    nam.m_len().set(bytes.len() as u32);
+    match nam.data_mut() {
+        Some(d) => d.copy_from_slice(bytes),
+        None => kpanic(format_args!("inet: a read-only name mbuf")),
+    }
 }
 
 /// `in_pcbsolock` held C-style, for `bsd`'s adapter (its protocols release the lock in
