@@ -411,9 +411,8 @@ pub fn sys___thrwakeup<G: ProcGlue>(p: &Thread<G>, ident: isize, n: i32) -> i32 
     }
 
     if ident == -1 {
-        // Wake up all waiters with ident -1. This is needed because ident -1 can be shared
-        // by multiple userspace lock state machines concurrently. The implementation has no
-        // way to direct the wakeup to a particular state machine.
+        // Ident -1 is a channel several userland locks may use at once, and nothing here
+        // tells their sleepers apart, so the waker wakes them all and lets each recheck.
         let mut w = TSB_SHARED.tsb_lock.lock();
         // Every record leaves the list as it is woken: the C's TAILQ_INIT after the walk.
         tslp_wakeups::<G>(&mut w, &TSB_SHARED.tsb_list);
@@ -431,22 +430,16 @@ pub fn sys___thrwakeup<G: ProcGlue>(p: &Thread<G>, ident: isize, n: i32) -> i32 
         .unwrap_or(usize::MAX);
 
     let mut w = tsb.tsb_lock.lock();
-    // An empty bucket: nothing to walk, and no local list to bind.
-    let found = if tsb.tsb_list.is_empty(&w) {
-        0
-    } else {
-        let wq: PinList<Tslpqueue> = PinList::new();
-        let found = tsb.tsb_list.move_where(
-            &mut w,
-            max,
-            |e| e.tslp_ident == ident && e.tslp_ps == ps,
-            &wq,
-        );
-        if found != 0 {
-            tslp_wakeups::<G>(&mut w, &wq);
-        }
-        found
-    };
+    let wq: PinList<Tslpqueue> = PinList::new();
+    let found = tsb.tsb_list.move_where(
+        &mut w,
+        max,
+        |e| e.tslp_ident == ident && e.tslp_ps == ps,
+        &wq,
+    );
+    if found != 0 {
+        tslp_wakeups::<G>(&mut w, &wq);
+    }
     drop(w);
 
     if found != 0 { 0 } else { Errno::ESRCH.as_i32() }
@@ -714,9 +707,11 @@ mod tests {
         );
         assert_eq!(lock_word(), 0);
         assert_eq!(len(&TSB_SHARED), 0);
-        // An unmapped lock: its fault, the record gone, the abort word never read.
+        // An unmapped lock: its fault, the record gone, the abort word never read (it is set
+        // and readable, so a read would answer EINTR).
+        set_abort(1);
         assert_eq!(
-            thrsleep_call(&p, 0x2000, CLOCK_MONOTONIC, 0, UNMAPPED, ABORT + 1),
+            thrsleep_call(&p, 0x2000, CLOCK_MONOTONIC, 0, UNMAPPED, ABORT),
             errno(Errno::EFAULT)
         );
         assert_eq!(len(thrsleep_bucket(0x2000)), 0);

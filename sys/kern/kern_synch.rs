@@ -543,12 +543,17 @@ mod tests {
             call(sys___thrwakeup, p, &[0, 1]),
             Errno::EINVAL.as_i32() as Register
         );
-        // n and the process: nobody of this process sleeps on the ident; the broadcast is 0.
+        // n and the process: nobody of this process sleeps on the ident, whatever n (a
+        // negative n read from its register); the broadcast is 0. A sleeper is beyond this
+        // fixture (no scheduler): how n counts the woken is kernel::thrsleep's wake-n test.
         let q = thread(1101);
-        assert_eq!(
-            call(sys___thrwakeup, q, &[0x1000, 1]),
-            Errno::ESRCH.as_i32() as Register
-        );
+        for n in [1, 0, -1] {
+            assert_eq!(
+                call(sys___thrwakeup, q, &[0x1000, n]),
+                Errno::ESRCH.as_i32() as Register,
+                "n {n}"
+            );
+        }
         assert_eq!(call(sys___thrwakeup, q, &[-1, 1]), 0);
     }
 }
