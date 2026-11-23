@@ -155,8 +155,6 @@
 //! ## Deviations
 //! - `NPF` is configured: `PF_TAG_DIVERTED` is honoured on input and `pf_pkt_addr_changed`
 //!   is the `Pf` bridge's leg. `NCARP` (`carp_lsdrop` on echo requests) is not configured.
-//! - `icmp6_ctloutput` (`ICMP6_FILTER`) stays `bsd`'s with the raw sockets' filter word it
-//!   reads and writes (`inp_icmp6filt`, N6.6b; `bsd`'s `netinet6/icmp6.rs`).
 //! - The raw sockets' input (`rip6_input`, the C's tail call) is the IPv6 domain's raw
 //!   entry's `Protocol::input` (`bsd`'s until N6.6b); the upper layer's control input
 //!   (`inet6sw[ip6_protox[nxt]].pr_ctlinput`) is the entry's `Protocol::ctlinput`.
@@ -172,6 +170,11 @@
 //!   returns without freeing it (icmp6.c:1206-1208, a leak).
 //!
 //! ## Redesign
+//! - N6.6b1 (D-7): [`icmp6_ctloutput`] is the kernel's, over the pcb's filter words
+//!   ([`Inpcb::icmp6filt`]): a set stores the eight words of the option's `struct
+//!   icmp6_filter`, a get loads them (the C's two `bcopy`s, word by word, never a torn word
+//!   for the unlocked reader `rip6_input`); `bsd`'s copy (`netinet6/icmp6.rs`) forwards to it
+//!   until N6.6b1's switch deletes it.
 //! - LZ's reads of the message through the raw pointers `ip6_exthdr_get` returned (`read_at`,
 //!   an `unsafe fn`; 23 `unsafe` over mbuf data) -> `pod` copies of the headers from the
 //!   mbuf that holds them (`ip6_input::ip6_exthdr_get`, `ip6_exthdr_bytes`), the C's checks
@@ -244,8 +247,8 @@ use hal::sys::netinet_ip6::{
     Ip6Frag, Ip6Hdr, Ip6Rthdr, Ip6Rthdr0,
 };
 use hal::sys::netinet6_in6::{
-    IPV6_RTHDR_TYPE_0, In6Addr, SockaddrIn6, in6_is_addr_linklocal, in6_is_addr_multicast,
-    in6_is_addr_unspecified, in6_is_scope_embed,
+    ICMP6_FILTER, IPV6_RTHDR_TYPE_0, In6Addr, SockaddrIn6, in6_is_addr_linklocal,
+    in6_is_addr_multicast, in6_is_addr_unspecified, in6_is_scope_embed,
 };
 use hal::sys::netinet6_in6_var::{IN6_IFF_ANYCAST, IN6_IFF_DUPLICATED, IN6_IFF_TENTATIVE};
 use hal::sys::socket::{AF_INET6, AF_LINK};
@@ -265,7 +268,7 @@ use crate::net::pf_hooks::pf;
 use crate::net::proto::{
     CtlArg, PRC_HOSTDEAD, PRC_MSGSIZE, PRC_NCMDS, PRC_PARAMPROB, PRC_REDIRECT_HOST,
     PRC_TIMXCEED_INTRANS, PRC_TIMXCEED_REASS, PRC_UNREACH_NET, PRC_UNREACH_PORT,
-    PRC_UNREACH_PROTOCOL, SockaddrView,
+    PRC_UNREACH_PROTOCOL, PRCO_GETOPT, PRCO_SETOPT, SockaddrView,
 };
 use crate::net::route::{
     RT_RESOLVE, RtAddrinfo, Rtentry, RttimerQueue, rt_timer_add, rt_timer_queue_change,
@@ -274,6 +277,7 @@ use crate::net::route::{
 };
 use crate::net::rtable::rtable_getsource;
 use crate::net::rtsock::rtm_send;
+use crate::netinet::in_pcb::Inpcb;
 use crate::netinet6::in6::{in6_addr2scopeid, in6_ifawithscope, in6ifa_ifpforlinklocal};
 use crate::netinet6::in6_cksum::in6_cksum;
 use crate::netinet6::in6_proto::{inet6_protocol, raw6_protocol};
@@ -1767,6 +1771,69 @@ pub fn icmp6_redirect_output(m0: MbufBox, rt: &Rtentry, net: &NetHeld<'_>) {
     }
     // fail: (m0 and m freed with their boxes)
     if_put(Some(ifp));
+}
+
+/// `icmp6_ctloutput(op, so, level, optname, m)`: the `IPPROTO_ICMPV6` socket options of a raw
+/// IPv6 socket's pcb `inp` (`rip6_ctloutput` sends that level here): `ICMP6_FILTER`, a
+/// `struct icmp6_filter` of exactly its 32 bytes (`EMSGSIZE` otherwise), on a pcb that has a
+/// filter (`EINVAL` without: a divert6 socket's); any other option `ENOPROTOOPT`, another
+/// level `EINVAL`. `m` holds a `PRCO_SETOPT`'s value and receives a `PRCO_GETOPT`'s answer.
+/// The caller holds the socket's lock; input reads the words without it.
+pub fn icmp6_ctloutput<G: ProcGlue>(
+    op: i32,
+    inp: &Inpcb<G>,
+    level: i32,
+    optname: i32,
+    m: Option<&mut Mbuf>,
+) -> Result<(), Errno> {
+    const FILTER_LEN: usize = size_of::<hal::sys::netinet_icmp6::Icmp6Filter>();
+
+    if level != IPPROTO_ICMPV6 {
+        return Err(Errno::EINVAL);
+    }
+
+    match op {
+        PRCO_SETOPT => match optname {
+            ICMP6_FILTER => {
+                let Some(m) = m.filter(|m| m.m_len().get() as usize == FILTER_LEN) else {
+                    return Err(Errno::EMSGSIZE);
+                };
+                let Some(filt) = inp.icmp6filt() else {
+                    return Err(Errno::EINVAL);
+                };
+                // bcopy(p, inp->inp_icmp6filt, sizeof(struct icmp6_filter)), a word at a time.
+                for (w, b) in filt.iter().zip(m.data().chunks_exact(4)) {
+                    let mut v = [0u8; 4];
+                    v.copy_from_slice(b);
+                    w.store(u32::from_ne_bytes(v), Ordering::Relaxed);
+                }
+                Ok(())
+            }
+            _ => Err(Errno::ENOPROTOOPT),
+        },
+        PRCO_GETOPT => match optname {
+            ICMP6_FILTER => {
+                let Some(filt) = inp.icmp6filt() else {
+                    return Err(Errno::EINVAL);
+                };
+                let Some(m) = m else {
+                    kpanic(format_args!("icmp6_ctloutput: no mbuf for PRCO_GETOPT"));
+                };
+                let mut b = [0u8; FILTER_LEN];
+                for (w, o) in filt.iter().zip(b.chunks_exact_mut(4)) {
+                    o.copy_from_slice(&w.load(Ordering::Relaxed).to_ne_bytes());
+                }
+                m.m_len().set(FILTER_LEN as u32);
+                match m.data_mut() {
+                    Some(d) => d.copy_from_slice(&b),
+                    None => kpanic(format_args!("icmp6_ctloutput: a read-only option mbuf")),
+                }
+                Ok(())
+            }
+            _ => Err(Errno::ENOPROTOOPT),
+        },
+        _ => Ok(()),
+    }
 }
 
 /// `icmp6_ratelimit(dst, type, code)`: perform rate limit check. `false` if it is okay to

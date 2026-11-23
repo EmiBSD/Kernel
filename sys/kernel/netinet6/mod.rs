@@ -41,5 +41,6 @@ pub mod mld6_var;
 pub mod nd6;
 pub mod nd6_nbr;
 pub mod nd6_rtr;
+pub mod raw_ip6;
 pub mod route6;
 /* </CODE> */

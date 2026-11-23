@@ -40,6 +40,7 @@ pub mod ip_id;
 pub mod ip_input;
 pub mod ip_output;
 pub mod ip_var;
+pub mod raw_ip;
 pub mod tcp_debug;
 pub mod tcp_fsm;
 pub mod tcp_input;

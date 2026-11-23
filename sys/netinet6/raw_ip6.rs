@@ -150,7 +150,6 @@ use core::slice;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::kassert;
-use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_sysctl::sysctl_rdstruct;
 use crate::kern::subr_prf::panic;
 use crate::kern::uipc_mbuf::{m_adj, m_copym, m_freem, m_prepend, m_pullup};
@@ -164,11 +163,9 @@ use crate::net::pf::{pf_find_divert, pf_mbuf_link_inpcb};
 use crate::net::pfvar::{PF_DIVERT_REPLY, PF_DIVERT_TO};
 use crate::net::rtable::rtable_l2;
 use crate::netinet::icmp6::{
-    ICMP6_PARAM_PROB, ICMP6_PARAMPROB_NEXTHEADER, Icmp6Filter, Icmp6Hdr, Icmp6statCounters,
-    icmp6stat_inc_hist,
+    ICMP6_PARAM_PROB, ICMP6_PARAMPROB_NEXTHEADER, Icmp6Hdr, Icmp6statCounters, icmp6stat_inc_hist,
 };
 use crate::netinet::in_::{IPPROTO_DONE, IPPROTO_ICMPV6, IPPROTO_IPV6, IPPROTO_MAX, IPPROTO_NONE};
-use crate::netinet::in_pcb::InpcbLegacy as _;
 use crate::netinet::in_pcb::{
     IN6P_CONTROLOPTS, IN6P_MINMTU, INP_IPV6, InpNotifyFn, Inpcb, Inpcbtable, in_pcb_iterator,
     in_pcballoc, in_pcbdetach, in_pcbinit, in_pcbref, in_pcbrtchange, in_pcbunref, sotoinpcb,
@@ -195,8 +192,7 @@ use crate::netinet6::ip6_var::{
     IPV6_MINMTU, Ip6Pktopts, Ip6statCounters, mtod_ip6, mtod_ip6_store,
 };
 use crate::sys::errno::Errno;
-use crate::sys::malloc::{M_NOWAIT, M_PCB, M_WAITOK};
-use crate::sys::mbuf::{M_COPYALL, M_DONTWAIT, M_MCAST, M_WAIT, Mbuf, PF_TAG_DIVERTED, mtod};
+use crate::sys::mbuf::{M_COPYALL, M_DONTWAIT, M_MCAST, Mbuf, PF_TAG_DIVERTED, mtod};
 use crate::sys::proc::Proc;
 use crate::sys::protosw::{PRC_HOSTDEAD, PRC_MSGSIZE, PRC_NCMDS, PrUsrreqs, prc_is_redirect};
 use crate::sys::socket::{AF_INET6, Sockaddr};
@@ -392,14 +388,13 @@ pub fn rip6_input(
         {
             continue;
         }
+        // ICMP6_FILTER_WILLBLOCK(type, inp->inp_icmp6filt): the type's word of the kernel
+        // pcb's filter (N6.6b1, D-7).
         if proto == IPPROTO_ICMPV6
-            && let Some(filt) = i.icmp6filt_ptr()
+            && let Some(filt) = i.icmp6filt()
+            && filt[usize::from(type_ >> 5)].load(Ordering::Relaxed) & (1 << (type_ & 31)) == 0
         {
-            // SAFETY: the filter is `rip6_attach`'s allocation, freed only by `rip6_detach`
-            // after the control block left this table's walks.
-            if unsafe { filt.as_ref() }.willblock(type_) {
-                continue;
-            }
+            continue;
         }
         let cksum6 = i.inp_cksum6.get();
         if proto != IPPROTO_ICMPV6 && cksum6 != -1 {
@@ -799,21 +794,9 @@ pub fn rip6_attach(so: &'static Socket, proto: i32, wait: i32) -> Result<(), Err
     inp.inp_ipv6.set(ip6);
     inp.inp_cksum6.set(-1);
 
-    let Some(filt) = malloc(
-        size_of::<Icmp6Filter>(),
-        M_PCB,
-        if wait == M_WAIT { M_WAITOK } else { M_NOWAIT },
-    ) else {
-        in_pcbdetach(inp);
-        return Err(Errno::ENOMEM);
-    };
-    let filt = filt.cast::<Icmp6Filter>();
-    let mut passall = Icmp6Filter::default();
-    passall.setpassall();
-    // SAFETY: a fresh `malloc(9)` allocation of a filter's size and alignment, written once
-    // before the control block publishes it.
-    unsafe { filt.as_ptr().write(passall) };
-    inp.set_icmp6filt_ptr(Some(filt));
+    // The filter, pass-all: the kernel pcb's words (N6.6b1, D-7; the C's malloc(M_PCB) and
+    // its ENOMEM path have no counterpart).
+    inp.icmp6filt_init();
 
     Ok(())
 }
@@ -825,13 +808,7 @@ pub fn rip6_detach(so: &'static Socket) -> Result<(), Errno> {
     let Some(inp) = sotoinpcb(so) else {
         panic(format_args!("rip6_detach"));
     };
-    // MROUTING: ip6_mrouter_done(so); not configured.
-    let filt = inp.icmp6filt_ptr();
-    inp.set_icmp6filt_ptr(None);
-    if let Some(filt) = filt {
-        free(filt.cast(), M_PCB, size_of::<Icmp6Filter>());
-    }
-
+    // MROUTING: ip6_mrouter_done(so); not configured. The filter goes with the pcb (D-7).
     in_pcbdetach(inp);
 
     Ok(())
@@ -997,6 +974,7 @@ mod tests {
     use std::{assert, assert_eq, assert_ne, vec};
 
     use super::*;
+    use crate::netinet::icmp6::Icmp6Filter;
 
     use crate::kern::uipc_mbuf::{m_copydata, m_get};
     use crate::kern::uipc_socket::{soclose, socreate};
@@ -1026,10 +1004,10 @@ mod tests {
 
     /// Replaces the ICMPv6 filter of `so`'s control block, as `setsockopt(ICMP6_FILTER)` does.
     fn set_filter(so: &Socket, f: Icmp6Filter) {
-        let filt = inpcb_of(so).icmp6filt_ptr().expect("rip6_attach made one");
-        // SAFETY: the filter is the control block's allocation, alive until `rip6_detach`;
-        // nothing else uses it during the test.
-        unsafe { filt.as_ptr().write(f) };
+        let filt = inpcb_of(so).icmp6filt().expect("rip6_attach made one");
+        for (w, v) in filt.iter().zip(f.icmp6_filt) {
+            w.store(v, Ordering::Relaxed);
+        }
     }
 
     /// An option mbuf holding the `int` `v`.

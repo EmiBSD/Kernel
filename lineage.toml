@@ -17493,6 +17493,45 @@ native = ["sys/kernel/netinet6/ip6_var.rs::IP6_MTUDISC_TIMEOUT"]
 kind = "moved"
 
 [[module]]
+rust = "sys/kernel/netinet6/raw_ip6.rs"
+crate = "kernel"
+lz = ["sys/netinet6/raw_ip6.rs"]
+status = "redesigned"
+notes = "N6.6b1 (built beside bsd's, unregistered until the switch): raw_ip6.c in the kernel, in raw IP's shape: Rip6Usrreqs over the socket lock's parts and the locked slot; rip6_input over the glue's rawin6pcbtable, the next header one word's load (Ip6Proto::ip6_nxt), the ICMPv6 filter the pcb's words (D-7: set pass-all by rip6_attach, one word read per input, gone with the pcb, no malloc(M_PCB) and no ENOMEM path), the IPV6_CHECKSUM bounds in the C's integer order; rip6_output with one loan of the sticky options from ip6_setpktopts to ip6_output's return and one copy of the multicast options, the checksum written through ip6_set_bytes after m_pulldown; rip6_ctlinput a safe function of the view and CtlArg::Ip6; RIP6COUNTERS per CPU; the struct rip6stat image and names are hal::sys::netinet6_raw_ip6's; the rows are kernel::netinet6::in6_proto's Rip6Protocol"
+
+[[module.fn]]
+lz = "sys/netinet6/raw_ip6.rs::RAWIN6PCBTABLE"
+native = ["rawin6pcbtable"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/netinet6/raw_ip6.rs::RIP6_USRREQS"
+native = ["Rip6Usrreqs"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/netinet6/raw_ip6.rs::sin6_bytes"
+native = ["sys/kernel/netinet/raw_ip.rs::sa_bytes"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet6/raw_ip6.rs::inpcb_of"
+native = ["sys/kernel/netinet/raw_ip.rs::pcb_of"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet6/raw_ip6.rs::nam_sin6"
+native = []
+kind = "dropped"
+reason = "the kernel's in6_nam2sin6 answers the sockaddr_in6 by value"
+
+[[module.fn]]
+lz = "sys/netinet6/raw_ip6.rs::RIPM6CTL_NAMES"
+native = []
+kind = "dropped"
+reason = "sysctl(8)'s name table, userland's (<netinet6/raw_ip6.h>'s RIPM6CTL_NAMES); the kernel answers the names by number (rip6_sysctl)"
+
+[[module]]
 rust = "sys/kernel/netinet/in_proto.rs"
 crate = "kernel"
 lz = ["sys/netinet/in_proto.rs"]
@@ -17503,6 +17542,39 @@ notes = "N6.4c2: ip_protox[], the inetsw[] table and its raw entry as InetTables
 lz = "sys/netinet/in_proto.rs::IP_PROTOX"
 native = ["InetTables"]
 kind = "merged"
+
+[[module]]
+rust = "sys/kernel/netinet/raw_ip.rs"
+crate = "kernel"
+lz = ["sys/netinet/raw_ip.rs"]
+status = "redesigned"
+notes = "N6.6b1 (built beside bsd's, unregistered until the switch): raw_ip.c in the kernel, generic over the glue: RipUsrreqs (rip_usrreqs as impl Usrreqs) over the socket lock's parts, the pcb borrowed from the socket's locked slot (attach fills it, detach takes it out for in_pcbdetach); rip_input over the glue's rawcbtable (NetTables) with in_pcb_iterator, the prototype's protocol one word's load (IpProto::ip_p), no socket lock on input; rip_output with one loan of the IPv4 options per send; rip_chkhdr over the pulled-up header's bytes, each option length checked before its byte; rip_ctloutput's IP_HDRINCL answering the bit (8), MRT_* EOPNOTSUPP (hal::sys::netinet_ip_mroute); the shared helpers of the raw and divert requests (inet, pcb_of, detach_slot, opt_int, set_mbuf, sa_bytes); the IPPROTO_RAW and wildcard rows are kernel::netinet::in_proto's RipProtocol"
+
+[[module.fn]]
+lz = "sys/netinet/raw_ip.rs::RAWCBTABLE"
+native = ["rawcbtable"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/netinet/raw_ip.rs::RIP_USRREQS"
+native = ["RipUsrreqs"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/netinet/raw_ip.rs::sin_bytes"
+native = ["sa_bytes"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/netinet/raw_ip.rs::inpcb_of"
+native = ["pcb_of"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/netinet/raw_ip.rs::nam_sin"
+native = []
+kind = "dropped"
+reason = "the kernel's in_nam2sin answers the sockaddr_in by value (no pointer to read unaligned)"
 
 [[module]]
 rust = "sys/kernel/netinet/ip_icmp.rs"

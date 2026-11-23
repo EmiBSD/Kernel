@@ -175,6 +175,7 @@ use crate::net::proto::{
     PR_SPLICE, PR_WANTRCVD, Protocol, SockaddrView, Usrreqs,
 };
 use crate::net::socket::{SoLocked, Socket};
+use crate::netinet::raw_ip::{RipUsrreqs, rip_ctloutput, rip_init, rip_input};
 use crate::netinet::tcp_input::tcp_input;
 use crate::netinet::tcp_subr::{tcp_ctlinput, tcp_init};
 use crate::netinet::tcp_timer::tcp_slowtimo;
@@ -441,6 +442,78 @@ impl<G: ProcGlue> Protocol<G> for TcpProtocol<G> {
     }
     fn slowtimo(&self) {
         tcp_slowtimo();
+    }
+}
+
+/// `inetsw[]`'s raw entries (N6.6b1): the `IPPROTO_RAW` row and the raw wildcard (`wild`,
+/// protocol 0, the last row, whose `pr_init` is `rip_init`): `rip_input`, `rip_ctloutput`,
+/// `rip_usrreqs`.
+pub struct RipProtocol<G: ProcGlue> {
+    /// The raw wildcard row (protocol 0, `rip_init`).
+    wild: bool,
+    /// The glue.
+    _g: PhantomData<fn() -> G>,
+}
+
+impl<G: ProcGlue> RipProtocol<G> {
+    /// The `IPPROTO_RAW` row.
+    pub const RAW: Self = Self {
+        wild: false,
+        _g: PhantomData,
+    };
+    /// The raw wildcard row.
+    pub const WILD: Self = Self {
+        wild: true,
+        _g: PhantomData,
+    };
+}
+
+impl<G: ProcGlue> Protocol<G> for RipProtocol<G> {
+    fn domain(&self) -> &'static dyn Domain<G> {
+        inetdomain::<G>()
+    }
+    fn ty(&self) -> i16 {
+        SOCK_RAW as i16
+    }
+    fn protocol(&self) -> i16 {
+        if self.wild { 0 } else { IPPROTO_RAW as i16 }
+    }
+    fn flags(&self) -> i16 {
+        PR_ATOMIC | PR_ADDR | PR_MPINPUT
+    }
+    fn usrreqs(&self) -> Option<&'static dyn Usrreqs<G>> {
+        Some(&RipUsrreqs::<G>::NEW)
+    }
+    fn input(
+        &self,
+        mp: &mut Option<MbufBox>,
+        offp: &mut i32,
+        proto: i32,
+        af: i32,
+        ns: Option<&mut Netstack>,
+        net: &NetHeld<'_>,
+    ) -> i32 {
+        rip_input::<G>(mp, offp, proto, af, ns, net)
+    }
+    fn has_ctloutput(&self) -> bool {
+        true
+    }
+    fn ctloutput(
+        &self,
+        op: i32,
+        so: &Socket<G>,
+        w: &mut SoLocked<'_>,
+        level: i32,
+        optname: i32,
+        m: Option<&mut Mbuf>,
+    ) -> Result<(), Errno> {
+        rip_ctloutput(op, so, w, level, optname, m)
+    }
+    /// `rip_init` (the wildcard row's).
+    fn init(&self) {
+        if self.wild {
+            rip_init::<G>();
+        }
     }
 }
 

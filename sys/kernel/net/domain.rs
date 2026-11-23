@@ -199,6 +199,10 @@ pub struct NetTables<G: ProcGlue> {
     pub(crate) tcp: crate::netinet::tcp_var::TcpTables<G>,
     /// The IPv6 protocol switch (`in6_proto.c`'s `inet6sw[]` and `ip6_protox[]`, N6.5d).
     pub(crate) inet6: crate::netinet6::in6_proto::Inet6Tables<G>,
+    /// Raw IP's control blocks (`raw_ip.c`'s `rawcbtable`, N6.6b1).
+    pub(crate) rawcbtable: crate::netinet::in_pcb::Inpcbtable<G>,
+    /// Raw IPv6's control blocks (`raw_ip6.c`'s `rawin6pcbtable`, N6.6b1).
+    pub(crate) rawin6pcbtable: crate::netinet::in_pcb::Inpcbtable<G>,
     /// `if_input_task_locked`: `if_netisr`, the protocols' software interrupt (N6.3a: here,
     /// since its yield is the glue's scheduler's).
     pub(crate) if_input_task_locked: crate::task::Task,
@@ -230,6 +234,8 @@ impl<G: ProcGlue> NetTables<G> {
             inet: crate::netinet::in_proto::InetTables::new(),
             tcp: crate::netinet::tcp_var::TcpTables::new(),
             inet6: crate::netinet6::in6_proto::Inet6Tables::new(),
+            rawcbtable: crate::netinet::in_pcb::Inpcbtable::new(),
+            rawin6pcbtable: crate::netinet::in_pcb::Inpcbtable::new(),
             if_input_task_locked: crate::task::Task::new(
                 crate::net::netisr::if_netisr::<G>,
                 ptr::null_mut(),

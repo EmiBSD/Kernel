@@ -81,29 +81,24 @@
 //! `bsd`'s adapter of it: the kernel's items under LZ's path for `bsd`'s importers (the
 //! transports' control inputs, raw IPv6, pf), wrappers of the functions they call over parked
 //! packets and routes (the net lock's proof made by check, `net_held`), and
-//! `icmp6_ctloutput`, which stays here with the raw sockets' filter word it reads and writes
-//! (`inp_icmp6filt`, `bsd`'s until N6.6b). `inet6sw[]`'s ICMPv6 entry is the kernel's
+//! `icmp6_ctloutput` over a socket, which forwards to the kernel's (N6.6b1, D-7: the raw
+//! sockets' filter is the kernel pcb's words) until N6.6b1's switch deletes it with `bsd`'s
+//! raw IPv6. `inet6sw[]`'s ICMPv6 entry is the kernel's
 //! (`kernel::netinet6::in6_proto::Icmp6Protocol`).
 //!
 //! Upstream: sys/netinet6/icmp6.c @ 3ce1f3f79392
 //!
 //! ## Deviations
 //! - `ICMP6_FILTER` get/set (`icmp6_ctloutput`) reaches the socket's control block through
-//!   `sotoinpcb`, which must accept `AF_INET6` sockets (phase 2 of the INET6 port).
-
-use core::mem::size_of;
-use core::ptr;
+//!   `sotoinpcb`, which must accept `AF_INET6` sockets (phase 2 of the INET6 port); a socket
+//!   without one answers `EINVAL` where the C dereferences NULL.
 
 use crate::net::if_::net_held;
 use crate::net::route::Rtentry;
-use crate::netinet::icmp6::Icmp6Filter;
-use crate::netinet::in_::IPPROTO_ICMPV6;
-use crate::netinet::in_pcb::InpcbLegacy as _;
 use crate::netinet::in_pcb::sotoinpcb;
-use crate::netinet6::in6::{ICMP6_FILTER, SockaddrIn6};
+use crate::netinet6::in6::SockaddrIn6;
 use crate::sys::errno::Errno;
-use crate::sys::mbuf::{Mbuf, mtod, unpark};
-use crate::sys::protosw::{PRCO_GETOPT, PRCO_SETOPT};
+use crate::sys::mbuf::{Mbuf, mut_of, unpark};
 use crate::sys::socketvar::Socket;
 
 pub use kernel::netinet6::icmp6::{Ip6CtlParam, icmp6_mtudisc_callback_register};
@@ -144,7 +139,8 @@ pub fn icmp6_mtudisc_clone(
     .map(crate::net::route::park)
 }
 
-/// `icmp6_ctloutput`: ICMPv6 socket option processing (`ICMP6_FILTER`).
+/// `icmp6_ctloutput`: ICMPv6 socket option processing (`ICMP6_FILTER`): the kernel's, on the
+/// socket's control block (`bsd`'s `rip6_ctloutput` sends the `IPPROTO_ICMPV6` level here).
 pub fn icmp6_ctloutput(
     op: i32,
     so: &'static Socket,
@@ -152,60 +148,11 @@ pub fn icmp6_ctloutput(
     optname: i32,
     m: Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let inp = sotoinpcb(so);
-
-    if level != IPPROTO_ICMPV6 {
-        return Err(Errno::EINVAL);
-    }
-
-    match op {
-        PRCO_SETOPT => match optname {
-            ICMP6_FILTER => {
-                let Some(m) = m else {
-                    return Err(Errno::EMSGSIZE);
-                };
-                if m.m_len().get() as usize != size_of::<Icmp6Filter>() {
-                    return Err(Errno::EMSGSIZE);
-                }
-                let Some(filt) = inp.and_then(|inp| inp.icmp6filt_ptr()) else {
-                    return Err(Errno::EINVAL);
-                };
-                // SAFETY: the mbuf holds a whole filter at its data; the pcb's filter is the
-                // `Icmp6Filter` allocated at attach time, owned by the socket.
-                unsafe {
-                    ptr::copy_nonoverlapping(
-                        mtod::<u8>(m).cast_const(),
-                        filt.as_ptr().cast::<u8>(),
-                        size_of::<Icmp6Filter>(),
-                    )
-                };
-                Ok(())
-            }
-            _ => Err(Errno::ENOPROTOOPT),
-        },
-        PRCO_GETOPT => match optname {
-            ICMP6_FILTER => {
-                let Some(filt) = inp.and_then(|inp| inp.icmp6filt_ptr()) else {
-                    return Err(Errno::EINVAL);
-                };
-                let Some(m) = m else {
-                    return Err(Errno::EINVAL);
-                };
-                m.m_len().set(size_of::<Icmp6Filter>() as u32);
-                // SAFETY: the pcb's filter is a whole `Icmp6Filter`; the reply mbuf has room
-                // for it (`sogetopt` provides an mbuf with MLEN bytes).
-                unsafe {
-                    ptr::copy_nonoverlapping(
-                        filt.as_ptr().cast::<u8>().cast_const(),
-                        mtod::<u8>(m),
-                        size_of::<Icmp6Filter>(),
-                    )
-                };
-                Ok(())
-            }
-            _ => Err(Errno::ENOPROTOOPT),
-        },
-        _ => Ok(()),
+    match sotoinpcb(so) {
+        Some(inp) => {
+            kernel::netinet6::icmp6::icmp6_ctloutput(op, inp, level, optname, m.map(mut_of))
+        }
+        None => Err(Errno::EINVAL),
     }
 }
 /* </CODE> */
@@ -213,17 +160,19 @@ pub fn icmp6_ctloutput(
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
-    // The ICMPv6 filter socket option, which stays here with its word (LZ's
-    // `the_icmp6_filter_is_a_socket_option`); ICMPv6's other tests are the kernel's.
+    // The ICMPv6 filter socket option through `bsd`'s forward (LZ's
+    // `the_icmp6_filter_is_a_socket_option`); the kernel's own tests are
+    // `kernel::netinet6::raw_ip6`'s.
 
-    use std::ptr::NonNull;
     use std::vec::Vec;
 
     use super::*;
     use crate::kern::uipc_mbuf::{m_copydata, m_freem, m_get};
-    use crate::netinet::icmp6::ICMP6_ECHO_REPLY;
-    use crate::netinet::icmp6::ICMP6_ECHO_REQUEST;
+    use crate::netinet::icmp6::{ICMP6_ECHO_REPLY, ICMP6_ECHO_REQUEST, Icmp6Filter};
+    use crate::netinet::in_::IPPROTO_ICMPV6;
+    use crate::netinet6::in6::ICMP6_FILTER;
     use crate::sys::mbuf::{M_DONTWAIT, MT_DATA};
+    use crate::sys::protosw::{PRCO_GETOPT, PRCO_SETOPT};
 
     fn bytes_of(m: &Mbuf) -> Vec<u8> {
         let mut v = std::vec![0u8; m.m_len().get() as usize];
@@ -241,13 +190,13 @@ mod tests {
         use crate::sys::socket::SOCK_RAW;
         let (_g, _t, _p) = crate::netinet::in_pcb::tests::setup();
         crate::netinet::raw_ip::rip_init();
-        // A raw socket of the inet domain stands in for a raw ICMPv6 socket (no `AF_INET6`
-        // socket is possible before `rip6_attach`): the option code only needs the pcb.
+        // Raw sockets of the inet domain stand in for raw ICMPv6 sockets (no `AF_INET6`
+        // socket is possible before `rip6_attach`): the option code only needs the pcb. The
+        // first gets the filter `rip6_attach` makes, the second has none.
         let so = socreate(i32::from(crate::sys::socket::AF_INET), SOCK_RAW, 1).expect("socket");
         let inp = sotoinpcb(so).expect("pcb");
-        let filt: &'static mut Icmp6Filter =
-            std::boxed::Box::leak(std::boxed::Box::new(Icmp6Filter { icmp6_filt: [0; 8] }));
-        inp.set_icmp6filt_ptr(NonNull::new(filt));
+        inp.icmp6filt_init();
+        let bare = socreate(i32::from(crate::sys::socket::AF_INET), SOCK_RAW, 1).expect("socket");
 
         // Wrong level, wrong option.
         assert_eq!(
@@ -270,32 +219,34 @@ mod tests {
         let mut want = Icmp6Filter { icmp6_filt: [0; 8] };
         want.setblockall();
         want.setpass(ICMP6_ECHO_REPLY);
-        m.m_len().set(size_of::<Icmp6Filter>() as u32);
-        // SAFETY: an mbuf holds MLEN bytes, more than a filter.
-        unsafe {
-            ptr::copy_nonoverlapping(
-                ptr::from_ref(&want).cast::<u8>(),
-                mtod::<u8>(m),
-                size_of::<Icmp6Filter>(),
-            )
-        };
+        let wb = bytes_of_filter(&want);
+        m.m_len().set(wb.len() as u32);
+        mut_of(m)
+            .data_mut()
+            .expect("a writable mbuf")
+            .copy_from_slice(&wb);
         icmp6_ctloutput(PRCO_SETOPT, so, IPPROTO_ICMPV6, ICMP6_FILTER, Some(m)).expect("set");
-        assert!(filt.willpass(ICMP6_ECHO_REPLY) && filt.willblock(ICMP6_ECHO_REQUEST));
+        let words = inp.icmp6filt().expect("a filter");
+        let got = Icmp6Filter {
+            icmp6_filt: core::array::from_fn(|i| {
+                words[i].load(core::sync::atomic::Ordering::Relaxed)
+            }),
+        };
+        assert!(got.willpass(ICMP6_ECHO_REPLY) && got.willblock(ICMP6_ECHO_REQUEST));
 
         let out = m_get(M_DONTWAIT, MT_DATA).expect("mbuf");
         icmp6_ctloutput(PRCO_GETOPT, so, IPPROTO_ICMPV6, ICMP6_FILTER, Some(out)).expect("get");
-        assert_eq!(out.m_len().get() as usize, size_of::<Icmp6Filter>());
-        assert_eq!(bytes_of(out), bytes_of_filter(&want));
+        assert_eq!(bytes_of(out), wb);
 
         // No filter, no option.
-        inp.set_icmp6filt_ptr(None);
         assert_eq!(
-            icmp6_ctloutput(PRCO_GETOPT, so, IPPROTO_ICMPV6, ICMP6_FILTER, Some(out)),
+            icmp6_ctloutput(PRCO_GETOPT, bare, IPPROTO_ICMPV6, ICMP6_FILTER, Some(out)),
             Err(Errno::EINVAL)
         );
         m_freem(m);
         m_freem(out);
         soclose(so, 0).expect("close");
+        soclose(bare, 0).expect("close");
         crate::netinet::in_pcb::tests::teardown();
     }
 }

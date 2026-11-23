@@ -170,6 +170,9 @@ use crate::net::socket::{SoLocked, Socket};
 use crate::netinet::tcp_input::tcp_input;
 use crate::netinet::tcp_subr::tcp6_ctlinput;
 use crate::netinet::tcp_usrreq::{TcpUsrreqs, tcp_ctloutput, tcp_sysctl};
+use crate::netinet6::raw_ip6::{
+    Rip6Usrreqs, rip6_ctlinput, rip6_ctloutput, rip6_init, rip6_input, rip6_sysctl,
+};
 use crate::proc::ProcGlue;
 use crate::sysctl::SysctlReq;
 
@@ -425,6 +428,103 @@ impl<G: ProcGlue> Protocol<G> for Tcp6Protocol<G> {
     }
     fn sysctl(&self, name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
         tcp_sysctl::<G>(name, req)
+    }
+}
+
+/// `inet6sw[]`'s raw entries (N6.6b1): the `IPPROTO_RAW` row (`rip6_input`,
+/// `rip6_ctlinput`, `rip6_ctloutput`, `rip6_usrreqs`, `rip6_sysctl`) and the raw wildcard
+/// (`wild`, protocol 0, the last row: `rip6_input`, `rip6_ctloutput`, `rip6_usrreqs`, its
+/// `pr_init` `rip6_init`).
+pub struct Rip6Protocol<G: ProcGlue> {
+    /// The raw wildcard row.
+    wild: bool,
+    /// The glue.
+    _g: PhantomData<fn() -> G>,
+}
+
+impl<G: ProcGlue> Rip6Protocol<G> {
+    /// The `IPPROTO_RAW` row.
+    pub const RAW: Self = Self {
+        wild: false,
+        _g: PhantomData,
+    };
+    /// The raw wildcard row.
+    pub const WILD: Self = Self {
+        wild: true,
+        _g: PhantomData,
+    };
+}
+
+impl<G: ProcGlue> Protocol<G> for Rip6Protocol<G> {
+    fn domain(&self) -> &'static dyn Domain<G> {
+        inet6domain::<G>()
+    }
+    fn ty(&self) -> i16 {
+        SOCK_RAW as i16
+    }
+    fn protocol(&self) -> i16 {
+        if self.wild { 0 } else { IPPROTO_RAW as i16 }
+    }
+    fn flags(&self) -> i16 {
+        if self.wild {
+            PR_ATOMIC | PR_ADDR | PR_MPINPUT
+        } else {
+            PR_ATOMIC | PR_ADDR | PR_MPINPUT | PR_MPSYSCTL
+        }
+    }
+    fn usrreqs(&self) -> Option<&'static dyn Usrreqs<G>> {
+        Some(&Rip6Usrreqs::<G>::NEW)
+    }
+    /// `rip6_ctlinput` (the `IPPROTO_RAW` row's; the wildcard has none).
+    fn ctlinput(
+        &self,
+        cmd: i32,
+        sa: SockaddrView<'_>,
+        rdomain: u32,
+        arg: CtlArg<'_>,
+        net: &NetHeld<'_>,
+    ) {
+        if !self.wild {
+            rip6_ctlinput::<G>(cmd, sa, rdomain, arg, net);
+        }
+    }
+    fn input(
+        &self,
+        mp: &mut Option<MbufBox>,
+        offp: &mut i32,
+        proto: i32,
+        af: i32,
+        ns: Option<&mut Netstack>,
+        net: &NetHeld<'_>,
+    ) -> i32 {
+        rip6_input::<G>(mp, offp, proto, af, ns, net)
+    }
+    fn has_ctloutput(&self) -> bool {
+        true
+    }
+    fn ctloutput(
+        &self,
+        op: i32,
+        so: &Socket<G>,
+        w: &mut SoLocked<'_>,
+        level: i32,
+        optname: i32,
+        m: Option<&mut Mbuf>,
+    ) -> Result<(), Errno> {
+        rip6_ctloutput(op, so, w, level, optname, m)
+    }
+    /// `rip6_sysctl` (the `IPPROTO_RAW` row's).
+    fn has_sysctl(&self) -> bool {
+        !self.wild
+    }
+    fn sysctl(&self, name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+        rip6_sysctl(name, req)
+    }
+    /// `rip6_init` (the wildcard row's).
+    fn init(&self) {
+        if self.wild {
+            rip6_init::<G>();
+        }
     }
 }
 

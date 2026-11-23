@@ -197,12 +197,12 @@ use crate::net::pf_hooks::{PF_DIVERT_REPLY, PF_DIVERT_TO, pf};
 use crate::net::proto::{PRC_HOSTDEAD, PRC_NCMDS, prc_is_redirect};
 use crate::net::route::Rtentry;
 use crate::net::rtable::rtable_l2;
-use crate::net::socket::SoLocked;
+use crate::net::socket::{SoLocked, Socket};
 use crate::net::toeplitz::stoeplitz_ip6port;
 use crate::netinet::in_pcb::{
     Addr6, INP_IPV6, INPLOOKUP_IPV6, INPLOOKUP_WILDCARD, InpGuard, Inpaddru, Inpcb, InpcbRef,
     Inpcbtable, hash_chain_find, in_pcb_iterator, in_pcbbind_locked, in_pcblookup_local,
-    in_pcbrehash, in_pcbrtchange, in_pcbsolock,
+    in_pcbrehash, in_pcbrtchange, in_pcbsolock, sotoinpcb_locked,
 };
 use crate::netinet6::in6::in6_nam2sin6;
 use crate::netinet6::in6_src::{in6_embedscope, in6_pcbselsrc, in6_recoverscope, in6_selecthlim};
@@ -490,6 +490,55 @@ pub fn in6_setpeeraddr<G: ProcGlue>(inp: &Inpcb<G>) -> SockaddrIn6 {
     // KAME hack: recover scopeid
     in6_recoverscope(&mut sin6, &faddr6);
     sin6
+}
+
+/// `in6_sockaddr(so, nam)`: the local address of `so`'s pcb into `nam` (`pru_sockaddr` of
+/// the IPv6 datagram and raw protocols), the socket locked by `w`; `panic(9)` without a pcb,
+/// which the C dereferences unchecked.
+pub fn in6_sockaddr<G: ProcGlue>(
+    so: &Socket<G>,
+    w: &mut SoLocked<'_>,
+    nam: &mut Mbuf,
+) -> Result<(), Errno> {
+    let Some(il) = w.inet() else {
+        kpanic(format_args!(
+            "in6_sockaddr: not a kernel protocol's socket lock"
+        ));
+    };
+    let Some(inp) = sotoinpcb_locked(so, &il.pcb) else {
+        kpanic(format_args!("in6_sockaddr: socket {so:p} has no pcb"));
+    };
+    set_nam6(nam, &in6_setsockaddr(inp));
+    Ok(())
+}
+
+/// `in6_peeraddr(so, nam)`: the foreign address of `so`'s pcb into `nam`, as
+/// [`in6_sockaddr`].
+pub fn in6_peeraddr<G: ProcGlue>(
+    so: &Socket<G>,
+    w: &mut SoLocked<'_>,
+    nam: &mut Mbuf,
+) -> Result<(), Errno> {
+    let Some(il) = w.inet() else {
+        kpanic(format_args!(
+            "in6_peeraddr: not a kernel protocol's socket lock"
+        ));
+    };
+    let Some(inp) = sotoinpcb_locked(so, &il.pcb) else {
+        kpanic(format_args!("in6_peeraddr: socket {so:p} has no pcb"));
+    };
+    set_nam6(nam, &in6_setpeeraddr(inp));
+    Ok(())
+}
+
+/// A `sockaddr_in6`'s bytes written into the name mbuf `nam` (`m_len` their count).
+fn set_nam6(nam: &mut Mbuf, sin6: &SockaddrIn6) {
+    let bytes = hal::user::bytes_of(core::slice::from_ref(sin6));
+    nam.m_len().set(bytes.len() as u32);
+    match nam.data_mut() {
+        Some(d) => d.copy_from_slice(bytes),
+        None => kpanic(format_args!("in6_sockaddr: a read-only name mbuf")),
+    }
 }
 
 /// `in6_pcbnotify(table, dst, fport_arg, src, lport_arg, rtable, cmd, cmdarg, notify)`:

@@ -171,7 +171,7 @@
 
 use core::mem::size_of;
 use core::pin::Pin;
-use core::ptr::{self, NonNull};
+use core::ptr;
 
 use hal::once::OnceStatic;
 use kernel::netinet::in_pcb as k;
@@ -180,7 +180,6 @@ use crate::kern::proc_glue::BsdProcGlue;
 use crate::kern::subr_prf::panic;
 use crate::net::if_::net_held;
 use crate::net::route::{Rtentry, as_static};
-use crate::netinet::icmp6::Icmp6Filter;
 use crate::netinet::in_::{InAddr, SockaddrIn};
 use crate::netinet::ip_ipsp::SockaddrUnion;
 #[cfg(feature = "inet6")]
@@ -337,10 +336,6 @@ pub trait InpcbLegacy {
     /// `inp->inp_options = m` (a parked chain given over to the kernel's cell; an old chain,
     /// which the C's callers never leave, is freed).
     fn set_options(&self, m: Option<&'static Mbuf>);
-    /// `inp->inp_icmp6filt`'s pointer.
-    fn icmp6filt_ptr(&self) -> Option<NonNull<Icmp6Filter>>;
-    /// `inp->inp_icmp6filt = f`.
-    fn set_icmp6filt_ptr(&self, f: Option<NonNull<Icmp6Filter>>);
     /// `inp->inp_upcall`, `inp->inp_upcall_arg` (wg(4)'s, set once).
     fn upcall_pair(&self) -> Option<(InpUpcallFn, *mut core::ffi::c_void)>;
 }
@@ -361,15 +356,6 @@ impl InpcbLegacy for Inpcb {
 
     fn set_options(&self, m: Option<&'static Mbuf>) {
         drop(core::mem::replace(&mut *self.options(), m.map(unpark)));
-    }
-
-    fn icmp6filt_ptr(&self) -> Option<NonNull<Icmp6Filter>> {
-        NonNull::new(self.inp_icmp6filt.get_mut().cast::<Icmp6Filter>())
-    }
-
-    fn set_icmp6filt_ptr(&self, f: Option<NonNull<Icmp6Filter>>) {
-        self.inp_icmp6filt
-            .set(f.map_or(ptr::null(), |p| p.as_ptr().cast_const().cast()));
     }
 
     fn upcall_pair(&self) -> Option<(InpUpcallFn, *mut core::ffi::c_void)> {
