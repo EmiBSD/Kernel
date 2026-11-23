@@ -492,15 +492,17 @@ const AFTERINSTALL_SCRIPTS: &[(&str, &[&str])] = &[(
 /// system over OpenBSD's libfuse (`LIBRARIES`); `tools/difftest` (M12+) holds the system call
 /// probes `cargo xtask diff-openbsd` runs on EmiBSD and on a real OpenBSD; `tools/mmapstress`
 /// (N3.4e) races msync(2) against madvise(2) on a shared file mapping (`just smoke-mmap`);
-/// `tools/bench` (N3) holds the micro-benchmarks `cargo xtask bench` runs on both. Their
-/// sources are not OpenBSD's, so the licence report (which lists only the reference tree's
-/// files) does not name them.
+/// `tools/bench` (N3) holds the micro-benchmarks `cargo xtask bench` runs on both;
+/// `tools/thrtest` (LZ 7f3d210b570c) checks `__thrsleep(2)`/`__thrwakeup(2)` and stresses
+/// libpthread (`just smoke-thrsleep`). Their sources are not OpenBSD's, so the licence report
+/// (which lists only the reference tree's files) does not name them.
 const OWN_PROGRAMS: &[&str] = &[
     "tools/sr6create",
     "tools/fusehello",
     "tools/difftest",
     "tools/mmapstress",
     "tools/bench",
+    "tools/thrtest",
 ];
 
 /// Programs whose Makefile embeds their manual page in a generated `manual.c` (`disklabel`'s

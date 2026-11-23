@@ -175,7 +175,7 @@ smokes := "smoke-boot smoke-shell smoke-login smoke-net smoke-route smoke-diag s
     "smoke-wg smoke-pf smoke-ipsec smoke-esp smoke-pfsync smoke-ipcomp smoke-https smoke-tcp " + \
     "smoke-divert smoke-tcpdump smoke-inet6 smoke-disk smoke-ufsopts smoke-fs smoke-cd smoke-softraid " + \
     "smoke-nvme smoke-ahci smoke-smmu smoke-power smoke-siop smoke-wd smoke-fd smoke-mpi smoke-sdmmc smoke-em smoke-igb smoke-re smoke-vmx smoke-pcn smoke-ne smoke-fxp smoke-dc smoke-vmwpvs smoke-efiboot smoke-acpi smoke-gicv3 smoke-clock smoke-rtc " + \
-    "smoke-nfs smoke-ext2fs smoke-fuse smoke-ntfs smoke-tcpbench smoke-mp smoke-ddbmp " + \
+    "smoke-nfs smoke-ext2fs smoke-fuse smoke-thrsleep smoke-ntfs smoke-tcpbench smoke-mp smoke-ddbmp " + \
     "smoke-net-mp smoke-up smoke-audio smoke-usb smoke-puc smoke-fb smoke-wscons smoke-vga smoke-kbd " + \
     "smoke-powerbtn smoke-ukc smoke-ppb smoke-dmar smoke-iic smoke-ipmi smoke-tpm smoke-virtio smoke-viogpu " + \
     "smoke-mouse smoke-ugen smoke-ehci smoke-uaudio smoke-uhci smoke-ohci smoke-cdce smoke-ucom " + \
@@ -2335,6 +2335,31 @@ fuse_steps := disk_login + " " + \
     "--send-after 'fuse-umount-42' --send 'case \"$(mount)\" in *fuse*) echo still;; *) echo fuse-gone-$((40+2));; esac\\n' " + \
     "--expect 'on /fuse type fuse' --expect 'fuse-up-42' --expect 'm10d-fuse-42' --expect 'm10d-fuse-sub-42' " + \
     "--expect 'hello.txt' --expect 'deep.txt' --expect 'fuse-ro-42' --expect 'fuse-umount-42' --expect 'fuse-gone-42'"
+
+# LZ 7f3d210b570c (lz-sync): __thrsleep(2) and __thrwakeup(2), kernel::thrsleep. tools/thrtest, a
+# static program linked with libpthread, calls them directly and checks what they return: EINVAL
+# for ident 0 and a bad timespec, ESRCH, a time already passed (the lock still freed) and a real
+# timeout, the abort word, sleepers woken one at a time and the ident -1 broadcast. Its second
+# half, 300 rounds of four threads that create and join threads while they share one FILE lock,
+# is a libpthread stress test: being static it holds no `_rthread_dl_lock` (the one compiled
+# caller of __thrsleep at the pin, shared librthread only), and FILE locks and the pthread
+# mutexes are futex(2)'s, so that half does not reach these calls. MP, `{{smp}}`; LZ's
+# `--timeout 400`. Part of `smoke`.
+smoke-thrsleep: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
+    @test {{ if has_amd64 == "true" { "-f target/userland/amd64/root/usr/bin/thrtest" } else { "" } }}{{both_archs_a}}{{ if has_arm64 == "true" { "-f target/userland/arm64/root/usr/bin/thrtest" } else { "" } }} || \
+        { echo "smoke-thrsleep: no thrtest in target/userland; run just userland first"; exit 1; }
+    {{xtask}} smoke {{reject}} {{smp}} --arch amd64 --kernel target/{{amd64}}/debug/bsd --timeout 400 --expect-ramdisk --until-seen {{thrsleep_steps}}
+    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --timeout 400 --expect-ramdisk --until-seen {{thrsleep_steps}}
+
+# `smoke-thrsleep`'s session.
+thrsleep_steps := disk_login + " " + \
+    "--send-after '# ' --send 'thrtest 300 && echo thrtest-done-$((40+2))\\n' " + \
+    "--expect 'thrtest: thrsleep ident 0 EINVAL ok' --expect 'thrtest: thrwakeup no sleeper ESRCH ok' " + \
+    "--expect 'thrtest: thrsleep past EWOULDBLOCK ok' --expect 'thrtest: thrsleep timeout slept ok' " + \
+    "--expect 'thrtest: thrsleep abort EINTR ok' --expect 'thrtest: thrsleep woken 0 ok' " + \
+    "--expect 'thrtest: thrwakeup n=1 each ok' --expect 'thrtest: thrwakeup -1 broadcast ok' " + \
+    "--expect 'thrtest: 300 rounds' --expect 'thrtest: stress 300 rounds ok' --expect 'thrtest: all ok' " + \
+    "--expect 'thrtest-done-42' --reject 'Bad system call' --reject ' FAILED: '"
 
 # M10d: NTFS, read-only, amd64 only (OpenBSD builds ntfs and mount_ntfs(8) for alpha, amd64 and
 # i386). The ramdisk's /root/images/ntfs.img (an NTFS volume made on this machine by
