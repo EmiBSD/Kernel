@@ -5,7 +5,7 @@
 # Edited by hand from then on, in the commit that changes a module.
 
 [meta]
-lz = "3c62ede688029454763f1734a2cc3748a168b430"
+lz = "e8249449d90523ffa7ddcdfd4fa846a96eabef65"
 
 [[module]]
 rust = "sys/arch/amd64/amd64/acpi_machdep.rs"
@@ -1056,6 +1056,11 @@ kind = "moved"
 lz = "sys/arch/arm64/include/pmap.rs::VM_MDPAGE_INIT"
 native = ["sys/hal/pmap.rs::PageMd::new"]
 kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/pmap.rs::pmap_bootstrap_uxn"
+native = ["pmap_kernel_nonglobal"]
+kind = "merged"
 
 [[module]]
 rust = "sys/hal/arch/arm64/pmap/vp.rs"
