@@ -3039,7 +3039,9 @@ pub(crate) mod testinet {
     }
 
     /// A socket of the test protocol, with a control block in `table`: the socket's handle
-    /// and the control block's (the caller's, beside the socket's `inp_refcnt`).
+    /// and the control block's (the caller's, beside the socket's `inp_refcnt`). Opened by
+    /// root through a set-user-id program (euid 0, ruid [`TEST_RUID`]), so a reader of the
+    /// two ids that swaps them (`tcp_ident`) is caught.
     pub(crate) fn pcb(table: &'static Inpcbtable<G>) -> (SocketRef<G>, InpcbRef<G>) {
         let so = soalloc(
             &UdpProto,
@@ -3051,7 +3053,7 @@ pub(crate) mod testinet {
                 linger: 0,
                 timeo: 0,
                 euid: 0,
-                ruid: 0,
+                ruid: TEST_RUID,
                 egid: 0,
                 rgid: 0,
                 cpid: 1,
@@ -3061,6 +3063,9 @@ pub(crate) mod testinet {
         let inp = in_pcballoc(&so, table, M_WAIT).expect("in_pcballoc");
         (so, inp)
     }
+
+    /// The real user id of [`pcb`]'s sockets.
+    pub(crate) const TEST_RUID: u32 = 1000;
 
     /// `udp_detach` and `soclose`: the control block detached under the net lock, the socket
     /// let go (no file holds it).

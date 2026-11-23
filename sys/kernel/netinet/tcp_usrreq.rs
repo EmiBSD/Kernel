@@ -2057,10 +2057,7 @@ mod tests {
         let attempts = stat(C::TcpsConnattempt);
 
         // connect(2): SYN_SENT, the SYN out with our MSS first.
-        {
-            let mut w = crate::net::socket::solock(&so);
-            tcp_connect(&so, &mut w, &nam4([10, 9, n, 2], 80)).expect("connect");
-        }
+        locked(&so, |w| tcp_connect(&so, w, &nam4([10, 9, n, 2], 80))).expect("connect");
         assert_eq!(stat(C::TcpsConnattempt), attempts + 1);
         assert_eq!(peek(&inp, |st| st.t_state), TCPS_SYN_SENT);
         assert!(so.has_state(SS_ISCONNECTING));
@@ -2094,10 +2091,7 @@ mod tests {
         assert_eq!(u32::from_be(ack.th_ack), piss.wrapping_add(1));
 
         // Data out (tcp_send), then the peer's data acknowledging it.
-        {
-            let mut w = crate::net::socket::solock(&so);
-            tcp_send(&so, &mut w, Some(data(b"hello")), None).expect("send");
-        }
+        locked(&so, |w| tcp_send(&so, w, Some(data(b"hello")), None)).expect("send");
         let (_ip, out, _o, payload) = last(d);
         assert_eq!(out.th_flags & TH_ACK, TH_ACK);
         assert_eq!(u32::from_be(out.th_seq), iss.wrapping_add(1));
@@ -2118,10 +2112,7 @@ mod tests {
         );
 
         // shutdown(2): FIN_WAIT_1 and our FIN; its ACK, then the peer's FIN: TIME_WAIT.
-        {
-            let mut w = crate::net::socket::solock(&so);
-            tcp_shutdown(&so, &mut w).expect("shutdown");
-        }
+        locked(&so, |w| tcp_shutdown(&so, w)).expect("shutdown");
         assert_eq!(peek(&inp, |st| st.t_state), TCPS_FIN_WAIT_1);
         let (_ip, fin, _o, _p) = last(d);
         assert_eq!(fin.th_flags & TH_FIN, TH_FIN);
@@ -2295,6 +2286,16 @@ mod tests {
         m
     }
 
+    /// `f` under `so`'s lock, as a request runs; its answer is checked by the caller after
+    /// the lock is let go (an assertion that fails under a socket lock would leave it held
+    /// for the tests after). `R` cannot borrow the lock.
+    fn locked<R>(so: &Socket<testtcp::G>, f: impl FnOnce(&mut SoLocked<'_>) -> R) -> R {
+        let mut w = crate::net::socket::solock(so);
+        let r = f(&mut w);
+        drop(w);
+        r
+    }
+
     /// `setsockopt(so, IPPROTO_TCP, opt, &v, sizeof(int))` through `tcp_ctloutput`.
     fn set(so: &Socket<testtcp::G>, opt: i32, v: i32) -> Result<(), Errno> {
         let mut w = crate::net::socket::solock(so);
@@ -2330,21 +2331,14 @@ mod tests {
         assert_eq!(set(&so, TCP_NOPUSH, 0), Ok(()), "established: tcp_output");
         assert_eq!(get_int(&so, TCP_NOPUSH), 0);
         // A value shorter than an int, or none: EINVAL.
-        {
-            let mut w = crate::net::socket::solock(&so);
+        let (short, none) = locked(&so, |w| {
             let mut m = optm(&[1, 0]);
-            let r = tcp_ctloutput(
-                PRCO_SETOPT,
-                &so,
-                &mut w,
-                IPPROTO_TCP,
-                TCP_NODELAY,
-                Some(&mut m),
-            );
-            assert_eq!(r, Err(Errno::EINVAL));
-            let r = tcp_ctloutput(PRCO_SETOPT, &so, &mut w, IPPROTO_TCP, TCP_MAXSEG, None);
-            assert_eq!(r, Err(Errno::EINVAL));
-        }
+            let short = tcp_ctloutput(PRCO_SETOPT, &so, w, IPPROTO_TCP, TCP_NODELAY, Some(&mut m));
+            let none = tcp_ctloutput(PRCO_SETOPT, &so, w, IPPROTO_TCP, TCP_MAXSEG, None);
+            (short, none)
+        });
+        assert_eq!(short, Err(Errno::EINVAL));
+        assert_eq!(none, Err(Errno::EINVAL));
         // TCP_MAXSEG: within (0, t_maxseg] only.
         let maxseg = get_int(&so, TCP_MAXSEG);
         assert_eq!(maxseg, 1460, "estab's segment, from the route");
@@ -2375,10 +2369,7 @@ mod tests {
         assert_eq!(set(&so, TCP_SACK_ENABLE, 1), Ok(()));
         assert_eq!(get_int(&so, TCP_SACK_ENABLE), 1);
         so.st_set(SS_NOFDREF);
-        {
-            let mut w = crate::net::socket::solock(&so);
-            tcp_detach(&so, &mut w).expect("the control block");
-        }
+        locked(&so, |w| tcp_detach(&so, w)).expect("the control block");
         drop(inp);
     }
 
@@ -2474,7 +2465,9 @@ mod tests {
         so.st_set(SS_CONNECTOUT);
         put(&conn);
         assert_eq!(ident(u, false, size, 0), Ok(size));
+        // The fixture's ids differ (euid 0, ruid 1000), so a swap is caught.
         let (euid, ruid, ..) = so.creds();
+        assert_eq!((euid, ruid), (0, testinet::TEST_RUID));
         assert_eq!((back().ruid, back().euid), (ruid as i32, euid as i32));
         // No connection: the listen lookup's miss counted, -1, -1.
         let miss = stat(C::TcpsPcbhashmiss);
@@ -2650,10 +2643,7 @@ mod tests {
             tp.st.t_state = TCPS_CLOSE_WAIT;
             ((), None)
         });
-        {
-            let mut w = crate::net::socket::solock(&so);
-            tcp_disconnect(&so, &mut w).expect("disconnect");
-        }
+        locked(&so, |w| tcp_disconnect(&so, w)).expect("disconnect");
         assert_eq!(peek(&inp, |st| st.t_state), TCPS_LAST_ACK);
         let (_ip, fin, _o, _p) = last(d);
         assert_eq!(fin.th_flags & TH_FIN, TH_FIN);
@@ -2665,10 +2655,7 @@ mod tests {
             tp.st.t_state = TCPS_FIN_WAIT_2;
             ((), None)
         });
-        {
-            let mut w = crate::net::socket::solock(&so);
-            tcp_shutdown(&so, &mut w).expect("shutdown");
-        }
+        locked(&so, |w| tcp_shutdown(&so, w)).expect("shutdown");
         assert!(so.has_state(crate::net::sockbuf::SS_ISDISCONNECTED));
         assert!(peek(&inp, |st| st
             .has_flags(crate::netinet::tcp_var::TF_TMR_2MSL)));
@@ -2677,11 +2664,11 @@ mod tests {
         // SO_LINGER with a zero linger: the disconnect drops (a RST), freeing the block.
         let (so, inp, d) = estab(b"tusr8", 157);
         let cbs = testtcp::tcpcbs();
-        {
-            let mut w = crate::net::socket::solock(&so);
-            so.set_options(&w, SO_LINGER, true);
-            tcp_disconnect(&so, &mut w).expect("disconnect");
-        }
+        locked(&so, |w| {
+            so.set_options(w, SO_LINGER, true);
+            tcp_disconnect(&so, w)
+        })
+        .expect("disconnect");
         let (_ip, rst, _o, _p) = last(d);
         assert_eq!(
             rst.th_flags & hal::sys::netinet_tcp::TH_RST,
@@ -2701,9 +2688,8 @@ mod tests {
         });
         so.set_oobmark(1);
         let oob = |flags: i32| -> Result<u8, Errno> {
-            let mut w = crate::net::socket::solock(&so);
             let mut m = optm(&[]);
-            tcp_rcvoob(&so, &mut w, &mut m, flags)?;
+            locked(&so, |w| tcp_rcvoob(&so, w, &mut m, flags))?;
             Ok(m.data()[0])
         };
         assert_eq!(oob(MSG_PEEK), Ok(b'x'));
@@ -2724,18 +2710,11 @@ mod tests {
             [224, 0, 0, 1],
             [10, 9, n, 255],
         ] {
-            let mut w = crate::net::socket::solock(&so);
-            assert_eq!(
-                tcp_connect(&so, &mut w, &nam4(a, 80)),
-                Err(Errno::EINVAL),
-                "{a:?}"
-            );
+            let r = locked(&so, |w| tcp_connect(&so, w, &nam4(a, 80)));
+            assert_eq!(r, Err(Errno::EINVAL), "{a:?}");
         }
         so.st_set(SS_NOFDREF);
-        {
-            let mut w = crate::net::socket::solock(&so);
-            tcp_detach(&so, &mut w).expect("the control block");
-        }
+        locked(&so, |w| tcp_detach(&so, w)).expect("the control block");
         drop(so);
 
         // tcp_newtcpcb without an item: ENOBUFS, the pcb detached again (the socket's slot
@@ -2764,10 +2743,7 @@ mod tests {
             }
             let before = pcbs();
             crate::testutil::fail_pool("tcpcb", 1);
-            let r = {
-                let mut w = crate::net::socket::solock(&so);
-                tcp_attach(&so, &mut w, 0, M_WAIT)
-            };
+            let r = locked(&so, |w| tcp_attach(&so, w, 0, M_WAIT));
             crate::testutil::fail_pool("tcpcb", 0);
             assert_eq!(r, Err(Errno::ENOBUFS));
             assert_eq!(pcbs(), before, "the pcb freed");

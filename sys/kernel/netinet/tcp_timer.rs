@@ -839,6 +839,15 @@ mod tests {
         assert_eq!(TCPTV_KEEPIDLE, 7_200_000);
     }
 
+    /// The C's `tcp_totbackoff` is the sum of `tcp_backoff[]` (`tcp_timer.c`, where the two
+    /// are written apart), and `tcp_keepintvl_sec` starts as `TCPTV_KEEPINTVL` in seconds
+    /// (75). bsd's `backoff_sums_to_the_total`, re-expressed where the items live now.
+    #[test]
+    fn backoff_sums_to_the_total() {
+        assert_eq!(TCP_BACKOFF.iter().sum::<i32>(), TCP_TOTBACKOFF);
+        assert_eq!(TCP_KEEPINTVL_SEC.load(Ordering::Relaxed), 75);
+    }
+
     #[test]
     #[ignore = "needs OPENBSD_SRC (just test-ref)"]
     fn values_match_the_c_header() {

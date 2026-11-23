@@ -1467,17 +1467,26 @@ fn signature_digest(
 /// or pool items): the SYN cache's sets, which hold an earlier test's bucket arrays and
 /// possibly its entries, forgotten without being freed (`syn_cache_init` makes them again in
 /// this test's memory), the debug ring zeroed (under `RING_TEST`) and `tcp_input`'s two rate
-/// limiters started again (`tcp_input_test_reset`). The pcb tables are reset by `in_pcbinit`
-/// itself; the counters (compared by difference, and bumped by other modules' tests
+/// limiters started again (`tcp_input_test_reset`), and the SYN cache's two tunables
+/// (`tcp_syn_hash_size`, `tcp_syn_use_limit`, which a test may change through `tcp_sysctl`)
+/// given back their initial values. The pcb tables are reset by `in_pcbinit` itself; the
+/// counters (compared by difference, and bumped by other modules' tests
 /// meanwhile) and the ISN secret (set once) hold no memory and stay. `bsd`'s host tests run
 /// the kernel's TCP over their glue since N6.6a5 and call it from their network setup.
 #[cfg(any(test, feature = "doubles"))]
 pub fn tcp_test_reset<G: ProcGlue>() {
-    let mut g = crate::net::domain::net::<G>().tcp.syn_cache.lock();
+    let tcp = &crate::net::domain::net::<G>().tcp;
+    let mut g = tcp.syn_cache.lock();
     core::mem::forget(core::mem::replace(
         &mut *g,
         crate::netinet::tcp_var::SynCaches::new(),
     ));
+    // `TcpTables::new`'s values, the C's initializers (`tcp_input.c`).
+    tcp.tcp_syn_hash_size.store(
+        crate::netinet::tcp_var::TCP_SYN_HASH_SIZE,
+        Ordering::Relaxed,
+    );
+    tcp.tcp_syn_use_limit.store(100_000, Ordering::Relaxed);
     drop(g);
     let _ring = crate::netinet::tcp_debug::RING_TEST
         .lock()
