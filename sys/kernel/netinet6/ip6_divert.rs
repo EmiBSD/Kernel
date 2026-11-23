@@ -396,3 +396,134 @@ impl<G: ProcGlue> Usrreqs<G> for Divert6Usrreqs<G> {
     }
 }
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    use hal::pod;
+    use hal::sys::netinet6_in6::In6Addr;
+
+    use super::*;
+    use crate::netinet::ip_divert::DIVCOUNTERS;
+    use crate::netinet::raw_ip::testraw::{
+        self, DIVERT6, G, close, locked, nam, nam6, pkt, recv, socket, with_net,
+    };
+    use crate::netinet::tcp_subr::testtcp::{a6, iface6};
+
+    /// The divert statistic `c` (`divcounters`, which IPv6 counts in).
+    fn divs(c: DivstatCounters) -> u64 {
+        DIVCOUNTERS.read()[c as usize]
+    }
+
+    /// An IPv6 UDP packet from `src` to `dst` with an 8-byte payload, its payload length
+    /// `plen`.
+    fn udp6(src: In6Addr, dst: In6Addr, plen: u16) -> std::vec::Vec<u8> {
+        let mut h = Ip6Hdr {
+            ip6_plen: plen.to_be(),
+            ip6_nxt: 17,
+            ip6_hlim: 64,
+            ip6_src: src,
+            ip6_dst: dst,
+            ..Ip6Hdr::zeroed()
+        };
+        h.set_ip6_vfc(IPV6_VERSION);
+        let mut b = std::vec![0u8; 48];
+        assert!(pod::put(&mut b, 0, &h));
+        b
+    }
+
+    /// `divert6_send` of `bytes` to `to`.
+    fn send(so: &Socket<G>, bytes: &[u8], to: In6Addr) -> Result<(), Errno> {
+        let n = nam6(to);
+        locked(so, |w| {
+            divert6_send(so, w, Some(pkt(bytes)), Some(&n), None)
+        })
+    }
+
+    #[test]
+    fn divert6_packet_reaches_the_socket_on_its_port() {
+        let (_g, p) = testraw::setup();
+        let _d = iface6(b"div6a", 84);
+        let ifidx = crate::net::if_::if_unit(b"div6a").map(|i| i.if_index.get());
+        let so = socket(&DIVERT6, 0, true).expect("attached");
+        assert!(!testraw::pcb(&so).has_flags(crate::netinet::in_pcb::INP_HDRINCL));
+        let n = nam(&testraw::sin([0, 0, 0, 0], 7200));
+        assert_eq!(
+            locked(&so, |w| divert_bind(&so, w, &n, p)).err(),
+            Some(Errno::EAFNOSUPPORT),
+            "an IPv4 name for an IPv6 socket"
+        );
+        let n6 = {
+            let mut s = SockaddrIn6 {
+                sin6_len: 28,
+                sin6_family: AF_INET6,
+                sin6_port: 7200u16.to_be(),
+                ..SockaddrIn6::default()
+            };
+            s.sin6_addr = In6Addr::default();
+            nam(&s)
+        };
+        assert_eq!(locked(&so, |w| divert_bind(&so, w, &n6, p)), Ok(()));
+        let six = DIV6COUNTERS.read();
+        let ipk = divs(DivstatCounters::DivsIpackets);
+
+        let b = udp6(a6(84, 2), a6(84, 1), 8);
+        let m = pkt(&b);
+        m.m_pkthdr().ph_ifidx.set(ifidx.unwrap_or(0));
+        with_net(|net| divert6_packet::<G>(m, i32::from(PF_IN), 7200u16.to_be(), net));
+        let (name, data) = recv(&so).expect("diverted");
+        assert_eq!(data, b);
+        let from = pod::at::<SockaddrIn6>(&name, 0).expect("a sockaddr_in6");
+        // The first IPv6 address of the interface's list (the C's walk): the link-local one
+        // in6_ifattach made before 2001:db8:84::1.
+        assert!(
+            hal::sys::netinet6_in6::in6_is_addr_linklocal(&from.sin6_addr),
+            "the interface's first IPv6 address"
+        );
+        with_net(|net| divert6_packet::<G>(pkt(&b), i32::from(PF_OUT), 7200u16.to_be(), net));
+        let (name, _) = recv(&so).expect("diverted");
+        let from = pod::at::<SockaddrIn6>(&name, 0).expect("a sockaddr_in6");
+        assert!(in6_is_addr_unspecified(&from.sin6_addr));
+        assert_eq!(
+            divs(DivstatCounters::DivsIpackets),
+            ipk + 2,
+            "divcounters, as the C"
+        );
+        assert_eq!(DIV6COUNTERS.read(), six, "div6counters never counted in");
+        close(so);
+    }
+
+    #[test]
+    fn divert6_output_checks_the_header_and_reinjects() {
+        let (_g, _p) = testraw::setup();
+        let d = iface6(b"div6b", 85);
+        let so = socket(&DIVERT6, 0, true).expect("attached");
+        let (op, errors) = (
+            divs(DivstatCounters::DivsOpackets),
+            divs(DivstatCounters::DivsErrors),
+        );
+        let any = In6Addr::default();
+        let good = udp6(a6(85, 1), a6(85, 2), 8);
+
+        // Short, version 4, a payload length past the packet: EINVAL.
+        assert_eq!(send(&so, &good[..39], any), Err(Errno::EINVAL));
+        let mut v4 = good.clone();
+        v4[0] = 0x45;
+        assert_eq!(send(&so, &v4, any), Err(Errno::EINVAL));
+        assert_eq!(
+            send(&so, &udp6(a6(85, 1), a6(85, 2), 9), any),
+            Err(Errno::EINVAL)
+        );
+        // Inbound to an address that is not ours: EADDRNOTAVAIL.
+        assert_eq!(send(&so, &good, a6(85, 2)), Err(Errno::EADDRNOTAVAIL));
+        assert_eq!(divs(DivstatCounters::DivsErrors), errors + 4);
+
+        // Outbound: ip6_output, the packet on the wire.
+        let sent = d.sent.load(core::sync::atomic::Ordering::Relaxed);
+        assert_eq!(send(&so, &good, any), Ok(()));
+        assert_eq!(d.sent.load(core::sync::atomic::Ordering::Relaxed), sent + 1);
+        assert_eq!(divs(DivstatCounters::DivsOpackets), op + 1);
+        close(so);
+    }
+}
+/* </TESTS> */

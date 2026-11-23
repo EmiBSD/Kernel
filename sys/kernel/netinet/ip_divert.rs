@@ -566,3 +566,242 @@ impl<G: ProcGlue> Usrreqs<G> for DivertUsrreqs<G> {
 // The counters are the statistics' words, the enum's end included.
 const _: () = assert!(DivstatCounters::DivsErrors as usize + 1 == DIVS_NCOUNTERS);
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    use core::pin::pin;
+    use core::sync::atomic::Ordering;
+
+    use hal::sys::netinet_in::IPPROTO_UDP;
+
+    use super::*;
+    use crate::netinet::in_pcb::{in_pcb_iterator, in_pcb_iterator_abort, testinet};
+    use crate::netinet::raw_ip::testraw::{
+        self, DIVERT, G, close, ip4, locked, nam, pkt, recv, sin, socket, with_net,
+    };
+
+    /// The divert statistic `c`.
+    fn divs(c: DivstatCounters) -> u64 {
+        DIVCOUNTERS.read()[c as usize]
+    }
+
+    /// A divert socket bound to `port` (host order).
+    fn bound(port: u16, p: &Thread<G>) -> crate::net::socket::SocketRef<G> {
+        let so = socket(&DIVERT, 0, true).expect("attached");
+        let n = nam(&sin([0, 0, 0, 0], port));
+        assert_eq!(locked(&so, |w| divert_bind(&so, w, &n, p)), Ok(()));
+        so
+    }
+
+    /// pf's `divert_packet` of `bytes` received on `ifidx`, in direction `dir`, to `port`.
+    fn divert(bytes: &[u8], ifidx: u32, dir: u8, port: u16) {
+        let m = pkt(bytes);
+        m.m_pkthdr().ph_ifidx.set(ifidx);
+        with_net(|net| divert_packet::<G>(m, i32::from(dir), port.to_be(), net));
+    }
+
+    /// `divert_send` of `bytes` to `to`.
+    fn send(so: &Socket<G>, bytes: &[u8], to: [u8; 4]) -> Result<(), Errno> {
+        let n = nam(&sin(to, 0));
+        locked(so, |w| divert_send(so, w, Some(pkt(bytes)), Some(&n), None))
+    }
+
+    #[test]
+    fn divert_attach_needs_privilege_and_takes_whole_headers() {
+        let (_g, _p) = testraw::setup();
+        assert_eq!(socket(&DIVERT, 0, false).err(), Some(Errno::EACCES));
+        let so = socket(&DIVERT, 0, true).expect("attached");
+        let inp = testraw::pcb(&so);
+        assert!(inp.has_flags(INP_HDRINCL));
+        assert!(core::ptr::eq(inp.table(), divbtable::<G>()));
+        drop(inp);
+        assert_eq!(so.so_rcv.hiwat(), DIVERT_RECVSPACE as u64);
+        // so->so_pcb != NULL: EINVAL (the C's, not a panic).
+        assert_eq!(
+            locked(&so, |w| divert_attach(&so, w, 0, crate::net::mbuf::M_WAIT)),
+            Err(Errno::EINVAL)
+        );
+        close(so);
+    }
+
+    #[test]
+    fn divert_packet_reaches_the_socket_on_its_port() {
+        let (_g, p) = testraw::setup();
+        let (ifp, _d) = testinet::iface(b"div0", [10, 9, 80, 1]);
+        let ifidx = ifp.if_index.get();
+        let so = bound(7000, p);
+        let b = ip4([10, 9, 80, 2], [10, 9, 80, 1], IPPROTO_UDP as u8, &[0; 8]);
+        let (ipk, noport, errors) = (
+            divs(DivstatCounters::DivsIpackets),
+            divs(DivstatCounters::DivsNoport),
+            divs(DivstatCounters::DivsErrors),
+        );
+
+        // Inbound: from the receiving interface's first IPv4 address.
+        divert(&b, ifidx, PF_IN, 7000);
+        let (name, data) = recv(&so).expect("diverted");
+        assert_eq!(data, b);
+        let from = hal::pod::at::<SockaddrIn>(&name, 0).expect("a sockaddr_in");
+        assert_eq!(from.sin_addr.s_addr, u32::from_ne_bytes([10, 9, 80, 1]));
+        // Outbound: from the wildcard.
+        divert(&b, ifidx, PF_OUT, 7000);
+        let (name, _) = recv(&so).expect("diverted");
+        assert_eq!(
+            hal::pod::at::<SockaddrIn>(&name, 0).map(|s| s.sin_addr.s_addr),
+            Some(0)
+        );
+        // Another port; an inbound packet of an interface that is gone.
+        divert(&b, ifidx, PF_IN, 7001);
+        divert(&b, 999, PF_IN, 7000);
+        assert!(recv(&so).is_none());
+        assert_eq!(divs(DivstatCounters::DivsIpackets), ipk + 4);
+        assert_eq!(divs(DivstatCounters::DivsNoport), noport + 1);
+        assert_eq!(divs(DivstatCounters::DivsErrors), errors + 1);
+
+        // A full receive buffer: counted, the packet dropped.
+        let full = divs(DivstatCounters::DivsFullsock);
+        let mut n = 0;
+        while divs(DivstatCounters::DivsFullsock) == full && n < 4000 {
+            divert(&b, ifidx, PF_IN, 7000);
+            n += 1;
+        }
+        assert_eq!(divs(DivstatCounters::DivsFullsock), full + 1);
+        close(so);
+    }
+
+    #[test]
+    fn divert_packet_skips_an_iterator_marker() {
+        let (_g, p) = testraw::setup();
+        let (ifp, _d) = testinet::iface(b"div1", [10, 9, 81, 1]);
+        // The queue, newest first: the bound socket, a walk's marker, the unbound one (port
+        // 0, as a marker's): the C would read the marker's port and match it.
+        let unbound = socket(&DIVERT, 0, true).expect("attached");
+        let other = bound(7100, p);
+        let table = divbtable::<G>();
+        let iter = pin!(Inpcb::<G>::marker());
+        let mut g = table.lock();
+        let first = in_pcb_iterator(table, &mut g, None, iter.as_ref());
+        assert!(first.is_some());
+        drop(g);
+
+        divert(
+            &ip4([10, 9, 81, 2], [10, 9, 81, 1], 17, &[0; 8]),
+            ifp.if_index.get(),
+            PF_IN,
+            0,
+        );
+        let got = recv(&unbound).is_some();
+        let mut g = table.lock();
+        in_pcb_iterator_abort(table, &mut g, first, iter.as_ref());
+        drop(g);
+        assert!(got, "the unbound socket, past the marker");
+        close(unbound);
+        close(other);
+    }
+
+    #[test]
+    fn divert_output_reinjects_both_ways_and_refuses_what_the_c_refuses() {
+        let (_g, _p) = testraw::setup();
+        let (_ifp, d) = testinet::iface(b"div2", [10, 9, 82, 1]);
+        let so = socket(&DIVERT, 0, true).expect("attached");
+        let (op, errors) = (
+            divs(DivstatCounters::DivsOpackets),
+            divs(DivstatCounters::DivsErrors),
+        );
+
+        // Outbound (the wildcard): ip_output, the header as written.
+        let out = ip4([10, 9, 82, 1], [10, 9, 82, 7], IPPROTO_UDP as u8, &[0; 8]);
+        let sent = d.sent.load(Ordering::Relaxed);
+        assert_eq!(send(&so, &out, [0, 0, 0, 0]), Ok(()));
+        assert_eq!(d.sent.load(Ordering::Relaxed), sent + 1);
+        let wire = d.last.lock().expect("the wire").clone();
+        assert_eq!(wire[12..20], out[12..20]);
+        assert_eq!(divs(DivstatCounters::DivsOpackets), op + 1);
+
+        // Inbound: only to a local route.
+        assert_eq!(
+            send(&so, &out, [10, 9, 82, 7]),
+            Err(Errno::EADDRNOTAVAIL),
+            "10.9.82.7's route is not RTF_LOCAL"
+        );
+        // A header rip_chkhdr refuses; a TCP packet shorter than its header; too long.
+        let mut v6 = out.clone();
+        v6[0] = 0x65;
+        assert_eq!(send(&so, &v6, [0, 0, 0, 0]), Err(Errno::EINVAL));
+        let short_tcp = ip4([10, 9, 82, 1], [10, 9, 82, 7], 6, &[0; 10]);
+        assert_eq!(send(&so, &short_tcp, [0, 0, 0, 0]), Err(Errno::EINVAL));
+        let huge = std::vec![0x45; IP_MAXPACKET + 1];
+        assert_eq!(send(&so, &huge, [0, 0, 0, 0]), Err(Errno::EMSGSIZE));
+        assert_eq!(divs(DivstatCounters::DivsErrors), errors + 4);
+        assert_eq!(divs(DivstatCounters::DivsOpackets), op + 1);
+        close(so);
+    }
+
+    #[test]
+    fn divert_output_reinjects_inbound_to_a_local_address() {
+        let (_g, _p) = testraw::setup();
+        crate::netinet::in_proto::inetsw_set::<G>(&crate::netinet::ip_input::tests::SW);
+        crate::netinet::ip_input::ip_init::<G>();
+        let (_ifp, _d) = testinet::iface(b"div3", [10, 9, 83, 1]);
+        let so = socket(&DIVERT, 0, true).expect("attached");
+        let udp = &crate::netinet::ip_input::tests::UDP;
+        let before = udp.inputs.load(Ordering::Relaxed);
+        let b = ip4([10, 9, 83, 2], [10, 9, 83, 1], IPPROTO_UDP as u8, &[0; 8]);
+        assert_eq!(send(&so, &b, [10, 9, 83, 1]), Ok(()));
+        assert!(
+            udp.inputs.load(Ordering::Relaxed) > before,
+            "ipv4_input delivered it to UDP"
+        );
+        close(so);
+    }
+
+    #[test]
+    fn divert_sysctl_bounds_and_statistics() {
+        let (_g, _p) = testraw::setup();
+        let u = crate::testutil::USER_BASE + 0x3_c000;
+        let call = |name: &[i32], oldp: usize, len: &mut usize, new: Option<i32>| {
+            if let Some(v) = new {
+                hal::user::UserPtr::<u8>::new(u + 0x100)
+                    .copyout_slice(&v.to_ne_bytes())
+                    .expect("user memory");
+            }
+            let mut r = SysctlReq {
+                oldp,
+                oldlenp: len,
+                newp: if new.is_some() { u + 0x100 } else { 0 },
+                newlen: if new.is_some() { 4 } else { 0 },
+            };
+            divert_sysctl(name, &mut r)
+        };
+        let mut len = 0;
+        assert_eq!(call(&[DIVERTCTL_STATS], 0, &mut len, None), Ok(()));
+        assert_eq!(len, 40);
+        assert_eq!(call(&[DIVERTCTL_STATS], u, &mut len, None), Ok(()));
+        assert!(
+            crate::testutil::user_bytes(u, len)
+                .and_then(|b| hal::user::pod_from_bytes::<Divstat>(&b))
+                .is_some()
+        );
+        assert_eq!(
+            call(&[DIVERTCTL_STATS, 0], 0, &mut len, None),
+            Err(Errno::ENOTDIR)
+        );
+
+        let was = divert_recvspace.load(Ordering::Relaxed);
+        let mut l = 4;
+        assert_eq!(call(&[DIVERTCTL_RECVSPACE], 0, &mut l, Some(1000)), Ok(()));
+        assert_eq!(divert_recvspace.load(Ordering::Relaxed), 1000);
+        assert_eq!(
+            call(&[DIVERTCTL_RECVSPACE], 0, &mut l, Some(SB_MAX as i32 + 1)),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(
+            call(&[DIVERTCTL_RECVSPACE], 0, &mut l, Some(-1)),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(divert_recvspace.load(Ordering::Relaxed), 1000);
+        divert_recvspace.store(was, Ordering::Relaxed);
+    }
+}
+/* </TESTS> */
