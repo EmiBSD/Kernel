@@ -6451,7 +6451,9 @@ status = "inherited"
 [[module]]
 rust = "sys/net/radix.rs"
 lz = ["sys/net/radix.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/radix.rs"]
+notes = "N6.7b0: D-14's differential test against the kernel's tree (kernel::net::radix) in the tests, the code LZ's; pf and IPsec move onto the kernel's tree and this file goes at N6.7b1"
 
 [[module]]
 rust = "sys/net/route.rs"
@@ -7974,6 +7976,114 @@ lz = "sys/net/art.rs::art_put"
 native = []
 kind = "dropped"
 reason = "a node goes back to the pool art_node when its last handle does: the unpublished node's drop (rtable_insert's duplicate) or the release of its retired heap words after a grace period (art_delete), which art_put's gc list then smr_barrier did"
+
+[[module]]
+rust = "sys/kernel/net/radix.rs"
+crate = "kernel"
+lz = ["sys/net/radix.rs"]
+status = "redesigned"
+notes = "N6.7b0: radix.h and radix.c as a tree that owns its nodes, keys and values (RadixTree<T, K>, D-3): a slot holds the C's treenodes[2], the K key bytes, the value and a generation; links are u32 indices (2 * slot the leaf, 2 * slot + 1 its internal node), the C's unions two shared words a node and one a record, mask references tagged; radix.c function by function under its names (rn_findmask is rn_addmask's search half, rn_delete_leaf rn_delete's unlinking half, shared with RadixTree::remove); a mask tree and annotation records per tree (D-4: no rn_init, rn_zeros, rn_ones, max_keylen, mask_rnhead or rtmask_pool); chunked storage behind a directory (Slab); the walk a cursor (first, next); D-7's short and long keys; a normal annotation names its leaf with its generation, so radix.c's dangling rm_leaf holds nothing (proposed D-20). bsd's sys/net/radix.rs stays for pf and IPsec until N6.7b1"
+
+[[module.fn]]
+lz = "sys/net/radix.rs::RadixNode::assign"
+native = []
+kind = "dropped"
+reason = "a node is a Copy value in its slot: rn_swap_nodes copies it whole (*to = *from), as the C"
+
+[[module.fn]]
+lz = "sys/net/radix.rs::RadixNode::default"
+native = []
+kind = "dropped"
+reason = "RadixNode::new is the zeroed node the slots start with; nothing asks for Default"
+
+[[module.fn]]
+lz = "sys/net/radix.rs::RadixNodeHead"
+native = ["RadixTree"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/radix.rs::RadixNodeHead::new"
+native = ["RadixTree::new"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/radix.rs::RadixNodeHead::default"
+native = []
+kind = "dropped"
+reason = "RadixTree::new takes the offset and the malloc type; nothing asks for Default"
+
+[[module.fn]]
+lz = "sys/net/radix.rs::RN_ZEROS"
+native = []
+kind = "dropped"
+reason = "D-4: no shared buffers; the left root's key is its slot's zeros, and rn_findmask's ones prefix is written into its key"
+
+[[module.fn]]
+lz = "sys/net/radix.rs::RN_ONES"
+native = []
+kind = "dropped"
+reason = "D-4: no shared buffers; the right root's key is its slot's ones, and a host route's mask in rn_satisfies_leaf is all ones by its absence"
+
+[[module.fn]]
+lz = "sys/net/radix.rs::MAX_KEYLEN"
+native = []
+kind = "dropped"
+reason = "D-4, D-7: each tree's key length is its type's K (rn_init's argument of its caller), not the largest of every caller's"
+
+[[module.fn]]
+lz = "sys/net/radix.rs::MASK_RNHEAD"
+native = ["RadixTree"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/radix.rs::RTMASK_POOL"
+native = ["RadixTree"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/radix.rs::at"
+native = []
+kind = "dropped"
+reason = "keys are K-byte arrays indexed in bounds; no raw byte read is left"
+
+[[module.fn]]
+lz = "sys/net/radix.rs::nd"
+native = []
+kind = "dropped"
+reason = "links are indices: Slab's n and nm reach a node"
+
+[[module.fn]]
+lz = "sys/net/radix.rs::bytes_eq"
+native = []
+kind = "dropped"
+reason = "keys are arrays: rn_insert, rn_match and rn_delete compare their byte ranges"
+
+[[module.fn]]
+lz = "sys/net/radix.rs::pair_node"
+native = []
+kind = "dropped"
+reason = "a leaf's internal node is the other half of its slot, index tt | 1 (the C's &tt[1])"
+
+[[module.fn]]
+lz = "sys/net/radix.rs::rn_initmask"
+native = ["RadixTree::init"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/radix.rs::rn_inithead"
+native = ["RadixTree::init"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/radix.rs::rn_init"
+native = ["RadixTree::new"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/radix.rs::rn_test_reset"
+native = []
+kind = "dropped"
+reason = "D-4: no global state to reset; each test's tree is its own"
 
 [[module]]
 rust = "sys/kernel/net/rtable.rs"

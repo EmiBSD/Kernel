@@ -743,6 +743,7 @@ fn main() {
         .chain(ND6_ROWS.iter())
         .chain(INET6_OUTPUT_ROWS.iter())
         .chain(INET6_INPUT_ROWS.iter())
+        .chain(RADIX_ROWS.iter())
         .copied()
         .collect();
     if args.first().map(String::as_str) == Some("list") {
@@ -1021,6 +1022,7 @@ fn main() {
     nd6_rows(&wanted, &report);
     inet6_output_rows(&wanted, &report);
     inet6_input_rows(&wanted, &report);
+    radix_rows(&wanted, &report);
 }
 
 /// The mbuf's rows (N6.1, decision 43), the same ops as the before rows on LZ's shape.
@@ -4155,5 +4157,106 @@ fn inet6_input_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f
     }
     drop(net);
     drop(w);
+}
+
+/// The radix tree's rows (N6.7b0, D-13: decision 43 at the N6 close), over a tree of pf's key
+/// length (28 bytes, `sockaddr_in` keys from the address's offset): `radix.match.host.1k`, a
+/// match of one of 1,000 host routes; `radix.match.net.1k`, of an address inside one of 1,000
+/// /24s (the chain's normal short cut); `radix.match.miss`, of an address outside all of them
+/// (the climb to the top through the annotations); `radix.add.del`, one /24 added to and
+/// deleted from the 1,000; `radix.walk.1k`, the walk of 1,000 routes (`first`, `next`). The
+/// "before" is a scratch harness over `bsd`'s `radix.rs` at the base (rows `bsd.radix.*`), run
+/// at the close beside these.
+const RADIX_ROWS: [&str; 5] = [
+    "radix.match.host.1k",
+    "radix.match.net.1k",
+    "radix.match.miss",
+    "radix.add.del",
+    "radix.walk.1k",
+];
+
+fn radix_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
+    use kernel::net::radix::RadixTree;
+
+    if !RADIX_ROWS.iter().any(|n| wanted(n)) {
+        return;
+    }
+    /// `M_RTABLE` (the chunks' `malloc(9)` type).
+    const M_RTABLE: i32 = 5;
+    let mask24 = sin([255, 255, 255, 0]);
+    let mut hosts: RadixTree<u32, 28> = RadixTree::new(4, M_RTABLE);
+    let mut nets: RadixTree<u32, 28> = RadixTree::new(4, M_RTABLE);
+    for i in 0..1000u32 {
+        let [_, _, a, b] = i.to_be_bytes();
+        if hosts.add(&sin([10, a, b, 1]), None, i).is_err()
+            || nets.add(&sin([10, a, b, 0]), Some(&mask24), i).is_err()
+        {
+            eprintln!("net: the radix rows' trees could not be made");
+            std::process::exit(1);
+        }
+    }
+    let host = sin([10, 1, 244, 1]);
+    let inside = sin([10, 2, 3, 77]);
+    let outside = sin([192, 168, 0, 1]);
+    if hosts.matches(&host) != Some(&500) || nets.matches(&inside).is_none() {
+        eprintln!("net: the radix rows' trees answer wrongly");
+        std::process::exit(1);
+    }
+    if wanted(RADIX_ROWS[0]) {
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                black_box(hosts.matches(black_box(&host)));
+            }
+            t.elapsed()
+        });
+        report(RADIX_ROWS[0], r);
+    }
+    if wanted(RADIX_ROWS[1]) {
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                black_box(nets.matches(black_box(&inside)));
+            }
+            t.elapsed()
+        });
+        report(RADIX_ROWS[1], r);
+    }
+    if wanted(RADIX_ROWS[2]) {
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                black_box(nets.matches(black_box(&outside)));
+            }
+            t.elapsed()
+        });
+        report(RADIX_ROWS[2], r);
+    }
+    if wanted(RADIX_ROWS[3]) {
+        let extra = sin([10, 200, 7, 0]);
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                let _ = black_box(nets.add(&extra, Some(&mask24), 7));
+                black_box(nets.delete(&extra, Some(&mask24)));
+            }
+            t.elapsed()
+        });
+        report(RADIX_ROWS[3], r);
+    }
+    if wanted(RADIX_ROWS[4]) {
+        let r = measure(1000, || {
+            let t = Instant::now();
+            let mut c = hosts.first();
+            let mut n = 0u32;
+            while let Some(l) = c {
+                c = hosts.next(l);
+                n += black_box(hosts.get(l).copied().unwrap_or(0));
+            }
+            black_box(n);
+            t.elapsed()
+        });
+        report(RADIX_ROWS[4], r);
+    }
 }
 /* </CODE> */
