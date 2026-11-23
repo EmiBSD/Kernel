@@ -156,6 +156,17 @@
 //!   a `fuse_attr_out` reply from one) and `fb_delete`: one `fmsg` item, two `arc4random()`
 //!   words, the in and wait queues, no data block.
 //!
+//! N6.7a0's rows, the nfs client's XDR cursors over the kernel's mbufs (decision 43: every RPC
+//! goes through them; written at 7a0, measured at the N6 close, decision 50; D-11's "before"
+//! is the scratch harness over `bsd`'s codec, `bsd.nfs.xdr.*`):
+//! - `nfs.xdr.dissect.fattr3`: a reader over a reply's `post_op_attr`, the flag word and the
+//!   84-byte `fattr3` copied out across two mbufs (the C's `nfsm_disct` makes them contiguous
+//!   with a fresh mbuf and a copy).
+//! - `nfs.xdr.build.write8k`: a version 3 WRITE's arguments built: `nfsm_reqhead`, the handle
+//!   as a counted string, the offset, the counts, the stability, then 8 KiB of data and their
+//!   padding over fresh mbufs (a cluster while more than `MLEN` is left), the chain finished
+//!   and freed.
+//!
 //! The doubles' pools recycle their items (`testutil::set_pool_recycle`, D-N5.5b-5; until
 //! N5.5b3 a copy of `proc.rs`'s recycling backend here): the doubles' pool otherwise hands out
 //! a fresh zeroed page per item and never takes one back, which timed the host's `malloc` and
@@ -719,6 +730,8 @@ fn main() {
         "tmpfs.stat",
         #[cfg(feature = "fuse")]
         "fuse.roundtrip",
+        "nfs.xdr.dissect.fattr3",
+        "nfs.xdr.build.write8k",
     ];
     if args.first().map(String::as_str) == Some("list") {
         for n in names {
@@ -1217,6 +1230,80 @@ fn main() {
         std::thread::scope(|s| {
             s.spawn(|| fuse_rows(&wanted, &names[fuse..], &report));
         });
+    }
+
+    // N6.7a0's rows: the nfs client's XDR cursors, on a thread of their own after fuse's.
+    std::thread::scope(|s| {
+        s.spawn(|| nfs_rows(&wanted, &report));
+    });
+}
+
+/// N6.7a0's rows (the module's docs): the nfs client's XDR cursors over the kernel's mbufs.
+fn nfs_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
+    use kernel::fs::nfs::nfsm_subs::{XdrReader, XdrWriter};
+    use kernel::fs::nfs::nfsproto::{NFSX_V3FATTR, NfsFattr, Nfsfh};
+    use kernel::net::mbuf::{M_WAIT, MT_DATA, m_get};
+
+    const ROWS: [&str; 2] = ["nfs.xdr.dissect.fattr3", "nfs.xdr.build.write8k"];
+    static BENCH_NMBCLUST: core::sync::atomic::AtomicI64 =
+        core::sync::atomic::AtomicI64::new(256 * 1024);
+    if !ROWS.iter().any(|n| wanted(n)) {
+        return;
+    }
+    // The mbufs' pages are the kernel's: the page system and the kernel maps of the tests,
+    // held for the rows.
+    let _g = kernel::testutil::pages_install(64 << 20);
+    kernel::testutil::kernel_maps_install();
+    kernel::net::mbuf::mbinit(&BENCH_NMBCLUST);
+
+    if wanted(ROWS[0]) {
+        // A post_op_attr (the flag word and a fattr3) whose attributes straddle two mbufs, as
+        // a reply's do when the RPC header leaves the first one part full.
+        let mut bytes = std::vec![0u8; 4 + NFSX_V3FATTR];
+        bytes[3] = 1;
+        let cut = 4 + 37;
+        let mut first = need(m_get(M_WAIT, MT_DATA).ok_or(()), "an mbuf");
+        let mut second = need(m_get(M_WAIT, MT_DATA).ok_or(()), "an mbuf");
+        for (m, part) in [(&mut first, &bytes[..cut]), (&mut second, &bytes[cut..])] {
+            m.m_len().set(part.len() as u32);
+            if let Some(d) = m.data_mut() {
+                d.copy_from_slice(part);
+            }
+        }
+        drop(first.m_next.set(second));
+        report(
+            ROWS[0],
+            measure(|| {
+                rounds(|| {
+                    let mut r = XdrReader::new(black_box(&first));
+                    if r.u32() == Ok(1) {
+                        black_box(r.pod::<NfsFattr>().ok());
+                    }
+                })
+            }),
+        );
+    }
+    if wanted(ROWS[1]) {
+        // A version 3 WRITE's arguments: the handle, the offset, the counts, the stability and
+        // 8 KiB of data with their padding (the buffer's copy is the slice form of
+        // `nfsm_uiotombuf`'s body: the glue's kernel uio leg is `bsd`'s until N7).
+        let fh = Nfsfh::new();
+        let data = std::vec![0x5au8; 8192];
+        report(
+            ROWS[1],
+            measure(|| {
+                rounds(|| {
+                    let mut w = XdrWriter::reqhead(64);
+                    w.fhtom(&fh, 28, true);
+                    w.hyper(black_box(8192));
+                    w.u32(8192);
+                    w.u32(0);
+                    w.u32(8192);
+                    w.buftombuf(black_box(&data));
+                    drop(black_box(w.into_chain()));
+                })
+            }),
+        );
     }
 }
 
