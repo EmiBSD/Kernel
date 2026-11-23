@@ -383,3 +383,4 @@ metadata:
 - A brief that asks for a docs/ROADMAP.md clause (an N10 item) still meets the role's ban on editing ROADMAP: write the exact text to the scratchpad and hand it to the main session in HANDOFF and the report (sysarch sync).
 - `cargo xtask lz trace` takes `<lz path>:<item>` with ONE colon (it prints the `::` form back); a native path alone is refused (sysarch sync).
 - A host test that reaches `sys_nosys` through `SYSENT` panics in kernel::assert (the SIGSYS path needs a real thread): a mutation putting a row back to `sys_nosys` is killed by panic, not by an ENOSYS assertion (sysarch sync).
+- A mutation batch run by locked.sh waits silently while another agent holds /tmp/emibsd/ci.lock (6b0's 18:xx-19:xx at N6.6b1): check `cat /tmp/emibsd/ci.lock/owner` before reading the batch's missing log as a failure; edit no file the batch will mutate meanwhile (N6.6b1).

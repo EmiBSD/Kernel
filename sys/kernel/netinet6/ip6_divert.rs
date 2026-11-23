@@ -443,6 +443,7 @@ mod tests {
     #[test]
     fn divert6_packet_reaches_the_socket_on_its_port() {
         let (_g, p) = testraw::setup();
+        assert_eq!(socket(&DIVERT6, 0, false).err(), Some(Errno::EACCES));
         let _d = iface6(b"div6a", 84);
         let ifidx = crate::net::if_::if_unit(b"div6a").map(|i| i.if_index.get());
         let so = socket(&DIVERT6, 0, true).expect("attached");
