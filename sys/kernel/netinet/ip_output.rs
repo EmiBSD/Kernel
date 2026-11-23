@@ -72,9 +72,10 @@
 //!   every packet before registration (`NPF == 0`); a packet pf tagged `PF_TAG_REROUTE`
 //!   reruns the route lookup (the C's `goto reroute` is a labelled loop).
 //! - Not configured, a comment at its site: `MROUTING` (`ip_mforward`).
-//! - The UDP counter of software checksums (`udps_outswcsum`) is the `Inet` leg
-//!   `udpstat_outswcsum` until UDP moves (N6.6b); TCP's (`tcps_outswcsum`) is the kernel's
-//!   `tcpstat_inc` since N6.6a1 (`icmp_mtudisc_clone` is ICMP's own since N6.4c2).
+//! - The counters of software checksums are the kernel's: UDP's (`udps_outswcsum`)
+//!   `udpstat_inc` since N6.6b0 (the `Inet` leg `udpstat_outswcsum` before it), TCP's
+//!   (`tcps_outswcsum`) `tcpstat_inc` since N6.6a1 (`icmp_mtudisc_clone` is ICMP's own
+//!   since N6.4c2).
 //! - `ip_ctloutput` with `IPSEC` configured: the four IPsec levels are set and read (no
 //!   `EOPNOTSUPP`); `IP_IPSEC_LOCAL_ID` and `IP_IPSEC_REMOTE_ID` answer `EOPNOTSUPP` as the C.
 //!   A `PRCO_GETOPT` without an answer mbuf is `panic(9)` (`sogetopt` always hands one over;
@@ -190,7 +191,7 @@ use hal::sys::netinet_udp::Udphdr;
 use hal::sys::socket::{AF_INET, SO_RTABLE};
 
 use crate::assert::kpanic;
-use crate::net::if_::{IfRef, if_input_local, if_output_ml, if_output_tso, ifa_ifwithaddr, inet};
+use crate::net::if_::{IfRef, if_input_local, if_output_ml, if_output_tso, ifa_ifwithaddr};
 use crate::net::if_var::Ifnet;
 use crate::net::ipsec_hooks::{IpsecLevel, SpdError, TdbHold, ipsec};
 use crate::net::mbuf::{
@@ -217,6 +218,7 @@ use crate::netinet::ip_var::{
     IpMoptions, IpstatCounters, ip_mtudisc, ipstat_add, ipstat_inc,
 };
 use crate::netinet::tcp_var::{TcpstatCounters, tcpstat_inc};
+use crate::netinet::udp_var::{UdpstatCounters, udpstat_inc};
 use crate::proc::{ProcGlue, Thread, suser};
 
 /// `sizeof(struct ip)`: the header without options.
@@ -1733,9 +1735,7 @@ pub fn in_proto_cksum_out(m: &mut Mbuf, ifp: Option<&Ifnet>) {
         }
     } else if flags & M_UDP_CSUM_OUT != 0 {
         if !in_ifcap_cksum(m, ifp, IFCAP_CSUM_UDPv4) || ip.ip_hl() != 5 {
-            if let Some(i) = inet() {
-                i.udpstat_outswcsum();
-            }
+            udpstat_inc(UdpstatCounters::UdpsOutswcsum);
             in_delayed_cksum(m);
             m.m_pkthdr().csum_flags.set(flags & !M_UDP_CSUM_OUT); // Clear
         }

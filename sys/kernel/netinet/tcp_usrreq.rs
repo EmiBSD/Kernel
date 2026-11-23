@@ -155,7 +155,8 @@
 //!   `sa_len`: the C's casts. `TCPCTL_DROP` drops the connection under its socket's lock
 //!   taken by `in_pcbsolock` (the C's), the pcb counted by the lookup until after the unlock.
 //! - `tcp_sysctl`'s port bitmaps go through the C's `malloc(M_SYSCTL)` buffer (an `MArray`,
-//!   where LZ put 8 KiB on the stack); `tcp_sysctl_tcpstat` builds `struct tcpstat` from the
+//!   where LZ put 8 KiB on the stack; N6.6b0: `in_pcb::in_sysctl_ports`, which
+//!   `udp_sysctl`'s identical block shares); `tcp_sysctl_tcpstat` builds `struct tcpstat` from the
 //!   per-CPU counters in the C's `ASSIGN` order and copies its bytes out (`hal::sys`'s image,
 //!   holes named). `tcp_syn_hash_size` and `tcp_syn_use_limit` are atomics beside the SYN
 //!   cache's mutex (`TcpTables`), written under it and read without it, as the C's
@@ -171,7 +172,6 @@ use core::marker::PhantomData;
 use core::mem::size_of;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use hal::malloc::{M_WAITOK, MArray};
 use hal::netlock::{NETLOCK, NetHeld};
 use hal::pool::PoolArc;
 use hal::rwlock::{RW_INTR, WitnessPart};
@@ -219,10 +219,9 @@ use crate::net::socket::{
 };
 use crate::netinet::in_::{in_broadcast, in_control, in_nam2sin};
 use crate::netinet::in_pcb::{
-    BADDYNAMICPORTS, Baddynamicports, DP_MAPSIZE, INP_IPV6, Inpcb, Inpcbtable, ROOTONLYPORTS,
-    in_pcballoc, in_pcbbind, in_pcbconnect, in_pcbdetach, in_pcbdisconnect, in_pcblookup,
-    in_pcblookup_listen, in_pcbsolock, in_pcbunset_faddr, in_setpeeraddr, in_setsockaddr,
-    sotoinpcb_locked,
+    INP_IPV6, Inpcb, Inpcbtable, in_pcballoc, in_pcbbind, in_pcbconnect, in_pcbdetach,
+    in_pcbdisconnect, in_pcblookup, in_pcblookup_listen, in_pcbsolock, in_pcbunset_faddr,
+    in_setpeeraddr, in_setsockaddr, in_sysctl_ports, inet, set_nam, sotoinpcb_locked, with_curproc,
 };
 use crate::netinet::ip_output::ip_ctloutput;
 use crate::netinet::tcp_debug::{TA_USER, tcp_trace};
@@ -257,10 +256,7 @@ use crate::netinet6::in6_pcb::{
 use crate::netinet6::in6_src::in6_embedscope;
 use crate::netinet6::ip6_output::ip6_ctloutput;
 use crate::proc::{ProcGlue, Thread, suser};
-use crate::sysctl::{
-    M_SYSCTL, SECURELEVEL, SYSCTL_LOCK, SysctlReq, bounded_arr, int, int_bounded, rdstruct,
-    structure,
-};
+use crate::sysctl::{SYSCTL_LOCK, SysctlReq, bounded_arr, int, int_bounded, rdstruct};
 
 /// `TCP_SENDSPACE`.
 const TCP_SENDSPACE: u32 = 1024 * 16;
@@ -367,17 +363,6 @@ static TCPCTL_VARS: [SysctlBoundedArgs; 14] = [
     SysctlBoundedArgs::new(TCPCTL_TSO, &TCP_DO_TSO, 0, 1),
 ];
 
-/// The socket lock of a request opened in its parts (the C's `soassertlocked`): a kernel TCP
-/// socket is always held by a witness under a proof of the net lock.
-fn inet<'w>(w: &'w mut SoLocked<'_>) -> InetLocked<'w> {
-    match w.inet() {
-        Some(il) => il,
-        None => kpanic(format_args!(
-            "tcp: the socket lock is not held as a kernel protocol's"
-        )),
-    }
-}
-
 /// `tcp_sogetpcb`: when a TCP is attached to a socket, then there will be a (struct inpcb)
 /// pointed at by the socket, and this structure will point at a subsidiary (struct tcpcb):
 /// both borrowed through the socket lock's parts (`il`) for as long as the answer lives, the
@@ -434,25 +419,6 @@ fn trace_end(start: Option<(usize, i32)>, st: Option<&TcpState>, req: i32) {
 /// state (`accept`, `sense`, `sockaddr`, `peeraddr`, `rcvoob`), on a socket with `SO_DEBUG`.
 fn trace_now<G: ProcGlue>(tp: &Tp<'_, '_, G>, req: i32) {
     trace_end(trace_start(tp), Some(tp.st), req);
-}
-
-/// `curproc`, which the socket requests run as (`panic(9)` without one: a request reaches a
-/// protocol from a system call).
-fn with_curproc<G: ProcGlue, R>(func: &str, f: impl FnOnce(&Thread<G>) -> R) -> R {
-    G::with_curproc(|p| match p {
-        Some(p) => f(p),
-        None => kpanic(format_args!("{func}: no curproc")),
-    })
-}
-
-/// `addr` written into the name mbuf `nam` (`m_len` its size).
-fn set_nam<T: AbiPod>(nam: &mut Mbuf, addr: &T) {
-    let bytes = bytes_of(core::slice::from_ref(addr));
-    nam.m_len().set(bytes.len() as u32);
-    match nam.data_mut() {
-        Some(d) => d.copy_from_slice(bytes),
-        None => kpanic(format_args!("tcp: a read-only name mbuf")),
-    }
 }
 
 /// `in_setsockaddr(inp, nam)`: the local address of `inp`, of its family, into `nam`.
@@ -1549,46 +1515,6 @@ fn tcp_sysctl_tcpstat<G: ProcGlue>(req: &mut SysctlReq<'_>) -> Result<(), Errno>
     rdstruct(req, bytes_of(core::slice::from_ref(&tcpstat)))
 }
 
-/// `TCPCTL_ROOTONLY` and `TCPCTL_BADDYNAMIC`: the TCP half of a port bitmap, copied out
-/// under the shared net lock and back under the exclusive one, through the C's `M_SYSCTL`
-/// buffer.
-fn tcp_sysctl_ports(req: &mut SysctlReq<'_>, ports: &Baddynamicports) -> Result<(), Errno> {
-    let buflen = DP_MAPSIZE * size_of::<u32>();
-    let Some(mut buf) = MArray::new(M_SYSCTL, M_WAITOK, buflen, |_| 0u8) else {
-        return Err(Errno::ENOMEM);
-    };
-
-    let shared = NETLOCK.read();
-    for (b, w) in buf
-        .as_chunks_mut::<{ size_of::<u32>() }>()
-        .0
-        .iter_mut()
-        .zip(&ports.tcp)
-    {
-        *b = w.load(Ordering::Relaxed).to_ne_bytes();
-    }
-    drop(shared);
-
-    let error = structure(req, &mut buf);
-
-    if error.is_ok() && req.newp != 0 {
-        let excl = NETLOCK.write();
-        for (b, w) in buf
-            .as_chunks::<{ size_of::<u32>() }>()
-            .0
-            .iter()
-            .zip(&ports.tcp)
-        {
-            w.store(u32::from_ne_bytes(*b), Ordering::Relaxed);
-        }
-        drop(excl);
-    }
-
-    // free(buf, M_SYSCTL, buflen)
-    drop(buf);
-    error
-}
-
 /// `tcp_sysctl`: sysctl for tcp variables.
 pub fn tcp_sysctl<G: ProcGlue>(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
     // All sysctl names at this level are terminal.
@@ -1598,15 +1524,7 @@ pub fn tcp_sysctl<G: ProcGlue>(name: &[i32], req: &mut SysctlReq<'_>) -> Result<
 
     match n {
         TCPCTL_ROOTONLY | TCPCTL_BADDYNAMIC => {
-            if n == TCPCTL_ROOTONLY && req.newp != 0 && SECURELEVEL.load(Ordering::Relaxed) > 0 {
-                return Err(Errno::EPERM);
-            }
-            let ports = if n == TCPCTL_ROOTONLY {
-                &ROOTONLYPORTS
-            } else {
-                &BADDYNAMICPORTS
-            };
-            tcp_sysctl_ports(req, ports)
+            in_sysctl_ports(req, IPPROTO_TCP as u16, n == TCPCTL_ROOTONLY)
         }
         TCPCTL_IDENT => tcp_ident::<G>(req, false),
 
@@ -1945,11 +1863,12 @@ mod tests {
     use super::*;
     use crate::net::mbuf::{M_DONTWAIT, M_TCP_CSUM_IN_OK, MT_DATA, MT_SONAME, m_get, m_gethdr};
     use crate::net::sockbuf::SS_CANTRCVMORE;
-    use crate::netinet::in_pcb::{sotoinpcb, testinet};
+    use crate::netinet::in_pcb::{BADDYNAMICPORTS, DP_MAPSIZE, sotoinpcb, testinet};
     use crate::netinet::tcp_fsm::TCPS_TIME_WAIT;
     use crate::netinet::tcp_input::tcp_input;
     use crate::netinet::tcp_subr::testtcp::{self, TcpProto, estab, last, stat};
     use crate::netinet::tcp_var::TcpstatCounters as C;
+    use crate::sysctl::SECURELEVEL;
 
     /// A `sockaddr_in` of `addr`:`port` in a name mbuf (`MT_SONAME`).
     fn nam4(addr: [u8; 4], port: u16) -> MbufBox {

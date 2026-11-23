@@ -198,7 +198,6 @@ use core::sync::atomic::{AtomicI32, Ordering};
 
 use hal::netlock::NetHeld;
 use hal::once::OnceStatic;
-use hal::pool::AnyArc;
 use hal::rwlock::Guarded;
 use hal::sys::errno::Errno;
 use hal::sys::net_if::IFF_LOOPBACK;
@@ -237,7 +236,7 @@ use crate::net::socket::{
     sorwakeup, sounlock_detached, sowwakeup,
 };
 use crate::netinet::in_pcb::{
-    Inpcb, InpcbRef, in_pcblookup, in_pcblookup_listen, in_pcbrtentry, in_pcbsolock,
+    InpHold, Inpcb, InpcbRef, in_pcblookup, in_pcblookup_listen, in_pcbrtentry, in_pcbsolock,
 };
 use crate::netinet::in4_cksum::in4_cksum;
 use crate::netinet::ip_output::ip_load;
@@ -366,39 +365,6 @@ enum TcpInputNext<G: ProcGlue> {
     /// `syn_cache_get`'s new connection, its pcb counted and its socket locked detached: the
     /// segment goes on there (the listener's reference dropped by the caller).
     Conn(InpcbRef<G>),
-}
-
-/// The pcb a segment is for, counted (the C's `in_pcbref`): the lookup's handle, or the one
-/// pf's `pf_inp_lookup` returned, kept erased so it is counted once, as the C's.
-enum InpHold<G: ProcGlue> {
-    /// `in_pcblookup`'s, `in_pcblookup_listen`'s, `syn_cache_get`'s.
-    Pcb(InpcbRef<G>),
-    /// `pf_inp_lookup`'s: a handle of an `Inpcb<G>`, checked when it is made.
-    Pf(AnyArc),
-}
-
-impl<G: ProcGlue> InpHold<G> {
-    /// pf's answer, when it is a pcb of this glue (anything else is no pcb).
-    fn pf(a: AnyArc) -> Option<Self> {
-        a.downcast_ref::<Inpcb<G>>()?;
-        Some(Self::Pf(a))
-    }
-}
-
-impl<G: ProcGlue> core::ops::Deref for InpHold<G> {
-    type Target = Inpcb<G>;
-
-    #[inline]
-    fn deref(&self) -> &Inpcb<G> {
-        match self {
-            Self::Pcb(h) => h,
-            Self::Pf(a) => match a.downcast_ref::<Inpcb<G>>() {
-                Some(inp) => inp,
-                // InpHold::pf checked it.
-                None => kpanic(format_args!("tcp_input: pf's handle is not a pcb")),
-            },
-        }
-    }
 }
 
 /// The socket `tcp_input_mlist` keeps locked between segments (its `so`, `*solocked`): the

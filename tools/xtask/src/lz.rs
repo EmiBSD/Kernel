@@ -166,6 +166,7 @@ struct Sync {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Record {
     lz: String,
     #[serde(default)]
@@ -182,6 +183,10 @@ struct Record {
     /// `applied` only: `cherry-pick`, `cherry-pick-conflicts` or `reimplemented`.
     #[serde(default)]
     method: String,
+    /// `applied` only: the commit's frozen amd64 half taken without compiling (decision 44);
+    /// at least one of `modules` is under the frozen tree.
+    #[serde(default)]
+    frozen: bool,
 }
 
 #[derive(Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -190,7 +195,14 @@ enum SyncStatus {
     Applied,
     NotApplicable,
     CoveredByRedesign,
+    /// Decision 44: a commit that touches only frozen amd64 files and does not cherry-pick
+    /// cleanly; N10 applies it, and cannot close with one open.
+    #[serde(rename = "deferred-to-N10")]
+    DeferredToN10,
 }
+
+/// The trees frozen until N10 (decision 44): a `frozen` record names a module under one.
+const FROZEN_PREFIXES: [&str; 3] = ["sys/arch/amd64/", "sys/hal/arch/amd64/", "sys/machine/"];
 
 /// An item a Rust file defines: its qualified name (`fork1`, `Proc::fork_thread`,
 /// `memmap_type::USABLE`) and its line span.
@@ -1603,6 +1615,29 @@ struct Pending {
 }
 
 /// `cargo xtask lz drift [--fetch] [--security] [--functions] [--strict]`.
+/// What is wrong with a record's `frozen` flag: only an `applied` record carries it, and it
+/// names at least one module of the frozen amd64 tree (`FROZEN_PREFIXES`).
+fn frozen_problems(r: &Record) -> Vec<String> {
+    let mut problems = Vec::new();
+    if !r.frozen {
+        return problems;
+    }
+    if r.status != SyncStatus::Applied {
+        problems.push(format!(
+            "`frozen` is only for applied records, not {:?}",
+            r.status
+        ));
+    }
+    if !r
+        .modules
+        .iter()
+        .any(|m| FROZEN_PREFIXES.iter().any(|p| m.starts_with(p)))
+    {
+        problems.push("`frozen` names no module of the frozen amd64 tree".to_string());
+    }
+    problems
+}
+
 pub(crate) fn drift(
     root: &Path,
     fetch: bool,
@@ -1682,7 +1717,9 @@ pub(crate) fn drift(
                     errors += 1;
                 }
             }
-            SyncStatus::NotApplicable | SyncStatus::CoveredByRedesign
+            SyncStatus::NotApplicable
+            | SyncStatus::CoveredByRedesign
+            | SyncStatus::DeferredToN10
                 if r.reason.trim().is_empty() =>
             {
                 println!(
@@ -1692,6 +1729,10 @@ pub(crate) fn drift(
                 errors += 1;
             }
             _ => {}
+        }
+        for problem in frozen_problems(r) {
+            println!("error: {SYNC_FILE}: {}: {problem}", r.lz);
+            errors += 1;
         }
         if r.security && r.status == SyncStatus::NotApplicable && r.reason.trim().is_empty() {
             println!(
@@ -1746,7 +1787,7 @@ pub(crate) fn drift(
             }
         }
     }
-    let methods: Vec<String> = ["cherry-pick", "cherry-pick-conflicts", "reimplemented"]
+    let mut methods: Vec<String> = ["cherry-pick", "cherry-pick-conflicts", "reimplemented"]
         .iter()
         .map(|m| {
             format!(
@@ -1755,6 +1796,14 @@ pub(crate) fn drift(
             )
         })
         .collect();
+    let deferred = sync
+        .commits
+        .iter()
+        .filter(|r| r.status == SyncStatus::DeferredToN10)
+        .count();
+    if deferred > 0 {
+        methods.push(format!("deferred-to-N10 {deferred}"));
+    }
     println!(
         "lz drift: {} commit(s) after pin {} on {}: {triaged} triaged ({}), {} open, {errors} record error(s)",
         triaged + pending.len(),
@@ -1961,7 +2010,55 @@ mod tests {
             reason: String::new(),
             security: false,
             method: String::new(),
+            frozen: false,
         }
+    }
+
+    #[test]
+    fn the_deferred_status_and_the_frozen_flag_parse() {
+        let text = r#"
+            [meta]
+            lz = "0123456789abcdef0123456789abcdef01234567"
+            [[commit]]
+            lz = "aaaaaaaaaaaa"
+            status = "deferred-to-N10"
+            reason = "amd64 only"
+            [[commit]]
+            lz = "bbbbbbbbbbbb"
+            status = "applied"
+            emibsd = "cccccccccccc"
+            method = "cherry-pick"
+            modules = ["sys/arch/amd64/amd64/x.rs"]
+            frozen = true
+        "#;
+        let sync: Sync = toml::from_str(text).expect("parses");
+        assert_eq!(sync.commits[0].status, SyncStatus::DeferredToN10);
+        assert!(sync.commits[1].frozen);
+        assert!(frozen_problems(&sync.commits[1]).is_empty());
+    }
+
+    #[test]
+    fn an_unknown_key_in_a_record_is_refused() {
+        let text = r#"
+            [meta]
+            lz = "0123456789abcdef0123456789abcdef01234567"
+            [[commit]]
+            lz = "aaaaaaaaaaaa"
+            status = "applied"
+            frozn = true
+        "#;
+        assert!(toml::from_str::<Sync>(text).is_err());
+    }
+
+    #[test]
+    fn frozen_needs_an_applied_record_and_a_frozen_module() {
+        let mut r = record("aaaaaaaaaaaa", SyncStatus::Applied, &["sys/kernel/x.rs"]);
+        r.frozen = true;
+        assert_eq!(frozen_problems(&r).len(), 1);
+        r.modules.push("sys/hal/arch/amd64/y.rs".to_string());
+        assert!(frozen_problems(&r).is_empty());
+        r.status = SyncStatus::DeferredToN10;
+        assert_eq!(frozen_problems(&r).len(), 1);
     }
 
     #[test]

@@ -242,8 +242,8 @@
 //!   members in the size test; the three queue entries 48, the two address unions 32,
 //!   `struct route` 72, `struct refcnt` 8, the header union 40); LZ's `Inpcb` was 352 (measured: a replica of its members over
 //!   this tree's types, LZ's `Route` of 72 and `Refcnt` of 8; the tree's at 2baa2aff, with
-//!   `RouteCell`, the same); here 568, 584 with the counted item's header (the pool and the
-//!   count; 544 and 560 before N6.6b1's ICMPv6 filter words): the three pinned entries (96: a lock identity each beside the two links), the
+//!   `RouteCell`, the same); here 560, 576 with the counted item's header (the pool and the
+//!   count; 536 and 552 before N6.6b1's ICMPv6 filter words): the three pinned entries (96: a lock identity each beside the two links), the
 //!   route cache's cell (72), the IPv4 multicast options' and (N6.5c, +64) the IPv6 packet
 //!   and multicast options' (40 each), the IPv4 options' slot (24, N6.6a0: +16 over `bsd`'s
 //!   word), the anchor (16), the IPv4 and IPv6 members side by
@@ -254,7 +254,8 @@
 //!   [`Inpcb::moptions6`] as a [`MouLoan`] of the family's member; a loan of the other
 //!   family's is `panic(9)`, where the C would read the union as the wrong member): 48 B
 //!   where the two cells were 80. The item was 568 B (552 and the header); 560 since N6.6a5,
-//!   `bsd`'s `inp_ppcb` word gone with `bsd`'s TCP; 584 since N6.6b1 (D-7: the ICMPv6
+//!   `bsd`'s `inp_ppcb` word gone with `bsd`'s TCP; 552 since N6.6b0, `inp_upcall`'s function
+//!   a fn pointer (D-3) where it was an erased fat pointer; 576 since N6.6b1 (D-7: the ICMPv6
 //!   filter's words and flag, +24 over `bsd`'s pointer word).
 //! - The IPv6 packet and multicast options are the kernel's typed cells since N6.5c (D-10),
 //!   lent by [`Inpcb::outputopts6`] and [`Inpcb::moptions6`] under the socket lock (the C's
@@ -299,6 +300,16 @@
 //!   [`in_pcbnotifyall`] and `in6_pcbnotify` lock through the new form and lend `notify` the
 //!   witness. A kernel TCP request never calls `in_pcbsolock` on the socket it holds (the
 //!   C's `tcp_timer_rexmt` lets its socket go before `in_pcbnotifyall`).
+//! - N6.6b0: `in_sysctl_ports` is the `*CTL_ROOTONLY`/`*CTL_BADDYNAMIC` block that
+//!   `tcp_sysctl` and `udp_sysctl` write identically in the C (the securelevel refusal, the
+//!   `M_SYSCTL` buffer, the shared then the exclusive net lock), one function for the two
+//!   protocols' halves of the bitmaps beside the bitmaps themselves (N6.6a5's
+//!   `tcp_sysctl_ports`, its second user UDP's).
+//! - N6.6b0's review: the internet protocols' request helpers, one copy each beside
+//!   [`sotoinpcb_locked`] where TCP and UDP had one each: `inet` (the socket lock opened in
+//!   its parts, `panic(9)` held otherwise), `with_curproc` (LZ's `curproc_or_panic` of
+//!   `tcp_usrreq`, `udp_usrreq` and `udp6_output`) and `set_nam` (an address into a request's
+//!   name mbuf).
 //!
 //! Lock and spl transitions per operation, against the C (`in_pcb.c`):
 //!
@@ -329,10 +340,10 @@ use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use hal::intr::IPL_SOFTNET;
 use hal::malloc::{M_NOWAIT, M_WAITOK, MArray, MBox};
 use hal::mutex::{Mutexed, MutexedGuard};
-use hal::netlock::NetHeld;
+use hal::netlock::{NETLOCK, NetHeld};
 use hal::once::OnceStatic;
 use hal::pinlist::{PinEntry, PinList};
-use hal::pool::{PR_NOWAIT, PR_WAITOK, PoolArc, PoolBox, PoolHome, TypedPool};
+use hal::pool::{AnyArc, PR_NOWAIT, PR_WAITOK, PoolArc, PoolBox, PoolHome, TypedPool};
 use hal::rwlock::{Guarded, RW_WRITE, Witness, WitnessPart};
 use hal::slot::{LoanSlot, ReadMostly, SlotLoan};
 use hal::sys::errno::Errno;
@@ -349,6 +360,7 @@ use hal::sys::netinet6_in6::{In6Addr, in6_is_addr_unspecified};
 use hal::sys::socket::{
     AF_INET, SO_ACCEPTCONN, SO_BINDANY, SO_REUSEADDR, SO_REUSEPORT, SOCK_DGRAM,
 };
+use hal::user::{AbiPod, bytes_of};
 use libkern::siphash::AtomicSiphashKey;
 
 use crate::assert::kassert;
@@ -363,7 +375,9 @@ use crate::net::proto::PR_CONNREQUIRED;
 use crate::net::route::{Route, Rtentry, rtdeletemsg};
 use crate::net::rtable::{rtable_exists, rtable_getsource, rtable_l2};
 use crate::net::sockbuf::SS_NOFDREF;
-use crate::net::socket::{SoLocked, Socket, SocketRef, so_part, sofree_legacy, solock_net, soref};
+use crate::net::socket::{
+    InetLocked, SoLocked, Socket, SocketRef, so_part, sofree_legacy, solock_net, soref,
+};
 use crate::net::toeplitz::stoeplitz_ip4port;
 use crate::netinet::in_::{in_broadcast, in_ifp2ia, in_nam2sin};
 use crate::netinet::in_var::ifatoia;
@@ -377,6 +391,7 @@ use crate::netinet6::in6_pcb::{
 use crate::netinet6::ip6_output::{ip6_freemoptions, ip6_freepcbopts};
 use crate::netinet6::ip6_var::{Ip6Moptions, Ip6Pktopts};
 use crate::proc::{ProcGlue, Thread, suser};
+use crate::sysctl::{M_SYSCTL, SECURELEVEL, SysctlReq, structure};
 
 // flags in inp_flags:
 
@@ -517,19 +532,70 @@ const fn inpcbhash_loadfactor(x: i32) -> i32 {
 /// `M_PCB`: protocol control blocks (`malloc.h`; `hashinit`'s type here).
 const M_PCB: i32 = 4;
 
+/// `inp_upcall`'s type (`in_pcb.h`): the hook that sees a UDP datagram before the socket
+/// buffer (wg(4)'s `wg_input`), called with its argument, the packet (given over), copies of
+/// its IP or IPv6 header and of its UDP header, the length of both headers and the softnet's
+/// stack; it answers the packet for the socket buffer, or `None` once it took it. A safe
+/// `fn` of the kernel's (N6.6b0, D-3): `bsd`'s wg(4) implements it (bridges.toml's
+/// `InpUpcall` row, paid by N8).
+pub type InpUpcallFn = fn(
+    arg: usize,
+    m: MbufBox,
+    ip: Option<&Ip>,
+    ip6: Option<&hal::sys::netinet_ip6::Ip6Hdr>,
+    uh: &hal::sys::netinet_udp::Udphdr,
+    hlen: i32,
+    ns: Option<&mut crate::net::if_var::Netstack>,
+) -> Option<MbufBox>;
+
 /// `inp_upcall` and `inp_upcall_arg`, set once ([`Inpcb::set_upcall`]): a hook that sees UDP
-/// datagrams before the socket buffer (wg(4)'s `wg_input`, set by `wg_bind`). The function is
-/// `bsd`'s, erased (`bsd`'s UDP input names its type to call it); the argument a word.
+/// datagrams before the socket buffer (wg(4)'s `wg_input`, set by `wg_bind`), the C's
+/// pointer and argument (N6.6b0: the function a safe [`InpUpcallFn`], where it was `bsd`'s
+/// `unsafe fn` erased behind `dyn Any`); the argument a word.
 #[derive(Clone, Copy)]
 pub struct InpUpcall {
     /// `inp_upcall`.
-    pub f: &'static (dyn core::any::Any + Send + Sync),
+    pub f: InpUpcallFn,
     /// `inp_upcall_arg`: the argument's address.
     pub arg: usize,
 }
 
 /// A counted control block: `in_pcbref` is a clone, `in_pcbunref` a drop.
 pub type InpcbRef<G> = PoolArc<Inpcb<G>>;
+
+/// The pcb a packet is for, counted (the C's `in_pcbref`): the lookup's handle, or the one
+/// pf's `pf_inp_lookup` returned, kept erased so it is counted once, as the C's (TCP's and,
+/// since N6.6b0, UDP's input).
+pub(crate) enum InpHold<G: ProcGlue> {
+    /// `in_pcblookup`'s, `in_pcblookup_listen`'s, `syn_cache_get`'s.
+    Pcb(InpcbRef<G>),
+    /// `pf_inp_lookup`'s: a handle of an `Inpcb<G>`, checked when it is made.
+    Pf(AnyArc),
+}
+
+impl<G: ProcGlue> InpHold<G> {
+    /// pf's answer, when it is a pcb of this glue (anything else is no pcb).
+    pub(crate) fn pf(a: AnyArc) -> Option<Self> {
+        a.downcast_ref::<Inpcb<G>>()?;
+        Some(Self::Pf(a))
+    }
+}
+
+impl<G: ProcGlue> core::ops::Deref for InpHold<G> {
+    type Target = Inpcb<G>;
+
+    #[inline]
+    fn deref(&self) -> &Inpcb<G> {
+        match self {
+            Self::Pcb(h) => h,
+            Self::Pf(a) => match a.downcast_ref::<Inpcb<G>>() {
+                Some(inp) => inp,
+                // InpHold::pf checked it.
+                None => kpanic(format_args!("inpcb: pf's handle is not a pcb")),
+            },
+        }
+    }
+}
 
 /// The table mutex held (`mtx_enter(&table->inpt_mtx)`): the witness of the queue and the
 /// hash chains, and the \[t\] members' setters' proof.
@@ -1272,11 +1338,7 @@ impl<G: ProcGlue> Inpcb<G> {
 
     /// `inp->inp_upcall = f; inp->inp_upcall_arg = arg` (wg(4)'s `wg_bind` on its new
     /// socket); `Err` when an upcall is set already.
-    pub fn set_upcall(
-        &self,
-        f: &'static (dyn core::any::Any + Send + Sync),
-        arg: usize,
-    ) -> Result<(), Errno> {
+    pub fn set_upcall(&self, f: InpUpcallFn, arg: usize) -> Result<(), Errno> {
         self.inp_upcall
             .set(InpUpcall { f, arg })
             .map_err(|_| Errno::EBUSY)
@@ -1802,6 +1864,57 @@ pub fn in_rootonly(port: u16, proto: u16) -> bool {
     }
 }
 
+/// The `*CTL_ROOTONLY` and `*CTL_BADDYNAMIC` names of `tcp_sysctl` and `udp_sysctl` (N6.6b0:
+/// the two C functions' identical blocks, one function): the `proto` half (`IPPROTO_TCP` or
+/// `IPPROTO_UDP`) of `rootonlyports` (`rootonly`) or `baddynamicports`, a write refused at
+/// `securelevel` > 0 for `rootonly` (`EPERM`), copied out under the shared net lock and back
+/// under the exclusive one, through the C's `malloc(M_SYSCTL, M_WAITOK | M_ZERO)` buffer.
+/// Another `proto` has no half: `EOPNOTSUPP` (no C caller passes one).
+pub(crate) fn in_sysctl_ports(
+    req: &mut SysctlReq<'_>,
+    proto: u16,
+    rootonly: bool,
+) -> Result<(), Errno> {
+    if rootonly && req.newp != 0 && SECURELEVEL.load(Ordering::Relaxed) > 0 {
+        return Err(Errno::EPERM);
+    }
+    let ports = if rootonly {
+        &ROOTONLYPORTS
+    } else {
+        &BADDYNAMICPORTS
+    };
+    let half = match i32::from(proto) {
+        IPPROTO_TCP => &ports.tcp,
+        IPPROTO_UDP => &ports.udp,
+        _ => return Err(Errno::EOPNOTSUPP),
+    };
+
+    let buflen = DP_MAPSIZE * core::mem::size_of::<u32>();
+    let Some(mut buf) = MArray::new(M_SYSCTL, M_WAITOK, buflen, |_| 0u8) else {
+        return Err(Errno::ENOMEM);
+    };
+
+    let shared = NETLOCK.read();
+    for (b, w) in buf.as_chunks_mut::<4>().0.iter_mut().zip(half) {
+        *b = w.load(Ordering::Relaxed).to_ne_bytes();
+    }
+    drop(shared);
+
+    let error = structure(req, &mut buf);
+
+    if error.is_ok() && req.newp != 0 {
+        let excl = NETLOCK.write();
+        for (b, w) in buf.as_chunks::<4>().0.iter().zip(half) {
+            w.store(u32::from_ne_bytes(*b), Ordering::Relaxed);
+        }
+        drop(excl);
+    }
+
+    // free(buf, M_SYSCTL, buflen)
+    drop(buf);
+    error
+}
+
 /// `in_pcballoc`: a new control block for `so` in `table`, its address in the socket's
 /// `so_pcb` and its first reference the socket's (`inp_refcnt` 1, the anchor); the handle
 /// returned is the caller's.
@@ -2271,6 +2384,39 @@ pub fn sotoinpcb_locked<'a, G: ProcGlue>(
     so.pcb_locked(pcb)?.downcast_ref::<Inpcb<G>>()
 }
 
+/// The socket lock of an internet protocol's user request opened in its parts (the C's
+/// `soassertlocked`): a kernel protocol's socket is always held by a witness under a proof
+/// of the net lock, so anything else is `panic(9)`. TCP's and UDP's requests (N6.6b0).
+pub(crate) fn inet<'w>(w: &'w mut SoLocked<'_>) -> InetLocked<'w> {
+    match w.inet() {
+        Some(il) => il,
+        None => kpanic(format_args!(
+            "inet: the socket lock is not held as a kernel protocol's"
+        )),
+    }
+}
+
+/// `curproc`, which an internet protocol's user requests run as, named `func` in the
+/// `panic(9)` without one (a request reaches a protocol from a system call or a kernel
+/// thread). TCP's and UDP's requests, `udp6_output` (N6.6b0).
+pub(crate) fn with_curproc<G: ProcGlue, R>(func: &str, f: impl FnOnce(&Thread<G>) -> R) -> R {
+    G::with_curproc(|p| match p {
+        Some(p) => f(p),
+        None => kpanic(format_args!("{func}: no curproc")),
+    })
+}
+
+/// `addr` written into the name mbuf `nam` of a request (`m_len` its size): the
+/// `in_setsockaddr`/`in_setpeeraddr` answers of TCP's and UDP's requests (N6.6b0).
+pub(crate) fn set_nam<T: AbiPod>(nam: &mut Mbuf, addr: &T) {
+    let bytes = bytes_of(core::slice::from_ref(addr));
+    nam.m_len().set(bytes.len() as u32);
+    match nam.data_mut() {
+        Some(d) => d.copy_from_slice(bytes),
+        None => kpanic(format_args!("inet: a read-only name mbuf")),
+    }
+}
+
 /// `in_pcbsolock` held C-style, for `bsd`'s adapter (its protocols release the lock in
 /// another function, `in_pcbsounlock`): `so_lock` by a detached holding, the caller holding
 /// the net lock (checked: `panic(9)` without it); `None` when the socket is detached. Until
@@ -2383,16 +2529,6 @@ pub fn in_setpeeraddr<G: ProcGlue>(inp: &Inpcb<G>) -> SockaddrIn {
         sin_port: inp.inp_fport.get(),
         sin_addr: inp.inp_faddr.get(),
         ..SockaddrIn::default()
-    }
-}
-
-/// `addr`'s bytes written into the name mbuf `nam` (`m_len` their count).
-fn set_nam<T: hal::user::AbiPod>(nam: &mut Mbuf, addr: &T) {
-    let bytes = hal::user::bytes_of(core::slice::from_ref(addr));
-    nam.m_len().set(bytes.len() as u32);
-    match nam.data_mut() {
-        Some(d) => d.copy_from_slice(bytes),
-        None => kpanic(format_args!("in_sockaddr: a read-only name mbuf")),
     }
 }
 
@@ -3333,7 +3469,7 @@ mod tests {
             size_of::<Inpcb<G>>(),
             size_of::<Route>()
         );
-        // 544 bytes, 560 with the counted item's header (the count and the pool), against the
+        // 536 bytes, 552 with the counted item's header (the count and the pool), against the
         // C's struct inpcb of 328 (LP64) and LZ's 352 (the module's Redesign): the three
         // pinned entries (96: a lock identity each besides the two links), the route cache's
         // cell (72), the multicast options' one cell (48: the C's union `inp_mou`, the box
@@ -3342,12 +3478,13 @@ mod tests {
         // claim word and the chain's box, N6.6a0's D-15, a word of bsd's before), the anchor
         // (16) and the kernel's tcpcb slot (32: the cell's 16-byte key and the 16-byte box,
         // N6.6a2's D-12; bsd's 8-byte word beside it went at N6.6a5: 552 and 568 before) are
-        // the growth; the item stays within the brief's bound of 584 (S12). N6.6b1 (D-7): the
-        // ICMPv6 filter's 32 bytes of words and its flag (which fills the byte of padding the
-        // layout had) where `bsd`'s 8-byte pointer word was: 544 -> 568, the item 560 -> 584,
-        // the bound of N6.6b's S11.
-        assert_eq!(sum, 568);
-        assert_eq!(size_of::<Inpcb<G>>(), 568);
+        // the growth; the item stays within the brief's bound of 584 (S12). N6.6b0 (D-3): the
+        // upcall's function a fn pointer, where it was an erased fat pointer: 536, 552 with the
+        // header (544 and 560 before). N6.6b1 (D-7): the ICMPv6 filter's 32 bytes of words
+        // and its flag (which fills the byte of padding the layout had) where `bsd`'s 8-byte
+        // pointer word was: 536 -> 560, the item 552 -> 576, within N6.6b's S11 (584).
+        assert_eq!(sum, 560);
+        assert_eq!(size_of::<Inpcb<G>>(), 560);
         assert!(size_of::<Inpcb<G>>() + 16 <= 584, "S11: the \"inpcb\" item");
 
         // The C's struct inpcb on LP64, as repr(C) lays out in_pcb.h's members in order (the
@@ -3690,7 +3827,7 @@ mod tests {
         assert_eq!(nout(), before + 1);
         assert_eq!(
             crate::net::domain::net::<Tg>().inpcb.pool.item_size(),
-            Some(584),
+            Some(576),
             "vmstat -m's size of an \"inpcb\" item: the value and the counted item's header"
         );
         assert_eq!(inp.legacy_count(), 1, "refcnt_init: the socket's");

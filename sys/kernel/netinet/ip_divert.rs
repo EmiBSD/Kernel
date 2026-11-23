@@ -111,6 +111,7 @@ use crate::net::rtable::rtable_l2;
 use crate::net::sockbuf::{SB_MAX, SS_PRIV};
 use crate::net::socket::{SoLocked, Socket, socantsendmore, soreserve, sorwakeup};
 use crate::netinet::in_::{in_control, in_ifp2ia, in_nam2sin};
+use crate::netinet::in_pcb::inet;
 use crate::netinet::in_pcb::{
     INP_HDRINCL, Inpcb, InpcbRef, Inpcbtable, in_pcb_is_iterator, in_pcballoc, in_pcbbind,
     in_pcbinit, in_peeraddr, in_sockaddr,
@@ -119,7 +120,7 @@ use crate::netinet::in_var::ifatoia;
 use crate::netinet::ip_input::ipv4_input;
 use crate::netinet::ip_output::{in_hdr_cksum_out, in_proto_cksum_out, ip_load, ip_output};
 use crate::netinet::ip_var::{IP_ALLOWBROADCAST, IP_RAWOUTPUT};
-use crate::netinet::raw_ip::{detach_slot, inet, pcb_of, rip_chkhdr, sa_bytes};
+use crate::netinet::raw_ip::{detach_slot, pcb_of, rip_chkhdr, sa_bytes};
 use crate::proc::{ProcGlue, Thread};
 use crate::sysctl::{SysctlReq, bounded_arr, rdstruct};
 
@@ -420,7 +421,7 @@ pub fn divert_attach<G: ProcGlue>(
     let inp = in_pcballoc(so, divbtable::<G>(), wait)?;
 
     inp.set_flags(INP_HDRINCL);
-    let mut il = inet(w, "divert_attach");
+    let mut il = inet(w);
     drop(so.set_pcb_locked(&mut il.pcb, Some(PoolArc::erase(inp))));
     Ok(())
 }
@@ -428,7 +429,7 @@ pub fn divert_attach<G: ProcGlue>(
 /// `divert_detach(so)`: the control block detached; `EINVAL` without one. Shared with
 /// divert6.
 pub fn divert_detach<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) -> Result<(), Errno> {
-    let mut il = inet(w, "divert_detach");
+    let mut il = inet(w);
 
     if !detach_slot(so, &mut il) {
         return Err(Errno::EINVAL);
@@ -443,14 +444,14 @@ pub fn divert_bind<G: ProcGlue>(
     addr: &Mbuf,
     p: &Thread<G>,
 ) -> Result<(), Errno> {
-    let il = inet(w, "divert_bind");
+    let il = inet(w);
     let inp = pcb_of(so, &il, "divert_bind");
     in_pcbbind(inp, Some(addr), p, &il.net)
 }
 
 /// `divert_shutdown(so)`: no more sends. Shared with divert6.
 pub fn divert_shutdown<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) -> Result<(), Errno> {
-    let _il = inet(w, "divert_shutdown");
+    let _il = inet(w);
     socantsendmore(so);
     Ok(())
 }
@@ -463,7 +464,7 @@ pub fn divert_send<G: ProcGlue>(
     addr: Option<&Mbuf>,
     control: Option<MbufBox>,
 ) -> Result<(), Errno> {
-    let il = inet(w, "divert_send");
+    let il = inet(w);
     let inp = pcb_of(so, &il, "divert_send");
     // sosend always hands over a packet (a pkthdr mbuf, empty or not).
     let Some(m) = m else {

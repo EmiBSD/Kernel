@@ -118,7 +118,8 @@
 //!   `bsd` adapters that lent the net lock's proof per call (`ip_output`, `in_pcbselsrc`,
 //!   `in_broadcast`). Here it is the kernel's, generic over the glue: the requests are
 //!   [`RipUsrreqs`] (`rip_usrreqs`), each borrowing the pcb from the socket's locked slot,
-//!   no count per request (N6.6a5's idiom, docs/IDIOMS.md); attach fills the slot with
+//!   no count per request (N6.6a5's idiom, docs/IDIOMS.md; the socket lock opened by
+//!   `in_pcb`'s shared `inet`); attach fills the slot with
 //!   `in_pcballoc`'s handle and detach takes it out for `in_pcbdetach`. The proof of the
 //!   net lock comes with the socket lock's parts ([`InetLocked`]) on requests and with the
 //!   caller on input. `rawcbtable` is the glue's ([`rawcbtable`], `NetTables`).
@@ -174,7 +175,7 @@ use crate::net::socket::{
 use crate::netinet::in_::{in_broadcast, in_control, in_nam2sin};
 use crate::netinet::in_pcb::{
     INP_CONTROLOPTS, INP_HDRINCL, INP_IPV6, Inpcb, InpcbRef, Inpcbtable, in_pcb_iterator,
-    in_pcballoc, in_pcbdetach, in_pcbinit, in_pcbselsrc, in_peeraddr, in_sockaddr,
+    in_pcballoc, in_pcbdetach, in_pcbinit, in_pcbselsrc, in_peeraddr, in_sockaddr, inet, set_nam,
     sotoinpcb_locked,
 };
 use crate::netinet::ip_icmp::icmp_error;
@@ -212,19 +213,6 @@ impl<G: ProcGlue> RipUsrreqs<G> {
 /// it).
 pub fn rawcbtable<G: ProcGlue>() -> &'static Inpcbtable<G> {
     &net::<G>().rawcbtable
-}
-
-/// The socket lock of a request on an internet socket of the kernel's, opened in its parts
-/// (the C's `soassertlocked`): such a socket is always held by a witness of `so_lock` under a
-/// proof of the net lock. `who` names the request in the `panic(9)` of a lock held another
-/// way. The raw and divert requests share it.
-pub(crate) fn inet<'w>(w: &'w mut SoLocked<'_>, who: &str) -> InetLocked<'w> {
-    match w.inet() {
-        Some(il) => il,
-        None => kpanic(format_args!(
-            "{who}: the socket lock is not held as a kernel protocol's"
-        )),
-    }
 }
 
 /// `sotoinpcb(so)` of a request the C makes on an attached socket (it dereferences the
@@ -578,16 +566,6 @@ pub(crate) fn opt_int(m: Option<&Mbuf>) -> Option<i32> {
     Some(i32::from_ne_bytes(b))
 }
 
-/// `addr` written into the mbuf `m` (`m_len` its size): a `PRCO_GETOPT` answer or a name.
-pub(crate) fn set_mbuf<T: AbiPod>(m: &mut Mbuf, addr: &T, who: &str) {
-    let bytes = sa_bytes(addr);
-    m.m_len().set(bytes.len() as u32);
-    match m.data_mut() {
-        Some(d) => d.copy_from_slice(bytes),
-        None => kpanic(format_args!("{who}: a read-only mbuf")),
-    }
-}
-
 /// `rip_ctloutput(op, so, level, optname, m)`: raw IP socket option processing: `IP_HDRINCL`
 /// (set from an `int`, read back as the flag's bit, the C's `inp_flags & INP_HDRINCL`), the
 /// multicast routing options (`EOPNOTSUPP` without `MROUTING`), then `ip_ctloutput`; another
@@ -600,7 +578,7 @@ pub fn rip_ctloutput<G: ProcGlue>(
     optname: i32,
     m: Option<&mut Mbuf>,
 ) -> Result<(), Errno> {
-    let il = inet(w, "rip_ctloutput");
+    let il = inet(w);
     let inp = pcb_of(so, &il, "rip_ctloutput");
 
     if level != IPPROTO_IP {
@@ -617,7 +595,7 @@ pub fn rip_ctloutput<G: ProcGlue>(
                 }
             } else {
                 match m {
-                    Some(m) => set_mbuf(m, &(inp.inp_flags.get() & INP_HDRINCL), "rip_ctloutput"),
+                    Some(m) => set_nam(m, &(inp.inp_flags.get() & INP_HDRINCL)),
                     None => kpanic(format_args!("rip_ctloutput: no mbuf for PRCO_GETOPT")),
                 }
             }
@@ -662,14 +640,14 @@ pub fn rip_attach<G: ProcGlue>(
     ip.ip_p = proto as u8;
     inp.inp_ip.set(ip);
     // so->so_pcb for the requests: in_pcballoc's handle, kept by the locked slot until detach.
-    let mut il = inet(w, "rip_attach");
+    let mut il = inet(w);
     drop(so.set_pcb_locked(&mut il.pcb, Some(PoolArc::erase(inp))));
     Ok(())
 }
 
 /// `rip_detach(so)`: the control block detached; `EINVAL` without one.
 pub fn rip_detach<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) -> Result<(), Errno> {
-    let mut il = inet(w, "rip_detach");
+    let mut il = inet(w);
 
     // MROUTING: ip_mrouter_done(so); not configured.
     if !detach_slot(so, &mut il) {
@@ -686,7 +664,7 @@ pub fn rip_bind<G: ProcGlue>(
     nam: &Mbuf,
     _p: &Thread<G>,
 ) -> Result<(), Errno> {
-    let il = inet(w, "rip_bind");
+    let il = inet(w);
     let inp = pcb_of(so, &il, "rip_bind");
 
     let addr = in_nam2sin(nam)?;
@@ -714,7 +692,7 @@ pub fn rip_connect<G: ProcGlue>(
     w: &mut SoLocked<'_>,
     nam: &Mbuf,
 ) -> Result<(), Errno> {
-    let il = inet(w, "rip_connect");
+    let il = inet(w);
     let inp = pcb_of(so, &il, "rip_connect");
 
     let addr = in_nam2sin(nam)?;
@@ -730,7 +708,7 @@ pub fn rip_connect<G: ProcGlue>(
 /// `rip_disconnect(so)`: `ENOTCONN` unless connected; the foreign address back to the
 /// wildcard.
 pub fn rip_disconnect<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) -> Result<(), Errno> {
-    let il = inet(w, "rip_disconnect");
+    let il = inet(w);
     let inp = pcb_of(so, &il, "rip_disconnect");
 
     if !so.has_state(SS_ISCONNECTED) {
@@ -747,7 +725,7 @@ pub fn rip_disconnect<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) -> Resu
 
 /// `rip_shutdown(so)`: marks the connection as being incapable of further input.
 pub fn rip_shutdown<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) -> Result<(), Errno> {
-    let _il = inet(w, "rip_shutdown");
+    let _il = inet(w);
     socantsendmore(so);
 
     Ok(())
@@ -763,7 +741,7 @@ pub fn rip_send<G: ProcGlue>(
     nam: Option<&Mbuf>,
     control: Option<MbufBox>,
 ) -> Result<(), Errno> {
-    let il = inet(w, "rip_send");
+    let il = inet(w);
     let inp = pcb_of(so, &il, "rip_send");
 
     let mut dst = SockaddrIn {
@@ -1048,7 +1026,7 @@ pub(crate) mod testraw {
     /// `addr` in a name mbuf (`MT_SONAME`).
     pub(crate) fn nam<T: AbiPod>(addr: &T) -> MbufBox {
         let mut m = m_get(M_WAIT, MT_SONAME).expect("an mbuf");
-        set_mbuf(&mut m, addr, "nam");
+        set_nam(&mut m, addr);
         m
     }
 
@@ -1222,7 +1200,7 @@ mod tests {
         // The slot's borrow answers the pcb until the detach takes it; a second detach finds
         // none (the C's EINVAL).
         let r = locked(&so, |w| {
-            let il = inet(w, "test");
+            let il = inet(w);
             sotoinpcb_locked(&so, &il.pcb).is_some()
         });
         assert!(r);

@@ -88,6 +88,7 @@ use crate::net::proto::{SockaddrView, Usrreqs};
 use crate::net::rtable::rtable_l2;
 use crate::net::sockbuf::SS_PRIV;
 use crate::net::socket::{SoLocked, Socket, soreserve};
+use crate::netinet::in_pcb::inet;
 use crate::netinet::in_pcb::{Inpcb, Inpcbtable, in_pcballoc, in_pcbinit};
 use crate::netinet::ip_divert::{
     DIVERT_HASHSIZE, DivstatCounters, divert_append, divert_bind, divert_detach,
@@ -95,7 +96,7 @@ use crate::netinet::ip_divert::{
     divert_shutdown, divstat_inc,
 };
 use crate::netinet::ip_var::{IP_ALLOWBROADCAST, IP_RAWOUTPUT};
-use crate::netinet::raw_ip::{inet, pcb_of, sa_bytes};
+use crate::netinet::raw_ip::{pcb_of, sa_bytes};
 use crate::netinet6::in6::{in6_control, in6_nam2sin6};
 use crate::netinet6::in6_pcb::{in6_peeraddr, in6_sockaddr};
 use crate::netinet6::in6_var::{In6Ifaddr, ia6_in6};
@@ -308,7 +309,7 @@ pub fn divert6_attach<G: ProcGlue>(
     )?;
     let inp = in_pcballoc(so, divb6table::<G>(), wait)?;
 
-    let mut il = inet(w, "divert6_attach");
+    let mut il = inet(w);
     drop(so.set_pcb_locked(&mut il.pcb, Some(PoolArc::erase(inp))));
     Ok(())
 }
@@ -321,7 +322,7 @@ pub fn divert6_send<G: ProcGlue>(
     addr: Option<&Mbuf>,
     control: Option<MbufBox>,
 ) -> Result<(), Errno> {
-    let il = inet(w, "divert6_send");
+    let il = inet(w);
     let inp = pcb_of(so, &il, "divert6_send");
     // sosend always hands over a packet (a pkthdr mbuf, empty or not).
     let Some(m) = m else {

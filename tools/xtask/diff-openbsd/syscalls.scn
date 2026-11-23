@@ -8,7 +8,11 @@
 # terminal, sendsyslog(2) and kern.tty. `tcp` (N6.6a5, D-5) follows `tty`, for the same
 # reason: TCP over 127.0.0.1 and ::1, its socket options, TCP_INFO's states, the
 # net.inet.tcp values that do not depend on the run, and TCPCTL_DROP of its own connection.
-# `raw` (N6.6b1, D-9) follows `tcp`: an ICMP echo over 127.0.0.1 with and without IP_HDRINCL,
+# `udp` (N6.6b0, D-9) follows `tcp`, for the same reason: UDP over 127.0.0.1 and ::1 (bind,
+# the names, a datagram each way, the destination address and port as control messages,
+# connect's rules, the send errors, a connected socket's ECONNREFUSED from a closed port),
+# and net.inet.udp's integers and the statistics' size.
+# `raw` (N6.6b1, D-9) follows `udp`: an ICMP echo over 127.0.0.1 with and without IP_HDRINCL,
 # the option's answer (the bit, 8), ICMP6_FILTER and IPV6_CHECKSUM's refusals, a divert socket
 # reinjecting a UDP datagram out and in with no pf rule, the divert and rip6 sysctls, and the
 # raw and divert sockets an unprivileged process is refused (EACCES).
@@ -32,6 +36,7 @@ $ difftest syscalls sysctl
 $ difftest syscalls ostype
 $ difftest syscalls tty
 $ difftest syscalls tcp
+$ difftest syscalls udp
 $ difftest syscalls raw
 $ ls -1a
 ! cd /

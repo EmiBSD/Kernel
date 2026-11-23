@@ -197,6 +197,10 @@ pub struct NetTables<G: ProcGlue> {
     /// TCP's globals (the control blocks' and the SYN cache's pools, the SYN cache, the pcb
     /// tables; N6.6a2).
     pub(crate) tcp: crate::netinet::tcp_var::TcpTables<G>,
+    /// `udp_usrreq.c`'s `udbtable` (N6.6b0).
+    pub(crate) udbtable: crate::netinet::in_pcb::Inpcbtable<G>,
+    /// `udp_usrreq.c`'s `udb6table` (N6.6b0).
+    pub(crate) udb6table: crate::netinet::in_pcb::Inpcbtable<G>,
     /// The IPv6 protocol switch (`in6_proto.c`'s `inet6sw[]` and `ip6_protox[]`, N6.5d).
     pub(crate) inet6: crate::netinet6::in6_proto::Inet6Tables<G>,
     /// Raw IP's control blocks (`raw_ip.c`'s `rawcbtable`, N6.6b1).
@@ -237,6 +241,8 @@ impl<G: ProcGlue> NetTables<G> {
             inpcb: crate::netinet::in_pcb::InpcbTables::new(),
             inet: crate::netinet::in_proto::InetTables::new(),
             tcp: crate::netinet::tcp_var::TcpTables::new(),
+            udbtable: crate::netinet::in_pcb::Inpcbtable::new(),
+            udb6table: crate::netinet::in_pcb::Inpcbtable::new(),
             inet6: crate::netinet6::in6_proto::Inet6Tables::new(),
             rawcbtable: crate::netinet::in_pcb::Inpcbtable::new(),
             rawin6pcbtable: crate::netinet::in_pcb::Inpcbtable::new(),

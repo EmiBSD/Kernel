@@ -199,11 +199,12 @@ use crate::net::sockbuf::{SS_CANTRCVMORE, SS_ISCONNECTED, SS_PRIV};
 use crate::net::socket::{
     SoLocked, Socket, socantsendmore, soisconnected, soisdisconnected, soreserve, sorwakeup,
 };
+use crate::netinet::in_pcb::inet;
 use crate::netinet::in_pcb::{
     IN6P_CONTROLOPTS, IN6P_MINMTU, INP_IPV6, Inpcb, InpcbRef, Inpcbtable, in_pcb_iterator,
     in_pcballoc, in_pcbinit, in_pcbrtchange,
 };
-use crate::netinet::raw_ip::{detach_slot, inet, pcb_of, sa_bytes};
+use crate::netinet::raw_ip::{detach_slot, pcb_of, sa_bytes};
 use crate::netinet6::icmp6::{icmp6_ctloutput, icmp6_error, icmp6_mtudisc_update};
 use crate::netinet6::in6::{in6_control, in6_nam2sin6};
 use crate::netinet6::in6_cksum::in6_cksum;
@@ -750,7 +751,7 @@ pub fn rip6_ctloutput<G: ProcGlue>(
     optname: i32,
     m: Option<&mut Mbuf>,
 ) -> Result<(), Errno> {
-    let il = inet(w, "rip6_ctloutput");
+    let il = inet(w);
     let inp = pcb_of(so, &il, "rip6_ctloutput");
 
     match level {
@@ -799,7 +800,7 @@ pub fn rip6_attach<G: ProcGlue>(
     // type pass, as the C's NULL pointer does before its malloc returns.
     inp.icmp6filt_init();
 
-    let mut il = inet(w, "rip6_attach");
+    let mut il = inet(w);
     drop(so.set_pcb_locked(&mut il.pcb, Some(PoolArc::erase(inp))));
     Ok(())
 }
@@ -807,7 +808,7 @@ pub fn rip6_attach<G: ProcGlue>(
 /// `rip6_detach(so)`: the control block detached (its ICMPv6 filter with it); `panic(9)`
 /// without one, as the C.
 pub fn rip6_detach<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) -> Result<(), Errno> {
-    let mut il = inet(w, "rip6_detach");
+    let mut il = inet(w);
 
     // MROUTING: ip6_mrouter_done(so); not configured.
     if !detach_slot(so, &mut il) {
@@ -825,7 +826,7 @@ pub fn rip6_bind<G: ProcGlue>(
     nam: &Mbuf,
     _p: &Thread<G>,
 ) -> Result<(), Errno> {
-    let il = inet(w, "rip6_bind");
+    let il = inet(w);
     let inp = pcb_of(so, &il, "rip6_bind");
 
     let mut addr = in6_nam2sin6(nam)?;
@@ -850,7 +851,7 @@ pub fn rip6_connect<G: ProcGlue>(
     w: &mut SoLocked<'_>,
     nam: &Mbuf,
 ) -> Result<(), Errno> {
-    let il = inet(w, "rip6_connect");
+    let il = inet(w);
     let inp = pcb_of(so, &il, "rip6_connect");
 
     let addr = in6_nam2sin6(nam)?;
@@ -877,7 +878,7 @@ pub fn rip6_connect<G: ProcGlue>(
 /// `rip6_disconnect(so)`: `ENOTCONN` unless connected; the foreign address back to the
 /// unspecified one.
 pub fn rip6_disconnect<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) -> Result<(), Errno> {
-    let il = inet(w, "rip6_disconnect");
+    let il = inet(w);
     let inp = pcb_of(so, &il, "rip6_disconnect");
 
     if !so.has_state(SS_ISCONNECTED) {
@@ -894,7 +895,7 @@ pub fn rip6_disconnect<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) -> Res
 
 /// `rip6_shutdown(so)`: marks the connection as being incapable of further input.
 pub fn rip6_shutdown<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) -> Result<(), Errno> {
-    let _il = inet(w, "rip6_shutdown");
+    let _il = inet(w);
     socantsendmore(so);
     Ok(())
 }
@@ -909,7 +910,7 @@ pub fn rip6_send<G: ProcGlue>(
     nam: Option<&Mbuf>,
     control: Option<MbufBox>,
 ) -> Result<(), Errno> {
-    let il = inet(w, "rip6_send");
+    let il = inet(w);
     let inp = pcb_of(so, &il, "rip6_send");
 
     // always copy sockaddr to avoid overwrites

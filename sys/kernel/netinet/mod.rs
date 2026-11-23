@@ -55,4 +55,6 @@ pub mod tcp_timer;
 pub mod tcp_tso;
 pub mod tcp_usrreq;
 pub mod tcp_var;
+pub mod udp_usrreq;
+pub mod udp_var;
 /* </CODE> */

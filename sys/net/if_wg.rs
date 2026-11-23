@@ -76,9 +76,10 @@
 //! - `NBPFILTER` and `NPF` are configured: `wg_clone_create` attaches a `DLT_LOOP` tap and
 //!   `wg_deliver_in`/`wg_qstart` tap with `bpf_mtap_af`; `wg_decap` calls
 //!   `pf_pkt_addr_changed`.
-//! - [`wg_input`] is the UDP pcb's `inp_upcall` ([`InpUpcallFn`](crate::netinet::in_pcb::InpUpcallFn), an `unsafe fn`: the
-//!   headers come as raw pointers); it reads `uh_sport`, `struct udphdr`'s first member,
-//!   through the pointer.
+//! - `wg_input` is the UDP pcb's `inp_upcall`, the kernel's safe
+//!   `kernel::netinet::in_pcb::InpUpcallFn` (N6.6b0): the packet given over (parked at
+//!   entry) and copies of its IP or IPv6 header and its UDP header, where the C passes
+//!   pointers into the packet; the softc's address as the argument.
 //! - The `struct mbuf`s the C builds on its stack for `sobind`, `sosetopt` and `sosend`'s
 //!   address (`mhostnam`, `mrtable`, `peernam`) are `m_get`'d and freed after the call (an
 //!   mbuf is `&'static Mbuf`); `peernam` holds a copy of the address instead of pointing at
@@ -214,7 +215,7 @@ use crate::sys::malloc::{M_DEVBUF, M_NOWAIT, M_RTABLE, M_ZERO};
 use crate::sys::mbuf::{
     M_BCAST, M_DONTWAIT, M_EXT, M_MAXLOOP, M_MCAST, M_WAIT, MHLEN, MT_DATA, MT_SONAME, MT_SOOPTS,
     MTag, Mbuf, MbufList, MbufQueue, PACKET_TAG_MAXSIZE, PACKET_TAG_WIREGUARD, mbuf_list_first,
-    ml_len, mq_empty, mq_len, mtod,
+    ml_len, mq_empty, mq_len, mtod, park,
 };
 use crate::sys::mutex::Mutex;
 use crate::sys::param::PWAIT;
@@ -1592,7 +1593,7 @@ pub fn wg_socket_open(
 
         solock(s);
         if let Some(inp) = sotoinpcb(s) {
-            let _ = inp.set_upcall(&WG_UPCALL, upcall_arg.expose_provenance());
+            let _ = inp.set_upcall(wg_input, upcall_arg.expose_provenance());
         }
         let mut ret = Ok(());
         sounlock(s);
@@ -3177,27 +3178,23 @@ pub fn wg_index_drop(arg: *mut c_void, key0: u32) {
     unsafe { peer.p_unused_index.insert_head(iter) };
 }
 
-/// `wg_input` as the UDP pcb's upcall entry (`wg_bind`'s `inp->inp_upcall = wg_input`).
-static WG_UPCALL: crate::netinet::in_pcb::InpUpcallEntry =
-    crate::netinet::in_pcb::InpUpcallEntry(wg_input);
-
-/// `wg_input`: the UDP socket's upcall: queues a received datagram (`hlen` bytes of IP and UDP
-/// header first) as a handshake message or a data message. Always consumes the packet.
-///
-/// # Safety
-///
-/// `arg` is the softc `wg_bind` gave the socket; `ip` (or, with `INET6`, `ip6`) points at the
-/// packet's IP header and `uh` at its UDP header, both readable.
-pub unsafe fn wg_input(
-    arg: *mut c_void,
-    m: &'static Mbuf,
-    ip: *const Ip,
-    ip6: *const c_void,
-    uh: *const c_void,
+/// `wg_input`: the UDP socket's upcall (`wg_bind`'s `inp->inp_upcall = wg_input`, the
+/// kernel's `InpUpcallFn` since N6.6b0, bridges.toml's `InpUpcall` row): queues a received
+/// datagram (`hlen` bytes of IP and UDP header first) as a handshake message or a data
+/// message. `arg` is the softc's address `wg_bind` gave the socket; `ip` (or `ip6`) and `uh`
+/// are the kernel's copies of the packet's headers. Always consumes the packet, which is
+/// parked at entry (`bsd`'s mbufs).
+fn wg_input(
+    arg: usize,
+    m: kernel::net::mbuf::MbufBox,
+    ip: Option<&Ip>,
+    ip6: Option<&hal::sys::netinet_ip6::Ip6Hdr>,
+    uh: &hal::sys::netinet_udp::Udphdr,
     hlen: i32,
     _ns: Option<&mut Netstack>,
-) -> Option<&'static Mbuf> {
-    let sc = sc_of(arg);
+) -> Option<kernel::net::mbuf::MbufBox> {
+    let m = park(m);
+    let sc = sc_of(ptr::with_exposed_provenance_mut::<c_void>(arg));
 
     net_assert_locked("wg_input");
 
@@ -3206,10 +3203,8 @@ pub unsafe fn wg_input(
         return None;
     };
 
-    if !ip.is_null() {
-        // SAFETY: the caller's contract: the IP header and `uh_sport`, the first member of
-        // `struct udphdr`, are readable.
-        let (ip, sport) = unsafe { (ip.read_unaligned(), uh.cast::<u16>().read_unaligned()) };
+    if let Some(ip) = ip {
+        let sport = uh.uh_sport;
         let mut e = t.t_endpoint.get();
         e.e_remote.set_sa_sin(&SockaddrIn {
             sin_len: size_of::<SockaddrIn>() as u8,
@@ -3220,8 +3215,7 @@ pub unsafe fn wg_input(
         });
         e.e_local.set_l_in(ip.ip_dst);
         t.t_endpoint.set(e);
-    // SAFETY: the caller's contract: `ip6` is null or a readable IPv6 header, `uh` a UDP header.
-    } else if !unsafe { wg_input_ip6(t, ip6, uh) } {
+    } else if !wg_input_ip6(t, ip6, uh) {
         m_freem(m);
         return None;
     }
@@ -3283,24 +3277,18 @@ pub unsafe fn wg_input(
 }
 
 /// The IPv6 case of `wg_input`: fills the tag's endpoint from the datagram's IPv6 header and
-/// UDP source port; `false` when there is no IPv6 header (always, without `INET6`).
-///
-/// # Safety
-///
-/// `ip6` is null or points at a readable IPv6 header, `uh` at a readable UDP header.
+/// UDP source port (the kernel's copies); `false` when there is no IPv6 header (always,
+/// without `INET6`).
 #[cfg(feature = "inet6")]
-unsafe fn wg_input_ip6(t: &WgTag, ip6: *const c_void, uh: *const c_void) -> bool {
-    if ip6.is_null() {
+fn wg_input_ip6(
+    t: &WgTag,
+    ip6: Option<&hal::sys::netinet_ip6::Ip6Hdr>,
+    uh: &hal::sys::netinet_udp::Udphdr,
+) -> bool {
+    let Some(ip6) = ip6 else {
         return false;
-    }
-    // SAFETY: the caller's contract: the IPv6 header and `uh_sport`, the first member of
-    // `struct udphdr`, are readable.
-    let (ip6, sport) = unsafe {
-        (
-            ip6.cast::<Ip6Hdr>().read_unaligned(),
-            uh.cast::<u16>().read_unaligned(),
-        )
     };
+    let sport = uh.uh_sport;
     let mut e = t.t_endpoint.get();
     e.e_remote.set_sa_sin6(&SockaddrIn6 {
         sin6_len: size_of::<SockaddrIn6>() as u8,
@@ -3315,12 +3303,12 @@ unsafe fn wg_input_ip6(t: &WgTag, ip6: *const c_void, uh: *const c_void) -> bool
 }
 
 /// The IPv6 case of `wg_input` (without `INET6`: no IPv6 header).
-///
-/// # Safety
-///
-/// Nothing is read.
 #[cfg(not(feature = "inet6"))]
-unsafe fn wg_input_ip6(_t: &WgTag, _ip6: *const c_void, _uh: *const c_void) -> bool {
+fn wg_input_ip6(
+    _t: &WgTag,
+    _ip6: Option<&hal::sys::netinet_ip6::Ip6Hdr>,
+    _uh: &hal::sys::netinet_udp::Udphdr,
+) -> bool {
     false
 }
 
@@ -4258,7 +4246,7 @@ mod tests {
         crate::kern::uipc_socket::soinit();
         crate::kern::uipc_domain::net_tables_for_tests();
         crate::netinet::in_pcb::in_init();
-        crate::netinet::udp_usrreq::udp_init();
+        kernel::netinet::udp_usrreq::udp_init::<crate::kern::proc_glue::BsdProcGlue>();
 
         pool_init(
             &WG_AIP_POOL,
@@ -4958,20 +4946,18 @@ mod tests {
         d.extend_from_slice(&[0, 0]);
         d.extend_from_slice(payload);
         let m = packet(&d);
-        let ip = mtod::<Ip>(m).cast_const();
-        let uh = ip.cast::<u8>().wrapping_add(20).cast::<c_void>();
-        // SAFETY: `ip` and `uh` point at the headers just written into the packet.
-        let r = unsafe {
-            wg_input(
-                ptr::from_ref(sc).cast_mut().cast(),
-                m,
-                ip,
-                ptr::null(),
-                uh,
-                28,
-                None,
-            )
-        };
+        // The kernel's UDP hands the upcall copies of the headers it read.
+        let ip: Ip = hal::pod::at(&d, 0).expect("an IP header");
+        let uh: hal::sys::netinet_udp::Udphdr = hal::pod::at(&d, 20).expect("a UDP header");
+        let r = wg_input(
+            ptr::from_ref(sc).addr(),
+            crate::sys::mbuf::unpark(m),
+            Some(&ip),
+            None,
+            &uh,
+            28,
+            None,
+        );
         assert!(r.is_none(), "wg_input consumes the packet");
     }
 
@@ -5199,20 +5185,18 @@ mod tests {
         d.extend_from_slice(&[0, 0]);
         d.extend_from_slice(payload);
         let m = packet(&d);
-        let ip6 = mtod::<u8>(m).cast_const().cast::<c_void>();
-        let uh = mtod::<u8>(m).cast_const().wrapping_add(40).cast::<c_void>();
-        // SAFETY: `ip6` and `uh` point at the headers just written into the packet.
-        let r = unsafe {
-            wg_input(
-                ptr::from_ref(sc).cast_mut().cast(),
-                m,
-                ptr::null(),
-                ip6,
-                uh,
-                48,
-                None,
-            )
-        };
+        // The kernel's UDP hands the upcall copies of the headers it read.
+        let ip6: hal::sys::netinet_ip6::Ip6Hdr = hal::pod::at(&d, 0).expect("an IPv6 header");
+        let uh: hal::sys::netinet_udp::Udphdr = hal::pod::at(&d, 40).expect("a UDP header");
+        let r = wg_input(
+            ptr::from_ref(sc).addr(),
+            crate::sys::mbuf::unpark(m),
+            None,
+            Some(&ip6),
+            &uh,
+            48,
+            None,
+        );
         assert!(r.is_none(), "wg_input consumes the packet");
     }
 

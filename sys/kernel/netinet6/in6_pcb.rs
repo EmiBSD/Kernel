@@ -508,7 +508,7 @@ pub fn in6_sockaddr<G: ProcGlue>(
     let Some(inp) = sotoinpcb_locked(so, &il.pcb) else {
         kpanic(format_args!("in6_sockaddr: socket {so:p} has no pcb"));
     };
-    set_nam6(nam, &in6_setsockaddr(inp));
+    crate::netinet::in_pcb::set_nam(nam, &in6_setsockaddr(inp));
     Ok(())
 }
 
@@ -527,18 +527,8 @@ pub fn in6_peeraddr<G: ProcGlue>(
     let Some(inp) = sotoinpcb_locked(so, &il.pcb) else {
         kpanic(format_args!("in6_peeraddr: socket {so:p} has no pcb"));
     };
-    set_nam6(nam, &in6_setpeeraddr(inp));
+    crate::netinet::in_pcb::set_nam(nam, &in6_setpeeraddr(inp));
     Ok(())
-}
-
-/// A `sockaddr_in6`'s bytes written into the name mbuf `nam` (`m_len` their count).
-fn set_nam6(nam: &mut Mbuf, sin6: &SockaddrIn6) {
-    let bytes = hal::user::bytes_of(core::slice::from_ref(sin6));
-    nam.m_len().set(bytes.len() as u32);
-    match nam.data_mut() {
-        Some(d) => d.copy_from_slice(bytes),
-        None => kpanic(format_args!("in6_sockaddr: a read-only name mbuf")),
-    }
 }
 
 /// `in6_pcbnotify(table, dst, fport_arg, src, lport_arg, rtable, cmd, cmdarg, notify)`:
