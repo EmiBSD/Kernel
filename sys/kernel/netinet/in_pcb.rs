@@ -3279,6 +3279,7 @@ pub(crate) mod testinet {
         crate::netinet6::frag6::frag6_test_reset();
         crate::netinet6::icmp6::icmp6_test_reset();
         crate::netinet6::ip6_input::ip6_test_reset();
+        crate::netinet::ip_input::ipq_test_reset();
         crate::net::rtable::rtable_test_reset();
         crate::net::route::rtlabel_test_reset();
         crate::net::route::route_init();
