@@ -756,8 +756,9 @@ pub(crate) mod tests {
 
     /// A data-only UDP row of the internet domain: sockets of `bsd`'s protocols' kind (held
     /// C-style) for the adapters' tests, since the kernel's UDP is the table's entry
-    /// (N6.6b0, `kernel::netinet::in_proto::UdpProtocol`).
-    static UDP_ROW: crate::sys::protosw::Protosw = crate::sys::protosw::Protosw {
+    /// (N6.6b0, `kernel::netinet::in_proto::UdpProtocol`); `kern_descrip`'s socket file too,
+    /// whatever `INETSW` still holds.
+    pub(crate) static UDP_ROW: crate::sys::protosw::Protosw = crate::sys::protosw::Protosw {
         pr_type: SOCK_DGRAM as i16,
         pr_protocol: IPPROTO_UDP as i16,
         pr_flags: crate::sys::protosw::PR_ATOMIC | crate::sys::protosw::PR_ADDR,
