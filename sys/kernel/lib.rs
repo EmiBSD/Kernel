@@ -108,6 +108,7 @@ pub mod select;
 pub mod sig;
 pub mod sigio;
 pub mod smr;
+pub mod sysarch;
 pub mod syscall;
 pub mod sysctl;
 pub mod task;

@@ -61,6 +61,7 @@ pub mod mptramp;
 #[cfg(feature = "qemu")]
 pub mod qemu;
 pub mod spl;
+pub mod sys_machdep;
 pub mod trap;
 pub mod tsc;
 pub mod vector;

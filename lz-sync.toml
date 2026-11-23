@@ -1307,3 +1307,21 @@ subject = "Merge __thrsleep/__thrwakeup (TD1a) into build/devtools-direct"
 modules = []
 status = "not-applicable"
 reason = "merge commit; its content arrived with the records of its parents' commits"
+
+[[commit]]
+lz = "0925b8a94390"
+subject = "arch: port sys_machdep.c (sysarch) for arm64 and amd64"
+modules = ["sys/kernel/sysarch.rs", "sys/arch/amd64/amd64/sys_machdep.rs", "sys/kern/init_sysent.rs"]
+status = "applied"
+emibsd = "72ec8bdd0010"
+method = "reimplemented"
+reason = "security (pledge's path, a per-arch system call; sysarch(2) answered sys_nosys, SIGSYS, where OpenBSD answers EINVAL): arm64's sys_machdep.rs is re-implemented in the kernel crate as sys/kernel/sysarch.rs with 0 unsafe (LZ 0): a pledged process first through ProcGlue::pledge_fail(p, EINVAL, 0), then EINVAL for every op, parms never read; bsd's sysent row is a forward in sys/kern/kern_xxx.rs (Legacy in the ABI) and init_sysent.rs is regenerated (row 165 names sys_sysarch); amd64's sys_machdep.rs is taken as LZ wrote it, frozen and not compiled (decision 44), its AMD64_IOPL (suser, the securelevel test, the copyin of struct amd64_iopl_args, the trap frame's PSL_IOPL) reachable on no built kernel and written at N10 (ROADMAP's N10 row), its one unsafe counted in arch/amd64 (773 -> 774, the budget raised in b247181d); LZ's MachineSysarch trait (sys/machine/sysarch.rs), its mod.rs hunks, its host impl and arm64's file as a bsd module are its machine contract's structure and are not taken; ports.toml is LZ's"
+security = true
+frozen = true
+
+[[commit]]
+lz = "a174e81208f6"
+subject = "xtask: gen-syscalls finds the machine contract's system calls"
+modules = []
+status = "covered-by-redesign"
+reason = "native's sysarch entry is sys/kern/kern_xxx.rs's forward (0925b8a94390's record), in a directory gen-syscalls already scans, so the generator finds it without LZ's sys/machine scan: proved by `just check-syscalls` green with row 165 naming sys_sysarch and by kern_xxx.rs's test sysarch_row_answers_einval through SYSENT[SYS_sysarch]; LZ's one init_sysent.rs hunk is the import path of its machine module (crate::machine::sysarch::sys_sysarch), which native does not have"
