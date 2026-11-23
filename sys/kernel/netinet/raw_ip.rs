@@ -860,4 +860,734 @@ impl<G: ProcGlue> Usrreqs<G> for RipUsrreqs<G> {
         in_peeraddr(so, w, addr)
     }
 }
+/// The host tests' raw and divert sockets (N6.6b1): protocols of `testinet`'s domains whose
+/// requests are the kernel's (`RipUsrreqs`, `Rip6Usrreqs`, `DivertUsrreqs`,
+/// `Divert6Usrreqs`), the four tables initialised, sockets made by `soalloc` and attached by
+/// the real request, packets and names built, records read back.
+#[cfg(test)]
+pub(crate) mod testraw {
+    use std::sync::MutexGuard;
+    use std::vec::Vec;
+
+    use hal::netlock::NETLOCK;
+    use hal::sys::netinet6_in6::In6Addr;
+    use hal::sys::socket::{AF_INET6, SOCK_RAW};
+
+    use super::*;
+    use crate::net::domain::Domain;
+    use crate::net::mbuf::{M_WAIT, MT_CONTROL, MT_SONAME, m_devget, m_get};
+    use crate::net::proto::{PR_ADDR, PR_ATOMIC, Protocol};
+    use crate::net::sockbuf::SS_NOFDREF;
+    use crate::net::socket::{SoInit, SocketRef, soalloc, solock};
+    use crate::netinet::in_pcb::{sotoinpcb, testinet};
+
+    /// The fixture's glue.
+    pub(crate) type G = testinet::G;
+
+    /// The family and requests of a [`TestProto`].
+    #[derive(Clone, Copy)]
+    pub(crate) enum Kind {
+        /// Raw IP.
+        Raw,
+        /// Raw IPv6.
+        Raw6,
+        /// divert(4).
+        Divert,
+        /// IPv6 divert.
+        Divert6,
+    }
+
+    /// A raw protocol of the test domains with the kernel's requests and options.
+    pub(crate) struct TestProto {
+        kind: Kind,
+        proto: i16,
+    }
+
+    /// Raw IP's `IPPROTO_RAW` row.
+    pub(crate) static RAW: TestProto = TestProto {
+        kind: Kind::Raw,
+        proto: 255,
+    };
+    /// Raw IPv6's `IPPROTO_RAW` row.
+    pub(crate) static RAW6: TestProto = TestProto {
+        kind: Kind::Raw6,
+        proto: 255,
+    };
+    /// ICMPv6's row (raw IPv6's requests, `pr_protocol` `IPPROTO_ICMPV6`).
+    pub(crate) static ICMP6: TestProto = TestProto {
+        kind: Kind::Raw6,
+        proto: 58,
+    };
+    /// divert(4)'s row.
+    pub(crate) static DIVERT: TestProto = TestProto {
+        kind: Kind::Divert,
+        proto: 258,
+    };
+    /// IPv6 divert's row.
+    pub(crate) static DIVERT6: TestProto = TestProto {
+        kind: Kind::Divert6,
+        proto: 258,
+    };
+
+    impl Protocol<G> for TestProto {
+        fn domain(&self) -> &'static dyn Domain<G> {
+            match self.kind {
+                Kind::Raw | Kind::Divert => &testinet::InetDom,
+                Kind::Raw6 | Kind::Divert6 => &testinet::Inet6Dom,
+            }
+        }
+        fn ty(&self) -> i16 {
+            SOCK_RAW as i16
+        }
+        fn protocol(&self) -> i16 {
+            self.proto
+        }
+        fn flags(&self) -> i16 {
+            PR_ATOMIC | PR_ADDR
+        }
+        fn usrreqs(&self) -> Option<&'static dyn Usrreqs<G>> {
+            Some(match self.kind {
+                Kind::Raw => &RipUsrreqs::<G>::NEW,
+                Kind::Raw6 => &crate::netinet6::raw_ip6::Rip6Usrreqs::<G>::NEW,
+                Kind::Divert => &crate::netinet::ip_divert::DivertUsrreqs::<G>::NEW,
+                Kind::Divert6 => &crate::netinet6::ip6_divert::Divert6Usrreqs::<G>::NEW,
+            })
+        }
+        fn has_ctloutput(&self) -> bool {
+            true
+        }
+        fn ctloutput(
+            &self,
+            op: i32,
+            so: &Socket<G>,
+            w: &mut SoLocked<'_>,
+            level: i32,
+            optname: i32,
+            m: Option<&mut Mbuf>,
+        ) -> Result<(), Errno> {
+            match self.kind {
+                Kind::Raw | Kind::Divert => rip_ctloutput(op, so, w, level, optname, m),
+                Kind::Raw6 | Kind::Divert6 => {
+                    crate::netinet6::raw_ip6::rip6_ctloutput(op, so, w, level, optname, m)
+                }
+            }
+        }
+    }
+
+    /// `testinet::setup` and the four tables initialised.
+    pub(crate) fn setup() -> (MutexGuard<'static, ()>, &'static Thread<G>) {
+        let r = testinet::setup();
+        rip_init::<G>();
+        crate::netinet6::raw_ip6::rip6_init::<G>();
+        crate::netinet::ip_divert::divert_init::<G>();
+        crate::netinet6::ip6_divert::divert6_init::<G>();
+        r
+    }
+
+    /// `f` with `so` locked (`solock`); its answer is checked after the unlock.
+    pub(crate) fn locked<R>(so: &Socket<G>, f: impl FnOnce(&mut SoLocked<'_>) -> R) -> R {
+        let mut w = solock(so);
+        f(&mut w)
+    }
+
+    /// A socket of `p` attached with protocol number `proto` (`socreate`'s two steps), by a
+    /// privileged process (`SS_PRIV`) or not.
+    pub(crate) fn socket(
+        p: &'static TestProto,
+        proto: i32,
+        privileged: bool,
+    ) -> Result<SocketRef<G>, Errno> {
+        let so = soalloc(
+            p,
+            M_WAIT,
+            SoInit {
+                so_type: SOCK_RAW,
+                state: if privileged { SS_PRIV } else { 0 },
+                options: 0,
+                linger: 0,
+                timeo: 0,
+                euid: 0,
+                ruid: 0,
+                egid: 0,
+                rgid: 0,
+                cpid: 1,
+            },
+        )
+        .expect("a socket");
+        let r = locked(&so, |w| match p.usrreqs() {
+            Some(u) => u.attach(&so, w, proto, M_WAIT),
+            None => Err(Errno::EPROTONOSUPPORT),
+        });
+        r.map(|()| so)
+    }
+
+    /// The socket's pcb, counted.
+    pub(crate) fn pcb(so: &Socket<G>) -> InpcbRef<G> {
+        sotoinpcb(so).expect("an attached socket")
+    }
+
+    /// `soclose`: the protocol's detach, the socket let go (no file holds it).
+    pub(crate) fn close(so: SocketRef<G>) {
+        so.st_set(SS_NOFDREF);
+        let p = so.proto();
+        let r = locked(&so, |w| match p.usrreqs() {
+            Some(u) => u.detach(&so, w),
+            None => Ok(()),
+        });
+        assert_eq!(r, Ok(()));
+        drop(so);
+    }
+
+    /// `f` with a proof of the shared net lock (input's holding).
+    pub(crate) fn with_net<R>(f: impl FnOnce(&NetHeld<'_>) -> R) -> R {
+        let w = NETLOCK.read();
+        let net = NetHeld::of(&w).expect("the net lock");
+        f(&net)
+    }
+
+    /// `addr` in a name mbuf (`MT_SONAME`).
+    pub(crate) fn nam<T: AbiPod>(addr: &T) -> MbufBox {
+        let mut m = m_get(M_WAIT, MT_SONAME).expect("an mbuf");
+        set_mbuf(&mut m, addr, "nam");
+        m
+    }
+
+    /// A `sockaddr_in` of `addr` (port 0) in a name mbuf.
+    pub(crate) fn nam4(addr: [u8; 4]) -> MbufBox {
+        nam(&sin(addr, 0))
+    }
+
+    /// A `sockaddr_in` of `addr`:`port` (host order).
+    pub(crate) fn sin(addr: [u8; 4], port: u16) -> SockaddrIn {
+        SockaddrIn {
+            sin_len: size_of::<SockaddrIn>() as u8,
+            sin_family: AF_INET,
+            sin_port: port.to_be(),
+            sin_addr: InAddr {
+                s_addr: u32::from_ne_bytes(addr),
+            },
+            ..SockaddrIn::default()
+        }
+    }
+
+    /// A `sockaddr_in6` of `addr` in a name mbuf.
+    pub(crate) fn nam6(addr: In6Addr) -> MbufBox {
+        let sin6 = hal::sys::netinet6_in6::SockaddrIn6 {
+            sin6_len: 28,
+            sin6_family: AF_INET6,
+            sin6_addr: addr,
+            ..Default::default()
+        };
+        nam(&sin6)
+    }
+
+    /// An IPv4 packet from `src` to `dst` of protocol `p`, its header (20 bytes, the length
+    /// and version set) and `payload`.
+    pub(crate) fn ip4(src: [u8; 4], dst: [u8; 4], p: u8, payload: &[u8]) -> Vec<u8> {
+        let len = 20 + payload.len();
+        let mut ip = Ip {
+            ip_len: (len as u16).to_be(),
+            ip_ttl: 64,
+            ip_p: p,
+            ip_src: InAddr {
+                s_addr: u32::from_ne_bytes(src),
+            },
+            ip_dst: InAddr {
+                s_addr: u32::from_ne_bytes(dst),
+            },
+            ..Ip::default()
+        };
+        ip.set_ip_v(4);
+        ip.set_ip_hl(5);
+        let mut b = std::vec![0u8; len];
+        assert!(hal::pod::put(&mut b, 0, &ip));
+        b[20..].copy_from_slice(payload);
+        b
+    }
+
+    /// `bytes` as a packet (one header mbuf, or a chain past `MHLEN`).
+    pub(crate) fn pkt(bytes: &[u8]) -> MbufBox {
+        m_devget(bytes, 0).expect("a packet")
+    }
+
+    /// The first record of `so`'s receive buffer taken: its address's and its data's bytes
+    /// (the control messages skipped); `None` when the buffer is empty.
+    pub(crate) fn recv(so: &Socket<G>) -> Option<(Vec<u8>, Vec<u8>)> {
+        let rec = so.so_rcv.lock().take_first_record()?;
+        let (mut name, mut data) = (Vec::new(), Vec::new());
+        for m in rec.iter() {
+            match i32::from(m.m_type().get()) {
+                MT_SONAME => name.extend_from_slice(m.data()),
+                MT_CONTROL => {}
+                _ => data.extend_from_slice(m.data()),
+            }
+        }
+        Some((name, data))
+    }
+
+    /// The IPv4 statistic `c`.
+    pub(crate) fn ips(c: IpstatCounters) -> u64 {
+        crate::netinet::ip_var::IPCOUNTERS.read()[c as usize]
+    }
+}
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    use core::sync::atomic::Ordering;
+    use std::vec::Vec;
+
+    use hal::sys::netinet_in::{IP_TTL, IPPROTO_TCP, IPPROTO_UDP};
+
+    use super::testraw::{
+        self, G, RAW, close, ip4, ips, locked, nam, nam4, pkt, recv, socket, with_net,
+    };
+    use super::*;
+    use crate::net::mbuf::{M_WAIT, MT_SOOPTS, m_get};
+    use crate::net::proto::PRCO_GETOPT;
+    use crate::net::socket::socantrcvmore;
+    use crate::netinet::in_pcb::testinet;
+
+    /// An option mbuf of `bytes`.
+    fn optm(bytes: &[u8]) -> MbufBox {
+        let mut m = m_get(M_WAIT, MT_SOOPTS).expect("an mbuf");
+        m.m_len().set(bytes.len() as u32);
+        m.data_mut().expect("writable").copy_from_slice(bytes);
+        m
+    }
+
+    /// `setsockopt(so, level, opt, &v, sizeof(int))` through `rip_ctloutput`.
+    fn set(so: &Socket<G>, level: i32, opt: i32, v: i32) -> Result<(), Errno> {
+        let mut m = optm(&v.to_ne_bytes());
+        locked(so, |w| {
+            rip_ctloutput(PRCO_SETOPT, so, w, level, opt, Some(&mut m))
+        })
+    }
+
+    /// `getsockopt(so, level, opt)` through `rip_ctloutput`: the answer's bytes.
+    fn get(so: &Socket<G>, level: i32, opt: i32) -> Result<Vec<u8>, Errno> {
+        let mut m = optm(&[]);
+        locked(so, |w| {
+            rip_ctloutput(PRCO_GETOPT, so, w, level, opt, Some(&mut m))
+        })
+        .map(|()| m.data().to_vec())
+    }
+
+    /// `rip_input` of `bytes` (received on interface `ifidx`) under the shared net lock.
+    fn deliver(bytes: &[u8], ifidx: u32) {
+        let m = pkt(bytes);
+        m.m_pkthdr().ph_ifidx.set(ifidx);
+        let p = i32::from(bytes[9]);
+        with_net(|net| {
+            let mut mp = Some(m);
+            let mut off = 20;
+            assert_eq!(
+                rip_input::<G>(&mut mp, &mut off, p, i32::from(AF_INET), None, net),
+                IPPROTO_DONE
+            );
+            assert!(mp.is_none(), "the packet consumed");
+        });
+    }
+
+    /// `rip_send(so, m, nam, NULL)` of `bytes`.
+    fn send(so: &Socket<G>, bytes: &[u8], to: Option<[u8; 4]>) -> Result<(), Errno> {
+        let n = to.map(nam4);
+        locked(so, |w| {
+            rip_send(so, w, Some(pkt(bytes)), n.as_deref(), None)
+        })
+    }
+
+    /// The last packet `d` output.
+    fn last(d: &testinet::InetDriver) -> Vec<u8> {
+        d.last.lock().expect("the wire").clone()
+    }
+
+    #[test]
+    fn rip_attach_needs_privilege_and_a_protocol_in_range() {
+        let (_g, _p) = testraw::setup();
+        assert_eq!(socket(&RAW, 1, false).err(), Some(Errno::EACCES));
+        assert_eq!(
+            socket(&RAW, IPPROTO_MAX, true).err(),
+            Some(Errno::EPROTONOSUPPORT)
+        );
+        assert_eq!(socket(&RAW, -1, true).err(), Some(Errno::EPROTONOSUPPORT));
+
+        let so = socket(&RAW, IPPROTO_UDP, true).expect("attached");
+        let inp = testraw::pcb(&so);
+        assert_eq!(i32::from(inp.inp_ip.ip_p()), IPPROTO_UDP);
+        assert!(!inp.has_flags(INP_IPV6 | INP_HDRINCL));
+        assert!(core::ptr::eq(inp.table(), rawcbtable::<G>()));
+        drop(inp);
+
+        // The slot's borrow answers the pcb until the detach takes it; a second detach finds
+        // none (the C's EINVAL).
+        let r = locked(&so, |w| {
+            let il = inet(w, "test");
+            sotoinpcb_locked(&so, &il.pcb).is_some()
+        });
+        assert!(r);
+        so.st_set(crate::net::sockbuf::SS_NOFDREF);
+        assert_eq!(locked(&so, |w| rip_detach(&so, w)), Ok(()));
+        assert_eq!(locked(&so, |w| rip_detach(&so, w)), Err(Errno::EINVAL));
+        drop(so);
+    }
+
+    #[test]
+    fn rip_input_hands_a_copy_to_every_matching_socket() {
+        let (_g, p) = testraw::setup();
+        let (ifp, _d) = testinet::iface(b"rip0", [10, 9, 61, 1]);
+        let ifidx = ifp.if_index.get();
+        let any = socket(&RAW, IPPROTO_ICMP, true).expect("attached");
+        let bound = socket(&RAW, IPPROTO_ICMP, true).expect("attached");
+        assert_eq!(
+            locked(&bound, |w| rip_bind(&bound, w, &nam4([10, 9, 61, 1]), p)),
+            Ok(())
+        );
+        let elsewhere = socket(&RAW, IPPROTO_ICMP, true).expect("attached");
+        assert_eq!(
+            locked(&elsewhere, |w| rip_connect(
+                &elsewhere,
+                w,
+                &nam4([10, 9, 61, 9])
+            )),
+            Ok(())
+        );
+        let udp = socket(&RAW, IPPROTO_UDP, true).expect("attached");
+        let wild = socket(&RAW, 0, true).expect("attached");
+        let closed = socket(&RAW, IPPROTO_ICMP, true).expect("attached");
+        socantrcvmore(&closed);
+        let noproto = ips(IpstatCounters::IpsNoproto);
+
+        let echo = ip4([10, 9, 61, 2], [10, 9, 61, 1], 1, &[8, 0, 0, 0, 0, 1, 0, 1]);
+        deliver(&echo, ifidx);
+        for so in [&any, &bound, &wild] {
+            let (name, data) = recv(so).expect("a copy");
+            assert_eq!(data, echo, "the whole datagram, its header included");
+            let src = hal::pod::at::<SockaddrIn>(&name, 0).expect("a sockaddr_in");
+            assert_eq!(src.sin_addr.s_addr, u32::from_ne_bytes([10, 9, 61, 2]));
+            assert_eq!(src.sin_len, 16);
+        }
+        assert!(recv(&elsewhere).is_none(), "another foreign address");
+        assert!(recv(&udp).is_none(), "another protocol");
+        assert!(recv(&closed).is_none(), "SS_CANTRCVMORE");
+
+        let dgram = ip4([10, 9, 61, 9], [10, 9, 61, 1], 17, &[0; 8]);
+        deliver(&dgram, ifidx);
+        assert_eq!(recv(&udp).map(|r| r.1), Some(dgram.clone()));
+        assert_eq!(recv(&wild).map(|r| r.1), Some(dgram));
+        assert!(recv(&any).is_none() && recv(&elsewhere).is_none());
+        assert_eq!(ips(IpstatCounters::IpsNoproto), noproto);
+
+        for so in [any, bound, elsewhere, udp, wild, closed] {
+            close(so);
+        }
+    }
+
+    #[test]
+    fn rip_input_without_a_socket_counts_and_answers_protocol_unreachable() {
+        use crate::netinet::icmp_var::{ICMPCOUNTERS, IcmpstatCounters};
+        let icps = |c: IcmpstatCounters| ICMPCOUNTERS.read()[c as usize];
+        let unreach = || ICMPCOUNTERS.read()[IcmpstatCounters::IcpsOuthist as usize + 3];
+
+        let (_g, _p) = testraw::setup();
+        let (ifp, _d) = testinet::iface(b"rip1", [10, 9, 62, 1]);
+        let ifidx = ifp.if_index.get();
+        let noproto = ips(IpstatCounters::IpsNoproto);
+        let delivered = ips(IpstatCounters::IpsDelivered);
+        let (error, out) = (icps(IcmpstatCounters::IcpsError), unreach());
+
+        // ICMP: dropped quietly.
+        deliver(
+            &ip4([10, 9, 62, 2], [10, 9, 62, 1], 1, &[8, 0, 0, 0]),
+            ifidx,
+        );
+        assert_eq!((icps(IcmpstatCounters::IcpsError), unreach()), (error, out));
+        assert_eq!(ips(IpstatCounters::IpsNoproto), noproto + 1);
+        assert_eq!(ips(IpstatCounters::IpsDelivered), delivered.wrapping_sub(1));
+
+        // Another protocol: a protocol unreachable made for the sender (icmp_error; its
+        // output is ip_send's task, later).
+        deliver(&ip4([10, 9, 62, 2], [10, 9, 62, 1], 99, &[0; 8]), ifidx);
+        assert_eq!(icps(IcmpstatCounters::IcpsError), error + 1);
+        assert_eq!(unreach(), out + 1, "an ICMP_UNREACH sent");
+        assert_eq!(ips(IpstatCounters::IpsNoproto), noproto + 2);
+        assert_eq!(ips(IpstatCounters::IpsDelivered), delivered.wrapping_sub(2));
+    }
+
+    /// The header of `rip_chkhdr`'s cases: version `v`, length `hl` words, `ip_len` `len`, the
+    /// options `opts` (`hl` - 5 words), the packet `len` bytes long unless `pad` differs.
+    fn hdr(v: u8, hl: u8, len: u16, opts: &[u8], pktlen: usize) -> Vec<u8> {
+        let mut b = ip4([10, 9, 0, 2], [10, 9, 0, 1], 17, &[]);
+        b[0] = (v << 4) | hl;
+        b[2..4].copy_from_slice(&len.to_be_bytes());
+        b.extend_from_slice(opts);
+        b.resize(pktlen, 0);
+        b
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn rip_chkhdr_keeps_every_bound_of_the_c() {
+        let (_g, _p) = testraw::setup();
+        let cases: [(&str, Vec<u8>, bool, bool); 13] = [
+            ("short", std::vec![0x45; 19], false, false),
+            ("hl < 5", hdr(4, 4, 20, &[], 20), false, false),
+            ("ip_len < hlen", hdr(4, 6, 20, &[1, 1, 1, 1], 24), false, false),
+            ("ip_len != len", hdr(4, 5, 28, &[], 24), false, false),
+            ("version 6", hdr(6, 5, 20, &[], 20), false, false),
+            ("both options", hdr(4, 6, 24, &[1, 1, 1, 0], 24), true, false),
+            ("no options, setsockopt's", hdr(4, 5, 20, &[], 20), true, true),
+            ("NOPs, EOL", hdr(4, 6, 24, &[1, 1, 1, 0], 24), false, true),
+            ("an option of 4", hdr(4, 6, 24, &[7, 4, 0, 0], 24), false, true),
+            ("optlen < 2", hdr(4, 6, 24, &[7, 1, 0, 0], 24), false, false),
+            ("optlen > cnt", hdr(4, 6, 24, &[7, 5, 0, 0], 24), false, false),
+            ("no length byte", hdr(4, 6, 24, &[1, 1, 1, 7], 24), false, false),
+            ("an EOL ends the walk", hdr(4, 6, 24, &[0, 7, 9, 9], 24), false, true),
+        ];
+        for (what, bytes, options, ok) in cases {
+            assert_eq!(rip_chkhdr(pkt(&bytes), options).is_some(), ok, "{what}");
+        }
+    }
+
+    /// A reference reading of `rip_chkhdr`'s rule over `b` (no setsockopt options).
+    fn reference(b: &[u8]) -> bool {
+        if b.len() < 20 {
+            return false;
+        }
+        let hlen = usize::from(b[0] & 0xf) * 4;
+        let len = usize::from(u16::from_be_bytes([b[2], b[3]]));
+        if hlen < 20 || len < hlen || len != b.len() || b[0] >> 4 != 4 {
+            return false;
+        }
+        let mut cp = 20;
+        while cp < hlen {
+            match b[cp] {
+                0 => return true,
+                1 => cp += 1,
+                _ => {
+                    let Some(&l) = b.get(cp + 1).filter(|_| cp + 1 < hlen) else {
+                        return false;
+                    };
+                    if l < 2 || cp + usize::from(l) > hlen {
+                        return false;
+                    }
+                    cp += usize::from(l);
+                }
+            }
+        }
+        true
+    }
+
+    #[test]
+    fn rip_chkhdr_never_reads_past_the_bytes_it_is_given() {
+        let (_g, _p) = testraw::setup();
+        // A property test over 4000 headers of a xorshift stream (no crate): every answer is
+        // the reference's, and nothing panics (an option walk past the header would).
+        let mut s: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut next = || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s
+        };
+        for _ in 0..4000 {
+            let r = next();
+            let hl = 5 + (r % 11) as u8;
+            let pktlen = (r >> 8) as usize % 64;
+            let mut b: Vec<u8> = (0..pktlen.max(1)).map(|_| (next() % 9) as u8).collect();
+            if b.len() >= 4 {
+                b[0] = if r & (1 << 40) != 0 {
+                    0x40 | hl
+                } else {
+                    0x60 | hl
+                };
+                let len = if r & (1 << 41) != 0 {
+                    b.len() as u16
+                } else {
+                    (r >> 48) as u16 % 64
+                };
+                b[2..4].copy_from_slice(&len.to_be_bytes());
+            }
+            assert_eq!(rip_chkhdr(pkt(&b), false).is_some(), reference(&b), "{b:?}");
+        }
+    }
+
+    #[test]
+    fn ip_hdrincl_output_keeps_the_user_s_header() {
+        let (_g, _p) = testraw::setup();
+        let (_ifp, d) = testinet::iface(b"rip2", [10, 9, 63, 1]);
+        let so = socket(&RAW, IPPROTO_UDP, true).expect("attached");
+        assert_eq!(set(&so, IPPROTO_IP, IP_HDRINCL, 1), Ok(()));
+        let rawout = ips(IpstatCounters::IpsRawout);
+
+        // Source 0 is selected, id 0 drawn, the destination the header's (the name's is
+        // ignored), the rest the user's.
+        let mut h = ip4([0, 0, 0, 0], [10, 9, 63, 7], 17, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        h[1] = 0x10; // tos
+        h[8] = 3; // ttl
+        assert_eq!(send(&so, &h, Some([10, 9, 63, 99])), Ok(()));
+        let out = last(d);
+        assert_eq!(out[16..20], [10, 9, 63, 7]);
+        assert_eq!(out[12..16], [10, 9, 63, 1]);
+        assert_ne!(out[4..6], [0, 0], "ip_id drawn");
+        assert_eq!((out[1], out[8], out[9]), (0x10, 3, 17));
+        assert_eq!(out[20..], [1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(ips(IpstatCounters::IpsRawout), rawout + 1);
+
+        // A header rip_chkhdr refuses (version 6), and one past IP_MAXPACKET.
+        let mut bad = h.clone();
+        bad[0] = 0x65;
+        assert_eq!(send(&so, &bad, Some([10, 9, 63, 7])), Err(Errno::EINVAL));
+        let huge = std::vec![0x45; IP_MAXPACKET + 1];
+        assert_eq!(send(&so, &huge, Some([10, 9, 63, 7])), Err(Errno::EMSGSIZE));
+        assert_eq!(ips(IpstatCounters::IpsRawout), rawout + 1);
+        close(so);
+    }
+
+    #[test]
+    fn rip_output_builds_the_header_from_the_prototype() {
+        let (_g, _p) = testraw::setup();
+        let (_ifp, d) = testinet::iface(b"rip3", [10, 9, 64, 1]);
+        let so = socket(&RAW, 253, true).expect("attached");
+        assert_eq!(set(&so, IPPROTO_IP, IP_TTL, 7), Ok(()));
+
+        assert_eq!(send(&so, &[0xa5; 4], Some([10, 9, 64, 7])), Ok(()));
+        let out = last(d);
+        assert_eq!(out.len(), 24);
+        assert_eq!(out[0] >> 4, 4);
+        assert_eq!(u16::from_be_bytes([out[2], out[3]]), 24);
+        assert_eq!(
+            (out[8], out[9]),
+            (7, 253),
+            "the prototype's TTL and protocol"
+        );
+        assert_eq!(out[12..16], [10, 9, 64, 1]);
+        assert_eq!(out[16..20], [10, 9, 64, 7]);
+        assert_eq!(out[20..], [0xa5; 4]);
+
+        // `m_pkthdr.len + sizeof(struct ip) > IP_MAXPACKET`.
+        let big = std::vec![0; IP_MAXPACKET - 19];
+        assert_eq!(send(&so, &big, Some([10, 9, 64, 7])), Err(Errno::EMSGSIZE));
+        close(so);
+    }
+
+    #[test]
+    fn rip_ctloutput_answers_as_the_c() {
+        let (_g, _p) = testraw::setup();
+        let so = socket(&RAW, 1, true).expect("attached");
+        assert_eq!(
+            get(&so, IPPROTO_IP, IP_HDRINCL),
+            Ok(0i32.to_ne_bytes().to_vec())
+        );
+        assert_eq!(set(&so, IPPROTO_IP, IP_HDRINCL, 1), Ok(()));
+        // The bit, INP_HDRINCL (8), not 1: the C's `inp_flags & INP_HDRINCL`.
+        assert_eq!(
+            get(&so, IPPROTO_IP, IP_HDRINCL),
+            Ok(8i32.to_ne_bytes().to_vec())
+        );
+        assert_eq!(set(&so, IPPROTO_IP, IP_HDRINCL, 0), Ok(()));
+        assert_eq!(
+            get(&so, IPPROTO_IP, IP_HDRINCL),
+            Ok(0i32.to_ne_bytes().to_vec())
+        );
+        // A value shorter than an int, or none.
+        let mut short = optm(&[1, 0]);
+        assert_eq!(
+            locked(&so, |w| rip_ctloutput(
+                PRCO_SETOPT,
+                &so,
+                w,
+                IPPROTO_IP,
+                IP_HDRINCL,
+                Some(&mut short)
+            )),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(
+            locked(&so, |w| rip_ctloutput(
+                PRCO_SETOPT,
+                &so,
+                w,
+                IPPROTO_IP,
+                IP_HDRINCL,
+                None
+            )),
+            Err(Errno::EINVAL)
+        );
+        // MROUTING is not configured; another level is refused; IP's options go on.
+        assert_eq!(set(&so, IPPROTO_IP, MRT_INIT, 1), Err(Errno::EOPNOTSUPP));
+        assert_eq!(get(&so, IPPROTO_IP, MRT_API_CONFIG), Err(Errno::EOPNOTSUPP));
+        assert_eq!(set(&so, IPPROTO_TCP, IP_HDRINCL, 1), Err(Errno::EINVAL));
+        assert_eq!(set(&so, IPPROTO_IP, IP_TTL, 9), Ok(()));
+        assert_eq!(
+            get(&so, IPPROTO_IP, IP_TTL),
+            Ok(9i32.to_ne_bytes().to_vec())
+        );
+        close(so);
+    }
+
+    #[test]
+    fn rip_bind_takes_ours_a_broadcast_or_any() {
+        let (_g, p) = testraw::setup();
+        let _ = testinet::iface(b"rip4", [10, 9, 65, 1]);
+        let so = socket(&RAW, 1, true).expect("attached");
+        let bind = |a: [u8; 4]| locked(&so, |w| rip_bind(&so, w, &nam4(a), p));
+        assert_eq!(bind([10, 9, 65, 1]), Ok(()), "ours");
+        assert_eq!(bind([10, 9, 65, 255]), Ok(()), "the subnet's broadcast");
+        assert_eq!(bind([255, 255, 255, 255]), Ok(()), "INADDR_BROADCAST");
+        assert_eq!(bind([0, 0, 0, 0]), Ok(()), "INADDR_ANY");
+        assert_eq!(bind([192, 0, 2, 1]), Err(Errno::EADDRNOTAVAIL));
+        assert_eq!(
+            testraw::pcb(&so).inp_laddr.get().s_addr,
+            0,
+            "a refused bind leaves the address"
+        );
+        locked(&so, |w| so.set_options(w, SO_BINDANY, true));
+        assert_eq!(bind([192, 0, 2, 1]), Ok(()), "SO_BINDANY");
+        assert_eq!(
+            testraw::pcb(&so).inp_laddr.get().s_addr,
+            u32::from_ne_bytes([192, 0, 2, 1])
+        );
+        close(so);
+    }
+
+    #[test]
+    fn rip_send_needs_an_address_unless_connected() {
+        let (_g, _p) = testraw::setup();
+        let (_ifp, d) = testinet::iface(b"rip5", [10, 9, 66, 1]);
+        let so = socket(&RAW, 253, true).expect("attached");
+        assert_eq!(send(&so, &[1], None), Err(Errno::ENOTCONN));
+        assert_eq!(
+            locked(&so, |w| rip_disconnect(&so, w)),
+            Err(Errno::ENOTCONN)
+        );
+        assert_eq!(
+            locked(&so, |w| rip_connect(&so, w, &nam4([10, 9, 66, 7]))),
+            Ok(())
+        );
+        assert!(so.has_state(SS_ISCONNECTED));
+        assert_eq!(send(&so, &[1], Some([10, 9, 66, 8])), Err(Errno::EISCONN));
+        assert_eq!(send(&so, &[1], None), Ok(()));
+        assert_eq!(last(d)[16..20], [10, 9, 66, 7]);
+        assert_eq!(
+            locked(&so, |w| rip_send(&so, w, None, None, None)),
+            Err(Errno::EINVAL),
+            "no packet (sosend never)"
+        );
+        assert_eq!(locked(&so, |w| rip_disconnect(&so, w)), Ok(()));
+        assert_eq!(testraw::pcb(&so).inp_faddr.get().s_addr, 0);
+        assert_eq!(
+            locked(&so, |w| rip_send(
+                &so,
+                w,
+                Some(pkt(&[1])),
+                Some(&nam(&testraw::sin([10, 9, 66, 9], 0))),
+                None
+            )),
+            Ok(())
+        );
+        close(so);
+    }
+}
+/* </TESTS> */
