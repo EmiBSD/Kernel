@@ -167,7 +167,8 @@ use crate::netinet::tcp_fsm::{
 use crate::netinet::tcp_output::{tcp_output, tcp_setpersist};
 use crate::netinet::tcp_seq::{TCP_ISSINCR2, seq_geq, seq_lt};
 use crate::netinet::tcp_subr::{
-    Closed, TCP_DO_ECN, TCP_ISS, tcp_close, tcp_drop, tcp_free, tcp_mtudisc_notify, tcp_respond,
+    Closed, TCP_DO_ECN, TCP_ISS, TCP_TIMER_MTX, tcp_close, tcp_drop, tcp_free, tcp_mtudisc_notify,
+    tcp_respond,
 };
 use crate::netinet::tcp_var::{
     TCP_RTT_SHIFT, TF_ACKNOW, TF_DISABLE_ECN, TF_PMTUD_PEND, TF_SEND_CWR, TF_TIMER, TcpState,
@@ -461,9 +462,15 @@ pub fn tcp_timer_delack<G: ProcGlue>(arg: &AnyArc) {
 /// `tcp_slowtimo`: tcp protocol timeout routine called every 500 ms (`pr_slowtimo`): it
 /// advances `tcp_iss` (the connections' own timers are callouts).
 pub fn tcp_slowtimo() {
-    let mut iss = TCP_ISS.lock();
+    let g = TCP_TIMER_MTX.lock();
     // increment iss
-    *iss = iss.wrapping_add(TCP_ISSINCR2 / PR_SLOWHZ as u32);
+    TCP_ISS.store(
+        TCP_ISS
+            .load(Ordering::Relaxed)
+            .wrapping_add(TCP_ISSINCR2 / PR_SLOWHZ as u32),
+        Ordering::Relaxed,
+    );
+    drop(g);
 }
 
 /// `tcp_canceltimers`: cancel all timers for TCP `tp`.
@@ -830,6 +837,15 @@ mod tests {
         // The macro tests the minimum first: an empty range yields the minimum.
         assert_eq!(tcpt_rangeset(15, 30, 20), 30);
         assert_eq!(TCPTV_KEEPIDLE, 7_200_000);
+    }
+
+    /// The C's `tcp_totbackoff` is the sum of `tcp_backoff[]` (`tcp_timer.c`, where the two
+    /// are written apart), and `tcp_keepintvl_sec` starts as `TCPTV_KEEPINTVL` in seconds
+    /// (75). bsd's `backoff_sums_to_the_total`, re-expressed where the items live now.
+    #[test]
+    fn backoff_sums_to_the_total() {
+        assert_eq!(TCP_BACKOFF.iter().sum::<i32>(), TCP_TOTBACKOFF);
+        assert_eq!(TCP_KEEPINTVL_SEC.load(Ordering::Relaxed), 75);
     }
 
     #[test]
@@ -1342,10 +1358,10 @@ mod tests {
     #[test]
     fn slowtimo_advances_the_iss() {
         let (_g, _p) = testtcp::setup();
-        let before = *TCP_ISS.lock();
+        let before = TCP_ISS.load(Ordering::Relaxed);
         tcp_slowtimo();
         assert_eq!(
-            *TCP_ISS.lock(),
+            TCP_ISS.load(Ordering::Relaxed),
             before.wrapping_add(TCP_ISSINCR2 / 2),
             "TCP_ISSINCR2 / PR_SLOWHZ"
         );

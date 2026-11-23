@@ -4319,7 +4319,7 @@ pub fn pf_socket_lookup(pd: &mut PfPdesc) -> bool {
             (
                 th.th_sport,
                 th.th_dport,
-                &crate::netinet::tcp_usrreq::TCBTABLE,
+                kernel::netinet::tcp_usrreq::tcbtable::<crate::kern::proc_glue::BsdProcGlue>(),
             )
         }
         IPPROTO_UDP => {
@@ -4368,7 +4368,9 @@ pub fn pf_socket_lookup(pd: &mut PfPdesc) -> bool {
             use crate::netinet6::in6_pcb::{in6_pcblookup, in6_pcblookup_listen};
             let table = match i32::from(pd.virtual_proto) {
                 IPPROTO_UDP => &crate::netinet::udp_usrreq::UDB6TABLE,
-                IPPROTO_TCP => &crate::netinet::tcp_usrreq::TCB6TABLE,
+                IPPROTO_TCP => {
+                    kernel::netinet::tcp_usrreq::tcb6table::<crate::kern::proc_glue::BsdProcGlue>()
+                }
                 _ => table,
             };
             let rdomain = u32::from(pd.rdomain);
@@ -4567,9 +4569,9 @@ fn pf_set_rt_ifp(
     rv
 }
 
-/// `tcp_mssdflt`: the default MSS (`net.inet.tcp.mssdflt`, `netinet/tcp_subr.rs`).
+/// `tcp_mssdflt`: the default MSS (`net.inet.tcp.mssdflt`, the kernel's `tcp_subr`).
 pub fn tcp_mssdflt() -> u16 {
-    crate::netinet::tcp_subr::TCP_MSSDFLT.load(core::sync::atomic::Ordering::Relaxed) as u16
+    kernel::netinet::tcp_subr::TCP_MSSDFLT.load(core::sync::atomic::Ordering::Relaxed) as u16
 }
 
 /// `pf_tcp_iss`: an initial sequence number for a modulated connection, from a keyed hash
@@ -4616,7 +4618,9 @@ pub fn pf_tcp_iss(pd: &mut PfPdesc) -> u32 {
     let off = sec.iss_off.get().wrapping_add(4096);
     sec.iss_off.set(off);
     u32::from_ne_bytes([digest[0], digest[1], digest[2], digest[3]])
-        .wrapping_add(crate::netinet::tcp_subr::TCP_ISS.load(core::sync::atomic::Ordering::Relaxed))
+        .wrapping_add(
+            kernel::netinet::tcp_subr::TCP_ISS.load(core::sync::atomic::Ordering::Relaxed),
+        )
         .wrapping_add(off)
 }
 
@@ -10696,7 +10700,7 @@ mod tests {
         // src, dst), plus `tcp_iss`, plus an offset that grows by 4096 a call; the keyed prefix
         // is made once and every call starts from it. Recomputed here from the secret, so the
         // same bytes are hashed in the same order as the C.
-        use crate::netinet::tcp_subr::TCP_ISS;
+        use kernel::netinet::tcp_subr::TCP_ISS;
 
         let mut pd = PfPdesc::new();
         pd.af = AF_INET;

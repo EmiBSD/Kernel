@@ -145,7 +145,7 @@
 //!   row).
 
 use core::pin::Pin;
-use core::sync::atomic::AtomicU64;
+use core::sync::atomic::{AtomicI32, AtomicU64};
 
 use hal::intr::IPL_SOFTNET;
 use hal::malloc::MArray;
@@ -163,7 +163,7 @@ use crate::assert::kpanic;
 use crate::net::ipsec_hooks::SOCKADDR_UNION_LEN;
 use crate::net::mbuf::MbufBox;
 use crate::net::route::Route;
-use crate::net::socket::{InetLocked, Socket, so_part};
+use crate::net::socket::{InetLocked, SoLocked, Socket, so_part};
 use crate::netinet::in_pcb::{Inpcb, InpcbRef, Inpcbtable};
 use crate::netinet::tcp_subr::{SACKHL_POOL, TCP_STARTTIME, TCPQE_POOL};
 use crate::netinet::tcp_timer::TCPT_NTIMERS;
@@ -825,17 +825,13 @@ impl<G: ProcGlue> Default for SynCacheSet<G> {
     }
 }
 
-/// What `syn_cache_mtx` keeps (\[S\]): `tcp_syn_cache[2]`, `tcp_syn_cache_active`, and the
-/// two `[S]` tunables of `tcp_input.c`.
+/// What `syn_cache_mtx` keeps (\[S\]): `tcp_syn_cache[2]` and `tcp_syn_cache_active` (the
+/// two `[S]` tunables of `tcp_input.c` are [`TcpTables`]' atomics, written under it).
 pub struct SynCaches<G: ProcGlue> {
     /// `tcp_syn_cache[2]`.
     pub sets: [SynCacheSet<G>; 2],
     /// `tcp_syn_cache_active`: the index of the active set.
     pub active: usize,
-    /// `tcp_syn_hash_size`: size of hash table.
-    pub tcp_syn_hash_size: i32,
-    /// `tcp_syn_use_limit`: reseed after uses.
-    pub tcp_syn_use_limit: i32,
 }
 
 impl<G: ProcGlue> SynCaches<G> {
@@ -844,8 +840,6 @@ impl<G: ProcGlue> SynCaches<G> {
         Self {
             sets: [SynCacheSet::new(), SynCacheSet::new()],
             active: 0,
-            tcp_syn_hash_size: TCP_SYN_HASH_SIZE,
-            tcp_syn_use_limit: 100_000,
         }
     }
 }
@@ -867,6 +861,11 @@ pub struct TcpTables<G: ProcGlue> {
     pub(crate) syn_cache_pool: TypedPool<SynCache<G>>,
     /// `syn_cache_mtx`: tcp syn cache global mutex, and the `[S]` globals.
     pub(crate) syn_cache: Mutexed<SynCaches<G>>,
+    /// \[S\] `tcp_syn_hash_size`: size of hash table. Written under `syn_cache_mtx` (`[S]`)
+    /// and read without it (`tcp_sysctl`'s `atomic_load_int`, `syn_cache_init`), as the C.
+    pub tcp_syn_hash_size: AtomicI32,
+    /// \[S\] `tcp_syn_use_limit`: reseed after uses; as `tcp_syn_hash_size`.
+    pub tcp_syn_use_limit: AtomicI32,
     /// `tcbtable`.
     pub tcbtable: Inpcbtable<G>,
     /// `tcb6table`.
@@ -880,6 +879,8 @@ impl<G: ProcGlue> TcpTables<G> {
             tcpcb_pool: BoxPool::new(),
             syn_cache_pool: TypedPool::new(),
             syn_cache: Mutexed::new(IPL_SOFTNET, SynCaches::new()),
+            tcp_syn_hash_size: AtomicI32::new(TCP_SYN_HASH_SIZE),
+            tcp_syn_use_limit: AtomicI32::new(100_000),
             tcbtable: Inpcbtable::new(),
             tcb6table: Inpcbtable::new(),
         }
@@ -910,6 +911,22 @@ pub struct Tp<'a, 'w, G: ProcGlue> {
     pub syn: &'a mut WitnessPart<'w>,
     /// The proof of the net lock the socket lock holds.
     pub net: &'a NetHeld<'w>,
+}
+
+/// The TCP members of a `struct kinfo_file` ([`kinfo`]: `fill_file`'s `intotcpcb(inpcb)`
+/// block, read by fstat(1) and netstat(1)), in the control block's types.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TcpKinfo {
+    /// `inp_ppcb`: the control block's address (printed for a privileged reader only).
+    pub tcpcb: usize,
+    /// `t_state`.
+    pub t_state: i32,
+    /// `rcv_wnd`.
+    pub rcv_wnd: u64,
+    /// `snd_wnd`.
+    pub snd_wnd: u64,
+    /// `snd_cwnd`.
+    pub snd_cwnd: u64,
 }
 
 /// `enum tcpstat_counters`: the index of each counter in `tcpcounters`, in the order of the
@@ -1197,8 +1214,19 @@ pub fn intotcpcb<'a, 'w, G: ProcGlue>(
     let InetLocked {
         pcb, tcp, syn, net, ..
     } = il;
-    let pcb: &'a WitnessPart<'w> = pcb;
-    let net: &'a NetHeld<'w> = net;
+    intotcpcb_parts(inp, pcb, tcp, syn, net)
+}
+
+/// [`intotcpcb`] over the parts of the socket lock one by one, for a caller whose `inp` is
+/// itself borrowed through the part `PCB` (the user requests' `tcp_sogetpcb`, which reads
+/// the pcb from the socket's locked slot).
+pub(crate) fn intotcpcb_parts<'a, 'w, G: ProcGlue>(
+    inp: &'a Inpcb<G>,
+    pcb: &'a WitnessPart<'w>,
+    tcp: &'a mut WitnessPart<'w>,
+    syn: &'a mut WitnessPart<'w>,
+    net: &'a NetHeld<'w>,
+) -> Option<Tp<'a, 'w, G>> {
     let cb = inp.tcpcb(pcb)?;
     let st = cb.get_ref().st.get_mut(tcp);
     Some(Tp {
@@ -1208,6 +1236,22 @@ pub fn intotcpcb<'a, 'w, G: ProcGlue>(
         st,
         syn,
         net,
+    })
+}
+
+/// The TCP members `kern.file` reports of `inp` (`fill_file`'s `inp_ppcb` and `intotcpcb`
+/// block), read under its socket's lock `w` (the caller's `in_pcbsolock` or `solock`, lent
+/// as a witness); `None` for a socket whose lock is not a kernel protocol's or without a
+/// control block (the C would print NULL's members).
+pub fn kinfo<G: ProcGlue>(inp: &Inpcb<G>, w: &mut SoLocked<'_>) -> Option<TcpKinfo> {
+    let mut il = w.inet()?;
+    let tp = intotcpcb(inp, &mut il)?;
+    Some(TcpKinfo {
+        tcpcb: core::ptr::from_ref::<Tcpcb<G>>(&tp.cb).addr(),
+        t_state: tp.st.t_state,
+        rcv_wnd: tp.st.rcv_wnd,
+        snd_wnd: tp.st.snd_wnd,
+        snd_cwnd: tp.st.snd_cwnd,
     })
 }
 /* </CODE> */
@@ -1451,6 +1495,43 @@ mod tests {
             assert_eq!(c, v, "{name}");
         }
         assert_eq!(defs["TF_TIMER"], "TF_TMR_REXMT");
+    }
+
+    #[test]
+    fn kinfo_reports_what_kern_file_prints_of_the_control_block() {
+        use crate::netinet::tcp_subr::testtcp;
+
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, _d) = testtcp::estab(b"tvar0", 161);
+        let want = testtcp::with_tp(&inp, |tp| {
+            let k = TcpKinfo {
+                tcpcb: core::ptr::from_ref::<Tcpcb<testtcp::G>>(&tp.cb).addr(),
+                t_state: tp.st.t_state,
+                rcv_wnd: tp.st.rcv_wnd,
+                snd_wnd: tp.st.snd_wnd,
+                snd_cwnd: tp.st.snd_cwnd,
+            };
+            (k, None)
+        });
+        let got = {
+            let mut w = crate::net::socket::solock(&so);
+            kinfo(&inp, &mut w)
+        };
+        assert_eq!(got, Some(want));
+        assert_eq!(want.t_state, crate::netinet::tcp_fsm::TCPS_ESTABLISHED);
+        assert_eq!(want.snd_wnd, 65535);
+        // Closed: no control block, nothing to report (the C would print NULL's members).
+        so.st_set(crate::net::sockbuf::SS_NOFDREF);
+        testtcp::with_tp(&inp, |tp| {
+            ((), Some(crate::netinet::tcp_subr::tcp_close(tp)))
+        });
+        let after = {
+            let mut w = crate::net::socket::solock(&so);
+            kinfo(&inp, &mut w)
+        };
+        assert_eq!(after, None);
+        drop(inp);
+        drop(so);
     }
 }
 /* </TESTS> */

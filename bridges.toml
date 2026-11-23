@@ -426,9 +426,11 @@ paid_by = "N8"
 # (kernel::netinet6::in6_proto, D-9): inet6's domain and its IPV6, ICMPV6, DSTOPTS, ROUTING
 # and FRAGMENT entries are the kernel's, bsd's rows the transports, raw IPv6 (whose control
 # input, options and requests ICMPv6's entry lends), IPsec, IP-in-IP and divert.
-# Paid when pfkeyv2's domain and inetsw[]'s and inet6sw[]'s AH/ESP/IPCOMP/IPIP entries, its
-# last legacy implementers, move (N8); inet's and inet6's transports and raw sockets at N6.6,
-# route's flip at N6.3b.
+# N6.6a5: TCP's entries are the kernel's (TcpProtocol, Tcp6Protocol, their requests
+# TcpUsrreqs), and pr_ctlinput carries the caller's proof of the net lock (its six callers
+# hold one; TCP's control input locks sockets under it). Paid when pfkeyv2's domain and
+# inetsw[]'s and inet6sw[]'s AH/ESP/IPCOMP/IPIP entries, its last legacy implementers, move
+# (N8); inet's and inet6's other transports and raw sockets at N6.6b, route's flip at N6.3b.
 # kernel::net::proto::Protocol
 [[bridge]]
 trait = "Protocol"
@@ -506,7 +508,8 @@ paid_by = "N7"
 # Inet6Tables), the last of the IPv6 legs but ip6_randomid (N8).
 # Registered by bsd's boot before the first interface (N6.3a1's
 # adapter commit); before that every leg does nothing, the C without INET/INET6.
-# N6.4 takes the IPv4 legs, N6.5 the IPv6 ones; N6.6a takes tcp_input_mlist (6a5),
+# N6.4 takes the IPv4 legs, N6.5 the IPv6 ones; N6.6a took tcp_input_mlist (6a5: the softnet
+# calls the kernel's through tcp_init's registration, tcp_input::tcp_input_mlist_softnet),
 # tcpstat_lro, tcp_if_output_tso and proto_outswcsum's TCP half (6a1: the kernel's tcp_var
 # counts tcps_inhwlro, tcps_inbadlro and tcps_outswcsum itself, the kernel's tcp_tso answers
 # if_output_tso, and the leg left is udpstat_outswcsum); N6.6b takes udpstat_outswcsum.

@@ -116,13 +116,13 @@ use core::ptr;
 use core::sync::atomic::Ordering;
 
 use hal::intr::IPL_SOFTNET;
+use hal::netlock::NetHeld;
 use hal::once::OnceStatic;
 use hal::pin::pin_static;
 use hal::pool::{BoxPool, TypedPool};
 use hal::sys::errno::Errno;
 use hal::sys::socket::{PF_UNSPEC, SOCK_RAW};
 
-use crate::assert::kassert;
 use crate::net::mbuf::{MAX_HDR, MAX_LINKHDR, MAX_PROTOHDR, Mbuf, MbufBox};
 use crate::net::proto::{Protocol, SockaddrView};
 use crate::net::socket::{Socket, Sosplice};
@@ -355,13 +355,11 @@ pub fn pffindproto<G: ProcGlue>(
 }
 
 /// `pfctlinput(cmd, sa)`: hands control input `cmd` about `sa` to every protocol that takes
-/// it (`pr_ctlinput(cmd, sa, 0, NULL)`), the net lock held.
-pub fn pfctlinput<G: ProcGlue>(cmd: i32, sa: SockaddrView<'_>) {
-    kassert!(hal::netlock::status() != 0);
-
+/// it (`pr_ctlinput(cmd, sa, 0, NULL)`), the net lock held (`held`, the caller's proof).
+pub fn pfctlinput<G: ProcGlue>(cmd: i32, sa: SockaddrView<'_>, held: &NetHeld<'_>) {
     for dp in net::<G>().domains() {
         for pr in dp.protocols() {
-            pr.ctlinput(cmd, sa, 0, crate::net::proto::CtlArg::None);
+            pr.ctlinput(cmd, sa, 0, crate::net::proto::CtlArg::None, held);
         }
     }
 }

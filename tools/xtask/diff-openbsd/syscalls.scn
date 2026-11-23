@@ -5,7 +5,9 @@
 # exec_script.c, file mappings) have sections of their own, so that their expected
 # difference (expected.toml) cannot hide another one. `tty` (N4.7) follows `ostype`, so no
 # step id of expected.toml moves: pairs from /dev/ptm, the line discipline, the session's
-# terminal, sendsyslog(2) and kern.tty.
+# terminal, sendsyslog(2) and kern.tty. `tcp` (N6.6a5, D-5) follows `tty`, for the same
+# reason: TCP over 127.0.0.1 and ::1, its socket options, TCP_INFO's states, the
+# net.inet.tcp values that do not depend on the run, and TCPCTL_DROP of its own connection.
 
 ## probes
 ! mkdir /mnt/sc
@@ -25,6 +27,7 @@ $ difftest syscalls mmapfile
 $ difftest syscalls sysctl
 $ difftest syscalls ostype
 $ difftest syscalls tty
+$ difftest syscalls tcp
 $ ls -1a
 ! cd /
 

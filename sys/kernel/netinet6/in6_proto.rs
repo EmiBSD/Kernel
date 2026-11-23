@@ -97,12 +97,13 @@
 //! array.
 //!
 //! ## Deviations
-//! - The table's entries are the kernel's IPv6, ICMPv6, destination options, routing header
-//!   and fragment header ([`Ip6Protocol`], [`Icmp6Protocol`], [`Dest6Protocol`],
-//!   [`Route6Protocol`], [`Frag6Protocol`]) and `bsd`'s UDP, TCP, raw IPv6, AH, ESP, IPComp,
-//!   IPv4 and IPv6 in IPv6, divert and the raw wildcard (`bsd`'s `inet6sw[]` rows through the
-//!   `Protocol` bridge impl) in the C's order; `bsd` assembles the slice and records it
-//!   ([`inet6sw_set`], `sys/kern/uipc_domain.rs`), until the transports move (N6.6, N8).
+//! - The table's entries are the kernel's IPv6, TCP (N6.6a5), ICMPv6, destination options,
+//!   routing header and fragment header ([`Ip6Protocol`], [`Tcp6Protocol`],
+//!   [`Icmp6Protocol`], [`Dest6Protocol`], [`Route6Protocol`], [`Frag6Protocol`]) and `bsd`'s
+//!   UDP, raw IPv6, AH, ESP, IPComp, IPv4 and IPv6 in IPv6, divert and the raw wildcard
+//!   (`bsd`'s `inet6sw[]` rows through the `Protocol` bridge impl) in the C's order; `bsd`
+//!   assembles the slice and records it ([`inet6sw_set`], `sys/kern/uipc_domain.rs`), until
+//!   the transports move (N6.6b, N8).
 //!   `IPSEC` is configured (AH, ESP and IPComp after the fragment header, `bsd`'s); so is
 //!   `NPF` (divert's entry, `bsd`'s). `NGIF` is 0 (`ipip_input` serves `IPPROTO_IPV4` and
 //!   `IPPROTO_IPV6`); `MPLS`, `NCARP`, `NETHERIP` and `NGRE` are not configured, their entries
@@ -152,19 +153,23 @@ use hal::once::OnceStatic;
 use hal::sys::errno::Errno;
 use hal::sys::netinet_in::{
     IPPROTO_DSTOPTS, IPPROTO_FRAGMENT, IPPROTO_ICMPV6, IPPROTO_IPV6, IPPROTO_MAX, IPPROTO_RAW,
-    IPPROTO_ROUTING,
+    IPPROTO_ROUTING, IPPROTO_TCP,
 };
 use hal::sys::netinet6_in6::SockaddrIn6;
-use hal::sys::socket::{AF_INET6, PF_INET6, SOCK_RAW};
+use hal::sys::socket::{AF_INET6, PF_INET6, SOCK_RAW, SOCK_STREAM};
 
 use crate::assert::kpanic;
 use crate::net::domain::{Domain, net};
 use crate::net::if_var::Netstack;
 use crate::net::mbuf::{Mbuf, MbufBox};
 use crate::net::proto::{
-    CtlArg, PR_ADDR, PR_ATOMIC, PR_MPINPUT, PR_MPSYSCTL, Protocol, SockaddrView, Usrreqs,
+    CtlArg, PR_ABRTACPTDIS, PR_ADDR, PR_ATOMIC, PR_CONNREQUIRED, PR_MPINPUT, PR_MPSYSCTL,
+    PR_SPLICE, PR_WANTRCVD, Protocol, SockaddrView, Usrreqs,
 };
 use crate::net::socket::{SoLocked, Socket};
+use crate::netinet::tcp_input::tcp_input;
+use crate::netinet::tcp_subr::tcp6_ctlinput;
+use crate::netinet::tcp_usrreq::{TcpUsrreqs, tcp_ctloutput, tcp_sysctl};
 use crate::proc::ProcGlue;
 use crate::sysctl::SysctlReq;
 
@@ -355,6 +360,74 @@ impl<G: ProcGlue> Protocol<G> for Ip6Protocol<G> {
     }
 }
 
+/// `inet6sw[]`'s TCP entry: `tcp_input`, `tcp6_ctlinput`, `tcp_ctloutput`, `tcp6_usrreqs`,
+/// `tcp_sysctl` (N6.6a5; `bsd`'s row until then).
+pub struct Tcp6Protocol<G: ProcGlue>(PhantomData<fn() -> G>);
+
+impl<G: ProcGlue> Tcp6Protocol<G> {
+    /// The entry.
+    pub const NEW: Self = Self(PhantomData);
+}
+
+impl<G: ProcGlue> Protocol<G> for Tcp6Protocol<G> {
+    fn domain(&self) -> &'static dyn Domain<G> {
+        inet6domain::<G>()
+    }
+    fn ty(&self) -> i16 {
+        SOCK_STREAM as i16
+    }
+    fn protocol(&self) -> i16 {
+        IPPROTO_TCP as i16
+    }
+    fn flags(&self) -> i16 {
+        PR_CONNREQUIRED | PR_WANTRCVD | PR_ABRTACPTDIS | PR_SPLICE | PR_MPINPUT | PR_MPSYSCTL
+    }
+    fn usrreqs(&self) -> Option<&'static dyn Usrreqs<G>> {
+        Some(&TcpUsrreqs::<G>::INET6)
+    }
+    fn ctlinput(
+        &self,
+        cmd: i32,
+        sa: SockaddrView<'_>,
+        rdomain: u32,
+        arg: CtlArg<'_>,
+        net: &NetHeld<'_>,
+    ) {
+        tcp6_ctlinput::<G>(cmd, sa, rdomain, arg, net);
+    }
+    fn input(
+        &self,
+        mp: &mut Option<MbufBox>,
+        offp: &mut i32,
+        proto: i32,
+        af: i32,
+        ns: Option<&mut Netstack>,
+        net: &NetHeld<'_>,
+    ) -> i32 {
+        tcp_input::<G>(mp, offp, proto, af, ns, net)
+    }
+    fn has_ctloutput(&self) -> bool {
+        true
+    }
+    fn ctloutput(
+        &self,
+        op: i32,
+        so: &Socket<G>,
+        w: &mut SoLocked<'_>,
+        level: i32,
+        optname: i32,
+        m: Option<&mut Mbuf>,
+    ) -> Result<(), Errno> {
+        tcp_ctloutput(op, so, w, level, optname, m)
+    }
+    fn has_sysctl(&self) -> bool {
+        true
+    }
+    fn sysctl(&self, name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+        tcp_sysctl::<G>(name, req)
+    }
+}
+
 /// `inet6sw[]`'s ICMPv6 entry: `icmp6_input`, `icmp6_init`, `icmp6_fasttimo`,
 /// `icmp6_sysctl`, the raw IPv6 sockets' control input, requests and options (the raw entry's,
 /// [`raw6_protocol`]: `rip6_ctlinput`, `rip6_usrreqs`, `rip6_ctloutput`, `bsd`'s until N6.6b).
@@ -385,9 +458,16 @@ impl<G: ProcGlue> Protocol<G> for Icmp6Protocol<G> {
     fn legacy(&self) -> bool {
         raw6_protocol::<G>().is_some_and(Protocol::legacy)
     }
-    fn ctlinput(&self, cmd: i32, sa: SockaddrView<'_>, rdomain: u32, arg: CtlArg<'_>) {
+    fn ctlinput(
+        &self,
+        cmd: i32,
+        sa: SockaddrView<'_>,
+        rdomain: u32,
+        arg: CtlArg<'_>,
+        net: &NetHeld<'_>,
+    ) {
         if let Some(r) = raw6_protocol::<G>() {
-            r.ctlinput(cmd, sa, rdomain, arg);
+            r.ctlinput(cmd, sa, rdomain, arg, net);
         }
     }
     fn has_ctloutput(&self) -> bool {
@@ -697,7 +777,14 @@ pub(crate) mod testsw6 {
         fn usrreqs(&self) -> Option<&'static dyn Usrreqs<G>> {
             None
         }
-        fn ctlinput(&self, cmd: i32, _sa: SockaddrView<'_>, _rdomain: u32, arg: CtlArg<'_>) {
+        fn ctlinput(
+            &self,
+            cmd: i32,
+            _sa: SockaddrView<'_>,
+            _rdomain: u32,
+            arg: CtlArg<'_>,
+            _net: &NetHeld<'_>,
+        ) {
             self.ctl.store(cmd, Ordering::Relaxed);
             if let CtlArg::Ip6(p) = arg {
                 self.ctl6_nxt.store(i32::from(p.nxt), Ordering::Relaxed);
@@ -822,7 +909,11 @@ mod tests {
         let mut sin6 = [0u8; 28];
         sin6[..2].copy_from_slice(&[28, AF_INET6]);
         let sa = SockaddrView::new(&sin6).expect("an address");
-        icmp6.ctlinput(PRC_MSGSIZE, sa, 0, CtlArg::None);
+        {
+            let w = hal::netlock::NETLOCK.read();
+            let net = NetHeld::of(&w).expect("the net lock");
+            icmp6.ctlinput(PRC_MSGSIZE, sa, 0, CtlArg::None, &net);
+        }
         assert_eq!(RAW6.ctl.load(Relaxed), PRC_MSGSIZE);
 
         // The domain, and every entry's domain without a lookup.

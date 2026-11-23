@@ -1073,10 +1073,6 @@ pub(crate) mod tests {
             inp.set_faddr(&g, sin([10, 0, 2, 2], 0).sin_addr);
             inp.set_fport(&g, htons(53));
         }
-        // A stand-in for the address of a tcpcb (`inp_ppcb`).
-        static PPCB: u64 = 0;
-        inp.inp_ppcb.set(ptr::from_ref(&PPCB).cast());
-
         solock(so);
         let mut kf = KinfoFile::zeroed();
         fill_file(&mut kf, None, None, 0, None, None, p, Some(so), false);
@@ -1098,10 +1094,12 @@ pub(crate) mod tests {
             ptr::from_ref(inp).addr() as u64,
             "so_pcb: the pcb"
         );
-        assert_eq!(kfp.inp_ppcb, ptr::from_ref(&PPCB).addr() as u64);
+        assert_eq!(
+            kfp.inp_ppcb, 0,
+            "inp_ppcb: a UDP pcb has no per-protocol block (the C's NULL)"
+        );
         assert_eq!(inp.legacy_count(), 1, "the socket's count only");
 
-        inp.inp_ppcb.set(ptr::null());
         release(inp);
         teardown();
     }

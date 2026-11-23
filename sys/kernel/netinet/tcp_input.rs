@@ -163,10 +163,10 @@
 //!   the C borrows the cache's pointer under the socket lock: one count pair per
 //!   `tcp_mss` and `tcp_mss_update`, per connection set-up and path MTU change, not per
 //!   segment.
-//! - N6.6a4: `tcp_input` is the kernel's (unregistered until the switch, N6.6a5; `bsd`'s
-//!   stays the softnet's through the `Inet` leg). LZ's body worked on `&'static` pcbs,
-//!   sockets and control blocks of `Cell`s, with `in_pcbsolock`/`in_pcbsounlock` a detached
-//!   pair. Here the pcb is a counted handle (the lookup's, or pf's erased one: `InpHold`,
+//! - N6.6a4: `tcp_input` is the kernel's (since the switch, N6.6a5, the softnet reaches
+//!   `tcp_input_mlist` through `TCP_INPUT_MLIST`, which `tcp_init` registers). LZ's body
+//!   worked on `&'static` pcbs, sockets and control blocks of `Cell`s, with
+//!   `in_pcbsolock`/`in_pcbsounlock` a detached pair. Here the pcb is a counted handle (the lookup's, or pf's erased one: `InpHold`,
 //!   counted once as the C's `in_pcbref`), its socket's lock a `SoLocked` witness opened in
 //!   parts, and the control block a `Tp` the body takes by value: `tp = tcp_close(tp)` is a
 //!   move that answers `Closed`, so a use after the close does not compile, and the frame
@@ -197,6 +197,7 @@ use core::mem::size_of;
 use core::sync::atomic::{AtomicI32, Ordering};
 
 use hal::netlock::NetHeld;
+use hal::once::OnceStatic;
 use hal::pool::AnyArc;
 use hal::rwlock::Guarded;
 use hal::sys::errno::Errno;
@@ -612,6 +613,32 @@ pub fn tcp_input_mlist<G: ProcGlue>(ml: &mut MbufList, af: i32, net: &NetHeld<'_
 
     // in_pcbsounlock(NULL, so)
     drop(so);
+}
+
+/// The [`tcp_input_mlist`] of the glue whose `tcp_init` ran first: how the softnet, which is
+/// not generic over the glue (`kernel::net::if_`'s `if_input_process`), reaches the kernel's
+/// TCP (the glue generic's hop, docs/SCAFFOLDING.md, as `rtsock`'s `ROUTE_INPUT`).
+static TCP_INPUT_MLIST: OnceStatic<fn(&mut MbufList, i32, &NetHeld<'_>)> = OnceStatic::new();
+
+/// `tcp_init`'s half of the softnet's call: `tcp_input_mlist::<G>` registered for
+/// [`tcp_input_mlist_softnet`] (a second glue's call keeps the first).
+pub(crate) fn tcp_input_mlist_register<G: ProcGlue>() {
+    let _ = TCP_INPUT_MLIST.set(tcp_input_mlist::<G>);
+}
+
+/// `tcp_input_mlist(&ns.ns_tcp_ml, af)` of `if_input_process`: the segments `tcp_input`
+/// queued on the softnet's list `ml`, under its shared net lock (`net`). Before `tcp_init`
+/// no segment can have been queued (only TCP's `pr_input` queues them); a list found then is
+/// purged, as no protocol takes it.
+pub(crate) fn tcp_input_mlist_softnet(ml: &mut MbufList, af: i32, net: &NetHeld<'_>) {
+    match TCP_INPUT_MLIST.get() {
+        Some(f) => f(ml, af, net),
+        None => {
+            while let Some(m) = ml_dequeue(ml) {
+                drop(m);
+            }
+        }
+    }
 }
 
 /// `tcp_input_solocked`: TCP input routine, follows pages 65-76 of the protocol specification
@@ -3031,7 +3058,7 @@ pub fn tcp_mss_adv(rt: Option<&Rtentry>, af: i32) -> i32 {
 /// The host tests' reset of `tcp_input`'s rate limiters (`tcp_rst_ppslim`'s and
 /// `tcp_ackdrop_ppslim`'s pairs, `tcp_test_reset`'s): a test's resets or dropped ACKs do not
 /// use up the next test's second.
-#[cfg(test)]
+#[cfg(any(test, feature = "doubles"))]
 pub(crate) fn tcp_input_test_reset() {
     ppsratecheck_locked(|l| {
         for pps in [&TCP_RST_PPS, &TCP_ACKDROP_PPS] {
@@ -5163,23 +5190,6 @@ mod tests {
         testtcp::close_listener(lso, linp);
     }
 
-    /// Fails the test protocol's attaches (`testtcp::FAIL_ATTACH`), for a test, until the
-    /// drop.
-    struct FailAttach;
-
-    impl FailAttach {
-        fn new() -> Self {
-            testtcp::FAIL_ATTACH.store(true, Ordering::Relaxed);
-            Self
-        }
-    }
-
-    impl Drop for FailAttach {
-        fn drop(&mut self) {
-            testtcp::FAIL_ATTACH.store(false, Ordering::Relaxed);
-        }
-    }
-
     #[test]
     fn input_resets_a_handshake_whose_socket_cannot_be_made() {
         let (_g, _p) = testtcp::setup();
@@ -5197,11 +5207,12 @@ mod tests {
             stat(C::TcpsScAborted),
             stat(C::TcpsScCompleted),
         );
-        // The ACK, while the new socket's attach fails after its pcb is made (sonewconn
-        // fails): resetandabort, the peer reset at its acknowledgment, the entry gone.
-        let fail = FailAttach::new();
+        // The ACK, while the new socket's attach fails after its pcb is made (tcp_attach's
+        // tcp_newtcpcb finds no "tcpcb" item, so sonewconn fails): resetandabort, the peer
+        // reset at its acknowledgment, the entry gone.
+        crate::testutil::fail_pool("tcpcb", 1);
         deliver(to80(n, 5700, TH_ACK, 401, iss.wrapping_add(1), &[], &[]));
-        drop(fail);
+        crate::testutil::fail_pool("tcpcb", 0);
         assert_eq!(stat(C::TcpsScAborted), aborted + 1);
         assert_eq!(stat(C::TcpsScCompleted), completed);
         let (_ip, rst, _o, _p) = last(d);

@@ -234,6 +234,16 @@
 //!   one mbuf, its data at 0 mod 64, into a destination at 0 mod 64 (one LZ run at 48)
 //!   through the same `machine::kcopy_out`, and still the length-dependent part differs;
 //!   a decision-43 item for the user, N12's row.
+//! - N6.6a5 (the review's S3, the user's decision): `so_pcb` of a kernel internet protocol
+//!   has two views. The counted slot (`pcb`, a `ReadMostly`) stays for the readers that hold
+//!   no socket lock (`fptounp`, `kern.file`'s by-pid walk), and the requests read
+//!   [`Socket::pcb_locked`], a `Guarded` copy keyed to `so_lock` in part [`so_part::PCB`],
+//!   borrowed for as long as the request's witness part is: the C's load of `so_pcb`, with no
+//!   count (`sotoinpcb_locked`), where `sotoinpcb`'s counted handle cost the reader pair of
+//!   the slot and the pcb's count pair on every `write(2)` and `read(2)`. The copy is keyed
+//!   at its first write (a `OnceStatic`, since the socket is built before it is placed in its
+//!   pool item, where `so_lock`'s identity is known), filled by TCP's attach and emptied by
+//!   `tcp_free` (the pcb and the socket count each other until then), both under the lock.
 
 use core::mem;
 use core::sync::atomic::{
@@ -431,6 +441,11 @@ pub struct Socket<G: ProcGlue> {
     /// queued once, by `sonewconn` before anyone else reaches it, and moved from `so_q0` to
     /// `so_q` under its own lock, which `sofree`'s caller holds.
     queued: AtomicBool,
+    /// \[s\] `so_pcb` of a kernel internet protocol as its requests read it
+    /// ([`Socket::pcb_locked`]): the pcb, counted, in a cell keyed to `so_lock` in part
+    /// [`so_part::PCB`], made at its first write ([`Socket::set_pcb_locked`]) once the
+    /// socket is in its pool item (the lock's identity is its address there).
+    pcb_locked: OnceStatic<Guarded<Option<AnyArc>>>,
     /// \[s br\] `so_sp`: splice state, allocated only when needed.
     sp: OnceStatic<PoolBox<Sosplice<G>>>,
     /// \[s\] `so_upcall`'s kind: 0 none, 1 the glue's registered function.
@@ -511,6 +526,7 @@ impl<G: ProcGlue> Socket<G> {
             legacy_pcb: AtomicUsize::new(0),
             freed: AtomicBool::new(false),
             queued: AtomicBool::new(false),
+            pcb_locked: OnceStatic::new(),
             sp: OnceStatic::new(),
             upcall_kind: AtomicU8::new(0),
             upcall_arg: AtomicUsize::new(0),
@@ -619,8 +635,8 @@ impl<G: ProcGlue> Socket<G> {
         }
     }
 
-    /// `so->so_linger = v` by `bsd`'s protocols (`tcp_disconnect`'s `TCP_LINGERTIME`).
-    pub fn set_linger_legacy(&self, v: i16) {
+    /// `so->so_linger = v` by a protocol, the socket locked (`tcp_attach`'s `TCP_LINGERTIME`).
+    pub(crate) fn set_linger(&self, v: i16) {
         self.linger.store(v, Ordering::Relaxed);
     }
 
@@ -741,6 +757,46 @@ impl<G: ProcGlue> Socket<G> {
     /// `so->so_pcb = pcb` of a kernel protocol, the socket locked; the old one given back.
     pub fn set_pcb(&self, _w: &SoLocked<'_>, pcb: Option<AnyArc>) -> Option<AnyArc> {
         self.pcb.replace(pcb)
+    }
+
+    /// `so->so_pcb` of a kernel internet protocol, for a holder of the socket's lock: the
+    /// pcb borrowed from the locked slot for as long as `part`, the lock's part
+    /// [`so_part::PCB`], is borrowed (the C's load; no count is taken, and the slot cannot
+    /// change meanwhile: its writer needs the part mutably). `None` before the protocol's
+    /// attach fills it and after its close empties it. A part of another lock is `panic(9)`.
+    #[inline]
+    pub fn pcb_locked<'a>(&'a self, part: &'a WitnessPart<'_>) -> Option<&'a AnyArc> {
+        self.pcb_locked.get()?.get(part).as_ref()
+    }
+
+    /// `so->so_pcb = pcb` in the locked slot ([`Socket::pcb_locked`]), by the holder of the
+    /// socket lock's part [`so_part::PCB`] (the protocol's attach, `tcp_free`); the old one
+    /// given back, for the caller to drop. The cell is made, keyed to this socket's
+    /// `so_lock`, at the first `Some`; a part of another lock is `panic(9)`.
+    pub fn set_pcb_locked(
+        &self,
+        part: &mut WitnessPart<'_>,
+        pcb: Option<AnyArc>,
+    ) -> Option<AnyArc> {
+        let cell = match self.pcb_locked.get() {
+            Some(cell) => cell,
+            None => {
+                if pcb.is_none() {
+                    return None;
+                }
+                // Only the lock's holder writes the slot: no other `set` can race this one.
+                let _ = self.pcb_locked.set(Guarded::keyed(
+                    self.so_lock.lock().id(),
+                    so_part::PCB,
+                    None,
+                ));
+                match self.pcb_locked.get() {
+                    Some(cell) => cell,
+                    None => kpanic(format_args!("set_pcb_locked: socket {self:p}: no cell")),
+                }
+            }
+        };
+        mem::replace(cell.get_mut(part), pcb)
     }
 
     /// `so->so_pcb = inp` of a kernel internet protocol's socket (`in_pcballoc`; `None`,

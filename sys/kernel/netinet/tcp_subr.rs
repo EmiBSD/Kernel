@@ -140,9 +140,10 @@
 //!   these globals and functions are the kernel's own, `bsd`'s `sys/netinet/tcp_subr.rs`
 //!   keeps its until the switch. `tcpqe_pool` and `sackhl_pool` are `BoxPool`s whose items
 //!   the queues own (`hal::pool::Pooled`), `tcpcb_pool` is the glue's (`tcp_var::TcpTables`);
-//!   `tcp_iss` is the data of `tcp_timer_mtx` (a `Mutexed`, where LZ had an atomic beside a
-//!   bare mutex); `tcp_secret` is a `OnceStatic` set by `tcp_init` (LZ: a `StaticCell` written
-//!   under `unsafe`), and `tcp_secret_ctx`, the context made over it once, is made per ISN
+//!   `tcp_iss` is an `AtomicU32` beside `tcp_timer_mtx`, a `Mutexed<()>` whose holders alone
+//!   write it (since N6.6a5, when pf reads it without the mutex, the C's `READ_ONCE`);
+//!   `tcp_secret` is a `OnceStatic` set by `tcp_init` (LZ: a `StaticCell` written under
+//!   `unsafe`), and `tcp_secret_ctx`, the context made over it once, is made per ISN
 //!   from it (the same cost as the C's copy of the context; no second copy of the secret's
 //!   bytes, which `tcp_init` wipes from its stack).
 //! - D-12: `tp = tcp_close(tp)` is a move: `tcp_close` consumes the control block's [`Tp`]
@@ -172,7 +173,7 @@
 //!   registers `tcp6_mtudisc_callback` with ICMPv6.
 
 use core::mem::size_of;
-use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
 
 use hal::intr::IPL_SOFTNET;
 use hal::mutex::Mutexed;
@@ -197,7 +198,7 @@ use hal::sys::netinet_tcp::{
 use hal::sys::netinet6_in6::{SA6_ANY, SockaddrIn6, in6_is_addr_unspecified, in6_is_addr_v4mapped};
 use hal::sys::socket::{AF_INET, AF_INET6};
 
-use crate::assert::kpanic;
+use crate::assert::{kassert, kpanic};
 use crate::crypto::md5::{MD5_DIGEST_LENGTH, Md5Ctx};
 use crate::crypto::sha2::{SHA512_DIGEST_LENGTH, Sha512Ctx};
 use crate::net::ipsec_hooks::{SOCKADDR_UNION_LEN, TdbRef, ipsec};
@@ -307,15 +308,19 @@ pub static SACKHL_POOL: BoxPool<Sackhole> = BoxPool::new();
 
 /// \[I\] `tcp_secret`.
 pub(crate) static TCP_SECRET: OnceStatic<[u8; 16]> = OnceStatic::new();
-/// `tcp_timer_mtx` and what it keeps: \[T\] `tcp_iss`, updated by timer and connection.
-pub static TCP_ISS: Mutexed<TcpSeq> = Mutexed::new(IPL_SOFTNET, 0);
+/// `tcp_timer_mtx`: global tcp timer data structures (`tcp_iss`'s writers).
+pub static TCP_TIMER_MTX: Mutexed<()> = Mutexed::new(IPL_SOFTNET, ());
+/// \[T\] `tcp_iss`: updated by timer and connection under [`TCP_TIMER_MTX`], read without
+/// it by pf (`pf_tcp_iss`'s `READ_ONCE`): a word, loaded and stored relaxed by the
+/// mutex's holders, so the reader costs a load as the C's.
+pub static TCP_ISS: AtomicU32 = AtomicU32::new(0);
 /// \[I\] `tcp_starttime`: random offset for `tcp_now()`.
 pub static TCP_STARTTIME: AtomicU64 = AtomicU64::new(0);
 
 /// `tcp_init`: TCP initialization (from `domaininit`; a second call, a test glue's, leaves
 /// what exists as it is).
 pub fn tcp_init<G: ProcGlue>() {
-    *TCP_ISS.lock() = 1; // wrong
+    TCP_ISS.store(1, Ordering::Relaxed); // wrong
     // 0 is treated special so add 1, 63 bits to count is enough
     let mut start = [0u8; 8];
     hal::random::arc4random_buf(&mut start);
@@ -357,6 +362,8 @@ pub fn tcp_init<G: ProcGlue>() {
     }
 
     icmp6_mtudisc_callback_register(tcp6_mtudisc_callback::<G>);
+    // The softnet's tcp_input_mlist (if.c calls it directly; the glue generic's hop).
+    crate::netinet::tcp_input::tcp_input_mlist_register::<G>();
 
     // Initialize the compressed state engine.
     syn_cache_init::<G>();
@@ -791,10 +798,20 @@ pub fn tcp_freeq(st: &mut TcpState) -> bool {
 /// `tcp_free`: the control block `tcp_close` closed, put back (the C's `pool_put(&tcpcb_pool,
 /// tp)` and `inp->inp_ppcb = NULL`, here a few statements later under the same socket lock):
 /// the slot emptied with the socket lock's part `PCB` (`pcb`), its timers' handles of the pcb
-/// dropped with it (D-11).
+/// dropped with it (D-11). The socket's locked slot, which the requests read
+/// (`sotoinpcb_locked`), is emptied with it (N6.6a5): `in_pcbdetach` emptied the counted one,
+/// and the pcb and its socket count each other until both are. A request has taken it out
+/// already (`tcp_usrreq`'s `tcp_free_request`).
 pub fn tcp_free<G: ProcGlue>(inp: &Inpcb<G>, pcb: &mut WitnessPart<'_>, closed: Closed) {
     let Closed(()) = closed;
     drop(inp.take_tcpcb(pcb));
+    if let Some(slot) = inp.socket().set_pcb_locked(pcb, None) {
+        kassert!(
+            slot.downcast_ref::<Inpcb<G>>()
+                .is_some_and(|s| core::ptr::eq(s, inp))
+        );
+        drop(slot);
+    }
 }
 
 /// `tcp_rscale`: compute proper scaling value for receiver window from buffer space.
@@ -1321,9 +1338,13 @@ pub fn tcp_set_iss_tsm<G: ProcGlue>(tp: &mut Tp<'_, '_, G>) {
     let rdomain = rtable_l2(inp.inp_rtableid.get());
 
     let iss = {
-        let mut g = TCP_ISS.lock();
-        *g = g.wrapping_add(TCP_ISS_CONN_INC);
-        *g
+        let g = TCP_TIMER_MTX.lock();
+        let iss = TCP_ISS
+            .load(Ordering::Relaxed)
+            .wrapping_add(TCP_ISS_CONN_INC);
+        TCP_ISS.store(iss, Ordering::Relaxed);
+        drop(g);
+        iss
     };
 
     // The context is not `Copy`: the clone is the C's struct copy, wiped at its drop.
@@ -1456,16 +1477,26 @@ fn signature_digest(
 /// or pool items): the SYN cache's sets, which hold an earlier test's bucket arrays and
 /// possibly its entries, forgotten without being freed (`syn_cache_init` makes them again in
 /// this test's memory), the debug ring zeroed (under `RING_TEST`) and `tcp_input`'s two rate
-/// limiters started again (`tcp_input_test_reset`). The pcb tables are reset by `in_pcbinit`
-/// itself; the counters (compared by difference, and bumped by other modules' tests
-/// meanwhile) and the ISN secret (set once) hold no memory and stay.
-#[cfg(test)]
-pub(crate) fn tcp_test_reset<G: ProcGlue>() {
-    let mut g = crate::net::domain::net::<G>().tcp.syn_cache.lock();
+/// limiters started again (`tcp_input_test_reset`), and the SYN cache's two tunables
+/// (`tcp_syn_hash_size`, `tcp_syn_use_limit`, which a test may change through `tcp_sysctl`)
+/// given back their initial values. The pcb tables are reset by `in_pcbinit` itself; the
+/// counters (compared by difference, and bumped by other modules' tests
+/// meanwhile) and the ISN secret (set once) hold no memory and stay. `bsd`'s host tests run
+/// the kernel's TCP over their glue since N6.6a5 and call it from their network setup.
+#[cfg(any(test, feature = "doubles"))]
+pub fn tcp_test_reset<G: ProcGlue>() {
+    let tcp = &crate::net::domain::net::<G>().tcp;
+    let mut g = tcp.syn_cache.lock();
     core::mem::forget(core::mem::replace(
         &mut *g,
         crate::netinet::tcp_var::SynCaches::new(),
     ));
+    // `TcpTables::new`'s values, the C's initializers (`tcp_input.c`).
+    tcp.tcp_syn_hash_size.store(
+        crate::netinet::tcp_var::TCP_SYN_HASH_SIZE,
+        Ordering::Relaxed,
+    );
+    tcp.tcp_syn_use_limit.store(100_000, Ordering::Relaxed);
     drop(g);
     let _ring = crate::netinet::tcp_debug::RING_TEST
         .lock()
@@ -1509,7 +1540,17 @@ pub(crate) mod testtcp {
         with_lock(&inp, |inp, il| {
             assert!(tcp_newtcpcb(inp, il, M_WAIT).is_some(), "a control block");
         });
+        attach_slot(&inp);
         (so, inp)
+    }
+
+    /// What `tcp_attach` does once the control block is made: the pcb in its socket's
+    /// locked slot, which the user requests read (`sotoinpcb_locked`).
+    pub(crate) fn attach_slot(inp: &InpcbRef<G>) {
+        let h = PoolArc::erase(inp.clone());
+        with_lock(inp, |i, il| {
+            assert!(i.socket().set_pcb_locked(&mut il.pcb, Some(h)).is_none());
+        });
     }
 
     /// Runs `f` with the socket of `inp` locked in parts under the shared net lock (a
@@ -1557,24 +1598,16 @@ pub(crate) mod testtcp {
     pub(crate) type Wire = testinet::InetDriver;
 
     /// The host tests' TCP protocols over the test domains (`testinet`'s `InetDom` and
-    /// `Inet6Dom`): the kernel's TCP is registered at N6.6a5, so a listener of these gives
-    /// `sonewconn` an attach that makes the kernel's control block (`tcp_attach`'s
-    /// `in_pcballoc` in the family's table and `tcp_newtcpcb`; on `ENOBUFS` the pcb detached
-    /// again, as tcp_usrreq.c:500-507: the socket's typed `so_pcb` and the pcb count each
-    /// other until `in_pcbdetach`), a listen that puts it in LISTEN, and a detach and an abort
-    /// that close it.
+    /// `Inet6Dom`), whose requests are the kernel's (`tcp_usrreq`'s [`TcpUsrreqs`]): a
+    /// listener of these gives `sonewconn` the real `tcp_attach` (the pcb in the family's
+    /// table, the control block, the `ENOBUFS` path that detaches the pcb again when
+    /// "tcpcb" has no item: `testutil::fail_pool`).
+    ///
+    /// [`TcpUsrreqs`]: crate::netinet::tcp_usrreq::TcpUsrreqs
     pub(crate) struct TcpProto;
 
     /// [`TcpProto`] over IPv6.
     pub(crate) struct Tcp6Proto;
-
-    /// [`TcpProto`]'s and [`Tcp6Proto`]'s requests.
-    struct TcpReqs;
-
-    /// A test's switch: the next attaches fail after the pcb is made, as when
-    /// `tcp_newtcpcb` finds no memory (`ENOBUFS`), so `sonewconn` does.
-    pub(crate) static FAIL_ATTACH: core::sync::atomic::AtomicBool =
-        core::sync::atomic::AtomicBool::new(false);
 
     impl crate::net::proto::Protocol<G> for TcpProto {
         fn domain(&self) -> &'static dyn crate::net::domain::Domain<G> {
@@ -1590,7 +1623,7 @@ pub(crate) mod testtcp {
             crate::net::proto::PR_CONNREQUIRED | crate::net::proto::PR_WANTRCVD
         }
         fn usrreqs(&self) -> Option<&'static dyn crate::net::proto::Usrreqs<G>> {
-            Some(&TcpReqs)
+            Some(&crate::netinet::tcp_usrreq::TcpUsrreqs::<G>::INET)
         }
     }
 
@@ -1608,123 +1641,41 @@ pub(crate) mod testtcp {
             crate::net::proto::PR_CONNREQUIRED | crate::net::proto::PR_WANTRCVD
         }
         fn usrreqs(&self) -> Option<&'static dyn crate::net::proto::Usrreqs<G>> {
-            Some(&TcpReqs)
+            Some(&crate::netinet::tcp_usrreq::TcpUsrreqs::<G>::INET6)
         }
     }
 
-    impl TcpReqs {
-        /// `tcp_close` and `tcp_free` of `so`'s connection, if it has one.
-        fn close(so: &crate::net::socket::Socket<G>, w: &mut crate::net::socket::SoLocked<'_>) {
-            let Some(inp) = crate::netinet::in_pcb::sotoinpcb(so) else {
-                return;
-            };
-            let Some(mut il) = w.inet() else {
-                return;
-            };
-            if let Some(tp) = intotcpcb(&inp, &mut il) {
-                let c = tcp_close(tp);
-                tcp_free(&inp, &mut il.pcb, c);
-            }
+    /// A socket of `proto` with `tcp_attach` done (its buffers 16 KB each, its pcb and
+    /// control block made), unbound.
+    pub(crate) fn socket(proto: &'static dyn crate::net::proto::Protocol<G>) -> SocketRef<G> {
+        let so = crate::net::socket::soalloc(
+            proto,
+            M_WAIT,
+            crate::net::socket::SoInit {
+                so_type: hal::sys::socket::SOCK_STREAM,
+                state: 0,
+                options: 0,
+                linger: 0,
+                timeo: 0,
+                euid: 0,
+                ruid: 0,
+                egid: 0,
+                rgid: 0,
+                cpid: 1,
+            },
+        )
+        .expect("a socket");
+        crate::net::socket::soreserve(&so, 16384, 16384).expect("the buffers");
+        {
+            let mut w = crate::net::socket::solock(&so);
+            proto
+                .usrreqs()
+                .expect("TCP's requests")
+                .attach(&so, &mut w, 0, M_WAIT)
+                .expect("the control block");
         }
+        so
     }
-
-    impl crate::net::proto::Usrreqs<G> for TcpReqs {
-        fn attach(
-            &self,
-            so: &crate::net::socket::Socket<G>,
-            w: &mut crate::net::socket::SoLocked<'_>,
-            _proto: i32,
-            wait: i32,
-        ) -> Result<(), Errno> {
-            let t = &crate::net::domain::net::<G>().tcp;
-            let table = if so.dom_family() == i32::from(hal::sys::socket::PF_INET6) {
-                &t.tcb6table
-            } else {
-                &t.tcbtable
-            };
-            let inp = crate::netinet::in_pcb::in_pcballoc(so, table, wait)?;
-            let mut il = w.inet().expect("a kernel protocol's socket lock");
-            // FAIL_ATTACH stands for tcp_newtcpcb's failure.
-            if !FAIL_ATTACH.load(Ordering::Relaxed) && tcp_newtcpcb(&inp, &mut il, wait).is_some() {
-                return Ok(());
-            }
-            // tcp_attach's ENOBUFS (tcp_usrreq.c:500-507): the pcb detached, so_pcb's count of
-            // it with it, the socket kept (SS_NOFDREF cleared over the detach's sofree).
-            let nofd = so.has_state(SS_NOFDREF);
-            so.st_clear(SS_NOFDREF);
-            crate::netinet::in_pcb::in_pcbdetach(inp, &il.net);
-            if nofd {
-                so.st_set(SS_NOFDREF);
-            }
-            Err(Errno::ENOBUFS)
-        }
-        fn detach(
-            &self,
-            so: &crate::net::socket::Socket<G>,
-            w: &mut crate::net::socket::SoLocked<'_>,
-        ) -> Result<(), Errno> {
-            Self::close(so, w);
-            Ok(())
-        }
-        fn listen(
-            &self,
-            so: &crate::net::socket::Socket<G>,
-            w: &mut crate::net::socket::SoLocked<'_>,
-        ) -> Result<(), Errno> {
-            let inp = crate::netinet::in_pcb::sotoinpcb(so).ok_or(Errno::EINVAL)?;
-            let mut il = w.inet().ok_or(Errno::EINVAL)?;
-            let tp = intotcpcb(&inp, &mut il).ok_or(Errno::EINVAL)?;
-            tp.st.t_state = crate::netinet::tcp_fsm::TCPS_LISTEN;
-            Ok(())
-        }
-        fn shutdown(
-            &self,
-            _so: &crate::net::socket::Socket<G>,
-            _w: &mut crate::net::socket::SoLocked<'_>,
-        ) -> Result<(), Errno> {
-            Ok(())
-        }
-        fn rcvd(
-            &self,
-            _so: &crate::net::socket::Socket<G>,
-            _w: &mut crate::net::socket::SoLocked<'_>,
-        ) {
-        }
-        fn send(
-            &self,
-            _so: &crate::net::socket::Socket<G>,
-            _w: &mut crate::net::socket::SoLocked<'_>,
-            _top: Option<MbufBox>,
-            _addr: Option<&Mbuf>,
-            _control: Option<MbufBox>,
-        ) -> Result<(), Errno> {
-            Err(Errno::EOPNOTSUPP)
-        }
-        fn abort(
-            &self,
-            so: &crate::net::socket::Socket<G>,
-            w: &mut crate::net::socket::SoLocked<'_>,
-        ) {
-            Self::close(so, w);
-        }
-        fn sockaddr(
-            &self,
-            _so: &crate::net::socket::Socket<G>,
-            _w: &mut crate::net::socket::SoLocked<'_>,
-            _addr: &mut Mbuf,
-        ) -> Result<(), Errno> {
-            Err(Errno::EOPNOTSUPP)
-        }
-        fn peeraddr(
-            &self,
-            _so: &crate::net::socket::Socket<G>,
-            _w: &mut crate::net::socket::SoLocked<'_>,
-            _addr: &mut Mbuf,
-        ) -> Result<(), Errno> {
-            Err(Errno::EOPNOTSUPP)
-        }
-    }
-
     /// A listener of [`TcpProto`] on 10.9.`n`.1:`port` over a new test interface `name`
     /// (`socket`, `bind`, `listen(5)`): its socket and pcb, the interface's driver. Its
     /// buffers 16 KB each, as `estab`'s.
@@ -1784,29 +1735,7 @@ pub(crate) mod testtcp {
         bind: impl FnOnce(&crate::netinet::in_pcb::InpGuard<'_, G>, &Inpcb<G>),
         port: u16,
     ) -> (SocketRef<G>, InpcbRef<G>) {
-        let so = crate::net::socket::soalloc(
-            proto,
-            M_WAIT,
-            crate::net::socket::SoInit {
-                so_type: hal::sys::socket::SOCK_STREAM,
-                state: 0,
-                options: 0,
-                linger: 0,
-                timeo: 0,
-                euid: 0,
-                ruid: 0,
-                egid: 0,
-                rgid: 0,
-                cpid: 1,
-            },
-        )
-        .expect("a socket");
-        crate::net::socket::soreserve(&so, 16384, 16384).expect("the buffers");
-        {
-            let mut w = crate::net::socket::solock(&so);
-            crate::net::proto::Usrreqs::<G>::attach(&TcpReqs, &so, &mut w, 0, M_WAIT)
-                .expect("the control block");
-        }
+        let so = socket(proto);
         let inp = crate::netinet::in_pcb::sotoinpcb(&so).expect("a pcb");
         {
             let mut g = table.lock();
@@ -1821,13 +1750,14 @@ pub(crate) mod testtcp {
         (so, inp)
     }
 
-    /// The listener `so` closed: its control block (and its SYN cache entries) closed and
-    /// freed, the socket let go (no file holds it; nothing is left on its queues).
+    /// The listener `so` closed (`tcp_detach`): its control block (and its SYN cache
+    /// entries) closed and freed, the socket let go (no file holds it; nothing is left on its
+    /// queues).
     pub(crate) fn close_listener(so: SocketRef<G>, inp: InpcbRef<G>) {
         so.st_set(SS_NOFDREF);
         {
             let mut w = crate::net::socket::solock(&so);
-            TcpReqs::close(&so, &mut w);
+            crate::netinet::tcp_usrreq::tcp_detach(&so, &mut w).expect("a control block");
         }
         drop(inp);
         drop(so);
@@ -1987,6 +1917,7 @@ pub(crate) mod testtcp {
         with_lock(&inp, |inp, il| {
             assert!(tcp_newtcpcb(inp, il, M_WAIT).is_some(), "a control block");
         });
+        attach_slot(&inp);
         crate::net::socket::soreserve(&so, 16384, 16384).expect("the buffers");
         with_tp(&inp, |mut tp| {
             tp.st
@@ -2470,8 +2401,8 @@ mod tests {
         let tcpcbs = testtcp::tcpcbs();
         let (so, inp) = testtcp::conn();
         assert_eq!(testtcp::tcpcbs(), tcpcbs + 1);
-        // The pcb's handles: ours, the socket's anchor, its so_pcb slot's, and one per timer
-        // (D-11).
+        // The pcb's handles: ours, the socket's anchor, its two so_pcb slots' (the counted
+        // one and the requests' locked one), and one per timer (D-11).
         let handles = PoolArc::count(&inp);
         testtcp::with_tp(&inp, |mut tp| {
             let st = &*tp.st;
@@ -2509,12 +2440,12 @@ mod tests {
         drop(so);
         // tcp_free: the item back, its five handles of the pcb gone with its timers.
         assert_eq!(testtcp::tcpcbs(), tcpcbs);
-        // The anchor's, the socket's typed so_pcb slot's (N6.6a4, emptied by in_pcbdetach)
-        // and the timers'.
+        // The anchor's, the socket's typed so_pcb slot's (N6.6a4, emptied by in_pcbdetach),
+        // its locked slot's (N6.6a5, emptied by tcp_free) and the timers'.
         assert_eq!(
             PoolArc::count(&inp),
-            handles - TCPT_NTIMERS - 2,
-            "the timers', the anchor's and so_pcb's"
+            handles - TCPT_NTIMERS - 3,
+            "the timers', the anchor's and the two so_pcb slots'"
         );
         // The pcb is detached: its socket's lock finds no pcb any more.
         {
@@ -2632,7 +2563,7 @@ mod tests {
             inp.set_lport(&g, htons(1111));
             inp.set_fport(&g, htons(2222));
         }
-        let before = *TCP_ISS.lock();
+        let before = TCP_ISS.load(Ordering::Relaxed);
         let (iss, tsm) = testtcp::with_tp(&inp, |mut tp| {
             tcp_set_iss_tsm(&mut tp);
             ((tp.st.iss, tp.st.ts_modulate), None)

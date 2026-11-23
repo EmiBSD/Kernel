@@ -116,10 +116,10 @@
 //! - `syn_cache_respond` builds its options in a 40-byte buffer, the TCP header's option room:
 //!   MSS 4, window scale 4, the signature 20 and the timestamps 12 fill it, so a signed entry
 //!   with `SCF_SACK_PERMIT` (4 more) would not fit. The C relies on the same exclusion:
-//!   `tcp_ctloutput` refuses `TCP_SACK_ENABLE` on a signed socket and `TCP_MD5SIG` on one with
-//!   SACK (tcp_usrreq.c:396-398, :418-420), and `syn_cache_add` copies only what the
-//!   listener allows; it is checked here (`kassert!`), and N6.6a5's `tcp_ctloutput` must keep
-//!   both refusals.
+//!   `tcp_ctloutput` refuses `TCP_SACK_ENABLE` on a signed socket and clears `sack_enable`
+//!   when it sets `TCP_MD5SIG` (tcp_usrreq.c:396-398, :418-420), and `syn_cache_add` copies
+//!   only what the listener allows; it is checked here (`kassert!`), and the kernel's
+//!   `tcp_ctloutput` (N6.6a5) keeps both.
 //! - `syn_cache_unreach` takes the addresses as `SynCacheSa`s (LZ: raw pointers copied in by
 //!   an `unsafe fn`); its caller (`tcp_ctlinput`, N6.6a3) copies them.
 //! - An entry found by `syn_cache_add` or `syn_cache_get` may be another listener's: one
@@ -446,7 +446,7 @@ pub fn syn_cache_timer_set<G: ProcGlue>(sc: &PoolArc<SynCache<G>>) {
 /// A second call (a test glue's) leaves them as they are.
 pub fn syn_cache_init<G: ProcGlue>() {
     let t = &net::<G>().tcp;
-    let size = t.syn_cache.lock().tcp_syn_hash_size;
+    let size = t.tcp_syn_hash_size.load(Ordering::Relaxed);
     // Initialize the hash buckets: allocated (M_WAITOK) before the mutex is taken.
     let mut arrays = [
         syn_cache_buckets::<G>(size, M_WAITOK),
@@ -488,8 +488,9 @@ pub fn syn_cache_insert<G: ProcGlue>(
     // useless cache swaps and reinitialization, use it until the limit is reached. An empty
     // cache is also the opportunity to resize the hash.
     if g.sets[active].scs_count == 0 && g.sets[active].scs_use <= 0 {
-        g.sets[active].scs_use = i64::from(g.tcp_syn_use_limit);
-        let hash_size = g.tcp_syn_hash_size;
+        let t = &net::<G>().tcp;
+        g.sets[active].scs_use = i64::from(t.tcp_syn_use_limit.load(Ordering::Relaxed));
+        let hash_size = t.tcp_syn_hash_size.load(Ordering::Relaxed);
         if g.sets[active].scs_size != hash_size {
             match syn_cache_buckets::<G>(hash_size, M_NOWAIT) {
                 // Try again next time.
@@ -1879,7 +1880,10 @@ mod tests {
             TCP_SYN_BUCKET_LIMIT.store(3 * TCP_SYN_BUCKET_SIZE, Ordering::Relaxed);
             TCP_SYN_CACHE_LIMIT.store(TCP_SYN_HASH_SIZE * TCP_SYN_BUCKET_SIZE, Ordering::Relaxed);
             let mut g = syn_cache_lock::<G>();
-            g.tcp_syn_hash_size = TCP_SYN_HASH_SIZE;
+            net::<G>()
+                .tcp
+                .tcp_syn_hash_size
+                .store(TCP_SYN_HASH_SIZE, Ordering::Relaxed);
             for s in &mut g.sets {
                 s.scs_use = 0;
             }
@@ -1897,7 +1901,7 @@ mod tests {
         // bucket limit of two.
         let first = {
             let mut g = net::<G>().tcp.syn_cache.lock();
-            g.tcp_syn_hash_size = 1;
+            net::<G>().tcp.tcp_syn_hash_size.store(1, Ordering::Relaxed);
             for s in &mut g.sets {
                 s.scs_use = 0;
             }

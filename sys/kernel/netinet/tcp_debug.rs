@@ -509,7 +509,7 @@ pub fn tcp_trace(
 
 /// The host tests that read the ring take this first, so another's records do not land in
 /// the middle of theirs (the ring is one global).
-#[cfg(test)]
+#[cfg(any(test, feature = "doubles"))]
 pub(crate) static RING_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 const _: () = assert!(size_of::<Tcpiphdr>() == 40);

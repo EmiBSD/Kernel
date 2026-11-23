@@ -164,8 +164,6 @@ use crate::netinet::in_pcb::{
 };
 use crate::netinet::ip_divert::DIVBTABLE;
 use crate::netinet::raw_ip::RAWCBTABLE;
-use crate::netinet::tcp_usrreq::TCBTABLE;
-use crate::netinet::tcp_var::intotcpcb;
 use crate::netinet::udp_usrreq::UDBTABLE;
 use crate::sys::disk::{DS_DISKNAMELEN, Disk, Diskstats};
 use crate::sys::errno::Errno;
@@ -191,8 +189,8 @@ use crate::sys::vnode::{Vattr, Vnode, makeimode};
 use crate::unported;
 #[cfg(feature = "inet6")]
 use crate::{
-    netinet::tcp_usrreq::TCB6TABLE, netinet::udp_usrreq::UDB6TABLE,
-    netinet6::ip6_divert::DIVB6TABLE, netinet6::raw_ip6::RAWIN6PCBTABLE,
+    netinet::udp_usrreq::UDB6TABLE, netinet6::ip6_divert::DIVB6TABLE,
+    netinet6::raw_ip6::RAWIN6PCBTABLE,
 };
 use hal::klock;
 use hal::user::UserPtr;
@@ -843,8 +841,9 @@ fn fill_file_socket(
             return;
         };
         soassertlocked(so);
+        let tcp = tcp_kinfo(so, inpcb, w);
         if show_pointers {
-            kf.inp_ppcb = ptrtoint64(inpcb.inp_ppcb.get_mut());
+            kf.inp_ppcb = tcp.map_or(0, |t| t.tcpcb as u64);
         }
         kf.inp_lport = u32::from(inpcb.inp_lport.get());
         kf.inp_laddru[0] = inpcb.inp_laddr.get().s_addr;
@@ -854,16 +853,17 @@ fn fill_file_socket(
         if so.so_type() == SOCK_RAW {
             kf.inp_proto = u32::from(inpcb.inp_ip.get().ip_p);
         }
-        if i32::from(so.proto().protocol()) == IPPROTO_TCP {
-            fill_file_tcpcb(kf, inpcb);
+        if let Some(t) = tcp {
+            fill_file_tcpcb(kf, &t);
         }
     } else if family == i32::from(AF_INET6) {
         let Some(inpcb) = sotoinpcb(so) else {
             return;
         };
         soassertlocked(so);
+        let tcp = tcp_kinfo(so, inpcb, w);
         if show_pointers {
-            kf.inp_ppcb = ptrtoint64(inpcb.inp_ppcb.get_mut());
+            kf.inp_ppcb = tcp.map_or(0, |t| t.tcpcb as u64);
         }
         kf.inp_lport = u32::from(inpcb.inp_lport.get());
         let laddr6: crate::netinet6::in6::In6Addr = inpcb.inp_laddr6.get();
@@ -879,8 +879,8 @@ fn fill_file_socket(
         if so.so_type() == SOCK_RAW {
             kf.inp_proto = u32::from(inpcb.inp_ipv6.get::<crate::netinet::ip6::Ip6Hdr>().ip6_nxt);
         }
-        if i32::from(so.proto().protocol()) == IPPROTO_TCP {
-            fill_file_tcpcb(kf, inpcb);
+        if let Some(t) = tcp {
+            fill_file_tcpcb(kf, &t);
         }
     } else if family == i32::from(AF_UNIX) {
         let Some(k) = kernel::net::unix::unp_kinfo(so, w) else {
@@ -904,17 +904,28 @@ fn fill_file_socket(
     }
 }
 
+/// The kernel's TCP control block of a TCP socket's `inpcb` (`fill_file`'s `inp_ppcb` and
+/// `intotcpcb(inpcb)`, read under the socket's lock `w` by `kernel::netinet::tcp_var::kinfo`,
+/// N6.6a5); `None` for another protocol's socket (whose `inp_ppcb` is NULL) and for one
+/// without a control block (the C would dereference NULL; its members stay zero).
+fn tcp_kinfo(
+    so: &Socket,
+    inpcb: &Inpcb,
+    w: &mut kernel::net::socket::SoLocked<'_>,
+) -> Option<kernel::netinet::tcp_var::TcpKinfo> {
+    if i32::from(so.proto().protocol()) != IPPROTO_TCP {
+        return None;
+    }
+    kernel::netinet::tcp_var::kinfo(inpcb, w)
+}
+
 /// The TCP members of `kinfo_file` (`fill_file`'s `intotcpcb(inpcb)` block, shared by the
-/// `AF_INET` and `AF_INET6` cases); a control block without a `tcpcb` (the C would
-/// dereference NULL) leaves them zero.
-fn fill_file_tcpcb(kf: &mut KinfoFile, inpcb: &Inpcb) {
-    let Some(tcpcb) = intotcpcb(inpcb) else {
-        return;
-    };
-    kf.t_rcv_wnd = tcpcb.rcv_wnd.get();
-    kf.t_snd_wnd = tcpcb.snd_wnd.get();
-    kf.t_snd_cwnd = tcpcb.snd_cwnd.get();
-    kf.t_state = tcpcb.t_state.get() as u32;
+/// `AF_INET` and `AF_INET6` cases).
+fn fill_file_tcpcb(kf: &mut KinfoFile, t: &kernel::netinet::tcp_var::TcpKinfo) {
+    kf.t_rcv_wnd = t.rcv_wnd;
+    kf.t_snd_wnd = t.snd_wnd;
+    kf.t_snd_cwnd = t.snd_cwnd;
+    kf.t_state = t.t_state as u32;
 }
 
 /// The output of a `sysctl_file` walk: the C's `kf`, `dp`, `buflen`, `elem_count` and
@@ -1136,9 +1147,9 @@ pub fn sysctl_file(name: &[i32], where_: usize, sizep: &mut usize, p: &Proc) -> 
         KERN_FILE_BYFILE => {
             // use the inp-tables to pick up closed connections, too
             if arg == DTYPE_SOCKET {
-                w.fillinptable(&TCBTABLE)?;
+                w.fillinptable(kernel::netinet::tcp_usrreq::tcbtable::<BsdProcGlue>())?;
                 #[cfg(feature = "inet6")]
-                w.fillinptable(&TCB6TABLE)?;
+                w.fillinptable(kernel::netinet::tcp_usrreq::tcb6table::<BsdProcGlue>())?;
                 w.fillinptable(&UDBTABLE)?;
                 #[cfg(feature = "inet6")]
                 w.fillinptable(&UDB6TABLE)?;
@@ -2154,6 +2165,129 @@ mod tests {
             Ok(())
         );
         assert_eq!(len, KERN_FILESLOP * size as usize);
+    }
+
+    /// `KERN_FILE_BYFILE`'s walk of the TCP table (`FileWalk::fillinptable`, `FILLINPTABLE`)
+    /// over a kernel TCP socket: `bsd`'s `in_pcbsolock` holds its lock detached, `fill_file`
+    /// attaches the holding for the kernel's `tcp_kinfo` (`solocked_legacy`'s `Attached`
+    /// branch), and the TCP members are the C's `fill_file`'s: `t_state`, the two windows and
+    /// the congestion window of the control block; `inp_ppcb` is the block's address under
+    /// show_pointers and NULL without, `so_pcb` the pcb's or -1.
+    #[test]
+    fn kern_file_byfile_walks_a_tcp_socket_under_its_detached_lock() {
+        use crate::kern::proc_glue::BsdProcGlue;
+        use crate::netinet::in_pcb::sotoinpcb;
+        use kernel::netinet::tcp_fsm::TCPS_LISTEN;
+        use kernel::netinet::tcp_usrreq::tcbtable;
+
+        /// The walk's buffer: up to `MAX` elements, in this module's range of the double.
+        const KF: usize = UB + 0x1000;
+        const MAX: usize = 16;
+
+        let (_g, _t, p) = crate::netinet::in_pcb::tests::setup();
+        kernel::netinet::tcp_subr::tcp_init::<BsdProcGlue>();
+        let so = crate::kern::uipc_socket::socreate(
+            i32::from(AF_INET),
+            crate::sys::socket::SOCK_STREAM,
+            0,
+        )
+        .expect("a TCP socket");
+        // listen(2): the socket locked as `sys_listen` locks it.
+        let r = {
+            let mut w = kernel::net::socket::solock(so);
+            let r = kernel::net::socket::solisten(so, &mut w, 5);
+            drop(w);
+            r
+        };
+        r.expect("listen");
+        let inp = sotoinpcb(so).expect("attached");
+        let lport = inp.inp_lport.get();
+        assert_ne!(lport, 0, "listen bound an ephemeral port");
+        // The control block as the kernel reads it under the socket's own lock.
+        let want = {
+            let mut w = kernel::net::socket::solock(so);
+            let k = kernel::netinet::tcp_var::kinfo(inp, &mut w);
+            drop(w);
+            k.expect("a control block")
+        };
+        assert_eq!(want.t_state, TCPS_LISTEN);
+        assert_ne!(want.snd_cwnd, 0, "tcp_newtcpcb's window");
+        assert_ne!(want.tcpcb, 0);
+
+        let size = size_of::<KinfoFile>();
+        let walk = |show_pointers: bool| -> KinfoFile {
+            let mut w = FileWalk {
+                kf: KinfoFile::zeroed(),
+                p,
+                show_pointers,
+                dp: 0,
+                buflen: 0,
+                elem_size: size,
+                elem_count: usize::MAX,
+                outsize: size,
+                needed: 0,
+            };
+            w.fillinptable(tcbtable::<BsdProcGlue>())
+                .expect("the count");
+            let n = w.needed / size;
+            assert!((1..=MAX).contains(&n), "{n} TCP pcbs");
+            let mut w = FileWalk {
+                kf: KinfoFile::zeroed(),
+                p,
+                show_pointers,
+                dp: KF,
+                buflen: n * size,
+                elem_size: size,
+                elem_count: n,
+                outsize: size,
+                needed: 0,
+            };
+            w.fillinptable(tcbtable::<BsdProcGlue>()).expect("the walk");
+            assert_eq!(w.elem_count, 0, "every pcb filled");
+            let b = user(KF, n * size);
+            (0..n)
+                .map(|i| hal::pod::at::<KinfoFile>(&b, i * size).expect("an element"))
+                .find(|kf| kf.inp_lport == u32::from(lport))
+                .expect("the socket's element")
+        };
+
+        for show_pointers in [false, true] {
+            let kf = walk(show_pointers);
+            assert_eq!(kf.f_type, DTYPE_SOCKET as u32);
+            assert_eq!(kf.so_family, u32::from(AF_INET));
+            assert_eq!(kf.so_protocol, IPPROTO_TCP as u32);
+            assert_eq!(kf.t_state, TCPS_LISTEN as u32, "{show_pointers}");
+            assert_eq!(
+                (kf.t_rcv_wnd, kf.t_snd_wnd, kf.t_snd_cwnd),
+                (want.rcv_wnd, want.snd_wnd, want.snd_cwnd),
+                "{show_pointers}"
+            );
+            if show_pointers {
+                assert_eq!(
+                    kf.inp_ppcb, want.tcpcb as u64,
+                    "inp_ppcb: the control block"
+                );
+                assert_eq!(
+                    kf.so_pcb,
+                    core::ptr::from_ref(inp).addr() as u64,
+                    "so_pcb: the pcb"
+                );
+            } else {
+                assert_eq!(kf.inp_ppcb, 0, "no pointers without show_pointers");
+                assert_eq!(kf.so_pcb, -1i64 as u64, "no pointers without show_pointers");
+            }
+        }
+        // The walk let the socket's lock go: the kernel's solock takes it again.
+        let k = {
+            let mut w = kernel::net::socket::solock(so);
+            let k = kernel::netinet::tcp_var::kinfo(inp, &mut w);
+            drop(w);
+            k
+        };
+        assert_eq!(k.map(|k| k.t_state), Some(TCPS_LISTEN));
+
+        let _ = crate::kern::uipc_socket::soclose(so, 0);
+        crate::netinet::in_pcb::tests::teardown();
     }
 
     #[test]

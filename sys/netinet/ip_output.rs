@@ -102,7 +102,7 @@ use crate::netinet::ip_ipsp::{
 use crate::netinet::ip_spd::{SpdError, ipsp_spd_lookup};
 use crate::netinet::ip_var::{IpMoptions, mtod_ip};
 use crate::netinet::ipsec_output::{ipsec_adjust_mtu, ipsp_process_packet};
-use crate::netinet::tcp_output::tcp_softtso_chop;
+use crate::netinet::tcp_subr::tcp_softtso_chop;
 use crate::netinet::tcp_var::{TcpstatCounters, tcpstat_inc};
 use crate::sys::endian::{htons, ntohl, ntohs};
 use crate::sys::errno::Errno;

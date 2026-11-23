@@ -135,9 +135,10 @@
 //! What `if.c` asks of the subsystems that have not moved goes through two bridges
 //! (bridges.toml), registered by `bsd` at boot, each answering as the C compiled without the
 //! subsystem before registration: [`Inet`] (netinet, netinet6: the protocols' software
-//! interrupts and `tcp_input_mlist`) and [`Link`] (bpf(4) and `if_ethersubr.c`); pf's legs
-//! are the `Pf` bridge's (`kernel::net::pf_hooks`). The routing code is the kernel's
-//! (`kernel::net::{route, rtable, rtsock}`, N6.3b).
+//! interrupts) and [`Link`] (bpf(4) and `if_ethersubr.c`); pf's legs are the `Pf` bridge's
+//! (`kernel::net::pf_hooks`). The routing code is the kernel's (`kernel::net::{route,
+//! rtable, rtsock}`, N6.3b). TCP is the kernel's (N6.6a5): the softnet hands its segments to
+//! `tcp_input_mlist` through the glue's registration (`tcp_input::tcp_input_mlist_softnet`).
 //!
 //! Lock and spl transitions of the operations against the C (if.c's line numbers at the
 //! pin), each the C's count:
@@ -369,6 +370,7 @@ use crate::net::proto::SockaddrView;
 use crate::net::rtable::{self, rtable_l2, rtable_loindex};
 use crate::net::socket::Socket;
 use crate::net::{route, rtsock};
+use crate::netinet::tcp_input::tcp_input_mlist_softnet;
 use crate::netinet::tcp_var::{TcpstatCounters, tcpstat_inc};
 use crate::prf::{Str, printf};
 use crate::proc::{ProcGlue, Thread, suser};
@@ -424,8 +426,6 @@ const IF_IDXMAP_DTOR_SIZE: usize = 32;
 /// `bsd`'s until N6.4-N6.6): a bridge (bridges.toml's `Inet` row, paid by N6). Before
 /// registration every leg does nothing: the C without `INET`/`INET6`.
 pub trait Inet: Sync + 'static {
-    /// `tcp_input_mlist(ml, af)`: the TCP segments a softnet gathered.
-    fn tcp_input_mlist(&self, ml: &mut MbufList, af: SaFamily);
     /// `ip6_randomid()`: the next IPv6 fragment identification of `idgen32` (`crypto/idgen.c`,
     /// `bsd`'s until crypto moves at N8: its generator, `ip6_output.c`'s `ip6_id_ctx`), for
     /// the kernel's `ip6_fragment` (N6.5c).
@@ -1129,10 +1129,8 @@ pub fn if_input_process(ifp: &'static Ifnet, ml: &mut MbufList, idx: u32) {
             }
         }
 
-        if let Some(inet) = inet() {
-            inet.tcp_input_mlist(&mut ns.ns_tcp_ml, AF_INET);
-            inet.tcp_input_mlist(&mut ns.ns_tcp6_ml, AF_INET6);
-        }
+        tcp_input_mlist_softnet(&mut ns.ns_tcp_ml, i32::from(AF_INET), &net);
+        tcp_input_mlist_softnet(&mut ns.ns_tcp6_ml, i32::from(AF_INET6), &net);
 
         if ml_empty(&ns.ns_input) {
             break;

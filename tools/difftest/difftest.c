@@ -37,17 +37,22 @@
 #include <sys/event.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/queue.h>
 #include <sys/resource.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/sysctl.h>
 #include <sys/time.h>
+#include <sys/timeout.h>
 #include <sys/tty.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 
 #include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <netinet/tcp_timer.h>
+#include <netinet/tcp_var.h>
 
 #include <dirent.h>
 #include <errno.h>
@@ -1789,6 +1794,184 @@ t_entry(void)
 #endif
 }
 
+/*
+ * TCP over the loopback (N6.6a5, D-5): a connection on 127.0.0.1 and one on ::1 walked
+ * through listen, a non-blocking connect, accept, a line each way, a half close and EOF;
+ * the errnos of a closed port, a bound port, a second connect, an unconnected send and a
+ * send after shutdown; the IPPROTO_TCP options set and read back; TCP_INFO's state in
+ * LISTEN, ESTABLISHED and after the peer's close; the net.inet.tcp values that do not
+ * depend on the run; TCPCTL_DROP of the probe's own connection, then of none. Only what
+ * is deterministic is printed: no port number, sequence number or time.
+ */
+static void
+tcp_state(const char *name, int s)
+{
+	struct tcp_info ti;
+	socklen_t len = sizeof(ti);
+
+	if (getsockopt(s, IPPROTO_TCP, TCP_INFO, &ti, &len) == -1)
+		printf("%s: -1 %s\n", name, ename(errno));
+	else
+		printf("%s: state %u len %u\n", name, ti.tcpi_state,
+		    (unsigned)len);
+}
+
+static void
+tcp_opt(const char *name, int s, int opt, int val)
+{
+	int got = -1;
+	socklen_t len = sizeof(got);
+	char n[64];
+
+	snprintf(n, sizeof(n), "setsockopt %s %d", name, val);
+	R(n, setsockopt(s, IPPROTO_TCP, opt, &val, sizeof(val)));
+	snprintf(n, sizeof(n), "getsockopt %s", name);
+	R(n, getsockopt(s, IPPROTO_TCP, opt, &got, &len) == 0 ? got : -1);
+}
+
+static void
+tcp_pair(const char *fam, struct sockaddr *sa, socklen_t salen)
+{
+	struct pollfd pfd;
+	char buf[32], name[64];
+	int l, c, a, n, one = 1, flags;
+
+	printf("-- %s\n", fam);
+	l = socket(sa->sa_family, SOCK_STREAM, 0);
+	OK("socket", l >= 0);
+	R("SO_REUSEADDR", setsockopt(l, SOL_SOCKET, SO_REUSEADDR, &one,
+	    sizeof(one)));
+	R("bind", bind(l, sa, salen));
+	R("listen", listen(l, 5));
+	tcp_state("TCP_INFO listener", l);
+	c = socket(sa->sa_family, SOCK_STREAM, 0);
+	R("bind in use", bind(c, sa, salen));
+	flags = fcntl(c, F_GETFL);
+	R("set nonblock", fcntl(c, F_SETFL, flags | O_NONBLOCK));
+	/* Over the loopback the handshake may end before connect returns. */
+	errno = 0;
+	n = connect(c, sa, salen);
+	OK("connect nonblocking", n == 0 || errno == EINPROGRESS);
+	pfd.fd = c;
+	pfd.events = POLLOUT;
+	R("poll connected", poll(&pfd, 1, 5000));
+	R("connect again", connect(c, sa, salen));
+	R("clear nonblock", fcntl(c, F_SETFL, flags));
+	a = accept(l, NULL, NULL);
+	OK("accept", a >= 0);
+	tcp_state("TCP_INFO established", c);
+
+	tcp_opt("TCP_NODELAY", c, TCP_NODELAY, 1);
+	tcp_opt("TCP_NODELAY", c, TCP_NODELAY, 0);
+	tcp_opt("TCP_NOPUSH", c, TCP_NOPUSH, 1);
+	tcp_opt("TCP_NOPUSH", c, TCP_NOPUSH, 0);
+	tcp_opt("TCP_MAXSEG", c, TCP_MAXSEG, 536);
+	snprintf(name, sizeof(name), "setsockopt TCP_MAXSEG 0");
+	one = 0;
+	R(name, setsockopt(c, IPPROTO_TCP, TCP_MAXSEG, &one, sizeof(one)));
+	one = 1;
+	R("setsockopt TCP_SACK_ENABLE established", setsockopt(c, IPPROTO_TCP,
+	    TCP_SACK_ENABLE, &one, sizeof(one)));
+	R("setsockopt TCP_MD5SIG established", setsockopt(c, IPPROTO_TCP,
+	    TCP_MD5SIG, &one, sizeof(one)));
+	R("setsockopt unknown", setsockopt(c, IPPROTO_TCP, 0x7f, &one,
+	    sizeof(one)));
+	R("setsockopt short", setsockopt(c, IPPROTO_TCP, TCP_NODELAY, &one, 1));
+
+	R("send", write(c, "hello\n", 6));
+	R("recv", read(a, buf, sizeof(buf)));
+	R("send back", write(a, "world\n", 6));
+	R("recv back", read(c, buf, sizeof(buf)));
+	R("shutdown wr", shutdown(c, SHUT_WR));
+	R("read after peer shutdown", read(a, buf, sizeof(buf)));
+	tcp_state("TCP_INFO after the peer's close", a);
+	signal(SIGPIPE, SIG_IGN);
+	R("write after shutdown", write(c, "x", 1));
+	close(a);
+	close(c);
+	close(l);
+	c = socket(sa->sa_family, SOCK_STREAM, 0);
+	R("send unconnected", write(c, "x", 1));
+	close(c);
+}
+
+static void
+tcp_sysctl(const char *name, int id)
+{
+	int mib[4] = { CTL_NET, PF_INET, IPPROTO_TCP, id };
+	int v = -1;
+	size_t len = sizeof(v);
+
+	R(name, sysctl(mib, 4, &v, &len, NULL, 0) == 0 ? v : -1);
+}
+
+static void
+t_tcp(void)
+{
+	struct sockaddr_in sin;
+	struct sockaddr_in6 sin6;
+	struct tcp_ident_mapping tir;
+	int mib[4] = { CTL_NET, PF_INET, IPPROTO_TCP, TCPCTL_DROP };
+	int l, c, a, one = 1;
+	socklen_t len;
+
+	section("tcp");
+	memset(&sin, 0, sizeof(sin));
+	sin.sin_len = sizeof(sin);
+	sin.sin_family = AF_INET;
+	sin.sin_port = htons(47123);
+	sin.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	tcp_pair("inet", (struct sockaddr *)&sin, sizeof(sin));
+	memset(&sin6, 0, sizeof(sin6));
+	sin6.sin6_len = sizeof(sin6);
+	sin6.sin6_family = AF_INET6;
+	sin6.sin6_port = htons(47124);
+	sin6.sin6_addr = in6addr_loopback;
+	tcp_pair("inet6", (struct sockaddr *)&sin6, sizeof(sin6));
+
+	printf("-- refused\n");
+	c = socket(AF_INET, SOCK_STREAM, 0);
+	sin.sin_port = htons(47125);
+	R("connect closed port", connect(c, (struct sockaddr *)&sin,
+	    sizeof(sin)));
+	close(c);
+
+	printf("-- net.inet.tcp\n");
+	tcp_sysctl("rfc1323", TCPCTL_RFC1323);
+	tcp_sysctl("mssdflt", TCPCTL_MSSDFLT);
+	tcp_sysctl("sack", TCPCTL_SACK);
+	tcp_sysctl("ecn", TCPCTL_ECN);
+	tcp_sysctl("rfc3390", TCPCTL_RFC3390);
+	tcp_sysctl("synbucketlimit", TCPCTL_SYN_BUCKET_LIMIT);
+	tcp_sysctl("synhashsize", TCPCTL_SYN_HASH_SIZE);
+
+	printf("-- drop\n");
+	sin.sin_port = htons(47126);
+	l = socket(AF_INET, SOCK_STREAM, 0);
+	setsockopt(l, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+	R("bind", bind(l, (struct sockaddr *)&sin, sizeof(sin)));
+	R("listen", listen(l, 5));
+	c = socket(AF_INET, SOCK_STREAM, 0);
+	R("connect", connect(c, (struct sockaddr *)&sin, sizeof(sin)));
+	a = accept(l, NULL, NULL);
+	OK("accept", a >= 0);
+	memset(&tir, 0, sizeof(tir));
+	len = sizeof(tir.laddr);
+	R("getsockname", getsockname(c, (struct sockaddr *)&tir.faddr, &len));
+	len = sizeof(tir.faddr);
+	R("getpeername", getpeername(c, (struct sockaddr *)&tir.laddr, &len));
+	R("TCPCTL_DROP no new value", sysctl(mib, 4, NULL, NULL, NULL, 0));
+	R("TCPCTL_DROP short", sysctl(mib, 4, NULL, NULL, &tir, 8));
+	R("TCPCTL_DROP the accepted end", sysctl(mib, 4, NULL, NULL, &tir,
+	    sizeof(tir)));
+	R("TCPCTL_DROP again", sysctl(mib, 4, NULL, NULL, &tir,
+	    sizeof(tir)));
+	R("read dropped", read(a, &one, 1));
+	close(a);
+	close(c);
+	close(l);
+}
+
 static const struct {
 	const char *name;
 	void (*fn)(void);
@@ -1808,6 +1991,7 @@ static const struct {
 	{ "sysctl", t_sysctl },
 	{ "ostype", t_ostype },
 	{ "tty", t_tty },
+	{ "tcp", t_tcp },
 	{ "entry", t_entry },
 };
 

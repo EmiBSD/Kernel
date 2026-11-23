@@ -129,7 +129,7 @@ use crate::netinet::ip_ipsp::{
 use crate::netinet::ip_spd::{SpdError, ipsp_spd_lookup};
 use crate::netinet::ip6::Ip6Hdr;
 use crate::netinet::ipsec_output::{ipsec_adjust_mtu, ipsp_process_packet};
-use crate::netinet::tcp_output::tcp_softtso_chop;
+use crate::netinet::tcp_subr::tcp_softtso_chop;
 use crate::netinet::tcp_var::{TcpstatCounters, tcpstat_inc};
 use crate::netinet6::icmp6::icmp6_mtudisc_clone;
 use crate::netinet6::in6::{In6Addr, SockaddrIn6, in6_addr2scopeid, in6_are_addr_equal};

@@ -888,9 +888,9 @@ mod tests {
     /// `ypconnect(2)`'s `sotoinpcb(so)->inp_flags |= INP_LOWPORT` is, in the kernel, the call
     /// `ypconnect_lowport` makes: the protocol's `ctloutput(PRCO_SETOPT, IPPROTO_IP,
     /// IP_PORTRANGE)` with a 4-byte `IP_PORTRANGE_LOW`, under `solock`. On a fresh stream and
-    /// datagram socket of `bsd`'s internet protocols (tcp_ctloutput, ip_ctloutput) it leaves
-    /// the flags the C's assignment leaves: `INP_LOWPORT` added, `INP_HIGHPORT` clear, nothing
-    /// else changed.
+    /// datagram socket of the internet protocols (the kernel's `tcp_ctloutput`, `bsd`'s
+    /// `ip_ctloutput` for UDP) it leaves the flags the C's assignment leaves: `INP_LOWPORT`
+    /// added, `INP_HIGHPORT` clear, nothing else changed.
     #[test]
     fn ypconnects_low_port_option_leaves_the_cs_inp_flags() {
         use kernel::net::mbuf::{M_WAIT, MT_SOOPTS, m_get};
@@ -900,7 +900,7 @@ mod tests {
         use crate::sys::socket::{AF_INET, SOCK_DGRAM, SOCK_STREAM};
 
         let (_g, _t, _p) = crate::netinet::in_pcb::tests::setup();
-        crate::netinet::tcp_subr::tcp_init();
+        kernel::netinet::tcp_subr::tcp_init::<crate::kern::proc_glue::BsdProcGlue>();
         crate::netinet::udp_usrreq::udp_init();
         for ty in [SOCK_STREAM, SOCK_DGRAM] {
             let so = crate::kern::uipc_socket::socreate(i32::from(AF_INET), ty, 0)

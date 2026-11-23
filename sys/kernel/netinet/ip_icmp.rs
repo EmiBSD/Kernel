@@ -635,6 +635,7 @@ pub fn icmp_input_if<G: ProcGlue>(
                     view(&sin),
                     m.m_pkthdr().ph_rtableid.get(),
                     crate::net::proto::CtlArg::Ip(msg),
+                    net,
                 );
             }
             Then::Raw
@@ -827,7 +828,7 @@ pub fn icmp_input_if<G: ProcGlue>(
                     let _ = rt_timer_add(rt, &ICMP_REDIRECT_TIMEOUT_Q, rtableid);
                 }
                 drop(newrt);
-                pfctlinput::<G>(PRC_REDIRECT_HOST, view(&sdst));
+                pfctlinput::<G>(PRC_REDIRECT_HOST, view(&sdst), net);
                 Then::Raw
             }
 
@@ -1273,6 +1274,7 @@ pub fn icmp_mtudisc_timeout<G: ProcGlue>(
                 view(&sin),
                 rtableid,
                 crate::net::proto::CtlArg::None,
+                net,
             );
         }
     } else if rt.rt_locks().get() & RTV_MTU == 0 {
