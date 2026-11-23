@@ -140,9 +140,10 @@
 //!   these globals and functions are the kernel's own, `bsd`'s `sys/netinet/tcp_subr.rs`
 //!   keeps its until the switch. `tcpqe_pool` and `sackhl_pool` are `BoxPool`s whose items
 //!   the queues own (`hal::pool::Pooled`), `tcpcb_pool` is the glue's (`tcp_var::TcpTables`);
-//!   `tcp_iss` is the data of `tcp_timer_mtx` (a `Mutexed`, where LZ had an atomic beside a
-//!   bare mutex); `tcp_secret` is a `OnceStatic` set by `tcp_init` (LZ: a `StaticCell` written
-//!   under `unsafe`), and `tcp_secret_ctx`, the context made over it once, is made per ISN
+//!   `tcp_iss` is an `AtomicU32` beside `tcp_timer_mtx`, a `Mutexed<()>` whose holders alone
+//!   write it (since N6.6a5, when pf reads it without the mutex, the C's `READ_ONCE`);
+//!   `tcp_secret` is a `OnceStatic` set by `tcp_init` (LZ: a `StaticCell` written under
+//!   `unsafe`), and `tcp_secret_ctx`, the context made over it once, is made per ISN
 //!   from it (the same cost as the C's copy of the context; no second copy of the secret's
 //!   bytes, which `tcp_init` wipes from its stack).
 //! - D-12: `tp = tcp_close(tp)` is a move: `tcp_close` consumes the control block's [`Tp`]

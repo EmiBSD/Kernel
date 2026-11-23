@@ -540,7 +540,7 @@ const NODEV: Dev = -1;
 /// `M_TEMP` (`<sys/malloc.h>`): misc temporary data buffers.
 const M_TEMP: i32 = 127;
 /// `M_SYSCTL` (`<sys/malloc.h>`): sysctl buffers (persistent storage).
-pub const M_SYSCTL: i32 = 11;
+pub(crate) const M_SYSCTL: i32 = 11;
 /// `sizeof(struct diskstats)` (`<sys/disk.h>`): the bytes of one `hw.diskstats` entry, which
 /// the [`DiskExport`] hands over already laid out.
 pub const DISKSTATS_SIZE: usize = 112;

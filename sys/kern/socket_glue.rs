@@ -888,9 +888,9 @@ mod tests {
     /// `ypconnect(2)`'s `sotoinpcb(so)->inp_flags |= INP_LOWPORT` is, in the kernel, the call
     /// `ypconnect_lowport` makes: the protocol's `ctloutput(PRCO_SETOPT, IPPROTO_IP,
     /// IP_PORTRANGE)` with a 4-byte `IP_PORTRANGE_LOW`, under `solock`. On a fresh stream and
-    /// datagram socket of `bsd`'s internet protocols (tcp_ctloutput, ip_ctloutput) it leaves
-    /// the flags the C's assignment leaves: `INP_LOWPORT` added, `INP_HIGHPORT` clear, nothing
-    /// else changed.
+    /// datagram socket of the internet protocols (the kernel's `tcp_ctloutput`, `bsd`'s
+    /// `ip_ctloutput` for UDP) it leaves the flags the C's assignment leaves: `INP_LOWPORT`
+    /// added, `INP_HIGHPORT` clear, nothing else changed.
     #[test]
     fn ypconnects_low_port_option_leaves_the_cs_inp_flags() {
         use kernel::net::mbuf::{M_WAIT, MT_SOOPTS, m_get};

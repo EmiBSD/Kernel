@@ -163,10 +163,10 @@
 //!   the C borrows the cache's pointer under the socket lock: one count pair per
 //!   `tcp_mss` and `tcp_mss_update`, per connection set-up and path MTU change, not per
 //!   segment.
-//! - N6.6a4: `tcp_input` is the kernel's (unregistered until the switch, N6.6a5; `bsd`'s
-//!   stays the softnet's through the `Inet` leg). LZ's body worked on `&'static` pcbs,
-//!   sockets and control blocks of `Cell`s, with `in_pcbsolock`/`in_pcbsounlock` a detached
-//!   pair. Here the pcb is a counted handle (the lookup's, or pf's erased one: `InpHold`,
+//! - N6.6a4: `tcp_input` is the kernel's (since the switch, N6.6a5, the softnet reaches
+//!   `tcp_input_mlist` through `TCP_INPUT_MLIST`, which `tcp_init` registers). LZ's body
+//!   worked on `&'static` pcbs, sockets and control blocks of `Cell`s, with
+//!   `in_pcbsolock`/`in_pcbsounlock` a detached pair. Here the pcb is a counted handle (the lookup's, or pf's erased one: `InpHold`,
 //!   counted once as the C's `in_pcbref`), its socket's lock a `SoLocked` witness opened in
 //!   parts, and the control block a `Tp` the body takes by value: `tp = tcp_close(tp)` is a
 //!   move that answers `Closed`, so a use after the close does not compile, and the frame
@@ -630,7 +630,7 @@ pub(crate) fn tcp_input_mlist_register<G: ProcGlue>() {
 /// queued on the softnet's list `ml`, under its shared net lock (`net`). Before `tcp_init`
 /// no segment can have been queued (only TCP's `pr_input` queues them); a list found then is
 /// purged, as no protocol takes it.
-pub fn tcp_input_mlist_softnet(ml: &mut MbufList, af: i32, net: &NetHeld<'_>) {
+pub(crate) fn tcp_input_mlist_softnet(ml: &mut MbufList, af: i32, net: &NetHeld<'_>) {
     match TCP_INPUT_MLIST.get() {
         Some(f) => f(ml, af, net),
         None => {

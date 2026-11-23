@@ -109,8 +109,12 @@
 //!   LZ's; the first two keep their lowercase names (`TCP_SENDSPACE` and `TCP_RECVSPACE` are
 //!   this file's constants). `tcpctl_vars[]` points at the `AtomicI32`s of the files that
 //!   define them.
-//! - `tcp_ctloutput` answers `ECONNRESET` for a socket whose control block is gone (a
-//!   close ran first), where the C dereferences `intotcpcb(inp)` unchecked (LZ's).
+//! - Not a behavioural deviation, a defensive answer: `tcp_ctloutput` answers `ECONNRESET`
+//!   for a pcb without a control block, where the C dereferences `intotcpcb(inp)` unchecked
+//!   (LZ's). The case cannot arise in the C or here: the close that frees the block
+//!   (`tcp_close`, C `tcp_subr.c:526-529`) detaches the pcb under the same socket lock, and
+//!   `in_pcbdetach` clears `so_pcb` (C `in_pcb.c:591`), so the request finds no pcb and
+//!   answers the C's own `ECONNRESET` first.
 //! - `INET6` is configured: the `PF_INET6` attach, `ip6_ctloutput`, the IPv6 checks of
 //!   `tcp_connect` and `tcp_ident`'s `AF_INET6` case. `TCP_ECN` and `TCP_SIGNATURE` are
 //!   configured. `SMALL_KERNEL` is not set: `tcpctl_vars`, `tcp_sysctl_tcpstat` and

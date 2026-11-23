@@ -177,8 +177,6 @@ pub fn tcp_signature_tdb_output(
     Err(Errno::EINVAL)
 }
 
-/// The 20 bytes of a TCP header as the C structure holds them.
-
 /// The SA's authentication key (`tdb->tdb_amxkey`, `tdb_amxkeylen` bytes) lent to `f`
 /// (`tcp_signature`'s `MD5Update`, here and in the kernel's TCP through the `Ipsec` leg),
 /// never copied out by this function. `tdb` is a counted reference of the SA (a
