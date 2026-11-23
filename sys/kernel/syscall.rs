@@ -69,8 +69,9 @@
 //! - `KTRACE` and dt(4) are not configured; `SYSCALL_DEBUG` is `bsd`'s feature
 //!   `syscall_debug`, reached through the glue (`ProcGlue::scdebug_call`, `scdebug_ret`).
 //! - `SY_NOLOCK` is honoured as in C for the system calls whose bodies are audited for
-//!   `MULTIPROCESSOR`; those whose bodies are not ported ([`SY_NOLOCK_DEFERRED`]) still run
-//!   under the kernel lock (LZ's).
+//!   `MULTIPROCESSOR`; one not audited yet would be listed in [`SY_NOLOCK_DEFERRED`] and run
+//!   under the kernel lock (LZ's; the list is empty since `__thrsleep(2)` and
+//!   `__thrwakeup(2)` were ported).
 //! - `mi_ast`'s `ADDUPROF` (the profiling clock, `subr_prof.c`) is reported (`unported!`).
 //!
 //! ## Redesign
@@ -102,7 +103,7 @@ use core::pin::Pin;
 use core::sync::atomic::Ordering;
 
 use hal::sys::errno::Errno;
-use hal::sys::syscall::{SYS___thrsleep, SYS___thrwakeup, SYS_MAXSYSCALL, SYS_sigreturn};
+use hal::sys::syscall::{SYS_MAXSYSCALL, SYS_sigreturn};
 use hal::syscall::{Register, Rval, SysArgs, SysResult};
 use hal::trap::{FaultSource, TrapHandler};
 
@@ -116,13 +117,11 @@ pub const SY_NOLOCK: i32 = 0x01;
 
 /// `NOLOCK` system calls (`syscalls.master`) whose bodies are not audited for
 /// `MULTIPROCESSOR`: [`mi_syscall`]'s callers keep the kernel lock for them although
-/// `sysent` marks them `SY_NOLOCK` (see the module's deviations). Since the end of LZ's M11e
-/// audit only the unported calls are left.
-pub const SY_NOLOCK_DEFERRED: &[i32] = &[
-    // __thrsleep(2) and __thrwakeup(2) are not ported (`sys_nosys`, which posts SIGSYS).
-    SYS___thrsleep,
-    SYS___thrwakeup,
-];
+/// `sysent` marks them `SY_NOLOCK` (see the module's deviations). LZ's M11e audit left only
+/// the unported `__thrsleep(2)` and `__thrwakeup(2)`; their port (LZ 9fd12af2c575,
+/// `kernel::thrsleep`) takes the C's locks (the buckets' mutexes and `SCHED_LOCK`, as
+/// `futex(2)`), so the table is empty and stays as the place for the next unaudited one.
+pub const SY_NOLOCK_DEFERRED: &[i32] = &[];
 
 /// [`SY_NOLOCK_DEFERRED`] as a table indexed by system call number.
 const SY_NOLOCK_DEFERRED_MAP: [bool; SYS_MAXSYSCALL] = {

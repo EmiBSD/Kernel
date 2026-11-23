@@ -346,7 +346,7 @@ pub fn main() -> ! {
 
     // Initialize futexes.
     crate::kern::sys_futex::futex_init();
-    let _ = unported!("tslp_init");
+    // tslp_init: `kernel::thrsleep`'s buckets are const initialisers; nothing to run.
 
     // Create credentials.
     let mut cr = Ucred::new();

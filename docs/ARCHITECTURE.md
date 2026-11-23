@@ -725,9 +725,11 @@ Makefile order, not shuffled (`sort -R`), and no relink kits (`/usr/share/relink
 `ld.so.a`) are made; `test-ld.so` is not built or run on the Mac (as in OpenBSD's cross
 builds), `smoke-cc` is that test. The kernel side is `uvm_mmap.c`'s file half
 (`uvm_mmapfile` over `uvn_attach`; device mappings other than `/dev/zero` report the
-unported `udv_attach`). `__thrsleep`/`__thrwakeup` (`kern_synch.c`) are still `sys_nosys`:
-libc's `FILE` locks and libpthread's `_rthread_dl_lock` call them only when two threads
-contend.
+unported `udv_attach`). `__thrsleep`/`__thrwakeup` (`kern_synch.c`) are `kernel::thrsleep`'s
+(LZ 9fd12af2c575, taken by `lz-sync`), reached through `bsd`'s `sysent` rows (`Legacy` in the
+ABI); the one compiled caller at the pin is the shared librthread's `_rthread_dl_lock`, when
+two threads contend for ld.so's lock (libc's `FILE` locks and the pthread mutexes are
+`futex(2)`'s on arm64 and amd64).
 
 ## The install media (M14c)
 
