@@ -1925,7 +1925,10 @@ mod tests {
     // Host tests of UDP over the test interfaces (`testudp`'s sockets, whose requests are
     // these): bsd's four tests re-expressed (input to a bound socket and the errors, output
     // with its control messages and errors, the IPsec levels and the encapsulation port,
-    // IPv6 input and its port unreachable), and the pcb's slot.
+    // IPv6 input and its port unreachable), the pcb's slot; and N6.6b0's: the multicast
+    // fan-out and its stop, the minimum TTL and a locked receiver, both control inputs, ESP in
+    // UDP and the inbound policy on IPsec's test legs (`testtcp::sig_legs`), the upcall, the
+    // sysctl names, bounds, statistics and bitmaps.
 
     use std::vec::Vec;
 
@@ -1939,10 +1942,12 @@ mod tests {
     use super::*;
     use crate::net::mbuf::{M_WAIT, m_get, ml_dequeue};
     use crate::net::proto::{PRCO_GETOPT, PRCO_SETOPT, Protocol};
+    use crate::net::socket::socantrcvmore;
     use crate::netinet::in_pcb::{in_baddynamic, sotoinpcb, testinet};
     use crate::netinet::ip_input::ip_send_test_take;
     use crate::netinet::tcp_subr::testtcp::{a6, iface6};
     use crate::netinet6::ip6_input::ip6_send_test_take;
+    use hal::user::UserPtr;
 
     /// The counter `c`'s sum.
     fn stat(c: UdpstatCounters) -> u64 {
@@ -2481,6 +2486,585 @@ mod tests {
         assert!(sotoinpcb(&so).is_none());
         assert_eq!(send(&so, b"x", None, None), Err(Errno::EINVAL));
         assert_eq!(locked(&so, |w| udp_detach(&so, w)), Err(Errno::EINVAL));
+    }
+
+    /// `ip_input`'s M_BCAST datagram (`dgram4` with the flag set).
+    fn bcast(m: MbufBox) -> MbufBox {
+        m.m_flags().set(m.m_flags().get() | M_BCAST);
+        m
+    }
+
+    /// `setsockopt(so, SOL_SOCKET, opt, on)` (the socket's options word).
+    fn sockopt(so: &Socket<G>, opt: i32, on: bool) {
+        locked(so, |w| so.set_options(w, opt, on));
+    }
+
+    #[test]
+    fn broadcast_reaches_every_sharing_socket_until_one_without_reuse() {
+        let (_g, _p) = testudp::setup();
+        let n = 203;
+        // Three sockets sharing port 7000 (SO_REUSEPORT before each bind); the table walks
+        // the last made first (in_pcballoc inserts at the head).
+        let socks: Vec<_> = (0..3)
+            .map(|_| {
+                let so = testudp::socket(&UdpProto);
+                sockopt(&so, SO_REUSEPORT, true);
+                bind(&so, &nam(&sin([0; 4], 7000))).expect("bind");
+                so
+            })
+            .collect();
+        let d = || {
+            dgram4(
+                [10, 9, n, 2],
+                6000,
+                [10, 9, n, 255],
+                7000,
+                b"all",
+                None,
+                None,
+            )
+        };
+
+        input(bcast(d()), 20, AF_INET_I32);
+        for so in &socks {
+            let r = records(so);
+            assert_eq!(r.len(), 1, "every sharing socket");
+            assert_eq!(r[0].data, b"all".to_vec());
+        }
+
+        // The first socket the walk meets stops sharing: it alone gets the next one.
+        sockopt(&socks[2], SO_REUSEPORT, false);
+        input(bcast(d()), 20, AF_INET_I32);
+        assert_eq!(records(&socks[2]).len(), 2, "the walk's first match");
+        assert_eq!(
+            records(&socks[1]).len(),
+            1,
+            "not reached after a socket without reuse"
+        );
+        assert_eq!(records(&socks[0]).len(), 1);
+
+        // A socket that can receive no more is skipped; with no match the datagram is
+        // counted and dropped, no ICMP error.
+        let lone = testudp::socket(&UdpProto);
+        bind(&lone, &nam(&sin([0; 4], 7001))).expect("bind");
+        socantrcvmore(&lone);
+        let (bcastmiss, noport) = (
+            stat(UdpstatCounters::UdpsNoportbcast),
+            stat(UdpstatCounters::UdpsNoport),
+        );
+        let _ = sent4();
+        input(
+            bcast(dgram4(
+                [10, 9, n, 2],
+                6000,
+                [10, 9, n, 255],
+                7001,
+                b"no",
+                None,
+                None,
+            )),
+            20,
+            AF_INET_I32,
+        );
+        assert!(records(&lone).is_empty());
+        assert_eq!(stat(UdpstatCounters::UdpsNoportbcast), bcastmiss + 1);
+        assert_eq!(stat(UdpstatCounters::UdpsNoport), noport);
+        assert!(sent4().is_empty());
+
+        close(lone);
+        for so in socks {
+            close(so);
+        }
+    }
+
+    #[test]
+    fn the_minimum_ttl_and_a_locked_receiver() {
+        let (_g, _p) = testudp::setup();
+        let n = 204;
+        let so = testudp::socket(&UdpProto);
+        bind(&so, &nam(&sin([0; 4], 7002))).expect("bind");
+        let inp = sotoinpcb(&so).expect("its pcb");
+
+        // IP_MINTTL above the datagram's TTL (64): dropped, not counted as no port.
+        inp.inp_ip_minttl.set(65);
+        let noport = stat(UdpstatCounters::UdpsNoport);
+        input(
+            dgram4([10, 9, n, 2], 6000, [10, 9, n, 1], 7002, b"x", None, None),
+            20,
+            AF_INET_I32,
+        );
+        assert!(records(&so).is_empty());
+        assert_eq!(stat(UdpstatCounters::UdpsNoport), noport);
+        // And the multicast walk applies it too.
+        input(
+            bcast(dgram4(
+                [10, 9, n, 2],
+                6000,
+                [10, 9, n, 255],
+                7002,
+                b"x",
+                None,
+                None,
+            )),
+            20,
+            AF_INET_I32,
+        );
+        assert!(records(&so).is_empty());
+        inp.inp_ip_minttl.set(64);
+        drop(inp);
+
+        // Input takes no socket lock: a datagram arrives while this thread holds the
+        // receiver's lock as a send does (the sender's own broadcast, looped back
+        // synchronously in the C), the input under that holding's shared net lock.
+        let held = crate::net::socket::solock_shared(&so);
+        let r = {
+            let net = held.net_proof().expect("the shared net lock");
+            let mut mp = Some(dgram4(
+                [10, 9, n, 2],
+                6000,
+                [10, 9, n, 1],
+                7002,
+                b"mine",
+                None,
+                None,
+            ));
+            let mut off = 20;
+            udp_input::<G>(&mut mp, &mut off, IPPROTO_UDP, AF_INET_I32, None, &net)
+        };
+        drop(held);
+        assert_eq!(r, IPPROTO_DONE);
+        assert_eq!(records(&so)[0].data, b"mine".to_vec());
+
+        close(so);
+    }
+
+    /// An ICMP message (type `ty`, code `code`, `icmp_nextmtu` `mtu`) returning the IPv4
+    /// header of a datagram from `src`:`sport` (its bytes `sport_raw` as they are) to
+    /// `dst`:`dport`, and the UDP ports: `CtlArg::Ip`'s bytes.
+    fn quote(src: [u8; 4], sport_raw: [u8; 2], dst: [u8; 4], dport: u16, mtu: u16) -> Vec<u8> {
+        let mut ip = Ip {
+            ip_len: 28u16.to_be(),
+            ip_ttl: 64,
+            ip_p: IPPROTO_UDP as u8,
+            ip_src: InAddr {
+                s_addr: u32::from_ne_bytes(src),
+            },
+            ip_dst: InAddr {
+                s_addr: u32::from_ne_bytes(dst),
+            },
+            ..Ip::default()
+        };
+        ip.set_ip_v(4);
+        ip.set_ip_hl(5);
+        let mut b = std::vec![3u8, 3, 0, 0, 0, 0];
+        b.extend_from_slice(&mtu.to_be_bytes());
+        let mut h = [0u8; 20];
+        assert!(pod::put(&mut h, 0, &ip));
+        b.extend_from_slice(&h);
+        b.extend_from_slice(&sport_raw);
+        b.extend_from_slice(&dport.to_be_bytes());
+        b.extend_from_slice(&[0, 8, 0, 0]);
+        b
+    }
+
+    /// `pr_ctlinput` of UDP under the shared net lock, as ICMP's input calls it.
+    fn ctl4(cmd: i32, to: &SockaddrIn, arg: CtlArg<'_>) {
+        let w = hal::netlock::NETLOCK.read();
+        let net = NetHeld::of(&w).expect("the net lock");
+        let sa = bytes_of(core::slice::from_ref(to));
+        udp_ctlinput::<G>(
+            cmd,
+            SockaddrView::new(sa).expect("an address"),
+            0,
+            arg,
+            &net,
+        );
+    }
+
+    #[test]
+    fn the_control_inputs_tell_the_sockets_they_concern() {
+        use crate::net::proto::PRC_UNREACH_PORT;
+
+        let (_g, _p) = testudp::setup();
+        let legs = crate::netinet::tcp_subr::testtcp::sig_legs();
+        let n = 205;
+        let (_ifp, _d) = testinet::iface(b"udpc0", [10, 9, n, 1]);
+        let so = testudp::socket(&UdpProto);
+        locked(&so, |w| udp_connect(&so, w, &nam(&sin([10, 9, n, 2], 53)))).expect("connect");
+        let lport = sotoinpcb(&so).expect("its pcb").inp_lport.get();
+        let peer = sin([10, 9, n, 2], 53);
+
+        // A port unreachable quoting our datagram: the connected socket gets ECONNREFUSED,
+        // collected by its next request; nothing else is locked twice (input holds no socket
+        // lock, the error is set under in_pcbsolock's).
+        let q = quote([10, 9, n, 1], lport.to_ne_bytes(), [10, 9, n, 2], 53, 0);
+        ctl4(PRC_UNREACH_PORT, &peer, CtlArg::Ip(&q));
+        assert_eq!(so.error(), Some(Errno::ECONNREFUSED));
+        so.set_error(None);
+        // A quote of another port reaches nobody.
+        let other = quote([10, 9, n, 1], 4444u16.to_be_bytes(), [10, 9, n, 2], 53, 0);
+        ctl4(PRC_UNREACH_PORT, &peer, CtlArg::Ip(&other));
+        assert_eq!(so.error(), None);
+        // A dead host: every socket talking to it (no quote).
+        ctl4(PRC_HOSTDEAD, &peer, CtlArg::None);
+        assert_eq!(so.error(), Some(Errno::EHOSTDOWN));
+        so.set_error(None);
+        // A short quote: nothing read past the message, nothing told.
+        ctl4(PRC_UNREACH_PORT, &peer, CtlArg::Ip(&q[..30]));
+        assert_eq!(so.error(), None);
+
+        // UDP-encapsulated ESP's path MTU: the quote's source port compared with
+        // udpencap_port as the C compares it, the 16-bit network value against the host's
+        // (4500 = 0x1194: its bytes as they are in memory match, its network order does not).
+        let before = legs.udpencap_ctl.load(Ordering::Relaxed);
+        let raw = quote(
+            [10, 9, n, 1],
+            4500u16.to_ne_bytes(),
+            [10, 9, n, 2],
+            4500,
+            1300,
+        );
+        ctl4(PRC_MSGSIZE, &peer, CtlArg::Ip(&raw));
+        assert_eq!(
+            legs.udpencap_ctl.load(Ordering::Relaxed),
+            before + 1,
+            "IPsec's leg"
+        );
+        let net = quote(
+            [10, 9, n, 1],
+            4500u16.to_be_bytes(),
+            [10, 9, n, 2],
+            4500,
+            1300,
+        );
+        ctl4(PRC_MSGSIZE, &peer, CtlArg::Ip(&net));
+        assert_eq!(
+            legs.udpencap_ctl.load(Ordering::Relaxed),
+            before + 1,
+            "htons(port): the socket lookup instead"
+        );
+
+        close(so);
+    }
+
+    #[test]
+    fn udp6_ctlinput_tells_the_connected_socket() {
+        use crate::net::proto::PRC_UNREACH_PORT;
+        use crate::netinet6::icmp6::Ip6CtlParam;
+
+        let (_g, _p) = testudp::setup();
+        let n = 206;
+        let _d = iface6(b"udp6c0", n);
+        let so = testudp::socket(&Udp6Proto);
+        locked(&so, |w| udp_connect(&so, w, &nam(&sin6(a6(n, 2), 53)))).expect("connect");
+        let lport = sotoinpcb(&so).expect("its pcb").inp_lport.get();
+
+        // The quoted packet: our IPv6 header and the UDP ports after it.
+        let ip6 = Ip6Hdr {
+            ip6_flow: 0x6000_0000u32.to_be(),
+            ip6_plen: 8u16.to_be(),
+            ip6_nxt: IPPROTO_UDP as u8,
+            ip6_hlim: 64,
+            ip6_src: a6(n, 1),
+            ip6_dst: a6(n, 2),
+        };
+        let mut b = std::vec![0u8; 48];
+        assert!(pod::put(&mut b, 0, &ip6));
+        b[40..42].copy_from_slice(&lport.to_ne_bytes());
+        b[42..44].copy_from_slice(&53u16.to_be_bytes());
+        let m = pkt(&b);
+        let p = Ip6CtlParam {
+            m: &m,
+            icmp6: Default::default(),
+            ip6,
+            off: 40,
+            src: sin6(a6(n, 1), 0),
+            finaldst: core::cell::Cell::new(a6(n, 2)),
+            cmdarg: None,
+            nxt: IPPROTO_UDP as u8,
+        };
+        let to = sin6(a6(n, 2), 0);
+        {
+            let w = hal::netlock::NETLOCK.read();
+            let net = NetHeld::of(&w).expect("the net lock");
+            let sa = bytes_of(core::slice::from_ref(&to));
+            let v = SockaddrView::new(sa).expect("an address");
+            udp6_ctlinput::<G>(PRC_UNREACH_PORT, v, 0, CtlArg::Ip6(&p), &net);
+            // An IPv4 quote is never this entry's: nothing.
+            udp6_ctlinput::<G>(PRC_UNREACH_PORT, v, 0, CtlArg::Ip(&[0; 36]), &net);
+        }
+        assert_eq!(so.error(), Some(Errno::ECONNREFUSED));
+
+        close(so);
+    }
+
+    /// A datagram to the encapsulation port 4500 carrying `body` (an SPI first).
+    fn esp_in_udp(src: [u8; 4], body: &[u8]) -> MbufBox {
+        dgram4(src, 4500, [10, 9, 72, 1], 4500, body, None, None)
+    }
+
+    #[test]
+    fn esp_in_udp_goes_to_ipsec_unless_its_spi_is_zero() {
+        let (_g, _p) = testudp::setup();
+        let legs = crate::netinet::tcp_subr::testtcp::sig_legs();
+        let so = testudp::socket(&UdpProto);
+        bind(&so, &nam(&sin([0; 4], 4500))).expect("bind");
+        let src = [10, 9, 72, 2];
+
+        // A non-zero SPI: the UDP header removed (the IP header moved up over it), the ESP
+        // packet handed to IPsec's leg at the IP header's end, protocol byte at ip_p.
+        let before = legs.udpencap_in.lock().expect("the record").len();
+        input(esp_in_udp(src, &[0, 0, 1, 0, 0xee, 0xee]), 20, AF_INET_I32);
+        let got = legs.udpencap_in.lock().expect("the record")[before..].to_vec();
+        assert_eq!(got.len(), 1, "IPsec's leg");
+        let (skip, protoff, af, head) = got[0].clone();
+        assert_eq!((skip, protoff, af), (20, 9, AF_INET_I32));
+        assert_eq!(head[0], 0x45, "the IP header first");
+        assert_eq!(&head[20..26], &[0, 0, 1, 0, 0xee, 0xee], "the SPI after it");
+        assert!(records(&so).is_empty());
+
+        // SPI 0: for the socket.
+        input(esp_in_udp(src, &[0, 0, 0, 0, 1]), 20, AF_INET_I32);
+        assert_eq!(records(&so).len(), 1);
+        // Shorter than an SPI: dropped.
+        input(esp_in_udp(src, &[1, 2, 3]), 20, AF_INET_I32);
+        assert_eq!(records(&so).len(), 1);
+        // pf diverted it: not IPsec's, whatever the SPI; the socket lookup instead (pf's
+        // divert-to key, which the tests' kernel has no pf to give: no socket then).
+        let m = esp_in_udp(src, &[0, 0, 1, 0, 2]);
+        m.m_pkthdr().pf.flags.set(PF_TAG_DIVERTED);
+        let miss = stat(UdpstatCounters::UdpsPcbhashmiss);
+        input(m, 20, AF_INET_I32);
+        assert_eq!(
+            stat(UdpstatCounters::UdpsPcbhashmiss),
+            miss + 1,
+            "the lookup"
+        );
+        assert_eq!(records(&so).len(), 1);
+        // ESP disabled: for the socket.
+        ESP_ENABLE.store(0, Ordering::Relaxed);
+        input(esp_in_udp(src, &[0, 0, 1, 0, 3]), 20, AF_INET_I32);
+        ESP_ENABLE.store(1, Ordering::Relaxed);
+        assert_eq!(records(&so).len(), 2);
+        assert_eq!(
+            legs.udpencap_in.lock().expect("the record").len(),
+            before + 1
+        );
+
+        close(so);
+    }
+
+    #[test]
+    fn the_inbound_policy_drops_or_gives_its_flow() {
+        use crate::netinet::tcp_subr::testtcp::{SPD_DENY, SPD_FLOW, SPD_FLOW_ID};
+
+        let (_g, _p) = testudp::setup();
+        let _legs = crate::netinet::tcp_subr::testtcp::sig_legs();
+        let so = testudp::socket(&UdpProto);
+        bind(&so, &nam(&sin([0; 4], 7003))).expect("bind");
+        let d = |src: [u8; 4]| dgram4(src, 6000, [10, 9, 72, 1], 7003, b"p", None, None);
+
+        // Refused: counted, dropped.
+        let nosec = stat(UdpstatCounters::UdpsNosec);
+        input(d(SPD_DENY), 20, AF_INET_I32);
+        assert_eq!(stat(UdpstatCounters::UdpsNosec), nosec + 1);
+        assert!(records(&so).is_empty());
+
+        // An SA's flow: a control message only for a socket that asked (IP_IPSECFLOWINFO).
+        input(d(SPD_FLOW), 20, AF_INET_I32);
+        assert!(records(&so)[0].ctl.is_empty());
+        sotoinpcb(&so)
+            .expect("its pcb")
+            .set_flags(INP_IPSECFLOWINFO);
+        input(d(SPD_FLOW), 20, AF_INET_I32);
+        assert_eq!(
+            records(&so)[1].ctl,
+            std::vec![(
+                IPPROTO_IP,
+                IP_IPSECFLOWINFO,
+                SPD_FLOW_ID.to_ne_bytes().to_vec()
+            )]
+        );
+        // No SA, no flow: nothing.
+        input(d([10, 9, 72, 3]), 20, AF_INET_I32);
+        assert!(records(&so)[2].ctl.is_empty());
+
+        close(so);
+    }
+
+    /// What the test upcall saw: its argument, the headers' length, the UDP source port and
+    /// the IP source.
+    static UPCALLS: std::sync::Mutex<Vec<(usize, i32, u16, [u8; 4])>> =
+        std::sync::Mutex::new(Vec::new());
+
+    /// A test `inp_upcall`: records its call, takes the packet for argument 1, gives it back
+    /// for any other.
+    fn upcall(
+        arg: usize,
+        m: MbufBox,
+        ip: Option<&Ip>,
+        _ip6: Option<&Ip6Hdr>,
+        uh: &Udphdr,
+        hlen: i32,
+        _ns: Option<&mut Netstack>,
+    ) -> Option<MbufBox> {
+        let src = ip.map_or([0; 4], |ip| ip.ip_src.s_addr.to_ne_bytes());
+        if let Ok(mut u) = UPCALLS.lock() {
+            u.push((arg, hlen, u16::from_be(uh.uh_sport), src));
+        }
+        (arg != 1).then_some(m)
+    }
+
+    #[test]
+    fn the_upcall_sees_the_datagram_first() {
+        let (_g, _p) = testudp::setup();
+        let n = 207;
+        let taker = testudp::socket(&UdpProto);
+        bind(&taker, &nam(&sin([0; 4], 7004))).expect("bind");
+        let giver = testudp::socket(&UdpProto);
+        bind(&giver, &nam(&sin([0; 4], 7005))).expect("bind");
+        sotoinpcb(&taker)
+            .expect("its pcb")
+            .set_upcall(upcall, 1)
+            .expect("set");
+        sotoinpcb(&giver)
+            .expect("its pcb")
+            .set_upcall(upcall, 2)
+            .expect("set");
+        assert_eq!(
+            sotoinpcb(&giver).expect("its pcb").set_upcall(upcall, 3),
+            Err(Errno::EBUSY),
+            "set once"
+        );
+        UPCALLS.lock().expect("the record").clear();
+
+        input(
+            dgram4([10, 9, n, 2], 6001, [10, 9, n, 1], 7004, b"t", None, None),
+            20,
+            AF_INET_I32,
+        );
+        input(
+            dgram4([10, 9, n, 2], 6002, [10, 9, n, 1], 7005, b"g", None, None),
+            20,
+            AF_INET_I32,
+        );
+        assert_eq!(
+            *UPCALLS.lock().expect("the record"),
+            std::vec![(1, 28, 6001, [10, 9, n, 2]), (2, 28, 6002, [10, 9, n, 2])]
+        );
+        assert!(records(&taker).is_empty(), "taken by the upcall");
+        assert_eq!(records(&giver)[0].data, b"g".to_vec(), "given back");
+
+        close(taker);
+        close(giver);
+    }
+
+    /// `net.inet.udp.<name>` as an `int`, `new` written first when given.
+    fn int_sysctl(name: i32, u: usize, new: Option<i32>) -> Result<i32, Errno> {
+        let mut len = size_of::<i32>();
+        if let Some(v) = new {
+            UserPtr::<i32>::new(u + 8).copyout(&v).expect("copyout");
+        }
+        let mut r = SysctlReq {
+            oldp: u,
+            oldlenp: &mut len,
+            newp: if new.is_some() { u + 8 } else { 0 },
+            newlen: if new.is_some() { size_of::<i32>() } else { 0 },
+        };
+        udp_sysctl(&[name], &mut r)?;
+        Ok(UserPtr::<i32>::new(u).copyin().expect("copyin"))
+    }
+
+    #[test]
+    fn sysctl_names_bounds_stats_and_the_port_bitmaps() {
+        use crate::netinet::in_pcb::{BADDYNAMICPORTS, DP_MAPSIZE, ROOTONLYPORTS};
+        use crate::sysctl::SECURELEVEL;
+
+        let (_g, _p) = testudp::setup();
+        let u = crate::testutil::USER_BASE + 0x3_a000;
+
+        // The bounded integers.
+        assert_eq!(int_sysctl(UDPCTL_CHECKSUM, u, None), Ok(1));
+        assert_eq!(int_sysctl(UDPCTL_CHECKSUM, u, Some(2)), Err(Errno::EINVAL));
+        assert_eq!(int_sysctl(UDPCTL_CHECKSUM, u, Some(0)), Ok(1));
+        assert_eq!(UDPCKSUM.load(Ordering::Relaxed), 0);
+        assert_eq!(int_sysctl(UDPCTL_CHECKSUM, u, Some(1)), Ok(0));
+        let rs = UDP_RECVSPACE.load(Ordering::Relaxed);
+        assert_eq!(int_sysctl(UDPCTL_RECVSPACE, u, None), Ok(rs));
+        assert_eq!(
+            int_sysctl(UDPCTL_RECVSPACE, u, Some(SB_MAX as i32 + 1)),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(int_sysctl(UDPCTL_SENDSPACE, u, None), Ok(9216));
+        assert_eq!(int_sysctl(99, u, None), Err(Errno::EOPNOTSUPP));
+        // Not terminal below a name.
+        let mut len = 4;
+        let mut r = SysctlReq {
+            oldp: u,
+            oldlenp: &mut len,
+            newp: 0,
+            newlen: 0,
+        };
+        assert_eq!(udp_sysctl(&[UDPCTL_STATS, 1], &mut r), Err(Errno::ENOTDIR));
+
+        // The statistics: struct udpstat, read only.
+        udpstat_inc(UdpstatCounters::UdpsOpackets);
+        let mut len = size_of::<Udpstat>();
+        let mut r = SysctlReq {
+            oldp: u,
+            oldlenp: &mut len,
+            newp: 0,
+            newlen: 0,
+        };
+        udp_sysctl(&[UDPCTL_STATS], &mut r).expect("stats");
+        assert_eq!(len, 104);
+        let s: Udpstat = UserPtr::<Udpstat>::new(u).copyin().expect("copyin");
+        assert_eq!(s.udps_opackets, stat(UdpstatCounters::UdpsOpackets));
+        let mut r = SysctlReq {
+            oldp: 0,
+            oldlenp: &mut len,
+            newp: u,
+            newlen: 104,
+        };
+        assert_eq!(udp_sysctl(&[UDPCTL_STATS], &mut r), Err(Errno::EPERM));
+
+        // The bitmaps: UDP's half read whole, a new one written under the exclusive net lock
+        // (TCP's half untouched); rootonly refuses a new value at securelevel > 0.
+        let buflen = DP_MAPSIZE * size_of::<u32>();
+        let map = |name: i32, oldp: usize, newp: usize| -> Result<(), Errno> {
+            let mut len = buflen;
+            let mut r = SysctlReq {
+                oldp,
+                oldlenp: &mut len,
+                newp,
+                newlen: if newp != 0 { buflen } else { 0 },
+            };
+            udp_sysctl(&[name], &mut r)
+        };
+        let w0 = BADDYNAMICPORTS.udp[0].load(Ordering::Relaxed);
+        let t0 = BADDYNAMICPORTS.tcp[0].load(Ordering::Relaxed);
+        assert_eq!(map(UDPCTL_BADDYNAMIC, u, 0), Ok(()));
+        assert_eq!(UserPtr::<u32>::new(u).copyin(), Ok(w0));
+        UserPtr::<u32>::new(u)
+            .copyout(&0x8000_0001)
+            .expect("copyout");
+        assert_eq!(map(UDPCTL_BADDYNAMIC, 0, u), Ok(()));
+        assert_eq!(BADDYNAMICPORTS.udp[0].load(Ordering::Relaxed), 0x8000_0001);
+        assert_eq!(
+            BADDYNAMICPORTS.tcp[0].load(Ordering::Relaxed),
+            t0,
+            "TCP's half untouched"
+        );
+        UserPtr::<u32>::new(u).copyout(&w0).expect("copyout");
+        assert_eq!(map(UDPCTL_BADDYNAMIC, 0, u), Ok(()));
+        assert_eq!(BADDYNAMICPORTS.udp[0].load(Ordering::Relaxed), w0);
+        let r0 = ROOTONLYPORTS.udp[0].load(Ordering::Relaxed);
+        let level = SECURELEVEL.swap(1, Ordering::Relaxed);
+        let refused = map(UDPCTL_ROOTONLY, 0, u);
+        let read = map(UDPCTL_ROOTONLY, u, 0);
+        SECURELEVEL.store(level, Ordering::Relaxed);
+        assert_eq!((refused, read), (Err(Errno::EPERM), Ok(())));
+        assert_eq!(ROOTONLYPORTS.udp[0].load(Ordering::Relaxed), r0);
     }
 }
 /* </TESTS> */
