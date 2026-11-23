@@ -198,7 +198,7 @@ use hal::sys::netinet_tcp::{
 use hal::sys::netinet6_in6::{SA6_ANY, SockaddrIn6, in6_is_addr_unspecified, in6_is_addr_v4mapped};
 use hal::sys::socket::{AF_INET, AF_INET6};
 
-use crate::assert::kpanic;
+use crate::assert::{kassert, kpanic};
 use crate::crypto::md5::{MD5_DIGEST_LENGTH, Md5Ctx};
 use crate::crypto::sha2::{SHA512_DIGEST_LENGTH, Sha512Ctx};
 use crate::net::ipsec_hooks::{SOCKADDR_UNION_LEN, TdbRef, ipsec};
@@ -798,10 +798,20 @@ pub fn tcp_freeq(st: &mut TcpState) -> bool {
 /// `tcp_free`: the control block `tcp_close` closed, put back (the C's `pool_put(&tcpcb_pool,
 /// tp)` and `inp->inp_ppcb = NULL`, here a few statements later under the same socket lock):
 /// the slot emptied with the socket lock's part `PCB` (`pcb`), its timers' handles of the pcb
-/// dropped with it (D-11).
+/// dropped with it (D-11). The socket's locked slot, which the requests read
+/// (`sotoinpcb_locked`), is emptied with it (N6.6a5): `in_pcbdetach` emptied the counted one,
+/// and the pcb and its socket count each other until both are. A request has taken it out
+/// already (`tcp_usrreq`'s `tcp_free_request`).
 pub fn tcp_free<G: ProcGlue>(inp: &Inpcb<G>, pcb: &mut WitnessPart<'_>, closed: Closed) {
     let Closed(()) = closed;
     drop(inp.take_tcpcb(pcb));
+    if let Some(slot) = inp.socket().set_pcb_locked(pcb, None) {
+        kassert!(
+            slot.downcast_ref::<Inpcb<G>>()
+                .is_some_and(|s| core::ptr::eq(s, inp))
+        );
+        drop(slot);
+    }
 }
 
 /// `tcp_rscale`: compute proper scaling value for receiver window from buffer space.
@@ -1530,7 +1540,17 @@ pub(crate) mod testtcp {
         with_lock(&inp, |inp, il| {
             assert!(tcp_newtcpcb(inp, il, M_WAIT).is_some(), "a control block");
         });
+        attach_slot(&inp);
         (so, inp)
+    }
+
+    /// What `tcp_attach` does once the control block is made: the pcb in its socket's
+    /// locked slot, which the user requests read (`sotoinpcb_locked`).
+    pub(crate) fn attach_slot(inp: &InpcbRef<G>) {
+        let h = PoolArc::erase(inp.clone());
+        with_lock(inp, |i, il| {
+            assert!(i.socket().set_pcb_locked(&mut il.pcb, Some(h)).is_none());
+        });
     }
 
     /// Runs `f` with the socket of `inp` locked in parts under the shared net lock (a
@@ -1897,6 +1917,7 @@ pub(crate) mod testtcp {
         with_lock(&inp, |inp, il| {
             assert!(tcp_newtcpcb(inp, il, M_WAIT).is_some(), "a control block");
         });
+        attach_slot(&inp);
         crate::net::socket::soreserve(&so, 16384, 16384).expect("the buffers");
         with_tp(&inp, |mut tp| {
             tp.st
@@ -2380,8 +2401,8 @@ mod tests {
         let tcpcbs = testtcp::tcpcbs();
         let (so, inp) = testtcp::conn();
         assert_eq!(testtcp::tcpcbs(), tcpcbs + 1);
-        // The pcb's handles: ours, the socket's anchor, its so_pcb slot's, and one per timer
-        // (D-11).
+        // The pcb's handles: ours, the socket's anchor, its two so_pcb slots' (the counted
+        // one and the requests' locked one), and one per timer (D-11).
         let handles = PoolArc::count(&inp);
         testtcp::with_tp(&inp, |mut tp| {
             let st = &*tp.st;
@@ -2419,12 +2440,12 @@ mod tests {
         drop(so);
         // tcp_free: the item back, its five handles of the pcb gone with its timers.
         assert_eq!(testtcp::tcpcbs(), tcpcbs);
-        // The anchor's, the socket's typed so_pcb slot's (N6.6a4, emptied by in_pcbdetach)
-        // and the timers'.
+        // The anchor's, the socket's typed so_pcb slot's (N6.6a4, emptied by in_pcbdetach),
+        // its locked slot's (N6.6a5, emptied by tcp_free) and the timers'.
         assert_eq!(
             PoolArc::count(&inp),
-            handles - TCPT_NTIMERS - 2,
-            "the timers', the anchor's and so_pcb's"
+            handles - TCPT_NTIMERS - 3,
+            "the timers', the anchor's and the two so_pcb slots'"
         );
         // The pcb is detached: its socket's lock finds no pcb any more.
         {

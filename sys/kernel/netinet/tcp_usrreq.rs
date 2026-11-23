@@ -135,15 +135,21 @@
 //!   values differ only in `pru_control` (`in_control`, `in6_control`), as the C's two tables
 //!   share every other function. Each request takes the socket's lock as a witness
 //!   ([`SoLocked`], the C's `soassertlocked`), opens it in parts ([`SoLocked::inet`]) and
-//!   reaches the control block through them (`intotcpcb`): `tcp_sogetpcb`'s two pointers are
-//!   the pcb's counted handle (`sotoinpcb`, one atomic pair per request where the C loads a
-//!   pointer: the slot is read without the socket lock by `kern.file` and `fstat`, so it is
-//!   a counted cell, N6.6a4; the N12 row) and a [`Tp`].
+//!   reaches the pcb and the control block through them: `tcp_sogetpcb`'s two pointers are
+//!   one [`Tp`], the pcb borrowed from the socket's locked slot (`sotoinpcb_locked`, part
+//!   `PCB`) and the block from the pcb's (`intotcpcb`), for as long as the parts are
+//!   borrowed: the C's two loads, no count taken (the review's S3, the user's decision). The
+//!   socket's counted slot (`sotoinpcb`, a reader pair and a count pair) stays for the
+//!   readers without the socket lock (`kern.file`, `fstat`, N6.6a4). `tcp_attach` fills the
+//!   locked slot with `in_pcballoc`'s handle once the block is made; `tcp_free` empties it.
 //! - `tp = tcp_close(tp)`, `tp = tcp_drop(tp, e)` and the `tcp_dodisconnect`/
 //!   `tcp_usrclosed` answers (a block or NULL) are [`TpOrClosed`]: the request that owns the
-//!   socket lock's parts frees a [`Closed`] block (`tcp_free`) before it unlocks, so a use of
-//!   the block after its close does not compile. `SO_DEBUG`'s `otp` is the block's address
-//!   before the request, never followed.
+//!   socket lock's parts frees a [`Closed`] block before it unlocks, so a use of the block
+//!   after its close does not compile; nor of the pcb, which the request borrowed from the
+//!   locked slot: freeing the block takes the pcb out of the slot (`tcp_free_request`, the
+//!   part `PCB` borrowed mutably), which compiles only once the borrow has ended, and the
+//!   slot's count keeps the pcb from `tcp_close`'s `in_pcbdetach` to then. `SO_DEBUG`'s
+//!   `otp` is the block's address before the request, never followed.
 //! - `tcp_ident` reads the two `sockaddr_storage`s whole and takes `sockaddr_in` or
 //!   `sockaddr_in6` from their first bytes by family (`hal::pod::at`), never cut at
 //!   `sa_len`: the C's casts. `TCPCTL_DROP` drops the connection under its socket's lock
@@ -168,7 +174,7 @@ use core::sync::atomic::{AtomicI32, Ordering};
 use hal::malloc::{M_WAITOK, MArray};
 use hal::netlock::{NETLOCK, NetHeld};
 use hal::pool::PoolArc;
-use hal::rwlock::RW_INTR;
+use hal::rwlock::{RW_INTR, WitnessPart};
 use hal::sys::errno::Errno;
 use hal::sys::netinet_in::{INADDR_ANY, INADDR_BROADCAST, IPPROTO_TCP, SockaddrIn, in_multicast};
 use hal::sys::netinet_tcp::{
@@ -213,10 +219,10 @@ use crate::net::socket::{
 };
 use crate::netinet::in_::{in_broadcast, in_control, in_nam2sin};
 use crate::netinet::in_pcb::{
-    BADDYNAMICPORTS, Baddynamicports, DP_MAPSIZE, INP_IPV6, Inpcb, InpcbRef, Inpcbtable,
-    ROOTONLYPORTS, in_pcballoc, in_pcbbind, in_pcbconnect, in_pcbdetach, in_pcbdisconnect,
-    in_pcblookup, in_pcblookup_listen, in_pcbsolock, in_pcbunset_faddr, in_setpeeraddr,
-    in_setsockaddr, sotoinpcb,
+    BADDYNAMICPORTS, Baddynamicports, DP_MAPSIZE, INP_IPV6, Inpcb, Inpcbtable, ROOTONLYPORTS,
+    in_pcballoc, in_pcbbind, in_pcbconnect, in_pcbdetach, in_pcbdisconnect, in_pcblookup,
+    in_pcblookup_listen, in_pcbsolock, in_pcbunset_faddr, in_setpeeraddr, in_setsockaddr,
+    sotoinpcb_locked,
 };
 use crate::netinet::ip_output::ip_ctloutput;
 use crate::netinet::tcp_debug::{TA_USER, tcp_trace};
@@ -242,7 +248,7 @@ use crate::netinet::tcp_var::{
     TCP_RTT_BASE_SHIFT, TCP_RTT_SHIFT, TCP_RTTVAR_SHIFT, TCPCOUNTERS, TCPOOB_HADDATA,
     TCPOOB_HAVEDATA, TCPS_NCOUNTERS, TF_ECN_PERMIT, TF_NODELAY, TF_NOPUSH, TF_RCVD_SCALE,
     TF_RCVD_TSTMP, TF_REQ_SCALE, TF_REQ_TSTMP, TF_SACK_PERMIT, TF_SIGNATURE, TcpState,
-    TcpstatCounters, Tp, intotcpcb, tcp_now, tcp_time, tcpstat_inc,
+    TcpstatCounters, Tp, intotcpcb, intotcpcb_parts, tcp_now, tcp_time, tcpstat_inc,
 };
 use crate::netinet6::in6::{in6_control, in6_nam2sin6};
 use crate::netinet6::in6_pcb::{
@@ -361,12 +367,6 @@ static TCPCTL_VARS: [SysctlBoundedArgs; 14] = [
     SysctlBoundedArgs::new(TCPCTL_TSO, &TCP_DO_TSO, 0, 1),
 ];
 
-/// The pcb of a TCP socket (`tcp_sogetpcb`'s first half): counted for the request; without
-/// one, the socket's pending error or `EINVAL`.
-fn tcp_sogetinp<G: ProcGlue>(so: &Socket<G>) -> Result<InpcbRef<G>, Errno> {
-    sotoinpcb(so).ok_or_else(|| so.error().unwrap_or(Errno::EINVAL))
-}
-
 /// The socket lock of a request opened in its parts (the C's `soassertlocked`): a kernel TCP
 /// socket is always held by a witness under a proof of the net lock.
 fn inet<'w>(w: &'w mut SoLocked<'_>) -> InetLocked<'w> {
@@ -380,13 +380,35 @@ fn inet<'w>(w: &'w mut SoLocked<'_>) -> InetLocked<'w> {
 
 /// `tcp_sogetpcb`: when a TCP is attached to a socket, then there will be a (struct inpcb)
 /// pointed at by the socket, and this structure will point at a subsidiary (struct tcpcb):
-/// the control block of `inp`, opened through `il`, or the socket's pending error or `EINVAL`.
+/// both borrowed through the socket lock's parts (`il`) for as long as the answer lives, the
+/// pcb from the socket's locked slot (`sotoinpcb_locked`, part `PCB`: the C's load of
+/// `so_pcb`, no count taken) and the control block from the pcb's (`intotcpcb`). Without
+/// either, the socket's pending error or `EINVAL`.
 fn tcp_sogetpcb<'a, 'w, G: ProcGlue>(
-    so: &Socket<G>,
-    inp: &'a Inpcb<G>,
+    so: &'a Socket<G>,
     il: &'a mut InetLocked<'w>,
 ) -> Result<Tp<'a, 'w, G>, Errno> {
-    intotcpcb(inp, il).ok_or_else(|| so.error().unwrap_or(Errno::EINVAL))
+    let InetLocked {
+        pcb, tcp, syn, net, ..
+    } = il;
+    let pcb: &'a WitnessPart<'w> = pcb;
+    sotoinpcb_locked(so, pcb)
+        .and_then(|inp| intotcpcb_parts(inp, pcb, tcp, syn, net))
+        .ok_or_else(|| so.error().unwrap_or(Errno::EINVAL))
+}
+
+/// `tcp_free` of the control block a request closed ([`Closed`]: `tcp_close` ran, and its
+/// `in_pcbdetach`): the pcb taken out of the socket's locked slot, whose count becomes this
+/// frame's (the request borrowed the pcb from the slot), the block freed through it, then
+/// the count dropped (the C's `in_pcbunref`, `in_pcbdetach`'s last step).
+fn tcp_free_request<G: ProcGlue>(so: &Socket<G>, pcb: &mut WitnessPart<'_>, closed: Closed) {
+    let slot = so.set_pcb_locked(pcb, None);
+    match slot.as_ref().and_then(|s| s.downcast_ref::<Inpcb<G>>()) {
+        Some(inp) => tcp_free(inp, pcb, closed),
+        None => kpanic(format_args!(
+            "tcp_free: socket {so:p}: no pcb in its locked slot"
+        )),
+    }
 }
 
 /// `otp` and `ostate` of a request on a socket with `SO_DEBUG`: the control block's address
@@ -577,19 +599,20 @@ pub fn tcp_ctloutput<G: ProcGlue>(
     optname: i32,
     m: Option<&mut Mbuf>,
 ) -> Result<(), Errno> {
-    let Some(inp) = sotoinpcb(so) else {
-        return Err(Errno::ECONNRESET);
-    };
     let mut il = inet(w);
     if level != IPPROTO_TCP {
+        let Some(inp) = sotoinpcb_locked(so, &il.pcb) else {
+            return Err(Errno::ECONNRESET);
+        };
         if inp.has_flags(INP_IPV6) {
-            return ip6_ctloutput(op, &inp, level, optname, m, &il.net);
+            return ip6_ctloutput(op, inp, level, optname, m, &il.net);
         }
         let mut options = inp.options();
-        return ip_ctloutput(op, &inp, &mut options, level, optname, m, &il.net);
+        return ip_ctloutput(op, inp, &mut options, level, optname, m, &il.net);
     }
-    let Some(mut tp) = intotcpcb(&inp, &mut il) else {
-        // The C dereferences the control block unchecked; a socket being closed has none.
+    // No pcb: the C's ECONNRESET. A pcb without a control block: the C dereferences it
+    // unchecked (the Deviations).
+    let Ok(mut tp) = tcp_sogetpcb(so, &mut il) else {
         return Err(Errno::ECONNRESET);
     };
 
@@ -757,6 +780,9 @@ pub fn tcp_attach<G: ProcGlue>(
         let otp = core::ptr::from_ref::<crate::netinet::tcp_var::Tcpcb<G>>(&tp.cb).addr();
         tcp_trace(TA_USER, TCPS_CLOSED, Some(tp.st), otp, None, PRU_ATTACH, 0);
     }
+    // so->so_pcb for the requests (`tcp_sogetpcb`): in_pcballoc's handle, kept by the
+    // socket's locked slot until tcp_free.
+    drop(so.set_pcb_locked(&mut il.pcb, Some(PoolArc::erase(inp))));
     Ok(())
 }
 
@@ -764,16 +790,15 @@ pub fn tcp_attach<G: ProcGlue>(
 /// non-embryonic, then can't do this directly: have to initiate a PRU_DISCONNECT, which may
 /// finish later; embryonic TCB's can just be discarded here.
 pub fn tcp_detach<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) -> Result<(), Errno> {
-    let inp = tcp_sogetinp(so)?;
     let mut il = inet(w);
-    let tp = tcp_sogetpcb(so, &inp, &mut il)?;
+    let tp = tcp_sogetpcb(so, &mut il)?;
     let start = trace_start(&tp);
 
     let end = tcp_dodisconnect(tp);
 
     trace_end(start, end.st(), PRU_DETACH);
     if let TpOrClosed::Closed(c) = end {
-        tcp_free(&inp, &mut il.pcb, c);
+        tcp_free_request(so, &mut il.pcb, c);
     }
     Ok(())
 }
@@ -785,12 +810,11 @@ pub fn tcp_bind<G: ProcGlue>(
     nam: &Mbuf,
     p: &Thread<G>,
 ) -> Result<(), Errno> {
-    let inp = tcp_sogetinp(so)?;
     let mut il = inet(w);
-    let tp = tcp_sogetpcb(so, &inp, &mut il)?;
+    let tp = tcp_sogetpcb(so, &mut il)?;
     let start = trace_start(&tp);
 
-    let error = in_pcbbind(&inp, Some(nam), p, tp.net);
+    let error = in_pcbbind(tp.inp, Some(nam), p, tp.net);
 
     trace_end(start, Some(tp.st), PRU_BIND);
     error
@@ -798,13 +822,12 @@ pub fn tcp_bind<G: ProcGlue>(
 
 /// `tcp_listen`: prepare to accept connections.
 pub fn tcp_listen<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) -> Result<(), Errno> {
-    let inp = tcp_sogetinp(so)?;
     let mut il = inet(w);
-    let tp = tcp_sogetpcb(so, &inp, &mut il)?;
+    let tp = tcp_sogetpcb(so, &mut il)?;
     let start = trace_start(&tp);
 
-    let error = if inp.inp_lport.get() == 0 {
-        with_curproc::<G, _>("tcp_listen", |p| in_pcbbind(&inp, None, p, tp.net))
+    let error = if tp.inp.inp_lport.get() == 0 {
+        with_curproc::<G, _>("tcp_listen", |p| in_pcbbind(tp.inp, None, p, tp.net))
     } else {
         Ok(())
     };
@@ -826,14 +849,18 @@ pub fn tcp_connect<G: ProcGlue>(
     w: &mut SoLocked<'_>,
     nam: &Mbuf,
 ) -> Result<(), Errno> {
-    let inp = tcp_sogetinp(so)?;
     let mut il = inet(w);
-    let mut tp = tcp_sogetpcb(so, &inp, &mut il)?;
+    let mut tp = tcp_sogetpcb(so, &mut il)?;
     let start = trace_start(&tp);
 
     let error = tcp_connect_tp(&mut tp, nam);
 
     trace_end(start, Some(tp.st), PRU_CONNECT);
+    if error.is_err() && !so.has_pcb() {
+        // tcp_connect_tp's in_pcbdetach (a socket without a file): the locked slot let go
+        // too, now that nothing borrows the pcb from it.
+        drop(so.set_pcb_locked(&mut il.pcb, None));
+    }
     error
 }
 
@@ -894,11 +921,10 @@ pub fn tcp_accept<G: ProcGlue>(
     w: &mut SoLocked<'_>,
     nam: &mut Mbuf,
 ) -> Result<(), Errno> {
-    let inp = tcp_sogetinp(so)?;
     let mut il = inet(w);
-    let tp = tcp_sogetpcb(so, &inp, &mut il)?;
+    let tp = tcp_sogetpcb(so, &mut il)?;
 
-    tcp_setpeeraddr(&inp, nam);
+    tcp_setpeeraddr(tp.inp, nam);
 
     trace_now(&tp, PRU_ACCEPT);
     Ok(())
@@ -912,25 +938,23 @@ pub fn tcp_accept<G: ProcGlue>(
 ///
 /// SHOULD IMPLEMENT LATER PRU_CONNECT VIA REALLOC TCPCB.
 pub fn tcp_disconnect<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) -> Result<(), Errno> {
-    let inp = tcp_sogetinp(so)?;
     let mut il = inet(w);
-    let tp = tcp_sogetpcb(so, &inp, &mut il)?;
+    let tp = tcp_sogetpcb(so, &mut il)?;
     let start = trace_start(&tp);
 
     let end = tcp_dodisconnect(tp);
 
     trace_end(start, end.st(), PRU_DISCONNECT);
     if let TpOrClosed::Closed(c) = end {
-        tcp_free(&inp, &mut il.pcb, c);
+        tcp_free_request(so, &mut il.pcb, c);
     }
     Ok(())
 }
 
 /// `tcp_shutdown`: mark the connection as being incapable of further output.
 pub fn tcp_shutdown<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) -> Result<(), Errno> {
-    let inp = tcp_sogetinp(so)?;
     let mut il = inet(w);
-    let tp = tcp_sogetpcb(so, &inp, &mut il)?;
+    let tp = tcp_sogetpcb(so, &mut il)?;
     let start = trace_start(&tp);
 
     let (end, error) = if so.so_snd.has_state(SS_CANTSENDMORE) {
@@ -948,18 +972,15 @@ pub fn tcp_shutdown<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) -> Result
 
     trace_end(start, end.st(), PRU_SHUTDOWN);
     if let TpOrClosed::Closed(c) = end {
-        tcp_free(&inp, &mut il.pcb, c);
+        tcp_free_request(so, &mut il.pcb, c);
     }
     error
 }
 
 /// `tcp_rcvd`: after a receive, possibly send window update to peer.
 pub fn tcp_rcvd<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) {
-    let Ok(inp) = tcp_sogetinp(so) else {
-        return;
-    };
     let mut il = inet(w);
-    let Ok(mut tp) = tcp_sogetpcb(so, &inp, &mut il) else {
+    let Ok(mut tp) = tcp_sogetpcb(so, &mut il) else {
         return;
     };
     let start = trace_start(&tp);
@@ -988,9 +1009,8 @@ pub fn tcp_send<G: ProcGlue>(
     }
     drop(control);
 
-    let inp = tcp_sogetinp(so)?;
     let mut il = inet(w);
-    let mut tp = tcp_sogetpcb(so, &inp, &mut il)?;
+    let mut tp = tcp_sogetpcb(so, &mut il)?;
     let start = trace_start(&tp);
 
     if let Some(m) = m {
@@ -1005,11 +1025,8 @@ pub fn tcp_send<G: ProcGlue>(
 
 /// `tcp_abort`: abort the TCP.
 pub fn tcp_abort<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) {
-    let Ok(inp) = tcp_sogetinp(so) else {
-        return;
-    };
     let mut il = inet(w);
-    let Ok(tp) = tcp_sogetpcb(so, &inp, &mut il) else {
+    let Ok(tp) = tcp_sogetpcb(so, &mut il) else {
         return;
     };
     let start = trace_start(&tp);
@@ -1017,7 +1034,7 @@ pub fn tcp_abort<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) {
     let c = tcp_drop(tp, Some(Errno::ECONNABORTED));
 
     trace_end(start, None, PRU_ABORT);
-    tcp_free(&inp, &mut il.pcb, c);
+    tcp_free_request(so, &mut il.pcb, c);
 }
 
 /// `tcp_sense`: the send buffer's size as the optimal block size.
@@ -1026,9 +1043,8 @@ pub fn tcp_sense<G: ProcGlue>(
     w: &mut SoLocked<'_>,
     ub: &mut Stat,
 ) -> Result<(), Errno> {
-    let inp = tcp_sogetinp(so)?;
     let mut il = inet(w);
-    let tp = tcp_sogetpcb(so, &inp, &mut il)?;
+    let tp = tcp_sogetpcb(so, &mut il)?;
 
     let g = so.so_snd.lock();
     ub.st_blksize = so.so_snd.hiwat() as _;
@@ -1045,9 +1061,8 @@ pub fn tcp_rcvoob<G: ProcGlue>(
     m: &mut Mbuf,
     flags: i32,
 ) -> Result<(), Errno> {
-    let inp = tcp_sogetinp(so)?;
     let mut il = inet(w);
-    let tp = tcp_sogetpcb(so, &inp, &mut il)?;
+    let tp = tcp_sogetpcb(so, &mut il)?;
 
     let st = &mut *tp.st;
     let error = if (so.oobmark() == 0 && !so.so_rcv.has_state(SS_RCVATMARK))
@@ -1081,9 +1096,8 @@ pub fn tcp_sendoob<G: ProcGlue>(
     }
     drop(control);
 
-    let inp = tcp_sogetinp(so)?;
     let mut il = inet(w);
-    let mut tp = tcp_sogetpcb(so, &inp, &mut il)?;
+    let mut tp = tcp_sogetpcb(so, &mut il)?;
     let start = trace_start(&tp);
 
     let error = if so.so_snd.sbspace() < -512 {
@@ -1113,11 +1127,10 @@ pub fn tcp_sockaddr<G: ProcGlue>(
     w: &mut SoLocked<'_>,
     nam: &mut Mbuf,
 ) -> Result<(), Errno> {
-    let inp = tcp_sogetinp(so)?;
     let mut il = inet(w);
-    let tp = tcp_sogetpcb(so, &inp, &mut il)?;
+    let tp = tcp_sogetpcb(so, &mut il)?;
 
-    tcp_setsockaddr(&inp, nam);
+    tcp_setsockaddr(tp.inp, nam);
 
     trace_now(&tp, PRU_SOCKADDR);
     Ok(())
@@ -1129,11 +1142,10 @@ pub fn tcp_peeraddr<G: ProcGlue>(
     w: &mut SoLocked<'_>,
     nam: &mut Mbuf,
 ) -> Result<(), Errno> {
-    let inp = tcp_sogetinp(so)?;
     let mut il = inet(w);
-    let tp = tcp_sogetpcb(so, &inp, &mut il)?;
+    let tp = tcp_sogetpcb(so, &mut il)?;
 
-    tcp_setpeeraddr(&inp, nam);
+    tcp_setpeeraddr(tp.inp, nam);
 
     trace_now(&tp, PRU_PEERADDR);
     Ok(())
@@ -1906,8 +1918,9 @@ impl<G: ProcGlue> Usrreqs<G> for TcpUsrreqs<G> {
         tcp_peeraddr(so, w, addr)
     }
     /// `in_flowid`.
-    fn flowid(&self, so: &Socket<G>, _w: &mut SoLocked<'_>) -> i32 {
-        sotoinpcb(so).map_or(0, |inp| i32::from(inp.inp_flowid.get()))
+    fn flowid(&self, so: &Socket<G>, w: &mut SoLocked<'_>) -> i32 {
+        let il = inet(w);
+        sotoinpcb_locked(so, &il.pcb).map_or(0, |inp| i32::from(inp.inp_flowid.get()))
     }
 }
 /* </CODE> */
@@ -1932,7 +1945,7 @@ mod tests {
     use super::*;
     use crate::net::mbuf::{M_DONTWAIT, M_TCP_CSUM_IN_OK, MT_DATA, MT_SONAME, m_get, m_gethdr};
     use crate::net::sockbuf::SS_CANTRCVMORE;
-    use crate::netinet::in_pcb::testinet;
+    use crate::netinet::in_pcb::{sotoinpcb, testinet};
     use crate::netinet::tcp_fsm::TCPS_TIME_WAIT;
     use crate::netinet::tcp_input::tcp_input;
     use crate::netinet::tcp_subr::testtcp::{self, TcpProto, estab, last, stat};
@@ -2803,6 +2816,106 @@ mod tests {
         }
         assert_eq!(received(&so), b"abc");
         testtcp::close(so, inp);
+    }
+
+    /// The pcb a request reaches, from the socket's locked slot (`sotoinpcb_locked`, part
+    /// `PCB`), as `tcp_sogetpcb` borrows it: the counted slot's pcb, or none.
+    fn slot_pcb(so: &Socket<testtcp::G>) -> Option<usize> {
+        locked(so, |w| {
+            let il = inet(w);
+            sotoinpcb_locked(so, &il.pcb).map(|i| core::ptr::from_ref(i).addr())
+        })
+    }
+
+    /// The review's S3: the requests borrow the pcb from the socket's locked slot, with no
+    /// count taken; `tcp_attach` fills the slot, every close empties it (a request's through
+    /// `tcp_free_request`, another frame's through `tcp_free`, `tcp_connect`'s detach of a
+    /// socket without a file by itself), and a request after the close answers the socket's
+    /// error as the C's `tcp_sogetpcb` (`tcp_ctloutput`'s other levels: `ECONNRESET`).
+    #[test]
+    fn the_requests_borrow_the_pcb_from_the_locked_slot_until_the_close() {
+        let (_g, _p) = testtcp::setup();
+        let n = 170;
+        let (_ifp, _d) = testinet::iface(b"tusrc", [10, 9, n, 1]);
+
+        // tcp_attach fills the slot with the counted slot's pcb.
+        let so = testtcp::socket(&TcpProto);
+        let inp = sotoinpcb(&so).expect("its pcb");
+        let addr = core::ptr::from_ref::<Inpcb<testtcp::G>>(&inp).addr();
+        assert_eq!(slot_pcb(&so), Some(addr));
+        // A request borrows it: no count taken while it holds the pcb and the block.
+        let before = PoolArc::count(&inp);
+        let (same, during) = locked(&so, |w| {
+            let mut il = inet(w);
+            let tp = tcp_sogetpcb(&so, &mut il).expect("the control block");
+            let same = core::ptr::eq(tp.inp, &*inp) && core::ptr::eq(tp.so, &*so);
+            (same, PoolArc::count(&inp))
+        });
+        assert!(same, "the socket's pcb and the socket");
+        assert_eq!(during, before, "no count taken by the request");
+        // tcp_abort (a request's close): the slots empty, the pcb's handles gone but ours.
+        locked(&so, |w| tcp_abort(&so, w));
+        assert_eq!(slot_pcb(&so), None);
+        assert!(sotoinpcb(&so).is_none());
+        assert_eq!(PoolArc::count(&inp), 1, "ours alone");
+        // A request after the close: the socket's error (ECONNABORTED), as tcp_sogetpcb's.
+        let mut m = optm(&[]);
+        let r = locked(&so, |w| tcp_sockaddr(&so, w, &mut m));
+        assert_eq!(r, Err(Errno::ECONNABORTED));
+        let r = locked(&so, |w| {
+            use hal::sys::netinet_in::{IP_TOS, IPPROTO_IP};
+            tcp_ctloutput(PRCO_GETOPT, &so, w, IPPROTO_IP, IP_TOS, Some(&mut m))
+        });
+        assert_eq!(r, Err(Errno::ECONNRESET), "no pcb: the C's ECONNRESET");
+        so.st_set(SS_NOFDREF);
+        drop(inp);
+        drop(so);
+
+        // Another frame's close (a callout's: tcp_close, then tcp_free under the lock it
+        // took): the slot emptied by tcp_free.
+        let (so, inp, _d) = estab(b"tusrd", n + 1);
+        assert_eq!(
+            slot_pcb(&so),
+            Some(core::ptr::from_ref::<Inpcb<testtcp::G>>(&inp).addr())
+        );
+        let emptied = testtcp::with_lock(&inp, |i, il| {
+            let tp = intotcpcb(i, il)?;
+            let c = tcp_close(tp);
+            tcp_free(i, &mut il.pcb, c);
+            Some(sotoinpcb_locked(i.socket(), &il.pcb).is_none())
+        });
+        assert_eq!(emptied, Some(true), "tcp_free emptied the locked slot");
+        assert_eq!(slot_pcb(&so), None);
+        so.st_set(SS_NOFDREF);
+        drop(inp);
+        drop(so);
+
+        // tcp_connect's template failure on a socket without a file: in_pcbdisconnect's
+        // in_pcbdetach, and the locked slot let go once the request is done with the pcb.
+        // A first connection clones the route to the peer (whose routing message would take
+        // the failing mbuf), and is dropped.
+        let warm = testtcp::socket(&TcpProto);
+        let r = locked(&warm, |w| tcp_connect(&warm, w, &nam4([10, 9, n, 2], 80)));
+        assert_eq!(r, Ok(()));
+        locked(&warm, |w| tcp_abort(&warm, w));
+        warm.st_set(SS_NOFDREF);
+        drop(warm);
+        let so = testtcp::socket(&TcpProto);
+        let inp = sotoinpcb(&so).expect("its pcb");
+        so.st_set(SS_NOFDREF);
+        let nam = nam4([10, 9, n, 2], 80);
+        crate::testutil::fail_pool("mbufpl", 1);
+        let r = locked(&so, |w| tcp_connect(&so, w, &nam));
+        crate::testutil::fail_pool("mbufpl", 0);
+        assert_eq!(r, Err(Errno::ENOBUFS));
+        assert!(!so.has_pcb(), "detached");
+        assert_eq!(slot_pcb(&so), None);
+        // The pcb keeps its control block (the C leaves `inp_ppcb` too: no `tcp_close` on
+        // this path), whose timers count the pcb: neither slot counts it any more.
+        let timers = crate::netinet::tcp_timer::TCPT_NTIMERS;
+        assert_eq!(PoolArc::count(&inp), 1 + timers, "ours and the timers'");
+        drop(inp);
+        drop(so);
     }
 }
 /* </TESTS> */

@@ -3611,6 +3611,8 @@ fn tcp_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
         });
         report(TCP_ROWS[1], r);
     }
+    // tcp_attach's last step, for tcp_send's tcp_sogetpcb: the pcb in the socket's locked slot.
+    drop(so.set_pcb_locked(&mut il.pcb, Some(hal::pool::PoolArc::erase(inp.clone()))));
     drop(il);
     if wanted(TCP_ROWS[2]) {
         let r = measure(OPS / 10, || {

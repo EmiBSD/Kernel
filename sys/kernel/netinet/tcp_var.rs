@@ -1214,8 +1214,19 @@ pub fn intotcpcb<'a, 'w, G: ProcGlue>(
     let InetLocked {
         pcb, tcp, syn, net, ..
     } = il;
-    let pcb: &'a WitnessPart<'w> = pcb;
-    let net: &'a NetHeld<'w> = net;
+    intotcpcb_parts(inp, pcb, tcp, syn, net)
+}
+
+/// [`intotcpcb`] over the parts of the socket lock one by one, for a caller whose `inp` is
+/// itself borrowed through the part `PCB` (the user requests' `tcp_sogetpcb`, which reads
+/// the pcb from the socket's locked slot).
+pub(crate) fn intotcpcb_parts<'a, 'w, G: ProcGlue>(
+    inp: &'a Inpcb<G>,
+    pcb: &'a WitnessPart<'w>,
+    tcp: &'a mut WitnessPart<'w>,
+    syn: &'a mut WitnessPart<'w>,
+    net: &'a NetHeld<'w>,
+) -> Option<Tp<'a, 'w, G>> {
     let cb = inp.tcpcb(pcb)?;
     let st = cb.get_ref().st.get_mut(tcp);
     Some(Tp {

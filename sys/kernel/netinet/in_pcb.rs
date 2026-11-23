@@ -2196,13 +2196,26 @@ pub fn in_pcbsolock<'a, G: ProcGlue>(
 /// no witness and counts the handle (brief 3.2 had a witness and no count): the C's
 /// `soassertlocked` is the caller's, who holds the socket's lock so the slot does not change
 /// meanwhile, and the count is one atomic increment per call: once per connection in
-/// `syn_cache_get` (from N6.6a5 also once per user request), never per segment, whose
-/// handle is the lookup's.
+/// `syn_cache_get`, never per segment, whose handle is the lookup's. TCP's user requests
+/// borrow the pcb instead ([`sotoinpcb_locked`], N6.6a5).
 pub fn sotoinpcb<G: ProcGlue>(so: &Socket<G>) -> Option<InpcbRef<G>> {
     let pcb = so.pcb_read();
     pcb.as_ref()?
         .downcast_ref::<Inpcb<G>>()
         .and_then(PoolArc::from_ref)
+}
+
+/// `sotoinpcb(so)` of a holder of the socket's lock (TCP's user requests, N6.6a5): the pcb
+/// borrowed from the socket's locked slot ([`Socket::pcb_locked`]) for as long as `pcb`, the
+/// lock's part `PCB`, is borrowed: the C's load of `so_pcb`, no count taken (the slot keeps
+/// the pcb, and its writer needs the part mutably). `None` before the protocol's attach and
+/// after its close (`tcp_free`), and for a socket whose slot another type fills.
+#[inline]
+pub fn sotoinpcb_locked<'a, G: ProcGlue>(
+    so: &'a Socket<G>,
+    pcb: &'a WitnessPart<'_>,
+) -> Option<&'a Inpcb<G>> {
+    so.pcb_locked(pcb)?.downcast_ref::<Inpcb<G>>()
 }
 
 /// `in_pcbsolock` held C-style, for `bsd`'s adapter (its protocols release the lock in
