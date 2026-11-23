@@ -1135,7 +1135,6 @@ pub(crate) mod testraw {
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
-    use core::sync::atomic::Ordering;
     use std::vec::Vec;
 
     use hal::sys::netinet_in::{IP_TTL, IPPROTO_TCP, IPPROTO_UDP};

@@ -1039,3 +1039,409 @@ impl<G: ProcGlue> Usrreqs<G> for Rip6Usrreqs<G> {
 // CTASSERT(sizeof(rip6stat) == rip6s_ncounters * sizeof(uint64_t)), the enum's end included.
 const _: () = assert!(Rip6statCounters::Rip6sOpackets as usize + 1 == RIP6S_NCOUNTERS);
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    use core::sync::atomic::AtomicU32;
+    use std::vec::Vec;
+
+    use hal::sys::netinet_icmp6::Icmp6Filter;
+    use hal::sys::netinet_in::IPPROTO_TCP;
+    use hal::sys::netinet6_in6::ICMP6_FILTER;
+    use hal::sys::socket::AF_INET;
+
+    use super::*;
+    use crate::net::mbuf::{M_WAIT, MT_SOOPTS, m_get};
+    use crate::net::proto::{PRC_HOSTDEAD, PRCO_GETOPT, PRCO_SETOPT};
+    use crate::netinet::raw_ip::testraw::{
+        self, DIVERT6, G, ICMP6, RAW6, close, locked, nam6, pkt, recv, socket, with_net,
+    };
+    use crate::netinet::tcp_subr::testtcp::{a6, iface6};
+
+    /// An option mbuf of `bytes`.
+    fn optm(bytes: &[u8]) -> MbufBox {
+        let mut m = m_get(M_WAIT, MT_SOOPTS).expect("an mbuf");
+        m.m_len().set(bytes.len() as u32);
+        m.data_mut().expect("writable").copy_from_slice(bytes);
+        m
+    }
+
+    /// `setsockopt` through `rip6_ctloutput`.
+    fn set(so: &Socket<G>, level: i32, opt: i32, v: &[u8]) -> Result<(), Errno> {
+        let mut m = optm(v);
+        locked(so, |w| {
+            rip6_ctloutput(PRCO_SETOPT, so, w, level, opt, Some(&mut m))
+        })
+    }
+
+    /// `getsockopt` through `rip6_ctloutput`: the answer's bytes.
+    fn get(so: &Socket<G>, level: i32, opt: i32) -> Result<Vec<u8>, Errno> {
+        let mut m = optm(&[]);
+        locked(so, |w| {
+            rip6_ctloutput(PRCO_GETOPT, so, w, level, opt, Some(&mut m))
+        })
+        .map(|()| m.data().to_vec())
+    }
+
+    /// The bytes of a filter.
+    fn fbytes(f: &Icmp6Filter) -> Vec<u8> {
+        f.icmp6_filt.iter().flat_map(|w| w.to_ne_bytes()).collect()
+    }
+
+    /// An IPv6 packet from `src` to `dst` of next header `nxt`, its 40-byte header and
+    /// `payload`.
+    fn ip6(src: In6Addr, dst: In6Addr, nxt: u8, payload: &[u8]) -> Vec<u8> {
+        let mut h = Ip6Hdr {
+            ip6_plen: (payload.len() as u16).to_be(),
+            ip6_nxt: nxt,
+            ip6_hlim: 64,
+            ip6_src: src,
+            ip6_dst: dst,
+            ..Ip6Hdr::zeroed()
+        };
+        h.set_ip6_vfc(IPV6_VERSION);
+        let mut b = std::vec![0u8; 40 + payload.len()];
+        assert!(pod::put(&mut b, 0, &h));
+        b[40..].copy_from_slice(payload);
+        b
+    }
+
+    /// `b` with the checksum of its payload stored at payload offset `off` (in6_cksum's).
+    fn with_sum(mut b: Vec<u8>, off: usize) -> Vec<u8> {
+        b[40 + off..42 + off].copy_from_slice(&[0, 0]);
+        let m = pkt(&b);
+        let sum = in6_cksum(&m, b[6], 40, (b.len() - 40) as u32);
+        b[40 + off..42 + off].copy_from_slice(&sum.to_ne_bytes());
+        b
+    }
+
+    /// `rip6_input` of `bytes` (whose next header is the protocol) under the shared net lock.
+    fn deliver(bytes: &[u8]) {
+        let p = i32::from(bytes[6]);
+        with_net(|net| {
+            let mut mp = Some(pkt(bytes));
+            let mut off = 40;
+            assert_eq!(
+                rip6_input::<G>(&mut mp, &mut off, p, i32::from(AF_INET6), None, net),
+                IPPROTO_DONE
+            );
+            assert!(mp.is_none(), "the packet consumed");
+        });
+    }
+
+    /// The statistic `c`.
+    fn r6s(c: Rip6statCounters) -> u64 {
+        RIP6COUNTERS.read()[c as usize]
+    }
+
+    /// `rip6_send` of `bytes` to `to`.
+    fn send(so: &Socket<G>, bytes: &[u8], to: Option<In6Addr>) -> Result<(), Errno> {
+        let n = to.map(nam6);
+        locked(so, |w| {
+            rip6_send(so, w, Some(pkt(bytes)), n.as_deref(), None)
+        })
+    }
+
+    #[test]
+    fn rip6_attach_needs_privilege_and_sets_no_checksum_and_a_pass_all_filter() {
+        let (_g, _p) = testraw::setup();
+        assert_eq!(socket(&RAW6, 58, false).err(), Some(Errno::EACCES));
+        assert_eq!(
+            socket(&RAW6, IPPROTO_MAX, true).err(),
+            Some(Errno::EPROTONOSUPPORT)
+        );
+        let so = socket(&RAW6, 253, true).expect("attached");
+        let inp = testraw::pcb(&so);
+        assert!(inp.has_flags(INP_IPV6));
+        assert_eq!(inp.inp_ipv6.ip6_nxt(), 253);
+        assert_eq!(inp.inp_cksum6.get(), -1);
+        let filt = inp.icmp6filt().expect("rip6_attach's filter");
+        assert!(
+            filt.iter()
+                .all(|w: &AtomicU32| w.load(Ordering::Relaxed) == u32::MAX)
+        );
+        assert!(core::ptr::eq(inp.table(), rawin6pcbtable::<G>()));
+        drop(inp);
+        close(so);
+    }
+
+    #[test]
+    fn icmpv6_reaches_the_sockets_whose_filter_passes_it() {
+        let (_g, _p) = testraw::setup();
+        let all = socket(&ICMP6, 58, true).expect("attached");
+        let no_echo = socket(&ICMP6, 58, true).expect("attached");
+        let other = socket(&RAW6, 253, true).expect("attached");
+        let mut f = Icmp6Filter::default();
+        f.setpassall();
+        f.setblock(128);
+        assert_eq!(
+            set(&no_echo, IPPROTO_ICMPV6, ICMP6_FILTER, &fbytes(&f)),
+            Ok(())
+        );
+        let ipackets = r6s(Rip6statCounters::Rip6sIpackets);
+
+        let (src, dst) = (a6(70, 2), a6(70, 1));
+        let request = with_sum(ip6(src, dst, 58, &[128, 0, 0, 0, 0, 1, 0, 1]), 2);
+        deliver(&request);
+        let (name, data) = recv(&all).expect("a copy");
+        assert_eq!(data, request[40..], "the headers before *offp stripped");
+        let from = pod::at::<SockaddrIn6>(&name, 0).expect("a sockaddr_in6");
+        assert_eq!(from.sin6_addr, src);
+        assert!(recv(&no_echo).is_none(), "ICMP6_FILTER_WILLBLOCK(128)");
+        assert!(recv(&other).is_none(), "another protocol");
+
+        let reply = with_sum(ip6(src, dst, 58, &[129, 0, 0, 0, 0, 1, 0, 1]), 2);
+        deliver(&reply);
+        assert!(recv(&all).is_some() && recv(&no_echo).is_some());
+        // ICMPv6 is counted by ICMPv6, not as raw input.
+        assert_eq!(r6s(Rip6statCounters::Rip6sIpackets), ipackets);
+
+        // The filter set again while packets are delivered by another thread: each word is
+        // read whole, each packet is delivered or blocked, nothing else.
+        let inp = testraw::pcb(&no_echo);
+        std::thread::scope(|s| {
+            let t = s.spawn(|| {
+                for _ in 0..64 {
+                    deliver(&request);
+                }
+            });
+            for i in 0..64 {
+                let mut g = optm(&fbytes(&if i % 2 == 0 {
+                    Icmp6Filter::default()
+                } else {
+                    f
+                }));
+                let _ = icmp6_ctloutput(
+                    PRCO_SETOPT,
+                    &inp,
+                    IPPROTO_ICMPV6,
+                    ICMP6_FILTER,
+                    Some(&mut g),
+                );
+            }
+            assert!(t.join().is_ok());
+        });
+        let mut n = 0;
+        while let Some((_, d)) = recv(&no_echo) {
+            assert_eq!(d, request[40..]);
+            n += 1;
+        }
+        assert!(n <= 64);
+        drop(inp);
+        for so in [all, no_echo, other] {
+            close(so);
+        }
+    }
+
+    #[test]
+    fn ipv6_checksum_offsets_are_verified_on_input() {
+        let (_g, _p) = testraw::setup();
+        let at2 = socket(&RAW6, 253, true).expect("attached");
+        let at8 = socket(&RAW6, 253, true).expect("attached");
+        assert_eq!(
+            set(&at2, IPPROTO_IPV6, IPV6_CHECKSUM, &2i32.to_ne_bytes()),
+            Ok(())
+        );
+        assert_eq!(
+            set(&at8, IPPROTO_IPV6, IPV6_CHECKSUM, &8i32.to_ne_bytes()),
+            Ok(())
+        );
+        let (src, dst) = (a6(71, 2), a6(71, 1));
+        let (isum, badsum) = (
+            r6s(Rip6statCounters::Rip6sIsum),
+            r6s(Rip6statCounters::Rip6sBadsum),
+        );
+
+        // A good sum at 2: the socket at 2 takes it; the one at 8 refuses it on the bound
+        // (8 bytes: 8 - 2 < 8) though the sum itself is good.
+        let good = with_sum(ip6(src, dst, 253, &[1, 2, 0, 0, 5, 6, 7, 8]), 2);
+        deliver(&good);
+        assert_eq!(recv(&at2).map(|r| r.1), Some(good[40..].to_vec()));
+        assert!(recv(&at8).is_none());
+        assert_eq!(r6s(Rip6statCounters::Rip6sIsum), isum + 2);
+        assert_eq!(r6s(Rip6statCounters::Rip6sBadsum), badsum + 1);
+
+        // A bad sum; a packet shorter than *offp + 2.
+        let mut bad = good.clone();
+        bad[47] ^= 0xff;
+        deliver(&bad);
+        deliver(&ip6(src, dst, 253, &[1]));
+        assert!(recv(&at2).is_none() && recv(&at8).is_none());
+        assert_eq!(r6s(Rip6statCounters::Rip6sBadsum), badsum + 5);
+        for so in [at2, at8] {
+            close(so);
+        }
+    }
+
+    #[test]
+    fn ipv6_checksum_output_and_its_bounds() {
+        let (_g, _p) = testraw::setup();
+        let d = iface6(b"rip6a", 72);
+        let raw = socket(&RAW6, 253, true).expect("attached");
+        assert_eq!(
+            set(&raw, IPPROTO_IPV6, IPV6_CHECKSUM, &2i32.to_ne_bytes()),
+            Ok(())
+        );
+        let to = a6(72, 2);
+        let opackets = r6s(Rip6statCounters::Rip6sOpackets);
+
+        assert_eq!(send(&raw, &[1, 2, 0, 0, 5, 6, 7, 8], Some(to)), Ok(()));
+        let out = d.last.lock().expect("the wire").clone();
+        assert_eq!(out.len(), 48);
+        assert_eq!(out[6], 253);
+        let m = pkt(&out);
+        assert_eq!(in6_cksum(&m, 253, 40, 8), 0, "the sum written at offset 2");
+        assert_eq!(r6s(Rip6statCounters::Rip6sOpackets), opackets + 1);
+
+        // `plen < 2 || plen - 2 < off`.
+        assert_eq!(send(&raw, &[1], Some(to)), Err(Errno::EINVAL));
+        assert_eq!(
+            set(&raw, IPPROTO_IPV6, IPV6_CHECKSUM, &8i32.to_ne_bytes()),
+            Ok(())
+        );
+        assert_eq!(send(&raw, &[0; 8], Some(to)), Err(Errno::EINVAL));
+        assert_eq!(
+            set(&raw, IPPROTO_IPV6, IPV6_CHECKSUM, &6i32.to_ne_bytes()),
+            Ok(())
+        );
+        assert_eq!(send(&raw, &[0; 8], Some(to)), Ok(()));
+
+        // ping6: ICMPv6's sum at 2, the echo request counted in ICMPv6's histogram.
+        let ping = socket(&ICMP6, 58, true).expect("attached");
+        let hist = crate::netinet6::ip6_var::ICMP6COUNTERS.read()
+            [Icmp6statCounters::Icp6sOuthist as usize + 128];
+        assert_eq!(send(&ping, &[128, 0, 0, 0, 0, 7, 0, 1], Some(to)), Ok(()));
+        let out = d.last.lock().expect("the wire").clone();
+        assert_eq!((out[6], out[40]), (58, 128));
+        assert_eq!(in6_cksum(&pkt(&out), 58, 40, 8), 0);
+        assert_eq!(
+            crate::netinet6::ip6_var::ICMP6COUNTERS.read()
+                [Icmp6statCounters::Icp6sOuthist as usize + 128],
+            hist + 1
+        );
+        // An unconnected socket needs an address.
+        assert_eq!(send(&ping, &[128, 0, 0, 0], None), Err(Errno::ENOTCONN));
+        for so in [raw, ping] {
+            close(so);
+        }
+    }
+
+    #[test]
+    fn rip6_ctloutput_and_the_filter_option() {
+        let (_g, _p) = testraw::setup();
+        let so = socket(&ICMP6, 58, true).expect("attached");
+        let mut pass = Icmp6Filter::default();
+        pass.setpassall();
+        assert_eq!(get(&so, IPPROTO_ICMPV6, ICMP6_FILTER), Ok(fbytes(&pass)));
+        let mut block = Icmp6Filter::default();
+        block.setblockall();
+        assert_eq!(
+            set(&so, IPPROTO_ICMPV6, ICMP6_FILTER, &fbytes(&block)),
+            Ok(())
+        );
+        assert_eq!(get(&so, IPPROTO_ICMPV6, ICMP6_FILTER), Ok(fbytes(&block)));
+        assert_eq!(
+            set(&so, IPPROTO_ICMPV6, ICMP6_FILTER, &[0; 31]),
+            Err(Errno::EMSGSIZE)
+        );
+        assert_eq!(
+            set(&so, IPPROTO_ICMPV6, 99, &[0; 32]),
+            Err(Errno::ENOPROTOOPT)
+        );
+        assert_eq!(get(&so, IPPROTO_ICMPV6, 99), Err(Errno::ENOPROTOOPT));
+        assert_eq!(set(&so, IPPROTO_TCP, 1, &[0; 4]), Err(Errno::EINVAL));
+        // ICMPv6's checksum offset is fixed (ip6_raw_ctloutput's icmp6off).
+        assert_eq!(
+            get(&so, IPPROTO_IPV6, IPV6_CHECKSUM),
+            Ok(2i32.to_ne_bytes().to_vec())
+        );
+        close(so);
+
+        // A divert6 socket has no filter: the C's NULL, EINVAL.
+        let div = socket(&DIVERT6, 0, true).expect("attached");
+        assert_eq!(get(&div, IPPROTO_ICMPV6, ICMP6_FILTER), Err(Errno::EINVAL));
+        assert_eq!(
+            set(&div, IPPROTO_ICMPV6, ICMP6_FILTER, &fbytes(&pass)),
+            Err(Errno::EINVAL)
+        );
+        close(div);
+    }
+
+    #[test]
+    fn rip6_ctlinput_notifies_the_sockets_of_the_destination() {
+        let (_g, _p) = testraw::setup();
+        let _d = iface6(b"rip6b", 73);
+        let so = socket(&RAW6, 253, true).expect("attached");
+        let to = a6(73, 2);
+        assert_eq!(locked(&so, |w| rip6_connect(&so, w, &nam6(to))), Ok(()));
+        assert_eq!(send(&so, &[0; 4], None), Ok(()));
+        let inp = testraw::pcb(&so);
+        let cached = || {
+            let w = crate::net::socket::solock(&so);
+            let r = inp.route().ro_rt.is_some();
+            drop(w);
+            r
+        };
+        assert!(cached(), "the send cached its route");
+        let sa6 = |a: In6Addr, len: u8, fam: u8| {
+            let mut b = [0u8; 28];
+            let s = SockaddrIn6 {
+                sin6_len: len,
+                sin6_family: fam,
+                sin6_addr: a,
+                ..SockaddrIn6::default()
+            };
+            assert!(pod::put(&mut b, 0, &s));
+            b
+        };
+        let ctl = |b: &[u8], cmd: i32| {
+            with_net(|net| {
+                rip6_ctlinput::<G>(
+                    cmd,
+                    SockaddrView::new(b).expect("a view"),
+                    0,
+                    CtlArg::None,
+                    net,
+                )
+            })
+        };
+        // Another family, another length, a command past the table: nothing.
+        ctl(&sa6(to, 28, AF_INET), PRC_HOSTDEAD);
+        ctl(&sa6(to, 24, AF_INET6), PRC_HOSTDEAD);
+        ctl(&sa6(to, 28, AF_INET6), PRC_NCMDS as i32);
+        assert!(cached());
+        // A dead host: in_pcbrtchange of the sockets to it.
+        ctl(&sa6(to, 28, AF_INET6), PRC_HOSTDEAD);
+        assert!(!cached(), "the route cache let go");
+        drop(inp);
+        close(so);
+    }
+
+    #[test]
+    fn the_statistics_sysctl() {
+        let (_g, _p) = testraw::setup();
+        let u = crate::testutil::USER_BASE + 0x3_c000;
+        let req = |name: &[i32], oldp: usize, len: &mut usize| -> Result<(), Errno> {
+            let mut r = SysctlReq {
+                oldp,
+                oldlenp: len,
+                newp: 0,
+                newlen: 0,
+            };
+            rip6_sysctl(name, &mut r)
+        };
+        let mut len = 0;
+        assert_eq!(req(&[RIPV6CTL_STATS], 0, &mut len), Ok(()));
+        assert_eq!(len, 56);
+        let opackets = r6s(Rip6statCounters::Rip6sOpackets);
+        assert_eq!(req(&[RIPV6CTL_STATS], u, &mut len), Ok(()));
+        let got: Rip6stat = crate::testutil::user_bytes(u, len)
+            .and_then(|b| hal::user::pod_from_bytes(&b))
+            .expect("the structure");
+        assert!(got.rip6s_opackets >= opackets);
+        assert_eq!(req(&[2], 0, &mut len), Err(Errno::EOPNOTSUPP));
+        assert_eq!(req(&[RIPV6CTL_STATS, 0], 0, &mut len), Err(Errno::ENOTDIR));
+    }
+}
+/* </TESTS> */
