@@ -7009,6 +7009,13 @@ status = "redesigned"
 notes = "N6.7a2: the nfsiods' call-closed part: nfs_asyncdaemon[] as tids in NfsTables (0 free, a slot claimed by compare-and-swap), nfs_iod_attach and nfs_iod_detach (nfssvc_iod's start and end: the slot, nfs_numasync, the nfs_bufqmax share), nfs_bufq_get (the token back from nfs_bufq), nfs_bufq_peek, nfs_bufq_chan, nfs_iod_nextwrite (the delayed write by vnode_dirty_scan, then buf_undirty and numoutput_inc); nfssvc_iod's loop and nfs_getset_niothreads call or start nfs_doio and come with N6.7a3; sys_nfssvc and the server's half stay bsd's until N6.7b (D-5)"
 
 [[module]]
+rust = "sys/kernel/fs/nfs/nfs_srvsubs.rs"
+crate = "kernel"
+lz = ["sys/nfs/nfs_srvsubs.rs", "sys/nfs/nfs_subs.rs"]
+status = "redesigned"
+notes = "N6.7b2 (unregistered until 7b4): nfs_srvsubs.c's helpers over the kernel's XdrReader/XdrWriter (nfs_namei checking each name byte as it copies it, mbuf by mbuf; nfsm_adj over the owned chain; nfsm_srvwcc, nfsm_srvpostop_attr, nfsm_srvfattr; nfsrv_fhtovp over Vfs::checkexp's ExportGrant by value, the reserved port and port 20 on a stream, the anonymous mapping, MNT_EXRDONLY; netaddr_match over the cache's rc_inetaddr; nfsm_srvsattr) and nfs_subs.c's server part (NFSRV_V2ERRMAP, the nfsv3err_* lists, NFSRV_V3ERRMAP, nfsrv_errmap, nfsm_srvfhtom); 0 unsafe (LZ's null fill and address copy are slice copies)"
+
+[[module]]
 rust = "sys/kernel/fs/nfs/nfssvc.rs"
 crate = "kernel"
 lz = ["sys/nfs/nfs_syscalls.rs", "sys/nfs/nfs.rs"]
