@@ -152,13 +152,20 @@
 //!   above 16 reads as 16 (the radix tree's D-7); a client's address mbuf of fewer than 2
 //!   bytes has no family, so only the default export answers it.
 //! - A failed `malloc(M_WAITOK)` is `panic(9)` (LZ's; it cannot fail once `malloc` is
-//!   registered). The C's `ENOBUFS` for a failed `rn_inithead` has no path left (the tree is
-//!   in the list); a tree that cannot take the entry for want of memory (`M_NOWAIT` chunks)
-//!   answers `EPERM`, the C's answer for `rn_addroute`'s `NULL`.
+//!   registered). An empty tree has no head, as the C's list has none before its first entry
+//!   or after `MNT_DELEXPORT`: `RadixTree::inithead` is the C's `rn_inithead`, its failure
+//!   `ENOBUFS`; a tree that cannot take the entry for want of memory afterwards (`M_NOWAIT`
+//!   chunks) answers `EPERM`, the C's answer for `rn_addroute`'s `NULL`.
 //! - The list is the mount's ([`Mount::export`]) rather than the file system's structure's
 //!   (`um_export`, `pm_export`, `im_export`); the UFS-like mounts empty it where their
 //!   `mountfs` `malloc(M_ZERO)`s that structure ([`Netexport::clear`]), so a recycled mount's
-//!   old entries are freed there, where the C's `free(ump)` leaks them (D-12).
+//!   old entries are freed there, where the C's `free(ump)` leaks them (D-12). A recycled
+//!   mount that tmpfs, fuse or nfs takes keeps the old entries' memory until a UFS-like
+//!   `mountfs` empties it (no lookup reaches them: `vfs_mount_alloc` clears `MNT_EXPORTED`, and
+//!   those file systems export nothing); the C leaks them for good.
+//! - Every sleep comes before the kernel lock's witness, and every entry or tree freed
+//!   (a refused entry, `MNT_DELEXPORT`'s old tree, `Netexport::clear`'s old list) is dropped
+//!   after the section ends, outside its `IPL_VM`.
 //! - Without `NFSSERVER` (feature `nfsserver`) [`vfs_export`] answers `ENOTSUP` and
 //!   [`vfs_export_lookup`] nothing, as the C.
 //!
@@ -207,12 +214,11 @@ use crate::cred::{NGROUPS_MAX, Ucred};
 use crate::net::mbuf::MLEN;
 use crate::net::mbuf::Mbuf;
 use crate::net::radix::RadixTree;
+use crate::net::rtable::M_RTABLE;
 use crate::proc::ProcGlue;
 
 /// `M_NETADDR`: the `malloc(9)` type of an export entry ("Export Host", `<sys/malloc.h>`).
 pub const M_NETADDR: i32 = 49;
-/// `M_RTABLE`: the `malloc(9)` type of the export tree's chunks (the C's radix head's).
-const M_RTABLE: i32 = 5;
 /// `rn_init(sizeof(struct sockaddr_in))` (`vntblinit`): the export tree's key length.
 const SIN_LEN: usize = 16;
 /// `offsetof(struct sockaddr_in, sin_addr)`: where the export tree's keys are compared from.
@@ -318,7 +324,10 @@ impl Netexport {
     /// keeps none of its last mount's entries. The caller holds the kernel lock.
     pub fn clear(&self) {
         let mut w = klock::witness();
-        *self.k.get_mut(&mut w) = ExportList::new();
+        let old = core::mem::replace(self.k.get_mut(&mut w), ExportList::new());
+        drop(w);
+        // Freed after the section.
+        drop(old);
     }
 }
 
@@ -386,14 +395,20 @@ fn vfs_hang_addrlist<G: ProcGlue>(
     np.exflags = argp.ex_flags;
     let mask = (masklen != 0).then_some(&smask[..masklen]);
     let mut w = klock::witness();
-    match nep
-        .k
-        .get_mut(&mut w)
-        .rtable_inet
-        .add(&saddr[..addrlen], mask, np)
-    {
-        Ok(_) => Ok(()),
-        // already exists (or no memory for the tree): the entry is freed with the error
+    let rnh = &mut nep.k.get_mut(&mut w).rtable_inet;
+    // An empty tree has no head: `rn_inithead`'s failure is ENOBUFS.
+    let headed = rnh.inithead();
+    let r = if headed {
+        rnh.add(&saddr[..addrlen], mask, np).map(|_| ())
+    } else {
+        Err(np)
+    };
+    drop(w);
+    // The refused entry is freed here, after the section.
+    match r {
+        Ok(()) => Ok(()),
+        Err(_) if !headed => Err(Errno::ENOBUFS),
+        // already exists (or no memory for the tree's node or mask)
         Err(_) => Err(Errno::EPERM),
     }
 }
@@ -403,7 +418,13 @@ fn vfs_hang_addrlist<G: ProcGlue>(
 #[cfg(feature = "nfsserver")]
 fn vfs_free_addrlist(nep: &Netexport) {
     let mut w = klock::witness();
-    nep.k.get_mut(&mut w).rtable_inet = RadixTree::new(SIN_ADDR_OFF, M_RTABLE);
+    let old = core::mem::replace(
+        &mut nep.k.get_mut(&mut w).rtable_inet,
+        RadixTree::new(SIN_ADDR_OFF, M_RTABLE),
+    );
+    drop(w);
+    // Freed after the section (its IPL_VM), every entry and chunk with it.
+    drop(old);
 }
 
 /// `vfs_export(mp, nep, argp)`: process a mount's export update: `MNT_DELEXPORT` empties the
@@ -809,6 +830,24 @@ mod tests {
         );
         assert_eq!((g.uid, g.gid, g.ngroups), (32767, 31, 3));
         assert_eq!(check(mp, &nam), Err(Errno::EACCES));
+    }
+
+    #[test]
+    fn a_head_that_cannot_be_made_is_enobufs() {
+        // vfs_hang_addrlist's `rn_inithead` failure: the entry's block is made, the empty
+        // tree's first block (its node directory) is not.
+        let (_g, mp) = fresh();
+        let host = entry(MNT_EXPORTED, 1, [10, 0, 0, 7], None);
+        crate::testutil::fail_pages(1, 1);
+        let r = vfs_export(mp, mp.export(), &host);
+        crate::testutil::fail_pages(0, 0);
+        assert_eq!(r, Err(Errno::ENOBUFS));
+        assert_eq!(mp.flag() & MNT_EXPORTED, 0, "nothing hung");
+        // With memory the same entry is hung.
+        assert_eq!(vfs_export(mp, mp.export(), &host), Ok(()));
+        assert_eq!(lookup(mp, [10, 0, 0, 7]), Some((MNT_EXPORTED, 1)));
+        // A refused entry on a tree with a head stays EPERM.
+        assert_eq!(vfs_export(mp, mp.export(), &host), Err(Errno::EPERM));
     }
 
     #[test]
