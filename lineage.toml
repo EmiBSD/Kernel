@@ -7009,6 +7009,13 @@ status = "redesigned"
 notes = "N6.7a2: the nfsiods' call-closed part: nfs_asyncdaemon[] as tids in NfsTables (0 free, a slot claimed by compare-and-swap), nfs_iod_attach and nfs_iod_detach (nfssvc_iod's start and end: the slot, nfs_numasync, the nfs_bufqmax share), nfs_bufq_get (the token back from nfs_bufq), nfs_bufq_peek, nfs_bufq_chan, nfs_iod_nextwrite (the delayed write by vnode_dirty_scan, then buf_undirty and numoutput_inc); nfssvc_iod's loop and nfs_getset_niothreads call or start nfs_doio and come with N6.7a3; sys_nfssvc and the server's half stay bsd's until N6.7b (D-5)"
 
 [[module]]
+rust = "sys/kernel/fs/nfs/nfs_srvsocket.rs"
+crate = "kernel"
+lz = ["sys/nfs/nfs_socket.rs"]
+status = "redesigned"
+notes = "N6.7b2 (unregistered until 7b4): nfs_socket.c's server half: nfs_rephead (an XdrWriter over a packet header mbuf, cluster or max_hdr room), nfs_getreq (the C's 10/8-word dissection then every bound in its order over XdrReader; the request freed on every error), nfsrv_rcv (the upcall marks SLP_NEEDQ; an nfsd's M_WAIT call receives: a stream's bytes onto ns_raw, a datagram's record with its sender), nfsrv_getstream (on the stream state taken out of the record's LoanSlot: the mark read byte by byte, NFS_MAXPACKET -> EPERM, whole mbufs moved and the last one's part m_copym'd, fragments joined), nfsrv_dorec (a record for an nfsd, its descriptor a PoolBox of ndscpl), nfsrv_wakenfsd (nfsd_head under the kernel lock's reader, the socket handed through the nfsd's slot); nfs_realign gone (XdrReader copies)"
+
+[[module]]
 rust = "sys/kernel/fs/nfs/nfs_srvsubs.rs"
 crate = "kernel"
 lz = ["sys/nfs/nfs_srvsubs.rs", "sys/nfs/nfs_subs.rs"]

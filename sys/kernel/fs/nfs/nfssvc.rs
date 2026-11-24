@@ -305,8 +305,9 @@ pub struct Nfsd<G: ProcGlue> {
     /// `nfsd_flag`: `NFSD_` flags.
     pub nfsd_flag: AtomicI32,
     /// `nfsd_slp`: current socket, as `nfsrv_wakenfsd` hands it to a waiting nfsd (counted
-    /// in its `ns_sref`); the nfsd takes it into its frame (`nfsrv_getslp`).
-    pub nfsd_slp: Guarded<Option<NfssvcSockRef<G>>>,
+    /// in its `ns_sref`); the nfsd takes it into its frame (`nfsrv_getslp`). A slot: the
+    /// waker fills it while it walks `nfsd_head` under the kernel lock's reader.
+    pub nfsd_slp: LoanSlot<Option<NfssvcSockRef<G>>>,
     /// `nfsd_procp`: the nfsd's thread, by its id.
     pub nfsd_procp: Pid,
 }
@@ -322,7 +323,7 @@ impl<G: ProcGlue> Nfsd<G> {
         Self {
             nfsd_chain: PinEntry::new(),
             nfsd_flag: AtomicI32::new(0),
-            nfsd_slp: Guarded::new_kernel(None),
+            nfsd_slp: LoanSlot::new(None),
             nfsd_procp: tid,
         }
     }
@@ -368,10 +369,16 @@ impl NfsrvDescript {
     /// A dissection cursor at `nd_md`/`nd_dpos`: `nd_off` bytes into the request (`EBADRPC`
     /// past its end, or with no request); the caller stores `offset()` back into `nd_off`.
     pub fn reader(&self) -> Result<XdrReader<'_>, Errno> {
-        match self.nd_mrep.as_deref() {
-            Some(m) => XdrReader::at(m, self.nd_off),
-            None => Err(Errno::EBADRPC),
-        }
+        nd_reader(&self.nd_mrep, self.nd_off)
+    }
+}
+
+/// [`NfsrvDescript::reader`] over the two members alone (`nd_reader(&nd.nd_mrep,
+/// nd.nd_off)`), so that the other members stay writable while the cursor lives.
+pub fn nd_reader(nd_mrep: &Option<MbufBox>, nd_off: usize) -> Result<XdrReader<'_>, Errno> {
+    match nd_mrep.as_deref() {
+        Some(m) => XdrReader::at(m, nd_off),
+        None => Err(Errno::EBADRPC),
     }
 }
 
