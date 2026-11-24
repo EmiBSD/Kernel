@@ -1867,11 +1867,12 @@ pub fn m_copym(m0: &mut Mbuf, off: i32, len: i32, wait: i32) -> Option<MbufBox> 
     top.into_head()
 }
 
-/// A chain built mbuf by mbuf at its tail (the C's `np = &n->m_next`), O(1) a step. A chain
-/// left unfinished (`m_copym`'s `nospace`, `m_devget`'s failure) is freed as the C's
-/// `m_freem(top)` frees it: from its head, so the head's `M_ZEROIZE` reaches every mbuf
-/// (pfkey's secrets), never mbuf by mbuf as the list's own drop would.
-struct MChainBuilder {
+/// A chain built mbuf by mbuf at its tail (the C's `np = &n->m_next`), O(1) a step; also nfs's
+/// request writer (`kernel::fs::nfs::nfsm_subs::XdrWriter`, N6.7a0). A chain left unfinished
+/// (`m_copym`'s `nospace`, `m_devget`'s failure) is freed as the C's `m_freem(top)` frees it:
+/// from its head, so the head's `M_ZEROIZE` reaches every mbuf (pfkey's secrets), never mbuf
+/// by mbuf as the list's own drop would.
+pub(crate) struct MChainBuilder {
     chain: OwnedSlist<MChain>,
 }
 
@@ -1887,21 +1888,21 @@ hal::slist_adapter!(
 );
 
 impl MChainBuilder {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             chain: OwnedSlist::new(),
         }
     }
 
     /// `*np = n; np = &n->m_next`: `n` (alone: its `m_next` empty) after the chain's last.
-    fn push(&mut self, n: MbufBox) {
+    pub(crate) fn push(&mut self, n: MbufBox) {
         self.chain.push_tail(n);
     }
 
     /// The chain's first mbuf, owning the rest: the finished chain moves out and the
     /// builder's `Drop` (an unfinished chain's) does not run on it (`ManuallyDrop`: the list
     /// left behind is empty, so nothing is forgotten).
-    fn into_head(self) -> Option<MbufBox> {
+    pub(crate) fn into_head(self) -> Option<MbufBox> {
         let mut this = core::mem::ManuallyDrop::new(self);
         core::mem::take(&mut this.chain).into_head()
     }

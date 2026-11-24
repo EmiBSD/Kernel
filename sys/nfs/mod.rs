@@ -60,9 +60,8 @@ pub mod nfsdiskless;
 pub mod nfsm_subs;
 pub mod nfsmount;
 pub mod nfsnode;
-pub mod nfsproto;
+pub use kernel::fs::nfs::nfsproto;
 pub mod nfsrvcache;
-#[forbid(unsafe_code)]
-pub mod rpcv2;
-pub mod xdr_subs;
+pub use hal::sys::nfs_rpcv2 as rpcv2;
+pub use kernel::fs::nfs::xdr_subs;
 /* </CODE> */

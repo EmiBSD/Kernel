@@ -119,7 +119,7 @@ use crate::machine::copy::copyout;
 use crate::machine::intr::{IPL_NONE, IPL_SOFTNET, splbio, splx};
 #[cfg(feature = "nfsclient")]
 use crate::nfs::nfs::NFS_NODE_POOL;
-use crate::nfs::nfs::{ND_NFSV3, NFS_TICKINTVL, NfsReq, NfsrvDescript, Nfsstats};
+use crate::nfs::nfs::{ND_NFSV3, NFS_TICKINTVL, NfsReq, NfsrvDescript};
 use crate::nfs::nfs_var::{mb_offset, nfsm_padlen};
 use crate::nfs::nfsm_subs::nfsm_rndup;
 use crate::nfs::nfsm_subs::{XdrIn, XdrOut, nfsm_avail};
@@ -130,32 +130,28 @@ use crate::nfs::nfsnode::{NACC, NCHG, NMODIFIED, NUPD};
 use crate::nfs::nfsnode::{NFS_COMMIT_PUSH_VALID, NFS_COMMIT_PUSHED_VALID, VTONFS};
 #[cfg(feature = "nfsclient")]
 use crate::nfs::nfsnode::{NFSTOV, NfsNode};
-use crate::nfs::nfsproto::{NFBLK, NFCHR, NFDIR, NFFIFO, NFLNK, NFNON, NFREG, NFSOCK};
 #[cfg(feature = "nfsclient")]
 use crate::nfs::nfsproto::{NFS_FABLKSIZE, NfsFattr, nfsv2tov_type, nfsv3tov_type, nfsx_fattr};
 use crate::nfs::nfsproto::{
-    NFS_NPROCS, NFS_PROG, NFSERR_ACCES, NFSERR_BAD_COOKIE, NFSERR_BADHANDLE, NFSERR_BADTYPE,
-    NFSERR_DQUOT, NFSERR_EXIST, NFSERR_FBIG, NFSERR_INVAL, NFSERR_IO, NFSERR_ISDIR, NFSERR_MLINK,
-    NFSERR_NAMETOL, NFSERR_NODEV, NFSERR_NOENT, NFSERR_NOSPC, NFSERR_NOT_SYNC, NFSERR_NOTDIR,
-    NFSERR_NOTEMPTY, NFSERR_NOTSUPP, NFSERR_NXIO, NFSERR_PERM, NFSERR_ROFS, NFSERR_SERVERFAULT,
-    NFSERR_STALE, NFSERR_TOOSMALL, NFSERR_XDEV, NFSPROC_CREATE, NFSPROC_FSSTAT, NFSPROC_GETATTR,
-    NFSPROC_LINK, NFSPROC_LOOKUP, NFSPROC_MKDIR, NFSPROC_NOOP, NFSPROC_NULL, NFSPROC_READ,
-    NFSPROC_READDIR, NFSPROC_READLINK, NFSPROC_REMOVE, NFSPROC_RENAME, NFSPROC_RMDIR,
-    NFSPROC_SETATTR, NFSPROC_SYMLINK, NFSPROC_WRITE, NFSV2PROC_CREATE, NFSV2PROC_GETATTR,
-    NFSV2PROC_LINK, NFSV2PROC_LOOKUP, NFSV2PROC_MKDIR, NFSV2PROC_NOOP, NFSV2PROC_NULL,
-    NFSV2PROC_READ, NFSV2PROC_READDIR, NFSV2PROC_READLINK, NFSV2PROC_REMOVE, NFSV2PROC_RENAME,
-    NFSV2PROC_RMDIR, NFSV2PROC_SETATTR, NFSV2PROC_STATFS, NFSV2PROC_SYMLINK, NFSV2PROC_WRITE,
-    NFSX_V2FH, NFSX_V3FH, Nfsfh, Nfstype, Nfsv2Time,
+    NFS_NPROCS, NFSERR_ACCES, NFSERR_BAD_COOKIE, NFSERR_BADHANDLE, NFSERR_BADTYPE, NFSERR_DQUOT,
+    NFSERR_EXIST, NFSERR_FBIG, NFSERR_INVAL, NFSERR_IO, NFSERR_ISDIR, NFSERR_MLINK, NFSERR_NAMETOL,
+    NFSERR_NODEV, NFSERR_NOENT, NFSERR_NOSPC, NFSERR_NOT_SYNC, NFSERR_NOTDIR, NFSERR_NOTEMPTY,
+    NFSERR_NOTSUPP, NFSERR_NXIO, NFSERR_PERM, NFSERR_ROFS, NFSERR_SERVERFAULT, NFSERR_STALE,
+    NFSERR_TOOSMALL, NFSERR_XDEV, NFSPROC_CREATE, NFSPROC_FSSTAT, NFSPROC_GETATTR, NFSPROC_LINK,
+    NFSPROC_LOOKUP, NFSPROC_MKDIR, NFSPROC_NOOP, NFSPROC_NULL, NFSPROC_READ, NFSPROC_READDIR,
+    NFSPROC_READLINK, NFSPROC_REMOVE, NFSPROC_RENAME, NFSPROC_RMDIR, NFSPROC_SETATTR,
+    NFSPROC_SYMLINK, NFSPROC_WRITE, NFSV2PROC_CREATE, NFSV2PROC_GETATTR, NFSV2PROC_LINK,
+    NFSV2PROC_LOOKUP, NFSV2PROC_MKDIR, NFSV2PROC_NOOP, NFSV2PROC_NULL, NFSV2PROC_READ,
+    NFSV2PROC_READDIR, NFSV2PROC_READLINK, NFSV2PROC_REMOVE, NFSV2PROC_RENAME, NFSV2PROC_RMDIR,
+    NFSV2PROC_SETATTR, NFSV2PROC_STATFS, NFSV2PROC_SYMLINK, NFSV2PROC_WRITE, NFSX_V2FH, NFSX_V3FH,
+    Nfsfh,
 };
 use crate::nfs::nfsproto::{
     NFS_VER2, NFS_VER3, NFSPROC_COMMIT, NFSV3SATTRTIME_DONTCHANGE, NFSV3SATTRTIME_TOCLIENT,
     NFSV3SATTRTIME_TOSERVER, NFSX_UNSIGNED,
 };
 use crate::nfs::rpcv2::RPCAUTH_NULL;
-use crate::nfs::rpcv2::{
-    RPC_AUTHERR, RPC_CALL, RPC_MISMATCH, RPC_MSGACCEPTED, RPC_MSGDENIED, RPC_REPLY, RPC_VER2,
-    RPCAUTH_UNIX,
-};
+use crate::nfs::rpcv2::RPCAUTH_UNIX;
 #[cfg(feature = "nfsclient")]
 use crate::nfs::xdr_subs::{fxdr_hyper, fxdr_nfsv2time, fxdr_nfsv3time};
 use crate::nfs::xdr_subs::{fxdr_unsigned, txdr_nfsv3time, txdr_unsigned};
@@ -184,63 +180,18 @@ use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 use crate::sys::vnode::Vattr;
 #[cfg(feature = "nfsclient")]
 use crate::sys::vnode::iftovt;
-use crate::sys::vnode::{VBLK, VCHR, VDIR, VFIFO, VLNK, VNON, VNOVAL, VREG, VSOCK, Vnode, Vtype};
+use crate::sys::vnode::{VBLK, VCHR, VDIR, VFIFO, VNON, VNOVAL, VREG, Vnode};
 #[cfg(feature = "nfsclient")]
 use crate::sys::vnode::{checkalias, vgone, vrele};
 #[cfg(feature = "nfsclient")]
 use kernel::vm::types::Voff;
 use libkern::StaticCell;
 
-/// `nfs_xdrneg1`: data items converted to XDR at startup, since they are constant. This is
-/// kinda hokey, but may save a little time doing byte swaps.
-#[allow(non_upper_case_globals)] // the C name
-pub const nfs_xdrneg1: u32 = txdr_unsigned(-1i32 as u32);
-/// `rpc_call`.
-#[allow(non_upper_case_globals)] // the C name
-pub const rpc_call: u32 = txdr_unsigned(RPC_CALL);
-/// `rpc_vers`.
-#[allow(non_upper_case_globals)] // the C name
-pub const rpc_vers: u32 = txdr_unsigned(RPC_VER2);
-/// `rpc_reply`.
-#[allow(non_upper_case_globals)] // the C name
-pub const rpc_reply: u32 = txdr_unsigned(RPC_REPLY);
-/// `rpc_msgdenied`.
-#[allow(non_upper_case_globals)] // the C name
-pub const rpc_msgdenied: u32 = txdr_unsigned(RPC_MSGDENIED);
-/// `rpc_autherr`.
-#[allow(non_upper_case_globals)] // the C name
-pub const rpc_autherr: u32 = txdr_unsigned(RPC_AUTHERR);
-/// `rpc_mismatch`.
-#[allow(non_upper_case_globals)] // the C name
-pub const rpc_mismatch: u32 = txdr_unsigned(RPC_MISMATCH);
-/// `rpc_auth_unix`.
-#[allow(non_upper_case_globals)] // the C name
-pub const rpc_auth_unix: u32 = txdr_unsigned(RPCAUTH_UNIX);
-/// `rpc_msgaccepted`.
-#[allow(non_upper_case_globals)] // the C name
-pub const rpc_msgaccepted: u32 = txdr_unsigned(RPC_MSGACCEPTED);
-/// `nfs_prog`.
-#[allow(non_upper_case_globals)] // the C name
-pub const nfs_prog: u32 = txdr_unsigned(NFS_PROG);
-/// `nfs_true`.
-#[allow(non_upper_case_globals)] // the C name
-pub const nfs_true: u32 = txdr_unsigned(1);
-/// `nfs_false`.
-#[allow(non_upper_case_globals)] // the C name
-pub const nfs_false: u32 = txdr_unsigned(0);
-
-/// `nfsv2_type`: the version 2 file type of each vnode type.
-pub const NFSV2_TYPE: [Nfstype; 9] = [
-    NFNON, NFREG, NFDIR, NFBLK, NFCHR, NFLNK, NFNON, NFCHR, NFNON,
-];
-/// `nfsv3_type`: the version 3 file type of each vnode type.
-pub const NFSV3_TYPE: [Nfstype; 9] = [
-    NFNON, NFREG, NFDIR, NFBLK, NFCHR, NFLNK, NFSOCK, NFFIFO, NFNON,
-];
-/// `nv2tov_type`: the vnode type of each version 2 file type.
-pub const NV2TOV_TYPE: [Vtype; 8] = [VNON, VREG, VDIR, VBLK, VCHR, VLNK, VNON, VNON];
-/// `nv3tov_type`: the vnode type of each version 3 file type.
-pub const NV3TOV_TYPE: [Vtype; 8] = [VNON, VREG, VDIR, VBLK, VCHR, VLNK, VSOCK, VFIFO];
+pub use kernel::fs::nfs::nfs_subs::{
+    NFSV2_TYPE, NFSV3_TYPE, NV2TOV_TYPE, NV3TOV_TYPE, nfs_false, nfs_prog, nfs_true, nfs_xdrneg1,
+    rpc_auth_unix, rpc_autherr, rpc_call, rpc_mismatch, rpc_msgaccepted, rpc_msgdenied, rpc_reply,
+    rpc_vers,
+};
 
 /// `nfsv3_procid`: mapping of old NFS version 2 RPC numbers to generic numbers.
 pub const NFSV3_PROCID: [usize; NFS_NPROCS] = [
@@ -680,8 +631,7 @@ pub const NFSRV_V3ERRMAP: [&[i16]; 22] = [
 /// `nfs_ticks`: NFS timer ticks per `hz` tick (`nfs_init`).
 pub static NFS_TICKS: AtomicI32 = AtomicI32::new(0);
 
-/// `nfsstats`.
-pub static NFSSTATS: Nfsstats = Nfsstats::new();
+pub use kernel::fs::nfs::nfs_subs::NFSSTATS;
 
 /// `nfsreqpl`: the `struct nfsreq` pool.
 pub static NFSREQPL: Pool = Pool::new();
@@ -1693,27 +1643,7 @@ pub fn nfsm_srvfhtom(mp: &mut &'static Mbuf, f: &Nfsfh, v3: bool) {
     }
 }
 
-/// `txdr_nfsv2time(from, to)`: the version 2 time of `from`; `VNOVAL` nanoseconds are sent
-/// as -1, a time of -1 seconds as -1.000001.
-pub fn txdr_nfsv2time(from: &Timespec) -> Nfsv2Time {
-    if from.tv_nsec == i64::from(VNOVAL) {
-        Nfsv2Time {
-            nfsv2_sec: nfs_xdrneg1,
-            nfsv2_usec: nfs_xdrneg1,
-        }
-    } else if from.tv_sec == -1 {
-        // can't request a time of -1; send -1.000001 == {-2,999999} instead
-        Nfsv2Time {
-            nfsv2_sec: txdr_unsigned(-2i32 as u32),
-            nfsv2_usec: txdr_unsigned(999_999),
-        }
-    } else {
-        Nfsv2Time {
-            nfsv2_sec: txdr_unsigned(from.tv_sec as u32),
-            nfsv2_usec: txdr_unsigned((from.tv_nsec / 1000) as u32),
-        }
-    }
-}
+pub use kernel::fs::nfs::nfs_subs::txdr_nfsv2time;
 
 const _: () = {
     assert!(fxdr_unsigned(nfs_xdrneg1) == u32::MAX);
@@ -1730,6 +1660,8 @@ pub(crate) mod tests {
     // and the version 2 times.
 
     use std::boxed::Box;
+
+    use crate::sys::vnode::Vtype;
     use std::vec;
     use std::vec::Vec;
 

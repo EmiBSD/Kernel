@@ -88,11 +88,11 @@
 
 use core::marker::PhantomData;
 use core::ptr;
+use hal::user::AbiPod;
 use kernel::fs::vops::Cred;
 
 use crate::kern::subr_prf::panic;
 use crate::kern::uipc_mbuf::m_freem;
-use crate::machine::copy::AbiPod;
 use crate::nfs::nfs::NfsrvDescript;
 #[cfg(feature = "nfsclient")]
 use crate::nfs::nfs_subs::nfs_loadattrcache;
