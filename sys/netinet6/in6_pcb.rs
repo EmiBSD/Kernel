@@ -131,22 +131,21 @@
 //! `in_pcb.c`'s `#ifdef INET6` branches (`netinet/in_pcb.rs`'s adapters call the kernel's
 //! `in_pcbbind_locked`, `in_pcbconnect` and `in_pcbrtentry` for both families). These
 //! adapters take `bsd`'s shapes: the `&'static Inpcb` held by a count, the name mbuf, the
-//! notification's `InpNotifyFn`, the net lock's proof made through the `SaToken`.
+//! net lock's proof made through the `SaToken` (the hash's, the address check's and the
+//! notification's went with their last callers, raw IPv6 and divert6, at N6.6b1: their tests
+//! call the kernel's).
 //!
 //! ## Deviations
 //! - `NSTOEPLITZ` is configured: the flow id of a connected or accepted pcb is the kernel's
 //!   (`in6_pcb_newflow` at the end of `in6_pcbconnect` and `in6_pcbset_addr`, N6.6a1).
-//! - `in6_pcbnotify` takes `cmdarg` as the C does and, as the C does, does not use it.
 
 use core::mem::size_of;
 
 use crate::kern::subr_prf::panic;
-use crate::net::if_::net_held;
-use crate::netinet::in_pcb::{InpNotifyFn, Inpcb, Inpcbtable, inp_static};
+use crate::netinet::in_pcb::{Inpcb, Inpcbtable};
 use crate::netinet6::in6::{In6Addr, SockaddrIn6};
 use crate::sys::errno::Errno;
 use crate::sys::mbuf::{Mbuf, mut_of};
-use crate::sys::proc::Proc;
 use kernel::netinet::in_pcb as k;
 use kernel::netinet6::in6_pcb as k6;
 
@@ -179,31 +178,6 @@ impl k::Hdr6 for crate::netinet::ip6::Ip6Hdr {
     }
 }
 
-/// `in6_pcbhash`: the hash of the complete IPv6 address quadruple in routing domain
-/// `rdomain` (the kernel's, over the addresses' bytes).
-pub fn in6_pcbhash(
-    table: &Inpcbtable,
-    rdomain: u32,
-    faddr: &In6Addr,
-    fport: u16,
-    laddr: &In6Addr,
-    lport: u16,
-) -> u64 {
-    k6::in6_pcbhash(table, rdomain, &faddr.s6_addr, fport, &laddr.s6_addr, lport)
-}
-
-/// `in6_pcbaddrisavail(inp, sin6, wild, p)`: the kernel's, taking the table mutex, under the
-/// net lock the caller holds; the scope zone is embedded into `sin6`'s address, as the C does
-/// in place.
-pub fn in6_pcbaddrisavail(
-    inp: &Inpcb,
-    sin6: &mut SockaddrIn6,
-    wild: i32,
-    _p: &Proc,
-) -> Result<(), Errno> {
-    k6::in6_pcbaddrisavail(inp, sin6, wild, net_held("in6_pcbaddrisavail").net())
-}
-
 /// Writes `sin6` as the address in `nam` (`nam->m_len = sizeof(struct sockaddr_in6)`, the
 /// structure at `mtod(nam)`).
 fn set_nam6(nam: &Mbuf, sin6: SockaddrIn6) {
@@ -226,58 +200,6 @@ pub fn in6_setsockaddr(inp: &Inpcb, nam: &Mbuf) {
 /// services the getpeername(2) call.
 pub fn in6_setpeeraddr(inp: &Inpcb, nam: &Mbuf) {
     set_nam6(nam, k6::in6_setpeeraddr(inp));
-}
-
-/// `in6_pcbnotify(table, dst, fport_arg, src, lport_arg, rtable, cmd, cmdarg, notify)`: the
-/// kernel's, `notify` called with the `&'static Inpcb` `bsd`'s protocols take (the walk's
-/// counted handle keeps it for the call, `inp_static`'s convention).
-#[allow(clippy::too_many_arguments)] // the C's signature
-pub fn in6_pcbnotify(
-    table: &Inpcbtable,
-    dst: &SockaddrIn6,
-    fport_arg: u32,
-    src: Option<&SockaddrIn6>,
-    lport_arg: u32,
-    rtable: u32,
-    cmd: i32,
-    cmdarg: Option<u32>,
-    notify: Option<InpNotifyFn>,
-) {
-    // The command's argument is not used (as in C): the protocols read theirs from the
-    // `ip6ctlparam`.
-    let _ = cmdarg;
-    // The caller's net lock, proved for the walk; each matching socket locked by the kernel
-    // (a detached holding: the protocols are `bsd`'s, which need no witness).
-    let lend = crate::net::if_::net_held("in6_pcbnotify");
-    match notify {
-        Some(n) => {
-            let mut f = |inp: &Inpcb,
-                         _w: &mut kernel::net::socket::SoLocked<'_>,
-                         e: Option<Errno>| { n(inp_static(inp), e) };
-            k6::in6_pcbnotify(
-                table,
-                dst,
-                fport_arg,
-                src,
-                lport_arg,
-                rtable,
-                cmd,
-                lend.net(),
-                Some(&mut f),
-            );
-        }
-        None => k6::in6_pcbnotify(
-            table,
-            dst,
-            fport_arg,
-            src,
-            lport_arg,
-            rtable,
-            cmd,
-            lend.net(),
-            None,
-        ),
-    }
 }
 
 /// `in6_pcblookup`: the connected control block for `faddr.fport <-> laddr.lport`,
@@ -379,13 +301,14 @@ pub(crate) mod tests {
         t
     }
 
-    /// A data-only raw IPv6 row of the inet6 domain: sockets of `bsd`'s protocols' kind for
-    /// these tests, by their row and not by an index of `INET6SW`, whose rows move to the
-    /// kernel one by one (N6.6b0).
+    /// A data-only raw IPv6 row of the inet6 domain for these tests, by their row and not by
+    /// an index of `INET6SW` (N6.6b0); a raw row (`pr_rip`, N6.6b1), its sockets held by a
+    /// witness as every internet socket's.
     static RAW6_ROW: crate::sys::protosw::Protosw = crate::sys::protosw::Protosw {
         pr_type: SOCK_RAW as i16,
         pr_protocol: crate::netinet::in_::IPPROTO_RAW as i16,
         pr_flags: crate::sys::protosw::PR_ATOMIC | crate::sys::protosw::PR_ADDR,
+        pr_rip: true,
         ..crate::sys::protosw::Protosw::new(&crate::netinet6::in6_proto::INET6DOMAIN)
     };
 
@@ -452,7 +375,7 @@ pub(crate) mod tests {
         for i in 0..4096u32 {
             let mut f = a6("fd00:77::2");
             f.set_s6_addr32(3, i / 64);
-            let h = in6_pcbhash(t, 0, &f, htons(443), &l, htons(1024 + (i % 64) as u16));
+            let h = hash6(t, 0, &f, htons(443), &l, htons(1024 + (i % 64) as u16));
             count[(h & (t.size() as u64 - 1)) as usize] += 1;
         }
         let mean = 4096 / buckets as u32;
@@ -462,11 +385,11 @@ pub(crate) mod tests {
 
         // The hash is a function of the whole quadruple and the routing domain.
         let f = a6("fd00:77::2");
-        let h = in6_pcbhash(t, 0, &f, htons(1), &l, htons(2));
-        assert_eq!(h, in6_pcbhash(t, 0, &f, htons(1), &l, htons(2)));
-        assert_ne!(h, in6_pcbhash(t, 1, &f, htons(1), &l, htons(2)));
-        assert_ne!(h, in6_pcbhash(t, 0, &l, htons(1), &f, htons(2)));
-        assert_ne!(h, in6_pcbhash(t, 0, &f, htons(2), &l, htons(1)));
+        let h = hash6(t, 0, &f, htons(1), &l, htons(2));
+        assert_eq!(h, hash6(t, 0, &f, htons(1), &l, htons(2)));
+        assert_ne!(h, hash6(t, 1, &f, htons(1), &l, htons(2)));
+        assert_ne!(h, hash6(t, 0, &l, htons(1), &f, htons(2)));
+        assert_ne!(h, hash6(t, 0, &f, htons(2), &l, htons(1)));
         teardown();
     }
 
@@ -562,6 +485,66 @@ pub(crate) mod tests {
         teardown();
     }
 
+    /// The kernel's `in6_pcbhash` of the quadruple, over the addresses' bytes.
+    fn hash6(
+        t: &Inpcbtable,
+        rdomain: u32,
+        faddr: &In6Addr,
+        fport: u16,
+        laddr: &In6Addr,
+        lport: u16,
+    ) -> u64 {
+        k6::in6_pcbhash(t, rdomain, &faddr.s6_addr, fport, &laddr.s6_addr, lport)
+    }
+
+    /// The kernel's `in6_pcbnotify` under the caller's net lock (its proof lent), `notify`
+    /// handed each matching control block as `bsd` holds one (`inp_static`); `cmdarg` is not
+    /// used, as in the C.
+    #[allow(clippy::too_many_arguments)] // in6_pcbnotify's arguments
+    fn notify6(
+        table: &Inpcbtable,
+        dst: &SockaddrIn6,
+        fport_arg: u32,
+        src: Option<&SockaddrIn6>,
+        lport_arg: u32,
+        rtable: u32,
+        cmd: i32,
+        _cmdarg: Option<u32>,
+        notify: Option<fn(&'static Inpcb, Option<Errno>)>,
+    ) {
+        let lend = crate::net::if_::net_held("in6_pcbnotify");
+        match notify {
+            Some(n) => {
+                let mut f =
+                    |inp: &Inpcb, _w: &mut kernel::net::socket::SoLocked<'_>, e: Option<Errno>| {
+                        n(crate::netinet::in_pcb::inp_static(inp), e)
+                    };
+                k6::in6_pcbnotify(
+                    table,
+                    dst,
+                    fport_arg,
+                    src,
+                    lport_arg,
+                    rtable,
+                    cmd,
+                    lend.net(),
+                    Some(&mut f),
+                );
+            }
+            None => k6::in6_pcbnotify(
+                table,
+                dst,
+                fport_arg,
+                src,
+                lport_arg,
+                rtable,
+                cmd,
+                lend.net(),
+                None,
+            ),
+        }
+    }
+
     /// What `record` saw: the number of calls, the local port and errno of the last one.
     static NOTIFIED: AtomicUsize = AtomicUsize::new(0);
     static LAST_LPORT: AtomicU32 = AtomicU32::new(0);
@@ -594,7 +577,7 @@ pub(crate) mod tests {
         crate::sys::systm::net_lock();
         // A message about one connection: its ports and addresses select it.
         NOTIFIED.store(0, Ordering::Relaxed);
-        in6_pcbnotify(
+        notify6(
             t,
             &sin6(f, 0),
             u32::from(htons(2000)),
@@ -614,7 +597,7 @@ pub(crate) mod tests {
 
         // A dead host: every connection to it, whatever the ports.
         NOTIFIED.store(0, Ordering::Relaxed);
-        in6_pcbnotify(
+        notify6(
             t,
             &sin6(f, 0),
             0,
@@ -631,7 +614,7 @@ pub(crate) mod tests {
         // Nothing for the unspecified or a v4-mapped destination, nor without a notifier.
         NOTIFIED.store(0, Ordering::Relaxed);
         for dst in [IN6ADDR_ANY, a6("::ffff:a00:202")] {
-            in6_pcbnotify(
+            notify6(
                 t,
                 &sin6(dst, 0),
                 0,
@@ -643,7 +626,7 @@ pub(crate) mod tests {
                 Some(record),
             );
         }
-        in6_pcbnotify(t, &sin6(f, 0), 0, None, 0, 0, PRC_MSGSIZE, None, None);
+        notify6(t, &sin6(f, 0), 0, None, 0, 0, PRC_MSGSIZE, None, None);
         assert_eq!(NOTIFIED.load(Ordering::Relaxed), 0);
         crate::sys::systm::net_unlock();
 
@@ -716,7 +699,7 @@ pub(crate) mod tests {
         // pcb by its cached route alone (no address of the pcb matches) and flushes it.
         for (dst, kept) in [(a6("2001:db8::6"), true), (far, false)] {
             net_lock_shared();
-            in6_pcbnotify(
+            notify6(
                 inp.table(),
                 &sin6(dst, 0),
                 0,
@@ -738,43 +721,43 @@ pub(crate) mod tests {
         teardown();
     }
 
-    /// `f` with the net lock held, as the socket layer's `solock` calls the pcb functions
-    /// (their address checks read the interfaces' addresses under it).
-    fn net_locked<R>(f: impl FnOnce() -> R) -> R {
+    /// The kernel's `in6_pcbaddrisavail(inp, sin6, 0)` under the net lock, as the socket
+    /// layer's `solock` calls the pcb functions (their address checks read the interfaces'
+    /// addresses under it).
+    fn avail(inp: &Inpcb, sin6: &mut SockaddrIn6) -> Result<(), Errno> {
         crate::sys::systm::net_lock();
-        let r = f();
+        let r = k6::in6_pcbaddrisavail(
+            inp,
+            sin6,
+            0,
+            crate::net::if_::net_held("in6_pcbaddrisavail").net(),
+        );
         crate::sys::systm::net_unlock();
         r
     }
 
     #[test]
     fn in6_pcbaddrisavail_checks_the_address() {
-        let (_g, _t, p) = setup();
+        let (_g, _t, _p) = setup();
         let t = table(1);
         let inp = pcb6(t);
 
         // The wildcard without a port is always available.
         let mut s = sin6(IN6ADDR_ANY, 0);
-        assert_eq!(net_locked(|| in6_pcbaddrisavail(inp, &mut s, 0, p)), Ok(()));
+        assert_eq!(avail(inp, &mut s), Ok(()));
         // No IPv4-mapped addresses.
         let mut s = sin6(a6("::ffff:a00:20f"), 0);
-        assert_eq!(
-            net_locked(|| in6_pcbaddrisavail(inp, &mut s, 0, p)),
-            Err(Errno::EADDRNOTAVAIL)
-        );
+        assert_eq!(avail(inp, &mut s), Err(Errno::EADDRNOTAVAIL));
         // Not an address of ours, unless SO_BINDANY.
         let mut s = sin6(a6("2001:db8::1"), 0);
-        assert_eq!(
-            net_locked(|| in6_pcbaddrisavail(inp, &mut s, 0, p)),
-            Err(Errno::EADDRNOTAVAIL)
-        );
+        assert_eq!(avail(inp, &mut s), Err(Errno::EADDRNOTAVAIL));
         inp.socket().set_options_legacy(SO_BINDANY, true);
         let mut s = sin6(a6("2001:db8::1"), 0);
-        assert_eq!(net_locked(|| in6_pcbaddrisavail(inp, &mut s, 0, p)), Ok(()));
+        assert_eq!(avail(inp, &mut s), Ok(()));
         // A multicast group is available too, the scope id cleared.
         let mut s = sin6(a6("ff02::1"), 0);
         s.sin6_scope_id = 0;
-        assert_eq!(net_locked(|| in6_pcbaddrisavail(inp, &mut s, 0, p)), Ok(()));
+        assert_eq!(avail(inp, &mut s), Ok(()));
         assert_eq!(s.sin6_scope_id, 0);
         release(inp);
         teardown();

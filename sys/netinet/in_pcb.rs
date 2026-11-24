@@ -662,14 +662,16 @@ pub(crate) mod tests {
         }
     }
 
-    /// A data-only UDP row of the internet domain: sockets of `bsd`'s protocols' kind (held
-    /// C-style) for the adapters' tests, since the kernel's UDP is the table's entry
-    /// (N6.6b0, `kernel::netinet::in_proto::UdpProtocol`); `kern_descrip`'s socket file too,
-    /// whatever `INETSW` still holds.
+    /// A data-only UDP row of the internet domain for the adapters' tests, since the
+    /// kernel's UDP is the table's entry (N6.6b0, `kernel::netinet::in_proto::UdpProtocol`);
+    /// `kern_descrip`'s socket file too, whatever `INETSW` still holds. A raw row (`pr_rip`,
+    /// N6.6b1): its sockets are held by a witness, as every internet socket since raw IP
+    /// moved, so the socket layer keeps no C-style arm for an internet socket.
     pub(crate) static UDP_ROW: crate::sys::protosw::Protosw = crate::sys::protosw::Protosw {
         pr_type: SOCK_DGRAM as i16,
         pr_protocol: IPPROTO_UDP as i16,
         pr_flags: crate::sys::protosw::PR_ATOMIC | crate::sys::protosw::PR_ADDR,
+        pr_rip: true,
         ..crate::sys::protosw::Protosw::new(&crate::netinet::in_proto::INETDOMAIN)
     };
 
