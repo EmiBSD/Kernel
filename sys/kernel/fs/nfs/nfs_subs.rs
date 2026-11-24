@@ -593,9 +593,9 @@ pub fn nfs_init<G: ProcGlue>() {
 
 /// `nfs_vfs_init` (`vfs_init`): the nfsiod buffer queue (`TAILQ_INIT(&nfs_bufq)`: an empty
 /// `NfsTables::nfs_bufq`, made with the tables), "nfsnodepl" (recorded: `vtonfs` counts a
-/// node again from the vnode's slot), the node hash that stands for every mount's `nm_ntree`
-/// (`nfs_node`), and the kq watch list's pool (`nfs_kq`). A second call (a test glue's)
-/// keeps the pools.
+/// node again from the vnode's slot), the key of the node hash that stands for every
+/// mount's `nm_ntree` (`nfs_node`; its chains are the tables'), and the kq watch list's pool
+/// (`nfs_kq`). A second call (a test glue's) keeps the pools and the key.
 pub fn nfs_vfs_init<G: ProcGlue>(_vfsp: &'static Vfsconf<G>) -> Result<(), Errno> {
     let t = &vfs::<G>().nfs;
     let _ = t
@@ -1033,18 +1033,22 @@ pub fn nfs_del_tobecommitted_range<G: ProcGlue>(np: &NfsNode<G>, bp: &Buf) {
     Range::push(np).del(bp);
 }
 
-/// The host tests' reset of the client's globals of a test glue (testing.md): the node hash
-/// forgotten (`nfs_node`), the nfsiod queue and the kq watch list forgotten with what they
-/// hold, the queue's counts and the nfsiods' table cleared. Nothing is freed: the memory
-/// behind them is gone with the last test's.
+/// The host tests' reset of the client's globals of a test glue (testing.md): the nfsiod
+/// queue and the kq watch list forgotten with what they hold, the queue's counts and the
+/// nfsiods' table cleared. Nothing is freed: the memory behind them is gone with the last
+/// test's. The node hash's chains are left as they are: a node a test left linked is in that
+/// test's leaked memory, on a mount no later test has, so no lookup matches it.
 #[cfg(any(test, feature = "doubles"))]
 pub(crate) fn nfs_test_reset<G: ProcGlue>() {
     let t = &vfs::<G>().nfs;
-    super::nfs_node::nfs_nhash_test_reset::<G>();
-    core::mem::forget(core::mem::replace(
-        &mut *t.nfs_bufq.lock(),
-        crate::fs::bufq::Fifo::new(),
-    ));
+    {
+        // Every caller of `vfs_test_reset` holds the kernel lock (the test set-ups).
+        let mut w = hal::klock::witness();
+        core::mem::forget(core::mem::replace(
+            t.nfs_bufq.get_mut(&mut w),
+            crate::fs::bufq::Fifo::new(),
+        ));
+    }
     super::nfs_kq::nfs_kq_test_reset::<G>();
     for d in &t.nfs_asyncdaemon {
         d.store(0, Ordering::Relaxed);
@@ -1407,16 +1411,13 @@ mod tests {
         assert_eq!(fxdr_unsigned(nfs_prog), 100_003);
         assert_eq!(fxdr_unsigned(nfs_true), 1);
     }
-}
-/// Host tests of the attribute cache (the timeout's arithmetic, the hits and misses, the
-/// size rules, the special file times), the commit ranges (the C's table and the merge,
-/// with property tests of their bounds) and `nfs_clearcommit` (N6.7a2).
-#[cfg(test)]
-mod attrcache_tests {
-    use super::*;
+
+    // N6.7a2: the attribute cache (the timeout's arithmetic, the hits and misses, the size
+    // rules, the special file times), the commit ranges (the C's table and the merge, with
+    // property tests of their bounds) and `nfs_clearcommit`.
+
     use crate::fs::bio::{bdwrite, brelse, getblk_wait};
     use crate::fs::nfs::nfs_node::{test_mount, test_node};
-    use crate::fs::nfs::nfsm_subs::TestRng;
     use crate::fs::testfs::TestGlue as G;
     use crate::fs::vnode::{VDIR, VREG};
 

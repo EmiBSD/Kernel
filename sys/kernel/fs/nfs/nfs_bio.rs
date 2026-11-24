@@ -89,17 +89,21 @@
 //!   does not make), and a buffer is its busy token (`BufRef`): [`nfs_asyncio`] parks it in
 //!   the buffer and queues a counted link (`bufq_park`), the nfsiod takes it back
 //!   (`nfs_syscalls`'s `nfs_bufq_get`).
-//! - The C's queue is a `TAILQ` under the kernel lock with no `splbio`; here the fifo is in a
-//!   `Mutexed` at `IPL_BIO` (mfs's `mfs_bufq`): `nfs_asyncio` may be reached from a path
-//!   that does not hold the kernel lock (a write the page daemon starts), and the park takes
-//!   the cache's lock first. One section of the cache's lock (the park) and one of the
-//!   queue's per buffer queued, and the same per buffer taken, where the C takes none
+//! - The C's queue is a `TAILQ` under the kernel lock with no `splbio`, which every caller
+//!   holds: the system calls, the buffer daemon and the syncer (kernel threads), and the
+//!   vnode pager, which takes it around its I/O (`sys/kernel/vm/vnode.rs:1321, 1384,
+//!   1576`) as the C's page daemon does (C:uvm/uvm_pdaemon.c:313). So the fifo is a cell of the kernel lock (`Guarded::new_kernel`), changed under its witness, and
+//!   `nfs_bufqlen` changes in the same section as the queue: no lock the C lacks. The token
+//!   is parked before the section (the cache's lock, `bufq_park`) and taken back after it
+//!   (`bufq_unpark`): one section of the cache's lock and one witness section (an spl pair)
+//!   per buffer queued, the same per buffer taken, where the C takes neither
 //!   (docs/ROADMAP.md N12's row, with the token's cost everywhere else).
 
 use core::cmp::{max, min};
 use core::ptr;
 use core::sync::atomic::Ordering;
 
+use hal::klock;
 use hal::sleep::{INFSLP, PCATCH, PRIBIO, tsleep_nsec, wakeup, wakeup_one};
 use hal::sys::errno::Errno;
 use hal::sys::types::{Daddr, Off};
@@ -663,8 +667,11 @@ pub fn nfs_asyncio<G: ProcGlue>(t: BufRef, readahead: bool) -> Result<(), (BufRe
 
         let q = &vfs::<G>().nfs.nfs_bufq;
         let m = bufq_park(t);
-        q.lock().queue(m);
-        NFS_BUFQLEN.fetch_add(1, Ordering::Relaxed);
+        {
+            let mut w = klock::witness();
+            q.get_mut(&mut w).queue(m);
+            NFS_BUFQLEN.fetch_add(1, Ordering::Relaxed);
+        }
 
         wakeup_one(ptr::from_ref(q));
         return Ok(());

@@ -109,12 +109,9 @@
 
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 
-use hal::intr::IPL_BIO;
-use hal::mutex::Mutexed;
 use hal::pinlist::PinEntry;
 use hal::pool::{BoxPool, PoolHome, TypedPool};
-use hal::rwlock::{ExclGuarded, Rwlocked};
-use hal::slot::ReadMostly;
+use hal::rwlock::{ExclGuarded, Guarded, Rwlocked};
 
 use super::nfs_kq::{Kevq, NfsKevq};
 use super::nfs_node::NfsNhash;
@@ -647,11 +644,12 @@ pub struct NfsTables<G: ProcGlue> {
     pub nfsreqpl: TypedPool<NfsReq<G>>,
     /// `nfs_node_pool` ("nfsnodepl"): the nodes.
     pub nfs_node_pool: TypedPool<NfsNode<G>>,
-    /// `nm_ntree` of every mount: the node hash, once `nfs_vfs_init` made it.
-    pub nhash: ReadMostly<Option<NfsNhash<G>>>,
+    /// `nm_ntree` of every mount: the node hash's fixed chains and its key.
+    pub nhash: NfsNhash<G>,
     /// `nfs_bufq`: the buffers `nfs_asyncio` queued for the nfsiods, their tokens parked in
-    /// them (at `IPL_BIO`: `nfs_bio`'s Redesign); its address is the nfsiods' wait channel.
-    pub nfs_bufq: Mutexed<Fifo>,
+    /// them, under the kernel lock (the C's: `nfs_bio`'s Redesign); its address is the
+    /// nfsiods' wait channel.
+    pub nfs_bufq: Guarded<Fifo>,
     /// `nfs_asyncdaemon[NFS_MAXASYNCDAEMON]`: the running nfsiods' thread ids, 0 for a free
     /// slot.
     pub nfs_asyncdaemon: [AtomicI32; NFS_NASYNCDAEMON],
@@ -675,8 +673,8 @@ impl<G: ProcGlue> NfsTables<G> {
         Self {
             nfsreqpl: TypedPool::new(),
             nfs_node_pool: TypedPool::new(),
-            nhash: ReadMostly::new(None),
-            nfs_bufq: Mutexed::new(IPL_BIO, Fifo::new()),
+            nhash: NfsNhash::new(),
+            nfs_bufq: Guarded::new_kernel(Fifo::new()),
             nfs_asyncdaemon: [const { AtomicI32::new(0) }; NFS_NASYNCDAEMON],
             kevq: Rwlocked::new("nfskqlk", NfsKevq::new()),
             kevqpl: BoxPool::new(),

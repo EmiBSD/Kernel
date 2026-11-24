@@ -182,15 +182,20 @@ pub fn nfs_bufq_chan<G: ProcGlue>() -> *const () {
 
 /// Whether `nfs_bufq` holds a buffer (`TAILQ_FIRST(&nfs_bufq) != NULL`).
 pub fn nfs_bufq_peek<G: ProcGlue>() -> bool {
-    vfs::<G>().nfs.nfs_bufq.lock().peek()
+    let r = klock::reader();
+    vfs::<G>().nfs.nfs_bufq.get(&r).peek()
 }
 
 /// Take one off the front of the list (`TAILQ_REMOVE` of `TAILQ_FIRST(&nfs_bufq)`,
 /// `nfs_bufqlen--`, and one waiter for room woken): the buffer's token, which `nfs_asyncio`
 /// parked in it; `None` for an empty queue.
 pub fn nfs_bufq_get<G: ProcGlue>() -> Option<BufRef> {
-    let m = vfs::<G>().nfs.nfs_bufq.lock().dequeue()?;
-    NFS_BUFQLEN.fetch_sub(1, Ordering::Relaxed);
+    let m = {
+        let mut w = klock::witness();
+        let m = vfs::<G>().nfs.nfs_bufq.get_mut(&mut w).dequeue()?;
+        NFS_BUFQLEN.fetch_sub(1, Ordering::Relaxed);
+        m
+    };
     wakeup_one(ptr::from_ref(&NFS_BUFQLEN));
     Some(bufq_unpark(m))
 }
