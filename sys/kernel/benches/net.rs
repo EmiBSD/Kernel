@@ -245,6 +245,37 @@
 //!   - `udp.input.mcast.2`: the same broadcast, to two sockets sharing the port
 //!     (`SO_REUSEPORT`): the walk, a copy for the first, the packet for the second.
 //!   - `udp6.send.lo` is not written yet (the IPv6 rows' ::1 set-up with a UDP socket: N6.8).
+//! - The raw IP and divert rows (N6.6b1; "before" = `bsd`'s raw IP and divert over LZ's shape
+//!   at the slice's base 7a698928: the rows `bsd.rip.send`, `bsd.rip.input.2`,
+//!   `bsd.rip6.input.filter`, `bsd.divert.packet` and `bsd.divert.output.in` of a scratch
+//!   harness never committed, kept in the main checkout's
+//!   `target/scratch-backup/n6.6b1-bench-before/` (`splice.py` adds it to a worktree of the
+//!   base's `sys/netinet/ip_divert.rs` and `sys/netinet6/raw_ip6.rs` tests; its header says
+//!   how each row differs from these), run from that worktree; measured at the N6 close,
+//!   decision 50): lo0 with
+//!   127.0.0.1/8, the glue's `inetsw[]` the IPv4 input rows' (a UDP entry that takes its
+//!   packet into the stash), sockets of the kernel's raw entries (`RipProtocol`,
+//!   `Rip6Protocol`, `DivertProtocol`, attached through their requests by a privileged
+//!   process), 64-byte packets:
+//!   - `rip.send`: the user request `rip_send` of 44 bytes on a raw ICMP socket, to
+//!     127.0.0.1 by address, its lock the run's holding as `sosend`'s (the pcb borrowed from
+//!     the slot, the header written, `in_pcbselsrc`, the options and route loans, `ip_output`
+//!     to lo0's queue), and the datagram taken off the queue; the user's mbuf made outside
+//!     the timing.
+//!   - `rip.input.2`: `rip_input` of a protocol 253 packet to two raw sockets of that
+//!     protocol under the shared net lock: the walk (one step and a count pair per pcb), a
+//!     copy for the first, the packet for the second, each appended with the sender's
+//!     address; the receive buffers flushed outside the timing.
+//!   - `rip6.input.filter`: `rip6_input` of an ICMPv6 echo reply (::1 to ::1) to a raw
+//!     ICMPv6 socket whose filter (`rip6_attach`'s pass-all) lets it through: the walk, the
+//!     filter's two loads, the append.
+//!   - `divert.packet`: `divert_packet` of an inbound packet (pf's `PF_IN`, lo0's index) to
+//!     the divert socket bound to port 7002, under the shared net lock: the first pcb of the
+//!     port, the receiving interface's first IPv4 address, the append.
+//!   - `divert.output.in`: the user request `divert_send` of a UDP packet to 127.0.0.1:
+//!     `rip_chkhdr`, the `RTF_LOCAL` route, both checksums recomputed, `ipv4_input` to the
+//!     stash's UDP entry; the packet made outside the timing and the delivered one freed
+//!     after it.
 //! - The IPv4 input rows (N6.4c2; "before" = `bsd`'s `ipv4_input`, `ipintr` and `ip_reass`
 //!   over LZ's shape at the slice's base, in a scratch test; measured at the N6.4 close,
 //!   decision 50): lo0 with 127.0.0.1/8 (`in_ioctl`), the glue's `inetsw[]` a UDP entry with
@@ -757,6 +788,7 @@ fn main() {
         .chain(SYNCACHE_ROWS.iter())
         .chain(TCP_ROWS.iter())
         .chain(UDP_ROWS.iter())
+        .chain(RAW_ROWS.iter())
         .chain(INET6_ROWS.iter())
         .chain(ND6_ROWS.iter())
         .chain(INET6_OUTPUT_ROWS.iter())
@@ -1037,6 +1069,7 @@ fn main() {
     syncache_rows(&wanted, &report);
     tcp_rows(&wanted, &report);
     udp_rows(&wanted, &report);
+    raw_rows(&wanted, &report);
     inet6_rows(&wanted, &report);
     nd6_rows(&wanted, &report);
     inet6_output_rows(&wanted, &report);
@@ -3868,6 +3901,291 @@ fn udp_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
         }
         drop(rd);
         core::mem::forget(socks);
+    }
+}
+
+const RAW_ROWS: [&str; 5] = [
+    "rip.send",
+    "rip.input.2",
+    "rip6.input.filter",
+    "divert.packet",
+    "divert.output.in",
+];
+
+/// A kernel raw socket of `pr` (raw IP's, raw IPv6's or divert's entry), attached with
+/// protocol number `proto` through its requests by a privileged process (`SS_PRIV`).
+fn raw_socket(
+    pr: &'static dyn kernel::net::proto::Protocol<G>,
+    proto: i32,
+) -> kernel::net::socket::SocketRef<G> {
+    use kernel::net::mbuf::M_WAIT;
+    use kernel::net::socket::{SoInit, soalloc, solock};
+
+    let so = need(
+        soalloc(
+            pr,
+            M_WAIT,
+            SoInit {
+                so_type: hal::sys::socket::SOCK_RAW,
+                state: kernel::net::sockbuf::SS_PRIV,
+                options: 0,
+                linger: 0,
+                timeo: 0,
+                euid: 0,
+                ruid: 0,
+                egid: 0,
+                rgid: 0,
+                cpid: 1,
+            },
+        ),
+        "a socket",
+    );
+    let mut w = solock(&so);
+    let attached = match pr.usrreqs() {
+        Some(u) => u.attach(&so, &mut w, proto, M_WAIT).is_ok(),
+        None => false,
+    };
+    drop(w);
+    if !attached {
+        eprintln!("net: a raw socket's attach failed");
+        std::process::exit(1);
+    }
+    so
+}
+
+/// An IPv6 packet of ICMPv6 type `ty` from ::1 to ::1, `len` bytes in all (the ICMPv6
+/// header's checksum left 0: the raw socket of an ICMPv6 row checks none).
+fn loop6_icmp(ty: u8, len: u16) -> Vec<u8> {
+    let mut b = vec![0u8; usize::from(len)];
+    b[0] = 0x60;
+    b[4..6].copy_from_slice(&(len - 40).to_be_bytes());
+    b[6] = hal::sys::netinet_in::IPPROTO_ICMPV6 as u8;
+    b[7] = 64;
+    b[23] = 1;
+    b[39] = 1;
+    b[40] = ty;
+    b
+}
+
+/// The raw IP and divert rows (N6.6b1): see the file's documentation.
+fn raw_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
+    use hal::netlock::NetHeld;
+    use hal::sys::netinet_in::{IPPROTO_ICMP, IPPROTO_ICMPV6, IPPROTO_UDP};
+    use hal::sys::socket::{AF_INET, AF_INET6};
+    use hal::sys::sockio::SIOCAIFADDR;
+    use kernel::net::if_loop::{LOOP_CLONER, loop_clone_create};
+    use kernel::net::ifq::ifiq_test_take;
+    use kernel::net::mbuf::{M_WAIT, MT_DATA, m_devget, m_gethdr, ml_dequeue};
+    use kernel::net::pf_hooks::PF_IN;
+    use kernel::net::socket::solock;
+    use kernel::netinet::in_proto::{DivertProtocol, RipProtocol};
+    use kernel::netinet::ip_divert::{divert_bind, divert_init, divert_packet, divert_send};
+    use kernel::netinet::raw_ip::{rip_init, rip_input, rip_send};
+    use kernel::netinet6::in6_proto::Rip6Protocol;
+    use kernel::netinet6::raw_ip6::{rip6_init, rip6_input};
+
+    if !RAW_ROWS.iter().any(|n| wanted(n)) {
+        return;
+    }
+    let (_g, p) = kernel::fs::testfs::test_thread_cached(64 << 20, 64);
+    testutil::kernel_maps_install();
+    mbinit(&BENCH_NMBCLUST);
+    let _ = kernel::net::if_::register_inet(&BENCH_INET);
+    let _ = kernel::netinet::ip_input::IPV4_INPUT.set(kernel::net::if_::test_proto_count);
+    kernel::net::if_::if_test_reset();
+    kernel::net::rtable::rtable_test_reset();
+    kernel::net::route::rtlabel_test_reset();
+    kernel::net::route::route_init();
+    kernel::net::rtable::rtable_init_doms(&[kernel::net::rtable::RtDom {
+        family: AF_INET,
+        rtoffset: 4,
+        maxplen: 32,
+        sasize: 16,
+    }]);
+    kernel::netinet::ip_id::ip_randomid_init();
+    kernel::net::domain::soinit::<G>();
+    kernel::netinet::in_pcb::in_init::<G>();
+    // The glue's inetsw[] and ip_init, for divert_output's ipv4_input.
+    kernel::netinet::in_proto::inetsw_set::<G>(&BENCH_IP_SW);
+    kernel::netinet::ip_input::ip_init::<G>();
+    rip_init::<G>();
+    rip6_init::<G>();
+    divert_init::<G>();
+
+    // lo0 with 127.0.0.1/8, as the ip.output.lo row makes it.
+    hal::klock::kernel_lock();
+    let made = loop_clone_create(&LOOP_CLONER, 0);
+    hal::klock::kernel_unlock();
+    if made.is_err() {
+        eprintln!("net: no lo0");
+        std::process::exit(1);
+    }
+    let lo = need(
+        kernel::net::if_::IFNETLIST
+            .iter()
+            .find(|i| i.if_xname.get()[..4] == *b"lo0\0"),
+        "lo0 listed",
+    );
+    let mut req = [0u8; 64];
+    req[16..18].copy_from_slice(&[16, 2]);
+    req[20..24].copy_from_slice(&[127, 0, 0, 1]);
+    req[48..50].copy_from_slice(&[16, 2]);
+    req[52..56].copy_from_slice(&[255, 0, 0, 0]);
+    if kernel::netinet::in_::in_ioctl(SIOCAIFADDR, &mut req, Some(lo), true).is_err() {
+        eprintln!("net: lo0 refused 127.0.0.1");
+        std::process::exit(1);
+    }
+
+    // rip.send: a raw ICMP socket sending 44 bytes to 127.0.0.1 by address; the looped
+    // datagram taken off lo0's queue each time.
+    if wanted(RAW_ROWS[0]) {
+        let so = raw_socket(&RipProtocol::<G>::RAW, IPPROTO_ICMP);
+        let payload = [0x5au8; 44];
+        let data = || {
+            let mut d = need(m_gethdr(M_WAIT, MT_DATA), "an mbuf");
+            d.m_len().set(payload.len() as u32);
+            d.m_pkthdr().len.set(payload.len() as i32);
+            need(d.data_mut(), "a writable mbuf").copy_from_slice(&payload);
+            d
+        };
+        let to = udp_nam([127, 0, 0, 1], 0);
+        let mut w = solock(&so);
+        let r = measure(OPS / 10, || {
+            let mut total = Duration::ZERO;
+            for _ in 0..OPS / 10 {
+                let d = data();
+                let t0 = Instant::now();
+                if rip_send(&so, &mut w, Some(black_box(d)), Some(&to), None).is_err() {
+                    eprintln!("net: rip_send failed");
+                    std::process::exit(1);
+                }
+                let mut ml = ifiq_test_take(lo.if_rcv());
+                let dg = need(ml_dequeue(&mut ml), "the looped datagram");
+                total += t0.elapsed();
+                drop(black_box(dg));
+            }
+            total
+        });
+        report(RAW_ROWS[0], r);
+        drop(w);
+        core::mem::forget(so);
+    }
+
+    // The input rows, under the shared net lock (their sockets made before it: an attach
+    // takes the exclusive one); the receive buffers flushed outside the timing.
+    let socks: Vec<_> = if wanted(RAW_ROWS[1]) {
+        (0..2)
+            .map(|_| raw_socket(&RipProtocol::<G>::RAW, 253))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let icmp6_so = wanted(RAW_ROWS[2]).then(|| raw_socket(&Rip6Protocol::<G>::RAW, IPPROTO_ICMPV6));
+    let rd = NETLOCK.read();
+    let net = need(NetHeld::of(&rd), "the net lock");
+    if wanted(RAW_ROWS[1]) {
+        let pkt = loop_packet(253, 1, 0, 64);
+        let r = measure(OPS / 10, || {
+            let mut total = Duration::ZERO;
+            for _ in 0..OPS / 10 {
+                let mut mp = Some(need(m_devget(&pkt, 0), "a packet"));
+                let mut off = 20;
+                let t0 = Instant::now();
+                let _ = rip_input::<G>(
+                    black_box(&mut mp),
+                    &mut off,
+                    253,
+                    i32::from(AF_INET),
+                    None,
+                    &net,
+                );
+                total += t0.elapsed();
+                for so in &socks {
+                    so.so_rcv.lock().sbflush();
+                }
+            }
+            total
+        });
+        report(RAW_ROWS[1], r);
+    }
+    if let Some(so) = &icmp6_so {
+        let pkt = loop6_icmp(129, 64);
+        let r = measure(OPS / 10, || {
+            let mut total = Duration::ZERO;
+            for _ in 0..OPS / 10 {
+                let mut mp = Some(need(m_devget(&pkt, 0), "a packet"));
+                let mut off = 40;
+                let t0 = Instant::now();
+                let _ = rip6_input::<G>(
+                    black_box(&mut mp),
+                    &mut off,
+                    IPPROTO_ICMPV6,
+                    i32::from(AF_INET6),
+                    None,
+                    &net,
+                );
+                total += t0.elapsed();
+                so.so_rcv.lock().sbflush();
+            }
+            total
+        });
+        report(RAW_ROWS[2], r);
+    }
+    drop(rd);
+    core::mem::forget((socks, icmp6_so));
+
+    // The divert rows: one divert socket bound to port 7002.
+    if wanted(RAW_ROWS[3]) || wanted(RAW_ROWS[4]) {
+        let so = raw_socket(&DivertProtocol::<G>::NEW, 0);
+        {
+            let mut w = solock(&so);
+            if divert_bind(&so, &mut w, &udp_nam([0, 0, 0, 0], 7002), p).is_err() {
+                eprintln!("net: divert_bind failed");
+                std::process::exit(1);
+            }
+        }
+        let pkt = loop_packet(IPPROTO_UDP as u8, 1, 0, 64);
+        if wanted(RAW_ROWS[3]) {
+            let rd = NETLOCK.read();
+            let net = need(NetHeld::of(&rd), "the net lock");
+            let ifidx = lo.if_index.get();
+            let r = measure(OPS / 10, || {
+                let mut total = Duration::ZERO;
+                for _ in 0..OPS / 10 {
+                    let m = need(m_devget(&pkt, 0), "a packet");
+                    m.m_pkthdr().ph_ifidx.set(ifidx);
+                    let t0 = Instant::now();
+                    divert_packet::<G>(black_box(m), i32::from(PF_IN), 7002u16.to_be(), &net);
+                    total += t0.elapsed();
+                    so.so_rcv.lock().sbflush();
+                }
+                total
+            });
+            report(RAW_ROWS[3], r);
+            drop(rd);
+        }
+        if wanted(RAW_ROWS[4]) {
+            let to = udp_nam([127, 0, 0, 1], 0);
+            let mut w = solock(&so);
+            let r = measure(OPS / 10, || {
+                let mut total = Duration::ZERO;
+                for _ in 0..OPS / 10 {
+                    let m = need(m_devget(&pkt, 0), "a packet");
+                    let t0 = Instant::now();
+                    if divert_send(&so, &mut w, Some(black_box(m)), Some(&to), None).is_err() {
+                        eprintln!("net: divert_send failed");
+                        std::process::exit(1);
+                    }
+                    total += t0.elapsed();
+                    // The delivered packet, out of the UDP entry's stash.
+                    STASH.with(|s| s.borrow_mut().clear());
+                }
+                total
+            });
+            report(RAW_ROWS[4], r);
+            drop(w);
+        }
+        core::mem::forget(so);
     }
 }
 

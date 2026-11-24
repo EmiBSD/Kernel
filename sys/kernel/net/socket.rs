@@ -920,7 +920,8 @@ enum NetHold<'a> {
 
 /// `so_lock`'s part of a socket lock.
 enum SoHold<'a> {
-    /// Not held (an internet socket under the net lock alone, or released for a while).
+    /// Not held (released for a while, or taken out by the drop; an internet socket under
+    /// the net lock alone, `bsd`'s until N6.6b1, is gone).
     None,
     /// Held with a witness (the kernel's domains: the cells keyed to `so_lock` open with it).
     Witness(WriteWitness<'a>),
@@ -1183,15 +1184,17 @@ impl Drop for SoLocked<'_> {
 /// `solock_nonet`'s callers), which this holding excludes.
 pub fn solock<G: ProcGlue>(so: &Socket<G>) -> SoLocked<'_> {
     if so.is_inet() {
+        // Every internet protocol is the kernel's since N6.6b1 (`bsd`'s raw rows answer with
+        // the kernel's raw IP): no internet socket is held C-style.
+        if so.legacy_lock {
+            kpanic(format_args!(
+                "solock: socket {so:p}: an internet socket of a legacy protocol"
+            ));
+        }
         let net = NetHold::Excl(NETLOCK.write());
-        let hold = if so.legacy_lock {
-            SoHold::None
-        } else {
-            SoHold::Witness(so.so_lock.lock().write())
-        };
         SoLocked {
             lock: &so.so_lock,
-            so: hold,
+            so: SoHold::Witness(so.so_lock.lock().write()),
             net,
         }
     } else {
@@ -1203,13 +1206,14 @@ pub fn solock<G: ProcGlue>(so: &Socket<G>) -> SoLocked<'_> {
 /// net lock of an internet socket, with or without a detached holding of `so_lock`; a
 /// detached holding of `so_lock` for the per-socket domains still in `bsd`), lent as a
 /// witness for a request that wants one (`sobind`, `soconnect`, `solisten` of nfs and `bsd`'s
-/// tests, `kern.file`'s fill, nfs's send). An internet socket's caller lends its proof of the
+/// tests, nfs's send). An internet socket's caller lends its proof of the
 /// net lock, `net` (`SaToken::lend_net`), which the witness carries for [`SoLocked::inet`]
 /// and never lets go (a wait or an unlock under it is `panic(9)`). Of a kernel protocol's
 /// internet socket (D-1), the caller's detached holding of `so_lock` is attached for the
 /// request and detached back by the drop; without one, the caller holds the net lock
 /// exclusively (`bsd`'s `solock`), and `so_lock` is taken for the request, uncontended, as
-/// [`solock`] takes it. A `bsd` protocol's socket gets the holdings as they are: the drop
+/// [`solock`] takes it (every internet socket is a kernel protocol's since N6.6b1). A `bsd`
+/// protocol's socket (pfkey's, a per-socket domain) gets the holdings as they are: the drop
 /// lets nothing go. `panic(9)` for an internet socket without `net`, for the other kernel
 /// domains' sockets (their requests are the kernel's), and for a lock the caller does not
 /// hold.
@@ -1223,13 +1227,13 @@ pub fn solocked_legacy<'a, G: ProcGlue>(
                 "solocked_legacy: socket {so:p}: the net lock is not lent"
             ));
         };
-        let hold = if so.legacy_lock {
-            if so.so_lock.held_detached() {
-                SoHold::Lent
-            } else {
-                SoHold::None
-            }
-        } else if so.so_lock.held_detached() {
+        // No internet socket is a `bsd` protocol's since N6.6b1 (see `solock`).
+        if so.legacy_lock {
+            kpanic(format_args!(
+                "solocked_legacy: socket {so:p}: an internet socket of a legacy protocol"
+            ));
+        }
+        let hold = if so.so_lock.held_detached() {
             SoHold::Attached(so.so_lock.attach())
         } else {
             kassert!(hal::netlock::write_held());
@@ -4945,24 +4949,14 @@ mod tests {
         inet_free(so);
     }
 
+    /// Since N6.6b1 no internet protocol is `bsd`'s, so `solock` refuses a legacy internet
+    /// socket (until then it held it by the net lock alone, no `so_lock`).
     #[test]
-    fn a_bsd_inet_socket_is_locked_by_the_net_lock_alone() {
+    #[should_panic(expected = "solock: socket")]
+    fn solock_refuses_an_internet_socket_of_a_legacy_protocol() {
         let _g = net_setup();
         let so = inet_socket(&BsdInet);
-        {
-            let mut w = solock(&so);
-            assert_eq!(hal::netlock::status(), hal::rwlock::RW_WRITE);
-            assert_eq!(so.so_lock.lock().status(), 0);
-            assert!(w.so_lock().is_none() && w.inet().is_none());
-        }
-        {
-            // solock_shared: so_lock held detached, no witness.
-            let mut w = solock_shared(&so);
-            assert!(so.so_lock.held_detached());
-            assert!(w.inet().is_none());
-        }
-        assert_eq!(so.so_lock.lock().status(), 0);
-        inet_free(so);
+        let _w = solock(&so);
     }
 
     #[test]
@@ -4998,22 +4992,16 @@ mod tests {
         inet_free(so);
     }
 
+    /// The same refusal in `solocked_legacy` (until N6.6b1 it lent a legacy internet
+    /// socket's holdings as they were). No lock is held when it panics.
     #[test]
-    fn bsd_lends_its_holdings_of_a_bsd_inet_socket_as_they_are() {
+    #[should_panic(expected = "solocked_legacy: socket")]
+    fn solocked_legacy_refuses_an_internet_socket_of_a_legacy_protocol() {
         let _g = net_setup();
         let so = inet_socket(&BsdInet);
-        hal::netlock::lock();
-        so.so_lock.enter_write_detached();
-        let (lent, kept) = hal::netlock::lend_detached(|net| {
-            let mut w = solocked_legacy(&so, Some(net));
-            let lent = w.so_lock().is_none() && w.inet().is_none();
-            drop(w);
-            (lent, so.so_lock.held_detached())
-        });
-        so.so_lock.exit_write_detached();
-        hal::netlock::unlock();
-        assert!(lent && kept);
-        inet_free(so);
+        let w = hal::netlock::NETLOCK.read();
+        let net = hal::netlock::NetHeld::of(&w).expect("the net lock");
+        let _l = solocked_legacy(&so, Some(&net));
     }
 
     #[test]

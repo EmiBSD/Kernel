@@ -290,11 +290,11 @@ pub trait Protocol<G: ProcGlue>: Sync + 'static {
     /// `pr_usrreqs`: the user requests; `None` for an entry sockets cannot be made of
     /// (`socreate`'s `EPROTONOSUPPORT`).
     fn usrreqs(&self) -> Option<&'static dyn Usrreqs<G>>;
-    /// Whether the protocol's requests are `bsd`'s (its `struct protosw`'s impl, or a kernel
-    /// entry that lends `bsd`'s raw requests): they release and take the socket lock again
-    /// C-style (`route_attach`, `pfkeyv2_send`, the internet transports' `in_pcbsolock`), so
-    /// the kernel holds a socket of the protocol by a detached holding of `so_lock`, never a
-    /// witness. A socket records it at `soalloc` ([`Socket`]'s `legacy_lock`), for its life.
+    /// Whether the protocol's requests are `bsd`'s (its `struct protosw`'s impl; since N6.6b1
+    /// only pfkey's, `bsd`'s raw rows answering with the kernel's raw IP): they release and
+    /// take the socket lock again C-style (`pfkeyv2_send`), so the kernel holds a socket of the
+    /// protocol by a detached holding of `so_lock`, never a witness. A socket records it at
+    /// `soalloc` ([`Socket`]'s `legacy_lock`), for its life.
     /// The kernel's own protocols answer `false`: their sockets are held by a witness of
     /// `so_lock`, an internet one's under either holding of the net lock (D-1, N6.6a0).
     fn legacy(&self) -> bool {
