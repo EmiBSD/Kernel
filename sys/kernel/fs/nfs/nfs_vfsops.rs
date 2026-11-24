@@ -67,9 +67,9 @@
 //! ## Redesign
 //! - LZ's `nfs_fsinfo` took a raw `*const Ucred` and an `NfsmInfo` over the request; here it
 //!   takes the credential borrowed, the reply's reader dissects the `nfsv3_fsinfo` by copy,
-//!   and [`fsinfo_apply`] (LZ's) does the C's unsigned arithmetic with wrapping adds: LZ's
-//!   `pref + fab - 1` panicked in a debug build for a preferred size within 511 of 2^32 that
-//!   a server sends.
+//!   and [`fsinfo_apply`] (LZ's) does the C's `u_int32_t` arithmetic, its adds wrapping as
+//!   the C's (a preferred size is rounded only when it is below the mount's size, so they
+//!   never wrap in practice).
 
 use core::sync::atomic::{AtomicI32, Ordering};
 

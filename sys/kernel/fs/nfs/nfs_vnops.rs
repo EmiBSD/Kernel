@@ -92,6 +92,10 @@
 //! - `nfs_print` prints under feature `debug` or `diagnostic`; the C's third condition,
 //!   `VFSLCKDEBUG`, has no feature here. The `DIAGNOSTIC` checks and `printf`s are behind
 //!   feature `diagnostic`.
+//! - `nfs_writebp`'s return when a buffer's `B_NEEDCOMMIT` was cleared while it waited for
+//!   the commit lock gives the buffer back (`brelse`), where the C returns with it still
+//!   busy; no path reaches it (the busy buffer is the caller's, so no one else clears the
+//!   flag).
 //! - Kept as the C: a version 3 WRITE reply whose count exceeds the request's (`rlen > len`)
 //!   is not refused; `nfs_fsinfo`'s readdir clamp compares with the read maximum (`max`), as
 //!   the C's reuse of the variable does; `nfs_readdirplusrpc` returns the error of an
@@ -4516,3 +4520,1352 @@ impl<G: ProcGlue> Vnops<G> for NfsFifoVnops<G> {
     }
 }
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    // Host tests of the vnode operations: the packer and the small helpers alone, then the
+    // operations against testnfs's scripted server on 127.0.0.1 (a mount of the fixture's
+    // glue whose nodes are the client's, `nfs_nget`'s, over the fixture's buffer cache).
+
+    use std::boxed::Box;
+    use std::sync::{Arc, Mutex};
+    use std::vec;
+    use std::vec::Vec;
+
+    use super::*;
+    use crate::fs::namei::Componentname;
+    use crate::fs::nfs::nfs_subs::nfs_vfs_init;
+    use crate::fs::nfs::nfsproto::{NFDIR, NFLNK, NFREG};
+    use crate::fs::nfs::testnfs::{self as tn, Out};
+    use crate::net::mbuf::MBUFPL;
+    use crate::sys::socket::SOCK_DGRAM;
+    use crate::uio::Iovec;
+
+    /// The silly name is `.nfs` and the two words in upper-case hex, 20 bytes.
+    #[test]
+    fn the_silly_name_is_the_c_s_format() {
+        let (n, len) = nfs_sillyname([0x0123_abcd, 0xfedc_ba98]);
+        assert_eq!(len, 20);
+        assert_eq!(&n[..20], b".nfs0123ABCDFEDCBA98");
+        assert!(n[20..].iter().all(|&b| b == 0));
+    }
+
+    /// The access bits a check asks: a directory's write is modify, extend and delete, its
+    /// exec lookup; a file's exec is execute.
+    #[test]
+    fn the_access_bits_follow_the_vnode_type() {
+        let rwx = VREAD | VWRITE | VEXEC;
+        assert_eq!(
+            nfs_access_mode(VDIR, rwx),
+            NFSV3ACCESS_READ
+                | NFSV3ACCESS_MODIFY
+                | NFSV3ACCESS_EXTEND
+                | NFSV3ACCESS_DELETE
+                | NFSV3ACCESS_LOOKUP
+        );
+        assert_eq!(
+            nfs_access_mode(VREG, rwx),
+            NFSV3ACCESS_READ | NFSV3ACCESS_MODIFY | NFSV3ACCESS_EXTEND | NFSV3ACCESS_EXECUTE
+        );
+        assert_eq!(nfs_access_mode(VREG, 0), 0);
+    }
+
+    /// A xorshift generator for the packer's property test.
+    fn next(s: &mut u64) -> u64 {
+        *s ^= *s << 13;
+        *s ^= *s >> 7;
+        *s ^= *s << 17;
+        *s
+    }
+
+    /// Whatever names come, the packer never writes past its buffer, every record lies in
+    /// one `NFS_READDIRBLKSIZ` block, and the records (the last grown to its block's end)
+    /// tile what was packed.
+    #[test]
+    fn the_packer_tiles_its_blocks_and_stays_in_the_buffer() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        for _ in 0..2000 {
+            let mut buf = vec![0u8; DIRBLKSIZ];
+            let start = if next(&mut seed) % 4 == 0 {
+                READDIRBLKSIZ
+            } else {
+                0
+            };
+            let mut pack = DirPack::new(&mut buf, start);
+            let mut begun = Vec::new();
+            loop {
+                let len = 1 + (next(&mut seed) % NFS_MAXNAMLEN as u64) as usize;
+                if !pack.begin(7, len) {
+                    break;
+                }
+                let at = pack.dp.expect("the record begun");
+                pack.name_slot(len).fill(b'a');
+                pack.end_name(len);
+                begun.push(at);
+            }
+            pack.finish();
+            let end = pack.pos;
+            assert!(end <= DIRBLKSIZ);
+            let mut off = start;
+            for &at in &begun {
+                // A record that did not fit its block's rest began the next block, the
+                // previous one grown to fill the gap: the records stay contiguous.
+                assert_eq!(at, off, "a gap before the record at {at}");
+                let reclen = usize::from(u16::from_ne_bytes([
+                    buf[at + ND_RECLEN],
+                    buf[at + ND_RECLEN + 1],
+                ]));
+                assert_eq!(at / READDIRBLKSIZ, (at + reclen - 1) / READDIRBLKSIZ);
+                let namlen = usize::from(buf[at + ND_NAMLEN]);
+                assert_eq!(buf[at + NFS_DIRHDSIZ + namlen], 0, "NUL-terminated");
+                off += reclen;
+            }
+            assert_eq!(off, end, "the records tile what was packed");
+        }
+    }
+
+    /// `fsinfo_apply`'s clamps: preferred sizes round up, maxima down (to themselves when they
+    /// round to 0), the readdir size is clamped by the read maximum (the C's reuse), and a
+    /// preferred size near 2^32 wraps as the C's unsigned add instead of overflowing.
+    #[test]
+    fn fsinfo_shrinks_the_sizes_as_the_c() {
+        let tm = crate::fs::nfs::nfs_node::test_mount(NFSMNT_NFSV3);
+        let nmp = &tm.nmp;
+        let set = |w, r, d| {
+            nmp.nm_wsize.store(w, Ordering::Relaxed);
+            nmp.nm_rsize.store(r, Ordering::Relaxed);
+            nmp.nm_readdirsize.store(d, Ordering::Relaxed);
+        };
+        let fs =
+            |wp: u32, wm: u32, rp: u32, rm: u32, dp: u32| super::super::nfsproto::Nfsv3Fsinfo {
+                fs_wtpref: wp.to_be(),
+                fs_wtmax: wm.to_be(),
+                fs_rtpref: rp.to_be(),
+                fs_rtmax: rm.to_be(),
+                fs_dtpref: dp.to_be(),
+                ..Default::default()
+            };
+        let get = || {
+            (
+                nmp.nm_wsize.load(Ordering::Relaxed),
+                nmp.nm_rsize.load(Ordering::Relaxed),
+                nmp.nm_readdirsize.load(Ordering::Relaxed),
+            )
+        };
+        set(8192, 8192, 8192);
+        super::super::nfs_vfsops::fsinfo_apply(nmp, &fs(4000, 65536, 3000, 65536, 1500));
+        assert_eq!(get(), (4096, 3072, 2048));
+        assert_ne!(nmp.flag() & NFSMNT_GOTFSINFO, 0);
+        set(8192, 8192, 8192);
+        super::super::nfs_vfsops::fsinfo_apply(nmp, &fs(65536, 300, 65536, 1000, 65536));
+        assert_eq!(
+            get(),
+            (300, 512, 1000),
+            "maxima: 300 rounds to 0, 1000 to 512"
+        );
+        set(8192, 8192, 8192);
+        super::super::nfs_vfsops::fsinfo_apply(
+            nmp,
+            &fs(u32::MAX - 100, 65536, 65536, 65536, 65536),
+        );
+        assert_eq!(
+            get(),
+            (8192, 8192, 8192),
+            "sizes above the mount's change nothing"
+        );
+    }
+
+    // The scripted server's tests.
+
+    /// The root's handle.
+    const ROOTFH: [u8; 8] = [1; 8];
+    /// A file's handle.
+    const FILEFH: [u8; 8] = [2; 8];
+
+    /// A test's mount: the fixture, the client's structure, the root directory's node (its
+    /// vnode locked, `nfs_nget`'s), and the mbufs out before the test.
+    struct Nt {
+        fx: tn::Fixture,
+        nmp: NfsMountRef<tn::G>,
+        dnp: NfsNodeRef<tn::G>,
+        mbufs: u64,
+    }
+
+    impl Nt {
+        /// The root's vnode.
+        fn dvp(&self) -> &'static Vnode<tn::G> {
+            nfstov(&self.dnp)
+        }
+
+        /// The requester's credential.
+        fn cred(&self) -> Cred<'static> {
+            Cred::real(self.fx.user.ucred())
+        }
+
+        /// The mount taken down: the network as the test found it.
+        fn done(self, peer: tn::Peer) {
+            peer.stop();
+            let Nt {
+                fx,
+                nmp,
+                dnp,
+                mbufs,
+            } = self;
+            drop(dnp);
+            tn::unmount(&fx, nmp);
+            tn::pump(fx.lo);
+            assert_eq!(MBUFPL.nout(), mbufs, "every mbuf back");
+            drop(fx);
+        }
+    }
+
+    /// A version 3 mount (`flag` more) over UDP with attribute cache bounds of 3..60 s, its
+    /// root a directory.
+    fn setup(flag: i32) -> Nt {
+        let fx = tn::setup(1000);
+        // A wall clock past the servers' times (the attribute cache's stamps are seconds; 0 is
+        // "no attributes").
+        if crate::tc::gettime() == 0 {
+            crate::tc::TIME_SECOND.store(1_000_000, Ordering::Relaxed);
+        }
+        let mbufs = MBUFPL.nout();
+        nfs_vfs_init::<tn::G>(fx.mp.vfc()).expect("nfs_vfs_init");
+        let nmp = tn::nfsmount(&fx, SOCK_DGRAM, flag);
+        for (a, v) in [
+            (&nmp.nm_acregmin, 3),
+            (&nmp.nm_acregmax, 60),
+            (&nmp.nm_acdirmin, 30),
+            (&nmp.nm_acdirmax, 60),
+        ] {
+            a.store(v, Ordering::Relaxed);
+        }
+        assert_eq!(tn::connect(&nmp), Ok(()));
+        let dnp = nfs_nget(fx.mp, &ROOTFH).expect("the root");
+        nfstov(&dnp).set_vtype(VDIR);
+        // The modification time the servers' directory attributes carry.
+        let _ = dnp.n_mtime.replace(crate::clock::Timespec {
+            tv_sec: 1000,
+            tv_nsec: 0,
+        });
+        Nt {
+            fx,
+            nmp,
+            dnp,
+            mbufs,
+        }
+    }
+
+    /// One XDR word.
+    fn w(v: &mut Vec<u8>, x: u32) {
+        v.extend_from_slice(&x.to_be_bytes());
+    }
+
+    /// A version 3 `fattr3` of the type `t`, mode, size, file id, modification and change
+    /// second and owner.
+    fn fattr3(t: u32, mode: u32, size: u64, fileid: u64, mtime: u32, uid: u32) -> Vec<u8> {
+        let mut v = Vec::new();
+        for x in [t, mode, 1, uid, 0] {
+            w(&mut v, x);
+        }
+        for q in [size, size, 0, 7, fileid] {
+            v.extend_from_slice(&q.to_be_bytes());
+        }
+        for x in [mtime, 0, mtime, 0, mtime, 0] {
+            w(&mut v, x);
+        }
+        assert_eq!(v.len(), NFSX_V3FATTR);
+        v
+    }
+
+    /// A `post_op_attr` (`None`: no attributes).
+    fn post(a: Option<Vec<u8>>) -> Vec<u8> {
+        let mut v = Vec::new();
+        match a {
+            Some(a) => {
+                w(&mut v, 1);
+                v.extend(a);
+            }
+            None => w(&mut v, 0),
+        }
+        v
+    }
+
+    /// A `wcc_data` with no attributes either side.
+    fn wcc() -> Vec<u8> {
+        vec![0; 8]
+    }
+
+    /// An `nfs_fh3`.
+    fn fh3(b: &[u8]) -> Vec<u8> {
+        let mut v = Vec::new();
+        w(&mut v, b.len() as u32);
+        v.extend_from_slice(b);
+        v.resize(v.len() + nfsm_padlen(b.len()), 0);
+        v
+    }
+
+    /// The procedure of a call.
+    fn proc_of(c: &[u8]) -> u32 {
+        u32::from_be_bytes(c[20..24].try_into().unwrap())
+    }
+
+    /// The arguments of a call, after its credential and verifier.
+    fn args_of(c: &[u8]) -> &[u8] {
+        let be = |o: usize| u32::from_be_bytes(c[o..o + 4].try_into().unwrap()) as usize;
+        let o = 32 + nfsm_rndup(be(28));
+        &c[o + 8 + nfsm_rndup(be(o + 4))..]
+    }
+
+    /// The XDR string at `off` of `a` and the offset after it.
+    fn xstr(a: &[u8], off: usize) -> (Vec<u8>, usize) {
+        let n = u32::from_be_bytes(a[off..off + 4].try_into().unwrap()) as usize;
+        (a[off + 4..off + 4 + n].to_vec(), off + 4 + nfsm_rndup(n))
+    }
+
+    /// A server answering by `f(procedure, arguments)`: a status and the results.
+    fn peer(nt: &Nt, mut f: impl FnMut(u32, &[u8]) -> (u32, Vec<u8>) + Send + 'static) -> tn::Peer {
+        tn::Peer::start(
+            &nt.fx,
+            SOCK_DGRAM,
+            &nt.nmp,
+            Box::new(move |_, c| {
+                let (st, body) = f(proc_of(c), args_of(c));
+                vec![Out::Data(tn::reply(c, 0, 0, st, &body))]
+            }),
+        )
+    }
+
+    /// The procedures of the calls a server saw.
+    fn procs(peer: &tn::Peer) -> Vec<u32> {
+        peer.calls().iter().map(|(_, c)| proc_of(c)).collect()
+    }
+
+    /// A GETATTR loads the cache; a second one within the timeout is answered from it.
+    #[test]
+    fn getattr_loads_the_cache_and_answers_from_it() {
+        let nt = setup(NFSMNT_NFSV3);
+        let p = peer(&nt, |pr, _| {
+            assert_eq!(pr, NFSPROC_GETATTR as u32);
+            (0, fattr3(NFDIR as u32, 0o755, 512, 2, 1000, 1000))
+        });
+        let mut va = Vattr::new();
+        assert_eq!(
+            nfs_getattr(nt.dvp(), &mut va, nt.cred(), nt.fx.user),
+            Ok(())
+        );
+        let mut va2 = Vattr::new();
+        assert_eq!(
+            nfs_getattr(nt.dvp(), &mut va2, nt.cred(), nt.fx.user),
+            Ok(())
+        );
+        assert_eq!(procs(&p), [NFSPROC_GETATTR as u32]);
+        assert_eq!(
+            (va.va_type, va.va_mode, va.va_size, va.va_fileid, va.va_uid),
+            (VDIR, 0o755, 512, 2, 1000)
+        );
+        assert_eq!(va2.va_mtime, va.va_mtime);
+        nt.done(p);
+    }
+
+    /// A version 3 ACCESS is asked once for a uid and a mode; the same check is answered from
+    /// the access cache, a refused bit is `EACCES`, and new attributes with another owner
+    /// invalidate the cache (`nfs_loadattrcache`).
+    #[test]
+    fn access_is_asked_once_then_cached() {
+        let nt = setup(NFSMNT_NFSV3);
+        let grant = Arc::new(Mutex::new(NFSV3ACCESS_READ | NFSV3ACCESS_LOOKUP));
+        let g2 = grant.clone();
+        let p = peer(&nt, move |pr, _| match pr as usize {
+            NFSPROC_ACCESS => {
+                let mut v = post(Some(fattr3(NFDIR as u32, 0o755, 512, 2, 1000, 1000)));
+                w(&mut v, *g2.lock().unwrap());
+                (0, v)
+            }
+            _ => (0, fattr3(NFDIR as u32, 0o755, 512, 2, 1000, 7)),
+        });
+        let (vp, np, nmp) = (nt.dvp(), &nt.dnp, &nt.nmp);
+        let user = nt.fx.user;
+        assert_eq!(nfs_access(vp, np, nmp, VEXEC, nt.cred(), user), Ok(()));
+        assert_eq!(nfs_access(vp, np, nmp, VEXEC, nt.cred(), user), Ok(()));
+        assert_eq!(procs(&p).len(), 1, "the second check from the cache");
+        assert_eq!(
+            nfs_access(vp, np, nmp, VWRITE, nt.cred(), user),
+            Err(Errno::EACCES)
+        );
+        assert_eq!(procs(&p).len(), 2);
+        assert_eq!(
+            nfs_access(vp, np, nmp, VWRITE, nt.cred(), user),
+            Err(Errno::EACCES),
+            "the refusal cached"
+        );
+        assert_eq!(procs(&p).len(), 2);
+        // New attributes with another owner throw the cache away.
+        nfs_invalidate_attrcache(np);
+        let mut va = Vattr::new();
+        assert_eq!(nfs_getattr(vp, &mut va, nt.cred(), user), Ok(()));
+        assert_eq!(np.n_accstamp.load(Ordering::Relaxed), -1);
+        *grant.lock().unwrap() = NFSV3ACCESS_READ | NFSV3ACCESS_LOOKUP | NFSV3ACCESS_MODIFY;
+        assert_eq!(nfs_access(vp, np, nmp, VEXEC, nt.cred(), user), Ok(()));
+        assert_eq!(
+            procs(&p),
+            [
+                NFSPROC_ACCESS as u32,
+                NFSPROC_ACCESS as u32,
+                NFSPROC_GETATTR as u32,
+                NFSPROC_ACCESS as u32
+            ]
+        );
+        nt.done(p);
+    }
+
+    /// A componentname of the requester for `op` with `flags`, the name `name`.
+    fn cn(nt: &Nt, op: u64, flags: u64, name: &'static [u8]) -> Componentname<'static, tn::G> {
+        let mut c = Componentname::new(op, flags, nt.fx.user, nt.cred());
+        c.set_name_lit(name);
+        c
+    }
+
+    /// A LOOKUP sends the directory's handle and the name; the node made from the reply's
+    /// handle has the attributes' type, and the name goes in the cache, so a second lookup
+    /// (once the vnode is released) is answered there (an ACCESS of the directory, no
+    /// LOOKUP).
+    #[test]
+    fn lookup_makes_the_node_and_caches_the_name() {
+        let nt = setup(NFSMNT_NFSV3);
+        let p = peer(&nt, |pr, a| match pr as usize {
+            NFSPROC_LOOKUP => {
+                let (fh, o) = xstr(a, 0);
+                assert_eq!(fh, ROOTFH);
+                assert_eq!(xstr(a, o).0, b"file");
+                let mut v = fh3(&FILEFH);
+                v.extend(post(Some(fattr3(NFREG as u32, 0o644, 100, 3, 1000, 1000))));
+                v.extend(post(None));
+                (0, v)
+            }
+            NFSPROC_ACCESS => {
+                let mut v = post(None);
+                w(&mut v, 0x3f);
+                (0, v)
+            }
+            _ => (NFSERR_IO as u32, post(None)),
+        });
+        let mut vpp = None;
+        let mut c = cn(&nt, LOOKUP, LOCKPARENT | ISLASTCN | MAKEENTRY, b"file");
+        assert_eq!(nfs_lookup(nt.dvp(), &mut vpp, &mut c), Ok(()));
+        let vp = vpp.expect("the file");
+        assert_eq!(vp.vtype(), VREG);
+        assert_eq!(vtonfs(vp).fh().bytes(), FILEFH);
+        assert_eq!(vtonfs(vp).n_size.load(Ordering::Relaxed), 100);
+        vput(vp);
+
+        let mut vpp = None;
+        let mut c = cn(&nt, LOOKUP, LOCKPARENT | ISLASTCN | MAKEENTRY, b"file");
+        assert_eq!(nfs_lookup(nt.dvp(), &mut vpp, &mut c), Ok(()));
+        assert!(
+            vpp.is_some_and(|v| ptr::eq(v, vp)),
+            "the same vnode, from the cache"
+        );
+        assert_eq!(procs(&p), [NFSPROC_LOOKUP as u32, NFSPROC_ACCESS as u32]);
+        vput(vp);
+        nt.done(p);
+    }
+
+    /// A name the server does not have is `ENOENT` for a LOOKUP, entered in the cache as a
+    /// negative entry (`MAKEENTRY`), and `EJUSTRETURN` for the last component of a CREATE.
+    #[test]
+    fn a_missing_name_is_enoent_or_ejustreturn_for_a_create() {
+        let nt = setup(NFSMNT_NFSV3);
+        let p = peer(&nt, |_, _| (Errno::ENOENT as u32, post(None)));
+        let mut vpp = None;
+        let mut c = cn(&nt, LOOKUP, LOCKPARENT | ISLASTCN | MAKEENTRY, b"none");
+        assert_eq!(nfs_lookup(nt.dvp(), &mut vpp, &mut c), Err(Errno::ENOENT));
+        assert!(vpp.is_none());
+        let mut c = cn(&nt, CREATE, LOCKPARENT | ISLASTCN, b"new");
+        assert_eq!(
+            nfs_lookup(nt.dvp(), &mut vpp, &mut c),
+            Err(Errno::EJUSTRETURN)
+        );
+        assert_ne!(c.cn_flags & SAVENAME, 0);
+        assert_eq!(procs(&p).len(), 2);
+        nt.done(p);
+    }
+
+    /// An exclusive create the server does not support (`NFSERR_NOTSUPP`, D-3) is retried
+    /// unchecked: two CREATEs, the first `EXCLUSIVE` with its verifier, the second
+    /// `UNCHECKED` with the attributes; the node comes from the second reply.
+    #[test]
+    fn an_exclusive_create_is_retried_unchecked() {
+        let nt = setup(NFSMNT_NFSV3);
+        let p = peer(&nt, |pr, a| {
+            assert_eq!(pr, NFSPROC_CREATE as u32);
+            let (_, o) = xstr(a, 0);
+            let (name, o) = xstr(a, o);
+            assert_eq!(name, b"x");
+            let how = u32::from_be_bytes(a[o..o + 4].try_into().unwrap());
+            if how == NFSV3CREATE_EXCLUSIVE {
+                (NFSERR_NOTSUPP as u32, wcc())
+            } else {
+                let mut v = Vec::new();
+                w(&mut v, 1);
+                v.extend(fh3(&FILEFH));
+                v.extend(post(Some(fattr3(NFREG as u32, 0o600, 0, 3, 1000, 1000))));
+                v.extend(wcc());
+                (0, v)
+            }
+        });
+        let mut vpp = None;
+        let mut c = cn(&nt, CREATE, LOCKPARENT | ISLASTCN, b"x");
+        let mut va = Vattr::new();
+        vattr_null(&mut va);
+        va.va_type = VREG;
+        va.va_mode = 0o600;
+        va.va_vaflags = VA_EXCLUSIVE;
+        assert_eq!(nfs_create(nt.dvp(), &mut vpp, &mut c, &mut va), Ok(()));
+        let vp = vpp.expect("the file");
+        assert_eq!(vp.vtype(), VREG);
+        let hows: Vec<u32> = p
+            .calls()
+            .iter()
+            .map(|(_, c)| {
+                let a = args_of(c);
+                let (_, o) = xstr(a, 0);
+                let (_, o) = xstr(a, o);
+                u32::from_be_bytes(a[o..o + 4].try_into().unwrap())
+            })
+            .collect();
+        assert_eq!(hows, [NFSV3CREATE_EXCLUSIVE, NFSV3CREATE_UNCHECKED]);
+        assert!(nt.dnp.isset(NMODIFIED));
+        vput(vp);
+        nt.done(p);
+    }
+
+    /// A regular file of the root: its node by its handle, its type and size set, read and
+    /// write credentials the requester's.
+    fn file(nt: &Nt, size: u64) -> NfsNodeRef<tn::G> {
+        let np = nfs_nget(nt.fx.mp, &FILEFH).expect("the file");
+        let vp = nfstov(&np);
+        vp.set_vtype(VREG);
+        np.n_size.store(size, Ordering::Relaxed);
+        np.n_vattr.update(|v| {
+            v.va_type = VREG;
+            v.va_size = size;
+        });
+        nfs_setcred(&np, nt.fx.user.ucred(), false);
+        nfs_setcred(&np, nt.fx.user.ucred(), true);
+        np
+    }
+
+    /// A kernel read of `len` bytes at `off` into `buf`.
+    fn kread(
+        vp: &'static Vnode<tn::G>,
+        nt: &Nt,
+        off: i64,
+        buf: &mut [u8],
+    ) -> (Result<(), Errno>, usize) {
+        crate::testutil::set_copy_kernel(true);
+        let mut iov = [Iovec::new()];
+        let mut uio = Uio::kernel_read(&mut iov, buf, Some(nt.fx.user));
+        uio.uio_offset = off;
+        let r = nfs_read(vp, &mut uio, 0, nt.cred());
+        (r, uio.uio_resid)
+    }
+
+    /// A version 3 READ reply of `data` (`eof` its flag).
+    fn read3(data: &[u8], eof: bool) -> Vec<u8> {
+        let mut v = post(None);
+        w(&mut v, data.len() as u32);
+        w(&mut v, u32::from(eof));
+        w(&mut v, data.len() as u32);
+        v.extend_from_slice(data);
+        v.resize(v.len() + nfsm_padlen(data.len()), 0);
+        v
+    }
+
+    /// A read goes through the buffer cache: one READ of the block, the bytes as the server
+    /// sent them (a short block zero-filled to the file's size); a second read of the same
+    /// block is answered from the cache.
+    #[test]
+    fn a_read_fills_a_cache_block_once() {
+        let nt = setup(NFSMNT_NFSV3 | NFSMNT_GOTFSINFO);
+        let np = file(&nt, 300);
+        let vp = nfstov(&np);
+        let p = peer(&nt, |pr, a| match pr as usize {
+            NFSPROC_READ => {
+                let (_, o) = xstr(a, 0);
+                assert_eq!(&a[o..o + 8], &0u64.to_be_bytes(), "offset 0");
+                (0, read3(&[b'z'; 200], true))
+            }
+            _ => (0, fattr3(NFREG as u32, 0o644, 300, 3, 1000, 1000)),
+        });
+        let mut buf = [0u8; 300];
+        let (r, resid) = kread(vp, &nt, 0, &mut buf);
+        assert_eq!(r, Ok(()));
+        assert_eq!(resid, 0);
+        assert!(buf[..200].iter().all(|&b| b == b'z'));
+        assert!(buf[200..].iter().all(|&b| b == 0), "the hole zero-filled");
+        let mut buf2 = [0u8; 50];
+        assert_eq!(kread(vp, &nt, 10, &mut buf2), (Ok(()), 0));
+        assert!(buf2.iter().all(|&b| b == b'z'));
+        assert_eq!(
+            procs(&p),
+            [NFSPROC_GETATTR as u32, NFSPROC_READ as u32],
+            "the attributes once, the block once"
+        );
+        vput(vp);
+        nt.done(p);
+    }
+
+    /// A kernel write of `data` at `off`.
+    fn kwrite(
+        vp: &'static Vnode<tn::G>,
+        nt: &Nt,
+        off: i64,
+        data: &[u8],
+        ioflag: i32,
+    ) -> Result<(), Errno> {
+        let mut iov = [Iovec::new()];
+        let mut uio = Uio::kernel_write(&mut iov, data, Some(nt.fx.user));
+        uio.uio_offset = off;
+        nfs_write(vp, &mut uio, ioflag, nt.cred())
+    }
+
+    /// The `stable` argument and the data of a version 3 WRITE call.
+    fn write_args(a: &[u8]) -> (u64, u32, Vec<u8>) {
+        let (_, o) = xstr(a, 0);
+        let off = u64::from_be_bytes(a[o..o + 8].try_into().unwrap());
+        let stable = u32::from_be_bytes(a[o + 12..o + 16].try_into().unwrap());
+        (off, stable, xstr(a, o + 16).0)
+    }
+
+    /// A version 3 WRITE reply: the count written, its commitment, the verifier.
+    fn write3(count: u32, committed: u32, verf: [u8; 8]) -> Vec<u8> {
+        let mut v = wcc();
+        w(&mut v, count);
+        w(&mut v, committed);
+        v.extend_from_slice(&verf);
+        v
+    }
+
+    /// A partial block is a delayed write; `fsync` writes it `UNSTABLE` (the first pass),
+    /// then commits it (the second): WRITE, COMMIT, the block clean after. When the COMMIT's
+    /// verifier differs from the WRITE's (a server reboot), the block is written again
+    /// `FILESYNC` and the mount takes the new verifier.
+    #[test]
+    fn fsync_writes_unstable_then_commits_and_rewrites_on_a_new_verifier() {
+        for reboot in [false, true] {
+            let nt = setup(NFSMNT_NFSV3 | NFSMNT_GOTFSINFO);
+            let np = file(&nt, 0);
+            let vp = nfstov(&np);
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let s2 = seen.clone();
+            // The server's verifier: a reboot between the WRITE and the COMMIT changes it.
+            let mut verf = [1u8; 8];
+            let p = peer(&nt, move |pr, a| match pr as usize {
+                NFSPROC_WRITE => {
+                    let (off, stable, data) = write_args(a);
+                    s2.lock().unwrap().push((off, stable, data.len()));
+                    let committed = if stable == NFSV3WRITE_UNSTABLE {
+                        NFSV3WRITE_UNSTABLE
+                    } else {
+                        NFSV3WRITE_FILESYNC
+                    };
+                    (0, write3(data.len() as u32, committed, verf))
+                }
+                NFSPROC_COMMIT => {
+                    if reboot {
+                        verf = [2; 8];
+                    }
+                    let mut v = wcc();
+                    v.extend_from_slice(&verf);
+                    (0, v)
+                }
+                _ => (0, fattr3(NFREG as u32, 0o644, 0, 3, 1000, 1000)),
+            });
+            assert_eq!(kwrite(vp, &nt, 0, &[b'w'; 100], 0), Ok(()));
+            assert!(p.calls().is_empty(), "a delayed write");
+            assert_eq!(np.n_size.load(Ordering::Relaxed), 100);
+            assert_eq!(nfs_fsync(vp, nt.cred(), MNT_WAIT, nt.fx.user), Ok(()));
+            let want: Vec<u32> = if reboot {
+                vec![
+                    NFSPROC_WRITE as u32,
+                    NFSPROC_COMMIT as u32,
+                    NFSPROC_WRITE as u32,
+                ]
+            } else {
+                vec![NFSPROC_WRITE as u32, NFSPROC_COMMIT as u32]
+            };
+            assert_eq!(procs(&p), want, "reboot {reboot}");
+            let writes = seen.lock().unwrap().clone();
+            assert_eq!(writes[0], (0, NFSV3WRITE_UNSTABLE, 100));
+            if reboot {
+                assert_eq!(writes[1], (0, NFSV3WRITE_FILESYNC, 100));
+                assert_eq!(nt.nmp.verf(), [2; 8], "the new verifier");
+            } else {
+                assert_eq!(nt.nmp.verf(), [1; 8]);
+            }
+            assert!(vp.bufs.dirty_is_empty(), "the block clean");
+            vput(vp);
+            nt.done(p);
+        }
+    }
+
+    /// A WRITE reply that wrote nothing (`rlen <= 0`) is `NFSERR_IO`, the buffer's error: a
+    /// synchronous write answers `EIO`.
+    #[test]
+    fn a_write_reply_of_no_bytes_is_eio() {
+        let nt = setup(NFSMNT_NFSV3 | NFSMNT_GOTFSINFO);
+        let np = file(&nt, 0);
+        let vp = nfstov(&np);
+        let p = peer(&nt, |pr, _| match pr as usize {
+            NFSPROC_WRITE => (0, write3(0, NFSV3WRITE_FILESYNC, [1; 8])),
+            _ => (0, fattr3(NFREG as u32, 0o644, 0, 3, 1000, 1000)),
+        });
+        assert_eq!(
+            kwrite(vp, &nt, 0, &[b'w'; 10], crate::fs::vnode::IO_SYNC),
+            Err(Errno::EIO)
+        );
+        assert!(np.isset(NWRITEERR));
+        vput(vp);
+        nt.done(p);
+    }
+
+    /// The results of a version 3 READDIR of `names` (file ids from 10, cookies from 100),
+    /// `eof` at the end.
+    fn readdir3(names: &[&[u8]], eof: bool) -> Vec<u8> {
+        let mut v = post(None);
+        v.extend_from_slice(&[9; 8]); // the cookie verifier
+        for (i, n) in names.iter().enumerate() {
+            w(&mut v, 1);
+            v.extend_from_slice(&(10 + i as u64).to_be_bytes());
+            w(&mut v, n.len() as u32);
+            v.extend_from_slice(n);
+            v.resize(v.len() + nfsm_padlen(n.len()), 0);
+            v.extend_from_slice(&(100 + i as u64).to_be_bytes());
+        }
+        w(&mut v, 0);
+        w(&mut v, u32::from(eof));
+        v
+    }
+
+    /// A readdir of the root into a user-sized kernel buffer: the entries' records.
+    fn kreaddir(nt: &Nt, off: i64, buf: &mut [u8]) -> (Result<(), Errno>, i32, usize, i64) {
+        let mut iov = [Iovec::new()];
+        let mut uio = Uio::kernel_read(&mut iov, buf, Some(nt.fx.user));
+        uio.uio_offset = off;
+        let mut eof = 0;
+        let r = nfs_readdir(nt.dvp(), &mut uio, nt.cred(), &mut eof);
+        (r, eof, uio.uio_resid, uio.uio_offset)
+    }
+
+    /// The `(d_fileno, d_off, name)` of the records in `buf`.
+    fn dirents(buf: &[u8]) -> Vec<(u64, i64, Vec<u8>)> {
+        let mut v = Vec::new();
+        let mut o = 0;
+        while o + Dirent::NAME_OFFSET <= buf.len() {
+            let r = &buf[o..];
+            let fileno = u64::from_ne_bytes(r[0..8].try_into().unwrap());
+            let off = i64::from_ne_bytes(r[8..16].try_into().unwrap());
+            let reclen = usize::from(u16::from_ne_bytes(r[16..18].try_into().unwrap()));
+            let namlen = usize::from(r[19]);
+            if reclen == 0 {
+                break;
+            }
+            assert!(Dirent::NAME_OFFSET + namlen < reclen && o + reclen <= buf.len());
+            let name = &r[Dirent::NAME_OFFSET..Dirent::NAME_OFFSET + namlen];
+            v.push((fileno, off, name.to_vec()));
+            o += reclen;
+        }
+        v
+    }
+
+    /// READDIR: the entries become records (`d_off` the cookie, the uio's offset the last
+    /// one), the end of the directory is `eofflag` and the EOF offset cache: a read there
+    /// with unchanged attributes needs no RPC.
+    #[test]
+    fn readdir_packs_the_entries_and_caches_the_end() {
+        let nt = setup(NFSMNT_NFSV3 | NFSMNT_GOTFSINFO);
+        let p = peer(&nt, |pr, _| match pr as usize {
+            NFSPROC_READDIR => (0, readdir3(&[b"a", b"bcd"], true)),
+            _ => (0, fattr3(NFDIR as u32, 0o755, 512, 2, 1000, 1000)),
+        });
+        let mut buf = [0u8; 1024];
+        let (r, eof, resid, off) = kreaddir(&nt, 0, &mut buf);
+        assert_eq!((r, eof), (Ok(()), 1));
+        let used = 1024 - resid;
+        assert_eq!(
+            dirents(&buf[..used]),
+            [(10, 100, b"a".to_vec()), (11, 101, b"bcd".to_vec())]
+        );
+        assert_eq!(off, 101);
+        assert_eq!(nt.dnp.n_direofoffset.load(Ordering::Relaxed), 101);
+        // The same directory read at its end: GETATTR (the attributes) once, no READDIR.
+        let (r, eof, resid, _) = kreaddir(&nt, 101, &mut buf);
+        assert_eq!((r, eof, resid), (Ok(()), 1, 1024));
+        assert_eq!(procs(&p), [NFSPROC_READDIR as u32, NFSPROC_GETATTR as u32]);
+        nt.done(p);
+    }
+
+    /// READDIRPLUS refused (`NFSERR_NOTSUPP`, D-3) clears `NFSMNT_RDIRPLUS` and the READDIR
+    /// that follows answers; a bad cookie (`NFSERR_BAD_COOKIE`) is `EINVAL`.
+    #[test]
+    fn readdirplus_falls_back_and_a_bad_cookie_is_einval() {
+        let nt = setup(NFSMNT_NFSV3 | NFSMNT_GOTFSINFO | NFSMNT_RDIRPLUS);
+        let bad = Arc::new(Mutex::new(false));
+        let b2 = bad.clone();
+        let p = peer(&nt, move |pr, _| match pr as usize {
+            NFSPROC_READDIRPLUS => (NFSERR_NOTSUPP as u32, post(None)),
+            NFSPROC_READDIR if *b2.lock().unwrap() => (NFSERR_BAD_COOKIE as u32, post(None)),
+            NFSPROC_READDIR => (0, readdir3(&[b"x"], true)),
+            _ => (0, fattr3(NFDIR as u32, 0o755, 512, 2, 1000, 1000)),
+        });
+        let mut buf = [0u8; 1024];
+        let (r, eof, _, _) = kreaddir(&nt, 0, &mut buf);
+        assert_eq!((r, eof), (Ok(()), 1));
+        assert_eq!(nt.nmp.flag() & NFSMNT_RDIRPLUS, 0, "plus given up");
+        assert_eq!(dirents(&buf)[0].2, b"x");
+        *bad.lock().unwrap() = true;
+        nt.dnp.n_direofoffset.store(0, Ordering::Relaxed);
+        let (r, _, _, _) = kreaddir(&nt, 5, &mut buf);
+        assert_eq!(r, Err(Errno::EINVAL));
+        assert_eq!(
+            procs(&p),
+            [
+                NFSPROC_READDIRPLUS as u32,
+                NFSPROC_READDIR as u32,
+                NFSPROC_READDIR as u32
+            ]
+        );
+        nt.done(p);
+    }
+
+    /// A name of 0 or of more than `NFS_MAXNAMLEN` bytes, or holding a `/`, is `EBADRPC`:
+    /// nothing reaches the caller's buffer.
+    #[test]
+    fn a_bad_entry_name_is_ebadrpc() {
+        for (case, names) in [
+            (0, std::vec![&b""[..]]),
+            (1, std::vec![&[b'n'; 256][..]]),
+            (2, std::vec![&b"a/b"[..]]),
+        ] {
+            let nt = setup(NFSMNT_NFSV3 | NFSMNT_GOTFSINFO);
+            let names: Vec<Vec<u8>> = names.iter().map(|n| n.to_vec()).collect();
+            let p = peer(&nt, move |_, _| {
+                let refs: Vec<&[u8]> = names.iter().map(|n| &n[..]).collect();
+                (0, readdir3(&refs, true))
+            });
+            let mut buf = [0u8; 1024];
+            let (r, _, resid, _) = kreaddir(&nt, 0, &mut buf);
+            assert_eq!(r, Err(Errno::EBADRPC), "case {case}");
+            assert_eq!(resid, 1024, "case {case}");
+            nt.done(p);
+        }
+    }
+
+    /// Random READDIR replies (names of 1..255 bytes, any count, `more` and `eof` either
+    /// way): the records stay inside the caller's buffer and each holds the name sent; the
+    /// directory buffer is never overrun (the packer's bounds) and the reply never read past.
+    #[test]
+    fn random_readdir_replies_stay_in_bounds() {
+        let nt = setup(NFSMNT_NFSV3 | NFSMNT_GOTFSINFO);
+        let seed = Arc::new(Mutex::new(0x2545_f491_4f6c_dd1du64));
+        let s2 = seed.clone();
+        let p = peer(&nt, move |pr, _| {
+            if pr as usize != NFSPROC_READDIR {
+                return (0, fattr3(NFDIR as u32, 0o755, 512, 2, 1000, 1000));
+            }
+            let mut s = s2.lock().unwrap();
+            // At most 6 entries: the fixture's peer sends a datagram from one cluster.
+            let n = (next(&mut s) % 7) as usize;
+            let names: Vec<Vec<u8>> = (0..n)
+                .map(|_| vec![b'a' + (next(&mut s) % 26) as u8; 1 + (next(&mut s) % 255) as usize])
+                .collect();
+            let refs: Vec<&[u8]> = names.iter().map(|n| &n[..]).collect();
+            let eof = next(&mut s) % 2 == 0;
+            (0, readdir3(&refs, eof))
+        });
+        for i in 0..40 {
+            nt.dnp.n_direofoffset.store(0, Ordering::Relaxed);
+            let mut buf = vec![0u8; 512 + 512 * (i % 4)];
+            let len = buf.len();
+            let (r, _, resid, _) = kreaddir(&nt, 0, &mut buf);
+            assert_eq!(r, Ok(()), "case {i}");
+            for (_, _, name) in dirents(&buf[..len - resid]) {
+                assert!(!name.is_empty() && name.iter().all(|&c| c == name[0]));
+            }
+        }
+        nt.done(p);
+    }
+
+    /// Removing a file another user holds open renames it to a silly name instead (a LOOKUP
+    /// that finds the name free, the RENAME, a LOOKUP that gives the node its new handle);
+    /// its last release (`nfs_inactive`) removes the silly name.
+    #[test]
+    fn removing_an_open_file_renames_it_and_its_last_close_removes_it() {
+        let nt = setup(NFSMNT_NFSV3 | NFSMNT_GOTFSINFO);
+        let np = file(&nt, 0);
+        let vp = nfstov(&np);
+        vref(vp); // another user's
+        let lookups = Arc::new(Mutex::new(0));
+        let l2 = lookups.clone();
+        let p = peer(&nt, move |pr, _| match pr as usize {
+            NFSPROC_LOOKUP => {
+                let mut n = l2.lock().unwrap();
+                *n += 1;
+                if *n == 1 {
+                    (Errno::ENOENT as u32, post(None))
+                } else {
+                    let mut v = fh3(&[3; 8]);
+                    v.extend(post(Some(fattr3(NFREG as u32, 0o644, 0, 3, 1000, 1000))));
+                    v.extend(post(None));
+                    (0, v)
+                }
+            }
+            NFSPROC_RENAME => (0, [wcc(), wcc()].concat()),
+            NFSPROC_REMOVE => (0, wcc()),
+            _ => (0, fattr3(NFREG as u32, 0o644, 0, 3, 1000, 1000)),
+        });
+        let mut c = cn(
+            &nt,
+            DELETE,
+            LOCKPARENT | ISLASTCN | crate::fs::namei::HASBUF,
+            b"f",
+        );
+        assert_eq!(nfs_remove(nt.dvp(), vp, &mut c), Ok(()));
+        let silly = {
+            let r = klock::reader();
+            let k = np.n_k.get(&r);
+            let sp = k.n_sillyrename.as_ref().expect("the record");
+            sp.s_name[..20].to_vec()
+        };
+        assert!(silly.starts_with(b".nfs"));
+        assert_eq!(np.fh().bytes(), [3; 8], "the handle the second LOOKUP gave");
+        let calls = p.calls();
+        let names: Vec<Vec<u8>> = calls
+            .iter()
+            .map(|(_, c)| {
+                let a = args_of(c);
+                xstr(a, xstr(a, 0).1).0
+            })
+            .collect();
+        assert_eq!(names[0], silly, "the probe of the silly name");
+        assert_eq!(names[1], b"f", "the rename from the name");
+        let a = args_of(&calls[1].1);
+        let o = xstr(a, xstr(a, 0).1).1;
+        assert_eq!(xstr(a, xstr(a, o).1).0, silly, "to the silly name");
+
+        // The other user closes, then the remover: the last release removes the silly name.
+        let _ = vrele(vp);
+        drop(np);
+        vput(vp);
+        let calls = p.calls();
+        let last = &calls[calls.len() - 1].1;
+        assert_eq!(proc_of(last), NFSPROC_REMOVE as u32);
+        let a = args_of(last);
+        assert_eq!(xstr(a, xstr(a, 0).1).0, silly);
+        assert_eq!(
+            procs(&p),
+            [
+                NFSPROC_LOOKUP as u32,
+                NFSPROC_RENAME as u32,
+                NFSPROC_LOOKUP as u32,
+                NFSPROC_REMOVE as u32
+            ]
+        );
+        nt.done(p);
+    }
+
+    /// RENAME sends both directories' handles and names; a retried rename's `ENOENT` is
+    /// success (the kludge); the vnodes are released by the operation.
+    #[test]
+    fn rename_sends_both_names_and_an_enoent_is_success() {
+        let nt = setup(NFSMNT_NFSV3 | NFSMNT_GOTFSINFO);
+        let np = file(&nt, 0);
+        let fvp = nfstov(&np);
+        let _ = vop_unlock(fvp);
+        let dvp = nt.dvp();
+        vref(dvp);
+        vref(dvp);
+        let p = peer(&nt, |pr, a| {
+            assert_eq!(pr, NFSPROC_RENAME as u32);
+            let (_, o) = xstr(a, 0);
+            let (from, o) = xstr(a, o);
+            let (_, o) = xstr(a, o);
+            assert_eq!((from, xstr(a, o).0), (b"a".to_vec(), b"b".to_vec()));
+            (Errno::ENOENT as u32, [wcc(), wcc()].concat())
+        });
+        let mut fc = cn(&nt, DELETE, crate::fs::namei::HASBUF, b"a");
+        let mut tc = cn(&nt, RENAME, crate::fs::namei::HASBUF, b"b");
+        let uses = dvp.usecount();
+        assert_eq!(nfs_rename(dvp, fvp, &mut fc, dvp, None, &mut tc), Ok(()));
+        assert_eq!(dvp.usecount(), uses - 2, "fdvp released, tdvp put");
+        assert!(nt.dnp.isset(NMODIFIED));
+        drop(np);
+        // tdvp's vput unlocked the root: the fixture's lock again for its end.
+        let _ = vn_lock(dvp, LK_EXCLUSIVE);
+        nt.done(p);
+    }
+
+    /// A version 3 SETATTR of a size: the sattr3 carries only the size, the node's size is
+    /// the new one, and an error puts the old size back.
+    #[test]
+    fn a_truncation_sends_the_size_and_an_error_restores_it() {
+        let nt = setup(NFSMNT_NFSV3 | NFSMNT_GOTFSINFO);
+        let np = file(&nt, 100);
+        let vp = nfstov(&np);
+        let fail = Arc::new(Mutex::new(false));
+        let f2 = fail.clone();
+        let p = peer(&nt, move |pr, a| {
+            assert_eq!(pr, NFSPROC_SETATTR as u32);
+            let (_, o) = xstr(a, 0);
+            let words: Vec<u32> = a[o..o + 24]
+                .chunks_exact(4)
+                .map(|x| u32::from_be_bytes(x.try_into().unwrap()))
+                .collect();
+            // mode, uid, gid not set; size set to 10.
+            assert_eq!(&words[..6], &[0, 0, 0, 1, 0, 10]);
+            let st = if *f2.lock().unwrap() {
+                NFSERR_IO as u32
+            } else {
+                0
+            };
+            (st, wcc())
+        });
+        let mut va = Vattr::new();
+        vattr_null(&mut va);
+        va.va_size = 10;
+        assert_eq!(nfs_setattr(vp, &mut va, nt.cred(), nt.fx.user), Ok(()));
+        assert_eq!(np.n_size.load(Ordering::Relaxed), 10);
+        np.n_size.store(100, Ordering::Relaxed);
+        *fail.lock().unwrap() = true;
+        let mut va = Vattr::new();
+        vattr_null(&mut va);
+        va.va_size = 10;
+        assert_eq!(
+            nfs_setattr(vp, &mut va, nt.cred(), nt.fx.user),
+            Err(Errno::EIO)
+        );
+        assert_eq!(np.n_size.load(Ordering::Relaxed), 100, "the old size back");
+        vput(vp);
+        nt.done(p);
+    }
+
+    /// SYMLINK carries the name, the attributes and the target; the node the reply names is
+    /// released, and the directory with it (`vput`, the C's contract).
+    #[test]
+    fn symlink_sends_the_target() {
+        let nt = setup(NFSMNT_NFSV3 | NFSMNT_GOTFSINFO);
+        let p = peer(&nt, |pr, a| {
+            assert_eq!(pr, NFSPROC_SYMLINK as u32);
+            let (_, o) = xstr(a, 0);
+            let (name, o) = xstr(a, o);
+            assert_eq!(name, b"l");
+            // sattr3: the mode set (0o755), the rest not.
+            let o = o + 8 + 4 * 5;
+            assert_eq!(xstr(a, o).0, b"/some/where");
+            let mut v = Vec::new();
+            w(&mut v, 1);
+            v.extend(fh3(&[4; 8]));
+            v.extend(post(Some(fattr3(NFLNK as u32, 0o755, 11, 4, 1000, 1000))));
+            v.extend(wcc());
+            (0, v)
+        });
+        let dvp = nt.dvp();
+        vref(dvp);
+        let mut c = cn(
+            &nt,
+            CREATE,
+            LOCKPARENT | ISLASTCN | crate::fs::namei::HASBUF,
+            b"l",
+        );
+        let mut va = Vattr::new();
+        vattr_null(&mut va);
+        va.va_mode = 0o755;
+        assert_eq!(nfs_symlink(dvp, &mut c, &va, b"/some/where"), Ok(()));
+        let _ = vn_lock(dvp, LK_EXCLUSIVE);
+        nt.done(p);
+    }
+
+    /// A version 2 mount: GETATTR's `fattr` is the version 2 one (the mode's type bits, the
+    /// blocks of 512 bytes, the change time's microseconds as `va_gen`), and the v2 kludge
+    /// makes a character device with `rdev` -1 a fifo, which a new node cannot be
+    /// (`EOPNOTSUPP`: fifofs is not ported).
+    #[test]
+    fn a_version_2_getattr_decodes_fattr2() {
+        let nt = setup(0);
+        let fifo = Arc::new(Mutex::new(false));
+        let f2 = fifo.clone();
+        let p = peer(&nt, move |pr, _| {
+            assert_eq!(pr, NFSPROC_GETATTR as u32);
+            let mut v = Vec::new();
+            let (t, mode, rdev) = if *f2.lock().unwrap() {
+                (4u32, 0o20644u32, u32::MAX)
+            } else {
+                (1, 0o100644, 0)
+            };
+            for x in [
+                t, mode, 2, 1000, 20, 300, 8192, rdev, 3, 7, 42, 5, 0, 1000, 0, 2000, 77,
+            ] {
+                w(&mut v, x);
+            }
+            (0, v)
+        });
+        let np = nfs_nget(nt.fx.mp, &FILEFH).expect("a node");
+        let vp = nfstov(&np);
+        let mut va = Vattr::new();
+        assert_eq!(nfs_getattr(vp, &mut va, nt.cred(), nt.fx.user), Ok(()));
+        assert_eq!(
+            (
+                va.va_type,
+                va.va_mode,
+                va.va_nlink,
+                va.va_size,
+                va.va_bytes,
+                va.va_fileid
+            ),
+            (VREG, 0o644, 2, 300, 3 * 512, 42)
+        );
+        assert_eq!(
+            (va.va_ctime.tv_sec, va.va_ctime.tv_nsec, va.va_gen),
+            (2000, 0, 77)
+        );
+        assert_eq!(vp.vtype(), VREG, "the new node's type");
+        vput(vp);
+        drop(np);
+        *fifo.lock().unwrap() = true;
+        let np = nfs_nget(nt.fx.mp, &[5; 8]).expect("a node");
+        let vp = nfstov(&np);
+        assert_eq!(
+            nfs_getattr(vp, &mut va, nt.cred(), nt.fx.user),
+            Err(Errno::EOPNOTSUPP)
+        );
+        assert_eq!(vp.vtype(), VFIFO);
+        drop(np);
+        vput(vp);
+        nt.done(p);
+    }
+
+    /// A version 3 COMMIT: nothing before the mount has a verifier; with one, a reply of
+    /// another verifier is `NFSERR_STALEWRITEVERF` and the mount takes it.
+    #[test]
+    fn a_commit_with_a_changed_verifier_is_stalewriteverf() {
+        let nt = setup(NFSMNT_NFSV3 | NFSMNT_GOTFSINFO);
+        let np = file(&nt, 0);
+        let vp = nfstov(&np);
+        let p = peer(&nt, |pr, a| {
+            assert_eq!(pr, NFSPROC_COMMIT as u32);
+            let (_, o) = xstr(a, 0);
+            assert_eq!(&a[o..o + 12], &[0, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0, 7]);
+            let mut v = wcc();
+            v.extend_from_slice(&[6; 8]);
+            (0, v)
+        });
+        assert_eq!(nfs_commit(vp, &np, &nt.nmp, 9, 7, Some(nt.fx.user)), Ok(()));
+        assert!(p.calls().is_empty(), "no verifier yet: nothing to commit");
+        nt.nmp.set_verf([5; 8]);
+        nt.nmp
+            .nm_flag
+            .fetch_or(NFSMNT_HASWRITEVERF, Ordering::Relaxed);
+        assert_eq!(
+            nfs_commit(vp, &np, &nt.nmp, 9, 7, Some(nt.fx.user)).map_err(NfsError::raw),
+            Err(NFSERR_STALEWRITEVERF)
+        );
+        assert_eq!(nt.nmp.verf(), [6; 8]);
+        assert_eq!(
+            nfs_commit(vp, &np, &nt.nmp, 9, 7, Some(nt.fx.user)),
+            Ok(()),
+            "the same verifier again"
+        );
+        vput(vp);
+        nt.done(p);
+    }
+
+    /// A version 3 handle of 0 or of more than `NFSX_V3FHMAX` bytes in a LOOKUP reply is
+    /// `EBADRPC`; one of 64 is a node.
+    #[test]
+    fn a_handle_size_out_of_bounds_is_ebadrpc() {
+        for (size, want) in [
+            (0usize, Err(Errno::EBADRPC)),
+            (65, Err(Errno::EBADRPC)),
+            (64, Ok(())),
+        ] {
+            let nt = setup(NFSMNT_NFSV3 | NFSMNT_GOTFSINFO);
+            let p = peer(&nt, move |_, _| {
+                let mut v = Vec::new();
+                w(&mut v, size as u32);
+                v.extend(vec![8u8; nfsm_rndup(size)]);
+                v.extend(post(None));
+                v.extend(post(None));
+                (0, v)
+            });
+            let mut vpp = None;
+            let mut c = cn(&nt, LOOKUP, LOCKPARENT | ISLASTCN, b"h");
+            assert_eq!(nfs_lookup(nt.dvp(), &mut vpp, &mut c), want, "size {size}");
+            if let Some(vp) = vpp {
+                vput(vp);
+            }
+            nt.done(p);
+        }
+    }
+    /// A version 3 `fattr3` (type word `t`, the mode word, uid, size, file id, the
+    /// modification second) as the reply carries it.
+    fn fattr3b(
+        t: u32,
+        mode: u32,
+        uid: u32,
+        size: u64,
+        fileid: u64,
+        mtime: u32,
+    ) -> std::vec::Vec<u8> {
+        let mut v = std::vec::Vec::new();
+        for x in [t, mode, 3, uid, 20] {
+            v.extend_from_slice(&x.to_be_bytes());
+        }
+        for q in [size, 2 * size, 0, 7, fileid] {
+            v.extend_from_slice(&q.to_be_bytes());
+        }
+        for x in [mtime - 1, 5, mtime, 6, mtime + 1, 7] {
+            v.extend_from_slice(&x.to_be_bytes());
+        }
+        v
+    }
+
+    /// `nfs_loadattrcache` of a new node (`VNON`): the type (the wire's word masked to three
+    /// bits), the mode's permission bits, the sizes, the times, the mount's fsid and I/O size
+    /// as the block size; the node's size, stamp and `n_mtime` set; the caller's copy; a reply
+    /// cut short is `EBADRPC`.
+    #[test]
+    fn loadattrcache_fills_a_new_node() {
+        let nt = setup(NFSMNT_NFSV3);
+        let np = nfs_nget(nt.fx.mp, &[7; 8]).expect("a node");
+        let vp = nfstov(&np);
+        // Type word 9: the C masks it to 1, a regular file.
+        let b = fattr3b(9, 0o104755, 1000, 300, 42, 5000);
+        let m = crate::fs::nfs::nfsm_subs::test_chain(&[&b[..40], &b[40..]]);
+        let mut x = super::super::nfsm_subs::XdrReader::new(&m);
+        let mut va = Vattr::new();
+        assert!(core::ptr::eq(
+            super::super::nfs_subs::nfs_loadattrcache(&np, true, &mut x, Some(&mut va)).unwrap(),
+            vp
+        ));
+        assert_eq!(x.offset(), 84);
+        assert_eq!(vp.vtype(), VREG);
+        assert_eq!(
+            (va.va_type, va.va_mode, va.va_uid, va.va_gid, va.va_nlink),
+            (VREG, 0o4755, 1000, 20, 3)
+        );
+        assert_eq!((va.va_size, va.va_bytes, va.va_fileid), (300, 600, 42));
+        assert_eq!(
+            (va.va_atime.tv_sec, va.va_mtime.tv_sec, va.va_ctime.tv_sec),
+            (4999, 5000, 5001)
+        );
+        assert_eq!((va.va_mtime.tv_nsec, va.va_flags, va.va_filerev), (6, 0, 0));
+        assert_eq!(va.va_fsid, i64::from(nt.fx.mp.fsid().val[0]));
+        assert_eq!(va.va_blocksize, i64::from(nt.fx.mp.iosize()));
+        assert_eq!(np.n_size.load(Ordering::Relaxed), 300);
+        assert_eq!(np.n_mtime.read().tv_sec, 5000);
+        assert_ne!(np.n_attrstamp.load(Ordering::Relaxed), 0);
+        let short = crate::fs::nfs::nfsm_subs::test_chain(&[&b[..80]]);
+        let mut x = super::super::nfsm_subs::XdrReader::new(&short);
+        assert_eq!(
+            super::super::nfs_subs::nfs_loadattrcache(&np, true, &mut x, None).err(),
+            Some(Errno::EBADRPC)
+        );
+        drop(x);
+        drop(short);
+        drop(m);
+        vput(vp);
+        drop(np);
+        let p = peer(&nt, |_, _| (0, Vec::new()));
+        nt.done(p);
+    }
+
+    /// The access cache is thrown away when the owner, the group or the mode changes, kept
+    /// otherwise; a modified file's larger local size is kept over the server's.
+    #[test]
+    fn loadattrcache_invalidates_access_and_keeps_a_modified_size() {
+        let nt = setup(NFSMNT_NFSV3);
+        let np = nfs_nget(nt.fx.mp, &[7; 8]).expect("a node");
+        let vp = nfstov(&np);
+        vp.set_vtype(VREG);
+        let load = |uid: u32, size: u64| {
+            let b = fattr3b(1, 0o644, uid, size, 42, 5000);
+            let m = crate::fs::nfs::nfsm_subs::test_chain(&[&b]);
+            let mut x = super::super::nfsm_subs::XdrReader::new(&m);
+            super::super::nfs_subs::nfs_loadattrcache(&np, true, &mut x, None).map(|_| ())
+        };
+        assert_eq!(load(1000, 300), Ok(()));
+        np.n_accstamp.store(5, Ordering::Relaxed);
+        assert_eq!(load(1000, 300), Ok(()));
+        assert_eq!(
+            np.n_accstamp.load(Ordering::Relaxed),
+            5,
+            "the same owner and mode"
+        );
+        assert_eq!(load(2000, 300), Ok(()));
+        assert_eq!(np.n_accstamp.load(Ordering::Relaxed), -1, "another owner");
+        np.set(NMODIFIED);
+        np.n_size.store(500, Ordering::Relaxed);
+        assert_eq!(load(2000, 300), Ok(()));
+        assert_eq!(np.n_size.load(Ordering::Relaxed), 500);
+        assert_eq!(np.n_vattr.read().va_size, 500, "the local size kept");
+        assert_eq!(load(2000, 900), Ok(()));
+        assert_eq!(
+            np.n_size.load(Ordering::Relaxed),
+            900,
+            "a larger server size taken"
+        );
+        np.clr(NMODIFIED);
+        vput(vp);
+        drop(np);
+        let p = peer(&nt, |_, _| (0, Vec::new()));
+        nt.done(p);
+    }
+
+    /// Version 2: a character device of `rdev` -1 is a fifo (the kludge), which a new node
+    /// cannot be without fifofs (`EOPNOTSUPP`); the type is the mode's when the word says
+    /// `NFNON` or `NFREG`.
+    #[test]
+    fn loadattrcache_of_version_2() {
+        let nt = setup(0);
+        let fattr2 = |t: u32, mode: u32, rdev: u32| {
+            let mut v = std::vec::Vec::new();
+            for x in [t, mode, 1, 0, 0, 10, 4096, rdev, 1, 7, 3, 1, 0, 2, 0, 3, 0] {
+                v.extend_from_slice(&x.to_be_bytes());
+            }
+            v
+        };
+        let np = nfs_nget(nt.fx.mp, &[7; 8]).expect("a node");
+        let vp = nfstov(&np);
+        let b = fattr2(4, 0o20600, u32::MAX);
+        let m = crate::fs::nfs::nfsm_subs::test_chain(&[&b]);
+        let mut x = super::super::nfsm_subs::XdrReader::new(&m);
+        assert_eq!(
+            super::super::nfs_subs::nfs_loadattrcache(&np, false, &mut x, None).err(),
+            Some(Errno::EOPNOTSUPP)
+        );
+        assert_eq!(vp.vtype(), VFIFO);
+        drop(x);
+        drop(m);
+        vput(vp);
+        drop(np);
+        let np = nfs_nget(nt.fx.mp, &[8; 8]).expect("a node");
+        let vp = nfstov(&np);
+        let b = fattr2(1, 0o40755, 0);
+        let m = crate::fs::nfs::nfsm_subs::test_chain(&[&b]);
+        let mut x = super::super::nfsm_subs::XdrReader::new(&m);
+        assert_eq!(
+            super::super::nfs_subs::nfs_loadattrcache(&np, false, &mut x, None).map(|_| ()),
+            Ok(())
+        );
+        assert_eq!(vp.vtype(), VDIR, "IFTOVT of the mode for NFREG");
+        assert_eq!(np.n_vattr.read().va_blocksize, 4096);
+        drop(x);
+        drop(m);
+        vput(vp);
+        drop(np);
+        let p = peer(&nt, |_, _| (0, Vec::new()));
+        nt.done(p);
+    }
+}
+/* </TESTS> */
