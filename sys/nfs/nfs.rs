@@ -51,26 +51,24 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! `<nfs/nfs.h>`: the NFS tunables, the `nfssvc(2)` arguments, the statistics, and the
-//! in-kernel structures shared by the client and the server: the outstanding request
-//! (`struct nfsreq`), the server socket (`struct nfssvc_sock`), the server thread
-//! (`struct nfsd`) and the server's request descriptor (`struct nfsrv_descript`).
+//! `<nfs/nfs.h>`, the server's half (D-5; the client's, the request `struct nfsreq`, the RTO
+//! timers, `nfs_niothreads` and the macros of the timeouts, is the kernel's,
+//! `kernel::fs::nfs::nfs`, since N6.7a5): the `nfssvc(2)` arguments, the server socket
+//! (`struct nfssvc_sock`), the server thread (`struct nfsd`) and the server's request
+//! descriptor (`struct nfsrv_descript`).
 //!
 //! Upstream: sys/nfs/nfs.h @ 3ce1f3f79392
 //!
-//! Requests, server sockets and server threads are pool or `malloc(9)` items that live until
-//! the C frees them; they are handed around as `&'static T` with `Cell` members, the
+//! Server sockets and server threads are pool or `malloc(9)` items that live until the C
+//! frees them; they are handed around as `&'static T` with `Cell` members, the
 //! `docs/C_TO_RUST.md` idiom for objects the C mutates through shared pointers, and they link
-//! into their lists through `queue.rs` entries ([`RChain`], [`NsChain`], [`NfsdChain`]). The
-//! server's request descriptor is owned by the `nfsd` that dequeued it and is passed as
+//! into their lists through `queue.rs` entries ([`NsChain`], [`NfsdChain`]). The server's
+//! request descriptor is owned by the `nfsd` that dequeued it and is passed as
 //! `&mut NfsrvDescript`, because its dissection cursor (`nd_md`, `nd_dpos`) is what
 //! `nfsd_dissect` reads through (`nfsm_subs.rs`).
 //!
 //! ## Deviations
-//! - `NFS_HZ`, `NFS_TIMEO`, `NFS_MINTIMEO`, `NFS_MAXTIMEO`, `NFS_MINRTO`, `NFS_MAXRTO` and
-//!   `NFS_INITRTT` depend on `hz` and `nfs_ticks`, so they are functions ([`nfs_hz`], ...).
-//!   `NFS_CMPFH`, `NFS_ISV3`, `NFS_SRVMAXDATA`, `NFSIGNORE_SOERROR` are functions with
-//!   lowercase names; `nfs_cmpfh` compares against the node's `n_fh` (`nfsnode.rs`).
+//! - `NFS_SRVMAXDATA` is a function with a lowercase name.
 //! - `struct nfsstats` and the constants userland reads (the tunables, the `nfssvc(2)` flags,
 //!   the `vfs.nfs` identifiers) are `hal::sys::nfs_nfs`'s image, re-exported here; the
 //!   counters are the kernel's (`kernel::fs::nfs::nfs::NfsCounters`, the instance
@@ -80,44 +78,26 @@
 //!   `nsd_verfstr`) and the kernel's `nsd_nfsd` cookie are `usize`.
 //! - `union nethostaddr` is [`Nethostaddr`] with both members side by side; the flag that
 //!   says which one is valid stays the C's (`RC_INETADDR`/`RC_NAM`).
-//! - `enum nfs_rto_timers` is a set of `usize` constants: the values index `nm_srtt` and
-//!   `nm_sdrtt`.
-//! - Procedure numbers (`r_procnum`, `nd_procnum`) are `usize` (see `nfsproto.rs`).
-//! - The `struct proc *` of a request (`r_procp`) and of a server thread (`nfsd_procp`)
-//!   are `Cell<*const Proc>`, the long-lived-pointer idiom; `nfsd_nd` is a `NonNull` to the
-//!   descriptor the thread owns.
+//! - Procedure numbers (`nd_procnum`) are `usize` (see `nfsproto.rs`).
+//! - The `struct proc *` of a server thread (`nfsd_procp`) is a `Cell<*const Proc>`, the
+//!   long-lived-pointer idiom; `nfsd_nd` is a `NonNull` to the descriptor the thread owns.
 //! - The globals the header declares for other files are declared here, each with the file
-//!   that defines it in C: `nfs_node_pool` (`nfs_node.c`), `nfsd_head`, `nfsd_head_flag`
-//!   and `nfs_niothreads` (`nfs_syscalls.c`; lowercase, since `NFS_NIOTHREADS` is the sysctl
-//!   identifier). `nfsreqpl` lives in `nfs_subs.rs`.
-//! - `B_INVAFTERWRITE` is `B_INVAL`'s `i64` like every `B_*` flag.
+//!   that defines it in C: `nfsd_head` and `nfsd_head_flag` (`nfs_syscalls.c`).
 
 use core::cell::Cell;
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicI32, Ordering};
+use core::sync::atomic::AtomicI32;
 
-use crate::conf::param::HZ;
-use crate::kern::subr_prf::panic;
-use crate::nfs::nfs_subs::NFS_TICKS;
-use crate::nfs::nfsmount::VFSTONFS;
-use crate::nfs::nfsnode::NfsNode;
 use crate::nfs::nfsproto::{NFS_MAXDATA, NFS_MAXDGRAMDATA, NFS_V2MAXDATA};
 use crate::queue_adapter;
-use crate::sys::buf::B_INVAL;
-use crate::sys::errno::Errno;
 use crate::sys::file::FileSlot;
 use crate::sys::mbuf::Mbuf;
-use crate::sys::mount::NFSMNT_NFSV3;
-use crate::sys::pool::Pool;
 use crate::sys::proc::Proc;
-use crate::sys::protosw::PR_CONNREQUIRED;
 use crate::sys::queue::{TailqEntry, TailqHead};
-use crate::sys::signal::{SIGHUP, SIGINT, SIGKILL, SIGQUIT, SIGTERM, Sigset, sigmask};
 use crate::sys::socketvar::Socket;
 use crate::sys::time::Timeval;
 use crate::sys::types::Uid;
 use crate::sys::ucred::{UcredCell, Xucred};
-use crate::sys::vnode::Vnode;
 
 pub use hal::sys::nfs_nfs::{
     FS_NFS_NAMES, NFS_DEFRAHEAD, NFS_DIRBLKSIZ, NFS_MAXASYNCDAEMON, NFS_MAXATTRTIMO, NFS_MAXGRPS,
@@ -125,46 +105,6 @@ pub use hal::sys::nfs_nfs::{
     NFS_READDIRBLKSIZ, NFS_READDIRSIZE, NFS_RETRANS, NFS_RSIZE, NFS_TICKINTVL, NFS_TIMEOUTMUL,
     NFS_WSIZE, NFSSVC_ADDSOCK, NFSSVC_NFSD, Nfsstats,
 };
-
-/// `B_INVAFTERWRITE`: whatever is required by the buffer cache code to say "invalidate the
-/// block after it is written back".
-pub const B_INVAFTERWRITE: i64 = B_INVAL;
-
-/// `NFSINT_SIGMASK`: the set of signals that interrupt an I/O in progress for `NFSMNT_INT`
-/// mounts. What should be in this set is open to debate, but I believe that since I/O system
-/// calls on ufs are never interrupted by signals the set should be minimal. My reasoning is
-/// that many current programs that use signals such as SIGALRM will not expect file I/O
-/// system calls to be interrupted by them and break.
-pub const NFSINT_SIGMASK: Sigset =
-    sigmask(SIGINT) | sigmask(SIGTERM) | sigmask(SIGKILL) | sigmask(SIGHUP) | sigmask(SIGQUIT);
-
-/// `R_TIMING`: timing request (in mntp); flag values for `r_flags`.
-pub const R_TIMING: i32 = 0x01;
-/// `R_SENT`: request has been sent.
-pub const R_SENT: i32 = 0x02;
-/// `R_SOFTTERM`: soft mnt, too many retries.
-pub const R_SOFTTERM: i32 = 0x04;
-/// `R_INTR`: intr mnt, signal pending.
-pub const R_INTR: i32 = 0x08;
-/// `R_SOCKERR`: fatal error on socket.
-pub const R_SOCKERR: i32 = 0x10;
-/// `R_TPRINTFMSG`: did a tprintf msg.
-pub const R_TPRINTFMSG: i32 = 0x20;
-/// `R_MUSTRESEND`: must resend request.
-pub const R_MUSTRESEND: i32 = 0x40;
-
-/// `NFS_DEFAULT_TIMER` (`enum nfs_rto_timers`).
-pub const NFS_DEFAULT_TIMER: usize = 0;
-/// `NFS_GETATTR_TIMER`.
-pub const NFS_GETATTR_TIMER: usize = 1;
-/// `NFS_LOOKUP_TIMER`.
-pub const NFS_LOOKUP_TIMER: usize = 2;
-/// `NFS_READ_TIMER`.
-pub const NFS_READ_TIMER: usize = 3;
-/// `NFS_WRITE_TIMER`.
-pub const NFS_WRITE_TIMER: usize = 4;
-/// `NFS_MAX_TIMER`.
-pub const NFS_MAX_TIMER: usize = NFS_WRITE_TIMER;
 
 /// `SLP_VALID`: connection is usable; bits for `ns_flag`.
 pub const SLP_VALID: i32 = 0x01;
@@ -246,75 +186,6 @@ impl NfsdSrvargs {
     /// `sizeof(struct nfsd_srvargs)` on LP64.
     pub const SIZE: usize = size_of::<NfsdSrvargs>();
 }
-
-/// `struct nfsreq`: NFS outstanding request list element, a `nfsreqpl` item.
-pub struct NfsReq {
-    /// `r_chain`: the link in the mount's `nm_reqsq`.
-    pub r_chain: TailqEntry<NfsReq>,
-    /// `r_mreq`: the request.
-    pub r_mreq: Cell<Option<&'static Mbuf>>,
-    /// `r_mrep`: the reply.
-    pub r_mrep: Cell<Option<&'static Mbuf>>,
-    /// `r_md`: the reply's dissection mbuf.
-    pub r_md: Cell<Option<&'static Mbuf>>,
-    /// `r_dpos`: the reply's dissection position, inside `r_md`'s data.
-    pub r_dpos: Cell<*mut u8>,
-    /// `r_nmp`: the mount.
-    pub r_nmp: Cell<Option<&'static crate::nfs::nfsmount::NfsMount>>,
-    /// `r_vp`: the vnode.
-    pub r_vp: Cell<Option<&'static Vnode>>,
-    /// `r_xid`: the transaction id (a raw XDR word).
-    pub r_xid: Cell<u32>,
-    /// `r_flags`: flags on request, see `R_*`.
-    pub r_flags: Cell<i32>,
-    /// `r_rexmit`: current retrans count.
-    pub r_rexmit: Cell<i32>,
-    /// `r_timer`: tick counter on reply.
-    pub r_timer: Cell<i32>,
-    /// `r_procnum`: NFS procedure number.
-    pub r_procnum: Cell<usize>,
-    /// `r_rtt`: RTT for rpc.
-    pub r_rtt: Cell<i32>,
-    /// `r_procp`: proc that did I/O system call (NULL for none).
-    pub r_procp: Cell<*const Proc>,
-}
-
-// SAFETY: requests are changed under the kernel lock at `splsoftnet` (`nfs_timer` and the
-// requesting thread), as in C.
-unsafe impl Sync for NfsReq {}
-
-impl NfsReq {
-    /// A request with every member cleared (`pool_get(&nfsreqpl, PR_ZERO)`).
-    pub const fn new() -> Self {
-        Self {
-            r_chain: TailqEntry::new(),
-            r_mreq: Cell::new(None),
-            r_mrep: Cell::new(None),
-            r_md: Cell::new(None),
-            r_dpos: Cell::new(ptr::null_mut()),
-            r_nmp: Cell::new(None),
-            r_vp: Cell::new(None),
-            r_xid: Cell::new(0),
-            r_flags: Cell::new(0),
-            r_rexmit: Cell::new(0),
-            r_timer: Cell::new(0),
-            r_procnum: Cell::new(0),
-            r_rtt: Cell::new(0),
-            r_procp: Cell::new(ptr::null()),
-        }
-    }
-}
-
-impl Default for NfsReq {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-queue_adapter!(
-    /// `TAILQ_HEAD(reqs, nfsreq)`: a mount's outstanding requests, through `r_chain`.
-    pub RChain: NfsReq, r_chain => TailqEntry<NfsReq>
-);
 
 /// `union nethostaddr`: network address hash list element. Which member is valid is the
 /// holder's flag (`RC_INETADDR` or `RC_NAM` in `nfsrvcache.rs`).
@@ -498,70 +369,11 @@ impl Default for NfsrvDescript {
     }
 }
 
-/// `nfs_node_pool`: the `struct nfsnode` pool (defined in `nfs_node.c`).
-pub static NFS_NODE_POOL: Pool = Pool::new();
-
 /// `nfsd_head`: every nfsd (defined in `nfs_syscalls.c`).
 pub static NFSD_HEAD: Nfsdhead = Nfsdhead(TailqHead::new());
 
 /// `nfsd_head_flag`: `NFSD_CHECKSLP` (defined in `nfs_syscalls.c`).
 pub static NFSD_HEAD_FLAG: AtomicI32 = AtomicI32::new(0);
-
-/// `nfs_niothreads`: the number of NFS I/O threads, `-1` before they are started (defined
-/// in `nfs_syscalls.c`).
-#[allow(non_upper_case_globals)] // the C name: `NFS_NIOTHREADS` is the sysctl identifier
-pub static nfs_niothreads: AtomicI32 = AtomicI32::new(-1);
-
-/// `NFS_HZ`: ticks per second of the NFS timer.
-pub fn nfs_hz() -> i32 {
-    HZ.load(Ordering::Relaxed) / NFS_TICKS.load(Ordering::Relaxed)
-}
-
-/// `NFS_TIMEO`: default timeout = 1 second.
-pub fn nfs_timeo() -> i32 {
-    nfs_hz()
-}
-
-/// `NFS_MINTIMEO`: min timeout to use.
-pub fn nfs_mintimeo() -> i32 {
-    nfs_hz()
-}
-
-/// `NFS_MAXTIMEO`: max timeout to backoff to.
-pub fn nfs_maxtimeo() -> i32 {
-    60 * nfs_hz()
-}
-
-/// `NFS_MINRTO`: on fast networks, the estimator will try to reduce the timeout lower than
-/// the latency of the server's disks, which results in too many timeouts, so cap the lower
-/// bound.
-pub fn nfs_minrto() -> i32 {
-    nfs_hz() >> 2
-}
-
-/// `NFS_MAXRTO`: keep the RTO from increasing to unreasonably large values when a server is
-/// not responding.
-pub fn nfs_maxrto() -> i32 {
-    20 * nfs_hz()
-}
-
-/// `NFS_INITRTT`.
-pub fn nfs_initrtt() -> i32 {
-    nfs_hz() << 3
-}
-
-/// `NFS_CMPFH(n, f, s)`: whether node `n` has the file handle `f` (of `f.len()` bytes).
-pub fn nfs_cmpfh(n: &NfsNode, f: &[u8]) -> bool {
-    n.n_fhsize.get() as usize == f.len() && n.n_fh.get().fh_bytes[..f.len()] == *f
-}
-
-/// `NFS_ISV3(v)`: whether the vnode's mount speaks NFS version 3.
-pub fn nfs_isv3(vp: &Vnode) -> bool {
-    let Some(mp) = vp.mount() else {
-        panic(format_args!("NFS_ISV3: vnode {:p} has no mount", vp));
-    };
-    VFSTONFS(mp).nm_flag.get() & NFSMNT_NFSV3 != 0
-}
 
 /// `NFS_SRVMAXDATA(n)`: the largest data a server reply may carry.
 pub fn nfs_srvmaxdata(n: &NfsrvDescript) -> usize {
@@ -574,15 +386,6 @@ pub fn nfs_srvmaxdata(n: &NfsrvDescript) -> usize {
     } else {
         NFS_V2MAXDATA
     }
-}
-
-/// `NFSIGNORE_SOERROR(s, e)`: socket errors ignored for connectionless sockets?? For now,
-/// ignore them all. `s` is the protocol's `pr_flags`.
-pub fn nfsignore_soerror(s: i32, e: Errno) -> bool {
-    e != Errno::EINTR
-        && e != Errno::ERESTART
-        && e != Errno::EWOULDBLOCK
-        && s & i32::from(PR_CONNREQUIRED) == 0
 }
 
 const _: () = {
@@ -599,22 +402,14 @@ mod tests {
     // Host tests for `<nfs/nfs.h>`: the statistics snapshot, the helpers and, against the C
     // header, the constants.
 
-    use std::string::String;
-
     use super::*;
 
     #[test]
-    fn server_reply_limits_and_ignored_errors() {
+    fn server_reply_limits() {
         let mut nd = NfsrvDescript::new();
         assert_eq!(nfs_srvmaxdata(&nd), NFS_V2MAXDATA);
         nd.nd_flag = ND_NFSV3;
         assert_eq!(nfs_srvmaxdata(&nd), NFS_MAXDATA);
-        assert!(nfsignore_soerror(0, Errno::ECONNREFUSED));
-        assert!(!nfsignore_soerror(0, Errno::EINTR));
-        assert!(!nfsignore_soerror(
-            i32::from(PR_CONNREQUIRED),
-            Errno::ECONNREFUSED
-        ));
     }
 
     #[test]
@@ -642,13 +437,6 @@ mod tests {
             ("NFS_NFSSTATS", NFS_NFSSTATS.into()),
             ("NFS_NIOTHREADS", NFS_NIOTHREADS.into()),
             ("NFS_MAXID", NFS_MAXID.into()),
-            ("R_TIMING", R_TIMING.into()),
-            ("R_SENT", R_SENT.into()),
-            ("R_SOFTTERM", R_SOFTTERM.into()),
-            ("R_INTR", R_INTR.into()),
-            ("R_SOCKERR", R_SOCKERR.into()),
-            ("R_TPRINTFMSG", R_TPRINTFMSG.into()),
-            ("R_MUSTRESEND", R_MUSTRESEND.into()),
             ("SLP_VALID", SLP_VALID.into()),
             ("SLP_DOREC", SLP_DOREC.into()),
             ("SLP_NEEDQ", SLP_NEEDQ.into()),
@@ -664,14 +452,6 @@ mod tests {
         for (name, value) in ours {
             assert_eq!(crate::reftest::int(&defs, name), Some(*value), "{name}");
         }
-        assert_eq!(
-            defs.get("NFS_MAX_TIMER").map(String::as_str),
-            Some("(NFS_WRITE_TIMER)")
-        );
-        assert_eq!(
-            defs.get("B_INVAFTERWRITE").map(String::as_str),
-            Some("B_INVAL")
-        );
     }
 }
 /* </TESTS> */

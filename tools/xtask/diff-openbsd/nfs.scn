@@ -1,0 +1,46 @@
+# diff-openbsd set `nfs` (format: tools/xtask/src/diffopenbsd/scenario.rs; N6.7a5, D-8): the
+# NFS client against the system's own server over the loopback interface. The guest exports
+# /mnt/nfs (on the scratch FFS of `setup`) to 127.0.0.1 with OpenBSD's portmap(8), mountd(8)
+# and nfsd(8), and mounts it with mount_nfs(8) as version 3 over UDP, version 3 over TCP and
+# version 2 over UDP; each mount runs file-system steps of `fs`'s kind on it (create, read,
+# symbolic link, rename, a 256 KiB write, removal, a directory, the error of a missing file)
+# and shows mount(8)'s line; the two `vfs.nfs` sysctls close the set. Both systems run the same
+# OpenBSD userland and the same server code path, so a difference is the client's.
+
+## export
+! ifconfig lo0 inet 127.0.0.1/8 up
+! mkdir -p /mnt/nfs /nfsmnt && echo hello >/mnt/nfs/a
+! echo "/mnt/nfs -maproot=root 127.0.0.1" >/etc/exports
+! portmap; sleep 1; mountd; nfsd -tu -n 4; sleep 2
+$ showmount -e 127.0.0.1
+
+## udp3
+$ mount_nfs 127.0.0.1:/mnt/nfs /nfsmnt && mount | grep nfsmnt
+$ cat /nfsmnt/a
+$ echo w >/nfsmnt/b && cat /nfsmnt/b && ls -1 /nfsmnt
+$ ln -s a /nfsmnt/l && readlink /nfsmnt/l && cat /nfsmnt/l
+$ mv /nfsmnt/b /nfsmnt/c && ls -1 /nfsmnt
+$ dd if=/dev/zero of=/nfsmnt/big bs=64k count=4 2>/dev/null && wc -c </nfsmnt/big
+$ mkdir /nfsmnt/d && ls -1F /nfsmnt && rmdir /nfsmnt/d
+$ cat /nfsmnt/missing
+$ rm /nfsmnt/big /nfsmnt/c /nfsmnt/l && ls -1 /nfsmnt
+$ umount /nfsmnt && echo unmounted
+
+## tcp3
+$ mount_nfs -T 127.0.0.1:/mnt/nfs /nfsmnt && mount | grep nfsmnt
+$ cat /nfsmnt/a
+$ echo w >/nfsmnt/b && mv /nfsmnt/b /nfsmnt/c && cat /nfsmnt/c && ls -1 /nfsmnt
+$ dd if=/dev/zero of=/nfsmnt/big bs=64k count=4 2>/dev/null && wc -c </nfsmnt/big
+$ rm /nfsmnt/big /nfsmnt/c && ls -1 /nfsmnt
+$ umount /nfsmnt && echo unmounted
+
+## udp2
+$ mount_nfs -2 127.0.0.1:/mnt/nfs /nfsmnt && mount | grep nfsmnt
+$ cat /nfsmnt/a
+$ echo w >/nfsmnt/b && cat /nfsmnt/b && rm /nfsmnt/b && ls -1 /nfsmnt
+$ cat /nfsmnt/missing
+$ umount /nfsmnt && echo unmounted
+
+## sysctl
+$ sysctl vfs.nfs.iothreads
+$ sysctl -n vfs.nfs.nfsstats >/dev/null && echo stats

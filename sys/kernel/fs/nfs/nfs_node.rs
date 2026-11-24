@@ -217,6 +217,16 @@ pub fn nfs_nhashinit<G: ProcGlue>() {
     let _ = vfs::<G>().nfs.nhash.key.set(siphash_key());
 }
 
+/// `RBT_FOREACH` over every mount's `nm_ntree` (ddb's `show all nfsnodes`, `nfs_debug`):
+/// `f` called with each hashed node, chain by chain, under the caller's reader.
+pub fn nfs_nhash_foreach<G: ProcGlue>(r: &klock::KernelReader, mut f: impl FnMut(&NfsNode<G>)) {
+    for chain in &vfs::<G>().nfs.nhash.chains {
+        for np in chain.iter(r) {
+            f(np);
+        }
+    }
+}
+
 /// `RBT_FIND(nfs_nodetree, &nmp->nm_ntree, &find)` of `nfs_nget`: the vnode of the node of
 /// the handle `fh` on the mount `mp`, and its `v_id` read in the same section, for the
 /// caller's `vget` and recheck (`nfs_nget`'s `loop`).

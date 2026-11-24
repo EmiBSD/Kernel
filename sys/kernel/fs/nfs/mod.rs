@@ -18,8 +18,9 @@
 
 /* <CODE> */
 //! The Network File System's kernel half (`docs/ROADMAP.md`'s N6.7, `sys/nfs/` in C): the
-//! wire format and the ABI (N6.7a0); the client follows sub-slice by sub-slice, built beside
-//! `bsd`'s and switched on by its last (D-1).
+//! wire format and the ABI (N6.7a0) and the client, built beside `bsd`'s sub-slice by
+//! sub-slice and switched on by N6.7a5 (D-1: `vfsconflist[]`'s `nfs` is [`nfs_vfsops::NfsVfs`]).
+//! The server stays `bsd`'s until N6.7b, over the server half of the files the C shares.
 //!
 //! Headers: `nfs` (`nfs.h`), `nfsproto` (`nfsproto.h`), `xdr_subs` (`xdr_subs.h`),
 //! `nfsm_subs` (`nfsm_subs.h`), `nfsmount` (`nfsmount.h`), `nfsnode` (`nfsnode.h`),
@@ -27,7 +28,8 @@
 //! diskless boot's `krpc_subr` and `nfs_boot` (N6.7a4, `option NFSCLIENT` only), the
 //! call-closed part of the file system's half (N6.7a2): `nfs_node`, `nfs_bio`, `nfs_kq`,
 //! `nfs_syscalls` (the nfsiods), and the vnode operations and the functions of their call
-//! cycle (N6.7a3): `nfs_vnops`, `nfs_vfsops`'s FSINFO. Userland's headers are `hal::sys`'s
+//! cycle (N6.7a3): `nfs_vnops`, `nfs_vfsops`'s FSINFO; the file system type and the ddb
+//! printers (N6.7a5): `nfs_vfsops`, `nfs_debug`. Userland's headers are `hal::sys`'s
 //! images (`nfs_nfs`,
 //! `nfs_nfsproto`, `nfs_rpcv2`), re-exported by the modules of the same name.
 
@@ -38,6 +40,7 @@ pub mod nfs;
 pub mod nfs_bio;
 #[cfg(feature = "nfsclient")]
 pub mod nfs_boot;
+pub mod nfs_debug;
 pub mod nfs_kq;
 pub mod nfs_node;
 pub mod nfs_socket;

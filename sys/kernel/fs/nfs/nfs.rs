@@ -109,6 +109,8 @@
 
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 
+use hal::intr::IPL_NONE;
+use hal::mutex::Mutexed;
 use hal::pinlist::PinEntry;
 use hal::pool::{BoxPool, PoolHome, TypedPool};
 use hal::rwlock::{ExclGuarded, Guarded, Rwlocked};
@@ -117,6 +119,7 @@ use super::nfs_kq::{Kevq, NfsKevq};
 use super::nfs_node::NfsNhash;
 use super::nfs_syscalls::NFS_NASYNCDAEMON;
 use super::nfs_vnops::{NfsFifoVnops, NfsSpecVnops, NfsVnops};
+use super::nfsdiskless::NfsDiskless;
 use super::nfsm_subs::XdrReader;
 use super::nfsmount::NfsMount;
 use super::nfsnode::NfsNode;
@@ -665,6 +668,9 @@ pub struct NfsTables<G: ProcGlue> {
     /// `nfs_fifovops`: the operations of a fifo on an NFS mount (installed by nothing while
     /// fifofs is not ported, `nfs_vnops`' Deviations).
     pub fifovops: NfsFifoVnops<G>,
+    /// `nfs_diskless` (`nfs_vfsops.c`): what `nfs_mountroot` booted from, kept once it is
+    /// filled (`nfs_vfsops`' Deviations).
+    pub nfs_diskless: Mutexed<Option<NfsDiskless<G>>>,
 }
 
 impl<G: ProcGlue> NfsTables<G> {
@@ -681,6 +687,7 @@ impl<G: ProcGlue> NfsTables<G> {
             vops: NfsVnops::new(),
             specvops: NfsSpecVnops::new(),
             fifovops: NfsFifoVnops::new(),
+            nfs_diskless: Mutexed::new(IPL_NONE, None),
         }
     }
 }
@@ -863,5 +870,30 @@ mod tests {
 
     /// `size_of::<NfsReq<G>>()` measured by the test above.
     const NFSREQ_SIZE: usize = 144;
+
+    /// The request flags, the last RTO timer and `B_INVAFTERWRITE` are the C header's.
+    #[test]
+    #[ignore = "reads reference/openbsd-src (just test-ref)"]
+    fn request_flags_are_the_c_header_s() {
+        let defs = crate::reftest::defines("sys/nfs/nfs.h");
+        let _ = crate::reftest::assert_defines!(
+            defs;
+            R_TIMING,
+            R_SENT,
+            R_SOFTTERM,
+            R_INTR,
+            R_SOCKERR,
+            R_TPRINTFMSG,
+            R_MUSTRESEND
+        );
+        assert_eq!(
+            defs.get("NFS_MAX_TIMER").map(std::string::String::as_str),
+            Some("(NFS_WRITE_TIMER)")
+        );
+        assert_eq!(
+            defs.get("B_INVAFTERWRITE").map(std::string::String::as_str),
+            Some("B_INVAL")
+        );
+    }
 }
 /* </TESTS> */
