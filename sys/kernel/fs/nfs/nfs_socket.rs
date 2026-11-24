@@ -134,7 +134,7 @@ use super::nfs::{
 };
 use super::nfs_subs::{NFS_TICKS, NFSSTATS, nfsm_rpchead, rpc_mismatch, rpc_msgdenied, rpc_reply};
 use super::nfsm_subs::{XdrReader, XdrWriter, nfsm_rndup};
-use super::nfsmount::{NfsMount, vfstonfs};
+use super::nfsmount::NfsMount;
 use super::nfsproto::{NFS_MAXPACKET, NFS_MAXPKTHDR, NFS_NPROCS, NFSERR_TRYLATER, NFSX_UNSIGNED};
 use crate::assert::kpanic;
 use crate::clock::sec_to_nsec;
@@ -1044,20 +1044,20 @@ pub fn nfs_reply<G: ProcGlue>(myrep: &Rep<'_, G>) -> Result<(), Errno> {
 /// The C's two outputs: the reply, its RPC header consumed, on success and on a status
 /// error (version 3's post-op attributes are read from it), `None` with any other error; and
 /// the error.
+///
+/// `nmp` is `VFSTONFS(vp->v_mount)`, which the vnode operation holds already: lent here (the
+/// C casts it again; the kernel's handle would be one more count pair per RPC).
 pub fn nfs_request<G: ProcGlue>(
+    nmp: &NfsMount<G>,
     vp: &'static Vnode<G>,
     procnum: usize,
     req: Request<'_, G>,
 ) -> (Option<Reply>, Result<(), NfsError>) {
-    let Some(mp) = vp.mount() else {
-        kpanic(format_args!("nfs_request: vnode {vp:p} has no mount"));
-    };
-    let nmp = vfstonfs(mp);
     let Request { body, procp, cred } = req;
 
     // The RPC header with authorization, an empty packet header mbuf (the AUTH_UNIX header)
     // before the arguments.
-    let (mut m, xid) = nfsm_rpchead(&nmp, procnum, cred, RPCAUTH_UNIX, body.into_chain());
+    let (mut m, xid) = nfsm_rpchead(nmp, procnum, cred, RPCAUTH_UNIX, body.into_chain());
 
     // For stream protocols, insert a Sun RPC Record Mark.
     if nmp.nm_sotype.load(Relaxed) == SOCK_STREAM {
@@ -1085,7 +1085,7 @@ pub fn nfs_request<G: ProcGlue>(
         ));
     };
     let r = Rep {
-        nmp: &nmp,
+        nmp,
         rep: &rep,
         procp,
     };
@@ -1182,7 +1182,7 @@ pub fn nfs_request<G: ProcGlue>(
 
         // If there was a successful reply and a tprintf msg. tprintf a response.
         if error.is_ok() && rep.flags() & R_TPRINTFMSG != 0 {
-            nfs_msg(&nmp, procp, "is alive again");
+            nfs_msg(nmp, procp, "is alive again");
         }
         if let Err(error) = error {
             drop(reply);
@@ -2001,8 +2001,13 @@ mod tests {
 
     /// An RPC of procedure `procnum` with no arguments, made by the fixture's requester with
     /// its credential.
-    fn rpc(fx: &tn::Fixture, procnum: usize) -> (Option<Reply>, Result<(), NfsError>) {
+    fn rpc(
+        fx: &tn::Fixture,
+        nmp: &NfsMount<tn::G>,
+        procnum: usize,
+    ) -> (Option<Reply>, Result<(), NfsError>) {
         nfs_request(
+            nmp,
             fx.vp,
             procnum,
             Request {
@@ -2034,7 +2039,7 @@ mod tests {
             &nmp,
             Box::new(|_, c| std::vec![Out::Data(tn::reply(c, 0, 0, 0, &[]))]),
         );
-        let (reply, r) = rpc(&fx, NFSPROC_NULL);
+        let (reply, r) = rpc(&fx, &nmp, NFSPROC_NULL);
         let calls = peer.calls();
         peer.stop();
         assert_eq!(r, Ok(()));
@@ -2074,7 +2079,7 @@ mod tests {
                 }
             }),
         );
-        let (_, r) = rpc(&fx, NFSPROC_NULL);
+        let (_, r) = rpc(&fx, &nmp, NFSPROC_NULL);
         let calls = peer.calls();
         peer.stop();
         assert_eq!(r, Ok(()));
@@ -2100,8 +2105,8 @@ mod tests {
             &nmp,
             Box::new(|n, c| std::vec![Out::Data(tn::denied(c, n == 1))]),
         );
-        let (a, ra) = rpc(&fx, NFSPROC_NULL);
-        let (b, rb) = rpc(&fx, NFSPROC_NULL);
+        let (a, ra) = rpc(&fx, &nmp, NFSPROC_NULL);
+        let (b, rb) = rpc(&fx, &nmp, NFSPROC_NULL);
         peer.stop();
         assert!(a.is_none() && b.is_none());
         assert_eq!(ra, Err(NfsError::Errno(Errno::EOPNOTSUPP)));
@@ -2134,7 +2139,7 @@ mod tests {
                 ]
             }),
         );
-        let (_, r) = rpc(&fx, NFSPROC_NULL);
+        let (_, r) = rpc(&fx, &nmp, NFSPROC_NULL);
         peer.stop();
         assert_eq!(r, Ok(()));
         assert_eq!(NFSSTATS.rpcunexpected.load(Relaxed), unexpected + 1);
@@ -2163,10 +2168,10 @@ mod tests {
                 })]
             }),
         );
-        let (a, ra) = rpc(&fx, NFSPROC_GETATTR);
-        let (b, rb) = rpc(&fx, NFSPROC_GETATTR);
-        let (c, rc) = rpc(&fx, NFSPROC_GETATTR);
-        let (d, rd) = rpc(&fx, NFSPROC_GETATTR);
+        let (a, ra) = rpc(&fx, &nmp, NFSPROC_GETATTR);
+        let (b, rb) = rpc(&fx, &nmp, NFSPROC_GETATTR);
+        let (c, rc) = rpc(&fx, &nmp, NFSPROC_GETATTR);
+        let (d, rd) = rpc(&fx, &nmp, NFSPROC_GETATTR);
         peer.stop();
         assert_eq!(ra, Err(NfsError::Status(10004)));
         assert_eq!(a.expect("kept").offset(), 28);
@@ -2205,7 +2210,7 @@ mod tests {
                 std::vec![Out::Data(tn::reply(c, 0, 0, st, &[]))]
             }),
         );
-        let (_, r) = rpc(&fx, NFSPROC_GETATTR);
+        let (_, r) = rpc(&fx, &nmp, NFSPROC_GETATTR);
         let calls = peer.calls();
         peer.stop();
         assert_eq!(r, Ok(()));
@@ -2227,7 +2232,7 @@ mod tests {
             Box::new(|_, c| std::vec![Out::Data(tn::reply(c, 0, 0, 0, &[]))]),
         );
         assert_eq!(tn::connect(&nmp), Ok(()));
-        let (reply, r) = rpc(&fx, NFSPROC_NULL);
+        let (reply, r) = rpc(&fx, &nmp, NFSPROC_NULL);
         let calls = peer.calls();
         assert_eq!(r, Ok(()));
         assert_eq!(reply.expect("the reply").offset(), 28);
@@ -2256,7 +2261,7 @@ mod tests {
             }),
         );
         assert_eq!(tn::connect(&nmp), Ok(()));
-        let (_, r) = rpc(&fx, NFSPROC_NULL);
+        let (_, r) = rpc(&fx, &nmp, NFSPROC_NULL);
         let calls = peer.calls();
         assert_eq!(r, Ok(()));
         assert_eq!(calls.len(), 2);
