@@ -14261,6 +14261,10 @@ reason = "decision 43: host microbenchmarks of the legacy timeout(9) adapter's p
 rust = "sys/benches/legacy_sched.rs"
 reason = "decision 43: host microbenchmarks of bsd's run and sleep queues (setrunqueue, remrunqueue, a sleep_setup and unsleep trip) over the host machine double and the kernel crate's doubles, a harness = false bench target of bsd, never a kernel image; no OpenBSD or LZ source"
 
+[[extra]]
+rust = "sys/benches/legacy_pf.rs"
+reason = "decision 43, D-13, N6.7b1: the host microbenchmark of pf's table lookup (pf.table.match: pfr_match_addr of an address inside one of a table's 1,000 /24s) over bsd's pool(9) and malloc(9) on host memory (setup_real_memory's bring-up) and the kernel crate's doubles, run before and after pf's tables moved onto the kernel's radix tree, a harness = false bench target of bsd, never a kernel image; no OpenBSD or LZ source"
+
 
 [[extra]]
 rust = "sys/kernel/benches/fs.rs"
