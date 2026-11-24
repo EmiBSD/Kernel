@@ -205,8 +205,8 @@ pub static IPSEC_EXP_FIRST_USE: AtomicI32 = AtomicI32::new(IPSEC_DEFAULT_EXP_FIR
 /// \[a\] `ipsec_expire_acquire`: wait for security assoc. (in sec).
 pub static IPSEC_EXPIRE_ACQUIRE: AtomicI32 = AtomicI32::new(IPSEC_DEFAULT_EXPIRE_ACQUIRE);
 
-/// \[a\] `esp_enable`.
-pub static ESP_ENABLE: AtomicI32 = AtomicI32::new(1);
+/// \[a\] `esp_enable`: the kernel's since N6.6b0 (its `udp_input` loads it), re-exported.
+pub use kernel::net::ipsec_hooks::ESP_ENABLE;
 /// \[a\] `ah_enable`.
 pub static AH_ENABLE: AtomicI32 = AtomicI32::new(1);
 /// \[a\] `ipcomp_enable`.
@@ -1279,18 +1279,21 @@ unsafe fn ipsec_common_ctlinput(
 }
 
 /// `udpencap_ctlinput`: the same for ESP in UDP: every UDP-encapsulated SA between the two
-/// addresses.
-///
-/// # Safety
-///
-/// As for [`ah4_ctlinput`]; `v` is not NULL.
-pub unsafe fn udpencap_ctlinput(_cmd: i32, _sa: *const Sockaddr, rdomain: u32, v: *mut c_void) {
+/// addresses. `icmp` is the ICMP message from its type byte (the kernel's `CtlArg::Ip`
+/// bytes, through the `Ipsec` leg since N6.6b0): its `icmp_nextmtu` and the IP header it
+/// returns are read from it, each length checked (the C reads them through `v` and the
+/// message before it); a message too short for them changes nothing (`icmp_input` hands on
+/// none such).
+pub fn udpencap_ctlinput(rdomain: u32, icmp: &[u8]) {
     net_assert_locked("udpencap_ctlinput");
 
-    // SAFETY: the caller's contract.
-    let ip: Ip = unsafe { ptr::read_unaligned(v.cast::<Ip>()) };
-    // SAFETY: the caller's contract.
-    let mtu = u32::from(unsafe { icmp_nextmtu(v.cast::<u8>()) });
+    let Some(ip) = hal::pod::at::<Ip>(icmp, ICMP_IP_OFFSET) else {
+        return;
+    };
+    let Some(&[hi, lo]) = icmp.get(ICMP_NEXTMTU_OFFSET..ICMP_NEXTMTU_OFFSET + 2) else {
+        return;
+    };
+    let mtu = u32::from(ntohs(u16::from_ne_bytes([hi, lo])));
 
     // Ignore the packet, if we do not receive a MTU or the MTU is too small to be
     // acceptable.
@@ -1417,8 +1420,8 @@ fn tagged_tdb(m: &Mbuf) -> Option<&'static Tdb> {
     gettdb(tdbi.rdomain, tdbi.spi, &tdbi.dst, tdbi.proto)
 }
 
-/// The `#ifdef IPSEC` block of `tcp_input` and `udp_input` (the kernel's `Ipsec` leg,
-/// N6.6a0): the inbound policy check of a segment against the inner-most IPsec SA it went
+/// The `#ifdef IPSEC` block of `tcp_input` (the kernel's `Ipsec` leg, N6.6a0; `udp_input`'s
+/// is [`ipsec_input_check_flow`], N6.6b0): the inbound policy check of a segment against the inner-most IPsec SA it went
 /// through and the socket's levels (`seclevel`, `None` without a pcb); the caller checks
 /// `ipsec_in_use` first.
 pub fn ipsec_input_check(
@@ -1432,6 +1435,29 @@ pub fn ipsec_input_check(
     tdb_unref(tdb);
 
     error
+}
+
+/// `udp_input`'s `#ifdef IPSEC` block (the kernel's `Ipsec::spd_check_in_flow` leg,
+/// N6.6b0): [`ipsec_input_check`]'s lookup, then the flow id of the SA the tag names
+/// (`tdb->tdb_ids->id_flow`; 0 without an SA or ids), read before the lookup's `tdb_unref`;
+/// the caller checks `ipsec_in_use` first.
+pub fn ipsec_input_check_flow(
+    m: &Mbuf,
+    hlen: i32,
+    af: i32,
+    seclevel: Option<&crate::netinet::ip_ipsp::IpsecLevel>,
+) -> Result<u32, SpdError> {
+    let tdb = tagged_tdb(m);
+    if let Err(e) = ipsp_spd_lookup(m, af, hlen, IPSP_DIRECTION_IN, tdb, seclevel, None, None) {
+        tdb_unref(tdb);
+        return Err(e);
+    }
+    // create ipsec options, id is not modified after creation
+    let flow = tdb
+        .and_then(|t| t.tdb_ids.get())
+        .map_or(0, |ids| ids.id_flow.get());
+    tdb_unref(tdb);
+    Ok(flow)
 }
 
 /// `ipsec_forward_check`: IPsec policy check for forwarded packets. Look at inner-most IPsec

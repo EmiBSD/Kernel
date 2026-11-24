@@ -4329,7 +4329,7 @@ pub fn pf_socket_lookup(pd: &mut PfPdesc) -> bool {
             (
                 uh.uh_sport,
                 uh.uh_dport,
-                &crate::netinet::udp_usrreq::UDBTABLE,
+                kernel::netinet::udp_usrreq::udbtable::<crate::kern::proc_glue::BsdProcGlue>(),
             )
         }
         _ => return false,
@@ -4367,7 +4367,9 @@ pub fn pf_socket_lookup(pd: &mut PfPdesc) -> bool {
         AF_INET6 => {
             use crate::netinet6::in6_pcb::{in6_pcblookup, in6_pcblookup_listen};
             let table = match i32::from(pd.virtual_proto) {
-                IPPROTO_UDP => &crate::netinet::udp_usrreq::UDB6TABLE,
+                IPPROTO_UDP => {
+                    kernel::netinet::udp_usrreq::udb6table::<crate::kern::proc_glue::BsdProcGlue>()
+                }
                 IPPROTO_TCP => {
                     kernel::netinet::tcp_usrreq::tcb6table::<crate::kern::proc_glue::BsdProcGlue>()
                 }

@@ -25,7 +25,10 @@
 //! ip_output.c's own IPsec code (`ip_output_ipsec_lookup`, and `ip_output_ipsec_send` with
 //! its `ip_output_ipsec_pmtu_update`), `tdb_unref` and `ipsec_adjust_mtu`; and since N6.5c
 //! the same two halves of ip6_output.c's (`ip6_output_ipsec_lookup`,
-//! `ip6_output_ipsec_send`, D-18 of N6.5), for `kernel::netinet6::ip6_output`.
+//! `ip6_output_ipsec_send`, D-18 of N6.5), for `kernel::netinet6::ip6_output`; and since
+//! N6.6b0 udp_usrreq.c's `#ifdef IPSEC` points (the inbound check with the SA's flow id, the
+//! UDP-encapsulated ESP input and its path MTU control input, and the two switches
+//! `udpencap_enable` and `esp_enable`, atomics beside `udpencap_port`).
 //!
 //! `bsd`'s `if_enc.rs` registers its implementation at boot ([`register_ipsec`],
 //! bridges.toml's `Ipsec` row, paid by N8); before that the legs answer as the C compiled
@@ -46,7 +49,7 @@ use hal::once::OnceStatic;
 use hal::sys::errno::Errno;
 
 use crate::assert::kpanic;
-use crate::net::if_var::IfaddrRef;
+use crate::net::if_var::{IfaddrRef, Netstack};
 use crate::net::mbuf::{Mbuf, MbufBox};
 use crate::net::route::Route;
 
@@ -194,6 +197,50 @@ pub trait Ipsec: Sync {
         Ok(())
     }
 
+    /// `udp_input`'s `#ifdef IPSEC` block (N6.6b0): [`Ipsec::spd_check_in`]'s check, and on
+    /// success the flow id of the SA the tag names (`tdb->tdb_ids->id_flow`, read before that
+    /// lookup's `tdb_unref`; 0 without an SA or without ids), which the socket receives as an
+    /// `IP_IPSECFLOWINFO` control message. `Err` refuses the datagram (the caller counts
+    /// `udps_nosec` and drops it). A second leg, not a changed one, so TCP's path reads no
+    /// ids. Default: `Ok(0)`, the C without `IPSEC`.
+    fn spd_check_in_flow(
+        &self,
+        _m: &Mbuf,
+        _af: i32,
+        _hlen: i32,
+        _seclevel: Option<&IpsecLevel>,
+    ) -> Result<u32, SpdError> {
+        Ok(0)
+    }
+
+    /// The end of `udp_input`'s UDP encapsulation of ESP (N6.6b0): `espstat_inc(esps_udpencin)`
+    /// then `ipsec_common_input(mp, skip, protoff, af, IPPROTO_ESP, 1, ns)` of the datagram
+    /// `*mp`, whose UDP header the caller removed already (the IP header moved over it):
+    /// `skip` the IP header's length, `protoff` the offset of its protocol (or next header)
+    /// byte. The answer is `ipsec_common_input`'s: `IPPROTO_DONE` with the packet consumed,
+    /// or the inner protocol with the decapsulated packet in `*mp`, for `ip_deliver`'s loop.
+    /// Default (no legs: the caller never reaches it without them): the packet freed,
+    /// `IPPROTO_DONE`.
+    fn udpencap_input(
+        &self,
+        mp: &mut Option<MbufBox>,
+        _skip: i32,
+        _protoff: i32,
+        _af: i32,
+        _ns: Option<&mut Netstack>,
+    ) -> i32 {
+        drop(mp.take());
+        hal::sys::netinet_in::IPPROTO_DONE
+    }
+
+    /// `udpencap_ctlinput(cmd, sa, rdomain, v)` (`udp_ctlinput`'s path MTU discovery for
+    /// UDP-encapsulated ESP, N6.6b0): the ICMP message `icmp` (from its type byte:
+    /// `CtlArg::Ip`'s bytes) lowers the path MTU of every UDP-encapsulating ESP SA between
+    /// the addresses of the IP header it returns, in routing domain `rdomain`. The leg reads
+    /// `icmp_nextmtu` and that header from the bytes, checking each length it reads; a short
+    /// message changes nothing. Default: nothing, the C without `IPSEC`.
+    fn udpencap_ctlinput(&self, _rdomain: u32, _icmp: &[u8]) {}
+
     /// `gettdbbysrcdst(rdomain, 0, src, dst, IPPROTO_TCP)` (`TCP_SIGNATURE`'s SA, N6.6a0 for
     /// the kernel's TCP): the SA between `src` and `dst`, each a `union sockaddr_union` read
     /// whole ([`SOCKADDR_UNION_LEN`] bytes, never cut at `sa_len`), with the lookup's
@@ -234,6 +281,16 @@ static IPSEC: OnceStatic<&'static dyn Ipsec> = OnceStatic::new();
 /// `net.inet.esp.udpencap_port` sysctl's; read by `in_baddynamic`, N6.4c1: here since the
 /// kernel's pcb reads it, `bsd`'s IPsec re-exports it until N8).
 pub static UDPENCAP_PORT: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(4500);
+
+/// \[a\] `udpencap_enable`: enables the UDP encapsulation of ESP (`ipsec_output.c`'s global,
+/// `net.inet.esp.udpencap`'s; N6.6b0: here beside [`UDPENCAP_PORT`], since the kernel's
+/// `udp_input` and `udp_ctlinput` load it per datagram, the C's `atomic_load_int`; `bsd`'s
+/// IPsec re-exports it until N8).
+pub static UDPENCAP_ENABLE: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(1);
+
+/// \[a\] `esp_enable`: ESP accepted on input (`ipsec_input.c`'s global, `net.inet.esp.enable`'s;
+/// N6.6b0, as [`UDPENCAP_ENABLE`]).
+pub static ESP_ENABLE: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(1);
 
 /// The one [`TdbKey`], given to the legs' registrant.
 static TDB_KEY: TdbKey = TdbKey(());

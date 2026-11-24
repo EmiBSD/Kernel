@@ -59,7 +59,7 @@
 
 use core::mem::size_of;
 use core::ptr;
-use core::sync::atomic::{AtomicI32, Ordering};
+use core::sync::atomic::Ordering;
 
 use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 use crate::kern::kern_tc::gettime;
@@ -110,8 +110,9 @@ use crate::sys::socket::AF_INET;
 use crate::sys::socket::AF_INET6;
 use crate::sys::systm::{kernel_assert_locked, net_assert_locked};
 
-/// \[a\] `udpencap_enable`: enabled by default.
-pub static UDPENCAP_ENABLE: AtomicI32 = AtomicI32::new(1);
+/// \[a\] `udpencap_enable`: enabled by default (the kernel's since N6.6b0: its `udp_input`
+/// and `udp_ctlinput` load it), re-exported.
+pub use kernel::net::ipsec_hooks::UDPENCAP_ENABLE;
 /// \[a\] `udpencap_port`: triggers decapsulation (the kernel's, N6.4c1: `in_baddynamic`
 /// reads it).
 pub use kernel::net::ipsec_hooks::UDPENCAP_PORT;
