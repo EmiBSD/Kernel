@@ -117,13 +117,13 @@
 //!   of the IPv6 domain at the first packet -> [`Inet6Tables`] in the glue's network tables
 //!   (`NetTables::inet6`, D-9; the IPv4 twin is `kernel::netinet::in_proto::InetTables`): the
 //!   table and the index of its raw entry, recorded together once by [`inet6sw_set`] (so
-//!   ICMPv6's tail reaches the raw entry before `ip6_init`: the R9 class of N6.4c2, a table
-//!   read before it is set), and `ip6_protox[]`,
+//!   no reader sees the table without its raw entry: the R9 class of N6.4c2, a table read
+//!   before it is set), and `ip6_protox[]`,
 //!   filled by [`inet6sw_init`] from `ip6_init` as the C's `ip6_init` fills it (an entry's
 //!   index is its place in the walk, no search). A lookup is two loads and an index
 //!   ([`inet6_protocol`], `#[inline]`: per packet), the C's `inet6sw[ip6_protox[nxt]]`;
-//!   [`raw6_protocol`] is one load and an index, for ICMPv6's tail call to the raw sockets. The
-//!   `Inet` leg is gone.
+//!   the raw entry's index serves `inet6sw_init`'s default (ICMPv6's tail calls
+//!   `rip6_input` itself since N6.6b1). The `Inet` leg is gone.
 //! - LZ's `inet6sw[]` of `Protosw` structs of function pointers and `inet6domain` -> the
 //!   `Protocol`/`Domain` traits (decision 46): [`Inet6Domain`] over the glue's table, it and
 //!   the kernel's entries zero-sized types with an associated `NEW` (the C's NULL entries are
@@ -279,15 +279,6 @@ pub fn inet6_protocol<G: ProcGlue>(nxt: i32) -> Option<&'static dyn Protocol<G>>
         .get(usize::try_from(nxt).ok()?)?
         .load(Ordering::Relaxed);
     t.sw.get()?.sw.get(usize::from(i)).copied()
-}
-
-/// The raw IPv6 entry (`rip6_input`'s, which ICMPv6 hands its messages to, and whose control
-/// input, socket options and user requests ICMPv6's entry shares); `None` before the glue
-/// records the table, or for a table without one.
-#[inline]
-pub fn raw6_protocol<G: ProcGlue>() -> Option<&'static dyn Protocol<G>> {
-    let s = tables::<G>().sw.get()?;
-    s.sw.get(s.raw).copied()
 }
 
 /// `inet6domain`: the IPv6 domain, its protocols the glue's `inet6sw[]` ([`inet6sw_set`], in
@@ -1177,7 +1168,6 @@ mod tests {
         for nxt in [99, IPPROTO_RAW, 0, IPPROTO_MAX - 1] {
             assert!(is_row(inet6_protocol::<G>(nxt), &RAW6), "{nxt}");
         }
-        assert!(is_row(raw6_protocol::<G>(), &RAW6));
         // An entry of another family's domain is no IPv6 protocol.
         assert!(FOREIGN6.protocol() == IPPROTO_ESP as i16);
         assert!(is_row(inet6_protocol::<G>(IPPROTO_ESP), &RAW6));

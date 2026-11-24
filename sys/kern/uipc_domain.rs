@@ -958,7 +958,7 @@ mod tests {
             pffinddomain as kfinddomain, pffindproto as kfindproto, pffindtype as kfindtype,
         };
         use kernel::net::proto::{PR_ADDR, PR_ATOMIC};
-        use kernel::netinet6::in6_proto::{inet6_protocol, inet6sw_init, raw6_protocol};
+        use kernel::netinet6::in6_proto::{inet6_protocol, inet6sw_init};
 
         let (_g, _t, _p) = crate::netinet::in_pcb::tests::setup();
         let f = i32::from(AF_INET6);
@@ -1058,7 +1058,6 @@ mod tests {
             (other.ty(), i32::from(other.protocol())),
             (SOCK_RAW as i16, IPPROTO_RAW)
         );
-        assert!(raw6_protocol::<G>().is_some_and(|r| ptr::addr_eq(r, other)));
         for n in [
             IPPROTO_ICMPV6,
             IPPROTO_DSTOPTS,

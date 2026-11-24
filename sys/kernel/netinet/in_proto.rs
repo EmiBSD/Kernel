@@ -142,7 +142,7 @@
 //!   address are [`InetTables`], one per glue in the network's tables (`NetTables::inet`,
 //!   D-9: the protocols are generic over the glue, `inetsw[]` cannot be a `static` of the
 //!   kernel): the table and the index of its raw entry, recorded together by [`inetsw_set`]
-//!   (N6.5d: so ICMP's tail reaches the raw entry before `ip_init`; until then the index
+//!   (N6.5d: so no reader sees the table without its raw entry; until then the index
 //!   was stored at `ip_init`, 0 before it), and `ip_protox[]`, filled by [`inetsw_init`] as
 //!   the C's `ip_init` fills it. A lookup is two loads and an index ([`ip_protocol`],
 //!   `#[inline]`: per packet), the C's `inetsw[ip_protox[nxt]]`.
@@ -152,8 +152,8 @@
 //!   the traits' defaults); ICMP's and IGMP's name the raw sockets' user requests and socket
 //!   options (`rip_usrreqs`, `rip_ctloutput`, the kernel's since N6.6b1: until then they lent
 //!   `bsd`'s through the raw entry), and IGMP's tail call is `rip_input`, as the C's rows and
-//!   `igmp_input_if` name them; ICMP's tail goes through the raw entry ([`raw_protocol`]),
-//!   which the test tables replace.
+//!   `igmp_input_if` name them, and ICMP's tail is `rip_input` too (`icmp_input`'s, as the
+//!   C's): no lookup of the raw entry on these paths since N6.6b1.
 //!   Nothing keys a domain or a protocol by address (`pffinddomain`, `pffindproto` compare
 //!   the family, the number and the type).
 
@@ -290,14 +290,6 @@ pub fn ip_protocol<G: ProcGlue>(nxt: i32) -> Option<&'static dyn Protocol<G>> {
         .get(usize::try_from(nxt).ok()?)?
         .load(Ordering::Relaxed);
     t.sw.get()?.sw.get(usize::from(i)).copied()
-}
-
-/// The raw entry (`rip_input`'s, which ICMP and IGMP hand their messages to); `None` before
-/// the glue records the table, or for a table without one.
-#[inline]
-pub fn raw_protocol<G: ProcGlue>() -> Option<&'static dyn Protocol<G>> {
-    let s = tables::<G>().sw.get()?;
-    s.sw.get(s.raw).copied()
 }
 
 /// `inetdomain`: the internet domain, its protocols the glue's `inetsw[]` ([`inetsw_set`], in
@@ -852,7 +844,6 @@ mod tests {
         assert!(same(ip_protocol::<G>(IPPROTO_TCP), &TCP));
         assert!(same(ip_protocol::<G>(IPPROTO_ICMP), &ICMP));
         assert!(same(ip_protocol::<G>(99), &RAW), "no entry: the raw one");
-        assert!(same(raw_protocol::<G>(), &RAW));
         assert!(ip_protocol::<G>(IPPROTO_MAX).is_none());
         assert!(ip_protocol::<G>(-1).is_none());
     }

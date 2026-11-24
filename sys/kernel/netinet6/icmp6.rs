@@ -155,8 +155,8 @@
 //! ## Deviations
 //! - `NPF` is configured: `PF_TAG_DIVERTED` is honoured on input and `pf_pkt_addr_changed`
 //!   is the `Pf` bridge's leg. `NCARP` (`carp_lsdrop` on echo requests) is not configured.
-//! - The raw sockets' input (`rip6_input`, the C's tail call) is the IPv6 domain's raw
-//!   entry's `Protocol::input` (`bsd`'s until N6.6b); the upper layer's control input
+//! - The raw sockets' input is `rip6_input` itself, the C's tail call (N6.6b1; until then the
+//!   IPv6 domain's raw entry's `Protocol::input`, `bsd`'s); the upper layer's control input
 //!   (`inet6sw[ip6_protox[nxt]].pr_ctlinput`) is the entry's `Protocol::ctlinput`.
 //! - `icmp6_mtudisc_timeout` is the C's: it does not tell TCP that the path MTU may have
 //!   grown (the IPv4 twin does).
@@ -280,7 +280,7 @@ use crate::net::rtsock::rtm_send;
 use crate::netinet::in_pcb::Inpcb;
 use crate::netinet6::in6::{in6_addr2scopeid, in6_ifawithscope, in6ifa_ifpforlinklocal};
 use crate::netinet6::in6_cksum::in6_cksum;
-use crate::netinet6::in6_proto::{inet6_protocol, raw6_protocol};
+use crate::netinet6::in6_proto::inet6_protocol;
 use crate::netinet6::in6_src::in6_embedscope;
 use crate::netinet6::in6_var::{In6Ifaddr, ia6_in6, ifatoia6};
 use crate::netinet6::ip6_input::{
@@ -298,6 +298,7 @@ use crate::netinet6::nd6::{
 };
 use crate::netinet6::nd6_nbr::{nd6_na_input, nd6_ns_input};
 use crate::netinet6::nd6_rtr::nd6_rtr_cache;
+use crate::netinet6::raw_ip6::rip6_input;
 use crate::proc::ProcGlue;
 use crate::sysctl::{SYSCTL_LOCK, SysctlReq, bounded_arr, int_bounded, rdint, rdstruct};
 use crate::time::{PPSRATECHECK_MTX, ppsratecheck_held, ppsratecheck_locked};
@@ -867,14 +868,9 @@ pub fn icmp6_input<G: ProcGlue>(
             Next::Raw => {}
         }
     }
-    // raw: deliver the packet to appropriate sockets (rip6_input).
+    // raw: deliver the packet to appropriate sockets.
     *mp = Some(m);
-    if let Some(raw) = raw6_protocol::<G>() {
-        raw.input(mp, offp, proto, af, ns, net)
-    } else {
-        drop(mp.take());
-        IPPROTO_DONE
-    }
+    rip6_input::<G>(mp, offp, proto, af, ns, net)
 }
 
 /// The echo request case of `icmp6_input`: copy the packet `m` to send to two data paths,
@@ -2822,8 +2818,17 @@ pub(crate) mod tests {
     #[test]
     fn an_error_reaches_the_quoted_protocol_then_the_raw_sockets() {
         use crate::netinet6::in6_proto::testsw6::{RAW6, UDP6, install};
+        use crate::netinet6::ip6_var::IP6COUNTERS;
+        use hal::sys::netinet6_ip6_var::Ip6statCounters;
         let (_g, ifp) = net6();
         install();
+        // icmp6_input's tail is rip6_input itself, the C's call (N6.6b1): with no raw socket
+        // it takes ip6s_delivered back one (an ICMPv6 message counts nothing in rip6stat, as
+        // the C), and the table's raw entry, a test row that counts its inputs, is not
+        // reached.
+        crate::netinet6::raw_ip6::rip6_init::<G>();
+        let delivered = || IP6COUNTERS.read()[Ip6statCounters::Ip6sDelivered as usize];
+        let (d0, row) = (delivered(), RAW6.inputs.load(Ordering::Relaxed));
         // A port unreachable quoting a UDP packet we sent (ours -> peer): icmp6_notify_error
         // hands it to UDP's entry (`inet6sw[ip6_protox[nxt]].pr_ctlinput`) with the quoted
         // packet's parameter, then icmp6_input's tail gives it to the raw sockets.
@@ -2841,7 +2846,6 @@ pub(crate) mod tests {
         msg.extend_from_slice(&quoted);
         UDP6.ctl.store(0, Ordering::Relaxed);
         UDP6.ctl6_nxt.store(-1, Ordering::Relaxed);
-        let raws = RAW6.inputs.load(Ordering::Relaxed);
         assert_eq!(
             input(icmp(ifp, peer6(), ours6(), &msg, false)),
             IPPROTO_DONE
@@ -2849,11 +2853,7 @@ pub(crate) mod tests {
         assert_eq!(UDP6.ctl.load(Ordering::Relaxed), PRC_UNREACH_PORT);
         assert_eq!(UDP6.ctl6_nxt.load(Ordering::Relaxed), IPPROTO_UDP);
         assert_eq!(UDP6.ctl6_cmdarg.load(Ordering::Relaxed), 0, "no MTU");
-        assert_eq!(
-            RAW6.inputs.load(Ordering::Relaxed),
-            raws + 1,
-            "then rip6_input"
-        );
+        assert_eq!(delivered(), d0.wrapping_sub(1), "then rip6_input");
         // A Packet Too Big: PRC_MSGSIZE, the MTU as the parameter's command argument.
         msg[0] = ICMP6_PACKET_TOO_BIG;
         msg[1] = 0;
@@ -2864,7 +2864,12 @@ pub(crate) mod tests {
         );
         assert_eq!(UDP6.ctl.load(Ordering::Relaxed), PRC_MSGSIZE);
         assert_eq!(UDP6.ctl6_cmdarg.load(Ordering::Relaxed), 1400);
-        assert_eq!(RAW6.inputs.load(Ordering::Relaxed), raws + 2);
+        assert_eq!(delivered(), d0.wrapping_sub(2));
+        assert_eq!(
+            RAW6.inputs.load(Ordering::Relaxed),
+            row,
+            "not the table's raw entry"
+        );
     }
 
     /// A port unreachable from the peer quoting a packet we sent to `dst` whose next header
@@ -2970,10 +2975,24 @@ pub(crate) mod tests {
 
     #[test]
     fn a_protocol_s_final_destination_is_written_back_where_it_is() {
-        use crate::netinet6::in6_proto::testsw6::{RAW6, UDP6, install};
+        use crate::netinet6::in6_proto::testsw6::{UDP6, install};
         let (_g, ifp) = net6();
         install();
-        let raw_bytes = || RAW6.last.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        // icmp6_input's advice to the quoted protocol (icmp6_notify_error, which writes the
+        // final destination back into the packet) and the packet it hands back, which the raw
+        // sockets get next: read where icmp6_input reads it (since N6.6b1 its tail is
+        // rip6_input itself, no test row in between).
+        let notified = |m: MbufBox| -> Vec<u8> {
+            let icmp6len = m.m_pkthdr().len.get() - 40;
+            let w = NETLOCK.write();
+            let net = NetHeld::of(&w).expect("the net lock");
+            let m = icmp6_notify_error::<G>(m, 40, icmp6len, PRC_UNREACH_PORT, &net)
+                .expect("the packet back");
+            drop(w);
+            let mut b = vec![0u8; m.m_pkthdr().len.get() as usize];
+            m_copydata(&m, 0, &mut b);
+            b
+        };
         let rewrite = |a: In6Addr| {
             *UDP6.ctl6_rewrite.lock().unwrap_or_else(|e| e.into_inner()) = Some(a.s6_addr);
         };
@@ -2996,23 +3015,18 @@ pub(crate) mod tests {
         // address, which takes the change; the quoted destination keeps its own.
         rewrite(zoned(f1));
         let m = unreach_quoting(ifp, peer6(), IPPROTO_ROUTING, &rthdr(0, 1, &[f1], None));
-        assert_eq!(input(m), IPPROTO_DONE);
-        let b = raw_bytes();
+        let b = notified(m);
         assert_eq!(&b[RH0_ADDR..RH0_ADDR + 16], &zoned(f1).s6_addr);
         assert_eq!(&b[QDST..QDST + 16], &peer6().s6_addr);
 
         // Without one: the quoted header's destination takes it.
         rewrite(zoned(peer6()));
-        assert_eq!(
-            input(unreach_quoting(ifp, peer6(), IPPROTO_UDP, &[])),
-            IPPROTO_DONE
-        );
-        assert_eq!(&raw_bytes()[QDST..QDST + 16], &zoned(peer6()).s6_addr);
+        let b = notified(unreach_quoting(ifp, peer6(), IPPROTO_UDP, &[]));
+        assert_eq!(&b[QDST..QDST + 16], &zoned(peer6()).s6_addr);
 
         // A protocol that changes nothing: the packet as it was quoted.
         let m = unreach_quoting(ifp, peer6(), IPPROTO_ROUTING, &rthdr(0, 1, &[f1], None));
-        assert_eq!(input(m), IPPROTO_DONE);
-        let b = raw_bytes();
+        let b = notified(m);
         assert_eq!(&b[RH0_ADDR..RH0_ADDR + 16], &f1.s6_addr);
         assert_eq!(&b[QDST..QDST + 16], &peer6().s6_addr);
     }
