@@ -126,12 +126,22 @@
 //!   `rtmask_pool`, and no "rtmask" line in `vmstat -m` (D-12). Masks compare by identity
 //!   inside one tree, which is all radix.c compares; the C's one mask tree is changed by
 //!   mount(2) under the kernel lock and by PF_KEY under the net lock alone.
-//! - A tree whose last route is deleted gives back its node chunks, its mask tree and its
+//! - A tree whose last route is deleted gives back its node arrays, its mask tree and its
 //!   annotations, and the next add starts it again (the C keeps the head until its owner
 //!   frees it, and never frees a mask). Nothing observes the difference: an empty tree
 //!   answers no lookup either way. An add refused on an empty tree keeps the head it made,
 //!   as the C's `rn_inithead` head stays, so the export list's next add answers what the
 //!   C's does.
+//! - The slots, the mask tree's and the annotation records live in arrays that double by
+//!   copying (D-13, the user's choice of 2026-11-24: flat arrays, the node pairs apart): the add
+//!   that fills one asks `malloc(M_NOWAIT)` for blocks twice the size and moves every element,
+//!   where the C allocates nothing for a route's nodes (its caller's entry carries them) and
+//!   only a new mask or annotation `M_NOWAIT`. A tree of pf's entries (48-byte slots, 48-byte
+//!   pairs) asks two contiguous 6.3 MB blocks as it passes 65,534 routes, two of 12.6 MB past
+//!   pf's 200,000-entry limit, the old blocks alive during the copy. Both new blocks are asked
+//!   before anything moves, so a refused grow leaves the tree whole and the add answers the
+//!   C's `NULL`, which each caller maps as the C maps `rn_addroute`'s (pf's -1, the exports'
+//!   `EPERM`, the policy database's freed policy and 0).
 //! - An add takes the slot for its node pair from the tree (`M_NOWAIT`), where the C's
 //!   caller embeds the pair in its own entry before the call: a slot the tree cannot have is
 //!   the C's `NULL` (the value comes back in the `Err`).
@@ -212,19 +222,20 @@
 //!   (`rm_mask`/`rm_leaf`); a mask reference carries a tag bit (`MASK`), so a mask never
 //!   compares equal to a node where the C compares a mask pointer with a node pointer
 //!   (`rn_del_radix_mask` on a route sharing a normal route's annotation).
-//! - Storage (D-3; the user's sizing of 2026-11-23, "start small, grow"): the slots, the mask
-//!   tree's slots and the annotation records live in three chunked arrays (`Slab`: chunks of
-//!   8, 8, 16 and 32 elements, then 64, `malloc(9)` of the tree's type, `M_NOWAIT`, behind a
-//!   directory that doubles by moving chunk handles); a node is the directory's entry, then
-//!   the slot: two loads where the C has one. An export list of a few hosts takes 1,760 bytes
-//!   asked of `malloc` (the node and mask trees' first chunks and their directories; 11,840
-//!   with 64-element chunks). Lookups and walks never allocate; an add takes at most one
-//!   slot, one mask slot and the annotations radix.c makes.
+//! - Storage (D-3, D-13's experiment of N6.7b1; the user's sizing of 2026-11-23, "start small,
+//!   grow"): the slots, the mask tree's slots and the annotation records live in three flat
+//!   arrays (`Slab`, one `malloc(9)` block of the tree's type each, `M_NOWAIT`, 8 elements
+//!   first, doubled when full by moving the elements into the new block), and the node pairs
+//!   of the two trees' slots in an array of their own beside them, indexed by the node's
+//!   number (`2 * slot` the leaf, `2 * slot + 1` the internal node): a descent loads 24-byte
+//!   nodes only, one load a node as the C. Lookups and walks never allocate; an add takes at
+//!   most one slot, one mask slot and the annotations radix.c makes, and the add that fills
+//!   an array copies it once into a block twice its size.
 //! - `rn_addmask`'s search mode is `rn_findmask`, so a lookup takes the tree shared;
 //!   `rn_delete`'s unlinking half is `rn_delete_leaf`, which [`RadixTree::remove`] shares.
 //!   `rn_inithead` and `rn_initmask` are [`RadixTree::inithead`], which the first add calls.
-//! - Costs against the C: `rn_match` is the C's steps with two loads a node (each leaf's slot
-//!   read once for its node, key and mask), the key copied once into a `K`-byte array (the
+//! - Costs against the C: `rn_match` is the C's steps, one load a node and one for a leaf's
+//!   key, the key copied once into a `K`-byte array (the
 //!   slices' bounds checked once), and, on a normal annotation it returns, one slot load for
 //!   the leaf's generation; an add copies the key into its slot; the walk's successor is the
 //!   C's climb, plus a climb of the duplicated key chain to its head once a chain (O(1)
@@ -259,12 +270,8 @@ const ROOT_LEFT: u32 = 0;
 const TOP: u32 = 1;
 const ROOT_RIGHT: u32 = 2;
 
-/// A full chunk of a `Slab`: `1 << CHUNK_SHIFT` elements. The first chunks are smaller (8, 8,
-/// 16 and 32 elements: the capacity doubles up to a full chunk), so a small tree (an export
-/// list of a few hosts) takes a few hundred bytes.
-const CHUNK_SHIFT: u32 = 6;
-const CHUNK: usize = 1 << CHUNK_SHIFT;
-/// The first chunk's elements.
+/// A `Slab`'s first capacity (it doubles from there), so a small tree (an export list of a
+/// few hosts) takes a few hundred bytes.
 const FIRST: usize = 8;
 /// The most elements a `Slab` holds: node indices stay below the `MASK` tag.
 const SLAB_LIMIT: usize = 1 << 29;
@@ -351,11 +358,10 @@ struct RadixMask {
     refs: i32,
 }
 
-/// A route's slot: the C's `treenodes[2]`, the key the leaf holds (`rn_key`, `K` bytes), the
-/// value the C's entry would carry around the pair, and the generation [`Leaf`] checks.
+/// A route's slot: the key the leaf holds (`rn_key`, `K` bytes), the value the C's entry
+/// would carry around its `treenodes[2]` (which live in the `Slab`'s node array), and the
+/// generation [`Leaf`] checks.
 struct Slot<V, const K: usize> {
-    /// `[0]` the leaf, `[1]` the internal node made with it.
-    nodes: [RadixNode; 2],
     /// The leaf's key (the mask tree's: the normalised mask).
     key: [u8; K],
     /// The route's value (`None` for the roots, the mask tree and a vacant slot).
@@ -366,20 +372,21 @@ struct Slot<V, const K: usize> {
     link: u32,
 }
 
-/// The storage of a tree's slots, its mask tree's or its annotations (D-3): chunks of 8, 8,
-/// 16 and 32 elements, then of `CHUNK` (64), each one `malloc(9)` block of the tree's type
-/// taken `M_NOWAIT`, behind a directory of chunk handles that doubles when full (the handles
-/// move, the elements do not); element `i` is `dir[c][o]` for [`locate`]'s `(c, o)` (`i >> 6`
-/// plus 3 and `i & 63` from 64 on). Vacant elements form a free list. The one place that
-/// knows the layout, so a flat array is a change of this type alone (D-13).
+/// The storage of a tree's slots, its mask tree's or its annotations (D-3, D-13): one flat
+/// array of elements, 8 first, doubled when full (the elements moved into a block twice the
+/// size, `malloc(9)` of the tree's type, `M_NOWAIT`), and for a tree's slots (`PAIRED`) the
+/// node pairs in a flat array beside it, node `x` its element `x`. Vacant elements form a free
+/// list. The one place that knows the layout.
 struct Slab<E> {
-    /// The chunk handles (`None` until the first element).
-    dir: Option<MArray<Option<MArray<E>>>>,
-    /// The chunks in use, from the directory's first entry.
-    chunks: usize,
+    /// The elements (`None` until the first).
+    elems: Option<MArray<E>>,
+    /// The nodes of the elements' pairs (`PAIRED` items only: two an element).
+    pairs: Option<MArray<RadixNode>>,
+    /// The times the arrays were made or grown (0: nothing allocated).
+    grows: usize,
     /// The first vacant element.
     free: u32,
-    /// The `malloc(9)` type of the directory and the chunks.
+    /// The `malloc(9)` type of the arrays.
     mtype: i32,
 }
 
@@ -387,27 +394,26 @@ impl<E> Slab<E> {
     /// No element, nothing allocated.
     const fn new(mtype: i32) -> Self {
         Self {
-            dir: None,
-            chunks: 0,
+            elems: None,
+            pairs: None,
+            grows: 0,
             free: NONE,
             mtype,
         }
     }
 
-    /// No chunk.
+    /// Nothing allocated.
     fn is_empty(&self) -> bool {
-        self.chunks == 0
+        self.grows == 0
     }
 
-    /// Element `i`, `None` past the chunks.
+    /// Element `i`, `None` past the array.
     #[inline]
     fn try_get(&self, i: u32) -> Option<&E> {
-        let (c, o) = locate(i as usize);
-        self.dir.as_ref()?.get(c)?.as_ref()?.get(o)
+        self.elems.as_ref()?.get(i as usize)
     }
 
-    /// Element `i`, which a link of the tree names: `panic(9)` past the chunks (a broken
-    /// tree).
+    /// Element `i`, which a link of the tree names: `panic(9)` past the array (a broken tree).
     #[inline]
     fn get(&self, i: u32) -> &E {
         match self.try_get(i) {
@@ -419,30 +425,56 @@ impl<E> Slab<E> {
     /// Element `i`, to change.
     #[inline]
     fn get_mut(&mut self, i: u32) -> &mut E {
-        let (c, o) = locate(i as usize);
-        let e = self
-            .dir
-            .as_mut()
-            .and_then(|d| d.get_mut(c))
-            .and_then(Option::as_mut)
-            .and_then(|k| k.get_mut(o));
-        match e {
+        match self.elems.as_mut().and_then(|a| a.get_mut(i as usize)) {
             Some(e) => e,
             None => kpanic(format_args!("radix: no element {i}")),
         }
     }
 
-    /// Every chunk and the directory freed (the elements dropped).
+    /// Node `x` of the pairs.
+    #[inline]
+    fn node(&self, x: u32) -> &RadixNode {
+        match self.pairs.as_ref().and_then(|a| a.get(x as usize)) {
+            Some(n) => n,
+            None => kpanic(format_args!("radix: no node {x}")),
+        }
+    }
+
+    /// Node `x` of the pairs, to change.
+    #[inline]
+    fn node_mut(&mut self, x: u32) -> &mut RadixNode {
+        match self.pairs.as_mut().and_then(|a| a.get_mut(x as usize)) {
+            Some(n) => n,
+            None => kpanic(format_args!("radix: no node {x}")),
+        }
+    }
+
+    /// Element `i`'s pair (`[0]` the leaf, `[1]` the internal node), to change.
+    fn pair_mut(&mut self, i: u32) -> &mut [RadixNode; 2] {
+        let at = (i as usize) * 2;
+        let pair = self
+            .pairs
+            .as_mut()
+            .and_then(|a| a.get_mut(at..at + 2))
+            .and_then(|p| <&mut [RadixNode; 2]>::try_from(p).ok());
+        match pair {
+            Some(p) => p,
+            None => kpanic(format_args!("radix: no pair {i}")),
+        }
+    }
+
+    /// Both arrays freed (the elements dropped).
     fn clear(&mut self) {
-        self.dir = None;
-        self.chunks = 0;
+        self.elems = None;
+        self.pairs = None;
+        self.grows = 0;
         self.free = NONE;
     }
 }
 
 impl<E: SlabItem> Slab<E> {
-    /// A vacant element, taken off the free list (a chunk more when it is empty): `None`
-    /// when `malloc(M_NOWAIT)` has no memory.
+    /// A vacant element, taken off the free list (the arrays doubled when it is empty):
+    /// `None` when `malloc(M_NOWAIT)` has no memory.
     fn alloc(&mut self) -> Option<u32> {
         if self.free == NONE {
             self.grow()?;
@@ -455,53 +487,71 @@ impl<E: SlabItem> Slab<E> {
         Some(i)
     }
 
-    /// Element `i` made vacant again (its old value dropped) and put on the free list.
+    /// Element `i` made vacant again (its old value dropped, its pair zeroed) and put on the
+    /// free list.
     fn release(&mut self, i: u32) {
         let next = self.free;
         let e = self.get_mut(i);
         *e = E::vacant();
         *e.link() = next;
+        if E::PAIRED {
+            *self.pair_mut(i) = [RadixNode::new(), RadixNode::new()];
+        }
         self.free = i;
     }
 
-    /// One more chunk, its elements on the free list; the directory doubled first when full.
+    /// The arrays doubled (8 elements the first time), the new elements on the free list.
+    /// Both new blocks are asked of `malloc` before an element moves, so a failure leaves the
+    /// old arrays whole.
     fn grow(&mut self) -> Option<()> {
-        let n = self.chunks;
-        let (base, len) = (chunk_base(n), chunk_len(n));
-        if base + len > SLAB_LIMIT {
+        let cap = self.elems.as_ref().map_or(0, |a| a.len());
+        let len = (cap * 2).max(FIRST);
+        if len > SLAB_LIMIT {
             return None;
         }
-        let cap = self.dir.as_ref().map_or(0, |d| d.len());
-        if n == cap {
-            let mut old = self.dir.take();
-            // `MArray::new` asks `malloc` before it runs the closure, so a failure leaves the
-            // old directory whole.
-            let grown = MArray::new(self.mtype, M_NOWAIT, (cap * 2).max(4), |i| {
+        let next = self.free;
+        let mut pairs = None;
+        if E::PAIRED {
+            let mut old = self.pairs.take();
+            let grown = MArray::new(self.mtype, M_NOWAIT, 2 * len, |j| {
                 old.as_mut()
-                    .and_then(|o| o.get_mut(i))
-                    .and_then(Option::take)
+                    .and_then(|o| o.get_mut(j))
+                    .map_or_else(RadixNode::new, |n| core::mem::replace(n, RadixNode::new()))
             });
             match grown {
-                Some(d) => self.dir = Some(d),
+                Some(p) => pairs = Some(p),
                 None => {
-                    self.dir = old;
+                    self.pairs = old;
                     return None;
                 }
             }
         }
-        let next = self.free;
-        let chunk = MArray::new(self.mtype, M_NOWAIT, len, |j| {
-            let mut e = E::vacant();
-            *e.link() = if j + 1 < len {
-                (base + j + 1) as u32
+        let mut old = self.elems.take();
+        let grown = MArray::new(self.mtype, M_NOWAIT, len, |j| {
+            if j < cap {
+                old.as_mut()
+                    .and_then(|o| o.get_mut(j))
+                    .map_or_else(E::vacant, |e| core::mem::replace(e, E::vacant()))
             } else {
-                next
-            };
-            e
-        })?;
-        *self.dir.as_mut().and_then(|d| d.get_mut(n))? = Some(chunk);
-        self.chunks = n + 1;
-        self.free = base as u32;
+                let mut e = E::vacant();
+                *e.link() = if j + 1 < len { (j + 1) as u32 } else { next };
+                e
+            }
+        });
+        let Some(elems) = grown else {
+            // The pairs stay in their new, larger block (nodes past the elements are unused).
+            self.elems = old;
+            if E::PAIRED {
+                self.pairs = pairs;
+            }
+            return None;
+        };
+        self.elems = Some(elems);
+        if E::PAIRED {
+            self.pairs = pairs;
+        }
+        self.grows += 1;
+        self.free = cap as u32;
         Some(())
     }
 }
@@ -510,13 +560,13 @@ impl<V, const K: usize> Slab<Slot<V, K>> {
     /// Node `x` (`2 * slot` the leaf, `2 * slot + 1` the internal node).
     #[inline]
     fn n(&self, x: u32) -> &RadixNode {
-        &self.get(x >> 1).nodes[(x & 1) as usize]
+        self.node(x)
     }
 
     /// Node `x`, to change.
     #[inline]
     fn nm(&mut self, x: u32) -> &mut RadixNode {
-        &mut self.get_mut(x >> 1).nodes[(x & 1) as usize]
+        self.node_mut(x)
     }
 
     /// The key of leaf `x` (`rn_key`).
@@ -718,7 +768,7 @@ impl<T, const K: usize> RadixTree<T, K> {
         false
     }
 
-    /// With no route left, every chunk given back (the next add starts the tree again).
+    /// With no route left, every array given back (the next add starts the tree again).
     fn drop_if_empty(&mut self) {
         if self.routes == 0 {
             self.nodes.clear();
@@ -903,6 +953,8 @@ impl Holders {
 
 /// What a `Slab` holds: how a vacant element looks and where its free-list link is.
 trait SlabItem {
+    /// Whether the elements are a tree's slots, with a node pair each in the `Slab`'s pairs.
+    const PAIRED: bool = false;
     /// A vacant element (the C's zeroed memory).
     fn vacant() -> Self;
     /// The free list's link of a vacant element.
@@ -927,9 +979,10 @@ impl SlabItem for RadixMask {
 }
 
 impl<V, const K: usize> SlabItem for Slot<V, K> {
+    const PAIRED: bool = true;
+
     fn vacant() -> Self {
         Self {
-            nodes: [RadixNode::new(), RadixNode::new()],
             key: [0; K],
             value: None,
             generation: 0,
@@ -949,38 +1002,6 @@ fn key_of<const K: usize>(v: &[u8]) -> [u8; K] {
     let n = v.len().min(K);
     k[..n].copy_from_slice(&v[..n]);
     k
-}
-
-/// The chunk and the offset in it of a `Slab`'s element `i`: chunk 0 holds 0..8, chunk 1
-/// 8..16, chunk 2 16..32, chunk 3 32..64, then 64 elements a chunk.
-#[inline]
-fn locate(i: usize) -> (usize, usize) {
-    if i >= CHUNK {
-        ((i >> CHUNK_SHIFT) + 3, i & (CHUNK - 1))
-    } else if i < FIRST {
-        (0, i)
-    } else {
-        let top = (usize::BITS - 1 - i.leading_zeros()) as usize;
-        (top - 2, i - (1 << top))
-    }
-}
-
-/// The first element of a `Slab`'s chunk `c`.
-fn chunk_base(c: usize) -> usize {
-    match c {
-        0 => 0,
-        1..=3 => (FIRST / 2) << c,
-        _ => (c - 3) << CHUNK_SHIFT,
-    }
-}
-
-/// The elements of a `Slab`'s chunk `c`.
-fn chunk_len(c: usize) -> usize {
-    match c {
-        0 => FIRST,
-        1..=3 => (FIRST / 2) << c,
-        _ => CHUNK,
-    }
 }
 
 /// `SALEN(sa)`: the length byte, at most `K` (D-7).
@@ -1114,7 +1135,7 @@ fn rn_match<T, const K: usize>(h: &RadixTree<T, K>, v: &[u8; K]) -> u32 {
     let off = h.n(top).off as usize;
     let mut t = rn_search(&h.nodes, v, top);
     let s = h.nodes.get(t >> 1);
-    let tn = s.nodes[0];
+    let tn = *h.n(t);
     // An exact match as a host, or how many bits match, for the normal masks' short cut. The
     // mask's length is enough: a match under it is a genuine match of the most specific
     // leaf, and a mismatch within it would be one at any length.
@@ -1142,7 +1163,7 @@ fn rn_match<T, const K: usize>(h: &RadixTree<T, K>, v: &[u8; K]) -> u32 {
     while t != NONE {
         // Not a host, but the leaf we wound up at may be a route to a net.
         let s = h.nodes.get(t >> 1);
-        let n = &s.nodes[0];
+        let n = h.n(t);
         if n.flags & RNF_NORMAL != 0 {
             if rn_b <= i32::from(n.b) {
                 kassert!(n.flags & RNF_ROOT == 0);
@@ -1177,7 +1198,7 @@ fn rn_match<T, const K: usize>(h: &RadixTree<T, K>, v: &[u8; K]) -> u32 {
                 let mut x = rn_search_m(&h.nodes, v, t, h.mk(rm.rmu));
                 while x != NONE {
                     let s = h.nodes.get(x >> 1);
-                    let n = &s.nodes[0];
+                    let n = h.n(x);
                     if n.mask() == rm.rmu {
                         if rn_satisfies_leaf(h, v, &s.key, n.mask(), off) {
                             kassert!(n.flags & RNF_ROOT == 0);
@@ -1200,7 +1221,7 @@ fn rn_match<T, const K: usize>(h: &RadixTree<T, K>, v: &[u8; K]) -> u32 {
 /// node, which tests bit `b`; the internal node.
 fn rn_newpair<V, const K: usize>(t: &mut Slab<Slot<V, K>>, slot: u32, b: i32) -> u32 {
     let (tt, x) = (slot << 1, (slot << 1) | 1);
-    let [leaf, node] = &mut t.get_mut(slot).nodes;
+    let [leaf, node] = t.pair_mut(slot);
     node.b = b as i16;
     node.bmask = 0x80 >> (b & 7);
     node.lm = tt;
@@ -2540,7 +2561,7 @@ mod tests {
         assert_eq!(h.get(a), None);
         assert_eq!(h.get(c), Some(&3));
         assert_eq!(h.get(b), Some(&2));
-        // A handle past this tree's chunks.
+        // A handle past this tree's arrays.
         let far = Leaf {
             slot: 1 << 20,
             generation: 1,
@@ -2549,10 +2570,10 @@ mod tests {
     }
 
     #[test]
-    fn a_small_tree_takes_small_chunks() {
-        // The user's sizing (2026-11-23, "start small, grow"): an export list of one host takes
-        // the node and mask trees' first chunks of 8 slots and their directories of 4 handles;
-        // the chunks then grow 8, 16, 32, 64.
+    fn a_small_tree_takes_small_arrays() {
+        // The user's sizing (2026-11-23, "start small, grow", kept by the layout of D-13,
+        // 2026-11-24): an export list of one host takes the node and mask trees' first arrays
+        // of 8 slots and 8 node pairs; they double from there.
         testutil::install();
         let before = testutil::malloc_out(M_RTABLE);
         let mut h: RadixTree<MBox<u32>, 16> = RadixTree::new(OFF, M_RTABLE);
@@ -2560,32 +2581,40 @@ mod tests {
         assert!(h.add(&sin([10, 0, 0, 7]), None, v).is_ok());
         let node = size_of::<Slot<MBox<u32>, 16>>();
         let mask = size_of::<Slot<(), 16>>();
-        let dir = 4 * size_of::<Option<MArray<Slot<(), 16>>>>();
+        let pair = 2 * size_of::<RadixNode>();
         let small = testutil::malloc_out(M_RTABLE) - before;
         std::eprintln!(
-            "one-host tree: {small} bytes ({node} a slot, {mask} a mask slot, {dir} a directory)"
+            "one-host tree: {small} bytes ({node} a slot, {mask} a mask slot, {pair} a pair)"
         );
-        assert_eq!(small as usize, 8 * node + dir + 8 * mask + dir);
-        assert_eq!(small, 1760, "the module's docs");
+        assert_eq!(small as usize, 8 * (node + pair) + 8 * (mask + pair));
+        assert_eq!(small, 1440, "the module's docs");
         drop(h);
         assert_eq!(testutil::malloc_out(M_RTABLE), before, "all given back");
-        // The chunk layout: 0..8, 8..16, 16..32, 32..64, then 64 a chunk.
-        for (i, want) in [
-            (0, (0, 0)),
-            (7, (0, 7)),
-            (8, (1, 0)),
-            (15, (1, 7)),
-            (16, (2, 0)),
-            (31, (2, 15)),
-            (32, (3, 0)),
-            (63, (3, 31)),
-            (64, (4, 0)),
-            (127, (4, 63)),
-            (128, (5, 0)),
+        // The capacity: 8 slots (the two roots and six routes), then 16, then 32; the node
+        // pairs twice as many nodes, always.
+        let mut h = tree();
+        let cap = |h: &Tree| {
+            let slots = h.nodes.elems.as_ref().map_or(0, |a| a.len());
+            let nodes = h.nodes.pairs.as_ref().map_or(0, |a| a.len());
+            assert_eq!(nodes, 2 * slots);
+            slots
+        };
+        assert_eq!(cap(&h), 0);
+        let mut n = 0u32;
+        for (routes, want) in [
+            (1, 8),
+            (6, 8),
+            (7, 16),
+            (14, 16),
+            (15, 32),
+            (30, 32),
+            (31, 64),
         ] {
-            assert_eq!(locate(i), want, "element {i}");
-            assert_eq!(chunk_base(want.0) + want.1, i);
-            assert!(want.1 < chunk_len(want.0));
+            while h.routes < routes {
+                add(&mut h, [10, 0, 1, n as u8], None, n).expect("added");
+                n += 1;
+            }
+            assert_eq!(cap(&h), want, "{routes} routes");
         }
     }
 
@@ -2606,14 +2635,14 @@ mod tests {
         assert!(h.is_empty() && !h.nodes.is_empty() && h.marks.is_empty());
         assert_eq!(matched(&h, [0, 0, 0, 0]), None);
         check_links(&h);
-        // And it starts again, past one chunk.
+        // And it starts again, past one doubling.
         add(&mut h, [10, 0, 0, 0], Some(8), 8).expect("added");
         assert_eq!(matched(&h, [10, 9, 9, 9]), Some(8));
         for i in 0..200u32 {
             let [_, _, a, b] = i.to_be_bytes();
             assert!(add(&mut h, [11, a, b, 1], None, 1000 + i).is_ok());
         }
-        assert!(h.nodes.chunks > 1);
+        assert!(h.nodes.grows > 1);
         assert_eq!(matched(&h, [11, 0, 150, 1]), Some(1150));
         check_links(&h);
     }
