@@ -97,13 +97,13 @@
 //! array.
 //!
 //! ## Deviations
-//! - The table's entries are the kernel's IPv6, TCP (N6.6a5), ICMPv6, destination options,
-//!   routing header and fragment header ([`Ip6Protocol`], [`Tcp6Protocol`],
-//!   [`Icmp6Protocol`], [`Dest6Protocol`], [`Route6Protocol`], [`Frag6Protocol`]) and `bsd`'s
-//!   UDP, raw IPv6, AH, ESP, IPComp, IPv4 and IPv6 in IPv6, divert and the raw wildcard
-//!   (`bsd`'s `inet6sw[]` rows through the `Protocol` bridge impl) in the C's order; `bsd`
-//!   assembles the slice and records it ([`inet6sw_set`], `sys/kern/uipc_domain.rs`), until
-//!   the transports move (N6.6b, N8).
+//! - The table's entries are the kernel's IPv6, UDP (N6.6b0), TCP (N6.6a5), ICMPv6,
+//!   destination options, routing header and fragment header ([`Ip6Protocol`],
+//!   [`Udp6Protocol`], [`Tcp6Protocol`], [`Icmp6Protocol`], [`Dest6Protocol`],
+//!   [`Route6Protocol`], [`Frag6Protocol`]) and `bsd`'s raw IPv6, AH, ESP, IPComp, IPv4 and
+//!   IPv6 in IPv6, divert and the raw wildcard (`bsd`'s `inet6sw[]` rows through the
+//!   `Protocol` bridge impl) in the C's order; `bsd` assembles the slice and records it
+//!   ([`inet6sw_set`], `sys/kern/uipc_domain.rs`), until the transports move (N6.6b1, N8).
 //!   `IPSEC` is configured (AH, ESP and IPComp after the fragment header, `bsd`'s); so is
 //!   `NPF` (divert's entry, `bsd`'s). `NGIF` is 0 (`ipip_input` serves `IPPROTO_IPV4` and
 //!   `IPPROTO_IPV6`); `MPLS`, `NCARP`, `NETHERIP` and `NGRE` are not configured, their entries
@@ -153,10 +153,10 @@ use hal::once::OnceStatic;
 use hal::sys::errno::Errno;
 use hal::sys::netinet_in::{
     IPPROTO_DSTOPTS, IPPROTO_FRAGMENT, IPPROTO_ICMPV6, IPPROTO_IPV6, IPPROTO_MAX, IPPROTO_RAW,
-    IPPROTO_ROUTING, IPPROTO_TCP,
+    IPPROTO_ROUTING, IPPROTO_TCP, IPPROTO_UDP,
 };
 use hal::sys::netinet6_in6::SockaddrIn6;
-use hal::sys::socket::{AF_INET6, PF_INET6, SOCK_RAW, SOCK_STREAM};
+use hal::sys::socket::{AF_INET6, PF_INET6, SOCK_DGRAM, SOCK_RAW, SOCK_STREAM};
 
 use crate::assert::kpanic;
 use crate::net::domain::{Domain, net};
@@ -170,6 +170,7 @@ use crate::net::socket::{SoLocked, Socket};
 use crate::netinet::tcp_input::tcp_input;
 use crate::netinet::tcp_subr::tcp6_ctlinput;
 use crate::netinet::tcp_usrreq::{TcpUsrreqs, tcp_ctloutput, tcp_sysctl};
+use crate::netinet::udp_usrreq::{UdpUsrreqs, udp_ctloutput, udp_input, udp_sysctl, udp6_ctlinput};
 use crate::proc::ProcGlue;
 use crate::sysctl::SysctlReq;
 
@@ -357,6 +358,76 @@ impl<G: ProcGlue> Protocol<G> for Ip6Protocol<G> {
     }
     fn slowtimo(&self) {
         crate::netinet6::frag6::frag6_slowtimo();
+    }
+}
+
+/// `inet6sw[]`'s UDP entry: `udp_input`, `udp6_ctlinput`, `ip6_ctloutput`, `udp6_usrreqs`,
+/// `udp_sysctl` (N6.6b0; `bsd`'s row until then; no `pr_init`: inet's `udp_init` makes both
+/// tables).
+pub struct Udp6Protocol<G: ProcGlue>(PhantomData<fn() -> G>);
+
+impl<G: ProcGlue> Udp6Protocol<G> {
+    /// The entry.
+    pub const NEW: Self = Self(PhantomData);
+}
+
+impl<G: ProcGlue> Protocol<G> for Udp6Protocol<G> {
+    fn domain(&self) -> &'static dyn Domain<G> {
+        inet6domain::<G>()
+    }
+    fn ty(&self) -> i16 {
+        SOCK_DGRAM as i16
+    }
+    fn protocol(&self) -> i16 {
+        IPPROTO_UDP as i16
+    }
+    fn flags(&self) -> i16 {
+        PR_ATOMIC | PR_ADDR | PR_SPLICE | PR_MPINPUT | PR_MPSYSCTL
+    }
+    fn usrreqs(&self) -> Option<&'static dyn Usrreqs<G>> {
+        Some(&UdpUsrreqs::<G>::INET6)
+    }
+    fn ctlinput(
+        &self,
+        cmd: i32,
+        sa: SockaddrView<'_>,
+        rdomain: u32,
+        arg: CtlArg<'_>,
+        net: &NetHeld<'_>,
+    ) {
+        udp6_ctlinput::<G>(cmd, sa, rdomain, arg, net);
+    }
+    fn input(
+        &self,
+        mp: &mut Option<MbufBox>,
+        offp: &mut i32,
+        proto: i32,
+        af: i32,
+        ns: Option<&mut Netstack>,
+        net: &NetHeld<'_>,
+    ) -> i32 {
+        udp_input::<G>(mp, offp, proto, af, ns, net)
+    }
+    fn has_ctloutput(&self) -> bool {
+        true
+    }
+    /// `ip6_ctloutput`.
+    fn ctloutput(
+        &self,
+        op: i32,
+        so: &Socket<G>,
+        w: &mut SoLocked<'_>,
+        level: i32,
+        optname: i32,
+        m: Option<&mut Mbuf>,
+    ) -> Result<(), Errno> {
+        udp_ctloutput(op, so, w, level, optname, m)
+    }
+    fn has_sysctl(&self) -> bool {
+        true
+    }
+    fn sysctl(&self, name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+        udp_sysctl(name, req)
     }
 }
 

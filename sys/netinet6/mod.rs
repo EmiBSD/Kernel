@@ -47,5 +47,4 @@ pub mod ip6_var;
 pub mod mld6;
 pub mod nd6;
 pub mod raw_ip6;
-pub mod udp6_output;
 /* </CODE> */

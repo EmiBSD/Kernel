@@ -105,10 +105,10 @@
 //!   `test`, which passes every packet before registration; a packet pf tagged
 //!   `PF_TAG_REROUTE` reruns the route lookup (the C's `goto reroute` is a labelled loop).
 //! - Not configured, a comment at its site: `MROUTING` (`ip6_mforward`).
-//! - The UDP counter of software checksums (`udps_outswcsum`) is the `Inet` leg
-//!   `udpstat_outswcsum` (until N6.6b; TCP's is the kernel's `tcpstat_inc` since N6.6a1), and
-//!   `idgen32` (`crypto/idgen.c`, `bsd`'s until crypto moves) is reached through the `Inet`
-//!   leg `ip6_randomid`, `bsd`'s generator.
+//! - `idgen32` (`crypto/idgen.c`, `bsd`'s until crypto moves) is reached through the `Inet`
+//!   leg `ip6_randomid`, `bsd`'s generator. The counters of software checksums are the
+//!   kernel's: UDP's (`udps_outswcsum`) `udpstat_inc` since N6.6b0 (the `Inet` leg
+//!   `udpstat_outswcsum` before it), TCP's `tcpstat_inc` since N6.6a1.
 //! - `in6_proto_cksum_out` stores no pseudo-header checksum when `ip6_lasthdr` finds the chain
 //!   invalid (the C would write at offset -1 plus the field offset), as LZ.
 //! - `ip6_ctloutput`'s `PRCO_GETOPT` without an answer mbuf is `panic(9)` (`sogetopt` always
@@ -262,6 +262,7 @@ use crate::netinet::in_pcb::{
 use crate::netinet::ip_output::in_ifcap_cksum;
 use crate::netinet::ip_var::ip_mtudisc;
 use crate::netinet::tcp_var::{TcpstatCounters, tcpstat_inc};
+use crate::netinet::udp_var::{UdpstatCounters, udpstat_inc};
 use crate::netinet6::in6::{in6_addmulti, in6_delmulti, in6_hasmulti};
 use crate::netinet6::in6_cksum::in6_cksum;
 use crate::netinet6::in6_src::in6_selectroute;
@@ -2530,9 +2531,7 @@ pub fn in6_proto_cksum_out(m: &mut Mbuf, ifp: Option<&Ifnet>) {
         }
     } else if flags & M_UDP_CSUM_OUT != 0 {
         if no_hw(IFCAP_CSUM_UDPv6, IPPROTO_UDP) {
-            if let Some(i) = inet() {
-                i.udpstat_outswcsum();
-            }
+            udpstat_inc(UdpstatCounters::UdpsOutswcsum);
             in6_delayed_cksum(m, IPPROTO_UDP as u8);
             m.m_pkthdr().csum_flags.set(flags & !M_UDP_CSUM_OUT); // Clear
         }

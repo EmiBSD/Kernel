@@ -902,6 +902,9 @@ pub fn test_uiomove_out<G: crate::proc::ProcGlue>(
             continue;
         }
         let cnt = iov.iov_len.min(buf.len() - done);
+        if uiomove_fault_now() {
+            return Err(hal::sys::errno::Errno::EFAULT);
+        }
         let addr = iov.iov_base.addr();
         if uio.uio_segflg == UioSeg::UIO_USERSPACE {
             hal::user::UserPtr::<u8>::new(addr).copyout_slice(&buf[done..done + cnt])?;
@@ -939,6 +942,9 @@ pub fn test_uiomove<G: crate::proc::ProcGlue>(
             continue;
         }
         let cnt = iov.iov_len.min(buf.len() - done);
+        if uiomove_fault_now() {
+            return Err(hal::sys::errno::Errno::EFAULT);
+        }
         if uio.uio_segflg == UioSeg::UIO_USERSPACE {
             let addr = iov.iov_base.addr();
             if uio.uio_rw == UioRw::UIO_READ {
@@ -1404,6 +1410,7 @@ std::thread_local! {
     static UNVEIL_FINAL: Cell<Option<hal::sys::errno::Errno>> = const { Cell::new(None) };
     static UNVEIL_FINAL_MATCH: Cell<Option<u32>> = const { Cell::new(None) };
     static COPY_KERNEL: Cell<bool> = const { Cell::new(false) };
+    static UIOMOVE_FAULT: Cell<Option<usize>> = const { Cell::new(None) };
 }
 
 /// What the test proc glues' `pledge_namei` answers on this thread from now on (`None`:
@@ -1537,6 +1544,29 @@ pub fn unveil_final_at(m: UnveilCount) {
 /// The match this thread's last `unveil_check_final` saw (taken).
 pub fn unveil_final_match() -> Option<UnveilCount> {
     UNVEIL_FINAL_MATCH.with(Cell::take)
+}
+
+/// Makes the `n`th iovec leg the test glues' `uiomove` and `uiomove_out` move on this thread
+/// from now on (0 the next one) fault: `EFAULT` with that iovec untouched and the earlier legs
+/// moved, as `uiomove(9)` answers a user page that is not mapped (nfs's tests of the C's
+/// ignored copy errors, N6.7a0); `None` (the default, and after the fault) faults none.
+pub fn set_uiomove_fault(n: Option<usize>) {
+    UIOMOVE_FAULT.with(|c| c.set(n));
+}
+
+/// Whether the leg about to be moved faults ([`set_uiomove_fault`]); counts it down.
+fn uiomove_fault_now() -> bool {
+    UIOMOVE_FAULT.with(|c| match c.get() {
+        Some(0) => {
+            c.set(None);
+            true
+        }
+        Some(n) => {
+            c.set(Some(n - 1));
+            false
+        }
+        None => false,
+    })
 }
 
 /// hal's kcopy token, taken by the first [`set_copy_kernel`] of a test process that has no

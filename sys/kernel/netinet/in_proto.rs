@@ -121,8 +121,9 @@
 //! LZ: sys/netinet/in_proto.rs@3c62ede68802
 //!
 //! ## Deviations
-//! - The table's entries are the kernel's IP, TCP, ICMP and IGMP ([`IpProtocol`],
-//!   [`TcpProtocol`] since N6.6a5, [`IcmpProtocol`], [`IgmpProtocol`]) and `bsd`'s other
+//! - The table's entries are the kernel's IP, UDP, TCP, ICMP and IGMP ([`IpProtocol`],
+//!   [`UdpProtocol`] since N6.6b0, [`TcpProtocol`] since N6.6a5, [`IcmpProtocol`],
+//!   [`IgmpProtocol`]) and `bsd`'s other
 //!   transports and IPsec (`bsd`'s `inetsw[]` rows through the `Protocol` bridge impl) in the
 //!   C's order; `bsd` assembles the slice and records it ([`inetsw_set`],
 //!   `sys/kern/uipc_domain.rs`), until the transports move (N6.6b, N8).
@@ -162,9 +163,10 @@ use hal::netlock::NetHeld;
 use hal::once::OnceStatic;
 use hal::sys::errno::Errno;
 use hal::sys::netinet_in::{
-    IPPROTO_DONE, IPPROTO_ICMP, IPPROTO_IGMP, IPPROTO_MAX, IPPROTO_RAW, IPPROTO_TCP, SockaddrIn,
+    IPPROTO_DONE, IPPROTO_ICMP, IPPROTO_IGMP, IPPROTO_MAX, IPPROTO_RAW, IPPROTO_TCP, IPPROTO_UDP,
+    SockaddrIn,
 };
-use hal::sys::socket::{AF_INET, PF_INET, SOCK_RAW, SOCK_STREAM};
+use hal::sys::socket::{AF_INET, PF_INET, SOCK_DGRAM, SOCK_RAW, SOCK_STREAM};
 
 use crate::assert::kpanic;
 use crate::net::domain::{Domain, net};
@@ -179,6 +181,9 @@ use crate::netinet::tcp_input::tcp_input;
 use crate::netinet::tcp_subr::{tcp_ctlinput, tcp_init};
 use crate::netinet::tcp_timer::tcp_slowtimo;
 use crate::netinet::tcp_usrreq::{TcpUsrreqs, tcp_ctloutput, tcp_sysctl};
+use crate::netinet::udp_usrreq::{
+    UdpUsrreqs, udp_ctlinput, udp_ctloutput, udp_init, udp_input, udp_sysctl,
+};
 use crate::proc::ProcGlue;
 use crate::sysctl::SysctlReq;
 
@@ -441,6 +446,78 @@ impl<G: ProcGlue> Protocol<G> for TcpProtocol<G> {
     }
     fn slowtimo(&self) {
         tcp_slowtimo();
+    }
+}
+
+/// `inetsw[]`'s UDP entry: `udp_input`, `udp_ctlinput`, `ip_ctloutput`, `udp_usrreqs`,
+/// `udp_init`, `udp_sysctl` (N6.6b0; `bsd`'s row until then).
+pub struct UdpProtocol<G: ProcGlue>(PhantomData<fn() -> G>);
+
+impl<G: ProcGlue> UdpProtocol<G> {
+    /// The entry.
+    pub const NEW: Self = Self(PhantomData);
+}
+
+impl<G: ProcGlue> Protocol<G> for UdpProtocol<G> {
+    fn domain(&self) -> &'static dyn Domain<G> {
+        inetdomain::<G>()
+    }
+    fn ty(&self) -> i16 {
+        SOCK_DGRAM as i16
+    }
+    fn protocol(&self) -> i16 {
+        IPPROTO_UDP as i16
+    }
+    fn flags(&self) -> i16 {
+        PR_ATOMIC | PR_ADDR | PR_SPLICE | PR_MPINPUT | PR_MPSYSCTL
+    }
+    fn usrreqs(&self) -> Option<&'static dyn Usrreqs<G>> {
+        Some(&UdpUsrreqs::<G>::INET)
+    }
+    fn ctlinput(
+        &self,
+        cmd: i32,
+        sa: SockaddrView<'_>,
+        rdomain: u32,
+        arg: CtlArg<'_>,
+        net: &NetHeld<'_>,
+    ) {
+        udp_ctlinput::<G>(cmd, sa, rdomain, arg, net);
+    }
+    fn input(
+        &self,
+        mp: &mut Option<MbufBox>,
+        offp: &mut i32,
+        proto: i32,
+        af: i32,
+        ns: Option<&mut Netstack>,
+        net: &NetHeld<'_>,
+    ) -> i32 {
+        udp_input::<G>(mp, offp, proto, af, ns, net)
+    }
+    fn has_ctloutput(&self) -> bool {
+        true
+    }
+    /// `ip_ctloutput`.
+    fn ctloutput(
+        &self,
+        op: i32,
+        so: &Socket<G>,
+        w: &mut SoLocked<'_>,
+        level: i32,
+        optname: i32,
+        m: Option<&mut Mbuf>,
+    ) -> Result<(), Errno> {
+        udp_ctloutput(op, so, w, level, optname, m)
+    }
+    fn has_sysctl(&self) -> bool {
+        true
+    }
+    fn sysctl(&self, name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+        udp_sysctl(name, req)
+    }
+    fn init(&self) {
+        udp_init::<G>();
     }
 }
 

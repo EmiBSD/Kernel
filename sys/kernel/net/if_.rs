@@ -430,10 +430,6 @@ pub trait Inet: Sync + 'static {
     /// `bsd`'s until crypto moves at N8: its generator, `ip6_output.c`'s `ip6_id_ctx`), for
     /// the kernel's `ip6_fragment` (N6.5c).
     fn ip6_randomid(&self) -> u32;
-    /// `udpstat_inc(udps_outswcsum)`: a UDP checksum computed in software on output
-    /// (`in_proto_cksum_out`, `in6_proto_cksum_out`; N6.4a, TCP's half the kernel's own since
-    /// N6.6a1, UDP's until UDP moves at N6.6b). Default: nothing.
-    fn udpstat_outswcsum(&self) {}
     /// `NET_ASSERT_LOCKED()` of a protocol input entered without a softnet stack and without
     /// the proof of the caller's holding (`ether_resolve`'s broadcast copy, reached through a
     /// driver's output, which carries none): `f` run with a proof `bsd` is lent for the call

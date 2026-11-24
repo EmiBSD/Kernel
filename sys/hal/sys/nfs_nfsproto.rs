@@ -54,17 +54,16 @@
 //! `<nfs/nfsproto.h>`: constants and wire structures of the Sun NFS version 2 and 3
 //! protocols ("NFS: Network File System Protocol Specification", RFC 1094, and "NFS: Network
 //! File System Version 3 Protocol Specification"): status numbers, `NFSX_*` sizes, procedure
-//! numbers, the file handle, times, attributes and the file system information replies.
+//! numbers, the file handle, times, attributes and the file system information replies. An
+//! installed header (`/usr/include/nfs/nfsproto.h`), so its image is `hal`'s (N6.7a0, D-10).
 //!
 //! Upstream: sys/nfs/nfsproto.h @ 3ce1f3f79392
+//! LZ: sys/nfs/nfsproto.rs@3c62ede68802
 //!
 //! The wire structures are `#[repr(C)]` structures of raw XDR words (network byte order, as
-//! they lie in the mbufs); `fxdr_unsigned`/`txdr_unsigned` (`xdr_subs.rs`) convert one word.
-//! They are plain data ([`AbiPod`]), so `nfsm_dissect`'s view copies them out of a reply
-//! ([`XdrIn::read`]) and `nfsm_build`'s view copies them in ([`XdrOut::write`]).
-//!
-//! [`XdrIn::read`]: crate::nfs::nfsm_subs::XdrIn::read
-//! [`XdrOut::write`]: crate::nfs::nfsm_subs::XdrOut::write
+//! they lie in the mbufs); `fxdr_unsigned`/`txdr_unsigned` (`kernel::fs::nfs::xdr_subs`)
+//! convert one word. They are plain data, so a reply's reader copies them out and a request's
+//! writer copies them in (`kernel::fs::nfs::nfsm_subs`).
 //!
 //! ## Deviations
 //! - The unions of the attribute and statfs replies (`fa_un`, `sf_un`) are arrays of raw
@@ -79,16 +78,21 @@
 //!   Status numbers (`NFS_OK`, `NFSERR_*`) are `i32`, the C's `int error` and `nd_repstat`
 //!   that hold them; the flag bits `NFSERR_RETVOID`/`NFSERR_AUTHERR`/`NFSERR_RETERR` too.
 //!   Other protocol values are `u32` words.
-//! - The conversion macros (`vtonfsv2_mode`, `nfsv3tov_type`, ...) are functions over the
-//!   tables of `nfs_subs.rs`, where the C defines them.
+//! - `NFS_MAXDATA` is `<sys/param.h>`'s `MAXBSIZE` (64 KiB) written out: `hal::sys` has no
+//!   `param.h` constant of that name; the reference test checks the C's definition.
+//!
+//! ## Redesign
+//! - LZ's `bsd` module `sys/nfs/nfsproto.rs` -> `hal::sys::nfs_nfsproto`: the kernel's nfs
+//!   client and `bsd`'s server name one copy; `bsd`'s `nfs::nfsproto` is the kernel's
+//!   `kernel::fs::nfs::nfsproto`, which re-exports this module.
+//! - LZ's eleven hand-written `unsafe impl AbiPod` -> [`crate::abi_pod!`], which proves at
+//!   compile time that each structure's listed members tile it; `Nfsfh`'s `fhandle_t` member
+//!   is read and written through [`crate::user::pod_from_bytes`]/[`crate::user::pod_to_bytes`]
+//!   (LZ: `xdr_subs`'s raw byte views).
+//! - The conversion macros (`vtonfsv2_mode`, `nfsv3tov_type`, ...) need the vnode types and
+//!   the tables of `nfs_subs.c`: they are the kernel's (`kernel::fs::nfs::nfsproto`).
 
-use crate::machine::copy::AbiPod;
-use crate::nfs::nfs_subs::{NFSV2_TYPE, NFSV3_TYPE, NV2TOV_TYPE, NV3TOV_TYPE};
-use crate::nfs::xdr_subs::{fxdr_unsigned, txdr_unsigned};
 use crate::sys::mount::Fhandle;
-use crate::sys::param::MAXBSIZE;
-use crate::sys::types::Mode;
-use crate::sys::vnode::{VCHR, VFIFO, Vtype, makeimode};
 
 /// `NFS_PORT`.
 pub const NFS_PORT: u16 = 2049;
@@ -105,7 +109,7 @@ pub const NFS_V2MAXDATA: usize = 8192;
 /// `NFS_MAXDGRAMDATA`.
 pub const NFS_MAXDGRAMDATA: usize = 32768;
 /// `NFS_MAXDATA`.
-pub const NFS_MAXDATA: usize = MAXBSIZE;
+pub const NFS_MAXDATA: usize = 64 * 1024;
 /// `NFS_MAXPATHLEN`.
 pub const NFS_MAXPATHLEN: usize = 1024;
 /// `NFS_MAXNAMLEN`.
@@ -488,12 +492,14 @@ impl Nfsfh {
 
     /// `fh_generic`: the `fhandle_t` member (a copy).
     pub fn fh_generic(&self) -> Fhandle {
-        crate::nfs::xdr_subs::xdr_get(&self.fh_bytes)
+        // `fhandle_t` fits in the 64 bytes (the size check below), so this never falls back.
+        crate::user::pod_from_bytes(&self.fh_bytes).unwrap_or_else(crate::user::zeroed)
     }
 
     /// Stores `fh` as the `fh_generic` member.
     pub fn set_fh_generic(&mut self, fh: &Fhandle) {
-        self.fh_bytes[..NFSX_V3FH].copy_from_slice(crate::nfs::xdr_subs::xdr_bytes(fh));
+        // Always room: `NFSX_V3FH <= NFS_MAXFHSIZE` (the size check below).
+        let _ = crate::user::pod_to_bytes(fh, &mut self.fh_bytes);
     }
 }
 
@@ -759,69 +765,70 @@ pub struct Nfsv3Pathconf {
     pub pc_casepreserving: u32,
 }
 
-// SAFETY: 64 `u8`s with the alignment raised to 4, which adds no bytes (checked below): every
-// byte is initialised and every bit pattern is a valid value.
-unsafe impl AbiPod for Nfsfh {}
-// SAFETY: this and the impls below are `#[repr(C)]` structures of `u32` words with no padding:
-// every byte is initialised and every bit pattern is a valid value.
-unsafe impl AbiPod for Nfsv2Time {}
-// SAFETY: as above.
-unsafe impl AbiPod for Nfsv3Time {}
-// SAFETY: as above.
-unsafe impl AbiPod for Nfsv3Spec {}
-// SAFETY: as above.
-unsafe impl AbiPod for Nfsuint64 {}
-// SAFETY: as above.
-unsafe impl AbiPod for NfsFattr {}
-// SAFETY: as above.
-unsafe impl AbiPod for Nfsv2Sattr {}
-// SAFETY: as above.
-unsafe impl AbiPod for Nfsv3Sattr {}
-// SAFETY: as above.
-unsafe impl AbiPod for NfsStatfs {}
-// SAFETY: as above.
-unsafe impl AbiPod for Nfsv3Fsinfo {}
-// SAFETY: as above.
-unsafe impl AbiPod for Nfsv3Pathconf {}
-
-/// `vtonfsv2_mode(t, m)`.
-pub fn vtonfsv2_mode(t: Vtype, m: Mode) -> u32 {
-    txdr_unsigned(if t == VFIFO {
-        makeimode(VCHR, m)
-    } else {
-        makeimode(t, m)
-    })
-}
-
-/// `vtonfsv3_mode(m)`.
-pub const fn vtonfsv3_mode(m: Mode) -> u32 {
-    txdr_unsigned(m & 0o7777)
-}
-
-/// `nfstov_mode(a)`.
-pub const fn nfstov_mode(a: u32) -> Mode {
-    fxdr_unsigned(a) & 0o7777
-}
-
-/// `vtonfsv2_type(a)`.
-pub const fn vtonfsv2_type(a: Vtype) -> u32 {
-    txdr_unsigned(NFSV2_TYPE[a as usize] as u32)
-}
-
-/// `vtonfsv3_type(a)`.
-pub const fn vtonfsv3_type(a: Vtype) -> u32 {
-    txdr_unsigned(NFSV3_TYPE[a as usize] as u32)
-}
-
-/// `nfsv2tov_type(a)`.
-pub const fn nfsv2tov_type(a: u32) -> Vtype {
-    NV2TOV_TYPE[(fxdr_unsigned(a) & 0x7) as usize]
-}
-
-/// `nfsv3tov_type(a)`.
-pub const fn nfsv3tov_type(a: u32) -> Vtype {
-    NV3TOV_TYPE[(fxdr_unsigned(a) & 0x7) as usize]
-}
+crate::abi_pod!(Nfsfh {
+    fh_bytes: [u8; NFS_MAXFHSIZE],
+});
+crate::abi_pod!(Nfsv2Time {
+    nfsv2_sec: u32,
+    nfsv2_usec: u32,
+});
+crate::abi_pod!(Nfsv3Time {
+    nfsv3_sec: u32,
+    nfsv3_nsec: u32,
+});
+crate::abi_pod!(Nfsv3Spec {
+    specdata1: u32,
+    specdata2: u32,
+});
+crate::abi_pod!(Nfsuint64 { nfsuquad: [u32; 2] });
+crate::abi_pod!(NfsFattr {
+    fa_type: u32,
+    fa_mode: u32,
+    fa_nlink: u32,
+    fa_uid: u32,
+    fa_gid: u32,
+    fa_un: [u32; 16],
+});
+crate::abi_pod!(Nfsv2Sattr {
+    sa_mode: u32,
+    sa_uid: u32,
+    sa_gid: u32,
+    sa_size: u32,
+    sa_atime: Nfsv2Time,
+    sa_mtime: Nfsv2Time,
+});
+crate::abi_pod!(Nfsv3Sattr {
+    sa_modetrue: u32,
+    sa_mode: u32,
+    sa_uidfalse: u32,
+    sa_gidfalse: u32,
+    sa_sizefalse: u32,
+    sa_atimetype: u32,
+    sa_atime: Nfsv3Time,
+    sa_mtimetype: u32,
+    sa_mtime: Nfsv3Time,
+});
+crate::abi_pod!(NfsStatfs { sf_un: [u32; 13] });
+crate::abi_pod!(Nfsv3Fsinfo {
+    fs_rtmax: u32,
+    fs_rtpref: u32,
+    fs_rtmult: u32,
+    fs_wtmax: u32,
+    fs_wtpref: u32,
+    fs_wtmult: u32,
+    fs_dtpref: u32,
+    fs_maxfilesize: Nfsuint64,
+    fs_timedelta: Nfsv3Time,
+    fs_properties: u32,
+});
+crate::abi_pod!(Nfsv3Pathconf {
+    pc_linkmax: u32,
+    pc_namemax: u32,
+    pc_notrunc: u32,
+    pc_chownrestricted: u32,
+    pc_caseinsensitive: u32,
+    pc_casepreserving: u32,
+});
 
 const _: () = {
     assert!(size_of::<Nfsfh>() == NFS_MAXFHSIZE);
@@ -842,13 +849,12 @@ const _: () = {
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
-    // Host tests for `<nfs/nfsproto.h>`: the union accessors, the type conversions and, against
+    // Host tests for `<nfs/nfsproto.h>`: the union accessors, the file handle and, against
     // the C header, the constants.
 
     use std::string::String;
 
     use super::*;
-    use crate::sys::vnode::{VBLK, VDIR, VLNK, VNON, VREG, VSOCK};
 
     #[test]
     fn union_accessors_name_the_c_words() {
@@ -879,22 +885,6 @@ mod tests {
         assert_eq!(fh.fh_generic(), g);
         assert_eq!(fh.fh_bytes[0..4], 1i32.to_ne_bytes());
         assert!(fh.fh_bytes[NFSX_V3FH..].iter().all(|&b| b == 0));
-    }
-
-    #[test]
-    fn type_and_mode_conversions() {
-        assert_eq!(nfsv3tov_type(txdr_unsigned(NFFIFO as u32)), VFIFO);
-        assert_eq!(nfsv2tov_type(txdr_unsigned(NFSOCK as u32)), VNON);
-        assert_eq!(nfsv3tov_type(txdr_unsigned(NFSOCK as u32)), VSOCK);
-        assert_eq!(nfsv3tov_type(txdr_unsigned(8 | NFDIR as u32)), VDIR);
-        assert_eq!(fxdr_unsigned(vtonfsv3_type(VLNK)), NFLNK as u32);
-        assert_eq!(fxdr_unsigned(vtonfsv2_type(VFIFO)), NFCHR as u32);
-        assert_eq!(fxdr_unsigned(vtonfsv2_type(VREG)), NFREG as u32);
-        assert_eq!(fxdr_unsigned(vtonfsv3_type(VBLK)), NFBLK as u32);
-        assert_eq!(fxdr_unsigned(vtonfsv2_mode(VFIFO, 0o644)), 0o020644);
-        assert_eq!(fxdr_unsigned(vtonfsv2_mode(VDIR, 0o755)), 0o040755);
-        assert_eq!(fxdr_unsigned(vtonfsv3_mode(0o104755)), 0o4755);
-        assert_eq!(nfstov_mode(txdr_unsigned(0o100644)), 0o644);
     }
 
     #[test]

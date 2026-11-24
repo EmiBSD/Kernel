@@ -80,9 +80,7 @@
 //!   goes to the real console.
 //! - The `struct tty *tp` of `kprintf`/`kputchar` is an `Option<&Tty>`; `kprintf` keeps its
 //!   three arguments and [`kprintf_tp`] is the form with the tty. `tprintf_open`,
-//!   `tprintf_close` and `tprintf` (`NFSSERVER || NFSCLIENT`) are compiled with feature
-//!   `nfsclient` or `nfsserver`; the handle `tpr_t` is [`Tpr`], an `Option` of a session
-//!   reference (`sys/sys/tprintf.rs`), and `tprintf` takes `fmt::Arguments`.
+//!   `tprintf_close` and `tprintf` are the kernel's (`kernel::prf`, N6.7a0).
 //! - `panicstr` is behind [`panicstr`] (a flag); the first message is kept in a single
 //!   `panicbuf`, per CPU from M5 (`ci_panicbuf`).
 //! - `db_panic` defaults to 0: a panic prints the stack trace and reboots, as OpenBSD does with
@@ -104,23 +102,15 @@ use crate::dev::cons::{cnputc, constty, set_constty};
 use crate::kern::init_main::DB_ACTIVE;
 use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 use crate::kern::kern_xxx::reboot;
-#[cfg(any(feature = "nfsclient", feature = "nfsserver"))]
 use crate::kern::proc_glue::session_of;
 use crate::kern::subr_log::{Buf, log_open, logwakeup, msgbuf_putchar, msgbufmapped};
 use crate::kern::tty::tputchar;
-#[cfg(any(feature = "nfsclient", feature = "nfsserver"))]
-use crate::kern::tty::ttycheckoutq;
 use crate::machine::db_machdep::db_enter;
 use crate::machine::intr::{IPL_HIGH, splhigh, splx};
 use crate::sys::mutex::{Mutex, mutex_assert_locked};
 use crate::sys::proc::PS_CONTROLT;
-use crate::sys::proc::Proc;
 use crate::sys::reboot::{RB_AUTOBOOT, RB_DUMP, RB_NOSYNC};
 use crate::sys::syslog::LOG_ERR;
-#[cfg(any(feature = "nfsclient", feature = "nfsserver"))]
-use crate::sys::syslog::LOG_INFO;
-#[cfg(any(feature = "nfsclient", feature = "nfsserver"))]
-use crate::sys::tprintf::Tpr;
 use crate::sys::tty::Tty;
 
 // flags for kprintf
@@ -506,58 +496,6 @@ pub fn uprintf(args: fmt::Arguments<'_>) {
     }
 }
 
-// tprintf functions: used to send messages to a specific process
-//
-// usage:
-//   get a tpr_t handle on a process "p" by using "tprintf_open(p)"
-//   use the handle when calling "tprintf"
-//   when done, do a "tprintf_close" to drop the handle
-
-/// `tprintf_open`: get a tprintf handle on a process `p` (XXX change s/proc/process).
-///
-/// `None` if the process can't be printed to.
-#[cfg(any(feature = "nfsclient", feature = "nfsserver"))]
-pub fn tprintf_open(p: &Proc) -> Tpr {
-    let pr = p.process();
-
-    // The session, counted (SESSHOLD) until `tprintf_close`.
-    let sess = session_of(pr)?;
-    if pr.ps_flags.load(Ordering::Relaxed) & PS_CONTROLT != 0 && sess.ttyvp.get().is_some() {
-        return Some(sess);
-    }
-    None
-}
-
-/// `tprintf_close`: dispose of a tprintf handle obtained with `tprintf_open`.
-#[cfg(any(feature = "nfsclient", feature = "nfsserver"))]
-pub fn tprintf_close(sess: Tpr) {
-    // SESSRELE: the handle's reference goes.
-    drop(sess);
-}
-
-/// `tprintf`: given a tprintf handle to a process (obtained with `tprintf_open`), send a
-/// message to the controlling tty for that process; also sends the message to /dev/klog.
-#[cfg(any(feature = "nfsclient", feature = "nfsserver"))]
-pub fn tprintf(tpr: &Tpr, args: fmt::Arguments<'_>) {
-    let mut tp = None;
-    let mut flags = TOLOG;
-
-    logpri(LOG_INFO);
-    if let Some(sess) = tpr
-        && sess.ttyvp.get().is_some()
-    {
-        let t = kernel::tty::session_tty(sess);
-        if let Some(t) = t
-            && ttycheckoutq(&t, false)
-        {
-            flags |= TOTTY;
-            tp = Some(t);
-        }
-    }
-    kprintf_tp(args, flags, tp.as_deref(), None);
-    logwakeup();
-}
-
 /// `ttyprintf`: send a message to a specific tty.
 ///
 /// Should be used only by tty driver or anything that knows the underlying tty will not be
@@ -878,6 +816,7 @@ mod tests {
         use crate::kern::proc_glue::{procinit, test_process, test_setsid, test_thread};
         use crate::sys::proc::SessionRef;
         use crate::sys::vnode::Vnode;
+        use kernel::prf::{tprintf, tprintf_close, tprintf_open};
         use kernel::proc::StaticOrPooled;
         use std::boxed::Box;
 
@@ -901,7 +840,7 @@ mod tests {
         crate::sys::systm::kernel_lock();
         // No controlling terminal: no handle, and closing none is fine.
         assert!(tprintf_open(p).is_none());
-        tprintf_close(None);
+        tprintf_close::<crate::kern::proc_glue::BsdProcGlue>(None);
         // The flag without a controlling vnode is no terminal either.
         pr.ps_flags.fetch_or(PS_CONTROLT, Ordering::Relaxed);
         assert!(tprintf_open(p).is_none());
@@ -931,7 +870,7 @@ mod tests {
         }
         assert_eq!(text, b"<6>nfs server not responding");
         // Without a handle the message still goes to the log.
-        tprintf(&None, format_args!("x"));
+        tprintf::<crate::kern::proc_glue::BsdProcGlue>(&None, format_args!("x"));
         crate::sys::systm::kernel_unlock();
 
         tprintf_close(handle);

@@ -164,7 +164,6 @@ use crate::netinet::in_pcb::{
 };
 use crate::netinet::ip_divert::DIVBTABLE;
 use crate::netinet::raw_ip::RAWCBTABLE;
-use crate::netinet::udp_usrreq::UDBTABLE;
 use crate::sys::disk::{DS_DISKNAMELEN, Disk, Diskstats};
 use crate::sys::errno::Errno;
 use crate::sys::fcntl::{FREAD, FWRITE};
@@ -188,10 +187,7 @@ use crate::sys::un::SockaddrUn;
 use crate::sys::vnode::{Vattr, Vnode, makeimode};
 use crate::unported;
 #[cfg(feature = "inet6")]
-use crate::{
-    netinet::udp_usrreq::UDB6TABLE, netinet6::ip6_divert::DIVB6TABLE,
-    netinet6::raw_ip6::RAWIN6PCBTABLE,
-};
+use crate::{netinet6::ip6_divert::DIVB6TABLE, netinet6::raw_ip6::RAWIN6PCBTABLE};
 use hal::klock;
 use hal::user::UserPtr;
 use kernel::sysctl::{RdString, SysctlNode, SysctlReq};
@@ -1150,9 +1146,9 @@ pub fn sysctl_file(name: &[i32], where_: usize, sizep: &mut usize, p: &Proc) -> 
                 w.fillinptable(kernel::netinet::tcp_usrreq::tcbtable::<BsdProcGlue>())?;
                 #[cfg(feature = "inet6")]
                 w.fillinptable(kernel::netinet::tcp_usrreq::tcb6table::<BsdProcGlue>())?;
-                w.fillinptable(&UDBTABLE)?;
+                w.fillinptable(kernel::netinet::udp_usrreq::udbtable::<BsdProcGlue>())?;
                 #[cfg(feature = "inet6")]
-                w.fillinptable(&UDB6TABLE)?;
+                w.fillinptable(kernel::netinet::udp_usrreq::udb6table::<BsdProcGlue>())?;
                 w.fillinptable(&RAWCBTABLE)?;
                 #[cfg(feature = "inet6")]
                 w.fillinptable(&RAWIN6PCBTABLE)?;

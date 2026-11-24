@@ -71,10 +71,10 @@
 //!   `NFS_INITRTT` depend on `hz` and `nfs_ticks`, so they are functions ([`nfs_hz`], ...).
 //!   `NFS_CMPFH`, `NFS_ISV3`, `NFS_SRVMAXDATA`, `NFSIGNORE_SOERROR` are functions with
 //!   lowercase names; `nfs_cmpfh` compares against the node's `n_fh` (`nfsnode.rs`).
-//! - `struct nfsstats` is ABI (`fs.nfs.nfsstats`): `#[repr(C)]` with `AtomicU64` members
-//!   (the C bumps them racily from everywhere, the `uvmexp` idiom); [`Nfsstats::snapshot`]
-//!   reads them into the plain words `sysctl` copies out. The instance is `nfs_subs.rs`'s
-//!   `NFSSTATS`, where the C defines it.
+//! - `struct nfsstats` and the constants userland reads (the tunables, the `nfssvc(2)` flags,
+//!   the `vfs.nfs` identifiers) are `hal::sys::nfs_nfs`'s image, re-exported here; the
+//!   counters are the kernel's (`kernel::fs::nfs::nfs::NfsCounters`, the instance
+//!   `nfs_subs.rs`'s `NFSSTATS`, N6.7a0).
 //! - `struct nfsd_args` and `struct nfsd_srvargs` (the `nfssvc(2)` ABI) name the holes the
 //!   C compiler leaves on LP64 (`_pad*`); user addresses (`name`, `nsd_authstr`,
 //!   `nsd_verfstr`) and the kernel's `nsd_nfsd` cookie are `usize`.
@@ -94,14 +94,14 @@
 
 use core::cell::Cell;
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicI32, Ordering};
 
 use crate::conf::param::HZ;
 use crate::kern::subr_prf::panic;
 use crate::nfs::nfs_subs::NFS_TICKS;
 use crate::nfs::nfsmount::VFSTONFS;
 use crate::nfs::nfsnode::NfsNode;
-use crate::nfs::nfsproto::{NFS_MAXDATA, NFS_MAXDGRAMDATA, NFS_NPROCS, NFS_V2MAXDATA};
+use crate::nfs::nfsproto::{NFS_MAXDATA, NFS_MAXDGRAMDATA, NFS_V2MAXDATA};
 use crate::queue_adapter;
 use crate::sys::buf::B_INVAL;
 use crate::sys::errno::Errno;
@@ -114,68 +114,21 @@ use crate::sys::protosw::PR_CONNREQUIRED;
 use crate::sys::queue::{TailqEntry, TailqHead};
 use crate::sys::signal::{SIGHUP, SIGINT, SIGKILL, SIGQUIT, SIGTERM, Sigset, sigmask};
 use crate::sys::socketvar::Socket;
-use crate::sys::sysctl::{CTLTYPE_INT, CTLTYPE_STRUCT, Ctlname};
 use crate::sys::time::Timeval;
 use crate::sys::types::Uid;
 use crate::sys::ucred::{UcredCell, Xucred};
 use crate::sys::vnode::Vnode;
 
-/// `NFS_TICKINTVL`: desired time for a tick (msec).
-pub const NFS_TICKINTVL: i32 = 5;
-/// `NFS_TIMEOUTMUL`: timeout/delay multiplier.
-pub const NFS_TIMEOUTMUL: i32 = 2;
-/// `NFS_MAXREXMIT`: stop counting after this many.
-pub const NFS_MAXREXMIT: i32 = 100;
-/// `NFS_RETRANS`: num of retrans for soft mounts.
-pub const NFS_RETRANS: i32 = 10;
-/// `NFS_MAXGRPS`: max. size of groups list.
-pub const NFS_MAXGRPS: i32 = 16;
-/// `NFS_MINATTRTIMO`: attribute cache timeout in sec.
-pub const NFS_MINATTRTIMO: i32 = 5;
-/// `NFS_MAXATTRTIMO`.
-pub const NFS_MAXATTRTIMO: i32 = 60;
-/// `NFS_WSIZE`: def. write data size <= 8192.
-pub const NFS_WSIZE: i32 = 8192;
-/// `NFS_RSIZE`: def. read data size <= 8192.
-pub const NFS_RSIZE: i32 = 8192;
-/// `NFS_READDIRSIZE`: def. readdir size.
-pub const NFS_READDIRSIZE: i32 = 8192;
-/// `NFS_DEFRAHEAD`: def. read ahead # blocks.
-pub const NFS_DEFRAHEAD: i32 = 1;
-/// `NFS_MAXRAHEAD`: max. read ahead # blocks.
-pub const NFS_MAXRAHEAD: i32 = 4;
-/// `NFS_MAXASYNCDAEMON`: max. number async_daemons runable.
-pub const NFS_MAXASYNCDAEMON: i32 = 20;
-
-/// `NFS_DIRBLKSIZ`: must be a multiple of `DIRBLKSIZ`. Ideally it should be bigger, but I've
-/// seen servers with broken NFS/ethernet drivers that won't work with anything bigger
-/// (Linux..).
-pub const NFS_DIRBLKSIZ: i32 = 1024;
-/// `NFS_READDIRBLKSIZ`: size of read dir blocks. XXX
-pub const NFS_READDIRBLKSIZ: i32 = 512;
+pub use hal::sys::nfs_nfs::{
+    FS_NFS_NAMES, NFS_DEFRAHEAD, NFS_DIRBLKSIZ, NFS_MAXASYNCDAEMON, NFS_MAXATTRTIMO, NFS_MAXGRPS,
+    NFS_MAXID, NFS_MAXRAHEAD, NFS_MAXREXMIT, NFS_MINATTRTIMO, NFS_NFSSTATS, NFS_NIOTHREADS,
+    NFS_READDIRBLKSIZ, NFS_READDIRSIZE, NFS_RETRANS, NFS_RSIZE, NFS_TICKINTVL, NFS_TIMEOUTMUL,
+    NFS_WSIZE, NFSSVC_ADDSOCK, NFSSVC_NFSD, Nfsstats,
+};
 
 /// `B_INVAFTERWRITE`: whatever is required by the buffer cache code to say "invalidate the
 /// block after it is written back".
 pub const B_INVAFTERWRITE: i64 = B_INVAL;
-
-/// `NFSSVC_NFSD`: flags for the `nfssvc()` system call.
-pub const NFSSVC_NFSD: i32 = 0x004;
-/// `NFSSVC_ADDSOCK`.
-pub const NFSSVC_ADDSOCK: i32 = 0x008;
-
-/// `NFS_NFSSTATS`: `fs.nfs` sysctl(3) identifiers; struct: `struct nfsstats`.
-pub const NFS_NFSSTATS: i32 = 1;
-/// `NFS_NIOTHREADS`: number of i/o threads.
-pub const NFS_NIOTHREADS: i32 = 2;
-/// `NFS_MAXID`.
-pub const NFS_MAXID: i32 = 3;
-
-/// `FS_NFS_NAMES`.
-pub const FS_NFS_NAMES: [Ctlname; NFS_MAXID as usize] = [
-    Ctlname::NONE,
-    Ctlname::new(b"nfsstats", CTLTYPE_STRUCT),
-    Ctlname::new(b"iothreads", CTLTYPE_INT),
-];
 
 /// `NFSINT_SIGMASK`: the set of signals that interrupt an I/O in progress for `NFSMNT_INT`
 /// mounts. What should be in this set is open to debate, but I believe that since I/O system
@@ -292,154 +245,6 @@ pub struct NfsdSrvargs {
 impl NfsdSrvargs {
     /// `sizeof(struct nfsd_srvargs)` on LP64.
     pub const SIZE: usize = size_of::<NfsdSrvargs>();
-}
-
-/// `struct nfsstats`: stats structure, the `fs.nfs.nfsstats` sysctl(3) ABI.
-#[repr(C)]
-pub struct Nfsstats {
-    /// `attrcache_hits`.
-    pub attrcache_hits: AtomicU64,
-    /// `attrcache_misses`.
-    pub attrcache_misses: AtomicU64,
-    /// `lookupcache_hits`.
-    pub lookupcache_hits: AtomicU64,
-    /// `lookupcache_misses`.
-    pub lookupcache_misses: AtomicU64,
-    /// `direofcache_hits`.
-    pub direofcache_hits: AtomicU64,
-    /// `direofcache_misses`.
-    pub direofcache_misses: AtomicU64,
-    /// `biocache_reads`.
-    pub biocache_reads: AtomicU64,
-    /// `read_bios`.
-    pub read_bios: AtomicU64,
-    /// `read_physios`.
-    pub read_physios: AtomicU64,
-    /// `biocache_writes`.
-    pub biocache_writes: AtomicU64,
-    /// `write_bios`.
-    pub write_bios: AtomicU64,
-    /// `write_physios`.
-    pub write_physios: AtomicU64,
-    /// `biocache_readlinks`.
-    pub biocache_readlinks: AtomicU64,
-    /// `readlink_bios`.
-    pub readlink_bios: AtomicU64,
-    /// `biocache_readdirs`.
-    pub biocache_readdirs: AtomicU64,
-    /// `readdir_bios`.
-    pub readdir_bios: AtomicU64,
-    /// `rpccnt`: client RPCs by procedure.
-    pub rpccnt: [AtomicU64; NFS_NPROCS],
-    /// `rpcretries`.
-    pub rpcretries: AtomicU64,
-    /// `srvrpccnt`: server RPCs by procedure.
-    pub srvrpccnt: [AtomicU64; NFS_NPROCS],
-    /// `srvrpc_errs`.
-    pub srvrpc_errs: AtomicU64,
-    /// `srv_errs`.
-    pub srv_errs: AtomicU64,
-    /// `rpcrequests`.
-    pub rpcrequests: AtomicU64,
-    /// `rpctimeouts`.
-    pub rpctimeouts: AtomicU64,
-    /// `rpcunexpected`.
-    pub rpcunexpected: AtomicU64,
-    /// `rpcinvalid`.
-    pub rpcinvalid: AtomicU64,
-    /// `srvcache_inproghits`.
-    pub srvcache_inproghits: AtomicU64,
-    /// `srvcache_idemdonehits`.
-    pub srvcache_idemdonehits: AtomicU64,
-    /// `srvcache_nonidemdonehits`.
-    pub srvcache_nonidemdonehits: AtomicU64,
-    /// `srvcache_misses`.
-    pub srvcache_misses: AtomicU64,
-    /// `forcedsync`.
-    pub forcedsync: AtomicU64,
-    /// `srvnqnfs_leases`.
-    pub srvnqnfs_leases: AtomicU64,
-    /// `srvnqnfs_maxleases`.
-    pub srvnqnfs_maxleases: AtomicU64,
-    /// `srvnqnfs_getleases`.
-    pub srvnqnfs_getleases: AtomicU64,
-    /// `srvvop_writes`.
-    pub srvvop_writes: AtomicU64,
-}
-
-impl Nfsstats {
-    /// The number of `uint64_t` words in the structure.
-    pub const NWORDS: usize = size_of::<Nfsstats>() / size_of::<u64>();
-
-    /// All counters zero.
-    pub const fn new() -> Self {
-        Self {
-            attrcache_hits: AtomicU64::new(0),
-            attrcache_misses: AtomicU64::new(0),
-            lookupcache_hits: AtomicU64::new(0),
-            lookupcache_misses: AtomicU64::new(0),
-            direofcache_hits: AtomicU64::new(0),
-            direofcache_misses: AtomicU64::new(0),
-            biocache_reads: AtomicU64::new(0),
-            read_bios: AtomicU64::new(0),
-            read_physios: AtomicU64::new(0),
-            biocache_writes: AtomicU64::new(0),
-            write_bios: AtomicU64::new(0),
-            write_physios: AtomicU64::new(0),
-            biocache_readlinks: AtomicU64::new(0),
-            readlink_bios: AtomicU64::new(0),
-            biocache_readdirs: AtomicU64::new(0),
-            readdir_bios: AtomicU64::new(0),
-            rpccnt: [const { AtomicU64::new(0) }; NFS_NPROCS],
-            rpcretries: AtomicU64::new(0),
-            srvrpccnt: [const { AtomicU64::new(0) }; NFS_NPROCS],
-            srvrpc_errs: AtomicU64::new(0),
-            srv_errs: AtomicU64::new(0),
-            rpcrequests: AtomicU64::new(0),
-            rpctimeouts: AtomicU64::new(0),
-            rpcunexpected: AtomicU64::new(0),
-            rpcinvalid: AtomicU64::new(0),
-            srvcache_inproghits: AtomicU64::new(0),
-            srvcache_idemdonehits: AtomicU64::new(0),
-            srvcache_nonidemdonehits: AtomicU64::new(0),
-            srvcache_misses: AtomicU64::new(0),
-            forcedsync: AtomicU64::new(0),
-            srvnqnfs_leases: AtomicU64::new(0),
-            srvnqnfs_maxleases: AtomicU64::new(0),
-            srvnqnfs_getleases: AtomicU64::new(0),
-            srvvop_writes: AtomicU64::new(0),
-        }
-    }
-
-    /// The counters in the order of the C structure: what `sysctl` copies out as
-    /// `struct nfsstats`.
-    pub fn snapshot(&self) -> [u64; Self::NWORDS] {
-        // SAFETY: `Nfsstats` is `#[repr(C)]` and made only of `AtomicU64`s (alone or in
-        // arrays), which have the size and alignment of `u64` and no padding between them:
-        // the structure is `NWORDS` atomics in a row, borrowed for the call.
-        let words = unsafe {
-            core::slice::from_raw_parts(ptr::from_ref(self).cast::<AtomicU64>(), Self::NWORDS)
-        };
-        core::array::from_fn(|i| words[i].load(Ordering::Relaxed))
-    }
-
-    /// Overwrites the counters with `values`, in the order of the C structure: what the
-    /// `fs.nfs.nfsstats` sysctl does when it is written (`nfs_sysctl`'s `copyin`).
-    pub fn restore(&self, values: &[u64; Self::NWORDS]) {
-        // SAFETY: as in `snapshot`: the structure is `NWORDS` atomics in a row.
-        let words = unsafe {
-            core::slice::from_raw_parts(ptr::from_ref(self).cast::<AtomicU64>(), Self::NWORDS)
-        };
-        for (word, value) in words.iter().zip(values) {
-            word.store(*value, Ordering::Relaxed);
-        }
-    }
-}
-
-impl Default for Nfsstats {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 /// `struct nfsreq`: NFS outstanding request list element, a `nfsreqpl` item.
@@ -785,8 +590,6 @@ const _: () = {
     assert!(NfsdSrvargs::SIZE == 144);
     assert!(core::mem::offset_of!(NfsdSrvargs, nsd_authstr) == 96);
     assert!(core::mem::offset_of!(NfsdSrvargs, nsd_timestamp) == 120);
-    assert!(Nfsstats::NWORDS == 78);
-    assert!(size_of::<Nfsstats>() == 78 * size_of::<u64>());
 };
 /* </CODE> */
 
@@ -799,22 +602,6 @@ mod tests {
     use std::string::String;
 
     use super::*;
-
-    #[test]
-    fn snapshot_is_in_c_order() {
-        let st = Nfsstats::new();
-        st.attrcache_hits.store(1, Ordering::Relaxed);
-        st.rpccnt[0].store(2, Ordering::Relaxed);
-        st.rpccnt[NFS_NPROCS - 1].store(3, Ordering::Relaxed);
-        st.rpcretries.store(4, Ordering::Relaxed);
-        st.srvvop_writes.store(5, Ordering::Relaxed);
-        let w = st.snapshot();
-        assert_eq!(w[0], 1);
-        assert_eq!(w[16], 2);
-        assert_eq!(w[16 + NFS_NPROCS - 1], 3);
-        assert_eq!(w[16 + NFS_NPROCS], 4);
-        assert_eq!(w[Nfsstats::NWORDS - 1], 5);
-    }
 
     #[test]
     fn server_reply_limits_and_ignored_errors() {

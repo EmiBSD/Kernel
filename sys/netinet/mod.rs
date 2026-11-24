@@ -26,10 +26,13 @@
 //! their LZ paths here as re-exports, for `bsd`'s importers (docs/SCAFFOLDING.md); TCP is the
 //! kernel's since N6.6a5 (`tcp_seq` and `tcp_var` re-exported for pf, the drivers' TSO and
 //! LRO counters and IPsec's output; `tcp_subr` keeps the TCP_SIGNATURE transform, IPsec's,
-//! until N8).
+//! until N8); UDP since N6.6b0 (`udp` and `udp_var` re-export `hal::sys`'s images for pf,
+//! IPsec, divert, pflow and the tests).
 
 pub use hal::sys::netinet_ip as ip;
 pub use hal::sys::netinet_tcp as tcp;
+pub use hal::sys::netinet_udp as udp;
+pub use hal::sys::netinet_udp_var as udp_var;
 pub use kernel::netinet::{
     in_cksum, in_systm, in4_cksum, inet_nat64, ip_ecn, ip_id, tcp_fsm, tcp_seq, tcp_var,
 };
@@ -63,9 +66,4 @@ pub mod ipsec_input;
 pub mod ipsec_output;
 pub mod raw_ip;
 pub mod tcp_subr;
-#[forbid(unsafe_code)]
-pub mod udp;
-pub mod udp_usrreq;
-#[forbid(unsafe_code)]
-pub mod udp_var;
 /* </CODE> */

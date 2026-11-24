@@ -896,8 +896,10 @@ mod tests {
         crate::kern::uipc_mbuf::tests::mbinit_again();
         crate::kern::uipc_socket::soinit();
         let p = thread();
+        // A datagram socket of the internet domain, no protocol attached (by its row, not
+        // by an index of INETSW, whose rows move to the kernel one by one).
         let so = crate::kern::uipc_socket::soalloc(
-            &crate::netinet::in_proto::INETSW[0],
+            &crate::netinet::in_pcb::tests::UDP_ROW,
             SOCK_DGRAM,
             M_WAIT,
         )

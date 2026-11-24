@@ -1615,6 +1615,12 @@ struct Pending {
 }
 
 /// `cargo xtask lz drift [--fetch] [--security] [--functions] [--strict]`.
+/// Whether the LZ commit `commit` is the pin or one of its ancestors, so its record is
+/// history (`git merge-base --is-ancestor`; an unknown commit is not).
+fn at_or_before_pin(lz: &Lz, commit: &str) -> bool {
+    git(&lz.repo, &["merge-base", "--is-ancestor", commit, &lz.pin]).is_ok()
+}
+
 /// What is wrong with a record's `frozen` flag: only an `applied` record carries it, and it
 /// names at least one module of the frozen amd64 tree (`FROZEN_PREFIXES`).
 fn frozen_problems(r: &Record) -> Vec<String> {
@@ -1680,7 +1686,10 @@ pub(crate) fn drift(
             errors += 1;
         }
         for m in &r.modules {
-            if !known.contains(m.as_str()) {
+            // A record the pin has passed is history: its `modules` named what the commit
+            // touched then, and a module deleted since (its file moved into the kernel crate)
+            // is no longer in lineage.toml. Only a record after the pin must name live ones.
+            if !known.contains(m.as_str()) && !at_or_before_pin(&lz, &r.lz) {
                 println!(
                     "error: {SYNC_FILE}: {} ({}): module {m} is not in {LINEAGE_FILE}",
                     r.lz, r.subject
