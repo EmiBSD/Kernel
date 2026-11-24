@@ -6996,7 +6996,14 @@ rust = "sys/kernel/fs/nfs/nfs_vfsops.rs"
 crate = "kernel"
 lz = ["sys/nfs/nfs_vfsops.rs"]
 status = "redesigned"
-notes = "N6.7a3: nfs_fsinfo (the cycle's FSINFO RPC) and fsinfo_apply (LZ's, with the C's wrapping unsigned adds); the rest of nfs_vfsops.c comes with the switch (N6.7a5). bsd's nfs_vfsops stays for its client until 7a5"
+notes = "N6.7a3: nfs_fsinfo (the cycle's FSINFO RPC) and fsinfo_apply (LZ's, with the C's wrapping unsigned adds). N6.7a5: NfsVfs (impl Vfs), nfs_mount/mountnfs/nfs_decode_args, nfs_unmount and the reaper over the timeout's counted argument, nfs_root, nfs_statfs, nfs_sync, nfs_sysctl, nfs_mountroot and nfs_mount_diskless (nfsclient)"
+
+[[module]]
+rust = "sys/kernel/fs/nfs/nfs_debug.rs"
+crate = "kernel"
+lz = ["sys/nfs/nfs_debug.rs"]
+status = "redesigned"
+notes = "N6.7a5: the ddb printers over a request and a node by reference and a fmt::Write; the walks over every NFS mount's queue and the node hash (D-9)"
 
 [[module]]
 rust = "sys/ntfs/ntfs.rs"

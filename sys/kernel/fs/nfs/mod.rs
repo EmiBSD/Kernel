@@ -38,6 +38,7 @@ pub mod nfs;
 pub mod nfs_bio;
 #[cfg(feature = "nfsclient")]
 pub mod nfs_boot;
+pub mod nfs_debug;
 pub mod nfs_kq;
 pub mod nfs_node;
 pub mod nfs_socket;
