@@ -66,11 +66,14 @@
 //!   ...) are `const`s computed at compile time, with their C names (lowercase:
 //!   `RPC_CALL` is already the `rpcv2.h` constant).
 //! - `nfsstats` is [`NFSSTATS`], counters of atomics (`nfs`).
-//! - `nfsm_uiotombuf` ignores `uiomove`'s error as the C does, but the bytes a failed move
-//!   did not fill are zeroed: the C sends whatever the fresh mbuf held there.
+//! - `nfsm_uiotombuf` ignores `uiomove`'s error as the C does; the bytes a failed move did not
+//!   fill are unspecified in the C (whatever the fresh mbuf held: `MGET` does not zero), and
+//!   zeros are chosen here, one of the C's outcomes, so no stale kernel bytes go on the wire.
 //! - `nfsm_mbuftouio` checks the uio's residual count where the C checks for iovecs left
-//!   (`EFBIG`): the same thing for a uio whose `uio_resid` is the sum of its iovecs, which every
-//!   uio the client builds is; its ignored `copyout` error is kept (the uio moves on).
+//!   (`EFBIG`), and needs a read uio (`UIO_READ`) whose `uio_resid` is the sum of its iovecs:
+//!   the glue's `uiomove_out` panics otherwise, where the C needs neither. Every C caller passes
+//!   such a uio (C:nfs/nfs_vnops.c:1176, 1248, 2460, 2656; nfs_serv.c:1941) and the wire cannot
+//!   change either. Its ignored `copyout` error is kept: the uio moves on past the bytes.
 //!
 //! ## Redesign
 //! - LZ's `bsd` module is the starting point of the client's half (D-5, N6.7a0): the words,
@@ -271,7 +274,9 @@ impl XdrWriter {
 
     /// `nfsm_v3attrbuild(mp, a, full)`: a version 3 `sattr3` of `a`: the mode and the times
     /// always, the owner, group and size only when `full`; a member left `VNOVAL` is "do not
-    /// set", a time equal to the server's second is "set to the server's time".
+    /// set", a time equal to the server's second is "set to the server's time". The bytes on the
+    /// wire are the C's; the mbuf split may differ, since a flag word and its value are two
+    /// 4-byte builds here where the C builds one 8- or 12-byte block.
     pub fn v3attrbuild(&mut self, a: &Vattr, full: bool) {
         let set = |w: &mut Self, on: bool, v: u32| {
             if on {
@@ -375,7 +380,7 @@ mod tests {
     use crate::fs::nfs::nfsm_subs::{TestRng, nfsm_rndup, test_bytes, test_chain, test_lens};
     use crate::fs::vnode::Vattr;
     use crate::net::mbuf::tests::setup;
-    use crate::uio::{Iovec, Uio};
+    use crate::uio::{Iovec, Uio, UioSeg};
 
     crate::test_file_glue!(Files, Procs);
     crate::test_proc_glue!(Procs, Files);
@@ -419,6 +424,102 @@ mod tests {
         let mut r = XdrReader::new(&m);
         assert_eq!(read_into(&mut r, 13, 64).0, Err(Errno::EBADRPC));
         crate::testutil::set_copy_kernel(false);
+    }
+
+    #[test]
+    fn an_ignored_copy_error_still_moves_the_uio_past_the_bytes() {
+        let _g = setup();
+        crate::testutil::set_copy_kernel(true);
+        // A 13-byte opaque over three mbufs (6, 6, then 1 and its 3 padding bytes), a word
+        // after it, read into two 8-byte iovecs. The legs: the first piece into a[0..6] (leg
+        // 0); the second into a[6..8] (leg 1) and b[0..4] (leg 2, which faults); the third
+        // into b[4] (leg 3).
+        let data: Vec<u8> = (1..=13).collect();
+        let m = test_chain(&[
+            &data[..6],
+            &data[6..12],
+            &[13, 0, 0, 0, 0xaa, 0xbb, 0xcc, 0xdd],
+        ]);
+        let mut a = [0xeeu8; 8];
+        let mut b = [0xeeu8; 8];
+        let b_base = b.as_mut_ptr().cast::<core::ffi::c_void>();
+        let mut iov = [
+            Iovec {
+                iov_base: a.as_mut_ptr().cast(),
+                iov_len: 8,
+            },
+            Iovec {
+                iov_base: b_base,
+                iov_len: 8,
+            },
+        ];
+        let mut uio = Uio::<Procs> {
+            uio_iov: &mut iov,
+            uio_offset: 0,
+            uio_resid: 16,
+            uio_segflg: UioSeg::UIO_SYSSPACE,
+            uio_rw: UioRw::UIO_READ,
+            uio_procp: None,
+        };
+        crate::testutil::set_uiomove_fault(Some(2));
+        let mut r = XdrReader::new(&m);
+        // The C drops copyout's error (C:nfs/nfs_subs.c:668-688): the read succeeds.
+        assert_eq!(r.to_uio(&mut uio, 13), Ok(()));
+        let (resid, off, left) = (uio.uio_resid, uio.uio_offset, uio.uio_iov.len());
+        let last = uio.uio_iov.first().map(|i| (i.iov_base, i.iov_len));
+        drop(uio);
+        crate::testutil::set_uiomove_fault(None);
+        crate::testutil::set_copy_kernel(false);
+        // The uio stands where a full copy leaves it.
+        assert_eq!((resid, off, left), (3, 13, 1));
+        assert_eq!(last, Some((b_base.wrapping_byte_add(5), 3)));
+        assert_eq!(a, data[..8]);
+        assert_eq!(b[..4], [0xee; 4], "the faulted leg wrote nothing");
+        assert_eq!(b[4], 13);
+        assert_eq!(b[5..], [0xee; 3]);
+        // The padding skipped: the next word is the reply's.
+        assert_eq!(r.offset(), 16);
+        assert_eq!(r.u32(), Ok(0xaabb_ccdd));
+    }
+
+    #[test]
+    fn a_failed_uiomove_leaves_zeros_not_the_mbufs_old_bytes() {
+        let _g = setup();
+        crate::testutil::set_copy_kernel(true);
+        // The tail's storage full of an old pattern, as a recycled mbuf's may be.
+        let mut m = m_get(M_WAIT, MT_DATA).expect("an mbuf");
+        if let Some(st) = m.storage_mut() {
+            st.fill(0xa5);
+        }
+        m.m_len().set(0);
+        let mut w = XdrWriter::with_first(m);
+        let src0 = [1u8; 4];
+        let src1 = [2u8; 4];
+        let mut iov = [
+            Iovec {
+                iov_base: src0.as_ptr().cast_mut().cast(),
+                iov_len: 4,
+            },
+            Iovec {
+                iov_base: src1.as_ptr().cast_mut().cast(),
+                iov_len: 4,
+            },
+        ];
+        let mut uio = Uio::<Procs> {
+            uio_iov: &mut iov,
+            uio_offset: 0,
+            uio_resid: 8,
+            uio_segflg: UioSeg::UIO_SYSSPACE,
+            uio_rw: UioRw::UIO_WRITE,
+            uio_procp: None,
+        };
+        // The second iovec's leg faults.
+        crate::testutil::set_uiomove_fault(Some(1));
+        w.from_uio(&mut uio, 8);
+        drop(uio);
+        crate::testutil::set_uiomove_fault(None);
+        crate::testutil::set_copy_kernel(false);
+        assert_eq!(test_bytes(&w.into_chain()), [1, 1, 1, 1, 0, 0, 0, 0]);
     }
 
     #[test]
