@@ -1139,13 +1139,7 @@ impl Mbuf {
     /// without `M_EXTWR`, or shared).
     #[inline]
     pub fn storage_mut(&mut self) -> Option<&mut [u8]> {
-        if self.body.e().is_none() {
-            return self.body.inline_mut();
-        }
-        if self.body.flags() & M_EXTWR == 0 {
-            return None;
-        }
-        self.body.e_mut().and_then(Ext::bytes_mut)
+        body_storage_mut(&mut self.body)
     }
 
     /// `M_SIZE(m)`: the size of the data storage.
@@ -1241,6 +1235,34 @@ impl Mbuf {
     pub fn next_mut(&mut self) -> Option<&mut Mbuf> {
         self.m_next.get_mut()
     }
+
+    /// The data, to write it, and the mbuf after this one, to change it: [`Mbuf::data_mut`]
+    /// and [`Mbuf::next_mut`] at once, two borrows of distinct members, so that a walk of a
+    /// chain can hold the data of every mbuf at the same time (the nfs server's iovecs over a
+    /// reply's data mbufs, `nfsrv_read`, N6.7b3). The data is `None` when it is read-only.
+    pub fn data_and_next_mut(&mut self) -> (Option<&mut [u8]>, Option<&mut Mbuf>) {
+        let (off, len) = (self.data_off(), self.m_len.get() as usize);
+        let data = body_storage_mut(&mut self.body).map(|s| match s.get_mut(off..off + len) {
+            Some(d) => d,
+            None => kpanic(format_args!("mtod: {len} bytes at {off} past the storage")),
+        });
+        (data, self.m_next.get_mut())
+    }
+}
+
+/// [`Mbuf::storage_mut`]'s body, over the overlay alone (so a caller may borrow the links
+/// beside it): `None` when the storage is read-only.
+#[inline]
+fn body_storage_mut(
+    body: &mut Body<Pkthdr, Ext, MbufMeta, M_PKTHDR, M_EXT, MLEN>,
+) -> Option<&mut [u8]> {
+    if body.e().is_none() {
+        return body.inline_mut();
+    }
+    if body.flags() & M_EXTWR == 0 {
+        return None;
+    }
+    body.e_mut().and_then(Ext::bytes_mut)
 }
 
 impl Drop for Mbuf {
@@ -3803,6 +3825,39 @@ pub(crate) mod tests {
         assert_eq!(contents(&m), data);
         drop(m);
         all_back();
+    }
+
+    #[test]
+    fn a_chain_lends_the_data_of_every_mbuf_at_once() {
+        let _g = setup();
+        let mut m = packet(&[100, 50, 200]);
+        // The three data areas held together, each written through its own borrow.
+        let mut pieces = Vec::new();
+        let mut cur = Some(&mut *m);
+        while let Some(mm) = cur {
+            let (d, next) = mm.data_and_next_mut();
+            pieces.push(d.expect("writable"));
+            cur = next;
+        }
+        assert_eq!(
+            pieces.iter().map(|p| p.len()).collect::<Vec<_>>(),
+            [100, 50, 200]
+        );
+        for (i, p) in pieces.iter_mut().enumerate() {
+            p.fill(i as u8 + 1);
+        }
+        let c = contents(&m);
+        assert!(c[..100].iter().all(|&b| b == 1));
+        assert!(c[100..150].iter().all(|&b| b == 2));
+        assert!(c[150..].iter().all(|&b| b == 3));
+
+        // A shared cluster lends no data to write; the link is still lent.
+        let mut m = packet(&[1000]);
+        let tail = m_split(&mut m, 300, M_DONTWAIT).expect("a tail");
+        let (d, next) = m.data_and_next_mut();
+        assert!(d.is_none());
+        assert!(next.is_none());
+        drop(tail);
     }
 
     #[test]

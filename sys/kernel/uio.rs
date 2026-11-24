@@ -194,6 +194,11 @@
 //!   for a `UIO_USERSPACE` read out of kernel bytes no one writes meanwhile (tmpfs's
 //!   `readlink(2)` from the link's block, D-N5.9-17): `hal`'s checked `copyout` of the slice,
 //!   straight to the iovec; a `UIO_SYSSPACE` one stays `bsd`'s `uiomove` until N7.
+//! - N6.7b3: [`Uio::kernel_readv`] and [`Uio::kernel_writev`], the one `UIO_SYSSPACE` uio over
+//!   several kernel buffers the nfs server hands `VOP_READ` and `VOP_WRITE` (the C's iovec
+//!   array over a reply's or a request's mbufs, `nfsrv_read`, `nfsrv_write`): the uio borrows
+//!   every buffer, as [`Uio::kernel_read`] borrows its one, so each address it carries names
+//!   bytes that exist (and, for a read, that nothing else reaches) for as long as it lives.
 
 use core::ffi::c_void;
 use core::ptr;
@@ -339,8 +344,8 @@ impl<'a, G: ProcGlue> Uio<'a, G> {
     /// = UIO_SYSSPACE; auio.uio_rw = UIO_READ`: the vnode pager's `VOP_READ` of a page), its
     /// one iovec in `iov`, offset 0, all of `buf` to fill. The uio borrows `buf` mutably for as
     /// long as it lives, so the address the iovec carries names bytes that exist, and that
-    /// nothing else reaches, for every `uiomove` made through it. The kernel's one way to
-    /// build a reading `UIO_SYSSPACE` uio.
+    /// nothing else reaches, for every `uiomove` made through it. With [`Uio::kernel_readv`],
+    /// the kernel's ways to build a reading `UIO_SYSSPACE` uio.
     pub fn kernel_read(
         iov: &'a mut [Iovec; 1],
         buf: &'a mut [u8],
@@ -359,6 +364,80 @@ impl<'a, G: ProcGlue> Uio<'a, G> {
             uio_procp: procp,
         }
     }
+
+    /// A `UIO_SYSSPACE` read into several kernel buffers, in order, one iovec each in `iov`
+    /// (the nfs server's `VOP_READ` into a reply's data mbufs, `nfsrv_read`): offset 0, every
+    /// byte of `bufs` to fill. `iov` holds at least as many iovecs as `bufs` yields
+    /// (`panic(9)` otherwise, the caller's count gone wrong); the uio takes the first ones.
+    /// Each buffer is borrowed mutably for as long as the uio lives, as
+    /// [`Uio::kernel_read`]'s one, so every address the iovecs carry names bytes that exist,
+    /// and that nothing else reaches, for every `uiomove` made through it.
+    pub fn kernel_readv(
+        iov: &'a mut [Iovec],
+        bufs: impl IntoIterator<Item = &'a mut [u8]>,
+        procp: Option<&'a Thread<G>>,
+    ) -> Self {
+        let (n, resid) = fill_iovecs(
+            iov,
+            bufs.into_iter()
+                .map(|b| (b.as_mut_ptr().cast::<c_void>(), b.len())),
+        );
+        Self {
+            uio_iov: &mut iov[..n],
+            uio_offset: 0,
+            uio_resid: resid,
+            uio_segflg: UioSeg::UIO_SYSSPACE,
+            uio_rw: UioRw::UIO_READ,
+            uio_procp: procp,
+        }
+    }
+
+    /// A `UIO_SYSSPACE` write out of several kernel buffers, in order, one iovec each in
+    /// `iov` (the nfs server's `VOP_WRITE` out of a request's mbufs, `nfsrv_write`): offset 0,
+    /// every byte of `bufs` to move. As [`Uio::kernel_readv`], `iov` has room for them all and
+    /// the uio borrows every buffer for as long as it lives; a write only reads them, so shared
+    /// borrows are all it needs ([`Uio::kernel_write`]'s argument).
+    pub fn kernel_writev(
+        iov: &'a mut [Iovec],
+        bufs: impl IntoIterator<Item = &'a [u8]>,
+        procp: Option<&'a Thread<G>>,
+    ) -> Self {
+        let (n, resid) = fill_iovecs(
+            iov,
+            bufs.into_iter()
+                .map(|b| (b.as_ptr().cast_mut().cast::<c_void>(), b.len())),
+        );
+        Self {
+            uio_iov: &mut iov[..n],
+            uio_offset: 0,
+            uio_resid: resid,
+            uio_segflg: UioSeg::UIO_SYSSPACE,
+            uio_rw: UioRw::UIO_WRITE,
+            uio_procp: procp,
+        }
+    }
+}
+
+/// The iovecs of [`Uio::kernel_readv`] and [`Uio::kernel_writev`]: one per `(address,
+/// length)` of `bufs`, from `iov[0]` on; the count and the bytes they cover.
+fn fill_iovecs(
+    iov: &mut [Iovec],
+    bufs: impl Iterator<Item = (*mut c_void, usize)>,
+) -> (usize, usize) {
+    let mut n = 0;
+    let mut resid = 0usize;
+    for (base, len) in bufs {
+        let Some(slot) = iov.get_mut(n) else {
+            crate::assert::kpanic(format_args!("kernel uio: more than {} buffers", n));
+        };
+        *slot = Iovec {
+            iov_base: base,
+            iov_len: len,
+        };
+        resid += len;
+        n += 1;
+    }
+    (n, resid)
 }
 
 /// Where [`iovec_copyin`] puts a user's iovecs: the `UIO_SMALLIOV` the caller keeps on its
@@ -678,6 +757,42 @@ mod tests {
         assert_eq!(v.iov_len, 42);
         assert_eq!(Iovec::SIZE, 16);
         assert!(Iovec::default().iov_base.is_null());
+    }
+
+    #[test]
+    fn kernel_uios_over_several_buffers_move_them_in_order() {
+        testutil::install();
+        testutil::set_copy_kernel(true);
+        // A read fills the buffers in turn, an empty one taking an iovec of its own (the nfs
+        // server's data mbufs, one iovec each); the spare iovec is left out.
+        let (mut a, mut b, mut c) = ([0u8; 3], [0u8; 0], [0u8; 5]);
+        let mut iov = [Iovec::new(); 4];
+        let mut uio =
+            Uio::<TestGlue>::kernel_readv(&mut iov, [&mut a[..], &mut b[..], &mut c[..]], None);
+        assert_eq!(uio.uio_iovcnt(), 3);
+        assert_eq!(uio.uio_resid, 8);
+        assert_eq!(uio.uio_offset, 0);
+        assert_eq!(uio.uio_rw, UioRw::UIO_READ);
+        assert_eq!(uio.uio_segflg, UioSeg::UIO_SYSSPACE);
+        let mut src = *b"abcdefghij";
+        testutil::test_uiomove(&mut src, &mut uio).unwrap();
+        assert_eq!(uio.uio_resid, 0);
+        assert_eq!(uio.uio_offset, 8);
+        drop(uio);
+        assert_eq!(&a, b"abc");
+        assert_eq!(&c, b"defgh");
+
+        // A write reads them in turn.
+        let mut iov = [Iovec::new(); 2];
+        let mut uio = Uio::<TestGlue>::kernel_writev(&mut iov, [&b"xy"[..], &b"z"[..]], None);
+        assert_eq!(uio.uio_iovcnt(), 2);
+        assert_eq!(uio.uio_resid, 3);
+        assert_eq!(uio.uio_rw, UioRw::UIO_WRITE);
+        let mut dst = [0u8; 4];
+        testutil::test_uiomove(&mut dst, &mut uio).unwrap();
+        assert_eq!(&dst, b"xyz\0");
+        assert_eq!(uio.uio_resid, 0);
+        testutil::set_copy_kernel(false);
     }
 
     #[test]
