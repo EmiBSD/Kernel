@@ -65,14 +65,19 @@
 //! ## Deviations
 //! - `nm_ntree` (`RBT_HEAD(nfs_nodetree, nfsnode)` in each mount, ordered by `nfsnode_cmp`)
 //!   is one table of `PinList` chains for every NFS mount ([`NfsNhash`], `NfsTables::nhash`),
-//!   chosen by a SipHash of the mount's address and the handle under a random key, its size
-//!   `initialvnodes` (the kernel's other node hashes' shape, `fuse_ihash`, `msdosfs`'s
-//!   `dehash`): the kernel has no tree of counted, pinned elements. A lookup is O(1)
-//!   expected where the C's is O(log n); a walk over every node (ddb's `show all
-//!   nfsnodes`, N6.7a5) meets them in another order. `nfs_ninit` (`RBT_INIT` of a mount's
-//!   tree) has nothing left to do and is gone. The table is `malloc(M_NFSMNT)`: `vmstat -m`'s
-//!   "NFS mount" row counts it from `nfs_vfs_init` on, where the C's tree costs nothing
-//!   beyond the nodes' own links.
+//!   chosen by a SipHash of the mount's address and the handle under a random key (the
+//!   kernel's other node hashes' shape, `fuse_ihash`, `msdosfs`'s `dehash`): the kernel has
+//!   no tree of counted, pinned elements. The chains are a fixed array of
+//!   [`NFS_NHASHSIZE`] (1,024) in the glue's tables, allocated by nothing (the user's
+//!   decision of 2026-11-24): `vmstat -m`'s "NFS mount" row counts what OpenBSD's counts.
+//!   The size: `hashinit(initialvnodes)` would give 4,096 chains (`initialvnodes` is 2,963
+//!   with `maxusers 80`), 160 KiB of chain heads in the image's data; a quarter of that keeps
+//!   40 KiB and, with every vnode of the default `maxvnodes` an NFS node, about three nodes a
+//!   chain where the C's tree walks about twelve (log2 of 2,963); a chain stays shorter than
+//!   the C's walk up to about 14,000 nodes (n / 1,024 = log2 n), past which a lookup costs
+//!   more than the C's (docs/ROADMAP.md N12's row). A lookup is O(1) expected; a walk over
+//!   every node (ddb's `show all nfsnodes`, N6.7a5) meets them in another order. `nfs_ninit`
+//!   (`RBT_INIT` of a mount's tree) has nothing left to do and is gone.
 //! - The C writes a node's handle in place when a lookup finds the node under a new one
 //!   (`nfs_lookitup`'s `*npp` case, for `nfs_sillyrename`), leaving its tree ordered by the
 //!   old handle. A chain is chosen by the handle, so that write is [`nfs_nrehash`]: the node
@@ -105,56 +110,69 @@
 
 use core::pin::Pin;
 use core::ptr;
-use core::sync::atomic::Ordering;
 
 use hal::klock;
-use hal::malloc::{M_WAITOK, MArray};
+use hal::once::OnceStatic;
 use hal::pinlist::PinList;
 use hal::sys::errno::Errno;
 use libkern::siphash::{SipHash24Ctx, SiphashKey};
 
-use super::nfsmount::M_NFSMNT;
 use super::nfsnode::{NfsFh, NfsNode, NfsNodeEntry, vtonfs};
 use crate::assert::kpanic;
 use crate::fs::cache::cache_purge;
 use crate::fs::mount::Mount;
-use crate::fs::subr::{hashinit, siphash_key, vfs};
+use crate::fs::subr::{siphash_key, vfs};
 use crate::fs::vnode::{VLARVAL, Vnode};
 use crate::proc::ProcGlue;
+
+/// The number of chains of the node hash, a power of two (the module's Deviations).
+pub const NFS_NHASHSIZE: usize = 1024;
 
 /// A chain of the node hash.
 type Chain<G> = PinList<NfsNodeEntry<G>>;
 
-/// `nm_ntree` of every NFS mount (the module's Deviations): the chains, the table's size - 1,
-/// the key.
+/// `nm_ntree` of every NFS mount (the module's Deviations): the chains, bound to the kernel
+/// lock at their first use, and the key `nfs_vfs_init` draws.
 pub struct NfsNhash<G: ProcGlue> {
-    tbl: MArray<Chain<G>>,
-    mask: u64,
-    key: SiphashKey,
+    chains: [Chain<G>; NFS_NHASHSIZE],
+    key: OnceStatic<SiphashKey>,
 }
 
 impl<G: ProcGlue> NfsNhash<G> {
+    /// Every chain empty, no key yet (the glue's tables' value).
+    pub const fn new() -> Self {
+        Self {
+            chains: [const { PinList::new() }; NFS_NHASHSIZE],
+            key: OnceStatic::new(),
+        }
+    }
+
     /// The chain of the handle `fh` of the mount `mp`: a SipHash of the mount's address
-    /// (unique among mounted file systems) and the handle's size and bytes.
+    /// (unique among mounted file systems) and the handle's size and bytes; `panic(9)`
+    /// before `nfs_vfs_init` drew the key.
     fn chain_of(&self, mp: &Mount<G>, fh: &[u8]) -> &Chain<G> {
-        let mut ctx = SipHash24Ctx::new(&self.key);
+        let Some(key) = self.key.get() else {
+            kpanic(format_args!("nfs_nhash: no key (nfs_vfs_init has not run)"));
+        };
+        let mut ctx = SipHash24Ctx::new(key);
         ctx.update(&mp.addr().to_ne_bytes());
         ctx.update(&fh.len().to_ne_bytes());
         ctx.update(fh);
-        // `& mask`, the table's size - 1, a power of two below 2^31 (`hashinit` of an
-        // `int`): the index fits the table.
-        let i = (ctx.end() & self.mask) as usize;
-        &self.tbl[i]
+        // `& (NFS_NHASHSIZE - 1)`, a power of two: the index fits the table.
+        let i = (ctx.end() & (NFS_NHASHSIZE as u64 - 1)) as usize;
+        &self.chains[i]
     }
 }
 
-/// The table, when `nfs_vfs_init` has made it: `panic(9)` before.
-fn with_nhash<G: ProcGlue, R>(f: impl FnOnce(&NfsNhash<G>) -> R) -> R {
-    let t = vfs::<G>().nfs.nhash.read();
-    match t.as_ref() {
-        Some(h) => f(h),
-        None => kpanic(format_args!("nfs_nhash: no table")),
+impl<G: ProcGlue> Default for NfsNhash<G> {
+    fn default() -> Self {
+        Self::new()
     }
+}
+
+/// The glue's node hash, borrowed for `f`.
+fn with_nhash<G: ProcGlue, R>(f: impl FnOnce(&NfsNhash<G>) -> R) -> R {
+    f(&vfs::<G>().nfs.nhash)
 }
 
 /// The mount a hashed node is on: its vnode's (set before the node is hashed, and kept until
@@ -174,21 +192,11 @@ fn is<G: ProcGlue>(np: &NfsNode<G>, mp: &Mount<G>, fh: &[u8]) -> bool {
     np.n_vnode.mount().is_some_and(|m| ptr::eq(m, mp)) && np.fh().bytes() == fh
 }
 
-/// `nm_ntree`'s making for every mount (`RBT_INIT`): the table, `hashinit(initialvnodes,
-/// M_NFSMNT, M_WAITOK)` with a random key; once, from `nfs_vfs_init`.
+/// `nm_ntree`'s making for every mount (`RBT_INIT`): the chains are the tables' (empty from
+/// the start); the key is drawn once, from `nfs_vfs_init` (a second call, a test glue's,
+/// keeps the first key).
 pub fn nfs_nhashinit<G: ProcGlue>() {
-    let initialvnodes = vfs::<G>().initialvnodes.load(Ordering::Relaxed);
-    let Some((tbl, mask)) = hashinit::<NfsNodeEntry<G>>(initialvnodes, M_NFSMNT, M_WAITOK) else {
-        kpanic(format_args!("nfs_vfs_init: no memory for the node hash"));
-    };
-    let h = NfsNhash {
-        tbl,
-        mask,
-        key: siphash_key(),
-    };
-    if vfs::<G>().nfs.nhash.replace(Some(h)).is_some() {
-        kpanic(format_args!("nfs_vfs_init: twice"));
-    }
+    let _ = vfs::<G>().nfs.nhash.key.set(siphash_key());
 }
 
 /// `RBT_FIND(nfs_nodetree, &nmp->nm_ntree, &find)` of `nfs_nget`: the vnode of the node of
@@ -239,7 +247,9 @@ pub fn nfs_nremove<G: ProcGlue>(np: &NfsNode<G>) {
 /// `np->n_fhp = &np->n_fh; bcopy(nfhp, np->n_fhp, fhlen); np->n_fhsize = fhlen;` of
 /// `nfs_lookitup` (the module's Deviations): the node takes the handle `fh`, and a hashed one
 /// moves to the chain of its new handle in the same section. The only writer of a node's
-/// handle after `nfs_nget`.
+/// handle after `nfs_nget`. A handle another node of the mount already has is not refused:
+/// both are then on one chain and a lookup finds the one linked last, as the C's tree holds
+/// two nodes of one key there (`nfs_lookitup` checks nothing either).
 pub fn nfs_nrehash<G: ProcGlue>(np: Pin<&NfsNode<G>>, fh: NfsFh) {
     if !np.n_entry.is_linked() {
         let _ = np.n_fh.replace(fh);
@@ -285,13 +295,6 @@ pub fn nfs_reclaim<G: ProcGlue>(vp: &'static Vnode<G>) -> Result<(), Errno> {
     Ok(())
 }
 
-/// `nfs_test_reset`'s part: forgets the node hash of a test glue's tables without freeing it
-/// (the memory behind it is gone with the last test's, testing.md).
-#[cfg(any(test, feature = "doubles"))]
-pub(crate) fn nfs_nhash_test_reset<G: ProcGlue>() {
-    core::mem::forget(vfs::<G>().nfs.nhash.replace(None));
-}
-
 /// The client's file system tests (N6.7a2): the test thread and its root of `fs::testfs`
 /// (the kernel lock held, a buffer cache, and `nfs_test_reset` run by `vfs_test_reset`),
 /// `nfs_vfs_init`, and a mount of its own whose slot holds a client structure (attribute
@@ -311,8 +314,10 @@ pub(crate) struct TestMount {
 /// [`TestMount`]'s set-up.
 #[cfg(test)]
 pub(crate) fn test_mount(flag: i32) -> TestMount {
+    use super::nfsmount::M_NFSMNT;
     use crate::fs::testfs::TestGlue as G;
-    use hal::malloc::{MArc, MBox};
+    use core::sync::atomic::Ordering;
+    use hal::malloc::{M_WAITOK, MArc, MBox};
     fn nop(_: *mut core::ffi::c_void) {}
     let (g, p) = crate::fs::testfs::test_thread_cached(64 << 20, 64);
     let root = crate::fs::init::rootvnode::<G>()
@@ -352,7 +357,8 @@ pub(crate) static TEST_GETATTR: std::sync::Mutex<
 > = std::sync::Mutex::new(None);
 
 /// The test nodes' vnode operations: `getattr` answers [`TEST_GETATTR`] (`EOPNOTSUPP`
-/// unset), `fsync` succeeds, the rest are the defaults.
+/// unset; the attributes written only with `Ok`), `fsync` succeeds, the rest are the
+/// defaults.
 #[cfg(test)]
 pub(crate) struct TestVops;
 
@@ -365,14 +371,16 @@ impl crate::fs::vops::Vnops<crate::fs::testfs::TestGlue> for TestVops {
         _cred: crate::fs::vops::Cred<'_>,
         _p: &crate::proc::Thread<crate::fs::testfs::TestGlue>,
     ) -> Result<(), Errno> {
+        // As `nfs_getattr`: the attributes are written only on success.
         match *TEST_GETATTR
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
         {
-            Some((r, va)) => {
+            Some((Ok(()), va)) => {
                 *vap = va;
-                r
+                Ok(())
             }
+            Some((Err(e), _)) => Err(e),
             None => Err(Errno::EOPNOTSUPP),
         }
     }
@@ -474,6 +482,19 @@ mod tests {
         nfs_ninsert(dup.as_pin()).expect("the pair is free again");
         nfs_nremove(&dup);
         nfs_nremove(&onp);
+    }
+
+    /// The fixed table's size (the module's Deviations): 1,024 chains of 40 bytes, a power
+    /// of two.
+    #[test]
+    fn the_node_hash_is_40_kib_of_chains() {
+        assert!(NFS_NHASHSIZE.is_power_of_two());
+        assert_eq!(core::mem::size_of::<Chain<TestGlue>>(), 40);
+        let n = core::mem::size_of::<NfsNhash<TestGlue>>();
+        assert!(
+            (40 * 1024..40 * 1024 + 64).contains(&n),
+            "{n}: the chains and the key"
+        );
     }
 
     /// Many nodes of one mount, hashed and found each by its own handle, then removed in

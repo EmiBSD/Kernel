@@ -78,6 +78,8 @@
 //!   the glue's tables; its counts `nfs_bufqlen` and `nfs_bufqmax` are the statics
 //!   [`NFS_BUFQLEN`] and [`NFS_BUFQMAX`] (their addresses are wait channels), and
 //!   `nfs_numasync` (`nfs_vnops.c`'s) is [`NFS_NUMASYNC`] beside them, the nfsiods' count.
+//!   The three are process-wide statics while the queue is the glue's: the kernel has one
+//!   glue, and the host tests' reset (`nfs_test_reset`) zeroes them with the queue.
 //!
 //! ## Redesign
 //! - LZ's `NfsNode` was an `nfs_node_pool` item handed around as `&'static NfsNode` with

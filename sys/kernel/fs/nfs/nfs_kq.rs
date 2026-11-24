@@ -65,8 +65,9 @@
 //! - `struct kevq` entries ([`Kevq`]) are items of a pool of their own ("nfskevqpl", made by
 //!   `nfs_vfs_init`) where the C `malloc`s them (`M_KEVENT`): the watch list owns them
 //!   (`hal::owned::OwnedList`), and an owning list takes pool items (`kqueue`'s timers'
-//!   `kqtimerpl` precedent). `vmstat -m` shows the pool, and `M_KEVENT`'s row no longer counts
-//!   a watched NFS vnode.
+//!   `kqtimerpl` precedent; the user's decision of 2026-11-24): `vmstat -m` shows a new pool
+//!   row, "nfskevqpl", and its `M_KEVENT` ("kevent") row no longer counts the watched NFS
+//!   vnodes.
 //! - `pnfskq` is the poller's thread id; the channel it sleeps on (and `nfs_kqwatch` wakes)
 //!   is the watch list's cell's address, where the C's is the poller's `struct proc`.
 //!   `nfs_kqpoll` calls `VOP_GETATTR` as itself (the running thread), which the C reads
@@ -232,8 +233,10 @@ fn pnfskq_chan<G: ProcGlue>() -> *const () {
 /// attributes expired, posts the events their changes imply, and exits when nothing is
 /// watched any more.
 pub fn nfs_kqpoll<G: ProcGlue>() -> ! {
+    // `struct vattr attr`: one for the poller's life, as the C's (the pass's docs).
+    let mut attr = Vattr::new();
     hal::thread::with_current::<Thread<G>, _>(|p| {
-        while nfs_kqpoll_pass(&p) {
+        while nfs_kqpoll_pass(&p, &mut attr) {
             // wait a while before checking for changes again
             let _ = tsleep_nsec(
                 pnfskq_chan::<G>(),
@@ -248,18 +251,21 @@ pub fn nfs_kqpoll<G: ProcGlue>() -> ! {
 
 /// One pass of [`nfs_kqpoll`]'s loop over the watch list, as the thread `p`: `true` while
 /// something is watched; `false` (and `pnfskq` cleared, under the lock, as the C's exit)
-/// once the list is empty.
-pub(crate) fn nfs_kqpoll_pass<G: ProcGlue>(p: &Thread<G>) -> bool {
+/// once the list is empty. `attr` is the poller's one `struct vattr`, kept from pass to
+/// pass and entry to entry as the C keeps it: a cache hit fills it, a failed `VOP_GETATTR`
+/// (other than `ESTALE`) leaves it as it was, so the comparisons that follow see the last
+/// attributes read and post nothing new for the failure (with several watched vnodes, the
+/// last attributes may be another vnode's, as in the C).
+pub(crate) fn nfs_kqpoll_pass<G: ProcGlue>(p: &Thread<G>, attr: &mut Vattr) -> bool {
     let mut g = kevq::<G>().write();
     let mut cur = g.kevlist.first();
     while let Some(ke) = cur {
         let vp = ke.vp;
         let np = vtonfs(vp);
-        let mut attr = Vattr::new();
 
         // skip if still in attrcache
         let cached = match vp.mount() {
-            Some(mp) => nfs_getattrcache(&np, &vfstonfs(mp), &mut attr) != Err(Errno::ENOENT),
+            Some(mp) => nfs_getattrcache(&np, &vfstonfs(mp), attr) != Err(Errno::ENOENT),
             None => kpanic(format_args!("nfs_kqpoll: vnode {vp:p} has no mount")),
         };
         if cached {
@@ -271,7 +277,7 @@ pub(crate) fn nfs_kqpoll_pass<G: ProcGlue>(p: &Thread<G>) -> bool {
         ke.flags.fetch_or(KEVQ_BUSY, Ordering::Relaxed);
         let mut hold = SecondaryRef::<ByKevq<G>>::new();
         hold.set(Some(ke));
-        g.unlocked(|| nfs_kqpoll_check(p, vp, &np, &hold));
+        g.unlocked(|| nfs_kqpoll_check(p, vp, &np, &hold, attr));
 
         // next:
         let Some(ke) = hold.get() else {
@@ -295,21 +301,21 @@ pub(crate) fn nfs_kqpoll_pass<G: ProcGlue>(p: &Thread<G>) -> bool {
 }
 
 /// The unlocked part of a pass over a watched vnode whose attributes expired: its
-/// attributes fetched again and each change posted.
+/// attributes fetched again into the poller's `attr` and each change posted.
 fn nfs_kqpoll_check<G: ProcGlue>(
     p: &Thread<G>,
     vp: &'static Vnode<G>,
     np: &super::nfsnode::NfsNode<G>,
     hold: &SecondaryRef<ByKevq<G>>,
+    attr: &mut Vattr,
 ) {
     let Some(ke) = hold.get() else {
         kpanic(format_args!("nfs_kqpoll: a held entry is gone"));
     };
-    let mut attr = Vattr::new();
     // save v_size, nfs_getattr() updates it
     let osize = np.n_size.load(Ordering::Relaxed);
 
-    if vop_getattr(vp, &mut attr, Cred::real(p.ucred()), p) == Err(Errno::ESTALE) {
+    if vop_getattr(vp, attr, Cred::real(p.ucred()), p) == Err(Errno::ESTALE) {
         nfs_invalidate_attrcache(np);
         VN_KNOTE(vp, NOTE_DELETE);
         return;
@@ -692,13 +698,17 @@ mod tests {
     }
 
     /// A pass of the poller: a vnode still in the attribute cache is skipped; an expired one
-    /// has its attributes fetched (`VOP_GETATTR`) and what changed recorded; `ESTALE`
-    /// invalidates the cache and records nothing; with the list empty the pass ends the
-    /// poller (`pnfskq` cleared).
+    /// has its attributes fetched (`VOP_GETATTR`), its changes posted to its knotes and
+    /// recorded; a failure other than `ESTALE` (a soft mount's `ETIMEDOUT`) posts and records
+    /// nothing, the poller's attributes staying the last read (the C's one `struct vattr`);
+    /// `ESTALE` invalidates the cache and posts `NOTE_DELETE`; with the list empty the pass
+    /// ends the poller (`pnfskq` cleared).
     #[test]
-    fn a_poll_pass_checks_the_expired_vnodes() {
+    fn a_poll_pass_posts_the_changes_of_the_expired_vnodes() {
         let t = test_mount(0);
         fake_poller();
+        let _ = crate::event::kqueue_init::<G>();
+        let kq = crate::event::kqueue_alloc::<G>(t.p.process().fd_ref()).expect("a kqueue");
         let (fresh, nfresh) = test_node(t.mp, VREG, &[5; 8]);
         let (stale, nstale) = test_node(t.mp, VREG, &[6; 8]);
         let mut va = Vattr::new();
@@ -707,7 +717,14 @@ mod tests {
         va.va_nlink = 1;
         *TEST_GETATTR.lock().unwrap() = Some((Ok(()), va));
         nfs_kqwatch(fresh).expect("watched");
-        nfs_kqwatch(stale).expect("watched");
+        // A kevent knote on `stale` that asks for every vnode event: it records the hints
+        // the poller posts.
+        let h = crate::event::test_knote(&kq, 1);
+        let kn = h.kn();
+        kn.kn_filter().set(EVFILT_VNODE);
+        kn.kn_sfflags
+            .set(NOTE_DELETE | NOTE_WRITE | NOTE_EXTEND | NOTE_TRUNCATE | NOTE_ATTRIB | NOTE_LINK);
+        nfs_kqfilter(stale, kn).expect("watched");
         let seen = |vp: &'static Vnode<G>| {
             let g = kevq::<G>().read();
             let ke = g
@@ -743,27 +760,48 @@ mod tests {
             tv_nsec: 8,
         };
         *TEST_GETATTR.lock().unwrap() = Some((Ok(()), changed));
-        assert!(nfs_kqpoll_pass(t.p));
+        let mut attr = Vattr::new();
+        assert!(nfs_kqpoll_pass(t.p, &mut attr));
+        assert_eq!(
+            kn.kn_fflags().get(),
+            NOTE_WRITE | NOTE_EXTEND | NOTE_ATTRIB | NOTE_LINK,
+            "the changes posted"
+        );
         assert_eq!(
             seen(stale),
             (changed.va_mtime, changed.va_ctime, 3, 0),
             "recorded, not busy"
         );
         assert_eq!(seen(fresh).2, 1, "skipped");
-        // ESTALE: the cache invalidated, nothing recorded.
+        // `stale` alone: `nfs_getattr` keeps `n_size` (the test's table does not), and a
+        // second read of the same attributes posts nothing.
+        nfs_kqunwatch(fresh);
+        nstale.n_size.store(20, Ordering::Relaxed);
+        kn.kn_fflags().set(0);
+        assert!(nfs_kqpoll_pass(t.p, &mut attr));
+        assert_eq!(kn.kn_fflags().get(), 0, "nothing changed");
+        // The server stops answering (a soft mount): nothing is posted or recorded.
+        let mut gone = changed;
+        gone.va_size = 0;
+        gone.va_nlink = 0;
+        *TEST_GETATTR.lock().unwrap() = Some((Err(Errno::ETIMEDOUT), gone));
+        assert!(nfs_kqpoll_pass(t.p, &mut attr));
+        assert_eq!(kn.kn_fflags().get(), 0, "no hint for a failed VOP_GETATTR");
+        assert_eq!(seen(stale), (changed.va_mtime, changed.va_ctime, 3, 0));
+        assert_eq!(attr.va_size, 20, "the poller's attributes kept");
+        // ESTALE: the cache invalidated, NOTE_DELETE posted, nothing recorded.
         nstale
             .n_attrstamp
             .store(gettime().wrapping_sub(1_000), Ordering::Relaxed);
-        let mut other = changed;
-        other.va_nlink = 9;
-        *TEST_GETATTR.lock().unwrap() = Some((Err(Errno::ESTALE), other));
-        assert!(nfs_kqpoll_pass(t.p));
+        *TEST_GETATTR.lock().unwrap() = Some((Err(Errno::ESTALE), gone));
+        assert!(nfs_kqpoll_pass(t.p, &mut attr));
         assert_eq!(nstale.n_attrstamp.load(Ordering::Relaxed), 0);
+        assert_eq!(kn.kn_fflags().get(), NOTE_DELETE);
         assert_eq!(seen(stale).2, 3);
         *TEST_GETATTR.lock().unwrap() = None;
-        nfs_kqunwatch(fresh);
-        nfs_kqunwatch(stale);
-        assert!(!nfs_kqpoll_pass(t.p), "nothing left to watch");
+        <NfsVnode as Filter<G>>::detach(kn);
+        crate::event::test_knote_drop(&kq, h);
+        assert!(!nfs_kqpoll_pass(t.p, &mut attr), "nothing left to watch");
         assert_eq!(kevq::<G>().read().pnfskq, None);
     }
 }
