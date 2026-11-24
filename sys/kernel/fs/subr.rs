@@ -2537,9 +2537,11 @@ mod tests {
     /// 2026-11-24) makes `nfs` a member the compiler places before `ufs` (at 112), so `ufs`
     /// sits at 41,432, measured with `nfsclient` alone and with `just test`'s features: the
     /// UFS tables themselves are unchanged, only their place in the glue's static moved.
+    /// N6.7a3: nfs's three vnode tables (`NfsVnops`, `NfsSpecVnops`, `NfsFifoVnops`, a byte
+    /// each) grow `nfs` by 8 bytes once aligned: `ufs` sits at 41,440.
     #[test]
     fn the_ufs_tables_stay_where_they_were_without_msdosfs() {
-        assert_eq!(core::mem::offset_of!(VfsTables<TestGlue>, ufs), 41_432);
+        assert_eq!(core::mem::offset_of!(VfsTables<TestGlue>, ufs), 41_440);
     }
 }
 /* </TESTS> */
