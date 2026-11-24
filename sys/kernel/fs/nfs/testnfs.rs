@@ -73,7 +73,7 @@ use crate::net::mbuf::{
 };
 use crate::net::proto::Protocol;
 use crate::net::socket::{SocketRef, sobind, soclose, socreate, solock, soreceive, sosend};
-use crate::netinet::in_proto::{InetDomain, TcpProtocol, UdpProtocol, inetsw_set};
+use crate::netinet::in_proto::{InetDomain, RipProtocol, TcpProtocol, UdpProtocol, inetsw_set};
 use crate::proc::{ProcGlue, Thread, process_alloc, thread_alloc};
 use crate::timeout::Timeout;
 
@@ -83,8 +83,13 @@ crate::test_proc_glue!(NfsGlue, NfsFiles);
 /// The fixture's glue.
 pub(crate) type G = NfsGlue;
 
-/// `inetsw[]` of the glue: the kernel's UDP and TCP.
-static SW: [&dyn Protocol<G>; 2] = [&UdpProtocol::<G>::NEW, &TcpProtocol::<G>::NEW];
+/// `inetsw[]` of the glue: the kernel's UDP and TCP, and (N6.7b2) the `IPPROTO_RAW` row
+/// (the nfs server's refusal of a raw socket).
+static SW: [&dyn Protocol<G>; 3] = [
+    &UdpProtocol::<G>::NEW,
+    &TcpProtocol::<G>::NEW,
+    &RipProtocol::<G>::RAW,
+];
 /// `domains[]` of the glue: the kernel's internet domain over [`SW`].
 static DOMS: [&dyn Domain<G>; 1] = [&InetDomain::<G>::NEW];
 
@@ -313,6 +318,7 @@ pub(crate) fn setup(uid: u32) -> Fixture {
     domains_set::<G>(&DOMS);
     crate::netinet::in_pcb::in_init::<G>();
     crate::netinet::udp_usrreq::udp_init::<G>();
+    crate::netinet::raw_ip::rip_init::<G>();
     crate::netinet::tcp_subr::tcp_test_reset::<G>();
     // The softnet's TCP input (`tcp_input_mlist_softnet`) is registered once per process,
     // by the first glue's `tcp_init`, and the kernel's TCP tests count on theirs
