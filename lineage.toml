@@ -6867,6 +6867,23 @@ status = "redesigned"
 notes = "N6.7a0 (D-10): rpcv2.h's constants, unchanged; bsd's nfs::rpcv2 re-exports this module"
 
 [[module]]
+rust = "sys/kernel/fs/nfs/krpc_subr.rs"
+crate = "kernel"
+lz = ["sys/nfs/krpc_subr.rs"]
+status = "redesigned"
+notes = "N6.7a4: the diskless boot's RPC over the kernel's UDP socket (socreate, sosetopt, sobind as proc0 for the reserved port, sosend of an m_copym, soreceive of the datagram, soclose on every path); the codecs on XdrReader/XdrWriter (every wire length the C's int compare first, a string checked whole against the chain before a byte is copied); the xid generator a Mutexed<Option<Idgen32Ctx>>. Built beside bsd's copy, unregistered: N6.7a5 switches nfs_mountroot to it"
+
+[[module.fn]]
+lz = "sys/nfs/krpc_subr.rs::KRPC_XID_MTX"
+native = ["KRPC_XID_CTX"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/nfs/krpc_subr.rs::KRPC_XID_CALLED"
+native = ["KRPC_XID_CTX"]
+kind = "merged"
+
+[[module]]
 rust = "sys/kernel/fs/nfs/nfs.rs"
 crate = "kernel"
 lz = ["sys/nfs/nfs.rs"]
@@ -6884,6 +6901,18 @@ native = ["NfsCounters::restore"]
 kind = "renamed"
 
 [[module]]
+rust = "sys/kernel/fs/nfs/nfs_boot.rs"
+crate = "kernel"
+lz = ["sys/nfs/nfs_boot.rs"]
+status = "redesigned"
+notes = "N6.7a4: RARP, bootparams (WHOAMI by broadcast CALLIT, GETFILE) and mountd over krpc_subr; the interface requests through the kernel's ifioctl over the structures' bytes, the broadcast address read under the shared net lock, nfsbootdevname a Mutexed copy; the mount arguments' pointers left NULL (the members are passed themselves); the C's !NFSCLIENT stubs not written (the module is nfsclient's). Built beside bsd's copy, unregistered until N6.7a5"
+
+[[module.fn]]
+lz = "sys/nfs/nfs_boot.rs::Ipv4"
+native = ["sys/kernel/netinet/if_ether.rs::InAddrFmt"]
+kind = "merged"
+
+[[module]]
 rust = "sys/kernel/fs/nfs/nfs_socket.rs"
 crate = "kernel"
 lz = ["sys/nfs/nfs_socket.rs"]
@@ -6896,6 +6925,13 @@ crate = "kernel"
 lz = ["sys/nfs/nfs_subs.rs"]
 status = "redesigned"
 notes = "N6.7a0: the XDR words, the type tables, NFSSTATS and txdr_nfsv2time (bsd's nfs_subs re-exports them for the server); the cursors' methods of nfs_subs.c: XdrWriter::{reqhead, from_uio (nfsm_uiotombuf), buftombuf, strtombuf, fhtom, v3attrbuild} over one append body, XdrReader::mbuftouio (each piece by the glue's uiomove_out); bsd's functions of the same work stay for its client until 7a5. N6.7a1: NFS_TICKS and nfs_init (the timer period and nfsreqpl; the server tables stay bsd's); nfsm_rpchead (the header in an XdrWriter over the m_align-ed packet header mbuf, the arguments linked behind; the request chain and its xid answered), nfs_get_xid (Mutexed<Option<Idgen32Ctx>>), NFSV2_PROCID, NFSV3_PROCID"
+
+[[module]]
+rust = "sys/kernel/fs/nfs/nfsdiskless.rs"
+crate = "kernel"
+lz = ["sys/nfs/nfsdiskless.rs"]
+status = "redesigned"
+notes = "N6.7a4: struct nfs_dlmount and nfs_diskless, generic over the glue's vnode (sw_vp); the arguments zeroed by hal::user::zeroed; nothing points into the structure"
 
 [[module]]
 rust = "sys/kernel/fs/nfs/nfsm_subs.rs"

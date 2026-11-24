@@ -318,8 +318,8 @@ hal::pin_adapter!(
 );
 
 /// A network-order IPv4 address printed as a dotted quad (what `inet_ntop(AF_INET, ...)`
-/// writes; see the module's deviations).
-struct InAddrFmt(InAddr);
+/// writes; see the module's deviations); also the diskless boot's (`kernel::fs::nfs`).
+pub(crate) struct InAddrFmt(pub(crate) InAddr);
 
 impl core::fmt::Display for InAddrFmt {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {

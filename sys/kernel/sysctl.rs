@@ -2571,6 +2571,20 @@ pub fn sysctl_proc_vmmap<G: ProcGlue>(
         "kern.proc_vmmap: fill_vmmap (uvm_glue.c)"
     ))
 }
+
+/// The host tests that write `hostname` or `domainname` (and their lengths) take this, so no
+/// two of them interleave their writes and reads (`kern.hostname`'s round trip here, the
+/// diskless boot's WHOAMI tests).
+#[cfg(test)]
+pub(crate) static NAMES_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// [`NAMES_TEST_LOCK`] taken, a panicking holder's poison ignored.
+#[cfg(test)]
+pub(crate) fn names_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    NAMES_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 /* </CODE> */
 
 /* <TESTS> */
@@ -3595,6 +3609,7 @@ mod tests {
 
     #[test]
     fn hostname_round_trips_under_the_lock() {
+        let _names = names_test_lock();
         let (_pr, p) = caller(5000, 0);
         let buf = testutil::USER_BASE + 0x6400;
         put(buf, b"emibsd.local");
