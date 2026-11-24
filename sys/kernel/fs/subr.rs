@@ -325,6 +325,9 @@ pub struct VfsTables<G: ProcGlue> {
     /// checks `ufs` did not move.
     #[cfg(feature = "fuse")]
     pub fuse: crate::fs::fuse::fusefs::FuseTables<G>,
+    /// nfs's globals (the pools "nfsreqpl" and "nfsnodepl"), N6.7a1: the last member; the
+    /// same layout test checks `ufs` did not move.
+    pub nfs: crate::fs::nfs::nfs::NfsTables<G>,
 }
 
 impl<G: ProcGlue> VfsTables<G> {
@@ -373,6 +376,7 @@ impl<G: ProcGlue> VfsTables<G> {
             tmpfs: crate::fs::tmpfs::tmpfs_vfsops::TmpfsTables::new(),
             #[cfg(feature = "fuse")]
             fuse: crate::fs::fuse::fusefs::FuseTables::new(),
+            nfs: crate::fs::nfs::nfs::NfsTables::new(),
         }
     }
 }
