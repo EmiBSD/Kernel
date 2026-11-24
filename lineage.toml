@@ -5836,8 +5836,8 @@ adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/init.rs", "sys/kernel/fs/
 rust = "sys/kern/vfs_subr.rs"
 lz = ["sys/kern/vfs_subr.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/sys/sysctl.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs", "sys/hal/sys/mount.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/fs/ufs/ufs/ufs_vfsops.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs"]
-notes = "N5.2: what stays bsd's of vfs_subr.c: the NFS server's export lists (vfs_hang_addrlist, vfs_free_netcred, vfs_free_addrlist, vfs_export, vfs_export_lookup, export_lookup: 12 unsafe, N6) and the shutdown trio (vfs_unmountall, vfs_shutdown, vfs_syncwait: sys_sync, dounmount and sr_quiesce are bsd's until N5.4/N7); its tests: setup, testfs, the vnode table's tests over the kernel with bsd's glue, the export list's"
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/sys/sysctl.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs", "sys/hal/sys/mount.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/fs/ufs/ufs/ufs_vfsops.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/export.rs"]
+notes = "N5.2: what stays bsd's of vfs_subr.c: the NFS server's export lists (vfs_hang_addrlist, vfs_free_netcred, vfs_free_addrlist, vfs_export, vfs_export_lookup, export_lookup: 12 unsafe, N6) and the shutdown trio (vfs_unmountall, vfs_shutdown, vfs_syncwait: sys_sync, dounmount and sr_quiesce are bsd's until N5.4/N7); its tests: setup, testfs, the vnode table's tests over the kernel with bsd's glue, the export list's; N6.7b0: the export lists are kernel::fs::export's (the 12 unsafe gone), the tests keep exports' helpers (sin, args over the user memory double, check_export over the table's checkexp) for the ffs, msdosfs, cd9660, udf and nfs tests"
 
 [[module]]
 rust = "sys/kern/vfs_syscalls.rs"
@@ -5850,7 +5850,7 @@ notes = "N5.4: an adapter of no logic over kernel::fs::syscalls: bsd's sysent[] 
 rust = "sys/kern/vfs_vops.rs"
 lz = ["sys/kern/vfs_vops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/default.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/lockf.rs"]
+adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/default.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/export.rs"]
 notes = "N5.2: the VOP_* names as thin adapters over kernel::fs::vops's vop_* (the C pointer as Cred, a lent buffer as IoBuf::Lent), impl Vnops for Vops and impl Vfs for Vfsops (the bridges Vnops and Vfs), the vop_generic_* operations of vfs_default.c the file systems' tables hold over kernel::fs::default, abortop_putname (the FileGlue abortop leg)"
 
 [[module]]
@@ -6457,7 +6457,9 @@ status = "inherited"
 [[module]]
 rust = "sys/net/radix.rs"
 lz = ["sys/net/radix.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/radix.rs"]
+notes = "N6.7b0: D-14's differential test against the kernel's tree (kernel::net::radix) in the tests, the code LZ's; pf and IPsec move onto the kernel's tree and this file goes at N6.7b1"
 
 [[module]]
 rust = "sys/net/route.rs"
@@ -6783,7 +6785,7 @@ adapted_by = ["sys/lib/libkern/siphash.rs"]
 rust = "sys/nfs/nfs_srvsubs.rs"
 lz = ["sys/nfs/nfs_srvsubs.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/fs/export.rs", "sys/kernel/fs/vops.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_subs.rs"
@@ -6806,7 +6808,7 @@ status = "inherited"
 rust = "sys/nfs/nfs_vfsops.rs"
 lz = ["sys/nfs/nfs_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/vnops.rs", "sys/hal/sys/mount.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/syscalls.rs", "sys/hal/sys/nfs_nfs.rs", "sys/kernel/fs/nfs/nfs.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/vnops.rs", "sys/hal/sys/mount.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/syscalls.rs", "sys/hal/sys/nfs_nfs.rs", "sys/kernel/fs/nfs/nfs.rs", "sys/kernel/fs/export.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_vnops.rs"
@@ -6865,6 +6867,23 @@ status = "redesigned"
 notes = "N6.7a0 (D-10): rpcv2.h's constants, unchanged; bsd's nfs::rpcv2 re-exports this module"
 
 [[module]]
+rust = "sys/kernel/fs/nfs/krpc_subr.rs"
+crate = "kernel"
+lz = ["sys/nfs/krpc_subr.rs"]
+status = "redesigned"
+notes = "N6.7a4: the diskless boot's RPC over the kernel's UDP socket (socreate, sosetopt, sobind as proc0 for the reserved port, sosend of an m_copym, soreceive of the datagram, soclose on every path); the codecs on XdrReader/XdrWriter (every wire length the C's int compare first, a string checked whole against the chain before a byte is copied); the xid generator a Mutexed<Option<Idgen32Ctx>>. Built beside bsd's copy, unregistered: N6.7a5 switches nfs_mountroot to it"
+
+[[module.fn]]
+lz = "sys/nfs/krpc_subr.rs::KRPC_XID_MTX"
+native = ["KRPC_XID_CTX"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/nfs/krpc_subr.rs::KRPC_XID_CALLED"
+native = ["KRPC_XID_CTX"]
+kind = "merged"
+
+[[module]]
 rust = "sys/kernel/fs/nfs/nfs.rs"
 crate = "kernel"
 lz = ["sys/nfs/nfs.rs"]
@@ -6882,11 +6901,23 @@ native = ["NfsCounters::restore"]
 kind = "renamed"
 
 [[module]]
+rust = "sys/kernel/fs/nfs/nfs_boot.rs"
+crate = "kernel"
+lz = ["sys/nfs/nfs_boot.rs"]
+status = "redesigned"
+notes = "N6.7a4: RARP, bootparams (WHOAMI by broadcast CALLIT, GETFILE) and mountd over krpc_subr; the interface requests through the kernel's ifioctl over the structures' bytes, the broadcast address read under the shared net lock, nfsbootdevname a Mutexed copy; the mount arguments' pointers left NULL (the members are passed themselves); the C's !NFSCLIENT stubs not written (the module is nfsclient's). Built beside bsd's copy, unregistered until N6.7a5"
+
+[[module.fn]]
+lz = "sys/nfs/nfs_boot.rs::Ipv4"
+native = ["sys/kernel/netinet/if_ether.rs::InAddrFmt"]
+kind = "merged"
+
+[[module]]
 rust = "sys/kernel/fs/nfs/nfs_socket.rs"
 crate = "kernel"
 lz = ["sys/nfs/nfs_socket.rs"]
 status = "redesigned"
-notes = "N6.7a1: the client's half of nfs_socket.c (D-5): nfs_connect (socreate for curproc, IP_PORTRANGE_LOW, sobind with proc0, soconnect and the 2 s waits), nfs_reconnect, nfs_disconnect, nfs_send and nfs_sndlock with the C's optional request (R1, for the server at 7b2), nfs_receive (no nfs_realign: the reader copies), nfs_reply (the match under one witness split into the list's part and PART_REQ), nfs_request (Request in, the C's two outputs: Option<Reply> and Result<(), NfsError>), nfs_timer (a reader per stretch, the place kept in a counted request handle across the copy and the send under solock_net), nfs_sigintr, the flag locks, nfs_msg over kernel::prf::tprintf; the server's half stays bsd's until 7b"
+notes = "N6.7a1: the client's half of nfs_socket.c (D-5): nfs_connect (socreate for curproc, IP_PORTRANGE_LOW, sobind with proc0, soconnect and the 2 s waits), nfs_reconnect, nfs_disconnect, nfs_send and nfs_sndlock with the C's optional request (R1, for the server at 7b2), nfs_receive (no nfs_realign: the reader copies), nfs_reply (the match under one witness split into the list's part and PART_REQ), nfs_request (Request in, the C's two outputs: Option<Reply> and Result<(), NfsError>), nfs_timer (a reader per stretch, the place kept in a counted request handle across the copy and the send under solock_net), nfs_sigintr, the flag locks, nfs_msg over kernel::prf::tprintf; the server's half stays bsd's until 7b; review fixes: ENOBUFS where hal's pools fail (LZ's), nfs_reply_match (the match on its own), the ignored mask read only when a signal of the set is pending, the mount's name mbuf lent (NfsMount::with_nam)"
 
 [[module]]
 rust = "sys/kernel/fs/nfs/nfs_subs.rs"
@@ -6894,6 +6925,13 @@ crate = "kernel"
 lz = ["sys/nfs/nfs_subs.rs"]
 status = "redesigned"
 notes = "N6.7a0: the XDR words, the type tables, NFSSTATS and txdr_nfsv2time (bsd's nfs_subs re-exports them for the server); the cursors' methods of nfs_subs.c: XdrWriter::{reqhead, from_uio (nfsm_uiotombuf), buftombuf, strtombuf, fhtom, v3attrbuild} over one append body, XdrReader::mbuftouio (each piece by the glue's uiomove_out); bsd's functions of the same work stay for its client until 7a5. N6.7a1: NFS_TICKS and nfs_init (the timer period and nfsreqpl; the server tables stay bsd's); nfsm_rpchead (the header in an XdrWriter over the m_align-ed packet header mbuf, the arguments linked behind; the request chain and its xid answered), nfs_get_xid (Mutexed<Option<Idgen32Ctx>>), NFSV2_PROCID, NFSV3_PROCID; N6.7a2: nfs_vfs_init (nfsnodepl recorded, nfskevqpl, the node hash's key), nfs_attrtimeo and nfs_getattrcache over the lent node and mount (the cache read once, written back only for a modified file's larger size), nfs_clearcommit (Mount::vnodes and vnode_dirty_for_each), the six commit range functions over one Range of a pair of words and its bit, nfs_test_reset"
+
+[[module]]
+rust = "sys/kernel/fs/nfs/nfsdiskless.rs"
+crate = "kernel"
+lz = ["sys/nfs/nfsdiskless.rs"]
+status = "redesigned"
+notes = "N6.7a4: struct nfs_dlmount and nfs_diskless, generic over the glue's vnode (sw_vp); the arguments zeroed by hal::user::zeroed; nothing points into the structure"
 
 [[module]]
 rust = "sys/kernel/fs/nfs/nfsm_subs.rs"
@@ -6974,7 +7012,7 @@ notes = "N6.7a2: the nfsiods' call-closed part: nfs_asyncdaemon[] as tids in Nfs
 rust = "sys/ntfs/ntfs.rs"
 lz = ["sys/ntfs/ntfs.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs"]
+adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/export.rs"]
 
 [[module]]
 rust = "sys/ntfs/ntfs_compr.rs"
@@ -7007,7 +7045,7 @@ adapted_by = ["sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs"]
 rust = "sys/ntfs/ntfs_vfsops.rs"
 lz = ["sys/ntfs/ntfs_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/export.rs"]
 
 [[module]]
 rust = "sys/ntfs/ntfs_vnops.rs"
@@ -8072,6 +8110,114 @@ kind = "dropped"
 reason = "a node goes back to the pool art_node when its last handle does: the unpublished node's drop (rtable_insert's duplicate) or the release of its retired heap words after a grace period (art_delete), which art_put's gc list then smr_barrier did"
 
 [[module]]
+rust = "sys/kernel/net/radix.rs"
+crate = "kernel"
+lz = ["sys/net/radix.rs"]
+status = "redesigned"
+notes = "N6.7b0: radix.h and radix.c as a tree that owns its nodes, keys and values (RadixTree<T, K>, D-3): a slot holds the C's treenodes[2], the K key bytes, the value and a generation; links are u32 indices (2 * slot the leaf, 2 * slot + 1 its internal node), the C's unions two shared words a node and one a record, mask references tagged; radix.c function by function under its names (rn_findmask is rn_addmask's search half, rn_delete_leaf rn_delete's unlinking half, shared with RadixTree::remove); a mask tree and annotation records per tree (D-4: no rn_init, rn_zeros, rn_ones, max_keylen, mask_rnhead or rtmask_pool); chunked storage behind a directory (Slab); the walk a cursor (first, next); D-7's short and long keys; a normal annotation names its leaf with its generation, so radix.c's dangling rm_leaf holds nothing (proposed D-20). bsd's sys/net/radix.rs stays for pf and IPsec until N6.7b1"
+
+[[module.fn]]
+lz = "sys/net/radix.rs::RadixNode::assign"
+native = []
+kind = "dropped"
+reason = "a node is a Copy value in its slot: rn_swap_nodes copies it whole (*to = *from), as the C"
+
+[[module.fn]]
+lz = "sys/net/radix.rs::RadixNode::default"
+native = []
+kind = "dropped"
+reason = "RadixNode::new is the zeroed node the slots start with; nothing asks for Default"
+
+[[module.fn]]
+lz = "sys/net/radix.rs::RadixNodeHead"
+native = ["RadixTree"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/radix.rs::RadixNodeHead::new"
+native = ["RadixTree::new"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/radix.rs::RadixNodeHead::default"
+native = []
+kind = "dropped"
+reason = "RadixTree::new takes the offset and the malloc type; nothing asks for Default"
+
+[[module.fn]]
+lz = "sys/net/radix.rs::RN_ZEROS"
+native = []
+kind = "dropped"
+reason = "D-4: no shared buffers; the left root's key is its slot's zeros, and rn_findmask's ones prefix is written into its key"
+
+[[module.fn]]
+lz = "sys/net/radix.rs::RN_ONES"
+native = []
+kind = "dropped"
+reason = "D-4: no shared buffers; the right root's key is its slot's ones, and a host route's mask in rn_satisfies_leaf is all ones by its absence"
+
+[[module.fn]]
+lz = "sys/net/radix.rs::MAX_KEYLEN"
+native = []
+kind = "dropped"
+reason = "D-4, D-7: each tree's key length is its type's K (rn_init's argument of its caller), not the largest of every caller's"
+
+[[module.fn]]
+lz = "sys/net/radix.rs::MASK_RNHEAD"
+native = ["RadixTree"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/radix.rs::RTMASK_POOL"
+native = ["RadixTree"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/radix.rs::at"
+native = []
+kind = "dropped"
+reason = "keys are K-byte arrays indexed in bounds; no raw byte read is left"
+
+[[module.fn]]
+lz = "sys/net/radix.rs::nd"
+native = []
+kind = "dropped"
+reason = "links are indices: Slab's n and nm reach a node"
+
+[[module.fn]]
+lz = "sys/net/radix.rs::bytes_eq"
+native = []
+kind = "dropped"
+reason = "keys are arrays: rn_insert, rn_match and rn_delete compare their byte ranges"
+
+[[module.fn]]
+lz = "sys/net/radix.rs::pair_node"
+native = []
+kind = "dropped"
+reason = "a leaf's internal node is the other half of its slot, index tt | 1 (the C's &tt[1])"
+
+[[module.fn]]
+lz = "sys/net/radix.rs::rn_initmask"
+native = ["RadixTree::inithead"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/radix.rs::rn_inithead"
+native = ["RadixTree::inithead"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/radix.rs::rn_init"
+native = ["RadixTree::new"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/radix.rs::rn_test_reset"
+native = []
+kind = "dropped"
+reason = "D-4: no global state to reset; each test's tree is its own"
+
+[[module]]
 rust = "sys/kernel/net/rtable.rs"
 crate = "kernel"
 lz = ["sys/net/rtable.rs"]
@@ -8908,8 +9054,8 @@ notes = "PROT_*, MAP_PRIVATE/MAP_ANON, MADV_*, MAP_INHERIT_* and MCL_CURRENT/MCL
 rust = "sys/sys/mount.rs"
 lz = ["sys/sys/mount.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/hal/sys/mount.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/vops.rs", "sys/kernel/file.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/ufs/mfs/mfs_vfsops.rs", "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs", "sys/kernel/fs/msdosfs/msdosfs_vfsops.rs", "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs", "sys/kernel/fs/isofs/udf/udf_vfsops.rs", "sys/kernel/fs/tmpfs/tmpfs_vfsops.rs", "sys/kernel/fs/fuse/fuse_vfsops.rs"]
-notes = "N5.2: Mount and Vfsconf the aliases of the kernel's, the VFS_* names over kernel::fs::vops, VFS_CHECKEXP through the table as bsd knows it (as_any), struct vfsops of fn members (kern/vfs_vops.rs implements the kernel's Vfs on it); keeps struct netcred/netexport with their 2 Sync impls (the export list's, kern/vfs_subr.rs, N6); N5.4: the ten *_args and export_args are hal's (sys/hal/sys/mount.rs, D-N5.4-3), re-exported here for the file systems' from_bytes sites, and their 3 read_unaligned went with them"
+adapted_by = ["sys/kernel/cred.rs", "sys/hal/sys/mount.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/vops.rs", "sys/kernel/file.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/ufs/mfs/mfs_vfsops.rs", "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs", "sys/kernel/fs/msdosfs/msdosfs_vfsops.rs", "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs", "sys/kernel/fs/isofs/udf/udf_vfsops.rs", "sys/kernel/fs/tmpfs/tmpfs_vfsops.rs", "sys/kernel/fs/fuse/fuse_vfsops.rs", "sys/kernel/fs/export.rs"]
+notes = "N5.2: Mount and Vfsconf the aliases of the kernel's, the VFS_* names over kernel::fs::vops, VFS_CHECKEXP through the table as bsd knows it (as_any), struct vfsops of fn members (kern/vfs_vops.rs implements the kernel's Vfs on it); keeps struct netcred/netexport with their 2 Sync impls (the export list's, kern/vfs_subr.rs, N6; N6.7b0: gone to kernel::fs::export with VFS_CHECKEXP and BsdMountG, vfs_checkexp answering the kernel's ExportGrant); N5.4: the ten *_args and export_args are hal's (sys/hal/sys/mount.rs, D-N5.4-3), re-exported here for the file systems' from_bytes sites, and their 3 read_unaligned went with them"
 
 [[module]]
 rust = "sys/sys/mplock.rs"
@@ -9396,6 +9542,40 @@ lz = "sys/sys/mount.rs::Mount::default"
 native = []
 kind = "dropped"
 reason = "a mount is made by vfs_mount_alloc only, never freed and recycled (D-N5.2-2); Mount::new is private and test doubles use Mount::new_unpooled"
+
+[[module]]
+rust = "sys/kernel/fs/export.rs"
+crate = "kernel"
+lz = ["sys/kern/vfs_subr.rs", "sys/sys/mount.rs", "sys/ufs/ufs/ufs_vfsops.rs"]
+status = "redesigned"
+notes = "N6.7b0: the NFS server's export lists (NFSSERVER, kernel feature nfsserver): struct netcred as Netcred (the value an MBox of M_NETADDR the kernel's radix tree carries; no node pair, no leaf cast, no netc_len), struct netexport as Netexport (a kernel-lock cell of the default entry and the RadixTree<MBox<Netcred>, 16>), the mount's own member Mount::export (ntfs's ntm_export one too); vfs_hang_addrlist in the C's order, every sleep before the witness; vfs_free_addrlist drops the tree; vfs_export, vfs_export_lookup (the grant by value, ExportGrant, D-6); check is ufs_check_export's body (msdosfs's and cd9660's the same); Netexport::clear where a UFS-like mountfs malloc(M_ZERO)s its structure; the switch (Vfs::checkexp, Mount::export) with N6.7b0's next commit"
+
+[[module.fn]]
+lz = "sys/sys/mount.rs::VFS_CHECKEXP"
+native = []
+kind = "dropped"
+reason = "the export check is each table's checkexp (Vfs::checkexp, D-5), which the NFS server calls through mp.op() as for every other slot; the dispatch by the mount's type name and the as_any downcast to bsd's Vfsops went with it"
+
+[[module.fn]]
+lz = "sys/kern/vfs_subr.rs::KEYLEN_PAD"
+native = []
+kind = "dropped"
+reason = "D-7: the radix tree keeps K-byte copies of its keys, zero-padded, so no slack is read behind an entry's address"
+
+[[module.fn]]
+lz = "sys/kern/vfs_subr.rs::vfs_free_netcred"
+native = ["vfs_free_addrlist"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/vfs_subr.rs::export_lookup"
+native = ["vfs_export_lookup"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/ufs_vfsops.rs::ufs_check_export"
+native = ["check"]
+kind = "renamed"
 
 [[module]]
 rust = "sys/kernel/fs/spec.rs"
@@ -10954,8 +11134,8 @@ kind = "merged"
 
 [[module.fn]]
 lz = "sys/msdosfs/msdosfs_vfsops.rs::msdosfs_check_export"
-native = ["sys/ufs/ufs/ufs_vfsops.rs::ufs_check_export"]
-kind = "merged"
+native = ["MsdosfsVfs::checkexp"]
+kind = "renamed"
 
 [[module]]
 rust = "sys/kernel/fs/msdosfs/msdosfs_vnops.rs"
@@ -11243,8 +11423,8 @@ kind = "renamed"
 
 [[module.fn]]
 lz = "sys/isofs/udf/udf_vfsops.rs::udf_checkexp"
-native = ["sys/sys/mount.rs::VFS_CHECKEXP"]
-kind = "merged"
+native = ["UdfVfs::checkexp"]
+kind = "renamed"
 [[module]]
 rust = "sys/kernel/fs/isofs/udf/udf_vnops.rs"
 crate = "kernel"
@@ -11891,8 +12071,8 @@ kind = "merged"
 
 [[module.fn]]
 lz = "sys/miscfs/fuse/fuse_vfsops.rs::fusefs_checkexp"
-native = ["sys/sys/mount.rs::VFS_CHECKEXP"]
-kind = "merged"
+native = ["FusefsVfs::checkexp"]
+kind = "renamed"
 
 [[module]]
 rust = "sys/kernel/fs/isofs/cd9660/iso.rs"
@@ -12058,8 +12238,8 @@ lines = "L615-L696"
 
 [[module.fn]]
 lz = "sys/isofs/cd9660/cd9660_vfsops.rs::cd9660_check_export"
-native = ["sys/ufs/ufs/ufs_vfsops.rs::ufs_check_export"]
-kind = "merged"
+native = ["Cd9660Vfs::checkexp"]
+kind = "renamed"
 
 [[module]]
 rust = "sys/kernel/fs/isofs/cd9660/cd9660_vnops.rs"
@@ -12702,7 +12882,7 @@ status = "inherited"
 rust = "sys/sys/vnode.rs"
 lz = ["sys/sys/vnode.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/vnode.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/getcwd.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/tmpfs/tmpfs_vfsops.rs"]
+adapted_by = ["sys/kernel/vm/vnode.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/getcwd.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/tmpfs/tmpfs_vfsops.rs", "sys/kernel/fs/export.rs"]
 notes = "N5.2: the face of kernel::fs::vnode for the bsd file systems: Vnode the alias of the kernel's Vnode<BsdProcGlue>, VnodeG (v_nc_tree, v_cache_dst, v_socket, si_lockf: bsd's members, LZ's unsafe impl Sync moved onto it from struct vnode, decision 2), the struct vop_*_args and struct vops of Option<fn> slots (kern/vfs_vops.rs implements the kernel's Vnops on it), cred_ref (2 unsafe, LZ's; gone at N5.5a2c: a_cred is the kernel's Cred, read through Cred::ucred), vfs_subr.c's names over kernel::fs::subr (wrappers where the glue cannot be inferred), set_vops; Vnode::data_as (LZ's unsafe data<T>, no callers) deleted; N5.3: VnodeG narrowed to v_socket (the name cache's heads and the device's record locks are the kernel vnode's); the vn_* functions and vfs_getcwd_common the kernel's, VNOPS bsd's table of the kernel's vnode file operations, vn_fsizechk's adapter (the uio's thread pinned)"
 
 [[module]]
@@ -12715,7 +12895,7 @@ status = "inherited"
 rust = "sys/ufs/ffs/ffs_vfsops.rs"
 lz = ["sys/ufs/ffs/ffs_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs", "sys/kernel/fs/ufs/ufs/ufs_ihash.rs", "sys/kernel/fs/ufs/ufs/ufs_dirhash.rs", "sys/kernel/fs/ufs/ufs/ufs_quota.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/ufs/ufs/ufs_vnops.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/msdosfs/msdosfs_vfsops.rs", "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs", "sys/kernel/fs/isofs/udf/udf_vfsops.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs", "sys/kernel/fs/ufs/ufs/ufs_ihash.rs", "sys/kernel/fs/ufs/ufs/ufs_dirhash.rs", "sys/kernel/fs/ufs/ufs/ufs_quota.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/ufs/ufs/ufs_vnops.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/msdosfs/msdosfs_vfsops.rs", "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs", "sys/kernel/fs/isofs/udf/udf_vfsops.rs", "sys/kernel/fs/export.rs"]
 notes = "N5.5b2: an adapter of no logic but ffs_mountroot over the kernel's (bsd's ROOTDEV and the machine's swapdev until N7), and in its TESTS the fixture bsd's nfs, quota and dirhash tests mount an FFS image with (over the kernel's newfs; mfs's tests are the kernel's since N5.5b3), the export tests (decision 43's ufs bench until N5.5b3, the kernel's benches/fs.rs ffs rows since), since N5.7c3 msdosfs's export test (the kernel's msdosfs over this disk and bsd's glue, VFS_CHECKEXP's MOUNT_MSDOS arm), and since N5.8c2 cd9660's export test (MOUNT_CD9660's arm) and the CD label spoof's test (subr_disk.rs's shell over the kernel's iso_volume_label, through this disk's strategy), and since N5.8u2 udf's two (a_udf_volume_refuses_every_export, MOUNT_UDF's arm; a_udf_volume_gets_a_disk_label, the UDF label spoof's shell over the kernel's udf_volume_id); the file system is the kernel's sys/kernel/fs/ufs/ffs/ffs_vfsops.rs"
 
 [[module]]
@@ -12766,12 +12946,6 @@ rust = "sys/ufs/ufs/ufs_quota.rs"
 lz = ["sys/ufs/ufs/ufs_quota.rs"]
 status = "adapted"
 adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs", "sys/kernel/fs/ufs/ufs/ufs_quota.rs"]
-
-[[module]]
-rust = "sys/ufs/ufs/ufs_vfsops.rs"
-lz = ["sys/ufs/ufs/ufs_vfsops.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/ufs/ufs/ufs_vfsops.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs", "sys/kernel/fs/ufs/ufs/ufs_quota.rs", "sys/kernel/fs/mount.rs"]
 
 [[module]]
 rust = "sys/hal/vm/param.rs"
@@ -18147,6 +18321,7 @@ reason = "N5.8u1-u2: the kernel udf's test fixtures (host tests and benches only
 rust = "sys/kernel/fs/tmpfs/testtmpfs.rs"
 crate = "kernel"
 reason = "N5.9t1, completed at N5.9t2: the kernel tmpfs's test fixture (host tests and benches only, cfg(any(test, feature = doubles))): TEST_TMPFS_CONF, the set-up (16 MiB of pages, the kernel maps, the test thread, tmpfs_init), the mount arguments' bytes (LZ's tmpfs_vfsops tests' args), a mount over no device and the same made the root (setup_root, testffs::make_root; LZ's tmpfs_vnops tests' setup_root); t1's stand-in vnode table gone for the real ones (TmpfsTables); no OpenBSD or LZ source"
+
 [[extra]]
 rust = "sys/kernel/fs/nfs/testnfs.rs"
 crate = "kernel"

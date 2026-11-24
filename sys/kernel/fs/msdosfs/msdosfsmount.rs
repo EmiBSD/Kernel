@@ -73,10 +73,10 @@
 //!
 //! ## Deviations
 //! - `pm_export` (`struct netexport`) is not a member: the export list of every kernel file
-//!   system's mount is the mount's glue member (`MountG`, `bsd`'s `BsdMountG.export`, the UFS
-//!   mounts' since N5.5b0), which `msdosfs_mount` updates through `FileGlue::vfs_export` and
-//!   `msdosfs_mountfs` starts empty through `FileGlue::ufs_export_init` (N5.7c3); the C keeps
-//!   it here whether or not `NFSSERVER` is configured.
+//!   system's mount is the mount's own (`Mount::export`, `kernel::fs::export`, N6.7b0; the
+//!   glue's member from N5.7c3), which `msdosfs_mount` updates through `vfs_export` and
+//!   `msdosfs_mountfs` empties (`Netexport::clear`); the C keeps it here whether or not
+//!   `NFSSERVER` is configured.
 //! - The `pm_BytesPerSec`, ... shorthands of `pm_bpb` are methods with the macros' names
 //!   ([`bpb_shorthand!`]); `msdosfs_mountfs` assigns the members of `pm_bpb` before the
 //!   structure is published.

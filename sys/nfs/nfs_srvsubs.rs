@@ -83,9 +83,11 @@
 //! - `nfsrv_fhtovp` reads the client's `struct sockaddr_in` out of the address mbuf with an
 //!   unaligned copy; an address mbuf shorter than a `sockaddr_in` fails the privileged port
 //!   check (`NFSERR_AUTHERR | AUTH_TOOWEAK`) rather than being read past its end. It takes the
-//!   exported file system's credentials (`VFS_CHECKEXP`'s `credanon`, a pointer into the
-//!   export list) as the C does; a null one cannot happen with the file systems of this tree
-//!   and fails with `EACCES` rather than being dereferenced.
+//!   exported file system's rights by value (N6.7b0, D-6: the file system's `Vfs::checkexp`
+//!   answers a `kernel::fs::export::ExportGrant`, the export flags and the anonymous ids
+//!   copied under the kernel lock's reader), where the C reads the anonymous credentials
+//!   through a pointer into the export entry after `VFS_FHTOVP`'s sleeps, in which a
+//!   `MNT_DELEXPORT` may free it.
 //! - `nfsm_adj` clamps the null fill to the mbuf's data (the C would write before it if
 //!   `nul > m_len`; its callers never ask for that).
 //! - `netaddr_match` returns a `bool`.
@@ -111,7 +113,7 @@ use crate::nfs::xdr_subs::{
 };
 use crate::sys::errno::Errno;
 use crate::sys::mbuf::{Mbuf, mtod};
-use crate::sys::mount::{Fhandle, MNT_EXPORTANON, MNT_EXRDONLY, VFS_CHECKEXP, VFS_FHTOVP};
+use crate::sys::mount::{Fhandle, MNT_EXPORTANON, MNT_EXRDONLY, VFS_FHTOVP};
 use crate::sys::namei::vfs_lookup;
 use crate::sys::namei::{
     HASBUF, ISSYMLINK, LOCKPARENT, NOCROSSMOUNT, Nameidata, RDONLY, SAVENAME, SAVESTART,
@@ -122,7 +124,7 @@ use crate::sys::socket::{AF_INET, SOCK_STREAM};
 use crate::sys::syslimits::NGROUPS_MAX;
 use crate::sys::time::Timespec;
 use crate::sys::types::{SaFamily, major, minor};
-use crate::sys::ucred::{Ucred, UcredCell};
+use crate::sys::ucred::UcredCell;
 use crate::sys::vnode::{VA_UTIMES_CHANGE, VA_UTIMES_NULL, VFIFO, Vattr, Vnode};
 use crate::sys::vnode::{vfs_getvfs, vput, vref, vrele};
 
@@ -397,7 +399,8 @@ pub fn nfsm_srvfattr(nfsd: &NfsrvDescript, vap: &Vattr) -> NfsFattr {
 /// vnode (locked when `lockflag`) and says whether its export is read-only.
 ///
 /// - looks the file system id up in the mount list (`ESTALE` when it is not there);
-/// - gets the export rights by calling `VFS_CHECKEXP()` and the vnode by `VFS_FHTOVP()`;
+/// - gets the export rights from the file system's `vfs_checkexp` (by value) and the vnode by
+///   `VFS_FHTOVP()`;
 /// - refuses clients that do not come from a reserved port (`NFSERR_AUTHERR |
 ///   AUTH_TOOWEAK`), and on a stream socket the ftp-data port 20;
 /// - if `cred`'s uid is 0 or the export maps everyone (`MNT_EXPORTANON`), sets `cred`'s uid,
@@ -415,9 +418,9 @@ pub fn nfsrv_fhtovp(
     let Some(mp) = vfs_getvfs(&fhp.fh_fsid) else {
         return Err(Errno::ESTALE.as_i32());
     };
-    let mut exflags = 0;
-    let mut credanon: *const Ucred = ptr::null();
-    VFS_CHECKEXP(mp, nam, &mut exflags, &mut credanon).map_err(Errno::as_i32)?;
+    // The client's rights, by value (D-6): nothing below reads the export entry, which a
+    // `MNT_DELEXPORT` may free while `VFS_FHTOVP` sleeps.
+    let grant = mp.op().checkexp(mp, nam).map_err(Errno::as_i32)?;
     let vp = VFS_FHTOVP(mp, &fhp.fh_fid).map_err(Errno::as_i32)?;
 
     let saddr = sockaddr_in_of(nam);
@@ -440,24 +443,17 @@ pub fn nfsrv_fhtovp(
     }
 
     // Check/setup credentials.
-    if cred.cr_uid.get() == 0 || exflags & MNT_EXPORTANON != 0 {
-        // SAFETY: `VFS_CHECKEXP` stored the address of the `netc_anon` of the export entry it
-        // matched (`ufs_check_export` & co.), which lives as long as the export list does;
-        // the list is not changed while this request is served (single kernel lock).
-        let Some(anon) = (unsafe { credanon.as_ref() }) else {
-            vput(vp);
-            return Err(Errno::EACCES.as_i32());
-        };
-        cred.set_uid(anon.cr_uid.get());
-        cred.set_gid(anon.cr_gid.get());
+    if cred.cr_uid.get() == 0 || grant.exflags & MNT_EXPORTANON != 0 {
+        cred.set_uid(grant.uid);
+        cred.set_gid(grant.gid);
         let mut i = 0;
-        while i < anon.cr_ngroups.get() as usize && i < NGROUPS_MAX {
-            cred.set_group(i, anon.cr_groups[i].get());
+        while i < grant.ngroups as usize && i < NGROUPS_MAX {
+            cred.set_group(i, grant.groups[i]);
             i += 1;
         }
         cred.set_ngroups(i as i16);
     }
-    let rdonly = exflags & MNT_EXRDONLY != 0;
+    let rdonly = grant.exflags & MNT_EXRDONLY != 0;
     if !lockflag {
         let _ = VOP_UNLOCK(vp);
     }
@@ -873,7 +869,10 @@ mod tests {
         use crate::kern::vfs_subr::tests::exports::{args, sin};
         use crate::kern::vfs_syscalls::{sys_mkdir, sys_mount, sys_open, sys_symlink};
         use crate::sys::fcntl::{O_CREAT, O_RDWR};
-        use crate::sys::mount::{MNT_EXPORTED, MNT_EXRDONLY, MNT_UPDATE, UfsArgs, VFS_VPTOFH};
+        use crate::sys::mount::{
+            MNT_DELEXPORT, MNT_EXPORTANON, MNT_EXPORTED, MNT_EXRDONLY, MNT_UPDATE, UfsArgs,
+            VFS_VPTOFH,
+        };
         use crate::sys::namei::{FOLLOW, LOCKLEAF, LOOKUP, NiDirp};
         use crate::sys::namei::{namei, ndinit};
         use crate::ufs::ffs::ffs_vfsops::tests::{
@@ -1041,7 +1040,7 @@ mod tests {
         let (r, _, _) = run(&stale, 1, &[b"f\0\0\0"], client, LOCKLEAF);
         assert_eq!(r, Err(Errno::ESTALE.as_i32()));
 
-        // A client outside the export list: EACCES from VFS_CHECKEXP.
+        // A client outside the export list: EACCES from the file system's vfs_checkexp.
         let outsider = nam([10, 0, 3, 9], 700);
         let (r, _, _) = run(&dirfh, 1, &[b"f\0\0\0"], outsider, LOCKLEAF);
         assert_eq!(r, Err(Errno::EACCES.as_i32()));
@@ -1077,6 +1076,37 @@ mod tests {
         assert_eq!((user.cr_uid.get(), user.cr_gid.get()), (1000, 1000));
         vput(vp);
         let (vp, _) = nfsrv_fhtovp(&filefh, false, &user, &slp, client).expect("a vnode");
+        vrele(vp);
+
+        // -mapall (MNT_EXPORTANON, no -ro): a non-root caller takes the export's ids too, with
+        // its groups, and the export is not read-only (the grant by value, N6.7b0).
+        let mut all = args(
+            MNT_DELEXPORT | MNT_EXPORTED | MNT_EXPORTANON,
+            4242,
+            Some(net),
+            Some(mask),
+        );
+        all.ex_anon.cr_ngroups = 2;
+        all.ex_anon.cr_groups[..2].copy_from_slice(&[7, 8]);
+        let ua = UfsArgs {
+            fspec: 0,
+            export_info: all,
+        };
+        let ub =
+            crate::kern::vfs_subr::tests::user_buf(hal::user::bytes_of(core::slice::from_ref(&ua)));
+        sys(
+            sys_mount,
+            p,
+            &[path(b"ffs\0"), path(b"/\0"), MNT_UPDATE as usize, ub.addr()],
+        )
+        .unwrap();
+        let (vp, rdonly) = nfsrv_fhtovp(&filefh, false, &user, &slp, client).expect("a vnode");
+        assert!(!rdonly, "exported read-write");
+        assert_eq!(
+            (user.cr_uid.get(), user.cr_gid.get(), user.cr_ngroups.get()),
+            (4242, 4242, 2)
+        );
+        assert_eq!((user.cr_groups[0].get(), user.cr_groups[1].get()), (7, 8));
         vrele(vp);
 
         // A sockaddr shorter than a sockaddr_in is not vouched for.

@@ -22,19 +22,26 @@
 //! `bsd`'s and switched on by its last (D-1).
 //!
 //! Headers: `nfs` (`nfs.h`), `nfsproto` (`nfsproto.h`), `xdr_subs` (`xdr_subs.h`),
-//! `nfsm_subs` (`nfsm_subs.h`), `nfsmount` (`nfsmount.h`), `nfsnode` (`nfsnode.h`); files:
-//! `nfs_socket` (the client's half), `nfs_subs`, and the call-closed part of the file
-//! system's half (N6.7a2): `nfs_node`, `nfs_bio`, `nfs_kq`, `nfs_syscalls` (the nfsiods). Userland's headers are `hal::sys`'s images (`nfs_nfs`, `nfs_nfsproto`,
-//! `nfs_rpcv2`), re-exported by the modules of the same name.
+//! `nfsm_subs` (`nfsm_subs.h`), `nfsmount` (`nfsmount.h`), `nfsnode` (`nfsnode.h`),
+//! `nfsdiskless` (`nfsdiskless.h`); files: `nfs_socket` (the client's half), `nfs_subs`, the
+//! diskless boot's `krpc_subr` and `nfs_boot` (N6.7a4, `option NFSCLIENT` only), and the
+//! call-closed part of the file system's half (N6.7a2): `nfs_node`, `nfs_bio`, `nfs_kq`,
+//! `nfs_syscalls` (the nfsiods). Userland's headers are `hal::sys`'s images (`nfs_nfs`,
+//! `nfs_nfsproto`, `nfs_rpcv2`), re-exported by the modules of the same name.
 
+#[cfg(feature = "nfsclient")]
+pub mod krpc_subr;
 #[allow(clippy::module_inception)] // OpenBSD's layout: sys/nfs/nfs.h
 pub mod nfs;
 pub mod nfs_bio;
+#[cfg(feature = "nfsclient")]
+pub mod nfs_boot;
 pub mod nfs_kq;
 pub mod nfs_node;
 pub mod nfs_socket;
 pub mod nfs_subs;
 pub mod nfs_syscalls;
+pub mod nfsdiskless;
 pub mod nfsm_subs;
 pub mod nfsmount;
 pub mod nfsnode;

@@ -692,8 +692,12 @@ impl Vfs<BsdProcGlue> for Vfsops {
         }
     }
 
-    fn as_any(&self) -> Option<&dyn core::any::Any> {
-        Some(self)
+    fn checkexp(
+        &self,
+        mp: &'static Mount,
+        nam: &crate::sys::mbuf::Mbuf,
+    ) -> Result<kernel::fs::export::ExportGrant, Errno> {
+        (self.vfs_checkexp)(mp, nam)
     }
 }
 
@@ -1445,7 +1449,7 @@ mod tests {
             vhit(11);
             Ok(())
         }),
-        vfs_checkexp: |_, _, _, _| Ok(()),
+        vfs_checkexp: |_, _| Err(Errno::EOPNOTSUPP),
     };
 
     static COUNTING_CONF: Vfsconf = Vfsconf::new(&COUNTING_VFSOPS, b"countfs", 97, MNT_LOCAL, 0);
@@ -1484,12 +1488,6 @@ mod tests {
         assert_eq!(ops.init(&COUNTING_CONF), Ok(()));
         let mut oldlen = 0;
         assert_eq!(ops.sysctl(&[1], 0, &mut oldlen, 0, 0, p), Ok(()));
-        // The table as bsd knows it, for the NFS server's vfs_checkexp.
-        assert!(
-            ops.as_any()
-                .and_then(|a| a.downcast_ref::<Vfsops>())
-                .is_some_and(|o| ptr::eq(o, &COUNTING_VFSOPS))
-        );
         assert_eq!(VFS_HITS.load(Ordering::SeqCst), (1 << 12) - 1);
         let _ = vrele(vp);
     }

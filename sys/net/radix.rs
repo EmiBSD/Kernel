@@ -2062,5 +2062,237 @@ mod tests {
         assert_eq!(r, Ok(()));
         assert!(walk(h).is_empty());
     }
+
+    /// An entry of the differential test: the node pair, the key and the mask the tree keeps
+    /// pointers to, and the value the kernel's tree carries for it.
+    struct DiffEntry {
+        nodes: [RadixNode; 2],
+        key: [u8; 32],
+        mask: Option<[u8; 32]>,
+        id: u32,
+    }
+
+    /// xorshift64*: the differential test's generator, deterministic from its seed.
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x >> 12;
+            x ^= x << 25;
+            x ^= x >> 27;
+            self.0 = x;
+            x.wrapping_mul(0x2545_f491_4f6c_dd1d)
+        }
+
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+    }
+
+    /// A key from a small universe of bytes, so keys collide and share prefixes.
+    fn diff_addr(rng: &mut Rng) -> [u8; 4] {
+        let mut pick = || [0u8, 1, 10, 0x80, 0xc0, 0xfe, 0xff][rng.below(7)];
+        [pick(), pick(), pick(), pick()]
+    }
+
+    /// A mask: contiguous, non-contiguous or from the universe, its length byte 16 or
+    /// shorter (normalisation trims either way).
+    fn diff_mask(rng: &mut Rng) -> [u8; 32] {
+        let m = match rng.below(3) {
+            0 => {
+                let plen = rng.below(33) as u32;
+                (if plen == 0 {
+                    0
+                } else {
+                    u32::MAX << (32 - plen)
+                })
+                .to_be_bytes()
+            }
+            1 => (rng.next() as u32).to_be_bytes(),
+            _ => diff_addr(rng),
+        };
+        let mut k = sin(m);
+        k[0] = [16, 16, 16, 8, 7, 6, 5][rng.below(7)];
+        k
+    }
+
+    /// D-14 (N6.7b0): the same random operations on this tree and on the kernel's
+    /// (`kernel::net::radix::RadixTree`, keys of `rn_init`'s 28 bytes from the address's
+    /// offset): every add's success, every delete's and match's route, every lookup's and
+    /// every walk's order compared, walks that delete the route they visit included. Keys
+    /// masked or not, masks contiguous or not, duplicated keys. The only operation left out is
+    /// a delete without a mask of the key of zeros, the left root's, which the C's `KASSERT`
+    /// refuses and the kernel's tree answers `None` (its `## Deviations`). Run by N6.7b0's
+    /// redesigner and again by N6.7b1's before this file goes; the comparisons it makes are
+    /// printed with `--nocapture`.
+    #[test]
+    fn the_kernel_tree_answers_as_this_one() {
+        use kernel::net::radix::RadixTree;
+        let _g = setup();
+        const SEEDS: u64 = 200;
+        let mut compared = 0u64;
+        let mut stopped = 0u64;
+        let mut ids = 0u32;
+        for seed in 1..=SEEDS {
+            let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+            let h = head();
+            let mut k: RadixTree<u32, 28> = RadixTree::new(SIN_ADDR_OFF as usize, M_RTABLE);
+            let mut live: Vec<&'static DiffEntry> = Vec::new();
+            let id_of = |live: &[&'static DiffEntry], rn: Option<&RadixNode>| {
+                rn.map(|rn| {
+                    live.iter()
+                        .find(|e| ptr::eq(rn, &e.nodes[0]))
+                        .map_or(u32::MAX, |e| e.id)
+                })
+            };
+            for step in 0..400 {
+                let ctx = std::format!("seed {seed} step {step}");
+                match rng.below(12) {
+                    0..=3 => {
+                        let mask = (rng.below(4) != 0).then(|| diff_mask(&mut rng));
+                        let mut key = sin(diff_addr(&mut rng));
+                        if let Some(m) = mask
+                            && rng.below(3) != 0
+                        {
+                            for i in 4..8 {
+                                key[i] &= m[i];
+                            }
+                        }
+                        ids += 1;
+                        let e: &'static DiffEntry = Box::leak(Box::new(DiffEntry {
+                            nodes: [RadixNode::new(), RadixNode::new()],
+                            key,
+                            mask,
+                            id: ids,
+                        }));
+                        let mp = e.mask.as_ref().map_or(ptr::null(), |m| m.as_ptr());
+                        // SAFETY: the key, the mask and the nodes are leaked, so they stay put
+                        // for as long as the tree holds them.
+                        let rn = unsafe { rn_addroute(e.key.as_ptr(), mp, h, &e.nodes, 0) };
+                        let ours = rn.is_some_and(|rn| ptr::eq(rn, &e.nodes[0]));
+                        let theirs = k.add(&e.key, e.mask.as_ref().map(|m| &m[..]), e.id);
+                        assert_eq!(ours, theirs.is_ok(), "{ctx}: add");
+                        if ours {
+                            live.push(e);
+                        }
+                    }
+                    4..=5 => {
+                        // A live route's key and mask, or a random pair.
+                        let (key, mask) = if !live.is_empty() && rng.below(4) != 0 {
+                            let e = live[rng.below(live.len())];
+                            (e.key, e.mask)
+                        } else {
+                            let mask = (rng.below(3) != 0).then(|| diff_mask(&mut rng));
+                            (sin(diff_addr(&mut rng)), mask)
+                        };
+                        if mask.is_none() && key[4..8] == [0; 4] {
+                            continue;
+                        }
+                        let mp = mask.as_ref().map_or(ptr::null(), |m| m.as_ptr());
+                        // SAFETY: a local key and mask, read during the call; the routes are
+                        // the leaked entries.
+                        let rn = unsafe { rn_delete(key.as_ptr(), mp, h, None) };
+                        let ours = id_of(&live, rn);
+                        let theirs = k.delete(&key, mask.as_ref().map(|m| &m[..]));
+                        assert_eq!(ours, theirs, "{ctx}: delete");
+                        if let Some(id) = ours {
+                            live.retain(|e| e.id != id);
+                        }
+                    }
+                    6..=8 => {
+                        let key = sin(diff_addr(&mut rng));
+                        // SAFETY: a local key, read during the call.
+                        let rn = unsafe { rn_match(key.as_ptr(), h) };
+                        assert_eq!(id_of(&live, rn), k.matches(&key).copied(), "{ctx}: match");
+                    }
+                    9..=10 => {
+                        let mask = (rng.below(3) != 0).then(|| diff_mask(&mut rng));
+                        let key = sin(diff_addr(&mut rng));
+                        let mp = mask.as_ref().map_or(ptr::null(), |m| m.as_ptr());
+                        // SAFETY: a local key and mask, read during the call.
+                        let rn = unsafe { rn_lookup(key.as_ptr(), mp, h) };
+                        assert_eq!(
+                            id_of(&live, rn),
+                            k.lookup(&key, mask.as_ref().map(|m| &m[..])).copied(),
+                            "{ctx}: lookup"
+                        );
+                    }
+                    _ => {
+                        // The walk, deleting every third route it visits (by its key and mask,
+                        // which radix.c may refuse) on both trees.
+                        let delete = rng.below(4) == 0;
+                        let mut ours = Vec::new();
+                        let mut ours_del = Vec::new();
+                        let mut n = 0;
+                        let r = rn_walktree(h, |rn, _| {
+                            let id = id_of(&live, Some(rn)).unwrap_or(u32::MAX);
+                            ours.push(id);
+                            n += 1;
+                            if delete && n % 3 == 0 {
+                                let e = live.iter().find(|e| e.id == id).expect("ours");
+                                let mp = e.mask.as_ref().map_or(ptr::null(), |m| m.as_ptr());
+                                // SAFETY: the visited route's own key and mask: the one leaf
+                                // the walk lets its function delete.
+                                let d = unsafe { rn_delete(e.key.as_ptr(), mp, h, None) };
+                                ours_del.push(id_of(&live, d));
+                            }
+                            Ok(())
+                        });
+                        assert_eq!(r, Ok(()));
+                        let mut theirs = Vec::new();
+                        let mut theirs_del = Vec::new();
+                        let mut n = 0;
+                        let mut repaired = false;
+                        let mut c = k.first();
+                        while let Some(l) = c {
+                            c = k.next(l);
+                            let id = *k.get(l).expect("a live route");
+                            theirs.push(id);
+                            n += 1;
+                            if delete && n % 3 == 0 {
+                                let e = live.iter().find(|e| e.id == id).expect("ours");
+                                theirs_del.push(k.delete(&e.key, e.mask.as_ref().map(|m| &m[..])));
+                                // A delete that repaired (D-20) leaves this tree's
+                                // annotation dangling and the kernel's sound: the walks
+                                // are compared up to it, and the seed stops below.
+                                if k.repairs() != 0 {
+                                    repaired = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if repaired {
+                            assert_eq!(ours.get(..theirs.len()), Some(&theirs[..]), "{ctx}: walk");
+                            assert_eq!(
+                                ours_del.get(..theirs_del.len()),
+                                Some(&theirs_del[..]),
+                                "{ctx}: the walk's deletes"
+                            );
+                        } else {
+                            assert_eq!(ours, theirs, "{ctx}: walk");
+                            assert_eq!(ours_del, theirs_del, "{ctx}: the walk's deletes");
+                        }
+                        live.retain(|e| !ours_del.contains(&Some(e.id)));
+                    }
+                }
+                compared += 1;
+                // radix.c can leave a normal route's annotation naming a route it deleted
+                // (`rm_leaf` set by `rn_add_radix_mask` to a route of a non-normal mask,
+                // which `rn_del_radix_mask` then reads as a mask's annotation): this tree
+                // then reads freed nodes, where the kernel's repairs the delete (D-20, its
+                // deviations). The two are compared up to the first repair only.
+                if k.repairs() != 0 {
+                    stopped += 1;
+                    break;
+                }
+            }
+        }
+        std::println!(
+            "radix differential: {compared} operations compared, {ids} routes offered, \
+             {stopped} of {SEEDS} seeds stopped at the first D-20 repair"
+        );
+        assert!(compared > SEEDS * 100, "most of the operations compared");
+    }
 }
 /* </TESTS> */

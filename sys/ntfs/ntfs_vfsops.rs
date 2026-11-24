@@ -143,16 +143,17 @@ use crate::sys::namei::{namei, ndinit};
 use crate::sys::proc::Proc;
 use crate::sys::systm::INFSLP;
 use crate::sys::types::{Ino, Uid, major};
-use crate::sys::ucred::{FSCRED, NOCRED, Ucred};
+use crate::sys::ucred::{FSCRED, NOCRED};
 use crate::sys::vnode::vn_lock;
 use crate::sys::vnode::{
     FORCECLOSE, SKIPSYSTEM, V_SAVE, VBAD, VBLK, VDIR, VNON, VREG, VROOT, VSYSTEM, VT_NTFS, Vnode,
     Vtype,
 };
 use crate::sys::vnode::{
-    copy_statfs_info, getnewvnode, vcount, vflush, vfs_export, vfs_export_lookup, vfs_mountedon,
-    vget, vinvalbuf, vput, vref, vrele,
+    copy_statfs_info, getnewvnode, vcount, vflush, vfs_mountedon, vget, vinvalbuf, vput, vref,
+    vrele,
 };
+use kernel::fs::export::{ExportGrant, vfs_export, vfs_export_lookup};
 
 /// `VG_DONTLOADIN`: tells `ntfs_vgetex` to do not call `ntfs_loadntnode()` on ntnode, even if
 /// ntnode not loaded.
@@ -180,23 +181,12 @@ pub static NTFS_VFSOPS: Vfsops = Vfsops {
 };
 
 /// `ntfs_checkexp` (`vfs_checkexp`): verify a remote client has export rights and return
-/// these rights via `exflagsp` and `credanonp`.
-pub fn ntfs_checkexp(
-    mp: &'static Mount,
-    nam: &Mbuf,
-    exflagsp: &mut i32,
-    credanonp: &mut *const Ucred,
-) -> Result<(), Errno> {
+/// these rights (by value: the kernel's `ExportGrant`, N6.7b0).
+pub fn ntfs_checkexp(mp: &'static Mount, nam: &Mbuf) -> Result<ExportGrant, Errno> {
     let ntm = VFSTONTFS(mp);
 
     // Get the export permission structure for this <mp, client> tuple.
-    let Some(np) = vfs_export_lookup(mp, &ntm.ntm_export, Some(nam)) else {
-        return Err(Errno::EACCES);
-    };
-
-    *exflagsp = np.netc_exflags.get();
-    *credanonp = ptr::from_ref(&*np.netc_anon);
-    Ok(())
+    vfs_export_lookup(mp, &ntm.ntm_export, Some(nam)).ok_or(Errno::EACCES)
 }
 
 /// `ntfs_sysctl` (`vfs_sysctl`).

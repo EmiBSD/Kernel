@@ -148,8 +148,8 @@
 //!   does. `bsd`'s file systems keep their `static` tables of the old shape: `bsd` implements
 //!   the trait on its `Vops` (packing the argument structures), so every
 //!   `getnewvnode(tag, mp, &FOO_VOPS)` keeps its spelling. `struct vfsops` the same, as
-//!   [`Vfs<G>`] (the C's 13 members; `vfs_checkexp` is the NFS server's and stays `bsd`'s,
-//!   reached through [`Vfs::as_any`]).
+//!   [`Vfs<G>`] (the C's 13 members; `vfs_checkexp`, the NFS server's, is [`Vfs::checkexp`]
+//!   since N6.7b0, the client's export rights by value, D-6).
 //! - `struct ucred *a_cred` with its `NOCRED`/`FSCRED` sentinels is [`Cred`], an enum of the
 //!   three sentinels and a borrowed real credential (N5.5a2c; LZ's `cred_ref`, the one
 //!   `unsafe` deref of `sys/sys/vnode.rs`, is its safe [`Cred::ucred`]): `bsd`'s `struct
@@ -173,11 +173,13 @@ use hal::sys::types::{Daddr, Ino, Register, Uid};
 use hal::sys::unistd::{_PC_ASYNC_IO, _PC_PATH_MAX, _PC_PIPE_BUF, _PC_PRIO_IO, _PC_SYNC_IO};
 
 use super::buf::{Buf, BufRef};
+use super::export::ExportGrant;
 use super::mount::{Mount, Vfsconf};
 use super::vnode::{VBIOERROR, VDIR, VNODE_MTX, Vattr, Vnode};
 use crate::assert::{kassert, kpanic};
 use crate::cred::Ucred;
 use crate::event::Knote;
+use crate::net::mbuf::Mbuf;
 use crate::proc::{ProcGlue, Thread};
 use crate::uio::Uio;
 
@@ -660,11 +662,10 @@ pub trait Vfs<G: ProcGlue>: Sync + 'static {
     ) -> Result<(), Errno> {
         Err(Errno::EOPNOTSUPP)
     }
-    /// The table as `bsd` knows it (its `Vfsops`: `vfs_checkexp`, the NFS server's), `None`
-    /// for the kernel's.
-    fn as_any(&self) -> Option<&dyn core::any::Any> {
-        None
-    }
+    /// `vfs_checkexp(mp, nam, ...)`: the export rights of the NFS client at `nam` (its
+    /// `struct sockaddr` mbuf) on `mp`, by value ([`ExportGrant`], D-6: the C's export flags
+    /// and anonymous credentials, which it hands out as a pointer into the export entry).
+    fn checkexp(&self, mp: &'static Mount<G>, nam: &Mbuf) -> Result<ExportGrant, Errno>;
 }
 
 /// `KASSERT(p == curproc)`.

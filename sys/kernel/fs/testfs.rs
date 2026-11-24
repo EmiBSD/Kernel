@@ -1173,6 +1173,14 @@ impl Vfs<TestGlue> for TestFs {
         fid.fid_data[..4].copy_from_slice(&(n.idx as u32).to_ne_bytes());
         Ok(())
     }
+    /// No exports.
+    fn checkexp(
+        &self,
+        _mp: &'static Mount<TestGlue>,
+        _nam: &crate::net::mbuf::Mbuf,
+    ) -> Result<super::export::ExportGrant, Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
 }
 
 /// The configured types of the tests: the test file system alone.
