@@ -76,8 +76,9 @@
 //!   `krpc_call` takes the request body by value (it is always freed: the C leaves it to the
 //!   caller on the failures before the header is made and leaves `*data` dangling on the
 //!   later ones) and returns the reply body; the broadcast's sender address goes to `from_p`
-//!   on success. A reply freed on an error path after it arrived is not leaked as in the C.
-//!   `retries` of -1 loops "forever" as in C.
+//!   on success. A failed `socreate` returns at once: the C goes to `out:` and `soclose`s the
+//!   uninitialised `so`. A reply freed on an error path after it arrived is not leaked as in
+//!   the C. `retries` of -1 loops "forever" as in C.
 //! - `krpc_call` and `krpc_portmap` take the calling thread: the kernel's `socreate` and
 //!   `sosetopt` name it where the C's read `curproc`. The bind is still `proc0`'s.
 //! - The server address is copied into the name mbuf for at most `sizeof(struct
@@ -138,6 +139,7 @@ use crate::net::mbuf::{
 use crate::net::socket::{
     Socket, sobind, soclose, socreate, solock_shared, soreceive, sosend, sosetopt,
 };
+use crate::netinet::if_ether::InAddrFmt;
 use crate::prf::printf;
 use crate::proc::{ProcGlue, Thread};
 use crate::sys::errno::Errno;
@@ -466,15 +468,10 @@ fn krpc_exchange<G: ProcGlue>(
         if timo < MAX_RESEND_DELAY {
             timo += 1;
         } else {
-            let a = sa.sin_addr.s_addr;
-            let b = a.to_ne_bytes();
             printf(format_args!(
-                "RPC timeout for server {}.{}.{}.{} (0x{:x}) prog {}\n",
-                b[0],
-                b[1],
-                b[2],
-                b[3],
-                u32::from_be(a),
+                "RPC timeout for server {} (0x{:x}) prog {}\n",
+                InAddrFmt(sa.sin_addr),
+                u32::from_be(sa.sin_addr.s_addr),
                 prog
             ));
         }
@@ -915,16 +912,21 @@ pub(crate) mod testkrpc {
         m
     }
 
-    /// The test domain and UDP (`testudp`), `proc0` recorded (the first test's root thread:
-    /// any root thread will do), and an interface `krpc<n>` at 10.77.n.1/24 whose packets go
-    /// to the returned wire.
+    /// The test domain and UDP (`testudp`), `proc0` recorded (this test thread's root thread,
+    /// once per thread: a test glue's process tables are the thread's, `test_proc_glue!`),
+    /// and an interface `krpc<n>` at 10.77.n.1/24 whose packets go to the returned wire.
     pub(crate) fn setup(
         name: &[u8],
         n: u8,
     ) -> (MutexGuard<'static, ()>, &'static Thread<G>, &'static Wire) {
         let (g, p) = testudp::setup();
         crate::testutil::install();
-        G::tables().proc0_test_install(hal::pin::pin_static(p));
+        std::thread_local! {
+            static PROC0: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+        }
+        if !PROC0.with(|m| m.replace(true)) {
+            G::tables().set_process0(p.process(), hal::pin::pin_static(p));
+        }
         let wire: &'static Wire = std::boxed::Box::leak(std::boxed::Box::default());
         let _ifp = testinet::iface_with(name, [10, 77, n, 1], wire);
         (g, p, wire)

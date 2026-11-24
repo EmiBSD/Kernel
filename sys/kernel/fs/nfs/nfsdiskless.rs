@@ -76,8 +76,7 @@
 //!   `NfsDiskless` held a `&'static Vnode` of `bsd`'s. The arguments are the image's zeroed
 //!   value (`hal::user::zeroed`), and the structure is generic over the glue whose vnode
 //!   `sw_vp` is (`Option<&'static Vnode<G>>`); nothing in it points into itself, so it may
-//!   move (LZ's had to stay put once `nfs_boot_getfh` had pointed the arguments at its
-//!   members).
+//!   move.
 
 use hal::sys::mount::{MNAMELEN, NfsArgs};
 use hal::sys::netinet_in::SockaddrIn;

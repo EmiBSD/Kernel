@@ -6905,6 +6905,11 @@ lz = ["sys/nfs/nfs_boot.rs"]
 status = "redesigned"
 notes = "N6.7a4: RARP, bootparams (WHOAMI by broadcast CALLIT, GETFILE) and mountd over krpc_subr; the interface requests through the kernel's ifioctl over the structures' bytes, the broadcast address read under the shared net lock, nfsbootdevname a Mutexed copy; the mount arguments' pointers left NULL (the members are passed themselves); the C's !NFSCLIENT stubs not written (the module is nfsclient's). Built beside bsd's copy, unregistered until N6.7a5"
 
+[[module.fn]]
+lz = "sys/nfs/nfs_boot.rs::Ipv4"
+native = ["sys/kernel/netinet/if_ether.rs::InAddrFmt"]
+kind = "merged"
+
 [[module]]
 rust = "sys/kernel/fs/nfs/nfs_socket.rs"
 crate = "kernel"

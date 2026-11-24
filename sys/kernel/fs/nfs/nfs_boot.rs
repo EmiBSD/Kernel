@@ -87,9 +87,11 @@
 //!   the cursor copies across mbufs (a mount reply whose first mbuf is empty after the RPC
 //!   header's strip is read, not refused). The sender's address of the WHOAMI reply is read
 //!   only when the name holds it (the C reads it unchecked).
-//! - The remote path (`host:path`) keeps its NUL inside `ndm_host`: with a server name of
+//! - The remote path (`host:path`) is never written past `ndm_host`: with a server name of
 //!   `MNAMELEN - 1` bytes the C stores the `:` in the last byte and the NUL one byte past the
-//!   array (the handle's first byte); here the `:` replaces the name's last byte.
+//!   array (the handle's first byte); here the `:` is stored and the NUL is not, so the name
+//!   reads as the C's does when the handle's first byte was 0 (readers copy at most
+//!   `MNAMELEN` bytes), and the handle is kept.
 //! - `NFS_BOOT_OPTIONS` and `NFS_BOOT_RWSIZE` (kernel config options, not defined in
 //!   `GENERIC`) are not configured.
 //! - The interface's first Internet address is read under the shared net lock (the C walks
@@ -101,9 +103,10 @@
 //!   through the raw `ifioctl` (`*mut c_void` data, 3 `unsafe`), and kept `nfsbootdevname` in
 //!   a `StaticCell`. A request is built with an [`XdrWriter`] and a reply read with one
 //!   [`XdrReader`]; the interface requests go through the kernel's `ifioctl` over the
-//!   structures' bytes (`hal::pod`); the device name is a `Mutexed` copy. The reply parsers
-//!   are their own functions (`bp_whoami_reply`, `bp_getfile_reply`, `md_mount_reply`) so
-//!   that the host tests drive them with a chain.
+//!   structures' bytes (`hal::pod`); the device name is a `Mutexed` copy; LZ's `Ipv4` printer
+//!   is `if_ether`'s `InAddrFmt`. The reply parsers are their own functions
+//!   (`bp_whoami_reply`, `bp_getfile_reply`, `md_mount_reply`) so that the host tests drive
+//!   them with a chain.
 //! - `nfs_boot_getfh` leaves the mount arguments' `addr`, `fh` and `hostname` `NULL`: the C
 //!   points them at the members of the same `nfs_dlmount` for `mountnfs`, which reads them in
 //!   the kernel and stores `NULL` in `mount_info` (C:nfs/nfs_vfsops.c:655-658); the kernel's
@@ -136,7 +139,7 @@ use crate::net::if_::{if_put, if_unit, ifioctl};
 use crate::net::if_var::Ifnet;
 use crate::net::mbuf::{Mbuf, MbufBox};
 use crate::net::socket::{soclose, socreate};
-use crate::netinet::if_ether::revarpwhoami;
+use crate::netinet::if_ether::{InAddrFmt, revarpwhoami};
 use crate::netinet::in_var::InIfaddr;
 use crate::prf::{Str, printf};
 use crate::proc::{ProcGlue, Thread};
@@ -149,16 +152,6 @@ use crate::sysctl::{
 /// `nfsbootdevname`: the name of the root device when booting from the network (a NUL-padded
 /// copy of `rootdv->dv_xname`), set by `setroot()` through [`set_nfsbootdevname`].
 static NFSBOOTDEVNAME: Mutexed<Option<[u8; IFNAMSIZ]>> = Mutexed::new(IPL_NONE, None);
-
-/// An IPv4 address in network order, as `inet_ntop` prints it.
-struct Ipv4(InAddr);
-
-impl core::fmt::Display for Ipv4 {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let b = self.0.s_addr.to_ne_bytes();
-        write!(f, "{}.{}.{}.{}", b[0], b[1], b[2], b[3])
-    }
-}
 
 /// `nfsbootdevname = rootdv->dv_xname` (`setroot()` in `subr_disk.c`): remembers the
 /// network device the root file system is on (its name up to a NUL, cut to `IFNAMSIZ - 1`).
@@ -235,7 +228,7 @@ pub fn nfs_boot_init<G: ProcGlue>(nd: &mut NfsDiskless<G>, procp: &Thread<G>) ->
             "reverse arp not answered by rarpd(8) or dhcpd(8)"
         ));
     };
-    printf(format_args!("nfs_boot: client_addr={}\n", Ipv4(my_ip)));
+    printf(format_args!("nfs_boot: client_addr={}\n", InAddrFmt(my_ip)));
 
     // Do enough of ifconfig(8) so that the chosen interface can talk to the servers. (just
     // set the address)
@@ -285,7 +278,7 @@ pub fn nfs_boot_init<G: ProcGlue>(nd: &mut NfsDiskless<G>, procp: &Thread<G>) ->
     with_hostname(|hostname| {
         printf(format_args!(
             "nfs_boot: server_addr={} hostname={}\n",
-            Ipv4(bp_sin.sin_addr),
+            InAddrFmt(bp_sin.sin_addr),
             Str(hostname)
         ))
     });
@@ -386,10 +379,16 @@ pub fn nfs_boot_getfh<G: ProcGlue>(
 }
 
 /// The tail of `nfs_boot_getfh`: appends `:` and `pathname` to the server name in `host`,
-/// cut to fit `MNAMELEN` (the remote path `getmntinfo(3)` shows).
+/// cut to fit `MNAMELEN` (the remote path `getmntinfo(3)` shows). A name that fills the
+/// array but its last byte leaves no room for the NUL: the `:` takes that byte and the NUL
+/// is not written (the C writes it one byte past the array; readers copy at most
+/// `MNAMELEN` bytes).
 fn remote_path(host: &mut [u8; MNAMELEN], pathname: &[u8]) {
     let endp = MNAMELEN - 1;
-    let mut dp = cstr(host).len().min(endp - 1);
+    let mut dp = cstr(host).len();
+    if dp >= MNAMELEN {
+        return;
+    }
     host[dp] = b':';
     dp += 1;
     for &c in pathname {
@@ -399,7 +398,9 @@ fn remote_path(host: &mut [u8; MNAMELEN], pathname: &[u8]) {
         host[dp] = c;
         dp += 1;
     }
-    host[dp] = 0;
+    if dp < MNAMELEN {
+        host[dp] = 0;
+    }
 }
 
 /// `bp_whoami(bpsin, my_ip, gw_ip)`: RPC bootparam/whoami: given the client IP address, gets
@@ -662,9 +663,11 @@ mod tests {
     use crate::fs::nfs::nfsm_subs::{nfsm_rndup, test_chain};
     use crate::netinet::udp_usrreq::testudp;
 
-    /// The names `f` sees, `kernel::sysctl`'s, put back after (the WHOAMI tests store theirs).
+    /// The names `f` sees, `kernel::sysctl`'s, put back after (the WHOAMI tests store theirs),
+    /// under the lock of the tests that write them (`kern.hostname`'s round trip).
     fn with_names_saved(f: impl FnOnce()) {
         use core::sync::atomic::Ordering::Relaxed;
+        let _names = crate::sysctl::names_test_lock();
         let h = with_hostname(|h| h.to_vec());
         let hl = HOSTNAMELEN.load(Relaxed);
         let d = with_domainname_mut(|d| d.to_vec());
@@ -698,11 +701,12 @@ mod tests {
         assert_eq!(cstr(&h).len(), MNAMELEN - 1);
         assert_eq!(h[MNAMELEN - 1], 0);
         // A name that fills the array (MNAMELEN - 1 bytes, the decode's limit): the `:` takes
-        // its last byte, nothing is written past it (the C writes the NUL one byte past).
+        // its last byte and no NUL is written (the C writes it one byte past the array).
         let mut h = [b'n'; MNAMELEN];
         h[MNAMELEN - 1] = 0;
         remote_path(&mut h, b"/x");
-        assert_eq!(h[MNAMELEN - 2..], [b':', 0]);
+        assert_eq!(h[MNAMELEN - 2..], [b'n', b':']);
+        assert_eq!(cstr(&h).len(), MNAMELEN);
     }
 
     #[test]
@@ -846,7 +850,7 @@ mod tests {
     }
 
     #[test]
-    fn the_broadcast_address_is_the_first_internet_addresss() {
+    fn the_broadcast_address_is_the_first_internet_address() {
         let (_g, _p) = testudp::setup();
         let (ifp, _d) = crate::netinet::in_pcb::testinet::iface(b"nfsb0", [10, 77, 30, 1]);
         assert_eq!(

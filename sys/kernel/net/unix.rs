@@ -2825,7 +2825,6 @@ pub(crate) mod tests {
     pub(crate) type G = TestGlue;
     pub(crate) type So = SocketRef<G>;
 
-    /// The tests' domains: the UNIX domain alone.
     /// The glue's domains: UNIX, and the Internet test domain with UDP (`testinet`'s, for the
     /// kernel's own sockets of the diskless boot's tests, N6.7a4).
     static DOMS: [&dyn Domain<G>; 2] =
@@ -2837,7 +2836,7 @@ pub(crate) mod tests {
     const URECV: usize = USER_BASE + 0x3_0000;
 
     /// The test thread with its descriptor table and root, the mbufs, the socket pools and
-    /// the UNIX domain.
+    /// the glue's domains.
     pub(crate) fn setup() -> (MutexGuard<'static, ()>, &'static Thread<G>) {
         let (g, p) = test_thread_cached(64 << 20, 64);
         testutil::kernel_maps_install();

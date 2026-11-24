@@ -1390,17 +1390,6 @@ impl<G: ProcGlue> ProcTables<G> {
         }
     }
 
-    /// Records `p` as process 0's thread (and its process) when `main`'s are not recorded
-    /// yet, the host tests' stand-in for `main` (a kernel request that acts as `proc0`, the
-    /// diskless boot's reserved-port bind); a later call keeps the first.
-    #[cfg(any(test, feature = "doubles"))]
-    pub fn proc0_test_install(&self, p: Pin<&'static Thread<G>>) {
-        if self.proc0.get().is_none() {
-            let _ = self.process0.set(p.get_ref().process());
-            let _ = self.proc0.set(p);
-        }
-    }
-
     /// `proc0` (`panic(9)` before `main` recorded it).
     pub fn proc0(&self) -> Pin<&'static Thread<G>> {
         match self.proc0.get() {

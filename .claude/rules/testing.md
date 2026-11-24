@@ -37,6 +37,12 @@ Four tiers. Every change lands with the tier it belongs to.
    sets forgotten, the debug ring zeroed), called by the kernel's TCP fixture (`testtcp::setup`)
    before `tcp_init`, and (N6.6a5, `bsd`'s tests run the kernel's TCP over their glue) by
    `bsd`'s `setup_net` (`pub` under the `doubles` feature, as `igmp_test_reset`); the server cache by `nfsrv_initcache` in the nfs tests' setup.
+   Process 0 is recorded once per test thread for a test glue that needs it (`set_process0`
+   behind a `thread_local!` flag: a `test_proc_glue!` glue's process tables are the
+   thread's; the diskless boot's `testkrpc` for `TestGlue`, `testnfs` for its own glue): the
+   thread recorded is a pool item of that test's memory, leaked with it, which is harmless as
+   a test global because leaked memory is never freed or reused and `proc0` is only read (its
+   credential for `suser`), never freed through or grown from.
 2. **Reference-backed tests**: `just test-ref`. Marked `#[ignore]`; they read `$OPENBSD_SRC`
    (set by the recipe to `reference/openbsd-src`) and cross-check constants against the C headers
    (`errno.h`, `param.h`, syscall numbers). They parse simple `#define` lines, nothing more.

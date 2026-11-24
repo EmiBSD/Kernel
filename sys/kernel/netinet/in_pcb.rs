@@ -3115,8 +3115,8 @@ pub(crate) mod testinet {
 
     /// The test domain: `AF_INET`, whose sockets the net lock serialises.
     pub(crate) struct InetDom;
-    /// Its datagram protocol (`IPPROTO_UDP`), without user requests: the tests call the pcb
-    /// functions themselves.
+    /// A datagram protocol (`IPPROTO_UDP`) of the domain without user requests, not among
+    /// its protocols: the pcb tests' sockets, whose pcb functions the tests call themselves.
     struct UdpProto;
 
     /// The domain's protocols, what `socreate(AF_INET, SOCK_DGRAM)` finds (the UNIX domain
