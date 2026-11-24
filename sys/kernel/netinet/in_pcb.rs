@@ -262,9 +262,10 @@
 //!   union of `inp_options` and `inp_outputopts6` is two members here, as in LZ).
 //! - N6.6a0 (D-15): the IPv4 options are the kernel's cell, a `hal::slot::LoanSlot` of the
 //!   chain (an mbuf chain is not `Sync`, so not a `ReadMostly`), lent by [`Inpcb::options`]
-//!   under the socket lock's check and freed by [`in_pcbdetach`]; `bsd`'s transports reach
-//!   it through their adapter's loans (`InpcbLegacy`). The re-keying of the pcb's `[s]`
-//!   members to `so_lock`'s witness is N6.6b's.
+//!   under the socket lock's check and freed by [`in_pcbdetach`]; `bsd`'s transports reached
+//!   it through their adapter's loans (`InpcbLegacy`) until the last of them, raw IP, moved
+//!   (N6.6b1). The re-keying of the pcb's `[s]` members to `so_lock`'s witness is N12's
+//!   (D-10 of N6.6b).
 //! - N6.6b1 (D-7): the ICMPv6 filter (`inp_icmp6filt`, the C's `malloc(M_PCB)` of 32 bytes
 //!   per raw IPv6 socket behind a pointer, `bsd`'s word until then) is eight atomic words in
 //!   the pcb and a flag published after them ([`Inpcb::icmp6filt`]): set once to pass-all by

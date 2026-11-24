@@ -142,12 +142,11 @@ use core::mem::size_of;
 
 use crate::kern::subr_prf::panic;
 use crate::net::if_::net_held;
-use crate::netinet::in_pcb::{InpNotifyFn, Inpcb, Inpcbtable, inp_static, sotoinpcb};
+use crate::netinet::in_pcb::{InpNotifyFn, Inpcb, Inpcbtable, inp_static};
 use crate::netinet6::in6::{In6Addr, SockaddrIn6};
 use crate::sys::errno::Errno;
 use crate::sys::mbuf::{Mbuf, mut_of};
 use crate::sys::proc::Proc;
-use crate::sys::socketvar::Socket;
 use kernel::netinet::in_pcb as k;
 use kernel::netinet6::in6_pcb as k6;
 
@@ -227,28 +226,6 @@ pub fn in6_setsockaddr(inp: &Inpcb, nam: &Mbuf) {
 /// services the getpeername(2) call.
 pub fn in6_setpeeraddr(inp: &Inpcb, nam: &Mbuf) {
     set_nam6(nam, k6::in6_setpeeraddr(inp));
-}
-
-/// `sotoinpcb(so)` of a socket the C knows to be attached.
-fn inpcb_of(so: &Socket) -> &'static Inpcb {
-    match sotoinpcb(so) {
-        Some(inp) => inp,
-        None => panic(format_args!("socket {:p}: no inpcb", so)),
-    }
-}
-
-/// `in6_sockaddr`: the `pru_sockaddr` of the IPv6 protocols.
-pub fn in6_sockaddr(so: &'static Socket, nam: &'static Mbuf) -> Result<(), Errno> {
-    in6_setsockaddr(inpcb_of(so), nam);
-
-    Ok(())
-}
-
-/// `in6_peeraddr`: the `pru_peeraddr` of the IPv6 protocols.
-pub fn in6_peeraddr(so: &'static Socket, nam: &'static Mbuf) -> Result<(), Errno> {
-    in6_setpeeraddr(inpcb_of(so), nam);
-
-    Ok(())
 }
 
 /// `in6_pcbnotify(table, dst, fport_arg, src, lport_arg, rtable, cmd, cmdarg, notify)`: the
@@ -368,6 +345,9 @@ pub(crate) mod tests {
     use std::boxed::Box;
     use std::vec::Vec;
     use std::{assert, assert_eq};
+
+    use crate::netinet::in_pcb::sotoinpcb;
+    use crate::sys::socketvar::Socket;
 
     use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
