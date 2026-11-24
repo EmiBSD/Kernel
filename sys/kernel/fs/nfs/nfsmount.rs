@@ -83,8 +83,10 @@
 //!   count; the C embeds it.
 //! - `nm_nam`, the server's address, is the `sockaddr`'s bytes ([`NfsNam`]): written once at
 //!   mount, read without a lock; a call that needs it as a name mbuf (`soconnect`, a send on
-//!   an `NFSMNT_NOCONN` socket) makes one ([`NfsNam::mbuf`]). An `Mbuf` holds `Cell`s, so a
-//!   chain shared by every thread of the mount would need an exclusive witness per read.
+//!   an `NFSMNT_NOCONN` socket) borrows the mount's own, made at the first such call and lent
+//!   from a `LoanSlot` ([`NfsMount::with_nam`]: two claims of the slot, no allocation), or a
+//!   copy while another call holds it. An `Mbuf` holds `Cell`s, so a chain shared by every
+//!   thread of the mount at once would need an exclusive witness per read.
 //! - `nm_verf` is one atomic word of the verifier's eight bytes, read and written whole.
 
 use core::sync::atomic::{AtomicI32, AtomicU16, AtomicU64, Ordering};
@@ -93,13 +95,14 @@ use hal::malloc::{MArc, MBox};
 use hal::once::OnceStatic;
 use hal::pinlist::PinList;
 use hal::rwlock::Guarded;
+use hal::slot::LoanSlot;
 
 use super::nfs::{NFS_MAX_TIMER, RChain};
 use super::nfsproto::NFSX_V3WRITEVERF;
 use crate::assert::kpanic;
 use crate::fs::mount::Mount;
 use crate::fs::vnode::Vnode;
-use crate::net::mbuf::{MLEN, MT_SONAME, MbufBox, m_get};
+use crate::net::mbuf::{MLEN, MT_SONAME, Mbuf, MbufBox, m_get};
 use crate::net::socket::SocketRef;
 use crate::proc::ProcGlue;
 use crate::timeout::Timeout;
@@ -179,6 +182,9 @@ pub struct NfsMount<G: ProcGlue> {
     pub nm_soflags: AtomicI32,
     /// `nm_nam`: addr of server.
     pub nm_nam: NfsNam,
+    /// `nm_nam` as a name mbuf, made at its first use and lent to each call that takes one
+    /// ([`NfsMount::with_nam`]).
+    nm_namm: LoanSlot<Option<MbufBox>>,
     /// `nm_timeo`: init timer for `NFSMNT_DUMBTIMR`.
     pub nm_timeo: AtomicI32,
     /// `nm_retry`: max retries.
@@ -232,6 +238,7 @@ impl<G: ProcGlue> NfsMount<G> {
             nm_soproto: AtomicI32::new(0),
             nm_soflags: AtomicI32::new(0),
             nm_nam: nam,
+            nm_namm: LoanSlot::new(None),
             nm_timeo: AtomicI32::new(0),
             nm_retry: AtomicI32::new(0),
             nm_srtt: [const { AtomicI32::new(0) }; NFS_MAX_TIMER],
@@ -249,6 +256,18 @@ impl<G: ProcGlue> NfsMount<G> {
             nm_acdirmin: AtomicU16::new(0),
             nm_acdirmax: AtomicU16::new(0),
         }
+    }
+
+    /// `f(nmp->nm_nam)`: the server's address as a name mbuf, lent for `f` (a connect, a
+    /// send on an unconnected socket). The mount's own, made at the first call and kept;
+    /// while another call holds it, a copy made for `f` (`how`: `M_WAIT` or `M_DONTWAIT`);
+    /// `None` when no mbuf is to be had.
+    pub fn with_nam<R>(&self, how: i32, f: impl FnOnce(Option<&Mbuf>) -> R) -> R {
+        let mut loan = self.nm_namm.lend();
+        if loan.is_none() {
+            *loan = self.nm_nam.mbuf(how);
+        }
+        f(loan.as_deref())
     }
 
     /// `nmp->nm_flag`.

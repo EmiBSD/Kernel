@@ -76,7 +76,12 @@
 //!   (neither sysctl nor `netstat`), only to `kvm`.
 //! - `nfs_reply` skips a receive that hands back no chain without an error (a datagram with
 //!   no data), as a reply too short to hold an xid: the C would read through the NULL chain.
-//! - `nfs_request` frees the reply of a denied RPC (`MSG_DENIED`), which the C leaks, as LZ.
+//! - `nfs_request` frees the reply of a denied RPC (`MSG_DENIED`), which the C leaks, as LZ;
+//!   a reply whose RPC header is cut short is freed too and gives `EBADRPC` with no reply,
+//!   where the C hands the chain up with the error (its callers free it unread).
+//! - `MGETHDR`, `M_PREPEND` and `pool_get` with `M_WAIT`/`PR_WAITOK` can fail here (`hal`'s
+//!   pools cannot always sleep for an item): `nfs_request` answers `ENOBUFS` with no reply,
+//!   the request freed, as LZ; the C cannot fail there.
 //! - The first send's copy of the request is made under the kernel lock's witness without
 //!   waiting (`M_DONTWAIT`); only when that fails is the chain taken out of its cell for an
 //!   `M_WAIT` copy and put back after, a window in which `nfs_timer` finds no chain to resend
@@ -136,7 +141,7 @@ use super::nfs_subs::{NFS_TICKS, NFSSTATS, nfsm_rpchead, rpc_mismatch, rpc_msgde
 use super::nfsm_subs::{XdrReader, XdrWriter, nfsm_rndup};
 use super::nfsmount::NfsMount;
 use super::nfsproto::{NFS_MAXPACKET, NFS_MAXPKTHDR, NFS_NPROCS, NFSERR_TRYLATER, NFSX_UNSIGNED};
-use crate::assert::kpanic;
+use crate::assert::{kassert, kpanic};
 use crate::clock::sec_to_nsec;
 use crate::cred::Ucred;
 use crate::fs::cache::cache_purge;
@@ -237,6 +242,38 @@ pub struct Rep<'a, G: ProcGlue> {
     pub rep: &'a NfsReq<G>,
     /// `rep->r_procp`, the requester's own (no lookup).
     pub procp: Option<&'a Thread<G>>,
+}
+
+/// What a reply's RPC header says.
+enum Header {
+    /// Accepted, status 0.
+    Ok,
+    /// Accepted with a non-zero NFS status.
+    Status(u32),
+    /// An error with the reply freed (`MSG_DENIED`, a header cut short).
+    Bad(Errno),
+    /// An error with the reply kept (accepted with a non-zero `accept_stat`:
+    /// `EPROTONOSUPPORT`; the C falls through to `nfsmout`).
+    Kept(Errno),
+}
+
+/// The work one request's timer step stops the walk for, done without the walk's reader.
+enum TimerWork<G: ProcGlue> {
+    /// "not responding": the message to the requester's terminal, then the request's step
+    /// goes on at the retry count's test.
+    Msg,
+    /// A datagram's retransmission on this socket; the walk goes on with the next request.
+    Resend(SocketRef<G>),
+}
+
+/// Where `nfs_timer`'s walk starts again.
+enum Place<G: ProcGlue> {
+    /// At the queue's first request.
+    First,
+    /// After this request.
+    After(PoolArc<NfsReq<G>>),
+    /// At this request's retry count test (after its message).
+    AtRetry(PoolArc<NfsReq<G>>),
 }
 
 /// `nfs_init_rtt(nmp)`: initialize the RTT estimator state for a new mount point.
@@ -438,9 +475,11 @@ fn nfs_connect_so<G: ProcGlue>(
             return Err(Errno::ENOTCONN);
         }
     } else {
-        let srv = nmp.nm_nam.mbuf(M_WAIT).ok_or(Errno::ENOBUFS)?;
         let mut w = solock_shared(so);
-        soconnect(so, &mut w, &srv)?;
+        nmp.with_nam(M_WAIT, |srv| match srv {
+            Some(srv) => soconnect(so, &mut w, srv),
+            None => Err(Errno::ENOBUFS),
+        })?;
 
         // Wait for the connection to complete. Cribbed from the connect system call but with
         // the wait timing out so that interruptible mounts don't hang here for a long time.
@@ -586,18 +625,24 @@ pub fn nfs_send<G: ProcGlue>(
             None => kpanic(format_args!("nfs_send: no socket")),
         },
     };
-    let mount_nam;
-    let sendnam = if soflags & i32::from(PR_CONNREQUIRED) != 0 || so.has_state(SS_ISCONNECTED) {
-        None
-    } else if let Some(r) = rep {
-        mount_nam = r.nmp.nm_nam.mbuf(M_WAIT);
-        mount_nam.as_deref()
-    } else {
-        nam
-    };
+    let connected = soflags & i32::from(PR_CONNREQUIRED) != 0 || so.has_state(SS_ISCONNECTED);
     let flags = 0;
 
-    let Err(mut error) = sosend(so, sendnam, None, Some(top), None, flags) else {
+    let sent = match rep {
+        // The client's unconnected socket: the mount's address, lent.
+        Some(r) if !connected => r
+            .nmp
+            .with_nam(M_WAIT, |n| sosend(so, n, None, Some(top), None, flags)),
+        _ => sosend(
+            so,
+            if connected { None } else { nam },
+            None,
+            Some(top),
+            None,
+            flags,
+        ),
+    };
+    let Err(mut error) = sent else {
         return Ok(());
     };
     if let Some(r) = rep {
@@ -665,7 +710,7 @@ pub fn nfs_receive<G: ProcGlue>(rep: &Rep<'_, G>) -> Result<Option<MbufBox>, Err
 
 /// A uio of `resid` bytes and no iovec: `soreceive`'s count when the data comes back as a
 /// chain (`mp0`).
-fn count_uio<'a, G: ProcGlue>(resid: usize, p: Option<&'a Thread<G>>) -> Uio<'a, G> {
+pub(crate) fn count_uio<'a, G: ProcGlue>(resid: usize, p: Option<&'a Thread<G>>) -> Uio<'a, G> {
     Uio {
         uio_iov: &mut [],
         uio_offset: 0,
@@ -987,53 +1032,63 @@ pub fn nfs_reply<G: ProcGlue>(myrep: &Rep<'_, G>) -> Result<(), Errno> {
             continue; // the reply freed
         }
 
-        // Loop through the request list to match up the reply. Iff no match, just drop the
-        // datagram.
-        let (found, unmatched) = {
-            let mut w = klock::witness();
-            let [list, mut part] = w.split::<2>();
-            let mut mrep = Some(mrep);
-            let mut found = None;
-            for rep in nmp.nm_reqsq.iter(&list) {
-                if !rep.has_reply() && rxid == rep.r_xid {
-                    // Found it..
-                    drop(rep.set_reply(&mut part, mrep.take().map(|m| Reply::new(m, off))));
-
-                    // Update congestion window. Do the additive increase of one rpc/rtt.
-                    let cwnd = nmp.nm_cwnd.load(Relaxed);
-                    if cwnd <= nmp.nm_sent.load(Relaxed) {
-                        let cwnd = cwnd + (NFS_CWNDSCALE * NFS_CWNDSCALE + (cwnd >> 1)) / cwnd;
-                        nmp.nm_cwnd.store(cwnd.min(NFS_MAXCWND), Relaxed);
-                    }
-                    rep.clear_flags(R_SENT);
-                    nmp.nm_sent.fetch_sub(NFS_CWNDSCALE, Relaxed);
-
-                    if rep.flags() & R_TIMING != 0 {
-                        nfs_update_rtt(nmp, rep);
-                    }
-
-                    nmp.nm_timeouts.store(0, Relaxed);
-                    found = Some(ptr::eq(rep, myrep.rep));
-                    break;
-                }
+        if nfs_reply_match(nmp, myrep.rep, rxid, mrep, off) {
+            if !myrep.rep.has_reply() {
+                kpanic(format_args!("nfsreply nil"));
             }
-            (found, mrep)
-        };
-        // If not matched to a request, drop it. If it's mine, get out.
-        match found {
-            None => {
-                NFSSTATS.rpcunexpected.fetch_add(1, Relaxed);
-                drop(unmatched);
-            }
-            Some(true) => {
-                if !myrep.rep.has_reply() {
-                    kpanic(format_args!("nfsreply nil"));
-                }
-                return Ok(());
-            }
-            Some(false) => {}
+            return Ok(());
         }
     }
+}
+
+/// `nfs_reply`'s match of a reply (its xid `rxid`, the chain `mrep`, its first `off` bytes
+/// read) to the mount's requests: loop through the request list to match up the reply; the
+/// first request with no reply and that xid takes it (the congestion window, the sent count,
+/// the RTT estimator and the timeouts' count updated). Iff no match, just drop the datagram
+/// (`rpcunexpected`). Whether it was `myrep`'s.
+fn nfs_reply_match<G: ProcGlue>(
+    nmp: &NfsMount<G>,
+    myrep: &NfsReq<G>,
+    rxid: u32,
+    mrep: MbufBox,
+    off: usize,
+) -> bool {
+    let (found, unmatched) = {
+        let mut w = klock::witness();
+        let [list, mut part] = w.split::<2>();
+        let mut mrep = Some(mrep);
+        let mut found = None;
+        for rep in nmp.nm_reqsq.iter(&list) {
+            if !rep.has_reply() && rxid == rep.r_xid {
+                // Found it..
+                drop(rep.set_reply(&mut part, mrep.take().map(|m| Reply::new(m, off))));
+
+                // Update congestion window. Do the additive increase of one rpc/rtt.
+                let cwnd = nmp.nm_cwnd.load(Relaxed);
+                if cwnd <= nmp.nm_sent.load(Relaxed) {
+                    let cwnd = cwnd + (NFS_CWNDSCALE * NFS_CWNDSCALE + (cwnd >> 1)) / cwnd;
+                    nmp.nm_cwnd.store(cwnd.min(NFS_MAXCWND), Relaxed);
+                }
+                rep.clear_flags(R_SENT);
+                nmp.nm_sent.fetch_sub(NFS_CWNDSCALE, Relaxed);
+
+                if rep.flags() & R_TIMING != 0 {
+                    nfs_update_rtt(nmp, rep);
+                }
+
+                nmp.nm_timeouts.store(0, Relaxed);
+                found = Some(ptr::eq(rep, myrep));
+                break;
+            }
+        }
+        (found, mrep)
+    };
+    // If not matched to a request, drop it. If it's mine, get out.
+    if found.is_none() {
+        NFSSTATS.rpcunexpected.fetch_add(1, Relaxed);
+    }
+    drop(unmatched);
+    found == Some(true)
 }
 
 /// `nfs_request(vp, procnum, infop)`: goes something like this: fill in request struct;
@@ -1054,15 +1109,20 @@ pub fn nfs_request<G: ProcGlue>(
     req: Request<'_, G>,
 ) -> (Option<Reply>, Result<(), NfsError>) {
     let Request { body, procp, cred } = req;
+    kassert!(vp.mount().is_some_and(|mp| ptr::eq(mp, nmp.nm_mountp)));
 
     // The RPC header with authorization, an empty packet header mbuf (the AUTH_UNIX header)
     // before the arguments.
-    let (mut m, xid) = nfsm_rpchead(nmp, procnum, cred, RPCAUTH_UNIX, body.into_chain());
+    let Some((mut m, xid)) = nfsm_rpchead(nmp, procnum, cred, RPCAUTH_UNIX, body.into_chain())
+    else {
+        return (None, Err(Errno::ENOBUFS.into()));
+    };
 
     // For stream protocols, insert a Sun RPC Record Mark.
     if nmp.nm_sotype.load(Relaxed) == SOCK_STREAM {
         let Some(mut mm) = m_prepend(m, NFSX_UNSIGNED as i32, M_WAIT) else {
-            kpanic(format_args!("nfs_request: M_PREPEND(M_WAIT)"));
+            // m_prepend freed the whole request.
+            return (None, Err(Errno::ENOBUFS.into()));
         };
         let mark =
             0x8000_0000 | (mm.m_pkthdr().len.get() as u32).wrapping_sub(NFSX_UNSIGNED as u32);
@@ -1080,9 +1140,7 @@ pub fn nfs_request<G: ProcGlue>(
             NfsReq::new(procnum as u32, xid, m, procp_tid, ptr::from_ref(vp).addr())
         })
     else {
-        kpanic(format_args!(
-            "nfs_request: pool_get(&nfsreqpl, PR_WAITOK) failed"
-        ));
+        return (None, Err(Errno::ENOBUFS.into()));
     };
     let r = Rep {
         nmp,
@@ -1228,19 +1286,6 @@ pub fn nfs_trylater_next(delay: i32) -> i32 {
     delay.saturating_mul(NFS_TIMEOUTMUL).min(nfs_maxtimeo())
 }
 
-/// What a reply's RPC header says.
-enum Header {
-    /// Accepted, status 0.
-    Ok,
-    /// Accepted with a non-zero NFS status.
-    Status(u32),
-    /// An error with the reply freed (`MSG_DENIED`, a header cut short).
-    Bad(Errno),
-    /// An error with the reply kept (accepted with a non-zero `accept_stat`:
-    /// `EPROTONOSUPPORT`; the C falls through to `nfsmout`).
-    Kept(Errno),
-}
-
 /// `nfs_request`'s dissection of a reply's RPC header after the xid and the message type:
 /// the reply status, the verifier (skipped by its length, rounded up, when positive), the
 /// accept status and the NFS status; `reply`'s offset left past them.
@@ -1293,36 +1338,6 @@ fn nfs_reply_header(reply: &mut Reply) -> Header {
     }
 }
 
-/// The work `nfs_timer`'s walk stops for, done without the walk's reader: a request's
-/// handle, to go on from it after.
-enum TimerWork<G: ProcGlue> {
-    /// "not responding": the message to the requester's terminal, then the request's
-    /// timer step goes on at the retry count's test.
-    Msg(PoolArc<NfsReq<G>>),
-    /// A datagram's retransmission on `so`; the walk goes on with the next request.
-    Resend(PoolArc<NfsReq<G>>, SocketRef<G>),
-}
-
-/// Where `nfs_timer`'s walk starts again.
-enum Place<G: ProcGlue> {
-    /// At the queue's first request.
-    First,
-    /// After this request.
-    After(PoolArc<NfsReq<G>>),
-    /// At this request's retry count test (after its message).
-    AtRetry(PoolArc<NfsReq<G>>),
-}
-
-/// What one request's step of the timer asks for.
-enum Step<G: ProcGlue> {
-    /// Nothing more: the next request.
-    Next,
-    /// The "not responding" message.
-    Msg,
-    /// A retransmission on this socket.
-    Resend(SocketRef<G>),
-}
-
 /// `nfs_timer(arg)`: nfs timer routine. Scan the nfsreq list and retransmit any requests that
 /// have timed out. `arg` is the mount whose `nm_rtimeout` this is (`nfs_vfsops`'s
 /// `timeout_set_proc`, a counted handle). The C's one walk under the net lock, kept: a
@@ -1338,15 +1353,15 @@ pub fn nfs_timer<G: ProcGlue>(arg: &hal::pool::AnyArc) {
         kpanic(format_args!("nfs_timer: the net lock"));
     };
     let mut place = Place::First;
-    while let Some(work) = nfs_timer_walk(nmp, &place) {
+    while let Some((h, work)) = nfs_timer_walk(nmp, &place) {
         place = match work {
-            TimerWork::Msg(h) => {
+            TimerWork::Msg => {
                 // Check for server not responding.
                 nfs_msg_tid(nmp, h.r_procp, "not responding");
                 h.set_flags(R_TPRINTFMSG);
                 Place::AtRetry(h)
             }
-            TimerWork::Resend(h, so) => {
+            TimerWork::Resend(so) => {
                 nfs_timer_resend(nmp, &h, &so, &net);
                 Place::After(h)
             }
@@ -1359,10 +1374,14 @@ pub fn nfs_timer<G: ProcGlue>(arg: &hal::pool::AnyArc) {
 }
 
 /// One reader's part of `nfs_timer`'s walk, from `place`: each request's step until one asks
-/// for work, which is answered with the request's handle; `None` at the queue's end. A place
+/// for work, which is answered with the request's handle and the work; `None` at the queue's
+/// end. A place
 /// whose request left the queue meanwhile (only possible where the kernel lock excludes
 /// nothing: the host's double) ends the walk.
-fn nfs_timer_walk<G: ProcGlue>(nmp: &NfsMount<G>, place: &Place<G>) -> Option<TimerWork<G>> {
+fn nfs_timer_walk<G: ProcGlue>(
+    nmp: &NfsMount<G>,
+    place: &Place<G>,
+) -> Option<(PoolArc<NfsReq<G>>, TimerWork<G>)> {
     let r = klock::reader();
     let (mut e, mut at_retry) = match place {
         Place::First => (nmp.nm_reqsq.first(&r), false),
@@ -1380,10 +1399,8 @@ fn nfs_timer_walk<G: ProcGlue>(nmp: &NfsMount<G>, place: &Place<G>) -> Option<Ti
         }
     };
     while let Some(rep) = e {
-        match nfs_timer_step(nmp, rep, &r, at_retry) {
-            Step::Next => {}
-            Step::Msg => return Some(TimerWork::Msg(nfs_req_handle(rep))),
-            Step::Resend(so) => return Some(TimerWork::Resend(nfs_req_handle(rep), so)),
+        if let Some(work) = nfs_timer_step(nmp, rep, &r, at_retry) {
+            return Some((nfs_req_handle(rep), work));
         }
         at_retry = false;
         e = nmp.nm_reqsq.next(&r, rep);
@@ -1400,16 +1417,16 @@ fn nfs_req_handle<G: ProcGlue>(rep: &NfsReq<G>) -> PoolArc<NfsReq<G>> {
 }
 
 /// The C's loop body for one request (`at_retry`: from the retry count's test on, after the
-/// message).
+/// message): the work it stops for, `None` for the next request.
 fn nfs_timer_step<G: ProcGlue>(
     nmp: &NfsMount<G>,
     rep: &NfsReq<G>,
     r: &klock::KernelReader,
     at_retry: bool,
-) -> Step<G> {
+) -> Option<TimerWork<G>> {
     if !at_retry {
         if rep.has_reply() || rep.flags() & R_SOFTTERM != 0 {
-            return Step::Next;
+            return None;
         }
         // The requester's thread, found by its id only on an interruptible mount (the C reads
         // r_procp there alone): it sleeps in nfs_reply while its request is queued.
@@ -1420,7 +1437,7 @@ fn nfs_timer_step<G: ProcGlue>(
         };
         if nfs_sigintr(nmp, Some(rep), p).is_err() {
             rep.set_flags(R_SOFTTERM);
-            return Step::Next;
+            return None;
         }
         let rtt = rep.r_rtt.load(Relaxed);
         if rtt >= 0 {
@@ -1436,7 +1453,7 @@ fn nfs_timer_step<G: ProcGlue>(
                 timeo = timeo.wrapping_mul(NFS_BACKOFF[(timeouts - 1) as usize]);
             }
             if rtt <= timeo {
-                return Step::Next;
+                return None;
             }
             if (timeouts as usize) < NFS_BACKOFF.len() {
                 nmp.nm_timeouts.store(timeouts + 1, Relaxed);
@@ -1445,23 +1462,23 @@ fn nfs_timer_step<G: ProcGlue>(
 
         // Check for server not responding.
         if rep.flags() & R_TPRINTFMSG == 0 && rep.r_rexmit.load(Relaxed) > 4 {
-            return Step::Msg;
+            return Some(TimerWork::Msg);
         }
     }
     if rep.r_rexmit.load(Relaxed) >= nmp.nm_retry.load(Relaxed) {
         // too many
         NFSSTATS.rpctimeouts.fetch_add(1, Relaxed);
         rep.set_flags(R_SOFTTERM);
-        return Step::Next;
+        return None;
     }
     if nmp.nm_sotype.load(Relaxed) != SOCK_DGRAM {
         let x = rep.r_rexmit.load(Relaxed).wrapping_add(1);
         rep.r_rexmit.store(x.min(NFS_MAXREXMIT), Relaxed);
-        return Step::Next;
+        return None;
     }
 
     let Some(so) = nmp.nm_so.get(r).clone() else {
-        return Step::Next;
+        return None;
     };
 
     // If there is enough space and the window allows.. Resend it. Set r_rtt to -1 in case we
@@ -1472,9 +1489,9 @@ fn nfs_timer_step<G: ProcGlue>(
             || rep.flags() & R_SENT != 0
             || nmp.nm_sent.load(Relaxed) < nmp.nm_cwnd.load(Relaxed))
     {
-        return Step::Resend(so);
+        return Some(TimerWork::Resend(so));
     }
-    Step::Next
+    None
 }
 
 /// The timer's retransmission of `rep` on `so` (the C's `m_copym(.., M_DONTWAIT)` and
@@ -1489,19 +1506,19 @@ fn nfs_timer_resend<G: ProcGlue>(
     let Some(m) = nfs_copy_mreq(rep, M_DONTWAIT) else {
         return;
     };
-    let nam;
-    let addr = if nmp.flag() & NFSMNT_NOCONN == 0 {
-        None
-    } else {
-        nam = nmp.nm_nam.mbuf(M_DONTWAIT);
-        match &nam {
-            Some(n) => Some(&**n),
-            None => return, // no mbuf for the name: as no copy
-        }
-    };
-    let error = {
+    let send = |addr: Option<&Mbuf>| {
         let mut w = solock_net(so, net);
         so.usrreqs().send(so, &mut w, Some(m), addr, None)
+    };
+    let error = if nmp.flag() & NFSMNT_NOCONN == 0 {
+        send(None)
+    } else {
+        // The mount's address, lent (a copy made without waiting while another holds it; none
+        // to be had: as no copy of the request).
+        match nmp.with_nam(M_DONTWAIT, |a| a.map(|a| send(Some(a)))) {
+            Some(error) => error,
+            None => return,
+        }
     };
     match error {
         Err(error) => {
@@ -1541,10 +1558,14 @@ pub fn nfs_sigintr<G: ProcGlue>(
     if nmp.flag() & NFSMNT_INT == 0 {
         return Ok(());
     }
-    if let Some(p) = p
-        && sigpending(p) & !sigignore(p.process()) & NFSINT_SIGMASK != 0
-    {
-        return Err(Errno::EINTR);
+    // The ignored mask is read only when a signal of the set is pending: the C reads it every
+    // time, unlocked; here it is under the process's ps_mtx, a lock pair per queued request
+    // per tick otherwise. The answer is the same.
+    if let Some(p) = p {
+        let pending = sigpending(p) & NFSINT_SIGMASK;
+        if pending != 0 && pending & !sigignore(p.process()) != 0 {
+            return Err(Errno::EINTR);
+        }
     }
     Ok(())
 }
@@ -1695,7 +1716,7 @@ mod tests {
     use crate::fs::nfs::nfsmount::{M_NFSMNT, NfsMountRef, NfsNam};
     use crate::fs::nfs::nfsproto::{NFSPROC_GETATTR, NFSPROC_LOOKUP, NFSPROC_NULL, NFSPROC_READ};
     use crate::fs::testfs::TestGlue as G;
-    use crate::net::mbuf::{MT_DATA, m_gethdr};
+    use crate::net::mbuf::{MT_DATA, MbufBox, m_gethdr};
     use crate::sys::signal::{SIGINT, SIGUSR1, sigmask};
     use crate::timeout::Timeout;
 
@@ -1735,13 +1756,23 @@ mod tests {
     /// A request of `procnum` queued on `nmp` as `nfs_request` queues it (its chain a 32-byte
     /// packet).
     fn queue(nmp: &NfsMount<G>, procnum: usize, tid: Option<Pid>) -> PoolArc<NfsReq<G>> {
+        queue_xid(nmp, procnum, tid, 7)
+    }
+
+    /// [`queue`] with the transaction id `xid`.
+    fn queue_xid(
+        nmp: &NfsMount<G>,
+        procnum: usize,
+        tid: Option<Pid>,
+        xid: u32,
+    ) -> PoolArc<NfsReq<G>> {
         let m = m_gethdr(M_WAIT, MT_DATA).expect("an mbuf");
         m.m_len().set(32);
         m.m_pkthdr().len.set(32);
         let rep = crate::fs::subr::vfs::<G>()
             .nfs
             .nfsreqpl
-            .get_homed(PR_WAITOK, || NfsReq::new(procnum as u32, 7, m, tid, 0))
+            .get_homed(PR_WAITOK, || NfsReq::new(procnum as u32, xid, m, tid, 0))
             .expect("a request");
         let mut w = klock::witness();
         nmp.nm_reqsq.insert_tail(&mut w, rep.as_pin());
@@ -1884,6 +1915,127 @@ mod tests {
         unqueue(&nmp, &rep);
     }
 
+    /// An empty reply chain for the match.
+    fn chain() -> MbufBox {
+        let m = m_gethdr(M_WAIT, MT_DATA).expect("an mbuf");
+        m.m_len().set(0);
+        m
+    }
+
+    /// Takes a request's reply back out (the requester's unlink).
+    fn take_reply(rep: &NfsReq<G>) -> Option<Reply> {
+        let mut w = klock::witness();
+        rep.set_reply(&mut w, None)
+    }
+
+    /// Two outstanding requests: each reply goes to the request of its xid whatever the order,
+    /// the sent count falls by one window unit for each; a second reply to a request that has
+    /// one matches nothing (`rpcunexpected`).
+    #[test]
+    fn the_match_gives_each_reply_to_its_own_request() {
+        let (_g, _p, nmp) = mount(SOCK_DGRAM, 0);
+        let a = queue_xid(&nmp, NFSPROC_NULL, None, 0x0a);
+        let b = queue_xid(&nmp, NFSPROC_NULL, None, 0x0b);
+        for r in [&a, &b] {
+            r.set_flags(R_SENT);
+        }
+        nmp.nm_sent.store(2 * NFS_CWNDSCALE, Relaxed);
+        let unexpected = NFSSTATS.rpcunexpected.load(Relaxed);
+        assert!(
+            !nfs_reply_match(&nmp, &a, 0x0b, chain(), 8),
+            "B's reply is not A's"
+        );
+        assert!(b.has_reply() && !a.has_reply());
+        assert_eq!(b.flags() & R_SENT, 0);
+        assert_eq!(nmp.nm_sent.load(Relaxed), NFS_CWNDSCALE);
+        assert!(nfs_reply_match(&nmp, &a, 0x0a, chain(), 8), "A's own");
+        assert!(a.has_reply());
+        assert_eq!(nmp.nm_sent.load(Relaxed), 0);
+        assert_eq!(take_reply(&a).map(|r| r.offset()), Some(8));
+        // A has its reply cell empty again but is still the one with that xid: a duplicate
+        // while A holds a reply is dropped.
+        {
+            let mut w = klock::witness();
+            drop(a.set_reply(&mut w, Some(Reply::new(chain(), 8))));
+        }
+        assert!(!nfs_reply_match(&nmp, &a, 0x0a, chain(), 8));
+        assert_eq!(NFSSTATS.rpcunexpected.load(Relaxed), unexpected + 1);
+        assert_eq!(
+            nmp.nm_sent.load(Relaxed),
+            0,
+            "no window unit for a dropped reply"
+        );
+        drop(take_reply(&a));
+        drop(take_reply(&b));
+        unqueue(&nmp, &a);
+        unqueue(&nmp, &b);
+    }
+
+    /// `nfs_rcvlock` waiting for another receiver: a reply that arrives for the request
+    /// meanwhile ends the wait with `EALREADY`, the lock not taken.
+    #[test]
+    fn the_receive_lock_answers_ealready_when_the_reply_came_meanwhile() {
+        let (_g, p, nmp) = mount(SOCK_DGRAM, 0);
+        let rep = queue(&nmp, NFSPROC_NULL, None);
+        nmp.nm_flag.fetch_or(NFSMNT_RCVLOCK, Relaxed); // another receiver holds it
+        let done = std::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
+        let (d, h, m) = (done.clone(), rep.clone(), nmp.clone());
+        let waker = std::thread::spawn(move || {
+            hal::klock::kernel_lock();
+            {
+                let mut w = klock::witness();
+                drop(h.set_reply(&mut w, Some(Reply::new(chain(), 0))));
+            }
+            while !d.load(Relaxed) {
+                wakeup(ptr::from_ref(&m.nm_flag));
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        });
+        let r = Rep {
+            nmp: &nmp,
+            rep: &rep,
+            procp: Some(p),
+        };
+        let got = nfs_rcvlock(&r);
+        done.store(true, Relaxed);
+        waker.join().expect("the waker");
+        assert_eq!(got, Err(Errno::EALREADY));
+        assert_ne!(nmp.flag() & NFSMNT_WANTRCV, 0, "it waited");
+        nmp.nm_flag
+            .fetch_and(!(NFSMNT_RCVLOCK | NFSMNT_WANTRCV), Relaxed);
+        drop(take_reply(&rep));
+        unqueue(&nmp, &rep);
+    }
+
+    /// The timer on an `NFSMNT_INT` mount finds the requester by its thread id: a signal of
+    /// the mask pending ends the request (`R_SOFTTERM`); none pending leaves it.
+    #[test]
+    fn the_timer_ends_an_interruptible_request_whose_thread_has_a_signal() {
+        let (_g, p, nmp) = mount(SOCK_DGRAM, NFSMNT_INT | NFSMNT_DUMBTIMR);
+        crate::sig::test_sigacts(p.process());
+        nmp.nm_timeo.store(100, Relaxed);
+        const TID: Pid = 6100;
+        p.p_tid.set(TID);
+        {
+            let mut w = klock::witness();
+            G::tables()
+                .tidhash(TID)
+                .insert_head(&mut w, core::pin::Pin::static_ref(p));
+        }
+        let rep = queue(&nmp, NFSPROC_NULL, Some(TID));
+        tick(&nmp);
+        assert_eq!(rep.flags() & R_SOFTTERM, 0, "no signal");
+        p.p_siglist.store(sigmask(SIGINT), Relaxed);
+        tick(&nmp);
+        assert_ne!(rep.flags() & R_SOFTTERM, 0, "SIGINT on the requester");
+        p.p_siglist.store(0, Relaxed);
+        {
+            let mut w = klock::witness();
+            G::tables().tidhash(TID).remove(&mut w, p);
+        }
+        unqueue(&nmp, &rep);
+    }
+
     /// The flag locks of `nm_flag`: taken, given back, the waiter's bit cleared.
     #[test]
     fn the_send_and_receive_locks_are_bits_of_nm_flag() {
@@ -1927,7 +2079,8 @@ mod tests {
         nmp.nm_numgrps.store(3, Relaxed);
         let body = m_gethdr(M_WAIT, MT_DATA).expect("an mbuf");
         body.m_len().set(8);
-        let (m, xid) = nfsm_rpchead(&nmp, NFSPROC_LOOKUP, &cr, RPCAUTH_UNIX, body);
+        let (m, xid) =
+            nfsm_rpchead(&nmp, NFSPROC_LOOKUP, &cr, RPCAUTH_UNIX, body).expect("a header");
         let bytes = crate::fs::nfs::nfsm_subs::test_bytes(&m);
         let w = |i: usize| u32::from_be_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap());
         assert_eq!(
@@ -1955,7 +2108,7 @@ mod tests {
         cr.cr_ngroups.set(2);
         let body = m_gethdr(M_WAIT, MT_DATA).expect("an mbuf");
         body.m_len().set(0);
-        let (m, _) = nfsm_rpchead(&nmp, NFSPROC_LOOKUP, &cr, RPCAUTH_UNIX, body);
+        let (m, _) = nfsm_rpchead(&nmp, NFSPROC_LOOKUP, &cr, RPCAUTH_UNIX, body).expect("a header");
         let bytes = crate::fs::nfs::nfsm_subs::test_bytes(&m);
         let w = |i: usize| u32::from_be_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap());
         assert_eq!(bytes.len(), 40 + 28);
@@ -2268,6 +2421,43 @@ mod tests {
         assert_eq!(calls[0].1, calls[1].1, "resent whole");
         tn::unmount(&fx, nmp);
         peer.stop();
+    }
+
+    /// `NFSMNT_NOCONN` over UDP: no connect, each send names the server (the mount's name
+    /// mbuf lent), the reply taken from an unconnected socket.
+    #[test]
+    fn a_call_on_an_unconnected_udp_socket_names_the_server() {
+        let fx = tn::setup(0);
+        let nmp = tn::nfsmount(&fx, SOCK_DGRAM, NFSMNT_NFSV3 | NFSMNT_NOCONN);
+        assert_eq!(tn::connect(&nmp), Ok(()));
+        assert!(!nm_so(&nmp).expect("a socket").has_state(SS_ISCONNECTED));
+        let peer = tn::Peer::start(
+            &fx,
+            SOCK_DGRAM,
+            &nmp,
+            Box::new(|_, c| std::vec![Out::Data(tn::reply(c, 0, 0, 0, &[]))]),
+        );
+        let (_, a) = rpc(&fx, &nmp, NFSPROC_NULL);
+        let (_, b) = rpc(&fx, &nmp, NFSPROC_NULL);
+        let calls = peer.calls();
+        peer.stop();
+        assert_eq!((a, b), (Ok(()), Ok(())));
+        assert_eq!(calls.len(), 2);
+        tn::unmount(&fx, nmp);
+    }
+
+    /// An out-of-memory `pool_get` of the request: `ENOBUFS` with no reply (the module's
+    /// deviation, LZ's).
+    #[test]
+    fn no_request_item_answers_enobufs() {
+        let fx = tn::setup(0);
+        let nmp = tn::nfsmount(&fx, SOCK_DGRAM, NFSMNT_NFSV3);
+        crate::testutil::fail_pool("nfsreqpl", 1);
+        let (reply, r) = rpc(&fx, &nmp, NFSPROC_NULL);
+        crate::testutil::fail_pool("nfsreqpl", 0);
+        assert!(reply.is_none());
+        assert_eq!(r, Err(NfsError::Errno(Errno::ENOBUFS)));
+        tn::unmount(&fx, nmp);
     }
 
     /// `NFSMNT_NOCONN` on a protocol that needs a connection: `ENOTCONN`, the socket gone.

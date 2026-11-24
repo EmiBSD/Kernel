@@ -65,7 +65,7 @@
 //! - `fusefs_vget`'s `curproc->p_ucred, curproc` is the glue's `curproc`, which panics
 //!   without a thread (LZ's).
 //! - `vfs_quotactl` is [`fusefs_quotactl`]; `vfs_checkexp`'s `fusefs_checkexp` (`EOPNOTSUPP`)
-//!   is `VFS_CHECKEXP`'s arm in `bsd`, the NFS server's (the kernel's `Vfs` has no slot).
+//!   is `Vfs::checkexp` (N6.7b0).
 //!
 //! Kept as the C, named: the vnode lock is held across `fusefs_vget`'s `FUSE_GETATTR` and
 //! `fusefs_statfs`'s `FUSE_STATFS` sleeps, so a daemon that stats its own mount before
@@ -105,6 +105,7 @@ use crate::assert::kpanic;
 use crate::cred::suser_ucred;
 use crate::descrip::fd_getfile;
 use crate::file::{DTYPE_VNODE, FileGlue};
+use crate::fs::export::ExportGrant;
 use crate::fs::fuse::fuse_device::{
     fuse_device_attach, fuse_device_cleanup, fuse_device_queue_fbuf, fuse_device_set_fmp,
     fuse_lookup,
@@ -126,6 +127,7 @@ use crate::fs::subr::{copy_statfs_info, getnewvnode, vflush, vfs, vfs_getnewfsid
 use crate::fs::vnode::{FORCECLOSE, VCHR, VDIR, VROOT, VT_FUSEFS, Vattr, Vnode};
 use crate::fs::vops::{Cred, Nd, VFS_VGET, Vfs, vop_getattr};
 use crate::fs::word::{I32Word, U32Word};
+use crate::net::mbuf::Mbuf;
 use crate::proc::{ProcGlue, Thread};
 use crate::sysctl::{SysctlReq, bounded_arr, int_bounded};
 
@@ -516,8 +518,7 @@ pub fn fusefs_sysctl<G: ProcGlue>(
     bounded_arr(&vars, name, &mut req)
 }
 
-/// `fusefs_vfsops`: each slot the C's function of the same name; `vfs_checkexp` is
-/// `VFS_CHECKEXP`'s arm (the module's deviations).
+/// `fusefs_vfsops`: each slot the C's function of the same name.
 impl<G: ProcGlue> Vfs<G> for FusefsVfs<G> {
     /// `vfs_mount`: [`fusefs_mount`].
     fn mount(
@@ -606,6 +607,10 @@ impl<G: ProcGlue> Vfs<G> for FusefsVfs<G> {
         p: &Thread<G>,
     ) -> Result<(), Errno> {
         fusefs_sysctl(name, oldp, oldlenp, newp, newlen, p)
+    }
+    /// `vfs_checkexp`: `fusefs_checkexp`, export permission not supported.
+    fn checkexp(&self, _mp: &'static Mount<G>, _nam: &Mbuf) -> Result<ExportGrant, Errno> {
+        Err(Errno::EOPNOTSUPP)
     }
 }
 /* </CODE> */

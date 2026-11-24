@@ -1923,7 +1923,6 @@ macro_rules! test_file_glue {
             type Data = $crate::testutil::TestFileData<$proc>;
             type FileList = FileListLink;
             type UnveilMatch = $crate::testutil::UnveilCount;
-            type MountG = ();
             type InodeHash = InodeHashLink;
             type DqHash = DqHashLink;
             type DqFree = DqFreeLink;

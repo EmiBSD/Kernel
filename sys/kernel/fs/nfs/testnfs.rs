@@ -76,7 +76,6 @@ use crate::net::socket::{SocketRef, sobind, soclose, socreate, solock, soreceive
 use crate::netinet::in_proto::{InetDomain, TcpProtocol, UdpProtocol, inetsw_set};
 use crate::proc::{ProcGlue, Thread, process_alloc, thread_alloc};
 use crate::timeout::Timeout;
-use crate::uio::{Uio, UioRw, UioSeg};
 
 crate::test_file_glue!(NfsFiles, NfsGlue);
 crate::test_proc_glue!(NfsGlue, NfsFiles);
@@ -151,6 +150,14 @@ impl Vfs<G> for TestVfs {
         Err(Errno::EOPNOTSUPP)
     }
     fn vptofh(&self, _vp: &'static Vnode<G>, _fid: &mut Fid) -> Result<(), Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+    /// No exports.
+    fn checkexp(
+        &self,
+        _mp: &'static Mount<G>,
+        _nam: &crate::net::mbuf::Mbuf,
+    ) -> Result<crate::fs::export::ExportGrant, Errno> {
         Err(Errno::EOPNOTSUPP)
     }
 }
@@ -513,21 +520,9 @@ pub(crate) fn pump(lo: &'static Ifnet) {
     }
 }
 
-/// A uio of `resid` bytes and no iovec, for a receive into a chain.
-fn count_uio<'a>(resid: usize) -> Uio<'a, G> {
-    Uio {
-        uio_iov: &mut [],
-        uio_offset: 0,
-        uio_resid: resid,
-        uio_segflg: UioSeg::UIO_SYSSPACE,
-        uio_rw: UioRw::UIO_READ,
-        uio_procp: None,
-    }
-}
-
 /// A datagram waiting on `so`, without waiting: its sender and its bytes.
 fn recv_dgram(so: &SocketRef<G>) -> Option<(MbufBox, Vec<u8>)> {
-    let mut uio = count_uio(1 << 20);
+    let mut uio = super::nfs_socket::count_uio::<G>(1 << 20, None);
     let (mut from, mut m, mut flags) = (None, None, MSG_DONTWAIT);
     soreceive(
         so,
@@ -544,7 +539,7 @@ fn recv_dgram(so: &SocketRef<G>) -> Option<(MbufBox, Vec<u8>)> {
 
 /// The stream bytes waiting on `so`, without waiting.
 fn recv_stream(so: &SocketRef<G>) -> Option<Vec<u8>> {
-    let mut uio = count_uio(1 << 20);
+    let mut uio = super::nfs_socket::count_uio::<G>(1 << 20, None);
     let (mut m, mut flags) = (None, MSG_DONTWAIT);
     soreceive(so, None, &mut uio, Some(&mut m), None, Some(&mut flags), 0).ok()?;
     m.as_deref().map(test_bytes)

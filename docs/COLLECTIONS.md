@@ -196,6 +196,24 @@ A bare `hal::owned::SlistLink` outside any list (an mbuf's `m_next`, a packet he
 `SecondaryRef` (`new`, `get`, `is_some`, `points_to`, `set`, drop): O(1) each, one atomic
 count up or down.
 
+## `kernel::net::radix::RadixTree` (`net/radix.c`; the export lists, at N6.7b1 pf's tables and the SPD)
+
+Not a `hal` collection: a kernel module that owns its nodes in index slabs (no `unsafe`), listed
+here because its walk is a collection's. `b` is the key's bits from the tree's offset, `c` the
+length of a duplicated key chain, `a` the annotations met on the way up. Every node access is
+two loads (the slab's directory entry, then the slot) where the C has one.
+
+| Method | C | Order |
+|---|---|---|
+| `new`, `is_empty`, `inithead` | `rn_inithead` (`new` allocates nothing; `inithead`, which the first add calls, the roots' first chunks) | O(1) |
+| `matches(v)` | `rn_match` | O(b) down, O(c) the chain, O(b + a) back up with `rn_search_m` per non-normal annotation: the C's |
+| `lookup(v, m)` | `rn_lookup` | `matches` + the mask's normalisation O(K) + O(c) |
+| `add(v, m, value)` | `rn_addroute` | O(b) search and insert, O(K) the mask, O(c) the chain, O(a) the annotation list; a chunk when the slots run out (8, 8, 16, 32, then 64 slots: the capacity doubles up to 64 a chunk), the directory moved (O(n/64) handles) when it doubles |
+| `delete(v, m)` | `rn_delete` | O(b) + O(K) + O(c) + O(a); D-20's repair walks the chain once (O(c): after the route, then before it), the subtree of the annotation's node only when the chain holds fewer of the annotation's routes than its count (a route of another key shares it), and the node's annotation list (O(a)) when the annotation becomes its remaining routes' mask's |
+| `remove(leaf)` | `rn_delete` of the leaf's key and mask | O(c) to the chain's head + O(a); no search |
+| `first()`, `next(leaf)` | `rn_walktree` | O(1) amortised a route: the C's successor climb, once a chain, plus the climb from a chain's last route to its head (O(c), once a chain); never a search by key |
+| `get(leaf)` | the leaf-to-owner cast | O(1): the generation compared |
+
 ## Owned memory: pools, `malloc(9)`, `km_alloc`
 
 Orders of the C's algorithms the `hal` types wrap (`subr_pool.c`, `kern_malloc.c`,

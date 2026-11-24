@@ -77,13 +77,12 @@
 //!   one around the kernel copy of the name) instead of reinitialising the caller's `ndp`,
 //!   whose lifetime cannot hold a local name, as `ffs_mount` does. A mount that is not an
 //!   update and has no arguments (the C would dereference NULL) answers `EINVAL`.
-//! - `disk_map`, `nblkdev`'s device switch, `rootvp` and the export list (`pm_export`) are
-//!   `bsd`'s until N7 and N6, reached through the glue (`FileGlue::disk_map`,
-//!   `fs::spec::devsw`, `FileGlue::rootvp`, `FileGlue::vfs_export`), as ffs's and ext2fs's:
-//!   the export list is the mount's glue member, which [`msdosfs_mountfs`] empties
-//!   (`FileGlue::ufs_export_init`) where the C's `malloc(M_ZERO)` of the `msdosfsmount` starts
-//!   `pm_export` empty, and `msdosfs_check_export` is `VFS_CHECKEXP`'s `MOUNT_MSDOS` arm over
-//!   `ufs_check_export` (`bsd`'s `sys/sys/mount.rs`), which reads only that list.
+//! - `disk_map`, `nblkdev`'s device switch and `rootvp` are `bsd`'s until N7, reached through
+//!   the glue (`FileGlue::disk_map`, `fs::spec::devsw`, `FileGlue::rootvp`), as ffs's and
+//!   ext2fs's. The export list (`pm_export`) is the mount's (`Mount::export`, N6.7b0), which
+//!   [`msdosfs_mount`] updates with `vfs_export` and [`msdosfs_mountfs`] empties where the C's
+//!   `malloc(M_ZERO)` of the `msdosfsmount` starts `pm_export` empty; `msdosfs_check_export`
+//!   is `ufs_check_export`'s body, `kernel::fs::export::check`.
 //! - `bcopy(args, &mp->mnt_stat.mount_info.msdosfs_args, ...)` copies the kernel copy of the
 //!   arguments' bytes into `mount_info`.
 //! - `struct msdosfs_sync_arg` is [`MsdosfsSyncArgs`] and its `allerror` a `Result`;
@@ -172,6 +171,7 @@ use crate::assert::kpanic;
 use crate::file::{DM_OPENBLCK, FileGlue};
 use crate::fs::bio::{bread, brelse};
 use crate::fs::buf::{B_INVAL, BufRef};
+use crate::fs::export::{ExportGrant, check, vfs_export};
 use crate::fs::lookup::{namei, ndinit};
 use crate::fs::mount::{Mount, Vfsconf};
 use crate::fs::msdosfs::bootsect::BSBPB_OFF;
@@ -206,6 +206,7 @@ use crate::fs::vops::{
     Cred, Nd, VFS_SYNC, Vfs, vop_close, vop_fsync, vop_ioctl, vop_open, vop_unlock,
 };
 use crate::fs::word::U32Word;
+use crate::net::mbuf::Mbuf;
 use crate::prf::printf;
 use crate::proc::{ProcGlue, Thread};
 use crate::vm::io::MAXBSIZE;
@@ -297,7 +298,7 @@ pub fn msdosfs_mount<G: ProcGlue>(
         match &args {
             // Process export requests.
             Some(a) if a.fspec == 0 => {
-                return <G::FileGlue as FileGlue>::vfs_export(mp, &a.export_info);
+                return vfs_export(mp, mp.export(), &a.export_info);
             }
             None => return Ok(()),
             Some(_) => {}
@@ -432,9 +433,9 @@ pub fn msdosfs_mountfs<G: ProcGlue>(
         };
 
         // pmp = malloc(sizeof *pmp, M_MSDOSFSMNT, M_WAITOK | M_ZERO): the structure is built
-        // below; its export list, the mount's glue member, starts empty.
+        // below; its export list, the mount's own, starts empty.
         malloced = true;
-        <G::FileGlue as FileGlue>::ufs_export_init(mp);
+        mp.export().clear();
         let mut pm_flags = 0;
         let mut pm_curfat = 0;
         let mut pm_fatmask = 0;
@@ -989,6 +990,10 @@ impl<G: ProcGlue> Vfs<G> for MsdosfsVfs<G> {
     fn init(&self, _vfc: &'static Vfsconf<G>) -> Result<(), Errno> {
         msdosfs_init::<G>()
     }
+    /// `vfs_checkexp`: `msdosfs_check_export` ([`check`](crate::fs::export::check)).
+    fn checkexp(&self, mp: &'static Mount<G>, nam: &Mbuf) -> Result<ExportGrant, Errno> {
+        check(mp, nam)
+    }
 }
 /* </CODE> */
 
@@ -1508,11 +1513,11 @@ mod tests {
 
     /// `mount -u`: to read-only (the files flushed, `MSDOSFSMNT_RONLY`, the device asked to
     /// sync its cache), back to read-write (`MNT_WANTRDWR`), a reload (`EOPNOTSUPP`), an
-    /// export update without a device name (the glue's `vfs_export`: the test glue has no
-    /// export list and answers `EOPNOTSUPP`, which `msdosfs_mount` returns), and an update
+    /// export update without a device name (`vfs_export` on the mount's list: the default
+    /// export, which a lookup then answers; `ENOTSUP` without `NFSSERVER`), and an update
     /// without arguments.
     #[test]
-    fn updates_switch_read_only_and_back_and_pass_exports_to_the_glue() {
+    fn updates_switch_read_only_and_back_and_export_the_mount() {
         let (disk, _) = sample(mkfat::FAT12_1M);
         let (_g, p) = attach(disk);
         let mp = try_mount(p, 0).unwrap();
@@ -1538,12 +1543,21 @@ mod tests {
 
         let mut args = noargs();
         args.export_info.ex_flags = MNT_EXPORTED;
-        assert_eq!(
-            v.mount(mp, b"/msdos", &mut data_of(&args), &mut nd(p), p),
-            Err(Errno::EOPNOTSUPP),
-            "the test glue's vfs_export"
-        );
-        assert_eq!(mp.flag() & MNT_EXPORTED, 0);
+        args.export_info.ex_anon.cr_uid = 32767;
+        let r = v.mount(mp, b"/msdos", &mut data_of(&args), &mut nd(p), p);
+        if cfg!(feature = "nfsserver") {
+            assert_eq!(r, Ok(()), "the default export");
+            assert_ne!(mp.flag() & MNT_EXPORTED, 0);
+            let lookup = || crate::fs::export::vfs_export_lookup(mp, mp.export(), None);
+            assert_eq!(lookup().map(|g| g.uid), Some(32767));
+            // MNT_DELEXPORT: no client then.
+            args.export_info.ex_flags = hal::sys::mount::MNT_DELEXPORT;
+            v.mount(mp, b"/msdos", &mut data_of(&args), &mut nd(p), p)
+                .unwrap();
+            assert_eq!(lookup(), None);
+        } else {
+            assert_eq!(r, Err(Errno::ENOTSUP), "no NFSSERVER");
+        }
         mp.set_flag(mp.flag() & !MNT_UPDATE);
         drop(pmp);
         unmount(p, mp);
@@ -1641,7 +1655,6 @@ mod tests {
         assert_eq!(v.vget(mp, 2).err(), Some(Errno::EOPNOTSUPP));
         let mut len = 0;
         assert_eq!(v.sysctl(&[1], 0, &mut len, 0, 0, p), Err(Errno::EOPNOTSUPP));
-        assert!(v.as_any().is_none());
         assert!(mp.node_arc::<u32>().is_none());
         // DIOCCACHESYNC is `_IOW('d', 120, int)`.
         assert_eq!(DIOCCACHESYNC, 0x8004_6478);

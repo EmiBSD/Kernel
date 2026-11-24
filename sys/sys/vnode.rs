@@ -122,8 +122,7 @@ pub static NUMVNODES: &AtomicI64 = &crate::kern::kern_descrip::VFS_TABLES.numvno
 /// `maxvnodes` (the kernel's word, `kern.maxvnodes`).
 pub static MAXVNODES: &AtomicI32 = &crate::kern::kern_descrip::VFS_TABLES.maxvnodes;
 
-/// What `kern/vfs_subr.rs` keeps (the NFS export list, the shutdown trio), named here as LZ's
-/// whole module was.
+/// What `kern/vfs_subr.rs` keeps (the shutdown trio), named here as LZ's whole module was.
 pub use crate::kern::vfs_subr::*;
 /// `vnode.h`'s `vn_*` functions (`vfs_vnops.c`) and `vfs_getcwd_common` (`vfs_getcwd.c`),
 /// where the C declares them: the kernel's (N5.3).

@@ -315,21 +315,20 @@ pub fn nfs_get_xid() -> u32 {
 /// The header goes in a fresh packet header mbuf (`rep->r_mreq`), `body` (the procedure's
 /// arguments, `nmi_mreq`) linked behind it; the answer is that chain, its packet length the
 /// whole request's, and the request's new xid (`r_xid`). The credential's groups are clamped
-/// to the mount's `nm_numgrps`.
+/// to the mount's `nm_numgrps`. `None` when no mbuf is to be had for the header (`hal`'s
+/// pools can fail a waiting `MGETHDR`; `nfs_request` answers `ENOBUFS`, as LZ), `body` freed.
 pub fn nfsm_rpchead<G: ProcGlue>(
     nmp: &NfsMount<G>,
     procnum: usize,
     cr: &Ucred,
     auth_type: u32,
     body: MbufBox,
-) -> (MbufBox, u32) {
+) -> Option<(MbufBox, u32)> {
     kassert!(auth_type == RPCAUTH_UNIX);
 
     // RPCAUTH_UNIX fits in an hdr mbuf, in the future other authorization methods need to
     // figure out their own sizes and allocate and chain mbufs accordingly.
-    let Some(mb) = m_gethdr(M_WAIT, MT_DATA) else {
-        kpanic(format_args!("nfs: out of mbufs"));
-    };
+    let mb = m_gethdr(M_WAIT, MT_DATA)?;
 
     // We need to start out by finding how big the authorization cred and verifier are for
     // the auth_type, to be able to correctly align the mbuf header/chain. In the
@@ -384,7 +383,7 @@ pub fn nfsm_rpchead<G: ProcGlue>(
     drop(m.m_next.set(body));
     m_calchdrlen(&m);
     m.m_pkthdr().ph_ifidx.set(0);
-    (m, xid)
+    Some((m, xid))
 }
 
 impl XdrWriter {

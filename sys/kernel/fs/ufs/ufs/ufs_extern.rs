@@ -59,7 +59,7 @@
 //!   `ufs_ihash.rs`, `ufs_lookup.rs`, `ufs_vfsops.rs` and `ufs_vnops.rs` here (N5.5a3: the
 //!   last two files), re-exported so that `use ufs_extern::*` reads like the C's `#include`.
 //!   `ufs_inode.c`'s and `ufs_quota.c`'s are reached through their modules;
-//!   `ufs_check_export` is `bsd`'s until the export list moves (N6).
+//!   `ufs_check_export` is `kernel::fs::export::check` (N6.7b0).
 //!
 //! ## Redesign
 //! - N5.5a: the kernel's half of LZ's re-export module, growing with each sub-slice.

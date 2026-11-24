@@ -214,7 +214,6 @@ impl FileGlue for BsdFileGlue {
     type FileList = FileListLink;
     /// `ni_unveil_match`: a slot of the looking-up process's unveil table (`kern_unveil.rs`).
     type UnveilMatch = crate::kern::kern_unveil::UnveilMatch;
-    type MountG = crate::sys::mount::BsdMountG;
     type InodeHash = InodeHashLink;
     type DqHash = DqHashLink;
     type DqFree = DqFreeLink;
@@ -295,19 +294,6 @@ impl FileGlue for BsdFileGlue {
         crate::kern::kern_subr::uiomove(buf, uio)
     }
 
-    /// `vfs_export(mp, &ump->um_export, argp)` of the kernel's `ffs_mount`: the export list is
-    /// the mount's `BsdMountG` member (`bsd`'s until N6).
-    fn vfs_export(
-        mp: &'static crate::sys::mount::Mount,
-        argp: &crate::sys::mount::ExportArgs,
-    ) -> Result<(), Errno> {
-        crate::kern::vfs_subr::vfs_export(mp, &mp.g.export, argp)
-    }
-    /// The kernel's `ffs_mountfs` starts the recycled mount's export list empty, as the C's
-    /// `malloc(M_ZERO)` of the `ufsmount` does.
-    fn ufs_export_init(mp: &crate::sys::mount::Mount) {
-        mp.g.export.clear();
-    }
     /// `disk_map` (`subr_disk.c`, `bsd`'s until N7).
     fn disk_map(path: &[u8], mappath: &mut [u8], flags: i32) -> bool {
         crate::kern::subr_disk::disk_map(path, mappath, flags)
