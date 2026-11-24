@@ -160,21 +160,27 @@
 //!   entry, pf's and the SPD's pools) and `rn_match` then answers it (radix.c:320). Here the
 //!   branch follows the annotation's flag, which the kernel can read (its union words are
 //!   tagged): a normal annotation held by the route being deleted passes to another route
-//!   that holds it (the next of the chain, else the first before it, else the first under
-//!   the node it hangs on: a route of another key shares it when its mask is the
-//!   annotation's leaf's), or leaves the tree when none does, so no route is left naming a
-//!   freed annotation; one shared by the route loses that reference, where radix.c leaves
-//!   the count one high, so a delete radix.c would later refuse succeeds (its normal
-//!   branch's "inconsistent dupedkey list", radix.c:844-849). No delete the C makes is
-//!   refused. The tree answers as the one built without the route, with one difference:
-//!   when only routes of non-normal masks still hold the annotation, the one that takes it
-//!   is short-cut as normal by `rn_match`, as radix.c short-cuts a non-normal route that
-//!   took it (radix.c:584-586, 316-321), so an address that route's mask refuses is still
-//!   answered by it, where the tree built without would give that route an annotation of
-//!   its mask. The C's state is not reachable from the tree's users at the pin: pf adds
-//!   prefix masks only (pf_table.c:1271, 1280), the SPD's masks are non-normal at index 16
-//!   (ip_spd.c:107, pfkeyv2_convert.c:473, 500), and the exports free their entries all at
-//!   once (vfs_subr.c:1565-1575). Each annotation also records its leaf's generation, a
+//!   that holds it (the next of the chain, where radix.c's normal branch hands it, else the
+//!   first before it, else the first under the node it hangs on: a route of another key
+//!   shares it when its mask is the annotation's leaf's), or leaves the tree when none does,
+//!   so no route is left naming a freed annotation; when every route still holding it has
+//!   one mask that is not normal, it becomes that mask's annotation (`rn_new_radix_mask`'s,
+//!   listed in `rn_add_radix_mask`'s order), as in the tree built without the deleted
+//!   routes. One shared by the route loses that reference, where radix.c leaves the count
+//!   one high, so a delete radix.c would later refuse succeeds (its normal branch's
+//!   "inconsistent dupedkey list", radix.c:844-849). No delete the C makes is refused. The
+//!   only state where the tree then differs from one built without the deleted routes:
+//!   routes of different masks still sharing the annotation, whose new leaf has a mask that
+//!   is not normal. It stays normal and its leaf is short-cut by `rn_match` (an address
+//!   that route's mask refuses is answered by it), which is radix.c's own state once a
+//!   route of another mask has taken a normal annotation over (radix.c:584-586, 316-321),
+//!   there before any delete and built again when that route is added just before the
+//!   annotation's leaf; a tree built in another order gives each mask its annotation.
+//!   No user of the tree at the pin reaches a repair, so neither that state nor the C's
+//!   dangling one arises: pf adds prefix masks only (pf_table.c:1271, 1280), the SPD's masks
+//!   are non-normal at index 16 (ip_spd.c:107, pfkeyv2_convert.c:473, 500), so neither has
+//!   a normal annotation a route of another mask takes, and the exports free their entries
+//!   all at once (vfs_subr.c:1565-1575). Each annotation also records its leaf's generation, a
 //!   check `rn_match` makes on a normal annotation it returns (after `rn_b`'s test): an
 //!   annotation still listed whose leaf has gone (radix.c:866-868's "Wasn't lifted at all"
 //!   return and the "Orphaned Mask" demote can leave one) is passed over; the property tests
@@ -864,6 +870,34 @@ impl<T, const K: usize> RadixTree<T, K> {
 enum MkLink {
     Node(u32),
     Mark(u32),
+}
+
+/// D-20: what `rn_holder` finds of the routes other than the one deleted that hold a
+/// normal annotation.
+struct Holders {
+    /// The first found: the next of the deleted route's chain (the route radix.c's normal
+    /// branch hands it to, and the one that takes it over when it is added again just before
+    /// its leaf), else the first before it, else the first under the annotation's node.
+    first: u32,
+    /// The first's mask, and whether every other has it too.
+    mask: u32,
+    one_mask: bool,
+    /// How many.
+    found: usize,
+}
+
+impl Holders {
+    /// Route `d` found holding the annotation.
+    fn note<T, const K: usize>(&mut self, h: &RadixTree<T, K>, d: u32) {
+        let m = h.n(d).mask();
+        if self.first == NONE {
+            self.first = d;
+            self.mask = m;
+        } else if m != self.mask {
+            self.one_mask = false;
+        }
+        self.found += 1;
+    }
 }
 
 /// What a `Slab` holds: how a vacant element looks and where its free-list link is.
@@ -1619,47 +1653,59 @@ fn rn_addroute<T, const K: usize>(
     tt
 }
 
-/// D-20: a route other than `tt` whose `rn_mklist` is `m`, the normal annotation `tt` holds:
-/// the next one of `tt`'s chain (where radix.c's normal branch hands it on), else the first
-/// before it (a route that shares it from earlier in the chain), else the first under the
-/// node it hangs on (a route of another key, which shares it when its mask is the
-/// annotation's leaf's, `rn_add_radix_mask`'s `mmask`); [`NONE`]. O(c) the chain, and the
-/// node's subtree only when the chain holds none.
-fn rn_holder<T, const K: usize>(h: &RadixTree<T, K>, tt: u32, m: u32) -> u32 {
+/// D-20: the routes other than `tt` whose `rn_mklist` is `m`, the normal annotation `tt`
+/// holds and `others` more share (its count): `tt`'s chain after it (where radix.c's normal
+/// branch hands it on), then before it, then, when the chain holds fewer than `others`, the
+/// other chains under the node it hangs on (a route of another key shares it when its mask
+/// is the annotation's leaf's, `rn_add_radix_mask`'s `mmask`). O(c) the chain, and the
+/// node's subtree only in that last case.
+fn rn_holder<T, const K: usize>(h: &RadixTree<T, K>, tt: u32, m: u32, others: usize) -> Holders {
+    let mut s = Holders {
+        first: NONE,
+        mask: NONE,
+        one_mask: true,
+        found: 0,
+    };
     let mut d = h.n(tt).dupedkey();
     while d != NONE {
         if h.n(d).mklist == m {
-            return d;
+            s.note(h, d);
         }
         d = h.n(d).dupedkey();
     }
-    let mut d = tt;
-    while h.n(h.n(d).p).b < 0 {
-        d = h.n(d).p;
+    let mut head = tt;
+    while h.n(h.n(head).p).b < 0 {
+        head = h.n(head).p;
     }
+    let mut d = head;
     while d != tt {
         if h.n(d).mklist == m {
-            return d;
+            s.note(h, d);
         }
         d = h.n(d).dupedkey();
+    }
+    if s.found >= others {
+        return s;
     }
     let x = rn_lift_node(&h.nodes, tt);
     if x == NONE {
-        return NONE;
+        return s;
     }
-    // The chains under x, in rn_walktree's order: down the left, each chain, then up past
-    // the right children and over to the next right subtree.
+    // The chains under x but tt's, in rn_walktree's order: down the left, each chain, then
+    // up past the right children and over to the next right subtree.
     let mut t = x;
     loop {
         while h.n(t).b >= 0 {
             t = h.n(t).l();
         }
-        let mut d = t;
-        while d != NONE {
-            if d != tt && h.n(d).mklist == m {
-                return d;
+        if t != head {
+            let mut d = t;
+            while d != NONE {
+                if h.n(d).mklist == m {
+                    s.note(h, d);
+                }
+                d = h.n(d).dupedkey();
             }
-            d = h.n(d).dupedkey();
         }
         loop {
             let p = h.n(t).p;
@@ -1669,10 +1715,81 @@ fn rn_holder<T, const K: usize>(h: &RadixTree<T, K>, tt: u32, m: u32) -> u32 {
             }
             t = p;
             if t == x {
-                return NONE;
+                return s;
             }
         }
     }
+}
+
+/// D-20: normal annotation `m`, held now only by routes of `d`'s mask, which has no
+/// `RNF_NORMAL`, made the annotation `rn_new_radix_mask(d)` makes (`d`'s flags, its mask) and
+/// listed where `rn_add_radix_mask` lists that mask on the node, so the tree answers as one
+/// built without the routes deleted. Left as it is when that node lists an annotation of the
+/// mask already (a tree built afresh would share that one) or does not list `m`.
+fn rn_mask_annotation<T, const K: usize>(h: &mut RadixTree<T, K>, d: u32, m: u32) {
+    let x = rn_lift_node(&h.nodes, d);
+    if x == NONE {
+        return;
+    }
+    // Out of the list, its place kept.
+    let mut prev = MkLink::Node(x);
+    loop {
+        let c = h.link(prev);
+        if c == NONE {
+            return;
+        }
+        if c == m {
+            break;
+        }
+        prev = MkLink::Mark(c);
+    }
+    let after = h.rm(m).mklist;
+    h.set_link(prev, after);
+    let dn = *h.n(d);
+    let netmask = dn.mask();
+    let mut mp = MkLink::Node(x);
+    loop {
+        let c = h.link(mp);
+        if c == NONE {
+            break;
+        }
+        let rm = *h.rm(c);
+        if rm.b < dn.b {
+            mp = MkLink::Mark(c);
+            continue;
+        }
+        if rm.b > dn.b {
+            break;
+        }
+        let mmask = if rm.flags & RNF_NORMAL != 0 {
+            match h.rm_leaf(c) {
+                NONE => NONE,
+                l => h.n(l).mask(),
+            }
+        } else {
+            rm.rmu
+        };
+        if mmask == netmask {
+            // That mask's annotation is there: m back where it was, as it was.
+            let next = h.link(prev);
+            h.rmm(m).mklist = next;
+            h.set_link(prev, m);
+            return;
+        }
+        if mmask != NONE
+            && (rn_refines(h.mk(netmask), h.mk(mmask)) || rn_lexobetter(h.mk(netmask), h.mk(mmask)))
+        {
+            break;
+        }
+        mp = MkLink::Mark(c);
+    }
+    let next = h.link(mp);
+    let rm = h.rmm(m);
+    rm.flags = dn.flags;
+    rm.rmu = netmask;
+    rm.generation = 0;
+    rm.mklist = next;
+    h.set_link(mp, m);
 }
 
 /// `rn_del_radix_mask(tt)`: route `tt`'s reference to its annotation dropped, the
@@ -1736,18 +1853,22 @@ fn rn_del_radix_mask<T, const K: usize>(h: &mut RadixTree<T, K>, tt: u32) -> i32
         }
         // Another route that holds the annotation takes it; none (or no other by the
         // count): it leaves the tree below.
-        let d = if h.rm(m).refs > 0 {
-            rn_holder(h, tt, m)
-        } else {
-            NONE
-        };
-        if d != NONE {
-            h.set_rm_leaf(m, d);
-            let rm = h.rmm(m);
-            if rm.refs > 0 {
-                rm.refs -= 1;
+        let others = usize::try_from(h.rm(m).refs).unwrap_or(0);
+        if others > 0 {
+            let s = rn_holder(h, tt, m, others);
+            let d = s.first;
+            if d != NONE {
+                h.set_rm_leaf(m, d);
+                h.rmm(m).refs -= 1;
+                // Held now only by routes of one mask that is not normal: that mask's
+                // annotation, as a tree built afresh has. Of mixed masks it stays normal,
+                // radix.c's own state once a route of another mask took it over
+                // (radix.c:584-586).
+                if s.one_mask && h.n(d).flags & RNF_NORMAL == 0 {
+                    rn_mask_annotation(h, d, m);
+                }
+                return 0;
             }
-            return 0;
         }
     } else {
         if h.rm(m).rmu != ttn.mask() {
@@ -2983,12 +3104,15 @@ mod tests {
         // D-20, the closing review's sequence: 255.255.0.2 sorts before the /24 (a longer
         // mask, rn_lexobetter) and shares the /16's annotation from before the odd route; the
         // /16 and then the odd route deleted, the annotation passes back to that earlier route
-        // instead of leaving the tree while it still names it. A /8 after them holds its own
-        // annotation, so the next route of the chain is not the holder.
+        // instead of leaving the tree while it still names it, and, that route's mask the
+        // only one left holding it, becomes that mask's annotation: the tree answers as the
+        // one built without the two routes. A /8 after them holds its own annotation, so the
+        // next route of the chain is not the holder.
         let mut h = d20(true);
         add(&mut h, [10, 0, 0, 0], Some(24), 24).expect("a /24, before the odd route");
         let two = sin([255, 255, 0, 2]);
-        h.add(&sin([10, 0, 0, 0]), Some(&two), 2)
+        let lb = h
+            .add(&sin([10, 0, 0, 0]), Some(&two), 2)
             .expect("255.255.0.2, before the /24");
         add(&mut h, [10, 0, 0, 0], Some(8), 8).expect("a /8, the chain's last");
         assert_eq!(walk(&h), [100, 2, 24, 1, 16, 8, 101], "the chain's order");
@@ -3007,18 +3131,25 @@ mod tests {
             .add(&sin([10, 0, 0, 0]), Some(&two), 2)
             .expect("255.255.0.2");
         add(&mut without, [10, 0, 0, 0], Some(8), 8).expect("the /8");
-        for a in D20_PROBES {
-            assert_eq!(matched(&h, a), matched(&without, a), "{a:?}");
+        for a in D20_PROBES
+            .iter()
+            .chain(&[[10, 0, 1, 131], [10, 0, 255, 255]])
+        {
+            assert_eq!(matched(&h, *a), matched(&without, *a), "{a:?}");
         }
         assert_eq!(matched(&h, [10, 0, 1, 129]), Some(2));
-        // The deviations' one difference: the route that took the annotation is short-cut
-        // as normal, as radix.c short-cuts the odd route that took it, so an address its mask
-        // refuses is answered by it; the tree built without gives it an annotation of its
-        // mask, and the /8 answers.
-        assert_eq!(matched(&h, [10, 0, 1, 131]), Some(2));
-        assert_eq!(matched(&without, [10, 0, 1, 131]), Some(8));
-        // Its own delete takes the annotation out; the tree empties cleanly.
+        // An address the 255.255.0.2 mask refuses: its annotation does not answer, the /8's
+        // does, as in the tree built without.
+        assert_eq!(matched(&h, [10, 0, 1, 131]), Some(8));
+        let m = h.n(lb.slot << 1).mklist;
+        assert!(
+            m != NONE && h.rm(m).flags & RNF_NORMAL == 0 && h.rm(m).rmu == h.n(lb.slot << 1).mask(),
+            "the 255.255.0.2 mask's annotation"
+        );
+        // Its own delete takes the annotation out (the mask's branch now, no repair); the
+        // tree empties cleanly.
         assert_eq!(h.delete(&sin([10, 0, 0, 0]), Some(&two)), Some(2));
+        assert_eq!(h.repairs(), 1);
         assert_eq!(h.dangling_annotations(), 0);
         check_links(&h);
         assert_eq!(matched(&h, [10, 0, 1, 131]), Some(8));
@@ -3034,12 +3165,19 @@ mod tests {
     fn a_route_of_another_key_that_shares_the_annotation_takes_it() {
         // D-20: a route of another key whose mask is the odd route's shares the /16's
         // annotation once the odd route is its leaf (rn_add_radix_mask's `mmask`); with the
-        // /16 and the odd route deleted, no route of the chain holds it, and the route under
-        // the node it hangs on takes it.
+        // /16 and the odd route deleted, no route of the chain holds it, the route under the
+        // node it hangs on takes it, and, its mask the only one left, it becomes that mask's
+        // annotation: the tree answers as the one built without the two routes.
         let mut h = d20(true);
         let odd = sin([255, 255, 0, 1]);
-        h.add(&sin([10, 0, 0, 2]), Some(&odd), 3)
+        let lr = h
+            .add(&sin([10, 0, 0, 2]), Some(&odd), 3)
             .expect("another key, the odd route's mask");
+        assert_eq!(
+            h.n(lr.slot << 1).mklist,
+            h.n(h.n(lr.slot << 1).p).mklist,
+            "it shares the annotation listed first on its node"
+        );
         check_links(&h);
         assert_eq!(del(&mut h, [10, 0, 0, 0], Some(16)), Some(16));
         assert_eq!(h.delete(&sin([10, 0, 0, 0]), Some(&odd)), Some(1));
@@ -3052,22 +3190,21 @@ mod tests {
         without
             .add(&sin([10, 0, 0, 2]), Some(&odd), 3)
             .expect("the other key's route");
-        for a in [
-            [10, 0, 0, 0],
-            [10, 0, 0, 1],
-            [10, 0, 0, 2],
-            [10, 0, 0, 6],
-            [10, 1, 0, 0],
-        ] {
-            assert_eq!(matched(&h, a), matched(&without, a), "{a:?}");
+        for a in D20_PROBES.iter().chain(&[[10, 0, 255, 255], [10, 0, 0, 3]]) {
+            assert_eq!(matched(&h, *a), matched(&without, *a), "{a:?}");
         }
         assert_eq!(matched(&h, [10, 0, 0, 6]), Some(3));
-        // The deviations' one difference, wider here: the route that took the annotation is
-        // short-cut as normal under the node it hangs on, where the tree built without
-        // searches under its mask and finds it only from its own key's side.
-        assert_eq!(matched(&h, [10, 0, 0, 129]), Some(3));
-        assert_eq!(matched(&without, [10, 0, 0, 129]), None);
+        // Addresses the odd mask refuses under that key: no short-cut answers the route.
+        assert_eq!(matched(&h, [10, 0, 0, 129]), None);
+        assert_eq!(matched(&h, [10, 0, 1, 129]), None);
+        let m = h.n(lr.slot << 1).mklist;
+        assert!(
+            m != NONE && h.rm(m).flags & RNF_NORMAL == 0 && h.rm(m).rmu == h.n(lr.slot << 1).mask(),
+            "the odd mask's annotation"
+        );
+        // Its delete is the mask's branch now, no repair.
         assert_eq!(h.delete(&sin([10, 0, 0, 2]), Some(&odd)), Some(3));
+        assert_eq!(h.repairs(), 1);
         assert_eq!(h.dangling_annotations(), 0);
         check_links(&h);
         assert_eq!(del(&mut h, [10, 0, 0, 1], None), Some(101));
@@ -3079,7 +3216,9 @@ mod tests {
     fn the_chain_takes_the_annotation_before_another_key() {
         // D-20: a route before the deleted one in its chain and a route of another key that
         // sorts first under the node both share the annotation; the chain's route takes it,
-        // then the other key's when that one goes too.
+        // then the other key's when that one goes too. With the two masks sharing it, the
+        // annotation stays normal (the deviations' one state that differs from the tree
+        // built without the deleted routes); with one left, it becomes that mask's.
         let mut h = tree();
         add(&mut h, [10, 0, 0, 4], None, 100).expect("the chain's head, a host route");
         add(&mut h, [10, 0, 0, 5], None, 101).expect("a sibling");
@@ -3099,15 +3238,45 @@ mod tests {
         assert_eq!(h.delete(&sin([10, 0, 0, 4]), Some(&odd)), Some(1));
         assert_eq!(h.dangling_annotations(), 0);
         check_links(&h);
-        // An address the annotation's short-cut answers: the chain's route took it.
+        // An address the annotation's short-cut answers: the chain's route took it, and its
+        // mask refuses the address, where the tree built without gives each mask its
+        // annotation and answers nothing.
         assert_eq!(matched(&h, [10, 0, 1, 5]), Some(2));
-        // That route deleted, the other key's takes it; then it leaves with that one.
+        let rebuilt = |with_two: bool| {
+            let mut t = tree();
+            add(&mut t, [10, 0, 0, 4], None, 100).expect("the chain's head");
+            add(&mut t, [10, 0, 0, 5], None, 101).expect("a sibling");
+            add(&mut t, [10, 0, 0, 4], Some(24), 24).expect("the /24");
+            if with_two {
+                t.add(&sin([10, 0, 0, 4]), Some(&two), 2)
+                    .expect("255.255.0.2");
+            }
+            t.add(&sin([10, 0, 0, 0]), Some(&odd), 3)
+                .expect("the other key's route");
+            t
+        };
+        assert_eq!(matched(&rebuilt(true), [10, 0, 1, 5]), None);
+        // That route deleted, the other key's takes it, its mask the only one left: that
+        // mask's annotation, and the tree answers as the one built without.
         assert_eq!(h.delete(&sin([10, 0, 0, 4]), Some(&two)), Some(2));
         assert_eq!(h.dangling_annotations(), 0);
         check_links(&h);
-        assert_eq!(matched(&h, [10, 0, 1, 5]), Some(3));
+        let without = rebuilt(false);
+        for a in [
+            [10, 0, 1, 5],
+            [10, 0, 1, 4],
+            [10, 0, 0, 0],
+            [10, 0, 0, 1],
+            [10, 0, 0, 2],
+            [10, 0, 0, 4],
+            [10, 0, 0, 6],
+            [10, 0, 0, 129],
+        ] {
+            assert_eq!(matched(&h, a), matched(&without, a), "{a:?}");
+        }
+        assert_eq!(matched(&h, [10, 0, 1, 5]), None);
         assert_eq!(h.delete(&sin([10, 0, 0, 0]), Some(&odd)), Some(3));
-        assert_eq!(h.repairs(), 3);
+        assert_eq!(h.repairs(), 2, "the last delete takes the mask's branch");
         assert_eq!(h.dangling_annotations(), 0);
         check_links(&h);
         assert_eq!(matched(&h, [10, 0, 1, 5]), None);
