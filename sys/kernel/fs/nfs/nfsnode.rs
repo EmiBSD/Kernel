@@ -91,9 +91,13 @@
 //!   or under the kernel lock: the words are relaxed atomics; the attribute cache, the times
 //!   and the handle `ReadMostly` cells copied out whole (cd9660's `inode`); the credentials and
 //!   the silly rename record counted or owned values in one kernel-lock cell ([`NfsNodeK`]).
+//! - N6.7a3: `n_vnode` is a `Link` (ufs's `i_vnode`), since `nfs_loadattrcache` moves a
+//!   device's node to the alias `checkalias` found (`np->n_vnode = nvp`); [`nfstov`] reads
+//!   it.
 
 use core::sync::atomic::{AtomicI16, AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering};
 
+use hal::link::Link;
 use hal::malloc::MBox;
 use hal::pinlist::PinEntry;
 use hal::pool::{PoolArc, PoolHome};
@@ -202,8 +206,9 @@ pub struct NfsNode<G: ProcGlue> {
     pub n_ctime: AtomicI64,
     /// `n_fh` and `n_fhsize` (`n_fhp` names `n_fh`): the file handle.
     pub n_fh: ReadMostly<NfsFh>,
-    /// `n_vnode`: associated vnode.
-    pub n_vnode: &'static Vnode<G>,
+    /// `n_vnode`: associated vnode (moved to a device's alias by `nfs_loadattrcache`; read
+    /// with [`nfstov`]).
+    pub n_vnode: Link<Vnode<G>>,
     /// `n_lockf`: locking record of file.
     pub n_lockf: LockfSlot,
     /// `n_lock`: NFSnode lock.
@@ -268,7 +273,7 @@ impl<G: ProcGlue> NfsNode<G> {
             n_mtime: ReadMostly::new(Timespec::ZERO),
             n_ctime: AtomicI64::new(0),
             n_fh: ReadMostly::new(fh),
-            n_vnode: vp,
+            n_vnode: Link::to(vp),
             n_lockf: LockfSlot::new(),
             n_lock: RecursiveRwlock::new("nfsnode"),
             n_error: AtomicI32::new(0),
@@ -344,9 +349,13 @@ pub fn vtonfs<G: ProcGlue>(vp: &Vnode<G>) -> NfsNodeRef<G> {
     }
 }
 
-/// `NFSTOV(np)`: the vnode of an nfsnode.
+/// `NFSTOV(np)`: the vnode of an nfsnode (`panic(9)` for a node whose link was emptied,
+/// which nothing does: the C's NULL `n_vnode`).
 pub fn nfstov<G: ProcGlue>(np: &NfsNode<G>) -> &'static Vnode<G> {
-    np.n_vnode
+    match np.n_vnode.get() {
+        Some(vp) => vp,
+        None => kpanic(format_args!("NFSTOV: node {np:p} without a vnode")),
+    }
 }
 /* </CODE> */
 

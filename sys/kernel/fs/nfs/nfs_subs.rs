@@ -111,6 +111,12 @@
 //!   reader's, each piece moved by the glue's `uiomove_out`; `nfsm_disct`, `nfs_adv` and
 //!   `nfsm_nextbytes` are the reader's copies and walks (`nfsm_subs`): no mbuf is inserted
 //!   into a reply, no raw position kept.
+//! - N6.7a3: [`nfs_loadattrcache`] takes the node and its mount's version from the operation
+//!   (the hot path's rule: no `VTONFS` or `VFSTONFS` the C's cast does not cost), reads the
+//!   `nfs_fattr` by the reader's `pod_len` (a copy of 68 or 84 bytes into the frame), and
+//!   writes the cache in one section of its cell (`ReadMostly::update`), its copy for the
+//!   caller made from the same section; the alias of a device moves the node's handle to the
+//!   alias vnode's slot and its `n_vnode` link, and answers the vnode (the C's `*vpp`).
 
 #![allow(non_upper_case_globals)] // the C's names of the XDR words
 
@@ -135,6 +141,7 @@ use super::nfsproto::{
     NFSV3SATTRTIME_DONTCHANGE, NFSV3SATTRTIME_TOCLIENT, NFSV3SATTRTIME_TOSERVER, NFSX_V2FH, Nfsfh,
     Nfstype, Nfsv2Time,
 };
+use super::nfsproto::{NFS_FABLKSIZE, NfsFattr, nfsv2tov_type, nfsv3tov_type, nfsx_fattr};
 use super::nfsproto::{
     NFS_NPROCS, NFS_VER2, NFS_VER3, NFSPROC_CREATE, NFSPROC_FSSTAT, NFSPROC_GETATTR, NFSPROC_LINK,
     NFSPROC_LOOKUP, NFSPROC_MKDIR, NFSPROC_NOOP, NFSPROC_NULL, NFSPROC_READ, NFSPROC_READDIR,
@@ -144,7 +151,9 @@ use super::nfsproto::{
     NFSV2PROC_READDIR, NFSV2PROC_READLINK, NFSV2PROC_REMOVE, NFSV2PROC_RENAME, NFSV2PROC_RMDIR,
     NFSV2PROC_SETATTR, NFSV2PROC_STATFS, NFSV2PROC_SYMLINK, NFSV2PROC_WRITE, NFSX_UNSIGNED,
 };
-use super::xdr_subs::{txdr_nfsv3time, txdr_unsigned};
+use super::xdr_subs::{
+    fxdr_hyper, fxdr_nfsv2time, fxdr_nfsv3time, fxdr_unsigned, txdr_nfsv3time, txdr_unsigned,
+};
 use crate::assert::kassert;
 use crate::assert::kpanic;
 use crate::clock::Timespec;
@@ -153,10 +162,12 @@ use crate::crypto::idgen::Idgen32Ctx;
 use crate::file::FileGlue;
 use crate::fs::bio::vnode_dirty_for_each;
 use crate::fs::buf::{B_BUSY, B_DELWRI, B_NEEDCOMMIT, Buf};
+use crate::fs::cache::cache_purge;
 use crate::fs::mount::{Mount, Vfsconf};
-use crate::fs::subr::vfs;
+use crate::fs::spec::BLKDEV_IOSIZE;
+use crate::fs::subr::{checkalias, vfs, vgone, vops_id, vrele};
 use crate::fs::vnode::Vtype::{self, VBLK, VCHR, VDIR, VFIFO, VLNK, VNON, VREG, VSOCK};
-use crate::fs::vnode::{VNOVAL, Vattr};
+use crate::fs::vnode::{VNOVAL, Vattr, Vnode, VopsId, iftovt};
 use crate::net::mbuf::{
     M_WAIT, MLEN, MT_DATA, MbufBox, m_align, m_calchdrlen, m_get, m_gethdr, mclget,
 };
@@ -167,9 +178,10 @@ use crate::sys::nfs_rpcv2::{
     RPC_AUTHERR, RPC_CALL, RPC_MISMATCH, RPC_MSGACCEPTED, RPC_MSGDENIED, RPC_REPLY, RPC_VER2,
     RPCAUTH_NULL, RPCAUTH_UNIX,
 };
-use crate::sys::types::{Gid, Mode, Off, Uid};
+use crate::sys::types::{Dev, Gid, Mode, Off, Uid, makedev};
 use crate::tc::gettime;
 use crate::uio::{Uio, UioRw};
+use crate::vm::io::MAXBSIZE;
 use crate::vm::vnode::uvm_vnp_setsize;
 
 /// `nfs_xdrneg1`: the XDR word of -1. Data items converted to xdr at startup, since they are
@@ -594,12 +606,176 @@ pub fn nfs_vfs_init<G: ProcGlue>(_vfsp: &'static Vfsconf<G>) -> Result<(), Errno
     Ok(())
 }
 
+/// `nfs_loadattrcache(vpp, mdp, dposp, vaper)`: load the attribute cache (that lives in the
+/// nfsnode entry) with the values of the `nfs_fattr` at the reader `x` (`NFSX_FATTR(v3)`
+/// bytes, `EBADRPC` past the reply's end) and, iff `vaper` is given, copy the attributes to
+/// it. `np` is the node, `v3` its mount's version (the C's `NFS_ISV3(vp)`, lent by the
+/// operation). A new node (its vnode's type `VNON`) gets its type, and a device its
+/// operations (`nfs_specvops`) and, when `checkalias` finds one, the alias's vnode, which the
+/// node moves to: the vnode the node is on is returned (the C's `*vpp`). A fifo is
+/// `EOPNOTSUPP` (`miscfs/fifofs` is not ported: the C's `!FIFO` path).
+pub fn nfs_loadattrcache<G: ProcGlue>(
+    np: &NfsNode<G>,
+    v3: bool,
+    x: &mut XdrReader<'_>,
+    vaper: Option<&mut Vattr>,
+) -> Result<&'static Vnode<G>, Errno> {
+    let mut vp = super::nfsnode::nfstov(np);
+    let fp = x.pod_len::<NfsFattr>(nfsx_fattr(v3))?;
+    let vmode: Mode = fxdr_unsigned(fp.fa_mode);
+    let (mut vtyp, rdev, mtime) = if v3 {
+        let spec = fp.fa3_rdev();
+        (
+            nfsv3tov_type(fp.fa_type),
+            makedev(fxdr_unsigned(spec.specdata1), fxdr_unsigned(spec.specdata2)),
+            fxdr_nfsv3time(&fp.fa3_mtime()),
+        )
+    } else {
+        let mut vtyp = nfsv2tov_type(fp.fa_type);
+        if vtyp == VNON || vtyp == VREG {
+            vtyp = iftovt(vmode);
+        }
+        // `int32_t rdev = fxdr_unsigned(int32_t, fp->fa2_rdev)`.
+        (
+            vtyp,
+            fxdr_unsigned(fp.fa2_rdev()) as Dev,
+            fxdr_nfsv2time(&fp.fa2_mtime()),
+        )
+    };
+    // Really ugly NFSv2 kludge (`rdev == 0xffffffff`, the `int` made unsigned).
+    if !v3 && vtyp == VCHR && rdev as u32 == 0xffff_ffff {
+        vtyp = VFIFO;
+    }
+
+    // If v_type == VNON it is a new node, so fill in the v_type, n_mtime fields. Check to see
+    // if it represents a special device, and if so, check for a possible alias. Once the
+    // correct vnode has been obtained, fill in the rest of the information.
+    if vp.vtype() == VNON {
+        cache_purge(vp);
+        vp.set_vtype(vtyp);
+        if vtyp == VFIFO {
+            // FIFO: vp->v_op = &nfs_fifovops (miscfs/fifofs, not ported); without FIFO:
+            return Err(Errno::EOPNOTSUPP);
+        }
+        if vtyp == VCHR || vtyp == VBLK {
+            vp.set_ops_id(vops_id::<G>(&vfs::<G>().nfs.specvops));
+            if let Some(nvp) = checkalias(vp, rdev, vp.mount()) {
+                // Discard unneeded vnode, but save its nfsnode. Since the nfsnode does not
+                // have a lock, its vnode lock has to be carried over.
+                if let Some(node) = vp.take_node() {
+                    nvp.set_node(node);
+                }
+                vp.set_ops_id(VopsId::SPEC);
+                vrele(vp);
+                vgone(vp);
+                // Reinitialize aliased node.
+                np.n_vnode.set(Some(nvp));
+                vp = nvp;
+            }
+        }
+        let _ = np.n_mtime.replace(mtime);
+    }
+
+    let uid: Uid = fxdr_unsigned(fp.fa_uid);
+    let gid: Gid = fxdr_unsigned(fp.fa_gid);
+    let (fsid, iosize) = match vp.mount() {
+        Some(mp) => (mp.fsid().val[0], mp.iosize()),
+        None => kpanic(format_args!("nfs_loadattrcache: vnode {vp:p} has no mount")),
+    };
+    let n_size = np.n_size.load(Ordering::Relaxed);
+    let modified = np.isset(NMODIFIED);
+    let (va, changed, size) = np.n_vattr.update(|vap| {
+        vap.va_type = vtyp;
+        vap.va_rdev = rdev;
+        vap.va_mtime = mtime;
+        vap.va_fsid = i64::from(fsid);
+
+        // Invalidate access cache if uid, gid or mode changed.
+        if np.n_accstamp.load(Ordering::Relaxed) != -1
+            && (gid != vap.va_gid || uid != vap.va_uid || (vmode & 0o7777) != vap.va_mode)
+        {
+            np.n_accstamp.store(-1, Ordering::Relaxed);
+        }
+
+        vap.va_mode = vmode & 0o7777;
+
+        vap.va_blocksize = match vtyp {
+            VBLK => i64::from(BLKDEV_IOSIZE),
+            VCHR => MAXBSIZE as i64,
+            _ if v3 => i64::from(iosize),
+            // `fxdr_unsigned(int32_t, fp->fa2_blocksize)`.
+            _ => i64::from(fxdr_unsigned(fp.fa2_blocksize()) as i32),
+        };
+        vap.va_nlink = fxdr_unsigned(fp.fa_nlink);
+        vap.va_uid = uid;
+        vap.va_gid = gid;
+        if v3 {
+            vap.va_size = fxdr_hyper(fp.fa3_size().words());
+            vap.va_bytes = fxdr_hyper(fp.fa3_used().words());
+            vap.va_fileid = fxdr_hyper(fp.fa3_fileid().words());
+            vap.va_atime = fxdr_nfsv3time(&fp.fa3_atime());
+            vap.va_ctime = fxdr_nfsv3time(&fp.fa3_ctime());
+        } else {
+            vap.va_size = u64::from(fxdr_unsigned(fp.fa2_size()));
+            // `(u_quad_t)fxdr_unsigned(int32_t, fp->fa2_blocks) * NFS_FABLKSIZE`: the
+            // signed word widened, then multiplied in 64 bits.
+            vap.va_bytes = (i64::from(fxdr_unsigned(fp.fa2_blocks()) as i32) as u64)
+                .wrapping_mul(NFS_FABLKSIZE);
+            // `fxdr_unsigned(int32_t, fp->fa2_fileid)`, widened as a signed value.
+            vap.va_fileid = i64::from(fxdr_unsigned(fp.fa2_fileid()) as i32) as u64;
+            vap.va_atime = fxdr_nfsv2time(&fp.fa2_atime());
+            let ctime = fp.fa2_ctime();
+            vap.va_ctime = Timespec {
+                tv_sec: i64::from(fxdr_unsigned(ctime.nfsv2_sec)),
+                tv_nsec: 0,
+            };
+            vap.va_gen = u64::from(fxdr_unsigned(ctime.nfsv2_usec));
+        }
+        vap.va_flags = 0;
+        vap.va_filerev = 0;
+
+        // The size: the node's own while it has local modifications past the server's.
+        let changed = vap.va_size != n_size;
+        let mut size = None;
+        if changed {
+            if vap.va_type == VREG && modified && vap.va_size < n_size {
+                vap.va_size = n_size;
+            } else {
+                size = Some(vap.va_size);
+            }
+        }
+        (*vap, changed, size)
+    });
+    if changed {
+        if let Some(size) = size {
+            np.n_size.store(size, Ordering::Relaxed);
+        }
+        if va.va_type == VREG {
+            // The C passes its `u_quad_t` size as the `voff_t` argument.
+            uvm_vnp_setsize(vp, np.n_size.load(Ordering::Relaxed) as Off);
+        }
+    }
+    np.n_attrstamp.store(gettime(), Ordering::Relaxed);
+    if let Some(vaper) = vaper {
+        *vaper = va;
+        if np.isset(NCHG) {
+            if np.isset(NACC) {
+                vaper.va_atime = *np.n_atim.read();
+            }
+            if np.isset(NUPD) {
+                vaper.va_mtime = *np.n_mtim.read();
+            }
+        }
+    }
+    Ok(vp)
+}
+
 /// `nfs_attrtimeo(np)`: the attribute cache timeout of a node, in seconds: a tenth of the
 /// age of its last modification, clamped to the mount's `acregmin..acregmax`
 /// (`acdirmin..acdirmax` for a directory); the minimum while it has local modifications.
 /// `nmp` is the node's mount, lent by the caller (the C's `VFSTONFS(vp->v_mount)`).
 pub fn nfs_attrtimeo<G: ProcGlue>(np: &NfsNode<G>, nmp: &NfsMount<G>) -> i32 {
-    let vp = np.n_vnode;
+    let vp = super::nfsnode::nfstov(np);
     // `int tenthage = (gettime() - np->n_mtime.tv_sec) / 10`: a `time_t` quotient kept in an
     // `int`, as the C's conversion (the server's times are 32-bit seconds).
     let tenthage = (gettime().wrapping_sub(np.n_mtime.read().tv_sec) / 10) as i32;
@@ -653,7 +829,10 @@ pub fn nfs_getattrcache<G: ProcGlue>(
                 np.n_size.store(vaper.va_size, Ordering::Relaxed);
             }
             // The C passes its `u_quad_t` size as the `voff_t` argument.
-            uvm_vnp_setsize(np.n_vnode, np.n_size.load(Ordering::Relaxed) as Off);
+            uvm_vnp_setsize(
+                super::nfsnode::nfstov(np),
+                np.n_size.load(Ordering::Relaxed) as Off,
+            );
         } else {
             np.n_size.store(vaper.va_size, Ordering::Relaxed);
         }

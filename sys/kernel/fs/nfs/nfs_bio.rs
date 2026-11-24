@@ -104,21 +104,47 @@ use hal::sleep::{INFSLP, PCATCH, PRIBIO, tsleep_nsec, wakeup, wakeup_one};
 use hal::sys::errno::Errno;
 use hal::sys::types::{Daddr, Off};
 
+use super::nfs::{B_INVAFTERWRITE, NfsError, nfs_isv3};
 use super::nfs_socket::nfs_sigintr;
-use super::nfs_subs::NFSSTATS;
-use super::nfsmount::NfsMount;
-use super::nfsnode::{
-    NFLUSHINPROG, NFLUSHWANT, NFS_BUFQLEN, NFS_BUFQMAX, NFS_NUMASYNC, NMODIFIED, NfsNode,
+use super::nfs_subs::{
+    NFSSTATS, nfs_add_tobecommitted_range, nfs_clearcommit, nfs_del_committed_range,
+    nfs_del_tobecommitted_range,
 };
+use super::nfs_vfsops::nfs_fsinfo;
+use super::nfs_vnops::{
+    buf_vnode, nfs_getattr_np, nfs_readlinkrpc, nfs_readrpc, nfs_setcred, nfs_writebp,
+    nfs_writerpc, ucred, vmount, with_thread,
+};
+use super::nfsmount::{NfsMount, vfstonfs};
+use super::nfsnode::{
+    NFLUSHINPROG, NFLUSHWANT, NFS_BUFQLEN, NFS_BUFQMAX, NFS_NUMASYNC, NMODIFIED, NWRITEERR,
+    NfsNode, nfs_invalidate_attrcache, vtonfs,
+};
+use super::nfsproto::{
+    NFS_MAXPATHLEN, NFSV3WRITE_DATASYNC, NFSV3WRITE_FILESYNC, NFSV3WRITE_UNSTABLE,
+};
+use crate::assert::kpanic;
 use crate::clock::sec_to_nsec;
-use crate::fs::bio::{DEV_BSHIFT, getblk, getblk_wait};
-use crate::fs::buf::{B_READ, B_WRITEINPROG, BufRef};
+use crate::event::{NOTE_EXTEND, NOTE_TRUNCATE, NOTE_WRITE};
+use crate::file::FileGlue;
+use crate::fs::bio::{
+    BCSTATS, DEV_BSHIFT, bdwrite, biodone, biowait, brelse, buf_dirty, getblk, getblk_wait, incore,
+};
+use crate::fs::buf::{
+    B_ASYNC, B_DELWRI, B_DONE, B_EINTR, B_ERROR, B_INVAL, B_NEEDCOMMIT, B_NOCACHE, B_PHYS, B_READ,
+    B_WRITEINPROG, BufRef,
+};
 use crate::fs::bufq::{BufqDiscipline, bufq_park};
 use crate::fs::subr::{vfs, vinvalbuf};
-use crate::fs::vnode::Vnode;
+use crate::fs::vnode::Vtype::{VLNK, VREG};
+use crate::fs::vnode::{IO_APPEND, IO_SYNC, V_SAVE, VN_KNOTE, VROOT, VTEXT, Vattr, Vnode};
+use crate::fs::vnops::vn_fsizechk;
 use crate::fs::vops::Cred;
 use crate::proc::{ProcGlue, Thread};
-use crate::sys::mount::NFSMNT_INT;
+use crate::sys::mount::{NFSMNT_GOTFSINFO, NFSMNT_INT, NFSMNT_NFSV3};
+use crate::sys::signal::SIGKILL;
+use crate::uio::{Iovec, Uio};
+use crate::vm::vnode::{uvm_vnp_setsize, uvm_vnp_uncache};
 
 /// `DEV_BSIZE` (`<sys/param.h>`): the block size `b_blkno` counts in.
 pub const DEV_BSIZE: i32 = 1 << DEV_BSHIFT;
@@ -174,6 +200,370 @@ pub fn nfs_shortread(bcount: i64, resid: usize, n_size: u64, boff: Off) -> (usiz
     }
 }
 
+/// `nfs_bioread(vp, uio, ioflag, cred)`: vnode op for read using bio (any similarity to
+/// readip() is purely coincidental): a regular file's blocks through the buffer cache, with
+/// read-ahead handed to the nfsiods, or a symbolic link's one block. For nfs, cache
+/// consistency can only be maintained approximately: if the file's modify time on the server
+/// has changed since the last read rpc or you have written to the file, you may have lost
+/// data cache consistency with the server, so flush all of the file's data out of the cache;
+/// then force a getattr rpc to ensure that you have up to date attributes.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the C's one function: the consistency check, read-ahead, the block and the link"
+)]
+pub fn nfs_bioread<G: ProcGlue>(
+    vp: &'static Vnode<G>,
+    uio: &mut Uio<'_, G>,
+    _ioflag: i32,
+    cred: Cred<'_>,
+) -> Result<(), Errno> {
+    #[cfg(feature = "diagnostic")]
+    if uio.uio_rw != crate::uio::UioRw::UIO_READ {
+        kpanic(format_args!("nfs_read mode"));
+    }
+    if uio.uio_resid == 0 {
+        return Ok(());
+    }
+    if uio.uio_offset < 0 {
+        return Err(Errno::EINVAL);
+    }
+    let np = vtonfs(vp);
+    let nmp = vfstonfs(vmount(vp));
+    let p = uio.uio_procp;
+    let cr = ucred(cred);
+    if nmp.flag() & (NFSMNT_NFSV3 | NFSMNT_GOTFSINFO) == NFSMNT_NFSV3 {
+        let _ = nfs_fsinfo(&nmp, vp, cr, p);
+    }
+    let biosize = nmp.nm_rsize.load(Ordering::Relaxed);
+    let mut vattr = Vattr::new();
+    if np.isset(NMODIFIED) {
+        nfs_invalidate_attrcache(&np);
+        with_thread(p, |pp| nfs_getattr_np(vp, &np, &nmp, &mut vattr, cred, pp))?;
+        let _ = np.n_mtime.replace(vattr.va_mtime);
+    } else {
+        with_thread(p, |pp| nfs_getattr_np(vp, &np, &nmp, &mut vattr, cred, pp))?;
+        if *np.n_mtime.read() != vattr.va_mtime {
+            nfs_vinvalbuf(&np, &nmp, V_SAVE, cred, p)?;
+            let _ = np.n_mtime.replace(vattr.va_mtime);
+        }
+    }
+
+    // update the cache read creds for this vnode
+    nfs_setcred(&np, cr, false);
+
+    loop {
+        if vp.flag() & VROOT != 0 && vp.vtype() == VLNK {
+            return nfs_readlinkrpc(vp, &np, &nmp, uio, cr).map_err(NfsError::errno);
+        }
+        let (mut t, on, mut n): (BufRef, i32, i32) = match vp.vtype() {
+            VREG => {
+                NFSSTATS.biocache_reads.fetch_add(1, Ordering::Relaxed);
+                let (lbn, on, bn) = nfs_bioblk(uio.uio_offset, biosize);
+                let mut not_readin = true;
+
+                // Start the read ahead(s), as required.
+                let readahead = nmp.nm_readahead.load(Ordering::Relaxed);
+                if NFS_NUMASYNC.load(Ordering::Relaxed) > 0 && readahead > 0 {
+                    let mut nra: i32 = 0;
+                    while nra < readahead
+                        && (((lbn + 1 + Daddr::from(nra)) * Daddr::from(biosize)) as u64)
+                            < np.n_size.load(Ordering::Relaxed)
+                    {
+                        let rabn = (lbn + 1 + Daddr::from(nra)) * Daddr::from(biosize / DEV_BSIZE);
+                        if !incore(&vp.bufs, rabn) {
+                            let Some(rabp) = nfs_getcacheblk(&nmp, vp, rabn, biosize, p) else {
+                                return Err(Errno::EINTR);
+                            };
+                            if rabp.buf().flags() & (B_DELWRI | B_DONE) == 0 {
+                                rabp.buf().set(B_READ | B_ASYNC);
+                                if let Err((rabp, _)) = nfs_asyncio::<G>(rabp, true) {
+                                    rabp.buf().set(B_INVAL);
+                                    brelse(rabp);
+                                }
+                            } else {
+                                brelse(rabp);
+                            }
+                        }
+                        nra += 1;
+                    }
+                }
+
+                // again:
+                loop {
+                    let Some(t) = nfs_getcacheblk(&nmp, vp, bn, biosize, p) else {
+                        return Err(Errno::EINTR);
+                    };
+                    let t = if t.buf().flags() & (B_DONE | B_DELWRI) == 0 {
+                        t.buf().set(B_READ);
+                        not_readin = false;
+                        let (t, error) = nfs_doio_sync(t, vp, &np, &nmp, p);
+                        if let Err(e) = error {
+                            brelse(t);
+                            return Err(e);
+                        }
+                        t
+                    } else {
+                        t
+                    };
+                    // `n = ulmin(biosize - on, uio->uio_resid)`, an `int`.
+                    let mut n = ((biosize - on) as usize).min(uio.uio_resid) as i32;
+                    // `offdiff = np->n_size - uio->uio_offset`: the `u_quad_t` difference
+                    // kept in an `off_t`.
+                    let offdiff =
+                        np.n_size
+                            .load(Ordering::Relaxed)
+                            .wrapping_sub(uio.uio_offset as u64) as i64;
+                    if offdiff < i64::from(n) {
+                        n = offdiff as i32;
+                    }
+                    let bp = t.buf();
+                    if not_readin && n > 0 && (on < bp.validoff() || on + n > bp.validend()) {
+                        bp.set(B_INVAFTERWRITE);
+                        if bp.dirtyend() > 0 {
+                            if !bp.isset(B_DELWRI) {
+                                kpanic(format_args!("nfsbioread"));
+                            }
+                            if nfs_writebp::<G>(t, true) == Err(Errno::EINTR) {
+                                return Err(Errno::EINTR);
+                            }
+                        } else {
+                            brelse(t);
+                        }
+                        continue;
+                    }
+                    let validend = bp.validend();
+                    let diff = if on >= validend { 0 } else { validend - on };
+                    if diff < n {
+                        n = diff;
+                    }
+                    break (t, on, n);
+                }
+            }
+            VLNK => {
+                NFSSTATS.biocache_readlinks.fetch_add(1, Ordering::Relaxed);
+                let Some(t) = nfs_getcacheblk(&nmp, vp, 0, NFS_MAXPATHLEN as i32, p) else {
+                    return Err(Errno::EINTR);
+                };
+                let t = if !t.buf().isset(B_DONE) {
+                    t.buf().set(B_READ);
+                    let (t, error) = nfs_doio_sync(t, vp, &np, &nmp, p);
+                    if let Err(e) = error {
+                        brelse(t);
+                        return Err(e);
+                    }
+                    t
+                } else {
+                    t
+                };
+                let n = uio
+                    .uio_resid
+                    .min(NFS_MAXPATHLEN.saturating_sub(t.buf().resid()))
+                    as i32;
+                (t, 0, n)
+            }
+            vt => kpanic(format_args!("nfsbioread: type {:x} unexpected", vt as i32)),
+        };
+
+        let mut error = Ok(());
+        if n > 0 {
+            // `0 <= on` and `on + n` is within the block (`n` was clamped to its valid end).
+            let (on, len) = (on as usize, n as usize);
+            match t.data().get_mut(on..on + len) {
+                Some(b) => error = <G::FileGlue as FileGlue>::uiomove(b, uio),
+                None => kpanic(format_args!(
+                    "nfsbioread: {len} bytes at {on} past the block"
+                )),
+            }
+        }
+
+        if vp.vtype() == VLNK {
+            n = 0;
+        }
+
+        brelse(t);
+        if error.is_err() || uio.uio_resid == 0 || n <= 0 {
+            return error;
+        }
+    }
+}
+
+/// `nfs_write` (`vop_write`): vnode op for write using bio. Each block is filled in the
+/// buffer cache and its dirty and valid ranges merged; a block that becomes full is written
+/// asynchronously, others delayed; a write that would leave a dirty block discontiguous
+/// writes the old dirty part first. `IO_SYNC` writes each block at once; `IO_APPEND` asks the
+/// server for the size first.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the C's one function: the checks, the block loop and its three ways out"
+)]
+pub fn nfs_write<G: ProcGlue>(
+    vp: &'static Vnode<G>,
+    uio: &mut Uio<'_, G>,
+    ioflag: i32,
+    cred: Cred<'_>,
+) -> Result<(), Errno> {
+    #[cfg(feature = "diagnostic")]
+    if uio.uio_rw != crate::uio::UioRw::UIO_WRITE {
+        kpanic(format_args!("nfs_write mode"));
+    }
+    if vp.vtype() != VREG {
+        return Err(Errno::EIO);
+    }
+    let np = vtonfs(vp);
+    if np.isset(NWRITEERR) {
+        np.clr(NWRITEERR);
+        let e = np.n_error.load(Ordering::Relaxed);
+        return if e == 0 {
+            Ok(())
+        } else {
+            Err(Errno::from_raw(e).unwrap_or(Errno::EIO))
+        };
+    }
+    let nmp = vfstonfs(vmount(vp));
+    let p = uio.uio_procp;
+    let cr = ucred(cred);
+    if nmp.flag() & (NFSMNT_NFSV3 | NFSMNT_GOTFSINFO) == NFSMNT_NFSV3 {
+        let _ = nfs_fsinfo(&nmp, vp, cr, p);
+    }
+    if ioflag & (IO_APPEND | IO_SYNC) != 0 {
+        if np.isset(NMODIFIED) {
+            nfs_invalidate_attrcache(&np);
+            nfs_vinvalbuf(&np, &nmp, V_SAVE, cred, p)?;
+        }
+        if ioflag & IO_APPEND != 0 {
+            nfs_invalidate_attrcache(&np);
+            let mut vattr = Vattr::new();
+            with_thread(p, |pp| nfs_getattr_np(vp, &np, &nmp, &mut vattr, cred, pp))?;
+            uio.uio_offset = np.n_size.load(Ordering::Relaxed) as Off;
+        }
+    }
+    if uio.uio_offset < 0 {
+        return Err(Errno::EINVAL);
+    }
+    if uio.uio_resid == 0 {
+        return Ok(());
+    }
+
+    // do the filesize rlimit check
+    let overrun = vn_fsizechk(vp, uio, ioflag, p.and_then(G::thread_pin))?;
+
+    // update the cache write creds for this node.
+    nfs_setcred(&np, cr, true);
+
+    // I use nm_rsize, not nm_wsize so that all buffer cache blocks will be the same size
+    // within a filesystem. nfs_writerpc will still use nm_wsize when sizing the rpc's.
+    let biosize = nmp.nm_rsize.load(Ordering::Relaxed);
+    let v3 = nfs_isv3(&nmp);
+    let b_proc = p.map_or(0, |p| ptr::from_ref(p).addr());
+    let mut extended = false;
+    let mut truncated = false;
+    let error: Result<(), Errno> = 'out: {
+        loop {
+            // XXX make sure we aren't cached in the VM page cache
+            uvm_vnp_uncache(vp);
+
+            NFSSTATS.biocache_writes.fetch_add(1, Ordering::Relaxed);
+            let (_lbn, on, bn) = nfs_bioblk(uio.uio_offset, biosize);
+            // `n = ulmin(biosize - on, uio->uio_resid)`, an `int`.
+            let n = ((biosize - on) as usize).min(uio.uio_resid) as i32;
+            // again:
+            loop {
+                let Some(mut t) = nfs_getcacheblk(&nmp, vp, bn, biosize, p) else {
+                    break 'out Err(Errno::EINTR);
+                };
+                np.set(NMODIFIED);
+                let end = uio.uio_offset + Off::from(n);
+                let n_size = np.n_size.load(Ordering::Relaxed);
+                if end as u64 > n_size {
+                    np.n_size.store(end as u64, Ordering::Relaxed);
+                    uvm_vnp_setsize(vp, end);
+                    extended = true;
+                } else if (end as u64) < n_size {
+                    truncated = true;
+                }
+
+                // If the new write will leave a contiguous dirty area, just update the
+                // b_dirtyoff and b_dirtyend, otherwise force a write rpc of the old dirty area.
+                let bp = t.buf();
+                if bp.dirtyend() > 0 && (on > bp.dirtyend() || on + n < bp.dirtyoff()) {
+                    bp.set_proc_addr(b_proc);
+                    if nfs_writebp::<G>(t, true) == Err(Errno::EINTR) {
+                        break 'out Err(Errno::EINTR);
+                    }
+                    continue;
+                }
+
+                // `0 <= on` and `on + n <= biosize`, the block's size.
+                let (o, len) = (on as usize, n as usize);
+                let moved = match t.data().get_mut(o..o + len) {
+                    Some(b) => <G::FileGlue as FileGlue>::uiomove(b, uio),
+                    None => kpanic(format_args!("nfs_write: {len} bytes at {o} past the block")),
+                };
+                if let Err(e) = moved {
+                    t.buf().set(B_ERROR);
+                    brelse(t);
+                    break 'out Err(e);
+                }
+                let bp = t.buf();
+                let (dirtyoff, dirtyend, validoff, validend) = nfs_bufranges(
+                    (bp.dirtyoff(), bp.dirtyend(), bp.validoff(), bp.validend()),
+                    on,
+                    n,
+                );
+                bp.set_dirtyoff(dirtyoff);
+                bp.set_dirtyend(dirtyend);
+                bp.set_validoff(validoff);
+                bp.set_validend(validend);
+
+                // Since this block is being modified, it must be written again and not just
+                // committed.
+                if v3 {
+                    let _lock = np.n_commitlock.write();
+                    if bp.isset(B_NEEDCOMMIT) {
+                        bp.clr(B_NEEDCOMMIT);
+                        nfs_del_tobecommitted_range(&np, bp);
+                    }
+                    nfs_del_committed_range(&np, bp);
+                } else {
+                    bp.clr(B_NEEDCOMMIT);
+                }
+
+                if ioflag & IO_SYNC != 0 {
+                    bp.set_proc_addr(b_proc);
+                    if let Err(e) = nfs_writebp::<G>(t, true) {
+                        break 'out Err(e);
+                    }
+                } else if n + on == biosize {
+                    bp.set_proc_addr(0);
+                    bp.set(B_ASYNC);
+                    let _ = nfs_writebp::<G>(t, false);
+                } else {
+                    bdwrite(t);
+                }
+                break;
+            }
+            if uio.uio_resid == 0 || n <= 0 {
+                break;
+            }
+        }
+
+        // out: XXX belongs here??? (`if (wrotedta)`: every way out of the loop but `out`
+        // copied data into a block, so the C's flag is always set here.)
+        VN_KNOTE(
+            vp,
+            NOTE_WRITE
+                | if extended { NOTE_EXTEND } else { 0 }
+                | if truncated { NOTE_TRUNCATE } else { 0 },
+        );
+        Ok(())
+    };
+
+    // out: correct the result for writes clamped by vn_fsizechk()
+    uio.uio_resid += overrun;
+
+    error
+}
+
 /// `nfs_getcacheblk(vp, bn, size, p)`: get an nfs cache block. Allocate a new one if the
 /// block isn't currently in the cache and return the block marked busy. If the calling
 /// process is interrupted by a signal for an interruptible mount point, return `None`.
@@ -210,7 +600,7 @@ pub fn nfs_vinvalbuf<G: ProcGlue>(
     cred: Cred<'_>,
     p: Option<&Thread<G>>,
 ) -> Result<(), Errno> {
-    let vp = np.n_vnode;
+    let vp = super::nfsnode::nfstov(np);
     let (sintr, stimeo) = if nmp.flag() & NFSMNT_INT != 0 {
         (PCATCH, sec_to_nsec(2))
     } else {
@@ -283,6 +673,223 @@ pub fn nfs_asyncio<G: ProcGlue>(t: BufRef, readahead: bool) -> Result<(), (BufRe
     // out:
     NFSSTATS.forcedsync.fetch_add(1, Ordering::Relaxed);
     Err((t, Errno::EIO))
+}
+
+/// [`nfs_doio`] of a buffer whose I/O its caller waits for (`nfs_bioread`'s, not `B_ASYNC`):
+/// the token comes back from `biodone` (the C's caller goes on with the buffer it gave), with
+/// the RPC's error.
+fn nfs_doio_sync<G: ProcGlue>(
+    t: BufRef,
+    vp: &'static Vnode<G>,
+    np: &NfsNode<G>,
+    nmp: &NfsMount<G>,
+    p: Option<&Thread<G>>,
+) -> (BufRef, Result<(), Errno>) {
+    let Some(r) = t.counted() else {
+        kpanic(format_args!(
+            "nfs_doio: a driver's own buffer {:p}",
+            t.buf()
+        ));
+    };
+    let error = nfs_doio_np(t, vp, np, nmp, p);
+    let (t, _) = biowait(r);
+    (t, error)
+}
+
+/// `nfs_doio(bp, p)`: do an I/O operation to/from a cache block. This may be called
+/// synchronously (`nfs_strategy`, `p` the caller) or from an nfsiod (`p` `None`). The buffer's
+/// token is given up to `biodone` at the end, as the C's.
+pub fn nfs_doio<G: ProcGlue>(t: BufRef, p: Option<&Thread<G>>) -> Result<(), Errno> {
+    let vp: &'static Vnode<G> = buf_vnode(t.buf());
+    let np = vtonfs(vp);
+    let nmp = vfstonfs(vmount(vp));
+    nfs_doio_np(t, vp, &np, &nmp, p)
+}
+
+/// [`nfs_doio`] of the buffer of `vp`, whose node `np` and mount `nmp` the caller lends.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the C's one function: physio, a read, a write"
+)]
+fn nfs_doio_np<G: ProcGlue>(
+    mut t: BufRef,
+    vp: &'static Vnode<G>,
+    np: &NfsNode<G>,
+    nmp: &NfsMount<G>,
+    p: Option<&Thread<G>>,
+) -> Result<(), Errno> {
+    let flags = t.buf().flags();
+    let bcount = usize::try_from(t.buf().bcount()).unwrap_or(0);
+    let blkno = t.buf().blkno();
+    let mut must_commit = false;
+    let mut iov = [Iovec::new()];
+    let error: Result<(), NfsError>;
+    let resid: usize;
+
+    // Historically, paging was done with physio, but no more.
+    if flags & B_PHYS != 0 {
+        // mapping was done by vmapbuf()
+        let off = blkno << DEV_BSHIFT;
+        if flags & B_READ != 0 {
+            NFSSTATS.read_physios.fetch_add(1, Ordering::Relaxed);
+            let mut uio = Uio::kernel_read(&mut iov, &mut t.data()[..bcount], p);
+            uio.uio_offset = off;
+            error = nfs_readrpc(vp, np, nmp, &mut uio);
+            resid = uio.uio_resid;
+        } else {
+            let mut iomode = NFSV3WRITE_DATASYNC;
+            NFSSTATS.write_physios.fetch_add(1, Ordering::Relaxed);
+            let mut uio = Uio::kernel_write(&mut iov, &t.data()[..bcount], p);
+            uio.uio_offset = off;
+            error = nfs_writerpc(vp, np, nmp, &mut uio, &mut iomode, &mut must_commit);
+            resid = uio.uio_resid;
+        }
+        if let Err(e) = error {
+            t.buf().set(B_ERROR);
+            t.buf().set_error(Some(e.errno()));
+        }
+    } else if flags & B_READ != 0 {
+        match vp.vtype() {
+            VREG => {
+                let boff = blkno << DEV_BSHIFT;
+                NFSSTATS.read_bios.fetch_add(1, Ordering::Relaxed);
+                BCSTATS.pendingreads.fetch_add(1, Ordering::Relaxed);
+                BCSTATS.numreads.fetch_add(1, Ordering::Relaxed);
+                {
+                    let mut uio = Uio::kernel_read(&mut iov, &mut t.data()[..bcount], p);
+                    uio.uio_offset = boff;
+                    error = nfs_readrpc(vp, np, nmp, &mut uio);
+                    resid = uio.uio_resid;
+                }
+                if error.is_ok() {
+                    t.buf().set_validoff(0);
+                    if resid != 0 {
+                        // If len > 0, there is a hole in the file and no writes after the
+                        // hole have been pushed to the server yet. Just zero fill the rest of
+                        // the valid area.
+                        let (zero, validend) = nfs_shortread(
+                            t.buf().bcount(),
+                            resid,
+                            np.n_size.load(Ordering::Relaxed),
+                            boff,
+                        );
+                        if zero > 0 {
+                            // `diff = bcount - resid`: within the buffer, as `zero` is at
+                            // most `resid`.
+                            let diff = bcount - resid;
+                            t.data()[diff..diff + zero].fill(0);
+                        }
+                        t.buf().set_validend(validend);
+                    } else {
+                        t.buf().set_validend(t.buf().bcount() as i32);
+                    }
+                }
+                if let Some(p) = p
+                    && vp.flag() & VTEXT != 0
+                    && *np.n_mtime.read() != np.n_vattr.read().va_mtime
+                {
+                    crate::tty::uprintf(
+                        p.process(),
+                        format_args!("Process killed due to text file modification\n"),
+                    );
+                    if let Some(pp) = G::thread_pin(p) {
+                        crate::sig::psignal(pp, SIGKILL);
+                    }
+                }
+            }
+            VLNK => {
+                NFSSTATS.readlink_bios.fetch_add(1, Ordering::Relaxed);
+                BCSTATS.pendingreads.fetch_add(1, Ordering::Relaxed);
+                BCSTATS.numreads.fetch_add(1, Ordering::Relaxed);
+                let mut uio = Uio::kernel_read(&mut iov, &mut t.data()[..bcount], p);
+                uio.uio_offset = 0;
+                // `curproc->p_ucred` (the module's Deviations: none is `panic(9)`).
+                error = G::with_curproc(|cp| match cp {
+                    Some(cp) => nfs_readlinkrpc(vp, np, nmp, &mut uio, cp.ucred()),
+                    None => kpanic(format_args!("nfs_doio: a link read with no thread")),
+                });
+                resid = uio.uio_resid;
+            }
+            vt => kpanic(format_args!("nfs_doio:  type {:x} unexpected", vt as i32)),
+        }
+        if let Err(e) = error {
+            t.buf().set(B_ERROR);
+            t.buf().set_error(Some(e.errno()));
+        }
+    } else {
+        let (dirtyoff, dirtyend) = (t.buf().dirtyoff(), t.buf().dirtyend());
+        // The dirty range is within the buffer (`nfs_write` set it there).
+        let (lo, hi) = (
+            usize::try_from(dirtyoff).unwrap_or(0),
+            usize::try_from(dirtyend).unwrap_or(0),
+        );
+        let off = blkno.wrapping_mul(Off::from(DEV_BSIZE)) + Off::from(dirtyoff);
+        NFSSTATS.write_bios.fetch_add(1, Ordering::Relaxed);
+        BCSTATS.pendingwrites.fetch_add(1, Ordering::Relaxed);
+        BCSTATS.numwrites.fetch_add(1, Ordering::Relaxed);
+        let mut iomode = if flags & (B_ASYNC | B_NEEDCOMMIT | B_NOCACHE) == B_ASYNC {
+            NFSV3WRITE_UNSTABLE
+        } else {
+            NFSV3WRITE_FILESYNC
+        };
+        t.buf().set(B_WRITEINPROG);
+        {
+            let Some(data) = t.data().get(lo..hi) else {
+                kpanic(format_args!(
+                    "nfs_doio: dirty range {lo}..{hi} past the buffer"
+                ));
+            };
+            let mut uio = Uio::kernel_write(&mut iov, data, p);
+            uio.uio_offset = off;
+            error = nfs_writerpc(vp, np, nmp, &mut uio, &mut iomode, &mut must_commit);
+            resid = uio.uio_resid;
+        }
+
+        let bp = t.buf();
+        {
+            let _lock = np.n_commitlock.write();
+            if error.is_ok() && iomode == NFSV3WRITE_UNSTABLE {
+                bp.set(B_NEEDCOMMIT);
+                nfs_add_tobecommitted_range(np, bp);
+            } else {
+                bp.clr(B_NEEDCOMMIT);
+                nfs_del_committed_range(np, bp);
+            }
+        }
+
+        bp.clr(B_WRITEINPROG);
+
+        // For an interrupted write, the buffer is still valid and the write hasn't been
+        // pushed to the server yet, so we can't set B_ERROR and report the interruption by
+        // setting B_EINTR. For the B_ASYNC case, B_EINTR is not relevant, so the rpc attempt
+        // is essentially a noop. For the case of a V3 write rpc not being committed to stable
+        // storage, the block is still dirty and requires either a commit rpc or another
+        // write rpc with iomode == NFSV3WRITE_FILESYNC before the block is reused. This is
+        // indicated by setting the B_DELWRI and B_NEEDCOMMIT flags.
+        if error == Err(NfsError::Errno(Errno::EINTR)) || (error.is_ok() && bp.isset(B_NEEDCOMMIT))
+        {
+            buf_dirty(&t);
+
+            if !t.buf().isset(B_ASYNC) && error.is_err() {
+                t.buf().set(B_EINTR);
+            }
+        } else {
+            if let Err(e) = error {
+                bp.set(B_ERROR);
+                bp.set_error(Some(e.errno()));
+                np.n_error.store(e.errno() as i32, Ordering::Relaxed);
+                np.set(NWRITEERR);
+            }
+            bp.set_dirtyoff(0);
+            bp.set_dirtyend(0);
+        }
+    }
+    t.buf().set_resid(resid);
+    if must_commit {
+        nfs_clearcommit(vmount(vp));
+    }
+    biodone(t);
+    error.map_err(NfsError::errno)
 }
 /* </CODE> */
 

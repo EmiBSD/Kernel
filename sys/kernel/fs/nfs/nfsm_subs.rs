@@ -65,8 +65,10 @@
 //! - `int *nmi_errorp` is gone: every reader method returns `Result` and the RPC's owner
 //!   frees the reply when it drops it (the C's `m_freem(nmi_mrep); nmi_mrep = NULL` before
 //!   it stores the error); the caller's `goto nfsmout` is `?`.
-//! - `nfsm_postop_attr` (it loads the attribute cache) comes with the cache (N6.7a2); the
-//!   server's `nfsd_*` twins stay `bsd`'s until N6.7b.
+//! - [`nfsm_postop_attr`] (it loads the attribute cache) came with the vnode operations
+//!   (N6.7a3): it takes the node whose cache it loads (the C's `*vpp`'s), and the reply as
+//!   an `Option` of its reader (the C's `nmi_mrep == NULL` test); the server's `nfsd_*`
+//!   twins stay `bsd`'s until N6.7b.
 //!
 //! ## Redesign
 //! - LZ's cursor was an mbuf and a raw position into its data (`nmi_dpos: *mut u8`, checked
@@ -399,6 +401,28 @@ pub const fn nfsm_rndup(a: usize) -> usize {
 /// `nfsm_padlen(s)` (`nfs_var.h`): the XDR padding after `s` bytes.
 pub const fn nfsm_padlen(s: usize) -> usize {
     nfsm_rndup(s) - s
+}
+
+/// `nfsm_postop_attr(infop, &vp, &attrflag)`: a version 3 `post_op_attr` of the reply at `x`
+/// (`None`: no reply, nothing done, the flag left), its attributes loaded into the cache of
+/// the node `np` (`nfs_loadattrcache`, of the node's mount's version `v3`) when it carries
+/// them; `attrflagp` is set to the flag. The dissection's or the load's error is the
+/// caller's.
+pub fn nfsm_postop_attr<G: crate::proc::ProcGlue>(
+    x: &mut Option<XdrReader<'_>>,
+    np: &super::nfsnode::NfsNode<G>,
+    v3: bool,
+    attrflagp: &mut i32,
+) -> Result<(), Errno> {
+    let Some(r) = x.as_mut() else {
+        return Ok(());
+    };
+    let attrflag = r.i32()?;
+    if attrflag != 0 {
+        super::nfs_subs::nfs_loadattrcache(np, v3, r, None)?;
+    }
+    *attrflagp = attrflag;
+    Ok(())
 }
 /// A chain of the given segments, one mbuf each (an empty segment an mbuf with no data), for
 /// the tests of the cursors here and in `nfs_subs`.

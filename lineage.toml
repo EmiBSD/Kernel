@@ -6888,7 +6888,7 @@ rust = "sys/kernel/fs/nfs/nfs.rs"
 crate = "kernel"
 lz = ["sys/nfs/nfs.rs"]
 status = "redesigned"
-notes = "N6.7a0: the statistics' counters (NfsCounters, members of the C's names, converted to and from hal's image member by member: no cast); re-exports hal::sys::nfs_nfs. N6.7a1: NfsReq (a counted, homed item of nfsreqpl linked on nm_reqsq through a PinEntry bound to the kernel lock; scalars relaxed atomics; r_mreq and the reply ExclGuarded cells of the kernel lock's PART_REQ, has_reply an atomic beside; r_procp a tid, r_nmp gone, r_vp an address), Reply (the chain and the bytes consumed), NfsError (D-3: Status for a reply status no errno names), NfsTables (nfsreqpl, nfsnodepl in VfsTables), the R_* flags, the RTT timers, the hz macros as functions, nfsignore_soerror, nfs_niothreads; N6.7a2: NfsTables gains nhash, nfs_bufq, nfs_asyncdaemon, kevq and kevqpl"
+notes = "N6.7a0: the statistics' counters (NfsCounters, members of the C's names, converted to and from hal's image member by member: no cast); re-exports hal::sys::nfs_nfs. N6.7a1: NfsReq (a counted, homed item of nfsreqpl linked on nm_reqsq through a PinEntry bound to the kernel lock; scalars relaxed atomics; r_mreq and the reply ExclGuarded cells of the kernel lock's PART_REQ, has_reply an atomic beside; r_procp a tid, r_nmp gone, r_vp an address), Reply (the chain and the bytes consumed), NfsError (D-3: Status for a reply status no errno names), NfsTables (nfsreqpl, nfsnodepl in VfsTables), the R_* flags, the RTT timers, the hz macros as functions, nfsignore_soerror, nfs_niothreads; N6.7a2: NfsTables gains nhash, nfs_bufq, nfs_asyncdaemon, kevq and kevqpl; N6.7a3: NfsTables::{vops, specvops, fifovops} (the three vnode tables), nfs_isv3 (NFS_ISV3 of the lent mount), nfs_cmpfh (NFS_CMPFH), B_INVAFTERWRITE"
 
 [[module.fn]]
 lz = "sys/nfs/nfs.rs::Nfsstats::snapshot"
@@ -6924,7 +6924,7 @@ rust = "sys/kernel/fs/nfs/nfs_subs.rs"
 crate = "kernel"
 lz = ["sys/nfs/nfs_subs.rs"]
 status = "redesigned"
-notes = "N6.7a0: the XDR words, the type tables, NFSSTATS and txdr_nfsv2time (bsd's nfs_subs re-exports them for the server); the cursors' methods of nfs_subs.c: XdrWriter::{reqhead, from_uio (nfsm_uiotombuf), buftombuf, strtombuf, fhtom, v3attrbuild} over one append body, XdrReader::mbuftouio (each piece by the glue's uiomove_out); bsd's functions of the same work stay for its client until 7a5. N6.7a1: NFS_TICKS and nfs_init (the timer period and nfsreqpl; the server tables stay bsd's); nfsm_rpchead (the header in an XdrWriter over the m_align-ed packet header mbuf, the arguments linked behind; the request chain and its xid answered), nfs_get_xid (Mutexed<Option<Idgen32Ctx>>), NFSV2_PROCID, NFSV3_PROCID; N6.7a2: nfs_vfs_init (nfsnodepl recorded, nfskevqpl, the node hash), nfs_attrtimeo and nfs_getattrcache over the lent node and mount (the cache read once, written back only for a modified file's larger size), nfs_clearcommit (Mount::vnodes and vnode_dirty_for_each), the six commit range functions over one Range of a pair of words and its bit, nfs_test_reset"
+notes = "N6.7a0: the XDR words, the type tables, NFSSTATS and txdr_nfsv2time (bsd's nfs_subs re-exports them for the server); the cursors' methods of nfs_subs.c: XdrWriter::{reqhead, from_uio (nfsm_uiotombuf), buftombuf, strtombuf, fhtom, v3attrbuild} over one append body, XdrReader::mbuftouio (each piece by the glue's uiomove_out); bsd's functions of the same work stay for its client until 7a5. N6.7a1: NFS_TICKS and nfs_init (the timer period and nfsreqpl; the server tables stay bsd's); nfsm_rpchead (the header in an XdrWriter over the m_align-ed packet header mbuf, the arguments linked behind; the request chain and its xid answered), nfs_get_xid (Mutexed<Option<Idgen32Ctx>>), NFSV2_PROCID, NFSV3_PROCID; N6.7a2: nfs_vfs_init (nfsnodepl recorded, nfskevqpl, the node hash), nfs_attrtimeo and nfs_getattrcache over the lent node and mount (the cache read once, written back only for a modified file's larger size), nfs_clearcommit (Mount::vnodes and vnode_dirty_for_each), the six commit range functions over one Range of a pair of words and its bit, nfs_test_reset; N6.7a3: nfs_loadattrcache over the lent node and its mount's version (the nfs_fattr copied by pod_len, the cache written in one ReadMostly section, a device's alias taking the node and its n_vnode link, the vnode answered)"
 
 [[module]]
 rust = "sys/kernel/fs/nfs/nfsdiskless.rs"
@@ -6938,7 +6938,7 @@ rust = "sys/kernel/fs/nfs/nfsm_subs.rs"
 crate = "kernel"
 lz = ["sys/nfs/nfsm_subs.rs"]
 status = "redesigned"
-notes = "N6.7a0: the client's cursors: XdrReader (nmi_md/nmi_dpos as a borrowed mbuf and an offset; nfsm_dissect, nfsm_adv, nfsm_strsiz, nfsm_mtouio; copies out, never a view into an mbuf, never an mbuf inserted; EBADRPC at the chain's end; at(offset) for the reply and the server's request) and XdrWriter (the chain owned, MChainBuilder behind and the tail being filled; nfsm_build, nfsm_strtom; with_first for a caller's head); LZ's XdrIn/XdrOut/NfsmInfo and the server's nfsd_* stay bsd's until 7a5 and 7b"
+notes = "N6.7a0: the client's cursors: XdrReader (nmi_md/nmi_dpos as a borrowed mbuf and an offset; nfsm_dissect, nfsm_adv, nfsm_strsiz, nfsm_mtouio; copies out, never a view into an mbuf, never an mbuf inserted; EBADRPC at the chain's end; at(offset) for the reply and the server's request) and XdrWriter (the chain owned, MChainBuilder behind and the tail being filled; nfsm_build, nfsm_strtom; with_first for a caller's head); LZ's XdrIn/XdrOut/NfsmInfo and the server's nfsd_* stay bsd's until 7a5 and 7b; N6.7a3: nfsm_postop_attr (the reply as an Option of its reader, the node lent)"
 
 [[module]]
 rust = "sys/kernel/fs/nfs/nfsmount.rs"
@@ -6952,7 +6952,7 @@ rust = "sys/kernel/fs/nfs/nfsnode.rs"
 crate = "kernel"
 lz = ["sys/nfs/nfsnode.rs"]
 status = "redesigned"
-notes = "N6.7a1: NfsNode, a counted, homed item of nfsnodepl for the vnode's typed slot, vtonfs a handle out of it (ufs's vtoi); words relaxed atomics, the attribute cache, times and handle (NfsFh: n_fh and n_fhsize) ReadMostly cells, credentials and the silly rename record (an MBox) kernel-lock cells, n_lock a RecursiveRwlock, n_commitlock a RawRwlock; n_entry and nfs_bufq come with N6.7a2's nfs_node and nfs_bio. bsd's nfsnode stays for its client until 7a5; N6.7a2: n_entry (the node hash's PinEntry, NfsNodeEntry), NFS_BUFQLEN, NFS_BUFQMAX, NFS_NUMASYNC (nfs_vnops.c's nfs_numasync, beside them); nfs_bufq is NfsTables::nfs_bufq"
+notes = "N6.7a1: NfsNode, a counted, homed item of nfsnodepl for the vnode's typed slot, vtonfs a handle out of it (ufs's vtoi); words relaxed atomics, the attribute cache, times and handle (NfsFh: n_fh and n_fhsize) ReadMostly cells, credentials and the silly rename record (an MBox) kernel-lock cells, n_lock a RecursiveRwlock, n_commitlock a RawRwlock; n_entry and nfs_bufq come with N6.7a2's nfs_node and nfs_bio. bsd's nfsnode stays for its client until 7a5; N6.7a2: n_entry (the node hash's PinEntry, NfsNodeEntry), NFS_BUFQLEN, NFS_BUFQMAX, NFS_NUMASYNC (nfs_vnops.c's nfs_numasync, beside them); nfs_bufq is NfsTables::nfs_bufq; N6.7a3: n_vnode a hal::link::Link (nfs_loadattrcache moves a device's node to its alias), nfstov reads it"
 
 [[module]]
 rust = "sys/kernel/fs/nfs/nfsproto.rs"
@@ -6973,7 +6973,7 @@ rust = "sys/kernel/fs/nfs/nfs_node.rs"
 crate = "kernel"
 lz = ["sys/nfs/nfs_node.rs"]
 status = "redesigned"
-notes = "N6.7a2: nm_ntree of every mount as one node hash (NfsNhash in NfsTables: PinList chains bound to the kernel lock, SipHash of the mount's address and the handle; nfs_nhashinit from nfs_vfs_init), nfs_nfind (RBT_FIND: the vnode and its v_id), nfs_ninsert (the race check and RBT_INSERT in one witness section, EEXIST), nfs_nremove, nfs_nrehash (nfs_lookitup's in-place handle write kept consistent with the hash), nfs_reclaim (creds dropped, cache_purge, the slot's handle taken back); nfs_ninit has nothing left to do; nfs_nget and nfs_inactive come with N6.7a3. bsd's nfs_node stays for its client until 7a5"
+notes = "N6.7a2: nm_ntree of every mount as one node hash (NfsNhash in NfsTables: PinList chains bound to the kernel lock, SipHash of the mount's address and the handle; nfs_nhashinit from nfs_vfs_init), nfs_nfind (RBT_FIND: the vnode and its v_id), nfs_ninsert (the race check and RBT_INSERT in one witness section, EEXIST), nfs_nremove, nfs_nrehash (nfs_lookitup's in-place handle write kept consistent with the hash), nfs_reclaim (creds dropped, cache_purge, the slot's handle taken back); nfs_ninit has nothing left to do; nfs_nget and nfs_inactive come with N6.7a3. bsd's nfs_node stays for its client until 7a5; N6.7a3: nfs_nget (the node's counted handle answered, the vnode locked; a new node hashed by nfs_ninsert, then put in the slot and locked; a lost race vgone's the vnode) and nfs_inactive (the silly rename record taken out of the kernel-lock cell, nfs_removeit, the directory's vput)"
 
 [[module.fn]]
 lz = "sys/nfs/nfs_node.rs::nfs_crfree"
@@ -6992,7 +6992,7 @@ rust = "sys/kernel/fs/nfs/nfs_bio.rs"
 crate = "kernel"
 lz = ["sys/nfs/nfs_bio.rs"]
 status = "redesigned"
-notes = "N6.7a2: the call-closed part: nfs_getcacheblk and nfs_vinvalbuf over the lent node and mount (getblk/getblk_wait, vinvalbuf, the C's sleeps on &n_flag), nfs_asyncio (the token parked in its buffer and its counted link queued on NfsTables::nfs_bufq, a Fifo under a Mutexed at IPL_BIO; the token back with EIO when no nfsiod takes it), DEV_BSIZE, the block arithmetic (nfs_bioblk, nfs_bufranges, nfs_shortread); nfs_bioread, nfs_write and nfs_doio come with N6.7a3. bsd's nfs_bio stays for its client until 7a5"
+notes = "N6.7a2: the call-closed part: nfs_getcacheblk and nfs_vinvalbuf over the lent node and mount (getblk/getblk_wait, vinvalbuf, the C's sleeps on &n_flag), nfs_asyncio (the token parked in its buffer and its counted link queued on NfsTables::nfs_bufq, a Fifo under a Mutexed at IPL_BIO; the token back with EIO when no nfsiod takes it), DEV_BSIZE, the block arithmetic (nfs_bioblk, nfs_bufranges, nfs_shortread); nfs_bioread, nfs_write and nfs_doio come with N6.7a3. bsd's nfs_bio stays for its client until 7a5; N6.7a3: nfs_bioread and nfs_write over the lent node and mount and the buffers' tokens (a synchronous block read keeps a counted link and takes its token back from biowait after nfs_doio's biodone), nfs_doio (nfs_doio_np with the node and mount lent; the private uio by Uio::kernel_read/kernel_write over BufRef::data)"
 
 [[module]]
 rust = "sys/kernel/fs/nfs/nfs_kq.rs"
@@ -7006,7 +7006,21 @@ rust = "sys/kernel/fs/nfs/nfs_syscalls.rs"
 crate = "kernel"
 lz = ["sys/nfs/nfs_syscalls.rs"]
 status = "redesigned"
-notes = "N6.7a2: the nfsiods' call-closed part: nfs_asyncdaemon[] as tids in NfsTables (0 free, a slot claimed by compare-and-swap), nfs_iod_attach and nfs_iod_detach (nfssvc_iod's start and end: the slot, nfs_numasync, the nfs_bufqmax share), nfs_bufq_get (the token back from nfs_bufq), nfs_bufq_peek, nfs_bufq_chan, nfs_iod_nextwrite (the delayed write by vnode_dirty_scan, then buf_undirty and numoutput_inc); nfssvc_iod's loop and nfs_getset_niothreads call or start nfs_doio and come with N6.7a3; sys_nfssvc and the server's half stay bsd's until N6.7b (D-5)"
+notes = "N6.7a2: the nfsiods' call-closed part: nfs_asyncdaemon[] as tids in NfsTables (0 free, a slot claimed by compare-and-swap), nfs_iod_attach and nfs_iod_detach (nfssvc_iod's start and end: the slot, nfs_numasync, the nfs_bufqmax share), nfs_bufq_get (the token back from nfs_bufq), nfs_bufq_peek, nfs_bufq_chan, nfs_iod_nextwrite (the delayed write by vnode_dirty_scan, then buf_undirty and numoutput_inc); nfssvc_iod's loop and nfs_getset_niothreads call or start nfs_doio and come with N6.7a3; sys_nfssvc and the server's half stay bsd's until N6.7b (D-5); N6.7a3: nfssvc_iod (a kernel::fork::Start::NfsIod thread over 7a2's pieces) and nfs_getset_niothreads (kthread_create of the missing ones, SIGKILL to a surplus one found by tid on the thread hash under a reader)"
+
+[[module]]
+rust = "sys/kernel/fs/nfs/nfs_vnops.rs"
+crate = "kernel"
+lz = ["sys/nfs/nfs_vnops.rs"]
+status = "redesigned"
+notes = "N6.7a3: nfs_vops, nfs_specvops and nfs_fifovops as NfsVnops, NfsSpecVnops and NfsFifoVnops (impl Vnops, members of NfsTables; nfs_common_slots! for the eight slots they share); every VOP and RPC of nfs_vnops.c over nfs_request's two outputs and the reply's reader (Mrep), the node and mount taken once per VOP and lent down; NfsError carries the v3 statuses inside (D-3: the NOTSUPP retry, the READDIRPLUS fallback, BAD_COOKIE, STALEWRITEVERF match again); the readdir RPCs pack into nfs_readdir's MArray through DirPack, the record fixed up in place and moved out by uiomove_out; n_rcred/n_wcred kept by nfs_setcred (left alone for the same ids); the silly rename record an MBox of M_NFSREQ in the node's kernel-lock cell; nfs_flush's commit pass by vnode_dirty_gather, its write pass by vnode_dirty_scan; nfs_writebp's first part by buf_undirty_output, a committed buffer's end by buf_undirty_done; the fifo table's fifofs slots visible gaps (unported!). bsd's nfs_vnops stays for its client until 7a5"
+
+[[module]]
+rust = "sys/kernel/fs/nfs/nfs_vfsops.rs"
+crate = "kernel"
+lz = ["sys/nfs/nfs_vfsops.rs"]
+status = "redesigned"
+notes = "N6.7a3: nfs_fsinfo (the cycle's FSINFO RPC) and fsinfo_apply (LZ's, with the C's wrapping unsigned adds); the rest of nfs_vfsops.c comes with the switch (N6.7a5). bsd's nfs_vfsops stays for its client until 7a5"
 
 [[module]]
 rust = "sys/ntfs/ntfs.rs"
