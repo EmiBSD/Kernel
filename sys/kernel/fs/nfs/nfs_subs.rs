@@ -92,7 +92,12 @@
 
 #![allow(non_upper_case_globals)] // the C's names of the XDR words
 
-use super::nfs::NfsCounters;
+use core::sync::atomic::{AtomicI32, Ordering};
+
+use hal::intr::IPL_NONE;
+use hal::pool::PR_WAITOK;
+
+use super::nfs::{NFS_TICKINTVL, NfsCounters};
 use super::nfsm_subs::{XdrReader, XdrWriter, nfsm_padlen};
 use super::nfsproto::{
     NFBLK, NFCHR, NFDIR, NFFIFO, NFLNK, NFNON, NFREG, NFS_MAXFHSIZE, NFS_PROG, NFSOCK,
@@ -103,6 +108,7 @@ use super::xdr_subs::{txdr_nfsv3time, txdr_unsigned};
 use crate::assert::kpanic;
 use crate::clock::Timespec;
 use crate::file::FileGlue;
+use crate::fs::subr::vfs;
 use crate::fs::vnode::Vtype::{self, VBLK, VCHR, VDIR, VFIFO, VLNK, VNON, VREG, VSOCK};
 use crate::fs::vnode::{VNOVAL, Vattr};
 use crate::net::mbuf::{M_WAIT, MLEN, MT_DATA, m_get, mclget};
@@ -157,6 +163,9 @@ pub const NV3TOV_TYPE: [Vtype; 8] = [VNON, VREG, VDIR, VBLK, VCHR, VLNK, VSOCK, 
 
 /// `nfsstats`: the client's and the server's counters (`vfs.nfs.nfsstats`).
 pub static NFSSTATS: NfsCounters = NfsCounters::new();
+
+/// `nfs_ticks`: the NFS timer's period in clock ticks (`nfs_init`'s, at least 1).
+pub static NFS_TICKS: AtomicI32 = AtomicI32::new(0);
 
 /// `txdr_nfsv2time(from, to)`: the version 2 time of `from`; `VNOVAL` nanoseconds are sent
 /// as -1, a time of -1 seconds as -1.000001.
@@ -357,6 +366,20 @@ fn uio_skip<G: ProcGlue>(uio: &mut Uio<'_, G>, mut n: usize) {
             .saturating_add(Off::try_from(c).unwrap_or(Off::MAX));
         n -= c;
     }
+}
+
+/// `nfs_init`: called once to initialize data structures: the timer's period
+/// (`(hz * NFS_TICKINTVL + 500) / 1000`, at least one tick) and "nfsreqpl". The XDR words
+/// are constants here; the server's tables (`nfsrv_init`, `nfsrv_initcache`) are `bsd`'s
+/// until N6.7b, whose `nfs_init` calls this one first. A second call (a test glue's) keeps
+/// the pool.
+pub fn nfs_init<G: ProcGlue>() {
+    let ticks = (crate::timeout::hz() * NFS_TICKINTVL + 500) / 1000;
+    NFS_TICKS.store(ticks.max(1), Ordering::Relaxed);
+    let _ = vfs::<G>()
+        .nfs
+        .nfsreqpl
+        .init_recorded(IPL_NONE, PR_WAITOK, "nfsreqpl");
 }
 
 const _: () = {

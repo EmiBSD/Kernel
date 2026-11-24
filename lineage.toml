@@ -6869,7 +6869,7 @@ rust = "sys/kernel/fs/nfs/nfs.rs"
 crate = "kernel"
 lz = ["sys/nfs/nfs.rs"]
 status = "redesigned"
-notes = "N6.7a0: the statistics' counters (NfsCounters, members of the C's names, converted to and from hal's image member by member: no cast); re-exports hal::sys::nfs_nfs. The request and the RTT timers come at N6.7a1"
+notes = "N6.7a0: the statistics' counters (NfsCounters, members of the C's names, converted to and from hal's image member by member: no cast); re-exports hal::sys::nfs_nfs. N6.7a1: NfsReq (a counted, homed item of nfsreqpl linked on nm_reqsq through a PinEntry bound to the kernel lock; scalars relaxed atomics; r_mreq and the reply ExclGuarded cells of the kernel lock's PART_REQ, has_reply an atomic beside; r_procp a tid, r_nmp gone, r_vp an address), Reply (the chain and the bytes consumed), NfsError (D-3: Status for a reply status no errno names), NfsTables (nfsreqpl, nfsnodepl in VfsTables), the R_* flags, the RTT timers, the hz macros as functions, nfsignore_soerror, nfs_niothreads"
 
 [[module.fn]]
 lz = "sys/nfs/nfs.rs::Nfsstats::snapshot"
@@ -6886,7 +6886,7 @@ rust = "sys/kernel/fs/nfs/nfs_subs.rs"
 crate = "kernel"
 lz = ["sys/nfs/nfs_subs.rs"]
 status = "redesigned"
-notes = "N6.7a0: the XDR words, the type tables, NFSSTATS and txdr_nfsv2time (bsd's nfs_subs re-exports them for the server); the cursors' methods of nfs_subs.c: XdrWriter::{reqhead, from_uio (nfsm_uiotombuf), buftombuf, strtombuf, fhtom, v3attrbuild} over one append body, XdrReader::mbuftouio (each piece by the glue's uiomove_out); bsd's functions of the same work stay for its client until 7a5"
+notes = "N6.7a0: the XDR words, the type tables, NFSSTATS and txdr_nfsv2time (bsd's nfs_subs re-exports them for the server); the cursors' methods of nfs_subs.c: XdrWriter::{reqhead, from_uio (nfsm_uiotombuf), buftombuf, strtombuf, fhtom, v3attrbuild} over one append body, XdrReader::mbuftouio (each piece by the glue's uiomove_out); bsd's functions of the same work stay for its client until 7a5. N6.7a1: NFS_TICKS and nfs_init (the timer period and nfsreqpl; the server tables stay bsd's)"
 
 [[module]]
 rust = "sys/kernel/fs/nfs/nfsm_subs.rs"
@@ -6894,6 +6894,20 @@ crate = "kernel"
 lz = ["sys/nfs/nfsm_subs.rs"]
 status = "redesigned"
 notes = "N6.7a0: the client's cursors: XdrReader (nmi_md/nmi_dpos as a borrowed mbuf and an offset; nfsm_dissect, nfsm_adv, nfsm_strsiz, nfsm_mtouio; copies out, never a view into an mbuf, never an mbuf inserted; EBADRPC at the chain's end; at(offset) for the reply and the server's request) and XdrWriter (the chain owned, MChainBuilder behind and the tail being filled; nfsm_build, nfsm_strtom; with_first for a caller's head); LZ's XdrIn/XdrOut/NfsmInfo and the server's nfsd_* stay bsd's until 7a5 and 7b"
+
+[[module]]
+rust = "sys/kernel/fs/nfs/nfsmount.rs"
+crate = "kernel"
+lz = ["sys/nfs/nfsmount.rs"]
+status = "redesigned"
+notes = "N6.7a1: NfsMount, a counted malloc(M_NFSMNT) block (NfsMountRef, an MArc) in the mount's typed slot, vfstonfs a handle out of it; the C's kernel-lock words relaxed atomics, nm_reqsq a PinList bound to the kernel lock, nm_so a SocketRef in a kernel-lock cell, nm_rtimeout an MBox (pinned, re-armed by nfs_timer without a count), nm_nam the sockaddr's bytes (NfsNam, a name mbuf made when a call needs one), nm_verf one atomic word; nm_ntree comes with N6.7a2's node table. bsd's nfsmount stays for its client until 7a5"
+
+[[module]]
+rust = "sys/kernel/fs/nfs/nfsnode.rs"
+crate = "kernel"
+lz = ["sys/nfs/nfsnode.rs"]
+status = "redesigned"
+notes = "N6.7a1: NfsNode, a counted, homed item of nfsnodepl for the vnode's typed slot, vtonfs a handle out of it (ufs's vtoi); words relaxed atomics, the attribute cache, times and handle (NfsFh: n_fh and n_fhsize) ReadMostly cells, credentials and the silly rename record (an MBox) kernel-lock cells, n_lock a RecursiveRwlock, n_commitlock a RawRwlock; n_entry and nfs_bufq come with N6.7a2's nfs_node and nfs_bio. bsd's nfsnode stays for its client until 7a5"
 
 [[module]]
 rust = "sys/kernel/fs/nfs/nfsproto.rs"
