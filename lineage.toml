@@ -7009,6 +7009,13 @@ status = "redesigned"
 notes = "N6.7a2: the nfsiods' call-closed part: nfs_asyncdaemon[] as tids in NfsTables (0 free, a slot claimed by compare-and-swap), nfs_iod_attach and nfs_iod_detach (nfssvc_iod's start and end: the slot, nfs_numasync, the nfs_bufqmax share), nfs_bufq_get (the token back from nfs_bufq), nfs_bufq_peek, nfs_bufq_chan, nfs_iod_nextwrite (the delayed write by vnode_dirty_scan, then buf_undirty and numoutput_inc); nfssvc_iod's loop and nfs_getset_niothreads call or start nfs_doio and come with N6.7a3; sys_nfssvc and the server's half stay bsd's until N6.7b (D-5)"
 
 [[module]]
+rust = "sys/kernel/fs/nfs/nfs_srvcache.rs"
+crate = "kernel"
+lz = ["sys/nfs/nfs_srvcache.rs", "sys/nfs/nfsrvcache.rs"]
+status = "redesigned"
+notes = "N6.7b2 (unregistered until 7b4): the duplicate request cache: NfsrvCache a PoolBox of nfsrvcpl (vmstat -m: the C's M_NFSD blocks; D-12's rule) owned by the LRU (OwnedList) and a counted member of its hash chain (a SecondaryList per bucket, the chains an MArray of M_NFSD, SipHash of the xid under a random key), the table one kernel-lock cell (lookups under its reader, changes under its witness), the members relaxed atomics, the saved reply and copied address LoanSlots; RC_LOCKED/RC_WANTED and the nfsrc sleep with the chain walked again; a held entry kept by a SecondaryRef across m_copym(M_WAIT) and nfs_rephead; NETFAMILY, the nonidempotent and nfsv2_repstat tables, initcache/getcache/updatecache/cleancache/lookupcache, cleanentry's double m_free of rc_nam closed"
+
+[[module]]
 rust = "sys/kernel/fs/nfs/nfs_srvsocket.rs"
 crate = "kernel"
 lz = ["sys/nfs/nfs_socket.rs"]

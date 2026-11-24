@@ -408,6 +408,8 @@ pub struct NfsrvTables<G: ProcGlue> {
     pub nfsd_waiting: AtomicI32,
     /// `nfsrv_descript_pl` ("ndscpl"): the request descriptors.
     pub nfsrv_descript_pl: BoxPool<NfsrvDescript>,
+    /// The duplicate request cache (`nfs_srvcache.c`'s globals).
+    pub cache: super::nfs_srvcache::NfsrvCacheState,
 }
 
 impl<G: ProcGlue> NfsrvTables<G> {
@@ -422,6 +424,7 @@ impl<G: ProcGlue> NfsrvTables<G> {
             nfs_numnfsd: AtomicI32::new(0),
             nfsd_waiting: AtomicI32::new(0),
             nfsrv_descript_pl: BoxPool::new(),
+            cache: super::nfs_srvcache::NfsrvCacheState::new(),
         }
     }
 }

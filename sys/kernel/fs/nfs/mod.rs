@@ -27,7 +27,7 @@
 //! diskless boot's `krpc_subr` and `nfs_boot` (N6.7a4, `option NFSCLIENT` only), and the
 //! call-closed part of the file system's half (N6.7a2): `nfs_node`, `nfs_bio`, `nfs_kq`,
 //! `nfs_syscalls` (the nfsiods); the server, beside `bsd`'s until N6.7b4 (`option NFSSERVER`):
-//! `nfssvc`, `nfs_srvsubs`, `nfs_srvsocket` (N6.7b2). Userland's headers are `hal::sys`'s images (`nfs_nfs`,
+//! `nfssvc`, `nfs_srvsubs`, `nfs_srvsocket`, `nfs_srvcache` (N6.7b2). Userland's headers are `hal::sys`'s images (`nfs_nfs`,
 //! `nfs_nfsproto`, `nfs_rpcv2`), re-exported by the modules of the same name.
 
 #[cfg(feature = "nfsclient")]
@@ -40,6 +40,8 @@ pub mod nfs_boot;
 pub mod nfs_kq;
 pub mod nfs_node;
 pub mod nfs_socket;
+#[cfg(feature = "nfsserver")]
+pub mod nfs_srvcache;
 #[cfg(feature = "nfsserver")]
 pub mod nfs_srvsocket;
 #[cfg(feature = "nfsserver")]
