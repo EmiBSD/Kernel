@@ -68,9 +68,16 @@
 //! - The unions `n_un1`/`n_un2` are their members side by side (`n_atim` and
 //!   `n_cookieverf`, `n_mtim` and `n_direofoffset`), as in LZ; a node uses the pair of its
 //!   type.
-//! - `n_entry` and the tree it links (`nm_ntree`), and `nfs_bufq` with its counts (declared
-//!   here, defined in `nfs_bio.c`), come with the code that uses them (N6.7a2's `nfs_node`
-//!   and `nfs_bio`).
+//! - `n_entry` links the node on a chain of the client's node hash (`nfs_node`'s
+//!   `NfsNhash`), not on its mount's red-black tree (`nm_ntree`): the kernel's tree of
+//!   counted, pinned elements does not exist, and every kernel file system keys its counted
+//!   nodes in `PinList` chains bound to the kernel lock. A lookup is O(1) expected where the
+//!   C's is O(log n); what changes is the order of a walk over every node (ddb's `show all
+//!   nfsnodes`, N6.7a5).
+//! - `nfs_bufq` (declared here, defined in `nfs_bio.c`) is `NfsTables::nfs_bufq`, a member of
+//!   the glue's tables; its counts `nfs_bufqlen` and `nfs_bufqmax` are the statics
+//!   [`NFS_BUFQLEN`] and [`NFS_BUFQMAX`] (their addresses are wait channels), and
+//!   `nfs_numasync` (`nfs_vnops.c`'s) is [`NFS_NUMASYNC`] beside them, the nfsiods' count.
 //!
 //! ## Redesign
 //! - LZ's `NfsNode` was an `nfs_node_pool` item handed around as `&'static NfsNode` with
@@ -88,6 +95,7 @@
 use core::sync::atomic::{AtomicI16, AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering};
 
 use hal::malloc::MBox;
+use hal::pinlist::PinEntry;
 use hal::pool::{PoolArc, PoolHome};
 use hal::rwlock::{Guarded, RawRwlock, RecursiveRwlock};
 use hal::slot::ReadMostly;
@@ -177,6 +185,9 @@ pub struct NfsNodeK<G: ProcGlue> {
 /// `struct nfsnode`: the NFS equivalent of ufs's inode. Any similarity is purely
 /// coincidental. A counted item of "nfsnodepl" (the module's Redesign).
 pub struct NfsNode<G: ProcGlue> {
+    /// `n_entry`: the link on the client's node hash (the kernel lock; the module's
+    /// Deviations).
+    pub n_entry: PinEntry<NfsNode<G>>,
     /// The item's home in "nfsnodepl" (`PoolArc::from_ref`).
     n_home: PoolHome<NfsNode<G>>,
     /// `n_size`: current size of file.
@@ -235,6 +246,12 @@ pub struct NfsNode<G: ProcGlue> {
 
 hal::pool_home!(impl[G: ProcGlue] NfsNode<G>, n_home);
 
+hal::pin_adapter!(
+    /// `n_entry`: the link of a node on its chain of the client's node hash (the C's
+    /// `RBT_ENTRY(nfsnode)` of `nm_ntree`).
+    impl[G: ProcGlue] pub NfsNodeEntry<G>: NfsNode<G>, n_entry
+);
+
 /// A counted handle to a node (the vnode's slot's, a vnode operation's).
 pub type NfsNodeRef<G> = PoolArc<NfsNode<G>>;
 
@@ -243,6 +260,7 @@ impl<G: ProcGlue> NfsNode<G> {
     /// PR_ZERO)`, `rrw_init`, `rw_init`): what `nfs_nget` fills.
     pub fn new(vp: &'static Vnode<G>, fh: NfsFh) -> Self {
         Self {
+            n_entry: PinEntry::new(),
             n_home: PoolHome::new(),
             n_size: AtomicU64::new(0),
             n_vattr: ReadMostly::new(Vattr::new()),
@@ -301,6 +319,17 @@ impl<G: ProcGlue> NfsNode<G> {
     }
 }
 
+/// `nfs_bufqlen`: the buffers on `nfs_bufq`; its address is the channel `nfs_asyncio`
+/// sleeps on for room (`nfs_bio.c`'s).
+pub static NFS_BUFQLEN: AtomicU32 = AtomicU32::new(0);
+
+/// `nfs_bufqmax`: the most buffers `nfs_asyncio` queues before it waits (or, for a
+/// read-ahead, gives up); each nfsiod adds its share when it starts (`nfs_bio.c`'s).
+pub static NFS_BUFQMAX: AtomicU32 = AtomicU32::new(0);
+
+/// `nfs_numasync`: the number of running nfsiods (`nfs_vnops.c`'s), kept by the nfsiods.
+pub static NFS_NUMASYNC: AtomicI32 = AtomicI32::new(0);
+
 /// `NFS_INVALIDATE_ATTRCACHE(np)`.
 pub fn nfs_invalidate_attrcache<G: ProcGlue>(np: &NfsNode<G>) {
     np.n_attrstamp.store(0, Ordering::Relaxed);
@@ -353,14 +382,21 @@ mod tests {
     }
 
     /// The "nfsnodepl" item's size (D-6: `vmstat -m` shows it; S11 stops above `bsd`'s item
-    /// plus 64 bytes): 600 bytes, 616 with the counted item's header, against bsd's 584
-    /// (LZ's shape, measured at the slice's base with a compile-time probe of
-    /// `size_of::<NfsNode>()`). The `ReadMostly` cells' claim words and the kernel-lock
-    /// cell's key are the growth; the three owning members share one cell for it.
+    /// plus 64 bytes): 632 bytes, 648 with the counted item's header, against bsd's 584
+    /// (LZ's shape, measured at N6.7a1's base with a compile-time probe of
+    /// `size_of::<NfsNode>()`): S11's bound exactly. The `ReadMostly` cells' claim words, the
+    /// kernel-lock cell's key and the hash link (`n_entry`, 32 bytes: a lock identity beside
+    /// the two links and the element, where the C's `RBT_ENTRY` has four words) are the
+    /// growth; the three owning members share one cell for it, and the link's chain is
+    /// recomputed at removal rather than stored.
     #[test]
     fn the_nfsnodepl_item_size() {
         let n = core::mem::size_of::<NfsNode<crate::fs::testfs::TestGlue>>();
-        assert_eq!(n, 600);
+        assert_eq!(
+            size_of::<PinEntry<NfsNode<crate::fs::testfs::TestGlue>>>(),
+            32
+        );
+        assert_eq!(n, 632);
         assert!(n + 16 <= 584 + 64, "S11: the \"nfsnodepl\" item");
     }
 }

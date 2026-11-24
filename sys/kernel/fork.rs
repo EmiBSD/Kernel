@@ -183,6 +183,8 @@ const TAG_REAPER: usize = 6;
 const TAG_ACCT: usize = 7;
 /// [`Start::Smr`].
 const TAG_SMR: usize = 8;
+/// [`Start::NfsKqPoll`].
+const TAG_NFSKQPOLL: usize = 9;
 /// [`Start::Legacy`]: the slot is added.
 const TAG_LEGACY: usize = 0x100;
 
@@ -205,6 +207,8 @@ pub enum Start {
     Acct,
     /// `smr_thread()`: the SMR thread (`kernel::smr`).
     Smr,
+    /// `nfs_kqpoll()`: the NFS client's kqueue poller (`kernel::fs::nfs::nfs_kq`).
+    NfsKqPoll,
     /// A function of `bsd`'s and its argument's exposed address (0: the new thread's own).
     Legacy(fn(*mut c_void), usize),
 }
@@ -223,6 +227,7 @@ impl Start {
             Start::Reaper => (TAG_REAPER, 0),
             Start::Acct => (TAG_ACCT, 0),
             Start::Smr => (TAG_SMR, 0),
+            Start::NfsKqPoll => (TAG_NFSKQPOLL, 0),
             Start::Legacy(f, arg) => {
                 let arg = if arg == 0 { me } else { arg };
                 (TAG_LEGACY + legacy_slot(f), arg)
@@ -241,6 +246,7 @@ impl Start {
             TAG_REAPER => Start::Reaper,
             TAG_ACCT => Start::Acct,
             TAG_SMR => Start::Smr,
+            TAG_NFSKQPOLL => Start::NfsKqPoll,
             s if s >= TAG_LEGACY => {
                 let f = *LEGACY.get(s - TAG_LEGACY)?.get()?;
                 Start::Legacy(f, arg)
@@ -330,6 +336,7 @@ fn thread_start<G: ProcGlue>(hold: SchedHold, start: usize, arg: usize) {
         Start::Reaper => crate::exit::reaper::<G>(),
         Start::Acct => crate::acct::acct_thread::<G>(),
         Start::Smr => crate::smr::thread::<G>(),
+        Start::NfsKqPoll => crate::fs::nfs::nfs_kq::nfs_kqpoll::<G>(),
         Start::Legacy(f, arg) => f(ptr::with_exposed_provenance_mut(arg)),
     }
 }
@@ -986,7 +993,7 @@ pub fn fork_test_reset() {
 
 const _: () = {
     assert!(size_of::<Tfork>() == 3 * size_of::<usize>());
-    assert!(TAG_LEGACY > TAG_SMR);
+    assert!(TAG_LEGACY > TAG_NFSKQPOLL);
 };
 /* </CODE> */
 
@@ -1010,6 +1017,7 @@ mod tests {
             Start::Reaper,
             Start::Acct,
             Start::Smr,
+            Start::NfsKqPoll,
         ] {
             let (w0, w1) = s.words(me);
             let back = Start::from_words(w0, w1).unwrap();

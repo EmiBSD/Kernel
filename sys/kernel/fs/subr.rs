@@ -540,6 +540,7 @@ pub fn vfs_test_reset<G: ProcGlue>() {
     crate::fs::tmpfs::tmpfs_vfsops::tmpfs_test_reset::<G>();
     #[cfg(feature = "fuse")]
     crate::fs::fuse::fusefs::fuse_test_reset::<G>();
+    crate::fs::nfs::nfs_subs::nfs_test_reset::<G>();
     t.rootvnode.set(None);
     t.numvnodes.store(0, Ordering::Relaxed);
 }

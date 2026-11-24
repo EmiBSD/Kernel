@@ -61,8 +61,9 @@
 //! `nfs_vfsops` and `nfs_subs`.
 //!
 //! ## Deviations
-//! - `nm_ntree` (the node tree, `RBT_HEAD(nfs_nodetree, nfsnode)`) comes with the node table
-//!   it serves (N6.7a2's `nfs_node`), not with this sub-slice.
+//! - `nm_ntree` (the node tree, `RBT_HEAD(nfs_nodetree, nfsnode)`) is not a member: every
+//!   mount's nodes are on `nfs_node`'s one node hash (`NfsTables::nhash`, keyed by the mount
+//!   and the handle; that module's Deviations).
 //!
 //! ## Redesign
 //! - LZ's `NfsMount` was the `malloc(9)`ed object `nfs_mount` hung from `mnt_data`, handed

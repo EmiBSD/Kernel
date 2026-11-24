@@ -109,12 +109,19 @@
 
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 
+use hal::intr::IPL_BIO;
+use hal::mutex::Mutexed;
 use hal::pinlist::PinEntry;
-use hal::pool::{PoolHome, TypedPool};
-use hal::rwlock::ExclGuarded;
+use hal::pool::{BoxPool, PoolHome, TypedPool};
+use hal::rwlock::{ExclGuarded, Rwlocked};
+use hal::slot::ReadMostly;
 
+use super::nfs_kq::{Kevq, NfsKevq};
+use super::nfs_node::NfsNhash;
+use super::nfs_syscalls::NFS_NASYNCDAEMON;
 use super::nfsm_subs::XdrReader;
 use super::nfsnode::NfsNode;
+use crate::fs::bufq::Fifo;
 use crate::net::mbuf::{Mbuf, MbufBox};
 use crate::net::proto::PR_CONNREQUIRED;
 use crate::proc::ProcGlue;
@@ -623,21 +630,41 @@ impl<G: ProcGlue> NfsReq<G> {
     }
 }
 
-/// The client's pools of one glue (`nfs.h`'s externs): "nfsreqpl" (defined in the C's
-/// `nfs_subs.c`) and "nfsnodepl" (`nfs_node.c`), made by `nfs_init` and `nfs_vfs_init`.
+/// The client's globals of one glue (`nfs.h`'s externs and the C files' own): the pools
+/// "nfsreqpl" (defined in the C's `nfs_subs.c`) and "nfsnodepl" (`nfs_node.c`), made by
+/// `nfs_init` and `nfs_vfs_init`, the node hash that stands for every mount's `nm_ntree`
+/// (`nfs_node`), the nfsiods' queue (`nfs_bio.c`'s `nfs_bufq`) and table
+/// (`nfs_syscalls.c`'s `nfs_asyncdaemon[]`), and the kq poller's watch list (`nfs_kq.c`).
 pub struct NfsTables<G: ProcGlue> {
     /// `nfsreqpl`: the outstanding requests.
     pub nfsreqpl: TypedPool<NfsReq<G>>,
     /// `nfs_node_pool` ("nfsnodepl"): the nodes.
     pub nfs_node_pool: TypedPool<NfsNode<G>>,
+    /// `nm_ntree` of every mount: the node hash, once `nfs_vfs_init` made it.
+    pub nhash: ReadMostly<Option<NfsNhash<G>>>,
+    /// `nfs_bufq`: the buffers `nfs_asyncio` queued for the nfsiods, their tokens parked in
+    /// them (at `IPL_BIO`: `nfs_bio`'s Redesign); its address is the nfsiods' wait channel.
+    pub nfs_bufq: Mutexed<Fifo>,
+    /// `nfs_asyncdaemon[NFS_MAXASYNCDAEMON]`: the running nfsiods' thread ids, 0 for a free
+    /// slot.
+    pub nfs_asyncdaemon: [AtomicI32; NFS_NASYNCDAEMON],
+    /// `kevlist` and `pnfskq` under `nfskevq_lock` (`nfs_kq`).
+    pub kevq: Rwlocked<NfsKevq<G>>,
+    /// The watch list's entries (`nfs_kq`'s Deviations: the C's `malloc(M_KEVENT)`).
+    pub kevqpl: BoxPool<Kevq<G>>,
 }
 
 impl<G: ProcGlue> NfsTables<G> {
-    /// No pool made yet.
+    /// No pool made yet, the queues and the table empty.
     pub const fn new() -> Self {
         Self {
             nfsreqpl: TypedPool::new(),
             nfs_node_pool: TypedPool::new(),
+            nhash: ReadMostly::new(None),
+            nfs_bufq: Mutexed::new(IPL_BIO, Fifo::new()),
+            nfs_asyncdaemon: [const { AtomicI32::new(0) }; NFS_NASYNCDAEMON],
+            kevq: Rwlocked::new("nfskqlk", NfsKevq::new()),
+            kevqpl: BoxPool::new(),
         }
     }
 }

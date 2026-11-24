@@ -82,7 +82,20 @@
 //! - LZ's `bsd` module is the starting point of the client's half (D-5, N6.7a0): the words,
 //!   the tables, the statistics and `txdr_nfsv2time` are the kernel's, `bsd`'s `nfs_subs`
 //!   re-exports them for the server; N6.7a1 brings the RPC header (`nfsm_rpchead`), the xids
-//!   and the procedure maps; the attribute cache and the commit ranges follow with N6.7a2.
+//!   and the procedure maps; N6.7a2 the attribute cache, the commit ranges and
+//!   `nfs_vfs_init` (`nfs_loadattrcache` comes with the vnode operations, N6.7a3).
+//! - LZ's attribute cache and commit ranges took the vnode and found its node and mount again
+//!   (`VTONFS`, `VFSTONFS`: an `unsafe` cast each). Here the vnode operation's node and mount
+//!   are lent ([`nfs_getattrcache`] and [`nfs_attrtimeo`] take `&NfsNode` and `&NfsMount`,
+//!   the range functions `&NfsNode`): `nfs_getattrcache` is per I/O, and the hot path's rule
+//!   allows no lookup the C does not make. The cache is read once into the caller's copy (the
+//!   C's `bcopy`), a reader pair of its cell where the C reads in place, and written back
+//!   only when the C writes it (a modified file's larger size). The six range functions are
+//!   one pair of words and its valid bit each (`Range`), the C's two copies of each body
+//!   written once. `nfs_clearcommit` walks the mount's vnodes (`Mount::vnodes`) and clears
+//!   each dirty list's `B_NEEDCOMMIT` in one section of the cache's lock
+//!   (`vnode_dirty_for_each`), where the C holds `splbio` once over the whole walk: one
+//!   section per vnode, on a verifier change only.
 //! - LZ's `nfsm_rpchead` wrote the header into the request's first mbuf through
 //!   `nfsm_build` over a raw cursor of the request (`r_mreq`, `r_nmp`, `r_xid` read and set
 //!   through it); [`nfsm_rpchead`] takes the mount, the procedure and the arguments' chain
@@ -101,7 +114,8 @@
 
 #![allow(non_upper_case_globals)] // the C's names of the XDR words
 
-use core::sync::atomic::{AtomicI32, Ordering};
+use core::ptr;
+use core::sync::atomic::{AtomicI32, AtomicI64, Ordering};
 
 use hal::intr::IPL_NONE;
 use hal::pool::PR_WAITOK;
@@ -109,8 +123,13 @@ use hal::pool::PR_WAITOK;
 use hal::mutex::Mutexed;
 
 use super::nfs::{NFS_TICKINTVL, NfsCounters};
+use super::nfs_bio::DEV_BSIZE;
+use super::nfs_node::nfs_nhashinit;
 use super::nfsm_subs::{XdrReader, XdrWriter, nfsm_padlen};
 use super::nfsmount::NfsMount;
+use super::nfsnode::{
+    NACC, NCHG, NFS_COMMIT_PUSH_VALID, NFS_COMMIT_PUSHED_VALID, NMODIFIED, NUPD, NfsNode,
+};
 use super::nfsproto::{
     NFBLK, NFCHR, NFDIR, NFFIFO, NFLNK, NFNON, NFREG, NFS_MAXFHSIZE, NFS_PROG, NFSOCK,
     NFSV3SATTRTIME_DONTCHANGE, NFSV3SATTRTIME_TOCLIENT, NFSV3SATTRTIME_TOSERVER, NFSX_V2FH, Nfsfh,
@@ -132,6 +151,9 @@ use crate::clock::Timespec;
 use crate::cred::Ucred;
 use crate::crypto::idgen::Idgen32Ctx;
 use crate::file::FileGlue;
+use crate::fs::bio::vnode_dirty_for_each;
+use crate::fs::buf::{B_BUSY, B_DELWRI, B_NEEDCOMMIT, Buf};
+use crate::fs::mount::{Mount, Vfsconf};
 use crate::fs::subr::vfs;
 use crate::fs::vnode::Vtype::{self, VBLK, VCHR, VDIR, VFIFO, VLNK, VNON, VREG, VSOCK};
 use crate::fs::vnode::{VNOVAL, Vattr};
@@ -148,6 +170,7 @@ use crate::sys::nfs_rpcv2::{
 use crate::sys::types::{Gid, Mode, Off, Uid};
 use crate::tc::gettime;
 use crate::uio::{Uio, UioRw};
+use crate::vm::vnode::uvm_vnp_setsize;
 
 /// `nfs_xdrneg1`: the XDR word of -1. Data items converted to xdr at startup, since they are
 /// constant. This is kinda hokey, but may save a little time doing byte swaps.
@@ -555,6 +578,302 @@ pub fn nfs_init<G: ProcGlue>() {
         .nfs
         .nfsreqpl
         .init_recorded(IPL_NONE, PR_WAITOK, "nfsreqpl");
+}
+
+/// `nfs_vfs_init` (`vfs_init`): the nfsiod buffer queue (`TAILQ_INIT(&nfs_bufq)`: an empty
+/// `NfsTables::nfs_bufq`, made with the tables), "nfsnodepl" (recorded: `vtonfs` counts a
+/// node again from the vnode's slot), the node hash that stands for every mount's `nm_ntree`
+/// (`nfs_node`), and the kq watch list's pool (`nfs_kq`). A second call (a test glue's)
+/// keeps the pools.
+pub fn nfs_vfs_init<G: ProcGlue>(_vfsp: &'static Vfsconf<G>) -> Result<(), Errno> {
+    let t = &vfs::<G>().nfs;
+    let _ = t
+        .nfs_node_pool
+        .init_recorded(IPL_NONE, PR_WAITOK, "nfsnodepl");
+    let _ = t.kevqpl.init(IPL_NONE, PR_WAITOK, "nfskevqpl");
+    nfs_nhashinit::<G>();
+    Ok(())
+}
+
+/// `nfs_attrtimeo(np)`: the attribute cache timeout of a node, in seconds: a tenth of the
+/// age of its last modification, clamped to the mount's `acregmin..acregmax`
+/// (`acdirmin..acdirmax` for a directory); the minimum while it has local modifications.
+/// `nmp` is the node's mount, lent by the caller (the C's `VFSTONFS(vp->v_mount)`).
+pub fn nfs_attrtimeo<G: ProcGlue>(np: &NfsNode<G>, nmp: &NfsMount<G>) -> i32 {
+    let vp = np.n_vnode;
+    // `int tenthage = (gettime() - np->n_mtime.tv_sec) / 10`: a `time_t` quotient kept in an
+    // `int`, as the C's conversion (the server's times are 32-bit seconds).
+    let tenthage = (gettime().wrapping_sub(np.n_mtime.read().tv_sec) / 10) as i32;
+
+    let (minto, maxto) = if vp.vtype() == VDIR {
+        (
+            i32::from(nmp.nm_acdirmin.load(Ordering::Relaxed)),
+            i32::from(nmp.nm_acdirmax.load(Ordering::Relaxed)),
+        )
+    } else {
+        (
+            i32::from(nmp.nm_acregmin.load(Ordering::Relaxed)),
+            i32::from(nmp.nm_acregmax.load(Ordering::Relaxed)),
+        )
+    };
+
+    if np.isset(NMODIFIED) || tenthage < minto {
+        minto
+    } else if tenthage < maxto {
+        tenthage
+    } else {
+        maxto
+    }
+}
+
+/// `nfs_getattrcache(vp, vaper)`: checks the time stamp; if the cache is valid, copies its
+/// contents to `vaper`, otherwise fails with `ENOENT`. `np` is the vnode's node and `nmp` its
+/// mount, both lent by the vnode operation (the C's `VTONFS(vp)` and, in `nfs_attrtimeo`,
+/// `VFSTONFS(vp->v_mount)`).
+pub fn nfs_getattrcache<G: ProcGlue>(
+    np: &NfsNode<G>,
+    nmp: &NfsMount<G>,
+    vaper: &mut Vattr,
+) -> Result<(), Errno> {
+    let stamp = np.n_attrstamp.load(Ordering::Relaxed);
+    if stamp == 0 || gettime().wrapping_sub(stamp) >= i64::from(nfs_attrtimeo(np, nmp)) {
+        NFSSTATS.attrcache_misses.fetch_add(1, Ordering::Relaxed);
+        return Err(Errno::ENOENT);
+    }
+    NFSSTATS.attrcache_hits.fetch_add(1, Ordering::Relaxed);
+    // `vap = &np->n_vattr`: the cache read once, the copy the C's `bcopy` makes.
+    *vaper = *np.n_vattr.read();
+    let n_size = np.n_size.load(Ordering::Relaxed);
+    if vaper.va_size != n_size {
+        if vaper.va_type == VREG {
+            if np.isset(NMODIFIED) && vaper.va_size < n_size {
+                // `vap->va_size = np->n_size`: the cache, then the copy.
+                np.n_vattr.update(|v| v.va_size = n_size);
+                vaper.va_size = n_size;
+            } else {
+                np.n_size.store(vaper.va_size, Ordering::Relaxed);
+            }
+            // The C passes its `u_quad_t` size as the `voff_t` argument.
+            uvm_vnp_setsize(np.n_vnode, np.n_size.load(Ordering::Relaxed) as Off);
+        } else {
+            np.n_size.store(vaper.va_size, Ordering::Relaxed);
+        }
+    }
+    if np.isset(NCHG) {
+        if np.isset(NACC) {
+            vaper.va_atime = *np.n_atim.read();
+        }
+        if np.isset(NUPD) {
+            vaper.va_mtime = *np.n_mtim.read();
+        }
+    }
+    Ok(())
+}
+
+/// `nfs_clearcommit(mp)`: the write verifier has changed (probably due to a server reboot),
+/// so all `B_NEEDCOMMIT` blocks will have to be written again. Since they are on the dirty
+/// block list as `B_DELWRI`, all this takes is clearing the `B_NEEDCOMMIT` flag. Once done
+/// the new write verifier can be set for the mount point. The C holds `splbio` over the
+/// whole walk; here each vnode's dirty list is one section of the cache's lock (the C's
+/// `splbio` is that lock's level).
+pub fn nfs_clearcommit<G: ProcGlue>(mp: &'static Mount<G>) {
+    'restart: loop {
+        for vp in mp.vnodes() {
+            if !vp.mount().is_some_and(|m| ptr::eq(m, mp)) {
+                // Paranoia.
+                continue 'restart;
+            }
+            vnode_dirty_for_each(&vp.bufs, |bp| {
+                if bp.flags() & (B_BUSY | B_DELWRI | B_NEEDCOMMIT) == B_DELWRI | B_NEEDCOMMIT {
+                    bp.clr(B_NEEDCOMMIT);
+                }
+            });
+        }
+        break;
+    }
+}
+
+/// `nfs_merge_commit_ranges(vp)`: folds the to-be-committed range into the committed one.
+pub fn nfs_merge_commit_ranges<G: ProcGlue>(np: &NfsNode<G>) {
+    let flags = np.n_commitflags.load(Ordering::Relaxed);
+    let (pushlo, pushhi) = (
+        np.n_pushlo.load(Ordering::Relaxed),
+        np.n_pushhi.load(Ordering::Relaxed),
+    );
+    if flags & NFS_COMMIT_PUSHED_VALID == 0 {
+        np.n_pushedlo.store(pushlo, Ordering::Relaxed);
+        np.n_pushedhi.store(pushhi, Ordering::Relaxed);
+        np.n_commitflags
+            .fetch_or(NFS_COMMIT_PUSHED_VALID, Ordering::Relaxed);
+    } else {
+        if pushlo < np.n_pushedlo.load(Ordering::Relaxed) {
+            np.n_pushedlo.store(pushlo, Ordering::Relaxed);
+        }
+        if pushhi > np.n_pushedhi.load(Ordering::Relaxed) {
+            np.n_pushedhi.store(pushhi, Ordering::Relaxed);
+        }
+    }
+
+    np.n_pushlo.store(0, Ordering::Relaxed);
+    np.n_pushhi.store(0, Ordering::Relaxed);
+    np.n_commitflags
+        .fetch_and(!NFS_COMMIT_PUSH_VALID, Ordering::Relaxed);
+}
+
+/// The byte range of a buffer's dirty data: `(off_t)bp->b_blkno * DEV_BSIZE` to that plus
+/// `b_dirtyend`.
+fn commit_range(bp: &Buf) -> (Off, Off) {
+    let lo = bp.blkno().wrapping_mul(Off::from(DEV_BSIZE));
+    (lo, lo.wrapping_add(Off::from(bp.dirtyend())))
+}
+
+/// One of a node's two ranges, its pair of words and its valid bit: the committed one
+/// (`n_pushedlo`, `n_pushedhi`, `NFS_COMMIT_PUSHED_VALID`) or the one to be committed
+/// (`n_pushlo`, `n_pushhi`, `NFS_COMMIT_PUSH_VALID`). The C writes each function twice, once
+/// per range.
+struct Range<'a> {
+    lo: &'a AtomicI64,
+    hi: &'a AtomicI64,
+    valid: i32,
+    flags: &'a AtomicI32,
+}
+
+impl<'a> Range<'a> {
+    /// The committed range of `np`.
+    fn pushed<G: ProcGlue>(np: &'a NfsNode<G>) -> Self {
+        Self {
+            lo: &np.n_pushedlo,
+            hi: &np.n_pushedhi,
+            valid: NFS_COMMIT_PUSHED_VALID,
+            flags: &np.n_commitflags,
+        }
+    }
+
+    /// The range of `np` to be committed.
+    fn push<G: ProcGlue>(np: &'a NfsNode<G>) -> Self {
+        Self {
+            lo: &np.n_pushlo,
+            hi: &np.n_pushhi,
+            valid: NFS_COMMIT_PUSH_VALID,
+            flags: &np.n_commitflags,
+        }
+    }
+
+    /// Whether the range is valid.
+    fn is_valid(&self) -> bool {
+        self.flags.load(Ordering::Relaxed) & self.valid != 0
+    }
+
+    /// Whether the buffer's dirty bytes lie inside the valid range.
+    fn holds(&self, bp: &Buf) -> bool {
+        if !self.is_valid() {
+            return false;
+        }
+        let (lo, hi) = commit_range(bp);
+        lo >= self.lo.load(Ordering::Relaxed) && hi <= self.hi.load(Ordering::Relaxed)
+    }
+
+    /// The range widened to the buffer's dirty bytes (made the buffer's when not valid).
+    fn add(&self, bp: &Buf) {
+        let (lo, hi) = commit_range(bp);
+        if !self.is_valid() {
+            self.lo.store(lo, Ordering::Relaxed);
+            self.hi.store(hi, Ordering::Relaxed);
+            self.flags.fetch_or(self.valid, Ordering::Relaxed);
+        } else {
+            if hi > self.hi.load(Ordering::Relaxed) {
+                self.hi.store(hi, Ordering::Relaxed);
+            }
+            if lo < self.lo.load(Ordering::Relaxed) {
+                self.lo.store(lo, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// The buffer's dirty bytes taken out of the valid range; with the bytes in its middle,
+    /// one of the two pieces is kept (XXX There's only one range): by the C's comparison, the
+    /// smaller one, although its comment says the largest.
+    fn del(&self, bp: &Buf) {
+        if !self.is_valid() {
+            return;
+        }
+        let (lo, hi) = commit_range(bp);
+        let (rlo, rhi) = (
+            self.lo.load(Ordering::Relaxed),
+            self.hi.load(Ordering::Relaxed),
+        );
+        if lo > rhi || hi < rlo {
+            return;
+        }
+        if lo <= rlo {
+            self.lo.store(hi, Ordering::Relaxed);
+        } else if hi >= rhi {
+            self.hi.store(lo, Ordering::Relaxed);
+        } else {
+            // XXX There's only one range. If the deleted range is in the middle, pick the
+            // largest of the contiguous ranges that it leaves. The C compares `n_pushedlo - lo`
+            // (minus the left piece) with `hi - n_pushedhi` (minus the right one), which keeps
+            // the smaller piece: kept as written (the tests pin it).
+            if rlo.wrapping_sub(lo) > hi.wrapping_sub(rhi) {
+                self.hi.store(lo, Ordering::Relaxed);
+            } else {
+                self.lo.store(hi, Ordering::Relaxed);
+            }
+        }
+    }
+}
+
+/// `nfs_in_committed_range(vp, bp)`: whether the buffer's dirty data was committed.
+pub fn nfs_in_committed_range<G: ProcGlue>(np: &NfsNode<G>, bp: &Buf) -> bool {
+    Range::pushed(np).holds(bp)
+}
+
+/// `nfs_in_tobecommitted_range(vp, bp)`: whether the buffer's dirty data is in the range
+/// to be committed.
+pub fn nfs_in_tobecommitted_range<G: ProcGlue>(np: &NfsNode<G>, bp: &Buf) -> bool {
+    Range::push(np).holds(bp)
+}
+
+/// `nfs_add_committed_range(vp, bp)`: widens the committed range to the buffer.
+pub fn nfs_add_committed_range<G: ProcGlue>(np: &NfsNode<G>, bp: &Buf) {
+    Range::pushed(np).add(bp);
+}
+
+/// `nfs_del_committed_range(vp, bp)`: takes the buffer out of the committed range.
+pub fn nfs_del_committed_range<G: ProcGlue>(np: &NfsNode<G>, bp: &Buf) {
+    Range::pushed(np).del(bp);
+}
+
+/// `nfs_add_tobecommitted_range(vp, bp)`: widens the range to be committed to the buffer.
+pub fn nfs_add_tobecommitted_range<G: ProcGlue>(np: &NfsNode<G>, bp: &Buf) {
+    Range::push(np).add(bp);
+}
+
+/// `nfs_del_tobecommitted_range(vp, bp)`: takes the buffer out of the range to be
+/// committed.
+pub fn nfs_del_tobecommitted_range<G: ProcGlue>(np: &NfsNode<G>, bp: &Buf) {
+    Range::push(np).del(bp);
+}
+
+/// The host tests' reset of the client's globals of a test glue (testing.md): the node hash
+/// forgotten (`nfs_node`), the nfsiod queue and the kq watch list forgotten with what they
+/// hold, the queue's counts and the nfsiods' table cleared. Nothing is freed: the memory
+/// behind them is gone with the last test's.
+#[cfg(any(test, feature = "doubles"))]
+pub(crate) fn nfs_test_reset<G: ProcGlue>() {
+    let t = &vfs::<G>().nfs;
+    super::nfs_node::nfs_nhash_test_reset::<G>();
+    core::mem::forget(core::mem::replace(
+        &mut *t.nfs_bufq.lock(),
+        crate::fs::bufq::Fifo::new(),
+    ));
+    super::nfs_kq::nfs_kq_test_reset::<G>();
+    for d in &t.nfs_asyncdaemon {
+        d.store(0, Ordering::Relaxed);
+    }
+    super::nfsnode::NFS_BUFQLEN.store(0, Ordering::Relaxed);
+    super::nfsnode::NFS_BUFQMAX.store(0, Ordering::Relaxed);
+    super::nfsnode::NFS_NUMASYNC.store(0, Ordering::Relaxed);
 }
 
 const _: () = {
