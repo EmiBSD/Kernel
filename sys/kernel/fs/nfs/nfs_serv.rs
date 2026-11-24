@@ -3259,3 +3259,1365 @@ pub fn nfsrv3_procs<G: ProcGlue>() -> [NfsrvProc<G>; NFS_NPROCS] {
     ]
 }
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    // Host tests of the server's procedures over an exported ffs (the kernel's testffs image,
+    // mounted at the root, its default export), driven by hand-built requests whose replies
+    // are read back word by word: LZ's five re-expressed (the readdir packing and sizes,
+    // flrep, the null/no-op/bad requests, every procedure in both versions with a clean
+    // unmount at the end, which a leaked vnode would refuse), then the C's checks one at a
+    // time (a read-only and a mapall export, the owner override, the name, count and write
+    // bounds, the stable modes, rename's rules, an unreserved port), and random requests to
+    // every procedure (a reply or a drop, never a panic, the unmount still clean).
+
+    use core::mem::offset_of;
+    use std::sync::MutexGuard;
+    use std::vec;
+    use std::vec::Vec;
+
+    use hal::sys::mount::{
+        ExportArgs, MNT_DELEXPORT, MNT_EXPORTANON, MNT_EXPORTED, MNT_EXRDONLY, Xucred,
+    };
+    use hal::sys::syslimits::NGROUPS_MAX as XNGROUPS;
+
+    use super::*;
+    use crate::fs::export::vfs_export;
+    use crate::fs::nfs::nfsm_subs::{test_bytes, test_chain};
+    use crate::fs::nfs::nfsproto::{
+        NFSERR_ACCES, NFSERR_EXIST, NFSERR_INVAL, NFSERR_IO, NFSERR_ISDIR, NFSERR_NOENT,
+        NFSERR_NOTDIR, NFSERR_NOTEMPTY, NFSERR_ROFS, NFSERR_STALE, NFSPROC_ACCESS, NFSPROC_COMMIT,
+        NFSPROC_CREATE, NFSPROC_FSINFO, NFSPROC_FSSTAT, NFSPROC_GETATTR, NFSPROC_LINK,
+        NFSPROC_LOOKUP, NFSPROC_MKDIR, NFSPROC_MKNOD, NFSPROC_NOOP, NFSPROC_NULL, NFSPROC_PATHCONF,
+        NFSPROC_READ, NFSPROC_READDIR, NFSPROC_READDIRPLUS, NFSPROC_READLINK, NFSPROC_REMOVE,
+        NFSPROC_RENAME, NFSPROC_RMDIR, NFSPROC_SETATTR, NFSPROC_SYMLINK, NFSPROC_WRITE,
+        NFSV3CREATE_EXCLUSIVE, NFSV3SATTRTIME_DONTCHANGE, NFSV3WRITE_DATASYNC, Nfstype,
+    };
+    use crate::fs::nfs::rpcv2::{AUTH_TOOWEAK, RPC_GARBAGE, RPC_PROCUNAVAIL};
+    use crate::fs::nfs::xdr_subs::xdr_get;
+    use crate::fs::testfs::TestGlue;
+    use crate::fs::ufs::ffs::testffs::{self, newfs};
+    use crate::fs::vops::VFS_ROOT;
+    use crate::net::mbuf::{m_devget, mbinit, nmbclust_update};
+    use crate::sys::socket::{AF_INET, SOCK_STREAM};
+
+    type G = TestGlue;
+
+    /// The raw XDR words of `b` as host values.
+    fn words(b: &[u8]) -> Vec<u32> {
+        b.chunks(4)
+            .map(|c| {
+                let mut w = [0u8; 4];
+                w[..c.len()].copy_from_slice(c);
+                u32::from_be_bytes(w)
+            })
+            .collect()
+    }
+
+    /// An XDR request body.
+    #[derive(Default, Clone)]
+    struct Req(Vec<u8>);
+
+    impl Req {
+        fn u(mut self, v: u32) -> Self {
+            self.0.extend_from_slice(&v.to_be_bytes());
+            self
+        }
+
+        fn hyper(self, v: u64) -> Self {
+            self.u((v >> 32) as u32).u(v as u32)
+        }
+
+        fn raw(mut self, b: &[u8]) -> Self {
+            self.0.extend_from_slice(b);
+            self
+        }
+
+        /// A file handle: version 3 `nfs_fh3` (length and bytes), version 2 32 bytes.
+        fn fh(self, fh: &Fhandle, v3: bool) -> Self {
+            let b = xdr_bytes(fh).to_vec();
+            if v3 {
+                self.u(NFSX_V3FH as u32).raw(&b)
+            } else {
+                self.raw(&b).raw(&[0; NFSX_V2FH - NFSX_V3FH])
+            }
+        }
+
+        /// A string or opaque: length, bytes and padding.
+        fn name(self, s: &[u8]) -> Self {
+            let pad = nfsm_padlen(s.len());
+            self.u(s.len() as u32).raw(s).raw(&[0; 3][..pad])
+        }
+
+        /// A version 3 `sattr3` that sets the mode and the size it is given.
+        fn sattr3(self, mode: Option<u32>, size: Option<u64>) -> Self {
+            let s = match mode {
+                Some(m) => self.u(1).u(m),
+                None => self.u(0),
+            };
+            let s = s.u(0).u(0);
+            let s = match size {
+                Some(z) => s.u(1).hyper(z),
+                None => s.u(0),
+            };
+            s.u(NFSV3SATTRTIME_DONTCHANGE).u(NFSV3SATTRTIME_DONTCHANGE)
+        }
+
+        /// A version 2 `sattr` that sets only the mode.
+        fn sattr2(self, mode: u32) -> Self {
+            let mut s = self.u(mode);
+            for _ in 0..7 {
+                s = s.u(u32::MAX);
+            }
+            s
+        }
+    }
+
+    /// A reply being read back.
+    struct Rd {
+        w: Vec<u32>,
+        i: usize,
+    }
+
+    impl Rd {
+        /// An accepted RPC reply whose `accept_stat` is `stat`.
+        fn accepted(w: Vec<u32>, stat: u32) -> Rd {
+            assert!(w.len() >= 6, "short reply {w:x?}");
+            assert_eq!(&w[..6], &[0x1234, 1, 0, 0, 0, stat], "RPC reply header");
+            Rd { w, i: 6 }
+        }
+
+        /// An accepted reply whose NFS status is `status`.
+        fn status(w: Vec<u32>, status: i32) -> Rd {
+            let mut r = Rd::accepted(w, 0);
+            assert_eq!(r.u(), status as u32, "NFS status");
+            r
+        }
+
+        fn u(&mut self) -> u32 {
+            let v = self.w[self.i];
+            self.i += 1;
+            v
+        }
+
+        fn hyper(&mut self) -> u64 {
+            (u64::from(self.u()) << 32) | u64::from(self.u())
+        }
+
+        fn n(&mut self, n: usize) -> Vec<u32> {
+            let v = self.w[self.i..self.i + n].to_vec();
+            self.i += n;
+            v
+        }
+
+        /// An opaque or string: its bytes.
+        fn opaque(&mut self) -> Vec<u8> {
+            let len = self.u() as usize;
+            let ws = self.n(len.div_ceil(4));
+            let mut b: Vec<u8> = ws.iter().flat_map(|w| w.to_be_bytes()).collect();
+            b.truncate(len);
+            b
+        }
+
+        /// A `post_op_attr`: the 21 words of `fattr3`, when present.
+        fn postop(&mut self) -> Option<Vec<u32>> {
+            (self.u() == 1).then(|| self.n(21))
+        }
+
+        /// A `wcc_data`: the pre-operation attributes (6 words) and the post-operation ones.
+        fn wcc(&mut self) -> (Option<Vec<u32>>, Option<Vec<u32>>) {
+            let pre = (self.u() == 1).then(|| self.n(6));
+            (pre, self.postop())
+        }
+
+        /// A `post_op_fh3`: the handle, when present.
+        fn postop_fh(&mut self) -> Option<Fhandle> {
+            (self.u() == 1).then(|| {
+                let b = self.opaque();
+                assert_eq!(b.len(), NFSX_V3FH);
+                xdr_get::<Fhandle>(&b)
+            })
+        }
+
+        fn done(&self) {
+            assert_eq!(self.i, self.w.len(), "the whole reply was read");
+        }
+    }
+
+    /// The exported file system and the server's view of it.
+    struct Srv {
+        p: &'static Thread<G>,
+        mp: &'static Mount<G>,
+        root: Fhandle,
+        slp: NfssvcSock<G>,
+        /// The client's port (0: no client address).
+        port: u16,
+    }
+
+    /// `struct export_args` of the default export: `flags`, the anonymous ids `anon`.
+    fn export(mp: &'static Mount<G>, flags: i32, anon: u32) {
+        let a = ExportArgs {
+            ex_flags: flags,
+            ex_root: 0,
+            ex_anon: Xucred {
+                cr_uid: anon,
+                cr_gid: anon,
+                cr_ngroups: 0,
+                _pad0: 0,
+                cr_groups: [0; XNGROUPS],
+            },
+            _pad0: 0,
+            ex_addr: 0,
+            ex_addrlen: 0,
+            _pad1: 0,
+            ex_mask: 0,
+            ex_masklen: 0,
+            _pad2: 0,
+        };
+        vfs_export(mp, mp.export(), &a).expect("exported");
+    }
+
+    /// An ffs image with `/motd` (13 bytes, mode 0644), mounted at the root, its default export
+    /// `flags` (`MNT_EXPORTED` and more) mapping to `anon`, a datagram socket and a client on a
+    /// reserved port; the kernel lock held, as the nfsds hold it.
+    fn served(flags: i32, anon: u32) -> (MutexGuard<'static, ()>, Srv) {
+        let mut img = newfs::Image::new(newfs::FFS1_4M);
+        img.add_file(b"motd", b"hello, world\n");
+        let (g, p) = testffs::attach(img.finish());
+        crate::testutil::kernel_maps_install();
+        mbinit(&crate::net::mbuf::tests::TEST_NMBCLUST);
+        let _ = nmbclust_update(256 * 1024);
+        hal::klock::kernel_lock();
+        let mp = testffs::mount_root(p, 0);
+        export(mp, flags, anon);
+        let vp = VFS_ROOT(mp).expect("the root");
+        let root = nfsrv_vptofh(vp).expect("its handle").fh_generic();
+        vput(vp);
+        let slp = NfssvcSock::new(None);
+        slp.ns_sotype.store(
+            crate::sys::socket::SOCK_DGRAM,
+            core::sync::atomic::Ordering::Relaxed,
+        );
+        let s = Srv {
+            p,
+            mp,
+            root,
+            slp,
+            port: 800,
+        };
+        (g, s)
+    }
+
+    /// A client's name at 127.0.0.1:`port`.
+    fn client(port: u16) -> MbufBox {
+        let mut sin = [0u8; 16];
+        sin[0] = 16;
+        sin[1] = AF_INET;
+        sin[2..4].copy_from_slice(&port.to_be_bytes());
+        sin[4..8].copy_from_slice(&[127, 0, 0, 1]);
+        m_devget(&sin, 0).expect("an address mbuf")
+    }
+
+    /// A request descriptor for `body`, split over mbufs of 50 bytes (so that words straddle
+    /// them), from 127.0.0.1:`port` (none for 0).
+    fn descript(body: &[u8], v3: bool, port: u16) -> NfsrvDescript {
+        let parts: Vec<&[u8]> = if body.is_empty() {
+            vec![&[][..]]
+        } else {
+            body.chunks(50).collect()
+        };
+        let mut nd = NfsrvDescript {
+            nd_mrep: Some(test_chain(&parts)),
+            nd_retxid: 0x1234,
+            ..NfsrvDescript::default()
+        };
+        if v3 {
+            nd.nd_flag |= ND_NFSV3;
+        }
+        if port != 0 {
+            nd.nd_nam2 = Some(client(port));
+        }
+        nd
+    }
+
+    /// The procedure `procnum` of the table on the request `body`: the C's `int` and the
+    /// reply's words; the request was freed either way.
+    fn run(s: &Srv, procnum: usize, body: &Req, v3: bool) -> (i32, Option<Vec<u32>>) {
+        let mut nd = descript(&body.0, v3, s.port);
+        nd.nd_procnum = procnum;
+        let (m, e) = nfsrv3_procs::<G>()[procnum](&mut nd, &s.slp, s.p);
+        assert!(nd.nd_mrep.is_none(), "the request was freed");
+        assert!(m.is_some() == (e == 0), "a reply iff 0: {e}");
+        (e, m.map(|m| words(&test_bytes(&m))))
+    }
+
+    /// [`run`] of a request that gets a reply.
+    fn reply(s: &Srv, procnum: usize, body: &Req, v3: bool) -> Vec<u32> {
+        let (e, w) = run(s, procnum, body, v3);
+        assert_eq!(e, 0);
+        w.expect("a reply")
+    }
+
+    /// LOOKUP of `name` under `dir` (version 3): the handle, or the status.
+    fn lookup(s: &Srv, dir: &Fhandle, name: &[u8]) -> Result<Fhandle, i32> {
+        let w = reply(
+            s,
+            NFSPROC_LOOKUP,
+            &Req::default().fh(dir, true).name(name),
+            true,
+        );
+        let mut r = Rd::accepted(w, 0);
+        match r.u() {
+            0 => {
+                let b = r.opaque();
+                assert!(r.postop().is_some());
+                assert!(r.postop().is_some());
+                r.done();
+                Ok(xdr_get::<Fhandle>(&b))
+            }
+            st => Err(st as i32),
+        }
+    }
+
+    /// The version 3 status of `procnum` on `body`.
+    fn status3(s: &Srv, procnum: usize, body: &Req) -> i32 {
+        let w = reply(s, procnum, body, true);
+        Rd::accepted(w, 0).u() as i32
+    }
+
+    /// A directory entry as `VOP_READDIR` writes it.
+    fn dirent(fileno: u64, off: i64, name: &[u8]) -> Vec<u8> {
+        let reclen = (Dirent::NAME_OFFSET + name.len() + 1 + 7) & !7;
+        let mut b = vec![0u8; reclen];
+        b[offset_of!(Dirent, d_fileno)..][..8].copy_from_slice(&fileno.to_ne_bytes());
+        b[offset_of!(Dirent, d_off)..][..8].copy_from_slice(&off.to_ne_bytes());
+        b[offset_of!(Dirent, d_reclen)..][..2].copy_from_slice(&(reclen as u16).to_ne_bytes());
+        b[offset_of!(Dirent, d_namlen)] = name.len() as u8;
+        b[Dirent::NAME_OFFSET..][..name.len()].copy_from_slice(name);
+        b
+    }
+
+    /// The words a writer built.
+    fn written(mb: XdrWriter) -> Vec<u32> {
+        words(&test_bytes(&mb.into_chain()))
+    }
+
+    fn writer() -> XdrWriter {
+        let m = m_get(M_WAIT, MT_DATA).expect("an mbuf");
+        m.m_len().set(0);
+        XdrWriter::with_first(m)
+    }
+
+    #[test]
+    fn readdir_packs_entries_with_a_file_number_while_they_fit() {
+        let _g = crate::net::mbuf::tests::setup();
+        let mut buf = dirent(5, 100, b"a");
+        buf.extend(dirent(0, 200, b"gone"));
+        buf.extend(dirent(7, 300, b"bcdef"));
+
+        // Version 3: true, fileid (hyper), name, cookie (hyper).
+        let mut mb = writer();
+        assert!(nfsrv_readdir_pack(&mut mb, &buf, true, 1000, 12));
+        let a = u32::from_be_bytes(*b"a\0\0\0");
+        let bcde = u32::from_be_bytes(*b"bcde");
+        let f = u32::from_be_bytes(*b"f\0\0\0");
+        assert_eq!(
+            written(mb),
+            [1, 0, 5, 1, a, 0, 100, 1, 0, 7, 5, bcde, f, 0, 300]
+        );
+
+        // Version 2: true, fileid, name, cookie; the second entry does not fit the count.
+        let mut mb = writer();
+        // 12 + (16 + 4) = 32 for "a", then 32 + (16 + 8) = 56 > 40.
+        assert!(!nfsrv_readdir_pack(&mut mb, &buf, false, 40, 12));
+        assert_eq!(written(mb), [1, 5, 1, a, 100]);
+
+        // A truncated entry or one with no length ends the walk.
+        let mut mb = writer();
+        let mut bad = dirent(9, 1, b"x");
+        bad[offset_of!(Dirent, d_reclen)..][..2].copy_from_slice(&0u16.to_ne_bytes());
+        assert!(nfsrv_readdir_pack(&mut mb, &bad, true, 1000, 12));
+        assert!(written(mb).is_empty());
+        assert_eq!(nfsrv_dirent_skip(&bad), bad.len());
+        let long = dirent(9, 1, b"x");
+        assert!(nfsrv_dirent(&long[..long.len() - 1]).is_none());
+
+        // The degenerate-case walk stops at the first entry with a file number.
+        let mut skip = dirent(0, 1, b"x");
+        let first = skip.len();
+        skip.extend(dirent(3, 2, b"y"));
+        assert_eq!(nfsrv_dirent_skip(&skip), first);
+        let empty = dirent(0, 1, b"x");
+        assert_eq!(nfsrv_dirent_skip(&empty), empty.len());
+    }
+
+    #[test]
+    fn readdir_sizes_follow_the_c() {
+        assert_eq!(nfsrv_readdir_cnt(100, 8192), 100);
+        assert_eq!(nfsrv_readdir_cnt(-1, 8192), 8192);
+        assert_eq!(nfsrv_readdir_cnt(9000, 8192), 8192);
+        assert_eq!(nfsrv_readdir_siz(100, 8192), 512);
+        assert_eq!(nfsrv_readdir_siz(512, 8192), 512);
+        assert_eq!(nfsrv_readdir_siz(513, 8192), 1024);
+        assert_eq!(nfsrv_readdir_siz(9000, 8192), 8192);
+        assert_eq!(nfsrv_readdir_siz(-5, 8192), 8192, "not positive: xfer");
+        assert_eq!(
+            nfsrv_readdir_siz(i32::MAX, 8192),
+            8192,
+            "wraps negative: xfer"
+        );
+    }
+
+    #[test]
+    fn flrep_is_cookie_attributes_and_handle() {
+        let fattr = NfsFattr {
+            fa_type: txdr_unsigned(1),
+            ..NfsFattr::default()
+        };
+        let mut nfh = Nfsfh::new();
+        nfh.fh_bytes[0] = 0xaa;
+        nfh.fh_bytes[NFSX_V3FH - 1] = 0xbb;
+        nfh.fh_bytes[NFSX_V3FH] = 0xcc; // past the handle: not copied
+        let fl = nfsrv_flrep(0x1_0000_0002, &fattr, &nfh);
+        assert_eq!(FLREP_SIZE, 33 * 4);
+        let w = words(&fl);
+        assert_eq!(&w[..4], &[1, 2, 1, 1], "cookie, post_op_attr true, fa_type");
+        assert_eq!(
+            &w[24..26],
+            &[1, NFSX_V3FH as u32],
+            "post_op_fh3 true, length"
+        );
+        assert_eq!(fl[26 * 4], 0xaa);
+        assert_eq!(fl[FLREP_SIZE - 1], 0xbb);
+    }
+
+    #[test]
+    fn null_noop_and_bad_requests() {
+        let (_g, mut s) = served(MNT_EXPORTED, 0);
+
+        // NULL: an accepted reply with no status.
+        let w = reply(&s, NFSPROC_NULL, &Req::default(), true);
+        Rd::accepted(w, 0).done();
+
+        // An obsolete procedure: PROC_UNAVAIL ...
+        let w = reply(&s, NFSPROC_NOOP, &Req::default(), false);
+        Rd::accepted(w, RPC_PROCUNAVAIL).done();
+        // ... or the status nfs_getreq left.
+        let mut nd = descript(&[], true, 0);
+        nd.nd_repstat = Errno::EBADRPC.as_i32();
+        let (m, e) = nfsrv_noop(&mut nd, &s.slp, s.p);
+        assert_eq!(e, 0);
+        let w = words(&test_bytes(&m.expect("a reply")));
+        Rd::accepted(w, RPC_GARBAGE).done();
+
+        // A version 3 file handle of the wrong length: GARBAGE_ARGS, no NFS status, for the
+        // handle of every procedure that takes one, and for link's second.
+        let bad = Req::default().u(12).raw(&[0; 12]);
+        for procnum in 1..NFS_NPROCS - 1 {
+            let w = reply(&s, procnum, &bad, true);
+            Rd::accepted(w, RPC_GARBAGE).done();
+        }
+        let link = Req::default().fh(&s.root, true).u(NFSX_V3FH as u32 + 4);
+        let w = reply(&s, NFSPROC_LINK, &link, true);
+        Rd::accepted(w, RPC_GARBAGE).done();
+
+        // A request that ends inside the file handle is dropped without a reply.
+        let short = Req::default().u(NFSX_V3FH as u32).raw(&[0; 8]);
+        for procnum in 1..NFS_NPROCS - 1 {
+            assert_eq!(
+                run(&s, procnum, &short, true),
+                (Errno::EBADRPC.as_i32(), None)
+            );
+        }
+
+        // An unknown file system: STALE.
+        let unknown = Req::default().fh(&Fhandle::default(), true);
+        assert_eq!(status3(&s, NFSPROC_GETATTR, &unknown), NFSERR_STALE);
+
+        // A client on an unreserved port, and a request with no client address, do not pass
+        // the port check: MSG_DENIED, AUTH_ERROR, AUTH_TOOWEAK.
+        let getattr = Req::default().fh(&s.root, true);
+        for port in [1024, 0] {
+            s.port = port;
+            let w = reply(&s, NFSPROC_GETATTR, &getattr, true);
+            assert_eq!(w, [0x1234, 1, 1, 1, AUTH_TOOWEAK]);
+        }
+        s.port = 20;
+        s.slp
+            .ns_sotype
+            .store(SOCK_STREAM, core::sync::atomic::Ordering::Relaxed);
+        let w = reply(&s, NFSPROC_GETATTR, &getattr, true);
+        assert_eq!(w, [0x1234, 1, 1, 1, AUTH_TOOWEAK], "port 20 on a stream");
+
+        // The table is in procedure number order.
+        let t = nfsrv3_procs::<G>();
+        assert!(core::ptr::fn_addr_eq(
+            t[NFSPROC_GETATTR],
+            nfsrv_getattr::<G> as NfsrvProc<G>
+        ));
+        assert!(core::ptr::fn_addr_eq(
+            t[NFSPROC_COMMIT],
+            nfsrv_commit::<G> as NfsrvProc<G>
+        ));
+        assert!(core::ptr::fn_addr_eq(
+            t[NFS_NPROCS - 1],
+            nfsrv_noop::<G> as NfsrvProc<G>
+        ));
+    }
+
+    #[test]
+    fn procedures_over_an_exported_ffs_version_3() {
+        let (_g, s) = served(MNT_EXPORTED, 0);
+        let root = s.root;
+        let motd = lookup(&s, &root, b"motd").expect("motd");
+        assert_eq!(lookup(&s, &root, b"nothere"), Err(NFSERR_NOENT));
+
+        // GETATTR: a regular file of 13 bytes, mode 0644.
+        let w = reply(&s, NFSPROC_GETATTR, &Req::default().fh(&motd, true), true);
+        let mut r = Rd::status(w, 0);
+        let fa = r.n(21);
+        r.done();
+        assert_eq!((fa[0], fa[1] & 0o7777, fa[5], fa[6]), (1, 0o644, 0, 13));
+
+        // ACCESS: root may do all but execute a file with no execute bit.
+        let w = reply(
+            &s,
+            NFSPROC_ACCESS,
+            &Req::default().fh(&motd, true).u(0x3f),
+            true,
+        );
+        let mut r = Rd::status(w, 0);
+        assert!(r.postop().is_some());
+        assert_eq!(r.u(), 0x3f & !0x20);
+        r.done();
+
+        // READ: the bytes, their count, eof.
+        let read = |fh: &Fhandle, off: u64, cnt: u32| {
+            let w = reply(
+                &s,
+                NFSPROC_READ,
+                &Req::default().fh(fh, true).hyper(off).u(cnt),
+                true,
+            );
+            let mut r = Rd::status(w, 0);
+            assert!(r.postop().is_some());
+            let count = r.u();
+            let eof = r.u();
+            let data = r.opaque();
+            r.done();
+            assert_eq!(count as usize, data.len());
+            (data, eof)
+        };
+        assert_eq!(read(&motd, 0, 100), (b"hello, world\n".to_vec(), 1));
+        assert_eq!(read(&motd, 7, 3), (b"wor".to_vec(), 0));
+        assert_eq!(read(&motd, 13, 10), (Vec::new(), 1));
+
+        // CREATE a file (mode 0640), WRITE it in the three stable modes, READ it back.
+        let w = reply(
+            &s,
+            NFSPROC_CREATE,
+            &Req::default()
+                .fh(&root, true)
+                .name(b"new")
+                .u(0)
+                .sattr3(Some(0o640), None),
+            true,
+        );
+        let mut r = Rd::status(w, 0);
+        let new = r.postop_fh().expect("a handle");
+        let fa = r.postop().expect("attributes");
+        assert_eq!(fa[1] & 0o7777, 0o640);
+        let (pre, post) = r.wcc();
+        assert!(pre.is_some() && post.is_some());
+        r.done();
+        for (off, stable, data, committed) in [
+            (
+                0u64,
+                NFSV3WRITE_FILESYNC,
+                &b"abcde"[..],
+                NFSV3WRITE_FILESYNC,
+            ),
+            (5, NFSV3WRITE_UNSTABLE, b"fgh", NFSV3WRITE_UNSTABLE),
+            (8, NFSV3WRITE_DATASYNC, b"ij", NFSV3WRITE_FILESYNC),
+        ] {
+            let body = Req::default()
+                .fh(&new, true)
+                .hyper(off)
+                .u(data.len() as u32)
+                .u(stable)
+                .name(data);
+            let w = reply(&s, NFSPROC_WRITE, &body, true);
+            let mut r = Rd::status(w, 0);
+            let (pre, post) = r.wcc();
+            assert!(pre.is_some() && post.is_some());
+            assert_eq!(r.u() as usize, data.len());
+            assert_eq!(r.u(), committed);
+            let verf = r.n(2);
+            r.done();
+            let bt = microboottime();
+            assert_eq!(verf, [bt.tv_sec as u32, bt.tv_usec as u32]);
+        }
+        assert_eq!(read(&new, 0, 4096), (b"abcdefghij".to_vec(), 1));
+
+        // SETATTR: the size cut to 2.
+        let w = reply(
+            &s,
+            NFSPROC_SETATTR,
+            &Req::default().fh(&new, true).sattr3(None, Some(2)).u(0),
+            true,
+        );
+        let mut r = Rd::status(w, 0);
+        let (_, post) = r.wcc();
+        assert_eq!(post.expect("attributes")[6], 2);
+        r.done();
+        assert_eq!(read(&new, 0, 100).0, b"ab");
+
+        // MKDIR, SYMLINK, READLINK.
+        let w = reply(
+            &s,
+            NFSPROC_MKDIR,
+            &Req::default()
+                .fh(&root, true)
+                .name(b"d")
+                .sattr3(Some(0o755), None),
+            true,
+        );
+        let mut r = Rd::status(w, 0);
+        let d = r.postop_fh().expect("a handle");
+        assert_eq!(r.postop().expect("attributes")[0], 2);
+        r.wcc();
+        r.done();
+        let w = reply(
+            &s,
+            NFSPROC_SYMLINK,
+            &Req::default()
+                .fh(&root, true)
+                .name(b"l")
+                .sattr3(Some(0o755), None)
+                .name(b"new"),
+            true,
+        );
+        let mut r = Rd::status(w, 0);
+        let l = r.postop_fh().expect("a handle");
+        assert_eq!(r.postop().expect("attributes")[0], 5);
+        r.wcc();
+        r.done();
+        let w = reply(&s, NFSPROC_READLINK, &Req::default().fh(&l, true), true);
+        let mut r = Rd::status(w, 0);
+        assert!(r.postop().is_some());
+        assert_eq!(r.opaque(), b"new");
+        r.done();
+        // READLINK of a file that is not a link: INVAL.
+        let w = reply(&s, NFSPROC_READLINK, &Req::default().fh(&new, true), true);
+        let mut r = Rd::status(w, NFSERR_INVAL);
+        assert!(r.postop().is_some());
+        r.done();
+
+        // MKNOD a fifo.
+        let w = reply(
+            &s,
+            NFSPROC_MKNOD,
+            &Req::default()
+                .fh(&root, true)
+                .name(b"fifo")
+                .u(Nfstype::NFFIFO as u32)
+                .sattr3(Some(0o600), None),
+            true,
+        );
+        let mut r = Rd::status(w, 0);
+        assert!(r.postop_fh().is_some());
+        assert_eq!(r.postop().expect("attributes")[0], Nfstype::NFFIFO as u32);
+        r.wcc();
+        r.done();
+
+        // READDIR and READDIRPLUS list them all.
+        let w = reply(
+            &s,
+            NFSPROC_READDIR,
+            &Req::default().fh(&root, true).hyper(0).hyper(0).u(4096),
+            true,
+        );
+        let mut r = Rd::status(w, 0);
+        assert!(r.postop().is_some());
+        r.hyper();
+        let mut names = Vec::new();
+        while r.u() == 1 {
+            r.hyper();
+            names.push(r.opaque());
+            r.hyper();
+        }
+        assert_eq!(r.u(), 1, "eof");
+        r.done();
+        names.sort();
+        let want: [&[u8]; 7] = [b".", b"..", b"d", b"fifo", b"l", b"motd", b"new"];
+        assert_eq!(names, want);
+        let w = reply(
+            &s,
+            NFSPROC_READDIRPLUS,
+            &Req::default()
+                .fh(&root, true)
+                .hyper(0)
+                .hyper(0)
+                .u(4096)
+                .u(8192),
+            true,
+        );
+        let mut r = Rd::status(w, 0);
+        assert!(r.postop().is_some());
+        r.hyper();
+        let mut n = 0;
+        while r.u() == 1 {
+            r.hyper();
+            let name = r.opaque();
+            r.hyper();
+            assert!(r.postop().is_some());
+            let fh = r.postop_fh().expect("a handle");
+            if name == b"motd" {
+                assert_eq!(fh, motd);
+            }
+            n += 1;
+        }
+        assert_eq!((n, r.u()), (7, 1));
+        r.done();
+
+        // RENAME new to d/n2, LINK it back as hard, REMOVE both names, RMDIR d.
+        let w = reply(
+            &s,
+            NFSPROC_RENAME,
+            &Req::default()
+                .fh(&root, true)
+                .name(b"new")
+                .fh(&d, true)
+                .name(b"n2"),
+            true,
+        );
+        let mut r = Rd::status(w, 0);
+        r.wcc();
+        r.wcc();
+        r.done();
+        assert_eq!(lookup(&s, &root, b"new"), Err(NFSERR_NOENT));
+        let n2 = lookup(&s, &d, b"n2").expect("renamed");
+        assert_eq!(n2, new, "the same file");
+        let w = reply(
+            &s,
+            NFSPROC_LINK,
+            &Req::default().fh(&n2, true).fh(&root, true).name(b"hard"),
+            true,
+        );
+        let mut r = Rd::status(w, 0);
+        assert_eq!(r.postop().expect("attributes")[2], 2, "two links");
+        r.wcc();
+        r.done();
+        let w = reply(
+            &s,
+            NFSPROC_RMDIR,
+            &Req::default().fh(&root, true).name(b"d"),
+            true,
+        );
+        let mut r = Rd::status(w, NFSERR_NOTEMPTY);
+        r.wcc();
+        r.done();
+        for (dir, name) in [
+            (&root, &b"hard"[..]),
+            (&d, b"n2"),
+            (&root, b"fifo"),
+            (&root, b"l"),
+        ] {
+            let w = reply(
+                &s,
+                NFSPROC_REMOVE,
+                &Req::default().fh(dir, true).name(name),
+                true,
+            );
+            let mut r = Rd::status(w, 0);
+            r.wcc();
+            r.done();
+        }
+        assert_eq!(
+            status3(
+                &s,
+                NFSPROC_RMDIR,
+                &Req::default().fh(&root, true).name(b"d")
+            ),
+            0
+        );
+
+        // FSSTAT, FSINFO, PATHCONF, COMMIT.
+        let w = reply(&s, NFSPROC_FSSTAT, &Req::default().fh(&root, true), true);
+        let mut r = Rd::status(w, 0);
+        assert!(r.postop().is_some());
+        let sf = r.n(13);
+        r.done();
+        assert!(sf[1] > 0, "total bytes");
+        let w = reply(&s, NFSPROC_FSINFO, &Req::default().fh(&root, true), true);
+        let mut r = Rd::status(w, 0);
+        assert!(r.postop().is_some());
+        let fi = r.n(12);
+        r.done();
+        assert_eq!(
+            &fi[..3],
+            &[NFS_MAXDATA as u32, NFS_MAXDGRAMDATA as u32, 512]
+        );
+        assert_eq!(&fi[7..9], &[u32::MAX, u32::MAX]);
+        assert_eq!(fi[11], 0x1b);
+        let w = reply(&s, NFSPROC_PATHCONF, &Req::default().fh(&root, true), true);
+        let mut r = Rd::status(w, 0);
+        assert!(r.postop().is_some());
+        let pc = r.n(6);
+        r.done();
+        assert_eq!((pc[1], pc[4], pc[5]), (255, 0, 1));
+        let w = reply(
+            &s,
+            NFSPROC_COMMIT,
+            &Req::default().fh(&motd, true).hyper(0).u(0),
+            true,
+        );
+        let mut r = Rd::status(w, 0);
+        r.wcc();
+        r.n(2);
+        r.done();
+
+        // Every vnode the procedures took was given back: the unmount is clean.
+        testffs::unmount_root(s.p, s.mp);
+    }
+
+    #[test]
+    fn procedures_over_an_exported_ffs_version_2() {
+        let (_g, s) = served(MNT_EXPORTED, 0);
+        let root = s.root;
+        let lookup2 = |name: &[u8]| {
+            let w = reply(
+                &s,
+                NFSPROC_LOOKUP,
+                &Req::default().fh(&root, false).name(name),
+                false,
+            );
+            let mut r = Rd::status(w, 0);
+            let fh = r.n(8);
+            let fa = r.n(17);
+            r.done();
+            let b: Vec<u8> = fh.iter().flat_map(|w| w.to_be_bytes()).collect();
+            (xdr_get::<Fhandle>(&b), fa)
+        };
+        let (motd, fa) = lookup2(b"motd");
+        assert_eq!((fa[0], fa[5]), (1, 13));
+        // A version 2 error is the status alone.
+        let w = reply(
+            &s,
+            NFSPROC_LOOKUP,
+            &Req::default().fh(&root, false).name(b"no"),
+            false,
+        );
+        Rd::status(w, NFSERR_NOENT).done();
+
+        // READ: attributes, then the data.
+        let w = reply(
+            &s,
+            NFSPROC_READ,
+            &Req::default().fh(&motd, false).u(0).u(100).u(0),
+            false,
+        );
+        let mut r = Rd::status(w, 0);
+        assert_eq!(r.n(17)[5], 13);
+        assert_eq!(r.opaque(), b"hello, world\n");
+        r.done();
+
+        // CREATE (sattr), WRITE (beginoffset, offset, totalcount, data), READ it back.
+        let w = reply(
+            &s,
+            NFSPROC_CREATE,
+            &Req::default()
+                .fh(&root, false)
+                .name(b"f2")
+                .sattr2(0o100_600),
+            false,
+        );
+        let mut r = Rd::status(w, 0);
+        let fh: Vec<u8> = r.n(8).iter().flat_map(|w| w.to_be_bytes()).collect();
+        let f2 = xdr_get::<Fhandle>(&fh);
+        assert_eq!(r.n(17)[1] & 0o7777, 0o600);
+        r.done();
+        let w = reply(
+            &s,
+            NFSPROC_WRITE,
+            &Req::default().fh(&f2, false).u(0).u(0).u(0).name(b"xyz"),
+            false,
+        );
+        let mut r = Rd::status(w, 0);
+        assert_eq!(r.n(17)[5], 3);
+        r.done();
+
+        // Reading a directory: ISDIR; MKDIR (a mode word); READDIR; STATFS.
+        let w = reply(
+            &s,
+            NFSPROC_READ,
+            &Req::default().fh(&root, false).u(0).u(10).u(0),
+            false,
+        );
+        Rd::status(w, NFSERR_ISDIR).done();
+        let w = reply(
+            &s,
+            NFSPROC_MKDIR,
+            &Req::default().fh(&root, false).name(b"d2").sattr2(0o755),
+            false,
+        );
+        let mut r = Rd::status(w, 0);
+        r.n(8);
+        assert_eq!(r.n(17)[0], 2);
+        r.done();
+        let w = reply(
+            &s,
+            NFSPROC_READDIR,
+            &Req::default().fh(&root, false).u(0).u(4096),
+            false,
+        );
+        let mut r = Rd::status(w, 0);
+        let mut n = 0;
+        while r.u() == 1 {
+            r.u();
+            r.opaque();
+            r.u();
+            n += 1;
+        }
+        assert_eq!((n, r.u()), (5, 1));
+        r.done();
+        let w = reply(&s, NFSPROC_FSSTAT, &Req::default().fh(&root, false), false);
+        let mut r = Rd::status(w, 0);
+        assert_eq!(r.u(), NFS_MAXDGRAMDATA as u32);
+        r.n(4);
+        r.done();
+
+        // A rename of a directory over a file: ISDIR in version 2 (EEXIST in version 3).
+        let ren = Req::default()
+            .fh(&root, false)
+            .name(b"d2")
+            .fh(&root, false)
+            .name(b"f2");
+        Rd::status(reply(&s, NFSPROC_RENAME, &ren, false), NFSERR_ISDIR).done();
+        for name in [&b"f2"[..], b"d2"] {
+            let pn = if name == b"f2" {
+                NFSPROC_REMOVE
+            } else {
+                NFSPROC_RMDIR
+            };
+            let w = reply(&s, pn, &Req::default().fh(&root, false).name(name), false);
+            Rd::status(w, 0).done();
+        }
+        testffs::unmount_root(s.p, s.mp);
+    }
+
+    #[test]
+    fn a_read_only_export_refuses_every_change() {
+        let (_g, s) = served(MNT_EXPORTED | MNT_EXRDONLY, 0);
+        let root = s.root;
+        let motd = lookup(&s, &root, b"motd").expect("motd");
+        let write = Req::default().fh(&motd, true).hyper(0).u(1).u(0).name(b"x");
+        let mut r = Rd::status(reply(&s, NFSPROC_WRITE, &write, true), NFSERR_ROFS);
+        r.wcc();
+        r.done();
+        let size0 = Req::default().fh(&motd, true).sattr3(None, Some(0)).u(0);
+        assert_eq!(status3(&s, NFSPROC_SETATTR, &size0), NFSERR_ROFS);
+        let mode = Req::default()
+            .fh(&motd, true)
+            .sattr3(Some(0o600), None)
+            .u(0);
+        assert_eq!(status3(&s, NFSPROC_SETATTR, &mode), NFSERR_ROFS);
+        let create = Req::default()
+            .fh(&root, true)
+            .name(b"c")
+            .u(0)
+            .sattr3(None, None);
+        assert_eq!(status3(&s, NFSPROC_CREATE, &create), NFSERR_ROFS);
+        let mkdir = Req::default().fh(&root, true).name(b"c").sattr3(None, None);
+        assert_eq!(status3(&s, NFSPROC_MKDIR, &mkdir), NFSERR_ROFS);
+        let remove = Req::default().fh(&root, true).name(b"motd");
+        assert_eq!(status3(&s, NFSPROC_REMOVE, &remove), NFSERR_ROFS);
+        let ren = Req::default()
+            .fh(&root, true)
+            .name(b"motd")
+            .fh(&root, true)
+            .name(b"m2");
+        Rd::status(reply(&s, NFSPROC_RENAME, &ren, true), NFSERR_ROFS);
+        // ACCESS takes the write bits away; READ still works.
+        let w = reply(
+            &s,
+            NFSPROC_ACCESS,
+            &Req::default().fh(&motd, true).u(0x0d),
+            true,
+        );
+        let mut r = Rd::status(w, 0);
+        r.postop();
+        assert_eq!(r.u(), 0x01);
+        r.done();
+        let v2 = Req::default().fh(&motd, false).u(0).u(0).u(0).name(b"x");
+        Rd::status(reply(&s, NFSPROC_WRITE, &v2, false), NFSERR_ROFS).done();
+        assert_eq!(lookup(&s, &root, b"motd"), Ok(motd));
+        testffs::unmount_root(s.p, s.mp);
+    }
+
+    #[test]
+    fn mapall_maps_root_and_the_owner_keeps_its_open_file() {
+        let (_g, s) = served(MNT_EXPORTED, 0);
+        let root = s.root;
+        // As root (maproot=root): a directory everyone may write into.
+        let w = reply(
+            &s,
+            NFSPROC_MKDIR,
+            &Req::default()
+                .fh(&root, true)
+                .name(b"pub")
+                .sattr3(Some(0o777), None),
+            true,
+        );
+        let mut r = Rd::status(w, 0);
+        let public = r.postop_fh().expect("a handle");
+        // Every client is nobody now.
+        export(s.mp, MNT_DELEXPORT, 0);
+        export(s.mp, MNT_EXPORTED | MNT_EXPORTANON, 32767);
+        let w = reply(
+            &s,
+            NFSPROC_CREATE,
+            &Req::default()
+                .fh(&public, true)
+                .name(b"mine")
+                .u(0)
+                .sattr3(Some(0o644), None),
+            true,
+        );
+        let mut r = Rd::status(w, 0);
+        let mine = r.postop_fh().expect("a handle");
+        assert_eq!(
+            r.postop().expect("attributes")[3],
+            32767,
+            "owned by the anonymous uid"
+        );
+        // Root's file is out of reach ...
+        let motd = lookup(&s, &root, b"motd").expect("motd");
+        let w = Req::default().fh(&motd, true).hyper(0).u(1).u(2).name(b"x");
+        Rd::status(reply(&s, NFSPROC_WRITE, &w, true), NFSERR_ACCES);
+        // ... but the owner writes its own file after taking its write bit away (the owner
+        // override of a file already open), and reads it after taking every bit away.
+        let mode0 = Req::default()
+            .fh(&mine, true)
+            .sattr3(Some(0o444), None)
+            .u(0);
+        assert_eq!(status3(&s, NFSPROC_SETATTR, &mode0), 0);
+        let w = Req::default()
+            .fh(&mine, true)
+            .hyper(0)
+            .u(2)
+            .u(2)
+            .name(b"ok");
+        assert_eq!(status3(&s, NFSPROC_WRITE, &w), 0);
+        let mode0 = Req::default().fh(&mine, true).sattr3(Some(0), None).u(0);
+        assert_eq!(status3(&s, NFSPROC_SETATTR, &mode0), 0);
+        let rd = Req::default().fh(&mine, true).hyper(0).u(10);
+        assert_eq!(status3(&s, NFSPROC_READ, &rd), 0);
+        // ACCESS has no override: nothing is granted on a mode 0 file.
+        let w = reply(
+            &s,
+            NFSPROC_ACCESS,
+            &Req::default().fh(&mine, true).u(0x2d),
+            true,
+        );
+        let mut r = Rd::status(w, 0);
+        r.postop();
+        assert_eq!(r.u(), 0);
+        r.done();
+        // A device node needs root, whom mapall maps away; a fifo does not.
+        let chr = Req::default()
+            .fh(&public, true)
+            .name(b"tty")
+            .u(Nfstype::NFCHR as u32)
+            .sattr3(None, None)
+            .u(1)
+            .u(2);
+        assert_eq!(status3(&s, NFSPROC_MKNOD, &chr), Errno::EPERM.as_i32());
+        let fifo = Req::default()
+            .fh(&public, true)
+            .name(b"q")
+            .u(Nfstype::NFFIFO as u32)
+            .sattr3(None, None);
+        assert_eq!(status3(&s, NFSPROC_MKNOD, &fifo), 0);
+        // So does removing a directory with REMOVE.
+        let sub = Req::default()
+            .fh(&public, true)
+            .name(b"sub")
+            .sattr3(Some(0o755), None);
+        assert_eq!(status3(&s, NFSPROC_MKDIR, &sub), 0);
+        let rm = Req::default().fh(&public, true).name(b"sub");
+        assert_eq!(status3(&s, NFSPROC_REMOVE, &rm), Errno::EPERM.as_i32());
+    }
+
+    #[test]
+    fn the_wire_bounds_are_checked_before_use() {
+        let (_g, s) = served(MNT_EXPORTED, 0);
+        let root = s.root;
+        let motd = lookup(&s, &root, b"motd").expect("motd");
+
+        // Names: 1..=NFS_MAXNAMLEN, no `/`, no NUL.
+        let long = [b'a'; NFS_MAXNAMLEN + 1];
+        let w = reply(
+            &s,
+            NFSPROC_LOOKUP,
+            &Req::default().fh(&root, true).name(&long),
+            true,
+        );
+        Rd::status(w, NFSERR_NAMETOL).done();
+        let max = [b'a'; NFS_MAXNAMLEN];
+        assert_eq!(lookup(&s, &root, &max), Err(NFSERR_NOENT));
+        let w = reply(
+            &s,
+            NFSPROC_LOOKUP,
+            &Req::default().fh(&root, true).name(b""),
+            true,
+        );
+        Rd::accepted(w, RPC_GARBAGE).done();
+        let w = reply(
+            &s,
+            NFSPROC_LOOKUP,
+            &Req::default().fh(&root, true).u(u32::MAX),
+            true,
+        );
+        Rd::accepted(w, RPC_GARBAGE).done();
+        assert_eq!(lookup(&s, &root, b"motd/x"), Err(NFSERR_ACCES));
+        assert_eq!(lookup(&s, &root, b"mo\0d"), Err(NFSERR_ACCES));
+        // A name longer than the request: nfs_namei's EBADRPC, a GARBAGE reply.
+        let cut = Req::default().fh(&root, true).u(10).raw(b"abc");
+        let w = reply(&s, NFSPROC_LOOKUP, &cut, true);
+        Rd::accepted(w, RPC_GARBAGE).done();
+        // A symlink target past NFS_MAXPATHLEN, rename's second name past NFS_MAXNAMLEN.
+        let sym = Req::default()
+            .fh(&root, true)
+            .name(b"s")
+            .sattr3(None, None)
+            .u(NFS_MAXPATHLEN as u32 + 1);
+        assert_eq!(
+            run(&s, NFSPROC_SYMLINK, &sym, true),
+            (Errno::EBADRPC.as_i32(), None)
+        );
+        let ren = Req::default()
+            .fh(&root, true)
+            .name(b"motd")
+            .fh(&root, true)
+            .u(NFS_MAXNAMLEN as u32 + 1);
+        assert_eq!(
+            run(&s, NFSPROC_RENAME, &ren, true),
+            (Errno::EBADRPC.as_i32(), None)
+        );
+
+        // Read counts: 1..=NFS_SRVMAXDATA (a datagram's NFS_MAXDGRAMDATA in version 3).
+        for cnt in [0, u32::MAX, NFS_MAXDGRAMDATA as u32 + 1] {
+            let rd = Req::default().fh(&motd, true).hyper(0).u(cnt);
+            Rd::accepted(reply(&s, NFSPROC_READ, &rd, true), RPC_GARBAGE).done();
+        }
+        let rd = Req::default()
+            .fh(&motd, true)
+            .hyper(0)
+            .u(NFS_MAXDGRAMDATA as u32);
+        assert_eq!(status3(&s, NFSPROC_READ, &rd), 0);
+
+        // Readdir counts: 0 is TOOSMALL (GARBAGE in version 2); the rest are clamped.
+        let rdd = Req::default().fh(&root, true).hyper(0).hyper(0).u(0);
+        let mut r = Rd::status(reply(&s, NFSPROC_READDIR, &rdd, true), NFSERR_TOOSMALL);
+        assert!(r.postop().is_none());
+        r.done();
+        let rdd2 = Req::default().fh(&root, false).u(0).u(0);
+        Rd::accepted(reply(&s, NFSPROC_READDIR, &rdd2, false), RPC_GARBAGE).done();
+        for (dircount, maxcount) in [(0, 4096), (4096, 0)] {
+            let rdp = Req::default()
+                .fh(&root, true)
+                .hyper(0)
+                .hyper(0)
+                .u(dircount)
+                .u(maxcount);
+            let r = Rd::status(reply(&s, NFSPROC_READDIRPLUS, &rdp, true), NFSERR_TOOSMALL);
+            drop(r);
+        }
+        let huge = Req::default().fh(&root, true).hyper(0).hyper(0).u(u32::MAX);
+        assert_eq!(status3(&s, NFSPROC_READDIR, &huge), 0);
+        // A readdir of a file: NOTDIR.
+        let notdir = Req::default().fh(&motd, true).hyper(0).hyper(0).u(512);
+        assert_eq!(status3(&s, NFSPROC_READDIR, &notdir), NFSERR_NOTDIR);
+        // A count too small for one entry: the entries that fit, eof false.
+        let small = Req::default().fh(&root, true).hyper(0).hyper(0).u(30);
+        let mut r = Rd::status(reply(&s, NFSPROC_READDIR, &small, true), 0);
+        r.postop();
+        r.hyper();
+        assert_eq!((r.u(), r.u()), (0, 0), "no entry, not eof");
+        r.done();
+
+        // Writes: more than NFS_MAXDATA, a negative length, fewer bytes than the length.
+        let w = |len: u32, data: &[u8]| {
+            Req::default()
+                .fh(&motd, true)
+                .hyper(0)
+                .u(len)
+                .u(2)
+                .u(len)
+                .raw(data)
+        };
+        for (len, data) in [
+            (NFS_MAXDATA as u32 + 1, &b"abcd"[..]),
+            (u32::MAX, b"abcd"),
+            (10, b"abcd"),
+        ] {
+            let mut r = Rd::status(reply(&s, NFSPROC_WRITE, &w(len, data), true), NFSERR_IO);
+            assert_eq!(r.wcc(), (None, None));
+            r.done();
+        }
+        // A write of exactly what is there, and of nothing.
+        assert_eq!(status3(&s, NFSPROC_WRITE, &w(4, b"abcd")), 0);
+        assert_eq!(status3(&s, NFSPROC_WRITE, &w(0, b"")), 0);
+        assert_eq!(
+            status3(
+                &s,
+                NFSPROC_READ,
+                &Req::default().fh(&motd, true).hyper(0).u(4)
+            ),
+            0
+        );
+        // A write to a directory: INVAL (version 3).
+        let wd = Req::default().fh(&root, true).hyper(0).u(1).u(2).name(b"x");
+        Rd::status(reply(&s, NFSPROC_WRITE, &wd, true), NFSERR_INVAL);
+        testffs::unmount_root(s.p, s.mp);
+    }
+
+    #[test]
+    fn rename_and_create_follow_the_c_s_rules() {
+        let (_g, s) = served(MNT_EXPORTED, 0);
+        let root = s.root;
+        let mkdir = |name: &[u8]| {
+            let rq = Req::default()
+                .fh(&root, true)
+                .name(name)
+                .sattr3(Some(0o755), None);
+            let mut r = Rd::status(reply(&s, NFSPROC_MKDIR, &rq, true), 0);
+            r.postop_fh().expect("a handle")
+        };
+        let d = mkdir(b"d");
+        mkdir(b"e");
+        let ren = |from: &[u8], tdir: &Fhandle, to: &[u8], v3: bool| {
+            let rq = Req::default()
+                .fh(&root, v3)
+                .name(from)
+                .fh(tdir, v3)
+                .name(to);
+            let w = reply(&s, NFSPROC_RENAME, &rq, v3);
+            Rd::accepted(w, 0).u() as i32
+        };
+        // A directory over a file, a file over a directory.
+        assert_eq!(ren(b"d", &root, b"motd", true), NFSERR_EXIST);
+        assert_eq!(ren(b"motd", &root, b"d", true), NFSERR_EXIST);
+        assert_eq!(ren(b"motd", &root, b"d", false), NFSERR_NOTDIR);
+        // A directory into itself: INVAL (NOTEMPTY in version 2).
+        assert_eq!(ren(b"d", &d, b"x", true), NFSERR_INVAL);
+        assert_eq!(ren(b"d", &d, b"x", false), NFSERR_NOTEMPTY);
+        // A name onto itself: nothing to do, and no error.
+        assert_eq!(ren(b"motd", &root, b"motd", true), 0);
+        assert!(lookup(&s, &root, b"motd").is_ok());
+        // A directory over an empty directory.
+        assert_eq!(ren(b"d", &root, b"e", true), 0);
+        assert_eq!(lookup(&s, &root, b"d"), Err(NFSERR_NOENT));
+
+        // CREATE: GUARDED refuses an existing name, UNCHECKED truncates it, EXCLUSIVE keeps
+        // its verifier and answers a retransmission with the same one.
+        let create = |name: &[u8], how: u32, tail: Req| {
+            let rq = Req::default()
+                .fh(&root, true)
+                .name(name)
+                .u(how)
+                .raw(&tail.0);
+            reply(&s, NFSPROC_CREATE, &rq, true)
+        };
+        let w = create(
+            b"motd",
+            NFSV3CREATE_GUARDED,
+            Req::default().sattr3(None, None),
+        );
+        let mut r = Rd::status(w, NFSERR_EXIST);
+        r.wcc();
+        r.done();
+        let w = create(
+            b"motd",
+            NFSV3CREATE_UNCHECKED,
+            Req::default().sattr3(None, Some(0)),
+        );
+        let mut r = Rd::status(w, 0);
+        r.postop_fh();
+        assert_eq!(r.postop().expect("attributes")[6], 0, "truncated");
+        let verf = Req::default().raw(b"verifier");
+        let w = create(b"x", NFSV3CREATE_EXCLUSIVE, verf.clone());
+        Rd::status(w, 0);
+        let w = create(b"x", NFSV3CREATE_EXCLUSIVE, verf.clone());
+        let r = Rd::accepted(w, 0);
+        let st = r.w[6];
+        assert!(st == 0 || st == NFSERR_EXIST as u32, "{st}");
+        let w = create(b"x", NFSV3CREATE_EXCLUSIVE, Req::default().raw(b"another!"));
+        let mut r = Rd::status(w, NFSERR_EXIST);
+        r.wcc();
+        r.done();
+        testffs::unmount_root(s.p, s.mp);
+    }
+
+    /// The next of a xorshift sequence.
+    fn next(x: &mut u64) -> u64 {
+        *x ^= *x << 13;
+        *x ^= *x >> 7;
+        *x ^= *x << 17;
+        *x
+    }
+
+    #[test]
+    fn random_requests_are_answered_or_dropped_never_panic() {
+        let (_g, s) = served(MNT_EXPORTED, 0);
+        let root = s.root;
+        let motd = lookup(&s, &root, b"motd").expect("motd");
+        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+        for _ in 0..3000 {
+            let v3 = next(&mut x) & 1 == 0;
+            let procnum = (next(&mut x) % NFS_NPROCS as u64) as usize;
+            let mut body = match next(&mut x) % 3 {
+                0 => Req::default(),
+                1 => Req::default().fh(&root, v3),
+                _ => Req::default().fh(&motd, v3),
+            };
+            let n = (next(&mut x) % 48) as usize;
+            for _ in 0..n {
+                // Small words mostly (lengths, modes, counts), now and then any word.
+                let w = next(&mut x);
+                let w = if w & 3 == 0 {
+                    w as u32
+                } else {
+                    (w % 40) as u32
+                };
+                body = body.u(w);
+            }
+            let (e, w) = run(&s, procnum, &body, v3);
+            if let Some(w) = w {
+                assert!(w.len() >= 3 && w[0] == 0x1234, "{w:x?}");
+            } else {
+                assert!(e != 0);
+            }
+        }
+        // Whatever the requests made, they gave every vnode back.
+        let list = |dir: &Fhandle| {
+            let rdd = Req::default().fh(dir, true).hyper(0).hyper(0).u(8192);
+            let mut r = Rd::status(reply(&s, NFSPROC_READDIR, &rdd, true), 0);
+            r.postop();
+            r.hyper();
+            let mut names = Vec::new();
+            while r.u() == 1 {
+                r.hyper();
+                names.push(r.opaque());
+                r.hyper();
+            }
+            names
+        };
+        let names = list(&root);
+        assert!(names.iter().any(|n| n == b"motd"));
+        testffs::unmount_root(s.p, s.mp);
+    }
+}
+/* </TESTS> */
