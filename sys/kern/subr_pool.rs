@@ -2559,9 +2559,6 @@ pub(crate) mod tests {
         kmeminit();
         #[cfg(feature = "kmemstats")]
         crate::kern::kern_malloc::kmemstats_test_reset();
-        // The radix trees' globals (`rn_zeros`, the mask tree) point into the memory just replaced:
-        // the next `rn_init` (`vfsinit`'s, `pfr_initialize`'s) starts over.
-        crate::net::radix::rn_test_reset();
         // The same for the wsmux table, grown with malloc(9) by the tests that attach muxes.
         crate::dev::wscons::wsmux::wsmux_test_reset();
         // An attach a failed test left counted would make every later `config_detach` sleep.

@@ -198,11 +198,9 @@ pub fn vfsinit() {
     kernel::fs::init::vfsinit::<BsdProcGlue>(
         &VFSCONFLIST,
         crate::conf::param::INITIALVNODES.load(Ordering::Relaxed),
-        || {
-            // vntblinit's tail
-            #[cfg(feature = "nfsserver")]
-            crate::net::radix::rn_init(size_of::<crate::netinet::in_::SockaddrIn>() as u32);
-        },
+        // vntblinit's tail, the export lists' rn_init: none since N6.7b1 (each radix tree
+        // has its own key length, kernel::net::radix).
+        || {},
     );
 }
 

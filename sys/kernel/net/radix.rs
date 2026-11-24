@@ -80,7 +80,8 @@
 /* <CODE> */
 //! Radix search trees for routing lookups: `<net/radix.h>` and `net/radix.c`, a tree that
 //! owns its nodes, its keys and its values. The NFS server's export lists use it (one tree a
-//! mount, `kernel::fs::export`); pf's tables and the IPsec policy database at N6.7b1.
+//! mount, `kernel::fs::export`), pf's tables (`bsd`'s `net/pf_table.rs`) and the IPsec
+//! policy database (`bsd`'s `netinet/ip_spd.rs`) since N6.7b1.
 //!
 //! Upstream: sys/net/radix.h @ 3ce1f3f79392
 //! Upstream: sys/net/radix.c @ 3ce1f3f79392
@@ -184,8 +185,8 @@
 //!   check `rn_match` makes on a normal annotation it returns (after `rn_b`'s test): an
 //!   annotation still listed whose leaf has gone (radix.c:866-868's "Wasn't lifted at all"
 //!   return and the "Orphaned Mask" demote can leave one) is passed over; the property tests
-//!   check that the deletes leave none. The differential test against `bsd`'s tree compares
-//!   the two up to the first repair.
+//!   check that the deletes leave none. The differential test against `bsd`'s tree (until
+//!   N6.7b1, when that tree went) compared the two up to the first repair.
 //!
 //! Kept as radix.c answers (the differential test and the tests name them): a route linked
 //! at the head of its key's chain takes the old head's flags (`rn_link_dupedkey`), so a
@@ -826,8 +827,8 @@ impl<T, const K: usize> RadixTree<T, K> {
     }
 
     /// The deletes D-20 repaired so far: where radix.c would have left a normal annotation
-    /// naming a freed route. The differential test against `bsd`'s tree compares the two
-    /// only until the first, since the C then reads freed memory.
+    /// naming a freed route. The differential test against `bsd`'s tree (until N6.7b1)
+    /// compared the two only until the first, since the C then reads freed memory.
     #[cfg(any(test, feature = "doubles"))]
     pub fn repairs(&self) -> u32 {
         self.repairs
@@ -2844,8 +2845,8 @@ mod tests {
     fn non_contiguous_masks_answer_only_routes_that_hold_the_key() {
         // Property: with any masks, a match is a route whose masked key is the address's, a
         // host route of the address is the answer, and adds, deletes and walks keep the
-        // links; the differential test against bsd's tree (sys/net/radix.rs) checks the
-        // exact answers.
+        // links; the differential test against bsd's tree (sys/net/radix.rs, until N6.7b1)
+        // checked the exact answers.
         let (mut quirks, mut answers, mut covered) = (0, 0, 0);
         for seed in 1..=24u64 {
             let mut rng = XorShift::new(seed.wrapping_mul(0x2545_f491));
@@ -2966,7 +2967,7 @@ mod tests {
         // radix.c's `rn_link_dupedkey` gives a route linked at the head of its key's chain
         // the old head's flags (after `rn_addroute` set its own `RNF_NORMAL`): a route with a
         // non-contiguous mask placed before a normal one is short-cut as normal by `rn_match`.
-        // Kept as the C answers (the differential test against bsd's tree agrees).
+        // Kept as the C answers (the differential test against bsd's tree agreed).
         let mut h = tree();
         add(&mut h, [10, 0, 0, 0], Some(8), 8).expect("added");
         let odd = sin([255, 0, 255, 0]);

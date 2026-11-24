@@ -59,8 +59,8 @@
 //! mounts, the special-device aliases and the other helpers of `vfs_subr.c` are the kernel
 //! crate's (`kernel::fs::subr`, `kernel::fs::mount`), which `sys/vnode.rs` names for `bsd`;
 //! the NFS server's export lists (`vfs_hang_addrlist` .. `vfs_export_lookup`) are
-//! `kernel::fs::export`'s since N6.7b0. `vntblinit`'s `rn_init` (`kern/vfs_init.rs`'s
-//! `vfsinit` calls it in its place) stays for `bsd`'s radix tree until N6.7b1.
+//! `kernel::fs::export`'s since N6.7b0. `vntblinit`'s `rn_init` has no counterpart since
+//! N6.7b1, when `bsd`'s radix tree went (each kernel tree has its key length).
 //!
 //! Upstream: sys/kern/vfs_subr.c @ 3ce1f3f79392
 //!

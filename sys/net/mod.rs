@@ -67,7 +67,6 @@ pub mod pfkeyv2_convert;
 pub mod pfkeyv2_parsemessage;
 pub mod pfvar;
 pub mod pfvar_priv;
-pub mod radix;
 pub mod route;
 pub mod rtable;
 pub mod rtsock;
