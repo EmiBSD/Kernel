@@ -59,7 +59,7 @@
 //! cursors of `nfsm_subs` ([`XdrWriter`], [`XdrReader`]).
 //!
 //! Upstream: sys/nfs/nfs_subs.c @ 3ce1f3f79392
-//! LZ: sys/nfs/nfs_subs.rs@3c62ede68802
+//! LZ: sys/nfs/nfs_subs.rs@e8249449d905
 //!
 //! ## Deviations
 //! - The XDR words `nfs_init` computes at startup (`rpc_call`, `nfs_true`, `nfs_xdrneg1`,
@@ -69,6 +69,9 @@
 //! - `nfsm_uiotombuf` ignores `uiomove`'s error as the C does; the bytes a failed move did not
 //!   fill are unspecified in the C (whatever the fresh mbuf held: `MGET` does not zero), and
 //!   zeros are chosen here, one of the C's outcomes, so no stale kernel bytes go on the wire.
+//! - `nfs_get_xid`'s context is seeded at its first call under a mutex of its own
+//!   ([`NFS_XID_CTX`]): the C's `static int called` and `static struct idgen32_ctx`, which
+//!   the kernel lock serialises there, are one `Mutexed` here (one lock pair per RPC).
 //! - `nfsm_mbuftouio` checks the uio's residual count where the C checks for iovecs left
 //!   (`EFBIG`), and needs a read uio (`UIO_READ`) whose `uio_resid` is the sum of its iovecs:
 //!   the glue's `uiomove_out` panics otherwise, where the C needs neither. Every C caller passes
@@ -78,8 +81,14 @@
 //! ## Redesign
 //! - LZ's `bsd` module is the starting point of the client's half (D-5, N6.7a0): the words,
 //!   the tables, the statistics and `txdr_nfsv2time` are the kernel's, `bsd`'s `nfs_subs`
-//!   re-exports them for the server; the RPC header, the xids, the attribute cache and the
-//!   commit ranges follow with N6.7a1 and N6.7a2.
+//!   re-exports them for the server; N6.7a1 brings the RPC header (`nfsm_rpchead`), the xids
+//!   and the procedure maps; the attribute cache and the commit ranges follow with N6.7a2.
+//! - LZ's `nfsm_rpchead` wrote the header into the request's first mbuf through
+//!   `nfsm_build` over a raw cursor of the request (`r_mreq`, `r_nmp`, `r_xid` read and set
+//!   through it); [`nfsm_rpchead`] takes the mount, the procedure and the arguments' chain
+//!   and answers the request's chain and its xid, from which `nfs_request` makes the request:
+//!   the header is an [`XdrWriter`] over the packet header mbuf `m_align` sized (the C's
+//!   layout: it fits, so the writer never grows), the arguments linked behind it.
 //! - LZ's build functions over a `&mut &'static Mbuf` cursor (`nfsm_build`, `nfsm_uiotombuf`
 //!   with its two raw writes into the trailing space, `nfsm_buftombuf` and `nfsm_strtombuf`
 //!   over `UIO_SYSSPACE` uios of raw iovecs) are methods of the writer that owns the chain:
@@ -92,25 +101,49 @@
 
 #![allow(non_upper_case_globals)] // the C's names of the XDR words
 
-use super::nfs::NfsCounters;
+use core::sync::atomic::{AtomicI32, Ordering};
+
+use hal::intr::IPL_NONE;
+use hal::pool::PR_WAITOK;
+
+use hal::mutex::Mutexed;
+
+use super::nfs::{NFS_TICKINTVL, NfsCounters};
 use super::nfsm_subs::{XdrReader, XdrWriter, nfsm_padlen};
+use super::nfsmount::NfsMount;
 use super::nfsproto::{
     NFBLK, NFCHR, NFDIR, NFFIFO, NFLNK, NFNON, NFREG, NFS_MAXFHSIZE, NFS_PROG, NFSOCK,
     NFSV3SATTRTIME_DONTCHANGE, NFSV3SATTRTIME_TOCLIENT, NFSV3SATTRTIME_TOSERVER, NFSX_V2FH, Nfsfh,
     Nfstype, Nfsv2Time,
 };
+use super::nfsproto::{
+    NFS_NPROCS, NFS_VER2, NFS_VER3, NFSPROC_CREATE, NFSPROC_FSSTAT, NFSPROC_GETATTR, NFSPROC_LINK,
+    NFSPROC_LOOKUP, NFSPROC_MKDIR, NFSPROC_NOOP, NFSPROC_NULL, NFSPROC_READ, NFSPROC_READDIR,
+    NFSPROC_READLINK, NFSPROC_REMOVE, NFSPROC_RENAME, NFSPROC_RMDIR, NFSPROC_SETATTR,
+    NFSPROC_SYMLINK, NFSPROC_WRITE, NFSV2PROC_CREATE, NFSV2PROC_GETATTR, NFSV2PROC_LINK,
+    NFSV2PROC_LOOKUP, NFSV2PROC_MKDIR, NFSV2PROC_NOOP, NFSV2PROC_NULL, NFSV2PROC_READ,
+    NFSV2PROC_READDIR, NFSV2PROC_READLINK, NFSV2PROC_REMOVE, NFSV2PROC_RENAME, NFSV2PROC_RMDIR,
+    NFSV2PROC_SETATTR, NFSV2PROC_STATFS, NFSV2PROC_SYMLINK, NFSV2PROC_WRITE, NFSX_UNSIGNED,
+};
 use super::xdr_subs::{txdr_nfsv3time, txdr_unsigned};
+use crate::assert::kassert;
 use crate::assert::kpanic;
 use crate::clock::Timespec;
+use crate::cred::Ucred;
+use crate::crypto::idgen::Idgen32Ctx;
 use crate::file::FileGlue;
+use crate::fs::subr::vfs;
 use crate::fs::vnode::Vtype::{self, VBLK, VCHR, VDIR, VFIFO, VLNK, VNON, VREG, VSOCK};
 use crate::fs::vnode::{VNOVAL, Vattr};
-use crate::net::mbuf::{M_WAIT, MLEN, MT_DATA, m_get, mclget};
+use crate::net::mbuf::{
+    M_WAIT, MLEN, MT_DATA, MbufBox, m_align, m_calchdrlen, m_get, m_gethdr, mclget,
+};
 use crate::proc::ProcGlue;
 use crate::sys::errno::Errno;
+use crate::sys::mount::NFSMNT_NFSV3;
 use crate::sys::nfs_rpcv2::{
     RPC_AUTHERR, RPC_CALL, RPC_MISMATCH, RPC_MSGACCEPTED, RPC_MSGDENIED, RPC_REPLY, RPC_VER2,
-    RPCAUTH_UNIX,
+    RPCAUTH_NULL, RPCAUTH_UNIX,
 };
 use crate::sys::types::{Gid, Mode, Off, Uid};
 use crate::tc::gettime;
@@ -155,8 +188,68 @@ pub const NV2TOV_TYPE: [Vtype; 8] = [VNON, VREG, VDIR, VBLK, VCHR, VLNK, VNON, V
 /// `nv3tov_type`: the vnode type of each version 3 file type.
 pub const NV3TOV_TYPE: [Vtype; 8] = [VNON, VREG, VDIR, VBLK, VCHR, VLNK, VSOCK, VFIFO];
 
+/// `nfsv3_procid`: mapping of old NFS Version 2 RPC numbers to generic numbers.
+pub const NFSV3_PROCID: [usize; NFS_NPROCS] = [
+    NFSPROC_NULL,
+    NFSPROC_GETATTR,
+    NFSPROC_SETATTR,
+    NFSPROC_NOOP,
+    NFSPROC_LOOKUP,
+    NFSPROC_READLINK,
+    NFSPROC_READ,
+    NFSPROC_NOOP,
+    NFSPROC_WRITE,
+    NFSPROC_CREATE,
+    NFSPROC_REMOVE,
+    NFSPROC_RENAME,
+    NFSPROC_LINK,
+    NFSPROC_SYMLINK,
+    NFSPROC_MKDIR,
+    NFSPROC_RMDIR,
+    NFSPROC_READDIR,
+    NFSPROC_FSSTAT,
+    NFSPROC_NOOP,
+    NFSPROC_NOOP,
+    NFSPROC_NOOP,
+    NFSPROC_NOOP,
+    NFSPROC_NOOP,
+];
+
+/// `nfsv2_procid`: and the reverse mapping from generic to Version 2 procedure numbers.
+pub const NFSV2_PROCID: [usize; NFS_NPROCS] = [
+    NFSV2PROC_NULL,
+    NFSV2PROC_GETATTR,
+    NFSV2PROC_SETATTR,
+    NFSV2PROC_LOOKUP,
+    NFSV2PROC_NOOP,
+    NFSV2PROC_READLINK,
+    NFSV2PROC_READ,
+    NFSV2PROC_WRITE,
+    NFSV2PROC_CREATE,
+    NFSV2PROC_MKDIR,
+    NFSV2PROC_SYMLINK,
+    NFSV2PROC_CREATE,
+    NFSV2PROC_REMOVE,
+    NFSV2PROC_RMDIR,
+    NFSV2PROC_RENAME,
+    NFSV2PROC_LINK,
+    NFSV2PROC_READDIR,
+    NFSV2PROC_NOOP,
+    NFSV2PROC_STATFS,
+    NFSV2PROC_NOOP,
+    NFSV2PROC_NOOP,
+    NFSV2PROC_NOOP,
+    NFSV2PROC_NOOP,
+];
+
 /// `nfsstats`: the client's and the server's counters (`vfs.nfs.nfsstats`).
 pub static NFSSTATS: NfsCounters = NfsCounters::new();
+
+/// `nfs_ticks`: the NFS timer's period in clock ticks (`nfs_init`'s, at least 1).
+pub static NFS_TICKS: AtomicI32 = AtomicI32::new(0);
+
+/// `nfs_get_xid`'s `nfs_xid_ctx` and `called`: the context, `None` before the first call.
+static NFS_XID_CTX: Mutexed<Option<Idgen32Ctx>> = Mutexed::new(IPL_NONE, None);
 
 /// `txdr_nfsv2time(from, to)`: the version 2 time of `from`; `VNOVAL` nanoseconds are sent
 /// as -1, a time of -1 seconds as -1.000001.
@@ -178,6 +271,96 @@ pub fn txdr_nfsv2time(from: &Timespec) -> Nfsv2Time {
             nfsv2_usec: txdr_unsigned((from.tv_nsec / 1000) as u32),
         }
     }
+}
+
+/// `nfs_get_xid`: return an unpredictable XID in XDR form (the context seeded at the first
+/// call).
+pub fn nfs_get_xid() -> u32 {
+    let mut g = NFS_XID_CTX.lock();
+    let ctx = g.get_or_insert_with(|| {
+        let mut c = Idgen32Ctx::zeroed();
+        c.init();
+        c
+    });
+    txdr_unsigned(ctx.generate())
+}
+
+/// `nfsm_rpchead(req, cr, auth_type)`: build the RPC header and fill in the authorization
+/// info. Right now we are pretty centric around `RPCAUTH_UNIX`, in the future, this function
+/// will need some love to be able to handle other authorization methods, such as Kerberos.
+///
+/// The header goes in a fresh packet header mbuf (`rep->r_mreq`), `body` (the procedure's
+/// arguments, `nmi_mreq`) linked behind it; the answer is that chain, its packet length the
+/// whole request's, and the request's new xid (`r_xid`). The credential's groups are clamped
+/// to the mount's `nm_numgrps`. `None` when no mbuf is to be had for the header (`hal`'s
+/// pools can fail a waiting `MGETHDR`; `nfs_request` answers `ENOBUFS`, as LZ), `body` freed.
+pub fn nfsm_rpchead<G: ProcGlue>(
+    nmp: &NfsMount<G>,
+    procnum: usize,
+    cr: &Ucred,
+    auth_type: u32,
+    body: MbufBox,
+) -> Option<(MbufBox, u32)> {
+    kassert!(auth_type == RPCAUTH_UNIX);
+
+    // RPCAUTH_UNIX fits in an hdr mbuf, in the future other authorization methods need to
+    // figure out their own sizes and allocate and chain mbufs accordingly.
+    let mb = m_gethdr(M_WAIT, MT_DATA)?;
+
+    // We need to start out by finding how big the authorization cred and verifier are for
+    // the auth_type, to be able to correctly align the mbuf header/chain. In the
+    // RPCAUTH_UNIX case, the size is the static part as shown in RFC1831 + the number of
+    // groups, RPCAUTH_UNIX has a zero verifier.
+    let crgroups = cr.groups();
+    let numgrps = nmp.nm_numgrps.load(Ordering::Relaxed);
+    let ngroups = if i32::from(cr.cr_ngroups.get()) > numgrps {
+        numgrps
+    } else {
+        i32::from(cr.cr_ngroups.get())
+    };
+    let ngroups = usize::try_from(ngroups).unwrap_or(0).min(crgroups.len());
+    let auth_len = (ngroups << 2) + 5 * NFSX_UNSIGNED;
+    let authsiz = super::nfsm_subs::nfsm_rndup(auth_len);
+    // The authorization size + the size of the static part.
+    m_align(&mb, (authsiz + 10 * NFSX_UNSIGNED) as i32);
+    mb.m_len().set(0);
+    let mut w = XdrWriter::with_first(mb);
+
+    // First the RPC header. Get a new (non-zero) xid.
+    let xid = nfs_get_xid();
+    w.word(xid);
+    w.word(rpc_call);
+    w.word(rpc_vers);
+    w.word(nfs_prog);
+    if nmp.nm_flag.load(Ordering::Relaxed) & NFSMNT_NFSV3 != 0 {
+        w.u32(NFS_VER3);
+        w.u32(procnum as u32);
+    } else {
+        w.u32(NFS_VER2);
+        w.u32(NFSV2_PROCID[procnum] as u32);
+    }
+
+    // The Authorization cred and its verifier.
+    w.u32(RPCAUTH_UNIX);
+    w.u32(authsiz as u32);
+    // The authorization cred.
+    w.word(0); // stamp
+    w.word(0); // NULL hostname
+    w.u32(cr.cr_uid.get());
+    w.u32(cr.cr_gid.get());
+    w.u32(ngroups as u32);
+    for g in &crgroups[..ngroups] {
+        w.u32(g.get());
+    }
+    // The authorization verifier.
+    w.u32(RPCAUTH_NULL);
+    w.word(0);
+
+    let mut m = w.into_chain();
+    drop(m.m_next.set(body));
+    m_calchdrlen(&m);
+    m.m_pkthdr().ph_ifidx.set(0);
+    Some((m, xid))
 }
 
 impl XdrWriter {
@@ -357,6 +540,20 @@ fn uio_skip<G: ProcGlue>(uio: &mut Uio<'_, G>, mut n: usize) {
             .saturating_add(Off::try_from(c).unwrap_or(Off::MAX));
         n -= c;
     }
+}
+
+/// `nfs_init`: called once to initialize data structures: the timer's period
+/// (`(hz * NFS_TICKINTVL + 500) / 1000`, at least one tick) and "nfsreqpl". The XDR words
+/// are constants here; the server's tables (`nfsrv_init`, `nfsrv_initcache`) are `bsd`'s
+/// until N6.7b, whose `nfs_init` calls this one first. A second call (a test glue's) keeps
+/// the pool.
+pub fn nfs_init<G: ProcGlue>() {
+    let ticks = (crate::timeout::hz() * NFS_TICKINTVL + 500) / 1000;
+    NFS_TICKS.store(ticks.max(1), Ordering::Relaxed);
+    let _ = vfs::<G>()
+        .nfs
+        .nfsreqpl
+        .init_recorded(IPL_NONE, PR_WAITOK, "nfsreqpl");
 }
 
 const _: () = {
