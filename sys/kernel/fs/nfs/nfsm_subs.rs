@@ -389,7 +389,9 @@ impl XdrWriter {
     }
 }
 
-/// `nfsm_rndup(a)`: `a` rounded up to a whole XDR word.
+/// `nfsm_rndup(a)`: `a` rounded up to a whole XDR word. `a` is at most `usize::MAX - 3` (`a +
+/// 3` overflows past it): every caller rounds a length from the wire only after the C's bound
+/// made it at most `i32::MAX` (`strsiz`), or a length of its own.
 pub const fn nfsm_rndup(a: usize) -> usize {
     (a + 3) & !0x3
 }
