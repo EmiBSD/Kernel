@@ -23,11 +23,12 @@
 //!
 //! Headers: `nfs` (`nfs.h`), `nfsproto` (`nfsproto.h`), `xdr_subs` (`xdr_subs.h`),
 //! `nfsm_subs` (`nfsm_subs.h`), `nfsmount` (`nfsmount.h`), `nfsnode` (`nfsnode.h`); files:
-//! `nfs_subs`. Userland's headers are `hal::sys`'s images (`nfs_nfs`, `nfs_nfsproto`,
+//! `nfs_socket` (the client's half), `nfs_subs`. Userland's headers are `hal::sys`'s images (`nfs_nfs`, `nfs_nfsproto`,
 //! `nfs_rpcv2`), re-exported by the modules of the same name.
 
 #[allow(clippy::module_inception)] // OpenBSD's layout: sys/nfs/nfs.h
 pub mod nfs;
+pub mod nfs_socket;
 pub mod nfs_subs;
 pub mod nfsm_subs;
 pub mod nfsmount;

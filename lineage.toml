@@ -6882,11 +6882,18 @@ native = ["NfsCounters::restore"]
 kind = "renamed"
 
 [[module]]
+rust = "sys/kernel/fs/nfs/nfs_socket.rs"
+crate = "kernel"
+lz = ["sys/nfs/nfs_socket.rs"]
+status = "redesigned"
+notes = "N6.7a1: the client's half of nfs_socket.c (D-5): nfs_connect (socreate for curproc, IP_PORTRANGE_LOW, sobind with proc0, soconnect and the 2 s waits), nfs_reconnect, nfs_disconnect, nfs_send and nfs_sndlock with the C's optional request (R1, for the server at 7b2), nfs_receive (no nfs_realign: the reader copies), nfs_reply (the match under one witness split into the list's part and PART_REQ), nfs_request (Request in, the C's two outputs: Option<Reply> and Result<(), NfsError>), nfs_timer (a reader per stretch, the place kept in a counted request handle across the copy and the send under solock_net), nfs_sigintr, the flag locks, nfs_msg over kernel::prf::tprintf; the server's half stays bsd's until 7b"
+
+[[module]]
 rust = "sys/kernel/fs/nfs/nfs_subs.rs"
 crate = "kernel"
 lz = ["sys/nfs/nfs_subs.rs"]
 status = "redesigned"
-notes = "N6.7a0: the XDR words, the type tables, NFSSTATS and txdr_nfsv2time (bsd's nfs_subs re-exports them for the server); the cursors' methods of nfs_subs.c: XdrWriter::{reqhead, from_uio (nfsm_uiotombuf), buftombuf, strtombuf, fhtom, v3attrbuild} over one append body, XdrReader::mbuftouio (each piece by the glue's uiomove_out); bsd's functions of the same work stay for its client until 7a5. N6.7a1: NFS_TICKS and nfs_init (the timer period and nfsreqpl; the server tables stay bsd's)"
+notes = "N6.7a0: the XDR words, the type tables, NFSSTATS and txdr_nfsv2time (bsd's nfs_subs re-exports them for the server); the cursors' methods of nfs_subs.c: XdrWriter::{reqhead, from_uio (nfsm_uiotombuf), buftombuf, strtombuf, fhtom, v3attrbuild} over one append body, XdrReader::mbuftouio (each piece by the glue's uiomove_out); bsd's functions of the same work stay for its client until 7a5. N6.7a1: NFS_TICKS and nfs_init (the timer period and nfsreqpl; the server tables stay bsd's); nfsm_rpchead (the header in an XdrWriter over the m_align-ed packet header mbuf, the arguments linked behind; the request chain and its xid answered), nfs_get_xid (Mutexed<Option<Idgen32Ctx>>), NFSV2_PROCID, NFSV3_PROCID"
 
 [[module]]
 rust = "sys/kernel/fs/nfs/nfsm_subs.rs"
