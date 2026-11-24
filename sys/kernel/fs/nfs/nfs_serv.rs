@@ -122,10 +122,11 @@
 //!   builds the attributes and counts after, in one `nfsm_build`, then joins the data with
 //!   `m_cat` (the C reads into mbufs already linked after a header it fills in afterwards);
 //!   the bytes on the wire are the C's, the reply's first mbuf takes no data cluster.
-//! - The name lookups take the request's credentials for both their parts: `nfs_namei`'s
-//!   `nfsrv_fhtovp` maps `&nd.nd_cr` and the lookup reads `cn_cred = Cred::real(&nd.nd_cr)`,
-//!   the same credential (the C's `ndp->ni_cnd.cn_cred = cred`); `nfsrv_mknod`'s second
-//!   lookup reads the nfsd's (`procp->p_ucred`), as the C's.
+//! - The name lookups take the request's credentials for both their parts: `nfs_namei` is
+//!   given `&nd.nd_cr`, which its `nfsrv_fhtovp` maps and which it makes the lookup's
+//!   `cn_cred` (the C's caller's `ndp->ni_cnd.cn_cred = cred`), so the procedures set no
+//!   `cn_cred` of their own, nor before the second lookups of create and symlink, which keep
+//!   it; `nfsrv_mknod`'s second lookup reads the nfsd's (`procp->p_ucred`), as the C's.
 //! - The symlink target is copied out of the request straight into its `M_TEMP` buffer
 //!   (`XdrReader::bytes_into`, then the padding skipped): the C's `nfsd_mtouio` through a
 //!   kernel uio, the same bytes and the same `EBADRPC` at the request's end, without a
@@ -328,19 +329,6 @@ fn startdir_rele<G: ProcGlue>(ni: &mut Nameidata<'_, G>) {
 /// `pool_put(&namei_pool, cnp->cn_pnbuf)`: gives a saved name buffer back.
 fn pnbuf_put<G: ProcGlue>(cnp: &mut Componentname<'_, G>) {
     drop(cnp.take_pnbuf());
-}
-
-/// `NDINIT(&nd, op, flags, UIO_SYSSPACE, NULL, procp); nd.ni_cnd.cn_cred = cred`: a
-/// lookup of a name the request carries, with the request's credentials.
-fn ndinit_cred<'a, G: ProcGlue>(
-    op: u64,
-    flags: u64,
-    p: &'a Thread<G>,
-    nd: &'a NfsrvDescript,
-) -> Nameidata<'a, G> {
-    let mut ni = ndinit(op, flags, NiDirp::Sys(&[]), p);
-    ni.ni_cnd.cn_cred = cred(nd);
-    ni
 }
 
 /// `nfsrv_fhtovp(fhp, lockflag, &vp, &nfsd->nd_cr, slp, nfsd->nd_nam, &rdonly)`.
@@ -774,7 +762,7 @@ pub fn nfsrv_lookup<G: ProcGlue>(
     let mut dirattr_ok = false;
     let mut va = Vattr::new();
     let res = {
-        let mut ni = ndinit_cred(LOOKUP, LOCKLEAF | SAVESTART, p, nd);
+        let mut ni = ndinit(LOOKUP, LOCKLEAF | SAVESTART, NiDirp::Sys(&[]), p);
         let mut dirp = None;
         let res = namei(nd, &mut ni, &fh, len, slp, &mut r, &mut dirp, p);
         if let Some(dirp) = dirp {
@@ -1312,7 +1300,12 @@ pub fn nfsrv_create<G: ProcGlue>(
         return nfsm_reply_only(nd, slp, error, 0);
     }
 
-    let mut ni = ndinit_cred(CREATE, LOCKPARENT | LOCKLEAF | SAVESTART, p, nd);
+    let mut ni = ndinit(
+        CREATE,
+        LOCKPARENT | LOCKLEAF | SAVESTART,
+        NiDirp::Sys(&[]),
+        p,
+    );
     let mut dirp = None;
     let res = namei(nd, &mut ni, &fh, len, slp, &mut r, &mut dirp, p);
     let mut dirfor = Vattr::new();
@@ -1418,7 +1411,7 @@ pub fn nfsrv_create<G: ProcGlue>(
             ni.ni_cnd.cn_nameiop = LOOKUP;
             ni.ni_cnd.cn_flags &= !(LOCKPARENT | SAVESTART);
             ni.ni_cnd.cn_proc = p;
-            ni.ni_cnd.cn_cred = cred(nd);
+            // cn_cred: the request's still, as nfs_namei set it.
             if let Err(e) = vfs_lookup(&mut ni) {
                 pnbuf_put_hasbuf(&mut ni.ni_cnd);
                 if let Some(d) = dirp {
@@ -1540,7 +1533,12 @@ pub fn nfsrv_mknod<G: ProcGlue>(
         return nfsm_reply_only(nd, slp, error, 0);
     }
 
-    let mut ni = ndinit_cred(CREATE, LOCKPARENT | LOCKLEAF | SAVESTART, p, nd);
+    let mut ni = ndinit(
+        CREATE,
+        LOCKPARENT | LOCKLEAF | SAVESTART,
+        NiDirp::Sys(&[]),
+        p,
+    );
     let mut dirp = None;
     let res = namei(nd, &mut ni, &fh, len, slp, &mut r, &mut dirp, p);
     let mut dirfor = Vattr::new();
@@ -1709,7 +1707,7 @@ pub fn nfsrv_remove<G: ProcGlue>(
         return nfsm_reply_only(nd, slp, error, 0);
     }
 
-    let mut ni = ndinit_cred(DELETE, LOCKPARENT | LOCKLEAF, p, nd);
+    let mut ni = ndinit(DELETE, LOCKPARENT | LOCKLEAF, NiDirp::Sys(&[]), p);
     let mut dirp = None;
     let res = namei(nd, &mut ni, &fh, len, slp, &mut r, &mut dirp, p);
     let mut dirfor = Vattr::new();
@@ -1820,7 +1818,7 @@ pub fn nfsrv_rename<G: ProcGlue>(
     // call, in case it is remapped.
     let saved_uid = nd.nd_cr.cr_uid.get();
 
-    let mut fromnd = ndinit_cred(DELETE, WANTPARENT | SAVESTART, p, nd);
+    let mut fromnd = ndinit(DELETE, WANTPARENT | SAVESTART, NiDirp::Sys(&[]), p);
     let mut fdirp = None;
     let res = namei(nd, &mut fromnd, &ffh, len, slp, &mut r, &mut fdirp, p);
     let mut fdirfor = Vattr::new();
@@ -1872,7 +1870,12 @@ pub fn nfsrv_rename<G: ProcGlue>(
     };
     nd.nd_cr.set_uid(saved_uid);
 
-    let mut tond = ndinit_cred(RENAME, LOCKPARENT | LOCKLEAF | NOCACHE | SAVESTART, p, nd);
+    let mut tond = ndinit(
+        RENAME,
+        LOCKPARENT | LOCKLEAF | NOCACHE | SAVESTART,
+        NiDirp::Sys(&[]),
+        p,
+    );
     let mut tdirp = None;
     let res = namei(nd, &mut tond, &tfh, len2, slp, &mut r, &mut tdirp, p);
     let mut tdirfor = Vattr::new();
@@ -2043,7 +2046,7 @@ pub fn nfsrv_link<G: ProcGlue>(
     let mut dirfor = Vattr::new();
     let mut dirfor_ok = false;
     let mut error = 0;
-    let mut ni = ndinit_cred(CREATE, LOCKPARENT, p, nd);
+    let mut ni = ndinit(CREATE, LOCKPARENT, NiDirp::Sys(&[]), p);
     // A directory is not linked, and not refused either: the C's `goto out1` with no error.
     if vp.vtype() != Vtype::VDIR {
         let res = namei(nd, &mut ni, &dfh, len, slp, &mut r, &mut dirp, p);
@@ -2140,7 +2143,7 @@ pub fn nfsrv_symlink<G: ProcGlue>(
         return nfsm_reply_only(nd, slp, error, 0);
     }
 
-    let mut ni = ndinit_cred(CREATE, LOCKPARENT | SAVESTART, p, nd);
+    let mut ni = ndinit(CREATE, LOCKPARENT | SAVESTART, NiDirp::Sys(&[]), p);
     let mut dirp = None;
     let res = namei(nd, &mut ni, &fh, len, slp, &mut r, &mut dirp, p);
     let mut dirfor = Vattr::new();
@@ -2212,7 +2215,7 @@ pub fn nfsrv_symlink<G: ProcGlue>(
                 ni.ni_cnd.cn_flags &= !(LOCKPARENT | SAVESTART | FOLLOW);
                 ni.ni_cnd.cn_flags |= NOFOLLOW | LOCKLEAF;
                 ni.ni_cnd.cn_proc = p;
-                ni.ni_cnd.cn_cred = cred(nd);
+                // cn_cred: the request's still, as nfs_namei set it.
                 error = status_of(&vfs_lookup(&mut ni));
                 if error == 0 {
                     let vp = ni_vp(&ni);
@@ -2289,7 +2292,7 @@ pub fn nfsrv_mkdir<G: ProcGlue>(
         return nfsm_reply_only(nd, slp, error, 0);
     }
 
-    let mut ni = ndinit_cred(CREATE, LOCKPARENT, p, nd);
+    let mut ni = ndinit(CREATE, LOCKPARENT, NiDirp::Sys(&[]), p);
     let mut dirp = None;
     let res = namei(nd, &mut ni, &fh, len, slp, &mut r, &mut dirp, p);
     let mut dirfor = Vattr::new();
@@ -2395,7 +2398,7 @@ pub fn nfsrv_rmdir<G: ProcGlue>(
         return nfsm_reply_only(nd, slp, error, 0);
     }
 
-    let mut ni = ndinit_cred(DELETE, LOCKPARENT | LOCKLEAF, p, nd);
+    let mut ni = ndinit(DELETE, LOCKPARENT | LOCKLEAF, NiDirp::Sys(&[]), p);
     let mut dirp = None;
     let res = namei(nd, &mut ni, &fh, len, slp, &mut r, &mut dirp, p);
     let mut dirfor = Vattr::new();
