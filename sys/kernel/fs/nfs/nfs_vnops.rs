@@ -5204,6 +5204,7 @@ mod tests {
             assert_eq!(kwrite(vp, &nt, 0, &[b'w'; 100], 0), Ok(()));
             assert!(p.calls().is_empty(), "a delayed write");
             assert_eq!(np.n_size.load(Ordering::Relaxed), 100);
+            let bios = NFSSTATS.write_bios.load(Ordering::Relaxed);
             assert_eq!(nfs_fsync(vp, nt.cred(), MNT_WAIT, nt.fx.user), Ok(()));
             let want: Vec<u32> = if reboot {
                 vec![
@@ -5224,6 +5225,11 @@ mod tests {
                 assert_eq!(nt.nmp.verf(), [1; 8]);
             }
             assert!(vp.bufs.dirty_is_empty(), "the block clean");
+            // One block write per WRITE: a committed block is done, never written again.
+            assert_eq!(
+                NFSSTATS.write_bios.load(Ordering::Relaxed) - bios,
+                writes.len() as u64
+            );
             vput(vp);
             nt.done(p);
         }
