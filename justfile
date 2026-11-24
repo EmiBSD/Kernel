@@ -1313,7 +1313,9 @@ cd_steps := disk_login + " " + \
 # portmap(8), mountd(8) and nfsd(8) (UDP and TCP); B lists the export with showmount(8),
 # mounts it with mount_nfs(8) over UDP and then over TCP (`-T`; mount(8) shows each), reads
 # A's file and writes one file per mount, which A then reads from its own disk. B retries showmount until A's
-# daemons answer. The markers are built with `$((..))`, so that the typed commands do not
+# daemons answer. N6.7a5 (D-8), on the TCP mount: a symbolic link read back, a 256 KiB
+# write, a rename, the removal of an open file (its silly rename gone at the close), then a
+# version 2 mount over UDP. The markers are built with `$((..))`, so that the typed commands do not
 # match them; the commands are short, since a long line can overflow arm64's pluart input
 # buffer under load. Part of `smoke`.
 smoke-nfs: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
@@ -1344,11 +1346,25 @@ nfs_b := "--b-send-after '# ' --b-send 'ifconfig vio1 inet 192.168.77.2/24 up\\n
     "--b-send-after '# ' --b-send 'mount_nfs -T 192.168.77.1:/export /mnt && mount\\n' " + \
     "--b-send-after '# ' --b-send 'cat /mnt/a.txt /mnt/b-udp.txt\\n' " + \
     "--b-send-after '# ' --b-send 'echo nfs-tcp-$((5+4)) >/mnt/b-tcp.txt\\n' " + \
-    "--b-send-after '# ' --b-send 'umount /mnt && echo nfs-done-$((6+4))\\n'"
+    "--b-send-after '# ' --b-send 'cd /mnt; ln -s a.txt l; ls -l l\\n' " + \
+    "--b-send-after '# ' --b-send '[ \"$(cat l)\" = nfs-a-7 ] && echo nfs-ln-$((5+6))\\n' " + \
+    "--b-send-after '# ' --b-send 'dd if=/dev/zero of=big bs=64k count=4\\n' " + \
+    "--b-send-after '# ' --b-send 'echo nfs-big-$(($(wc -c <big)))\\n' " + \
+    "--b-send-after '# ' --b-send 'mv big big2 && [ ! -e big ] && echo nfs-mv-$((6+6))\\n' " + \
+    "--b-send-after '# ' --b-send 'exec 3<big2; rm big2\\n' " + \
+    "--b-send-after '# ' --b-send 'echo nfs-open-$(($(wc -c <&3))); exec 3<&-\\n' " + \
+    "--b-send-after '# ' --b-send 'sleep 1; set -- .nfs*; [ ! -e \"$1\" ] && echo nfs-silly-$((7+6))\\n' " + \
+    "--b-send-after '# ' --b-send 'cd /; umount /mnt && echo nfs-done-$((6+4))\\n' " + \
+    "--b-send-after '# ' --b-send 'mount_nfs -2 192.168.77.1:/export /mnt && mount\\n' " + \
+    "--b-send-after '# ' --b-send 'cat /mnt/b-tcp.txt; umount /mnt && echo nfs-v2-$((7+7))\\n'"
 nfs_expect := "--a-expect 'nfs-up-5' --a-expect 'nfs-udp-8' --a-expect 'nfs-tcp-9' " + \
     "--b-expect 'Exports list on 192.168.77.1:' --b-expect '/export                            192.168.77.2' " + \
     "--b-expect 'nfs-a-7' --b-expect '192.168.77.1:/export on /mnt type nfs (v3, udp' " + \
-    "--b-expect '192.168.77.1:/export on /mnt type nfs (v3, tcp' --b-expect 'nfs-done-10'"
+    "--b-expect '192.168.77.1:/export on /mnt type nfs (v3, tcp' " + \
+    "--b-expect ' l -> a.txt' --b-expect 'nfs-ln-11' --b-expect 'nfs-big-262144' " + \
+    "--b-expect 'nfs-mv-12' --b-expect 'nfs-open-262144' --b-expect 'nfs-silly-13' " + \
+    "--b-expect 'nfs-done-10' --b-expect '192.168.77.1:/export on /mnt type nfs (v2, udp' " + \
+    "--b-expect 'nfs-v2-14'"
 
 # M10d: ext2fs (sys/ufs/ext2fs) on a disk set of its own (`--disk-set ext2fs`, so smoke-disk's
 # sd0 is left alone). Boot 1 (`--disk-fresh`) gives sd0 an MBR and disklabel(8)'s automatic
