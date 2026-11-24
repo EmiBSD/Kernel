@@ -285,3 +285,219 @@ pub fn nfs_asyncio<G: ProcGlue>(t: BufRef, readahead: bool) -> Result<(), (BufRe
     Err((t, Errno::EIO))
 }
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    // Host tests of the block arithmetic (the C's values, table-driven, and property tests
+    // of its bounds), nfs_getcacheblk, nfs_vinvalbuf's flags and its signal path, and
+    // nfs_asyncio's queue and its limits.
+
+    use super::*;
+    use crate::fs::bio::{bdwrite, brelse};
+    use crate::fs::buf::B_READ;
+    use crate::fs::nfs::nfs_node::{test_mount, test_node};
+    use crate::fs::nfs::nfs_syscalls::{nfs_bufq_get, nfs_bufq_peek};
+    use crate::fs::nfs::nfsm_subs::TestRng;
+    use crate::fs::vnode::VREG;
+    use crate::sys::signal::{SIGINT, sigmask};
+
+    #[test]
+    fn the_cache_block_of_an_offset() {
+        for (offset, biosize, want) in [
+            (0, 8192, (0, 0, 0)),
+            (1, 8192, (0, 1, 0)),
+            (8191, 8192, (0, 8191, 0)),
+            (8192, 8192, (1, 0, 16)),
+            (8193, 8192, (1, 1, 16)),
+            (100_000, 32_768, (3, 1_696, 192)),
+            (1 << 40, 65_536, (1 << 24, 0, 1 << 31)),
+            (511, 512, (0, 511, 0)),
+            (512, 512, (1, 0, 1)),
+        ] {
+            assert_eq!(nfs_bioblk(offset, biosize), want, "{offset} {biosize}");
+        }
+    }
+
+    /// Property: `lbn * biosize + on` is the offset, `on` lies in the block, and `bn` names
+    /// the block in `DEV_BSIZE` units, for any offset and power-of-two block size.
+    #[test]
+    fn the_block_arithmetic_covers_the_offset() {
+        let mut rng = TestRng(0x6269_6f62_6c6b_6172);
+        for _ in 0..20_000 {
+            let biosize = 512i32 << rng.below(8);
+            let offset = (rng.next_u64() >> rng.below(64)) as i64 & i64::MAX >> 8;
+            let (lbn, on, bn) = nfs_bioblk(offset, biosize);
+            assert!(on >= 0 && on < biosize);
+            assert_eq!(lbn * i64::from(biosize) + i64::from(on), offset);
+            assert_eq!(bn * i64::from(DEV_BSIZE), lbn * i64::from(biosize));
+        }
+    }
+
+    /// `nfs_write`'s merge of `n` bytes at `on` into a buffer's dirty and valid ranges.
+    #[test]
+    fn a_write_merges_into_the_dirty_and_valid_ranges() {
+        // (dirtyoff, dirtyend, validoff, validend), on, n, result
+        for (old, on, n, want) in [
+            ((0, 0, 0, 0), 100, 50, (100, 150, 100, 150)),
+            ((100, 150, 100, 150), 120, 100, (100, 220, 100, 220)),
+            ((100, 150, 100, 150), 10, 20, (10, 150, 10, 150)),
+            ((0, 0, 0, 4096), 100, 50, (100, 150, 0, 4096)),
+            ((0, 0, 200, 300), 100, 50, (100, 150, 100, 150)),
+            ((0, 0, 400, 500), 100, 50, (100, 150, 100, 150)),
+            ((0, 0, 140, 300), 100, 50, (100, 150, 100, 300)),
+            ((100, 150, 0, 8192), 0, 8192, (0, 8192, 0, 8192)),
+        ] {
+            assert_eq!(nfs_bufranges(old, on, n), want, "{old:?} {on} {n}");
+        }
+    }
+
+    /// Property: after a write the dirty range holds the bytes written and the old dirty
+    /// range, and the valid range holds the dirty one.
+    #[test]
+    fn the_merged_ranges_hold_the_write() {
+        let mut rng = TestRng(0x6275_6672_616e_6765);
+        for _ in 0..20_000 {
+            let size = 512i32 << rng.below(8);
+            let on = rng.below(size as usize) as i32;
+            let n = 1 + rng.below((size - on) as usize) as i32;
+            let doff = rng.below(size as usize) as i32;
+            let dend = if rng.below(3) == 0 {
+                0
+            } else {
+                doff + rng.below((size - doff) as usize + 1) as i32
+            };
+            let voff = rng.below(size as usize) as i32;
+            let vend = voff + rng.below((size - voff) as usize + 1) as i32;
+            let (d0, d1, v0, v1) = nfs_bufranges((doff, dend, voff, vend), on, n);
+            assert!(d0 <= on && d1 >= on + n);
+            if dend > 0 {
+                assert!(d0 <= doff && d1 >= dend);
+            }
+            assert!(v0 <= d0 && v1 >= d1);
+        }
+    }
+
+    /// `nfs_doio`'s zero fill after a short read: the bytes from the data's end to the
+    /// node's size, at most the bytes left unread, and the valid end after them.
+    #[test]
+    fn a_short_read_zero_fills_up_to_the_node_size() {
+        // bcount, resid, n_size, boff -> (zero, validend)
+        for (bcount, resid, n_size, boff, want) in [
+            (8192, 4096, 1 << 20, 0, (4096, 8192)),
+            (8192, 4096, 6000, 0, (1904, 6000)),
+            (8192, 4096, 4096, 0, (0, 4096)),
+            (8192, 4096, 100, 0, (0, 4096)),
+            (8192, 8192, 8192 + 10, 8192, (10, 10)),
+            // The C keeps the low int of the u_quad_t difference: negative here, no fill.
+            (8192, 1, 1 << 40, 1 << 30, (0, 8191)),
+            (8192, 1, (1 << 30) + 8192, 1 << 30, (1, 8192)),
+        ] {
+            assert_eq!(
+                nfs_shortread(bcount, resid, n_size, boff),
+                want,
+                "{bcount} {resid} {n_size} {boff}"
+            );
+        }
+    }
+
+    /// `nfs_getcacheblk` gives the block busy, on an interruptible mount and not.
+    #[test]
+    fn getcacheblk_gives_the_block_busy() {
+        for flag in [0, NFSMNT_INT] {
+            let t = test_mount(flag);
+            let (vp, _np) = test_node(t.mp, VREG, &[1; 8]);
+            let tk = nfs_getcacheblk(&t.nmp, vp, 32, 8192, Some(t.p)).expect("a block");
+            assert_eq!(tk.buf().lblkno(), 32);
+            assert!(tk.buf().isset(crate::fs::buf::B_BUSY));
+            brelse(tk);
+        }
+    }
+
+    /// `nfs_vinvalbuf`: every buffer of the vnode invalidated, `NMODIFIED` and
+    /// `NFLUSHINPROG` cleared, a waiter's `NFLUSHWANT` cleared (and woken).
+    #[test]
+    fn vinvalbuf_flushes_and_clears_the_flags() {
+        let t = test_mount(0);
+        let (vp, np) = test_node(t.mp, VREG, &[2; 8]);
+        for blk in 0..4 {
+            bdwrite(getblk_wait(&vp.bufs, blk * 16, 8192));
+        }
+        assert!(!vp.bufs.dirty_is_empty());
+        np.set(NMODIFIED | NFLUSHWANT);
+        nfs_vinvalbuf(&np, &t.nmp, 0, Cred::NOCRED, Some(t.p)).expect("flushed");
+        assert!(vp.bufs.dirty_is_empty() && vp.bufs.clean_is_empty());
+        assert!(!np.isset(NMODIFIED | NFLUSHINPROG | NFLUSHWANT));
+    }
+
+    /// On an interruptible mount a thread with an interrupting signal pending gives up the
+    /// wait for another flush (its 2 s sleep, then `nfs_sigintr`) with `EINTR`, its
+    /// `NFLUSHWANT` left for the flusher; without the signal it would wait on.
+    #[test]
+    fn vinvalbuf_waits_for_another_flush_until_a_signal() {
+        let t = test_mount(NFSMNT_INT);
+        crate::sig::test_sigacts(t.p.process());
+        let (_vp, np) = test_node(t.mp, VREG, &[3; 8]);
+        np.set(NFLUSHINPROG);
+        t.p.p_siglist.store(sigmask(SIGINT), Ordering::Relaxed);
+        assert_eq!(
+            nfs_vinvalbuf(&np, &t.nmp, 0, Cred::NOCRED, Some(t.p)),
+            Err(Errno::EINTR)
+        );
+        t.p.p_siglist.store(0, Ordering::Relaxed);
+        assert!(np.isset(NFLUSHINPROG | NFLUSHWANT));
+        np.clr(NFLUSHINPROG | NFLUSHWANT);
+    }
+
+    /// `nfs_asyncio`: with no nfsiod the buffer comes back (`EIO`, `forcedsync` counted);
+    /// otherwise it is queued (a write marked `B_WRITEINPROG`, a read not) and taken back by
+    /// an nfsiod; a read-ahead gives up when the queue is over its limit.
+    #[test]
+    fn asyncio_queues_for_the_nfsiods_within_the_limit() {
+        let t = test_mount(0);
+        let (vp, _np) = test_node(t.mp, VREG, &[4; 8]);
+        let forced = NFSSTATS.forcedsync.load(Ordering::Relaxed);
+        let tk = getblk_wait(&vp.bufs, 0, 8192);
+        let Err((tk, e)) = nfs_asyncio::<crate::fs::testfs::TestGlue>(tk, false) else {
+            panic!("queued with no nfsiod");
+        };
+        assert_eq!(e, Errno::EIO);
+        assert_eq!(NFSSTATS.forcedsync.load(Ordering::Relaxed), forced + 1);
+        assert!(!tk.buf().isset(B_WRITEINPROG));
+
+        NFS_NUMASYNC.store(1, Ordering::Relaxed);
+        NFS_BUFQMAX.store(1, Ordering::Relaxed);
+        assert!(nfs_asyncio::<crate::fs::testfs::TestGlue>(tk, false).is_ok());
+        assert_eq!(NFS_BUFQLEN.load(Ordering::Relaxed), 1);
+        let rd = getblk_wait(&vp.bufs, 16, 8192);
+        rd.buf().set(B_READ);
+        assert!(nfs_asyncio::<crate::fs::testfs::TestGlue>(rd, false).is_ok());
+        assert_eq!(NFS_BUFQLEN.load(Ordering::Relaxed), 2);
+        // Over the limit (2 > 1): a read-ahead gives up.
+        let ra = getblk_wait(&vp.bufs, 32, 8192);
+        ra.buf().set(B_READ);
+        let Err((ra, e)) = nfs_asyncio::<crate::fs::testfs::TestGlue>(ra, true) else {
+            panic!("a read-ahead queued over the limit");
+        };
+        assert_eq!(e, Errno::EIO);
+        assert_eq!(NFSSTATS.forcedsync.load(Ordering::Relaxed), forced + 2);
+        brelse(ra);
+
+        let w = nfs_bufq_get::<crate::fs::testfs::TestGlue>().expect("the write");
+        assert_eq!(w.buf().lblkno(), 0);
+        assert!(w.buf().isset(B_WRITEINPROG));
+        let r = nfs_bufq_get::<crate::fs::testfs::TestGlue>().expect("the read");
+        assert_eq!(r.buf().lblkno(), 16);
+        assert!(!r.buf().isset(B_WRITEINPROG));
+        assert!(!nfs_bufq_peek::<crate::fs::testfs::TestGlue>());
+        assert!(nfs_bufq_get::<crate::fs::testfs::TestGlue>().is_none());
+        assert_eq!(NFS_BUFQLEN.load(Ordering::Relaxed), 0);
+        w.buf().clr(B_WRITEINPROG);
+        brelse(w);
+        r.buf().clr(B_READ);
+        brelse(r);
+        NFS_NUMASYNC.store(0, Ordering::Relaxed);
+        NFS_BUFQMAX.store(0, Ordering::Relaxed);
+    }
+}
+/* </TESTS> */

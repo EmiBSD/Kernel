@@ -562,3 +562,209 @@ pub(crate) fn nfs_kq_test_reset<G: ProcGlue>() {
     g.pnfskq = None;
 }
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    // Host tests of the filters, nfs_kqfilter's table choice and watch, the watch list's
+    // counts (nfs_kqwatch, nfs_kqunwatch) and the poller's pass (what it checks, what it
+    // skips, ESTALE, the exit when the list empties).
+
+    use super::*;
+    use crate::fs::nfs::nfs_node::{TEST_GETATTR, test_mount, test_node};
+    use crate::fs::testfs::TestGlue as G;
+    use crate::fs::vnode::VREG;
+    use crate::tc::gettime;
+
+    /// The watch list's entries: each vnode and its count, head first.
+    fn watched() -> std::vec::Vec<(usize, u32)> {
+        let g = kevq::<G>().read();
+        g.kevlist
+            .iter()
+            .map(|ke| (at(ke.vp), ke.usecount.load(Ordering::Relaxed)))
+            .collect()
+    }
+
+    /// A vnode's address, for the list's comparisons.
+    fn at(vp: &Vnode<G>) -> usize {
+        ptr::from_ref(vp).addr()
+    }
+
+    /// A poller recorded as running, so that no thread is made.
+    fn fake_poller() {
+        kevq::<G>().write().pnfskq = Some(99);
+    }
+
+    #[test]
+    fn the_write_and_vnode_filters_and_the_revoke() {
+        let kn = Knote::<G>::detached();
+        assert!(<NfsWrite as Filter<G>>::event(&kn, 0));
+        assert_eq!(kn.kn_data().get(), 0);
+        assert!(<NfsWrite as Filter<G>>::event(&kn, i64::from(NOTE_REVOKE)));
+        assert!(kn.has_flags(EV_EOF) && kn.has_flags(EV_ONESHOT));
+        let kn = Knote::<G>::detached();
+        kn.kn_sfflags.set(NOTE_WRITE | NOTE_EXTEND);
+        assert!(!<NfsVnode as Filter<G>>::event(&kn, i64::from(NOTE_ATTRIB)));
+        assert!(<NfsVnode as Filter<G>>::event(&kn, i64::from(NOTE_EXTEND)));
+        assert_eq!(kn.kn_fflags().get(), NOTE_EXTEND);
+        assert!(<NfsVnode as Filter<G>>::event(&kn, i64::from(NOTE_REVOKE)));
+        assert!(kn.has_flags(EV_EOF) && !kn.has_flags(EV_ONESHOT));
+        assert_eq!(NfsFiltops::<G>::READ.f_flags, FILTEROP_ISFD);
+    }
+
+    /// The read filter of a revoked vnode ends without its node (the C does not follow
+    /// the NULL `v_data` either).
+    #[test]
+    fn a_revoked_vnode_s_read_filter_ends_without_its_node() {
+        let t = test_mount(0);
+        let (vp, np) = test_node(t.mp, VREG, &[1; 8]);
+        drop(np);
+        drop(vp.take_node());
+        let kn = Knote::<G>::detached();
+        assert!(kn.set_hook_vnode(vp).is_ok());
+        assert!(<NfsRead as Filter<G>>::event(&kn, i64::from(NOTE_REVOKE)));
+        assert!(kn.has_flags(EV_EOF) && kn.has_flags(EV_ONESHOT));
+    }
+
+    /// `nfs_kqfilter`: an unknown filter is `EINVAL`; a poll(2) knote gets its table and the
+    /// vnode's list but is not watched; a kevent one is watched too, and its detach drops
+    /// the watch.
+    #[test]
+    fn kqfilter_picks_the_table_and_watches_unless_polled() {
+        let t = test_mount(0);
+        fake_poller();
+        let (vp, _np) = test_node(t.mp, VREG, &[2; 8]);
+        let _ = crate::event::kqueue_init::<G>();
+        let kq = crate::event::kqueue_alloc::<G>(t.p.process().fd_ref()).expect("a kqueue");
+        let bad = crate::event::test_knote(&kq, 1);
+        bad.kn().kn_filter().set(-100);
+        assert_eq!(nfs_kqfilter(vp, bad.kn()), Err(Errno::EINVAL));
+        assert!(watched().is_empty());
+        crate::event::test_knote_drop(&kq, bad);
+
+        let h = crate::event::test_knote(&kq, 2);
+        let poll = h.kn();
+        poll.kn_filter().set(EVFILT_VNODE);
+        poll.set_flags(__EV_POLL);
+        nfs_kqfilter(vp, poll).expect("attached");
+        assert!(watched().is_empty(), "poll(2) is not watched");
+        assert!(!vp.klist.is_empty());
+        <NfsVnode as Filter<G>>::detach(poll);
+        assert!(vp.klist.is_empty());
+        crate::event::test_knote_drop(&kq, h);
+
+        let h = crate::event::test_knote(&kq, 3);
+        let kev = h.kn();
+        kev.kn_filter().set(EVFILT_WRITE);
+        nfs_kqfilter(vp, kev).expect("attached");
+        assert_eq!(watched(), [(at(vp), 1)]);
+        <NfsWrite as Filter<G>>::detach(kev);
+        assert!(watched().is_empty() && vp.klist.is_empty());
+        crate::event::test_knote_drop(&kq, h);
+    }
+
+    /// `nfs_kqwatch` counts the watchers of a vnode on one entry and puts a new vnode first;
+    /// `nfs_kqunwatch` counts down and frees the entry with its last watcher; an unwatched
+    /// vnode is nothing to it.
+    #[test]
+    fn the_watch_list_counts_its_watchers() {
+        let t = test_mount(0);
+        fake_poller();
+        let (a, _na) = test_node(t.mp, VREG, &[3; 8]);
+        let (b, _nb) = test_node(t.mp, VREG, &[4; 8]);
+        nfs_kqwatch(a).expect("watched");
+        nfs_kqwatch(a).expect("watched");
+        nfs_kqwatch(b).expect("watched");
+        assert_eq!(watched(), [(at(b), 1), (at(a), 2)]);
+        nfs_kqunwatch(a);
+        assert_eq!(watched(), [(at(b), 1), (at(a), 1)]);
+        nfs_kqunwatch(b);
+        assert_eq!(watched(), [(at(a), 1)]);
+        nfs_kqunwatch(b);
+        assert_eq!(watched(), [(at(a), 1)]);
+        nfs_kqunwatch(a);
+        assert!(watched().is_empty());
+        assert_eq!(
+            kevq::<G>().read().pnfskq,
+            Some(99),
+            "the poller ends itself"
+        );
+    }
+
+    /// A pass of the poller: a vnode still in the attribute cache is skipped; an expired one
+    /// has its attributes fetched (`VOP_GETATTR`) and what changed recorded; `ESTALE`
+    /// invalidates the cache and records nothing; with the list empty the pass ends the
+    /// poller (`pnfskq` cleared).
+    #[test]
+    fn a_poll_pass_checks_the_expired_vnodes() {
+        let t = test_mount(0);
+        fake_poller();
+        let (fresh, nfresh) = test_node(t.mp, VREG, &[5; 8]);
+        let (stale, nstale) = test_node(t.mp, VREG, &[6; 8]);
+        let mut va = Vattr::new();
+        va.va_type = VREG;
+        va.va_size = 10;
+        va.va_nlink = 1;
+        *TEST_GETATTR.lock().unwrap() = Some((Ok(()), va));
+        nfs_kqwatch(fresh).expect("watched");
+        nfs_kqwatch(stale).expect("watched");
+        let seen = |vp: &'static Vnode<G>| {
+            let g = kevq::<G>().read();
+            let ke = g
+                .kevlist
+                .iter()
+                .find(|ke| ptr::eq(ke.vp, vp))
+                .expect("on the list");
+            let s = *ke.seen.read();
+            (
+                s.omtime,
+                s.octime,
+                s.onlink,
+                ke.flags.load(Ordering::Relaxed),
+            )
+        };
+        assert_eq!(seen(stale).2, 1);
+        // `fresh` is in its cache; `stale`'s expired (never stamped).
+        let _ = nfresh.n_vattr.replace(va);
+        nfresh.n_size.store(10, Ordering::Relaxed);
+        nfresh
+            .n_attrstamp
+            .store(gettime().wrapping_sub(1), Ordering::Relaxed);
+        nstale.n_size.store(10, Ordering::Relaxed);
+        let mut changed = va;
+        changed.va_size = 20;
+        changed.va_nlink = 3;
+        changed.va_mtime = crate::clock::Timespec {
+            tv_sec: 5,
+            tv_nsec: 6,
+        };
+        changed.va_ctime = crate::clock::Timespec {
+            tv_sec: 7,
+            tv_nsec: 8,
+        };
+        *TEST_GETATTR.lock().unwrap() = Some((Ok(()), changed));
+        assert!(nfs_kqpoll_pass(t.p));
+        assert_eq!(
+            seen(stale),
+            (changed.va_mtime, changed.va_ctime, 3, 0),
+            "recorded, not busy"
+        );
+        assert_eq!(seen(fresh).2, 1, "skipped");
+        // ESTALE: the cache invalidated, nothing recorded.
+        nstale
+            .n_attrstamp
+            .store(gettime().wrapping_sub(1_000), Ordering::Relaxed);
+        let mut other = changed;
+        other.va_nlink = 9;
+        *TEST_GETATTR.lock().unwrap() = Some((Err(Errno::ESTALE), other));
+        assert!(nfs_kqpoll_pass(t.p));
+        assert_eq!(nstale.n_attrstamp.load(Ordering::Relaxed), 0);
+        assert_eq!(seen(stale).2, 3);
+        *TEST_GETATTR.lock().unwrap() = None;
+        nfs_kqunwatch(fresh);
+        nfs_kqunwatch(stale);
+        assert!(!nfs_kqpoll_pass(t.p), "nothing left to watch");
+        assert_eq!(kevq::<G>().read().pnfskq, None);
+    }
+}
+/* </TESTS> */
