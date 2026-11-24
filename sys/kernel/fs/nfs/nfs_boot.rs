@@ -1,0 +1,647 @@
+/* <LICENSES> */
+/*
+ * Copyright (c) 2026 Emilio Navarrete Lineros <enavarre@outlook.com>
+ *
+ * Permission to use, copy, modify, and distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+
+/*
+ * Copyright (c) 1995 Adam Glass, Gordon Ross
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. The name of the authors may not be used to endorse or promote products
+ *    derived from this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHORS ``AS IS'' AND ANY EXPRESS OR
+ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+ * IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+ * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+/* </LICENSES> */
+
+/* <CODE> */
+//! `nfs/nfs_boot.c` in the kernel: support for NFS diskless booting, specifically getting
+//! information about where to boot from, what pathnames, etc. This implementation uses
+//! RARP and the bootparam RPC. We are forced to implement RPC anyway (to get file handles)
+//! so we might as well take advantage of it for bootparam, too.
+//!
+//! The diskless boot process goes like this:
+//! 1. Use RARP to get our interface address;
+//! 2. Use RPC/bootparam/whoami to get our hostname, our IP domain name, and a gateway
+//!    address;
+//! 3. Use RPC/bootparam/getfile to get the server:pathname for our root;
+//! 4. Use RPC/mountd to get the root file handle;
+//! 5. Use RPC/bootparam/getfile to get the swap path;
+//! 6. Use RPC/mountd to get the swap file handle.
+//!
+//! (This happens to be the way Sun does it too.)
+//!
+//! Upstream: sys/nfs/nfs_boot.c @ 3ce1f3f79392
+//! LZ: sys/nfs/nfs_boot.rs@e8249449d905
+//!
+//! The file is compiled only with `option NFSCLIENT` (`sys/conf/files`): the module is behind
+//! the `nfsclient` feature.
+//!
+//! ## Deviations
+//! - The C's `#if !defined(NFSCLIENT) || (NETHER == 0)` stubs (`nfs_boot_init` panics,
+//!   `nfs_boot_getfh` is `EOPNOTSUPP`) are not written: the file is compiled only with
+//!   `NFSCLIENT` (`sys/conf/files`), and ethernet is always built here, so they are the C's
+//!   code for a kernel that never compiles them (LZ kept them behind `not(nfsclient)`).
+//! - `nfsbootdevname` (a `char *` set by `setroot()` in `subr_disk.c`) is [`NFSBOOTDEVNAME`],
+//!   a copy of the name, with a setter, [`set_nfsbootdevname`].
+//! - The C's `hostname`/`hostnamelen`/`domainname`/`domainnamelen` are `kernel::sysctl`'s, the
+//!   names read and written under their locks.
+//! - `bp_whoami` returns the gateway address instead of storing it through `gw_ip`;
+//!   `bp_getfile`'s `serv_name` and `pathname` are slices (`MNAMELEN` and `MAXPATHLEN`
+//!   bytes); `md_mount` also takes the buffer the file handle goes to (the C reaches it
+//!   through `argp->fh`, which `nfs_boot_getfh` sets to the same buffer); `nfs_boot_getfh`
+//!   takes the calling thread, for `krpc_call`'s socket.
+//! - `md_mount`'s `error` from the mount daemon (an errno number on the wire) that names no
+//!   `Errno` is `EIO`. A version 3 handle's length is compared unsigned with `NFSX_V3FHMAX`
+//!   (the C's `int` compare lets a length of 2^31 or more through to a negative `bcopy`).
+//! - The C's contiguity tests (`m->m_len < n`, `m_pullup`) are tests of the chain's length:
+//!   the cursor copies across mbufs (a mount reply whose first mbuf is empty after the RPC
+//!   header's strip is read, not refused). The sender's address of the WHOAMI reply is read
+//!   only when the name holds it (the C reads it unchecked).
+//! - The remote path (`host:path`) keeps its NUL inside `ndm_host`: with a server name of
+//!   `MNAMELEN - 1` bytes the C stores the `:` in the last byte and the NUL one byte past the
+//!   array (the handle's first byte); here the `:` replaces the name's last byte.
+//! - `NFS_BOOT_OPTIONS` and `NFS_BOOT_RWSIZE` (kernel config options, not defined in
+//!   `GENERIC`) are not configured.
+//! - The interface's first Internet address is read under the shared net lock (the C walks
+//!   `if_addrlist` with no lock, at boot).
+//!
+//! ## Redesign
+//! - LZ handed `&'static Mbuf` chains to `krpc_subr`'s decoders, each `m_pullup`ing and
+//!   `m_adj`ing the head, wrote its requests through raw mbuf views and its interface requests
+//!   through the raw `ifioctl` (`*mut c_void` data, 3 `unsafe`), and kept `nfsbootdevname` in
+//!   a `StaticCell`. A request is built with an [`XdrWriter`] and a reply read with one
+//!   [`XdrReader`]; the interface requests go through the kernel's `ifioctl` over the
+//!   structures' bytes (`hal::pod`); the device name is a `Mutexed` copy. The reply parsers
+//!   are their own functions (`bp_whoami_reply`, `bp_getfile_reply`, `md_mount_reply`) so
+//!   that the host tests drive them with a chain.
+//! - `nfs_boot_getfh` leaves the mount arguments' `addr`, `fh` and `hostname` `NULL`: the C
+//!   points them at the members of the same `nfs_dlmount` for `mountnfs`, which reads them in
+//!   the kernel and stores `NULL` in `mount_info` (C:nfs/nfs_vfsops.c:655-658); the kernel's
+//!   `nfs_mount_diskless` (N6.7a5) passes the members themselves (LZ's form), and a user
+//!   address of the kernel's own structure is never made.
+
+use hal::intr::IPL_NONE;
+use hal::mutex::Mutexed;
+use hal::netlock::{NETLOCK, NetHeld};
+use hal::sys::mount::{MNAMELEN, NFSMNT_NFSV3, NfsArgs};
+use hal::sys::net_if::{IFF_UP, IFNAMSIZ, Ifreq};
+use hal::sys::netinet_in::{InAddr, SockaddrIn};
+use hal::sys::netinet_in_var::InAliasreq;
+use hal::sys::socket::{AF_INET, SOCK_DGRAM};
+use hal::sys::sockio::{SIOCAIFADDR, SIOCGIFFLAGS, SIOCSIFFLAGS};
+use hal::user::{AbiPod, bytes_of_mut, zeroed};
+
+use super::krpc_subr::{
+    BOOTPARAM_GETFILE, BOOTPARAM_PROG, BOOTPARAM_VERS, BOOTPARAM_WHOAMI, PMAPPORT, PMAPPROC_CALLIT,
+    PMAPPROG, PMAPVERS, XDR_INADDR_SIZE, krpc_call, krpc_portmap, xdr_inaddr_decode,
+    xdr_inaddr_encode, xdr_string_decode, xdr_string_encode,
+};
+use super::nfsdiskless::{NfsDiskless, NfsDlmount};
+use super::nfsm_subs::{XdrReader, XdrWriter};
+use super::nfsproto::{NFS_PROG, NFS_VER2, NFS_VER3, NFSX_V2FH, NFSX_V3FHMAX};
+use super::rpcv2::{RPCMNT_MOUNT, RPCPROG_MNT};
+use crate::assert::kpanic;
+use crate::fs::namei::MAXPATHLEN;
+use crate::net::if_::{if_put, if_unit, ifioctl};
+use crate::net::if_var::Ifnet;
+use crate::net::mbuf::{Mbuf, MbufBox};
+use crate::net::socket::{soclose, socreate};
+use crate::netinet::if_ether::revarpwhoami;
+use crate::netinet::in_var::InIfaddr;
+use crate::prf::{Str, printf};
+use crate::proc::{ProcGlue, Thread};
+use crate::sys::errno::Errno;
+use crate::sysctl::{
+    DOMAINNAMELEN, HOSTNAMELEN, MAXHOSTNAMELEN, with_domainname_mut, with_hostname,
+    with_hostname_mut,
+};
+
+/// `nfsbootdevname`: the name of the root device when booting from the network (a NUL-padded
+/// copy of `rootdv->dv_xname`), set by `setroot()` through [`set_nfsbootdevname`].
+static NFSBOOTDEVNAME: Mutexed<Option<[u8; IFNAMSIZ]>> = Mutexed::new(IPL_NONE, None);
+
+/// An IPv4 address in network order, as `inet_ntop` prints it.
+struct Ipv4(InAddr);
+
+impl core::fmt::Display for Ipv4 {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let b = self.0.s_addr.to_ne_bytes();
+        write!(f, "{}.{}.{}.{}", b[0], b[1], b[2], b[3])
+    }
+}
+
+/// `nfsbootdevname = rootdv->dv_xname` (`setroot()` in `subr_disk.c`): remembers the
+/// network device the root file system is on (its name up to a NUL, cut to `IFNAMSIZ - 1`).
+pub fn set_nfsbootdevname(name: &[u8]) {
+    let mut n = [0u8; IFNAMSIZ];
+    let len = cstr(name).len().min(IFNAMSIZ - 1);
+    n[..len].copy_from_slice(&name[..len]);
+    *NFSBOOTDEVNAME.lock() = Some(n);
+}
+
+/// The bytes of a NUL-terminated buffer before its NUL.
+fn cstr(b: &[u8]) -> &[u8] {
+    let len = b.iter().position(|&c| c == 0).unwrap_or(b.len());
+    &b[..len]
+}
+
+/// The kernel's `ifioctl(so, cmd, (caddr_t)req, procp)` over the request structure's bytes.
+fn ifioctl_on<G: ProcGlue, T: AbiPod>(
+    so: &crate::net::socket::Socket<G>,
+    cmd: u64,
+    req: &mut T,
+    procp: &Thread<G>,
+) -> Result<(), Errno> {
+    ifioctl(
+        Some(so),
+        cmd,
+        bytes_of_mut(core::slice::from_mut(req)),
+        procp,
+    )
+}
+
+/// `nfs_boot_init(nd, procp)`: called with an empty `nfs_diskless` to be filled in. Finds an
+/// interface, RARPs for its IP address, stuffs it, the implied broadcast address and the
+/// netmask into the interface, asks the bootparam server who we are, and records the boot
+/// server's address in `nd`. Panics when there is no interface or nobody answers: there is
+/// nothing to boot from then. Called with the kernel lock (`if_unit`'s).
+///
+/// This was moved here from `nfs_vfsops.c` because this procedure would be quite different if
+/// someone decides to write (i.e.) a BOOTP version of this file (might not use RARP, etc.).
+pub fn nfs_boot_init<G: ProcGlue>(nd: &mut NfsDiskless<G>, procp: &Thread<G>) -> Result<(), Errno> {
+    // Find a network interface.
+    let devname = *NFSBOOTDEVNAME.lock();
+    let Some(ifp) = devname.and_then(|n| if_unit(cstr(&n))) else {
+        kpanic(format_args!("nfs_boot: no suitable interface"));
+    };
+
+    let xname = ifp.if_xname.get();
+    let mut ireq = Ifreq::zeroed();
+    ireq.ifr_name = xname;
+    printf(format_args!(
+        "nfs_boot: using interface {}, with revarp & bootparams\n",
+        Str(&xname)
+    ));
+
+    // Bring up the interface.
+    //
+    // Get the old interface flags and or IFF_UP into them; if IFF_UP set blindly, interface
+    // selection can be clobbered.
+    let so = match socreate(procp, i32::from(AF_INET), SOCK_DGRAM, 0) {
+        Ok(so) => so,
+        Err(e) => kpanic(format_args!("nfs_boot: socreate, error={}", e.as_i32())),
+    };
+    if let Err(e) = ifioctl_on(&so, SIOCGIFFLAGS, &mut ireq, procp) {
+        kpanic(format_args!("nfs_boot: GIFFLAGS, error={}", e.as_i32()));
+    }
+    ireq.set_ifr_flags(ireq.ifr_flags() | IFF_UP as i16);
+    if let Err(e) = ifioctl_on(&so, SIOCSIFFLAGS, &mut ireq, procp) {
+        kpanic(format_args!("nfs_boot: SIFFLAGS, error={}", e.as_i32()));
+    }
+
+    // Do RARP for the interface address.
+    let Ok(my_ip) = revarpwhoami(ifp) else {
+        kpanic(format_args!(
+            "reverse arp not answered by rarpd(8) or dhcpd(8)"
+        ));
+    };
+    printf(format_args!("nfs_boot: client_addr={}\n", Ipv4(my_ip)));
+
+    // Do enough of ifconfig(8) so that the chosen interface can talk to the servers. (just
+    // set the address)
+    let mut ifra = InAliasreq {
+        ifra_name: xname,
+        ifra_addr: SockaddrIn {
+            sin_len: size_of::<SockaddrIn>() as u8,
+            sin_family: AF_INET,
+            sin_addr: my_ip,
+            ..SockaddrIn::default()
+        },
+        ..InAliasreq::default()
+    };
+    if let Err(e) = ifioctl_on(&so, SIOCAIFADDR, &mut ifra, procp) {
+        kpanic(format_args!("nfs_boot: set if addr, error={}", e.as_i32()));
+    }
+
+    let _ = soclose(&so, 0);
+    drop(so);
+
+    let Some(broad) = nfs_boot_broadaddr(ifp) else {
+        kpanic(format_args!(
+            "nfs_boot: address not configured on {}",
+            Str(&xname)
+        ));
+    };
+    if_put(Some(ifp));
+
+    // Get client name and gateway address. RPC: bootparam/whoami. The server address
+    // returned by the WHOAMI call is used for all subsequent bootparam RPCs.
+    let mut bp_sin = SockaddrIn {
+        sin_len: size_of::<SockaddrIn>() as u8,
+        sin_family: AF_INET,
+        sin_addr: InAddr { s_addr: broad },
+        ..SockaddrIn::default()
+    };
+    HOSTNAMELEN.store(MAXHOSTNAMELEN as i32, core::sync::atomic::Ordering::Relaxed);
+
+    // this returns gateway IP address
+    let _gw_ip = match bp_whoami(procp, &mut bp_sin, &my_ip) {
+        Ok(gw) => gw,
+        Err(e) => kpanic(format_args!(
+            "nfs_boot: bootparam whoami, error={}",
+            e.as_i32()
+        )),
+    };
+    with_hostname(|hostname| {
+        printf(format_args!(
+            "nfs_boot: server_addr={} hostname={}\n",
+            Ipv4(bp_sin.sin_addr),
+            Str(hostname)
+        ))
+    });
+
+    nd.nd_boot = bp_sin;
+
+    Ok(())
+}
+
+/// The broadcast address (network order) of the first Internet address on `ifp`, the C's
+/// `TAILQ_FOREACH` for an `AF_INET` address and its `ia_broadaddr`; `None` when it has none.
+/// Read under the shared net lock (the interface's address list is a net cell).
+fn nfs_boot_broadaddr(ifp: &Ifnet) -> Option<u32> {
+    let w = NETLOCK.read();
+    let net = NetHeld::of(&w)?;
+    let r = net.reader();
+    let broad = ifp
+        .if_addrlist()
+        .iter(&r)
+        .find_map(|ifa| InIfaddr::of(&ifa).map(|ia| ia.ia_broadaddr().get().sin_addr.s_addr));
+    drop(r);
+    broad
+}
+
+/// `nfs_boot_getfh(bpsin, key, ndmntp, retries)`: gets the file handle of the file system
+/// `key` (`root` or `swap`) from the bootparam server `bpsin` (with `retries` tries: -1 is
+/// forever): `ndmntp` is the output, the mount arguments set up to describe the file system
+/// (`NFSMNT_NFSV3` cleared when the mount daemon speaks only an older version), the server's
+/// address, its `host:path` name and the handle.
+pub fn nfs_boot_getfh<G: ProcGlue>(
+    p: &Thread<G>,
+    bpsin: &SockaddrIn,
+    key: &[u8],
+    ndmntp: &mut NfsDlmount,
+    retries: i32,
+) -> Result<(), Errno> {
+    let mut pathname = [0u8; MAXPATHLEN];
+
+    // Initialize mount args (`addr`, `fh` and `hostname` stay NULL: the module's Redesign).
+    let args = &mut ndmntp.ndm_args;
+    *args = zeroed::<NfsArgs>();
+    args.addrlen = i32::from(ndmntp.ndm_saddr.sin_len);
+    args.sotype = SOCK_DGRAM;
+    args.flags = NFSMNT_NFSV3;
+
+    let sin = &mut ndmntp.ndm_saddr;
+
+    // Get server:pathname for "key" (root or swap) using RPC to bootparam/getfile
+    if let Err(e) = bp_getfile(
+        p,
+        bpsin,
+        key,
+        sin,
+        &mut ndmntp.ndm_host,
+        &mut pathname,
+        retries,
+    ) {
+        printf(format_args!(
+            "nfs_boot: bootparam get {}: {}\n",
+            Str(key),
+            e.as_i32()
+        ));
+        return Err(e);
+    }
+
+    // Get file handle for "key" (root or swap) using RPC to mountd/mount
+    if let Err(e) = md_mount(p, sin, cstr(&pathname), args, &mut ndmntp.ndm_fh) {
+        printf(format_args!(
+            "nfs_boot: mountd {}, error={}\n",
+            Str(key),
+            e.as_i32()
+        ));
+        return Err(e);
+    }
+
+    // Set port number for NFS use.
+    // XXX: NFS port is always 2049, right?
+    let ver = if args.flags & NFSMNT_NFSV3 != 0 {
+        NFS_VER3
+    } else {
+        NFS_VER2
+    };
+    match krpc_portmap(p, sin, NFS_PROG, ver) {
+        Ok(port) => sin.sin_port = port,
+        Err(e) => {
+            printf(format_args!(
+                "nfs_boot: portmap NFS, error={}\n",
+                e.as_i32()
+            ));
+            return Err(e);
+        }
+    }
+
+    // Construct remote path (for getmntinfo(3))
+    remote_path(&mut ndmntp.ndm_host, cstr(&pathname));
+
+    Ok(())
+}
+
+/// The tail of `nfs_boot_getfh`: appends `:` and `pathname` to the server name in `host`,
+/// cut to fit `MNAMELEN` (the remote path `getmntinfo(3)` shows).
+fn remote_path(host: &mut [u8; MNAMELEN], pathname: &[u8]) {
+    let endp = MNAMELEN - 1;
+    let mut dp = cstr(host).len().min(endp - 1);
+    host[dp] = b':';
+    dp += 1;
+    for &c in pathname {
+        if dp >= endp {
+            break;
+        }
+        host[dp] = c;
+        dp += 1;
+    }
+    host[dp] = 0;
+}
+
+/// `bp_whoami(bpsin, my_ip, gw_ip)`: RPC bootparam/whoami: given the client IP address, gets
+/// the client name (`hostname`), the domain name (`domainname`) and the gateway address (the
+/// return value). The hostname and domainname are set here for convenience.
+///
+/// Note: `bpsin` is initialized to the broadcast address, and will be replaced with the
+/// bootparam server address after this call is complete. Have to use `PMAP_PROC_CALL` to make
+/// sure we get responses only from a servers that know about us (don't want to broadcast a
+/// getport call).
+fn bp_whoami<G: ProcGlue>(
+    p: &Thread<G>,
+    bpsin: &mut SockaddrIn,
+    my_ip: &InAddr,
+) -> Result<InAddr, Errno> {
+    // Build request message for PMAPPROC_CALLIT: struct whoami_call (the program, version and
+    // procedure to call and the length of the argument, all words) and the encapsulated data
+    // (client IP address).
+    let mut w = XdrWriter::reqhead(0);
+    w.u32(BOOTPARAM_PROG);
+    w.u32(BOOTPARAM_VERS);
+    w.u32(BOOTPARAM_WHOAMI);
+    w.u32(XDR_INADDR_SIZE as u32);
+    xdr_inaddr_encode(&mut w, my_ip);
+
+    // RPC: portmap/callit
+    bpsin.sin_port = PMAPPORT.to_be();
+    let mut from = None;
+    let m = krpc_call(
+        p,
+        bpsin,
+        PMAPPROG,
+        PMAPVERS,
+        PMAPPROC_CALLIT,
+        w.into_chain(),
+        Some(&mut from),
+        -1,
+    )?;
+
+    // Parse result message.
+    let r = bp_whoami_reply(&m, from.as_deref(), bpsin);
+    if r.is_err() {
+        printf(format_args!("nfs_boot: bootparam_whoami: bad reply\n"));
+    }
+    r
+}
+
+/// The reply half of `bp_whoami`: the callit reply in `m` (the port and the length of the
+/// encapsulated reply, then the whoami reply: hostname, domainname, gateway), and the
+/// address it came from; `EBADRPC` for a bad reply. The names are stored as they are read,
+/// as the C's.
+fn bp_whoami_reply(m: &Mbuf, from: Option<&Mbuf>, bpsin: &mut SockaddrIn) -> Result<InAddr, Errno> {
+    let mut r = XdrReader::new(m);
+    // struct callit_reply: the port and the length of the encapsulated data (words).
+    let port = r.u32()? as i16;
+    let _msg_len = r.u32()?; // not used by the C either
+
+    // Save bootparam server address: sin_addr, at offset 4 of the sender's sockaddr_in.
+    let from = from.ok_or(Errno::EBADRPC)?;
+    let addr = XdrReader::at(from, 4)?.word()?;
+    bpsin.sin_port = (port as u16).to_be();
+    bpsin.sin_addr.s_addr = addr;
+
+    // client name
+    let mut len = MAXHOSTNAMELEN - 1;
+    HOSTNAMELEN.store(len as i32, core::sync::atomic::Ordering::Relaxed);
+    with_hostname_mut(|hostname| xdr_string_decode(&mut r, hostname, &mut len))?;
+    HOSTNAMELEN.store(len as i32, core::sync::atomic::Ordering::Relaxed);
+
+    // domain name
+    let mut len = MAXHOSTNAMELEN - 1;
+    DOMAINNAMELEN.store(len as i32, core::sync::atomic::Ordering::Relaxed);
+    with_domainname_mut(|domainname| xdr_string_decode(&mut r, domainname, &mut len))?;
+    DOMAINNAMELEN.store(len as i32, core::sync::atomic::Ordering::Relaxed);
+
+    // gateway address
+    xdr_inaddr_decode(&mut r)
+}
+
+/// `bp_getfile(bpsin, key, md_sin, serv_name, pathname, retries)`: RPC bootparam/getfile:
+/// given the client name and the file `key`, gets the server name (`serv_name`), the server IP
+/// address (`md_sin`, a new `sockaddr_in` of it, for mountd and NFS) and the server pathname
+/// (`pathname`).
+fn bp_getfile<G: ProcGlue>(
+    p: &Thread<G>,
+    bpsin: &SockaddrIn,
+    key: &[u8],
+    md_sin: &mut SockaddrIn,
+    serv_name: &mut [u8],
+    pathname: &mut [u8],
+    retries: i32,
+) -> Result<(), Errno> {
+    // Build request message.
+
+    // client name (hostname), the bytes `hostnamelen` says, read under its lock
+    let mut w = XdrWriter::reqhead(0);
+    let hostnamelen = HOSTNAMELEN.load(core::sync::atomic::Ordering::Relaxed);
+    with_hostname(|h| {
+        let n = usize::try_from(hostnamelen).unwrap_or(0).min(h.len());
+        xdr_string_encode(&mut w, &h[..n])
+    })?;
+
+    // key name (root or swap)
+    xdr_string_encode(&mut w, key)?;
+
+    // RPC: bootparam/getfile
+    let m = krpc_call(
+        p,
+        bpsin,
+        BOOTPARAM_PROG,
+        BOOTPARAM_VERS,
+        BOOTPARAM_GETFILE,
+        w.into_chain(),
+        None,
+        retries,
+    )?;
+
+    // Parse result message.
+    if bp_getfile_reply(&m, md_sin, serv_name, pathname).is_err() {
+        printf(format_args!("nfs_boot: bootparam_getfile: bad reply\n"));
+        return Err(Errno::EBADRPC);
+    }
+    Ok(())
+}
+
+/// The reply half of `bp_getfile`: server name, server address, server pathname; `EBADRPC`
+/// for a bad reply.
+fn bp_getfile_reply(
+    m: &Mbuf,
+    md_sin: &mut SockaddrIn,
+    serv_name: &mut [u8],
+    pathname: &mut [u8],
+) -> Result<(), Errno> {
+    let mut r = XdrReader::new(m);
+
+    // server name
+    let mut sn_len = MNAMELEN - 1;
+    xdr_string_decode(&mut r, serv_name, &mut sn_len)?;
+
+    // server IP address (mountd/NFS)
+    let inaddr = xdr_inaddr_decode(&mut r)?;
+
+    // server pathname
+    let mut path_len = MAXPATHLEN - 1;
+    xdr_string_decode(&mut r, pathname, &mut path_len)?;
+
+    // setup server socket address
+    *md_sin = SockaddrIn {
+        sin_len: size_of::<SockaddrIn>() as u8,
+        sin_family: AF_INET,
+        sin_addr: inaddr,
+        ..SockaddrIn::default()
+    };
+    Ok(())
+}
+
+/// `md_mount(mdsin, path, argp)`: RPC mountd/mount: given a server pathname, gets an NFS file
+/// handle (into `fh`, its size in `argp.fhsize`). Also sets `mdsin.sin_port` to the mount
+/// daemon's port. `mdsin` is the mountd server address. Tries mount protocol version 3 (for
+/// NFSv3) and falls back to lower versions, clearing `NFSMNT_NFSV3` when it ends up with
+/// less than 3.
+fn md_mount<G: ProcGlue>(
+    p: &Thread<G>,
+    mdsin: &mut SockaddrIn,
+    path: &[u8],
+    argp: &mut NfsArgs,
+    fh: &mut [u8; NFSX_V3FHMAX],
+) -> Result<(), Errno> {
+    let mut mntver: u32 = if argp.flags & NFSMNT_NFSV3 != 0 { 3 } else { 2 };
+    let reply: MbufBox = loop {
+        // A failed portmap (`continue` in the C's do-while) or a mount daemon that does not
+        // speak this version (`EPROGMISMATCH`) tries the next lower version; any other
+        // result of the call ends the loop.
+        let error = match krpc_portmap(p, mdsin, RPCPROG_MNT, mntver) {
+            Err(e) => e,
+            Ok(port) => {
+                mdsin.sin_port = port;
+
+                let mut w = XdrWriter::reqhead(0);
+                xdr_string_encode(&mut w, path)?;
+
+                // Do RPC to mountd.
+                match krpc_call(
+                    p,
+                    mdsin,
+                    RPCPROG_MNT,
+                    mntver,
+                    RPCMNT_MOUNT,
+                    w.into_chain(),
+                    None,
+                    -1,
+                ) {
+                    Ok(m) => break m,
+                    Err(Errno::EPROGMISMATCH) => Errno::EPROGMISMATCH,
+                    Err(e) => return Err(e), // message already freed
+                }
+            }
+        };
+        // Try lower version of mountd.
+        mntver -= 1;
+        if mntver < 1 {
+            return Err(error);
+        }
+    };
+
+    if mntver != 3 {
+        argp.flags &= !NFSMNT_NFSV3;
+    }
+
+    md_mount_reply(&reply, mntver, argp, fh)
+}
+
+/// The reply half of `md_mount`: the mount status and the file handle, its size in
+/// `argp.fhsize`.
+fn md_mount_reply(
+    m: &Mbuf,
+    mntver: u32,
+    argp: &mut NfsArgs,
+    fh: &mut [u8; NFSX_V3FHMAX],
+) -> Result<(), Errno> {
+    let mut r = XdrReader::new(m);
+    // The reply might have only the errno; have at least errno, so check that.
+    let error = r.u32()?;
+    if error != 0 {
+        return Err(i32::try_from(error)
+            .ok()
+            .and_then(Errno::from_raw)
+            .unwrap_or(Errno::EIO));
+    }
+
+    // Have errno==0, so the fh must be there.
+    let fhsize = if mntver == 3 {
+        let fhsize = r.u32()?;
+        if fhsize as usize > NFSX_V3FHMAX {
+            return Err(Errno::EBADRPC);
+        }
+        fhsize as usize
+    } else {
+        NFSX_V2FH
+    };
+    argp.fhsize = fhsize as i32;
+
+    r.bytes_into(&mut fh[..fhsize])
+}
+/* </CODE> */
