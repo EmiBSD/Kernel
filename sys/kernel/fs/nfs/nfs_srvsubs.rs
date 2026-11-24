@@ -1641,9 +1641,12 @@ mod tests {
             // A handle of a file is no directory to look under.
             let (res, _, _) = namei(p, &file, b"x", 1, &cr);
             assert_eq!(res, Err(Errno::ENOTDIR.as_i32()));
-            // A name the request does not hold all of: EBADRPC.
-            let (res, _, _) = namei(p, &dir, b"fil", 9, &cr);
+            // A name the request does not hold all of: EBADRPC (four bytes, no padding to
+            // meet first: a NUL of the padding is EACCES, as the C checks each byte).
+            let (res, _, _) = namei(p, &dir, b"filx", 9, &cr);
             assert_eq!(res, Err(Errno::EBADRPC.as_i32()));
+            let (res, _, _) = namei(p, &dir, b"fil", 9, &cr);
+            assert_eq!(res, Err(Errno::EACCES.as_i32()));
             // A name too long for the pathname buffer.
             let (res, _, _) = namei(p, &dir, b"f", MAXPATHLEN, &cr);
             assert_eq!(res, Err(Errno::ENAMETOOLONG.as_i32()));
