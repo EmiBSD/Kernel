@@ -2064,11 +2064,12 @@ mod tests {
     }
 
     /// An entry of the differential test: the node pair, the key and the mask the tree keeps
-    /// pointers to, and the value the kernel's tree carries for it.
+    /// pointers to (in buffers longer than any `rn_init` length the tests give), and the
+    /// value the kernel's tree carries for it.
     struct DiffEntry {
         nodes: [RadixNode; 2],
-        key: [u8; 32],
-        mask: Option<[u8; 32]>,
+        key: [u8; 64],
+        mask: Option<[u8; 64]>,
         id: u32,
     }
 
@@ -2117,27 +2118,207 @@ mod tests {
         k
     }
 
-    /// D-14 (N6.7b0): the same random operations on this tree and on the kernel's
-    /// (`kernel::net::radix::RadixTree`, keys of `rn_init`'s 28 bytes from the address's
-    /// offset): every add's success, every delete's and match's route, every lookup's and
-    /// every walk's order compared, walks that delete the route they visit included. Keys
-    /// masked or not, masks contiguous or not, duplicated keys. The only operation left out is
-    /// a delete without a mask of the key of zeros, the left root's, which the C's `KASSERT`
-    /// refuses and the kernel's tree answers `None` (its `## Deviations`). Run by N6.7b0's
-    /// redesigner and again by N6.7b1's before this file goes; the comparisons it makes are
-    /// printed with `--nocapture`.
-    #[test]
-    fn the_kernel_tree_answers_as_this_one() {
+    /// `k` in a 64-byte buffer.
+    fn wide(k: [u8; 32]) -> [u8; 64] {
+        let mut w = [0u8; 64];
+        w[..32].copy_from_slice(&k);
+        w
+    }
+
+    /// What the differential test offers both trees: the routes' keys and masks, the keys and
+    /// masks its deletes and lookups name when they do not name a live route, and the keys
+    /// its matches look up.
+    struct Shape {
+        /// `rn_inithead`'s offset (and the kernel tree's).
+        off: usize,
+        /// `rn_init`'s key length (the kernel tree's `K` is the driver's const parameter).
+        keylen: u32,
+        /// An add's key and mask.
+        route: fn(&mut Rng) -> ([u8; 64], Option<[u8; 64]>),
+        /// A delete's or a lookup's key and mask, when not a live route's.
+        pair: fn(&mut Rng) -> ([u8; 64], Option<[u8; 64]>),
+        /// A match's key.
+        probe: fn(&mut Rng) -> [u8; 64],
+        /// The left root's key asked for without a mask: a delete the C's `KASSERT` refuses.
+        root: fn(&[u8; 64], Option<&[u8; 64]>) -> bool,
+        /// `true`: the first D-20 repair stops the seed (mixed masks reach radix.c's dangling
+        /// annotation); `false`: no repair may happen at all.
+        repairs_allowed: bool,
+    }
+
+    /// N6.7b0's mix: `sockaddr_in` keys masked or not, masks contiguous, non-contiguous or
+    /// arbitrary, duplicated keys.
+    const MIXED: Shape = Shape {
+        off: SIN_ADDR_OFF as usize,
+        keylen: 28,
+        route: |rng| {
+            let mask = (rng.below(4) != 0).then(|| diff_mask(rng));
+            let mut key = sin(diff_addr(rng));
+            if let Some(m) = mask
+                && rng.below(3) != 0
+            {
+                for i in 4..8 {
+                    key[i] &= m[i];
+                }
+            }
+            (wide(key), mask.map(wide))
+        },
+        pair: |rng| {
+            let mask = (rng.below(3) != 0).then(|| diff_mask(rng));
+            (wide(sin(diff_addr(rng))), mask.map(wide))
+        },
+        probe: |rng| wide(sin(diff_addr(rng))),
+        root: |key, mask| mask.is_none() && key[4..8] == [0; 4],
+        repairs_allowed: true,
+    };
+
+    /// `pfr_prepare_network`'s mask of `plen` bits over `n` address bytes at `off`, in a key
+    /// of length `len` and family `af` (`sockaddr_in` or `sockaddr_in6`).
+    fn prefix(len: u8, af: u8, off: usize, n: usize, plen: usize) -> [u8; 64] {
+        let mut m = [0u8; 64];
+        m[0] = len;
+        m[1] = af;
+        for i in 0..n {
+            let bits = plen.saturating_sub(8 * i).min(8);
+            m[off + i] = if bits == 0 { 0 } else { 0xffu8 << (8 - bits) };
+        }
+        m
+    }
+
+    /// A pf table entry of the tree for (`len`, `af`, `off`, `n`): a host (no mask) or a
+    /// network of a prefix mask, its address masked (`pfr_validate_addr` refuses host bits),
+    /// as `pfr_route_kentry` adds it.
+    fn pf_route(
+        rng: &mut Rng,
+        len: u8,
+        af: u8,
+        off: usize,
+        n: usize,
+    ) -> ([u8; 64], Option<[u8; 64]>) {
+        let plen = rng.below(8 * n + 1);
+        let mut key = [0u8; 64];
+        key[0] = len;
+        key[1] = af;
+        for i in 0..n {
+            key[off + i] = [0u8, 1, 10, 0x80, 0xc0, 0xfe, 0xff][rng.below(7)];
+        }
+        if plen == 8 * n {
+            return (key, None);
+        }
+        let m = prefix(len, af, off, n, plen);
+        for i in off..off + n {
+            key[i] &= m[i];
+        }
+        (key, Some(m))
+    }
+
+    /// pf's IPv4 tables: `sockaddr_in` keys in the 28-byte `pfsockaddr_union`, from
+    /// `sin_addr`; hosts and prefix masks only (`pfr_route_kentry`).
+    const PF4: Shape = Shape {
+        off: SIN_ADDR_OFF as usize,
+        keylen: 28,
+        route: |rng| pf_route(rng, SIN_LEN, AF_INET, 4, 4),
+        pair: |rng| pf_route(rng, SIN_LEN, AF_INET, 4, 4),
+        probe: |rng| pf_route(rng, SIN_LEN, AF_INET, 4, 4).0,
+        root: |key, mask| mask.is_none() && key[4..8] == [0; 4],
+        repairs_allowed: false,
+    };
+
+    /// pf's IPv6 tables: `sockaddr_in6` keys (28 bytes), from `sin6_addr` (8).
+    const PF6: Shape = Shape {
+        off: 8,
+        keylen: 28,
+        route: |rng| pf_route(rng, 28, 24, 8, 16),
+        pair: |rng| pf_route(rng, 28, 24, 8, 16),
+        probe: |rng| pf_route(rng, 28, 24, 8, 16).0,
+        root: |key, mask| mask.is_none() && key[8..24] == [0; 16],
+        repairs_allowed: false,
+    };
+
+    /// A flow of the SPD as `import_flow` makes it (pfkeyv2_convert.c): the key and the mask
+    /// of `sockaddr_encap`s (`SENT_LEN`, `PF_KEY`), the type `SENT_IP4` in both, the
+    /// direction (the mask's `0xff`), the addresses under prefix masks and masked, the
+    /// protocol (the mask's `0xff` when one is given) and the ports (`0xffff` when given). A
+    /// probe (`packet`) is `ipsp_spd_lookup`'s key: whole addresses, no mask.
+    fn spd_flow(rng: &mut Rng, packet: bool) -> ([u8; 64], Option<[u8; 64]>) {
+        use crate::netinet::in_::InAddr;
+        use crate::netinet::ip_ipsp::{SENT_IP4, SENT_LEN, SockaddrEncap};
+        use crate::sys::socket::PF_KEY;
+        let (mut k, mut m) = (SockaddrEncap::new(), SockaddrEncap::new());
+        for e in [&mut k, &mut m] {
+            e.set_sen_len(SENT_LEN as u8);
+            e.set_sen_family(PF_KEY);
+            e.set_sen_type(SENT_IP4);
+        }
+        k.set_sen_direction([1u8, 2][rng.below(2)]);
+        m.set_sen_direction(0xff);
+        let (src, dst) = (diff_addr(rng), diff_addr(rng));
+        let (sp, dp) = (rng.below(33), rng.below(33));
+        let pm = |plen: usize| InAddr {
+            s_addr: (if plen == 0 {
+                0
+            } else {
+                u32::MAX << (32 - plen)
+            })
+            .to_be(),
+        };
+        let addr = |a: [u8; 4], mask: InAddr| InAddr {
+            s_addr: u32::from_ne_bytes(a) & if packet { u32::MAX } else { mask.s_addr },
+        };
+        k.set_sen_ip_src(addr(src, pm(sp)));
+        k.set_sen_ip_dst(addr(dst, pm(dp)));
+        m.set_sen_ip_src(pm(sp));
+        m.set_sen_ip_dst(pm(dp));
+        let proto = [0u8, 6, 17][rng.below(3)];
+        k.set_sen_proto(proto);
+        if proto != 0 {
+            m.set_sen_proto(0xff);
+        }
+        let (sport, dport) = ([0u16, 53, 80][rng.below(3)], [0u16, 53, 80][rng.below(3)]);
+        k.set_sen_sport(sport.to_be());
+        k.set_sen_dport(dport.to_be());
+        m.set_sen_sport(if sport != 0 { 0xffff } else { 0 });
+        m.set_sen_dport(if dport != 0 { 0xffff } else { 0 });
+        let mut key = [0u8; 64];
+        key[..SENT_LEN].copy_from_slice(k.as_bytes());
+        let mut mask = [0u8; 64];
+        mask[..SENT_LEN].copy_from_slice(m.as_bytes());
+        (key, (!packet).then_some(mask))
+    }
+
+    /// The SPD's trees: `sockaddr_encap` keys (`rn_init(sizeof(struct sockaddr_encap))`, 48),
+    /// compared from `sen_type` (2); every route has a mask, non-normal at index 16.
+    const SPD: Shape = Shape {
+        off: 2,
+        keylen: 48,
+        route: |rng| spd_flow(rng, false),
+        pair: |rng| spd_flow(rng, false),
+        probe: |rng| spd_flow(rng, true).0,
+        root: |_, mask| mask.is_none(),
+        repairs_allowed: false,
+    };
+
+    /// D-14 (N6.7b0, run again by N6.7b1 before this file goes): the same random operations
+    /// on this tree and on the kernel's (`kernel::net::radix::RadixTree<u32, K>`) for `seeds`
+    /// seeds of 400 steps: every add's success, every delete's and match's route, every
+    /// lookup's and every walk's order compared, walks that delete every third route they
+    /// visit included; `shape` gives the keys and masks. The only operation left out is a
+    /// delete without a mask of the key of zeros, the left root's, which the C's `KASSERT`
+    /// refuses and the kernel's tree answers `None` (its `## Deviations`). Returns the
+    /// operations compared, the routes offered and the seeds stopped at a D-20 repair.
+    fn differential<const K: usize>(shape: &Shape, seeds: u64) -> (u64, u32, u64) {
         use kernel::net::radix::RadixTree;
-        let _g = setup();
-        const SEEDS: u64 = 200;
+        // `rn_init` grows the key length while no head exists: before the first head.
+        rn_init(shape.keylen);
         let mut compared = 0u64;
         let mut stopped = 0u64;
         let mut ids = 0u32;
-        for seed in 1..=SEEDS {
+        for seed in 1..=seeds {
             let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
-            let h = head();
-            let mut k: RadixTree<u32, 28> = RadixTree::new(SIN_ADDR_OFF as usize, M_RTABLE);
+            let mut h = None;
+            assert!(rn_inithead(&mut h, shape.off as i32));
+            let h = h.expect("a head");
+            let mut k: RadixTree<u32, K> = RadixTree::new(shape.off, M_RTABLE);
             let mut live: Vec<&'static DiffEntry> = Vec::new();
             let id_of = |live: &[&'static DiffEntry], rn: Option<&RadixNode>| {
                 rn.map(|rn| {
@@ -2150,15 +2331,7 @@ mod tests {
                 let ctx = std::format!("seed {seed} step {step}");
                 match rng.below(12) {
                     0..=3 => {
-                        let mask = (rng.below(4) != 0).then(|| diff_mask(&mut rng));
-                        let mut key = sin(diff_addr(&mut rng));
-                        if let Some(m) = mask
-                            && rng.below(3) != 0
-                        {
-                            for i in 4..8 {
-                                key[i] &= m[i];
-                            }
-                        }
+                        let (key, mask) = (shape.route)(&mut rng);
                         ids += 1;
                         let e: &'static DiffEntry = Box::leak(Box::new(DiffEntry {
                             nodes: [RadixNode::new(), RadixNode::new()],
@@ -2183,10 +2356,9 @@ mod tests {
                             let e = live[rng.below(live.len())];
                             (e.key, e.mask)
                         } else {
-                            let mask = (rng.below(3) != 0).then(|| diff_mask(&mut rng));
-                            (sin(diff_addr(&mut rng)), mask)
+                            (shape.pair)(&mut rng)
                         };
-                        if mask.is_none() && key[4..8] == [0; 4] {
+                        if (shape.root)(&key, mask.as_ref()) {
                             continue;
                         }
                         let mp = mask.as_ref().map_or(ptr::null(), |m| m.as_ptr());
@@ -2201,14 +2373,13 @@ mod tests {
                         }
                     }
                     6..=8 => {
-                        let key = sin(diff_addr(&mut rng));
+                        let key = (shape.probe)(&mut rng);
                         // SAFETY: a local key, read during the call.
                         let rn = unsafe { rn_match(key.as_ptr(), h) };
                         assert_eq!(id_of(&live, rn), k.matches(&key).copied(), "{ctx}: match");
                     }
                     9..=10 => {
-                        let mask = (rng.below(3) != 0).then(|| diff_mask(&mut rng));
-                        let key = sin(diff_addr(&mut rng));
+                        let (key, mask) = (shape.pair)(&mut rng);
                         let mp = mask.as_ref().map_or(ptr::null(), |m| m.as_ptr());
                         // SAFETY: a local key and mask, read during the call.
                         let rn = unsafe { rn_lookup(key.as_ptr(), mp, h) };
@@ -2281,18 +2452,71 @@ mod tests {
                 // (`rm_leaf` set by `rn_add_radix_mask` to a route of a non-normal mask,
                 // which `rn_del_radix_mask` then reads as a mask's annotation): this tree
                 // then reads freed nodes, where the kernel's repairs the delete (D-20, its
-                // deviations). The two are compared up to the first repair only.
+                // deviations). The two are compared up to the first repair only; pf's and
+                // the SPD's masks never reach one.
+                if !shape.repairs_allowed {
+                    assert_eq!(k.repairs(), 0, "{ctx}: a repair");
+                    assert_eq!(k.dangling_annotations(), 0, "{ctx}: a dangling annotation");
+                }
                 if k.repairs() != 0 {
                     stopped += 1;
                     break;
                 }
             }
         }
+        (compared, ids, stopped)
+    }
+
+    /// D-14's run over N6.7b0's mixed keys and masks; the comparisons it makes are printed
+    /// with `--nocapture`.
+    #[test]
+    fn the_kernel_tree_answers_as_this_one() {
+        let _g = setup();
+        const SEEDS: u64 = 200;
+        let (compared, ids, stopped) = differential::<28>(&MIXED, SEEDS);
         std::println!(
             "radix differential: {compared} operations compared, {ids} routes offered, \
              {stopped} of {SEEDS} seeds stopped at the first D-20 repair"
         );
         assert!(compared > SEEDS * 100, "most of the operations compared");
+    }
+
+    /// N6.7b1: the same comparison over pf's tables' keys and masks (`pfsockaddr_union`s of
+    /// IPv4 and IPv6 addresses, hosts and prefix masks): equal answers at every step and no
+    /// D-20 repair, so the kernel's tree never leaves radix.c's own state for pf.
+    #[test]
+    fn pf_tables_answer_alike_on_both_trees() {
+        let _g = setup();
+        const SEEDS: u64 = 100;
+        let (c4, i4, s4) = differential::<28>(&PF4, SEEDS);
+        let (c6, i6, s6) = differential::<28>(&PF6, SEEDS);
+        std::println!(
+            "radix differential (pf): IPv4 {c4} operations, {i4} routes; IPv6 {c6} \
+             operations, {i6} routes; {} seeds stopped",
+            s4 + s6
+        );
+        assert_eq!(s4 + s6, 0);
+        assert!(
+            c4 > SEEDS * 300 && c6 > SEEDS * 300,
+            "every operation compared"
+        );
+    }
+
+    /// N6.7b1: the same over the SPD's keys and masks (`sockaddr_encap` flows as
+    /// `import_flow` builds them, packets as `ipsp_spd_lookup` does): equal answers, and no
+    /// repair: every SPD mask is non-normal at index 16 (`sen_type`'s byte), so no normal
+    /// annotation exists for a route of another mask to take over.
+    #[test]
+    fn the_spd_answers_alike_on_both_trees() {
+        let _g = setup();
+        const SEEDS: u64 = 100;
+        let (compared, ids, stopped) = differential::<48>(&SPD, SEEDS);
+        std::println!(
+            "radix differential (SPD): {compared} operations, {ids} routes, {stopped} seeds \
+             stopped"
+        );
+        assert_eq!(stopped, 0);
+        assert!(compared > SEEDS * 300, "every operation compared");
     }
 }
 /* </TESTS> */
