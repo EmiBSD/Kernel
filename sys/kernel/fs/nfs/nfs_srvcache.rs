@@ -691,7 +691,7 @@ pub fn nfsrv_lookupcache<G: ProcGlue>(nd: &NfsrvDescript) -> Option<SecondaryRef
 /// The host tests' reset of the cache of a test glue (testing.md): the lists forgotten
 /// with what they hold (the memory behind them is gone with the last test's), the counts
 /// back to the C's start.
-#[cfg(test)]
+#[cfg(any(test, feature = "doubles"))]
 pub(crate) fn nfsrv_cache_test_reset<G: ProcGlue>() {
     let c = &vfs::<G>().nfsrv.cache;
     {

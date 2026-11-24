@@ -66,6 +66,11 @@
 //! - `nfs_rephead` answers the reply being built as an `XdrWriter` (its chain is the C's
 //!   `*mrq`, the writer the C's `*mbp`); `nfs_getreq` frees the request on every error, as the
 //!   C's `nfsd_dissect` does, and answers `Result`.
+//! - A last fragment of length 0 cut with no fragment before it (its mark followed by more of
+//!   the stream: the cut takes no mbuf) queues no record; the C stores the empty fragment list
+//!   as the queue's tail (`ns_recend = NULL`), so the next record overwrites `ns_rec` and the
+//!   records queued before are lost. A mark of length 0 that ends the stream cuts the mark's
+//!   emptied mbuf as its record, as the C does (its parse is `EBADRPC`).
 //! - `nfs_realign` is gone: the server reads every request through `XdrReader`, which copies
 //!   the words out, so an mbuf whose data is not word aligned needs no copy.
 //! - `nfsrv_rcv`'s socket upcall (`so->so_upcall = nfsrv_rcv`, its argument the record) is
@@ -121,7 +126,7 @@ use super::rpcv2::{
     RPCAUTH_MAXSIZ, RPCAUTH_UNIXGIDS,
 };
 use super::xdr_subs::txdr_unsigned;
-use crate::assert::kpanic;
+use crate::assert::{kassert, kpanic};
 use crate::cred::UcredCell;
 use crate::fs::subr::vfs;
 use crate::net::mbuf::{
@@ -414,6 +419,9 @@ fn rcv_stream<G: ProcGlue>(so: &Socket<G>, slp: &NfssvcSock<G>, waitflag: i32) {
         if slp.flag() & SLP_VALID == 0 {
             return Some(st);
         }
+        // `ns_solock` keeps a second receive out while the state is taken out: nothing was
+        // put in its place meanwhile.
+        kassert!(r.ns_raw.is_empty() && r.ns_frag.is_empty());
         r.ns_raw = mem::take(&mut st.ns_raw);
         r.ns_frag = mem::take(&mut st.ns_frag);
         r.ns_cc = st.ns_cc;
@@ -986,6 +994,19 @@ mod tests {
         let mut st = stream(&max, 3);
         assert_eq!(nfsrv_getstream(&slp, &mut st, M_WAIT), Ok(()));
         assert_eq!(st.ns_reclen, NFS_MAXPACKET as i32);
+        // A last fragment of length 0 with more of the stream after it: no record for it,
+        // and the records before and after it kept (the C loses the ones before).
+        let slp = mksock();
+        let mut st = Vec::new();
+        st.extend(0x8000_0003u32.to_be_bytes());
+        st.extend([1, 2, 3]);
+        st.extend(0x8000_0000u32.to_be_bytes());
+        st.extend(0x8000_0002u32.to_be_bytes());
+        st.extend([4, 5]);
+        let mut st = stream(&st, 5);
+        assert_eq!(nfsrv_getstream(&slp, &mut st, M_WAIT), Ok(()));
+        assert_eq!(records(&st), [vec![1, 2, 3], vec![4, 5]]);
+        assert!(st.ns_frag.is_empty());
         // A parse already running (SLP_GETSTREAM) is not entered again.
         slp.set_flags(SLP_GETSTREAM);
         let mut st = stream(&s, 4);

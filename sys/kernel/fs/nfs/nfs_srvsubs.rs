@@ -166,6 +166,7 @@ use crate::fs::namei::{
 };
 use crate::fs::subr::{vfs_getvfs, vput, vref, vrele};
 use crate::fs::vnode::{VA_UTIMES_CHANGE, VA_UTIMES_NULL, Vattr, Vnode, Vtype};
+use crate::fs::vops::Cred;
 use crate::fs::vops::vop_unlock;
 use crate::net::mbuf::Mbuf;
 use crate::proc::{ProcGlue, Thread};
@@ -558,8 +559,9 @@ pub const NFSRV_V3ERRMAP: [&[i16]; NFSPROC_COMMIT + 1] = [
 /// when the caller asked for `SAVENAME` or `SAVESTART`: then it stays in `cn_pnbuf` with
 /// `HASBUF` set.
 ///
-/// `cred` is the request's credentials (`nd_cr`, which `ndp.ni_cnd.cn_cred` names), mapped
-/// for the export by `nfsrv_fhtovp`. The error is the C's `int`: an errno or an NFS status.
+/// `cred` is the request's credentials (`nd_cr`): mapped for the export by `nfsrv_fhtovp`
+/// and made the lookup's (`ndp.ni_cnd.cn_cred`, set here, so that the two are one, as the C's
+/// caller points `cn_cred` at `nd_cr`). The error is the C's `int`: an errno or an NFS status.
 #[allow(clippy::too_many_arguments, reason = "the C's argument list")]
 pub fn nfs_namei<'a, G: ProcGlue>(
     ndp: &mut Nameidata<'a, G>,
@@ -570,9 +572,10 @@ pub fn nfs_namei<'a, G: ProcGlue>(
     r: &mut XdrReader<'_>,
     retdirp: &mut Option<&'static Vnode<G>>,
     p: &'a Thread<G>,
-    cred: &UcredCell,
+    cred: &'a UcredCell,
 ) -> Result<(), i32> {
     *retdirp = None;
+    ndp.ni_cnd.cn_cred = Cred::Real(cred);
     let Some(buf) = pathbuf_get::<G>() else {
         return Err(Errno::ENOMEM.as_i32());
     };
@@ -1600,7 +1603,6 @@ mod tests {
             let udp = sock(SOCK_DGRAM);
             let at = client(700);
             let mut nd = ndinit(LOOKUP, LOCKLEAF, NiDirp::Sys(b""), p);
-            nd.ni_cnd.cn_cred = Cred::Real(cr);
             let mut dirp = None;
             let res = nfs_namei(&mut nd, dir, len, &udp, Some(&at), &mut r, &mut dirp, p, cr);
             if let Some(d) = dirp {

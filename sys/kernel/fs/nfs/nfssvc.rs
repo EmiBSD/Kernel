@@ -123,6 +123,10 @@
 //!   the last one out calls it, and a list of pinned nfsds is not dropped from under them.
 //! - `nfsrv_zapsock` also frees the fragments of a record being assembled (`ns_frag`), which
 //!   the C leaks.
+//! - `nfsrv_init` makes the new datagram socket's record before it clears `SLP_INIT` and wakes
+//!   the system calls waiting on "nfsd init": the C makes it after (`nfs_syscalls.c:571`,
+//!   then `:577`), while its `malloc(M_WAITOK)` may sleep, so a woken `NFSSVC_ADDSOCK` of a
+//!   datagram socket reads `nfs_udpsock`, the record `nfsrv_init(1)` has just freed.
 //!
 //! ## Redesign
 //! - LZ's `nfssvc_sock` and `nfsd` were `malloc(9)` blocks cast to `&'static` (two `unsafe`
@@ -1035,17 +1039,9 @@ pub fn nfsrv_init<G: ProcGlue>(terminating: bool) {
         nfsrv_cleancache::<G>(); // And clear out server cache
     }
 
-    t.nfssvc_sockhead_flag
-        .fetch_and(!SLP_INIT, Ordering::Relaxed);
-    if t.nfssvc_sockhead_flag.load(Ordering::Relaxed) & SLP_WANTINIT != 0 {
-        t.nfssvc_sockhead_flag
-            .fetch_and(!SLP_WANTINIT, Ordering::Relaxed);
-        wakeup(ptr::from_ref(&t.nfssvc_sockhead));
-    }
-
-    t.nfsd_head_flag
-        .fetch_and(!NFSD_CHECKSLP, Ordering::Relaxed);
-
+    // The datagram socket's record, made while SLP_INIT still holds `nfssvc(2)` back (the
+    // module's Deviations: the C makes it after the wakeup, a window in which an
+    // NFSSVC_ADDSOCK reads the record it freed).
     let Some(udp) = MArc::new(M_NFSSVC, M_WAITOK, NfssvcSock::new(None)) else {
         kpanic(format_args!(
             "nfsrv_init: no memory for the datagram socket"
@@ -1058,6 +1054,17 @@ pub fn nfsrv_init<G: ProcGlue>(terminating: bool) {
         t.nfs_udpsock.get_mut(&mut w).replace(udp)
     };
     drop(old);
+
+    t.nfssvc_sockhead_flag
+        .fetch_and(!SLP_INIT, Ordering::Relaxed);
+    if t.nfssvc_sockhead_flag.load(Ordering::Relaxed) & SLP_WANTINIT != 0 {
+        t.nfssvc_sockhead_flag
+            .fetch_and(!SLP_WANTINIT, Ordering::Relaxed);
+        wakeup(ptr::from_ref(&t.nfssvc_sockhead));
+    }
+
+    t.nfsd_head_flag
+        .fetch_and(!NFSD_CHECKSLP, Ordering::Relaxed);
 
     if !terminating {
         let _ = t
@@ -1127,8 +1134,9 @@ pub fn nfs_srvmaxdata(n: &NfsrvDescript) -> usize {
 /// The host tests' reset of a test glue's server tables (testing.md's `*_test_reset`): the
 /// sockets and nfsds an earlier test left linked unlinked and forgotten with their handles
 /// (their memory is gone with that test's), the flags and counts back to the C's start, the
-/// cache's reset. Nothing is freed. The caller holds the kernel lock (the set-ups').
-#[cfg(test)]
+/// cache's reset. Nothing is freed. The caller holds the kernel lock (the set-ups'):
+/// `vfs_test_reset` calls it.
+#[cfg(any(test, feature = "doubles"))]
 pub(crate) fn nfsrv_test_reset<G: ProcGlue>() {
     let t = &vfs::<G>().nfsrv;
     {
@@ -1303,7 +1311,7 @@ mod tests {
             limits.pl_rlimit[RLIMIT_NOFILE].rlim_cur = 64;
             drop(pr.set_limit(PlimitRef::new(limits)));
             crate::testutil::set_test_maxfiles(4096);
-            nfsrv_test_reset::<G>();
+            // `testnfs::setup`'s `vfs_test_reset` reset the server's tables.
             nfsrv_init::<G>(false);
             nfsrv_initcache::<G>();
             fx
@@ -1488,7 +1496,29 @@ mod tests {
                 .expect("a new record");
             assert!(!MArc::ptr_eq(&fresh, &udp));
             assert_eq!(t.nfs_numnfsd.load(Ordering::Relaxed), 0);
-            drop((fresh, udp, so));
+            assert_eq!(t.nfssvc_sockhead_flag.load(Ordering::Relaxed) & SLP_INIT, 0);
+
+            // A restart: the second datagram socket, refused before, is the fresh record's
+            // (the old one, zapped and off the list, stays untouched), and an nfsd serves it.
+            assert_eq!(addsock(&fx, fd2, None), Ok(()));
+            assert_eq!(udp.flag(), 0);
+            assert_eq!(fresh.flag() & SLP_VALID, SLP_VALID);
+            let so2 = sock_of(&fx, fd2);
+            send(&c, Some(&name(&lo_sin(PORT + 1))), &call(31, 1));
+            pump(fx.lo);
+            nfsrv_rcv(&so2, &fresh, crate::net::mbuf::M_DONTWAIT);
+            let n = nfsd(&fx);
+            nfsd_enter(&n);
+            let mut frame = NfsdFrame::default();
+            assert_eq!(nfsd_step(&n, fx.user, &PROCS, &mut frame), Ok(()));
+            assert_eq!(SEEN.with(Cell::take), Some(700));
+            pump(fx.lo);
+            let r = recv(&c).expect("the restarted server's reply");
+            assert_eq!(&r[..4], &31u32.to_be_bytes());
+            nfsd_leave(&n);
+            drop(n);
+            assert_eq!(fresh.flag(), 0);
+            drop((fresh, udp, so, so2));
             abort(&c);
             abort(&c2);
             assert_eq!(sys_close(fx.user, fd), Ok(()));
@@ -1647,6 +1677,11 @@ mod tests {
                 Err(Errno::EINVAL)
             );
             assert_eq!(sys_close(fx.user, fd), Ok(()));
+            // A socket that is neither a stream nor a datagram one (raw IP): EINVAL.
+            let raw = sys_socket(fx.user, i32::from(AF_INET), hal::sys::socket::SOCK_RAW, 255)
+                .expect("a raw socket");
+            assert_eq!(addsock(&fx, raw, None), Err(Errno::EINVAL));
+            assert_eq!(sys_close(fx.user, raw), Ok(()));
         }
 
         #[test]
