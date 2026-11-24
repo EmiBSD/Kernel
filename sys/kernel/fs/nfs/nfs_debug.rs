@@ -47,6 +47,9 @@
 //!   mount's queue for as long as it waits, a node on the hash from `nfs_nget` to
 //!   `nfs_reclaim`), but for a request between its `pool_get` and its queueing or after its
 //!   dequeue, and a node in `nfs_nget`'s race window, which the C prints and this does not.
+//! - `show nfsreq addr` and `show nfsnode addr` print the request or the node at `addr` only
+//!   when one is there (on a mount's queue, on the node hash); the C reads whatever lies at
+//!   the address as one.
 //! - `r_procp` is printed as the requester's thread id (`proc 0x..`, 0 for none), `r_nmp` as
 //!   the mount the walk is at (0 for `show nfsreq`), `r_md` as the reply's first mbuf (the
 //!   reply is a chain and the bytes consumed, `nfs`'s Redesign); the C prints pointers.
@@ -56,8 +59,9 @@
 //!   `unsafe`); here they take the request or the node by reference and write to a
 //!   `core::fmt::Write` (`so_print`'s form, D-9). The walks are the kernel lock's: the
 //!   request's chains are read under its exclusive witness, the node hash under a reader
-//!   (ddb holds the kernel lock by fiat). `bsd`'s ddb keeps the two address commands' casts
-//!   (`show nfsreq addr`, `show nfsnode addr`), as `show socket`'s.
+//!   (ddb holds the kernel lock by fiat); the two address commands find their item by its
+//!   address on those walks, so no address is read as an item (LZ's casts go, D-9's two
+//!   casts in `bsd`'s ddb are not needed).
 
 use core::fmt;
 use core::sync::atomic::Ordering;
@@ -131,6 +135,29 @@ pub fn db_show_all_nfsreqs<G: ProcGlue>(full: bool, pr: &mut dyn fmt::Write) -> 
     Ok(())
 }
 
+/// `show nfsreq[/f] addr`: the request at the address `addr`, found on its mount's queue
+/// (nothing printed for an address that is no waiting request; the module's Deviations).
+pub fn db_nfsreq_print<G: ProcGlue>(
+    addr: usize,
+    full: bool,
+    pr: &mut dyn fmt::Write,
+) -> fmt::Result {
+    for mp in mountlist::<G>(false) {
+        let Some(nmp) = mp.node_arc::<NfsMount<G>>() else {
+            continue;
+        };
+        let w = klock::witness();
+        if let Some(rep) = nmp
+            .nm_reqsq
+            .iter(&w)
+            .find(|r| core::ptr::from_ref(*r).addr() == addr)
+        {
+            return nfs_request_print(rep, Some(&nmp), full, &w, pr);
+        }
+    }
+    Ok(())
+}
+
 /// `nfs_node_print(v, full, pr)`: prints the node `np`.
 pub fn nfs_node_print<G: ProcGlue>(
     np: &NfsNode<G>,
@@ -163,6 +190,23 @@ pub fn nfs_node_print<G: ProcGlue>(
         )?;
     }
     Ok(())
+}
+
+/// `show nfsnode[/f] addr`: the node at the address `addr`, found on the node hash (nothing
+/// printed for an address that is no node; the module's Deviations).
+pub fn db_nfsnode_print<G: ProcGlue>(
+    addr: usize,
+    full: bool,
+    pr: &mut dyn fmt::Write,
+) -> fmt::Result {
+    let r = klock::reader();
+    let mut res = Ok(());
+    nfs_nhash_foreach::<G>(&r, |np| {
+        if res.is_ok() && core::ptr::from_ref(np).addr() == addr {
+            res = nfs_node_print(np, full, pr);
+        }
+    });
+    res
 }
 
 /// `db_show_all_nfsnodes(expr, haddr, count, modif)`: `show all nfsnodes[/f]`: every node of
@@ -251,6 +295,14 @@ mod tests {
         let mut s = String::new();
         db_show_all_nfsnodes::<G>(false, &mut s).unwrap();
         assert!(s.contains(&std::format!("vnode {vp:p}")), "{s}");
+        // `show nfsnode addr`: the node at its address, nothing at another.
+        let at = core::ptr::from_ref::<NfsNode<G>>(&np).addr();
+        let mut s = String::new();
+        db_nfsnode_print::<G>(at, false, &mut s).unwrap();
+        assert!(s.starts_with("size 4096 flag 4 vnode"), "{s}");
+        let mut s = String::new();
+        db_nfsnode_print::<G>(at + 8, false, &mut s).unwrap();
+        assert!(s.is_empty(), "{s}");
         crate::fs::nfs::nfs_node::nfs_nremove(&np);
         let mut s = String::new();
         db_show_all_nfsnodes::<G>(false, &mut s).unwrap();

@@ -870,5 +870,30 @@ mod tests {
 
     /// `size_of::<NfsReq<G>>()` measured by the test above.
     const NFSREQ_SIZE: usize = 144;
+
+    /// The request flags, the last RTO timer and `B_INVAFTERWRITE` are the C header's.
+    #[test]
+    #[ignore = "reads reference/openbsd-src (just test-ref)"]
+    fn request_flags_are_the_c_header_s() {
+        let defs = crate::reftest::defines("sys/nfs/nfs.h");
+        let _ = crate::reftest::assert_defines!(
+            defs;
+            R_TIMING,
+            R_SENT,
+            R_SOFTTERM,
+            R_INTR,
+            R_SOCKERR,
+            R_TPRINTFMSG,
+            R_MUSTRESEND
+        );
+        assert_eq!(
+            defs.get("NFS_MAX_TIMER").map(std::string::String::as_str),
+            Some("(NFS_WRITE_TIMER)")
+        );
+        assert_eq!(
+            defs.get("B_INVAFTERWRITE").map(std::string::String::as_str),
+            Some("B_INVAL")
+        );
+    }
 }
 /* </TESTS> */
