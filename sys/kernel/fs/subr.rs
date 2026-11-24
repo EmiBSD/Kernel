@@ -2548,10 +2548,19 @@ mod tests {
     /// N6.7a3: nfs's three vnode tables (`NfsVnops`, `NfsSpecVnops`, `NfsFifoVnops`, a byte
     /// each) grow `nfs` by 8 bytes once aligned: `ufs` sits at 41,440. N6.7a5: `nfs_diskless`
     /// (`nfs_mountroot`'s record, a `Mutexed` of the diskless structure) grows it by 624:
-    /// `ufs` sits at 42,064.
+    /// `ufs` sits at 42,064. N6.7b2: with `nfsserver` (`just test`'s features), the server's
+    /// tables (`nfsrv`, `NfsrvTables`: the socket and nfsd lists, the datagram record, the
+    /// descriptors' pool and the duplicate request cache) grow the members placed before
+    /// `ufs` by 328 bytes: `ufs` sits at 42,392; without the feature (plain `cargo test -p
+    /// kernel`) it stays at 42,064.
     #[test]
     fn the_ufs_tables_stay_where_they_were_without_msdosfs() {
-        assert_eq!(core::mem::offset_of!(VfsTables<TestGlue>, ufs), 42_064);
+        let at = if cfg!(feature = "nfsserver") {
+            42_392
+        } else {
+            42_064
+        };
+        assert_eq!(core::mem::offset_of!(VfsTables<TestGlue>, ufs), at);
     }
 }
 /* </TESTS> */

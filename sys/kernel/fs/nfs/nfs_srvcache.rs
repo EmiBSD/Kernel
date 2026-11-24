@@ -747,7 +747,11 @@ mod tests {
         g
     }
 
+    /// The test's end: the cache emptied with what its entries hold (the saved replies and
+    /// address copies are mbufs, counted for the whole process: testing.md), the lock given
+    /// back.
     fn done() {
+        nfsrv_cleancache::<G>();
         hal::klock::kernel_unlock();
     }
 
