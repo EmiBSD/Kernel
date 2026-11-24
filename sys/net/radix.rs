@@ -2243,6 +2243,7 @@ mod tests {
                         let mut theirs = Vec::new();
                         let mut theirs_del = Vec::new();
                         let mut n = 0;
+                        let mut repaired = false;
                         let mut c = k.first();
                         while let Some(l) = c {
                             c = k.next(l);
@@ -2252,10 +2253,26 @@ mod tests {
                             if delete && n % 3 == 0 {
                                 let e = live.iter().find(|e| e.id == id).expect("ours");
                                 theirs_del.push(k.delete(&e.key, e.mask.as_ref().map(|m| &m[..])));
+                                // A delete that repaired (D-20) leaves this tree's
+                                // annotation dangling and the kernel's sound: the walks
+                                // are compared up to it, and the seed stops below.
+                                if k.repairs() != 0 {
+                                    repaired = true;
+                                    break;
+                                }
                             }
                         }
-                        assert_eq!(ours, theirs, "{ctx}: walk");
-                        assert_eq!(ours_del, theirs_del, "{ctx}: the walk's deletes");
+                        if repaired {
+                            assert_eq!(ours.get(..theirs.len()), Some(&theirs[..]), "{ctx}: walk");
+                            assert_eq!(
+                                ours_del.get(..theirs_del.len()),
+                                Some(&theirs_del[..]),
+                                "{ctx}: the walk's deletes"
+                            );
+                        } else {
+                            assert_eq!(ours, theirs, "{ctx}: walk");
+                            assert_eq!(ours_del, theirs_del, "{ctx}: the walk's deletes");
+                        }
                         live.retain(|e| !ours_del.contains(&Some(e.id)));
                     }
                 }
@@ -2263,9 +2280,9 @@ mod tests {
                 // radix.c can leave a normal route's annotation naming a route it deleted
                 // (`rm_leaf` set by `rn_add_radix_mask` to a route of a non-normal mask,
                 // which `rn_del_radix_mask` then reads as a mask's annotation): this tree
-                // then reads freed nodes, the kernel's passes the annotation over (its
-                // deviations). The two are compared up to that state only.
-                if k.dangling_annotations() != 0 {
+                // then reads freed nodes, where the kernel's repairs the delete (D-20, its
+                // deviations). The two are compared up to the first repair only.
+                if k.repairs() != 0 {
                     stopped += 1;
                     break;
                 }
@@ -2273,7 +2290,7 @@ mod tests {
         }
         std::println!(
             "radix differential: {compared} operations compared, {ids} routes offered, \
-             {stopped} of {SEEDS} seeds stopped at radix.c's dangling annotation"
+             {stopped} of {SEEDS} seeds stopped at the first D-20 repair"
         );
         assert!(compared > SEEDS * 100, "most of the operations compared");
     }

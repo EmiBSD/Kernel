@@ -8066,13 +8066,13 @@ reason = "a leaf's internal node is the other half of its slot, index tt | 1 (th
 
 [[module.fn]]
 lz = "sys/net/radix.rs::rn_initmask"
-native = ["RadixTree::init"]
+native = ["RadixTree::inithead"]
 kind = "merged"
 
 [[module.fn]]
 lz = "sys/net/radix.rs::rn_inithead"
-native = ["RadixTree::init"]
-kind = "merged"
+native = ["RadixTree::inithead"]
+kind = "renamed"
 
 [[module.fn]]
 lz = "sys/net/radix.rs::rn_init"
