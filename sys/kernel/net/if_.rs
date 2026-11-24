@@ -1277,16 +1277,26 @@ pub fn if_idxmap_test_reset() {
 }
 
 /// The host tests' softnets: task queues no thread serves (`kernel::task`'s
-/// `taskq_unthreaded`), made once and run by hand, in place of `softnet_init`'s.
+/// `taskq_unthreaded`), made once and run by hand, in place of `softnet_init`'s; at every
+/// call (a test's setup) the work an earlier test left on them is forgotten, not run
+/// (`taskq_test_forget`): an interface's input task queued there names a queue of that
+/// test's memory, and its packets, freed by a later test's `with_smr_thread`, would go into
+/// another memory (N6.7a1: the nfs tests' `lo0` left its replies queued).
 #[cfg(any(test, feature = "doubles"))]
 pub fn softnet_test_install() {
     for sn in &SOFTNETS {
-        if sn.taskq.is_none() {
-            let tq: &'static Taskq =
-                std::boxed::Box::leak(std::boxed::Box::new(crate::task::taskq_unthreaded(sn.name)));
-            crate::task::run_by_hand(tq);
-            sn.taskq.set(Some(tq));
-            sn.bartask.set_ref(net_tq_barrier_task, sn);
+        match sn.taskq.get() {
+            Some(tq) => {
+                let _ = crate::task::taskq_test_forget(tq);
+            }
+            None => {
+                let tq: &'static Taskq = std::boxed::Box::leak(std::boxed::Box::new(
+                    crate::task::taskq_unthreaded(sn.name),
+                ));
+                crate::task::run_by_hand(tq);
+                sn.taskq.set(Some(tq));
+                sn.bartask.set_ref(net_tq_barrier_task, sn);
+            }
         }
     }
 }

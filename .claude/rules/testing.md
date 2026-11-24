@@ -19,7 +19,16 @@ Four tiers. Every change lands with the tier it belongs to.
    `config_attach` or under a kernel lock then hangs the rest of the run (rule of
    2026-10-08, after the M16e close found it). Known resets: `rn_test_reset` (radix),
    `wsmux_test_reset` (the mux table), `autoconf_test_reset` (`autoconf_attdet`),
-   `pf_osfp_test_reset` (the fingerprint list), `kmemstats_test_reset`; in `setup_net`,
+   `pf_osfp_test_reset` (the fingerprint list), `kmemstats_test_reset`; (N6.7a1)
+   `softnet_test_install` (`kernel::net::if_`, called by every fixture below that has
+   interfaces) also forgets the work an earlier test left on the softnets
+   (`kernel::task::taskq_test_forget`): the nfs tests' `lo0` left its input task and its
+   packets there, which the next `with_smr_thread` freed into another memory. What is not
+   memory but is counted or registered for the whole process is left as found by the test
+   itself: the nfs fixture's `Drop` drains `lo0`, takes its addresses and routes off
+   (`in_ifdetach`, `in6_ifdetach`) and runs SMR's releases (the mbuf pools' `nout`, `rttrash`
+   and routing table 0 outlive every test), and registers the TCP tests' glue for the
+   softnet's `tcp_input_mlist` before its own `tcp_init` (set once, the first glue's); in `setup_net`,
    `pfi_test_reset`, `bpf_test_reset`, `enc_reset`, the interface lists and (N6.4) the
    kernel's `igmp_test_reset` and `arp_test_reset`, (N6.5b) `nd6_test_reset` (the neighbor
    cache list, the hold total, ND's timeouts) and `dad_test_reset` (the DAD records' lists),
