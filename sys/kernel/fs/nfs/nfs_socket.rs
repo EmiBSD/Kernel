@@ -76,7 +76,12 @@
 //!   (neither sysctl nor `netstat`), only to `kvm`.
 //! - `nfs_reply` skips a receive that hands back no chain without an error (a datagram with
 //!   no data), as a reply too short to hold an xid: the C would read through the NULL chain.
-//! - `nfs_request` frees the reply of a denied RPC (`MSG_DENIED`), which the C leaks, as LZ.
+//! - `nfs_request` frees the reply of a denied RPC (`MSG_DENIED`), which the C leaks, as LZ;
+//!   a reply whose RPC header is cut short is freed too and gives `EBADRPC` with no reply,
+//!   where the C hands the chain up with the error (its callers free it unread).
+//! - `MGETHDR`, `M_PREPEND` and `pool_get` with `M_WAIT`/`PR_WAITOK` can fail here (`hal`'s
+//!   pools cannot always sleep for an item): `nfs_request` answers `ENOBUFS` with no reply,
+//!   the request freed, as LZ; the C cannot fail there.
 //! - The first send's copy of the request is made under the kernel lock's witness without
 //!   waiting (`M_DONTWAIT`); only when that fails is the chain taken out of its cell for an
 //!   `M_WAIT` copy and put back after, a window in which `nfs_timer` finds no chain to resend
@@ -136,7 +141,7 @@ use super::nfs_subs::{NFS_TICKS, NFSSTATS, nfsm_rpchead, rpc_mismatch, rpc_msgde
 use super::nfsm_subs::{XdrReader, XdrWriter, nfsm_rndup};
 use super::nfsmount::NfsMount;
 use super::nfsproto::{NFS_MAXPACKET, NFS_MAXPKTHDR, NFS_NPROCS, NFSERR_TRYLATER, NFSX_UNSIGNED};
-use crate::assert::kpanic;
+use crate::assert::{kassert, kpanic};
 use crate::clock::sec_to_nsec;
 use crate::cred::Ucred;
 use crate::fs::cache::cache_purge;
@@ -1054,15 +1059,20 @@ pub fn nfs_request<G: ProcGlue>(
     req: Request<'_, G>,
 ) -> (Option<Reply>, Result<(), NfsError>) {
     let Request { body, procp, cred } = req;
+    kassert!(vp.mount().is_some_and(|mp| ptr::eq(mp, nmp.nm_mountp)));
 
     // The RPC header with authorization, an empty packet header mbuf (the AUTH_UNIX header)
     // before the arguments.
-    let (mut m, xid) = nfsm_rpchead(nmp, procnum, cred, RPCAUTH_UNIX, body.into_chain());
+    let Some((mut m, xid)) = nfsm_rpchead(nmp, procnum, cred, RPCAUTH_UNIX, body.into_chain())
+    else {
+        return (None, Err(Errno::ENOBUFS.into()));
+    };
 
     // For stream protocols, insert a Sun RPC Record Mark.
     if nmp.nm_sotype.load(Relaxed) == SOCK_STREAM {
         let Some(mut mm) = m_prepend(m, NFSX_UNSIGNED as i32, M_WAIT) else {
-            kpanic(format_args!("nfs_request: M_PREPEND(M_WAIT)"));
+            // m_prepend freed the whole request.
+            return (None, Err(Errno::ENOBUFS.into()));
         };
         let mark =
             0x8000_0000 | (mm.m_pkthdr().len.get() as u32).wrapping_sub(NFSX_UNSIGNED as u32);
@@ -1080,9 +1090,7 @@ pub fn nfs_request<G: ProcGlue>(
             NfsReq::new(procnum as u32, xid, m, procp_tid, ptr::from_ref(vp).addr())
         })
     else {
-        kpanic(format_args!(
-            "nfs_request: pool_get(&nfsreqpl, PR_WAITOK) failed"
-        ));
+        return (None, Err(Errno::ENOBUFS.into()));
     };
     let r = Rep {
         nmp,
@@ -1927,7 +1935,8 @@ mod tests {
         nmp.nm_numgrps.store(3, Relaxed);
         let body = m_gethdr(M_WAIT, MT_DATA).expect("an mbuf");
         body.m_len().set(8);
-        let (m, xid) = nfsm_rpchead(&nmp, NFSPROC_LOOKUP, &cr, RPCAUTH_UNIX, body);
+        let (m, xid) =
+            nfsm_rpchead(&nmp, NFSPROC_LOOKUP, &cr, RPCAUTH_UNIX, body).expect("a header");
         let bytes = crate::fs::nfs::nfsm_subs::test_bytes(&m);
         let w = |i: usize| u32::from_be_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap());
         assert_eq!(
@@ -1955,7 +1964,7 @@ mod tests {
         cr.cr_ngroups.set(2);
         let body = m_gethdr(M_WAIT, MT_DATA).expect("an mbuf");
         body.m_len().set(0);
-        let (m, _) = nfsm_rpchead(&nmp, NFSPROC_LOOKUP, &cr, RPCAUTH_UNIX, body);
+        let (m, _) = nfsm_rpchead(&nmp, NFSPROC_LOOKUP, &cr, RPCAUTH_UNIX, body).expect("a header");
         let bytes = crate::fs::nfs::nfsm_subs::test_bytes(&m);
         let w = |i: usize| u32::from_be_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap());
         assert_eq!(bytes.len(), 40 + 28);
@@ -2268,6 +2277,20 @@ mod tests {
         assert_eq!(calls[0].1, calls[1].1, "resent whole");
         tn::unmount(&fx, nmp);
         peer.stop();
+    }
+
+    /// An out-of-memory `pool_get` of the request: `ENOBUFS` with no reply (the module's
+    /// deviation, LZ's).
+    #[test]
+    fn no_request_item_answers_enobufs() {
+        let fx = tn::setup(0);
+        let nmp = tn::nfsmount(&fx, SOCK_DGRAM, NFSMNT_NFSV3);
+        crate::testutil::fail_pool("nfsreqpl", 1);
+        let (reply, r) = rpc(&fx, &nmp, NFSPROC_NULL);
+        crate::testutil::fail_pool("nfsreqpl", 0);
+        assert!(reply.is_none());
+        assert_eq!(r, Err(NfsError::Errno(Errno::ENOBUFS)));
+        tn::unmount(&fx, nmp);
     }
 
     /// `NFSMNT_NOCONN` on a protocol that needs a connection: `ENOTCONN`, the socket gone.
