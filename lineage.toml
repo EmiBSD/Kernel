@@ -7489,6 +7489,23 @@ lz = ["sys/nfs/nfs_serv.rs"]
 status = "redesigned"
 notes = "N6.7b3 (unregistered until 7b4): nfs_serv.c's procedures over the kernel's XdrReader (one cursor over the owned request; every length compared before use) and the XdrWriter nfs_rephead begins (nfsm_reply answers the writer or the finished reply); read and write hand VOP_READ/VOP_WRITE one uio over the mbufs' bytes (Uio::kernel_readv over Mbuf::data_and_next_mut, kernel_writev over XdrReader pieces), the read's data filled before the reply and joined by m_cat, its header built after in one nfsm_build; every check of the C kept in its order (nfsrv_fhtovp's export and port, the read-only export, nfsrv_access's owner override, suser_ucred, the wire's bounds); 0 unsafe (LZ's nfsm_rebuild view gone)"
 
+[[module.fn]]
+lz = "sys/nfs/nfs_serv.rs::NfsrvProc"
+native = ["sys/kernel/fs/nfs/nfssvc.rs::NfsrvProc"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/nfs/nfs_serv.rs::nfsm_rebuild"
+native = []
+kind = "dropped"
+reason = "the read's attributes and counts are built after VOP_READ in one nfsm_build of the reply's writer, so no view into an earlier mbuf is needed"
+
+[[module.fn]]
+lz = "sys/nfs/nfs_serv.rs::AUTH_TOOWEAK_STATUS"
+native = []
+kind = "dropped"
+reason = "kernel::fs::nfs::nfs_srvsubs::nfsrv_fhtovp refuses a request with no client address itself, with the same NFSERR_AUTHERR | AUTH_TOOWEAK"
+
 [[module]]
 rust = "sys/kernel/fs/nfs/nfs_srvsubs.rs"
 crate = "kernel"
@@ -7502,6 +7519,11 @@ crate = "kernel"
 lz = ["sys/nfs/nfs_syscalls.rs", "sys/nfs/nfs.rs"]
 status = "redesigned"
 notes = "N6.7b2 (unregistered until 7b4, D-9): nfs.h's server structures and nfs_syscalls.c's server half. NfssvcSock (an MArc of M_NFSSVC pinned on nfssvc_sockhead, a PinList bound to the kernel lock; the membership's handle in ns_self; ns_flag/ns_solock/ns_sref relaxed atomics; ns_so, ns_fp kernel-lock cells; the queued mbufs one NsRcv in a LoanSlot; ns_nam the connected client's bytes, lent to a request as a name mbuf), Nfsd (an MBox of M_NFSD the call's frame owns, pinned on nfsd_head; nfsd_procp a tid, nfsd_nd gone), NfsrvDescript (a PoolBox of ndscpl: the request owned, the cursor the bytes consumed, nd_nam lent, nd_nam2 owned), NfsrvProc (nfsrv3_procs' one function type), NfsrvTables (VfsTables' nfsrv member); and nfs_syscalls.c's server half: sys_nfssvc (suser, the nfsd init wait, NFSSVC_ADDSOCK over UserPtr<NfsdArgs>/getsock/sockargs, NFSSVC_NFSD over UserPtr<NfsdSrvargs>, EINTR/ERESTART success; procs, nfs_serv's table, given by 7b4's registration), nfssvc_addsock, nfssvc_checknam, nfssvc_nfsd and its loop (the socket and the request in the nfsd's frame, ns_nam lent per request), the reply's send, nfsrv_zapsock, nfsrv_slpderef (the caller's handle; the unlink takes the membership's), nfsrv_init, nfsrv_getslp (the handle out of the nfsd's mailbox)"
+
+[[module.fn]]
+lz = "sys/nfs/nfs_syscalls.rs::NFSRV3_PROCS"
+native = ["sys/kernel/fs/nfs/nfs_serv.rs::nfsrv3_procs"]
+kind = "moved"
 
 [[module]]
 rust = "sys/ntfs/ntfs.rs"
