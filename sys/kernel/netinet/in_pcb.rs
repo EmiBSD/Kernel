@@ -3119,7 +3119,10 @@ pub(crate) mod testinet {
     /// functions themselves.
     struct UdpProto;
 
-    static PROTOS: [&dyn Protocol<G>; 1] = [&UdpProto];
+    /// The domain's protocols, what `socreate(AF_INET, SOCK_DGRAM)` finds (the UNIX domain
+    /// tests' table lists the domain): UDP with its user requests (N6.7a4, the diskless
+    /// boot's kernel sockets).
+    static PROTOS: [&dyn Protocol<G>; 1] = [&crate::netinet::udp_usrreq::testudp::UdpProto];
 
     impl Domain<G> for InetDom {
         fn family(&self) -> i32 {
@@ -3287,6 +3290,15 @@ pub(crate) mod testinet {
     /// [`InetDriver`]) with the IPv4 address `addr`/24, its local and connected routes made.
     pub(crate) fn iface(name: &[u8], addr: [u8; 4]) -> (&'static Ifnet, &'static InetDriver) {
         let d: &'static InetDriver = Box::leak(Box::default());
+        (iface_with(name, addr, d), d)
+    }
+
+    /// [`iface`] over the driver `d` (one that brings the interface up at `SIOCSIFADDR`).
+    pub(crate) fn iface_with(
+        name: &[u8],
+        addr: [u8; 4],
+        d: &'static dyn NetDriver,
+    ) -> &'static Ifnet {
         let ifp = crate::net::if_::test_ifnet_with(name, d);
         ifp.if_flags.set(IFF_BROADCAST | IFF_MULTICAST);
         ifp.if_mtu.set(1500);
@@ -3315,7 +3327,7 @@ pub(crate) mod testinet {
             &sin([255, 255, 255, 0]),
         );
         crate::netinet::in_::in_ioctl(SIOCAIFADDR, &mut r, Some(ifp), true).expect("an address");
-        (ifp, d)
+        ifp
     }
 }
 /* </CODE> */

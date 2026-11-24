@@ -670,4 +670,821 @@ const _: () = {
     assert!(size_of::<RpcCall>() == 15 * 4);
     assert!(size_of::<RpcCall>() <= crate::net::mbuf::MHLEN);
 };
+/// The diskless boot's test fixture (`cfg(test)`), shared by this module's tests and
+/// `nfs_boot`'s: chains and XDR bytes, and a scripted UDP peer behind a test interface (the
+/// UDP of `testudp` over the test glue).
+#[cfg(test)]
+pub(crate) mod testkrpc {
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex, MutexGuard};
+    use std::vec;
+    use std::vec::Vec;
+
+    use hal::sys::netinet_in::{IPPROTO_UDP, InAddr, SockaddrIn};
+    use hal::sys::netinet_ip::Ip;
+    use hal::sys::netinet_udp::Udphdr;
+    use hal::sys::socket::AF_INET;
+
+    use super::RPC_REPLY;
+    use crate::fs::nfs::nfsm_subs::nfsm_rndup;
+    use crate::net::if_var::{Ifnet, NetDriver};
+    use crate::net::mbuf::{
+        M_UDP_CSUM_IN_OK, M_WAIT, MChainBuilder, MHLEN, MT_DATA, MbufBox, m_get, m_gethdr, mclget,
+    };
+    use crate::net::route::Rtentry;
+    use crate::netinet::in_pcb::testinet;
+    use crate::netinet::udp_usrreq::testudp::{self, G};
+    use crate::proc::{ProcGlue, Thread};
+    use crate::sys::errno::Errno;
+
+    /// The segments `segs` as one chain, its first mbuf a packet header's (the total length
+    /// in it), the others plain mbufs.
+    pub(crate) fn pkt_chain(segs: &[&[u8]]) -> MbufBox {
+        let mut b = MChainBuilder::new();
+        let total: usize = segs.iter().map(|s| s.len()).sum();
+        for (i, s) in segs.iter().enumerate() {
+            let mut m = if i == 0 {
+                m_gethdr(M_WAIT, MT_DATA).expect("an mbuf")
+            } else {
+                m_get(M_WAIT, MT_DATA).expect("an mbuf")
+            };
+            if s.len() > MHLEN {
+                mclget(&mut m, M_WAIT);
+            }
+            m.m_len().set(s.len() as u32);
+            m.data_mut().expect("writable").copy_from_slice(s);
+            if i == 0 {
+                m.m_pkthdr().len.set(total as i32);
+            }
+            b.push(m);
+        }
+        b.into_head().expect("a chain")
+    }
+
+    /// An XDR string: its length word, its bytes, its zero padding.
+    pub(crate) fn xstr(s: &[u8]) -> Vec<u8> {
+        let mut v = (s.len() as u32).to_be_bytes().to_vec();
+        v.extend_from_slice(s);
+        v.resize(4 + nfsm_rndup(s.len()), 0);
+        v
+    }
+
+    /// An XDR `struct xdr_inaddr` of `a`.
+    pub(crate) fn xaddr(a: [u8; 4]) -> Vec<u8> {
+        let mut v = 1u32.to_be_bytes().to_vec();
+        for b in a {
+            v.extend_from_slice(&u32::from(b).to_be_bytes());
+        }
+        v
+    }
+
+    /// The words of `w`, big-endian.
+    pub(crate) fn words(w: &[u32]) -> Vec<u8> {
+        w.iter().flat_map(|x| x.to_be_bytes()).collect()
+    }
+
+    /// An accepted reply's header (AUTH_NULL verifier, success) before `body`.
+    pub(crate) fn accepted(xid: u32, body: &[u8]) -> Vec<u8> {
+        let mut v = vec![];
+        v.extend_from_slice(&xid.to_ne_bytes());
+        v.extend_from_slice(&words(&[RPC_REPLY, 0, 0, 0, 0]));
+        v.extend_from_slice(body);
+        v
+    }
+
+    /// The peer's wire: the packets the client's interface outputs, kept for the peer.
+    #[derive(Default)]
+    pub(crate) struct Wire {
+        out: Mutex<VecDeque<Vec<u8>>>,
+    }
+
+    impl NetDriver for Wire {
+        fn ioctl(&self, ifp: &'static Ifnet, cmd: u64, _data: &mut [u8]) -> Result<(), Errno> {
+            if cmd == hal::sys::sockio::SIOCSIFADDR {
+                ifp.if_flags
+                    .set(ifp.if_flags.get() | hal::sys::net_if::IFF_UP);
+            }
+            Ok(())
+        }
+        fn output(
+            &self,
+            _ifp: &'static Ifnet,
+            m: MbufBox,
+            _dst: crate::net::proto::SockaddrView<'_>,
+            _rt: Option<&Rtentry>,
+        ) -> Result<(), Errno> {
+            let mut bytes = vec![0u8; m.m_pkthdr().len.get() as usize];
+            crate::net::mbuf::m_copydata(&m, 0, &mut bytes);
+            if let Ok(mut q) = self.out.lock() {
+                q.push_back(bytes);
+            }
+            Ok(())
+        }
+    }
+
+    /// A request the peer saw: the addresses, the ports and the UDP payload.
+    #[derive(Clone, Debug)]
+    pub(crate) struct Seen {
+        pub(crate) src: [u8; 4],
+        pub(crate) dst: [u8; 4],
+        pub(crate) sport: u16,
+        pub(crate) dport: u16,
+        pub(crate) payload: Vec<u8>,
+    }
+
+    impl Seen {
+        /// The call's word `i` (host order).
+        pub(crate) fn word(&self, i: usize) -> u32 {
+            u32::from_be_bytes(self.payload[4 * i..4 * i + 4].try_into().unwrap_or([0; 4]))
+        }
+        /// The call's raw xid.
+        pub(crate) fn xid(&self) -> u32 {
+            u32::from_ne_bytes(self.payload[..4].try_into().unwrap_or([0; 4]))
+        }
+        /// The program, version and procedure called.
+        pub(crate) fn call(&self) -> (u32, u32, u32) {
+            (self.word(3), self.word(4), self.word(5))
+        }
+        /// The call's body, after the 60-byte header.
+        pub(crate) fn body(&self) -> &[u8] {
+            &self.payload[60..]
+        }
+    }
+
+    /// The scripted server at `server`: a thread that hands each request the client sends to
+    /// `script` and sends the client every payload it answers, from `server` and the port the
+    /// request went to, until stopped.
+    pub(crate) struct Peer {
+        stop: Arc<AtomicBool>,
+        seen: Arc<Mutex<Vec<Seen>>>,
+        th: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Peer {
+        pub(crate) fn start(
+            wire: &'static Wire,
+            server: [u8; 4],
+            mut script: impl FnMut(&Seen) -> Vec<Vec<u8>> + Send + 'static,
+        ) -> Self {
+            let stop = Arc::new(AtomicBool::new(false));
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let (st, sn) = (stop.clone(), seen.clone());
+            let th = std::thread::spawn(move || {
+                while !st.load(Ordering::SeqCst) {
+                    let next = wire.out.lock().ok().and_then(|mut q| q.pop_front());
+                    let Some(p) = next else {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                        continue;
+                    };
+                    let hl = usize::from(p[0] & 0x0f) * 4;
+                    let ip4 = |o: usize| [p[o], p[o + 1], p[o + 2], p[o + 3]];
+                    let s = Seen {
+                        src: ip4(12),
+                        dst: ip4(16),
+                        sport: u16::from_be_bytes([p[hl], p[hl + 1]]),
+                        dport: u16::from_be_bytes([p[hl + 2], p[hl + 3]]),
+                        payload: p[hl + 8..].to_vec(),
+                    };
+                    if let Ok(mut v) = sn.lock() {
+                        v.push(s.clone());
+                    }
+                    for reply in script(&s) {
+                        let m = dgram(server, s.dport, s.src, s.sport, &reply);
+                        let _ = testudp::input(m, 20, i32::from(AF_INET));
+                    }
+                }
+            });
+            Self {
+                stop,
+                seen,
+                th: Some(th),
+            }
+        }
+
+        /// Stops the peer: the requests it saw.
+        pub(crate) fn stop(mut self) -> Vec<Seen> {
+            self.stop.store(true, Ordering::SeqCst);
+            if let Some(th) = self.th.take() {
+                th.join().expect("the peer");
+            }
+            self.seen.lock().map(|v| v.clone()).unwrap_or_default()
+        }
+    }
+
+    impl Drop for Peer {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            if let Some(th) = self.th.take() {
+                let _ = th.join();
+            }
+        }
+    }
+
+    /// An IPv4 datagram from `src`:`sport` to `dst`:`dport` with `payload`, its checksum
+    /// verified by the interface (`M_UDP_CSUM_IN_OK`).
+    fn dgram(src: [u8; 4], sport: u16, dst: [u8; 4], dport: u16, payload: &[u8]) -> MbufBox {
+        let len = 28 + payload.len();
+        let mut ip = Ip {
+            ip_len: (len as u16).to_be(),
+            ip_ttl: 64,
+            ip_p: IPPROTO_UDP as u8,
+            ip_src: InAddr {
+                s_addr: u32::from_ne_bytes(src),
+            },
+            ip_dst: InAddr {
+                s_addr: u32::from_ne_bytes(dst),
+            },
+            ..Ip::default()
+        };
+        ip.set_ip_v(4);
+        ip.set_ip_hl(5);
+        let uh = Udphdr {
+            uh_sport: sport.to_be(),
+            uh_dport: dport.to_be(),
+            uh_ulen: ((8 + payload.len()) as u16).to_be(),
+            uh_sum: 0x1234u16.to_be(),
+        };
+        let mut p = vec![0u8; len];
+        assert!(hal::pod::put(&mut p, 0, &ip));
+        assert!(hal::pod::put(&mut p, 20, &uh));
+        p[28..].copy_from_slice(payload);
+        let m = pkt_chain(&[&p]);
+        let ph = m.m_pkthdr();
+        ph.csum_flags.set(ph.csum_flags.get() | M_UDP_CSUM_IN_OK);
+        m
+    }
+
+    /// The test domain and UDP (`testudp`), `proc0` recorded (the first test's root thread:
+    /// any root thread will do), and an interface `krpc<n>` at 10.77.n.1/24 whose packets go
+    /// to the returned wire.
+    pub(crate) fn setup(
+        name: &[u8],
+        n: u8,
+    ) -> (MutexGuard<'static, ()>, &'static Thread<G>, &'static Wire) {
+        let (g, p) = testudp::setup();
+        crate::testutil::install();
+        G::tables().proc0_test_install(hal::pin::pin_static(p));
+        let wire: &'static Wire = std::boxed::Box::leak(std::boxed::Box::default());
+        let _ifp = testinet::iface_with(name, [10, 77, n, 1], wire);
+        (g, p, wire)
+    }
+
+    /// A thread of user `uid` (not the superuser), for the privilege tests.
+    pub(crate) fn user_thread(uid: u32) -> &'static Thread<G> {
+        let pr = crate::proc::process_alloc::<G>(4000 + uid as i32, ());
+        let mut ids = crate::cred::Ucred::new();
+        ids.cr_uid.set(uid);
+        ids.cr_ruid.set(uid);
+        drop(pr.set_ucred(crate::cred::CredRef::new(ids)));
+        let t = crate::proc::thread_alloc::<G>(&pr, ());
+        drop(t.set_cred(pr.ucred()));
+        core::mem::forget(pr);
+        hal::pool::PoolBox::leak(t)
+    }
+
+    /// The address `a`, port 0, as a `sockaddr_in`.
+    pub(crate) fn sin(a: [u8; 4], port: u16) -> SockaddrIn {
+        testudp::sin(a, port)
+    }
+}
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    // Host tests of the boot's RPC: the XDR codecs against the C's rules (strings with their
+    // bounds and padding, addresses), the reply's strip, the receive loop's tests, property
+    // tests of the decoders over chains split at random, and `krpc_call` end to end against a
+    // scripted UDP peer: the header, the reserved port bound by `proc0`, a lost request sent
+    // again, `ETIMEDOUT`, stray and denied replies skipped, the broadcast and its sender.
+
+    use std::vec;
+    use std::vec::Vec;
+
+    use super::testkrpc::{
+        Peer, Seen, accepted, pkt_chain, setup, sin, user_thread, words, xaddr, xstr,
+    };
+    use super::*;
+    use crate::fs::nfs::nfsm_subs::{TestRng, test_bytes, test_chain};
+
+    /// The bytes an [`XdrWriter`] built.
+    fn written(f: impl FnOnce(&mut XdrWriter)) -> Vec<u8> {
+        let mut w = XdrWriter::reqhead(0);
+        f(&mut w);
+        test_bytes(&w.into_chain())
+    }
+
+    #[test]
+    fn strings_encode_with_their_padding_and_the_cs_limit() {
+        let _g = crate::net::mbuf::tests::setup();
+        for s in [&b""[..], b"a", b"root", b"swap!", b"/export/root"] {
+            let mut r = Ok(());
+            let b = written(|w| r = xdr_string_encode(w, s));
+            assert_eq!(r, Ok(()));
+            assert_eq!(b, xstr(s), "{s:?}");
+        }
+        // 4 + rndup(len) > MCLBYTES is the C's NULL, ENOMEM to its callers; one byte less
+        // fits.
+        let big = vec![b'x'; MCLBYTES - 4];
+        let mut r = Err(Errno::EIO);
+        let b = written(|w| r = xdr_string_encode(w, &big));
+        assert_eq!((r, b.len()), (Ok(()), MCLBYTES));
+        let big = vec![b'x'; MCLBYTES - 3];
+        let mut w = XdrWriter::reqhead(0);
+        assert_eq!(xdr_string_encode(&mut w, &big), Err(Errno::ENOMEM));
+    }
+
+    #[test]
+    fn strings_decode_bounded_by_the_length_wanted_and_the_buffer() {
+        let _g = crate::net::mbuf::tests::setup();
+        // (wire string, len wanted, buffer size): the bytes kept and the length reported;
+        // the cursor always ends past the whole string and its padding.
+        let table: [(&[u8], usize, usize, &[u8]); 6] = [
+            (b"client", 255, 256, b"client"),
+            (b"", 255, 256, b""),
+            (b"abcdefgh", 3, 256, b"abc"),
+            (b"abcdefgh", 255, 5, b"abcd"),
+            (b"abcde", 5, 6, b"abcde"),
+            (b"abcde", 0, 6, b""),
+        ];
+        for (s, want, room, kept) in table {
+            let mut bytes = xstr(s);
+            bytes.extend_from_slice(&[0xaa, 0xbb, 0xcc, 0xdd]);
+            let m = test_chain(&[&bytes]);
+            let mut r = XdrReader::new(&m);
+            let mut buf = vec![0xeeu8; room];
+            let mut len = want;
+            assert_eq!(xdr_string_decode(&mut r, &mut buf, &mut len), Ok(()));
+            assert_eq!(len, kept.len());
+            assert_eq!(&buf[..len], kept);
+            assert_eq!(buf[len], 0, "NUL-terminated");
+            assert_eq!(r.word(), Ok(u32::from_ne_bytes([0xaa, 0xbb, 0xcc, 0xdd])));
+        }
+    }
+
+    #[test]
+    fn a_bad_string_leaves_the_buffer_untouched() {
+        let _g = crate::net::mbuf::tests::setup();
+        let cases: [Vec<u8>; 6] = [
+            // Negative (-2^31, and -1, which as a size would overflow the rounding), and
+            // above INT_MAX - 3 - 4.
+            words(&[0x8000_0000]),
+            words(&[0xffff_ffff]),
+            words(&[0x7fff_fff9]),
+            // Longer than the chain: the bytes, or only the padding, missing.
+            words(&[8, 0x6162_6364]),
+            {
+                let mut v = words(&[5]);
+                v.extend_from_slice(b"abcde");
+                v
+            },
+            // No length word at all.
+            vec![0, 0],
+        ];
+        for bytes in cases {
+            let m = test_chain(&[&bytes]);
+            let mut r = XdrReader::new(&m);
+            let mut buf = [0xeeu8; 16];
+            let mut len = 15;
+            assert_eq!(
+                xdr_string_decode(&mut r, &mut buf, &mut len),
+                Err(Errno::EBADRPC),
+                "{bytes:?}"
+            );
+            assert_eq!(buf, [0xee; 16]);
+            assert_eq!(len, 15);
+        }
+        // The largest length the C accepts is still refused by the chain's end.
+        let m = test_chain(&[&words(&[0x7fff_fff8])]);
+        let mut buf = [0u8; 4];
+        let mut len = 3;
+        assert_eq!(
+            xdr_string_decode(&mut XdrReader::new(&m), &mut buf, &mut len),
+            Err(Errno::EBADRPC)
+        );
+    }
+
+    #[test]
+    fn addresses_round_trip_and_another_type_is_any() {
+        let _g = crate::net::mbuf::tests::setup();
+        let a = InAddr {
+            s_addr: u32::from_ne_bytes([10, 77, 1, 200]),
+        };
+        let b = written(|w| xdr_inaddr_encode(w, &a));
+        assert_eq!(b, xaddr([10, 77, 1, 200]));
+        let m = test_chain(&[&b[..7], &b[7..]]);
+        assert_eq!(xdr_inaddr_decode(&mut XdrReader::new(&m)), Ok(a));
+        // Each word's low byte (fxdr_unsigned(u_int8_t, ..)).
+        let m = test_chain(&[&words(&[1, 0x1_0a, 0xff_4d, 0x01, 0x0102])]);
+        assert_eq!(
+            xdr_inaddr_decode(&mut XdrReader::new(&m)).map(|a| a.s_addr.to_ne_bytes()),
+            Ok([10, 77, 1, 2])
+        );
+        let m = test_chain(&[&words(&[2, 10, 77, 1, 2])]);
+        assert_eq!(
+            xdr_inaddr_decode(&mut XdrReader::new(&m)).map(|a| a.s_addr),
+            Ok(INADDR_ANY)
+        );
+        let m = test_chain(&[&words(&[1, 10, 77, 1])]);
+        assert_eq!(
+            xdr_inaddr_decode(&mut XdrReader::new(&m)),
+            Err(Errno::EBADRPC)
+        );
+    }
+
+    #[test]
+    fn the_strip_takes_the_header_and_the_verifier_by_its_bounded_length() {
+        let _g = crate::net::mbuf::tests::setup();
+        let xid = txdr_unsigned(7);
+        // AUTH_NULL: 24 bytes go.
+        let r = accepted(xid, b"body");
+        let m = strip_reply(pkt_chain(&[&r[..10], &r[10..]])).expect("stripped");
+        assert_eq!(test_bytes(&m), b"body");
+        // A verifier of 5 bytes takes 8 more (rounded), as the C.
+        let mut r = vec![];
+        r.extend_from_slice(&words(&[7, RPC_REPLY, 0, 1, 5, 0]));
+        r.extend_from_slice(b"VVVVVVVV");
+        r.extend_from_slice(b"rest");
+        let m = strip_reply(pkt_chain(&[&r])).expect("stripped");
+        assert_eq!(test_bytes(&m), b"rest");
+        // RPCAUTH_MAXSIZ is the bound; above it, or a negative int, EBADRPC, though the
+        // chain holds the verifier it announces.
+        for (authlen, ok) in [(400u32, true), (401, false), (0x8000_0000, false)] {
+            let mut r = words(&[7, RPC_REPLY, 0, 1, authlen, 0]);
+            r.resize(24 + 404 + 8, 0);
+            assert_eq!(strip_reply(pkt_chain(&[&r])).is_ok(), ok, "{authlen}");
+        }
+        // Shorter than the header, or than the verifier it announces.
+        let r = words(&[7, RPC_REPLY, 0, 0, 0]);
+        assert_eq!(strip_reply(pkt_chain(&[&r])).err(), Some(Errno::EBADRPC));
+        let r = words(&[7, RPC_REPLY, 0, 1, 8, 0, 1]);
+        assert_eq!(strip_reply(pkt_chain(&[&r])).err(), Some(Errno::EBADRPC));
+        // No packet header: EBADRPC, not a panic.
+        let r = accepted(xid, b"x");
+        assert_eq!(strip_reply(test_chain(&[&r])).err(), Some(Errno::EBADRPC));
+    }
+
+    #[test]
+    fn the_receive_loop_takes_only_the_answer_to_its_call() {
+        let _g = crate::net::mbuf::tests::setup();
+        let xid = 0x1234_5678;
+        let ok = accepted(txdr_unsigned(xid), b"");
+        let m = pkt_chain(&[&ok[..3], &ok[3..]]);
+        assert!(krpc_reply_ok(&m, ok.len(), xid));
+        // Under MIN_REPLY_HDR by the received count.
+        assert!(!krpc_reply_ok(&m, 15, xid));
+        // Another xid, a call, a denial, a failed call.
+        let other = accepted(txdr_unsigned(xid + 1), b"");
+        assert!(!krpc_reply_ok(&pkt_chain(&[&other]), 24, xid));
+        let mut call = ok.clone();
+        call[4..8].copy_from_slice(&0u32.to_be_bytes());
+        assert!(!krpc_reply_ok(&pkt_chain(&[&call]), 24, xid));
+        let before = crate::testutil::printf_count("rpc denied, error=1\n");
+        let denied = [
+            &txdr_unsigned(xid).to_ne_bytes()[..],
+            &words(&[RPC_REPLY, 1, 1]),
+        ]
+        .concat();
+        assert!(!krpc_reply_ok(&pkt_chain(&[&denied]), 16, xid));
+        assert_eq!(
+            crate::testutil::printf_count("rpc denied, error=1\n"),
+            before + 1
+        );
+        let before = crate::testutil::printf_count("rpc denied, status=1\n");
+        let failed = [
+            &txdr_unsigned(xid).to_ne_bytes()[..],
+            &words(&[RPC_REPLY, 0, 0, 0, 1]),
+        ]
+        .concat();
+        assert!(!krpc_reply_ok(&pkt_chain(&[&failed]), 24, xid));
+        assert_eq!(
+            crate::testutil::printf_count("rpc denied, status=1\n"),
+            before + 1
+        );
+        // A 16-byte accepted reply passes the loop; the strip refuses it.
+        let short = &ok[..16];
+        let m = pkt_chain(&[short]);
+        assert!(krpc_reply_ok(&m, 16, xid));
+        assert_eq!(strip_reply(m).err(), Some(Errno::EBADRPC));
+    }
+
+    /// A flat decoder of the same wire: the strings and the address the C's rules keep, or
+    /// `None` where it refuses.
+    fn flat_decode(b: &[u8], want: usize) -> Option<(Vec<u8>, [u8; 4], usize)> {
+        let len = i32::from_be_bytes(b.get(..4)?.try_into().ok()?);
+        if len < 0 || len > i32::MAX - 7 {
+            return None;
+        }
+        let padded = nfsm_rndup(len as usize);
+        let s = b.get(4..4 + padded)?;
+        let kept = s[..(len as usize).min(want)].to_vec();
+        let at = 4 + padded;
+        let a = b.get(at..at + 20)?;
+        let w = |i: usize| u32::from_be_bytes(a[4 * i..4 * i + 4].try_into().unwrap_or([0; 4]));
+        let addr = if w(0) == 1 {
+            [w(1) as u8, w(2) as u8, w(3) as u8, w(4) as u8]
+        } else {
+            [0; 4]
+        };
+        Some((kept, addr, at + 20))
+    }
+
+    #[test]
+    fn property_the_decoders_equal_a_flat_decoder_over_any_split() {
+        let _g = crate::net::mbuf::tests::setup();
+        let mut rng = TestRng(0x6b72_7063_5f73_7472);
+        for case in 0..2000 {
+            // A string of 0..40 bytes (its length word sometimes wrong), an address of
+            // either type, sometimes cut short.
+            let n = rng.below(41);
+            let mut b = xstr(&rng.bytes(n));
+            match rng.below(8) {
+                0 => b[..4].copy_from_slice(&(rng.next_u64() as u32).to_be_bytes()),
+                1 => b[..4].copy_from_slice(&((n + rng.below(9)) as u32).to_be_bytes()),
+                _ => {}
+            }
+            let atype = if rng.below(4) == 0 { 2 } else { 1 };
+            b.extend_from_slice(&words(&[
+                atype,
+                rng.next_u64() as u32,
+                rng.next_u64() as u32,
+                rng.next_u64() as u32,
+                rng.next_u64() as u32,
+            ]));
+            if rng.below(4) == 0 {
+                b.truncate(rng.below(b.len() + 1));
+            }
+            let want = rng.below(48);
+            let expect = flat_decode(&b, want);
+
+            let segs = rng.split(&b);
+            let m = test_chain(&segs);
+            let mut r = XdrReader::new(&m);
+            let mut buf = [0u8; 48];
+            let mut len = want;
+            let got = xdr_string_decode(&mut r, &mut buf, &mut len)
+                .and_then(|()| xdr_inaddr_decode(&mut r))
+                .map(|a| (buf[..len].to_vec(), a.s_addr.to_ne_bytes(), r.offset()));
+            assert_eq!(got.ok(), expect, "case {case}: {b:?} want {want}");
+        }
+    }
+
+    #[test]
+    fn property_the_strip_never_reads_past_the_chain() {
+        let _g = crate::net::mbuf::tests::setup();
+        let mut rng = TestRng(0x7374_7269_705f_7270);
+        for case in 0..2000 {
+            let authtype = if rng.below(3) == 0 { 0 } else { 1 };
+            let authlen = match rng.below(4) {
+                0 => rng.next_u64() as u32,
+                _ => rng.below(420) as u32,
+            };
+            let mut b = words(&[1, RPC_REPLY, 0, authtype, authlen, 0]);
+            let extra = rng.below(440);
+            b.extend(rng.bytes(extra));
+            if rng.below(2) == 0 {
+                b.truncate(rng.below(b.len() + 1));
+            }
+            let total = b.len();
+            let expect = if total < 24 {
+                None
+            } else if authtype == 0 {
+                Some(24)
+            } else {
+                let a = authlen as i32;
+                if a < 0 || a as usize > RPCAUTH_MAXSIZ {
+                    None
+                } else {
+                    let l = 24 + ((a + 3) & !3) as usize;
+                    (l <= total).then_some(l)
+                }
+            };
+            let segs = rng.split(&b);
+            let got = strip_reply(pkt_chain(&segs)).ok().map(|m| test_bytes(&m));
+            assert_eq!(
+                got,
+                expect.map(|l| b[l..].to_vec()),
+                "case {case}: authlen {authlen} total {total}"
+            );
+        }
+    }
+
+    /// The `getport` answers of a portmapper: `port` for every program.
+    fn portmapper(port: u32) -> impl FnMut(&Seen) -> Vec<Vec<u8>> + Send + 'static {
+        move |s| vec![accepted(s.xid(), &words(&[port]))]
+    }
+
+    #[test]
+    fn a_portmap_call_carries_the_cs_header_from_a_reserved_port() {
+        let (_g, p, wire) = setup(b"krpc1", 1);
+        let peer = Peer::start(wire, [10, 77, 1, 2], portmapper(2049));
+        let mut s = sin([10, 77, 1, 2], 0);
+        // The portmapper's own port needs no call.
+        assert_eq!(
+            krpc_portmap(p, &mut s, PMAPPROG, PMAPVERS),
+            Ok(PMAPPORT.to_be())
+        );
+        assert_eq!(
+            krpc_portmap(p, &mut s, RPCPROG_MNT_TEST, 3),
+            Ok(2049u16.to_be())
+        );
+        assert_eq!(s.sin_port, PMAPPORT.to_be());
+        let seen = peer.stop();
+        assert_eq!(seen.len(), 1);
+        let c = &seen[0];
+        assert_eq!((c.dst, c.dport), ([10, 77, 1, 2], PMAPPORT));
+        // The reserved port: IP_PORTRANGE_LOW's range (600..1023), not the default's.
+        assert!((600..1024).contains(&c.sport), "port {}", c.sport);
+        // xid, CALL, RPC version 2, the program, version and procedure, AUTH_UNIX of 20
+        // zero bytes (root), an AUTH_NULL verifier; then sdata.
+        assert_eq!(
+            c.payload[4..60],
+            words(&[
+                0,
+                2,
+                PMAPPROG,
+                PMAPVERS,
+                PMAPPROC_GETPORT,
+                1,
+                20,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+            ])[..]
+        );
+        assert_eq!(
+            c.body(),
+            words(&[RPCPROG_MNT_TEST, 3, IPPROTO_UDP as u32, 0])
+        );
+    }
+
+    /// The mount daemon's program number (rpcv2.h's `RPCPROG_MNT`), as the tests write it.
+    const RPCPROG_MNT_TEST: u32 = 100005;
+
+    #[test]
+    fn the_bind_is_proc0s_whoever_calls() {
+        let (_g, _p, wire) = setup(b"krpc2", 2);
+        let user = user_thread(1000);
+        assert!(crate::proc::suser(user).is_err());
+        let peer = Peer::start(wire, [10, 77, 2, 2], portmapper(635));
+        let mut s = sin([10, 77, 2, 2], 0);
+        assert_eq!(
+            krpc_portmap(user, &mut s, RPCPROG_MNT_TEST, 1),
+            Ok(635u16.to_be())
+        );
+        let seen = peer.stop();
+        assert_eq!(seen.len(), 1);
+        assert!(seen[0].sport < 1024, "port {}", seen[0].sport);
+    }
+
+    #[test]
+    fn a_lost_request_is_sent_again_with_its_xid() {
+        let (_g, p, wire) = setup(b"krpc3", 3);
+        let mut first = true;
+        let peer = Peer::start(wire, [10, 77, 3, 2], move |s| {
+            if core::mem::replace(&mut first, false) {
+                return vec![];
+            }
+            vec![accepted(s.xid(), b"done")]
+        });
+        let mut w = XdrWriter::reqhead(0);
+        w.u32(42);
+        let r = krpc_call(
+            p,
+            &sin([10, 77, 3, 2], 700),
+            300_001,
+            1,
+            9,
+            w.into_chain(),
+            None,
+            5,
+        );
+        assert_eq!(r.map(|m| test_bytes(&m)), Ok(b"done".to_vec()));
+        let seen = peer.stop();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0].xid(), seen[1].xid());
+        assert_eq!(seen[0].payload, seen[1].payload);
+        assert_eq!(seen[0].call(), (300_001, 1, 9));
+        assert_eq!(seen[0].body(), words(&[42]));
+    }
+
+    #[test]
+    fn no_answer_is_etimedout_when_the_retries_run_out() {
+        let (_g, p, wire) = setup(b"krpc4", 4);
+        let peer = Peer::start(wire, [10, 77, 4, 2], |_| vec![]);
+        let w = XdrWriter::reqhead(0);
+        let r = krpc_call(
+            p,
+            &sin([10, 77, 4, 2], 700),
+            300_002,
+            1,
+            1,
+            w.into_chain(),
+            None,
+            1,
+        );
+        assert_eq!(r.err(), Some(Errno::ETIMEDOUT));
+        assert_eq!(peer.stop().len(), 1);
+        // Another family is refused before a socket is made.
+        let mut s = sin([10, 77, 4, 2], 700);
+        s.sin_family = 24;
+        let w = XdrWriter::reqhead(0);
+        let r = krpc_call(p, &s, 1, 1, 1, w.into_chain(), None, 1);
+        assert_eq!(r.err(), Some(Errno::EAFNOSUPPORT));
+    }
+
+    #[test]
+    fn stray_and_denied_replies_are_skipped_for_the_answer() {
+        let (_g, p, wire) = setup(b"krpc5", 5);
+        let peer = Peer::start(wire, [10, 77, 5, 2], |s| {
+            let x = s.xid();
+            let other = x ^ 0x0100_0000;
+            let mut call = accepted(x, b"no");
+            call[4..8].copy_from_slice(&0u32.to_be_bytes());
+            vec![
+                accepted(other, b"stray"),
+                call,
+                [&x.to_ne_bytes()[..], &words(&[RPC_REPLY, 1, 7])].concat(),
+                [&x.to_ne_bytes()[..], &words(&[RPC_REPLY, 0, 0, 0, 3])].concat(),
+                vec![1, 2, 3],
+                accepted(x, b"yes!"),
+            ]
+        });
+        let denied = crate::testutil::printf_count("rpc denied, error=7\n");
+        let failed = crate::testutil::printf_count("rpc denied, status=3\n");
+        let w = XdrWriter::reqhead(0);
+        let r = krpc_call(
+            p,
+            &sin([10, 77, 5, 2], 700),
+            300_003,
+            1,
+            1,
+            w.into_chain(),
+            None,
+            3,
+        );
+        assert_eq!(r.map(|m| test_bytes(&m)), Ok(b"yes!".to_vec()));
+        assert_eq!(peer.stop().len(), 1);
+        assert_eq!(
+            crate::testutil::printf_count("rpc denied, error=7\n"),
+            denied + 1
+        );
+        assert_eq!(
+            crate::testutil::printf_count("rpc denied, status=3\n"),
+            failed + 1
+        );
+    }
+
+    #[test]
+    fn a_broadcast_call_reports_its_answers_sender() {
+        let (_g, p, wire) = setup(b"krpc6", 6);
+        let peer = Peer::start(wire, [10, 77, 6, 9], |s| vec![accepted(s.xid(), b"hi")]);
+        let mut from = None;
+        let w = XdrWriter::reqhead(0);
+        let r = krpc_call(
+            p,
+            &sin([10, 77, 6, 255], PMAPPORT),
+            PMAPPROG,
+            PMAPVERS,
+            PMAPPROC_CALLIT,
+            w.into_chain(),
+            Some(&mut from),
+            2,
+        );
+        assert_eq!(r.map(|m| test_bytes(&m)), Ok(b"hi".to_vec()));
+        let from = from.expect("the sender");
+        let sa: SockaddrIn = hal::pod::at(from.data(), 0).expect("a sockaddr_in");
+        assert_eq!(sa.sin_addr.s_addr.to_ne_bytes(), [10, 77, 6, 9]);
+        assert_eq!(sa.sin_port, PMAPPORT.to_be());
+        let seen = peer.stop();
+        assert_eq!(seen[0].dst, [10, 77, 6, 255]);
+        // Without SO_BROADCAST (no `from_p`) the broadcast is refused by ip_output.
+        let w = XdrWriter::reqhead(0);
+        let r = krpc_call(
+            p,
+            &sin([10, 77, 6, 255], PMAPPORT),
+            1,
+            1,
+            1,
+            w.into_chain(),
+            None,
+            1,
+        );
+        assert_eq!(r.err(), Some(Errno::EACCES));
+    }
+
+    #[test]
+    fn xids_are_drawn_from_the_generator() {
+        crate::testutil::install();
+        let a = krpc_get_xid();
+        let b = krpc_get_xid();
+        assert_ne!(a, b);
+        assert!(KRPC_XID_CTX.lock().is_some());
+    }
+}
+/* </TESTS> */

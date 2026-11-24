@@ -645,3 +645,386 @@ fn md_mount_reply(
     r.bytes_into(&mut fh[..fhsize])
 }
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    // Host tests of the diskless boot's parsers (WHOAMI, GETFILE, MNT) over chains, the
+    // remote path, the device name and the broadcast address, and the RPCs end to end
+    // against the scripted peer of `krpc_subr`: WHOAMI by broadcast, the root's handle (mount
+    // version 3), the fall back to version 2.
+
+    use std::vec;
+    use std::vec::Vec;
+
+    use super::super::krpc_subr::testkrpc::{Peer, Seen, accepted, setup, sin, words, xaddr, xstr};
+    use super::*;
+    use crate::fs::nfs::nfsm_subs::{nfsm_rndup, test_chain};
+    use crate::netinet::udp_usrreq::testudp;
+
+    /// The names `f` sees, `kernel::sysctl`'s, put back after (the WHOAMI tests store theirs).
+    fn with_names_saved(f: impl FnOnce()) {
+        use core::sync::atomic::Ordering::Relaxed;
+        let h = with_hostname(|h| h.to_vec());
+        let hl = HOSTNAMELEN.load(Relaxed);
+        let d = with_domainname_mut(|d| d.to_vec());
+        let dl = DOMAINNAMELEN.load(Relaxed);
+        f();
+        with_hostname_mut(|x| x.copy_from_slice(&h));
+        HOSTNAMELEN.store(hl, Relaxed);
+        with_domainname_mut(|x| x.copy_from_slice(&d));
+        DOMAINNAMELEN.store(dl, Relaxed);
+    }
+
+    #[test]
+    fn the_boot_device_name_is_kept_up_to_its_nul() {
+        set_nfsbootdevname(b"vio0\0junk");
+        assert_eq!(cstr(&(*NFSBOOTDEVNAME.lock()).unwrap_or_default()), b"vio0");
+        set_nfsbootdevname(&[b'x'; 40]);
+        let n = (*NFSBOOTDEVNAME.lock()).unwrap_or_default();
+        assert_eq!(cstr(&n).len(), IFNAMSIZ - 1);
+    }
+
+    #[test]
+    fn the_remote_path_is_host_colon_path_cut_to_mnamelen() {
+        let mut h = [0u8; MNAMELEN];
+        h[..6].copy_from_slice(b"server");
+        remote_path(&mut h, b"/export/root");
+        assert_eq!(cstr(&h), b"server:/export/root");
+        // A long path stops one byte short of the end, for the NUL.
+        let mut h = [0u8; MNAMELEN];
+        h[..2].copy_from_slice(b"sv");
+        remote_path(&mut h, &[b'p'; 200]);
+        assert_eq!(cstr(&h).len(), MNAMELEN - 1);
+        assert_eq!(h[MNAMELEN - 1], 0);
+        // A name that fills the array (MNAMELEN - 1 bytes, the decode's limit): the `:` takes
+        // its last byte, nothing is written past it (the C writes the NUL one byte past).
+        let mut h = [b'n'; MNAMELEN];
+        h[MNAMELEN - 1] = 0;
+        remote_path(&mut h, b"/x");
+        assert_eq!(h[MNAMELEN - 2..], [b':', 0]);
+    }
+
+    #[test]
+    fn a_getfile_reply_gives_the_name_the_address_and_the_path() {
+        let _g = crate::net::mbuf::tests::setup();
+        let mut b = xstr(b"server");
+        b.extend(xaddr([10, 77, 0, 2]));
+        b.extend(xstr(b"/export/root"));
+        let m = test_chain(&[&b[..9], &b[9..30], &b[30..]]);
+        let mut md = SockaddrIn::default();
+        let (mut name, mut path) = ([0u8; MNAMELEN], [0u8; MAXPATHLEN]);
+        assert_eq!(bp_getfile_reply(&m, &mut md, &mut name, &mut path), Ok(()));
+        assert_eq!(
+            (cstr(&name), cstr(&path)),
+            (&b"server"[..], &b"/export/root"[..])
+        );
+        assert_eq!(md.sin_addr.s_addr.to_ne_bytes(), [10, 77, 0, 2]);
+        assert_eq!((md.sin_len, md.sin_family, md.sin_port), (16, AF_INET, 0));
+        // Cut anywhere: EBADRPC.
+        for cut in [0, 3, 10, 29, b.len() - 1] {
+            let m = test_chain(&[&b[..cut]]);
+            assert_eq!(
+                bp_getfile_reply(&m, &mut md, &mut name, &mut path),
+                Err(Errno::EBADRPC),
+                "cut at {cut}"
+            );
+        }
+        // A server name longer than MNAMELEN - 1 is cut to it.
+        let mut b = xstr(&[b's'; 120]);
+        b.extend(xaddr([1, 2, 3, 4]));
+        b.extend(xstr(b"/"));
+        let m = test_chain(&[&b]);
+        assert_eq!(bp_getfile_reply(&m, &mut md, &mut name, &mut path), Ok(()));
+        assert_eq!(cstr(&name).len(), MNAMELEN - 1);
+    }
+
+    /// A mount reply: the status, then the handle as version `v` sends it.
+    fn mnt_reply(status: u32, v: u32, fh: &[u8]) -> Vec<u8> {
+        let mut b = words(&[status]);
+        if v == 3 {
+            b.extend(words(&[fh.len() as u32]));
+        }
+        b.extend_from_slice(fh);
+        b
+    }
+
+    #[test]
+    fn a_mount_reply_gives_the_handle_by_its_version() {
+        let _g = crate::net::mbuf::tests::setup();
+        let mut args = zeroed::<NfsArgs>();
+        let mut fh = [0u8; NFSX_V3FHMAX];
+        let h28: Vec<u8> = (1..=28).collect();
+        let m = test_chain(&[&mnt_reply(0, 3, &h28)[..6], &mnt_reply(0, 3, &h28)[6..]]);
+        assert_eq!(md_mount_reply(&m, 3, &mut args, &mut fh), Ok(()));
+        assert_eq!((args.fhsize, &fh[..28]), (28, &h28[..]));
+        // Version 2: NFSX_V2FH bytes, no length word.
+        let h32: Vec<u8> = (100..132).collect();
+        let m = test_chain(&[&mnt_reply(0, 2, &h32)]);
+        assert_eq!(md_mount_reply(&m, 2, &mut args, &mut fh), Ok(()));
+        assert_eq!((args.fhsize, &fh[..32]), (32, &h32[..]));
+        // The largest version 3 handle; one more, or a length with the top bit, EBADRPC.
+        let h64 = [7u8; 64];
+        let m = test_chain(&[&mnt_reply(0, 3, &h64)]);
+        assert_eq!(md_mount_reply(&m, 3, &mut args, &mut fh), Ok(()));
+        assert_eq!(args.fhsize, 64);
+        for bad in [65u32, 0x8000_0000, 0xffff_ffff] {
+            let mut b = words(&[0, bad]);
+            b.extend_from_slice(&[0; 64]);
+            let m = test_chain(&[&b]);
+            assert_eq!(
+                md_mount_reply(&m, 3, &mut args, &mut fh),
+                Err(Errno::EBADRPC),
+                "{bad:#x}"
+            );
+        }
+        // The daemon's errno, EIO for a number that is none; a reply short of its handle or
+        // of its status word.
+        let m = test_chain(&[&words(&[13])]);
+        assert_eq!(
+            md_mount_reply(&m, 3, &mut args, &mut fh),
+            Err(Errno::EACCES)
+        );
+        let m = test_chain(&[&words(&[70_000])]);
+        assert_eq!(md_mount_reply(&m, 3, &mut args, &mut fh), Err(Errno::EIO));
+        let m = test_chain(&[&mnt_reply(0, 2, &h32)[..20]]);
+        assert_eq!(
+            md_mount_reply(&m, 2, &mut args, &mut fh),
+            Err(Errno::EBADRPC)
+        );
+        let m = test_chain(&[&[0, 0]]);
+        assert_eq!(
+            md_mount_reply(&m, 3, &mut args, &mut fh),
+            Err(Errno::EBADRPC)
+        );
+    }
+
+    /// The WHOAMI answer inside a CALLIT reply: bootparamd's `port`, then the names and the
+    /// gateway.
+    fn whoami_reply(port: u32, host: &[u8], domain: &[u8], gw: [u8; 4]) -> Vec<u8> {
+        let mut inner = xstr(host);
+        inner.extend(xstr(domain));
+        inner.extend(xaddr(gw));
+        let mut b = words(&[port, inner.len() as u32]);
+        b.extend(inner);
+        b
+    }
+
+    #[test]
+    fn a_whoami_reply_names_the_host_and_the_server() {
+        let (_g, _p) = testudp::setup();
+        with_names_saved(|| {
+            let b = whoami_reply(700, b"emibsd", b"example.org", [10, 77, 0, 254]);
+            let m = test_chain(&[&b[..5], &b[5..]]);
+            let from = testudp::nam(&sin([10, 77, 0, 2], 111));
+            let mut bp = sin([10, 77, 0, 255], 111);
+            assert_eq!(
+                bp_whoami_reply(&m, Some(&from), &mut bp).map(|a| a.s_addr.to_ne_bytes()),
+                Ok([10, 77, 0, 254])
+            );
+            assert_eq!(bp.sin_addr.s_addr.to_ne_bytes(), [10, 77, 0, 2]);
+            assert_eq!(bp.sin_port, 700u16.to_be());
+            use core::sync::atomic::Ordering::Relaxed;
+            assert_eq!(HOSTNAMELEN.load(Relaxed), 6);
+            assert_eq!(with_hostname(|h| h[..7].to_vec()), b"emibsd\0");
+            assert_eq!(DOMAINNAMELEN.load(Relaxed), 11);
+            assert_eq!(
+                crate::sysctl::with_domainname(|d| d[..12].to_vec()),
+                b"example.org\0"
+            );
+            // Short anywhere, or no sender: EBADRPC.
+            for cut in [0, 7, 12, 20, b.len() - 1] {
+                let m = test_chain(&[&b[..cut]]);
+                assert_eq!(
+                    bp_whoami_reply(&m, Some(&from), &mut bp),
+                    Err(Errno::EBADRPC),
+                    "cut at {cut}"
+                );
+            }
+            assert_eq!(bp_whoami_reply(&m, None, &mut bp), Err(Errno::EBADRPC));
+        });
+    }
+
+    #[test]
+    fn the_broadcast_address_is_the_first_internet_addresss() {
+        let (_g, _p) = testudp::setup();
+        let (ifp, _d) = crate::netinet::in_pcb::testinet::iface(b"nfsb0", [10, 77, 30, 1]);
+        assert_eq!(
+            nfs_boot_broadaddr(ifp).map(u32::to_ne_bytes),
+            Some([10, 77, 30, 255])
+        );
+        let bare = crate::net::if_::test_ifnet_with(b"nfsb1", &BARE);
+        assert_eq!(nfs_boot_broadaddr(bare), None);
+    }
+
+    /// A driver for an interface with no address.
+    static BARE: Bare = Bare;
+    struct Bare;
+    impl crate::net::if_var::NetDriver for Bare {
+        fn ioctl(&self, _ifp: &'static Ifnet, _cmd: u64, _data: &mut [u8]) -> Result<(), Errno> {
+            Ok(())
+        }
+        fn output(
+            &self,
+            _ifp: &'static Ifnet,
+            _m: MbufBox,
+            _dst: crate::net::proto::SockaddrView<'_>,
+            _rt: Option<&crate::net::route::Rtentry>,
+        ) -> Result<(), Errno> {
+            Ok(())
+        }
+    }
+
+    /// A server for the boot's RPCs at 10.77.`n`.2: the portmapper (mountd at 635, nfsd at
+    /// 2049; mountd version 3 answered with no port when `no_v3`), bootparamd's CALLIT and
+    /// GETFILE, and mountd's MNT of either version.
+    fn boot_server(n: u8, no_v3: bool) -> impl FnMut(&Seen) -> Vec<Vec<u8>> + Send + 'static {
+        const NFS_PROG_T: u32 = 100003;
+        const MNT_PROG_T: u32 = 100005;
+        move |s| {
+            let x = s.xid();
+            let body = s.body();
+            let w =
+                |i: usize| u32::from_be_bytes(body[4 * i..4 * i + 4].try_into().unwrap_or([0; 4]));
+            let reply = match s.call() {
+                (PMAPPROG, PMAPVERS, 3) => match (w(0), w(1)) {
+                    (MNT_PROG_T, 3) if no_v3 => vec![],
+                    (MNT_PROG_T, _) => words(&[635]),
+                    (NFS_PROG_T, _) => words(&[2049]),
+                    _ => words(&[0]),
+                },
+                (PMAPPROG, PMAPVERS, PMAPPROC_CALLIT) => {
+                    whoami_reply(700, b"emibsd", b"example.org", [10, 77, n, 254])
+                }
+                (BOOTPARAM_PROG, BOOTPARAM_VERS, BOOTPARAM_GETFILE) => {
+                    // The client's name, then the key.
+                    let hl = w(0) as usize;
+                    let key_at = 4 + nfsm_rndup(hl);
+                    let kl =
+                        u32::from_be_bytes(body[key_at..key_at + 4].try_into().unwrap_or([0; 4]));
+                    let key = &body[key_at + 4..key_at + 4 + kl as usize];
+                    let mut b = xstr(b"server");
+                    b.extend(xaddr([10, 77, n, 2]));
+                    b.extend(xstr(&[b"/export/", key].concat()));
+                    b
+                }
+                (MNT_PROG_T, 3, 1) => {
+                    let mut b = words(&[0, 28]);
+                    b.extend((1..=28).collect::<Vec<u8>>());
+                    b
+                }
+                (MNT_PROG_T, 2, 1) => {
+                    let mut b = words(&[0]);
+                    b.extend((100..132).collect::<Vec<u8>>());
+                    b
+                }
+                _ => return vec![],
+            };
+            vec![accepted(x, &reply)]
+        }
+    }
+
+    #[test]
+    fn whoami_asks_by_broadcast_through_the_portmapper() {
+        let (_g, p, wire) = setup(b"nfsb2", 32);
+        with_names_saved(|| {
+            let peer = Peer::start(wire, [10, 77, 32, 2], boot_server(32, false));
+            let mut bp = sin([10, 77, 32, 255], 0);
+            let me = InAddr {
+                s_addr: u32::from_ne_bytes([10, 77, 32, 1]),
+            };
+            assert_eq!(
+                bp_whoami(p, &mut bp, &me).map(|a| a.s_addr.to_ne_bytes()),
+                Ok([10, 77, 32, 254])
+            );
+            assert_eq!(bp.sin_addr.s_addr.to_ne_bytes(), [10, 77, 32, 2]);
+            assert_eq!(bp.sin_port, 700u16.to_be());
+            let seen = peer.stop();
+            assert_eq!(seen.len(), 1);
+            assert_eq!((seen[0].dst, seen[0].dport), ([10, 77, 32, 255], PMAPPORT));
+            assert_eq!(seen[0].call(), (PMAPPROG, PMAPVERS, PMAPPROC_CALLIT));
+            // CALLIT of bootparamd's WHOAMI, its argument the client's address.
+            let mut want = words(&[BOOTPARAM_PROG, BOOTPARAM_VERS, BOOTPARAM_WHOAMI, 20]);
+            want.extend(xaddr([10, 77, 32, 1]));
+            assert_eq!(seen[0].body(), &want[..]);
+        });
+    }
+
+    #[test]
+    fn getfh_finds_the_roots_server_path_and_version_3_handle() {
+        let (_g, p, wire) = setup(b"nfsb3", 33);
+        with_names_saved(|| {
+            with_hostname_mut(|h| h[..7].copy_from_slice(b"emibsd\0"));
+            HOSTNAMELEN.store(6, core::sync::atomic::Ordering::Relaxed);
+            let peer = Peer::start(wire, [10, 77, 33, 2], boot_server(33, false));
+            let mut nd = NfsDlmount::new();
+            let bp = sin([10, 77, 33, 2], 700);
+            assert_eq!(nfs_boot_getfh(p, &bp, b"root", &mut nd, 2), Ok(()));
+            assert_eq!(cstr(&nd.ndm_host), b"server:/export/root");
+            assert_eq!(nd.ndm_saddr.sin_addr.s_addr.to_ne_bytes(), [10, 77, 33, 2]);
+            assert_eq!(nd.ndm_saddr.sin_port, 2049u16.to_be());
+            assert_eq!(
+                (nd.ndm_saddr.sin_len, nd.ndm_saddr.sin_family),
+                (16, AF_INET)
+            );
+            let a = &nd.ndm_args;
+            assert_eq!(
+                (a.flags, a.fhsize, a.sotype),
+                (NFSMNT_NFSV3, 28, SOCK_DGRAM)
+            );
+            // addrlen is read before the address is filled (0 in a fresh structure), and
+            // the pointers stay NULL.
+            assert_eq!((a.addrlen, a.addr, a.fh, a.hostname), (0, 0, 0, 0));
+            assert_eq!(nd.ndm_fh[..28], (1..=28).collect::<Vec<u8>>()[..]);
+            let seen = peer.stop();
+            let calls: Vec<_> = seen.iter().map(Seen::call).collect();
+            assert_eq!(
+                calls,
+                [
+                    (BOOTPARAM_PROG, BOOTPARAM_VERS, BOOTPARAM_GETFILE),
+                    (PMAPPROG, PMAPVERS, 3),
+                    (100005, 3, 1),
+                    (PMAPPROG, PMAPVERS, 3),
+                ]
+            );
+            // GETFILE: the client's name (hostnamelen bytes), the key; MNT: the path.
+            assert_eq!(seen[0].body(), [xstr(b"emibsd"), xstr(b"root")].concat());
+            assert_eq!(seen[0].dport, 700);
+            assert_eq!(seen[2].body(), xstr(b"/export/root"));
+            assert_eq!(seen[2].dport, 635);
+            assert_eq!(&seen[3].body()[..8], words(&[100003, 3]));
+        });
+    }
+
+    #[test]
+    fn getfh_falls_back_to_mount_version_2() {
+        let (_g, p, wire) = setup(b"nfsb4", 34);
+        with_names_saved(|| {
+            let peer = Peer::start(wire, [10, 77, 34, 2], boot_server(34, true));
+            let mut nd = NfsDlmount::new();
+            let bp = sin([10, 77, 34, 2], 700);
+            assert_eq!(nfs_boot_getfh(p, &bp, b"swap", &mut nd, 2), Ok(()));
+            let a = &nd.ndm_args;
+            assert_eq!((a.flags & NFSMNT_NFSV3, a.fhsize), (0, 32));
+            assert_eq!(nd.ndm_fh[..32], (100..132).collect::<Vec<u8>>()[..]);
+            assert_eq!(cstr(&nd.ndm_host), b"server:/export/swap");
+            let seen = peer.stop();
+            let calls: Vec<_> = seen.iter().map(Seen::call).collect();
+            assert_eq!(
+                calls,
+                [
+                    (BOOTPARAM_PROG, BOOTPARAM_VERS, BOOTPARAM_GETFILE),
+                    (PMAPPROG, PMAPVERS, 3),
+                    (PMAPPROG, PMAPVERS, 3),
+                    (100005, 2, 1),
+                    (PMAPPROG, PMAPVERS, 3),
+                ]
+            );
+            // The portmapper asked for mountd 3, then 2, then nfsd 2.
+            assert_eq!(&seen[1].body()[..8], words(&[100005, 3]));
+            assert_eq!(&seen[2].body()[..8], words(&[100005, 2]));
+            assert_eq!(&seen[4].body()[..8], words(&[100003, 2]));
+        });
+    }
+}
+/* </TESTS> */
