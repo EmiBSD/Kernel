@@ -6886,7 +6886,7 @@ rust = "sys/kernel/fs/nfs/nfs_socket.rs"
 crate = "kernel"
 lz = ["sys/nfs/nfs_socket.rs"]
 status = "redesigned"
-notes = "N6.7a1: the client's half of nfs_socket.c (D-5): nfs_connect (socreate for curproc, IP_PORTRANGE_LOW, sobind with proc0, soconnect and the 2 s waits), nfs_reconnect, nfs_disconnect, nfs_send and nfs_sndlock with the C's optional request (R1, for the server at 7b2), nfs_receive (no nfs_realign: the reader copies), nfs_reply (the match under one witness split into the list's part and PART_REQ), nfs_request (Request in, the C's two outputs: Option<Reply> and Result<(), NfsError>), nfs_timer (a reader per stretch, the place kept in a counted request handle across the copy and the send under solock_net), nfs_sigintr, the flag locks, nfs_msg over kernel::prf::tprintf; the server's half stays bsd's until 7b"
+notes = "N6.7a1: the client's half of nfs_socket.c (D-5): nfs_connect (socreate for curproc, IP_PORTRANGE_LOW, sobind with proc0, soconnect and the 2 s waits), nfs_reconnect, nfs_disconnect, nfs_send and nfs_sndlock with the C's optional request (R1, for the server at 7b2), nfs_receive (no nfs_realign: the reader copies), nfs_reply (the match under one witness split into the list's part and PART_REQ), nfs_request (Request in, the C's two outputs: Option<Reply> and Result<(), NfsError>), nfs_timer (a reader per stretch, the place kept in a counted request handle across the copy and the send under solock_net), nfs_sigintr, the flag locks, nfs_msg over kernel::prf::tprintf; the server's half stays bsd's until 7b; review fixes: ENOBUFS where hal's pools fail (LZ's), nfs_reply_match (the match on its own), the ignored mask read only when a signal of the set is pending, the mount's name mbuf lent (NfsMount::with_nam)"
 
 [[module]]
 rust = "sys/kernel/fs/nfs/nfs_subs.rs"
@@ -18107,6 +18107,7 @@ reason = "N5.8u1-u2: the kernel udf's test fixtures (host tests and benches only
 rust = "sys/kernel/fs/tmpfs/testtmpfs.rs"
 crate = "kernel"
 reason = "N5.9t1, completed at N5.9t2: the kernel tmpfs's test fixture (host tests and benches only, cfg(any(test, feature = doubles))): TEST_TMPFS_CONF, the set-up (16 MiB of pages, the kernel maps, the test thread, tmpfs_init), the mount arguments' bytes (LZ's tmpfs_vfsops tests' args), a mount over no device and the same made the root (setup_root, testffs::make_root; LZ's tmpfs_vnops tests' setup_root); t1's stand-in vnode table gone for the real ones (TmpfsTables); no OpenBSD or LZ source"
+
 [[extra]]
 rust = "sys/kernel/fs/nfs/testnfs.rs"
 crate = "kernel"
