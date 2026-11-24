@@ -6850,7 +6850,7 @@ rust = "sys/hal/sys/nfs_nfs.rs"
 crate = "hal"
 lz = ["sys/nfs/nfs.rs"]
 status = "redesigned"
-notes = "N6.7a0 (D-10): nfs.h's userland part: the tunables, the nfssvc(2) flags, the vfs.nfs ids and FS_NFS_NAMES, struct nfsstats as a plain abi_pod! image (78 u64, 624 bytes; LZ's atomics-as-words cast, two unsafe, gone: the counters are the kernel's NfsCounters); bsd's nfs.rs re-exports them"
+notes = "N6.7a0 (D-10): nfs.h's userland part: the tunables, the nfssvc(2) flags, the vfs.nfs ids and FS_NFS_NAMES, struct nfsstats as a plain abi_pod! image (78 u64, 624 bytes; LZ's atomics-as-words cast, two unsafe, gone: the counters are the kernel's NfsCounters); bsd's nfs.rs re-exports them. N6.7b2 (D-8): struct nfsd_args and struct nfsd_srvargs, nfssvc(2)'s arguments, as abi_pod! images (24 and 144 bytes, the LP64 holes named; LZ's hand-written unsafe AbiPod impl of NfsdArgs gone)"
 
 [[module]]
 rust = "sys/hal/sys/nfs_nfsproto.rs"
