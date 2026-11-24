@@ -154,8 +154,9 @@
 //! - A failed `malloc(M_WAITOK)` is `panic(9)` (LZ's; it cannot fail once `malloc` is
 //!   registered). An empty tree has no head, as the C's list has none before its first entry
 //!   or after `MNT_DELEXPORT`: `RadixTree::inithead` is the C's `rn_inithead`, its failure
-//!   `ENOBUFS`; a tree that cannot take the entry for want of memory afterwards (`M_NOWAIT`
-//!   chunks) answers `EPERM`, the C's answer for `rn_addroute`'s `NULL`.
+//!   `ENOBUFS`; the head stays once made, a refused first entry included, as the C's; a
+//!   tree that cannot take the entry for want of memory afterwards (`M_NOWAIT` chunks)
+//!   answers `EPERM`, the C's answer for `rn_addroute`'s `NULL`.
 //! - The list is the mount's ([`Mount::export`]) rather than the file system's structure's
 //!   (`um_export`, `pm_export`, `im_export`); the UFS-like mounts empty it where their
 //!   `mountfs` `malloc(M_ZERO)`s that structure ([`Netexport::clear`]), so a recycled mount's
@@ -848,6 +849,24 @@ mod tests {
         assert_eq!(lookup(mp, [10, 0, 0, 7]), Some((MNT_EXPORTED, 1)));
         // A refused entry on a tree with a head stays EPERM.
         assert_eq!(vfs_export(mp, mp.export(), &host), Err(Errno::EPERM));
+    }
+
+    #[test]
+    fn a_refused_first_entry_keeps_the_head() {
+        // The address of zeros is the left root leaf's key: rn_addroute refuses it, EPERM,
+        // and the head rn_inithead made stays, as the C's.
+        let (_g, mp) = fresh();
+        let zeros = entry(MNT_EXPORTED, 1, [0, 0, 0, 0], None);
+        assert_eq!(vfs_export(mp, mp.export(), &zeros), Err(Errno::EPERM));
+        assert_eq!(mp.flag() & MNT_EXPORTED, 0, "nothing hung");
+        // The next entry needs no block for the tree: with the tree's next block refused it
+        // is still hung, where a head given back would be made again and fail, ENOBUFS.
+        let host = entry(MNT_EXPORTED, 1, [10, 0, 0, 7], None);
+        crate::testutil::fail_pages(1, 1);
+        let r = vfs_export(mp, mp.export(), &host);
+        crate::testutil::fail_pages(0, 0);
+        assert_eq!(r, Ok(()));
+        assert_eq!(lookup(mp, [10, 0, 0, 7]), Some((MNT_EXPORTED, 1)));
     }
 
     #[test]
