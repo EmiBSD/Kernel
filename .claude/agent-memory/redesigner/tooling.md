@@ -383,3 +383,7 @@ metadata:
 - A brief that asks for a docs/ROADMAP.md clause (an N10 item) still meets the role's ban on editing ROADMAP: write the exact text to the scratchpad and hand it to the main session in HANDOFF and the report (sysarch sync).
 - `cargo xtask lz trace` takes `<lz path>:<item>` with ONE colon (it prints the `::` form back); a native path alone is refused (sysarch sync).
 - A host test that reaches `sys_nosys` through `SYSENT` panics in kernel::assert (the SIGSYS path needs a real thread): a mutation putting a row back to `sys_nosys` is killed by panic, not by an ENOSYS assertion (sysarch sync).
+- Rust 2024 reserves `gen`: a struct field or local named `gen` is a parse error (`expected identifier, found reserved keyword`); name it `generation` (N6.7b0 radix).
+- A kernel cargo feature that gates new code (`nfsserver`, N6.7b0) must also join the justfile `test` recipe's `kernel/...` feature list, or `just test` never runs the kernel's own tests of it; `cfg!(feature = ..)` in a shared test keeps both answers (Ok vs ENOTSUP).
+- Multi-file call-site switches under the worktree guard (heredocs refused): a scratchpad `subst.py` applying a spec of exact (path, old, new) triples all-or-nothing (refusing a missing or non-unique old text) and a `cut.py` deleting from a unique start line to an end marker kept 40 files consistent (N6.7b0).
+- The machine lock can vanish under you (another agent's loop recreated it while yours ran, N6.7b0 20:48): release only after checking `owner` is yours, and log take/release times in the scratchpad.
