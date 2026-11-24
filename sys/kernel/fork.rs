@@ -185,6 +185,8 @@ const TAG_ACCT: usize = 7;
 const TAG_SMR: usize = 8;
 /// [`Start::NfsKqPoll`].
 const TAG_NFSKQPOLL: usize = 9;
+/// [`Start::NfsIod`].
+const TAG_NFSIOD: usize = 10;
 /// [`Start::Legacy`]: the slot is added.
 const TAG_LEGACY: usize = 0x100;
 
@@ -209,6 +211,8 @@ pub enum Start {
     Smr,
     /// `nfs_kqpoll()`: the NFS client's kqueue poller (`kernel::fs::nfs::nfs_kq`).
     NfsKqPoll,
+    /// `nfssvc_iod()`: an NFS client's asynchronous I/O thread (`kernel::fs::nfs::nfs_syscalls`).
+    NfsIod,
     /// A function of `bsd`'s and its argument's exposed address (0: the new thread's own).
     Legacy(fn(*mut c_void), usize),
 }
@@ -228,6 +232,7 @@ impl Start {
             Start::Acct => (TAG_ACCT, 0),
             Start::Smr => (TAG_SMR, 0),
             Start::NfsKqPoll => (TAG_NFSKQPOLL, 0),
+            Start::NfsIod => (TAG_NFSIOD, 0),
             Start::Legacy(f, arg) => {
                 let arg = if arg == 0 { me } else { arg };
                 (TAG_LEGACY + legacy_slot(f), arg)
@@ -247,6 +252,7 @@ impl Start {
             TAG_ACCT => Start::Acct,
             TAG_SMR => Start::Smr,
             TAG_NFSKQPOLL => Start::NfsKqPoll,
+            TAG_NFSIOD => Start::NfsIod,
             s if s >= TAG_LEGACY => {
                 let f = *LEGACY.get(s - TAG_LEGACY)?.get()?;
                 Start::Legacy(f, arg)
@@ -337,6 +343,7 @@ fn thread_start<G: ProcGlue>(hold: SchedHold, start: usize, arg: usize) {
         Start::Acct => crate::acct::acct_thread::<G>(),
         Start::Smr => crate::smr::thread::<G>(),
         Start::NfsKqPoll => crate::fs::nfs::nfs_kq::nfs_kqpoll::<G>(),
+        Start::NfsIod => crate::fs::nfs::nfs_syscalls::nfssvc_iod::<G>(),
         Start::Legacy(f, arg) => f(ptr::with_exposed_provenance_mut(arg)),
     }
 }
@@ -993,7 +1000,7 @@ pub fn fork_test_reset() {
 
 const _: () = {
     assert!(size_of::<Tfork>() == 3 * size_of::<usize>());
-    assert!(TAG_LEGACY > TAG_NFSKQPOLL);
+    assert!(TAG_LEGACY > TAG_NFSIOD);
 };
 /* </CODE> */
 
@@ -1018,6 +1025,7 @@ mod tests {
             Start::Acct,
             Start::Smr,
             Start::NfsKqPoll,
+            Start::NfsIod,
         ] {
             let (w0, w1) = s.words(me);
             let back = Start::from_words(w0, w1).unwrap();

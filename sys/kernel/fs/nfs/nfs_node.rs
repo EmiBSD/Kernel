@@ -52,15 +52,15 @@
 
 /* <CODE> */
 //! The NFS client's nodes in the kernel: the table of every mount's nfsnodes by file handle
-//! (`nm_ntree`: [`nfs_nfind`], [`nfs_ninsert`], [`nfs_nremove`], [`nfs_nrehash`]) and the
-//! vnode operation `nfs_reclaim` (give the node back to "nfsnodepl").
+//! (`nm_ntree`: [`nfs_nfind`], [`nfs_ninsert`], [`nfs_nremove`], [`nfs_nrehash`]), the node of
+//! a handle ([`nfs_nget`]) and the vnode operations `nfs_inactive` (remove a silly-renamed
+//! file on last close) and `nfs_reclaim` (give the node back to "nfsnodepl").
 //!
 //! Upstream: sys/nfs/nfs_node.c @ 3ce1f3f79392
 //! LZ: sys/nfs/nfs_node.rs@e8249449d905
 //!
-//! `nfs_nget` (find or make the node and vnode of a handle) and `nfs_inactive` (remove a
-//! silly-renamed file on last close) call into the vnode operations (`nfs_vops`,
-//! `nfs_removeit`): they come with them (N6.7a3), over this module's table.
+//! `nfs_nget` and `nfs_inactive` call into the vnode operations (`nfs_vops`, `nfs_removeit`):
+//! they came with them (N6.7a3), over this module's table.
 //!
 //! ## Deviations
 //! - `nm_ntree` (`RBT_HEAD(nfs_nodetree, nfsnode)` in each mount, ordered by `nfsnode_cmp`)
@@ -107,22 +107,40 @@
 //!   `pool_put(&nfs_node_pool, vp->v_data)` and `v_data = NULL`): the node goes back to its
 //!   pool with its last handle, and its credentials (`n_rcred`, `n_wcred`) are let go first,
 //!   as the C's `crfree`s.
+//! - N6.7a3: [`nfs_nget`] answers the node's counted handle (the C's `*npp`; its vnode is
+//!   `nfstov`'s), referenced and locked as the C's. A new node is made, hashed by
+//!   [`nfs_ninsert`] (the C's second `RBT_FIND`, its race check, and its `RBT_INSERT`, one
+//!   section) and only then put in the vnode's slot and locked: the C fills `v_data` and locks
+//!   before it inserts, but nothing between sleeps, so no other thread can tell the orders
+//!   apart; a lost race gives the node back and `vgone`s the vnode, as the C's. One count
+//!   pair more than the C when the node is found (the handle `vtonfs` makes after `vget`).
+//!   `nfs_inactive` takes the silly rename record out of the node's kernel-lock cell in one
+//!   section, and gives back its credential and memory before the directory's `vput` (the C
+//!   frees the record after).
 
 use core::pin::Pin;
 use core::ptr;
+use core::sync::atomic::Ordering;
 
 use hal::klock;
 use hal::once::OnceStatic;
 use hal::pinlist::PinList;
+use hal::pool::{PR_WAITOK, PoolArc};
 use hal::sys::errno::Errno;
 use libkern::siphash::{SipHash24Ctx, SiphashKey};
 
-use super::nfsnode::{NfsFh, NfsNode, NfsNodeEntry, vtonfs};
+use super::nfs_bio::nfs_vinvalbuf;
+use super::nfs_vnops::nfs_removeit;
+use super::nfsmount::vfstonfs;
+use super::nfsnode::{
+    NFLUSHINPROG, NFLUSHWANT, NMODIFIED, NfsFh, NfsNode, NfsNodeEntry, NfsNodeRef, nfstov, vtonfs,
+};
 use crate::assert::kpanic;
 use crate::fs::cache::cache_purge;
 use crate::fs::mount::Mount;
-use crate::fs::subr::{siphash_key, vfs};
-use crate::fs::vnode::{VLARVAL, Vnode};
+use crate::fs::subr::{getnewvnode, siphash_key, vfs, vget, vgone, vput};
+use crate::fs::vnode::{LK_EXCLUSIVE, LK_RETRY, VDIR, VLARVAL, VT_NFS, Vnode, vn_lock};
+use crate::fs::vops::{Cred, vop_lock, vop_unlock};
 use crate::proc::ProcGlue;
 
 /// The number of chains of the node hash, a power of two (the module's Deviations).
@@ -178,7 +196,7 @@ fn with_nhash<G: ProcGlue, R>(f: impl FnOnce(&NfsNhash<G>) -> R) -> R {
 /// The mount a hashed node is on: its vnode's (set before the node is hashed, and kept until
 /// after `nfs_reclaim`).
 fn node_mount<G: ProcGlue>(np: &NfsNode<G>) -> &'static Mount<G> {
-    match np.n_vnode.mount() {
+    match nfstov(np).mount() {
         Some(mp) => mp,
         None => kpanic(format_args!(
             "nfs_node: node {np:p}: its vnode has no mount"
@@ -189,7 +207,7 @@ fn node_mount<G: ProcGlue>(np: &NfsNode<G>) -> &'static Mount<G> {
 /// `nfsnode_cmp(a, b) == 0` for a node of the mount `mp` and the handle `fh`: the same mount
 /// (the C's tree is the mount's), the same size, the same bytes.
 fn is<G: ProcGlue>(np: &NfsNode<G>, mp: &Mount<G>, fh: &[u8]) -> bool {
-    np.n_vnode.mount().is_some_and(|m| ptr::eq(m, mp)) && np.fh().bytes() == fh
+    nfstov(np).mount().is_some_and(|m| ptr::eq(m, mp)) && np.fh().bytes() == fh
 }
 
 /// `nm_ntree`'s making for every mount (`RBT_INIT`): the chains are the tables' (empty from
@@ -208,7 +226,10 @@ pub fn nfs_nfind<G: ProcGlue>(mp: &Mount<G>, fh: &[u8]) -> Option<(&'static Vnod
         h.chain_of(mp, fh)
             .iter(&r)
             .find(|np| is(np, mp, fh))
-            .map(|np| (np.n_vnode, np.n_vnode.id()))
+            .map(|np| {
+                let vp = nfstov(np);
+                (vp, vp.id())
+            })
     })
 }
 
@@ -262,6 +283,106 @@ pub fn nfs_nrehash<G: ProcGlue>(np: Pin<&NfsNode<G>>, fh: NfsFh) {
         let _ = np.n_fh.replace(fh);
         h.chain_of(mp, fh.bytes()).insert_head(&mut w, np);
     });
+}
+
+/// `nfs_nget(mnt, fh, fhsize, npp)`: look up a vnode/nfsnode by file handle: the node of the
+/// handle `fh` on the mount `mp`, its vnode referenced and locked (`LK_EXCLUSIVE`), found on
+/// the node hash or made with a fresh vnode of `nfs_vops` (its type `VNON` until
+/// `nfs_loadattrcache` fills it). Callers must check for mount points!! `getnewvnode`'s error
+/// when no vnode can be had.
+pub fn nfs_nget<G: ProcGlue>(mp: &'static Mount<G>, fh: &[u8]) -> Result<NfsNodeRef<G>, Errno> {
+    let Some(nfh) = NfsFh::new(fh) else {
+        // Every caller bounds the handle by `NFSX_V3FHMAX` first (`nfsm_getfh`, the mount's).
+        kpanic(format_args!("nfs_nget: a handle of {} bytes", fh.len()));
+    };
+    loop {
+        if let Some((vp, vpid)) = nfs_nfind(mp, fh) {
+            if vget(vp, LK_EXCLUSIVE).is_err() {
+                continue;
+            }
+            if vpid != vp.id() {
+                vput(vp);
+                continue;
+            }
+            return Ok(vtonfs(vp));
+        }
+
+        // getnewvnode() could recycle a vnode, potentially formerly owned by NFS. This will
+        // cause a VOP_RECLAIM() to happen, which will cause recursive locking, so we unlock
+        // before calling getnewvnode() lock again afterwards, but must check to see if this
+        // nfsnode has been added while we did not hold the lock.
+        let nvp = getnewvnode(VT_NFS, Some(mp), &vfs::<G>().nfs.vops)?;
+        // note that we don't have this vnode set up completely yet
+        nvp.flag_set(VLARVAL);
+        let Some(np) = vfs::<G>()
+            .nfs
+            .nfs_node_pool
+            .get_homed(PR_WAITOK, || NfsNode::new(nvp, nfh))
+        else {
+            kpanic(format_args!("nfs_nget: nfsnodepl is empty"));
+        };
+
+        // getnewvnode() and pool_get() can sleep, check for race: the search and the
+        // insertion in one section (nothing below sleeps).
+        if nfs_ninsert(np.as_pin()).is_err() {
+            drop(np);
+            vgone(nvp);
+            continue;
+        }
+
+        nvp.set_node(PoolArc::erase(np.clone()));
+        // we now have an nfsnode on this vnode
+        nvp.flag_clr(VLARVAL);
+        // lock the nfsnode (it went on the hash above, in the C's next step)
+        if vop_lock(nvp, LK_EXCLUSIVE).is_err() {
+            kpanic(format_args!(
+                "nfs_nget: a fresh vnode {nvp:p} would not lock"
+            ));
+        }
+        np.n_accstamp.store(-1, Ordering::Relaxed);
+        return Ok(np);
+    }
+}
+
+/// `nfs_inactive` (`vop_inactive`): the last reference to the vnode is gone. A silly-renamed
+/// file (`nfs_sillyrename`) has its buffers thrown away and its silly name removed from the
+/// directory; the node's flags but the flush state are cleared. Unlocks the vnode.
+pub fn nfs_inactive<G: ProcGlue>(vp: &'static Vnode<G>) -> Result<(), Errno> {
+    #[cfg(feature = "diagnostic")]
+    crate::fs::ufs::ufs::ufs_inode::pushing_active(vp, "nfs_inactive: pushing active");
+
+    if vp.flag() & VLARVAL != 0 {
+        // vnode was incompletely set up, just return as we are throwing it away.
+        return Ok(());
+    }
+    let np = vtonfs(vp);
+    let sp = if vp.vtype() != VDIR {
+        let mut w = klock::witness();
+        np.n_k.get_mut(&mut w).n_sillyrename.take()
+    } else {
+        None
+    };
+    if let Some(sp) = &sp {
+        let nmp = vfstonfs(node_mount(&np));
+        G::with_curproc(|p| {
+            let _ = nfs_vinvalbuf(&np, &nmp, 0, Cred::real(&sp.s_cred), p);
+        });
+    }
+    np.n_flag
+        .fetch_and(NMODIFIED | NFLUSHINPROG | NFLUSHWANT, Ordering::Relaxed);
+
+    let _ = vop_unlock(vp);
+
+    if let Some(sp) = sp {
+        // Remove the silly file that was rename'd earlier
+        let _ = vn_lock(sp.s_dvp, LK_EXCLUSIVE | LK_RETRY);
+        let _ = nfs_removeit(&sp);
+        let dvp = sp.s_dvp;
+        // crfree(sp->s_cred) and free(sp): the record and its credential's reference.
+        drop(sp);
+        vput(dvp);
+    }
+    Ok(())
 }
 
 /// `nfs_reclaim` (`vop_reclaim`): reclaim an nfsnode so that it can be used for other

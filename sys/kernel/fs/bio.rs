@@ -2543,6 +2543,79 @@ pub fn vnode_dirty_scan(
     DirtyScan::Taken(buf_acquire(&mut g, r))
 }
 
+/// Up to `N` of `vb`'s dirty buffers that `pick` chooses, taken in one pass of the dirty list
+/// from its head and one section of the cache's lock (`nfs_flush`'s commit pass:
+/// `LIST_FOREACH_SAFE` at `splbio`, `bufcache_take` and `buf_acquire` of each buffer until its
+/// vector is full): their tokens in the list's order, then `None`s. `pick` tests flags under
+/// the lock (a buffer it picks must not be busy); it is asked again of each buffer right
+/// before that one is taken, since `buf_acquire` may sleep for kva and let another thread
+/// take a buffer picked before (the C tests each buffer when its walk reaches it): one taken
+/// so meanwhile is left out, where the C's walk would go on for another.
+pub fn vnode_dirty_gather<const N: usize>(
+    vb: &'static VnodeBufs,
+    mut pick: impl FnMut(&Buf) -> bool,
+) -> [Option<BufRef>; N] {
+    let mut g = CACHE.lock();
+    let mut refs: [Option<SecondaryRef<ByBufhead>>; N] = [const { None }; N];
+    {
+        let st = vb.st.get(&g);
+        let mut n = 0;
+        for bp in &st.dirty {
+            if n == N {
+                break;
+            }
+            if pick(bp) {
+                refs[n] = Some(counted(bp));
+                n += 1;
+            }
+        }
+    }
+    let mut out: [Option<BufRef>; N] = [const { None }; N];
+    let mut n = 0;
+    for r in refs.into_iter().flatten() {
+        let Some(bp) = r.get() else {
+            kpanic(format_args!("vnode_dirty_gather: a link to nothing"));
+        };
+        if !pick(bp) {
+            continue;
+        }
+        bufcache_take(&mut g, bp);
+        out[n] = Some(buf_acquire(&mut g, r));
+        n += 1;
+    }
+    out
+}
+
+/// `buf_undirty(bp); bp->b_vp->v_numoutput++` at one `splbio` (`nfs_writebp`'s first part):
+/// the busy buffer made clean and one more write counted in progress on its vnode, in one
+/// section of the cache's lock.
+pub fn buf_undirty_output(t: &BufRef) {
+    let bp = t.buf();
+    let vb = b_vp(bp);
+    let mut g = CACHE.lock();
+    if bp.isset(B_DELWRI) {
+        bp.clr(B_DELWRI);
+        reassignbuf(&mut g, bp);
+    }
+    vb.numoutput.fetch_add(1, Mem::Relaxed);
+}
+
+/// `buf_undirty(bp); vp->v_numoutput++; ... biodone(bp)` at one `splbio` (`nfs_flush`'s
+/// buffer whose data a commit made stable): clean, one more write counted on its vnode, and
+/// its I/O done (`biodone`, which an asynchronous buffer's release ends), in one section of
+/// the cache's lock.
+pub fn buf_undirty_done(t: BufRef) {
+    let bp = t.buf();
+    let vb = b_vp(bp);
+    let mut g = CACHE.lock();
+    if bp.isset(B_DELWRI) {
+        bp.clr(B_DELWRI);
+        reassignbuf(&mut g, bp);
+    }
+    vb.numoutput.fetch_add(1, Mem::Relaxed);
+    biodone_locked(t, g);
+}
+
 /// `f` on each of `vb`'s dirty buffers, under the cache's lock (`ffs_fsync`'s clearing of
 /// `B_SCANNED`, `nfs_clearcommit`'s of `B_NEEDCOMMIT`): flags only.
 pub fn vnode_dirty_for_each(vb: &VnodeBufs, mut f: impl FnMut(&Buf)) {
