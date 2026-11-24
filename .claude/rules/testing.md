@@ -47,7 +47,7 @@ Four tiers. Every change lands with the tier it belongs to.
    another test's memory by a UDP test's `ip_send_test_take`); (N6.6a2) `kernel::netinet::tcp_subr::tcp_test_reset` (the SYN cache's
    sets forgotten, the debug ring zeroed), called by the kernel's TCP fixture (`testtcp::setup`)
    before `tcp_init`, and (N6.6a5, `bsd`'s tests run the kernel's TCP over their glue) by
-   `bsd`'s `setup_net` (`pub` under the `doubles` feature, as `igmp_test_reset`); the server cache by `nfsrv_initcache` in the nfs tests' setup.
+   `bsd`'s `setup_net` (`pub` under the `doubles` feature, as `igmp_test_reset`); the server cache by `nfsrv_initcache` in the nfs tests' setup; (N6.7a2) the kernel's `nfs_test_reset` (the nfs client's queues and kq list; the node hash's chains are fixed and not reset), called by `vfs_test_reset`.
    Process 0 is recorded once per test thread for a test glue that needs it (`set_process0`
    behind a `thread_local!` flag: a `test_proc_glue!` glue's process tables are the
    thread's; the diskless boot's `testkrpc` for `TestGlue`, `testnfs` for its own glue): the
