@@ -2148,6 +2148,8 @@ t_udp(void)
 	mib[3] = UDPCTL_MAXID;
 	len = 0;
 	R("unknown", sysctl(mib, 4, NULL, &len, NULL, 0));
+}
+
 /* The Internet checksum of the n bytes at p (an ICMP message's). */
 static uint16_t
 raw_cksum(const void *p, size_t n)
