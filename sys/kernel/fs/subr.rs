@@ -541,6 +541,7 @@ pub fn vfs_test_reset<G: ProcGlue>() {
     crate::fs::tmpfs::tmpfs_vfsops::tmpfs_test_reset::<G>();
     #[cfg(feature = "fuse")]
     crate::fs::fuse::fusefs::fuse_test_reset::<G>();
+    crate::fs::nfs::nfs_subs::nfs_test_reset::<G>();
     t.rootvnode.set(None);
     t.numvnodes.store(0, Ordering::Relaxed);
 }
@@ -2532,9 +2533,13 @@ mod tests {
     /// test -p kernel` checks it without the member, `just test` with it. The default
     /// representation decides the order, so a change elsewhere in `VfsTables` (or in the
     /// compiler's layout) can move it too: then measure again, and say why in the commit.
+    /// N6.7a2: nfs's node hash (1,024 fixed chains, 40 KiB, the user's decision of
+    /// 2026-11-24) makes `nfs` a member the compiler places before `ufs` (at 112), so `ufs`
+    /// sits at 41,432, measured with `nfsclient` alone and with `just test`'s features: the
+    /// UFS tables themselves are unchanged, only their place in the glue's static moved.
     #[test]
     fn the_ufs_tables_stay_where_they_were_without_msdosfs() {
-        assert_eq!(core::mem::offset_of!(VfsTables<TestGlue>, ufs), 144);
+        assert_eq!(core::mem::offset_of!(VfsTables<TestGlue>, ufs), 41_432);
     }
 }
 /* </TESTS> */
