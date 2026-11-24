@@ -17,7 +17,8 @@ Four tiers. Every change lands with the tier it belongs to.
    forgets the old state without freeing it: freeing into, or growing from, an earlier test's
    memory or a pool initialised again since crashes a later test, and a panic inside
    `config_attach` or under a kernel lock then hangs the rest of the run (rule of
-   2026-10-08, after the M16e close found it). Known resets: `rn_test_reset` (radix),
+   2026-10-08, after the M16e close found it). Known resets (`rn_test_reset` went with `bsd`'s radix at N6.7b1: the kernel's
+   trees keep no global),
    `wsmux_test_reset` (the mux table), `autoconf_test_reset` (`autoconf_attdet`),
    `pf_osfp_test_reset` (the fingerprint list), `kmemstats_test_reset`; (N6.7a1)
    `softnet_test_install` (`kernel::net::if_`, called by every fixture below that has
