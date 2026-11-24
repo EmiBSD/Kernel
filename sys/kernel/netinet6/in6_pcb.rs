@@ -202,7 +202,7 @@ use crate::net::toeplitz::stoeplitz_ip6port;
 use crate::netinet::in_pcb::{
     Addr6, INP_IPV6, INPLOOKUP_IPV6, INPLOOKUP_WILDCARD, InpGuard, Inpaddru, Inpcb, InpcbRef,
     Inpcbtable, hash_chain_find, in_pcb_iterator, in_pcbbind_locked, in_pcblookup_local,
-    in_pcbrehash, in_pcbrtchange, in_pcbsolock, sotoinpcb_locked,
+    in_pcbrehash, in_pcbrtchange, in_pcbsolock,
 };
 use crate::netinet6::in6::in6_nam2sin6;
 use crate::netinet6::in6_src::{in6_embedscope, in6_pcbselsrc, in6_recoverscope, in6_selecthlim};
@@ -505,9 +505,7 @@ pub fn in6_sockaddr<G: ProcGlue>(
             "in6_sockaddr: not a kernel protocol's socket lock"
         ));
     };
-    let Some(inp) = sotoinpcb_locked(so, &il.pcb) else {
-        kpanic(format_args!("in6_sockaddr: socket {so:p} has no pcb"));
-    };
+    let inp = crate::netinet::in_pcb::pcb_of(so, &il.pcb, "in6_sockaddr");
     crate::netinet::in_pcb::set_nam(nam, &in6_setsockaddr(inp));
     Ok(())
 }
@@ -524,9 +522,7 @@ pub fn in6_peeraddr<G: ProcGlue>(
             "in6_peeraddr: not a kernel protocol's socket lock"
         ));
     };
-    let Some(inp) = sotoinpcb_locked(so, &il.pcb) else {
-        kpanic(format_args!("in6_peeraddr: socket {so:p} has no pcb"));
-    };
+    let inp = crate::netinet::in_pcb::pcb_of(so, &il.pcb, "in6_peeraddr");
     crate::netinet::in_pcb::set_nam(nam, &in6_setpeeraddr(inp));
     Ok(())
 }

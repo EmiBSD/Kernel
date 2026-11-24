@@ -178,14 +178,13 @@ use crate::net::proto::{PRCO_SETOPT, Usrreqs};
 use crate::net::rtable::rtable_l2;
 use crate::net::sockbuf::{SS_CANTRCVMORE, SS_ISCONNECTED, SS_PRIV};
 use crate::net::socket::{
-    InetLocked, SoLocked, Socket, socantsendmore, soisconnected, soisdisconnected, soreserve,
-    sorwakeup,
+    SoLocked, Socket, socantsendmore, soisconnected, soisdisconnected, soreserve, sorwakeup,
 };
 use crate::netinet::in_::{in_broadcast, in_control, in_nam2sin};
 use crate::netinet::in_pcb::{
-    INP_CONTROLOPTS, INP_HDRINCL, INP_IPV6, Inpcb, InpcbRef, Inpcbtable, in_pcb_iterator,
-    in_pcballoc, in_pcbdetach, in_pcbinit, in_pcbselsrc, in_peeraddr, in_sockaddr, inet, set_nam,
-    sotoinpcb_locked,
+    INP_CONTROLOPTS, INP_HDRINCL, INP_IPV6, Inpcb, InpcbRef, Inpcbtable, detach_slot,
+    in_pcb_iterator, in_pcballoc, in_pcbinit, in_pcbselsrc, in_peeraddr, in_sockaddr, inet, pcb_of,
+    set_nam,
 };
 use crate::netinet::ip_icmp::icmp_error;
 use crate::netinet::ip_id::ip_randomid;
@@ -222,36 +221,6 @@ impl<G: ProcGlue> RipUsrreqs<G> {
 /// it).
 pub fn rawcbtable<G: ProcGlue>() -> &'static Inpcbtable<G> {
     &net::<G>().rawcbtable
-}
-
-/// `sotoinpcb(so)` of a request the C makes on an attached socket (it dereferences the
-/// pointer unchecked): the pcb borrowed from the socket's locked slot, `panic(9)` without one.
-pub(crate) fn pcb_of<'a, G: ProcGlue>(
-    so: &'a Socket<G>,
-    il: &'a InetLocked<'_>,
-    who: &str,
-) -> &'a Inpcb<G> {
-    match sotoinpcb_locked(so, &il.pcb) {
-        Some(inp) => inp,
-        None => kpanic(format_args!("{who}: socket {so:p} has no pcb")),
-    }
-}
-
-/// `in_pcbdetach(sotoinpcb(so))` of a detach request: the pcb taken out of the socket's
-/// locked slot (whose handle the attach put there) and detached; `false` when the socket has
-/// none (the C's `inp == NULL`).
-pub(crate) fn detach_slot<G: ProcGlue>(so: &Socket<G>, il: &mut InetLocked<'_>) -> bool {
-    let Some(slot) = so.set_pcb_locked(&mut il.pcb, None) else {
-        return false;
-    };
-    let Some(inp) = slot.downcast_ref::<Inpcb<G>>().and_then(PoolArc::from_ref) else {
-        kpanic(format_args!(
-            "detach: socket {so:p}: a slot of another type"
-        ));
-    };
-    drop(slot);
-    in_pcbdetach(inp, &il.net);
-    true
 }
 
 /// The bytes of a `sockaddr_in` (or any other ABI image) the caller built.
@@ -588,7 +557,7 @@ pub fn rip_ctloutput<G: ProcGlue>(
     m: Option<&mut Mbuf>,
 ) -> Result<(), Errno> {
     let il = inet(w);
-    let inp = pcb_of(so, &il, "rip_ctloutput");
+    let inp = pcb_of(so, &il.pcb, "rip_ctloutput");
 
     if level != IPPROTO_IP {
         return Err(Errno::EINVAL);
@@ -674,7 +643,7 @@ pub fn rip_bind<G: ProcGlue>(
     _p: &Thread<G>,
 ) -> Result<(), Errno> {
     let il = inet(w);
-    let inp = pcb_of(so, &il, "rip_bind");
+    let inp = pcb_of(so, &il.pcb, "rip_bind");
 
     let addr = in_nam2sin(nam)?;
     let rtableid = inp.inp_rtableid.get();
@@ -702,7 +671,7 @@ pub fn rip_connect<G: ProcGlue>(
     nam: &Mbuf,
 ) -> Result<(), Errno> {
     let il = inet(w);
-    let inp = pcb_of(so, &il, "rip_connect");
+    let inp = pcb_of(so, &il.pcb, "rip_connect");
 
     let addr = in_nam2sin(nam)?;
 
@@ -718,7 +687,7 @@ pub fn rip_connect<G: ProcGlue>(
 /// wildcard.
 pub fn rip_disconnect<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) -> Result<(), Errno> {
     let il = inet(w);
-    let inp = pcb_of(so, &il, "rip_disconnect");
+    let inp = pcb_of(so, &il.pcb, "rip_disconnect");
 
     if !so.has_state(SS_ISCONNECTED) {
         return Err(Errno::ENOTCONN);
@@ -751,7 +720,7 @@ pub fn rip_send<G: ProcGlue>(
     control: Option<MbufBox>,
 ) -> Result<(), Errno> {
     let il = inet(w);
-    let inp = pcb_of(so, &il, "rip_send");
+    let inp = pcb_of(so, &il.pcb, "rip_send");
 
     let mut dst = SockaddrIn {
         sin_family: AF_INET,
@@ -847,6 +816,7 @@ impl<G: ProcGlue> Usrreqs<G> for RipUsrreqs<G> {
         in_peeraddr(so, w, addr)
     }
 }
+
 /// The host tests' raw and divert sockets (N6.6b1): protocols of `testinet`'s domains whose
 /// requests are the kernel's (`RipUsrreqs`, `Rip6Usrreqs`, `DivertUsrreqs`,
 /// `Divert6Usrreqs`), the four tables initialised, sockets made by `soalloc` and attached by
@@ -1210,7 +1180,7 @@ mod tests {
         // none (the C's EINVAL).
         let r = locked(&so, |w| {
             let il = inet(w);
-            sotoinpcb_locked(&so, &il.pcb).is_some()
+            crate::netinet::in_pcb::sotoinpcb_locked(&so, &il.pcb).is_some()
         });
         assert!(r);
         so.st_set(crate::net::sockbuf::SS_NOFDREF);

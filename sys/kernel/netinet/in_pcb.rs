@@ -2499,9 +2499,12 @@ pub fn in_setpeeraddr<G: ProcGlue>(inp: &Inpcb<G>) -> SockaddrIn {
     }
 }
 
-/// The pcb of a name request (`sotoinpcb(so)`, which the C dereferences unchecked): borrowed
-/// from the socket's locked slot; `panic(9)` without one.
-fn name_pcb<'a, G: ProcGlue>(
+/// `sotoinpcb(so)` of a request the C makes on an attached socket (it dereferences the
+/// pointer unchecked): the pcb borrowed from the socket's locked slot (`pcb`, the lock's
+/// part), `panic(9)` without one; `who` names the request. The datagram and raw protocols'
+/// requests and the name requests (N6.6b1: one helper where UDP, raw IP and the names each
+/// had theirs).
+pub(crate) fn pcb_of<'a, G: ProcGlue>(
     so: &'a Socket<G>,
     pcb: &'a WitnessPart<'_>,
     who: &str,
@@ -2510,6 +2513,23 @@ fn name_pcb<'a, G: ProcGlue>(
         Some(inp) => inp,
         None => kpanic(format_args!("{who}: socket {so:p} has no pcb")),
     }
+}
+
+/// `in_pcbdetach(sotoinpcb(so))` of a detach request: the pcb taken out of the socket's
+/// locked slot (whose handle the attach put there) and detached; `false` when the socket has
+/// none (the C's `inp == NULL`). UDP's and the raw protocols' (N6.6b1: one helper).
+pub(crate) fn detach_slot<G: ProcGlue>(so: &Socket<G>, il: &mut InetLocked<'_>) -> bool {
+    let Some(slot) = so.set_pcb_locked(&mut il.pcb, None) else {
+        return false;
+    };
+    let Some(inp) = slot.downcast_ref::<Inpcb<G>>().and_then(PoolArc::from_ref) else {
+        kpanic(format_args!(
+            "detach: socket {so:p}: a slot of another type"
+        ));
+    };
+    drop(slot);
+    in_pcbdetach(inp, &il.net);
+    true
 }
 
 /// `in_sockaddr(so, nam)`: the local address of `so`'s pcb into `nam` (`pru_sockaddr` of the
@@ -2524,7 +2544,7 @@ pub fn in_sockaddr<G: ProcGlue>(
             "in_sockaddr: not a kernel protocol's socket lock"
         ));
     };
-    set_nam(nam, &in_setsockaddr(name_pcb(so, &il.pcb, "in_sockaddr")));
+    set_nam(nam, &in_setsockaddr(pcb_of(so, &il.pcb, "in_sockaddr")));
     Ok(())
 }
 
@@ -2540,7 +2560,7 @@ pub fn in_peeraddr<G: ProcGlue>(
             "in_peeraddr: not a kernel protocol's socket lock"
         ));
     };
-    set_nam(nam, &in_setpeeraddr(name_pcb(so, &il.pcb, "in_peeraddr")));
+    set_nam(nam, &in_setpeeraddr(pcb_of(so, &il.pcb, "in_peeraddr")));
     Ok(())
 }
 

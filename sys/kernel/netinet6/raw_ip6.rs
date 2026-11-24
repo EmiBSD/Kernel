@@ -207,10 +207,10 @@ use crate::net::socket::{
 };
 use crate::netinet::in_pcb::inet;
 use crate::netinet::in_pcb::{
-    IN6P_CONTROLOPTS, IN6P_MINMTU, INP_IPV6, Inpcb, InpcbRef, Inpcbtable, in_pcb_iterator,
-    in_pcballoc, in_pcbinit, in_pcbrtchange,
+    IN6P_CONTROLOPTS, IN6P_MINMTU, INP_IPV6, Inpcb, InpcbRef, Inpcbtable, detach_slot,
+    in_pcb_iterator, in_pcballoc, in_pcbinit, in_pcbrtchange, pcb_of,
 };
-use crate::netinet::raw_ip::{detach_slot, pcb_of, sa_bytes};
+use crate::netinet::raw_ip::sa_bytes;
 use crate::netinet6::icmp6::{icmp6_ctloutput, icmp6_error, icmp6_mtudisc_update};
 use crate::netinet6::in6::{in6_control, in6_nam2sin6};
 use crate::netinet6::in6_cksum::in6_cksum;
@@ -758,7 +758,7 @@ pub fn rip6_ctloutput<G: ProcGlue>(
     m: Option<&mut Mbuf>,
 ) -> Result<(), Errno> {
     let il = inet(w);
-    let inp = pcb_of(so, &il, "rip6_ctloutput");
+    let inp = pcb_of(so, &il.pcb, "rip6_ctloutput");
 
     match level {
         IPPROTO_IPV6 => match optname {
@@ -833,7 +833,7 @@ pub fn rip6_bind<G: ProcGlue>(
     _p: &Thread<G>,
 ) -> Result<(), Errno> {
     let il = inet(w);
-    let inp = pcb_of(so, &il, "rip6_bind");
+    let inp = pcb_of(so, &il.pcb, "rip6_bind");
 
     let mut addr = in6_nam2sin6(nam)?;
 
@@ -858,7 +858,7 @@ pub fn rip6_connect<G: ProcGlue>(
     nam: &Mbuf,
 ) -> Result<(), Errno> {
     let il = inet(w);
-    let inp = pcb_of(so, &il, "rip6_connect");
+    let inp = pcb_of(so, &il.pcb, "rip6_connect");
 
     let addr = in6_nam2sin6(nam)?;
 
@@ -885,7 +885,7 @@ pub fn rip6_connect<G: ProcGlue>(
 /// unspecified one.
 pub fn rip6_disconnect<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) -> Result<(), Errno> {
     let il = inet(w);
-    let inp = pcb_of(so, &il, "rip6_disconnect");
+    let inp = pcb_of(so, &il.pcb, "rip6_disconnect");
 
     if !so.has_state(SS_ISCONNECTED) {
         return Err(Errno::ENOTCONN);
@@ -917,7 +917,7 @@ pub fn rip6_send<G: ProcGlue>(
     control: Option<MbufBox>,
 ) -> Result<(), Errno> {
     let il = inet(w);
-    let inp = pcb_of(so, &il, "rip6_send");
+    let inp = pcb_of(so, &il.pcb, "rip6_send");
 
     // always copy sockaddr to avoid overwrites
     let mut dst = SockaddrIn6 {

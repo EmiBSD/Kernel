@@ -206,7 +206,6 @@ use core::sync::atomic::{AtomicI32, Ordering};
 use hal::netlock::NetHeld;
 use hal::pod;
 use hal::pool::PoolArc;
-use hal::rwlock::WitnessPart;
 use hal::sys::errno::Errno;
 use hal::sys::netinet_icmp6::{ICMP6_DST_UNREACH, ICMP6_DST_UNREACH_NOPORT};
 use hal::sys::netinet_in::{
@@ -249,17 +248,17 @@ use crate::net::proto::{
 use crate::net::rtable::rtable_l2;
 use crate::net::sockbuf::{SB_MAX, SS_CANTRCVMORE, SS_ISCONNECTED, SS_PRIV, sbcreatecontrol};
 use crate::net::socket::{
-    InetLocked, SoLocked, Socket, socantsendmore, soisconnected, soreserve, sorwakeup, sowwakeup,
+    SoLocked, Socket, socantsendmore, soisconnected, soreserve, sorwakeup, sowwakeup,
 };
 use crate::netinet::in_::{in_control, in_nam2sin};
 use crate::netinet::in_pcb::InpUpcall;
 use crate::netinet::in_pcb::{
     IN6P_CONTROLOPTS, IN6P_RECVDSTPORT, INP_CONTROLOPTS, INP_IPSECFLOWINFO, INP_IPV6,
-    INP_RECVDSTPORT, InpHold, Inpcb, InpcbRef, Inpcbtable, in_pcb_iterator, in_pcb_iterator_abort,
-    in_pcbaddrisavail, in_pcballoc, in_pcbbind, in_pcbconnect, in_pcbdetach, in_pcbdisconnect,
-    in_pcbinit, in_pcblookup, in_pcblookup_listen, in_pcbnotifyall, in_pcbrtchange, in_pcbselsrc,
-    in_pcbsolock, in_pcbunset_laddr, in_setpeeraddr, in_setsockaddr, in_sysctl_ports, inet,
-    set_nam, sotoinpcb_locked, with_curproc,
+    INP_RECVDSTPORT, InpHold, Inpcb, InpcbRef, Inpcbtable, detach_slot, in_pcb_iterator,
+    in_pcb_iterator_abort, in_pcbaddrisavail, in_pcballoc, in_pcbbind, in_pcbconnect,
+    in_pcbdisconnect, in_pcbinit, in_pcblookup, in_pcblookup_listen, in_pcbnotifyall,
+    in_pcbrtchange, in_pcbselsrc, in_pcbsolock, in_pcbunset_laddr, in_setpeeraddr, in_setsockaddr,
+    in_sysctl_ports, inet, pcb_of, set_nam, sotoinpcb_locked, with_curproc,
 };
 use crate::netinet::in4_cksum::in4_cksum;
 use crate::netinet::ip_icmp::icmp_error;
@@ -340,15 +339,6 @@ pub fn udbtable<G: ProcGlue>() -> &'static Inpcbtable<G> {
 /// `udb6table`: the glue's IPv6 UDP control blocks, as [`udbtable`].
 pub fn udb6table<G: ProcGlue>() -> &'static Inpcbtable<G> {
     &net::<G>().udb6table
-}
-
-/// `sotoinpcb(so)` of the requests that dereference it unchecked: the pcb borrowed from the
-/// socket's locked slot; `panic(9)` without one, where the C dereferences NULL.
-fn udp_inp<'a, G: ProcGlue>(so: &'a Socket<G>, pcb: &'a WitnessPart<'_>) -> &'a Inpcb<G> {
-    match sotoinpcb_locked(so, pcb) {
-        Some(inp) => inp,
-        None => kpanic(format_args!("udp socket {so:p}: no inpcb")),
-    }
 }
 
 /// `udp_init`: the two tables (`udpcounters` is a static).
@@ -1377,24 +1367,10 @@ pub fn udp_attach<G: ProcGlue>(
     Ok(())
 }
 
-/// The pcb taken out of the socket's locked slot and detached (`in_pcbdetach`): the C's
-/// `in_pcbdetach(inp)`, which clears `so_pcb`; `false` when the slot is empty.
-fn udp_pcbdetach<G: ProcGlue>(so: &Socket<G>, il: &mut InetLocked<'_>) -> bool {
-    let Some(slot) = so.set_pcb_locked(&mut il.pcb, None) else {
-        return false;
-    };
-    let Some(h) = slot.downcast_ref::<Inpcb<G>>().and_then(PoolArc::from_ref) else {
-        kpanic(format_args!("udp: socket {so:p}: its slot holds no pcb"));
-    };
-    in_pcbdetach(h, &il.net);
-    drop(slot);
-    true
-}
-
 /// `udp_detach`: the control block detached; `EINVAL` without one.
 pub fn udp_detach<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) -> Result<(), Errno> {
     let mut il = inet(w);
-    if !udp_pcbdetach(so, &mut il) {
+    if !detach_slot(so, &mut il) {
         return Err(Errno::EINVAL);
     }
     Ok(())
@@ -1408,7 +1384,7 @@ pub fn udp_bind<G: ProcGlue>(
     p: &Thread<G>,
 ) -> Result<(), Errno> {
     let il = inet(w);
-    let inp = udp_inp(so, &il.pcb);
+    let inp = pcb_of(so, &il.pcb, "udp_bind");
     in_pcbbind(inp, Some(addr), p, &il.net)
 }
 
@@ -1419,7 +1395,7 @@ pub fn udp_connect<G: ProcGlue>(
     addr: &Mbuf,
 ) -> Result<(), Errno> {
     let il = inet(w);
-    let inp = udp_inp(so, &il.pcb);
+    let inp = pcb_of(so, &il.pcb, "udp_connect");
 
     // INET6
     let connected = if inp.has_flags(INP_IPV6) {
@@ -1441,7 +1417,7 @@ pub fn udp_connect<G: ProcGlue>(
 fn udp_disconnect<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) -> Result<(), Errno> {
     let mut il = inet(w);
     let detach = {
-        let inp = udp_inp(so, &il.pcb);
+        let inp = pcb_of(so, &il.pcb, "udp_disconnect");
 
         // INET6
         let unconnected = if inp.has_flags(INP_IPV6) {
@@ -1457,7 +1433,7 @@ fn udp_disconnect<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) -> Result<(
     };
     if detach {
         // in_pcbdisconnect's in_pcbdetach of a socket without a file.
-        udp_pcbdetach(so, &mut il);
+        detach_slot(so, &mut il);
     }
     so.st_clear(SS_ISCONNECTED); // XXX
 
@@ -1556,7 +1532,7 @@ pub fn udp_ctloutput<G: ProcGlue>(
     m: Option<&mut Mbuf>,
 ) -> Result<(), Errno> {
     let il = inet(w);
-    let inp = udp_inp(so, &il.pcb);
+    let inp = pcb_of(so, &il.pcb, "udp_ctloutput");
     if inp.has_flags(INP_IPV6) {
         return ip6_ctloutput(op, inp, level, optname, m, &il.net);
     }
@@ -1632,7 +1608,7 @@ impl<G: ProcGlue> Usrreqs<G> for UdpUsrreqs<G> {
     /// `in_sockaddr` or `in6_sockaddr`.
     fn sockaddr(&self, so: &Socket<G>, w: &mut SoLocked<'_>, addr: &mut Mbuf) -> Result<(), Errno> {
         let il = inet(w);
-        let inp = udp_inp(so, &il.pcb);
+        let inp = pcb_of(so, &il.pcb, "udp_sockaddr");
         if self.inet6 {
             set_nam(addr, &in6_setsockaddr(inp));
         } else {
@@ -1643,7 +1619,7 @@ impl<G: ProcGlue> Usrreqs<G> for UdpUsrreqs<G> {
     /// `in_peeraddr` or `in6_peeraddr`.
     fn peeraddr(&self, so: &Socket<G>, w: &mut SoLocked<'_>, addr: &mut Mbuf) -> Result<(), Errno> {
         let il = inet(w);
-        let inp = udp_inp(so, &il.pcb);
+        let inp = pcb_of(so, &il.pcb, "udp_peeraddr");
         if self.inet6 {
             set_nam(addr, &in6_setpeeraddr(inp));
         } else {
@@ -1654,7 +1630,7 @@ impl<G: ProcGlue> Usrreqs<G> for UdpUsrreqs<G> {
     /// `in_flowid`.
     fn flowid(&self, so: &Socket<G>, w: &mut SoLocked<'_>) -> i32 {
         let il = inet(w);
-        i32::from(udp_inp(so, &il.pcb).inp_flowid.get())
+        i32::from(pcb_of(so, &il.pcb, "udp_flowid").inp_flowid.get())
     }
 }
 /// The host tests' UDP sockets: protocols of the test domains (`testinet`'s `InetDom` and

@@ -118,14 +118,14 @@ use crate::net::socket::{SoLocked, Socket, socantsendmore, soreserve, sorwakeup}
 use crate::netinet::in_::{in_control, in_ifp2ia, in_nam2sin};
 use crate::netinet::in_pcb::inet;
 use crate::netinet::in_pcb::{
-    INP_HDRINCL, Inpcb, InpcbRef, Inpcbtable, in_pcb_is_iterator, in_pcballoc, in_pcbbind,
-    in_pcbinit, in_peeraddr, in_sockaddr,
+    INP_HDRINCL, Inpcb, InpcbRef, Inpcbtable, detach_slot, in_pcb_is_iterator, in_pcballoc,
+    in_pcbbind, in_pcbinit, in_peeraddr, in_sockaddr, pcb_of,
 };
 use crate::netinet::in_var::ifatoia;
 use crate::netinet::ip_input::ipv4_input;
 use crate::netinet::ip_output::{in_hdr_cksum_out, in_proto_cksum_out, ip_load, ip_output};
 use crate::netinet::ip_var::{IP_ALLOWBROADCAST, IP_RAWOUTPUT};
-use crate::netinet::raw_ip::{detach_slot, pcb_of, rip_chkhdr, sa_bytes};
+use crate::netinet::raw_ip::{rip_chkhdr, sa_bytes};
 use crate::proc::{ProcGlue, Thread};
 use crate::sysctl::{SysctlReq, bounded_arr, rdstruct};
 
@@ -450,7 +450,7 @@ pub fn divert_bind<G: ProcGlue>(
     p: &Thread<G>,
 ) -> Result<(), Errno> {
     let il = inet(w);
-    let inp = pcb_of(so, &il, "divert_bind");
+    let inp = pcb_of(so, &il.pcb, "divert_bind");
     in_pcbbind(inp, Some(addr), p, &il.net)
 }
 
@@ -470,7 +470,7 @@ pub fn divert_send<G: ProcGlue>(
     control: Option<MbufBox>,
 ) -> Result<(), Errno> {
     let il = inet(w);
-    let inp = pcb_of(so, &il, "divert_send");
+    let inp = pcb_of(so, &il.pcb, "divert_send");
     // sosend always hands over a packet (a pkthdr mbuf, empty or not).
     let Some(m) = m else {
         return Err(Errno::EINVAL);

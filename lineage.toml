@@ -16773,8 +16773,8 @@ reason = "the checksum the C stores through its pointer is stored in udp_input's
 
 [[module.fn]]
 lz = "sys/netinet/udp_usrreq.rs::inpcb_of"
-native = ["udp_inp"]
-kind = "renamed"
+native = ["sys/kernel/netinet/in_pcb.rs::pcb_of"]
+kind = "merged"
 
 [[module]]
 rust = "sys/kernel/netinet/udp_var.rs"
@@ -16955,9 +16955,8 @@ kind = "split"
 
 [[module.fn]]
 lz = "sys/netinet/in_pcb.rs::inpcb_of"
-native = []
-kind = "dropped"
-reason = "a sotoinpcb that panics without a pcb, for bsd's in_sockaddr/in_peeraddr adapters, gone with them at N6.6b1 (their last callers, raw IP and divert, moved): the kernel's requests borrow the pcb from the socket's locked slot (sotoinpcb_locked, raw_ip's pcb_of) and panic(9) without one, where the C dereferences NULL"
+native = ["pcb_of"]
+kind = "renamed"
 
 [[module]]
 rust = "sys/kernel/netinet6/in6_cksum.rs"
@@ -17220,9 +17219,8 @@ kind = "split"
 
 [[module.fn]]
 lz = "sys/netinet6/in6_pcb.rs::inpcb_of"
-native = []
-kind = "dropped"
-reason = "a sotoinpcb that panics without a pcb, for bsd's in6_sockaddr/in6_peeraddr adapters, gone with them at N6.6b1 (their last callers, raw IPv6 and divert6, moved): the kernel's requests borrow the pcb from the socket's locked slot (raw_ip's pcb_of) and panic(9) without one, where the C dereferences NULL"
+native = ["sys/kernel/netinet/in_pcb.rs::pcb_of"]
+kind = "merged"
 
 [[module]]
 rust = "sys/kernel/netinet6/ip6_output.rs"
@@ -17592,7 +17590,7 @@ kind = "merged"
 
 [[module.fn]]
 lz = "sys/netinet6/raw_ip6.rs::inpcb_of"
-native = ["sys/kernel/netinet/raw_ip.rs::pcb_of"]
+native = ["sys/kernel/netinet/in_pcb.rs::pcb_of"]
 kind = "merged"
 
 [[module.fn]]
@@ -17646,7 +17644,7 @@ rust = "sys/kernel/netinet/raw_ip.rs"
 crate = "kernel"
 lz = ["sys/netinet/raw_ip.rs"]
 status = "redesigned"
-notes = "N6.6b1 (built beside bsd's, unregistered until the switch): raw_ip.c in the kernel, generic over the glue: RipUsrreqs (rip_usrreqs as impl Usrreqs) over the socket lock's parts, the pcb borrowed from the socket's locked slot (attach fills it, detach takes it out for in_pcbdetach); rip_input over the glue's rawcbtable (NetTables) with in_pcb_iterator, the prototype's protocol one word's load (IpProto::ip_p), no socket lock on input; rip_output with one loan of the IPv4 options per send; rip_chkhdr over the pulled-up header's bytes, each option length checked before its byte; rip_ctloutput's IP_HDRINCL answering the bit (8), MRT_* EOPNOTSUPP (hal::sys::netinet_ip_mroute); the shared helpers of the raw and divert requests (inet, pcb_of, detach_slot, opt_int, set_mbuf, sa_bytes); the IPPROTO_RAW and wildcard rows are kernel::netinet::in_proto's RipProtocol"
+notes = "N6.6b1 (built beside bsd's, unregistered until the switch): raw_ip.c in the kernel, generic over the glue: RipUsrreqs (rip_usrreqs as impl Usrreqs) over the socket lock's parts, the pcb borrowed from the socket's locked slot (attach fills it, detach takes it out for in_pcbdetach); rip_input over the glue's rawcbtable (NetTables) with in_pcb_iterator, the prototype's protocol one word's load (IpProto::ip_p), no socket lock on input; rip_output with one loan of the IPv4 options per send; rip_chkhdr over the pulled-up header's bytes, each option length checked before its byte; rip_ctloutput's IP_HDRINCL answering the bit (8), MRT_* EOPNOTSUPP (hal::sys::netinet_ip_mroute); the shared helpers of the raw and divert requests (opt_int, sa_bytes; pcb_of and detach_slot are in_pcb.rs's since N6.6b1's review, one pair with UDP's and the name requests'); the IPPROTO_RAW and wildcard rows are kernel::netinet::in_proto's RipProtocol"
 
 [[module.fn]]
 lz = "sys/netinet/raw_ip.rs::RAWCBTABLE"
@@ -17665,8 +17663,8 @@ kind = "renamed"
 
 [[module.fn]]
 lz = "sys/netinet/raw_ip.rs::inpcb_of"
-native = ["pcb_of"]
-kind = "renamed"
+native = ["sys/kernel/netinet/in_pcb.rs::pcb_of"]
+kind = "merged"
 
 [[module.fn]]
 lz = "sys/netinet/raw_ip.rs::nam_sin"
