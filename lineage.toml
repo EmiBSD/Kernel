@@ -6429,7 +6429,7 @@ status = "inherited"
 rust = "sys/net/pfkeyv2.rs"
 lz = ["sys/net/pfkeyv2.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/netinet/ip_var.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/netinet/ip_var.rs", "sys/kernel/net/radix.rs"]
 
 [[module]]
 rust = "sys/net/pfkeyv2_convert.rs"
@@ -6598,7 +6598,8 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/n
 rust = "sys/netinet/ip_ipsp.rs"
 lz = ["sys/netinet/ip_ipsp.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet6/ip6_output.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet6/ip6_output.rs", "sys/kernel/net/radix.rs"]
+notes = "N6.7b1: ipo_nodes went with the SPD's move onto the kernel's radix tree; ipo_addr_key and ipo_mask_key give the key's and the mask's bytes (copied into the tree) instead of pointers the tree kept"
 
 [[module]]
 rust = "sys/netinet/ip_output.rs"
@@ -6609,7 +6610,9 @@ adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/n
 [[module]]
 rust = "sys/netinet/ip_spd.rs"
 lz = ["sys/netinet/ip_spd.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/radix.rs"]
+notes = "N6.7b1: the SPD on the kernel's radix tree (SpdTree, kernel::net::radix::RadixTree of the policies, 48-byte keys from sen_type): spd_tables holds the trees in malloc(M_RTABLE) boxes, spd_table_get lends one shared, spd_table_mut exclusively (the exclusive net lock), spd_table_walk is the tree's cursor fetched again at each step (spd_walktree); ipsec_policy_of (the leaf-to-policy cast) went with the node pairs, the route's value being the policy"
 
 [[module]]
 rust = "sys/netinet/ip_var.rs"

@@ -204,7 +204,6 @@ use crate::net::pfkeyv2_parsemessage::{
     SADB_EXTS_ALLOWED_OUT, SADB_EXTS_REQUIRED_OUT, pfkeyv2_parsemessage,
 };
 use crate::net::pfvar::PF_TAG_NAME_SIZE;
-use crate::net::radix::{rn_addroute, rn_init, rn_match};
 use crate::net::rtable::{rtable_exists, rtable_l2};
 use crate::netinet::in_::{IPPROTO_AH, IPPROTO_ESP, IPPROTO_IPCOMP, IPPROTO_IPIP, SockaddrIn};
 #[cfg(feature = "inet6")]
@@ -222,7 +221,7 @@ use crate::netinet::ip_ipsp::{
 };
 use crate::netinet::ip_spd::{
     IPO_TDB_MTX, IPSEC_ACQUIRE_POOL, IPSEC_POLICY_POOL, ipsec_delete_policy, ipsec_get_acquire,
-    ipsec_policy_of, ipsec_unref_acquire, spd_table_add, spd_table_get, spd_table_walk,
+    ipsec_unref_acquire, spd_table_add, spd_table_mut, spd_table_walk,
 };
 use crate::netinet::ipsec_input::{
     AH_ENABLE, ESP_ENABLE, IPCOMP_ENABLE, IPSEC_DEF_AUTH, IPSEC_DEF_COMP, IPSEC_DEF_ENC,
@@ -1216,9 +1215,9 @@ pub static PFKEYDOMAIN: Domain = Domain {
     dom_maxplen: 0,
 };
 
-/// `pfkey_init`: the radix trees for `struct sockaddr_encap` keys and the pools.
+/// `pfkey_init`: the pools. The C's `rn_init(sizeof(struct sockaddr_encap))` is each SPD
+/// tree's own key length (`ip_spd`'s `SpdTree`, N6.7b1).
 pub fn pfkey_init() {
-    rn_init(SockaddrEncap::new().as_bytes().len() as u32);
     PKPTABLE.pkp_list.init();
     pool_init(
         &PKPCB_POOL,
@@ -3006,12 +3005,10 @@ unsafe fn pfkeyv2_flow(
         return Err(e);
     }
 
-    // Determine whether the exact same SPD entry already exists.
+    // Determine whether the exact same SPD entry already exists. The tree `spd_table_add`
+    // lent is not used after this lookup.
     let mut ipo_ptr: *mut IpsecPolicy = ptr::null_mut();
-    // SAFETY: `encapdst` is a `SENT_LEN`-byte key whose first byte is its length.
-    if let Some(rn) = unsafe { rn_match(encapdst.as_bytes().as_ptr(), rnh) } {
-        // SAFETY: a leaf `rn_match` returned from an SPD tree.
-        let ipo = unsafe { ipsec_policy_of(rn) };
+    if let Some(&ipo) = rnh.matches(encapdst.as_bytes()) {
         let p = ptr::from_ref(ipo).cast_mut();
 
         // Verify that the entry is identical
@@ -3124,20 +3121,11 @@ unsafe fn pfkeyv2_flow(
         refcnt_init(&ipo.ipo_refcnt);
 
         // Add SPD entry
-        let added = spd_table_get(rdomain).and_then(|rnh| {
-            // SAFETY: the key and mask are the policy's `SENT_LEN`-byte encap addresses and
-            // the nodes its `ipo_nodes`, which stay in place while it is in the tree.
-            unsafe {
-                rn_addroute(
-                    ipo.ipo_addr_key(),
-                    ipo.ipo_mask_key(),
-                    rnh,
-                    &ipo.ipo_nodes,
-                    0,
-                )
-            }
+        let added = spd_table_mut(rdomain).is_some_and(|rnh| {
+            rnh.add(&ipo.ipo_addr_key(), Some(&ipo.ipo_mask_key()), ipo)
+                .is_ok()
         });
-        if added.is_none() {
+        if !added {
             // Remove from linked list of policies on TDB
             mtx_enter(&IPO_TDB_MTX);
             if let Some(t) = ipo.ipo_tdb.get() {
@@ -3849,7 +3837,6 @@ mod tests {
     use crate::machine::Machine;
     use crate::machine::cpu::Cpu;
     use crate::net::pfkeyv2_convert::import_lifetime;
-    use crate::net::radix::rn_test_reset;
     use crate::netinet::in_::IPPROTO_ESP;
     use crate::netinet::in_::IPSEC_LEVEL_BYPASS;
     use crate::netinet::ip_input::tests::sin;
@@ -3883,7 +3870,6 @@ mod tests {
         procinit();
         soinit();
         crate::kern::uipc_domain::net_tables_for_tests();
-        rn_test_reset();
         spd_reset();
         ipsp_reset();
         pfkey_reset();
@@ -5209,7 +5195,8 @@ mod tests {
     /// its direction only; the more specific of two overlapping flows wins; a deny refuses
     /// (`EHOSTUNREACH`), a bypass passes without an SA; a socket that bypasses IPsec passes an
     /// incoming packet a deny would refuse; a deleted flow no longer matches and a second
-    /// delete is `ESRCH`; the dump walks every flow, and the flush's walk deletes them all.
+    /// delete is `ESRCH`; the dump walks every flow, and the flush's walk deletes them all; of
+    /// two flows of one key, a delete names the more specific first.
     #[test]
     fn the_spd_answers_by_direction_and_the_most_specific_flow() {
         let _g = setup();
@@ -5286,6 +5273,41 @@ mod tests {
         send(so, &flow(SADB_X_ADDFLOW, ftype, dir, src, dst, 12)).expect("addflow");
         assert_eq!(header(&recv(so).expect("the reply")).sadb_msg_errno, 0);
         assert_eq!(spd(out, [10, 77, 4, 8], [10, 77, 2, 9], None), unreach);
+
+        // Two flows of one key and two masks (10.77.8.0 under /24 and /25), the /25 the more
+        // specific. A delete names the flow `rn_match` finds for the key (pfkeyv2_flow's
+        // "exact same SPD entry" test), the /25 that heads the key's chain: the /24 cannot be
+        // deleted before it (ESRCH, as the C), and can after.
+        let pair = [
+            (deny, out, [[10, 77, 8, 0], m24], [[10, 77, 2, 0], m24]),
+            (
+                bypass,
+                out,
+                [[10, 77, 8, 0], [255, 255, 255, 128]],
+                [[10, 77, 2, 0], m24],
+            ),
+        ];
+        let del = |i: usize, seq: u32| {
+            let (ftype, dir, src, dst) = pair[i];
+            send(so, &flow(SADB_X_DELFLOW, ftype, dir, src, dst, seq)).expect("delflow");
+            header(&recv(so).expect("the reply")).sadb_msg_errno
+        };
+        for (seq, &(ftype, dir, src, dst)) in pair.iter().enumerate() {
+            send(
+                so,
+                &flow(SADB_X_ADDFLOW, ftype, dir, src, dst, 13 + seq as u32),
+            )
+            .expect("addflow");
+            assert_eq!(header(&recv(so).expect("the reply")).sadb_msg_errno, 0);
+        }
+        assert_eq!(spd(out, [10, 77, 8, 5], [10, 77, 2, 9], None), Ok(false));
+        assert_eq!(spd(out, [10, 77, 8, 200], [10, 77, 2, 9], None), unreach);
+        assert_eq!(del(0, 15), Errno::ESRCH as u8);
+        assert_eq!(del(1, 16), 0);
+        assert_eq!(spd(out, [10, 77, 8, 5], [10, 77, 2, 9], None), unreach);
+        assert_eq!(del(0, 17), 0);
+        assert_eq!(spd(out, [10, 77, 8, 200], [10, 77, 2, 9], None), Ok(false));
+        assert_eq!(spd_dump_len(), 1, "the flow added after the flush");
 
         soclose(so, 0).expect("close");
         teardown();

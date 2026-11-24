@@ -53,13 +53,15 @@
 //!   ("silently drop the packet") is [`SpdError::Drop`], any other errno
 //!   [`SpdError::Errno`]. `struct tdb **tdbout` is `Option<&mut Option<&'static Tdb>>`.
 //! - `spd_tables` (`struct radix_node_head **` grown with `mallocarray(M_RTABLE)`) is a
-//!   `Vec` of head pointers in a `StaticCell`, under the net lock; `spd_table_max` is its
-//!   length minus one. The heads themselves come from `rn_inithead` (`malloc(M_RTABLE)`).
-//! - `spd_table_walk` takes the walker as a closure; the radix walker's `struct radix_node *`
-//!   is turned back into the policy that embeds it. A walker may free the policy it is given
-//!   (`pfkeyv2_policy_flush`), as in C.
-//! - The SPD radix key is `ipo_addr`, read through the pointer the policy's `Cell` gives:
-//!   the key is written before the policy enters the tree and not changed while it is there.
+//!   `Vec` of trees in a `StaticCell`, under the net lock; `spd_table_max` is its length minus
+//!   one. Each tree is the kernel's radix tree ([`SpdTree`], N6.7b1) in a `malloc(M_RTABLE)`
+//!   block, made with its roots where the C's `rn_inithead` makes its head; it carries each
+//!   route's policy, so no leaf is cast back to the policy that embeds it. The tree copies the
+//!   key and mask (`ipo_addr`, `ipo_mask`) when the policy enters it.
+//! - `spd_table_walk` takes the walker as a closure, over the tree's cursor: the successor is
+//!   taken before the walker runs and the tree is fetched again at each step, so a walker may
+//!   delete the policy it is given (`pfkeyv2_policy_flush`), as in C, and no lent tree is in
+//!   use while it runs.
 //! - The ports of the flow key are copied out of the packet in network order, as the C's
 //!   `m_copydata` into the `sockaddr_encap` does.
 //! - `INET6` is configured (feature `inet6`): the `AF_INET6` flow key of the lookup, the
@@ -80,7 +82,6 @@ use crate::kern::subr_pool::{pool_get, pool_put};
 use crate::kern::uipc_mbuf::m_copydata;
 use crate::machine::intr::IPL_SOFTNET;
 use crate::net::pfkeyv2::pfkeyv2_acquire;
-use crate::net::radix::{RadixNode, RadixNodeHead, rn_delete, rn_inithead, rn_match, rn_walktree};
 use crate::net::rtable::rtable_l2;
 use crate::netinet::in_::IPSEC_LEVEL_AVAIL;
 use crate::netinet::in_::IPSEC_LEVEL_BYPASS;
@@ -107,6 +108,7 @@ use crate::netinet6::in6::{IN6MASK128, In6Addr, SockaddrIn6, in6_is_addr_unspeci
 #[cfg(feature = "inet6")]
 use crate::netinet6::in6_src::in6_recoverscope;
 use crate::sys::errno::Errno;
+use crate::sys::malloc::{M_NOWAIT, M_RTABLE};
 use crate::sys::mbuf::Mbuf;
 use crate::sys::mutex::{Mutex, mutex_assert_locked};
 use crate::sys::pool::{PR_NOWAIT, PR_ZERO, Pool};
@@ -116,6 +118,8 @@ use crate::sys::socket::AF_INET6;
 use crate::sys::socket::{AF_INET, PF_KEY};
 use crate::sys::systm::{net_assert_locked, net_assert_locked_exclusive};
 use crate::sys::timeout::Timeout;
+use hal::malloc::MBox;
+use kernel::net::radix::RadixTree;
 use libkern::staticcell::StaticCell;
 
 /// What `ipsp_spd_lookup` answers instead of "no IPsec" or "do IPsec".
@@ -142,12 +146,12 @@ pub static IPSEC_ACQUIRE_POOL: Pool = Pool::new();
 /// `tdb_delete_locked()` we need lock order `tdb_sadb_mtx` before `ipo_tdb_mtx`.
 pub static IPO_TDB_MTX: Mutex = Mutex::new(IPL_SOFTNET);
 
-/// A radix head pointer in `spd_tables` (`rn_inithead`'s, never freed).
-#[derive(Clone, Copy)]
-struct SpdTable(Option<&'static RadixNodeHead>);
+/// The SPD of one routing domain (`struct radix_node_head` of `struct sockaddr_encap` keys,
+/// compared from `sen_type`): the kernel's radix tree, each route's value its policy.
+pub type SpdTree = RadixTree<&'static IpsecPolicy, SENT_LEN>;
 
-// SAFETY: the heads are reached under the net lock only.
-unsafe impl Send for SpdTable {}
+/// A tree of `spd_tables` (`rn_inithead`'s head, `malloc(M_RTABLE)`, never freed).
+struct SpdTable(Option<MBox<SpdTree>>);
 
 /// `spd_tables`/`spd_table_max`: the SPD of each routing domain. Protected by the
 /// `NET_LOCK()`.
@@ -180,21 +184,34 @@ pub struct AcquireListHead(pub TailqHead<IpsecAcquireHead>);
 // SAFETY: changed only under `ipsec_acquire_mtx`.
 unsafe impl Sync for AcquireListHead {}
 
-/// `spd_table_get`: the SPD of the routing domain of `rtableid`, if there is one.
-pub fn spd_table_get(rtableid: u32) -> Option<&'static RadixNodeHead> {
+/// The SPD of routing domain `rdomain`, if there is one; the net lock is held.
+fn spd_tree(rdomain: usize) -> Option<&'static SpdTree> {
+    spd_tables().get(rdomain)?.0.as_deref()
+}
+
+/// `spd_table_get`: the SPD of the routing domain of `rtableid`, if there is one. Lent for
+/// the caller's lookup: no caller keeps it past a change of the tree ([`spd_table_mut`]).
+pub fn spd_table_get(rtableid: u32) -> Option<&'static SpdTree> {
     net_assert_locked("spd_table_get");
 
-    let tables = spd_tables();
-    if tables.is_empty() {
+    if spd_tables().is_empty() {
         return None;
     }
 
+    spd_tree(rtable_l2(rtableid) as usize)
+}
+
+/// The SPD of the routing domain of `rtableid` to change (`rn_addroute`, `rn_delete`): the
+/// net lock is held exclusively, and no tree [`spd_table_get`] lent is still in use.
+pub(crate) fn spd_table_mut(rtableid: u32) -> Option<&'static mut SpdTree> {
+    net_assert_locked_exclusive("spd_table_mut");
+
     let rdomain = rtable_l2(rtableid) as usize;
-    tables.get(rdomain)?.0
+    spd_tables_mut().get_mut(rdomain)?.0.as_deref_mut()
 }
 
 /// `spd_table_add`: the SPD of the routing domain of `rtableid`, made if missing.
-pub fn spd_table_add(rtableid: u32) -> Option<&'static RadixNodeHead> {
+pub fn spd_table_add(rtableid: u32) -> Option<&'static SpdTree> {
     net_assert_locked_exclusive("spd_table_add");
 
     let tables = spd_tables_mut();
@@ -203,37 +220,26 @@ pub fn spd_table_add(rtableid: u32) -> Option<&'static RadixNodeHead> {
         if tables.try_reserve(rdomain + 1 - tables.len()).is_err() {
             return None;
         }
-        tables.resize(rdomain + 1, SpdTable(None));
+        tables.resize_with(rdomain + 1, || SpdTable(None));
     }
 
     if tables[rdomain].0.is_none() {
-        let mut rnh = None;
-        if !rn_inithead(&mut rnh, offset_of_sen_type() as i32) {
-            rnh = None;
-        }
+        // rn_inithead: the head (`malloc(M_RTABLE, M_NOWAIT)`) and its roots, or none.
+        let rnh = MBox::new(
+            M_RTABLE,
+            M_NOWAIT,
+            SpdTree::new(offset_of_sen_type(), M_RTABLE),
+        )
+        .and_then(|mut rnh| rnh.inithead().then_some(rnh));
         tables[rdomain] = SpdTable(rnh);
     }
 
-    tables[rdomain].0
+    tables[rdomain].0.as_deref()
 }
 
 /// `offsetof(struct sockaddr_encap, sen_type)`: where the radix comparison starts.
 const fn offset_of_sen_type() -> usize {
     2
-}
-
-/// The policy whose `ipo_nodes[0]` is the SPD leaf `rn` (the C's cast of the
-/// `struct radix_node *` to `struct ipsec_policy *`).
-///
-/// # Safety
-///
-/// `rn` is a leaf of an SPD tree (from `rn_match`, `rn_lookup`, `rn_delete` or
-/// `rn_walktree`), not one of its root leaves.
-pub(crate) unsafe fn ipsec_policy_of(rn: &'static RadixNode) -> &'static IpsecPolicy {
-    // SAFETY: `IpsecPolicy` is `#[repr(C)]` with `ipo_nodes` first, and the only node pairs
-    // `pfkeyv2_flow` adds to an SPD are policies' `ipo_nodes`; a policy stays allocated until
-    // `ipsec_delete_policy` took it out of the tree.
-    unsafe { &*ptr::from_ref(rn).cast::<IpsecPolicy>() }
 }
 
 /// `spd_table_walk`: calls `func(ipo, tableid)` on every policy of the SPD of `rtableid`.
@@ -242,22 +248,41 @@ pub fn spd_table_walk(
     rtableid: u32,
     mut func: impl FnMut(&'static IpsecPolicy, u32) -> Result<(), Errno>,
 ) -> Result<(), Errno> {
-    let Some(rnh) = spd_table_get(rtableid) else {
+    if spd_table_get(rtableid).is_none() {
         return Ok(());
-    };
+    }
+    let rdomain = rtable_l2(rtableid) as usize;
 
     // EGAIN means the tree changed.
     loop {
-        let r = rn_walktree(rnh, |rn, tableid| {
-            // SAFETY: a leaf of an SPD tree, which `rn_walktree` hands over.
-            let ipo = unsafe { ipsec_policy_of(rn) };
-            func(ipo, tableid)
-        });
-        match r {
+        match spd_walktree(rdomain, &mut func) {
             Err(Errno::EAGAIN) => continue,
             r => return r,
         }
     }
+}
+
+/// `rn_walktree(rnh, walker, arg)` over the SPD of `rdomain`: `func` on each policy, the first
+/// error ends the walk. The successor is taken before `func` runs and the tree is fetched again
+/// at each step and lent only for that, so `func` may change it (`pfkeyv2_policy_flush`'s
+/// `ipsec_delete_policy`). The walker's table id is the C's `rnh_rtableid`, which nothing
+/// writes: 0.
+fn spd_walktree(
+    rdomain: usize,
+    func: &mut impl FnMut(&'static IpsecPolicy, u32) -> Result<(), Errno>,
+) -> Result<(), Errno> {
+    let mut c = spd_tree(rdomain).and_then(SpdTree::first);
+    while let Some(leaf) = c {
+        let Some(rnh) = spd_tree(rdomain) else {
+            return Ok(());
+        };
+        c = rnh.next(leaf);
+        let Some(&ipo) = rnh.get(leaf) else {
+            continue;
+        };
+        func(ipo, 0)?;
+    }
+    Ok(())
 }
 
 /// Copies `n` bytes at offset `off` of the packet into a fresh array.
@@ -427,17 +452,11 @@ pub fn ipsp_spd_lookup(
 
     // Actual SPD lookup.
     let rdomain = rtable_l2(m.m_pkthdr().ph_rtableid.get());
-    let rn = spd_table_get(rdomain).and_then(|rnh| {
-        // SAFETY: `dst` is a `SENT_LEN`-byte key whose first byte is its length.
-        unsafe { rn_match(dst.as_bytes().as_ptr(), rnh) }
-    });
-    let Some(rn) = rn else {
+    let Some(ipo) = spd_table_get(rdomain).and_then(|rnh| rnh.matches(dst.as_bytes()).copied())
+    else {
         // Return whatever the socket requirements are, there are no system-wide policies.
         return ipsp_spd_inp(m, seclevel, None, tdbout);
     };
-    // SAFETY: `rn_match` never returns a root node; the SPD's leaves are the first nodes of
-    // policies, alive while the net lock is held.
-    let ipo: &'static IpsecPolicy = unsafe { ipsec_policy_of(rn) };
 
     match ipo.ipo_type.get() {
         IPSP_PERMIT => return ipsp_spd_inp(m, seclevel, Some(ipo), tdbout),
@@ -790,17 +809,9 @@ pub fn ipsec_delete_policy(ipo: &'static IpsecPolicy) -> Result<(), Errno> {
     }
 
     // Delete from SPD.
-    let rnh = spd_table_get(ipo.ipo_rdomain.get()).ok_or(Errno::ESRCH)?;
-    // SAFETY: the policy's key and mask are `SENT_LEN`-byte encap addresses; its nodes are in
-    // this tree.
-    let deleted = unsafe {
-        rn_delete(
-            ipo.ipo_addr_key(),
-            ipo.ipo_mask_key(),
-            rnh,
-            Some(&ipo.ipo_nodes[0]),
-        )
-    };
+    let deleted = spd_table_mut(ipo.ipo_rdomain.get())
+        .ok_or(Errno::ESRCH)?
+        .delete(&ipo.ipo_addr_key(), Some(&ipo.ipo_mask_key()));
     if deleted.is_none() {
         return Err(Errno::ESRCH);
     }
@@ -1107,10 +1118,11 @@ pub fn ipsec_get_acquire(seq: u32) -> Option<&'static IpsecAcquire> {
     ipa
 }
 
-/// Forgets every SPD table: the host tests start from an empty database.
+/// Forgets every SPD table: the host tests start from an empty database. The trees were
+/// allocated from an earlier test's memory, so they are leaked, never freed into it.
 #[cfg(test)]
 pub(crate) fn spd_reset() {
-    spd_tables_mut().clear();
+    core::mem::forget(core::mem::take(spd_tables_mut()));
     IPSEC_ACQUIRE_HEAD.0.init();
 }
 
