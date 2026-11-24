@@ -245,9 +245,14 @@
 //!   - `udp.input.mcast.2`: the same broadcast, to two sockets sharing the port
 //!     (`SO_REUSEPORT`): the walk, a copy for the first, the packet for the second.
 //!   - `udp6.send.lo` is not written yet (the IPv6 rows' ::1 set-up with a UDP socket: N6.8).
-//! - The raw IP and divert rows (N6.6b1; "before" = `bsd`'s raw IP and divert over LZ's shape,
-//!   the rows `bsd.rip.*` and `bsd.divert.*` of a scratch harness run at the close from a
-//!   worktree of the base, as the UDP rows'; measured at the N6 close, decision 50): lo0 with
+//! - The raw IP and divert rows (N6.6b1; "before" = `bsd`'s raw IP and divert over LZ's shape
+//!   at the slice's base 7a698928: the rows `bsd.rip.send`, `bsd.rip.input.2`,
+//!   `bsd.rip6.input.filter`, `bsd.divert.packet` and `bsd.divert.output.in` of a scratch
+//!   harness never committed, kept in the main checkout's
+//!   `target/scratch-backup/n6.6b1-bench-before/` (`splice.py` adds it to a worktree of the
+//!   base's `sys/netinet/ip_divert.rs` and `sys/netinet6/raw_ip6.rs` tests; its header says
+//!   how each row differs from these), run from that worktree; measured at the N6 close,
+//!   decision 50): lo0 with
 //!   127.0.0.1/8, the glue's `inetsw[]` the IPv4 input rows' (a UDP entry that takes its
 //!   packet into the stash), sockets of the kernel's raw entries (`RipProtocol`,
 //!   `Rip6Protocol`, `DivertProtocol`, attached through their requests by a privileged
