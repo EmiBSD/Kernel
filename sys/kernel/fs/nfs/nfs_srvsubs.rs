@@ -1275,9 +1275,7 @@ mod tests {
         use crate::fs::namei::{LOCKLEAF, LOOKUP, NiDirp};
         use crate::fs::nfs::nfsm_subs::nfsm_rndup;
         use crate::fs::subr::vfs_getnewfsid;
-        use crate::fs::testfs::{
-            Kind, ROOT, TEST_DATASIZE, TEST_VFS, TestGlue, test_thread, tree_add,
-        };
+        use crate::fs::testfs::{Kind, ROOT, TEST_DATASIZE, TEST_VFS, TestGlue, tree_add};
         use crate::fs::vops::{Cred, Nd, Vfs};
         use crate::net::mbuf::MbufBox;
         use crate::proc::Thread;
@@ -1386,7 +1384,10 @@ mod tests {
             Fhandle,
             Fhandle,
         ) {
-            let (g, p) = test_thread();
+            let (g, p) = crate::fs::testfs::test_thread_cached(64 << 20, 64);
+            crate::testutil::kernel_maps_install();
+            crate::net::mbuf::mbinit(&crate::net::mbuf::tests::TEST_NMBCLUST);
+            let _ = crate::net::mbuf::nmbclust_update(256 * 1024);
             let mp = vfs_mount_alloc(None, &EXP_CONF[0]);
             vfs_unbusy(mp);
             vfs_getnewfsid(mp);

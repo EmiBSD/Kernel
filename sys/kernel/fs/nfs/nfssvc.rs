@@ -1423,7 +1423,8 @@ mod tests {
                 .get(&klock::reader())
                 .clone()
                 .expect("the record");
-            assert_eq!(udp.flag(), SLP_VALID | SLP_NEEDQ);
+            // No nfsd waits yet: the socket is also marked for the first that looks.
+            assert_eq!(udp.flag(), SLP_VALID | SLP_NEEDQ | SLP_DOREC);
             // A second datagram socket is refused while the first serves.
             let fd2 = bound(&fx, SOCK_DGRAM, PORT + 1);
             assert_eq!(addsock(&fx, fd2, None), Err(Errno::EPERM));
