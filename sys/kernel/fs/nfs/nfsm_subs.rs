@@ -424,6 +424,7 @@ pub fn nfsm_postop_attr<G: crate::proc::ProcGlue>(
     *attrflagp = attrflag;
     Ok(())
 }
+
 /// A chain of the given segments, one mbuf each (an empty segment an mbuf with no data), for
 /// the tests of the cursors here and in `nfs_subs`.
 #[cfg(test)]

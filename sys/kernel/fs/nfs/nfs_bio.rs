@@ -117,7 +117,7 @@ use super::nfs_subs::{
 };
 use super::nfs_vfsops::nfs_fsinfo;
 use super::nfs_vnops::{
-    buf_vnode, nfs_getattr_np, nfs_readlinkrpc, nfs_readrpc, nfs_setcred, nfs_writebp,
+    buf_vnode, errno_of, nfs_getattr_np, nfs_readlinkrpc, nfs_readrpc, nfs_setcred, nfs_writebp,
     nfs_writerpc, ucred, vmount, with_thread,
 };
 use super::nfsmount::{NfsMount, vfstonfs};
@@ -417,12 +417,7 @@ pub fn nfs_write<G: ProcGlue>(
     let np = vtonfs(vp);
     if np.isset(NWRITEERR) {
         np.clr(NWRITEERR);
-        let e = np.n_error.load(Ordering::Relaxed);
-        return if e == 0 {
-            Ok(())
-        } else {
-            Err(Errno::from_raw(e).unwrap_or(Errno::EIO))
-        };
+        return errno_of(np.n_error.load(Ordering::Relaxed));
     }
     let nmp = vfstonfs(vmount(vp));
     let p = uio.uio_procp;

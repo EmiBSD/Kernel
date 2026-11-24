@@ -61,6 +61,12 @@
 //! LZ: sys/nfs/nfs_vfsops.rs@e8249449d905
 //!
 //! ## Deviations
+//! - A preferred or maximum transfer size of 0 in the server's answer leaves the mount's size
+//!   as it was (`NFSMNT_GOTFSINFO` is set all the same), where the C stores 0: the next read
+//!   divides by `nm_rsize` (`nfs_bioread`'s block arithmetic: a divide trap on amd64; on
+//!   arm64 `UDIV` answers 0, `biosize - on` is negative and the `uiomove` reads past
+//!   `b_data`), and a version 3 WRITE of 0 bytes loops for ever when the server answers a
+//!   count above 0 (C:nfs/nfs_vnops.c:1291, :1380). A size of 0 is no transfer size.
 //! - Kept as the C: the readdir size's clamp compares with the server's read maximum (the C
 //!   reuses `max`, LZ's note).
 //!
@@ -98,7 +104,17 @@ pub fn fsinfo_apply<G: ProcGlue>(nmp: &NfsMount<G>, fsp: &Nfsv3Fsinfo) {
     let fab = NFS_FABLKSIZE as u32;
     let dirblk = NFS_DIRBLKSIZ as u32;
     let get = |s: &AtomicI32| s.load(Ordering::Relaxed) as u32;
-    let set = |s: &AtomicI32, v: u32| s.store(v as i32, Ordering::Relaxed);
+    // A size the answer would make 0 keeps the mount's (the module's Deviations).
+    let set = |s: &AtomicI32, v: u32| {
+        if v != 0 {
+            s.store(v as i32, Ordering::Relaxed);
+        }
+    };
+    // `max & ~(blk - 1)`, or `max` itself when that is 0.
+    let down = |max: u32, blk: u32| match max & !(blk - 1) {
+        0 => max,
+        v => v,
+    };
 
     let pref = fxdr_unsigned(fsp.fs_wtpref);
     if pref < get(&nmp.nm_wsize) {
@@ -106,10 +122,7 @@ pub fn fsinfo_apply<G: ProcGlue>(nmp: &NfsMount<G>, fsp: &Nfsv3Fsinfo) {
     }
     let mut max = fxdr_unsigned(fsp.fs_wtmax);
     if max < get(&nmp.nm_wsize) {
-        set(&nmp.nm_wsize, max & !(fab - 1));
-        if get(&nmp.nm_wsize) == 0 {
-            set(&nmp.nm_wsize, max);
-        }
+        set(&nmp.nm_wsize, down(max, fab));
     }
     let pref = fxdr_unsigned(fsp.fs_rtpref);
     if pref < get(&nmp.nm_rsize) {
@@ -117,10 +130,7 @@ pub fn fsinfo_apply<G: ProcGlue>(nmp: &NfsMount<G>, fsp: &Nfsv3Fsinfo) {
     }
     max = fxdr_unsigned(fsp.fs_rtmax);
     if max < get(&nmp.nm_rsize) {
-        set(&nmp.nm_rsize, max & !(fab - 1));
-        if get(&nmp.nm_rsize) == 0 {
-            set(&nmp.nm_rsize, max);
-        }
+        set(&nmp.nm_rsize, down(max, fab));
     }
     let pref = fxdr_unsigned(fsp.fs_dtpref);
     if pref < get(&nmp.nm_readdirsize) {
@@ -131,10 +141,7 @@ pub fn fsinfo_apply<G: ProcGlue>(nmp: &NfsMount<G>, fsp: &Nfsv3Fsinfo) {
     }
     // (`max` is still the read maximum here, as in the C.)
     if max < get(&nmp.nm_readdirsize) {
-        set(&nmp.nm_readdirsize, max & !(dirblk - 1));
-        if get(&nmp.nm_readdirsize) == 0 {
-            set(&nmp.nm_readdirsize, max);
-        }
+        set(&nmp.nm_readdirsize, down(max, dirblk));
     }
     nmp.nm_flag.fetch_or(NFSMNT_GOTFSINFO, Ordering::Relaxed);
 }
