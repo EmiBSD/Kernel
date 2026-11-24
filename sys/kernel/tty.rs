@@ -5402,7 +5402,7 @@ mod tests {
     fn tioccons_is_refused_while_another_live_tty_has_it_and_checks_the_console() {
         let (p, _d) = world(4710);
         // The names' pool and tables (vfsinit), and no root file system.
-        crate::fs::init::vfsinit::<Kg>(&[], 64, || {});
+        crate::fs::init::vfsinit::<Kg>(&[], 64);
         let a = test_tty();
         let b = test_tty();
         // a holds the console, as a TIOCCONS that passed leaves it

@@ -90,13 +90,10 @@ pub fn set_rootvnode<G: ProcGlue>(vp: Option<&'static Vnode<G>>) {
 
 /// Initialize the vnode structures and initialize each file system type of `table`
 /// (`vfsconflist[]`); `initialvnodes` is `conf/param.c`'s: `namei_pool`, the vnode table,
-/// the name cache, the types. `between` runs after the vnode table, where the C has
-/// `vntblinit`'s tail, `rn_init` of the export lists (`NFSSERVER`, `bsd`'s until N6).
-pub fn vfsinit<G: ProcGlue>(
-    table: &'static [Vfsconf<G>],
-    initialvnodes: i32,
-    between: impl FnOnce(),
-) {
+/// the name cache, the types. `vntblinit`'s tail, `rn_init` of the export lists
+/// (`NFSSERVER`), has no counterpart: each radix tree has its own key length
+/// (`kernel::net::radix`, N6.7b1).
+pub fn vfsinit<G: ProcGlue>(table: &'static [Vfsconf<G>], initialvnodes: i32) {
     let t = vfs::<G>();
     // A second call (a test's) keeps the first table.
     let _ = t.vfsconf.set(table);
@@ -106,9 +103,8 @@ pub fn vfsinit<G: ProcGlue>(
     // call (a test's) keeps the first pool.
     let _ = t.namei.init(IPL_NONE, PR_WAITOK, "namei");
 
-    // Initialize the vnode table (and the export lists' radix keys, its tail).
+    // Initialize the vnode table.
     vntblinit::<G>(initialvnodes);
-    between();
 
     // Initialize the vnode name cache.
     super::cache::nchinit::<G>(initialvnodes);

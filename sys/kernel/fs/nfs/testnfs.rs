@@ -358,7 +358,7 @@ pub(crate) fn setup(uid: u32) -> Fixture {
     crate::netinet::in_::in_ioctl(SIOCAIFADDR, &mut r, Some(lo), true).expect("127.0.0.1");
 
     vfs_test_reset::<G>();
-    crate::fs::init::vfsinit::<G>(&CONF, 64, || {});
+    crate::fs::init::vfsinit::<G>(&CONF, 64);
     let _ = crate::fs::spec::register_devsw::<G>(&NFS_DEVSW);
     let mp = vfs_mount_alloc(None, &CONF[0]);
     vfs_unbusy(mp);

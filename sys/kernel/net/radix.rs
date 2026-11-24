@@ -133,15 +133,18 @@
 //!   as the C's `rn_inithead` head stays, so the export list's next add answers what the
 //!   C's does.
 //! - The slots, the mask tree's and the annotation records live in arrays that double by
-//!   copying (D-13, the user's choice of 2026-11-24: flat arrays, the node pairs apart): the add
-//!   that fills one asks `malloc(M_NOWAIT)` for blocks twice the size and moves every element,
-//!   where the C allocates nothing for a route's nodes (its caller's entry carries them) and
-//!   only a new mask or annotation `M_NOWAIT`. A tree of pf's entries (48-byte slots, 48-byte
-//!   pairs) asks two contiguous 6.3 MB blocks as it passes 65,534 routes, two of 12.6 MB past
-//!   pf's 200,000-entry limit, the old blocks alive during the copy. Both new blocks are asked
-//!   before anything moves, so a refused grow leaves the tree whole and the add answers the
-//!   C's `NULL`, which each caller maps as the C maps `rn_addroute`'s (pf's -1, the exports'
-//!   `EPERM`, the policy database's freed policy and 0).
+//!   copying (D-13, the user's choices of 2026-11-24: flat arrays, the node pairs apart in a
+//!   hot and a cold half): the add that fills one asks `malloc(M_NOWAIT)` for blocks twice the
+//!   size and moves every element, where the C allocates nothing for a route's nodes (its
+//!   caller's entry carries them) and only a new mask or annotation `M_NOWAIT`. A tree of pf's
+//!   entries asks three contiguous blocks as it passes 65,534 routes (the slots 6.3 MB, the hot
+//!   node halves 4.2 MB, the cold 2.1 MB) and 12.6, 8.4 and 4.2 MB past 131,070 (pf's
+//!   200,000-entry limit lies beyond), the old blocks alive during the copy. Each block is
+//!   filled as soon as it is granted (`MArray::new` asks `malloc` before it runs its
+//!   initialiser) and a refusal keeps the blocks already grown, larger than the slots need, so
+//!   a refused grow leaves the tree whole and the add answers the C's `NULL`, which each caller
+//!   maps as the C maps `rn_addroute`'s (pf's -1, the exports' `EPERM`, the policy database's
+//!   freed policy and 0).
 //! - An add takes the slot for its node pair from the tree (`M_NOWAIT`), where the C's
 //!   caller embeds the pair in its own entry before the call: a slot the tree cannot have is
 //!   the C's `NULL` (the value comes back in the `Err`).
@@ -188,8 +191,9 @@
 //!   there before any delete and built again when that route is added just before the
 //!   annotation's leaf; a tree built in another order gives each mask its annotation.
 //!   No user of the tree at the pin reaches a repair, so neither that state nor the C's
-//!   dangling one arises: pf adds prefix masks only (pf_table.c:1271, 1280), the SPD's masks
-//!   are non-normal at index 16 (ip_spd.c:107, pfkeyv2_convert.c:473, 500), so neither has
+//!   dangling one arises: pf adds hosts and prefix masks only (pf_table.c:1271, 1280), all
+//!   normal but a /0's, which is the mask tree's root (index 0, not normal) and which no
+//!   normal annotation shares; the SPD's masks are non-normal at index 16 (ip_spd.c:107, pfkeyv2_convert.c:473, 500), so neither has
 //!   a normal annotation a route of another mask takes, and the exports free their entries
 //!   all at once (vfs_subr.c:1565-1575). Each annotation also records its leaf's generation, a
 //!   check `rn_match` makes on a normal annotation it returns (after `rn_b`'s test): an
@@ -455,36 +459,36 @@ impl<E> Slab<E> {
         }
     }
 
-    /// Node `x` of the pairs.
+    /// Node `x` (`2 * slot` the leaf, `2 * slot + 1` the internal node), its hot half.
     #[inline]
-    fn node(&self, x: u32) -> &RadixNode {
+    fn n(&self, x: u32) -> &RadixNode {
         match self.pairs.as_ref().and_then(|a| a.get(x as usize)) {
             Some(n) => n,
             None => kpanic(format_args!("radix: no node {x}")),
         }
     }
 
-    /// Node `x` of the pairs, to change.
+    /// Node `x`'s hot half, to change.
     #[inline]
-    fn node_mut(&mut self, x: u32) -> &mut RadixNode {
+    fn nm(&mut self, x: u32) -> &mut RadixNode {
         match self.pairs.as_mut().and_then(|a| a.get_mut(x as usize)) {
             Some(n) => n,
             None => kpanic(format_args!("radix: no node {x}")),
         }
     }
 
-    /// The cold half of node `x`.
+    /// Node `x`'s cold half (`rn_p`, `rn_mklist`).
     #[inline]
-    fn cold(&self, x: u32) -> &ColdNode {
+    fn c(&self, x: u32) -> &ColdNode {
         match self.colds.as_ref().and_then(|a| a.get(x as usize)) {
             Some(n) => n,
             None => kpanic(format_args!("radix: no node {x}")),
         }
     }
 
-    /// The cold half of node `x`, to change.
+    /// Node `x`'s cold half, to change.
     #[inline]
-    fn cold_mut(&mut self, x: u32) -> &mut ColdNode {
+    fn cm(&mut self, x: u32) -> &mut ColdNode {
         match self.colds.as_mut().and_then(|a| a.get_mut(x as usize)) {
             Some(n) => n,
             None => kpanic(format_args!("radix: no node {x}")),
@@ -539,15 +543,17 @@ impl<E: SlabItem> Slab<E> {
         *e.link() = next;
         if E::PAIRED {
             *self.pair_mut(i) = [RadixNode::new(), RadixNode::new()];
-            *self.cold_mut(2 * i) = ColdNode::new();
-            *self.cold_mut(2 * i + 1) = ColdNode::new();
+            *self.cm(2 * i) = ColdNode::new();
+            *self.cm(2 * i + 1) = ColdNode::new();
         }
         self.free = i;
     }
 
     /// The arrays doubled (8 elements the first time), the new elements on the free list.
-    /// Both new blocks are asked of `malloc` before an element moves, so a failure leaves the
-    /// old arrays whole.
+    /// The cold node halves, the hot ones, then the elements: each block is filled as soon as
+    /// `malloc` grants it (`MArray::new` asks before it runs its initialiser), and a refusal
+    /// keeps the blocks already grown, larger than the elements need, so the tree stays whole
+    /// and nothing is lost.
     fn grow(&mut self) -> Option<()> {
         let cap = self.elems.as_ref().map_or(0, |a| a.len());
         let len = (cap * 2).max(FIRST);
@@ -621,30 +627,6 @@ impl<E: SlabItem> Slab<E> {
 }
 
 impl<V, const K: usize> Slab<Slot<V, K>> {
-    /// Node `x` (`2 * slot` the leaf, `2 * slot + 1` the internal node).
-    #[inline]
-    fn n(&self, x: u32) -> &RadixNode {
-        self.node(x)
-    }
-
-    /// Node `x`, to change.
-    #[inline]
-    fn nm(&mut self, x: u32) -> &mut RadixNode {
-        self.node_mut(x)
-    }
-
-    /// Node `x`'s cold half (`rn_p`, `rn_mklist`).
-    #[inline]
-    fn c(&self, x: u32) -> &ColdNode {
-        self.cold(x)
-    }
-
-    /// Node `x`'s cold half, to change.
-    #[inline]
-    fn cm(&mut self, x: u32) -> &mut ColdNode {
-        self.cold_mut(x)
-    }
-
     /// The key of leaf `x` (`rn_key`).
     #[inline]
     fn key(&self, x: u32) -> &[u8; K] {

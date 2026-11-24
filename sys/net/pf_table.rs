@@ -4330,6 +4330,12 @@ mod tests {
     fn a_destroyed_table_gives_its_trees_back() {
         let _g = setup();
         let rtable = kernel::net::rtable::M_RTABLE;
+        // The pfrktable pool's item (vmstat -m's size, D-12): the table and its two trees.
+        std::eprintln!(
+            "pfrktable item: {} bytes, a tree {} bytes",
+            size_of::<PfrKtable>(),
+            size_of::<PfrRadix>()
+        );
         let before = kernel::testutil::malloc_out(rtable);
         assert_eq!(add_tables(std::vec![table("gone", "", 0)]), 1);
         let mut tbl = table("gone", "", 0);
