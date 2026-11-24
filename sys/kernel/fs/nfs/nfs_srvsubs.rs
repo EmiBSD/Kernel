@@ -1608,6 +1608,11 @@ mod tests {
             if let Some(d) = dirp {
                 vrele(d);
             }
+            // The lookup ran as the credential the export mapped (the request's `nd_cr`).
+            match nd.ni_cnd.cn_cred {
+                Cred::Real(c) => assert!(core::ptr::eq(c, &**cr), "the lookup's credential"),
+                _ => panic!("the lookup ran without the request's credential"),
+            }
             let flags = nd.ni_cnd.cn_flags;
             if res.is_ok() {
                 assert_eq!(
