@@ -91,8 +91,9 @@
 //!   (`nfs_syscalls`'s `nfs_bufq_get`).
 //! - The C's queue is a `TAILQ` under the kernel lock with no `splbio`, which every caller
 //!   holds: the system calls, the buffer daemon and the syncer (kernel threads), and the
-//!   vnode pager, which takes it around its I/O (`sys/kernel/vm/vnode.rs:1321, 1384,
-//!   1576`) as the C's page daemon does (C:uvm/uvm_pdaemon.c:313). So the fifo is a cell of the kernel lock (`Guarded::new_kernel`), changed under its witness, and
+//!   vnode pager, which takes it around its I/O (`sys/kernel/vm/vnode.rs:1321`) as the
+//!   C's page daemon does (C:uvm/uvm_pdaemon.c:313). So the fifo is a cell of the kernel
+//!   lock (`Guarded::new_kernel`), changed under its witness, and
 //!   `nfs_bufqlen` changes in the same section as the queue: no lock the C lacks. The token
 //!   is parked before the section (the cache's lock, `bufq_park`) and taken back after it
 //!   (`bufq_unpark`): one section of the cache's lock and one witness section (an spl pair)

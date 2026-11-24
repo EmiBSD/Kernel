@@ -4868,6 +4868,25 @@ mod tests {
         nt.done(p);
     }
 
+    /// A failed GETATTR (a status, or attributes cut short) leaves the caller's attributes as
+    /// they were: the kq poller compares them after an error, as the C's.
+    #[test]
+    fn a_failed_getattr_leaves_the_attributes() {
+        for (status, want) in [(NFSERR_IO as u32, Errno::EIO), (0, Errno::EBADRPC)] {
+            let nt = setup(NFSMNT_NFSV3);
+            let p = peer(&nt, move |_, _| (status, vec![0; 8]));
+            let mut va = Vattr::new();
+            va.va_size = 77;
+            va.va_mode = 0o123;
+            assert_eq!(
+                nfs_getattr(nt.dvp(), &mut va, nt.cred(), nt.fx.user),
+                Err(want)
+            );
+            assert_eq!((va.va_size, va.va_mode), (77, 0o123));
+            nt.done(p);
+        }
+    }
+
     /// A version 3 ACCESS is asked once for a uid and a mode; the same check is answered from
     /// the access cache, a refused bit is `EACCES`, and new attributes with another owner
     /// invalidate the cache (`nfs_loadattrcache`).
