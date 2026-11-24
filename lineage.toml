@@ -7483,6 +7483,13 @@ status = "redesigned"
 notes = "N6.7b2 (unregistered until 7b4): nfs_socket.c's server half: nfs_rephead (an XdrWriter over a packet header mbuf, cluster or max_hdr room), nfs_getreq (the C's 10/8-word dissection then every bound in its order over XdrReader; the request freed on every error), nfsrv_rcv (the upcall marks SLP_NEEDQ; an nfsd's M_WAIT call receives: a stream's bytes onto ns_raw, a datagram's record with its sender), nfsrv_getstream (on the stream state taken out of the record's LoanSlot: the mark read byte by byte, NFS_MAXPACKET -> EPERM, whole mbufs moved and the last one's part m_copym'd, fragments joined), nfsrv_dorec (a record for an nfsd, its descriptor a PoolBox of ndscpl), nfsrv_wakenfsd (nfsd_head under the kernel lock's reader, the socket handed through the nfsd's slot); nfs_realign gone (XdrReader copies)"
 
 [[module]]
+rust = "sys/kernel/fs/nfs/nfs_serv.rs"
+crate = "kernel"
+lz = ["sys/nfs/nfs_serv.rs"]
+status = "redesigned"
+notes = "N6.7b3 (unregistered until 7b4): nfs_serv.c's procedures over the kernel's XdrReader (one cursor over the owned request; every length compared before use) and the XdrWriter nfs_rephead begins (nfsm_reply answers the writer or the finished reply); read and write hand VOP_READ/VOP_WRITE one uio over the mbufs' bytes (Uio::kernel_readv over Mbuf::data_and_next_mut, kernel_writev over XdrReader pieces), the read's data filled before the reply and joined by m_cat, its header built after in one nfsm_build; every check of the C kept in its order (nfsrv_fhtovp's export and port, the read-only export, nfsrv_access's owner override, suser_ucred, the wire's bounds); 0 unsafe (LZ's nfsm_rebuild view gone)"
+
+[[module]]
 rust = "sys/kernel/fs/nfs/nfs_srvsubs.rs"
 crate = "kernel"
 lz = ["sys/nfs/nfs_srvsubs.rs", "sys/nfs/nfs_subs.rs"]
