@@ -159,6 +159,7 @@ use hal::sys::mount::{
     Fsid, MFSNAMELEN, MNAMELEN, MNT_UNMOUNT, Statfs, VB_NOWAIT, VB_READ, VB_WAIT, VB_WRITE,
 };
 
+use super::export::Netexport;
 use super::vnode::Vnode;
 use super::vops::Vfs;
 use crate::assert::{kassert, kpanic};
@@ -297,6 +298,9 @@ pub struct Mount<G: ProcGlue> {
     node: ReadMostly<Option<AnyArc>>,
     /// The members of `bsd`'s types a mount carries (`FileGlue::MountG`, docs/SCAFFOLDING.md).
     pub g: <G::FileGlue as FileGlue>::MountG,
+    /// The NFS server's export list of the mount (`um_export`, `pm_export`, `im_export` of
+    /// the C's UFS, msdosfs and cd9660 structures, the mount's own here).
+    export: Netexport,
 }
 
 impl<G: ProcGlue> Mount<G> {
@@ -319,6 +323,7 @@ impl<G: ProcGlue> Mount<G> {
             data: AtomicPtr::new(ptr::null_mut()),
             node: ReadMostly::new(None),
             g: Default::default(),
+            export: Netexport::new(),
         }
     }
 
@@ -344,6 +349,13 @@ impl<G: ProcGlue> Mount<G> {
     #[inline]
     pub fn op(&self) -> &'static dyn Vfs<G> {
         self.vfc().vfc_vfsops
+    }
+
+    /// The mount's export list (`struct netexport`, `kernel::fs::export`): what its file
+    /// system's `vfs_export` updates and its `vfs_checkexp` reads.
+    #[inline]
+    pub fn export(&self) -> &Netexport {
+        &self.export
     }
 
     /// `mp->mnt_flag`.

@@ -9405,6 +9405,13 @@ kind = "dropped"
 reason = "a mount is made by vfs_mount_alloc only, never freed and recycled (D-N5.2-2); Mount::new is private and test doubles use Mount::new_unpooled"
 
 [[module]]
+rust = "sys/kernel/fs/export.rs"
+crate = "kernel"
+lz = ["sys/kern/vfs_subr.rs", "sys/sys/mount.rs", "sys/ufs/ufs/ufs_vfsops.rs"]
+status = "redesigned"
+notes = "N6.7b0: the NFS server's export lists (NFSSERVER, kernel feature nfsserver): struct netcred as Netcred (the value an MBox of M_NETADDR the kernel's radix tree carries; no node pair, no leaf cast, no netc_len), struct netexport as Netexport (a kernel-lock cell of the default entry and the RadixTree<MBox<Netcred>, 16>), the mount's own member Mount::export (ntfs's ntm_export one too); vfs_hang_addrlist in the C's order, every sleep before the witness; vfs_free_addrlist drops the tree; vfs_export, vfs_export_lookup (the grant by value, ExportGrant, D-6); check is ufs_check_export's body (msdosfs's and cd9660's the same); Netexport::clear where a UFS-like mountfs malloc(M_ZERO)s its structure"
+
+[[module]]
 rust = "sys/kernel/fs/spec.rs"
 crate = "kernel"
 lz = ["sys/sys/specdev.rs", "sys/kern/spec_vnops.rs"]
