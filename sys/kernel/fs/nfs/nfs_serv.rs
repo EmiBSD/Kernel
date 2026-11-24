@@ -3732,7 +3732,9 @@ mod tests {
         }
 
         // An unknown file system: STALE.
-        let unknown = Req::default().fh(&Fhandle::default(), true);
+        let mut nofs = Fhandle::default();
+        nofs.fh_fsid.val = [0x7eed_beef, 0x1234];
+        let unknown = Req::default().fh(&nofs, true);
         assert_eq!(status3(&s, NFSPROC_GETATTR, &unknown), NFSERR_STALE);
 
         // A client on an unreserved port, and a request with no client address, do not pass
@@ -3914,22 +3916,25 @@ mod tests {
         assert!(r.postop().is_some());
         r.done();
 
-        // MKNOD a fifo.
-        let w = reply(
-            &s,
-            NFSPROC_MKNOD,
-            &Req::default()
+        // MKNOD a character device (VOP_MKNOD, then the name looked up again) and a socket
+        // (VOP_CREATE). Not a fifo: the kernel's inherited gap (no fifofs: ffs_vinit refuses
+        // one with EOPNOTSUPP after the node is made).
+        for (name, t, spec) in [
+            (&b"tty"[..], Nfstype::NFCHR, true),
+            (b"sock", Nfstype::NFSOCK, false),
+        ] {
+            let rq = Req::default()
                 .fh(&root, true)
-                .name(b"fifo")
-                .u(Nfstype::NFFIFO as u32)
-                .sattr3(Some(0o600), None),
-            true,
-        );
-        let mut r = Rd::status(w, 0);
-        assert!(r.postop_fh().is_some());
-        assert_eq!(r.postop().expect("attributes")[0], Nfstype::NFFIFO as u32);
-        r.wcc();
-        r.done();
+                .name(name)
+                .u(t as u32)
+                .sattr3(Some(0o600), None);
+            let rq = if spec { rq.u(2).u(0) } else { rq };
+            let mut r = Rd::status(reply(&s, NFSPROC_MKNOD, &rq, true), 0);
+            assert!(r.postop_fh().is_some());
+            assert_eq!(r.postop().expect("attributes")[0], t as u32);
+            r.wcc();
+            r.done();
+        }
 
         // READDIR and READDIRPLUS list them all.
         let w = reply(
@@ -3950,7 +3955,7 @@ mod tests {
         assert_eq!(r.u(), 1, "eof");
         r.done();
         names.sort();
-        let want: [&[u8]; 7] = [b".", b"..", b"d", b"fifo", b"l", b"motd", b"new"];
+        let want: [&[u8]; 8] = [b".", b"..", b"d", b"l", b"motd", b"new", b"sock", b"tty"];
         assert_eq!(names, want);
         let w = reply(
             &s,
@@ -3978,7 +3983,7 @@ mod tests {
             }
             n += 1;
         }
-        assert_eq!((n, r.u()), (7, 1));
+        assert_eq!((n, r.u()), (8, 1));
         r.done();
 
         // RENAME new to d/n2, LINK it back as hard, REMOVE both names, RMDIR d.
@@ -4021,7 +4026,8 @@ mod tests {
         for (dir, name) in [
             (&root, &b"hard"[..]),
             (&d, b"n2"),
-            (&root, b"fifo"),
+            (&root, b"tty"),
+            (&root, b"sock"),
             (&root, b"l"),
         ] {
             let w = reply(
@@ -4325,7 +4331,7 @@ mod tests {
         r.postop();
         assert_eq!(r.u(), 0);
         r.done();
-        // A device node needs root, whom mapall maps away; a fifo does not.
+        // A device node needs root, whom mapall maps away; a socket's does not.
         let chr = Req::default()
             .fh(&public, true)
             .name(b"tty")
@@ -4333,13 +4339,14 @@ mod tests {
             .sattr3(None, None)
             .u(1)
             .u(2);
-        assert_eq!(status3(&s, NFSPROC_MKNOD, &chr), Errno::EPERM.as_i32());
-        let fifo = Req::default()
+        // EPERM is not one of MKNOD's version 3 errors: the C's map answers IO.
+        assert_eq!(status3(&s, NFSPROC_MKNOD, &chr), NFSERR_IO);
+        let sock = Req::default()
             .fh(&public, true)
             .name(b"q")
-            .u(Nfstype::NFFIFO as u32)
+            .u(Nfstype::NFSOCK as u32)
             .sattr3(None, None);
-        assert_eq!(status3(&s, NFSPROC_MKNOD, &fifo), 0);
+        assert_eq!(status3(&s, NFSPROC_MKNOD, &sock), 0);
         // So does removing a directory with REMOVE.
         let sub = Req::default()
             .fh(&public, true)
@@ -4347,7 +4354,9 @@ mod tests {
             .sattr3(Some(0o755), None);
         assert_eq!(status3(&s, NFSPROC_MKDIR, &sub), 0);
         let rm = Req::default().fh(&public, true).name(b"sub");
-        assert_eq!(status3(&s, NFSPROC_REMOVE, &rm), Errno::EPERM.as_i32());
+        // EPERM is not one of REMOVE's version 3 errors either: IO; the directory stays.
+        assert_eq!(status3(&s, NFSPROC_REMOVE, &rm), NFSERR_IO);
+        assert!(lookup(&s, &public, b"sub").is_ok());
     }
 
     #[test]
