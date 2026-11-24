@@ -68,8 +68,8 @@
 //!   fixed part ([`wchar_at`]). `struct attr_indexentry` keeps its `ie_fname[NTFS_MAXFILENAME]`
 //!   (its entries are copied out with [`Packed::read`]).
 //! - `struct ntfsmount`: the members are `Cell`s; `ntm_ad` is the `mallocarray`ed table with
-//!   its count `ntm_adnum` beside it ([`Ntfsmount::ad`]); `ntm_export` (`struct netexport`)
-//!   is kept whether or not `nfsserver` is configured, as msdosfs's `pm_export`; the three name hooks are function pointers whose shapes take slices
+//!   its count `ntm_adnum` beside it ([`Ntfsmount::ad`]); `ntm_export` (`struct netexport`,
+//!   the kernel's `Netexport` since N6.7b0) is kept whether or not `nfsserver` is configured; the three name hooks are function pointers whose shapes take slices
 //!   ([`NtfsWgetFunc`], [`NtfsWputFunc`], [`NtfsWcmpFunc`]).
 //! - `ntfs_cntobn`, `ntfs_cntob`, `ntfs_btocn`, `ntfs_btocl`, `ntfs_btocnoff` and `ntfs_bntob`
 //!   read `ntmp` from the caller's scope in C; they are methods of [`Ntfsmount`], computing in
@@ -87,10 +87,11 @@ use core::ptr::NonNull;
 
 use crate::kern::subr_prf::panic;
 use crate::ntfs::ntfs_inode::{Fnode, Ntnode, NtnodeLoaded};
-use crate::sys::mount::{Mount, Netexport};
+use crate::sys::mount::Mount;
 use crate::sys::queue::TailqHead;
 use crate::sys::types::{Daddr, Dev, Gid, Mode, Off, Uid};
 use crate::sys::vnode::{VT_NTFS, Vnode};
+use kernel::fs::export::Netexport;
 
 /// `cn_t`: a cluster number.
 pub type Cn = u64;

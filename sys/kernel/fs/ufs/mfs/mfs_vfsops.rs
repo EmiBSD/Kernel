@@ -69,8 +69,8 @@
 //! - `mfs_start`'s `p_siglist` update clears the signal's bit only when a signal was taken: a
 //!   `cursig` of 0 (woken without one) clears nothing, where the C's `sigmask(0)` is a shift
 //!   by -1 (LZ's).
-//! - `mfs_checkexp` takes the mount alone: the export check is `bsd`'s (the NFS server's,
-//!   `VFS_CHECKEXP`), which calls it for an mfs mount (docs/SCAFFOLDING.md, N6).
+//! - `mfs_checkexp` takes the mount alone (the client's address is not read): `EXPORTMFS`
+//!   is not configured, so it refuses every client; `Vfs::checkexp` calls it.
 //!
 //! ## Redesign
 //! - LZ's `MFS_VFSOPS` (a `bsd` `Vfsops` of function pointers over `bsd`'s mount) -> `impl
@@ -111,6 +111,7 @@ use hal::user::UserPtr;
 use super::mfs_vnops::mfs_serve;
 use super::mfsnode::{Mfsnode, vtomfs};
 use crate::assert::kpanic;
+use crate::fs::export::ExportGrant;
 use crate::fs::mount::{Mount, Vfsconf, vfs_busy};
 use crate::fs::subr::{checkalias, getnewvnode, vfs, vrele};
 use crate::fs::syscalls::dounmount;
@@ -124,6 +125,7 @@ use crate::fs::ufs::ufs::ufs_vfsops::ufs_root;
 use crate::fs::ufs::ufs::ufsmount::vfstoufs;
 use crate::fs::vnode::{FORCECLOSE, VBLK, VT_MFS, Vnode, WRITECLOSE};
 use crate::fs::vops::{Cred, Nd, Vfs};
+use crate::net::mbuf::Mbuf;
 use crate::proc::{ProcGlue, Thread};
 use crate::sched::tsleep_nsec;
 use crate::sig::{Sigctx, cursig};
@@ -254,7 +256,7 @@ pub fn mfs_signalled<G: ProcGlue>(mp: &'static Mount<G>, p: &Thread<G>) {
 }
 
 /// `mfs_checkexp` (`vfs_checkexp`): check export permission, not supported.
-pub fn mfs_checkexp<G: ProcGlue>(_mp: &Mount<G>) -> Result<(), Errno> {
+pub fn mfs_checkexp<G: ProcGlue>(_mp: &Mount<G>) -> Result<ExportGrant, Errno> {
     Err(Errno::EOPNOTSUPP)
 }
 
@@ -352,6 +354,11 @@ impl<G: ProcGlue> Vfs<G> for Mfs<G> {
         p: &Thread<G>,
     ) -> Result<(), Errno> {
         ffs_sysctl(name, oldp, oldlenp, newp, newlen, p)
+    }
+
+    /// `vfs_checkexp`: [`mfs_checkexp`].
+    fn checkexp(&self, mp: &'static Mount<G>, _nam: &Mbuf) -> Result<ExportGrant, Errno> {
+        mfs_checkexp(mp)
     }
 }
 

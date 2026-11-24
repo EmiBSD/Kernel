@@ -71,11 +71,11 @@
 //! - [`ext2fs_mount`] looks the device name up in a `Nameidata` of its own (`ndinit` around
 //!   the kernel copy of the name), as `ffs_mount` does; a mount that is not an update and has
 //!   no arguments is `EINVAL` (the C reads through the NULL `args`; only in-kernel callers
-//!   pass none). `disk_map` and `vfs_export` (with the export list, `um_export`) are `bsd`'s
-//!   until N7 and N6, reached through the glue (`FileGlue::disk_map`, `FileGlue::vfs_export`;
-//!   [`ext2fs_mountfs`] empties the recycled mount's export list with
-//!   `FileGlue::ufs_export_init` where the C's `malloc(M_ZERO)` of the `ufsmount` starts it
-//!   empty), as ffs's.
+//!   pass none). `disk_map` is `bsd`'s until N7, reached through the glue
+//!   (`FileGlue::disk_map`); the export list (`um_export`) is the mount's (`Mount::export`,
+//!   N6.7b0): [`ext2fs_mount`] updates it with `vfs_export`, [`ext2fs_mountfs`] empties it
+//!   where the C's `malloc(M_ZERO)` of the `ufsmount` starts it empty, and `vfs_checkexp` is
+//!   `ufs_check_export`'s body, `kernel::fs::export::check`, as ffs's.
 //! - [`ext2fs_reload`] releases the super block's buffer before `e2fs_sbfill` reads the
 //!   descriptors again, and the old descriptors go with the new array; the C keeps the buffer
 //!   busy and loses the descriptors. `ext2fs_reload_vnode` releases the buffer of a failed
@@ -172,6 +172,7 @@ use super::ext2fs_subr::ext2fs_vinit;
 use crate::assert::kpanic;
 use crate::file::{DM_OPENBLCK, FileGlue};
 use crate::fs::bio::{DEV_BSHIFT, bawrite, bread, brelse, bwrite, getblk_wait};
+use crate::fs::export::{ExportGrant, check, vfs_export};
 use crate::fs::lookup::{namei, ndinit};
 use crate::fs::mount::{Mount, Vfsconf, mountlist_insert_tail, vfs_mount_free, vfs_unbusy};
 use crate::fs::namei::{FOLLOW, LOOKUP, NiDirp};
@@ -195,6 +196,7 @@ use crate::fs::vnode::{
     WRITECLOSE, vn_lock,
 };
 use crate::fs::vops::{Cred, Nd, VFS_VGET, Vfs, vop_close, vop_fsync, vop_open, vop_unlock};
+use crate::net::mbuf::Mbuf;
 use crate::prf::{Str, printf};
 use crate::proc::{ProcGlue, Thread};
 use crate::tc::gettime;
@@ -362,7 +364,7 @@ pub fn ext2fs_mount<G: ProcGlue>(
         match &args {
             // Process export requests.
             Some(a) if a.fspec == 0 => {
-                return <G::FileGlue as FileGlue>::vfs_export(mp, &a.export_info);
+                return vfs_export(mp, mp.export(), &a.export_info);
             }
             None => return Ok(()), // success
             Some(_) => {}
@@ -661,8 +663,8 @@ pub fn ext2fs_mountfs<G: ProcGlue>(
         }
 
         let u: &UfsmountRef<G> = ump.insert(Ufsmount::alloc());
-        // The zeroed structure's export list (the mount's glue member).
-        <G::FileGlue as FileGlue>::ufs_export_init(mp);
+        // The zeroed structure's export list (the mount's own).
+        mp.export().clear();
         // ump->um_e2fs = malloc(sizeof(struct m_ext2fs), M_UFSMNT, M_WAITOK | M_ZERO).
         let fs = Ext2Superblock::new();
 
@@ -1073,8 +1075,8 @@ pub fn ext2fs_vget<G: ProcGlue>(
 /// - check that the inode number is valid
 /// - call `ext2fs_vget()` to get the locked inode
 /// - check for an unallocated inode (`i_mode == 0`)
-/// - check that the given client host has export rights and return those rights via
-///   `exflagsp` and `credanonp`
+/// - check that the given client host has export rights (the file system's `checkexp`, by
+///   value since N6.7b0)
 pub fn ext2fs_fhtovp<G: ProcGlue>(
     mp: &'static Mount<G>,
     fhp: &Fid,
@@ -1322,6 +1324,10 @@ impl<G: ProcGlue> Vfs<G> for Ext2fsVfs<G> {
     /// `vfs_init`: [`ext2fs_init`].
     fn init(&self, vfc: &'static Vfsconf<G>) -> Result<(), Errno> {
         ext2fs_init(vfc)
+    }
+    /// `vfs_checkexp`: `ufs_check_export` ([`check`](crate::fs::export::check)).
+    fn checkexp(&self, mp: &'static Mount<G>, nam: &Mbuf) -> Result<ExportGrant, Errno> {
+        check(mp, nam)
     }
 }
 /* </CODE> */
@@ -2100,7 +2106,6 @@ mod tests {
             vfs.sysctl(&[1], 0, &mut len, 0, 0, p),
             Err(Errno::EOPNOTSUPP)
         );
-        assert!(vfs.as_any().is_none());
         let mp = try_mount(p, 0).unwrap();
         assert_eq!(vfs.start(mp, 0, p), Ok(()));
         let root = vfs.root(mp).unwrap();

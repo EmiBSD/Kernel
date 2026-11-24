@@ -65,11 +65,12 @@
 //! - `ffs_mount` looks the device name up in a `Nameidata` of its own (`ndinit` around the
 //!   kernel copy of the name) instead of reinitialising the caller's `ndp`, whose lifetime
 //!   cannot hold a local name (LZ's).
-//! - `disk_map` and `vfs_export` (with the export list, `um_export`) are `bsd`'s until N7 and
-//!   N6: [`ffs_mount`] calls them through the glue (`FileGlue::disk_map`,
-//!   `FileGlue::vfs_export`, docs/SCAFFOLDING.md), and [`ffs_mountfs`] empties the recycled
-//!   mount's export list where the C's `malloc(M_ZERO)` of the `ufsmount` starts it empty
-//!   (`FileGlue::ufs_export_init`).
+//! - `disk_map` is `bsd`'s until N7: [`ffs_mount`] calls it through the glue
+//!   (`FileGlue::disk_map`, docs/SCAFFOLDING.md). The export list (`um_export`) is the
+//!   mount's (`Mount::export`, `kernel::fs::export`, N6.7b0): [`ffs_mount`] updates it with
+//!   `vfs_export`, [`ffs_mountfs`] empties it where the C's `malloc(M_ZERO)` of the `ufsmount`
+//!   starts it empty, and `vfs_checkexp` is `ufs_check_export`'s body,
+//!   `kernel::fs::export::check`.
 //! - `rootdev` and `swapdev` are the caller's ([`ffs_mountroot`]'s arguments: `bsd`'s
 //!   `ROOTDEV` and the machine's `conf.c` until N7); `rootvp` and `swapdev_vp` are `bsd`'s
 //!   `init_main.c` globals, reached through the glue (`FileGlue::rootvp`, `set_rootvp`,
@@ -178,6 +179,7 @@ use crate::file::{DM_OPENBLCK, FileGlue};
 use crate::fs::bio::getblk_wait;
 use crate::fs::bio::{DEV_BSHIFT, bawrite, bread, brelse, bwrite};
 use crate::fs::buf::{B_INVAL, B_NOCACHE, BufRef};
+use crate::fs::export::{ExportGrant, check, vfs_export};
 use crate::fs::lookup::{namei, ndinit};
 use crate::fs::mount::{Mount, Vfsconf, mountlist_insert_tail, vfs_mount_free, vfs_unbusy};
 use crate::fs::namei::{FOLLOW, LOOKUP, NiDirp};
@@ -207,6 +209,7 @@ use crate::fs::vnode::{
 use crate::fs::vops::{
     Cred, IoBuf, Nd, VFS_STATFS, VFS_SYNC, Vfs, vop_close, vop_fsync, vop_open, vop_unlock,
 };
+use crate::net::mbuf::Mbuf;
 use crate::prf::printf;
 use crate::proc::{ProcGlue, Thread};
 use crate::sysctl::{SysctlReq, bounded_arr};
@@ -456,7 +459,7 @@ pub fn ffs_mount<G: ProcGlue>(
                 };
                 if a.fspec == 0 {
                     // Process export requests.
-                    if let Err(e) = <G::FileGlue as FileGlue>::vfs_export(mp, &a.export_info) {
+                    if let Err(e) = vfs_export(mp, mp.export(), &a.export_info) {
                         break 'error_1 Err(e);
                     }
                     break 'success;
@@ -888,8 +891,8 @@ pub fn ffs_mountfs<G: ProcGlue>(
         }
 
         let u: &UfsmountRef<G> = ump.insert(Ufsmount::alloc());
-        // The zeroed structure's export list (the mount's glue member).
-        <G::FileGlue as FileGlue>::ufs_export_init(mp);
+        // The zeroed structure's export list (the mount's own).
+        mp.export().clear();
         // ump->um_fs = malloc(fs_sbsize); memcpy(ump->um_fs, bp->b_data, fs_sbsize), and
         // its summary space (`fs.rs`).
         let sbsize = bfs.fs_sbsize as usize;
@@ -1703,6 +1706,11 @@ impl<G: ProcGlue> Vfs<G> for Ffs<G> {
         p: &Thread<G>,
     ) -> Result<(), Errno> {
         ffs_sysctl(name, oldp, oldlenp, newp, newlen, p)
+    }
+
+    /// `vfs_checkexp`: `ufs_check_export` ([`check`](crate::fs::export::check)).
+    fn checkexp(&self, mp: &'static Mount<G>, nam: &Mbuf) -> Result<ExportGrant, Errno> {
+        check(mp, nam)
     }
 }
 

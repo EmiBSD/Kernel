@@ -331,6 +331,14 @@ impl Vfs<TestGlue> for TestUfsVfs {
     fn vptofh(&self, _: &'static Vnode<TestGlue>, _: &mut Fid) -> Result<(), Errno> {
         Err(Errno::EOPNOTSUPP)
     }
+    /// No exports.
+    fn checkexp(
+        &self,
+        _mp: &'static Mount<TestGlue>,
+        _nam: &crate::net::mbuf::Mbuf,
+    ) -> Result<crate::fs::export::ExportGrant, Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
 }
 
 /// The disk's `d_strategy`: the block's bytes in or out by disk address, then `biodone`.

@@ -143,7 +143,6 @@ use crate::sys::socket::SOCK_DGRAM;
 use crate::sys::swap::NETDEV;
 use crate::sys::time::sec_to_nsec;
 use crate::sys::types::{Ino, Uid};
-use crate::sys::ucred::Ucred;
 use crate::sys::vnode::vn_lock;
 use crate::sys::vnode::{FORCECLOSE, VDIR, VNON, VREG, VROOT, Vattr, Vnode};
 use crate::sys::vnode::{
@@ -1057,13 +1056,12 @@ pub fn nfs_quotactl(
     Err(Errno::EOPNOTSUPP)
 }
 
-/// `nfs_checkexp(mp, nam, exflagsp, credanonp)`: check export permission, not supported.
+/// `nfs_checkexp(mp, nam, ...)`: check export permission, not supported (the
+/// rights would come by value, `struct vfsops`'s `vfs_checkexp` since N6.7b0).
 pub fn nfs_checkexp(
     _mp: &'static Mount,
     _nam: &Mbuf,
-    _exflagsp: &mut i32,
-    _credanonp: &mut *const Ucred,
-) -> Result<(), Errno> {
+) -> Result<kernel::fs::export::ExportGrant, Errno> {
     Err(Errno::EOPNOTSUPP)
 }
 /* </CODE> */

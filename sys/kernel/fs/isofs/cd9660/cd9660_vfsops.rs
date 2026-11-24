@@ -94,9 +94,8 @@
 //!   for an `ino` no handle can give. What an NFS client of an exported disc sees: the files
 //!   past 2 GiB open, and a crafted handle gets `ESTALE` or the record it names, where the
 //!   OpenBSD server crashes.
-//! - `cd9660_check_export` is `VFS_CHECKEXP`'s `MOUNT_CD9660` arm (`bsd`'s
-//!   `sys/sys/mount.rs`): `ufs_check_export`, the same body over the mount's export list,
-//!   which is the mount's glue member (`im_export`, `cd9660_extern.rs`).
+//! - `cd9660_check_export` is `ufs_check_export`'s body (`kernel::fs::export::check`) over the
+//!   mount's export list (`im_export` is the mount's, `cd9660_extern.rs`, N6.7b0).
 //! - `iso_disklabelspoof` is `bsd`'s (`sys/kern/subr_disk.rs`) over [`iso_volume_label`]:
 //!   the disk label and `dkcksum` are `bsd`'s until N7.
 //!
@@ -153,6 +152,7 @@ use crate::assert::kpanic;
 use crate::file::FileGlue;
 use crate::fs::bio::{DEV_BSHIFT, bread, brelse};
 use crate::fs::buf::BufRef;
+use crate::fs::export::{ExportGrant, check, vfs_export};
 use crate::fs::isofs::cd9660::cd9660_extern::{
     ISO_FTYPE_9660, ISO_FTYPE_DEFAULT, ISO_FTYPE_RRIP, ISOFSMNT_ROOT, IsoMnt, M_ISOFSMNT, blkoff,
     lblkno, vfstoisofs,
@@ -182,6 +182,7 @@ use crate::fs::vnode::{
     VROOT, VSOCK, VT_ISOFS, Vnode, VopsId, iftovt, vn_lock,
 };
 use crate::fs::vops::{Cred, Nd, VFS_VGET, Vfs, vop_close, vop_ioctl, vop_open, vop_unlock};
+use crate::net::mbuf::Mbuf;
 use crate::prf::printf;
 use crate::proc::{ProcGlue, Thread};
 use crate::time::inittodr;
@@ -358,7 +359,7 @@ pub fn cd9660_mount<G: ProcGlue>(
         if let Some(a) = &args
             && a.fspec == 0
         {
-            return <G::FileGlue as FileGlue>::vfs_export(mp, &a.export_info);
+            return vfs_export(mp, mp.export(), &a.export_info);
         }
         return Ok(());
     }
@@ -547,9 +548,9 @@ pub fn iso_mountfs<G: ProcGlue>(
         };
 
         // isomp = malloc(sizeof *isomp, M_ISOFSMNT, M_WAITOK): the structure is built below;
-        // its export list, the mount's glue member, starts empty.
+        // its export list, the mount's own, starts empty.
         malloced = true;
-        <G::FileGlue as FileGlue>::ufs_export_init(mp);
+        mp.export().clear();
         let mut isomp = IsoMnt {
             im_flags: 0,
             im_mountp: mp,
@@ -1047,8 +1048,7 @@ pub fn cd9660_vptofh<G: ProcGlue>(vp: &'static Vnode<G>, fhp: &mut Fid) -> Resul
 }
 
 /// `cd9660_vfsops`: each slot the C's function of the same name; `vfs_sysctl` the trait's
-/// default (`EOPNOTSUPP`, the C's `eopnotsupp`); `vfs_checkexp` is `VFS_CHECKEXP`'s arm (the
-/// module's deviations).
+/// default (`EOPNOTSUPP`, the C's `eopnotsupp`).
 impl<G: ProcGlue> Vfs<G> for Cd9660Vfs<G> {
     /// `vfs_mount`: [`cd9660_mount`].
     fn mount(
@@ -1124,6 +1124,10 @@ impl<G: ProcGlue> Vfs<G> for Cd9660Vfs<G> {
     /// `vfs_init`: `cd9660_init` (`cd9660_node.rs`).
     fn init(&self, _vfc: &'static Vfsconf<G>) -> Result<(), Errno> {
         cd9660_init::<G>()
+    }
+    /// `vfs_checkexp`: `cd9660_check_export` ([`check`](crate::fs::export::check)).
+    fn checkexp(&self, mp: &'static Mount<G>, nam: &Mbuf) -> Result<ExportGrant, Errno> {
+        check(mp, nam)
     }
 }
 
@@ -1643,11 +1647,17 @@ mod tests {
         // The updates.
         mp.set_flag(mp.flag() | MNT_UPDATE);
         assert_eq!(v.mount(mp, b"/cd", &mut [], &mut nd(p), p), Ok(()));
+        // An export update (no device name) goes to the mount's list (`kernel::fs::export`,
+        // N6.7b0): no flag asked, nothing to do; `ENOTSUP` without `NFSSERVER`.
         let mut e = args(0, 0);
         e.fspec = 0;
         assert_eq!(
             v.mount(mp, b"/cd", &mut data_of(&e), &mut nd(p), p),
-            Err(Errno::EOPNOTSUPP)
+            if cfg!(feature = "nfsserver") {
+                Ok(())
+            } else {
+                Err(Errno::ENOTSUP)
+            }
         );
         assert_eq!(v.mount(mp, b"/cd", &mut data, &mut nd(p), p), Ok(()));
         mp.set_flag(mp.flag() & !MNT_UPDATE);

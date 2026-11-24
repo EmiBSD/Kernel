@@ -67,8 +67,7 @@
 //!   the NULL `tn_vnode` (LZ's).
 //! - `tmpfs_root`, `tmpfs_vget` and `tmpfs_fhtovp` return the vnode (`Vfs`'s shape).
 //! - `vfs_quotactl`'s `(void *)eopnotsupp` is [`tmpfs_quotactl`]; `vfs_sysctl`'s is the
-//!   trait's default (`EOPNOTSUPP`); `vfs_checkexp`'s is `VFS_CHECKEXP`'s arm (`bsd`'s, at the
-//!   switch).
+//!   trait's default (`EOPNOTSUPP`); `vfs_checkexp`'s is `Vfs::checkexp`'s `EOPNOTSUPP`.
 //! - `ta_version` is not checked (the C neither).
 //! - `vmstat -m`'s item sizes of the two pools are the kernel structures' and the counted
 //!   handle's header, not the C's: `tmpfs_node` 384 (C 272, LZ 352), `tmpfs_dirent` 128 (C
@@ -122,6 +121,7 @@ use hal::sys::types::{Gid, Ino, Mode, Uid};
 use hal::vm::uvmexp::UVMEXP;
 
 use crate::assert::{kassert, kpanic};
+use crate::fs::export::ExportGrant;
 use crate::fs::mount::{Mount, Vfsconf};
 use crate::fs::subr::{copy_statfs_info, vflush, vfs, vfs_getnewfsid};
 use crate::fs::tmpfs::tmpfs::{
@@ -139,6 +139,7 @@ use crate::fs::vnode::{
     FORCECLOSE, LK_EXCLUSIVE, LK_RETRY, VDIR, VNOVAL, Vnode, WRITECLOSE, vn_lock,
 };
 use crate::fs::vops::{Cred, Nd, Vfs, vop_unlock};
+use crate::net::mbuf::Mbuf;
 use crate::prf::printf;
 use crate::proc::{ProcGlue, Thread};
 
@@ -551,8 +552,7 @@ pub fn tmpfs_sync() -> Result<(), Errno> {
 }
 
 /// `tmpfs_vfsops`: each slot the C's function of the same name; `vfs_sysctl` the trait's
-/// default (`EOPNOTSUPP`, the C's `eopnotsupp`); `vfs_checkexp` is `VFS_CHECKEXP`'s arm (the
-/// module's deviations).
+/// default (`EOPNOTSUPP`, the C's `eopnotsupp`).
 impl<G: ProcGlue> Vfs<G> for TmpfsVfs<G> {
     /// `vfs_mount`: [`tmpfs_mount`].
     fn mount(
@@ -628,6 +628,10 @@ impl<G: ProcGlue> Vfs<G> for TmpfsVfs<G> {
     /// `vfs_init`: [`tmpfs_init`].
     fn init(&self, _vfc: &'static Vfsconf<G>) -> Result<(), Errno> {
         tmpfs_init::<G>()
+    }
+    /// `vfs_checkexp`: `(void *)eopnotsupp`.
+    fn checkexp(&self, _mp: &'static Mount<G>, _nam: &Mbuf) -> Result<ExportGrant, Errno> {
+        Err(Errno::EOPNOTSUPP)
     }
 }
 

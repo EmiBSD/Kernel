@@ -168,11 +168,11 @@
 //!   `netc_len`, an `unsafe impl Sync`) -> [`Netcred`], the value an `MBox` of `M_NETADDR` the
 //!   kernel's radix tree (`kernel::net::radix`) carries: the tree owns the keys, no cast.
 //! - LZ's `struct netexport` (`ne_rtable_inet` a `Cell<Option<&'static RadixNodeHead>>`, an
-//!   `unsafe impl Sync`) in `bsd`'s glue member of the mount (`BsdMountG`, N5.5b0) ->
+//!   `unsafe impl Sync`) in `bsd`'s glue member of the mount (N5.5b0) ->
 //!   [`Netexport`], a kernel-lock cell holding the default entry and the tree, the mount's own
 //!   member ([`Mount::export`]); ntfs keeps one in its structure as the C.
-//! - `vfs_checkexp`'s `credanonp`, a pointer into the entry, -> [`ExportGrant`], the ids by
-//!   value (D-6; the check the C makes through the pointer is unchanged in `nfsrv_fhtovp`:
+//! - `vfs_checkexp`'s anonymous credentials, a pointer into the entry, -> [`ExportGrant`], the
+//!   ids by value (D-6; the check the C makes through the pointer is unchanged in `nfsrv_fhtovp`:
 //!   uid 0 or `MNT_EXPORTANON` take the grant's ids, at most `NGROUPS_MAX` groups).
 //! - `vfs_free_netcred`, the walker that deleted and freed one entry, is the tree's drop:
 //!   `vfs_free_addrlist` puts an empty tree in the list's place.
@@ -260,7 +260,7 @@ impl Default for Netcred {
     }
 }
 
-/// What `vfs_checkexp` answers a client (the C's `*exflagsp` and `*credanonp`), copied out of
+/// What `vfs_checkexp` answers a client (the C's export flags and anonymous ids), copied out of
 /// its export entry under the kernel lock's reader (D-6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExportGrant {

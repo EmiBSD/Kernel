@@ -68,8 +68,8 @@
 //!   `vfs_mount` receives the kernel copy of the user's arguments as a byte slice of
 //!   `vfc_datasize` bytes, which the file system reads as its own `*_args` structure.
 //! - Its per-mount data hangs from `mnt_data` (`*mut c_void`, as in C); a UFS mount's is the
-//!   kernel's typed slot (`Mount::set_node`, N5.5b0), and its export list the mount's glue
-//!   member ([`BsdMountG`]).
+//!   kernel's typed slot (`Mount::set_node`, N5.5b0), and its export list is the mount's own
+//!   (`Mount::export`, `kernel::fs::export`, N6.7b0).
 //!
 //! ## Deviations
 //! - `mnt_stat` is read with the kernel's `Mount::stat` and changed with `Mount::with_stat`.
@@ -82,27 +82,22 @@
 //!   `*Args::from_bytes` reads them out of the kernel copy of the mount arguments. Since N5.4
 //!   they are `hal`'s (`hal::sys::mount`, D-N5.4-3), re-exported here, their holes named.
 //! - `VFS_*` are functions with the macros' names (`#[allow(non_snake_case)]`).
-//! - `struct netcred` and `struct netexport` are always defined, as the C header does, over
-//!   the ported radix tree (`net/radix.rs`): their members are `Cell`s, the `ne_rtable_inet`
-//!   pointer an `Option<&'static RadixNodeHead>`; a `Netcred` is `malloc`ed with the
-//!   address and mask it is keyed by behind it, as in C (`kern/vfs_subr.rs`). `struct
+//! - `struct netcred` and `struct netexport` are the kernel's (`kernel::fs::export`, N6.7b0),
+//!   and so is the export check: the NFS server calls the table's `checkexp`
+//!   (`Vfs::checkexp`), which answers the client's rights by value; `struct vfsops`'s
+//!   `vfs_checkexp` here answers the same `ExportGrant` (ntfs's and nfs's). `struct
 //!   nfs_args` (`NfsArgs`) reads like the other `*Args`; its `addr`, `fh` and `hostname`
 //!   are user addresses.
 //! - The user-level prototypes (`mount`, `statfs`, ...) are not kernel material; the kernel
 //!   ones are their functions in `vfs_subr.rs`, `vfs_init.rs` and `vfs_syscalls.rs`.
 
-use core::cell::Cell;
-
 use crate::kern::proc_glue::BsdProcGlue;
-use crate::kern::subr_prf::panic;
-use crate::net::radix::{RadixNode, RadixNodeHead};
 use crate::sys::errno::Errno;
 use crate::sys::mbuf::Mbuf;
 use crate::sys::namei::Nameidata;
 use crate::sys::proc::Proc;
 use crate::sys::sysctl::Sysctlfn;
 use crate::sys::types::{Ino, Uid};
-use crate::sys::ucred::{Ucred, UcredCell};
 use crate::sys::vnode::Vnode;
 /// `struct bcachestats`: buffer cache statistics, `hal`'s (N5.1: one copy for the kernel's
 /// cache and `vfs.generic.bcachestat`).
@@ -117,6 +112,7 @@ pub use hal::sys::mount::{
     MOUNT_UDF, MOUNT_UFS, MountInfo, Statfs, VB_DUPOK, VB_NOWAIT, VB_READ, VB_WAIT, VB_WRITE,
     VFS_BCACHESTAT, VFS_CONF, VFS_GENERIC, VFS_MAXTYPENUM, VfsconfAbi,
 };
+use kernel::fs::export::ExportGrant;
 use kernel::fs::vops::Cred;
 
 /// The file systems' mount arguments, `hal`'s since N5.4 (D-N5.4-3: one copy for the
@@ -170,9 +166,8 @@ pub fn bufpages_inact() -> i64 {
 pub type VfsMountFn =
     fn(&'static Mount, &[u8], &mut [u8], &mut Nameidata<'_>, &Proc) -> Result<(), Errno>;
 
-/// The type of `vfs_checkexp(mp, nam, extflagsp, credanonp)`.
-pub type VfsCheckexpFn =
-    fn(&'static Mount, &Mbuf, &mut i32, &mut *const Ucred) -> Result<(), Errno>;
+/// The type of `vfs_checkexp(mp, nam, ...)`: the client's export rights by value (D-6).
+pub type VfsCheckexpFn = fn(&'static Mount, &Mbuf) -> Result<ExportGrant, Errno>;
 
 /// The type of `vfs_init(vfsconf)`.
 pub type VfsInitFn = fn(&'static Vfsconf) -> Result<(), Errno>;
@@ -205,7 +200,7 @@ pub struct Vfsops {
     /// `vfs_sysctl(name, namelen, oldp, oldlenp, newp, newlen, p)`, NULL when the type has no
     /// `vfs.<type>` node.
     pub vfs_sysctl: Option<Sysctlfn>,
-    /// `vfs_checkexp(mp, nam, extflagsp, credanonp)`.
+    /// `vfs_checkexp(mp, nam, ...)`: the client's export rights by value.
     pub vfs_checkexp: VfsCheckexpFn,
 }
 
@@ -273,150 +268,6 @@ pub fn VFS_FHTOVP(mp: &'static Mount, fidp: &Fid) -> Result<&'static Vnode, Errn
 #[allow(non_snake_case)] // the C macro's name
 pub fn VFS_VPTOFH(vp: &'static Vnode, fidp: &mut Fid) -> Result<(), Errno> {
     kernel::fs::vops::VFS_VPTOFH(vp, fidp)
-}
-
-/// `VFS_CHECKEXP(MP, NAM, EXFLG, CRED)`.
-#[allow(non_snake_case)] // the C macro's name
-pub fn VFS_CHECKEXP(
-    mp: &'static Mount,
-    nam: &Mbuf,
-    exflg: &mut i32,
-    cred: &mut *const Ucred,
-) -> Result<(), Errno> {
-    // `vfs_checkexp` is the NFS server's, `bsd`'s: the table as `bsd` knows it, or for the
-    // kernel's ffs (N5.5b2) and ext2fs (N5.6c3) their `vfs_checkexp`, `ufs_check_export` over
-    // the mount's export list (`bsd`'s until N6), for the kernel's msdosfs (N5.7c3) and cd9660
-    // (N5.8c2) their `msdosfs_check_export` and `cd9660_check_export`, which are
-    // `ufs_check_export`'s body over the same list (the C's `pm_export` and `im_export` are the
-    // mount's glue member), for the kernel's mfs (N5.5b3) its `mfs_checkexp`, and for the
-    // kernel's udf (N5.8u2) its `udf_checkexp`, which refuses every client (`EACCES`), for
-    // the kernel's tmpfs (N5.9t2) its `(void *)eopnotsupp`, and for the kernel's fuse (N5.9f2)
-    // its `fusefs_checkexp` (`EOPNOTSUPP`).
-    match mp.op().as_any().and_then(|a| a.downcast_ref::<Vfsops>()) {
-        Some(ops) => (ops.vfs_checkexp)(mp, nam, exflg, cred),
-        #[cfg(feature = "ffs")]
-        None if mp.vfc().name() == MOUNT_FFS => {
-            crate::ufs::ufs::ufs_vfsops::ufs_check_export(mp, nam, exflg, cred)
-        }
-        #[cfg(feature = "ext2fs")]
-        None if mp.vfc().name() == MOUNT_EXT2FS => {
-            crate::ufs::ufs::ufs_vfsops::ufs_check_export(mp, nam, exflg, cred)
-        }
-        #[cfg(feature = "msdosfs")]
-        None if mp.vfc().name() == MOUNT_MSDOS => {
-            crate::ufs::ufs::ufs_vfsops::ufs_check_export(mp, nam, exflg, cred)
-        }
-        #[cfg(feature = "cd9660")]
-        None if mp.vfc().name() == MOUNT_CD9660 => {
-            crate::ufs::ufs::ufs_vfsops::ufs_check_export(mp, nam, exflg, cred)
-        }
-        // `udf_checkexp`: "For the time being".
-        #[cfg(feature = "udf")]
-        None if mp.vfc().name() == MOUNT_UDF => Err(Errno::EACCES),
-        #[cfg(feature = "mfs")]
-        None if mp.vfc().name() == MOUNT_MFS => kernel::fs::ufs::mfs::mfs_vfsops::mfs_checkexp(mp),
-        // tmpfs_vfsops' `vfs_checkexp`: `(void *)eopnotsupp`.
-        #[cfg(feature = "tmpfs")]
-        None if mp.vfc().name() == MOUNT_TMPFS => Err(Errno::EOPNOTSUPP),
-        // fuse_vfsops' `fusefs_checkexp`: EOPNOTSUPP.
-        #[cfg(feature = "fuse")]
-        None if mp.vfc().name() == MOUNT_FUSEFS => Err(Errno::EOPNOTSUPP),
-        None => panic(format_args!(
-            "VFS_CHECKEXP: mount {:p} of a kernel file system",
-            mp
-        )),
-    }
-}
-
-/// `struct netcred`: network address lookup element. The radix tree of a [`Netexport`] holds
-/// these `malloc(M_NETADDR)`ed with the address and mask they are keyed by right behind
-/// them (`netc_len` is the size of the whole allocation); the first member must stay
-/// `netc_rnodes`, as `vfs_export_lookup` turns the leaf `rn_match` finds back into its
-/// `Netcred`.
-#[repr(C)]
-pub struct Netcred {
-    /// `netc_rnodes`: the radix tree's leaf and internal node for this entry.
-    pub netc_rnodes: [RadixNode; 2],
-    /// `netc_exflags`: the `export_args`'s `ex_flags` (`MNT_EXRDONLY`, ...).
-    pub netc_exflags: Cell<i32>,
-    /// `netc_len`: size of the allocation.
-    pub netc_len: Cell<i32>,
-    /// `netc_anon`: the credentials anonymous clients map to (the entry's own, filled in
-    /// place by `vfs_hang_addrlist`).
-    pub netc_anon: UcredCell,
-}
-
-// SAFETY: the members are changed under the kernel lock while the file system's export
-// list is updated (`vfs_export`), as in C; the kernel serialises them like the rest of the
-// mount's state.
-unsafe impl Sync for Netcred {}
-
-impl Netcred {
-    /// A zeroed entry, as `malloc(M_ZERO)` returns it.
-    pub const fn new() -> Self {
-        Self {
-            netc_rnodes: [RadixNode::new(), RadixNode::new()],
-            netc_exflags: Cell::new(0),
-            netc_len: Cell::new(0),
-            netc_anon: UcredCell::new(),
-        }
-    }
-}
-
-impl Default for Netcred {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// `struct netexport`: network export information of one file system.
-pub struct Netexport {
-    /// `ne_defexported`: default export.
-    pub ne_defexported: Netcred,
-    /// `ne_rtable_inet`: individual exports.
-    pub ne_rtable_inet: Cell<Option<&'static RadixNodeHead>>,
-}
-
-// SAFETY: as for `Netcred`.
-unsafe impl Sync for Netexport {}
-
-impl Netexport {
-    /// An empty export list, as `malloc(M_ZERO)` returns it.
-    pub const fn new() -> Self {
-        Self {
-            ne_defexported: Netcred::new(),
-            ne_rtable_inet: Cell::new(None),
-        }
-    }
-}
-
-impl Default for Netexport {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Netexport {
-    /// The list emptied as the C starts each UFS mount's (`um_export` inside the
-    /// `malloc(M_ZERO)`ed `struct ufsmount` of `ffs_mountfs` and `ext2fs_mountfs`): a recycled
-    /// mount's previous entries are forgotten, not freed, as the C's `free(ump)` forgets them.
-    pub fn clear(&self) {
-        self.ne_rtable_inet.set(None);
-        self.ne_defexported.netc_exflags.set(0);
-        self.ne_defexported.netc_len.set(0);
-        self.ne_defexported.netc_anon.assign(&Ucred::new());
-    }
-}
-
-/// The members of `bsd`'s types a mount carries (the glue's `MountG`, `Mount::g`;
-/// docs/SCAFFOLDING.md).
-#[derive(Default)]
-pub struct BsdMountG {
-    /// `um_export` of a UFS mount (`struct ufsmount`'s, the NFS server's export list): the
-    /// mount's since N5.5b0, so the UFS structure itself is `Send` and lives in the mount's
-    /// typed slot. Its three readers hold the mount (`ffs_mount`'s and `ext2fs_mount`'s
-    /// `vfs_export`, `ufs_check_export`'s `vfs_export_lookup`).
-    pub export: Netexport,
 }
 /* </CODE> */
 
@@ -522,28 +373,6 @@ mod tests {
         assert_eq!(args.flags, NFSMNT_NFSV3 | NFSMNT_RSIZE);
         assert_eq!(args.acregmin, 7);
         assert!(NfsArgs::from_bytes(&bytes[..NfsArgs::SIZE - 1]).is_none());
-    }
-
-    /// A recycled mount's export list starts empty, as the C's zeroed `struct ufsmount` does
-    /// (`ffs_mountfs`, `ext2fs_mountfs`; N5.5b0): no individual export left, the default
-    /// export's flags, length and anonymous credentials zero.
-    #[test]
-    fn a_cleared_export_list_is_a_new_one() {
-        let g = BsdMountG::default();
-        let nep = &g.export;
-        let rnh: &'static RadixNodeHead =
-            std::boxed::Box::leak(std::boxed::Box::new(RadixNodeHead::new()));
-        nep.ne_rtable_inet.set(Some(rnh));
-        nep.ne_defexported
-            .netc_exflags
-            .set(MNT_EXRDONLY | MNT_EXPORTANON);
-        nep.ne_defexported.netc_len.set(64);
-        nep.ne_defexported.netc_anon.set_uid(Uid::MAX - 1);
-        nep.clear();
-        assert!(nep.ne_rtable_inet.get().is_none());
-        assert_eq!(nep.ne_defexported.netc_exflags.get(), 0);
-        assert_eq!(nep.ne_defexported.netc_len.get(), 0);
-        assert_eq!(nep.ne_defexported.netc_anon.cr_uid.get(), 0);
     }
 }
 /* </TESTS> */
