@@ -134,6 +134,15 @@
 //!   `IP_HDRINCL` refusal's test and `ip_output`'s argument), where LZ took two.
 //! - LZ's `inpcb_of` (a `sotoinpcb` that panics) goes: a request without a pcb is
 //!   `panic(9)` where the C dereferences NULL, `rip_detach` answers `EINVAL` as the C.
+//! - Cost against the C (measured at the N6 close by the `rip.*` bench rows, decision 50):
+//!   a send pays the pcb's options and route loans (two atomics each, D-10 of N6.6b, N12)
+//!   and the multicast options' copy (`moptions_out`), where the C reads the members under
+//!   the socket lock, and a connected socket's packet a dynamic call to pf's
+//!   `mbuf_link_inpcb_of`; input pays the header's copy (`ip_load`, 20 bytes) and a dynamic
+//!   call to pf's `find_divert` where the C reads through a pointer and calls pf directly
+//!   (pf moves at N8); the walk, its count pair per pcb and the `m_copym` per extra match are
+//!   the C's. Since N6.6b1 no lend of the net lock is left on these paths, but on IPsec's
+//!   tail to the raw sockets (`bsd`'s `ipsec_input_disabled`, one per packet, N8).
 
 use core::marker::PhantomData;
 use core::mem::size_of;

@@ -157,6 +157,12 @@
 //! - The checksum bounds keep the C's integer order: `m_pkthdr.len < *offp + 2` and
 //!   `len - *offp - 2 < inp_cksum6` before `in6_cksum` on input, `plen < 2 || plen - 2 < off`
 //!   (an unsigned subtraction) on output: a user's offset never indexes past the packet.
+//! - Cost against the C (measured at the N6 close by the `rip6.input.filter` bench row,
+//!   decision 50): a send pays one sticky options loan and one route loan (two atomics
+//!   each, D-10 of N6.6b, N12) and the multicast options' copy, where the C reads the
+//!   members under the socket lock; input pays the IPv6 header's copy (`ip6_load`) and a
+//!   dynamic call to pf's `find_divert` (N8), and the filter two loads (the cell's flag,
+//!   then the word) where the C loads a pointer and a word.
 
 use core::marker::PhantomData;
 use core::mem::{offset_of, size_of};

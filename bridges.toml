@@ -403,12 +403,15 @@ paid_by = "N8"
 # &(dyn Any + Sync) (the trait is not generic over the glue); bsd keeps its legacy counts of
 # the pcb for sk_inp and pkthdr_pf.inp until pf moves (docs/SCAFFOLDING.md). N6.6b0: the
 # kernel's UDP calls inp_lookup, inp_link and mbuf_link_inpcb_of as TCP does, and the `for`
-# list names the TCP files that call the legs since N6.6a (D-12's correction). Paid when pf
-# moves (N8).
+# list names the TCP files that call the legs since N6.6a (D-12's correction). N6.6b1: the
+# kernel's raw IP and raw IPv6 call find_divert (rip_input's and rip6_input's divert key) and
+# mbuf_link_inpcb_of (rip_output's and rip6_output's link of a connected socket's packets);
+# pf's PF_DIVERT calls the kernel's divert_packet/divert6_packet directly (bsd calling the
+# kernel, no leg). Paid when pf moves (N8).
 # kernel::net::pf_hooks::Pf
 [[bridge]]
 trait = "Pf"
-for = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet6/in6_pcb.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet6/icmp6.rs", "sys/kernel/netinet6/ip6_output.rs", "sys/kernel/netinet6/ip6_input.rs", "sys/kernel/netinet6/ip6_forward.rs", "sys/kernel/netinet/tcp_input.rs", "sys/kernel/netinet/tcp_output.rs", "sys/kernel/netinet/tcp_syncache.rs", "sys/kernel/netinet/udp_usrreq.rs", "sys/kernel/netinet6/udp6_output.rs"]
+for = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet6/in6_pcb.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet6/icmp6.rs", "sys/kernel/netinet6/ip6_output.rs", "sys/kernel/netinet6/ip6_input.rs", "sys/kernel/netinet6/ip6_forward.rs", "sys/kernel/netinet/tcp_input.rs", "sys/kernel/netinet/tcp_output.rs", "sys/kernel/netinet/tcp_syncache.rs", "sys/kernel/netinet/udp_usrreq.rs", "sys/kernel/netinet6/udp6_output.rs", "sys/kernel/netinet/raw_ip.rs", "sys/kernel/netinet6/raw_ip6.rs"]
 paid_by = "N8"
 
 # bsd: the protocols still in bsd (inet's inetsw[], inet6's, route's, pfkey's), implemented
@@ -432,9 +435,15 @@ paid_by = "N8"
 # TcpUsrreqs), and pr_ctlinput carries the caller's proof of the net lock (its six callers
 # hold one; TCP's control input locks sockets under it). N6.6b0: UDP's entries are the
 # kernel's (UdpProtocol, Udp6Protocol, their requests UdpUsrreqs); bsd's inetsw[] and
-# inet6sw[] keep raw IP, divert, IPsec, IP-in-IP and pfsync. Paid when pfkeyv2's domain and
-# inetsw[]'s and inet6sw[]'s AH/ESP/IPCOMP/IPIP entries, its last legacy implementers, move
-# (N8); inet's and inet6's raw sockets and divert at N6.6b1, route's flip at N6.3b.
+# inet6sw[] keep raw IP, divert, IPsec, IP-in-IP and pfsync. N6.6b1: raw IP's, raw IPv6's,
+# divert's and the raw wildcards' entries are the kernel's (RipProtocol, Rip6Protocol,
+# DivertProtocol, Divert6Protocol), and ICMP's, IGMP's and ICMPv6's name the kernel's raw
+# requests and options (the lending through the raw entry goes); bsd's inetsw[] and
+# inet6sw[] keep IP-in-IP, IPsec and pfsync (inet6: IPsec and IP-in-IP), raw rows whose
+# requests and options are the kernel's raw IP's (bsd's Protosw's pr_rip, D-2 of N6.6b: their
+# sockets are the kernel's, legacy() false), their inputs, control inputs and sysctls
+# bsd's. Paid when pfkeyv2's domain (its legacy implementer, the last) and inetsw[]'s and
+# inet6sw[]'s AH/ESP/IPCOMP/IPIP/pfsync entries move (N8); route's flip was at N6.3b.
 # kernel::net::proto::Protocol
 [[bridge]]
 trait = "Protocol"
@@ -520,9 +529,9 @@ paid_by = "N7"
 # kernel's ip_output and ip6_output count udps_outswcsum themselves, kernel::netinet::udp_var).
 # ip6_randomid stays until crypto's idgen moves (N8), so the row is not paid
 # at N6.6b as once planned (N6.6a's inventory, G).
-# with_net_held outlives it: at N6.6b it moves onto the NetDriver bridge (the interface whose
-# output lost the proof lends it; bsd's wrappers then make theirs with net_held), and it goes
-# with that bridge's output reshaped to carry the proof (N7), as docs/SCAFFOLDING.md's row says.
+# with_net_held stays on this row (D-6 of N6.6b: moving it onto the NetDriver bridge, as
+# planned once, would move a leg between two rows that both live and remove nothing); it goes
+# with NetDriver's output reshaped to carry the proof (N7), as docs/SCAFFOLDING.md's row says.
 # kernel::net::if_::Inet
 [[bridge]]
 trait = "Inet"
@@ -549,7 +558,8 @@ paid_by = "N8"
 # (the two output legs above).
 # N6.6a0, for the kernel's TCP (its callers from N6.6a2/a4): spd_check_in (tcp_input's #ifdef
 # IPSEC block: ipsec_in_use, then sys/netinet/ipsec_input.rs's ipsec_input_check, the inner-most
-# tag's gettdb, ipsp_spd_lookup in, tdb_unref; UDP's at N6.6b), tcp_signature_tdb
+# tag's gettdb, ipsp_spd_lookup in, tdb_unref; UDP's is spd_check_in_flow, N6.6b0, which
+# also reads the SA's id_flow), tcp_signature_tdb
 # (gettdbbysrcdst over two whole sockaddr_unions, IPPROTO_TCP) and tdb_amxkey (the SA's MD5 key
 # lent to a closure by sys/netinet/tcp_subr.rs's tdb_amxkey_lend, never copied out; the
 # TCP_SIGNATURE xform's five functions stay bsd's, D-10).

@@ -75,6 +75,11 @@
 //!   only to a valid `RTF_LOCAL` route (`EADDRNOTAVAIL` otherwise), both checksums recomputed,
 //!   then `ipv4_input` with the caller's proof; outbound through `ip_output`
 //!   (`IP_ALLOWBROADCAST | IP_RAWOUTPUT`), the route cache lent for the call.
+//! - Cost against the C (measured at the N6 close by the `divert.*` bench rows, decision
+//!   50): pf, still `bsd`'s, lends its net lock's proof once per diverted packet, either
+//!   direction (`net_held` at `sys/net/pf.rs`'s `PF_DIVERT`), and unparks the packet (N8);
+//!   the walk to the first pcb of the port and the address list are the C's; the
+//!   reinjection lends nothing.
 
 use core::marker::PhantomData;
 use core::mem::size_of;
