@@ -68,9 +68,9 @@
 //!   `malloc`'s 512-byte bucket, so `vmstat -m`'s `UFS mount` row should not change (the
 //!   requests are the C's).
 //!   `um_export` (`struct netexport`, the
-//!   NFS server's) is the mount's glue member since N5.5b0 (`Mount::g`, `bsd`'s `BsdMountG`,
-//!   until N6): `bsd`'s `vfs_export` and `vfs_export_lookup` read it from the mount, which all
-//!   three of its readers hold. The quota members (`um_quotas`, `um_cred`, `um_btime`,
+//!   NFS server's) is the mount's own since N6.7b0 (`Mount::export`, `kernel::fs::export`;
+//!   N5.5b0 to N6.7a the glue's member): `vfs_export` and `vfs_export_lookup` read it from the
+//!   mount, which all three of its readers hold. The quota members (`um_quotas`, `um_cred`, `um_btime`,
 //!   `um_itime`, `um_qflags`) are the structure's own since N5.5a2.
 //! - The block is the structure and the count of its handles ([`UfsmountRef`], an
 //!   `hal::malloc::MArc`): 16 bytes more per mount in `vmstat -m`'s `UFS mount` row than the

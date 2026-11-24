@@ -152,6 +152,14 @@ impl Vfs<G> for TestVfs {
     fn vptofh(&self, _vp: &'static Vnode<G>, _fid: &mut Fid) -> Result<(), Errno> {
         Err(Errno::EOPNOTSUPP)
     }
+    /// No exports.
+    fn checkexp(
+        &self,
+        _mp: &'static Mount<G>,
+        _nam: &crate::net::mbuf::Mbuf,
+    ) -> Result<crate::fs::export::ExportGrant, Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
 }
 
 /// The vnode operations of the fixture's vnode (none used).

@@ -85,8 +85,8 @@ pub(crate) mod tests {
     // The fixture of `bsd`'s tests that mount an FFS image (nfs's, quota's, dirhash's):
     // `newfs`, the kernel's image builder, a block device vnode whose strategy reads and writes
     // the image, and the root mount through the kernel's `ffs_mountfs`; with the tests of
-    // `ffs_mount`'s export update (the exports are `bsd`'s until N6), of the kernel msdosfs's,
-    // cd9660's and udf's (`VFS_CHECKEXP`'s arms), and of the CD and UDF labels
+    // `ffs_mount`'s export update (the export list is the kernel's since N6.7b0), of the kernel
+    // msdosfs's, cd9660's and udf's `vfs_checkexp`, and of the CD and UDF labels
     // `subr_disk.rs`'s shells spoof over the kernel's parsers (N5.8c2, N5.8u2). The image tests of the
     // file system itself are the kernel's (`kernel::fs::ufs::ffs::ffs_vfsops`'s tests, over
     // its test glue), and so are decision 43's ffs pairs since N5.5b3 (`benches/fs.rs`'s
@@ -291,7 +291,7 @@ pub(crate) mod tests {
 
     /// `mount -u` with `ufs_args` whose `fspec` is NULL and whose `export_info` names a network, as
     /// `mountd(8)` does it: `mount(2)` reaches `ffs_mount`, which hands the export list to
-    /// `vfs_export`; `ufs_check_export` then answers the flags and the anonymous credentials for a
+    /// `vfs_export`; ffs's `vfs_checkexp` (`ufs_check_export`) then answers the flags and the anonymous credentials for a
     /// client's address, and refuses one outside the list.
     #[cfg(feature = "nfsserver")]
     #[test]
@@ -352,7 +352,8 @@ pub(crate) mod tests {
         teardown();
     }
 
-    /// The export list is the mount's glue member (N5.5b0) and mounts are recycled, where the
+    /// The export list is the mount's own (N6.7b0; the glue's member from N5.5b0) and mounts are
+    /// recycled, where the
     /// C's list lives in a `struct ufsmount` that `ffs_mountfs` `malloc(M_ZERO)`s afresh: an
     /// export left by an unmount (no `MNT_DELEXPORT`) is gone from the recycled mount after
     /// `ffs_mountfs`.
@@ -383,19 +384,26 @@ pub(crate) mod tests {
             &[path(b"ffs\0"), path(b"/\0"), MNT_UPDATE as usize, ub.addr()],
         )
         .unwrap();
-        assert!(mp.g.export.ne_rtable_inet.get().is_some(), "exported");
+        // Whether the list holds the /24's entry (a lookup of one of its hosts).
+        let listed = |mp: &'static crate::sys::mount::Mount| {
+            let nam = kernel::net::mbuf::m_devget(&sin(2, [10, 0, 2, 9])[..16], 0).unwrap();
+            kernel::fs::export::vfs_export_lookup(mp, mp.export(), Some(&nam)).is_some()
+        };
+        assert!(listed(mp), "exported");
 
         // Unmounted with its list still hanging (the C's free(ump) forgets it), then mounted
         // again: vfs_mount_alloc hands the same mount out of its free list.
         unmount_root(p, mp);
         assert!(
-            mp.g.export.ne_rtable_inet.get().is_some(),
+            listed(mp),
             "the unmount leaves the list, as the C's free(ump) does"
         );
         let again = mount_root(p, false);
         assert!(core::ptr::eq(again, mp), "the mount was recycled");
-        assert!(again.g.export.ne_rtable_inet.get().is_none());
         assert_eq!(again.flag() & MNT_EXPORTED, 0);
+        again.flag_set(MNT_EXPORTED);
+        assert!(!listed(again), "the list was emptied by ffs_mountfs");
+        again.flag_clr(MNT_EXPORTED);
 
         unmount_root(p, again);
         teardown();
@@ -404,8 +412,8 @@ pub(crate) mod tests {
     /// msdosfs's export list (N5.7c3: `bsd`'s msdosfs test, moved here with the switch, as the
     /// kernel's msdosfs reaches `bsd`'s export lists only through this crate's glue): `mount
     /// -u` of a FAT file system with `msdosfs_args` whose `fspec` is NULL reaches the kernel's
-    /// `msdosfs_mount`, which hands the list to `vfs_export`; `VFS_CHECKEXP`'s `MOUNT_MSDOS`
-    /// arm (`ufs_check_export` over the mount's list) then answers the listed client and
+    /// `msdosfs_mount`, which hands the list to `vfs_export`; msdosfs's `vfs_checkexp`
+    /// (`ufs_check_export`'s body over the mount's list) then answers the listed client and
     /// refuses the others.
     #[cfg(all(feature = "nfsserver", feature = "msdosfs"))]
     #[test]
@@ -467,9 +475,9 @@ pub(crate) mod tests {
 
     /// `mount -u` of an ISO 9660 disc (the kernel's cd9660 over this module's disk and `bsd`'s
     /// glue, N5.8c2): mount(2)'s `MNT_UPDATE` without a device name reaches the kernel's
-    /// `cd9660_mount` and `bsd`'s `vfs_export`, and `VFS_CHECKEXP`'s `MOUNT_CD9660` arm (the
-    /// C's `cd9660_check_export`, `ufs_check_export`'s body over the mount's list) answers the
-    /// listed client and refuses the others; without the arm the match's last arm panics.
+    /// `cd9660_mount` and the kernel's `vfs_export`, and cd9660's `vfs_checkexp` (the C's
+    /// `cd9660_check_export`, `ufs_check_export`'s body over the mount's list) answers the
+    /// listed client and refuses the others.
     #[cfg(all(feature = "nfsserver", feature = "cd9660"))]
     #[test]
     fn mount_update_exports_an_iso_9660_disc() {
@@ -570,9 +578,8 @@ pub(crate) mod tests {
     }
 
     /// A UDF volume (the kernel's udf over this module's disk and `bsd`'s glue, N5.8u2):
-    /// mounted at `/`, read through the system calls, and `VFS_CHECKEXP`'s `MOUNT_UDF` arm
-    /// (the C's `udf_checkexp`) refuses every client (`EACCES`); without the arm the match's
-    /// last arm panics.
+    /// mounted at `/`, read through the system calls, and udf's `vfs_checkexp` (the C's
+    /// `udf_checkexp`) refuses every client (`EACCES`).
     #[cfg(all(feature = "nfsserver", feature = "udf"))]
     #[test]
     fn a_udf_volume_refuses_every_export() {

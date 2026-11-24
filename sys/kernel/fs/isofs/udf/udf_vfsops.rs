@@ -112,8 +112,7 @@
 //!   `ino_t` and `udf_vget` panics ("alien ino_t") for a handle whose top bit is set.
 //!   Unreachable: `udf_checkexp` refuses every export (`EACCES`), so no NFS client holds a
 //!   UDF handle.
-//! - `udf_checkexp` is `VFS_CHECKEXP`'s `MOUNT_UDF` arm (`bsd`'s `sys/sys/mount.rs`), the
-//!   C's `EACCES` ("for the time being").
+//! - `udf_checkexp` is `Vfs::checkexp` (N6.7b0), the C's `EACCES` ("for the time being").
 //! - `udf_vget` makes the unode after it read the file entry (the C's `pool_get` comes first,
 //!   udf_vfsops.c:576): a `vget` refused before it (a read error, no file entry, no memory
 //!   for its copy) makes and frees one item of `unode_pool` (D-N5.7-U5's shim), so
@@ -170,6 +169,7 @@ use crate::assert::kpanic;
 use crate::file::FileGlue;
 use crate::fs::bio::{DEV_BSHIFT, bread, brelse};
 use crate::fs::buf::BufRef;
+use crate::fs::export::ExportGrant;
 use crate::fs::isofs::udf::ecma167_udf::{
     AnchorVdp, DescTag, ExtentAd, ExtfileEntry, FileEntry, FilesetDesc, LogvolDesc, LongAd,
     PartDesc, PartMap1, PartMap2, PartMapMeta, PartMapSpare, SpareMapEntry, TAGID_ANCHOR,
@@ -199,6 +199,7 @@ use crate::fs::vnode::{
     Vnode, VopsId, vn_lock,
 };
 use crate::fs::vops::{Cred, Nd, VFS_VGET, Vfs, vop_close, vop_open, vop_unlock};
+use crate::net::mbuf::Mbuf;
 use crate::prf::printf;
 use crate::proc::{ProcGlue, Thread};
 
@@ -1034,8 +1035,7 @@ pub fn udf_find_partmaps<G: ProcGlue>(ump: &Umount<G>, lvd: &[u8]) -> Result<(),
 }
 
 /// `udf_vfsops`: each slot the C's function of the same name; `vfs_sysctl` the trait's
-/// default (`EOPNOTSUPP`, the C's NULL); `vfs_checkexp` is `VFS_CHECKEXP`'s arm (the module's
-/// deviations).
+/// default (`EOPNOTSUPP`, the C's NULL).
 impl<G: ProcGlue> Vfs<G> for UdfVfs<G> {
     /// `vfs_mount`: [`udf_mount`].
     fn mount(
@@ -1111,6 +1111,10 @@ impl<G: ProcGlue> Vfs<G> for UdfVfs<G> {
     /// `vfs_init`: [`udf_init`].
     fn init(&self, _vfc: &'static Vfsconf<G>) -> Result<(), Errno> {
         udf_init::<G>()
+    }
+    /// `vfs_checkexp`: `udf_checkexp`, which refuses every client "for the time being".
+    fn checkexp(&self, _mp: &'static Mount<G>, _nam: &Mbuf) -> Result<ExportGrant, Errno> {
+        Err(Errno::EACCES)
     }
 }
 

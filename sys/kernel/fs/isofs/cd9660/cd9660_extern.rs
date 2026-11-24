@@ -62,10 +62,10 @@
 //!
 //! ## Deviations
 //! - `im_export` (`struct netexport`) is not a member: the export list of every kernel file
-//!   system's mount is the mount's glue member (`MountG`, `bsd`'s `BsdMountG.export`, the UFS
-//!   mounts' since N5.5b0, msdosfs's since N5.7c3), which `cd9660_mount` updates through
-//!   `FileGlue::vfs_export` and `iso_mountfs` starts empty through `FileGlue::ufs_export_init`
-//!   (N5.8c2); the C keeps it here whether or not `NFSSERVER` is configured.
+//!   system's mount is the mount's own (`Mount::export`, `kernel::fs::export`, N6.7b0; the
+//!   glue's member from N5.8c2), which `cd9660_mount` updates through `vfs_export` and
+//!   `iso_mountfs` empties (`Netexport::clear`); the C keeps it here whether or not
+//!   `NFSSERVER` is configured.
 //! - `root_extent` and `root_size` are `u32`, as `isonum_733` reads them (the C's `int` only
 //!   differs past 2^31 blocks).
 //! - `blkoff`, `lblktosize`, `lblkno` and `blksize` are functions over `i64` offsets and

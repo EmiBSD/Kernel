@@ -22,8 +22,9 @@
 //! The UFS layer is the kernel's (`kernel::fs::ufs::ufs`); what is left here keeps LZ's names
 //! for `bsd`'s users: headers (types) `dinode` (libsa's tests), `dir` (the NFS server),
 //! `dirhash`, `inode`, `quota`; files (functions) `ufs_dirhash` (feature `ufs_dirhash`,
-//! `option UFS_DIRHASH`), `ufs_quota` (feature `quota`, `option QUOTA`) and `ufs_vfsops`
-//! (`ufs_check_export`, the NFS server's). `ufs_quota_stub.c` is skipped (see `quota.rs`).
+//! `option UFS_DIRHASH`) and `ufs_quota` (feature `quota`, `option QUOTA`); `ufs_vfsops` went
+//! with its last function, the NFS server's export check (N6.7b0, `kernel::fs::export`).
+//! `ufs_quota_stub.c` is skipped (see `quota.rs`).
 //! `ufs_bmap`, `ufs_extern`, `ufs_ihash`, `ufs_inode`, `ufs_lookup`, `ufs_vnops` and
 //! `ufsmount` went with `bsd`'s ext2fs, their last user (N5.6c3).
 
@@ -39,6 +40,4 @@ pub mod quota;
 pub mod ufs_dirhash;
 #[cfg(feature = "quota")]
 pub mod ufs_quota;
-#[forbid(unsafe_code)]
-pub mod ufs_vfsops;
 /* </CODE> */

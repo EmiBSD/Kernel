@@ -606,10 +606,6 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     /// `Default` is NULL.
     type UnveilMatch: Copy + Default;
 
-    /// The members of `bsd`'s types a mount carries: the UFS export list (`um_export`, the
-    /// NFS server's, `bsd`'s until N6), `fs::mount::Mount::g` (docs/SCAFFOLDING.md);
-    /// `Default` is a new mount's.
-    type MountG: Default + Sync + 'static;
     /// `i_hash`: the inode hash's adapter ([`ufs_glue_links!`](crate::ufs_glue_links)).
     type InodeHash: PinAdapter<Elem = crate::fs::ufs::ufs::inode::Inode<Self::Proc>>;
     /// `dq_hash`: the dquot hash's adapter ([`ufs_glue_links!`](crate::ufs_glue_links)).
@@ -689,21 +685,6 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     /// The vnode and mount tables of this glue's processes (one `static` of `bsd`'s).
     fn vfs() -> &'static crate::fs::subr::VfsTables<Self::Proc>;
 
-    /// `vfs_export(mp, &ump->um_export, argp)` of a UFS mount (`ffs_mount`'s export update,
-    /// `mount -u` without a device name): the NFS server's export list is the mount's glue
-    /// member, `bsd`'s until N6 ([`FileGlue::MountG`], docs/SCAFFOLDING.md). A glue without one
-    /// answers `EOPNOTSUPP`.
-    fn vfs_export(
-        _mp: &'static crate::fs::mount::Mount<Self::Proc>,
-        _argp: &hal::sys::mount::ExportArgs,
-    ) -> Result<(), Errno> {
-        Err(Errno::EOPNOTSUPP)
-    }
-    /// The empty `um_export` of a new UFS mount (`ffs_mountfs`'s `malloc(M_ZERO)` of its
-    /// `struct ufsmount`): the export list of the recycled mount's glue member (`bsd`'s until
-    /// N6) emptied, its entries forgotten as the C's `free(ump)` forgets them. Nothing for a
-    /// glue without one.
-    fn ufs_export_init(_mp: &crate::fs::mount::Mount<Self::Proc>) {}
     /// `disk_map(path, mappath, sizeof(mappath), flags) != -1` (`subr_disk.c`, `bsd`'s until
     /// N7, docs/SCAFFOLDING.md): `path` names a disk by its disklabel UID and `mappath` now
     /// holds the device's path; `false` (the C's -1) for any other path, and for a glue

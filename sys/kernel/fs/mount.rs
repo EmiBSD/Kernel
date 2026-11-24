@@ -138,8 +138,9 @@
 //!   it ([`Mount::take_node`], the unmount, after `vflush`) and reaches it by naming its type
 //!   ([`Mount::node_arc`]: a counted handle, held across the sleeps the operation makes, the
 //!   C's `VFSTOUFS(mp)` made a count). The raw `data` word stays for the file systems still in
-//!   `bsd` (docs/SCAFFOLDING.md). The members of `bsd`'s types a mount carries are the glue's
-//!   member [`Mount::g`] (`FileGlue::MountG`: the UFS export list, `um_export`, until N6).
+//!   `bsd` (docs/SCAFFOLDING.md). The NFS server's export list (`um_export`, `pm_export`,
+//!   `im_export` of the C's structures) is the mount's own member, [`Mount::export`] (N6.7b0;
+//!   N5.5b0 to N6.7a it was `bsd`'s, the glue's member `g`).
 
 use core::ffi::c_void;
 use core::ptr;
@@ -159,10 +160,10 @@ use hal::sys::mount::{
     Fsid, MFSNAMELEN, MNAMELEN, MNT_UNMOUNT, Statfs, VB_NOWAIT, VB_READ, VB_WAIT, VB_WRITE,
 };
 
+use super::export::Netexport;
 use super::vnode::Vnode;
 use super::vops::Vfs;
 use crate::assert::{kassert, kpanic};
-use crate::file::FileGlue;
 use crate::proc::ProcGlue;
 
 /// `M_MOUNT`: the malloc type of `struct mount` (`<sys/malloc.h>`).
@@ -295,8 +296,9 @@ pub struct Mount<G: ProcGlue> {
     /// `mnt_data` of a kernel file system: its per-mount structure, counted and typed (an
     /// erased `MArc`; the module's redesign).
     node: ReadMostly<Option<AnyArc>>,
-    /// The members of `bsd`'s types a mount carries (`FileGlue::MountG`, docs/SCAFFOLDING.md).
-    pub g: <G::FileGlue as FileGlue>::MountG,
+    /// The NFS server's export list of the mount (`um_export`, `pm_export`, `im_export` of
+    /// the C's UFS, msdosfs and cd9660 structures, the mount's own here).
+    export: Netexport,
 }
 
 impl<G: ProcGlue> Mount<G> {
@@ -318,7 +320,7 @@ impl<G: ProcGlue> Mount<G> {
             words: [const { AtomicU32::new(0) }; 6],
             data: AtomicPtr::new(ptr::null_mut()),
             node: ReadMostly::new(None),
-            g: Default::default(),
+            export: Netexport::new(),
         }
     }
 
@@ -344,6 +346,13 @@ impl<G: ProcGlue> Mount<G> {
     #[inline]
     pub fn op(&self) -> &'static dyn Vfs<G> {
         self.vfc().vfc_vfsops
+    }
+
+    /// The mount's export list (`struct netexport`, `kernel::fs::export`): what its file
+    /// system's `vfs_export` updates and its `vfs_checkexp` reads.
+    #[inline]
+    pub fn export(&self) -> &Netexport {
+        &self.export
     }
 
     /// `mp->mnt_flag`.
@@ -638,9 +647,9 @@ pub fn vfs_mount_alloc<G: ProcGlue>(
 
 impl<G: ProcGlue> Mount<G> {
     /// A recycled mount made as `malloc(M_ZERO)` leaves a new one (it is on no list, its
-    /// last reference gone: no one else reaches it), but for the glue member `g`, which the
-    /// file systems that use it clear where they start (the UFS mountfs empties the export
-    /// list, `bsd`'s `Netexport::clear`), and the typed slot, which must be empty already.
+    /// last reference gone: no one else reaches it), but for the export list, which the file
+    /// systems that use it clear where they start (the UFS-like mountfs's `malloc(M_ZERO)`,
+    /// `Netexport::clear`), and the typed slot, which must be empty already.
     fn reset(&self) {
         self.listed.store(false, Ordering::Relaxed);
         self.vfc.set(None);

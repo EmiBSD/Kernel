@@ -25,6 +25,7 @@ cd9660 = []                     # `option CD9660` -> fs::isofs::cd9660, the ISO 
 udf = []                        # `option UDF` -> fs::isofs::udf, the UDF file system of DVDs
 fuse = []                       # `option FUSE` -> fs::fuse, FUSE and /dev/fuse0 (N5.9f1, f2; wired at N5.9f2's switch)
 nfsclient = []                  # `option NFSCLIENT` -> netinet::if_ether's reverse ARP client (revarpwhoami, nfs_boot's; N6.4b)
+nfsserver = []                  # `option NFSSERVER` -> fs::export, the file systems' export lists (vfs_export, vfs_export_lookup; N6.7b0); without it ENOTSUP and no grant
 tcp_sack_debug = []             # `option TCP_SACK_DEBUG` -> netinet::tcp_output::tcp_print_holes (not in GENERIC; N6.6a3)
 # No `multiprocessor`: the kernel crate is MULTIPROCESSOR code only (decision 40,
 # 2026-10-17): vm::pmemrange always has its per-CPU page caches.

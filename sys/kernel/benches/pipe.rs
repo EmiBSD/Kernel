@@ -448,7 +448,6 @@ impl FileGlue for BenchFiles {
     type Data = BenchData;
     type FileList = FileListLink;
     type UnveilMatch = ();
-    type MountG = ();
     type InodeHash = InodeHashLink;
     type DqHash = DqHashLink;
     type DqFree = DqFreeLink;

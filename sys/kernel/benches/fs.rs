@@ -562,6 +562,14 @@ impl Vfs<TestGlue> for NamesFs {
     ) -> Result<(), Errno> {
         Err(Errno::EOPNOTSUPP)
     }
+    /// No exports.
+    fn checkexp(
+        &self,
+        _mp: &'static kernel::fs::mount::Mount<TestGlue>,
+        _nam: &kernel::net::mbuf::Mbuf,
+    ) -> Result<kernel::fs::export::ExportGrant, Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
 }
 
 /// The names bench's configured type.

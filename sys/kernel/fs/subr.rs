@@ -117,9 +117,10 @@
 //!   `debug`, as in C. The DDB printers wait for the ddb command loop (LZ's, kept).
 //! - `vfs_unmountall`, `vfs_shutdown` and `vfs_syncwait` stay in `bsd`'s `vfs_subr.rs`, over
 //!   the kernel's `dounmount` and `sys_sync` since N5.4 (`kernel::fs::syscalls`, through
-//!   `bsd`'s `vfs_syscalls.rs`), until `sr_quiesce` moves (N7); so does the NFS export list
-//!   (`vfs_hang_addrlist`, `vfs_export`, `vfs_export_lookup`, feature `nfsserver`, and
-//!   `vntblinit`'s `rn_init`), until the NFS server moves (N6).
+//!   `bsd`'s `vfs_syscalls.rs`), until `sr_quiesce` moves (N7). The NFS export list
+//!   (`vfs_hang_addrlist`, `vfs_export`, `vfs_export_lookup`, feature `nfsserver`) is
+//!   `kernel::fs::export` since N6.7b0; `vntblinit`'s `rn_init` has no counterpart (each export
+//!   tree is made for its key length, `kernel::net::radix`).
 //! - `vfs_stall` reads each successor before the body ([`mountlist_safe_restart`]), and a
 //!   successor unmounted while the body slept (`vfs_busy`'s wait, `VFS_SYNC`) restarts the
 //!   walk from the head past the mounts already handled (`MNT_STALLED` set when stalling,

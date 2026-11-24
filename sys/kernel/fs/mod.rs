@@ -33,6 +33,7 @@ pub mod buf;
 pub mod bufq;
 pub mod cache;
 pub mod default;
+pub mod export;
 #[cfg(feature = "fuse")]
 pub mod fuse;
 pub mod getcwd;
