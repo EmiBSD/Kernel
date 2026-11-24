@@ -222,21 +222,27 @@
 //!   (`rm_mask`/`rm_leaf`); a mask reference carries a tag bit (`MASK`), so a mask never
 //!   compares equal to a node where the C compares a mask pointer with a node pointer
 //!   (`rn_del_radix_mask` on a route sharing a normal route's annotation).
-//! - Storage (D-3, D-13's experiment of N6.7b1; the user's sizing of 2026-11-23, "start small,
+//! - Storage (D-3; D-13 at N6.7b1, the user's choices of 2026-11-24; the user's sizing of
+//!   2026-11-23, "start small,
 //!   grow"): the slots, the mask tree's slots and the annotation records live in three flat
 //!   arrays (`Slab`, one `malloc(9)` block of the tree's type each, `M_NOWAIT`, 8 elements
 //!   first, doubled when full by moving the elements into the new block), and the node pairs
-//!   of the two trees' slots in an array of their own beside them, indexed by the node's
-//!   number (`2 * slot` the leaf, `2 * slot + 1` the internal node): a descent loads 24-byte
-//!   nodes only, one load a node as the C. Lookups and walks never allocate; an add takes at
+//!   of the two trees' slots in arrays of their own beside them, indexed by the node's
+//!   number (`2 * slot` the leaf, `2 * slot + 1` the internal node), each node split in a
+//!   16-byte hot half (`rn_b`, `rn_bmask`, `rn_flags`, `rn_off`, `rn_l`/`rn_mask`,
+//!   `rn_r`/`rn_dupedkey`: all a descent and a leaf's test read) and a cold half at the same
+//!   index (`rn_p`, `rn_mklist`: the climbs, the changes and the walks): a descent loads
+//!   16-byte nodes only, one load a node as the C, at a stride that is a shift. Lookups and
+//!   walks never allocate; an add takes at
 //!   most one slot, one mask slot and the annotations radix.c makes, and the add that fills
 //!   an array copies it once into a block twice its size.
 //! - `rn_addmask`'s search mode is `rn_findmask`, so a lookup takes the tree shared;
 //!   `rn_delete`'s unlinking half is `rn_delete_leaf`, which [`RadixTree::remove`] shares.
 //!   `rn_inithead` and `rn_initmask` are [`RadixTree::inithead`], which the first add calls.
 //! - Costs against the C: `rn_match` is the C's steps, one load a node and one for a leaf's
-//!   key, the key copied once into a `K`-byte array (the
-//!   slices' bounds checked once), and, on a normal annotation it returns, one slot load for
+//!   key, plus one address computation a node (the index scaled and added: the C loads the
+//!   next node's address directly), a key of the tree's length borrowed in place (a shorter
+//!   one copied, zero-padded), and, on a normal annotation it returns, one slot load for
 //!   the leaf's generation; an add copies the key into its slot; the walk's successor is the
 //!   C's climb, plus a climb of the duplicated key chain to its head once a chain (O(1)
 //!   amortised a leaf, docs/COLLECTIONS.md).
@@ -276,15 +282,13 @@ const FIRST: usize = 8;
 /// The most elements a `Slab` holds: node indices stay below the `MASK` tag.
 const SLAB_LIMIT: usize = 1 << 29;
 
-/// `struct radix_node`: a leaf or an internal node. The C's union is two shared words: `lm`
-/// is an internal node's `rn_l` and a leaf's `rn_mask` (a mask reference), `rd` an internal
-/// node's `rn_r` and a leaf's `rn_dupedkey`. A leaf's `rn_key` is its slot's key.
+/// `struct radix_node`, its hot half: what a descent and a leaf's test read (16 bytes, so the
+/// node array's stride is a shift). The C's union is two shared words: `lm` is an internal
+/// node's `rn_l` and a leaf's `rn_mask` (a mask reference), `rd` an internal node's `rn_r` and
+/// a leaf's `rn_dupedkey`. A leaf's `rn_key` is its slot's key; `rn_p` and `rn_mklist` are
+/// its [`ColdNode`], at the same index of the `Slab`'s cold array.
 #[derive(Clone, Copy)]
 struct RadixNode {
-    /// `rn_mklist`: the annotations of the routes in the subtree (a [`RadixMask`] index).
-    mklist: u32,
-    /// `rn_p`: the parent (the previous leaf, in a duplicated key chain).
-    p: u32,
     /// `rn_b`: the bit tested; a leaf's is `-1 - index(netmask)`.
     b: i16,
     /// `rn_bmask`: the tested bit within its byte.
@@ -299,12 +303,29 @@ struct RadixNode {
     rd: u32,
 }
 
-impl RadixNode {
-    /// A zeroed node, as the C's `M_ZERO` and `PR_ZERO` pairs are.
+/// `struct radix_node`, its cold half: what only the climbs, the changes and the walks read.
+#[derive(Clone, Copy)]
+struct ColdNode {
+    /// `rn_mklist`: the annotations of the routes in the subtree (a [`RadixMask`] index).
+    mklist: u32,
+    /// `rn_p`: the parent (the previous leaf, in a duplicated key chain).
+    p: u32,
+}
+
+impl ColdNode {
+    /// A zeroed node's cold half.
     const fn new() -> Self {
         Self {
             mklist: NONE,
             p: NONE,
+        }
+    }
+}
+
+impl RadixNode {
+    /// A zeroed node, as the C's `M_ZERO` and `PR_ZERO` pairs are.
+    const fn new() -> Self {
+        Self {
             b: 0,
             bmask: 0,
             flags: 0,
@@ -380,8 +401,10 @@ struct Slot<V, const K: usize> {
 struct Slab<E> {
     /// The elements (`None` until the first).
     elems: Option<MArray<E>>,
-    /// The nodes of the elements' pairs (`PAIRED` items only: two an element).
+    /// The hot halves of the elements' node pairs (`PAIRED` items only: two an element).
     pairs: Option<MArray<RadixNode>>,
+    /// Their cold halves, at the same indices.
+    colds: Option<MArray<ColdNode>>,
     /// The times the arrays were made or grown (0: nothing allocated).
     grows: usize,
     /// The first vacant element.
@@ -396,6 +419,7 @@ impl<E> Slab<E> {
         Self {
             elems: None,
             pairs: None,
+            colds: None,
             grows: 0,
             free: NONE,
             mtype,
@@ -449,6 +473,24 @@ impl<E> Slab<E> {
         }
     }
 
+    /// The cold half of node `x`.
+    #[inline]
+    fn cold(&self, x: u32) -> &ColdNode {
+        match self.colds.as_ref().and_then(|a| a.get(x as usize)) {
+            Some(n) => n,
+            None => kpanic(format_args!("radix: no node {x}")),
+        }
+    }
+
+    /// The cold half of node `x`, to change.
+    #[inline]
+    fn cold_mut(&mut self, x: u32) -> &mut ColdNode {
+        match self.colds.as_mut().and_then(|a| a.get_mut(x as usize)) {
+            Some(n) => n,
+            None => kpanic(format_args!("radix: no node {x}")),
+        }
+    }
+
     /// Element `i`'s pair (`[0]` the leaf, `[1]` the internal node), to change.
     fn pair_mut(&mut self, i: u32) -> &mut [RadixNode; 2] {
         let at = (i as usize) * 2;
@@ -467,6 +509,7 @@ impl<E> Slab<E> {
     fn clear(&mut self) {
         self.elems = None;
         self.pairs = None;
+        self.colds = None;
         self.grows = 0;
         self.free = NONE;
     }
@@ -496,6 +539,8 @@ impl<E: SlabItem> Slab<E> {
         *e.link() = next;
         if E::PAIRED {
             *self.pair_mut(i) = [RadixNode::new(), RadixNode::new()];
+            *self.cold_mut(2 * i) = ColdNode::new();
+            *self.cold_mut(2 * i + 1) = ColdNode::new();
         }
         self.free = i;
     }
@@ -511,7 +556,22 @@ impl<E: SlabItem> Slab<E> {
         }
         let next = self.free;
         let mut pairs = None;
+        let mut colds = None;
         if E::PAIRED {
+            // The cold halves first: a refusal here leaves everything as it was.
+            let mut old = self.colds.take();
+            let grown = MArray::new(self.mtype, M_NOWAIT, 2 * len, |j| {
+                old.as_mut()
+                    .and_then(|o| o.get_mut(j))
+                    .map_or_else(ColdNode::new, |n| core::mem::replace(n, ColdNode::new()))
+            });
+            match grown {
+                Some(c) => colds = Some(c),
+                None => {
+                    self.colds = old;
+                    return None;
+                }
+            }
             let mut old = self.pairs.take();
             let grown = MArray::new(self.mtype, M_NOWAIT, 2 * len, |j| {
                 old.as_mut()
@@ -521,7 +581,9 @@ impl<E: SlabItem> Slab<E> {
             match grown {
                 Some(p) => pairs = Some(p),
                 None => {
+                    // The cold halves stay in their new, larger block.
                     self.pairs = old;
+                    self.colds = colds;
                     return None;
                 }
             }
@@ -543,12 +605,14 @@ impl<E: SlabItem> Slab<E> {
             self.elems = old;
             if E::PAIRED {
                 self.pairs = pairs;
+                self.colds = colds;
             }
             return None;
         };
         self.elems = Some(elems);
         if E::PAIRED {
             self.pairs = pairs;
+            self.colds = colds;
         }
         self.grows += 1;
         self.free = cap as u32;
@@ -567,6 +631,18 @@ impl<V, const K: usize> Slab<Slot<V, K>> {
     #[inline]
     fn nm(&mut self, x: u32) -> &mut RadixNode {
         self.node_mut(x)
+    }
+
+    /// Node `x`'s cold half (`rn_p`, `rn_mklist`).
+    #[inline]
+    fn c(&self, x: u32) -> &ColdNode {
+        self.cold(x)
+    }
+
+    /// Node `x`'s cold half, to change.
+    #[inline]
+    fn cm(&mut self, x: u32) -> &mut ColdNode {
+        self.cold_mut(x)
     }
 
     /// The key of leaf `x` (`rn_key`).
@@ -637,8 +713,16 @@ impl<T, const K: usize> RadixTree<T, K> {
         if self.routes == 0 {
             return None;
         }
-        let v = key_of::<K>(v);
-        self.value_at(rn_match(self, &v))
+        // A key of the tree's length is borrowed in place; a shorter one is padded (D-7).
+        let padded;
+        let v = match v.get(..K).and_then(|k| <&[u8; K]>::try_from(k).ok()) {
+            Some(k) => k,
+            None => {
+                padded = key_of::<K>(v);
+                &padded
+            }
+        };
+        self.value_at(rn_match(self, v))
     }
 
     /// `rn_lookup(v, m, head)`: with a mask, the route of exactly that key and mask (`v`'s
@@ -725,8 +809,8 @@ impl<T, const K: usize> RadixTree<T, K> {
         }
         // The chain's head: a leaf whose parent is an internal node.
         let mut base = tt;
-        while self.n(self.n(base).p).b < 0 {
-            base = self.n(base).p;
+        while self.n(self.c(base).p).b < 0 {
+            base = self.c(base).p;
         }
         self.chain_head(rn_walktree(self, base))
     }
@@ -741,8 +825,8 @@ impl<T, const K: usize> RadixTree<T, K> {
     pub fn remove(&mut self, at: Leaf) -> Option<T> {
         let tt = self.check(at)?;
         let mut saved_tt = tt;
-        while self.n(self.n(saved_tt).p).b < 0 {
-            saved_tt = self.n(saved_tt).p;
+        while self.n(self.c(saved_tt).p).b < 0 {
+            saved_tt = self.c(saved_tt).p;
         }
         let tt = rn_delete_leaf(self, saved_tt, tt);
         self.take_route(tt)
@@ -830,6 +914,18 @@ impl<T, const K: usize> RadixTree<T, K> {
         self.nodes.nm(x)
     }
 
+    /// Node `x`'s cold half (`rn_p`, `rn_mklist`).
+    #[inline]
+    fn c(&self, x: u32) -> &ColdNode {
+        self.nodes.c(x)
+    }
+
+    /// Node `x`'s cold half, to change.
+    #[inline]
+    fn cm(&mut self, x: u32) -> &mut ColdNode {
+        self.nodes.cm(x)
+    }
+
     /// The bytes of the mask reference `r` (its mask tree leaf's key).
     #[inline]
     fn mk(&self, r: u32) -> &[u8; K] {
@@ -902,7 +998,7 @@ impl<T, const K: usize> RadixTree<T, K> {
     /// What the `struct radix_mask **mp` of the C's list walks points at.
     fn link(&self, l: MkLink) -> u32 {
         match l {
-            MkLink::Node(x) => self.n(x).mklist,
+            MkLink::Node(x) => self.c(x).mklist,
             MkLink::Mark(m) => self.rm(m).mklist,
         }
     }
@@ -910,7 +1006,7 @@ impl<T, const K: usize> RadixTree<T, K> {
     /// `*mp = v`.
     fn set_link(&mut self, l: MkLink, v: u32) {
         match l {
-            MkLink::Node(x) => self.nm(x).mklist = v,
+            MkLink::Node(x) => self.cm(x).mklist = v,
             MkLink::Mark(m) => self.rmm(m).mklist = v,
         }
     }
@@ -1178,9 +1274,9 @@ fn rn_match<T, const K: usize>(h: &RadixTree<T, K>, v: &[u8; K]) -> u32 {
     t = saved_t;
     // Start searching up the tree.
     loop {
-        t = h.n(t).p;
+        t = h.c(t).p;
         let tn = *h.n(t);
-        let mut m = tn.mklist;
+        let mut m = h.c(t).mklist;
         while m != NONE {
             let rm = *h.rm(m);
             if rm.flags & RNF_NORMAL != 0 {
@@ -1227,9 +1323,9 @@ fn rn_newpair<V, const K: usize>(t: &mut Slab<Slot<V, K>>, slot: u32, b: i32) ->
     node.lm = tt;
     node.off = (b >> 3) as u32;
     leaf.b = -1;
-    leaf.p = x;
     leaf.flags = RNF_ACTIVE;
     node.flags = RNF_ACTIVE;
+    t.cm(tt).p = x;
     x
 }
 
@@ -1271,8 +1367,8 @@ fn rn_insert<V, const K: usize>(t: &mut Slab<Slot<V, K>>, v: &[u8; K], slot: u32
     } else {
         t.nm(p).rd = new;
     }
-    t.nm(x).p = new;
-    t.nm(new).p = p;
+    t.cm(x).p = new;
+    t.cm(new).p = p;
     let nn = *t.n(new);
     if v[nn.off as usize] & nn.bmask == 0 {
         t.nm(new).rd = x;
@@ -1398,7 +1494,7 @@ fn rn_new_radix_mask<T, const K: usize>(h: &mut RadixTree<T, K>, tt: u32, next: 
     if n.flags & RNF_NORMAL != 0 {
         h.set_rm_leaf(m, tt);
     }
-    h.nm(tt).mklist = m;
+    h.cm(tt).mklist = m;
     m
 }
 
@@ -1409,7 +1505,7 @@ fn rn_lift_node<V, const K: usize>(n: &Slab<Slot<V, K>>, t: u32) -> u32 {
     // Rewind a duplicated key chain to its head.
     let mut t = t;
     while n.n(t).b < 0 {
-        t = n.n(t).p;
+        t = n.c(t).p;
     }
     // Can't lift node above head of dupedkey list, give up.
     if b > i32::from(n.n(t).b) {
@@ -1418,7 +1514,7 @@ fn rn_lift_node<V, const K: usize>(n: &Slab<Slot<V, K>>, t: u32) -> u32 {
     let mut x;
     loop {
         x = t;
-        t = n.n(t).p;
+        t = n.c(t).p;
         if !(b <= i32::from(n.n(t).b) && x != t) {
             return x;
         }
@@ -1454,12 +1550,12 @@ fn rn_add_radix_mask<T, const K: usize>(h: &mut RadixTree<T, K>, tt: u32, keydup
         let mmask = if rm.flags & RNF_NORMAL != 0 {
             let leaf = h.rm_leaf(m);
             if keyduplicated {
-                if leaf != NONE && h.n(leaf).p == tt {
+                if leaf != NONE && h.c(leaf).p == tt {
                     // the new route is better
                     h.set_rm_leaf(m, tt);
                 } else if cfg!(feature = "diagnostic") {
                     let mut t = leaf;
-                    while t != NONE && h.n(t).mklist == m {
+                    while t != NONE && h.c(t).mklist == m {
                         if t == tt {
                             break;
                         }
@@ -1474,7 +1570,7 @@ fn rn_add_radix_mask<T, const K: usize>(h: &mut RadixTree<T, K>, tt: u32, keydup
                     }
                 }
                 h.rmm(m).refs += 1;
-                h.nm(tt).mklist = m;
+                h.cm(tt).mklist = m;
                 return;
             } else if h.n(tt).flags & RNF_NORMAL != 0 {
                 log(
@@ -1492,7 +1588,7 @@ fn rn_add_radix_mask<T, const K: usize>(h: &mut RadixTree<T, K>, tt: u32, keydup
         };
         if mmask == netmask {
             h.rmm(m).refs += 1;
-            h.nm(tt).mklist = m;
+            h.cm(tt).mklist = m;
             return;
         }
         // A gone route's annotation has no mask to order by: passed over.
@@ -1543,15 +1639,15 @@ fn rn_add_dupedkey<T, const K: usize>(h: &mut RadixTree<T, K>, saved_tt: u32, tt
 /// when `before`; the chain is doubly linked through `rn_p`.
 fn rn_link_dupedkey<V, const K: usize>(t: &mut Slab<Slot<V, K>>, tt: u32, x: u32, before: bool) {
     if before {
-        let xp = t.n(x).p;
+        let xp = t.c(x).p;
         if t.n(xp).b > 0 {
             // link in at head of list
             let xn = *t.n(x);
             let node = t.nm(tt);
             node.rd = x;
             node.flags = xn.flags;
-            node.p = xp;
-            t.nm(x).p = tt;
+            t.cm(tt).p = xp;
+            t.cm(x).p = tt;
             if t.n(xp).l() == x {
                 t.nm(xp).lm = tt;
             } else {
@@ -1560,16 +1656,16 @@ fn rn_link_dupedkey<V, const K: usize>(t: &mut Slab<Slot<V, K>>, tt: u32, x: u32
         } else {
             t.nm(tt).rd = x;
             t.nm(xp).rd = tt;
-            t.nm(tt).p = xp;
-            t.nm(x).p = tt;
+            t.cm(tt).p = xp;
+            t.cm(x).p = tt;
         }
     } else {
         let d = t.n(x).dupedkey();
         t.nm(tt).rd = d;
         t.nm(x).rd = tt;
-        t.nm(tt).p = x;
+        t.cm(tt).p = x;
         if d != NONE {
-            t.nm(d).p = tt;
+            t.cm(d).p = tt;
         }
     }
 }
@@ -1577,7 +1673,7 @@ fn rn_link_dupedkey<V, const K: usize>(t: &mut Slab<Slot<V, K>>, tt: u32, x: u32
 /// `rn_fixup_nodes(tt)`: the annotations of the new internal node above the new leaf `tt`,
 /// from its sibling (a chain of leaves, or an internal node whose list it takes the head of).
 fn rn_fixup_nodes<T, const K: usize>(h: &mut RadixTree<T, K>, tt: u32) {
-    let tp = h.n(tt).p;
+    let tp = h.c(tt).p;
     let mut x = if h.n(tp).r() == tt {
         h.n(tp).l()
     } else {
@@ -1591,17 +1687,17 @@ fn rn_fixup_nodes<T, const K: usize>(h: &mut RadixTree<T, K>, tt: u32) {
         while x != NONE {
             let xn = *h.n(x);
             if xx != NONE
-                && h.n(xx).mklist != NONE
+                && h.c(xx).mklist != NONE
                 && h.n(xx).mask() == xn.mask()
-                && xn.mklist == NONE
+                && h.c(x).mklist == NONE
             {
                 // multipath route
-                let shared = h.n(xx).mklist;
-                h.nm(x).mklist = shared;
+                let shared = h.c(xx).mklist;
+                h.cm(x).mklist = shared;
                 h.rmm(shared).refs += 1;
             }
             let xn = *h.n(x);
-            if xn.mask() != NONE && i32::from(xn.b) >= b_leaf && xn.mklist == NONE {
+            if xn.mask() != NONE && i32::from(xn.b) >= b_leaf && h.c(x).mklist == NONE {
                 let m = rn_new_radix_mask(h, x, NONE);
                 h.set_link(mp, m);
                 if m != NONE {
@@ -1611,7 +1707,7 @@ fn rn_fixup_nodes<T, const K: usize>(h: &mut RadixTree<T, K>, tt: u32) {
             xx = x;
             x = h.n(x).dupedkey();
         }
-    } else if h.n(x).mklist != NONE {
+    } else if h.c(x).mklist != NONE {
         // x is an internal node: skip over masks whose index is > that of new node
         let mut mp = MkLink::Node(x);
         let mut m;
@@ -1622,7 +1718,7 @@ fn rn_fixup_nodes<T, const K: usize>(h: &mut RadixTree<T, K>, tt: u32) {
             }
             mp = MkLink::Mark(m);
         }
-        h.nm(tp).mklist = m;
+        h.cm(tp).mklist = m;
         h.set_link(mp, NONE);
     }
 }
@@ -1690,18 +1786,18 @@ fn rn_holder<T, const K: usize>(h: &RadixTree<T, K>, tt: u32, m: u32, others: us
     };
     let mut d = h.n(tt).dupedkey();
     while d != NONE {
-        if h.n(d).mklist == m {
+        if h.c(d).mklist == m {
             s.note(h, d);
         }
         d = h.n(d).dupedkey();
     }
     let mut head = tt;
-    while h.n(h.n(head).p).b < 0 {
-        head = h.n(head).p;
+    while h.n(h.c(head).p).b < 0 {
+        head = h.c(head).p;
     }
     let mut d = head;
     while d != tt {
-        if h.n(d).mklist == m {
+        if h.c(d).mklist == m {
             s.note(h, d);
         }
         d = h.n(d).dupedkey();
@@ -1723,14 +1819,14 @@ fn rn_holder<T, const K: usize>(h: &RadixTree<T, K>, tt: u32, m: u32, others: us
         if t != head {
             let mut d = t;
             while d != NONE {
-                if h.n(d).mklist == m {
+                if h.c(d).mklist == m {
                     s.note(h, d);
                 }
                 d = h.n(d).dupedkey();
             }
         }
         loop {
-            let p = h.n(t).p;
+            let p = h.c(t).p;
             if h.n(p).l() == t {
                 t = h.n(p).r();
                 break;
@@ -1819,7 +1915,7 @@ fn rn_mask_annotation<T, const K: usize>(h: &mut RadixTree<T, K>, d: u32, m: u32
 /// inconsistent and the route must stay.
 fn rn_del_radix_mask<T, const K: usize>(h: &mut RadixTree<T, K>, tt: u32) -> i32 {
     let ttn = *h.n(tt);
-    let m = ttn.mklist;
+    let m = h.c(tt).mklist;
     let saved_m = m;
     if ttn.mask() == NONE || m == NONE {
         return 0;
@@ -1846,7 +1942,7 @@ fn rn_del_radix_mask<T, const K: usize>(h: &mut RadixTree<T, K>, tt: u32) -> i32
         // tt is the annotation's leaf, so the head of a multipath chain.
         if h.rm(m).refs > 0 {
             let d = ttn.dupedkey();
-            if d == NONE || h.n(d).mklist != m {
+            if d == NONE || h.c(d).mklist != m {
                 log(
                     LOG_ERR,
                     format_args!("rn_delete: inconsistent dupedkey list\n"),
@@ -1942,14 +2038,16 @@ fn rn_del_radix_mask<T, const K: usize>(h: &mut RadixTree<T, K>, tt: u32) -> i32
 /// internal node), its parent's and children's links moved with it.
 fn rn_swap_nodes<V, const K: usize>(t: &mut Slab<Slot<V, K>>, from: u32, to: u32) {
     let f = *t.n(from);
+    let fc = *t.c(from);
     *t.nm(to) = f;
-    if t.n(f.p).l() == from {
-        t.nm(f.p).lm = to;
+    *t.cm(to) = fc;
+    if t.n(fc.p).l() == from {
+        t.nm(fc.p).lm = to;
     } else {
-        t.nm(f.p).rd = to;
+        t.nm(fc.p).rd = to;
     }
-    t.nm(f.l()).p = to;
-    t.nm(f.r()).p = to;
+    t.cm(f.l()).p = to;
+    t.cm(f.r()).p = to;
 }
 
 /// `rn_delete(v_arg, n_arg, head, rn)`: the route of key `v` and mask `n` (none: the head of
@@ -1995,11 +2093,11 @@ fn rn_delete_leaf<T, const K: usize>(h: &mut RadixTree<T, K>, saved_tt: u32, tt:
         return NONE;
     }
     let tt1 = tt | 1;
-    let tp = h.n(tt).p;
+    let tp = h.c(tt).p;
     if h.n(saved_tt).dupedkey() != NONE {
         let x = if tt == saved_tt {
             let x = h.n(saved_tt).dupedkey();
-            h.nm(x).p = tp;
+            h.cm(x).p = tp;
             if h.n(tp).l() == tt {
                 h.nm(tp).lm = x;
             } else {
@@ -2010,7 +2108,7 @@ fn rn_delete_leaf<T, const K: usize>(h: &mut RadixTree<T, K>, saved_tt: u32, tt:
             let d = h.n(tt).dupedkey();
             h.nm(tp).rd = d;
             if d != NONE {
-                h.nm(d).p = tp;
+                h.cm(d).p = tp;
             }
             saved_tt
         };
@@ -2025,15 +2123,15 @@ fn rn_delete_leaf<T, const K: usize>(h: &mut RadixTree<T, K>, saved_tt: u32, tt:
         } else {
             h.n(tp).l()
         };
-        let pp = h.n(tp).p;
+        let pp = h.c(tp).p;
         if h.n(pp).r() == tp {
             h.nm(pp).rd = x;
         } else {
             h.nm(pp).lm = x;
         }
-        h.nm(x).p = pp;
+        h.cm(x).p = pp;
         // Demote routes attached to us (actually on the internal parent node).
-        let tpm = h.n(tp).mklist;
+        let tpm = h.c(tp).mklist;
         if tpm != NONE {
             if h.n(x).b >= 0 {
                 let mut mp = MkLink::Node(x);
@@ -2047,9 +2145,9 @@ fn rn_delete_leaf<T, const K: usize>(h: &mut RadixTree<T, K>, saved_tt: u32, tt:
                 let mut m = tpm;
                 let mut x = x;
                 while m != NONE && x != NONE {
-                    if m == h.n(x).mklist {
+                    if m == h.c(x).mklist {
                         let mut mm = h.rm(m).mklist;
-                        h.nm(x).mklist = NONE;
+                        h.cm(x).mklist = NONE;
                         h.rmm(m).refs -= 1;
                         if h.rm(m).refs < 0 {
                             h.marks.release(m);
@@ -2084,11 +2182,11 @@ fn rn_delete_leaf<T, const K: usize>(h: &mut RadixTree<T, K>, saved_tt: u32, tt:
 fn rn_walktree<T, const K: usize>(h: &RadixTree<T, K>, base: u32) -> u32 {
     let mut rn = base;
     // If at right child go back up, otherwise, go right.
-    while h.n(h.n(rn).p).r() == rn && h.n(rn).flags & RNF_ROOT == 0 {
-        rn = h.n(rn).p;
+    while h.n(h.c(rn).p).r() == rn && h.n(rn).flags & RNF_ROOT == 0 {
+        rn = h.c(rn).p;
     }
     // Find the next leaf.
-    rn = h.n(h.n(rn).p).r();
+    rn = h.n(h.c(rn).p).r();
     while h.n(rn).b >= 0 {
         rn = h.n(rn).l();
     }
@@ -2106,18 +2204,22 @@ fn rn_inithead0<V, const K: usize>(t: &mut Slab<Slot<V, K>>, offset: usize) -> O
     let tt = t.n(top).l();
     let node = t.nm(top);
     node.rd = ROOT_RIGHT;
-    node.p = top;
     node.flags = RNF_ROOT | RNF_ACTIVE;
+    t.cm(top).p = top;
     let leaf = t.nm(tt);
     leaf.flags = RNF_ROOT | RNF_ACTIVE;
     leaf.b = (-1 - off) as i16;
     let copy = *t.n(tt);
     *t.nm(ROOT_RIGHT) = copy;
+    let cold = *t.c(tt);
+    *t.cm(ROOT_RIGHT) = cold;
     t.get_mut(right).key = [0xff; K];
     Some(())
 }
 
 const _: () = {
+    assert!(core::mem::size_of::<RadixNode>() == 16);
+    assert!(core::mem::size_of::<ColdNode>() == 8);
     assert!(TOP == ROOT_LEFT | 1);
     assert!(SLAB_LIMIT * 2 <= MASK as usize);
 };
@@ -2220,13 +2322,13 @@ mod tests {
         let n = *h.n(x);
         assert!(n.flags & RNF_ACTIVE != 0, "node {x} not active");
         if n.b >= 0 {
-            let mut m = n.mklist;
+            let mut m = h.c(x).mklist;
             while m != NONE {
                 s.listed.push(m);
                 m = h.rm(m).mklist;
             }
             for c in [n.l(), n.r()] {
-                assert_eq!(h.n(c).p, x, "child {c} of {x}");
+                assert_eq!(h.c(c).p, x, "child {c} of {x}");
                 if h.n(c).b >= 0 {
                     assert!(h.n(c).b > n.b, "bits grow down the tree");
                 }
@@ -2242,13 +2344,13 @@ mod tests {
         let mut d = x;
         while d != NONE {
             if prev != NONE {
-                assert_eq!(h.n(d).p, prev, "chain link");
+                assert_eq!(h.c(d).p, prev, "chain link");
                 assert!(h.n(d).flags & RNF_ROOT == 0, "a root only heads its chain");
                 assert!(h.n(d).flags & RNF_ACTIVE != 0);
                 s.values.push(*h.value_at(d).expect("a route"));
             }
-            if h.n(d).mklist != NONE {
-                s.held.push((d, h.n(d).mklist));
+            if h.c(d).mklist != NONE {
+                s.held.push((d, h.c(d).mklist));
             }
             prev = d;
             d = h.n(d).dupedkey();
@@ -2266,7 +2368,7 @@ mod tests {
             return Vec::new();
         }
         let mut s = Seen::default();
-        assert_eq!(h.n(TOP).p, TOP, "the top is its own parent");
+        assert_eq!(h.c(TOP).p, TOP, "the top is its own parent");
         visit(h, TOP, &mut s);
         assert_eq!(s.values.len(), h.routes, "every route reachable once");
         assert_eq!(s.heads.first(), Some(&ROOT_LEFT));
@@ -2581,7 +2683,7 @@ mod tests {
         assert!(h.add(&sin([10, 0, 0, 7]), None, v).is_ok());
         let node = size_of::<Slot<MBox<u32>, 16>>();
         let mask = size_of::<Slot<(), 16>>();
-        let pair = 2 * size_of::<RadixNode>();
+        let pair = 2 * (size_of::<RadixNode>() + size_of::<ColdNode>());
         let small = testutil::malloc_out(M_RTABLE) - before;
         std::eprintln!(
             "one-host tree: {small} bytes ({node} a slot, {mask} a mask slot, {pair} a pair)"
@@ -3171,7 +3273,7 @@ mod tests {
         // An address the 255.255.0.2 mask refuses: its annotation does not answer, the /8's
         // does, as in the tree built without.
         assert_eq!(matched(&h, [10, 0, 1, 131]), Some(8));
-        let m = h.n(lb.slot << 1).mklist;
+        let m = h.c(lb.slot << 1).mklist;
         assert!(
             m != NONE && h.rm(m).flags & RNF_NORMAL == 0 && h.rm(m).rmu == h.n(lb.slot << 1).mask(),
             "the 255.255.0.2 mask's annotation"
@@ -3204,8 +3306,8 @@ mod tests {
             .add(&sin([10, 0, 0, 2]), Some(&odd), 3)
             .expect("another key, the odd route's mask");
         assert_eq!(
-            h.n(lr.slot << 1).mklist,
-            h.n(h.n(lr.slot << 1).p).mklist,
+            h.c(lr.slot << 1).mklist,
+            h.c(h.c(lr.slot << 1).p).mklist,
             "it shares the annotation listed first on its node"
         );
         check_links(&h);
@@ -3227,7 +3329,7 @@ mod tests {
         // Addresses the odd mask refuses under that key: no short-cut answers the route.
         assert_eq!(matched(&h, [10, 0, 0, 129]), None);
         assert_eq!(matched(&h, [10, 0, 1, 129]), None);
-        let m = h.n(lr.slot << 1).mklist;
+        let m = h.c(lr.slot << 1).mklist;
         assert!(
             m != NONE && h.rm(m).flags & RNF_NORMAL == 0 && h.rm(m).rmu == h.n(lr.slot << 1).mask(),
             "the odd mask's annotation"
@@ -3323,7 +3425,7 @@ mod tests {
         let l16 = add(&mut h, [10, 0, 0, 0], Some(16), 16).expect("a /16");
         add(&mut h, [10, 0, 0, 0], Some(8), 8).expect("a /8");
         assert_eq!(matched(&h, [10, 0, 0, 129]), Some(16));
-        let m = h.n(l16.slot << 1).mklist;
+        let m = h.c(l16.slot << 1).mklist;
         assert!(
             m != NONE && h.rm(m).flags & RNF_NORMAL != 0,
             "the /16's annotation"

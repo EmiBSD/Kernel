@@ -201,7 +201,8 @@ count up or down.
 Not a `hal` collection: a kernel module that owns its nodes in index arrays (no `unsafe`),
 listed here because its walk is a collection's. `b` is the key's bits from the tree's offset, `c`
 the length of a duplicated key chain, `a` the annotations met on the way up. A node access is one
-load (the node array's element, D-13's layout of N6.7b1), a leaf's key one more (its slot's).
+load (the 16-byte hot half in the node array, D-13's layout of N6.7b1; a cold half beside it
+holds `rn_p` and `rn_mklist`), a leaf's key one more (its slot's).
 
 | Method | C | Order |
 |---|---|---|
