@@ -294,9 +294,9 @@
 //!   caller's proof of the net lock: a witness of `so_lock` for a kernel protocol's socket
 //!   (its `[s]` cells open through [`SoLocked::inet`]'s parts), a detached holding for a
 //!   `bsd` protocol's; its drop is `in_pcbsounlock`. LZ's pair, taken in one function and
-//!   released in another, stays for `bsd`'s adapter as [`in_pcbsolock_detached`] and
-//!   [`in_pcbsounlock_detached`] until the other transports move (N6.6b; TCP, the kernel's
-//!   since N6.6a5, uses neither).
+//!   released in another, stayed for `bsd`'s adapter in a detached form (`so_lock` by a
+//!   detached holding) until N6.6b1 (D-5 of N6.6b): `kern.file`'s walk, its last user, takes
+//!   [`in_pcbsolock`] and hands `fill_file` the holding.
 //!   [`in_pcbnotifyall`] and `in6_pcbnotify` lock through the new form and lend `notify` the
 //!   witness. A kernel TCP request never calls `in_pcbsolock` on the socket it holds (the
 //!   C's `tcp_timer_rexmt` lets its socket go before `in_pcbnotifyall`).
@@ -2417,40 +2417,6 @@ pub(crate) fn set_nam<T: AbiPod>(nam: &mut Mbuf, addr: &T) {
     }
 }
 
-/// `in_pcbsolock` held C-style, for `bsd`'s adapter (its protocols release the lock in
-/// another function, `in_pcbsounlock`): `so_lock` by a detached holding, the caller holding
-/// the net lock (checked: `panic(9)` without it); `None` when the socket is detached. Until
-/// the other transports move (N6.6b; TCP's are the kernel's since N6.6a5).
-pub fn in_pcbsolock_detached<G: ProcGlue>(inp: &Inpcb<G>) -> Option<&Socket<G>> {
-    // NET_ASSERT_LOCKED(): this process's write holding or a read holding.
-    if !matches!(hal::netlock::status(), RW_WRITE | hal::rwlock::RW_READ) {
-        kpanic(format_args!(
-            "in_pcbsolock: inpcb {inp:p}: the net lock is not held"
-        ));
-    }
-    let so = inp.socket_opt()?;
-    so.so_lock_legacy().enter_write_detached();
-    if so.legacy_pcb() == 0 {
-        so.so_lock_legacy().exit_write_detached();
-        return None;
-    }
-    kassert!(so.legacy_pcb() == core::ptr::from_ref(inp).addr());
-    Some(so)
-}
-
-/// `in_pcbsounlock` of what [`in_pcbsolock_detached`] locked.
-pub fn in_pcbsounlock_detached<G: ProcGlue>(inp: Option<&Inpcb<G>>, so: Option<&Socket<G>>) {
-    let Some(so) = so else {
-        return;
-    };
-    if let Some(inp) = inp
-        && so.legacy_pcb() != 0
-    {
-        kassert!(so.legacy_pcb() == core::ptr::from_ref(inp).addr());
-    }
-    so.so_lock_legacy().exit_write_detached();
-}
-
 /// `in_pcb_iterator`: the control block after `iter`'s place (the first one when the walk
 /// starts, `iter` on no list) in `table`'s queue, counted, with `iter` moved after it; the
 /// previous answer `prev` is dropped here, under the table mutex (`g`), as the C's
@@ -3900,9 +3866,10 @@ mod tests {
         );
         assert_eq!(keep.legacy_count(), 1);
         {
-            let _r = NETLOCK.read();
+            let r = NETLOCK.read();
+            let net = NetHeld::of(&r).expect("the net lock's witness");
             assert!(
-                in_pcbsolock_detached(&keep).is_none(),
+                in_pcbsolock(&keep, &net).is_none(),
                 "the socket is gone: drop the segment"
             );
         }
@@ -4075,14 +4042,6 @@ mod tests {
         assert!(gone, "the socket is detached: nothing to lock");
         assert_eq!(keep.socket().so_lock_legacy().lock().status(), 0);
         assert!(sock.is_some());
-    }
-
-    #[test]
-    #[should_panic(expected = "in_pcbsolock: inpcb")]
-    fn in_pcbsolock_detached_needs_the_net_lock() {
-        let (_g, _p) = testinet::setup();
-        let (_so, inp) = testinet::pcb(testinet::table(16));
-        let _ = in_pcbsolock_detached(&inp);
     }
 
     #[test]

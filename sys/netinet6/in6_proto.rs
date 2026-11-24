@@ -84,9 +84,11 @@
 //!
 //! Since N6.5d the IPv6 domain, `ip6_protox[]` and the IPv6, ICMPv6, destination options,
 //! routing header and fragment header entries are the kernel's (`kernel::netinet6::in6_proto`),
-//! and TCP's since N6.6a5 (`Tcp6Protocol`). The rows here are `bsd`'s nine in the C's order:
-//! UDP, raw IPv6, AH, ESP and IPComp, IPv4 and IPv6 in IPv6, divert and the raw wildcard;
-//! `bsd`'s `sys/kern/uipc_domain.rs` hands
+//! and TCP's since N6.6a5 (`Tcp6Protocol`), UDP's since N6.6b0 (`Udp6Protocol`), raw IPv6's,
+//! divert's and the raw wildcard's since N6.6b1 (`Rip6Protocol`, `Divert6Protocol`). The rows
+//! here are `bsd`'s five in the C's order: AH, ESP and IPComp, IPv4 and IPv6 in IPv6, raw
+//! sockets served by the kernel's raw IPv6 requests and options (`pr_rip`, D-2 of N6.6b; their
+//! inputs and sysctls are `bsd`'s until N8); `bsd`'s `sys/kern/uipc_domain.rs` hands
 //! the kernel the table of its entries and these rows, and the rows' `pr_domain` is this
 //! file's `inet6domain` (`bsd`'s `struct domain`, whose protocols are that table).
 //!
@@ -99,57 +101,28 @@
 //!   `ipcomp46_input`, as in C.
 //! - `NGIF` is 0 (`ipip_input` serves `IPPROTO_IPV4` and `IPPROTO_IPV6`); `MPLS`, `NCARP`,
 //!   `NETHERIP` and `NGRE` are not configured: their entries are comments. `NPF` is:
-//!   `IPPROTO_DIVERT` (`netinet6/ip6_divert.c`) has its entry. `SMALL_KERNEL` is not set,
-//!   so the sysctl handlers are in the table.
-//! - `rip6_sendspace`/`rip6_recvspace` (`u_long`, no sysctl) are constants of the same
-//!   names, as `rip_sendspace` is.
+//!   `IPPROTO_DIVERT` (`netinet6/ip6_divert.c`) has its entry, the kernel's. `SMALL_KERNEL`
+//!   is not set, so the sysctl handlers are in the table.
 
 use core::mem::{offset_of, size_of};
 
-use crate::netinet::in_::{
-    IPPROTO_AH, IPPROTO_DIVERT, IPPROTO_ESP, IPPROTO_IPCOMP, IPPROTO_IPV4, IPPROTO_IPV6,
-    IPPROTO_RAW,
-};
+use crate::netinet::in_::{IPPROTO_AH, IPPROTO_ESP, IPPROTO_IPCOMP, IPPROTO_IPV4, IPPROTO_IPV6};
 use crate::netinet::ip_ipip::ipip_input;
 use crate::netinet::ipsec_input::{
     ah_sysctl, ah46_input, esp_sysctl, esp46_input, ipcomp_sysctl, ipcomp46_input,
 };
 use crate::netinet6::in6::SockaddrIn6;
-use crate::netinet6::ip6_divert::{DIVERT6_USRREQS, divert6_init};
-use crate::netinet6::raw_ip6::{
-    RIP6_USRREQS, rip6_ctlinput, rip6_ctloutput, rip6_init, rip6_input, rip6_sysctl,
-};
 use crate::sys::domain::Domain;
-use crate::sys::protosw::{PR_ADDR, PR_ATOMIC, PR_MPINPUT, PR_MPSYSCTL, Protosw};
+use crate::sys::protosw::{PR_ADDR, PR_ATOMIC, PR_MPSYSCTL, Protosw};
 use crate::sys::socket::{AF_INET6, SOCK_RAW};
 
-/// Nominal space allocated to a raw ip6 socket: send.
-pub const RIPV6SNDQ: u64 = 8192;
-/// Nominal space allocated to a raw ip6 socket: receive.
-pub const RIPV6RCVQ: u64 = 8192;
-
-/// `rip6_sendspace`.
-pub const RIP6_SENDSPACE: u64 = RIPV6SNDQ;
-/// `rip6_recvspace`.
-pub const RIP6_RECVSPACE: u64 = RIPV6RCVQ;
-
-/// `inet6sw[]`'s rows that are `bsd`'s, in the C's order (the IPv6, ICMPv6 and extension
-/// header entries between them are the kernel's: `sys/kern/uipc_domain.rs`'s `INET6_PROTOS`
-/// is the whole table).
-pub static INET6SW: [Protosw; 8] = [
+/// `inet6sw[]`'s rows that are `bsd`'s, in the C's order (the other entries are the kernel's:
+/// `sys/kern/uipc_domain.rs`'s `INET6_PROTOS` is the whole table). Each is a raw socket
+/// protocol whose requests and options are the kernel's raw IPv6's (`pr_rip`).
+pub static INET6SW: [Protosw; 5] = [
     // IPV6: the kernel's (kernel::netinet6::in6_proto::Ip6Protocol).
     // UDP: the kernel's (kernel::netinet6::in6_proto::Udp6Protocol, N6.6b0).
-    Protosw {
-        pr_type: SOCK_RAW as i16,
-        pr_protocol: IPPROTO_RAW as i16,
-        pr_flags: PR_ATOMIC | PR_ADDR | PR_MPINPUT | PR_MPSYSCTL,
-        pr_input: Some(rip6_input),
-        pr_ctlinput: Some(rip6_ctlinput),
-        pr_ctloutput: Some(rip6_ctloutput),
-        pr_usrreqs: Some(&RIP6_USRREQS),
-        pr_sysctl: Some(rip6_sysctl),
-        ..Protosw::new(&INET6DOMAIN)
-    },
+    // RAW: the kernel's (kernel::netinet6::in6_proto::Rip6Protocol::RAW, N6.6b1).
     // ICMPV6, DSTOPTS, ROUTING, FRAGMENT: the kernel's (kernel::netinet6::in6_proto's
     // Icmp6Protocol, Dest6Protocol, Route6Protocol, Frag6Protocol).
     Protosw {
@@ -157,8 +130,7 @@ pub static INET6SW: [Protosw; 8] = [
         pr_protocol: IPPROTO_AH as i16,
         pr_flags: PR_ATOMIC | PR_ADDR | PR_MPSYSCTL,
         pr_input: Some(ah46_input),
-        pr_ctloutput: Some(rip6_ctloutput),
-        pr_usrreqs: Some(&RIP6_USRREQS),
+        pr_rip: true,
         pr_sysctl: Some(ah_sysctl),
         ..Protosw::new(&INET6DOMAIN)
     },
@@ -167,8 +139,7 @@ pub static INET6SW: [Protosw; 8] = [
         pr_protocol: IPPROTO_ESP as i16,
         pr_flags: PR_ATOMIC | PR_ADDR | PR_MPSYSCTL,
         pr_input: Some(esp46_input),
-        pr_ctloutput: Some(rip6_ctloutput),
-        pr_usrreqs: Some(&RIP6_USRREQS),
+        pr_rip: true,
         pr_sysctl: Some(esp_sysctl),
         ..Protosw::new(&INET6DOMAIN)
     },
@@ -177,8 +148,7 @@ pub static INET6SW: [Protosw; 8] = [
         pr_protocol: IPPROTO_IPCOMP as i16,
         pr_flags: PR_ATOMIC | PR_ADDR | PR_MPSYSCTL,
         pr_input: Some(ipcomp46_input),
-        pr_ctloutput: Some(rip6_ctloutput),
-        pr_usrreqs: Some(&RIP6_USRREQS),
+        pr_rip: true,
         pr_sysctl: Some(ipcomp_sysctl),
         ..Protosw::new(&INET6DOMAIN)
     },
@@ -188,8 +158,7 @@ pub static INET6SW: [Protosw; 8] = [
         pr_flags: PR_ATOMIC | PR_ADDR,
         // NGIF > 0: in6_gif_input; not configured.
         pr_input: Some(ipip_input),
-        pr_ctloutput: Some(rip6_ctloutput),
-        pr_usrreqs: Some(&RIP6_USRREQS), // XXX
+        pr_rip: true, // XXX
         ..Protosw::new(&INET6DOMAIN)
     },
     Protosw {
@@ -198,33 +167,15 @@ pub static INET6SW: [Protosw; 8] = [
         pr_flags: PR_ATOMIC | PR_ADDR,
         // NGIF > 0: in6_gif_input; not configured.
         pr_input: Some(ipip_input),
-        pr_ctloutput: Some(rip6_ctloutput),
-        pr_usrreqs: Some(&RIP6_USRREQS), // XXX
+        pr_rip: true, // XXX
         ..Protosw::new(&INET6DOMAIN)
     },
     // MPLS && NGIF > 0: IPPROTO_MPLS through in6_gif_input; NCARP > 0: IPPROTO_CARP
     // (carp6_proto_input); neither configured.
-    Protosw {
-        pr_type: SOCK_RAW as i16,
-        pr_protocol: IPPROTO_DIVERT as i16,
-        pr_flags: PR_ATOMIC | PR_ADDR | PR_MPSYSCTL,
-        pr_ctloutput: Some(rip6_ctloutput),
-        pr_usrreqs: Some(&DIVERT6_USRREQS),
-        pr_init: Some(divert6_init),
-        ..Protosw::new(&INET6DOMAIN)
-    },
+    // DIVERT (NPF > 0): the kernel's (kernel::netinet6::in6_proto::Divert6Protocol, N6.6b1).
     // NETHERIP > 0: IPPROTO_ETHERIP (ip6_etherip_input); NGRE > 0: IPPROTO_GRE
     // (gre_input6); neither configured.
-    Protosw {
-        // raw wildcard
-        pr_type: SOCK_RAW as i16,
-        pr_flags: PR_ATOMIC | PR_ADDR | PR_MPINPUT,
-        pr_input: Some(rip6_input),
-        pr_ctloutput: Some(rip6_ctloutput),
-        pr_usrreqs: Some(&RIP6_USRREQS),
-        pr_init: Some(rip6_init),
-        ..Protosw::new(&INET6DOMAIN)
-    },
+    // The raw wildcard: the kernel's (kernel::netinet6::in6_proto::Rip6Protocol::WILD, N6.6b1).
 ];
 
 /// `inet6domain` as `bsd`'s rows name it (`pr_domain`); the domain the kernel's socket layer
@@ -260,23 +211,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_entry_is_of_the_inet6_domain_and_the_wildcard_is_last() {
+    fn every_entry_is_of_the_inet6_domain_and_a_raw_ip6_row() {
         assert!(
             INET6SW
                 .iter()
                 .all(|pr| core::ptr::eq(pr.pr_domain, &INET6DOMAIN))
         );
-        let last = &INET6SW[INET6SW.len() - 1];
-        assert_eq!((last.pr_type, last.pr_protocol), (SOCK_RAW as i16, 0));
-        assert!(last.pr_init.is_some());
         assert_eq!(INET6DOMAIN.dom_sasize, 28);
         assert_eq!(INET6DOMAIN.dom_rtoffset, 8);
-        // The rows are bsd's alone: the raw protocol's has its user requests, and no row is
-        // one of the kernel's entries.
-        let raw = INET6SW
-            .iter()
-            .find(|pr| i32::from(pr.pr_protocol) == IPPROTO_RAW);
-        assert!(raw.is_some_and(|pr| pr.pr_type == SOCK_RAW as i16 && pr.pr_usrreqs.is_some()));
+        // The rows are bsd's alone, raw sockets of the kernel's raw IPv6 requests and options
+        // (pr_rip, N6.6b1: the raw IPv6, divert and wildcard rows are the kernel's), and no
+        // row is one of the kernel's entries.
+        assert!(INET6SW.iter().all(|pr| pr.pr_type == SOCK_RAW as i16
+            && pr.pr_rip
+            && pr.pr_usrreqs.is_none()
+            && pr.pr_ctloutput.is_none()));
         assert!(INET6SW.iter().all(|pr| {
             ![
                 crate::netinet::in_::IPPROTO_ICMPV6,
@@ -285,6 +234,9 @@ mod tests {
                 crate::netinet::in_::IPPROTO_FRAGMENT,
             ]
             .contains(&i32::from(pr.pr_protocol))
+                && pr.pr_protocol != 0
+                && i32::from(pr.pr_protocol) != crate::netinet::in_::IPPROTO_RAW
+                && i32::from(pr.pr_protocol) != crate::netinet::in_::IPPROTO_DIVERT
         }));
         assert_eq!(
             INET6SW

@@ -173,8 +173,8 @@
 //! - N6.6b1 (D-7): [`icmp6_ctloutput`] is the kernel's, over the pcb's filter words
 //!   ([`Inpcb::icmp6filt`]): a set stores the eight words of the option's `struct
 //!   icmp6_filter`, a get loads them (the C's two `bcopy`s, word by word, never a torn word
-//!   for the unlocked reader `rip6_input`); `bsd`'s copy (`netinet6/icmp6.rs`) forwards to it
-//!   until N6.6b1's switch deletes it.
+//!   for the unlocked reader `rip6_input`), called by the kernel's `rip6_ctloutput`; `bsd`'s
+//!   copy (`netinet6/icmp6.rs`) went with N6.6b1's switch.
 //! - LZ's reads of the message through the raw pointers `ip6_exthdr_get` returned (`read_at`,
 //!   an `unsafe fn`; 23 `unsafe` over mbuf data) -> `pod` copies of the headers from the
 //!   mbuf that holds them (`ip6_input::ip6_exthdr_get`, `ip6_exthdr_bytes`), the C's checks

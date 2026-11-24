@@ -397,17 +397,6 @@ pub fn in_pcbdetach(inp: &'static Inpcb) {
     k::in_pcbdetach(h, net_held("in_pcbdetach").net());
 }
 
-/// `in_pcbsolock`: locks the socket of `inp`; `None` when it is detached (the kernel's
-/// detached form: `bsd`'s protocols unlock in another function).
-pub fn in_pcbsolock(inp: &'static Inpcb) -> Option<&'static Socket> {
-    k::in_pcbsolock_detached(inp)
-}
-
-/// `in_pcbsounlock`: unlocks what `in_pcbsolock` locked.
-pub fn in_pcbsounlock(inp: Option<&Inpcb>, so: Option<&Socket>) {
-    k::in_pcbsounlock_detached(inp, so);
-}
-
 /// `in_pcbref`: takes a reference to `inp`.
 pub fn in_pcbref(inp: Option<&'static Inpcb>) -> Option<&'static Inpcb> {
     let inp = inp?;
@@ -1038,9 +1027,34 @@ pub(crate) mod tests {
         }
         solock(so);
         let mut kf = KinfoFile::zeroed();
-        fill_file(&mut kf, None, None, 0, None, None, p, Some(so), false);
         let mut kfp = KinfoFile::zeroed();
-        fill_file(&mut kfp, None, None, 0, None, None, p, Some(so), true);
+        {
+            // The holding fill_file is handed, as kern.file's walk hands it its own.
+            let lend = crate::net::if_::net_held("kern.file");
+            let mut w = kernel::net::socket::solocked_legacy(so, Some(lend.net()));
+            fill_file(
+                &mut kf,
+                None,
+                None,
+                0,
+                None,
+                None,
+                p,
+                Some((so, &mut w)),
+                false,
+            );
+            fill_file(
+                &mut kfp,
+                None,
+                None,
+                0,
+                None,
+                None,
+                p,
+                Some((so, &mut w)),
+                true,
+            );
+        }
         sounlock(so);
 
         assert_eq!(kf.so_family, u32::from(AF_INET));
@@ -1327,7 +1341,21 @@ pub(crate) mod tests {
             locked(|| in_pcbbind(inp, Some(nam6(sin6(a6("fd00:77::1"), 5353))), p)).expect("bind");
             solock(so);
             let mut kf = KinfoFile::zeroed();
-            fill_file(&mut kf, None, None, 0, None, None, p, Some(so), false);
+            {
+                let lend = crate::net::if_::net_held("kern.file");
+                let mut w = kernel::net::socket::solocked_legacy(so, Some(lend.net()));
+                fill_file(
+                    &mut kf,
+                    None,
+                    None,
+                    0,
+                    None,
+                    None,
+                    p,
+                    Some((so, &mut w)),
+                    false,
+                );
+            }
             sounlock(so);
 
             assert_eq!(kf.so_family, u32::from(AF_INET6));
