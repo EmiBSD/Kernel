@@ -66,8 +66,8 @@
 //!   `ip_directedbcast`, `la_hold_total`, `ip_mtudisc_timeout_q`, `ipqent_pool`, ...) and the
 //!   prototypes (`ip_output`, `ip_input_if`, ...) are defined by `netinet/ip_input.rs`,
 //!   `ip_output.rs`, `ip_icmp.rs` and `if_ether.rs`; `rip_usrreqs` and the `rip_*`
-//!   functions by `netinet/raw_ip.c`, which is not ported (`netinet/in_proto.rs` has the
-//!   `rip_input` stand-in). `struct ipstat` as `sysctl(2)` returns it is here.
+//!   functions by `netinet/raw_ip.c`, the kernel's since N6.6b1 (`kernel::netinet::raw_ip`).
+//!   `struct ipstat` as `sysctl(2)` returns it is here.
 
 use core::mem::size_of;
 

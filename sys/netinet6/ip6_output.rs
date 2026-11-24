@@ -77,9 +77,10 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! IPv6 output as `bsd`'s callers know it: `ip6_output`, fragmentation, the output checksums
-//! and the socket options (`ip6_ctloutput`, `ip6_raw_ctloutput`) with LZ's signatures over the
-//! kernel's (`kernel::netinet6::ip6_output`, N6.5c); the generator of the fragment ids
+//! IPv6 output as `bsd`'s callers know it: `ip6_output`, fragmentation and the output
+//! checksums with LZ's signatures over the kernel's (`kernel::netinet6::ip6_output`, N6.5c;
+//! the socket options' adapters, `ip6_ctloutput` and `ip6_raw_ctloutput`, went with raw IPv6
+//! at N6.6b1); the generator of the fragment ids
 //! (`ip6_id_ctx`, over `bsd`'s `idgen32`), which the kernel reaches through the `Inet` bridge's
 //! `ip6_randomid` leg; and IPsec's half of `ip6_output` (`ip6_output_ipsec_lookup`,
 //! `ip6_output_ipsec_send`, `ip6_output_ipsec_pmtu_update`), which the kernel reaches through
@@ -111,7 +112,6 @@ use hal::mutex::Mutexed;
 
 use crate::crypto::idgen::Idgen32Ctx;
 use crate::kern::kern_tc::gettime;
-use crate::kern::subr_prf::panic;
 use crate::kern::uipc_mbuf::{m_freem, ml_dequeue, ml_enqueue, ml_init, ml_purge};
 use crate::kern::uipc_mbuf2::{m_tag_first, m_tag_next};
 use crate::net::if_::net_held;
@@ -120,7 +120,6 @@ use crate::net::if_var::Ifnet;
 use crate::net::pf::pf_test;
 use crate::net::pfvar::{PF_FWD, PF_OUT, PF_PASS};
 use crate::net::route::{RT_RESOLVE, RTF_HOST, Route, as_static, rtfree};
-use crate::netinet::in_pcb::sotoinpcb;
 use crate::netinet::ip_input::ip_mtudisc;
 use crate::netinet::ip_ipsp::{
     IPSP_DF_INHERIT, IPSP_DIRECTION_OUT, IpsecCounters, IpsecLevel, Tdb, TdbCounters, TdbIdent,
@@ -142,7 +141,6 @@ use crate::sys::mbuf::{
     unpark,
 };
 use crate::sys::socket::AF_INET6;
-use crate::sys::socketvar::Socket;
 use crate::sys::systm::{kernel_lock, kernel_unlock};
 
 pub use kernel::netinet6::ip6_output::{ip6_clearpktopts, ip6_setpktopts, ro_sin6};
@@ -183,47 +181,6 @@ pub fn ip6_fragment(
     mtu: u64,
 ) -> Result<(), Errno> {
     ml.change(|l| kernel::netinet6::ip6_output::ip6_fragment(unpark(m0), l, hlen, nextproto, mtu))
-}
-
-/// `ip6_ctloutput`: IP6 socket option processing (the kernel's, `pr_ctloutput` of UDP6 and,
-/// behind `rip6_ctloutput` and `tcp_ctloutput`, of raw IPv6 and TCP), on the socket's
-/// control block.
-pub fn ip6_ctloutput(
-    op: i32,
-    so: &'static Socket,
-    level: i32,
-    optname: i32,
-    m: Option<&'static Mbuf>,
-) -> Result<(), Errno> {
-    let Some(inp) = sotoinpcb(so) else {
-        panic(format_args!("ip6_ctloutput: socket {:p} without inpcb", so));
-    };
-    kernel::netinet6::ip6_output::ip6_ctloutput(
-        op,
-        inp,
-        level,
-        optname,
-        m.map(mut_of),
-        net_held("ip6_ctloutput").net(),
-    )
-}
-
-/// `ip6_raw_ctloutput`: the raw-socket IPv6 options (`IPV6_CHECKSUM`, the kernel's), on the
-/// socket's control block.
-pub fn ip6_raw_ctloutput(
-    op: i32,
-    so: &'static Socket,
-    level: i32,
-    optname: i32,
-    m: Option<&'static Mbuf>,
-) -> Result<(), Errno> {
-    let Some(inp) = sotoinpcb(so) else {
-        panic(format_args!(
-            "ip6_raw_ctloutput: socket {:p} without inpcb",
-            so
-        ));
-    };
-    kernel::netinet6::ip6_output::ip6_raw_ctloutput(op, inp, level, optname, m.map(mut_of))
 }
 
 /// `idgen32(&ip6_id_ctx)`: the next fragment id of `bsd`'s generator, the kernel's

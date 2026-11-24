@@ -109,6 +109,8 @@
 
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 
+use hal::intr::IPL_NONE;
+use hal::mutex::Mutexed;
 use hal::pinlist::PinEntry;
 use hal::pool::{BoxPool, PoolHome, TypedPool};
 use hal::rwlock::{ExclGuarded, Guarded, Rwlocked};
@@ -116,8 +118,12 @@ use hal::rwlock::{ExclGuarded, Guarded, Rwlocked};
 use super::nfs_kq::{Kevq, NfsKevq};
 use super::nfs_node::NfsNhash;
 use super::nfs_syscalls::NFS_NASYNCDAEMON;
+use super::nfs_vnops::{NfsFifoVnops, NfsSpecVnops, NfsVnops};
+use super::nfsdiskless::NfsDiskless;
 use super::nfsm_subs::XdrReader;
+use super::nfsmount::NfsMount;
 use super::nfsnode::NfsNode;
+use crate::fs::buf::B_INVAL;
 use crate::fs::bufq::Fifo;
 use crate::net::mbuf::{Mbuf, MbufBox};
 use crate::net::proto::PR_CONNREQUIRED;
@@ -127,6 +133,10 @@ pub use crate::sys::nfs_nfs::*;
 use crate::sys::nfs_nfsproto::NFS_NPROCS;
 use crate::sys::signal::{SIGHUP, SIGINT, SIGKILL, SIGQUIT, SIGTERM, Sigset, sigmask};
 use crate::sys::types::Pid;
+
+/// `B_INVAFTERWRITE`: the buffer flag `nfs_bioread` sets on a block whose valid range does
+/// not cover a read, so that its release after the write invalidates it (`B_INVAL`).
+pub const B_INVAFTERWRITE: i64 = B_INVAL;
 
 /// `NFSINT_SIGMASK`: the set of signals that interrupt an I/O in progress for `NFSMNT_INT`
 /// mounts. What should be in this set is open to debate, but I believe that since I/O
@@ -650,6 +660,17 @@ pub struct NfsTables<G: ProcGlue> {
     pub kevq: Rwlocked<NfsKevq<G>>,
     /// The watch list's entries (`nfs_kq`'s Deviations: the C's `malloc(M_KEVENT)`).
     pub kevqpl: BoxPool<Kevq<G>>,
+    /// `nfs_vops`: the operations of the client's vnodes (`nfs_vnops`; one address per glue,
+    /// for `vops_id`).
+    pub vops: NfsVnops<G>,
+    /// `nfs_specvops`: the operations of a device on an NFS mount.
+    pub specvops: NfsSpecVnops<G>,
+    /// `nfs_fifovops`: the operations of a fifo on an NFS mount (installed by nothing while
+    /// fifofs is not ported, `nfs_vnops`' Deviations).
+    pub fifovops: NfsFifoVnops<G>,
+    /// `nfs_diskless` (`nfs_vfsops.c`): what `nfs_mountroot` booted from, kept once it is
+    /// filled (`nfs_vfsops`' Deviations).
+    pub nfs_diskless: Mutexed<Option<NfsDiskless<G>>>,
 }
 
 impl<G: ProcGlue> NfsTables<G> {
@@ -663,6 +684,10 @@ impl<G: ProcGlue> NfsTables<G> {
             nfs_asyncdaemon: [const { AtomicI32::new(0) }; NFS_NASYNCDAEMON],
             kevq: Rwlocked::new("nfskqlk", NfsKevq::new()),
             kevqpl: BoxPool::new(),
+            vops: NfsVnops::new(),
+            specvops: NfsSpecVnops::new(),
+            fifovops: NfsFifoVnops::new(),
+            nfs_diskless: Mutexed::new(IPL_NONE, None),
         }
     }
 }
@@ -723,6 +748,20 @@ pub fn nfsignore_soerror(s: i32, e: Errno) -> bool {
         && e != Errno::ERESTART
         && e != Errno::EWOULDBLOCK
         && s & i32::from(PR_CONNREQUIRED) == 0
+}
+
+/// `NFS_ISV3(vp)`: whether the vnode's mount `nmp` (the caller's `VFSTONFS(vp->v_mount)`,
+/// lent) speaks version 3.
+#[inline]
+pub fn nfs_isv3<G: ProcGlue>(nmp: &NfsMount<G>) -> bool {
+    nmp.flag() & crate::sys::mount::NFSMNT_NFSV3 != 0
+}
+
+/// `NFS_CMPFH(n, f, s)`: whether the node's handle is the `fh` of a reply (the same size, the
+/// same bytes).
+#[inline]
+pub fn nfs_cmpfh<G: ProcGlue>(np: &NfsNode<G>, fh: &[u8]) -> bool {
+    np.fh().bytes() == fh
 }
 /* </CODE> */
 
@@ -831,5 +870,30 @@ mod tests {
 
     /// `size_of::<NfsReq<G>>()` measured by the test above.
     const NFSREQ_SIZE: usize = 144;
+
+    /// The request flags, the last RTO timer and `B_INVAFTERWRITE` are the C header's.
+    #[test]
+    #[ignore = "reads reference/openbsd-src (just test-ref)"]
+    fn request_flags_are_the_c_header_s() {
+        let defs = crate::reftest::defines("sys/nfs/nfs.h");
+        let _ = crate::reftest::assert_defines!(
+            defs;
+            R_TIMING,
+            R_SENT,
+            R_SOFTTERM,
+            R_INTR,
+            R_SOCKERR,
+            R_TPRINTFMSG,
+            R_MUSTRESEND
+        );
+        assert_eq!(
+            defs.get("NFS_MAX_TIMER").map(std::string::String::as_str),
+            Some("(NFS_WRITE_TIMER)")
+        );
+        assert_eq!(
+            defs.get("B_INVAFTERWRITE").map(std::string::String::as_str),
+            Some("B_INVAL")
+        );
+    }
 }
 /* </TESTS> */

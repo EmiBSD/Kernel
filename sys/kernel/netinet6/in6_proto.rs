@@ -97,15 +97,16 @@
 //! array.
 //!
 //! ## Deviations
-//! - The table's entries are the kernel's IPv6, UDP (N6.6b0), TCP (N6.6a5), ICMPv6,
-//!   destination options, routing header and fragment header ([`Ip6Protocol`],
-//!   [`Udp6Protocol`], [`Tcp6Protocol`], [`Icmp6Protocol`], [`Dest6Protocol`],
-//!   [`Route6Protocol`], [`Frag6Protocol`]) and `bsd`'s raw IPv6, AH, ESP, IPComp, IPv4 and
-//!   IPv6 in IPv6, divert and the raw wildcard (`bsd`'s `inet6sw[]` rows through the
-//!   `Protocol` bridge impl) in the C's order; `bsd` assembles the slice and records it
-//!   ([`inet6sw_set`], `sys/kern/uipc_domain.rs`), until the transports move (N6.6b1, N8).
+//! - The table's entries are the kernel's IPv6, UDP (N6.6b0), TCP (N6.6a5), raw IPv6, ICMPv6,
+//!   destination options, routing header, fragment header, divert and the raw wildcard
+//!   ([`Ip6Protocol`], [`Udp6Protocol`], [`Tcp6Protocol`], [`Rip6Protocol`] and
+//!   [`Divert6Protocol`] (N6.6b1), [`Icmp6Protocol`], [`Dest6Protocol`], [`Route6Protocol`],
+//!   [`Frag6Protocol`]) and `bsd`'s AH, ESP, IPComp, IPv4 and IPv6 in IPv6 rows (`bsd`'s
+//!   `inet6sw[]` rows through the `Protocol` bridge impl, their sockets served by the kernel's
+//!   raw IPv6 requests: `pr_rip`) in the C's order; `bsd` assembles the slice and records it
+//!   ([`inet6sw_set`], `sys/kern/uipc_domain.rs`), until those rows move (N8).
 //!   `IPSEC` is configured (AH, ESP and IPComp after the fragment header, `bsd`'s); so is
-//!   `NPF` (divert's entry, `bsd`'s). `NGIF` is 0 (`ipip_input` serves `IPPROTO_IPV4` and
+//!   `NPF` (divert's entry, the kernel's). `NGIF` is 0 (`ipip_input` serves `IPPROTO_IPV4` and
 //!   `IPPROTO_IPV6`); `MPLS`, `NCARP`, `NETHERIP` and `NGRE` are not configured, their entries
 //!   absent as LZ's. `SMALL_KERNEL` is not set: the sysctl handlers are in the table.
 //!
@@ -115,27 +116,27 @@
 //!   reached by the kernel through the `Inet` bridge's `ip6_protox` leg and a `pffinddomain`
 //!   of the IPv6 domain at the first packet -> [`Inet6Tables`] in the glue's network tables
 //!   (`NetTables::inet6`, D-9; the IPv4 twin is `kernel::netinet::in_proto::InetTables`): the
-//!   table and the index of its raw entry, recorded together once by [`inet6sw_set`] (so the
-//!   raw sockets' requests ICMPv6's entry lends are there before `ip6_init`, as the C's static
-//!   `pr_usrreqs`: the R9 class of N6.4c2, a table read before it is set), and `ip6_protox[]`,
+//!   table and the index of its raw entry, recorded together once by [`inet6sw_set`] (so
+//!   no reader sees the table without its raw entry: the R9 class of N6.4c2, a table read
+//!   before it is set), and `ip6_protox[]`,
 //!   filled by [`inet6sw_init`] from `ip6_init` as the C's `ip6_init` fills it (an entry's
 //!   index is its place in the walk, no search). A lookup is two loads and an index
 //!   ([`inet6_protocol`], `#[inline]`: per packet), the C's `inet6sw[ip6_protox[nxt]]`;
-//!   [`raw6_protocol`] is one load and an index, for ICMPv6's tail call to the raw sockets. The
-//!   `Inet` leg is gone.
+//!   the raw entry's index serves `inet6sw_init`'s default (ICMPv6's tail calls
+//!   `rip6_input` itself since N6.6b1). The `Inet` leg is gone.
 //! - LZ's `inet6sw[]` of `Protosw` structs of function pointers and `inet6domain` -> the
 //!   `Protocol`/`Domain` traits (decision 46): [`Inet6Domain`] over the glue's table, it and
 //!   the kernel's entries zero-sized types with an associated `NEW` (the C's NULL entries are
-//!   the traits' defaults). ICMPv6's control input, socket options and user requests are the
-//!   raw entry's (`rip6_ctlinput`, `rip6_ctloutput`, `rip6_usrreqs` in the C, `bsd`'s until
-//!   N6.6b), reached through the raw entry ([`raw6_protocol`]: the C names the same functions
-//!   in both rows). `bsd`'s rows of the kernel's inputs (`kernel_input!`'s wrappers of
-//!   `dest6_input`, `route6_input` and `frag6_input`, the parked packet unparked for each),
-//!   its `frag6_slowtimo` wrapper and its wrappers of `ip6_init`, `ip6_sysctl`, `icmp6_input`,
-//!   `icmp6_init`, `icmp6_fasttimo` and `icmp6_sysctl` go: the entries call the kernel's
-//!   functions with the packet owned. Nothing keys a domain or a protocol by address: an
-//!   entry's `pr_domain` is the zero-sized domain itself, no lookup (N6.4c2's R9: a
-//!   `pffinddomain` there panicked in every `bsd` test that never registered the domains).
+//!   the traits' defaults). ICMPv6's control input, socket options and user requests are raw
+//!   IPv6's (`rip6_ctlinput`, `rip6_ctloutput`, `rip6_usrreqs`), named directly as the C's row
+//!   names them (N6.6b1; until then `bsd`'s, reached through the raw entry). `bsd`'s rows of
+//!   the kernel's inputs (`kernel_input!`'s wrappers of `dest6_input`, `route6_input` and
+//!   `frag6_input`, the parked packet unparked for each), its `frag6_slowtimo` wrapper and
+//!   its wrappers of `ip6_init`, `ip6_sysctl`, `icmp6_input`, `icmp6_init`, `icmp6_fasttimo`
+//!   and `icmp6_sysctl` go: the entries call the kernel's functions with the packet owned.
+//!   Nothing keys a domain or a protocol by address: an entry's `pr_domain` is the zero-sized
+//!   domain itself, no lookup (N6.4c2's R9: a `pffinddomain` there panicked in every `bsd`
+//!   test that never registered the domains).
 //! - Cost against the C: `ip_deliver`'s lookup per protocol header is the C's (`ip6_protox[]`
 //!   read, the table's slot read, the entry's `&dyn` call for the C's call through
 //!   `pr_input`); no lock, no spl transition, as the C. The C's `ip6_init` finds the raw
@@ -152,8 +153,8 @@ use hal::netlock::NetHeld;
 use hal::once::OnceStatic;
 use hal::sys::errno::Errno;
 use hal::sys::netinet_in::{
-    IPPROTO_DSTOPTS, IPPROTO_FRAGMENT, IPPROTO_ICMPV6, IPPROTO_IPV6, IPPROTO_MAX, IPPROTO_RAW,
-    IPPROTO_ROUTING, IPPROTO_TCP, IPPROTO_UDP,
+    IPPROTO_DIVERT, IPPROTO_DSTOPTS, IPPROTO_FRAGMENT, IPPROTO_ICMPV6, IPPROTO_IPV6, IPPROTO_MAX,
+    IPPROTO_RAW, IPPROTO_ROUTING, IPPROTO_TCP, IPPROTO_UDP,
 };
 use hal::sys::netinet6_in6::SockaddrIn6;
 use hal::sys::socket::{AF_INET6, PF_INET6, SOCK_DGRAM, SOCK_RAW, SOCK_STREAM};
@@ -171,6 +172,10 @@ use crate::netinet::tcp_input::tcp_input;
 use crate::netinet::tcp_subr::tcp6_ctlinput;
 use crate::netinet::tcp_usrreq::{TcpUsrreqs, tcp_ctloutput, tcp_sysctl};
 use crate::netinet::udp_usrreq::{UdpUsrreqs, udp_ctloutput, udp_input, udp_sysctl, udp6_ctlinput};
+use crate::netinet6::ip6_divert::{Divert6Usrreqs, divert6_init};
+use crate::netinet6::raw_ip6::{
+    Rip6Usrreqs, rip6_ctlinput, rip6_ctloutput, rip6_init, rip6_input, rip6_sysctl,
+};
 use crate::proc::ProcGlue;
 use crate::sysctl::SysctlReq;
 
@@ -233,8 +238,7 @@ fn raw_entry<G: ProcGlue>(sw: &[&'static dyn Protocol<G>]) -> Option<usize> {
 
 /// `inet6sw[]` recorded with its raw entry, once (the glue's boot, before `domaininit`: `bsd`
 /// assembles it of its rows and the kernel's entries; a second call, a test's, keeps the first
-/// table). The raw entry is the table's from here on, before `ip6_init`: ICMPv6's entry lends
-/// the raw sockets' requests to `socreate` as the C's static `pr_usrreqs` does.
+/// table). The raw entry is the table's from here on, before `ip6_init`.
 pub fn inet6sw_set<G: ProcGlue>(sw: &'static [&'static dyn Protocol<G>]) {
     let raw = raw_entry(sw).unwrap_or(usize::MAX);
     let _ = tables::<G>().sw.set(Inet6sw { sw, raw });
@@ -275,15 +279,6 @@ pub fn inet6_protocol<G: ProcGlue>(nxt: i32) -> Option<&'static dyn Protocol<G>>
         .get(usize::try_from(nxt).ok()?)?
         .load(Ordering::Relaxed);
     t.sw.get()?.sw.get(usize::from(i)).copied()
-}
-
-/// The raw IPv6 entry (`rip6_input`'s, which ICMPv6 hands its messages to, and whose control
-/// input, socket options and user requests ICMPv6's entry shares); `None` before the glue
-/// records the table, or for a table without one.
-#[inline]
-pub fn raw6_protocol<G: ProcGlue>() -> Option<&'static dyn Protocol<G>> {
-    let s = tables::<G>().sw.get()?;
-    s.sw.get(s.raw).copied()
 }
 
 /// `inet6domain`: the IPv6 domain, its protocols the glue's `inet6sw[]` ([`inet6sw_set`], in
@@ -499,9 +494,151 @@ impl<G: ProcGlue> Protocol<G> for Tcp6Protocol<G> {
     }
 }
 
+/// `inet6sw[]`'s raw entries (N6.6b1): the `IPPROTO_RAW` row (`rip6_input`,
+/// `rip6_ctlinput`, `rip6_ctloutput`, `rip6_usrreqs`, `rip6_sysctl`) and the raw wildcard
+/// (`wild`, protocol 0, the last row: `rip6_input`, `rip6_ctloutput`, `rip6_usrreqs`, its
+/// `pr_init` `rip6_init`).
+pub struct Rip6Protocol<G: ProcGlue> {
+    /// The raw wildcard row.
+    wild: bool,
+    /// The glue.
+    _g: PhantomData<fn() -> G>,
+}
+
+impl<G: ProcGlue> Rip6Protocol<G> {
+    /// The `IPPROTO_RAW` row.
+    pub const RAW: Self = Self {
+        wild: false,
+        _g: PhantomData,
+    };
+    /// The raw wildcard row.
+    pub const WILD: Self = Self {
+        wild: true,
+        _g: PhantomData,
+    };
+}
+
+impl<G: ProcGlue> Protocol<G> for Rip6Protocol<G> {
+    fn domain(&self) -> &'static dyn Domain<G> {
+        inet6domain::<G>()
+    }
+    fn ty(&self) -> i16 {
+        SOCK_RAW as i16
+    }
+    fn protocol(&self) -> i16 {
+        if self.wild { 0 } else { IPPROTO_RAW as i16 }
+    }
+    fn flags(&self) -> i16 {
+        if self.wild {
+            PR_ATOMIC | PR_ADDR | PR_MPINPUT
+        } else {
+            PR_ATOMIC | PR_ADDR | PR_MPINPUT | PR_MPSYSCTL
+        }
+    }
+    fn usrreqs(&self) -> Option<&'static dyn Usrreqs<G>> {
+        Some(&Rip6Usrreqs::<G>::NEW)
+    }
+    /// `rip6_ctlinput` (the `IPPROTO_RAW` row's; the wildcard has none).
+    fn ctlinput(
+        &self,
+        cmd: i32,
+        sa: SockaddrView<'_>,
+        rdomain: u32,
+        arg: CtlArg<'_>,
+        net: &NetHeld<'_>,
+    ) {
+        if !self.wild {
+            rip6_ctlinput::<G>(cmd, sa, rdomain, arg, net);
+        }
+    }
+    fn input(
+        &self,
+        mp: &mut Option<MbufBox>,
+        offp: &mut i32,
+        proto: i32,
+        af: i32,
+        ns: Option<&mut Netstack>,
+        net: &NetHeld<'_>,
+    ) -> i32 {
+        rip6_input::<G>(mp, offp, proto, af, ns, net)
+    }
+    fn has_ctloutput(&self) -> bool {
+        true
+    }
+    fn ctloutput(
+        &self,
+        op: i32,
+        so: &Socket<G>,
+        w: &mut SoLocked<'_>,
+        level: i32,
+        optname: i32,
+        m: Option<&mut Mbuf>,
+    ) -> Result<(), Errno> {
+        rip6_ctloutput(op, so, w, level, optname, m)
+    }
+    /// `rip6_sysctl` (the `IPPROTO_RAW` row's).
+    fn has_sysctl(&self) -> bool {
+        !self.wild
+    }
+    fn sysctl(&self, name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+        rip6_sysctl(name, req)
+    }
+    /// `rip6_init` (the wildcard row's).
+    fn init(&self) {
+        if self.wild {
+            rip6_init::<G>();
+        }
+    }
+}
+
+/// `inet6sw[]`'s divert6 entry (N6.6b1; `NPF`): no input (pf hands it the packets,
+/// `divert6_packet`), `rip6_ctloutput`, `divert6_usrreqs`, `divert6_init`; no sysctl.
+pub struct Divert6Protocol<G: ProcGlue>(PhantomData<fn() -> G>);
+
+impl<G: ProcGlue> Divert6Protocol<G> {
+    /// The entry.
+    pub const NEW: Self = Self(PhantomData);
+}
+
+impl<G: ProcGlue> Protocol<G> for Divert6Protocol<G> {
+    fn domain(&self) -> &'static dyn Domain<G> {
+        inet6domain::<G>()
+    }
+    fn ty(&self) -> i16 {
+        SOCK_RAW as i16
+    }
+    fn protocol(&self) -> i16 {
+        IPPROTO_DIVERT as i16
+    }
+    fn flags(&self) -> i16 {
+        PR_ATOMIC | PR_ADDR | PR_MPSYSCTL
+    }
+    fn usrreqs(&self) -> Option<&'static dyn Usrreqs<G>> {
+        Some(&Divert6Usrreqs::<G>::NEW)
+    }
+    fn has_ctloutput(&self) -> bool {
+        true
+    }
+    fn ctloutput(
+        &self,
+        op: i32,
+        so: &Socket<G>,
+        w: &mut SoLocked<'_>,
+        level: i32,
+        optname: i32,
+        m: Option<&mut Mbuf>,
+    ) -> Result<(), Errno> {
+        rip6_ctloutput(op, so, w, level, optname, m)
+    }
+    fn init(&self) {
+        divert6_init::<G>();
+    }
+}
+
 /// `inet6sw[]`'s ICMPv6 entry: `icmp6_input`, `icmp6_init`, `icmp6_fasttimo`,
-/// `icmp6_sysctl`, the raw IPv6 sockets' control input, requests and options (the raw entry's,
-/// [`raw6_protocol`]: `rip6_ctlinput`, `rip6_usrreqs`, `rip6_ctloutput`, `bsd`'s until N6.6b).
+/// `icmp6_sysctl`, the raw IPv6 sockets' control input, requests and options (`rip6_ctlinput`,
+/// `rip6_usrreqs`, `rip6_ctloutput`, named as the C's row names them; until N6.6b1 they were
+/// `bsd`'s, lent through the raw entry).
 pub struct Icmp6Protocol<G: ProcGlue>(PhantomData<fn() -> G>);
 
 impl<G: ProcGlue> Icmp6Protocol<G> {
@@ -522,13 +659,11 @@ impl<G: ProcGlue> Protocol<G> for Icmp6Protocol<G> {
     fn flags(&self) -> i16 {
         PR_ATOMIC | PR_ADDR | PR_MPSYSCTL
     }
+    /// `rip6_usrreqs`: an ICMPv6 socket is a raw IPv6 socket.
     fn usrreqs(&self) -> Option<&'static dyn Usrreqs<G>> {
-        raw6_protocol::<G>()?.usrreqs()
+        Some(&Rip6Usrreqs::<G>::NEW)
     }
-    /// The raw IPv6 entry's: an ICMPv6 socket is a raw socket served by its requests.
-    fn legacy(&self) -> bool {
-        raw6_protocol::<G>().is_some_and(Protocol::legacy)
-    }
+    /// `rip6_ctlinput`.
     fn ctlinput(
         &self,
         cmd: i32,
@@ -537,13 +672,12 @@ impl<G: ProcGlue> Protocol<G> for Icmp6Protocol<G> {
         arg: CtlArg<'_>,
         net: &NetHeld<'_>,
     ) {
-        if let Some(r) = raw6_protocol::<G>() {
-            r.ctlinput(cmd, sa, rdomain, arg, net);
-        }
+        rip6_ctlinput::<G>(cmd, sa, rdomain, arg, net);
     }
     fn has_ctloutput(&self) -> bool {
-        raw6_protocol::<G>().is_some_and(Protocol::has_ctloutput)
+        true
     }
+    /// `rip6_ctloutput`.
     fn ctloutput(
         &self,
         op: i32,
@@ -553,10 +687,7 @@ impl<G: ProcGlue> Protocol<G> for Icmp6Protocol<G> {
         optname: i32,
         m: Option<&mut Mbuf>,
     ) -> Result<(), Errno> {
-        match raw6_protocol::<G>() {
-            Some(r) => r.ctloutput(op, so, w, level, optname, m),
-            None => Err(Errno::ENOPROTOOPT),
-        }
+        rip6_ctloutput(op, so, w, level, optname, m)
     }
     fn input(
         &self,
@@ -973,26 +1104,31 @@ mod tests {
             assert!(!pr.has_sysctl() && pr.usrreqs().is_none() && !pr.has_ctloutput());
         }
 
-        // ICMPv6's control input and socket options are the raw entry's (rip6_ctlinput,
-        // rip6_ctloutput in both rows of the C).
-        assert!(icmp6.has_ctloutput(), "the raw entry's");
+        // ICMPv6's control input, socket options and requests are raw IPv6's own
+        // (rip6_ctlinput, rip6_ctloutput, rip6_usrreqs in both rows of the C), named, not the
+        // table's raw entry's (here a test row that counts its control inputs): an address
+        // rip6_ctlinput refuses (24 bytes, not a sockaddr_in6's 28) reaches no row.
+        assert!(icmp6.has_ctloutput() && icmp6.usrreqs().is_some());
         RAW6.ctl.store(0, Relaxed);
-        let mut sin6 = [0u8; 28];
-        sin6[..2].copy_from_slice(&[28, AF_INET6]);
+        let mut sin6 = [0u8; 24];
+        sin6[..2].copy_from_slice(&[24, AF_INET6]);
         let sa = SockaddrView::new(&sin6).expect("an address");
         {
             let w = hal::netlock::NETLOCK.read();
             let net = NetHeld::of(&w).expect("the net lock");
             icmp6.ctlinput(PRC_MSGSIZE, sa, 0, CtlArg::None, &net);
         }
-        assert_eq!(RAW6.ctl.load(Relaxed), PRC_MSGSIZE);
+        assert_eq!(RAW6.ctl.load(Relaxed), 0, "rip6_ctlinput itself");
 
         // The domain, and every entry's domain without a lookup.
         let dom = &Inet6Domain::<G>::NEW;
         assert_eq!((dom.family(), dom.name()), (i32::from(AF_INET6), "inet6"));
         assert_eq!((dom.sasize(), dom.rtoffset(), dom.maxplen()), (28, 8, 128));
         assert!(dom.rights().is_none());
-        assert_eq!(icmp6.legacy(), RAW6.legacy(), "the raw entry's");
+        assert!(
+            !icmp6.legacy(),
+            "raw IPv6's, the kernel's: held by a witness"
+        );
         assert_eq!(dom.protocols().len(), SW6.len());
         for pr in [ip6 as &dyn Protocol<G>, icmp6, dest6, route6, frag6] {
             assert_eq!(pr.domain().family(), i32::from(AF_INET6));
@@ -1032,7 +1168,6 @@ mod tests {
         for nxt in [99, IPPROTO_RAW, 0, IPPROTO_MAX - 1] {
             assert!(is_row(inet6_protocol::<G>(nxt), &RAW6), "{nxt}");
         }
-        assert!(is_row(raw6_protocol::<G>(), &RAW6));
         // An entry of another family's domain is no IPv6 protocol.
         assert!(FOREIGN6.protocol() == IPPROTO_ESP as i16);
         assert!(is_row(inet6_protocol::<G>(IPPROTO_ESP), &RAW6));

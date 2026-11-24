@@ -159,11 +159,8 @@ use crate::machine::cpu::{Cpu, CpuInfo, cpu_info_foreach, curproc};
 use crate::machine::param::MachineInfo;
 use crate::netinet::in_::IPPROTO_TCP;
 use crate::netinet::in_pcb::{
-    Inpcb, Inpcbtable, in_pcb_iterator, in_pcb_iterator_abort, in_pcbsolock, in_pcbsounlock,
-    sotoinpcb,
+    Inpcb, Inpcbtable, in_pcb_iterator, in_pcb_iterator_abort, sotoinpcb,
 };
-use crate::netinet::ip_divert::DIVBTABLE;
-use crate::netinet::raw_ip::RAWCBTABLE;
 use crate::sys::disk::{DS_DISKNAMELEN, Disk, Diskstats};
 use crate::sys::errno::Errno;
 use crate::sys::fcntl::{FREAD, FWRITE};
@@ -186,10 +183,9 @@ use crate::sys::types::Register;
 use crate::sys::un::SockaddrUn;
 use crate::sys::vnode::{Vattr, Vnode, makeimode};
 use crate::unported;
-#[cfg(feature = "inet6")]
-use crate::{netinet6::ip6_divert::DIVB6TABLE, netinet6::raw_ip6::RAWIN6PCBTABLE};
 use hal::klock;
 use hal::user::UserPtr;
+use kernel::netinet::in_pcb::in_pcbsolock;
 use kernel::sysctl::{RdString, SysctlNode, SysctlReq};
 
 /// `MAXPARTITIONS` (`<machine/disklabel.h>`, 16 on amd64 and arm64): number of partitions.
@@ -628,7 +624,8 @@ fn unp_path_copy(dst: &mut [u8; KI_UNPPATHLEN], addr: &[u8]) {
 
 /// `fill_file`: one `kinfo_file` for the file `fp`, or (without a file) for the vnode `vp`
 /// a process uses as its text, current or root directory (`fd` is then `KERN_FILE_TEXT`,
-/// ...), or for the socket `so` of a protocol control block table (locked by the caller).
+/// ...), or for the socket `so` of a protocol control block table, with its lock as the
+/// caller holds it (the kernel's `in_pcbsolock`).
 /// `fdp` and `pr` are the descriptor table and the process the descriptor is found through,
 /// for `KERN_FILE_BYPID`/`KERN_FILE_BYUID`.
 #[allow(clippy::too_many_arguments)] // the C's arguments
@@ -640,7 +637,7 @@ pub fn fill_file(
     vp: Option<&'static Vnode>,
     pr: Option<&Process>,
     p: &Proc,
-    so: Option<&Socket>,
+    so: Option<(&Socket, &mut kernel::net::socket::SoLocked<'_>)>,
     show_pointers: bool,
 ) {
     *kf = KinfoFile::zeroed();
@@ -712,13 +709,9 @@ pub fn fill_file(
         }
         (DTYPE_SOCKET, _) => {
             // if so is passed as parameter it is already locked (an internet socket, by the
-            // caller's C-style in_pcbsolock: lent)
+            // caller's in_pcbsolock: its holding handed over)
             match (so, fp) {
-                (Some(so), _) => {
-                    let lend = crate::net::if_::net_held("kern.file");
-                    let mut w = kernel::net::socket::solocked_legacy(so, Some(lend.net()));
-                    fill_file_socket(kf, so, &mut w, show_pointers);
-                }
+                (Some((so, w)), _) => fill_file_socket(kf, so, w, show_pointers),
                 (None, Some(fp)) => {
                     let so = fp_socket(fp);
                     let mut w = kernel::net::socket::solock_shared(so);
@@ -996,24 +989,33 @@ impl FileWalk<'_> {
             if self.room() {
                 drop(g);
                 net_lock_shared();
-                let Some(so) = in_pcbsolock(i) else {
-                    net_unlock_shared();
+                // in_pcbsolock: the kernel's (D-5 of N6.6b), under the shared net lock's
+                // proof; its drop is in_pcbsounlock, before the net lock goes.
+                let filled = {
+                    let lend = crate::net::if_::net_held("kern.file");
+                    match (i.socket_opt(), in_pcbsolock(i, lend.net())) {
+                        (Some(so), Some(mut w)) => {
+                            fill_file(
+                                &mut self.kf,
+                                None,
+                                None,
+                                0,
+                                None,
+                                None,
+                                self.p,
+                                Some((so, &mut w)),
+                                self.show_pointers,
+                            );
+                            true
+                        }
+                        _ => false,
+                    }
+                };
+                net_unlock_shared();
+                if !filled {
                     g = table.lock();
                     continue;
-                };
-                fill_file(
-                    &mut self.kf,
-                    None,
-                    None,
-                    0,
-                    None,
-                    None,
-                    self.p,
-                    Some(so),
-                    self.show_pointers,
-                );
-                in_pcbsounlock(Some(i), Some(so));
-                net_unlock_shared();
+                }
                 let r = copyout(&self.kf.as_bytes()[..self.outsize], self.dp);
                 g = table.lock();
                 if let Err(e) = r {
@@ -1149,13 +1151,13 @@ pub fn sysctl_file(name: &[i32], where_: usize, sizep: &mut usize, p: &Proc) -> 
                 w.fillinptable(kernel::netinet::udp_usrreq::udbtable::<BsdProcGlue>())?;
                 #[cfg(feature = "inet6")]
                 w.fillinptable(kernel::netinet::udp_usrreq::udb6table::<BsdProcGlue>())?;
-                w.fillinptable(&RAWCBTABLE)?;
+                w.fillinptable(kernel::netinet::raw_ip::rawcbtable::<BsdProcGlue>())?;
                 #[cfg(feature = "inet6")]
-                w.fillinptable(&RAWIN6PCBTABLE)?;
+                w.fillinptable(kernel::netinet6::raw_ip6::rawin6pcbtable::<BsdProcGlue>())?;
                 // NPF > 0
-                w.fillinptable(&DIVBTABLE)?;
+                w.fillinptable(kernel::netinet::ip_divert::divbtable::<BsdProcGlue>())?;
                 #[cfg(feature = "inet6")]
-                w.fillinptable(&DIVB6TABLE)?;
+                w.fillinptable(kernel::netinet6::ip6_divert::divb6table::<BsdProcGlue>())?;
             }
             let mut fp: Option<FileRef> = None;
             loop {
@@ -2164,13 +2166,14 @@ mod tests {
     }
 
     /// `KERN_FILE_BYFILE`'s walk of the TCP table (`FileWalk::fillinptable`, `FILLINPTABLE`)
-    /// over a kernel TCP socket: `bsd`'s `in_pcbsolock` holds its lock detached, `fill_file`
-    /// attaches the holding for the kernel's `tcp_kinfo` (`solocked_legacy`'s `Attached`
-    /// branch), and the TCP members are the C's `fill_file`'s: `t_state`, the two windows and
-    /// the congestion window of the control block; `inp_ppcb` is the block's address under
-    /// show_pointers and NULL without, `so_pcb` the pcb's or -1.
+    /// over a kernel TCP socket: the kernel's `in_pcbsolock` holds its lock by a witness under
+    /// the shared net lock's proof (D-5 of N6.6b; until N6.6b1 `bsd`'s detached form), the
+    /// holding handed to `fill_file` for the kernel's `tcp_kinfo`, and the TCP members are the
+    /// C's `fill_file`'s: `t_state`, the two windows and the congestion window of the control
+    /// block; `inp_ppcb` is the block's address under show_pointers and NULL without,
+    /// `so_pcb` the pcb's or -1.
     #[test]
-    fn kern_file_byfile_walks_a_tcp_socket_under_its_detached_lock() {
+    fn kern_file_byfile_walks_a_tcp_socket_under_its_lock() {
         use crate::kern::proc_glue::BsdProcGlue;
         use crate::netinet::in_pcb::sotoinpcb;
         use kernel::netinet::tcp_fsm::TCPS_LISTEN;

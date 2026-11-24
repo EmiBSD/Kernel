@@ -152,10 +152,6 @@ use crate::machine::db_machdep::{
 use crate::machine::intr::spl0;
 use crate::net::route::{db_show_rtable, db_show_rtentry};
 use crate::netinet::ip_ipsp::{TDB_POOL, Tdb, tdb_printit};
-#[cfg(feature = "nfsclient")]
-use crate::nfs::nfs_debug::{
-    db_show_all_nfsnodes, db_show_all_nfsreqs, nfs_node_print, nfs_request_print,
-};
 use crate::sys::mbuf::Mbuf;
 use crate::sys::reboot::{
     RB_AUTOBOOT, RB_DUMP, RB_HALT, RB_NOSYNC, RB_POWERDOWN, RB_RESET, RB_TIMEBAD, RB_USERREQ,
@@ -563,28 +559,59 @@ fn db_vnode_print_cmd(_addr: DbExpr, _have: bool, _count: DbExpr, _modif: &[u8])
     db_stub!("vfs_vnode_print (vfs_subr.c)")
 }
 
-/// `db_nfsreq_print_cmd`: `show nfsreq[/f] addr`.
+/// The ddb console as a `core::fmt::Write`, for the kernel's printers.
 #[cfg(feature = "nfsclient")]
-fn db_nfsreq_print_cmd(addr: DbExpr, _have: bool, _count: DbExpr, modif: &[u8]) -> DbResult {
-    let full = modif.first() == Some(&b'f');
+struct DbOut;
 
-    // nfs_request_print reads a whole struct nfsreq at the address: the user vouches for it,
-    // as in C, except for 0, which Rust may not read through.
-    if addr != 0 {
-        nfs_request_print(addr as usize as *const u8, full, db_printf);
+#[cfg(feature = "nfsclient")]
+impl fmt::Write for DbOut {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        db_printf(format_args!("{s}"));
+        Ok(())
     }
+}
+
+/// `db_show_all_nfsreqs`: `show all nfsreqs[/f]`, the kernel's (N6.7a5).
+#[cfg(feature = "nfsclient")]
+fn db_show_all_nfsreqs(_addr: DbExpr, _have: bool, _count: DbExpr, modif: &[u8]) -> DbResult {
+    let full = modif.first() == Some(&b'f');
+    let _ = kernel::fs::nfs::nfs_debug::db_show_all_nfsreqs::<crate::kern::proc_glue::BsdProcGlue>(
+        full, &mut DbOut,
+    );
     Ok(())
 }
 
-/// `db_nfsnode_print_cmd`: `show nfsnode[/f] addr`.
+/// `db_show_all_nfsnodes`: `show all nfsnodes[/f]`, the kernel's (N6.7a5).
+#[cfg(feature = "nfsclient")]
+fn db_show_all_nfsnodes(_addr: DbExpr, _have: bool, _count: DbExpr, modif: &[u8]) -> DbResult {
+    let full = modif.first() == Some(&b'f');
+    let _ = kernel::fs::nfs::nfs_debug::db_show_all_nfsnodes::<crate::kern::proc_glue::BsdProcGlue>(
+        full, &mut DbOut,
+    );
+    Ok(())
+}
+
+/// `db_nfsreq_print_cmd`: `show nfsreq[/f] addr`, the kernel's (N6.7a5).
+#[cfg(feature = "nfsclient")]
+fn db_nfsreq_print_cmd(addr: DbExpr, _have: bool, _count: DbExpr, modif: &[u8]) -> DbResult {
+    let full = modif.first() == Some(&b'f');
+    let _ = kernel::fs::nfs::nfs_debug::db_nfsreq_print::<crate::kern::proc_glue::BsdProcGlue>(
+        addr as usize,
+        full,
+        &mut DbOut,
+    );
+    Ok(())
+}
+
+/// `db_nfsnode_print_cmd`: `show nfsnode[/f] addr`, the kernel's (N6.7a5).
 #[cfg(feature = "nfsclient")]
 fn db_nfsnode_print_cmd(addr: DbExpr, _have: bool, _count: DbExpr, modif: &[u8]) -> DbResult {
     let full = modif.first() == Some(&b'f');
-
-    // As in db_nfsreq_print_cmd, for a struct nfsnode.
-    if addr != 0 {
-        nfs_node_print(addr as usize as *const u8, full, db_printf);
-    }
+    let _ = kernel::fs::nfs::nfs_debug::db_nfsnode_print::<crate::kern::proc_glue::BsdProcGlue>(
+        addr as usize,
+        full,
+        &mut DbOut,
+    );
     Ok(())
 }
 

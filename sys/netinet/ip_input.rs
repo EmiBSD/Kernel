@@ -63,8 +63,6 @@ use crate::kern::proc_glue::BsdProcGlue as G;
 use crate::net::if_::net_held;
 use crate::net::if_var::{Ifnet, Netstack};
 use crate::net::route::Route;
-use crate::netinet::in_pcb::Inpcb;
-use crate::netinet::ip::Ip;
 use crate::sys::mbuf::{Mbuf, park, unpark};
 
 pub use kernel::netinet::ip_input::{
@@ -162,19 +160,13 @@ pub fn ip_send(m: &'static Mbuf) {
     kernel::netinet::ip_input::ip_send(unpark(m));
 }
 
-/// `ip_savecontrol(inp, mp, ip, m)`: the kernel's control messages appended at `*mp` (an
-/// empty slot in every caller), parked.
-pub fn ip_savecontrol(inp: &Inpcb, mp: &mut Option<&'static Mbuf>, ip: &Ip, m: &Mbuf) {
-    let chain = kernel::netinet::ip_input::ip_savecontrol::<G>(inp, ip, m);
-    *mp = chain.map(park);
-}
-
 /* </CODE> */
 
 /* <TESTS> */
 #[cfg(test)]
 pub(crate) mod tests {
     use crate::net::if_var::IfnetLegacy;
+    use crate::netinet::ip::Ip;
     // Host tests for IPv4: header validation in `ipv4_input` on crafted packets, and the whole
     // path of a ping over a test Ethernet interface: an address through `in_ioctl`, the
     // routes it makes, a default route, ARP resolution with the held packet sent once the reply

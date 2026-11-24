@@ -555,7 +555,7 @@ mod tests {
     use super::*;
     use crate::kern::uipc_mbuf::tests::setup as mbuf_setup;
     use crate::kern::uipc_mbuf::{m_freem, m_get};
-    use crate::nfs::nfs_subs::nfsm_reqhead;
+    use crate::nfs::nfs_subs::tests::nfsm_reqhead;
     use crate::nfs::nfs_subs::tests::{bytes, chain, lens};
     use crate::nfs::nfsm_subs::nfsm_avail;
     use crate::nfs::nfsproto::NFSV3SATTRTIME_DONTCHANGE;

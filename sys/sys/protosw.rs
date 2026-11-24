@@ -395,6 +395,12 @@ pub struct Protosw {
     pub pr_slowtimo: Option<fn()>,
     /// `pr_sysctl`: sysctl for protocol.
     pub pr_sysctl: Option<PrSysctlFn>,
+    /// The C's `.pr_usrreqs = &rip_usrreqs` (or `&rip6_usrreqs`) with `.pr_ctloutput =
+    /// rip_ctloutput` (or `rip6_ctloutput`): a row whose sockets are raw IP's, served by the
+    /// kernel's raw requests and options (`kernel::netinet::raw_ip`, `kernel::netinet6::raw_ip6`,
+    /// by the domain's family) since N6.6b1 moved raw IP; its `pr_usrreqs` and `pr_ctloutput`
+    /// are then `None` (D-2 of N6.6b: the IP-in-IP, IPsec and pfsync rows, until N8).
+    pub pr_rip: bool,
 }
 
 impl Protosw {
@@ -414,6 +420,7 @@ impl Protosw {
             pr_fasttimo: None,
             pr_slowtimo: None,
             pr_sysctl: None,
+            pr_rip: false,
         }
     }
 }
