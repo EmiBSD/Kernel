@@ -51,7 +51,7 @@
 //!   when one is there (on a mount's queue, on the node hash); the C reads whatever lies at
 //!   the address as one.
 //! - `r_procp` is printed as the requester's thread id (`proc 0x..`, 0 for none), `r_nmp` as
-//!   the mount the walk is at (0 for `show nfsreq`), `r_md` as the reply's first mbuf (the
+//!   the mount the request waits on, `r_md` as the reply's first mbuf (the
 //!   reply is a chain and the bytes consumed, `nfs`'s Redesign); the C prints pointers.
 //!
 //! ## Redesign

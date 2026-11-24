@@ -85,9 +85,11 @@
 //!   `nfsm_srvfhtom` takes the `nfsfh_t` the server's handle lives in (the C passes its
 //!   `fh_generic` member and reads `NFSX_V2FH` bytes from it, past the `fhandle_t`).
 //! - `nfsstats` is the kernel's `NFSSTATS` of atomics.
-//! - `nfs_init` calls the kernel's (`nfs_ticks`, "nfsreqpl"), then, under `NFSSERVER`,
-//!   `nfsrv_init(0)` (`nfs_syscalls.c`) and `nfsrv_initcache()` (`nfs_srvcache.c`), as the C
-//!   does.
+//! - `nfs_init` runs, under `NFSSERVER`, `nfsrv_init(0)` (`nfs_syscalls.c`) and
+//!   `nfsrv_initcache()` (`nfs_srvcache.c`), then the kernel's (`nfs_ticks`, "nfsreqpl"):
+//!   the C's order, so "nfsreqpl" is registered after the server's pools (`vmstat -m`'s
+//!   rows, the `kern.pool` serials); the C sets `nfs_ticks` first, which nothing reads
+//!   before the first mount.
 //! - `nfsrv_errmap` maps an `err` below 1 to `NFSERR_IO`; the C indexes the version 2 table
 //!   at `err - 1` and would read before it (its callers never pass one).
 
@@ -881,17 +883,17 @@ pub fn nfsm_nextbytes<'a>(
     Ok(unsafe { XdrIn::new(p, n) })
 }
 
-/// `nfs_init`: called once to initialize data structures: the kernel's half (the timer's
-/// period and "nfsreqpl", `kernel::fs::nfs::nfs_subs::nfs_init`, N6.7a5), then the server's
-/// tables (`bsd`'s until N6.7b).
+/// `nfs_init`: called once to initialize data structures: the server's tables (`bsd`'s
+/// until N6.7b), then the kernel's half (the timer's period and "nfsreqpl",
+/// `kernel::fs::nfs::nfs_subs::nfs_init`, N6.7a5), "nfsreqpl" last as in the C.
 pub fn nfs_init() {
-    kernel::fs::nfs::nfs_subs::nfs_init::<crate::kern::proc_glue::BsdProcGlue>();
     #[cfg(feature = "nfsserver")]
     {
         // Init server data structures.
         crate::nfs::nfs_syscalls::nfsrv_init(0);
         crate::nfs::nfs_srvcache::nfsrv_initcache(); // Init the server request cache
     }
+    kernel::fs::nfs::nfs_subs::nfs_init::<crate::kern::proc_glue::BsdProcGlue>();
 }
 
 /// `nfsrv_errmap(nd, err)`: maps an errno to an NFS error number. For version 3 also

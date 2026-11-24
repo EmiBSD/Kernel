@@ -70,8 +70,6 @@
 //!   no caller reaches, returns `Ok(None)` (LZ's).
 //! - `mountnfs`' failure path also empties the mount's slot, which the C leaves pointing at
 //!   the freed `nfsmount` of a mount about to be freed (LZ's).
-//! - `f_mntonname`, `f_mntfromname` and `f_mntfromspec` are `strlcpy`'d with the C's
-//!   `MNAMELEN`, where LZ's `MNAMELEN - 1` cut an 89-character name to 88 (fuse's D-N5.9-10).
 //! - `nfs_mount_diskless` returns the mount and its root vnode, takes the server's address
 //!   from `ndm_saddr` (where the C's `ndm_args.addr` points) and the handle from `ndm_fh`, and
 //!   panics as the C when the mount fails. `nfs_mountroot` takes the two things only `bsd`
@@ -96,6 +94,9 @@
 //!   reuses `max`, LZ's note).
 //!
 //! ## Redesign
+//! - LZ's slip fixed: `f_mntonname`, `f_mntfromname` and `f_mntfromspec` are `strlcpy`'d with
+//!   the C's `MNAMELEN` (C:nfs/nfs_vfsops.c:653-658, an 89-character name kept whole), where
+//!   LZ's `MNAMELEN - 1` cut it to 88 (fuse's D-N5.9-10).
 //! - LZ's `NFS_VFSOPS` (a `bsd` `Vfsops` of function pointers) -> `impl Vfs<G> for NfsVfs<G>`
 //!   and its constant [`NfsVfs::VFS`] (fuse's shape), each slot the C's function.
 //! - The mount's `struct nfsmount` is a counted `malloc(M_NFSMNT)` block (`nfsmount`'s
@@ -750,7 +751,7 @@ pub fn nfs_mount<G: ProcGlue>(
     // sockargs() call must be after above copyin() calls. (`addrlen` an `int` made a
     // `size_t`, as the C's prototype converts it: a negative one is refused by the bound.)
     let nam = sockargs(UserPtr::new(args.addr), args.addrlen as usize, MT_SONAME)?;
-    // The name's bytes; `sockargs` bounds a name to an mbuf's data, below `NfsNam`'s room.
+    // The name's bytes; `sockargs` bounds a name to `UCHAR_MAX`, `NfsNam`'s room.
     let Some(nam) = NfsNam::new(nam.data()) else {
         return Err(Errno::EINVAL);
     };
@@ -1428,6 +1429,60 @@ mod tests {
             Err(Errno::ENOMEM)
         );
         assert_eq!(short, 624);
+    }
+
+    /// `args` as the kernel copy `mount(2)` makes of the user's `struct nfs_args`.
+    fn data_of(a: &NfsArgs) -> Vec<u8> {
+        hal::user::bytes_of(core::slice::from_ref(a)).to_vec()
+    }
+
+    /// `nfs_mount` on `mp` with the kernel copy `data`, the nfsiods asked for already (no
+    /// thread is started: `nfs_niothreads` made non-negative).
+    fn mount(mp: &'static Mount<G>, p: &Thread<G>, data: &mut [u8]) -> Result<(), Errno> {
+        let _ = nfs_niothreads.fetch_max(0, Ordering::Relaxed);
+        let mut nd = crate::fs::lookup::ndinit(
+            crate::fs::namei::LOOKUP,
+            crate::fs::namei::FOLLOW,
+            crate::fs::namei::NiDirp::Sys(b"/mnt"),
+            p,
+        );
+        nfs_mount(mp, b"/mnt", data, &mut nd, p)
+    }
+
+    /// `mount(2)`'s argument checks, each before any copy in, in the C's order: `RDIRPLUS`
+    /// without version 3, arguments shorter than `struct nfs_args` (the C's NULL), a handle
+    /// size below 0 or above `NFSX_V3FHMAX`, an update of a mount with no NFS structure; then,
+    /// after the handle and the host name are copied in, a server address longer than
+    /// `UCHAR_MAX` or negative (`sockargs`).
+    #[test]
+    fn mount_refuses_bad_arguments() {
+        let tm = test_mount(0);
+        let (mp, p) = (tm.mp, tm.p);
+        let mut a = args(NFSMNT_RDIRPLUS, SOCK_DGRAM);
+        assert_eq!(mount(mp, p, &mut data_of(&a)), Err(Errno::EINVAL));
+        a.flags = NFSMNT_NFSV3 | NFSMNT_RDIRPLUS;
+        a.fhsize = -1;
+        assert_eq!(mount(mp, p, &mut data_of(&a)), Err(Errno::EINVAL));
+        a.fhsize = NFSX_V3FHMAX as i32 + 1;
+        assert_eq!(mount(mp, p, &mut data_of(&a)), Err(Errno::EINVAL));
+        assert_eq!(mount(mp, p, &mut [0u8; 8]), Err(Errno::EINVAL));
+
+        // An update of a mount whose slot holds no NFS structure.
+        let fresh = crate::fs::mount::vfs_mount_alloc(None, mp.vfc());
+        crate::fs::mount::vfs_unbusy(fresh);
+        fresh.set_flag(fresh.flag() | MNT_UPDATE);
+        a.fhsize = 0;
+        assert_eq!(mount(fresh, p, &mut data_of(&a)), Err(Errno::EIO));
+
+        // The address's length, after the handle (`fhsize` 64, the bound kept) and the host
+        // name are copied in from user memory (testfs's slots).
+        a.fhsize = NFSX_V3FHMAX as i32;
+        a.fh = crate::fs::testfs::up(2, &[7u8; 64]).addr();
+        a.hostname = crate::fs::testfs::up(3, b"127.0.0.1:/x").addr();
+        for len in [256, -1] {
+            a.addrlen = len;
+            assert_eq!(mount(mp, p, &mut data_of(&a)), Err(Errno::EINVAL), "{len}");
+        }
     }
 
     /// The operations that only answer an errno, as the C's.

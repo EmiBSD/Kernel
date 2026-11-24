@@ -101,8 +101,9 @@
 //!   with `getsn` under `cnpollc`) is reported and skipped: `getsn` is not ported. A kernel
 //!   booted with `-a` goes on with its configured root. `NFSCLIENT` (feature `nfsclient`):
 //!   the `nfs_mountroot` branches are ported (`nfs_mountroot` is a two-line call of the
-//!   kernel's since N6.7a5, so that `setroot`'s address test has a `bsd` function); `swapdev = NODEV` (a constant of `conf.c` here)
-//!   is not assigned, nothing reads it before `swdevt[0]` is.
+//!   kernel's since N6.7a5, so that `setroot`'s address test has a `bsd` function);
+//!   `swapdev = NODEV` (a constant of `conf.c` here) is not assigned, nothing reads it
+//!   before `swdevt[0]` is.
 //! - `parsedisk` returns the device and the `dev_t` as an `Option` pair instead of filling
 //!   `*devp`; `getdisk` likewise.
 //! - `disk_attach_callback`'s `struct disk_attach_task` is a malloc'd [`DiskAttachTask`], as
