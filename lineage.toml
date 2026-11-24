@@ -6760,7 +6760,7 @@ rust = "sys/hal/sys/nfs_nfs.rs"
 crate = "hal"
 lz = ["sys/nfs/nfs.rs"]
 status = "redesigned"
-notes = "N6.7a0 (D-10): nfs.h's userland part: the tunables, the nfssvc(2) flags, the vfs.nfs ids and FS_NFS_NAMES, struct nfsstats as a plain abi_pod! image (78 u64, 624 bytes; LZ's atomics-as-words cast, two unsafe, gone: the counters are the kernel's NfsCounters); bsd's nfs.rs re-exports them"
+notes = "N6.7a0 (D-10): nfs.h's userland part: the tunables, the nfssvc(2) flags, the vfs.nfs ids and FS_NFS_NAMES, struct nfsstats as a plain abi_pod! image (78 u64, 624 bytes; LZ's atomics-as-words cast, two unsafe, gone: the counters are the kernel's NfsCounters); bsd's nfs.rs re-exports them. N6.7b2 (D-8): struct nfsd_args and struct nfsd_srvargs, nfssvc(2)'s arguments, as abi_pod! images (24 and 144 bytes, the LP64 holes named; LZ's hand-written unsafe AbiPod impl of NfsdArgs gone)"
 
 [[module]]
 rust = "sys/hal/sys/nfs_nfsproto.rs"
@@ -7466,6 +7466,34 @@ lz = "sys/nfs/nfs_debug.rs::DbPrintf"
 native = []
 kind = "dropped"
 reason = "the printers write to a core::fmt::Write"
+
+[[module]]
+rust = "sys/kernel/fs/nfs/nfs_srvcache.rs"
+crate = "kernel"
+lz = ["sys/nfs/nfs_srvcache.rs", "sys/nfs/nfsrvcache.rs"]
+status = "redesigned"
+notes = "N6.7b2 (unregistered until 7b4): the duplicate request cache: NfsrvCache a PoolBox of nfsrvcpl (vmstat -m: the C's M_NFSD blocks; D-12's rule) owned by the LRU (OwnedList) and a counted member of its hash chain (a SecondaryList per bucket, the chains an MArray of M_NFSD, SipHash of the xid under a random key), the table one kernel-lock cell (lookups under its reader, changes under its witness), the members relaxed atomics, the saved reply and copied address LoanSlots; RC_LOCKED/RC_WANTED and the nfsrc sleep with the chain walked again; a held entry kept by a SecondaryRef across m_copym(M_WAIT) and nfs_rephead; NETFAMILY, the nonidempotent and nfsv2_repstat tables, initcache/getcache/updatecache/cleancache/lookupcache, cleanentry's double m_free of rc_nam closed"
+
+[[module]]
+rust = "sys/kernel/fs/nfs/nfs_srvsocket.rs"
+crate = "kernel"
+lz = ["sys/nfs/nfs_socket.rs"]
+status = "redesigned"
+notes = "N6.7b2 (unregistered until 7b4): nfs_socket.c's server half: nfs_rephead (an XdrWriter over a packet header mbuf, cluster or max_hdr room), nfs_getreq (the C's 10/8-word dissection then every bound in its order over XdrReader; the request freed on every error), nfsrv_rcv (the upcall marks SLP_NEEDQ; an nfsd's M_WAIT call receives: a stream's bytes onto ns_raw, a datagram's record with its sender), nfsrv_getstream (on the stream state taken out of the record's LoanSlot: the mark read byte by byte, NFS_MAXPACKET -> EPERM, whole mbufs moved and the last one's part m_copym'd, fragments joined), nfsrv_dorec (a record for an nfsd, its descriptor a PoolBox of ndscpl), nfsrv_wakenfsd (nfsd_head under the kernel lock's reader, the socket handed through the nfsd's slot); nfs_realign gone (XdrReader copies)"
+
+[[module]]
+rust = "sys/kernel/fs/nfs/nfs_srvsubs.rs"
+crate = "kernel"
+lz = ["sys/nfs/nfs_srvsubs.rs", "sys/nfs/nfs_subs.rs"]
+status = "redesigned"
+notes = "N6.7b2 (unregistered until 7b4): nfs_srvsubs.c's helpers over the kernel's XdrReader/XdrWriter (nfs_namei checking each name byte as it copies it, mbuf by mbuf; nfsm_adj over the owned chain; nfsm_srvwcc, nfsm_srvpostop_attr, nfsm_srvfattr; nfsrv_fhtovp over Vfs::checkexp's ExportGrant by value, the reserved port and port 20 on a stream, the anonymous mapping, MNT_EXRDONLY; netaddr_match over the cache's rc_inetaddr; nfsm_srvsattr) and nfs_subs.c's server part (NFSRV_V2ERRMAP, the nfsv3err_* lists, NFSRV_V3ERRMAP, nfsrv_errmap, nfsm_srvfhtom); 0 unsafe (LZ's null fill and address copy are slice copies)"
+
+[[module]]
+rust = "sys/kernel/fs/nfs/nfssvc.rs"
+crate = "kernel"
+lz = ["sys/nfs/nfs_syscalls.rs", "sys/nfs/nfs.rs"]
+status = "redesigned"
+notes = "N6.7b2 (unregistered until 7b4, D-9): nfs.h's server structures and nfs_syscalls.c's server half. NfssvcSock (an MArc of M_NFSSVC pinned on nfssvc_sockhead, a PinList bound to the kernel lock; the membership's handle in ns_self; ns_flag/ns_solock/ns_sref relaxed atomics; ns_so, ns_fp kernel-lock cells; the queued mbufs one NsRcv in a LoanSlot; ns_nam the connected client's bytes, lent to a request as a name mbuf), Nfsd (an MBox of M_NFSD the call's frame owns, pinned on nfsd_head; nfsd_procp a tid, nfsd_nd gone), NfsrvDescript (a PoolBox of ndscpl: the request owned, the cursor the bytes consumed, nd_nam lent, nd_nam2 owned), NfsrvProc (nfsrv3_procs' one function type), NfsrvTables (VfsTables' nfsrv member); and nfs_syscalls.c's server half: sys_nfssvc (suser, the nfsd init wait, NFSSVC_ADDSOCK over UserPtr<NfsdArgs>/getsock/sockargs, NFSSVC_NFSD over UserPtr<NfsdSrvargs>, EINTR/ERESTART success; procs, nfs_serv's table, given by 7b4's registration), nfssvc_addsock, nfssvc_checknam, nfssvc_nfsd and its loop (the socket and the request in the nfsd's frame, ns_nam lent per request), the reply's send, nfsrv_zapsock, nfsrv_slpderef (the caller's handle; the unlink takes the membership's), nfsrv_init, nfsrv_getslp (the handle out of the nfsd's mailbox)"
 
 [[module]]
 rust = "sys/ntfs/ntfs.rs"

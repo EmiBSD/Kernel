@@ -329,6 +329,10 @@ pub struct VfsTables<G: ProcGlue> {
     /// nfs's globals (the pools "nfsreqpl" and "nfsnodepl"), N6.7a1: the last member; the
     /// same layout test checks `ufs` did not move.
     pub nfs: crate::fs::nfs::nfs::NfsTables<G>,
+    /// The nfs server's globals (`nfs_syscalls.c`'s sockets, nfsds and descriptor pool),
+    /// N6.7b2: the last member; the same layout test checks `ufs` did not move.
+    #[cfg(feature = "nfsserver")]
+    pub nfsrv: crate::fs::nfs::nfssvc::NfsrvTables<G>,
 }
 
 impl<G: ProcGlue> VfsTables<G> {
@@ -378,6 +382,8 @@ impl<G: ProcGlue> VfsTables<G> {
             #[cfg(feature = "fuse")]
             fuse: crate::fs::fuse::fusefs::FuseTables::new(),
             nfs: crate::fs::nfs::nfs::NfsTables::new(),
+            #[cfg(feature = "nfsserver")]
+            nfsrv: crate::fs::nfs::nfssvc::NfsrvTables::new(),
         }
     }
 }
@@ -542,6 +548,8 @@ pub fn vfs_test_reset<G: ProcGlue>() {
     #[cfg(feature = "fuse")]
     crate::fs::fuse::fusefs::fuse_test_reset::<G>();
     crate::fs::nfs::nfs_subs::nfs_test_reset::<G>();
+    #[cfg(feature = "nfsserver")]
+    crate::fs::nfs::nfssvc::nfsrv_test_reset::<G>();
     t.rootvnode.set(None);
     t.numvnodes.store(0, Ordering::Relaxed);
 }
@@ -2540,10 +2548,19 @@ mod tests {
     /// N6.7a3: nfs's three vnode tables (`NfsVnops`, `NfsSpecVnops`, `NfsFifoVnops`, a byte
     /// each) grow `nfs` by 8 bytes once aligned: `ufs` sits at 41,440. N6.7a5: `nfs_diskless`
     /// (`nfs_mountroot`'s record, a `Mutexed` of the diskless structure) grows it by 624:
-    /// `ufs` sits at 42,064.
+    /// `ufs` sits at 42,064. N6.7b2: with `nfsserver` (`just test`'s features), the server's
+    /// tables (`nfsrv`, `NfsrvTables`: the socket and nfsd lists, the datagram record, the
+    /// descriptors' pool and the duplicate request cache) grow the members placed before
+    /// `ufs` by 328 bytes: `ufs` sits at 42,392; without the feature (plain `cargo test -p
+    /// kernel`) it stays at 42,064.
     #[test]
     fn the_ufs_tables_stay_where_they_were_without_msdosfs() {
-        assert_eq!(core::mem::offset_of!(VfsTables<TestGlue>, ufs), 42_064);
+        let at = if cfg!(feature = "nfsserver") {
+            42_392
+        } else {
+            42_064
+        };
+        assert_eq!(core::mem::offset_of!(VfsTables<TestGlue>, ufs), at);
     }
 }
 /* </TESTS> */

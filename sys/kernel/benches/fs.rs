@@ -167,6 +167,17 @@
 //!   padding over fresh mbufs (a cluster while more than `MLEN` is left), the chain finished
 //!   and freed.
 //!
+//! N6.7b2's rows, the nfs server's request path but its procedures (`option NFSSERVER`, built
+//! with the kernel's `nfsserver` feature; written at 7b2, measured at the N6 close, decision
+//! 50; no "before" exists, D-13):
+//! - `nfs.srv.getreq`: `nfs_getreq` of a version 3 GETATTR call with an AUTH_UNIX credential
+//!   of two groups, its header split over two mbufs: the C's dissection and every bound, the
+//!   credential filled.
+//! - `nfs.srv.cache.hit`: `nfsrv_getcache` of a retransmitted datagram request found in the
+//!   cache (done once, in progress after: the hit path either way): the chain walked under
+//!   the kernel lock's reader, the entry locked and held, moved to the LRU's tail under its
+//!   witness, unlocked (the C's `nfsrv_lookupcache` and its LRU move).
+//!
 //! The doubles' pools recycle their items (`testutil::set_pool_recycle`, D-N5.5b-5; until
 //! N5.5b3 a copy of `proc.rs`'s recycling backend here): the doubles' pool otherwise hands out
 //! a fresh zeroed page per item and never takes one back, which timed the host's `malloc` and
@@ -740,6 +751,10 @@ fn main() {
         "fuse.roundtrip",
         "nfs.xdr.dissect.fattr3",
         "nfs.xdr.build.write8k",
+        #[cfg(feature = "nfsserver")]
+        "nfs.srv.getreq",
+        #[cfg(feature = "nfsserver")]
+        "nfs.srv.cache.hit",
     ];
     if args.first().map(String::as_str) == Some("list") {
         for n in names {
@@ -1244,6 +1259,93 @@ fn main() {
     std::thread::scope(|s| {
         s.spawn(|| nfs_rows(&wanted, &report));
     });
+
+    // N6.7b2's rows: the nfs server's request header and reply cache, on a thread of their own.
+    #[cfg(feature = "nfsserver")]
+    std::thread::scope(|s| {
+        s.spawn(|| nfs_srv_rows(&wanted, &report));
+    });
+}
+
+/// N6.7b2's rows (the module's docs): the nfs server's RPC header and its reply cache.
+#[cfg(feature = "nfsserver")]
+fn nfs_srv_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
+    use kernel::fs::nfs::nfs_srvcache::{nfsrv_getcache, nfsrv_initcache, nfsrv_updatecache};
+    use kernel::fs::nfs::nfs_srvsocket::nfs_getreq;
+    use kernel::fs::nfs::nfssvc::{ND_NFSV3, NfsrvDescript, NfssvcSock};
+    use kernel::net::mbuf::{M_WAIT, MT_DATA, MT_SONAME, MbufBox, m_get};
+
+    const ROWS: [&str; 2] = ["nfs.srv.getreq", "nfs.srv.cache.hit"];
+    static BENCH_NMBCLUST: core::sync::atomic::AtomicI64 =
+        core::sync::atomic::AtomicI64::new(256 * 1024);
+    if !ROWS.iter().any(|n| wanted(n)) {
+        return;
+    }
+    let _g = kernel::testutil::pages_install(64 << 20);
+    kernel::testutil::kernel_maps_install();
+    kernel::net::mbuf::mbinit(&BENCH_NMBCLUST);
+    hal::klock::kernel_lock();
+
+    // A version 3 GETATTR call: xid, CALL, RPC 2, NFS, version 3, procedure 1, AUTH_UNIX of 28
+    // bytes (stamp, an empty machine name, uid, gid, two groups), an AUTH_NULL verifier.
+    let words: [u32; 17] = [7, 0, 2, 100_003, 3, 1, 1, 28, 0, 0, 0, 0, 2, 5, 6, 0, 0];
+    let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_be_bytes()).collect();
+    let chain = |b: &[u8]| -> MbufBox {
+        let cut = 23;
+        let mut first = need(m_get(M_WAIT, MT_DATA).ok_or(()), "an mbuf");
+        let mut second = need(m_get(M_WAIT, MT_DATA).ok_or(()), "an mbuf");
+        for (m, part) in [(&mut first, &b[..cut]), (&mut second, &b[cut..])] {
+            m.m_len().set(part.len() as u32);
+            if let Some(d) = m.data_mut() {
+                d.copy_from_slice(part);
+            }
+        }
+        drop(first.m_next.set(second));
+        first
+    };
+
+    if wanted(ROWS[0]) {
+        let mut nd = NfsrvDescript::default();
+        report(
+            ROWS[0],
+            measure(|| {
+                nd.nd_mrep = Some(chain(&bytes));
+                rounds(|| {
+                    nd.nd_off = 0;
+                    black_box(nfs_getreq(black_box(&mut nd), true).ok());
+                })
+            }),
+        );
+    }
+    if wanted(ROWS[1]) {
+        nfsrv_initcache::<TestGlue>();
+        let slp = NfssvcSock::<TestGlue>::new(None);
+        let sin = [16u8, 2, 2, 188, 127, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0];
+        let mut nam = need(m_get(M_WAIT, MT_SONAME).ok_or(()), "an mbuf");
+        nam.m_len().set(16);
+        if let Some(d) = nam.data_mut() {
+            d.copy_from_slice(&sin);
+        }
+        let mut nd = NfsrvDescript {
+            nd_retxid: 7,
+            nd_procnum: 1,
+            nd_flag: ND_NFSV3,
+            nd_nam2: Some(nam),
+            ..NfsrvDescript::default()
+        };
+        // The first call makes the entry; done, it is idempotent: each later call is a hit.
+        let _ = nfsrv_getcache(&mut nd, &slp);
+        nfsrv_updatecache::<TestGlue>(&nd, true, None);
+        report(
+            ROWS[1],
+            measure(|| {
+                rounds(|| {
+                    black_box(nfsrv_getcache(black_box(&mut nd), &slp).0);
+                })
+            }),
+        );
+    }
+    hal::klock::kernel_unlock();
 }
 
 /// N6.7a0's rows (the module's docs): the nfs client's XDR cursors over the kernel's mbufs.

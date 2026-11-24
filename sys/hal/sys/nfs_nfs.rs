@@ -69,7 +69,12 @@
 //!   sysctl copies, an [`crate::abi_pod!`], and the kernel's counters convert to and from it
 //!   member by member (`NfsCounters::snapshot`, `NfsCounters::restore`), no cast.
 //! - The rest of `nfs.h` (the request, the server's socket, thread and descriptor, the RTT
-//!   timers, `NFSINT_SIGMASK`, `nfsd_args`) is the kernel's or `bsd`'s, not userland's.
+//!   timers, `NFSINT_SIGMASK`) is the kernel's or `bsd`'s, not userland's.
+//! - `struct nfsd_args` and `struct nfsd_srvargs`, `nfssvc(2)`'s arguments, are images here
+//!   (N6.7b2, D-8: the kernel's `sys_nfssvc` copies them in through a `UserPtr`), with the
+//!   holes the C compiler leaves on LP64 named (`_pad*`) and their user addresses `usize`;
+//!   `nsd_timestamp`'s `struct timeval` is its two words (`tv_sec`, `tv_usec`), which the
+//!   kernel never reads (the C copies the structure in to check it is readable, and drops it).
 
 use crate::sys::nfs_nfsproto::NFS_NPROCS;
 use crate::sys::sysctl::{CTLTYPE_INT, CTLTYPE_STRUCT, Ctlname};
@@ -112,6 +117,78 @@ pub const NFS_READDIRBLKSIZ: i32 = 512;
 pub const NFSSVC_NFSD: i32 = 0x004;
 /// `NFSSVC_ADDSOCK`.
 pub const NFSSVC_ADDSOCK: i32 = 0x008;
+
+/// `struct nfsd_args`: the `NFSSVC_ADDSOCK` argument of `nfssvc(2)`. Not that anyone besides
+/// nfsd(8) should ever use it.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NfsdArgs {
+    /// `sock`: socket to serve.
+    pub sock: i32,
+    /// The hole before `name`.
+    pub _pad0: i32,
+    /// `name`: client addr for connection based sockets (a user address).
+    pub name: usize,
+    /// `namelen`: length of name.
+    pub namelen: i32,
+    /// The hole at the end.
+    pub _pad1: i32,
+}
+
+// `#[repr(C)]` integers with the two holes named: no padding.
+crate::abi_pod!(NfsdArgs {
+    sock: i32,
+    _pad0: i32,
+    name: usize,
+    namelen: i32,
+    _pad1: i32,
+});
+
+/// `struct nfsd_srvargs`: the `NFSSVC_NFSD` argument of `nfssvc(2)`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct NfsdSrvargs {
+    /// `nsd_nfsd`: pointer to in kernel nfsd struct (opaque to userland, never read).
+    pub nsd_nfsd: usize,
+    /// `nsd_uid`: effective uid mapped to cred.
+    pub nsd_uid: crate::sys::types::Uid,
+    /// `nsd_haddr`: IP address of client.
+    pub nsd_haddr: u32,
+    /// `nsd_cr`: cred. uid maps to.
+    pub nsd_cr: crate::sys::mount::Xucred,
+    /// `nsd_authlen`: length of auth string (ret).
+    pub nsd_authlen: i32,
+    /// `nsd_authstr`: auth string (ret), a user address.
+    pub nsd_authstr: usize,
+    /// `nsd_verflen`: and the verifier.
+    pub nsd_verflen: i32,
+    /// The hole before `nsd_verfstr`.
+    pub _pad0: i32,
+    /// `nsd_verfstr`, a user address.
+    pub nsd_verfstr: usize,
+    /// `nsd_timestamp`: timestamp from verifier (`tv_sec`, `tv_usec`).
+    pub nsd_timestamp: [i64; 2],
+    /// `nsd_ttl`: credential ttl (sec).
+    pub nsd_ttl: u32,
+    /// The hole at the end.
+    pub _pad1: u32,
+}
+
+// `#[repr(C)]` integers and `Xucred` (an image itself) with the two holes named: no padding.
+crate::abi_pod!(NfsdSrvargs {
+    nsd_nfsd: usize,
+    nsd_uid: crate::sys::types::Uid,
+    nsd_haddr: u32,
+    nsd_cr: crate::sys::mount::Xucred,
+    nsd_authlen: i32,
+    nsd_authstr: usize,
+    nsd_verflen: i32,
+    _pad0: i32,
+    nsd_verfstr: usize,
+    nsd_timestamp: [i64; 2],
+    nsd_ttl: u32,
+    _pad1: u32,
+});
 
 /// `NFS_NFSSTATS`: `vfs.nfs` sysctl(3) identifiers; struct: `struct nfsstats`.
 pub const NFS_NFSSTATS: i32 = 1;
@@ -292,6 +369,9 @@ crate::abi_pod!(Nfsstats {
 const _: () = {
     assert!(Nfsstats::NWORDS == 78);
     assert!(size_of::<Nfsstats>() == 624);
+    // LP64's `struct nfsd_args` and `struct nfsd_srvargs`, the same on both machines.
+    assert!(size_of::<NfsdArgs>() == 24);
+    assert!(size_of::<NfsdSrvargs>() == 144);
 };
 /* </CODE> */
 
@@ -313,6 +393,27 @@ mod tests {
         assert_eq!(offset_of!(Nfsstats, srvrpccnt), (17 + NFS_NPROCS) * 8);
         assert_eq!(offset_of!(Nfsstats, srvvop_writes), 77 * 8);
         assert_eq!(Nfsstats::new(), Nfsstats::default());
+    }
+
+    #[test]
+    fn the_nfssvc_arguments_sit_at_the_c_offsets() {
+        // struct nfsd_args { int sock; caddr_t name; int namelen; } on LP64.
+        assert_eq!(offset_of!(NfsdArgs, sock), 0);
+        assert_eq!(offset_of!(NfsdArgs, name), 8);
+        assert_eq!(offset_of!(NfsdArgs, namelen), 16);
+        assert_eq!(size_of::<NfsdArgs>(), 24);
+        // struct nfsd_srvargs: the pointer, two words, the 76-byte xucred, then the auth
+        // string's length and address, the verifier's, the timeval and the ttl.
+        assert_eq!(offset_of!(NfsdSrvargs, nsd_uid), 8);
+        assert_eq!(offset_of!(NfsdSrvargs, nsd_haddr), 12);
+        assert_eq!(offset_of!(NfsdSrvargs, nsd_cr), 16);
+        assert_eq!(offset_of!(NfsdSrvargs, nsd_authlen), 92);
+        assert_eq!(offset_of!(NfsdSrvargs, nsd_authstr), 96);
+        assert_eq!(offset_of!(NfsdSrvargs, nsd_verflen), 104);
+        assert_eq!(offset_of!(NfsdSrvargs, nsd_verfstr), 112);
+        assert_eq!(offset_of!(NfsdSrvargs, nsd_timestamp), 120);
+        assert_eq!(offset_of!(NfsdSrvargs, nsd_ttl), 136);
+        assert_eq!(size_of::<NfsdSrvargs>(), 144);
     }
 
     #[test]
