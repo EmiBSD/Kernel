@@ -6423,7 +6423,9 @@ status = "redesigned"
 [[module]]
 rust = "sys/net/pf_table.rs"
 lz = ["sys/net/pf_table.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/radix.rs"]
+notes = "N6.7b1 (the user's option A, 2026-11-24): pf's tables on the kernel's radix tree (PfrRadix in pfvar.rs, each route's value its entry), inline RefCell trees in the table, borrowed per lookup and per walk step (pfr_walk, the tree's cursor); PfrKtable is no PfPoolItem (pool_init/pool_put direct), pfr_create_ktable writes the trees into the zeroed item, pfr_destroy_ktable empties them before pool_put; rn2ke (the leaf-to-entry cast) went with the node pairs; ke_key gives the key's bytes, pfr_rnh lends a tree; pfr_walktree takes the entry"
 
 [[module]]
 rust = "sys/net/pfkeyv2.rs"
@@ -6447,7 +6449,8 @@ adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
 rust = "sys/net/pfvar.rs"
 lz = ["sys/net/pfvar.rs"]
 status = "adapted"
-adapted_by = ["sys/sys/tree.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/sys/tree.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/radix.rs"]
+notes = "N6.7b1: pfrke_node went with pf's tables' move onto the kernel's radix tree (PfrRadix); pfrkt_ip4/pfrkt_ip6 are RefCell<PfrRadix>, the trees themselves"
 
 [[module]]
 rust = "sys/net/pfvar_priv.rs"

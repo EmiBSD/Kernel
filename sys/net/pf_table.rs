@@ -54,9 +54,10 @@
 //!
 //! A table (`struct pfr_ktable`) is an item of `pfr_ktable_pl` in the global tree
 //! `pfr_ktables`, ordered by name then anchor; it holds two radix trees (`pfrkt_ip4`,
-//! `pfrkt_ip6`) of entries (`struct pfr_kentry`, items of `pfr_kentry_pl[type]`). An entry
-//! embeds the radix node pair it is linked by as its first member (`#[repr(C)]` in
-//! `net/pfvar.rs`), so the leaf the radix code returns is the entry. Transactions build a
+//! `pfrkt_ip6`) of entries (`struct pfr_kentry`, items of `pfr_kentry_pl[type]`): since N6.7b1
+//! the kernel's radix tree (`kernel::net::radix`, `PfrRadix` in `net/pfvar.rs`), which owns
+//! its nodes and keys and carries each route's entry, so no leaf is cast back to the entry
+//! that embedded it. Transactions build a
 //! shadow table (`pfr_ina_define`) that `pfr_ina_commit` merges or swaps in; an anchored table
 //! refers to the root table of the same name (`pfrkt_root`), which rules in the anchor fall back
 //! to when the anchored table is not active.
@@ -70,9 +71,10 @@
 //! - `COPYIN`/`COPYOUT` through a [`PfrBuf`]: a buffer of the other kind than the flags ask for,
 //!   or an index past the end of a kernel array, is `EFAULT` (the C would `bcopy` from the user
 //!   address, or `copyin` from a kernel address, or run off the array).
-//! - `pfr_walktree`'s `struct pfr_walktree` is [`PfrWalktree`], its union an enum; it is passed
-//!   to `rn_walktree` in a closure. `PFRW_POOL_GET`'s "finish search" return of 1 is
-//!   `Err(EPERM)` (`EPERM` is 1), which `pfr_kentry_byidx` ignores as the C does.
+//! - `pfr_walktree`'s `struct pfr_walktree` is [`PfrWalktree`], its union an enum; `rn_walktree`
+//!   is the tree's cursor (`pfr_walk`), which lends the tree for each step only, the successor
+//!   taken before `pfr_walktree` runs, as the C's. `PFRW_POOL_GET`'s "finish search" return of 1
+//!   is `Err(EPERM)` (`EPERM` is 1), which `pfr_kentry_byidx` ignores as the C does.
 //! - `pfr_kentry_all`'s `pfrke_rkif`/`pfrke_rifname` are reached through `pfr_kentry_route`, and
 //!   the cost entry's weight through `pfr_kentry_cost`, after the entry's type.
 //!   `pfr_fill_feedback` reads the weight of every entry as a `pfr_kentry_cost`, past the end of
@@ -97,20 +99,21 @@
 //! - `pfr_insert_kentry` and `pfr_remove_kentry` take `&PfrAddr` (pf.c's callers); the C's
 //!   `pfr_create_kentry` writes the implicit weight into the caller's `pfr_addr`, here into a
 //!   copy.
-//! - Where the C dereferences a pointer it takes to be set (a table's radix heads, the shadow of
-//!   a table being committed, the entry `rn_match` finds inside a block), a NULL one panics.
+//! - Where the C dereferences a pointer it takes to be set (the shadow of a table being
+//!   committed, the entry `rn_match` finds inside a block), a NULL one panics. A table's two
+//!   trees are its own members, made with the table (the C's `rn_inithead` heads); a borrow of
+//!   one while another is alive (none is) would panic.
 //! - `pfr_kentry_pl` is an array of `PFRKE_MAX` pools, as in C; `pf_pool_limits` names its
 //!   first pool (`&pfr_kentry_pl` in C is the array's address, `pfr_kentry_pl[PFRKE_PLAIN]`).
 
-use core::cell::Cell;
+use core::cell::{Cell, Ref, RefCell};
 use core::cmp::Ordering;
 use core::mem::{offset_of, size_of};
 use core::ptr::{self, NonNull};
 
-use crate::kern::kern_malloc::free;
 use crate::kern::kern_tc::gettime;
 use crate::kern::sched_bsd::preempt;
-use crate::kern::subr_pool::pool_get;
+use crate::kern::subr_pool::{pool_get, pool_init, pool_put};
 use crate::kern::subr_prf::panic;
 use crate::machine::copy::{copyin, copyout};
 use crate::machine::intr::IPL_SOFTNET;
@@ -132,14 +135,10 @@ use crate::net::pfvar::{
     PFR_TFLAG_REFERENCED, PFR_TFLAG_SETMASK, PFR_TFLAG_USRMASK, PFRKE_COST, PFRKE_FLAG_MARK,
     PFRKE_FLAG_NOT, PFRKE_MAX, PFRKE_PLAIN, PFRKE_ROUTE, PfAddr, PfPool, PfPoolItem, PfRuleset,
     PfiDynaddr, PfrAddr, PfrAstats, PfrKcounters, PfrKentry, PfrKentryCost, PfrKentryRoute,
-    PfrKentryioq, PfrKentryworkq, PfrKtable, PfrKtableworkq, PfrTable, PfrTstats, PfsockaddrUnion,
-    pf_abi_zeroed, pf_azero, pf_cstr, pf_pool_get, pf_pool_init, pf_pool_put,
+    PfrKentryioq, PfrKentryworkq, PfrKtable, PfrKtableworkq, PfrRadix, PfrTable, PfrTstats,
+    PfsockaddrUnion, pf_abi_zeroed, pf_azero, pf_cstr, pf_pool_get, pf_pool_init, pf_pool_put,
 };
 use crate::net::pfvar_priv::{PfGlobal, PfPdesc, pf_assert_locked, pf_lock, pf_unlock};
-use crate::net::radix::{
-    RadixNode, RadixNodeHead, rn_addroute, rn_delete, rn_init, rn_inithead, rn_lookup, rn_match,
-    rn_walktree,
-};
 use crate::netinet::in_::{InAddr, SockaddrIn};
 use crate::netinet6::in6::SockaddrIn6;
 use crate::sys::errno::Errno;
@@ -247,11 +246,8 @@ pub static PFR_KENTRY_PL: [Pool; PFRKE_MAX as usize] = [Pool::new(), Pool::new()
 /// `pfr_kcounters_pl`.
 pub static PFR_KCOUNTERS_PL: Pool = Pool::new();
 
-// SAFETY: integers, `Cell`s of them and of `Option<&T>`, tree and list links and a byte copy
-// of a `PfAbi` table: the all-zero pattern is valid.
-unsafe impl PfPoolItem for PfrKtable {}
-// SAFETY: radix nodes (null links and zeros, `RadixNode::new()`), list links, `Cell`s of
-// integers, of a byte union and of `Option<&T>`: the all-zero pattern is valid.
+// SAFETY: list links, `Cell`s of integers, of a byte union and of `Option<&T>`: the all-zero
+// pattern is valid.
 unsafe impl PfPoolItem for PfrKentry {}
 // SAFETY: as for `PfrKentry`, plus a `Cell<Option<&T>>` and a byte array.
 unsafe impl PfPoolItem for PfrKentryRoute {}
@@ -440,15 +436,6 @@ where
     })
 }
 
-/// The entry whose node pair starts with `rn`: every leaf of a table's radix tree but the
-/// root leaves (which the radix functions never return) is an entry's `pfrke_node[0]`.
-fn rn2ke(rn: &'static RadixNode) -> &'static PfrKentry {
-    // SAFETY: `PfrKentry` is `#[repr(C)]` with `pfrke_node` first, and the only node pairs
-    // `pfr_route_kentry` adds to a table's trees are entries' `pfrke_node`; an entry stays
-    // allocated while it is in a tree.
-    unsafe { &*ptr::from_ref(rn).cast::<PfrKentry>() }
-}
-
 /// `pfrke_rkif`/`pfrke_rifname`: the route part of a route or cost entry.
 fn pfr_kentry_route(ke: &'static PfrKentry) -> &'static PfrKentryRoute {
     let t = ke.pfrke_type.get();
@@ -473,18 +460,28 @@ fn pfr_kentry_cost(ke: &'static PfrKentry) -> &'static PfrKentryCost {
     unsafe { &*ptr::from_ref(ke).cast::<PfrKentryCost>() }
 }
 
-/// The key the radix trees hold for `ke`: its `pfrke_sa`, which stays in place while the
-/// entry is in a tree.
-fn ke_key(ke: &PfrKentry) -> *const u8 {
-    ke.pfrke_sa.as_ptr().cast::<u8>().cast_const()
+/// The key the radix trees hold for `ke`: its `pfrke_sa`, the bytes the tree copies.
+fn ke_key(ke: &PfrKentry) -> [u8; size_of::<PfsockaddrUnion>()] {
+    ke.pfrke_sa.get().bytes
 }
 
-/// The radix head `h` of a table, which `pfr_create_ktable` made.
-fn pfr_rnh(h: &Cell<Option<&'static RadixNodeHead>>) -> &'static RadixNodeHead {
-    match h.get() {
-        Some(h) => h,
-        None => panic(format_args!("pf_table: table without radix head")),
-    }
+/// The radix tree `h` of a table (`kt->pfrkt_ip4` or `pfrkt_ip6`), lent for a lookup or one
+/// step of a walk; the borrow ends with the caller's expression, before anything sleeps or
+/// changes the tree.
+fn pfr_rnh(h: &RefCell<PfrRadix>) -> Ref<'_, PfrRadix> {
+    h.borrow()
+}
+
+/// An empty tree of `sockaddr_in` (`ip6`: `sockaddr_in6`) keys, compared from the address
+/// (`rn_inithead(&kt->pfrkt_ip4, offsetof(struct sockaddr_in, sin_addr))`), its blocks of
+/// `M_RTABLE`; nothing allocated until its roots are made.
+fn pfr_radix(ip6: bool) -> PfrRadix {
+    let off = if ip6 {
+        offset_of!(SockaddrIn6, sin6_addr)
+    } else {
+        offset_of!(SockaddrIn, sin_addr)
+    };
+    PfrRadix::new(off, M_RTABLE)
 }
 
 /// `pfr_gcd`.
@@ -497,12 +494,19 @@ pub fn pfr_gcd(mut m: i32, mut n: i32) -> i32 {
     n
 }
 
-/// `pfr_initialize`: the radix code's key length, the pools and `pfr_ffaddr`.
+/// `pfr_initialize`: the pools and `pfr_ffaddr`. The C's `rn_init(sizeof(struct
+/// sockaddr_in6))` is each tree's own key length (`PfrRadix`, N6.7b1). A table is no
+/// `PfPoolItem` (its trees are not valid all-zero): `pfr_create_ktable` writes them.
 pub fn pfr_initialize() {
-    // sizeof(struct sockaddr_in6), the size of a pfsockaddr_union.
-    rn_init(size_of::<PfsockaddrUnion>() as u32);
-
-    pf_pool_init::<PfrKtable>(&PFR_KTABLE_PL, IPL_SOFTNET, 0, "pfrktable");
+    pool_init(
+        &PFR_KTABLE_PL,
+        size_of::<PfrKtable>(),
+        align_of::<PfrKtable>() as u32,
+        IPL_SOFTNET,
+        0,
+        "pfrktable",
+        None,
+    );
     pf_pool_init::<PfrKentry>(
         &PFR_KENTRY_PL[PFRKE_PLAIN as usize],
         IPL_SOFTNET,
@@ -1019,9 +1023,23 @@ pub fn pfr_tst_addrs(
     Ok(())
 }
 
-/// Walks the radix tree `h` with `pfr_walktree` and `w`.
-fn pfr_walk(h: &'static RadixNodeHead, w: &mut PfrWalktree<'_, '_>) -> Result<(), Errno> {
-    rn_walktree(h, |rn, id| pfr_walktree(rn, w, id))
+/// `rn_walktree(h, pfr_walktree, w)`: `pfr_walktree` on each entry of the tree `h`, the first
+/// error ending the walk. The tree is borrowed for each step only, to take the successor and
+/// the entry before `pfr_walktree` runs (which may copy out to user memory); the walker's table
+/// id is the C's `rnh_rtableid`, which nothing writes: 0.
+fn pfr_walk(h: &RefCell<PfrRadix>, w: &mut PfrWalktree<'_, '_>) -> Result<(), Errno> {
+    let mut c = pfr_rnh(h).first();
+    while let Some(leaf) = c {
+        let ke = {
+            let t = pfr_rnh(h);
+            c = t.next(leaf);
+            t.get(leaf).copied()
+        };
+        if let Some(ke) = ke {
+            pfr_walktree(ke, w, 0)?;
+        }
+    }
+    Ok(())
 }
 
 /// `pfr_get_addrs`: copies the addresses of the table `tbl` out to `addr` (`copyout`, a user
@@ -1048,9 +1066,9 @@ pub fn pfr_get_addrs(
     w.pfrw_1 = Pfrw1::Addr(addr, 0);
     w.pfrw_free = kt.pfrkt_cnt().get();
     w.pfrw_flags = flags;
-    let mut rv = pfr_walk(pfr_rnh(&kt.pfrkt_ip4), &mut w);
+    let mut rv = pfr_walk(&kt.pfrkt_ip4, &mut w);
     if rv.is_ok() {
-        rv = pfr_walk(pfr_rnh(&kt.pfrkt_ip6), &mut w);
+        rv = pfr_walk(&kt.pfrkt_ip6, &mut w);
     }
     rv?;
 
@@ -1093,9 +1111,9 @@ pub fn pfr_get_astats(
     w.pfrw_1 = Pfrw1::Astats(addr, 0);
     w.pfrw_free = kt.pfrkt_cnt().get();
     w.pfrw_flags = flags;
-    let mut rv = pfr_walk(pfr_rnh(&kt.pfrkt_ip4), &mut w);
+    let mut rv = pfr_walk(&kt.pfrkt_ip4, &mut w);
     if rv.is_ok() {
-        rv = pfr_walk(pfr_rnh(&kt.pfrkt_ip6), &mut w);
+        rv = pfr_walk(&kt.pfrkt_ip6, &mut w);
     }
     if rv.is_ok() && flags & PFR_FLAG_CLSTATS != 0 {
         pfr_enqueue_addrs(kt, &workq, None, false);
@@ -1229,14 +1247,10 @@ pub fn pfr_enqueue_addrs(
         PfrwOp::Enqueue
     });
     w.pfrw_1 = Pfrw1::Workq(workq);
-    if let Some(h) = kt.pfrkt_ip4.get()
-        && pfr_walk(h, &mut w).is_err()
-    {
+    if pfr_walk(&kt.pfrkt_ip4, &mut w).is_err() {
         crate::dpfprintf!(LOG_ERR, "pfr_enqueue_addrs: IPv4 walktree failed.");
     }
-    if let Some(h) = kt.pfrkt_ip6.get()
-        && pfr_walk(h, &mut w).is_err()
-    {
+    if pfr_walk(&kt.pfrkt_ip6, &mut w).is_err() {
         crate::dpfprintf!(LOG_ERR, "pfr_enqueue_addrs: IPv6 walktree failed.");
     }
     if let Some(naddr) = naddr {
@@ -1247,10 +1261,10 @@ pub fn pfr_enqueue_addrs(
 /// `pfr_mark_addrs`: clears the mark of every entry of `kt`.
 pub fn pfr_mark_addrs(kt: &'static PfrKtable) {
     let mut w = PfrWalktree::new(PfrwOp::Mark);
-    if pfr_walk(pfr_rnh(&kt.pfrkt_ip4), &mut w).is_err() {
+    if pfr_walk(&kt.pfrkt_ip4, &mut w).is_err() {
         crate::dpfprintf!(LOG_ERR, "pfr_mark_addrs: IPv4 walktree failed.");
     }
-    if pfr_walk(pfr_rnh(&kt.pfrkt_ip6), &mut w).is_err() {
+    if pfr_walk(&kt.pfrkt_ip6, &mut w).is_err() {
         crate::dpfprintf!(LOG_ERR, "pfr_mark_addrs: IPv6 walktree failed.");
     }
 }
@@ -1279,12 +1293,9 @@ pub fn pfr_lookup_addr(
     };
     if addr_network(ad) {
         pfr_prepare_network(&mut mask, ad.pfra_af, i32::from(ad.pfra_net));
-        // SAFETY: the table's tree holds entries (the radix module's invariant); the key and
-        // mask are 28-byte unions, readable for the radix key length.
-        unsafe { rn_lookup(sa.bytes.as_ptr(), mask.bytes.as_ptr(), head) }.map(rn2ke)
+        head.lookup(&sa.bytes, Some(&mask.bytes)).copied()
     } else {
-        // SAFETY: as above.
-        let ke = unsafe { rn_match(sa.bytes.as_ptr(), head) }.map(rn2ke);
+        let ke = head.matches(&sa.bytes).copied();
         ke.filter(|ke| !(exact && kentry_network(ke)))
     }
 }
@@ -1309,11 +1320,9 @@ pub fn pfr_lookup_kentry(
             key.pfrke_af.get(),
             i32::from(key.pfrke_net.get()),
         );
-        // SAFETY: as in `pfr_lookup_addr`; the key is the entry's 28-byte union.
-        unsafe { rn_lookup(ke_key(key), mask.bytes.as_ptr(), head) }.map(rn2ke)
+        head.lookup(&ke_key(key), Some(&mask.bytes)).copied()
     } else {
-        // SAFETY: as above.
-        let ke = unsafe { rn_match(ke_key(key), head) }.map(rn2ke);
+        let ke = head.matches(&ke_key(key)).copied();
         ke.filter(|ke| !(exact && kentry_network(ke)))
     }
 }
@@ -1687,39 +1696,22 @@ pub fn pfr_prepare_network(sa: &mut PfsockaddrUnion, af: SaFamily, net: i32) {
 pub fn pfr_route_kentry(kt: &'static PfrKtable, ke: &'static PfrKentry) -> bool {
     let mut mask = PfsockaddrUnion::default();
 
-    // bzero(ke->pfrke_node, sizeof(ke->pfrke_node))
-    for n in &ke.pfrke_node {
-        n.rn_mklist.set(ptr::null());
-        n.rn_p.set(ptr::null());
-        n.rn_b.set(0);
-        n.rn_bmask.set(0);
-        n.rn_flags.set(0);
-        n.rn_key.set(ptr::null());
-        n.rn_mask.set(ptr::null());
-        n.rn_dupedkey.set(ptr::null());
-        n.rn_off.set(0);
-        n.rn_l.set(ptr::null());
-        n.rn_r.set(ptr::null());
-    }
-    let head = match ke.pfrke_af.get() {
-        AF_INET => pfr_rnh(&kt.pfrkt_ip4),
+    // The C's bzero(ke->pfrke_node): the tree makes the route's nodes.
+    let mut head = match ke.pfrke_af.get() {
+        AF_INET => kt.pfrkt_ip4.borrow_mut(),
         #[cfg(feature = "inet6")]
-        AF_INET6 => pfr_rnh(&kt.pfrkt_ip6),
+        AF_INET6 => kt.pfrkt_ip6.borrow_mut(),
         af => unhandled_af(i32::from(af)),
     };
 
     let rn = if kentry_network(ke) {
         pfr_prepare_network(&mut mask, ke.pfrke_af.get(), i32::from(ke.pfrke_net.get()));
-        // SAFETY: the tree invariant holds for the table's head; the key is the entry's
-        // union and the node pair its own, both staying in place until `pfr_unroute_kentry`;
-        // the mask is copied by the radix code.
-        unsafe { rn_addroute(ke_key(ke), mask.bytes.as_ptr(), head, &ke.pfrke_node, 0) }
+        head.add(&ke_key(ke), Some(&mask.bytes), ke)
     } else {
-        // SAFETY: as above, without a mask.
-        unsafe { rn_addroute(ke_key(ke), ptr::null(), head, &ke.pfrke_node, 0) }
+        head.add(&ke_key(ke), None, ke)
     };
 
-    rn.is_some()
+    rn.is_ok()
 }
 
 /// `pfr_unroute_kentry`: removes the entry `ke` from the radix tree of its family in `kt`.
@@ -1727,21 +1719,20 @@ pub fn pfr_route_kentry(kt: &'static PfrKtable, ke: &'static PfrKentry) -> bool 
 pub fn pfr_unroute_kentry(kt: &'static PfrKtable, ke: &'static PfrKentry) -> bool {
     let mut mask = PfsockaddrUnion::default();
 
-    let head = match ke.pfrke_af.get() {
-        AF_INET => pfr_rnh(&kt.pfrkt_ip4),
+    let mut head = match ke.pfrke_af.get() {
+        AF_INET => kt.pfrkt_ip4.borrow_mut(),
         #[cfg(feature = "inet6")]
-        AF_INET6 => pfr_rnh(&kt.pfrkt_ip6),
+        AF_INET6 => kt.pfrkt_ip6.borrow_mut(),
         af => unhandled_af(i32::from(af)),
     };
 
     let rn = if kentry_network(ke) {
         pfr_prepare_network(&mut mask, ke.pfrke_af.get(), i32::from(ke.pfrke_net.get()));
-        // SAFETY: the tree invariant holds for the table's head; the key is the entry's union.
-        unsafe { rn_delete(ke_key(ke), mask.bytes.as_ptr(), head, None) }
+        head.delete(&ke_key(ke), Some(&mask.bytes))
     } else {
-        // SAFETY: as above.
-        unsafe { rn_delete(ke_key(ke), ptr::null(), head, None) }
+        head.delete(&ke_key(ke), None)
     };
+    drop(head);
 
     if rn.is_none() {
         crate::dpfprintf!(LOG_ERR, "pfr_unroute_kentry: delete failed.\n");
@@ -1785,11 +1776,10 @@ pub fn pfr_copyout_addr(ad: &mut PfrAddr, ke: Option<&'static PfrKentry>) {
 
 /// `pfr_walktree`: what the table walks do with each entry, after `w.pfrw_op`.
 fn pfr_walktree(
-    rn: &'static RadixNode,
+    ke: &'static PfrKentry,
     w: &mut PfrWalktree<'_, '_>,
     _id: u32,
 ) -> Result<(), Errno> {
-    let ke = rn2ke(rn);
     let mut mask = PfsockaddrUnion::default();
     let flags = w.pfrw_flags;
 
@@ -2843,16 +2833,22 @@ pub fn pfr_create_ktable(
     let p = pool_get(&PFR_KTABLE_PL, wait | PR_ZERO | PR_LIMITFAIL)?
         .cast::<PfrKtable>()
         .as_ptr();
-    // SAFETY: a fresh, zeroed item of `pfr_ktable_pl`, sized and aligned for a `PfrKtable`
-    // (`pfr_initialize`), and all-zero is a valid one (`PfPoolItem`). Nothing refers to it
-    // yet, so the table description (`pfrkt_t`, whose name and anchor are not `Cell`s) is
-    // copied in through the raw pointer before the first shared reference is made.
+    // SAFETY: `p` is a fresh, zeroed item of `pfr_ktable_pl`, sized and aligned for a
+    // `PfrKtable` (`pfr_initialize`'s `pool_init`), which nothing else refers to yet. All-zero
+    // is a valid value of every member but the two radix trees (integers, `Cell`s of them and of
+    // `Option<&T>`, tree and list links, the byte copy of a `PfAbi` table); the two trees are
+    // written here through the raw pointer, which neither reads nor drops the zero bytes under
+    // them, and so is the table description (`pfrkt_t`, whose name and anchor are not `Cell`s),
+    // all before the first shared reference is made. The item stays allocated until
+    // `pfr_destroy_ktable` gives it back, after emptying both trees.
     let kt: &'static PfrKtable = unsafe {
         ptr::copy_nonoverlapping(
             ptr::from_ref(tbl),
             ptr::addr_of_mut!((*p).pfrkt_ts.pfrts_t),
             1,
         );
+        ptr::addr_of_mut!((*p).pfrkt_ip4).write(RefCell::new(pfr_radix(false)));
+        ptr::addr_of_mut!((*p).pfrkt_ip6).write(RefCell::new(pfr_radix(true)));
         &*p
     };
 
@@ -2866,16 +2862,8 @@ pub fn pfr_create_ktable(
         rs.tables.set(rs.tables.get() + 1);
     }
 
-    let mut ip4 = kt.pfrkt_ip4.get();
-    let ok = rn_inithead(&mut ip4, offset_of!(SockaddrIn, sin_addr) as i32);
-    kt.pfrkt_ip4.set(ip4);
-    let ok = ok && {
-        let mut ip6 = kt.pfrkt_ip6.get();
-        let ok = rn_inithead(&mut ip6, offset_of!(SockaddrIn6, sin6_addr) as i32);
-        kt.pfrkt_ip6.set(ip6);
-        ok
-    };
-    if !ok {
+    // rn_inithead of both heads: the trees' roots (M_RTABLE, M_NOWAIT), or no table.
+    if !kt.pfrkt_ip4.borrow_mut().inithead() || !kt.pfrkt_ip6.borrow_mut().inithead() {
         pfr_destroy_ktable(kt, false);
         return None;
     }
@@ -2928,20 +2916,10 @@ pub fn pfr_destroy_ktable(kt: &'static PfrKtable, flushaddr: bool) {
         pfr_clean_node_mask(kt, &addrq);
         pfr_destroy_kentries(&addrq);
     }
-    if let Some(h) = kt.pfrkt_ip4.get() {
-        free(
-            NonNull::from(h).cast(),
-            M_RTABLE,
-            size_of::<RadixNodeHead>(),
-        );
-    }
-    if let Some(h) = kt.pfrkt_ip6.get() {
-        free(
-            NonNull::from(h).cast(),
-            M_RTABLE,
-            size_of::<RadixNodeHead>(),
-        );
-    }
+    // free(kt->pfrkt_ip4, M_RTABLE) and pfrkt_ip6's: each tree's memory given back, so the
+    // item owns nothing when it goes back to its pool (which runs no drop).
+    drop(kt.pfrkt_ip4.replace(pfr_radix(false)));
+    drop(kt.pfrkt_ip6.replace(pfr_radix(true)));
     if let Some(shadow) = kt.pfrkt_shadow.get() {
         pfr_destroy_ktable(shadow, flushaddr);
     }
@@ -2949,7 +2927,7 @@ pub fn pfr_destroy_ktable(kt: &'static PfrKtable, flushaddr: bool) {
         rs.tables.set(rs.tables.get() - 1);
         pf_remove_if_empty_ruleset(rs);
     }
-    pf_pool_put(&PFR_KTABLE_PL, kt);
+    pool_put(&PFR_KTABLE_PL, NonNull::from(kt).cast());
 }
 
 /// The order of two table descriptions: name (at most `PF_TABLE_NAME_SIZE` bytes), then
@@ -3028,14 +3006,12 @@ pub fn pfr_kentry_byaddr(
     let ke = match af {
         AF_INET => {
             let tmp4 = pfr_sin_key(a);
-            // SAFETY: the table's tree holds entries; the key is a 28-byte union.
-            unsafe { rn_match(tmp4.bytes.as_ptr(), pfr_rnh(&kt.pfrkt_ip4)) }.map(rn2ke)
+            pfr_rnh(&kt.pfrkt_ip4).matches(&tmp4.bytes).copied()
         }
         #[cfg(feature = "inet6")]
         AF_INET6 => {
             let tmp6 = pfr_sin6_key(a);
-            // SAFETY: as for the IPv4 key.
-            unsafe { rn_match(tmp6.bytes.as_ptr(), pfr_rnh(&kt.pfrkt_ip6)) }.map(rn2ke)
+            pfr_rnh(&kt.pfrkt_ip6).matches(&tmp6.bytes).copied()
         }
         _ => unhandled_af(i32::from(af)),
     };
@@ -3056,14 +3032,12 @@ pub fn pfr_update_stats(kt: &'static PfrKtable, a: &PfAddr, pd: &PfPdesc, op: u8
     let ke = match af {
         AF_INET => {
             let tmp4 = pfr_sin_key(a);
-            // SAFETY: as in `pfr_kentry_byaddr`.
-            unsafe { rn_match(tmp4.bytes.as_ptr(), pfr_rnh(&kt.pfrkt_ip4)) }.map(rn2ke)
+            pfr_rnh(&kt.pfrkt_ip4).matches(&tmp4.bytes).copied()
         }
         #[cfg(feature = "inet6")]
         AF_INET6 => {
             let tmp6 = pfr_sin6_key(a);
-            // SAFETY: as for the IPv4 key.
-            unsafe { rn_match(tmp6.bytes.as_ptr(), pfr_rnh(&kt.pfrkt_ip6)) }.map(rn2ke)
+            pfr_rnh(&kt.pfrkt_ip6).matches(&tmp6.bytes).copied()
         }
         _ => unhandled_af(i32::from(af)),
     };
@@ -3333,8 +3307,7 @@ pub fn pfr_pool_get(rpool: &'static PfPool, af: SaFamily) -> Result<(PfAddr, PfA
                         s_addr: addr.addr32(0),
                     };
                     tmp4.set_sin(&sin);
-                    // SAFETY: as in `pfr_kentry_byaddr`.
-                    unsafe { rn_match(tmp4.bytes.as_ptr(), pfr_rnh(&kt.pfrkt_ip4)) }.map(rn2ke)
+                    pfr_rnh(&kt.pfrkt_ip4).matches(&tmp4.bytes).copied()
                 }
                 #[cfg(feature = "inet6")]
                 AF_INET6 => {
@@ -3342,8 +3315,7 @@ pub fn pfr_pool_get(rpool: &'static PfPool, af: SaFamily) -> Result<(PfAddr, PfA
                     let mut sin6 = tmp4.sin6();
                     sin6.sin6_addr = addr.v6();
                     tmp4.set_sin6(&sin6);
-                    // SAFETY: as in `pfr_kentry_byaddr`.
-                    unsafe { rn_match(tmp4.bytes.as_ptr(), pfr_rnh(&kt.pfrkt_ip6)) }.map(rn2ke)
+                    pfr_rnh(&kt.pfrkt_ip6).matches(&tmp4.bytes).copied()
                 }
                 _ => unhandled_af(i32::from(af)),
             };
@@ -3391,7 +3363,7 @@ pub fn pfr_kentry_byidx(
 
     match af {
         AF_INET => {
-            let _ = pfr_walk(pfr_rnh(&kt.pfrkt_ip4), &mut w);
+            let _ = pfr_walk(&kt.pfrkt_ip4, &mut w);
             match w.pfrw_1 {
                 Pfrw1::Kentry(ke) => ke,
                 _ => None,
@@ -3399,7 +3371,7 @@ pub fn pfr_kentry_byidx(
         }
         #[cfg(feature = "inet6")]
         AF_INET6 => {
-            let _ = pfr_walk(pfr_rnh(&kt.pfrkt_ip6), &mut w);
+            let _ = pfr_walk(&kt.pfrkt_ip6, &mut w);
             match w.pfrw_1 {
                 Pfrw1::Kentry(ke) => ke,
                 _ => None,
@@ -3467,15 +3439,15 @@ pub fn pfr_dynaddr_update(kt: &'static PfrKtable, dyn_: &'static PfiDynaddr) {
     match dyn_.pfid_af.get() {
         AF_UNSPEC => {
             // look up all both addresses IPv4 + IPv6
-            let _ = pfr_walk(pfr_rnh(&kt.pfrkt_ip4), &mut w);
-            let _ = pfr_walk(pfr_rnh(&kt.pfrkt_ip6), &mut w);
+            let _ = pfr_walk(&kt.pfrkt_ip4, &mut w);
+            let _ = pfr_walk(&kt.pfrkt_ip6, &mut w);
         }
         AF_INET => {
-            let _ = pfr_walk(pfr_rnh(&kt.pfrkt_ip4), &mut w);
+            let _ = pfr_walk(&kt.pfrkt_ip4, &mut w);
         }
         #[cfg(feature = "inet6")]
         AF_INET6 => {
-            let _ = pfr_walk(pfr_rnh(&kt.pfrkt_ip6), &mut w);
+            let _ = pfr_walk(&kt.pfrkt_ip6, &mut w);
         }
         af => unhandled_af(i32::from(af)),
     }
@@ -4202,6 +4174,191 @@ mod tests {
         pfr_copyout_addr(&mut ad, Some(ke));
         assert_eq!((ad.pfra_af, ad.pfra_net), (AF_INET6, 64));
         assert_eq!(ad.pfra_ip6addr(), net64.pfra_ip6addr());
+    }
+    /// xorshift64*: the model test's generator, deterministic from its seed.
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x >> 12;
+            x ^= x << 25;
+            x ^= x >> 27;
+            self.0 = x;
+            x.wrapping_mul(0x2545_f491_4f6c_dd1d)
+        }
+
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+    }
+
+    /// An entry of the model: the network `a/net` (a host at 32), negated or not.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    struct Model {
+        a: [u8; 4],
+        net: u8,
+        not: bool,
+    }
+
+    /// The mask of a `net`-bit prefix.
+    fn prefix_mask(net: u8) -> u32 {
+        if net == 0 {
+            0
+        } else {
+            u32::MAX << (32 - u32::from(net))
+        }
+    }
+
+    /// An address of a small universe, so that networks nest and share prefixes.
+    fn model_addr(rng: &mut Rng) -> [u8; 4] {
+        [
+            10,
+            [0u8, 1, 2, 3][rng.below(4)],
+            [0u8, 1, 128, 255][rng.below(4)],
+            [0u8, 1, 77, 255][rng.below(4)],
+        ]
+    }
+
+    /// The model's answer for `x`: the most specific entry holding it (the longest prefix,
+    /// a host before every network), matched unless negated.
+    fn model_match(model: &[Model], x: [u8; 4]) -> bool {
+        let x = u32::from_be_bytes(x);
+        model
+            .iter()
+            .filter(|e| x & prefix_mask(e.net) == u32::from_be_bytes(e.a))
+            .max_by_key(|e| e.net)
+            .is_some_and(|e| !e.not)
+    }
+
+    /// N6.7b1 (pf's tables on the kernel's radix tree): random adds, deletes and lookups of
+    /// IPv4 hosts and nested networks, some negated, through pf's own ioctl functions; at every
+    /// step `pfr_match_addr` answers as a linear model of the longest prefix and the negation,
+    /// the table's counters follow, and its walks (a delete's full scan, the enqueue, the
+    /// clear) visit every entry once.
+    #[test]
+    fn table_matches_answer_as_the_longest_prefix_model() {
+        let _g = setup();
+        assert_eq!(add_tables(std::vec![table("model", "", 0)]), 1);
+        let mut tbl = table("model", "", 0);
+        let kt = pfr_lookup_table(&tbl).expect("table");
+        let (mut matched, mut missed) = (0u64, 0u64);
+        let mut steps = 0;
+        for seed in 1..=20u64 {
+            let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+            let mut model: Vec<Model> = Vec::new();
+            for _ in 0..300 {
+                steps += 1;
+                match rng.below(20) {
+                    0..=8 => {
+                        let net = [0u8, 8, 9, 15, 16, 17, 24, 25, 31, 32, 32, 32][rng.below(12)];
+                        let a = (u32::from_be_bytes(model_addr(&mut rng)) & prefix_mask(net))
+                            .to_be_bytes();
+                        let e = Model {
+                            a,
+                            net,
+                            not: rng.below(4) == 0,
+                        };
+                        let there = model.iter().any(|m| m.a == e.a && m.net == e.net);
+                        let (nadd, _) =
+                            add_addrs(&mut tbl, &[addr4(e.a, e.net, e.not)]).expect("added");
+                        assert_eq!(nadd, i32::from(!there), "{e:?}");
+                        if !there {
+                            model.push(e);
+                        }
+                    }
+                    9..=11 => {
+                        // A live entry (its negation flipped now and then: a conflict, kept),
+                        // or an absent one.
+                        let (e, flip) = if !model.is_empty() && rng.below(4) != 0 {
+                            (model[rng.below(model.len())], rng.below(5) == 0)
+                        } else {
+                            let net = [8u8, 16, 24, 32][rng.below(4)];
+                            let a = (u32::from_be_bytes(model_addr(&mut rng)) & prefix_mask(net))
+                                .to_be_bytes();
+                            (Model { a, net, not: false }, false)
+                        };
+                        let mut v = std::vec![addr4(e.a, e.net, e.not != flip)];
+                        let mut ndel = -1;
+                        pfr_del_addrs(&mut tbl, &mut PfrBuf::Kernel(&mut v), 1, Some(&mut ndel), 0)
+                            .expect("deleted");
+                        let i = model
+                            .iter()
+                            .position(|m| m.a == e.a && m.net == e.net && m.not == (e.not != flip));
+                        assert_eq!(ndel, i32::from(i.is_some()), "{e:?} flip {flip}");
+                        if let Some(i) = i {
+                            model.swap_remove(i);
+                        }
+                    }
+                    12..=18 => {
+                        let x = model_addr(&mut rng);
+                        let want = model_match(&model, x);
+                        let (m0, n0) = (kt.pfrkt_match().get(), kt.pfrkt_nomatch().get());
+                        assert_eq!(pfr_match_addr(kt, &pf4(x), AF_INET), want, "{x:?}");
+                        assert_eq!(kt.pfrkt_match().get() - m0, u64::from(want));
+                        assert_eq!(kt.pfrkt_nomatch().get() - n0, u64::from(!want));
+                        if want {
+                            matched += 1;
+                        } else {
+                            missed += 1;
+                        }
+                    }
+                    _ => {
+                        let workq = SlistHead::<PfrKentryworkq>::new();
+                        let mut n = -1;
+                        pfr_enqueue_addrs(kt, &workq, Some(&mut n), false);
+                        assert_eq!(n as usize, model.len());
+                        assert_eq!(sl_iter(&workq).count(), model.len());
+                        assert_eq!(kt.pfrkt_cnt().get() as usize, model.len());
+                    }
+                }
+            }
+            let mut ndel = -1;
+            pfr_clr_addrs(&mut tbl, Some(&mut ndel), 0).expect("cleared");
+            assert_eq!(ndel as usize, model.len());
+            assert_eq!(kt.pfrkt_cnt().get(), 0);
+            assert!(!pfr_match_addr(kt, &pf4([10, 0, 0, 1]), AF_INET));
+        }
+        assert_eq!(PFR_KENTRY_PL[PFRKE_PLAIN as usize].pr_nout.get(), 0);
+        std::println!("pf table model: {steps} steps, {matched} matches, {missed} misses");
+        assert!(matched > 500 && missed > 500, "both answers seen");
+    }
+
+    /// N6.7b1: a destroyed table gives its trees' memory back before its pool item goes
+    /// (the pool runs no drop), and a table made again in that item starts empty.
+    #[test]
+    fn a_destroyed_table_gives_its_trees_back() {
+        let _g = setup();
+        let rtable = kernel::net::rtable::M_RTABLE;
+        let before = kernel::testutil::malloc_out(rtable);
+        assert_eq!(add_tables(std::vec![table("gone", "", 0)]), 1);
+        let mut tbl = table("gone", "", 0);
+        let v: Vec<PfrAddr> = (0..100u8)
+            .map(|i| addr4([10, 9, i, 0], 24, false))
+            .collect();
+        assert_eq!(add_addrs(&mut tbl, &v).expect("added").0, 100);
+        assert!(kernel::testutil::malloc_out(rtable) > before);
+        let mut ts = std::vec![table("gone", "", 0)];
+        let mut ndel = -1;
+        pfr_del_tables(&PfrBuf::Kernel(&mut ts), 1, Some(&mut ndel), 0).expect("deleted");
+        assert_eq!(ndel, 1);
+        assert_eq!(
+            kernel::testutil::malloc_out(rtable),
+            before,
+            "the trees' blocks"
+        );
+        assert_eq!(PFR_KTABLE_PL.pr_nout.get(), 0);
+
+        // A table made again (in a pool item the old one may have been): empty, then its own
+        // entries only.
+        assert_eq!(add_tables(std::vec![table("again", "", 0)]), 1);
+        let mut tbl = table("again", "", 0);
+        let kt = pfr_lookup_table(&tbl).expect("table");
+        assert_eq!(kt.pfrkt_cnt().get(), 0);
+        assert!(!pfr_match_addr(kt, &pf4([10, 9, 3, 1]), AF_INET));
+        add_addrs(&mut tbl, &[addr4([10, 9, 3, 0], 24, false)]).expect("added");
+        assert!(pfr_match_addr(kt, &pf4([10, 9, 3, 1]), AF_INET));
+        assert!(!pfr_match_addr(kt, &pf4([10, 9, 4, 1]), AF_INET));
     }
 }
 /* </TESTS> */

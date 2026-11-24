@@ -92,7 +92,7 @@
 //! - `pfr_kentry`'s union `u` of one member is flattened: `PfrKentry` is `struct _pfr_kentry`
 //!   and the route and cost variants embed it first (`#[repr(C)]`), as the C's overlay does.
 
-use core::cell::Cell;
+use core::cell::{Cell, RefCell};
 use core::ffi::c_void;
 use core::mem::{MaybeUninit, size_of};
 use core::ptr;
@@ -103,7 +103,6 @@ use crate::kassert;
 use crate::machine::copy::{AbiPod, copyin, copyout};
 use crate::net::if_::IFNAMSIZ;
 use crate::net::if_var::{IfgGroup, Ifnet};
-use crate::net::radix::{RadixNode, RadixNodeHead};
 use crate::net::route::RTLABEL_LEN;
 use crate::netinet::in_::{InAddr, SockaddrIn};
 use crate::netinet::tcp_fsm::TCP_NSTATES;
@@ -117,6 +116,7 @@ use crate::sys::time::Timeval;
 use crate::sys::timeout::Timeout;
 use crate::sys::tree::{RbEntry, RbHead};
 use crate::sys::types::{Pid, SaFamily, Time, Uid};
+use kernel::net::radix::RadixTree;
 
 /// `PF_TCPS_PROXY_SRC`: synproxy state, talking to the client.
 pub const PF_TCPS_PROXY_SRC: u8 = TCP_NSTATES as u8;
@@ -2381,11 +2381,11 @@ pub const PFRKE_COST: u8 = 2;
 /// `PFRKE_MAX`.
 pub const PFRKE_MAX: u8 = 3;
 
-/// `struct pfr_kentry` (`struct _pfr_kentry`): a table entry, two radix nodes and the key.
+/// `struct pfr_kentry` (`struct _pfr_kentry`): a table entry and its key. The C's
+/// `pfrke_node[2]`, the radix nodes the entry is linked by, are its table's tree's own
+/// (`PfrRadix`, N6.7b1), which carries the entry.
 #[repr(C)]
 pub struct PfrKentry {
-    /// `pfrke_node[2]`: the radix nodes the entry is linked by.
-    pub pfrke_node: [RadixNode; 2],
     /// `pfrke_sa`: the key (address).
     pub pfrke_sa: Cell<PfsockaddrUnion>,
     /// `pfrke_workq`.
@@ -2455,7 +2455,13 @@ crate::queue_adapter!(
     pub PfrKentryioq: PfrKentry, pfrke_ioq => SlistEntry<PfrKentry>
 );
 
-/// `struct pfr_ktable`: a table.
+/// A table's radix tree of entries (`struct radix_node_head` of `pfsockaddr_union` keys,
+/// `rn_init(sizeof(struct sockaddr_in6))`): the kernel's radix tree (N6.7b1), each route's
+/// value its entry.
+pub type PfrRadix = RadixTree<&'static PfrKentry, { size_of::<PfsockaddrUnion>() }>;
+
+/// `struct pfr_ktable`: a table. Not valid all-zero (its trees): `pfr_create_ktable` writes
+/// them into the zeroed pool item.
 pub struct PfrKtable {
     /// `pfrkt_ts`: the table and its counters (`pfrkt_t`, `pfrkt_name`, ... are its members).
     pub pfrkt_ts: PfrTstats,
@@ -2463,10 +2469,11 @@ pub struct PfrKtable {
     pub pfrkt_tree: RbEntry<PfrKtable>,
     /// `pfrkt_workq`.
     pub pfrkt_workq: SlistEntry<PfrKtable>,
-    /// `pfrkt_ip4`.
-    pub pfrkt_ip4: Cell<Option<&'static RadixNodeHead>>,
-    /// `pfrkt_ip6`.
-    pub pfrkt_ip6: Cell<Option<&'static RadixNodeHead>>,
+    /// `pfrkt_ip4`: the IPv4 entries' tree (the C's `struct radix_node_head *`, the tree
+    /// itself here, under `pf_lock` with the rest of the table).
+    pub pfrkt_ip4: RefCell<PfrRadix>,
+    /// `pfrkt_ip6`: the IPv6 entries' tree.
+    pub pfrkt_ip6: RefCell<PfrRadix>,
     /// `pfrkt_shadow`.
     pub pfrkt_shadow: Cell<Option<&'static PfrKtable>>,
     /// `pfrkt_root`.
