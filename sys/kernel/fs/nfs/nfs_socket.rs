@@ -1682,7 +1682,8 @@ mod tests {
     // Host tests of the engine's parts that run without a peer: the RTT estimator, the
     // timer's walk over queued requests (backoff, the message, the soft termination, the
     // stream's count), the flag locks, nfs_sigintr, the RPC header (AUTH_UNIX and its group
-    // clamp, the version 2 procedure map), the xids, the TRYLATER backoff.
+    // clamp, the version 2 procedure map), the xids, the TRYLATER backoff. The scripted
+    // peer's tests (an RPC over the kernel's UDP and TCP on lo0) are `testnfs`'s.
 
     use core::ffi::c_void;
     use std::sync::MutexGuard;
@@ -1988,6 +1989,290 @@ mod tests {
         assert_eq!(d, max);
         assert_eq!(nfs_trylater_next(max), max);
         assert!(seen.windows(2).all(|p| p[1] == p[0] * NFS_TIMEOUTMUL));
+    }
+
+    // The scripted peer's tests: an RPC over the kernel's UDP and TCP on lo0, against a
+    // kernel socket on 127.0.0.1:2049 that answers as each test's script says.
+
+    use std::boxed::Box;
+
+    use crate::fs::nfs::testnfs::{self as tn, Out};
+    use crate::sys::netinet_in::IPPORT_RESERVED;
+
+    /// An RPC of procedure `procnum` with no arguments, made by the fixture's requester with
+    /// its credential.
+    fn rpc(fx: &tn::Fixture, procnum: usize) -> (Option<Reply>, Result<(), NfsError>) {
+        nfs_request(
+            fx.vp,
+            procnum,
+            Request {
+                body: XdrWriter::reqhead(0),
+                procp: Some(fx.user),
+                cred: fx.user.ucred(),
+            },
+        )
+    }
+
+    /// The XDR words of a call.
+    fn words(c: &[u8]) -> std::vec::Vec<u32> {
+        c.chunks_exact(4)
+            .map(|w| u32::from_be_bytes(w.try_into().unwrap()))
+            .collect()
+    }
+
+    /// A NULL call over UDP: the header (RPC version 2, the program, version 3, the
+    /// procedure, AUTH_UNIX with the requester's uid), the reply's header consumed, and the
+    /// client's port reserved though the requester is no superuser (`proc0`'s bind).
+    #[test]
+    fn a_call_over_udp_is_answered_from_a_reserved_port() {
+        let fx = tn::setup(1000);
+        let nmp = tn::nfsmount(&fx, SOCK_DGRAM, NFSMNT_NFSV3);
+        assert_eq!(tn::connect(&nmp), Ok(()));
+        let peer = tn::Peer::start(
+            &fx,
+            SOCK_DGRAM,
+            &nmp,
+            Box::new(|_, c| std::vec![Out::Data(tn::reply(c, 0, 0, 0, &[]))]),
+        );
+        let (reply, r) = rpc(&fx, NFSPROC_NULL);
+        let calls = peer.calls();
+        peer.stop();
+        assert_eq!(r, Ok(()));
+        assert_eq!(
+            reply.expect("the reply").offset(),
+            28,
+            "the RPC header's 7 words"
+        );
+        assert_eq!(calls.len(), 1);
+        let (port, c) = &calls[0];
+        assert!(*port < IPPORT_RESERVED as u16 && *port > 0, "port {port}");
+        let w = words(c);
+        assert_eq!(&w[1..6], &[0, 2, 100_003, 3, NFSPROC_NULL as u32]);
+        assert_eq!([w[6], w[10]], [1, 1000], "AUTH_UNIX, the requester's uid");
+        tn::unmount(&fx, nmp);
+    }
+
+    /// A datagram the server never answers is sent again by the timer (`R_SENT`: a
+    /// retransmission, the window halved, `rpcretries`), and the reply to the copy ends the
+    /// RPC; the timeouts' count is cleared by the reply.
+    #[test]
+    fn a_lost_datagram_is_resent_by_the_timer() {
+        let fx = tn::setup(0);
+        let nmp = tn::nfsmount(&fx, SOCK_DGRAM, NFSMNT_NFSV3 | NFSMNT_DUMBTIMR);
+        nmp.nm_timeo.store(1, Relaxed);
+        assert_eq!(tn::connect(&nmp), Ok(()));
+        let retries = NFSSTATS.rpcretries.load(Relaxed);
+        let peer = tn::Peer::start(
+            &fx,
+            SOCK_DGRAM,
+            &nmp,
+            Box::new(|n, c| {
+                if n == 1 {
+                    std::vec![Out::Tick(2)]
+                } else {
+                    std::vec![Out::Data(tn::reply(c, 0, 0, 0, &[]))]
+                }
+            }),
+        );
+        let (_, r) = rpc(&fx, NFSPROC_NULL);
+        let calls = peer.calls();
+        peer.stop();
+        assert_eq!(r, Ok(()));
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].1, calls[1].1, "the same request, its xid kept");
+        assert_eq!(NFSSTATS.rpcretries.load(Relaxed), retries + 1);
+        assert_eq!(nmp.nm_cwnd.load(Relaxed), NFS_MAXCWND / 4, "halved once");
+        assert_eq!(nmp.nm_sent.load(Relaxed), 0);
+        assert_eq!(nmp.nm_timeouts.load(Relaxed), 0);
+        tn::unmount(&fx, nmp);
+    }
+
+    /// `MSG_DENIED`: `RPC_MISMATCH` is `EOPNOTSUPP`, an authentication error `EACCES`; no
+    /// reply is handed up.
+    #[test]
+    fn a_denied_call_answers_eopnotsupp_or_eacces() {
+        let fx = tn::setup(0);
+        let nmp = tn::nfsmount(&fx, SOCK_DGRAM, NFSMNT_NFSV3);
+        assert_eq!(tn::connect(&nmp), Ok(()));
+        let peer = tn::Peer::start(
+            &fx,
+            SOCK_DGRAM,
+            &nmp,
+            Box::new(|n, c| std::vec![Out::Data(tn::denied(c, n == 1))]),
+        );
+        let (a, ra) = rpc(&fx, NFSPROC_NULL);
+        let (b, rb) = rpc(&fx, NFSPROC_NULL);
+        peer.stop();
+        assert!(a.is_none() && b.is_none());
+        assert_eq!(ra, Err(NfsError::Errno(Errno::EOPNOTSUPP)));
+        assert_eq!(rb, Err(NfsError::Errno(Errno::EACCES)));
+        tn::unmount(&fx, nmp);
+    }
+
+    /// A reply to no request (`rpcunexpected`) and a message that is no reply
+    /// (`rpcinvalid`) are dropped; the reply that matches ends the RPC.
+    #[test]
+    fn a_stray_xid_and_a_non_reply_are_counted_and_dropped() {
+        let fx = tn::setup(0);
+        let nmp = tn::nfsmount(&fx, SOCK_DGRAM, NFSMNT_NFSV3);
+        assert_eq!(tn::connect(&nmp), Ok(()));
+        let unexpected = NFSSTATS.rpcunexpected.load(Relaxed);
+        let invalid = NFSSTATS.rpcinvalid.load(Relaxed);
+        let peer = tn::Peer::start(
+            &fx,
+            SOCK_DGRAM,
+            &nmp,
+            Box::new(|_, c| {
+                let mut stray = tn::reply(c, 0, 0, 0, &[]);
+                stray[0] ^= 0x55;
+                let mut call = tn::call_xid(c).to_vec();
+                call.extend_from_slice(&0u32.to_be_bytes()); // RPC_CALL
+                std::vec![
+                    Out::Data(stray),
+                    Out::Data(call),
+                    Out::Data(tn::reply(c, 0, 0, 0, &[])),
+                ]
+            }),
+        );
+        let (_, r) = rpc(&fx, NFSPROC_NULL);
+        peer.stop();
+        assert_eq!(r, Ok(()));
+        assert_eq!(NFSSTATS.rpcunexpected.load(Relaxed), unexpected + 1);
+        assert_eq!(NFSSTATS.rpcinvalid.load(Relaxed), invalid + 1);
+        tn::unmount(&fx, nmp);
+    }
+
+    /// The C's two outputs: a non-zero NFS status keeps the reply (D-3: one that names no
+    /// errno is a `Status`), a non-zero `accept_stat` keeps it with `EPROTONOSUPPORT`, a
+    /// verifier with data is skipped by its rounded length.
+    #[test]
+    fn a_status_error_keeps_the_reply() {
+        let fx = tn::setup(0);
+        let nmp = tn::nfsmount(&fx, SOCK_DGRAM, NFSMNT_NFSV3);
+        assert_eq!(tn::connect(&nmp), Ok(()));
+        let peer = tn::Peer::start(
+            &fx,
+            SOCK_DGRAM,
+            &nmp,
+            Box::new(|n, c| {
+                std::vec![Out::Data(match n {
+                    1 => tn::reply(c, 0, 0, 10004, &[]),
+                    2 => tn::reply(c, 0, 0, 70, &[]),
+                    3 => tn::reply(c, 0, 1, 0, &[]),
+                    _ => tn::reply(c, 5, 0, 0, &[]),
+                })]
+            }),
+        );
+        let (a, ra) = rpc(&fx, NFSPROC_GETATTR);
+        let (b, rb) = rpc(&fx, NFSPROC_GETATTR);
+        let (c, rc) = rpc(&fx, NFSPROC_GETATTR);
+        let (d, rd) = rpc(&fx, NFSPROC_GETATTR);
+        peer.stop();
+        assert_eq!(ra, Err(NfsError::Status(10004)));
+        assert_eq!(a.expect("kept").offset(), 28);
+        assert_eq!(rb, Err(NfsError::Errno(Errno::ESTALE)));
+        assert!(b.is_some());
+        assert_eq!(rc, Err(NfsError::Errno(Errno::EPROTONOSUPPORT)));
+        assert_eq!(
+            c.expect("kept").offset(),
+            24,
+            "no status word after accept_stat"
+        );
+        assert_eq!(rd, Ok(()));
+        assert_eq!(
+            d.expect("the reply").offset(),
+            28 + 8,
+            "five verifier bytes, rounded"
+        );
+        tn::unmount(&fx, nmp);
+    }
+
+    /// Version 3's `NFSERR_TRYLATER`: the request is sent again after `NFS_MINTIMEO`
+    /// seconds (one here: `nfs_ticks` made `hz`), with its xid.
+    #[test]
+    fn trylater_sends_the_request_again() {
+        let fx = tn::setup(0);
+        NFS_TICKS.store(crate::timeout::hz(), Relaxed);
+        let nmp = tn::nfsmount(&fx, SOCK_DGRAM, NFSMNT_NFSV3);
+        assert_eq!(tn::connect(&nmp), Ok(()));
+        let requests = NFSSTATS.rpcrequests.load(Relaxed);
+        let peer = tn::Peer::start(
+            &fx,
+            SOCK_DGRAM,
+            &nmp,
+            Box::new(|n, c| {
+                let st = if n == 1 { NFSERR_TRYLATER as u32 } else { 0 };
+                std::vec![Out::Data(tn::reply(c, 0, 0, st, &[]))]
+            }),
+        );
+        let (_, r) = rpc(&fx, NFSPROC_GETATTR);
+        let calls = peer.calls();
+        peer.stop();
+        assert_eq!(r, Ok(()));
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].1[..4], calls[1].1[..4], "the same xid");
+        assert_eq!(NFSSTATS.rpcrequests.load(Relaxed), requests + 2);
+        tn::unmount(&fx, nmp);
+    }
+
+    /// A NULL call over TCP: the connect through lo0, the record mark, the reply's record.
+    #[test]
+    fn a_call_over_tcp_is_answered() {
+        let fx = tn::setup(1000);
+        let nmp = tn::nfsmount(&fx, SOCK_STREAM, NFSMNT_NFSV3);
+        let peer = tn::Peer::start(
+            &fx,
+            SOCK_STREAM,
+            &nmp,
+            Box::new(|_, c| std::vec![Out::Data(tn::reply(c, 0, 0, 0, &[]))]),
+        );
+        assert_eq!(tn::connect(&nmp), Ok(()));
+        let (reply, r) = rpc(&fx, NFSPROC_NULL);
+        let calls = peer.calls();
+        assert_eq!(r, Ok(()));
+        assert_eq!(reply.expect("the reply").offset(), 28);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(words(&calls[0].1)[10], 1000);
+        tn::unmount(&fx, nmp);
+        peer.stop();
+    }
+
+    /// A record mark past `NFS_MAXPACKET`: `EFBIG`, the connection made again and the request
+    /// sent again on it (`R_MUSTRESEND`), then answered.
+    #[test]
+    fn a_record_past_the_maximum_reconnects_and_resends() {
+        let fx = tn::setup(0);
+        let nmp = tn::nfsmount(&fx, SOCK_STREAM, NFSMNT_NFSV3);
+        let peer = tn::Peer::start(
+            &fx,
+            SOCK_STREAM,
+            &nmp,
+            Box::new(|n, c| {
+                if n == 1 {
+                    std::vec![Out::Mark(NFS_MAXPACKET as u32 + 1)]
+                } else {
+                    std::vec![Out::Data(tn::reply(c, 0, 0, 0, &[]))]
+                }
+            }),
+        );
+        assert_eq!(tn::connect(&nmp), Ok(()));
+        let (_, r) = rpc(&fx, NFSPROC_NULL);
+        let calls = peer.calls();
+        assert_eq!(r, Ok(()));
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].1, calls[1].1, "resent whole");
+        tn::unmount(&fx, nmp);
+        peer.stop();
+    }
+
+    /// `NFSMNT_NOCONN` on a protocol that needs a connection: `ENOTCONN`, the socket gone.
+    #[test]
+    fn noconn_is_refused_on_tcp() {
+        let fx = tn::setup(0);
+        let nmp = tn::nfsmount(&fx, SOCK_STREAM, NFSMNT_NOCONN);
+        assert_eq!(tn::connect(&nmp), Err(Errno::ENOTCONN));
+        assert!(nm_so(&nmp).is_none(), "nfs_disconnect's");
+        tn::unmount(&fx, nmp);
     }
 }
 /* </TESTS> */

@@ -18108,6 +18108,11 @@ rust = "sys/kernel/fs/tmpfs/testtmpfs.rs"
 crate = "kernel"
 reason = "N5.9t1, completed at N5.9t2: the kernel tmpfs's test fixture (host tests and benches only, cfg(any(test, feature = doubles))): TEST_TMPFS_CONF, the set-up (16 MiB of pages, the kernel maps, the test thread, tmpfs_init), the mount arguments' bytes (LZ's tmpfs_vfsops tests' args), a mount over no device and the same made the root (setup_root, testffs::make_root; LZ's tmpfs_vnops tests' setup_root); t1's stand-in vnode table gone for the real ones (TmpfsTables); no OpenBSD or LZ source"
 [[extra]]
+rust = "sys/kernel/fs/nfs/testnfs.rs"
+crate = "kernel"
+reason = "N6.7a1: the nfs client's host test fixture: a glue of its own with the kernel's UDP and TCP, lo0 with 127.0.0.1, a mount and a vnode, and a scripted peer socket on 127.0.0.1:2049 in a thread of its own"
+
+[[extra]]
 rust = "sys/kernel/fs/fuse/testfuse.rs"
 crate = "kernel"
 reason = "N5.9f1: the kernel fuse's test fixture (host tests and benches only, cfg(any(test, feature = doubles))): the set-up (the test thread, the fmsg pool and the inode hash), the simulated daemon fb_queue runs (LZ's TEST_DAEMON of miscfs/fuse/fusebuf.rs, moved) and the daemon's side of the device (LZ's fuse_device tests' helpers read_req, reply, dev_read, dev_write, open_dev, fake_fmp, moved), a node on a mount structure that is not a real one; N5.9f2: fusefs_init in the set-up, fuse_vnops' table for the nodes (TestFuseVops gone), a daemon scripted by opcode (script/scripted, the requests seen recorded), LZ's fuse_vfsops tests' file system (hello_fs) and set-up moved (the configuration entry, args, the daemon's descriptor of the device, mount, mounted, rdwr, readdir); no OpenBSD or LZ source"

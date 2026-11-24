@@ -34,6 +34,8 @@ pub mod nfsm_subs;
 pub mod nfsmount;
 pub mod nfsnode;
 pub mod nfsproto;
+#[cfg(test)]
+pub(crate) mod testnfs;
 pub mod xdr_subs;
 
 pub use crate::sys::nfs_rpcv2 as rpcv2;
