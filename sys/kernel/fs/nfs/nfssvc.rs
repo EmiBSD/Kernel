@@ -108,6 +108,21 @@
 //!   it): the C points every request of the socket at one mbuf, which `nfsrv_zapsock` frees
 //!   under a request still using it. The address of a datagram socket is never read (every
 //!   datagram's record carries its sender), so `NFSSVC_ADDSOCK` keeps none for one.
+//! - The socket's upcall (`so->so_upcall = nfsrv_rcv` and its clearing in `nfsrv_zapsock`)
+//!   is N6.7b4's (D-10: its argument becomes the record's counted handle); until then the
+//!   kernel's server is not registered and its tests make the upcall's call themselves.
+//! - `nfsrv3_procs[]` is `nfs_serv`'s (N6.7b3), handed to `sys_nfssvc` and the nfsds' loop
+//!   (`procs`) by the system call's registration at N6.7b4.
+//! - `sys_nfssvc` answers `ENOMEM` when no `struct nfsd` is to be had, and `nfssvc_addsock`
+//!   `ENOMEM` or `ENOBUFS` when no record or option mbuf is (LZ's; the C's `M_WAIT` cannot
+//!   fail).
+//! - A procedure's reply that comes with an error is freed; the C leaks it.
+//! - `nfsrv_slpderef` never frees the datagram socket's record (LZ's): the C frees it and
+//!   leaves `nfs_udpsock` pointing at the freed record for the next `NFSSVC_ADDSOCK`.
+//! - `nfsrv_init` leaves `nfsd_head` as it is (the C's `TAILQ_INIT`): no nfsd is on it when
+//!   the last one out calls it, and a list of pinned nfsds is not dropped from under them.
+//! - `nfsrv_zapsock` also frees the fragments of a record being assembled (`ns_frag`), which
+//!   the C leaks.
 //!
 //! ## Redesign
 //! - LZ's `nfssvc_sock` and `nfsd` were `malloc(9)` blocks cast to `&'static` (two `unsafe`
@@ -135,25 +150,50 @@
 //! - `nfsrv3_procs[]` is an array of one function type, [`NfsrvProc`], indexed by
 //!   `nd_procnum`: no operations table.
 
+use core::mem::size_of;
+use core::ptr;
 use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
-use hal::malloc::MArc;
+use hal::klock;
+use hal::malloc::{M_WAITOK, MArc, MBox};
 use hal::owned::OwnedSlist;
 use hal::pinlist::{PinEntry, PinList};
-use hal::pool::BoxPool;
+use hal::pool::{BoxPool, PR_WAITOK, PoolBox};
 use hal::rwlock::Guarded;
+use hal::sleep::{INFSLP, PCATCH, tsleep_nsec, wakeup};
 use hal::slot::LoanSlot;
 use hal::sys::errno::Errno;
 use hal::sys::types::Pid;
+use hal::user::UserPtr;
 
+use super::nfs::{NFSSVC_ADDSOCK, NFSSVC_NFSD, NfsdArgs, NfsdSrvargs};
+use super::nfs_socket::{nfs_send, nfs_sndlock, nfs_sndunlock};
+use super::nfs_srvcache::{
+    RC_DOIT, RC_DROPIT, RC_REPLY, nfsrv_cleancache, nfsrv_getcache, nfsrv_updatecache,
+};
+use super::nfs_srvsocket::{nfsrv_dorec, nfsrv_rcv, nfsrv_wakenfsd};
+use super::nfs_subs::NFSSTATS;
 use super::nfsm_subs::XdrReader;
 use super::nfsmount::NfsNam;
-use super::nfsproto::{NFS_MAXDATA, NFS_MAXDGRAMDATA, NFS_NPROCS, NFS_V2MAXDATA};
+use super::nfsproto::{
+    NFS_MAXDATA, NFS_MAXDGRAMDATA, NFS_MAXPACKET, NFS_NPROCS, NFS_V2MAXDATA, NFSX_UNSIGNED,
+};
+use crate::assert::kpanic;
 use crate::cred::UcredCell;
-use crate::file::FileSlot;
-use crate::net::mbuf::{MNext, Mbuf, MbufBox, MbufList};
-use crate::net::socket::SocketRef;
-use crate::proc::{ProcGlue, Thread};
+use crate::descrip::closef;
+use crate::file::{File, FileGlue, FileRef, FileSlot};
+use crate::fs::subr::vfs;
+use crate::net::mbuf::{M_WAIT, MNext, Mbuf, MbufBox, MbufList, m_get, m_prepend};
+use crate::net::proto::PR_CONNREQUIRED;
+use crate::net::sockbuf::{PSOCK, SB_NOINTR};
+use crate::net::socket::{Socket, SocketRef, solock_shared, soreserve, sosetopt, soshutdown};
+use crate::net::syscalls::{getsock, sockargs};
+use crate::netinet::in_::in_nam2sin;
+use crate::proc::{ProcGlue, Thread, suser};
+use crate::sys::mbuf::{MT_SONAME, MT_SOOPTS};
+use crate::sys::netinet_in::{IPPORT_RESERVED, IPPROTO_TCP, IPPROTO_UDP};
+use crate::sys::netinet_tcp::TCP_NODELAY;
+use crate::sys::socket::{AF_INET, SHUT_RDWR, SO_KEEPALIVE, SOCK_DGRAM, SOCK_STREAM, SOL_SOCKET};
 
 /// `M_NFSSVC`: NFS server structures (`<sys/malloc.h>`'s 50, "NFS srvsock").
 pub const M_NFSSVC: i32 = 50;
@@ -432,6 +472,614 @@ impl<G: ProcGlue> NfsrvTables<G> {
 impl<G: ProcGlue> Default for NfsrvTables<G> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// `sys_nfssvc(p, v, retval)`: the NFS server's pseudo system call for the nfsds. Based on
+/// the flag value it either adds a socket to the selection list (`NFSSVC_ADDSOCK`, a
+/// `struct nfsd_args` at `argp`) or remains in the kernel as an nfsd (`NFSSVC_NFSD`, a
+/// `struct nfsd_srvargs` at `argp`, read and dropped) until a signal; anything else is
+/// `EINVAL`. Must be super user (`suser`, first); waits while the server's tables are
+/// being made again ("nfsd init"). `EINTR` and `ERESTART` (the nfsd's end) are success.
+/// `procs` is `nfsrv3_procs[]` (`nfs_serv`'s, registered with the call at N6.7b4).
+pub fn sys_nfssvc<G: ProcGlue>(
+    p: &Thread<G>,
+    flag: i32,
+    argp: usize,
+    procs: &[NfsrvProc<G>; NFS_NPROCS],
+) -> Result<(), Errno> {
+    // Must be super user
+    suser(p)?;
+
+    let t = &vfs::<G>().nfsrv;
+    while t.nfssvc_sockhead_flag.load(Ordering::Relaxed) & SLP_INIT != 0 {
+        t.nfssvc_sockhead_flag
+            .fetch_or(SLP_WANTINIT, Ordering::Relaxed);
+        let _ = tsleep_nsec(
+            ptr::from_ref(&t.nfssvc_sockhead),
+            PSOCK,
+            "nfsd init",
+            INFSLP,
+        );
+    }
+
+    let error = match flag {
+        NFSSVC_ADDSOCK => {
+            let nfsdarg = UserPtr::<NfsdArgs>::new(argp).copyin()?;
+            let fp = getsock(p, nfsdarg.sock)?;
+            // Get the client address for connected sockets.
+            let nam = if nfsdarg.name == 0 || nfsdarg.namelen == 0 {
+                None
+            } else {
+                // A negative `int` is a huge `size_t` to the C's sockargs: EINVAL.
+                let len = usize::try_from(nfsdarg.namelen).unwrap_or(usize::MAX);
+                match sockargs(UserPtr::new(nfsdarg.name), len, MT_SONAME) {
+                    Ok(nam) => Some(nam),
+                    Err(e) => {
+                        let _ = fp.frele(Some(p));
+                        return Err(e);
+                    }
+                }
+            };
+            let error = nfssvc_addsock(&fp, nam, p);
+            let _ = fp.frele(Some(p));
+            error
+        }
+        NFSSVC_NFSD => {
+            let _nsd: NfsdSrvargs = UserPtr::<NfsdSrvargs>::new(argp).copyin()?;
+            let Some(nfsd) = MBox::new(M_NFSD, M_WAITOK, Nfsd::new(p.p_tid.get())) else {
+                return Err(Errno::ENOMEM);
+            };
+            nfssvc_nfsd(&nfsd, p, procs)
+        }
+        _ => Err(Errno::EINVAL),
+    };
+
+    match error {
+        Err(Errno::EINTR | Errno::ERESTART) => Ok(()),
+        e => e,
+    }
+}
+
+/// `(struct socket *)fp->f_data` of a file `getsock` found: `panic(9)` for another.
+fn so_of_file<G: ProcGlue>(fp: &File<G::FileGlue>) -> &SocketRef<G> {
+    match fp.data().and_then(<G::FileGlue as FileGlue>::socket_of) {
+        Some(so) => so,
+        None => kpanic(format_args!(
+            "nfssvc: file {:#x} is not a socket",
+            fp.addr()
+        )),
+    }
+}
+
+/// The socket a server socket wraps (`slp->ns_so`), counted for the caller's use.
+fn so_of<G: ProcGlue>(slp: &NfssvcSock<G>) -> Option<SocketRef<G>> {
+    slp.ns_k.get(&klock::reader()).ns_so.clone()
+}
+
+/// `*mtod(m, int32_t *) = 1; m->m_len = sizeof(int32_t)`: an option's value for `sosetopt`.
+fn set_mtod_one(m: &mut Mbuf) {
+    m.m_len().set(size_of::<i32>() as u32);
+    if let Some(d) = m.data_mut() {
+        d.copy_from_slice(&1i32.to_ne_bytes());
+    }
+}
+
+/// `nfssvc_addsock(fp, mynam)`: adds a socket to the list for servicing by nfsds: the one
+/// datagram socket (`EPERM` while it serves one already) or a connected stream with its
+/// client's address `mynam`; IPv4 UDP and TCP only (`EINVAL`). Its buffers are reserved for
+/// `NFS_MAXPACKET`, a stream's keep-alive and `TCP_NODELAY` set, its receives and sends made
+/// uninterruptible and without a time limit, and an nfsd woken for it.
+pub fn nfssvc_addsock<G: ProcGlue>(
+    fp: &FileRef<G::FileGlue>,
+    mynam: Option<MbufBox>,
+    p: &Thread<G>,
+) -> Result<(), Errno> {
+    let t = &vfs::<G>().nfsrv;
+    let so = so_of_file::<G>(fp);
+    let mut tslp = None;
+
+    // Add it to the list, as required.
+    if i32::from(so.proto().protocol()) == IPPROTO_UDP {
+        let Some(udp) = t.nfs_udpsock.get(&klock::reader()).clone() else {
+            kpanic(format_args!("nfssvc_addsock: nfsrv_init has not run"));
+        };
+        if udp.flag() & SLP_VALID != 0 {
+            drop(mynam);
+            return Err(Errno::EPERM);
+        }
+        tslp = Some(udp);
+    }
+    // Allow only IPv4 UDP and TCP sockets.
+    let sotype = so.so_type();
+    if (sotype != SOCK_STREAM && sotype != SOCK_DGRAM) || so.dom_family() != i32::from(AF_INET) {
+        drop(mynam);
+        return Err(Errno::EINVAL);
+    }
+
+    let siz = if sotype == SOCK_STREAM {
+        NFS_MAXPACKET + size_of::<u64>() // sizeof (u_long)
+    } else {
+        NFS_MAXPACKET
+    };
+    let reserved = {
+        let _l = solock_shared(so);
+        soreserve(so, siz as u64, siz as u64)
+    };
+    if let Err(e) = reserved {
+        drop(mynam);
+        return Err(e);
+    }
+
+    // Set protocol specific options { for now TCP only } and reserve some space. For datagram
+    // sockets, this can get called repeatedly for the same socket, but that isn't harmful.
+    if sotype == SOCK_STREAM {
+        let Some(mut m) = m_get(M_WAIT, MT_SOOPTS) else {
+            return Err(Errno::ENOBUFS);
+        };
+        set_mtod_one(&mut m);
+        let _ = sosetopt(so, p, SOL_SOCKET, SO_KEEPALIVE, Some(&mut m));
+    }
+    if so.dom_family() == i32::from(AF_INET) && i32::from(so.proto().protocol()) == IPPROTO_TCP {
+        let Some(mut m) = m_get(M_WAIT, MT_SOOPTS) else {
+            return Err(Errno::ENOBUFS);
+        };
+        set_mtod_one(&mut m);
+        let _ = sosetopt(so, p, IPPROTO_TCP, TCP_NODELAY, Some(&mut m));
+    }
+    {
+        let _l = solock_shared(so);
+        let mut rcv = so.so_rcv.lock();
+        rcv.clear_flags(SB_NOINTR);
+        rcv.set_timeo_nsecs(INFSLP);
+        drop(rcv);
+        let mut snd = so.so_snd.lock();
+        snd.clear_flags(SB_NOINTR);
+        snd.set_timeo_nsecs(INFSLP);
+    }
+
+    // A connected socket's record keeps its client's address; the datagram socket's never
+    // reads one (the module's Deviations).
+    let slp = match tslp {
+        Some(slp) => {
+            drop(mynam);
+            slp
+        }
+        None => {
+            let nam = mynam.as_deref().and_then(|m| NfsNam::new(m.data()));
+            let Some(slp) = MArc::new(M_NFSSVC, M_WAITOK, NfssvcSock::new(nam)) else {
+                return Err(Errno::ENOMEM);
+            };
+            let mut w = klock::witness();
+            t.nfssvc_sockhead.insert_tail(&mut w, slp.as_pin());
+            slp.ns_k.get_mut(&mut w).ns_self = Some(slp.clone());
+            slp
+        }
+    };
+    slp.ns_sotype.store(sotype, Ordering::Relaxed);
+    let old_fp = {
+        let mut w = klock::witness();
+        let k = slp.ns_k.get_mut(&mut w);
+        k.ns_so = Some(so.clone());
+        k.ns_fp.replace(fp.fref())
+    };
+    drop(old_fp);
+    // so->so_upcallarg = slp; so->so_upcall = nfsrv_rcv: N6.7b4's (the module's Deviations).
+    slp.ns_flag.store(SLP_VALID | SLP_NEEDQ, Ordering::Relaxed);
+    nfsrv_wakenfsd(&slp);
+    Ok(())
+}
+
+/// `nfssvc_checknam(nam)`: whether the client's address is acceptable: an IPv4 address with
+/// a reserved source port.
+pub fn nfssvc_checknam(nam: Option<&Mbuf>) -> bool {
+    let Some(nam) = nam else {
+        return false;
+    };
+    match in_nam2sin(nam) {
+        Ok(sin) => i32::from(u16::from_be(sin.sin_port)) < IPPORT_RESERVED,
+        Err(_) => false,
+    }
+}
+
+/// `nfssvc_nfsd(nfsd)`: called by `nfssvc()` for nfsds. Just loops around servicing rpc
+/// requests until it is killed by a signal: a socket found (`nfsrv_getslp`), its data
+/// received if it has some (under its send lock), a record taken (`nfsrv_dorec`), the cache
+/// asked (`nfsrv_getcache`), a request from an unreserved port dropped (but for the NULL
+/// procedure), the procedure run, the cache told, the reply sent (a record mark first on a
+/// stream, under the socket's send lock), the socket zapped on `EPIPE`. The nfsd's own frame
+/// holds its socket and its request; the last nfsd out makes the tables again
+/// (`nfsrv_init(1)`).
+pub fn nfssvc_nfsd<G: ProcGlue>(
+    nfsd: &MBox<Nfsd<G>>,
+    p: &Thread<G>,
+    procs: &[NfsrvProc<G>; NFS_NPROCS],
+) -> Result<(), Errno> {
+    let t = &vfs::<G>().nfsrv;
+    {
+        let mut w = klock::witness();
+        t.nfsd_head.insert_tail(&mut w, nfsd.as_pin());
+    }
+    t.nfs_numnfsd.fetch_add(1, Ordering::Relaxed);
+
+    let error = nfsd_loop(nfsd, p, procs);
+
+    // done:
+    {
+        let mut w = klock::witness();
+        t.nfsd_head.remove(&mut w, nfsd);
+    }
+    if t.nfs_numnfsd.fetch_sub(1, Ordering::Relaxed) == 1 {
+        nfsrv_init::<G>(true); // Reinitialize everything
+    }
+    Err(error)
+}
+
+/// `nfssvc_nfsd`'s loop (its `loop:` to its `goto done`): the error it ends with.
+fn nfsd_loop<G: ProcGlue>(
+    nfsd: &Nfsd<G>,
+    p: &Thread<G>,
+    procs: &[NfsrvProc<G>; NFS_NPROCS],
+) -> Errno {
+    // The socket the nfsd serves (`nfsd->nfsd_slp`) and the request it holds.
+    let mut cur: Option<NfssvcSockRef<G>> = None;
+    let mut nd: Option<PoolBox<NfsrvDescript>> = None;
+    loop {
+        let mut error = Ok(());
+        let slp = if nfsd.flag() & NFSD_REQINPROG == 0 {
+            // attach an nfssvc_sock to nfsd
+            let slp = match nfsrv_getslp(nfsd) {
+                Ok(s) => s,
+                Err(e) => return e,
+            };
+            if slp.flag() & SLP_VALID != 0 {
+                if slp.flag() & (SLP_DISCONN | SLP_NEEDQ) == SLP_NEEDQ {
+                    slp.clear_flags(SLP_NEEDQ);
+                    let _ = nfs_sndlock::<G>(&slp.ns_solock, None);
+                    if let Some(so) = so_of(&slp) {
+                        nfsrv_rcv(&so, &slp, M_WAIT);
+                    }
+                    nfs_sndunlock(&slp.ns_solock);
+                }
+                if slp.flag() & SLP_DISCONN != 0 {
+                    nfsrv_zapsock(&slp);
+                }
+                match nfsrv_dorec(&slp) {
+                    Ok(n) => nd = Some(n),
+                    Err(e) => error = Err(e),
+                }
+                nfsd.nfsd_flag.fetch_or(NFSD_REQINPROG, Ordering::Relaxed);
+            }
+            slp
+        } else {
+            match cur.take() {
+                Some(s) => s,
+                None => kpanic(format_args!(
+                    "nfssvc_nfsd: a request in progress, no socket"
+                )),
+            }
+        };
+
+        if error.is_err() || slp.flag() & SLP_VALID == 0 {
+            nd = None;
+            nfsd.nfsd_flag.fetch_and(!NFSD_REQINPROG, Ordering::Relaxed);
+            nfsrv_slpderef(slp);
+            continue;
+        }
+
+        let Some(so) = so_of(&slp) else {
+            kpanic(format_args!("nfssvc_nfsd: a valid socket wraps no socket"));
+        };
+        let sotype = so.so_type();
+        let connected = so.pr_flags(PR_CONNREQUIRED);
+        let Some(mut req) = nd.take() else {
+            kpanic(format_args!("nfssvc_nfsd: no request descriptor"));
+        };
+        if req.nd_nam2.is_none() {
+            // nd->nd_nam = slp->ns_nam: the socket's name mbuf lent (a copy while another
+            // nfsd holds it).
+            req.nd_nam = slp
+                .ns_namm
+                .take()
+                .or_else(|| slp.ns_nam.as_ref().and_then(|n| n.mbuf(M_WAIT)));
+        }
+
+        let (cacherep, mut mreq) = nfsrv_getcache(&mut req, &slp);
+        let mut send = cacherep == RC_REPLY;
+        if cacherep == RC_DOIT {
+            // Unless this is a null request (server ping), make sure that the client is
+            // using a reserved source port.
+            if req.nd_procnum != 0 && !nfssvc_checknam(req.nam()) {
+                // drop it
+                req.nd_mrep = None;
+                req.nd_nam2 = None;
+            } else {
+                let Some(proc_fn) = procs.get(req.nd_procnum) else {
+                    kpanic(format_args!(
+                        "nfssvc_nfsd: procedure {} past the table",
+                        req.nd_procnum
+                    ));
+                };
+                let (m, err) = proc_fn(&mut req, &slp, p);
+                mreq = m;
+                if mreq.is_none() {
+                    req.nd_nam2 = None;
+                    req.nd_mrep = None;
+                } else if err != 0 {
+                    NFSSTATS.srv_errs.fetch_add(1, Ordering::Relaxed);
+                    nfsrv_updatecache::<G>(&req, false, mreq.as_deref_mut());
+                    req.nd_nam2 = None;
+                    mreq = None;
+                } else {
+                    NFSSTATS.srvrpccnt[req.nd_procnum].fetch_add(1, Ordering::Relaxed);
+                    nfsrv_updatecache::<G>(&req, true, mreq.as_deref_mut());
+                    req.nd_mrep = None;
+                    send = true;
+                }
+            }
+        } else if cacherep == RC_DROPIT {
+            req.nd_mrep = None;
+            req.nd_nam2 = None;
+        }
+
+        if send {
+            let Some(m) = mreq.take() else {
+                kpanic(format_args!("nfssvc_nfsd: a reply to send is missing"));
+            };
+            let err = nfsrv_send_reply(&slp, &so, sotype, connected, &mut req, m);
+            if let Err(e @ (Errno::EINTR | Errno::ERESTART)) = err {
+                drop(slp.ns_namm.replace(req.nd_nam.take()));
+                drop(req);
+                nfsrv_slpderef(slp);
+                return e;
+            }
+        }
+
+        // The connection's name back for the next request; the descriptor to its pool.
+        if req.nd_nam.is_some() {
+            drop(slp.ns_namm.replace(req.nd_nam.take()));
+        }
+        drop(req);
+
+        match nfsrv_dorec(&slp) {
+            Ok(n) => {
+                nd = Some(n);
+                cur = Some(slp);
+            }
+            Err(_) => {
+                nfsd.nfsd_flag.fetch_and(!NFSD_REQINPROG, Ordering::Relaxed);
+                nfsrv_slpderef(slp);
+            }
+        }
+    }
+}
+
+/// `nfssvc_nfsd`'s `RC_REPLY` case: the reply `m` sized (`panic(9)` for an empty one or one
+/// past `NFS_MAXPACKET`, as the C), a Sun RPC record mark prepended on a stream, sent to the
+/// request's sender (under the socket's send lock when it is connected) unless the socket is
+/// no longer valid (`EPIPE`), the request's mbufs freed, the socket zapped on `EPIPE`.
+fn nfsrv_send_reply<G: ProcGlue>(
+    slp: &NfssvcSock<G>,
+    so: &Socket<G>,
+    sotype: i32,
+    connected: bool,
+    req: &mut NfsrvDescript,
+    m: MbufBox,
+) -> Result<(), Errno> {
+    let mut siz = 0usize;
+    let mut c: Option<&Mbuf> = Some(&m);
+    while let Some(mm) = c {
+        siz += mm.m_len().get() as usize;
+        c = mm.m_next.get();
+    }
+    if siz == 0 || siz > NFS_MAXPACKET {
+        kpanic(format_args!("bad nfs svc reply, siz = {siz}"));
+    }
+    // `siz <= NFS_MAXPACKET`: an `int`.
+    if let Some(h) = m.pkthdr() {
+        h.len.set(siz as i32);
+        h.ph_ifidx.set(0);
+    }
+
+    // For stream protocols, prepend a Sun RPC Record Mark.
+    let m = if sotype == SOCK_STREAM {
+        m_prepend(m, NFSX_UNSIGNED as i32, M_WAIT).map(|mut m| {
+            if let Some(d) = m.data_mut() {
+                d[..NFSX_UNSIGNED].copy_from_slice(&(0x8000_0000u32 | siz as u32).to_be_bytes());
+            }
+            m
+        })
+    } else {
+        Some(m)
+    };
+
+    if connected {
+        let _ = nfs_sndlock::<G>(&slp.ns_solock, None);
+    }
+    let error = match m {
+        Some(m) if slp.flag() & SLP_VALID != 0 => {
+            nfs_send(Some(so), req.nd_nam2.as_deref(), m, None)
+        }
+        Some(m) => {
+            drop(m);
+            Err(Errno::EPIPE)
+        }
+        // m_prepend found no mbuf (it frees the reply): the C's M_WAIT cannot fail.
+        None => Err(Errno::ENOBUFS),
+    };
+    req.nd_nam2 = None;
+    req.nd_mrep = None;
+    if error == Err(Errno::EPIPE) {
+        nfsrv_zapsock(slp);
+    }
+    if connected {
+        nfs_sndunlock(&slp.ns_solock);
+    }
+    error
+}
+
+/// `nfsrv_zapsock(slp)`: shuts down a socket associated with an `nfssvc_sock` structure.
+/// Should be called with the send lock set, if required. The trick here is to increment the
+/// sref at the start, so that the nfsds will stop using it and clear `ns_flag` at the end so
+/// that it will not be reassigned during cleanup: its flags cleared, the file it holds closed
+/// (the socket shut down first), the client's address and every mbuf it queued freed.
+pub fn nfsrv_zapsock<G: ProcGlue>(slp: &NfssvcSock<G>) {
+    slp.clear_flags(SLP_ALLFLAGS);
+    let (fp, so) = {
+        let mut w = klock::witness();
+        let k = slp.ns_k.get_mut(&mut w);
+        (k.ns_fp.take(), k.ns_so.clone())
+    };
+    let Some(fp) = fp else {
+        return;
+    };
+    // so->so_upcall = NULL: the upcall is set at N6.7b4 (the module's Deviations).
+    if let Some(so) = so {
+        let _ = soshutdown(&so, SHUT_RDWR);
+    }
+    let _ = closef(fp, None);
+    drop(slp.ns_namm.take());
+    drop(slp.ns_rcv.take());
+}
+
+/// `nfsrv_slpderef(slp)`: dereferences a server socket structure (the caller's handle, which
+/// goes). If it has no more references and is no longer valid, it leaves the list and is
+/// freed with its last handle; the datagram socket's record stays for the next
+/// `NFSSVC_ADDSOCK` (LZ's).
+pub fn nfsrv_slpderef<G: ProcGlue>(slp: NfssvcSockRef<G>) {
+    let t = &vfs::<G>().nfsrv;
+    let sref = slp.ns_sref.fetch_sub(1, Ordering::Relaxed).wrapping_sub(1);
+    if sref == 0 && slp.flag() & SLP_VALID == 0 {
+        let member = {
+            let mut w = klock::witness();
+            let udp = t
+                .nfs_udpsock
+                .get(&w)
+                .as_ref()
+                .is_some_and(|u| MArc::ptr_eq(u, &slp));
+            if udp {
+                None
+            } else {
+                t.nfssvc_sockhead.remove(&mut w, &slp);
+                slp.ns_k.get_mut(&mut w).ns_self.take()
+            }
+        };
+        drop(member);
+    }
+    drop(slp);
+}
+
+/// `nfsrv_init(terminating)`: initializes the data structures for the server, handshaking
+/// with any new nfsds starting up to avoid any chance of corruption (`SLP_INIT`, "nfsd
+/// init"): when `terminating`, every socket zapped and freed and the cache cleaned; then the
+/// datagram socket's record made, and at boot the descriptors' pool.
+pub fn nfsrv_init<G: ProcGlue>(terminating: bool) {
+    let t = &vfs::<G>().nfsrv;
+    if t.nfssvc_sockhead_flag.load(Ordering::Relaxed) & SLP_INIT != 0 {
+        kpanic(format_args!("nfsd init"));
+    }
+    t.nfssvc_sockhead_flag.fetch_or(SLP_INIT, Ordering::Relaxed);
+    if terminating {
+        loop {
+            let slp = {
+                let r = klock::reader();
+                let Some(first) = t.nfssvc_sockhead.first(&r) else {
+                    break;
+                };
+                match first.ns_k.get(&r).ns_self.clone() {
+                    Some(s) => s,
+                    None => kpanic(format_args!(
+                        "nfsrv_init: a socket on the list without its handle"
+                    )),
+                }
+            };
+            if slp.flag() & SLP_VALID != 0 {
+                nfsrv_zapsock(&slp);
+            }
+            let member = {
+                let mut w = klock::witness();
+                t.nfssvc_sockhead.remove(&mut w, &slp);
+                slp.ns_k.get_mut(&mut w).ns_self.take()
+            };
+            drop(member);
+            drop(slp);
+        }
+        nfsrv_cleancache::<G>(); // And clear out server cache
+    }
+
+    t.nfssvc_sockhead_flag
+        .fetch_and(!SLP_INIT, Ordering::Relaxed);
+    if t.nfssvc_sockhead_flag.load(Ordering::Relaxed) & SLP_WANTINIT != 0 {
+        t.nfssvc_sockhead_flag
+            .fetch_and(!SLP_WANTINIT, Ordering::Relaxed);
+        wakeup(ptr::from_ref(&t.nfssvc_sockhead));
+    }
+
+    t.nfsd_head_flag
+        .fetch_and(!NFSD_CHECKSLP, Ordering::Relaxed);
+
+    let Some(udp) = MArc::new(M_NFSSVC, M_WAITOK, NfssvcSock::new(None)) else {
+        kpanic(format_args!(
+            "nfsrv_init: no memory for the datagram socket"
+        ));
+    };
+    let old = {
+        let mut w = klock::witness();
+        t.nfssvc_sockhead.insert_head(&mut w, udp.as_pin());
+        udp.ns_k.get_mut(&mut w).ns_self = Some(udp.clone());
+        t.nfs_udpsock.get_mut(&mut w).replace(udp)
+    };
+    drop(old);
+
+    if !terminating {
+        let _ = t
+            .nfsrv_descript_pl
+            .init(hal::intr::IPL_NONE, PR_WAITOK, "ndscpl");
+    }
+}
+
+/// `nfsrv_getslp(nfsd)`: finds an `nfssvc_sock` for the nfsd, sleeping if needed ("nfsd",
+/// interruptible: a signal's error ends the nfsd): the socket a waker handed it, or one
+/// marked `SLP_DOREC` when `NFSD_CHECKSLP` says some wait. The handle comes into the nfsd's
+/// frame, counted in the socket's `ns_sref`.
+pub fn nfsrv_getslp<G: ProcGlue>(nfsd: &Nfsd<G>) -> Result<NfssvcSockRef<G>, Errno> {
+    let t = &vfs::<G>().nfsrv;
+    loop {
+        // again:
+        while nfsd.nfsd_slp.update(|s| s.is_none())
+            && t.nfsd_head_flag.load(Ordering::Relaxed) & NFSD_CHECKSLP == 0
+        {
+            nfsd.nfsd_flag.fetch_or(NFSD_WAITING, Ordering::Relaxed);
+            t.nfsd_waiting.fetch_add(1, Ordering::Relaxed);
+            let error = tsleep_nsec(ptr::from_ref(nfsd), PSOCK | PCATCH, "nfsd", INFSLP);
+            t.nfsd_waiting.fetch_sub(1, Ordering::Relaxed);
+            error?;
+        }
+
+        if nfsd.nfsd_slp.update(|s| s.is_none())
+            && t.nfsd_head_flag.load(Ordering::Relaxed) & NFSD_CHECKSLP != 0
+        {
+            let r = klock::reader();
+            let found = t
+                .nfssvc_sockhead
+                .iter(&r)
+                .find(|slp| slp.flag() & (SLP_VALID | SLP_DOREC) == SLP_VALID | SLP_DOREC);
+            match found.and_then(|slp| slp.ns_k.get(&r).ns_self.clone()) {
+                Some(slp) => {
+                    slp.clear_flags(SLP_DOREC);
+                    slp.ns_sref.fetch_add(1, Ordering::Relaxed);
+                    drop(nfsd.nfsd_slp.replace(Some(slp)));
+                }
+                None => {
+                    t.nfsd_head_flag
+                        .fetch_and(!NFSD_CHECKSLP, Ordering::Relaxed);
+                }
+            }
+        }
+
+        if let Some(slp) = nfsd.nfsd_slp.take() {
+            return Ok(slp);
+        }
     }
 }
 
