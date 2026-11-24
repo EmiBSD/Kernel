@@ -121,14 +121,15 @@
 //! LZ: sys/netinet/in_proto.rs@3c62ede68802
 //!
 //! ## Deviations
-//! - The table's entries are the kernel's IP, UDP, TCP, ICMP and IGMP ([`IpProtocol`],
-//!   [`UdpProtocol`] since N6.6b0, [`TcpProtocol`] since N6.6a5, [`IcmpProtocol`],
-//!   [`IgmpProtocol`]) and `bsd`'s other
-//!   transports and IPsec (`bsd`'s `inetsw[]` rows through the `Protocol` bridge impl) in the
-//!   C's order; `bsd` assembles the slice and records it ([`inetsw_set`],
-//!   `sys/kern/uipc_domain.rs`), until the transports move (N6.6b, N8).
-//!   `IPSEC` is configured (AH, ESP and IPComp after IGMP, `bsd`'s), `NPFSYNC` and `NPF`
-//!   (pfsync's and divert's entries, `bsd`'s); `NGIF` is 0 (`ipip_input` serves
+//! - The table's entries are the kernel's IP, UDP, TCP, raw IP, ICMP, IGMP, divert and the raw
+//!   wildcard ([`IpProtocol`], [`UdpProtocol`] since N6.6b0, [`TcpProtocol`] since N6.6a5,
+//!   [`IcmpProtocol`], [`IgmpProtocol`], [`RipProtocol`] and [`DivertProtocol`] since N6.6b1)
+//!   and `bsd`'s IP-in-IP, IPsec and pfsync rows (`bsd`'s `inetsw[]` rows through the
+//!   `Protocol` bridge impl, their sockets served by the kernel's raw requests: `pr_rip`) in
+//!   the C's order; `bsd` assembles the slice and records it ([`inetsw_set`],
+//!   `sys/kern/uipc_domain.rs`), until those rows move (N8).
+//!   `IPSEC` is configured (AH, ESP and IPComp after IGMP, `bsd`'s), `NPFSYNC` (pfsync's
+//!   entry, `bsd`'s) and `NPF` (divert's, the kernel's); `NGIF` is 0 (`ipip_input` serves
 //!   `IPPROTO_IPV4` and, with `INET6`, `IPPROTO_IPV6`); `MPLS`, `NGRE`, `NCARP` and
 //!   `NETHERIP` are not configured, their entries absent as LZ's. `SMALL_KERNEL` is not set:
 //!   the sysctl handlers are in the table.
@@ -141,17 +142,18 @@
 //!   address are [`InetTables`], one per glue in the network's tables (`NetTables::inet`,
 //!   D-9: the protocols are generic over the glue, `inetsw[]` cannot be a `static` of the
 //!   kernel): the table and the index of its raw entry, recorded together by [`inetsw_set`]
-//!   (N6.5d: so ICMP's and IGMP's entries lend the raw sockets' requests before `ip_init`,
-//!   as the C's static `pr_usrreqs`; until then the index was stored at `ip_init`, 0 before
-//!   it), and `ip_protox[]`, filled by [`inetsw_init`] as the C's `ip_init` fills it. A
-//!   lookup is two loads and an index ([`ip_protocol`], `#[inline]`: per packet), the C's
-//!   `inetsw[ip_protox[nxt]]`.
+//!   (N6.5d: so no reader sees the table without its raw entry; until then the index
+//!   was stored at `ip_init`, 0 before it), and `ip_protox[]`, filled by [`inetsw_init`] as
+//!   the C's `ip_init` fills it. A lookup is two loads and an index ([`ip_protocol`],
+//!   `#[inline]`: per packet), the C's `inetsw[ip_protox[nxt]]`.
 //! - LZ's `inetsw[]` of `Protosw` structs of function pointers and `inetdomain` -> the
 //!   `Protocol`/`Domain` traits (decision 46): [`InetDomain`] over the glue's table, it and
 //!   the kernel's entries zero-sized types with an associated `NEW` (the C's NULL entries are
-//!   the traits' defaults); ICMP's and IGMP's share the raw entry's user requests and socket
-//!   options (`rip_usrreqs`, `rip_ctloutput` in the C), reached through the raw entry
-//!   ([`raw_protocol`]); IGMP's `rip_input` tail call is the raw entry's `Protocol::input`.
+//!   the traits' defaults); ICMP's and IGMP's name the raw sockets' user requests and socket
+//!   options (`rip_usrreqs`, `rip_ctloutput`, the kernel's since N6.6b1: until then they lent
+//!   `bsd`'s through the raw entry), and IGMP's tail call is `rip_input`, as the C's rows and
+//!   `igmp_input_if` name them, and ICMP's tail is `rip_input` too (`icmp_input`'s, as the
+//!   C's): no lookup of the raw entry on these paths since N6.6b1.
 //!   Nothing keys a domain or a protocol by address (`pffinddomain`, `pffindproto` compare
 //!   the family, the number and the type).
 
@@ -163,8 +165,8 @@ use hal::netlock::NetHeld;
 use hal::once::OnceStatic;
 use hal::sys::errno::Errno;
 use hal::sys::netinet_in::{
-    IPPROTO_DONE, IPPROTO_ICMP, IPPROTO_IGMP, IPPROTO_MAX, IPPROTO_RAW, IPPROTO_TCP, IPPROTO_UDP,
-    SockaddrIn,
+    IPPROTO_DIVERT, IPPROTO_DONE, IPPROTO_ICMP, IPPROTO_IGMP, IPPROTO_MAX, IPPROTO_RAW,
+    IPPROTO_TCP, IPPROTO_UDP, SockaddrIn,
 };
 use hal::sys::socket::{AF_INET, PF_INET, SOCK_DGRAM, SOCK_RAW, SOCK_STREAM};
 
@@ -177,6 +179,8 @@ use crate::net::proto::{
     PR_SPLICE, PR_WANTRCVD, Protocol, SockaddrView, Usrreqs,
 };
 use crate::net::socket::{SoLocked, Socket};
+use crate::netinet::ip_divert::{DivertUsrreqs, divert_init, divert_sysctl};
+use crate::netinet::raw_ip::{RipUsrreqs, rip_ctloutput, rip_init, rip_input};
 use crate::netinet::tcp_input::tcp_input;
 use crate::netinet::tcp_subr::{tcp_ctlinput, tcp_init};
 use crate::netinet::tcp_timer::tcp_slowtimo;
@@ -247,8 +251,7 @@ fn raw_entry<G: ProcGlue>(sw: &[&'static dyn Protocol<G>]) -> Option<usize> {
 
 /// `inetsw[]` recorded with its raw entry, once (the glue's boot, before `domaininit`: `bsd`
 /// assembles it of its rows and the kernel's entries; a second call, a test's, keeps the first
-/// table). The raw entry is the table's from here on, before `ip_init`: ICMP's and IGMP's
-/// entries lend the raw sockets' requests as the C's static `pr_usrreqs` does.
+/// table). The raw entry is the table's from here on, before `ip_init`.
 pub fn inetsw_set<G: ProcGlue>(sw: &'static [&'static dyn Protocol<G>]) {
     let raw = raw_entry(sw).unwrap_or(usize::MAX);
     let _ = tables::<G>().sw.set(Inetsw { sw, raw });
@@ -287,14 +290,6 @@ pub fn ip_protocol<G: ProcGlue>(nxt: i32) -> Option<&'static dyn Protocol<G>> {
         .get(usize::try_from(nxt).ok()?)?
         .load(Ordering::Relaxed);
     t.sw.get()?.sw.get(usize::from(i)).copied()
-}
-
-/// The raw entry (`rip_input`'s, which ICMP and IGMP hand their messages to); `None` before
-/// the glue records the table, or for a table without one.
-#[inline]
-pub fn raw_protocol<G: ProcGlue>() -> Option<&'static dyn Protocol<G>> {
-    let s = tables::<G>().sw.get()?;
-    s.sw.get(s.raw).copied()
 }
 
 /// `inetdomain`: the internet domain, its protocols the glue's `inetsw[]` ([`inetsw_set`], in
@@ -521,10 +516,126 @@ impl<G: ProcGlue> Protocol<G> for UdpProtocol<G> {
     }
 }
 
-/// The raw entry's user requests and socket options, which ICMP's and IGMP's entries share
-/// (`rip_usrreqs`, `rip_ctloutput`: `bsd`'s until N6.6b).
-fn raw<G: ProcGlue>() -> Option<&'static dyn Protocol<G>> {
-    raw_protocol::<G>()
+/// `inetsw[]`'s raw entries (N6.6b1): the `IPPROTO_RAW` row and the raw wildcard (`wild`,
+/// protocol 0, the last row, whose `pr_init` is `rip_init`): `rip_input`, `rip_ctloutput`,
+/// `rip_usrreqs`.
+pub struct RipProtocol<G: ProcGlue> {
+    /// The raw wildcard row (protocol 0, `rip_init`).
+    wild: bool,
+    /// The glue.
+    _g: PhantomData<fn() -> G>,
+}
+
+impl<G: ProcGlue> RipProtocol<G> {
+    /// The `IPPROTO_RAW` row.
+    pub const RAW: Self = Self {
+        wild: false,
+        _g: PhantomData,
+    };
+    /// The raw wildcard row.
+    pub const WILD: Self = Self {
+        wild: true,
+        _g: PhantomData,
+    };
+}
+
+impl<G: ProcGlue> Protocol<G> for RipProtocol<G> {
+    fn domain(&self) -> &'static dyn Domain<G> {
+        inetdomain::<G>()
+    }
+    fn ty(&self) -> i16 {
+        SOCK_RAW as i16
+    }
+    fn protocol(&self) -> i16 {
+        if self.wild { 0 } else { IPPROTO_RAW as i16 }
+    }
+    fn flags(&self) -> i16 {
+        PR_ATOMIC | PR_ADDR | PR_MPINPUT
+    }
+    fn usrreqs(&self) -> Option<&'static dyn Usrreqs<G>> {
+        Some(&RipUsrreqs::<G>::NEW)
+    }
+    fn input(
+        &self,
+        mp: &mut Option<MbufBox>,
+        offp: &mut i32,
+        proto: i32,
+        af: i32,
+        ns: Option<&mut Netstack>,
+        net: &NetHeld<'_>,
+    ) -> i32 {
+        rip_input::<G>(mp, offp, proto, af, ns, net)
+    }
+    fn has_ctloutput(&self) -> bool {
+        true
+    }
+    fn ctloutput(
+        &self,
+        op: i32,
+        so: &Socket<G>,
+        w: &mut SoLocked<'_>,
+        level: i32,
+        optname: i32,
+        m: Option<&mut Mbuf>,
+    ) -> Result<(), Errno> {
+        rip_ctloutput(op, so, w, level, optname, m)
+    }
+    /// `rip_init` (the wildcard row's).
+    fn init(&self) {
+        if self.wild {
+            rip_init::<G>();
+        }
+    }
+}
+
+/// `inetsw[]`'s divert(4) entry (N6.6b1; `NPF`): no input (pf hands it the packets,
+/// `divert_packet`), `rip_ctloutput`, `divert_usrreqs`, `divert_init`, `divert_sysctl`.
+pub struct DivertProtocol<G: ProcGlue>(PhantomData<fn() -> G>);
+
+impl<G: ProcGlue> DivertProtocol<G> {
+    /// The entry.
+    pub const NEW: Self = Self(PhantomData);
+}
+
+impl<G: ProcGlue> Protocol<G> for DivertProtocol<G> {
+    fn domain(&self) -> &'static dyn Domain<G> {
+        inetdomain::<G>()
+    }
+    fn ty(&self) -> i16 {
+        SOCK_RAW as i16
+    }
+    fn protocol(&self) -> i16 {
+        IPPROTO_DIVERT as i16
+    }
+    fn flags(&self) -> i16 {
+        PR_ATOMIC | PR_ADDR | PR_MPSYSCTL
+    }
+    fn usrreqs(&self) -> Option<&'static dyn Usrreqs<G>> {
+        Some(&DivertUsrreqs::<G>::NEW)
+    }
+    fn has_ctloutput(&self) -> bool {
+        true
+    }
+    fn ctloutput(
+        &self,
+        op: i32,
+        so: &Socket<G>,
+        w: &mut SoLocked<'_>,
+        level: i32,
+        optname: i32,
+        m: Option<&mut Mbuf>,
+    ) -> Result<(), Errno> {
+        rip_ctloutput(op, so, w, level, optname, m)
+    }
+    fn has_sysctl(&self) -> bool {
+        true
+    }
+    fn sysctl(&self, name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+        divert_sysctl(name, req)
+    }
+    fn init(&self) {
+        divert_init::<G>();
+    }
 }
 
 /// `inetsw[]`'s ICMP entry: `icmp_input`, `icmp_init`, `icmp_sysctl`, the raw sockets'
@@ -549,16 +660,14 @@ impl<G: ProcGlue> Protocol<G> for IcmpProtocol<G> {
     fn flags(&self) -> i16 {
         PR_ATOMIC | PR_ADDR | PR_MPSYSCTL
     }
+    /// `rip_usrreqs`: an ICMP socket is a raw socket.
     fn usrreqs(&self) -> Option<&'static dyn Usrreqs<G>> {
-        raw::<G>()?.usrreqs()
-    }
-    /// The raw entry's: an ICMP socket is a raw socket served by its requests.
-    fn legacy(&self) -> bool {
-        raw::<G>().is_some_and(Protocol::legacy)
+        Some(&RipUsrreqs::<G>::NEW)
     }
     fn has_ctloutput(&self) -> bool {
-        raw::<G>().is_some_and(Protocol::has_ctloutput)
+        true
     }
+    /// `rip_ctloutput`.
     fn ctloutput(
         &self,
         op: i32,
@@ -568,10 +677,7 @@ impl<G: ProcGlue> Protocol<G> for IcmpProtocol<G> {
         optname: i32,
         m: Option<&mut Mbuf>,
     ) -> Result<(), Errno> {
-        match raw::<G>() {
-            Some(r) => r.ctloutput(op, so, w, level, optname, m),
-            None => Err(Errno::ENOPROTOOPT),
-        }
+        rip_ctloutput(op, so, w, level, optname, m)
     }
     fn input(
         &self,
@@ -620,16 +726,14 @@ impl<G: ProcGlue> Protocol<G> for IgmpProtocol<G> {
     fn flags(&self) -> i16 {
         PR_ATOMIC | PR_ADDR | PR_MPSYSCTL
     }
+    /// `rip_usrreqs`: an IGMP socket is a raw socket.
     fn usrreqs(&self) -> Option<&'static dyn Usrreqs<G>> {
-        raw::<G>()?.usrreqs()
-    }
-    /// The raw entry's: an IGMP socket is a raw socket served by its requests.
-    fn legacy(&self) -> bool {
-        raw::<G>().is_some_and(Protocol::legacy)
+        Some(&RipUsrreqs::<G>::NEW)
     }
     fn has_ctloutput(&self) -> bool {
-        raw::<G>().is_some_and(Protocol::has_ctloutput)
+        true
     }
+    /// `rip_ctloutput`.
     fn ctloutput(
         &self,
         op: i32,
@@ -639,10 +743,7 @@ impl<G: ProcGlue> Protocol<G> for IgmpProtocol<G> {
         optname: i32,
         m: Option<&mut Mbuf>,
     ) -> Result<(), Errno> {
-        match raw::<G>() {
-            Some(r) => r.ctloutput(op, so, w, level, optname, m),
-            None => Err(Errno::ENOPROTOOPT),
-        }
+        rip_ctloutput(op, so, w, level, optname, m)
     }
     fn input(
         &self,
@@ -658,13 +759,10 @@ impl<G: ProcGlue> Protocol<G> for IgmpProtocol<G> {
         };
         // igmp_input_if's tail: return rip_input(mp, offp, proto, af, ns).
         match crate::netinet::igmp::igmp_input(m, *offp, net) {
-            Some(m) => match raw::<G>() {
-                Some(r) => {
-                    *mp = Some(m);
-                    r.input(mp, offp, proto, af, ns, net)
-                }
-                None => IPPROTO_DONE,
-            },
+            Some(m) => {
+                *mp = Some(m);
+                rip_input::<G>(mp, offp, proto, af, ns, net)
+            }
             None => IPPROTO_DONE,
         }
     }
@@ -728,9 +826,11 @@ mod tests {
         assert_eq!((dom.family(), dom.name()), (i32::from(AF_INET), "inet"));
         assert_eq!((dom.sasize(), dom.rtoffset(), dom.maxplen()), (16, 4, 32));
         assert_eq!(dom.protocols().len(), SW.len());
-        // ICMP's and IGMP's sockets are the raw entry's (the test's raw entry is a kernel one).
+        // ICMP's and IGMP's sockets are raw IP's, the kernel's (N6.6b1): held by a witness.
         assert!(!ip.legacy());
-        assert_eq!((icmp.legacy(), igmp.legacy()), (RAW.legacy(), RAW.legacy()));
+        assert!(!icmp.legacy() && !igmp.legacy());
+        assert!(icmp.usrreqs().is_some() && igmp.usrreqs().is_some());
+        assert!(icmp.has_ctloutput() && igmp.has_ctloutput());
         assert_eq!(ip.domain().family(), i32::from(AF_INET));
     }
 
@@ -744,7 +844,6 @@ mod tests {
         assert!(same(ip_protocol::<G>(IPPROTO_TCP), &TCP));
         assert!(same(ip_protocol::<G>(IPPROTO_ICMP), &ICMP));
         assert!(same(ip_protocol::<G>(99), &RAW), "no entry: the raw one");
-        assert!(same(raw_protocol::<G>(), &RAW));
         assert!(ip_protocol::<G>(IPPROTO_MAX).is_none());
         assert!(ip_protocol::<G>(-1).is_none());
     }

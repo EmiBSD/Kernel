@@ -167,6 +167,89 @@ struct TestVops;
 
 impl Vnops<G> for TestVops {}
 
+/// The device switch of the glue (`vfs_getnewfsid` reads `nblkdev`): no device answers.
+struct NfsDevsw;
+
+impl crate::fs::spec::Devsw<G> for NfsDevsw {
+    fn nchrdev(&self) -> u32 {
+        8
+    }
+    fn nblkdev(&self) -> u32 {
+        8
+    }
+    fn cdev_type(&self, _maj: u32) -> u32 {
+        0
+    }
+    fn cdev_flags(&self, _maj: u32) -> u32 {
+        0
+    }
+    fn bdev_type(&self, _maj: u32) -> u32 {
+        0
+    }
+    fn cdev_open(&self, _dev: i32, _o: i32, _t: i32, _p: &Thread<G>) -> Result<(), Errno> {
+        Err(Errno::ENXIO)
+    }
+    fn cdev_close(&self, _dev: i32, _f: i32, _t: i32, _p: Option<&Thread<G>>) -> Result<(), Errno> {
+        Err(Errno::ENXIO)
+    }
+    fn cdev_read(
+        &self,
+        _dev: i32,
+        _uio: &mut crate::uio::Uio<'_, G>,
+        _i: i32,
+    ) -> Result<(), Errno> {
+        Err(Errno::ENXIO)
+    }
+    fn cdev_write(
+        &self,
+        _dev: i32,
+        _uio: &mut crate::uio::Uio<'_, G>,
+        _i: i32,
+    ) -> Result<(), Errno> {
+        Err(Errno::ENXIO)
+    }
+    fn cdev_ioctl(
+        &self,
+        _dev: i32,
+        _cmd: u64,
+        _data: &mut [u8],
+        _fflag: i32,
+        _p: &Thread<G>,
+    ) -> Result<(), Errno> {
+        Err(Errno::ENXIO)
+    }
+    fn cdev_kqfilter(&self, _dev: i32, _kn: &crate::event::Knote<G>) -> Option<Result<(), Errno>> {
+        None
+    }
+    fn bdev_open(&self, _dev: i32, _o: i32, _t: i32, _p: &Thread<G>) -> Result<(), Errno> {
+        Err(Errno::ENXIO)
+    }
+    fn bdev_close(&self, _dev: i32, _f: i32, _t: i32, _p: Option<&Thread<G>>) -> Result<(), Errno> {
+        Err(Errno::ENXIO)
+    }
+    fn bdev_ioctl(
+        &self,
+        _dev: i32,
+        _cmd: u64,
+        _data: &mut [u8],
+        _fflag: i32,
+        _p: &Thread<G>,
+    ) -> Result<(), Errno> {
+        Err(Errno::ENXIO)
+    }
+    fn bdev_strategy(&self, _bp: crate::fs::vops::IoBuf) {}
+    fn chrtoblk(&self, _dev: i32) -> i32 {
+        crate::fs::bio::NODEV
+    }
+    fn iskmemdev(&self, _dev: i32) -> bool {
+        false
+    }
+    fn iszerodev(&self, _dev: i32) -> bool {
+        false
+    }
+}
+
+static NFS_DEVSW: NfsDevsw = NfsDevsw;
 static TEST_VFS: TestVfs = TestVfs;
 static TEST_VOPS: TestVops = TestVops;
 static CONF: [Vfsconf<G>; 1] = [Vfsconf::new(&TEST_VFS, b"nfs", 2, 0, 0)];
@@ -270,6 +353,7 @@ pub(crate) fn setup(uid: u32) -> Fixture {
 
     vfs_test_reset::<G>();
     crate::fs::init::vfsinit::<G>(&CONF, 64, || {});
+    let _ = crate::fs::spec::register_devsw::<G>(&NFS_DEVSW);
     let mp = vfs_mount_alloc(None, &CONF[0]);
     vfs_unbusy(mp);
     let vp = getnewvnode(VT_NFS, Some(mp), &TEST_VOPS).expect("a vnode");

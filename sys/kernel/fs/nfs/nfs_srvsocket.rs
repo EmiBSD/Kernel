@@ -66,9 +66,6 @@
 //! - `nfs_rephead` answers the reply being built as an `XdrWriter` (its chain is the C's
 //!   `*mrq`, the writer the C's `*mbp`); `nfs_getreq` frees the request on every error, as the
 //!   C's `nfsd_dissect` does, and answers `Result`.
-//! - A record whose fragments hold no mbuf (a last-fragment mark of length 0 with nothing
-//!   before it) queues nothing: the C stores the empty fragment list as the queue's tail and
-//!   loses the records queued before it.
 //! - `nfs_realign` is gone: the server reads every request through `XdrReader`, which copies
 //!   the words out, so an mbuf whose data is not word aligned needs no copy.
 //! - `nfsrv_rcv`'s socket upcall (`so->so_upcall = nfsrv_rcv`, its argument the record) is
@@ -766,7 +763,10 @@ mod tests {
 
     /// A descriptor of the request `b`, cut into `cut`-byte mbufs.
     fn descript(b: &[u8], cut: usize) -> NfsrvDescript {
-        let parts: Vec<&[u8]> = b.chunks(cut.max(1)).collect();
+        let mut parts: Vec<&[u8]> = b.chunks(cut.max(1)).collect();
+        if parts.is_empty() {
+            parts.push(&[]);
+        }
         NfsrvDescript {
             nd_mrep: Some(test_chain(&parts)),
             ..NfsrvDescript::default()
@@ -991,11 +991,12 @@ mod tests {
         let mut st = stream(&s, 4);
         assert_eq!(nfsrv_getstream(&slp, &mut st, M_WAIT), Ok(()));
         assert!(st.ns_rec.is_empty());
-        // A last fragment of length 0 with nothing before it queues nothing.
+        // A last fragment of length 0 with nothing before it: a record of the mark's emptied
+        // mbuf, as the C queues it (its parse is then EBADRPC).
         let slp = mksock();
         let mut st = stream(&0x8000_0000u32.to_be_bytes(), 4);
         assert_eq!(nfsrv_getstream(&slp, &mut st, M_WAIT), Ok(()));
-        assert!(st.ns_rec.is_empty());
+        assert_eq!(records(&st), [Vec::<u8>::new()]);
     }
 
     #[test]

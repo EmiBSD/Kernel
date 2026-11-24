@@ -60,8 +60,8 @@
 //! LZ: sys/nfs/nfs_syscalls.rs@e8249449d905
 //!
 //! The nfsiods do read-ahead and write-behind operations on the block I/O cache: each takes
-//! the buffers `nfs_asyncio` queues and does their RPCs (`nfs_doio`). `nfssvc_iod`'s loop,
-//! which calls `nfs_doio`, and `nfs_getset_niothreads`, which starts it, come with
+//! the buffers `nfs_asyncio` queues and does their RPCs (`nfs_doio`). [`nfssvc_iod`]'s loop,
+//! which calls `nfs_doio`, and [`nfs_getset_niothreads`], which starts it, came with
 //! `nfs_doio` (N6.7a3), over these pieces; `nfssvc(2)` and the server's half (`nfssvc_nfsd`,
 //! `nfsrv_*`) stay `bsd`'s until N6.7b (D-5).
 //!
@@ -84,16 +84,23 @@
 //!   `nfs_bwrite` (flags, `buf_undirty`, `v_numoutput++`) in the same `splbio` section; here
 //!   it is the scan's section, `buf_undirty`'s and `numoutput_inc`'s: two sections of the
 //!   cache's lock more per write behind (docs/ROADMAP.md N12's row).
+//! - N6.7a3: [`nfssvc_iod`] is a `fork::Start::NfsIod` thread (`nfs_kqpoll`'s form): its tid
+//!   is its slot's value; the surplus nfsiod [`nfs_getset_niothreads`] kills is found by that
+//!   tid on the thread hash under a reader of the kernel lock (the C's `psignal` of the
+//!   slot's `struct proc *`), and a slot whose thread is gone already is counted as the C's.
 
 use core::ptr;
 use core::sync::atomic::Ordering;
 
 use hal::klock;
-use hal::sleep::{wakeup, wakeup_one};
+use hal::sleep::{INFSLP, PCATCH, PWAIT, tsleep_nsec, wakeup, wakeup_one};
 use hal::sys::errno::Errno;
 use hal::sys::types::Pid;
 
+use super::nfs::nfs_niothreads;
+use super::nfs_bio::nfs_doio;
 use super::nfsnode::{NFS_BUFQLEN, NFS_BUFQMAX, NFS_NUMASYNC};
+use crate::assert::kpanic;
 use crate::fs::bio::{BCSTATS, DirtyPick, DirtyScan, VnodeBufs, buf_undirty, vnode_dirty_scan};
 use crate::fs::buf::{
     B_ASYNC, B_BUSY, B_DELWRI, B_DONE, B_ERROR, B_NEEDCOMMIT, B_NOCACHE, B_READ, BufRef,
@@ -102,6 +109,7 @@ use crate::fs::bufq::{BufqDiscipline, bufq_unpark};
 use crate::fs::subr::vfs;
 use crate::proc::ProcGlue;
 use crate::sys::nfs_nfs::NFS_MAXASYNCDAEMON;
+use crate::sys::signal::SIGKILL;
 
 /// The number of slots of `nfs_asyncdaemon[]`.
 pub const NFS_NASYNCDAEMON: usize = NFS_MAXASYNCDAEMON as usize;
@@ -214,6 +222,105 @@ pub fn nfs_iod_nextwrite(vb: &'static VnodeBufs) -> Option<BufRef> {
     buf_undirty(&t);
     vb.numoutput_inc();
     Some(t)
+}
+
+/// `nfssvc_iod(arg)` (a `fork::Start::NfsIod` thread): an asynchronous I/O thread for client
+/// nfs. It does read-ahead and write-behind operations on the block I/O cache: each buffer
+/// `nfs_asyncio` queues, and beside a write the delayed writes of the same vnode. Never
+/// returns: it exits when it fails (`EBUSY` with every slot taken) or gets killed (the
+/// signal ends its idle sleep).
+pub fn nfssvc_iod<G: ProcGlue>() -> ! {
+    let tid = G::with_curproc(|p| match p {
+        Some(p) => p.p_tid.get(),
+        None => kpanic(format_args!("nfssvc_iod: no thread")),
+    });
+
+    // Assign my position or return error if too many already running.
+    let iod = match nfs_iod_attach::<G>(tid) {
+        Ok(iod) => iod,
+        Err(e) => crate::thread::kthread_exit::<G>(e as i32),
+    };
+
+    // Just loop around doin our stuff until SIGKILL.
+    let mut error = Ok(());
+    loop {
+        while !nfs_bufq_peek::<G>() && error.is_ok() {
+            error = tsleep_nsec(nfs_bufq_chan::<G>(), PWAIT | PCATCH, "nfsidl", INFSLP);
+        }
+        while let Some(mut t) = nfs_bufq_get::<G>() {
+            if t.buf().isset(B_READ) {
+                let _ = nfs_doio::<G>(t, None);
+                continue;
+            }
+            loop {
+                // Look for a delayed write for the same vnode, so I can do it now, grabbed
+                // before nfs_doio() (`nfs_iod_nextwrite`).
+                let Some(vb) = t.buf().vnode_bufs() else {
+                    kpanic(format_args!(
+                        "nfssvc_iod: buffer {:p} without b_vp",
+                        t.buf()
+                    ));
+                };
+                let nbp = nfs_iod_nextwrite(vb);
+                let _ = nfs_doio::<G>(t, None);
+                match nbp {
+                    Some(n) => t = n,
+                    None => break,
+                }
+            }
+        }
+        if let Err(e) = error {
+            nfs_iod_detach::<G>(iod);
+            crate::thread::kthread_exit::<G>(e as i32);
+        }
+    }
+}
+
+/// `nfs_getset_niothreads(set)`: with `set`, the number of nfsiods asked for
+/// (`nfs_niothreads`, clamped to `0..=NFS_MAXASYNCDAEMON`) is made true: the missing ones
+/// are started, a surplus one is sent `SIGKILL` (found by its thread id under the kernel
+/// lock); without, `nfs_niothreads` reads back how many run (unless it is still `-1`, none
+/// started yet).
+pub fn nfs_getset_niothreads<G: ProcGlue>(set: bool) {
+    let slots = &vfs::<G>().nfs.nfs_asyncdaemon;
+    let have = slots
+        .iter()
+        .filter(|d| d.load(Ordering::Relaxed) != 0)
+        .count() as i32;
+
+    if set {
+        // clamp to sane range
+        let n = nfs_niothreads
+            .load(Ordering::Relaxed)
+            .clamp(0, NFS_MAXASYNCDAEMON);
+        nfs_niothreads.store(n, Ordering::Relaxed);
+
+        let mut start = n - have;
+        while start > 0 {
+            let _ = crate::thread::kthread_create::<G>(b"nfsio", crate::fork::Start::NfsIod);
+            start -= 1;
+        }
+
+        let r = klock::reader();
+        for d in slots {
+            if start >= 0 {
+                break;
+            }
+            let tid = d.load(Ordering::Relaxed);
+            if tid != 0 {
+                let p = G::tables()
+                    .tidhash(tid)
+                    .iter_pinned(&r)
+                    .find(|p| p.p_tid.get() == tid);
+                if let Some(p) = p {
+                    crate::sig::psignal(p, SIGKILL);
+                }
+                start += 1;
+            }
+        }
+    } else if nfs_niothreads.load(Ordering::Relaxed) >= 0 {
+        nfs_niothreads.store(have, Ordering::Relaxed);
+    }
 }
 /* </CODE> */
 

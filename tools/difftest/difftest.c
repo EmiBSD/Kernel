@@ -50,6 +50,11 @@
 #include <sys/wait.h>
 
 #include <netinet/in.h>
+#include <netinet/ip.h>
+#include <netinet/ip_divert.h>
+#include <netinet/ip_icmp.h>
+#include <netinet/ip_mroute.h>
+#include <netinet/icmp6.h>
 #include <netinet/tcp.h>
 #include <netinet/tcp_timer.h>
 #include <netinet/tcp_var.h>
@@ -57,6 +62,7 @@
 #include <netinet/ip_var.h>
 #include <netinet/udp.h>
 #include <netinet/udp_var.h>
+#include <netinet6/raw_ip6.h>
 
 #include <dirent.h>
 #include <errno.h>
@@ -2144,6 +2150,227 @@ t_udp(void)
 	R("unknown", sysctl(mib, 4, NULL, &len, NULL, 0));
 }
 
+/* The Internet checksum of the n bytes at p (an ICMP message's). */
+static uint16_t
+raw_cksum(const void *p, size_t n)
+{
+	const uint8_t *b = p;
+	uint32_t sum = 0;
+
+	for (; n > 1; n -= 2, b += 2)
+		sum += (uint32_t)(b[0] << 8 | b[1]);
+	if (n == 1)
+		sum += (uint32_t)(b[0] << 8);
+	while (sum >> 16)
+		sum = (sum & 0xffff) + (sum >> 16);
+	return htons((uint16_t)~sum);
+}
+
+/* The type and length of the next message on raw socket s, or its timeout. */
+static void
+raw_recv(const char *name, int s)
+{
+	struct pollfd pfd = { .fd = s, .events = POLLIN };
+	char buf[256];
+	ssize_t n;
+
+	if (poll(&pfd, 1, 2000) != 1) {
+		printf("%s: timeout\n", name);
+		return;
+	}
+	n = recv(s, buf, sizeof(buf), 0);
+	if (n < 21)
+		printf("%s: %zd bytes\n", name, n);
+	else
+		printf("%s: %zd bytes, ICMP type %d\n", name, n,
+		    (unsigned char)buf[(buf[0] & 0x0f) * 4]);
+}
+
+/* A UDP datagram of 8 bytes from 127.0.0.1:47202 to 127.0.0.1:dport, IP header included. */
+static size_t
+raw_udp(char *p, int dport)
+{
+	struct ip ip;
+	struct udphdr uh;
+
+	memset(&ip, 0, sizeof(ip));
+	ip.ip_v = 4;
+	ip.ip_hl = 5;
+	ip.ip_len = htons(20 + 8 + 8);
+	ip.ip_ttl = 64;
+	ip.ip_p = IPPROTO_UDP;
+	ip.ip_src.s_addr = htonl(INADDR_LOOPBACK);
+	ip.ip_dst.s_addr = htonl(INADDR_LOOPBACK);
+	memset(&uh, 0, sizeof(uh));
+	uh.uh_sport = htons(47202);
+	uh.uh_dport = htons(dport);
+	uh.uh_ulen = htons(8 + 8);
+	memcpy(p, &ip, sizeof(ip));
+	memcpy(p + 20, &uh, sizeof(uh));
+	memcpy(p + 28, "divert!!", 8);
+	return 36;
+}
+
+/* The size sysctl(2) gives for the node mib, or its error. */
+static void
+raw_sysctl_size(const char *name, int *mib, u_int n)
+{
+	size_t len = 0;
+
+	if (sysctl(mib, n, NULL, &len, NULL, 0) == -1)
+		printf("%s: -1 %s\n", name, ename(errno));
+	else
+		printf("%s: %zu bytes\n", name, len);
+}
+
+static void
+t_raw(void)
+{
+	struct sockaddr_in sin, any;
+	struct icmp6_filter f6;
+	struct ip ip;
+	char pkt[64];
+	int s, u, d, one = 1, v, st;
+	int dmib[4] = { CTL_NET, PF_INET, IPPROTO_DIVERT, DIVERTCTL_STATS };
+	int rmib[4] = { CTL_NET, PF_INET6, IPPROTO_RAW, RIPV6CTL_STATS };
+	int smib[4] = { CTL_NET, PF_INET, IPPROTO_DIVERT, DIVERTCTL_RECVSPACE };
+	socklen_t len;
+	size_t sz;
+	pid_t pid;
+
+	section("raw");
+	memset(&sin, 0, sizeof(sin));
+	sin.sin_len = sizeof(sin);
+	sin.sin_family = AF_INET;
+	sin.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	any = sin;
+	any.sin_addr.s_addr = htonl(INADDR_ANY);
+
+	printf("-- icmp\n");
+	s = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+	OK("socket", s >= 0);
+	len = sizeof(v);
+	R("IP_HDRINCL get", getsockopt(s, IPPROTO_IP, IP_HDRINCL, &v, &len));
+	printf("IP_HDRINCL: %d\n", v);
+	R("IP_HDRINCL short", setsockopt(s, IPPROTO_IP, IP_HDRINCL, &one, 2));
+	R("MRT_INIT", setsockopt(s, IPPROTO_IP, MRT_INIT, &one, sizeof(one)));
+	R("level IPV6", setsockopt(s, IPPROTO_IPV6, IP_HDRINCL, &one,
+	    sizeof(one)));
+	memset(pkt, 0, sizeof(pkt));
+	pkt[20] = ICMP_ECHO;
+	pkt[25] = 1;			/* id 1 */
+	pkt[27] = 1;			/* seq 1 */
+	memcpy(pkt + 22, &(uint16_t){ raw_cksum(pkt + 20, 8) }, 2);
+	R("sendto echo", sendto(s, pkt + 20, 8, 0, (struct sockaddr *)&sin,
+	    sizeof(sin)));
+	raw_recv("recv", s);
+	R("IP_HDRINCL on", setsockopt(s, IPPROTO_IP, IP_HDRINCL, &one,
+	    sizeof(one)));
+	len = sizeof(v);
+	R("IP_HDRINCL get", getsockopt(s, IPPROTO_IP, IP_HDRINCL, &v, &len));
+	printf("IP_HDRINCL: %d\n", v);
+	memset(&ip, 0, sizeof(ip));
+	ip.ip_v = 4;
+	ip.ip_hl = 5;
+	ip.ip_len = htons(28);
+	ip.ip_ttl = 64;
+	ip.ip_p = IPPROTO_ICMP;
+	ip.ip_dst.s_addr = htonl(INADDR_LOOPBACK);
+	memcpy(pkt, &ip, sizeof(ip));
+	pkt[27] = 2;			/* seq 2 */
+	memset(pkt + 22, 0, 2);
+	memcpy(pkt + 22, &(uint16_t){ raw_cksum(pkt + 20, 8) }, 2);
+	R("sendto echo hdrincl", sendto(s, pkt, 28, 0, (struct sockaddr *)&sin,
+	    sizeof(sin)));
+	raw_recv("recv", s);
+	ip.ip_v = 6;
+	memcpy(pkt, &ip, sizeof(ip));
+	R("sendto bad version", sendto(s, pkt, 28, 0, (struct sockaddr *)&sin,
+	    sizeof(sin)));
+	close(s);
+
+	printf("-- inet6\n");
+	s = socket(AF_INET6, SOCK_RAW, IPPROTO_ICMPV6);
+	OK("socket icmp6", s >= 0);
+	len = sizeof(f6);
+	R("ICMP6_FILTER get", getsockopt(s, IPPROTO_ICMPV6, ICMP6_FILTER, &f6,
+	    &len));
+	printf("echo request: %s\n",
+	    ICMP6_FILTER_WILLPASS(ICMP6_ECHO_REQUEST, &f6) ? "pass" : "block");
+	R("ICMP6_FILTER short", setsockopt(s, IPPROTO_ICMPV6, ICMP6_FILTER, &f6,
+	    8));
+	ICMP6_FILTER_SETBLOCK(ICMP6_ECHO_REQUEST, &f6);
+	R("ICMP6_FILTER set", setsockopt(s, IPPROTO_ICMPV6, ICMP6_FILTER, &f6,
+	    sizeof(f6)));
+	v = 4;
+	R("IPV6_CHECKSUM on icmp6", setsockopt(s, IPPROTO_IPV6, IPV6_CHECKSUM,
+	    &v, sizeof(v)));
+	close(s);
+	s = socket(AF_INET6, SOCK_RAW, 253);
+	OK("socket 253", s >= 0);
+	v = 3;
+	R("IPV6_CHECKSUM odd", setsockopt(s, IPPROTO_IPV6, IPV6_CHECKSUM, &v,
+	    sizeof(v)));
+	v = -2;
+	R("IPV6_CHECKSUM -2", setsockopt(s, IPPROTO_IPV6, IPV6_CHECKSUM, &v,
+	    sizeof(v)));
+	v = 2;
+	R("IPV6_CHECKSUM 2", setsockopt(s, IPPROTO_IPV6, IPV6_CHECKSUM, &v,
+	    sizeof(v)));
+	len = sizeof(v);
+	R("IPV6_CHECKSUM get", getsockopt(s, IPPROTO_IPV6, IPV6_CHECKSUM, &v,
+	    &len));
+	printf("IPV6_CHECKSUM: %d\n", v);
+	close(s);
+
+	printf("-- divert\n");
+	u = socket(AF_INET, SOCK_DGRAM, 0);
+	sin.sin_port = htons(47201);
+	R("bind udp", bind(u, (struct sockaddr *)&sin, sizeof(sin)));
+	d = socket(AF_INET, SOCK_RAW, IPPROTO_DIVERT);
+	OK("socket divert", d >= 0);
+	sin.sin_port = htons(47200);
+	R("bind divert", bind(d, (struct sockaddr *)&sin, sizeof(sin)));
+	len = sizeof(v);
+	R("ICMP6_FILTER on divert", getsockopt(d, IPPROTO_ICMPV6, ICMP6_FILTER,
+	    &f6, &len));
+	sz = raw_udp(pkt, 47201);
+	R("reinject out", sendto(d, pkt, sz, 0, (struct sockaddr *)&any,
+	    sizeof(any)));
+	raw_recv("udp recv", u);
+	sin.sin_port = 0;
+	R("reinject in", sendto(d, pkt, sz, 0, (struct sockaddr *)&sin,
+	    sizeof(sin)));
+	raw_recv("udp recv", u);
+	sin.sin_addr.s_addr = htonl(0xc0000201);	/* 192.0.2.1: not ours */
+	R("reinject in, not local", sendto(d, pkt, sz, 0,
+	    (struct sockaddr *)&sin, sizeof(sin)));
+	R("reinject short", sendto(d, pkt, 19, 0, (struct sockaddr *)&any,
+	    sizeof(any)));
+	close(d);
+	close(u);
+	raw_sysctl_size("net.inet.divert.stats", dmib, 4);
+	sz = sizeof(v);
+	R("net.inet.divert.recvspace", sysctl(smib, 4, &v, &sz, NULL, 0));
+	printf("recvspace: %d\n", v);
+	raw_sysctl_size("net.inet6.raw.stats", rmib, 4);
+
+	printf("-- unprivileged\n");
+	fflush(stdout);
+	pid = fork();
+	if (pid == 0) {
+		if (setuid(1) == -1)
+			_exit(1);
+		R("raw", socket(AF_INET, SOCK_RAW, IPPROTO_ICMP));
+		R("raw6", socket(AF_INET6, SOCK_RAW, IPPROTO_ICMPV6));
+		R("divert", socket(AF_INET, SOCK_RAW, IPPROTO_DIVERT));
+		R("divert6", socket(AF_INET6, SOCK_RAW, IPPROTO_DIVERT));
+		fflush(stdout);
+		_exit(0);
+	}
+	R("wait", waitpid(pid, &st, 0) == pid ? WEXITSTATUS(st) : -1);
+}
+
 static const struct {
 	const char *name;
 	void (*fn)(void);
@@ -2165,6 +2392,7 @@ static const struct {
 	{ "tty", t_tty },
 	{ "tcp", t_tcp },
 	{ "udp", t_udp },
+	{ "raw", t_raw },
 	{ "entry", t_entry },
 };
 

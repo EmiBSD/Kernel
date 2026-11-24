@@ -31,6 +31,7 @@ pub mod in6_pcb;
 pub mod in6_proto;
 pub mod in6_src;
 pub mod in6_var;
+pub mod ip6_divert;
 pub mod ip6_forward;
 pub mod ip6_id;
 pub mod ip6_input;
@@ -41,6 +42,7 @@ pub mod mld6_var;
 pub mod nd6;
 pub mod nd6_nbr;
 pub mod nd6_rtr;
+pub mod raw_ip6;
 pub mod route6;
 pub mod udp6_output;
 /* </CODE> */

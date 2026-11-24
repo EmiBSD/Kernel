@@ -171,7 +171,7 @@
 
 use core::mem::size_of;
 use core::pin::Pin;
-use core::ptr::{self, NonNull};
+use core::ptr;
 
 use hal::once::OnceStatic;
 use kernel::netinet::in_pcb as k;
@@ -180,13 +180,12 @@ use crate::kern::proc_glue::BsdProcGlue;
 use crate::kern::subr_prf::panic;
 use crate::net::if_::net_held;
 use crate::net::route::{Rtentry, as_static};
-use crate::netinet::icmp6::Icmp6Filter;
 use crate::netinet::in_::{InAddr, SockaddrIn};
 use crate::netinet::ip_ipsp::SockaddrUnion;
 #[cfg(feature = "inet6")]
 use crate::netinet6::in6_pcb::{in6_pcbset_addr, in6_setpeeraddr, in6_setsockaddr};
 use crate::sys::errno::Errno;
-use crate::sys::mbuf::{Mbuf, mtod, park, unpark};
+use crate::sys::mbuf::{Mbuf, mtod};
 use crate::sys::proc::Proc;
 use crate::sys::socket::AF_INET;
 #[cfg(feature = "inet6")]
@@ -215,8 +214,8 @@ pub type Inpcbtable = k::Inpcbtable<BsdProcGlue>;
 /// The table mutex held.
 pub type InpGuard<'a> = k::InpGuard<'a, BsdProcGlue>;
 
-/// The per-pcb hook of `in_pcbnotifyall` and the protocols' `ctlinput`s (`udp_notify`,
-/// `in_pcbrtchange`): the control block and the errno of the event (`None` for 0).
+/// The per-pcb hook of `in_pcbnotifyall` and the protocols' `ctlinput`s: the control block
+/// and the errno of the event (`None` for 0).
 pub type InpNotifyFn = fn(&'static Inpcb, Option<Errno>);
 
 /// The [`LegacyKey`] `in_init` took at boot.
@@ -304,51 +303,6 @@ pub fn in_pcballoc(
     k::in_pcballoc(so, table, wait).map(drop)
 }
 
-/// The members `bsd` keeps in the kernel's pcb (its words), read and written here.
-pub trait InpcbLegacy {
-    /// `inp->inp_options != NULL`, under the socket lock (the kernel's loan, checked).
-    fn has_options(&self) -> bool;
-    /// `f` with `inp->inp_options` lent for the call (the transports' `ip_output` argument).
-    fn with_options<R>(&self, f: impl FnOnce(Option<&Mbuf>) -> R) -> R;
-    /// `inp->inp_options` taken out, parked for `bsd` (`NULL` left behind).
-    fn take_options(&self) -> Option<&'static Mbuf>;
-    /// `inp->inp_options = m` (a parked chain given over to the kernel's cell; an old chain,
-    /// which the C's callers never leave, is freed).
-    fn set_options(&self, m: Option<&'static Mbuf>);
-    /// `inp->inp_icmp6filt`'s pointer.
-    fn icmp6filt_ptr(&self) -> Option<NonNull<Icmp6Filter>>;
-    /// `inp->inp_icmp6filt = f`.
-    fn set_icmp6filt_ptr(&self, f: Option<NonNull<Icmp6Filter>>);
-}
-
-impl InpcbLegacy for Inpcb {
-    fn has_options(&self) -> bool {
-        self.options().is_some()
-    }
-
-    fn with_options<R>(&self, f: impl FnOnce(Option<&Mbuf>) -> R) -> R {
-        let opts = self.options();
-        f(opts.as_deref())
-    }
-
-    fn take_options(&self) -> Option<&'static Mbuf> {
-        core::mem::take(&mut *self.options()).map(park)
-    }
-
-    fn set_options(&self, m: Option<&'static Mbuf>) {
-        drop(core::mem::replace(&mut *self.options(), m.map(unpark)));
-    }
-
-    fn icmp6filt_ptr(&self) -> Option<NonNull<Icmp6Filter>> {
-        NonNull::new(self.inp_icmp6filt.get_mut().cast::<Icmp6Filter>())
-    }
-
-    fn set_icmp6filt_ptr(&self, f: Option<NonNull<Icmp6Filter>>) {
-        self.inp_icmp6filt
-            .set(f.map_or(ptr::null(), |p| p.as_ptr().cast_const().cast()));
-    }
-}
-
 /// `in_pcbbind_locked`: binds `inp` to the address in `nam` (or `laddr` and a port picked
 /// here when `nam` is `None`), with the table mutex held (`g`); the kernel's, for both
 /// families.
@@ -409,17 +363,6 @@ pub fn in_pcbdetach(inp: &'static Inpcb) {
         panic(format_args!("in_pcbdetach: inpcb {inp:p} not a pool item"));
     };
     k::in_pcbdetach(h, net_held("in_pcbdetach").net());
-}
-
-/// `in_pcbsolock`: locks the socket of `inp`; `None` when it is detached (the kernel's
-/// detached form: `bsd`'s protocols unlock in another function).
-pub fn in_pcbsolock(inp: &'static Inpcb) -> Option<&'static Socket> {
-    k::in_pcbsolock_detached(inp)
-}
-
-/// `in_pcbsounlock`: unlocks what `in_pcbsolock` locked.
-pub fn in_pcbsounlock(inp: Option<&Inpcb>, so: Option<&Socket>) {
-    k::in_pcbsounlock_detached(inp, so);
 }
 
 /// `in_pcbref`: takes a reference to `inp`.
@@ -492,28 +435,6 @@ pub fn in_setpeeraddr(inp: &Inpcb, nam: &Mbuf) {
     set_nam(nam, k::in_setpeeraddr(inp));
 }
 
-/// `sotoinpcb(so)` of a socket the C knows to be attached.
-fn inpcb_of(so: &Socket) -> &'static Inpcb {
-    match sotoinpcb(so) {
-        Some(inp) => inp,
-        None => panic(format_args!("socket {:p}: no inpcb", so)),
-    }
-}
-
-/// `in_sockaddr`: the `pru_sockaddr` of the Internet protocols.
-pub fn in_sockaddr(so: &'static Socket, nam: &'static Mbuf) -> Result<(), Errno> {
-    in_setsockaddr(inpcb_of(so), nam);
-
-    Ok(())
-}
-
-/// `in_peeraddr`: the `pru_peeraddr` of the Internet protocols.
-pub fn in_peeraddr(so: &'static Socket, nam: &'static Mbuf) -> Result<(), Errno> {
-    in_setpeeraddr(inpcb_of(so), nam);
-
-    Ok(())
-}
-
 /// `in_flowid`: the `pru_flowid` of the Internet protocols.
 pub fn in_flowid(so: &'static Socket) -> i32 {
     match sotoinpcb(so) {
@@ -547,12 +468,6 @@ pub fn in_losing(inp: &Inpcb) {
     k::in_losing(inp, net_held("in_losing").net());
 }
 
-/// `in_pcbrtchange`: after a routing change, flushes the old route.
-pub fn in_pcbrtchange(inp: &'static Inpcb, errno: Option<Errno>) {
-    crate::kern::uipc_socket2::soassertlocked(inp.socket());
-    k::in_pcbrtchange(inp, errno);
-}
-
 /// `in_pcblookup_local_lock`: the control block of `table` bound to local port `lport` and
 /// address `laddrp` with the fewest wildcards, referenced; `IN_PCBLOCK_GRAB` only (a caller
 /// holding the table mutex calls the kernel's `in_pcblookup_local` with its guard).
@@ -583,13 +498,6 @@ pub fn in_pcbrtentry(inp: &Inpcb) -> Option<&'static Rtentry> {
     crate::kern::uipc_socket2::soassertlocked(inp.socket());
     // The cache keeps its own handle while `bsd`'s caller uses the route (`as_static`).
     k::in_pcbrtentry(inp, net_held("in_pcbrtentry").net()).map(|rt| as_static(&rt))
-}
-
-/// `in_pcbselsrc`: the IPv4 address most appropriate as the source for destination
-/// `dstsock`, into `insrc`.
-pub fn in_pcbselsrc(insrc: &mut InAddr, dstsock: &SockaddrIn, inp: &Inpcb) -> Result<(), Errno> {
-    *insrc = k::in_pcbselsrc(dstsock, inp, net_held("in_pcbselsrc").net())?;
-    Ok(())
 }
 
 /// `in_pcblookup`: the connected control block for `faddr.fport <-> laddr.lport`,
@@ -754,14 +662,16 @@ pub(crate) mod tests {
         }
     }
 
-    /// A data-only UDP row of the internet domain: sockets of `bsd`'s protocols' kind (held
-    /// C-style) for the adapters' tests, since the kernel's UDP is the table's entry
-    /// (N6.6b0, `kernel::netinet::in_proto::UdpProtocol`); `kern_descrip`'s socket file too,
-    /// whatever `INETSW` still holds.
+    /// A data-only UDP row of the internet domain for the adapters' tests, since the
+    /// kernel's UDP is the table's entry (N6.6b0, `kernel::netinet::in_proto::UdpProtocol`);
+    /// `kern_descrip`'s socket file too, whatever `INETSW` still holds. A raw row (`pr_rip`,
+    /// N6.6b1): its sockets are held by a witness, as every internet socket since raw IP
+    /// moved, so the socket layer keeps no C-style arm for an internet socket.
     pub(crate) static UDP_ROW: crate::sys::protosw::Protosw = crate::sys::protosw::Protosw {
         pr_type: SOCK_DGRAM as i16,
         pr_protocol: IPPROTO_UDP as i16,
         pr_flags: crate::sys::protosw::PR_ATOMIC | crate::sys::protosw::PR_ADDR,
+        pr_rip: true,
         ..crate::sys::protosw::Protosw::new(&crate::netinet::in_proto::INETDOMAIN)
     };
 
@@ -1052,9 +962,34 @@ pub(crate) mod tests {
         }
         solock(so);
         let mut kf = KinfoFile::zeroed();
-        fill_file(&mut kf, None, None, 0, None, None, p, Some(so), false);
         let mut kfp = KinfoFile::zeroed();
-        fill_file(&mut kfp, None, None, 0, None, None, p, Some(so), true);
+        {
+            // The holding fill_file is handed, as kern.file's walk hands it its own.
+            let lend = crate::net::if_::net_held("kern.file");
+            let mut w = kernel::net::socket::solocked_legacy(so, Some(lend.net()));
+            fill_file(
+                &mut kf,
+                None,
+                None,
+                0,
+                None,
+                None,
+                p,
+                Some((so, &mut w)),
+                false,
+            );
+            fill_file(
+                &mut kfp,
+                None,
+                None,
+                0,
+                None,
+                None,
+                p,
+                Some((so, &mut w)),
+                true,
+            );
+        }
         sounlock(so);
 
         assert_eq!(kf.so_family, u32::from(AF_INET));
@@ -1341,7 +1276,21 @@ pub(crate) mod tests {
             locked(|| in_pcbbind(inp, Some(nam6(sin6(a6("fd00:77::1"), 5353))), p)).expect("bind");
             solock(so);
             let mut kf = KinfoFile::zeroed();
-            fill_file(&mut kf, None, None, 0, None, None, p, Some(so), false);
+            {
+                let lend = crate::net::if_::net_held("kern.file");
+                let mut w = kernel::net::socket::solocked_legacy(so, Some(lend.net()));
+                fill_file(
+                    &mut kf,
+                    None,
+                    None,
+                    0,
+                    None,
+                    None,
+                    p,
+                    Some((so, &mut w)),
+                    false,
+                );
+            }
             sounlock(so);
 
             assert_eq!(kf.so_family, u32::from(AF_INET6));

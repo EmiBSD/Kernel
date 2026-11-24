@@ -54,15 +54,15 @@
 //! The NFS system calls: `nfssvc(2)` (`sys_nfssvc`), which adds a socket to the server's list
 //! (`NFSSVC_ADDSOCK`, `nfssvc_addsock`) or turns the calling process into an `nfsd`
 //! (`NFSSVC_NFSD`, `nfssvc_nfsd`), the server's initialisation and socket bookkeeping
-//! (`nfsrv_init`, `nfsrv_zapsock`, `nfsrv_slpderef`, `nfsrv_getslp`), and the client's
-//! asynchronous I/O threads (`nfssvc_iod`, `nfs_getset_niothreads`).
+//! (`nfsrv_init`, `nfsrv_zapsock`, `nfsrv_slpderef`, `nfsrv_getslp`). The client's
+//! asynchronous I/O threads (`nfssvc_iod`, `nfs_getset_niothreads`) are the kernel's
+//! (`kernel::fs::nfs::nfs_syscalls`) since N6.7a5 (D-5).
 //!
 //! Upstream: sys/nfs/nfs_syscalls.c @ 3ce1f3f79392
 //!
 //! `nfssvc_nfsd` loops getting RPC requests from the sockets `nfssvc_addsock` registered,
 //! runs each through the procedure table `nfsrv3_procs[]`, saves the reply in the request
-//! cache and sends it, until it is killed by a signal. The `nfsiod`s drain `nfs_bufq`, the
-//! queue `nfs_asyncio` fills with the buffers of read-ahead and write-behind I/O.
+//! cache and sends it, until it is killed by a signal.
 //!
 //! ## Deviations
 //! - `sys_nfssvc` returns `ENOSYS` after the privilege check without `nfsserver`, as the C
@@ -75,25 +75,18 @@
 //! - An `m_prepend` that cannot get an mbuf makes the reply fail with `ENOBUFS` (the request
 //!   is dropped), where the C dereferences NULL.
 //! - `nfssvc_checknam` answers a `bool`; `nfssvc_nfsd`'s `nfsrv_dorec` returns the descriptor
-//!   (`NonNull`) instead of filling `*ndp`; the thread's `struct proc *` entries of
-//!   `nfs_asyncdaemon[]` are `AtomicPtr`s.
-//! - `nfssvc_iod`'s `kthread_exit(error)` takes the errno number.
+//!   (`NonNull`) instead of filling `*ndp`.
 
 use core::ffi::c_void;
-#[cfg(feature = "nfsclient")]
-use core::ptr;
 #[cfg(feature = "nfsserver")]
 use core::ptr::NonNull;
 #[cfg(feature = "nfsserver")]
 use core::sync::atomic::AtomicI32;
-#[cfg(feature = "nfsclient")]
-use core::sync::atomic::AtomicPtr;
 use core::sync::atomic::Ordering::Relaxed;
 
 use crate::kern::kern_prot::suser;
 use crate::kern::kern_synch::{tsleep_nsec, wakeup};
 use crate::kern::subr_prf::panic;
-use crate::sys::buf::BufLegacy;
 use crate::sys::errno::Errno;
 use crate::sys::proc::Proc;
 use crate::sys::systm::{INFSLP, SysArgs};
@@ -168,37 +161,6 @@ use crate::sys::syscallargs::SysNfssvcArgs;
 #[cfg(feature = "nfsserver")]
 use crate::sys::systm::sysargs;
 
-#[cfg(feature = "nfsclient")]
-use crate::kern::kern_kthread::{kthread_create, kthread_exit};
-#[cfg(feature = "nfsclient")]
-use crate::kern::kern_sig::psignal;
-#[cfg(feature = "nfsclient")]
-use crate::kern::kern_synch::wakeup_one;
-#[cfg(feature = "nfsclient")]
-use crate::machine::cpu::curproc;
-#[cfg(feature = "nfsclient")]
-use crate::machine::intr::{splbio, splx};
-#[cfg(feature = "nfsclient")]
-use crate::nfs::nfs::{NFS_MAXASYNCDAEMON, nfs_niothreads};
-#[cfg(feature = "nfsclient")]
-use crate::nfs::nfs_bio::nfs_doio;
-#[cfg(feature = "nfsclient")]
-use crate::nfs::nfs_vnops::NFS_NUMASYNC;
-#[cfg(feature = "nfsclient")]
-use crate::nfs::nfsnode::{NFS_BUFQ, NFS_BUFQLEN, NFS_BUFQMAX};
-#[cfg(feature = "nfsclient")]
-use crate::sys::buf::{
-    B_ASYNC, B_BUSY, B_DELWRI, B_DONE, B_ERROR, B_NEEDCOMMIT, B_NOCACHE, B_READ, Buf,
-};
-#[cfg(feature = "nfsclient")]
-use crate::sys::buf::{BCSTATS, buf_undirty, lend};
-#[cfg(feature = "nfsclient")]
-use crate::sys::param::PWAIT;
-#[cfg(feature = "nfsclient")]
-use crate::sys::signal::SIGKILL;
-#[cfg(feature = "nfsclient")]
-use kernel::fs::bio::{DirtyPick, DirtyScan, vnode_dirty_scan};
-
 /// `SLP_INIT`: NFS data undergoing initialization.
 #[cfg(feature = "nfsserver")]
 const SLP_INIT: i32 = 0x01;
@@ -239,11 +201,6 @@ static NFSD_WAITING_COUNT: AtomicI32 = AtomicI32::new(0);
 /// `nfs_numnfsd`: the number of running nfsds.
 #[cfg(feature = "nfsserver")]
 static NFS_NUMNFSD: AtomicI32 = AtomicI32::new(0);
-
-/// `nfs_asyncdaemon[NFS_MAXASYNCDAEMON]`: the threads of the running nfsiods (null: free).
-#[cfg(feature = "nfsclient")]
-static NFS_ASYNCDAEMON: [AtomicPtr<Proc>; NFS_MAXASYNCDAEMON as usize] =
-    [const { AtomicPtr::new(ptr::null_mut()) }; NFS_MAXASYNCDAEMON as usize];
 
 /// `nfsd_waiting`'s value, for the nfsds' own bookkeeping and debugging.
 #[cfg(feature = "nfsserver")]
@@ -551,7 +508,7 @@ fn nfssvc_nfsd(nfsd: &'static Nfsd) -> Result<(), Errno> {
             if slp.ns_flag.get() & SLP_VALID != 0 {
                 if slp.ns_flag.get() & (SLP_DISCONN | SLP_NEEDQ) == SLP_NEEDQ {
                     slp.ns_flag.set(slp.ns_flag.get() & !SLP_NEEDQ);
-                    let _ = nfs_sndlock(&slp.ns_solock, None);
+                    let _ = nfs_sndlock(&slp.ns_solock);
                     if let Some(so) = slp.ns_so.get() {
                         nfsrv_rcv(
                             so,
@@ -709,11 +666,11 @@ fn nfssvc_nfsd(nfsd: &'static Nfsd) -> Result<(), Errno> {
             }
 
             if let Some(l) = solockp {
-                let _ = nfs_sndlock(l, None);
+                let _ = nfs_sndlock(l);
             }
 
             let err = match m {
-                Some(m) if slp.ns_flag.get() & SLP_VALID != 0 => nfs_send(so, ndr.nd_nam2, m, None),
+                Some(m) if slp.ns_flag.get() & SLP_VALID != 0 => nfs_send(so, ndr.nd_nam2, m),
                 Some(m) => {
                     m_freem(Some(m));
                     Err(Errno::EPIPE)
@@ -864,156 +821,6 @@ pub fn nfsrv_init(terminating: i32) {
             "ndscpl",
             None,
         );
-    }
-}
-
-/// `nfssvc_iod(arg)`: asynchronous I/O threads for client nfs. They do read-ahead and
-/// write-behind operations on the block I/O cache. Never returns unless it fails or gets
-/// killed.
-#[cfg(feature = "nfsclient")]
-pub fn nfssvc_iod(_arg: *mut c_void) {
-    let Some(p) = curproc() else {
-        panic(format_args!("nfssvc_iod: no curproc"));
-    };
-    let kvaslots = BCSTATS.kvaslots.load(Relaxed);
-    let numbufs = BCSTATS.numbufs.load(Relaxed);
-    let mut bufcount = 256.min(kvaslots / 8);
-    bufcount = bufcount.min(numbufs / 8);
-
-    // Assign my position or return error if too many already running.
-    let mut myiod = None;
-    for (i, slot) in NFS_ASYNCDAEMON.iter().enumerate() {
-        if slot.load(Relaxed).is_null() {
-            myiod = Some(i);
-            break;
-        }
-    }
-    let Some(myiod) = myiod else {
-        kthread_exit(Errno::EBUSY.as_i32());
-    };
-
-    NFS_ASYNCDAEMON[myiod].store(ptr::from_ref(p).cast_mut(), Relaxed);
-    NFS_NUMASYNC.fetch_add(1, Relaxed);
-
-    // Upper limit on how many bufs we'll queue up for this iod.
-    if i64::from(NFS_BUFQMAX.load(Relaxed)) > kvaslots / 4 {
-        NFS_BUFQMAX.store((kvaslots / 4) as u32, Relaxed);
-        bufcount = 0;
-    }
-    if i64::from(NFS_BUFQMAX.load(Relaxed)) > numbufs / 4 {
-        NFS_BUFQMAX.store((numbufs / 4) as u32, Relaxed);
-        bufcount = 0;
-    }
-
-    NFS_BUFQMAX.fetch_add(bufcount as u32, Relaxed);
-    wakeup(ptr::from_ref(&NFS_BUFQLEN)); // wake up anyone waiting for room to enqueue IO
-
-    // Just loop around doin our stuff until SIGKILL.
-    let mut error: Result<(), Errno> = Ok(());
-    loop {
-        while NFS_BUFQ.lock().is_empty() && error.is_ok() {
-            error = tsleep_nsec(ptr::from_ref(&NFS_BUFQ), PWAIT | PCATCH, "nfsidl", INFSLP);
-        }
-        loop {
-            // Take one off the front of the list: its token, parked in it by the thread
-            // that queued it (`nfs_asyncio`), comes with it.
-            let Some(m) = NFS_BUFQ.lock().pop_head() else {
-                break;
-            };
-            let Some(t) = m.get().take_parked() else {
-                panic(format_args!(
-                    "nfssvc_iod: a queued buffer without its token"
-                ));
-            };
-            drop(m);
-            NFS_BUFQLEN.fetch_sub(1, Relaxed);
-            wakeup_one(ptr::from_ref(&NFS_BUFQLEN));
-            let mut bp = lend(t);
-            if bp.flags() & B_READ != 0 {
-                let _ = nfs_doio(bp, None);
-            } else {
-                loop {
-                    // Look for a delayed write for the same vnode, so I can do it now. We
-                    // must grab it before calling nfs_doio() to avoid any risk of the vnode
-                    // getting vclean()'d while we are doing the write rpc.
-                    let Some(vp) = bp.vp() else {
-                        panic(format_args!("nfssvc_iod: buffer without a vnode"));
-                    };
-                    let s = splbio();
-                    let pick = |b: &Buf| {
-                        if b.flags() & (B_BUSY | B_DELWRI | B_NEEDCOMMIT | B_NOCACHE) != B_DELWRI {
-                            return DirtyPick::Skip;
-                        }
-                        b.set_flags(b.flags() | B_ASYNC);
-                        DirtyPick::Take
-                    };
-                    let nbp = match vnode_dirty_scan(&vp.bufs, "nfsidl", 0, INFSLP, pick) {
-                        DirtyScan::Taken(t) => Some(lend(t)),
-                        _ => None,
-                    };
-                    // For the delayed write, do the first part of nfs_bwrite() up to, but not
-                    // including nfs_strategy().
-                    if let Some(nbp) = nbp {
-                        nbp.set_flags(nbp.flags() & !(B_READ | B_DONE | B_ERROR));
-                        buf_undirty(nbp);
-                        if let Some(nvp) = nbp.vp() {
-                            nvp.bufs.numoutput_inc();
-                        }
-                    }
-                    splx(s);
-
-                    let _ = nfs_doio(bp, None);
-                    match nbp {
-                        Some(n) => bp = n,
-                        None => break,
-                    }
-                }
-            }
-        }
-        if let Err(e) = error {
-            NFS_ASYNCDAEMON[myiod].store(ptr::null_mut(), Relaxed);
-            NFS_NUMASYNC.fetch_sub(1, Relaxed);
-            NFS_BUFQMAX.fetch_sub(bufcount as u32, Relaxed);
-            kthread_exit(e.as_i32());
-        }
-    }
-}
-
-/// `nfs_getset_niothreads(set)`: reads (`set` false: `nfs_niothreads` becomes the number of
-/// running nfsiods) or sets (starts or kills nfsiods until there are `nfs_niothreads`).
-#[cfg(feature = "nfsclient")]
-pub fn nfs_getset_niothreads(set: bool) {
-    let have = NFS_ASYNCDAEMON
-        .iter()
-        .filter(|slot| !slot.load(Relaxed).is_null())
-        .count() as i32;
-
-    if set {
-        // clamp to sane range
-        let n = nfs_niothreads.load(Relaxed).clamp(0, NFS_MAXASYNCDAEMON);
-        nfs_niothreads.store(n, Relaxed);
-
-        let mut start = n - have;
-
-        while start > 0 {
-            let _ = kthread_create(nfssvc_iod, ptr::null_mut(), b"nfsio");
-            start -= 1;
-        }
-
-        for slot in NFS_ASYNCDAEMON.iter() {
-            if start >= 0 {
-                break;
-            }
-            let p = slot.load(Relaxed);
-            if !p.is_null() {
-                // SAFETY: an nfsiod's thread stays valid until it clears its slot just before
-                // it exits (`nfssvc_iod`), under the kernel lock like this code.
-                psignal(unsafe { &*p }, SIGKILL);
-                start += 1;
-            }
-        }
-    } else if nfs_niothreads.load(Relaxed) >= 0 {
-        nfs_niothreads.store(have, Relaxed);
     }
 }
 
@@ -1182,24 +989,6 @@ mod tests {
     #[test]
     fn the_temporary_procedure_table_covers_every_procedure() {
         assert_eq!(NFSRV3_PROCS.len(), NFS_NPROCS);
-    }
-
-    #[cfg(feature = "nfsclient")]
-    #[test]
-    fn nfsiod_threads_are_counted_and_the_sysctl_value_follows() {
-        // Nothing runs: the slots are free and the count is zero.
-        assert!(NFS_ASYNCDAEMON.iter().all(|p| p.load(Relaxed).is_null()));
-        assert_eq!(NFS_NUMASYNC.load(Relaxed), 0);
-
-        // Reading (`set` false) makes `nfs_niothreads` the number of running iods, but only once
-        // it has been initialised (-1 means "not yet").
-        let saved = nfs_niothreads.swap(-1, Relaxed);
-        nfs_getset_niothreads(false);
-        assert_eq!(nfs_niothreads.load(Relaxed), -1);
-        nfs_niothreads.store(4, Relaxed);
-        nfs_getset_niothreads(false);
-        assert_eq!(nfs_niothreads.load(Relaxed), 0);
-        nfs_niothreads.store(saved, Relaxed);
     }
 }
 /* </TESTS> */

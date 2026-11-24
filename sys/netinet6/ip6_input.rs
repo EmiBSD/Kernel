@@ -90,7 +90,6 @@ use crate::kern::proc_glue::BsdProcGlue as G;
 use crate::net::if_::net_held;
 use crate::net::if_var::{Ifnet, Netstack};
 use crate::net::route::Route;
-use crate::netinet::in_pcb::Inpcb;
 use crate::sys::mbuf::{Mbuf, park, unpark};
 
 pub use kernel::netinet6::ip6_input::{INET6CTLERRMAP, ip6_get_prevhdr, ip6_lasthdr};
@@ -123,11 +122,6 @@ pub fn ip6_input_if(
     );
     *mp = k.map(park);
     nxt
-}
-
-/// `ip6_savecontrol(inp, m, mp)`: the kernel's; `*mp` the control chain it made, parked.
-pub fn ip6_savecontrol(inp: &Inpcb, m: &Mbuf, mp: &mut Option<&'static Mbuf>) {
-    *mp = kernel::netinet6::ip6_input::ip6_savecontrol::<G>(inp, m).map(park);
 }
 
 /// `ip6_forward(m, ro, flags)`: the kernel's, of a parked packet (pf's route-to and

@@ -1148,7 +1148,24 @@ mod tests {
         let b = test_bytes(&w.into_chain());
         assert_eq!(b.len(), 4 + 4 + NFSX_V3FATTR);
         assert_eq!(&b[..8], &be(&[0, 1])[..]);
-        want = be(&[1, 0o644, 2, 1000, 20, 1, 2, 0, 4096, 1, 0x0304, 0, 7, 2, 9]);
+        // rdev 0x01020304: major 3, minor 0x010204 (`<sys/types.h>`'s split).
+        want = be(&[
+            1,
+            0o644,
+            2,
+            1000,
+            20,
+            1,
+            2,
+            0,
+            4096,
+            3,
+            0x0001_0204,
+            0,
+            7,
+            2,
+            9,
+        ]);
         assert_eq!(&b[8..8 + want.len()], &want[..]);
         // The times: 10.000001, 11.000002, 12.000003.
         assert_eq!(&b[68..92], &be(&[10, 1000, 11, 2000, 12, 3000])[..]);
@@ -1238,6 +1255,403 @@ mod tests {
         assert_eq!(&b[..4], &(NFSX_V3FH as u32).to_be_bytes());
         assert_eq!(&b[4..4 + NFSX_V3FH], &f.fh_bytes[..NFSX_V3FH]);
         assert_eq!(b.len(), 4 + super::super::nfsm_subs::nfsm_rndup(NFSX_V3FH));
+    }
+
+    // The export check over a test mount: a file system that is the test file system with an
+    // export list of the test's choosing (`checkexp` answers the grant a thread-local holds),
+    // on the mount list with a fsid of its own.
+
+    mod export {
+        use core::cell::Cell;
+
+        use hal::sys::types::Ino;
+
+        use super::*;
+        use crate::fs::export::ExportGrant;
+        use crate::fs::lookup::ndinit;
+        use crate::fs::mount::{
+            Mount, Vfsconf, mountlist_insert_tail, vfs_mount_alloc, vfs_unbusy,
+        };
+        use crate::fs::namei::{LOCKLEAF, LOOKUP, NiDirp};
+        use crate::fs::nfs::nfsm_subs::nfsm_rndup;
+        use crate::fs::subr::vfs_getnewfsid;
+        use crate::fs::testfs::{Kind, ROOT, TEST_DATASIZE, TEST_VFS, TestGlue, tree_add};
+        use crate::fs::vops::{Cred, Nd, Vfs};
+        use crate::net::mbuf::MbufBox;
+        use crate::proc::Thread;
+        use crate::sys::mount::{Fid, MNT_EXPORTED, MNT_LOCAL, Statfs};
+        use crate::sys::socket::SOCK_DGRAM;
+
+        type G = TestGlue;
+
+        std::thread_local! {
+            /// What the test file system's `checkexp` answers: a grant, or the errno.
+            static GRANT: Cell<Result<ExportGrant, Errno>> = const { Cell::new(Err(Errno::EACCES)) };
+        }
+
+        /// The test file system with an export list.
+        struct ExpVfs;
+
+        impl Vfs<G> for ExpVfs {
+            fn mount(
+                &self,
+                mp: &'static Mount<G>,
+                path: &[u8],
+                data: &mut [u8],
+                ndp: &mut Nd<'_, G>,
+                p: &Thread<G>,
+            ) -> Result<(), Errno> {
+                TEST_VFS.mount(mp, path, data, ndp, p)
+            }
+            fn start(&self, mp: &'static Mount<G>, f: i32, p: &Thread<G>) -> Result<(), Errno> {
+                TEST_VFS.start(mp, f, p)
+            }
+            fn unmount(&self, mp: &'static Mount<G>, f: i32, p: &Thread<G>) -> Result<(), Errno> {
+                TEST_VFS.unmount(mp, f, p)
+            }
+            fn root(&self, mp: &'static Mount<G>) -> Result<&'static Vnode<G>, Errno> {
+                TEST_VFS.root(mp)
+            }
+            fn quotactl(
+                &self,
+                mp: &'static Mount<G>,
+                cmds: i32,
+                uid: u32,
+                arg: usize,
+                p: &Thread<G>,
+            ) -> Result<(), Errno> {
+                TEST_VFS.quotactl(mp, cmds, uid, arg, p)
+            }
+            fn statfs(
+                &self,
+                mp: &'static Mount<G>,
+                sbp: &mut Statfs,
+                p: &Thread<G>,
+            ) -> Result<(), Errno> {
+                TEST_VFS.statfs(mp, sbp, p)
+            }
+            fn sync(
+                &self,
+                mp: &'static Mount<G>,
+                waitfor: i32,
+                stall: i32,
+                cred: Cred<'_>,
+                p: &Thread<G>,
+            ) -> Result<(), Errno> {
+                TEST_VFS.sync(mp, waitfor, stall, cred, p)
+            }
+            fn vget(&self, mp: &'static Mount<G>, ino: Ino) -> Result<&'static Vnode<G>, Errno> {
+                TEST_VFS.vget(mp, ino)
+            }
+            fn fhtovp(&self, mp: &'static Mount<G>, fid: &Fid) -> Result<&'static Vnode<G>, Errno> {
+                TEST_VFS.fhtovp(mp, fid)
+            }
+            fn vptofh(&self, vp: &'static Vnode<G>, fid: &mut Fid) -> Result<(), Errno> {
+                TEST_VFS.vptofh(vp, fid)
+            }
+            fn checkexp(&self, _mp: &'static Mount<G>, _nam: &Mbuf) -> Result<ExportGrant, Errno> {
+                GRANT.with(Cell::get)
+            }
+        }
+
+        static EXP_VFS: ExpVfs = ExpVfs;
+        static EXP_CONF: [Vfsconf<G>; 1] = [Vfsconf::new(
+            &EXP_VFS,
+            b"expfs",
+            98,
+            MNT_LOCAL,
+            TEST_DATASIZE,
+        )];
+
+        /// A grant of `exflags`, the anonymous ids `anon`, groups 5 and 6.
+        fn grant(exflags: i32, anon: u32) -> ExportGrant {
+            let mut groups = [0; crate::sys::syslimits::NGROUPS_MAX];
+            groups[0] = 5;
+            groups[1] = 6;
+            ExportGrant {
+                exflags,
+                uid: anon,
+                gid: anon,
+                ngroups: 2,
+                groups,
+            }
+        }
+
+        /// The exported mount, a file and a directory in its tree, and their handles.
+        fn exported() -> (
+            std::sync::MutexGuard<'static, ()>,
+            &'static Thread<G>,
+            Fhandle,
+            Fhandle,
+        ) {
+            let (g, p) = crate::fs::testfs::test_thread_cached(64 << 20, 64);
+            crate::testutil::kernel_maps_install();
+            crate::net::mbuf::mbinit(&crate::net::mbuf::tests::TEST_NMBCLUST);
+            let _ = crate::net::mbuf::nmbclust_update(256 * 1024);
+            let mp = vfs_mount_alloc(None, &EXP_CONF[0]);
+            vfs_unbusy(mp);
+            vfs_getnewfsid(mp);
+            mountlist_insert_tail(mp);
+            let file = tree_add(b"file", ROOT, Kind::Reg, None);
+            let handle = |idx: usize| {
+                let vp = TEST_VFS
+                    .fhtovp(mp, &{
+                        let mut f = Fid::default();
+                        f.fid_len = 4;
+                        f.fid_data[..4].copy_from_slice(&(idx as u32).to_ne_bytes());
+                        f
+                    })
+                    .expect("a node");
+                let mut fid = Fid::default();
+                TEST_VFS.vptofh(vp, &mut fid).expect("its handle");
+                vput(vp);
+                Fhandle {
+                    fh_fsid: mp.fsid(),
+                    fh_fid: fid,
+                }
+            };
+            let (dir, f) = (handle(ROOT), handle(file));
+            (g, p, dir, f)
+        }
+
+        /// A client's name at 127.0.0.1:`port`.
+        fn client(port: u16) -> MbufBox {
+            let mut sin = [0u8; 16];
+            sin[0] = 16;
+            sin[1] = AF_INET;
+            sin[2..4].copy_from_slice(&port.to_be_bytes());
+            sin[4..8].copy_from_slice(&[127, 0, 0, 1]);
+            test_chain(&[&sin])
+        }
+
+        fn sock(sotype: i32) -> NfssvcSock<G> {
+            let s = NfssvcSock::new(None);
+            s.ns_sotype
+                .store(sotype, core::sync::atomic::Ordering::Relaxed);
+            s
+        }
+
+        fn root_cred() -> UcredCell {
+            UcredCell::new()
+        }
+
+        #[test]
+        fn fhtovp_checks_the_mount_the_export_and_the_port() {
+            let (_g, _p, dir, _) = exported();
+            hal::klock::kernel_lock();
+            let udp = sock(SOCK_DGRAM);
+            let tcp = sock(SOCK_STREAM);
+            let tooweak = NFSERR_AUTHERR | AUTH_TOOWEAK as i32;
+            GRANT.with(|g| g.set(Ok(grant(MNT_EXPORTED, 32767))));
+            let ok = |r: Result<(&'static Vnode<G>, bool), i32>| match r {
+                Ok((vp, _)) => {
+                    vrele(vp);
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            };
+            // An unknown file system: ESTALE, before the export is asked.
+            let mut stale = dir;
+            stale.fh_fsid.val[0] ^= 0x5a5a;
+            assert_eq!(
+                ok(nfsrv_fhtovp(
+                    &stale,
+                    false,
+                    &root_cred(),
+                    &udp,
+                    Some(&client(700))
+                )),
+                Err(Errno::ESTALE.as_i32())
+            );
+            // The export refuses the client: its errno.
+            GRANT.with(|g| g.set(Err(Errno::EACCES)));
+            assert_eq!(
+                ok(nfsrv_fhtovp(
+                    &dir,
+                    false,
+                    &root_cred(),
+                    &udp,
+                    Some(&client(700))
+                )),
+                Err(Errno::EACCES.as_i32())
+            );
+            GRANT.with(|g| g.set(Ok(grant(MNT_EXPORTED, 32767))));
+            // Reserved ports pass, 1024 does not; port 20 only on a datagram socket.
+            assert_eq!(
+                ok(nfsrv_fhtovp(
+                    &dir,
+                    false,
+                    &root_cred(),
+                    &udp,
+                    Some(&client(1023))
+                )),
+                Ok(())
+            );
+            assert_eq!(
+                ok(nfsrv_fhtovp(
+                    &dir,
+                    false,
+                    &root_cred(),
+                    &udp,
+                    Some(&client(1024))
+                )),
+                Err(tooweak)
+            );
+            assert_eq!(
+                ok(nfsrv_fhtovp(
+                    &dir,
+                    false,
+                    &root_cred(),
+                    &udp,
+                    Some(&client(20))
+                )),
+                Ok(())
+            );
+            assert_eq!(
+                ok(nfsrv_fhtovp(
+                    &dir,
+                    false,
+                    &root_cred(),
+                    &tcp,
+                    Some(&client(20))
+                )),
+                Err(tooweak)
+            );
+            // A short address, or none: not a client to vouch for.
+            let short = test_chain(&[&client(700).data()[..8]]);
+            assert_eq!(
+                ok(nfsrv_fhtovp(&dir, false, &root_cred(), &udp, Some(&short))),
+                Err(tooweak)
+            );
+            assert_eq!(
+                ok(nfsrv_fhtovp(&dir, false, &root_cred(), &udp, None)),
+                Err(tooweak)
+            );
+            hal::klock::kernel_unlock();
+        }
+
+        #[test]
+        fn fhtovp_maps_root_and_everyone_on_mapall_and_says_read_only() {
+            let (_g, _p, dir, _) = exported();
+            hal::klock::kernel_lock();
+            let udp = sock(SOCK_DGRAM);
+            let at = Some(client(700));
+            // -maproot: uid 0 takes the anonymous ids and groups.
+            GRANT.with(|g| g.set(Ok(grant(MNT_EXPORTED, 32767))));
+            let cr = root_cred();
+            let (vp, rdonly) =
+                nfsrv_fhtovp(&dir, false, &cr, &udp, at.as_deref()).expect("granted");
+            vrele(vp);
+            assert!(!rdonly);
+            assert_eq!(
+                (cr.cr_uid.get(), cr.cr_gid.get(), cr.cr_ngroups.get()),
+                (32767, 32767, 2)
+            );
+            assert_eq!(cr.cr_groups[1].get(), 6);
+            // Another user keeps its ids...
+            let cr = UcredCell::new();
+            cr.set_uid(1000);
+            cr.set_gid(100);
+            let (vp, _) = nfsrv_fhtovp(&dir, false, &cr, &udp, at.as_deref()).expect("granted");
+            vrele(vp);
+            assert_eq!((cr.cr_uid.get(), cr.cr_gid.get()), (1000, 100));
+            // ...unless -mapall (MNT_EXPORTANON); -ro (MNT_EXRDONLY) is the answer's second.
+            GRANT.with(|g| g.set(Ok(grant(MNT_EXPORTED | MNT_EXPORTANON | MNT_EXRDONLY, 4))));
+            let (vp, rdonly) =
+                nfsrv_fhtovp(&dir, false, &cr, &udp, at.as_deref()).expect("granted");
+            vrele(vp);
+            assert!(rdonly);
+            assert_eq!(
+                (cr.cr_uid.get(), cr.cr_gid.get(), cr.cr_ngroups.get()),
+                (4, 4, 2)
+            );
+            // A group count past NGROUPS_MAX takes NGROUPS_MAX groups; a negative one none.
+            let mut big = grant(MNT_EXPORTED, 9);
+            big.ngroups = 40;
+            GRANT.with(|g| g.set(Ok(big)));
+            let cr = root_cred();
+            let (vp, _) = nfsrv_fhtovp(&dir, false, &cr, &udp, at.as_deref()).expect("granted");
+            vrele(vp);
+            assert_eq!(
+                cr.cr_ngroups.get() as usize,
+                crate::sys::syslimits::NGROUPS_MAX
+            );
+            big.ngroups = -1;
+            GRANT.with(|g| g.set(Ok(big)));
+            let cr = root_cred();
+            let (vp, _) = nfsrv_fhtovp(&dir, false, &cr, &udp, at.as_deref()).expect("granted");
+            vrele(vp);
+            assert_eq!(cr.cr_ngroups.get(), 0);
+            hal::klock::kernel_unlock();
+        }
+
+        /// `nfs_namei` of the request bytes `req` (a name and its padding) under `dir`.
+        fn namei(
+            p: &'static Thread<G>,
+            dir: &Fhandle,
+            name: &[u8],
+            len: usize,
+            cr: &UcredCell,
+        ) -> (Result<(), i32>, Option<&'static Vnode<G>>, u64) {
+            let mut b = name.to_vec();
+            b.resize(nfsm_rndup(name.len()), 0);
+            let m = test_chain(&[&b[..b.len().min(3)], &b[b.len().min(3)..]]);
+            let mut r = XdrReader::new(&m);
+            let udp = sock(SOCK_DGRAM);
+            let at = client(700);
+            let mut nd = ndinit(LOOKUP, LOCKLEAF, NiDirp::Sys(b""), p);
+            nd.ni_cnd.cn_cred = Cred::Real(cr);
+            let mut dirp = None;
+            let res = nfs_namei(&mut nd, dir, len, &udp, Some(&at), &mut r, &mut dirp, p, cr);
+            if let Some(d) = dirp {
+                vrele(d);
+            }
+            let flags = nd.ni_cnd.cn_flags;
+            if res.is_ok() {
+                assert_eq!(
+                    r.offset(),
+                    b.len(),
+                    "the cursor past the name and its padding"
+                );
+                if let Some(dvp) = nd.ni_dvp.take() {
+                    vrele(dvp);
+                }
+            }
+            (res, nd.ni_vp.take(), flags)
+        }
+
+        #[test]
+        fn namei_looks_names_up_under_the_handle_and_refuses_slashes_and_nuls() {
+            let (_g, p, dir, file) = exported();
+            hal::klock::kernel_lock();
+            GRANT.with(|g| g.set(Ok(grant(MNT_EXPORTED | MNT_EXRDONLY, 32767))));
+            let cr = root_cred();
+            let (res, vp, flags) = namei(p, &dir, b"file", 4, &cr);
+            assert_eq!(res, Ok(()));
+            let vp = vp.expect("the file");
+            assert_eq!(vp.vtype(), Vtype::VREG);
+            vput(vp);
+            // Never across a mount point; read-only on a read-only export.
+            assert_eq!(flags & (NOCROSSMOUNT | RDONLY), NOCROSSMOUNT | RDONLY);
+            for bad in [&b"fi/le"[..], &b"fi\0le"[..], &b"/"[..]] {
+                let (res, vp, _) = namei(p, &dir, bad, bad.len(), &cr);
+                assert_eq!(res, Err(Errno::EACCES.as_i32()), "{bad:?}");
+                assert!(vp.is_none());
+            }
+            // A handle of a file is no directory to look under.
+            let (res, _, _) = namei(p, &file, b"x", 1, &cr);
+            assert_eq!(res, Err(Errno::ENOTDIR.as_i32()));
+            // A name the request does not hold all of: EBADRPC (four bytes, no padding to
+            // meet first: a NUL of the padding is EACCES, as the C checks each byte).
+            let (res, _, _) = namei(p, &dir, b"filx", 9, &cr);
+            assert_eq!(res, Err(Errno::EBADRPC.as_i32()));
+            let (res, _, _) = namei(p, &dir, b"fil", 9, &cr);
+            assert_eq!(res, Err(Errno::EACCES.as_i32()));
+            // A name too long for the pathname buffer.
+            let (res, _, _) = namei(p, &dir, b"f", MAXPATHLEN, &cr);
+            assert_eq!(res, Err(Errno::ENAMETOOLONG.as_i32()));
+            hal::klock::kernel_unlock();
+        }
     }
 }
 /* </TESTS> */

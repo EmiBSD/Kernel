@@ -9834,14 +9834,30 @@ pub fn pf_test(af: SaFamily, fwdir: u8, ifp: &'static Ifnet, m0: &mut Option<&'s
                 match pd.af {
                     AF_INET => {
                         if let Some(m) = pd.m {
-                            crate::netinet::ip_divert::divert_packet(m, pd.dir, r.divert.port);
+                            // The kernel's divert(4) (N6.6b1): the packet unparked, the net
+                            // lock's proof lent (one lend per diverted packet, until N8).
+                            kernel::netinet::ip_divert::divert_packet::<
+                                crate::kern::proc_glue::BsdProcGlue,
+                            >(
+                                crate::sys::mbuf::unpark(m),
+                                i32::from(pd.dir),
+                                r.divert.port,
+                                crate::net::if_::net_held("divert_packet").net(),
+                            );
                         }
                         pd.m = None;
                     }
                     #[cfg(feature = "inet6")]
                     AF_INET6 => {
                         if let Some(m) = pd.m {
-                            crate::netinet6::ip6_divert::divert6_packet(m, pd.dir, r.divert.port);
+                            kernel::netinet6::ip6_divert::divert6_packet::<
+                                crate::kern::proc_glue::BsdProcGlue,
+                            >(
+                                crate::sys::mbuf::unpark(m),
+                                i32::from(pd.dir),
+                                r.divert.port,
+                                crate::net::if_::net_held("divert6_packet").net(),
+                            );
                         }
                         pd.m = None;
                     }

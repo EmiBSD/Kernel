@@ -100,8 +100,10 @@
 //! - `setroot`'s `RB_ASKNAME` dialogue (the "root device:" and "swap device:" prompts read
 //!   with `getsn` under `cnpollc`) is reported and skipped: `getsn` is not ported. A kernel
 //!   booted with `-a` goes on with its configured root. `NFSCLIENT` (feature `nfsclient`):
-//!   the `nfs_mountroot` branches are ported; `swapdev = NODEV` (a constant of `conf.c` here)
-//!   is not assigned, nothing reads it before `swdevt[0]` is.
+//!   the `nfs_mountroot` branches are ported (`nfs_mountroot` is a two-line call of the
+//!   kernel's since N6.7a5, so that `setroot`'s address test has a `bsd` function);
+//!   `swapdev = NODEV` (a constant of `conf.c` here) is not assigned, nothing reads it
+//!   before `swdevt[0]` is.
 //! - `parsedisk` returns the device and the `dev_t` as an `Option` pair instead of filling
 //!   `*devp`; `getdisk` likewise.
 //! - `disk_attach_callback`'s `struct disk_attach_task` is a malloc'd [`DiskAttachTask`], as
@@ -137,13 +139,11 @@ use crate::machine::conf::{bdevsw, cdevsw, nblkdev, nchrdev};
 use crate::machine::cpu::curproc;
 use crate::machine::intr::IPL_BIO;
 use crate::net::if_::{if_addgroup, if_put, if_unit};
-#[cfg(feature = "nfsclient")]
-use crate::nfs::nfs_boot::set_nfsbootdevname;
-#[cfg(feature = "nfsclient")]
-use crate::nfs::nfs_vfsops::nfs_mountroot;
 use crate::sys::buf::BufLegacy;
 use crate::sys::buf::biowait;
 use crate::sys::vnode::{cdevvp, vdevgone, vput};
+#[cfg(feature = "nfsclient")]
+use kernel::fs::nfs::nfs_boot::set_nfsbootdevname;
 
 use crate::sys::buf::{B_BUSY, B_DONE, B_ERROR, B_RAW, B_READ, B_WRITE, Buf};
 use crate::sys::conf::SWDEVT;
@@ -1560,6 +1560,17 @@ pub fn disk_lock_nointr(dk: &Disk) {
 /// `disk_unlock`: releases the disk lock.
 pub fn disk_unlock(dk: &Disk) {
     rw_exit_write(&dk.dk_lock);
+}
+
+/// `nfs_mountroot`: the `mountroot` of a root on NFS, the kernel's (N6.7a5) over `swdevt[0]`
+/// and the machine's `swapdev`, as `dk_mountroot`'s file systems' (`setroot` compares
+/// `mountroot` with this function's address).
+#[cfg(feature = "nfsclient")]
+pub fn nfs_mountroot() -> Result<(), Errno> {
+    kernel::fs::nfs::nfs_vfsops::nfs_mountroot::<crate::kern::proc_glue::BsdProcGlue>(
+        &crate::sys::conf::SWDEVT[0],
+        crate::machine::conf::swapdev(),
+    )
 }
 
 /// `dk_mountroot`: the `mountroot` of a disk root: reads `rootdev`'s label and mounts the
