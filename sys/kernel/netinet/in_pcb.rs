@@ -242,8 +242,8 @@
 //!   members in the size test; the three queue entries 48, the two address unions 32,
 //!   `struct route` 72, `struct refcnt` 8, the header union 40); LZ's `Inpcb` was 352 (measured: a replica of its members over
 //!   this tree's types, LZ's `Route` of 72 and `Refcnt` of 8; the tree's at 2baa2aff, with
-//!   `RouteCell`, the same); here 536, 552 with the counted item's header (the pool and the
-//!   count): the three pinned entries (96: a lock identity each beside the two links), the
+//!   `RouteCell`, the same); here 560, 576 with the counted item's header (the pool and the
+//!   count; 536 and 552 before N6.6b1's ICMPv6 filter words): the three pinned entries (96: a lock identity each beside the two links), the
 //!   route cache's cell (72), the IPv4 multicast options' and (N6.5c, +64) the IPv6 packet
 //!   and multicast options' (40 each), the IPv4 options' slot (24, N6.6a0: +16 over `bsd`'s
 //!   word), the anchor (16), the IPv4 and IPv6 members side by
@@ -255,18 +255,27 @@
 //!   family's is `panic(9)`, where the C would read the union as the wrong member): 48 B
 //!   where the two cells were 80. The item was 568 B (552 and the header); 560 since N6.6a5,
 //!   `bsd`'s `inp_ppcb` word gone with `bsd`'s TCP; 552 since N6.6b0, `inp_upcall`'s function
-//!   a fn pointer (D-3) where it was an erased fat pointer.
+//!   a fn pointer (D-3) where it was an erased fat pointer; 576 since N6.6b1 (D-7: the ICMPv6
+//!   filter's words and flag, +24 over `bsd`'s pointer word).
 //! - The IPv6 packet and multicast options are the kernel's typed cells since N6.5c (D-10),
 //!   lent by [`Inpcb::outputopts6`] and [`Inpcb::moptions6`] under the socket lock (the C's
 //!   union of `inp_options` and `inp_outputopts6` is two members here, as in LZ).
 //! - N6.6a0 (D-15): the IPv4 options are the kernel's cell, a `hal::slot::LoanSlot` of the
 //!   chain (an mbuf chain is not `Sync`, so not a `ReadMostly`), lent by [`Inpcb::options`]
-//!   under the socket lock's check and freed by [`in_pcbdetach`]; `bsd`'s transports reach
-//!   it through their adapter's loans (`InpcbLegacy`). The re-keying of the pcb's `[s]`
-//!   members to `so_lock`'s witness is N6.6b's.
-//! - `bsd`'s own member, the ICMPv6 filter, is a word `bsd` keeps (`hal::link::PtrWord`),
-//!   which the kernel never reads (N6.6b's; the per-protocol pcb's word went with `bsd`'s
-//!   TCP at N6.6a5, the kernel's slot being the tcpcb's); `inp_upcall` is set once
+//!   under the socket lock's check and freed by [`in_pcbdetach`]; `bsd`'s transports reached
+//!   it through their adapter's loans (`InpcbLegacy`) until the last of them, raw IP, moved
+//!   (N6.6b1). The re-keying of the pcb's `[s]` members to `so_lock`'s witness is N12's
+//!   (D-10 of N6.6b).
+//! - N6.6b1 (D-7): the ICMPv6 filter (`inp_icmp6filt`, the C's `malloc(M_PCB)` of 32 bytes
+//!   per raw IPv6 socket behind a pointer, `bsd`'s word until then) is eight atomic words in
+//!   the pcb and a flag published after them ([`Inpcb::icmp6filt`]): set once to pass-all by
+//!   `rip6_attach`, read a word at a time by `rip6_input` without the socket lock (the C's
+//!   unlocked read of a word), overwritten word by word by `ICMP6_FILTER` under it (the C's
+//!   `bcopy` racing a reader, never a torn word), gone with the pcb (the C frees it in
+//!   `rip6_detach`); no flag is the C's NULL (a divert6 or a non-raw pcb). The flag is a
+//!   field of its own so it fills a byte of the pcb's padding: the item grows by 24 bytes
+//!   where a `OnceStatic` of the words would take 32. The per-protocol pcb's word went with
+//!   `bsd`'s TCP at N6.6a5, the kernel's slot being the tcpcb's; `inp_upcall` is set once
 //!   (`hal::once::OnceStatic`), as wg(4) sets
 //!   it on a new socket; `inp_pf_sk` is pf's word ([`PfSlot`]).
 //! - The table: [`Inpcbtable`] holds the queue (a pinned list keyed to its mutex) and the
@@ -286,9 +295,9 @@
 //!   caller's proof of the net lock: a witness of `so_lock` for a kernel protocol's socket
 //!   (its `[s]` cells open through [`SoLocked::inet`]'s parts), a detached holding for a
 //!   `bsd` protocol's; its drop is `in_pcbsounlock`. LZ's pair, taken in one function and
-//!   released in another, stays for `bsd`'s adapter as [`in_pcbsolock_detached`] and
-//!   [`in_pcbsounlock_detached`] until the other transports move (N6.6b; TCP, the kernel's
-//!   since N6.6a5, uses neither).
+//!   released in another, stayed for `bsd`'s adapter in a detached form (`so_lock` by a
+//!   detached holding) until N6.6b1 (D-5 of N6.6b): `kern.file`'s walk, its last user, takes
+//!   [`in_pcbsolock`] and hands `fill_file` the holding.
 //!   [`in_pcbnotifyall`] and `in6_pcbnotify` lock through the new form and lend `notify` the
 //!   witness. A kernel TCP request never calls `in_pcbsolock` on the socket it holds (the
 //!   C's `tcp_timer_rexmt` lets its socket go before `in_pcbnotifyall`).
@@ -326,12 +335,10 @@
 //! | `in_pcblookup*`'s answers | an [`InpcbRef`]; `bsd`'s adapters take the guard, call the `_held` lookups and turn the answer into a legacy count with [`Inpcb::legacy_ref_locked`] before they let the guard go (the C's `in_pcbref` before `mtx_leave`; review 1's B1: after it, a concurrent close and last `in_pcbunref` could free the pcb first) |
 //! | divert, raw and udp deliveries, tcp timers and syn cache, pf (`sk_inp`, `pf.inp`) | legacy counts, `bsd`'s, until N6.6 and N8 |
 
-use core::ffi::c_void;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 
 use hal::intr::IPL_SOFTNET;
-use hal::link::PtrWord;
 use hal::malloc::{M_NOWAIT, M_WAITOK, MArray, MBox};
 use hal::mutex::{Mutexed, MutexedGuard};
 use hal::netlock::{NETLOCK, NetHeld};
@@ -835,6 +842,12 @@ impl IpProto {
         }
     }
 
+    /// `ip_p`: the protocol byte alone, one word's load (raw IP's input reads it per pcb).
+    #[inline]
+    pub fn ip_p(&self) -> u8 {
+        self.0[2].load(Ordering::Relaxed).to_ne_bytes()[1]
+    }
+
     /// Stores `ip`.
     pub fn set(&self, ip: Ip) {
         let len = ip.ip_len.to_ne_bytes();
@@ -871,6 +884,13 @@ impl Ip6Proto {
             b[i * 4..i * 4 + 4].copy_from_slice(&w.load(Ordering::Relaxed).to_ne_bytes());
         }
         H::from_bytes(b)
+    }
+
+    /// `ip6_nxt`: the next header byte alone, one word's load (raw IPv6's input reads it per
+    /// pcb).
+    #[inline]
+    pub fn ip6_nxt(&self) -> u8 {
+        self.0[1].load(Ordering::Relaxed).to_ne_bytes()[2]
     }
 
     /// Stores `h`.
@@ -1007,8 +1027,13 @@ pub struct Inpcb<G: ProcGlue> {
     pub inp_ip_minttl: AtomicCell<u8>,
     /// `inp_cksum6`.
     pub inp_cksum6: AtomicCell<i32>,
-    /// `inp_icmp6filt`: the `ICMP6_FILTER` of a raw ICMPv6 socket (`bsd`'s, until N6.5).
-    pub inp_icmp6filt: PtrWord<c_void>,
+    /// `inp_icmp6filt`: the `ICMP6_FILTER` of a raw IPv6 socket (`struct icmp6_filter`'s
+    /// words), meaningful once [`Inpcb::inp_icmp6filt_set`] is (D-7): read through
+    /// [`Inpcb::icmp6filt`].
+    inp_icmp6filt: [AtomicU32; 8],
+    /// Whether `inp_icmp6filt` is set (the C's pointer not NULL): stored (Release) once,
+    /// after the words, by [`Inpcb::icmp6filt_init`].
+    inp_icmp6filt_set: AtomicBool,
     /// `inp_upcall` and `inp_upcall_arg`.
     inp_upcall: OnceStatic<InpUpcall>,
     /// \[t\] `inp_rtableid`.
@@ -1078,7 +1103,8 @@ impl<G: ProcGlue> Inpcb<G> {
             inp_seclevel: SeclevelCell::new(),
             inp_ip_minttl: AtomicCell::new(),
             inp_cksum6: AtomicCell::new(),
-            inp_icmp6filt: PtrWord::new(),
+            inp_icmp6filt: [const { AtomicU32::new(0) }; 8],
+            inp_icmp6filt_set: AtomicBool::new(false),
             inp_upcall: OnceStatic::new(),
             inp_rtableid: TWord::new(),
             inp_pipex: AtomicCell::new(),
@@ -1275,6 +1301,34 @@ impl<G: ProcGlue> Inpcb<G> {
     /// `inp_flowinfo = flow`.
     pub fn set_inp_flowinfo(&self, flow: u32) {
         self.inp_ipv6.0[0].store(flow, Ordering::Relaxed);
+    }
+
+    /// `inp->inp_icmp6filt`: the ICMPv6 filter's eight words (`struct icmp6_filter`'s
+    /// `icmp6_filt`), `None` where the C's pointer is NULL (a pcb `rip6_attach` did not make).
+    /// The words are read and written one at a time (Relaxed) after the flag's Acquire load:
+    /// a reader without the socket lock (`rip6_input`) sees each word whole, before or after
+    /// a concurrent `ICMP6_FILTER` (the C's unlocked read racing a `bcopy`).
+    #[inline]
+    pub fn icmp6filt(&self) -> Option<&[AtomicU32; 8]> {
+        self.inp_icmp6filt_set
+            .load(Ordering::Acquire)
+            .then_some(&self.inp_icmp6filt)
+    }
+
+    /// `inp->inp_icmp6filt = malloc(..); ICMP6_FILTER_SETPASSALL(inp->inp_icmp6filt)` of
+    /// `rip6_attach`, on a pcb no input can see yet: the eight words to pass-all, then the flag
+    /// published (Release). `panic(9)` on a pcb whose filter is set already (the C's attach
+    /// runs once per pcb).
+    pub fn icmp6filt_init(&self) {
+        if self.inp_icmp6filt_set.load(Ordering::Relaxed) {
+            kpanic(format_args!(
+                "inpcb {self:p}: the ICMPv6 filter is set already"
+            ));
+        }
+        for w in &self.inp_icmp6filt {
+            w.store(u32::MAX, Ordering::Relaxed);
+        }
+        self.inp_icmp6filt_set.store(true, Ordering::Release);
     }
 
     /// `inp_upcall` and its argument, once set.
@@ -2364,40 +2418,6 @@ pub(crate) fn set_nam<T: AbiPod>(nam: &mut Mbuf, addr: &T) {
     }
 }
 
-/// `in_pcbsolock` held C-style, for `bsd`'s adapter (its protocols release the lock in
-/// another function, `in_pcbsounlock`): `so_lock` by a detached holding, the caller holding
-/// the net lock (checked: `panic(9)` without it); `None` when the socket is detached. Until
-/// the other transports move (N6.6b; TCP's are the kernel's since N6.6a5).
-pub fn in_pcbsolock_detached<G: ProcGlue>(inp: &Inpcb<G>) -> Option<&Socket<G>> {
-    // NET_ASSERT_LOCKED(): this process's write holding or a read holding.
-    if !matches!(hal::netlock::status(), RW_WRITE | hal::rwlock::RW_READ) {
-        kpanic(format_args!(
-            "in_pcbsolock: inpcb {inp:p}: the net lock is not held"
-        ));
-    }
-    let so = inp.socket_opt()?;
-    so.so_lock_legacy().enter_write_detached();
-    if so.legacy_pcb() == 0 {
-        so.so_lock_legacy().exit_write_detached();
-        return None;
-    }
-    kassert!(so.legacy_pcb() == core::ptr::from_ref(inp).addr());
-    Some(so)
-}
-
-/// `in_pcbsounlock` of what [`in_pcbsolock_detached`] locked.
-pub fn in_pcbsounlock_detached<G: ProcGlue>(inp: Option<&Inpcb<G>>, so: Option<&Socket<G>>) {
-    let Some(so) = so else {
-        return;
-    };
-    if let Some(inp) = inp
-        && so.legacy_pcb() != 0
-    {
-        kassert!(so.legacy_pcb() == core::ptr::from_ref(inp).addr());
-    }
-    so.so_lock_legacy().exit_write_detached();
-}
-
 /// `in_pcb_iterator`: the control block after `iter`'s place (the first one when the walk
 /// starts, `iter` on no list) in `table`'s queue, counted, with `iter` moved after it; the
 /// previous answer `prev` is dropped here, under the table mutex (`g`), as the C's
@@ -2477,6 +2497,71 @@ pub fn in_setpeeraddr<G: ProcGlue>(inp: &Inpcb<G>) -> SockaddrIn {
         sin_addr: inp.inp_faddr.get(),
         ..SockaddrIn::default()
     }
+}
+
+/// `sotoinpcb(so)` of a request the C makes on an attached socket (it dereferences the
+/// pointer unchecked): the pcb borrowed from the socket's locked slot (`pcb`, the lock's
+/// part), `panic(9)` without one; `who` names the request. The datagram and raw protocols'
+/// requests and the name requests (N6.6b1: one helper where UDP, raw IP and the names each
+/// had theirs).
+pub(crate) fn pcb_of<'a, G: ProcGlue>(
+    so: &'a Socket<G>,
+    pcb: &'a WitnessPart<'_>,
+    who: &str,
+) -> &'a Inpcb<G> {
+    match sotoinpcb_locked(so, pcb) {
+        Some(inp) => inp,
+        None => kpanic(format_args!("{who}: socket {so:p} has no pcb")),
+    }
+}
+
+/// `in_pcbdetach(sotoinpcb(so))` of a detach request: the pcb taken out of the socket's
+/// locked slot (whose handle the attach put there) and detached; `false` when the socket has
+/// none (the C's `inp == NULL`). UDP's and the raw protocols' (N6.6b1: one helper).
+pub(crate) fn detach_slot<G: ProcGlue>(so: &Socket<G>, il: &mut InetLocked<'_>) -> bool {
+    let Some(slot) = so.set_pcb_locked(&mut il.pcb, None) else {
+        return false;
+    };
+    let Some(inp) = slot.downcast_ref::<Inpcb<G>>().and_then(PoolArc::from_ref) else {
+        kpanic(format_args!(
+            "detach: socket {so:p}: a slot of another type"
+        ));
+    };
+    drop(slot);
+    in_pcbdetach(inp, &il.net);
+    true
+}
+
+/// `in_sockaddr(so, nam)`: the local address of `so`'s pcb into `nam` (`pru_sockaddr` of the
+/// datagram and raw protocols), the socket locked by `w`.
+pub fn in_sockaddr<G: ProcGlue>(
+    so: &Socket<G>,
+    w: &mut SoLocked<'_>,
+    nam: &mut Mbuf,
+) -> Result<(), Errno> {
+    let Some(il) = w.inet() else {
+        kpanic(format_args!(
+            "in_sockaddr: not a kernel protocol's socket lock"
+        ));
+    };
+    set_nam(nam, &in_setsockaddr(pcb_of(so, &il.pcb, "in_sockaddr")));
+    Ok(())
+}
+
+/// `in_peeraddr(so, nam)`: the foreign address of `so`'s pcb into `nam`, as
+/// [`in_sockaddr`].
+pub fn in_peeraddr<G: ProcGlue>(
+    so: &Socket<G>,
+    w: &mut SoLocked<'_>,
+    nam: &mut Mbuf,
+) -> Result<(), Errno> {
+    let Some(il) = w.inet() else {
+        kpanic(format_args!(
+            "in_peeraddr: not a kernel protocol's socket lock"
+        ));
+    };
+    set_nam(nam, &in_setpeeraddr(pcb_of(so, &il.pcb, "in_peeraddr")));
+    Ok(())
 }
 
 /// `in_pcbnotifyall`: passes some notification to all connections of a protocol associated
@@ -3184,6 +3269,7 @@ pub(crate) mod testinet {
         crate::netinet6::frag6::frag6_test_reset();
         crate::netinet6::icmp6::icmp6_test_reset();
         crate::netinet6::ip6_input::ip6_test_reset();
+        crate::netinet::ip_input::ipq_test_reset();
         crate::net::rtable::rtable_test_reset();
         crate::net::route::rtlabel_test_reset();
         crate::net::route::route_init();
@@ -3352,7 +3438,8 @@ mod tests {
             ("2 x In6AddrCell", 32),
             ("2 x port", 4),
             ("inp_socket", size_of::<Option<SocketRef<G>>>()),
-            ("inp_icmp6filt", size_of::<PtrWord<c_void>>()),
+            ("inp_icmp6filt", size_of::<[AtomicU32; 8]>()),
+            ("inp_icmp6filt_set", size_of::<AtomicBool>()),
             (
                 "inp_tcpcb",
                 size_of::<Guarded<Option<PoolBox<crate::netinet::tcp_var::Tcpcb<G>>>>>(),
@@ -3393,10 +3480,12 @@ mod tests {
         // N6.6a2's D-12; bsd's 8-byte word beside it went at N6.6a5: 552 and 568 before) are
         // the growth; the item stays within the brief's bound of 584 (S12). N6.6b0 (D-3): the
         // upcall's function a fn pointer, where it was an erased fat pointer: 536, 552 with the
-        // header (544 and 560 before).
-        assert_eq!(sum, 535);
-        assert_eq!(size_of::<Inpcb<G>>(), 536);
-        assert!(size_of::<Inpcb<G>>() + 16 <= 584, "S12: the \"inpcb\" item");
+        // header (544 and 560 before). N6.6b1 (D-7): the ICMPv6 filter's 32 bytes of words
+        // and its flag (which fills the byte of padding the layout had) where `bsd`'s 8-byte
+        // pointer word was: 536 -> 560, the item 552 -> 576, within N6.6b's S11 (584).
+        assert_eq!(sum, 560);
+        assert_eq!(size_of::<Inpcb<G>>(), 560);
+        assert!(size_of::<Inpcb<G>>() + 16 <= 584, "S11: the \"inpcb\" item");
 
         // The C's struct inpcb on LP64, as repr(C) lays out in_pcb.h's members in order (the
         // pointers as words, the unions as their largest member's words).
@@ -3738,7 +3827,7 @@ mod tests {
         assert_eq!(nout(), before + 1);
         assert_eq!(
             crate::net::domain::net::<Tg>().inpcb.pool.item_size(),
-            Some(552),
+            Some(576),
             "vmstat -m's size of an \"inpcb\" item: the value and the counted item's header"
         );
         assert_eq!(inp.legacy_count(), 1, "refcnt_init: the socket's");
@@ -3810,9 +3899,10 @@ mod tests {
         );
         assert_eq!(keep.legacy_count(), 1);
         {
-            let _r = NETLOCK.read();
+            let r = NETLOCK.read();
+            let net = NetHeld::of(&r).expect("the net lock's witness");
             assert!(
-                in_pcbsolock_detached(&keep).is_none(),
+                in_pcbsolock(&keep, &net).is_none(),
                 "the socket is gone: drop the segment"
             );
         }
@@ -3985,14 +4075,6 @@ mod tests {
         assert!(gone, "the socket is detached: nothing to lock");
         assert_eq!(keep.socket().so_lock_legacy().lock().status(), 0);
         assert!(sock.is_some());
-    }
-
-    #[test]
-    #[should_panic(expected = "in_pcbsolock: inpcb")]
-    fn in_pcbsolock_detached_needs_the_net_lock() {
-        let (_g, _p) = testinet::setup();
-        let (_so, inp) = testinet::pcb(testinet::table(16));
-        let _ = in_pcbsolock_detached(&inp);
     }
 
     #[test]

@@ -48,9 +48,9 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! IPv4 output as `bsd`'s callers know it: `ip_output`, fragmentation, option insertion, the
-//! output checksums and the socket options (`ip_ctloutput`) with LZ's signatures over the
-//! kernel's (`kernel::netinet::ip_output`, N6.4a and N6.4c1); and IPsec's half of
+//! IPv4 output as `bsd`'s callers know it: `ip_output`, fragmentation, option insertion and
+//! the output checksums with LZ's signatures over the kernel's (`kernel::netinet::ip_output`,
+//! N6.4a and N6.4c1); and IPsec's half of
 //! `ip_output` (`ip_output_ipsec_lookup`, `ip_output_ipsec_send`,
 //! `ip_output_ipsec_pmtu_update`), which the kernel reaches through the `Ipsec` bridge's legs
 //! until IPsec moves (N8).
@@ -58,9 +58,8 @@
 //! Upstream: sys/netinet/ip_output.c @ 3ce1f3f79392
 //!
 //! `ip_ctloutput` (the `pr_ctloutput` of UDP and, behind `rip_ctloutput` and
-//! `tcp_ctloutput`, of raw IP and TCP) finds the socket's control block and lends the
-//! kernel's the socket's IPv4 options, the parked mbuf this tree keeps in the pcb until the
-//! transports move (N6.6).
+//! `tcp_ctloutput`, of raw IP and TCP) is the kernel's alone since N6.6b1: its last `bsd`
+//! caller, raw IP, moved, and the adapter that lent it the socket's IPv4 options went.
 //!
 //! Status: `ported` (M7b output path, M9a socket options); the output path the kernel's
 //! since N6.4a, the socket options since N6.4c1.
@@ -82,7 +81,6 @@ use core::ptr::{self};
 use core::sync::atomic::Ordering;
 
 use crate::kern::kern_tc::gettime;
-use crate::kern::subr_prf::panic;
 use crate::kern::uipc_mbuf::{m_freem, ml_dequeue, ml_enqueue, ml_init, ml_purge};
 use crate::kern::uipc_mbuf2::{m_tag_first, m_tag_next};
 use crate::net::if_enc::enc_getif;
@@ -91,7 +89,6 @@ use crate::net::pf::pf_test;
 use crate::net::pfvar::{PF_FWD, PF_OUT, PF_PASS};
 use crate::net::route::{RT_RESOLVE, RTF_HOST, Route, as_static, rtfree};
 use crate::netinet::in_::InAddr;
-use crate::netinet::in_pcb::sotoinpcb;
 use crate::netinet::ip::IP_DF;
 use crate::netinet::ip_icmp::icmp_mtudisc_clone;
 use crate::netinet::ip_input::ip_mtudisc;
@@ -112,7 +109,6 @@ use crate::sys::mbuf::{
     unpark,
 };
 use crate::sys::socket::AF_INET;
-use crate::sys::socketvar::Socket;
 use crate::sys::systm::{kernel_lock, kernel_unlock};
 
 /// `ip_output(m, opt, ro, flags, imo, seclevel, ipsecflowinfo)`: IP output, the kernel's
@@ -358,32 +354,6 @@ pub fn ip_insertoptions(m: &'static Mbuf, opt: &Mbuf, phlen: &mut i32) -> &'stat
         opt.data(),
         phlen,
     ))
-}
-
-/// `ip_ctloutput`: IP socket option processing (the kernel's, `pr_ctloutput` of UDP and,
-/// behind `rip_ctloutput` and `tcp_ctloutput`, of raw IP and TCP), on the socket's control
-/// block, with its IPv4 options (`inp_options`, the parked mbuf `bsd` keeps until the
-/// transports move) lent for the call.
-pub fn ip_ctloutput(
-    op: i32,
-    so: &'static Socket,
-    level: i32,
-    optname: i32,
-    m: Option<&'static Mbuf>,
-) -> Result<(), Errno> {
-    let Some(inp) = sotoinpcb(so) else {
-        panic(format_args!("ip_ctloutput: socket {:p} without inpcb", so));
-    };
-    let mut options = inp.options();
-    kernel::netinet::ip_output::ip_ctloutput(
-        op,
-        inp,
-        &mut options,
-        level,
-        optname,
-        m.map(mut_of),
-        crate::net::if_::net_held("ip_ctloutput").net(),
-    )
 }
 
 /// `in_hdr_cksum_out`: the IP header checksum, by the interface if it can or in software (the

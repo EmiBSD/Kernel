@@ -79,6 +79,10 @@
 //!   drops the packet, as the C's non-zero).
 //! - `NPF` (pf(4)) is configured: `pf_test` of transport mode packets, `pf_tag_packet`,
 //!   `pf_pkt_addr_changed`, and `PF_TAG_DIVERTED` packets go to raw sockets.
+//! - The raw sockets are the kernel's (N6.6b1): `ipsec_input_disabled`'s `rip_input` and
+//!   `rip6_input` are private wrappers that unpark the packet for the kernel's, lend it the
+//!   net lock's proof (`net_held`, one lend per packet on this tail, until IPsec moves at
+//!   N8) and park what it hands back.
 //! - `NBPFILTER` is configured: the `enc(4)` interface of the SA counts a decapsulated
 //!   packet, becomes its `ph_ifidx` (but for IPComp) and taps it.
 //! - `INET6` is configured (feature `inet6`): the IPv6 destination of `ipsec_common_input`,
@@ -99,11 +103,12 @@ use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 use crate::kern::kern_sysctl::{sysctl_bounded_arr, sysctl_rdstruct, sysctl_tstring};
 use crate::kern::kern_tc::gettime;
 use crate::kern::kern_timeout::timeout_add_sec;
+use crate::kern::proc_glue::BsdProcGlue;
 use crate::kern::subr_prf::panic;
 use crate::kern::uipc_mbuf::{m_copyback, m_copydata, m_pullup};
 use crate::kern::uipc_mbuf2::{m_tag_find, m_tag_get, m_tag_prepend};
 use crate::net::bpf::{BPF_DIRECTION_IN, bpf_mtap_hdr};
-use crate::net::if_::{if_get, if_put, unhandled_af};
+use crate::net::if_::{if_get, if_put, net_held, unhandled_af};
 use crate::net::if_enc::{Enchdr, enc_getif};
 use crate::net::if_var::Netstack;
 use crate::net::pf::{pf_pkt_addr_changed, pf_tag_packet, pf_test};
@@ -149,7 +154,6 @@ use crate::netinet::ip_var::{mtod_ip, mtod_ip_store};
 #[cfg(feature = "inet6")]
 use crate::netinet::ip6::{IPV6_MAXPACKET, Ip6Ext, Ip6Hdr};
 use crate::netinet::ipsec_output::{UDPENCAP_ENABLE, UDPENCAP_PORT};
-use crate::netinet::raw_ip::rip_input;
 use crate::netinet::udp::Udphdr;
 #[cfg(feature = "inet6")]
 use crate::netinet6::in6::{In6Addr, SockaddrIn6};
@@ -159,13 +163,12 @@ use crate::netinet6::in6_cksum::in6_cksum;
 use crate::netinet6::in6_src::in6_recoverscope;
 #[cfg(feature = "inet6")]
 use crate::netinet6::ip6_var::{mtod_ip6, mtod_ip6_store};
-#[cfg(feature = "inet6")]
-use crate::netinet6::raw_ip6::rip6_input;
 use crate::sys::endian::{htons, ntohl, ntohs};
 use crate::sys::errno::Errno;
 use crate::sys::malloc::M_NOWAIT;
 use crate::sys::mbuf::{
     M_AUTH, M_COMP, M_CONF, M_TUNNEL, Mbuf, PACKET_TAG_IPSEC_IN_DONE, PF_TAG_DIVERTED, m_freemp,
+    park, unpark,
 };
 use crate::sys::protosw::PRC_MSGSIZE;
 use crate::sys::socket::{AF_INET, AF_INET6, Sockaddr};
@@ -1071,6 +1074,52 @@ pub fn ipsec_input_disabled(
         x if x == i32::from(AF_INET6) => rip6_input(mp, offp, proto, af, ns),
         _ => unhandled_af(af),
     }
+}
+
+/// `rip_input(mp, offp, proto, af)` of a parked packet: the kernel's raw IP input (N6.6b1),
+/// the packet unparked for it and what it hands back parked again, under the caller's net
+/// lock (its proof made by check, `net_held`).
+fn rip_input(
+    mp: &mut Option<&'static Mbuf>,
+    offp: &mut i32,
+    proto: i32,
+    af: i32,
+    ns: Option<&mut Netstack>,
+) -> i32 {
+    let mut m = mp.take().map(unpark);
+    let nxt = kernel::netinet::raw_ip::rip_input::<BsdProcGlue>(
+        &mut m,
+        offp,
+        proto,
+        af,
+        ns,
+        net_held("rip_input").net(),
+    );
+    *mp = m.map(park);
+    nxt
+}
+
+/// `rip6_input(mp, offp, proto, af)` of a parked packet: the kernel's raw IPv6 input
+/// (N6.6b1), as [`rip_input`].
+#[cfg(feature = "inet6")]
+fn rip6_input(
+    mp: &mut Option<&'static Mbuf>,
+    offp: &mut i32,
+    proto: i32,
+    af: i32,
+    ns: Option<&mut Netstack>,
+) -> i32 {
+    let mut m = mp.take().map(unpark);
+    let nxt = kernel::netinet6::raw_ip6::rip6_input::<BsdProcGlue>(
+        &mut m,
+        offp,
+        proto,
+        af,
+        ns,
+        net_held("rip6_input").net(),
+    );
+    *mp = m.map(park);
+    nxt
 }
 
 /// `(*mp)->m_pkthdr.pf.flags & PF_TAG_DIVERTED`: pf(4) diverted the packet to a socket.

@@ -75,8 +75,8 @@
 //!   the kernel's `mfs_vfsops` (`Mfs::<BsdProcGlue>::VFS`, N5.5b3), and `ext2fs`'s (N5.6c3),
 //!   `msdos`'s (N5.7c3), `cd9660`'s (N5.8c2) and `udf`'s (`UdfVfs::<BsdProcGlue>::VFS`,
 //!   N5.8u2), `tmpfs`'s (`TmpfsVfs::<BsdProcGlue>::VFS`, N5.9t2) and `fuse`'s
-//!   (`FusefsVfs::<BsdProcGlue>::VFS`, N5.9f2) the kernel's; the other types' (`nfs`, `ntfs`)
-//!   are `bsd`'s `Vfsops` tables.
+//!   (`FusefsVfs::<BsdProcGlue>::VFS`, N5.9f2) and `nfs`'s (`NfsVfs::<BsdProcGlue>::VFS`,
+//!   N6.7a5) the kernel's; `ntfs`'s is `bsd`'s `Vfsops` table.
 
 use core::sync::atomic::Ordering;
 
@@ -129,7 +129,7 @@ static VFSCONFLIST: [Vfsconf; NVFSCONF] = [
     ),
     #[cfg(feature = "nfsclient")]
     Vfsconf::new(
-        &crate::nfs::nfs_vfsops::NFS_VFSOPS,
+        &kernel::fs::nfs::nfs_vfsops::NfsVfs::<BsdProcGlue>::VFS,
         crate::sys::mount::MOUNT_NFS,
         2,
         crate::sys::mount::MNT_SWAPPABLE,

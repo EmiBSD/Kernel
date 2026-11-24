@@ -40,11 +40,9 @@ pub mod in6_pcb;
 pub mod in6_proto;
 pub mod in6_src;
 pub mod in6_var;
-pub mod ip6_divert;
 pub mod ip6_input;
 pub mod ip6_output;
 pub mod ip6_var;
 pub mod mld6;
 pub mod nd6;
-pub mod raw_ip6;
 /* </CODE> */
