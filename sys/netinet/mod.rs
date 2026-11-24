@@ -27,7 +27,7 @@
 //! kernel's since N6.6a5 (`tcp_seq` and `tcp_var` re-exported for pf, the drivers' TSO and
 //! LRO counters and IPsec's output; `tcp_subr` keeps the TCP_SIGNATURE transform, IPsec's,
 //! until N8); UDP since N6.6b0 (`udp` and `udp_var` re-export `hal::sys`'s images for pf,
-//! IPsec, divert, pflow and the tests).
+//! IPsec, pflow and the tests); raw IP and divert since N6.6b1 (nothing re-exported).
 
 pub use hal::sys::netinet_ip as ip;
 pub use hal::sys::netinet_tcp as tcp;
@@ -52,7 +52,6 @@ pub mod in_var;
 #[forbid(unsafe_code)]
 pub mod ip6;
 pub mod ip_ah;
-pub mod ip_divert;
 pub mod ip_esp;
 pub mod ip_icmp;
 pub mod ip_input;
@@ -64,6 +63,5 @@ pub mod ip_spd;
 pub mod ip_var;
 pub mod ipsec_input;
 pub mod ipsec_output;
-pub mod raw_ip;
 pub mod tcp_subr;
 /* </CODE> */

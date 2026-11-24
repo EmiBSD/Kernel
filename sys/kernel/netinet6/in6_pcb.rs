@@ -197,7 +197,7 @@ use crate::net::pf_hooks::{PF_DIVERT_REPLY, PF_DIVERT_TO, pf};
 use crate::net::proto::{PRC_HOSTDEAD, PRC_NCMDS, prc_is_redirect};
 use crate::net::route::Rtentry;
 use crate::net::rtable::rtable_l2;
-use crate::net::socket::SoLocked;
+use crate::net::socket::{SoLocked, Socket};
 use crate::net::toeplitz::stoeplitz_ip6port;
 use crate::netinet::in_pcb::{
     Addr6, INP_IPV6, INPLOOKUP_IPV6, INPLOOKUP_WILDCARD, InpGuard, Inpaddru, Inpcb, InpcbRef,
@@ -490,6 +490,41 @@ pub fn in6_setpeeraddr<G: ProcGlue>(inp: &Inpcb<G>) -> SockaddrIn6 {
     // KAME hack: recover scopeid
     in6_recoverscope(&mut sin6, &faddr6);
     sin6
+}
+
+/// `in6_sockaddr(so, nam)`: the local address of `so`'s pcb into `nam` (`pru_sockaddr` of
+/// the IPv6 datagram and raw protocols), the socket locked by `w`; `panic(9)` without a pcb,
+/// which the C dereferences unchecked.
+pub fn in6_sockaddr<G: ProcGlue>(
+    so: &Socket<G>,
+    w: &mut SoLocked<'_>,
+    nam: &mut Mbuf,
+) -> Result<(), Errno> {
+    let Some(il) = w.inet() else {
+        kpanic(format_args!(
+            "in6_sockaddr: not a kernel protocol's socket lock"
+        ));
+    };
+    let inp = crate::netinet::in_pcb::pcb_of(so, &il.pcb, "in6_sockaddr");
+    crate::netinet::in_pcb::set_nam(nam, &in6_setsockaddr(inp));
+    Ok(())
+}
+
+/// `in6_peeraddr(so, nam)`: the foreign address of `so`'s pcb into `nam`, as
+/// [`in6_sockaddr`].
+pub fn in6_peeraddr<G: ProcGlue>(
+    so: &Socket<G>,
+    w: &mut SoLocked<'_>,
+    nam: &mut Mbuf,
+) -> Result<(), Errno> {
+    let Some(il) = w.inet() else {
+        kpanic(format_args!(
+            "in6_peeraddr: not a kernel protocol's socket lock"
+        ));
+    };
+    let inp = crate::netinet::in_pcb::pcb_of(so, &il.pcb, "in6_peeraddr");
+    crate::netinet::in_pcb::set_nam(nam, &in6_setpeeraddr(inp));
+    Ok(())
 }
 
 /// `in6_pcbnotify(table, dst, fport_arg, src, lport_arg, rtable, cmd, cmdarg, notify)`:

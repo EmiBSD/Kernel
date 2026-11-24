@@ -1081,15 +1081,17 @@ pub(crate) mod tests {
         let ifp = test_ifnet(b"traw0");
         ifp.if_flags.set(IFF_UP);
         if_attach(ifp);
-        // A socket of bsd's raw IP row, whose pru_control is in_control: named by its type
-        // and protocol, not by an index of INETSW (its rows move to the kernel one by one).
+        // A socket of one of bsd's raw rows (ESP's), whose requests are the kernel's raw IP's
+        // (pr_rip, N6.6b1: raw IP's own row is the kernel's) and whose pru_control is
+        // in_control: named by its type and protocol, not by an index of INETSW.
         let raw = crate::netinet::in_proto::INETSW
             .iter()
             .find(|pr| {
                 i32::from(pr.pr_type) == crate::sys::socket::SOCK_RAW
-                    && i32::from(pr.pr_protocol) == crate::netinet::in_::IPPROTO_RAW
+                    && i32::from(pr.pr_protocol) == crate::netinet::in_::IPPROTO_ESP
+                    && pr.pr_rip
             })
-            .expect("bsd's raw IP row");
+            .expect("bsd's ESP row");
         let so = crate::kern::uipc_socket::soalloc(
             raw,
             crate::sys::socket::SOCK_RAW,

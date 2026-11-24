@@ -154,8 +154,8 @@
 //!   `icmp_send` takes the options' bytes.
 //! - `pr_ctlinput` of the offending packet's protocol is `Protocol::ctlinput` with the
 //!   message's bytes (the C's `&icp->icmp_ip`, whose `struct icmp` TCP reads back), found
-//!   with `kernel::netinet::in_proto::ip_protocol`; the raw sockets' `rip_input` is the raw
-//!   entry's `Protocol::input` (`raw_protocol`).
+//!   with `kernel::netinet::in_proto::ip_protocol`; the raw sockets' input is `rip_input`
+//!   itself, the C's tail call (N6.6b1; until then the raw entry's `Protocol::input`).
 //! - `icmperrppslim_last`/`icmperrpps_count`, a `StaticCell` in LZ touched through
 //!   `ppsratecheck_shared`'s raw pointers, are a `Guarded` cell keyed to `ppsratecheck_mtx`
 //!   ([`ICMPERRPPS`]), read and written in `ppsratecheck_locked`'s one section: the C's
@@ -235,7 +235,7 @@ use crate::netinet::icmp_var::{
     ICMPCOUNTERS, ICPS_NCOUNTERS, IcmpstatCounters, icmpstat_inc, icmpstat_inc_hist,
 };
 use crate::netinet::in_::in_canforward;
-use crate::netinet::in_proto::{ip_protocol, raw_protocol};
+use crate::netinet::in_proto::ip_protocol;
 use crate::netinet::in_var::InIfaddr;
 use crate::netinet::in4_cksum::in4_cksum;
 use crate::netinet::ip_id::ip_randomid;
@@ -245,6 +245,7 @@ use crate::netinet::ip_input::{
 };
 use crate::netinet::ip_output::{ip_insertoptions, ip_load, ip_store};
 use crate::netinet::ip_var::{IpstatCounters, ipstat_inc};
+use crate::netinet::raw_ip::rip_input;
 use crate::proc::ProcGlue;
 use crate::sysctl::{SysctlReq, bounded_arr, int_bounded, rdstruct, sysctl_vslock};
 use crate::time::{PPSRATECHECK_MTX, ppsratecheck_held, ppsratecheck_locked};
@@ -846,12 +847,7 @@ pub fn icmp_input_if<G: ProcGlue>(
         Then::Raw => {
             // raw:
             *mp = Some(m);
-            if let Some(raw) = raw_protocol::<G>() {
-                raw.input(mp, offp, proto, af, ns, net)
-            } else {
-                drop(mp.take());
-                IPPROTO_DONE
-            }
+            rip_input::<G>(mp, offp, proto, af, ns, net)
         }
         Then::Free => IPPROTO_DONE,
         Then::Reflect => {
@@ -1541,8 +1537,16 @@ mod tests {
 
     #[test]
     fn errors_are_advised_to_the_offending_protocol() {
+        use crate::netinet::ip_input::tests::RAW;
+        use crate::netinet::ip_var::{IPCOUNTERS, IpstatCounters};
         let _g = setup();
         let (ifp, _) = crate::netinet::ip_output::tests::iface();
+        // icmp_input's tail is rip_input itself, the C's call (N6.6b1): with no raw socket it
+        // counts the message in ips_noproto, and the table's raw entry (a test row that
+        // counts its inputs) is not reached.
+        crate::netinet::raw_ip::rip_init::<G>();
+        let noproto = || IPCOUNTERS.read()[IpstatCounters::IpsNoproto as usize];
+        let (n0, row) = (noproto(), RAW.inputs.load(Ordering::Relaxed));
         // Port unreachable about a UDP datagram we sent to 10.0.2.2.
         let mut msg = std::vec![ICMP_UNREACH, ICMP_UNREACH_PORT, 0, 0, 0, 0, 0, 0];
         let mut inner = header(0x45, 28, 5, 0, IPPROTO_UDP as u8, 0);
@@ -1556,6 +1560,7 @@ mod tests {
             UDP.ctl.load(Ordering::Relaxed),
             PRC_UNREACH_NET + i32::from(ICMP_UNREACH_PORT)
         );
+        assert_eq!(noproto(), n0 + 1, "then rip_input");
         // An unknown unreachable code is a bad code, not advised.
         msg[1] = 99;
         UDP.ctl.store(0, Ordering::Relaxed);
@@ -1563,6 +1568,12 @@ mod tests {
         let _ = input(icmp_packet(ifp, &msg, false));
         assert_eq!(icps(IcmpstatCounters::IcpsBadcode), badcode + 1);
         assert_eq!(UDP.ctl.load(Ordering::Relaxed), 0);
+        assert_eq!(noproto(), n0 + 2, "a bad code reaches the raw sockets too");
+        assert_eq!(
+            RAW.inputs.load(Ordering::Relaxed),
+            row,
+            "not the table's raw entry"
+        );
     }
 
     /// A UDP datagram from 10.0.2.2 to us, `off` its `ip_off` word, `flags` its mbuf flags.

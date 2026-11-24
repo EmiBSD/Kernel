@@ -147,8 +147,9 @@
 //!
 //! ## Deviations
 //! - `satosin6`, `satosin6_const`, `sin6tosa` and `sin6tosa_const` are pointer casts
-//!   (`docs/C_TO_RUST.md`) for `bsd`'s raw socket addresses; `in6_nam2sin6` checks through
-//!   the kernel's and answers the pointer into the caller's mbuf, as LZ's callers use it.
+//!   (`docs/C_TO_RUST.md`) for `bsd`'s raw socket addresses (`in6_nam2sin6`'s adapter went
+//!   with its last callers, raw IPv6 and divert, at N6.6b1: the kernel's is
+//!   `kernel::netinet6::in6::in6_nam2sin6`).
 //! - `in6_control` has the `pru_control` signature (`sys/protosw.rs`): the socket's
 //!   `SS_PRIV` and the kernel copy of the request, handed whole to the kernel's `in6_control`
 //!   (ND's two requests included since N6.5b; `bsd`'s tests call the kernel's `in6_ioctl` over
@@ -163,7 +164,6 @@ use crate::net::if_::net_held;
 use crate::net::if_var::Ifnet;
 use crate::netinet6::in6_var::In6Multi;
 use crate::sys::errno::Errno;
-use crate::sys::mbuf::{Mbuf, mtod};
 use crate::sys::socket::Sockaddr;
 use crate::sys::socketvar::{SS_PRIV, Socket};
 use hal::malloc::MArc;
@@ -193,12 +193,6 @@ pub const fn sin6tosa(sin6: *mut SockaddrIn6) -> *mut Sockaddr {
 /// `sin6tosa_const(sin6)`: a `sockaddr_in6` seen as a generic `sockaddr`, read-only.
 pub const fn sin6tosa_const(sin6: *const SockaddrIn6) -> *const Sockaddr {
     sin6.cast()
-}
-
-/// `in6_nam2sin6(nam, &sin6)`: the `sockaddr_in6` in mbuf `nam`, checked by the kernel's.
-pub fn in6_nam2sin6(nam: &Mbuf) -> Result<*mut SockaddrIn6, Errno> {
-    kernel::netinet6::in6::in6_nam2sin6(nam)?;
-    Ok(satosin6(mtod::<Sockaddr>(nam)))
 }
 
 /// `in6_control(so, cmd, data, ifp)`: the `pru_control` of the IPv6 protocols: the address
