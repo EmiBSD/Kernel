@@ -329,6 +329,10 @@ pub struct VfsTables<G: ProcGlue> {
     /// nfs's globals (the pools "nfsreqpl" and "nfsnodepl"), N6.7a1: the last member; the
     /// same layout test checks `ufs` did not move.
     pub nfs: crate::fs::nfs::nfs::NfsTables<G>,
+    /// The nfs server's globals (`nfs_syscalls.c`'s sockets, nfsds and descriptor pool),
+    /// N6.7b2: the last member; the same layout test checks `ufs` did not move.
+    #[cfg(feature = "nfsserver")]
+    pub nfsrv: crate::fs::nfs::nfssvc::NfsrvTables<G>,
 }
 
 impl<G: ProcGlue> VfsTables<G> {
@@ -378,6 +382,8 @@ impl<G: ProcGlue> VfsTables<G> {
             #[cfg(feature = "fuse")]
             fuse: crate::fs::fuse::fusefs::FuseTables::new(),
             nfs: crate::fs::nfs::nfs::NfsTables::new(),
+            #[cfg(feature = "nfsserver")]
+            nfsrv: crate::fs::nfs::nfssvc::NfsrvTables::new(),
         }
     }
 }
@@ -542,6 +548,8 @@ pub fn vfs_test_reset<G: ProcGlue>() {
     #[cfg(feature = "fuse")]
     crate::fs::fuse::fusefs::fuse_test_reset::<G>();
     crate::fs::nfs::nfs_subs::nfs_test_reset::<G>();
+    #[cfg(feature = "nfsserver")]
+    crate::fs::nfs::nfssvc::nfsrv_test_reset::<G>();
     t.rootvnode.set(None);
     t.numvnodes.store(0, Ordering::Relaxed);
 }
