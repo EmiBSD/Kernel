@@ -856,6 +856,22 @@ pub fn run_next_by_hand(tq: &Taskq) {
     }
 }
 
+/// Test hook: every task pending on `tq` taken off its worklist without running it, and
+/// how many there were: a queue that outlives the host tests' memory (a static one, the
+/// softnets of `net::if_::softnet_test_install`) forgets the work an earlier test queued,
+/// whose tasks and arguments live in that test's memory (testing.md's `*_test_reset`
+/// rule). Each task is unlinked, not the list dropped, so a `static` task among them is no
+/// longer pending and can be queued again.
+#[cfg(any(test, feature = "doubles"))]
+pub fn taskq_test_forget(tq: &Taskq) -> usize {
+    let mut g = tq.st.lock();
+    let mut n = 0;
+    while tq.worklist.remove_first(&mut g) {
+        n += 1;
+    }
+    n
+}
+
 /// Test hook: `taskq_init` once per test process (the pool, the system queues' threads),
 /// for every test module that needs them running.
 #[cfg(test)]
@@ -991,6 +1007,34 @@ mod tests {
         );
 
         assert!(task_del(&TQ, &B));
+        assert!(worklist_is_empty(&TQ));
+    }
+
+    /// N6.7a1: the test hook forgets what is pending without running it, and the tasks it
+    /// took off are free to be queued again.
+    #[test]
+    fn forgetting_a_worklist_unlinks_every_task_without_running_it() {
+        testutil::install();
+        static TQ: Taskq = taskq_unthreaded(b"tqforget");
+        static RUNS: AtomicU32 = AtomicU32::new(0);
+        fn count(_arg: *mut c_void) {
+            RUNS.fetch_add(1, Ordering::Relaxed);
+        }
+        static A: Task = Task::new(count, ptr::null_mut());
+        static B: Task = Task::new(count, ptr::null_mut());
+        run_by_hand(&TQ);
+
+        assert_eq!(taskq_test_forget(&TQ), 0, "nothing pending");
+        assert!(task_add(&TQ, pinned(&A)));
+        assert!(task_add(&TQ, pinned(&B)));
+        assert_eq!(taskq_test_forget(&TQ), 2);
+        assert!(worklist_is_empty(&TQ));
+        assert!(!A.pending() && !B.pending());
+        assert_eq!(RUNS.load(Ordering::Relaxed), 0, "forgotten, not run");
+
+        assert!(task_add(&TQ, pinned(&A)), "queued again");
+        run_next_by_hand(&TQ);
+        assert_eq!(RUNS.load(Ordering::Relaxed), 1);
         assert!(worklist_is_empty(&TQ));
     }
 

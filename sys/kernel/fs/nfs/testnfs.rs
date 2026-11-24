@@ -51,7 +51,7 @@ use hal::sys::errno::Errno;
 use hal::sys::mount::{Fid, Statfs};
 use hal::sys::netinet_in::{IPPROTO_TCP, IPPROTO_UDP, InAddr, SockaddrIn};
 use hal::sys::netinet_in_var::InAliasreq;
-use hal::sys::socket::{AF_INET, MSG_DONTWAIT, SOCK_DGRAM, SOCK_STREAM};
+use hal::sys::socket::{AF_INET, MSG_DONTWAIT, SO_LINGER, SOCK_DGRAM, SOCK_STREAM};
 use hal::sys::sockio::SIOCAIFADDR;
 use hal::sys::types::{Ino, Uid};
 
@@ -231,6 +231,13 @@ pub(crate) fn setup(uid: u32) -> Fixture {
     crate::netinet::in_pcb::in_init::<G>();
     crate::netinet::udp_usrreq::udp_init::<G>();
     crate::netinet::tcp_subr::tcp_test_reset::<G>();
+    // The softnet's TCP input (`tcp_input_mlist_softnet`) is registered once per process,
+    // by the first glue's `tcp_init`, and the kernel's TCP tests count on theirs
+    // (`testtcp::setup`'s, testinet's glue): it is registered first here, whatever order the
+    // tests run in (N6.7a1: an nfs test run first made it this glue's, and
+    // `the_softnet_reaches_tcp_input_mlist` found no socket). `pump` calls `tcp_input`
+    // itself, as it skips IP's input for the same reason.
+    crate::netinet::tcp_input::tcp_input_mlist_register::<crate::netinet::in_pcb::testinet::G>();
     crate::netinet::tcp_subr::tcp_init::<G>();
 
     hal::klock::kernel_lock();
@@ -378,7 +385,7 @@ impl Peer {
                 {
                     // A new connection (the client's reconnect) replaces the old one.
                     if let Some(old) = conn.replace(c) {
-                        let _ = soclose(&old, 0);
+                        abort(&old);
                     }
                     pending.clear();
                 }
@@ -436,7 +443,7 @@ impl Peer {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
             if let Some(c) = conn {
-                let _ = soclose(&c, 0);
+                abort(&c);
             }
         });
         Self {
@@ -560,6 +567,18 @@ fn accept(so: &SocketRef<G>) -> Option<SocketRef<G>> {
     Some(c)
 }
 
+/// Closes the peer's connection `c` with a zero linger (`SO_LINGER`): `tcp_disconnect` drops
+/// it with a reset, so neither side is left in a closing state or `TIME_WAIT` (control
+/// blocks, their template mbufs and their timers outliving the test's memory: the mbuf
+/// tests count every mbuf of the process, N6.7a1).
+fn abort(c: &SocketRef<G>) {
+    {
+        let w = solock(c);
+        c.set_options(&w, SO_LINGER, true);
+    }
+    let _ = soclose(c, 0);
+}
+
 /// Sends `b` on `so` (to `to` when given), without waiting.
 fn send(so: &SocketRef<G>, to: Option<&MbufBox>, b: &[u8]) {
     let mut m = m_gethdr(M_WAIT, MT_DATA).expect("an mbuf");
@@ -610,5 +629,49 @@ pub(crate) fn denied(call: &[u8], mismatch: bool) -> Vec<u8> {
 /// Connects the client (`nfs_connect` as the requester).
 pub(crate) fn connect(nmp: &NfsMount<G>) -> Result<(), Errno> {
     nfs_connect(nmp, None)
+}
+
+/// The test's end, while its memory is still the current one (the guard is the fixture's
+/// last field), so that nothing of the test outlives it in a process-wide structure
+/// (N6.7a1):
+/// - the packets `lo0` still holds (the closing segments sent after the peer's last pump:
+///   the client's FIN at the unmount, the resets of the peer's [`abort`]) are given to their
+///   transports until none is left, as the softnet would: they were left on `lo0`'s input
+///   queue and its softnet task, which a later test's softnet worker ran, freeing them into
+///   its own memory, and the mbuf tests (which count every mbuf of the process) found them
+///   and the connections' control blocks out;
+/// - `lo0`'s addresses and their routes go, as `if_detach`'s `in_ifdetach` and
+///   `in6_ifdetach` take them (`lo0` itself cannot be destroyed: `loop_clone_destroy`'s
+///   `EPERM`): routing table 0 outlives the test, and a later test's interface of the same
+///   index found them there (the cloner test's detach deleted `lo0`'s IPv6 routes, which
+///   stayed in `rttrash`);
+/// - the releases this test deferred to SMR run.
+///
+/// Skipped when the test is unwinding.
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        let rcv = self.lo.if_rcv();
+        for _ in 0..16 {
+            if crate::net::ifq::ifiq_len(rcv) == 0 {
+                break;
+            }
+            pump(self.lo);
+        }
+        assert_eq!(
+            crate::net::ifq::ifiq_len(rcv),
+            0,
+            "lo0 quiet at the test's end"
+        );
+        {
+            let w = NETLOCK.write();
+            let net = NetHeld::of(&w).expect("the net lock");
+            crate::netinet::in_::in_ifdetach(self.lo, &net);
+            crate::netinet6::in6_ifattach::in6_ifdetach(self.lo, &net);
+        }
+        crate::net::route::tests::grace();
+    }
 }
 /* </CODE> */
