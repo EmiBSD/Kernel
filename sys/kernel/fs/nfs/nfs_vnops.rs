@@ -743,17 +743,16 @@ pub fn nfs_access<G: ProcGlue>(
     let mut x = mrep(&reply)?;
     let mut attrflag = 0;
     nfsm_postop_attr(&mut x, np, v3, &mut attrflag)?;
-    let error = match res {
-        Err(e) => return Err(e.errno()),
-        Ok(()) => {
-            let rmode = rd(&mut x).u32()?;
-            // The NFS V3 spec does not clarify whether or not the returned access bits can be
-            // a superset of the ones requested, so...
-            if rmode & mode != mode {
-                Some(Errno::EACCES)
-            } else {
-                None
-            }
+    let error = if let Err(e) = res {
+        return Err(e.errno());
+    } else {
+        let rmode = rd(&mut x).u32()?;
+        // The NFS V3 spec does not clarify whether or not the returned access bits can be
+        // a superset of the ones requested, so...
+        if rmode & mode == mode {
+            None
+        } else {
+            Some(Errno::EACCES)
         }
     };
     drop(reply);
@@ -1053,10 +1052,10 @@ fn nfsm_wcc_data<G: ProcGlue>(
     }
     let mut ttattrf = 0;
     nfsm_postop_attr(x, np, true, &mut ttattrf)?;
-    *flagp = if *flagp != NFSV3_WCCRATTR {
-        ttretf
-    } else {
+    *flagp = if *flagp == NFSV3_WCCRATTR {
         ttattrf
+    } else {
+        ttretf
     };
     Ok(())
 }
@@ -1811,18 +1810,15 @@ pub fn nfs_mknodrpc<G: ProcGlue>(
     };
 
     // nfsmout:
-    match &error {
-        Err(_) => {
-            if let Some(n) = newnp.take() {
-                vput(nfstov(&n));
-            }
+    if error.is_err() {
+        if let Some(n) = newnp.take() {
+            vput(nfstov(&n));
         }
-        Ok(()) => {
-            if cnp.cn_flags & MAKEENTRY != 0 {
-                nfs_cache_enter(dvp, &dnp, newnp.as_deref(), cnp.name());
-            }
-            *vpp = newnp.as_ref().map(|n| nfstov(n));
+    } else {
+        if cnp.cn_flags & MAKEENTRY != 0 {
+            nfs_cache_enter(dvp, &dnp, newnp.as_deref(), cnp.name());
         }
+        *vpp = newnp.as_ref().map(|n| nfstov(n));
     }
     drop(cnp.take_pnbuf());
     dnp.set(NMODIFIED);
@@ -2534,19 +2530,16 @@ pub fn nfs_mkdir<G: ProcGlue>(
             }
         }
     }
-    match &error {
-        Err(_) => {
-            if let Some(n) = newnp {
-                vput(nfstov(&n));
-            }
+    if error.is_err() {
+        if let Some(n) = newnp {
+            vput(nfstov(&n));
         }
-        Ok(()) => {
-            VN_KNOTE(dvp, NOTE_WRITE | NOTE_LINK);
-            if cnp.cn_flags & MAKEENTRY != 0 {
-                nfs_cache_enter(dvp, &dnp, newnp.as_deref(), cnp.name());
-            }
-            *vpp = newnp.as_ref().map(|n| nfstov(n));
+    } else {
+        VN_KNOTE(dvp, NOTE_WRITE | NOTE_LINK);
+        if cnp.cn_flags & MAKEENTRY != 0 {
+            nfs_cache_enter(dvp, &dnp, newnp.as_deref(), cnp.name());
         }
+        *vpp = newnp.as_ref().map(|n| nfstov(n));
     }
     drop(cnp.take_pnbuf());
     vput(dvp);
@@ -3329,10 +3322,10 @@ pub fn nfs_lookitup<G: ProcGlue>(
                     vref(dvp);
                     newnp = Some(dnp.clone());
                 }
-                _ => match nfs_nget(vmount(dvp), fh.bytes()) {
-                    Ok(n) => newnp = Some(n),
-                    Err(e) => return Err(e.into()),
-                },
+                _ => {
+                    let n = nfs_nget(vmount(dvp), fh.bytes())?;
+                    newnp = Some(n);
+                }
             }
             // The node the attributes are for: the one updated, or the one looked up.
             let target: &NfsNode<G> = match (&npp, newnp.as_deref()) {
@@ -3785,7 +3778,7 @@ pub fn nfs_writebp<G: ProcGlue>(t: BufRef, force: bool) -> Result<(), Errno> {
         let mut off = (bp.blkno() as u64)
             .wrapping_mul(DEV_BSIZE as u64)
             .wrapping_add(bp.dirtyoff() as u64);
-        let mut cnt = (bp.dirtyend() - bp.dirtyoff()) as i64;
+        let mut cnt = i64::from(bp.dirtyend() - bp.dirtyoff());
 
         let lock = np.n_commitlock.write();
         if !bp.isset(B_NEEDCOMMIT) {
@@ -3797,7 +3790,10 @@ pub fn nfs_writebp<G: ProcGlue>(t: BufRef, force: bool) -> Result<(), Errno> {
         }
 
         // If it's already been committed by somebody else, bail.
-        let commit = if !nfs_in_committed_range(&np, bp) {
+        let commit = if nfs_in_committed_range(&np, bp) {
+            // It has already been committed.
+            Ok(())
+        } else {
             let mut pushedrange = false;
             // Since we're going to do this, push as much as we can.
             if nfs_in_tobecommitted_range(&np, bp) {
@@ -3823,9 +3819,6 @@ pub fn nfs_writebp<G: ProcGlue>(t: BufRef, force: bool) -> Result<(), Errno> {
                 BCSTATS.pendingwrites.fetch_sub(1, Ordering::Relaxed);
             }
             rv
-        } else {
-            // It has already been committed.
-            Ok(())
         };
 
         drop(lock);

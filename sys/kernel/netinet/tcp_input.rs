@@ -1221,14 +1221,13 @@ impl TcpInputState {
             let notp = match exit {
                 TcpInputExit::Done => return self.done(),
                 TcpInputExit::DropAfterAckRatelim => {
-                    if !pps_ok(&TCP_ACKDROP_PPS, TCP_ACKDROP_PPSLIM.load(Ordering::Relaxed)) {
-                        // XXX stat
-                        NoTpExit::Drop
-                    } else {
+                    if pps_ok(&TCP_ACKDROP_PPS, TCP_ACKDROP_PPSLIM.load(Ordering::Relaxed)) {
                         // ...fall into dropafterack...
                         exit = TcpInputExit::DropAfterAck;
                         continue;
                     }
+                    // XXX stat
+                    NoTpExit::Drop
                 }
                 TcpInputExit::DropAfterAck => {
                     // Generate an ACK dropping incoming segment if it occupies sequence space,
@@ -2036,9 +2035,7 @@ fn tcp_input_tcb<'a, 'w, G: ProcGlue>(
                     // Dup acks mean that packets have left the network (they're now cached at
                     // the receiver) so bump cwnd by the amount in the receiver to keep a
                     // constant cwnd packets in the network.
-                    if !tcp_timer_isarmed(st, TCPT_REXMT) {
-                        st.t_dupacks = 0;
-                    } else {
+                    if tcp_timer_isarmed(st, TCPT_REXMT) {
                         st.t_dupacks = st.t_dupacks.wrapping_add(1);
                         if i32::from(st.t_dupacks) == TCPREXMTTHRESH {
                             let onxt = st.snd_nxt;
@@ -2096,6 +2093,8 @@ fn tcp_input_tcb<'a, 'w, G: ProcGlue>(
                             let _ = tcp_output(&mut tp);
                             return T(Drop, tp);
                         }
+                    } else {
+                        st.t_dupacks = 0;
                     }
                 } else if s.tiwin < st.snd_wnd {
                     // The window was retracted! Previous dup ACKs may have been due to
@@ -2398,12 +2397,11 @@ fn tcp_input_tcb<'a, 'w, G: ProcGlue>(
         } else {
             if let Some(m) = s.m.take() {
                 m_adj(&m, s.hdroptlen);
-                match tcp_reass(&mut tp, &mut s.th, m, &mut s.tlen) {
-                    Ok(flags) => s.tiflags = flags,
-                    Err(_) => {
-                        s.tiflags = 0;
-                        reass_failed = true;
-                    }
+                if let Ok(flags) = tcp_reass(&mut tp, &mut s.th, m, &mut s.tlen) {
+                    s.tiflags = flags;
+                } else {
+                    s.tiflags = 0;
+                    reass_failed = true;
                 }
             }
             tp.st.set_flags(TF_ACKNOW);
@@ -2890,7 +2888,7 @@ pub fn tcp_mss<G: ProcGlue>(tp: &mut Tp<'_, '_, G>, offer: i32) -> i32 {
 
     st.t_maxseg = mss as u16;
 
-    if offer != -1 { mssopt } else { mss }
+    if offer == -1 { mss } else { mssopt }
 }
 
 /// `tcp_hdrsz`: the length of the IP and TCP headers with the options every segment of the

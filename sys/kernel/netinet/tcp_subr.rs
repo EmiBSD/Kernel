@@ -383,19 +383,18 @@ pub fn tcp_init<G: ProcGlue>() {
 pub fn tcp_template<G: ProcGlue>(tp: &mut Tp<'_, '_, G>) -> Option<MbufBox> {
     let inp = tp.inp;
 
-    let mut m = match tp.st.t_template.take() {
-        Some(m) => m,
-        None => {
-            let m = m_get(M_DONTWAIT, MT_HEADER)?;
-            let nh = match tp.st.pf {
-                // default to PF_INET
-                0 | AF_INET_I32 => size_of::<Ip>(),
-                AF_INET6_I32 => size_of::<Ip6Hdr>(),
-                _ => 0,
-            };
-            m.m_len().set((nh + size_of::<Tcphdr>()) as u32);
-            m
-        }
+    let mut m = if let Some(m) = tp.st.t_template.take() {
+        m
+    } else {
+        let m = m_get(M_DONTWAIT, MT_HEADER)?;
+        let nh = match tp.st.pf {
+            // default to PF_INET
+            0 | AF_INET_I32 => size_of::<Ip>(),
+            AF_INET6_I32 => size_of::<Ip6Hdr>(),
+            _ => 0,
+        };
+        m.m_len().set((nh + size_of::<Tcphdr>()) as u32);
+        m
     };
 
     let Some(d) = m.data_mut() else {
@@ -603,44 +602,41 @@ pub fn tcp_respond<G: ProcGlue>(
     });
 
     let seclevel = tp.map(|tp| tp.inp.inp_seclevel.get());
-    match af {
-        AF_INET6_I32 => {
-            // The sticky options and the route cache, lent for the call (the caller holds
-            // the socket lock with `tp`).
-            let sticky = tp.map(|tp| tp.inp.outputopts6());
-            let mut ro = tp.map(|tp| tp.inp.route());
-            // The C ignores the result: a lost reply is a lost segment.
-            let _ = ip6_output(
-                m,
-                sticky
-                    .as_ref()
-                    .and_then(|s| s.as_deref())
-                    .map(Ip6Pktopts::as_opts),
-                ro.as_deref_mut(),
-                0,
-                None,
-                seclevel.as_ref(),
-                net,
-            );
-        }
-        _ => {
-            let mut ro = tp.map(|tp| tp.inp.route());
-            // The C ignores the result: a lost reply is a lost segment.
-            let _ = ip_output(
-                m,
-                None,
-                ro.as_deref_mut(),
-                if ip_mtudisc.load(Ordering::Relaxed) != 0 {
-                    IP_MTUDISC
-                } else {
-                    0
-                },
-                None,
-                seclevel.as_ref(),
-                0,
-                net,
-            );
-        }
+    if af == AF_INET6_I32 {
+        // The sticky options and the route cache, lent for the call (the caller holds
+        // the socket lock with `tp`).
+        let sticky = tp.map(|tp| tp.inp.outputopts6());
+        let mut ro = tp.map(|tp| tp.inp.route());
+        // The C ignores the result: a lost reply is a lost segment.
+        let _ = ip6_output(
+            m,
+            sticky
+                .as_ref()
+                .and_then(|s| s.as_deref())
+                .map(Ip6Pktopts::as_opts),
+            ro.as_deref_mut(),
+            0,
+            None,
+            seclevel.as_ref(),
+            net,
+        );
+    } else {
+        let mut ro = tp.map(|tp| tp.inp.route());
+        // The C ignores the result: a lost reply is a lost segment.
+        let _ = ip_output(
+            m,
+            None,
+            ro.as_deref_mut(),
+            if ip_mtudisc.load(Ordering::Relaxed) != 0 {
+                IP_MTUDISC
+            } else {
+                0
+            },
+            None,
+            seclevel.as_ref(),
+            0,
+            net,
+        );
     }
 }
 

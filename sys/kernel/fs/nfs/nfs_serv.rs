@@ -839,9 +839,7 @@ pub fn nfsrv_readlink<G: ProcGlue>(
     let mut mp: Option<MbufBox> = None;
     let mut len = 0usize;
     let mut resid = 0usize;
-    let r: Result<(), Errno> = if vp.vtype() != Vtype::VLNK {
-        Err(if v3 { Errno::EINVAL } else { Errno::ENXIO })
-    } else {
+    let r: Result<(), Errno> = if vp.vtype() == Vtype::VLNK {
         match nfsrv_readlink_mbuf() {
             None => Err(Errno::ENOBUFS),
             Some(mut m) => {
@@ -860,6 +858,8 @@ pub fn nfsrv_readlink<G: ProcGlue>(
                 r
             }
         }
+    } else {
+        Err(if v3 { Errno::EINVAL } else { Errno::ENXIO })
     };
     // out:
     let mut attr = Vattr::new();
@@ -1015,13 +1015,12 @@ pub fn nfsrv_read<G: ProcGlue>(
             rr
         };
         drop(iv);
-        let error = match rr {
-            Err(e) => e.as_i32(),
-            Ok(()) => {
-                let g = vop_getattr(vp, &mut va, cred(nd), p);
-                getret = g.is_ok();
-                status_of(&g)
-            }
+        let error = if let Err(e) = rr {
+            e.as_i32()
+        } else {
+            let g = vop_getattr(vp, &mut va, cred(nd), p);
+            getret = g.is_ok();
+            status_of(&g)
         };
         if error != 0 {
             vput(vp);
@@ -1723,34 +1722,33 @@ pub fn nfsrv_remove<G: ProcGlue>(
         }
     }
 
-    let error = match res {
-        Err(error) => error,
-        Ok(()) => {
-            let vp = ni_vp(&ni);
-            let error = 'out: {
-                if vp.vtype() == Vtype::VDIR
-                    && let Err(e) = suser_ucred(&nd.nd_cr)
-                {
-                    break 'out e.as_i32();
-                }
-                // The root of a mounted filesystem cannot be deleted.
-                if vp.flag() & VROOT != 0 {
-                    break 'out Errno::EBUSY.as_i32();
-                }
-                if vp.flag() & VTEXT != 0 {
-                    let _ = uvm_vnp_uncache(vp);
-                }
-                0
-            };
-            // out:
-            if error == 0 {
-                status_of(&vop_remove(ni_dvp(&ni), vp, &mut ni.ni_cnd))
-            } else {
-                abortop(&mut ni);
-                dvp_release(&ni);
-                vput(vp);
-                error
+    let error = if let Err(error) = res {
+        error
+    } else {
+        let vp = ni_vp(&ni);
+        let error = 'out: {
+            if vp.vtype() == Vtype::VDIR
+                && let Err(e) = suser_ucred(&nd.nd_cr)
+            {
+                break 'out e.as_i32();
             }
+            // The root of a mounted filesystem cannot be deleted.
+            if vp.flag() & VROOT != 0 {
+                break 'out Errno::EBUSY.as_i32();
+            }
+            if vp.flag() & VTEXT != 0 {
+                let _ = uvm_vnp_uncache(vp);
+            }
+            0
+        };
+        // out:
+        if error == 0 {
+            status_of(&vop_remove(ni_dvp(&ni), vp, &mut ni.ni_cnd))
+        } else {
+            abortop(&mut ni);
+            dvp_release(&ni);
+            vput(vp);
+            error
         }
     };
     let mut diraft = Vattr::new();
@@ -1891,84 +1889,81 @@ pub fn nfsrv_rename<G: ProcGlue>(
         }
     }
     let fdvp = ni_dvp(&fromnd);
-    let error = match res {
-        Err(error) => {
+    let error = if let Err(error) = res {
+        let _ = vop_abortop(fdvp, &mut fromnd.ni_cnd);
+        vrele(fdvp);
+        vrele(fvp);
+        error
+    } else {
+        let tdvp = ni_dvp(&tond);
+        let tvp = tond.ni_vp;
+        let pick = |e3: Errno, e2: Errno| if v3 { e3 } else { e2 }.as_i32();
+        let mut error = 'out: {
+            if let Some(tvp) = tvp {
+                let fdir = fvp.vtype() == Vtype::VDIR;
+                let tdir = tvp.vtype() == Vtype::VDIR;
+                if fdir && !tdir {
+                    break 'out pick(Errno::EEXIST, Errno::EISDIR);
+                } else if !fdir && tdir {
+                    break 'out pick(Errno::EEXIST, Errno::ENOTDIR);
+                }
+                if tdir && tvp.mountedhere().is_some() {
+                    break 'out pick(Errno::EXDEV, Errno::ENOTEMPTY);
+                }
+            }
+            if fvp.vtype() == Vtype::VDIR && fvp.mountedhere().is_some() {
+                break 'out pick(Errno::EXDEV, Errno::ENOTEMPTY);
+            }
+            if !same_mount(fvp, tdvp) {
+                break 'out pick(Errno::EXDEV, Errno::ENOTEMPTY);
+            }
+            let mut error = 0;
+            if ptr::eq(fvp, tdvp) {
+                error = pick(Errno::EINVAL, Errno::ENOTEMPTY);
+            }
+            // If source is the same as the destination (that is the same vnode with the
+            // same name in the same directory), then there is nothing to do.
+            if same_vnode(Some(fvp), tvp)
+                && ptr::eq(fdvp, tdvp)
+                && fromnd.ni_cnd.name() == tond.ni_cnd.name()
+            {
+                error = -1;
+            }
+            error
+        };
+        // out:
+        if error == 0 {
+            if let Some(tvp) = tvp {
+                let _ = uvm_vnp_uncache(tvp);
+            }
+            error = status_of(&vop_rename(
+                fdvp,
+                fvp,
+                &mut fromnd.ni_cnd,
+                tdvp,
+                tvp,
+                &mut tond.ni_cnd,
+            ));
+        } else {
+            let _ = vop_abortop(tdvp, &mut tond.ni_cnd);
+            if same_vnode(Some(tdvp), tvp) {
+                vrele(tdvp);
+            } else {
+                vput(tdvp);
+            }
+            if let Some(tvp) = tvp {
+                vput(tvp);
+            }
             let _ = vop_abortop(fdvp, &mut fromnd.ni_cnd);
             vrele(fdvp);
             vrele(fvp);
-            error
-        }
-        Ok(()) => {
-            let tdvp = ni_dvp(&tond);
-            let tvp = tond.ni_vp;
-            let pick = |e3: Errno, e2: Errno| if v3 { e3 } else { e2 }.as_i32();
-            let mut error = 'out: {
-                if let Some(tvp) = tvp {
-                    let fdir = fvp.vtype() == Vtype::VDIR;
-                    let tdir = tvp.vtype() == Vtype::VDIR;
-                    if fdir && !tdir {
-                        break 'out pick(Errno::EEXIST, Errno::EISDIR);
-                    } else if !fdir && tdir {
-                        break 'out pick(Errno::EEXIST, Errno::ENOTDIR);
-                    }
-                    if tdir && tvp.mountedhere().is_some() {
-                        break 'out pick(Errno::EXDEV, Errno::ENOTEMPTY);
-                    }
-                }
-                if fvp.vtype() == Vtype::VDIR && fvp.mountedhere().is_some() {
-                    break 'out pick(Errno::EXDEV, Errno::ENOTEMPTY);
-                }
-                if !same_mount(fvp, tdvp) {
-                    break 'out pick(Errno::EXDEV, Errno::ENOTEMPTY);
-                }
-                let mut error = 0;
-                if ptr::eq(fvp, tdvp) {
-                    error = pick(Errno::EINVAL, Errno::ENOTEMPTY);
-                }
-                // If source is the same as the destination (that is the same vnode with the
-                // same name in the same directory), then there is nothing to do.
-                if same_vnode(Some(fvp), tvp)
-                    && ptr::eq(fdvp, tdvp)
-                    && fromnd.ni_cnd.name() == tond.ni_cnd.name()
-                {
-                    error = -1;
-                }
-                error
-            };
-            // out:
-            if error == 0 {
-                if let Some(tvp) = tvp {
-                    let _ = uvm_vnp_uncache(tvp);
-                }
-                error = status_of(&vop_rename(
-                    fdvp,
-                    fvp,
-                    &mut fromnd.ni_cnd,
-                    tdvp,
-                    tvp,
-                    &mut tond.ni_cnd,
-                ));
-            } else {
-                let _ = vop_abortop(tdvp, &mut tond.ni_cnd);
-                if same_vnode(Some(tdvp), tvp) {
-                    vrele(tdvp);
-                } else {
-                    vput(tdvp);
-                }
-                if let Some(tvp) = tvp {
-                    vput(tvp);
-                }
-                let _ = vop_abortop(fdvp, &mut fromnd.ni_cnd);
-                vrele(fdvp);
-                vrele(fvp);
-                if error == -1 {
-                    error = 0;
-                }
+            if error == -1 {
+                error = 0;
             }
-            startdir_rele(&mut tond);
-            pnbuf_put(&mut tond.ni_cnd);
-            error
         }
+        startdir_rele(&mut tond);
+        pnbuf_put(&mut tond.ni_cnd);
+        error
     };
     // out1:
     let mut fdiraft = Vattr::new();
@@ -2060,28 +2055,27 @@ pub fn nfsrv_link<G: ProcGlue>(
                 dirp = None;
             }
         }
-        error = match res {
-            Err(error) => error,
-            Ok(()) => {
-                let dvp = ni_dvp(&ni);
-                let error = if ni.ni_vp.is_some() {
-                    Errno::EEXIST.as_i32()
-                } else if !same_mount(vp, dvp) {
-                    Errno::EXDEV.as_i32()
-                } else {
-                    0
-                };
-                // out:
-                if error == 0 {
-                    status_of(&vop_link(dvp, vp, &mut ni.ni_cnd))
-                } else {
-                    abortop(&mut ni);
-                    dvp_release(&ni);
-                    if let Some(xp) = ni.ni_vp {
-                        vrele(xp);
-                    }
-                    error
+        error = if let Err(error) = res {
+            error
+        } else {
+            let dvp = ni_dvp(&ni);
+            let error = if ni.ni_vp.is_some() {
+                Errno::EEXIST.as_i32()
+            } else if !same_mount(vp, dvp) {
+                Errno::EXDEV.as_i32()
+            } else {
+                0
+            };
+            // out:
+            if error == 0 {
+                status_of(&vop_link(dvp, vp, &mut ni.ni_cnd))
+            } else {
+                abortop(&mut ni);
+                dvp_release(&ni);
+                if let Some(xp) = ni.ni_vp {
+                    vrele(xp);
                 }
+                error
             }
         };
     }
@@ -2643,11 +2637,11 @@ pub fn nfsrv_readdir<G: ProcGlue>(
         let cnt = nfsrv_readdir_cnt(cnt, xfer);
         let siz = nfsrv_readdir_siz(cnt, xfer);
         fhtovp(nd, &fh, true, slp).and_then(|(vp, rdonly)| {
-            if vp.vtype() != Vtype::VDIR {
+            if vp.vtype() == Vtype::VDIR {
+                Ok((vp, rdonly, cnt, siz))
+            } else {
                 vput(vp);
                 Err(Errno::ENOTDIR.as_i32())
-            } else {
-                Ok((vp, rdonly, cnt, siz))
             }
         })
     };
@@ -2794,11 +2788,11 @@ pub fn nfsrv_readdirplus<G: ProcGlue>(
         let cnt = nfsrv_readdir_cnt(cnt, xfer);
         let siz = nfsrv_readdir_siz(siz, xfer);
         fhtovp(nd, &fh, true, slp).and_then(|(vp, rdonly)| {
-            if vp.vtype() != Vtype::VDIR {
+            if vp.vtype() == Vtype::VDIR {
+                Ok((vp, rdonly, cnt, siz))
+            } else {
                 vput(vp);
                 Err(Errno::ENOTDIR.as_i32())
-            } else {
-                Ok((vp, rdonly, cnt, siz))
             }
         })
     };

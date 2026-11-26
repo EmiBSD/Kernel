@@ -694,7 +694,7 @@ pub fn syn_cache_cleanup<G: ProcGlue>(tp: &Tp<'_, '_, G>) {
                 .get(&g)
                 .sc_inplisten
                 .as_ref()
-                .is_some_and(|l| core::ptr::eq::<Inpcb<G>>(&**l, tp.inp))
+                .is_some_and(|l| core::ptr::eq::<Inpcb<G>>(&raw const **l, tp.inp))
         );
         let removed = syn_cache_rm(&mut g, &sc);
         // syn_cache_put under the mutex, as the C's.
@@ -749,7 +749,7 @@ fn sc_of<G: ProcGlue>(g: &ScGuard<'_, G>, sc: &SynCache<G>, inp: &Inpcb<G>) -> b
         .get(g)
         .sc_inplisten
         .as_ref()
-        .is_some_and(|l| core::ptr::eq::<Inpcb<G>>(&**l, inp))
+        .is_some_and(|l| core::ptr::eq::<Inpcb<G>>(&raw const **l, inp))
 }
 
 /// `in_pcbset_addr(inp, src, dst, rtableid)` of a new connection: the foreign address and
@@ -966,7 +966,7 @@ pub fn syn_cache_get<G: ProcGlue>(
 
                     // Give the new socket our cached route reference (another listener's
                     // entry's stays with it: the pcb's cache is looked up when first used).
-                    if let Some(l) = l.as_deref_mut() {
+                    if let Some(l) = l {
                         inp.set_route(core::mem::take(&mut l.sc_route));
                     }
 
@@ -1436,7 +1436,7 @@ fn syn_cache_respond_with<G: ProcGlue>(
 
     // Compute the size of the TCP options.
     let optlen = 4
-        + if i.sc_request_r_scale != 15 { 4 } else { 0 }
+        + if i.sc_request_r_scale == 15 { 0 } else { 4 }
         + if i.sc_fixflags & SCF_SACK_PERMIT != 0 {
             4
         } else {

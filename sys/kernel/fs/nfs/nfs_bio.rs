@@ -349,15 +349,15 @@ pub fn nfs_bioread<G: ProcGlue>(
                 let Some(t) = nfs_getcacheblk(&nmp, vp, 0, NFS_MAXPATHLEN as i32, p) else {
                     return Err(Errno::EINTR);
                 };
-                let t = if !t.buf().isset(B_DONE) {
+                let t = if t.buf().isset(B_DONE) {
+                    t
+                } else {
                     t.buf().set(B_READ);
                     let (t, error) = nfs_doio_sync(t, vp, &np, &nmp, p);
                     if let Err(e) = error {
                         brelse(t);
                         return Err(e);
                     }
-                    t
-                } else {
                     t
                 };
                 let n = uio

@@ -244,12 +244,11 @@ pub fn divert6_packet<G: ProcGlue>(m: MbufBox, dir: i32, divert_port: u16, net: 
 
     let mut m = m;
     if (m.m_len().get() as usize) < size_of::<Ip6Hdr>() {
-        match m_pullup(m, size_of::<Ip6Hdr>() as i32) {
-            Some(n) => m = n,
-            None => {
-                divstat_inc(DivstatCounters::DivsErrors);
-                return;
-            }
+        if let Some(n) = m_pullup(m, size_of::<Ip6Hdr>() as i32) {
+            m = n;
+        } else {
+            divstat_inc(DivstatCounters::DivsErrors);
+            return;
         }
     }
 
@@ -304,8 +303,8 @@ pub fn divert6_attach<G: ProcGlue>(
 
     soreserve(
         so,
-        divert_sendspace.load(Ordering::Relaxed) as u32 as u64,
-        divert_recvspace.load(Ordering::Relaxed) as u32 as u64,
+        u64::from(divert_sendspace.load(Ordering::Relaxed) as u32),
+        u64::from(divert_recvspace.load(Ordering::Relaxed) as u32),
     )?;
     let inp = in_pcballoc(so, divb6table::<G>(), wait)?;
 

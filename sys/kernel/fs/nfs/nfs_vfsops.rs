@@ -245,7 +245,7 @@ pub fn nfs_statfs<G: ProcGlue>(
             .load(Ordering::Relaxed)
             .min(nmp.nm_wsize.load(Ordering::Relaxed)) as u32;
         if v3 {
-            let blk = NFS_FABLKSIZE as u64;
+            let blk = NFS_FABLKSIZE;
             sbp.f_bsize = NFS_FABLKSIZE as u32;
             sbp.f_blocks = fxdr_hyper(sfp.sf_tbytes().words()) / blk;
             sbp.f_bfree = fxdr_hyper(sfp.sf_fbytes().words()) / blk;

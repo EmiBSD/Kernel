@@ -529,19 +529,16 @@ pub fn nfsrv_getcache<G: ProcGlue>(
         .nam()
         .and_then(sockaddr_in_of)
         .filter(|sin| sin.sin_family == AF_INET);
-    match inet {
-        Some(sin) => {
-            rp.rc_flag.fetch_or(RC_INETADDR, Relaxed);
-            rp.rc_inetaddr.store(sin.sin_addr.s_addr, Relaxed);
-        }
-        None => {
-            rp.rc_flag.fetch_or(RC_NAM, Relaxed);
-            let copy = nd
-                .nd_nam2
-                .as_deref_mut()
-                .and_then(|m| m_copym(m, 0, M_COPYALL, M_WAIT));
-            drop(rp.rc_nam.replace(copy));
-        }
+    if let Some(sin) = inet {
+        rp.rc_flag.fetch_or(RC_INETADDR, Relaxed);
+        rp.rc_inetaddr.store(sin.sin_addr.s_addr, Relaxed);
+    } else {
+        rp.rc_flag.fetch_or(RC_NAM, Relaxed);
+        let copy = nd
+            .nd_nam2
+            .as_deref_mut()
+            .and_then(|m| m_copym(m, 0, M_COPYALL, M_WAIT));
+        drop(rp.rc_nam.replace(copy));
     }
     // `nd_procnum < NFS_NPROCS` (23): a `u_int16_t`.
     rp.rc_proc.store(nd.nd_procnum as u16, Relaxed);

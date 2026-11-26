@@ -572,12 +572,11 @@ impl<E: SlabItem> Slab<E> {
                     .and_then(|o| o.get_mut(j))
                     .map_or_else(ColdNode::new, |n| core::mem::replace(n, ColdNode::new()))
             });
-            match grown {
-                Some(c) => colds = Some(c),
-                None => {
-                    self.colds = old;
-                    return None;
-                }
+            if let Some(c) = grown {
+                colds = Some(c);
+            } else {
+                self.colds = old;
+                return None;
             }
             let mut old = self.pairs.take();
             let grown = MArray::new(self.mtype, M_NOWAIT, 2 * len, |j| {
@@ -585,14 +584,13 @@ impl<E: SlabItem> Slab<E> {
                     .and_then(|o| o.get_mut(j))
                     .map_or_else(RadixNode::new, |n| core::mem::replace(n, RadixNode::new()))
             });
-            match grown {
-                Some(p) => pairs = Some(p),
-                None => {
-                    // The cold halves stay in their new, larger block.
-                    self.pairs = old;
-                    self.colds = colds;
-                    return None;
-                }
+            if let Some(p) = grown {
+                pairs = Some(p);
+            } else {
+                // The cold halves stay in their new, larger block.
+                self.pairs = old;
+                self.colds = colds;
+                return None;
             }
         }
         let mut old = self.elems.take();
@@ -698,12 +696,11 @@ impl<T, const K: usize> RadixTree<T, K> {
         }
         // A key of the tree's length is borrowed in place; a shorter one is padded (D-7).
         let padded;
-        let v = match v.get(..K).and_then(|k| <&[u8; K]>::try_from(k).ok()) {
-            Some(k) => k,
-            None => {
-                padded = key_of::<K>(v);
-                &padded
-            }
+        let v = if let Some(k) = v.get(..K).and_then(|k| <&[u8; K]>::try_from(k).ok()) {
+            k
+        } else {
+            padded = key_of::<K>(v);
+            &padded
         };
         self.value_at(rn_match(self, v))
     }
@@ -1592,7 +1589,7 @@ fn rn_add_radix_mask<T, const K: usize>(h: &mut RadixTree<T, K>, tt: u32, keydup
 /// of the same mask is there.
 fn rn_add_dupedkey<T, const K: usize>(h: &mut RadixTree<T, K>, saved_tt: u32, tt: u32) -> i32 {
     let netmask = h.n(tt).mask();
-    let b_leaf = if netmask != NONE { h.n(tt).b } else { 0 };
+    let b_leaf = if netmask == NONE { 0 } else { h.n(tt).b };
     let mut x = saved_tt;
     let mut xp = x;
     while x != NONE {
@@ -2077,29 +2074,7 @@ fn rn_delete_leaf<T, const K: usize>(h: &mut RadixTree<T, K>, saved_tt: u32, tt:
     }
     let tt1 = tt | 1;
     let tp = h.c(tt).p;
-    if h.n(saved_tt).dupedkey() != NONE {
-        let x = if tt == saved_tt {
-            let x = h.n(saved_tt).dupedkey();
-            h.cm(x).p = tp;
-            if h.n(tp).l() == tt {
-                h.nm(tp).lm = x;
-            } else {
-                h.nm(tp).rd = x;
-            }
-            x
-        } else {
-            let d = h.n(tt).dupedkey();
-            h.nm(tp).rd = d;
-            if d != NONE {
-                h.cm(d).p = tp;
-            }
-            saved_tt
-        };
-        // We may be holding an active internal node in the tree.
-        if h.n(tt1).flags & RNF_ACTIVE != 0 {
-            rn_swap_nodes(&mut h.nodes, tt1, x | 1);
-        }
-    } else {
+    if h.n(saved_tt).dupedkey() == NONE {
         // Not duplicated: tt and its parent leave the tree.
         let x = if h.n(tp).l() == tt {
             h.n(tp).r()
@@ -2153,6 +2128,28 @@ fn rn_delete_leaf<T, const K: usize>(h: &mut RadixTree<T, K>, saved_tt: u32, tt:
         // Our internal node, if it is not the parent just removed, takes the parent's place.
         if tp != tt1 {
             rn_swap_nodes(&mut h.nodes, tt1, tp);
+        }
+    } else {
+        let x = if tt == saved_tt {
+            let x = h.n(saved_tt).dupedkey();
+            h.cm(x).p = tp;
+            if h.n(tp).l() == tt {
+                h.nm(tp).lm = x;
+            } else {
+                h.nm(tp).rd = x;
+            }
+            x
+        } else {
+            let d = h.n(tt).dupedkey();
+            h.nm(tp).rd = d;
+            if d != NONE {
+                h.cm(d).p = tp;
+            }
+            saved_tt
+        };
+        // We may be holding an active internal node in the tree.
+        if h.n(tt1).flags & RNF_ACTIVE != 0 {
+            rn_swap_nodes(&mut h.nodes, tt1, x | 1);
         }
     }
     h.nm(tt).flags &= !RNF_ACTIVE;

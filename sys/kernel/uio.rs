@@ -428,7 +428,7 @@ fn fill_iovecs(
     let mut resid = 0usize;
     for (base, len) in bufs {
         let Some(slot) = iov.get_mut(n) else {
-            crate::assert::kpanic(format_args!("kernel uio: more than {} buffers", n));
+            crate::assert::kpanic(format_args!("kernel uio: more than {n} buffers"));
         };
         *slot = Iovec {
             iov_base: base,

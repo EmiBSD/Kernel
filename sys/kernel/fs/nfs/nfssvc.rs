@@ -648,21 +648,18 @@ pub fn nfssvc_addsock<G: ProcGlue>(
 
     // A connected socket's record keeps its client's address; the datagram socket's never
     // reads one (the module's Deviations).
-    let slp = match tslp {
-        Some(slp) => {
-            drop(mynam);
-            slp
-        }
-        None => {
-            let nam = mynam.as_deref().and_then(|m| NfsNam::new(m.data()));
-            let Some(slp) = MArc::new(M_NFSSVC, M_WAITOK, NfssvcSock::new(nam)) else {
-                return Err(Errno::ENOMEM);
-            };
-            let mut w = klock::witness();
-            t.nfssvc_sockhead.insert_tail(&mut w, slp.as_pin());
-            slp.ns_k.get_mut(&mut w).ns_self = Some(slp.clone());
-            slp
-        }
+    let slp = if let Some(slp) = tslp {
+        drop(mynam);
+        slp
+    } else {
+        let nam = mynam.as_deref().and_then(|m| NfsNam::new(m.data()));
+        let Some(slp) = MArc::new(M_NFSSVC, M_WAITOK, NfssvcSock::new(nam)) else {
+            return Err(Errno::ENOMEM);
+        };
+        let mut w = klock::witness();
+        t.nfssvc_sockhead.insert_tail(&mut w, slp.as_pin());
+        slp.ns_k.get_mut(&mut w).ns_self = Some(slp.clone());
+        slp
     };
     slp.ns_sotype.store(sotype, Ordering::Relaxed);
     let old_fp = {
@@ -880,15 +877,12 @@ pub fn nfsd_step<G: ProcGlue>(
     }
     drop(req);
 
-    match nfsrv_dorec(&slp) {
-        Ok(n) => {
-            frame.nd = Some(n);
-            frame.cur = Some(slp);
-        }
-        Err(_) => {
-            nfsd.nfsd_flag.fetch_and(!NFSD_REQINPROG, Ordering::Relaxed);
-            nfsrv_slpderef(slp);
-        }
+    if let Ok(n) = nfsrv_dorec(&slp) {
+        frame.nd = Some(n);
+        frame.cur = Some(slp);
+    } else {
+        nfsd.nfsd_flag.fetch_and(!NFSD_REQINPROG, Ordering::Relaxed);
+        nfsrv_slpderef(slp);
     }
     Ok(())
 }

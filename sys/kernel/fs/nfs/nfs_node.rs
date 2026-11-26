@@ -366,11 +366,11 @@ pub fn nfs_inactive<G: ProcGlue>(vp: &'static Vnode<G>) -> Result<(), Errno> {
         return Ok(());
     }
     let np = vtonfs(vp);
-    let sp = if vp.vtype() != VDIR {
+    let sp = if vp.vtype() == VDIR {
+        None
+    } else {
         let mut w = klock::witness();
         np.n_k.get_mut(&mut w).n_sillyrename.take()
-    } else {
-        None
     };
     if let Some(sp) = &sp {
         let nmp = vfstonfs(node_mount(&np));

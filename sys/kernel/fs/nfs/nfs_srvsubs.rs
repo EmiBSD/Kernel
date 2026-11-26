@@ -856,22 +856,18 @@ pub fn nfsrv_fhtovp<G: ProcGlue>(
     let grant = mp.op().checkexp(mp, nam).map_err(Errno::as_i32)?;
     let vp = mp.op().fhtovp(mp, &fhp.fh_fid).map_err(Errno::as_i32)?;
 
-    match sockaddr_in_of(nam) {
-        Some(saddr) => {
-            let port = u16::from_be(saddr.sin_port);
-            if saddr.sin_family == AF_INET
-                && (i32::from(port) >= IPPORT_RESERVED
-                    || (slp.sotype() == SOCK_STREAM && port == 20))
-            {
-                vput(vp);
-                return Err(tooweak);
-            }
-        }
-        None => {
-            // Shorter than a sockaddr_in: not an address of a client we can vouch for.
+    if let Some(saddr) = sockaddr_in_of(nam) {
+        let port = u16::from_be(saddr.sin_port);
+        if saddr.sin_family == AF_INET
+            && (i32::from(port) >= IPPORT_RESERVED || (slp.sotype() == SOCK_STREAM && port == 20))
+        {
             vput(vp);
             return Err(tooweak);
         }
+    } else {
+        // Shorter than a sockaddr_in: not an address of a client we can vouch for.
+        vput(vp);
+        return Err(tooweak);
     }
 
     // Check/setup credentials.

@@ -195,35 +195,31 @@ pub fn tcp_reass<G: ProcGlue>(
         tcpqe_tcp: *th,
         tcpqe_m: seg.take(),
     });
-    let mut tiqe = match fresh {
-        Some(q) => q,
-        None => {
-            let Some(m) = seg.take() else {
-                kpanic(format_args!("tcp_reass: the segment went with no entry"));
-            };
-            // Any SACK report for data we are about to discard is stale.
-            if st.sack_enable != 0 && st.rcv_numsacks != 0 {
-                tcp_clean_sackreport(st);
-            }
-            let last = if th.th_seq == st.rcv_nxt {
-                // Reuse last entry since new segment fills a hole: its segment freed.
-                take_last(&mut st.t_segq)
-            } else {
-                None
-            };
-            match last {
-                Some(mut q) => {
-                    q.tcpqe_m = Some(m);
-                    q
-                }
-                None => {
-                    // Flush segment queue for this connection
-                    tcp_freeq(st);
-                    tcpstat_inc(TcpstatCounters::TcpsRcvmemdrop);
-                    drop(m);
-                    return Err(Errno::ENOBUFS);
-                }
-            }
+    let mut tiqe = if let Some(q) = fresh {
+        q
+    } else {
+        let Some(m) = seg.take() else {
+            kpanic(format_args!("tcp_reass: the segment went with no entry"));
+        };
+        // Any SACK report for data we are about to discard is stale.
+        if st.sack_enable != 0 && st.rcv_numsacks != 0 {
+            tcp_clean_sackreport(st);
+        }
+        let last = if th.th_seq == st.rcv_nxt {
+            // Reuse last entry since new segment fills a hole: its segment freed.
+            take_last(&mut st.t_segq)
+        } else {
+            None
+        };
+        if let Some(mut q) = last {
+            q.tcpqe_m = Some(m);
+            q
+        } else {
+            // Flush segment queue for this connection
+            tcp_freeq(st);
+            tcpstat_inc(TcpstatCounters::TcpsRcvmemdrop);
+            drop(m);
+            return Err(Errno::ENOBUFS);
         }
     };
 
@@ -364,10 +360,10 @@ pub(crate) fn tcp_flush_queue<G: ProcGlue>(tp: &mut Tp<'_, '_, G>) -> u8 {
         // pool_put(&tcpqe_pool, q)
         drop(q);
         if flags != 0
-            || !st
+            || st
                 .t_segq
                 .get()
-                .is_some_and(|n| n.tcpqe_tcp.th_seq == st.rcv_nxt)
+                .is_none_or(|n| n.tcpqe_tcp.th_seq != st.rcv_nxt)
         {
             break;
         }
@@ -457,7 +453,15 @@ pub fn tcp_update_sack_list(st: &mut TcpState, rcv_laststart: TcpSeq, rcv_lasten
         st.sackblks[i] = zero;
         lastpos = i as i32; // last posn with a zero entry
     }
-    if lastpos != -1 {
+    if lastpos == -1 {
+        // no merges -- shift sacks by 1
+        if (st.rcv_numsacks as usize) < MAX_SACK_BLKS {
+            st.rcv_numsacks += 1;
+        }
+        for i in (1..st.rcv_numsacks as usize).rev() {
+            st.sackblks[i] = st.sackblks[i - 1];
+        }
+    } else {
         // at least one merge
         let mut j = 1usize;
         for i in 0..numsacks {
@@ -470,14 +474,6 @@ pub fn tcp_update_sack_list(st: &mut TcpState, rcv_laststart: TcpSeq, rcv_lasten
         }
         st.rcv_numsacks = j as i32; // including first blk (added later)
         st.sackblks[1..j].copy_from_slice(&temp[1..j]); // now copy back
-    } else {
-        // no merges -- shift sacks by 1
-        if (st.rcv_numsacks as usize) < MAX_SACK_BLKS {
-            st.rcv_numsacks += 1;
-        }
-        for i in (1..st.rcv_numsacks as usize).rev() {
-            st.sackblks[i] = st.sackblks[i - 1];
-        }
     }
     st.sackblks[0] = firstsack;
 }

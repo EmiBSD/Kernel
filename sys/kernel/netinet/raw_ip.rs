@@ -394,7 +394,26 @@ pub fn rip_output<G: ProcGlue>(
 
     // If the user handed us a complete IP packet, use it. Otherwise, allocate an mbuf for a
     // header and fill it in.
-    let (mut m, mut ip) = if !inp.has_flags(INP_HDRINCL) {
+    let (mut m, mut ip) = if inp.has_flags(INP_HDRINCL) {
+        if m.m_pkthdr().len.get() as usize > IP_MAXPACKET {
+            return Err(Errno::EMSGSIZE);
+        }
+
+        let Some(m) = rip_chkhdr(m, opts.is_some()) else {
+            return Err(Errno::EINVAL);
+        };
+
+        let mut ip = ip_load(&m);
+        if ip.ip_id == 0 {
+            ip.ip_id = ip_randomid().to_be();
+        }
+        dst.sin_addr = ip.ip_dst;
+
+        // XXX prevent ip_output from overwriting header fields
+        flags |= IP_RAWOUTPUT;
+        ipstat_inc(IpstatCounters::IpsRawout);
+        (m, ip)
+    } else {
         if m.m_pkthdr().len.get() as usize + IP_HDR_LEN > IP_MAXPACKET {
             return Err(Errno::EMSGSIZE);
         }
@@ -416,25 +435,6 @@ pub fn rip_output<G: ProcGlue>(
             },
             ..ip_load(&m)
         };
-        (m, ip)
-    } else {
-        if m.m_pkthdr().len.get() as usize > IP_MAXPACKET {
-            return Err(Errno::EMSGSIZE);
-        }
-
-        let Some(m) = rip_chkhdr(m, opts.is_some()) else {
-            return Err(Errno::EINVAL);
-        };
-
-        let mut ip = ip_load(&m);
-        if ip.ip_id == 0 {
-            ip.ip_id = ip_randomid().to_be();
-        }
-        dst.sin_addr = ip.ip_dst;
-
-        // XXX prevent ip_output from overwriting header fields
-        flags |= IP_RAWOUTPUT;
-        ipstat_inc(IpstatCounters::IpsRawout);
         (m, ip)
     };
 

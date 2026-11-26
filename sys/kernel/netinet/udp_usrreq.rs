@@ -605,15 +605,14 @@ pub fn udp_input<G: ProcGlue>(
     let mut ipsecflowinfo: u32 = 0;
     if let Some(legs) = ipsec() {
         let seclevel = inp.as_deref().map(|i| i.inp_seclevel.get());
-        match legs.spd_check_in_flow(&m, af, iphlen, seclevel.as_ref()) {
-            Ok(flow) => ipsecflowinfo = flow,
-            Err(_) => {
-                udpstat_inc(UdpstatCounters::UdpsNosec);
-                // bad: m_freem(m), in_pcbunref(inp)
-                drop(m);
-                drop(inp);
-                return IPPROTO_DONE;
-            }
+        if let Ok(flow) = legs.spd_check_in_flow(&m, af, iphlen, seclevel.as_ref()) {
+            ipsecflowinfo = flow;
+        } else {
+            udpstat_inc(UdpstatCounters::UdpsNosec);
+            // bad: m_freem(m), in_pcbunref(inp)
+            drop(m);
+            drop(inp);
+            return IPPROTO_DONE;
         }
     }
 

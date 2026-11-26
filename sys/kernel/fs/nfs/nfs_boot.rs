@@ -280,7 +280,7 @@ pub fn nfs_boot_init<G: ProcGlue>(nd: &mut NfsDiskless<G>, procp: &Thread<G>) ->
             "nfs_boot: server_addr={} hostname={}\n",
             InAddrFmt(bp_sin.sin_addr),
             Str(hostname)
-        ))
+        ));
     });
 
     nd.nd_boot = bp_sin;
@@ -298,7 +298,7 @@ fn nfs_boot_broadaddr(ifp: &Ifnet) -> Option<u32> {
     let broad = ifp
         .if_addrlist()
         .iter(&r)
-        .find_map(|ifa| InIfaddr::of(&ifa).map(|ia| ia.ia_broadaddr().get().sin_addr.s_addr));
+        .find_map(|ifa| InIfaddr::of(ifa).map(|ia| ia.ia_broadaddr().get().sin_addr.s_addr));
     drop(r);
     broad
 }

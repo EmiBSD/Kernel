@@ -103,11 +103,11 @@ pub const fn txdr_unsigned(v: u32) -> u32 {
 pub const fn fxdr_nfsv2time(f: &Nfsv2Time) -> Timespec {
     Timespec {
         tv_sec: fxdr_unsigned(f.nfsv2_sec) as Time,
-        tv_nsec: if f.nfsv2_usec != 0xffff_ffff {
+        tv_nsec: if f.nfsv2_usec == 0xffff_ffff {
+            0
+        } else {
             // The C multiplies in `u_int`.
             1000u32.wrapping_mul(fxdr_unsigned(f.nfsv2_usec)) as i64
-        } else {
-            0
         },
     }
 }

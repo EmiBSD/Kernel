@@ -784,22 +784,17 @@ impl<G: ProcGlue> Socket<G> {
         part: &mut WitnessPart<'_>,
         pcb: Option<AnyArc>,
     ) -> Option<AnyArc> {
-        let cell = match self.pcb_locked.get() {
-            Some(cell) => cell,
-            None => {
-                if pcb.is_none() {
-                    return None;
-                }
-                // Only the lock's holder writes the slot: no other `set` can race this one.
-                let _ = self.pcb_locked.set(Guarded::keyed(
-                    self.so_lock.lock().id(),
-                    so_part::PCB,
-                    None,
-                ));
-                match self.pcb_locked.get() {
-                    Some(cell) => cell,
-                    None => kpanic(format_args!("set_pcb_locked: socket {self:p}: no cell")),
-                }
+        let cell = if let Some(cell) = self.pcb_locked.get() {
+            cell
+        } else {
+            pcb.as_ref()?;
+            // Only the lock's holder writes the slot: no other `set` can race this one.
+            let _ =
+                self.pcb_locked
+                    .set(Guarded::keyed(self.so_lock.lock().id(), so_part::PCB, None));
+            match self.pcb_locked.get() {
+                Some(cell) => cell,
+                None => kpanic(format_args!("set_pcb_locked: socket {self:p}: no cell")),
             }
         };
         mem::replace(cell.get_mut(part), pcb)

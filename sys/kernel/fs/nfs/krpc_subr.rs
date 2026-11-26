@@ -617,7 +617,7 @@ pub fn xdr_string_decode(
 ) -> Result<(), Errno> {
     let mut probe = r.clone();
     let slen = probe.i32()?; // string length
-    if slen < 0 || slen > i32::MAX - 3 - 4 {
+    if !(0..=i32::MAX - 3 - 4).contains(&slen) {
         return Err(Errno::EBADRPC);
     }
     let padded = nfsm_rndup(slen as usize);
