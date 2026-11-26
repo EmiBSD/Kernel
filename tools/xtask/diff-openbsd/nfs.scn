@@ -4,8 +4,13 @@
 # and nfsd(8), and mounts it with mount_nfs(8) as version 3 over UDP, version 3 over TCP and
 # version 2 over UDP; each mount runs file-system steps of `fs`'s kind on it (create, read,
 # symbolic link, rename, a 256 KiB write, removal, a directory, the error of a missing file)
-# and shows mount(8)'s line; the two `vfs.nfs` sysctls close the set. Both systems run the same
-# OpenBSD userland and the same server code path, so a difference is the client's.
+# and shows mount(8)'s line; the two `vfs.nfs` sysctls follow. Both systems run the same
+# OpenBSD userland. N6.7b4 (D-15), the server's export list: /etc/exports rewritten and mountd(8)
+# told to read it again (SIGHUP: the kernel's list deleted and hung again), each time with
+# showmount(8)'s list and a mount: a read-only export (a write refused), -mapall (a file
+# created as root is the mapped user's), a -network/-mask entry and the default export; then
+# the first export back. From N6.7b4 the server is the kernel's too, so a difference is the
+# client's or the server's.
 
 ## export
 ! ifconfig lo0 inet 127.0.0.1/8 up
@@ -44,3 +49,41 @@ $ umount /nfsmnt && echo unmounted
 ## sysctl
 $ sysctl vfs.nfs.iothreads
 $ sysctl -n vfs.nfs.nfsstats >/dev/null && echo stats
+
+## ro
+! umount /nfsmnt 2>/dev/null; echo "/mnt/nfs -ro 127.0.0.1" >/etc/exports
+! kill -HUP $(cat /var/run/mountd.pid); sleep 2
+$ showmount -e 127.0.0.1
+$ mount_nfs 127.0.0.1:/mnt/nfs /nfsmnt && cat /nfsmnt/a
+$ echo w >/nfsmnt/b
+$ rm /nfsmnt/a
+$ ls -1 /nfsmnt && umount /nfsmnt && echo unmounted
+
+## mapall
+! chmod 1777 /mnt/nfs && echo "/mnt/nfs -mapall=1000:1000 127.0.0.1" >/etc/exports
+! kill -HUP $(cat /var/run/mountd.pid); sleep 2
+$ showmount -e 127.0.0.1
+$ mount_nfs 127.0.0.1:/mnt/nfs /nfsmnt && echo w >/nfsmnt/m && cat /nfsmnt/m
+$ stat -f '%u %g' /mnt/nfs/m /mnt/nfs/a
+$ rm /nfsmnt/m && umount /nfsmnt && echo unmounted
+
+## network
+! echo "/mnt/nfs -maproot=root -network 127.0.0.0 -mask 255.0.0.0" >/etc/exports
+! kill -HUP $(cat /var/run/mountd.pid); sleep 2
+$ showmount -e 127.0.0.1
+$ mount_nfs 127.0.0.1:/mnt/nfs /nfsmnt && echo w >/nfsmnt/n && cat /nfsmnt/n
+$ stat -f '%u %g' /mnt/nfs/n && rm /nfsmnt/n && umount /nfsmnt && echo unmounted
+
+## default
+! echo "/mnt/nfs -maproot=root" >/etc/exports
+! kill -HUP $(cat /var/run/mountd.pid); sleep 2
+$ showmount -e 127.0.0.1
+$ mount_nfs -T 127.0.0.1:/mnt/nfs /nfsmnt && cat /nfsmnt/a && ls -1 /nfsmnt
+$ umount /nfsmnt && echo unmounted
+
+## again
+! chmod 755 /mnt/nfs && echo "/mnt/nfs -maproot=root 127.0.0.1" >/etc/exports
+! kill -HUP $(cat /var/run/mountd.pid); sleep 2
+$ showmount -e 127.0.0.1
+$ mount_nfs 127.0.0.1:/mnt/nfs /nfsmnt && echo w >/nfsmnt/b && cat /nfsmnt/b
+$ rm /nfsmnt/b && umount /nfsmnt && echo unmounted
