@@ -734,9 +734,13 @@ pub fn arm_intr_map_msi(node: i32, data: &mut u64) -> u32 {
 
         let rid_base = cell[0];
         let length = cell[2 + mcells];
-        let msi_base = cell[2..2 + mcells]
+        // The base's first cell is `cell[2]` whatever `mcells` says (the C's `msi_base =
+        // cell[2]`): with `#msi-cells = <0>` it is the length cell.
+        let msi_base = cell
+            .get(3..2 + mcells)
+            .unwrap_or(&[])
             .iter()
-            .fold(0u64, |base, &c| base << 32 | u64::from(c));
+            .fold(u64::from(cell[2]), |base, &c| base << 32 | u64::from(c));
         if rid >= rid_base && rid < rid_base.wrapping_add(length) {
             *data = msi_base.wrapping_add(u64::from(rid - rid_base));
             return cell[1];
@@ -1127,10 +1131,11 @@ mod tests {
         IntrHandler::Raw(nop, arg)
     }
 
-    /// The test tree: a GIC (phandle 1, three cells), two MSI frames (phandle 2 with
-    /// `#msi-cells`, 3 without), a bus whose `interrupt-parent` is the GIC with devices of
-    /// each kind, a one-cell controller under it, a PCI host with an `interrupt-map` and an
-    /// `msi-map`, and a device with an `msi-parent`.
+    /// The test tree: a GIC (phandle 1, three cells), three MSI frames (phandle 2 with one
+    /// `#msi-cells`, 3 without the property, 5 with none), a bus whose `interrupt-parent` is
+    /// the GIC with devices of each kind, a one-cell controller under it, a PCI host with an
+    /// `interrupt-map` and an `msi-map`, a second whose `msi-map` names the zero-cell frame,
+    /// and a device with an `msi-parent`.
     fn tree() -> TreeGuard {
         testutil::install();
         let mut b = FdtBuilder::new();
@@ -1149,6 +1154,11 @@ mod tests {
         b.begin(b"msi@2");
         b.prop(b"msi-controller", b"");
         b.prop_cells(b"phandle", &[3]);
+        b.end();
+        b.begin(b"msi@3");
+        b.prop(b"msi-controller", b"");
+        b.prop_cells(b"#msi-cells", &[0]);
+        b.prop_cells(b"phandle", &[5]);
         b.end();
         b.begin(b"soc");
         b.prop_cells(b"interrupt-parent", &[1]);
@@ -1187,6 +1197,9 @@ mod tests {
             ],
         );
         b.prop_cells(b"msi-map", &[0x0, 2, 0x100, 0x10, 0x10, 3, 0x200, 0x10]);
+        b.end();
+        b.begin(b"pci0");
+        b.prop_cells(b"msi-map", &[0x0, 5, 0x10]);
         b.end();
         b.begin(b"msidev");
         b.prop_cells(b"msi-parent", &[2]);
@@ -1470,6 +1483,10 @@ mod tests {
         let mut data = 0x30;
         assert_eq!(arm_intr_map_msi(pci, &mut data), 0);
         assert_eq!(data, 0x30);
+        // `#msi-cells = <0>`: the base is the length cell, as the C reads it.
+        let mut data = 5;
+        assert_eq!(arm_intr_map_msi(node(b"/pci0"), &mut data), 5);
+        assert_eq!(data, 0x15);
         let mut data = 9;
         assert_eq!(arm_intr_map_msi(node(b"/msidev/fn@0"), &mut data), 2);
         assert_eq!(data, 9);
