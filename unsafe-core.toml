@@ -63,6 +63,4 @@ paths = [
     "sys/kern/subr_prf.rs",
     "sys/sys/systm.rs",
     "sys/kern/kern_tc.rs",
-    # The volatile store N1's redesign kept (redesigned, so core or forbid).
-    "sys/lib/libkern/explicit_bzero.rs",
 ]
