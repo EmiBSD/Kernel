@@ -248,6 +248,7 @@ Locations are on `main` at the commit that last edited this file.
 | `softraid_hooks`, `softraid_hooks_off` (`map_root` beside `attach`) | `sys/kernel/dev/disk.rs` | softraid(4) is `bsd`'s: `setroot` calls `sr_map_root` through the registered `fn` | N7.7 |
 | `ConfigGlue::nam2blk`, `swapdev`, `boothowto_or` (defaults: none, `NODEV`, nothing) | `sys/kernel/dev/autoconf.rs`, implemented by `sys/kern/subr_autoconf.rs` (`BsdConfigGlue`) | The machine's `nam2blk[]`, `conf.c`'s `swapdev` and `boothowto` are `bsd`'s: the root choice (`setroot`, `dk_mountroot`, `findblkmajor`) reads them through the glue | `swapdev` N7.3c (the device switch); `nam2blk`, `boothowto_or` N9 |
 | `disk_attach_unit` | `sys/kernel/dev/disk.rs` | vnd(4)'s `struct device` is made by hand in `bsd` (no `cfdata`, no node in the kernel's tree): its disk attaches by name and unit | N7.7 (vnd) |
+| diskmap(4)'s five `cdevsw` entry points as concrete functions over `BsdProcGlue` | `sys/dev/diskmap.rs` | `cdevsw[90].d_ioctl` and `kern_pledge.rs`'s `DIOCMAP` arm compare one function's address; a generic's instances may differ between codegen units | N7.3c (the device switch) |
 
 ## Arriving
 

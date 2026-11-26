@@ -1648,7 +1648,7 @@ notes = "M2: arm64_bs_tag, fdt_cons_bs_tag, generic_space_read/write_1/2/4/8, ge
 rust = "sys/arch/arm64/arm64/conf.rs"
 lz = ["sys/arch/arm64/arm64/conf.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/base/log.rs", "sys/kernel/fs/fuse/fuse_device.rs"]
+adapted_by = ["sys/kernel/base/log.rs", "sys/kernel/fs/fuse/fuse_device.rs", "sys/kernel/dev/diskmap.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/arm64/cpu.rs"
@@ -3097,15 +3097,16 @@ adapted_by = ["sys/kernel/base/log.rs", "sys/kernel/tty/mod.rs", "sys/kernel/fs/
 notes = "struct consdev with fn pointers and Cell fields, CN_*; cninit/constab are not used (the consoles are attached directly); M8: CONSMAJOR, the cnopen..cnkqfilter prototypes are cons.rs's functions; cons_decl/cons_init macros are the Consdev literal; M2: cngetc/cnputc/cnpollc/cnbell/nullcnpollc on an atomic cn_tab; M8: cnopen, cnclose, cnread, cnwrite, cnstop, cnioctl, cnkqfilter through the device switch, constty and cn_devvp as atomic pointers (constty()/set_constty()); cninit and constab[] are not used: each architecture attaches its console directly (docs/ARCHITECTURE.md)"
 
 [[module]]
-rust = "sys/dev/diskmap.rs"
-lz = ["sys/dev/diskmap.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/proc/cred.rs", "sys/kernel/file/mod.rs", "sys/kernel/file/descrip.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs", "sys/hal/sys/dkio.rs", "sys/kernel/dev/disk.rs"]
-
-[[module]]
 rust = "sys/dev/efi/efi.rs"
 lz = ["sys/dev/efi/efi.rs"]
 status = "inherited"
+
+[[module]]
+rust = "sys/dev/diskmap.rs"
+lz = ["sys/dev/diskmap.rs"]
+status = "adapted"
+adapted_by = ["sys/kernel/dev/diskmap.rs"]
+notes = "N7.1d: diskmap(4) is the kernel's (sys/kernel/dev/diskmap.rs); this file keeps the five cdevsw entry points as concrete functions over BsdProcGlue, so cdevsw[90].d_ioctl and kern_pledge's DIOCMAP comparison name one function's address (scaffolding until the device switch is the kernel's, N7.3c)"
 
 [[module]]
 rust = "sys/dev/fdt/gpiokeys.rs"
@@ -20734,6 +20735,13 @@ crate = "kernel"
 lz = ["sys/arch/arm64/arm64/disksubr.rs"]
 status = "redesigned"
 notes = "N7.1d: readdisklabel/writedisklabel over the disk layer's LabelBuf (the geteblk token and the driver's Strat closure; brelse its drop) instead of a &'static Buf with an unsafe view of b_data; the ISO 9660 and UDF spoofs called at home (fs::isofs); bsd's MachineDisklabel trait gone (the constants are hal::sys::disklabel's); amd64's disksubr.c is N10's"
+
+[[module]]
+rust = "sys/kernel/dev/diskmap.rs"
+crate = "kernel"
+lz = ["sys/dev/diskmap.rs"]
+status = "redesigned"
+notes = "N7.1d: diskmap(4) over the kernel's descriptor and VFS code (getvnode, fnew, fdinsert, closef, ndinit, vn_open, FileGlue::vnode_file), generic over the glue (cdevsw signatures, as fuse's); the argument an AbiPod read, the user's name through UserPtr; ni_pledge PLEDGE_RPATH and ni_unveil UNVEIL_READ kept"
 
 [[module]]
 rust = "sys/kernel/dev/autoconf.rs"

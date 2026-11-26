@@ -33,182 +33,44 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! diskmap(4): the disk mapper, `/dev/diskmap`. opendev(3) opens it and hands it a disk's
-//! name or its disklabel UID (`DIOCMAP`); the device swaps the caller's descriptor for one
-//! open on the disk's real device node.
+//! diskmap(4)'s `cdevsw[90]` entry points as `bsd`'s device switch names them: the kernel's
+//! (`kernel::dev::diskmap`, N7.1d) over `bsd`'s glue.
 //!
 //! Upstream: sys/dev/diskmap.c @ 3ce1f3f79392
 //!
-//! `cdevsw[90]` of amd64 and arm64 (`cdev_disk_init(1,diskmap)`). The DUID lookup is
-//! `disk_map` (`subr_disk.rs`), which `mount(2)` uses too.
-//!
-//! ## Deviations
-//! - The device name buffer is a `PATH_MAX` `Vec` (the C's `malloc(M_DEVBUF)`), and
-//!   `disk_map` writes the mapped name into a second one, where the C maps in place.
+//! Each is one concrete function, so that the address `cdevsw[90].d_ioctl` holds and the
+//! one `pledge_ioctl` compares it with (`kern_pledge.rs`'s `DIOCMAP` arm) are the same
+//! function's (a generic's instances may differ between codegen units).
+//! docs/SCAFFOLDING.md: until the device switch is the kernel's (N7.3c).
 
-use alloc::vec;
-use core::sync::atomic::Ordering;
-use kernel::fs::vops::Cred;
-
-use crate::kassert;
-use crate::kern::kern_descrip::{BsdFileData, closef, fdinsert, fnew};
-use crate::kern::vfs_syscalls::getvnode;
-use crate::kern::vfs_vops::VOP_UNLOCK;
-use crate::machine::copy::{copyinstr, copyoutstr};
-use crate::sys::dkio::{DIOCMAP, DkDiskmap};
+use crate::kern::proc_glue::BsdProcGlue;
 use crate::sys::errno::Errno;
-use crate::sys::file::{DTYPE_VNODE, FileRef, frele};
-use crate::sys::filedesc::{FdGuard, fdplock, fdpunlock};
-use crate::sys::namei::ndinit;
-use crate::sys::namei::{NiDirp, UNVEIL_READ};
-use crate::sys::pledge::PLEDGE_RPATH;
 use crate::sys::proc::Proc;
-use crate::sys::syslimits::PATH_MAX;
 use crate::sys::types::Dev;
 use crate::sys::uio::Uio;
-use crate::sys::vnode::{VNOPS, vn_close, vn_open};
-use kernel::dev::disk::disk_map;
 
-/// `*(struct dk_diskmap *)addr`, read from the ioctl's argument buffer.
-fn dk_diskmap_load(addr: &[u8]) -> DkDiskmap {
-    let mut b = [0u8; size_of::<DkDiskmap>()];
-    let n = addr.len().min(b.len());
-    b[..n].copy_from_slice(&addr[..n]);
-    let word = |at: usize| {
-        let mut w = [0u8; size_of::<usize>()];
-        w.copy_from_slice(&b[at..at + size_of::<usize>()]);
-        usize::from_ne_bytes(w)
-    };
-    let int = |at: usize| i32::from_ne_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
-    DkDiskmap {
-        device: word(core::mem::offset_of!(DkDiskmap, device)),
-        fd: int(core::mem::offset_of!(DkDiskmap, fd)),
-        flags: int(core::mem::offset_of!(DkDiskmap, flags)),
-    }
+/// `diskmapopen`.
+pub fn diskmapopen(dev: Dev, flag: i32, fmt: i32, p: &Proc) -> Result<(), Errno> {
+    kernel::dev::diskmap::diskmapopen::<BsdProcGlue>(dev, flag, fmt, p)
 }
 
-/// `diskmapopen`: nothing to do.
-pub fn diskmapopen(_dev: Dev, _flag: i32, _fmt: i32, _p: &Proc) -> Result<(), Errno> {
-    Ok(())
+/// `diskmapclose`.
+pub fn diskmapclose(dev: Dev, flag: i32, fmt: i32, p: Option<&Proc>) -> Result<(), Errno> {
+    kernel::dev::diskmap::diskmapclose::<BsdProcGlue>(dev, flag, fmt, p)
 }
 
-/// `diskmapclose`: nothing to do.
-pub fn diskmapclose(_dev: Dev, _flag: i32, _fmt: i32, _p: Option<&Proc>) -> Result<(), Errno> {
-    Ok(())
+/// `diskmapioctl`: `DIOCMAP`.
+pub fn diskmapioctl(dev: Dev, cmd: u64, addr: &mut [u8], flag: i32, p: &Proc) -> Result<(), Errno> {
+    kernel::dev::diskmap::diskmapioctl(dev, cmd, addr, flag, p)
 }
 
-/// `diskmapioctl`: `DIOCMAP` maps the disk name or disklabel UID at `dm->device` to its
-/// device node (writing the mapped name back), opens that node with the flags of the file
-/// at `dm->fd` and puts the new file in that descriptor's place.
-pub fn diskmapioctl(
-    _dev: Dev,
-    cmd: u64,
-    addr: &mut [u8],
-    _flag: i32,
-    p: &Proc,
-) -> Result<(), Errno> {
-    if cmd != DIOCMAP {
-        return Err(Errno::ENOTTY);
-    }
-
-    // Map a request for a disk to the correct device. We should be supplied with either a
-    // diskname or a disklabel UID.
-    let dm = dk_diskmap_load(addr);
-    let fd = dm.fd;
-    let mut devname = vec![0u8; PATH_MAX];
-    copyinstr(dm.device, &mut devname)?;
-    let mut mapped = vec![0u8; PATH_MAX];
-    if disk_map(&devname, &mut mapped, dm.flags) {
-        devname = mapped;
-        let len = devname.iter().position(|&c| c == 0).unwrap_or(PATH_MAX - 1);
-        copyoutstr(&devname[..=len], dm.device)?;
-    }
-
-    // Attempt to open actual device.
-    let fp0 = getvnode(p, fd)?;
-    let fflag = fp0.f_flag.load(Ordering::SeqCst);
-
-    let mut nd = ndinit(0, 0, NiDirp::Sys(&devname), p);
-    nd.ni_pledge = PLEDGE_RPATH;
-    nd.ni_unveil = UNVEIL_READ;
-    if let Err(error) = vn_open(&mut nd, fflag as i32, 0) {
-        let _ = frele(fp0, p);
-        return Err(error);
-    }
-    let Some(vp) = nd.ni_vp else {
-        let _ = frele(fp0, p);
-        return Err(Errno::ENOENT);
-    };
-    let _ = VOP_UNLOCK(vp);
-
-    let fdp = p.fd();
-    let mut g = fdplock(fdp);
-    let bad = |g: FdGuard<'_>, fp0: FileRef, error: Errno| -> Result<(), Errno> {
-        fdpunlock(g);
-        let _ = vn_close(vp, fflag as i32, Cred::real(p.ucred()), Some(p));
-        let _ = frele(fp0, p);
-        Err(error)
-    };
-
-    // Stop here if the 'struct file *' has been replaced, for example by another thread
-    // calling dup2(2), while this thread was sleeping in vn_open(). Note that this would
-    // not happen for correct usages of "/dev/diskmap".
-    if !g.ofile(fd).is_some_and(|f| FileRef::ptr_eq(&f, &fp0)) {
-        return bad(g, fp0, Errno::EAGAIN);
-    }
-
-    let Some(fp) = fnew(p) else {
-        return bad(g, fp0, Errno::ENFILE);
-    };
-
-    // Zap old file: the slot's reference comes out, the descriptor stays allocated.
-    let (old, flags) = g.take_ofile(fd);
-    kassert!(old.as_ref().is_some_and(|f| FileRef::ptr_eq(f, &fp0)));
-
-    // Insert new file.
-    fp.f_flag.store(fflag, Ordering::SeqCst);
-    fp.install(DTYPE_VNODE, &VNOPS, BsdFileData::vnode(vp));
-    fdinsert(&mut g, fd, flags, &fp);
-    fdpunlock(g);
-    drop(fp);
-
-    // The slot's reference and getvnode's (the C's closef of a count of 2).
-    drop(old);
-    let _ = closef(fp0, p);
-
-    Ok(())
+/// `diskmapread`.
+pub fn diskmapread(dev: Dev, uio: &mut Uio<'_>, flag: i32) -> Result<(), Errno> {
+    kernel::dev::diskmap::diskmapread::<BsdProcGlue>(dev, uio, flag)
 }
 
-/// `diskmapread`: the mapper has no data.
-pub fn diskmapread(_dev: Dev, _uio: &mut Uio<'_>, _flag: i32) -> Result<(), Errno> {
-    Err(Errno::ENXIO)
-}
-
-/// `diskmapwrite`: the mapper takes no data.
-pub fn diskmapwrite(_dev: Dev, _uio: &mut Uio<'_>, _flag: i32) -> Result<(), Errno> {
-    Err(Errno::ENXIO)
+/// `diskmapwrite`.
+pub fn diskmapwrite(dev: Dev, uio: &mut Uio<'_>, flag: i32) -> Result<(), Errno> {
+    kernel::dev::diskmap::diskmapwrite::<BsdProcGlue>(dev, uio, flag)
 }
 /* </CODE> */
-
-/* <TESTS> */
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_argument_is_read_at_the_c_offsets() {
-        let mut b = [0u8; size_of::<DkDiskmap>()];
-        b[..8].copy_from_slice(&0x1234_5678usize.to_ne_bytes()[..8]);
-        b[8..12].copy_from_slice(&7i32.to_ne_bytes());
-        b[12..16].copy_from_slice(&3i32.to_ne_bytes());
-        let dm = dk_diskmap_load(&b);
-        assert_eq!(dm.device, 0x1234_5678);
-        assert_eq!((dm.fd, dm.flags), (7, 3));
-    }
-
-    #[test]
-    fn the_argument_has_the_c_size() {
-        assert_eq!(size_of::<DkDiskmap>(), 16);
-    }
-}
-/* </TESTS> */
