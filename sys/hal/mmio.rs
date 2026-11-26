@@ -97,12 +97,9 @@
 //! `uvm_page_init`) cannot be told from a device's by any check here.
 //!
 //! ## Deviations
-//! - Inherited from LZ (its `generic_space_map`): the flags map to three memory types,
-//!   `BUS_SPACE_MAP_CACHEABLE` to write-back, `BUS_SPACE_MAP_PREFETCHABLE` to Device-nGnRE and
-//!   anything else to Device-nGnRnE; the C maps `BUS_SPACE_MAP_PREFETCHABLE` uncached normal
-//!   memory (`PMAP_CACHE_CI`) and `BUS_SPACE_MAP_POSTED` Device-nGnRE (`bus_space.c`,
-//!   `generic_space_map`), which LZ ignores. The translation is `bsd`'s caller's; [`DevCache`]
-//!   names what the backend enters today.
+//! - None of its own. [`DevCache`] names the four memory types the C's `generic_space_map`
+//!   chooses from; the translation of the `BUS_SPACE_MAP_*` flags, and LZ's deviation in it,
+//!   are `bsd`'s caller's (`sys/arch/arm64/arm64/bus_space.rs`, its `## Deviations`).
 //!
 //! ## Redesign
 //! - LZ's handle is a bare address (`BusSpaceHandle(usize)`), read through the tag's function
@@ -251,18 +248,21 @@ impl<R: RegBlock, T: MmioWord> Clone for Reg<R, T> {
 
 impl<R: RegBlock, T: MmioWord> Copy for Reg<R, T> {}
 
-/// A memory type of a device mapping: `PMAP_CACHE_DEV_NGNRNE`, `PMAP_CACHE_DEV_NGNRE` and
-/// `PMAP_CACHE_WB` on arm64 (amd64's `pmap_kenter_pa` flags at N10: `PMAP_NOCACHE`,
-/// `PMAP_WC`, none).
+/// A memory type of a device mapping, the four `generic_space_map` chooses from:
+/// `PMAP_CACHE_DEV_NGNRNE`, `PMAP_CACHE_DEV_NGNRE`, `PMAP_CACHE_CI` and `PMAP_CACHE_WB` on arm64
+/// (amd64's `pmap_kenter_pa` flags at N10: `PMAP_NOCACHE` for the two device types, `PMAP_WC`,
+/// none).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DevCache {
     /// Device memory, non-gathering, non-reordering, no early write acknowledgement
     /// (Device-nGnRnE): the default.
     Device,
-    /// `BUS_SPACE_MAP_PREFETCHABLE` as LZ maps it (Device-nGnRE: early write acknowledgement;
-    /// see the module's deviations).
-    Prefetchable,
-    /// `BUS_SPACE_MAP_CACHEABLE`: normal write-back memory.
+    /// Device memory with early write acknowledgement (Device-nGnRE): the C's
+    /// `BUS_SPACE_MAP_POSTED`.
+    Posted,
+    /// Normal memory, not cacheable: the C's `BUS_SPACE_MAP_PREFETCHABLE` (`PMAP_CACHE_CI`).
+    Uncached,
+    /// Normal write-back memory: `BUS_SPACE_MAP_CACHEABLE`.
     Cacheable,
 }
 
@@ -555,7 +555,7 @@ mod tests {
         let pa = device_frame();
         // A block across a page boundary takes two pages.
         let m = mapper
-            .map_device::<Untyped>(va, pa, PAGE_SIZE - 8, 16, DevCache::Prefetchable)
+            .map_device::<Untyped>(va, pa, PAGE_SIZE - 8, 16, DevCache::Posted)
             .unwrap();
         assert_eq!(pmap::kernel().extract(va), Some(pa));
         assert!(pmap::kernel().extract(va + Vsize::new(PAGE_SIZE)).is_some());

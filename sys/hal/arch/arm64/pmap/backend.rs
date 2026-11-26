@@ -2235,12 +2235,13 @@ impl PmapBackend for Backend {
         pmap_kenter(va, pa, prot, cacheable);
     }
 
-    /// `generic_space_map`'s `pmap_kenter_cache(va, pa, PROT_READ | PROT_WRITE, cache)`, the
-    /// memory type as LZ chooses it from the flags (`hal::mmio`'s deviations).
+    /// `generic_space_map`'s `pmap_kenter_cache(va, pa, PROT_READ | PROT_WRITE, cache)` with
+    /// the memory type `cache` names.
     fn kenter_device(va: Vaddr, pa: Paddr, cache: DevCache) {
         let cache = match cache {
             DevCache::Device => PMAP_CACHE_DEV_NGNRNE,
-            DevCache::Prefetchable => PMAP_CACHE_DEV_NGNRE,
+            DevCache::Posted => PMAP_CACHE_DEV_NGNRE,
+            DevCache::Uncached => PMAP_CACHE_CI,
             DevCache::Cacheable => PMAP_CACHE_WB,
         };
         pmap_kenter(va, pa, PROT_READ | PROT_WRITE, cache);

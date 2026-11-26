@@ -2797,7 +2797,7 @@ mod tests {
         let m = map_device::<Untyped>(
             Paddr::new(frame.as_usize() + PAGE_SIZE - 4),
             8,
-            DevCache::Prefetchable,
+            DevCache::Posted,
         )
         .expect("mapped");
         let va = next.expect("the device window");

@@ -68,6 +68,15 @@
 //!   region is 256 MiB) takes its virtual range from `km_alloc(kv_any, kp_none, kd_nowait)`,
 //!   as the C does for every mapping, and `generic_space_unmap` gives such a range back with
 //!   `km_free`.
+//! - After `pmap_init` the flags map to three of the four memory types the C uses, as LZ
+//!   wrote it: `BUS_SPACE_MAP_CACHEABLE` to write-back, `BUS_SPACE_MAP_PREFETCHABLE` to
+//!   Device-nGnRE (`hal::mmio::DevCache::Posted`) and anything else to Device-nGnRnE. The C
+//!   (`bus_space.c`, `generic_space_map`) lets the later flag win: `BUS_SPACE_MAP_PREFETCHABLE`
+//!   maps normal uncached memory (`PMAP_CACHE_CI`, `DevCache::Uncached`) and
+//!   `BUS_SPACE_MAP_POSTED` Device-nGnRE, which LZ ignores. Kept because every boot maps through
+//!   it (simplefb's frame buffer and the PCI BARs ask `BUS_SPACE_MAP_PREFETCHABLE`); closed when
+//!   the kernel's bus maps translate the flags, simplebus's at N7.2b and pciecam's at N7.5
+//!   (docs/ZERO_UNSAFE.md 0.11, `struct bus_space`).
 
 use core::ptr;
 
@@ -188,10 +197,11 @@ pub unsafe fn generic_space_map(
     // - startpa, &kv_any, &kp_none, &kd_nowait); pmap_kenter_cache each page. Here the kernel
     // map's owner chooses the range (the `vmmap` window, then `km_alloc`) and `hal`'s token
     // enters the pages (`kernel::vm::km::map_device`); the handle is the block's address.
+    // LZ's translation of the flags, kept (see the module's deviations).
     let cache = if flags & BUS_SPACE_MAP_CACHEABLE != 0 {
         DevCache::Cacheable
     } else if flags & BUS_SPACE_MAP_PREFETCHABLE != 0 {
-        DevCache::Prefetchable
+        DevCache::Posted
     } else {
         DevCache::Device
     };
