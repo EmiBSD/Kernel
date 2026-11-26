@@ -79,7 +79,9 @@
 //!   itself ([`Evcount::vector`]), read by the driver at attach: the only users give the
 //!   address of an interrupt number fixed when the handler is established (`ih_irq`), so the
 //!   value read once is the value the C reads at each sysctl; the stored pointer and its
-//!   `unsafe` deref go.
+//!   `unsafe` deref go. amd64's `intr_establish` sets `is_idtvec` after its attach and may
+//!   change it on a re-establish: N10 attaches after the assignment and updates the source's
+//!   counters (`docs/SCAFFOLDING.md`).
 //! - The per-CPU counts (`ec_percpu`, `counters_alloc(1)`): one padded word per CPU
 //!   (`M_COUNTERS`), indexed by `cpu_number()`, in a block of a static table of
 //!   [`NPERCPU`] slots ([`PERCPU`]); the counter holds its slot's number (`ec_percpu`, 0 for
