@@ -648,22 +648,48 @@ smoke-wg: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
 # M9a: OpenBSD's ifconfig(8) and ping(8) from the ramdisk, multi-user, logged in as root
 # (`smoke-login`'s sends). vio0's address (10.0.2.15/24) and the default route through QEMU's
 # gateway come from the kernel's boot self-test (`selftest: ping`), so no /etc/hostname.vio0
-# is needed. Part of `smoke`.
+# is needed. N6.8: then netstat(1), from Userland's published set (tools/xtask/
+# userland-set.toml; the user's request of 2026-11-25), after lo0 gets 127.0.0.1/8 (as
+# netstart(8) gives it; the ramdisk's rc does not) and nc(1) listens on TCP port 7777:
+# `netstat -rn` (sysctl NET_RT_DUMP: the default route, vio0's network, the loopback hosts of
+# both families; no 127/8 network route, which OpenBSD's in_ifinit adds for no loopback),
+# `netstat -an` (sysctl KERN_FILE through libkvm: the listening socket) and `netstat -s -p
+# tcp` (sysctl TCPCTL_STATS). Only the lines whose columns do not depend on traffic are
+# expected (the Refs and Use counts are not). Part of `smoke`.
+netstat_sends := "--send-after '# ' --send 'ifconfig lo0 inet 127.0.0.1/8 up; nc -l 7777 & sleep 1\\n' " + \
+    "--send-after '# ' --send 'netstat -rn\\n' " + \
+    "--send-after '# ' --send 'netstat -an\\n' " + \
+    "--send-after '# ' --send 'netstat -s -p tcp && echo netstat-tcp-$((5+5))\\n'"
+netstat_expects := "--expect 'Routing tables' --expect 'Internet:' " + \
+    "--expect 'Destination        Gateway            Flags   Refs      Use   Mtu  Prio Iface' " + \
+    "--expect 'default            10.0.2.2           UGS ' " + \
+    "--expect '10.0.2/24          10.0.2.15          UCn ' " + \
+    "--expect '127.0.0.1          127.0.0.1          UH' --expect 'Internet6:' " + \
+    "--expect '::1                                         ::1                                     UH' " + \
+    "--expect 'Active Internet connections (including servers)' " + \
+    "--expect 'Proto   Recv-Q Send-Q  Local Address          Foreign Address        TCP-State' " + \
+    "--expect 'tcp          0      0  *.7777                 *.*                    LISTEN' " + \
+    "--expect 'connections established (including accepts)' --expect 'netstat-tcp-10'"
+
 smoke-net: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
     @test {{ramdisks}} || \
         { echo "smoke-net: no ramdisk image; run just userland first"; exit 1; }
     {{xtask}} smoke {{reject}} {{smp}} --arch amd64 --kernel target/{{amd64}}/debug/bsd --expect-ramdisk --until-seen \
         --send-after "login:" --send 'root\n' --send-after "Password:" --send 'emibsd\n' \
         --send-after "# " --send 'ifconfig vio0\n' --send-after "# " --send 'ping -c 1 10.0.2.2\n' \
+        {{netstat_sends}} \
         --expect "rc: multi-user" --expect "vio0: flags=" --expect "inet 10.0.2.15 netmask 0xffffff00" \
         --expect "PING 10.0.2.2 (10.0.2.2): 56 data bytes" \
-        --expect "1 packets transmitted, 1 packets received, 0.0% packet loss"
+        --expect "1 packets transmitted, 1 packets received, 0.0% packet loss" \
+        {{netstat_expects}}
     {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --expect-ramdisk --until-seen \
         --send-after "login:" --send 'root\n' --send-after "Password:" --send 'emibsd\n' \
         --send-after "# " --send 'ifconfig vio0\n' --send-after "# " --send 'ping -c 1 10.0.2.2\n' \
+        {{netstat_sends}} \
         --expect "rc: multi-user" --expect "vio0: flags=" --expect "inet 10.0.2.15 netmask 0xffffff00" \
         --expect "PING 10.0.2.2 (10.0.2.2): 56 data bytes" \
-        --expect "1 packets transmitted, 1 packets received, 0.0% packet loss"
+        --expect "1 packets transmitted, 1 packets received, 0.0% packet loss" \
+        {{netstat_expects}}
 
 # M9d: pf(4) from userland. Logs in as `smoke-login` does, then: `pfctl -si` (DIOCGETSTATUS:
 # disabled), a ping to QEMU's gateway that gets its reply, `pfctl -e` (DIOCSTART) and `pfctl
