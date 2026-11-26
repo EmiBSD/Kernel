@@ -396,6 +396,14 @@ mod tests {
 
     static COUNTS: AtomicUsize = AtomicUsize::new(0);
 
+    /// As [`bump`], into `NET_COUNTS`: the IPL_NONE test reads a counter no other test of
+    /// this module adds to, so a concurrent test's handler cannot move its `before`.
+    fn bump_net(arg: *mut c_void) {
+        NET_COUNTS.fetch_add(arg.addr() & 0xff, Ordering::Relaxed);
+    }
+
+    static NET_COUNTS: AtomicUsize = AtomicUsize::new(0);
+
     #[test]
     fn a_scheduled_handler_runs_once_at_its_level() {
         testutil::install();
@@ -432,17 +440,17 @@ mod tests {
         testutil::install();
         let si = establish(
             IPL_SOFTNET | IPL_MPSAFE,
-            bump,
+            bump_net,
             ptr::without_provenance_mut(4),
         )
         .unwrap();
         let _ = crate::cpu::intr::spllower(crate::cpu::intr::IPL_NONE);
         crate::cpu::intr::init_smask();
-        let before = COUNTS.load(Ordering::Relaxed);
+        let before = NET_COUNTS.load(Ordering::Relaxed);
         // `mtx_leave(&softintr_lock)` lowers the level below IPL_SOFTNET: the C's splx runs
         // the pending soft interrupt there and then.
         si.schedule();
-        assert_eq!(COUNTS.load(Ordering::Relaxed), before + 4);
+        assert_eq!(NET_COUNTS.load(Ordering::Relaxed), before + 4);
         assert_eq!(si.disestablish(), None);
         si.release();
     }
