@@ -85,6 +85,7 @@
 use core::mem::offset_of;
 use core::num::NonZeroU32;
 
+use hal::mem::explicit_bzero;
 use hal::sync::slot::ReadMostly;
 use sysdefs::errno::Errno;
 
@@ -132,11 +133,12 @@ pub struct FdtHead {
     pub fh_struct_size: u32,
 }
 
-/// `struct fdt`: the parsed blob, its blocks as offsets from the header.
+/// `struct fdt`: the parsed blob, its blocks as offsets from the header. The installed tree
+/// is an `Fdt<'static>`; the boot's wipe parses a borrowed blob ([`fdt_take_property`]).
 #[derive(Clone, Copy, Debug)]
-pub struct Fdt {
+pub struct Fdt<'a> {
     /// `header`: the whole blob.
-    pub blob: &'static [u8],
+    pub blob: &'a [u8],
     /// `tree`: the structure block's offset.
     pub struct_off: u32,
     /// `strings`: the strings block's offset.
@@ -178,10 +180,10 @@ impl FdtNode {
 }
 
 /// `tree` and `tree_inited`: the parsed blob, `None` before [`fdt_init`] accepted one.
-static TREE: ReadMostly<Option<Fdt>> = ReadMostly::new(None);
+static TREE: ReadMostly<Option<Fdt<'static>>> = ReadMostly::new(None);
 
 /// The parsed tree, copied out of [`TREE`].
-fn tree() -> Option<Fdt> {
+fn tree() -> Option<Fdt<'static>> {
     *TREE.read()
 }
 
@@ -206,9 +208,14 @@ fn cstr(b: &[u8], off: usize) -> Option<&[u8]> {
     rest.get(..rest.iter().position(|&c| c == 0)?)
 }
 
-/// `strcmp(a, b) == 0` for the NUL-terminated `b` at byte offset `off` and a NUL-free `a`.
+/// `strcmp(a, b) == 0` for the NUL-terminated `b` at byte offset `off` and a NUL-free `a`,
+/// byte by byte as `strcmp` walks: the first difference (or the blob's end) ends it.
 fn name_eq(b: &[u8], a: &[u8], off: usize) -> bool {
-    cstr(b, off) == Some(a)
+    let at = |i: usize| off.checked_add(i).and_then(|j| b.get(j)).copied();
+    a.iter()
+        .enumerate()
+        .all(|(i, &c)| c != 0 && at(i) == Some(c))
+        && at(a.len()) == Some(0)
 }
 
 /// `fdt_check_head`: the blob's version, 0 if it is not one this parser accepts.
@@ -247,16 +254,23 @@ fn check_head(b: &[u8]) -> Option<u32> {
 /// version, 0 when there is no tree or `blob` is not one.
 pub fn fdt_init(blob: Option<&'static [u8]>) -> i32 {
     let _ = TREE.replace(None);
-    let Some(b) = blob else {
+    let Some(fdt) = blob.and_then(parse) else {
         return 0;
     };
-    let version = fdt_check_head(b);
+    let _ = TREE.replace(Some(fdt));
+    fdt.version as i32
+}
+
+/// `fdt_init`'s parse of `b`, without installing it: `None` when it is not a blob this parser
+/// accepts.
+fn parse(b: &[u8]) -> Option<Fdt<'_>> {
+    let version = check_head(b)?;
     if version == 0 {
-        return 0;
+        return None;
     }
     // fdt_check_head read the words up to the version's, so the header has them.
     let head = |off| word(b, off).unwrap_or(0);
-    let fdt = Fdt {
+    Some(Fdt {
         blob: b,
         struct_off: head(offset_of!(FdtHead, fh_struct_off)),
         strings_off: head(offset_of!(FdtHead, fh_strings_off)),
@@ -268,9 +282,7 @@ pub fn fdt_init(blob: Option<&'static [u8]>) -> i32 {
         } else {
             0
         },
-    };
-    let _ = TREE.replace(Some(fdt));
-    version as i32
+    })
 }
 
 /// The blob [`fdt_init`] installed, `None` without a tree.
@@ -287,7 +299,7 @@ pub fn fdt_get_size(blob: &[u8]) -> usize {
 }
 
 /// `fdt_get_str`: retrieve the offset of string `num` from the strings table.
-fn fdt_get_str(t: &Fdt, num: u32) -> Option<usize> {
+fn fdt_get_str(t: &Fdt<'_>, num: u32) -> Option<usize> {
     if num > t.strings_size {
         return None;
     }
@@ -329,7 +341,13 @@ pub fn fdt_node_property(node: Option<FdtNode>, name: &[u8]) -> Option<&'static 
 }
 
 /// [`fdt_node_property`] in the tree `t`.
-fn node_property(t: &Fdt, node: FdtNode, name: &[u8]) -> Option<&'static [u8]> {
+fn node_property<'a>(t: &Fdt<'a>, node: FdtNode, name: &[u8]) -> Option<&'a [u8]> {
+    let (off, len) = property_at(t, node, name)?;
+    t.blob.get(off..off + len)
+}
+
+/// The offset and length of the value of the node's property `name`, inside the blob.
+fn property_at(t: &Fdt<'_>, node: FdtNode, name: &[u8]) -> Option<(usize, usize)> {
     let b = t.blob;
     let mut p = node.at();
     if word(b, p)? != FDT_NODE_BEGIN {
@@ -340,7 +358,8 @@ fn node_property(t: &Fdt, node: FdtNode, name: &[u8]) -> Option<&'static [u8]> {
         let nameid = word(b, p + 8)?; // id of name in strings table
         if fdt_get_str(t, nameid).is_some_and(|s| name_eq(b, name, s)) {
             let size = word(b, p + 4)? as usize; // size of value
-            return b.get(p + 12..p + 12 + size);
+            b.get(p + 12..p + 12 + size)?;
+            return Some((p + 12, size));
         }
         p = skip_property(b, p)?;
     }
@@ -380,7 +399,7 @@ pub fn fdt_next_node(node: Option<FdtNode>) -> Option<FdtNode> {
 }
 
 /// `fdt_next_node(NULL)`: the root.
-fn root(t: &Fdt) -> Option<FdtNode> {
+fn root(t: &Fdt<'_>) -> Option<FdtNode> {
     let p = skip_nops(t.blob, t.struct_off as usize)?;
     if word(t.blob, p)? == FDT_NODE_BEGIN {
         node_at(p)
@@ -390,7 +409,7 @@ fn root(t: &Fdt) -> Option<FdtNode> {
 }
 
 /// `fdt_next_node` of a node in the tree `t`.
-fn next_node(t: &Fdt, node: FdtNode) -> Option<FdtNode> {
+fn next_node(t: &Fdt<'_>, node: FdtNode) -> Option<FdtNode> {
     let b = t.blob;
     let mut p = node.at();
     if word(b, p)? != FDT_NODE_BEGIN {
@@ -447,7 +466,7 @@ pub fn fdt_child_node(node: Option<FdtNode>) -> Option<FdtNode> {
 }
 
 /// [`fdt_child_node`] in the tree `t`.
-fn child_node(t: &Fdt, node: FdtNode) -> Option<FdtNode> {
+fn child_node(t: &Fdt<'_>, node: FdtNode) -> Option<FdtNode> {
     let b = t.blob;
     let p = node.at();
     if word(b, p)? != FDT_NODE_BEGIN {
@@ -464,7 +483,7 @@ fn child_node(t: &Fdt, node: FdtNode) -> Option<FdtNode> {
 
 /// The children of `node` in order: the C's `for (child = fdt_child_node(node); child;
 /// child = fdt_next_node(child))`, one step from the last.
-fn children(t: &Fdt, node: FdtNode) -> impl Iterator<Item = FdtNode> + '_ {
+fn children<'t>(t: &'t Fdt<'_>, node: FdtNode) -> impl Iterator<Item = FdtNode> + 't {
     core::iter::successors(child_node(t, node), move |&c| next_node(t, c))
 }
 
@@ -474,7 +493,7 @@ pub fn fdt_node_name(node: Option<FdtNode>) -> Option<&'static [u8]> {
 }
 
 /// [`fdt_node_name`] in the tree `t`.
-fn node_name(t: &Fdt, node: FdtNode) -> Option<&'static [u8]> {
+fn node_name<'a>(t: &Fdt<'a>, node: FdtNode) -> Option<&'a [u8]> {
     let b = t.blob;
     if word(b, node.at())? != FDT_NODE_BEGIN {
         return None;
@@ -490,7 +509,7 @@ fn unit_match(s: &[u8], name: &[u8]) -> bool {
 
 /// The child of `node` called `name`: an exact match first, then one without its unit
 /// address; the C's two walks.
-fn child_by_name(t: &Fdt, node: FdtNode, name: &[u8]) -> Option<FdtNode> {
+fn child_by_name(t: &Fdt<'_>, node: FdtNode, name: &[u8]) -> Option<FdtNode> {
     children(t, node)
         .find(|&c| node_name(t, c) == Some(name))
         .or_else(|| {
@@ -505,7 +524,7 @@ pub fn fdt_find_node(name: &[u8]) -> Option<FdtNode> {
 }
 
 /// [`fdt_find_node`] in the tree `t`: the components between runs of `/`, from the root.
-fn find_node(t: &Fdt, name: &[u8]) -> Option<FdtNode> {
+fn find_node(t: &Fdt<'_>, name: &[u8]) -> Option<FdtNode> {
     if name.first() != Some(&b'/') {
         return None;
     }
@@ -518,7 +537,7 @@ fn find_node(t: &Fdt, name: &[u8]) -> Option<FdtNode> {
 }
 
 /// `fdt_parent_node_recurse`.
-fn fdt_parent_node_recurse(t: &Fdt, pnode: FdtNode, child: FdtNode) -> Option<FdtNode> {
+fn fdt_parent_node_recurse(t: &Fdt<'_>, pnode: FdtNode, child: FdtNode) -> Option<FdtNode> {
     for node in children(t, pnode) {
         if node == child {
             return Some(pnode);
@@ -536,7 +555,7 @@ pub fn fdt_parent_node(node: Option<FdtNode>) -> Option<FdtNode> {
 }
 
 /// [`fdt_parent_node`] in the tree `t`.
-fn parent_node(t: &Fdt, node: FdtNode) -> Option<FdtNode> {
+fn parent_node(t: &Fdt<'_>, node: FdtNode) -> Option<FdtNode> {
     let pnode = root(t)?;
     if node == pnode {
         return None;
@@ -545,7 +564,7 @@ fn parent_node(t: &Fdt, node: FdtNode) -> Option<FdtNode> {
 }
 
 /// `fdt_find_phandle_recurse`.
-fn fdt_find_phandle_recurse(t: &Fdt, node: FdtNode, phandle: u32) -> Option<FdtNode> {
+fn fdt_find_phandle_recurse(t: &Fdt<'_>, node: FdtNode, phandle: u32) -> Option<FdtNode> {
     let data =
         node_property(t, node, b"phandle").or_else(|| node_property(t, node, b"linux,phandle"));
     if data.is_some_and(|d| d.len() == 4 && word(d, 0) == Some(phandle)) {
@@ -560,7 +579,7 @@ pub fn fdt_find_phandle(phandle: u32) -> Option<FdtNode> {
 }
 
 /// [`fdt_find_phandle`] in the tree `t`.
-fn find_phandle(t: &Fdt, phandle: u32) -> Option<FdtNode> {
+fn find_phandle(t: &Fdt<'_>, phandle: u32) -> Option<FdtNode> {
     fdt_find_phandle_recurse(t, root(t)?, phandle)
 }
 
@@ -574,7 +593,7 @@ pub fn fdt_get_cells(node: Option<FdtNode>) -> (i32, i32) {
 }
 
 /// [`fdt_get_cells`] in the tree `t`.
-fn get_cells(t: &Fdt, node: FdtNode) -> (i32, i32) {
+fn get_cells(t: &Fdt<'_>, node: FdtNode) -> (i32, i32) {
     let (mut ac, mut sc) = parent_node(t, node).map_or((1, 1), |p| get_cells(t, p));
     let int = |name: &[u8]| {
         let mut v = [0i32; 1];
@@ -621,7 +640,7 @@ fn supported_cells(ac: i32, sc: i32) -> Option<(usize, usize)> {
 ///
 /// Translation does not end here. We need to check if the parent's parent also has a ranges
 /// attribute and ask the same questions again.
-fn fdt_translate_reg(t: &Fdt, node: FdtNode, mut reg: FdtReg) -> Result<FdtReg, Errno> {
+fn fdt_translate_reg(t: &Fdt<'_>, node: FdtNode, mut reg: FdtReg) -> Result<FdtReg, Errno> {
     // No parent, no translation.
     let Some(parent) = parent_node(t, node) else {
         return Ok(reg);
@@ -735,7 +754,7 @@ pub fn fdt_is_compatible(node: Option<FdtNode>, name: &[u8]) -> bool {
 }
 
 /// [`fdt_is_compatible`] in the tree `t`.
-fn is_compatible(t: &Fdt, node: FdtNode, name: &[u8]) -> bool {
+fn is_compatible(t: &Fdt<'_>, node: FdtNode, name: &[u8]) -> bool {
     node_property(t, node, b"compatible")
         .is_some_and(|data| data.split(|&c| c == 0).any(|s| s == name))
 }
@@ -804,7 +823,7 @@ pub fn OF_getnodebyphandle(phandle: u32) -> i32 {
 
 /// The "name" property is optional since version 16 of the flattened device tree
 /// specification, so we synthesize one from the unit name of the node if it is missing.
-fn synthesized_name(t: &Fdt, node: FdtNode) -> Option<&'static [u8]> {
+fn synthesized_name<'a>(t: &Fdt<'a>, node: FdtNode) -> Option<&'a [u8]> {
     let name = node_name(t, node)?;
     name.split(|&c| c == b'@').next()
 }
@@ -819,7 +838,7 @@ enum Prop {
 
 /// The property `prop` of the node `handle`, `None` when there is none (and no name to
 /// synthesize).
-fn of_prop(t: &Fdt, handle: i32, prop: &[u8]) -> Option<Prop> {
+fn of_prop(t: &Fdt<'static>, handle: i32, prop: &[u8]) -> Option<Prop> {
     let node = of_node(handle)?;
     match node_property(t, node, prop) {
         Some(data) => Some(Prop::Value(data)),
@@ -838,7 +857,7 @@ pub fn OF_getproplen(handle: i32, prop: &[u8]) -> i32 {
 }
 
 /// `OF_getprop` in the tree `t`.
-fn getprop(t: &Fdt, handle: i32, prop: &[u8], buf: &mut [u8]) -> i32 {
+fn getprop(t: &Fdt<'static>, handle: i32, prop: &[u8], buf: &mut [u8]) -> i32 {
     match of_prop(t, handle, prop) {
         Some(Prop::Value(data)) => {
             let n = data.len().min(buf.len());
@@ -949,6 +968,29 @@ pub fn OF_getindex(handle: i32, entry: Option<&[u8]>, prop: &[u8]) -> i32 {
         .split(|&c| c == 0)
         .position(|name| name == entry)
         .map_or(-1, |idx| idx as i32)
+}
+
+/// boot(8)'s secrets in `/chosen` (`openbsd,sr-bootuuid`, `openbsd,sr-bootkey`: the C's
+/// `initarm` copies them for softraid(4) and wipes them from the tree): the value of the
+/// property `name` of the node at `path` in `blob`, copied into `out` when their lengths
+/// match, then zeroed in `blob` (`explicit_bzero`) whatever its length; whether it was
+/// copied. `blob` is not the installed tree but the boot's one mutable view of it
+/// (`hal::mem::fdtblob::with_boot_mut`), before `fdt_init` adopts it. A blob that is not a
+/// tree, or a missing node or property, copies and zeroes nothing.
+pub fn fdt_take_property(blob: &mut [u8], path: &[u8], name: &[u8], out: &mut [u8]) -> bool {
+    let Some((off, len)) = parse(blob).and_then(|t| property_at(&t, find_node(&t, path)?, name))
+    else {
+        return false;
+    };
+    let Some(value) = blob.get_mut(off..off + len) else {
+        return false;
+    };
+    let copied = value.len() == out.len();
+    if copied {
+        out.copy_from_slice(value);
+    }
+    explicit_bzero(value);
+    copied
 }
 
 /// A blob built by a test, the tree it installs, and the trees shaped like QEMU `virt`'s:
@@ -1627,6 +1669,126 @@ mod tests {
                 walk_everything(g.blob);
             }
         }
+    }
+
+    /// A tree whose `/chosen` holds boot(8)'s two secrets between other properties.
+    fn with_secrets() -> Vec<u8> {
+        let mut b = FdtBuilder::new();
+        b.begin(b"");
+        b.prop(b"model", b"virt\0");
+        b.begin(b"chosen");
+        b.prop(b"bootargs", b"-s\0");
+        b.prop(b"openbsd,sr-bootuuid", &[0x11; 16]);
+        b.prop(b"openbsd,sr-bootkey", &[0x5a; 64]);
+        b.prop(b"openbsd,bootduid", &[0x22; 8]);
+        b.end();
+        b.end();
+        b.finish()
+    }
+
+    /// The bytes where `a` and `b` differ.
+    fn differing(a: &[u8], b: &[u8]) -> Vec<usize> {
+        (0..a.len()).filter(|&i| a[i] != b[i]).collect()
+    }
+
+    #[test]
+    fn the_wipe_zeroes_both_secrets_and_nothing_else() {
+        let before = with_secrets();
+        let mut blob = before.clone();
+        let mut uuid = [0u8; 16];
+        let mut key = [0u8; 64];
+        assert!(fdt_take_property(
+            &mut blob,
+            b"/chosen",
+            b"openbsd,sr-bootuuid",
+            &mut uuid
+        ));
+        assert!(fdt_take_property(
+            &mut blob,
+            b"/chosen",
+            b"openbsd,sr-bootkey",
+            &mut key
+        ));
+        assert_eq!(uuid, [0x11; 16]);
+        assert_eq!(key, [0x5a; 64]);
+        let changed = differing(&before, &blob);
+        assert_eq!(changed.len(), 16 + 64, "only the two values changed");
+        assert!(changed.iter().all(|&i| blob[i] == 0), "to zeroes");
+        // The tree reads as before, the two values zeroed in place.
+        let _g = install(blob);
+        let chosen = fdt_find_node(b"/chosen");
+        assert_eq!(
+            fdt_node_property(chosen, b"openbsd,sr-bootuuid"),
+            Some(&[0u8; 16][..])
+        );
+        assert_eq!(
+            fdt_node_property(chosen, b"openbsd,sr-bootkey"),
+            Some(&[0u8; 64][..])
+        );
+        assert_eq!(
+            fdt_node_property(chosen, b"openbsd,bootduid"),
+            Some(&[0x22u8; 8][..])
+        );
+        assert_eq!(fdt_node_property(chosen, b"bootargs"), Some(&b"-s\0"[..]));
+    }
+
+    #[test]
+    fn a_secret_of_another_length_is_zeroed_not_copied() {
+        let before = with_secrets();
+        let mut blob = before.clone();
+        let mut short = [7u8; 32];
+        assert!(!fdt_take_property(
+            &mut blob,
+            b"/chosen",
+            b"openbsd,sr-bootkey",
+            &mut short
+        ));
+        assert_eq!(short, [7; 32], "not copied");
+        let changed = differing(&before, &blob);
+        assert_eq!(changed.len(), 64, "zeroed all the same, as the C");
+        assert!(changed.iter().all(|&i| blob[i] == 0));
+    }
+
+    #[test]
+    fn no_secret_and_no_tree_change_nothing() {
+        let before = with_secrets();
+        let mut blob = before.clone();
+        let mut out = [0u8; 16];
+        assert!(!fdt_take_property(
+            &mut blob,
+            b"/chosen",
+            b"openbsd,missing",
+            &mut out
+        ));
+        assert!(!fdt_take_property(
+            &mut blob,
+            b"/nowhere",
+            b"openbsd,sr-bootuuid",
+            &mut out
+        ));
+        assert_eq!(blob, before);
+        let mut bad = with_header_word(0, 0);
+        let bad_before = bad.clone();
+        assert!(!fdt_take_property(
+            &mut bad,
+            b"/chosen",
+            b"stdout-path",
+            &mut [0u8; 20]
+        ));
+        assert_eq!(bad, bad_before);
+    }
+
+    #[test]
+    fn names_compare_as_strcmp() {
+        let b = b"abc\0abd\0ab";
+        assert!(name_eq(b, b"abc", 0));
+        assert!(!name_eq(b, b"ab", 0), "a prefix is no match");
+        assert!(!name_eq(b, b"abcd", 0));
+        assert!(name_eq(b, b"abd", 4));
+        assert!(!name_eq(b, b"ab", 8), "no NUL before the end");
+        assert!(!name_eq(b, b"a\0c", 0), "a NUL in the name");
+        assert!(!name_eq(b, b"", usize::MAX));
+        assert!(name_eq(b, b"", 3));
     }
 }
 /* </TESTS> */

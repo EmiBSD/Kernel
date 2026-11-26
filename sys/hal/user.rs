@@ -543,14 +543,6 @@ impl KcopyToken {
         }
     }
 
-    /// Whether the token was taken: `bsd`'s boot has registered `hal`'s bridges, its first
-    /// phase, before which no code of the `forbid` crates names an address of its own, is
-    /// over. `crate::mem::fdtblob` refuses a device tree named after it; whoever retires the
-    /// token (with `UioMove`) gives that seal another mark of the same point.
-    pub(crate) fn taken() -> bool {
-        KCOPY_TAKEN.load(Ordering::Acquire)
-    }
-
     /// `kcopy(kva, buf, buf.len())`: the bytes at the kernel address `kva` into `buf`;
     /// `EFAULT` when a page faults (or where `hal` has no copy).
     pub fn kcopy_in(&self, kva: usize, buf: &mut [u8]) -> Result<(), Errno> {

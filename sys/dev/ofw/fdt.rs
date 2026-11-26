@@ -46,7 +46,8 @@
 //! re-exported (`dev/ofw/openfirm.rs` re-exports them from here, as before). A node stays a
 //! pointer into the blob, [`FdtNode`]: the installed blob's address plus the kernel's node
 //! offset, made and taken apart by address arithmetic and never dereferenced; null is no
-//! node. The boot's three calls name the blob to `hal` by its address: [`fdt_get_size`] is
+//! node. The boot's three calls name the blob to `hal` by its pointer (kept as such, so
+//! `hal` has the provenance the boot made it with): [`fdt_get_size`] is
 //! `fdtblob::probe` (the header's magic and size, the blob not yet mapped), [`fdt_init`]
 //! `probe` then `adopt` then the kernel's `fdt_init`, [`fdt_check_head`] the kernel's check of
 //! the adopted bytes.
@@ -75,7 +76,6 @@ use hal::mem::fdtblob;
 use kernel::dev::ofw::fdt as kfdt;
 
 use crate::sys::errno::Errno;
-use crate::sys::types::Vaddr;
 
 /// A node: a pointer to its `FDT_NODE_BEGIN` token in the blob; null is no node.
 pub type FdtNode = *const u32;
@@ -100,7 +100,7 @@ fn to_ptr(node: Option<kfdt::FdtNode>) -> FdtNode {
 
 /// `fdt_check_head`: the blob's version, 0 if it is not one this parser accepts.
 pub fn fdt_check_head(fdt: *const u8) -> u32 {
-    if fdtblob::probe(Vaddr::new(fdt.addr())) == 0 {
+    if fdtblob::probe(fdt) == 0 {
         return 0;
     }
     fdtblob::adopt().map_or(0, kfdt::fdt_check_head)
@@ -109,7 +109,7 @@ pub fn fdt_check_head(fdt: *const u8) -> u32 {
 /// `fdt_init`: the tree from the blob at `fdt` (null: no tree); its version, 0 when `fdt` is
 /// null or not a blob.
 pub fn fdt_init(fdt: *const u8) -> i32 {
-    if fdt.is_null() || fdtblob::probe(Vaddr::new(fdt.addr())) == 0 {
+    if fdt.is_null() || fdtblob::probe(fdt) == 0 {
         return kfdt::fdt_init(None);
     }
     kfdt::fdt_init(fdtblob::adopt())
@@ -117,7 +117,7 @@ pub fn fdt_init(fdt: *const u8) -> i32 {
 
 /// `fdt_get_size`: return the size of the FDT, 0 if `fdt` is null or has no FDT magic.
 pub fn fdt_get_size(fdt: *const u8) -> usize {
-    fdtblob::probe(Vaddr::new(fdt.addr()))
+    fdtblob::probe(fdt)
 }
 
 /// `fdt_node_property`: the node's property `name`, a slice of the blob.
