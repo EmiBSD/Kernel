@@ -39,7 +39,7 @@ bsd --tests`, then the host checks once (decision 31).
    - `docs/IDIOMS.md`: both sides' rows, one row per idiom.
    - the justfile `smokes` list and recipes; `tools/xtask/src/*` option tables and their module
      docs; `.claude/rules/xtask.md`.
-   - `sys/arch/{amd64,arm64}/conf/ioconf.rs`, only when an `lz-sync:` branch brought a driver:
+   - `sys/bsd/arch/{amd64,arm64}/conf/ioconf.rs`, only when an `lz-sync:` branch brought a driver:
      both sides' entries kept, cfdata renumbered, `NCFDATA` and the MP `cpu*` index updated.
    - docs: STATUS (under 30 lines), ROADMAP, README, JOURNAL; README's lineage table and
      STATUS's summary line are regenerated with `cargo xtask lz status --write`, never by hand.

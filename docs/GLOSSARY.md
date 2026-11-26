@@ -29,7 +29,7 @@ explaining, and a new directory under `sys/`, is a new row here, in the same com
 | `ConfigRow` | One row of the machine's `cfdata[]` as the kernel's autoconfiguration sees it (`kernel::dev::device::ConfigRow`, `struct cfdata`): its driver, potential parents, `cf_unit` and `cf_fstate`; `bsd`'s `Cfdata` implements it until the table moves (N7.1c) |
 | `ci`, `ci-full` | `just ci`: build, clippy, fmt, lineage, budget, host tests, the smokes, drift and `diff-openbsd`; `just ci-full`: `ci` with every smoke on four CPUs and the installer end to end. Both run once, at a milestone close (decision 23) |
 | close | The end of a milestone: `just check`, `ci`, `ci-full` and `diff-openbsd` green, the numbers in the closing `docs:` commit, the annotated tag `n<N>-<name>` on it |
-| `crate::machine` | The one path through which generic code (`kern/`, `uvm/`, `dev/`) reaches architecture code; `crate::arch::amd64` and `crate::arch::arm64` are never named outside `sys/arch/` and `sys/machine/` |
+| `crate::machine` | The one path through which generic code (`kern/`, `uvm/`, `dev/`) reaches architecture code; `crate::arch::amd64` and `crate::arch::arm64` are never named outside `sys/bsd/arch/` and `sys/bsd/machine/` |
 | `CpuWalk` | `hal::sync::smr`'s view of the CPUs a grace period waits for: `running(n)` (`CPU_IS_RUNNING`), `peg(n)` (`sched_peg_curproc`: the caller moves to CPU `n`, whose switch passes `smr_idle`) and `unpeg()`; passed to `hal::sync::smr::Batch::run`, which runs the grace period before the batch's calls, as a parameter (decision 39), implemented by the kernel's scheduler (`kernel::base::smr::SchedCpus`) and by the host tests' fakes; `running` is a trust boundary (`sys/hal/mem/trust.rs`), `peg` is checked (N6.0). |
 | DDB, `ddb(4)` | OpenBSD's in-kernel debugger, entered on a panic or from the console |
 | Dehash | msdosfs's denode hash (`msdosfs_denode.c`'s `dehashtbl`, `dehash`, `dehashkey`; `kernel::fs::msdosfs::msdosfs_denode::Dehash`, N5.7c2): a `hashinit` table of pinned lists of the denodes, a chain chosen by the SipHash of the device and the directory entry's position under a random key; in the glue's `MsdosfsTables` (`VfsTables::msdosfs`) |
@@ -143,7 +143,15 @@ explaining, and a new directory under `sys/`, is a new row here, in the same com
 What each directory is in OpenBSD and here. The man page in parentheses (`ffs(4)`, `pf(4)`,
 `vfs(9)`) is OpenBSD's own description. A driver's name is the one `dmesg` prints (`em0`,
 `vio0`, `sd0`). Where a directory has moved into `kernel` or `hal`, the row says so; the rest
-is `bsd`, legacy, until its milestone (`docs/ROADMAP.md`).
+is `bsd`, legacy, until its milestone (`docs/ROADMAP.md`). The directories are named as
+OpenBSD and LZ lay them out: since 2026-11-26 this tree keeps the legacy ones under `sys/bsd/`
+(`sys/kern/` is `sys/bsd/kern/`) and the loaders under `sys/boot/` (the two rows below;
+`docs/ARCHITECTURE.md`, "Repository layout").
+
+| Directory | Name | What it is |
+|---|---|---|
+| `sys/bsd/` | | the legacy package `bsd`: LZ's whole tree (its `sys/<x>`), the kernel that boots while its subsystems move into `kernel` and `hal`; deleted at N9 |
+| `sys/boot/` | | the boot loaders, separate binaries outside the zero-unsafe plan: `libsa/`, `efi/`, `boot/` (`boot(8)`), `arm64/efiboot/`, amd64's `efiboot/` and `libsa/` (LZ's `sys/lib/libsa/`, `sys/stand/{efi,boot}/`, `sys/arch/<arch>/stand/`) |
 
 ### The core
 
@@ -247,8 +255,8 @@ driver's own structures.
 
 | Directory | Name | What it is |
 |---|---|---|
-| `sys/stand/` | standalone | the boot loaders' common code: `boot` (OpenBSD's `boot(8)`: the prompt, `boot.conf`, loading `/bsd`), `efi` (the UEFI glue), `bootarg` (what the loader passes the kernel), `fdtfb` (a framebuffer from the device tree), `limine` and `limine.conf` (the Limine scaffolding) |
-| `sys/lib/libsa/` | standalone library | the loaders' libc (`libsa(9)`): a tiny `alloc`, `printf`, `open`/`read`/`stat` over `ufs`/`ufs2`/`cd9660`, `loadfile`/`loadfile_elf` (loading the kernel), the network boot (`arp`, `ether`, `netif`, `netudp`, `tftp`, `in_cksum`), `disklabel`, `cons` |
+| `sys/stand/` | standalone | the boot loaders' common code (here `sys/boot/boot/`, `sys/boot/efi/` and, the kernel's own boot entry, `sys/bsd/stand/`): `boot` (OpenBSD's `boot(8)`: the prompt, `boot.conf`, loading `/bsd`), `efi` (the UEFI glue), `bootarg` (what the loader passes the kernel), `fdtfb` (a framebuffer from the device tree), `limine` and `limine.conf` (the Limine scaffolding) |
+| `sys/lib/libsa/` | standalone library | the loaders' libc (`libsa(9)`; here `sys/boot/libsa/`): a tiny `alloc`, `printf`, `open`/`read`/`stat` over `ufs`/`ufs2`/`cd9660`, `loadfile`/`loadfile_elf` (loading the kernel), the network boot (`arp`, `ether`, `netif`, `netudp`, `tftp`, `in_cksum`), `disklabel`, `cons` |
 | `sys/lib/libkern/` | kernel library | what the kernel takes from libc (`libkern(9)`): `strlcpy`, `strlcat`, `strnlen`, `strncasecmp`, `scanc`, `skpc`, `getsn`, `crc32c`, `explicit_bzero`, `timingsafe_bcmp` (constant-time compare), `random` (the kernel's `arc4random`), `staticcell` |
 | `sys/lib/libz/` | zlib | what the kernel compiles of zlib: crc32, adler32, deflate, inflate (compressed kernels and `ipcomp`) |
 | `sys/kernel/` | | the `kernel` crate (Part 1): `proc`, `fork`, `exit`, `thread`, `cred`, `prot`, `resource`, `sched`, `sig`, `sigio`, `descrip`, `file`, `event` (kqueue), `select`, `pipe`, `futex`, `sysctl`, `syscall`, `tty`, `pty`, `termios`, `clist`, `clock`, `clockintr`, `tc`, `time`, `timeout`, `task`, `extent`, `uio`, `acct`, `log`, `prf`, `reboot`, `api` (`KernelApi`), `vm/` (uvm redesigned: `map`, `fault`, `page`, `pager`, `amap`, `anon`, `aobj`, `vnode`, `swap`, `pdaemon`, `pmemrange`, `km`, `mmap`, `unix`, `meter`, `glue`), `crypto/` (above) |

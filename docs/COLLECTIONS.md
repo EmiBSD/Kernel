@@ -279,7 +279,7 @@ Orders of the C's algorithms the `hal` types wrap (`subr_pool.c`, `kern_malloc.c
 | `acct.rs` | `Box<dyn AcctSink>` | `acct_open` (an `AcctVnode`, N5.3), `close` | O(1) |
 | `sched.rs` | `Box::leak` of a `SchedCpu` | | O(1), once per CPU at boot |
 
-## `bsd` (legacy, `sys/sys/queue.rs` and `sys/sys/tree.rs`)
+## `bsd` (legacy, `sys/bsd/sys/queue.rs` and `sys/bsd/sys/tree.rs`)
 
 The C macros' orders, kept 1:1 by LZ: `TAILQ_*`, `LIST_*`, `SIMPLEQ_*`, `STAILQ_*`,
 `XSIMPLEQ_*` all O(1) except the walks (`*_FOREACH`, O(n)) and the singly linked removals

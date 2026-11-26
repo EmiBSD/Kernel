@@ -30,7 +30,7 @@
 //! `rd_root_size` bytes (`ramdisk too small`), which the C does not change. `-s` prints
 //! `rd_root_size`, `-x` extracts the image the kernel holds (to FS or stdout), `-d` prints
 //! the offsets. The kernel's `rd_root_size` is `ROOTBYTES`, the `EMIBSD_MINIROOTSIZE` the
-//! kernel was built with (`sys/dev/rd.rs`, cargo feature `miniroot`).
+//! kernel was built with (`sys/bsd/dev/rd.rs`, cargo feature `miniroot`).
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};

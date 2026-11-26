@@ -24,10 +24,10 @@ draws them.
 | 2 | `kernel` | | `sys/kernel/` | 0, `#![forbid(unsafe_code)]` at the root; the compiler refuses one | every decision the operating system makes: memory, processes, the scheduler, signals, descriptors, kqueue, VFS and the file systems, the network stack, the drivers' logic, crypto, pf, pledge, unveil, exec. Its own types, ownership first. Reaches what has not moved out of `bsd` only through a bridge trait registered in `hal` (`bridges.toml`, 0 rows at N9) |
 | 3 | `hal` | Hardware Abstraction Layer | `sys/hal/` | the only `unsafe` of the system, under `hal_ceiling`, every site with a soundness proof, Miri on its host tests | the hardware (page tables and the pmaps, traps, the syscall entry, the context switch, the interrupt level, MMIO, caches, early boot) and the runtime written new (locks that own their data, typed pools, owned memory, `OnceStatic`, the typed user copy, per-CPU data, the bridge registry, the system call trap's registration and `UserRegs`, the view of the trap frame it hands `abi`, decision 53). Its API towards `kernel` is safe: `cargo xtask hal-check` refuses a `pub unsafe fn` |
 | 3' | `lib` | | `sys/lib/libkern/`, `sys/lib/libz/` | 10 and 0 (N1) | the leaf crates below `hal`: `libkern`, what the C kernel takes from libc (string and memory routines, `strlcpy`, `crc32`, `StaticCell`), and `libz`, what the kernel compiles of zlib (crc32, adler32, deflate, inflate). Both depend on nothing of ours; `hal` depends on `libkern` |
-| legacy | `bsd` | | `sys/` itself, named after OpenBSD's kernel image `/bsd` | 9,490 at the N4 close, 0 files at N9 | the LandingZone tree: OpenBSD's kernel ported file by file, the kernel that boots and passes every smoke while its subsystems move into `kernel` and `hal`. Calls down into the three crates, never the reverse; registers the bridge implementations in `hal` at boot and hands `KernelApi` to `abi::abi_init` |
+| legacy | `bsd` | | `sys/bsd/` (`sys/` itself until 2026-11-26), named after OpenBSD's kernel image `/bsd` | 9,490 at the N4 close, 0 files at N9 | the LandingZone tree: OpenBSD's kernel ported file by file, the kernel that boots and passes every smoke while its subsystems move into `kernel` and `hal`. Calls down into the three crates, never the reverse; registers the bridge implementations in `hal` at boot and hands `KernelApi` to `abi::abi_init` |
 | 4 | hardware | | | | QEMU amd64 and arm64, real machines |
 
-Beside the layers, outside the four crates and unchanged: the boot loaders (`sys/stand/`,
+Beside the layers, outside the four crates and unchanged: the boot loaders (`sys/boot/`: LZ's `sys/stand/`,
 `sys/lib/libsa/`, `sys/arch/*/stand/`), separate binaries that run before the kernel.
 
 Every other term and acronym of these documents (LZ, MP, KPTI, MMIO, DMA, pmap, UVM, VFS, EFI,
@@ -39,7 +39,7 @@ ACPI, bridge, slice, ratchet, zones, ...) is one row of `docs/GLOSSARY.md`.
 the hardware and the runtime, the only crate where `unsafe` may live; `sys/kernel/`, every
 decision of the operating system, `#![forbid(unsafe_code)]` at its root; `sys/abi/`, OpenBSD's
 userland interface, linked into the kernel image (decision 47), `forbid`, translation only; and
-`bsd` at `sys/` itself (OpenBSD's kernel image is `/bsd`), the LZ tree with its subsystems as
+`bsd` at `sys/bsd/` (OpenBSD's kernel image is `/bsd`; `sys/` itself until 2026-11-26), the LZ tree with its subsystems as
 modules (`kern`, `uvm`, `dev`, `ddb`, `sys`, `machine`, `arch`), replaced subsystem by subsystem
 and deleted at N9. Under all four, the leaf crate `sys/lib/sysdefs/` (decision 54, 2026-11-26)
 holds OpenBSD's basic types, constants and `#[repr(C)]` ABI structures (what `hal::sys` was),
@@ -55,10 +55,36 @@ dependency: it is a trait `kernel` or `hal` declares and `bsd` implements and re
 `hal`'s registry at boot, one row of `bridges.toml` each (section 0.3). `sys/lib/libkern` and
 `sys/lib/libz` stay leaves, as `sysdefs` is, and all three are `#![forbid(unsafe_code)]` (decision
 55: `explicit_bzero` went to `hal::mem`, `StaticCell` to `bsd` and, as the boot loaders' own copy,
-to `libsa`, the one `sys/lib/` crate that keeps `unsafe`) (OpenBSD builds both as libraries too; libz holds what the kernel
+to `libsa`, the boot loaders' library in `sys/boot/libsa/`, which keeps `unsafe`) (OpenBSD builds both as libraries too; libz holds what the kernel
 compiles of zlib: crc32, adler32, deflate, inflate; zlib licence).
 
-No `src/` directory (`[lib] path = "lib.rs"`), so C and Rust paths differ only by extension.
+No `src/` directory (`[lib] path = "lib.rs"`), so C and Rust paths differ only by the `bsd/` directory
+(LZ's `sys/<x>` is `sys/bsd/<x>`, below) and the extension.
+
+### Repository layout (2026-11-26)
+
+`sys/` holds six purpose directories (the user's decision of 2026-11-26): `abi/`, `hal/`,
+`kernel/` and `lib/` (`sysdefs`, `libkern`, `libz`), the crates of the design; `bsd/`, the
+whole LZ tree, legacy, deleted at N9; and `boot/`, the boot loaders, separate binaries outside
+the zero-unsafe plan: `libsa/`, `efi/`, `boot/` (boot(8)), `arm64/efiboot/` and amd64's
+`efiboot/` and `libsa/` (frozen, decision 44). Package names did not change (`bsd`, `libsa`,
+`efi`, `boot`, `efiboot-arm64`, `efiboot-amd64`), nor did any module path. `bsd/stand/` is not
+a loader: it is the kernel binary's own boot entry (`bsd`'s `mod stand`: Limine's `_start` and
+boot(8)'s `bootarg_main`), and stays counted with the loaders by `unsafe-report`, as before the
+move. `init/` stays at the root.
+
+LZ's tree is flat (`sys/kern/`, `sys/lib/libsa/`, `sys/stand/`, `sys/arch/<arch>/stand/`), and
+every LZ path in this repository is LZ's: `lineage.toml`'s `lz` lists and fn rows, the
+`lz-sync.toml` records, ROADMAP's scope cells, the citations of `reference/emibsd-lz`, the
+`LZ:` trailers. One map turns a native path into LZ's, `lz_flat` in `tools/xtask/src/main.rs`:
+`sys/bsd/<x>` is `sys/<x>`; `sys/boot/libsa/`, `efi/`, `boot/` are `sys/lib/libsa/`,
+`sys/stand/efi/`, `sys/stand/boot/`; `sys/boot/<arch>/<dir>/` is `sys/arch/<arch>/stand/<dir>/`.
+`lz check` compares an inherited module with the LZ file it names that way, `unsafe-report`
+keeps LZ's row names (`kern`, `dev/pci`, `arch/arm64`, `lib/libsa`), `/progress` matches
+ROADMAP's rows through it, and `cargo xtask lz patch` applies an LZ commit through its inverse
+(`docs/SYNC.md`). In the documents written before the move (this one's sections below, the
+JOURNAL, IDIOMS, GLOSSARY, SCAFFOLDING, `docs/ZERO_UNSAFE.md` after 0.1), a `sys/<x>` path of
+the legacy tree or a loader is that LZ layout: read it through the same map.
 
 ### hal's groups (2026-11-26)
 
@@ -139,15 +165,15 @@ implement them. Each is a row of `bridges.toml`; `lz check` counts them.
 
 | OpenBSD | Here |
 |---|---|
-| `sys/kern/subr_prf.c` | `sys/kern/subr_prf.rs` |
-| `sys/sys/proc.h` (`struct proc`) | `sys/sys/proc.rs` (`pub struct Proc`) |
-| `sys/kern/kern_fork.c` (`fork1()`) | `sys/kern/kern_fork.rs` (`impl Proc { pub fn fork1 }` or `pub fn fork1`) |
-| `sys/arch/amd64/amd64/pmap.c` | `sys/arch/amd64/amd64/pmap.rs` |
-| `sys/arch/amd64/include/pte.h` | `sys/arch/amd64/include/pte.rs` |
+| `sys/kern/subr_prf.c` | `sys/bsd/kern/subr_prf.rs` |
+| `sys/sys/proc.h` (`struct proc`) | `sys/bsd/sys/proc.rs` (`pub struct Proc`) |
+| `sys/kern/kern_fork.c` (`fork1()`) | `sys/bsd/kern/kern_fork.rs` (`impl Proc { pub fn fork1 }` or `pub fn fork1`) |
+| `sys/arch/amd64/amd64/pmap.c` | `sys/bsd/arch/amd64/amd64/pmap.rs` |
+| `sys/arch/amd64/include/pte.h` | `sys/bsd/arch/amd64/include/pte.rs` |
 | `sys/lib/libkern/strlcpy.c` | `sys/lib/libkern/strlcpy.rs` |
-| `sys/net/if.h`, `sys/netinet/in.h` (Rust keywords) | `sys/net/if_.rs`, `sys/netinet/in_.rs` (`docs/C_TO_RUST.md`) |
-| `sys/arch/*/stand/`, `boot(8)`, `efiboot` | `sys/stand/` (Limine glue) until M14, when the user decided (2026-10-03) to port `boot(8)`/`efiboot` and `sys/lib/libsa/`; Limine is scaffolding until `boot(8)` boots the same kernel in QEMU |
-| `sys/conf/`, `config(8)`, Makefiles, `newvers.sh` | Cargo features and `tools/xtask`; `ioconf.c` is `sys/arch/<arch>/conf/ioconf.rs`, by hand (M7b); the `vers.c` that `newvers.sh` generates is `sys/conf/vers.rs`, fed by `sys/build.rs` ("The system's identity", below); not ported |
+| `sys/net/if.h`, `sys/netinet/in.h` (Rust keywords) | `sys/bsd/net/if_.rs`, `sys/bsd/netinet/in_.rs` (`docs/C_TO_RUST.md`) |
+| `sys/arch/*/stand/`, `boot(8)`, `efiboot` | `sys/bsd/stand/` (Limine glue) until M14, when the user decided (2026-10-03) to port `boot(8)`/`efiboot` and `sys/lib/libsa/` (all of them in `sys/boot/` since 2026-11-26); Limine is scaffolding until `boot(8)` boots the same kernel in QEMU |
+| `sys/conf/`, `config(8)`, Makefiles, `newvers.sh` | Cargo features and `tools/xtask`; `ioconf.c` is `sys/bsd/arch/<arch>/conf/ioconf.rs`, by hand (M7b); the `vers.c` that `newvers.sh` generates is `sys/bsd/conf/vers.rs`, fed by `sys/bsd/build.rs` ("The system's identity", below); not ported |
 
 Types live where the **header** is; functions live where the **`.c`** is. Rust allows inherent
 `impl` blocks in any module of the defining crate, which is exactly the header/implementation split.

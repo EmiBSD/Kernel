@@ -337,9 +337,9 @@ pub(crate) struct CrateCount {
 pub(crate) const CRATE_NAMES: [&str; 6] = ["kernel", "abi", "hal", "lib", "bsd", "boot"];
 
 /// The crate a file belongs to (`rel` relative to the root): `kernel`, `abi`, `hal`, `lib`
-/// (`sys/lib/sysdefs/`, `sys/lib/libkern/`, `sys/lib/libz/`), `boot` (`sys/stand/`,
-/// `sys/lib/libsa/`, `sys/arch/*/stand/`), or `bsd` for every other file under `sys/` and
-/// `init/`; `None` for anything else. The legacy tree and the loaders are read in LZ's layout
+/// (`sys/lib/sysdefs/`, `sys/lib/libkern/`, `sys/lib/libz/`), `boot` (`sys/boot/`, LZ's
+/// `sys/stand/`, `sys/lib/libsa/`, `sys/arch/*/stand/`), or `bsd` for every other file under
+/// `sys/` and `init/`; `None` for anything else. The legacy tree and the loaders are read in LZ's layout
 /// (`crate::lz_flat`): `sys/bsd/<x>` is `sys/<x>` and `sys/boot/` is `boot`. So the kernel
 /// binary's boot entry, `sys/bsd/stand/` (`bsd`'s `mod stand`, LZ's `sys/stand/*.rs`), stays
 /// in `boot` with the loaders, where it was counted before the move of 2026-11-26.
@@ -361,9 +361,10 @@ pub(crate) fn crate_of_file(rel: &str) -> Option<&'static str> {
     })
 }
 
-/// A `bsd` file that N2 moves into `hal`: the hardware (`sys/arch/` apart from the boot
-/// loaders' `stand/`, `sys/machine/`) and the lists and trees (`sys/sys/queue.rs`,
-/// `sys/sys/tree.rs`, `sys/kern/subr_tree.rs`). Informative: it counts as `bsd` until it moves.
+/// A `bsd` file that N2 moves into `hal`: the hardware (`sys/bsd/arch/`, `sys/bsd/machine/`)
+/// and the lists and trees (`sys/bsd/sys/queue.rs`, `sys/bsd/sys/tree.rs`,
+/// `sys/bsd/kern/subr_tree.rs`), matched in LZ's layout (`crate::lz_flat`). Informative: it
+/// counts as `bsd` until it moves.
 pub(crate) fn moves_to_hal(rel: &str) -> bool {
     crate_of_file(rel) == Some("bsd")
         && matches!(
@@ -502,7 +503,8 @@ pub(crate) struct FileMeasure {
     /// Its module is `#[forbid(unsafe_code)]` ([`forbid_files`]).
     pub(crate) forbid: bool,
     /// One of the modules the forbid ratchet counts: under `sys/` and not structure (a crate
-    /// root, `mod.rs`, `build.rs`, or a file of `sys/machine/`, `sys/arch/host/`, `sys/stand/`).
+    /// root, `mod.rs`, `build.rs`, or a file of `sys/bsd/machine/`, `sys/bsd/arch/host/`, `sys/bsd/stand/`,
+    /// `sys/boot/{boot,efi}/`: LZ's `sys/machine/`, `sys/arch/host/`, `sys/stand/`).
     pub(crate) module: bool,
     /// Its `unsafe` in kernel code.
     pub(crate) kernel: Counts,

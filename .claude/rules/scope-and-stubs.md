@@ -5,10 +5,10 @@ LZ ports OpenBSD incrementally, and this tree inherits its gaps. These rules kee
 - Never `todo!()`, `unimplemented!()` or an empty body standing in for real work. Both lints are
   denied workspace-wide; do not `#[allow]` them.
 - When a ported file calls into an unported subsystem, make the gap explicit and visible, either:
-  - `return Err(unported!("uvm_map"))` (`sys/kern/unported.rs`), a macro that prints the gap once
+  - `return Err(unported!("uvm_map"))` (`sys/bsd/kern/unported.rs`), a macro that prints the gap once
     per site and yields `Errno::ENOSYS`; or
   - gate the whole path behind a cargo feature mirroring the OpenBSD `option(4)`
-    (`diagnostic`, `multiprocessor`, ...), documented in `sys/Cargo.toml`.
+    (`diagnostic`, `multiprocessor`, ...), documented in `sys/bsd/Cargo.toml`.
 - Every inherited stub stays in the file's `//! ## Deviations` list; a redesign closes it or keeps
   it visible, never widens it. No new behavioural difference from OpenBSD:
   `tools/xtask/diff-openbsd/expected.toml` records only inherited gaps.
@@ -53,7 +53,8 @@ LZ ports OpenBSD incrementally, and this tree inherits its gaps. These rules kee
     one blank line. The original blocks are never touched: never shortened, reworded,
     reordered or replaced.
   - A module with `license = "none"`, an `[[extra]]`, and every `.rs` outside `lineage.toml`
-    (crate roots, `mod.rs`, `sys/machine/`, `sys/stand/`, `sys/arch/host/`, `tools/`): the
+    (crate roots, `mod.rs`, `sys/bsd/machine/`, `sys/bsd/stand/`, `sys/boot/{boot,efi}/`,
+    `sys/bsd/arch/host/`, `tools/`): the
     author's block is the only block of the zone, and the zone is the file's first.
   - New files carry it from their first commit; generated files carry it from the generator
     (`gen-syscalls`). The canonical text is `AUTHOR_BLOCK` in `tools/xtask/src/layout.rs`;

@@ -8,7 +8,7 @@ always before an `N` milestone is marked met. LZ is read, never written.
    items (`--functions`) each one touches.
 2. Triage every commit into `lz-sync.toml`, one `[[commit]]` record each:
    - `applied`, with `emibsd = "<12-hex>"` and `method`: `cherry-pick` (an inherited module:
-     `git -C reference/emibsd-lz format-patch -1 <hash> | git am`), `cherry-pick-conflicts` (an
+     `cargo xtask lz patch <hash> | git am -3`), `cherry-pick-conflicts` (an
      adapted module: conflicts expected at its call sites, resolved by hand) or `reimplemented`
      (a redesigned module: the change re-expressed in its new shape);
    - `not-applicable`, with the reason (nothing native derives from it, or the path does not
@@ -19,7 +19,22 @@ always before an `N` milestone is marked met. LZ is read, never written.
      with `frozen = true`;
    - `security = true` on every security fix; such a record is never `not-applicable` without a
      reason that names the fix.
-   A file new in LZ becomes a new `inherited` module of `lineage.toml` in the same commit.
+   The paths (the user's layout of 2026-11-26): LZ's `sys/` is flat, this tree keeps LZ's
+   files in `sys/bsd/` (LZ's `sys/<x>`) and the loaders in `sys/boot/` (LZ's
+   `sys/lib/libsa/`, `sys/stand/{efi,boot}/`, `sys/arch/<arch>/stand/<dir>/` are
+   `sys/boot/libsa/`, `efi/`, `boot/`, `<arch>/<dir>/`). A plain `git format-patch | git am`
+   or `git cherry-pick` would write LZ's paths; `cargo xtask lz patch <hash>` prints the
+   commit's patch with every file header in the native layout (the message and the hunks
+   LZ's), so `cargo xtask lz patch <hash> | git am -3` applies it where the files are, one
+   commit with LZ's message, reworded to `lz-sync: apply LZ <12-hex> (...)` after. A header it
+   cannot place (LZ's `sys/lib/libkern/`, `sys/lib/libz/` or `sys/sys/` file whose native home
+   is a leaf crate's group, `sys/lib/<crate>/<group>/`) fails in `git am`, and that file is
+   applied by hand as before. Check after the apply that no new file appeared outside the
+   native directories (`git status`: nothing new under `sys/kern/`, `sys/dev/`, ... at the
+   top of `sys/`). `modules` names native modules by LZ's path (`sys/kern/x.rs`) or by their
+   own (`sys/bsd/kern/x.rs`): both read the same (`lz_flat`, `lineage.md`).
+   A file new in LZ becomes a new `inherited` module of `lineage.toml` in the same commit,
+   under its native path (`sys/bsd/...` or `sys/boot/...`).
    `modules` names every native module the commit touches, the new ones included: `lz check`
    compares each with the newest applied commit naming it, not with the pin, until the pin
    catches up.

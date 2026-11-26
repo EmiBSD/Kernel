@@ -20,7 +20,7 @@ and `rust-kernel.md` for the zero-unsafe terms, `subagents.md` for the common co
 `docs/ZERO_UNSAFE.md` section 0 (the plan in force and its one diagram), `docs/IDIOMS.md`, and
 `bridges.toml`. OpenBSD's C under
 `reference/openbsd-src/` is the specification; the LZ module at the pin
-(`reference/emibsd-lz`) is the shape; `sys/sys/queue.rs` is the model of a core primitive with a
+(`reference/emibsd-lz`) is the shape; `sys/bsd/sys/queue.rs` is the model of a core primitive with a
 safe API.
 
 ## How

@@ -5,8 +5,8 @@ paths:
 
 # Kernel Rust
 
-- `#![no_std]` everywhere under `sys/`. `extern crate std` only in `sys/lib.rs` for the host
-  build, in `sys/arch/host/` and `sys/hal/arch/host/` (the host doubles), under `#[cfg(test)]`, and in the host benchmark targets under
+- `#![no_std]` everywhere under `sys/`. `extern crate std` only in `sys/bsd/lib.rs` for the host
+  build, in `sys/bsd/arch/host/` and `sys/hal/arch/host/` (the host doubles), under `#[cfg(test)]`, and in the host benchmark targets under
   `sys/*/benches/` (`harness = false`, never linked into a kernel image; the user, 2026-10-18). `alloc` only behind `feature = "alloc"`
   until M3.
 - Workspace lints are law: `unsafe_op_in_unsafe_fn`, `clippy::undocumented_unsafe_blocks`,
@@ -23,7 +23,7 @@ paths:
   (`lineage.md`), the one record of it, so the old name stays greppable. Types CamelCase
   (`Proc`, `VmMapEntry`), constants unchanged (`PAGE_SIZE`, `MAXCOMLEN`).
 - Arch access only via `crate::machine::*`. Naming `crate::arch::amd64` or `crate::arch::arm64`
-  outside `sys/arch/` and `sys/machine/` is a bug.
+  outside `sys/bsd/arch/` and `sys/bsd/machine/` is a bug.
 - `static mut` is forbidden. Use atomics, the ported `Mutex<T>`, or `StaticCell<T>` with a
   documented invariant.
 - `#[repr(C)]` only where layout matters (hardware, ABI, bootloader). Otherwise let Rust lay it out.
@@ -43,8 +43,8 @@ paths:
   `unsafe` in `hal` carries a soundness argument, not a reference to the C
   (`unsafe-budget.md`), and `hal` exposes safe APIs only: an `unsafe fn` there is
   `pub(crate)`, since no caller outside `hal` may be `unsafe` (`cargo xtask hal-check`).
-- `Adapter` (`sys/sys/queue.rs`) is implemented only by `bsd`'s `queue_adapter!` and
-  `tree_adapter!` (`crate::tree_adapter!` of `sys/sys/tree.rs`); never write an impl by hand,
+- `Adapter` (`sys/bsd/sys/queue.rs`) is implemented only by `bsd`'s `queue_adapter!` and
+  `tree_adapter!` (`crate::tree_adapter!` of `sys/bsd/sys/tree.rs`); never write an impl by hand,
   rename the trait, or impl a trait passed through a macro variable (`lz check` refuses all
   three). The element's field must be exactly the entry type, never a pointer to it (the
   macro checks it at compile time).
@@ -57,13 +57,13 @@ paths:
   `crate::tree_adapter!` to tell them apart). No premise rests on these adapters (an `entry`
   that names the wrong field scrambles that list or tree, it never makes a reference
   dangle), so `lz check` does not police them; write them only through the macros all the
-  same. Code in `sys/kernel/` uses this family; `bsd` keeps `sys/sys/queue.rs` and
-  `sys/sys/tree.rs` until their last user moves.
+  same. Code in `sys/kernel/` uses this family; `bsd` keeps `sys/bsd/sys/queue.rs` and
+  `sys/bsd/sys/tree.rs` until their last user moves.
 - Dependencies allowed in `sys/`: `libkern`, `libz`, `sysdefs` (our own leaf crate, decision 54), `bitflags`; dev-only `proptest`. The boot
   loaders' crates (M14) may also use `libsa`, `boot` and `efi` (ours, OpenBSD code); the kernel
   does not depend on them. Lists and trees
-  are our own (`sys/sys/queue.rs`, `sys/sys/tree.rs`), not `intrusive-collections`. Not allowed: `limine` (0.6+ is nightly-only, 0.5 is frozen at base revision 3; the
-  protocol structs are written in `sys/stand/limine.rs` from the spec), `x86_64`, `aarch64-cpu`,
+  are our own (`sys/bsd/sys/queue.rs`, `sys/bsd/sys/tree.rs`), not `intrusive-collections`. Not allowed: `limine` (0.6+ is nightly-only, 0.5 is frozen at base revision 3; the
+  protocol structs are written in `sys/bsd/stand/limine.rs` from the spec), `x86_64`, `aarch64-cpu`,
   `spin`, `uart_16550`, `fdt`, `linked_list_allocator`, `buddy_system_allocator`, or any crate that
   replaces code OpenBSD has. Porting that code is the project.
 - Every `pub` item has a doc comment (`missing_docs` is warn; `just clippy` uses `-D warnings`).
@@ -99,5 +99,5 @@ paths:
   9. `#[cfg(test)]` helpers other tests share (`pub(crate) fn foo_reset()`, `mod testutil;`):
      in CODE, not in TESTS.
   Within a section keep the C file's order; the OpenBSD header/implementation split is the
-  interface/implementation split (types in `sys/sys/<header>.rs`, functions in the `.c`'s module,
-  traits in `sys/machine/<header>.rs`).
+  interface/implementation split (in `bsd`: types in `sys/bsd/sys/<header>.rs`, functions in the `.c`'s module,
+  traits in `sys/bsd/machine/<header>.rs`).

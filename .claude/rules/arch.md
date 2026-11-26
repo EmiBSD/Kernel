@@ -1,12 +1,12 @@
 ---
 paths:
-  - "sys/arch/**"
-  - "sys/machine/**"
+  - "sys/bsd/arch/**"
+  - "sys/bsd/machine/**"
 ---
 
 # Architecture code and the machine contract
 
-- `sys/machine/<header>.rs`, one module per OpenBSD header, is the contract: `param.rs` for
+- `sys/bsd/machine/<header>.rs`, one module per OpenBSD header, is the contract: `param.rs` for
   `<machine/param.h>` and `<machine/_types.h>`; `cpu.rs` for `<machine/cpu.h>`/`cpufunc.h`, the
   QEMU exit, `boot(9)` and `delay(9)`; `cons.rs` for `consinit()` (the console framework itself is
   generic, `dev/cons.rs`); `bus.rs` for `bus_space(9)` (tag and handle types per arch, C-named free
@@ -14,9 +14,9 @@ paths:
   `db_enter`); more as milestones add them (`pmap.rs`, `intr.rs`). Generic code only sees
   `crate::machine` (every module is re-exported there). Adding a trait method means implementing
   it for arm64 AND host in the same commit (amd64's implementation is N10's, decision 44; the
-  method is still designed for both); `sys/machine/mod.rs` asserts the selected arch
+  method is still designed for both); `sys/bsd/machine/mod.rs` asserts the selected arch
   implements every trait.
-- Nothing generic lives in `sys/arch/`. If two archs would write the same code, it belongs in
+- Nothing generic lives in `sys/bsd/arch/`. If two archs would write the same code, it belongs in
   `kern/` or `uvm/`. If one arch needs a hook the other does not, it is still a trait method with a
   no-op implementation, never a `#[cfg(target_arch)]` in generic code.
 - Each arch directory mirrors OpenBSD: `arch/<arch>/<arch>/` for `.c`/`.S` ports (`locore`,
@@ -25,8 +25,9 @@ paths:
   `param`, `vmparam`, `cpu`, `intr`, `frame`, `pte`.
 - `include/` holds constants, `#[repr(C)]` hardware structs and `#[inline]` register accessors.
   Never state. State lives in `machdep`/`cpu` modules.
-- `asm!`/`global_asm!` only under `sys/arch/`. Every `asm!` has justified `options(...)` (`nomem`,
-  `nostack`, `preserves_flags` only when true) and a `// SAFETY:`. amd64 uses Intel syntax (the
+- `asm!`/`global_asm!` only under `sys/bsd/arch/` and `sys/boot/<arch>/`. Every `asm!` has
+  justified `options(...)` (`nomem`, `nostack`, `preserves_flags` only when true) and a
+  `// SAFETY:`. amd64 uses Intel syntax (the
   Rust default). Whole-file assembly stays a real `.S` file next to the Rust and is pulled in with
   `global_asm!(include_str!("locore.S"))`, so it can be diffed against OpenBSD's.
 - Interrupt and exception entry stubs are assembly (like OpenBSD's `vector.S`/`exception.S`), not

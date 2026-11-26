@@ -48,12 +48,14 @@ paths:
   `schema` together with `/progress`'s script): `totals` {`kernel_unsafe`, `test_unsafe`,
   `core_unsafe`, `core_unsafe_files`, `legacy_unsafe`, `legacy_unsafe_files` (the files that
   hold any), `modules` (the files the forbid ratchet counts: under `sys/`, apart from crate
-  roots, `mod.rs`, `build.rs`, `sys/machine/`, `sys/arch/host/` and `sys/stand/`),
+  roots, `mod.rs`, `build.rs`, `sys/bsd/machine/`, `sys/bsd/arch/host/`, `sys/bsd/stand/`,
+  `sys/boot/boot/` and `sys/boot/efi/`),
   `forbid_modules`, `core_budget` (over the rows that hold core files, each row's budget
   minus its legacy)} (the v1 groups stay until N9, the pace baseline reads `legacy`); `crates` (additive,
   `schema` stays 1) {`kernel`, `abi`, `hal`, `lib` (the leaf crates `sys/lib/sysdefs/`, `libkern/`, `libz/`;
-  `--check` holds it at 0 like `kernel` and `abi`, 2026-11-26), `boot` (`sys/stand/`, `sys/lib/libsa/`,
-  `sys/arch/*/stand/`), `bsd` (every other file under `sys/`, and `init/`; it also carries
+  `--check` holds it at 0 like `kernel` and `abi`, 2026-11-26), `boot` (`sys/boot/`, and bsd's boot
+  entry `sys/bsd/stand/`, counted there as before the layout of 2026-11-26),
+  `bsd` (every other file under `sys/`, and `init/`; it also carries
   `to_hal` {`files`, `unsafe`}, the hardware and the lists and trees that N2 moves into `hal`:
   still `bsd` until they move)}: each {`files`, `unsafe`}, kernel code, test code apart}; `ratchet` {`forbid_floor`, `legacy_ceiling`,
   `legacy_baseline`, `hal_ceiling` (or `null`), `baseline_date`} or `null`; `rate` {`active_days` (days with a commit from `baseline_date`
@@ -63,6 +65,14 @@ paths:
   (`lineage.toml`'s, `extra`, or `null`), `subsystem`, `group` (`core`, else `forbid`, else
   `legacy`), `module`, `test` (a test-only file), `unsafe` (kernel code), `static_cell`,
   `send_sync`, `raw_cell`, `unsafe_cell`}].
+- LZ's layout (2026-11-26): the legacy tree is `sys/bsd/` and the loaders `sys/boot/`, LZ's
+  `sys/<x>`, `sys/lib/libsa/`, `sys/stand/{efi,boot}/` and `sys/arch/<arch>/stand/<dir>/`.
+  `lz_flat` (`main.rs`) reads a native path as LZ lays it out; `lz` (an inherited module's LZ
+  file, structure, the `lz-sync.toml` records' `modules`, `trace --rust`), `unsafe-report`
+  (the row names, so `unsafe-budget.toml` keeps LZ's, the crates, `to_hal`) and `/progress`
+  (its `lz_layout`, for ROADMAP's LZ-style scope cells) go through it. A tool that names a
+  file by LZ's layout does too; native file paths in code (`limine.conf`, `gen-syscalls`'
+  outputs, `manual`'s inputs) are the new ones.
 - Two commands write to the tree: `lz status --write`, only between the `<!-- lz:begin -->` /
   `<!-- lz:end -->` markers in `README.md` (the table and the core's line) and `docs/STATUS.md` (the summary line), and `unsafe-report --write`,
   only the line of `docs/STATUS.md` that starts with `Unsafe` and `unsafe-budget.toml`

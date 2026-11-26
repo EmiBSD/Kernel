@@ -3,7 +3,7 @@
 Four tiers. Every change lands with the tier it belongs to.
 
 1. **Host unit tests**: `just test` (`cargo test -p libkern -p bsd`). Pure logic (libkern, errno,
-   page-allocator math, queue adapters, formatting) runs on macOS through `sys/arch/host`.
+   page-allocator math, queue adapters, formatting) runs on macOS through `sys/bsd/arch/host`.
    Every new `pub fn` with testable logic gets a test in the same file: an inline
    `#[cfg(test)] mod tests` in the `<TESTS>` zone at the end, whatever its length (there is no
    `tests.rs`; `rust-kernel.md`, file layout). `cargo xtask lz check` rejects a `tests.rs`, a
