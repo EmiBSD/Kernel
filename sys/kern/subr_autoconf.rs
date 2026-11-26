@@ -232,7 +232,7 @@ fn new_softc(ls: LegacySoftc) -> AnyArc {
 
 /// The node of a legacy device: the one in its driver's unit table, or, for a device made by
 /// hand, a shadow for the call (the module's deviations).
-fn node_of(dev: &Device) -> DevRef {
+pub(crate) fn node_of(dev: &Device) -> DevRef {
     let cf = dev.cfdata();
     if let Some(n) = cf.cf_driver.cd_units.get(dev.dv_unit.get())
         && ptr::eq(legacy_device(&n), dev)
@@ -826,6 +826,15 @@ impl ConfigGlue for BsdConfigGlue {
     }
     fn root_mounted(&self) -> bool {
         rootvp().is_some()
+    }
+    fn nam2blk(&self) -> &'static [kernel::dev::disk::Nam2blk] {
+        crate::machine::autoconf::nam2blk()
+    }
+    fn swapdev(&self) -> i32 {
+        crate::machine::conf::swapdev()
+    }
+    fn boothowto_or(&self, flags: i32) {
+        BOOTHOWTO.fetch_or(flags, Ordering::Relaxed);
     }
 }
 /* </CODE> */

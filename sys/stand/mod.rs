@@ -278,8 +278,7 @@ unsafe fn boot_init(boot: &BootInfo) -> Result<(), BootError> {
     // boot(8)'s BOOTARG_BOOTDUID (efiboot's `openbsd,bootduid`; under Limine, `bootduid=` on
     // the command line): `setroot` finds the boot disk by this label DUID.
     if let Some(duid) = boot.bootduid() {
-        // SAFETY: the boot CPU alone, before `main` and autoconfiguration read it.
-        unsafe { bsd::kern::subr_disk::BOOTDUID.write(duid) };
+        bsd::sys::disk::set_bootduid(duid);
     }
     #[cfg(feature = "qemu")]
     bsd::kern::selftest::parse_bootargs(boot.cmdline.to_bytes());

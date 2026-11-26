@@ -217,6 +217,17 @@ pub trait ConfigGlue: Sync {
     fn boothowto(&self) -> i32;
     /// `rootvp != NULL`: the root file system is mounted.
     fn root_mounted(&self) -> bool;
+    /// `nam2blk[]`: the disk drivers' names and block majors (`findblkmajor`,
+    /// `findblkname`); none for a machine without disks.
+    fn nam2blk(&self) -> &'static [crate::dev::disk::Nam2blk] {
+        &[]
+    }
+    /// `swapdev` (`conf.c`): the machine's swap device, `NODEV` without one.
+    fn swapdev(&self) -> i32 {
+        -1
+    }
+    /// `boothowto |= flags` (`setroot`'s `RB_ASKNAME`).
+    fn boothowto_or(&self, _flags: i32) {}
 }
 
 /// `cfdata[]` as one walk sees it: its rows in use, each found in O(1).
@@ -249,6 +260,28 @@ fn with_rows<R>(f: impl FnOnce(&dyn RowTable) -> R) -> R {
 /// A C string argument up to its first NUL.
 fn cstr(s: &[u8]) -> &[u8] {
     &s[..s.iter().position(|&c| c == 0).unwrap_or(s.len())]
+}
+
+/// The machine's `nam2blk[]` (`ConfigGlue::nam2blk`); none before the glue is registered.
+pub fn config_nam2blk() -> &'static [crate::dev::disk::Nam2blk] {
+    GLUE.get().map_or(&[], |g| g.nam2blk())
+}
+
+/// The machine's `swapdev` (`ConfigGlue::swapdev`); `NODEV` before the glue is registered.
+pub fn config_swapdev() -> i32 {
+    GLUE.get().map_or(-1, |g| g.swapdev())
+}
+
+/// `boothowto` (`ConfigGlue::boothowto`); 0 before the glue is registered.
+pub fn config_boothowto() -> i32 {
+    GLUE.get().map_or(0, |g| g.boothowto())
+}
+
+/// `boothowto |= flags` (`ConfigGlue::boothowto_or`).
+pub fn config_boothowto_or(flags: i32) {
+    if let Some(g) = GLUE.get() {
+        g.boothowto_or(flags);
+    }
 }
 
 /// The registered glue.

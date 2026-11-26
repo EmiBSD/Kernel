@@ -136,14 +136,8 @@ use crate::kern::init_main::BOOTHOWTO;
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_timeout::{timeout_add_msec, timeout_add_sec, timeout_del, timeout_set};
 use crate::kern::subr_autoconf::device_unref;
-use crate::kern::subr_disk::{
-    bounds_check_with_label, disk_attach, disk_busy, disk_closepart, disk_detach, disk_gone,
-    disk_lock, disk_lock_nointr, disk_lookup, disk_openpart, disk_unbusy, disk_unlock, diskerr,
-    dkcksum, initdisklabel, setdisklabel,
-};
 use crate::kern::subr_prf::{Str, panic, printf};
 use crate::machine::cpu::delay;
-use crate::machine::disklabel::{readdisklabel, writedisklabel};
 use crate::machine::intr::{splbio, splx};
 use crate::sys::buf::BufLegacy;
 use crate::sys::buf::biodone;
@@ -153,10 +147,14 @@ use crate::sys::buf::{minphys, physio};
 use crate::sys::device::{
     CfMatch, Cfattach, Cfdriver, DV_DISK, DVACT_POWERDOWN, DVACT_RESUME, DVACT_SUSPEND, Device,
 };
+use crate::sys::disk::{
+    bounds_check_with_label, disk_attach, disk_busy, disk_closepart, disk_detach, disk_gone,
+    disk_lookup, disk_openpart, disk_unbusy, diskerr, dkcksum, initdisklabel, setdisklabel,
+};
+use crate::sys::disk::{readdisklabel, writedisklabel};
 use crate::sys::disklabel::{
     DISKLABEL_SIZE, DISKMAGIC, DTYPE_ESDI, DTYPE_ST506, Disklabel, Partinfo, disklabeldev,
-    diskpart, diskunit, dl_blktosec, dl_getdsize, dl_getpoffset, dl_getpsize, dl_sectoblk,
-    dl_setdsize,
+    diskpart, diskunit, dl_getdsize, dl_setdsize,
 };
 use crate::sys::dkio::{
     DIOCCACHESYNC, DIOCGDINFO, DIOCGPART, DIOCGPDINFO, DIOCRLDINFO, DIOCSDINFO, DIOCWDINFO,
@@ -215,12 +213,9 @@ static WDDUMPRECALIBRATED: AtomicBool = AtomicBool::new(false);
 /// `wddumpmulti`.
 static WDDUMPMULTI: AtomicI32 = AtomicI32::new(1);
 
-/// The zeroed label the I/O paths read before `disk_attach` allocated one.
-static ZERO_LABEL: Disklabel = Disklabel::zeroed();
-
 /// `wdlookup(unit)`: the attached unit, referenced (`disk_lookup`).
 fn wdlookup(unit: u32) -> Option<NonNull<Device>> {
-    disk_lookup(&WD_CD, i32::try_from(unit).ok()?)
+    disk_lookup(&WD_CD, i32::try_from(unit).ok()?, |dv| &wd_softc(dv).sc_dk)
 }
 
 /// `(struct wd_softc *)dv`.
@@ -433,7 +428,7 @@ pub fn wdattach(_parent: Option<&Device>, self_: &Device, aux: *mut c_void) {
     let xname = self_.xname().as_bytes();
     let n = xname.len().min(dk_name.len());
     dk_name[..n].copy_from_slice(&xname[..n]);
-    wd.sc_dk.dk_name.set(dk_name);
+    wd.sc_dk.construct(&dk_name, 0);
     let _ = bufq_init(&wd.sc_bufq, BUFQ_DEFAULT);
     timeout_set(
         &wd.sc_restart_timeout,
@@ -443,7 +438,7 @@ pub fn wdattach(_parent: Option<&Device>, self_: &Device, aux: *mut c_void) {
 
     // Attach disk.
     disk_attach(Some(&wd.sc_dev), &wd.sc_dk);
-    wd.sc_wdc_bio.lp.set(wd.sc_dk.dk_label.get());
+    wd.sc_wdc_bio.lp.set(NonNull::new(wd.sc_dk.label_ptr()));
 }
 
 /// `wdactivate`.
@@ -487,6 +482,7 @@ pub fn wddetach(self_: &Device, _flags: i32) -> Result<(), Errno> {
     // Detach disk.
     bufq_destroy(&sc.sc_bufq);
     disk_detach(&sc.sc_dk);
+    sc.sc_dk.destroy();
 
     Ok(())
 }
@@ -516,17 +512,13 @@ pub fn wdstrategy(bp: &'static Buf) {
             }
 
             // Validate the request.
-            let ok = wd
-                .sc_dk
-                .with_label(|lp| bounds_check_with_label(bp, lp.unwrap_or(&ZERO_LABEL)));
+            let ok = bounds_check_with_label(bp, &wd.sc_dk.geom(diskpart(bp.dev())));
             if !ok {
                 break 'done;
             }
 
             // Check that the number of sectors can fit in a byte.
-            let secsize = wd
-                .sc_dk
-                .with_label(|lp| i64::from(lp.unwrap_or(&ZERO_LABEL).d_secsize));
+            let secsize = i64::from(wd.sc_dk.geom(0).secsize);
             if bp.bcount() / secsize >= (1i64 << NBBY) {
                 break 'bad EINVAL;
             }
@@ -582,16 +574,9 @@ pub fn wdstart(wd: &'static WdSoftc) {
 pub fn __wdstart(wd: &'static WdSoftc, bp: &'static Buf) {
     let bio = &wd.sc_wdc_bio;
 
-    let (blkno, nsecs) = wd.sc_dk.with_label(|lp| {
-        let lp = lp.unwrap_or(&ZERO_LABEL);
-        let part = &lp.d_partitions[diskpart(bp.dev()) as usize];
-        let blkno = dl_blktosec(
-            lp,
-            (bp.blkno() as u64).wrapping_add(dl_sectoblk(lp, dl_getpoffset(part))),
-        );
-        let nsecs = howmany(bp.bcount() as usize, lp.d_secsize as usize) as u64;
-        (blkno, nsecs)
-    });
+    let g = wd.sc_dk.geom(diskpart(bp.dev()));
+    let blkno = g.blktosec((bp.blkno() as u64).wrapping_add(g.sectoblk(g.poffset)));
+    let nsecs = howmany(bp.bcount() as usize, g.secsize as usize) as u64;
     bio.blkno.set(blkno as Daddr);
     bio.blkdone.set(0);
     wd.sc_bp.set(Some(bp));
@@ -681,8 +666,15 @@ pub fn wddone(wd: &'static WdSoftc) {
     if let Some(errbuf) = retry {
         // Just reset and retry. Can we do more ?
         wdc_reset_channel(wd.drvp(), false);
-        wd.sc_dk
-            .with_label(|lp| diskerr(bp, "wd", errbuf, LOG_PRINTF, bio.blkdone.get() as i32, lp));
+        let g = wd.sc_dk.geom(diskpart(bp.dev()));
+        diskerr(
+            bp,
+            "wd",
+            errbuf,
+            LOG_PRINTF,
+            bio.blkdone.get() as i32,
+            Some(&g),
+        );
         let retries = wd.retries.get();
         wd.retries.set(retries + 1);
         if retries < WDIORETRIES {
@@ -779,14 +771,18 @@ pub fn wdopen_noproc(dev: Dev, _flag: i32, fmt: i32) -> Result<(), Errno> {
     }
 
     // If this is the first open of this device, add a reference to the adapter.
-    if let Err(e) = disk_lock(&wd.sc_dk) {
-        // bad4:
-        unref();
-        return Err(e);
-    }
+    let dk = wd.sc_dk.get();
+    let lock = match dk.lock() {
+        Ok(l) => l,
+        Err(e) => {
+            // bad4:
+            unref();
+            return Err(e);
+        }
+    };
 
     let error = 'bad: {
-        if wd.sc_dk.dk_openmask.get() != 0 {
+        if wd.sc_dk.openmask() != 0 {
             // If any partition is open, but the disk has been invalidated, disallow further
             // opens.
             if !wd.isset(WDF_LOADED) {
@@ -801,11 +797,7 @@ pub fn wdopen_noproc(dev: Dev, _flag: i32, fmt: i32) -> Result<(), Errno> {
             // Load the partition info if not already loaded.
             let mut lp = Disklabel::zeroed();
             let error = wdgetdisklabel(dev, wd, &mut lp, false);
-            // SAFETY: under the disk lock, with no partition open: nobody else holds the
-            // in-core label.
-            if let Some(dl) = unsafe { wd.sc_dk.label_mut() } {
-                *dl = lp;
-            }
+            wd.sc_dk.label_store(&lp);
             if error == Err(EIO) {
                 break 'bad Err(EIO);
             }
@@ -818,7 +810,7 @@ pub fn wdopen_noproc(dev: Dev, _flag: i32, fmt: i32) -> Result<(), Errno> {
 
     // bad: (nothing to undo when no partition is open)
     // bad3:
-    disk_unlock(&wd.sc_dk);
+    drop(lock);
     // bad4:
     unref();
     error
@@ -833,16 +825,17 @@ pub fn wdclose(dev: Dev, _flag: i32, fmt: i32, _p: Option<&Proc>) -> Result<(), 
 
     wdcdebug_print!(wdcdebug_wd_mask, DEBUG_FUNCS, "wdclose\n");
 
-    disk_lock_nointr(&wd.sc_dk);
+    let dk = wd.sc_dk.get();
+    let lock = dk.lock_nointr();
 
     disk_closepart(&wd.sc_dk, part, fmt);
 
-    if wd.sc_dk.dk_openmask.get() == 0 {
+    if wd.sc_dk.openmask() == 0 {
         let _ = wd_flushcache(wd, AT_WAIT);
         // XXXX Must wait for I/O to complete!
     }
 
-    disk_unlock(&wd.sc_dk);
+    drop(lock);
 
     // SAFETY: the reference `wdlookup` took.
     unsafe { device_unref(dv) };
@@ -902,14 +895,10 @@ pub fn wdgetdisklabel(
     }
 
     // The label wdstrategy checks the reads below against (see the module's deviations).
-    if wd.sc_dk.dk_openmask.get() == 0 {
+    if wd.sc_dk.openmask() == 0 {
         let mut incore = *lp;
         if initdisklabel(&mut incore).is_ok() {
-            // SAFETY: no partition is open and the caller serialises label changes (the
-            // disk lock in `wdopen`): nobody else holds the in-core label.
-            if let Some(dl) = unsafe { wd.sc_dk.label_mut() } {
-                *dl = incore;
-            }
+            wd.sc_dk.label_store(&incore);
         }
     }
 
@@ -967,10 +956,7 @@ fn wdioctl_loaded(
                 &mut *lpp.as_ptr()
             };
             let _ = wdgetdisklabel(dev, wd, lp, false);
-            // SAFETY: the driver's own label; no other reference to it is live.
-            if let Some(dl) = unsafe { wd.sc_dk.label_mut() } {
-                *dl = *lp;
-            }
+            wd.sc_dk.label_store(lp);
             free(mem, M_TEMP, size_of::<Disklabel>());
             Ok(())
         }
@@ -983,24 +969,16 @@ fn wdioctl_loaded(
         }
 
         DIOCGDINFO => {
-            wd.sc_dk.with_label(|lp| {
-                if let Some(lp) = lp {
-                    copyout_label(lp, addr);
-                }
-            });
+            copyout_label(&wd.sc_dk.label(), addr);
             Ok(())
         }
 
         DIOCGPART => {
-            if let Some(lp) = wd.sc_dk.dk_label.get() {
-                let pi = Partinfo {
-                    disklab: lp.as_ptr(),
-                    // SAFETY: `lp` is the live in-core label; the projection only computes
-                    // the address of one of its partitions.
-                    part: unsafe { &raw mut (*lp.as_ptr()).d_partitions[diskpart(dev) as usize] },
-                };
-                pi.store(addr);
-            }
+            let pi = Partinfo {
+                disklab: wd.sc_dk.label_ptr(),
+                part: wd.sc_dk.partition_ptr(diskpart(dev)),
+            };
+            pi.store(addr);
             Ok(())
         }
 
@@ -1009,26 +987,27 @@ fn wdioctl_loaded(
                 return Err(EBADF);
             }
 
-            disk_lock(&wd.sc_dk)?;
+            let dk = wd.sc_dk.get();
+            let lock = dk.lock()?;
 
             let mut nlp = Disklabel::from_bytes(addr);
-            // SAFETY: under the disk lock; the borrow ends before the strategy runs.
-            let mut error = match unsafe { wd.sc_dk.label_mut() } {
-                Some(olp) => setdisklabel(olp, &mut nlp, wd.sc_dk.dk_openmask.get()),
-                None => Err(ENXIO),
-            };
+            let mut olp = wd.sc_dk.label();
+            let mut error = setdisklabel(&mut olp, &mut nlp, wd.sc_dk.openmask());
+            if error.is_ok() {
+                wd.sc_dk.label_store(&olp);
+            }
             if error.is_ok() {
                 let drvp = wd.drvp();
                 if drvp.state.get() > RECAL {
                     drvp.set(crate::dev::ata::atavar::DRIVE_RESET);
                 }
                 if xfer == DIOCWDINFO {
-                    let mut lp = wd.sc_dk.label().unwrap_or_default();
+                    let mut lp = wd.sc_dk.label();
                     error = writedisklabel(disklabeldev(dev), wdstrategy, &mut lp);
                 }
             }
 
-            disk_unlock(&wd.sc_dk);
+            drop(lock);
             error
         }
 
@@ -1053,17 +1032,15 @@ pub fn wdsize(dev: Dev) -> Daddr {
     let wd = wd_softc(dv);
 
     let part = diskpart(dev);
-    let omask = wd.sc_dk.dk_openmask.get() & (1u64 << part);
+    let omask = wd.sc_dk.openmask() & (1u64 << part);
 
     let size = 'exit: {
         if omask == 0 && wdopen_noproc(dev, 0, S_IFBLK as i32).is_err() {
             break 'exit -1;
         }
 
-        let mut size = wd.sc_dk.with_label(|lp| {
-            let lp = lp.unwrap_or(&ZERO_LABEL);
-            dl_sectoblk(lp, dl_getpsize(&lp.d_partitions[part as usize])) as Daddr
-        });
+        let g = wd.sc_dk.geom(part);
+        let mut size = g.sectoblk(g.psize) as Daddr;
         if omask == 0 && wdclose(dev, 0, S_IFBLK as i32, None).is_err() {
             size = -1;
         }
@@ -1098,11 +1075,8 @@ pub fn wddump(dev: Dev, blkno: Daddr, va: *mut u8, size: usize) -> Result<(), Er
     }
 
     // Convert to disk sectors. Request must be a multiple of size.
-    let (secsize, psize, poffset) = wd.sc_dk.with_label(|lp| {
-        let lp = lp.unwrap_or(&ZERO_LABEL);
-        let p = &lp.d_partitions[part as usize];
-        (lp.d_secsize as usize, dl_getpsize(p), dl_getpoffset(p))
-    });
+    let g = wd.sc_dk.geom(part);
+    let (secsize, psize, poffset) = (g.secsize as usize, g.psize, g.poffset);
     if secsize == 0 || !size.is_multiple_of(secsize) {
         return Err(EFAULT);
     }

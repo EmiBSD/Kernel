@@ -34,7 +34,6 @@ pub mod cpufunc;
 pub mod cpuswitch;
 pub mod db_interface;
 pub mod db_trace;
-pub mod disksubr;
 pub mod fpu;
 pub mod intr;
 pub mod locore;

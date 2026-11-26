@@ -95,7 +95,8 @@
 //!   them; a reader outside `sysctl(2)`, `gethostname`'s NFS and ISO 9660 users, takes the
 //!   read side); `disknames` and `diskstats` are `MArray`s owned by the `Rwlocked` state of
 //!   `sysctl_disklock` (LZ: two `AtomicPtr`s and their lengths, dereferenced in `unsafe`
-//!   blocks), filled through the [`DiskExport`] bridge (the disk list is `bsd`'s, N7).
+//!   blocks), filled from the kernel's disk list (`dev::disk`, N7.1d; the `DiskExport`
+//!   bridge to `bsd`'s list is paid).
 //! - `hw_vendor`, `hw_prod`, `hw_uuid`, `hw_serial`, `hw_ver` are [`HwString`]s (a `ReadMostly`, the last write wins as the C's assignment) the machine
 //!   sets once at attach (LZ: `StaticCell`s read in `unsafe`); `cpu_cpuspeed` is
 //!   [`register_cpuspeed`]'s; the three battery setters are one [`BatteryCharge`] trait over
@@ -541,8 +542,7 @@ const NODEV: Dev = -1;
 const M_TEMP: i32 = 127;
 /// `M_SYSCTL` (`<sys/malloc.h>`): sysctl buffers (persistent storage).
 pub(crate) const M_SYSCTL: i32 = 11;
-/// `sizeof(struct diskstats)` (`<sys/disk.h>`): the bytes of one `hw.diskstats` entry, which
-/// the [`DiskExport`] hands over already laid out.
+/// `sizeof(struct diskstats)` (`<sys/disk.h>`): the bytes of one `hw.diskstats` entry.
 pub const DISKSTATS_SIZE: usize = 112;
 /// `BYTE_ORDER` (`<machine/endian.h>`): `LITTLE_ENDIAN` (1234) or `BIG_ENDIAN` (4321).
 const BYTE_ORDER_C: i32 = if cfg!(target_endian = "little") {
@@ -734,8 +734,6 @@ static CPU_CPUSPEED: OnceStatic<CpuSpeedFn> = OnceStatic::new();
 pub type CpuSpeedFn = fn(&mut i32) -> Result<(), Errno>;
 /// The battery driver's setters (`hw_battery_set*`).
 static BATTERY: OnceStatic<&'static dyn BatteryCharge> = OnceStatic::new();
-/// The disk list's export (`bsd`'s `disklist`, N7).
-static DISK_EXPORT: OnceStatic<&'static dyn DiskExport> = OnceStatic::new();
 /// `physmem`: physical memory, in pages (the machine's `bsd` variable).
 static PHYSMEM: OnceStatic<&'static core::sync::atomic::AtomicUsize> = OnceStatic::new();
 
@@ -847,24 +845,6 @@ pub fn register_battery(b: &'static dyn BatteryCharge) -> Result<(), AlreadyRegi
         .map_err(|_| AlreadyRegistered("BatteryCharge"))
 }
 
-/// The disk list as `sysctl_diskinit` reads it (`bsd`'s `subr_disk`, N7: `disk_change`,
-/// `disk_count`, `disklist` and each disk's statistics under its `dk_mtx`). A bridge
-/// (`bridges.toml`).
-pub trait DiskExport: Sync {
-    /// `if (disk_change) disk_change = 0`: whether the list changed since the last call.
-    fn take_change(&self) -> bool;
-    /// `disk_count`.
-    fn count(&self) -> usize;
-    /// `TAILQ_FOREACH(dk, &disklist, dk_link)`: `f` on each disk's name (up to its NUL), its
-    /// label's uid formatted (`None` when the label has none) and its `struct diskstats`
-    /// (`DISKSTATS_SIZE` bytes, name and statistics filled under the disk's mutex).
-    fn for_each(&self, f: &mut DiskVisit<'_>);
-}
-
-/// What [`DiskExport::for_each`] calls on each disk: its name, its label's uid formatted (or
-/// `None`) and its `struct diskstats` bytes.
-pub type DiskVisit<'a> = dyn FnMut(&[u8], Option<&[u8]>, &[u8]) + 'a;
-
 /// The host tests' reset (`testing.md`'s rule: a global holding kernel memory): the disk
 /// exports are forgotten, not freed, since they may be an earlier test's memory, which
 /// `setup_real_memory` replaced.
@@ -873,13 +853,6 @@ pub fn sysctl_test_reset() {
     let mut d = SYSCTL_DISKLOCK.write();
     core::mem::forget(d.names.take());
     core::mem::forget(d.stats.take());
-}
-
-/// Registers the disk list's export, once (`bsd`'s `main`).
-pub fn install_disk_export(d: &'static dyn DiskExport) -> Result<(), AlreadyRegistered> {
-    DISK_EXPORT
-        .set(d)
-        .map_err(|_| AlreadyRegistered("DiskExport"))
 }
 
 /// `f(hostname)`: the host's name (up to `hostnamelen` bytes are meaningful), under its lock.
@@ -1497,7 +1470,7 @@ fn hw_sysctl_locked(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> 
             sysctl_diskinit(true)?;
             let d = SYSCTL_DISKLOCK.read();
             let stats = d.stats.as_deref().unwrap_or(&[]);
-            let count = DISK_EXPORT.get().map_or(0, |e| e.count());
+            let count = crate::dev::disk::disk_count();
             let len = (count * DISKSTATS_SIZE).min(stats.len());
             rdstruct(req, &stats[..len])
         }
@@ -1607,30 +1580,40 @@ fn diskname_append(buf: &mut [u8], l: usize, name: &[u8], duid: &[u8]) -> usize 
     l + n
 }
 
+/// `TAILQ_FOREACH(dk, &disklist, dk_link)`: `f` on each attached disk, one list step at a
+/// time (`dev::disk::disk_next`).
+fn each_disk(mut f: impl FnMut(&crate::dev::disk::Disk)) {
+    use crate::dev::disk::disk_next;
+
+    let mut d = disk_next(None);
+    while let Some(dk) = d {
+        f(&dk);
+        d = disk_next(Some(&dk));
+    }
+}
+
 /// `sysctl_diskinit`: initialises `disknames`/`diskstats` for export by sysctl. If `update`
 /// is set, then we simply update the disk statistics information. Under the kernel lock (the
 /// caller's vslock).
 pub fn sysctl_diskinit(update: bool) -> Result<(), Errno> {
+    use crate::dev::disk::{disk_change_take, disk_count, disk_stats, duid_format, duid_iszero};
+
     klock::kernel_assert_locked();
 
     let mut d = SYSCTL_DISKLOCK.write_flags(RW_INTR)?;
-    let Some(exp) = DISK_EXPORT.get().copied() else {
-        // No disk list is exported (no `bsd`): no disk, nothing to build.
-        return Ok(());
-    };
 
     let mut changed = false;
 
     // Run in a loop, disks may change while malloc sleeps.
-    while exp.take_change() {
+    while disk_change_take() {
         let mut tlen = 0;
-        exp.for_each(&mut |name, _, _| {
-            tlen += name.len();
+        each_disk(|dk| {
+            tlen += dk.name().len();
             tlen += 18; // label uid + separators
         });
         tlen += 1;
         // disk_count may change when malloc sleeps
-        let count = exp.count();
+        let count = disk_count();
 
         // The sysctl_disklock ensures that no other process can allocate disknames and
         // diskstats while our malloc sleeps.
@@ -1645,15 +1628,19 @@ pub fn sysctl_diskinit(update: bool) -> Result<(), Errno> {
     let DiskExports { names, stats } = &mut *d;
     let stats: &mut [u8] = stats.as_deref_mut().unwrap_or(&mut []);
     let mut sdk = stats.as_chunks_mut::<DISKSTATS_SIZE>().0.iter_mut();
+    let mut copy_stats = |dk: &crate::dev::disk::Disk| {
+        if let Some(dst) = sdk.next() {
+            dst.copy_from_slice(disk_stats(dk).as_bytes());
+        }
+    };
     if changed {
         let names: &mut [u8] = names.as_deref_mut().unwrap_or(&mut []);
         let mut l = 0;
-        exp.for_each(&mut |name, duid, ds| {
-            l = diskname_append(names, l, name, duid.unwrap_or(&[]));
-            if let Some(dst) = sdk.next() {
-                let n = ds.len().min(DISKSTATS_SIZE);
-                dst[..n].copy_from_slice(&ds[..n]);
-            }
+        each_disk(|dk| {
+            let uid = dk.uid();
+            let duid = (!duid_iszero(&uid)).then(|| duid_format(&uid));
+            l = diskname_append(names, l, dk.name(), duid.as_ref().map_or(&[], |d| &d[..]));
+            copy_stats(dk);
         });
 
         // Eliminate trailing comma
@@ -1662,12 +1649,7 @@ pub fn sysctl_diskinit(update: bool) -> Result<(), Errno> {
         }
     } else if update {
         // Just update, number of drives hasn't changed
-        exp.for_each(&mut |_, _, ds| {
-            if let Some(dst) = sdk.next() {
-                let n = ds.len().min(DISKSTATS_SIZE);
-                dst[..n].copy_from_slice(&ds[..n]);
-            }
-        });
+        each_disk(copy_stats);
     }
     Ok(())
 }
@@ -3377,7 +3359,6 @@ mod tests {
             register_top(CTL_NET, &NET).unwrap();
             static OSTYPE: RdString = RdString(b"EmiBSD");
             register_kern(KERN_OSTYPE, &OSTYPE).unwrap();
-            install_disk_export(&DISKS).unwrap();
         });
     }
 
@@ -3642,42 +3623,30 @@ mod tests {
         );
     }
 
-    /// The disk list's double: `(name, duid, statistics)` per disk and the change flag.
-    struct Disks {
-        list: StdMutex<(bool, Vec<(&'static [u8], Option<&'static [u8]>, u8)>)>,
-    }
-
-    impl DiskExport for Disks {
-        fn take_change(&self) -> bool {
-            core::mem::replace(&mut self.list.lock().unwrap().0, false)
-        }
-        fn count(&self) -> usize {
-            self.list.lock().unwrap().1.len()
-        }
-        fn for_each(&self, f: &mut DiskVisit<'_>) {
-            let list = self.list.lock().unwrap().1.clone();
-            for (name, duid, fill) in list {
-                f(name, duid, &[fill; DISKSTATS_SIZE]);
-            }
-        }
-    }
-
-    static DISKS: Disks = Disks {
-        list: StdMutex::new((false, Vec::new())),
-    };
-
     #[test]
-    fn hw_disk_nodes_follow_the_export() {
+    fn hw_disk_nodes_follow_the_disk_list() {
+        use crate::dev::disk::{
+            Disk, disk_attach, disk_busy, disk_detach, disk_stats, disk_unbusy,
+        };
+        use hal::sys::disklabel::Disklabel;
+
+        let _g = testutil::bufcache_install(1 << 20, 64);
+        crate::dev::disk::disk_test_reset();
         registered();
         setup();
         let out = testutil::USER_BASE + 0x5e00;
-        *DISKS.list.lock().unwrap() = (
-            true,
-            std::vec![
-                (&b"sd0"[..], Some(&b"0123456789abcdef"[..]), 1),
-                (&b"cd0"[..], None, 2)
-            ],
-        );
+        let sd0 = Disk::new(b"sd0", 0);
+        let mut lp = Disklabel::zeroed();
+        lp.d_uid = [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef];
+        let cd0 = Disk::new(b"cd0", 0);
+        disk_attach::<Procs>(None, &sd0);
+        disk_attach::<Procs>(None, &cd0);
+        // After the attach, which zeroes the label.
+        sd0.label_store(&lp);
+        disk_busy(&sd0);
+        disk_unbusy(&sd0, 4096, 8, true);
+
+        // The names: the DUID of a disk whose label has one, none for the other.
         let mut len = 64;
         assert_eq!(
             hw_sysctl_locked(&[HW_DISKNAMES], &mut req(out, &mut len, 0, 0)),
@@ -3685,7 +3654,8 @@ mod tests {
         );
         assert_eq!(get(out, len), b"sd0:0123456789abcdef,cd0:\0".to_vec());
 
-        // The statistics: both entries, refreshed on every read (the update path).
+        // The statistics: both entries, byte for byte, refreshed on every read (the update
+        // path).
         let mut len = 2 * DISKSTATS_SIZE;
         assert_eq!(
             hw_sysctl_locked(&[HW_DISKSTATS], &mut req(out, &mut len, 0, 0)),
@@ -3693,27 +3663,29 @@ mod tests {
         );
         assert_eq!(len, 2 * DISKSTATS_SIZE);
         let stats = get(out, len);
-        assert!(stats[..DISKSTATS_SIZE].iter().all(|&b| b == 1));
-        assert!(stats[DISKSTATS_SIZE..].iter().all(|&b| b == 2));
-        DISKS.list.lock().unwrap().1[1].2 = 3;
+        assert_eq!(&stats[..DISKSTATS_SIZE], disk_stats(&sd0).as_bytes());
+        assert_eq!(&stats[DISKSTATS_SIZE..], disk_stats(&cd0).as_bytes());
+        assert_eq!(&stats[..4], b"sd0\0");
+        disk_busy(&cd0);
+        disk_unbusy(&cd0, 512, 0, false);
         assert_eq!(
             hw_sysctl_locked(&[HW_DISKSTATS], &mut req(out, &mut len, 0, 0)),
             Ok(())
         );
-        assert!(get(out, len)[DISKSTATS_SIZE..].iter().all(|&b| b == 3));
+        assert_eq!(
+            &get(out, len)[DISKSTATS_SIZE..],
+            disk_stats(&cd0).as_bytes()
+        );
 
         // A disk gone: the names are rebuilt.
-        {
-            let mut l = DISKS.list.lock().unwrap();
-            l.0 = true;
-            l.1.truncate(1);
-        }
+        disk_detach(&cd0);
         let mut len = 64;
         assert_eq!(
             hw_sysctl_locked(&[HW_DISKNAMES], &mut req(out, &mut len, 0, 0)),
             Ok(())
         );
         assert_eq!(get(out, len), b"sd0:0123456789abcdef\0".to_vec());
+        disk_detach(&sd0);
     }
 
     #[test]

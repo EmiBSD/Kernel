@@ -108,7 +108,6 @@ use kernel::fs::vops::Cred;
 
 use crate::kern::init_main::rootvp;
 use crate::kern::kern_malloc::{free, mallocarray};
-use crate::kern::subr_disk::disk_map;
 use crate::kern::subr_prf::{panic, printf};
 use crate::kern::vfs_vops::{VOP_CLOSE, VOP_OPEN, VOP_UNLOCK};
 use crate::machine::conf::nblkdev;
@@ -153,6 +152,7 @@ use crate::sys::vnode::{
     copy_statfs_info, getnewvnode, vcount, vflush, vfs_mountedon, vget, vinvalbuf, vput, vref,
     vrele,
 };
+use kernel::dev::disk::disk_map;
 use kernel::fs::export::{ExportGrant, vfs_export, vfs_export_lookup};
 
 /// `VG_DONTLOADIN`: tells `ntfs_vgetex` to do not call `ntfs_loadntnode()` on ntnode, even if

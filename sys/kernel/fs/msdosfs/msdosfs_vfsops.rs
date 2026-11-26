@@ -77,8 +77,8 @@
 //!   one around the kernel copy of the name) instead of reinitialising the caller's `ndp`,
 //!   whose lifetime cannot hold a local name, as `ffs_mount` does. A mount that is not an
 //!   update and has no arguments (the C would dereference NULL) answers `EINVAL`.
-//! - `disk_map`, `nblkdev`'s device switch and `rootvp` are `bsd`'s until N7, reached through
-//!   the glue (`FileGlue::disk_map`, `fs::spec::devsw`, `FileGlue::rootvp`), as ffs's and
+//! - `nblkdev`'s device switch and `rootvp` are `bsd`'s until N7, reached through the glue
+//!   (`fs::spec::devsw`, `FileGlue::rootvp`; `disk_map` is the kernel's since N7.1d), as ffs's and
 //!   ext2fs's. The export list (`pm_export`) is the mount's (`Mount::export`, N6.7b0), which
 //!   [`msdosfs_mount`] updates with `vfs_export` and [`msdosfs_mountfs`] empties where the C's
 //!   `malloc(M_ZERO)` of the `msdosfsmount` starts `pm_export` empty; `msdosfs_check_export`
@@ -169,7 +169,7 @@ use hal::user::UserPtr;
 
 use crate::assert::kpanic;
 use crate::base::prf::printf;
-use crate::file::{DM_OPENBLCK, FileGlue};
+use crate::file::FileGlue;
 use crate::fs::bio::{bread, brelse};
 use crate::fs::buf::{B_INVAL, BufRef};
 use crate::fs::export::{ExportGrant, check, vfs_export};
@@ -210,6 +210,7 @@ use crate::fs::word::U32Word;
 use crate::net::mbuf::Mbuf;
 use crate::proc::{ProcGlue, Thread};
 use crate::vm::io::MAXBSIZE;
+use hal::sys::disk::DM_OPENBLCK;
 
 /// `DEV_BSIZE`: the size of a disk block, the unit of the geometry's block numbers.
 const DEV_BSIZE: u32 = 512;
@@ -312,7 +313,7 @@ pub fn msdosfs_mount<G: ProcGlue>(
     };
     UserPtr::<u8>::new(args.fspec).copyinstr(&mut fspec)?;
 
-    if !<G::FileGlue as FileGlue>::disk_map(&fspec, &mut fname, DM_OPENBLCK) {
+    if !crate::dev::disk::disk_map(&fspec, &mut fname, DM_OPENBLCK) {
         fname = fspec;
     }
 

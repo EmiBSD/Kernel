@@ -77,7 +77,6 @@
 //!   at compile time that their members tile them (the C's padding holes are members,
 //!   `ds_pad0`); `struct mbstat` is `AbiPod` in `hal::sys::mbuf` since N6.1.
 
-use crate::sys::disk::Diskstats;
 use crate::sys::errno::Errno;
 use crate::sys::proc::Proc;
 use crate::sys::sched::Cpustats;
@@ -111,20 +110,7 @@ impl<T: hal::user::AbiPod> SysctlPlain for T {}
 // `struct timeval` and `struct clockinfo` are the kernel's (`kernel::time::clock::Timeval`,
 // `kernel::time::Clockinfo`, N4.8a), `AbiPod` where they are defined.
 
-// `struct diskstats`: the C's one padding hole a member (`ds_pad0`).
-hal::abi_pod!(Diskstats {
-    ds_name: [u8; crate::sys::disk::DS_DISKNAMELEN],
-    ds_busy: i32,
-    ds_pad0: u32,
-    ds_rxfer: u64,
-    ds_wxfer: u64,
-    ds_seek: u64,
-    ds_rbytes: u64,
-    ds_wbytes: u64,
-    ds_attachtime: Timeval,
-    ds_timestamp: Timeval,
-    ds_time: Timeval,
-});
+// `struct diskstats`: `AbiPod` in `hal::sys::disk` (N7.1d), where it moved with the disk.
 
 // `struct cpustats`: seven `uint64_t`.
 hal::abi_pod!(Cpustats {
@@ -135,11 +121,8 @@ hal::abi_pod!(Cpustats {
 // `struct mbstat`: `AbiPod` in `hal::sys::mbuf` (N6.1), where it moved with the mbuf.
 
 const _: () = {
-    use core::mem::{offset_of, size_of};
+    use core::mem::size_of;
     // The C layout (amd64 and arm64 are both LP64) of the structures this side copies out.
-    assert!(size_of::<Diskstats>() == 112);
-    assert!(offset_of!(Diskstats, ds_rxfer) == 24);
-    assert!(offset_of!(Diskstats, ds_attachtime) == 64);
     assert!(size_of::<Timeval>() == 16);
     assert!(size_of::<Clockinfo>() == 16);
 };
@@ -158,7 +141,6 @@ mod tests {
         let kf = KinfoFile::zeroed();
         assert_eq!(kf.as_bytes().len(), 632);
         assert_eq!(Cpustats::default().as_bytes().len(), 56);
-        assert_eq!(Diskstats::default().as_bytes().len(), 112);
     }
 
     #[test]

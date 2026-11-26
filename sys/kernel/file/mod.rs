@@ -153,10 +153,6 @@ pub const FIF_HASLOCK: u32 = 0x01;
 /// `FIF_INSERTED`: present in `filehead`.
 pub const FIF_INSERTED: u32 = 0x80;
 
-/// `DM_OPENBLCK` (`<sys/disk.h>`, `bsd`'s `subr_disk` until N7): [`FileGlue::disk_map`] maps
-/// a disklabel UID to the block device.
-pub const DM_OPENBLCK: i32 = 0x2;
-
 /// `FDUP_MAX_COUNT`: the reference count past which a file is no longer duplicated (below
 /// `hal`'s handle limit, so a duplication is refused before a clone could panic).
 pub const FDUP_MAX_COUNT: u32 = u32::MAX - 2 * hal::cpu::MAXCPUS as u32;
@@ -691,13 +687,6 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     /// The vnode and mount tables of this glue's processes (one `static` of `bsd`'s).
     fn vfs() -> &'static crate::fs::subr::VfsTables<Self::Proc>;
 
-    /// `disk_map(path, mappath, sizeof(mappath), flags) != -1` (`subr_disk.c`, `bsd`'s until
-    /// N7, docs/SCAFFOLDING.md): `path` names a disk by its disklabel UID and `mappath` now
-    /// holds the device's path; `false` (the C's -1) for any other path, and for a glue
-    /// without disks.
-    fn disk_map(_path: &[u8], _mappath: &mut [u8], _flags: i32) -> bool {
-        false
-    }
     /// `rootvp` (`init_main.c`'s global, `bsd`'s until N7, docs/SCAFFOLDING.md): the vnode of
     /// the root device, which `ffs_mountfs` lets share its device with the swap partition (a
     /// miniroot's); `None` before a root mount, and for a glue without one.

@@ -863,6 +863,9 @@ pub(crate) mod tests {
     /// thread with credentials and a descriptor table (no current directory).
     pub(crate) fn setup() -> (MutexGuard<'static, ()>, &'static Proc) {
         let guard = setup_real_memory();
+        // The kernel's disk list (the drivers' tests attach disks): an earlier test's blocks
+        // forgotten (testing.md).
+        kernel::dev::disk::disk_test_reset();
         crate::machine::cons::consinit();
         // The VOPs run under the kernel lock, as the system calls that reach them take it:
         // VN_KNOTE (knote_locked on v_klist) needs it held. The test thread keeps it.

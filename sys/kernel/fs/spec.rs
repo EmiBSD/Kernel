@@ -387,7 +387,7 @@ pub trait Devsw<G: ProcGlue>: Sync {
 
 /// The device switch of `G`'s subsystem; `panic(9)` before it is registered (no device vnode
 /// exists then).
-pub(super) fn devsw<G: ProcGlue>() -> &'static dyn Devsw<G> {
+pub(crate) fn devsw<G: ProcGlue>() -> &'static dyn Devsw<G> {
     match vfs::<G>().devsw.get() {
         Some(d) => *d,
         None => kpanic(format_args!("the device switch is not registered")),

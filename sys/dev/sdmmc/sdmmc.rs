@@ -95,7 +95,6 @@ use crate::kern::kern_synch::{tsleep_nsec, wakeup};
 use crate::kern::subr_autoconf::{
     config_activate_children, config_pending_decr, config_pending_incr,
 };
-use crate::kern::subr_disk::ROOTDV;
 use crate::kern::subr_prf::{panic, printf};
 use crate::machine::bus::{
     BUS_DMA_ALLOCNOW, BUS_DMA_NOWAIT, BusSize, bus_dmamap_create, bus_dmamap_destroy,
@@ -281,15 +280,14 @@ pub fn sdmmc_activate(self_: &Device, act: i32) -> Result<(), Errno> {
 
 /// `sdmmc_holds_root_device`: is the root disk a child of this slot's SCSI bus?
 pub fn sdmmc_holds_root_device(sc: &SdmmcSoftc) -> bool {
-    let rootdv = ROOTDV.load(Ordering::Relaxed);
-    // SAFETY: `rootdv` is set once to an attached device that is never freed.
-    let Some(rootdv) = (unsafe { rootdv.as_ref() }) else {
+    let Some(rootdv) = kernel::dev::disk::rootdv() else {
         return false;
     };
+    let me = crate::kern::subr_autoconf::node_of(&sc.sc_dev);
     rootdv
         .parent()
-        .and_then(Device::parent)
-        .is_some_and(|d| ptr::eq(d, &sc.sc_dev))
+        .and_then(|d| d.parent())
+        .is_some_and(|d| hal::mem::malloc::MArc::ptr_eq(d, &me))
 }
 
 /// `sdmmc_create_thread`.

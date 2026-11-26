@@ -85,12 +85,6 @@ use kernel::dev::autoconf::config_attach_by_hand;
 use kernel::dev::device::Aux;
 
 use crate::kern::subr_autoconf::device_unref;
-use crate::kern::subr_disk::{
-    bounds_check_with_label, disk_attach, disk_closepart, disk_detach, disk_gone, disk_lock,
-    disk_lock_nointr, disk_lookup, disk_openpart, disk_unlock, dkcksum, initdisklabel,
-    setdisklabel,
-};
-use crate::machine::disklabel::{readdisklabel, writedisklabel};
 use crate::machine::intr::{splbio, splx};
 use crate::sys::buf::BufLegacy;
 use crate::sys::buf::biodone;
@@ -99,10 +93,15 @@ use crate::sys::buf::{minphys, physio};
 use crate::sys::device::{
     CfMatch, Cfattach, Cfdata, Cfdriver, DV_DISK, Device, FSTATE_NOTFOUND, Softc,
 };
-use crate::sys::disk::Disk;
+use crate::sys::disk::DiskSlot;
+use crate::sys::disk::{LabelGeom, readdisklabel, writedisklabel};
+use crate::sys::disk::{
+    bounds_check_with_label, disk_attach, disk_closepart, disk_detach, disk_gone, disk_lookup,
+    disk_openpart, dkcksum, initdisklabel, setdisklabel,
+};
 use crate::sys::disklabel::{
     DISKLABEL_SIZE, DISKMAGIC, DTYPE_SCSI, Disklabel, Partinfo, disklabeldev, diskpart, diskunit,
-    dl_getpoffset, dl_setdsize,
+    dl_setdsize,
 };
 use crate::sys::dkio::{DIOCGDINFO, DIOCGPART, DIOCGPDINFO, DIOCRLDINFO, DIOCSDINFO, DIOCWDINFO};
 use crate::sys::errno::Errno;
@@ -149,7 +148,7 @@ pub struct RdSoftc {
     /// `sc_dev`.
     pub sc_dev: Device,
     /// `sc_dk`.
-    pub sc_dk: Disk,
+    pub sc_dk: DiskSlot,
 }
 
 // SAFETY: `#[repr(C)]` with the device first; the disk is all-zero valid (`sys/disk.rs`).
@@ -229,7 +228,7 @@ pub fn rd_root_size() -> u32 {
 
 /// `rdlookup(unit)`: the attached unit, referenced (`disk_lookup`).
 fn rdlookup(unit: u32) -> Option<NonNull<Device>> {
-    disk_lookup(&RD_CD, i32::try_from(unit).ok()?)
+    disk_lookup(&RD_CD, i32::try_from(unit).ok()?, |dv| &rd_softc(dv).sc_dk)
 }
 
 /// The softc of a unit `rdlookup` returned.
@@ -276,7 +275,7 @@ pub fn rd_attach(_parent: Option<&Device>, self_: &Device, _aux: *mut c_void) {
     let xname = sc.sc_dev.xname().as_bytes();
     let n = xname.len().min(name.len());
     name[..n].copy_from_slice(&xname[..n]);
-    sc.sc_dk.dk_name.set(name);
+    sc.sc_dk.construct(&name, 0);
     disk_attach(Some(&sc.sc_dev), &sc.sc_dk);
 }
 
@@ -300,22 +299,19 @@ pub fn rdopen(dev: Dev, _flag: i32, fmt: i32, _p: &Proc) -> Result<(), Errno> {
     let dv = rdlookup(unit).ok_or(Errno::ENXIO)?;
     let sc = rd_softc(dv);
 
-    let result = disk_lock(&sc.sc_dk).and_then(|()| {
+    let dk = sc.sc_dk.get();
+    let result = dk.lock().and_then(|lock| {
         let result = (|| {
-            if sc.sc_dk.dk_openmask.get() == 0 {
+            if sc.sc_dk.openmask() == 0 {
                 // Load the partition info if not already loaded.
                 let mut lp = Disklabel::zeroed();
                 rdgetdisklabel(dev, sc, &mut lp, false)?;
-                // SAFETY: under the disk lock, with no partition open: nobody else holds
-                // the in-core label.
-                if let Some(dl) = unsafe { sc.sc_dk.label_mut() } {
-                    *dl = lp;
-                }
+                sc.sc_dk.label_store(&lp);
             }
 
             disk_openpart(&sc.sc_dk, part, fmt, true)
         })();
-        disk_unlock(&sc.sc_dk);
+        drop(lock);
         result
     });
 
@@ -332,11 +328,12 @@ pub fn rdclose(dev: Dev, _flag: i32, fmt: i32, _p: Option<&Proc>) -> Result<(), 
     let dv = rdlookup(unit).ok_or(Errno::ENXIO)?;
     let sc = rd_softc(dv);
 
-    disk_lock_nointr(&sc.sc_dk);
+    let dk = sc.sc_dk.get();
+    let lock = dk.lock_nointr();
 
     disk_closepart(&sc.sc_dk, part, fmt);
 
-    disk_unlock(&sc.sc_dk);
+    drop(lock);
     // SAFETY: the reference `rdlookup` took.
     unsafe { device_unref(dv) };
     Ok(())
@@ -345,19 +342,19 @@ pub fn rdclose(dev: Dev, _flag: i32, fmt: i32, _p: Option<&Proc>) -> Result<(), 
 /// `rdstrategy`: copies between the buffer and the image.
 pub fn rdstrategy(bp: &'static Buf) {
     let dv = rdlookup(diskunit(bp.dev()));
-    let label = dv.and_then(|dv| rd_softc(dv).sc_dk.label());
+    let geom = dv.map(|dv| rd_softc(dv).sc_dk.geom(diskpart(bp.dev())));
 
-    match label {
+    match geom {
         None => {
             bp.set_error(Some(Errno::ENXIO));
             // bad:
             bp.set(B_ERROR);
             bp.set_resid(usize::try_from(bp.bcount()).unwrap_or(0));
         }
-        Some(lp) => {
+        Some(g) => {
             // Validate the request.
-            if bounds_check_with_label(bp, &lp) {
-                rd_transfer(bp, &lp);
+            if bounds_check_with_label(bp, &g) {
+                rd_transfer(bp, &g);
             }
         }
     }
@@ -373,12 +370,10 @@ pub fn rdstrategy(bp: &'static Buf) {
 }
 
 /// The transfer of `rdstrategy`, once the request is validated.
-fn rd_transfer(bp: &Buf, lp: &Disklabel) {
+fn rd_transfer(bp: &Buf, g: &LabelGeom) {
     // XXX: Worry about overflow when computing off?
     let size = rd_root_size() as u64;
-    let p = &lp.d_partitions[diskpart(bp.dev()) as usize];
-    let mut off =
-        dl_getpoffset(p) * u64::from(lp.d_secsize) + (bp.blkno() as u64) * DEV_BSIZE as u64;
+    let mut off = g.poffset * u64::from(g.secsize) + (bp.blkno() as u64) * DEV_BSIZE as u64;
     if off > size {
         off = size;
     }
@@ -410,10 +405,7 @@ pub fn rdioctl(dev: Dev, cmd: u64, data: &mut [u8], fflag: i32, _p: &Proc) -> Re
         DIOCRLDINFO => {
             let mut lp = Disklabel::zeroed();
             let _ = rdgetdisklabel(dev, sc, &mut lp, false);
-            // SAFETY: the driver's own label, no other reference to it is live.
-            if let Some(dl) = unsafe { sc.sc_dk.label_mut() } {
-                *dl = lp;
-            }
+            sc.sc_dk.label_store(&lp);
             Ok(())
         }
 
@@ -425,23 +417,16 @@ pub fn rdioctl(dev: Dev, cmd: u64, data: &mut [u8], fflag: i32, _p: &Proc) -> Re
         }
 
         DIOCGDINFO => {
-            if let Some(lp) = sc.sc_dk.label() {
-                copyout_label(&lp, data);
-            }
+            copyout_label(&sc.sc_dk.label(), data);
             Ok(())
         }
 
         DIOCGPART => {
-            if let Some(lp) = sc.sc_dk.dk_label.get() {
-                let part = diskpart(dev) as usize;
-                let pi = Partinfo {
-                    disklab: lp.as_ptr(),
-                    // SAFETY: `lp` is the live in-core label; the projection only computes
-                    // the address of one of its partitions.
-                    part: unsafe { &raw mut (*lp.as_ptr()).d_partitions[part] },
-                };
-                pi.store(data);
-            }
+            let pi = Partinfo {
+                disklab: sc.sc_dk.label_ptr(),
+                part: sc.sc_dk.partition_ptr(diskpart(dev)),
+            };
+            pi.store(data);
             Ok(())
         }
 
@@ -449,22 +434,23 @@ pub fn rdioctl(dev: Dev, cmd: u64, data: &mut [u8], fflag: i32, _p: &Proc) -> Re
             if fflag & FWRITE == 0 {
                 Err(Errno::EBADF)
             } else {
-                disk_lock(&sc.sc_dk).and_then(|()| {
+                let dk = sc.sc_dk.get();
+                dk.lock().and_then(|lock| {
                     let mut nlp = Disklabel::from_bytes(data);
-                    // SAFETY: under the disk lock; the borrow ends before the strategy runs.
-                    let result = match unsafe { sc.sc_dk.label_mut() } {
-                        Some(olp) => setdisklabel(olp, &mut nlp, sc.sc_dk.dk_openmask.get()),
-                        None => Err(Errno::ENXIO),
-                    };
+                    let mut olp = sc.sc_dk.label();
+                    let result = setdisklabel(&mut olp, &mut nlp, sc.sc_dk.openmask());
+                    if result.is_ok() {
+                        sc.sc_dk.label_store(&olp);
+                    }
                     let result = result.and_then(|()| {
                         if cmd == DIOCWDINFO {
-                            let mut lp = sc.sc_dk.label().unwrap_or_default();
+                            let mut lp = sc.sc_dk.label();
                             writedisklabel(disklabeldev(dev), rdstrategy, &mut lp)
                         } else {
                             Ok(())
                         }
                     });
-                    disk_unlock(&sc.sc_dk);
+                    drop(lock);
                     result
                 })
             }
@@ -515,14 +501,10 @@ pub fn rdgetdisklabel(
     lp.d_checksum = dkcksum(lp);
 
     // The label rdstrategy checks the reads below against (see the module's deviations).
-    if sc.sc_dk.dk_openmask.get() == 0 {
+    if sc.sc_dk.openmask() == 0 {
         let mut incore = *lp;
         if initdisklabel(&mut incore).is_ok() {
-            // SAFETY: no partition is open and the caller serialises label changes (the
-            // disk lock in `rdopen`): nobody else holds the in-core label.
-            if let Some(dl) = unsafe { sc.sc_dk.label_mut() } {
-                *dl = incore;
-            }
+            sc.sc_dk.label_store(&incore);
         }
     }
 
@@ -615,19 +597,25 @@ mod tests {
         let dv = rdlookup(0).expect("rd0 attached");
         let sc = rd_softc(dv);
         assert_eq!(sc.sc_dev.xname(), "rd0");
-        assert_eq!(sc.sc_dk.name(), "rd0");
+        assert_eq!(sc.sc_dk.get().name(), b"rd0");
         // SAFETY: the reference `rdlookup` took.
         unsafe { device_unref(dv) };
         assert!(rdlookup(1).is_none());
 
-        // The host has no `readdisklabel`; the label rdstrategy checks against is the spoofed
+        // The label rdstrategy checks the label read against is the spoofed
         // one, published before the read.
         let raw = makediskdev(17, 0, RAW_PART);
         let mut lp = Disklabel::zeroed();
-        assert_eq!(rdgetdisklabel(raw, sc, &mut lp, false), Err(Errno::ENODEV));
+        // The label read runs on the host now (the kernel's readdisklabel, N7.1d): a fresh
+        // buffer cache for its geteblk.
+        kernel::fs::bio::bio_test_reset();
+        kernel::fs::bufq::bufq_test_reset();
+        crate::sys::buf::bufinit();
+        // The image (sector i holds the byte i) has no label, MBR, ISO 9660 or UDF volume.
+        assert!(rdgetdisklabel(raw, sc, &mut lp, false).is_err());
         assert_eq!(&lp.d_typename[..8], b"RAM disk");
         assert_eq!(lp.d_nsectors as usize, SECTORS);
-        let incore = sc.sc_dk.label().expect("in-core label");
+        let incore = sc.sc_dk.label();
         assert_eq!(
             dl_getpsize(&incore.d_partitions[RAW_PART as usize]),
             SECTORS as u64

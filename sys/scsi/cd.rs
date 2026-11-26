@@ -140,14 +140,8 @@ use core::mem::{offset_of, size_of};
 use core::ptr::{self, NonNull};
 
 use crate::kern::subr_autoconf::device_unref;
-use crate::kern::subr_disk::{
-    bounds_check_with_label, disk_attach, disk_busy, disk_closepart, disk_detach, disk_gone,
-    disk_lock, disk_lock_nointr, disk_lookup, disk_openpart, disk_unbusy, disk_unlock, dkcksum,
-    initdisklabel, setdisklabel,
-};
 use crate::kern::subr_prf::{panic, printf};
 use crate::machine::copy::copyout;
-use crate::machine::disklabel::readdisklabel;
 use crate::machine::intr::{splbio, splx};
 use crate::scsi::scsi_all::{
     PR_ALLOW, PR_PREVENT, SENSE_NOT_READY_BECOMING_READY, SKEY_NOT_READY, SMS_PAGE_CTRL_CHANGEABLE,
@@ -197,10 +191,15 @@ use crate::sys::cdio::{
 use crate::sys::device::{
     CD_COCOVM, CfMatch, Cfattach, Cfdriver, DV_DISK, DVACT_DEACTIVATE, DVACT_RESUME, Device, Softc,
 };
-use crate::sys::disk::{DKF_NOLABELREAD, Disk};
+use crate::sys::disk::readdisklabel;
+use crate::sys::disk::{DKF_NOLABELREAD, DiskSlot};
+use crate::sys::disk::{
+    bounds_check_with_label, disk_attach, disk_busy, disk_closepart, disk_detach, disk_gone,
+    disk_lookup, disk_openpart, disk_unbusy, dkcksum, initdisklabel, setdisklabel,
+};
 use crate::sys::disklabel::{
     DISKLABEL_SIZE, DISKMAGIC, DTYPE_ATAPI, DTYPE_SCSI, Disklabel, Partinfo, RAW_PART,
-    disklabeldev, diskpart, diskunit, dl_blktosec, dl_getpoffset, dl_setdsize,
+    disklabeldev, diskpart, diskunit, dl_setdsize,
 };
 use crate::sys::dkio::{
     DIOCEJECT, DIOCGDINFO, DIOCGPART, DIOCGPDINFO, DIOCLOCK, DIOCRLDINFO, DIOCSDINFO, DIOCWDINFO,
@@ -816,8 +815,8 @@ pub struct CdParms {
 pub struct CdSoftc {
     /// `sc_dev`.
     pub sc_dev: Device,
-    /// `sc_dk`.
-    pub sc_dk: Disk,
+    /// `sc_dk`: the kernel's disk (`sys/sys/disk.rs`'s slot).
+    pub sc_dk: DiskSlot,
     /// `sc_flags`: `CDF_*`.
     pub sc_flags: Cell<i32>,
     /// `sc_link`: contains our targ, lun, etc.; set by `cdattach`.
@@ -893,7 +892,7 @@ const fn pattern(r#type: u8, removable: i32, vendor: &'static [u8]) -> ScsiInqui
 
 /// `cdlookup(unit)`: the attached unit, referenced (`disk_lookup`).
 fn cdlookup(unit: u32) -> Option<NonNull<Device>> {
-    disk_lookup(&CD_CD, i32::try_from(unit).ok()?)
+    disk_lookup(&CD_CD, i32::try_from(unit).ok()?, |dv| &cd_softc(dv).sc_dk)
 }
 
 /// `(struct cd_softc *)dv`.
@@ -961,7 +960,7 @@ pub fn cdattach(_parent: Option<&Device>, self_: &Device, aux: *mut c_void) {
     let xname = sc.sc_dev.xname().as_bytes();
     let n = xname.len().min(name.len());
     name[..n].copy_from_slice(&xname[..n]);
-    sc.sc_dk.dk_name.set(name);
+    sc.sc_dk.construct(&name, DKF_NOLABELREAD);
     let _ = bufq_init(&sc.sc_bufq, BUFQ_DEFAULT);
 
     printf(format_args!("\n"));
@@ -969,7 +968,6 @@ pub fn cdattach(_parent: Option<&Device>, self_: &Device, aux: *mut c_void) {
     scsi_xsh_set(&sc.sc_xsh, link, cdstart);
 
     // Attach disk.
-    sc.sc_dk.dk_flags.set(DKF_NOLABELREAD);
     disk_attach(Some(&sc.sc_dev), &sc.sc_dk);
 }
 
@@ -981,7 +979,7 @@ pub fn cdactivate(self_: &Device, act: i32) -> Result<(), Errno> {
         DVACT_RESUME => {
             // When resuming, hardware may have forgotten we locked it. So if there are any
             // open partitions, lock the CD.
-            if sc.sc_dk.dk_openmask.get() != 0 {
+            if sc.sc_dk.openmask() != 0 {
                 let _ = scsi_prevent(
                     sc.link(),
                     i32::from(PR_PREVENT),
@@ -1012,6 +1010,7 @@ pub fn cddetach(self_: &Device, _flags: i32) -> Result<(), Errno> {
     // Detach disk.
     bufq_destroy(&sc.sc_bufq);
     disk_detach(&sc.sc_dk);
+    sc.sc_dk.destroy();
 
     Ok(())
 }
@@ -1043,14 +1042,18 @@ pub fn cdopen_noproc(dev: Dev, _flag: i32, fmt: i32) -> Result<(), Errno> {
     // SC_DEBUG(link, SDEV_DB1, ("cdopen: dev=0x%x (unit %d (of %d), partition %d)\n", ...)):
     // SCSIDEBUG is not configured.
 
-    if let Err(e) = disk_lock(&sc.sc_dk) {
-        unref();
-        return Err(e);
-    }
+    let dk = sc.sc_dk.get();
+    let lock = match dk.lock() {
+        Ok(l) => l,
+        Err(e) => {
+            unref();
+            return Err(e);
+        }
+    };
 
     // `Ok(true)`: go to `out`; `Ok(false)`: go to `bad` with `error`.
     let mut error = Ok(());
-    let out = if sc.sc_dk.dk_openmask.get() != 0 {
+    let out = if sc.sc_dk.openmask() != 0 {
         // If any partition is open, but the disk has been invalidated, disallow further
         // opens.
         if !link_isset(link, SDEV_MEDIA_LOADED) {
@@ -1123,11 +1126,7 @@ pub fn cdopen_noproc(dev: Dev, _flag: i32, fmt: i32) -> Result<(), Errno> {
                     // Fabricate a disk label.
                     let mut lp = Disklabel::zeroed();
                     let _ = cdgetdisklabel(dev, sc, &mut lp, false);
-                    // SAFETY: under the disk lock, with no partition open: nobody else
-                    // holds the in-core label.
-                    if let Some(dl) = unsafe { sc.sc_dk.label_mut() } {
-                        *dl = lp;
-                    }
+                    sc.sc_dk.label_store(&lp);
                     // SC_DEBUG(link, SDEV_DB3, ("Disklabel fabricated\n")).
                     true
                 }
@@ -1147,7 +1146,7 @@ pub fn cdopen_noproc(dev: Dev, _flag: i32, fmt: i32) -> Result<(), Errno> {
     }
 
     // bad:
-    if sc.sc_dk.dk_openmask.get() == 0 {
+    if sc.sc_dk.openmask() == 0 {
         let _ = scsi_prevent(
             link,
             i32::from(PR_ALLOW),
@@ -1156,7 +1155,7 @@ pub fn cdopen_noproc(dev: Dev, _flag: i32, fmt: i32) -> Result<(), Errno> {
         link_clr(link, SDEV_OPEN | SDEV_MEDIA_LOADED);
     }
 
-    disk_unlock(&sc.sc_dk);
+    drop(lock);
     unref();
     error
 }
@@ -1178,11 +1177,12 @@ pub fn cdclose(dev: Dev, _flag: i32, fmt: i32, _p: Option<&Proc>) -> Result<(), 
     }
     let link = sc.link();
 
-    disk_lock_nointr(&sc.sc_dk);
+    let dk = sc.sc_dk.get();
+    let lock = dk.lock_nointr();
 
     disk_closepart(&sc.sc_dk, part, fmt);
 
-    if sc.sc_dk.dk_openmask.get() == 0 {
+    if sc.sc_dk.openmask() == 0 {
         // XXXX Must wait for I/O to complete!
 
         let _ = scsi_prevent(
@@ -1201,14 +1201,11 @@ pub fn cdclose(dev: Dev, _flag: i32, fmt: i32, _p: Option<&Proc>) -> Result<(), 
         scsi_xsh_del(&sc.sc_xsh);
     }
 
-    disk_unlock(&sc.sc_dk);
+    drop(lock);
 
     unref();
     Ok(())
 }
-
-/// The zeroed label the I/O paths read before `disk_attach` allocated one.
-static ZERO_LABEL: Disklabel = Disklabel::zeroed();
 
 /// `cdstrategy`: actually translates the requested transfer into one the physical driver
 /// can understand. The transfer is described by a buf and will include only one physical
@@ -1235,9 +1232,7 @@ pub fn cdstrategy(bp: &'static Buf) {
             }
 
             // Validate the request.
-            let ok = sc
-                .sc_dk
-                .with_label(|lp| bounds_check_with_label(bp, lp.unwrap_or(&ZERO_LABEL)));
+            let ok = bounds_check_with_label(bp, &sc.sc_dk.geom(diskpart(bp.dev())));
             if !ok {
                 break 'done;
             }
@@ -1348,16 +1343,12 @@ pub fn cdstart(xs: &'static ScsiXfer) {
     xs.cookie.set(ptr::from_ref(bp).cast_mut().cast());
     xs.bp.set(Some(bp));
 
-    let (secno, nsecs) = sc.sc_dk.with_label(|lp| {
-        let lp = lp.unwrap_or(&ZERO_LABEL);
-        let p = &lp.d_partitions[diskpart(bp.dev()) as usize];
-        let secno = dl_getpoffset(p) + dl_blktosec(lp, bp.blkno() as u64);
-        let nsecs = howmany(
-            usize::try_from(bp.bcount()).unwrap_or(0),
-            lp.d_secsize as usize,
-        ) as u32;
-        (secno, nsecs)
-    });
+    let g = sc.sc_dk.geom(diskpart(bp.dev()));
+    let secno = g.poffset + g.blktosec(bp.blkno() as u64);
+    let nsecs = howmany(
+        usize::try_from(bp.bcount()).unwrap_or(0),
+        g.secsize as usize,
+    ) as u32;
 
     let cmdlen = xs.with_cmd(|cmd: &mut ScsiGeneric| {
         if !link_isset(link, SDEV_ATAPI | SDEV_UMASS)
@@ -1479,7 +1470,7 @@ pub fn cdminphys(bp: &Buf) {
     // blocks.
     if !link_isset(link, SDEV_ATAPI | SDEV_UMASS) && sid_ansii_rev(&link.inqdata.get()) < SCSI_REV_2
     {
-        let secsize = sc.sc_dk.with_label(|lp| lp.map_or(0, |lp| lp.d_secsize));
+        let secsize = sc.sc_dk.geom(0).secsize;
         let max = i64::from(secsize) * 0xff;
 
         if bp.bcount() > max {
@@ -1589,10 +1580,7 @@ fn cdioctl_locked(
         DIOCRLDINFO => {
             let mut lp = Disklabel::zeroed();
             let _ = cdgetdisklabel(dev, sc, &mut lp, false);
-            // SAFETY: the driver's own label; no other reference to it is live.
-            if let Some(dl) = unsafe { sc.sc_dk.label_mut() } {
-                *dl = lp;
-            }
+            sc.sc_dk.label_store(&lp);
             Ok(())
         }
 
@@ -1604,22 +1592,16 @@ fn cdioctl_locked(
         }
 
         DIOCGDINFO => {
-            if let Some(lp) = sc.sc_dk.label() {
-                copyout_label(&lp, addr);
-            }
+            copyout_label(&sc.sc_dk.label(), addr);
             Ok(())
         }
 
         DIOCGPART => {
-            if let Some(lp) = sc.sc_dk.dk_label.get() {
-                let pi = Partinfo {
-                    disklab: lp.as_ptr(),
-                    // SAFETY: `lp` is the live in-core label; the projection only computes
-                    // the address of one of its partitions.
-                    part: unsafe { &raw mut (*lp.as_ptr()).d_partitions[part as usize] },
-                };
-                pi.store(addr);
-            }
+            let pi = Partinfo {
+                disklab: sc.sc_dk.label_ptr(),
+                part: sc.sc_dk.partition_ptr(part),
+            };
+            pi.store(addr);
             Ok(())
         }
 
@@ -1628,17 +1610,18 @@ fn cdioctl_locked(
                 return Err(EBADF);
             }
 
-            disk_lock(&sc.sc_dk)?;
+            let dk = sc.sc_dk.get();
+            let lock = dk.lock()?;
 
             let mut nlp = Disklabel::from_bytes(addr);
-            // SAFETY: under the disk lock; the borrow ends with the call.
-            let error = match unsafe { sc.sc_dk.label_mut() } {
-                Some(olp) => setdisklabel(olp, &mut nlp, sc.sc_dk.dk_openmask.get()),
-                None => Err(ENXIO),
-            };
+            let mut olp = sc.sc_dk.label();
+            let error = setdisklabel(&mut olp, &mut nlp, sc.sc_dk.openmask());
+            if error.is_ok() {
+                sc.sc_dk.label_store(&olp);
+            }
             // The C's `if (error == 0) { }`: cd(4) never writes the label back.
 
-            disk_unlock(&sc.sc_dk);
+            drop(lock);
             error
         }
 
@@ -2037,14 +2020,10 @@ pub fn cdgetdisklabel(
     }
 
     // The label cdstrategy checks the reads below against (see the module's deviations).
-    if sc.sc_dk.dk_openmask.get() == 0 {
+    if sc.sc_dk.openmask() == 0 {
         let mut incore = *lp;
         if initdisklabel(&mut incore).is_ok() {
-            // SAFETY: no partition is open and the caller serialises label changes (the
-            // disk lock in `cdopen`): nobody else holds the in-core label.
-            if let Some(dl) = unsafe { sc.sc_dk.label_mut() } {
-                *dl = incore;
-            }
+            sc.sc_dk.label_store(&incore);
         }
     }
 

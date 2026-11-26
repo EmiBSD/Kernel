@@ -23,6 +23,9 @@
 pub mod autoconf;
 pub mod clock_subr;
 pub mod device;
+pub mod disk;
+pub mod diskmap;
+pub mod disksubr;
 pub mod evcount;
 pub mod sensors;
 #[cfg(feature = "boot_config")]

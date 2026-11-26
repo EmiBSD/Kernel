@@ -285,10 +285,6 @@ impl FileGlue for BsdFileGlue {
         crate::kern::kern_subr::uiomove(buf, uio)
     }
 
-    /// `disk_map` (`subr_disk.c`, `bsd`'s until N7).
-    fn disk_map(path: &[u8], mappath: &mut [u8], flags: i32) -> bool {
-        crate::kern::subr_disk::disk_map(path, mappath, flags)
-    }
     /// `rootvp`: `init_main.rs`'s (until N7).
     fn rootvp() -> Option<&'static Vnode> {
         crate::kern::init_main::rootvp()

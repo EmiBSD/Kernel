@@ -84,7 +84,7 @@ use crate::kern::subr_prf::panic;
 use crate::scsi::scsiconf::{ScsiLink, ScsiXshandler};
 use crate::sys::buf::Bufq;
 use crate::sys::device::{Device, Softc};
-use crate::sys::disk::Disk;
+use crate::sys::disk::DiskSlot;
 
 /// `SDF_THIN`: disk is thin provisioned.
 pub const SDF_THIN: i32 = 0x01;
@@ -133,7 +133,7 @@ pub struct SdSoftc {
     /// `sc_dev`.
     pub sc_dev: Device,
     /// `sc_dk`.
-    pub sc_dk: Disk,
+    pub sc_dk: DiskSlot,
     /// `sc_bufq`: the buffers `sdstrategy` queued for `sdstart`.
     pub sc_bufq: Bufq,
     /// `flags`: `SDF_*`.

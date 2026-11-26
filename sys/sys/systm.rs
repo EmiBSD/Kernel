@@ -99,10 +99,7 @@ pub static SAFEPRI: AtomicI32 = AtomicI32::new(0);
 
 /// `rootdev`, `dumpdev`, `mountroot`: defined by the kernel configuration (`config(8)`'s
 /// `swapgeneric.c`, `sys/conf/swapgeneric.rs`).
-pub use crate::conf::swapgeneric::{DUMPDEV, MOUNTROOT, ROOTDEV};
-
-/// The type of `mountroot`: mounts the root file system and puts it on `mountlist`.
-pub type MountrootFn = fn() -> Result<(), Errno>;
+pub use crate::conf::swapgeneric::{DUMPDEV, ROOTDEV};
 
 /// `INFSLP`: sleep forever (`tsleep_nsec` and friends).
 pub const INFSLP: u64 = u64::MAX;
