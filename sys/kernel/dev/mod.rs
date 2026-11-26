@@ -21,5 +21,9 @@
 //! interface (`subr_autoconf.c`, `<sys/device.h>`, N7.1a); the drivers follow from N7.2.
 
 pub mod autoconf;
+pub mod clock_subr;
 pub mod device;
+pub mod evcount;
+pub mod sensors;
+pub mod watchdog;
 /* </CODE> */

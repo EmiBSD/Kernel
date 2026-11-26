@@ -55,6 +55,27 @@ compiles of zlib: crc32, adler32, deflate, inflate; zlib licence).
 
 No `src/` directory (`[lib] path = "lib.rs"`), so C and Rust paths differ only by extension.
 
+### hal's groups (2026-11-26)
+
+`sys/hal/` is grouped by purpose, one directory per group, so a driver or a subsystem names only
+the groups it needs (the user approved the layout on 2026-11-26). The root keeps what other
+rules name by path (`api`, `syscall`, `sys`, `user`, `machine`, `arch`) and the small leaves.
+
+| Group | Holds | Used by |
+|---|---|---|
+| `hal::sync` | mutex, rwlock, spinlock, seqlock, smr, refcnt, once, klock, netlock, sleep, percpu, slot | everything in `kernel` |
+| `hal::mem` | malloc, pool, kmbuf, mapped, bootmem, pod, overlay, trust | `kernel::fs`, `kernel::net`, `kernel::dev`, `kernel::vm` |
+| `hal::ds` | list, pinlist, pin, link, tree, owned | `kernel::fs`, `kernel::net`, `kernel::dev` |
+| `hal::cpu` | the running CPU (`curcpu`), thread, trap, intr, softintr, clock, sig | proc, sched, signals; `kernel::dev` only for spl and interrupts |
+| `hal::vm` | the page arithmetic, uvmexp and the pmap | `kernel::vm` |
+| `hal::dev` | mmio, dma: the only driver-facing group (N7 adds the GIC system registers and the SMCCC call) | `kernel::dev` and the drivers |
+| root | api, syscall, sys, user, machine, arch, bridges, assert, prf, cons, random | as before |
+
+`cpu`'s own file is `cpu/curcpu.rs`, re-exported by `cpu/mod.rs`: its `#[forbid(unsafe_code)]`
+must not cover `thread.rs`, and a group's own name as a module trips `clippy::module_inception`.
+The paths `hal::cpu::cpu_number` and the others did not change. `cargo xtask hal-check` keeps
+drivers and devices apart (rules D1 and D2, `.claude/rules/xtask.md`).
+
 ### The runtime API (N2.3)
 
 What `kernel` builds on, all safe to call, every `unsafe` inside `hal` with its proof

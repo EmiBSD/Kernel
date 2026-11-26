@@ -75,7 +75,7 @@ use core::ffi::c_void;
 use core::mem::{offset_of, size_of};
 use core::ptr::{self, NonNull};
 
-use kernel::sensors::{sensor_attach, sensor_task_register, sensordev_install};
+use kernel::dev::sensors::{sensor_attach, sensor_task_register, sensordev_install};
 
 use crate::dev::bio::bio_register;
 use crate::dev::biovar::{

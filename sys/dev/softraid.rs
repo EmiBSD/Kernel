@@ -115,7 +115,7 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 
 use libkern::{StaticCell, explicit_bzero, strlcpy};
 
-use kernel::sensors::{
+use kernel::dev::sensors::{
     sensor_attach, sensor_detach, sensor_task_register, sensor_task_unregister,
     sensordev_deinstall, sensordev_install,
 };

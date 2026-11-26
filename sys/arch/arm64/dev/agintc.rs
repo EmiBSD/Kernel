@@ -139,7 +139,7 @@ use crate::sys::malloc::{M_DEVBUF, M_TEMP, M_WAITOK, M_ZERO};
 use crate::sys::param::PAGE_SIZE;
 use crate::sys::queue::{ListEntry, ListHead, TailqEntry, TailqHead};
 use crate::sys::systm::{kernel_lock, kernel_unlock};
-use kernel::evcount::{evcount_attach, evcount_detach};
+use kernel::dev::evcount::{evcount_attach, evcount_detach};
 
 /// The CPU interface's system registers, by the C's names (`s3_0_c4_c6_0` is `ICC_PMR_EL1`,
 /// ...), as `mrs`/`msr` operands.

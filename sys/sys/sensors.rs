@@ -49,11 +49,11 @@
 //!
 //! Status: `ported`. Since N7.1b the user structures, types and flags are `hal::sys::sensors`'s
 //! and `struct ksensor`, `struct ksensordev` and `struct sensor_task` with their functions
-//! `kernel::sensors`'s, re-exported here for the drivers still in `bsd`
+//! `kernel::dev::sensors`'s, re-exported here for the drivers still in `bsd`
 //! (`docs/SCAFFOLDING.md`).
 
 pub use hal::sys::sensors::*;
-pub use kernel::sensors::{
+pub use kernel::dev::sensors::{
     Ksensor, Ksensordev, SensorTask, SensorTaskRef, StatusCell, TimevalCell, TypeCell,
 };
 /* </CODE> */
@@ -61,7 +61,7 @@ pub use kernel::sensors::{
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
-    use kernel::sensors::{
+    use kernel::dev::sensors::{
         sensor_attach, sensor_detach, sensordev_deinstall, sensordev_get, sensordev_install,
         sensors_lock,
     };

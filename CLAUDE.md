@@ -60,6 +60,7 @@ unsafe-budget.toml           per-subsystem unsafe totals that `just ci` enforces
 sys/                         package `bsd`: the LZ tree, legacy, replaced subsystem by subsystem, deleted at N9
   kern/ uvm/ dev/ net/ ...   LZ's subsystems, still the kernel that boots while they move out
   hal/                       crate `hal`: the hardware (arch/amd64, arch/arm64, machine, moved here at N2) and the runtime; the ONLY unsafe
+                             groups: sync/ mem/ ds/ cpu/ vm/ dev/ (docs/ARCHITECTURE.md)
   kernel/                    crate `kernel`: every decision of the OS, #![forbid(unsafe_code)] at the root
   abi/                       crate `abi`: OpenBSD's userland interface, linked into the kernel image, forbid, no logic
   stand/                     the boot loaders (separate binaries, outside the four crates)

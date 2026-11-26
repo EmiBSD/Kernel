@@ -294,8 +294,8 @@ paid_by = "N7"
 # kernel::fs::subr::VfsSysctl, and register_top refuses the id); kern.numvnodes and
 # kern.bufcachepercent are the kernel's nodes (fs::subr::NumvnodesNode,
 # fs::bio::BufcachepercentNode) that bsd's table still registers, as kern.nchstats's (N5.3).
-# N7.1b: kern.intrcnt and kern.evcount are kernel::evcount's nodes (IntrcntNode, EvcountNode),
-# kern.watchdog kernel::watchdog's (WatchdogNode) and hw.sensors kernel::sensors's
+# N7.1b: kern.intrcnt and kern.evcount are kernel::dev::evcount's nodes (IntrcntNode, EvcountNode),
+# kern.watchdog kernel::dev::watchdog's (WatchdogNode) and hw.sensors kernel::dev::sensors's
 # (SensorsNode), registered by bsd's tables likewise.
 # kernel::sysctl::SysctlNode
 [[bridge]]

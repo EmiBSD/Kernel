@@ -1483,9 +1483,9 @@ static KERN_NODES: [(i32, &dyn SysctlNode); 27] = [
     (KERN_CPUSTATS, &Node(kern_cpustats)),
     (KERN_AUDIO, &Node(kern_audio)),
     // `kern.intrcnt`, `kern.watchdog` and `kern.evcount`: the kernel's nodes (N7.1b).
-    (KERN_INTRCNT, &kernel::evcount::IntrcntNode),
-    (KERN_WATCHDOG, &kernel::watchdog::WatchdogNode),
-    (KERN_EVCOUNT, &kernel::evcount::EvcountNode),
+    (KERN_INTRCNT, &kernel::dev::evcount::IntrcntNode),
+    (KERN_WATCHDOG, &kernel::dev::watchdog::WatchdogNode),
+    (KERN_EVCOUNT, &kernel::dev::evcount::EvcountNode),
     // `kern.clockintr` and `kern.timecounter`: the kernel's nodes (N4.8a).
     (KERN_CLOCKINTR, &kernel::clockintr::ClockintrNode),
     // `kern.tty`: the kernel's node (N4.7b), over this glue's terminals.
@@ -1640,7 +1640,7 @@ fn sysctl_file_node(
 static HW_NODES: [(i32, &dyn SysctlNode); 5] = [
     (HW_MACHINE, &MACHINE_NODE),
     // `hw.sensors`: the kernel's node (N7.1b).
-    (HW_SENSORS, &kernel::sensors::SensorsNode),
+    (HW_SENSORS, &kernel::dev::sensors::SensorsNode),
     (HW_UCOMNAMES, &Node(hw_ucomnames)),
     (HW_SMT, &Node(hw_smt)),
     (HW_BLOCKCPU, &Node(hw_blockcpu)),

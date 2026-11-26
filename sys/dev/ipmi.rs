@@ -190,8 +190,8 @@ use crate::sys::task::{SYSTQ, TASKQ_MPSAFE, Task};
 use crate::sys::time::{msec_to_nsec, sec_to_nsec};
 use crate::sys::types::{Dev, minor};
 use crate::{kassert, kprintf};
-use kernel::sensors::{sensor_attach, sensordev_install};
-use kernel::watchdog::{wdog_register, wdog_shutdown};
+use kernel::dev::sensors::{sensor_attach, sensordev_install};
+use kernel::dev::watchdog::{wdog_register, wdog_shutdown};
 
 // ---- ipmi.h ----
 

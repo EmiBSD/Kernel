@@ -60,7 +60,7 @@
 //! - N7.1b: the user structures move from `bsd`'s `sys/sys/sensors.rs` to `hal::sys` (one
 //!   layout for both machines: `i32`, `i64`, byte arrays and `struct timeval`'s image,
 //!   [`IfTimeval`]), beside the types and flags the kernel's `struct ksensor` uses
-//!   (`kernel::sensors`). `bsd`'s header re-exports them.
+//!   (`kernel::dev::sensors`). `bsd`'s header re-exports them.
 
 use crate::sys::net_if::IfTimeval;
 
