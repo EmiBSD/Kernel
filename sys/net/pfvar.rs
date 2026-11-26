@@ -92,7 +92,7 @@
 //! - `pfr_kentry`'s union `u` of one member is flattened: `PfrKentry` is `struct _pfr_kentry`
 //!   and the route and cost variants embed it first (`#[repr(C)]`), as the C's overlay does.
 
-use core::cell::{Cell, RefCell};
+use core::cell::Cell;
 use core::ffi::c_void;
 use core::mem::{MaybeUninit, size_of};
 use core::ptr;
@@ -116,6 +116,7 @@ use crate::sys::time::Timeval;
 use crate::sys::timeout::Timeout;
 use crate::sys::tree::{RbEntry, RbHead};
 use crate::sys::types::{Pid, SaFamily, Time, Uid};
+use hal::rwlock::Rwlocked;
 use kernel::net::radix::RadixTree;
 
 /// `PF_TCPS_PROXY_SRC`: synproxy state, talking to the client.
@@ -2460,8 +2461,8 @@ crate::queue_adapter!(
 /// value its entry.
 pub type PfrRadix = RadixTree<&'static PfrKentry, { size_of::<PfsockaddrUnion>() }>;
 
-/// `struct pfr_ktable`: a table. Not valid all-zero (its trees): `pfr_create_ktable` writes
-/// them into the zeroed pool item.
+/// `struct pfr_ktable`: a table. Not valid all-zero (its trees and their locks):
+/// `pfr_create_ktable` writes them into the zeroed pool item.
 pub struct PfrKtable {
     /// `pfrkt_ts`: the table and its counters (`pfrkt_t`, `pfrkt_name`, ... are its members).
     pub pfrkt_ts: PfrTstats,
@@ -2470,10 +2471,12 @@ pub struct PfrKtable {
     /// `pfrkt_workq`.
     pub pfrkt_workq: SlistEntry<PfrKtable>,
     /// `pfrkt_ip4`: the IPv4 entries' tree (the C's `struct radix_node_head *`, the tree
-    /// itself here, under `pf_lock` with the rest of the table).
-    pub pfrkt_ip4: RefCell<PfrRadix>,
-    /// `pfrkt_ip6`: the IPv6 entries' tree.
-    pub pfrkt_ip6: RefCell<PfrRadix>,
+    /// itself here), inside a lock of its own the C does not have ("pfrktip4", a leaf: the
+    /// lookups take it shared, the adds, deletes, the commit's swap and the destroy alone; the
+    /// user's decision of 2026-11-24, `net/pf_table.rs`'s Deviations).
+    pub pfrkt_ip4: Rwlocked<PfrRadix>,
+    /// `pfrkt_ip6`: the IPv6 entries' tree, under its own lock ("pfrktip6"), as `pfrkt_ip4`.
+    pub pfrkt_ip6: Rwlocked<PfrRadix>,
     /// `pfrkt_shadow`.
     pub pfrkt_shadow: Cell<Option<&'static PfrKtable>>,
     /// `pfrkt_root`.
@@ -2492,7 +2495,20 @@ pub struct PfrKtable {
     pub pfrkt_maxweight: Cell<u16>,
 }
 
-// SAFETY: changed under `pf_lock` and the net lock, as in C.
+// SAFETY: a table is shared by every CPU that runs pf, under different locks: the tables'
+// ioctls hold the exclusive net lock and `pf_lock`; the rules (`pfr_match_addr`,
+// `pfr_pool_get`) and the state purge (`pf_purge_expired_states`, a `systqmp` task: `pf_lock`,
+// no net lock) hold `pf_lock`; `pfr_update_stats` runs after `pf_unlock` under the shared net
+// lock alone, on every softnet at once, and so does `pf_src_connlimit`'s insert into an overload
+// table (from `pf_test_state`, before any `pf_lock`). No pf lock is common to all of them, so the two trees are `Rwlocked`:
+// every lookup takes the tree's lock shared and every add, delete, swap and destroy takes it
+// alone, which keeps readers and writers apart whatever else each holds; that half is sound.
+// The other half is LZ's argument ("changed under `pf_lock` and the net lock, as in C"), true of
+// the members only the ioctls, the rules and the purge write, and false, as in the C, for three:
+// `pfr_update_stats` adds to `pfrkt_packets`, `pfrkt_bytes` and the entry's counters, and
+// `pfr_insert_kentry` from `pf_src_connlimit` to `pfrkt_cnt`, under the shared net lock alone,
+// beside each other and beside the purge (lost counts in the C, a data race on a `Cell` here).
+// Those words stay as LZ had them until pf's tables move into the kernel (N8).
 unsafe impl Sync for PfrKtable {}
 
 impl PfrKtable {

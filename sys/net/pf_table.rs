@@ -101,12 +101,28 @@
 //!   copy.
 //! - Where the C dereferences a pointer it takes to be set (the shadow of a table being
 //!   committed, the entry `rn_match` finds inside a block), a NULL one panics. A table's two
-//!   trees are its own members, made with the table (the C's `rn_inithead` heads); a borrow of
-//!   one while another is alive (none is) would panic.
+//!   trees are its own members, made with the table (the C's `rn_inithead` heads).
+//! - Each of a table's trees is inside a lock of its own, which the C does not have
+//!   (`hal::rwlock::Rwlocked`, "pfrktip4" and "pfrktip6"; the user's decision of 2026-11-24),
+//!   because the C's readers race its writers: `pfr_update_stats` looks its entry up after
+//!   `PF_UNLOCK`, under the shared net lock alone, on every softnet at once, while the state
+//!   purge (`PF_LOCK`, no net lock) deletes entries and the packet path adds and deletes them
+//!   (`pf_source_used` and `pf_source_rele` under `PF_LOCK`, `pf_src_connlimit`'s overload
+//!   insert from `pf_test_state`, without it). Every lookup (`pfr_kentry_byaddr`, so
+//!   `pfr_match_addr`, and `pfr_update_stats`, `pfr_lookup_addr`, `pfr_lookup_kentry`,
+//!   `pfr_pool_get`, each step of a walk) takes it shared; `pfr_route_kentry`,
+//!   `pfr_unroute_kentry`, the swap of `pfr_commit_ktable` and `pfr_destroy_ktable` take it
+//!   alone; a new table's roots are made before the table is shared, without it. The lock is a
+//!   leaf: held for the tree's own operation only, no other lock taken under it, never across a
+//!   sleep, a copyout, a free, a walk's callback or `pf_unlock`; the one allocation under it is
+//!   the tree's `M_NOWAIT` growth. A lookup costs the shared enter and exit (two atomic
+//!   exchanges, no spl) the C does not pay. As in the C, the entry a lookup answers is used after
+//!   the lock is released (`pfr_update_stats` counts the packet on it), so an entry the purge
+//!   deletes meanwhile is still counted on.
 //! - `pfr_kentry_pl` is an array of `PFRKE_MAX` pools, as in C; `pf_pool_limits` names its
 //!   first pool (`&pfr_kentry_pl` in C is the array's address, `pfr_kentry_pl[PFRKE_PLAIN]`).
 
-use core::cell::{Cell, Ref, RefCell};
+use core::cell::Cell;
 use core::cmp::Ordering;
 use core::mem::{offset_of, size_of};
 use core::ptr::{self, NonNull};
@@ -152,6 +168,7 @@ use crate::sys::syslog::{LOG_DEBUG, LOG_ERR, LOG_NOTICE};
 use crate::sys::systm::{net_assert_locked, net_lock, net_unlock};
 use crate::sys::tree::RbHead;
 use crate::sys::types::{SaFamily, Time};
+use hal::rwlock::{ReadGuard, Rwlocked};
 use libkern::{strlcpy, strnlen};
 
 #[cfg(feature = "inet6")]
@@ -465,11 +482,22 @@ fn ke_key(ke: &PfrKentry) -> [u8; size_of::<PfsockaddrUnion>()] {
     ke.pfrke_sa.get().bytes
 }
 
-/// The radix tree `h` of a table (`kt->pfrkt_ip4` or `pfrkt_ip6`), lent for a lookup or one
-/// step of a walk; the borrow ends with the caller's expression, before anything sleeps or
-/// changes the tree.
-fn pfr_rnh(h: &RefCell<PfrRadix>) -> Ref<'_, PfrRadix> {
-    h.borrow()
+/// The radix tree `h` of a table (`kt->pfrkt_ip4` or `pfrkt_ip6`), its lock taken shared for a
+/// lookup or one step of a walk. The lock is a leaf: the guard ends with the caller's
+/// expression, which takes no other lock and does not sleep, before anything else runs.
+fn pfr_rnh(h: &Rwlocked<PfrRadix>) -> ReadGuard<'_, PfrRadix> {
+    h.read()
+}
+
+/// The tree of the family `af` in `kt` (`pfrkt_ip4` or `pfrkt_ip6`), unlocked, for a caller that
+/// prepares its key and mask before it takes the lock.
+fn pfr_tree(kt: &'static PfrKtable, af: SaFamily) -> &'static Rwlocked<PfrRadix> {
+    match af {
+        AF_INET => &kt.pfrkt_ip4,
+        #[cfg(feature = "inet6")]
+        AF_INET6 => &kt.pfrkt_ip6,
+        af => unhandled_af(i32::from(af)),
+    }
 }
 
 /// An empty tree of `sockaddr_in` (`ip6`: `sockaddr_in6`) keys, compared from the address
@@ -1024,10 +1052,11 @@ pub fn pfr_tst_addrs(
 }
 
 /// `rn_walktree(h, pfr_walktree, w)`: `pfr_walktree` on each entry of the tree `h`, the first
-/// error ending the walk. The tree is borrowed for each step only, to take the successor and
-/// the entry before `pfr_walktree` runs (which may copy out to user memory); the walker's table
-/// id is the C's `rnh_rtableid`, which nothing writes: 0.
-fn pfr_walk(h: &RefCell<PfrRadix>, w: &mut PfrWalktree<'_, '_>) -> Result<(), Errno> {
+/// error ending the walk. The tree's lock is taken shared for each step only, to take the
+/// successor and the entry before `pfr_walktree` runs (which may copy out to user memory or
+/// queue the entry for a delete), and released before it; the walker's table id is the C's
+/// `rnh_rtableid`, which nothing writes: 0.
+fn pfr_walk(h: &Rwlocked<PfrRadix>, w: &mut PfrWalktree<'_, '_>) -> Result<(), Errno> {
     let mut c = pfr_rnh(h).first();
     while let Some(leaf) = c {
         let ke = {
@@ -1282,20 +1311,20 @@ pub fn pfr_lookup_addr(
     let head = match ad.pfra_af {
         AF_INET => {
             fillin_sin(&mut sa, ad.pfra_ip4addr());
-            pfr_rnh(&kt.pfrkt_ip4)
+            &kt.pfrkt_ip4
         }
         #[cfg(feature = "inet6")]
         AF_INET6 => {
             fillin_sin6(&mut sa, ad.pfra_ip6addr());
-            pfr_rnh(&kt.pfrkt_ip6)
+            &kt.pfrkt_ip6
         }
         af => unhandled_af(i32::from(af)),
     };
     if addr_network(ad) {
         pfr_prepare_network(&mut mask, ad.pfra_af, i32::from(ad.pfra_net));
-        head.lookup(&sa.bytes, Some(&mask.bytes)).copied()
+        pfr_rnh(head).lookup(&sa.bytes, Some(&mask.bytes)).copied()
     } else {
-        let ke = head.matches(&sa.bytes).copied();
+        let ke = pfr_rnh(head).matches(&sa.bytes).copied();
         ke.filter(|ke| !(exact && kentry_network(ke)))
     }
 }
@@ -1308,21 +1337,18 @@ pub fn pfr_lookup_kentry(
 ) -> Option<&'static PfrKentry> {
     let mut mask = PfsockaddrUnion::default();
 
-    let head = match key.pfrke_af.get() {
-        AF_INET => pfr_rnh(&kt.pfrkt_ip4),
-        #[cfg(feature = "inet6")]
-        AF_INET6 => pfr_rnh(&kt.pfrkt_ip6),
-        af => unhandled_af(i32::from(af)),
-    };
+    let head = pfr_tree(kt, key.pfrke_af.get());
     if kentry_network(key) {
         pfr_prepare_network(
             &mut mask,
             key.pfrke_af.get(),
             i32::from(key.pfrke_net.get()),
         );
-        head.lookup(&ke_key(key), Some(&mask.bytes)).copied()
+        pfr_rnh(head)
+            .lookup(&ke_key(key), Some(&mask.bytes))
+            .copied()
     } else {
-        let ke = head.matches(&ke_key(key)).copied();
+        let ke = pfr_rnh(head).matches(&ke_key(key)).copied();
         ke.filter(|ke| !(exact && kentry_network(ke)))
     }
 }
@@ -1692,47 +1718,40 @@ pub fn pfr_prepare_network(sa: &mut PfsockaddrUnion, af: SaFamily, net: i32) {
 
 /// `pfr_route_kentry`: adds the entry `ke` to the radix tree of its family in `kt`. `true`
 /// (the C's 0) when added, `false` (the C's -1) when the radix code refuses it (the key is
-/// there, or no memory).
+/// there, or no memory). The tree's lock is taken alone for the add only, the key and the mask
+/// made before it; the tree's growth under it is `M_NOWAIT`.
 pub fn pfr_route_kentry(kt: &'static PfrKtable, ke: &'static PfrKentry) -> bool {
     let mut mask = PfsockaddrUnion::default();
 
     // The C's bzero(ke->pfrke_node): the tree makes the route's nodes.
-    let mut head = match ke.pfrke_af.get() {
-        AF_INET => kt.pfrkt_ip4.borrow_mut(),
-        #[cfg(feature = "inet6")]
-        AF_INET6 => kt.pfrkt_ip6.borrow_mut(),
-        af => unhandled_af(i32::from(af)),
-    };
+    let head = pfr_tree(kt, ke.pfrke_af.get());
+    let key = ke_key(ke);
 
     let rn = if kentry_network(ke) {
         pfr_prepare_network(&mut mask, ke.pfrke_af.get(), i32::from(ke.pfrke_net.get()));
-        head.add(&ke_key(ke), Some(&mask.bytes), ke)
+        head.write().add(&key, Some(&mask.bytes), ke)
     } else {
-        head.add(&ke_key(ke), None, ke)
+        head.write().add(&key, None, ke)
     };
 
     rn.is_ok()
 }
 
 /// `pfr_unroute_kentry`: removes the entry `ke` from the radix tree of its family in `kt`.
-/// `true` (the C's 0) when removed, `false` (the C's -1) when it was not there.
+/// `true` (the C's 0) when removed, `false` (the C's -1) when it was not there. The tree's lock
+/// is taken alone for the delete only.
 pub fn pfr_unroute_kentry(kt: &'static PfrKtable, ke: &'static PfrKentry) -> bool {
     let mut mask = PfsockaddrUnion::default();
 
-    let mut head = match ke.pfrke_af.get() {
-        AF_INET => kt.pfrkt_ip4.borrow_mut(),
-        #[cfg(feature = "inet6")]
-        AF_INET6 => kt.pfrkt_ip6.borrow_mut(),
-        af => unhandled_af(i32::from(af)),
-    };
+    let head = pfr_tree(kt, ke.pfrke_af.get());
+    let key = ke_key(ke);
 
     let rn = if kentry_network(ke) {
         pfr_prepare_network(&mut mask, ke.pfrke_af.get(), i32::from(ke.pfrke_net.get()));
-        head.delete(&ke_key(ke), Some(&mask.bytes))
+        head.write().delete(&key, Some(&mask.bytes))
     } else {
-        head.delete(&ke_key(ke), None)
+        head.write().delete(&key, None)
     };
-    drop(head);
 
     if rn.is_none() {
         crate::dpfprintf!(LOG_ERR, "pfr_unroute_kentry: delete failed.\n");
@@ -2647,8 +2666,8 @@ pub fn pfr_commit_ktable(kt: &'static PfrKtable, tzero: Time) {
         pfr_destroy_kentries(&garbageq);
     } else {
         // kt cannot contain addresses
-        kt.pfrkt_ip4.swap(&shadow.pfrkt_ip4);
-        kt.pfrkt_ip6.swap(&shadow.pfrkt_ip6);
+        pfr_swap_tree(&kt.pfrkt_ip4, &shadow.pfrkt_ip4, false);
+        pfr_swap_tree(&kt.pfrkt_ip6, &shadow.pfrkt_ip6, true);
         kt.pfrkt_cnt().swap(shadow.pfrkt_cnt());
         pfr_clstats_ktable(kt, tzero, true);
     }
@@ -2659,6 +2678,19 @@ pub fn pfr_commit_ktable(kt: &'static PfrKtable, tzero: Time) {
     pfr_destroy_ktable(shadow, false);
     kt.pfrkt_shadow.set(None);
     pfr_setflags_ktable(kt, nflags);
+}
+
+/// The C's swap of `kt->pfrkt_ip4` (or `pfrkt_ip6`) and the shadow's in `pfr_commit_ktable`:
+/// `kt`'s tree becomes the shadow's and the shadow's `kt`'s. The locks are leaves, so one is
+/// held at a time: the shadow's tree is taken out (the shadow is the ioctl's own, reached only
+/// through `pfrkt_shadow` under the exclusive net lock and `pf_lock`, so nobody sees it empty),
+/// swapped into `kt` in one section of `kt`'s lock (a lookup sees the old tree or the new one),
+/// and `kt`'s old tree put in the shadow, which `pfr_destroy_ktable` frees.
+fn pfr_swap_tree(kt: &Rwlocked<PfrRadix>, shadow: &Rwlocked<PfrRadix>, ip6: bool) {
+    let new = core::mem::replace(&mut *shadow.write(), pfr_radix(ip6));
+    let old = core::mem::replace(&mut *kt.write(), new);
+    let empty = core::mem::replace(&mut *shadow.write(), old);
+    drop(empty);
 }
 
 /// `pfr_validate_table`: checks the name, anchor (rewritten by `pfr_fix_anchor`) and flags of
@@ -2833,12 +2865,18 @@ pub fn pfr_create_ktable(
     let p = pool_get(&PFR_KTABLE_PL, wait | PR_ZERO | PR_LIMITFAIL)?
         .cast::<PfrKtable>()
         .as_ptr();
+    // rn_inithead of both heads: the trees' roots (M_RTABLE, M_NOWAIT), made while the trees
+    // are this call's own values, so no lock is taken; the C makes them after attaching the
+    // ruleset, and a failure is still answered there, after it, as the C's.
+    let mut ip4 = pfr_radix(false);
+    let mut ip6 = pfr_radix(true);
+    let heads = ip4.inithead() && ip6.inithead();
     // SAFETY: `p` is a fresh, zeroed item of `pfr_ktable_pl`, sized and aligned for a
     // `PfrKtable` (`pfr_initialize`'s `pool_init`), which nothing else refers to yet. All-zero
-    // is a valid value of every member but the two radix trees (integers, `Cell`s of them and of
-    // `Option<&T>`, tree and list links, the byte copy of a `PfAbi` table); the two trees are
-    // written here through the raw pointer, which neither reads nor drops the zero bytes under
-    // them, and so is the table description (`pfrkt_t`, whose name and anchor are not `Cell`s),
+    // is a valid value of every member but the two locked radix trees (integers, `Cell`s of them
+    // and of `Option<&T>`, tree and list links, the byte copy of a `PfAbi` table); the two
+    // `Rwlocked` trees are written here through the raw pointer, which neither reads nor drops the
+    // zero bytes under them, and so is the table description (`pfrkt_t`, whose name and anchor are not `Cell`s),
     // all before the first shared reference is made. The item stays allocated until
     // `pfr_destroy_ktable` gives it back, after emptying both trees.
     let kt: &'static PfrKtable = unsafe {
@@ -2847,8 +2885,8 @@ pub fn pfr_create_ktable(
             ptr::addr_of_mut!((*p).pfrkt_ts.pfrts_t),
             1,
         );
-        ptr::addr_of_mut!((*p).pfrkt_ip4).write(RefCell::new(pfr_radix(false)));
-        ptr::addr_of_mut!((*p).pfrkt_ip6).write(RefCell::new(pfr_radix(true)));
+        ptr::addr_of_mut!((*p).pfrkt_ip4).write(Rwlocked::new("pfrktip4", ip4));
+        ptr::addr_of_mut!((*p).pfrkt_ip6).write(Rwlocked::new("pfrktip6", ip6));
         &*p
     };
 
@@ -2862,8 +2900,8 @@ pub fn pfr_create_ktable(
         rs.tables.set(rs.tables.get() + 1);
     }
 
-    // rn_inithead of both heads: the trees' roots (M_RTABLE, M_NOWAIT), or no table.
-    if !kt.pfrkt_ip4.borrow_mut().inithead() || !kt.pfrkt_ip6.borrow_mut().inithead() {
+    // rn_inithead's failure: no table.
+    if !heads {
         pfr_destroy_ktable(kt, false);
         return None;
     }
@@ -2917,9 +2955,12 @@ pub fn pfr_destroy_ktable(kt: &'static PfrKtable, flushaddr: bool) {
         pfr_destroy_kentries(&addrq);
     }
     // free(kt->pfrkt_ip4, M_RTABLE) and pfrkt_ip6's: each tree's memory given back, so the
-    // item owns nothing when it goes back to its pool (which runs no drop).
-    drop(kt.pfrkt_ip4.replace(pfr_radix(false)));
-    drop(kt.pfrkt_ip6.replace(pfr_radix(true)));
+    // item owns nothing when it goes back to its pool (which runs no drop). Each tree is taken
+    // out under its lock alone and freed after the lock is released.
+    let ip4 = core::mem::replace(&mut *kt.pfrkt_ip4.write(), pfr_radix(false));
+    drop(ip4);
+    let ip6 = core::mem::replace(&mut *kt.pfrkt_ip6.write(), pfr_radix(true));
+    drop(ip6);
     if let Some(shadow) = kt.pfrkt_shadow.get() {
         pfr_destroy_ktable(shadow, flushaddr);
     }
@@ -4365,6 +4406,104 @@ mod tests {
         add_addrs(&mut tbl, &[addr4([10, 9, 3, 0], 24, false)]).expect("added");
         assert!(pfr_match_addr(kt, &pf4([10, 9, 3, 1]), AF_INET));
         assert!(!pfr_match_addr(kt, &pf4([10, 9, 4, 1]), AF_INET));
+    }
+
+    /// N6.7b1 B1 (a table's trees under their own lock, the user's decision of 2026-11-24): two
+    /// holders look a table up at once; a writer (`pfr_insert_kentry`) that comes while they
+    /// hold it waits, and a lookup that comes after the writer waits behind it; then two threads
+    /// look up while this one adds and deletes hosts in the same tree, and every answer is the
+    /// table's. The `RefCell` this replaced had a borrow counter that concurrent lookups wrote
+    /// without a lock. What the host cannot show: the softnets' and the purge task's own
+    /// contexts, spl, or a lost update of the old counter (a race, not a sequence).
+    #[test]
+    fn lookups_share_a_table_while_a_writer_changes_it() {
+        use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+        use std::time::{Duration, Instant};
+
+        let _g = setup();
+        assert_eq!(add_tables(std::vec![table("shared", "", 0)]), 1);
+        let mut tbl = table("shared", "", 0);
+        let kt = pfr_lookup_table(&tbl).expect("table");
+        let nets: Vec<PfrAddr> = (0..64u8).map(|i| addr4([10, i, 0, 0], 24, false)).collect();
+        assert_eq!(add_addrs(&mut tbl, &nets).expect("added").0, 64);
+        let net_of = |a: [u8; 4]| {
+            pfr_kentry_byaddr(kt, &pf4(a), AF_INET, false).map(|ke| ke.pfrke_net.get())
+        };
+        let host = |k: u32| addr4([192, 168, (k >> 8) as u8, k as u8], 32, false);
+
+        // Two holders at once, and a writer between them and the next reader.
+        let first = kt.pfrkt_ip4.read();
+        std::thread::scope(|sc| {
+            sc.spawn(|| {
+                let second = kt
+                    .pfrkt_ip4
+                    .try_read()
+                    .expect("shared with the first holder");
+                let key = pfr_sin_key(&pf4([10, 3, 0, 9]));
+                assert_eq!(
+                    second.matches(&key.bytes).map(|ke| ke.pfrke_net.get()),
+                    Some(24)
+                );
+                assert!(
+                    kt.pfrkt_ip4.try_write().is_none(),
+                    "no writer while two hold it"
+                );
+            })
+            .join()
+            .expect("the second holder");
+            let writer = sc.spawn(|| pfr_insert_kentry(kt, &host(1), 0));
+            // The writer spins, then sleeps on the lock's writers' channel.
+            let until = Instant::now() + Duration::from_secs(10);
+            while kt.pfrkt_ip4.try_read().map(drop).is_some() {
+                assert!(Instant::now() < until, "the writer never waited");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert!(!writer.is_finished(), "the writer waits for the holder");
+            drop(first);
+            assert_eq!(writer.join().expect("the writer"), Ok(()));
+        });
+        assert_eq!(net_of([192, 168, 0, 1]), Some(32));
+        assert_eq!(net_of([10, 63, 0, 200]), Some(24));
+        assert_eq!(kt.pfrkt_cnt().get(), 65);
+
+        // Two lookers while this thread adds and deletes hosts beside their networks.
+        let done = AtomicBool::new(false);
+        let looked = AtomicU64::new(0);
+        std::thread::scope(|sc| {
+            for t in 0..2u8 {
+                let (done, looked) = (&done, &looked);
+                sc.spawn(move || {
+                    let mut i = 0u32;
+                    while !done.load(Ordering::Relaxed) || i < 2_000 {
+                        let n = (i % 64) as u8;
+                        assert_eq!(net_of([10, n, 0, t.wrapping_add(i as u8)]), Some(24));
+                        assert_eq!(net_of([172, 16, n, 1]), None);
+                        i += 1;
+                    }
+                    looked.fetch_add(u64::from(i), Ordering::Relaxed);
+                });
+            }
+            for round in 0..20u32 {
+                for k in 2..202u32 {
+                    assert_eq!(pfr_insert_kentry(kt, &host(k), 0), Ok(()));
+                }
+                for k in (2..202u32).filter(|k| (k + round) % 3 != 0) {
+                    assert_eq!(pfr_remove_kentry(kt, &host(k)), Ok(()));
+                }
+                for k in (2..202u32).filter(|k| (k + round) % 3 == 0) {
+                    assert_eq!(pfr_remove_kentry(kt, &host(k)), Ok(()));
+                }
+            }
+            done.store(true, Ordering::Relaxed);
+        });
+        assert!(looked.load(Ordering::Relaxed) >= 4_000);
+        assert_eq!(kt.pfrkt_cnt().get(), 65);
+        assert_eq!(net_of([192, 168, 0, 2]), None);
+        assert_eq!(net_of([192, 168, 0, 1]), Some(32));
+        std::eprintln!(
+            "pf table lock: {} lookups beside 8,000 adds and deletes",
+            looked.load(Ordering::Relaxed) * 2
+        );
     }
 }
 /* </TESTS> */
