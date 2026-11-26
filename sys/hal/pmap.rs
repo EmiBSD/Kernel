@@ -87,7 +87,7 @@
 //! backend (`crate::arch::current::pmap`: amd64's and arm64's at N3.1 commits 4 and 5, the
 //! host double's `BTreeMap` in `sys/hal/arch/host/pmap.rs`). The backend implements the
 //! crate-private [`PmapBackend`] contract; what only one machine's own code uses (amd64's TLB
-//! shootdown words and `PG_NX_BIT`, arm64's `VMMAP`, ...) stays `pub` in its backend module
+//! shootdown words and `PG_NX_BIT`, arm64's `VMMAP_SIZE`, ...) stays `pub` in its backend module
 //! and is reached by path from that machine's code.
 //!
 //! The behaviour is the C's (`uvm_pmap.h`, `pmap(9)`, the two `pmap.c`): `pmap_enter` fails only

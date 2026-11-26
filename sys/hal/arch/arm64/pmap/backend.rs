@@ -440,8 +440,9 @@ static GROW: Mutexed<Grow> = Mutexed::new(
         npted: 0,
     },
 );
-/// `vmmap` (see the deviations): the next free address of the device window, `bus_space`'s.
-pub static VMMAP: AtomicUsize = AtomicUsize::new(0);
+/// `vmmap` (see the deviations): the next free address of the device window, handed out by
+/// `device_va` alone.
+pub(crate) static VMMAP: AtomicUsize = AtomicUsize::new(0);
 /// The identity table [`switch_mmu_kernel_table`] runs from (its `TTBR0_EL1` value), built
 /// once by the bootstrap; 0 before.
 static SWITCH_IDENTITY: AtomicU64 = AtomicU64::new(0);

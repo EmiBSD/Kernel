@@ -55,7 +55,8 @@
 //! ## Deviations
 //! - Until `pmap_init`, `generic_space_map` is the identity inside the bootstrap device map
 //!   the early init installs (the first GiB of physical space as device memory in `TTBR0`,
-//!   `machdep.rs`, `BOOTSTRAP_DEVICE_MAP_SIZE`); afterwards it maps through `pmap_kenter_cache`
+//!   `machdep.rs`, `BOOTSTRAP_DEVICE_MAP_SIZE`); afterwards it maps through the kernel's
+//!   `kernel::vm::km::map_device` (`pmap_kenter_cache` per page, by `hal`'s token)
 //!   in the kernel half from the `vmmap` window below `virtual_avail` (`VMMAP_SIZE`; the
 //!   C's `km_alloc(kv_any)` takes the range from `kernel_map`), and the console
 //!   is remapped so the lower half can go to user address spaces. A map outside the bootstrap
@@ -70,28 +71,22 @@
 
 use core::ptr;
 
-use core::sync::atomic::Ordering;
-
 use crate::arch::arm64::arm64::machdep::BOOTSTRAP_DEVICE_MAP_SIZE;
 use crate::arch::arm64::include::bus::{
     BUS_SPACE_MAP_CACHEABLE, BUS_SPACE_MAP_PREFETCHABLE, BusSpace, BusSpaceHandle,
 };
-use crate::arch::arm64::include::param::PAGE_SIZE;
 use crate::arch::arm64::include::vmparam::VM_MIN_KERNEL_ADDRESS;
-use crate::kern::vm_bsd::{km_alloc, km_free};
+use crate::kern::vm_bsd::km_free;
 use crate::machine::bus::{BusAddr, BusSize};
-use crate::machine::pmap::{
-    pmap_growkernel, pmap_kenter_cache, pmap_kernel, pmap_kremove, pmap_update,
-};
+use crate::machine::pmap::{pmap_kernel, pmap_kremove, pmap_update};
 use crate::sys::errno::Errno;
-use crate::sys::mman::{PROT_READ, PROT_WRITE};
 use crate::sys::types::{Off, Paddr, Vaddr, Vsize};
 use crate::unported;
-use hal::arch::arm64::pmap::layout::{PMAP_CACHE_DEV_NGNRE, PMAP_CACHE_DEV_NGNRNE, PMAP_CACHE_WB};
-use hal::arch::arm64::pmap::{VMMAP, VMMAP_SIZE};
+use hal::arch::arm64::pmap::VMMAP_SIZE;
+use hal::mmio::{DevCache, Untyped};
 use hal::pmap::initialized as pmap_initialized;
 use hal::vm::param::{round_page, trunc_page};
-use kernel::vm::km::{KD_NOWAIT, KP_NONE, KV_ANY};
+use kernel::vm::km::{KP_NONE, KV_ANY, map_device};
 
 /// `arm64_bs_tag`: the one bus space of the machine.
 pub static ARM64_BS_TAG: BusSpace = BusSpace {
@@ -190,47 +185,17 @@ pub unsafe fn generic_space_map(
     }
 
     // The C: startpa = trunc_page(bpa); endpa = round_page(bpa + size); va = km_alloc(endpa
-    // - startpa, &kv_any, &kp_none, &kd_nowait); pmap_kenter_cache each page. Here the
-    // virtual range comes from `vmmap` (`VMMAP`, see sys/hal/arch/arm64/pmap/backend.rs).
-    let startpa = trunc_page(offs);
-    let endpa = round_page(offs.checked_add(size).ok_or(Errno::EINVAL)?);
-    let len = endpa - startpa;
-    let mut va = VMMAP.load(Ordering::Relaxed);
-    if va + len > VM_MIN_KERNEL_ADDRESS + VMMAP_SIZE {
-        // Beyond the window: kernel_map space, as the C takes for every mapping.
-        let Some(kva) = km_alloc(len, &KV_ANY, &KP_NONE, &KD_NOWAIT) else {
-            return Err(Errno::ENOMEM);
-        };
-        va = kva.as_ptr() as usize;
-    } else {
-        VMMAP.store(va + len, Ordering::Relaxed);
-        let _ = pmap_growkernel(Vaddr::new(va + len));
-    }
+    // - startpa, &kv_any, &kp_none, &kd_nowait); pmap_kenter_cache each page. Here the kernel
+    // map's owner chooses the range (the `vmmap` window, then `km_alloc`) and `hal`'s token
+    // enters the pages (`kernel::vm::km::map_device`); the handle is the block's address.
     let cache = if flags & BUS_SPACE_MAP_CACHEABLE != 0 {
-        PMAP_CACHE_WB
+        DevCache::Cacheable
     } else if flags & BUS_SPACE_MAP_PREFETCHABLE != 0 {
-        PMAP_CACHE_DEV_NGNRE
+        DevCache::Prefetchable
     } else {
-        PMAP_CACHE_DEV_NGNRNE
+        DevCache::Device
     };
-    let mut pa = startpa;
-    let mut cur = va;
-    while pa < endpa {
-        // SAFETY: a fresh kernel virtual range (`vmmap` or `km_alloc`) the tables cover,
-        // mapping device registers the caller owns.
-        unsafe {
-            pmap_kenter_cache(
-                Vaddr::new(cur),
-                Paddr::new(pa),
-                PROT_READ | PROT_WRITE,
-                cache,
-            )
-        };
-        pa += PAGE_SIZE;
-        cur += PAGE_SIZE;
-    }
-    pmap_update(pmap_kernel());
-    Ok(BusSpaceHandle(va + (offs - startpa)))
+    map_device::<Untyped>(Paddr::new(offs), size, cache).map(|m| BusSpaceHandle(m.into_legacy_va()))
 }
 
 /// `generic_space_unmap`: releases a mapping; the bootstrap identity map is never released.

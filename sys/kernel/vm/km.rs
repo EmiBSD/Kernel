@@ -189,6 +189,32 @@
 /*
  *	Utah $Hdr: vm_machdep.c 1.16.1.1 89/06/23$
  */
+
+/*
+ * Copyright (c) 2001-2003 Opsycon AB  (www.opsycon.se / www.opsycon.com)
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS
+ * OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ */
 /* </LICENSES> */
 
 /* <CODE> */
@@ -199,10 +225,12 @@
 //! Upstream: sys/uvm/uvm_extern.h @ 3ce1f3f79392
 //! Upstream: sys/kern/vfs_biomem.c @ 3ce1f3f79392
 //! Upstream: sys/arch/arm64/arm64/vm_machdep.c @ 3ce1f3f79392
+//! Upstream: sys/arch/arm64/arm64/bus_space.c @ 3ce1f3f79392
 //! LZ: sys/uvm/uvm_km.rs@3c62ede68802
 //! LZ: sys/uvm/uvm_extern.rs@3c62ede68802
 //! LZ: sys/kern/vfs_biomem.rs@3c62ede68802
 //! LZ: sys/arch/arm64/arm64/vm_machdep.rs@3c62ede68802
+//! LZ: sys/arch/arm64/arm64/bus_space.rs@e8249449d905
 //!
 //! A request names three modes: where the virtual space comes from ([`KmemVaMode`]: which
 //! kernel map, its alignment, whether to wait for room, the single-page allocator), what backs
@@ -312,6 +340,15 @@
 //!   reference it was given) and unmapped by its drop; [`KernelWindow`]'s twin over the
 //!   C's other source of a kernel range. Its bytes move only by copies through the window
 //!   (`kernel::uio::uiomove_window` straight to the uio's iovecs), never through a slice.
+//! - N7.0: `bus_space_map`'s and `bus_space_unmap`'s bodies (LZ: arm64's `generic_space_map`
+//!   and `generic_space_unmap` in `bsd`, the `vmmap` cursor bumped by hand and every page
+//!   entered through the legacy `pmap_kenter_cache` `unsafe fn`) are [`map_device`] and
+//!   [`unmap_device`]: the space chosen here, as the token's holder (the device window by
+//!   `KernelMapper::device_va`, else `km_alloc(kv_any, kp_none, kd_nowait)`), the pages
+//!   entered and the block made by `hal` (`KernelMapper::map_device`, which refuses managed
+//!   frames: `sys/hal/mmio.rs`), and the reverse. `bsd`'s `generic_space_map` keeps its name
+//!   and signature over [`map_device`] for its drivers (`machine::bus`, 163 modules) and takes
+//!   the address out of the block; its `generic_space_unmap` stays its own until they move.
 
 use core::marker::PhantomData;
 use core::ptr::NonNull;
@@ -321,6 +358,8 @@ use hal::arch::current::param::{PAGE_SHIFT, PAGE_SIZE};
 
 use hal::kmbuf::{PageKind, PageMemory};
 use hal::mapped::MappedBytes;
+#[cfg(target_arch = "aarch64")]
+use hal::mmio::{DevCache, Mmio, RegBlock};
 use hal::once::OnceStatic;
 use hal::pmap::{HAVE_PMAP_DIRECT, KernelMapper, PMAP_NOMMU, PMAP_WIRED, Pmap, PmapRef};
 use hal::pool::PoolArc;
@@ -1685,6 +1724,58 @@ fn dma_alloc_in(nommu: bool, sz: usize, kp: &KmemPaMode, wait: bool) -> Option<V
     Some(sva)
 }
 
+/// `bus_space_map`'s body (`generic_space_map`, after `pmap_init`): the whole pages that hold
+/// `[pa, pa + size)` entered as device memory of type `cache` at kernel virtual space of the
+/// token's own, and the block as a value. The space is the next of the device window
+/// (`KernelMapper::device_va`, LZ's `vmmap`), or when the window has no room
+/// `km_alloc(kv_any, kp_none, kd_nowait)`, the C's for every mapping: `ENOMEM` when there is
+/// none. `EINVAL` when the range wraps or is shorter than `R::SIZE` (refused before any space
+/// is taken), or when `hal` refuses the block (a typed one not aligned for a `u64`), the
+/// `km_alloc` space then given back. `pmap_update` is nothing on both machines (the module's
+/// redesign), so it is not called.
+#[cfg(target_arch = "aarch64")]
+pub fn map_device<R: RegBlock>(pa: Paddr, size: usize, cache: DevCache) -> Result<Mmio<R>, Errno> {
+    if size < R::SIZE {
+        return Err(Errno::EINVAL);
+    }
+    let startpa = pa.trunc_page();
+    let endpa = pa
+        .as_usize()
+        .checked_add(size)
+        .and_then(|end| end.checked_next_multiple_of(PAGE_SIZE))
+        .ok_or(Errno::EINVAL)?;
+    let len = endpa - startpa.as_usize();
+    let off = pa.as_usize() - startpa.as_usize();
+    let mapper = token();
+    let (va, window) = match mapper.device_va(len) {
+        Some(va) => (va, true),
+        None => (
+            km_alloc(len, &KV_ANY, &KP_NONE, &KD_NOWAIT).ok_or(Errno::ENOMEM)?,
+            false,
+        ),
+    };
+    mapper
+        .map_device::<R>(va, startpa, off, size, cache)
+        .inspect_err(|_| {
+            // The window's space is never given back (it is not an allocator's).
+            if !window {
+                km_free(va, len, &KV_ANY, &KP_NONE);
+            }
+        })
+}
+
+/// `bus_space_unmap`'s body (`generic_space_unmap`): the mapping removed (`pmap_kremove`) and
+/// its space given back (`km_free(kv_any, kp_none)`), unless it is the device window's,
+/// which is never reused.
+#[cfg(target_arch = "aarch64")]
+pub fn unmap_device<R: RegBlock>(m: Mmio<R>) {
+    let mapper = token();
+    let (va, len) = mapper.unmap_device(m);
+    if !mapper.in_device_window(va) {
+        km_free(va, len, &KV_ANY, &KP_NONE);
+    }
+}
+
 /// The kernel map's DMA-reachable wired pages as `KmBuf` takes them (`uvm_vslock_device`'s
 /// bounce), a provider passed as a value.
 pub const fn dma_memory() -> &'static dyn PageMemory {
@@ -1726,6 +1817,8 @@ mod tests {
     use crate::testutil;
 
     use hal::kmbuf::KmBuf;
+    #[cfg(target_arch = "aarch64")]
+    use hal::mmio::Untyped;
     use hal::vm::uvmexp::UVMEXP;
 
     /// 16 MiB of pages for each test.
@@ -2332,6 +2425,90 @@ mod tests {
     fn testutil_frame() -> Paddr {
         let va = alloc_in(true, PAGE_SIZE, &KV_ANY, &KP_ZERO, &KD_NOWAIT).expect("a page");
         hal::pmap::direct_unmap(va).expect("its frame")
+    }
+
+    /// Two pages of host memory standing for a device's registers: outside the page system,
+    /// their address exposed (the host's direct map is the identity), never freed.
+    #[cfg(target_arch = "aarch64")]
+    fn device_frame() -> Paddr {
+        #[repr(C, align(4096))]
+        struct DevPages([u8; 8192]);
+        let p = std::boxed::Box::into_raw(std::boxed::Box::new(DevPages([0; 8192])));
+        Paddr::new(p.expose_provenance())
+    }
+
+    /// A device layout of 0x20 bytes.
+    #[cfg(target_arch = "aarch64")]
+    struct DevRegs;
+
+    #[cfg(target_arch = "aarch64")]
+    impl RegBlock for DevRegs {
+        const SIZE: usize = 0x20;
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn a_device_is_mapped_in_the_window_and_unmapping_takes_the_mapping_away() {
+        let _g = setup();
+        let frame = device_frame();
+        // The window's next address, peeked without taking any of it.
+        let va = token().device_va(0).expect("the device window");
+        let m = map_device::<DevRegs>(
+            Paddr::new(frame.as_usize() + 0x40),
+            DevRegs::SIZE,
+            DevCache::Device,
+        )
+        .expect("mapped");
+        assert_eq!(m.len(), DevRegs::SIZE);
+        assert_eq!(
+            extract(va.as_usize()),
+            Some(frame),
+            "the whole page, at the window's"
+        );
+        m.write_at::<u32>(0x1c, 0x5aa5_0ff0);
+        assert_eq!(m.read_at::<u32>(0x1c), 0x5aa5_0ff0);
+        assert_eq!(
+            token().device_va(0),
+            Some(Vaddr::new(va.as_usize() + PAGE_SIZE)),
+            "one page taken"
+        );
+        unmap_device(m);
+        assert_eq!(extract(va.as_usize()), None);
+        assert_eq!(
+            token().device_va(0),
+            Some(Vaddr::new(va.as_usize() + PAGE_SIZE)),
+            "the window's space is never given back"
+        );
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn a_device_range_too_short_or_wrapping_is_refused_before_any_space_is_taken() {
+        let _g = setup();
+        let next = token().device_va(0);
+        assert!(matches!(
+            map_device::<DevRegs>(device_frame(), DevRegs::SIZE - 1, DevCache::Device),
+            Err(Errno::EINVAL)
+        ));
+        assert!(matches!(
+            map_device::<Untyped>(Paddr::new(usize::MAX - 8), 16, DevCache::Device),
+            Err(Errno::EINVAL)
+        ));
+        assert_eq!(token().device_va(0), next);
+        // A block spanning two pages takes both.
+        let frame = device_frame();
+        let m = map_device::<Untyped>(
+            Paddr::new(frame.as_usize() + PAGE_SIZE - 4),
+            8,
+            DevCache::Prefetchable,
+        )
+        .expect("mapped");
+        let va = next.expect("the device window");
+        assert_eq!(
+            token().device_va(0),
+            Some(Vaddr::new(va.as_usize() + 2 * PAGE_SIZE))
+        );
+        unmap_device(m);
     }
 }
 /* </TESTS> */
