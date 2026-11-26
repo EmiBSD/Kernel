@@ -77,7 +77,7 @@
 //!                                          when both saw all they expect (twovm.rs)
 //! cargo xtask smoke|smoke2|qemu ... --image tree|init
 //! cargo xtask smoke|smoke2|qemu ... --kernel K --root bare|init[=FILE]|tree[=DIR]
-//!                   [--owners FILE] [--duid HEX16] [--efi FILE] [--strip-debug]
+//!                   [--owners FILE] [--duid HEX16] [--efi FILE] [--strip-debug] [--selftest WORD]
 //!                   [--boot-flags -FLAGS | --boot-manual] [--expect-root] [--boot-on nvme|ahci]
 //!                                          boot through efiboot (efiboot.rs): a shared
 //!                                          image of `just efiboot-images-A`, or a per-run
@@ -171,7 +171,7 @@
 //!                                          gnu/llvm by its build glue, into target/comp/A
 //!                                          (userland/comp.rs); N jobs, default half the CPUs
 //! cargo xtask efiboot-image --arch A --kernel K --root bare|init[=FILE]|tree[=DIR]
-//!                     [--owners FILE] [--duid HEX16] [--efi FILE] [--strip-debug]
+//!                     [--owners FILE] [--duid HEX16] [--efi FILE] [--strip-debug] [--selftest WORD]
 //!                     (--shared | --out FILE)
 //!                                          an efiboot disk (MBR, label, FFS a with /bsd,
 //!                                          ESP): --shared writes target/efiboot/A/
@@ -262,7 +262,7 @@ const USAGE: &str = "usage: cargo xtask <lz check | lz status [--write] | lz dri
                      e2fsck --arch A [--disk-set NAME] [--cat PATH=TEXT]... | fsck-msdos --arch A | \
                      manual --arch arm64 --boot-log LOG --out FILE | include --arch arm64 --out DIR | \
                      nvme-root --arch A [--duid HEX] [--out FILE] [--root-dev DEV] | \
-                     efiboot-image --arch A --kernel K --root bare|init[=FILE]|tree[=DIR] [--owners FILE] [--duid HEX16] [--efi FILE] [--strip-debug] (--shared | --out FILE)>";
+                     efiboot-image --arch A --kernel K --root bare|init[=FILE]|tree[=DIR] [--owners FILE] [--duid HEX16] [--efi FILE] [--strip-debug] [--selftest WORD] (--shared | --out FILE)>";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();

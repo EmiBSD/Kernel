@@ -34,7 +34,7 @@
 use core::mem::size_of;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{
-    AtomicBool, AtomicI32, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering,
+    AtomicBool, AtomicI32, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering,
 };
 
 use alloc::boxed::Box;
@@ -138,6 +138,12 @@ use kernel::vm::types::{
 /// A value that is neither all zeros nor all ones.
 const PATTERN: u64 = 0x5a5a_c3c3_0f0f_a5a5;
 
+/// The first bytes of [`PRESET`], which the image builder looks for in the kernel file
+/// (`tools/xtask/src/efiboot.rs`, `PRESET_MAGIC`: the same 16 bytes).
+const PRESET_MAGIC: [u8; 16] = *b"EMIBSD-SELFTEST\0";
+/// The bytes of [`PRESET`] after its magic: the words the image builder writes.
+const PRESET_SLOT: usize = 48;
+
 /// `selftest=trap` on the kernel command line asks for [`trap_bad_access`].
 static TRAP_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// `selftest=uart` asks for [`uart_echo`].
@@ -158,6 +164,16 @@ static FB_REQUESTED: AtomicBool = AtomicBool::new(false);
 static WSCONS_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// `selftest=tpm` asks for `tpm_selftest` (`dev/acpi/tpm.rs`).
 static TPM_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// The self-test preset of this kernel file: [`PRESET_MAGIC`], then [`PRESET_SLOT`] bytes
+/// that `cargo xtask efiboot-image --selftest WORD` (and `smoke --root ... --selftest WORD`)
+/// fills in the image's copy of the kernel with `selftest=WORD`, NUL padded, as rdsetroot(8)
+/// writes the ramdisk into a `bsd.rd` and `config -e` a kernel's settings before it boots:
+/// boot(8) passes the kernel only its flags (`exec.c`), so a test word has no channel on its
+/// command line. All zero: no self-test asked. The bytes are atomics, so the kernel stores to
+/// the static ([`preset_apply`]) and none of its loads can be folded into the initial value
+/// the compiler sees; a patched file is read as patched.
+static PRESET: [AtomicU8; PRESET_MAGIC.len() + PRESET_SLOT] = preset_init(PRESET_MAGIC);
 
 /// The first frame buffer that attached (its device name and the attach arguments it would
 /// hand `wsdisplay`), for [`fb_check`].
@@ -224,6 +240,36 @@ pub fn parse_bootargs(cmdline: &[u8]) {
     if cmdline.windows(TPM.len()).any(|w| w == TPM) {
         TPM_REQUESTED.store(true, Ordering::Relaxed);
     }
+}
+
+/// [`PRESET`]'s initial value: the magic, then a zeroed slot.
+const fn preset_init(magic: [u8; 16]) -> [AtomicU8; PRESET_MAGIC.len() + PRESET_SLOT] {
+    let mut p = [const { AtomicU8::new(0) }; PRESET_MAGIC.len() + PRESET_SLOT];
+    let mut i = 0;
+    while i < magic.len() {
+        p[i] = AtomicU8::new(magic[i]);
+        i += 1;
+    }
+    p
+}
+
+/// The words of a preset slot: its bytes up to the first NUL.
+fn preset_words(slot: &[u8]) -> &[u8] {
+    let end = slot.iter().position(|&b| b == 0).unwrap_or(slot.len());
+    &slot[..end]
+}
+
+/// Applies the self-test preset ([`PRESET`]): takes its words, each byte swapped with 0 (the
+/// slot reads empty afterwards), and sets the requests [`parse_bootargs`] sets for the same
+/// words on a command line. Called once by the boot glue (`boot_init`), on the boot
+/// processor, before the other processors start; under a loader that passes words (Limine)
+/// it finds the slot empty and changes nothing.
+pub fn preset_apply() {
+    let mut slot = [0u8; PRESET_SLOT];
+    for (b, cell) in slot.iter_mut().zip(&PRESET[PRESET_MAGIC.len()..]) {
+        *b = cell.swap(0, Ordering::Relaxed);
+    }
+    parse_bootargs(preset_words(&slot));
 }
 
 /// Whether the command line asked for [`fb_check`].
@@ -2823,3 +2869,38 @@ pub fn wscons_grid() {
     );
 }
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preset_words_stop_at_the_first_nul() {
+        assert_eq!(preset_words(b"selftest=trap\0\0\0"), b"selftest=trap");
+        assert_eq!(preset_words(&[0; PRESET_SLOT]), b"");
+        assert_eq!(preset_words(b"selftest=vio"), b"selftest=vio");
+    }
+
+    #[test]
+    fn preset_apply_sets_what_parse_bootargs_sets() {
+        for (cell, m) in PRESET.iter().zip(PRESET_MAGIC) {
+            assert_eq!(cell.load(Ordering::Relaxed), m);
+        }
+        let slot = &PRESET[PRESET_MAGIC.len()..];
+        assert!(slot.iter().all(|c| c.load(Ordering::Relaxed) == 0));
+        // An empty slot asks for nothing.
+        preset_apply();
+        assert!(!taskq_requested() && !trap_requested());
+        // What the image builder writes for `--selftest taskq`.
+        for (cell, b) in slot.iter().zip(b"selftest=taskq") {
+            cell.store(*b, Ordering::Relaxed);
+        }
+        preset_apply();
+        assert!(taskq_requested());
+        assert!(!trap_requested() && !kthread_requested());
+        assert!(slot.iter().all(|c| c.load(Ordering::Relaxed) == 0));
+        TASKQ_REQUESTED.store(false, Ordering::Relaxed);
+    }
+}
+/* </TESTS> */

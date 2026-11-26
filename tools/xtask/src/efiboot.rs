@@ -43,8 +43,11 @@
 //!   or `/dev/<dev>` for the older `efiboot-disk --root-dev`. boot(8) passes the label's DUID
 //!   (`BOOTARG_BOOTDUID`, arm64's `openbsd,bootduid`), by which the kernel finds its root.
 //! - `cargo xtask efiboot-image --arch A --kernel K --root bare|init[=FILE]|tree[=DIR]
-//!   [--owners FILE] [--duid HEX16] [--efi FILE] [--strip-debug] (--shared | --out FILE)`:
-//!   one such image. `--shared` writes one of the two images every recipe may boot
+//!   [--owners FILE] [--duid HEX16] [--efi FILE] [--strip-debug] [--selftest WORD]
+//!   (--shared | --out FILE)`: one such image. `--selftest WORD` writes `selftest=WORD` into
+//!   the self-test preset of the image's copy of the kernel (`sys/bsd/kern/selftest.rs`,
+//!   feature `qemu`), as rdsetroot(8) writes a ramdisk into `bsd.rd`: boot(8) passes the
+//!   kernel only its flags, so the word Limine's command line carried has no other channel. `--shared` writes one of the two images every recipe may boot
 //!   ([`Shared`], `target/efiboot/<arch>/emibsd-{tree,init}.img`, made by `just
 //!   efiboot-images-arm64`); a VM attaches it with `snapshot=on`, so it is never written and
 //!   is as fresh at each QEMU start as a ramdisk. `--out FILE` is a per-run image in the run
@@ -76,6 +79,12 @@ const ALIGN: u64 = 2048;
 const ESP_SECTORS: u64 = 16384;
 /// The DUID of the efiboot images' label (`EFIBOOT0` in ASCII, `454649424f4f5430`).
 pub(crate) const DUID: [u8; 8] = *b"EFIBOOT0";
+
+/// The magic of the kernel's self-test preset (`sys/bsd/kern/selftest.rs`, `PRESET`, feature
+/// `qemu`): the same 16 bytes, which a host test checks against that file.
+const PRESET_MAGIC: [u8; 16] = *b"EMIBSD-SELFTEST\0";
+/// The preset's slot after the magic, which [`write_preset`] fills.
+const PRESET_SLOT: usize = 48;
 
 /// `boot.conf` on the disk: efiboot runs it before its prompt. It sets no `boot` command,
 /// so the prompt comes, and turns the prompt's timeout off so that the smoke types at it.
@@ -205,6 +214,9 @@ pub(crate) struct ImageSpec<'a> {
     pub fstab_dev: Option<&'a str>,
     /// `/bsd` without its `.debug_*` sections (`llvm-objcopy --strip-debug`).
     pub strip_debug: bool,
+    /// `--selftest WORD`: `selftest=WORD` written into the kernel's preset ([`write_preset`])
+    /// in the image's copy of the kernel.
+    pub selftest: Option<&'a str>,
 }
 
 /// The two images every recipe may boot ([`shared_path`]).
@@ -387,6 +399,51 @@ fn stage_kernel(kernel: &Path, to: &Path, strip: bool) -> Result<()> {
     Ok(())
 }
 
+/// Writes `selftest=WORD` into the self-test preset of `kernel` (the bytes of the kernel
+/// file), as rdsetroot(8) writes a ramdisk into `bsd.rd`: the file must hold exactly one
+/// [`PRESET_MAGIC`] followed by an empty (zero) slot, and the word is lowercase letters and
+/// digits, `selftest=WORD` at most [`PRESET_SLOT`] bytes (NUL padded). A kernel built without
+/// feature `qemu` has no preset.
+fn write_preset(kernel: &mut [u8], word: &str) -> std::result::Result<(), String> {
+    if word.is_empty()
+        || !word
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+    {
+        return Err(format!(
+            "--selftest {word}: a self-test name such as trap or fb"
+        ));
+    }
+    let text = format!("selftest={word}");
+    if text.len() > PRESET_SLOT {
+        return Err(format!(
+            "--selftest {word}: longer than the preset's {PRESET_SLOT} bytes"
+        ));
+    }
+    let at: Vec<usize> = kernel
+        .windows(PRESET_MAGIC.len())
+        .enumerate()
+        .filter(|(_, w)| *w == PRESET_MAGIC)
+        .map(|(i, _)| i)
+        .collect();
+    let [i] = at[..] else {
+        return Err(format!(
+            "{} copies of the self-test preset's magic, not one (a kernel built without \
+             feature qemu has none)",
+            at.len()
+        ));
+    };
+    let start = i + PRESET_MAGIC.len();
+    let slot = kernel
+        .get_mut(start..start + PRESET_SLOT)
+        .ok_or("the self-test preset's slot runs past the file's end")?;
+    if slot.iter().any(|&b| b != 0) {
+        return Err("the self-test preset's slot is not empty".into());
+    }
+    slot[..text.len()].copy_from_slice(text.as_bytes());
+    Ok(())
+}
+
 /// Writes the FFS of partition `a` in `work` and returns it: `/bsd`, `/etc/boot.conf`,
 /// `/etc/random.seed` and what [`ImageSpec::root`] adds.
 fn make_ffs(root: &Path, spec: &ImageSpec<'_>, work: &Path) -> Result<Vec<u8>> {
@@ -444,6 +501,11 @@ fn make_ffs(root: &Path, spec: &ImageSpec<'_>, work: &Path) -> Result<Vec<u8>> {
     fs::create_dir_all(staging.join("etc")).map_err(|e| format!("{}: {e}", staging.display()))?;
     let bsd = staging.join("bsd");
     stage_kernel(spec.kernel, &bsd, spec.strip_debug)?;
+    if let Some(word) = spec.selftest {
+        let mut k = fs::read(&bsd).map_err(|e| format!("{}: {e}", bsd.display()))?;
+        write_preset(&mut k, word).map_err(|e| format!("{}: {e}", spec.kernel.display()))?;
+        fs::write(&bsd, k)?;
+    }
     fs::write(staging.join("etc/boot.conf"), BOOT_CONF)?;
     // A seed boot(8) can read (and marks used, sticky bit, as on a real install).
     let seed: Vec<u8> = (0..256u32)
@@ -589,7 +651,7 @@ pub(crate) fn image(root: &Path, spec: &ImageSpec<'_>, out: &Path) -> Result<()>
     };
     println!(
         "efiboot-image: {} ({} sectors, DUID {}; a = ffs of {} sectors with /bsd ({kernel_kib} \
-         KiB{}){what}, /etc/boot.conf, /etc/random.seed; ESP with EFI/BOOT/{} ({} KiB); \
+         KiB{}{}){what}, /etc/boot.conf, /etc/random.seed; ESP with EFI/BOOT/{} ({} KiB); \
          made in {:.1}s)",
         out.display(),
         disk.len() as u64 / SECTOR,
@@ -600,6 +662,9 @@ pub(crate) fn image(root: &Path, spec: &ImageSpec<'_>, out: &Path) -> Result<()>
         } else {
             ""
         },
+        spec.selftest
+            .map(|w| format!(", preset selftest={w}"))
+            .unwrap_or_default(),
         efi_name(spec.arch),
         efi_bytes.len() / 1024,
         started.elapsed().as_secs_f32()
@@ -625,8 +690,12 @@ pub(crate) fn image_command(root: &Path, args: &[&str]) -> Result<()> {
             // The shared images are the standard ones: the default tree or stand-in, the
             // default DUID (what `--image` and `--expect-root` assume).
             let which = Shared::parse(root_spec)?;
-            if duid.is_some() {
-                return Err("--shared images carry the default DUID: no --duid".into());
+            if duid.is_some() || optional_flag(args, "--selftest").is_some() {
+                return Err(
+                    "--shared images carry the default DUID and no preset: no --duid, no \
+                     --selftest"
+                        .into(),
+                );
             }
             shared_path(root, arch, which)
         }
@@ -643,6 +712,7 @@ pub(crate) fn image_command(root: &Path, args: &[&str]) -> Result<()> {
             duid: duid.unwrap_or(DUID),
             fstab_dev: None,
             strip_debug: args.contains(&"--strip-debug"),
+            selftest: optional_flag(args, "--selftest"),
         },
         &out,
     )
@@ -670,6 +740,7 @@ pub(crate) fn efiboot_disk(
             duid: DUID,
             fstab_dev: root_dev,
             strip_debug: false,
+            selftest: None,
         },
         &boot::image_path(root, arch, None),
     )
@@ -680,7 +751,13 @@ pub(crate) const BOOT_PROMPT: &str = "boot> ";
 
 /// The options of `smoke`, `smoke2` and `qemu` that are only an efiboot boot's, and the
 /// Limine ones an efiboot boot refuses (no command line, no modules).
-const EFIBOOT_ONLY: &[&str] = &["--boot-flags", "--boot-on", "--owners", "--efi"];
+const EFIBOOT_ONLY: &[&str] = &[
+    "--boot-flags",
+    "--boot-on",
+    "--selftest",
+    "--owners",
+    "--efi",
+];
 const EFIBOOT_ONLY_SWITCHES: &[&str] = &["--boot-manual", "--expect-root", "--strip-debug"];
 const LIMINE_ONLY: &[&str] = &["--cmdline", "--init", "--ramdisk"];
 const LIMINE_ONLY_SWITCHES: &[&str] = &["--expect-ramdisk"];
@@ -762,7 +839,7 @@ pub(crate) fn boot_args(root: &Path, arch: Arch, args: &[&str]) -> Result<Option
     let (image_path, duid) = match (shared, root_spec) {
         (Some(_), Some(_)) => return Err("--image and --root: one or the other".into()),
         (Some(name), None) => {
-            let fixed: Vec<&str> = ["--kernel", "--duid", "--owners", "--efi"]
+            let fixed: Vec<&str> = ["--kernel", "--duid", "--selftest", "--owners", "--efi"]
                 .into_iter()
                 .filter(|o| optional_flag(args, o).is_some())
                 .chain(args.contains(&"--strip-debug").then_some("--strip-debug"))
@@ -806,6 +883,7 @@ pub(crate) fn boot_args(root: &Path, arch: Arch, args: &[&str]) -> Result<Option
                     duid,
                     fstab_dev: None,
                     strip_debug: args.contains(&"--strip-debug"),
+                    selftest: optional_flag(args, "--selftest"),
                 },
                 &out,
             )?;
@@ -999,6 +1077,56 @@ mod tests {
         assert!(err(&["--image", "bare"]).contains("shared images"));
         assert!(err(&["--image", "tree"]).contains("efiboot-images-arm64"));
         assert!(boot_args(r, Arch::Amd64, &["--image", "tree"]).is_err());
+    }
+
+    #[test]
+    fn the_preset_is_written_once_into_an_empty_slot() {
+        let mut k = vec![0u8; 256];
+        k[100..116].copy_from_slice(&PRESET_MAGIC);
+        write_preset(&mut k, "mpstress").unwrap();
+        assert_eq!(&k[116..133], b"selftest=mpstress");
+        assert!(k[133..164].iter().all(|&b| b == 0));
+        // Its slot is no longer empty.
+        assert!(
+            write_preset(&mut k, "trap")
+                .unwrap_err()
+                .contains("not empty")
+        );
+        // No magic: a kernel without feature qemu.
+        assert!(
+            write_preset(&mut [0u8; 256], "trap")
+                .unwrap_err()
+                .contains("0 copies")
+        );
+        // Two magics.
+        let mut two = vec![0u8; 256];
+        two[0..16].copy_from_slice(&PRESET_MAGIC);
+        two[128..144].copy_from_slice(&PRESET_MAGIC);
+        assert!(
+            write_preset(&mut two, "trap")
+                .unwrap_err()
+                .contains("2 copies")
+        );
+        // A slot cut by the file's end.
+        let mut short = vec![0u8; 40];
+        short[8..24].copy_from_slice(&PRESET_MAGIC);
+        assert!(write_preset(&mut short, "trap").is_err());
+        // Words.
+        let mut k = vec![0u8; 256];
+        k[0..16].copy_from_slice(&PRESET_MAGIC);
+        for bad in ["", "Trap", "trap fb", "-s", &"x".repeat(40)] {
+            assert!(write_preset(&mut k, bad).is_err(), "{bad}");
+        }
+        write_preset(&mut k, &"x".repeat(39)).unwrap();
+    }
+
+    #[test]
+    fn the_preset_magic_is_the_kernels() {
+        let selftest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sys/bsd/kern/selftest.rs");
+        let text = fs::read_to_string(&selftest).unwrap();
+        assert!(text.contains("const PRESET_MAGIC: [u8; 16] = *b\"EMIBSD-SELFTEST\\0\";"));
+        assert!(text.contains(&format!("const PRESET_SLOT: usize = {PRESET_SLOT};")));
+        assert_eq!(PRESET_MAGIC, *b"EMIBSD-SELFTEST\0");
     }
 
     #[test]
