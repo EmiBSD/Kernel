@@ -193,8 +193,9 @@
 //!   No user of the tree at the pin reaches a repair, so neither that state nor the C's
 //!   dangling one arises: pf adds hosts and prefix masks only (pf_table.c:1271, 1280), all
 //!   normal but a /0's, which is the mask tree's root (index 0, not normal) and which no
-//!   normal annotation shares; the SPD's masks are non-normal at index 16 (ip_spd.c:107, pfkeyv2_convert.c:473, 500), so neither has
-//!   a normal annotation a route of another mask takes, and the exports free their entries
+//!   normal annotation shares; the SPD's masks are non-normal at index 16 (ip_spd.c:107,
+//!   pfkeyv2_convert.c:473, 500), so neither has a normal annotation a route of another mask
+//!   takes, and the exports free their entries
 //!   all at once (vfs_subr.c:1565-1575). Each annotation also records its leaf's generation, a
 //!   check `rn_match` makes on a normal annotation it returns (after `rn_b`'s test): an
 //!   annotation still listed whose leaf has gone (radix.c:866-868's "Wasn't lifted at all"

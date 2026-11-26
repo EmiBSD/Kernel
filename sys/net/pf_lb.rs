@@ -72,6 +72,8 @@
 //! - `pfr_pool_get` returns the entry's address and mask (`net/pf_table.rs`) instead of
 //!   pointing `raddr`/`rmask` at them (see above).
 
+use core::sync::atomic::Ordering as AtomicOrdering;
+
 use crate::dev::rnd::arc4random_uniform;
 use crate::kern::subr_prf::{addlog, log};
 use crate::net::if_::unhandled_af;
@@ -555,7 +557,7 @@ pub fn pf_map_addr(
                     return false;
                 };
 
-                let cnt = kt.pfrkt_cnt().get();
+                let cnt = kt.pfrkt_cnt().load(AtomicOrdering::Relaxed);
                 if cnt == 0 {
                     rpool.tblidx.set(0);
                 } else {
@@ -610,7 +612,7 @@ pub fn pf_map_addr(
                     return false;
                 };
 
-                let cnt = kt.pfrkt_cnt().get();
+                let cnt = kt.pfrkt_cnt().load(AtomicOrdering::Relaxed);
                 if cnt == 0 {
                     rpool.tblidx.set(0);
                 } else {

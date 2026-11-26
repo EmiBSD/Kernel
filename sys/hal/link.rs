@@ -234,8 +234,8 @@ impl<T: 'static> core::fmt::Debug for Link<T> {
 /// allow to be shared.
 ///
 /// Invariant: `ptr` is null or the address of a `&'static T` given to [`SyncLink::set`],
-/// [`SyncLink::replace`] (its swap) or [`SyncLink::to`] for a `T: Sync`; nothing else ever
-/// writes it.
+/// [`SyncLink::replace`] (its swap), [`SyncLink::set_if_none`] (its exchange from null) or
+/// [`SyncLink::to`] for a `T: Sync`; nothing else ever writes it.
 pub struct SyncLink<T: 'static> {
     ptr: AtomicPtr<T>,
 }
@@ -291,6 +291,23 @@ impl<T: Sync + 'static> SyncLink<T> {
     #[inline]
     pub fn replace(&self, to: Option<&'static T>) -> Option<&'static T> {
         self.read(Access::Swap(to))
+    }
+
+    /// Points an empty link at `to`: one compare-and-exchange from null, so of several CPUs
+    /// installing their own target at once exactly one does (the C's "allocate on first use",
+    /// `pfrke_counters`); `Err(to)` gives the caller's target back when the link had one
+    /// (read it with [`SyncLink::get`]). `Release` on success, as [`SyncLink::set`].
+    #[inline]
+    pub fn set_if_none(&self, to: &'static T) -> Result<(), &'static T> {
+        self.ptr
+            .compare_exchange(
+                ptr::null_mut(),
+                Self::word(Some(to)),
+                Ordering::Release,
+                Ordering::Relaxed,
+            )
+            .map(|_| ())
+            .map_err(|_| to)
     }
 
     /// The pointer word of `to` (null for `None`).
@@ -1618,6 +1635,32 @@ mod tests {
         l.set(None);
         assert!(l.is_none());
         assert_eq!(SyncLink::to(&A).get(), Some(&7));
+    }
+
+    /// `set_if_none` installs one target of several racing ones: every thread but one gets
+    /// its own back, and the link names the winner's.
+    #[test]
+    fn set_if_none_installs_exactly_one() {
+        const THREADS: usize = 4;
+        for round in 0..200u32 {
+            let values: &'static [u32] = Box::leak(
+                (0..THREADS as u32)
+                    .map(|t| round * 8 + t)
+                    .collect::<Box<[u32]>>(),
+            );
+            let l: &'static SyncLink<u32> = Box::leak(Box::new(SyncLink::new()));
+            let workers: std::vec::Vec<_> = (0..THREADS)
+                .map(|t| thread::spawn(move || l.set_if_none(&values[t]).is_ok()))
+                .collect();
+            let won: std::vec::Vec<usize> = workers
+                .into_iter()
+                .enumerate()
+                .filter_map(|(t, w)| w.join().unwrap().then_some(t))
+                .collect();
+            assert_eq!(won.len(), 1);
+            assert!(l.points_to(&values[won[0]]));
+            assert_eq!(l.set_if_none(&values[0]), Err(&values[0]));
+        }
     }
 
     /// `replace` is one exchange: threads swapping their own targets in see every target

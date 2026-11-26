@@ -96,6 +96,7 @@ use core::cell::Cell;
 use core::ffi::c_void;
 use core::mem::{MaybeUninit, size_of};
 use core::ptr;
+use core::sync::atomic::{AtomicI32, AtomicU64};
 
 use alloc::boxed::Box;
 
@@ -116,7 +117,9 @@ use crate::sys::time::Timeval;
 use crate::sys::timeout::Timeout;
 use crate::sys::tree::{RbEntry, RbHead};
 use crate::sys::types::{Pid, SaFamily, Time, Uid};
+use hal::link::SyncLink;
 use hal::rwlock::Rwlocked;
+use kernel::net::if_var::AtomicCell;
 use kernel::net::radix::RadixTree;
 
 /// `PF_TCPS_PROXY_SRC`: synproxy state, talking to the client.
@@ -2156,15 +2159,19 @@ pub struct PfrTable {
     pub pfrt_anchor: [u8; PATH_MAX],
     /// `pfrt_name`.
     pub pfrt_name: [u8; PF_TABLE_NAME_SIZE],
-    /// `pfrt_flags`: `PFR_TFLAG_*`.
-    pub pfrt_flags: Cell<u32>,
+    /// `pfrt_flags`: `PFR_TFLAG_*`. A relaxed atomic (D1): an active table's flags are read by
+    /// `pfr_update_stats` under the shared net lock alone while the state purge may change
+    /// them under `pf_lock` (`pf_rm_rule` -> `pfr_detach_table` -> `pfr_setflags_ktable`).
+    pub pfrt_flags: AtomicCell<u32>,
     /// `pfrt_fback`: `PFR_FB_*`.
     pub pfrt_fback: Cell<u8>,
     /// A hole the C compiler leaves.
     pub _pad: [u8; 3],
 }
 
-// SAFETY: `#[repr(C)]` byte arrays and `Cell`s of integers, the hole named `_pad`.
+// SAFETY: `#[repr(C)]` byte arrays, a `Cell` of an integer and an `AtomicCell<u32>`
+// (`repr(transparent)` over `AtomicU32`, which has `u32`'s size, alignment and bit validity:
+// every bit pattern is a valid value), the hole named `_pad`.
 unsafe impl PfAbi for PfrTable {}
 
 impl PfrTable {
@@ -2291,36 +2298,43 @@ pub const PFR_REFCNT_MAX: usize = 2;
 pub struct PfrTstats {
     /// `pfrts_t`.
     pub pfrts_t: PfrTable,
-    /// `pfrts_packets[PFR_DIR_MAX][PFR_OP_TABLE_MAX]`.
-    pub pfrts_packets: [[Cell<u64>; PFR_OP_TABLE_MAX]; PFR_DIR_MAX],
-    /// `pfrts_bytes[PFR_DIR_MAX][PFR_OP_TABLE_MAX]`.
-    pub pfrts_bytes: [[Cell<u64>; PFR_OP_TABLE_MAX]; PFR_DIR_MAX],
+    /// `pfrts_packets[PFR_DIR_MAX][PFR_OP_TABLE_MAX]`: atomics (D1), added to by
+    /// `pfr_update_stats` on every softnet at once (`fetch_add`, `Relaxed`).
+    pub pfrts_packets: [[AtomicU64; PFR_OP_TABLE_MAX]; PFR_DIR_MAX],
+    /// `pfrts_bytes[PFR_DIR_MAX][PFR_OP_TABLE_MAX]`: as `pfrts_packets`.
+    pub pfrts_bytes: [[AtomicU64; PFR_OP_TABLE_MAX]; PFR_DIR_MAX],
     /// `pfrts_match`.
     pub pfrts_match: Cell<u64>,
     /// `pfrts_nomatch`.
     pub pfrts_nomatch: Cell<u64>,
     /// `pfrts_tzero`.
     pub pfrts_tzero: Cell<Time>,
-    /// `pfrts_cnt`.
-    pub pfrts_cnt: Cell<i32>,
+    /// `pfrts_cnt`: an atomic (D1), counted by `pfr_insert_kentry` from `pf_src_connlimit`
+    /// without `pf_lock` on several softnets at once (`fetch_add`, `fetch_sub`, `Relaxed`).
+    pub pfrts_cnt: AtomicI32,
     /// `pfrts_refcnt[PFR_REFCNT_MAX]`.
     pub pfrts_refcnt: [Cell<i32>; PFR_REFCNT_MAX],
     /// A hole the C compiler leaves.
     pub _pad: [u8; 4],
 }
 
-// SAFETY: `#[repr(C)]` of a `PfAbi` table and `Cell`s of integers, the hole named `_pad`.
+// SAFETY: `#[repr(C)]` of a `PfAbi` table, `Cell`s of integers and atomics of integers
+// (`AtomicU64`, `AtomicI32`: their integer's size, alignment and bit validity, so every bit
+// pattern is a valid value), the hole named `_pad`.
 unsafe impl PfAbi for PfrTstats {}
 
-/// `struct pfr_kcounters`: an entry's counters.
+/// `struct pfr_kcounters`: an entry's counters, atomics (D1): `pfr_update_stats` adds to the
+/// packet and byte counts on every softnet at once (`fetch_add`, `Relaxed`); `states` changes
+/// under `pf_lock` (`pfr_states_increase`, `pfr_states_decrease`). So the block is `Sync`, as
+/// the entry's [`SyncLink`] to it needs.
 #[derive(Default)]
 pub struct PfrKcounters {
     /// `pfrkc_packets[PFR_DIR_MAX][PFR_OP_ADDR_MAX]`.
-    pub pfrkc_packets: [[Cell<u64>; PFR_OP_ADDR_MAX]; PFR_DIR_MAX],
+    pub pfrkc_packets: [[AtomicU64; PFR_OP_ADDR_MAX]; PFR_DIR_MAX],
     /// `pfrkc_bytes[PFR_DIR_MAX][PFR_OP_ADDR_MAX]`.
-    pub pfrkc_bytes: [[Cell<u64>; PFR_OP_ADDR_MAX]; PFR_DIR_MAX],
+    pub pfrkc_bytes: [[AtomicU64; PFR_OP_ADDR_MAX]; PFR_DIR_MAX],
     /// `states`.
-    pub states: Cell<u64>,
+    pub states: AtomicU64,
 }
 
 /// `union pfsockaddr_union`: a `sockaddr`, a `sockaddr_in` or a `sockaddr_in6` (28 bytes).
@@ -2393,23 +2407,40 @@ pub struct PfrKentry {
     pub pfrke_workq: SlistEntry<PfrKentry>,
     /// `pfrke_ioq`.
     pub pfrke_ioq: SlistEntry<PfrKentry>,
-    /// `pfrke_counters`.
-    pub pfrke_counters: Cell<Option<&'static PfrKcounters>>,
+    /// `pfrke_counters`: allocated on first use by whichever CPU counts first and installed
+    /// with one exchange from null (`SyncLink::set_if_none`, D1); a loser's block goes back to
+    /// its pool after the tree's lock.
+    pub pfrke_counters: SyncLink<PfrKcounters>,
     /// `pfrke_tzero`.
     pub pfrke_tzero: Cell<Time>,
     /// `pfrke_af`.
     pub pfrke_af: Cell<u8>,
     /// `pfrke_net`.
     pub pfrke_net: Cell<u8>,
-    /// `pfrke_flags`: `PFRKE_FLAG_*`.
-    pub pfrke_flags: Cell<u8>,
+    /// `pfrke_flags`: `PFRKE_FLAG_*`. A relaxed atomic (D1): written under `pf_lock` only
+    /// (`PFRKE_FLAG_MARK` by `pfr_remove_kentry` from the purge, the ioctls' marks and
+    /// negations), read by `pfr_update_stats` without it.
+    pub pfrke_flags: AtomicCell<u8>,
     /// `pfrke_type`: `PFRKE_*`.
     pub pfrke_type: Cell<u8>,
     /// `pfrke_fb`.
     pub pfrke_fb: Cell<u8>,
 }
 
-// SAFETY: changed under `pf_lock` and the net lock, as in C.
+// SAFETY: an entry is shared once its table's tree holds it; each member is sound for that
+// sharing by what guards it:
+// - `pfrke_counters` is a `SyncLink` (atomic) to a block of atomics, installed by an exchange
+//   from null, cleared and freed only by the ioctls (`pfr_clstats_kentries`: the exclusive net
+//   lock keeps every softnet out) or with the entry (`pfr_destroy_kentry`, after its tree's
+//   delete, which waits for every reader on the tree's lock);
+// - `pfrke_flags` is a relaxed atomic, written only under `pf_lock`;
+// - `pfrke_sa`, `pfrke_af`, `pfrke_net` and `pfrke_type` are written before the entry is in a
+//   tree, and never after;
+// - `pfrke_tzero` and `pfrke_fb`, and the work queue links, are written by the entry's creator
+//   before or right after it routes it, and later by the ioctls (the exclusive net lock and
+//   `pf_lock`) and the purge (`pf_lock`), and read only by those: the exclusive net lock keeps
+//   the creators on the softnets out of an ioctl, `pf_lock` the purge.
+// The tree is the table's and under its own lock (`PfrKtable`'s argument).
 unsafe impl Sync for PfrKentry {}
 
 /// `struct pfr_kentry_route`: an entry with an interface (route-to tables).
@@ -2487,28 +2518,42 @@ pub struct PfrKtable {
     pub pfrkt_larg: Cell<i64>,
     /// `pfrkt_nflags`.
     pub pfrkt_nflags: Cell<i32>,
-    /// `pfrkt_refcntcost`.
-    pub pfrkt_refcntcost: Cell<u64>,
-    /// `pfrkt_gcdweight`.
-    pub pfrkt_gcdweight: Cell<u16>,
-    /// `pfrkt_maxweight`.
-    pub pfrkt_maxweight: Cell<u16>,
+    /// `pfrkt_refcntcost`: a relaxed atomic (D1), written under `pf_lock`, read without it by
+    /// `pfr_ktable_winfo_update` from `pf_src_connlimit`'s insert.
+    pub pfrkt_refcntcost: AtomicCell<u64>,
+    /// `pfrkt_gcdweight`: a relaxed atomic (D1), written by `pfr_ktable_winfo_update` under
+    /// `pf_lock` and, from `pf_src_connlimit`'s insert, without it.
+    pub pfrkt_gcdweight: AtomicCell<u16>,
+    /// `pfrkt_maxweight`: as `pfrkt_gcdweight`.
+    pub pfrkt_maxweight: AtomicCell<u16>,
 }
 
 // SAFETY: a table is shared by every CPU that runs pf, under different locks: the tables'
 // ioctls hold the exclusive net lock and `pf_lock`; the rules (`pfr_match_addr`,
 // `pfr_pool_get`) and the state purge (`pf_purge_expired_states`, a `systqmp` task: `pf_lock`,
 // no net lock) hold `pf_lock`; `pfr_update_stats` runs after `pf_unlock` under the shared net
-// lock alone, on every softnet at once, and so does `pf_src_connlimit`'s insert into an overload
-// table (from `pf_test_state`, before any `pf_lock`). No pf lock is common to all of them, so the two trees are `Rwlocked`:
-// every lookup takes the tree's lock shared and every add, delete, swap and destroy takes it
-// alone, which keeps readers and writers apart whatever else each holds; that half is sound.
-// The other half is LZ's argument ("changed under `pf_lock` and the net lock, as in C"), true of
-// the members only the ioctls, the rules and the purge write, and false, as in the C, for three:
-// `pfr_update_stats` adds to `pfrkt_packets`, `pfrkt_bytes` and the entry's counters, and
-// `pfr_insert_kentry` from `pf_src_connlimit` to `pfrkt_cnt`, under the shared net lock alone,
-// beside each other and beside the purge (lost counts in the C, a data race on a `Cell` here).
-// Those words stay as LZ had them until pf's tables move into the kernel (N8).
+// lock alone, on every softnet at once, and so does `pf_src_connlimit`'s insert into an
+// overload table (from `pf_test_state`, before any `pf_lock`). Each member is sound for that
+// sharing by what guards it:
+// - `pfrkt_ip4`, `pfrkt_ip6`: `Rwlocked`, each lookup shared, each add, delete, swap and
+//   destroy alone, whatever pf lock the caller holds (B1);
+// - `pfrkt_ts`'s `pfrts_packets`, `pfrts_bytes` and `pfrts_cnt`: atomics, added to with
+//   `fetch_add`/`fetch_sub` by `pfr_update_stats` and `pfr_insert_kentry` on every softnet
+//   (D1), cleared and copied out whole only by the ioctls, which the exclusive net lock and
+//   `pf_lock` keep alone;
+// - `pfrkt_ts`'s `pfrt_flags` (`pfrkt_flags()`): a relaxed atomic, written by the ioctls and
+//   the purge's `pfr_detach_table` (both `pf_lock`), read on the softnets (D1);
+// - `pfrkt_refcntcost`, `pfrkt_gcdweight`, `pfrkt_maxweight`: relaxed atomics (D1), the
+//   weights also written by `pf_src_connlimit`'s insert without `pf_lock` (the C's
+//   unsynchronised gcd, now a race of whole words);
+// - `pfrkt_ts`'s `pfrts_match`, `pfrts_nomatch`, `pfrts_tzero`, `pfrts_refcnt`, the name and
+//   anchor, `pfrkt_shadow`, `pfrkt_rs`, `pfrkt_larg`, `pfrkt_nflags` and the tree and work
+//   queue links: written and read only under `pf_lock` (the rules, the purge, the ioctls);
+// - `pfrkt_root`: written by the ioctls (exclusive net lock), read by `pfr_update_stats`
+//   under the shared net lock, which excludes them.
+// What this does not cover is a table's lifetime: the purge's `pf_rm_rule` may detach and
+// destroy a table a softnet still counts on, as the C may (its `NET_LOCK` comment in
+// `pf_test`); that is the C's, not a data race of these members.
 unsafe impl Sync for PfrKtable {}
 
 impl PfrKtable {
@@ -2528,12 +2573,12 @@ impl PfrKtable {
     }
 
     /// `pfrkt_flags`.
-    pub fn pfrkt_flags(&self) -> &Cell<u32> {
+    pub fn pfrkt_flags(&self) -> &AtomicCell<u32> {
         &self.pfrkt_ts.pfrts_t.pfrt_flags
     }
 
     /// `pfrkt_cnt`.
-    pub fn pfrkt_cnt(&self) -> &Cell<i32> {
+    pub fn pfrkt_cnt(&self) -> &AtomicI32 {
         &self.pfrkt_ts.pfrts_cnt
     }
 
@@ -2543,12 +2588,12 @@ impl PfrKtable {
     }
 
     /// `pfrkt_packets`.
-    pub fn pfrkt_packets(&self) -> &[[Cell<u64>; PFR_OP_TABLE_MAX]; PFR_DIR_MAX] {
+    pub fn pfrkt_packets(&self) -> &[[AtomicU64; PFR_OP_TABLE_MAX]; PFR_DIR_MAX] {
         &self.pfrkt_ts.pfrts_packets
     }
 
     /// `pfrkt_bytes`.
-    pub fn pfrkt_bytes(&self) -> &[[Cell<u64>; PFR_OP_TABLE_MAX]; PFR_DIR_MAX] {
+    pub fn pfrkt_bytes(&self) -> &[[AtomicU64; PFR_OP_TABLE_MAX]; PFR_DIR_MAX] {
         &self.pfrkt_ts.pfrts_bytes
     }
 

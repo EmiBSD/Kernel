@@ -2603,7 +2603,7 @@ pub unsafe fn pf_tbladdr_copyout(aw: &PfAddrWrap) {
     }
     aw.set_tbl(None);
     aw.set_cnt(if kt.pfrkt_flags().get() & PFR_TFLAG_ACTIVE != 0 {
-        kt.pfrkt_cnt().get()
+        kt.pfrkt_cnt().load(AtomicOrdering::Relaxed)
     } else {
         -1
     });
