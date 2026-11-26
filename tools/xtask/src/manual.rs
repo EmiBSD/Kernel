@@ -88,7 +88,7 @@ const PAGES: &[(&str, &str)] = &[
     ),
     (
         "boot(8)",
-        "unverified: EmiBSD's loaders (sys/stand/boot, sys/arch/arm64/stand/efiboot) are \
+        "unverified: EmiBSD's loaders (sys/boot/boot, sys/boot/arm64/efiboot) are \
          ports of OpenBSD's, and the pin carries no arm64 boot.8 to compare with.",
     ),
 ];

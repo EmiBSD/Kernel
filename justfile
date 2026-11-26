@@ -131,8 +131,8 @@ build-init-arm64:
 
 build: build-amd64 build-arm64 build-init-amd64 build-init-arm64 efiboot-amd64 efiboot-arm64
 
-# M14: OpenBSD's efiboot, amd64's BOOTX64.EFI (sys/arch/amd64/stand/efiboot, with libsa and
-# boot(8)'s sys/stand/boot). Linked position-independent at 0 (relocation-model=pie, which
+# M14: OpenBSD's efiboot, amd64's BOOTX64.EFI (sys/boot/amd64/efiboot, with libsa and
+# boot(8)'s sys/boot/boot). Linked position-independent at 0 (relocation-model=pie, which
 # replaces the kernel's static one: RUSTFLAGS overrides .cargo/config.toml's target
 # rustflags), in a target directory of its own so the kernel's builds are not redone, then
 # made a PE32+ image with `llvm-objcopy -O binary` (cargo xtask efiboot): target/efiboot/
@@ -141,7 +141,7 @@ efiboot-amd64:
     {{ if has_amd64 == "true" { "" } else { "echo 'efiboot-amd64: amd64 SKIPPED (decision 44)' # " } }}RUSTFLAGS="-C relocation-model=pie" cargo build -p efiboot-amd64 --target {{amd64}} --target-dir target/efiboot
     {{no_amd64}}{{xtask}} efiboot --arch amd64 --elf target/efiboot/{{amd64}}/debug/bootx64
 
-# M14 track A3: arm64's BOOTAA64.EFI (sys/arch/arm64/stand/efiboot), built as amd64's:
+# M14 track A3: arm64's BOOTAA64.EFI (sys/boot/arm64/efiboot), built as amd64's:
 # target/efiboot/arm64/BOOTAA64.EFI, its PE header OpenBSD's own (`.peheader`, start.S).
 efiboot-arm64:
     RUSTFLAGS="-C relocation-model=pie" cargo build -p efiboot-arm64 --target {{arm64}} --target-dir target/efiboot

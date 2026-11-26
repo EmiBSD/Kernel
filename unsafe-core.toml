@@ -30,13 +30,10 @@ paths = [
     "sys/bsd/arch/amd64/**",
     "sys/bsd/arch/arm64/**",
     "sys/bsd/machine/**",
-    # Boot: the boot loaders, a separate binary that runs before the kernel.
+    # Boot: the boot loaders, a separate binary that runs before the kernel, and the kernel
+    # binary's boot entry (bsd's `mod stand`).
+    "sys/boot/**",
     "sys/bsd/stand/**",
-    "sys/stand/boot/**",
-    "sys/stand/efi/**",
-    "sys/arch/amd64/stand/**",
-    "sys/arch/arm64/stand/**",
-    "sys/lib/libsa/**",
     # Test harness: the host test double; host only.
     "sys/bsd/arch/host/**",
     # Runtime: the primitives every subsystem builds on.

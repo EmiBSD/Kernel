@@ -35,7 +35,7 @@
 
 extern crate alloc;
 
-#[path = "../../../../bsd/arch/amd64/include/biosvar.rs"]
+#[path = "../../../bsd/arch/amd64/include/biosvar.rs"]
 mod biosvar;
 mod cmd_i386;
 mod conf;

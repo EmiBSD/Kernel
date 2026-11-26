@@ -672,7 +672,7 @@ mod tests {
             dir
         } else {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../../../..")
+                .join("../../../..")
                 .join(dir)
         }
     }

@@ -1535,95 +1535,95 @@ status = "inherited"
 notes = "M16a: the whole file: pciide_machdep_compat_intr_establish (ISA IRQ 14/15, IST_EDGE, IPL_BIO, named after the device) and pciide_machdep_compat_intr_disestablish, reached by pciide.c through machine::pciide_machdep (trait PciideMachdep; arm64, which has no pciide_machdep.c and no ISA bus, and the host establish nothing)"
 
 [[module]]
-rust = "sys/arch/amd64/stand/efiboot/cmd_i386.rs"
+rust = "sys/boot/amd64/efiboot/cmd_i386.rs"
 lz = ["sys/arch/amd64/stand/efiboot/cmd_i386.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/amd64/stand/efiboot/conf.rs"
+rust = "sys/boot/amd64/efiboot/conf.rs"
 lz = ["sys/arch/amd64/stand/efiboot/conf.rs"]
 status = "redesigned"
 
 [[module]]
-rust = "sys/arch/amd64/stand/efiboot/dev_i386.rs"
+rust = "sys/boot/amd64/efiboot/dev_i386.rs"
 lz = ["sys/arch/amd64/stand/efiboot/dev_i386.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/amd64/stand/efiboot/diskprobe.rs"
+rust = "sys/boot/amd64/efiboot/diskprobe.rs"
 lz = ["sys/arch/amd64/stand/efiboot/diskprobe.rs"]
 status = "adapted"
 adapted_by = ["sys/bsd/sys/staticcell.rs"]
 
 [[module]]
-rust = "sys/arch/amd64/stand/efiboot/efiboot.rs"
+rust = "sys/boot/amd64/efiboot/efiboot.rs"
 lz = ["sys/arch/amd64/stand/efiboot/efiboot.rs"]
 status = "adapted"
 adapted_by = ["sys/bsd/sys/staticcell.rs"]
 
 [[module]]
-rust = "sys/arch/amd64/stand/efiboot/efidev.rs"
+rust = "sys/boot/amd64/efiboot/efidev.rs"
 lz = ["sys/arch/amd64/stand/efiboot/efidev.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/amd64/stand/efiboot/efipxe.rs"
+rust = "sys/boot/amd64/efiboot/efipxe.rs"
 lz = ["sys/arch/amd64/stand/efiboot/efipxe.rs"]
 status = "adapted"
 adapted_by = ["sys/bsd/sys/staticcell.rs"]
 
 [[module]]
-rust = "sys/arch/amd64/stand/efiboot/efirng.rs"
+rust = "sys/boot/amd64/efiboot/efirng.rs"
 lz = ["sys/arch/amd64/stand/efiboot/efirng.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/amd64/stand/efiboot/exec_i386.rs"
+rust = "sys/boot/amd64/efiboot/exec_i386.rs"
 lz = ["sys/arch/amd64/stand/efiboot/exec_i386.rs"]
 status = "redesigned"
 
 [[module]]
-rust = "sys/arch/amd64/stand/efiboot/heap.rs"
+rust = "sys/boot/amd64/efiboot/heap.rs"
 lz = ["sys/arch/amd64/stand/efiboot/heap.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/amd64/stand/efiboot/machdep.rs"
+rust = "sys/boot/amd64/efiboot/machdep.rs"
 lz = ["sys/arch/amd64/stand/efiboot/machdep.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/amd64/stand/efiboot/memprobe.rs"
+rust = "sys/boot/amd64/efiboot/memprobe.rs"
 lz = ["sys/arch/amd64/stand/efiboot/memprobe.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/amd64/stand/efiboot/run_i386.rs"
+rust = "sys/boot/amd64/efiboot/run_i386.rs"
 lz = ["sys/arch/amd64/stand/efiboot/run_i386.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/amd64/stand/efiboot/self_reloc.rs"
+rust = "sys/boot/amd64/efiboot/self_reloc.rs"
 lz = ["sys/arch/amd64/stand/efiboot/self_reloc.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/amd64/stand/efiboot/start_amd64.rs"
+rust = "sys/boot/amd64/efiboot/start_amd64.rs"
 lz = ["sys/arch/amd64/stand/efiboot/start_amd64.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/amd64/stand/libsa/disk.rs"
+rust = "sys/boot/amd64/libsa/disk.rs"
 lz = ["sys/arch/amd64/stand/libsa/disk.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/amd64/stand/libsa/libsa.rs"
+rust = "sys/boot/amd64/libsa/libsa.rs"
 lz = ["sys/arch/amd64/stand/libsa/libsa.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/amd64/stand/libsa/mdrandom.rs"
+rust = "sys/boot/amd64/libsa/mdrandom.rs"
 lz = ["sys/arch/amd64/stand/libsa/mdrandom.rs"]
 status = "inherited"
 
@@ -2090,80 +2090,80 @@ native = ["VM_MAX_KERNEL_ADDRESS"]
 kind = "moved"
 
 [[module]]
-rust = "sys/arch/arm64/stand/efiboot/conf.rs"
+rust = "sys/boot/arm64/efiboot/conf.rs"
 lz = ["sys/arch/arm64/stand/efiboot/conf.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/arm64/stand/efiboot/disk.rs"
+rust = "sys/boot/arm64/efiboot/disk.rs"
 lz = ["sys/arch/arm64/stand/efiboot/disk.rs"]
 status = "inherited"
 license = "none"
 
 [[module]]
-rust = "sys/arch/arm64/stand/efiboot/dt_blob.rs"
+rust = "sys/boot/arm64/efiboot/dt_blob.rs"
 lz = ["sys/arch/arm64/stand/efiboot/dt_blob.rs"]
 status = "adapted"
 adapted_by = ["sys/bsd/sys/staticcell.rs"]
 license = "none"
 
 [[module]]
-rust = "sys/arch/arm64/stand/efiboot/efiacpi.rs"
+rust = "sys/boot/arm64/efiboot/efiacpi.rs"
 lz = ["sys/arch/arm64/stand/efiboot/efiacpi.rs"]
 status = "adapted"
 adapted_by = ["sys/bsd/sys/staticcell.rs"]
 
 [[module]]
-rust = "sys/arch/arm64/stand/efiboot/efiboot.rs"
+rust = "sys/boot/arm64/efiboot/efiboot.rs"
 lz = ["sys/arch/arm64/stand/efiboot/efiboot.rs"]
 status = "adapted"
 adapted_by = ["sys/bsd/sys/staticcell.rs"]
 
 [[module]]
-rust = "sys/arch/arm64/stand/efiboot/efidev.rs"
+rust = "sys/boot/arm64/efiboot/efidev.rs"
 lz = ["sys/arch/arm64/stand/efiboot/efidev.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/arm64/stand/efiboot/efipxe.rs"
+rust = "sys/boot/arm64/efiboot/efipxe.rs"
 lz = ["sys/arch/arm64/stand/efiboot/efipxe.rs"]
 status = "adapted"
 adapted_by = ["sys/bsd/sys/staticcell.rs"]
 
 [[module]]
-rust = "sys/arch/arm64/stand/efiboot/efirng.rs"
+rust = "sys/boot/arm64/efiboot/efirng.rs"
 lz = ["sys/arch/arm64/stand/efiboot/efirng.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/arm64/stand/efiboot/exec.rs"
+rust = "sys/boot/arm64/efiboot/exec.rs"
 lz = ["sys/arch/arm64/stand/efiboot/exec.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/arm64/stand/efiboot/fdt.rs"
+rust = "sys/boot/arm64/efiboot/fdt.rs"
 lz = ["sys/arch/arm64/stand/efiboot/fdt.rs"]
 status = "adapted"
 adapted_by = ["sys/bsd/sys/staticcell.rs"]
 
 [[module]]
-rust = "sys/arch/arm64/stand/efiboot/heap.rs"
+rust = "sys/boot/arm64/efiboot/heap.rs"
 lz = ["sys/arch/arm64/stand/efiboot/heap.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/arm64/stand/efiboot/self_reloc.rs"
+rust = "sys/boot/arm64/efiboot/self_reloc.rs"
 lz = ["sys/arch/arm64/stand/efiboot/self_reloc.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/arch/arm64/stand/efiboot/smbios.rs"
+rust = "sys/boot/arm64/efiboot/smbios.rs"
 lz = ["sys/arch/arm64/stand/efiboot/smbios.rs"]
 status = "adapted"
 adapted_by = ["sys/bsd/sys/staticcell.rs"]
 
 [[module]]
-rust = "sys/arch/arm64/stand/efiboot/start.rs"
+rust = "sys/boot/arm64/efiboot/start.rs"
 lz = ["sys/arch/arm64/stand/efiboot/start.rs"]
 status = "inherited"
 
@@ -5941,219 +5941,219 @@ lz = ["sys/lib/libkern/timingsafe_bcmp.rs"]
 status = "redesigned"
 
 [[module]]
-rust = "sys/lib/libsa/alloc.rs"
+rust = "sys/boot/libsa/alloc.rs"
 lz = ["sys/lib/libsa/alloc.rs"]
 status = "adapted"
 adapted_by = ["sys/bsd/sys/staticcell.rs"]
 
 [[module]]
-rust = "sys/lib/libsa/arc4.rs"
+rust = "sys/boot/libsa/arc4.rs"
 lz = ["sys/lib/libsa/arc4.rs"]
 status = "adapted"
 adapted_by = ["sys/bsd/sys/staticcell.rs"]
 
 [[module]]
-rust = "sys/lib/libsa/arp.rs"
+rust = "sys/boot/libsa/arp.rs"
 lz = ["sys/lib/libsa/arp.rs"]
 status = "adapted"
 adapted_by = ["sys/bsd/sys/staticcell.rs"]
 
 [[module]]
-rust = "sys/lib/libsa/cd9660.rs"
+rust = "sys/boot/libsa/cd9660.rs"
 lz = ["sys/lib/libsa/cd9660.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libsa/close.rs"
+rust = "sys/boot/libsa/close.rs"
 lz = ["sys/lib/libsa/close.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libsa/closeall.rs"
+rust = "sys/boot/libsa/closeall.rs"
 lz = ["sys/lib/libsa/closeall.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libsa/cons.rs"
+rust = "sys/boot/libsa/cons.rs"
 lz = ["sys/lib/libsa/cons.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libsa/cread.rs"
+rust = "sys/boot/libsa/cread.rs"
 lz = ["sys/lib/libsa/cread.rs"]
 status = "adapted"
 adapted_by = ["sys/lib/libz/base/zlib.rs", "sys/lib/libz/inflate/inflate.rs"]
 
 [[module]]
-rust = "sys/lib/libsa/ctime.rs"
+rust = "sys/boot/libsa/ctime.rs"
 lz = ["sys/lib/libsa/ctime.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libsa/dev.rs"
+rust = "sys/boot/libsa/dev.rs"
 lz = ["sys/lib/libsa/dev.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libsa/disklabel.rs"
+rust = "sys/boot/libsa/disklabel.rs"
 lz = ["sys/lib/libsa/disklabel.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libsa/dkcksum.rs"
+rust = "sys/boot/libsa/dkcksum.rs"
 lz = ["sys/lib/libsa/dkcksum.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libsa/ether.rs"
+rust = "sys/boot/libsa/ether.rs"
 lz = ["sys/lib/libsa/ether.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libsa/exit.rs"
+rust = "sys/boot/libsa/exit.rs"
 lz = ["sys/lib/libsa/exit.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libsa/fchmod.rs"
+rust = "sys/boot/libsa/fchmod.rs"
 lz = ["sys/lib/libsa/fchmod.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libsa/fstat.rs"
+rust = "sys/boot/libsa/fstat.rs"
 lz = ["sys/lib/libsa/fstat.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libsa/getchar.rs"
+rust = "sys/boot/libsa/getchar.rs"
 lz = ["sys/lib/libsa/getchar.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libsa/globals.rs"
+rust = "sys/boot/libsa/globals.rs"
 lz = ["sys/lib/libsa/globals.rs"]
 status = "adapted"
 adapted_by = ["sys/bsd/sys/staticcell.rs"]
 
 [[module]]
-rust = "sys/lib/libsa/hexdump.rs"
+rust = "sys/boot/libsa/hexdump.rs"
 lz = ["sys/lib/libsa/hexdump.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libsa/in_cksum.rs"
+rust = "sys/boot/libsa/in_cksum.rs"
 lz = ["sys/lib/libsa/in_cksum.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libsa/iodesc.rs"
+rust = "sys/boot/libsa/iodesc.rs"
 lz = ["sys/lib/libsa/iodesc.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libsa/loadfile.rs"
+rust = "sys/boot/libsa/loadfile.rs"
 lz = ["sys/lib/libsa/loadfile.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libsa/loadfile_elf.rs"
+rust = "sys/boot/libsa/loadfile_elf.rs"
 lz = ["sys/lib/libsa/loadfile_elf.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libsa/lseek.rs"
+rust = "sys/boot/libsa/lseek.rs"
 lz = ["sys/lib/libsa/lseek.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libsa/net.rs"
+rust = "sys/boot/libsa/net.rs"
 lz = ["sys/lib/libsa/net.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libsa/netif.rs"
+rust = "sys/boot/libsa/netif.rs"
 lz = ["sys/lib/libsa/netif.rs"]
 status = "adapted"
 adapted_by = ["sys/bsd/sys/staticcell.rs"]
 
 [[module]]
-rust = "sys/lib/libsa/netudp.rs"
+rust = "sys/boot/libsa/netudp.rs"
 lz = ["sys/lib/libsa/netudp.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libsa/open.rs"
+rust = "sys/boot/libsa/open.rs"
 lz = ["sys/lib/libsa/open.rs"]
 status = "adapted"
 adapted_by = ["sys/bsd/sys/staticcell.rs"]
 
 [[module]]
-rust = "sys/lib/libsa/printf.rs"
+rust = "sys/boot/libsa/printf.rs"
 lz = ["sys/lib/libsa/printf.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libsa/putchar.rs"
+rust = "sys/boot/libsa/putchar.rs"
 lz = ["sys/lib/libsa/putchar.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libsa/read.rs"
+rust = "sys/boot/libsa/read.rs"
 lz = ["sys/lib/libsa/read.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libsa/readdir.rs"
+rust = "sys/boot/libsa/readdir.rs"
 lz = ["sys/lib/libsa/readdir.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libsa/saerrno.rs"
+rust = "sys/boot/libsa/saerrno.rs"
 lz = ["sys/lib/libsa/saerrno.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libsa/snprintf.rs"
+rust = "sys/boot/libsa/snprintf.rs"
 lz = ["sys/lib/libsa/snprintf.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libsa/stand.rs"
+rust = "sys/boot/libsa/stand.rs"
 lz = ["sys/lib/libsa/stand.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libsa/stat.rs"
+rust = "sys/boot/libsa/stat.rs"
 lz = ["sys/lib/libsa/stat.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libsa/strerror.rs"
+rust = "sys/boot/libsa/strerror.rs"
 lz = ["sys/lib/libsa/strerror.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libsa/strtol.rs"
+rust = "sys/boot/libsa/strtol.rs"
 lz = ["sys/lib/libsa/strtol.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libsa/strtoll.rs"
+rust = "sys/boot/libsa/strtoll.rs"
 lz = ["sys/lib/libsa/strtoll.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libsa/tftp.rs"
+rust = "sys/boot/libsa/tftp.rs"
 lz = ["sys/lib/libsa/tftp.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libsa/ufs.rs"
+rust = "sys/boot/libsa/ufs.rs"
 lz = ["sys/lib/libsa/ufs.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libsa/ufs2.rs"
+rust = "sys/boot/libsa/ufs2.rs"
 lz = ["sys/lib/libsa/ufs2.rs"]
 status = "inherited"
 
@@ -7954,114 +7954,114 @@ status = "adapted"
 adapted_by = ["sys/kernel/dev/disk.rs"]
 
 [[module]]
-rust = "sys/stand/boot/boot.rs"
+rust = "sys/boot/boot/boot.rs"
 lz = ["sys/stand/boot/boot.rs"]
 status = "adapted"
 adapted_by = ["sys/bsd/sys/staticcell.rs"]
 
 [[module]]
-rust = "sys/stand/boot/bootarg.rs"
+rust = "sys/boot/boot/bootarg.rs"
 lz = ["sys/stand/boot/bootarg.rs"]
 status = "adapted"
 adapted_by = ["sys/bsd/sys/staticcell.rs"]
 
 [[module]]
-rust = "sys/stand/boot/cmd.rs"
+rust = "sys/boot/boot/cmd.rs"
 lz = ["sys/stand/boot/cmd.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/stand/boot/vars.rs"
+rust = "sys/boot/boot/vars.rs"
 lz = ["sys/stand/boot/vars.rs"]
 status = "adapted"
 adapted_by = ["sys/bsd/sys/staticcell.rs"]
 
 [[module]]
-rust = "sys/stand/efi/include/amd64/efibind.rs"
+rust = "sys/boot/efi/include/amd64/efibind.rs"
 lz = ["sys/stand/efi/include/amd64/efibind.rs"]
 status = "inherited"
 license = "public domain"
 
 [[module]]
-rust = "sys/stand/efi/include/efi.rs"
+rust = "sys/boot/efi/include/efi.rs"
 lz = ["sys/stand/efi/include/efi.rs"]
 status = "inherited"
 license = "Intel's EFI notice"
 
 [[module]]
-rust = "sys/stand/efi/include/efi_nii.rs"
+rust = "sys/boot/efi/include/efi_nii.rs"
 lz = ["sys/stand/efi/include/efi_nii.rs"]
 status = "inherited"
 license = "Intel's EFI notice"
 
 [[module]]
-rust = "sys/stand/efi/include/efiapi.rs"
+rust = "sys/boot/efi/include/efiapi.rs"
 lz = ["sys/stand/efi/include/efiapi.rs"]
 status = "inherited"
 license = "Intel's EFI notice"
 
 [[module]]
-rust = "sys/stand/efi/include/eficon.rs"
+rust = "sys/boot/efi/include/eficon.rs"
 lz = ["sys/stand/efi/include/eficon.rs"]
 status = "inherited"
 license = "Intel's EFI notice"
 
 [[module]]
-rust = "sys/stand/efi/include/eficonsctl.rs"
+rust = "sys/boot/efi/include/eficonsctl.rs"
 lz = ["sys/stand/efi/include/eficonsctl.rs"]
 status = "inherited"
 license = "Intel's BSD 2-clause notice"
 
 [[module]]
-rust = "sys/stand/efi/include/efidef.rs"
+rust = "sys/boot/efi/include/efidef.rs"
 lz = ["sys/stand/efi/include/efidef.rs"]
 status = "inherited"
 license = "Intel's EFI notice"
 
 [[module]]
-rust = "sys/stand/efi/include/efidevp.rs"
+rust = "sys/boot/efi/include/efidevp.rs"
 lz = ["sys/stand/efi/include/efidevp.rs"]
 status = "inherited"
 license = "Intel's EFI notice"
 
 [[module]]
-rust = "sys/stand/efi/include/efierr.rs"
+rust = "sys/boot/efi/include/efierr.rs"
 lz = ["sys/stand/efi/include/efierr.rs"]
 status = "inherited"
 license = "Intel's EFI notice"
 
 [[module]]
-rust = "sys/stand/efi/include/efifs.rs"
+rust = "sys/boot/efi/include/efifs.rs"
 lz = ["sys/stand/efi/include/efifs.rs"]
 status = "inherited"
 license = "Intel's EFI notice"
 
 [[module]]
-rust = "sys/stand/efi/include/efigop.rs"
+rust = "sys/boot/efi/include/efigop.rs"
 lz = ["sys/stand/efi/include/efigop.rs"]
 status = "inherited"
 license = "Intel's EFI notice"
 
 [[module]]
-rust = "sys/stand/efi/include/efinet.rs"
+rust = "sys/boot/efi/include/efinet.rs"
 lz = ["sys/stand/efi/include/efinet.rs"]
 status = "inherited"
 license = "Intel's EFI notice"
 
 [[module]]
-rust = "sys/stand/efi/include/efiprot.rs"
+rust = "sys/boot/efi/include/efiprot.rs"
 lz = ["sys/stand/efi/include/efiprot.rs"]
 status = "inherited"
 license = "Intel's EFI notice"
 
 [[module]]
-rust = "sys/stand/efi/include/efipxebc.rs"
+rust = "sys/boot/efi/include/efipxebc.rs"
 lz = ["sys/stand/efi/include/efipxebc.rs"]
 status = "inherited"
 license = "Intel's EFI notice"
 
 [[module]]
-rust = "sys/stand/efi/include/efiser.rs"
+rust = "sys/boot/efi/include/efiser.rs"
 lz = ["sys/stand/efi/include/efiser.rs"]
 status = "inherited"
 license = "Intel's EFI notice"
@@ -14015,99 +14015,99 @@ license = "none"
 notes = "decision 55: moved from libkern (git mv) so libkern holds no unsafe; the file is unchanged but for its header, and dies with its last user at N9; the boot loaders' copy is sys/lib/libsa/staticcell.rs, an [[extra]]"
 
 [[extra]]
-rust = "sys/lib/libsa/staticcell.rs"
+rust = "sys/boot/libsa/staticcell.rs"
 reason = "decision 55: the boot loaders' own copy of sys/sys/staticcell.rs (libsa is the excepted crate, a separate binary that runs before the kernel; libsa, sys/stand/boot and the efiboot crates import it from here), so libkern holds no unsafe and the loaders do not depend on bsd's copy"
 
 [[extra]]
-rust = "sys/lib/libsa/hdr/cons.rs"
+rust = "sys/boot/libsa/hdr/cons.rs"
 reason = "M14 A1: the part of the kernel header libsa reads, declared again in libsa (a leaf crate that cannot link the kernel); hdr/tests.rs checks the layouts against bsd's port"
 
 [[extra]]
-rust = "sys/lib/libsa/hdr/dinode.rs"
+rust = "sys/boot/libsa/hdr/dinode.rs"
 reason = "M14 A1: the part of the kernel header libsa reads, declared again in libsa (a leaf crate that cannot link the kernel); hdr/tests.rs checks the layouts against bsd's port"
 
 [[extra]]
-rust = "sys/lib/libsa/hdr/dir.rs"
+rust = "sys/boot/libsa/hdr/dir.rs"
 reason = "M14 A1: the part of the kernel header libsa reads, declared again in libsa (a leaf crate that cannot link the kernel); hdr/tests.rs checks the layouts against bsd's port"
 
 [[extra]]
-rust = "sys/lib/libsa/hdr/disklabel.rs"
+rust = "sys/boot/libsa/hdr/disklabel.rs"
 reason = "M14 A1: the part of the kernel header libsa reads, declared again in libsa (a leaf crate that cannot link the kernel); hdr/tests.rs checks the layouts against bsd's port"
 
 [[extra]]
-rust = "sys/lib/libsa/hdr/endian.rs"
+rust = "sys/boot/libsa/hdr/endian.rs"
 reason = "M14 A3: the part of the kernel header libsa reads, declared again in libsa (a leaf crate that cannot link the kernel); hdr/tests.rs checks the layouts against bsd's port"
 
 [[extra]]
-rust = "sys/lib/libsa/hdr/ethertypes.rs"
+rust = "sys/boot/libsa/hdr/ethertypes.rs"
 reason = "M14 A3: the part of the kernel header libsa reads, declared again in libsa (a leaf crate that cannot link the kernel); hdr/tests.rs checks the layouts against bsd's port"
 
 [[extra]]
-rust = "sys/lib/libsa/hdr/exec_elf.rs"
+rust = "sys/boot/libsa/hdr/exec_elf.rs"
 reason = "M14 A1: the part of the kernel header libsa reads, declared again in libsa (a leaf crate that cannot link the kernel); hdr/tests.rs checks the layouts against bsd's port"
 
 [[extra]]
-rust = "sys/lib/libsa/hdr/fs.rs"
+rust = "sys/boot/libsa/hdr/fs.rs"
 reason = "M14 A1: the part of the kernel header libsa reads, declared again in libsa (a leaf crate that cannot link the kernel); hdr/tests.rs checks the layouts against bsd's port"
 
 [[extra]]
-rust = "sys/lib/libsa/hdr/hibernate.rs"
+rust = "sys/boot/libsa/hdr/hibernate.rs"
 reason = "M14 A1: the part of the kernel header libsa reads, declared again in libsa (a leaf crate that cannot link the kernel); hdr/tests.rs checks the layouts against bsd's port"
 
 [[extra]]
-rust = "sys/lib/libsa/hdr/if_arp.rs"
+rust = "sys/boot/libsa/hdr/if_arp.rs"
 reason = "M14 A3: the part of the kernel header libsa reads, declared again in libsa (a leaf crate that cannot link the kernel); hdr/tests.rs checks the layouts against bsd's port"
 
 [[extra]]
-rust = "sys/lib/libsa/hdr/if_ether.rs"
+rust = "sys/boot/libsa/hdr/if_ether.rs"
 reason = "M14 A3: the part of the kernel header libsa reads, declared again in libsa (a leaf crate that cannot link the kernel); hdr/tests.rs checks the layouts against bsd's port"
 
 [[extra]]
-rust = "sys/lib/libsa/hdr/in_.rs"
+rust = "sys/boot/libsa/hdr/in_.rs"
 reason = "M14 A3: the part of the kernel header libsa reads, declared again in libsa (a leaf crate that cannot link the kernel); hdr/tests.rs checks the layouts against bsd's port"
 
 [[extra]]
-rust = "sys/lib/libsa/hdr/ip.rs"
+rust = "sys/boot/libsa/hdr/ip.rs"
 reason = "M14 A3: the part of the kernel header libsa reads, declared again in libsa (a leaf crate that cannot link the kernel); hdr/tests.rs checks the layouts against bsd's port"
 
 [[extra]]
-rust = "sys/lib/libsa/hdr/ip_var.rs"
+rust = "sys/boot/libsa/hdr/ip_var.rs"
 reason = "M14 A3: the part of the kernel header libsa reads, declared again in libsa (a leaf crate that cannot link the kernel); hdr/tests.rs checks the layouts against bsd's port"
 
 [[extra]]
-rust = "sys/lib/libsa/hdr/iso.rs"
+rust = "sys/boot/libsa/hdr/iso.rs"
 reason = "M14 A1: the part of the kernel header libsa reads, declared again in libsa (a leaf crate that cannot link the kernel); hdr/tests.rs checks the layouts against bsd's port"
 
 [[extra]]
-rust = "sys/lib/libsa/hdr/param.rs"
+rust = "sys/boot/libsa/hdr/param.rs"
 reason = "M14 A1: the part of the kernel header libsa reads, declared again in libsa (a leaf crate that cannot link the kernel); hdr/tests.rs checks the layouts against bsd's port"
 
 [[extra]]
-rust = "sys/lib/libsa/hdr/reboot.rs"
+rust = "sys/boot/libsa/hdr/reboot.rs"
 reason = "M14 A1: the part of the kernel header libsa reads, declared again in libsa (a leaf crate that cannot link the kernel); hdr/tests.rs checks the layouts against bsd's port"
 
 [[extra]]
-rust = "sys/lib/libsa/hdr/stat.rs"
+rust = "sys/boot/libsa/hdr/stat.rs"
 reason = "M14 A1: the part of the kernel header libsa reads, declared again in libsa (a leaf crate that cannot link the kernel); hdr/tests.rs checks the layouts against bsd's port"
 
 [[extra]]
-rust = "sys/lib/libsa/hdr/types.rs"
+rust = "sys/boot/libsa/hdr/types.rs"
 reason = "M14 A1: the part of the kernel header libsa reads, declared again in libsa (a leaf crate that cannot link the kernel); hdr/tests.rs checks the layouts against bsd's port"
 
 [[extra]]
-rust = "sys/lib/libsa/hdr/udp.rs"
+rust = "sys/boot/libsa/hdr/udp.rs"
 reason = "M14 A3: the part of the kernel header libsa reads, declared again in libsa (a leaf crate that cannot link the kernel); hdr/tests.rs checks the layouts against bsd's port"
 
 [[extra]]
-rust = "sys/lib/libsa/hdr/udp_var.rs"
+rust = "sys/boot/libsa/hdr/udp_var.rs"
 reason = "M14 A3: the part of the kernel header libsa reads, declared again in libsa (a leaf crate that cannot link the kernel); hdr/tests.rs checks the layouts against bsd's port"
 
 [[extra]]
-rust = "sys/lib/libsa/hdr/uuid.rs"
+rust = "sys/boot/libsa/hdr/uuid.rs"
 reason = "M14 A1: the part of the kernel header libsa reads, declared again in libsa (a leaf crate that cannot link the kernel); hdr/tests.rs checks the layouts against bsd's port"
 
 [[extra]]
-rust = "sys/lib/libsa/testutil.rs"
+rust = "sys/boot/libsa/testutil.rs"
 reason = "M14 A1: libsa host tests: a RAM disk over the makefs fixtures, a whole-file memfs, a test console and SaConf"
 
 [[extra]]
