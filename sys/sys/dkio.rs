@@ -46,86 +46,18 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! `<sys/dkio.h>`: disk-specific ioctls.
+//! `<sys/dkio.h>` as `bsd` names it: `hal::sys::dkio` (N7.1d) re-exported, and `DIOCGPART`,
+//! whose `struct partinfo` stays `bsd`'s until N7.3c.
 //!
 //! Upstream: sys/sys/dkio.h @ 3ce1f3f79392
-//!
-//! ## Deviations
-//! - `struct dk_diskmap`'s `char *device` is a raw pointer (a user address, as in C).
 
-use crate::sys::disklabel::{Disklabel, Partinfo};
-use crate::sys::ioccom::{_io, _ior, _iow, _iowr};
+pub use hal::sys::dkio::*;
 
-// get and set disklabel; DIOCGPART used internally
+use crate::sys::disklabel::Partinfo;
+use crate::sys::ioccom::_iow;
 
-/// `DIOCGDINFO`: get.
-pub const DIOCGDINFO: u64 = _ior::<Disklabel>(b'd', 101);
-/// `DIOCSDINFO`: set.
-pub const DIOCSDINFO: u64 = _iow::<Disklabel>(b'd', 102);
-/// `DIOCWDINFO`: set, update disk.
-pub const DIOCWDINFO: u64 = _iow::<Disklabel>(b'd', 103);
 /// `DIOCGPART`: get partition.
 pub const DIOCGPART: u64 = _iow::<Partinfo>(b'd', 104);
-
-/// `DIOCEJECT`: eject removable disk.
-pub const DIOCEJECT: u64 = _io(b'd', 112);
-/// `DIOCLOCK`: lock/unlock pack.
-pub const DIOCLOCK: u64 = _iow::<i32>(b'd', 113);
-
-/// `DIOCGPDINFO`: get physical.
-pub const DIOCGPDINFO: u64 = _ior::<Disklabel>(b'd', 114);
-/// `DIOCRLDINFO`: reload disklabel.
-pub const DIOCRLDINFO: u64 = _io(b'd', 115);
-
-/// `struct dk_inquiry`.
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct DkInquiry {
-    /// `vendor`.
-    pub vendor: [u8; 64],
-    /// `product`.
-    pub product: [u8; 128],
-    /// `revision`.
-    pub revision: [u8; 64],
-    /// `serial`.
-    pub serial: [u8; 64],
-}
-
-/// `DIOCINQ`.
-pub const DIOCINQ: u64 = _ior::<DkInquiry>(b'd', 116);
-
-/// `struct dk_cache`.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct DkCache {
-    /// `wrcache`.
-    pub wrcache: u32,
-    /// `rdcache`.
-    pub rdcache: u32,
-}
-
-/// `DIOCGCACHE`: get cache enabled.
-pub const DIOCGCACHE: u64 = _ior::<DkCache>(b'd', 117);
-/// `DIOCSCACHE`: set cache enabled.
-pub const DIOCSCACHE: u64 = _iow::<DkCache>(b'd', 118);
-
-/// `struct dk_diskmap`.
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct DkDiskmap {
-    /// `device`: a user address.
-    pub device: *mut u8,
-    /// `fd`.
-    pub fd: i32,
-    /// `flags`.
-    pub flags: i32,
-}
-
-/// `DIOCMAP`.
-pub const DIOCMAP: u64 = _iowr::<DkDiskmap>(b'd', 119);
-
-/// `DIOCCACHESYNC`: sync cache (force?).
-pub const DIOCCACHESYNC: u64 = _iow::<i32>(b'd', 120);
 /* </CODE> */
 
 /* <TESTS> */
@@ -134,15 +66,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn label_ioctls_carry_the_label_size() {
-        // _IOR('d', 101, struct disklabel): out, 1172 bytes, group 'd', number 101.
-        assert_eq!(
-            DIOCGDINFO,
-            0x4000_0000 | (1172 << 16) | (u64::from(b'd') << 8) | 101
-        );
-        assert_eq!(DIOCRLDINFO, 0x2000_0000 | (u64::from(b'd') << 8) | 115);
+    fn diocgpart_carries_two_pointers() {
         // A struct partinfo is two pointers.
         assert_eq!((DIOCGPART >> 16) & 0x1fff, 16);
+        assert_eq!(DIOCGPART & 0xffff, (u64::from(b'd') << 8) | 104);
     }
 }
 /* </TESTS> */

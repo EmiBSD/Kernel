@@ -3102,7 +3102,7 @@ notes = "struct consdev with fn pointers and Cell fields, CN_*; cninit/constab a
 rust = "sys/dev/diskmap.rs"
 lz = ["sys/dev/diskmap.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc/cred.rs", "sys/kernel/file/mod.rs", "sys/kernel/file/descrip.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs"]
+adapted_by = ["sys/kernel/proc/cred.rs", "sys/kernel/file/mod.rs", "sys/kernel/file/descrip.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs", "sys/hal/sys/dkio.rs"]
 
 [[module]]
 rust = "sys/dev/efi/efi.rs"
@@ -5526,7 +5526,7 @@ kind = "moved"
 rust = "sys/kern/kern_sysctl.rs"
 lz = ["sys/kern/kern_sysctl.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/file/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc/mod.rs", "sys/kern/proc_glue.rs", "sys/kernel/proc/cred.rs", "sys/kernel/proc/resource.rs", "sys/kernel/file/mod.rs", "sys/kernel/file/descrip.rs", "sys/kernel/file/event.rs", "sys/kernel/sig/mod.rs", "sys/kernel/base/log.rs", "sys/kernel/tty/mod.rs", "sys/kernel/base/sysctl.rs", "sys/kernel/time/clockintr.rs", "sys/kernel/time/tc.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/unix.rs", "sys/kernel/net/syscalls.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/tcp_var.rs", "sys/kernel/netinet/tcp_usrreq.rs", "sys/kernel/netinet/udp_usrreq.rs", "sys/kernel/netinet/raw_ip.rs", "sys/kernel/netinet6/raw_ip6.rs", "sys/kernel/netinet/ip_divert.rs", "sys/kernel/netinet6/ip6_divert.rs", "sys/kernel/dev/evcount.rs", "sys/kernel/dev/watchdog.rs", "sys/kernel/dev/sensors.rs"]
+adapted_by = ["sys/kernel/file/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc/mod.rs", "sys/kern/proc_glue.rs", "sys/kernel/proc/cred.rs", "sys/kernel/proc/resource.rs", "sys/kernel/file/mod.rs", "sys/kernel/file/descrip.rs", "sys/kernel/file/event.rs", "sys/kernel/sig/mod.rs", "sys/kernel/base/log.rs", "sys/kernel/tty/mod.rs", "sys/kernel/base/sysctl.rs", "sys/kernel/time/clockintr.rs", "sys/kernel/time/tc.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/unix.rs", "sys/kernel/net/syscalls.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/tcp_var.rs", "sys/kernel/netinet/tcp_usrreq.rs", "sys/kernel/netinet/udp_usrreq.rs", "sys/kernel/netinet/raw_ip.rs", "sys/kernel/netinet6/raw_ip6.rs", "sys/kernel/netinet/ip_divert.rs", "sys/kernel/netinet6/ip6_divert.rs", "sys/kernel/dev/evcount.rs", "sys/kernel/dev/watchdog.rs", "sys/kernel/dev/sensors.rs", "sys/hal/sys/disk.rs"]
 notes = "N4.6b: the bsd half of sysctl(2): kern.file, the helpers over bsd copyin/copyout for the nodes still in bsd, and sysctl_register_legacy (Node/ProcNode adapters, the CTL_* trees, the kern/hw leaves, directories and kern_vars/hw_vars entries whose state is bsd's, hw.machine, physmem), BsdDiskExport (the DiskExport bridge), native_sysctl (the KernelApi entry); the dispatcher, the vslock and kern.proc moved into sys/kernel/base/sysctl.rs; adapted, not redesigned, until kern.file moves (N5/N6): its unsafe blocks (three at N4.6b: the bound address mbuf viewed as a slice, in_pcb_iterator and its abort; two since N6.4c1, DISKLIST's insert and remove, the pcb's gone with the kernel's pcb) keep the file from the forbid a redesigned bsd module needs (lz check, ZERO_UNSAFE section 5); N4.8a: kern.clockintr and kern.timecounter are the kernel's ClockintrNode and TcNode in KERN_NODES (LZ's kern.clockintr unported! closed)"
 
 [[module]]
@@ -8069,17 +8069,23 @@ status = "inherited"
 [[module]]
 rust = "sys/sys/disk.rs"
 lz = ["sys/sys/disk.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/sys/disk.rs"]
+notes = "N7.1d: the constants and struct diskstats are hal::sys::disk's, re-exported"
 
 [[module]]
 rust = "sys/sys/disklabel.rs"
 lz = ["sys/sys/disklabel.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/sys/disklabel.rs"]
+notes = "N7.1d: hal::sys::disklabel re-exported; keeps struct partinfo (DIOCGPART) and its 2 unsafe until N7.3c"
 
 [[module]]
 rust = "sys/sys/dkio.rs"
 lz = ["sys/sys/dkio.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/sys/dkio.rs"]
+notes = "N7.1d: hal::sys::dkio re-exported; keeps DIOCGPART (struct partinfo) until N7.3c"
 
 [[module]]
 rust = "sys/sys/domain.rs"
@@ -10114,7 +10120,7 @@ license = "none"
 rust = "sys/sys/sysctl.rs"
 lz = ["sys/sys/sysctl.rs"]
 status = "redesigned"
-notes = "N4.6b: an adapter over hal::sys::sysctl (the header re-exported), the sysctlfn prototype of the nodes still in bsd, and SysctlPlain as a safe blanket over hal::user::AbiPod (LZ: an unsafe trait, two unsafe byte views and 12 unsafe impls); struct timeval, clockinfo, diskstats and cpustats AbiPod through hal::abi_pod! here (mbstat in hal::sys::mbuf since N6.1); 0 unsafe (LZ 17), forbid on its mod line"
+notes = "N4.6b: an adapter over hal::sys::sysctl (the header re-exported), the sysctlfn prototype of the nodes still in bsd, and SysctlPlain as a safe blanket over hal::user::AbiPod (LZ: an unsafe trait, two unsafe byte views and 12 unsafe impls); struct timeval, clockinfo, diskstats and cpustats AbiPod through hal::abi_pod! here (mbstat in hal::sys::mbuf since N6.1); 0 unsafe (LZ 17), forbid on its mod line; N7.1d: struct diskstats AbiPod in hal::sys::disk, where it moved"
 
 [[module]]
 rust = "sys/hal/sys/sysctl.rs"
@@ -10129,6 +10135,27 @@ crate = "hal"
 lz = ["sys/sys/mount.rs", "sys/kern/vfs_subr.rs"]
 status = "redesigned"
 notes = "N5.1: struct bcachestats moved into hal so kernel::fs::bio (bcstats' owner) and bsd (vfs.generic.bcachestat) share one copy, AbiPod through hal::abi_pod! (LZ declared it in vfs_bio.rs); bsd's sys/sys/mount.rs re-exports it; N5.2: the ABI half of mount.h (struct statfs, fsid_t, struct fid, fhandle_t, MountInfo, the MOUNT_*, MNT_*, VB_*, VFS_* constants) and vfs.generic.conf's VfsconfAbi (LZ's private struct of vfs_subr.rs) moved here, Statfs, Fhandle, Fsid, Fid and MountInfo AbiPod through abi_pod! (LZ's two unsafe impl AbiPod go); N5.4 (D-N5.4-3): the mount arguments moved here, ExportArgs, UfsArgs, MfsArgs, IsoArgs, NfsArgs, MsdosfsArgs, NtfsArgs, UdfArgs, TmpfsArgs and FusefsArgs with their constants, and <sys/ucred.h>'s struct xucred (Xucred, which export_args embeds; ucred.h's licence block and Upstream/LZ lines with it), each AbiPod through abi_pod! with its holes named and from_bytes over hal::user::pod_from_bytes; bsd's sys/sys/mount.rs and sys/sys/ucred.rs re-export them"
+
+[[module]]
+rust = "sys/hal/sys/disk.rs"
+crate = "hal"
+lz = ["sys/sys/disk.rs"]
+status = "redesigned"
+notes = "N7.1d: <sys/disk.h>'s constants (DS_DISKNAMELEN, DKF_*, DK_*, DM_*) and struct diskstats, AbiPod through abi_pod! here (it was in bsd's sys/sys/sysctl.rs), its timevals hal's IfTimeval; struct disk is the kernel's (kernel::dev::disk)"
+
+[[module]]
+rust = "sys/hal/sys/disklabel.rs"
+crate = "hal"
+lz = ["sys/sys/disklabel.rs"]
+status = "redesigned"
+notes = "N7.1d: <sys/disklabel.h> whole but struct partinfo (bsd's until N7.3c); Disklabel and Partition AbiPod through abi_pod!, as_bytes/as_bytes_mut over hal::user::bytes_of (LZ's two unsafe casts go, slices for arrays); LABELSECTOR, LABELOFFSET, MAXPARTITIONS from hal's arm64 include (the host's values amd64's and arm64's) instead of bsd's MachineDisklabel"
+
+[[module]]
+rust = "sys/hal/sys/dkio.rs"
+crate = "hal"
+lz = ["sys/sys/dkio.rs"]
+status = "redesigned"
+notes = "N7.1d: <sys/dkio.h> but DIOCGPART (struct partinfo is bsd's until N7.3c); dk_inquiry, dk_cache and dk_diskmap AbiPod through abi_pod!, dk_diskmap's device a usize (a user address)"
 
 [[module]]
 rust = "sys/kernel/fs/buf.rs"

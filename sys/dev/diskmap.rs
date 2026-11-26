@@ -81,7 +81,7 @@ fn dk_diskmap_load(addr: &[u8]) -> DkDiskmap {
     };
     let int = |at: usize| i32::from_ne_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
     DkDiskmap {
-        device: word(core::mem::offset_of!(DkDiskmap, device)) as *mut u8,
+        device: word(core::mem::offset_of!(DkDiskmap, device)),
         fd: int(core::mem::offset_of!(DkDiskmap, fd)),
         flags: int(core::mem::offset_of!(DkDiskmap, flags)),
     }
@@ -116,12 +116,12 @@ pub fn diskmapioctl(
     let dm = dk_diskmap_load(addr);
     let fd = dm.fd;
     let mut devname = vec![0u8; PATH_MAX];
-    copyinstr(dm.device as usize, &mut devname)?;
+    copyinstr(dm.device, &mut devname)?;
     let mut mapped = vec![0u8; PATH_MAX];
     if disk_map(&devname, &mut mapped, dm.flags) {
         devname = mapped;
         let len = devname.iter().position(|&c| c == 0).unwrap_or(PATH_MAX - 1);
-        copyoutstr(&devname[..=len], dm.device as usize)?;
+        copyoutstr(&devname[..=len], dm.device)?;
     }
 
     // Attempt to open actual device.
@@ -202,7 +202,7 @@ mod tests {
         b[8..12].copy_from_slice(&7i32.to_ne_bytes());
         b[12..16].copy_from_slice(&3i32.to_ne_bytes());
         let dm = dk_diskmap_load(&b);
-        assert_eq!(dm.device as usize, 0x1234_5678);
+        assert_eq!(dm.device, 0x1234_5678);
         assert_eq!((dm.fd, dm.flags), (7, 3));
     }
 

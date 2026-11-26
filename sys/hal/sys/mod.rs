@@ -22,6 +22,12 @@
 #[forbid(unsafe_code)]
 pub mod dirent;
 #[forbid(unsafe_code)]
+pub mod disk;
+#[forbid(unsafe_code)]
+pub mod disklabel;
+#[forbid(unsafe_code)]
+pub mod dkio;
+#[forbid(unsafe_code)]
 pub mod endian;
 #[forbid(unsafe_code)]
 pub mod errno;

@@ -78,12 +78,13 @@
 //!   `char *` into the softc's `dv_xname`: the same bytes without a self-reference.
 //! - `dk_device` and `dk_label` are `Option<NonNull<_>>` (the C's possibly NULL pointers);
 //!   [`Disk::label`] and [`Disk::label_mut`] reach the label.
-//! - `struct diskstats` has an explicit `ds_pad0` where the C compiler inserts four bytes of
-//!   padding before `ds_rxfer`: the layout is the C's (checked in `sys/sysctl.rs`) with no
-//!   uninitialised bytes, so `hw.diskstats` copies it out as bytes.
+//! - The header's constants and `struct diskstats` are `hal::sys::disk`'s (N7.1d),
+//!   re-exported here.
 
 use core::cell::Cell;
 use core::ptr::NonNull;
+
+pub use hal::sys::disk::*;
 
 use crate::queue_adapter;
 use crate::sys::device::Device;
@@ -93,44 +94,6 @@ use crate::sys::queue::{TailqEntry, TailqHead};
 use crate::sys::rwlock::Rwlock;
 use crate::sys::time::Timeval;
 use crate::sys::types::Dev;
-
-/// `DS_DISKNAMELEN`.
-pub const DS_DISKNAMELEN: usize = 16;
-
-/// `struct diskstats`: what `hw.diskstats` reports per disk.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Diskstats {
-    /// `ds_name`.
-    pub ds_name: [u8; DS_DISKNAMELEN],
-    /// `ds_busy`: busy counter.
-    pub ds_busy: i32,
-    /// The four bytes of padding the C compiler puts here to align `ds_rxfer`.
-    pub ds_pad0: u32,
-    /// `ds_rxfer`: total number of read transfers.
-    pub ds_rxfer: u64,
-    /// `ds_wxfer`: total number of write transfers.
-    pub ds_wxfer: u64,
-    /// `ds_seek`: total independent seek operations.
-    pub ds_seek: u64,
-    /// `ds_rbytes`: total bytes read.
-    pub ds_rbytes: u64,
-    /// `ds_wbytes`: total bytes written.
-    pub ds_wbytes: u64,
-    /// `ds_attachtime`: time disk was attached.
-    pub ds_attachtime: Timeval,
-    /// `ds_timestamp`: time of first busy or any unbusy.
-    pub ds_timestamp: Timeval,
-    /// `ds_time`: total time spent busy.
-    pub ds_time: Timeval,
-}
-
-/// `DKF_CONSTRUCTED`.
-pub const DKF_CONSTRUCTED: i32 = 0x0001;
-/// `DKF_OPENED`.
-pub const DKF_OPENED: i32 = 0x0002;
-/// `DKF_NOLABELREAD`.
-pub const DKF_NOLABELREAD: i32 = 0x0004;
 
 /// `struct disk`.
 pub struct Disk {
@@ -269,28 +232,6 @@ impl Default for Disk {
         Self::new()
     }
 }
-
-// states
-
-/// `DK_CLOSED`: drive is closed.
-pub const DK_CLOSED: i32 = 0;
-/// `DK_WANTOPEN`: drive being opened.
-pub const DK_WANTOPEN: i32 = 1;
-/// `DK_WANTOPENRAW`: drive being opened.
-pub const DK_WANTOPENRAW: i32 = 2;
-/// `DK_RDLABEL`: label being read.
-pub const DK_RDLABEL: i32 = 3;
-/// `DK_OPEN`: label read, drive open.
-pub const DK_OPEN: i32 = 4;
-/// `DK_OPENRAW`: open without label.
-pub const DK_OPENRAW: i32 = 5;
-
-// Disk map flags.
-
-/// `DM_OPENPART`: Open raw partition.
-pub const DM_OPENPART: i32 = 0x1;
-/// `DM_OPENBLCK`: Open block device.
-pub const DM_OPENBLCK: i32 = 0x2;
 
 queue_adapter!(
     /// `TAILQ_ENTRY(disk) dk_link`: `disklist`.

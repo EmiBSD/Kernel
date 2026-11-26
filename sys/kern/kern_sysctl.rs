@@ -1249,9 +1249,13 @@ fn disk_stats_copy(sdk: &mut Diskstats, dk: &Disk) {
     sdk.ds_seek = dk.dk_seek.get();
     sdk.ds_rbytes = dk.dk_rbytes.get();
     sdk.ds_wbytes = dk.dk_wbytes.get();
-    sdk.ds_attachtime = dk.dk_attachtime.get();
-    sdk.ds_timestamp = dk.dk_timestamp.get();
-    sdk.ds_time = dk.dk_time.get();
+    let tv = |t: crate::sys::time::Timeval| hal::sys::net_if::IfTimeval {
+        tv_sec: t.tv_sec,
+        tv_usec: t.tv_usec,
+    };
+    sdk.ds_attachtime = tv(dk.dk_attachtime.get());
+    sdk.ds_timestamp = tv(dk.dk_timestamp.get());
+    sdk.ds_time = tv(dk.dk_time.get());
     mtx_leave(&dk.dk_mtx);
 }
 
