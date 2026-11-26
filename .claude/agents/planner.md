@@ -67,7 +67,9 @@ shape (Rust signatures); the `hal` pieces with their `unsafe` and the bridges; t
 every `hal` boundary type (decision 44: amd64 is frozen until N10, so the type is designed for
 both machines and implemented for arm64); lineage rows and IDIOMS rows; tests,
 smokes and `diff-openbsd`; the commit series; stop-and-ask conditions; expected numbers
-(labelled as estimates).
+(labelled as estimates); the slice's size in wall hours and subagent tokens, from the
+measured table of `docs/ZERO_UNSAFE.md` 0.5 ("Measured pace"), never in agent days
+(the user, 2026-11-26).
 
 ## Final message
 

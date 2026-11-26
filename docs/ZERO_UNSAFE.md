@@ -187,6 +187,29 @@ Total: 8,906 `unsafe` out of `bsd` (8,747 legacy + 159 old runtime files), 580 +
 time** at the measured pace, serial (the slices share files); this number is the planning
 session's and promises nothing: `/progress` measures.
 
+Measured pace, N7 (the user, 2026-11-26: "dale", after the plan's day figures proved far too
+high). The planner sized N7's slices in agent days from LZ's lines and `unsafe`; the first day of
+N7 measured them (wall time from git, subagent tokens from the session's task notifications;
+the main session's own tokens are not counted):
+
+| Work | Plan | Wall time | Subagent tokens |
+|---|---|---|---|
+| survey + plan + first briefs | — | ~1 h | 0.8 M |
+| N7.0 + N7.1a + N7.1b (parallel, one review each) | 7.5 d | ~7 h | 2.4 M |
+| N7.1c (brief, redesign, review) | 1 d | ~2.5 h | 0.8 M |
+| N7.1d (brief, redesign, blocking review, closing) | 2.5 d | ~3 h | 1.3 M |
+| N7.abi direct + N7.abi2 (decisions 52, 53) | — | ~3 h | 1.4 M |
+| sysdefs (decisions 54, 55), mechanical, no review | — | ~1 h | 0.5 M |
+| N7.2b0 (brief, redesign, blocking review, closing, fixes) | (in 4 d) | ~2.5 h | ~1.2 M |
+
+So wave A's 11 plan days took about 10 hours and 5 M subagent tokens. Since that day an
+estimate is given in wall hours and subagent tokens, from this table: a reviewed slice of the
+wave-A size is 2-4 h and 0.7-1.3 M tokens (the upper end when a review blocks). The plan's
+remaining 93 N7 days come to about 90-125 h and 45-65 M tokens, slice by slice, with the large
+slices (N7.7 storage, N7.9 display, N7.10 usb: several redesigners each, more review rounds)
+counted above the ratio; an estimate that promises nothing, revised as slices close. The binding limit is the weekly token budget, not the machine: hours turn
+into calendar days only against the share of the week the user spends per day.
+
 What does not change in any milestone: what userland sees (`abi` is byte-identical, the smokes
 and `diff-openbsd` are the proof), the LZ sync (`lz-sync.md`, with `covered-by-redesign` for
 dropped files), the two architectures on every commit, the per-commit `just check`.
