@@ -108,9 +108,6 @@
 //!   it): the C points every request of the socket at one mbuf, which `nfsrv_zapsock` frees
 //!   under a request still using it. The address of a datagram socket is never read (every
 //!   datagram's record carries its sender), so `NFSSVC_ADDSOCK` keeps none for one.
-//! - The socket's upcall (`so->so_upcall = nfsrv_rcv` and its clearing in `nfsrv_zapsock`)
-//!   is N6.7b4's (D-10: its argument becomes the record's counted handle); until then the
-//!   kernel's server is not registered and its tests make the upcall's call themselves.
 //! - `nfsrv3_procs[]` is `nfs_serv`'s (N6.7b3), handed to `sys_nfssvc` and the nfsds' loop
 //!   (`procs`) by the system call's registration at N6.7b4.
 //! - `sys_nfssvc` answers `ENOMEM` when no `struct nfsd` is to be had, and `nfssvc_addsock`
@@ -153,6 +150,11 @@
 //!   (`nd_nam`, the connection's).
 //! - `nfsrv3_procs[]` is an array of one function type, [`NfsrvProc`], indexed by
 //!   `nd_procnum`: no operations table.
+//! - The socket's `so_upcallarg` (LZ: the record's address exposed into a word, cast back by
+//!   the upcall) is one more handle of the record, erased (`MArc::erase`; N6.7b4, D-10):
+//!   `nfssvc_addsock` gives it to the socket, `nfsrv_zapsock` takes it back with the C's
+//!   `so_upcall = NULL`, so a socket never names a freed record and the record never keeps
+//!   its socket alive through a cycle once zapped.
 
 use core::mem::size_of;
 use core::ptr;
@@ -668,7 +670,10 @@ pub fn nfssvc_addsock<G: ProcGlue>(
         k.ns_fp.replace(fp.fref())
     };
     drop(old_fp);
-    // so->so_upcallarg = slp; so->so_upcall = nfsrv_rcv: N6.7b4's (the module's Deviations).
+    // so->so_upcallarg = slp; so->so_upcall = nfsrv_rcv: the record's handle, counted (the
+    // function is the glue's registered one, nfs_srvsocket's nfsrv_rcv_upcall). What the slot
+    // held (this record again, for a datagram socket added twice) is not the last handle.
+    drop(so.set_upcall(Some(MArc::erase(slp.clone()))));
     slp.ns_flag.store(SLP_VALID | SLP_NEEDQ, Ordering::Relaxed);
     nfsrv_wakenfsd(&slp);
     Ok(())
@@ -965,8 +970,10 @@ pub fn nfsrv_zapsock<G: ProcGlue>(slp: &NfssvcSock<G>) {
     let Some(fp) = fp else {
         return;
     };
-    // so->so_upcall = NULL: the upcall is set at N6.7b4 (the module's Deviations).
     if let Some(so) = so {
+        // so->so_upcall = NULL: the socket's handle of this record goes (never its last: the
+        // caller holds the record, and the list's membership holds one).
+        drop(so.set_upcall(None));
         let _ = soshutdown(&so, SHUT_RDWR);
     }
     let _ = closef(fp, None);

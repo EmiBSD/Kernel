@@ -73,9 +73,6 @@
 //!   emptied mbuf as its record, as the C does (its parse is `EBADRPC`).
 //! - `nfs_realign` is gone: the server reads every request through `XdrReader`, which copies
 //!   the words out, so an mbuf whose data is not word aligned needs no copy.
-//! - `nfsrv_rcv`'s socket upcall (`so->so_upcall = nfsrv_rcv`, its argument the record) is
-//!   set by N6.7b4's switch (D-10: the argument becomes a counted handle); until then the
-//!   kernel's server is not registered and its tests make the upcall's call themselves.
 //!
 //! ## Redesign
 //! - LZ's receive parked the mbufs on the socket's record (`ns_raw`, `ns_rawend`, `ns_rec`,
@@ -92,6 +89,11 @@
 //!   stream's head (O(1) each) and copying the part of the last one the record ends in, as
 //!   the C does; the mark is read byte by byte from the head, the C's loop. The descriptor is
 //!   a `PoolBox` of "ndscpl" its nfsd owns.
+//! - `nfsrv_rcv`'s upcall argument (`so_upcallarg`, LZ's record address exposed into a word
+//!   and cast back with one `unsafe`) is the record's counted handle with its type erased
+//!   (N6.7b4, D-10): [`nfsrv_rcv_upcall`] takes it back by naming `NfssvcSock<G>`, and the
+//!   handle the socket's slot holds keeps the record alive across the call, whatever
+//!   `nfsrv_zapsock` does meanwhile (it clears the slot, the C's `so_upcall = NULL`).
 //! - `nfsrv_wakenfsd` walks `nfsd_head` under the kernel lock's reader and hands the socket
 //!   to the nfsd it wakes through the nfsd's mailbox (`nfsd_slp`, a slot), the handle the
 //!   socket's list membership holds cloned: no exclusive witness, so no spl pair.
@@ -101,7 +103,7 @@ use core::sync::atomic::Ordering::Relaxed;
 
 use hal::klock;
 use hal::owned::OwnedSlist;
-use hal::pool::{PR_WAITOK, PoolBox};
+use hal::pool::{AnyArc, PR_WAITOK, PoolBox};
 use hal::sleep::wakeup_one;
 use hal::sys::errno::Errno;
 use hal::sys::socket::MSG_DONTWAIT;
@@ -347,6 +349,16 @@ pub fn nfsrv_rcv<G: ProcGlue>(so: &Socket<G>, slp: &NfssvcSock<G>, waitflag: i32
     klock::kernel_lock();
     rcv(so, slp, waitflag);
     klock::kernel_unlock();
+}
+
+/// [`nfsrv_rcv`] as the socket layer's registered upcall (`so->so_upcall`, which
+/// `nfssvc_addsock` sets): `arg` is the socket's record, the counted handle it stored in
+/// `so_upcallarg`, taken back by naming its type (O(1)); any other argument is not nfs's,
+/// and nothing is done.
+pub fn nfsrv_rcv_upcall<G: ProcGlue>(so: &Socket<G>, arg: &AnyArc, waitflag: i32) {
+    if let Some(slp) = arg.downcast_ref::<NfssvcSock<G>>() {
+        nfsrv_rcv(so, slp, waitflag);
+    }
 }
 
 /// `nfsrv_rcv`'s body, under the kernel lock.

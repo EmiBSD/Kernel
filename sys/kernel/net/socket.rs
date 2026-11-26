@@ -215,7 +215,13 @@
 //!   the listener. A queued child holds one parked reference for the queue
 //!   (`PoolArc::forget` at insert, `PoolArc::adopt` at removal, exactly once each).
 //! - `so_upcall` is not a trait (decision 46, D-N6.2-3): one registered function per glue
-//!   ([`NetTables`]) and two atomics, the kind and the argument word, as the C's two words.
+//!   ([`NetTables`]), the C's `so_upcall` word an atomic kind, and `so_upcallarg` a counted
+//!   handle with its type erased (N6.7b4, D-10: nfs's server socket record, an `MArc`), in a
+//!   read-mostly slot: `sorwakeup` tests the kind (one load, as the C's test of
+//!   `so_upcall`), then clones the handle out of the slot (a reader pair and a count pair)
+//!   and calls the function with it outside the slot, so the record outlives the call
+//!   whatever `nfsrv_zapsock` does meanwhile, and a writer never waits on a reader that waits
+//!   for the kernel lock its writer holds.
 //! - Cost against the C: the internet domains' socket events take one leaf mutex more per
 //!   `sonewconn`, `soisconnected` and accept (`cq`); the UNIX domain's promotion and `sofree`
 //!   of a queued socket take 1-2 mutex sections where the C takes 3 rwlock operations and
@@ -289,9 +295,9 @@ pub static SOMINCONN_VAR: AtomicI32 = AtomicI32::new(SOMINCONN);
 /// A counted handle to a socket (`struct socket *` with a reference: `soref`/`sorele`).
 pub type SocketRef<G> = PoolArc<Socket<G>>;
 
-/// `so_upcall`: the function a socket's upcall runs (`sorwakeup`), with the argument word it
-/// was set with and `M_DONTWAIT`.
-pub type UpcallFn<G> = fn(&Socket<G>, usize, i32);
+/// `so_upcall`: the function a socket's upcall runs (`sorwakeup`), with the argument it was
+/// set with (`so_upcallarg`, a counted handle the function downcasts) and `M_DONTWAIT`.
+pub type UpcallFn<G> = fn(&Socket<G>, &AnyArc, i32);
 
 /// `struct splice`: structure used for manipulating splice option (`SO_SPLICE`).
 #[repr(C)]
@@ -448,10 +454,10 @@ pub struct Socket<G: ProcGlue> {
     pcb_locked: OnceStatic<Guarded<Option<AnyArc>>>,
     /// \[s br\] `so_sp`: splice state, allocated only when needed.
     sp: OnceStatic<PoolBox<Sosplice<G>>>,
-    /// \[s\] `so_upcall`'s kind: 0 none, 1 the glue's registered function.
+    /// \[a\] `so_upcall`'s kind: 0 none, 1 the glue's registered function.
     upcall_kind: AtomicU8,
-    /// \[s\] `so_upcallarg`: arg for above.
-    upcall_arg: AtomicUsize,
+    /// \[a\] `so_upcallarg`: arg for above, counted (the slot's own exclusion).
+    upcall_arg: ReadMostly<Option<AnyArc>>,
     /// `so_rcv`: the receive buffer.
     pub so_rcv: Sockbuf<G>,
     /// `so_snd`: the send buffer.
@@ -529,7 +535,7 @@ impl<G: ProcGlue> Socket<G> {
             pcb_locked: OnceStatic::new(),
             sp: OnceStatic::new(),
             upcall_kind: AtomicU8::new(0),
-            upcall_arg: AtomicUsize::new(0),
+            upcall_arg: ReadMostly::new(None),
             so_rcv: Sockbuf::new(),
             so_snd: Sockbuf::new(),
         }
@@ -844,32 +850,32 @@ impl<G: ProcGlue> Socket<G> {
         self.sp.get().map(|b| &**b)
     }
 
-    /// `so_upcall` and its argument word set (nfs's `so->so_upcall = nfsrv_rcv`), the
-    /// socket locked; `None` clears it.
-    pub fn set_upcall(&self, _w: &SoLocked<'_>, arg: Option<usize>) {
-        self.set_upcall_legacy(arg);
-    }
-
-    /// [`Socket::set_upcall`] by `bsd`'s nfs, which holds the net lock exclusively.
-    pub fn set_upcall_legacy(&self, arg: Option<usize>) {
-        if let Some(a) = arg {
-            self.upcall_arg.store(a, Ordering::Relaxed);
+    /// `so->so_upcallarg = arg; so->so_upcall = f` with the glue's registered function `f`
+    /// (nfs's `nfssvc_addsock`), or `so->so_upcall = NULL` for `None` (`nfsrv_zapsock`): the
+    /// argument first and the kind after it, cleared in the other order, so `sorwakeup`
+    /// never sees the kind without its argument. As the C's two stores: the C marks them
+    /// \[s\], but nfs writes them under the kernel lock alone, the socket unlocked, so no
+    /// witness is asked for and no lock is taken here. The argument it held is
+    /// answered, for the caller to drop where it likes (never the last handle while the
+    /// caller holds its record, as nfs does).
+    pub fn set_upcall(&self, arg: Option<AnyArc>) -> Option<AnyArc> {
+        if arg.is_some() {
+            let old = self.upcall_arg.replace(arg);
             self.upcall_kind.store(1, Ordering::Release);
+            old
         } else {
-            {
-                self.upcall_kind.store(0, Ordering::Release);
-                self.upcall_arg.store(0, Ordering::Relaxed);
-            }
+            self.upcall_kind.store(0, Ordering::Release);
+            self.upcall_arg.replace(None)
         }
     }
 
-    /// `so_upcallarg`, 0 without an upcall.
-    pub fn upcall_arg(&self) -> usize {
+    /// `so_upcallarg` for a reader (ddb's `so_print`): a counted copy, `None` without an
+    /// upcall.
+    pub fn upcall_arg(&self) -> Option<AnyArc> {
         if self.upcall_kind.load(Ordering::Acquire) == 0 {
-            0
-        } else {
-            self.upcall_arg.load(Ordering::Relaxed)
+            return None;
         }
+        self.upcall_arg.read().clone()
     }
 }
 
@@ -3871,12 +3877,9 @@ pub fn sorwakeup<G: ProcGlue>(so: &Socket<G>) {
     sowakeup(so, &so.so_rcv);
     if so.upcall_kind.load(Ordering::Acquire) != 0
         && let Some(f) = net::<G>().upcall.get()
+        && let Some(arg) = so.upcall_arg()
     {
-        f(
-            so,
-            so.upcall_arg.load(Ordering::Relaxed),
-            crate::net::mbuf::M_DONTWAIT,
-        );
+        f(so, &arg, crate::net::mbuf::M_DONTWAIT);
     }
 }
 
@@ -4260,7 +4263,7 @@ pub fn so_print<G: ProcGlue>(so: &Socket<G>, pr: &mut dyn core::fmt::Write) -> c
         pr,
         "so_upcall: {} so_upcallarg: {:#x}",
         so.upcall_kind.load(Ordering::Relaxed),
-        so.upcall_arg.load(Ordering::Relaxed)
+        so.upcall_arg.read().as_ref().map_or(0, AnyArc::addr)
     )?;
     writeln!(pr, "so_euid: {} so_ruid: {}", so.euid, so.ruid)?;
     writeln!(pr, "so_egid: {} so_rgid: {}", so.egid, so.rgid)?;

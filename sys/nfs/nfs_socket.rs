@@ -545,14 +545,22 @@ pub fn nfs_getreq(
     Ok(())
 }
 
-/// [`nfsrv_rcv`] as the socket layer's registered upcall (`so->so_upcall`, set by
-/// `nfssvc_addsock`): `arg` is the `nfssvc_sock`'s address it stored in `so_upcallarg`,
-/// exposed there.
+/// The `nfssvc_sock`'s address `nfssvc_addsock` stores in `so_upcallarg`, exposed, in the
+/// counted block the socket's typed argument holds (until the kernel's server replaces this
+/// one, N6.7b4).
 #[cfg(feature = "nfsserver")]
-pub fn nfsrv_rcv_upcall(so: &Socket, arg: usize, waitflag: i32) {
+pub struct SlpAddr(pub usize);
+
+/// [`nfsrv_rcv`] as the socket layer's registered upcall (`so->so_upcall`, set by
+/// `nfssvc_addsock`): `arg` holds the `nfssvc_sock`'s address it stored in `so_upcallarg`.
+#[cfg(feature = "nfsserver")]
+pub fn nfsrv_rcv_upcall(so: &Socket, arg: &hal::pool::AnyArc, waitflag: i32) {
+    let Some(slp) = arg.downcast_ref::<SlpAddr>() else {
+        return;
+    };
     nfsrv_rcv(
         crate::sys::socketvar::as_static(so),
-        core::ptr::with_exposed_provenance_mut(arg),
+        core::ptr::with_exposed_provenance_mut(slp.0),
         waitflag,
     );
 }

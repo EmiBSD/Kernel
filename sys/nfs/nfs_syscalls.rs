@@ -413,8 +413,16 @@ pub fn nfssvc_addsock(fp: &FileRef, mynam: Option<&'static Mbuf>) -> Result<(), 
     slp.ns_nam.set(mynam);
     slp.ns_fp.set(FileSlot::with(Some(fref(fp))));
     // so_upcallarg = slp, so_upcall = nfsrv_rcv (the function the glue registered,
-    // nfs_socket's nfsrv_rcv_upcall): the address exposed for the upcall to take back.
-    so.set_upcall_legacy(Some(core::ptr::from_ref(slp).expose_provenance()));
+    // nfs_socket's nfsrv_rcv_upcall): the address exposed, in a counted block, for the
+    // upcall to take back.
+    let Some(arg) = hal::malloc::MArc::new(
+        M_NFSSVC,
+        M_WAITOK,
+        crate::nfs::nfs_socket::SlpAddr(core::ptr::from_ref(slp).expose_provenance()),
+    ) else {
+        return Err(Errno::ENOMEM);
+    };
+    drop(so.set_upcall(Some(hal::malloc::MArc::erase(arg))));
     slp.ns_flag.set(SLP_VALID | SLP_NEEDQ);
     nfsrv_wakenfsd(slp);
     Ok(())
@@ -729,7 +737,7 @@ pub fn nfsrv_zapsock(slp: &NfssvcSock) {
     // FREF(fp); slp->ns_fp = NULL: the slot's reference, which `closef` gives back.
     if let Some(fp) = slp.ns_fp.take().take() {
         if let Some(so) = slp.ns_so.get() {
-            so.set_upcall_legacy(None);
+            drop(so.set_upcall(None));
             let _ = soshutdown(so, SHUT_RDWR);
         }
         let _ = closef(fp, None::<&Proc>);
