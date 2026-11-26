@@ -246,11 +246,6 @@ pub fn soreceive(
     error
 }
 
-/// `soshutdown(so, how)`.
-pub fn soshutdown(so: &Socket, how: i32) -> Result<(), Errno> {
-    kernel::net::socket::soshutdown(so, how)
-}
-
 /// `sosetopt(so, level, optname, m)` for `curproc`; `m` is the caller's (parked) and stays
 /// the caller's.
 pub fn sosetopt(

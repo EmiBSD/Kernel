@@ -29,8 +29,9 @@
 //! futex(2) (`FutexEntry`, N4.6c), the process system calls' forty-six (`ProcEntries`,
 //! N4.6a), sysctl(2) (`SysctlEntry`, N4.6b), the time system calls with reboot(2)
 //! (`TimeEntries`, N4.8), sigreturn(2) (`SigreturnEntry`, N4.8b), the VFS system calls'
-//! sixty-five (`VfsEntries`, N5.4) and the socket system calls' nineteen (`SocketEntries`,
-//! N6.2b: `kernel::net::syscalls`, `sys/kern/socket_glue.rs`), which run the system
+//! sixty-five (`VfsEntries`, N5.4), the socket system calls' nineteen (`SocketEntries`,
+//! N6.2b: `kernel::net::syscalls`, `sys/kern/socket_glue.rs`) and nfssvc(2) (N6.7b4:
+//! `kernel::fs::nfs::nfssvc`, `sys/kern/vfs_syscalls.rs`), which run the system
 //! call prologue still in `bsd` (pledge, the pinned syscalls) before `kernel::pipe`,
 //! `kernel::vm`, `kernel::descrip`, `kernel::event`, `kernel::select`, `kernel::log`,
 //! `kernel::futex`, the process modules, `kernel::sysctl`, `kernel::time`,
@@ -76,6 +77,7 @@ pub const fn table(
     sigreturn: SigreturnEntry,
     vfs: VfsEntries,
     socket: SocketEntries,
+    nfssvc: fn(Register, i32, usize, &mut Rval) -> SysResult,
 ) -> KernelApi {
     KernelApi::new(
         register_syscall_handler,
@@ -92,6 +94,7 @@ pub const fn table(
         sigreturn,
         vfs,
         socket,
+        nfssvc,
     )
 }
 
@@ -466,6 +469,10 @@ mod tests {
     };
 
     fn sendsyslog(nr: Register, _: usize, _: usize, _: i32, _: &mut Rval) -> SysResult {
+        Err(nr as i32)
+    }
+
+    fn nfssvc(nr: Register, _: i32, _: usize, _: &mut Rval) -> SysResult {
         Err(nr as i32)
     }
 
@@ -891,7 +898,8 @@ mod tests {
     };
 
     static API: KernelApi = table(
-        legacy, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC, sysctl, TIME, sigreturn, VFS, SOCKET,
+        legacy, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC, sysctl, TIME, sigreturn, VFS,
+        SOCKET, nfssvc,
     );
 
     #[test]
@@ -916,6 +924,7 @@ mod tests {
         );
         assert_eq!((API.event.kqueue)(269, &mut rval), Err(269));
         assert_eq!((API.sendsyslog)(112, 0, 0, 0, &mut rval), Err(112));
+        assert_eq!((API.nfssvc)(155, 0, 0, &mut rval), Err(155));
         assert_eq!((API.futex)(83, 0, 0, 0, 0, 0, &mut rval), Err(83));
         assert_eq!((API.proc.fork)(2, &mut rval), Err(2));
         assert_eq!((API.proc.setrtable)(310, 0, &mut rval), Err(310));

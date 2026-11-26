@@ -89,8 +89,8 @@
 //! `nfs_srvcache.c` and `nfsrvcache.h`): requests of datagram transports are remembered by
 //! transaction id, procedure and client address, so that a retransmission of a request still
 //! in progress is dropped, one of a non-idempotent request that has completed gets the saved
-//! reply, and one of an idempotent request is simply done again. Beside `bsd`'s server until
-//! N6.7b4.
+//! reply, and one of an idempotent request is simply done again. The server's since N6.7b4
+//! (`nfs_init` makes it, after `nfsrv_init(0)`).
 //!
 //! Upstream: sys/nfs/nfs_srvcache.c @ 3ce1f3f79392
 //! Upstream: sys/nfs/nfsrvcache.h @ 3ce1f3f79392

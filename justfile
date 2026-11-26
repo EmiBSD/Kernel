@@ -1315,7 +1315,15 @@ cd_steps := disk_login + " " + \
 # A's file and writes one file per mount, which A then reads from its own disk. B retries showmount until A's
 # daemons answer. N6.7a5 (D-8), on the TCP mount: a symbolic link read back, a 256 KiB
 # write, a rename, the removal of an open file (its silly rename gone at the close), then a
-# version 2 mount over UDP. The markers are built with `$((..))`, so that the typed commands do not
+# version 2 mount over UDP. N6.7b4 (D-15), the server's export list: a second export line,
+# `/export2` (an msdosfs on a vnd of the ramdisk's FAT image, a file system of its own, since
+# the options are per file system and address) `-ro -maproot=root -network 192.168.77.0
+# -mask 255.255.255.0`, which showmount lists; B reads it and a write is refused (EROFS: root
+# kept as root, so msdosfs's lookup grants the directory's write access and the export's
+# read-only flag answers, as the C's order does; squashed to nobody, the lookup's EACCES
+# comes first); then A
+# kills its nfsds (the last one out makes the server's tables again) and starts them again,
+# and B mounts and reads /export from the new ones. The markers are built with `$((..))`, so that the typed commands do not
 # match them; the commands are short, since a long line can overflow arm64's pluart input
 # buffer under load. Part of `smoke`.
 smoke-nfs: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
@@ -1332,11 +1340,20 @@ nfs_both := "--both-send-after 'login:' --both-send 'root\\n' --both-send-after 
 nfs_a := "--a-send-after '# ' --a-send 'ifconfig vio1 inet 192.168.77.1/24 up\\n' " + \
     "--a-send-after '# ' --a-send 'mkdir -p /export\\n' " + \
     "--a-send-after '# ' --a-send 'echo nfs-a-$((3+4)) >/export/a.txt\\n' " + \
+    "--a-send-after '# ' --a-send 'vnconfig vnd0 /root/images/fat.img; mkdir -p /export2\\n' " + \
+    "--a-send-after '# ' --a-send 'mount_msdos /dev/vnd0c /export2 && echo nfs-fat-$((3+3))\\n' " + \
     "--a-send-after '# ' --a-send 'echo \"/export -maproot=root 192.168.77.2\" >/etc/exports\\n' " + \
+    "--a-send-after '# ' --a-send 'n=\"-network 192.168.77.0 -mask 255.255.255.0\"\\n' " + \
+    "--a-send-after '# ' --a-send 'echo \"/export2 -ro -maproot=root $n\" >>/etc/exports\\n' " + \
     "--a-send-after '# ' --a-send 'portmap; sleep 1; mountd; nfsd -tu -n 4\\n' " + \
     "--a-send-after '# ' --a-send 'sleep 1; echo nfs-up-$((2+3))\\n' " + \
     "--a-send-after '# ' --a-send 'cd /export; until [ -f b-tcp.txt ]; do sleep 1; done\\n' " + \
-    "--a-send-after '# ' --a-send 'sleep 1; cat b-udp.txt b-tcp.txt\\n'"
+    "--a-send-after '# ' --a-send 'sleep 1; cat b-udp.txt b-tcp.txt\\n' " + \
+    "--a-send-after '# ' --a-send 'until [ -f b-wait.txt ]; do sleep 1; done\\n' " + \
+    "--a-send-after '# ' --a-send 'ps -axo pid= -o comm= >/tmp/p\\n' " + \
+    "--a-send-after '# ' --a-send 'while read p c; do [ $c = nfsd ] && kill $p; done </tmp/p\\n' " + \
+    "--a-send-after '# ' --a-send 'sleep 3; echo nfsd-left-$(ps -axo comm= | grep -c nfsd)\\n' " + \
+    "--a-send-after '# ' --a-send 'nfsd -tu -n 4; sleep 1; echo r >r.txt; echo nfs-restart-$((9+9))\\n'"
 nfs_b := "--b-send-after '# ' --b-send 'ifconfig vio1 inet 192.168.77.2/24 up\\n' " + \
     "--b-send-after '# ' --b-send 'until showmount -e 192.168.77.1; do sleep 2; done\\n' " + \
     "--b-send-after '# ' --b-send 'mount_nfs 192.168.77.1:/export /mnt && mount\\n' " + \
@@ -1356,15 +1373,25 @@ nfs_b := "--b-send-after '# ' --b-send 'ifconfig vio1 inet 192.168.77.2/24 up\\n
     "--b-send-after '# ' --b-send 'sleep 1; set -- .nfs*; [ ! -e \"$1\" ] && echo nfs-silly-$((7+6))\\n' " + \
     "--b-send-after '# ' --b-send 'cd /; umount /mnt && echo nfs-done-$((6+4))\\n' " + \
     "--b-send-after '# ' --b-send 'mount_nfs -2 192.168.77.1:/export /mnt && mount\\n' " + \
-    "--b-send-after '# ' --b-send 'cat /mnt/b-tcp.txt; umount /mnt && echo nfs-v2-$((7+7))\\n'"
-nfs_expect := "--a-expect 'nfs-up-5' --a-expect 'nfs-udp-8' --a-expect 'nfs-tcp-9' " + \
+    "--b-send-after '# ' --b-send 'cat /mnt/b-tcp.txt; umount /mnt && echo nfs-v2-$((7+7))\\n' " + \
+    "--b-send-after '# ' --b-send 'mount_nfs 192.168.77.1:/export2 /mnt && cat /mnt/m10c-fat.txt\\n' " + \
+    "--b-send-after '# ' --b-send 'echo w >/mnt/w.txt || echo nfs-ro-$((8+8))\\n' " + \
+    "--b-send-after '# ' --b-send 'umount /mnt; mount_nfs 192.168.77.1:/export /mnt\\n' " + \
+    "--b-send-after '# ' --b-send 'echo w >/mnt/b-wait.txt; umount /mnt\\n' " + \
+    "--b-send-after '# ' --b-send 'm(){ mount_nfs 192.168.77.1:$1 /mnt; }\\n' " + \
+    "--b-send-after '# ' --b-send 'until m /export && [ -f /mnt/r.txt ]; do umount /mnt; sleep 2; done\\n' " + \
+    "--b-send-after '# ' --b-send 'cat /mnt/a.txt; umount /mnt && echo nfs-again-$((8+9))\\n'"
+nfs_expect := "--a-expect 'nfs-fat-6' --a-expect 'nfs-up-5' --a-expect 'nfs-udp-8' --a-expect 'nfs-tcp-9' " + \
+    "--a-expect 'nfsd-left-0' --a-expect 'nfs-restart-18' " + \
     "--b-expect 'Exports list on 192.168.77.1:' --b-expect '/export                            192.168.77.2' " + \
+    "--b-expect '/export2                           192.168.77.0' " + \
     "--b-expect 'nfs-a-7' --b-expect '192.168.77.1:/export on /mnt type nfs (v3, udp' " + \
     "--b-expect '192.168.77.1:/export on /mnt type nfs (v3, tcp' " + \
     "--b-expect ' l -> a.txt' --b-expect 'nfs-ln-11' --b-expect 'nfs-big-262144' " + \
     "--b-expect 'nfs-mv-12' --b-expect 'nfs-open-262144' --b-expect 'nfs-silly-13' " + \
     "--b-expect 'nfs-done-10' --b-expect '192.168.77.1:/export on /mnt type nfs (v2, udp' " + \
-    "--b-expect 'nfs-v2-14'"
+    "--b-expect 'nfs-v2-14' --b-expect 'm10c-fat-42' --b-expect 'Read-only file system' " + \
+    "--b-expect 'nfs-ro-16' --b-expect 'nfs-again-17'"
 
 # M10d: ext2fs (sys/ufs/ext2fs) on a disk set of its own (`--disk-set ext2fs`, so smoke-disk's
 # sd0 is left alone). Boot 1 (`--disk-fresh`) gives sd0 an MBR and disklabel(8)'s automatic
@@ -2051,7 +2078,7 @@ smoke-efiboot: (build-amd64 "--features qemu") (build-arm64 "--features qemu") e
         --expect "BlkSiz" \
         --expect "booting hd0a:/bsd: " --expect "]=0x" --expect "entry point at 0x1000000" \
         --expect "bsd: booted on amd64 by boot(8) efiboot" --expect "bsd: boot(8) bootarg protocol, " \
-        --expect "abi: 331 syscalls, 189 native" \
+        --expect "abi: 331 syscalls, 190 native" \
         --expect "bsd: {{ncpu}} processors, boot processor hwid 0x0" --expect "EmiBSD 8.0 (GENERIC) #" \
         --expect "random: good seed from bootblocks" --reject "warning: no entropy supplied by boot loader" \
         --expect "cpu0 at mainbus0: apid 0 (boot processor)" \
@@ -2074,7 +2101,7 @@ smoke-efiboot: (build-amd64 "--features qemu") (build-arm64 "--features qemu") e
         --expect ">> EmiBSD/arm64 BOOTAA64 1.26" --expect "efiboot: boot.conf read" --expect "boot> " \
         --expect "-r-xr-xr-x 0,0" --expect "booting sd0a:/bsd: " --expect "]=0x" \
         --expect "bsd: booted on arm64 by boot(8) efiboot" --expect "bsd: boot(8) bootarg protocol, " \
-        --expect "abi: 331 syscalls, 189 native" \
+        --expect "abi: 331 syscalls, 190 native" \
         --expect "bsd: {{ncpu}} processors, boot processor hwid 0x0" --expect "EmiBSD 8.0 (GENERIC) #" \
         --expect "random: good seed from bootblocks" --reject "warning: no entropy supplied by boot loader" \
         --expect "cpu0 at mainbus0 mpidr 0: ARM Cortex-A72" --expect "cpu{{aps}} at mainbus0 mpidr {{aps}}: ARM Cortex-A72" \
@@ -2252,7 +2279,7 @@ smoke-abi: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
     {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --cmdline "-s" --expect-ramdisk --until-seen {{abi_steps}}
 
 # `smoke-abi`'s expectations and session.
-abi_steps := "--expect 'abi: 331 syscalls, 189 native' " + \
+abi_steps := "--expect 'abi: 331 syscalls, 190 native' " + \
     "--send-after 'RETURN for sh:' --send '\\n' " + \
     "--send-after '# ' --send 'ls / >/dev/null && echo abi-ok-$((40+2))\\n' " + \
     "--expect 'abi-ok-42' " + \
@@ -3861,7 +3888,7 @@ _dist-arm64: dist-clean-tree build-release-arm64 build-init-arm64 efiboot-arm64
     rm -rf target/smoke/dist
     mkdir -p target/smoke/dist
     EMIBSD_RUN_DIR=target/smoke/dist {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/release/bsd --ramdisk none --expect-ramdisk --until-seen \
-        --expect "bsd: booted on arm64" --expect "abi: 331 syscalls, 189 native" --expect "EmiBSD 8.0 (GENERIC) #" \
+        --expect "bsd: booted on arm64" --expect "abi: 331 syscalls, 190 native" --expect "EmiBSD 8.0 (GENERIC) #" \
         --expect "init: hello from user mode" --expect "init: EmiBSD 8.0" --expect "init: processes ok" \
         --expect "init: unveil ok" --expect "panic: init died (signal 0, exit " | tee target/smoke/dist/boot.log
     rdsize=$({{xtask}} rdsetroot -s target/bsdrd/{{arm64}}/release/bsd)

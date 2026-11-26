@@ -46,6 +46,7 @@
 //! registers themselves. N6.2b: the socket system calls' nineteen (`KernelApi::socket`,
 //! `sys/kernel/net/syscalls.rs`: `socket(2)`, `bind(2)`, `accept(2)`, `sendmsg(2)`,
 //! `recvmmsg(2)`, ..., `ypconnect(2)`; `setrtable(2)` and `getrtable(2)` are `KernelApi::proc`'s).
+//! N6.7b4: the NFS server's `nfssvc(2)` (`KernelApi::nfssvc`, `sys/kernel/fs/nfs/nfssvc.rs`).
 //!
 //! Translation only (decision 21; `cargo xtask abi-check`, decision 25): no loop, a
 //! `match` only on the number's conversion and on `Some`/`None`, one kernel call per
@@ -66,9 +67,9 @@ use hal::sys::syscall::{
     SYS_getsid, SYS_getthrid, SYS_getthrname, SYS_getuid, SYS_ioctl, SYS_issetugid, SYS_kbind,
     SYS_kevent, SYS_kqueue, SYS_kqueue1, SYS_madvise, SYS_mimmutable, SYS_minherit, SYS_mlock,
     SYS_mlockall, SYS_mmap, SYS_mprotect, SYS_mquery, SYS_msync, SYS_munlock, SYS_munlockall,
-    SYS_munmap, SYS_pinsyscalls, SYS_pipe, SYS_pipe2, SYS_poll, SYS_ppoll, SYS_pread, SYS_preadv,
-    SYS_pselect, SYS_pwrite, SYS_pwritev, SYS_read, SYS_readv, SYS_select, SYS_sendsyslog,
-    SYS_setegid, SYS_seteuid, SYS_setgid, SYS_setgroups, SYS_setlogin, SYS_setpgid,
+    SYS_munmap, SYS_nfssvc, SYS_pinsyscalls, SYS_pipe, SYS_pipe2, SYS_poll, SYS_ppoll, SYS_pread,
+    SYS_preadv, SYS_pselect, SYS_pwrite, SYS_pwritev, SYS_read, SYS_readv, SYS_select,
+    SYS_sendsyslog, SYS_setegid, SYS_seteuid, SYS_setgid, SYS_setgroups, SYS_setlogin, SYS_setpgid,
     SYS_setpriority, SYS_setregid, SYS_setresgid, SYS_setresuid, SYS_setreuid, SYS_setrlimit,
     SYS_setrtable, SYS_setsid, SYS_setthrname, SYS_setuid, SYS_sigreturn, SYS_sysctl, SYS_utrace,
     SYS_vfork, SYS_wait4, SYS_waitid, SYS_write, SYS_writev,
@@ -108,7 +109,7 @@ pub enum Sysent {
 }
 
 /// How many entries of [`SYSENT`] are `Native` (a test counts them).
-pub const NATIVE: u32 = 189;
+pub const NATIVE: u32 = 190;
 
 /// What the ABI says about itself when it registers ([`crate::abi_init`]).
 #[expect(
@@ -312,6 +313,7 @@ pub static SYSENT: [Sysent; SYS_MAXSYSCALL] = {
     table[SYS_shutdown as usize] = Sysent::Native(sys_shutdown);
     table[SYS_socketpair as usize] = Sysent::Native(sys_socketpair);
     table[SYS_ypconnect as usize] = Sysent::Native(sys_ypconnect);
+    table[SYS_nfssvc as usize] = Sysent::Native(sys_nfssvc);
     table
 };
 
@@ -1897,6 +1899,11 @@ fn sys_socketpair(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> S
 fn sys_ypconnect(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.socket.ypconnect)(SYS_ypconnect as Register, int(args[0]), rval)
 }
+
+/// 155 = `int nfssvc(int flag, void *argp)`.
+pub fn sys_nfssvc(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.nfssvc)(SYS_nfssvc as Register, int(args[0]), ptr(args[1]), rval)
+}
 // `INFO` narrows the table's size to `HandlerInfo::syscalls`'s `u32`: it fits.
 const _: () = assert!(SYS_MAXSYSCALL <= u32::MAX as usize);
 /* </CODE> */
@@ -2108,6 +2115,11 @@ mod tests {
     fn sendsyslog(nr: Register, b: usize, n: usize, f: i32, rval: &mut Rval) -> SysResult {
         rval[0] = nr;
         Err(b as i32 * 100 + n as i32 * 10 + f)
+    }
+
+    fn nfssvc(nr: Register, flag: i32, argp: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(flag * 10 + argp as i32)
     }
 
     const EVENT: hal::api::EventEntries = hal::api::EventEntries {
@@ -2938,7 +2950,7 @@ mod tests {
     };
     static API: KernelApi = KernelApi::new(
         register, legacy, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC, sysctl, TIME, sigreturn,
-        VFS, SOCKET,
+        VFS, SOCKET, nfssvc,
     );
 
     /// The event system calls N4.4 made `Native` (`KernelApi::event`).
@@ -3042,7 +3054,7 @@ mod tests {
     }
 
     #[test]
-    fn every_entry_but_pipe_vm_fd_event_sendsyslog_futex_proc_sysctl_time_sigreturn_vfs_and_socket_is_legacy()
+    fn every_entry_but_pipe_vm_fd_event_sendsyslog_futex_proc_sysctl_time_sigreturn_vfs_socket_and_nfssvc_is_legacy()
      {
         for nr in 0..SYS_MAXSYSCALL as Register {
             if nr == SYS_pipe as Register
@@ -3051,6 +3063,7 @@ mod tests {
                 || nr == SYS_futex as Register
                 || nr == SYS_sysctl as Register
                 || nr == SYS_sigreturn as Register
+                || nr == SYS_nfssvc as Register
                 || VM_CALLS.iter().any(|&v| v as Register == nr)
                 || FD_CALLS.iter().any(|&v| v as Register == nr)
                 || EVENT_CALLS.iter().any(|&v| v as Register == nr)
@@ -3560,6 +3573,26 @@ mod tests {
         );
     }
 
+    /// nfssvc(2)'s translation (N6.7b4): its number, the flag as an `int` and the argument's
+    /// address, the trap's return registers.
+    #[test]
+    fn nfssvc_is_native_and_reaches_the_kernels_entry() {
+        assert!(matches!(
+            entry(&SYSENT, SYS_nfssvc as Register),
+            Some(Sysent::Native(_))
+        ));
+        // The flag is read as the C's `int`: the register's upper half is not the flag's.
+        let a: SysArgs = [(1 << 32) | 4, 2, 3, 0, 0, 0];
+        let mut rval = [-7; 2];
+        assert_eq!(sys_nfssvc(&API, &a, &mut rval), Err(42));
+        assert_eq!(rval, [SYS_nfssvc as Register, -7]);
+        let mut rval = [-7; 2];
+        assert_eq!(
+            syscall(&API, SYS_nfssvc as Register, &a, &mut rval),
+            Err(42)
+        );
+    }
+
     /// futex(2)'s translation (N4.6c): its number, the five arguments in
     /// `<sys/syscallargs.h>`'s order, the trap's return registers.
     #[test]
@@ -3607,9 +3640,9 @@ mod tests {
             Err(4242)
         );
         assert_eq!(
-            NATIVE, 189,
+            NATIVE, 190,
             "93 through sysctl(2), 11 more with the time calls, 1 with sigreturn(2), 65 with the \
-             VFS calls (N5.4), 19 with the socket calls (N6.2b)"
+             VFS calls (N5.4), 19 with the socket calls (N6.2b), 1 with nfssvc(2) (N6.7b4)"
         );
     }
 

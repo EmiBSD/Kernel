@@ -38,7 +38,8 @@
 //! ([`SigreturnEntry`], N4.8b); [`VfsEntries`], the sixty-five of the VFS (`open(2)`,
 //! `stat(2)`, `mount(2)`, `rename(2)`, `getdents(2)`, ..., `__getcwd(2)`, N5.4);
 //! [`SocketEntries`], the nineteen of the sockets (`socket(2)`, `sendmsg(2)`, `accept(2)`, ...,
-//! N6.2b), one typed entry each.
+//! N6.2b), one typed entry each; `nfssvc`, the NFS server's `nfssvc(2)` (`kernel::fs::nfs`,
+//! N6.7b4).
 //!
 //! Until the N5 close the table crossed a binary boundary (the ABI was the loadable module of
 //! decision 22) and was `#[repr(C)]`, versioned and checked by the loader against the
@@ -574,6 +575,8 @@ pub struct KernelApi {
     pub vfs: VfsEntries,
     /// The socket system calls (N6.2b).
     pub socket: SocketEntries,
+    /// 155 = `int nfssvc(int flag, void *argp)` (N6.7b4): `(nr, flag, argp, rval)`.
+    pub nfssvc: fn(Register, i32, usize, &mut Rval) -> SysResult,
 }
 
 impl KernelApi {
@@ -597,6 +600,7 @@ impl KernelApi {
         sigreturn: SigreturnEntry,
         vfs: VfsEntries,
         socket: SocketEntries,
+        nfssvc: fn(Register, i32, usize, &mut Rval) -> SysResult,
     ) -> Self {
         Self {
             register_syscall_handler,
@@ -613,6 +617,7 @@ impl KernelApi {
             sigreturn,
             vfs,
             socket,
+            nfssvc,
         }
     }
 }
@@ -801,6 +806,11 @@ mod tests {
     fn sendsyslog(nr: Register, b: usize, n: usize, f: i32, rval: &mut Rval) -> SysResult {
         rval[0] = nr;
         Err(b as i32 * 100 + n as i32 * 10 + f)
+    }
+
+    fn nfssvc(nr: Register, flag: i32, argp: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(flag * 10 + argp as i32)
     }
 
     const EVENT: EventEntries = EventEntries {
@@ -1565,7 +1575,7 @@ mod tests {
 
     static API: KernelApi = KernelApi::new(
         register, legacy, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC, sysctl, TIME, sigreturn,
-        VFS, SOCKET,
+        VFS, SOCKET, nfssvc,
     );
 
     #[test]
@@ -1675,6 +1685,13 @@ mod tests {
         let mut rval = [0; 2];
         assert_eq!((API.sendsyslog)(112, 1, 2, 3, &mut rval), Err(123));
         assert_eq!(rval[0], 112);
+    }
+
+    #[test]
+    fn the_nfssvc_entry_is_the_callers() {
+        let mut rval = [0; 2];
+        assert_eq!((API.nfssvc)(155, 4, 2, &mut rval), Err(42));
+        assert_eq!(rval[0], 155);
     }
 
     #[test]

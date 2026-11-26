@@ -1254,6 +1254,12 @@ impl AnyArc {
     pub fn ptr_eq(a: &Self, b: &Self) -> bool {
         a.item == b.item
     }
+
+    /// The erased value's address, for a debugger's print (ddb's `%p` of a socket's
+    /// `so_upcallarg`): an address only, never read through.
+    pub fn addr(&self) -> usize {
+        self.item.as_ptr().wrapping_byte_add(self.vt.value).addr()
+    }
 }
 
 impl Clone for AnyArc {
@@ -2970,6 +2976,11 @@ mod tests {
         assert!(e.downcast_ref::<u64>().is_none(), "another type is refused");
         let f = e.clone();
         assert!(AnyArc::ptr_eq(&e, &f));
+        assert_eq!(
+            e.addr(),
+            core::ptr::from_ref::<Pair>(&kept).addr(),
+            "the address is the value's"
+        );
         assert_eq!(PoolArc::count(&kept), 3);
         drop(e);
         drop(kept);

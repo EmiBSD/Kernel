@@ -1730,6 +1730,9 @@ mod tests {
         flag: i32,
     ) -> (MutexGuard<'static, ()>, &'static Thread<G>, NfsMountRef<G>) {
         let (g, p) = crate::net::unix::tests::setup();
+        // nfs_init makes the server's tables again: an earlier test's are forgotten first.
+        #[cfg(feature = "nfsserver")]
+        crate::fs::nfs::nfssvc::nfsrv_test_reset::<G>();
         nfs_init::<G>();
         let mp = crate::fs::init::rootvnode::<G>()
             .and_then(|v| v.mount())

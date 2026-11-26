@@ -216,8 +216,6 @@ pub fn domaininit() {
         crate::netinet6::ip6_output::ip6_randomid_init();
         kernel::netinet6::in6_proto::inet6sw_set::<G>(&INET6_PROTOS);
     }
-    #[cfg(feature = "nfsserver")]
-    kernel::net::socket::register_upcall::<G>(crate::nfs::nfs_socket::nfsrv_rcv_upcall);
     kernel::net::domain::domaininit::<G>(NET_DOMAINS);
 }
 
@@ -226,8 +224,6 @@ pub fn domaininit() {
 /// fresh memory (`domaininit` once per process would leave them in the first test's).
 #[cfg(test)]
 pub(crate) fn net_tables_for_tests() {
-    #[cfg(feature = "nfsserver")]
-    kernel::net::socket::register_upcall::<G>(crate::nfs::nfs_socket::nfsrv_rcv_upcall);
     kernel::netinet::in_proto::inetsw_set::<G>(&INET_PROTOS);
     #[cfg(feature = "inet6")]
     kernel::netinet6::in6_proto::inet6sw_set::<G>(&INET6_PROTOS);

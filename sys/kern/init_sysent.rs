@@ -27,8 +27,8 @@
 //! Upstream: sys/kern/init_sysent.c @ 3ce1f3f79392
 //!
 //! ## Deviations
-//! - An entry points at its `sys_*` function only when `sys/kern`, `sys/uvm`, `sys/dev` or
-//!   `sys/nfs` defines it (`pub fn sys_<name>(`); the others are `sys_nosys` with a note,
+//! - An entry points at its `sys_*` function only when `sys/kern` or `sys/dev` defines
+//!   it (`pub fn sys_<name>(`); the others are `sys_nosys` with a note,
 //!   so the table always compiles. Rerun the generator after porting a syscall.
 //! - An entry whose function exists only with a kernel option (`nfssvc`: `NFSCLIENT` or
 //!   `NFSSERVER`, cargo features `nfsclient`, `nfsserver`) has two rows, one per `cfg`; the
@@ -81,6 +81,8 @@ use crate::kern::sys_generic::{
     sys_ioctl, sys_poll, sys_ppoll, sys_pselect, sys_read, sys_readv, sys_select, sys_utrace,
     sys_write, sys_writev,
 };
+#[cfg(any(feature = "nfsclient", feature = "nfsserver"))]
+use crate::kern::vfs_syscalls::sys_nfssvc;
 use crate::kern::vfs_syscalls::{
     sys___getcwd, sys___pledge_open, sys___realpath, sys_access, sys_chdir, sys_chflags,
     sys_chflagsat, sys_chmod, sys_chown, sys_chroot, sys_faccessat, sys_fchdir, sys_fchflags,
@@ -98,8 +100,6 @@ use crate::kern::vm_bsd::{
     sys_mprotect, sys_mquery, sys_msync, sys_munlock, sys_munlockall, sys_munmap, sys_obreak,
     sys_pinsyscalls,
 };
-#[cfg(any(feature = "nfsclient", feature = "nfsserver"))]
-use crate::nfs::nfs_syscalls::sys_nfssvc;
 use crate::sys::syscall::SYS_MAXSYSCALL;
 use crate::sys::syscallargs::{
     SysAccept4Args, SysAcceptArgs, SysAccessArgs, SysAcctArgs, SysAdjfreqArgs, SysAdjtimeArgs,

@@ -26,10 +26,10 @@
 //! - `sys/kern/syscalls.rs` (the names, `syscalls.c`).
 //!
 //! The switch table points every entry at `sys_nosys` unless a `pub fn sys_<name>(` exists
-//! in a file directly under `sys/kern/`, `sys/dev/` or `sys/nfs/` (`getentropy(2)` lives in
-//! `dev/rnd.c`, `nfssvc(2)` in `nfs/nfs_syscalls.c`; the vm calls' `sysent` adapters in
-//! `kern/vm_bsd.rs` since `sys/uvm/` went into the kernel, N3.5), so porting a syscall is: write
-//! the function, rerun the generator. `--check` regenerates in memory and fails if the files on
+//! in a file directly under `sys/kern/` or `sys/dev/` (`getentropy(2)` lives in `dev/rnd.c`;
+//! the vm calls' `sysent` adapters in `kern/vm_bsd.rs` since `sys/uvm/` went into the kernel,
+//! N3.5, and `nfssvc(2)`'s in `kern/vfs_syscalls.rs` since `sys/nfs/` did, N6.7b4), so
+//! porting a syscall is: write the function, rerun the generator. `--check` regenerates in memory and fails if the files on
 //! disk differ (`just ci`). Of the kernel options the master file tests, `ACCOUNTING`,
 //! `NFSCLIENT` and `NFSSERVER` are configured (as in GENERIC); for `PTRACE`, `KTRACE` and
 //! `SYSV*` the `#else` branches are taken. `NFSCLIENT` and `NFSSERVER` are cargo features of
@@ -399,11 +399,7 @@ fn join_type(tokens: &[&str]) -> String {
 /// The `sys_*` functions the tree defines: name -> module path.
 fn ported_syscalls(root: &Path) -> Result<BTreeMap<String, String>> {
     let mut found = BTreeMap::new();
-    for (dir, module) in [
-        ("sys/kern", "crate::kern"),
-        ("sys/dev", "crate::dev"),
-        ("sys/nfs", "crate::nfs"),
-    ] {
+    for (dir, module) in [("sys/kern", "crate::kern"), ("sys/dev", "crate::dev")] {
         let mut names: Vec<_> = fs::read_dir(root.join(dir))?
             .filter_map(|e| e.ok())
             .map(|e| e.path())
@@ -576,8 +572,8 @@ pub fn generate(root: &Path) -> Result<Vec<(&'static str, String)>> {
     sysent.push_str(&banner("sys/kern/init_sysent.c"));
     sysent.push_str(
         "//!\n//! ## Deviations\n\
-         //! - An entry points at its `sys_*` function only when `sys/kern`, `sys/uvm`, `sys/dev` or\n\
-         //!   `sys/nfs` defines it (`pub fn sys_<name>(`); the others are `sys_nosys` with a note,\n\
+         //! - An entry points at its `sys_*` function only when `sys/kern` or `sys/dev` defines\n\
+         //!   it (`pub fn sys_<name>(`); the others are `sys_nosys` with a note,\n\
          //!   so the table always compiles. Rerun the generator after porting a syscall.\n\
          //! - An entry whose function exists only with a kernel option (`nfssvc`: `NFSCLIENT` or\n\
          //!   `NFSSERVER`, cargo features `nfsclient`, `nfsserver`) has two rows, one per `cfg`; the\n\

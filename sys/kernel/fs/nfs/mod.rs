@@ -20,7 +20,7 @@
 //! The Network File System's kernel half (`docs/ROADMAP.md`'s N6.7, `sys/nfs/` in C): the
 //! wire format and the ABI (N6.7a0) and the client, built beside `bsd`'s sub-slice by
 //! sub-slice and switched on by N6.7a5 (D-1: `vfsconflist[]`'s `nfs` is [`nfs_vfsops::NfsVfs`]).
-//! The server stays `bsd`'s until N6.7b, over the server half of the files the C shares.
+//! The server is the kernel's since N6.7b4 (`bsd`'s `sys/nfs/` deleted).
 //!
 //! Headers: `nfs` (`nfs.h`), `nfsproto` (`nfsproto.h`), `xdr_subs` (`xdr_subs.h`),
 //! `nfsm_subs` (`nfsm_subs.h`), `nfsmount` (`nfsmount.h`), `nfsnode` (`nfsnode.h`),
@@ -29,9 +29,9 @@
 //! call-closed part of the file system's half (N6.7a2): `nfs_node`, `nfs_bio`, `nfs_kq`,
 //! `nfs_syscalls` (the nfsiods), and the vnode operations and the functions of their call
 //! cycle (N6.7a3): `nfs_vnops`, `nfs_vfsops`'s FSINFO; the file system type and the ddb
-//! printers (N6.7a5): `nfs_vfsops`, `nfs_debug`; the server, beside `bsd`'s until N6.7b4
-//! (`option NFSSERVER`): `nfssvc`, `nfs_srvsubs`, `nfs_srvsocket`, `nfs_srvcache` (N6.7b2),
-//! `nfs_serv` (the procedures, N6.7b3).
+//! printers (N6.7a5): `nfs_vfsops`, `nfs_debug`; the server (`option NFSSERVER`), built
+//! beside `bsd`'s and switched on by N6.7b4: `nfssvc`, `nfs_srvsubs`, `nfs_srvsocket`,
+//! `nfs_srvcache` (N6.7b2), `nfs_serv` (the procedures, N6.7b3).
 //! Userland's headers are `hal::sys`'s images (`nfs_nfs`,
 //! `nfs_nfsproto`, `nfs_rpcv2`), re-exported by the modules of the same name.
 

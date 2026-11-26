@@ -5045,14 +5045,14 @@ adapted_by = ["sys/kernel/vm/object.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd
 rust = "sys/kern/init_main.rs"
 lz = ["sys/kern/init_main.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/syscall.rs", "sys/kernel/pipe.rs", "sys/hal/rwlock.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/init.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/pdaemon.rs", "sys/kernel/vm/types.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/sched.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/clockintr.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/sync.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/smr.rs", "sys/kernel/thrsleep.rs"]
+adapted_by = ["sys/hal/syscall.rs", "sys/kernel/pipe.rs", "sys/hal/rwlock.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/init.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/pdaemon.rs", "sys/kernel/vm/types.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/sched.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/clockintr.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/sync.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/smr.rs", "sys/kernel/thrsleep.rs", "sys/kernel/fs/nfs/nfs_subs.rs"]
 notes = "M2: main() skeleton in the C's order (consinit, copyright, then every step reports itself unported until its subsystem lands), copyright, boothowto, db_active, ncpus, ncpusfound; main takes no framep and never returns; proc0/process0, start_init, check_console, kthreads are M5; M5-a: timeout_startup, SCHED_LOCK_INIT, sched_init, clockqueue_init, sched_init_cpu and timeout_proc_init are called; initclocks runs (the LAPIC timer on amd64, agtimer on arm64) and selftest=clock checks it; M5-b1: proc0/process0/pgrp0/session0 are statics here; main sets curproc first, calls procinit, builds process 0 as the C does (process_initialize, the lists and hashes, PS_SYSTEM/P_SYSTEM, SONPROC, nice, the name), p_addr = proc0paddr, chgproccnt(0, 1), ci_randseed; crget, the p_sleep_to timeout (endtsleep, M5-b2), signal_init/siginit, fdinit, lim_startup and uvmspace_init stay reported; M5-b2: proc0 p_sleep_to (endtsleep), sleep_queue_init, scheduler_start, kthread_run_deferred_queue (idle and softclock threads), the proc0 tsleep loop (without feature qemu) and selftest=kthread; M6-b: initprocess (null until start_init), the reaper kthread, the boot modules printed (init as a Limine module); the kthread selftest runs after the reaper exists; M6-b2: vmspace0 (uvmspace_init over pmap_kernel, process0/proc0 point at it), fork1 of init (FORK_FORK, start_init) sets initprocess, start_init_exec with its wakeup, start_init (waits for main, check_console reported, execs the init module through exec_image and returns to user mode; 'init: not found' panics as in C), set_init_module from stand; proc0 sleeps in its tsleep loop under qemu too (init's exit ends the run); the kthread selftest still exits early; M7a: rw_obj_init runs; M7a-3b: limit0 with lim_startup and uvm_init_limits; M7b: taskq_init runs (systq and systqmp threads from kthread_run_deferred_queue), selftest=taskq after the reaper exists; kern_prot.c: proc0's credentials (crget, cr_ngroups = 1) are real; M7b: mbinit runs (followed by selftest mbufs under feature qemu), mbcpuinit runs; M7b: config_init, the config_pending wait (tsleep on config_pending) and config_process_deferred_mountroot run (subr_autoconf.c); kern_descrip.c: filedesc_init runs, process 0 gets fdinit() as ps_fd/p_fd, start_init installs the console stand-in (dev/consfile.rs) at descriptors 0, 1 and 2 before the exec, where init(8) would open /dev/console; kern_sig.c: sigacts0, signal_init, siginit(&sigacts0), process 0's ps_sigacts; start_init clears init's ps_sigflags; M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot; M8: pty, NPTY 16), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; M8: tty_init runs (tty.c); M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; ffs: rootvp and swapdev_vp (AtomicPtr with rootvp()/set_rootvp() and swapdev_vp()/set_swapdev_vp()), set by ffs_mountroot; M8: disk_init runs (subr_disk.c), rd(4) attaches from pdevinit and selftest rd_check (feature qemu) opens rd0a through bdevsw and reads the ffs superblock right after; M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; M8: start_init is the C's (the argument page at USRSTACK - PAGE_SIZE, the boot flags and path copied out, sys_execve of each initpaths[] entry), then exec_image of the init boot module with the same arguments while no root file system exists; init_exec is not needed (exec_maxhdrsz is a const fn); uvmpd_tune where the page daemon would start; M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; M8: start_init is the C's (the argument page at USRSTACK - PAGE_SIZE, the boot flags and path copied out, sys_execve of each initpaths[] entry), then exec_image of the init boot module with the same arguments while no root file system exists; init_exec is not needed (exec_maxhdrsz is a const fn); uvmpd_tune where the page daemon would start; M8: futex_init; M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; M8: start_init is the C's (the argument page at USRSTACK - PAGE_SIZE, the boot flags and path copied out, sys_execve of each initpaths[] entry), then exec_image of the init boot module with the same arguments while no root file system exists; init_exec is not needed (exec_maxhdrsz is a const fn); uvmpd_tune where the page daemon would start; M8: futex_init; M8: start_periodic_resettodr; M8: diskconf runs (machine::autoconf::diskconf, setroot); with a ramdisk the root is mounted from rd0a and start_init execs OpenBSD's /sbin/init from it, without one main still says it cannot mount root and execs the init boot module; sockets: soinit runs; domaininit initialises unixdomain too; kern_event.c: kqueue_init and kqueue_init_percpu are called; M9b: CRYPTO (GENERIC's option) is configured: crypto_init and swcr_init run after the pseudo-devices, wg attaches from pdevinit; M9d: NSTOEPLITZ: stoeplitz_init runs before the pseudo-devices; pf and pflog attach from pdevinit; M10e: main calls nfs_init (nfs_subs.rs) before vfsinit under nfsserver or nfsclient, as the C; M11a: KERNEL_LOCK_INIT and KERNEL_LOCK (sys::systm functions, nothing without MULTIPROCESSOR) and cpu_boot_secondary_processors (MULTIPROCESSOR) in their places; M11a: smr_startup, smr_startup_thread, start_init's KERNEL_UNLOCK before init's first return to user mode; with MULTIPROCESSOR and qemu `selftest: N cpus running` after cpu_boot_secondary_processors (selftest=kthread boots the APs itself first); pool_gc_pages (MULTIPROCESSOR) reported until the per-CPU pool caches; M13 (vmx): the qemu network self-test (selftest::ping_gateway) runs after cpu_boot_secondary_processors and the per-CPU checks, so intr_barrier reaches queue interrupts on the APs; M16d: random_start(boothowto & RB_GOODRANDOM) is called (was an unported! report); __guard_local is GUARD_LOCAL (export_name __guard_local) in .openbsd.randomdata, read by random_start; N3.5 S2: LZ's static VMSPACE0 (vmspace0) is gone: process 0's vmspace is an item of vmsppl made by kernel::vm::map::uvmspace_alloc_kernel (the C's uvmspace_init(&vmspace0, pmap_kernel(), ..)), held by PROCESS0's ps_vmspace"
 
 [[module]]
 rust = "sys/kern/init_sysent.rs"
 lz = ["sys/kern/init_sysent.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/pipe.rs", "sys/kern/vm_bsd.rs", "sys/kernel/fs/getcwd.rs", "sys/kernel/net/syscalls.rs"]
+adapted_by = ["sys/kernel/pipe.rs", "sys/kern/vm_bsd.rs", "sys/kernel/fs/getcwd.rs", "sys/kernel/net/syscalls.rs", "sys/kernel/fs/nfs/nfssvc.rs"]
 license = "none"
 
 [[module]]
@@ -5800,7 +5800,7 @@ adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/fs/vnop
 rust = "sys/kern/uipc_domain.rs"
 lz = ["sys/kern/uipc_domain.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/proto.rs", "sys/kernel/net/unix.rs", "sys/kernel/net/syscalls.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet/in_proto.rs", "sys/kernel/netinet6/icmp6.rs", "sys/kernel/netinet6/in6_proto.rs", "sys/kernel/netinet/udp_usrreq.rs", "sys/kernel/netinet/raw_ip.rs", "sys/kernel/netinet6/raw_ip6.rs", "sys/kernel/netinet/ip_divert.rs", "sys/kernel/netinet6/ip6_divert.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/proto.rs", "sys/kernel/net/unix.rs", "sys/kernel/net/syscalls.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet/in_proto.rs", "sys/kernel/netinet6/icmp6.rs", "sys/kernel/netinet6/in6_proto.rs", "sys/kernel/netinet/udp_usrreq.rs", "sys/kernel/netinet/raw_ip.rs", "sys/kernel/netinet6/raw_ip6.rs", "sys/kernel/netinet/ip_divert.rs", "sys/kernel/netinet6/ip6_divert.rs", "sys/kernel/fs/nfs/nfs_srvsocket.rs"]
 
 [[module]]
 rust = "sys/kern/uipc_mbuf.rs"
@@ -5843,7 +5843,7 @@ notes = "N5.2: what stays bsd's of vfs_subr.c: the NFS server's export lists (vf
 rust = "sys/kern/vfs_syscalls.rs"
 lz = ["sys/kern/vfs_syscalls.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/clock.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/sync.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/getcwd.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/syscalls.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/clock.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/sync.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/getcwd.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/fs/nfs/nfssvc.rs"]
 notes = "N5.4: an adapter of no logic over kernel::fs::syscalls: bsd's sysent[] rows of the 64 calls of vfs_syscalls.c and __getcwd (struct sys_*_args unpacked, retval[0] set), the positioned I/O rows over kernel::descrip, VFS_ENTRIES (the Native entries over kern_descrip::native), and LZ's names for the other bsd modules and their tests (dounmount and getvnode re-exported; domknodat, dolinkat, dosymlinkat, dounlinkat, doreadlinkat, dorenameat and domkdirat over a pathname's address)"
 
 [[module]]
@@ -6698,64 +6698,6 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/n
 notes = "N6.5b: a shim: hal::sys::netinet6_nd6 and kernel::netinet6::nd6 re-exported whole for bsd's importers; the neighbor fixtures bsd's IPv6 tests share (nd6_setup, fake_neighbor, the capture output) and the header check stay here; ND's tests are the kernel's"
 
 [[module]]
-rust = "sys/nfs/nfs.rs"
-lz = ["sys/nfs/nfs.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/vops.rs", "sys/hal/sys/nfs_nfs.rs", "sys/kernel/fs/nfs/nfs.rs"]
-
-[[module]]
-rust = "sys/nfs/nfs_serv.rs"
-lz = ["sys/nfs/nfs_serv.rs"]
-status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
-
-[[module]]
-rust = "sys/nfs/nfs_socket.rs"
-lz = ["sys/nfs/nfs_socket.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/sig.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/prf.rs", "sys/kernel/fs/nfs/nfs_socket.rs"]
-
-[[module]]
-rust = "sys/nfs/nfs_srvcache.rs"
-lz = ["sys/nfs/nfs_srvcache.rs"]
-status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs"]
-
-[[module]]
-rust = "sys/nfs/nfs_srvsubs.rs"
-lz = ["sys/nfs/nfs_srvsubs.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/fs/export.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/nfs/nfs_subs.rs"]
-
-[[module]]
-rust = "sys/nfs/nfs_subs.rs"
-lz = ["sys/nfs/nfs_subs.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/crypto/idgen.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/types.rs", "sys/kernel/cred.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/fs/nfs/nfs_subs.rs", "sys/kernel/fs/nfs/nfs.rs", "sys/kernel/fs/nfs/nfsproto.rs"]
-
-[[module]]
-rust = "sys/nfs/nfs_syscalls.rs"
-lz = ["sys/nfs/nfs_syscalls.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/syscalls.rs", "sys/kernel/fs/nfs/nfs_syscalls.rs"]
-
-[[module]]
-rust = "sys/nfs/nfs_var.rs"
-lz = ["sys/nfs/nfs_var.rs"]
-status = "inherited"
-
-[[module]]
-rust = "sys/nfs/nfsm_subs.rs"
-lz = ["sys/nfs/nfsm_subs.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/fs/vops.rs", "sys/kernel/fs/nfs/xdr_subs.rs", "sys/kernel/fs/nfs/nfsm_subs.rs"]
-
-[[module]]
-rust = "sys/nfs/nfsrvcache.rs"
-lz = ["sys/nfs/nfsrvcache.rs"]
-status = "inherited"
-
-[[module]]
 rust = "sys/hal/sys/nfs_nfs.rs"
 crate = "hal"
 lz = ["sys/nfs/nfs.rs"]
@@ -6908,6 +6850,43 @@ kind = "renamed"
 lz = "sys/nfs/nfs_subs.rs::nfsm_fhtom"
 native = ["XdrWriter::fhtom"]
 kind = "renamed"
+[[module.fn]]
+lz = "sys/nfs/nfs_subs.rs::nfsm_mget"
+native = []
+kind = "dropped"
+reason = "MGET(M_WAIT) over a raw build cursor: the writer gets its mbufs itself (XdrWriter: m_get(M_WAIT), a panic where the C cannot fail)"
+[[module.fn]]
+lz = "sys/nfs/nfs_subs.rs::nfsm_mbuftouio"
+native = ["sys/kernel/fs/nfs/nfsm_subs.rs::XdrReader::to_uio"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/nfs/nfs_subs.rs::nfsm_uiotombuf"
+native = ["XdrWriter::from_uio"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/nfs/nfs_subs.rs::nfsm_buftombuf"
+native = ["XdrWriter::buftombuf"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/nfs/nfs_subs.rs::nfsm_strtombuf"
+native = ["XdrWriter::strtombuf"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/nfs/nfs_subs.rs::nfsm_disct"
+native = ["sys/kernel/fs/nfs/nfsm_subs.rs::XdrReader::get", "sys/kernel/fs/nfs/nfsm_subs.rs::XdrReader::bytes_into"]
+kind = "split"
+[[module.fn]]
+lz = "sys/nfs/nfs_subs.rs::nfs_adv"
+native = ["sys/kernel/fs/nfs/nfsm_subs.rs::XdrReader::adv"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/nfs/nfs_subs.rs::nfsm_nextbytes"
+native = ["sys/kernel/fs/nfs/nfsm_subs.rs::XdrReader::bytes_into"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfs_subs.rs::nfsm_build"
+native = ["sys/kernel/fs/nfs/nfsm_subs.rs::XdrWriter::build", "sys/kernel/fs/nfs/nfsm_subs.rs::XdrWriter::build_slice"]
+kind = "split"
 
 [[module]]
 rust = "sys/kernel/fs/nfs/nfsdiskless.rs"
@@ -6919,7 +6898,7 @@ notes = "N6.7a4: struct nfs_dlmount and nfs_diskless, generic over the glue's vn
 [[module]]
 rust = "sys/kernel/fs/nfs/nfsm_subs.rs"
 crate = "kernel"
-lz = ["sys/nfs/nfsm_subs.rs"]
+lz = ["sys/nfs/nfsm_subs.rs", "sys/nfs/nfs_var.rs"]
 status = "redesigned"
 notes = "N6.7a0: the client's cursors: XdrReader (nmi_md/nmi_dpos as a borrowed mbuf and an offset; nfsm_dissect, nfsm_adv, nfsm_strsiz, nfsm_mtouio; copies out, never a view into an mbuf, never an mbuf inserted; EBADRPC at the chain's end; at(offset) for the reply and the server's request) and XdrWriter (the chain owned, MChainBuilder behind and the tail being filled; nfsm_build, nfsm_strtom; with_first for a caller's head); LZ's XdrIn/XdrOut/NfsmInfo and the server's nfsd_* stay bsd's until 7a5 and 7b; N6.7a3: nfsm_postop_attr (the reply as an Option of its reader, the node lent)"
 
@@ -6969,6 +6948,116 @@ kind = "renamed"
 lz = "sys/nfs/nfsm_subs.rs::nfsm_strtom"
 native = ["XdrWriter::strtom"]
 kind = "renamed"
+[[module.fn]]
+lz = "sys/nfs/nfsm_subs.rs::XdrIn"
+native = ["XdrReader"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfsm_subs.rs::XdrIn::new"
+native = ["XdrReader::get"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfsm_subs.rs::XdrIn::len"
+native = []
+kind = "dropped"
+reason = "a view's length: the reader copies a fixed (XdrReader::get) or caller-sized (XdrReader::bytes_into) count"
+[[module.fn]]
+lz = "sys/nfs/nfsm_subs.rs::XdrIn::is_empty"
+native = []
+kind = "dropped"
+reason = "a view's emptiness: the reader copies a fixed or caller-sized count, never an empty view"
+[[module.fn]]
+lz = "sys/nfs/nfsm_subs.rs::XdrIn::bytes"
+native = ["XdrReader::bytes_into"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/nfs/nfsm_subs.rs::XdrIn::get"
+native = ["XdrReader::word"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/nfs/nfsm_subs.rs::XdrIn::fxdr_hyper"
+native = ["XdrReader::hyper"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/nfs/nfsm_subs.rs::XdrIn::read"
+native = ["XdrReader::pod"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/nfs/nfsm_subs.rs::XdrOut"
+native = ["XdrWriter"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfsm_subs.rs::XdrOut::new"
+native = ["XdrWriter::build_slice"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfsm_subs.rs::XdrOut::len"
+native = []
+kind = "dropped"
+reason = "a view's length: the writer builds a fixed (XdrWriter::build) or caller-sized (XdrWriter::build_slice) block"
+[[module.fn]]
+lz = "sys/nfs/nfsm_subs.rs::XdrOut::is_empty"
+native = []
+kind = "dropped"
+reason = "a view's emptiness: the writer builds a fixed or caller-sized block, never an empty view"
+[[module.fn]]
+lz = "sys/nfs/nfsm_subs.rs::XdrOut::set_bytes"
+native = ["XdrWriter::build_slice"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfsm_subs.rs::XdrOut::set"
+native = ["XdrWriter::word"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfsm_subs.rs::XdrOut::put"
+native = ["XdrWriter::word"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfsm_subs.rs::XdrOut::txdr_hyper"
+native = ["XdrWriter::hyper"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfsm_subs.rs::XdrOut::put_hyper"
+native = ["XdrWriter::hyper"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfsm_subs.rs::XdrOut::write"
+native = ["XdrWriter::pod"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/nfs/nfsm_subs.rs::nfsm_avail"
+native = []
+kind = "dropped"
+reason = "the bytes left at a raw position: every XdrReader read checks the chain's bytes itself (EBADRPC past its end)"
+[[module.fn]]
+lz = "sys/nfs/nfsm_subs.rs::dissect"
+native = ["XdrReader::get"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfsm_subs.rs::adv"
+native = ["XdrReader::adv"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/nfs/nfsm_subs.rs::nfsd_dissect"
+native = ["sys/kernel/fs/nfs/nfssvc.rs::nd_reader", "XdrReader::get"]
+kind = "split"
+[[module.fn]]
+lz = "sys/nfs/nfsm_subs.rs::nfsd_adv"
+native = ["XdrReader::adv"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfsm_subs.rs::nfsd_strsiz"
+native = ["XdrReader::strsiz"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfsm_subs.rs::nfsd_mtouio"
+native = ["XdrReader::to_uio"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfs_var.rs::mb_offset"
+native = []
+kind = "dropped"
+reason = "a raw address past an mbuf's data, for LZ's build views: the writer builds at its own offsets (XdrWriter) and nothing reads an mbuf through an address"
 
 [[module]]
 rust = "sys/kernel/fs/nfs/nfsmount.rs"
@@ -7473,6 +7562,66 @@ crate = "kernel"
 lz = ["sys/nfs/nfs_srvcache.rs", "sys/nfs/nfsrvcache.rs"]
 status = "redesigned"
 notes = "N6.7b2 (unregistered until 7b4): the duplicate request cache: NfsrvCache a PoolBox of nfsrvcpl (vmstat -m: the C's M_NFSD blocks; D-12's rule) owned by the LRU (OwnedList) and a counted member of its hash chain (a SecondaryList per bucket, the chains an MArray of M_NFSD, SipHash of the xid under a random key), the table one kernel-lock cell (lookups under its reader, changes under its witness), the members relaxed atomics, the saved reply and copied address LoanSlots; RC_LOCKED/RC_WANTED and the nfsrc sleep with the chain walked again; a held entry kept by a SecondaryRef across m_copym(M_WAIT) and nfs_rephead; NETFAMILY, the nonidempotent and nfsv2_repstat tables, initcache/getcache/updatecache/cleancache/lookupcache, cleanentry's double m_free of rc_nam closed"
+[[module.fn]]
+lz = "sys/nfs/nfs_srvcache.rs::Nfsrvhashtbl"
+native = ["NfsrvCacheTable"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfs_srvcache.rs::Nfsrvlru"
+native = ["NfsrvCacheTable"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfs_srvcache.rs::NFSRVHASHTBL"
+native = ["NfsrvCacheTable"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfs_srvcache.rs::NFSRVHASH"
+native = ["NfsrvCacheTable"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfs_srvcache.rs::NFSRVHASHKEY"
+native = ["NfsrvCacheTable"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfs_srvcache.rs::NFSRVLRUHEAD"
+native = ["NfsrvCacheTable"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfs_srvcache.rs::NUMNFSRVCACHE"
+native = ["NfsrvCacheState"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfs_srvcache.rs::DESIREDNFSRVCACHE"
+native = ["NfsrvCacheState"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfs_srvcache.rs::nfsrchash"
+native = ["NfsrvCacheTable::chain_of"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/nfs/nfs_srvcache.rs::wakeup_entry"
+native = ["unlock_entry"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfs_srvcache.rs::sleep_on_entry"
+native = ["nfsrv_getcache", "nfsrv_recycle"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfsrvcache.rs::NfsrvCache::rc_inetaddr"
+native = ["NfsrvCache"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfsrvcache.rs::NfsrvCache::set_rc_inetaddr"
+native = ["NfsrvCache"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfsrvcache.rs::NfsrvCache::rc_nam"
+native = ["NfsrvCache"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfsrvcache.rs::NfsrvCache::set_rc_nam"
+native = ["NfsrvCache"]
+kind = "merged"
 
 [[module]]
 rust = "sys/kernel/fs/nfs/nfs_srvsocket.rs"
@@ -7480,6 +7629,51 @@ crate = "kernel"
 lz = ["sys/nfs/nfs_socket.rs"]
 status = "redesigned"
 notes = "N6.7b2 (unregistered until 7b4): nfs_socket.c's server half: nfs_rephead (an XdrWriter over a packet header mbuf, cluster or max_hdr room), nfs_getreq (the C's 10/8-word dissection then every bound in its order over XdrReader; the request freed on every error), nfsrv_rcv (the upcall marks SLP_NEEDQ; an nfsd's M_WAIT call receives: a stream's bytes onto ns_raw, a datagram's record with its sender), nfsrv_getstream (on the stream state taken out of the record's LoanSlot: the mark read byte by byte, NFS_MAXPACKET -> EPERM, whole mbufs moved and the last one's part m_copym'd, fragments joined), nfsrv_dorec (a record for an nfsd, its descriptor a PoolBox of ndscpl), nfsrv_wakenfsd (nfsd_head under the kernel lock's reader, the socket handed through the nfsd's slot); nfs_realign gone (XdrReader copies)"
+[[module.fn]]
+lz = "sys/nfs/nfs_socket.rs::NFS_REALIGN_TEST"
+native = []
+kind = "dropped"
+reason = "nfs_realign's counter, a kernel global no sysctl shows; no request is realigned: XdrReader copies every word out, so an mbuf whose data is not word aligned needs no copy (nfs_srvsocket's Deviations)"
+[[module.fn]]
+lz = "sys/nfs/nfs_socket.rs::NFS_REALIGN_COUNT"
+native = []
+kind = "dropped"
+reason = "nfs_realign's counter, a kernel global no sysctl shows; no request is realigned: XdrReader copies every word out, so an mbuf whose data is not word aligned needs no copy (nfs_srvsocket's Deviations)"
+[[module.fn]]
+lz = "sys/nfs/nfs_socket.rs::aligned_void_pointer"
+native = []
+kind = "dropped"
+reason = "nfs_realign's alignment test; no request is realigned: XdrReader copies every word out, so an mbuf whose data is not word aligned needs no copy (nfs_srvsocket's Deviations)"
+[[module.fn]]
+lz = "sys/nfs/nfs_socket.rs::nfs_realign_fixup"
+native = []
+kind = "dropped"
+reason = "nfs_realign's copy of a misaligned mbuf; no request is realigned: XdrReader copies every word out, so an mbuf whose data is not word aligned needs no copy (nfs_srvsocket's Deviations)"
+[[module.fn]]
+lz = "sys/nfs/nfs_socket.rs::realign_fixup"
+native = []
+kind = "dropped"
+reason = "nfs_realign_fixup's body; no request is realigned: XdrReader copies every word out, so an mbuf whose data is not word aligned needs no copy (nfs_srvsocket's Deviations)"
+[[module.fn]]
+lz = "sys/nfs/nfs_socket.rs::align_pointer"
+native = []
+kind = "dropped"
+reason = "nfs_realign's ALIGN; no request is realigned: XdrReader copies every word out, so an mbuf whose data is not word aligned needs no copy (nfs_srvsocket's Deviations)"
+[[module.fn]]
+lz = "sys/nfs/nfs_socket.rs::nfs_realign"
+native = []
+kind = "dropped"
+reason = "no request is realigned: XdrReader copies every word out, so an mbuf whose data is not word aligned needs no copy (nfs_srvsocket's Deviations); the request is read as received"
+[[module.fn]]
+lz = "sys/nfs/nfs_socket.rs::realign"
+native = []
+kind = "dropped"
+reason = "nfs_realign's body; no request is realigned: XdrReader copies every word out, so an mbuf whose data is not word aligned needs no copy (nfs_srvsocket's Deviations)"
+[[module.fn]]
+lz = "sys/nfs/nfs_socket.rs::words"
+native = []
+kind = "dropped"
+reason = "a helper copying a dissected view's words: the reader answers the words itself (XdrReader::u32)"
 
 [[module]]
 rust = "sys/kernel/fs/nfs/nfs_serv.rs"
@@ -7523,6 +7717,96 @@ notes = "N6.7b2 (unregistered until 7b4, D-9): nfs.h's server structures and nfs
 lz = "sys/nfs/nfs_syscalls.rs::NFSRV3_PROCS"
 native = ["sys/kernel/fs/nfs/nfs_serv.rs::nfsrv3_procs"]
 kind = "moved"
+[[module.fn]]
+lz = "sys/nfs/nfs.rs::NfsdSrvargs::SIZE"
+native = []
+kind = "dropped"
+reason = "the image is hal::sys::nfs_nfs::NfsdSrvargs, read by UserPtr::copyin at its size_of (144, the hal size test); no byte count of its own"
+[[module.fn]]
+lz = "sys/nfs/nfs.rs::Nethostaddr"
+native = ["sys/kernel/fs/nfs/nfs_srvcache.rs::NfsrvCache"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfs.rs::NfssvcSock::default"
+native = ["NfssvcSock::new"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/nfs/nfs.rs::Nfsd::default"
+native = ["Nfsd::new"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/nfs/nfs.rs::NfsrvDescript::new"
+native = ["NfsrvDescript"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfs.rs::NfsrvDescript::default"
+native = ["NfsrvDescript"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfs.rs::Nfsdhead"
+native = ["NfsrvTables"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfs.rs::NFSD_HEAD"
+native = ["NfsrvTables"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfs.rs::NFSD_HEAD_FLAG"
+native = ["NfsrvTables"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfs_syscalls.rs::NFSRV_DESCRIPT_PL"
+native = ["NfsrvTables"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfs_syscalls.rs::Nfssvcsockhead"
+native = ["NfsrvTables"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfs_syscalls.rs::NFSSVC_SOCKHEAD"
+native = ["NfsrvTables"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfs_syscalls.rs::NFSSVC_SOCKHEAD_FLAG"
+native = ["NfsrvTables"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfs_syscalls.rs::NFS_UDPSOCK"
+native = ["NfsrvTables"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfs_syscalls.rs::NFSD_WAITING_COUNT"
+native = ["NfsrvTables"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfs_syscalls.rs::NFS_NUMNFSD"
+native = ["NfsrvTables"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfs_syscalls.rs::nfsd_waiting"
+native = ["NfsrvTables"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfs_syscalls.rs::nfs_udpsock"
+native = ["NfsrvTables"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfs_syscalls.rs::nfssvc_addsock_args"
+native = ["sys_nfssvc"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfs_syscalls.rs::set_mtod_int"
+native = ["set_mtod_one"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/nfs/nfs_syscalls.rs::nfssvc_sock_alloc"
+native = ["nfssvc_addsock", "nfsrv_init"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/nfs/nfs_syscalls.rs::nfssvc_sock_free"
+native = []
+kind = "dropped"
+reason = "a record is an MArc of M_NFSSVC: its last handle (the list membership, an nfsd, the socket upcall argument) frees it, where LZ freed the malloc block by hand in nfsrv_slpderef and nfsrv_init"
 
 [[module]]
 rust = "sys/ntfs/ntfs.rs"
@@ -14251,7 +14535,7 @@ reason = "hal runtime, written new: KmBuf, an owned run of kernel pages (km_allo
 [[extra]]
 rust = "sys/hal/pool.rs"
 crate = "hal"
-reason = "hal runtime, written new: TypedPool<T> and PoolArc<T>, pool(9) items as owned counted handles over the PoolBackend bridge; BoxPool<T> and PoolBox<T> (N3.1, D18), the uncounted owned item, exactly a T, for the pmaps' pv entries and pteds, and SharedBox<T> (BoxPool::get_linked, its raw form into_raw/from_raw for arm64's level-3 slots); N3.4a: PoolArc::get_mut and leak, TypedPool::init_recorded (from_value's pools), set_hiwat/cache_init over RawPool (pool_sethiwat, pool_cache_init); N3.5 S0: PoolBox::into_raw/from_raw (crate-private, the owning containers of owned.rs), StaticArena<T, N> behind BoxPool::init_arena (N static slots and leaked pages carved into slots, never freed, no pool(9) row: uvm_map.c's kernel_map_entry[MAX_KMAPENT], uvm.kentry_free and the kmapent pages); docs/ZERO_UNSAFE.md 0.1, decision 10; N5.1: RawPool::get_idle and BoxPool::get_idle, a get from the items the pool holds that never grows it, sleeps or counts a failure (buf_get's try under the cache's lock), the item's one write shared with get (boxed), and PoolYield with RawPool::yield_now (pool_get's kern.pool_debug 2 yield, made by the caller once it holds no lock); N5.3: PR_RWLOCK (lockf's pools); N5.5b0: AnyArc erases an MArc too (its vtable gives the offsets of the count and the value and the kind of handle); N5.9f2: RawPool::npages and TypedPool::npages (pr_npages, 0 unsafe; the default 0 for a backend with no pages of its own), for vfs.fuse.fusefs_pool_pages; N6.0: PageSource (pool_allocator's pa_alloc/pa_free/pa_pagesz as a safe trait the kernel implements) and PoolBackend::create_with (no default pool: a backend that cannot take a source makes none), TypedPool::init_with_source and BoxPool::init_with_source; PoolBox::pool (crate-private) for hal::smr's pool check; N6.0: Parkable (const POOL and a ParkWord mark within the item), PoolBox::park (the handle given up for the item's pointer, never a reference) and PoolBox::unpark (the handle back once, by a compare-and-swap of the mark); N6.1: Pooled (a type's one pool, split out of Parkable, Send only), RawPool::wakeup (pool_wakeup, a default method) and BoxPool::wakeup; BoxPool<Bytes<N>>::get_bytes, a cluster's item unwritten (a 64 KiB value cannot be built on the stack first); N6.3c: PoolArc's into_raw/from_raw became its hal::smr::CountedArc impl (the counted words' handle, beside MArc's); N6.4b: PoolBox::unpark's doc says hal::link::TaggedLink does not park its items (no new unsafe); N6.6a0: RawPool::set_hardlimit (pool_sethardlimit: EINVAL below the items out; the default refuses with EOPNOTSUPP, a backend that cannot keep a limit never accepts one) forwarded by TypedPool::set_hardlimit and BoxPool::set_hardlimit (EINVAL before init), for TCP's tcpqe and sackhl pools (0 unsafe)"
+reason = "hal runtime, written new: TypedPool<T> and PoolArc<T>, pool(9) items as owned counted handles over the PoolBackend bridge; BoxPool<T> and PoolBox<T> (N3.1, D18), the uncounted owned item, exactly a T, for the pmaps' pv entries and pteds, and SharedBox<T> (BoxPool::get_linked, its raw form into_raw/from_raw for arm64's level-3 slots); N3.4a: PoolArc::get_mut and leak, TypedPool::init_recorded (from_value's pools), set_hiwat/cache_init over RawPool (pool_sethiwat, pool_cache_init); N3.5 S0: PoolBox::into_raw/from_raw (crate-private, the owning containers of owned.rs), StaticArena<T, N> behind BoxPool::init_arena (N static slots and leaked pages carved into slots, never freed, no pool(9) row: uvm_map.c's kernel_map_entry[MAX_KMAPENT], uvm.kentry_free and the kmapent pages); docs/ZERO_UNSAFE.md 0.1, decision 10; N5.1: RawPool::get_idle and BoxPool::get_idle, a get from the items the pool holds that never grows it, sleeps or counts a failure (buf_get's try under the cache's lock), the item's one write shared with get (boxed), and PoolYield with RawPool::yield_now (pool_get's kern.pool_debug 2 yield, made by the caller once it holds no lock); N5.3: PR_RWLOCK (lockf's pools); N5.5b0: AnyArc erases an MArc too (its vtable gives the offsets of the count and the value and the kind of handle); N5.9f2: RawPool::npages and TypedPool::npages (pr_npages, 0 unsafe; the default 0 for a backend with no pages of its own), for vfs.fuse.fusefs_pool_pages; N6.0: PageSource (pool_allocator's pa_alloc/pa_free/pa_pagesz as a safe trait the kernel implements) and PoolBackend::create_with (no default pool: a backend that cannot take a source makes none), TypedPool::init_with_source and BoxPool::init_with_source; PoolBox::pool (crate-private) for hal::smr's pool check; N6.0: Parkable (const POOL and a ParkWord mark within the item), PoolBox::park (the handle given up for the item's pointer, never a reference) and PoolBox::unpark (the handle back once, by a compare-and-swap of the mark); N6.1: Pooled (a type's one pool, split out of Parkable, Send only), RawPool::wakeup (pool_wakeup, a default method) and BoxPool::wakeup; BoxPool<Bytes<N>>::get_bytes, a cluster's item unwritten (a 64 KiB value cannot be built on the stack first); N6.3c: PoolArc's into_raw/from_raw became its hal::smr::CountedArc impl (the counted words' handle, beside MArc's); N6.4b: PoolBox::unpark's doc says hal::link::TaggedLink does not park its items (no new unsafe); N6.6a0: RawPool::set_hardlimit (pool_sethardlimit: EINVAL below the items out; the default refuses with EOPNOTSUPP, a backend that cannot keep a limit never accepts one) forwarded by TypedPool::set_hardlimit and BoxPool::set_hardlimit (EINVAL before init), for TCP's tcpqe and sackhl pools (0 unsafe); N6.7b4: AnyArc::addr (the erased value's address, for ddb's so_print of so_upcallarg; 0 unsafe)"
 
 [[extra]]
 rust = "sys/hal/malloc.rs"
@@ -14302,12 +14586,12 @@ reason = "copy of sys/crypto/testutil.rs (host test helper: hex vectors, seeded 
 [[extra]]
 rust = "sys/kernel/api.rs"
 crate = "kernel"
-reason = "N2.4a (decision 22): the kernel side of KernelApi (the type is hal::api): table() builds it with the kernel registration that keeps the ABI's handler and registers its trampoline in hal; no LZ source: OpenBSD has no table between its system calls and the kernel; N4.8b: table() takes the sigreturn entry; N5.4: table() takes the VFS entries; N5 close (decision 47): the ABI is linked into the image, table() loses copyin and copyout (no caller: abi copies through hal::UserPtr), the registration is Registered in ABI and its trampoline abi_syscall answers ENOSYS before it, as hal does; N5 close (the abi casts): table()'s pipe2 takes the flags as the C's int (i32)"
+reason = "N2.4a (decision 22): the kernel side of KernelApi (the type is hal::api): table() builds it with the kernel registration that keeps the ABI's handler and registers its trampoline in hal; no LZ source: OpenBSD has no table between its system calls and the kernel; N4.8b: table() takes the sigreturn entry; N5.4: table() takes the VFS entries; N5 close (decision 47): the ABI is linked into the image, table() loses copyin and copyout (no caller: abi copies through hal::UserPtr), the registration is Registered in ABI and its trampoline abi_syscall answers ENOSYS before it, as hal does; N5 close (the abi casts): table()'s pipe2 takes the flags as the C's int (i32); N6.7b4: table() takes nfssvc(2)'s entry"
 
 [[extra]]
 rust = "sys/abi/sysent.rs"
 crate = "abi"
-reason = "N2.4a (decisions 21, 22): the ABI's system call table, one Native | Legacy entry per number of sys/sys/syscall.rs (every entry Legacy at N2.4; pipe and pipe2 Native at N2.6, through KernelApi::pipe2), and the dispatcher KernelApi's registration hands to hal; bsd's sys/kern/init_sysent.rs stays the Legacy path until every entry is Native; N3.5 S1: the translations of the fifteen vm system calls (sys_obreak, sys_mmap, ... sys_munlockall over KernelApi::vm, mmap/mquery's address in rval[0]), out of the table until the flip (S2) makes them Native; N4.8b: sigreturn(2) Native through KernelApi::sigreturn (NATIVE 94); N5.4: the VFS system calls' sixty-five (the sixty-four of vfs_syscalls.c and __getcwd) Native through KernelApi::vfs, each translation one call with the arguments as the entries type them (NATIVE 170); N5 close (decision 47): linked into the image, its handler registered by abi_init, which bsd's boot glue calls before main(); N5 close (the abi casts): pipe2's flags read as the C's int and handed to KernelApi::pipe2 as i32, no argument reaches the kernel untyped; N5 close (the abi casts): every argument read through scarg, the C's SCARG per type family, the crate-wide allow of the cast lints gone; N6.2b: the nineteen socket system calls Native through KernelApi::socket (NATIVE 170 -> 189)"
+reason = "N2.4a (decisions 21, 22): the ABI's system call table, one Native | Legacy entry per number of sys/sys/syscall.rs (every entry Legacy at N2.4; pipe and pipe2 Native at N2.6, through KernelApi::pipe2), and the dispatcher KernelApi's registration hands to hal; bsd's sys/kern/init_sysent.rs stays the Legacy path until every entry is Native; N3.5 S1: the translations of the fifteen vm system calls (sys_obreak, sys_mmap, ... sys_munlockall over KernelApi::vm, mmap/mquery's address in rval[0]), out of the table until the flip (S2) makes them Native; N4.8b: sigreturn(2) Native through KernelApi::sigreturn (NATIVE 94); N5.4: the VFS system calls' sixty-five (the sixty-four of vfs_syscalls.c and __getcwd) Native through KernelApi::vfs, each translation one call with the arguments as the entries type them (NATIVE 170); N5 close (decision 47): linked into the image, its handler registered by abi_init, which bsd's boot glue calls before main(); N5 close (the abi casts): pipe2's flags read as the C's int and handed to KernelApi::pipe2 as i32, no argument reaches the kernel untyped; N5 close (the abi casts): every argument read through scarg, the C's SCARG per type family, the crate-wide allow of the cast lints gone; N6.2b: the nineteen socket system calls Native through KernelApi::socket (NATIVE 170 -> 189); N6.7b4: nfssvc(2) Native (KernelApi::nfssvc), NATIVE 190"
 
 [[extra]]
 rust = "sys/abi/scarg.rs"
@@ -14316,12 +14600,12 @@ reason = "N5 close (the abi casts, the user's decision of 2026-10-29): SCARG, sy
 
 [[extra]]
 rust = "sys/kern/abi_module.rs"
-reason = "N2.4a: bsd's side of the ABI until its subsystems move (deleted at N9): the Legacy system call path the traps' sysent[] choice became (ENOSYS outside the table, else mi_syscall) and the KernelApi table bsd fills; N4.8b: KernelApi::sigreturn is kern_sig.rs's native_sigreturn; N5.4: KernelApi::vfs is kern/vfs_syscalls.rs's VFS_ENTRIES (the 65 VFS system calls' native_* over kern_descrip::native); N5 close (decision 47): the ABI is linked into the image, one boot step (abi_boot, from stand::start_kernel after hal_bridges_register) hands KERNEL_API to abi::abi_init before main() and prints the handler's line (abi: N syscalls, M native); the ModulePlatform bridge, the boot hand-over, the Legacy fallback's registration and the load from main are gone; no unsafe"
+reason = "N2.4a: bsd's side of the ABI until its subsystems move (deleted at N9): the Legacy system call path the traps' sysent[] choice became (ENOSYS outside the table, else mi_syscall) and the KernelApi table bsd fills; N4.8b: KernelApi::sigreturn is kern_sig.rs's native_sigreturn; N5.4: KernelApi::vfs is kern/vfs_syscalls.rs's VFS_ENTRIES (the 65 VFS system calls' native_* over kern_descrip::native); N5 close (decision 47): the ABI is linked into the image, one boot step (abi_boot, from stand::start_kernel after hal_bridges_register) hands KERNEL_API to abi::abi_init before main() and prints the handler's line (abi: N syscalls, M native); the ModulePlatform bridge, the boot hand-over, the Legacy fallback's registration and the load from main are gone; no unsafe; N6.7b4: KernelApi::nfssvc (vfs_syscalls::native_nfssvc)"
 
 [[extra]]
 rust = "sys/hal/api.rs"
 crate = "hal"
-reason = "N2.4a (decision 22): the KernelApi type, below both the kernel (which fills and registers the table, kernel::api) and the ABI (which names it without depending on the kernel crate); N3.5 S1: VmEntries (KernelApi::vm), the fifteen vm system calls' typed entries; N4.8b: sigreturn (SigreturnEntry) after sysctl; N5.4: VfsEntries (KernelApi::vfs), the sixty-five VFS system calls' typed entries; N5 close (decision 47): the ABI is linked into the image, so what only the module loader read is gone (the ApiPrefix of version and size, AbiModuleHeader and its offsets, the layout asserts, the #[repr(C)]s), and the copyin and copyout entries (no caller: abi copies through hal::UserPtr); N5 close (the abi casts): KernelApi::pipe2's flags typed i32, the C's int flags; N6.2b: SocketEntries (KernelApi::socket), the nineteen socket system calls' typed entries"
+reason = "N2.4a (decision 22): the KernelApi type, below both the kernel (which fills and registers the table, kernel::api) and the ABI (which names it without depending on the kernel crate); N3.5 S1: VmEntries (KernelApi::vm), the fifteen vm system calls' typed entries; N4.8b: sigreturn (SigreturnEntry) after sysctl; N5.4: VfsEntries (KernelApi::vfs), the sixty-five VFS system calls' typed entries; N5 close (decision 47): the ABI is linked into the image, so what only the module loader read is gone (the ApiPrefix of version and size, AbiModuleHeader and its offsets, the layout asserts, the #[repr(C)]s), and the copyin and copyout entries (no caller: abi copies through hal::UserPtr); N5 close (the abi casts): KernelApi::pipe2's flags typed i32, the C's int flags; N6.2b: SocketEntries (KernelApi::socket), the nineteen socket system calls' typed entries; N6.7b4: KernelApi::nfssvc, nfssvc(2)'s entry (the kernel's NFS server)"
 
 [[module]]
 rust = "sys/kernel/clock.rs"
@@ -16491,6 +16775,12 @@ lz = "sys/kern/uipc_socket2.rs::same"
 native = []
 kind = "dropped"
 reason = "an identity test of two optional mbufs over the raw links: the records are owned by SbData, whose last record and tail are fields, not pointers to compare"
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket2.rs::sounlock_shared"
+native = []
+kind = "dropped"
+reason = "its only caller, bsd's nfs, moved to kernel::fs::nfs, which unlocks through the guard solock_shared answers"
 
 [[module.fn]]
 lz = "sys/kern/uipc_socket2.rs::sblastrecordchk"

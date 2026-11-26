@@ -183,7 +183,8 @@ pub struct NetTables<G: ProcGlue> {
     pffast: Timeout,
     /// `pfslow_timeout`: the 500 ms protocol timeout.
     pfslow: Timeout,
-    /// The registered `so_upcall` function (nfs's, `bsd`'s until N6.7b).
+    /// The registered `so_upcall` function (nfs's server's `nfsrv_rcv_upcall`, registered by
+    /// `nfs_init` since N6.7b4).
     pub(crate) upcall: OnceStatic<crate::net::socket::UpcallFn<G>>,
     /// The UNIX domain's globals (`uipc_usrreq.c`'s: the control blocks' pool, `unp_head`,
     /// the files in flight, the collector).

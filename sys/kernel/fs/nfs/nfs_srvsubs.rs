@@ -91,7 +91,7 @@
 //! conversion with its export and reserved port checks (`nfsrv_fhtovp`), the host address
 //! comparison (`netaddr_match`) and the `sattr3` decoder; and the server's part of
 //! `nfs_subs.c`: the error maps (`nfsrv_errmap`) and the reply's file handle
-//! (`nfsm_srvfhtom`). Beside `bsd`'s server until N6.7b4.
+//! (`nfsm_srvfhtom`). The server's since N6.7b4.
 //!
 //! Upstream: sys/nfs/nfs_srvsubs.c @ 3ce1f3f79392
 //! Upstream: sys/nfs/nfs_subs.c @ 3ce1f3f79392
