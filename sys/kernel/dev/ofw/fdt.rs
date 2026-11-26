@@ -87,7 +87,7 @@ use core::num::NonZeroU32;
 
 use hal::mem::explicit_bzero;
 use hal::sync::slot::ReadMostly;
-use sysdefs::errno::Errno;
+use sysdefs::base::errno::Errno;
 
 /// `FDT_MAGIC`.
 pub const FDT_MAGIC: u32 = 0xd00d_feed;
