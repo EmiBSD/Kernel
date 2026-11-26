@@ -78,6 +78,10 @@
 //!   controllers are the kernel's and not on it. Every walk of it looks for a real controller
 //!   (by node, by phandle, with `ic_establish_msi`, by ITS), which a real controller's
 //!   registration puts ahead of its node's dummy in the C, so no walk finds another one.
+//!   That holds once the real controller has registered: before it, a walk by phandle
+//!   (`acpi_intr_establish`'s) would find the node's dummy in the C and pre-register, where
+//!   this list has nothing and the establish fails. Unreachable on the boots there are: an
+//!   ACPI boot attaches the GIC at mainbus before `acpi0` and its devices.
 //! - A handle on a legacy controller is LZ's `MachineIntrHandle` (`ih_ic`, `ih_ih`, the size
 //!   `free` checks, as the handles `acpi_machdep`, `ampintc`'s MSI frames and `pciecam` make
 //!   by hand); a handle on a native controller (a pre-registration until N7.2a2) has a null
@@ -106,7 +110,7 @@ use crate::queue_adapter;
 use crate::sys::malloc::{M_DEVBUF, M_WAITOK};
 use crate::sys::queue::{ListEntry, ListHead};
 use crate::unported;
-use kernel::dev::arm64::intr::{self as core_intr, BarrierCpu, IcCookie, IcDesc, IntrHandle};
+use kernel::dev::arm64::intr::{self as core_intr, BarrierWait, IcCookie, IcDesc, IntrHandle};
 use kernel::dev::intr::IntrHandler;
 
 pub use kernel::dev::arm64::intr::{
@@ -438,11 +442,17 @@ pub fn interrupt_controllers() -> &'static ListHead<IcList> {
 /// called as LZ called them, a `NULL` entry doing what LZ did (nothing), its cookies words.
 pub struct LegacyIc(&'static InterruptController);
 
-// SAFETY: the structure's `Cell`s are written only before it is shared: `ic_node`,
-// `ic_cookie` and `ic_gic_its_id` by its driver before `arm_intr_register_fdt`, `ic_cells` and
-// `ic_phandle` by that registration on the registering CPU before the structure is on
-// `interrupt_controllers` and before the kernel establishes anything on it; afterwards every
-// access is a read (`LegacyIc` only reads), so sharing `&LegacyIc` between CPUs cannot race.
+// SAFETY: `LegacyIc` reads, through `&InterruptController`, the entry points (plain
+// `Option<fn>` fields, never written after the driver built the structure) and the `ic_cookie`
+// `Cell`, which the driver writes before it calls `arm_intr_register_fdt`, so before the kernel
+// publishes the registration holding this `LegacyIc` (`insert_head`, a release store that the
+// walkers' acquire loads pair with). Of the structure's other `Cell`s, `ic_node` and
+// `ic_gic_its_id` are only read, once, by `arm_intr_register_fdt` before that publication;
+// `ic_cells` and `ic_phandle` are written after it, by the registration's `linked` hook on the
+// registering CPU, but `LegacyIc` never reads them, and their readers (the walkers of
+// `interrupt_controllers`) reach the structure only through that list, which links it after
+// the writes, under `IcHead`'s autoconf protocol. No `Cell` that `LegacyIc` reads is written
+// once another CPU can reach it, so sharing `&LegacyIc` cannot race.
 unsafe impl Sync for LegacyIc {}
 
 /// `ci` as the kernel's CPU number.
@@ -551,11 +561,11 @@ impl core_intr::InterruptController for LegacyIc {
     }
 
     /// The driver's `ic_barrier` makes its own `sched_barrier`: nothing left to wait for.
-    fn barrier(&self, ih: IcCookie) -> Option<BarrierCpu> {
+    fn barrier(&self, ih: IcCookie) -> BarrierWait {
         if let Some(barrier) = self.0.ic_barrier {
             barrier(legacy_cookie(ih));
         }
-        None
+        BarrierWait::Nothing
     }
 
     fn set_wakeup(&self, ih: IcCookie) {
@@ -620,8 +630,9 @@ fn handle(cookie: NonNull<MachineIntrHandle>) -> Handle {
         let native = unsafe { cookie.cast::<NativeIntrHandle>().as_ref() };
         Handle::Native(native.ih)
     } else {
-        // SAFETY: a non-null `ih_ic` names a registered `struct interrupt_controller`, a
-        // driver's static or softc member that is never freed.
+        // SAFETY: a non-null `ih_ic` names a `struct interrupt_controller` that is never
+        // freed: a registered one (a driver's static or softc member) or a static that is not
+        // registered (`pciecam`'s `PCIECAM_IC`, whose handles it makes by hand).
         Handle::Legacy(unsafe { &*mih.ih_ic }, mih.ih_ih)
     }
 }

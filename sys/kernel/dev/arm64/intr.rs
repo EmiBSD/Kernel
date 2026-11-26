@@ -112,7 +112,7 @@
 //! - `struct cpu_info *ci` -> the CPU's number (`Option<usize>`, `None` for the C's `NULL`,
 //!   the primary CPU; IDIOMS "a CPU by number").
 //! - `ic_barrier`, which calls `sched_barrier(ih->ih_ci)` inside the controller, -> a method
-//!   that answers the CPU to wait for ([`BarrierCpu`]), and [`intr_barrier`] makes the call:
+//!   that answers which CPU to wait for ([`BarrierWait`]), and [`intr_barrier`] makes the call:
 //!   the scheduler is generic over the process glue until N8, which a trait object's method
 //!   cannot be (scaffolding).
 //! - `LIST_HEAD interrupt_controllers` and `prereg_interrupts`, raw lists touched "at attach
@@ -200,10 +200,17 @@ pub enum IcCookie {
     Word(usize),
 }
 
-/// The CPU `intr_barrier` waits for (`sched_barrier(ih->ih_ci)`): a CPU's number, or `None`
-/// for the primary CPU (the C's `NULL`).
+/// What `intr_barrier` waits for (`sched_barrier(ih->ih_ci)`), as a controller's `barrier`
+/// answers it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BarrierCpu(pub Option<usize>);
+pub enum BarrierWait {
+    /// Nothing: the handler is on no CPU yet, or the controller waited itself.
+    Nothing,
+    /// The primary CPU (the C's `ih_ci == NULL`).
+    Primary,
+    /// That CPU, by number.
+    Cpu(usize),
+}
 
 /// A controller's registration request: the members of `struct interrupt_controller` the
 /// driver fills before `arm_intr_register_fdt`.
@@ -656,9 +663,9 @@ pub trait InterruptController: Sync + 'static {
     fn cpu_enable(&self) {}
 
     /// `ic_barrier(ih)`: the CPU whose pass through the scheduler proves no handler of `ih`
-    /// still runs; `None` when there is nothing to wait for (or the controller waited
-    /// itself).
-    fn barrier(&self, ih: IcCookie) -> Option<BarrierCpu>;
+    /// still runs, or [`BarrierWait::Nothing`] when there is nothing to wait for (or the
+    /// controller waited itself).
+    fn barrier(&self, ih: IcCookie) -> BarrierWait;
 
     /// `ic_set_wakeup(ih)`: the interrupt may wake the machine.
     fn set_wakeup(&self, _ih: IcCookie) {}
@@ -799,9 +806,11 @@ impl InterruptController for PreregIc {
     }
 
     /// `arm_intr_prereg_barrier_fdt`: the real controller's answer, once it took the handler.
-    fn barrier(&self, ih: IcCookie) -> Option<BarrierCpu> {
-        let (ic, ih) = Self::taken(Self::record(ih))?;
-        ic.ops.barrier(ih)
+    fn barrier(&self, ih: IcCookie) -> BarrierWait {
+        match Self::taken(Self::record(ih)) {
+            Some((ic, ih)) => ic.ops.barrier(ih),
+            None => BarrierWait::Nothing,
+        }
     }
 
     /// `arm_intr_prereg_set_wakeup_fdt`: through the real controller once it took the
@@ -982,8 +991,10 @@ pub fn arm_intr_cpu_enable() {
 /// `intr_barrier`: returns once no CPU runs a handler of `ih` (`ic_barrier`, whose
 /// `sched_barrier` is made here, `G` being the scheduler's glue).
 pub fn intr_barrier<G: ProcGlue>(ih: IntrHandle) {
-    if let Some(BarrierCpu(cpu)) = ih.ic.ops.barrier(ih.ih) {
-        sched_barrier::<G>(cpu);
+    match ih.ic.ops.barrier(ih.ih) {
+        BarrierWait::Nothing => {}
+        BarrierWait::Primary => sched_barrier::<G>(None),
+        BarrierWait::Cpu(n) => sched_barrier::<G>(Some(n)),
     }
 }
 
@@ -1112,9 +1123,9 @@ mod tests {
             self.push(Call::Route(word(ih), enable, cpu));
         }
 
-        fn barrier(&self, ih: IcCookie) -> Option<BarrierCpu> {
+        fn barrier(&self, ih: IcCookie) -> BarrierWait {
             self.push(Call::Barrier(word(ih)));
-            Some(BarrierCpu(Some(1)))
+            BarrierWait::Cpu(1)
         }
 
         fn set_wakeup(&self, ih: IcCookie) {
@@ -1346,7 +1357,7 @@ mod tests {
         intr_set_wakeup(ih);
         assert_eq!(
             ih.controller().ops().barrier(ih.cookie()),
-            Some(BarrierCpu(Some(1)))
+            BarrierWait::Cpu(1)
         );
         assert_eq!(
             gic.calls()[1..],
@@ -1380,7 +1391,10 @@ mod tests {
         assert!(matches!(first.cookie(), IcCookie::Rec(_)));
         // Before the controller: nothing to wait for, the level keeps the flag, a
         // disestablish takes the record off the list.
-        assert_eq!(first.controller().ops().barrier(first.cookie()), None);
+        assert_eq!(
+            first.controller().ops().barrier(first.cookie()),
+            BarrierWait::Nothing
+        );
         intr_set_wakeup(second);
         arm_intr_disestablish_fdt(gone);
 
@@ -1399,7 +1413,7 @@ mod tests {
         // After it: the pre-registration forwards to the controller's cookie.
         assert_eq!(
             first.controller().ops().barrier(first.cookie()),
-            Some(BarrierCpu(Some(1)))
+            BarrierWait::Cpu(1)
         );
         intr_set_wakeup(first);
         arm_intr_disestablish_fdt(first);
@@ -1434,7 +1448,10 @@ mod tests {
         );
         assert_eq!(sub.calls().len(), 1);
         // Taken, with no cookie: nothing to forward to.
-        assert_eq!(pre.controller().ops().barrier(pre.cookie()), None);
+        assert_eq!(
+            pre.controller().ops().barrier(pre.cookie()),
+            BarrierWait::Nothing
+        );
     }
 
     #[test]
