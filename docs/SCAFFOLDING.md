@@ -224,7 +224,8 @@ Locations are on `main` at the commit that last edited this file.
 |---|---|---|---|
 | `pub use kernel::clock_subr` (LZ's path `crate::kern::clock_subr`) and `sys/sys/time.rs`'s re-export of `ClockYmdhms` and `POSIX_BASE_YEAR` | `sys/kern/mod.rs`, `sys/sys/time.rs` | The time-of-day chips still in `bsd` import the date arithmetic by LZ's paths (`efi_machdep.rs`; amd64's `isa/clock.rs`, frozen, decision 44) | N7.2b (`efi_machdep`, `plrtc` implement `Todr`), N10 (amd64's) |
 | `sys/sys/evcount.rs`: a re-export of `kernel::evcount::Evcount` | `sys/sys/evcount.rs` | The interrupt controllers still in `bsd` embed `struct evcount` by LZ's path (`ampintc`, `agintc`; amd64's `intr.rs`, frozen) | N7.2a (the GIC drivers), N10 (amd64's) |
-| The word-form callbacks: `wdog_register(cb: fn(*mut c_void, i32) -> i32, arg: usize)` and `wdog_shutdown(arg: usize)` | `sys/kernel/watchdog.rs` | ipmi(4), still in `bsd`, passes its softc as an untyped pointer | N7.12 (ipmi), with amd64's at N10 |
+| The word-form callbacks: `wdog_register(cb: fn(*mut c_void, i32) -> i32, arg: usize)` and `wdog_shutdown(arg: usize)`; `sensor_task_register(arg: usize, func: fn(*mut c_void), period)` | `sys/kernel/watchdog.rs`, `sys/kernel/sensors.rs` | ipmi(4) and the sensor drivers (softraid, nvme, mpi, gpiokeys), still in `bsd`, pass their softc as an untyped pointer | N7.12 (ipmi), N7.7 (nvme), N7 (the others), with amd64's at N10 |
+| `sys/sys/sensors.rs`: a re-export of `hal::sys::sensors` and `kernel::sensors`'s records (`Ksensor`, `Ksensordev`, `SensorTask`, `SensorTaskRef`, the cells) | `sys/sys/sensors.rs` | The sensor drivers still in `bsd` embed `struct ksensor`/`ksensordev` by LZ's path (viomb, ipmi, nvme, mpi, softraid, gpiokeys; amd64's CPU and ACPI sensors, frozen) | N7 (the drivers), N10 (amd64's) |
 
 ## Arriving
 

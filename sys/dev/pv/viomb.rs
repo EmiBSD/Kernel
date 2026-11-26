@@ -91,7 +91,6 @@ use crate::dev::pv::virtiovar::{
 };
 use crate::kassert;
 use crate::kern::dma_alloc::{dma_alloc, dma_free};
-use crate::kern::kern_sensors::{sensor_attach, sensordev_install};
 use crate::kern::kern_task::{TaskqRef, task_add, task_set, taskq_create};
 use crate::kern::subr_prf::{panic, printf};
 use crate::machine::Machine;
@@ -107,6 +106,7 @@ use crate::sys::pool::{PR_NOWAIT, PR_ZERO};
 use crate::sys::sensors::{Ksensor, Ksensordev, SENSOR_INTEGER};
 use crate::sys::task::{Task, Taskq};
 use crate::sys::types::Paddr;
+use kernel::sensors::{sensor_attach, sensordev_install};
 use kernel::vm::page::{Pglist, uvm_pglistalloc, uvm_pglistfree};
 use kernel::vm::types::UVM_PLA_NOWAIT;
 

@@ -3112,7 +3112,8 @@ status = "inherited"
 [[module]]
 rust = "sys/dev/fdt/gpiokeys.rs"
 lz = ["sys/dev/fdt/gpiokeys.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/sensors.rs"]
 
 [[module]]
 rust = "sys/dev/fdt/ipmi_fdt.rs"
@@ -3382,7 +3383,8 @@ status = "inherited"
 [[module]]
 rust = "sys/dev/ic/mpi.rs"
 lz = ["sys/dev/ic/mpi.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/sensors.rs"]
 notes = "M16a: the whole driver, no stubs: mpi_attach (unwinding as a labelled block), the doorbell handshake (mpi_init, reset_soft/hard, handshake_send/recv, iocfacts, iocinit), portfacts, portenable, fwupload, manufacturing, get_raid, the ccb pool and iopool (mpi_get_ccb/put_ccb), reply frames, mpi_start/poll/wait/reply/intr, the scsibus adapter (scsi_cmd, scsi_cmd_done, load_xs with SGE chaining, scsi_probe with the virtual-volume and SAS ATAPI checks, scsi_ioctl), the configuration pages (mpi_req_cfg_header/page generic over basic and extended headers, SPI port/device, SAS iou, FC port, coalescing), events (eventnotify/ack, SAS device status, detach, FC rescan task), SPI domain validation (squash_ppr, run_ppr, ppr, inq), bio(4) (BIOCINQ/VOL/DISK, ioctl_cache for DIOCGCACHE/SCACHE) and the volume sensors. MPI_DEBUG (DPRINTF, the page-0 read in mpi_ppr) is not defined and not ported. ccb_cookie is an enum and mpi_poll's rv is ccb_poll_rv (the C leaves the address of a dead stack variable in the ccb after a timeout); C bugs kept: mpi_ioctl_cache reads action_status from the rcb (not its reply), the ccb leaks when mpi_poll fails in portenable/cfg_header/cfg_page/ioctl_cache, mpi_ioctl_vol copies 32 bytes from the 8-byte vendor, mpi_ioctl_disk's strlcpy runs on from vendor_id. Host tests: header kinds, dword views, SGE flags. QEMU (`just smoke-mpi`, both archs): mpi0 (MSI) attaches QEMU's SAS1068, scsibus 8 targets, sd1 (amd64) / sd2 (arm64) 64MB; fdisk/disklabel/newfs/mount/cmp/dd as OpenBSD 8.0 does on the same QEMU"
 
 [[module]]
@@ -3433,7 +3435,7 @@ status = "inherited"
 rust = "sys/dev/ic/nvme.rs"
 lz = ["sys/dev/ic/nvme.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/fs/buf.rs"]
+adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/sensors.rs"]
 
 [[module]]
 rust = "sys/dev/ic/nvmeio.rs"
@@ -3588,7 +3590,7 @@ notes = "M16a: license: NetBSD Foundation BSD-2, kept whole; the whole header: s
 rust = "sys/dev/ipmi.rs"
 lz = ["sys/dev/ipmi.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/task.rs", "sys/kernel/watchdog.rs"]
+adapted_by = ["sys/kernel/task.rs", "sys/kernel/watchdog.rs", "sys/kernel/sensors.rs"]
 
 [[module]]
 rust = "sys/dev/ipmivar.rs"
@@ -4339,7 +4341,7 @@ notes = "M16d: license: BSD-3 (Red Hat), kept whole beside viogpu.c's ISC notice
 rust = "sys/dev/pv/viomb.rs"
 lz = ["sys/dev/pv/viomb.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/task.rs", "sys/kernel/vm/page.rs", "sys/kernel/vm/types.rs"]
+adapted_by = ["sys/kernel/task.rs", "sys/kernel/vm/page.rs", "sys/kernel/vm/types.rs", "sys/kernel/sensors.rs"]
 notes = "M16d: license: BSD-2 (NetBSD, two notices kept whole); the whole file: viomb_ca/cd, match, attach (inflate and deflate queues, dma_alloc'ed frame number array and its map, taskq viomb, the desired/current sensors), viomb_config_change, viomb_worker, viomb_inflate (uvm_pglistalloc below dma_constraint), viomb_deflate, viomb_read_config, viomb_vq_dequeue (Result), viomb_inflate_intr, viomb_deflate_intr; the C's quirks kept: sensors lag the last request, a short deflate records i - 1 entries, request lengths are nvpages words; deviations: VIRTIO_PAGE_SIZE == PAGE_SIZE a const assertion (the C's #error), viomb_nvpages host-tested, VIOMBDEBUG behind VIRTIO_DEBUG; viomb* at virtio? on both archs; smoke-virtio: balloon 384 of 512 MB then 512 give raw0=134217728/raw1=133169152 then 0/1048576, as OpenBSD 8.0 does at the same scale"
 
 [[module]]
@@ -4514,7 +4516,7 @@ notes = "M16a: the whole header: struct sdmmc_csd/cid/scr, sdmmc_response, struc
 rust = "sys/dev/softraid.rs"
 lz = ["sys/dev/softraid.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/crypto/md5.rs", "sys/kernel/task.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/vnops.rs"]
+adapted_by = ["sys/kernel/crypto/md5.rs", "sys/kernel/task.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/sensors.rs"]
 
 [[module]]
 rust = "sys/dev/softraid_concat.rs"
@@ -4557,7 +4559,8 @@ adapted_by = ["sys/kernel/fs/buf.rs"]
 [[module]]
 rust = "sys/dev/softraidvar.rs"
 lz = ["sys/dev/softraidvar.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/sensors.rs"]
 
 [[module]]
 rust = "sys/dev/usb/ehci.rs"
@@ -5469,12 +5472,6 @@ kind = "renamed"
 
 
 [[module]]
-rust = "sys/kern/kern_sensors.rs"
-lz = ["sys/kern/kern_sensors.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/task.rs"]
-
-[[module]]
 rust = "sys/kern/kern_sig.rs"
 lz = ["sys/kern/kern_sig.rs"]
 status = "redesigned"
@@ -5529,7 +5526,7 @@ kind = "moved"
 rust = "sys/kern/kern_sysctl.rs"
 lz = ["sys/kern/kern_sysctl.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/log.rs", "sys/kernel/tty.rs", "sys/kernel/sysctl.rs", "sys/kernel/clockintr.rs", "sys/kernel/tc.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/unix.rs", "sys/kernel/net/syscalls.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/tcp_var.rs", "sys/kernel/netinet/tcp_usrreq.rs", "sys/kernel/netinet/udp_usrreq.rs", "sys/kernel/netinet/raw_ip.rs", "sys/kernel/netinet6/raw_ip6.rs", "sys/kernel/netinet/ip_divert.rs", "sys/kernel/netinet6/ip6_divert.rs", "sys/kernel/evcount.rs", "sys/kernel/watchdog.rs"]
+adapted_by = ["sys/kernel/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/log.rs", "sys/kernel/tty.rs", "sys/kernel/sysctl.rs", "sys/kernel/clockintr.rs", "sys/kernel/tc.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/unix.rs", "sys/kernel/net/syscalls.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/tcp_var.rs", "sys/kernel/netinet/tcp_usrreq.rs", "sys/kernel/netinet/udp_usrreq.rs", "sys/kernel/netinet/raw_ip.rs", "sys/kernel/netinet6/raw_ip6.rs", "sys/kernel/netinet/ip_divert.rs", "sys/kernel/netinet6/ip6_divert.rs", "sys/kernel/evcount.rs", "sys/kernel/watchdog.rs", "sys/kernel/sensors.rs"]
 notes = "N4.6b: the bsd half of sysctl(2): kern.file, the helpers over bsd copyin/copyout for the nodes still in bsd, and sysctl_register_legacy (Node/ProcNode adapters, the CTL_* trees, the kern/hw leaves, directories and kern_vars/hw_vars entries whose state is bsd's, hw.machine, physmem), BsdDiskExport (the DiskExport bridge), native_sysctl (the KernelApi entry); the dispatcher, the vslock and kern.proc moved into sys/kernel/sysctl.rs; adapted, not redesigned, until kern.file moves (N5/N6): its unsafe blocks (three at N4.6b: the bound address mbuf viewed as a slice, in_pcb_iterator and its abort; two since N6.4c1, DISKLIST's insert and remove, the pcb's gone with the kernel's pcb) keep the file from the forbid a redesigned bsd module needs (lz check, ZERO_UNSAFE section 5); N4.8a: kern.clockintr and kern.timecounter are the kernel's ClockintrNode and TcNode in KERN_NODES (LZ's kern.clockintr unported! closed)"
 
 [[module]]
@@ -9998,7 +9995,7 @@ notes = "N4.4: struct selinfo is sys/kernel/select.rs's Selinfo<G> (a kernel-loc
 rust = "sys/sys/sensors.rs"
 lz = ["sys/sys/sensors.rs"]
 status = "adapted"
-adapted_by = ["sys/sys/sysctl.rs"]
+adapted_by = ["sys/sys/sysctl.rs", "sys/kernel/sensors.rs", "sys/hal/sys/sensors.rs"]
 
 [[module]]
 rust = "sys/hal/sys/timetc.rs"
@@ -16468,6 +16465,10 @@ reason = "the diskstats array is an MArray owned by sysctl_disklock's Rwlocked s
 lz = "sys/kern/kern_sysctl.rs::sysctl_intrcnt"
 native = ["sys/kernel/evcount.rs::IntrcntNode"]
 kind = "moved"
+[[module.fn]]
+lz = "sys/kern/kern_sysctl.rs::sysctl_sensors"
+native = ["sys/kernel/sensors.rs::sysctl_sensors"]
+kind = "moved"
 
 [[module]]
 rust = "sys/kernel/syscall.rs"
@@ -20593,4 +20594,26 @@ kind = "merged"
 [[module.fn]]
 lz = "sys/kern/kern_watchdog.rs::WDOG_CTL_CB_ARG"
 native = ["WDOG_CTL"]
+kind = "merged"
+
+[[module]]
+rust = "sys/hal/sys/sensors.rs"
+crate = "hal"
+lz = ["sys/sys/sensors.rs"]
+status = "redesigned"
+notes = "N7.1b: <sys/sensors.h>'s ABI half: enum sensor_type and sensor_status (with from_i32), the SENSOR_DRIVE_* values and flags, struct sensor and struct sensordev by abi_pod! (tv is struct timeval's image IfTimeval), their layout checks; 0 unsafe"
+
+[[module]]
+rust = "sys/kernel/sensors.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_sensors.rs", "sys/sys/sensors.rs"]
+status = "redesigned"
+notes = "N7.1b: kern_sensors.c and struct ksensor/ksensordev in the kernel, 0 unsafe: the records valid all zero with relaxed-atomic members (AtomicCell, AtomicBytes, TypeCell, StatusCell, TimevalCell) keeping LZ's get/set, sensordev_list and each device's sensors PinLists under one Mutexed (the C's kernel lock and splhigh), the C's ordered walks with the insert as a splice; struct sensor_task a counted M_DEVBUF block held by its timeout and task (set_shared), period in an Rwlocked \"sensor\" held across the call, the dying run clearing both; the function a legacy fn(*mut c_void) and its argument an exposed address; hw.sensors the kernel's SensorsNode (sysctl_sensors moved from kern_sysctl.rs)"
+[[module.fn]]
+lz = "sys/kern/kern_sensors.rs::SensordevListHead"
+native = ["SENSORDEV_LIST", "SENSORS_LOCK"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/sys/sensors.rs::KsensorsHead"
+native = ["Ksensordev"]
 kind = "merged"

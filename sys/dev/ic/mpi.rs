@@ -75,6 +75,8 @@ use core::ffi::c_void;
 use core::mem::{offset_of, size_of};
 use core::ptr::{self, NonNull};
 
+use kernel::sensors::{sensor_attach, sensor_task_register, sensordev_install};
+
 use crate::dev::bio::bio_register;
 use crate::dev::biovar::{
     BIOC_SDFAILED, BIOC_SDINVALID, BIOC_SDOFFLINE, BIOC_SDONLINE, BIOC_SDSCRUB, BIOC_SVDEGRADED,
@@ -86,7 +88,6 @@ use crate::dev::ic::mpivar::*;
 use crate::kern::kern_lock::{mtx_enter, mtx_init, mtx_leave};
 use crate::kern::kern_malloc::{free, malloc, mallocarray};
 use crate::kern::kern_rwlock::{rw_enter_write, rw_exit_write, rw_init};
-use crate::kern::kern_sensors::{sensor_attach, sensor_task_register, sensordev_install};
 use crate::kern::kern_synch::{msleep_nsec, wakeup_one};
 use crate::kern::kern_task::{SYSTQ, task_add, task_set};
 use crate::kern::kern_timeout::timeout_set;
@@ -3790,7 +3791,7 @@ pub fn mpi_create_sensors(sc: &'static MpiSoftc) -> Result<(), Errno> {
         vol += 1;
     }
 
-    if sensor_task_register(sc.cookie(), mpi_refresh_sensors, 10).is_none() {
+    if sensor_task_register(sc.cookie().expose_provenance(), mpi_refresh_sensors, 10).is_none() {
         // bad:
         free(sensors.cast(), M_DEVBUF, nsensors * size_of::<Ksensor>());
         sc.sc_sensors.set(ptr::null_mut());

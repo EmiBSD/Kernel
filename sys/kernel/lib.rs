@@ -107,6 +107,7 @@ pub mod reboot;
 pub mod resource;
 pub mod sched;
 pub mod select;
+pub mod sensors;
 pub mod sig;
 pub mod sigio;
 pub mod smr;

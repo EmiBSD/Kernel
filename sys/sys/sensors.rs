@@ -43,360 +43,59 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! `<sys/sensors.h>`: hardware sensors (`hw.sensors`): the user-visible `struct sensor` and
-//! `struct sensordev` that `sysctl(2)` copies out, and the kernel's `struct ksensor` and
-//! `struct ksensordev` that drivers attach. The functions live in `kern/kern_sensors.rs`.
+//! `<sys/sensors.h>`: hardware sensors (`hw.sensors`).
 //!
 //! Upstream: sys/sys/sensors.h @ 3ce1f3f79392
 //!
-//! ## Deviations
-//! - `enum sensor_type` and `enum sensor_status` are `#[repr(i32)]` Rust enums with the C's
-//!   names and values ([`SensorType`], [`SensorStatus`]); the user structures keep plain `i32`
-//!   members (`r#type`, `status`), as `sysctl_rdstruct` needs a type valid for every bit
-//!   pattern (`SysctlPlain`).
-//! - `sensor_type_s[]` is `#ifndef _KERNEL` (userland only) and is not part of the kernel.
-//! - The kernel structures are shared through pointers at `splhigh`, so their members are
-//!   `Cell`s; every one of them is valid as all-zero bytes (a `ksensordev` lives in an
-//!   `M_ZERO` softc, `softraid`'s).
-//! - `struct sensor_task` is opaque here, as in C; the type is `kern_sensors.rs`'s and is
-//!   re-exported.
+//! Status: `ported`. Since N7.1b the user structures, types and flags are `hal::sys::sensors`'s
+//! and `struct ksensor`, `struct ksensordev` and `struct sensor_task` with their functions
+//! `kernel::sensors`'s, re-exported here for the drivers still in `bsd`
+//! (`docs/SCAFFOLDING.md`).
 
-use core::cell::Cell;
-
-pub use crate::kern::kern_sensors::SensorTask;
-use crate::queue_adapter;
-use crate::sys::queue::{SlistEntry, SlistHead};
-use crate::sys::time::Timeval;
-
-/// `enum sensor_type`: sensor types.
-#[repr(i32)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(non_camel_case_types)] // OpenBSD names, verbatim, for grep-ability
-pub enum SensorType {
-    /// temperature (uK)
-    SENSOR_TEMP = 0,
-    /// fan revolution speed
-    SENSOR_FANRPM,
-    /// voltage (uV DC)
-    SENSOR_VOLTS_DC,
-    /// voltage (uV AC)
-    SENSOR_VOLTS_AC,
-    /// resistance
-    SENSOR_OHMS,
-    /// power (uW)
-    SENSOR_WATTS,
-    /// current (uA)
-    SENSOR_AMPS,
-    /// power capacity (uWh)
-    SENSOR_WATTHOUR,
-    /// power capacity (uAh)
-    SENSOR_AMPHOUR,
-    /// boolean indicator
-    SENSOR_INDICATOR,
-    /// generic integer value
-    SENSOR_INTEGER,
-    /// percent (m%)
-    SENSOR_PERCENT,
-    /// illuminance (ulx)
-    SENSOR_LUX,
-    /// disk
-    SENSOR_DRIVE,
-    /// system time error (nSec)
-    SENSOR_TIMEDELTA,
-    /// humidity (m%RH)
-    SENSOR_HUMIDITY,
-    /// frequency (uHz)
-    SENSOR_FREQ,
-    /// angle (uDegrees)
-    SENSOR_ANGLE,
-    /// distance (uMeter)
-    SENSOR_DISTANCE,
-    /// pressure (mPa)
-    SENSOR_PRESSURE,
-    /// acceleration (u m/s^2)
-    SENSOR_ACCEL,
-    /// velocity (u m/s)
-    SENSOR_VELOCITY,
-    /// energy (uJ)
-    SENSOR_ENERGY,
-}
-
-pub use SensorType::*;
-
-/// `SENSOR_MAX_TYPES`: the number of sensor types.
-pub const SENSOR_MAX_TYPES: usize = SENSOR_ENERGY as usize + 1;
-
-impl SensorType {
-    /// Every type, in the C's order (index = value).
-    const ALL: [SensorType; SENSOR_MAX_TYPES] = [
-        SENSOR_TEMP,
-        SENSOR_FANRPM,
-        SENSOR_VOLTS_DC,
-        SENSOR_VOLTS_AC,
-        SENSOR_OHMS,
-        SENSOR_WATTS,
-        SENSOR_AMPS,
-        SENSOR_WATTHOUR,
-        SENSOR_AMPHOUR,
-        SENSOR_INDICATOR,
-        SENSOR_INTEGER,
-        SENSOR_PERCENT,
-        SENSOR_LUX,
-        SENSOR_DRIVE,
-        SENSOR_TIMEDELTA,
-        SENSOR_HUMIDITY,
-        SENSOR_FREQ,
-        SENSOR_ANGLE,
-        SENSOR_DISTANCE,
-        SENSOR_PRESSURE,
-        SENSOR_ACCEL,
-        SENSOR_VELOCITY,
-        SENSOR_ENERGY,
-    ];
-
-    /// The type whose C value is `v` (`(enum sensor_type)v`); `None` outside the enum.
-    pub fn from_i32(v: i32) -> Option<Self> {
-        usize::try_from(v)
-            .ok()
-            .and_then(|i| Self::ALL.get(i).copied())
-    }
-}
-
-/// `SENSOR_DRIVE_EMPTY`.
-pub const SENSOR_DRIVE_EMPTY: i64 = 1;
-/// `SENSOR_DRIVE_READY`.
-pub const SENSOR_DRIVE_READY: i64 = 2;
-/// `SENSOR_DRIVE_POWERUP`.
-pub const SENSOR_DRIVE_POWERUP: i64 = 3;
-/// `SENSOR_DRIVE_ONLINE`.
-pub const SENSOR_DRIVE_ONLINE: i64 = 4;
-/// `SENSOR_DRIVE_IDLE`.
-pub const SENSOR_DRIVE_IDLE: i64 = 5;
-/// `SENSOR_DRIVE_ACTIVE`.
-pub const SENSOR_DRIVE_ACTIVE: i64 = 6;
-/// `SENSOR_DRIVE_REBUILD`.
-pub const SENSOR_DRIVE_REBUILD: i64 = 7;
-/// `SENSOR_DRIVE_POWERDOWN`.
-pub const SENSOR_DRIVE_POWERDOWN: i64 = 8;
-/// `SENSOR_DRIVE_FAIL`.
-pub const SENSOR_DRIVE_FAIL: i64 = 9;
-/// `SENSOR_DRIVE_PFAIL`.
-pub const SENSOR_DRIVE_PFAIL: i64 = 10;
-
-/// `enum sensor_status`: sensor states.
-#[repr(i32)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(non_camel_case_types)] // OpenBSD names, verbatim, for grep-ability
-pub enum SensorStatus {
-    /// status is unspecified
-    SENSOR_S_UNSPEC = 0,
-    /// status is ok
-    SENSOR_S_OK,
-    /// status is warning
-    SENSOR_S_WARN,
-    /// status is critical
-    SENSOR_S_CRIT,
-    /// status is unknown
-    SENSOR_S_UNKNOWN,
-}
-
-pub use SensorStatus::*;
-
-/// `SENSOR_FINVALID`: sensor is invalid.
-pub const SENSOR_FINVALID: i32 = 0x0001;
-/// `SENSOR_FUNKNOWN`: sensor value is unknown.
-pub const SENSOR_FUNKNOWN: i32 = 0x0002;
-
-/// `struct sensor`: sensor data as `sysctl(2)` returns it. New fields should be added at the
-/// end to encourage backwards compat.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Sensor {
-    /// `desc`: sensor description, may be empty.
-    pub desc: [u8; 32],
-    /// `tv`: sensor value last change time.
-    pub tv: Timeval,
-    /// `value`: current value.
-    pub value: i64,
-    /// `type`: sensor type (an `enum sensor_type` value).
-    pub r#type: i32,
-    /// `status`: sensor status (an `enum sensor_status` value).
-    pub status: i32,
-    /// `numt`: sensor number of `.type` type.
-    pub numt: i32,
-    /// `flags`: sensor flags.
-    pub flags: i32,
-}
-
-// `#[repr(C)]` of a byte array, a `Timeval` (two `i64`s) and integers, laid out without
-// holes (`hal::abi_pod!` checks it).
-hal::abi_pod!(Sensor {
-    desc: [u8; 32],
-    tv: Timeval,
-    value: i64,
-    r#type: i32,
-    status: i32,
-    numt: i32,
-    flags: i32,
-});
-
-/// `struct sensordev`: sensor device data as `sysctl(2)` returns it. New fields should be
-/// added at the end to encourage backwards compat.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Sensordev {
-    /// `num`: sensordev number.
-    pub num: i32,
-    /// `xname`: unix device name.
-    pub xname: [u8; 16],
-    /// `maxnumt`: per type, one past the highest `numt` attached.
-    pub maxnumt: [i32; SENSOR_MAX_TYPES],
-    /// `sensors_count`.
-    pub sensors_count: i32,
-}
-
-// `#[repr(C)]` of `i32`s and a byte array, without holes (`hal::abi_pod!` checks it).
-hal::abi_pod!(Sensordev {
-    num: i32,
-    xname: [u8; 16],
-    maxnumt: [i32; SENSOR_MAX_TYPES],
-    sensors_count: i32,
-});
-
-/// `struct ksensor`: the kernel's sensor data.
-///
-/// Protected by: `splhigh` for the list link and `numt`; the driver owns the value members.
-pub struct Ksensor {
-    /// `list`: device-scope list.
-    pub list: SlistEntry<Ksensor>,
-    /// `desc`: sensor description, may be empty.
-    pub desc: Cell<[u8; 32]>,
-    /// `tv`: sensor value last change time.
-    pub tv: Cell<Timeval>,
-    /// `value`: current value.
-    pub value: Cell<i64>,
-    /// `type`: sensor type.
-    pub r#type: Cell<SensorType>,
-    /// `status`: sensor status.
-    pub status: Cell<SensorStatus>,
-    /// `numt`: sensor number of `.type` type.
-    pub numt: Cell<i32>,
-    /// `flags`: sensor flags, ie. `SENSOR_FINVALID`.
-    pub flags: Cell<i32>,
-}
-
-// SAFETY: the link and `numt` change at `splhigh` (`sensor_attach`, `sensor_detach`), the
-// values are written by the owning driver; the kernel runs one CPU.
-unsafe impl Sync for Ksensor {}
-
-impl Ksensor {
-    /// A zeroed sensor (the C's `M_ZERO`/`bzero`ed `struct ksensor`).
-    pub const fn new() -> Self {
-        Self {
-            list: SlistEntry::new(),
-            desc: Cell::new([0; 32]),
-            tv: Cell::new(Timeval {
-                tv_sec: 0,
-                tv_usec: 0,
-            }),
-            value: Cell::new(0),
-            r#type: Cell::new(SENSOR_TEMP),
-            status: Cell::new(SENSOR_S_UNSPEC),
-            numt: Cell::new(0),
-            flags: Cell::new(0),
-        }
-    }
-}
-
-impl Default for Ksensor {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-queue_adapter!(
-    /// `SLIST_HEAD(ksensors_head, ksensor)`: a device's sensors, through `list`.
-    pub KsensorList: Ksensor, list => SlistEntry<Ksensor>
-);
-
-/// `struct ksensors_head`.
-pub type KsensorsHead = SlistHead<KsensorList>;
-
-/// `struct ksensordev`: the kernel's sensor device data.
-///
-/// Protected by: `splhigh`.
-pub struct Ksensordev {
-    /// `list`: the link in `sensordev_list`.
-    pub list: SlistEntry<Ksensordev>,
-    /// `num`: sensordev number.
-    pub num: Cell<i32>,
-    /// `xname`: unix device name, NUL-terminated.
-    pub xname: Cell<[u8; 16]>,
-    /// `maxnumt`: per type, one past the highest `numt` attached.
-    pub maxnumt: Cell<[i32; SENSOR_MAX_TYPES]>,
-    /// `sensors_count`.
-    pub sensors_count: Cell<i32>,
-    /// `sensors_list`.
-    pub sensors_list: KsensorsHead,
-}
-
-// SAFETY: the members change at `splhigh` in `kern_sensors.rs`; one CPU.
-unsafe impl Sync for Ksensordev {}
-
-impl Ksensordev {
-    /// A zeroed sensor device.
-    pub const fn new() -> Self {
-        Self {
-            list: SlistEntry::new(),
-            num: Cell::new(0),
-            xname: Cell::new([0; 16]),
-            maxnumt: Cell::new([0; SENSOR_MAX_TYPES]),
-            sensors_count: Cell::new(0),
-            sensors_list: SlistHead::new(),
-        }
-    }
-}
-
-impl Default for Ksensordev {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-queue_adapter!(
-    /// `SLIST_HEAD(, ksensordev) sensordev_list`: the installed sensor devices, through
-    /// `list`.
-    pub KsensordevList: Ksensordev, list => SlistEntry<Ksensordev>
-);
-
-const _: () = {
-    assert!(core::mem::size_of::<Sensor>() == 32 + 16 + 8 + 4 * 4);
-    assert!(core::mem::offset_of!(Sensor, tv) == 32);
-    assert!(core::mem::offset_of!(Sensor, value) == 48);
-    assert!(core::mem::size_of::<Sensordev>() == 4 + 16 + 4 * SENSOR_MAX_TYPES + 4);
-    assert!(SENSOR_MAX_TYPES == 23);
+pub use hal::sys::sensors::*;
+pub use kernel::sensors::{
+    Ksensor, Ksensordev, SensorTask, SensorTaskRef, StatusCell, TimevalCell, TypeCell,
 };
 /* </CODE> */
 
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
+    use kernel::sensors::{
+        sensor_attach, sensor_detach, sensordev_deinstall, sensordev_get, sensordev_install,
+        sensors_lock,
+    };
+
     use super::*;
+    use crate::net::if_::tests::zeroed_static;
 
     #[test]
-    fn sensor_type_round_trip() {
-        for (i, t) in SensorType::ALL.iter().enumerate() {
-            assert_eq!(*t as usize, i);
-            assert_eq!(SensorType::from_i32(i as i32), Some(*t));
-        }
-        assert_eq!(SensorType::from_i32(-1), None);
-        assert_eq!(SensorType::from_i32(SENSOR_MAX_TYPES as i32), None);
-    }
-
-    #[test]
-    fn user_layouts() {
-        assert_eq!(core::mem::size_of::<Sensor>(), 72);
-        assert_eq!(core::mem::size_of::<Sensordev>(), 116);
+    fn zeroed_records_attach_install_and_detach() {
+        kernel::testutil::install();
+        // SAFETY: `Ksensordev` and `Ksensor` are valid all zero (their members are atomics,
+        // hal's `PinEntry` and `PinList`, each 0 when empty), as the zeroed softcs that embed
+        // them rely on.
+        let sd: &'static Ksensordev = unsafe { zeroed_static() };
+        // SAFETY: as above.
+        let s: &'static Ksensor = unsafe { zeroed_static() };
+        assert_eq!(s.r#type.get(), SENSOR_TEMP);
+        assert_eq!(s.status.get(), SENSOR_S_UNSPEC);
+        s.r#type.set(SENSOR_INTEGER);
+        sensor_attach(sd, s);
+        assert!(s.is_attached());
+        sensordev_install(sd);
+        let num = sd.num.get();
+        assert!(core::ptr::eq(
+            sensordev_get(&sensors_lock(), num).unwrap(),
+            sd
+        ));
+        assert_eq!(sd.maxnumt[SENSOR_INTEGER as usize].get(), 1);
+        s.value.set(42);
+        assert_eq!(s.value.get(), 42);
+        sensordev_deinstall(sd);
+        sensor_detach(sd, s);
+        assert!(!s.is_attached());
+        assert!(!sd.is_installed());
     }
 }
 /* </TESTS> */

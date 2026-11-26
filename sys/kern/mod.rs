@@ -64,7 +64,6 @@ pub mod kern_resource;
 pub mod kern_rwlock;
 #[forbid(unsafe_code)]
 pub mod kern_sched;
-pub mod kern_sensors;
 #[forbid(unsafe_code)]
 pub mod kern_sig;
 // `kern_smr.c` is `hal::smr` and `kernel::smr` since N6.0; the read sections' callers keep

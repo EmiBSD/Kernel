@@ -115,6 +115,11 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 
 use libkern::{StaticCell, explicit_bzero, strlcpy};
 
+use kernel::sensors::{
+    sensor_attach, sensor_detach, sensor_task_register, sensor_task_unregister,
+    sensordev_deinstall, sensordev_install,
+};
+
 use crate::crypto::md5::{MD5_DIGEST_LENGTH, Md5Ctx};
 use crate::dev::bio::{bio_register, bio_status, bio_status_init};
 use crate::dev::biovar::{
@@ -134,10 +139,6 @@ use crate::kern::kern_kthread::{kthread_create, kthread_create_deferred, kthread
 use crate::kern::kern_lock::{mtx_enter, mtx_init, mtx_leave};
 use crate::kern::kern_malloc::{free, malloc, mallocarray};
 use crate::kern::kern_rwlock::{rw_assert_wrlock, rw_enter_write, rw_exit_write, rw_init};
-use crate::kern::kern_sensors::{
-    sensor_attach, sensor_detach, sensor_task_register, sensor_task_unregister,
-    sensordev_deinstall, sensordev_install,
-};
 use crate::kern::kern_synch::{tsleep_nsec, wakeup};
 use crate::kern::kern_task::{TaskqRef, task_add, task_set, taskq_create, taskq_destroy_leaked};
 use crate::kern::subr_autoconf::{config_detach, config_found, config_suspend};
@@ -2083,8 +2084,7 @@ pub fn sr_detach(self_: &Device, flags: i32) -> Result<(), Errno> {
 
     // !SMALL_KERNEL
     if let Some(st) = sc.sc_sensor_task.take() {
-        // SAFETY: the task `sr_sensors_create` registered, unregistered once (taken out).
-        unsafe { sensor_task_unregister(st) };
+        sensor_task_unregister(&st);
     }
     sensordev_deinstall(&sc.sc_sensordev);
 
@@ -5475,12 +5475,17 @@ pub fn sr_sensors_create(sd: &'static SrDiscipline) -> Result<(), Errno> {
     sensor_attach(&sc.sc_sensordev, sensor);
     sd.sd_vol.sv_sensor_attached.set(1);
 
-    if sc.sc_sensor_task.get().is_none() {
-        let st = sensor_task_register(ptr::from_ref(sc).cast_mut().cast(), sr_sensors_refresh, 10);
-        sc.sc_sensor_task.set(st);
-        if st.is_none() {
-            return Err(Errno::EIO);
-        }
+    let st = sc.sc_sensor_task.take().or_else(|| {
+        sensor_task_register(
+            ptr::from_ref(sc).expose_provenance(),
+            sr_sensors_refresh,
+            10,
+        )
+    });
+    let failed = st.is_none();
+    sc.sc_sensor_task.set(st);
+    if failed {
+        return Err(Errno::EIO);
     }
 
     Ok(())
@@ -5502,8 +5507,7 @@ pub fn sr_sensors_delete(sd: &SrDiscipline) {
         return;
     }
     if let Some(st) = sc.sc_sensor_task.take() {
-        // SAFETY: the task `sr_sensors_create` registered, unregistered once (taken out).
-        unsafe { sensor_task_unregister(st) };
+        sensor_task_unregister(&st);
     }
 }
 

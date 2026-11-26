@@ -159,7 +159,6 @@ use crate::kern::kern_kthread::{kthread_create, kthread_create_deferred, kthread
 use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_rwlock::{rw_enter_write, rw_exit_write, rw_init};
-use crate::kern::kern_sensors::{sensor_attach, sensordev_install};
 use crate::kern::kern_synch::{msleep_nsec, tsleep_nsec, wakeup};
 use crate::kern::kern_task::{TaskqRef, task_add, task_del, task_set, taskq_create};
 use crate::kern::subr_autoconf::device_lookup;
@@ -191,6 +190,7 @@ use crate::sys::task::{SYSTQ, TASKQ_MPSAFE, Task};
 use crate::sys::time::{msec_to_nsec, sec_to_nsec};
 use crate::sys::types::{Dev, minor};
 use crate::{kassert, kprintf};
+use kernel::sensors::{sensor_attach, sensordev_install};
 use kernel::watchdog::{wdog_register, wdog_shutdown};
 
 // ---- ipmi.h ----
