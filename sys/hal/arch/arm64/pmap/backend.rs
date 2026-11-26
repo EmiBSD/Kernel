@@ -121,7 +121,9 @@
 //!   to `USER_SPACE_BITS`, as the C's.
 //! - `vmmap` is the kernel virtual window below `virtual_avail` that `bus_space`'s
 //!   `generic_space_map` takes device mappings from ([`VMMAP`], [`VMMAP_SIZE`]), 1024 pages
-//!   where the C keeps one page (`pmap_bootstrap_bs_map`).
+//!   where the C keeps one page (`pmap_bootstrap_bs_map`). Since N7.0 only the kernel map's
+//!   token hands it out (`KernelMapper::device_va`, a compare-and-swap of the cursor), and the
+//!   kernel's `km::map_device` enters the pages (`kenter_device`).
 //! - Pointer authentication (`pm_api*key`, `pmap_setpauthkeys`) and the tail of
 //!   `pmap_postinit` (the `pmap_kvp_map` submap reserved for growing the kernel's tables) are
 //!   not configured, as in LZ (`pmap_tramp`, the head of `pmap_postinit`, is: N4.8d, see the
@@ -263,6 +265,7 @@ use super::vp::{
 };
 use crate::assert::{hal_panic, kassert};
 use crate::intr::{IPL_NONE, IPL_VM, splraise};
+use crate::mmio::DevCache;
 use crate::mutex::{Mutexed, MutexedGuard};
 use crate::pmap::{
     BootstrapParams, KernelImage, PG_PMAP_MOD, PG_PMAP_REF, PMAP_CANFAIL, PMAP_WIRED, PageMd,
@@ -2229,6 +2232,36 @@ impl PmapBackend for Backend {
     /// `pmap_kenter_cache`: enter a kernel mapping with the given cache mode.
     fn kenter_cache(va: Vaddr, pa: Paddr, prot: VmProt, cacheable: i32) {
         pmap_kenter(va, pa, prot, cacheable);
+    }
+
+    /// `generic_space_map`'s `pmap_kenter_cache(va, pa, PROT_READ | PROT_WRITE, cache)`, the
+    /// memory type as LZ chooses it from the flags (`hal::mmio`'s deviations).
+    fn kenter_device(va: Vaddr, pa: Paddr, cache: DevCache) {
+        let cache = match cache {
+            DevCache::Device => PMAP_CACHE_DEV_NGNRNE,
+            DevCache::Prefetchable => PMAP_CACHE_DEV_NGNRE,
+            DevCache::Cacheable => PMAP_CACHE_WB,
+        };
+        pmap_kenter(va, pa, PROT_READ | PROT_WRITE, cache);
+    }
+
+    /// The next `len` bytes of `vmmap` (see the deviations), taken by a compare-and-swap so
+    /// that two callers never get the same space, and the kernel's tables grown to cover them
+    /// (`pmap_growkernel`, as LZ's `generic_space_map`); `None` past the window's end or
+    /// before the bootstrap set the cursor.
+    fn device_va(len: usize) -> Option<Vaddr> {
+        let end = VM_MIN_KERNEL_ADDRESS + VMMAP_SIZE;
+        let va = VMMAP
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |va| {
+                va.checked_add(len).filter(|&e| va != 0 && e <= end)
+            })
+            .ok()?;
+        let _ = Self::growkernel(Vaddr::new(va + len));
+        Some(Vaddr::new(va))
+    }
+
+    fn in_device_window(va: Vaddr) -> bool {
+        (VM_MIN_KERNEL_ADDRESS..VM_MIN_KERNEL_ADDRESS + VMMAP_SIZE).contains(&va.as_usize())
     }
 
     /// `pmap_fault_fixup`: this function exists to do software referenced/modified emulation.

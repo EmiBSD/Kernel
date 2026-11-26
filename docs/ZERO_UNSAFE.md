@@ -573,6 +573,7 @@ adds an operation the C's switch lacks.
 | `struct cryptocap` | `crypto/cryptodev.h` | `CryptoDriver` | N8 | to name |
 | `struct db_command` | `ddb/db_command.h` | `DbCommand` | N9.1 | to name |
 | `nfsrv3_procs[]` (the server's procedures by number) | `nfs/nfs_syscalls.c:78` | not a trait: an array of one function type, `NfsrvProc<G>`, indexed by `nd_procnum` (N6.7b2/b3) | N6.7b4 | done, `kernel::fs::nfs::nfs_serv::nfsrv3_procs`, handed to `sys_nfssvc` by `sysent[155]`'s row |
+| arm64 `struct bus_space` (`_space_read_1` .. `_space_write_8`, `_space_map`, `_space_unmap`, `_space_subregion`, `_space_vaddr`, `_space_mmap`) | `arch/arm64/include/bus.h` | not a trait: one implementation of the reads and writes (`generic_space_*`), so they are `hal::mmio::Mmio<R>`'s methods; the two entries a bus ever overrides (`_space_map` and `_space_mmap`, `simplebus`'s and `pciecam`'s copies of the tag) become each bus's own `map` over `kernel::vm::km::map_device` | N7.0 | done for the reads, writes and the map (`sys/hal/mmio.rs`); `bsd`'s tag keeps its table for its drivers (163 modules name `machine::bus`); the buses' `map` at N7.2b (simplebus) and N7.5 (pciecam) |
 
 Not traits: the per-architecture backends of `hal` (the pmaps, `bus_space`, `cpu_switch`) are
 `cfg`, one implementation per machine; only the host double needs a trait, and `MachineExec`,
