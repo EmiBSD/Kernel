@@ -21112,6 +21112,20 @@ status = "redesigned"
 notes = "N7.2b0: <dev/ofw/openfirm.h>'s re-export of the OF_* functions and OFMAXPARAM over the kernel's reader (kernel::dev::ofw::fdt); bsd's openfirm.rs stays LZ's, over bsd's adapter"
 
 [[module]]
+rust = "sys/kernel/dev/intr.rs"
+crate = "kernel"
+lz = ["sys/arch/arm64/include/intr.rs"]
+status = "redesigned"
+notes = "N7.2a1: the machine-independent interrupt handler: IntrFn (int (*)(void *)) and IntrHandler, the handler and its argument as one value (Raw: a bsd handler and its void * as an exposed address; the frame and counted-softc arms come with their first users, N7.2a2), IntrHandler::call applying the controllers' NULL-argument rule (the frame instead) once for both machines"
+
+[[module]]
+rust = "sys/kernel/dev/arm64/intr.rs"
+crate = "kernel"
+lz = ["sys/arch/arm64/arm64/intr.rs", "sys/arch/arm64/include/intr.rs"]
+status = "redesigned"
+notes = "N7.2a1: arm64's interrupt core in the kernel, 0 unsafe: struct interrupt_controller as the trait InterruptController (default methods the C's NULL entries; barrier answers the CPU and intr_barrier::<G> calls sched_barrier) and the registration IcReg built whole from an IcDesc (phandle and #interrupt-cells read once, immutable, MBox::leak'ed); ic_establish's void * as IcCookie (Rec, a record downcast by its controller; Word); struct machine_intr_handle as IntrHandle by value; the two LIST_HEADs as hal::ds::list::Lists in IntrRegistry (a static; tests build their own), writers under one Mutexed<()> at IPL_NONE never held across a controller's method, lookups lock-free; struct intr_prereg as Prereg (leaked, never freed: the module's Deviations) and the dummy controller as PreregIc; the specifier walks (interrupts with the interrupt-parent walk, interrupts-extended with the C's counting of an empty phandle, which LZ skipped; interrupt-map; msi-map with the #msi-cells default; msi-parent) over MArray cell buffers; the C's names kept. bsd's arch/arm64/arm64/intr.rs becomes the adapter in the next commit; until then it still defines every LZ item"
+
+[[module]]
 rust = "sys/kernel/dev/sensors.rs"
 crate = "kernel"
 lz = ["sys/kern/kern_sensors.rs", "sys/sys/sensors.rs", "sys/kern/kern_sysctl.rs"]
