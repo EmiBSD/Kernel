@@ -420,3 +420,6 @@ metadata:
 - Never decide an item is dead from `git grep ... | head`: the cut list hid bsd's callers of `solocked_legacy` and a cleanup was written and reverted; count with `git grep -l` (no head) before deleting (N6.7b4).
 - Deleting a `bsd` dir that `tools/xtask/src/syscalls.rs`'s `ported_syscalls` scans (`sys/nfs`) breaks `gen-syscalls`: drop its entry, move the `pub fn sys_*` row into a scanned dir (`sys/kern/`), rerun `just gen-syscalls` (init_sysent's `use` follows) (N6.7b4).
 - lz check after deleting `bsd`'s copy of an LZ file lists every item only the copy held (81 for sys/nfs/); an LZ file no kernel module lists (`nfs_var.rs`) joins a kernel module's `lz` list with its licence block, `Upstream:` and `LZ:` lines, never `[[dropped]]` (N6.7b4).
+- lz check's `[[module.fn]]` targets must be parsed items: a struct field (`Device::all`) or a `hal::pin_adapter!`-made type (`AllLink`) is refused as "not found"; name the owning struct (N7.1a).
+- The worktree guard refuses a Bash call that chains a heredoc (python or `cat >>`) with other commands, or several `sed -e` with `\n`-continued replacements: run the heredoc alone, or edit with the Edit tool (N7.1a).
+- `cargo xtask lz trace` takes `<lz path>:<item>` with ONE colon; `path::item` answers "not found" (N7.1a).
