@@ -155,7 +155,7 @@ total = 10
 
 [[subsystem]]
 name = "lib/libsa"
-total = 84
+total = 93
 
 [[subsystem]]
 name = "lib/libz"
