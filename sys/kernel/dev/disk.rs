@@ -2274,6 +2274,10 @@ pub fn rootdv() -> Option<DevRef> {
 
 /// `nfs_mountroot`: the `mountroot` of a root on NFS, over `swdevt[0]` and the machine's
 /// `swapdev`; without `NFSCLIENT` there is none (`setroot` never chooses it).
+#[allow(
+    clippy::extra_unused_type_parameters,
+    reason = "G is used only with the nfsclient feature; the callers name it either way"
+)]
 fn nfs_mountroot<G: ProcGlue>() -> Result<(), Errno> {
     #[cfg(feature = "nfsclient")]
     {
