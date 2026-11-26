@@ -71,10 +71,12 @@
 
 use alloc::vec::Vec;
 
-use libz::{
-    Flush, MAX_WBITS, Strategy, Z_DEFAULT_COMPRESSION, ZStatus, ZStream, deflate, deflateEnd,
-    deflateInit2, inflate, inflateEnd, inflateInit2,
+use libz::base::zconf::MAX_WBITS;
+use libz::base::zlib::{
+    Flush, Strategy, Z_DEFAULT_COMPRESSION, ZStatus, ZStream, deflateInit2, inflateInit2,
 };
+use libz::deflate::deflate::{deflate, deflateEnd};
+use libz::inflate::inflate::{inflate, inflateEnd};
 use sysdefs::base::errno::Errno;
 
 /// `Z_METHOD`: the deflate compression method.

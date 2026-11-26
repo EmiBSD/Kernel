@@ -250,7 +250,7 @@ use hal::sync::once::OnceStatic;
 use hal::sync::rwlock::{RW_INTR, RawRwlock, WriteWitness};
 use hal::sync::sleep::tsleep_nsec;
 use hal::sync::slot::ReadMostly;
-use libz::crc32;
+use libz::check::crc32::crc32;
 use sysdefs::base::types::{Daddr, Dev, major, makedev, minor};
 use sysdefs::base::uuid::Uuid;
 use sysdefs::dev::disk::{DKF_CONSTRUCTED, DKF_NOLABELREAD, DKF_OPENED, DM_OPENBLCK, DM_OPENPART};
