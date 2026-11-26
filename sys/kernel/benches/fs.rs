@@ -167,6 +167,32 @@
 //!   padding over fresh mbufs (a cluster while more than `MLEN` is left), the chain finished
 //!   and freed.
 //!
+//! N6.8's rows, the nfs client's request path and vnode operations (decision 43; written at
+//! N6.8 for 7a1, 7a3 and 7a5, which deferred them, measured at the N6 close, decision 50; no
+//! "before" exists: `bsd`'s client had no benchmark, D-11), over `testnfs`'s fixture made
+//! `pub` for the doubles (`lo0` with 127.0.0.1/8, the glue's own UDP and TCP, the scripted
+//! server in a thread of its own that looks at its socket without pause,
+//! `Peer::start_polling`); an RPC row's time is the requester's, the peer thread's and the
+//! two thread switches:
+//! - `nfs.rpc.null.udp`, `nfs.rpc.null.tcp`: `nfs_request` of a NULL call to the peer and
+//!   its reply (`nfsm_rpchead`, the record mark over TCP, the send, `nfs_reply` asleep in
+//!   `soreceive`, the reply matched by xid and its header consumed).
+//! - `nfs.rexmit.udp`: a NULL call whose first datagram is never answered: two calls of
+//!   `nfs_timer` from the peer (the round-trip time past the timeout of one tick, the
+//!   window halved, the datagram sent again from the mount's socket), then the reply to
+//!   the copy.
+//! - `nfs.getattr.cached`: `nfs_getattr` of a directory whose attributes the cache holds
+//!   (`nfs_getattrcache`: the stamp against the timeout, the attributes copied).
+//! - `nfs.lookup.cached`: `nfs_lookup` of a name the name cache holds, the directory's
+//!   access cached (the cache's entry, the access cache, the node's reference).
+//! - `nfs.read.8k.cached`: `nfs_read` of 8 KiB the buffer cache holds (attributes valid,
+//!   the block `B_DONE`: the buffer found, copied out, released).
+//! - `nfs.read.8k.rpc`: `nfs_readrpc` of 8 KiB: one READ call to the peer, whose reply
+//!   carries 8 KiB, copied into the uio.
+//! - `nfs.write.8k.async`: `nfs_write` of one whole 8 KiB block: the block's WRITE sent by
+//!   the buffer's I/O path to the peer (no nfsiod runs on the host, the write is made by the
+//!   caller).
+//!
 //! N6.7b2's rows, the nfs server's request path but its procedures (`option NFSSERVER`, built
 //! with the kernel's `nfsserver` feature; written at 7b2, measured at the N6 close, decision
 //! 50; no "before" exists, D-13):
@@ -756,6 +782,14 @@ fn main() {
         "fuse.roundtrip",
         "nfs.xdr.dissect.fattr3",
         "nfs.xdr.build.write8k",
+        "nfs.rpc.null.udp",
+        "nfs.rpc.null.tcp",
+        "nfs.rexmit.udp",
+        "nfs.getattr.cached",
+        "nfs.lookup.cached",
+        "nfs.read.8k.cached",
+        "nfs.read.8k.rpc",
+        "nfs.write.8k.async",
         #[cfg(feature = "nfsserver")]
         "nfs.srv.getreq",
         #[cfg(feature = "nfsserver")]
@@ -1269,6 +1303,12 @@ fn main() {
         s.spawn(|| nfs_rows(&wanted, &report));
     });
 
+    // N6.8's rows (written at the N6 close for 7a1, 7a3 and 7a5): the nfs client over lo0, on
+    // a thread of its own.
+    std::thread::scope(|s| {
+        s.spawn(|| nfs_client_rows(&wanted, &report));
+    });
+
     // N6.7b2's rows: the nfs server's request header and reply cache, on a thread of their own.
     #[cfg(feature = "nfsserver")]
     std::thread::scope(|s| {
@@ -1482,6 +1522,398 @@ fn nfs_srv_proc_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, 
     }
     testffs::unmount_root(p, mp);
     hal::klock::kernel_unlock();
+}
+
+/// N6.8's rows (the module's docs): the nfs client over `lo0` and the scripted server of
+/// `testnfs`, which looks at its socket without pause.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one fixture shared by eight rows, each its own block"
+)]
+fn nfs_client_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
+    use core::sync::atomic::Ordering::Relaxed;
+    use kernel::fs::namei::{Componentname, ISLASTCN, LOCKPARENT, LOOKUP, MAKEENTRY};
+    use kernel::fs::nfs::nfs_bio::nfs_write;
+    use kernel::fs::nfs::nfs_node::nfs_nget;
+    use kernel::fs::nfs::nfs_socket::{Request, nfs_request};
+    use kernel::fs::nfs::nfs_subs::nfs_vfs_init;
+    use kernel::fs::nfs::nfs_vnops::{nfs_getattr, nfs_lookup, nfs_read, nfs_readrpc, nfs_setcred};
+    use kernel::fs::nfs::nfsm_subs::XdrWriter;
+    use kernel::fs::nfs::nfsmount::NfsMount;
+    use kernel::fs::nfs::nfsnode::nfstov;
+    use kernel::fs::nfs::nfsproto::{
+        NFDIR, NFREG, NFSPROC_ACCESS, NFSPROC_LOOKUP, NFSPROC_NULL, NFSPROC_READ, NFSPROC_WRITE,
+        NFSX_V3FATTR,
+    };
+    use kernel::fs::nfs::testnfs::{self as tn, Out};
+    use kernel::fs::subr::vput;
+    use kernel::fs::vnode::{VDIR, VREG};
+    use kernel::fs::vops::Cred;
+    use kernel::sys::mount::{NFSMNT_DUMBTIMR, NFSMNT_GOTFSINFO, NFSMNT_NFSV3};
+    use kernel::sys::socket::{SOCK_DGRAM, SOCK_STREAM};
+    use kernel::uio::{Iovec, Uio};
+
+    const ROWS: [&str; 8] = [
+        "nfs.rpc.null.udp",
+        "nfs.rpc.null.tcp",
+        "nfs.rexmit.udp",
+        "nfs.getattr.cached",
+        "nfs.lookup.cached",
+        "nfs.read.8k.cached",
+        "nfs.read.8k.rpc",
+        "nfs.write.8k.async",
+    ];
+    /// Ops per sample of a row whose op crosses to the peer's thread.
+    const RPC_OPS: usize = 2000;
+    type Gl = tn::G;
+    if !ROWS.iter().any(|n| wanted(n)) {
+        return;
+    }
+
+    /// ns per op of `REPS` samples of `ops` calls of `f`: min, median, max.
+    fn measure_ops(ops: usize, mut f: impl FnMut()) -> (f64, f64, f64) {
+        for _ in 0..ops / 10 {
+            f();
+        }
+        let mut v: Vec<f64> = (0..REPS)
+            .map(|_| {
+                let t = Instant::now();
+                for _ in 0..ops {
+                    f();
+                }
+                t.elapsed().as_nanos() as f64 / ops as f64
+            })
+            .collect();
+        v.sort_by(f64::total_cmp);
+        (v[0], v[v.len() / 2], v[v.len() - 1])
+    }
+    /// One XDR word.
+    fn w(v: &mut Vec<u8>, x: u32) {
+        v.extend_from_slice(&x.to_be_bytes());
+    }
+    /// A version 3 `fattr3` of the type `t`, mode, size, file id, time and owner.
+    fn fattr3(t: u32, mode: u32, size: u64, fileid: u64, mtime: u32, uid: u32) -> Vec<u8> {
+        let mut v = Vec::new();
+        for x in [t, mode, 1, uid, 0] {
+            w(&mut v, x);
+        }
+        for q in [size, size, 0, 7, fileid] {
+            v.extend_from_slice(&q.to_be_bytes());
+        }
+        for x in [mtime, 0, mtime, 0, mtime, 0] {
+            w(&mut v, x);
+        }
+        assert_eq!(v.len(), NFSX_V3FATTR);
+        v
+    }
+    /// A `post_op_attr`.
+    fn post(a: Option<Vec<u8>>) -> Vec<u8> {
+        let mut v = Vec::new();
+        match a {
+            Some(a) => {
+                w(&mut v, 1);
+                v.extend(a);
+            }
+            None => w(&mut v, 0),
+        }
+        v
+    }
+    /// An `nfs_fh3`.
+    fn fh3(b: &[u8]) -> Vec<u8> {
+        let mut v = Vec::new();
+        w(&mut v, b.len() as u32);
+        v.extend_from_slice(b);
+        v.resize(v.len() + (4 - b.len() % 4) % 4, 0);
+        v
+    }
+    /// The procedure of a call.
+    fn proc_of(c: &[u8]) -> u32 {
+        u32::from_be_bytes(c[20..24].try_into().unwrap())
+    }
+    /// A version 3 READ reply of `data`.
+    fn read3(data: &[u8], eof: bool) -> Vec<u8> {
+        let mut v = post(None);
+        w(&mut v, data.len() as u32);
+        w(&mut v, u32::from(eof));
+        w(&mut v, data.len() as u32);
+        v.extend_from_slice(data);
+        v.resize(v.len() + (4 - data.len() % 4) % 4, 0);
+        v
+    }
+    /// A version 3 WRITE reply: the count, `FILESYNC`, the verifier.
+    fn write3(count: u32) -> Vec<u8> {
+        let mut v = vec![0u8; 8];
+        w(&mut v, count);
+        w(&mut v, 2);
+        v.extend_from_slice(&[1u8; 8]);
+        v
+    }
+    /// A server answering by `f(procedure)`: a status and the results.
+    fn peer(
+        fx: &tn::Fixture,
+        sotype: i32,
+        nmp: &kernel::fs::nfs::nfsmount::NfsMountRef<Gl>,
+        mut f: impl FnMut(u32) -> (u32, Vec<u8>) + Send + 'static,
+    ) -> tn::Peer {
+        tn::Peer::start_polling(
+            fx,
+            sotype,
+            nmp,
+            Box::new(move |_, c| {
+                let (st, body) = f(proc_of(c));
+                vec![Out::Data(tn::reply(c, 0, 0, st, &body))]
+            }),
+            Duration::ZERO,
+        )
+    }
+
+    let fx = tn::bench_setup(1000);
+    // A wall clock past the servers' times (the attribute cache's stamps are seconds; 0 is
+    // "no attributes").
+    if kernel::tc::gettime() == 0 {
+        kernel::tc::TIME_SECOND.store(1_000_000, Relaxed);
+    }
+    nfs_vfs_init::<Gl>(fx.mp.vfc()).expect("nfs_vfs_init");
+    let rpc = |nmp: &NfsMount<Gl>| {
+        let r = nfs_request(
+            nmp,
+            fx.vp,
+            NFSPROC_NULL,
+            Request {
+                body: XdrWriter::reqhead(0),
+                procp: Some(fx.user),
+                cred: fx.user.ucred(),
+            },
+        );
+        black_box(r.1.is_ok());
+        drop(black_box(r.0));
+    };
+
+    // A NULL call over UDP: the connect first, then the peer.
+    if wanted(ROWS[0]) {
+        let nmp = tn::nfsmount(&fx, SOCK_DGRAM, NFSMNT_NFSV3);
+        need(tn::connect(&nmp), "connect");
+        let p = peer(&fx, SOCK_DGRAM, &nmp, |_| (0, Vec::new()));
+        report(ROWS[0], measure_ops(RPC_OPS, || rpc(&nmp)));
+        p.stop();
+        tn::unmount(&fx, nmp);
+    }
+    // Over TCP the peer listens before the connect.
+    if wanted(ROWS[1]) {
+        let nmp = tn::nfsmount(&fx, SOCK_STREAM, NFSMNT_NFSV3);
+        let p = peer(&fx, SOCK_STREAM, &nmp, |_| (0, Vec::new()));
+        need(tn::connect(&nmp), "connect");
+        report(ROWS[1], measure_ops(RPC_OPS, || rpc(&nmp)));
+        tn::unmount(&fx, nmp);
+        p.stop();
+    }
+    // A datagram lost: the peer ticks the timer twice at the first copy, answers the second.
+    if wanted(ROWS[2]) {
+        let nmp = tn::nfsmount(&fx, SOCK_DGRAM, NFSMNT_NFSV3 | NFSMNT_DUMBTIMR);
+        nmp.nm_timeo.store(1, Relaxed);
+        nmp.nm_retry.store(1_000_000, Relaxed);
+        need(tn::connect(&nmp), "connect");
+        let p = tn::Peer::start_polling(
+            &fx,
+            SOCK_DGRAM,
+            &nmp,
+            Box::new(|n, c| {
+                if n % 2 == 1 {
+                    vec![Out::Tick(2)]
+                } else {
+                    vec![Out::Data(tn::reply(c, 0, 0, 0, &[]))]
+                }
+            }),
+            Duration::ZERO,
+        );
+        report(ROWS[2], measure_ops(RPC_OPS / 2, || rpc(&nmp)));
+        p.stop();
+        tn::unmount(&fx, nmp);
+    }
+
+    // The vnode rows: a version 3 mount over UDP with attribute cache bounds of 3..60 s, its
+    // root a directory.
+    let rootfh = [1u8; 8];
+    let filefh = [2u8; 8];
+    let cred = || Cred::real(fx.user.ucred());
+    let mount = || {
+        let nmp = tn::nfsmount(&fx, SOCK_DGRAM, NFSMNT_NFSV3 | NFSMNT_GOTFSINFO);
+        for (a, v) in [
+            (&nmp.nm_acregmin, 3),
+            (&nmp.nm_acregmax, 60),
+            (&nmp.nm_acdirmin, 30),
+            (&nmp.nm_acdirmax, 60),
+        ] {
+            a.store(v, Relaxed);
+        }
+        need(tn::connect(&nmp), "connect");
+        let dnp = need(nfs_nget(fx.mp, &rootfh), "the root");
+        nfstov(&dnp).set_vtype(VDIR);
+        let _ = dnp.n_mtime.replace(kernel::clock::Timespec {
+            tv_sec: 1000,
+            tv_nsec: 0,
+        });
+        (nmp, dnp)
+    };
+    let file = |size: u64| {
+        let np = need(nfs_nget(fx.mp, &filefh), "the file");
+        let vp = nfstov(&np);
+        vp.set_vtype(VREG);
+        np.n_size.store(size, Relaxed);
+        np.n_vattr.update(|v| {
+            v.va_type = VREG;
+            v.va_size = size;
+        });
+        nfs_setcred(&np, fx.user.ucred(), false);
+        nfs_setcred(&np, fx.user.ucred(), true);
+        np
+    };
+
+    if wanted(ROWS[3]) {
+        let (nmp, dnp) = mount();
+        let p = peer(&fx, SOCK_DGRAM, &nmp, |_| {
+            (0, fattr3(NFDIR as u32, 0o755, 512, 2, 1000, 1000))
+        });
+        let dvp = nfstov(&dnp);
+        let mut va = kernel::fs::vnode::Vattr::new();
+        need(
+            nfs_getattr(dvp, &mut va, cred(), fx.user),
+            "the first GETATTR",
+        );
+        report(
+            ROWS[3],
+            measure(|| {
+                rounds(|| {
+                    black_box(nfs_getattr(black_box(dvp), &mut va, cred(), fx.user).is_ok());
+                })
+            }),
+        );
+        if p.calls().len() != 1 {
+            eprintln!("fs: nfs.getattr.cached went to the server");
+            std::process::exit(1);
+        }
+        p.stop();
+        drop(dnp);
+        tn::unmount(&fx, nmp);
+    }
+    if wanted(ROWS[4]) {
+        let (nmp, dnp) = mount();
+        let p = peer(&fx, SOCK_DGRAM, &nmp, move |pr| match pr as usize {
+            NFSPROC_LOOKUP => {
+                let mut v = fh3(&filefh);
+                v.extend(post(Some(fattr3(NFREG as u32, 0o644, 100, 3, 1000, 1000))));
+                v.extend(post(None));
+                (0, v)
+            }
+            NFSPROC_ACCESS => {
+                let mut v = post(None);
+                w(&mut v, 0x3f);
+                (0, v)
+            }
+            _ => (5, post(None)),
+        });
+        let dvp = nfstov(&dnp);
+        let look = || {
+            let mut vpp = None;
+            let mut c =
+                Componentname::new(LOOKUP, LOCKPARENT | ISLASTCN | MAKEENTRY, fx.user, cred());
+            c.set_name_lit(b"file");
+            let r = nfs_lookup(black_box(dvp), &mut vpp, &mut c);
+            if let Some(vp) = vpp {
+                vput(vp);
+            }
+            black_box(r.is_ok());
+        };
+        look();
+        look();
+        let first = p.calls().len();
+        report(ROWS[4], measure(|| rounds(look)));
+        if p.calls().len() != first {
+            eprintln!("fs: nfs.lookup.cached went to the server");
+            std::process::exit(1);
+        }
+        p.stop();
+        drop(dnp);
+        tn::unmount(&fx, nmp);
+    }
+    if wanted(ROWS[5]) {
+        let (nmp, dnp) = mount();
+        let np = file(8192);
+        let vp = nfstov(&np);
+        let p = peer(&fx, SOCK_DGRAM, &nmp, move |pr| match pr as usize {
+            NFSPROC_READ => (0, read3(&[b'z'; 8192], true)),
+            _ => (0, fattr3(NFREG as u32, 0o644, 8192, 3, 1000, 1000)),
+        });
+        kernel::testutil::set_copy_kernel(true);
+        let mut buf = vec![0u8; 8192];
+        let mut read = || {
+            let mut iov = [Iovec::new()];
+            let mut uio = Uio::kernel_read(&mut iov, &mut buf, Some(fx.user));
+            uio.uio_offset = 0;
+            black_box(nfs_read(vp, &mut uio, 0, cred()).is_ok());
+        };
+        read();
+        let first = p.calls().len();
+        report(ROWS[5], measure(|| rounds(&mut read)));
+        if p.calls().len() != first {
+            eprintln!("fs: nfs.read.8k.cached went to the server");
+            std::process::exit(1);
+        }
+        vput(vp);
+        p.stop();
+        drop((np, dnp));
+        tn::unmount(&fx, nmp);
+    }
+    if wanted(ROWS[6]) {
+        let (nmp, dnp) = mount();
+        let np = file(1 << 30);
+        let vp = nfstov(&np);
+        let p = peer(&fx, SOCK_DGRAM, &nmp, |_| (0, read3(&[b'z'; 8192], false)));
+        kernel::testutil::set_copy_kernel(true);
+        let mut buf = vec![0u8; 8192];
+        report(
+            ROWS[6],
+            measure_ops(RPC_OPS, || {
+                let mut iov = [Iovec::new()];
+                let mut uio = Uio::kernel_read(&mut iov, &mut buf, Some(fx.user));
+                uio.uio_offset = 0;
+                black_box(nfs_readrpc(vp, &np, &nmp, &mut uio).is_ok());
+            }),
+        );
+        vput(vp);
+        p.stop();
+        drop((np, dnp));
+        tn::unmount(&fx, nmp);
+    }
+    if wanted(ROWS[7]) {
+        let (nmp, dnp) = mount();
+        let np = file(8192);
+        let vp = nfstov(&np);
+        let p = peer(&fx, SOCK_DGRAM, &nmp, move |pr| match pr as usize {
+            NFSPROC_WRITE => (0, write3(8192)),
+            _ => (0, fattr3(NFREG as u32, 0o644, 8192, 3, 1000, 1000)),
+        });
+        kernel::testutil::set_copy_kernel(true);
+        let data = vec![b'w'; 8192];
+        let mut write = || {
+            let mut iov = [Iovec::new()];
+            let mut uio = Uio::kernel_write(&mut iov, &data, Some(fx.user));
+            uio.uio_offset = 0;
+            black_box(nfs_write(vp, &mut uio, 0, cred()).is_ok());
+        };
+        write();
+        let first = p.calls().len();
+        report(ROWS[7], measure_ops(RPC_OPS, &mut write));
+        eprintln!(
+            "fs: nfs.write.8k.async: {} calls over {} writes",
+            p.calls().len() - first,
+            RPC_OPS * (REPS + 1) + RPC_OPS / 10
+        );
+        vput(vp);
+        p.stop();
+        drop((np, dnp));
+        tn::unmount(&fx, nmp);
+    }
 }
 
 /// N6.7a0's rows (the module's docs): the nfs client's XDR cursors over the kernel's mbufs.

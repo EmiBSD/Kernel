@@ -575,7 +575,7 @@ fn same_ids(a: &Ucred, b: &Ucred) -> bool {
 /// `if (np->n_rcred) crfree(np->n_rcred); np->n_rcred = cred; crhold(cred);` (and the same of
 /// `n_wcred`, `write`): the node's read or write credentials become `cred`, left alone when
 /// the cell holds credentials that send the same ids already (the module's Redesign).
-pub(crate) fn nfs_setcred<G: ProcGlue>(np: &NfsNode<G>, cred: &Ucred, write: bool) {
+pub fn nfs_setcred<G: ProcGlue>(np: &NfsNode<G>, cred: &Ucred, write: bool) {
     {
         let r = klock::reader();
         let k = np.n_k.get(&r);
