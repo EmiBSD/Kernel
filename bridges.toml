@@ -653,7 +653,7 @@ trait = "DriverOps"
 for = ["sys/kernel/dev/autoconf.rs"]
 paid_by = "N7"
 
-# bsd: `impl UkcTables for IoconfTables` in sys/machine/autoconf.rs, handed to user_config by
+# bsd: `impl UkcTables for UkcIoconf` in sys/machine/autoconf.rs, handed to user_config by
 # cpu_startup under `boot -c` (N7.1c): ioconf.c's cfdata[]/cfroots[]/pdevinit[] and names as
 # the kernel's UKC editor reads and edits them. A trait received as a value; the row goes when
 # the tables become the registry (decision 45 (3), N9.1).

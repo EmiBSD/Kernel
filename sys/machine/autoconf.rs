@@ -33,8 +33,8 @@
 //! As `config(8)` does, `cfdata[]` ends in free slots ([`Cfdata::free`]) for UKC's `add`;
 //! [`ioconf_cfdata`] cuts them off, as the C's loops stop at the first entry without an
 //! attachment. The editor reads and writes them through the kernel's `UkcTables`, which
-//! [`IoconfTables`] implements here until N9.1's registry owns the tables
-//! (`bridges.toml`'s `UkcTables`, `docs/SCAFFOLDING.md`).
+//! [`UkcIoconf`] (the tables and `change`'s working copy) implements here until N9.1's
+//! registry owns the tables (`bridges.toml`'s `UkcTables`, `docs/SCAFFOLDING.md`).
 
 use core::ffi::c_void;
 
@@ -147,78 +147,114 @@ pub fn nam2blk() -> &'static [Nam2blk] {
     Machine::nam2blk()
 }
 
-/// The tables as UKC edits them: accessors over the slices; the locator and parent vectors,
-/// constant here, are replaced by copies kept for ever (the C's `mallocarray`, never freed).
+/// The tables as UKC edits them, with `change`'s working copy of an entry's locators (the C's
+/// `lk`), which `IoconfTables` has no member for.
 #[cfg(feature = "boot_config")]
-impl UkcTables for IoconfTables<'_> {
+pub(crate) struct UkcIoconf<'a> {
+    /// The tables.
+    t: IoconfTables<'a>,
+    /// `change`'s working copy, between `loc_copy_begin` and `loc_copy_end`.
+    lk: Vec<i64>,
+}
+
+#[cfg(feature = "boot_config")]
+impl<'a> UkcIoconf<'a> {
+    /// The tables `t`, with no working copy.
+    pub(crate) fn new(t: IoconfTables<'a>) -> Self {
+        Self { t, lk: Vec::new() }
+    }
+}
+
+/// Accessors over the slices; the locator and parent vectors, constant here, are replaced by
+/// copies kept for ever (the C's `mallocarray`, never freed).
+#[cfg(feature = "boot_config")]
+impl UkcTables for UkcIoconf<'_> {
     fn slots(&self) -> usize {
-        self.cfdata.len()
+        self.t.cfdata.len()
     }
 
     fn is_free(&self, dev: usize) -> bool {
-        self.cfdata[dev].is_free()
+        self.t.cfdata[dev].is_free()
     }
 
     fn name(&self, dev: usize) -> &'static [u8] {
-        self.cfdata[dev].cf_driver.cd_name
+        self.t.cfdata[dev].cf_driver.cd_name
     }
 
     fn unit(&self, dev: usize) -> i16 {
-        self.cfdata[dev].cf_unit.get()
+        self.t.cfdata[dev].cf_unit.get()
     }
 
     fn set_unit(&mut self, dev: usize, unit: i16) {
-        self.cfdata[dev].cf_unit.set(unit);
+        self.t.cfdata[dev].cf_unit.set(unit);
     }
 
     fn fstate(&self, dev: usize) -> i16 {
-        self.cfdata[dev].cf_fstate.get()
+        self.t.cfdata[dev].cf_fstate.get()
     }
 
     fn set_fstate(&mut self, dev: usize, fstate: i16) {
-        self.cfdata[dev].cf_fstate.set(fstate);
+        self.t.cfdata[dev].cf_fstate.set(fstate);
     }
 
     fn starunit1(&self, dev: usize) -> i16 {
-        self.cfdata[dev].cf_starunit1
+        self.t.cfdata[dev].cf_starunit1
     }
 
     fn set_starunit1(&mut self, dev: usize, unit: i16) {
-        self.cfdata[dev].cf_starunit1 = unit;
+        self.t.cfdata[dev].cf_starunit1 = unit;
     }
 
     fn flags(&self, dev: usize) -> i32 {
-        self.cfdata[dev].cf_flags
+        self.t.cfdata[dev].cf_flags
     }
 
     fn set_flags(&mut self, dev: usize, flags: i32) {
-        self.cfdata[dev].cf_flags = flags;
+        self.t.cfdata[dev].cf_flags = flags;
     }
 
     fn loc(&self, dev: usize) -> &[i64] {
-        self.cfdata[dev].cf_loc
+        self.t.cfdata[dev].cf_loc
     }
 
-    fn set_loc(&mut self, dev: usize, loc: &[i64]) -> bool {
-        let mut copy: Vec<i64> = Vec::new();
-        if copy.try_reserve_exact(loc.len()).is_err() {
+    fn loc_copy_begin(&mut self, dev: usize) -> bool {
+        let loc = self.t.cfdata[dev].cf_loc;
+        let mut lk: Vec<i64> = Vec::new();
+        if lk.try_reserve_exact(loc.len()).is_err() {
             return false;
         }
-        copy.extend_from_slice(loc);
-        self.cfdata[dev].cf_loc = copy.leak();
+        lk.extend_from_slice(loc);
+        self.lk = lk;
         true
     }
 
+    fn loc_copy_at(&self, k: usize) -> i64 {
+        self.lk[k]
+    }
+
+    fn set_loc_copy_at(&mut self, k: usize, val: i64) {
+        self.lk[k] = val;
+    }
+
+    /// The copy's exact capacity makes `leak` an allocation-free hand-over; an unchanged copy
+    /// is dropped, the C's `free`.
+    fn loc_copy_end(&mut self, dev: usize) {
+        let lk = core::mem::take(&mut self.lk);
+        if lk[..] != *self.t.cfdata[dev].cf_loc {
+            self.t.cfdata[dev].cf_loc = lk.leak();
+        }
+    }
+
     fn parents(&self, dev: usize) -> &[i16] {
-        self.cfdata[dev].cf_parents
+        self.t.cfdata[dev].cf_parents
     }
 
     fn locnames_at(&self, dev: usize) -> i32 {
-        self.cfdata[dev].cf_locnames
+        self.t.cfdata[dev].cf_locnames
     }
 
     fn slot_copy(&mut self, to: usize, from: usize) {
-        self.cfdata[to] = self.cfdata[from].clone();
+        self.t.cfdata[to] = self.t.cfdata[from].clone();
     }
 
     /// The C's one `pv[]` is a constant vector per entry here: a renumbered copy of each
@@ -228,7 +264,7 @@ impl UkcTables for IoconfTables<'_> {
     /// copies made (LZ's; the C has none to make): `add` is typed at the console.
     fn parents_shift(&mut self, last: usize, from: i16) -> bool {
         let mut fixed: Vec<(&'static [i16], &'static [i16])> = Vec::new();
-        for cf in &self.cfdata[..=last] {
+        for cf in &self.t.cfdata[..=last] {
             let pv = cf.cf_parents;
             if !pv.iter().any(|&p| p >= from)
                 || fixed.iter().any(|(old, _)| core::ptr::eq(*old, pv))
@@ -242,7 +278,7 @@ impl UkcTables for IoconfTables<'_> {
             copy.extend(pv.iter().map(|&p| if p >= from { p + 1 } else { p }));
             fixed.push((pv, copy.leak()));
         }
-        for cf in &mut self.cfdata[..=last] {
+        for cf in &mut self.t.cfdata[..=last] {
             if let Some((_, copy)) = fixed
                 .iter()
                 .find(|(old, _)| core::ptr::eq(*old, cf.cf_parents))
@@ -254,35 +290,35 @@ impl UkcTables for IoconfTables<'_> {
     }
 
     fn roots(&self) -> &[i16] {
-        self.cfroots
+        self.t.cfroots
     }
 
     fn set_root(&mut self, i: usize, dev: i16) {
-        self.cfroots[i] = dev;
+        self.t.cfroots[i] = dev;
     }
 
     fn pdevs(&self) -> usize {
-        self.pdevinit.len()
+        self.t.pdevinit.len()
     }
 
     fn pdev_name(&self, p: usize) -> &'static [u8] {
-        self.pdevnames[p]
+        self.t.pdevnames[p]
     }
 
     fn pdev_count(&self, p: usize) -> i32 {
-        self.pdevinit[p].pdev_count
+        self.t.pdevinit[p].pdev_count
     }
 
     fn set_pdev_count(&mut self, p: usize, n: i32) {
-        self.pdevinit[p].pdev_count = n;
+        self.t.pdevinit[p].pdev_count = n;
     }
 
     fn locname(&self, i: usize) -> Option<&'static [u8]> {
-        self.locnames.get(i).copied()
+        self.t.locnames.get(i).copied()
     }
 
     fn locnamp(&self) -> &[i16] {
-        self.locnamp
+        self.t.locnamp
     }
 }
 
@@ -296,7 +332,8 @@ pub fn user_config() {
     // `cfdata`, `cfroots` and `pdevinit`; the borrow `t` is lent to the kernel's editor, which
     // keeps nothing of it (`user_config` takes `&mut dyn UkcTables` for the call only), and
     // is dropped when this function returns, before any of those readers runs.
-    let mut t = unsafe { Machine::ioconf_mut() };
+    let t = unsafe { Machine::ioconf_mut() };
+    let mut t = UkcIoconf::new(t);
     kernel::dev::userconf::user_config(&mut t, crate::machine::db_machdep::db_enter);
 }
 /* </CODE> */
@@ -305,7 +342,8 @@ pub fn user_config() {
 #[cfg(all(test, feature = "boot_config"))]
 mod tests {
     // The tables' side of UKC: what the kernel's editor writes is what autoconfiguration
-    // reads, shared parent vectors are renumbered alike, and a slot copy is the whole entry.
+    // reads, shared parent vectors are renumbered alike, a slot copy is the whole entry, and
+    // `change`'s copy is kept only when it differs.
 
     use std::vec;
 
@@ -340,16 +378,16 @@ mod tests {
         (cf, vec![0])
     }
 
-    fn with_tables(f: impl FnOnce(&mut IoconfTables<'_>)) -> Vec<Cfdata> {
+    fn with_tables(f: impl FnOnce(&mut UkcIoconf<'_>)) -> Vec<Cfdata> {
         let (mut cf, mut roots) = tables();
-        let mut t = IoconfTables {
+        let mut t = UkcIoconf::new(IoconfTables {
             cfdata: &mut cf,
             cfroots: &mut roots,
             pdevinit: &mut [],
             pdevnames: &PDEVNAMES,
             locnames: &LOCNAMES,
             locnamp: &LOCNAMP,
-        };
+        });
         f(&mut t);
         cf
     }
@@ -371,10 +409,13 @@ mod tests {
     }
 
     #[test]
-    fn a_slot_copy_is_the_whole_entry_and_set_loc_a_copy() {
+    fn a_slot_copy_is_the_whole_entry_and_a_changed_copy_the_new_locators() {
         let cf = with_tables(|t| {
             t.slot_copy(3, 2);
-            assert!(t.set_loc(3, &[5]));
+            assert!(t.loc_copy_begin(3));
+            assert_eq!(t.loc_copy_at(0), 3);
+            t.set_loc_copy_at(0, 5);
+            t.loc_copy_end(3);
             t.set_flags(3, 9);
         });
         assert!(!cf[3].is_free() && cf[4].is_free());
@@ -387,6 +428,17 @@ mod tests {
         assert_eq!(cf[2].cf_loc, [3], "the source keeps its locators");
         assert!(core::ptr::eq(cf[3].cf_parents, &SHARED[..]));
         assert_eq!((cf[3].cf_locnames, cf[3].cf_starunit1), (0, 1));
+    }
+
+    #[test]
+    fn an_unchanged_copy_is_not_kept() {
+        let before = tables().0[2].cf_loc;
+        let cf = with_tables(|t| {
+            assert!(t.loc_copy_begin(2));
+            t.set_loc_copy_at(0, 3);
+            t.loc_copy_end(2);
+        });
+        assert!(core::ptr::eq(cf[2].cf_loc, before));
     }
 }
 /* </TESTS> */

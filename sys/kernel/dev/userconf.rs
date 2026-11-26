@@ -72,12 +72,12 @@
 //!   nothing the C kept across calls is lost; `userconf_history` is not a kernel symbol, so
 //!   `config -u` cannot read it through `/dev/kmem` (LZ's).
 //! - `ioconf.c`'s locator and parent vectors are constant in their owner: `change` always
-//!   edits an `M_TEMP` copy of the locators (the C does only when another entry shares
-//!   them), handed to the owner ([`UkcTables::set_loc`]) only when something changed, and
-//!   `add` has the owner renumber the parents ([`UkcTables::parents_shift`], the C's `pv[]`
-//!   loop) in copies. If that memory cannot be had, `change` prints `out of memory.` (before
-//!   its questions, as the C's shared case; or after them, leaving the entry as it was) and
-//!   `add` prints it and changes nothing (the C's `pv[]` edit cannot fail) (LZ's).
+//!   edits a copy of the locators (the C does only when another entry shares them), made
+//!   before its questions and kept only if something changed, and `add` renumbers the
+//!   parents (the C's `pv[]` loop) in copies, one per shared vector, all made before any
+//!   entry changes. If that memory cannot be had, `change` prints `out of memory.` before its
+//!   questions (as the C's shared case does) and `add` prints it and changes nothing (the
+//!   C's `pv[]` edit cannot fail) (LZ's).
 //! - A negative device number (`find -1`) is answered `Unknown devno`, where the C indexes
 //!   `cfdata[]` before its start; so is one too large for `int` (LZ's).
 //! - The locator names come from per-attribute runs in `locnamp[]` (the compression
@@ -88,6 +88,10 @@
 //!   (LZ's).
 //! - `ddb` calls the debugger's entry unconditionally (the C's is under `#if defined(DDB)`;
 //!   the kernel always has ddb) (LZ's).
+//! - `add`'s unit arithmetic is 16-bit: a unit of 32767 (`add vio32767`) overflows
+//!   `max_unit + 1`, a panic in a debug kernel where the C's `int` goes on (LZ's).
+//! - A pseudo-device's count prints as its magnitude, so a count of `INT_MIN` (which
+//!   `change` can set) prints `2147483648` where the C's `abs()` gives `-2147483648` (LZ's).
 //!
 //! ## Redesign
 //! - LZ's `Userconf` over `machine::autoconf::IoconfTables` (`bsd`'s slices of `Cfdata`,
@@ -107,10 +111,11 @@
 //!   where it now is and given its unit and state; the parents are renumbered first, by the
 //!   owner, so a failure changes nothing (the clone then copies the renumbered vector, as the
 //!   C's `new` shares the `pv[]` it fixes).
-//! - `change`'s working copy is an `MArray` of `M_TEMP` freed at the end of the command (the
-//!   C's `mallocarray`), never a leaked `Vec`; the copy that outlives the session is the
-//!   owner's. The flags are stored after the locators, so a refused copy leaves the entry
-//!   whole (the C writes the flags first; nothing prints between).
+//! - `change`'s working copy is the owner's, as the C's `mallocarray` + `bcopy` made before
+//!   the questions ([`UkcTables::loc_copy_begin`]), edited by index and, at the end, kept
+//!   as the entry's locators if anything changed or freed ([`UkcTables::loc_copy_end`], the
+//!   C's `memcmp`, which cannot fail); the kernel allocates nothing (LZ's working `Vec` was
+//!   the editor's, leaked when kept).
 //! - The console and the debugger are [`UkcCons`]'s (`cnpollc`, `db_enter`), so `run` no
 //!   longer takes `pollc`; the kernel's console is `hal::cons` and `printf(9)`, and ddb's
 //!   entry is the function `user_config` is given (`bsd`'s until N9).
@@ -120,7 +125,6 @@
 use core::fmt;
 use core::sync::atomic::Ordering;
 
-use hal::mem::malloc::{M_NOWAIT, MArray};
 use libkern::{GetsnCons, getsn, strncasecmp};
 
 use crate::base::log::snprintf;
@@ -172,9 +176,6 @@ const INT_MAX: i64 = i32::MAX as i64;
 /// `LONG_MAX`, the limit of a locator.
 const LONG_MAX: i64 = i64::MAX;
 
-/// `M_TEMP` (`<sys/malloc.h>`): `change`'s working copy of the locators.
-const M_TEMP: i32 = 127;
-
 /// `printf(...)` on the editor's console.
 macro_rules! uc_printf {
     ($uc:expr, $($arg:tt)*) => {
@@ -217,8 +218,8 @@ struct Cons {
 /// `ioconf.c`'s tables as UKC reads and edits them: `cfdata[]` with its free slots (by
 /// index, `dev`), `cfroots[]`, `pdevinit[]` and the names `config(8)` writes beside them.
 /// Implemented by the tables' owner (`bsd`'s `machine::autoconf` until N9.1); every method is
-/// an accessor of one member, except [`set_loc`](Self::set_loc) and
-/// [`parents_shift`](Self::parents_shift), which may need memory.
+/// an accessor of one member, except [`loc_copy_begin`](Self::loc_copy_begin) and
+/// [`parents_shift`](Self::parents_shift), which may need memory, and the copy's others.
 pub trait UkcTables {
     /// `cfdata[]`'s length, free slots included.
     fn slots(&self) -> usize;
@@ -244,9 +245,16 @@ pub trait UkcTables {
     fn set_flags(&mut self, dev: usize, flags: i32);
     /// `cfdata[dev].cf_loc`.
     fn loc(&self, dev: usize) -> &[i64];
-    /// `cfdata[dev].cf_loc = <a copy of loc>`, the copy kept for ever (the C's
-    /// `mallocarray`, never freed); `false` when it cannot be had, nothing changed.
-    fn set_loc(&mut self, dev: usize, loc: &[i64]) -> bool;
+    /// `change`'s `mallocarray` + `bcopy`: a working copy of `cfdata[dev].cf_loc`, made
+    /// before the questions; `false` when it cannot be had, nothing changed.
+    fn loc_copy_begin(&mut self, dev: usize) -> bool;
+    /// The working copy's locator `k`.
+    fn loc_copy_at(&self, k: usize) -> i64;
+    /// The working copy's locator `k` = `val`.
+    fn set_loc_copy_at(&mut self, k: usize, val: i64);
+    /// The end of `change`: the working copy becomes `cfdata[dev].cf_loc` (kept for ever, the
+    /// C's block never freed) if it differs from it, and is freed otherwise; cannot fail.
+    fn loc_copy_end(&mut self, dev: usize);
     /// `cfdata[dev].cf_parents`, as indices into `cfdata[]`.
     fn parents(&self, dev: usize) -> &[i16];
     /// `cfdata[dev].cf_locnames`: the start of its run in [`locnamp`](Self::locnamp).
@@ -679,31 +687,27 @@ impl<'a, C: UkcCons> Userconf<'a, C> {
                 self.userconf_hist_cmd(b'c');
                 self.userconf_hist_int(devno);
 
-                // The locators are constant: edit a copy, kept if anything changed.
-                let t = &*self.t;
-                let Some(mut lk) =
-                    MArray::new(M_TEMP, M_NOWAIT, t.loc(dev).len(), |k| t.loc(dev)[k])
-                else {
+                // The locators are constant: edit the owner's copy, made before the
+                // questions and kept if anything changed.
+                if !self.t.loc_copy_begin(dev) {
                     uc_printf!(self, "out of memory.\n");
                     return;
-                };
+                }
 
                 for k in 0..self.nlocs(dev) {
                     let item = self.locname(self.locnamp_at(dev, k));
-                    self.userconf_modify(item, &mut lk[k], LONG_MAX);
+                    let mut l = self.t.loc_copy_at(k);
+                    self.userconf_modify(item, &mut l, LONG_MAX);
+                    self.t.set_loc_copy_at(k, l);
                     // XXX add *l
-                    self.userconf_hist_int(lk[k]);
+                    self.userconf_hist_int(l);
                 }
                 let mut tmp = i64::from(self.t.flags(dev));
                 self.userconf_modify(b"flags", &mut tmp, INT_MAX);
                 self.userconf_hist_int(tmp);
-
-                if lk[..] != *self.t.loc(dev) && !self.t.set_loc(dev, &lk) {
-                    uc_printf!(self, "out of memory.\n");
-                    return;
-                }
                 self.t.set_flags(dev, tmp as i32);
-                drop(lk);
+
+                self.t.loc_copy_end(dev);
 
                 uc_printf!(self, "{devno:3} ");
                 self.userconf_pdevnam(dev);
@@ -1375,7 +1379,6 @@ mod tests {
     use std::vec::Vec;
 
     use super::*;
-    use crate::testutil;
 
     /// One `cfdata[]` entry of the fake tables.
     #[derive(Clone, Debug, PartialEq)]
@@ -1430,14 +1433,15 @@ mod tests {
     static LOCNAMP: [i16; 9] = [-1, 0, -1, 1, 2, -1, 3, 4, -1];
     static PDEVNAMES: [&[u8]; 2] = [b"pty", b"loop"];
 
-    /// The fake tables, with a count of `set_loc` calls and a switch that makes `set_loc`
-    /// and `parents_shift` fail.
+    /// The fake tables, with `change`'s working copy, a count of the copies kept as an
+    /// entry's locators and a switch that makes `loc_copy_begin` and `parents_shift` fail.
     #[derive(Clone, Debug, PartialEq)]
     struct Fake {
         cf: Vec<Row>,
         roots: Vec<i16>,
         pdev: Vec<i32>,
-        set_locs: usize,
+        lk: Option<Vec<i64>>,
+        kept: usize,
         no_memory: bool,
     }
 
@@ -1478,13 +1482,26 @@ mod tests {
         fn loc(&self, dev: usize) -> &[i64] {
             &self.cf[dev].loc
         }
-        fn set_loc(&mut self, dev: usize, loc: &[i64]) -> bool {
-            self.set_locs += 1;
+        fn loc_copy_begin(&mut self, dev: usize) -> bool {
+            assert!(self.lk.is_none(), "one copy at a time");
             if self.no_memory {
                 return false;
             }
-            self.cf[dev].loc = loc.to_vec();
+            self.lk = Some(self.cf[dev].loc.clone());
             true
+        }
+        fn loc_copy_at(&self, k: usize) -> i64 {
+            self.lk.as_ref().unwrap()[k]
+        }
+        fn set_loc_copy_at(&mut self, k: usize, val: i64) {
+            self.lk.as_mut().unwrap()[k] = val;
+        }
+        fn loc_copy_end(&mut self, dev: usize) {
+            let lk = self.lk.take().unwrap();
+            if lk != self.cf[dev].loc {
+                self.cf[dev].loc = lk;
+                self.kept += 1;
+            }
         }
         fn parents(&self, dev: usize) -> &[i16] {
             &self.cf[dev].parents
@@ -1549,7 +1566,8 @@ mod tests {
             cf,
             roots: std::vec![0],
             pdev: std::vec![16, 1],
-            set_locs: 0,
+            lk: None,
+            kept: 0,
             no_memory: false,
         }
     }
@@ -1593,8 +1611,6 @@ mod tests {
     /// Runs a session on `keys` over `t`; returns what it printed, the history and the
     /// console.
     fn session(keys: &str, t: &mut Fake) -> (String, Vec<u8>, Script) {
-        // `change`'s copy is an `MArray`: the malloc double.
-        testutil::install();
         let cons = Script {
             keys: keys.as_bytes().to_vec(),
             next: 0,
@@ -1686,28 +1702,27 @@ mod tests {
         );
         assert_eq!(t.cf[2].loc, [0x3e8, 4]);
         assert_eq!(t.cf[2].flags, 1);
-        assert_eq!(t.set_locs, 1);
+        assert_eq!((t.kept, t.lk.as_ref()), (1, None));
     }
 
     #[test]
     fn change_keeps_the_locators_when_nothing_changed() {
-        // No locator edited: the owner is never asked for a copy; the flags are stored.
+        // No locator edited: the copy is freed, not kept; the flags are stored.
         let (_, t, _) = run("change 2\ry\r\r5\rquit\r");
-        assert_eq!(t.set_locs, 0);
+        assert_eq!((t.kept, t.lk.as_ref()), (0, None));
         assert_eq!(t.cf[2].loc, [0x3f8, 4]);
         assert_eq!(t.cf[2].flags, 5);
     }
 
     #[test]
-    fn change_without_memory_for_the_copy_changes_nothing() {
+    fn change_without_memory_for_the_copy_asks_nothing_and_changes_nothing() {
         let mut t = table();
         t.no_memory = true;
-        let (out, hist, _) = session("change 2\ry0x3e8\r\r1\rquit\r", &mut t);
-        assert!(out.contains("flags [0] ? 1\nout of memory.\nUKC> "));
-        assert!(!out.contains("changed"));
-        assert_eq!(t.set_locs, 1);
-        assert_eq!(t.cf[2].loc, [0x3f8, 4]);
-        assert_eq!(t.cf[2].flags, 0);
+        let before = t.clone();
+        let (out, hist, _) = session("change 2\ryquit\r", &mut t);
+        assert!(out.contains("change (y/n) ?\nout of memory.\nUKC> "));
+        assert!(!out.contains("port ["));
+        assert_eq!(t, before);
         // A device's `change` record is never ended (the C's): `quit`'s takes its place.
         assert_eq!(hist, b"q\n");
     }

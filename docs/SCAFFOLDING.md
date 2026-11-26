@@ -245,7 +245,7 @@ Locations are on `main` at the commit that last edited this file.
 
 | What | Where | Why | Removed by |
 |---|---|---|---|
-| `impl UkcTables for IoconfTables` (the `UkcTables` row of `bridges.toml`) and its shell `machine::autoconf::user_config`, which takes the tables with `Autoconf::ioconf_mut` (the one `unsafe`) and hands them to `kernel::dev::userconf::user_config` | `sys/machine/autoconf.rs:153`, `:292` | `ioconf.c`'s tables are still `bsd`'s hand-written `ioconf.rs` in `StaticCell`s, rows of `Cfdata`; `set_loc` and `parents_shift` leak copies of the constant vectors (the C's `mallocarray`, never freed) | N9.1 (the registry owns the tables, decision 45 (3)) |
+| `UkcIoconf` (the tables with `change`'s working copy) and its `impl UkcTables` (the `UkcTables` row of `bridges.toml`), and the shell `machine::autoconf::user_config`, which takes the tables with `Autoconf::ioconf_mut` (the one `unsafe`) and hands them to `kernel::dev::userconf::user_config` | `sys/machine/autoconf.rs:153`, `:171`, `:328` | `ioconf.c`'s tables are still `bsd`'s hand-written `ioconf.rs` in `StaticCell`s, rows of `Cfdata`; `loc_copy_end` and `parents_shift` leak the copies of the constant vectors they keep (the C's `mallocarray`, never freed) | N9.1 (the registry owns the tables, decision 45 (3)) |
 | `user_config`'s `db_enter: fn()` argument (the `ddb` command's entry) | `sys/kernel/dev/userconf.rs:1363` | ddb is `bsd`'s (`machine::db_machdep::db_enter`) | N9, with ddb (then a direct call) |
 | amd64's `cpu_startup` still calls the deleted `crate::kern::subr_userconf::user_config` | `sys/arch/amd64/amd64/machdep.rs:1431` | decision 44: amd64 is not touched before N10; one line, `crate::machine::autoconf::user_config()` | N10 |
 
