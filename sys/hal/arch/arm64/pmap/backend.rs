@@ -2266,6 +2266,17 @@ impl PmapBackend for Backend {
         (VM_MIN_KERNEL_ADDRESS..VM_MIN_KERNEL_ADDRESS + VMMAP_SIZE).contains(&va.as_usize())
     }
 
+    /// The image's frames: its virtual range moved by its physical offset (see the deviations;
+    /// none before the bootstrap recorded it).
+    fn in_kernel_image(pa: Paddr) -> bool {
+        let (start, end, off) = (
+            IMAGE[0].load(Ordering::Relaxed),
+            IMAGE[1].load(Ordering::Relaxed),
+            IMAGE[2].load(Ordering::Relaxed),
+        );
+        (start.wrapping_add(off)..end.wrapping_add(off)).contains(&pa.as_usize())
+    }
+
     /// `pmap_fault_fixup`: this function exists to do software referenced/modified emulation.
     /// Its purpose is to tell the caller that a fault was generated either for this emulation,
     /// or to tell the caller that it's a legit fault.

@@ -373,6 +373,12 @@ impl PmapBackend for Backend {
         (DEVICE_BASE..DEVICE_BASE + DEVICE_SIZE).contains(&va.as_usize())
     }
 
+    /// The host double has no kernel image among its frames.
+    #[cfg(target_arch = "aarch64")]
+    fn in_kernel_image(_pa: Paddr) -> bool {
+        false
+    }
+
     /// The host emulates nothing.
     #[cfg(target_arch = "aarch64")]
     fn fault_fixup(_pmap: &Pmap, _va: Vaddr, _ftype: VmProt) -> bool {

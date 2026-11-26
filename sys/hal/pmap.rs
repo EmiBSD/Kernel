@@ -849,6 +849,11 @@ impl KernelMapper {
     /// mapping) or before `pmap_bootstrap` set the window up.
     #[cfg(target_arch = "aarch64")]
     pub fn device_va(&self, len: usize) -> Option<Vaddr> {
+        // Whole pages, one at least: two empty requests would share an address, and a ragged
+        // one would leave every later address off a page.
+        crate::assert::kassert!(
+            len != 0 && len.is_multiple_of(crate::arch::current::param::PAGE_SIZE)
+        );
         Backend::device_va(len)
     }
 
@@ -864,6 +869,13 @@ impl KernelMapper {
     #[cfg(target_arch = "aarch64")]
     pub(crate) fn kenter_device(&self, va: Vaddr, pa: Paddr, cache: DevCache) {
         Backend::kenter_device(va, pa, cache);
+    }
+
+    /// Whether the frame `pa` holds part of the kernel image (its text, data and BSS), which
+    /// [`KernelMapper::map_device`] refuses as it refuses managed frames.
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn in_kernel_image(&self, pa: Paddr) -> bool {
+        Backend::in_kernel_image(pa)
     }
 }
 
@@ -1030,6 +1042,9 @@ pub(crate) trait PmapBackend {
     /// [`KernelMapper::in_device_window`].
     #[cfg(target_arch = "aarch64")]
     fn in_device_window(va: Vaddr) -> bool;
+    /// [`KernelMapper::in_kernel_image`].
+    #[cfg(target_arch = "aarch64")]
+    fn in_kernel_image(pa: Paddr) -> bool;
     /// [`Pmap::fault_fixup`].
     #[cfg(target_arch = "aarch64")]
     fn fault_fixup(pmap: &Pmap, va: Vaddr, ftype: VmProt) -> bool;

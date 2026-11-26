@@ -78,8 +78,9 @@
 //! A mapping is made only by the kernel map's token ([`KernelMapper::map_device`]): whole pages
 //! from a page-aligned physical address, entered read and write, never executable, with the
 //! memory type the caller names ([`DevCache`]), and the register block `off` bytes into the
-//! first page. Every frame is checked not to be a managed page (`PhysPages::md_of`): RAM the
-//! page system hands out is never device memory. The value is the mapping: [`Mmio::read`] and
+//! first page. Every frame is checked not to be a managed page (`PhysPages::md_of`) nor to hold
+//! the kernel image: RAM the page system hands out, and the kernel's own text and data, are
+//! never device memory. The value is the mapping: [`Mmio::read`] and
 //! [`Mmio::write`] are `bus_space_read_N`/`bus_space_write_N`, one volatile access each, at an
 //! offset a [`Reg`] carries; [`Mmio::read_at`]/[`Mmio::write_at`] take a computed offset and
 //! check it. Only [`KernelMapper::unmap_device`] consumes it (`pmap_kremove`), so no access
@@ -93,8 +94,9 @@
 //!
 //! The trust boundary (`sys/hal/trust.rs`): that the physical range is the device's registers,
 //! and the virtual range the token holder's own, is the caller's word, as for `kenter`. A
-//! frame of RAM that is not a managed page (the kernel image, the pages stolen before
-//! `uvm_page_init`) cannot be told from a device's by any check here.
+//! frame of RAM that is neither a managed page nor the kernel image (the pages stolen before
+//! `uvm_page_init`, the boot page tables among them, of which nothing keeps a record) cannot
+//! be told from a device's by any check here.
 //!
 //! ## Deviations
 //! - None of its own. [`DevCache`] names the four memory types the C's `generic_space_map`
@@ -351,7 +353,8 @@ impl<R: RegBlock> Mmio<R> {
     fn load<T: MmioWord>(&self, off: usize) -> T {
         let p = ptr::with_exposed_provenance::<T>(self.base + off);
         // SAFETY: the invariant: `[base, base + len)` lies in a mapping `map_device` entered
-        // onto frames none of which is a managed page, read and write, which stays while this
+        // onto frames none of which is a managed page or the kernel image, read and write,
+        // which stays while this
         // value lives (only `unmap_device`, which consumes it, removes it; the token's contract
         // keeps every other remover away from its pages, as for any `kenter` mapping). The
         // caller proved `off` (a `Reg::new` of `R`: aligned and inside `R::SIZE`, which
@@ -359,9 +362,11 @@ impl<R: RegBlock> Mmio<R> {
         // `check`), so `p` is aligned and the `T` inside the block. Device frames hold no Rust
         // object (the trust paragraph of `sys/hal/trust.rs`: firmware's register ranges), so
         // the volatile load touches memory outside every Rust allocation, which needs no
-        // provenance and races nothing the language sees; on the host double the block is
-        // memory of the test's own whose address it exposed, valid for the read. Any bit
-        // pattern is a `T` (`MmioWord`).
+        // provenance and races nothing the language sees. On the host double the block is a
+        // Rust allocation of the test's own whose address it exposed, valid for the read; there
+        // the volatile access is an ordinary one, so a store from another thread at the same
+        // time would race it: `Mmio` is `Sync`, but the host tests touch each mapping from
+        // their own thread alone. Any bit pattern is a `T` (`MmioWord`).
         unsafe { p.read_volatile() }
     }
 
@@ -370,8 +375,12 @@ impl<R: RegBlock> Mmio<R> {
     fn store<T: MmioWord>(&self, off: usize, v: T) {
         let p = ptr::with_exposed_provenance_mut::<T>(self.base + off);
         // SAFETY: as for `load`: `p` is aligned and its `T` inside a live, writable mapping of
-        // device frames (or the host double's own memory), outside every Rust allocation, so
-        // the volatile store changes nothing a Rust reference covers.
+        // device frames, outside every Rust allocation, so the volatile store changes nothing a
+        // Rust reference covers and races nothing the language sees, whichever thread runs it.
+        // On the host double the block is the test's own Rust allocation, which no reference
+        // covers either; there the store is an ordinary write, sound because the host tests use
+        // each mapping from one thread (`Mmio` is `Sync`: a test that shared one across threads
+        // would race).
         unsafe { p.write_volatile(v) }
     }
 }
@@ -388,7 +397,8 @@ impl KernelMapper {
     /// range wraps, `len` is shorter than `R::SIZE`, or a typed block (`R::SIZE` above 0)
     /// starts at an address not aligned for a `u64`. `panic(9)` before `pmap_init` (the boot
     /// path maps the early console through its own identity window then) and when a frame is
-    /// a managed page, before any page is entered.
+    /// a managed page or holds the kernel image, before any page is entered. An empty block
+    /// (`len` 0) still takes the page it starts in.
     pub fn map_device<R: RegBlock>(
         &self,
         va: Vaddr,
@@ -403,8 +413,10 @@ impl KernelMapper {
                 pa.as_usize()
             ));
         }
+        // One page at least: an empty block still takes the page it starts in, so every block
+        // is a mapped address.
         let size = off
-            .checked_add(len)
+            .checked_add(len.max(1))
             .and_then(|end| end.checked_next_multiple_of(PAGE_SIZE))
             .filter(|&size| {
                 off < PAGE_SIZE
@@ -432,6 +444,12 @@ impl KernelMapper {
             if pages.md_of(frame).is_some() {
                 hal_panic(format_args!(
                     "map_device: {:#x} is a managed page",
+                    frame.as_usize()
+                ));
+            }
+            if self.in_kernel_image(frame) {
+                hal_panic(format_args!(
+                    "map_device: {:#x} holds the kernel image",
                     frame.as_usize()
                 ));
             }
@@ -601,6 +619,20 @@ mod tests {
         ));
         // An untyped block may start anywhere in its page.
         assert!(map::<Untyped>(3, 5).is_ok());
+    }
+
+    #[cfg(all(target_arch = "aarch64", feature = "diagnostic"))]
+    #[test]
+    #[should_panic(expected = "kernel diagnostic assertion")]
+    fn an_empty_window_request_fails_the_assertion() {
+        let _ = mapper().device_va(0);
+    }
+
+    #[cfg(all(target_arch = "aarch64", feature = "diagnostic"))]
+    #[test]
+    #[should_panic(expected = "kernel diagnostic assertion")]
+    fn a_ragged_window_request_fails_the_assertion() {
+        let _ = mapper().device_va(PAGE_SIZE + 8);
     }
 
     #[cfg(target_arch = "aarch64")]

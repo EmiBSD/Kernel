@@ -1808,9 +1808,11 @@ pub fn map_device<R: RegBlock>(pa: Paddr, size: usize, cache: DevCache) -> Resul
         return Err(Errno::EINVAL);
     }
     let startpa = pa.trunc_page();
+    // An empty block still takes the page it starts in (hal's `map_device`), so the space is
+    // whole pages, one at least.
     let endpa = pa
         .as_usize()
-        .checked_add(size)
+        .checked_add(size.max(1))
         .and_then(|end| end.checked_next_multiple_of(PAGE_SIZE))
         .ok_or(Errno::EINVAL)?;
     let len = endpa - startpa.as_usize();
@@ -2656,8 +2658,8 @@ mod tests {
     fn a_device_is_mapped_in_the_window_and_unmapping_takes_the_mapping_away() {
         let _g = setup();
         let frame = device_frame();
-        // The window's next address, peeked without taking any of it.
-        let va = token().device_va(0).expect("the device window");
+        // The window's next page, taken: the mapping lands on the page after it.
+        let va = Vaddr::new(window_page().as_usize() + PAGE_SIZE);
         let m = map_device::<DevRegs>(
             Paddr::new(frame.as_usize() + 0x40),
             DevRegs::SIZE,
@@ -2672,18 +2674,34 @@ mod tests {
         );
         m.write_at::<u32>(0x1c, 0x5aa5_0ff0);
         assert_eq!(m.read_at::<u32>(0x1c), 0x5aa5_0ff0);
-        assert_eq!(
-            token().device_va(0),
-            Some(Vaddr::new(va.as_usize() + PAGE_SIZE)),
-            "one page taken"
-        );
         unmap_device(m);
         assert_eq!(extract(va.as_usize()), None);
         assert_eq!(
-            token().device_va(0),
-            Some(Vaddr::new(va.as_usize() + PAGE_SIZE)),
+            window_page(),
+            Vaddr::new(va.as_usize() + PAGE_SIZE),
             "the window's space is never given back"
         );
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn an_empty_device_block_takes_its_page() {
+        let _g = setup();
+        let frame = device_frame();
+        let va = Vaddr::new(window_page().as_usize() + PAGE_SIZE);
+        let m = map_device::<Untyped>(frame, 0, DevCache::Device).expect("mapped");
+        assert!(m.is_empty());
+        assert_eq!(extract(va.as_usize()), Some(frame));
+        unmap_device(m);
+        assert_eq!(extract(va.as_usize()), None);
+        assert_eq!(window_page(), Vaddr::new(va.as_usize() + PAGE_SIZE));
+    }
+
+    /// The device window's next page, taken (and never given back): the next device mapping
+    /// lands on the page after it.
+    #[cfg(target_arch = "aarch64")]
+    fn window_page() -> Vaddr {
+        token().device_va(PAGE_SIZE).expect("the device window")
     }
 
     #[test]
@@ -2782,7 +2800,7 @@ mod tests {
     #[test]
     fn a_device_range_too_short_or_wrapping_is_refused_before_any_space_is_taken() {
         let _g = setup();
-        let next = token().device_va(0);
+        let before = window_page();
         assert!(matches!(
             map_device::<DevRegs>(device_frame(), DevRegs::SIZE - 1, DevCache::Device),
             Err(Errno::EINVAL)
@@ -2791,7 +2809,12 @@ mod tests {
             map_device::<Untyped>(Paddr::new(usize::MAX - 8), 16, DevCache::Device),
             Err(Errno::EINVAL)
         ));
-        assert_eq!(token().device_va(0), next);
+        let va = window_page();
+        assert_eq!(
+            va,
+            Vaddr::new(before.as_usize() + PAGE_SIZE),
+            "no space taken"
+        );
         // A block spanning two pages takes both.
         let frame = device_frame();
         let m = map_device::<Untyped>(
@@ -2800,11 +2823,7 @@ mod tests {
             DevCache::Posted,
         )
         .expect("mapped");
-        let va = next.expect("the device window");
-        assert_eq!(
-            token().device_va(0),
-            Some(Vaddr::new(va.as_usize() + 2 * PAGE_SIZE))
-        );
+        assert_eq!(window_page(), Vaddr::new(va.as_usize() + 3 * PAGE_SIZE));
         unmap_device(m);
     }
 }
