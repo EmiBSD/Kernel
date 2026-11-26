@@ -519,7 +519,7 @@ pub fn image_tagged(
     let ramdisk_bytes = ramdisk.map(read).transpose()?;
     let efi_path = limine_file(arch.limine_efi())?;
     let efi = read(&efi_path)?;
-    let mut conf = read(&root.join("sys/stand/limine.conf"))?;
+    let mut conf = read(&root.join("sys/bsd/stand/limine.conf"))?;
     // The entry is the last block of the file; `cmdline:` and `module_path:` are more keys
     // of it.
     if !conf.ends_with(b"\n") {

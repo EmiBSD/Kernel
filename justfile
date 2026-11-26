@@ -1,8 +1,8 @@
 # EmiBSD task runner. `just` lists recipes. Never call qemu or `cargo --target` by hand.
 set shell := ["zsh", "-cu"]
 
-# What `newvers.sh` reads, made reproducible: `sys/build.rs` builds the kernel's `version`
-# string (`sys/conf/vers.rs`) from these. The build number is the commit count, the date the
+# What `newvers.sh` reads, made reproducible: `sys/bsd/build.rs` builds the kernel's `version`
+# string (`sys/bsd/conf/vers.rs`) from these. The build number is the commit count, the date the
 # last commit's; both come from the local repository, so the same commit gives the same kernel.
 export EMIBSD_BUILD := `git rev-list --count HEAD 2>/dev/null || echo 0`
 export SOURCE_DATE_EPOCH := `git log -1 --format=%ct 2>/dev/null || echo 0`
@@ -2883,7 +2883,7 @@ smoke-puc: (build-amd64 "--features qemu")
 # M13: the frame buffer, both archs. The firmware's GOP (amd64: q35's standard VGA; arm64:
 # `-device ramfb`, `--fb`, hwopts.rs) reaches the kernel through Limine's framebuffer
 # request: efifb0 attaches at mainbus0 on amd64, simplefb0 on arm64 (at the
-# `/chosen/framebuffer` node the boot glue adds, as efiboot does, sys/stand/fdtfb.rs), each
+# `/chosen/framebuffer` node the boot glue adds, as efiboot does, sys/bsd/stand/fdtfb.rs), each
 # with rasops on top and wsdisplay0 on it (a plain display: the serial line stays the
 # console, as in OpenBSD with a serial console). `selftest=fb` draws "EmiBSD M13" through a
 # screen's emulops, as wsdisplay does, and prints the text's box; `--screenshot-after` takes a
@@ -3682,7 +3682,7 @@ cc_script := disk_login + " " + \
 
 # --- quality -----------------------------------------------------------------
 
-# host unit tests (libkern + libz + bsd through sys/arch/host, plus xtask's own), built
+# host unit tests (libkern + libz + bsd through sys/bsd/arch/host, plus xtask's own), built
 # MULTIPROCESSOR as every kernel is (decision 40); the kernel with the options bsd's default
 # features forward to it (QUOTA, UFS_DIRHASH, FFS2, MFS), so the modules they gate are tested
 test:
@@ -3742,7 +3742,7 @@ check-abi:
     {{xtask}} abi-check
 
 # Regenerate the system call tables from reference/.../syscalls.master (sys/lib/sysdefs/proc/syscall.rs,
-# sys/sys/syscallargs.rs, kern/init_sysent.rs, kern/syscalls.rs). Rerun after porting a sys_*
+# sys/bsd/sys/syscallargs.rs, sys/bsd/kern/init_sysent.rs, sys/bsd/kern/syscalls.rs). Rerun after porting a sys_*
 # function.
 gen-syscalls:
     {{xtask}} gen-syscalls
@@ -3762,7 +3762,7 @@ lz-sync:
 # --- the install media (M14c) ---------------------------------------------------------
 
 # `rd0`'s image size in sectors: the ramdisk of `bsd.rd` is built into the kernel
-# (`EMIBSD_MINIROOTSIZE`, feature `miniroot`: sys/dev/rd.rs, OpenBSD's `option MINIROOTSIZE`)
+# (`EMIBSD_MINIROOTSIZE`, feature `miniroot`: sys/bsd/dev/rd.rs, OpenBSD's `option MINIROOTSIZE`)
 # and `cargo xtask miniroot` pads its image to exactly this (userland/miniroot.rs,
 # `MINIROOT_SECTORS`: change both).
 miniroot_sectors := "65536"

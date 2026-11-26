@@ -25,8 +25,8 @@
 //!   `EMIBSD_BUILD` (the build number; the justfile passes the commit count),
 //!   `SOURCE_DATE_EPOCH` (the build date; the justfile passes the last commit's time),
 //!   `USER`, `EMIBSD_BUILD_HOST` (the justfile passes `hostname -s`) and `EMIBSD_BUILD_DIR`
-//!   (the source directory, `CARGO_MANIFEST_DIR` when unset; `just dist-arm64` names a
-//!   neutral `build@emibsd:/usr/src/sys`).
+//!   (the source directory: `sys/`, the parent of `CARGO_MANIFEST_DIR`, when unset;
+//!   `just dist-arm64` names a neutral `build@emibsd:/usr/src/sys`).
 //! - Bare-metal builds only: the per-architecture linker script. Host builds (tests,
 //!   `cargo check`, the `sys/arch/host` double) never link a kernel.
 //! - Every build: the per-architecture `option`s (`ARCH_OPTIONS`), what `config(8)` reads
@@ -39,6 +39,7 @@
 //!   builds get none, since the host double has none of these interfaces.
 
 use std::env;
+use std::path::Path;
 
 /// The three-letter day names of `date(1)`, Sunday first.
 const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -144,10 +145,14 @@ fn newvers() {
     let epoch = input("SOURCE_DATE_EPOCH", "0").parse::<i64>().unwrap_or(0);
     let user = input("USER", "unknown");
     let host = input("EMIBSD_BUILD_HOST", "localhost");
-    let dir = input(
-        "EMIBSD_BUILD_DIR",
-        &env::var("CARGO_MANIFEST_DIR").unwrap_or_default(),
+    // The source directory is `sys/`, the parent of the package's own `sys/bsd/` (the legacy
+    // tree's directory since 2026-11-26), as it was before the move.
+    let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+    let sys_dir = Path::new(&manifest_dir).parent().map_or_else(
+        || manifest_dir.clone(),
+        |p| p.to_string_lossy().into_owned(),
     );
+    let dir = input("EMIBSD_BUILD_DIR", &sys_dir);
 
     println!("cargo:rustc-env=EMIBSD_VERS_BUILD={build}");
     println!("cargo:rustc-env=EMIBSD_VERS_DATE={}", date_string(epoch));

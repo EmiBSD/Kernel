@@ -8,7 +8,8 @@ description = "The OpenBSD kernel, re-implemented in Rust"
 build = "build.rs"
 publish = false
 
-# No src/: reference/openbsd-src/sys/kern/foo.c <-> sys/kern/foo.rs differ only by extension.
+# No src/: reference/openbsd-src/sys/kern/foo.c <-> sys/bsd/kern/foo.rs differ by the bsd/
+# directory (LZ's sys/kern/foo.rs: the legacy tree sits in sys/bsd/ since 2026-11-26) and the extension.
 [lib]
 path = "lib.rs"
 
@@ -85,11 +86,11 @@ viocon = []       # amd64 GENERIC's commented-out `#viocon* at virtio?`, uncomme
 [dependencies]
 # The crates of docs/ZERO_UNSAFE.md section 0: bsd calls down into them, never the reverse.
 # `abi` is linked into the image (decision 47): bsd's boot glue calls `abi::abi_init`
-# (sys/kern/abi_module.rs), until N9's image is kernel + abi + hal; `abi` calls the kernel
+# (sys/bsd/kern/abi_module.rs), until N9's image is kernel + abi + hal; `abi` calls the kernel
 # through `kernel::api` (decision 52).
-abi = { path = "abi" }
-hal = { path = "hal" }
-kernel = { path = "kernel" }
+abi = { path = "../abi" }
+hal = { path = "../hal" }
+kernel = { path = "../kernel" }
 libkern.workspace = true
 sysdefs.workspace = true
 libz.workspace = true
@@ -97,7 +98,7 @@ libz.workspace = true
 # The host tests register the kernel crate's doubles of hal's bridges (never the real ones):
 # the same dependency with its `doubles` feature, for tests only.
 [dev-dependencies]
-kernel = { path = "kernel", features = ["doubles"] }
+kernel = { path = "../kernel", features = ["doubles"] }
 libkern = { workspace = true, features = ["doubles"] }
 
 [lints]

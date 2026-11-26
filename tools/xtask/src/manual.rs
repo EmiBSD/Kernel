@@ -70,7 +70,7 @@ const PAGES: &[(&str, &str)] = &[
     (
         "config(8)",
         "EmiBSD's kernel is not configured with config(8): the autoconfiguration tables are \
-         hand-written (sys/arch/arm64/conf/ioconf.rs) and there is no kernel configuration \
+         hand-written (sys/bsd/arch/arm64/conf/ioconf.rs) and there is no kernel configuration \
          file to build.",
     ),
     (
@@ -474,7 +474,7 @@ pub fn manual(root: &Path, args: &[&str]) -> Result<()> {
     arch_arm64(args)?;
     let log = read(Path::new(crate::flag(args, "--boot-log")?))?;
     let out = PathBuf::from(crate::flag(args, "--out")?);
-    let configured = parse_ioconf(&read(&root.join("sys/arch/arm64/conf/ioconf.rs"))?)?;
+    let configured = parse_ioconf(&read(&root.join("sys/bsd/arch/arm64/conf/ioconf.rs"))?)?;
     let seen = parse_attached(&log);
     let attached: Vec<String> = configured
         .iter()
@@ -487,7 +487,7 @@ pub fn manual(root: &Path, args: &[&str]) -> Result<()> {
     let (consts, max) =
         parse_syscall_consts(&read(&root.join("sys/lib/sysdefs/proc/syscall.rs"))?)?;
     let native = parse_native(&read(&root.join("sys/abi/sysent.rs"))?);
-    let rows = parse_init_sysent(&read(&root.join("sys/kern/init_sysent.rs"))?)?;
+    let rows = parse_init_sysent(&read(&root.join("sys/bsd/kern/init_sysent.rs"))?)?;
     let mut syscalls = classify(&rows, &native, &consts, max)?;
     let header = parse_syscall_h(&read(
         &root.join("reference/openbsd-src/sys/sys/syscall.h"),
