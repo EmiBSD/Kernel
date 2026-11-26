@@ -830,6 +830,12 @@ impl ConfigGlue for BsdConfigGlue {
     fn nam2blk(&self) -> &'static [kernel::dev::disk::Nam2blk] {
         crate::machine::autoconf::nam2blk()
     }
+    fn swapdev(&self) -> i32 {
+        crate::machine::conf::swapdev()
+    }
+    fn boothowto_or(&self, flags: i32) {
+        BOOTHOWTO.fetch_or(flags, Ordering::Relaxed);
+    }
 }
 /* </CODE> */
 

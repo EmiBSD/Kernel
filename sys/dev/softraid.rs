@@ -143,7 +143,6 @@ use crate::kern::kern_rwlock::{rw_assert_wrlock, rw_enter_write, rw_exit_write, 
 use crate::kern::kern_synch::{tsleep_nsec, wakeup};
 use crate::kern::kern_task::{TaskqRef, task_add, task_set, taskq_create, taskq_destroy_leaked};
 use crate::kern::subr_autoconf::{config_detach, config_found, config_suspend};
-use crate::kern::subr_disk::ROOTDUID;
 use crate::kern::subr_pool::{pool_get, pool_put};
 use crate::kern::subr_prf::{Str, panic, printf, snprintf};
 use crate::kern::subr_xxx::blktochr;
@@ -1769,10 +1768,8 @@ pub fn sr_map_root() {
 
     // DNPRINTF(SR_D_MISC, "sr_map_root")
 
-    // SAFETY: `rootduid` is written by `setroot`, which calls this function, on the thread
-    // running main; nothing else touches it meanwhile.
-    let rootduid = unsafe { ROOTDUID.get_mut() };
-    if *rootduid == [0u8; DUID_SIZE] {
+    let rootduid = kernel::dev::disk::rootduid();
+    if rootduid == [0u8; DUID_SIZE] {
         // DNPRINTF(SR_D_MISC, "root duid is zero")
         return;
     }
@@ -1786,8 +1783,8 @@ pub fn sr_map_root() {
                 continue;
             };
             for duid in &sbm.sbm_boot_duid {
-                if *rootduid == duid.get() {
-                    *rootduid = sbm.sbm_root_duid.get();
+                if rootduid == duid.get() {
+                    kernel::dev::disk::set_rootduid(sbm.sbm_root_duid.get());
                     // DNPRINTF(SR_D_MISC, "root duid mapped to %s")
                     return;
                 }

@@ -101,8 +101,10 @@
 //! `disk_detach`, `disk_lookup`, `disk_openpart`, the statistics of `disk_busy` and
 //! `disk_unbusy`), the label code (`dkcksum`, `initdisklabel`, `checkdisklabel`,
 //! `readdoslabel` and its GPT, MBR and FAT spoofs, `setdisklabel`), the transfer bounds
-//! (`bounds_check_with_label`), `diskerr`, `disk_readlabel` and `disk_map` (the DUID lookup of
-//! `mount(2)` and of `opendev(3)`'s `DIOCMAP`).
+//! (`bounds_check_with_label`), `diskerr`, `disk_readlabel`, `disk_map` (the DUID lookup of
+//! `mount(2)` and of `opendev(3)`'s `DIOCMAP`), and the root, swap and dump choice (`setroot`,
+//! `getdisk`, `parsedisk`, `dk_mountroot`) with `swapgeneric.c`'s `rootdev`, `dumpdev`,
+//! `swdevt[]` and `mountroot`.
 //!
 //! Upstream: sys/kern/subr_disk.c @ 3ce1f3f79392
 //! Upstream: sys/sys/disk.h @ 3ce1f3f79392
@@ -137,6 +139,17 @@
 //! - `DEBUG`'s `DPRINTF`s are not configured.
 //! - `dk_state`, `dk_blkshift` and `dk_byteshift`, which no driver of the tree reads, are not
 //!   members of [`Disk`].
+//! - `setroot`'s `RB_ASKNAME` dialogue (the "root device:" and "swap device:" prompts read
+//!   with `getsn` under `cnpollc`) is reported and skipped (LZ's gap: its text blames
+//!   `getsn`; the pin is frozen). A kernel booted with `-a` goes on with its configured root.
+//!   `NFSCLIENT` (feature `nfsclient`): the `nfs_mountroot` branches are ported; `swapdev =
+//!   NODEV` (a constant of `conf.c` here) is not assigned, nothing reads it before `swdevt[0]`
+//!   is.
+//! - `dk_mountroot`: `EXT2FS` (feature `ext2fs`) and `CD9660` (feature `cd9660`) are the file
+//!   systems with a mountroot beside FFS, which the kernel always has (LZ's `!FFS` panic arm
+//!   has no configuration here).
+//! - `parsedisk` returns the device and the `dev_t` as an `Option` pair instead of filling
+//!   `*devp`; `getdisk` likewise.
 //!
 //! ## Redesign
 //! - N7.1d: `struct disk` was LZ's `Disk` of `Cell`s embedded in each zeroed softc, with a
@@ -174,12 +187,17 @@
 //! - `softraid_disk_attach` (softraid callback, do not use!) is a registered `fn`
 //!   ([`softraid_hooks`]), with `sr_map_root` beside it, instead of a `bsd` import: the
 //!   kernel names nothing of `bsd`.
+//! - The root choice (`setroot`, `dk_mountroot`) is the kernel's with `swapgeneric.c`'s
+//!   statics: `rootdev`, `dumpdev`, `swdevt[]` atomics, `mountroot` a [`Mountroot`] (the C's
+//!   function pointer compared with `nfs_mountroot`'s address), `bootduid`/`rootduid` one word
+//!   each, `rootdv` a counted `DevRef`; the machine's `nam2blk[]`, `swapdev` and `boothowto
+//!   |= RB_ASKNAME` come through `ConfigGlue`.
 //! - LZ's 22 `unsafe` of `subr_disk.rs` and 7 of `sys/disk.rs` are gone (the module has
 //!   none).
 
 use core::fmt::{self, Write as _};
 use core::mem::offset_of;
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU64, Ordering};
 
 use hal::cpu::intr::{IPL_BIO, IPL_NONE};
 use hal::ds::pinlist::{PinEntry, PinList};
@@ -189,6 +207,7 @@ use hal::random::{arc4random_buf, enqueue_randomness};
 use hal::sync::mutex::Mutexed;
 use hal::sync::once::OnceStatic;
 use hal::sync::rwlock::{RW_INTR, RawRwlock, WriteWitness};
+use hal::sync::sleep::tsleep_nsec;
 use hal::sync::slot::ReadMostly;
 use hal::sys::disk::{DKF_CONSTRUCTED, DKF_NOLABELREAD, DKF_OPENED, DM_OPENBLCK, DM_OPENPART};
 use hal::sys::disk::{DS_DISKNAMELEN, Diskstats};
@@ -207,6 +226,7 @@ use hal::sys::disklabel::{
 use hal::sys::dkio::DIOCGDINFO;
 use hal::sys::fcntl::FREAD;
 use hal::sys::net_if::IfTimeval;
+use hal::sys::reboot::RB_ASKNAME;
 use hal::sys::stat::{S_IFBLK, S_IFCHR};
 use hal::sys::types::{Daddr, Dev, major, makedev, minor};
 use hal::sys::uuid::Uuid;
@@ -214,10 +234,13 @@ use libz::crc32;
 
 use crate::assert::kpanic;
 use crate::base::log::LOG_PRINTF;
+use crate::base::prf::unported;
 use crate::base::prf::{Str, printf};
 use crate::base::task::{SYSTQ, Task, task_add};
-use crate::dev::autoconf::config_nam2blk;
-use crate::dev::device::{DevRef, Device};
+use crate::dev::autoconf::{
+    alldevs_next, config_boothowto, config_boothowto_or, config_nam2blk, config_swapdev,
+};
+use crate::dev::device::{DV_DISK, DevRef, Device};
 use crate::fs::bio::{brelse, geteblk};
 use crate::fs::buf::{
     B_BUSY, B_DONE, B_ERROR, B_INVAL, B_RAW, B_READ, B_WRITE, Buf, BufRef, MAXPHYS,
@@ -227,7 +250,7 @@ use crate::fs::ufs::ufs::inode::{words_get, words_read_bytes, words_write_bytes}
 use crate::fs::vops::{Cred, vop_close, vop_ioctl, vop_open};
 use crate::proc::ProcGlue;
 use crate::sys::errno::Errno;
-use crate::time::clock::Timeval;
+use crate::time::clock::{Timeval, sec_to_nsec};
 use crate::time::tc::microuptime;
 
 /// `DUID_SIZE`.
@@ -1705,6 +1728,20 @@ pub fn disk_init() {
 /// Attach a disk: link it on `disklist`, record its device `dv` and the raw partition's
 /// block device, and queue the read of its label on `systq`.
 pub fn disk_attach<G: ProcGlue>(dv: Option<&DevRef>, dk: &DiskRef) {
+    attach::<G>(dv, dv.map(|d| (d.xname().as_bytes(), d.unit())), dk);
+}
+
+/// `disk_attach` of a pseudo-device's disk that has no node in the device tree (`bsd`'s
+/// vnd(4), whose `struct device` its `vndattach` makes by hand): no `dk_device`, the block
+/// device from the device's name `xname` and `unit`, as the C's `findblkmajor(dv)` and
+/// `dv->dv_unit` give it.
+pub fn disk_attach_unit<G: ProcGlue>(xname: &[u8], unit: i32, dk: &DiskRef) {
+    attach::<G>(None, Some((xname, unit)), dk);
+}
+
+/// `disk_attach`'s body: `ident` is the device's name and unit (`dv_xname`, `dv_unit`), when
+/// there is a device.
+fn attach<G: ProcGlue>(dv: Option<&DevRef>, ident: Option<(&[u8], i32)>, dk: &DiskRef) {
     hal::sync::klock::kernel_assert_locked();
 
     // Allocate and initialize the disklabel structures: the block holds them (zeroed).
@@ -1724,11 +1761,11 @@ pub fn disk_attach<G: ProcGlue>(dv: Option<&DevRef>, dk: &DiskRef) {
     // Store device structure and number for later use.
     drop(dk.dk_device.replace(dv.cloned()));
     dk.dk_devno.store(NODEV, Ordering::Relaxed);
-    if let Some(dv) = dv {
-        let majdev = findblkmajor(dv);
+    if let Some((xname, unit)) = ident {
+        let majdev = findblkmajor_name(xname);
         if majdev >= 0 {
             dk.dk_devno.store(
-                makediskdev(majdev as u32, dv.unit() as u32, RAW_PART),
+                makediskdev(majdev as u32, unit as u32, RAW_PART),
                 Ordering::Relaxed,
             );
         }
@@ -1931,7 +1968,11 @@ pub fn disk_stats(dk: &Disk) -> Diskstats {
 
 /// `findblkmajor`: the block major of a disk device, from its name (`nam2blk[]`), or -1.
 pub fn findblkmajor(dv: &Device) -> i32 {
-    let name = dv.xname().as_bytes();
+    findblkmajor_name(dv.xname().as_bytes())
+}
+
+/// `findblkmajor`'s lookup of the device name `name` (`sd0`, `vnd1`, ...).
+fn findblkmajor_name(name: &[u8]) -> i32 {
     let len = name
         .iter()
         .position(u8::is_ascii_digit)
@@ -2118,6 +2159,412 @@ pub fn duid_format(duid: &[u8; DUID_SIZE]) -> [u8; 2 * DUID_SIZE] {
         s[2 * i + 1] = HEX[usize::from(b & 0xf)];
     }
     s
+}
+
+/// `int (*mountroot)(void)`: which routine mounts the root file system (the module's
+/// redesign: the C's function pointer, compared with `nfs_mountroot`'s address, is an enum).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mountroot {
+    /// `dk_mountroot`: a disk root.
+    Disk,
+    /// `nfs_mountroot`: a root on NFS.
+    Nfs,
+}
+
+/// `rootdev`: the root device, `NODEV` until `setroot` picks one (`swapgeneric.c`'s).
+pub static ROOTDEV: AtomicI32 = AtomicI32::new(NODEV);
+
+/// `dumpdev`: the dump device (`swapgeneric.c`'s).
+pub static DUMPDEV: AtomicI32 = AtomicI32::new(NODEV);
+
+/// `swdevt[]`: the swap devices, `NODEV`-terminated ("to be filled in" by `setroot`);
+/// `swapgeneric.c`'s, with room for the RAMDISK configuration's one swap device.
+pub static SWDEVT: [AtomicI32; 2] = [AtomicI32::new(NODEV), AtomicI32::new(NODEV)];
+
+/// `mountroot`: 0 is NULL (the kernel is "generic": `setroot` picks one), then
+/// [`Mountroot::Disk`] and [`Mountroot::Nfs`].
+static MOUNTROOT: AtomicU8 = AtomicU8::new(0);
+
+/// `bootduid`: DUID of boot disk, its 8 bytes in one word. Written by the machine's boot glue
+/// before autoconf.
+static BOOTDUID: AtomicU64 = AtomicU64::new(0);
+
+/// `rootduid`: DUID of root disk, its 8 bytes in one word. Written by `setroot` (and
+/// softraid's `sr_map_root`, which it calls).
+static ROOTDUID: AtomicU64 = AtomicU64::new(0);
+
+/// `rootdv`: the root device, chosen by `setroot`.
+static ROOTDV: ReadMostly<Option<DevRef>> = ReadMostly::new(None);
+
+/// `mountroot = m` (the configuration's `swapgeneric.c`/`swapbsd.c`, and `setroot`).
+pub fn mountroot_set(m: Option<Mountroot>) {
+    let v = match m {
+        None => 0,
+        Some(Mountroot::Disk) => 1,
+        Some(Mountroot::Nfs) => 2,
+    };
+    MOUNTROOT.store(v, Ordering::Relaxed);
+}
+
+/// `mountroot`.
+pub fn mountroot_get() -> Option<Mountroot> {
+    match MOUNTROOT.load(Ordering::Relaxed) {
+        1 => Some(Mountroot::Disk),
+        2 => Some(Mountroot::Nfs),
+        _ => None,
+    }
+}
+
+/// `(*mountroot)()`: `None` when no root is configured (the C's NULL `mountroot`).
+pub fn mountroot<G: ProcGlue>() -> Option<Result<(), Errno>> {
+    match mountroot_get()? {
+        Mountroot::Disk => Some(dk_mountroot::<G>()),
+        Mountroot::Nfs => Some(nfs_mountroot::<G>()),
+    }
+}
+
+/// `bootduid`.
+pub fn bootduid() -> [u8; DUID_SIZE] {
+    BOOTDUID.load(Ordering::Relaxed).to_ne_bytes()
+}
+
+/// `memcpy(bootduid, duid, sizeof(bootduid))` (the machine's boot glue).
+pub fn set_bootduid(duid: [u8; DUID_SIZE]) {
+    BOOTDUID.store(u64::from_ne_bytes(duid), Ordering::Relaxed);
+}
+
+/// `rootduid`.
+pub fn rootduid() -> [u8; DUID_SIZE] {
+    ROOTDUID.load(Ordering::Relaxed).to_ne_bytes()
+}
+
+/// `memcpy(rootduid, duid, sizeof(rootduid))` (`setroot`, softraid's `sr_map_root`).
+pub fn set_rootduid(duid: [u8; DUID_SIZE]) {
+    ROOTDUID.store(u64::from_ne_bytes(duid), Ordering::Relaxed);
+}
+
+/// `rootdv`: the root device `setroot` chose.
+pub fn rootdv() -> Option<DevRef> {
+    ROOTDV.read().clone()
+}
+
+/// `nfs_mountroot`: the `mountroot` of a root on NFS, over `swdevt[0]` and the machine's
+/// `swapdev`; without `NFSCLIENT` there is none (`setroot` never chooses it).
+fn nfs_mountroot<G: ProcGlue>() -> Result<(), Errno> {
+    #[cfg(feature = "nfsclient")]
+    {
+        crate::fs::nfs::nfs_vfsops::nfs_mountroot::<G>(&SWDEVT[0], config_swapdev())
+    }
+    #[cfg(not(feature = "nfsclient"))]
+    Err(Errno::ENODEV)
+}
+
+/// `dk_mountroot`: the `mountroot` of a disk root: reads `rootdev`'s label and mounts the
+/// root partition with the mountroot of its file system type.
+pub fn dk_mountroot<G: ProcGlue>() -> Result<(), Errno> {
+    let rootdev = ROOTDEV.load(Ordering::Relaxed);
+    let part = diskpart(rootdev) as usize;
+    let swapdev = config_swapdev();
+
+    let mut dl = Disklabel::zeroed();
+    if let Err(error) = disk_readlabel::<G>(&mut dl, rootdev) {
+        kpanic(format_args!("{error}"));
+    }
+
+    if dl_getpsize(&dl.d_partitions[part]) == 0 {
+        kpanic(format_args!("root filesystem has size 0"));
+    }
+    let fstype = dl.d_partitions[part].p_fstype;
+    #[cfg(feature = "ext2fs")]
+    if fstype == hal::sys::disklabel::FS_EXT2FS {
+        return crate::fs::ufs::ext2fs::ext2fs_vfsops::ext2fs_mountroot::<G>(rootdev, swapdev);
+    }
+    #[cfg(feature = "cd9660")]
+    if fstype == hal::sys::disklabel::FS_ISO9660 {
+        return crate::fs::isofs::cd9660::cd9660_vfsops::cd9660_mountroot::<G>(rootdev, swapdev);
+    }
+    if fstype != FS_BSDFFS {
+        printf(format_args!(
+            "filesystem type {fstype} not known.. assuming ffs\n"
+        ));
+    }
+    crate::fs::ufs::ffs::ffs_vfsops::ffs_mountroot::<G>(rootdev, swapdev)
+}
+
+/// `getdisk`: `parsedisk`, listing the choices when `str` names no disk.
+pub fn getdisk(str: &[u8], defpart: u32) -> Option<(DevRef, Dev)> {
+    let found = parsedisk(str, defpart);
+    if found.is_none() {
+        printf(format_args!("use one of: exit"));
+        let mut d = alldevs_next(None);
+        while let Some(n) = d {
+            if n.class() == DV_DISK {
+                printf(format_args!(" {}[a-p]", n.xname()));
+            }
+            #[cfg(feature = "nfsclient")]
+            if n.class() == crate::dev::device::DV_IFNET {
+                printf(format_args!(" {}", n.xname()));
+            }
+            d = alldevs_next(Some(&n));
+        }
+        printf(format_args!("\n"));
+    }
+    found
+}
+
+/// `parsedisk`: the disk device `str` names (`wd0`, `rd0a`, ...) and its block device for
+/// the partition the name ends in (`defpart` without one); with `NFSCLIENT`, a network
+/// interface and `NODEV`.
+pub fn parsedisk(str: &[u8], defpart: u32) -> Option<(DevRef, Dev)> {
+    let mut len = str.len();
+    if len == 0 {
+        return None;
+    }
+    let part = match dl_partname2num(str[len - 1]) {
+        Some(n) if n < MAXPARTITIONS => {
+            len -= 1;
+            n as u32
+        }
+        _ => defpart,
+    };
+
+    let mut d = alldevs_next(None);
+    while let Some(n) = d {
+        if n.class() == DV_DISK && n.xname().as_bytes() == &str[..len] {
+            let majdev = findblkmajor(&n);
+            if majdev < 0 {
+                return None;
+            }
+            let dev = makediskdev(majdev as u32, n.unit() as u32, part);
+            return Some((n, dev));
+        }
+        #[cfg(feature = "nfsclient")]
+        if n.class() == crate::dev::device::DV_IFNET && n.xname().as_bytes() == &str[..len] {
+            return Some((n, NODEV));
+        }
+        d = alldevs_next(Some(&n));
+    }
+    None
+}
+
+/// The first attached disk for which `f` holds (`TAILQ_FOREACH` ... `break`).
+fn disk_find(f: impl Fn(&Disk) -> bool) -> Option<DiskRef> {
+    let mut d = disk_next(None);
+    while let Some(dk) = d {
+        if f(&dk) {
+            return Some(dk);
+        }
+        d = disk_next(Some(&dk));
+    }
+    None
+}
+
+/// `setroot`: chooses the root, swap and dump devices (`rootdev`, `swdevt[0]`, `dumpdev`)
+/// from the configuration, the boot device and the boot disk's DUID, and sets `mountroot`.
+pub fn setroot<G: ProcGlue>(bootdv: Option<DevRef>, part: u32, exitflags: i32) {
+    let _ = exitflags; // reboot(exitflags) answers "exit" at the prompt (RB_ASKNAME, below).
+    let mut bootdv = bootdv;
+    let mut part = part;
+
+    // Ensure that all disk attach callbacks have completed.
+    let mut slept = 0;
+    loop {
+        let pending = disk_find(|dk| dk.devno() != NODEV && dk.flags() & DKF_OPENED == 0);
+        let Some(dk) = pending else { break };
+        let _ = tsleep_nsec(
+            core::ptr::from_ref::<Disk>(&dk),
+            0,
+            "dkopen",
+            sec_to_nsec(1),
+        );
+        slept += 1;
+        if slept >= 5 {
+            break;
+        }
+    }
+
+    if slept == 5 {
+        printf(format_args!("disklabels not read:"));
+        let mut d = disk_next(None);
+        while let Some(dk) = d {
+            if dk.devno() != NODEV && dk.flags() & DKF_OPENED == 0 {
+                printf(format_args!(" {}", Str(dk.name())));
+            }
+            d = disk_next(Some(&dk));
+        }
+        printf(format_args!("\n"));
+    }
+
+    let mut bduid = bootduid();
+    if duid_iszero(&bduid) {
+        // Locate DUID for boot disk since it was not provided.
+        let dk = disk_find(|dk| match &bootdv {
+            Some(b) => dk.is_device(b),
+            None => dk.device().is_none(),
+        });
+        if let Some(dk) = dk {
+            bduid = dk.uid();
+            set_bootduid(bduid);
+        }
+    } else if bootdv.is_none() {
+        // Locate boot disk based on the provided DUID.
+        if let Some(dv) = disk_find(|dk| dk.uid() == bduid).and_then(|dk| dk.device()) {
+            bootdv = Some(dv);
+        }
+    }
+    set_rootduid(bduid);
+
+    // NSOFTRAID > 0
+    sr_map_root();
+    let rduid = rootduid();
+
+    // If `swap generic' and we couldn't determine boot device, ask the user.
+    let mut dk_found: Option<DiskRef> = None;
+    let generic = mountroot_get().is_none();
+    if generic && bootdv.is_none() {
+        config_boothowto_or(RB_ASKNAME);
+    }
+    if config_boothowto() & RB_ASKNAME != 0 {
+        // The "root device" and "swap device" prompts (getsn under cnpollc).
+        let _ = unported!("setroot: RB_ASKNAME prompts (getsn)");
+        if generic && bootdv.is_none() {
+            printf(format_args!("root device: none configured\n"));
+            return;
+        }
+    }
+    let rootdev = ROOTDEV.load(Ordering::Relaxed);
+    let rootdv: DevRef;
+    if mountroot_get() == Some(Mountroot::Nfs) {
+        // `mountroot == nfs_mountroot'
+        let Some(dv) = bootdv.clone() else { return };
+        rootdv = dv;
+        ROOTDEV.store(NODEV, Ordering::Relaxed);
+        DUMPDEV.store(NODEV, Ordering::Relaxed);
+        // swapdev = NODEV: see the module's deviations.
+    } else if generic && rootdev == NODEV {
+        // `swap generic'
+        let Some(mut dv) = bootdv.clone() else { return };
+
+        if dv.class() == DV_DISK && !duid_iszero(&rduid) {
+            let Some(dk) = disk_find(|dk| dk.uid() == rduid) else {
+                kpanic(format_args!(
+                    "root device ({}) not found",
+                    Str(&duid_format(&rduid))
+                ));
+            };
+            if let Some(d) = dk.device() {
+                dv = d;
+            }
+            dk_found = Some(dk);
+        }
+        rootdv = dv;
+
+        let majdev = findblkmajor(&rootdv);
+        let nswapdev = if majdev >= 0 {
+            // Root and swap are on the disk. Assume swap is on partition b.
+            let unit = rootdv.unit() as u32;
+            ROOTDEV.store(makediskdev(majdev as u32, unit, part), Ordering::Relaxed);
+            makediskdev(majdev as u32, unit, 1)
+        } else {
+            // Root and swap are on a net.
+            NODEV
+        };
+        DUMPDEV.store(nswapdev, Ordering::Relaxed);
+        SWDEVT[0].store(nswapdev, Ordering::Relaxed);
+    } else {
+        // Completely pre-configured, but we want rootdv ..
+        let majdev = major(rootdev) as i32;
+        let Some(name) = findblkname(majdev) else {
+            return;
+        };
+        let unit = diskunit(rootdev);
+        part = diskpart(rootdev);
+        let mut buf = LineBuf::<128>::new();
+        let _ = write!(
+            buf,
+            "{}{}{}",
+            Str(name),
+            unit,
+            char::from(dl_partnum2name(part as usize).unwrap_or(b'?'))
+        );
+        let Some((dv, _)) = parsedisk(buf.bytes(), 0) else {
+            kpanic(format_args!("root device ({}) not found", Str(buf.bytes())));
+        };
+        rootdv = dv;
+    }
+    drop(ROOTDV.replace(Some(rootdv.clone())));
+
+    if let Some(bdv) = &bootdv
+        && bdv.class() == crate::dev::device::DV_IFNET
+        && let Some(ifp) = crate::net::if_::if_unit(bdv.xname().as_bytes())
+    {
+        let _ = crate::net::if_::if_addgroup(ifp, b"netboot");
+        crate::net::if_::if_put(Some(ifp));
+    }
+
+    if rootdv.class() == DV_DISK {
+        mountroot_set(Some(Mountroot::Disk));
+        part = diskpart(ROOTDEV.load(Ordering::Relaxed));
+    } else {
+        #[cfg(feature = "nfsclient")]
+        if rootdv.class() == crate::dev::device::DV_IFNET {
+            mountroot_set(Some(Mountroot::Nfs));
+            crate::fs::nfs::nfs_boot::set_nfsbootdevname(rootdv.xname().as_bytes());
+            return;
+        }
+        printf(format_args!(
+            "can't figure root, hope your kernel is right\n"
+        ));
+        return;
+    }
+
+    let partname = char::from(dl_partnum2name(part as usize).unwrap_or(b'?'));
+    printf(format_args!("root on {}{partname}", rootdv.xname()));
+
+    if let Some(dk) = dk_found
+        && dk.is_device(&rootdv)
+    {
+        printf(format_args!(" ({}.{partname})", Str(&duid_format(&rduid))));
+    }
+
+    // Make the swap partition on the root drive the primary swap.
+    let rootdev = ROOTDEV.load(Ordering::Relaxed);
+    let mut temp = NODEV;
+    let mut found = false;
+    for sw in &SWDEVT {
+        let d = sw.load(Ordering::Relaxed);
+        if d == NODEV {
+            break;
+        }
+        if major(rootdev) == major(d) && diskunit(rootdev) == diskunit(d) {
+            temp = SWDEVT[0].load(Ordering::Relaxed);
+            SWDEVT[0].store(d, Ordering::Relaxed);
+            sw.store(temp, Ordering::Relaxed);
+            found = true;
+            break;
+        }
+    }
+    if found {
+        // If dumpdev was the same as the old primary swap device, move it to the new
+        // primary swap device.
+        if temp == DUMPDEV.load(Ordering::Relaxed) {
+            DUMPDEV.store(SWDEVT[0].load(Ordering::Relaxed), Ordering::Relaxed);
+        }
+    }
+    let print_dev = |what: &str, d: Dev| {
+        let name = findblkname(major(d) as i32).unwrap_or(b"??");
+        let p = char::from(dl_partnum2name(diskpart(d) as usize).unwrap_or(b'?'));
+        printf(format_args!(" {what} on {}{}{p}", Str(name), diskunit(d)));
+    };
+    let sw0 = SWDEVT[0].load(Ordering::Relaxed);
+    if sw0 != NODEV {
+        print_dev("swap", sw0);
+    }
+    let dumpdev = DUMPDEV.load(Ordering::Relaxed);
+    if dumpdev != NODEV {
+        print_dev("dump", dumpdev);
+    }
+    printf(format_args!("\n"));
 }
 
 const _: () = {
@@ -2848,6 +3295,31 @@ mod tests {
         assert_eq!(&bp.bytes()[..10], b"sector two");
         // Past the disk: the strategy's error.
         assert_eq!(readdisksector(&mut bp, &lp, 9), Err(Errno::EIO));
+    }
+
+    #[test]
+    fn the_root_statics_round_trip() {
+        let _g = setup(1);
+        mountroot_set(Some(Mountroot::Nfs));
+        assert_eq!(mountroot_get(), Some(Mountroot::Nfs));
+        mountroot_set(Some(Mountroot::Disk));
+        assert_eq!(mountroot_get(), Some(Mountroot::Disk));
+        mountroot_set(None);
+        assert_eq!(mountroot_get(), None);
+        assert!(mountroot::<crate::fs::testfs::TestGlue>().is_none());
+        let d = [1, 2, 3, 4, 5, 6, 7, 8];
+        set_bootduid(d);
+        assert_eq!(bootduid(), d);
+        set_rootduid([0; DUID_SIZE]);
+        assert!(duid_iszero(&rootduid()));
+        set_bootduid([0; DUID_SIZE]);
+    }
+
+    #[test]
+    fn parsedisk_refuses_what_names_no_disk() {
+        let _g = setup(1);
+        assert!(parsedisk(b"", 0).is_none());
+        assert!(parsedisk(b"nosuch9a", 0).is_none());
     }
 }
 /* </TESTS> */

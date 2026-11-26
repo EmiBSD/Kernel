@@ -66,43 +66,29 @@
 //!   `bsd.rd` would. Without a ramdisk the kernel stays generic.
 //! - `swdevt[]` has room for the RAMDISK configuration's one swap device; `uvm_swap.c`, its
 //!   reader, is not ported.
+//! - N7.1d: `rootdev`, `dumpdev`, `swdevt[]` and `mountroot` are the kernel's
+//!   (`kernel::dev::disk`, the root choice's owner), re-exported here; `mountroot` is a
+//!   `Mountroot` (`dk_mountroot`, `nfs_mountroot`) and `swapconf_rdroot` is safe.
 
-use core::sync::atomic::AtomicI32;
+use core::sync::atomic::Ordering::Relaxed;
 
-use libkern::StaticCell;
+pub use kernel::dev::disk::{DUMPDEV, ROOTDEV, SWDEVT};
+use kernel::dev::disk::{Mountroot, mountroot_set};
 
 use crate::sys::disklabel::makediskdev;
 use crate::sys::param::NODEV;
-use crate::sys::systm::MountrootFn;
-
-/// `mountroot`: the routine that mounts the root file system; NULL tells `autoconf.c` that
-/// the kernel is "generic" (`setroot` then picks one).
-pub static MOUNTROOT: StaticCell<Option<MountrootFn>> = StaticCell::new(None);
-
-/// `rootdev`: the root device, `NODEV` until `setroot` picks one.
-pub static ROOTDEV: AtomicI32 = AtomicI32::new(NODEV);
-
-/// `dumpdev`: the dump device.
-pub static DUMPDEV: AtomicI32 = AtomicI32::new(NODEV);
-
-/// `swdevt[]`: the swap devices, `NODEV`-terminated ("to be filled in" by `setroot`).
-pub static SWDEVT: [AtomicI32; 2] = [AtomicI32::new(NODEV), AtomicI32::new(NODEV)];
 
 /// The `rd(4)` block major on both architectures (`nam2blk[]` of their `autoconf.c`).
 const RD_BMAJOR: u32 = 17;
 
 /// What `swapbsd.c` holds for `config bsd root on rd0a swap on rd0b`: `rootdev` rd0a,
-/// `dumpdev` and `swdevt[0]` rd0b, `mountroot` `dk_mountroot`.
-///
-/// # Safety
-/// Called once, on the boot CPU before `main` reads `mountroot` (no other access).
-pub unsafe fn swapconf_rdroot() {
-    use core::sync::atomic::Ordering::Relaxed;
+/// `dumpdev` and `swdevt[0]` rd0b, `mountroot` `dk_mountroot`. Before `main` reads
+/// `mountroot` (the boot CPU's hand-over).
+pub fn swapconf_rdroot() {
     ROOTDEV.store(makediskdev(RD_BMAJOR, 0, 0), Relaxed);
     DUMPDEV.store(makediskdev(RD_BMAJOR, 0, 1), Relaxed);
     SWDEVT[0].store(makediskdev(RD_BMAJOR, 0, 1), Relaxed);
     SWDEVT[1].store(NODEV, Relaxed);
-    // SAFETY: the caller guarantees the boot CPU is the only accessor.
-    unsafe { MOUNTROOT.write(Some(crate::kern::subr_disk::dk_mountroot)) };
+    mountroot_set(Some(Mountroot::Disk));
 }
 /* </CODE> */

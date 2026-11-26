@@ -99,7 +99,7 @@ pub static SAFEPRI: AtomicI32 = AtomicI32::new(0);
 
 /// `rootdev`, `dumpdev`, `mountroot`: defined by the kernel configuration (`config(8)`'s
 /// `swapgeneric.c`, `sys/conf/swapgeneric.rs`).
-pub use crate::conf::swapgeneric::{DUMPDEV, MOUNTROOT, ROOTDEV};
+pub use crate::conf::swapgeneric::{DUMPDEV, ROOTDEV};
 
 /// The type of `mountroot`: mounts the root file system and puts it on `mountlist`.
 pub type MountrootFn = fn() -> Result<(), Errno>;

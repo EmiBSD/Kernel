@@ -77,6 +77,9 @@
 //! to it (`sys::buf::lend`, `biowait`, `token_of`).
 //!
 //! ## Deviations
+//! - A pseudo-device's disk whose `struct device` its driver made by hand (vnd(4): no
+//!   `cfdata`, no node in the kernel's tree) attaches without a `dk_device`
+//!   (`disk_attach_unit`): its block device comes from its name and unit, as the C's.
 //! - A slot read before `construct` (or after `destroy`) is `panic(9)` where the C reads the
 //!   zeroed `struct disk`: no driver of the tree does (each constructs in its attach).
 //!
@@ -88,7 +91,8 @@ use hal::sync::slot::ReadMostly;
 pub use hal::sys::disk::*;
 pub use kernel::dev::disk::{
     DUID_SIZE, Disk, DiskLock, DiskRef, LabelGeom, bounds_check_with_label, checkdisklabel,
-    diskerr, dkcksum, duid_equal, duid_format, duid_iszero, initdisklabel, setdisklabel,
+    diskerr, dkcksum, duid_equal, duid_format, duid_iszero, initdisklabel, set_bootduid,
+    setdisklabel,
 };
 
 use crate::kern::proc_glue::BsdProcGlue;
@@ -209,8 +213,19 @@ impl Default for DiskSlot {
 /// `disk_attach(dv, &sc->sc_dk)`: the slot's disk attached for the legacy device `dv` (its
 /// kernel node, `subr_autoconf`'s `node_of`).
 pub fn disk_attach(dv: Option<&Device>, sc_dk: &DiskSlot) {
-    let node = dv.map(node_of);
-    kernel::dev::disk::disk_attach::<BsdProcGlue>(node.as_ref(), &sc_dk.get());
+    let dk = sc_dk.get();
+    match dv {
+        // A pseudo-device whose `struct device` its driver made by hand (vnd(4)): no node.
+        Some(d) if d.dv_cfdata.get().is_none() => {
+            let xname = d.dv_xname.get();
+            let n = xname.iter().position(|&c| c == 0).unwrap_or(xname.len());
+            kernel::dev::disk::disk_attach_unit::<BsdProcGlue>(&xname[..n], d.dv_unit.get(), &dk);
+        }
+        _ => {
+            let node = dv.map(node_of);
+            kernel::dev::disk::disk_attach::<BsdProcGlue>(node.as_ref(), &dk);
+        }
+    }
 }
 
 /// `disk_detach(&sc->sc_dk)`.

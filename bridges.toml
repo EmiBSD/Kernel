@@ -626,6 +626,8 @@ paid_by = "N7"
 # for the kernel's autoconfiguration (N7.1a), implemented by sys/kern/subr_autoconf.rs's
 # BsdConfigGlue over machine::autoconf and registered by bsd's config_init. Paid when the
 # tables become the registry (decision 45 (3), N9.1; boot -c's UKC edits them at N7.1c).
+# N7.1d: also nam2blk[], conf.c's swapdev and boothowto |= RB_ASKNAME, for the kernel's root
+# choice (kernel::dev::disk's setroot, dk_mountroot, findblkmajor).
 # kernel::dev::autoconf::ConfigGlue
 [[bridge]]
 trait = "ConfigGlue"

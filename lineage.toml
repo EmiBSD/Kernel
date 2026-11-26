@@ -1627,7 +1627,8 @@ adapted_by = ["sys/hal/vm/pmap.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs",
 [[module]]
 rust = "sys/arch/arm64/arm64/autoconf.rs"
 lz = ["sys/arch/arm64/arm64/autoconf.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/dev/disk.rs"]
 notes = "M4/M5: cpu_configure as far as the interrupts go; M7b: cpu_configure in the C's order (splhigh, softintr_init, config_rootfound(\"mainbus\"), cold = 0, spl0; the GIC and the generic timer now attach through mainbus, attach_interrupt_controller and attach_timer are gone); unmap_startup (with codepatch_disable) and cpu_identify_cleanup reported; M7b: bus_dma_init runs (then selftest bus_dma_check on mainbus_dma_tag under feature qemu); device_register (empty, as in C) through machine::autoconf; nam2blk[]; diskconf waits for disks; cold lives in sys/systm.rs; M8: diskconf (setroot without a boot device; dumpconf reported); M10e: diskconf with NFSCLIENT: the interface whose MAC is bootmac (BOOTMAC, a StaticCell nothing fills under Limine) becomes the boot device through parsedisk; M11a: cpu_identify_cleanup runs (cpu.rs); cryptox_setup (CRYPTO with arm64_has_aes) still not called"
 
 [[module]]
@@ -2157,7 +2158,9 @@ notes = "M2: hz, tick, tick_nsec, utc_offset as atomics; maxprocess/maxthread/ma
 [[module]]
 rust = "sys/conf/swapgeneric.rs"
 lz = ["sys/conf/swapgeneric.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/dev/disk.rs"]
+notes = "N7.1d: rootdev, dumpdev, swdevt[] and mountroot are the kernel's (kernel::dev::disk), re-exported; swapconf_rdroot safe (LZ 2 unsafe)"
 
 [[module]]
 rust = "sys/conf/vers.rs"
@@ -4449,7 +4452,8 @@ notes = "M16a: struct sdhc_softc (repr(C) Softc; sc_host the attachment's array 
 [[module]]
 rust = "sys/dev/sdmmc/sdmmc.rs"
 lz = ["sys/dev/sdmmc/sdmmc.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/dev/disk.rs"]
 notes = "M16a: the whole file but SDMMC_IOCTL (not configured: sdmmc_ioctl and its bio_register not compiled) and SDMMC_DEBUG (sdmmc_dump_command not compiled, DPRINTFs comments): sdmmc_ca/cd, match/attach (kthread_create_deferred, config_pending)/detach/activate, sdmmc_holds_root_device, the task thread and queue (add/del/needs_discover/discover_task), card attach/detach, enable/disable, set_bus_power (lowest common voltage as sdmmc_lowest_ocr, host-tested), function alloc/free, scan, init, sdmmc_delay, app/mmc commands, go_idle_state, send_if_cond, set_relative_addr, select_card. 0/1 returns are Result<(), Errno> (EIO); the task thread's Proc is stored when kthread_create returns"
 
 [[module]]
@@ -5582,13 +5586,6 @@ lz = ["sys/kern/subr_autoconf.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/dev/autoconf.rs", "sys/kernel/dev/device.rs", "sys/kernel/dev/disk.rs"]
 notes = "N7.1a: the shim over kernel::dev::autoconf, every LZ name and signature kept for bsd's drivers (U4) and no logic of its own: impl ConfigRow and DriverOps for Cfdata (the DriverOps bridge), BsdConfigGlue (the ConfigGlue bridge, cfdata[] lent once per walk), LegacySoftc holding the node's dv_ref, node_of (a shadow node for a device made by hand), the cd_devs/cd_ndevs mirror kept by the kernel's hooks, device_hold for parsedisk, and the re-exports of AUTOCONF_SERIAL/CONFIG_PENDING/AUTOCONF_VERBOSE; docs/SCAFFOLDING.md; goes with the last legacy driver (N7.14)"
-
-[[module]]
-rust = "sys/kern/subr_disk.rs"
-lz = ["sys/kern/subr_disk.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs", "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs", "sys/kernel/fs/isofs/udf/udf_subr.rs", "sys/kernel/fs/nfs/nfs_vfsops.rs", "sys/kernel/fs/nfs/nfs_boot.rs", "sys/kernel/dev/autoconf.rs", "sys/kernel/dev/disk.rs"]
-notes = "N7.1d: the label code, the list, disk_map, disk_readlabel and disk_lookup are the kernel's (sys/kernel/dev/disk.rs); keeps the root choice over disk_next until N7.1d's next step"
 
 [[module]]
 rust = "sys/kern/subr_log.rs"
@@ -13597,7 +13594,7 @@ notes = "N4.7a: the adapter of kernel::base::log's <sys/syslog.h> (every constan
 rust = "sys/sys/systm.rs"
 lz = ["sys/sys/systm.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/sync/netlock.rs"]
+adapted_by = ["sys/hal/sync/netlock.rs", "sys/kernel/dev/disk.rs"]
 notes = "physmem only (defined here, filled by the machdeps; the C defines it per arch); the hostname/boottime globals, copyin/copyout, tsleep/wakeup and the other prototypes come with their files; M5-b2: cold and safepri (defined here like physmem), INFSLP, MAXTSLP; M6-a: struct sysent (Sysent::new for the generated table), sy_call_t (Result plus the retval registers), SY_NOLOCK, SCARG as sysargs; M6-b: sy_call_t takes &SysArgs (the six registers) and sysargs::<T> is safe; M7b: NET_LOCK/NET_UNLOCK/NET_LOCK_SHARED/NET_UNLOCK_SHARED and the NET_ASSERT_* (DIAGNOSTIC, splassert_ctl) as functions over netlock (defined in net/if_.rs), the assertions taking the caller's name for __func__; vfs stage 1: mountroot (MOUNTROOT, a StaticCell<Option<MountrootFn>> defined here like cold; NULL until setroot exists); ffs: rootdev as the ROOTDEV atomic (NODEV until setroot sets it); swapdev comes from the arch conf.c (machine::conf::swapdev); M11a: KERNEL_LOCK_INIT/KERNEL_LOCK/KERNEL_UNLOCK/KERNEL_ASSERT_LOCKED/KERNEL_ASSERT_UNLOCKED as kernel_lock_init()..kernel_assert_unlocked(), nothing without MULTIPROCESSOR; M11a: cond_signal"
 
 [[module]]
@@ -20725,6 +20722,11 @@ lz = "sys/sys/disk.rs::Disk::default"
 native = []
 kind = "dropped"
 reason = "a disk is made by Disk::new with its name and flags (disk_construct); the all-zero value a softc holds is the shim's empty DiskSlot (its Default)"
+
+[[module.fn]]
+lz = "sys/kern/subr_disk.rs::bfmt"
+native = ["LineBuf"]
+kind = "renamed"
 
 [[module]]
 rust = "sys/kernel/dev/disksubr.rs"

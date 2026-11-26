@@ -602,11 +602,17 @@ mod tests {
         unsafe { device_unref(dv) };
         assert!(rdlookup(1).is_none());
 
-        // The host has no `readdisklabel`; the label rdstrategy checks against is the spoofed
+        // The label rdstrategy checks the label read against is the spoofed
         // one, published before the read.
         let raw = makediskdev(17, 0, RAW_PART);
         let mut lp = Disklabel::zeroed();
-        assert_eq!(rdgetdisklabel(raw, sc, &mut lp, false), Err(Errno::ENODEV));
+        // The label read runs on the host now (the kernel's readdisklabel, N7.1d): a fresh
+        // buffer cache for its geteblk.
+        kernel::fs::bio::bio_test_reset();
+        kernel::fs::bufq::bufq_test_reset();
+        crate::sys::buf::bufinit();
+        // The image (sector i holds the byte i) has no label, MBR, ISO 9660 or UDF volume.
+        assert!(rdgetdisklabel(raw, sc, &mut lp, false).is_err());
         assert_eq!(&lp.d_typename[..8], b"RAM disk");
         assert_eq!(lp.d_nsectors as usize, SECTORS);
         let incore = sc.sc_dk.label();

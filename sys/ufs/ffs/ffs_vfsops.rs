@@ -57,26 +57,10 @@
 //! Upstream: sys/ufs/ffs/ffs_vfsops.c @ 3ce1f3f79392
 //!
 //! ## Deviations
-//! - `rootdev` is `sys/systm.rs`'s `ROOTDEV` and `swapdev` the machine's (`conf.c`) until N7
-//!   (docs/SCAFFOLDING.md); `rootvp` and `swapdev_vp` stay `init_main`'s statics, which the
-//!   kernel's `ffs_mountroot` reaches through `FileGlue::rootvp`, `set_rootvp` and
+//! - `ffs_mountroot` is the kernel's, called by the kernel's `dk_mountroot` (N7.1d: `bsd`'s
+//!   adapter over `rootdev` and `swapdev` is gone); `rootvp` and `swapdev_vp` stay
+//!   `init_main`'s statics, which it reaches through `FileGlue::rootvp`, `set_rootvp` and
 //!   `set_swapdev_vp` (`kern_descrip.rs`'s `BsdFileGlue`, docs/SCAFFOLDING.md, N7).
-
-use core::sync::atomic::Ordering;
-
-use crate::kern::proc_glue::BsdProcGlue;
-use crate::machine::conf::swapdev;
-use crate::sys::errno::Errno;
-use crate::sys::systm::ROOTDEV;
-
-/// `ffs_mountroot`: called by `main()` when ufs is going to be mounted as root: the kernel's,
-/// over `rootdev` and `swapdev`.
-pub fn ffs_mountroot() -> Result<(), Errno> {
-    kernel::fs::ufs::ffs::ffs_vfsops::ffs_mountroot::<BsdProcGlue>(
-        ROOTDEV.load(Ordering::Relaxed),
-        swapdev(),
-    )
-}
 /* </CODE> */
 
 /* <TESTS> */

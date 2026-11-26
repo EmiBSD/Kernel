@@ -159,7 +159,7 @@ use crate::sys::proc::{
 use crate::sys::reboot::{RB_GOODRANDOM, RB_SINGLE};
 use crate::sys::resourcevar::{Plimit, PlimitRef};
 use crate::sys::signalvar::Sigacts;
-use crate::sys::systm::{INFSLP, MOUNTROOT, SysArgs, kernel_lock, kernel_lock_init, kernel_unlock};
+use crate::sys::systm::{INFSLP, SysArgs, kernel_lock, kernel_lock_init, kernel_unlock};
 use crate::sys::types::Register;
 use crate::sys::ucred::{CredRef, Ucred};
 use crate::unported;
@@ -554,10 +554,8 @@ pub fn main() -> ! {
     // Make debug symbols available in ddb.
     let _ = unported!("db_ctf_init");
 
-    // SAFETY: written only by the boot path (`swapconf_rdroot`) and `setroot`, both before
-    // this read, on this thread.
-    let mountroot = unsafe { MOUNTROOT.read() };
-    let mounted = match mountroot {
+    // (*mountroot)(): the kernel's root choice (`kernel::dev::disk`).
+    let mounted = match kernel::dev::disk::mountroot::<crate::kern::proc_glue::BsdProcGlue>() {
         None => {
             // The C panics "cannot mount root" here; this kernel has no disk driver or file
             // system yet (stage 2), so it says so and goes on: init is exec'd from its boot
@@ -565,8 +563,8 @@ pub fn main() -> ! {
             kprintf!("cannot mount root: no root file system\n");
             false
         }
-        Some(f) => {
-            if f().is_err() {
+        Some(r) => {
+            if r.is_err() {
                 panic(format_args!("cannot mount root"));
             }
             true

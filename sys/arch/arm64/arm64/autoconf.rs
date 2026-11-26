@@ -62,8 +62,6 @@ use crate::arch::arm64::arm64::cpu::cpu_identify_cleanup;
 use crate::arch::arm64::arm64::machdep::COLD;
 use crate::kern::kern_softintr::softintr_init;
 use crate::kern::subr_autoconf::config_rootfound;
-#[cfg(feature = "nfsclient")]
-use crate::kern::subr_disk::parsedisk;
 use crate::machine::intr::{spl0, splhigh};
 #[cfg(feature = "nfsclient")]
 use crate::net::if_::IFNETLIST;
@@ -73,6 +71,8 @@ use crate::net::if_types::IFT_ETHER;
 use crate::netinet::if_ether::{ETHER_ADDR_LEN, arpcom_of};
 use crate::sys::device::{Device, Nam2blk};
 use crate::unported;
+#[cfg(feature = "nfsclient")]
+use kernel::dev::disk::parsedisk;
 
 /// `bootmac`: the MAC address the machine booted from over the network, handed over by the
 /// firmware (`None` under Limine).
@@ -83,9 +83,9 @@ pub static BOOTMAC: StaticCell<Option<[u8; ETHER_ADDR_LEN]>> = StaticCell::new(N
 /// `NFSCLIENT`, none otherwise).
 pub fn diskconf() {
     #[cfg(feature = "nfsclient")]
-    let mut bootdv: Option<&'static Device> = None;
+    let mut bootdv: Option<kernel::dev::device::DevRef> = None;
     #[cfg(not(feature = "nfsclient"))]
-    let bootdv: Option<&'static Device> = None;
+    let bootdv: Option<kernel::dev::device::DevRef> = None;
     let part = 0;
 
     #[cfg(feature = "nfsclient")]
@@ -103,7 +103,11 @@ pub fn diskconf() {
         }
     }
 
-    crate::kern::subr_disk::setroot(bootdv, part, crate::sys::reboot::RB_USERREQ);
+    kernel::dev::disk::setroot::<crate::kern::proc_glue::BsdProcGlue>(
+        bootdv,
+        part,
+        crate::sys::reboot::RB_USERREQ,
+    );
     let _ = crate::unported!("dumpconf (machdep.c)");
     // HIBERNATE: not configured.
 }

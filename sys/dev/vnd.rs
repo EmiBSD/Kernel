@@ -1102,11 +1102,19 @@ mod tests {
         sc.sc_dk.construct(b"vnd0", 0);
         disk_attach(Some(&sc.sc_dev), &sc.sc_dk);
 
-        // The host has no `readdisklabel`; the label vndstrategy checks against is the
+        // The label vndstrategy checks the label read against is the
         // fabricated one, published (initialised) before the read.
         let mut lp = Disklabel::zeroed();
         let raw = makediskdev(VND_BMAJ, 0, RAW_PART);
-        assert_eq!(vndgetdisklabel(raw, sc, &mut lp, false), Err(Errno::ENODEV));
+        // The label read runs on the host now (the kernel's readdisklabel, N7.1d): a fresh
+        // buffer cache for its geteblk.
+        kernel::fs::bio::bio_test_reset();
+        kernel::fs::bufq::bufq_test_reset();
+        crate::sys::buf::bufinit();
+        // vndopen marks the unit labelled before the read (vndstrategy refuses a unit without).
+        sc.sc_flags.set(sc.sc_flags.get() | VNF_HAVELABEL);
+        // The file (`i % 251` a sector) has no label, MBR, ISO 9660 or UDF volume.
+        assert!(vndgetdisklabel(raw, sc, &mut lp, false).is_err());
         assert_eq!(&lp.d_typename[..10], b"vnd device");
         assert_eq!(&lp.d_packname[..10], b"fictitious");
         assert_eq!(lp.d_type, DTYPE_VND);
