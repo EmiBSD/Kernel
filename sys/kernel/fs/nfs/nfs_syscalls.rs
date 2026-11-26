@@ -63,7 +63,7 @@
 //! the buffers `nfs_asyncio` queues and does their RPCs (`nfs_doio`). [`nfssvc_iod`]'s loop,
 //! which calls `nfs_doio`, and [`nfs_getset_niothreads`], which starts it, came with
 //! `nfs_doio` (N6.7a3), over these pieces; `nfssvc(2)` and the server's half (`nfssvc_nfsd`,
-//! `nfsrv_*`) stay `bsd`'s until N6.7b (D-5).
+//! `nfsrv_*`) are `nfssvc`'s (N6.7b2, the server since N6.7b4).
 //!
 //! ## Deviations
 //! - `nfs_asyncdaemon[]` holds the nfsiods' thread ids (0: a free slot; thread 0 is process

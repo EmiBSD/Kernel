@@ -48,6 +48,35 @@
  *
  *	@(#)nfsm_subs.h	8.2 (Berkeley) 3/30/95
  */
+
+/*
+ * Copyright (c) 1996 Christos Zoulas.  All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. All advertising materials mentioning features or use of this software
+ *    must display the following acknowledgement:
+ *	This product includes software developed by Christos Zoulas.
+ * 4. The name of the author may not be used to endorse or promote products
+ *    derived from this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
+ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+ * IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
+ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+ * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
 /* </LICENSES> */
 
 /* <CODE> */
@@ -59,7 +88,9 @@
 //! ...) are methods of the same cursors in `nfs_subs`.
 //!
 //! Upstream: sys/nfs/nfsm_subs.h @ 3ce1f3f79392
+//! Upstream: sys/nfs/nfs_var.h @ 3ce1f3f79392
 //! LZ: sys/nfs/nfsm_subs.rs@3c62ede68802
+//! LZ: sys/nfs/nfs_var.rs@e8249449d905
 //!
 //! ## Deviations
 //! - `int *nmi_errorp` is gone: every reader method returns `Result` and the RPC's owner
@@ -67,8 +98,9 @@
 //!   it stores the error); the caller's `goto nfsmout` is `?`.
 //! - [`nfsm_postop_attr`] (it loads the attribute cache) came with the vnode operations
 //!   (N6.7a3): it takes the node whose cache it loads (the C's `*vpp`'s), and the reply as
-//!   an `Option` of its reader (the C's `nmi_mrep == NULL` test); the server's `nfsd_*`
-//!   twins stay `bsd`'s until N6.7b.
+//!   an `Option` of its reader (the C's `nmi_mrep == NULL` test); the server reads its
+//!   requests with the same reader (`nfssvc::nd_reader`, N6.7b2), its `nfsd_*` twins gone
+//!   with `bsd`'s copy (N6.7b4).
 //!
 //! ## Redesign
 //! - LZ's cursor was an mbuf and a raw position into its data (`nmi_dpos: *mut u8`, checked
@@ -90,6 +122,9 @@
 //! - Every length from the wire is an `i32` compared as the C compares it (`nfsm_strsiz`'s
 //!   `len < 0 || len > maxlen`) before it becomes a size, and becomes one by `usize::try_from`,
 //!   never `as`; a read past the chain's end is `EBADRPC`, never a panic.
+//! - `nfs_var.h` (N6.7b4, when `bsd`'s copy went with the server): its prototypes are the
+//!   functions of the kernel's modules, its `nfsm_padlen` is here, and its `mb_offset` (a raw
+//!   address past an mbuf's data) has no user: the writer builds at its own offsets.
 
 use core::slice;
 

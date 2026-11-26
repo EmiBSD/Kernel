@@ -60,7 +60,9 @@
 //! `mkfifo`, `link`, `symlink`, `unlink`, `rename`, `mkdir`, `rmdir`), attributes (`access`,
 //! `stat`, `pathconf`, `readlink`, `chflags`, `chmod`, `chown`, `utimes`, `truncate`),
 //! `lseek`, `fsync`, `getdents`, `umask`, `revoke` and the positioned reads and writes, and
-//! the `Native` entries of the VFS calls (`VFS_ENTRIES`).
+//! the `Native` entries of the VFS calls (`VFS_ENTRIES`); since N6.7b4 also the NFS server's
+//! `nfssvc(2)`, `sysent[155]`'s row over `kernel::fs::nfs::nfssvc` and its `Native` entry
+//! (`native_nfssvc`), `subr_log`'s form for `sendsyslog(2)`.
 //!
 //! Upstream: sys/kern/vfs_syscalls.c @ 3ce1f3f79392
 //!
@@ -97,11 +99,11 @@ use crate::sys::syscall::{
     SYS_fchmod, SYS_fchmodat, SYS_fchown, SYS_fchownat, SYS_fhopen, SYS_fhstat, SYS_fhstatfs,
     SYS_fstatat, SYS_fstatfs, SYS_fsync, SYS_ftruncate, SYS_futimens, SYS_futimes, SYS_getdents,
     SYS_getfh, SYS_getfsstat, SYS_lchown, SYS_link, SYS_linkat, SYS_lseek, SYS_lstat, SYS_mkdir,
-    SYS_mkdirat, SYS_mkfifo, SYS_mkfifoat, SYS_mknod, SYS_mknodat, SYS_mount, SYS_open, SYS_openat,
-    SYS_pathconf, SYS_pathconfat, SYS_quotactl, SYS_readlink, SYS_readlinkat, SYS_rename,
-    SYS_renameat, SYS_revoke, SYS_rmdir, SYS_stat, SYS_statfs, SYS_symlink, SYS_symlinkat,
-    SYS_sync, SYS_truncate, SYS_umask, SYS_unlink, SYS_unlinkat, SYS_unmount, SYS_unveil,
-    SYS_utimensat, SYS_utimes,
+    SYS_mkdirat, SYS_mkfifo, SYS_mkfifoat, SYS_mknod, SYS_mknodat, SYS_mount, SYS_nfssvc, SYS_open,
+    SYS_openat, SYS_pathconf, SYS_pathconfat, SYS_quotactl, SYS_readlink, SYS_readlinkat,
+    SYS_rename, SYS_renameat, SYS_revoke, SYS_rmdir, SYS_stat, SYS_statfs, SYS_symlink,
+    SYS_symlinkat, SYS_sync, SYS_truncate, SYS_umask, SYS_unlink, SYS_unlinkat, SYS_unmount,
+    SYS_unveil, SYS_utimensat, SYS_utimes,
 };
 use crate::sys::syscallargs::*;
 use crate::sys::systm::{SysArgs, sysargs};
@@ -1729,6 +1731,42 @@ fn native_unlinkat(
         nr,
         SYS_unlinkat,
         [fd as Register, path as Register, flag as Register, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `nfssvc(2)` (`sysent[155]`, under the kernel lock: the C's `STD`), the NFS server's pseudo
+/// system call for the nfsds: the kernel's (N6.7b4), with `nfs_serv`'s `nfsrv3_procs[]`.
+/// Without `option NFSSERVER` the C's `suser` and then `ENOSYS`.
+#[cfg(any(feature = "nfsclient", feature = "nfsserver"))]
+pub fn sys_nfssvc(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
+    let uap: &SysNfssvcArgs = sysargs(v);
+    #[cfg(feature = "nfsserver")]
+    {
+        kernel::fs::nfs::nfssvc::sys_nfssvc(
+            p,
+            uap.flag.get(),
+            uap.argp.get().addr(),
+            &kernel::fs::nfs::nfs_serv::nfsrv3_procs::<crate::kern::proc_glue::BsdProcGlue>(),
+        )
+    }
+    #[cfg(not(feature = "nfsserver"))]
+    {
+        let _ = uap;
+        // Must be super user
+        crate::kern::kern_prot::suser(p)?;
+        Err(Errno::ENOSYS)
+    }
+}
+
+/// `KernelApi::nfssvc`, the `Native` nfssvc(2): the thread on this CPU runs `mi_syscall` on
+/// `sysent[155]` (the prologue still `bsd`'s: pledge, the pinned syscalls, the kernel lock),
+/// whose row is [`sys_nfssvc`]; another number is `ENOSYS`.
+pub fn native_nfssvc(nr: Register, flag: i32, argp: usize, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_nfssvc,
+        [flag as Register, argp as Register, 0, 0, 0, 0],
         rval,
     )
 }

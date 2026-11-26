@@ -257,7 +257,8 @@ paid_by = "N10"
 # kernel::fs::export::ExportGrant): the kernel's file systems answer it themselves (ffs,
 # ext2fs, msdosfs and cd9660 kernel::fs::export::check over the mount's list; mfs, tmpfs,
 # fuse, nfs EOPNOTSUPP; udf EACCES), bsd's Vfsops through its vfs_checkexp member (ntfs's
-# over its own list); the as_any leg went with VFS_CHECKEXP, its one user.
+# over its own list); the as_any leg went with VFS_CHECKEXP, its one user. The one caller is
+# the kernel's nfsrv_fhtovp since N6.7b4 (bsd's server, sys/nfs/, deleted): no nfs leg is left.
 # Paid with Vnops, when the last bsd file system moves (ntfs at N10), so N10.
 # kernel::fs::vops::Vfs
 [[bridge]]

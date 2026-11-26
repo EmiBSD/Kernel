@@ -89,8 +89,9 @@
 //! server receives on, `struct nfssvc_sock`; an nfsd, `struct nfsd`; a request,
 //! `struct nfsrv_descript`) and their flags, and `nfs_syscalls.c`'s server half: the
 //! `nfssvc(2)` system call, the sockets it adds, the nfsds' loop and the tables they share.
-//! Built beside `bsd`'s server and unregistered until N6.7b4 switches the server on (D-9:
-//! `nfssvc` stays `bsd`'s until then).
+//! Built beside `bsd`'s server (N6.7b2) and the server since N6.7b4 (D-9): `sysent[155]`'s
+//! row (`bsd`'s `vfs_syscalls`, the system call prologue's) calls [`sys_nfssvc`], `abi`'s
+//! entry is `Native`, `nfs_init` makes the tables, and `bsd`'s `sys/nfs/` is gone.
 //!
 //! Upstream: sys/nfs/nfs_syscalls.c @ 3ce1f3f79392
 //! Upstream: sys/nfs/nfs.h @ 3ce1f3f79392
@@ -109,7 +110,8 @@
 //!   under a request still using it. The address of a datagram socket is never read (every
 //!   datagram's record carries its sender), so `NFSSVC_ADDSOCK` keeps none for one.
 //! - `nfsrv3_procs[]` is `nfs_serv`'s (N6.7b3), handed to `sys_nfssvc` and the nfsds' loop
-//!   (`procs`) by the system call's registration at N6.7b4.
+//!   (`procs`) by `sysent[155]`'s row (N6.7b4): the C's global table is a value the call is
+//!   given.
 //! - `sys_nfssvc` answers `ENOMEM` when no `struct nfsd` is to be had, and `nfssvc_addsock`
 //!   `ENOMEM` or `ENOBUFS` when no record or option mbuf is (LZ's; the C's `M_WAIT` cannot
 //!   fail).
@@ -487,7 +489,7 @@ impl<G: ProcGlue> Default for NfsrvTables<G> {
 /// `struct nfsd_srvargs` at `argp`, read and dropped) until a signal; anything else is
 /// `EINVAL`. Must be super user (`suser`, first); waits while the server's tables are
 /// being made again ("nfsd init"). `EINTR` and `ERESTART` (the nfsd's end) are success.
-/// `procs` is `nfsrv3_procs[]` (`nfs_serv`'s, registered with the call at N6.7b4).
+/// `procs` is `nfsrv3_procs[]` (`nfs_serv`'s, which `sysent[155]`'s row hands it).
 pub fn sys_nfssvc<G: ProcGlue>(
     p: &Thread<G>,
     flag: i32,
@@ -1245,7 +1247,8 @@ mod tests {
 
     // The server over real kernel sockets on lo0 (the nfs client's fixture, `testnfs`): the
     // nfsd's loop driven pass by pass in the test's thread (`nfsd_step`; a host sleep has no
-    // signal to end it), the socket's upcall made by hand (N6.7b4 registers it), the client a
+    // signal to end it), the socket's upcall made by hand where a test drives it (the
+    // datagram test also lets the registered one run), the client a
     // kernel socket of the same glue; then nfssvc(2)'s errnos.
 
     mod sock {
@@ -1257,7 +1260,6 @@ mod tests {
 
         use super::super::*;
         use crate::descrip::{fdinit, sys_close};
-        use crate::fs::nfs::nfs_srvcache::nfsrv_initcache;
         use crate::fs::nfs::nfs_srvsocket::nfs_rephead;
         use crate::fs::nfs::nfsm_subs::test_bytes;
         use crate::fs::nfs::testnfs::{self, Fixture, G, lo_sin, name, pump};
@@ -1318,9 +1320,8 @@ mod tests {
             limits.pl_rlimit[RLIMIT_NOFILE].rlim_cur = 64;
             drop(pr.set_limit(PlimitRef::new(limits)));
             crate::testutil::set_test_maxfiles(4096);
-            // `testnfs::setup`'s `vfs_test_reset` reset the server's tables.
-            nfsrv_init::<G>(false);
-            nfsrv_initcache::<G>();
+            // `testnfs::setup`'s `vfs_test_reset` reset the server's tables, and its
+            // `nfs_init` made them again (`nfsrv_init(0)`, `nfsrv_initcache`).
             fx
         }
 
@@ -1483,10 +1484,19 @@ mod tests {
             assert!(recv(&c2).is_none(), "no reply from an unreserved port");
             assert!(recv(&c).is_none());
 
-            // A retransmission of the served (idempotent) request is done again.
+            // A retransmission of the served (idempotent) request is done again. No call of
+            // nfsrv_rcv by hand: the socket's upcall (`nfs_init` registered it,
+            // `nfssvc_addsock` set it with the record's handle) marks the socket.
+            assert_eq!(udp.flag() & SLP_NEEDQ, 0);
+            assert!(
+                so.upcall_arg().is_some_and(|a| a
+                    .downcast_ref::<NfssvcSock<G>>()
+                    .is_some_and(|s| core::ptr::eq(s, &*udp))),
+                "so_upcallarg is the record"
+            );
             send(&c, Some(&to), &call(11, 1));
             pump(fx.lo);
-            nfsrv_rcv(&so, &udp, crate::net::mbuf::M_DONTWAIT);
+            assert_ne!(udp.flag() & SLP_NEEDQ, 0, "the upcall marked the socket");
             assert_eq!(nfsd_step(&n, fx.user, &PROCS, &mut frame), Ok(()));
             assert_eq!(SEEN.with(Cell::take), Some(700));
             pump(fx.lo);
@@ -1496,6 +1506,7 @@ mod tests {
             nfsd_leave(&n);
             drop(n);
             assert_eq!(udp.flag(), 0);
+            assert!(so.upcall_arg().is_none(), "zapped: so_upcall is NULL");
             let fresh = t
                 .nfs_udpsock
                 .get(&klock::reader())

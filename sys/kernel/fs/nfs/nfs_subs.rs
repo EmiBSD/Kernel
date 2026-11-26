@@ -578,13 +578,22 @@ fn uio_skip<G: ProcGlue>(uio: &mut Uio<'_, G>, mut n: usize) {
 }
 
 /// `nfs_init`: called once to initialize data structures: the timer's period
-/// (`(hz * NFS_TICKINTVL + 500) / 1000`, at least one tick) and "nfsreqpl". The XDR words
-/// are constants here; the server's tables (`nfsrv_init`, `nfsrv_initcache`) are `bsd`'s
-/// until N6.7b, whose `nfs_init` calls this one first. A second call (a test glue's) keeps
-/// the pool.
+/// (`(hz * NFS_TICKINTVL + 500) / 1000`, at least one tick), with `option NFSSERVER` the
+/// server's tables (`nfsrv_init(0)`, which makes "ndscpl", then `nfsrv_initcache`, which
+/// makes "nfsrvcpl") and the server sockets' upcall function registered with the glue's
+/// socket layer (`nfsrv_rcv`, which `nfssvc_addsock` sets on each socket), then "nfsreqpl",
+/// last, as the C's order (`vmstat -m`'s rows and the `kern.pool` serials). The XDR words
+/// are constants here. A second call (a test glue's, which forgets the server's tables
+/// first, `nfsrv_test_reset`) makes the server's tables again and keeps the pools.
 pub fn nfs_init<G: ProcGlue>() {
     let ticks = (crate::timeout::hz() * NFS_TICKINTVL + 500) / 1000;
     NFS_TICKS.store(ticks.max(1), Ordering::Relaxed);
+    #[cfg(feature = "nfsserver")]
+    {
+        super::nfssvc::nfsrv_init::<G>(false); // Init server data structures
+        super::nfs_srvcache::nfsrv_initcache::<G>(); // Init the server request cache
+        crate::net::socket::register_upcall::<G>(super::nfs_srvsocket::nfsrv_rcv_upcall::<G>);
+    }
     let _ = vfs::<G>()
         .nfs
         .nfsreqpl

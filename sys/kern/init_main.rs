@@ -469,7 +469,7 @@ pub fn main() -> ! {
 
     // Initialize the file systems.
     #[cfg(any(feature = "nfsserver", feature = "nfsclient"))]
-    crate::nfs::nfs_subs::nfs_init(); // initialize server/shared data
+    kernel::fs::nfs::nfs_subs::nfs_init::<BsdProcGlue>(); // initialize server/shared data
     vfsinit();
 
     // Start real time and statistics clocks.

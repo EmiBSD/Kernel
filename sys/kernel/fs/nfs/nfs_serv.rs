@@ -54,8 +54,8 @@
 //! The NFS server's procedures (N6.7b3): `nfs_serv.c`, the version 2 and 3 server calls to
 //! vnode operations, one function per procedure (`nfsrv_getattr`, `nfsrv_lookup`,
 //! `nfsrv_read`, ...), each of nfssvc's `NfsrvProc` type, and `nfs_syscalls.c`'s table of
-//! them, `nfsrv3_procs`, which the nfsds dispatch through by `nd_procnum`. Beside `bsd`'s
-//! server until N6.7b4 switches the server on.
+//! them, `nfsrv3_procs`, which the nfsds dispatch through by `nd_procnum`: the table
+//! `sysent[155]`'s row hands `sys_nfssvc` since N6.7b4, when the server became the kernel's.
 //!
 //! Upstream: sys/nfs/nfs_serv.c @ 3ce1f3f79392
 //! LZ: sys/nfs/nfs_serv.rs@e8249449d905

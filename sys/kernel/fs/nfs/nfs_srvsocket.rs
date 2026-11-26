@@ -55,7 +55,8 @@
 //! (`nfs_rephead`), the request's (`nfs_getreq`), a server socket's receive (`nfsrv_rcv`,
 //! the socket upcall and the nfsds' blocking call), the stream's record marks
 //! (`nfsrv_getstream`), a record taken for an nfsd (`nfsrv_dorec`) and the wakeup of an idle
-//! nfsd (`nfsrv_wakenfsd`). Beside `bsd`'s server until N6.7b4.
+//! nfsd (`nfsrv_wakenfsd`). The server's since N6.7b4, which registers the upcall
+//! (`nfs_init`).
 //!
 //! Upstream: sys/nfs/nfs_socket.c @ 3ce1f3f79392
 //! LZ: sys/nfs/nfs_socket.rs@e8249449d905
