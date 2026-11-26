@@ -59,7 +59,7 @@ use core::mem::offset_of;
 use super::include::pcb::Pcb;
 use crate::cpu::CORE_CURPCB;
 use crate::user::RawCopy;
-use sysdefs::errno::Errno;
+use sysdefs::base::errno::Errno;
 
 global_asm!(
     include_str!("copy.S"),

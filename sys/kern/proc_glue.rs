@@ -1072,7 +1072,7 @@ pub(crate) fn test_proc(pid: Pid, cr: kernel::proc::cred::CredRef) -> &'static P
 /// The limits of the tests' processes: none but `RLIMIT_NOFILE`, `nofile` (what `fdalloc`
 /// reads), for `p`'s process, and `p`'s copy forgotten so its next read takes them.
 #[cfg(test)]
-pub(crate) fn test_set_limits(p: &Proc, nofile: sysdefs::types::Rlim) {
+pub(crate) fn test_set_limits(p: &Proc, nofile: sysdefs::base::types::Rlim) {
     use crate::sys::resource::{RLIM_INFINITY, RLIMIT_NOFILE, Rlimit};
     let mut limit = crate::sys::resourcevar::Plimit::new();
     for l in &mut limit.pl_rlimit {

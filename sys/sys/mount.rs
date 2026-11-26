@@ -80,7 +80,7 @@
 //!   mfs_args` (`MfsArgs`) with MFS, `iso_args`, `msdosfs_args`, `udf_args` and `tmpfs_args`
 //!   with M10c, `nfs_args` with NFS (M10e), `ntfs_args` with NTFS (M10d)); each
 //!   `*Args::from_bytes` reads them out of the kernel copy of the mount arguments. Since N5.4
-//!   they are `hal`'s (`sysdefs::mount`, D-N5.4-3), re-exported here, their holes named.
+//!   they are `hal`'s (`sysdefs::fs::mount`, D-N5.4-3), re-exported here, their holes named.
 //! - `VFS_*` are functions with the macros' names (`#[allow(non_snake_case)]`).
 //! - `struct netcred` and `struct netexport` are the kernel's (`kernel::fs::export`, N6.7b0),
 //!   and so is the export check: the NFS server calls the table's `checkexp`
@@ -103,7 +103,7 @@ use kernel::fs::export::ExportGrant;
 use kernel::fs::vops::Cred;
 /// `struct bcachestats`: buffer cache statistics, `hal`'s (N5.1: one copy for the kernel's
 /// cache and `vfs.generic.bcachestat`).
-pub use sysdefs::mount::{
+pub use sysdefs::fs::mount::{
     Bcachestats, Fhandle, Fid, Fsid, MAXFIDSZ, MFSNAMELEN, MNAMELEN, MNT_ASYNC, MNT_BITS,
     MNT_DEFEXPORTED, MNT_DELEXPORT, MNT_DOOMED, MNT_EXPORTANON, MNT_EXPORTED, MNT_EXRDONLY,
     MNT_FORCE, MNT_LAZY, MNT_LOCAL, MNT_NOATIME, MNT_NODEV, MNT_NOEXEC, MNT_NOPERM, MNT_NOSUID,
@@ -117,7 +117,7 @@ pub use sysdefs::mount::{
 
 /// The file systems' mount arguments, `hal`'s since N5.4 (D-N5.4-3: one copy for the
 /// kernel's `mount(2)` and the file systems that read them).
-pub use sysdefs::mount::{
+pub use sysdefs::fs::mount::{
     ExportArgs, FusefsArgs, ISOFSMNT_EXTATT, ISOFSMNT_GENS, ISOFSMNT_NOJOLIET, ISOFSMNT_NORRIP,
     ISOFSMNT_SESS, IsoArgs, MSDOSFSMNT_LONGNAME, MSDOSFSMNT_NOWIN95, MSDOSFSMNT_SHORTNAME, MfsArgs,
     MsdosfsArgs, NFS_ARGSVERSION, NFSMNT_ACDIRMAX, NFSMNT_ACDIRMIN, NFSMNT_ACREGMAX,

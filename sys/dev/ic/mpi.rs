@@ -130,7 +130,7 @@ use crate::sys::sensors::{
     SENSOR_DRIVE_REBUILD, SENSOR_S_CRIT, SENSOR_S_OK, SENSOR_S_UNKNOWN, SENSOR_S_WARN,
 };
 use crate::sys::systm::{INFSLP, kernel_lock, kernel_unlock};
-use libkern::strlcpy;
+use libkern::string::strlcpy::strlcpy;
 
 /// `mpi_cd`.
 pub static MPI_CD: Cfdriver = Cfdriver::new(b"mpi", DV_DULL, 0);

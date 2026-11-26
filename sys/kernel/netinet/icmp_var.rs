@@ -51,7 +51,7 @@
 //! Variables related to this implementation of the internet control message protocol: the
 //! kernel's half of `<netinet/icmp_var.h>`, the per-CPU ICMP statistics (`icmpcounters`,
 //! defined by `ip_icmp.c`) and `icmpstat_inc`. The userland half (`struct icmpstat`, the
-//! `ICMPCTL_*` names) is `sysdefs::netinet_icmp_var`.
+//! `ICMPCTL_*` names) is `sysdefs::netinet::icmp_var`.
 //!
 //! Upstream: sys/netinet/icmp_var.h @ 3ce1f3f79392
 //! LZ: sys/netinet/icmp_var.rs@3c62ede68802
@@ -70,7 +70,7 @@
 use core::mem::size_of;
 
 use hal::sync::percpu::Counters;
-use sysdefs::netinet_icmp_var::{ICMP_NHIST, Icmpstat};
+use sysdefs::netinet::icmp_var::{ICMP_NHIST, Icmpstat};
 
 /// `enum icmpstat_counters`: the per-CPU ICMP counters, one per word of [`Icmpstat`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

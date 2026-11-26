@@ -99,7 +99,7 @@ use crate::mem::pool::{BoxPool, SharedBox};
 use crate::mem::trust::check_frame;
 use crate::sync::mutex::MutexedGuard;
 use crate::vm::pmap::Pmap;
-use sysdefs::types::{Paddr, Vaddr};
+use sysdefs::base::types::{Paddr, Vaddr};
 
 /// The kernel's `pte_desc`s one page holds (`PAGE_SIZE / sizeof(struct pte_desc)`).
 pub(super) const PTEDS_PER_PAGE: usize = PAGE_SIZE / size_of::<PteDesc>();

@@ -150,7 +150,7 @@
 /* <CODE> */
 //! Routing tables and the routing socket's messages: `<net/route.h>` and `net/route.c`, for
 //! `bsd`'s callers. The routes, their caches, timers and labels are the kernel's
-//! (`kernel::net::route`, N6.3b) and route.h's ABI is `sysdefs::net_route`'s; this module is
+//! (`kernel::net::route`, N6.3b) and route.h's ABI is `sysdefs::net::route`'s; this module is
 //! their adapter, of no logic: the kernel's items under LZ's names, and the entry points in
 //! the shapes `bsd`'s protocols call them with (a socket address as its bytes, a route as the
 //! `&'static Rtentry` LZ's code keeps, the net lock held C-style).
@@ -193,7 +193,7 @@ pub use kernel::net::route::{
     rtisvalid, rtlabel_id2name, rtlabel_id2sa, rtlabel_name2id, rtlabel_unref, rtstat_inc,
 };
 pub use kernel::net::rtable::SaCopy;
-pub use sysdefs::net_route::*;
+pub use sysdefs::net::route::*;
 
 /// `rt` as the `&'static Rtentry` LZ's code keeps, for a route the kernel lends for a call.
 pub fn as_static(rt: &Rtentry) -> &'static Rtentry {
@@ -251,7 +251,7 @@ pub fn sa_view(b: &[u8]) -> SockaddrView<'_> {
 
 /// The bytes of a socket address structure (`sockaddr_in`, `sockaddr_in6`, ...), the C's
 /// `sintosa(&sin)`.
-pub fn sa_of<T: sysdefs::pod::AbiPod>(sa: &T) -> &[u8] {
+pub fn sa_of<T: sysdefs::base::pod::AbiPod>(sa: &T) -> &[u8] {
     hal::user::bytes_of(core::slice::from_ref(sa))
 }
 

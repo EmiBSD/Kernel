@@ -89,9 +89,9 @@
 //! - N5.7c1: the module's private `bread_or_release` is `fs::bio::bread_or_release`, shared
 //!   with msdosfs's FAT engine (a pure move: the same body, the same calls).
 
-use sysdefs::errno::Errno;
-use sysdefs::mount::MNT_WAIT;
-use sysdefs::types::{Daddr, Off};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Daddr, Off};
+use sysdefs::fs::mount::MNT_WAIT;
 
 #[cfg(feature = "ffs2")]
 use super::ffs_alloc::ffs2_blkpref;

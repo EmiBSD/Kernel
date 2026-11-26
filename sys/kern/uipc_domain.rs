@@ -116,8 +116,8 @@ use crate::sys::socket::{
 };
 use crate::sys::socketvar::{Socket, as_static};
 use crate::sys::stat::Stat;
-use sysdefs::netinet_in::IPPROTO_DONE;
-use sysdefs::netinet_ip_icmp::ICMP_MINLEN;
+use sysdefs::netinet::in_::IPPROTO_DONE;
+use sysdefs::netinet::ip_icmp::ICMP_MINLEN;
 
 /// `domains[]` as the kernel's socket layer sees it, in the C's order: `bsd`'s pfkey table
 /// through the traits, and the kernel's IPv6, internet, UNIX and route domains.
@@ -277,7 +277,7 @@ impl KDomain<G> for Domain {
 /// The largest socket address `bsd`'s `pr_ctlinput` functions read: a `sockaddr_in6`
 /// (TCP's, UDP's and raw IPv6's, after their length check); TCP's IPv4 function reads a
 /// `sockaddr_in`, 16 bytes, after its family check alone.
-const CTL_SA_LEN: usize = size_of::<sysdefs::netinet6_in6::SockaddrIn6>();
+const CTL_SA_LEN: usize = size_of::<sysdefs::netinet6::in6::SockaddrIn6>();
 
 /// The socket address handed to a `pr_ctlinput` function: its bytes (`sa_len` of them, at
 /// least the header's two: `SockaddrView`'s) in a zero-filled buffer of [`CTL_SA_LEN`], a
@@ -858,11 +858,11 @@ mod tests {
             let m = crate::net::if_::tests::test_packet(&[0u8; 48]);
             let p = kernel::netinet6::icmp6::Ip6CtlParam {
                 m,
-                icmp6: sysdefs::netinet_icmp6::Icmp6Hdr::zeroed(),
-                ip6: sysdefs::netinet_ip6::Ip6Hdr::default(),
+                icmp6: sysdefs::netinet::icmp6::Icmp6Hdr::zeroed(),
+                ip6: sysdefs::netinet::ip6::Ip6Hdr::default(),
                 off: 48,
-                src: sysdefs::netinet6_in6::SockaddrIn6::default(),
-                finaldst: core::cell::Cell::new(sysdefs::netinet6_in6::In6Addr::default()),
+                src: sysdefs::netinet6::in6::SockaddrIn6::default(),
+                finaldst: core::cell::Cell::new(sysdefs::netinet6::in6::In6Addr::default()),
                 cmdarg: Some(1280),
                 nxt: 17,
             };
@@ -1117,15 +1117,15 @@ mod tests {
         use kernel::netinet6::ip6_var::{
             ICMP6_REDIRTIMEOUT, ICMP6ERRPPSLIM, IP6_DEFHLIM, IP6_HDRNESTLIMIT,
         };
-        use sysdefs::netinet_icmp6::{
+        use sysdefs::netinet::icmp6::{
             ICMPV6CTL_ERRPPSLIMIT, ICMPV6CTL_ND6_QUEUED, ICMPV6CTL_REDIRTIMEOUT, ICMPV6CTL_STATS,
             Icmp6stat,
         };
-        use sysdefs::netinet6_in6::{
+        use sysdefs::netinet6::in6::{
             IPV6CTL_DEFHLIM, IPV6CTL_HDRNESTLIMIT, IPV6CTL_MRTPROTO, IPV6CTL_STATS,
         };
-        use sysdefs::netinet6_ip6_var::Ip6stat;
-        use sysdefs::netinet6_raw_ip6::{RIPV6CTL_STATS, Rip6stat};
+        use sysdefs::netinet6::ip6_var::Ip6stat;
+        use sysdefs::netinet6::raw_ip6::{RIPV6CTL_STATS, Rip6stat};
 
         let (_g, _t, p) = crate::netinet::in_pcb::tests::setup();
         let f = i32::from(AF_INET6);

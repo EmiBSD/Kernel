@@ -125,15 +125,15 @@ use hal::mem::malloc::{M_WAITOK, MArc, MBox};
 use hal::mem::pool::AnyArc;
 use hal::sync::sleep::tsleep_nsec;
 use hal::user::UserPtr;
-use sysdefs::dirent::MAXNAMLEN;
-use sysdefs::errno::Errno;
-use sysdefs::mount::{
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Ino, Uid};
+use sysdefs::file::dirent::MAXNAMLEN;
+use sysdefs::fs::mount::{
     Fid, MNAMELEN, MNT_FORCE, MNT_LAZY, MNT_UPDATE, NFSMNT_ACDIRMAX, NFSMNT_ACDIRMIN,
     NFSMNT_ACREGMAX, NFSMNT_ACREGMIN, NFSMNT_GOTFSINFO, NFSMNT_INTERNAL, NFSMNT_MAXGRPS,
     NFSMNT_NFSV3, NFSMNT_NOCONN, NFSMNT_RDIRPLUS, NFSMNT_READAHEAD, NFSMNT_READDIRSIZE,
     NFSMNT_RETRANS, NFSMNT_RSIZE, NFSMNT_SOFT, NFSMNT_TIMEO, NFSMNT_WSIZE, NfsArgs, Statfs,
 };
-use sysdefs::types::{Ino, Uid};
 
 use super::nfs::{
     NFS_DEFRAHEAD, NFS_DIRBLKSIZ, NFS_MAXATTRTIMO, NFS_MAXGRPS, NFS_MAXRAHEAD, NFS_MAXREXMIT,
@@ -170,7 +170,7 @@ use crate::sched::NOWAKE;
 use crate::time::clock::sec_to_nsec;
 use crate::time::timeout::{KCLOCK_NONE, TIMEOUT_PROC, Timeout};
 use crate::vm::io::MAXBSIZE;
-use sysdefs::socket::SOCK_DGRAM;
+use sysdefs::net::socket::SOCK_DGRAM;
 
 /// The NFS client of the glue `G`: `nfs_vfsops` ([`NfsVfs::VFS`]).
 pub struct NfsVfs<G>(PhantomData<fn() -> G>);
@@ -804,11 +804,11 @@ pub fn mountnfs<G: ProcGlue>(
     mp.with_stat(|sp| {
         sp.f_namemax = MAXNAMLEN as u32;
         sp.f_mntonname.fill(0);
-        libkern::strlcpy(&mut sp.f_mntonname, pth);
+        libkern::string::strlcpy::strlcpy(&mut sp.f_mntonname, pth);
         sp.f_mntfromname.fill(0);
-        libkern::strlcpy(&mut sp.f_mntfromname, hst);
+        libkern::string::strlcpy::strlcpy(&mut sp.f_mntfromname, hst);
         sp.f_mntfromspec.fill(0);
-        libkern::strlcpy(&mut sp.f_mntfromspec, hst);
+        libkern::string::strlcpy::strlcpy(&mut sp.f_mntfromspec, hst);
     });
     let mut nargs = *argp;
     nargs.addr = 0;
@@ -1208,8 +1208,8 @@ mod tests {
     use crate::fs::nfs::testnfs::{self as tn, Out};
     use crate::fs::testfs::TestGlue as G;
     use crate::net::mbuf::MBUFPL;
-    use sysdefs::mount::{NFS_ARGSVERSION, NFSMNT_AUTHERR};
-    use sysdefs::socket::SOCK_STREAM;
+    use sysdefs::fs::mount::{NFS_ARGSVERSION, NFSMNT_AUTHERR};
+    use sysdefs::net::socket::SOCK_STREAM;
 
     /// Mount arguments with every field zero but the version, the flags and the socket type.
     fn args(flags: i32, sotype: i32) -> NfsArgs {

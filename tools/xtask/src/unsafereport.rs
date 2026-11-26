@@ -2745,7 +2745,7 @@ mod tests {
             ("sys/sys/errno.rs", Some("bsd")),
             ("sys/kern/kern_sig.rs", Some("bsd")),
             ("sys/lib/libkern/lib.rs", Some("lib")),
-            ("sys/lib/sysdefs/types.rs", Some("lib")),
+            ("sys/lib/sysdefs/base/types.rs", Some("lib")),
             ("sys/lib/libz/inflate.rs", Some("lib")),
             ("sys/lib/libsa/staticcell.rs", Some("boot")),
             ("init/src/main.rs", Some("bsd")),

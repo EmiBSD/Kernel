@@ -90,19 +90,19 @@ use core::ptr;
 use core::sync::atomic::Ordering;
 
 use hal::sync::klock;
-use sysdefs::errno::Errno;
-use sysdefs::fcntl::{
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::Off;
+use sysdefs::file::fcntl::{
     F_FLOCK, F_UNLCK, FFSYNC, FNONBLOCK, FREAD, FWRITE, Flock, O_APPEND, O_CREAT, O_DIRECTORY,
     O_EXCL, O_NOFOLLOW, O_TRUNC,
 };
-use sysdefs::filio::{FIOASYNC, FIONREAD};
-use sysdefs::mount::{MNT_RDONLY, MNT_SYNCHRONOUS};
-use sysdefs::signal::SIGXFSZ;
-use sysdefs::stat::{
+use sysdefs::file::filio::{FIOASYNC, FIONREAD};
+use sysdefs::file::stat::{
     S_BLKSIZE, S_IFBLK, S_IFCHR, S_IFDIR, S_IFIFO, S_IFLNK, S_IFREG, S_IFSOCK, Stat,
 };
-use sysdefs::types::Off;
-use sysdefs::unistd::{SEEK_CUR, SEEK_END, SEEK_SET};
+use sysdefs::fs::mount::{MNT_RDONLY, MNT_SYNCHRONOUS};
+use sysdefs::proc::unistd::{SEEK_CUR, SEEK_END, SEEK_SET};
+use sysdefs::sig::signal::SIGXFSZ;
 
 use super::getcwd::vfs_getcwd_common;
 use super::lookup::namei;

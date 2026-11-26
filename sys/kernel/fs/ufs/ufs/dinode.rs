@@ -79,7 +79,7 @@
 //!   `pod_from_bytes`/`pod_to_bytes`, where LZ read and wrote them through `unsafe`
 //!   unaligned pointer casts (`dinode1_at` and its three twins).
 
-use sysdefs::types::Mode;
+use sysdefs::base::types::Mode;
 
 /// `ufsino_t`: UFS directories use 32bit inode numbers internally, regardless of what the
 /// system on top of it uses.

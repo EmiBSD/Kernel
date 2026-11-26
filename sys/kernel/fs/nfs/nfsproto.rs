@@ -51,7 +51,7 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! `<nfs/nfsproto.h>` in the kernel: the header's image (`sysdefs::nfs_nfsproto`, which this
+//! `<nfs/nfsproto.h>` in the kernel: the header's image (`sysdefs::fs::nfs::nfsproto`, which this
 //! module re-exports, so `kernel::fs::nfs::nfsproto::NFSX_V3FATTR` is the one constant) and
 //! its conversion macros between the vnode's types and modes and the wire's.
 //!
@@ -69,12 +69,12 @@
 //!   conversions, which need the vnode types (`kernel::fs::vnode`), are here. `bsd`'s
 //!   `nfs::nfsproto` re-exports this module, so its importers did not change.
 
-pub use sysdefs::nfs_nfsproto::*;
+pub use sysdefs::fs::nfs::nfsproto::*;
 
 use super::nfs_subs::{NFSV2_TYPE, NFSV3_TYPE, NV2TOV_TYPE, NV3TOV_TYPE};
 use super::xdr_subs::{fxdr_unsigned, txdr_unsigned};
 use crate::fs::vnode::{Vtype, makeimode};
-use sysdefs::types::Mode;
+use sysdefs::base::types::Mode;
 
 /// `vtonfsv2_mode(t, m)`: a version 2 mode word (a fifo is sent as a character device).
 pub fn vtonfsv2_mode(t: Vtype, m: Mode) -> u32 {

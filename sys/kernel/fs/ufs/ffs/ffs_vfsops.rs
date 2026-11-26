@@ -154,15 +154,15 @@ use hal::mem::pool::{PR_WAITOK, PoolArc};
 use hal::random::arc4random;
 use hal::sync::sleep::INFSLP;
 use hal::user::{UserPtr, pod_from_bytes};
-use sysdefs::errno::Errno;
-use sysdefs::fcntl::{FREAD, FWRITE};
-use sysdefs::mount::{
+use sysdefs::base::errno::Errno;
+use sysdefs::base::param::PAGE_SIZE;
+use sysdefs::base::types::{Daddr, Dev, Ino, Mode, Off, Uid, major};
+use sysdefs::file::fcntl::{FREAD, FWRITE};
+use sysdefs::fs::mount::{
     Fid, MNAMELEN, MNT_FORCE, MNT_LAZY, MNT_LOCAL, MNT_QUOTA, MNT_RDONLY, MNT_RELOAD, MNT_UPDATE,
     MNT_WAIT, MNT_WANTRDWR, Statfs, UfsArgs,
 };
-use sysdefs::param::PAGE_SIZE;
-use sysdefs::sysctl::SysctlBoundedArgs;
-use sysdefs::types::{Daddr, Dev, Ino, Mode, Off, Uid, major};
+use sysdefs::proc::sysctl::SysctlBoundedArgs;
 
 use super::ffs_alloc::{ffs_inode_alloc, ffs_inode_free};
 use super::ffs_balloc::ffs_balloc;
@@ -215,7 +215,7 @@ use crate::net::mbuf::Mbuf;
 use crate::proc::{ProcGlue, Thread};
 use crate::time::inittodr;
 use crate::time::tc::gettime;
-use sysdefs::disk::DM_OPENBLCK;
+use sysdefs::dev::disk::DM_OPENBLCK;
 
 /// `DEV_BSIZE`.
 const DEV_BSIZE: i64 = 1 << DEV_BSHIFT;
@@ -383,7 +383,7 @@ pub fn ffs_mountroot<G: ProcGlue>(rootdev: Dev, swapdev: Dev) -> Result<(), Errn
 /// `mfs_mount` makes the same pairs.
 pub(crate) fn mname_copy(dst: &mut [u8; MNAMELEN], src: &[u8]) {
     *dst = [0; MNAMELEN];
-    libkern::strlcpy(dst, src);
+    libkern::string::strlcpy::strlcpy(dst, src);
 }
 
 /// `ffs_mount` (`vfs_mount`): mount system call. `data` is the kernel copy of the user's
@@ -1777,7 +1777,7 @@ mod tests {
     use std::vec::Vec;
     use std::{assert, assert_eq, assert_ne};
 
-    use sysdefs::fcntl::{O_CREAT, O_RDONLY, O_RDWR};
+    use sysdefs::file::fcntl::{O_CREAT, O_RDONLY, O_RDWR};
 
     use super::*;
     use crate::file::descrip::{sys_close, sys_read, sys_write};

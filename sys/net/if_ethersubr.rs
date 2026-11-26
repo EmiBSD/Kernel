@@ -385,7 +385,7 @@ mod tests {
         use kernel::net::proto::SockaddrView;
 
         let (_g, ifp) = nd6_setup();
-        let mut eh = sysdefs::netinet_if_ether::EtherHeader::default();
+        let mut eh = sysdefs::netinet::if_ether::EtherHeader::default();
         let view =
             |s: &SockaddrIn6| -> Vec<u8> { hal::user::bytes_of(core::slice::from_ref(s)).to_vec() };
 
@@ -421,8 +421,8 @@ mod tests {
             ifp,
             &handle,
             Some(&PEER_MAC),
-            sysdefs::netinet_icmp6::ND_NA_FLAG_SOLICITED
-                | sysdefs::netinet_icmp6::ND_NA_FLAG_OVERRIDE,
+            sysdefs::netinet::icmp6::ND_NA_FLAG_SOLICITED
+                | sysdefs::netinet::icmp6::ND_NA_FLAG_OVERRIDE,
             false,
             &PEER6,
             &PEER6,

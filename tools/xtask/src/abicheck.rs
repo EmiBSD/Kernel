@@ -898,9 +898,9 @@ mod tests {
         one("fn f(r: &R) { hal::syscall::child(r); }\n", "R6");
         one("use hal::syscall::{Gpr, handler_info};\n", "R6");
         one("fn f() { hal::syscall::dispatch(1, &A, &mut R); }\n", "R6");
-        clean("use sysdefs::syscall::{SYS_exit, SYS_read};\nuse sysdefs::errno::*;\n");
-        clean("use hal::syscall::SysArgs;\nuse sysdefs::syscall::{SYS_exit, SYS_read};\n");
-        clean("fn f() -> i32 { sysdefs::errno::Errno::ENOSYS.as_i32() }\n");
+        clean("use sysdefs::proc::syscall::{SYS_exit, SYS_read};\nuse sysdefs::base::errno::*;\n");
+        clean("use hal::syscall::SysArgs;\nuse sysdefs::proc::syscall::{SYS_exit, SYS_read};\n");
+        clean("fn f() -> i32 { sysdefs::base::errno::Errno::ENOSYS.as_i32() }\n");
         clean("use sysdefs as headers;\n");
         // `hal::sys` is gone (decision 54): the headers are not hal's to name.
         one("use hal::sys::errno::*;\n", "R6");
@@ -909,7 +909,7 @@ mod tests {
             "R6",
         );
         // `::hal` is the crate: clean here because the path is allowed.
-        clean("pub use ::sysdefs::syscall::SYS_exit;\n");
+        clean("pub use ::sysdefs::proc::syscall::SYS_exit;\n");
         // Another crate's or this crate's module, a field and a comment are not the crate.
         clean("use other::hal::cpu;\nuse crate::hal::x;\nuse self::hal::y;\nuse super::hal::z;\n");
         clean("fn f(s: S) { s.hal.cpu(); }\n");

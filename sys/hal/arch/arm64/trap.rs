@@ -161,12 +161,12 @@ use crate::cpu::trap::{FaultSource, TrapHandler};
 use crate::cpu::{MAXCPUS, cpu_number, curcpu};
 use crate::vm::param::trunc_page;
 use crate::vm::uvmexp::UVMEXP;
-use sysdefs::errno::Errno;
-use sysdefs::siginfo::{
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::Register;
+use sysdefs::sig::siginfo::{
     BUS_ADRALN, BUS_OBJERR, ILL_BTCFI, ILL_ILLOPC, SEGV_ACCERR, SEGV_MAPERR, TRAP_BRKPT, TRAP_TRACE,
 };
-use sysdefs::signal::{SIGBUS, SIGILL, SIGKILL, SIGSEGV, SIGTRAP};
-use sysdefs::types::Register;
+use sysdefs::sig::signal::{SIGBUS, SIGILL, SIGKILL, SIGSEGV, SIGTRAP};
 
 /// `cpu_id_aa64pfr0`: the userland view of `ID_AA64PFR0_EL1` (`cpu.c`'s
 /// `cpu_identify_cleanup`, which `bsd`'s CPU code runs), `emulate_msr`'s answer.

@@ -153,18 +153,18 @@ use hal::arch::current::param::{PAGE_MASK, PAGE_SHIFT, PAGE_SIZE};
 use hal::mem::pool::PoolArc;
 use hal::sync::rwlock::WriteWitness;
 use hal::vm::param::{round_page, trunc_page};
-use sysdefs::dirent::{
+use sysdefs::base::errno::Errno;
+use sysdefs::base::syslimits::LINK_MAX;
+use sysdefs::base::types::{Dev, Gid, Mode, Off, Uid, Vsize};
+use sysdefs::file::dirent::{
     DT_BLK, DT_CHR, DT_DIR, DT_FIFO, DT_LNK, DT_REG, DT_SOCK, Dirent, MAXNAMLEN, dirent_size,
 };
-use sysdefs::errno::Errno;
-use sysdefs::mman::{MADV_NORMAL, MADV_SEQUENTIAL};
-use sysdefs::mount::MNT_RDONLY;
-use sysdefs::stat::{
+use sysdefs::file::stat::{
     ALLPERMS, APPEND, IMMUTABLE, S_ISGID, S_ISTXT, SF_APPEND, SF_IMMUTABLE, SF_SETTABLE,
     UF_SETTABLE,
 };
-use sysdefs::syslimits::LINK_MAX;
-use sysdefs::types::{Dev, Gid, Mode, Off, Uid, Vsize};
+use sysdefs::fs::mount::MNT_RDONLY;
+use sysdefs::vm::mman::{MADV_NORMAL, MADV_SEQUENTIAL};
 
 use crate::assert::{kassert, kpanic};
 use crate::base::sysctl::SECURELEVEL;

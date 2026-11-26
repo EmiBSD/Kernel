@@ -74,8 +74,8 @@
 //!   `getlbns` over the inode's `MNINDIR` (the C's `ufs_getlbns(vp, ..)` reaches the same
 //!   inode through `VTOI`, a count pair here).
 
-use sysdefs::errno::Errno;
-use sysdefs::types::Daddr;
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::Daddr;
 
 use super::ext2fs::fsbtodb;
 use super::ext2fs_alloc::{ext2fs_alloc, ext2fs_blkfree, ext2fs_blkpref};

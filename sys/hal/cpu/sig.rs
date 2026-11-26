@@ -36,9 +36,9 @@
 //!   over `bsd`'s `sig_machdep.rs`), and `sigreturn` hands back the mask it read for the
 //!   kernel to install (`sys_sigreturn`'s machine-independent half, `kernel::sig`).
 
-use sysdefs::errno::Errno;
-use sysdefs::siginfo::Siginfo;
-use sysdefs::signal::{Sig, Sigaltstack, Sigset};
+use sysdefs::base::errno::Errno;
+use sysdefs::sig::siginfo::Siginfo;
+use sysdefs::sig::signal::{Sig, Sigaltstack, Sigset};
 
 /// The machine's signal frame (arm64's `sig_machdep.c`).
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]

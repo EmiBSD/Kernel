@@ -85,8 +85,8 @@ use core::ptr;
 
 use hal::mem::malloc::{M_WAITOK, MArray};
 use hal::user::UserPtr;
-use sysdefs::dirent::{Dirent, dirent_recsize};
-use sysdefs::errno::Errno;
+use sysdefs::base::errno::Errno;
+use sysdefs::file::dirent::{Dirent, dirent_recsize};
 
 use super::cache::cache_revlookup;
 use super::init::rootvnode;

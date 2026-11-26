@@ -146,8 +146,8 @@ use hal::sync::mutex::{Mutexed, MutexedGuard};
 use hal::sync::sleep::wakeup;
 use hal::vm::param::{atop, round_page, trunc_page};
 use hal::vm::uvmexp::UVMEXP;
-use sysdefs::errno::Errno;
-use sysdefs::types::Paddr;
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::Paddr;
 
 use super::page::{
     self, PG_ZERO, PQ_FREE, Pglist, VmPage, nth, nth_back, uvm_pagezero, uvm_pagezero_target,

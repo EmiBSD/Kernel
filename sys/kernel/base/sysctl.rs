@@ -160,11 +160,12 @@ use hal::sync::slot::ReadMostly;
 use hal::user::{UserPtr, bytes_of};
 use hal::vm::param::atop;
 use hal::vm::uvmexp::UVMEXP;
-use sysdefs::errno::Errno;
-use sysdefs::limits::SHRT_MAX;
-use sysdefs::mman::{PROT_READ, PROT_WRITE};
-use sysdefs::pledge::PLEDGE_UNVEIL;
-use sysdefs::sysctl::{
+use sysdefs::base::errno::Errno;
+use sysdefs::base::limits::SHRT_MAX;
+use sysdefs::base::syslimits::{ARG_MAX, NGROUPS_MAX, PATH_MAX};
+use sysdefs::base::types::{Dev, Pid};
+use sysdefs::proc::pledge::PLEDGE_UNVEIL;
+use sysdefs::proc::sysctl::{
     CTL_DDB, CTL_HW, CTL_KERN, CTL_MACHDEP, CTL_MAXID, CTL_MAXNAME, CTL_NET, CTL_VFS, CTL_VM,
     EPROC_CTTY, EPROC_LKUNVEIL, EPROC_UNVEIL, HW_ALLOWPOWERDOWN, HW_BATTERY, HW_BATTERY_CHARGEMODE,
     HW_BATTERY_CHARGESTART, HW_BATTERY_CHARGESTOP, HW_BLOCKCPU, HW_BYTEORDER, HW_CPUSPEED,
@@ -189,9 +190,8 @@ use sysdefs::sysctl::{
     KERN_WATCHDOG, KERN_WXABORT, KI_NOCPU, KinfoProc, KinfoVmentry, SYSCTL_INT_READONLY,
     SysctlBoundedArgs,
 };
-use sysdefs::syslimits::{ARG_MAX, NGROUPS_MAX, PATH_MAX};
-use sysdefs::types::{Dev, Pid};
-use sysdefs::unistd::_POSIX_VERSION;
+use sysdefs::proc::unistd::_POSIX_VERSION;
+use sysdefs::vm::mman::{PROT_READ, PROT_WRITE};
 
 use crate::assert::kpanic;
 use crate::file::uio::UioMove;
@@ -1148,7 +1148,7 @@ const KERN_DIRS_LOCKED: [i32; 6] = [
 const HW_REGISTERED: [i32; 5] = [HW_MACHINE_ID, HW_SENSORS, HW_UCOMNAMES, HW_SMT, HW_BLOCKCPU];
 
 /// `HW_MACHINE`.
-const HW_MACHINE_ID: i32 = sysdefs::sysctl::HW_MACHINE;
+const HW_MACHINE_ID: i32 = sysdefs::proc::sysctl::HW_MACHINE;
 
 /// Whether a subsystem may register the `kern` node `id`: the dispatcher consults only these.
 fn kern_registrable(id: i32) -> bool {
@@ -1927,7 +1927,7 @@ pub fn fill_kproc<G: ProcGlue>(
     ki.p_estcpu = p.p_estcpu.get();
     if isthread {
         ki.p_tid = p.p_tid.get() + THREAD_PID_OFFSET;
-        libkern::strlcpy(&mut ki.p_name, &p.name());
+        libkern::string::strlcpy::strlcpy(&mut ki.p_name, &p.name());
     } else {
         ki.p_tid = -1;
     }
@@ -1966,10 +1966,10 @@ pub fn fill_kproc<G: ProcGlue>(
     ki.p_acflag = pr.ps_acflag.get();
     ki.p_pledge = pr.ps_pledge.load(Ordering::Relaxed);
 
-    libkern::strlcpy(&mut ki.p_emul, b"native");
-    libkern::strlcpy(&mut ki.p_comm, &pr.comm());
+    libkern::string::strlcpy::strlcpy(&mut ki.p_emul, b"native");
+    libkern::string::strlcpy::strlcpy(&mut ki.p_comm, &pr.comm());
     if let Some(s) = s {
-        libkern::strlcpy(&mut ki.p_login, s.s_login.get(r));
+        libkern::string::strlcpy::strlcpy(&mut ki.p_login, s.s_login.get(r));
 
         if !s.ttyvp.is_none() {
             ki.p_eflag |= EPROC_CTTY;
@@ -2000,7 +2000,7 @@ pub fn fill_kproc<G: ProcGlue>(
         if p.p_wchan.get() != 0
             && let Some(wmesg) = p.p_wmesg.get()
         {
-            libkern::strlcpy(&mut ki.p_wmesg, wmesg.as_bytes());
+            libkern::string::strlcpy::strlcpy(&mut ki.p_wmesg, wmesg.as_bytes());
         }
         if show_pointers {
             ki.p_wchan = p.p_wchan.get() as u64;
@@ -2581,10 +2581,10 @@ mod tests {
     use std::vec::Vec;
 
     use hal::mem::pool::PoolBox;
-    use sysdefs::sysctl::{
+    use sysdefs::base::types::Uid;
+    use sysdefs::proc::sysctl::{
         CTL_DEBUG, HW_NCPU, KERN_PROC_SHOW_THREADS, KinfoFile, SYSCTL_INT_READONLY,
     };
-    use sysdefs::types::Uid;
 
     use super::*;
     use crate::proc::cred::{CredRef, Ucred};
@@ -3417,7 +3417,7 @@ mod tests {
         // kern.mbstat: struct mbstat; kern.maxclusters: nmbclust, both the mbuf's.
         assert_eq!(
             sysctl(&p, at, &[CTL_KERN, KERN_MBSTAT], 0, Some(0), 0, 0),
-            (Ok(()), Some(size_of::<sysdefs::mbuf::Mbstat>()))
+            (Ok(()), Some(size_of::<sysdefs::net::mbuf::Mbstat>()))
         );
         let (r, len) = sysctl(&p, at, &[CTL_KERN, KERN_MAXCLUSTERS], old, Some(4), 0, 0);
         assert_eq!((r, len), (Ok(()), Some(4)));
@@ -3552,7 +3552,7 @@ mod tests {
     /// too short `ENOTDIR`, an unknown type `EOPNOTSUPP` (vfs_subr.c's answers).
     #[test]
     fn vfs_is_the_kernel_s_own_tree() {
-        use sysdefs::mount::{VFS_GENERIC, VFS_MAXTYPENUM};
+        use sysdefs::fs::mount::{VFS_GENERIC, VFS_MAXTYPENUM};
         let (_pr, p) = caller(4950, 0);
         let at = testutil::USER_BASE + 0x5d00;
         assert_eq!(
@@ -3631,7 +3631,7 @@ mod tests {
         use crate::dev::disk::{
             Disk, disk_attach, disk_busy, disk_detach, disk_stats, disk_unbusy,
         };
-        use sysdefs::disklabel::Disklabel;
+        use sysdefs::dev::disklabel::Disklabel;
 
         let _g = testutil::bufcache_install(1 << 20, 64);
         crate::dev::disk::disk_test_reset();

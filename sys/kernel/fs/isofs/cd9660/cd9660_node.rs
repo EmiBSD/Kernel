@@ -170,11 +170,11 @@ use hal::mem::malloc::{M_WAITOK, MArc, MArray};
 use hal::sync::klock;
 use hal::sync::rwlock::RecursiveRwlock;
 use hal::sync::slot::ReadMostly;
-use libkern::siphash::{SipHash24Ctx, SiphashKey};
-use sysdefs::errno::Errno;
-use sysdefs::mount::ISOFSMNT_EXTATT;
-use sysdefs::stat::{S_IFDIR, S_IFREG, S_IRGRP, S_IROTH, S_IRUSR, S_IXGRP, S_IXOTH, S_IXUSR};
-use sysdefs::types::{Dev, Gid, Uid};
+use libkern::hash::siphash::{SipHash24Ctx, SiphashKey};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Dev, Gid, Uid};
+use sysdefs::file::stat::{S_IFDIR, S_IFREG, S_IRGRP, S_IROTH, S_IRUSR, S_IXGRP, S_IXOTH, S_IXUSR};
+use sysdefs::fs::mount::ISOFSMNT_EXTATT;
 
 use crate::assert::kpanic;
 use crate::fs::bio::brelse;
@@ -799,7 +799,7 @@ mod tests {
     use crate::fs::isofs::cd9660::cd9660_extern::ISO_FTYPE_DEFAULT;
     use crate::fs::isofs::cd9660::testcd9660::{attach_image, image, rec, test_mnt, test_node};
     use crate::fs::testfs::TestGlue;
-    use sysdefs::stat::S_IFMT;
+    use sysdefs::file::stat::S_IFMT;
 
     /// `cd9660_tstamp_conv7` of a 7-byte date.
     fn conv7(d: [u8; 7]) -> (bool, Timespec) {

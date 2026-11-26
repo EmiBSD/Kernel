@@ -125,7 +125,7 @@ use hal::sync::klock;
 use crate::base::log::{Buf, LOG_INFO, logwakeup, msgbuf_putchar, msgbufmapped};
 use crate::proc::{PS_CONTROLT, ProcGlue, SessionRef, Thread};
 use crate::tty::{Tty, session_tty, tputchar, ttycheckoutq};
-use sysdefs::errno::Errno;
+use sysdefs::base::errno::Errno;
 
 /// A C string as `printf(9)`'s `%s` prints it: its bytes up to the first NUL, if any, each as
 /// a character (a byte above 0x7f prints as its Latin-1 character, as LZ's `Str` did). The one

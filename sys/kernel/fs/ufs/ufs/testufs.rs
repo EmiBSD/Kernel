@@ -41,9 +41,9 @@ use std::vec::Vec;
 use hal::cpu::intr::IPL_NONE;
 use hal::mem::malloc::MArc;
 use hal::mem::pool::{BoxPool, PR_WAITOK, PoolArc, TypedPool};
-use sysdefs::errno::Errno;
-use sysdefs::mount::{Fid, MNT_LOCAL, Statfs};
-use sysdefs::types::{Daddr, Ino, Mode, Off, Uid};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Daddr, Ino, Mode, Off, Uid};
+use sysdefs::fs::mount::{Fid, MNT_LOCAL, Statfs};
 
 use super::dinode::{IFDIR, Ufs2Dinode, Ufsino};
 use super::dir::DIRBLKSIZ;
@@ -67,7 +67,7 @@ use crate::proc::Thread;
 pub const BSIZE: usize = DIRBLKSIZ;
 
 /// The device number of the double's disk (`i_dev`): a disk of testfs's device switch.
-pub const TEST_DEV: sysdefs::types::Dev = sysdefs::types::makedev(2, 14);
+pub const TEST_DEV: sysdefs::base::types::Dev = sysdefs::base::types::makedev(2, 14);
 
 /// The file system's half of the double.
 pub struct TestUfs;

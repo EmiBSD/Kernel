@@ -95,7 +95,7 @@
 //! ## Redesign
 //! - LZ keeps the page arithmetic in `bsd`'s `sys/uvm/uvm_param.rs`, with inherent `impl`
 //!   blocks on `Paddr`, `Vaddr` and `Vsize`. Rust allows an inherent `impl` only in the crate
-//!   that defines the type, and N3.1 moves `<sys/types.h>` into `hal` (`sys/lib/sysdefs/types.rs`)
+//!   that defines the type, and N3.1 moves `<sys/types.h>` into `hal` (`sys/lib/sysdefs/base/types.rs`)
 //!   because every signature of `hal::vm::pmap` takes those newtypes; so the arithmetic moves with
 //!   them, here, and `bsd`'s `uvm_param.rs` re-exports it beside what it keeps
 //!   (`VM_KERNEL_SPACE_SIZE`, over the `VmParam` trait `hal` has no implementor of).
@@ -105,11 +105,11 @@
 
 use crate::arch::current::param::{PAGE_MASK, PAGE_SHIFT};
 
-// `sysdefs::param` states the page geometry the address newtypes use: it must be the machine's.
+// `sysdefs::base::param` states the page geometry the address newtypes use: it must be the machine's.
 const _: () = assert!(
-    PAGE_SHIFT == sysdefs::param::PAGE_SHIFT
-        && PAGE_MASK == sysdefs::param::PAGE_MASK
-        && crate::arch::current::param::PAGE_SIZE == sysdefs::param::PAGE_SIZE
+    PAGE_SHIFT == sysdefs::base::param::PAGE_SHIFT
+        && PAGE_MASK == sysdefs::base::param::PAGE_MASK
+        && crate::arch::current::param::PAGE_SIZE == sysdefs::base::param::PAGE_SIZE
 );
 
 /// Default page size.
@@ -140,7 +140,7 @@ pub const fn trunc_page(x: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sysdefs::types::{Paddr, Vaddr, Vsize};
+    use sysdefs::base::types::{Paddr, Vaddr, Vsize};
 
     #[test]
     fn page_arithmetic() {

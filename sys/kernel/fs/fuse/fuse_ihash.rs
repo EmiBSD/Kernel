@@ -83,9 +83,9 @@ use core::sync::atomic::Ordering;
 use hal::ds::pinlist::PinList;
 use hal::mem::malloc::{M_WAITOK, MArray};
 use hal::sync::klock;
-use libkern::siphash::{SipHash24Ctx, SiphashKey};
-use sysdefs::errno::Errno;
-use sysdefs::types::Ino;
+use libkern::hash::siphash::{SipHash24Ctx, SiphashKey};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::Ino;
 
 use crate::assert::kpanic;
 use crate::fs::fuse::fusefs::{FusefsMnt, M_FUSEFS};

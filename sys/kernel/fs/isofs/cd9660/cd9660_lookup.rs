@@ -90,10 +90,10 @@
 
 use core::sync::atomic::Ordering;
 
-use sysdefs::errno::Errno;
-use sysdefs::mount::MNT_RDONLY;
-use sysdefs::syslimits::NAME_MAX;
-use sysdefs::types::Off;
+use sysdefs::base::errno::Errno;
+use sysdefs::base::syslimits::NAME_MAX;
+use sysdefs::base::types::Off;
+use sysdefs::fs::mount::MNT_RDONLY;
 
 use crate::assert::kpanic;
 use crate::fs::bio::{DEV_BSHIFT, bread_or_release, brelse};
@@ -497,7 +497,7 @@ mod tests {
     use std::sync::MutexGuard;
     use std::vec::Vec;
 
-    use sysdefs::mount::ISOFSMNT_NORRIP;
+    use sysdefs::fs::mount::ISOFSMNT_NORRIP;
 
     use super::*;
     use crate::fs::isofs::cd9660::cd9660_node::vtoi;

@@ -177,7 +177,7 @@ use crate::sys::systm::{kernel_lock, kernel_unlock};
 #[cfg(feature = "inet6")]
 use alloc::vec::Vec;
 use hal::mem::explicit_bzero;
-use libkern::timingsafe_bcmp;
+use libkern::mem::timingsafe_bcmp::timingsafe_bcmp;
 
 /// `struct ahstat`: the AH statistics as `net.inet.ah.stats` returns them.
 #[repr(C)]

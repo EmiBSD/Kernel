@@ -63,7 +63,7 @@ use core::ptr::{self, NonNull};
 use core::slice;
 use core::sync::atomic::Ordering;
 
-use libkern::strlcpy;
+use libkern::string::strlcpy::strlcpy;
 
 use crate::arch::arm64::arm64::bus_dma::{
     _dmamap_create, _dmamap_destroy, _dmamap_load, _dmamap_load_buffer, _dmamap_load_mbuf,

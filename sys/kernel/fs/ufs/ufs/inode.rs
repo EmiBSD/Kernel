@@ -166,10 +166,10 @@ use hal::sync::once::OnceStatic;
 use hal::sync::rwlock::RecursiveRwlock;
 use hal::sync::slot::ReadMostly;
 use hal::user::{bytes_of, bytes_of_mut, pod_from_bytes, pod_to_bytes};
-use sysdefs::errno::Errno;
-use sysdefs::mount::{Fid, MNT_ASYNC};
-use sysdefs::pod::AbiPod;
-use sysdefs::types::{Daddr, Dev, Mode, Off};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::pod::AbiPod;
+use sysdefs::base::types::{Daddr, Dev, Mode, Off};
+use sysdefs::fs::mount::{Fid, MNT_ASYNC};
 
 use super::dinode::{
     MAXSYMLINKLEN_UFS1, MAXSYMLINKLEN_UFS2, NDADDR, NIADDR, Ufs1Dinode, Ufs2Dinode, Ufsino,

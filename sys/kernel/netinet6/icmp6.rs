@@ -215,14 +215,15 @@ use hal::mem::pool::PoolArc;
 use hal::sync::netlock::NetHeld;
 use hal::sync::rwlock::Guarded;
 use hal::sync::slot::ReadMostly;
-use sysdefs::errno::Errno;
-use sysdefs::limits::INT_MAX;
-use sysdefs::net_if::{IFF_UP, IFXF_AUTOCONF6, SDL_DATA_OFFSET};
-use sysdefs::net_route::{
+use sysdefs::base::errno::Errno;
+use sysdefs::base::limits::INT_MAX;
+use sysdefs::net::if_::{IFF_UP, IFXF_AUTOCONF6, SDL_DATA_OFFSET};
+use sysdefs::net::route::{
     RTAX_DST, RTAX_GATEWAY, RTAX_LABEL, RTF_BLACKHOLE, RTF_DYNAMIC, RTF_GATEWAY, RTF_HOST,
     RTF_LLINFO, RTF_LOCAL, RTF_REJECT, RTM_ADD, RTV_MTU, SockaddrRtlabel,
 };
-use sysdefs::netinet_icmp6::{
+use sysdefs::net::socket::{AF_INET6, AF_LINK};
+use sysdefs::netinet::icmp6::{
     ICMP6_DST_UNREACH, ICMP6_DST_UNREACH_ADDR, ICMP6_DST_UNREACH_ADMIN,
     ICMP6_DST_UNREACH_BEYONDSCOPE, ICMP6_DST_UNREACH_NOPORT, ICMP6_DST_UNREACH_NOROUTE,
     ICMP6_ECHO_REPLY, ICMP6_ECHO_REQUEST, ICMP6_PACKET_TOO_BIG, ICMP6_PARAM_PROB,
@@ -238,21 +239,20 @@ use sysdefs::netinet_icmp6::{
     ND_REDIRECT_ONLINK, ND_REDIRECT_ROUTER, ND_ROUTER_ADVERT, ND_ROUTER_SOLICIT, NdNeighborAdvert,
     NdNeighborSolicit, NdOptHdr, NdOptRdHdr, NdRedirect, NdRouterAdvert, NdRouterSolicit,
 };
-use sysdefs::netinet_in::{
+use sysdefs::netinet::in_::{
     IPPROTO_AH, IPPROTO_DONE, IPPROTO_DSTOPTS, IPPROTO_FRAGMENT, IPPROTO_HOPOPTS, IPPROTO_ICMPV6,
     IPPROTO_IPV6, IPPROTO_ROUTING,
 };
-use sysdefs::netinet_ip6::{
+use sysdefs::netinet::ip6::{
     IP6F_OFF_MASK, IPV6_FLOWLABEL_MASK, IPV6_MMTU, IPV6_VERSION, IPV6_VERSION_MASK, Ip6Ext,
     Ip6Frag, Ip6Hdr, Ip6Rthdr, Ip6Rthdr0,
 };
-use sysdefs::netinet6_in6::{
+use sysdefs::netinet6::in6::{
     ICMP6_FILTER, IPV6_RTHDR_TYPE_0, In6Addr, SockaddrIn6, in6_is_addr_linklocal,
     in6_is_addr_multicast, in6_is_addr_unspecified, in6_is_scope_embed,
 };
-use sysdefs::netinet6_in6_var::{IN6_IFF_ANYCAST, IN6_IFF_DUPLICATED, IN6_IFF_TENTATIVE};
-use sysdefs::socket::{AF_INET6, AF_LINK};
-use sysdefs::sysctl::SysctlBoundedArgs;
+use sysdefs::netinet6::in6_var::{IN6_IFF_ANYCAST, IN6_IFF_DUPLICATED, IN6_IFF_TENTATIVE};
+use sysdefs::proc::sysctl::SysctlBoundedArgs;
 
 use crate::assert::kpanic;
 use crate::base::sysctl::{SYSCTL_LOCK, SysctlReq, bounded_arr, int_bounded, rdint, rdstruct};
@@ -968,7 +968,7 @@ fn icmp6_echo_reply(
 
 /// The `len` bytes at `off` of `m` made contiguous ([`ip6_exthdr_get`]) and copied as a `T`;
 /// `None` (the chain freed, `icp6s_tooshort` counted) when the chain does not hold them.
-fn exthdr<T: sysdefs::pod::AbiPod>(m: MbufBox, off: i32) -> Option<(MbufBox, T)> {
+fn exthdr<T: sysdefs::base::pod::AbiPod>(m: MbufBox, off: i32) -> Option<(MbufBox, T)> {
     let len = size_of::<T>();
     let Some((m, at, o)) = ip6_exthdr_get(m, off, len as i32) else {
         icmp6stat_inc(Icmp6statCounters::Icp6sTooshort);
@@ -1782,7 +1782,7 @@ pub fn icmp6_ctloutput<G: ProcGlue>(
     optname: i32,
     m: Option<&mut Mbuf>,
 ) -> Result<(), Errno> {
-    const FILTER_LEN: usize = size_of::<sysdefs::netinet_icmp6::Icmp6Filter>();
+    const FILTER_LEN: usize = size_of::<sysdefs::netinet::icmp6::Icmp6Filter>();
 
     if level != IPPROTO_ICMPV6 {
         return Err(Errno::EINVAL);
@@ -2029,8 +2029,8 @@ pub(crate) mod tests {
 
     use hal::sync::netlock::NETLOCK;
     use hal::user::UserPtr;
-    use sysdefs::netinet_in::IPPROTO_UDP;
-    use sysdefs::socket::AF_INET6;
+    use sysdefs::net::socket::AF_INET6;
+    use sysdefs::netinet::in_::IPPROTO_UDP;
 
     use super::*;
     use crate::net::if_var::Ifnet;
@@ -2535,14 +2535,14 @@ pub(crate) mod tests {
         let ifa = crate::netinet6::in6::tests::withaddr(ifp, &ours6());
         with_net(|net| {
             let mut info = RtAddrinfo::new();
-            info.rti_flags = RTF_GATEWAY | RTF_HOST | sysdefs::net_route::RTF_STATIC;
+            info.rti_flags = RTF_GATEWAY | RTF_HOST | sysdefs::net::route::RTF_STATIC;
             info.rti_info[RTAX_DST] = Some(view(&d));
             info.rti_info[RTAX_GATEWAY] = Some(view(&g));
             info.rti_ifa = ifa.as_ref();
             rtrequest(
                 RTM_ADD,
                 &mut info,
-                sysdefs::net_route::RTP_STATIC,
+                sysdefs::net::route::RTP_STATIC,
                 None,
                 0,
                 net,
@@ -2817,7 +2817,7 @@ pub(crate) mod tests {
     fn an_error_reaches_the_quoted_protocol_then_the_raw_sockets() {
         use crate::netinet6::in6_proto::testsw6::{RAW6, UDP6, install};
         use crate::netinet6::ip6_var::IP6COUNTERS;
-        use sysdefs::netinet6_ip6_var::Ip6statCounters;
+        use sysdefs::netinet6::ip6_var::Ip6statCounters;
         let (_g, ifp) = net6();
         install();
         // icmp6_input's tail is rip6_input itself, the C's call (N6.6b1): with no raw socket

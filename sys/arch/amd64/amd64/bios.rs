@@ -95,7 +95,9 @@ use core::slice;
 use core::sync::atomic::Ordering;
 
 use crate::sys::staticcell::StaticCell;
-use libkern::{strlcpy, strncasecmp, strnlen};
+use libkern::string::strlcpy::strlcpy;
+use libkern::string::strncasecmp::strncasecmp;
+use libkern::string::strnlen::strnlen;
 
 use super::super::include::biosvar::SMBIOS_SIGNATURE;
 #[cfg(target_os = "none")]

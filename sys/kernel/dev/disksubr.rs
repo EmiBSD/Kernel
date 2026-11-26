@@ -68,18 +68,20 @@
 //!   through `machine::disklabel`'s `MachineDisklabel` trait), over a `&'static Buf` with an
 //!   `unsafe` view of `b_data`; it is the kernel's, over the disk layer's `LabelBuf` (the
 //!   `geteblk` token and the driver's [`Strat`] closure), its `brelse` the buffer's drop. No
-//!   machine code is involved: the label's place (`LABELSECTOR`) is `sysdefs::disklabel`'s.
+//!   machine code is involved: the label's place (`LABELSECTOR`) is `sysdefs::dev::disklabel`'s.
 
 use core::sync::atomic::Ordering;
 use hal::user::AbiBytes;
 
-use sysdefs::disklabel::{DISKLABEL_SIZE, DOS_LABELSECTOR, Disklabel, dl_blkoffset, dl_blktosec};
-use sysdefs::types::{Daddr, Dev};
+use sysdefs::base::types::{Daddr, Dev};
+use sysdefs::dev::disklabel::{
+    DISKLABEL_SIZE, DOS_LABELSECTOR, Disklabel, dl_blkoffset, dl_blktosec,
+};
 
 use crate::dev::disk::{DISK_CHANGE, LabelBuf, Strat, initdisklabel, readdisksector, readdoslabel};
 use crate::fs::buf::{B_BUSY, B_DONE, B_RAW, B_READ, B_WRITE};
 use crate::proc::ProcGlue;
-use sysdefs::errno::Errno;
+use sysdefs::base::errno::Errno;
 
 /// Attempt to read a disk label from a device using the indicated strategy routine. The
 /// label must be partly set up before this: secpercyl, secsize and anything required for a
@@ -173,7 +175,7 @@ mod tests {
     use super::*;
     use crate::dev::disk::dkcksum;
     use crate::fs::buf::{B_ERROR, BufRef};
-    use sysdefs::disklabel::{
+    use sysdefs::dev::disklabel::{
         DISKMAGIC, DOSMBR_SIGNATURE, DOSPARTOFF, DOSPTYP_OPENBSD, FS_BSDFFS, RAW_PART,
         dl_getpoffset, dl_setdsize, dl_setpsize,
     };
@@ -217,7 +219,7 @@ mod tests {
         d.d_magic = DISKMAGIC;
         d.d_magic2 = DISKMAGIC;
         d.d_npartitions = 3;
-        sysdefs::disklabel::dl_setpoffset(&mut d.d_partitions[0], off);
+        sysdefs::dev::disklabel::dl_setpoffset(&mut d.d_partitions[0], off);
         dl_setpsize(&mut d.d_partitions[0], u64::from(sectors) - off);
         d.d_partitions[0].p_fstype = FS_BSDFFS;
         dl_setpsize(&mut d.d_partitions[RAW_PART as usize], u64::from(sectors));

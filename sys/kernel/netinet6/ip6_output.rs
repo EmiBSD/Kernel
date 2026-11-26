@@ -206,26 +206,27 @@ use core::sync::atomic::Ordering;
 use hal::mem::malloc::{M_NOWAIT, M_WAITOK, MArray, MBox};
 use hal::mem::pod;
 use hal::sync::netlock::NetHeld;
-use sysdefs::endian::{htonl, htons};
-use sysdefs::errno::Errno;
-use sysdefs::net_if::{
+use sysdefs::base::endian::{htonl, htons};
+use sysdefs::base::errno::Errno;
+use sysdefs::net::if_::{
     IFCAP_CSUM_TCPv6, IFCAP_CSUM_UDPv6, IFCAP_TSOv6, IFF_LOOPBACK, IFF_MULTICAST,
 };
-use sysdefs::net_route::{RTF_GATEWAY, RTF_LOCAL, RTV_MTU};
-use sysdefs::netinet_icmp6::Icmp6Hdr;
-use sysdefs::netinet_in::{
+use sysdefs::net::route::{RTF_GATEWAY, RTF_LOCAL, RTV_MTU};
+use sysdefs::net::socket::{AF_INET6, Cmsghdr, SO_RTABLE, cmsg_align, cmsg_len};
+use sysdefs::netinet::icmp6::Icmp6Hdr;
+use sysdefs::netinet::in_::{
     IPPROTO_DSTOPTS, IPPROTO_FRAGMENT, IPPROTO_HOPOPTS, IPPROTO_ICMPV6, IPPROTO_IPV6, IPPROTO_TCP,
     IPPROTO_UDP, IPSEC_AUTH_LEVEL_DEFAULT, IPSEC_ESP_NETWORK_LEVEL_DEFAULT,
     IPSEC_ESP_TRANS_LEVEL_DEFAULT, IPSEC_IPCOMP_LEVEL_DEFAULT, IPSEC_LEVEL_BYPASS,
     IPSEC_LEVEL_UNIQUE,
 };
-use sysdefs::netinet_ip6::{
+use sysdefs::netinet::ip6::{
     IP6F_MORE_FRAG, IP6OPT_JUMBO, IP6OPT_PADN, IPV6_MAXPACKET, IPV6_MMTU, Ip6Dest, Ip6Frag, Ip6Hbh,
     Ip6Hdr,
 };
-use sysdefs::netinet_tcp::Tcphdr;
-use sysdefs::netinet_udp::Udphdr;
-use sysdefs::netinet6_in6::{
+use sysdefs::netinet::tcp::Tcphdr;
+use sysdefs::netinet::udp::Udphdr;
+use sysdefs::netinet6::in6::{
     IPSEC6_OUTSA, IPV6_AUTH_LEVEL, IPV6_AUTOFLOWLABEL, IPV6_CHECKSUM, IPV6_DEFAULT_MULTICAST_LOOP,
     IPV6_DONTFRAG, IPV6_DSTOPTS, IPV6_ESP_NETWORK_LEVEL, IPV6_ESP_TRANS_LEVEL, IPV6_HOPLIMIT,
     IPV6_HOPOPTS, IPV6_IPCOMP_LEVEL, IPV6_JOIN_GROUP, IPV6_LEAVE_GROUP, IPV6_MINHOPCOUNT,
@@ -237,7 +238,6 @@ use sysdefs::netinet6_in6::{
     SockaddrIn6, in6_are_addr_equal, in6_is_addr_mc_intfacelocal, in6_is_addr_mc_linklocal,
     in6_is_addr_multicast, in6_is_addr_unspecified, in6_is_scope_embed,
 };
-use sysdefs::socket::{AF_INET6, Cmsghdr, SO_RTABLE, cmsg_align, cmsg_len};
 
 use crate::assert::kpanic;
 use crate::net::if_::{IfRef, if_input_local, if_output_ml, if_output_tso, inet};
@@ -273,7 +273,7 @@ use crate::netinet6::ip6_var::{
     Ip6Moptions, Ip6OutOpts, Ip6Pktopts, M_IP6OPT, ip6stat_add, ip6stat_inc,
 };
 use crate::proc::{ProcGlue, Thread, suser};
-use sysdefs::netinet6_ip6_var::Ip6statCounters;
+use sysdefs::netinet6::ip6_var::Ip6statCounters;
 
 /// `JUMBOOPTLEN`: length of the jumbo payload option and its padding.
 const JUMBOOPTLEN: usize = 8;
@@ -2559,11 +2559,11 @@ mod tests {
     use std::vec::Vec;
 
     use hal::sync::netlock::NETLOCK;
-    use sysdefs::net_if::{IFF_RUNNING, IFF_UP};
-    use sysdefs::netinet_in::IPPROTO_IP;
-    use sysdefs::netinet_ip6::{IP6OPT_ROUTER_ALERT, IPV6_VERSION};
-    use sysdefs::socket::{PF_INET6, SOCK_RAW};
-    use sysdefs::sockio::SIOCSIFADDR;
+    use sysdefs::net::if_::{IFF_RUNNING, IFF_UP};
+    use sysdefs::net::socket::{PF_INET6, SOCK_RAW};
+    use sysdefs::net::sockio::SIOCSIFADDR;
+    use sysdefs::netinet::in_::IPPROTO_IP;
+    use sysdefs::netinet::ip6::{IP6OPT_ROUTER_ALERT, IPV6_VERSION};
 
     use super::*;
     use crate::net::domain::Domain;

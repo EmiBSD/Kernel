@@ -51,7 +51,7 @@ use core::mem::{align_of, size_of};
 
 use crate::arch::current::param::PAGE_SIZE;
 use crate::assert::hal_panic;
-use sysdefs::types::Vsize;
+use sysdefs::base::types::Vsize;
 
 /// `n` values of `T`, `init(i)` the `i`th, in memory stolen from the page system before it is
 /// up; never freed. Panics when `T` is zero-sized or aligned beyond a page, when the size

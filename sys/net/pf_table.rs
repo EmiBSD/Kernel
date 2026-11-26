@@ -190,7 +190,8 @@ use crate::sys::systm::{net_assert_locked, net_lock, net_unlock};
 use crate::sys::tree::RbHead;
 use crate::sys::types::{SaFamily, Time};
 use hal::sync::rwlock::{ReadGuard, Rwlocked};
-use libkern::{strlcpy, strnlen};
+use libkern::string::strlcpy::strlcpy;
+use libkern::string::strnlen::strnlen;
 
 #[cfg(feature = "inet6")]
 use crate::{netinet6::in6::In6Addr, sys::socket::AF_INET6};

@@ -97,7 +97,7 @@ use crate::machine::pci_machdep::{
 };
 use crate::sys::device::{CfMatch, Cfattach, DVACT_RESUME, Device, Softc};
 use crate::sys::errno::Errno;
-use libkern::strlcpy;
+use libkern::string::strlcpy::strlcpy;
 
 /// `struct uhci_pci_softc`.
 #[repr(C)]

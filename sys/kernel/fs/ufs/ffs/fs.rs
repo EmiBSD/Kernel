@@ -127,7 +127,7 @@ use core::sync::atomic::{AtomicI32, AtomicU8, AtomicU64, Ordering};
 use hal::mem::malloc::{M_WAITOK, MArray};
 use hal::sync::slot::ReadMostly;
 use hal::user::pod_from_bytes;
-use sysdefs::types::{Daddr, Off};
+use sysdefs::base::types::{Daddr, Off};
 
 use crate::assert::kpanic;
 use crate::file::select::howmany;

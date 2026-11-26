@@ -273,9 +273,9 @@ use crate::vm::pmap::{
     BootstrapParams, KernelImage, PG_PMAP_MOD, PG_PMAP_REF, PMAP_CANFAIL, PMAP_WIRED, PageMd,
     PhysPages, Pmap, PmapBackend, PmapCounter, PmapRef, PmapStatistics, VmProt,
 };
-use sysdefs::errno::Errno;
-use sysdefs::mman::{PROT_EXEC, PROT_NONE, PROT_READ, PROT_WRITE};
-use sysdefs::types::{Paddr, Vaddr, Vsize};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Paddr, Vaddr, Vsize};
+use sysdefs::vm::mman::{PROT_EXEC, PROT_NONE, PROT_READ, PROT_WRITE};
 
 /// The size of the `vmmap` window (see the deviations): large enough for the devices, wholly
 /// below `virtual_avail`, out of `kernel_map`'s way.

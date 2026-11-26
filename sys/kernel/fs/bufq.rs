@@ -74,7 +74,7 @@ use hal::ds::list::{List, ListEntry};
 use hal::ds::owned::{Member, SecondaryList};
 use hal::sync::mutex::Mutexed;
 use hal::sync::sleep::{INFSLP, PRIBIO, wakeup};
-use sysdefs::errno::Errno;
+use sysdefs::base::errno::Errno;
 
 use super::bio::{BCSTATS, biodone, note_done, note_queued};
 use super::buf::{
@@ -565,7 +565,7 @@ mod tests {
     use crate::fs::buf::{B_DONE, BUFQ_FIFO, BUFQ_NSCAN};
     use crate::testutil::{BufTestVnode, bufcache_install};
     use hal::sync::sleep::INFSLP;
-    use sysdefs::types::Daddr;
+    use sysdefs::base::types::Daddr;
 
     /// The queues' tests share the cache's counters (`kvaslots`): one at a time.
     fn setup() -> MutexGuard<'static, ()> {
@@ -627,7 +627,14 @@ mod tests {
 
         // A cache buffer: queued by a counted link, which the dequeue gives back.
         let tv = BufTestVnode::new(64);
-        let t = getblk(&tv.bufs, 3, sysdefs::param::PAGE_SIZE as i32, 0, INFSLP).expect("a buffer");
+        let t = getblk(
+            &tv.bufs,
+            3,
+            sysdefs::base::param::PAGE_SIZE as i32,
+            0,
+            INFSLP,
+        )
+        .expect("a buffer");
         let r = t.counted().expect("a cache buffer");
         let cb = r.get().expect("the buffer");
         Buf::park(t);

@@ -62,7 +62,7 @@
 //! a matter of convention between the device driver and its consumers; however, all drivers
 //! for an interface of a given `if_type` are expected to agree.
 //!
-//! Status: `ported`; `struct sockaddr_dl` is `hal`'s since N6.3a (`sysdefs::net_if`),
+//! Status: `ported`; `struct sockaddr_dl` is `hal`'s since N6.3a (`sysdefs::net::if_`),
 //! re-exported here, beside LZ's raw-pointer helpers for `bsd`'s users.
 //!
 //! ## Deviations
@@ -75,7 +75,7 @@
 use core::mem::size_of;
 use core::ptr::addr_of_mut;
 
-pub use sysdefs::net_if::SockaddrDl;
+pub use sysdefs::net::if_::SockaddrDl;
 
 use crate::sys::socket::Sockaddr;
 

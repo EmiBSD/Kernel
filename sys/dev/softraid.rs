@@ -117,7 +117,7 @@ use hal::user::AbiBytes;
 
 use crate::sys::staticcell::StaticCell;
 use hal::mem::explicit_bzero;
-use libkern::strlcpy;
+use libkern::string::strlcpy::strlcpy;
 
 use kernel::dev::sensors::{
     sensor_attach, sensor_detach, sensor_task_register, sensor_task_unregister,

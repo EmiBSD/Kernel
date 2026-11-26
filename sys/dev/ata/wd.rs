@@ -289,7 +289,7 @@ pub fn wdattach(_parent: Option<&Device>, self_: &Device, aux: *mut c_void) {
     wd.drvp.set(Some(drvp));
 
     let mut name = [0u8; 31];
-    let _ = libkern::strlcpy(&mut name, self_.xname().as_bytes());
+    let _ = libkern::string::strlcpy::strlcpy(&mut name, self_.xname().as_bytes());
     drvp.drive_name.set(name);
     drvp.cf_flags.set(self_.cfdata().cf_flags);
 

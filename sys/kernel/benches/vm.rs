@@ -100,8 +100,8 @@ use kernel::vm::types::{
     Voff, uvm_mapflag,
 };
 use kernel::vm::vnode::{uvn_attach, uvn_init};
-use sysdefs::errno::Errno;
-use sysdefs::mman::{
+use sysdefs::base::errno::Errno;
+use sysdefs::vm::mman::{
     MADV_NORMAL, MADV_RANDOM, MAP_ANON, MAP_INHERIT_COPY, MAP_INHERIT_SHARE, MAP_PRIVATE,
     PROT_EXEC, PROT_NONE, PROT_READ, PROT_WRITE,
 };

@@ -69,8 +69,8 @@ use kernel::file::{DTYPE_PIPE, File, FileOps};
 use kernel::proc::resource::{self, PlimitRef};
 use kernel::proc::{self, ProcGlue, ProcTables, Process, Session, Thread};
 use kernel::testutil;
-use sysdefs::errno::Errno;
-use sysdefs::types::Off;
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::Off;
 
 // ---------------------------------------------------------------------------------------
 // The harness (vm.rs's).
@@ -405,7 +405,7 @@ impl FileOps<BenchFiles> for BenchOps {
     fn stat(
         &self,
         _: &File<BenchFiles>,
-        _: &mut sysdefs::stat::Stat,
+        _: &mut sysdefs::file::stat::Stat,
         _: &Thread<BenchGlue>,
     ) -> Result<(), Errno> {
         Ok(())

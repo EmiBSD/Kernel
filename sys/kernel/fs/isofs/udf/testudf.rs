@@ -31,8 +31,8 @@ use std::vec::Vec;
 
 use hal::mem::malloc::{M_WAITOK, MArc, MArray};
 use hal::mem::pool::PoolArc;
-use sysdefs::errno::Errno;
-use sysdefs::mount::{MNT_LOCAL, MNT_RDONLY, MOUNT_UDF, UdfArgs};
+use sysdefs::base::errno::Errno;
+use sysdefs::fs::mount::{MNT_LOCAL, MNT_RDONLY, MOUNT_UDF, UdfArgs};
 
 use crate::fs::isofs::udf::udf::{
     M_UDFFENTRY, M_UDFMOUNT, UDF_HASHTBLSIZE, UdfHash, Udfino, Umount, UmountRef, Unode, UnodeRef,
@@ -126,8 +126,8 @@ pub fn test_ump(f: impl FnOnce(&Umount<TestGlue>)) -> UmountRef<TestGlue> {
 /// `size` being `l_ea + l_ad` and `hdr` the entry's fixed part.
 pub fn fentry_copy(entry: &[u8]) -> MArray<u8> {
     let hdr = crate::fs::isofs::udf::udf::FentryHdr::parse(entry);
-    let size =
-        sysdefs::endian::letoh32(hdr.l_ea) as usize + sysdefs::endian::letoh32(hdr.l_ad) as usize;
+    let size = sysdefs::base::endian::letoh32(hdr.l_ea) as usize
+        + sysdefs::base::endian::letoh32(hdr.l_ad) as usize;
     let n = size + crate::fs::isofs::udf::ecma167_udf::UDF_EXTFENTRY_SIZE;
     let Some(mut fe) = MArray::new(M_UDFFENTRY, M_WAITOK, n, |_| 0u8) else {
         std::panic!("testudf: malloc(M_UDFFENTRY)");

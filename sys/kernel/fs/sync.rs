@@ -80,8 +80,8 @@ use core::ptr;
 use core::sync::atomic::{AtomicI32, Ordering};
 
 use hal::ds::list::{List, ListEntry};
-use sysdefs::errno::Errno;
-use sysdefs::mount::{MNT_ASYNC, MNT_LAZY, VB_NOWAIT, VB_READ};
+use sysdefs::base::errno::Errno;
+use sysdefs::fs::mount::{MNT_ASYNC, MNT_LAZY, VB_NOWAIT, VB_READ};
 
 use super::mount::{Mount, vfs_busy, vfs_unbusy};
 use super::subr::{getnewvnode_id, vfs, vget, vput};

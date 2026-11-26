@@ -54,7 +54,7 @@
 /* <CODE> */
 //! `<netinet/igmp_var.h>`: Internet Group Management Protocol (IGMP), implementation-specific
 //! definitions, the kernel's since N6.4a (`kernel::netinet::igmp_var`; the userland half,
-//! `struct igmpstat` and the sysctl names, `sysdefs::netinet_igmp_var`), re-exported under
+//! `struct igmpstat` and the sysctl names, `sysdefs::netinet::igmp_var`), re-exported under
 //! LZ's path.
 //!
 //! Upstream: sys/netinet/igmp_var.h @ 3ce1f3f79392
@@ -62,5 +62,5 @@
 pub use kernel::netinet::igmp_var::{
     IGPS_NCOUNTERS, IgmpPktinfo, IgmpstatCounters, igmp_random_delay, igmpstat_inc,
 };
-pub use sysdefs::netinet_igmp_var::{IGMPCTL_MAXID, IGMPCTL_STATS, Igmpstat};
+pub use sysdefs::netinet::igmp_var::{IGMPCTL_MAXID, IGMPCTL_STATS, Igmpstat};
 /* </CODE> */

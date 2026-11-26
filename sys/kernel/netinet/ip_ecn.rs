@@ -117,12 +117,12 @@
 //!   caller stores back.
 //!
 //! ## Redesign
-//! - LZ's module moved whole into the kernel (N6.4a), over `sysdefs::netinet_ip`'s
+//! - LZ's module moved whole into the kernel (N6.4a), over `sysdefs::netinet::ip`'s
 //!   image; `bsd`'s tunnels (gif, etherip, ipip, IPsec: N6.6, N8) reach it under LZ's path
 //!   through `sys/netinet/mod.rs`'s re-export.
 
-use sysdefs::endian::htons;
-use sysdefs::netinet_ip::{IPTOS_ECN_CE, IPTOS_ECN_ECT1, IPTOS_ECN_MASK, IPTOS_ECN_NOTECT, Ip};
+use sysdefs::base::endian::htons;
+use sysdefs::netinet::ip::{IPTOS_ECN_CE, IPTOS_ECN_ECT1, IPTOS_ECN_MASK, IPTOS_ECN_NOTECT, Ip};
 
 /// `ECN_ALLOWED_IPSEC`: ECN allowed.
 pub const ECN_ALLOWED_IPSEC: i32 = 2;
@@ -201,7 +201,7 @@ pub fn ip_tos_patch(ip: &mut Ip, tos: u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sysdefs::netinet_ip::IPTOS_ECN_ECT0;
+    use sysdefs::netinet::ip::IPTOS_ECN_ECT0;
 
     #[test]
     fn ingress_and_egress() {

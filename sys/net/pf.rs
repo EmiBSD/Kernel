@@ -10567,7 +10567,7 @@ pub fn pf_status_clear() {
 /// `pf_status_read`: a copy of the status with the interface's counters (`pfs->ifname`).
 pub fn pf_status_read(pfs: &mut PfStatus) -> Result<(), Errno> {
     let ifname = pfs.ifname.get();
-    if libkern::strnlen(&ifname, ifname.len()) >= ifname.len() {
+    if libkern::string::strnlen::strnlen(&ifname, ifname.len()) >= ifname.len() {
         return Err(Errno::ENAMETOOLONG);
     }
     crate::sys::systm::net_lock();

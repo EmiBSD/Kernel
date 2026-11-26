@@ -149,12 +149,12 @@ use core::sync::atomic::Ordering;
 use hal::mem::malloc::{M_WAITOK, MArray};
 use hal::mem::pool::{PR_WAITOK, PoolBox};
 use hal::user::bytes_of_mut;
-use sysdefs::dirent::{DT_DIR, DT_UNKNOWN, Dirent, MAXNAMLEN, dirent_size};
-use sysdefs::endian::{letoh16, letoh32, letoh64};
-use sysdefs::errno::Errno;
-use sysdefs::syslimits::NAME_MAX;
-use sysdefs::types::{Daddr, Ino, Mode, Nlink, Off, Register};
-use sysdefs::unistd::{
+use sysdefs::base::endian::{letoh16, letoh32, letoh64};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::syslimits::NAME_MAX;
+use sysdefs::base::types::{Daddr, Ino, Mode, Nlink, Off, Register};
+use sysdefs::file::dirent::{DT_DIR, DT_UNKNOWN, Dirent, MAXNAMLEN, dirent_size};
+use sysdefs::proc::unistd::{
     _PC_CHOWN_RESTRICTED, _PC_LINK_MAX, _PC_NAME_MAX, _PC_NO_TRUNC, _PC_TIMESTAMP_RESOLUTION,
 };
 

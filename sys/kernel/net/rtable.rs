@@ -121,10 +121,10 @@ use hal::sync::smr::{
     self, SmrArcLink, SmrArcWord, SmrCounted, SmrLink, SmrLinked, SmrPtr, SmrRead, SmrRef,
     SmrRetiredArc,
 };
-use sysdefs::errno::Errno;
-use sysdefs::net_route::{RTF_MPATH, RTP_ANY, RTP_MASK};
-use sysdefs::socket::{AF_MAX, RT_TABLEID_BITS, RT_TABLEID_MASK, RT_TABLEID_MAX};
-use sysdefs::types::SaFamily;
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::SaFamily;
+use sysdefs::net::route::{RTF_MPATH, RTP_ANY, RTP_MASK};
+use sysdefs::net::socket::{AF_MAX, RT_TABLEID_BITS, RT_TABLEID_MASK, RT_TABLEID_MAX};
 
 use crate::assert::{kassert, kpanic};
 use crate::net::art::{Art, ArtInsert, ArtItem, ArtIter, ArtPools};
@@ -1313,8 +1313,8 @@ mod tests {
     use std::vec;
     use std::vec::Vec;
 
-    use sysdefs::net_route::{RTF_GATEWAY, RTF_HOST, RTF_UP, RTP_DOWN, RTP_STATIC};
-    use sysdefs::socket::{AF_INET, AF_INET6, AF_UNIX};
+    use sysdefs::net::route::{RTF_GATEWAY, RTF_HOST, RTF_UP, RTP_DOWN, RTP_STATIC};
+    use sysdefs::net::socket::{AF_INET, AF_INET6, AF_UNIX};
 
     use super::*;
     use crate::net::route::tests::{ROUTE_DOMS, entry, grace, sin, sin6, testroutes_setup};

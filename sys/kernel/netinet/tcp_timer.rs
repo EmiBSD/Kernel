@@ -147,11 +147,11 @@ use core::sync::atomic::{AtomicI32, Ordering};
 
 use hal::mem::pool::{AnyArc, PoolArc};
 use hal::sync::netlock::{NETLOCK, NetHeld};
-use sysdefs::errno::Errno;
-use sysdefs::net_route::{RTF_HOST, RTV_MTU};
-use sysdefs::netinet_in::SockaddrIn;
-use sysdefs::netinet_ip::Ip;
-use sysdefs::socket::{AF_INET, SO_DEBUG, SO_KEEPALIVE};
+use sysdefs::base::errno::Errno;
+use sysdefs::net::route::{RTF_HOST, RTV_MTU};
+use sysdefs::net::socket::{AF_INET, SO_DEBUG, SO_KEEPALIVE};
+use sysdefs::netinet::in_::SockaddrIn;
+use sysdefs::netinet::ip::Ip;
 
 use crate::assert::{kassert, kpanic};
 use crate::net::proto::PR_SLOWHZ;
@@ -821,7 +821,7 @@ pub fn tcp_timer_2msl<G: ProcGlue>(arg: &AnyArc) {
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
-    use sysdefs::netinet_tcp::{TH_ACK, TH_RST};
+    use sysdefs::netinet::tcp::{TH_ACK, TH_RST};
 
     use super::*;
     use crate::netinet::tcp_subr::testtcp;

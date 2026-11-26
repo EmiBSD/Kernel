@@ -52,8 +52,8 @@
 //! - LZ's module moved whole into the kernel (N6.4a); pf (`bsd`, N8) reaches it under
 //!   LZ's path through `sys/netinet/mod.rs`'s re-export.
 
-use sysdefs::errno::Errno;
-use sysdefs::socket::{AF_INET, AF_INET6};
+use sysdefs::base::errno::Errno;
+use sysdefs::net::socket::{AF_INET, AF_INET6};
 
 /// `union inet_nat64_addr`'s `u32[i]`.
 fn u32_at(a: &[u8; 16], i: usize) -> u32 {

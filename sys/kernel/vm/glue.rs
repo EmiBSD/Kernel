@@ -112,8 +112,8 @@ use hal::user::UserPtr;
 use hal::vm::param::{atop, ptoa, round_page, trunc_page};
 use hal::vm::pmap::Pmap;
 use hal::vm::uvmexp::UVMEXP;
-use sysdefs::errno::Errno;
-use sysdefs::types::{Paddr, Vaddr};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Paddr, Vaddr};
 
 use super::fault::{FaultMap, FaultMapGuard, uvm_fault_unwire_locked, uvm_fault_wire};
 use super::init::machine;

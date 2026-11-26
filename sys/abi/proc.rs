@@ -28,7 +28,7 @@
 use crate::scarg::{int, ptr, size_t, u_int};
 use hal::syscall::{Register, Rval, SysArgs, SysResult};
 
-use sysdefs::syscall::{
+use sysdefs::proc::syscall::{
     SYS___get_tcb, SYS___set_tcb, SYS___tfork, SYS___threxit, SYS_acct, SYS_exit, SYS_fork,
     SYS_futex, SYS_getegid, SYS_geteuid, SYS_getgid, SYS_getgroups, SYS_getlogin_r, SYS_getpgid,
     SYS_getpgrp, SYS_getpid, SYS_getppid, SYS_getpriority, SYS_getresgid, SYS_getresuid,

@@ -53,11 +53,11 @@ use crate::vm::param::round_page;
 use crate::vm::pmap::{
     BootstrapParams, PageMd, PhysPages, Pmap, PmapBackend, PmapStatistics, VmProt,
 };
-use sysdefs::errno::Errno;
-use sysdefs::mman::PROT_NONE;
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Paddr, Vaddr, Vsize};
+use sysdefs::vm::mman::PROT_NONE;
 #[cfg(target_arch = "aarch64")]
-use sysdefs::mman::{PROT_READ, PROT_WRITE};
-use sysdefs::types::{Paddr, Vaddr, Vsize};
+use sysdefs::vm::mman::{PROT_READ, PROT_WRITE};
 
 /// arm64's `EFI_SPACE_BITS`: the width of the EFI runtime pmap's address space.
 #[cfg(target_arch = "aarch64")]

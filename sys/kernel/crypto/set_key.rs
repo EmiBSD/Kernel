@@ -99,7 +99,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use super::des_locl::{DesCblock, DesKeySchedule, ITERATIONS, c2l, perm_op};
 use super::podd::ODD_PARITY;
 use super::sk::DES_SKB;
-use sysdefs::errno::Errno;
+use sysdefs::base::errno::Errno;
 
 /// `NUM_WEAK_KEY`.
 const NUM_WEAK_KEY: usize = 16;

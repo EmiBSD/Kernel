@@ -82,7 +82,7 @@
 //! Upstream: sys/netinet6/ip6_var.h @ 3ce1f3f79392
 //!
 //! ## Deviations
-//! - `struct ip6stat`, `enum ip6stat_counters` (`sysdefs::netinet6_ip6_var`), the flags, the
+//! - `struct ip6stat`, `enum ip6stat_counters` (`sysdefs::netinet6::ip6_var`), the flags, the
 //!   counters and their increments (`kernel::netinet6::ip6_var`) are re-exported (N6.5a).
 //! - `struct ip6_moptions` and `struct ip6_pktopts` (N6.5c) and `struct ip6q` and `struct
 //!   ip6asfrag` (N6.5d: the reassembly is the kernel's, `kernel::netinet6::frag6`) are the
@@ -109,7 +109,7 @@ pub use kernel::netinet6::ip6_var::{
     IPV6_FORWARDING, IPV6_FORWARDING_IPSEC, IPV6_MINMTU, IPV6_REDIRECT, IPV6_UNSPECSRC,
     Ip6Moptions, Ip6OutOpts, Ip6Pktopts, ip6stat_add, ip6stat_dec, ip6stat_inc, ip6stat_inc_idx,
 };
-pub use sysdefs::netinet6_ip6_var::{IP6S_NCOUNTERS, Ip6stat, Ip6statCounters};
+pub use sysdefs::netinet6::ip6_var::{IP6S_NCOUNTERS, Ip6stat, Ip6statCounters};
 
 /// `*mtod(m, struct ip6_hdr *)`: the IPv6 header at the start of `m`'s data, as a value.
 /// The data may sit at any alignment in the mbuf, so the header is copied out of the first

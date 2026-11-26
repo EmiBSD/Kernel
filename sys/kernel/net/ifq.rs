@@ -111,9 +111,9 @@ use hal::ds::pinlist::PinList;
 use hal::mem::malloc::{M_WAITOK, MBox};
 use hal::sync::mutex::{Mutexed, MutexedGuard};
 use hal::sync::sleep::INFSLP;
-use sysdefs::errno::Errno;
-use sysdefs::net_bpf::BPF_DIRECTION_IN;
-use sysdefs::net_if::{IFF_RUNNING, IFQ_MAXPRIO, IFQ_NQUEUES, IFXF_MONITOR, IfData};
+use sysdefs::base::errno::Errno;
+use sysdefs::net::bpf::BPF_DIRECTION_IN;
+use sysdefs::net::if_::{IFF_RUNNING, IFQ_MAXPRIO, IFQ_NQUEUES, IFXF_MONITOR, IfData};
 
 use crate::assert::{kassert, kpanic};
 use crate::base::task::{Task, TaskChain, Taskq, task_add, task_del, taskq_del_barrier};
@@ -1404,7 +1404,7 @@ mod tests {
         assert!(!first.pending() && !second_task().pending());
         // The start task through the serializer, to the driver's qstart (IFF_RUNNING set and
         // a packet queued).
-        ifp.if_flags.set(sysdefs::net_if::IFF_RUNNING);
+        ifp.if_flags.set(sysdefs::net::if_::IFF_RUNNING);
         ifp.if_txmit.set(1);
         ifq_enqueue(ifq, test_packet(1, 1)).expect("queued");
         ifq_start(ifq);

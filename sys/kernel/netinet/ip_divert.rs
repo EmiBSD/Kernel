@@ -88,18 +88,18 @@ use core::sync::atomic::{AtomicI32, Ordering};
 use hal::mem::pool::PoolArc;
 use hal::sync::netlock::NetHeld;
 use hal::sync::percpu::Counters;
-use sysdefs::errno::Errno;
-use sysdefs::net_route::RTF_LOCAL;
-use sysdefs::netinet_in::{INADDR_ANY, IPPROTO_ICMP, IPPROTO_TCP, IPPROTO_UDP, SockaddrIn};
-use sysdefs::netinet_ip::{IP_MAXPACKET, Ip};
-use sysdefs::netinet_ip_divert::{
+use sysdefs::base::errno::Errno;
+use sysdefs::net::route::RTF_LOCAL;
+use sysdefs::net::socket::AF_INET;
+use sysdefs::netinet::in_::{INADDR_ANY, IPPROTO_ICMP, IPPROTO_TCP, IPPROTO_UDP, SockaddrIn};
+use sysdefs::netinet::ip::{IP_MAXPACKET, Ip};
+use sysdefs::netinet::ip_divert::{
     DIVERTCTL_RECVSPACE, DIVERTCTL_SENDSPACE, DIVERTCTL_STATS, DIVS_NCOUNTERS, Divstat,
 };
-use sysdefs::netinet_ip_icmp::ICMP_MINLEN;
-use sysdefs::netinet_tcp::Tcphdr;
-use sysdefs::netinet_udp::Udphdr;
-use sysdefs::socket::AF_INET;
-use sysdefs::sysctl::SysctlBoundedArgs;
+use sysdefs::netinet::ip_icmp::ICMP_MINLEN;
+use sysdefs::netinet::tcp::Tcphdr;
+use sysdefs::netinet::udp::Udphdr;
+use sysdefs::proc::sysctl::SysctlBoundedArgs;
 
 use crate::assert::kpanic;
 use crate::base::sysctl::{SysctlReq, bounded_arr, rdstruct};
@@ -578,7 +578,7 @@ mod tests {
     use core::pin::pin;
     use core::sync::atomic::Ordering;
 
-    use sysdefs::netinet_in::IPPROTO_UDP;
+    use sysdefs::netinet::in_::IPPROTO_UDP;
 
     use super::*;
     use crate::netinet::in_pcb::{in_pcb_iterator, in_pcb_iterator_abort, testinet};

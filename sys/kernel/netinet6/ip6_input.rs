@@ -187,23 +187,24 @@ use hal::mem::malloc::M_NOWAIT;
 use hal::mem::pod;
 use hal::sync::netlock::{NETLOCK, NetHeld};
 use hal::sync::once::OnceStatic;
-use sysdefs::errno::Errno;
-use sysdefs::limits::INT_MAX;
-use sysdefs::net_if::{IFF_LOOPBACK, IFT_ENC};
-use sysdefs::net_route::RTF_LOCAL;
-use sysdefs::netinet_icmp6::{ICMP6_PARAM_PROB, ICMP6_PARAMPROB_HEADER, ICMP6_PARAMPROB_OPTION};
-use sysdefs::netinet_in::{
+use sysdefs::base::errno::Errno;
+use sysdefs::base::limits::INT_MAX;
+use sysdefs::net::if_::{IFF_LOOPBACK, IFT_ENC};
+use sysdefs::net::route::RTF_LOCAL;
+use sysdefs::net::socket::{AF_INET6, AF_UNSPEC, SCM_TIMESTAMP, SO_TIMESTAMP, SOL_SOCKET};
+use sysdefs::netinet::icmp6::{ICMP6_PARAM_PROB, ICMP6_PARAMPROB_HEADER, ICMP6_PARAMPROB_OPTION};
+use sysdefs::netinet::in_::{
     IPPROTO_AH, IPPROTO_DONE, IPPROTO_DSTOPTS, IPPROTO_FRAGMENT, IPPROTO_HOPOPTS, IPPROTO_IPV6,
     IPPROTO_ROUTING,
 };
-use sysdefs::netinet_ip::IPQ_MAXLEN;
-use sysdefs::netinet_ip6::{
+use sysdefs::netinet::ip::IPQ_MAXLEN;
+use sysdefs::netinet::ip6::{
     IP6F_OFF_MASK, IP6OPT_JUMBO, IP6OPT_JUMBO_LEN, IP6OPT_MINLEN, IP6OPT_PAD1, IP6OPT_PADN,
     IP6OPT_ROUTER_ALERT, IP6OPT_RTALERT_LEN, IP6OPT_TYPE_DISCARD, IP6OPT_TYPE_FORCEICMP,
     IP6OPT_TYPE_ICMP, IP6OPT_TYPE_SKIP, IPV6_FLOWINFO_MASK, IPV6_MAXPACKET, IPV6_VERSION,
     IPV6_VERSION_MASK, Ip6Ext, Ip6Frag, Ip6Hbh, Ip6Hdr, Ip6Rthdr, ip6opt_type,
 };
-use sysdefs::netinet6_in6::{
+use sysdefs::netinet6::in6::{
     IPV6_DSTOPTS, IPV6_HOPLIMIT, IPV6_HOPOPTS, IPV6_PKTINFO, IPV6_RTHDR, IPV6_RTHDR_TYPE_0,
     IPV6_TCLASS, IPV6CTL_DAD_COUNT, IPV6CTL_DAD_PENDING, IPV6CTL_DEFHLIM, IPV6CTL_DEFMCASTHLIM,
     IPV6CTL_FORWARDING, IPV6CTL_HDRNESTLIMIT, IPV6CTL_IFQUEUE, IPV6CTL_MAXDYNROUTES,
@@ -214,10 +215,9 @@ use sysdefs::netinet6_in6::{
     in6_is_addr_multicast, in6_is_addr_unspecified, in6_is_addr_v4compat, in6_is_addr_v4mapped,
     in6_is_scope_embed,
 };
-use sysdefs::netinet6_in6_var::{IN6_IFF_DUPLICATED, IN6_IFF_TENTATIVE};
-use sysdefs::netinet6_ip6_var::{IP6S_NCOUNTERS, Ip6stat, Ip6statCounters};
-use sysdefs::socket::{AF_INET6, AF_UNSPEC, SCM_TIMESTAMP, SO_TIMESTAMP, SOL_SOCKET};
-use sysdefs::sysctl::SysctlBoundedArgs;
+use sysdefs::netinet6::in6_var::{IN6_IFF_DUPLICATED, IN6_IFF_TENTATIVE};
+use sysdefs::netinet6::ip6_var::{IP6S_NCOUNTERS, Ip6stat, Ip6statCounters};
+use sysdefs::proc::sysctl::SysctlBoundedArgs;
 
 use crate::base::sysctl::{SYSCTL_LOCK, SysctlReq, bounded_arr, int_bounded, rdstruct};
 use crate::base::task::{Task, task_add};
@@ -1289,7 +1289,7 @@ pub fn ip6_unknown_opt(mp: &mut Option<MbufBox>, ty: u8, off: i32, net: &NetHeld
             if let Some(m) = mp.take() {
                 let dst = bytes_at::<16>(&m, offset_of!(Ip6Hdr, ip6_dst) as i32);
                 let mcast = dst.is_some_and(|d| {
-                    in6_is_addr_multicast(&sysdefs::netinet6_in6::In6Addr { s6_addr: d })
+                    in6_is_addr_multicast(&sysdefs::netinet6::in6::In6Addr { s6_addr: d })
                 });
                 if mcast || m.flags() & (M_BCAST | M_MCAST) != 0 {
                     drop(m);
@@ -1719,9 +1719,9 @@ mod tests {
 
     use std::vec::Vec;
 
-    use sysdefs::netinet_in::{IPPROTO_ESP, IPPROTO_UDP};
-    use sysdefs::netinet_ip6::IPV6_VERSION;
-    use sysdefs::netinet6_ip6_var::Ip6statCounters as C;
+    use sysdefs::netinet::in_::{IPPROTO_ESP, IPPROTO_UDP};
+    use sysdefs::netinet::ip6::IPV6_VERSION;
+    use sysdefs::netinet6::ip6_var::Ip6statCounters as C;
 
     use super::*;
     use crate::net::mbuf::m_devget;
@@ -2010,9 +2010,9 @@ mod tests {
     // ip6_savecontrol's messages and the sysctls (LZ's `deep_names_are_not_directories`).
 
     use hal::user::UserPtr;
-    use sysdefs::netinet_icmp6::{ICMP6_DST_UNREACH, ICMP6_DST_UNREACH_NOROUTE};
-    use sysdefs::netinet_in::IPPROTO_TCP;
-    use sysdefs::netinet6_in6::In6Addr;
+    use sysdefs::netinet::icmp6::{ICMP6_DST_UNREACH, ICMP6_DST_UNREACH_NOROUTE};
+    use sysdefs::netinet::in_::IPPROTO_TCP;
+    use sysdefs::netinet6::in6::In6Addr;
 
     use crate::net::mbuf::{M_COPYALL, m_copym, m_split};
     use crate::netinet6::icmp6::tests::{net6, packet as packet6, with_net};
@@ -2361,7 +2361,7 @@ mod tests {
         assert_eq!(nxt, IPPROTO_UDP, "a router");
         other.if_type.set(IFT_ENC);
         let (nxt, _, _) = input_if(other, rx(other, peer6(), ours6(), IPPROTO_UDP, &[0; 8]));
-        other.if_type.set(sysdefs::net_if::IFT_ETHER);
+        other.if_type.set(sysdefs::net::if_::IFT_ETHER);
         assert_eq!(nxt, IPPROTO_UDP, "enc(4)");
         let m = rx(other, peer6(), ours6(), IPPROTO_UDP, &[0; 8]);
         m.m_pkthdr().pf.flags.set(PF_TAG_TRANSLATE_LOCALHOST);

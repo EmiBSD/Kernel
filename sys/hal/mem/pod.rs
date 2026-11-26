@@ -33,7 +33,7 @@
 //!   place by the C (`ip_input`'s `ip->ip_ttl--`, `in_cksum` over the header).
 
 use crate::user::{pod_from_bytes, pod_to_bytes};
-use sysdefs::pod::AbiPod;
+use sysdefs::base::pod::AbiPod;
 
 /// The `T` at byte `off` of `buf`, copied out; `None` when `buf` ends before it does.
 pub fn at<T: AbiPod>(buf: &[u8], off: usize) -> Option<T> {

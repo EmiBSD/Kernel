@@ -821,7 +821,7 @@ pub(crate) mod tests {
             let i32_at = |off: usize| i32::from_ne_bytes(w4(off));
             let u64_at = |off: usize| u64::from_ne_bytes(word(off, 8));
             let i64_at = |off: usize| i64::from_ne_bytes(word(off, 8));
-            let ts_at = |off: usize| sysdefs::stat::Timespec {
+            let ts_at = |off: usize| sysdefs::file::stat::Timespec {
                 tv_sec: i64_at(off),
                 tv_nsec: i64_at(off + 8),
             };

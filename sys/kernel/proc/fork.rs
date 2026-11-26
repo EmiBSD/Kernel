@@ -118,9 +118,9 @@ use hal::sync::mutex::Mutexed;
 use hal::sync::once::OnceStatic;
 use hal::user::UserPtr;
 use hal::vm::uvmexp::UVMEXP;
-use sysdefs::errno::Errno;
-use sysdefs::types::{Pid, Uid};
-use sysdefs::vmmeter::Forkstat;
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Pid, Uid};
+use sysdefs::vm::vmmeter::Forkstat;
 
 use crate::assert::{kassert, kpanic};
 use crate::proc::resource::RLIMIT_NPROC;

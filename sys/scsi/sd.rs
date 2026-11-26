@@ -117,7 +117,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use hal::sysbytes::DisklabelBytes;
 use hal::user::AbiBytes;
 
-use libkern::strlcpy;
+use libkern::string::strlcpy::strlcpy;
 
 use crate::kern::init_main::BOOTHOWTO;
 use crate::kern::kern_malloc::{free, malloc};

@@ -124,8 +124,8 @@ use core::cmp::min;
 
 use hal::ds::owned::SlistLink;
 use hal::mem::pool::{PR_NOWAIT, PoolBox};
-use sysdefs::errno::Errno;
-use sysdefs::netinet_tcp::{
+use sysdefs::base::errno::Errno;
+use sysdefs::netinet::tcp::{
     MAX_SACK_BLKS, TCP_SACKHOLE_LIMIT, TCPOLEN_SACK, TH_ACK, TH_FIN, TcpSeq, Tcphdr,
 };
 
@@ -759,7 +759,7 @@ mod tests {
 
     use std::vec::Vec;
 
-    use sysdefs::netinet_tcp::{TCPOPT_SACK, TH_PUSH};
+    use sysdefs::netinet::tcp::{TCPOPT_SACK, TH_PUSH};
 
     use super::*;
     use crate::net::mbuf::{M_DONTWAIT, m_gethdr};

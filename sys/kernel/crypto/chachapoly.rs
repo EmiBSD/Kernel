@@ -81,12 +81,12 @@
 //!   anyway). The ChaCha and Poly1305 code is constant time in its own modules.
 
 use hal::mem::explicit_bzero;
-use libkern::timingsafe_bcmp;
+use libkern::mem::timingsafe_bcmp::timingsafe_bcmp;
 
 use super::chacha_private::{ChachaCtx, hchacha20};
 use super::poly1305::{Poly1305State, poly1305_block_size};
 use super::wipe;
-use sysdefs::errno::Errno;
+use sysdefs::base::errno::Errno;
 
 /// `CHACHA20_KEYSIZE`.
 pub const CHACHA20_KEYSIZE: usize = 32;

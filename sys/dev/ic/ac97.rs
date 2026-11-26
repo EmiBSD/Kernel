@@ -149,7 +149,7 @@ use core::cell::Cell;
 use core::ffi::c_void;
 use core::ptr;
 
-use libkern::strlcpy;
+use libkern::string::strlcpy::strlcpy;
 
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::subr_prf::{panic, printf};

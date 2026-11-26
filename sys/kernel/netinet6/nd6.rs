@@ -77,7 +77,7 @@
 /* <CODE> */
 //! IPv6 Neighbor Discovery: the neighbor cache, the per-interface ND information and the
 //! address resolution, `netinet6/nd6.c`, and the kernel half of `<netinet6/nd6.h>` (its
-//! userland half, the states and the requests ndp(8) reads, is `sysdefs::netinet6_nd6`).
+//! userland half, the states and the requests ndp(8) reads, is `sysdefs::netinet6::nd6`).
 //!
 //! Upstream: sys/netinet6/nd6.h @ 3ce1f3f79392
 //! Upstream: sys/netinet6/nd6.c @ 3ce1f3f79392
@@ -153,7 +153,7 @@
 //! - `ifp->if_nd` (`malloc(M_IP6NDP)` of 8 bytes, a 16-byte bucket, behind a word) -> the
 //!   embedded [`NdIfinfoCell`] of every interface (D-6): two atomics, valid all zero (the
 //!   `Ifnet`-in-a-zeroed-softc rule), set by `nd6_ifattach` and cleared by `nd6_ifdetach`; the
-//!   image `SIOCGIFINFO_IN6` copies out stays `sysdefs::netinet6_nd6::NdIfinfo`. LZ's
+//!   image `SIOCGIFINFO_IN6` copies out stays `sysdefs::netinet6::nd6::NdIfinfo`. LZ's
 //!   "an interface without one" deviation is gone: every interface has it.
 //! - `nd6_resolve(ifp, rt, m, dst, desten)` takes the packet (`MbufBox`) and gives it back on
 //!   success (`Err(EAGAIN)`: kept on the hold queue; any other error: freed), the destination a
@@ -225,32 +225,32 @@ use hal::random::arc4random;
 use hal::sync::mutex::Mutexed;
 use hal::sync::netlock::{NETLOCK, NetHeld};
 use hal::sync::rwlock::{RW_READ, RW_WRITE};
-use sysdefs::endian::{htonl, htons, ntohs};
-use sysdefs::errno::Errno;
-use sysdefs::net_if::{IFF_MULTICAST, IFT_CARP, IFT_ETHER, IFT_IEEE80211, SockaddrDl};
-use sysdefs::net_route::{
+use sysdefs::base::endian::{htonl, htons, ntohs};
+use sysdefs::base::errno::Errno;
+use sysdefs::net::if_::{IFF_MULTICAST, IFT_CARP, IFT_ETHER, IFT_IEEE80211, SockaddrDl};
+use sysdefs::net::route::{
     RTAX_DST, RTAX_GATEWAY, RTF_ANNOUNCE, RTF_CACHED, RTF_CLONING, RTF_GATEWAY, RTF_HOST,
     RTF_LLINFO, RTF_LOCAL, RTF_MPLS, RTF_MULTICAST, RTF_REJECT, RTF_STATIC, RTM_ADD, RTM_DELETE,
     RTM_INVALIDATE, RTM_RESOLVE, RTP_CONNECTED,
 };
-use sysdefs::netinet_icmp6::{
+use sysdefs::net::socket::AF_LINK;
+use sysdefs::netinet::icmp6::{
     ICMP6_DST_UNREACH, ICMP6_DST_UNREACH_ADDR, Icmp6statCounters, ND_NEIGHBOR_SOLICIT,
     ND_OPT_SOURCE_LINKADDR, ND_OPT_TARGET_LINKADDR, ND_REDIRECT, ND_REDIRECT_ROUTER,
     ND_ROUTER_ADVERT, ND_ROUTER_SOLICIT,
 };
-use sysdefs::netinet_if_ether::ETHER_ADDR_LEN;
-use sysdefs::netinet6_in6::{
+use sysdefs::netinet::if_ether::ETHER_ADDR_LEN;
+use sysdefs::netinet6::in6::{
     In6Addr, SockaddrIn6, in6_is_addr_linklocal, in6_is_addr_mc_linklocal, in6_is_addr_unspecified,
 };
-use sysdefs::netinet6_in6_var::{
+use sysdefs::netinet6::in6_var::{
     IN6_IFF_AUTOCONF, IN6_IFF_DEPRECATED, SIOCGIFINFO_IN6, SIOCGNBRINFO_IN6,
 };
-use sysdefs::netinet6_nd6::{
+use sysdefs::netinet6::nd6::{
     In6Nbrinfo, In6Ndireq, ND6_INFINITE_LIFETIME, ND6_LLINFO_DELAY, ND6_LLINFO_INCOMPLETE,
     ND6_LLINFO_NOSTATE, ND6_LLINFO_PROBE, ND6_LLINFO_PURGE, ND6_LLINFO_REACHABLE, ND6_LLINFO_STALE,
     NdIfinfo,
 };
-use sysdefs::socket::AF_LINK;
 
 use crate::assert::{kassert, kpanic};
 use crate::base::log::{LOG_DEBUG, LOG_INFO};
@@ -1492,7 +1492,7 @@ pub fn nd6_llchanged(ll: &[u8], rt: &Rtentry, ifp: &Ifnet) -> bool {
     let l = lladdr_bytes(ll, ifp);
     rt.with_gateway(|g| {
         let cur = g.and_then(|g| {
-            let start = sysdefs::net_if::SDL_DATA_OFFSET + usize::from(*g.get(5)?);
+            let start = sysdefs::net::if_::SDL_DATA_OFFSET + usize::from(*g.get(5)?);
             g.get(start..start + l.len())
         });
         cur != Some(l)
@@ -2039,16 +2039,16 @@ pub(crate) mod tests {
     use std::sync::MutexGuard;
     use std::vec::Vec;
 
-    use sysdefs::net_if::{
+    use sysdefs::net::if_::{
         IFF_BROADCAST, IFF_MULTICAST, IFF_RUNNING, IFF_SIMPLEX, IFF_UP, IFNAMSIZ, IFT_LOOP,
         IFXF_MPSAFE,
     };
-    use sysdefs::net_route::{RTF_UP, RTP_STATIC};
-    use sysdefs::netinet_icmp6::{
+    use sysdefs::net::route::{RTF_UP, RTP_STATIC};
+    use sysdefs::netinet::icmp6::{
         ND_NA_FLAG_OVERRIDE, ND_NA_FLAG_SOLICITED, ND_NEIGHBOR_ADVERT, NdNeighborAdvert,
     };
-    use sysdefs::netinet_ip6::{IPV6_VERSION, Ip6Hdr};
-    use sysdefs::netinet6_in6_var::{
+    use sysdefs::netinet::ip6::{IPV6_VERSION, Ip6Hdr};
+    use sysdefs::netinet6::in6_var::{
         IN6_IFF_ANYCAST, IN6_IFF_DUPLICATED, IN6_IFF_TENTATIVE, In6Aliasreq,
     };
 
@@ -2128,7 +2128,7 @@ pub(crate) mod tests {
                     let idx = ifp.if_index.get();
                     for at in [8, 24] {
                         let mut a = pod::at::<In6Addr>(&pkt, at).expect("an address");
-                        if sysdefs::netinet6_in6::in6_is_scope_embed(&a) {
+                        if sysdefs::netinet6::in6::in6_is_scope_embed(&a) {
                             a.set_s6_addr16(1, htons(idx as u16));
                             assert!(pod::put(&mut pkt, at, &a));
                         }
@@ -2136,12 +2136,12 @@ pub(crate) mod tests {
                     let src = pod::at::<In6Addr>(&pkt, 8).expect("the source");
                     let dst = pod::at::<In6Addr>(&pkt, 24).expect("the destination");
                     ip6.push(Sent6 {
-                        flags: if sysdefs::netinet6_in6::in6_is_addr_unspecified(&src) {
+                        flags: if sysdefs::netinet6::in6::in6_is_addr_unspecified(&src) {
                             crate::netinet6::ip6_var::IPV6_UNSPECSRC
                         } else {
                             0
                         },
-                        ifidx: if sysdefs::netinet6_in6::in6_is_addr_multicast(&dst) {
+                        ifidx: if sysdefs::netinet6::in6::in6_is_addr_multicast(&dst) {
                             idx as u16
                         } else {
                             0

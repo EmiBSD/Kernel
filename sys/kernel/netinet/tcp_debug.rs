@@ -166,12 +166,12 @@ use core::mem::size_of;
 use hal::cpu::intr::IPL_SOFTNET;
 use hal::mem::pod;
 use hal::sync::mutex::Mutexed;
-use sysdefs::netinet_in::InAddr;
-use sysdefs::netinet_ip::IPVERSION;
-use sysdefs::netinet_ip_var::Ipovly;
-use sysdefs::netinet_ip6::{IPV6_VERSION, IPV6_VERSION_MASK, Ip6Hdr};
-use sysdefs::netinet_tcp::{TcpSeq, Tcphdr};
-use sysdefs::socket::{PF_INET, PF_INET6, PF_UNSPEC};
+use sysdefs::net::socket::{PF_INET, PF_INET6, PF_UNSPEC};
+use sysdefs::netinet::in_::InAddr;
+use sysdefs::netinet::ip::IPVERSION;
+use sysdefs::netinet::ip_var::Ipovly;
+use sysdefs::netinet::ip6::{IPV6_VERSION, IPV6_VERSION_MASK, Ip6Hdr};
+use sysdefs::netinet::tcp::{TcpSeq, Tcphdr};
 
 use crate::netinet::ip_icmp::iptime;
 use crate::netinet::tcp_var::TcpState;

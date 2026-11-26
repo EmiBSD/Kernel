@@ -96,11 +96,11 @@ use hal::sync::rwlock::{RawRwlock, WriteWitness};
 use hal::sync::sleep::{INFSLP, PCATCH, PWAIT};
 use hal::user::UserPtr;
 use hal::vm::param::ptoa;
-use sysdefs::errno::Errno;
-use sysdefs::futex::{
+use sysdefs::base::errno::Errno;
+use sysdefs::proc::futex::{
     FUTEX_FLAG_MASK, FUTEX_OP_MASK, FUTEX_PRIVATE_FLAG, FUTEX_REQUEUE, FUTEX_WAIT, FUTEX_WAKE,
 };
-use sysdefs::mman::MAP_INHERIT_SHARE;
+use sysdefs::vm::mman::MAP_INHERIT_SHARE;
 
 use crate::assert::kpanic;
 use crate::proc::{ProcGlue, Thread};
@@ -567,9 +567,9 @@ mod tests {
 
     use hal::arch::current::param::PAGE_SIZE;
     use hal::arch::current::vmparam::{VM_MAXUSER_ADDRESS, VM_MIN_ADDRESS};
-    use sysdefs::futex::{FUTEX_REQUEUE_PRIVATE, FUTEX_WAIT_PRIVATE, FUTEX_WAKE_PRIVATE};
-    use sysdefs::mman::{MADV_NORMAL, MAP_INHERIT_COPY, PROT_READ, PROT_WRITE};
-    use sysdefs::types::Vsize;
+    use sysdefs::base::types::Vsize;
+    use sysdefs::proc::futex::{FUTEX_REQUEUE_PRIVATE, FUTEX_WAIT_PRIVATE, FUTEX_WAKE_PRIVATE};
+    use sysdefs::vm::mman::{MADV_NORMAL, MAP_INHERIT_COPY, PROT_READ, PROT_WRITE};
 
     use super::*;
     use crate::proc::{P_INSCHED, Process, SSLEEP};

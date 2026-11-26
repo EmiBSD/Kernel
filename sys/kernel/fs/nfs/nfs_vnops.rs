@@ -162,14 +162,14 @@ use hal::mem::malloc::{M_WAITOK, MArray, MBox};
 use hal::random::arc4random_buf;
 use hal::sync::klock;
 use hal::sync::sleep::{INFSLP, PCATCH};
-use sysdefs::dirent::{DT_UNKNOWN, Dirent, dirent_recsize, iftodt};
-use sysdefs::errno::Errno;
-use sysdefs::fcntl::{FREAD, FWRITE, Flock, O_EXCL};
-use sysdefs::mount::{MNT_RDONLY, MNT_WAIT};
-use sysdefs::param::PAGE_SIZE;
-use sysdefs::syslimits::{LINK_MAX, NAME_MAX};
-use sysdefs::types::{Daddr, Register, major, minor};
-use sysdefs::unistd::{
+use sysdefs::base::errno::Errno;
+use sysdefs::base::param::PAGE_SIZE;
+use sysdefs::base::syslimits::{LINK_MAX, NAME_MAX};
+use sysdefs::base::types::{Daddr, Register, major, minor};
+use sysdefs::file::dirent::{DT_UNKNOWN, Dirent, dirent_recsize, iftodt};
+use sysdefs::file::fcntl::{FREAD, FWRITE, Flock, O_EXCL};
+use sysdefs::fs::mount::{MNT_RDONLY, MNT_WAIT};
+use sysdefs::proc::unistd::{
     _PC_2_SYMLINKS, _PC_ALLOC_SIZE_MIN, _PC_CHOWN_RESTRICTED, _PC_FILESIZEBITS, _PC_LINK_MAX,
     _PC_NAME_MAX, _PC_NO_TRUNC, _PC_REC_INCR_XFER_SIZE, _PC_REC_MAX_XFER_SIZE,
     _PC_REC_MIN_XFER_SIZE, _PC_REC_XFER_ALIGN, _PC_SYMLINK_MAX, _PC_TIMESTAMP_RESOLUTION,
@@ -241,7 +241,7 @@ use crate::proc::cred::{CredRef, Ucred, crdup};
 use crate::proc::{ProcGlue, Thread};
 use crate::time::tc::{getnanotime, gettime};
 use crate::vm::vnode::{uvm_vnp_setsize, uvm_vnp_uncache};
-use sysdefs::mount::{
+use sysdefs::fs::mount::{
     NFSMNT_GOTFSINFO, NFSMNT_HASWRITEVERF, NFSMNT_INT, NFSMNT_NFSV3, NFSMNT_RDIRPLUS,
 };
 
@@ -4549,7 +4549,7 @@ mod tests {
     use crate::fs::nfs::nfsproto::{NFDIR, NFLNK, NFREG};
     use crate::fs::nfs::testnfs::{self as tn, Out};
     use crate::net::mbuf::MBUFPL;
-    use sysdefs::socket::SOCK_DGRAM;
+    use sysdefs::net::socket::SOCK_DGRAM;
 
     /// The silly name is `.nfs` and the two words in upper-case hex, 20 bytes.
     #[test]
@@ -5439,7 +5439,7 @@ mod tests {
         );
         assert_eq!(buf[18], DT_UNKNOWN, "the first entry's type unknown");
         let second = usize::from(u16::from_ne_bytes([buf[16], buf[17]]));
-        assert_eq!(buf[second + 18], sysdefs::dirent::DT_REG);
+        assert_eq!(buf[second + 18], sysdefs::file::dirent::DT_REG);
         nt.done(p);
     }
 

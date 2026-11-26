@@ -235,11 +235,11 @@ use hal::sync::once::OnceStatic;
 use hal::sync::rwlock::{Divisible, Guarded, RW_WRITE, RawRwlock, Witness};
 use hal::sync::sleep::{INFSLP, PCATCH};
 use hal::user::UserPtr;
-use sysdefs::errno::Errno;
-use sysdefs::fcntl::{FNONBLOCK, FREAD, FWRITE, O_CLOEXEC};
-use sysdefs::pledge::PLEDGE_PROC;
-use sysdefs::types::Pid;
-use sysdefs::wait::w_exitcode;
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::Pid;
+use sysdefs::file::fcntl::{FNONBLOCK, FREAD, FWRITE, O_CLOEXEC};
+use sysdefs::proc::pledge::PLEDGE_PROC;
+use sysdefs::proc::wait::w_exitcode;
 
 use crate::assert::{kassert, kpanic};
 use crate::base::task::{SYSTQMP, Task, task_add, taskq_del_barrier};
@@ -3949,7 +3949,7 @@ pub(crate) mod tests {
     use crate::proc::resource::{Plimit, PlimitRef, RLIMIT_NOFILE};
     use crate::proc::{PS_PLEDGE, process_alloc, procinit, thread_alloc};
     use crate::testutil::{self, TestFileData};
-    use sysdefs::stat::Stat;
+    use sysdefs::file::stat::Stat;
 
     crate::test_file_glue!(Kf, Kg);
     crate::test_proc_glue!(Kg, Kf);

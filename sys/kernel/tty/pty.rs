@@ -99,11 +99,11 @@ use hal::sync::once::OnceStatic;
 use hal::sync::rwlock::RawRwlock;
 use hal::sync::sleep::PCATCH;
 use hal::user::{pod_from_bytes, pod_to_bytes};
-use sysdefs::errno::Errno;
-use sysdefs::fcntl::{FNONBLOCK, FREAD, FWRITE};
-use sysdefs::filio::FIONREAD;
-use sysdefs::signal::{NSIG, SIGINFO, SIGTTIN};
-use sysdefs::types::{Dev, major, makedev, minor};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Dev, major, makedev, minor};
+use sysdefs::file::fcntl::{FNONBLOCK, FREAD, FWRITE};
+use sysdefs::file::filio::FIONREAD;
+use sysdefs::sig::signal::{NSIG, SIGINFO, SIGTTIN};
 
 use crate::assert::kpanic;
 use crate::base::sysctl::SysctlReq;

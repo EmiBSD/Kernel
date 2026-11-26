@@ -92,7 +92,7 @@
 //!   the C's `ip->i_mnt`). 0 `unsafe` (LZ: 1).
 
 use hal::mem::malloc::{M_WAITOK, MArc};
-use sysdefs::types::Dev;
+use sysdefs::base::types::Dev;
 
 use crate::assert::kpanic;
 use crate::fs::isofs::cd9660::iso::isodcl;

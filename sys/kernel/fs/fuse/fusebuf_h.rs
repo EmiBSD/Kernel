@@ -90,8 +90,8 @@ use hal::mem::malloc::MArray;
 use hal::mem::pool::PoolHome;
 use hal::sync::slot::ReadMostly;
 use hal::user::{bytes_of, bytes_of_mut};
-use sysdefs::pod::AbiPod;
-use sysdefs::types::Ino;
+use sysdefs::base::pod::AbiPod;
+use sysdefs::base::types::Ino;
 
 use crate::fs::ufs::ufs::inode::{words_read_bytes, words_write_bytes};
 use crate::fs::word::{I32Word, U64Word};

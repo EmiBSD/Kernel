@@ -47,13 +47,13 @@ use hal::mem::malloc::{M_WAITOK, MArc, MBox};
 use hal::mem::pod;
 use hal::mem::pool::PoolArc;
 use hal::sync::netlock::{NETLOCK, NetHeld};
-use sysdefs::errno::Errno;
-use sysdefs::mount::{Fid, Statfs};
-use sysdefs::netinet_in::{IPPROTO_TCP, IPPROTO_UDP, InAddr, SockaddrIn};
-use sysdefs::netinet_in_var::InAliasreq;
-use sysdefs::socket::{AF_INET, MSG_DONTWAIT, SO_LINGER, SOCK_DGRAM, SOCK_STREAM};
-use sysdefs::sockio::SIOCAIFADDR;
-use sysdefs::types::{Ino, Uid};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Ino, Uid};
+use sysdefs::fs::mount::{Fid, Statfs};
+use sysdefs::net::socket::{AF_INET, MSG_DONTWAIT, SO_LINGER, SOCK_DGRAM, SOCK_STREAM};
+use sysdefs::net::sockio::SIOCAIFADDR;
+use sysdefs::netinet::in_::{IPPROTO_TCP, IPPROTO_UDP, InAddr, SockaddrIn};
+use sysdefs::netinet::in_var::InAliasreq;
 
 use super::nfs_socket::{nfs_connect, nfs_disconnect, nfs_timer};
 use super::nfs_subs::nfs_init;
@@ -346,7 +346,7 @@ pub fn bench_setup(uid: u32) -> Fixture {
             sasize: 16,
         },
         RtDom {
-            family: sysdefs::socket::AF_INET6,
+            family: sysdefs::net::socket::AF_INET6,
             rtoffset: 8,
             maxplen: 128,
             sasize: 28,

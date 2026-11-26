@@ -105,8 +105,8 @@
 //!   per packet across the crate boundary (N6.3c1's R12).
 
 use hal::mem::pod;
-use sysdefs::endian::htonl;
-use sysdefs::netinet6_in6::{In6Addr, in6_is_scope_embed};
+use sysdefs::base::endian::htonl;
+use sysdefs::netinet6::in6::{In6Addr, in6_is_scope_embed};
 
 use crate::assert::kpanic;
 use crate::net::mbuf::Mbuf;

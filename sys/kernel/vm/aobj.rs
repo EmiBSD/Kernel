@@ -123,9 +123,9 @@ use hal::mem::pool::{BoxPool, PR_NOWAIT, PR_WAITOK, PoolArc, PoolBox, TypedPool}
 use hal::sync::rwlock::{Guarded, RawRwlock, Witness, WriteWitness};
 use hal::vm::param::{round_page, trunc_page};
 use hal::vm::uvmexp::UVMEXP;
-use sysdefs::errno::Errno;
-use sysdefs::mman::{PROT_NONE, PROT_READ, PROT_WRITE};
-use sysdefs::types::Vsize;
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::Vsize;
+use sysdefs::vm::mman::{PROT_NONE, PROT_READ, PROT_WRITE};
 
 use super::object::{ObjKind, ObjRef, Object, UVM_OBJ_KERN, pagewait_relock, uvm_obj_destroy};
 use super::page::{

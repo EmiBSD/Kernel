@@ -118,7 +118,7 @@
 use core::mem::size_of;
 
 use hal::user::pod_from_bytes;
-use sysdefs::types::Daddr;
+use sysdefs::base::types::Daddr;
 
 use super::ext2fs::{Ext2Superblock, fsbtodb};
 use super::ext2fs_dinode::{NDADDR, NIADDR};
@@ -258,7 +258,7 @@ impl Ext4ExtentPath {
     }
 
     /// The 12 bytes of slot `slot` of the node as a `T` (zero past the node).
-    fn entry<T: sysdefs::pod::AbiPod + Default>(&self, slot: usize) -> T {
+    fn entry<T: sysdefs::base::pod::AbiPod + Default>(&self, slot: usize) -> T {
         let at = slot * EXT4_ENTRY_SIZE;
         self.node()
             .get(at..at + EXT4_ENTRY_SIZE)

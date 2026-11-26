@@ -101,14 +101,14 @@ use core::sync::atomic::Ordering;
 use hal::mem::pool::PoolBox;
 use hal::sync::klock;
 use hal::user::UserPtr;
-use sysdefs::errno::Errno;
-use sysdefs::siginfo::{
-    CLD_CONTINUED, CLD_DUMPED, CLD_EXITED, CLD_KILLED, CLD_STOPPED, CLD_TRAPPED, Siginfo,
-};
-use sysdefs::types::Pid;
-use sysdefs::wait::{
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::Pid;
+use sysdefs::proc::wait::{
     _WCONTINUED, Idtype, P_ALL, P_PGID, P_PID, WAIT_ANY, WAIT_MYPGRP, WCONTINUED, WEXITED, WNOHANG,
     WNOWAIT, WSTOPPED, WTRAPPED, WUNTRACED, w_exitcode, w_stopcode, wcoredump, wstatus,
+};
+use sysdefs::sig::siginfo::{
+    CLD_CONTINUED, CLD_DUMPED, CLD_EXITED, CLD_KILLED, CLD_STOPPED, CLD_TRAPPED, Siginfo,
 };
 
 use crate::assert::{kassert, kpanic};

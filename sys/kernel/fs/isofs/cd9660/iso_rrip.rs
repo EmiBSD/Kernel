@@ -79,7 +79,7 @@
 //!   most: `iso_mountfs` releases the supplementary descriptor's block before its Rock Ridge
 //!   check, D-N5.8-R1). 0 `unsafe` (LZ: 0).
 
-use sysdefs::types::{Daddr, Off};
+use sysdefs::base::types::{Daddr, Off};
 
 use crate::fs::isofs::cd9660::cd9660_extern::IsoMnt;
 use crate::fs::isofs::cd9660::cd9660_node::{IsoNode, IsoRripInode};

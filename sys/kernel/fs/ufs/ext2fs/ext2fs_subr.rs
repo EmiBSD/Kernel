@@ -74,8 +74,8 @@
 //!   its address (`vops_id`), and an alias found by `checkalias` takes the vnode's typed
 //!   node (`take_node`/`set_node`, the C's `v_data` moved).
 
-use sysdefs::errno::Errno;
-use sysdefs::types::{Daddr, Dev, Off};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Daddr, Dev, Off};
 
 use super::ext2fs::{blkoff, fsbtodb, lblkno};
 use super::ext2fs_dinode::{EXT2_ROOTINO, EXT4_EXTENTS};
@@ -182,7 +182,7 @@ mod tests {
 
     use std::assert_eq;
 
-    use sysdefs::mount::MNT_RDONLY;
+    use sysdefs::fs::mount::MNT_RDONLY;
 
     use super::super::ext2fs::Ext2Superblock;
     use super::super::testext2fs::newfs::{self, B, ROOTDIR};

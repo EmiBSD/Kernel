@@ -95,8 +95,8 @@ use hal::vm::uvmexp::{
     VM_METER, VM_NKMEMPAGES, VM_PSSTRINGS, VM_SWAPENCRYPT, VM_USPACE, VM_UVMEXP, VM_VNODEMIN,
     VM_VTEXTMIN, counters_read,
 };
-use sysdefs::errno::Errno;
-use sysdefs::vmmeter::Vmtotal;
+use sysdefs::base::errno::Errno;
+use sysdefs::vm::vmmeter::Vmtotal;
 
 use super::init::machine;
 pub use crate::base::sysctl::SysctlReq;

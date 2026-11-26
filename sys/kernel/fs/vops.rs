@@ -165,12 +165,12 @@
 use crate::file::LockOwner;
 use core::ptr;
 
-use sysdefs::errno::Errno;
-use sysdefs::fcntl::Flock;
-use sysdefs::mount::{Fid, Statfs};
-use sysdefs::syslimits::{PATH_MAX, PIPE_BUF};
-use sysdefs::types::{Daddr, Ino, Register, Uid};
-use sysdefs::unistd::{_PC_ASYNC_IO, _PC_PATH_MAX, _PC_PIPE_BUF, _PC_PRIO_IO, _PC_SYNC_IO};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::syslimits::{PATH_MAX, PIPE_BUF};
+use sysdefs::base::types::{Daddr, Ino, Register, Uid};
+use sysdefs::file::fcntl::Flock;
+use sysdefs::fs::mount::{Fid, Statfs};
+use sysdefs::proc::unistd::{_PC_ASYNC_IO, _PC_PATH_MAX, _PC_PIPE_BUF, _PC_PRIO_IO, _PC_SYNC_IO};
 
 use super::buf::{Buf, BufRef};
 use super::export::ExportGrant;

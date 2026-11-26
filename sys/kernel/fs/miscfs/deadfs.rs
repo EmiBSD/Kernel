@@ -64,9 +64,9 @@
 use core::marker::PhantomData;
 use core::ptr;
 
-use sysdefs::errno::Errno;
-use sysdefs::fcntl::Flock;
-use sysdefs::types::{Daddr, Register};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Daddr, Register};
+use sysdefs::file::fcntl::Flock;
 
 use crate::file::event::{__EV_POLL, EVFILT_EXCEPT, EVFILT_READ, EVFILT_WRITE, Knote, Kqueue};
 use crate::file::uio::Uio;

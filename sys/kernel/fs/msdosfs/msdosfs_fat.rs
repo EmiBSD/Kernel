@@ -145,8 +145,8 @@ use core::cmp::min;
 use core::mem::offset_of;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use sysdefs::errno::Errno;
-use sysdefs::types::Daddr;
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::Daddr;
 
 use crate::assert::{kassert, kpanic};
 use crate::base::prf::printf;

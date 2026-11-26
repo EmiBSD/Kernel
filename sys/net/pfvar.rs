@@ -4032,7 +4032,7 @@ pub fn pf_cstr(b: &[u8]) -> &[u8] {
 
 /// `strlcpy(dst, src, sizeof(dst))` over byte arrays.
 pub fn pf_strlcpy(dst: &mut [u8], src: &[u8]) -> usize {
-    libkern::strlcpy(dst, src)
+    libkern::string::strlcpy::strlcpy(dst, src)
 }
 /* </CODE> */
 

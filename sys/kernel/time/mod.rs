@@ -160,7 +160,7 @@ use crate::time::tc::{
     tc_setrealtimeclock,
 };
 use crate::time::timeout::Timeout;
-use sysdefs::errno::Errno;
+use sysdefs::base::errno::Errno;
 
 /// `CLOCK_REALTIME`.
 pub const CLOCK_REALTIME: i32 = 0;
@@ -1298,8 +1298,8 @@ mod tests {
 
     /// A thread of a new process `pid` whose uids are all `uid`.
     fn thread_as(
-        pid: sysdefs::types::Pid,
-        uid: sysdefs::types::Uid,
+        pid: sysdefs::base::types::Pid,
+        uid: sysdefs::base::types::Uid,
     ) -> (
         crate::proc::ProcessRef<Procs>,
         hal::mem::pool::PoolBox<Thread<Procs>>,
@@ -1324,7 +1324,7 @@ mod tests {
     }
 
     /// A user pointer to a `T` this test wrote at `UTIME + off`.
-    fn user<T: sysdefs::pod::AbiPod>(off: usize, v: &T) -> UserPtr<T> {
+    fn user<T: sysdefs::base::pod::AbiPod>(off: usize, v: &T) -> UserPtr<T> {
         let u = UserPtr::<T>::new(UTIME + off);
         u.copyout(v).unwrap();
         u

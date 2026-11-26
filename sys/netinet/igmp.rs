@@ -116,7 +116,7 @@
 
 /* <CODE> */
 //! The Internet Group Management Protocol (IGMP): `<netinet/igmp.h>`
-//! (`sysdefs::netinet_igmp`) and `netinet/igmp.c`, the kernel's since N6.4a
+//! (`sysdefs::netinet::igmp`) and `netinet/igmp.c`, the kernel's since N6.4a
 //! (`kernel::netinet::igmp`), with LZ's `inetsw[]` entry points for `bsd`'s protocol table.
 //!
 //! Upstream: sys/netinet/igmp.h @ 3ce1f3f79392
@@ -129,7 +129,7 @@ pub use kernel::netinet::igmp::{
     IGMP_MTX, IGMP_TIMERS_ARE_RUNNING, IGMPCOUNTERS, ROUTER_ALERT, igmp_fasttimo, igmp_init,
     igmp_joingroup, igmp_leavegroup, igmp_slowtimo, rti_delete, rti_fill, rti_reset, rti_type,
 };
-pub use sysdefs::netinet_igmp::*;
+pub use sysdefs::netinet::igmp::*;
 
 /* </CODE> */
 

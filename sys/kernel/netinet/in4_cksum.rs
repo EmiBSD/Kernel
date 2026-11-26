@@ -105,9 +105,9 @@
 
 use core::mem::size_of;
 
-use sysdefs::endian::htons;
-use sysdefs::netinet_ip::Ip;
-use sysdefs::netinet_ip_var::Ipovly;
+use sysdefs::base::endian::htons;
+use sysdefs::netinet::ip::Ip;
+use sysdefs::netinet::ip_var::Ipovly;
 
 use crate::assert::kpanic;
 use crate::base::prf::printf;

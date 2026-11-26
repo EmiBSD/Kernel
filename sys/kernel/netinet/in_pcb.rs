@@ -348,20 +348,22 @@ use hal::sync::once::OnceStatic;
 use hal::sync::rwlock::{Guarded, RW_WRITE, Witness, WitnessPart};
 use hal::sync::slot::{LoanSlot, ReadMostly, SlotLoan};
 use hal::user::bytes_of;
-use libkern::siphash::AtomicSiphashKey;
-use sysdefs::errno::Errno;
-use sysdefs::net_if::IFF_UP;
-use sysdefs::net_route::{RTF_DYNAMIC, RTF_GATEWAY};
-use sysdefs::netinet_in::{
+use libkern::hash::siphash::AtomicSiphashKey;
+use sysdefs::base::errno::Errno;
+use sysdefs::base::pod::AbiPod;
+use sysdefs::net::if_::IFF_UP;
+use sysdefs::net::route::{RTF_DYNAMIC, RTF_GATEWAY};
+use sysdefs::net::socket::{
+    AF_INET, SO_ACCEPTCONN, SO_BINDANY, SO_REUSEADDR, SO_REUSEPORT, SOCK_DGRAM,
+};
+use sysdefs::netinet::in_::{
     INADDR_ANY, INADDR_BROADCAST, IPPORT_HIFIRSTAUTO, IPPORT_HILASTAUTO, IPPORT_RESERVED,
     IPPORT_USERRESERVED, IPPROTO_TCP, IPPROTO_UDP, IPSEC_AUTH_LEVEL_DEFAULT,
     IPSEC_ESP_NETWORK_LEVEL_DEFAULT, IPSEC_ESP_TRANS_LEVEL_DEFAULT, IPSEC_IPCOMP_LEVEL_DEFAULT,
     InAddr, SockaddrIn, in_multicast,
 };
-use sysdefs::netinet_ip::Ip;
-use sysdefs::netinet6_in6::{In6Addr, in6_is_addr_unspecified};
-use sysdefs::pod::AbiPod;
-use sysdefs::socket::{AF_INET, SO_ACCEPTCONN, SO_BINDANY, SO_REUSEADDR, SO_REUSEPORT, SOCK_DGRAM};
+use sysdefs::netinet::ip::Ip;
+use sysdefs::netinet6::in6::{In6Addr, in6_is_addr_unspecified};
 
 use crate::assert::kassert;
 use crate::assert::kpanic;
@@ -542,8 +544,8 @@ pub type InpUpcallFn = fn(
     arg: usize,
     m: MbufBox,
     ip: Option<&Ip>,
-    ip6: Option<&sysdefs::netinet_ip6::Ip6Hdr>,
-    uh: &sysdefs::netinet_udp::Udphdr,
+    ip6: Option<&sysdefs::netinet::ip6::Ip6Hdr>,
+    uh: &sysdefs::netinet::udp::Udphdr,
     hlen: i32,
     ns: Option<&mut crate::net::if_var::Netstack>,
 ) -> Option<MbufBox>;
@@ -695,7 +697,7 @@ pub trait Hdr6: Copy {
     fn to_bytes(&self) -> [u8; 40];
 }
 
-impl Hdr6 for sysdefs::netinet_ip6::Ip6Hdr {
+impl Hdr6 for sysdefs::netinet::ip6::Ip6Hdr {
     fn from_bytes(b: [u8; 40]) -> Self {
         let mut src = [0; 16];
         let mut dst = [0; 16];
@@ -1944,8 +1946,8 @@ pub fn in_pcballoc<G: ProcGlue>(
     inp.inp_rtableid.set(rtableid);
     inp.inp_hops.set(-1);
     match so.dom_family() {
-        f if f == i32::from(sysdefs::socket::PF_INET6) => inp.inp_flags.set(INP_IPV6),
-        f if f == i32::from(sysdefs::socket::PF_INET) => {} // inp_flags is initialized to 0
+        f if f == i32::from(sysdefs::net::socket::PF_INET6) => inp.inp_flags.set(INP_IPV6),
+        f if f == i32::from(sysdefs::net::socket::PF_INET) => {} // inp_flags is initialized to 0
         f => kpanic(format_args!("in_pcballoc: unhandled af {f}")),
     }
     inp.inp_cksum6.set(-1);
@@ -3179,10 +3181,10 @@ pub(crate) mod testinet {
 
     use hal::mem::pod;
     use hal::sync::netlock::NETLOCK;
-    use sysdefs::net_if::{IFF_BROADCAST, IFF_MULTICAST};
-    use sysdefs::netinet_in_var::InAliasreq;
-    use sysdefs::socket::{PF_INET, SOCK_DGRAM};
-    use sysdefs::sockio::{SIOCADDMULTI, SIOCAIFADDR, SIOCDELMULTI, SIOCSIFADDR};
+    use sysdefs::net::if_::{IFF_BROADCAST, IFF_MULTICAST};
+    use sysdefs::net::socket::{PF_INET, SOCK_DGRAM};
+    use sysdefs::net::sockio::{SIOCADDMULTI, SIOCAIFADDR, SIOCDELMULTI, SIOCSIFADDR};
+    use sysdefs::netinet::in_var::InAliasreq;
 
     use super::*;
     use crate::fs::testfs::TestGlue;
@@ -3226,7 +3228,7 @@ pub(crate) mod testinet {
 
     impl Domain<G> for Inet6Dom {
         fn family(&self) -> i32 {
-            i32::from(sysdefs::socket::PF_INET6)
+            i32::from(sysdefs::net::socket::PF_INET6)
         }
         fn name(&self) -> &'static str {
             "inet6"
@@ -3552,7 +3554,7 @@ mod tests {
     use std::vec::Vec;
 
     use hal::sync::netlock::NETLOCK;
-    use sysdefs::endian::htons;
+    use sysdefs::base::endian::htons;
 
     use super::testinet::{self, G as Tg};
     use crate::net::pf_hooks::testpf;
@@ -3752,7 +3754,7 @@ mod tests {
         inp.inp_flowid.set(!want);
         let sin = |addr: InAddr, port: u16| SockaddrIn {
             sin_len: size_of::<SockaddrIn>() as u8,
-            sin_family: sysdefs::socket::AF_INET,
+            sin_family: sysdefs::net::socket::AF_INET,
             sin_port: port,
             sin_addr: addr,
             sin_zero: [0; 8],

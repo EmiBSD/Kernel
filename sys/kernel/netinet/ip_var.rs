@@ -51,7 +51,7 @@
 //! IP implementation variables, the kernel's half of `<netinet/ip_var.h>`: the `ip_output`
 //! flags, `IPMTUDISCTIMEOUT`, the per-CPU IP statistics (`ipcounters`, defined by
 //! `ip_input.c`) and their `ipstat_inc`/`ipstat_add`. The userland half (`struct ipstat`,
-//! `struct ipovly`, `struct ipoption`, `MAX_IPOPTLEN`) is `sysdefs::netinet_ip_var`.
+//! `struct ipovly`, `struct ipoption`, `MAX_IPOPTLEN`) is `sysdefs::netinet::ip_var`.
 //!
 //! Upstream: sys/netinet/ip_var.h @ 3ce1f3f79392
 //! LZ: sys/netinet/ip_var.rs@3c62ede68802
@@ -111,9 +111,9 @@ use hal::ds::owned::{OwnedSlist, SlistLink};
 use hal::mem::malloc::{MArc, MArray};
 use hal::mem::pool::{BoxPool, Pooled};
 use hal::sync::percpu::Counters;
-use sysdefs::netinet_in::InAddr;
-use sysdefs::netinet_ip::IPDEFTTL;
-use sysdefs::socket::SO_BROADCAST;
+use sysdefs::net::socket::SO_BROADCAST;
+use sysdefs::netinet::in_::InAddr;
+use sysdefs::netinet::ip::IPDEFTTL;
 
 use crate::net::mbuf::MbufBox;
 use crate::netinet::in_var::InMulti;
@@ -419,7 +419,7 @@ pub fn ipstat_dec(c: IpstatCounters) {
 
 // The counters are `struct ipstat`'s words (`CTASSERT` in `ip_sysctl_ipstat`).
 const _: () =
-    assert!(size_of::<sysdefs::netinet_ip_var::Ipstat>() == IPS_NCOUNTERS * size_of::<u64>());
+    assert!(size_of::<sysdefs::netinet::ip_var::Ipstat>() == IPS_NCOUNTERS * size_of::<u64>());
 /* </CODE> */
 
 /* <TESTS> */

@@ -53,7 +53,7 @@ use crate::bridges::AlreadyRegistered;
 use crate::sync::once::OnceStatic;
 use crate::syscall::{Register, Rval, SysResult};
 use crate::vm::pmap::VmProt;
-use sysdefs::errno::Errno;
+use sysdefs::base::errno::Errno;
 
 /// The machine's trap frame (`struct trapframe`), as the exception entry saved it.
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]

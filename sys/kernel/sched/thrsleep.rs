@@ -128,7 +128,7 @@ use hal::sync::mutex::{Mutexed, MutexedGuard};
 use hal::sync::sleep::{INFSLP, PCATCH, PWAIT};
 use hal::sync::spinlock::{_ATOMIC_LOCK_UNLOCKED, AtomicLock};
 use hal::user::UserPtr;
-use sysdefs::errno::Errno;
+use sysdefs::base::errno::Errno;
 
 use crate::proc::{ProcGlue, Thread};
 use crate::sched::{sleep_finish, sleep_setup, wakeup_n_locked};
