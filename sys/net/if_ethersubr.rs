@@ -200,6 +200,7 @@ mod tests {
     use crate::net::if_::{IFF_BROADCAST, IFF_MULTICAST, IFF_NOARP, IFF_RUNNING, IFF_SIMPLEX};
     use crate::net::if_var::IfnetLegacy;
     use crate::sys::mbuf::mtod;
+    use hal::sysbytes::In6IfreqRu;
 
     const OURS: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
     const PEER: [u8; 6] = [0x52, 0x55, 0x0a, 0x00, 0x02, 0x02];

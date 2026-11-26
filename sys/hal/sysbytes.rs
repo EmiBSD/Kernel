@@ -34,15 +34,18 @@
 //!   (`pod_from_bytes::<UfsArgs>(d)` is `pod_from_bytes::<UfsArgs>(d)`, `hal::user::zeroed::<KinfoFile>()` is
 //!   `zeroed::<KinfoFile>()`).
 
+use crate::assert::hal_panic;
 use crate::sys::disklabel::{
     DISKLABEL_PARTITIONS_OFFSET, DISKLABEL_SIZE, Disklabel, MAXPARTITIONSUNIT, Partition,
 };
 use crate::sys::mount::Fhandle;
 use crate::sys::net_if::{Ifaliasreq, Ifreq};
 use crate::sys::netinet_ip_icmp::Icmp;
+use crate::sys::netinet6_in6::SockaddrIn6;
+use crate::sys::netinet6_in6_var::{Icmp6Ifstat, In6Addrlifetime, In6Ifreq, In6Ifstat};
 use crate::sys::nfs_nfsproto::Nfsfh;
 use crate::sys::socket::Sockaddr;
-use crate::user::{AbiBytes, bytes_of, bytes_of_mut, pod_from_bytes, pod_to_bytes, zeroed};
+use crate::user::{AbiBytes, AbiPod, bytes_of, bytes_of_mut, pod_from_bytes, pod_to_bytes, zeroed};
 
 /// `Disklabel` as the C casts it from a sector buffer, and its checksum words.
 pub trait DisklabelBytes: Sized {
@@ -207,6 +210,74 @@ impl NfsfhGeneric for Nfsfh {
         // Always room: `NFSX_V3FH <= NFS_MAXFHSIZE` (the size check in `nfs_nfsproto`).
         let _ = pod_to_bytes(fh, &mut self.fh_bytes);
     }
+}
+/// A member of the union `u` read at its offset 0 (every member fits: the union is the
+/// largest one's size).
+#[inline]
+fn ru_get<T: AbiPod>(u: &[u8]) -> T {
+    match crate::mem::pod::at::<T>(u, 0) {
+        Some(v) => v,
+        None => hal_panic(format_args!("in6_ifreq: a member longer than the union")),
+    }
+}
+
+/// A member of the union `u` written at its offset 0.
+#[inline]
+fn ru_put<T: AbiPod>(u: &mut [u8], v: &T) {
+    if !crate::mem::pod::put(u, 0, v) {
+        hal_panic(format_args!("in6_ifreq: a member longer than the union"));
+    }
+}
+
+/// Defines [`In6IfreqRu`], the `ifr_*` shorthands of `struct in6_ifreq`'s union members.
+macro_rules! in6_ifreq_accessor {
+    ($($(#[$doc:meta])* $get:ident, $set:ident => $ty:ty;)*) => {
+        /// `struct in6_ifreq`'s union members, read and written at the union's start.
+        pub trait In6IfreqRu {
+            $(
+                $(#[$doc])*
+                fn $get(&self) -> $ty;
+
+                $(#[$doc])*
+                fn $set(&mut self, v: $ty);
+            )*
+        }
+
+        impl In6IfreqRu for In6Ifreq {
+            $(
+                #[inline]
+                fn $get(&self) -> $ty {
+                    ru_get(&self.ifr_ifru)
+                }
+
+                #[inline]
+                fn $set(&mut self, v: $ty) {
+                    ru_put(&mut self.ifr_ifru, &v);
+                }
+            )*
+        }
+    };
+}
+
+in6_ifreq_accessor! {
+    /// `ifr_addr` (`ifr_ifru.ifru_addr`).
+    ifr_addr, set_ifr_addr => SockaddrIn6;
+    /// `ifr_dstaddr` (`ifr_ifru.ifru_dstaddr`).
+    ifr_dstaddr, set_ifr_dstaddr => SockaddrIn6;
+    /// `ifr_flags` (`ifr_ifru.ifru_flags`).
+    ifr_flags, set_ifr_flags => i16;
+    /// `ifr_ifru.ifru_flags6`.
+    ifr_flags6, set_ifr_flags6 => i32;
+    /// `ifr_ifru.ifru_metric`.
+    ifr_metric, set_ifr_metric => i32;
+    /// `ifr_ifru.ifru_data`: a user address.
+    ifr_data, set_ifr_data => u64;
+    /// `ifr_ifru.ifru_lifetime`.
+    ifr_lifetime, set_ifr_lifetime => In6Addrlifetime;
+    /// `ifr_ifru.ifru_stat`.
+    ifr_stat, set_ifr_stat => In6Ifstat;
+    /// `ifr_ifru.ifru_icmp6stat`.
+    ifr_icmp6stat, set_ifr_icmp6stat => Icmp6Ifstat;
 }
 /* </CODE> */
 
@@ -382,6 +453,7 @@ mod tests {
     }
 
     mod netinet6_in6_var {
+        use super::super::In6IfreqRu;
         use crate::sys::netinet6_in6::In6Addr;
         use crate::sys::netinet6_in6::SockaddrIn6;
         use crate::sys::netinet6_in6_var::*;
@@ -817,6 +889,36 @@ mod tests {
             assert_eq!(&b[..8], &[9, 1, b'/', b't', b'm', b'p', b'/', b's']);
             assert_eq!(pod_from_bytes::<SockaddrUn>(b), Some(su));
             assert_eq!(pod_from_bytes::<SockaddrUn>(&b[..105]), None);
+        }
+    }
+
+    mod net_route {
+        use crate::mem::pod;
+        use crate::sys::net_route::*;
+
+        #[test]
+        fn a_message_header_is_read_and_written_in_its_bytes() {
+            // A route(8) RTM_GET as userland writes it: the C's offsets (rtm_addrs at 12,
+            // rtm_pid at 24, rtm_rmx at 40, rmx_refcnt at 40 + 24).
+            let mut buf = [0u8; 96];
+            let mut h = RtMsghdr {
+                rtm_msglen: 96,
+                rtm_version: RTM_VERSION,
+                rtm_type: RTM_GET,
+                rtm_hdrlen: 96,
+                rtm_addrs: RTA_DST | RTA_NETMASK,
+                rtm_pid: 42,
+                ..RtMsghdr::default()
+            };
+            h.rtm_rmx.rmx_refcnt = 3;
+            assert!(pod::put(&mut buf, 0, &h));
+            assert_eq!(&buf[0..4], &[96, 0, RTM_VERSION, RTM_GET]);
+            assert_eq!(buf[12], 0x5);
+            assert_eq!(buf[24], 42);
+            assert_eq!(buf[64], 3);
+            let back: RtMsghdr = pod::at(&buf, 0).expect("the header");
+            assert_eq!(back, h);
+            assert_eq!(back.rtm_use(), 0);
         }
     }
 }

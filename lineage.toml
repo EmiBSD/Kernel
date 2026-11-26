@@ -9673,6 +9673,11 @@ status = "redesigned"
 notes = "N6.5a: netinet6/in6_var.h's userland part as abi_pod! images with const size asserts: in6_addrlifetime (24), in6_ifstat (160), icmp6_ifstat (272), in6_ifreq (288, its union the 272 bytes read by copy through LZ's accessor names), in6_aliasreq (128, ifra_addr the union's address member); the SIOC*_IN6 commands, IN6_IFF_*; LZ's reference test and two layout tests; the _KERNEL part is kernel::netinet6::in6_var's (bsd's until N6.5a's addresses commit)"
 
 [[module.fn]]
+lz = "sys/netinet6/in6_var.rs::in6_ifreq_accessor"
+native = ["sys/hal/sysbytes.rs::in6_ifreq_accessor"]
+kind = "moved"
+
+[[module.fn]]
 lz = "sys/netinet6/in6_var.rs::In6IfreqIfru"
 native = ["In6Ifreq"]
 kind = "merged"

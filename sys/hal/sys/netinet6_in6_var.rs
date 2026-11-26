@@ -101,13 +101,11 @@
 
 use core::mem::size_of;
 
-use crate::assert::hal_panic;
 use crate::sys::ioccom::{_ioc, _iow, _iowr, IOC_INOUT};
 use crate::sys::net_if::IFNAMSIZ;
 use crate::sys::netinet6_in6::SockaddrIn6;
 use crate::sys::netinet6_nd6::{In6Nbrinfo, In6Ndireq};
 use crate::sys::types::Time;
-use crate::user::AbiPod;
 
 /// `struct in6_addrlifetime`: the lifetimes of an address. pltime/vltime are just for future
 /// reference (required to implement the 2 hour rule for hosts); they are never modified by
@@ -338,43 +336,6 @@ crate::abi_pod!(In6Ifreq {
     ifr_ifru: [u8; IN6_IFREQ_IFRU_LEN],
 });
 
-/// A member of the union `u` read at its offset 0 (every member fits: the union is the
-/// largest one's size).
-#[inline]
-fn ru_get<T: AbiPod>(u: &[u8]) -> T {
-    match crate::mem::pod::at::<T>(u, 0) {
-        Some(v) => v,
-        None => hal_panic(format_args!("in6_ifreq: a member longer than the union")),
-    }
-}
-
-/// A member of the union `u` written at its offset 0.
-#[inline]
-fn ru_put<T: AbiPod>(u: &mut [u8], v: &T) {
-    if !crate::mem::pod::put(u, 0, v) {
-        hal_panic(format_args!("in6_ifreq: a member longer than the union"));
-    }
-}
-
-/// Defines the `ifr_*` shorthands of `struct in6_ifreq`'s union members.
-macro_rules! in6_ifreq_accessor {
-    ($($(#[$doc:meta])* $get:ident, $set:ident => $ty:ty;)*) => {
-        $(
-            $(#[$doc])*
-            #[inline]
-            pub fn $get(&self) -> $ty {
-                ru_get(&self.ifr_ifru)
-            }
-
-            $(#[$doc])*
-            #[inline]
-            pub fn $set(&mut self, v: $ty) {
-                ru_put(&mut self.ifr_ifru, &v);
-            }
-        )*
-    };
-}
-
 impl In6Ifreq {
     /// An all-zero request.
     pub const fn zeroed() -> Self {
@@ -382,27 +343,6 @@ impl In6Ifreq {
             ifr_name: [0; IFNAMSIZ],
             ifr_ifru: [0; IN6_IFREQ_IFRU_LEN],
         }
-    }
-
-    in6_ifreq_accessor! {
-        /// `ifr_addr` (`ifr_ifru.ifru_addr`).
-        ifr_addr, set_ifr_addr => SockaddrIn6;
-        /// `ifr_dstaddr` (`ifr_ifru.ifru_dstaddr`).
-        ifr_dstaddr, set_ifr_dstaddr => SockaddrIn6;
-        /// `ifr_flags` (`ifr_ifru.ifru_flags`).
-        ifr_flags, set_ifr_flags => i16;
-        /// `ifr_ifru.ifru_flags6`.
-        ifr_flags6, set_ifr_flags6 => i32;
-        /// `ifr_ifru.ifru_metric`.
-        ifr_metric, set_ifr_metric => i32;
-        /// `ifr_ifru.ifru_data`: a user address.
-        ifr_data, set_ifr_data => u64;
-        /// `ifr_ifru.ifru_lifetime`.
-        ifr_lifetime, set_ifr_lifetime => In6Addrlifetime;
-        /// `ifr_ifru.ifru_stat`.
-        ifr_stat, set_ifr_stat => In6Ifstat;
-        /// `ifr_ifru.ifru_icmp6stat`.
-        ifr_icmp6stat, set_ifr_icmp6stat => Icmp6Ifstat;
     }
 }
 

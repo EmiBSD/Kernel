@@ -732,32 +732,6 @@ const _: () = {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mem::pod;
-
-    #[test]
-    fn a_message_header_is_read_and_written_in_its_bytes() {
-        // A route(8) RTM_GET as userland writes it: the C's offsets (rtm_addrs at 12,
-        // rtm_pid at 24, rtm_rmx at 40, rmx_refcnt at 40 + 24).
-        let mut buf = [0u8; 96];
-        let mut h = RtMsghdr {
-            rtm_msglen: 96,
-            rtm_version: RTM_VERSION,
-            rtm_type: RTM_GET,
-            rtm_hdrlen: 96,
-            rtm_addrs: RTA_DST | RTA_NETMASK,
-            rtm_pid: 42,
-            ..RtMsghdr::default()
-        };
-        h.rtm_rmx.rmx_refcnt = 3;
-        assert!(pod::put(&mut buf, 0, &h));
-        assert_eq!(&buf[0..4], &[96, 0, RTM_VERSION, RTM_GET]);
-        assert_eq!(buf[12], 0x5);
-        assert_eq!(buf[24], 42);
-        assert_eq!(buf[64], 3);
-        let back: RtMsghdr = pod::at(&buf, 0).expect("the header");
-        assert_eq!(back, h);
-        assert_eq!(back.rtm_use(), 0);
-    }
 
     #[test]
     fn the_filter_bits_are_the_message_types() {

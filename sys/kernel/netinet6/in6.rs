@@ -217,6 +217,7 @@
 
 use core::mem::{offset_of, size_of};
 use core::ptr;
+use hal::sysbytes::In6IfreqRu;
 
 use hal::mem::malloc::MArc;
 use hal::mem::pod;
@@ -1744,6 +1745,7 @@ pub(crate) mod tests {
     use crate::netinet::in_var::M_IPMADDR;
     use crate::netinet6::in6_var::{ia6_in6, in6_ifaddr_alloc};
     use crate::testutil::{malloc_out, malloc_requests};
+    use hal::sysbytes::In6IfreqRu;
 
     /// `a:b::c` text to an address (the forms the tests use).
     pub(crate) fn a6(s: &str) -> In6Addr {
