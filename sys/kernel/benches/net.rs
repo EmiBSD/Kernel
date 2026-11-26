@@ -4696,15 +4696,19 @@ fn inet6_input_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f
 /// match of one of 1,000 host routes; `radix.match.net.1k`, of an address inside one of 1,000
 /// /24s (the chain's normal short cut); `radix.match.miss`, of an address outside all of them
 /// (the climb to the top through the annotations); `radix.add.del`, one /24 added to and
-/// deleted from the 1,000; `radix.walk.1k`, the walk of 1,000 routes (`first`, `next`). The
-/// "before" is a scratch harness over `bsd`'s `radix.rs` at the base (rows `bsd.radix.*`), run
-/// at the close beside these.
-const RADIX_ROWS: [&str; 5] = [
+/// deleted from the 1,000; `radix.walk.1k`, the walk of 1,000 routes (`first`, `next`);
+/// `radix.add.worst.1k` and `radix.add.worst.64k` (N6.7b1, D-13), the slowest single add of
+/// host routes while a tree grows from empty to 1,000 and to 65,536 routes (the add that
+/// grows the storage), ns per repetition's worst add. The "before" is a scratch harness over
+/// `bsd`'s `radix.rs` at the base (rows `bsd.radix.*`), run at the close beside these.
+const RADIX_ROWS: [&str; 7] = [
     "radix.match.host.1k",
     "radix.match.net.1k",
     "radix.match.miss",
     "radix.add.del",
     "radix.walk.1k",
+    "radix.add.worst.1k",
+    "radix.add.worst.64k",
 ];
 
 fn radix_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
@@ -4789,6 +4793,36 @@ fn radix_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f6
             t.elapsed()
         });
         report(RADIX_ROWS[4], r);
+    }
+    // The slowest add while a tree of host routes grows to `n`, over REPS fresh trees.
+    let worst = |n: u32| -> (f64, f64, f64) {
+        let mut v: Vec<f64> = (0..REPS)
+            .map(|_| {
+                let mut t: RadixTree<u32, 28> = RadixTree::new(4, M_RTABLE);
+                let mut w = Duration::ZERO;
+                for i in 0..n {
+                    let [_, a, b, c] = i.to_be_bytes();
+                    let k = sin([10, a, b, c]);
+                    let s = Instant::now();
+                    let r = t.add(&k, None, i);
+                    w = w.max(s.elapsed());
+                    if r.is_err() {
+                        eprintln!("net: the radix rows' growing tree refused an add");
+                        std::process::exit(1);
+                    }
+                }
+                black_box(&t);
+                w.as_nanos() as f64
+            })
+            .collect();
+        v.sort_by(f64::total_cmp);
+        (v[0], v[v.len() / 2], v[v.len() - 1])
+    };
+    if wanted(RADIX_ROWS[5]) {
+        report(RADIX_ROWS[5], worst(1000));
+    }
+    if wanted(RADIX_ROWS[6]) {
+        report(RADIX_ROWS[6], worst(65_536));
     }
 }
 /* </CODE> */

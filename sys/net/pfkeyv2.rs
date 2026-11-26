@@ -204,7 +204,6 @@ use crate::net::pfkeyv2_parsemessage::{
     SADB_EXTS_ALLOWED_OUT, SADB_EXTS_REQUIRED_OUT, pfkeyv2_parsemessage,
 };
 use crate::net::pfvar::PF_TAG_NAME_SIZE;
-use crate::net::radix::{rn_addroute, rn_init, rn_match};
 use crate::net::rtable::{rtable_exists, rtable_l2};
 use crate::netinet::in_::{IPPROTO_AH, IPPROTO_ESP, IPPROTO_IPCOMP, IPPROTO_IPIP, SockaddrIn};
 #[cfg(feature = "inet6")]
@@ -222,7 +221,7 @@ use crate::netinet::ip_ipsp::{
 };
 use crate::netinet::ip_spd::{
     IPO_TDB_MTX, IPSEC_ACQUIRE_POOL, IPSEC_POLICY_POOL, ipsec_delete_policy, ipsec_get_acquire,
-    ipsec_policy_of, ipsec_unref_acquire, spd_table_add, spd_table_get, spd_table_walk,
+    ipsec_unref_acquire, spd_table_add, spd_table_mut, spd_table_walk,
 };
 use crate::netinet::ipsec_input::{
     AH_ENABLE, ESP_ENABLE, IPCOMP_ENABLE, IPSEC_DEF_AUTH, IPSEC_DEF_COMP, IPSEC_DEF_ENC,
@@ -1216,9 +1215,9 @@ pub static PFKEYDOMAIN: Domain = Domain {
     dom_maxplen: 0,
 };
 
-/// `pfkey_init`: the radix trees for `struct sockaddr_encap` keys and the pools.
+/// `pfkey_init`: the pools. The C's `rn_init(sizeof(struct sockaddr_encap))` is each SPD
+/// tree's own key length (`ip_spd`'s `SpdTree`, N6.7b1).
 pub fn pfkey_init() {
-    rn_init(SockaddrEncap::new().as_bytes().len() as u32);
     PKPTABLE.pkp_list.init();
     pool_init(
         &PKPCB_POOL,
@@ -3006,12 +3005,10 @@ unsafe fn pfkeyv2_flow(
         return Err(e);
     }
 
-    // Determine whether the exact same SPD entry already exists.
+    // Determine whether the exact same SPD entry already exists. The tree `spd_table_add`
+    // lent is not used after this lookup.
     let mut ipo_ptr: *mut IpsecPolicy = ptr::null_mut();
-    // SAFETY: `encapdst` is a `SENT_LEN`-byte key whose first byte is its length.
-    if let Some(rn) = unsafe { rn_match(encapdst.as_bytes().as_ptr(), rnh) } {
-        // SAFETY: a leaf `rn_match` returned from an SPD tree.
-        let ipo = unsafe { ipsec_policy_of(rn) };
+    if let Some(&ipo) = rnh.matches(encapdst.as_bytes()) {
         let p = ptr::from_ref(ipo).cast_mut();
 
         // Verify that the entry is identical
@@ -3124,20 +3121,11 @@ unsafe fn pfkeyv2_flow(
         refcnt_init(&ipo.ipo_refcnt);
 
         // Add SPD entry
-        let added = spd_table_get(rdomain).and_then(|rnh| {
-            // SAFETY: the key and mask are the policy's `SENT_LEN`-byte encap addresses and
-            // the nodes its `ipo_nodes`, which stay in place while it is in the tree.
-            unsafe {
-                rn_addroute(
-                    ipo.ipo_addr_key(),
-                    ipo.ipo_mask_key(),
-                    rnh,
-                    &ipo.ipo_nodes,
-                    0,
-                )
-            }
+        let added = spd_table_mut(rdomain).is_some_and(|rnh| {
+            rnh.add(&ipo.ipo_addr_key(), Some(&ipo.ipo_mask_key()), ipo)
+                .is_ok()
         });
-        if added.is_none() {
+        if !added {
             // Remove from linked list of policies on TDB
             mtx_enter(&IPO_TDB_MTX);
             if let Some(t) = ipo.ipo_tdb.get() {
@@ -3849,14 +3837,15 @@ mod tests {
     use crate::machine::Machine;
     use crate::machine::cpu::Cpu;
     use crate::net::pfkeyv2_convert::import_lifetime;
-    use crate::net::radix::rn_test_reset;
     use crate::netinet::in_::IPPROTO_ESP;
+    use crate::netinet::in_::IPSEC_LEVEL_BYPASS;
     use crate::netinet::ip_input::tests::sin;
+    use crate::netinet::ip_ipsp::IpsecLevel;
     use crate::netinet::ip_ipsp::{
         IPSP_DIRECTION_OUT, TDBF_ALLOCATIONS, TDBF_BYTES, TDBF_TIMER, TDBF_TUNNELING, XF_ESP,
         gettdb, ipsp_reset, tdb_unref,
     };
-    use crate::netinet::ip_spd::{ipsp_spd_lookup, spd_reset};
+    use crate::netinet::ip_spd::{SpdError, ipsp_spd_lookup, spd_reset};
     use crate::sys::endian::htonl;
 
     use crate::sys::socket::{MSG_DONTWAIT, PF_KEY as PFK};
@@ -3881,7 +3870,6 @@ mod tests {
         procinit();
         soinit();
         crate::kern::uipc_domain::net_tables_for_tests();
-        rn_test_reset();
         spd_reset();
         ipsp_reset();
         pfkey_reset();
@@ -5120,6 +5108,206 @@ mod tests {
         send(so, &Msg::new(SADB_FLUSH, SADB_SATYPE_UNSPEC, 5).done()).expect("flush");
         assert_eq!(header(&recv(so).expect("the reply")).sadb_msg_errno, 0);
         assert_eq!(IPSEC_IN_USE.load(Ordering::Relaxed), 0, "the flow went too");
+
+        soclose(so, 0).expect("close");
+        teardown();
+    }
+    /// An `SADB_X_ADDFLOW` through `PEER` (or an `SADB_X_DELFLOW`, `type_`, which carries no
+    /// address) of flow type `ftype` and direction `dir` for `src`/`smask` to `dst`/`dmask`.
+    fn flow(
+        type_: u8,
+        ftype: u8,
+        dir: u8,
+        src: [[u8; 4]; 2],
+        dst: [[u8; 4]; 2],
+        seq: u32,
+    ) -> Vec<u8> {
+        let mut m = Msg::new(type_, SADB_SATYPE_ESP, seq);
+        if type_ == SADB_X_ADDFLOW {
+            m = m.address(SADB_EXT_ADDRESS_DST, PEER, 0);
+        }
+        m.address(SADB_X_EXT_SRC_FLOW, src[0], 0)
+            .address(SADB_X_EXT_SRC_MASK, src[1], 0)
+            .address(SADB_X_EXT_DST_FLOW, dst[0], 0)
+            .address(SADB_X_EXT_DST_MASK, dst[1], 0)
+            .ext(SADB_X_EXT_PROTOCOL, SadbProtocol::default(), &[])
+            .ext(
+                SADB_X_EXT_FLOW_TYPE,
+                SadbProtocol {
+                    sadb_protocol_proto: ftype,
+                    sadb_protocol_direction: dir,
+                    ..SadbProtocol::default()
+                },
+                &[],
+            )
+            .done()
+    }
+
+    /// `ipsp_spd_lookup` of a UDP packet from `src` to `dst` in direction `dir`, with the
+    /// socket's levels `sl`: the error, or the SA the policy gives (none here).
+    fn spd(dir: u8, src: [u8; 4], dst: [u8; 4], sl: Option<&IpsecLevel>) -> Result<bool, SpdError> {
+        let m = udp_packet(src, dst);
+        let mut tdb = None;
+        let r = ipsp_spd_lookup(
+            m,
+            i32::from(AF_INET),
+            20,
+            dir,
+            None,
+            sl,
+            Some(&mut tdb),
+            None,
+        );
+        crate::kern::uipc_mbuf::m_freem(m);
+        let had = tdb.is_some();
+        tdb_unref(tdb);
+        r.map(|()| had)
+    }
+
+    /// The messages of a `net.key` SPD dump: their count.
+    fn spd_dump_len() -> usize {
+        let mut size = 0;
+        pfkeyv2_sysctl(&[NET_KEY_SPD_DUMP], 0, &mut size, 0, 0).expect("size");
+        if size == 0 {
+            return 0;
+        }
+        let mut buf = vec![0u8; size];
+        let mut len = size;
+        pfkeyv2_sysctl(
+            &[NET_KEY_SPD_DUMP],
+            buf.as_mut_ptr() as usize,
+            &mut len,
+            0,
+            0,
+        )
+        .expect("dump");
+        let (mut n, mut off) = (0, 0);
+        while off < len {
+            let h = header(&buf[off..]);
+            assert_eq!(h.sadb_msg_type, SADB_X_SPDDUMP);
+            off += usize::from(h.sadb_msg_len) * 8;
+            n += 1;
+        }
+        n
+    }
+
+    /// N6.7b1: the SPD's answers over the radix tree it lives in. A flow matches packets of
+    /// its direction only; the more specific of two overlapping flows wins; a deny refuses
+    /// (`EHOSTUNREACH`), a bypass passes without an SA; a socket that bypasses IPsec passes an
+    /// incoming packet a deny would refuse; a deleted flow no longer matches and a second
+    /// delete is `ESRCH`; the dump walks every flow, and the flush's walk deletes them all; of
+    /// two flows of one key, a delete names the more specific first.
+    #[test]
+    fn the_spd_answers_by_direction_and_the_most_specific_flow() {
+        let _g = setup();
+        let so =
+            socreate(i32::from(PF_KEY), SOCK_RAW, i32::from(PF_KEY_V2)).expect("socket(PF_KEY)");
+        let (deny, bypass) = (SADB_X_FLOW_TYPE_DENY, SADB_X_FLOW_TYPE_BYPASS);
+        let (out, inb) = (IPSP_DIRECTION_OUT, IPSP_DIRECTION_IN);
+        let m24 = [255, 255, 255, 0];
+        let flows = [
+            (deny, out, [[10, 77, 1, 0], m24], [[10, 77, 2, 0], m24]),
+            (bypass, out, [[10, 77, 3, 0], m24], [[10, 77, 2, 0], m24]),
+            (deny, inb, [[10, 77, 2, 0], m24], [[10, 77, 5, 0], m24]),
+            (deny, out, [[10, 77, 4, 0], m24], [[10, 77, 2, 0], m24]),
+            (
+                bypass,
+                out,
+                [[10, 77, 4, 7], [255; 4]],
+                [[10, 77, 2, 0], m24],
+            ),
+        ];
+        for (seq, &(ftype, dir, src, dst)) in flows.iter().enumerate() {
+            send(so, &flow(SADB_X_ADDFLOW, ftype, dir, src, dst, seq as u32)).expect("addflow");
+            assert_eq!(header(&recv(so).expect("the reply")).sadb_msg_errno, 0);
+        }
+        assert_eq!(IPSEC_IN_USE.load(Ordering::Relaxed), 5);
+        assert_eq!(spd_dump_len(), 5, "the dump walks every flow");
+
+        let unreach = Err(SpdError::Errno(Errno::EHOSTUNREACH));
+        assert_eq!(spd(out, [10, 77, 1, 5], [10, 77, 2, 9], None), unreach);
+        assert_eq!(spd(out, [10, 77, 3, 5], [10, 77, 2, 9], None), Ok(false));
+        assert_eq!(spd(inb, [10, 77, 2, 9], [10, 77, 5, 1], None), unreach);
+        // Each flow has its direction.
+        assert_eq!(spd(out, [10, 77, 2, 9], [10, 77, 5, 1], None), Ok(false));
+        assert_eq!(spd(inb, [10, 77, 1, 5], [10, 77, 2, 9], None), Ok(false));
+        // The host's bypass inside the network's deny.
+        assert_eq!(spd(out, [10, 77, 4, 7], [10, 77, 2, 9], None), Ok(false));
+        assert_eq!(spd(out, [10, 77, 4, 8], [10, 77, 2, 9], None), unreach);
+        assert_eq!(spd(out, [10, 77, 6, 1], [10, 77, 2, 9], None), Ok(false));
+        // A socket that bypasses IPsec takes the incoming packet the deny refuses.
+        let bypass_all = IpsecLevel {
+            sl_auth: IPSEC_LEVEL_BYPASS as u8,
+            sl_esp_trans: IPSEC_LEVEL_BYPASS as u8,
+            sl_esp_network: IPSEC_LEVEL_BYPASS as u8,
+            sl_ipcomp: IPSEC_LEVEL_BYPASS as u8,
+        };
+        assert_eq!(
+            spd(inb, [10, 77, 2, 9], [10, 77, 5, 1], Some(&bypass_all)),
+            Ok(false)
+        );
+
+        // SADB_X_DELFLOW of the first: its packets pass; again, ESRCH.
+        let (ftype, dir, src, dst) = flows[0];
+        send(so, &flow(SADB_X_DELFLOW, ftype, dir, src, dst, 9)).expect("delflow");
+        assert_eq!(header(&recv(so).expect("the reply")).sadb_msg_errno, 0);
+        assert_eq!(spd(out, [10, 77, 1, 5], [10, 77, 2, 9], None), Ok(false));
+        send(so, &flow(SADB_X_DELFLOW, ftype, dir, src, dst, 10)).expect("delflow");
+        assert_eq!(
+            header(&recv(so).expect("the reply")).sadb_msg_errno,
+            Errno::ESRCH as u8
+        );
+        assert_eq!(IPSEC_IN_USE.load(Ordering::Relaxed), 4);
+        assert_eq!(spd_dump_len(), 4);
+
+        // SADB_FLUSH: the walk deletes every flow (restarting after each, EAGAIN).
+        send(so, &Msg::new(SADB_FLUSH, SADB_SATYPE_UNSPEC, 11).done()).expect("flush");
+        assert_eq!(header(&recv(so).expect("the reply")).sadb_msg_errno, 0);
+        assert_eq!(IPSEC_IN_USE.load(Ordering::Relaxed), 0);
+        assert_eq!(spd_dump_len(), 0);
+        assert_eq!(spd(inb, [10, 77, 2, 9], [10, 77, 5, 1], None), Ok(false));
+        assert_eq!(spd(out, [10, 77, 4, 8], [10, 77, 2, 9], None), Ok(false));
+
+        // A flow added again after the flush is found again.
+        let (ftype, dir, src, dst) = flows[3];
+        send(so, &flow(SADB_X_ADDFLOW, ftype, dir, src, dst, 12)).expect("addflow");
+        assert_eq!(header(&recv(so).expect("the reply")).sadb_msg_errno, 0);
+        assert_eq!(spd(out, [10, 77, 4, 8], [10, 77, 2, 9], None), unreach);
+
+        // Two flows of one key and two masks (10.77.8.0 under /24 and /25), the /25 the more
+        // specific. A delete names the flow `rn_match` finds for the key (pfkeyv2_flow's
+        // "exact same SPD entry" test), the /25 that heads the key's chain: the /24 cannot be
+        // deleted before it (ESRCH, as the C), and can after.
+        let pair = [
+            (deny, out, [[10, 77, 8, 0], m24], [[10, 77, 2, 0], m24]),
+            (
+                bypass,
+                out,
+                [[10, 77, 8, 0], [255, 255, 255, 128]],
+                [[10, 77, 2, 0], m24],
+            ),
+        ];
+        let del = |i: usize, seq: u32| {
+            let (ftype, dir, src, dst) = pair[i];
+            send(so, &flow(SADB_X_DELFLOW, ftype, dir, src, dst, seq)).expect("delflow");
+            header(&recv(so).expect("the reply")).sadb_msg_errno
+        };
+        for (seq, &(ftype, dir, src, dst)) in pair.iter().enumerate() {
+            send(
+                so,
+                &flow(SADB_X_ADDFLOW, ftype, dir, src, dst, 13 + seq as u32),
+            )
+            .expect("addflow");
+            assert_eq!(header(&recv(so).expect("the reply")).sadb_msg_errno, 0);
+        }
+        assert_eq!(spd(out, [10, 77, 8, 5], [10, 77, 2, 9], None), Ok(false));
+        assert_eq!(spd(out, [10, 77, 8, 200], [10, 77, 2, 9], None), unreach);
+        assert_eq!(del(0, 15), Errno::ESRCH as u8);
+        assert_eq!(del(1, 16), 0);
+        assert_eq!(spd(out, [10, 77, 8, 5], [10, 77, 2, 9], None), unreach);
+        assert_eq!(del(0, 17), 0);
+        assert_eq!(spd(out, [10, 77, 8, 200], [10, 77, 2, 9], None), Ok(false));
+        assert_eq!(spd_dump_len(), 1, "the flow added after the flush");
 
         soclose(so, 0).expect("close");
         teardown();

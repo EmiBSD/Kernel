@@ -1361,7 +1361,7 @@ fn setup_on(g: MutexGuard<'static, ()>) -> MutexGuard<'static, ()> {
     STRATEGY_ERROR.with(|c| c.set(None));
     BDEV_STRATEGY.with(|c| c.set(None));
     crate::testutil::unveil_done_reset();
-    super::init::vfsinit::<TestGlue>(&TEST_CONF, 64, || {});
+    super::init::vfsinit::<TestGlue>(&TEST_CONF, 64);
     super::lockf::lf_init();
     let _ = register_devsw::<TestGlue>(&TEST_DEVSW);
     g

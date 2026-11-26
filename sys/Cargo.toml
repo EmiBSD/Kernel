@@ -35,6 +35,14 @@ name = "legacy_sched"
 path = "benches/legacy_sched.rs"
 harness = false
 
+# Host microbenchmark of pf's table lookup (decision 43, D-13, N6.7b1; benches/legacy_pf.rs)
+# over bsd's pool(9) and malloc(9) on host memory and the kernel crate's doubles, never a
+# kernel image: `cargo bench -p bsd --bench legacy_pf [--profile dev]`.
+[[bench]]
+name = "legacy_pf"
+path = "benches/legacy_pf.rs"
+harness = false
+
 [features]
 # `multiprocessor` is always on: the MULTIPROCESSOR kernel is the only one built (decision 40).
 default = ["alloc", "boot_config", "multiprocessor", "ffs", "ffs2", "kmemstats", "inet6", "quota", "ufs_dirhash", "mfs", "tmpfs", "msdosfs", "cd9660", "udf", "nfsclient", "nfsserver", "fuse", "ntfs", "ext2fs", "wsdisplay_compat_usl", "wsdisplay_compat_rawkbd"]

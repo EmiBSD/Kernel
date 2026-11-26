@@ -54,9 +54,10 @@
 //!
 //! A table (`struct pfr_ktable`) is an item of `pfr_ktable_pl` in the global tree
 //! `pfr_ktables`, ordered by name then anchor; it holds two radix trees (`pfrkt_ip4`,
-//! `pfrkt_ip6`) of entries (`struct pfr_kentry`, items of `pfr_kentry_pl[type]`). An entry
-//! embeds the radix node pair it is linked by as its first member (`#[repr(C)]` in
-//! `net/pfvar.rs`), so the leaf the radix code returns is the entry. Transactions build a
+//! `pfrkt_ip6`) of entries (`struct pfr_kentry`, items of `pfr_kentry_pl[type]`): since N6.7b1
+//! the kernel's radix tree (`kernel::net::radix`, `PfrRadix` in `net/pfvar.rs`), which owns
+//! its nodes and keys and carries each route's entry, so no leaf is cast back to the entry
+//! that embedded it. Transactions build a
 //! shadow table (`pfr_ina_define`) that `pfr_ina_commit` merges or swaps in; an anchored table
 //! refers to the root table of the same name (`pfrkt_root`), which rules in the anchor fall back
 //! to when the anchored table is not active.
@@ -70,9 +71,10 @@
 //! - `COPYIN`/`COPYOUT` through a [`PfrBuf`]: a buffer of the other kind than the flags ask for,
 //!   or an index past the end of a kernel array, is `EFAULT` (the C would `bcopy` from the user
 //!   address, or `copyin` from a kernel address, or run off the array).
-//! - `pfr_walktree`'s `struct pfr_walktree` is [`PfrWalktree`], its union an enum; it is passed
-//!   to `rn_walktree` in a closure. `PFRW_POOL_GET`'s "finish search" return of 1 is
-//!   `Err(EPERM)` (`EPERM` is 1), which `pfr_kentry_byidx` ignores as the C does.
+//! - `pfr_walktree`'s `struct pfr_walktree` is [`PfrWalktree`], its union an enum; `rn_walktree`
+//!   is the tree's cursor (`pfr_walk`), which lends the tree for each step only, the successor
+//!   taken before `pfr_walktree` runs, as the C's. `PFRW_POOL_GET`'s "finish search" return of 1
+//!   is `Err(EPERM)` (`EPERM` is 1), which `pfr_kentry_byidx` ignores as the C does.
 //! - `pfr_kentry_all`'s `pfrke_rkif`/`pfrke_rifname` are reached through `pfr_kentry_route`, and
 //!   the cost entry's weight through `pfr_kentry_cost`, after the entry's type.
 //!   `pfr_fill_feedback` reads the weight of every entry as a `pfr_kentry_cost`, past the end of
@@ -97,8 +99,46 @@
 //! - `pfr_insert_kentry` and `pfr_remove_kentry` take `&PfrAddr` (pf.c's callers); the C's
 //!   `pfr_create_kentry` writes the implicit weight into the caller's `pfr_addr`, here into a
 //!   copy.
-//! - Where the C dereferences a pointer it takes to be set (a table's radix heads, the shadow of
-//!   a table being committed, the entry `rn_match` finds inside a block), a NULL one panics.
+//! - Where the C dereferences a pointer it takes to be set (the shadow of a table being
+//!   committed, the entry `rn_match` finds inside a block), a NULL one panics. A table's two
+//!   trees are its own members, made with the table (the C's `rn_inithead` heads).
+//! - Each of a table's trees is inside a lock of its own, which the C does not have
+//!   (`hal::rwlock::Rwlocked`, "pfrktip4" and "pfrktip6"; the user's decision of 2026-11-24),
+//!   because the C's readers race its writers: `pfr_update_stats` looks its entry up after
+//!   `PF_UNLOCK`, under the shared net lock alone, on every softnet at once, while the state
+//!   purge (`PF_LOCK`, no net lock) deletes entries and the packet path adds and deletes them
+//!   (`pf_source_used` and `pf_source_rele` under `PF_LOCK`, `pf_src_connlimit`'s overload
+//!   insert from `pf_test_state`, without it). Every lookup (`pfr_kentry_byaddr`, so
+//!   `pfr_match_addr`, and `pfr_update_stats`, `pfr_lookup_addr`, `pfr_lookup_kentry`,
+//!   `pfr_pool_get`, each step of a walk) takes it shared; `pfr_route_kentry`,
+//!   `pfr_unroute_kentry`, the swap of `pfr_commit_ktable` and `pfr_destroy_ktable` take it
+//!   alone; a new table's roots are made before the table is shared, without it. The lock is a
+//!   leaf: held for the tree's own operation only, no other lock taken under it, never across a
+//!   sleep, a copyout, a free, a walk's callback or `pf_unlock`; the allocations under it are
+//!   the tree's `M_NOWAIT` growth and an entry's first `pfrke_counters` block
+//!   (`pool_get(&pfr_kcounters_pl, PR_NOWAIT | PR_ZERO)`, whose only lock is the pool's mutex). A
+//!   lookup costs the shared enter and exit (two atomic exchanges, no spl) the C does not pay.
+//! - A lookup whose caller reads or counts on the entry it found keeps the tree's lock shared
+//!   until that last use (`pfr_match_kentry`, `pfr_kentry_byaddr_with`): `pfr_update_stats`'s
+//!   negation test and counters (their first `pfrke_counters` allocation is `PR_NOWAIT`, as
+//!   the C's), `pfr_match_addr`'s negation, `pfr_states_increase` and `pfr_states_decrease`,
+//!   `pfr_lookup_addr`'s and `pfr_lookup_kentry`'s network test, `pfr_pool_get`'s nested
+//!   block. The C dereferences the entry after `rn_match` with nothing to keep it, so the
+//!   purge (`PF_LOCK` only) may free an entry `pfr_update_stats` (shared net lock only) is
+//!   counting on; here the delete waits for the lock. The debug lines are printed after it.
+//!   What still outlives the lock is used under `pf_lock`, which every delete holds: the entry
+//!   `pfr_kentry_byidx`'s walk answers `pfr_pool_get`, and `pfr_kentry_byaddr`'s answer to
+//!   `pf_map_addr_sticky`, which only tests it.
+//! - The counters the softnets bump at once are atomics, where the C's are plain words (D1,
+//!   the user's decision of 2026-11-25): the table's `pfrkt_packets`, `pfrkt_bytes` and
+//!   `pfrkt_cnt` and an entry's `pfrkc_packets` and `pfrkc_bytes` are added to with relaxed
+//!   `fetch_add`/`fetch_sub` (the C loses counts when two CPUs count at once); the members
+//!   written under `pf_lock` and read without it (`pfrt_flags`, `pfrke_flags`,
+//!   `pfrkt_refcntcost`, `pfrkt_gcdweight`, `pfrkt_maxweight`) are relaxed atomic words. An
+//!   entry's `pfrke_counters` is installed by one exchange from null: of two CPUs counting a
+//!   new entry at once, the C links both blocks one after the other and leaks the first
+//!   (pf_table.c:2555-2557); here the loser gives its block back to `pfr_kcounters_pl` after
+//!   the tree's lock. The structures copied to userland keep their layout and values.
 //! - `pfr_kentry_pl` is an array of `PFRKE_MAX` pools, as in C; `pf_pool_limits` names its
 //!   first pool (`&pfr_kentry_pl` in C is the array's address, `pfr_kentry_pl[PFRKE_PLAIN]`).
 
@@ -106,11 +146,11 @@ use core::cell::Cell;
 use core::cmp::Ordering;
 use core::mem::{offset_of, size_of};
 use core::ptr::{self, NonNull};
+use core::sync::atomic::Ordering as AtomicOrdering;
 
-use crate::kern::kern_malloc::free;
 use crate::kern::kern_tc::gettime;
 use crate::kern::sched_bsd::preempt;
-use crate::kern::subr_pool::pool_get;
+use crate::kern::subr_pool::{pool_get, pool_init, pool_put};
 use crate::kern::subr_prf::panic;
 use crate::machine::copy::{copyin, copyout};
 use crate::machine::intr::IPL_SOFTNET;
@@ -132,14 +172,10 @@ use crate::net::pfvar::{
     PFR_TFLAG_REFERENCED, PFR_TFLAG_SETMASK, PFR_TFLAG_USRMASK, PFRKE_COST, PFRKE_FLAG_MARK,
     PFRKE_FLAG_NOT, PFRKE_MAX, PFRKE_PLAIN, PFRKE_ROUTE, PfAddr, PfPool, PfPoolItem, PfRuleset,
     PfiDynaddr, PfrAddr, PfrAstats, PfrKcounters, PfrKentry, PfrKentryCost, PfrKentryRoute,
-    PfrKentryioq, PfrKentryworkq, PfrKtable, PfrKtableworkq, PfrTable, PfrTstats, PfsockaddrUnion,
-    pf_abi_zeroed, pf_azero, pf_cstr, pf_pool_get, pf_pool_init, pf_pool_put,
+    PfrKentryioq, PfrKentryworkq, PfrKtable, PfrKtableworkq, PfrRadix, PfrTable, PfrTstats,
+    PfsockaddrUnion, pf_abi_zeroed, pf_azero, pf_cstr, pf_pool_get, pf_pool_init, pf_pool_put,
 };
 use crate::net::pfvar_priv::{PfGlobal, PfPdesc, pf_assert_locked, pf_lock, pf_unlock};
-use crate::net::radix::{
-    RadixNode, RadixNodeHead, rn_addroute, rn_delete, rn_init, rn_inithead, rn_lookup, rn_match,
-    rn_walktree,
-};
 use crate::netinet::in_::{InAddr, SockaddrIn};
 use crate::netinet6::in6::SockaddrIn6;
 use crate::sys::errno::Errno;
@@ -153,6 +189,7 @@ use crate::sys::syslog::{LOG_DEBUG, LOG_ERR, LOG_NOTICE};
 use crate::sys::systm::{net_assert_locked, net_lock, net_unlock};
 use crate::sys::tree::RbHead;
 use crate::sys::types::{SaFamily, Time};
+use hal::rwlock::{ReadGuard, Rwlocked};
 use libkern::{strlcpy, strnlen};
 
 #[cfg(feature = "inet6")]
@@ -247,17 +284,15 @@ pub static PFR_KENTRY_PL: [Pool; PFRKE_MAX as usize] = [Pool::new(), Pool::new()
 /// `pfr_kcounters_pl`.
 pub static PFR_KCOUNTERS_PL: Pool = Pool::new();
 
-// SAFETY: integers, `Cell`s of them and of `Option<&T>`, tree and list links and a byte copy
-// of a `PfAbi` table: the all-zero pattern is valid.
-unsafe impl PfPoolItem for PfrKtable {}
-// SAFETY: radix nodes (null links and zeros, `RadixNode::new()`), list links, `Cell`s of
-// integers, of a byte union and of `Option<&T>`: the all-zero pattern is valid.
+// SAFETY: list links, `Cell`s of integers and of a byte union, a relaxed atomic of a `u8`
+// (`AtomicCell<u8>`) and a `SyncLink` (an `AtomicPtr`, null when zero): the all-zero pattern is
+// valid.
 unsafe impl PfPoolItem for PfrKentry {}
 // SAFETY: as for `PfrKentry`, plus a `Cell<Option<&T>>` and a byte array.
 unsafe impl PfPoolItem for PfrKentryRoute {}
 // SAFETY: as for `PfrKentryRoute`, plus a `Cell<u16>`.
 unsafe impl PfPoolItem for PfrKentryCost {}
-// SAFETY: `Cell`s of integers.
+// SAFETY: atomics of integers (`AtomicU64`), valid all zero.
 unsafe impl PfPoolItem for PfrKcounters {}
 
 /// `pfr_mask`: the mask `pfr_pool_get` hands out.
@@ -440,15 +475,6 @@ where
     })
 }
 
-/// The entry whose node pair starts with `rn`: every leaf of a table's radix tree but the
-/// root leaves (which the radix functions never return) is an entry's `pfrke_node[0]`.
-fn rn2ke(rn: &'static RadixNode) -> &'static PfrKentry {
-    // SAFETY: `PfrKentry` is `#[repr(C)]` with `pfrke_node` first, and the only node pairs
-    // `pfr_route_kentry` adds to a table's trees are entries' `pfrke_node`; an entry stays
-    // allocated while it is in a tree.
-    unsafe { &*ptr::from_ref(rn).cast::<PfrKentry>() }
-}
-
 /// `pfrke_rkif`/`pfrke_rifname`: the route part of a route or cost entry.
 fn pfr_kentry_route(ke: &'static PfrKentry) -> &'static PfrKentryRoute {
     let t = ke.pfrke_type.get();
@@ -473,18 +499,42 @@ fn pfr_kentry_cost(ke: &'static PfrKentry) -> &'static PfrKentryCost {
     unsafe { &*ptr::from_ref(ke).cast::<PfrKentryCost>() }
 }
 
-/// The key the radix trees hold for `ke`: its `pfrke_sa`, which stays in place while the
-/// entry is in a tree.
-fn ke_key(ke: &PfrKentry) -> *const u8 {
-    ke.pfrke_sa.as_ptr().cast::<u8>().cast_const()
+/// The key the radix trees hold for `ke`: its `pfrke_sa`, the bytes the tree copies.
+fn ke_key(ke: &PfrKentry) -> [u8; size_of::<PfsockaddrUnion>()] {
+    ke.pfrke_sa.get().bytes
 }
 
-/// The radix head `h` of a table, which `pfr_create_ktable` made.
-fn pfr_rnh(h: &Cell<Option<&'static RadixNodeHead>>) -> &'static RadixNodeHead {
-    match h.get() {
-        Some(h) => h,
-        None => panic(format_args!("pf_table: table without radix head")),
+/// The radix tree `h` of a table (`kt->pfrkt_ip4` or `pfrkt_ip6`), its lock taken shared for a
+/// lookup or one step of a walk. The guard lives until the caller's last use of the entry the
+/// tree answered, so no delete (`pfr_unroute_kentry`, which takes the lock alone before the
+/// entry is freed) can free it meanwhile. The lock is a leaf: while the guard lives nothing
+/// takes another lock (but an `M_NOWAIT` pool allocation's, as the tree's own growth),
+/// sleeps, copies out or frees.
+fn pfr_rnh(h: &Rwlocked<PfrRadix>) -> ReadGuard<'_, PfrRadix> {
+    h.read()
+}
+
+/// The tree of the family `af` in `kt` (`pfrkt_ip4` or `pfrkt_ip6`), unlocked, for a caller that
+/// prepares its key and mask before it takes the lock.
+fn pfr_tree(kt: &'static PfrKtable, af: SaFamily) -> &'static Rwlocked<PfrRadix> {
+    match af {
+        AF_INET => &kt.pfrkt_ip4,
+        #[cfg(feature = "inet6")]
+        AF_INET6 => &kt.pfrkt_ip6,
+        af => unhandled_af(i32::from(af)),
     }
+}
+
+/// An empty tree of `sockaddr_in` (`ip6`: `sockaddr_in6`) keys, compared from the address
+/// (`rn_inithead(&kt->pfrkt_ip4, offsetof(struct sockaddr_in, sin_addr))`), its blocks of
+/// `M_RTABLE`; nothing allocated until its roots are made.
+fn pfr_radix(ip6: bool) -> PfrRadix {
+    let off = if ip6 {
+        offset_of!(SockaddrIn6, sin6_addr)
+    } else {
+        offset_of!(SockaddrIn, sin_addr)
+    };
+    PfrRadix::new(off, M_RTABLE)
 }
 
 /// `pfr_gcd`.
@@ -497,12 +547,19 @@ pub fn pfr_gcd(mut m: i32, mut n: i32) -> i32 {
     n
 }
 
-/// `pfr_initialize`: the radix code's key length, the pools and `pfr_ffaddr`.
+/// `pfr_initialize`: the pools and `pfr_ffaddr`. The C's `rn_init(sizeof(struct
+/// sockaddr_in6))` is each tree's own key length (`PfrRadix`, N6.7b1). A table is no
+/// `PfPoolItem` (its trees are not valid all-zero): `pfr_create_ktable` writes them.
 pub fn pfr_initialize() {
-    // sizeof(struct sockaddr_in6), the size of a pfsockaddr_union.
-    rn_init(size_of::<PfsockaddrUnion>() as u32);
-
-    pf_pool_init::<PfrKtable>(&PFR_KTABLE_PL, IPL_SOFTNET, 0, "pfrktable");
+    pool_init(
+        &PFR_KTABLE_PL,
+        size_of::<PfrKtable>(),
+        align_of::<PfrKtable>() as u32,
+        IPL_SOFTNET,
+        0,
+        "pfrktable",
+        None,
+    );
     pf_pool_init::<PfrKentry>(
         &PFR_KENTRY_PL[PFRKE_PLAIN as usize],
         IPL_SOFTNET,
@@ -544,13 +601,13 @@ pub fn pfr_clr_addrs(tbl: &mut PfrTable, ndel: Option<&mut i32>, flags: i32) -> 
 
     if flags & PFR_FLAG_DUMMY == 0 {
         pfr_remove_kentries(kt, &workq);
-        if kt.pfrkt_cnt().get() != 0 {
+        if kt.pfrkt_cnt().load(AtomicOrdering::Relaxed) != 0 {
             crate::dpfprintf!(
                 LOG_NOTICE,
                 "pfr_clr_addrs: corruption detected ({}).",
-                kt.pfrkt_cnt().get()
+                kt.pfrkt_cnt().load(AtomicOrdering::Relaxed)
             );
-            kt.pfrkt_cnt().set(0);
+            kt.pfrkt_cnt().store(0, AtomicOrdering::Relaxed);
         }
     }
     Ok(())
@@ -754,12 +811,12 @@ pub fn pfr_del_addrs(
     // one is O(n*LOG(N)) and is better for small 'n'
     //
     // following code try to decide which one is best.
-    let mut i = kt.pfrkt_cnt().get();
+    let mut i = kt.pfrkt_cnt().load(AtomicOrdering::Relaxed);
     while i > 0 {
         log += 1;
         i >>= 1;
     }
-    if size > kt.pfrkt_cnt().get() / log {
+    if size > kt.pfrkt_cnt().load(AtomicOrdering::Relaxed) / log {
         // full table scan
         pfr_mark_addrs(kt);
     } else {
@@ -1019,9 +1076,24 @@ pub fn pfr_tst_addrs(
     Ok(())
 }
 
-/// Walks the radix tree `h` with `pfr_walktree` and `w`.
-fn pfr_walk(h: &'static RadixNodeHead, w: &mut PfrWalktree<'_, '_>) -> Result<(), Errno> {
-    rn_walktree(h, |rn, id| pfr_walktree(rn, w, id))
+/// `rn_walktree(h, pfr_walktree, w)`: `pfr_walktree` on each entry of the tree `h`, the first
+/// error ending the walk. The tree's lock is taken shared for each step only, to take the
+/// successor and the entry before `pfr_walktree` runs (which may copy out to user memory or
+/// queue the entry for a delete), and released before it; the walker's table id is the C's
+/// `rnh_rtableid`, which nothing writes: 0.
+fn pfr_walk(h: &Rwlocked<PfrRadix>, w: &mut PfrWalktree<'_, '_>) -> Result<(), Errno> {
+    let mut c = pfr_rnh(h).first();
+    while let Some(leaf) = c {
+        let ke = {
+            let t = pfr_rnh(h);
+            c = t.next(leaf);
+            t.get(leaf).copied()
+        };
+        if let Some(ke) = ke {
+            pfr_walktree(ke, w, 0)?;
+        }
+    }
+    Ok(())
 }
 
 /// `pfr_get_addrs`: copies the addresses of the table `tbl` out to `addr` (`copyout`, a user
@@ -1039,18 +1111,18 @@ pub fn pfr_get_addrs(
     else {
         return Err(Errno::ESRCH);
     };
-    if kt.pfrkt_cnt().get() > *size {
-        *size = kt.pfrkt_cnt().get();
+    if kt.pfrkt_cnt().load(AtomicOrdering::Relaxed) > *size {
+        *size = kt.pfrkt_cnt().load(AtomicOrdering::Relaxed);
         return Ok(());
     }
 
     let mut w = PfrWalktree::new(PfrwOp::GetAddrs);
     w.pfrw_1 = Pfrw1::Addr(addr, 0);
-    w.pfrw_free = kt.pfrkt_cnt().get();
+    w.pfrw_free = kt.pfrkt_cnt().load(AtomicOrdering::Relaxed);
     w.pfrw_flags = flags;
-    let mut rv = pfr_walk(pfr_rnh(&kt.pfrkt_ip4), &mut w);
+    let mut rv = pfr_walk(&kt.pfrkt_ip4, &mut w);
     if rv.is_ok() {
-        rv = pfr_walk(pfr_rnh(&kt.pfrkt_ip6), &mut w);
+        rv = pfr_walk(&kt.pfrkt_ip6, &mut w);
     }
     rv?;
 
@@ -1062,7 +1134,7 @@ pub fn pfr_get_addrs(
         );
         return Err(Errno::ENOTTY);
     }
-    *size = kt.pfrkt_cnt().get();
+    *size = kt.pfrkt_cnt().load(AtomicOrdering::Relaxed);
     Ok(())
 }
 
@@ -1084,18 +1156,18 @@ pub fn pfr_get_astats(
     else {
         return Err(Errno::ESRCH);
     };
-    if kt.pfrkt_cnt().get() > *size {
-        *size = kt.pfrkt_cnt().get();
+    if kt.pfrkt_cnt().load(AtomicOrdering::Relaxed) > *size {
+        *size = kt.pfrkt_cnt().load(AtomicOrdering::Relaxed);
         return Ok(());
     }
 
     let mut w = PfrWalktree::new(PfrwOp::GetAstats);
     w.pfrw_1 = Pfrw1::Astats(addr, 0);
-    w.pfrw_free = kt.pfrkt_cnt().get();
+    w.pfrw_free = kt.pfrkt_cnt().load(AtomicOrdering::Relaxed);
     w.pfrw_flags = flags;
-    let mut rv = pfr_walk(pfr_rnh(&kt.pfrkt_ip4), &mut w);
+    let mut rv = pfr_walk(&kt.pfrkt_ip4, &mut w);
     if rv.is_ok() {
-        rv = pfr_walk(pfr_rnh(&kt.pfrkt_ip6), &mut w);
+        rv = pfr_walk(&kt.pfrkt_ip6, &mut w);
     }
     if rv.is_ok() && flags & PFR_FLAG_CLSTATS != 0 {
         pfr_enqueue_addrs(kt, &workq, None, false);
@@ -1111,7 +1183,7 @@ pub fn pfr_get_astats(
         );
         return Err(Errno::ENOTTY);
     }
-    *size = kt.pfrkt_cnt().get();
+    *size = kt.pfrkt_cnt().load(AtomicOrdering::Relaxed);
     Ok(())
 }
 
@@ -1229,14 +1301,10 @@ pub fn pfr_enqueue_addrs(
         PfrwOp::Enqueue
     });
     w.pfrw_1 = Pfrw1::Workq(workq);
-    if let Some(h) = kt.pfrkt_ip4.get()
-        && pfr_walk(h, &mut w).is_err()
-    {
+    if pfr_walk(&kt.pfrkt_ip4, &mut w).is_err() {
         crate::dpfprintf!(LOG_ERR, "pfr_enqueue_addrs: IPv4 walktree failed.");
     }
-    if let Some(h) = kt.pfrkt_ip6.get()
-        && pfr_walk(h, &mut w).is_err()
-    {
+    if pfr_walk(&kt.pfrkt_ip6, &mut w).is_err() {
         crate::dpfprintf!(LOG_ERR, "pfr_enqueue_addrs: IPv6 walktree failed.");
     }
     if let Some(naddr) = naddr {
@@ -1247,10 +1315,10 @@ pub fn pfr_enqueue_addrs(
 /// `pfr_mark_addrs`: clears the mark of every entry of `kt`.
 pub fn pfr_mark_addrs(kt: &'static PfrKtable) {
     let mut w = PfrWalktree::new(PfrwOp::Mark);
-    if pfr_walk(pfr_rnh(&kt.pfrkt_ip4), &mut w).is_err() {
+    if pfr_walk(&kt.pfrkt_ip4, &mut w).is_err() {
         crate::dpfprintf!(LOG_ERR, "pfr_mark_addrs: IPv4 walktree failed.");
     }
-    if pfr_walk(pfr_rnh(&kt.pfrkt_ip6), &mut w).is_err() {
+    if pfr_walk(&kt.pfrkt_ip6, &mut w).is_err() {
         crate::dpfprintf!(LOG_ERR, "pfr_mark_addrs: IPv6 walktree failed.");
     }
 }
@@ -1268,23 +1336,21 @@ pub fn pfr_lookup_addr(
     let head = match ad.pfra_af {
         AF_INET => {
             fillin_sin(&mut sa, ad.pfra_ip4addr());
-            pfr_rnh(&kt.pfrkt_ip4)
+            &kt.pfrkt_ip4
         }
         #[cfg(feature = "inet6")]
         AF_INET6 => {
             fillin_sin6(&mut sa, ad.pfra_ip6addr());
-            pfr_rnh(&kt.pfrkt_ip6)
+            &kt.pfrkt_ip6
         }
         af => unhandled_af(i32::from(af)),
     };
     if addr_network(ad) {
         pfr_prepare_network(&mut mask, ad.pfra_af, i32::from(ad.pfra_net));
-        // SAFETY: the table's tree holds entries (the radix module's invariant); the key and
-        // mask are 28-byte unions, readable for the radix key length.
-        unsafe { rn_lookup(sa.bytes.as_ptr(), mask.bytes.as_ptr(), head) }.map(rn2ke)
+        pfr_rnh(head).lookup(&sa.bytes, Some(&mask.bytes)).copied()
     } else {
-        // SAFETY: as above.
-        let ke = unsafe { rn_match(sa.bytes.as_ptr(), head) }.map(rn2ke);
+        let head = pfr_rnh(head);
+        let ke = head.matches(&sa.bytes).copied();
         ke.filter(|ke| !(exact && kentry_network(ke)))
     }
 }
@@ -1297,23 +1363,19 @@ pub fn pfr_lookup_kentry(
 ) -> Option<&'static PfrKentry> {
     let mut mask = PfsockaddrUnion::default();
 
-    let head = match key.pfrke_af.get() {
-        AF_INET => pfr_rnh(&kt.pfrkt_ip4),
-        #[cfg(feature = "inet6")]
-        AF_INET6 => pfr_rnh(&kt.pfrkt_ip6),
-        af => unhandled_af(i32::from(af)),
-    };
+    let head = pfr_tree(kt, key.pfrke_af.get());
     if kentry_network(key) {
         pfr_prepare_network(
             &mut mask,
             key.pfrke_af.get(),
             i32::from(key.pfrke_net.get()),
         );
-        // SAFETY: as in `pfr_lookup_addr`; the key is the entry's 28-byte union.
-        unsafe { rn_lookup(ke_key(key), mask.bytes.as_ptr(), head) }.map(rn2ke)
+        pfr_rnh(head)
+            .lookup(&ke_key(key), Some(&mask.bytes))
+            .copied()
     } else {
-        // SAFETY: as above.
-        let ke = unsafe { rn_match(ke_key(key), head) }.map(rn2ke);
+        let head = pfr_rnh(head);
+        let ke = head.matches(&ke_key(key)).copied();
         ke.filter(|ke| !(exact && kentry_network(ke)))
     }
 }
@@ -1514,7 +1576,7 @@ pub fn pfr_insert_kentries(kt: &'static PfrKtable, workq: &SlistHead<PfrKentrywo
         pfr_ktable_winfo_update(kt, p);
         pfr_yield(true);
     }
-    kt.pfrkt_cnt().set(kt.pfrkt_cnt().get() + n);
+    kt.pfrkt_cnt().fetch_add(n, AtomicOrdering::Relaxed);
 }
 
 /// `pfr_insert_kentry`: adds the address `ad` to `kt` unless it is there (pf's overload
@@ -1539,7 +1601,7 @@ pub fn pfr_insert_kentry(kt: &'static PfrKtable, ad: &PfrAddr, tzero: Time) -> R
     if p.pfrke_type.get() == PFRKE_COST {
         kt.pfrkt_refcntcost.set(kt.pfrkt_refcntcost.get() + 1);
     }
-    kt.pfrkt_cnt().set(kt.pfrkt_cnt().get() + 1);
+    kt.pfrkt_cnt().fetch_add(1, AtomicOrdering::Relaxed);
     pfr_ktable_winfo_update(kt, p);
 
     Ok(())
@@ -1582,7 +1644,7 @@ pub fn pfr_remove_kentries(kt: &'static PfrKtable, workq: &SlistHead<PfrKentrywo
                 .set(kt.pfrkt_refcntcost.get().wrapping_sub(1));
         }
     }
-    kt.pfrkt_cnt().set(kt.pfrkt_cnt().get() - n);
+    kt.pfrkt_cnt().fetch_sub(n, AtomicOrdering::Relaxed);
     pfr_destroy_kentries(workq);
 
     // update maxweight and gcd for load balancing
@@ -1610,9 +1672,8 @@ pub fn pfr_clstats_kentries(workq: &SlistHead<PfrKentryworkq>, tzero: Time, negc
         if negchange {
             p.pfrke_flags.set(p.pfrke_flags.get() ^ PFRKE_FLAG_NOT);
         }
-        if let Some(c) = p.pfrke_counters.get() {
+        if let Some(c) = p.pfrke_counters.replace(None) {
             pf_pool_put(&PFR_KCOUNTERS_PL, c);
-            p.pfrke_counters.set(None);
         }
         p.pfrke_tzero.set(tzero);
     }
@@ -1683,64 +1744,39 @@ pub fn pfr_prepare_network(sa: &mut PfsockaddrUnion, af: SaFamily, net: i32) {
 
 /// `pfr_route_kentry`: adds the entry `ke` to the radix tree of its family in `kt`. `true`
 /// (the C's 0) when added, `false` (the C's -1) when the radix code refuses it (the key is
-/// there, or no memory).
+/// there, or no memory). The tree's lock is taken alone for the add only, the key and the mask
+/// made before it; the tree's growth under it is `M_NOWAIT`.
 pub fn pfr_route_kentry(kt: &'static PfrKtable, ke: &'static PfrKentry) -> bool {
     let mut mask = PfsockaddrUnion::default();
 
-    // bzero(ke->pfrke_node, sizeof(ke->pfrke_node))
-    for n in &ke.pfrke_node {
-        n.rn_mklist.set(ptr::null());
-        n.rn_p.set(ptr::null());
-        n.rn_b.set(0);
-        n.rn_bmask.set(0);
-        n.rn_flags.set(0);
-        n.rn_key.set(ptr::null());
-        n.rn_mask.set(ptr::null());
-        n.rn_dupedkey.set(ptr::null());
-        n.rn_off.set(0);
-        n.rn_l.set(ptr::null());
-        n.rn_r.set(ptr::null());
-    }
-    let head = match ke.pfrke_af.get() {
-        AF_INET => pfr_rnh(&kt.pfrkt_ip4),
-        #[cfg(feature = "inet6")]
-        AF_INET6 => pfr_rnh(&kt.pfrkt_ip6),
-        af => unhandled_af(i32::from(af)),
-    };
+    // The C's bzero(ke->pfrke_node): the tree makes the route's nodes.
+    let head = pfr_tree(kt, ke.pfrke_af.get());
+    let key = ke_key(ke);
 
     let rn = if kentry_network(ke) {
         pfr_prepare_network(&mut mask, ke.pfrke_af.get(), i32::from(ke.pfrke_net.get()));
-        // SAFETY: the tree invariant holds for the table's head; the key is the entry's
-        // union and the node pair its own, both staying in place until `pfr_unroute_kentry`;
-        // the mask is copied by the radix code.
-        unsafe { rn_addroute(ke_key(ke), mask.bytes.as_ptr(), head, &ke.pfrke_node, 0) }
+        head.write().add(&key, Some(&mask.bytes), ke)
     } else {
-        // SAFETY: as above, without a mask.
-        unsafe { rn_addroute(ke_key(ke), ptr::null(), head, &ke.pfrke_node, 0) }
+        head.write().add(&key, None, ke)
     };
 
-    rn.is_some()
+    rn.is_ok()
 }
 
 /// `pfr_unroute_kentry`: removes the entry `ke` from the radix tree of its family in `kt`.
-/// `true` (the C's 0) when removed, `false` (the C's -1) when it was not there.
+/// `true` (the C's 0) when removed, `false` (the C's -1) when it was not there. The tree's lock
+/// is taken alone for the delete only.
 pub fn pfr_unroute_kentry(kt: &'static PfrKtable, ke: &'static PfrKentry) -> bool {
     let mut mask = PfsockaddrUnion::default();
 
-    let head = match ke.pfrke_af.get() {
-        AF_INET => pfr_rnh(&kt.pfrkt_ip4),
-        #[cfg(feature = "inet6")]
-        AF_INET6 => pfr_rnh(&kt.pfrkt_ip6),
-        af => unhandled_af(i32::from(af)),
-    };
+    let head = pfr_tree(kt, ke.pfrke_af.get());
+    let key = ke_key(ke);
 
     let rn = if kentry_network(ke) {
         pfr_prepare_network(&mut mask, ke.pfrke_af.get(), i32::from(ke.pfrke_net.get()));
-        // SAFETY: the tree invariant holds for the table's head; the key is the entry's union.
-        unsafe { rn_delete(ke_key(ke), mask.bytes.as_ptr(), head, None) }
+        head.write().delete(&key, Some(&mask.bytes))
     } else {
-        // SAFETY: as above.
-        unsafe { rn_delete(ke_key(ke), ptr::null(), head, None) }
+        head.write().delete(&key, None)
     };
 
     if rn.is_none() {
@@ -1770,7 +1806,7 @@ pub fn pfr_copyout_addr(ad: &mut PfrAddr, ke: Option<&'static PfrKentry>) {
         af => unhandled_af(i32::from(af)),
     }
     if let Some(c) = ke.pfrke_counters.get() {
-        ad.pfra_states = c.states.get() as u32;
+        ad.pfra_states = c.states.load(AtomicOrdering::Relaxed) as u32;
     }
     let t = ke.pfrke_type.get();
     if t == PFRKE_COST || t == PFRKE_ROUTE {
@@ -1785,11 +1821,10 @@ pub fn pfr_copyout_addr(ad: &mut PfrAddr, ke: Option<&'static PfrKentry>) {
 
 /// `pfr_walktree`: what the table walks do with each entry, after `w.pfrw_op`.
 fn pfr_walktree(
-    rn: &'static RadixNode,
+    ke: &'static PfrKentry,
     w: &mut PfrWalktree<'_, '_>,
     _id: u32,
 ) -> Result<(), Errno> {
-    let ke = rn2ke(rn);
     let mut mask = PfsockaddrUnion::default();
     let flags = w.pfrw_flags;
 
@@ -1841,8 +1876,10 @@ fn pfr_walktree(
                 if let Some(c) = ke.pfrke_counters.get() {
                     for d in 0..PFR_DIR_MAX {
                         for o in 0..PFR_OP_ADDR_MAX {
-                            as_.pfras_packets[d][o] = c.pfrkc_packets[d][o].get();
-                            as_.pfras_bytes[d][o] = c.pfrkc_bytes[d][o].get();
+                            as_.pfras_packets[d][o] =
+                                c.pfrkc_packets[d][o].load(AtomicOrdering::Relaxed);
+                            as_.pfras_bytes[d][o] =
+                                c.pfrkc_bytes[d][o].load(AtomicOrdering::Relaxed);
                         }
                     }
                 } else {
@@ -2495,11 +2532,14 @@ pub fn pfr_ina_define(
             kt.pfrkt_flags()
                 .set(kt.pfrkt_flags().get() | PFR_TFLAG_INACTIVE);
             pfr_insert_ktables(&tableq);
-            shadow.pfrkt_cnt().set(if flags & PFR_FLAG_ADDRSTOO != 0 {
-                xaddr
-            } else {
-                NO_ADDRESSES
-            });
+            shadow.pfrkt_cnt().store(
+                if flags & PFR_FLAG_ADDRSTOO != 0 {
+                    xaddr
+                } else {
+                    NO_ADDRESSES
+                },
+                AtomicOrdering::Relaxed,
+            );
             kt.pfrkt_shadow.set(Some(shadow));
         } else {
             pfr_clean_node_mask(shadow, &addrq);
@@ -2614,7 +2654,7 @@ pub fn pfr_commit_ktable(kt: &'static PfrKtable, tzero: Time) {
         panic(format_args!("pfr_commit_ktable: no shadow"));
     };
 
-    if shadow.pfrkt_cnt().get() == NO_ADDRESSES {
+    if shadow.pfrkt_cnt().load(AtomicOrdering::Relaxed) == NO_ADDRESSES {
         if kt.pfrkt_flags().get() & PFR_TFLAG_ACTIVE == 0 {
             pfr_clstats_ktable(kt, tzero, true);
         }
@@ -2657,9 +2697,13 @@ pub fn pfr_commit_ktable(kt: &'static PfrKtable, tzero: Time) {
         pfr_destroy_kentries(&garbageq);
     } else {
         // kt cannot contain addresses
-        kt.pfrkt_ip4.swap(&shadow.pfrkt_ip4);
-        kt.pfrkt_ip6.swap(&shadow.pfrkt_ip6);
-        kt.pfrkt_cnt().swap(shadow.pfrkt_cnt());
+        pfr_swap_tree(&kt.pfrkt_ip4, &shadow.pfrkt_ip4, false);
+        pfr_swap_tree(&kt.pfrkt_ip6, &shadow.pfrkt_ip6, true);
+        let cnt = kt.pfrkt_cnt().swap(
+            shadow.pfrkt_cnt().load(AtomicOrdering::Relaxed),
+            AtomicOrdering::Relaxed,
+        );
+        shadow.pfrkt_cnt().store(cnt, AtomicOrdering::Relaxed);
         pfr_clstats_ktable(kt, tzero, true);
     }
     let nflags = ((shadow.pfrkt_flags().get() & PFR_TFLAG_USRMASK)
@@ -2669,6 +2713,19 @@ pub fn pfr_commit_ktable(kt: &'static PfrKtable, tzero: Time) {
     pfr_destroy_ktable(shadow, false);
     kt.pfrkt_shadow.set(None);
     pfr_setflags_ktable(kt, nflags);
+}
+
+/// The C's swap of `kt->pfrkt_ip4` (or `pfrkt_ip6`) and the shadow's in `pfr_commit_ktable`:
+/// `kt`'s tree becomes the shadow's and the shadow's `kt`'s. The locks are leaves, so one is
+/// held at a time: the shadow's tree is taken out (the shadow is the ioctl's own, reached only
+/// through `pfrkt_shadow` under the exclusive net lock and `pf_lock`, so nobody sees it empty),
+/// swapped into `kt` in one section of `kt`'s lock (a lookup sees the old tree or the new one),
+/// and `kt`'s old tree put in the shadow, which `pfr_destroy_ktable` frees.
+fn pfr_swap_tree(kt: &Rwlocked<PfrRadix>, shadow: &Rwlocked<PfrRadix>, ip6: bool) {
+    let new = core::mem::replace(&mut *shadow.write(), pfr_radix(ip6));
+    let old = core::mem::replace(&mut *kt.write(), new);
+    let empty = core::mem::replace(&mut *shadow.write(), old);
+    drop(empty);
 }
 
 /// `pfr_validate_table`: checks the name, anchor (rewritten by `pfr_fix_anchor`) and flags of
@@ -2793,7 +2850,7 @@ pub fn pfr_setflags_ktable(kt: &'static PfrKtable, mut newf: u32) {
         PFR_KTABLE_CNT.set(PFR_KTABLE_CNT.get() - 1);
         return;
     }
-    if newf & PFR_TFLAG_ACTIVE == 0 && kt.pfrkt_cnt().get() != 0 {
+    if newf & PFR_TFLAG_ACTIVE == 0 && kt.pfrkt_cnt().load(AtomicOrdering::Relaxed) != 0 {
         pfr_enqueue_addrs(kt, &addrq, None, false);
         pfr_remove_kentries(kt, &addrq);
     }
@@ -2823,8 +2880,8 @@ pub fn pfr_clstats_ktable(kt: &'static PfrKtable, tzero: Time, recurse: bool) {
     }
     for d in 0..PFR_DIR_MAX {
         for o in 0..PFR_OP_TABLE_MAX {
-            kt.pfrkt_packets()[d][o].set(0);
-            kt.pfrkt_bytes()[d][o].set(0);
+            kt.pfrkt_packets()[d][o].store(0, AtomicOrdering::Relaxed);
+            kt.pfrkt_bytes()[d][o].store(0, AtomicOrdering::Relaxed);
         }
     }
     kt.pfrkt_match().set(0);
@@ -2843,16 +2900,28 @@ pub fn pfr_create_ktable(
     let p = pool_get(&PFR_KTABLE_PL, wait | PR_ZERO | PR_LIMITFAIL)?
         .cast::<PfrKtable>()
         .as_ptr();
-    // SAFETY: a fresh, zeroed item of `pfr_ktable_pl`, sized and aligned for a `PfrKtable`
-    // (`pfr_initialize`), and all-zero is a valid one (`PfPoolItem`). Nothing refers to it
-    // yet, so the table description (`pfrkt_t`, whose name and anchor are not `Cell`s) is
-    // copied in through the raw pointer before the first shared reference is made.
+    // rn_inithead of both heads: the trees' roots (M_RTABLE, M_NOWAIT), made while the trees
+    // are this call's own values, so no lock is taken; the C makes them after attaching the
+    // ruleset, and a failure is still answered there, after it, as the C's.
+    let mut ip4 = pfr_radix(false);
+    let mut ip6 = pfr_radix(true);
+    let heads = ip4.inithead() && ip6.inithead();
+    // SAFETY: `p` is a fresh, zeroed item of `pfr_ktable_pl`, sized and aligned for a
+    // `PfrKtable` (`pfr_initialize`'s `pool_init`), which nothing else refers to yet. All-zero
+    // is a valid value of every member but the two locked radix trees (integers, `Cell`s of them
+    // and of `Option<&T>`, tree and list links, the byte copy of a `PfAbi` table); the two
+    // `Rwlocked` trees are written here through the raw pointer, which neither reads nor drops the
+    // zero bytes under them, and so is the table description (`pfrkt_t`, whose name and anchor are not `Cell`s),
+    // all before the first shared reference is made. The item stays allocated until
+    // `pfr_destroy_ktable` gives it back, after emptying both trees.
     let kt: &'static PfrKtable = unsafe {
         ptr::copy_nonoverlapping(
             ptr::from_ref(tbl),
             ptr::addr_of_mut!((*p).pfrkt_ts.pfrts_t),
             1,
         );
+        ptr::addr_of_mut!((*p).pfrkt_ip4).write(Rwlocked::new("pfrktip4", ip4));
+        ptr::addr_of_mut!((*p).pfrkt_ip6).write(Rwlocked::new("pfrktip6", ip6));
         &*p
     };
 
@@ -2866,16 +2935,8 @@ pub fn pfr_create_ktable(
         rs.tables.set(rs.tables.get() + 1);
     }
 
-    let mut ip4 = kt.pfrkt_ip4.get();
-    let ok = rn_inithead(&mut ip4, offset_of!(SockaddrIn, sin_addr) as i32);
-    kt.pfrkt_ip4.set(ip4);
-    let ok = ok && {
-        let mut ip6 = kt.pfrkt_ip6.get();
-        let ok = rn_inithead(&mut ip6, offset_of!(SockaddrIn6, sin6_addr) as i32);
-        kt.pfrkt_ip6.set(ip6);
-        ok
-    };
-    if !ok {
+    // rn_inithead's failure: no table.
+    if !heads {
         pfr_destroy_ktable(kt, false);
         return None;
     }
@@ -2928,20 +2989,13 @@ pub fn pfr_destroy_ktable(kt: &'static PfrKtable, flushaddr: bool) {
         pfr_clean_node_mask(kt, &addrq);
         pfr_destroy_kentries(&addrq);
     }
-    if let Some(h) = kt.pfrkt_ip4.get() {
-        free(
-            NonNull::from(h).cast(),
-            M_RTABLE,
-            size_of::<RadixNodeHead>(),
-        );
-    }
-    if let Some(h) = kt.pfrkt_ip6.get() {
-        free(
-            NonNull::from(h).cast(),
-            M_RTABLE,
-            size_of::<RadixNodeHead>(),
-        );
-    }
+    // free(kt->pfrkt_ip4, M_RTABLE) and pfrkt_ip6's: each tree's memory given back, so the
+    // item owns nothing when it goes back to its pool (which runs no drop). Each tree is taken
+    // out under its lock alone and freed after the lock is released.
+    let ip4 = core::mem::replace(&mut *kt.pfrkt_ip4.write(), pfr_radix(false));
+    drop(ip4);
+    let ip6 = core::mem::replace(&mut *kt.pfrkt_ip6.write(), pfr_radix(true));
+    drop(ip6);
     if let Some(shadow) = kt.pfrkt_shadow.get() {
         pfr_destroy_ktable(shadow, flushaddr);
     }
@@ -2949,7 +3003,7 @@ pub fn pfr_destroy_ktable(kt: &'static PfrKtable, flushaddr: bool) {
         rs.tables.set(rs.tables.get() - 1);
         pf_remove_if_empty_ruleset(rs);
     }
-    pf_pool_put(&PFR_KTABLE_PL, kt);
+    pool_put(&PFR_KTABLE_PL, NonNull::from(kt).cast());
 }
 
 /// The order of two table descriptions: name (at most `PF_TABLE_NAME_SIZE` bytes), then
@@ -2982,9 +3036,10 @@ pub fn pfr_lookup_table(tbl: &PfrTable) -> Option<&'static PfrKtable> {
 /// `pfr_match_addr`: whether the active table `kt` (or its root) holds `a` in a positive
 /// entry; counts the match or miss.
 pub fn pfr_match_addr(kt: &'static PfrKtable, a: &PfAddr, af: SaFamily) -> bool {
-    let ke = pfr_kentry_byaddr(kt, a, af, false);
-
-    let m = ke.is_some_and(|ke| ke.pfrke_flags.get() & PFRKE_FLAG_NOT == 0);
+    // The negation is read under the tree's lock.
+    let m = pfr_kentry_byaddr_with(kt, a, af, false, |ke| {
+        ke.is_some_and(|ke| ke.pfrke_flags.get() & PFRKE_FLAG_NOT == 0)
+    });
     if m {
         kt.pfrkt_match().set(kt.pfrkt_match().get().wrapping_add(1));
     } else {
@@ -3015,31 +3070,85 @@ fn pfr_sin6_key(a: &PfAddr) -> PfsockaddrUnion {
     tmp6
 }
 
+/// `rn_match` of the address `a` (`tmp4` or `tmp6`) in the tree of family `af` of the table
+/// `kt`, with `f` run on the entry found while the tree's lock is still held shared: a delete
+/// cannot unlink and free the entry while `f` uses it, where the C dereferences the entry after
+/// `rn_match` with nothing to keep it. `f` keeps the lock a leaf ([`pfr_rnh`]).
+fn pfr_match_kentry<R>(
+    kt: &'static PfrKtable,
+    a: &PfAddr,
+    af: SaFamily,
+    f: impl FnOnce(Option<&'static PfrKentry>) -> R,
+) -> R {
+    match af {
+        AF_INET => {
+            let tmp4 = pfr_sin_key(a);
+            let head = pfr_rnh(&kt.pfrkt_ip4);
+            f(head.matches(&tmp4.bytes).copied())
+        }
+        #[cfg(feature = "inet6")]
+        AF_INET6 => {
+            let tmp6 = pfr_sin6_key(a);
+            let head = pfr_rnh(&kt.pfrkt_ip6);
+            f(head.matches(&tmp6.bytes).copied())
+        }
+        _ => unhandled_af(i32::from(af)),
+    }
+}
+
+/// [`pfr_kentry_byaddr`]'s answer given to `f` under the tree's lock ([`pfr_match_kentry`]);
+/// `f(None)` when neither `kt` nor its root is active.
+fn pfr_kentry_byaddr_with<R>(
+    kt: &'static PfrKtable,
+    a: &PfAddr,
+    af: SaFamily,
+    exact: bool,
+    f: impl FnOnce(Option<&'static PfrKentry>) -> R,
+) -> R {
+    match pfr_ktable_select_active(kt) {
+        Some(kt) => pfr_match_kentry(kt, a, af, |ke| {
+            f(ke.filter(|ke| !(exact && kentry_network(ke))))
+        }),
+        None => f(None),
+    }
+}
+
 /// `pfr_kentry_byaddr`: the entry of the active table `kt` (or its root) that best matches
-/// `a` (`None` with `exact` when that is a network).
+/// `a` (`None` with `exact` when that is a network). The entry outlives the tree's lock: for a
+/// caller that only tests it (`pf_map_addr_sticky`) or holds `pf_lock`, which every delete
+/// holds; the others use [`pfr_kentry_byaddr_with`].
 pub fn pfr_kentry_byaddr(
     kt: &'static PfrKtable,
     a: &PfAddr,
     af: SaFamily,
     exact: bool,
 ) -> Option<&'static PfrKentry> {
-    let kt = pfr_ktable_select_active(kt)?;
+    pfr_kentry_byaddr_with(kt, a, af, exact, |ke| ke)
+}
 
-    let ke = match af {
-        AF_INET => {
-            let tmp4 = pfr_sin_key(a);
-            // SAFETY: the table's tree holds entries; the key is a 28-byte union.
-            unsafe { rn_match(tmp4.bytes.as_ptr(), pfr_rnh(&kt.pfrkt_ip4)) }.map(rn2ke)
-        }
-        #[cfg(feature = "inet6")]
-        AF_INET6 => {
-            let tmp6 = pfr_sin6_key(a);
-            // SAFETY: as for the IPv4 key.
-            unsafe { rn_match(tmp6.bytes.as_ptr(), pfr_rnh(&kt.pfrkt_ip6)) }.map(rn2ke)
-        }
-        _ => unhandled_af(i32::from(af)),
+/// `ke->pfrke_counters`, made on its first use (`pool_get(&pfr_kcounters_pl, PR_NOWAIT |
+/// PR_ZERO)`, as the C's) and installed by one exchange from null: of two CPUs counting a new
+/// entry at once, one block is linked and the other comes back as the second value, for the
+/// caller to give back with `pf_pool_put` once it has released the tree's lock (the C stores
+/// both, one after the other, and leaks the first). No block without memory, as the C's.
+fn pfr_kcounters(ke: &PfrKentry) -> (Option<&'static PfrKcounters>, Option<&'static PfrKcounters>) {
+    if let Some(c) = ke.pfrke_counters.get() {
+        return (Some(c), None);
+    }
+    let Some(new) = pf_pool_get::<PfrKcounters>(&PFR_KCOUNTERS_PL, PR_NOWAIT | PR_ZERO) else {
+        return (None, None);
     };
-    ke.filter(|ke| !(exact && kentry_network(ke)))
+    match ke.pfrke_counters.set_if_none(new) {
+        Ok(()) => (Some(new), None),
+        Err(new) => (ke.pfrke_counters.get(), Some(new)),
+    }
+}
+
+/// A block `pfr_kcounters` did not link, given back (after the tree's lock).
+fn pfr_kcounters_put(spare: Option<&'static PfrKcounters>) {
+    if let Some(c) = spare {
+        pf_pool_put(&PFR_KCOUNTERS_PL, c);
+    }
 }
 
 /// `pfr_update_stats`: counts the packet `pd` against the table `kt` and the entry matching
@@ -3053,55 +3162,42 @@ pub fn pfr_update_stats(kt: &'static PfrKtable, a: &PfAddr, pd: &PfPdesc, op: u8
         return;
     };
 
-    let ke = match af {
-        AF_INET => {
-            let tmp4 = pfr_sin_key(a);
-            // SAFETY: as in `pfr_kentry_byaddr`.
-            unsafe { rn_match(tmp4.bytes.as_ptr(), pfr_rnh(&kt.pfrkt_ip4)) }.map(rn2ke)
+    // The entry is read and counted on under the tree's lock, so the purge cannot free it
+    // meanwhile; the first count's `pfrke_counters` is `PR_NOWAIT`, as the C's. The debug line,
+    // a block another CPU's count beat, and the table's own counters come after the lock. Every
+    // count is an atomic add (D1): the softnets count at once.
+    let (op_idx, failed, spare) = pfr_match_kentry(kt, a, af, |ke| {
+        let mut op_idx = match op {
+            PF_PASS => PFR_OP_PASS,
+            PF_MATCH => PFR_OP_MATCH,
+            PF_DROP => PFR_OP_BLOCK,
+            _ => panic(format_args!("unhandled op")),
+        };
+        let mut failed = false;
+        let mut spare = None;
+        if ke.is_none_or(|ke| ke.pfrke_flags.get() & PFRKE_FLAG_NOT != 0) != notrule {
+            failed = op_idx != PFR_OP_PASS;
+            op_idx = PFR_OP_XPASS;
         }
-        #[cfg(feature = "inet6")]
-        AF_INET6 => {
-            let tmp6 = pfr_sin6_key(a);
-            // SAFETY: as for the IPv4 key.
-            unsafe { rn_match(tmp6.bytes.as_ptr(), pfr_rnh(&kt.pfrkt_ip6)) }.map(rn2ke)
+        if let Some(ke) = ke
+            && op_idx != PFR_OP_XPASS
+            && kt.pfrkt_flags().get() & PFR_TFLAG_COUNTERS != 0
+        {
+            let (c, extra) = pfr_kcounters(ke);
+            spare = extra;
+            if let Some(c) = c {
+                c.pfrkc_packets[dir_idx][op_idx].fetch_add(1, AtomicOrdering::Relaxed);
+                c.pfrkc_bytes[dir_idx][op_idx].fetch_add(len, AtomicOrdering::Relaxed);
+            }
         }
-        _ => unhandled_af(i32::from(af)),
-    };
-
-    let mut op_idx = match op {
-        PF_PASS => PFR_OP_PASS,
-        PF_MATCH => PFR_OP_MATCH,
-        PF_DROP => PFR_OP_BLOCK,
-        _ => panic(format_args!("unhandled op")),
-    };
-
-    if ke.is_none_or(|ke| ke.pfrke_flags.get() & PFRKE_FLAG_NOT != 0) != notrule {
-        if op_idx != PFR_OP_PASS {
-            crate::dpfprintf!(LOG_DEBUG, "pfr_update_stats: assertion failed.");
-        }
-        op_idx = PFR_OP_XPASS;
+        (op_idx, failed, spare)
+    });
+    pfr_kcounters_put(spare);
+    if failed {
+        crate::dpfprintf!(LOG_DEBUG, "pfr_update_stats: assertion failed.");
     }
-    let c = &kt.pfrkt_packets()[dir_idx][op_idx];
-    c.set(c.get().wrapping_add(1));
-    let c = &kt.pfrkt_bytes()[dir_idx][op_idx];
-    c.set(c.get().wrapping_add(len));
-    if let Some(ke) = ke
-        && op_idx != PFR_OP_XPASS
-        && kt.pfrkt_flags().get() & PFR_TFLAG_COUNTERS != 0
-    {
-        if ke.pfrke_counters.get().is_none() {
-            ke.pfrke_counters.set(pf_pool_get::<PfrKcounters>(
-                &PFR_KCOUNTERS_PL,
-                PR_NOWAIT | PR_ZERO,
-            ));
-        }
-        if let Some(c) = ke.pfrke_counters.get() {
-            let p = &c.pfrkc_packets[dir_idx][op_idx];
-            p.set(p.get().wrapping_add(1));
-            let b = &c.pfrkc_bytes[dir_idx][op_idx];
-            b.set(b.get().wrapping_add(len));
-        }
-    }
+    kt.pfrkt_packets()[dir_idx][op_idx].fetch_add(1, AtomicOrdering::Relaxed);
+    kt.pfrkt_bytes()[dir_idx][op_idx].fetch_add(len, AtomicOrdering::Relaxed);
 }
 
 /// `pfr_attach_table`: the table `name` of the ruleset `rs` (created, with its root table for
@@ -3211,7 +3307,7 @@ fn pfr_pool_settle(
     kt.pfrkt_match().set(kt.pfrkt_match().get().wrapping_add(1));
     rpool.states.set(0);
     if let Some(c) = ke.pfrke_counters.get() {
-        rpool.states.set(c.states.get());
+        rpool.states.set(c.states.load(AtomicOrdering::Relaxed));
     }
     match ke.pfrke_type.get() {
         t @ (PFRKE_COST | PFRKE_ROUTE) => {
@@ -3229,16 +3325,17 @@ fn pfr_pool_settle(
 /// address in `rpool.counter`. `Err(1)` when the table has no usable address, `Err(-1)` when
 /// the pool is not over a table.
 pub fn pfr_pool_get(rpool: &'static PfPool, af: SaFamily) -> Result<(PfAddr, PfAddr), i32> {
-    let mut tmp4 = PfsockaddrUnion::default();
     let mut addr = PfAddr::zeroed();
     let mut mask = PfsockaddrUnion::default();
     let mut loop_ = 0;
     let mut use_counter = false;
 
+    // The C's `tmp4`/`tmp6` are `pfr_match_kentry`'s keys, made per lookup from `addr`; the
+    // family is checked here, as the C's filling of them does.
     match af {
-        AF_INET => fillin_sin(&mut tmp4, InAddr { s_addr: 0 }),
+        AF_INET => {}
         #[cfg(feature = "inet6")]
-        AF_INET6 => fillin_sin6(&mut tmp4, In6Addr::default()),
+        AF_INET6 => {}
         _ => unhandled_af(i32::from(af)),
     }
 
@@ -3248,7 +3345,7 @@ pub fn pfr_pool_get(rpool: &'static PfPool, af: SaFamily) -> Result<(PfAddr, PfA
     };
 
     let mut idx = rpool.tblidx.get();
-    if idx < 0 || idx >= kt.pfrkt_cnt().get() {
+    if idx < 0 || idx >= kt.pfrkt_cnt().load(AtomicOrdering::Relaxed) {
         idx = 0;
     } else {
         use_counter = true;
@@ -3325,41 +3422,25 @@ pub fn pfr_pool_get(rpool: &'static PfPool, af: SaFamily) -> Result<(PfAddr, PfA
             return Ok((raddr, rmask));
         }
         loop {
-            // we don't want to use a nested block
-            let ke2 = match af {
-                AF_INET => {
-                    let mut sin = tmp4.sin();
-                    sin.sin_addr = InAddr {
-                        s_addr: addr.addr32(0),
-                    };
-                    tmp4.set_sin(&sin);
-                    // SAFETY: as in `pfr_kentry_byaddr`.
-                    unsafe { rn_match(tmp4.bytes.as_ptr(), pfr_rnh(&kt.pfrkt_ip4)) }.map(rn2ke)
-                }
-                #[cfg(feature = "inet6")]
-                AF_INET6 => {
-                    // tmp6, in the same union.
-                    let mut sin6 = tmp4.sin6();
-                    sin6.sin6_addr = addr.v6();
-                    tmp4.set_sin6(&sin6);
-                    // SAFETY: as in `pfr_kentry_byaddr`.
-                    unsafe { rn_match(tmp4.bytes.as_ptr(), pfr_rnh(&kt.pfrkt_ip6)) }.map(rn2ke)
-                }
-                _ => unhandled_af(i32::from(af)),
-            };
-            if ke2.is_some_and(|ke2| ptr::eq(ke2, ke))
-                && !(rpool.addr.type_.get() == PF_ADDR_DYNIFTL && pfr_islinklocal(af, &addr))
-            {
+            // we don't want to use a nested block: the entry `addr` falls under (`tmp4` or
+            // `tmp6` holding it), compared and its prefix read under the tree's lock.
+            let (same, net2) = pfr_match_kentry(kt, &addr, af, |ke2| {
+                (
+                    ke2.is_some_and(|ke2| ptr::eq(ke2, ke)),
+                    ke2.map(|ke2| ke2.pfrke_net.get()),
+                )
+            });
+            if same && !(rpool.addr.type_.get() == PF_ADDR_DYNIFTL && pfr_islinklocal(af, &addr)) {
                 // lookup return the same block - perfect
                 pfr_pool_settle(rpool, kt, ke, idx, &addr, af);
                 return Ok((raddr, rmask));
             }
             // _next_entry:
-            let Some(ke2) = ke2 else {
+            let Some(net2) = net2 else {
                 panic(format_args!("pfr_pool_get: address outside its block"));
             };
             // we need to increase the counter past the nested block
-            pfr_prepare_network(&mut mask, af, i32::from(ke2.pfrke_net.get()));
+            pfr_prepare_network(&mut mask, af, i32::from(net2));
             let cur = addr;
             pf_poolmask(
                 &mut addr,
@@ -3391,7 +3472,7 @@ pub fn pfr_kentry_byidx(
 
     match af {
         AF_INET => {
-            let _ = pfr_walk(pfr_rnh(&kt.pfrkt_ip4), &mut w);
+            let _ = pfr_walk(&kt.pfrkt_ip4, &mut w);
             match w.pfrw_1 {
                 Pfrw1::Kentry(ke) => ke,
                 _ => None,
@@ -3399,7 +3480,7 @@ pub fn pfr_kentry_byidx(
         }
         #[cfg(feature = "inet6")]
         AF_INET6 => {
-            let _ = pfr_walk(pfr_rnh(&kt.pfrkt_ip6), &mut w);
+            let _ = pfr_walk(&kt.pfrkt_ip6, &mut w);
             match w.pfrw_1 {
                 Pfrw1::Kentry(ke) => ke,
                 _ => None,
@@ -3412,48 +3493,52 @@ pub fn pfr_kentry_byidx(
 /// `pfr_states_increase`: counts one more state on the entry for `addr` (added for load
 /// balancing state counter use); its count, -1 without such an entry or memory.
 pub fn pfr_states_increase(kt: &'static PfrKtable, addr: &PfAddr, af: SaFamily) -> i32 {
-    let Some(ke) = pfr_kentry_byaddr(kt, addr, af, true) else {
-        return -1;
-    };
+    // Under the tree's lock, as `pfr_update_stats`; `states` changes under `pf_lock`.
+    let (n, spare) = pfr_kentry_byaddr_with(kt, addr, af, true, |ke| {
+        let Some(ke) = ke else {
+            return (-1, None);
+        };
 
-    if ke.pfrke_counters.get().is_none() {
-        ke.pfrke_counters.set(pf_pool_get::<PfrKcounters>(
-            &PFR_KCOUNTERS_PL,
-            PR_NOWAIT | PR_ZERO,
-        ));
-    }
-    let Some(c) = ke.pfrke_counters.get() else {
-        return -1;
-    };
+        let (c, spare) = pfr_kcounters(ke);
+        let Some(c) = c else {
+            return (-1, spare);
+        };
 
-    c.states.set(c.states.get().wrapping_add(1));
-    c.states.get() as i32
+        let n = c.states.load(AtomicOrdering::Relaxed).wrapping_add(1);
+        c.states.store(n, AtomicOrdering::Relaxed);
+        (n as i32, spare)
+    });
+    pfr_kcounters_put(spare);
+    n
 }
 
 /// `pfr_states_decrease`: counts one state less on the entry for `addr` (added for load
 /// balancing state counter use); its count, -1 without such an entry or memory.
 pub fn pfr_states_decrease(kt: &'static PfrKtable, addr: &PfAddr, af: SaFamily) -> i32 {
-    let Some(ke) = pfr_kentry_byaddr(kt, addr, af, true) else {
-        return -1;
-    };
+    // Under the tree's lock, as `pfr_update_stats`; the debug line after it.
+    let (n, below, spare) = pfr_kentry_byaddr_with(kt, addr, af, true, |ke| {
+        let Some(ke) = ke else {
+            return (-1, false, None);
+        };
 
-    if ke.pfrke_counters.get().is_none() {
-        ke.pfrke_counters.set(pf_pool_get::<PfrKcounters>(
-            &PFR_KCOUNTERS_PL,
-            PR_NOWAIT | PR_ZERO,
-        ));
-    }
-    let Some(c) = ke.pfrke_counters.get() else {
-        return -1;
-    };
+        let (c, spare) = pfr_kcounters(ke);
+        let Some(c) = c else {
+            return (-1, false, spare);
+        };
 
-    if c.states.get() > 0 {
-        c.states.set(c.states.get() - 1);
-    } else {
+        let mut n = c.states.load(AtomicOrdering::Relaxed);
+        let below = n == 0;
+        if !below {
+            n -= 1;
+            c.states.store(n, AtomicOrdering::Relaxed);
+        }
+        (n as i32, below, spare)
+    });
+    pfr_kcounters_put(spare);
+    if below {
         crate::dpfprintf!(LOG_DEBUG, "pfr_states_decrease: states-- when states <= 0");
     }
-
-    c.states.get() as i32
+    n
 }
 
 /// `pfr_dynaddr_update`: sets the first address and mask of each family of the table `kt` in
@@ -3467,15 +3552,15 @@ pub fn pfr_dynaddr_update(kt: &'static PfrKtable, dyn_: &'static PfiDynaddr) {
     match dyn_.pfid_af.get() {
         AF_UNSPEC => {
             // look up all both addresses IPv4 + IPv6
-            let _ = pfr_walk(pfr_rnh(&kt.pfrkt_ip4), &mut w);
-            let _ = pfr_walk(pfr_rnh(&kt.pfrkt_ip6), &mut w);
+            let _ = pfr_walk(&kt.pfrkt_ip4, &mut w);
+            let _ = pfr_walk(&kt.pfrkt_ip6, &mut w);
         }
         AF_INET => {
-            let _ = pfr_walk(pfr_rnh(&kt.pfrkt_ip4), &mut w);
+            let _ = pfr_walk(&kt.pfrkt_ip4, &mut w);
         }
         #[cfg(feature = "inet6")]
         AF_INET6 => {
-            let _ = pfr_walk(pfr_rnh(&kt.pfrkt_ip6), &mut w);
+            let _ = pfr_walk(&kt.pfrkt_ip6, &mut w);
         }
         af => unhandled_af(i32::from(af)),
     }
@@ -3643,7 +3728,7 @@ mod tests {
                 ([10, 0, 0, 0], PFR_FB_ADDED),
             ]
         );
-        assert_eq!(kt.pfrkt_cnt().get(), 4);
+        assert_eq!(kt.pfrkt_cnt().load(AtomicOrdering::Relaxed), 4);
 
         // Longest prefix wins; the negated /16 hides the /8 under it.
         assert!(pfr_match_addr(kt, &pf4([10, 2, 3, 4]), AF_INET));
@@ -3736,7 +3821,7 @@ mod tests {
         assert_eq!(ndel, 1);
         assert_eq!(v[0].pfra_fback, PFR_FB_DELETED);
         assert_eq!(v[1].pfra_fback, PFR_FB_NONE);
-        assert_eq!(kt.pfrkt_cnt().get(), 3);
+        assert_eq!(kt.pfrkt_cnt().load(AtomicOrdering::Relaxed), 3);
         assert!(
             !pfr_match_addr(kt, &pf4([10, 1, 2, 3]), AF_INET),
             "under the negated /16"
@@ -3766,7 +3851,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!((nadd, ndel, nchange), (1, 2, 0));
-        assert_eq!(kt.pfrkt_cnt().get(), 2);
+        assert_eq!(kt.pfrkt_cnt().load(AtomicOrdering::Relaxed), 2);
         assert!(pfr_match_addr(kt, &pf4([172, 20, 1, 1]), AF_INET));
         assert!(!pfr_match_addr(kt, &pf4([192, 168, 1, 1]), AF_INET));
 
@@ -3774,7 +3859,7 @@ mod tests {
         let mut ndel = -1;
         pfr_clr_addrs(&mut tbl, Some(&mut ndel), 0).unwrap();
         assert_eq!(ndel, 2);
-        assert_eq!(kt.pfrkt_cnt().get(), 0);
+        assert_eq!(kt.pfrkt_cnt().load(AtomicOrdering::Relaxed), 0);
         assert_eq!(PFR_KENTRY_PL[PFRKE_PLAIN as usize].pr_nout.get(), 0);
 
         // pfr_del_tables destroys the table.
@@ -3868,10 +3953,22 @@ mod tests {
         // Not in the table, though the rule said it was: counted as XPASS.
         pfr_update_stats(kt, &pf4([1, 1, 1, 1]), &pd, PF_PASS, false);
 
-        assert_eq!(kt.pfrkt_packets()[1][PFR_OP_PASS].get(), 2);
-        assert_eq!(kt.pfrkt_bytes()[1][PFR_OP_PASS].get(), 200);
-        assert_eq!(kt.pfrkt_packets()[0][PFR_OP_BLOCK].get(), 1);
-        assert_eq!(kt.pfrkt_packets()[0][PFR_OP_XPASS].get(), 1);
+        assert_eq!(
+            kt.pfrkt_packets()[1][PFR_OP_PASS].load(AtomicOrdering::Relaxed),
+            2
+        );
+        assert_eq!(
+            kt.pfrkt_bytes()[1][PFR_OP_PASS].load(AtomicOrdering::Relaxed),
+            200
+        );
+        assert_eq!(
+            kt.pfrkt_packets()[0][PFR_OP_BLOCK].load(AtomicOrdering::Relaxed),
+            1
+        );
+        assert_eq!(
+            kt.pfrkt_packets()[0][PFR_OP_XPASS].load(AtomicOrdering::Relaxed),
+            1
+        );
 
         let mut st = std::vec![PfrAstats::default(); 1];
         let mut size = 1;
@@ -3915,7 +4012,10 @@ mod tests {
         let mut nzero = -1;
         pfr_clr_tstats(&PfrBuf::Kernel(&mut ts), 1, Some(&mut nzero), 0).unwrap();
         assert_eq!(nzero, 1);
-        assert_eq!(kt.pfrkt_packets()[1][PFR_OP_PASS].get(), 0);
+        assert_eq!(
+            kt.pfrkt_packets()[1][PFR_OP_PASS].load(AtomicOrdering::Relaxed),
+            0
+        );
     }
 
     #[test]
@@ -3992,7 +4092,7 @@ mod tests {
             !pfr_match_addr(kt, &pf4([172, 20, 1, 1]), AF_INET),
             "now negated"
         );
-        assert_eq!(kt.pfrkt_cnt().get(), 2);
+        assert_eq!(kt.pfrkt_cnt().load(AtomicOrdering::Relaxed), 2);
 
         // A rolled back transaction leaves the table alone.
         pfr_ina_begin(&trs, Some(&mut ticket), None, 0).unwrap();
@@ -4032,14 +4132,14 @@ mod tests {
         let kt = pfr_lookup_table(&table("ov", "", 0)).unwrap();
         pfr_insert_kentry(kt, &addr4([203, 0, 113, 9], 32, false), 0).unwrap();
         pfr_insert_kentry(kt, &addr4([203, 0, 113, 9], 32, false), 0).unwrap();
-        assert_eq!(kt.pfrkt_cnt().get(), 1);
+        assert_eq!(kt.pfrkt_cnt().load(AtomicOrdering::Relaxed), 1);
         assert!(pfr_match_addr(kt, &pf4([203, 0, 113, 9]), AF_INET));
         pfr_remove_kentry(kt, &addr4([203, 0, 113, 9], 32, false)).unwrap();
         assert_eq!(
             pfr_remove_kentry(kt, &addr4([203, 0, 113, 9], 32, false)),
             Err(Errno::ESRCH)
         );
-        assert_eq!(kt.pfrkt_cnt().get(), 0);
+        assert_eq!(kt.pfrkt_cnt().load(AtomicOrdering::Relaxed), 0);
     }
 
     /// A kernel pool over the table `kt`.
@@ -4171,7 +4271,7 @@ mod tests {
 
         let (nadd, _) = add_addrs(&mut tbl, &[net64, host]).expect("added");
         assert_eq!(nadd, 2);
-        assert_eq!(kt.pfrkt_cnt().get(), 2);
+        assert_eq!(kt.pfrkt_cnt().load(AtomicOrdering::Relaxed), 2);
 
         assert!(pfr_match_addr(
             kt,
@@ -4202,6 +4302,410 @@ mod tests {
         pfr_copyout_addr(&mut ad, Some(ke));
         assert_eq!((ad.pfra_af, ad.pfra_net), (AF_INET6, 64));
         assert_eq!(ad.pfra_ip6addr(), net64.pfra_ip6addr());
+    }
+    /// xorshift64*: the model test's generator, deterministic from its seed.
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x >> 12;
+            x ^= x << 25;
+            x ^= x >> 27;
+            self.0 = x;
+            x.wrapping_mul(0x2545_f491_4f6c_dd1d)
+        }
+
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+    }
+
+    /// An entry of the model: the network `a/net` (a host at 32), negated or not.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    struct Model {
+        a: [u8; 4],
+        net: u8,
+        not: bool,
+    }
+
+    /// The mask of a `net`-bit prefix.
+    fn prefix_mask(net: u8) -> u32 {
+        if net == 0 {
+            0
+        } else {
+            u32::MAX << (32 - u32::from(net))
+        }
+    }
+
+    /// An address of a small universe, so that networks nest and share prefixes.
+    fn model_addr(rng: &mut Rng) -> [u8; 4] {
+        [
+            10,
+            [0u8, 1, 2, 3][rng.below(4)],
+            [0u8, 1, 128, 255][rng.below(4)],
+            [0u8, 1, 77, 255][rng.below(4)],
+        ]
+    }
+
+    /// The model's answer for `x`: the most specific entry holding it (the longest prefix,
+    /// a host before every network), matched unless negated.
+    fn model_match(model: &[Model], x: [u8; 4]) -> bool {
+        let x = u32::from_be_bytes(x);
+        model
+            .iter()
+            .filter(|e| x & prefix_mask(e.net) == u32::from_be_bytes(e.a))
+            .max_by_key(|e| e.net)
+            .is_some_and(|e| !e.not)
+    }
+
+    /// N6.7b1 (pf's tables on the kernel's radix tree): random adds, deletes and lookups of
+    /// IPv4 hosts and nested networks, some negated, through pf's own ioctl functions; at every
+    /// step `pfr_match_addr` answers as a linear model of the longest prefix and the negation,
+    /// the table's counters follow, and its walks (a delete's full scan, the enqueue, the
+    /// clear) visit every entry once.
+    #[test]
+    fn table_matches_answer_as_the_longest_prefix_model() {
+        let _g = setup();
+        assert_eq!(add_tables(std::vec![table("model", "", 0)]), 1);
+        let mut tbl = table("model", "", 0);
+        let kt = pfr_lookup_table(&tbl).expect("table");
+        let (mut matched, mut missed) = (0u64, 0u64);
+        let mut steps = 0;
+        for seed in 1..=20u64 {
+            let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+            let mut model: Vec<Model> = Vec::new();
+            for _ in 0..300 {
+                steps += 1;
+                match rng.below(20) {
+                    0..=8 => {
+                        let net = [0u8, 8, 9, 15, 16, 17, 24, 25, 31, 32, 32, 32][rng.below(12)];
+                        let a = (u32::from_be_bytes(model_addr(&mut rng)) & prefix_mask(net))
+                            .to_be_bytes();
+                        let e = Model {
+                            a,
+                            net,
+                            not: rng.below(4) == 0,
+                        };
+                        let there = model.iter().any(|m| m.a == e.a && m.net == e.net);
+                        let (nadd, _) =
+                            add_addrs(&mut tbl, &[addr4(e.a, e.net, e.not)]).expect("added");
+                        assert_eq!(nadd, i32::from(!there), "{e:?}");
+                        if !there {
+                            model.push(e);
+                        }
+                    }
+                    9..=11 => {
+                        // A live entry (its negation flipped now and then: a conflict, kept),
+                        // or an absent one.
+                        let (e, flip) = if !model.is_empty() && rng.below(4) != 0 {
+                            (model[rng.below(model.len())], rng.below(5) == 0)
+                        } else {
+                            let net = [8u8, 16, 24, 32][rng.below(4)];
+                            let a = (u32::from_be_bytes(model_addr(&mut rng)) & prefix_mask(net))
+                                .to_be_bytes();
+                            (Model { a, net, not: false }, false)
+                        };
+                        let mut v = std::vec![addr4(e.a, e.net, e.not != flip)];
+                        let mut ndel = -1;
+                        pfr_del_addrs(&mut tbl, &mut PfrBuf::Kernel(&mut v), 1, Some(&mut ndel), 0)
+                            .expect("deleted");
+                        let i = model
+                            .iter()
+                            .position(|m| m.a == e.a && m.net == e.net && m.not == (e.not != flip));
+                        assert_eq!(ndel, i32::from(i.is_some()), "{e:?} flip {flip}");
+                        if let Some(i) = i {
+                            model.swap_remove(i);
+                        }
+                    }
+                    12..=18 => {
+                        let x = model_addr(&mut rng);
+                        let want = model_match(&model, x);
+                        let (m0, n0) = (kt.pfrkt_match().get(), kt.pfrkt_nomatch().get());
+                        assert_eq!(pfr_match_addr(kt, &pf4(x), AF_INET), want, "{x:?}");
+                        assert_eq!(kt.pfrkt_match().get() - m0, u64::from(want));
+                        assert_eq!(kt.pfrkt_nomatch().get() - n0, u64::from(!want));
+                        if want {
+                            matched += 1;
+                        } else {
+                            missed += 1;
+                        }
+                    }
+                    _ => {
+                        let workq = SlistHead::<PfrKentryworkq>::new();
+                        let mut n = -1;
+                        pfr_enqueue_addrs(kt, &workq, Some(&mut n), false);
+                        assert_eq!(n as usize, model.len());
+                        assert_eq!(sl_iter(&workq).count(), model.len());
+                        assert_eq!(
+                            kt.pfrkt_cnt().load(AtomicOrdering::Relaxed) as usize,
+                            model.len()
+                        );
+                    }
+                }
+            }
+            let mut ndel = -1;
+            pfr_clr_addrs(&mut tbl, Some(&mut ndel), 0).expect("cleared");
+            assert_eq!(ndel as usize, model.len());
+            assert_eq!(kt.pfrkt_cnt().load(AtomicOrdering::Relaxed), 0);
+            assert!(!pfr_match_addr(kt, &pf4([10, 0, 0, 1]), AF_INET));
+        }
+        assert_eq!(PFR_KENTRY_PL[PFRKE_PLAIN as usize].pr_nout.get(), 0);
+        std::println!("pf table model: {steps} steps, {matched} matches, {missed} misses");
+        assert!(matched > 500 && missed > 500, "both answers seen");
+    }
+
+    /// N6.7b1: a destroyed table gives its trees' memory back before its pool item goes
+    /// (the pool runs no drop), and a table made again in that item starts empty.
+    #[test]
+    fn a_destroyed_table_gives_its_trees_back() {
+        let _g = setup();
+        let rtable = kernel::net::rtable::M_RTABLE;
+        // The pfrktable pool's item (vmstat -m's size, D-12): the table and its two trees.
+        std::eprintln!(
+            "pfrktable item: {} bytes, a tree {} bytes",
+            size_of::<PfrKtable>(),
+            size_of::<PfrRadix>()
+        );
+        let before = kernel::testutil::malloc_out(rtable);
+        assert_eq!(add_tables(std::vec![table("gone", "", 0)]), 1);
+        let mut tbl = table("gone", "", 0);
+        let v: Vec<PfrAddr> = (0..100u8)
+            .map(|i| addr4([10, 9, i, 0], 24, false))
+            .collect();
+        assert_eq!(add_addrs(&mut tbl, &v).expect("added").0, 100);
+        assert!(kernel::testutil::malloc_out(rtable) > before);
+        let mut ts = std::vec![table("gone", "", 0)];
+        let mut ndel = -1;
+        pfr_del_tables(&PfrBuf::Kernel(&mut ts), 1, Some(&mut ndel), 0).expect("deleted");
+        assert_eq!(ndel, 1);
+        assert_eq!(
+            kernel::testutil::malloc_out(rtable),
+            before,
+            "the trees' blocks"
+        );
+        assert_eq!(PFR_KTABLE_PL.pr_nout.get(), 0);
+
+        // A table made again (in a pool item the old one may have been): empty, then its own
+        // entries only.
+        assert_eq!(add_tables(std::vec![table("again", "", 0)]), 1);
+        let mut tbl = table("again", "", 0);
+        let kt = pfr_lookup_table(&tbl).expect("table");
+        assert_eq!(kt.pfrkt_cnt().load(AtomicOrdering::Relaxed), 0);
+        assert!(!pfr_match_addr(kt, &pf4([10, 9, 3, 1]), AF_INET));
+        add_addrs(&mut tbl, &[addr4([10, 9, 3, 0], 24, false)]).expect("added");
+        assert!(pfr_match_addr(kt, &pf4([10, 9, 3, 1]), AF_INET));
+        assert!(!pfr_match_addr(kt, &pf4([10, 9, 4, 1]), AF_INET));
+    }
+
+    /// N6.7b1 B1 (a table's trees under their own lock, the user's decision of 2026-11-24): two
+    /// holders look a table up at once; a writer (`pfr_insert_kentry`) that comes while they
+    /// hold it waits, and a lookup that comes after the writer waits behind it; then two threads
+    /// look up while this one adds and deletes hosts in the same tree, and every answer is the
+    /// table's. The `RefCell` this replaced had a borrow counter that concurrent lookups wrote
+    /// without a lock. What the host cannot show: the softnets' and the purge task's own
+    /// contexts, spl, or a lost update of the old counter (a race, not a sequence).
+    #[test]
+    fn lookups_share_a_table_while_a_writer_changes_it() {
+        use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+        use std::time::{Duration, Instant};
+
+        let _g = setup();
+        assert_eq!(add_tables(std::vec![table("shared", "", 0)]), 1);
+        let mut tbl = table("shared", "", 0);
+        let kt = pfr_lookup_table(&tbl).expect("table");
+        let nets: Vec<PfrAddr> = (0..64u8).map(|i| addr4([10, i, 0, 0], 24, false)).collect();
+        assert_eq!(add_addrs(&mut tbl, &nets).expect("added").0, 64);
+        let net_of = |a: [u8; 4]| {
+            pfr_kentry_byaddr(kt, &pf4(a), AF_INET, false).map(|ke| ke.pfrke_net.get())
+        };
+        let host = |k: u32| addr4([192, 168, (k >> 8) as u8, k as u8], 32, false);
+
+        // Two holders at once, and a writer between them and the next reader.
+        let first = kt.pfrkt_ip4.read();
+        std::thread::scope(|sc| {
+            sc.spawn(|| {
+                let second = kt
+                    .pfrkt_ip4
+                    .try_read()
+                    .expect("shared with the first holder");
+                let key = pfr_sin_key(&pf4([10, 3, 0, 9]));
+                assert_eq!(
+                    second.matches(&key.bytes).map(|ke| ke.pfrke_net.get()),
+                    Some(24)
+                );
+                assert!(
+                    kt.pfrkt_ip4.try_write().is_none(),
+                    "no writer while two hold it"
+                );
+            })
+            .join()
+            .expect("the second holder");
+            let writer = sc.spawn(|| pfr_insert_kentry(kt, &host(1), 0));
+            // The writer spins, then sleeps on the lock's writers' channel.
+            let until = Instant::now() + Duration::from_secs(10);
+            while kt.pfrkt_ip4.try_read().map(drop).is_some() {
+                assert!(Instant::now() < until, "the writer never waited");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert!(!writer.is_finished(), "the writer waits for the holder");
+            drop(first);
+            assert_eq!(writer.join().expect("the writer"), Ok(()));
+        });
+        assert_eq!(net_of([192, 168, 0, 1]), Some(32));
+        assert_eq!(net_of([10, 63, 0, 200]), Some(24));
+        assert_eq!(kt.pfrkt_cnt().load(AtomicOrdering::Relaxed), 65);
+
+        // Two lookers while this thread adds and deletes hosts beside their networks.
+        let done = AtomicBool::new(false);
+        let looked = AtomicU64::new(0);
+        std::thread::scope(|sc| {
+            for t in 0..2u8 {
+                let (done, looked) = (&done, &looked);
+                sc.spawn(move || {
+                    let mut i = 0u32;
+                    while !done.load(Ordering::Relaxed) || i < 2_000 {
+                        let n = (i % 64) as u8;
+                        assert_eq!(net_of([10, n, 0, t.wrapping_add(i as u8)]), Some(24));
+                        assert_eq!(net_of([172, 16, n, 1]), None);
+                        i += 1;
+                    }
+                    looked.fetch_add(u64::from(i), Ordering::Relaxed);
+                });
+            }
+            for round in 0..20u32 {
+                for k in 2..202u32 {
+                    assert_eq!(pfr_insert_kentry(kt, &host(k), 0), Ok(()));
+                }
+                for k in (2..202u32).filter(|k| (k + round) % 3 != 0) {
+                    assert_eq!(pfr_remove_kentry(kt, &host(k)), Ok(()));
+                }
+                for k in (2..202u32).filter(|k| (k + round) % 3 == 0) {
+                    assert_eq!(pfr_remove_kentry(kt, &host(k)), Ok(()));
+                }
+            }
+            done.store(true, Ordering::Relaxed);
+        });
+        assert!(looked.load(Ordering::Relaxed) >= 4_000);
+        assert_eq!(kt.pfrkt_cnt().load(AtomicOrdering::Relaxed), 65);
+        assert_eq!(net_of([192, 168, 0, 2]), None);
+        assert_eq!(net_of([192, 168, 0, 1]), Some(32));
+        std::eprintln!(
+            "pf table lock: {} lookups beside 8,000 adds and deletes",
+            looked.load(Ordering::Relaxed) * 2
+        );
+    }
+
+    /// N6.7b1 D1 (the counters atomic, the user's decision of 2026-11-25): four threads count
+    /// packets on one table at once through `pfr_update_stats`, starting each round together on
+    /// entries with no counter block yet; the table's and the entries' totals are exact (no
+    /// lost update), and every entry holds exactly one block, the racing CPUs' others given
+    /// back (the C's leak).
+    #[test]
+    fn concurrent_counts_are_exact_and_leak_no_block() {
+        use std::sync::Barrier;
+
+        const THREADS: u64 = 4;
+        const ROUNDS: u64 = 40;
+        const PER_ROUND: u64 = 1_000;
+        const LEN: u64 = 60;
+
+        let _g = setup();
+        assert_eq!(
+            add_tables(std::vec![table("count", "", PFR_TFLAG_COUNTERS)]),
+            1
+        );
+        let mut tbl = table("count", "", 0);
+        let kt = pfr_lookup_table(&tbl).expect("table");
+        let nets: Vec<PfrAddr> = (0..64u8).map(|i| addr4([10, i, 0, 0], 24, false)).collect();
+        assert_eq!(add_addrs(&mut tbl, &nets).expect("added").0, 64);
+
+        let start = Barrier::new(THREADS as usize + 1);
+        let end = Barrier::new(THREADS as usize + 1);
+        // Per round: the blocks out after the counts, the entries' packets and bytes, the
+        // entries cleared and the blocks out after the clear. Checked once the threads are
+        // done, so a wrong count fails the test instead of leaving them at the barrier.
+        let mut rounds: Vec<(u32, u64, u64, i32, u32)> = Vec::new();
+        std::thread::scope(|sc| {
+            for t in 0..THREADS {
+                let (start, end) = (&start, &end);
+                sc.spawn(move || {
+                    let mut pd = PfPdesc::new();
+                    pd.af = AF_INET;
+                    pd.tot_len = LEN;
+                    pd.dir = PF_OUT;
+                    for _ in 0..ROUNDS {
+                        start.wait();
+                        for i in 0..PER_ROUND {
+                            let n = (i % 64) as u8;
+                            pfr_update_stats(
+                                kt,
+                                &pf4([10, n, 0, t as u8 + 1]),
+                                &pd,
+                                PF_PASS,
+                                false,
+                            );
+                        }
+                        end.wait();
+                    }
+                });
+            }
+            for _ in 0..ROUNDS {
+                start.wait();
+                end.wait();
+                let blocks = PFR_KCOUNTERS_PL.pr_nout.get() as u32;
+                let mut st = std::vec![PfrAstats::default(); 64];
+                let mut size = 64;
+                let _ = pfr_get_astats(&mut tbl, &mut PfrBuf::Kernel(&mut st), &mut size, 0);
+                let packets: u64 = st.iter().map(|a| a.pfras_packets[1][PFR_OP_PASS]).sum();
+                let bytes: u64 = st.iter().map(|a| a.pfras_bytes[1][PFR_OP_PASS]).sum();
+                // The blocks go, so the next round races on first use again.
+                let mut v = nets.clone();
+                let mut nzero = -1;
+                let _ = pfr_clr_astats(
+                    &mut tbl,
+                    &mut PfrBuf::Kernel(&mut v),
+                    64,
+                    Some(&mut nzero),
+                    0,
+                );
+                rounds.push((
+                    blocks,
+                    packets,
+                    bytes,
+                    nzero,
+                    PFR_KCOUNTERS_PL.pr_nout.get() as u32,
+                ));
+            }
+        });
+        for (r, &(blocks, packets, bytes, nzero, after)) in rounds.iter().enumerate() {
+            assert_eq!(blocks, 64, "round {r}: a block per entry");
+            assert_eq!(
+                packets,
+                THREADS * PER_ROUND,
+                "round {r}: the entries' packets"
+            );
+            assert_eq!(
+                bytes,
+                THREADS * PER_ROUND * LEN,
+                "round {r}: the entries' bytes"
+            );
+            assert_eq!(nzero, 64, "round {r}: cleared");
+            assert_eq!(after, 0, "round {r}: the blocks given back");
+        }
+        let entries_seen: u64 = rounds.iter().map(|r| r.1).sum();
+        let total = THREADS * ROUNDS * PER_ROUND;
+        assert_eq!(entries_seen, total);
+        assert_eq!(
+            kt.pfrkt_packets()[1][PFR_OP_PASS].load(AtomicOrdering::Relaxed),
+            total,
+            "the table's packets"
+        );
+        assert_eq!(
+            kt.pfrkt_bytes()[1][PFR_OP_PASS].load(AtomicOrdering::Relaxed),
+            total * LEN,
+            "the table's bytes"
+        );
     }
 }
 /* </TESTS> */

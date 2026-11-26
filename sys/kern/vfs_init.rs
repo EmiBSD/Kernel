@@ -192,17 +192,12 @@ pub fn set_rootvnode(vp: Option<&'static Vnode>) {
 }
 
 /// Initialize the vnode structures and initialize each file system type: the kernel's
-/// `vfsinit` over `vfsconflist[]` (the `namei` pool, the vnode table, the export lists' radix
-/// keys at its tail, the name cache, each type's `vfs_init`).
+/// `vfsinit` over `vfsconflist[]` (the `namei` pool, the vnode table, the name cache, each
+/// type's `vfs_init`).
 pub fn vfsinit() {
     kernel::fs::init::vfsinit::<BsdProcGlue>(
         &VFSCONFLIST,
         crate::conf::param::INITIALVNODES.load(Ordering::Relaxed),
-        || {
-            // vntblinit's tail
-            #[cfg(feature = "nfsserver")]
-            crate::net::radix::rn_init(size_of::<crate::netinet::in_::SockaddrIn>() as u32);
-        },
     );
 }
 

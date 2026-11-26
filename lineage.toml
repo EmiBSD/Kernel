@@ -5627,7 +5627,7 @@ status = "inherited"
 rust = "sys/kern/subr_pool.rs"
 lz = ["sys/kern/subr_pool.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/km.rs", "sys/kernel/vm/page.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/sigio.rs", "sys/kernel/log.rs", "sys/kernel/sysctl.rs", "sys/kernel/fs/bio.rs", "sys/hal/smr.rs"]
+adapted_by = ["sys/kernel/vm/km.rs", "sys/kernel/vm/page.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/sigio.rs", "sys/kernel/log.rs", "sys/kernel/sysctl.rs", "sys/kernel/fs/bio.rs", "sys/hal/smr.rs", "sys/kernel/net/radix.rs"]
 notes = "pool_init/destroy/get/put with do_get/do_put, the page management, the request queue, pool_prime, watermarks/limits/constraints, pool_reclaim(_all), the page allocators and the lock ops; getnsecuptime is kern_tc.c's; poison_* (subr_poison.c) reported; ddb printers (pool_printit, db_show_all_pools) and pool_chk not here; M7a: pool_lock (the rwlock over the pool list) is real; diagnostic tools stage 2: sysctl_dopool and the non-MULTIPROCESSOR pool_cache_pool_info/pool_cache_info/pool_cache_cpus_info; M10e: pool_walk (DDB: func(item, full, pr) for every item in use of the full and the partial pages; PoolWalkPr/PoolWalkFn types), used by the NFS client printers (nfs_debug.c); host test; M11a: the lock ops are the real mutex (mtx_init_flags at pr_ipl, mtx_enter/_try/leave, MUTEX_ASSERT_*, msleep_nsec) and rwlock (rw_init_flags, rw_enter_write, RW_WRITE|RW_NOSLEEP, rw_assert_wrlock, rwsleep_nsec), with or without MULTIPROCESSOR; pool_get asserts waitok and with PR_WAITOK and no memory queues a pool_request on its stack and sleeps in pl_sleep until pool_runqueue serves it (deviation: while cold or on proc0 it fails, where the C panics under DIAGNOSTIC); the slowdown/pool_debug yield; pr_refcnt taken by sysctl_dopool and finalized by pool_destroy; splvm in pool_multi_alloc/free, KERNEL_LOCK in pool_multi_alloc_ni/free_ni; pool_gc_sched (timeout) and pool_gc_pages (systqmp task, splvm, one idle page per pool after POOL_WAIT_GC, re-armed every second; started by init_main under MULTIPROCESSOR); the MULTIPROCESSOR per-CPU caches: struct pool_cache_item/pool_cache, POOL_CACHE_* , pool_cache_init (pool_caches 'plcache' via cpumem_get), pool_cache_item_magic(_check) over the ci_nextl words, pool_list_enter/leave (contention count), pool_cache_list_alloc/free/put, pool_cache_enter/leave (pc_gen generation at pr_ipl), pool_cache_get/put, pool_cache_destroy, pool_cache_gc (list length tuning), pool_cache_pool_info, pool_cache_info and pool_cache_cpus_info (kern.pool.cache/cache_cpus); counters other CPUs read are relaxed atomics with release/acquire on pc_gen; selftest=mpstress (selftest.rs) is the MP stress; N5.1, an exception to adapted (the user reviews it): adapted plus pool_get_idle, the RawPool::get_idle bridge method kernel's BoxPool needs (buf_get's try under the cache's lock: an item the pool holds, no growth, no sleep, no pr_nfail); moves with subr_pool's redesign"
 
 [[module]]
@@ -5830,7 +5830,7 @@ adapted_by = ["sys/hal/netlock.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/so
 rust = "sys/kern/vfs_init.rs"
 lz = ["sys/kern/vfs_init.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/init.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/ufs/mfs/mfs_vfsops.rs", "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs", "sys/kernel/fs/msdosfs/msdosfs_vfsops.rs", "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs", "sys/kernel/fs/isofs/udf/udf_vfsops.rs", "sys/kernel/fs/tmpfs/tmpfs_vfsops.rs", "sys/kernel/fs/fuse/fuse_vfsops.rs", "sys/kernel/fs/nfs/nfs_vfsops.rs"]
+adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/init.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/ufs/mfs/mfs_vfsops.rs", "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs", "sys/kernel/fs/msdosfs/msdosfs_vfsops.rs", "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs", "sys/kernel/fs/isofs/udf/udf_vfsops.rs", "sys/kernel/fs/tmpfs/tmpfs_vfsops.rs", "sys/kernel/fs/fuse/fuse_vfsops.rs", "sys/kernel/fs/nfs/nfs_vfsops.rs", "sys/kernel/net/radix.rs"]
 
 [[module]]
 rust = "sys/kern/vfs_subr.rs"
@@ -6423,13 +6423,15 @@ status = "redesigned"
 [[module]]
 rust = "sys/net/pf_table.rs"
 lz = ["sys/net/pf_table.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/radix.rs"]
+notes = "N6.7b1 (the user's option A, 2026-11-24): pf's tables on the kernel's radix tree (PfrRadix in pfvar.rs, each route's value its entry), inline RefCell trees in the table, borrowed per lookup and per walk step (pfr_walk, the tree's cursor); PfrKtable is no PfPoolItem (pool_init/pool_put direct), pfr_create_ktable writes the trees into the zeroed item, pfr_destroy_ktable empties them before pool_put; rn2ke (the leaf-to-entry cast) went with the node pairs; ke_key gives the key's bytes, pfr_rnh lends a tree; pfr_walktree takes the entry"
 
 [[module]]
 rust = "sys/net/pfkeyv2.rs"
 lz = ["sys/net/pfkeyv2.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/netinet/ip_var.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/netinet/ip_var.rs", "sys/kernel/net/radix.rs"]
 
 [[module]]
 rust = "sys/net/pfkeyv2_convert.rs"
@@ -6447,19 +6449,13 @@ adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
 rust = "sys/net/pfvar.rs"
 lz = ["sys/net/pfvar.rs"]
 status = "adapted"
-adapted_by = ["sys/sys/tree.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/sys/tree.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/radix.rs"]
+notes = "N6.7b1: pfrke_node went with pf's tables' move onto the kernel's radix tree (PfrRadix); pfrkt_ip4/pfrkt_ip6 are RefCell<PfrRadix>, the trees themselves"
 
 [[module]]
 rust = "sys/net/pfvar_priv.rs"
 lz = ["sys/net/pfvar_priv.rs"]
 status = "inherited"
-
-[[module]]
-rust = "sys/net/radix.rs"
-lz = ["sys/net/radix.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/net/radix.rs"]
-notes = "N6.7b0: D-14's differential test against the kernel's tree (kernel::net::radix) in the tests, the code LZ's; pf and IPsec move onto the kernel's tree and this file goes at N6.7b1"
 
 [[module]]
 rust = "sys/net/route.rs"
@@ -6592,7 +6588,8 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/n
 rust = "sys/netinet/ip_ipsp.rs"
 lz = ["sys/netinet/ip_ipsp.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet6/ip6_output.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet6/ip6_output.rs", "sys/kernel/net/radix.rs"]
+notes = "N6.7b1: ipo_nodes went with the SPD's move onto the kernel's radix tree; ipo_addr_key and ipo_mask_key give the key's and the mask's bytes (copied into the tree) instead of pointers the tree kept"
 
 [[module]]
 rust = "sys/netinet/ip_output.rs"
@@ -6603,7 +6600,9 @@ adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/n
 [[module]]
 rust = "sys/netinet/ip_spd.rs"
 lz = ["sys/netinet/ip_spd.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/radix.rs"]
+notes = "N6.7b1: the SPD on the kernel's radix tree (SpdTree, kernel::net::radix::RadixTree of the policies, 48-byte keys from sen_type): spd_tables holds the trees in malloc(M_RTABLE) boxes, spd_table_get lends one shared, spd_table_mut exclusively (the exclusive net lock), spd_table_walk is the tree's cursor fetched again at each step (spd_walktree); ipsec_policy_of (the leaf-to-policy cast) went with the node pairs, the route's value being the policy"
 
 [[module]]
 rust = "sys/netinet/ip_var.rs"
@@ -8631,7 +8630,7 @@ rust = "sys/kernel/net/radix.rs"
 crate = "kernel"
 lz = ["sys/net/radix.rs"]
 status = "redesigned"
-notes = "N6.7b0: radix.h and radix.c as a tree that owns its nodes, keys and values (RadixTree<T, K>, D-3): a slot holds the C's treenodes[2], the K key bytes, the value and a generation; links are u32 indices (2 * slot the leaf, 2 * slot + 1 its internal node), the C's unions two shared words a node and one a record, mask references tagged; radix.c function by function under its names (rn_findmask is rn_addmask's search half, rn_delete_leaf rn_delete's unlinking half, shared with RadixTree::remove); a mask tree and annotation records per tree (D-4: no rn_init, rn_zeros, rn_ones, max_keylen, mask_rnhead or rtmask_pool); chunked storage behind a directory (Slab); the walk a cursor (first, next); D-7's short and long keys; a normal annotation names its leaf with its generation, so radix.c's dangling rm_leaf holds nothing (proposed D-20). bsd's sys/net/radix.rs stays for pf and IPsec until N6.7b1"
+notes = "N6.7b0: radix.h and radix.c as a tree that owns its nodes, keys and values (RadixTree<T, K>, D-3): a slot holds the C's treenodes[2], the K key bytes, the value and a generation; links are u32 indices (2 * slot the leaf, 2 * slot + 1 its internal node), the C's unions two shared words a node and one a record, mask references tagged; radix.c function by function under its names (rn_findmask is rn_addmask's search half, rn_delete_leaf rn_delete's unlinking half, shared with RadixTree::remove); a mask tree and annotation records per tree (D-4: no rn_init, rn_zeros, rn_ones, max_keylen, mask_rnhead or rtmask_pool); flat index arrays that double, the node pairs in arrays of their own, a 16-byte hot half (what a descent reads) and a cold half (rn_p, rn_mklist) at the same index (Slab; D-13, the user's choices of 2026-11-24, at N6.7b1; N6.7b0's chunks behind a directory before); the walk a cursor (first, next); D-7's short and long keys; a normal annotation names its leaf with its generation, so radix.c's dangling rm_leaf holds nothing (proposed D-20). N6.7b1: pf's tables (sys/net/pf_table.rs) and the SPD (sys/netinet/ip_spd.rs) use it too, and bsd's sys/net/radix.rs is gone (its LZ items placed by this module's names and rows)"
 
 [[module.fn]]
 lz = "sys/net/radix.rs::RadixNode::assign"
@@ -13712,7 +13711,7 @@ reason = "hal runtime, written new: KASSERT(9) and panic(9) for the crate that n
 [[extra]]
 rust = "sys/hal/link.rs"
 crate = "hal"
-reason = "hal runtime, written new (N3.3): Link<T>, a settable reference to a 'static target over an atomic pointer, the one deref of the intrusive List and Tree; docs/IDIOMS.md; N5.3: SyncLink<T>, a Link that is Sync whatever T is (its target lent only where T: Sync), for a link whose target's auto traits would be an inductive cycle (Filedesc's cdir and rdir, Session's ttyvp); N6.3a: SaLink, the sockaddr of an interface address whose storage bsd owns, published only with the one SaToken bsd's boot takes as a typed &'static Cell<T> (address and size one pair under a sequence) and read by the kernel as a copy of its sa_len bytes cut at the storage, given a hal::netlock::NetHeld proof of the net lock (a witness's, or the token holder's check: review 2's S-a; review 1's B2; the trust.rs premise; removed at N6.4/N6.5); N6.4a: SaWords, a socket address's storage the kernel owns as atomic words (an in_ifaddr's ia_addr), linked by SaLink::set_words with no token beside a typed Link to it and copied by atomic loads (no new unsafe), the IPv4 half of that removal; N6.4b: TaggedLink<T>, the one word two owners share (a route's rt_llinfo): tagged, the PoolBox of a Tagged type (Pooled, and the static mutex its slots are written under as a const, StaticMutex) given up to the word through the box's crate-private raw form (its pool checked; never the public park: review 1's B1, a lent 'static reference could be unparked), lent under that mutex's guard (whole or part 0) and given back to the whole guard borrowed mutably; untagged, bsd nd6's legacy address, stored and returned, never followed; is_typed for rt_refcnt (two unsafe: the owned item's reference, the box's from_raw); N6.5b (D-5): TaggedLink<A, B>, two typed kinds (tags 01 and 10, each with its own pool and lock, the tag and the type paired by one private Kind impl, the kinds excluding each other by the exchange from null; 4-aligned items), get_a/get_b, set_a/set_b, take_a/take_b, is_a/is_b; move_b_to_head, nd6_resolve's LRU move of the record the word owns on its pinned list in one call (the lent item borrows the witness the list change needs mutably); the owned item lent pinned (the same two unsafe, their SAFETY extended to the kinds and to Pin); N6.5e: SaWords::read, a record's own socket address copied as SaLink::read copies linked words (SaLink::read's words leg now calls it); N6.5e review 1 (B1): SaToken::net_held (a NetHeld<'static> by check of rw_status, which another process's read holding satisfied) replaced by SaToken::lend_net, a hal::netlock::NetLend guard (exact); SaLink::read's SAFETY rests on exact proofs only; N6.5e (5e1): SaLink::set_words, the link's words member and SaWords::as_ptr removed with their last user (the multicast records' unread ifma_addr): an SaLink names a storage bsd owns only (enc(4)'s address); 5e1's review (N3): SaLink::get removed, no caller since bsd's raw readers of the internet records' links went (9085f600)"
+reason = "hal runtime, written new (N3.3): Link<T>, a settable reference to a 'static target over an atomic pointer, the one deref of the intrusive List and Tree; docs/IDIOMS.md; N5.3: SyncLink<T>, a Link that is Sync whatever T is (its target lent only where T: Sync), for a link whose target's auto traits would be an inductive cycle (Filedesc's cdir and rdir, Session's ttyvp); N6.3a: SaLink, the sockaddr of an interface address whose storage bsd owns, published only with the one SaToken bsd's boot takes as a typed &'static Cell<T> (address and size one pair under a sequence) and read by the kernel as a copy of its sa_len bytes cut at the storage, given a hal::netlock::NetHeld proof of the net lock (a witness's, or the token holder's check: review 2's S-a; review 1's B2; the trust.rs premise; removed at N6.4/N6.5); N6.4a: SaWords, a socket address's storage the kernel owns as atomic words (an in_ifaddr's ia_addr), linked by SaLink::set_words with no token beside a typed Link to it and copied by atomic loads (no new unsafe), the IPv4 half of that removal; N6.4b: TaggedLink<T>, the one word two owners share (a route's rt_llinfo): tagged, the PoolBox of a Tagged type (Pooled, and the static mutex its slots are written under as a const, StaticMutex) given up to the word through the box's crate-private raw form (its pool checked; never the public park: review 1's B1, a lent 'static reference could be unparked), lent under that mutex's guard (whole or part 0) and given back to the whole guard borrowed mutably; untagged, bsd nd6's legacy address, stored and returned, never followed; is_typed for rt_refcnt (two unsafe: the owned item's reference, the box's from_raw); N6.5b (D-5): TaggedLink<A, B>, two typed kinds (tags 01 and 10, each with its own pool and lock, the tag and the type paired by one private Kind impl, the kinds excluding each other by the exchange from null; 4-aligned items), get_a/get_b, set_a/set_b, take_a/take_b, is_a/is_b; move_b_to_head, nd6_resolve's LRU move of the record the word owns on its pinned list in one call (the lent item borrows the witness the list change needs mutably); the owned item lent pinned (the same two unsafe, their SAFETY extended to the kinds and to Pin); N6.5e: SaWords::read, a record's own socket address copied as SaLink::read copies linked words (SaLink::read's words leg now calls it); N6.5e review 1 (B1): SaToken::net_held (a NetHeld<'static> by check of rw_status, which another process's read holding satisfied) replaced by SaToken::lend_net, a hal::netlock::NetLend guard (exact); SaLink::read's SAFETY rests on exact proofs only; N6.5e (5e1): SaLink::set_words, the link's words member and SaWords::as_ptr removed with their last user (the multicast records' unread ifma_addr): an SaLink names a storage bsd owns only (enc(4)'s address); 5e1's review (N3): SaLink::get removed, no caller since bsd's raw readers of the internet records' links went (9085f600); N6.7b1 D1: SyncLink::set_if_none, one compare-and-exchange from null (no unsafe), for pf's first-use counter block (pfrke_counters)"
 
 [[module]]
 rust = "sys/hal/list.rs"
@@ -14798,6 +14797,10 @@ reason = "decision 43: host microbenchmarks of the legacy timeout(9) adapter's p
 [[extra]]
 rust = "sys/benches/legacy_sched.rs"
 reason = "decision 43: host microbenchmarks of bsd's run and sleep queues (setrunqueue, remrunqueue, a sleep_setup and unsleep trip) over the host machine double and the kernel crate's doubles, a harness = false bench target of bsd, never a kernel image; no OpenBSD or LZ source"
+
+[[extra]]
+rust = "sys/benches/legacy_pf.rs"
+reason = "decision 43, D-13, N6.7b1: the host microbenchmark of pf's table lookup (pf.table.match: pfr_match_addr of an address inside one of a table's 1,000 /24s) over bsd's pool(9) and malloc(9) on host memory (setup_real_memory's bring-up) and the kernel crate's doubles, run before and after pf's tables moved onto the kernel's radix tree, a harness = false bench target of bsd, never a kernel image; no OpenBSD or LZ source"
 
 
 [[extra]]

@@ -183,7 +183,6 @@ use crate::net::pf_ioctl::pf_tag_unref;
 use crate::net::pfkeyv2::{
     SADB_EXT_LIFETIME_HARD, SADB_EXT_LIFETIME_SOFT, SADB_SATYPE_UNSPEC, pfkeyv2_expire,
 };
-use crate::net::radix::RadixNode;
 use crate::netinet::in_::{INADDR_ANY, IPPROTO_IPCOMP, InAddr, SockaddrIn};
 use crate::netinet::ip_ah::{ah_attach, ah_init, ah_input, ah_output, ah_zeroize};
 use crate::netinet::ip_esp::{esp_attach, esp_init, esp_input, esp_output, esp_zeroize};
@@ -908,11 +907,9 @@ queue_adapter!(
 );
 
 /// `struct ipsec_policy`: an entry of the SPD (a flow), in the radix tree of its routing
-/// domain. `ipo_nodes` is first: the tree's `struct radix_node *` is cast back to the policy.
-#[repr(C)]
+/// domain, whose route carries it (`ip_spd`'s `SpdTree`): the C's `ipo_nodes`, the tree's glue
+/// embedded first so that a leaf is cast back to the policy, are the tree's own (N6.7b1).
 pub struct IpsecPolicy {
-    /// `ipo_nodes`: radix tree glue.
-    pub ipo_nodes: [RadixNode; 2],
     /// `ipo_addr`: the flow (the radix key), written before the policy enters the tree.
     pub ipo_addr: Cell<SockaddrEncap>,
     /// `ipo_mask`: its mask (the radix mask).
@@ -954,7 +951,6 @@ impl IpsecPolicy {
     /// A zeroed policy (`pool_get(PR_ZERO)`).
     pub const fn new() -> Self {
         Self {
-            ipo_nodes: [RadixNode::new(), RadixNode::new()],
             ipo_addr: Cell::new(SockaddrEncap::new()),
             ipo_mask: Cell::new(SockaddrEncap::new()),
             ipo_src: Cell::new(SockaddrUnion::new()),
@@ -973,14 +969,15 @@ impl IpsecPolicy {
         }
     }
 
-    /// `ipo_addr`'s bytes as the radix key (`(caddr_t)&ipo->ipo_addr`).
-    pub fn ipo_addr_key(&self) -> *const u8 {
-        self.ipo_addr.as_ptr().cast_const().cast()
+    /// `ipo_addr`'s bytes as the radix key (`(caddr_t)&ipo->ipo_addr`), copied: the tree
+    /// keeps its own.
+    pub fn ipo_addr_key(&self) -> [u8; SENT_LEN] {
+        *self.ipo_addr.get().as_bytes()
     }
 
-    /// `ipo_mask`'s bytes as the radix mask.
-    pub fn ipo_mask_key(&self) -> *const u8 {
-        self.ipo_mask.as_ptr().cast_const().cast()
+    /// `ipo_mask`'s bytes as the radix mask, copied.
+    pub fn ipo_mask_key(&self) -> [u8; SENT_LEN] {
+        *self.ipo_mask.get().as_bytes()
     }
 }
 
