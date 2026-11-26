@@ -541,6 +541,21 @@ impl<A: PinAdapter> PinList<A> {
             .map(|p| elem_of(entry_at(p)))
     }
 
+    /// `TAILQ_PREV(e)`: the element before `e`, which must be on a list of this lock; `None`
+    /// for the first (its `prev` names no element: no link ever points at the head).
+    pub fn prev<'a, W: Witness + ?Sized>(
+        &'a self,
+        w: &'a W,
+        e: &'a A::Elem,
+    ) -> Option<&'a A::Elem> {
+        let id = id_of(w);
+        bind(&self.key, id, "TAILQ_PREV");
+        linked_entry::<A>(e, id, "TAILQ_PREV")
+            .prev
+            .get()
+            .map(|p| elem_of(entry_at(p)))
+    }
+
     /// `TAILQ_FOREACH`: the elements in order.
     pub fn iter<'a, W: Witness + ?Sized>(&'a self, w: &'a W) -> ListIter<'a, A> {
         bind(&self.key, id_of(w), "TAILQ_FOREACH");
@@ -1284,7 +1299,11 @@ mod tests {
         assert_eq!(l.first(&g).map(|n| n.v), Some(3));
         assert_eq!(l.last(&g).map(|n| n.v), Some(2));
         assert_eq!(l.next(&g, &a).map(|n| n.v), Some(2));
+        assert_eq!(l.prev(&g, &a).map(|n| n.v), Some(3));
+        assert_eq!(l.prev(&g, &b).map(|n| n.v), Some(1));
+        assert!(l.prev(&g, &c).is_none(), "the first has no prev");
         l.remove(&mut g, &a);
+        assert_eq!(l.prev(&g, &b).map(|n| n.v), Some(3), "linked over the gap");
         assert!(!a.e.is_linked());
         assert_eq!(values(l.iter(&g)), [3, 2]);
         assert!(l.remove_first(&mut g));
