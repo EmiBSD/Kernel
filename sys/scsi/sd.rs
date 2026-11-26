@@ -230,7 +230,7 @@ const fn pattern(r#type: u8, removable: i32) -> ScsiInquiryPattern {
 
 /// `sdlookup(unit)`: the attached unit, referenced (`disk_lookup`).
 fn sdlookup(unit: u32) -> Option<NonNull<Device>> {
-    disk_lookup(&SD_CD, i32::try_from(unit).ok()?)
+    disk_lookup(&SD_CD, i32::try_from(unit).ok()?, |dv| &sd_softc(dv).sc_dk)
 }
 
 /// `(struct sd_softc *)dv`.
@@ -424,6 +424,7 @@ pub fn sddetach(self_: &Device, _flags: i32) -> Result<(), Errno> {
     // Detach disk.
     bufq_destroy(&sc.sc_bufq);
     disk_detach(&sc.sc_dk);
+    sc.sc_dk.destroy();
 
     Ok(())
 }

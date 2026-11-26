@@ -228,7 +228,7 @@ pub fn rd_root_size() -> u32 {
 
 /// `rdlookup(unit)`: the attached unit, referenced (`disk_lookup`).
 fn rdlookup(unit: u32) -> Option<NonNull<Device>> {
-    disk_lookup(&RD_CD, i32::try_from(unit).ok()?)
+    disk_lookup(&RD_CD, i32::try_from(unit).ok()?, |dv| &rd_softc(dv).sc_dk)
 }
 
 /// The softc of a unit `rdlookup` returned.

@@ -892,7 +892,7 @@ const fn pattern(r#type: u8, removable: i32, vendor: &'static [u8]) -> ScsiInqui
 
 /// `cdlookup(unit)`: the attached unit, referenced (`disk_lookup`).
 fn cdlookup(unit: u32) -> Option<NonNull<Device>> {
-    disk_lookup(&CD_CD, i32::try_from(unit).ok()?)
+    disk_lookup(&CD_CD, i32::try_from(unit).ok()?, |dv| &cd_softc(dv).sc_dk)
 }
 
 /// `(struct cd_softc *)dv`.
@@ -1010,6 +1010,7 @@ pub fn cddetach(self_: &Device, _flags: i32) -> Result<(), Errno> {
     // Detach disk.
     bufq_destroy(&sc.sc_bufq);
     disk_detach(&sc.sc_dk);
+    sc.sc_dk.destroy();
 
     Ok(())
 }

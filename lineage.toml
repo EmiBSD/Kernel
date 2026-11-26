@@ -1648,7 +1648,7 @@ notes = "M2: arm64_bs_tag, fdt_cons_bs_tag, generic_space_read/write_1/2/4/8, ge
 rust = "sys/arch/arm64/arm64/conf.rs"
 lz = ["sys/arch/arm64/arm64/conf.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/base/log.rs", "sys/kernel/fs/fuse/fuse_device.rs", "sys/kernel/dev/diskmap.rs"]
+adapted_by = ["sys/kernel/base/log.rs", "sys/kernel/fs/fuse/fuse_device.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/arm64/cpu.rs"
@@ -3106,7 +3106,7 @@ rust = "sys/dev/diskmap.rs"
 lz = ["sys/dev/diskmap.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/dev/diskmap.rs"]
-notes = "N7.1d: diskmap(4) is the kernel's (sys/kernel/dev/diskmap.rs); this file keeps the five cdevsw entry points as concrete functions over BsdProcGlue, so cdevsw[90].d_ioctl and kern_pledge's DIOCMAP comparison name one function's address (scaffolding until the device switch is the kernel's, N7.3c)"
+notes = "N7.1d: diskmap(4) is the kernel's (sys/kernel/dev/diskmap.rs); this file is rewritten as five wrappers, the cdevsw entry points as concrete functions over BsdProcGlue with LZ's names and signatures, so that cdevsw[90].d_ioctl and kern_pledge.rs's DIOCMAP comparison name one function's address. adapted, not an [[extra]]: it is LZ's module, whose items keep their names and signatures and only reach the redesigned kernel module (docs/SCAFFOLDING.md, N7.3c)"
 
 [[module]]
 rust = "sys/dev/fdt/gpiokeys.rs"
@@ -14521,6 +14521,11 @@ lz = ["sys/net/if_.rs", "sys/sys/systm.rs"]
 status = "redesigned"
 notes = "N3.4c: the NetLock bridge (NET_LOCK, NET_UNLOCK, rw_status(&netlock) of net/if.rs) for the kernel crate's vnode pager, an [[extra]] until N6.0; N6.0: the net lock itself, if.c's netlock as hal's static RawRwlock (NETLOCK, moved out of sys/net/if_.rs) with systm.h's paired forms as detached holdings over RawRwlock's crate-private raw paths (lock/unlock marked by the writer word, lock_shared/unlock_shared by a count; a witness's holding never released by them, no witness rebuilt from the lock word: the review's fix), rw_status(&netlock) (status, write_held, held_detached) and rwsleep_nsec on it (sleep_nsec); the bridge gone, bsd's seven NET_* wrappers (sys/sys/systm.rs) adapters over it; the NET_ASSERT_* stay bsd's (splassert_fail and splassert_ctl are bsd's); no dt(4) trace index (dt(4) not ported); N6.3a review 2: NetHeld, the proof of the net lock for readers that are not Guarded cells (from a witness of NETLOCK, or by hal::ds::link::SaToken::net_held); N6.5e: the net cells' witnesses, NetHeld::reader (NetReader, shared: NET_ASSERT_LOCKED()) and NetHeld::writer (NetWriter, exclusive: NET_ASSERT_LOCKED_EXCLUSIVE()), each borrowing its proof, kept apart on the write holding by the borrow word NET_BORROW (readers nest, the writer alone, the other kind panic(9)), nothing counted on a read holding; NET_CELLS_ID, the net cells' identity (a word no lock owns); unlock and sleep_nsec refuse a witness left out; N6.5e review 1 (B1): every proof exact: lend_held and its NetLend guard (SaToken::lend_net's) lend the running process's write holding (LENT, checked by unlock, sleep_nsec and before_write_release, which a write witness of NETLOCK calls on every release) or a read share joined for the guard (RawRwlock::join_read); unlock checks its ownership first; review 2: sleep_nsec checks its ownership first too, the per-packet lend sites of bsd and their exits named in the notes with the per-thread alternative (not written), a read lend spanning the lender's own read release documented as a possible self-deadlock; N6.6a0: NetHeld::reborrow (the proof again for a borrow of it, 0 unsafe, no atomic), for the kernel's socket lock carrying bsd's lent proof (SoLocked::inet)"
 
+[[module.fn]]
+lz = "sys/sys/systm.rs::MountrootFn"
+native = ["sys/kernel/dev/disk.rs::Mountroot"]
+kind = "moved"
+
 [[module]]
 rust = "sys/hal/sync/rwlock.rs"
 crate = "hal"
@@ -20658,7 +20663,7 @@ kind = "moved"
 [[module]]
 rust = "sys/kernel/dev/disk.rs"
 crate = "kernel"
-lz = ["sys/kern/subr_disk.rs", "sys/sys/disk.rs"]
+lz = ["sys/kern/subr_disk.rs", "sys/sys/disk.rs", "sys/conf/swapgeneric.rs"]
 status = "redesigned"
 notes = "N7.1d: struct disk a counted block (MArc, Disk::new for disk_construct), its lock a RawRwlock (Disk::lock/lock_nointr, the guard's drop disk_unlock), dk_mtx a Mutexed of the metrics at IPL_BIO, the in-core label 147 relaxed words (label_store, label, geom's LabelGeom on the I/O path), disklist a PinList under DISKS with each disk's list handle parked on it (disk_next walks), the label task a set_shared task; the label code over a LabelBuf (the geteblk token and a Strat closure: strat + biowait); softraid's two callbacks registered (softraid_hooks); LZ's 22 + 7 unsafe gone"
 
@@ -20728,6 +20733,12 @@ reason = "a disk is made by Disk::new with its name and flags (disk_construct); 
 lz = "sys/kern/subr_disk.rs::bfmt"
 native = ["LineBuf"]
 kind = "renamed"
+
+[[module.fn]]
+lz = "sys/conf/swapgeneric.rs::MOUNTROOT"
+native = ["MOUNTROOT", "mountroot_set", "mountroot_get", "Mountroot"]
+kind = "split"
+
 
 [[module]]
 rust = "sys/kernel/dev/disksubr.rs"

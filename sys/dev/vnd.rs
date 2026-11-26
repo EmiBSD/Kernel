@@ -574,10 +574,17 @@ pub fn vndbdevsize(vp: &'static Vnode, p: &Proc) -> usize {
     if pi.part.is_null() {
         return 0;
     }
-    // SAFETY: `DIOCGPART` answered with a partition of the driver's in-core label, which
-    // lives while the device is attached (the vnode is open).
-    let part = unsafe { &*pi.part };
-    dl_getpsize(part) as usize
+    // SAFETY: `DIOCGPART` answered with `Disk::partition_ptr`: a `Partition` inside the
+    // disk's in-core label, the relaxed `AtomicU64` words of its `Disk` block, which lives
+    // while the device is attached (its softc's slot holds it; the vnode is open). The words
+    // are 8-aligned and the partition sits at 148 + 16 * n bytes, so the pointer is aligned
+    // for `Partition` (4); every bit pattern is a valid `Partition` (integers). Every store
+    // to the words is made by a holder of the kernel lock (`words_write_bytes`, asserted
+    // under `diagnostic`), which `vndioctl`'s caller holds here, so no store runs during
+    // this plain read: the C's reader races nothing either under the kernel lock. The value
+    // is copied out; no reference outlives the read.
+    let part = unsafe { pi.part.read() };
+    dl_getpsize(&part) as usize
 }
 
 /// `vndioctl`.

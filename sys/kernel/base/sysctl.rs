@@ -3638,10 +3638,11 @@ mod tests {
         let sd0 = Disk::new(b"sd0", 0);
         let mut lp = Disklabel::zeroed();
         lp.d_uid = [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef];
-        sd0.label_store(&lp);
         let cd0 = Disk::new(b"cd0", 0);
         disk_attach::<Procs>(None, &sd0);
         disk_attach::<Procs>(None, &cd0);
+        // After the attach, which zeroes the label.
+        sd0.label_store(&lp);
         disk_busy(&sd0);
         disk_unbusy(&sd0, 4096, 8, true);
 

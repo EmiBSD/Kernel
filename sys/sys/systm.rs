@@ -101,9 +101,6 @@ pub static SAFEPRI: AtomicI32 = AtomicI32::new(0);
 /// `swapgeneric.c`, `sys/conf/swapgeneric.rs`).
 pub use crate::conf::swapgeneric::{DUMPDEV, ROOTDEV};
 
-/// The type of `mountroot`: mounts the root file system and puts it on `mountlist`.
-pub type MountrootFn = fn() -> Result<(), Errno>;
-
 /// `INFSLP`: sleep forever (`tsleep_nsec` and friends).
 pub const INFSLP: u64 = u64::MAX;
 /// `MAXTSLP`: the longest finite sleep.

@@ -129,6 +129,12 @@ impl DiskSlot {
         self.0.read().is_some()
     }
 
+    /// Whether the slot's disk is attached (on `disklist`); `false` before `construct` or
+    /// after `destroy`.
+    pub fn is_attached(&self) -> bool {
+        self.0.read().as_ref().is_some_and(|dk| dk.is_attached())
+    }
+
     /// The disk, a handle: `panic(9)` before `construct`.
     pub fn get(&self) -> DiskRef {
         match self.try_get() {
@@ -254,10 +260,21 @@ pub fn disk_unbusy(sc_dk: &DiskSlot, bcount: i64, blkno: crate::sys::types::Dadd
 }
 
 /// `disk_lookup(cd, unit)`: the unit's device, referenced (`device_lookup`; the caller gives
-/// it back with `device_unref`), when it has completed attaching its disk.
-pub fn disk_lookup(cd: &Cfdriver, unit: i32) -> Option<NonNull<Device>> {
-    let node = cd.cd_units.get(unit)?;
-    kernel::dev::disk::disk_of_device(&node)?;
+/// it back with `device_unref`), when it has completed attaching its disk. `sc_dk` is the
+/// driver's way from its device to its softc's slot (`|dv| &sd_softc(dv).sc_dk`): the C's walk
+/// of `disklist` for `dk_device == dv` is the slot's own disk being attached (a softc's disk
+/// is attached for that softc's device alone), O(1) and lock-free, as the strategy path wants.
+/// The mirror (`cd_dev`) holds an attached unit's softc until its detach clears the slot, and
+/// nothing sleeps between the check and `device_lookup` (the callers hold the kernel lock).
+pub fn disk_lookup(
+    cd: &Cfdriver,
+    unit: i32,
+    sc_dk: impl FnOnce(NonNull<Device>) -> &'static DiskSlot,
+) -> Option<NonNull<Device>> {
+    let dv = cd.cd_dev(unit)?;
+    if !sc_dk(dv).is_attached() {
+        return None;
+    }
     device_lookup(cd, unit)
 }
 
@@ -331,6 +348,23 @@ mod tests {
         assert_eq!(slot.geom(0), LabelGeom::default());
         slot.destroy();
         assert!(!slot.is_constructed());
+    }
+
+    #[test]
+    fn a_detached_disk_is_freed_by_destroy() {
+        let (_g, _p) = crate::kern::vfs_subr::tests::setup();
+        let slot = DiskSlot::new();
+        let before = kernel::testutil::malloc_out(2);
+        slot.construct(b"sd8", 0);
+        assert!(kernel::testutil::malloc_out(2) > before);
+        disk_attach(None, &slot);
+        assert!(slot.is_attached());
+        disk_detach(&slot);
+        assert!(!slot.is_attached());
+        slot.destroy();
+        // The list's handle went with disk_detach, the slot's with destroy: the block is
+        // freed (sddetach, cddetach, wddetach do this after disk_detach).
+        assert_eq!(kernel::testutil::malloc_out(2), before);
     }
 }
 /* </TESTS> */

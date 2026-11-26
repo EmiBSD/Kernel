@@ -94,6 +94,40 @@
  *
  *	@(#)disk.h	8.1 (Berkeley) 6/2/93
  */
+
+/*-
+ * Copyright (c) 1990 The Regents of the University of California.
+ * All rights reserved.
+ *
+ * This code is derived from software contributed to Berkeley by
+ * William Jolitz.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ *	@(#)swapgeneric.c	5.5 (Berkeley) 5/9/91
+ */
 /* </LICENSES> */
 
 /* <CODE> */
@@ -108,8 +142,10 @@
 //!
 //! Upstream: sys/kern/subr_disk.c @ 3ce1f3f79392
 //! Upstream: sys/sys/disk.h @ 3ce1f3f79392
+//! Upstream: sys/conf/swapgeneric.c @ 3ce1f3f79392
 //! LZ: sys/kern/subr_disk.rs@e8249449d905
 //! LZ: sys/sys/disk.rs@e8249449d905
+//! LZ: sys/conf/swapgeneric.rs@e8249449d905
 //!
 //! The disk drivers still in `bsd` (sd, cd: N7.4b; rd, vnd, softraid: N7.7; wd, fd: N10)
 //! reach this module through one shim, `bsd`'s `sys/sys/disk.rs`: a `DiskSlot` in each
@@ -194,6 +230,9 @@
 //!   |= RB_ASKNAME` come through `ConfigGlue`.
 //! - LZ's 22 `unsafe` of `subr_disk.rs` and 7 of `sys/disk.rs` are gone (the module has
 //!   none).
+//! - The label words are read and written through `fs::ufs::ufs::inode`'s word helpers
+//!   (`words_get`, `words_read_bytes`, `words_write_bytes`), the inode's `DinWords` core: a
+//!   neutral home for them (`fs::word`) is a later step's, not this one's.
 
 use core::fmt::{self, Write as _};
 use core::mem::offset_of;
@@ -218,8 +257,8 @@ use hal::sys::disklabel::{
     DOSPTYP_LINUX, DOSPTYP_NTFS, DOSPTYP_OPENBSD, DOSPTYP_UNUSED, Disklabel, DosPartition, FS_BOOT,
     FS_BSDFFS, FS_EXT2FS, FS_HFS, FS_MSDOS, FS_NTFS, FS_OTHER, FS_UNUSED, GPTMINHDRSIZE,
     GPTMINPARTSIZE, GPTREVISION, GPTSECTOR, GPTSIGNATURE, GptHeader, GptPartition, MAXDISKSIZE,
-    MAXPARTITIONS, NDOSPART, NSPARE, Partition, RAW_PART, diskpart, diskunit, dl_blkoffset,
-    dl_blktosec, dl_getbend, dl_getbstart, dl_getdsize, dl_getpoffset, dl_getpsize,
+    MAXPARTITIONS, MAXPARTITIONSUNIT, NDOSPART, NSPARE, Partition, RAW_PART, diskpart, diskunit,
+    dl_blkoffset, dl_blktosec, dl_getbend, dl_getbstart, dl_getdsize, dl_getpoffset, dl_getpsize,
     dl_partname2num, dl_partnum2name, dl_sectoblk, dl_setbend, dl_setbstart, dl_setdsize,
     dl_setpoffset, dl_setpsize, makediskdev,
 };
@@ -408,8 +447,10 @@ pub struct LabelGeom {
 }
 
 impl LabelGeom {
-    /// The geometry of partition `part` of the label `lp`.
-    pub fn of(lp: &Disklabel, part: u32) -> Self {
+    /// The geometry of partition `part` of the label `lp` (the tests' reference for
+    /// [`Disk::geom`]).
+    #[cfg(test)]
+    pub(crate) fn of(lp: &Disklabel, part: u32) -> Self {
         let p = lp
             .d_partitions
             .get(part as usize)
@@ -535,18 +576,8 @@ impl Disk {
         self.dk_copenmask.load(Ordering::Relaxed)
     }
 
-    /// `dk_bopenmask = m` (a driver that keeps the masks itself, vnd(4)).
-    pub fn set_bopenmask(&self, m: u64) {
-        self.dk_bopenmask.store(m, Ordering::Relaxed);
-    }
-
-    /// `dk_copenmask = m`.
-    pub fn set_copenmask(&self, m: u64) {
-        self.dk_copenmask.store(m, Ordering::Relaxed);
-    }
-
     /// `dk_openmask = m`.
-    pub fn set_openmask(&self, m: u64) {
+    fn set_openmask(&self, m: u64) {
         self.dk_openmask.store(m, Ordering::Relaxed);
     }
 
@@ -566,8 +597,9 @@ impl Disk {
         words_read_bytes(&self.dk_label, LABEL, 0, out.as_bytes_mut());
     }
 
-    /// `*dk->dk_label = *lp`: the in-core label replaced, by a holder of `dk_lock` or the
-    /// kernel lock (the module's redesign).
+    /// `*dk->dk_label = *lp`: the in-core label replaced, by a holder of the kernel lock
+    /// (asserted under `diagnostic`; the drivers' opens and ioctls, which take `dk_lock`
+    /// too, run under it, as `disk_attach` does).
     pub fn label_store(&self, lp: &Disklabel) {
         words_write_bytes(&self.dk_label, LABEL, 0, lp.as_bytes());
     }
@@ -585,7 +617,7 @@ impl Disk {
             .cast::<u8>()
             .wrapping_add(
                 offset_of!(Disklabel, d_partitions)
-                    + (part as usize).min(MAXPARTITIONS) * size_of::<Partition>(),
+                    + (part as usize).min(MAXPARTITIONSUNIT as usize - 1) * size_of::<Partition>(),
             )
             .cast::<Partition>()
     }
@@ -612,7 +644,7 @@ impl Disk {
             secpercyl: words_get(w, LABEL, offset_of!(Disklabel, d_secpercyl)),
             ..LabelGeom::default()
         };
-        if (part as usize) < MAXPARTITIONS {
+        if part < MAXPARTITIONSUNIT {
             let p = offset_of!(Disklabel, d_partitions) + part as usize * size_of::<Partition>();
             let size: u32 = words_get(w, LABEL, p + offset_of!(Partition, p_size));
             let off: u32 = words_get(w, LABEL, p + offset_of!(Partition, p_offset));
@@ -630,7 +662,7 @@ impl Disk {
         let w = &self.dk_label;
         let n: u16 = words_get(w, LABEL, offset_of!(Disklabel, d_npartitions));
         part < u32::from(n)
-            && (part as usize) < MAXPARTITIONS
+            && part < MAXPARTITIONSUNIT
             && words_get::<u8>(
                 w,
                 LABEL,
@@ -778,7 +810,7 @@ struct SoftraidHooks {
 
 /// The witness of `disklist`, `disk_count` and the disks' list handles (the C's kernel lock,
 /// the module's redesign): held for one list step at a time.
-pub static DISKS: Mutexed<()> = Mutexed::new(IPL_NONE, ());
+static DISKS: Mutexed<()> = Mutexed::new(IPL_NONE, ());
 
 /// `disklist`: a global list of all disks attached to the system. May grow or shrink over
 /// time.
@@ -1039,7 +1071,11 @@ pub fn readdoslabel(
 
     partoff += DOS_LABELSECTOR;
     if readdisksector(bp, lp, dl_blktosec(lp, partoff as u64)).is_err() {
-        return Err(bp.buf().error().unwrap_or(Errno::EIO));
+        // return bp->b_error: 0 (success, the spoofed label) when the strategy set no error.
+        return match bp.buf().error() {
+            Some(e) => Err(e),
+            None => Ok(()),
+        };
     }
 
     let mut rlp = Disklabel::from_bytes(
@@ -1678,7 +1714,7 @@ pub fn diskerr(bp: &Buf, dname: &str, what: &str, pri: i32, blkdone: i32, g: Opt
     let unit = diskunit(bp.dev());
     let part = diskpart(bp.dev());
     let partname = dl_partnum2name(part as usize).map_or('?', char::from);
-    let mut line = LineBuf::<192>::new();
+    let mut line = LineBuf::<256>::new();
 
     let _ = write!(
         line,
@@ -1744,7 +1780,9 @@ pub fn disk_attach_unit<G: ProcGlue>(xname: &[u8], unit: i32, dk: &DiskRef) {
 fn attach<G: ProcGlue>(dv: Option<&DevRef>, ident: Option<(&[u8], i32)>, dk: &DiskRef) {
     hal::sync::klock::kernel_assert_locked();
 
-    // Allocate and initialize the disklabel structures: the block holds them (zeroed).
+    // Allocate and initialize the disklabel structures: the block holds them, zeroed afresh
+    // (the C mallocs an M_ZERO label: a disk attached again, vnd's, starts with no label).
+    dk.label_store(&Disklabel::zeroed());
 
     // Set the attached timestamp.
     dk.dk_mtx.lock().attachtime = microuptime();
@@ -1888,8 +1926,9 @@ pub fn disk_unbusy(dk: &Disk, bcount: i64, blkno: Daddr, read: bool) {
     let diff_time = {
         let mut s = dk.dk_mtx.lock();
 
+        let busy = s.busy;
         s.busy -= 1;
-        if s.busy < 0 {
+        if busy == 0 {
             printf(format_args!(
                 "disk_unbusy: {}: dk_busy < 0\n",
                 Str(dk.name())
@@ -3098,10 +3137,11 @@ mod tests {
     /// A disk named `name` whose label has the DUID `uid`, attached (no device).
     fn listed_disk(name: &[u8], uid: [u8; DUID_SIZE]) -> DiskRef {
         let dk = Disk::new(name, 0);
+        disk_attach::<crate::fs::testfs::TestGlue>(None, &dk);
+        // After the attach, which zeroes the label (the C's M_ZERO malloc).
         let mut lp = label(64);
         lp.d_uid = uid;
         dk.label_store(&lp);
-        disk_attach::<crate::fs::testfs::TestGlue>(None, &dk);
         dk
     }
 
@@ -3320,6 +3360,35 @@ mod tests {
         let _g = setup(1);
         assert!(parsedisk(b"", 0).is_none());
         assert!(parsedisk(b"nosuch9a", 0).is_none());
+    }
+
+    #[test]
+    fn a_disk_attached_again_starts_with_no_label() {
+        let _g = setup(1);
+        let dk = listed_disk(b"vnd0", [7; 8]);
+        assert_eq!(dk.uid(), [7; 8]);
+        disk_detach(&dk);
+        assert!(!dk.is_attached());
+        disk_attach::<crate::fs::testfs::TestGlue>(None, &dk);
+        assert!(dk.is_attached());
+        assert_eq!(dk.uid(), [0; 8]);
+        assert_eq!(dk.geom(0), LabelGeom::default());
+        disk_detach(&dk);
+    }
+
+    #[test]
+    fn unbusy_warns_once_the_count_goes_below_zero() {
+        let _g = setup(1);
+        crate::testutil::install();
+        let dk = Disk::new(b"wd7", 0);
+        let before = crate::testutil::printf_count("disk_unbusy: wd7: dk_busy < 0");
+        disk_unbusy(&dk, 0, 0, true);
+        disk_unbusy(&dk, 0, 0, true);
+        // `dk_busy-- == 0`: only the first underflow warns.
+        assert_eq!(
+            crate::testutil::printf_count("disk_unbusy: wd7: dk_busy < 0") - before,
+            1
+        );
     }
 }
 /* </TESTS> */
