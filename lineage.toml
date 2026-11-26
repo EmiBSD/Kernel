@@ -1710,8 +1710,8 @@ notes = "M5-b2: enodev, enxio, eopnotsupp, nullop, assertwaitok (SMR_ASSERT_NONC
 rust = "sys/bsd/arch/arm64/arm64/intr.rs"
 lz = ["sys/arch/arm64/arm64/intr.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/hal/cpu/intr.rs", "sys/hal/arch/arm64/trap.rs"]
-notes = "M2: arm_clock_func, arm_clock_register, arm_dflt_delay, delay, cpu_initclocks, cpu_startclock, setstatclockrate; M4: arm_dflt_irq/fiq, arm_irq/fiq_dispatch, arm_cpu_irq/fiq, arm_smask, arm_intr_func with the arm_dflt_* spl, arm_do_pending_intr, arm_set_intr_handler, arm_init_smask, splraise/spllower/splx/softintr, arm_splassert_check, intr_enable/disable_wakeup, arm_intr_get_parent, the pre-registration (arm_intr_prereg_*, arm_intr_init_fdt), arm_intr_register_fdt, arm_intr_establish_fdt/_cpu/_idx/_idx_cpu, arm_intr_disestablish_fdt, arm_intr_enable/disable, arm_intr_parent_establish/disestablish_fdt, arm_intr_route, arm_intr_cpu_enable, intr_barrier, intr_set_wakeup (lists behind a Sync wrapper, NonNull handles); the imap/msi variants and arm_intr_map_msi come with PCI (M5), the IPIs with MULTIPROCESSOR; M11a: the MULTIPROCESSOR IPI implementation: intr_send_ipi_func (a StaticCell set by the controller's attach), arm_send_ipi, arm_no_send_ipi; SOFTINTR_XCALL stays out (NXCALL 0 on arm64); ; M12: arm_intr_map_msi (msi-map with msi-map-mask and #msi-cells, else the first msi-parent up the tree), arm_intr_establish_fdt_imap/_imap_cpu (interrupt-map with interrupt-map-mask, the parent's #address-cells; reg as a 4-cell slice), arm_intr_establish_fdt_msi/_msi_cpu (through ic_establish_msi); interrupt_controllers() for ampintc.c's extern use of the list; N4.5c: gains ArmIntrHardware (hal::cpu::intr::IntrHardware over ARM_INTR_FUNC, registered by initarm); arm_smask, arm_init_smask, the arm_dflt_* bodies, arm_do_pending_intr and softintr forward to hal::cpu::intr (the table and ci_cpl/ci_ipending/ci_idepth are hal's)"
+adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/hal/cpu/intr.rs", "sys/hal/arch/arm64/trap.rs", "sys/kernel/dev/arm64/intr.rs"]
+notes = "N7.2a1: the adapter over kernel::dev::arm64::intr under LZ's names and signatures: LegacyIc (a driver's struct interrupt_controller as the kernel's trait), arm_intr_register_fdt registering it and linking the mirror list interrupt_controllers() serves (legacy structures only), handles as LZ's MachineIntrHandle on a legacy controller and a NativeIntrHandle (null ih_ic) on a native one, the pre-registration, cell parsing and lists gone; the clock table, the spl table and the IPI slot stay (N7.2b2, N7.2a3, N7.2a2). M2: arm_clock_func, arm_clock_register, arm_dflt_delay, delay, cpu_initclocks, cpu_startclock, setstatclockrate; M4: arm_dflt_irq/fiq, arm_irq/fiq_dispatch, arm_cpu_irq/fiq, arm_smask, arm_intr_func with the arm_dflt_* spl, arm_do_pending_intr, arm_set_intr_handler, arm_init_smask, splraise/spllower/splx/softintr, arm_splassert_check, intr_enable/disable_wakeup, arm_intr_get_parent, the pre-registration (arm_intr_prereg_*, arm_intr_init_fdt), arm_intr_register_fdt, arm_intr_establish_fdt/_cpu/_idx/_idx_cpu, arm_intr_disestablish_fdt, arm_intr_enable/disable, arm_intr_parent_establish/disestablish_fdt, arm_intr_route, arm_intr_cpu_enable, intr_barrier, intr_set_wakeup (lists behind a Sync wrapper, NonNull handles); the imap/msi variants and arm_intr_map_msi come with PCI (M5), the IPIs with MULTIPROCESSOR; M11a: the MULTIPROCESSOR IPI implementation: intr_send_ipi_func (a StaticCell set by the controller's attach), arm_send_ipi, arm_no_send_ipi; SOFTINTR_XCALL stays out (NXCALL 0 on arm64); ; M12: arm_intr_map_msi (msi-map with msi-map-mask and #msi-cells, else the first msi-parent up the tree), arm_intr_establish_fdt_imap/_imap_cpu (interrupt-map with interrupt-map-mask, the parent's #address-cells; reg as a 4-cell slice), arm_intr_establish_fdt_msi/_msi_cpu (through ic_establish_msi); interrupt_controllers() for ampintc.c's extern use of the list; N4.5c: gains ArmIntrHardware (hal::cpu::intr::IntrHardware over ARM_INTR_FUNC, registered by initarm); arm_smask, arm_init_smask, the arm_dflt_* bodies, arm_do_pending_intr and softintr forward to hal::cpu::intr (the table and ci_cpl/ci_ipending/ci_idepth are hal's)"
 
 [[module]]
 rust = "sys/bsd/arch/arm64/arm64/locore.rs"
@@ -1929,8 +1929,9 @@ notes = "M14 (A3): what locore.S's drop_to_el1 writes: CPTR_RES1, HCR_TGE, HCR_R
 [[module]]
 rust = "sys/bsd/arch/arm64/include/intr.rs"
 lz = ["sys/arch/arm64/include/intr.rs"]
-status = "inherited"
-notes = "M3: the levels; M4: IST_* (with the arm64 extra trigger types), SOFTINTR_XCALL, struct machine_intr_handle, struct arm_intr_func, struct interrupt_controller (ic_establish's name is &str, the cookie a *const ()); the spl*() helpers are the machine::intr contract; ARM_IPI_* with MULTIPROCESSOR (M5); M11a: ARM_IPI_NOP/DDB/HALT/XCALL; ; M12: ic_establish_msi in struct interrupt_controller (IcEstablishMsiFn, addr/data as &mut u64)"
+status = "adapted"
+adapted_by = ["sys/kernel/dev/arm64/intr.rs", "sys/kernel/dev/intr.rs", "sys/hal/cpu/intr.rs"]
+notes = "N7.2a1: the levels re-exported from hal::cpu::intr, the trigger types, IPI numbers and SOFTINTR_XCALL from kernel::dev::arm64::intr, IntrFn from kernel::dev::intr; the three legacy structs stay for the drivers in bsd. M3: the levels; M4: IST_* (with the arm64 extra trigger types), SOFTINTR_XCALL, struct machine_intr_handle, struct arm_intr_func, struct interrupt_controller (ic_establish's name is &str, the cookie a *const ()); the spl*() helpers are the machine::intr contract; ARM_IPI_* with MULTIPROCESSOR (M5); M11a: ARM_IPI_NOP/DDB/HALT/XCALL; ; M12: ic_establish_msi in struct interrupt_controller (IcEstablishMsiFn, addr/data as &mut u64)"
 
 [[module]]
 rust = "sys/hal/arch/arm64/include/mplock.rs"
@@ -21123,7 +21124,119 @@ rust = "sys/kernel/dev/arm64/intr.rs"
 crate = "kernel"
 lz = ["sys/arch/arm64/arm64/intr.rs", "sys/arch/arm64/include/intr.rs"]
 status = "redesigned"
-notes = "N7.2a1: arm64's interrupt core in the kernel, 0 unsafe: struct interrupt_controller as the trait InterruptController (default methods the C's NULL entries; barrier answers the CPU and intr_barrier::<G> calls sched_barrier) and the registration IcReg built whole from an IcDesc (phandle and #interrupt-cells read once, immutable, MBox::leak'ed); ic_establish's void * as IcCookie (Rec, a record downcast by its controller; Word); struct machine_intr_handle as IntrHandle by value; the two LIST_HEADs as hal::ds::list::Lists in IntrRegistry (a static; tests build their own), writers under one Mutexed<()> at IPL_NONE never held across a controller's method, lookups lock-free; struct intr_prereg as Prereg (leaked, never freed: the module's Deviations) and the dummy controller as PreregIc; the specifier walks (interrupts with the interrupt-parent walk, interrupts-extended with the C's counting of an empty phandle, which LZ skipped; interrupt-map; msi-map with the #msi-cells default; msi-parent) over MArray cell buffers; the C's names kept. bsd's arch/arm64/arm64/intr.rs becomes the adapter in the next commit; until then it still defines every LZ item"
+notes = "N7.2a1: arm64's interrupt core in the kernel, 0 unsafe: struct interrupt_controller as the trait InterruptController (default methods the C's NULL entries; barrier answers the CPU and intr_barrier::<G> calls sched_barrier) and the registration IcReg built whole from an IcDesc (phandle and #interrupt-cells read once, immutable, MBox::leak'ed); ic_establish's void * as IcCookie (Rec, a record downcast by its controller; Word); struct machine_intr_handle as IntrHandle by value; the two LIST_HEADs as hal::ds::list::Lists in IntrRegistry (a static; tests build their own), writers under one Mutexed<()> at IPL_NONE never held across a controller's method, lookups lock-free; struct intr_prereg as Prereg (leaked, never freed: the module's Deviations) and the dummy controller as PreregIc; the specifier walks (interrupts with the interrupt-parent walk, interrupts-extended with the C's counting of an empty phandle, which LZ skipped; interrupt-map; msi-map with the #msi-cells default; msi-parent) over MArray cell buffers; the C's names kept. bsd's arch/arm64/arm64/intr.rs is the adapter over it (LegacyIc, the mirror list, the handles); <machine/intr.h>'s levels are hal's (moved rows), its trigger types, IPI numbers and SOFTINTR_XCALL this module's, IntrFn kernel::dev::intr's"
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/intr.rs::IntrPrereg"
+native = ["Prereg"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/intr.rs::PreregHead"
+native = ["IntrRegistry"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/intr.rs::PREREG_INTERRUPTS"
+native = ["IntrRegistry"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/intr.rs::arm_intr_prereg_establish_fdt"
+native = ["PreregIc::establish"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/intr.rs::arm_intr_prereg_disestablish_fdt"
+native = ["PreregIc::disestablish"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/intr.rs::arm_intr_prereg_barrier_fdt"
+native = ["PreregIc::barrier"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/intr.rs::arm_intr_prereg_set_wakeup_fdt"
+native = ["PreregIc::set_wakeup"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/intr.rs::arm_intr_init_fdt_recurse"
+native = ["IntrRegistry::init_fdt_recurse"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/arch/arm64/include/intr.rs::IPL_NONE"
+native = ["sys/hal/cpu/intr.rs::IPL_NONE"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/arch/arm64/include/intr.rs::IPL_SOFTCLOCK"
+native = ["sys/hal/cpu/intr.rs::levels::IPL_SOFTCLOCK"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/arch/arm64/include/intr.rs::IPL_SOFTNET"
+native = ["sys/hal/cpu/intr.rs::levels::IPL_SOFTNET"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/arch/arm64/include/intr.rs::IPL_SOFTTTY"
+native = ["sys/hal/cpu/intr.rs::levels::IPL_SOFTTTY"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/arch/arm64/include/intr.rs::IPL_BIO"
+native = ["sys/hal/cpu/intr.rs::levels::IPL_BIO"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/arch/arm64/include/intr.rs::IPL_NET"
+native = ["sys/hal/cpu/intr.rs::levels::IPL_NET"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/arch/arm64/include/intr.rs::IPL_TTY"
+native = ["sys/hal/cpu/intr.rs::levels::IPL_TTY"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/arch/arm64/include/intr.rs::IPL_VM"
+native = ["sys/hal/cpu/intr.rs::levels::IPL_VM"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/arch/arm64/include/intr.rs::IPL_AUDIO"
+native = ["sys/hal/cpu/intr.rs::levels::IPL_AUDIO"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/arch/arm64/include/intr.rs::IPL_CLOCK"
+native = ["sys/hal/cpu/intr.rs::IPL_CLOCK"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/arch/arm64/include/intr.rs::IPL_SCHED"
+native = ["sys/hal/cpu/intr.rs::levels::IPL_SCHED"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/arch/arm64/include/intr.rs::IPL_STATCLOCK"
+native = ["sys/hal/cpu/intr.rs::IPL_STATCLOCK"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/arch/arm64/include/intr.rs::IPL_HIGH"
+native = ["sys/hal/cpu/intr.rs::levels::IPL_HIGH"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/arch/arm64/include/intr.rs::NIPL"
+native = ["sys/hal/cpu/intr.rs::levels::NIPL"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/arch/arm64/include/intr.rs::IPL_IPI"
+native = ["sys/hal/cpu/intr.rs::levels::IPL_IPI"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/arch/arm64/include/intr.rs::IPL_MPFLOOR"
+native = ["sys/hal/cpu/intr.rs::levels::IPL_MPFLOOR"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/arch/arm64/include/intr.rs::IPL_IRQMASK"
+native = ["sys/hal/cpu/intr.rs::levels::IPL_IRQMASK"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/arch/arm64/include/intr.rs::IPL_FLAGMASK"
+native = ["sys/hal/cpu/intr.rs::levels::IPL_FLAGMASK"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/arch/arm64/include/intr.rs::IPL_MPSAFE"
+native = ["sys/hal/cpu/intr.rs::IPL_MPSAFE"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/arch/arm64/include/intr.rs::IPL_WAKEUP"
+native = ["sys/hal/cpu/intr.rs::IPL_WAKEUP"]
+kind = "moved"
 
 [[module]]
 rust = "sys/kernel/dev/sensors.rs"

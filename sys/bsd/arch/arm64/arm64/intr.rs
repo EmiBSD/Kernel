@@ -55,6 +55,14 @@
 //! (`intr_send_ipi_func`, `arm_send_ipi`, `arm_no_send_ipi`); the generic
 //! timer (`agtimer.c`) that replaces `arm_dflt_delay` attaches from `mainbus` (M5).
 //!
+//! N7.2a1: the registry of interrupt controllers, the pre-registration and the device tree's
+//! interrupt specifiers are the kernel's (`kernel::dev::arm64::intr`); this file is the
+//! adapter `bsd`'s drivers keep calling under LZ's names and signatures: [`LegacyIc`] makes a
+//! driver's `struct interrupt_controller` the kernel's `InterruptController`,
+//! [`arm_intr_register_fdt`] registers it and links it on the list
+//! [`interrupt_controllers`] serves, and the handles stay `NonNull<MachineIntrHandle>`. The
+//! clock table, the `spl` table and the IPI slot are still here (N7.2b2, N7.2a3, N7.2a2).
+//!
 //! ## Deviations
 //! - `arm_clock_func` is a [`StaticCell`], written by `arm_clock_register` during
 //!   autoconfiguration on the boot CPU.
@@ -64,13 +72,21 @@
 //!   attach (`arm_set_intr_handler`) on the boot CPU before interrupts are enabled; `hal`
 //!   reaches `arm_intr_func` as `hal::cpu::intr::IntrHardware` ([`ArmIntrHardware`], N4.5c), and
 //!   `arm_smask`, `ci_cpl`, `ci_ipending` and the `arm_dflt_*` bodies are `hal::cpu::intr`'s.
-//! - The controller and pre-registration lists are `LIST`s behind a `Sync` wrapper, touched
-//!   at attach time on the boot CPU; the handles are `NonNull<MachineIntrHandle>`.
-//!   `ampintc.c`'s `extern` use of `interrupt_controllers` is [`interrupt_controllers`].
+//! - `interrupt_controllers` (which `ampintc.c`, `acpipci.c` and `acpi_machdep.c` walk) is the
+//!   list of the legacy structures registered through [`arm_intr_register_fdt`], linked as
+//!   the kernel links their registrations, the latest first; the pre-registration's dummy
+//!   controllers are the kernel's and not on it. Every walk of it looks for a real controller
+//!   (by node, by phandle, with `ic_establish_msi`, by ITS), which a real controller's
+//!   registration puts ahead of its node's dummy in the C, so no walk finds another one.
+//! - A handle on a legacy controller is LZ's `MachineIntrHandle` (`ih_ic`, `ih_ih`, the size
+//!   `free` checks, as the handles `acpi_machdep`, `ampintc`'s MSI frames and `pciecam` make
+//!   by hand); a handle on a native controller (a pre-registration until N7.2a2) has a null
+//!   `ih_ic` and carries the kernel's `IntrHandle` after it (`NativeIntrHandle`); every
+//!   handle function takes the path its `ih_ic` says. No `bsd` reader of `ih_ic` meets a
+//!   native handle: the readers read only the handles they made.
 //! - `arm_intr_establish_fdt_imap*` take the child's four `reg` cells as a slice (the C's
 //!   `int *reg, int nreg`, `nreg` in bytes); `arm_intr_map_msi`'s `data` is a `&mut u64`.
 
-use core::cell::Cell;
 use core::ffi::c_void;
 use core::ptr::{self, NonNull};
 
@@ -79,20 +95,24 @@ use crate::sys::staticcell::StaticCell;
 use crate::arch::arm64::include::cpu::{CpuInfo, curcpu};
 use crate::arch::arm64::include::frame::Trapframe;
 use crate::arch::arm64::include::intr::{
-    ArmIntrFunc, IPL_NONE, IPL_WAKEUP, InterruptController, IntrFn, MachineIntrHandle,
-};
-use crate::dev::ofw::openfirm::{
-    OF_child, OF_getnodebyphandle, OF_getpropbool, OF_getpropint, OF_getpropintarray,
-    OF_getproplen, OF_parent, OF_peer,
+    ArmIntrFunc, IPL_NONE, InterruptController, IntrFn, MachineIntrHandle,
 };
 use crate::kassert;
 use crate::kern::kern_malloc::{free, malloc};
-use crate::kern::subr_prf::printf;
+use crate::kern::kern_sched::{cpu_info_by_number, cpu_number_of};
+use crate::kern::proc_glue::BsdProcGlue;
 use crate::kern::subr_prf::{panic, splassert_fail};
 use crate::queue_adapter;
-use crate::sys::malloc::{M_DEVBUF, M_TEMP, M_WAITOK, M_ZERO};
+use crate::sys::malloc::{M_DEVBUF, M_WAITOK};
 use crate::sys::queue::{ListEntry, ListHead};
 use crate::unported;
+use kernel::dev::arm64::intr::{self as core_intr, BarrierCpu, IcCookie, IcDesc, IntrHandle};
+use kernel::dev::intr::IntrHandler;
+
+pub use kernel::dev::arm64::intr::{
+    MAX_INTERRUPT_CELLS, arm_intr_cpu_enable, arm_intr_get_parent, arm_intr_init_fdt,
+    arm_intr_map_msi,
+};
 
 /// `arm_intr_func`: the controller's `spl` functions, the defaults until one attaches; `hal`
 /// reaches them through [`ArmIntrHardware`].
@@ -389,333 +409,249 @@ pub fn intr_disable_wakeup() {
     }
 }
 
-/// `arm_intr_get_parent`: find the interrupt parent by walking up the tree.
-pub fn arm_intr_get_parent(node: i32) -> i32 {
-    let mut node = node;
-    while node != 0 {
-        let phandle = OF_getpropint(node, b"interrupt-parent", 0);
-        if phandle != 0 {
-            return OF_getnodebyphandle(phandle);
-        }
-        node = OF_parent(node);
-        if OF_getpropbool(node, b"interrupt-controller") {
-            return node;
-        }
-    }
-    0
-}
-
-/// `arm_intr_map_msi`: the phandle of the MSI controller of `node`, through its `msi-map`
-/// (which also turns the requester ID in `data` into the controller's device ID) or the
-/// first `msi-parent` up the tree; 0 when there is none.
-pub fn arm_intr_map_msi(node: i32, data: &mut u64) -> u32 {
-    let len = OF_getproplen(node, b"msi-map");
-    if len <= 0 {
-        let mut node = node;
-        let mut phandle = 0;
-        while node != 0 && phandle == 0 {
-            phandle = OF_getpropint(node, b"msi-parent", 0);
-            node = OF_parent(node);
-        }
-        return phandle;
-    }
-
-    let len = len as usize;
-    let Some(map) = malloc(len, M_TEMP, M_WAITOK) else {
-        return 0;
-    };
-    let map = map.cast::<u32>();
-    // SAFETY: a fresh allocation of `len` bytes, freed below; `len` came from the property,
-    // and a property of whole cells fills it.
-    let cells = unsafe { core::slice::from_raw_parts_mut(map.as_ptr(), len / 4) };
-    OF_getpropintarray(node, b"msi-map", cells);
-
-    let mask = OF_getpropint(node, b"msi-map-mask", 0xffff);
-    let rid = (*data as u32) & mask;
-
-    let mut phandle = 0;
-    let mut cell: &[u32] = cells;
-    while cell.len() > 1 {
-        let ctrl = OF_getnodebyphandle(cell[1]);
-        if ctrl == 0 {
-            break;
-        }
-
-        // Some device trees (e.g. those for the Rockchip RK3399 boards) are missing a
-        // #msi-cells property. Assume the msi-specifier uses a single cell in that case.
-        let mcells = OF_getpropint(ctrl, b"#msi-cells", 1) as usize;
-        if cell.len() < mcells + 3 {
-            break;
-        }
-
-        let rid_base = cell[0];
-        let length = cell[2 + mcells];
-        let mut msi_base = u64::from(cell[2]);
-        for i in 1..mcells {
-            msi_base <<= 32;
-            msi_base |= u64::from(cell[2 + i]);
-        }
-        if rid >= rid_base && rid < rid_base.wrapping_add(length) {
-            *data = msi_base + u64::from(rid - rid_base);
-            phandle = cell[1];
-            break;
-        }
-
-        cell = &cell[3 + mcells..];
-    }
-
-    free(map.cast::<u8>(), M_TEMP, len);
-    phandle
-}
-
-/// `MAX_INTERRUPT_CELLS`.
-pub const MAX_INTERRUPT_CELLS: usize = 4;
-
-/// `struct intr_prereg`: interrupt pre-registration.
-///
-/// To allow device drivers to establish interrupt handlers before all relevant interrupt
-/// controllers have been attached, we support pre-registration of interrupt handlers. For
-/// each node in the device tree that has an "interrupt-controller" property, we register a
-/// dummy interrupt controller that simply stashes away all relevant details of the
-/// interrupt handler being established. Later, when the real interrupt controller registers
-/// itself, we establish those interrupt handlers based on that information.
-pub struct IntrPrereg {
-    /// `ip_list`.
-    pub ip_list: ListEntry<IntrPrereg>,
-    /// `ip_phandle`.
-    pub ip_phandle: u32,
-    /// `ip_cell[MAX_INTERRUPT_CELLS]`.
-    pub ip_cell: [u32; MAX_INTERRUPT_CELLS],
-    /// `ip_level`.
-    pub ip_level: Cell<i32>,
-    /// `ip_ci`.
-    pub ip_ci: Option<&'static CpuInfo>,
-    /// `ip_func`.
-    pub ip_func: IntrFn,
-    /// `ip_arg`.
-    pub ip_arg: *mut c_void,
-    /// `ip_name`.
-    pub ip_name: &'static str,
-    /// `ip_ic`: the controller that took it, once one did.
-    pub ip_ic: Cell<*const InterruptController>,
-    /// `ip_ih`: the controller's handle.
-    pub ip_ih: Cell<*mut c_void>,
-}
-
-queue_adapter!(
-    /// `LIST_HEAD(, intr_prereg) prereg_interrupts`.
-    pub PreregList: IntrPrereg, ip_list => ListEntry<IntrPrereg>
-);
-
 queue_adapter!(
     /// `LIST_HEAD(, interrupt_controller) interrupt_controllers`.
     pub IcList: InterruptController, ic_list => ListEntry<InterruptController>
 );
 
-/// A list head that can be a static: every access happens at attach time on the boot CPU.
-struct PreregHead(ListHead<PreregList>);
-// SAFETY: see the type's doc.
-unsafe impl Sync for PreregHead {}
-/// As `PreregHead`.
+/// A list head that can be a static: linked only by [`arm_intr_register_fdt`], during
+/// autoconfiguration under the kernel lock (the C's protocol, which the kernel's registry
+/// keeps for its own list with a mutex), and never unlinked.
 struct IcHead(ListHead<IcList>);
-// SAFETY: see `PreregHead`.
+// SAFETY: the only writer is `arm_intr_register_fdt`, which autoconf runs on one CPU at a time
+// under the kernel lock (no two inserts race), and an insert publishes a structure its driver
+// filled before registering; the readers (`interrupt_controllers`) only walk it, and nothing is
+// ever removed, so a walker never meets a freed or half-linked element.
 unsafe impl Sync for IcHead {}
 
-/// `prereg_interrupts`.
-static PREREG_INTERRUPTS: PreregHead = PreregHead(ListHead::new());
 /// `interrupt_controllers`.
 static INTERRUPT_CONTROLLERS: IcHead = IcHead(ListHead::new());
 
-/// `interrupt_controllers`, which `ampintc.c` names `extern` for the GICv2m frame: the
-/// registered controllers, the latest first.
+/// `interrupt_controllers`, which `ampintc.c` names `extern` for the GICv2m frame (and
+/// `acpipci`, `acpi_machdep` walk): the registered legacy controllers, the latest first.
 pub fn interrupt_controllers() -> &'static ListHead<IcList> {
     &INTERRUPT_CONTROLLERS.0
 }
 
-/// `arm_intr_prereg_establish_fdt`: the dummy controller's `ic_establish`.
-pub fn arm_intr_prereg_establish_fdt(
-    cookie: *const (),
-    cell: &[u32],
-    level: i32,
-    ci: Option<&'static CpuInfo>,
-    func: IntrFn,
-    arg: *mut c_void,
-    name: &'static str,
-) -> *mut c_void {
-    // SAFETY: the cookie is the controller itself (`arm_intr_init_fdt_recurse`).
-    let ic = unsafe { &*cookie.cast::<InterruptController>() };
+/// A driver's `struct interrupt_controller` as the kernel's
+/// [`InterruptController`](kernel::dev::arm64::intr::InterruptController): its entry points
+/// called as LZ called them, a `NULL` entry doing what LZ did (nothing), its cookies words.
+pub struct LegacyIc(&'static InterruptController);
 
-    let Some(ip) = malloc(size_of::<IntrPrereg>(), M_DEVBUF, M_ZERO | M_WAITOK) else {
-        return ptr::null_mut();
-    };
-    let ip = ip.cast::<IntrPrereg>();
-    let mut cells = [0u32; MAX_INTERRUPT_CELLS];
-    for (i, c) in cells
-        .iter_mut()
-        .enumerate()
-        .take(ic.ic_cells.get() as usize)
-    {
-        *c = cell[i];
-    }
-    // SAFETY: a fresh allocation of the right size and alignment, written once before use.
-    unsafe {
-        ip.write(IntrPrereg {
-            ip_list: ListEntry::new(),
-            ip_phandle: ic.ic_phandle.get(),
-            ip_cell: cells,
-            ip_level: Cell::new(level),
-            ip_ci: ci,
-            ip_func: func,
-            ip_arg: arg,
-            ip_name: name,
-            ip_ic: Cell::new(ptr::null()),
-            ip_ih: Cell::new(ptr::null_mut()),
-        });
-    }
-    // SAFETY: as above; the entry lives until disestablished.
-    let entry: &'static IntrPrereg = unsafe { ip.as_ref() };
-    // SAFETY: a new entry, on no list; attach time, boot CPU.
-    unsafe { PREREG_INTERRUPTS.0.insert_head(entry) };
-    ip.as_ptr().cast::<c_void>()
+// SAFETY: the structure's `Cell`s are written only before it is shared: `ic_node`,
+// `ic_cookie` and `ic_gic_its_id` by its driver before `arm_intr_register_fdt`, `ic_cells` and
+// `ic_phandle` by that registration on the registering CPU before the structure is on
+// `interrupt_controllers` and before the kernel establishes anything on it; afterwards every
+// access is a read (`LegacyIc` only reads), so sharing `&LegacyIc` between CPUs cannot race.
+unsafe impl Sync for LegacyIc {}
+
+/// `ci` as the kernel's CPU number.
+fn cpu_of(ci: Option<&CpuInfo>) -> Option<usize> {
+    ci.map(cpu_number_of)
 }
 
-/// `arm_intr_prereg_disestablish_fdt`.
-pub fn arm_intr_prereg_disestablish_fdt(cookie: *mut c_void) {
-    let Some(ip) = NonNull::new(cookie.cast::<IntrPrereg>()) else {
-        return;
-    };
-    // SAFETY: a pre-registration from `arm_intr_prereg_establish_fdt`, alive until freed here.
-    let entry = unsafe { ip.as_ref() };
-    // SAFETY: the controller that took the entry is a registered one.
-    let ic = unsafe { entry.ip_ic.get().as_ref() };
-
-    if let Some(ic) = ic
-        && !entry.ip_ih.get().is_null()
-        && let Some(dis) = ic.ic_disestablish
-    {
-        dis(entry.ip_ih.get());
-    }
-
-    if ic.is_none() {
-        // SAFETY: an entry no controller took is still on the list.
-        unsafe { ListHead::<PreregList>::remove(entry) };
-    }
-    free(ip.cast::<u8>(), M_DEVBUF, size_of::<IntrPrereg>());
+/// The kernel's CPU number as `bsd`'s `cpu_info`.
+fn ci_of(cpu: Option<usize>) -> Option<&'static CpuInfo> {
+    cpu.and_then(cpu_info_by_number)
 }
 
-/// `arm_intr_prereg_barrier_fdt`.
-pub fn arm_intr_prereg_barrier_fdt(cookie: *mut c_void) {
-    // SAFETY: as for `arm_intr_prereg_disestablish_fdt`.
-    let entry = unsafe { &*cookie.cast::<IntrPrereg>() };
-    // SAFETY: as above.
-    if let Some(ic) = unsafe { entry.ip_ic.get().as_ref() }
-        && !entry.ip_ih.get().is_null()
-        && let Some(barrier) = ic.ic_barrier
-    {
-        barrier(entry.ip_ih.get());
+/// A handler of `bsd`'s as the kernel's: the function and its argument's address.
+fn raw(func: IntrFn, arg: *mut c_void) -> IntrHandler {
+    IntrHandler::Raw(func, arg.expose_provenance())
+}
+
+/// A legacy controller's `void *` handle as the kernel's cookie (`NULL`: refused).
+fn word(ih: *mut c_void) -> Option<IcCookie> {
+    (!ih.is_null()).then(|| IcCookie::Word(ih.expose_provenance()))
+}
+
+/// The `void *` handle a legacy controller answered.
+fn legacy_cookie(ih: IcCookie) -> *mut c_void {
+    match ih {
+        IcCookie::Word(w) => ptr::with_exposed_provenance_mut(w),
+        IcCookie::Rec(_) => panic(format_args!("a legacy controller's cookie is a record")),
     }
 }
 
-/// `arm_intr_prereg_set_wakeup_fdt`.
-pub fn arm_intr_prereg_set_wakeup_fdt(cookie: *mut c_void) {
-    // SAFETY: as for `arm_intr_prereg_disestablish_fdt`.
-    let entry = unsafe { &*cookie.cast::<IntrPrereg>() };
-    // SAFETY: as above.
-    if let Some(ic) = unsafe { entry.ip_ic.get().as_ref() }
-        && !entry.ip_ih.get().is_null()
-        && let Some(set_wakeup) = ic.ic_set_wakeup
-    {
-        set_wakeup(entry.ip_ih.get());
+impl core_intr::InterruptController for LegacyIc {
+    fn establish(
+        &self,
+        cell: &[u32],
+        level: i32,
+        cpu: Option<usize>,
+        h: IntrHandler,
+        name: &'static str,
+    ) -> Option<IcCookie> {
+        let IntrHandler::Raw(func, _) = h;
+        let establish = self.0.ic_establish?;
+        word(establish(
+            self.0.ic_cookie.get(),
+            cell,
+            level,
+            ci_of(cpu),
+            func,
+            h.raw_arg(),
+            name,
+        ))
     }
-    entry.ip_level.set(entry.ip_level.get() | IPL_WAKEUP);
-}
 
-/// `arm_intr_init_fdt_recurse`: a dummy controller for every "interrupt-controller" node.
-fn arm_intr_init_fdt_recurse(node: i32) {
-    if OF_getproplen(node, b"interrupt-controller") >= 0 {
-        let Some(ic) = malloc(
-            size_of::<InterruptController>(),
-            M_DEVBUF,
-            M_ZERO | M_WAITOK,
-        ) else {
-            return;
-        };
-        let ic = ic.cast::<InterruptController>();
-        // SAFETY: a fresh allocation, written once before use; it lives forever.
-        unsafe {
-            ic.write(InterruptController {
-                ic_node: Cell::new(node),
-                ic_cookie: Cell::new(ic.as_ptr().cast::<()>()),
-                ic_establish: Some(arm_intr_prereg_establish_fdt),
-                ic_establish_msi: None,
-                ic_disestablish: Some(arm_intr_prereg_disestablish_fdt),
-                ic_enable: None,
-                ic_disable: None,
-                ic_route: None,
-                ic_cpu_enable: None,
-                ic_barrier: Some(arm_intr_prereg_barrier_fdt),
-                ic_set_wakeup: Some(arm_intr_prereg_set_wakeup_fdt),
-                ic_list: ListEntry::new(),
-                ic_phandle: Cell::new(0),
-                ic_cells: Cell::new(0),
-                ic_gic_its_id: Cell::new(0),
-            });
+    fn establish_msi(
+        &self,
+        addr: &mut u64,
+        data: &mut u64,
+        level: i32,
+        cpu: Option<usize>,
+        h: IntrHandler,
+        name: &'static str,
+    ) -> Option<IcCookie> {
+        let IntrHandler::Raw(func, _) = h;
+        let establish_msi = self.0.ic_establish_msi?;
+        word(establish_msi(
+            self.0.ic_cookie.get(),
+            addr,
+            data,
+            level,
+            ci_of(cpu),
+            func,
+            h.raw_arg(),
+            name,
+        ))
+    }
+
+    fn disestablish(&self, ih: IcCookie) {
+        if let Some(dis) = self.0.ic_disestablish {
+            dis(legacy_cookie(ih));
         }
-        // SAFETY: as above.
-        arm_intr_register_fdt(unsafe { ic.as_ref() });
     }
 
-    let mut child = OF_child(node);
-    while child != 0 {
-        arm_intr_init_fdt_recurse(child);
-        child = OF_peer(child);
+    fn enable(&self, ih: IcCookie) {
+        kassert!(self.0.ic_enable.is_some());
+        if let Some(enable) = self.0.ic_enable {
+            enable(legacy_cookie(ih));
+        }
+    }
+
+    fn disable(&self, ih: IcCookie) {
+        kassert!(self.0.ic_disable.is_some());
+        if let Some(disable) = self.0.ic_disable {
+            disable(legacy_cookie(ih));
+        }
+    }
+
+    fn route(&self, ih: IcCookie, enable: bool, cpu: usize) {
+        if let (Some(route), Some(ci)) = (self.0.ic_route, cpu_info_by_number(cpu)) {
+            route(legacy_cookie(ih), enable, ci);
+        }
+    }
+
+    fn cpu_enable(&self) {
+        if let Some(cpu_enable) = self.0.ic_cpu_enable {
+            cpu_enable();
+        }
+    }
+
+    /// The driver's `ic_barrier` makes its own `sched_barrier`: nothing left to wait for.
+    fn barrier(&self, ih: IcCookie) -> Option<BarrierCpu> {
+        if let Some(barrier) = self.0.ic_barrier {
+            barrier(legacy_cookie(ih));
+        }
+        None
+    }
+
+    fn set_wakeup(&self, ih: IcCookie) {
+        if let Some(set_wakeup) = self.0.ic_set_wakeup {
+            set_wakeup(legacy_cookie(ih));
+        }
+    }
+
+    fn legacy(&self) -> Option<usize> {
+        Some(ptr::from_ref(self.0).expose_provenance())
     }
 }
 
-/// `arm_intr_init_fdt`: pre-registers every interrupt controller of the tree.
-pub fn arm_intr_init_fdt() {
-    let node = OF_peer(0);
-    if node != 0 {
-        arm_intr_init_fdt_recurse(node);
-    }
-}
-
-/// `arm_intr_register_fdt`: a real controller registers; the handlers pre-registered for
-/// its node are established now.
+/// `arm_intr_register_fdt`: a real controller registers with the kernel (its `ic_cells` and
+/// `ic_phandle` written back, the structure linked on [`interrupt_controllers`]); the
+/// handlers pre-registered for its node are established on it now.
 pub fn arm_intr_register_fdt(ic: &'static InterruptController) {
-    ic.ic_cells
-        .set(OF_getpropint(ic.ic_node.get(), b"#interrupt-cells", 0));
-    ic.ic_phandle
-        .set(OF_getpropint(ic.ic_node.get(), b"phandle", 0));
-    kassert!(ic.ic_cells.get() as usize <= MAX_INTERRUPT_CELLS);
+    let Some(ops) = hal::mem::malloc::MBox::new(M_DEVBUF, M_WAITOK, LegacyIc(ic)) else {
+        panic(format_args!("arm_intr_register_fdt: no malloc(9)"));
+    };
+    let desc = IcDesc {
+        node: ic.ic_node.get(),
+        gic_its_id: ic.ic_gic_its_id.get(),
+        ops: hal::mem::malloc::MBox::leak(ops),
+    };
+    core_intr::arm_intr_register_fdt_linked(desc, |reg| {
+        ic.ic_cells.set(reg.cells());
+        ic.ic_phandle.set(reg.phandle());
+        // SAFETY: a controller registers once (its driver's attach), so `ic` is on no list;
+        // autoconf, under the kernel lock (see `IcHead`).
+        unsafe { INTERRUPT_CONTROLLERS.0.insert_head(ic) };
+    });
+}
 
-    // SAFETY: a controller registers once; attach time, boot CPU.
-    unsafe { INTERRUPT_CONTROLLERS.0.insert_head(ic) };
+/// A handle on a native controller: `ih_ic` null, the kernel's handle after it.
+#[repr(C)]
+struct NativeIntrHandle {
+    /// `ih_ic` and `ih_ih` both null: what tells this kind from LZ's.
+    mih: MachineIntrHandle,
+    /// The kernel's handle.
+    ih: IntrHandle,
+}
 
-    // Establish pre-registered interrupt handlers.
-    let mut next = PREREG_INTERRUPTS.0.first();
-    while let Some(ip) = next {
-        next = ListHead::<PreregList>::next(ip);
-        if ip.ip_phandle != ic.ic_phandle.get() {
-            continue;
-        }
-        ip.ip_ic.set(ptr::from_ref(ic));
-        if let Some(establish) = ic.ic_establish {
-            ip.ip_ih.set(establish(
-                ic.ic_cookie.get(),
-                &ip.ip_cell,
-                ip.ip_level.get(),
-                ip.ip_ci,
-                ip.ip_func,
-                ip.ip_arg,
-                ip.ip_name,
-            ));
-        }
-        if ip.ip_ih.get().is_null() {
-            printf(format_args!("can't establish interrupt {}\n", ip.ip_name));
-        }
-        // SAFETY: `ip` is on the list; attach time, boot CPU.
-        unsafe { ListHead::<PreregList>::remove(ip) };
+/// What a handle names: a legacy controller and its `void *`, or the kernel's handle.
+enum Handle {
+    /// `ih_ic`, `ih_ih`.
+    Legacy(&'static InterruptController, *mut c_void),
+    /// A native controller's.
+    Native(IntrHandle),
+}
+
+/// What `cookie` names.
+fn handle(cookie: NonNull<MachineIntrHandle>) -> Handle {
+    // SAFETY: an established handle (`arm_intr_establish_fdt*`, `arm_intr_parent_establish_fdt`
+    // or one a driver made by hand, LZ's contract for every caller) is a live
+    // `MachineIntrHandle` until its disestablish frees it.
+    let mih = unsafe { cookie.as_ref() };
+    if mih.ih_ic.is_null() {
+        // SAFETY: only `new_handle` writes a null `ih_ic`, and only as the first member of a
+        // `#[repr(C)]` `NativeIntrHandle` it allocated whole, so the block is one; it lives
+        // as long as the `MachineIntrHandle` above.
+        let native = unsafe { cookie.cast::<NativeIntrHandle>().as_ref() };
+        Handle::Native(native.ih)
+    } else {
+        // SAFETY: a non-null `ih_ic` names a registered `struct interrupt_controller`, a
+        // driver's static or softc member that is never freed.
+        Handle::Legacy(unsafe { &*mih.ih_ic }, mih.ih_ih)
+    }
+}
+
+/// `malloc(sizeof(v), M_DEVBUF, M_WAITOK)` holding `v`.
+fn alloc<T>(v: T) -> Option<NonNull<T>> {
+    let p = malloc(size_of::<T>(), M_DEVBUF, M_WAITOK)?.cast::<T>();
+    // SAFETY: a fresh block of `size_of::<T>()` bytes, aligned for every type of a handle
+    // (`malloc(9)`'s blocks are aligned to their power-of-two size, at least 16), written once
+    // before anything reads it.
+    unsafe { p.write(v) };
+    Some(p)
+}
+
+/// The handle a driver gets for the kernel's `ih`: LZ's pair for a legacy controller, a
+/// [`NativeIntrHandle`] for a native one.
+fn new_handle(ih: IntrHandle) -> Option<NonNull<MachineIntrHandle>> {
+    match ih.controller().ops().legacy() {
+        Some(ic) => alloc(MachineIntrHandle {
+            ih_ic: ptr::with_exposed_provenance(ic),
+            ih_ih: legacy_cookie(ih.cookie()),
+        }),
+        None => alloc(NativeIntrHandle {
+            mih: MachineIntrHandle {
+                ih_ic: ptr::null(),
+                ih_ih: ptr::null_mut(),
+            },
+            ih,
+        })
+        .map(NonNull::cast),
     }
 }
 
@@ -755,7 +691,7 @@ pub fn arm_intr_establish_fdt_idx(
 }
 
 /// `arm_intr_establish_fdt_idx_cpu`: interrupt `idx` of `node` on `ci`, through the
-/// controller its `interrupts-extended` or `interrupts` property names.
+/// controller its `interrupts-extended` or `interrupts` property names (the kernel's walk).
 #[allow(clippy::too_many_arguments)] // the C's signature
 pub fn arm_intr_establish_fdt_idx_cpu(
     node: i32,
@@ -766,88 +702,15 @@ pub fn arm_intr_establish_fdt_idx_cpu(
     cookie: *mut c_void,
     name: &'static str,
 ) -> Option<NonNull<MachineIntrHandle>> {
-    let mut extended = true;
-    let mut len = OF_getproplen(node, b"interrupts-extended");
-    if len <= 0 {
-        len = OF_getproplen(node, b"interrupts");
-        extended = false;
-    }
-    if len <= 0 || len % 4 != 0 {
-        return None;
-    }
-    let len = len as usize;
-
-    // Old style.
-    let mut ic: Option<&'static InterruptController> = None;
-    if !extended {
-        let parent = arm_intr_get_parent(node);
-        ic = INTERRUPT_CONTROLLERS
-            .0
-            .iter()
-            .find(|c| c.ic_node.get() == parent);
-        ic?;
-    }
-
-    let cells = malloc(len, M_TEMP, M_WAITOK)?.cast::<u32>();
-    // SAFETY: a fresh allocation of `len` bytes, a whole number of cells.
-    let cells_slice = unsafe { core::slice::from_raw_parts_mut(cells.as_ptr(), len / 4) };
-    if extended {
-        OF_getpropintarray(node, b"interrupts-extended", cells_slice);
-    } else {
-        OF_getpropintarray(node, b"interrupts", cells_slice);
-    }
-    let mut cell: &[u32] = cells_slice;
-    let mut val: *mut c_void = ptr::null_mut();
-    let mut i = 0;
-    while i <= idx && !cell.is_empty() {
-        if extended {
-            let phandle = cell[0];
-            // Handle "empty" phandle reference.
-            if phandle == 0 {
-                cell = &cell[1..];
-                continue;
-            }
-            ic = INTERRUPT_CONTROLLERS
-                .0
-                .iter()
-                .find(|c| c.ic_phandle.get() == phandle);
-            if ic.is_none() {
-                break;
-            }
-            cell = &cell[1..];
-        }
-        let Some(c) = ic else {
-            break;
-        };
-        let ncells = c.ic_cells.get() as usize;
-        if i == idx
-            && cell.len() >= ncells
-            && let Some(establish) = c.ic_establish
-        {
-            val = establish(c.ic_cookie.get(), cell, level, ci, func, cookie, name);
-            break;
-        }
-        if cell.len() < ncells {
-            break;
-        }
-        cell = &cell[ncells..];
-        i += 1;
-    }
-    free(cells.cast::<u8>(), M_TEMP, len);
-
-    if val.is_null() {
-        return None;
-    }
-    let ih =
-        malloc(size_of::<MachineIntrHandle>(), M_DEVBUF, M_WAITOK)?.cast::<MachineIntrHandle>();
-    // SAFETY: a fresh allocation, written once before use.
-    unsafe {
-        ih.write(MachineIntrHandle {
-            ih_ic: ic.map_or(ptr::null(), ptr::from_ref),
-            ih_ih: val,
-        });
-    }
-    Some(ih)
+    let h = raw(func, cookie);
+    new_handle(core_intr::arm_intr_establish_fdt_idx_cpu(
+        node,
+        idx,
+        level,
+        cpu_of(ci),
+        h,
+        name,
+    )?)
 }
 
 /// `arm_intr_establish_fdt_imap`.
@@ -864,7 +727,7 @@ pub fn arm_intr_establish_fdt_imap(
 
 /// `arm_intr_establish_fdt_imap_cpu`: the interrupt that `node`'s `interrupt-map` routes the
 /// child unit address and pin `reg` (four cells: `phys.hi`, `phys.mid`, `phys.lo`, the pin)
-/// to, after `interrupt-map-mask`.
+/// to, after `interrupt-map-mask` (the kernel's walk).
 pub fn arm_intr_establish_fdt_imap_cpu(
     node: i32,
     reg: &[u32],
@@ -874,82 +737,15 @@ pub fn arm_intr_establish_fdt_imap_cpu(
     cookie: *mut c_void,
     name: &'static str,
 ) -> Option<NonNull<MachineIntrHandle>> {
-    let mut map_mask = [0u32; 4];
-
-    if reg.len() != map_mask.len() {
-        return None;
-    }
-
-    if OF_getpropintarray(node, b"interrupt-map-mask", &mut map_mask) != 16 {
-        return None;
-    }
-
-    let len = OF_getproplen(node, b"interrupt-map");
-    if len <= 0 {
-        return None;
-    }
-    let len = len as usize;
-
-    let map = malloc(len, M_DEVBUF, M_WAITOK)?.cast::<u32>();
-    // SAFETY: a fresh allocation of `len` bytes, freed below.
-    let cells = unsafe { core::slice::from_raw_parts_mut(map.as_ptr(), len / 4) };
-    OF_getpropintarray(node, b"interrupt-map", cells);
-
-    let mut ic: Option<&'static InterruptController> = None;
-    let mut val: *mut c_void = ptr::null_mut();
-    let mut cell: &[u32] = cells;
-    while cell.len() > 5 {
-        ic = INTERRUPT_CONTROLLERS
-            .0
-            .iter()
-            .find(|c| c.ic_phandle.get() == cell[4]);
-        let Some(c) = ic else {
-            break;
-        };
-
-        let acells = OF_getpropint(c.ic_node.get(), b"#address-cells", 0) as usize;
-        let ncells = c.ic_cells.get() as usize;
-        if cell.len() >= 5 + acells + ncells
-            && (reg[0] & map_mask[0]) == cell[0]
-            && (reg[1] & map_mask[1]) == cell[1]
-            && (reg[2] & map_mask[2]) == cell[2]
-            && (reg[3] & map_mask[3]) == cell[3]
-            && let Some(establish) = c.ic_establish
-        {
-            val = establish(
-                c.ic_cookie.get(),
-                &cell[5 + acells..],
-                level,
-                ci,
-                func,
-                cookie,
-                name,
-            );
-            break;
-        }
-
-        if cell.len() < 5 + acells + ncells {
-            break;
-        }
-        cell = &cell[5 + acells + ncells..];
-    }
-
-    free(map.cast::<u8>(), M_DEVBUF, len);
-
-    if val.is_null() {
-        return None;
-    }
-
-    let ih =
-        malloc(size_of::<MachineIntrHandle>(), M_DEVBUF, M_WAITOK)?.cast::<MachineIntrHandle>();
-    // SAFETY: a fresh allocation, written once before use.
-    unsafe {
-        ih.write(MachineIntrHandle {
-            ih_ic: ic.map_or(ptr::null(), ptr::from_ref),
-            ih_ih: val,
-        });
-    }
-    Some(ih)
+    let h = raw(func, cookie);
+    new_handle(core_intr::arm_intr_establish_fdt_imap_cpu(
+        node,
+        reg,
+        level,
+        cpu_of(ci),
+        h,
+        name,
+    )?)
 }
 
 /// `arm_intr_establish_fdt_msi`.
@@ -978,80 +774,62 @@ pub fn arm_intr_establish_fdt_msi_cpu(
     cookie: *mut c_void,
     name: &'static str,
 ) -> Option<NonNull<MachineIntrHandle>> {
-    let phandle = arm_intr_map_msi(node, data);
-    let ic = INTERRUPT_CONTROLLERS
-        .0
-        .iter()
-        .find(|c| c.ic_phandle.get() == phandle)?;
-    let establish_msi = ic.ic_establish_msi?;
-
-    let val = establish_msi(
-        ic.ic_cookie.get(),
+    let h = raw(func, cookie);
+    new_handle(core_intr::arm_intr_establish_fdt_msi_cpu(
+        node,
         addr,
         data,
         level,
-        ci,
-        func,
-        cookie,
+        cpu_of(ci),
+        h,
         name,
-    );
-    if val.is_null() {
-        return None;
-    }
-
-    let ih =
-        malloc(size_of::<MachineIntrHandle>(), M_DEVBUF, M_WAITOK)?.cast::<MachineIntrHandle>();
-    // SAFETY: a fresh allocation, written once before use.
-    unsafe {
-        ih.write(MachineIntrHandle {
-            ih_ic: ptr::from_ref(ic),
-            ih_ih: val,
-        });
-    }
-    Some(ih)
+    )?)
 }
 
 /// `arm_intr_disestablish_fdt`.
 ///
 /// # Safety
 ///
-/// `cookie` must come from `arm_intr_establish_fdt*` and not be used afterwards.
+/// `cookie` must come from `arm_intr_establish_fdt*` (or be a `MachineIntrHandle` a driver
+/// made by hand, with `M_DEVBUF`) and not be used afterwards.
 pub unsafe fn arm_intr_disestablish_fdt(cookie: NonNull<MachineIntrHandle>) {
-    // SAFETY: the caller's guarantee.
-    let ih = unsafe { cookie.as_ref() };
-    // SAFETY: an established handle names a registered controller.
-    let ic = unsafe { &*ih.ih_ic };
-    if let Some(dis) = ic.ic_disestablish {
-        dis(ih.ih_ih);
+    match handle(cookie) {
+        Handle::Legacy(ic, ih) => {
+            if let Some(dis) = ic.ic_disestablish {
+                dis(ih);
+            }
+            free(cookie.cast(), M_DEVBUF, size_of::<MachineIntrHandle>());
+        }
+        Handle::Native(ih) => {
+            core_intr::arm_intr_disestablish_fdt(ih);
+            free(cookie.cast(), M_DEVBUF, size_of::<NativeIntrHandle>());
+        }
     }
-    free(
-        cookie.cast::<u8>(),
-        M_DEVBUF,
-        size_of::<MachineIntrHandle>(),
-    );
 }
 
 /// `arm_intr_enable`.
 pub fn arm_intr_enable(cookie: NonNull<MachineIntrHandle>) {
-    // SAFETY: an established handle names a registered controller.
-    let ih = unsafe { cookie.as_ref() };
-    // SAFETY: as above.
-    let ic = unsafe { &*ih.ih_ic };
-    kassert!(ic.ic_enable.is_some());
-    if let Some(enable) = ic.ic_enable {
-        enable(ih.ih_ih);
+    match handle(cookie) {
+        Handle::Legacy(ic, ih) => {
+            kassert!(ic.ic_enable.is_some());
+            if let Some(enable) = ic.ic_enable {
+                enable(ih);
+            }
+        }
+        Handle::Native(ih) => core_intr::arm_intr_enable(ih),
     }
 }
 
 /// `arm_intr_disable`.
 pub fn arm_intr_disable(cookie: NonNull<MachineIntrHandle>) {
-    // SAFETY: as for `arm_intr_enable`.
-    let ih = unsafe { cookie.as_ref() };
-    // SAFETY: as above.
-    let ic = unsafe { &*ih.ih_ic };
-    kassert!(ic.ic_disable.is_some());
-    if let Some(disable) = ic.ic_disable {
-        disable(ih.ih_ih);
+    match handle(cookie) {
+        Handle::Legacy(ic, ih) => {
+            kassert!(ic.ic_disable.is_some());
+            if let Some(disable) = ic.ic_disable {
+                disable(ih);
+            }
+        }
+        Handle::Native(ih) => core_intr::arm_intr_disable(ih),
     }
 }
 
@@ -1067,38 +845,13 @@ pub fn arm_intr_parent_establish_fdt(
     arg: *mut c_void,
     name: &'static str,
 ) -> *mut c_void {
-    // SAFETY: the cookie is the forwarding controller itself.
-    let ic = unsafe { &*cookie.cast::<InterruptController>() };
-
-    let parent = arm_intr_get_parent(ic.ic_node.get());
-    let Some(pic) = INTERRUPT_CONTROLLERS
-        .0
-        .iter()
-        .find(|c| c.ic_node.get() == parent)
-    else {
+    let me = cookie.addr();
+    let Some(ic) = core_intr::controllers().find(|ic| ic.ops().legacy() == Some(me)) else {
         return ptr::null_mut();
     };
-
-    let Some(establish) = pic.ic_establish else {
-        return ptr::null_mut();
-    };
-    let val = establish(pic.ic_cookie.get(), cell, level, ci, func, arg, name);
-    if val.is_null() {
-        return ptr::null_mut();
-    }
-
-    let Some(ih) = malloc(size_of::<MachineIntrHandle>(), M_DEVBUF, M_WAITOK) else {
-        return ptr::null_mut();
-    };
-    let ih = ih.cast::<MachineIntrHandle>();
-    // SAFETY: a fresh allocation, written once before use.
-    unsafe {
-        ih.write(MachineIntrHandle {
-            ih_ic: ptr::from_ref(pic),
-            ih_ih: val,
-        });
-    }
-    ih.as_ptr().cast::<c_void>()
+    core_intr::arm_intr_parent_establish_fdt(ic, cell, level, cpu_of(ci), raw(func, arg), name)
+        .and_then(new_handle)
+        .map_or(ptr::null_mut(), |ih| ih.as_ptr().cast::<c_void>())
 }
 
 /// `arm_intr_parent_disestablish_fdt`.
@@ -1106,49 +859,43 @@ pub fn arm_intr_parent_disestablish_fdt(cookie: *mut c_void) {
     let Some(ih) = NonNull::new(cookie.cast::<MachineIntrHandle>()) else {
         return;
     };
-    // SAFETY: a handle from `arm_intr_parent_establish_fdt`.
+    // SAFETY: a handle from `arm_intr_parent_establish_fdt`, not used after this.
     unsafe { arm_intr_disestablish_fdt(ih) };
 }
 
 /// `arm_intr_route`.
 pub fn arm_intr_route(cookie: NonNull<MachineIntrHandle>, enable: bool, ci: &CpuInfo) {
-    // SAFETY: as for `arm_intr_enable`.
-    let ih = unsafe { cookie.as_ref() };
-    // SAFETY: as above.
-    let ic = unsafe { &*ih.ih_ic };
-    if let Some(route) = ic.ic_route {
-        route(ih.ih_ih, enable, ci);
-    }
-}
-
-/// `arm_intr_cpu_enable`: every controller's per-CPU setup, on a CPU that comes up.
-pub fn arm_intr_cpu_enable() {
-    for ic in INTERRUPT_CONTROLLERS.0.iter() {
-        if let Some(cpu_enable) = ic.ic_cpu_enable {
-            cpu_enable();
+    match handle(cookie) {
+        Handle::Legacy(ic, ih) => {
+            if let Some(route) = ic.ic_route {
+                route(ih, enable, ci);
+            }
         }
+        Handle::Native(ih) => core_intr::arm_intr_route(ih, enable, cpu_number_of(ci)),
     }
 }
 
 /// `intr_barrier`: waits until no CPU runs the handler.
 pub fn intr_barrier(cookie: NonNull<MachineIntrHandle>) {
-    // SAFETY: as for `arm_intr_enable`.
-    let ih = unsafe { cookie.as_ref() };
-    // SAFETY: as above.
-    let ic = unsafe { &*ih.ih_ic };
-    if let Some(barrier) = ic.ic_barrier {
-        barrier(ih.ih_ih);
+    match handle(cookie) {
+        Handle::Legacy(ic, ih) => {
+            if let Some(barrier) = ic.ic_barrier {
+                barrier(ih);
+            }
+        }
+        Handle::Native(ih) => core_intr::intr_barrier::<BsdProcGlue>(ih),
     }
 }
 
 /// `intr_set_wakeup`.
 pub fn intr_set_wakeup(cookie: NonNull<MachineIntrHandle>) {
-    // SAFETY: as for `arm_intr_enable`.
-    let ih = unsafe { cookie.as_ref() };
-    // SAFETY: as above.
-    let ic = unsafe { &*ih.ih_ic };
-    if let Some(set_wakeup) = ic.ic_set_wakeup {
-        set_wakeup(ih.ih_ih);
+    match handle(cookie) {
+        Handle::Legacy(ic, ih) => {
+            if let Some(set_wakeup) = ic.ic_set_wakeup {
+                set_wakeup(ih);
+            }
+        }
+        Handle::Native(ih) => core_intr::intr_set_wakeup(ih),
     }
 }
 
