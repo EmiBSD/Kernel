@@ -20,6 +20,10 @@
 //! `nfs` of group `fs`: `<nfs/*.h>`, the wire formats.
 
 #[forbid(unsafe_code)]
+#[allow(
+    clippy::module_inception,
+    reason = "the C file keeps its name inside its group: `nfs::nfs`"
+)]
 pub mod nfs;
 #[forbid(unsafe_code)]
 pub mod nfsproto;

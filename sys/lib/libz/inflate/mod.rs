@@ -26,6 +26,10 @@ pub(crate) mod inffast;
 #[forbid(unsafe_code)]
 pub(crate) mod inffixed;
 #[forbid(unsafe_code)]
+#[allow(
+    clippy::module_inception,
+    reason = "the C file keeps its name inside its group: `inflate::inflate`"
+)]
 pub mod inflate;
 #[forbid(unsafe_code)]
 pub(crate) mod inftrees;

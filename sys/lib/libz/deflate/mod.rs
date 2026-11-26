@@ -22,6 +22,10 @@
 #[forbid(unsafe_code)]
 pub mod compress;
 #[forbid(unsafe_code)]
+#[allow(
+    clippy::module_inception,
+    reason = "the C file keeps its name inside its group: `deflate::deflate`"
+)]
 pub mod deflate;
 #[forbid(unsafe_code)]
 pub(crate) mod trees;

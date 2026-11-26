@@ -718,7 +718,7 @@ mod tests {
     /// entry of the table, and no two names share a number.
     #[test]
     fn the_numbers_are_sys_syscall_h() {
-        let src = include_str!("../lib/sysdefs/syscall.rs");
+        let src = include_str!("../lib/sysdefs/proc/syscall.rs");
         let mut seen = std::collections::BTreeMap::new();
         for line in src.lines() {
             let Some(rest) = line.strip_prefix("pub const SYS_") else {
