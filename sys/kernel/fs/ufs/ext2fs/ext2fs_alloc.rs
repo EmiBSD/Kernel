@@ -99,7 +99,7 @@ use crate::fs::vnode::Vnode;
 use crate::fs::vops::{Cred, VFS_VGET};
 use crate::proc::ProcGlue;
 use crate::time::tc::gettime;
-use libkern::skpc;
+use libkern::mem::skpc::skpc;
 
 /// The allocator `ext2fs_hashalloc` runs in each cylinder group (`ext2fs_alloccg` or
 /// `ext2fs_nodealloccg`).

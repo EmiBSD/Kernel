@@ -26,7 +26,8 @@
 //! checksums GPT headers with it), the rest for `ipsec`, `crypto`, `ppp_deflate` and `ddb`
 //! (IPComp's `deflate_global`, `cryptosoft.c`, `ppp-deflate.c`, CTF sections). This crate ports
 //! the same files, one module per C file (`deflate.c` and `deflate.h` → `deflate.rs`;
-//! `zlib.h` → `zlib.rs`), the public functions re-exported at the crate root.
+//! `zlib.h` → `zlib.rs`), grouped by purpose (`base`, `deflate`, `inflate`, `check`): the
+//! public functions are `libz::inflate::inflate::inflate`, `libz::check::crc32::crc32`, ...
 //!
 //! The files here are under the zlib licence (`zopenbsd.c` is ISC), and are altered source
 //! versions (rewrites in Rust); each file says so and carries the notice in full. This crate
@@ -40,50 +41,17 @@ extern crate alloc;
 extern crate std;
 
 #[forbid(unsafe_code)]
-pub mod adler32;
+pub mod base;
 #[forbid(unsafe_code)]
-pub mod compress;
-#[forbid(unsafe_code)]
-pub mod crc32;
+pub mod check;
 #[forbid(unsafe_code)]
 pub mod deflate;
 #[forbid(unsafe_code)]
-pub mod infback;
-#[forbid(unsafe_code)]
-mod inffast;
-#[forbid(unsafe_code)]
-mod inffixed;
-#[forbid(unsafe_code)]
 pub mod inflate;
-#[forbid(unsafe_code)]
-mod inftrees;
-#[forbid(unsafe_code)]
-mod trees;
-#[forbid(unsafe_code)]
-pub mod zconf;
-#[forbid(unsafe_code)]
-pub mod zlib;
-#[forbid(unsafe_code)]
-pub mod zopenbsd;
-#[forbid(unsafe_code)]
-pub mod zutil;
 
-pub use adler32::{adler32, adler32_combine};
-pub use compress::{compress, compress2, compressBound, compressBound_z};
-pub use crc32::crc32;
-pub use deflate::{
-    deflate, deflateBound, deflateBound_z, deflateCopy, deflateEnd, deflateGetDictionary,
-    deflateInit_, deflateInit2_, deflateParams, deflatePending, deflatePrime, deflateReset,
-    deflateResetKeep, deflateSetDictionary, deflateSetHeader, deflateTune, deflateUsed,
-};
-pub use infback::{inflateBack, inflateBackEnd, inflateBackInit_};
-pub use inflate::{
-    inflate, inflateCodesUsed, inflateCopy, inflateEnd, inflateGetDictionary, inflateGetHeader,
-    inflateInit_, inflateInit2_, inflateMark, inflatePrime, inflateReset, inflateReset2,
-    inflateResetKeep, inflateSetDictionary, inflateSync, inflateSyncPoint, inflateUndermine,
-    inflateValidate,
-};
-pub use zconf::{MAX_MEM_LEVEL, MAX_WBITS};
-pub use zlib::*;
-pub use zutil::{zError, zlibCompileFlags, zlibVersion};
+// Two aliases for inherited files that stay byte-identical to LZ's: `inflate/inffixed.rs` names
+// `crate::inftrees`, and the boot loaders' `efiboot/efidev.rs` (both archs) call
+// `libz::crc32`. They are the only reason of these lines; no file of ours uses them.
+pub use check::crc32::crc32;
+pub(crate) use inflate::inftrees;
 /* </CODE> */

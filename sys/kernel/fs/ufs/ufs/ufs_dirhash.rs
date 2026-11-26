@@ -121,7 +121,7 @@ use hal::mem::malloc::{M_NOWAIT, MArray, MBox};
 use hal::mem::pool::{BoxPool, PR_WAITOK};
 use hal::random::arc4random;
 use hal::sync::rwlock::{RawRwlock, SharedRwlock, WriteWitness};
-use libkern::siphash::{SipHash24, SiphashKey};
+use libkern::hash::siphash::{SipHash24, SiphashKey};
 use sysdefs::base::errno::Errno;
 use sysdefs::base::types::Off;
 

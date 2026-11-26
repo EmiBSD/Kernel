@@ -170,7 +170,7 @@ use hal::mem::malloc::{M_WAITOK, MArc, MArray};
 use hal::sync::klock;
 use hal::sync::rwlock::RecursiveRwlock;
 use hal::sync::slot::ReadMostly;
-use libkern::siphash::{SipHash24Ctx, SiphashKey};
+use libkern::hash::siphash::{SipHash24Ctx, SiphashKey};
 use sysdefs::base::errno::Errno;
 use sysdefs::base::types::{Dev, Gid, Uid};
 use sysdefs::file::stat::{S_IFDIR, S_IFREG, S_IRGRP, S_IROTH, S_IRUSR, S_IXGRP, S_IXOTH, S_IXUSR};

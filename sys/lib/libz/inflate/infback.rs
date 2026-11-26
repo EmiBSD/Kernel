@@ -103,12 +103,14 @@
 
 use alloc::vec::Vec;
 
-use crate::inffast::inflate_fast;
-use crate::inflate::{CodeTable, InflateMode, InflateState, Regs, copy_forward, order, small_msg};
-use crate::inftrees::{CodeType, inflate_fixed, inflate_table};
-use crate::zlib::{InternalState, ZError, ZLIB_VERSION, ZStatus, ZStream};
-use crate::zopenbsd::zcfree;
-use crate::zutil::SLOW;
+use crate::base::zlib::{InternalState, ZError, ZLIB_VERSION, ZStatus, ZStream};
+use crate::base::zopenbsd::zcfree;
+use crate::base::zutil::SLOW;
+use crate::inflate::inffast::inflate_fast;
+use crate::inflate::inflate::{
+    CodeTable, InflateMode, InflateState, Regs, copy_forward, order, small_msg,
+};
+use crate::inflate::inftrees::{CodeType, inflate_fixed, inflate_table};
 
 /// `inflateBackInit_`: initialise `strm` for [`inflateBack`], with a window of `1 <<
 /// windowBits` bytes (`windowBits` in 8..15) that is also the output buffer. `version` and
@@ -692,15 +694,15 @@ mod tests {
     // without `inflate_fast()`.
 
     use super::*;
-    use crate::inflate::{inflate, inflateEnd};
-    use crate::zlib::{Flush, Strategy, inflateBackInit, inflateInit2};
+    use crate::base::zlib::{Flush, Strategy, inflateBackInit, inflateInit2};
+    use crate::inflate::inflate::{inflate, inflateEnd};
     use std::format;
     use std::vec;
     use std::vec::Vec;
 
-    static CORPUS: &[u8] = include_bytes!("testdata/inflate_corpus.bin");
-    static RAW15: &[u8] = include_bytes!("testdata/inflate_raw15.z");
-    static RAW12: &[u8] = include_bytes!("testdata/inflate_raw12.z");
+    static CORPUS: &[u8] = include_bytes!("../testdata/inflate_corpus.bin");
+    static RAW15: &[u8] = include_bytes!("../testdata/inflate_raw15.z");
+    static RAW12: &[u8] = include_bytes!("../testdata/inflate_raw12.z");
 
     /// Decode `input` with a `1 << wbits` window, `strm.next_in` holding its first `first`
     /// bytes and `in_` handing out the rest `chunk` bytes at a time. Returns the return code,
@@ -913,8 +915,8 @@ mod tests {
         chunk: usize,
         flush: Flush,
     ) -> Vec<u8> {
-        use crate::deflate::{deflate, deflateEnd};
-        use crate::zlib::{Z_DEFLATED, deflateInit2};
+        use crate::base::zlib::{Z_DEFLATED, deflateInit2};
+        use crate::deflate::deflate::{deflate, deflateEnd};
         let mut out = vec![0u8; data.len() * 2 + 1024];
         let mut strm = ZStream::new();
         assert_eq!(
@@ -1084,10 +1086,14 @@ mod tests {
                         strm.next_in = &c;
                         strm.next_out = &mut buf;
                         let mut want =
-                            crate::inflate::inflate_impl(&mut strm, Flush::NoFlush, slow);
+                            crate::inflate::inflate::inflate_impl(&mut strm, Flush::NoFlush, slow);
                         if want == Ok(ZStatus::Ok) {
                             // out of input: the next call cannot go on
-                            want = crate::inflate::inflate_impl(&mut strm, Flush::NoFlush, slow);
+                            want = crate::inflate::inflate::inflate_impl(
+                                &mut strm,
+                                Flush::NoFlush,
+                                slow,
+                            );
                         }
                         let (n, want_msg) = (strm.total_out as usize, strm.msg);
                         assert_eq!(inflateEnd(&mut strm), Ok(()));

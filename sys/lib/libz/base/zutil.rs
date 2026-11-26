@@ -95,8 +95,8 @@
 
 #![allow(non_snake_case)] // zlib's names are camelCase or upper case in C (zError, ERR_MSG)
 
-use crate::zconf::{MAX_MEM_LEVEL, MAX_WBITS};
-use crate::zlib::{ZError, ZLIB_VERSION, ZStream};
+use crate::base::zconf::{MAX_MEM_LEVEL, MAX_WBITS};
+use crate::base::zlib::{ZError, ZLIB_VERSION, ZStream};
 
 /// `SLOW` (`-DSLOW` in `sys/lib/libz/Makefile`): `inflate()` never calls `inflate_fast()`.
 pub(crate) const SLOW: bool = true;
@@ -212,7 +212,7 @@ pub fn zError(err: i32) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::zlib::{Z_BUF_ERROR, Z_NEED_DICT, Z_OK, Z_STREAM_ERROR, Z_VERSION_ERROR};
+    use crate::base::zlib::{Z_BUF_ERROR, Z_NEED_DICT, Z_OK, Z_STREAM_ERROR, Z_VERSION_ERROR};
 
     #[test]
     fn error_messages_are_indexed_by_two_minus_code() {

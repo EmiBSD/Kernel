@@ -95,7 +95,7 @@ use crate::sys::malloc::{M_DEVBUF, M_NOWAIT, M_WAITOK, M_ZERO};
 use crate::sys::mutex::Mutex;
 use crate::sys::param::DEV_BSIZE;
 use crate::sys::queue::{TailqEntry, TailqHead};
-use libkern::strlcpy;
+use libkern::string::strlcpy::strlcpy;
 
 /// `SDMMC_SCSIID_HOST`.
 pub const SDMMC_SCSIID_HOST: u16 = 0x00;

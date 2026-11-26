@@ -52,8 +52,8 @@
 //!
 //! Upstream: sys/lib/libkern/libkern.h @ 3ce1f3f79392
 //!
-//! One module per C file (`strlcpy.c` → `strlcpy.rs`), each function re-exported at the crate
-//! root so callers write `libkern::strlcpy(..)`. Functions whose semantics `core` already
+//! One module per C file (`strlcpy.c` → `strlcpy.rs`), grouped by purpose (`string`, `mem`,
+//! `hash`, `rand`): `libkern::string::strlcpy::strlcpy(..)`. Functions whose semantics `core` already
 //! provides exactly (`memcpy`, `strlen`, `qsort`) are not ported; see `ports.toml`
 //! (`skipped: provided-by-core`). This crate has no dependencies and must stay that way.
 //!
@@ -76,36 +76,16 @@
 extern crate std;
 
 #[forbid(unsafe_code)]
-pub mod crc32c;
+pub mod hash;
 #[forbid(unsafe_code)]
-pub mod getsn;
+pub mod mem;
 #[forbid(unsafe_code)]
-pub mod random;
+pub mod rand;
 #[forbid(unsafe_code)]
-pub mod scanc;
-#[forbid(unsafe_code)]
-pub mod siphash;
-#[forbid(unsafe_code)]
-pub mod skpc;
-#[forbid(unsafe_code)]
-pub mod strlcat;
-#[forbid(unsafe_code)]
-pub mod strlcpy;
-#[forbid(unsafe_code)]
-pub mod strncasecmp;
-#[forbid(unsafe_code)]
-pub mod strnlen;
-#[forbid(unsafe_code)]
-pub mod timingsafe_bcmp;
+pub mod string;
 
-pub use crc32c::crc32c;
-pub use getsn::{GetsnCons, getsn};
-pub use random::random;
-pub use scanc::scanc;
-pub use skpc::skpc;
-pub use strlcat::strlcat;
-pub use strlcpy::strlcpy;
-pub use strncasecmp::strncasecmp;
-pub use strnlen::strnlen;
-pub use timingsafe_bcmp::timingsafe_bcmp;
+// The one function at the root: the inherited `sys/net/pf_osfp.rs` (byte-identical to LZ's,
+// `lineage.toml` `inherited`) calls `libkern::strnlen`; no file of ours does. Remove it with
+// that file.
+pub use string::strnlen::strnlen;
 /* </CODE> */

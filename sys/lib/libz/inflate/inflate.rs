@@ -141,15 +141,15 @@
 
 use alloc::vec::Vec;
 
-use crate::adler32::adler32;
-use crate::inffast::inflate_fast;
-use crate::inffixed::{distfix, lenfix};
-use crate::inftrees::{Code, CodeType, ENOUGH, inflate_fixed, inflate_table};
-use crate::zlib::{
+use crate::base::zlib::{
     Flush, GzHeader, InternalState, Z_DEFLATED, ZError, ZLIB_VERSION, ZStatus, ZStream,
 };
-use crate::zopenbsd::{ZBox, zcalloc, zcalloc_box, zcfree};
-use crate::zutil::{DEF_WBITS, SLOW, SMALL};
+use crate::base::zopenbsd::{ZBox, zcalloc, zcalloc_box, zcfree};
+use crate::base::zutil::{DEF_WBITS, SLOW, SMALL};
+use crate::check::adler32::adler32;
+use crate::inflate::inffast::inflate_fast;
+use crate::inflate::inffixed::{distfix, lenfix};
+use crate::inflate::inftrees::{Code, CodeType, ENOUGH, inflate_fixed, inflate_table};
 
 /// `inflate_mode`: the possible inflate modes between `inflate()` calls. The values start at
 /// 16180, as in the C, so a stray integer is unlikely to look like a mode; the order matters
@@ -1575,16 +1575,16 @@ mod tests {
     // RFC 1951 streams of the error and corner-case tests are built here, bit by bit.
 
     use super::*;
-    use crate::adler32::adler32;
-    use crate::zconf::MAX_WBITS;
-    use crate::zlib::*;
+    use crate::base::zconf::MAX_WBITS;
+    use crate::base::zlib::*;
+    use crate::check::adler32::adler32;
     use std::format;
     use std::vec;
     use std::vec::Vec;
 
     macro_rules! testdata {
         ($name:literal) => {
-            include_bytes!(concat!("testdata/inflate_", $name))
+            include_bytes!(concat!("../testdata/inflate_", $name))
         };
     }
 
@@ -2686,8 +2686,8 @@ mod tests {
         chunk: usize,
         flush: Flush,
     ) -> Vec<u8> {
-        use crate::deflate::{deflate, deflateEnd};
-        use crate::zlib::{Z_DEFLATED, deflateInit2};
+        use crate::base::zlib::{Z_DEFLATED, deflateInit2};
+        use crate::deflate::deflate::{deflate, deflateEnd};
         let mut out = vec![0u8; data.len() + data.len() / 2 + 1024];
         let mut strm = ZStream::new();
         assert_eq!(
@@ -2770,8 +2770,8 @@ mod tests {
     /// Compress `input` with this crate's deflate in one `Flush::Finish` call, with `memLevel`
     /// `mem_level` (an empty input too, which `deflate_with` has no piece for).
     fn deflate_all(input: &[u8], level: i32, wbits: i32, mem_level: i32) -> Vec<u8> {
-        use crate::deflate::{deflate, deflateEnd};
-        use crate::zlib::{Z_DEFLATED, deflateInit2};
+        use crate::base::zlib::{Z_DEFLATED, deflateInit2};
+        use crate::deflate::deflate::{deflate, deflateEnd};
         let mut out = vec![0u8; input.len() + input.len() / 8 + 1024];
         let mut strm = ZStream::new();
         assert_eq!(
@@ -2825,8 +2825,8 @@ mod tests {
     /// `Flush::Block` too) decodes whole, and with one byte of input and output at a time.
     #[test]
     fn round_trips_every_flush_mode() {
-        use crate::deflate::{deflate, deflateEnd};
-        use crate::zlib::deflateInit;
+        use crate::base::zlib::deflateInit;
+        use crate::deflate::deflate::{deflate, deflateEnd};
         let mut out = vec![0u8; CORPUS.len() * 2];
         let mut strm = ZStream::new();
         assert_eq!(deflateInit(&mut strm, 6), Ok(()));
@@ -2862,8 +2862,8 @@ mod tests {
     /// buffers whenever one is full, then raw inflate with `Flush::PartialFlush` into 333-byte ones.
     #[test]
     fn round_trips_ipcomp_output_buffers() {
-        use crate::deflate::{deflate, deflateEnd};
-        use crate::zlib::{Z_DEFLATED, deflateInit2};
+        use crate::base::zlib::{Z_DEFLATED, deflateInit2};
+        use crate::deflate::deflate::{deflate, deflateEnd};
         for size in [1, 100, 1000, 1400, 9000] {
             let packet = &CORPUS[..size];
             let mut bufs: Vec<Vec<u8>> = (0..40).map(|_| vec![0u8; 512]).collect();
@@ -2956,8 +2956,8 @@ mod tests {
     /// `deflateSetDictionary(dict)`, checking the `adler` the dictionary leaves (its Adler-32 for
     /// a zlib stream; a raw stream keeps the initial value).
     fn deflate_dict(data: &[u8], dict: &[u8], level: i32, wbits: i32) -> Vec<u8> {
-        use crate::deflate::{deflate, deflateEnd, deflateSetDictionary};
-        use crate::zlib::{Z_DEFLATED, deflateInit2};
+        use crate::base::zlib::{Z_DEFLATED, deflateInit2};
+        use crate::deflate::deflate::{deflate, deflateEnd, deflateSetDictionary};
         let mut out = vec![0u8; data.len() + data.len() / 8 + 1024];
         let mut strm = ZStream::new();
         assert_eq!(
@@ -3086,8 +3086,8 @@ mod tests {
     /// window), and the data comes back.
     #[test]
     fn raw_dictionary_in_the_middle_of_a_stream() {
-        use crate::deflate::{deflate, deflateEnd, deflateSetDictionary};
-        use crate::zlib::{Z_DEFLATED, deflateInit2};
+        use crate::base::zlib::{Z_DEFLATED, deflateInit2};
+        use crate::deflate::deflate::{deflate, deflateEnd, deflateSetDictionary};
         let mut rng = XorShift(0xda94_2042_e4dd_58b5);
         for round in 0..24 {
             let wbits = 9 + rng.below(7) as i32;
@@ -3248,7 +3248,7 @@ mod tests {
         // RFC 1952: magic, CM 8, no flags, MTIME 0, XFL 0, OS 3, the deflate data, CRC-32, ISIZE
         let mut gz = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3];
         gz.extend_from_slice(&fixed_aaaa());
-        gz.extend_from_slice(&crate::crc32::crc32(0, b"aaaa").to_le_bytes());
+        gz.extend_from_slice(&crate::check::crc32::crc32(0, b"aaaa").to_le_bytes());
         gz.extend_from_slice(&4u32.to_le_bytes());
         for wbits in [15, 0, -15] {
             assert_data_error(&gz, wbits);

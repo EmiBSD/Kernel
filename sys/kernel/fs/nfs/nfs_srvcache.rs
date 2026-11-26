@@ -149,7 +149,7 @@ use hal::sync::klock;
 use hal::sync::rwlock::Guarded;
 use hal::sync::sleep::{INFSLP, tsleep_nsec, wakeup};
 use hal::sync::slot::LoanSlot;
-use libkern::siphash::{SipHash24, SiphashKey};
+use libkern::hash::siphash::{SipHash24, SiphashKey};
 
 use super::nfs_srvsocket::nfs_rephead;
 use super::nfs_srvsubs::{netaddr_match, sockaddr_in_of};

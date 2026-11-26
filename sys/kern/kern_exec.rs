@@ -93,7 +93,7 @@ use core::ptr::{self};
 use core::slice;
 use core::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 use kernel::fs::vops::Cred;
-use libkern::strnlen;
+use libkern::string::strnlen::strnlen;
 
 use crate::dev::rnd::{arc4random, arc4random_buf};
 use crate::kern::exec_elf::{exec_elf_fixup, exec_elf_makecmds};

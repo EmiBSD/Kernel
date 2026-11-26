@@ -804,11 +804,11 @@ pub fn mountnfs<G: ProcGlue>(
     mp.with_stat(|sp| {
         sp.f_namemax = MAXNAMLEN as u32;
         sp.f_mntonname.fill(0);
-        libkern::strlcpy(&mut sp.f_mntonname, pth);
+        libkern::string::strlcpy::strlcpy(&mut sp.f_mntonname, pth);
         sp.f_mntfromname.fill(0);
-        libkern::strlcpy(&mut sp.f_mntfromname, hst);
+        libkern::string::strlcpy::strlcpy(&mut sp.f_mntfromname, hst);
         sp.f_mntfromspec.fill(0);
-        libkern::strlcpy(&mut sp.f_mntfromspec, hst);
+        libkern::string::strlcpy::strlcpy(&mut sp.f_mntfromspec, hst);
     });
     let mut nargs = *argp;
     nargs.addr = 0;

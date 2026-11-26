@@ -119,7 +119,7 @@ use alloc::vec::Vec;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicU64, Ordering};
 use kernel::fs::vops::Cred;
-use libkern::strnlen;
+use libkern::string::strnlen::strnlen;
 
 use crate::kern::exec_subr::{exec_process_vmcmds, exec_setup_stack};
 use crate::kern::kern_malloc::{free, malloc};

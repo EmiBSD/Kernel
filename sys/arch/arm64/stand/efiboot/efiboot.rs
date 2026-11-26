@@ -807,13 +807,13 @@ pub fn efi_framebuffer() {
     // Don't create a "simple-framebuffer" node if we already have one. Besides "/chosen",
     // we also check under "/" since that is where the Raspberry Pi firmware puts it.
     if let Some(name) = enabled_framebuffer(fdt_find_node(b"/chosen")) {
-        libkern::strlcpy::strlcpy(path, b"/chosen/");
-        libkern::strlcat::strlcat(path, &name);
+        libkern::string::strlcpy::strlcpy(path, b"/chosen/");
+        libkern::string::strlcat::strlcat(path, &name);
         return;
     }
     if let Some(name) = enabled_framebuffer(fdt_find_node(b"/")) {
-        libkern::strlcpy::strlcpy(path, b"/");
-        libkern::strlcat::strlcat(path, &name);
+        libkern::string::strlcpy::strlcpy(path, b"/");
+        libkern::string::strlcat::strlcat(path, &name);
         return;
     }
 
@@ -902,7 +902,7 @@ pub fn efi_framebuffer() {
     fdt_node_add_property(child, b"reg", &reg);
     fdt_node_add_property(child, b"compatible", b"simple-framebuffer\0");
 
-    libkern::strlcpy::strlcpy(path, b"/chosen/framebuffer");
+    libkern::string::strlcpy::strlcpy(path, b"/chosen/framebuffer");
 }
 
 /// `efi_console()`: point `/chosen/stdout-path` at the console's node (a serial port by its
@@ -1256,7 +1256,7 @@ pub fn getsecs() -> Time {
 pub fn devboot(_dev: Dev, p: &mut [u8; BOOTDEVLEN]) {
     let dip = BOOTDEV_DIP.load(Ordering::Relaxed);
     if dip.is_null() {
-        libkern::strlcpy::strlcpy(&mut p[..7], b"tftp0a");
+        libkern::string::strlcpy::strlcpy(&mut p[..7], b"tftp0a");
         return;
     }
 
@@ -1265,7 +1265,7 @@ pub fn devboot(_dev: Dev, p: &mut [u8; BOOTDEVLEN]) {
 
     // If there is no BSD disklabel on the boot device, boot from the ESP instead.
     if (d.flags & DISKINFO_FLAG_GOODLABEL) == 0 {
-        libkern::strlcpy::strlcpy(&mut p[..6], b"esp0a");
+        libkern::string::strlcpy::strlcpy(&mut p[..6], b"esp0a");
         return;
     }
 
@@ -1284,12 +1284,12 @@ pub fn devboot(_dev: Dev, p: &mut [u8; BOOTDEVLEN]) {
     let sr_boot_vol: i32 = -1;
 
     if sr_boot_vol != -1 && part_type != FS_BSDFFS {
-        libkern::strlcpy::strlcpy(&mut p[..5], b"sr0a");
+        libkern::string::strlcpy::strlcpy(&mut p[..5], b"sr0a");
         p[2] = b'0'.wrapping_add(sr_boot_vol as u8);
         return;
     }
 
-    libkern::strlcpy::strlcpy(&mut p[..5], b"sd0a");
+    libkern::string::strlcpy::strlcpy(&mut p[..5], b"sd0a");
     p[2] = b'0'.wrapping_add(sd_boot_vol as u8);
 }
 

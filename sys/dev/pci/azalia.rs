@@ -122,7 +122,7 @@ use core::ptr::{self, NonNull};
 use core::slice;
 use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
-use libkern::strlcpy;
+use libkern::string::strlcpy::strlcpy;
 
 use crate::dev::audio::{AUDIO_LOCK, audio_attach_mi, audio_blksz_bytes};
 use crate::dev::audio_if::{

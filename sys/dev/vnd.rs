@@ -108,7 +108,7 @@ use hal::sysbytes::DisklabelBytes;
 use hal::user::AbiBytes;
 
 use hal::mem::explicit_bzero;
-use libkern::strlcpy;
+use libkern::string::strlcpy::strlcpy;
 
 use crate::crypto::blf::{BLF_MAXUTILIZED, BlfCtx};
 use crate::dev::vndioctl::{VNDIOCCLR, VNDIOCGET, VNDIOCSET, VNDNLEN, VndIoctl, VndUser};

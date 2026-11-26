@@ -105,7 +105,7 @@ use crate::sys::errno::Errno;
 use crate::sys::malloc::{M_NTFSNTHASH, M_WAITOK};
 use crate::sys::queue::ListHead;
 use crate::sys::types::Dev;
-use libkern::siphash::{SipHash24Ctx, SiphashKey};
+use libkern::hash::siphash::{SipHash24Ctx, SiphashKey};
 
 /// `LIST_HEAD(nthashhead, ntnode)`.
 pub type Nthashhead = ListHead<NtnodeHash>;

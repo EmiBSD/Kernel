@@ -639,16 +639,16 @@ pub fn pfi_dynaddr_setup(aw: &'static PfAddrWrap, af: SaFamily, wait: i32) -> bo
         pf_strlcpy(&mut tblname, v.ifname());
         let iflags = aw.iflags.get();
         if iflags & PFI_AFLAG_NETWORK != 0 {
-            libkern::strlcat(&mut tblname, b":network");
+            libkern::string::strlcat::strlcat(&mut tblname, b":network");
         }
         if iflags & PFI_AFLAG_BROADCAST != 0 {
-            libkern::strlcat(&mut tblname, b":broadcast");
+            libkern::string::strlcat::strlcat(&mut tblname, b":broadcast");
         }
         if iflags & PFI_AFLAG_PEER != 0 {
-            libkern::strlcat(&mut tblname, b":peer");
+            libkern::string::strlcat::strlcat(&mut tblname, b":peer");
         }
         if iflags & PFI_AFLAG_NOALIAS != 0 {
-            libkern::strlcat(&mut tblname, b":0");
+            libkern::string::strlcat::strlcat(&mut tblname, b":0");
         }
         if dyn_.pfid_net.get() != 128 {
             let n = pf_cstr(&tblname).len();

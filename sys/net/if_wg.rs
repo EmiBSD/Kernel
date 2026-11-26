@@ -131,7 +131,8 @@ use core::slice;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
 use hal::mem::explicit_bzero;
-use libkern::{strlcpy, timingsafe_bcmp};
+use libkern::mem::timingsafe_bcmp::timingsafe_bcmp;
+use libkern::string::strlcpy::strlcpy;
 
 use crate::crypto::curve25519::curve25519_generate_public;
 use crate::dev::rnd::{arc4random, arc4random_buf, arc4random_uniform};
@@ -237,7 +238,7 @@ use crate::sys::timeout::{Timeout, timeout_pending};
 use crate::sys::types::{InPort, SaFamily};
 use hal::cpu::intr::IPL_NONE;
 use hal::sync::mutex::Mutexed;
-use libkern::siphash::AtomicSiphashKey;
+use libkern::hash::siphash::AtomicSiphashKey;
 
 /// `WG_KEY_LEN`.
 pub const WG_KEY_LEN: usize = 32;

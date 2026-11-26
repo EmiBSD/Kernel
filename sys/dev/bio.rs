@@ -84,7 +84,7 @@ use core::fmt::Arguments;
 use core::mem::{offset_of, size_of};
 use core::ptr::{self, NonNull};
 
-use libkern::strlcpy;
+use libkern::string::strlcpy::strlcpy;
 
 use crate::dev::biovar::{
     BIO_MSG_COUNT, BIO_MSG_ERROR, BIO_MSG_INFO, BIO_MSG_LEN, BIO_MSG_WARN, BIO_STATUS_UNKNOWN,

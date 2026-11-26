@@ -47,7 +47,7 @@
 //!   `min(strlen(src), size - strlen(dst) - 1)` bytes, terminate, return
 //!   `strlen(src) + min(size, strlen(dst))`), including a destination with no NUL within its size.
 
-use crate::strnlen;
+use crate::string::strnlen::strnlen;
 
 /// Appends the string in `src` to the string in `dst`. Unlike `strncat`, `dst.len()` is the full
 /// size of the buffer, not the space left. At most `dst.len() - 1` bytes end up in `dst` and the

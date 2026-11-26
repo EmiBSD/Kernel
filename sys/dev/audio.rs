@@ -96,7 +96,7 @@ use core::ptr::{self, NonNull};
 use core::slice;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use libkern::strlcpy;
+use libkern::string::strlcpy::strlcpy;
 
 use crate::dev::audio_if::{
     AUDIO_ENCODING_ALAW, AUDIO_ENCODING_SLINEAR_BE, AUDIO_ENCODING_SLINEAR_LE, AUDIO_ENCODING_ULAW,

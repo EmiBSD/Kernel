@@ -826,7 +826,7 @@ pub fn clockrequest_advance_random(cr: &Clockrequest, min: u64, mask: u32) -> u6
     let mut expiration = cr.expiration.load(Ordering::Relaxed);
     while expiration <= uptime {
         let off = loop {
-            let off = libkern::random(&seed) & mask;
+            let off = libkern::rand::random::random(&seed) & mask;
             if off != 0 {
                 break off;
             }

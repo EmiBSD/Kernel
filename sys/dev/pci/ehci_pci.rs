@@ -103,7 +103,7 @@ use crate::machine::pci_machdep::{
 use crate::sys::device::{CfMatch, Cfattach, DVACT_RESUME, Device, Softc};
 use crate::sys::errno::Errno;
 use core::sync::atomic::Ordering;
-use libkern::strlcpy;
+use libkern::string::strlcpy::strlcpy;
 
 /// `EHCI_SBx00_WORKAROUND_REG`.
 const EHCI_SBX00_WORKAROUND_REG: i32 = 0x50;

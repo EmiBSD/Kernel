@@ -293,12 +293,12 @@ pub(crate) enum InternalState {
     #[default]
     None,
     /// A compression stream (`deflate.rs`).
-    Deflate(crate::zopenbsd::ZBox<crate::deflate::DeflateState>),
+    Deflate(crate::base::zopenbsd::ZBox<crate::deflate::deflate::DeflateState>),
     /// A decompression stream (`inflate.rs`).
-    Inflate(crate::zopenbsd::ZBox<crate::inflate::InflateState>),
+    Inflate(crate::base::zopenbsd::ZBox<crate::inflate::inflate::InflateState>),
     /// A call-back decompression stream (`infback.rs`). The C's `inflateStateCheck` rejects
     /// it, so it is not an `Inflate`.
-    InflateBack(crate::zopenbsd::ZBox<crate::inflate::InflateState>),
+    InflateBack(crate::base::zopenbsd::ZBox<crate::inflate::inflate::InflateState>),
 }
 
 /// `struct z_stream_s` (`z_stream`): a compression or decompression stream.
@@ -478,14 +478,19 @@ impl ZCode for Result<(), ZError> {
     }
 }
 
-/// `deflateInit(strm, level)`: the zlib.h macro, [`deflateInit_`](crate::deflate::deflateInit_)
+/// `deflateInit(strm, level)`: the zlib.h macro, [`deflateInit_`](crate::deflate::deflate::deflateInit_)
 /// with this library's version and stream size.
 pub fn deflateInit(strm: &mut ZStream<'_>, level: i32) -> Result<(), ZError> {
-    crate::deflate::deflateInit_(strm, level, ZLIB_VERSION, size_of::<ZStream<'_>>() as i32)
+    crate::deflate::deflate::deflateInit_(
+        strm,
+        level,
+        ZLIB_VERSION,
+        size_of::<ZStream<'_>>() as i32,
+    )
 }
 
 /// `deflateInit2(strm, level, method, windowBits, memLevel, strategy)`: the zlib.h macro,
-/// [`deflateInit2_`](crate::deflate::deflateInit2_) with this library's version and stream
+/// [`deflateInit2_`](crate::deflate::deflate::deflateInit2_) with this library's version and stream
 /// size.
 pub fn deflateInit2(
     strm: &mut ZStream<'_>,
@@ -495,7 +500,7 @@ pub fn deflateInit2(
     memLevel: i32,
     strategy: Strategy,
 ) -> Result<(), ZError> {
-    crate::deflate::deflateInit2_(
+    crate::deflate::deflate::deflateInit2_(
         strm,
         level,
         method,
@@ -507,17 +512,17 @@ pub fn deflateInit2(
     )
 }
 
-/// `inflateInit(strm)`: the zlib.h macro, [`inflateInit_`](crate::inflate::inflateInit_) with
+/// `inflateInit(strm)`: the zlib.h macro, [`inflateInit_`](crate::inflate::inflate::inflateInit_) with
 /// this library's version and stream size.
 pub fn inflateInit(strm: &mut ZStream<'_>) -> Result<(), ZError> {
-    crate::inflate::inflateInit_(strm, ZLIB_VERSION, size_of::<ZStream<'_>>() as i32)
+    crate::inflate::inflate::inflateInit_(strm, ZLIB_VERSION, size_of::<ZStream<'_>>() as i32)
 }
 
 /// `inflateInit2(strm, windowBits)`: the zlib.h macro,
-/// [`inflateInit2_`](crate::inflate::inflateInit2_) with this library's version and stream
+/// [`inflateInit2_`](crate::inflate::inflate::inflateInit2_) with this library's version and stream
 /// size.
 pub fn inflateInit2(strm: &mut ZStream<'_>, windowBits: i32) -> Result<(), ZError> {
-    crate::inflate::inflateInit2_(
+    crate::inflate::inflate::inflateInit2_(
         strm,
         windowBits,
         ZLIB_VERSION,
@@ -526,14 +531,14 @@ pub fn inflateInit2(strm: &mut ZStream<'_>, windowBits: i32) -> Result<(), ZErro
 }
 
 /// `inflateBackInit(strm, windowBits, window)`: the zlib.h macro,
-/// [`inflateBackInit_`](crate::infback::inflateBackInit_) with this library's version and
+/// [`inflateBackInit_`](crate::inflate::infback::inflateBackInit_) with this library's version and
 /// stream size.
 pub fn inflateBackInit(
     strm: &mut ZStream<'_>,
     windowBits: i32,
     window: Vec<u8>,
 ) -> Result<(), ZError> {
-    crate::infback::inflateBackInit_(
+    crate::inflate::infback::inflateBackInit_(
         strm,
         windowBits,
         window,

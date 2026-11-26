@@ -90,9 +90,9 @@
 //!   `INFLATE_ALLOW_INVALID_DISTANCE_TOOFAR_ARRR` are not defined in the kernel build; only the
 //!   C code compiled without them is ported. `Tracevv` is dropped (no `ZLIB_DEBUG`).
 
-use crate::inflate::{InflateMode, InflateState, Regs, copy_forward, small_msg};
-use crate::zlib::ZStream;
-use crate::zutil::zassert;
+use crate::base::zlib::ZStream;
+use crate::base::zutil::zassert;
+use crate::inflate::inflate::{InflateMode, InflateState, Regs, copy_forward, small_msg};
 
 /// Copy `len` bytes to `output[*out..]` from `from` in `window`, or, when `window` is `None`,
 /// from `output[from..]`, front to back (the regions may overlap, as a match needs).

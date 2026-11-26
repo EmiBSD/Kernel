@@ -352,7 +352,7 @@ pub fn udf_disklabelspoof<G: ProcGlue>(
     // Okay, it's a UDF volume. Spoof a disk label for it (the type name only when the
     // volume's name translated).
     if let Some(vid) = vid {
-        libkern::strlcpy(&mut lp.d_typename, &vid);
+        libkern::string::strlcpy::strlcpy(&mut lp.d_typename, &vid);
     }
 
     for p in lp.d_partitions.iter_mut().take(MAXPARTITIONS) {

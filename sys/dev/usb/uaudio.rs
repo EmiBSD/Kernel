@@ -154,7 +154,7 @@ use crate::sys::device::{CfMatch, Cfattach, Cfdriver, DV_DULL, Device, Softc};
 use crate::sys::errno::Errno;
 use crate::sys::fcntl::{FREAD, FWRITE};
 use crate::sys::malloc::{M_USBDEV, M_WAITOK};
-use libkern::strlcpy;
+use libkern::string::strlcpy::strlcpy;
 
 /// `UE_ISO_USAGE`: isochronous endpoint usage (XXX: these belong to dev/usb/usb.h).
 pub const UE_ISO_USAGE: u32 = 0x30;

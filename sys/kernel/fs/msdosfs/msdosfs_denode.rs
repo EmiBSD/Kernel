@@ -159,7 +159,7 @@ use hal::mem::malloc::{M_WAITOK, MArc, MArray};
 use hal::sync::klock;
 use hal::sync::sleep::INFSLP;
 use hal::sync::slot::ReadMostly;
-use libkern::siphash::{SipHash24Ctx, SiphashKey};
+use libkern::hash::siphash::{SipHash24Ctx, SiphashKey};
 use sysdefs::base::errno::Errno;
 use sysdefs::base::types::{Daddr, Dev};
 use sysdefs::fs::mount::MNT_RDONLY;

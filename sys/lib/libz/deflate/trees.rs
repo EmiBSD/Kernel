@@ -100,12 +100,12 @@
 
 #![allow(non_upper_case_globals)] // zlib's names (static_ltree, _dist_code, bl_order)
 
-use crate::deflate::{
+use crate::base::zlib::{Strategy, Z_BINARY, Z_TEXT, Z_UNKNOWN};
+use crate::base::zutil::{DYN_TREES, MAX_MATCH, MIN_MATCH, STATIC_TREES, STORED_BLOCK, zassert};
+use crate::deflate::deflate::{
     BL_CODES, Buf_size, CtData, D_CODES, DeflateState, HEAP_SIZE, L_CODES, LENGTH_CODES, LITERALS,
     MAX_BITS, Tree, d_code, put_byte,
 };
-use crate::zlib::{Strategy, Z_BINARY, Z_TEXT, Z_UNKNOWN};
-use crate::zutil::{DYN_TREES, MAX_MATCH, MIN_MATCH, STATIC_TREES, STORED_BLOCK, zassert};
 
 /// `MAX_BL_BITS`: bit length codes must not exceed MAX_BL_BITS bits.
 const MAX_BL_BITS: usize = 7;
@@ -1081,7 +1081,7 @@ pub(crate) fn _tr_tally(s: &mut DeflateState, dist: usize, lc: usize) -> bool {
         // Here, lc is the match length - MIN_MATCH
         let dist = dist - 1; // dist = match distance - 1
         zassert!(
-            dist < crate::deflate::MAX_DIST(s)
+            dist < crate::deflate::deflate::MAX_DIST(s)
                 && lc <= MAX_MATCH - MIN_MATCH
                 && d_code(dist) < D_CODES,
             "_tr_tally: bad match"

@@ -103,7 +103,7 @@
 
 #![allow(non_upper_case_globals)] // the C's table names (lbase, lext, dbase, dext)
 
-use crate::inflate::{CodeTable, InflateState};
+use crate::inflate::inflate::{CodeTable, InflateState};
 
 /// `MAXBITS`: the longest code length deflate allows.
 const MAXBITS: usize = 15;
@@ -437,7 +437,7 @@ mod tests {
     // them, and the corner cases of the code-length checks.
 
     use super::*;
-    use crate::inffixed::{distfix, lenfix};
+    use crate::inflate::inffixed::{distfix, lenfix};
     use std::vec;
     use std::vec::Vec;
 

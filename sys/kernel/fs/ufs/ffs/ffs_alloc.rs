@@ -133,7 +133,8 @@ use crate::proc::ProcGlue;
 use crate::proc::fork::ratecheck;
 use crate::time::clock::Timespec;
 use crate::vm::vnode::uvm_vnp_uncache;
-use libkern::{scanc, skpc};
+use libkern::mem::scanc::scanc;
+use libkern::mem::skpc::skpc;
 
 /// `fserr_interval`: at most one "file system full" message every 2 seconds.
 const FSERR_INTERVAL: Timespec = Timespec::new(2, 0);

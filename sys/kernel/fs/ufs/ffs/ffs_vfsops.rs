@@ -383,7 +383,7 @@ pub fn ffs_mountroot<G: ProcGlue>(rootdev: Dev, swapdev: Dev) -> Result<(), Errn
 /// `mfs_mount` makes the same pairs.
 pub(crate) fn mname_copy(dst: &mut [u8; MNAMELEN], src: &[u8]) {
     *dst = [0; MNAMELEN];
-    libkern::strlcpy(dst, src);
+    libkern::string::strlcpy::strlcpy(dst, src);
 }
 
 /// `ffs_mount` (`vfs_mount`): mount system call. `data` is the kernel copy of the user's

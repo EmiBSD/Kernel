@@ -121,7 +121,7 @@ use crate::sys::mbuf::{Mbuf, PF_TAG_SYNCOOKIE_RECREATED};
 use crate::sys::socket::{AF_INET, AF_INET6};
 use crate::sys::syslog::LOG_WARNING;
 use crate::sys::timeout::Timeout;
-use libkern::siphash::{AtomicSiphashKey, SIPHASH_KEY_LENGTH, SiphashKey};
+use libkern::hash::siphash::{AtomicSiphashKey, SIPHASH_KEY_LENGTH, SiphashKey};
 
 /// `union pf_syncookie`: the cookie byte and its bit-fields (see the module's deviations).
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]

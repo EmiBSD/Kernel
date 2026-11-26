@@ -175,19 +175,19 @@
 
 use alloc::vec::Vec;
 
-use crate::adler32::adler32;
-use crate::trees::{
-    _dist_code, _length_code, _tr_align, _tr_flush_bits, _tr_flush_block, _tr_init,
-    _tr_stored_block, StaticTreeDesc, static_bl_desc, static_d_desc, static_l_desc,
-};
-use crate::zconf::{MAX_MEM_LEVEL, MAX_WBITS};
-use crate::zlib::{
+use crate::base::zconf::{MAX_MEM_LEVEL, MAX_WBITS};
+use crate::base::zlib::{
     Flush, GzHeader, InternalState, Strategy, Z_DEFAULT_COMPRESSION, Z_DEFLATED, Z_UNKNOWN, ZError,
     ZLIB_VERSION, ZStatus, ZStream,
 };
-use crate::zopenbsd::{zcalloc, zcalloc_box, zcfree};
-use crate::zutil::{
+use crate::base::zopenbsd::{zcalloc, zcalloc_box, zcfree};
+use crate::base::zutil::{
     DEF_MEM_LEVEL, ERR_MSG, ERR_RETURN, MAX_MATCH, MIN_MATCH, PRESET_DICT, zassert,
+};
+use crate::check::adler32::adler32;
+use crate::deflate::trees::{
+    _dist_code, _length_code, _tr_align, _tr_flush_bits, _tr_flush_block, _tr_init,
+    _tr_stored_block, StaticTreeDesc, static_bl_desc, static_d_desc, static_l_desc,
 };
 
 /// `NIL`: tail of hash chains.
@@ -888,7 +888,7 @@ pub fn deflateInit_(
 /// `Z_DEFAULT_COMPRESSION`) with a window of `2^windowBits` bytes (9..15; negative for a raw
 /// deflate stream without the zlib wrapper, 8 is taken as 9 with the zlib wrapper),
 /// `memLevel` (1..9) and `strategy`. `version` and `stream_size` are what the caller was
-/// compiled against ([`deflateInit2`](crate::zlib::deflateInit2) passes them).
+/// compiled against ([`deflateInit2`](crate::base::zlib::deflateInit2) passes them).
 #[allow(clippy::too_many_arguments)] // zlib's signature
 pub fn deflateInit2_(
     strm: &mut ZStream<'_>,
@@ -2301,18 +2301,18 @@ mod tests {
     // script does; the `input` lines check that.
 
     use super::*;
-    use crate::crc32::crc32;
-    use crate::zlib::{deflateInit, deflateInit2};
+    use crate::base::zlib::{deflateInit, deflateInit2};
+    use crate::check::crc32::crc32;
     use std::format;
     use std::string::String;
     use std::vec;
     use std::vec::Vec;
 
-    const VECTORS: &str = include_str!("testdata/deflate_vectors.txt");
-    const TEXT: &[u8] = include_bytes!("testdata/deflate_text.txt");
-    const IPCOMP_TEXT: &[u8] = include_bytes!("testdata/deflate_ipcomp_text.bin");
-    const ZLIB_TEXT_L9: &[u8] = include_bytes!("testdata/deflate_zlib_text_l9.bin");
-    const RAW_TEXT_L1: &[u8] = include_bytes!("testdata/deflate_raw_text_l1.bin");
+    const VECTORS: &str = include_str!("../testdata/deflate_vectors.txt");
+    const TEXT: &[u8] = include_bytes!("../testdata/deflate_text.txt");
+    const IPCOMP_TEXT: &[u8] = include_bytes!("../testdata/deflate_ipcomp_text.bin");
+    const ZLIB_TEXT_L9: &[u8] = include_bytes!("../testdata/deflate_zlib_text_l9.bin");
+    const RAW_TEXT_L1: &[u8] = include_bytes!("../testdata/deflate_raw_text_l1.bin");
 
     /// The "large" output buffer of the vectors.
     const BIG: usize = 1 << 18;
@@ -2854,7 +2854,7 @@ mod tests {
         );
         // longer than the 512-byte window: only the tail is kept
         assert_eq!(deflateSetDictionary(&mut strm, TEXT), Ok(()));
-        assert_eq!(strm.adler, crate::adler32::adler32(1, Some(TEXT)));
+        assert_eq!(strm.adler, crate::check::adler32::adler32(1, Some(TEXT)));
         let mut dict = [0u8; 512];
         assert_eq!(deflateGetDictionary(&strm, Some(&mut dict)), Ok(512));
         assert_eq!(deflateGetDictionary(&strm, None), Ok(512));
@@ -2962,8 +2962,8 @@ mod tests {
 
     /// Inflate `z` (window `wbits`) in one call into a buffer of `len + 1` bytes.
     fn inflate_all(z: &[u8], wbits: i32, len: usize) -> Vec<u8> {
-        use crate::inflate::{inflate, inflateEnd};
-        use crate::zlib::inflateInit2;
+        use crate::base::zlib::inflateInit2;
+        use crate::inflate::inflate::{inflate, inflateEnd};
         let mut out = vec![0u8; len + 1];
         let mut strm = ZStream::new();
         assert_eq!(inflateInit2(&mut strm, wbits), Ok(()));
@@ -3066,7 +3066,7 @@ mod tests {
     /// `compressBound` promises.
     #[test]
     fn compress_round_trips_at_every_level() {
-        use crate::compress::{compress2, compressBound_z};
+        use crate::deflate::compress::{compress2, compressBound_z};
         let mut rng = XorShift(0x9e37_79b9_7f4a_7c15);
         for level in -1..=9 {
             let len = rng.below(20_000);
@@ -3155,14 +3155,14 @@ mod tests {
                         if let Some(dict) = dict {
                             assert_eq!(
                                 z[2..6],
-                                crate::adler32::adler32(1, Some(dict)).to_be_bytes()
+                                crate::check::adler32::adler32(1, Some(dict)).to_be_bytes()
                             );
                             at = 6;
                         }
                         let n = z.len();
                         assert_eq!(
                             z[n - 4..],
-                            crate::adler32::adler32(1, Some(&data)).to_be_bytes()
+                            crate::check::adler32::adler32(1, Some(&data)).to_be_bytes()
                         );
                         let raw = compress_once(&data, dict, level, -w, 8, strategy);
                         assert!(
@@ -3660,7 +3660,7 @@ mod tests {
     /// the stream ends, and `compressBound()` holds for `compress2()`.
     #[test]
     fn bound_is_enough_for_one_finish_call() {
-        use crate::compress::{compress2, compressBound_z};
+        use crate::deflate::compress::{compress2, compressBound_z};
         let mut rng = XorShift(0xcbbb_9d5d_c105_9ed8);
         let mut sizes = vec![0, 1, 2, 3, 10, 100, 1000, 16_383, 16_384, 70_000];
         for _ in 0..10 {

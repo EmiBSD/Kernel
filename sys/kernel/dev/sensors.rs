@@ -745,7 +745,7 @@ fn sysctl_sensors(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
                 let w = SENSORS_LOCK.lock();
                 let ksd = sensordev_get(&w, dev)?;
                 let mut xname = [0u8; 16];
-                libkern::strlcpy(&mut xname, &ksd.xname.get());
+                libkern::string::strlcpy::strlcpy(&mut xname, &ksd.xname.get());
                 Sensordev {
                     num: ksd.num.get(),
                     xname,

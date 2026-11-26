@@ -99,7 +99,7 @@ use crate::machine::pci_machdep::{
 use crate::sys::device::{CfMatch, Cfattach, DVACT_POWERDOWN, DVACT_RESUME, Device, Softc};
 use crate::sys::errno::Errno;
 use core::sync::atomic::Ordering;
-use libkern::strlcpy;
+use libkern::string::strlcpy::strlcpy;
 
 /// `struct xhci_pci_softc`.
 #[repr(C)]

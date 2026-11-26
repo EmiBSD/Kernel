@@ -185,7 +185,7 @@ use hal::sync::mutex::{Mutexed, MutexedGuard};
 use hal::sync::once::OnceStatic;
 use hal::sync::rwlock::{Guarded, RW_READ, RW_WRITE, SplitRwlock};
 use hal::sync::sleep::INFSLP;
-use libkern::siphash::SiphashKey;
+use libkern::hash::siphash::SiphashKey;
 use sysdefs::base::errno::Errno;
 use sysdefs::base::types::{Daddr, Dev, Gid, Mode, Uid, major, makedev, minor};
 use sysdefs::fs::mount::{

@@ -251,7 +251,7 @@ pub fn ext2fs_init<G: ProcGlue>(_vfsp: &'static Vfsconf<G>) -> Result<(), Errno>
 /// `memset(fs->e2fs_fsmnt, 0, sizeof(fs->e2fs_fsmnt)); strlcpy(fs->e2fs_fsmnt, name, ..)`.
 fn e2fs_set_fsmnt(fs: &Ext2Superblock, name: &[u8]) {
     let mut m = [0u8; MAXMNTLEN];
-    libkern::strlcpy(&mut m, name);
+    libkern::string::strlcpy::strlcpy(&mut m, name);
     fs.set_fsmnt(&m);
 }
 
@@ -259,7 +259,7 @@ fn e2fs_set_fsmnt(fs: &Ext2Superblock, name: &[u8]) {
 /// mounted on" name in the super block, kept by revision 1 file systems.
 fn e2fs_set_sb_fsmnt(fs: &Ext2Superblock, name: &[u8]) {
     let mut m = [0u8; 64];
-    libkern::strlcpy(&mut m, name);
+    libkern::string::strlcpy::strlcpy(&mut m, name);
     fs.write_bytes(offset_of!(Ext2fs, e2fs_fsmnt), &m);
 }
 

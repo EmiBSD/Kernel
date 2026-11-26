@@ -121,7 +121,9 @@ use core::ops::ControlFlow;
 use core::sync::atomic::{AtomicI32, Ordering};
 use kernel::fs::vops::Cred;
 
-use libkern::{strlcpy, strnlen};
+use libkern::string::strlcpy::strlcpy;
+
+use libkern::string::strnlen::strnlen;
 
 use crate::conf::param::{FSCALE, MAXFILES, MAXPROCESS, MAXTHREAD, UTC_OFFSET};
 use crate::conf::vers::{OSRELEASE, OSTYPE, OSVERSION, VERSION};

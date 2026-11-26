@@ -47,7 +47,7 @@
 //!   `min(strlen(src), size - 1)` bytes, terminate, return `strlen(src)`), over random buffers,
 //!   sizes 0..=12 and sources with and without an embedded NUL.
 
-use crate::strnlen;
+use crate::string::strnlen::strnlen;
 
 /// Copies the string in `src` to `dst`. At most `dst.len() - 1` bytes are copied and the result
 /// is always NUL-terminated (unless `dst` is empty). Returns the length of `src`; a result

@@ -73,7 +73,7 @@ use core::cell::Cell;
 use core::ptr::{self, NonNull};
 
 use hal::mem::explicit_bzero;
-use libkern::timingsafe_bcmp;
+use libkern::mem::timingsafe_bcmp::timingsafe_bcmp;
 
 use crate::crypto::blake2s::Blake2sState;
 use crate::crypto::chachapoly::{
@@ -101,7 +101,7 @@ use crate::sys::socket::AF_INET6;
 use crate::sys::socket::{AF_INET, AF_UNSPEC, SockaddrStorage};
 use crate::sys::time::{Timespec, timespecadd, timespecsub};
 use crate::sys::types::{SaFamily, Time};
-use libkern::siphash::AtomicSiphashKey;
+use libkern::hash::siphash::AtomicSiphashKey;
 
 /// `COOKIE_MAC_SIZE`.
 pub const COOKIE_MAC_SIZE: usize = 16;

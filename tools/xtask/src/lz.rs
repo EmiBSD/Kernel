@@ -445,11 +445,19 @@ fn rel_of(root: &Path, f: &Path) -> String {
 /// The LZ path an inherited or adapted module of the native tree derives from. A module that
 /// moved into a crate at N2 (`hal`, `kernel`) keeps the LZ file it came from at its old path;
 /// every other module has the same path in both trees. `sysdefs` is grouped by purpose
-/// (`sys/lib/sysdefs/<group>/<header>.rs`), and a header's LZ file is `sys/sys/<header>.rs`.
+/// (`sys/lib/sysdefs/<group>/<header>.rs`), and a header's LZ file is `sys/sys/<header>.rs`;
+/// `libkern` and `libz` are grouped the same way, their LZ files `sys/lib/<crate>/<file>.rs`.
 fn lz_home(rust: &str) -> String {
     if let Some(rest) = rust.strip_prefix("sys/lib/sysdefs/") {
         if let Some((_group, file)) = rest.split_once('/') {
             return format!("sys/sys/{file}");
+        }
+    }
+    for leaf in ["libkern", "libz"] {
+        if let Some(rest) = rust.strip_prefix(&format!("sys/lib/{leaf}/"))
+            && let Some((_group, file)) = rest.split_once('/')
+        {
+            return format!("sys/lib/{leaf}/{file}");
         }
     }
     const MOVED: [(&str, &str); 4] = [

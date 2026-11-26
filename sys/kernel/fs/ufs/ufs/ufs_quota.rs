@@ -120,7 +120,7 @@ use hal::random::arc4random;
 use hal::sync::sleep::INFSLP;
 use hal::sync::slot::ReadMostly;
 use hal::user::{UserPtr, bytes_of, pod_from_bytes};
-use libkern::siphash::{SipHash24Ctx, SiphashKey};
+use libkern::hash::siphash::{SipHash24Ctx, SiphashKey};
 use sysdefs::base::errno::Errno;
 use sysdefs::base::types::{Daddr, Off, Uid};
 use sysdefs::file::fcntl::{FREAD, FWRITE};

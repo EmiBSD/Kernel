@@ -80,8 +80,8 @@
 
 #![allow(non_snake_case)] // zlib's names (compressBound, destLen)
 
-use crate::deflate::{deflate, deflateEnd};
-use crate::zlib::{Flush, Z_DEFAULT_COMPRESSION, ZError, ZStatus, ZStream, deflateInit};
+use crate::base::zlib::{Flush, Z_DEFAULT_COMPRESSION, ZError, ZStatus, ZStream, deflateInit};
+use crate::deflate::deflate::{deflate, deflateEnd};
 
 /// `compress2` (`compress2_z`): compresses `source` into `dest` at `level` (as in
 /// `deflateInit`) and returns the size of the compressed data (the C's `destLen`). `dest`
@@ -165,9 +165,9 @@ pub fn compressBound(sourceLen: u64) -> u64 {
 mod tests {
     use super::*;
 
-    const TEXT: &[u8] = include_bytes!("testdata/deflate_text.txt");
+    const TEXT: &[u8] = include_bytes!("../testdata/deflate_text.txt");
     /// zlib 1.2.12, level 9, of the test text (`compress2(.., 9)` makes the same stream).
-    const ZLIB_TEXT_L9: &[u8] = include_bytes!("testdata/deflate_zlib_text_l9.bin");
+    const ZLIB_TEXT_L9: &[u8] = include_bytes!("../testdata/deflate_zlib_text_l9.bin");
 
     #[test]
     fn compress2_makes_a_zlib_stream() {

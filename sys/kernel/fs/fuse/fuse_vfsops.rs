@@ -217,11 +217,11 @@ pub fn fusefs_mount<G: ProcGlue>(
 
         mp.with_stat(|sp| {
             sp.f_mntonname.fill(0);
-            libkern::strlcpy(&mut sp.f_mntonname, path);
+            libkern::string::strlcpy::strlcpy(&mut sp.f_mntonname, path);
             sp.f_mntfromname.fill(0);
-            libkern::strlcpy(&mut sp.f_mntfromname, b"fusefs");
+            libkern::string::strlcpy::strlcpy(&mut sp.f_mntfromname, b"fusefs");
             sp.f_mntfromspec.fill(0);
-            libkern::strlcpy(&mut sp.f_mntfromspec, b"fusefs");
+            libkern::string::strlcpy::strlcpy(&mut sp.f_mntfromspec, b"fusefs");
         });
 
         // fuse_device_set_fmp(fmp, 1), after U1's test made again.

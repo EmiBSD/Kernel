@@ -59,7 +59,7 @@ use bsd::sys::systm::PHYSMEM;
 use bsd::sys::types::Vaddr;
 use hal::vm::param::atop;
 use hal::vm::uvmexp::UVMEXP;
-use libkern::strlcpy;
+use libkern::string::strlcpy::strlcpy;
 
 /// Ops per measurement.
 const OPS: usize = 1_000_000;

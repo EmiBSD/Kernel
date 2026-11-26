@@ -2767,7 +2767,7 @@ native = ["Sha384Ctx::finalize", "Sha512Core::digest"]
 kind = "split"
 
 [[module]]
-rust = "sys/lib/libkern/siphash.rs"
+rust = "sys/lib/libkern/hash/siphash.rs"
 lz = ["sys/crypto/siphash.rs"]
 status = "redesigned"
 
@@ -2868,7 +2868,7 @@ rust = "sys/kernel/crypto/xform_ipcomp.rs"
 crate = "kernel"
 lz = ["sys/crypto/xform_ipcomp.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libz/zlib.rs", "sys/lib/libz/inflate.rs", "sys/lib/libz/deflate.rs"]
+adapted_by = ["sys/lib/libz/base/zlib.rs", "sys/lib/libz/inflate/inflate.rs", "sys/lib/libz/deflate/deflate.rs"]
 
 [[module]]
 rust = "sys/ddb/db_command.rs"
@@ -3246,7 +3246,8 @@ status = "inherited"
 [[module]]
 rust = "sys/dev/ic/ac97.rs"
 lz = ["sys/dev/ic/ac97.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/lib/libkern/string/strlcpy.rs"]
 
 [[module]]
 rust = "sys/dev/ic/ahci.rs"
@@ -3890,12 +3891,14 @@ status = "inherited"
 [[module]]
 rust = "sys/dev/pci/azalia.rs"
 lz = ["sys/dev/pci/azalia.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/lib/libkern/string/strlcpy.rs"]
 
 [[module]]
 rust = "sys/dev/pci/azalia_codec.rs"
 lz = ["sys/dev/pci/azalia_codec.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/lib/libkern/string/strlcpy.rs"]
 
 [[module]]
 rust = "sys/dev/pci/cy82c693.rs"
@@ -3919,7 +3922,8 @@ notes = "M16a: struct cy82c693_handle (Cy82c693Handle, Copy); the prototypes are
 [[module]]
 rust = "sys/dev/pci/eap.rs"
 lz = ["sys/dev/pci/eap.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/lib/libkern/string/strlcpy.rs"]
 notes = "M16d: the whole file (NMIDI > 0): eap_match (eap_devices[]), eap_attach (ES1370: AK4531 reset and mixer defaults through its set_port; ES1371/ES1373/CT5880: SRC programmed for 48 kHz, ac97(4) host), eap_resume/eap_activate, the AK4531 and ES1371 codec access with their timeouts, eap_intr (ADC, DAC2, UART), DMA list (eap_malloc adds M_ZERO to its node), set_params (ULINEAR returns EINVAL at once: the C's case falls through to default), trigger/halt, the ES1370 mixer (set_port, get_port, query_devinfo) and the ES1371 ones through the codec, the MIDI UART (open, close, output, getinfo); sc_prun/sc_rrun checked under the diagnostic feature; eap* at pci?, audio* at eap? and midi* at eap? in amd64's ioconf (amd64 GENERIC only); host tests (mixer bits, devinfo, blocksize, midi info); smoke-eap: ES1370 plays the tone"
 
 [[module]]
@@ -3931,7 +3935,8 @@ notes = "M16d: every define, typed by use (register offsets usize, 32-bit regist
 [[module]]
 rust = "sys/dev/pci/ehci_pci.rs"
 lz = ["sys/dev/pci/ehci_pci.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/lib/libkern/string/strlcpy.rs"]
 
 [[module]]
 rust = "sys/dev/pci/gcu_reg.rs"
@@ -4029,7 +4034,8 @@ status = "inherited"
 [[module]]
 rust = "sys/dev/pci/ohci_pci.rs"
 lz = ["sys/dev/pci/ohci_pci.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/lib/libkern/string/strlcpy.rs"]
 
 [[module]]
 rust = "sys/dev/pci/pci.rs"
@@ -4251,7 +4257,8 @@ status = "inherited"
 [[module]]
 rust = "sys/dev/pci/uhci_pci.rs"
 lz = ["sys/dev/pci/uhci_pci.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/lib/libkern/string/strlcpy.rs"]
 
 [[module]]
 rust = "sys/dev/pci/vga_pci.rs"
@@ -4284,7 +4291,8 @@ notes = "M16a: vmwpvs(4), whole file, amd64 GENERIC only; QEMU's pvscsi has no V
 [[module]]
 rust = "sys/dev/pci/xhci_pci.rs"
 lz = ["sys/dev/pci/xhci_pci.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/lib/libkern/string/strlcpy.rs"]
 license = "NetBSD Foundation BSD-2 notice"
 
 [[module]]
@@ -4633,7 +4641,8 @@ status = "inherited"
 [[module]]
 rust = "sys/dev/usb/uaudio.rs"
 lz = ["sys/dev/usb/uaudio.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/lib/libkern/string/strlcpy.rs"]
 
 [[module]]
 rust = "sys/dev/usb/ucom.rs"
@@ -4763,7 +4772,8 @@ license = "NetBSD Foundation BSD-2 notice"
 [[module]]
 rust = "sys/dev/usb/usb_subr.rs"
 lz = ["sys/dev/usb/usb_subr.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/lib/libkern/string/strlcpy.rs"]
 license = "NetBSD Foundation BSD-2 notice"
 
 [[module]]
@@ -5858,7 +5868,7 @@ adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vno
 notes = "N5.2: the VOP_* names as thin adapters over kernel::fs::vops's vop_* (the C pointer as Cred, a lent buffer as IoBuf::Lent), impl Vnops for Vops and impl Vfs for Vfsops (the bridges Vnops and Vfs), the vop_generic_* operations of vfs_default.c the file systems' tables hold over kernel::fs::default, abortop_putname (the FileGlue abortop leg)"
 
 [[module]]
-rust = "sys/lib/libkern/crc32c.rs"
+rust = "sys/lib/libkern/hash/crc32c.rs"
 lz = ["sys/lib/libkern/crc32c.rs"]
 status = "redesigned"
 
@@ -5869,7 +5879,7 @@ lz =["sys/lib/libkern/explicit_bzero.rs"]
 status = "redesigned"
 
 [[module]]
-rust = "sys/lib/libkern/getsn.rs"
+rust = "sys/lib/libkern/string/getsn.rs"
 lz = ["sys/lib/libkern/getsn.rs"]
 status = "inherited"
 
@@ -5877,45 +5887,45 @@ status = "inherited"
 rust = "sys/lib/libkern/lib.rs"
 lz = ["sys/lib/libkern/lib.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs"]
+adapted_by = ["sys/lib/libkern/hash/siphash.rs"]
 
 [[module]]
-rust = "sys/lib/libkern/random.rs"
+rust = "sys/lib/libkern/rand/random.rs"
 lz = ["sys/lib/libkern/random.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libkern/scanc.rs"
+rust = "sys/lib/libkern/mem/scanc.rs"
 lz = ["sys/lib/libkern/scanc.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libkern/skpc.rs"
+rust = "sys/lib/libkern/mem/skpc.rs"
 lz = ["sys/lib/libkern/skpc.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libkern/strlcat.rs"
+rust = "sys/lib/libkern/string/strlcat.rs"
 lz = ["sys/lib/libkern/strlcat.rs"]
 status = "redesigned"
 
 [[module]]
-rust = "sys/lib/libkern/strlcpy.rs"
+rust = "sys/lib/libkern/string/strlcpy.rs"
 lz = ["sys/lib/libkern/strlcpy.rs"]
 status = "redesigned"
 
 [[module]]
-rust = "sys/lib/libkern/strncasecmp.rs"
+rust = "sys/lib/libkern/string/strncasecmp.rs"
 lz = ["sys/lib/libkern/strncasecmp.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libkern/strnlen.rs"
+rust = "sys/lib/libkern/string/strnlen.rs"
 lz = ["sys/lib/libkern/strnlen.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libkern/timingsafe_bcmp.rs"
+rust = "sys/lib/libkern/mem/timingsafe_bcmp.rs"
 lz = ["sys/lib/libkern/timingsafe_bcmp.rs"]
 status = "redesigned"
 
@@ -5961,7 +5971,7 @@ status = "inherited"
 rust = "sys/lib/libsa/cread.rs"
 lz = ["sys/lib/libsa/cread.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libz/zlib.rs", "sys/lib/libz/inflate.rs"]
+adapted_by = ["sys/lib/libz/base/zlib.rs", "sys/lib/libz/inflate/inflate.rs"]
 
 [[module]]
 rust = "sys/lib/libsa/ctime.rs"
@@ -6137,25 +6147,25 @@ lz = ["sys/lib/libsa/ufs2.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libz/adler32.rs"
+rust = "sys/lib/libz/check/adler32.rs"
 lz = ["sys/lib/libz/adler32.rs"]
 status = "redesigned"
 license = "zlib"
 
 [[module]]
-rust = "sys/lib/libz/compress.rs"
+rust = "sys/lib/libz/deflate/compress.rs"
 lz = ["sys/lib/libz/compress.rs"]
 status = "redesigned"
 license = "zlib"
 
 [[module]]
-rust = "sys/lib/libz/crc32.rs"
+rust = "sys/lib/libz/check/crc32.rs"
 lz = ["sys/lib/libz/crc32.rs"]
 status = "redesigned"
 license = "zlib"
 
 [[module]]
-rust = "sys/lib/libz/deflate.rs"
+rust = "sys/lib/libz/deflate/deflate.rs"
 lz = ["sys/lib/libz/deflate.rs"]
 status = "redesigned"
 license = "zlib"
@@ -6205,62 +6215,62 @@ native = ["with_state", "state_ref", "state_mut"]
 kind = "merged"
 
 [[module]]
-rust = "sys/lib/libz/infback.rs"
+rust = "sys/lib/libz/inflate/infback.rs"
 lz = ["sys/lib/libz/infback.rs"]
 status = "redesigned"
 license = "zlib"
 
 [[module]]
-rust = "sys/lib/libz/inffast.rs"
+rust = "sys/lib/libz/inflate/inffast.rs"
 lz = ["sys/lib/libz/inffast.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libz/inflate.rs"]
+adapted_by = ["sys/lib/libz/inflate/inflate.rs"]
 license = "zlib"
 
 [[module]]
-rust = "sys/lib/libz/inffixed.rs"
+rust = "sys/lib/libz/inflate/inffixed.rs"
 lz = ["sys/lib/libz/inffixed.rs"]
 status = "inherited"
 license = "zlib"
 
 [[module]]
-rust = "sys/lib/libz/inflate.rs"
+rust = "sys/lib/libz/inflate/inflate.rs"
 lz = ["sys/lib/libz/inflate.rs"]
 status = "redesigned"
 license = "zlib"
 
 [[module]]
-rust = "sys/lib/libz/inftrees.rs"
+rust = "sys/lib/libz/inflate/inftrees.rs"
 lz = ["sys/lib/libz/inftrees.rs"]
 status = "redesigned"
 license = "zlib"
 
 [[module]]
-rust = "sys/lib/libz/trees.rs"
+rust = "sys/lib/libz/deflate/trees.rs"
 lz = ["sys/lib/libz/trees.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libz/deflate.rs"]
+adapted_by = ["sys/lib/libz/deflate/deflate.rs"]
 license = "zlib"
 
 [[module]]
-rust = "sys/lib/libz/zconf.rs"
+rust = "sys/lib/libz/base/zconf.rs"
 lz = ["sys/lib/libz/zconf.rs"]
 status = "inherited"
 license = "zlib"
 
 [[module]]
-rust = "sys/lib/libz/zlib.rs"
+rust = "sys/lib/libz/base/zlib.rs"
 lz = ["sys/lib/libz/zlib.rs"]
 status = "redesigned"
 license = "zlib"
 
 [[module]]
-rust = "sys/lib/libz/zopenbsd.rs"
+rust = "sys/lib/libz/base/zopenbsd.rs"
 lz = ["sys/lib/libz/zopenbsd.rs"]
 status = "redesigned"
 
 [[module]]
-rust = "sys/lib/libz/zutil.rs"
+rust = "sys/lib/libz/base/zutil.rs"
 lz = ["sys/lib/libz/zutil.rs"]
 status = "redesigned"
 license = "zlib"
@@ -6377,7 +6387,7 @@ adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/
 rust = "sys/net/if_wg.rs"
 lz = ["sys/net/if_wg.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/base/task.rs", "sys/kernel/proc/mod.rs", "sys/kern/proc_glue.rs", "sys/kernel/proc/cred.rs", "sys/hal/cpu/thread.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/bpf.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/udp_usrreq.rs"]
+adapted_by = ["sys/lib/libkern/hash/siphash.rs", "sys/kernel/base/task.rs", "sys/kernel/proc/mod.rs", "sys/kern/proc_glue.rs", "sys/kernel/proc/cred.rs", "sys/hal/cpu/thread.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/bpf.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/udp_usrreq.rs"]
 notes = "one change of its own besides the call sites: wg_tag's t_done is an AtomicBool stored Release after t_mbuf and loaded Acquire by wg_queue_dequeue, the C's unordered plain int closed on the user's decision of 2026-11-08 ahead of N8's redesign"
 
 [[module]]
@@ -6408,7 +6418,7 @@ adapted_by = ["sys/kernel/crypto/md5.rs", "sys/hal/vm/param.rs", "sys/kernel/pro
 rust = "sys/net/pf_lb.rs"
 lz = ["sys/net/pf_lb.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs"]
+adapted_by = ["sys/lib/libkern/hash/siphash.rs"]
 
 [[module]]
 rust = "sys/net/pf_norm.rs"
@@ -6424,7 +6434,8 @@ status = "inherited"
 [[module]]
 rust = "sys/net/pf_ruleset.rs"
 lz = ["sys/net/pf_ruleset.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/lib/libkern/string/strlcpy.rs", "sys/lib/libkern/string/strlcat.rs"]
 
 [[module]]
 rust = "sys/net/pf_syncookies.rs"
@@ -6491,7 +6502,7 @@ adapted_by = ["sys/kernel/proc/mod.rs", "sys/kern/proc_glue.rs", "sys/kernel/pro
 rust = "sys/net/wg_cookie.rs"
 lz = ["sys/net/wg_cookie.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/blake2s.rs", "sys/lib/libkern/siphash.rs"]
+adapted_by = ["sys/crypto/blake2s.rs", "sys/lib/libkern/hash/siphash.rs"]
 
 [[module]]
 rust = "sys/net/wg_noise.rs"
@@ -6540,7 +6551,7 @@ notes = "M7b: module in_ (in is a Rust keyword), with in.c; every constant, the 
 rust = "sys/netinet/in_pcb.rs"
 lz = ["sys/netinet/in_pcb.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/proc/mod.rs", "sys/kern/proc_glue.rs", "sys/kernel/proc/cred.rs", "sys/hal/cpu/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_proto.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/in6_pcb.rs", "sys/hal/sync/netlock.rs", "sys/kernel/netinet/tcp_var.rs", "sys/kernel/netinet/udp_usrreq.rs", "sys/kernel/netinet/raw_ip.rs", "sys/kernel/netinet/ip_divert.rs"]
+adapted_by = ["sys/lib/libkern/hash/siphash.rs", "sys/kernel/proc/mod.rs", "sys/kern/proc_glue.rs", "sys/kernel/proc/cred.rs", "sys/hal/cpu/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_proto.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/in6_pcb.rs", "sys/hal/sync/netlock.rs", "sys/kernel/netinet/tcp_var.rs", "sys/kernel/netinet/udp_usrreq.rs", "sys/kernel/netinet/raw_ip.rs", "sys/kernel/netinet/ip_divert.rs"]
 
 [[module]]
 rust = "sys/netinet/in_proto.rs"
@@ -6599,7 +6610,7 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/n
 rust = "sys/netinet/ip_ipsp.rs"
 lz = ["sys/netinet/ip_ipsp.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet6/ip6_output.rs", "sys/kernel/net/radix.rs"]
+adapted_by = ["sys/lib/libkern/hash/siphash.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet6/ip6_output.rs", "sys/kernel/net/radix.rs"]
 notes = "N6.7b1: ipo_nodes went with the SPD's move onto the kernel's radix tree; ipo_addr_key and ipo_mask_key give the key's and the mask's bytes (copied into the tree) instead of pointers the tree kept"
 
 [[module]]
@@ -6657,7 +6668,7 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/n
 rust = "sys/netinet6/in6_pcb.rs"
 lz = ["sys/netinet6/in6_pcb.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet6/in6_pcb.rs", "sys/lib/sysdefs/netinet6/in6.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/icmp6.rs", "sys/kernel/netinet6/in6_proto.rs", "sys/hal/sync/netlock.rs", "sys/kernel/net/if_var.rs", "sys/kernel/netinet/udp_usrreq.rs", "sys/kernel/netinet6/raw_ip6.rs", "sys/kernel/netinet6/ip6_divert.rs"]
+adapted_by = ["sys/lib/libkern/hash/siphash.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet6/in6_pcb.rs", "sys/lib/sysdefs/netinet6/in6.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/icmp6.rs", "sys/kernel/netinet6/in6_proto.rs", "sys/hal/sync/netlock.rs", "sys/kernel/net/if_var.rs", "sys/kernel/netinet/udp_usrreq.rs", "sys/kernel/netinet6/raw_ip6.rs", "sys/kernel/netinet6/ip6_divert.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6_proto.rs"
@@ -7846,7 +7857,7 @@ status = "inherited"
 rust = "sys/ntfs/ntfs_ihash.rs"
 lz = ["sys/ntfs/ntfs_ihash.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs"]
+adapted_by = ["sys/lib/libkern/hash/siphash.rs"]
 
 [[module]]
 rust = "sys/ntfs/ntfs_inode.rs"
@@ -7890,7 +7901,8 @@ status = "inherited"
 [[module]]
 rust = "sys/scsi/scsi_base.rs"
 lz = ["sys/scsi/scsi_base.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/lib/libkern/string/strlcpy.rs"]
 
 [[module]]
 rust = "sys/scsi/scsi_debug.rs"
@@ -13823,7 +13835,7 @@ adapted_by = ["sys/kernel/vm/page.rs", "sys/kernel/proc/mod.rs", "sys/kern/proc_
 rust = "sys/ufs/ufs/ufs_quota.rs"
 lz = ["sys/ufs/ufs/ufs_quota.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/proc/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs", "sys/kernel/fs/ufs/ufs/ufs_quota.rs"]
+adapted_by = ["sys/lib/libkern/hash/siphash.rs", "sys/kernel/proc/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs", "sys/kernel/fs/ufs/ufs/ufs_quota.rs"]
 
 [[module]]
 rust = "sys/hal/vm/param.rs"

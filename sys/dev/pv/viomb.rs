@@ -404,10 +404,10 @@ pub fn viomb_attach(parent: Option<&Device>, self_: &Device, aux: *mut c_void) {
         );
 
         let mut xname = [0u8; 16];
-        libkern::strlcpy(&mut xname, sc.devname().as_bytes());
+        libkern::string::strlcpy::strlcpy(&mut xname, sc.devname().as_bytes());
         sc.sc_sensdev.xname.set(xname);
         let mut desc = [0u8; 32];
-        libkern::strlcpy(&mut desc, b"desired");
+        libkern::string::strlcpy::strlcpy(&mut desc, b"desired");
         sc.sc_sens[0].desc.set(desc);
         sc.sc_sens[0].r#type.set(SENSOR_INTEGER);
         sensor_attach(&sc.sc_sensdev, &sc.sc_sens[0]);
@@ -416,7 +416,7 @@ pub fn viomb_attach(parent: Option<&Device>, self_: &Device, aux: *mut c_void) {
             .set(i64::from(sc.sc_npages.get() << PAGE_SHIFT));
 
         let mut desc = [0u8; 32];
-        libkern::strlcpy(&mut desc, b"current");
+        libkern::string::strlcpy::strlcpy(&mut desc, b"current");
         sc.sc_sens[1].desc.set(desc);
         sc.sc_sens[1].r#type.set(SENSOR_INTEGER);
         sensor_attach(&sc.sc_sensdev, &sc.sc_sens[1]);

@@ -97,7 +97,7 @@ use core::cell::Cell;
 use core::ffi::c_void;
 use core::ptr::{self, NonNull};
 
-use libkern::strlcpy;
+use libkern::string::strlcpy::strlcpy;
 
 use crate::dev::audio::{AUDIO_LOCK, audio_attach_mi};
 use crate::dev::audio_if::{

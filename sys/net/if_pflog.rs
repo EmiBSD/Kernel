@@ -122,7 +122,7 @@ use crate::sys::socket::Sockaddr;
 use crate::sys::sockio::SIOCSIFFLAGS;
 use crate::sys::systm::{net_assert_locked, net_lock, net_unlock};
 use crate::sys::types::{Pid, SaFamily, Uid};
-use libkern::strlcpy;
+use libkern::string::strlcpy::strlcpy;
 
 /// `PFLOG_RULESET_NAME_SIZE`.
 pub const PFLOG_RULESET_NAME_SIZE: usize = 16;

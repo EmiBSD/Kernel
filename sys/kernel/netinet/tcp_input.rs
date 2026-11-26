@@ -199,7 +199,7 @@ use core::sync::atomic::{AtomicI32, Ordering};
 use hal::sync::netlock::NetHeld;
 use hal::sync::once::OnceStatic;
 use hal::sync::rwlock::Guarded;
-use libkern::timingsafe_bcmp;
+use libkern::mem::timingsafe_bcmp::timingsafe_bcmp;
 use sysdefs::base::errno::Errno;
 use sysdefs::net::if_::IFF_LOOPBACK;
 use sysdefs::net::socket::{AF_INET, AF_INET6, SO_ACCEPTCONN, SO_DEBUG, SO_OOBINLINE};

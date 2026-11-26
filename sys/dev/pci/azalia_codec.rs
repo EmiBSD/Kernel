@@ -79,7 +79,7 @@
 
 use alloc::vec::Vec;
 
-use libkern::strlcpy;
+use libkern::string::strlcpy::strlcpy;
 
 use crate::dev::pci::azalia::{
     AZ_CLASS_INPUT, AZ_CLASS_OUTPUT, AZ_CLASS_RECORD, AZ_QRK_DOLBY_ATMOS, AZ_QRK_GPIO_POL_0,

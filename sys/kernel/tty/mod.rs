@@ -3451,7 +3451,8 @@ pub fn ttwrite<G: ProcGlue>(tp: &Tty<G>, uio: &mut dyn UioMove, flag: i32) -> Re
                 let mut ce = if tp.t_oflag() & OPOST == 0 {
                     cc
                 } else {
-                    let ce = cc - libkern::scanc(&obuf[cp..cp + cc], &CHAR_TYPE, CCLASSMASK);
+                    let ce =
+                        cc - libkern::mem::scanc::scanc(&obuf[cp..cp + cc], &CHAR_TYPE, CCLASSMASK);
                     // If ce is zero, then we're processing a special character through
                     // ttyoutput.
                     if ce == 0 {

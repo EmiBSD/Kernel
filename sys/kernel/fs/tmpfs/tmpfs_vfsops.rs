@@ -354,9 +354,9 @@ pub fn tmpfs_mount<G: ProcGlue>(
         sp.f_mntfromname = [0; MNAMELEN];
         sp.f_mntfromspec = [0; MNAMELEN];
 
-        libkern::strlcpy(&mut sp.f_mntonname[..MNAMELEN - 1], path);
-        libkern::strlcpy(&mut sp.f_mntfromname[..MNAMELEN - 1], b"tmpfs");
-        libkern::strlcpy(&mut sp.f_mntfromspec[..MNAMELEN - 1], b"tmpfs");
+        libkern::string::strlcpy::strlcpy(&mut sp.f_mntonname[..MNAMELEN - 1], path);
+        libkern::string::strlcpy::strlcpy(&mut sp.f_mntfromname[..MNAMELEN - 1], b"tmpfs");
+        libkern::string::strlcpy::strlcpy(&mut sp.f_mntfromspec[..MNAMELEN - 1], b"tmpfs");
     });
 
     Ok(())

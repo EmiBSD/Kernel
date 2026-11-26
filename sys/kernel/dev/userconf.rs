@@ -125,7 +125,11 @@
 use core::fmt;
 use core::sync::atomic::Ordering;
 
-use libkern::{GetsnCons, getsn, strncasecmp};
+use libkern::string::getsn::GetsnCons;
+
+use libkern::string::getsn::getsn;
+
+use libkern::string::strncasecmp::strncasecmp;
 
 use crate::base::log::snprintf;
 use crate::base::prf::{Str, printf};

@@ -348,7 +348,7 @@ use hal::sync::once::OnceStatic;
 use hal::sync::rwlock::{Guarded, RW_WRITE, Witness, WitnessPart};
 use hal::sync::slot::{LoanSlot, ReadMostly, SlotLoan};
 use hal::user::bytes_of;
-use libkern::siphash::AtomicSiphashKey;
+use libkern::hash::siphash::AtomicSiphashKey;
 use sysdefs::base::errno::Errno;
 use sysdefs::base::pod::AbiPod;
 use sysdefs::net::if_::IFF_UP;

@@ -1927,7 +1927,7 @@ pub fn fill_kproc<G: ProcGlue>(
     ki.p_estcpu = p.p_estcpu.get();
     if isthread {
         ki.p_tid = p.p_tid.get() + THREAD_PID_OFFSET;
-        libkern::strlcpy(&mut ki.p_name, &p.name());
+        libkern::string::strlcpy::strlcpy(&mut ki.p_name, &p.name());
     } else {
         ki.p_tid = -1;
     }
@@ -1966,10 +1966,10 @@ pub fn fill_kproc<G: ProcGlue>(
     ki.p_acflag = pr.ps_acflag.get();
     ki.p_pledge = pr.ps_pledge.load(Ordering::Relaxed);
 
-    libkern::strlcpy(&mut ki.p_emul, b"native");
-    libkern::strlcpy(&mut ki.p_comm, &pr.comm());
+    libkern::string::strlcpy::strlcpy(&mut ki.p_emul, b"native");
+    libkern::string::strlcpy::strlcpy(&mut ki.p_comm, &pr.comm());
     if let Some(s) = s {
-        libkern::strlcpy(&mut ki.p_login, s.s_login.get(r));
+        libkern::string::strlcpy::strlcpy(&mut ki.p_login, s.s_login.get(r));
 
         if !s.ttyvp.is_none() {
             ki.p_eflag |= EPROC_CTTY;
@@ -2000,7 +2000,7 @@ pub fn fill_kproc<G: ProcGlue>(
         if p.p_wchan.get() != 0
             && let Some(wmesg) = p.p_wmesg.get()
         {
-            libkern::strlcpy(&mut ki.p_wmesg, wmesg.as_bytes());
+            libkern::string::strlcpy::strlcpy(&mut ki.p_wmesg, wmesg.as_bytes());
         }
         if show_pointers {
             ki.p_wchan = p.p_wchan.get() as u64;

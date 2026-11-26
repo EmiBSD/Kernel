@@ -102,7 +102,7 @@
 //!   are `timingsafe_bcmp`.
 
 use hal::mem::explicit_bzero;
-use libkern::timingsafe_bcmp;
+use libkern::mem::timingsafe_bcmp::timingsafe_bcmp;
 
 use super::wipe;
 use crate::dev::rnd::arc4random_buf;
