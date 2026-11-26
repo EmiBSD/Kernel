@@ -97,8 +97,8 @@ use core::mem::offset_of;
 use core::ptr;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use hal::malloc::MArc;
-use hal::sleep::{INFSLP, PCATCH, PWAIT};
+use hal::mem::malloc::MArc;
+use hal::sync::sleep::{INFSLP, PCATCH, PWAIT};
 use hal::sys::errno::Errno;
 use hal::sys::mount::{
     Fid, MNAMELEN, MNT_FORCE, MNT_RDONLY, MNT_UPDATE, MNT_WANTRDWR, MfsArgs, Statfs, VB_NOWAIT,

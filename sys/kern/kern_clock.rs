@@ -106,7 +106,7 @@ use crate::sys::proc::ProcExt;
 use crate::sys::proc::{P_SYSTEM, TU_ITICKS, TU_STICKS, TU_UTICKS, tu_enter, tu_leave};
 use crate::sys::sched::{CP_IDLE, CP_INTR, CP_NICE, CP_SPIN, CP_SYS, CP_USER};
 use crate::sys::time::{Timespec, Timeval, timespec_to_timeval};
-use hal::clock::ClockFrame;
+use hal::cpu::clock::ClockFrame;
 
 /// `tvtohz`: compute number of hz in the specified amount of time.
 pub fn tvtohz(tv: &Timeval) -> i32 {

@@ -63,9 +63,9 @@
 //!   `FUFH_INVALID` (`-1 as usize`) could name no slot and is no longer writable; the slots'
 //!   `fh_type` keeps the C's [`FufhType`], `FUFH_INVALID` included.
 
-use hal::malloc::MArc;
-use hal::pinlist::PinEntry;
-use hal::rwlock::RecursiveRwlock;
+use hal::ds::pinlist::PinEntry;
+use hal::mem::malloc::MArc;
+use hal::sync::rwlock::RecursiveRwlock;
 use hal::sys::types::{Ino, Off};
 
 use crate::assert::kpanic;

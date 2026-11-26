@@ -150,8 +150,8 @@
 use core::sync::atomic::Ordering;
 
 use hal::arch::current::param::{PAGE_MASK, PAGE_SHIFT, PAGE_SIZE};
-use hal::pool::PoolArc;
-use hal::rwlock::WriteWitness;
+use hal::mem::pool::PoolArc;
+use hal::sync::rwlock::WriteWitness;
 use hal::sys::dirent::{
     DT_BLK, DT_CHR, DT_DIR, DT_FIFO, DT_LNK, DT_REG, DT_SOCK, Dirent, MAXNAMLEN, dirent_size,
 };
@@ -237,7 +237,7 @@ pub fn tmpfs_alloc_node<G: ProcGlue>(
         }
         VDIR => TnSpec::Dir(TnDir::new()),
         VFIFO | VSOCK => TnSpec::None,
-        VLNK => TnSpec::Lnk(hal::once::OnceStatic::new()),
+        VLNK => TnSpec::Lnk(hal::sync::once::OnceStatic::new()),
         VREG => TnSpec::Reg(TnReg::new()),
         VNON | VBAD => {
             kassert!(false);
@@ -370,7 +370,7 @@ pub(super) fn free_node_unlinked<G: ProcGlue>(tmp: &TmpfsMount<G>, node: TmpfsNo
             }
         }
         TnSpec::Dir(dir) => {
-            kassert!(dir.tn_dir.is_empty(&hal::klock::reader()));
+            kassert!(dir.tn_dir.is_empty(&hal::sync::klock::reader()));
             kassert!(
                 dir.tn_parent.is_none()
                     || tmp.tm_root.get().is_some_and(|r| PoolArc::ptr_eq(r, &node))
@@ -639,7 +639,7 @@ pub fn tmpfs_dir_attach<G: ProcGlue>(
 
     // Insert the entry to the directory (parent of inode).
     {
-        let mut w = hal::klock::witness();
+        let mut w = hal::sync::klock::witness();
         dnode.dir().tn_dir.insert_tail(&mut w, de.as_pin());
     }
     // The directory's place holds the entry until tmpfs_dir_detach takes it off.
@@ -712,7 +712,7 @@ pub fn tmpfs_dir_detach<G: ProcGlue>(dnode: &TmpfsNodeRef<G>, de: &TmpfsDirentRe
         drop(dir.tn_readdir_lastp.set(None));
     }
     {
-        let mut w = hal::klock::witness();
+        let mut w = hal::sync::klock::witness();
         dir.tn_dir.remove(&mut w, de);
     }
     drop(PoolArc::adopt(&**de));
@@ -747,7 +747,7 @@ pub fn tmpfs_dir_lookup<G: ProcGlue>(
     tmpfs_validate_dir(node);
 
     let de = {
-        let r = hal::klock::reader();
+        let r = hal::sync::klock::reader();
         node.dir()
             .tn_dir
             .iter(&r)
@@ -845,7 +845,7 @@ pub fn tmpfs_dir_lookupbyseq<G: ProcGlue>(
         kassert!(de.td_seq.get() != TMPFS_DIRSEQ_NONE);
         return Some(de);
     }
-    let r = hal::klock::reader();
+    let r = hal::sync::klock::reader();
     node.dir()
         .tn_dir
         .iter(&r)
@@ -863,7 +863,7 @@ fn dir_next<G: ProcGlue>(
     dnode: &TmpfsNode<G>,
     de: &TmpfsDirentRef<G>,
 ) -> Option<TmpfsDirentRef<G>> {
-    let r = hal::klock::reader();
+    let r = hal::sync::klock::reader();
     dnode.dir().tn_dir.next(&r, de).and_then(PoolArc::from_ref)
 }
 
@@ -900,7 +900,7 @@ pub fn tmpfs_dir_getdotents<G: ProcGlue>(
             dp.d_fileno = parent.tn_id.get();
             dirent_setname(dp, b"..");
             let first = {
-                let r = hal::klock::reader();
+                let r = hal::sync::klock::reader();
                 dir.tn_dir.first(&r).and_then(PoolArc::from_ref)
             };
             match first {

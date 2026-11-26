@@ -90,12 +90,12 @@
 //!   they take their arguments typed and return the value, so `bsd`'s rows and the ABI
 //!   module translate once (decision 25) and the kernel never reads a raw register.
 //! - The group and session lookups run under the kernel lock's reader or writer witness
-//!   (`hal::klock`), the C's `[K]` made a type; `getpgid`/`getsid`'s "same session" rule is
+//!   (`hal::sync::klock`), the C's `[K]` made a type; `getpgid`/`getsid`'s "same session" rule is
 //!   one helper (`sameses_target`).
 
 use core::sync::atomic::Ordering;
 
-use hal::klock;
+use hal::sync::klock;
 use hal::sys::errno::Errno;
 use hal::sys::syslimits::NGROUPS_MAX;
 use hal::sys::types::{Gid, Pid, Uid};
@@ -135,7 +135,10 @@ pub fn sys_getpgrp<G: ProcGlue>(p: &Thread<G>) -> Pid {
 }
 
 /// The address of `pr`'s session (`pr->ps_session`), 0 without one: what the C compares.
-fn session_addr<G: ProcGlue, W: hal::rwlock::Witness + ?Sized>(w: &W, pr: &Process<G>) -> usize {
+fn session_addr<G: ProcGlue, W: hal::sync::rwlock::Witness + ?Sized>(
+    w: &W,
+    pr: &Process<G>,
+) -> usize {
     pr.session(w).map_or(0, |s| core::ptr::from_ref(s).addr())
 }
 
@@ -346,7 +349,7 @@ pub fn sys_setpgid<G: ProcGlue>(curp: &Thread<G>, pid: Pid, pgid: Pid) -> Result
 /// A counted reference to the group `pg` found under a witness (a pool item: groups other
 /// than process 0's are `pgrppl`'s, and process 0's never moves).
 fn pgrp_ref<G: ProcGlue>(pg: &crate::proc::Pgrp<G>) -> crate::proc::PgrpRef<G> {
-    match hal::pool::PoolArc::from_ref(pg) {
+    match hal::mem::pool::PoolArc::from_ref(pg) {
         Some(a) => crate::proc::StaticOrPooled::Pooled(a),
         None => G::pgrp_ref(pg),
     }
@@ -844,17 +847,17 @@ pub fn proc_cansugid<G: ProcGlue>(p: &Thread<G>) -> bool {
 /// the machine refuses).
 #[allow(non_snake_case, reason = "the C name, sys___set_tcb")]
 pub fn sys___set_tcb<G: ProcGlue>(p: &Thread<G>, tcb: usize) -> Result<(), Errno> {
-    if hal::thread::tcb_invalid(tcb) {
+    if hal::cpu::thread::tcb_invalid(tcb) {
         return Err(Errno::EINVAL);
     }
-    hal::thread::tcb_set(p, tcb);
+    hal::cpu::thread::tcb_set(p, tcb);
     Ok(())
 }
 
 /// `__get_tcb(2)`: get address of the proc's thread-control-block.
 #[allow(non_snake_case, reason = "the C name, sys___get_tcb")]
 pub fn sys___get_tcb<G: ProcGlue>(p: &Thread<G>) -> usize {
-    hal::thread::tcb_get(p)
+    hal::cpu::thread::tcb_get(p)
 }
 
 /// `getthrname(2)`: the name of thread `tid` of the caller's process (the caller for 0)
@@ -958,7 +961,7 @@ pub fn sys_getrtable<G: ProcGlue>(p: &Thread<G>) -> i32 {
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
-    use hal::pool::PoolBox;
+    use hal::mem::pool::PoolBox;
 
     use super::*;
     use crate::proc::ProcessRef;

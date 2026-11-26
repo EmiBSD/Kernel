@@ -103,7 +103,7 @@
 //!   through the raw `ifioctl` (`*mut c_void` data, 3 `unsafe`), and kept `nfsbootdevname` in
 //!   a `StaticCell`. A request is built with an [`XdrWriter`] and a reply read with one
 //!   [`XdrReader`]; the interface requests go through the kernel's `ifioctl` over the
-//!   structures' bytes (`hal::pod`); the device name is a `Mutexed` copy; LZ's `Ipv4` printer
+//!   structures' bytes (`hal::mem::pod`); the device name is a `Mutexed` copy; LZ's `Ipv4` printer
 //!   is `if_ether`'s `InAddrFmt`. The reply parsers are their own functions
 //!   (`bp_whoami_reply`, `bp_getfile_reply`, `md_mount_reply`) so that the host tests drive
 //!   them with a chain.
@@ -113,9 +113,9 @@
 //!   `nfs_mount_diskless` (N6.7a5) passes the members themselves (LZ's form), and a user
 //!   address of the kernel's own structure is never made.
 
-use hal::intr::IPL_NONE;
-use hal::mutex::Mutexed;
-use hal::netlock::{NETLOCK, NetHeld};
+use hal::cpu::intr::IPL_NONE;
+use hal::sync::mutex::Mutexed;
+use hal::sync::netlock::{NETLOCK, NetHeld};
 use hal::sys::mount::{MNAMELEN, NFSMNT_NFSV3, NfsArgs};
 use hal::sys::net_if::{IFF_UP, IFNAMSIZ, Ifreq};
 use hal::sys::netinet_in::{InAddr, SockaddrIn};

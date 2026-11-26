@@ -1196,7 +1196,7 @@ mod tests {
         // of unveil_removevnode are under the kernel lock, as in a system call.
         crate::sys::systm::kernel_lock();
         {
-            let mut w = hal::klock::witness();
+            let mut w = hal::sync::klock::witness();
             let all = &proc_tables().allprocess;
             all.insert_head(&mut w, core::pin::Pin::static_ref(pr));
             all.insert_head(&mut w, core::pin::Pin::static_ref(child));
@@ -1209,7 +1209,7 @@ mod tests {
         assert_eq!(pos, -1);
         assert_eq!(pr.ps_uvvcount.get(), 2); // the slot stays, zapped
         {
-            let mut w = hal::klock::witness();
+            let mut w = hal::sync::klock::witness();
             let all = &proc_tables().allprocess;
             all.remove(&mut w, child);
             all.remove(&mut w, pr);

@@ -357,11 +357,11 @@
 //!   `RbtHead` address tree, a `TailqHead` dead queue and an `SlistHead` free list through
 //!   raw links, and freed with `pool_put` while the code still holds the reference: 22
 //!   `unsafe`. Here every entry is a [`PoolBox`] whichever its source: the 1,024 static
-//!   entries and the carved pages are a `hal::pool::StaticArena` behind their own `BoxPool`
+//!   entries and the carved pages are a `hal::mem::pool::StaticArena` behind their own `BoxPool`
 //!   (`KENTRY_POOL`, the C's `UVM_MAP_STATIC`), and `"vmmpekpl"` and `"vmmpepl"` stay the
 //!   C's pools. A box is owned by the map's address tree ([`ByAddr`], a
-//!   `hal::owned::OwnedTree`, augmented with `fspace_augment`) or by a dead queue
-//!   ([`DeadQueue`], a `hal::owned::OwnedList` over the same link: the C's `dfree` union),
+//!   `hal::ds::owned::OwnedTree`, augmented with `fspace_augment`) or by a dead queue
+//!   ([`DeadQueue`], a `hal::ds::owned::OwnedList` over the same link: the C's `dfree` union),
 //!   never both; the selectors' free trees and the pivots only count their links in the
 //!   entry, so the tree refuses to give an entry back while one still names it. An entry's
 //!   pool goes back with its box (`uvm_mapent_free`'s dispatch on `UVM_MAP_STATIC`/`KMEM`);
@@ -371,7 +371,7 @@
 //!   unique key: `uvm_mapent_addr_insert` panics on a collision, as the C) and found them
 //!   again after each change, O(log n) a step where the C's walks are O(1) a step. Since
 //!   N12.1 a walk that changes the tree holds the C's pointer as a counted link (`Held`, a
-//!   `hal::owned::SecondaryRef`): the entry it lends borrows the hold, not the tree, the
+//!   `hal::ds::owned::SecondaryRef`): the entry it lends borrows the hold, not the tree, the
 //!   walk steps with `RBT_NEXT` from it, and the tree refuses to give a counted entry back
 //!   (I4), so the C's rule that nothing frees the entry under the walk is checked. The
 //!   clippers take the entry held (`uvm_map_clip_start_held` releases the hold before the
@@ -412,7 +412,7 @@
 //!   walkers and the trap's `sserial` read them without the lock, as the C's plain loads),
 //!   written by setters that take the write lock's [`EntryWrite`]; an entry's two handles
 //!   (`object`: [`EntryObject`]; the `aref`'s amap and page offset) are one [`Handles`] in a
-//!   `hal::rwlock::Guarded` keyed to the map's lock (part 1 of its witness): readers clone
+//!   `hal::sync::rwlock::Guarded` keyed to the map's lock (part 1 of its witness): readers clone
 //!   them through any witness of the lock, the writer changes them through its
 //!   [`EntryWrite`]. LZ's per-cell busy flags (N3.4e) are gone with the `Cell`s. The map's
 //!   own scalars (`flags`, `size`, `timestamp`, `sserial`, `ref_count`, the bounds) are
@@ -420,7 +420,7 @@
 //! - **The lock as values.** `vm_map_lock`/`vm_map_lock_read`/`vm_map_lock_try` give a guard;
 //!   `vm_map_unlock*` is its drop; `vm_map_upgrade`/`vm_map_downgrade` consume it and give
 //!   the other; `vm_map_busy` + `vm_map_unlock` is [`MapWriteGuard::into_busy`], whose
-//!   [`MapBusy`] drops as `vm_map_unbusy`. The busy owner is `hal::sleep::curproc_word()` (0
+//!   [`MapBusy`] drops as `vm_map_unbusy`. The busy owner is `hal::sync::sleep::curproc_word()` (0
 //!   is never an owner) and `nbusy` its waiters, both under `flags_lock`, on whose address the
 //!   waiters sleep (`"vmmapbsy"`, `PVM`). The state (`addr`, the selectors, the brk and stack
 //!   areas) is a [`MapState`] in a `Guarded` keyed to the lock at `uvm_map_setup`, which
@@ -456,7 +456,7 @@
 //!   it checks and whose `p_ru` a `VM_MAP_WIREFUTURE` wiring counts, the `uvm_map_pageable`
 //!   family the counters' record of the wiring's faults (`ru`, `None` for an unwiring or a
 //!   kernel map's). The kernel maps are `super::km`'s slots; randomness is `hal::random`, the
-//!   teardown's yield `hal::sleep::sched_pause`.
+//!   teardown's yield `hal::sync::sleep::sched_pause`.
 //! - [`uvm_map_protect`]'s `RLIMIT_DATA` check (LZ's `unported!`) is the C's again, over the
 //!   thread's `lim_cur`.
 //! - `amap_copy(map, entry, ..)` (the map half; the kernel's `amap_copy_from` copies the
@@ -484,20 +484,19 @@ use hal::arch::current::param::{PAGE_MASK, PAGE_SHIFT, PAGE_SIZE};
 use hal::arch::current::vmparam::{
     BRKSIZ, MAXDSIZ, VM_MAXUSER_ADDRESS, VM_MIN_ADDRESS, VM_MIN_KERNEL_ADDRESS,
 };
-use hal::intr::{IPL_NONE, IPL_VM, splassert};
+use hal::cpu::intr::{IPL_NONE, IPL_VM, splassert};
 
-use hal::kmbuf::{KmBuf, PageKind, PageMemory};
-use hal::malloc::{M_NOWAIT, M_WAITOK, MBox};
-use hal::mutex::{Mutexed, MutexedGuard};
-use hal::once::OnceStatic;
-use hal::owned::{OwnedEntry, OwnedList, OwnedTree, SecondaryEntry, SecondaryRef};
-use hal::pmap::PmapRef;
-use hal::pool::{BoxPool, PR_NOWAIT, PR_WAITOK, PoolArc, PoolBox, StaticArena, TypedPool};
+use hal::ds::owned::{OwnedEntry, OwnedList, OwnedTree, SecondaryEntry, SecondaryRef};
+use hal::mem::kmbuf::{KmBuf, PageKind, PageMemory};
+use hal::mem::malloc::{M_NOWAIT, M_WAITOK, MBox};
+use hal::mem::pool::{BoxPool, PR_NOWAIT, PR_WAITOK, PoolArc, PoolBox, StaticArena, TypedPool};
 use hal::random::{arc4random, arc4random_uniform};
-use hal::rwlock::{
+use hal::sync::mutex::{Mutexed, MutexedGuard};
+use hal::sync::once::OnceStatic;
+use hal::sync::rwlock::{
     Divisible, Exclusive, Guarded, LockId, RawRwlock, RwMode, RwWitness, Witness, WitnessPart,
 };
-use hal::sleep::{INFSLP, PVM, cold, curproc_word, sched_pause, wakeup};
+use hal::sync::sleep::{INFSLP, PVM, cold, curproc_word, sched_pause, wakeup};
 use hal::sys::errno::Errno;
 use hal::sys::mman::{
     MADV_NORMAL, MADV_RANDOM, MADV_SEQUENTIAL, MAP_INHERIT_COPY, MAP_INHERIT_NONE,
@@ -506,6 +505,7 @@ use hal::sys::mman::{
 };
 use hal::sys::types::Vaddr;
 use hal::vm::param::{atop, ptoa, round_page, trunc_page};
+use hal::vm::pmap::PmapRef;
 use hal::vm::uvmexp::UVMEXP;
 
 use super::addr::{
@@ -1331,8 +1331,8 @@ impl FreeParts<'_> {
 }
 
 /// The C's `struct vm_map_entry *` kept across a change of the map's address tree: a counted
-/// link (`hal::owned::SecondaryRef`), which the tree refuses to give back while it lives
-/// (`hal::owned`'s I4), so a walk steps with `RBT_NEXT` from the entry in hand while clips
+/// link (`hal::ds::owned::SecondaryRef`), which the tree refuses to give back while it lives
+/// (`hal::ds::owned`'s I4), so a walk steps with `RBT_NEXT` from the entry in hand while clips
 /// and inserts happen around it, at the C's cost (no search per step). The entry it lends
 /// borrows the `Held`, not the tree, so it coexists with the state's `&mut`. An entry held
 /// must leave the tree only after its holds are released ([`Held::release`]): a splitting
@@ -2210,7 +2210,7 @@ static VMSPACE_POOL: TypedPool<Vmspace> = TypedPool::new();
 /// `IPL_VM`) never waits for a map.
 struct KentryPages;
 
-// The provider's contract (`hal::kmbuf::PageMemory`): a block `km_alloc` returns is fresh
+// The provider's contract (`hal::mem::kmbuf::PageMemory`): a block `km_alloc` returns is fresh
 // kernel memory of `len` bytes (one page here), zeroed (`kp_zero`), page-aligned, which nothing
 // else references until `free` hands it to `km_free` with the same modes (never: the arena
 // keeps its pages).
@@ -3915,13 +3915,13 @@ pub fn uvm_map_inentry<G: ProcGlue>(
     if uvm_map_inentry_recheck(serial, addr, ie) {
         ok = uvm_map_inentry_fix(map, ie, addr, f, serial);
         if !ok {
-            hal::klock::kernel_lock();
+            hal::sync::klock::kernel_lock();
             let pr = p.process();
             let report = InentryReport::of(&p, what, addr, ie, reason);
             crate::tty::uprintf(pr, format_args!("{report}"));
             pr.ps_acflag.set(pr.ps_acflag.get() | crate::acct::AMAP);
             // sv.sival_ptr = (void *)PROC_PC(p)
-            let sv = hal::sys::siginfo::Sigval::from_ptr(hal::trap::proc_pc());
+            let sv = hal::sys::siginfo::Sigval::from_ptr(hal::cpu::trap::proc_pc());
             crate::sig::trapsignal(
                 p,
                 hal::sys::signal::SIGSEGV,
@@ -3929,7 +3929,7 @@ pub fn uvm_map_inentry<G: ProcGlue>(
                 hal::sys::siginfo::SEGV_ACCERR,
                 sv,
             );
-            hal::klock::kernel_unlock();
+            hal::sync::klock::kernel_unlock();
         }
     }
     ok
@@ -4975,9 +4975,9 @@ fn uvm_map_splitentry(
                 adjust_offset = true;
             } else if isobj {
                 if let Some(uobj) = nh.uvm_obj() {
-                    hal::klock::kernel_lock(); // KERNEL_LOCK()
+                    hal::sync::klock::kernel_lock(); // KERNEL_LOCK()
                     uobj.reference();
-                    hal::klock::kernel_unlock(); // KERNEL_UNLOCK()
+                    hal::sync::klock::kernel_unlock(); // KERNEL_UNLOCK()
                 }
                 adjust_offset = true;
             }
@@ -5495,7 +5495,7 @@ pub fn uvmspace_init(
 
     let pmap = match pmap {
         Some(pm) => pm,
-        None => match hal::pmap::create() {
+        None => match hal::vm::pmap::create() {
             Some(pm) => pm,
             None => kpanic(format_args!("uvmspace_init: no pmap")),
         },
@@ -7014,7 +7014,7 @@ fn uvm_map_kmem_grow(
 
     // Reserve pmap entries (PMAP_GROWKERNEL is defined on amd64 and arm64).
     UVM_MAXKADDR.store(
-        hal::pmap::growkernel(Vaddr::new(end)).as_usize(),
+        hal::vm::pmap::growkernel(Vaddr::new(end)).as_usize(),
         Mem::Relaxed,
     );
 
@@ -7591,7 +7591,7 @@ pub(crate) mod tests {
         let _ = uvm_anon_init(0);
         let _ = amap_init(0);
         let _ = uao_init();
-        hal::pmap::init();
+        hal::vm::pmap::init();
         uvm_map_init();
         uvmfault_init();
         guard
@@ -7910,7 +7910,7 @@ pub(crate) mod tests {
         let p = thread(205);
         let pr = p.process();
         crate::sig::test_sigacts(pr);
-        let pp = hal::pin::pin_static::<Thread<Kg>>(p);
+        let pp = hal::ds::pin::pin_static::<Thread<Kg>>(p);
         {
             let mut g = pr.ps_mtx.lock();
             pr.ps_threads.insert_tail(&mut g, pp);
@@ -7924,8 +7924,8 @@ pub(crate) mod tests {
         };
         crate::sig::setsigvec(p, SIGSEGV, &mut sa);
         pr.set_comm(b"pivot");
-        hal::trap::set_user_regs(0x1234, 0);
-        let _ = hal::sig::take_sent();
+        hal::cpu::trap::set_user_regs(0x1234, 0);
+        let _ = hal::cpu::sig::take_sent();
 
         let vm = user_vmspace();
         let map = &vm.vm_map;
@@ -7956,7 +7956,7 @@ pub(crate) mod tests {
             map.sserial()
         ));
         assert_eq!((ie.start, ie.end), (stk, stk + len));
-        assert!(hal::sig::take_sent().is_empty());
+        assert!(hal::cpu::sig::take_sent().is_empty());
         assert_eq!(pr.ps_acflag.get() & crate::acct::AMAP, 0);
 
         let bad = plain + PAGE_SIZE + 0x20;
@@ -7976,7 +7976,7 @@ pub(crate) mod tests {
             "a failure leaves the cache"
         );
         assert_ne!(pr.ps_acflag.get() & crate::acct::AMAP, 0, "AMAP");
-        let sent = hal::sig::take_sent();
+        let sent = hal::cpu::sig::take_sent();
         assert_eq!(sent.len(), 1, "SIGSEGV");
         assert_eq!(sent[0].sig, SIGSEGV);
         let si = sent[0].info.expect("SA_SIGINFO");
@@ -7997,7 +7997,7 @@ pub(crate) mod tests {
                 stk + len - 1
             )
         );
-        hal::trap::set_user_regs(0, 0);
+        hal::cpu::trap::set_user_regs(0, 0);
         Kg::set_curproc(None);
         uvmspace_free(vm);
     }
@@ -8806,7 +8806,7 @@ pub(crate) mod tests {
         let flags = uvm_mapflag(RW, RW, MAP_INHERIT_NONE, MADV_RANDOM, UVM_FLAG_FIXED);
         let mut va = map.min_offset();
         // An INTRSAFE map is used at IPL_VM (uvm_map's splassert).
-        let spl = hal::intr::splraise(IPL_VM);
+        let spl = hal::cpu::intr::splraise(IPL_VM);
         uvm_map(
             map,
             &mut va,
@@ -9254,7 +9254,7 @@ pub(crate) mod tests {
         let _g = setup();
         let map = kernel_style_map(VM_MAP_INTRSAFE);
         let before = UVMEXP.kmapent.load(Mem::Relaxed);
-        let spl = hal::intr::splraise(IPL_VM);
+        let spl = hal::cpu::intr::splraise(IPL_VM);
         let held = map.lock();
         let (mapped, got) = exhaust_and_refill(map);
         assert!(!mapped, "the refill page asked a kernel map for space");

@@ -75,7 +75,7 @@ pub use kernel::syscall::SY_NOLOCK_DEFERRED;
 
 /// The thread `p` of a system call, pinned.
 fn pinned(p: &Proc) -> Pin<&'static Proc> {
-    hal::pin::pin_static(p.as_static())
+    hal::ds::pin::pin_static(p.as_static())
 }
 
 /// `pin_check(p, code)` (`kernel::syscall::pin_check`).

@@ -95,8 +95,8 @@
 //!   insertion of a stack record into a `'static` list; its removal; the move of a matching
 //!   record to the waker's local list; the dereference of the `tslp_p` thread pointer the
 //!   waker swapped out) -> 0: the record is pinned on the sleeper's stack
-//!   (`core::pin::pin!`) on a `hal::pinlist::PinList` bound to its bucket's
-//!   `hal::mutex::Mutexed<()>`, whose guard is the list's witness; the buckets are `const`
+//!   (`core::pin::pin!`) on a `hal::ds::pinlist::PinList` bound to its bucket's
+//!   `hal::sync::mutex::Mutexed<()>`, whose guard is the list's witness; the buckets are `const`
 //!   statics, `Sync` by their types.
 //! - `tslp_p` is no field: "queued" (`tslp_p != NULL`) **is** being linked
 //!   ([`Tslpentry::waiting`], the entry's own word, cleared last by the unlink itself), so a
@@ -114,19 +114,19 @@
 //!   the thread (docs/ROADMAP.md, N12).
 //! - `tslp_init` has no body: the buckets' lists and mutexes are `const` initialisers, so
 //!   nothing runs at boot (`main`'s `unported!("tslp_init")` is gone).
-//! - `<machine/spinlock.h>`'s word and values are `hal::spinlock`'s, one definition for both
+//! - `<machine/spinlock.h>`'s word and values are `hal::sync::spinlock`'s, one definition for both
 //!   machines (LZ's `MachineSpinlock` trait is not taken).
 
 use core::pin::{Pin, pin};
 use core::ptr;
 
-use hal::intr::IPL_MPFLOOR;
-use hal::mutex::{Mutexed, MutexedGuard};
-use hal::pinlist::{PinEntry, PinList};
-use hal::sleep::{INFSLP, PCATCH, PWAIT};
-use hal::spinlock::{_ATOMIC_LOCK_UNLOCKED, AtomicLock};
+use hal::cpu::intr::IPL_MPFLOOR;
+use hal::cpu::thread::sched_lock;
+use hal::ds::pinlist::{PinEntry, PinList};
+use hal::sync::mutex::{Mutexed, MutexedGuard};
+use hal::sync::sleep::{INFSLP, PCATCH, PWAIT};
+use hal::sync::spinlock::{_ATOMIC_LOCK_UNLOCKED, AtomicLock};
 use hal::sys::errno::Errno;
-use hal::thread::sched_lock;
 use hal::user::UserPtr;
 
 use crate::clock::Timespec;
@@ -848,7 +848,7 @@ mod tests {
                 assert_eq!(lock_word(), 0);
                 assert_eq!(thrwakeup_call(&w, ident, 1), 0);
             }
-            hal::thread::set_current_static::<T>(None);
+            hal::cpu::thread::set_current_static::<T>(None);
         });
         for _ in 0..ROUNDS {
             set_lock(1);
@@ -858,7 +858,7 @@ mod tests {
         waker.join().unwrap();
         assert_eq!(len(thrsleep_bucket(ident)), 0);
         assert_eq!(thrwakeup_call(&me, ident, 1), errno(Errno::ESRCH));
-        hal::thread::set_current_static::<T>(None);
+        hal::cpu::thread::set_current_static::<T>(None);
     }
 
     #[test]
@@ -869,11 +869,11 @@ mod tests {
         crate::sched::sleep_timeout_init(me.get_ref());
         run_as(a, me);
         {
-            hal::klock::kernel_lock();
-            let mut w = hal::klock::witness();
+            hal::sync::klock::kernel_lock();
+            let mut w = hal::sync::klock::witness();
             TABLES.tidhash(190).insert_head(&mut w, me);
             drop(w);
-            hal::klock::kernel_unlock();
+            hal::sync::klock::kernel_unlock();
         }
         let now = clock_gettime(me.get_ref(), CLOCK_MONOTONIC).unwrap();
         let tp = set_ts(now.tv_sec + 3600, now.tv_nsec);
@@ -883,11 +883,11 @@ mod tests {
             run_as(b, w);
             until_asleep(me);
             // The softclock thread took the timeout off the wheel and runs its handler.
-            assert!(hal::pin::project(me, |t| &t.p_sleep_to).del());
-            hal::klock::kernel_lock();
+            assert!(hal::ds::pin::project(me, |t| &t.p_sleep_to).del());
+            hal::sync::klock::kernel_lock();
             crate::sched::endtsleep::<G>(ptr::without_provenance_mut(190));
-            hal::klock::kernel_unlock();
-            hal::thread::set_current_static::<T>(None);
+            hal::sync::klock::kernel_unlock();
+            hal::cpu::thread::set_current_static::<T>(None);
         });
         // A timeout is EWOULDBLOCK here (futex(2) answers ETIMEDOUT).
         assert_eq!(
@@ -899,12 +899,12 @@ mod tests {
         // It took itself off its bucket.
         assert_eq!(len(thrsleep_bucket(0x7000)), 0);
         assert_eq!(thrwakeup_call(&me, 0x7000, 1), errno(Errno::ESRCH));
-        hal::klock::kernel_lock();
-        let mut w = hal::klock::witness();
+        hal::sync::klock::kernel_lock();
+        let mut w = hal::sync::klock::witness();
         TABLES.tidhash(190).remove(&mut w, me.get_ref());
         drop(w);
-        hal::klock::kernel_unlock();
-        hal::thread::set_current_static::<T>(None);
+        hal::sync::klock::kernel_unlock();
+        hal::cpu::thread::set_current_static::<T>(None);
     }
 }
 /* </TESTS> */

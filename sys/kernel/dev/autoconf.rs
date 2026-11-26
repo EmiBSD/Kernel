@@ -94,7 +94,7 @@
 //!   pointers in statics made `Sync` by hand (`Devicelist`, `DeferredConfigQueue`), the
 //!   deferred records `malloc`ed (`DeferredConfig`); every walk dereferenced pointers whose
 //!   lifetime rested on `config_detach`'s ordering. Here the nodes are counted
-//!   ([`DevRef`]): `alldevs` and the queues are `hal::pinlist::PinList`s linking the pinned
+//!   ([`DevRef`]): `alldevs` and the queues are `hal::ds::pinlist::PinList`s linking the pinned
 //!   node, all keyed to one lock, [`TREE`], the C's kernel lock for them, held for list and
 //!   table steps only, never across a driver's function or a sleep. A walk carries an owning
 //!   handle for the element it is at (from the driver's unit table for `alldevs`, from the
@@ -121,12 +121,12 @@ use core::fmt::{self, Write as _};
 use core::ptr;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use hal::intr::{IPL_HIGH, IPL_NONE};
-use hal::malloc::MArc;
-use hal::mutex::{Mutexed, MutexedGuard};
-use hal::once::OnceStatic;
-use hal::pinlist::PinList;
-use hal::sleep::{INFSLP, PWAIT, wakeup};
+use hal::cpu::intr::{IPL_HIGH, IPL_NONE};
+use hal::ds::pinlist::PinList;
+use hal::mem::malloc::MArc;
+use hal::sync::mutex::{Mutexed, MutexedGuard};
+use hal::sync::once::OnceStatic;
+use hal::sync::sleep::{INFSLP, PWAIT, wakeup};
 use hal::sys::reboot::{RB_COCOVM, RB_UNHIBERNATE};
 
 use crate::assert::{kassert, kpanic};
@@ -628,7 +628,7 @@ pub fn config_attach(
     drv.attach(parent, &dev, aux);
     config_process_deferred_children(&dev);
     // NHOTPLUG > 0
-    if !hal::sleep::cold() {
+    if !hal::sync::sleep::cold() {
         let _ = unported!("hotplug_device_attach (dev/hotplug.c)");
     }
 
@@ -716,7 +716,7 @@ pub fn config_make_softc(parent: Option<&DevRef>, cf: &'static dyn ConfigRow) ->
 /// A node around a softc its driver made outside `config_make_softc` (a legacy indirect
 /// bus's preallocated softc, given back to be attached; a device a legacy test made by
 /// hand): scaffolding (docs/SCAFFOLDING.md), not in the tree until attached.
-pub fn device_adopt(id: &Ident<'_>, flags: i32, softc: hal::pool::AnyArc) -> DevRef {
+pub fn device_adopt(id: &Ident<'_>, flags: i32, softc: hal::mem::pool::AnyArc) -> DevRef {
     Device::new(id, flags, softc)
 }
 
@@ -863,7 +863,7 @@ pub fn config_detach(dev: DevRef, flags: i32) -> Result<(), Errno> {
         drop(array);
 
         // NHOTPLUG > 0
-        if !hal::sleep::cold() {
+        if !hal::sync::sleep::cold() {
             let _ = unported!("hotplug_device_detach (dev/hotplug.c)");
         }
 
@@ -1181,7 +1181,7 @@ mod tests {
     use std::vec::Vec;
     use std::{assert, assert_eq, format};
 
-    use hal::pool::AnyArc;
+    use hal::mem::pool::AnyArc;
 
     use super::*;
     use crate::dev::device::{DV_DULL, DevRef, Devclass, DriverOps, Ident, QUIET, UNCONF};
@@ -1270,7 +1270,7 @@ mod tests {
                 self.name.len() + format!("{}", id.unit).len()
             );
             SOFTCS.fetch_add(1, Ordering::Relaxed);
-            MArc::erase(MArc::new(2, hal::malloc::M_NOWAIT, Softc).expect("softc"))
+            MArc::erase(MArc::new(2, hal::mem::malloc::M_NOWAIT, Softc).expect("softc"))
         }
         fn probe(&self, parent: Option<&DevRef>, _m: &Match, aux: &Aux<'_>) -> i32 {
             if parent.is_none() {
@@ -1914,7 +1914,7 @@ mod tests {
             let mut woken = 0;
             while CONFIG_PENDING.load(Ordering::SeqCst) != 0 {
                 s.store(true, Ordering::SeqCst);
-                if hal::sleep::tsleep_nsec(
+                if hal::sync::sleep::tsleep_nsec(
                     ptr::from_ref(&CONFIG_PENDING),
                     PWAIT,
                     "cfpend",

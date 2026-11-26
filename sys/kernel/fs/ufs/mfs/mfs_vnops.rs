@@ -95,8 +95,8 @@ use core::marker::PhantomData;
 use core::ptr;
 use core::sync::atomic::Ordering;
 
-use hal::intr::{IPL_BIO, splraise};
-use hal::sleep::{INFSLP, wakeup};
+use hal::cpu::intr::{IPL_BIO, splraise};
+use hal::sync::sleep::{INFSLP, wakeup};
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::Flock;
 use hal::sys::types::{Daddr, Register};
@@ -562,7 +562,7 @@ mod tests {
         vp.set_vtype(VBLK);
         assert!(checkalias(vp, makedev(255, minor), None).is_none());
         let mfsp = Mfsnode::new(vp, UIMAGE, LEN as i64, tid);
-        vp.set_node(hal::malloc::MArc::erase(mfsp.clone()));
+        vp.set_node(hal::mem::malloc::MArc::erase(mfsp.clone()));
         (vp, mfsp)
     }
 
@@ -629,7 +629,7 @@ mod tests {
         assert!(checkalias(vp, makedev(255, 902), None).is_none());
         // The process's memory is gone: no such address (below the copy double's).
         let mfsp = Mfsnode::new(vp, 0x1000, LEN as i64, p.p_tid.get());
-        vp.set_node(hal::malloc::MArc::erase(mfsp.clone()));
+        vp.set_node(hal::mem::malloc::MArc::erase(mfsp.clone()));
         let (t, r) = bread(&vp.bufs, 0, 512);
         assert_eq!(r, Err(Errno::EFAULT));
         assert!(t.buf().isset(B_ERROR));

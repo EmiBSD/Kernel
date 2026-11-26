@@ -114,7 +114,7 @@
 //!   struct as bytes in an `unsafe` block; `cd9660_readlink` writes no raw iovec (above).
 //! - `struct isoreaddir` (`readdir`'s three entries and offsets) and `cd9660_read`'s `struct
 //!   ra` (the read-ahead blocks and sizes) are `malloc(M_TEMP)` blocks of the structure's
-//!   size as the C's (`hal::malloc::MBox`, freed where the C frees them, by the drop on every
+//!   size as the C's (`hal::mem::malloc::MBox`, freed where the C frees them, by the drop on every
 //!   path), where LZ kept them on the stack: `vmstat -m`'s `temp` row counts the C's requests
 //!   (the main session's D-N5.8-R2 after review 1, D-N5.7-U5's principle).
 //! - `cd9660_strategy` is `ufs_strategy`'s shape: the buffer's token (`IoBuf::into_token`,
@@ -126,7 +126,7 @@
 
 use core::marker::PhantomData;
 
-use hal::malloc::{M_WAITOK, MArray, MBox};
+use hal::mem::malloc::{M_WAITOK, MArray, MBox};
 use hal::sys::dirent::{DT_UNKNOWN, Dirent, MAXNAMLEN, dirent_size};
 use hal::sys::errno::Errno;
 use hal::sys::stat::ALLPERMS;

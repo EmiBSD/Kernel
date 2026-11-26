@@ -111,7 +111,7 @@
 //!   list's end in every case the C reaches.
 //!
 //! ## Redesign
-//! - The queue and the holes are owned chains (`hal::owned::SlistLink`: each link owns the
+//! - The queue and the holes are owned chains (`hal::ds::owned::SlistLink`: each link owns the
 //!   next entry's "tcpqe" or "sackhl" item, D-13), walked forward with a cursor on the link
 //!   that owns the current entry: an insert or a removal where the walk stands is a link
 //!   change, O(1), as the C's `TAILQ_INSERT_AFTER` and `TAILQ_REMOVE` (LZ: `unsafe` list
@@ -122,8 +122,8 @@
 
 use core::cmp::min;
 
-use hal::owned::SlistLink;
-use hal::pool::{PR_NOWAIT, PoolBox};
+use hal::ds::owned::SlistLink;
+use hal::mem::pool::{PR_NOWAIT, PoolBox};
 use hal::sys::errno::Errno;
 use hal::sys::netinet_tcp::{
     MAX_SACK_BLKS, TCP_SACKHOLE_LIMIT, TCPOLEN_SACK, TH_ACK, TH_FIN, TcpSeq, Tcphdr,

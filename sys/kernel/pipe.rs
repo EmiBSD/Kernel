@@ -107,7 +107,7 @@
 //! ## Redesign
 //! - LZ's pair is a raw pool item reached by raw pointers (`f_data`, `pipe_peer`,
 //!   `pipe_pair`, `pipe_lock`), freed by the second `unsafe fn pipe_destroy`; here it is a
-//!   `hal::pool::PoolArc<PipePair<G>>` of a `TypedPool`, and each pipe is owned by one
+//!   `hal::mem::pool::PoolArc<PipePair<G>>` of a `TypedPool`, and each pipe is owned by one
 //!   [`PipeEnd`] (not `Clone`), which [`Pipes::create`] returns, one per descriptor. Dropping
 //!   an end is `pipe_close`'s `pipe_destroy`, so it runs exactly once per pipe, and the pair
 //!   goes back to the pool when the last handle goes (`pipe_pair_destroy` is
@@ -149,10 +149,10 @@
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use hal::kmbuf::{KmBuf, PageMemory};
-use hal::pool::{PR_WAITOK, PoolArc, TypedPool};
-use hal::rwlock::{RW_WRITE, Rwlocked, WriteGuard};
-use hal::sleep::{PCATCH, wakeup};
+use hal::mem::kmbuf::{KmBuf, PageMemory};
+use hal::mem::pool::{PR_WAITOK, PoolArc, TypedPool};
+use hal::sync::rwlock::{RW_WRITE, Rwlocked, WriteGuard};
+use hal::sync::sleep::{PCATCH, wakeup};
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::{FREAD, FWRITE};
 use hal::sys::signal::SIGIO;
@@ -1518,8 +1518,10 @@ mod tests {
         crate::sig::test_sigacts(pr);
         {
             let mut g = pr.ps_mtx.lock();
-            pr.ps_threads
-                .insert_tail(&mut g, hal::pin::pin_static::<crate::proc::Thread<Kg>>(t));
+            pr.ps_threads.insert_tail(
+                &mut g,
+                hal::ds::pin::pin_static::<crate::proc::Thread<Kg>>(t),
+            );
         }
         pr.ps_threadcnt.set(1);
         Kg::set_curproc(Some(t));

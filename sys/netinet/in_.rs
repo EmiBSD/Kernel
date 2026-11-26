@@ -188,13 +188,13 @@ pub unsafe fn in_ioctl(
 pub fn in_addmulti(
     addr: &InAddr,
     ifp: &'static crate::net::if_var::Ifnet,
-) -> Option<hal::malloc::MArc<kernel::netinet::in_var::InMulti>> {
+) -> Option<hal::mem::malloc::MArc<kernel::netinet::in_var::InMulti>> {
     kernel::netinet::in_::in_addmulti(addr, ifp, crate::net::if_::net_held("in_addmulti").net())
 }
 
 /// `in_delmulti(inm)`: the kernel's, under the net lock the caller holds; the membership's
 /// handle given back.
-pub fn in_delmulti(inm: hal::malloc::MArc<kernel::netinet::in_var::InMulti>) {
+pub fn in_delmulti(inm: hal::mem::malloc::MArc<kernel::netinet::in_var::InMulti>) {
     kernel::netinet::in_::in_delmulti(inm, crate::net::if_::net_held("in_delmulti").net());
 }
 /* </CODE> */

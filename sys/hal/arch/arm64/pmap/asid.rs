@@ -72,10 +72,10 @@ use super::layout::{
 };
 use crate::assert::kassert;
 use crate::bridges;
+use crate::cpu::intr::IPL_HIGH;
 use crate::cpu::{MAXCPUS, cpu_number};
-use crate::intr::IPL_HIGH;
-use crate::mutex::{Mutexed, MutexedGuard};
-use crate::pmap::Pmap;
+use crate::sync::mutex::{Mutexed, MutexedGuard};
+use crate::vm::pmap::Pmap;
 
 /// `pmap_asid[]`: two bits per pmap (its kernel and user ASIDs), `PMAP_MAX_NASID` bits.
 struct AsidMap {

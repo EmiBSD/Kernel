@@ -162,7 +162,7 @@ use crate::sys::vnode::{VEXEC, VREG, VSGID, VSUID};
 use crate::sys::vnode::{vn_close, vn_rdwr};
 use crate::sys::vnode::{vput, vref, vrele};
 use crate::unported;
-use hal::once::OnceStatic;
+use hal::sync::once::OnceStatic;
 use hal::vm::param::{atop, round_page, trunc_page};
 use kernel::exit::exit1;
 use kernel::proc::PinTable;
@@ -843,7 +843,7 @@ fn execve_common(
     if pr.ps_flags.load(Ordering::Relaxed) & PS_PPWAIT != 0 {
         pr.ps_flags.fetch_and(!PS_PPWAIT, Ordering::Relaxed);
         let pptr = {
-            let r = hal::klock::reader();
+            let r = hal::sync::klock::reader();
             pr.pptr(&r).cloned()
         };
         if let Some(pptr) = pptr {

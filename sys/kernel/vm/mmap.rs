@@ -82,7 +82,7 @@
 //!   pass the thread and `p->p_vmspace`. N5.0: the thread is the C's `struct proc *p`
 //!   (`&Thread<G>`), whose fields the calls read themselves (the limits, `ps_wxcounter`, the
 //!   kbind words under `ps_mtx`, `ps_libcpin`, `P_HASSIBLING`); `sigexit` is
-//!   `kernel::sig`'s and `PROC_PC` `hal::trap::proc_pc`. What is not the kernel's yet is the
+//!   `kernel::sig`'s and `PROC_PC` `hal::cpu::trap::proc_pc`. What is not the kernel's yet is the
 //!   glue's: `pledge_protexec` (`ProcGlue`, `kern_pledge` until N8) and a vnode file's vnode
 //!   (`FileGlue::vnode_ops`); the text vnode's `MNT_WXALLOWED` is the process's own
 //!   `textvp` since N5.3 (the C's `v_mount` test: no text vnode or no mount, not allowed). N3.5 to N4 asked all of it of the `VmProc` bridge about
@@ -116,8 +116,8 @@ use core::sync::atomic::{AtomicI32, Ordering};
 
 use hal::arch::current::param::{PAGE_MASK, PAGE_SIZE};
 use hal::arch::current::vmparam::{VM_MAXUSER_ADDRESS, VM_MIN_ADDRESS};
-use hal::klock::{kernel_lock, kernel_unlock};
-use hal::malloc::{M_WAITOK, MArray};
+use hal::mem::malloc::{M_WAITOK, MArray};
+use hal::sync::klock::{kernel_lock, kernel_unlock};
 use hal::sys::errno::Errno;
 use hal::sys::mman::{
     __MAP_NOFAULT, __MAP_NOREPLACE, MADV_DONTNEED, MADV_FREE, MADV_NORMAL, MADV_RANDOM,
@@ -1208,7 +1208,7 @@ pub fn sys_kbind<G: ProcGlue>(
     //
     // If paramp is non-NULL and we're uninitialized, do initialization. Otherwise, do
     // security checks and raise SIGILL on failure.
-    let pc = hal::trap::proc_pc(); // PROC_PC(p): p is the running thread
+    let pc = hal::cpu::trap::proc_pc(); // PROC_PC(p): p is the running thread
     let sigill = {
         let g_pr = pr.ps_mtx.lock(); // mtx_enter(&pr->ps_mtx)
         let mut slot = KbindSlot {
@@ -1509,7 +1509,7 @@ mod tests {
         let vm = crate::vm::map::tests::user_vmspace();
         let p = crate::vm::map::tests::thread(94);
         let pr = p.process();
-        hal::trap::set_user_regs(0x4_1000, 0);
+        hal::cpu::trap::set_user_regs(0x4_1000, 0);
         // A NULL block on a fresh process disables kbind.
         assert_eq!(sys_kbind(p, &vm, UserPtr::new(0), 0, 0), Ok(()));
         assert_eq!(pr.ps_kbind_addr.get(), BOGO_PC);
@@ -1525,7 +1525,7 @@ mod tests {
             (qr.ps_kbind_addr.get(), qr.ps_kbind_cookie.get()),
             (0x4_1000, 77)
         );
-        hal::trap::set_user_regs(0, 0);
+        hal::cpu::trap::set_user_regs(0, 0);
         let _ = super::super::map::uvmspace_free(vm);
     }
 

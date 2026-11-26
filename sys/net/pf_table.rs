@@ -103,7 +103,7 @@
 //!   committed, the entry `rn_match` finds inside a block), a NULL one panics. A table's two
 //!   trees are its own members, made with the table (the C's `rn_inithead` heads).
 //! - Each of a table's trees is inside a lock of its own, which the C does not have
-//!   (`hal::rwlock::Rwlocked`, "pfrktip4" and "pfrktip6"; the user's decision of 2026-11-24),
+//!   (`hal::sync::rwlock::Rwlocked`, "pfrktip4" and "pfrktip6"; the user's decision of 2026-11-24),
 //!   because the C's readers race its writers: `pfr_update_stats` looks its entry up after
 //!   `PF_UNLOCK`, under the shared net lock alone, on every softnet at once, while the state
 //!   purge (`PF_LOCK`, no net lock) deletes entries and the packet path adds and deletes them
@@ -189,7 +189,7 @@ use crate::sys::syslog::{LOG_DEBUG, LOG_ERR, LOG_NOTICE};
 use crate::sys::systm::{net_assert_locked, net_lock, net_unlock};
 use crate::sys::tree::RbHead;
 use crate::sys::types::{SaFamily, Time};
-use hal::rwlock::{ReadGuard, Rwlocked};
+use hal::sync::rwlock::{ReadGuard, Rwlocked};
 use libkern::{strlcpy, strnlen};
 
 #[cfg(feature = "inet6")]

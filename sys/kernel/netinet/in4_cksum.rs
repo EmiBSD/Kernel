@@ -98,7 +98,7 @@
 //! - LZ's `read_unaligned` of the header at `mtod(m)` and its 12-byte pseudo header array
 //!   -> the protocol and length words added directly and `ip_src`/`ip_dst` read in place
 //!   from the kernel's `Mbuf::data()` as the four 16-bit words they sum to, with no `unsafe`
-//!   and no copy (a whole-header `hal::pod::at::<Ip>` was a memmove call in the dev profile,
+//!   and no copy (a whole-header `hal::mem::pod::at::<Ip>` was a memmove call in the dev profile,
 //!   +34 % on N6.4a's `in4.cksum.40`); the check that the first mbuf holds a header is the
 //!   slice's bound (`m_len < sizeof(struct ip)`, the C's panic). `#[inline]`: a per-packet
 //!   helper of `bsd`'s transports across the crate boundary (N6.3c1's R12).

@@ -118,13 +118,13 @@
 //!   `PinEntry` for the C's 16-byte `LIST_ENTRY` (+16), the kernel's `MbufQueue` is 56 with
 //!   its unlocked length beside the list for the C's 48 (+8), and `la_refcnt` is gone (-8))
 //!   owned by the route's word,
-//!   `hal::link::TaggedLink`'s first kind (D-4; not `Parkable`: no lent record can be made a box
+//!   `hal::ds::link::TaggedLink`'s first kind (D-4; not `Parkable`: no lent record can be made a box
 //!   by the park protocol, review 1's B1): the word
 //!   lends the record only to a guard of [`ARP_MTX`] (the C's "rt_llinfo and RTF_LLINFO are
 //!   protected by arp_mtx", now a type: `LlinfoArp`'s `Tagged::LOCK`), and gives the box back
 //!   only to the whole guard borrowed mutably (`RTM_DELETE`). Its one owner is the word, so
 //!   `la_refcnt` (the list's reference and the iterator's) goes: the list links the pinned
-//!   record (`hal::pinlist::PinList`, `arp_list`), and `arptimer` holds no reference to a
+//!   record (`hal::ds::pinlist::PinList`, `arp_list`), and `arptimer` holds no reference to a
 //!   record across the mutex's release, only its route (below). The members are \[m\] as in
 //!   the C: atomics written under the mutex (`la_refreshed`, `la_asked`), and `la_mq` the
 //!   kernel's `MbufQueue` (its own mutex, a leaf, as the C's).
@@ -157,11 +157,11 @@
 //! - `arpinq` is the kernel's `Niqueue` (`kernel::net::if_var`), `net.inet.ip.arpq`'s
 //!   `sysctl_niq` the kernel's; `if_output_mq` over `la_mq` is `arpcache`'s own delist and
 //!   `if_output_ml`.
-//! - The ARP packet in an mbuf is read and written through `hal::pod` at offset 0 (the data
+//! - The ARP packet in an mbuf is read and written through `hal::mem::pod` at offset 0 (the data
 //!   has no alignment guarantee: a copy, 28 bytes, once per packet as LZ's); the Ethernet
 //!   header `arprequest`/`arpreply` hand to the interface's output in a `pseudo_AF_HDRCMPLT`
 //!   socket address is written into its `sa_data`, as in C.
-//! - `revarpwhoarewe` sleeps on `revarp_myip`'s address through `hal::sleep` (no glue), as
+//! - `revarpwhoarewe` sleeps on `revarp_myip`'s address through `hal::sync::sleep` (no glue), as
 //!   the C's `tsleep_nsec(&revarp_myip, PSOCK, "revarp", ...)`.
 //!
 //! **Lock and spl transitions** against the C: `arpresolve`'s hit takes none (`arp_mtx` once
@@ -189,15 +189,15 @@ use core::pin::{Pin, pin};
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
-use hal::intr::IPL_SOFTNET;
-use hal::link::{StaticMutex, Tagged};
-use hal::mutex::Mutexed;
-use hal::netlock::{NETLOCK, NetHeld};
-use hal::once::OnceStatic;
-use hal::pinlist::{PinEntry, PinList};
-use hal::pod;
-use hal::pool::{BoxPool, PR_NOWAIT, PoolArc, Pooled};
-use hal::rwlock::RW_WRITE;
+use hal::cpu::intr::IPL_SOFTNET;
+use hal::ds::link::{StaticMutex, Tagged};
+use hal::ds::pinlist::{PinEntry, PinList};
+use hal::mem::pod;
+use hal::mem::pool::{BoxPool, PR_NOWAIT, PoolArc, Pooled};
+use hal::sync::mutex::Mutexed;
+use hal::sync::netlock::{NETLOCK, NetHeld};
+use hal::sync::once::OnceStatic;
+use hal::sync::rwlock::RW_WRITE;
 use hal::sys::errno::Errno;
 #[cfg(feature = "nfsclient")]
 use hal::sys::net_ethertypes::ETHERTYPE_REVARP;
@@ -911,14 +911,14 @@ fn arpresolve_ll(
 
     // The route flags are changed under the kernel lock.
     if reject == Some(true) && !rt.rt_flags.isset(RTF_REJECT) {
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         rt.rt_flags.set_bits(RTF_REJECT);
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
     }
     if reject == Some(false) && rt.rt_flags.isset(RTF_REJECT) {
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         rt.rt_flags.clear(RTF_REJECT);
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
     }
     if refresh {
         let sip = rt_ifa_sin(rt);
@@ -1112,7 +1112,7 @@ pub fn arpcache(
     };
     let mut changed = false;
 
-    kassert!(hal::netlock::status() == RW_WRITE);
+    kassert!(hal::sync::netlock::status() == RW_WRITE);
     kassert!(rt.with_gateway(|g| g.is_some()));
 
     // This can happen if the entry has been deleted by another CPU after we found it.
@@ -1254,7 +1254,7 @@ pub fn arpinvalidate(rt: &Rtentry) {
 
 /// `arptfree(rt)`: frees an arp entry, under the exclusive net lock.
 pub fn arptfree(rt: &PoolArc<Rtentry>, net: &NetHeld<'_>) {
-    kassert!(hal::netlock::status() == RW_WRITE);
+    kassert!(hal::sync::netlock::status() == RW_WRITE);
 
     // might have been freed between leave arp_mtx and enter net lock
     if !rt.rt_flags.isset(RTF_LLINFO) {
@@ -1393,7 +1393,7 @@ fn revarp_reply(ifp: &Ifnet, m: &MbufBox, ar: &EtherArp) {
         REVARP_FINISHED.store(true, Ordering::Relaxed);
     }
     // wake: Do wakeup every time in case it was missed.
-    hal::sleep::wakeup(&raw const REVARP_MYIP);
+    hal::sync::sleep::wakeup(&raw const REVARP_MYIP);
 }
 
 /// `revarprequest(ifp)`: send a RARP request for the ip address of the specified interface.
@@ -1441,8 +1441,12 @@ pub fn revarpwhoarewe(ifp: &'static Ifnet) -> Result<(InAddr, InAddr), Errno> {
     while count > 0 {
         count -= 1;
         revarprequest(ifp);
-        let result =
-            hal::sleep::tsleep_nsec(&raw const REVARP_MYIP, PSOCK, "revarp", REVARP_WAIT_NSEC);
+        let result = hal::sync::sleep::tsleep_nsec(
+            &raw const REVARP_MYIP,
+            PSOCK,
+            "revarp",
+            REVARP_WAIT_NSEC,
+        );
         if result != Err(Errno::EWOULDBLOCK) {
             break;
         }
@@ -1571,10 +1575,10 @@ mod tests {
         ifp.if_flags
             .set(IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST | IFF_RUNNING | IFF_UP);
         ac.ac_enaddr.set(OURS);
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         if_attach(ifp);
         ether_ifattach(ac);
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
 
         // ifconfig <name> inet 10.0.2.15/24
         let mut req = [0u8; 64];
@@ -1656,7 +1660,7 @@ mod tests {
     fn resolve(ifp: &'static Ifnet, rt: &Rtentry, a: [u8; 4]) -> Result<[u8; 6], Errno> {
         let s = sin(a);
         let mut desten = [0u8; 6];
-        hal::netlock::lock();
+        hal::sync::netlock::lock();
         let r = arpresolve(
             ifp,
             Some(rt),
@@ -1664,7 +1668,7 @@ mod tests {
             SockaddrView::new(&s).expect("a view"),
             &mut desten,
         );
-        hal::netlock::unlock();
+        hal::sync::netlock::unlock();
         r.map(|m| {
             drop(m);
             desten

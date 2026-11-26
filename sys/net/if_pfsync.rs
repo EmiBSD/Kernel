@@ -249,7 +249,7 @@ use crate::sys::syslog::LOG_WARNING;
 use crate::sys::systm::{INFSLP, net_assert_locked, net_lock, net_unlock};
 use crate::sys::task::{Task, Taskq};
 use crate::sys::timeout::{Timeout, timeout_pending};
-use hal::malloc::MArc;
+use hal::mem::malloc::MArc;
 
 /// `PFSYNC_VERSION`.
 pub const PFSYNC_VERSION: u8 = 6;
@@ -4219,9 +4219,9 @@ mod tests {
             "only unit 0"
         );
         // The C holds the kernel lock across an attach (bpf_ifattach asserts it).
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         assert_eq!(pfsync_clone_create(&PFSYNC_CLONER, 0), Ok(()));
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
         let ifp = if_unit(b"pfsync0").expect("pfsync0");
         if_put(ifp);
         assert_eq!(ifp.if_type.get(), IFT_PFSYNC);

@@ -94,10 +94,10 @@ use core::marker::PhantomData;
 use core::ptr;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use hal::malloc::{M_WAITOK, MBox};
-use hal::once::OnceStatic;
-use hal::rwlock::RawRwlock;
-use hal::sleep::PCATCH;
+use hal::mem::malloc::{M_WAITOK, MBox};
+use hal::sync::once::OnceStatic;
+use hal::sync::rwlock::RawRwlock;
+use hal::sync::sleep::PCATCH;
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::{FNONBLOCK, FREAD, FWRITE};
 use hal::sys::filio::FIONREAD;
@@ -422,7 +422,7 @@ pub fn ptsread<G: ProcGlue>(dev: Dev, uio: &mut dyn UioMove, flag: i32) -> Resul
                     }
                     // A process in the background of a tty is in a process group.
                     let pg = {
-                        let r = hal::klock::reader();
+                        let r = hal::sync::klock::reader();
                         pr.pgrp(&r).cloned()
                     };
                     if sigismasked(p, SIGTTIN)
@@ -543,11 +543,11 @@ pub fn ptcwakeup<G: ProcGlue>(tp: &Tty<G>, flag: i32) {
 
     if flag & FREAD != 0 {
         selwakeup(&pti.pt_selr);
-        hal::sleep::wakeup(tp.t_outq.cf_chan());
+        hal::sync::sleep::wakeup(tp.t_outq.cf_chan());
     }
     if flag & FWRITE != 0 {
         selwakeup(&pti.pt_selw);
-        hal::sleep::wakeup(tp.t_rawq.cf_chan());
+        hal::sync::sleep::wakeup(tp.t_rawq.cf_chan());
     }
 }
 
@@ -624,11 +624,11 @@ pub fn ptcread<G: ProcGlue>(dev: Dev, uio: &mut dyn UioMove, flag: i32) -> Resul
         if flag & IO_NDELAY != 0 {
             return Err(Errno::EWOULDBLOCK);
         }
-        hal::sleep::tsleep_nsec(
+        hal::sync::sleep::tsleep_nsec(
             tp.t_outq.cf_chan(),
             TTIPRI | PCATCH,
             TTYIN,
-            hal::sleep::INFSLP,
+            hal::sync::sleep::INFSLP,
         )?;
     }
     let mut error = Ok(());
@@ -705,7 +705,7 @@ pub fn ptcwrite<G: ProcGlue>(dev: Dev, uio: &mut dyn UioMove, flag: i32) -> Resu
                 }
                 let _ = tp.t_canq.putc(0);
                 ttwakeup(tp);
-                hal::sleep::wakeup(ptr::from_ref(&tp.t_canq));
+                hal::sync::sleep::wakeup(ptr::from_ref(&tp.t_canq));
                 break 'body PtcExit::Done(Ok(()));
             }
             loop {
@@ -728,13 +728,13 @@ pub fn ptcwrite<G: ProcGlue>(dev: Dev, uio: &mut dyn UioMove, flag: i32) -> Resu
                     if tp.t_rawq.c_cc.get() + tp.t_canq.c_cc.get() >= tp.ttyhog() - 2
                         && (tp.t_canq.c_cc.get() > 0 || tp.t_lflag() & ICANON == 0)
                     {
-                        hal::sleep::wakeup(ptr::from_ref(&tp.t_rawq));
+                        hal::sync::sleep::wakeup(ptr::from_ref(&tp.t_rawq));
                         break 'body PtcExit::Block;
                     }
                     let c = i32::from(buf[cp]);
                     cp += 1;
                     if linesw(tp).rint(c, tp) == 1
-                        && hal::sleep::tsleep_nsec(
+                        && hal::sync::sleep::tsleep_nsec(
                             ptr::from_ref(tp),
                             TTIPRI | PCATCH,
                             "ttyretype",
@@ -776,11 +776,11 @@ pub fn ptcwrite<G: ProcGlue>(dev: Dev, uio: &mut dyn UioMove, flag: i32) -> Resu
                         Ok(())
                     };
                 }
-                if let Err(e) = hal::sleep::tsleep_nsec(
+                if let Err(e) = hal::sync::sleep::tsleep_nsec(
                     tp.t_rawq.cf_chan(),
                     TTOPRI | PCATCH,
                     TTYOUT,
-                    hal::sleep::INFSLP,
+                    hal::sync::sleep::INFSLP,
                 ) {
                     // interrupt: adjust for data copied in but not written
                     uio.set_resid(uio.resid() + cc);
@@ -807,7 +807,7 @@ fn kn_pti<G: ProcGlue>(kn: &Knote<G>) -> &'static PtSoftc<G> {
 /// `filt_ptcrdetach`: unhooks a read or except knote.
 fn filt_ptcrdetach<G: ProcGlue>(kn: &Knote<G>) {
     let pti = kn_pti(kn);
-    let _s = hal::intr::splraise(hal::intr::IPL_TTY);
+    let _s = hal::cpu::intr::splraise(hal::cpu::intr::IPL_TTY);
     pti.pt_selr.si_note.remove_legacy(kn);
 }
 
@@ -858,7 +858,7 @@ impl<G: ProcGlue> Filter<G> for PtcWrite {
     /// `filt_ptcwdetach`.
     fn detach(kn: &Knote<G>) {
         let pti = kn_pti(kn);
-        let _s = hal::intr::splraise(hal::intr::IPL_TTY);
+        let _s = hal::cpu::intr::splraise(hal::cpu::intr::IPL_TTY);
         pti.pt_selw.si_note.remove_legacy(kn);
     }
 
@@ -961,7 +961,7 @@ pub fn ptckqfilter<G: ProcGlue>(dev: Dev, kn: &Knote<G>) -> Result<(), Errno> {
     kn.kn_hook
         .set(ptr::without_provenance_mut(minor(dev) as usize));
 
-    let _s = hal::intr::splraise(hal::intr::IPL_TTY);
+    let _s = hal::cpu::intr::splraise(hal::cpu::intr::IPL_TTY);
     klist.insert_legacy(kn);
     Ok(())
 }

@@ -64,7 +64,7 @@
 //! ## Deviations
 //! - `struct kevq` entries ([`Kevq`]) are items of a pool of their own ("nfskevqpl", made by
 //!   `nfs_vfs_init`) where the C `malloc`s them (`M_KEVENT`): the watch list owns them
-//!   (`hal::owned::OwnedList`), and an owning list takes pool items (`kqueue`'s timers'
+//!   (`hal::ds::owned::OwnedList`), and an owning list takes pool items (`kqueue`'s timers'
 //!   `kqtimerpl` precedent; the user's decision of 2026-11-24): `vmstat -m` shows a new pool
 //!   row, "nfskevqpl", and its `M_KEVENT` ("kevent") row no longer counts the watched NFS
 //!   vnodes.
@@ -80,7 +80,7 @@
 //!   `kn_hook` a raw word cast back to the vnode. Here the list and `pnfskq` are one value
 //!   in a `Rwlocked` (`nfskevq_lock`, the C's rwlock: `NfsTables::kevq`) that owns its
 //!   entries; the poller keeps the entry it works on with the lock dropped by a counted
-//!   reference (`hal::owned::SecondaryRef`, `kernel::event`'s `KnHold` shape: the C's
+//!   reference (`hal::ds::owned::SecondaryRef`, `kernel::event`'s `KnHold` shape: the C's
 //!   `KEVQ_BUSY` stays the flag `nfs_kqunwatch` waits on, and the list could not give the
 //!   entry back while the reference lives), and walks on from it with `next(e)`, O(1) a
 //!   step as the C's `SLIST_FOREACH`; the reference is taken only for an entry whose
@@ -100,11 +100,11 @@ use core::marker::PhantomData;
 use core::ptr;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use hal::owned::{OwnedAdapter, OwnedEntry, OwnedList, SecondaryRef};
-use hal::pool::PR_WAITOK;
-use hal::rwlock::Rwlocked;
-use hal::sleep::{INFSLP, tsleep_nsec, wakeup};
-use hal::slot::ReadMostly;
+use hal::ds::owned::{OwnedAdapter, OwnedEntry, OwnedList, SecondaryRef};
+use hal::mem::pool::PR_WAITOK;
+use hal::sync::rwlock::Rwlocked;
+use hal::sync::sleep::{INFSLP, tsleep_nsec, wakeup};
+use hal::sync::slot::ReadMostly;
 use hal::sys::errno::Errno;
 use hal::sys::types::{Nlink, Pid};
 
@@ -235,7 +235,7 @@ fn pnfskq_chan<G: ProcGlue>() -> *const () {
 pub fn nfs_kqpoll<G: ProcGlue>() -> ! {
     // `struct vattr attr`: one for the poller's life, as the C's (the pass's docs).
     let mut attr = Vattr::new();
-    hal::thread::with_current::<Thread<G>, _>(|p| {
+    hal::cpu::thread::with_current::<Thread<G>, _>(|p| {
         while nfs_kqpoll_pass(&p, &mut attr) {
             // wait a while before checking for changes again
             let _ = tsleep_nsec(

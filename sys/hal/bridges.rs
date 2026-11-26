@@ -29,7 +29,7 @@
 //! Every bridge is a row of `bridges.toml` (`trait`, `for`, `paid_by`, the milestone whose
 //! subsystem moves the implementation in and removes the row); N9 requires the file empty.
 //! The kernel crate's own bridges (`Fd`, `Kq`, ... for pipe(2), N2.6) live in `kernel`, in the
-//! same shape, one [`crate::once::OnceStatic`] each.
+//! same shape, one [`crate::sync::once::OnceStatic`] each.
 //!
 //! What each primitive does while its bridge is not registered (early boot, host tests that
 //! register none) is written in its module and is never a panic in a hot path: no interrupts
@@ -37,7 +37,7 @@
 //! from the machine's per-CPU register.
 //!
 //! The kernel's page allocator is not a bridge: `kernel::vm::km` implements `hal`'s
-//! [`crate::kmbuf::PageMemory`] and its callers pass it down as a value (N3.2), as the pmap's
+//! [`crate::mem::kmbuf::PageMemory`] and its callers pass it down as a value (N3.2), as the pmap's
 //! page provider is (D16).
 //!
 //! **The boot contract.** Every bridge is a safe trait (decision 30). The two memory
@@ -46,7 +46,7 @@
 //! the boot CPU, before interrupts and before any user of the pieces) with the kernel's own
 //! `pool(9)` and `malloc(9)`; `hal`'s soundness rests on that registration: the
 //! blocks they return are kernel memory of the size granted, exclusively the caller's until
-//! freed through the same bridge (`sys/hal/trust.rs` checks every answer for alignment and
+//! freed through the same bridge (`sys/hal/mem/trust.rs` checks every answer for alignment and
 //! size). A slot is set once, so nothing registered later can replace them.
 //!
 //! ## Redesign
@@ -55,18 +55,18 @@
 //!   (`register_*` refuses a second implementation), and a reader gets an `Option`.
 
 use crate::cons::Console;
-use crate::intr::IntrHardware;
-use crate::malloc::Malloc;
-use crate::once::OnceStatic;
+use crate::cpu::intr::IntrHardware;
+use crate::mem::malloc::Malloc;
+use crate::mem::pool::PoolBackend;
+use crate::prf::Printf;
+use crate::sync::once::OnceStatic;
+use crate::sync::sleep::Sleep;
 #[cfg(any(
     not(target_os = "none"),
     target_arch = "x86_64",
     target_arch = "aarch64"
 ))]
-use crate::pmap::{Random, TlbCpus};
-use crate::pool::PoolBackend;
-use crate::prf::Printf;
-use crate::sleep::Sleep;
+use crate::vm::pmap::{Random, TlbCpus};
 
 /// A second registration of a bridge, which keeps the first; names the trait.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -145,7 +145,7 @@ bridge!(
     printf
 );
 
-// The pmap's two bridges exist where `hal::pmap` does (`lib.rs`: the host, amd64 and arm64);
+// The pmap's two bridges exist where `hal::vm::pmap` does (`lib.rs`: the host, amd64 and arm64);
 // their readers are the backends' (amd64's shootdown, arm64's ASID allocator).
 #[cfg(any(
     not(target_os = "none"),

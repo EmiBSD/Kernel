@@ -169,10 +169,10 @@ use core::mem::{offset_of, size_of};
 use core::pin::pin;
 use core::sync::atomic::Ordering;
 
-use hal::netlock::NetHeld;
-use hal::percpu::Counters;
-use hal::pod;
-use hal::pool::PoolArc;
+use hal::mem::pod;
+use hal::mem::pool::PoolArc;
+use hal::sync::netlock::NetHeld;
+use hal::sync::percpu::Counters;
 use hal::sys::errno::Errno;
 use hal::sys::netinet_icmp6::{
     ICMP6_PARAM_PROB, ICMP6_PARAMPROB_NEXTHEADER, Icmp6Hdr, Icmp6statCounters,

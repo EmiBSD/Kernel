@@ -374,7 +374,8 @@ pub static BSD_IPSEC: BsdIpsec = BsdIpsec;
 
 /// The key `register_ipsec` gave [`BSD_IPSEC`]'s registration, with which its legs make and
 /// read [`TdbRef`]s.
-pub static BSD_TDB_KEY: hal::once::OnceStatic<&'static TdbKey> = hal::once::OnceStatic::new();
+pub static BSD_TDB_KEY: hal::sync::once::OnceStatic<&'static TdbKey> =
+    hal::sync::once::OnceStatic::new();
 
 /// The key, which every leg is called after (`ifinit` registered them and kept it).
 pub(crate) fn tdb_key() -> &'static TdbKey {

@@ -37,8 +37,8 @@
 //! interrupts, before any other CPU runs, and before any user of a `hal` piece (the kernel
 //! crate's subsystems are initialised from `main()`, after `uvm_init`, `kmeminit` and the
 //! pools). That is the boot contract `hal`'s soundness rests on (`sys/hal/bridges.rs`,
-//! `sys/hal/trust.rs`): the memory bridges are the kernel's own allocators, registered once.
-//! The interrupt controller (`hal::intr::IntrHardware`, N4.5c) is the machine's to register,
+//! `sys/hal/mem/trust.rs`): the memory bridges are the kernel's own allocators, registered once.
+//! The interrupt controller (`hal::cpu::intr::IntrHardware`, N4.5c) is the machine's to register,
 //! from its earliest setup (arm64's `initarm`): generic code cannot name it.
 //! Registering does not call them; a bridge is used only by a piece whose subsystem is up.
 
@@ -46,8 +46,8 @@ use core::ptr::NonNull;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use hal::cons::Console;
-use hal::malloc::Malloc;
-use hal::pool::{PageSource, PoolBackend, RawPool};
+use hal::mem::malloc::Malloc;
+use hal::mem::pool::{PageSource, PoolBackend, RawPool};
 use hal::prf::Printf;
 
 use crate::dev::cons::{cngetc, cnpollc, cnputc};
@@ -256,15 +256,15 @@ impl Malloc for BsdMalloc {
     }
 }
 
-/// The CPUs as amd64's TLB shootdown and cache flush need them (`hal::pmap::TlbCpus`):
+/// The CPUs as amd64's TLB shootdown and cache flush need them (`hal::vm::pmap::TlbCpus`):
 /// `CPU_INFO_FOREACH`, `cpu_is_running`, `ci_proc_pmap`, `x86_fast_ipi`,
 /// `wbinvd_on_all_cpus` and `ci_cflushsz` of `sys/arch/amd64/amd64/{cpu,ipi}.rs`.
 #[cfg(all(machine_x86, feature = "multiprocessor"))]
 struct BsdTlbCpus;
 
 #[cfg(all(machine_x86, feature = "multiprocessor"))]
-impl hal::pmap::TlbCpus for BsdTlbCpus {
-    fn for_each_other_running(&self, f: &mut dyn FnMut(usize, *const hal::pmap::Pmap)) {
+impl hal::vm::pmap::TlbCpus for BsdTlbCpus {
+    fn for_each_other_running(&self, f: &mut dyn FnMut(usize, *const hal::vm::pmap::Pmap)) {
         let me = crate::machine::cpu::curcpu();
         crate::machine::cpu::cpu_info_foreach(&mut |ci| {
             if !core::ptr::eq(ci, me) && crate::machine::cpu::cpu_is_running(ci) {
@@ -276,12 +276,12 @@ impl hal::pmap::TlbCpus for BsdTlbCpus {
         });
     }
 
-    fn send(&self, cpuid: usize, ipi: hal::pmap::TlbIpi) -> bool {
+    fn send(&self, cpuid: usize, ipi: hal::vm::pmap::TlbIpi) -> bool {
         use crate::machine::x86::{LAPIC_IPI_INVLPG, LAPIC_IPI_INVLRANGE, LAPIC_IPI_INVLTLB};
         let vector = match ipi {
-            hal::pmap::TlbIpi::Page => LAPIC_IPI_INVLPG,
-            hal::pmap::TlbIpi::Range => LAPIC_IPI_INVLRANGE,
-            hal::pmap::TlbIpi::Tlb => LAPIC_IPI_INVLTLB,
+            hal::vm::pmap::TlbIpi::Page => LAPIC_IPI_INVLPG,
+            hal::vm::pmap::TlbIpi::Range => LAPIC_IPI_INVLRANGE,
+            hal::vm::pmap::TlbIpi::Tlb => LAPIC_IPI_INVLTLB,
         };
         let mut sent = false;
         crate::machine::cpu::cpu_info_foreach(&mut |ci| {
@@ -301,10 +301,10 @@ impl hal::pmap::TlbCpus for BsdTlbCpus {
     }
 }
 
-/// `arc4random(9)` of `sys/dev/rnd.rs` (`hal::pmap::Random`).
+/// `arc4random(9)` of `sys/dev/rnd.rs` (`hal::vm::pmap::Random`).
 struct BsdRandom;
 
-impl hal::pmap::Random for BsdRandom {
+impl hal::vm::pmap::Random for BsdRandom {
     fn random_u32(&self) -> u32 {
         crate::dev::rnd::arc4random()
     }
@@ -348,12 +348,12 @@ impl Printf for BsdPrintf {
     }
 }
 
-/// The kernel's scheduler as `hal::sleep`'s sleeps (`kernel::sched::KernelSleep`).
+/// The kernel's scheduler as `hal::sync::sleep`'s sleeps (`kernel::sched::KernelSleep`).
 static KERNEL_SLEEP: kernel::sched::KernelSleep<crate::kern::proc_glue::BsdProcGlue> =
     kernel::sched::KernelSleep::new();
 static BSD_POOLS: BsdPools = BsdPools;
 static BSD_MALLOC: BsdMalloc = BsdMalloc;
-/// What `hal`'s trap code asks (`hal::trap::TrapHandler`): the kernel's, over `bsd`'s threads
+/// What `hal`'s trap code asks (`hal::cpu::trap::TrapHandler`): the kernel's, over `bsd`'s threads
 /// (N4.8b).
 #[cfg(not(machine_x86))]
 static KERNEL_TRAP: kernel::syscall::KernelTrap<crate::kern::proc_glue::BsdProcGlue> =
@@ -421,7 +421,7 @@ pub fn hal_bridges_register() {
     // And the kernel's window leg of uiomove its own token (hal::user::WindowKcopyToken,
     // N5.9t1), taken by kernel::uio here for the same reason.
     kernel::uio::window_kcopy_take();
-    // And the publisher of the interface addresses' storage (hal::link::SaToken, N6.3a): the
+    // And the publisher of the interface addresses' storage (hal::ds::link::SaToken, N6.3a): the
     // kernel's interface layer copies what a link names, so only bsd's internet protocols,
     // which own that storage, may make one name it; taken here for the same reason.
     crate::net::if_var::sa_token_take();
@@ -430,7 +430,7 @@ pub fn hal_bridges_register() {
     let _ = hal::bridges::register_malloc(&BSD_MALLOC);
     // What the machine's trap code asks (N4.8b): before the first thread runs.
     #[cfg(not(machine_x86))]
-    let _ = hal::trap::install(&KERNEL_TRAP);
+    let _ = hal::cpu::trap::install(&KERNEL_TRAP);
     let _ = hal::bridges::register_console(&BSD_CONS);
     let _ = hal::bridges::register_printf(&BSD_PRINTF);
     let _ = hal::bridges::register_random(&BSD_RANDOM);

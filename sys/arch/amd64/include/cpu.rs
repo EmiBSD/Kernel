@@ -96,7 +96,7 @@ use crate::sys::device::Device;
 use crate::sys::proc::Proc;
 use crate::sys::sched::SchedstatePercpu;
 use crate::sys::sysctl::{CTLTYPE_INT, CTLTYPE_QUAD, CTLTYPE_STRING, CTLTYPE_STRUCT};
-use hal::pmap::Pmap;
+use hal::vm::pmap::Pmap;
 
 /// `enum cpu_vendor`: the vendor `cpu_set_vendor` maps cpuid(0)'s string to.
 #[allow(non_camel_case_types, clippy::upper_case_acronyms)] // OpenBSD names, verbatim

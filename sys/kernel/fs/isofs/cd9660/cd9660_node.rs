@@ -121,7 +121,7 @@
 //!   IsoNode`, freed by `cd9660_reclaim`) -> an [`IsoNode`] made where the C fills its
 //!   `malloc(M_ZERO)` block ([`IsoNode::new`]: the identity `i_vnode`, `i_dev`, `i_number` and
 //!   the mount structure's handle `i_mnt` given, the rest zero) and published in a counted
-//!   `malloc(M_ISOFSNODE)` block ([`IsoNodeRef`], `hal::malloc::MArc`; `vmstat -m`'s `ISOFS
+//!   `malloc(M_ISOFSNODE)` block ([`IsoNodeRef`], `hal::mem::malloc::MArc`; `vmstat -m`'s `ISOFS
 //!   node` row, the C's requests; a typed pool would add a pool row userland sees, D-N5.7-2,
 //!   D-N5.8-7) erased into the vnode's typed slot (`Vnode::set_node` in
 //!   `cd9660_vget_internal`, N5.8c2, where the C sets `v_data`; `take_node` in
@@ -133,19 +133,19 @@
 //!   (`fs::word`, docs/IDIOMS.md's counters' row: every cd9660 path is `KERNEL_LOCK`ed):
 //!   `iso_extent`, `i_size`, `iso_start`, and what the C changes under the node's lock (`i_flag`, the lookup's directory offsets
 //!   `i_endoff`/`i_diroff`/`i_offset`/`i_ino`, the read-ahead's `ci_lastr`); `i_vnode` and
-//!   `i_devvp` are `hal::link::Link`s (the alias move; `vref`'d after the hashing and given
+//!   `i_devvp` are `hal::ds::link::Link`s (the alias move; `vref`'d after the hashing and given
 //!   back by the reclaim). `i_mnt` is a counted handle of the mount structure held for the
 //!   node's life ([`IsoNode::mnt`] borrows it: one load, the C's `ip->i_mnt`). `i_lock` is a
-//!   `hal::rwlock::RecursiveRwlock` (the C's `RWL_DUPOK | RWL_IS_VNODE` are `WITNESS` flags,
+//!   `hal::sync::rwlock::RecursiveRwlock` (the C's `RWL_DUPOK | RWL_IS_VNODE` are `WITNESS` flags,
 //!   as the denode's).
 //! - The attributes (`inode`, the C's `ISO_RRIP_INODE`, filled once by `cd9660_vget_internal`
 //!   from the record and read whole by `getattr`, `access` and `inactive`) are a
-//!   `hal::slot::ReadMostly<IsoRripInode>` ([`IsoNode::inode`] a copy out, [`IsoNode::set_inode`]
+//!   `hal::sync::slot::ReadMostly<IsoRripInode>` ([`IsoNode::inode`] a copy out, [`IsoNode::set_inode`]
 //!   the one write; `ufs_vfsops.rs`'s tables the precedent): a read is one compare-and-swap and
 //!   a release, where the C loads the members it needs; review 1 of N5.8c1.
 //! - LZ's three `StaticCell`s and the chains of `sys/queue.rs` `ListHead`s linked and
 //!   unlinked in `unsafe` blocks whose argument was the kernel lock -> [`Isohash`], the
-//!   denode hash's shape (N5.7c2): a `hashinit` table of `hal::pinlist::PinList`s of the
+//!   denode hash's shape (N5.7c2): a `hashinit` table of `hal::ds::pinlist::PinList`s of the
 //!   pinned nodes (`MArc::as_pin`), its adapter [`IsoHashLink`] from `hal::pin_adapter!`'s
 //!   generic form (LZ's `IsoHash`, a `queue_adapter!`), in a `ReadMostly` cell of the glue's
 //!   tables. **The C has no lock** ("XXX locking"): the kernel lock is the lock, as LZ's: a
@@ -164,12 +164,12 @@
 
 use core::pin::Pin;
 
-use hal::klock;
-use hal::link::Link;
-use hal::malloc::{M_WAITOK, MArc, MArray};
-use hal::pinlist::PinList;
-use hal::rwlock::RecursiveRwlock;
-use hal::slot::ReadMostly;
+use hal::ds::link::Link;
+use hal::ds::pinlist::PinList;
+use hal::mem::malloc::{M_WAITOK, MArc, MArray};
+use hal::sync::klock;
+use hal::sync::rwlock::RecursiveRwlock;
+use hal::sync::slot::ReadMostly;
 use hal::sys::errno::Errno;
 use hal::sys::mount::ISOFSMNT_EXTATT;
 use hal::sys::stat::{S_IFDIR, S_IFREG, S_IRGRP, S_IROTH, S_IRUSR, S_IXGRP, S_IXOTH, S_IXUSR};
@@ -239,7 +239,7 @@ impl IsoRripInode {
 /// module's redesign for which members are words).
 pub struct IsoNode<G: ProcGlue> {
     /// `i_next`, `i_prev`: hash chain.
-    pub i_hash: hal::pinlist::PinEntry<IsoNode<G>>,
+    pub i_hash: hal::ds::pinlist::PinEntry<IsoNode<G>>,
     /// The index of the chain the node is on (what the C's `i_prev` knows of it).
     pub i_chain: U32Word,
     /// `i_vnode`: vnode associated with this inode.
@@ -289,7 +289,7 @@ impl<G: ProcGlue> IsoNode<G> {
     /// unhashed, unlocked.
     pub fn new(vp: &'static Vnode<G>, dev: Dev, number: Cdino, imp: IsoMntRef<G>) -> Self {
         Self {
-            i_hash: hal::pinlist::PinEntry::new(),
+            i_hash: hal::ds::pinlist::PinEntry::new(),
             i_chain: U32Word::new(0),
             i_vnode: Link::to(vp),
             i_devvp: Link::new(),

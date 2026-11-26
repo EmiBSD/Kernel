@@ -116,7 +116,7 @@ fn uptr<T, U>(a: *const T) -> UserPtr<U> {
 
 /// The thread pinned, as the kernel's `truncate` calls take it (`proc_glue`'s `pinned`).
 fn pinned(p: &Proc) -> Pin<&'static Proc> {
-    hal::pin::pin_static(crate::sys::proc::ProcExt::as_static(p))
+    hal::ds::pin::pin_static(crate::sys::proc::ProcExt::as_static(p))
 }
 
 /// Mount a file system.

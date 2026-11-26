@@ -158,7 +158,7 @@
 //! - LZ lays a `struct msgbuf` over a static byte area with `Msgbuf::from_raw` (an unsized
 //!   `[Cell<u8>]` tail, `unsafe` to make, `unsafe impl Sync` to share) and keeps
 //!   `msgbufp`/`consbufp` in `StaticCell`s and `log_mtx` beside them. Here `log_mtx` owns the
-//!   buffers: [`LOG_MTX`] is a `hal::mutex::Mutexed<LogBufs>` whose data are the two
+//!   buffers: [`LOG_MTX`] is a `hal::sync::mutex::Mutexed<LogBufs>` whose data are the two
 //!   [`Msgbuf`]s, `#[repr(C)]` with the C's header ([`MsgbufHeader`], `abi_pod!`, the 40
 //!   bytes `kern.msgbuf` copies out) and their rings as arrays, so no byte of either is
 //!   reached without the mutex. `msgbufp == NULL` and `consbufp == NULL` are a buffer whose
@@ -189,12 +189,12 @@ use core::fmt::{self, Write as _};
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicI32, Ordering, fence};
 
-use hal::klock;
-use hal::malloc::{M_WAITOK, MArray};
-use hal::mutex::{Mutexed, MutexedGuard, SharedMutex};
-use hal::pin::pin_static;
-use hal::rwlock::Rwlocked;
-use hal::sleep::{INFSLP, PCATCH};
+use hal::ds::pin::pin_static;
+use hal::mem::malloc::{M_WAITOK, MArray};
+use hal::sync::klock;
+use hal::sync::mutex::{Mutexed, MutexedGuard, SharedMutex};
+use hal::sync::rwlock::Rwlocked;
+use hal::sync::sleep::{INFSLP, PCATCH};
 use hal::sys::errno::Errno;
 use hal::sys::filio::{FIOASYNC, FIOGETOWN, FIONREAD, FIOSETOWN};
 use hal::sys::ioccom::_iow;
@@ -631,7 +631,7 @@ impl<G: ProcGlue> LogDev<G> {
             open: AtomicBool::new(false),
             state: AtomicI32::new(0),
             need_wakeup: AtomicBool::new(false),
-            kq_mtx: Mutexed::new(hal::intr::IPL_HIGH, ()),
+            kq_mtx: Mutexed::new(hal::cpu::intr::IPL_HIGH, ()),
             klist: Klist::owner(),
             sigio: SigioRef::new(),
             tick: Timeout::new(logtick::<G>, ptr::null_mut()),
@@ -712,7 +712,7 @@ fn snprintf(buf: &mut [u8], args: fmt::Arguments<'_>) -> usize {
 
 /// `log_mtx` and the buffers it owns (`msgbufp`, `consbufp`): a leaf at `IPL_HIGH`, so
 /// `printf(9)` can run anywhere.
-pub static LOG_MTX: Mutexed<LogBufs> = Mutexed::new(hal::intr::IPL_HIGH, LogBufs::new());
+pub static LOG_MTX: Mutexed<LogBufs> = Mutexed::new(hal::cpu::intr::IPL_HIGH, LogBufs::new());
 
 /// `msgbufmapped`: is the message buffer mapped?
 static MSGBUFMAPPED: AtomicBool = AtomicBool::new(false);
@@ -888,9 +888,11 @@ pub fn logread<G: ProcGlue>(uio: &mut dyn UioMove, flag: i32) -> Result<(), Errn
         drop(g);
         // Set up and enter sleep manually instead of using msleep() to keep log_mtx as a
         // leaf lock.
-        hal::sleep::sleep_setup(&raw const LOG_RDCHAN, LOG_RDPRI | PCATCH, "klog");
-        let error =
-            hal::sleep::sleep_finish(INFSLP, log.state.load(Ordering::Relaxed) & LOG_RDWAIT != 0);
+        hal::sync::sleep::sleep_setup(&raw const LOG_RDCHAN, LOG_RDPRI | PCATCH, "klog");
+        let error = hal::sync::sleep::sleep_finish(
+            INFSLP,
+            log.state.load(Ordering::Relaxed) & LOG_RDWAIT != 0,
+        );
         g = LOG_MTX.lock();
         error?;
     }
@@ -1028,7 +1030,7 @@ pub fn logtick<G: ProcGlue>(_arg: *mut c_void) {
             pgsigio::<G>(&log.sigio, SIGIO, false);
         }
         if state & LOG_RDWAIT != 0 {
-            hal::sleep::wakeup(&raw const LOG_RDCHAN);
+            hal::sync::sleep::wakeup(&raw const LOG_RDCHAN);
         }
     }
     pin_static(&log.tick).add_msec(LOG_TICK);

@@ -139,7 +139,7 @@
 //!   the segments are built and appended, the trimmed original goes to the list's head
 //!   last (`push_head`, O(1)), so the list's order is the C's (the original first, then the
 //!   segments in order) and an error drops everything at once (the C's `ml_purge`). The IP
-//!   headers are copies written back with `hal::pod` (`ip_store`/`ip6_store`); the TCP
+//!   headers are copies written back with `hal::mem::pod` (`ip_store`/`ip6_store`); the TCP
 //!   header's two changed fields are stored byte by byte into the data (`th_put`,
 //!   `th_flags_clear`), no `unsafe`.
 //! - LZ's `pub unsafe fn tcp_if_output_tso(.., dst: *const Sockaddr, ..)` (the raw output
@@ -150,7 +150,7 @@
 use core::cmp::min;
 use core::mem::size_of;
 
-use hal::pod;
+use hal::mem::pod;
 use hal::sys::errno::Errno;
 use hal::sys::net_if::{IFCAP_TSOv4, IFCAP_TSOv6};
 use hal::sys::netinet_in::IPPROTO_TCP;

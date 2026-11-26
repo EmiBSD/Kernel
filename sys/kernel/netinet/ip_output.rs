@@ -100,7 +100,7 @@
 //!   `net` proof parameter; `bsd`'s 21 importers keep LZ's signature through a wrapper in
 //!   `sys/netinet/ip_output.rs` (`unpark`, the proof through the `SaToken`).
 //! - The IP header: LZ's `mtod_ip`/`mtod_ip_store` (an unaligned copy through `unsafe`) ->
-//!   [`ip_load`]/[`ip_store`], `hal::pod`'s view of the first mbuf's bytes when they are
+//!   [`ip_load`]/[`ip_store`], `hal::mem::pod`'s view of the first mbuf's bytes when they are
 //!   aligned (the transports' packets and the 2-byte aligned Ethernet frames), a copy
 //!   otherwise; a read-only cluster is written through `m_copyback` (copy on write).
 //!   `ip_output` loads the header once, works on the copy and stores it before each step
@@ -159,9 +159,9 @@
 use core::mem::size_of;
 use core::sync::atomic::Ordering;
 
-use hal::malloc::{M_NOWAIT, M_WAITOK, MArray, MBox};
-use hal::netlock::NetHeld;
-use hal::pod;
+use hal::mem::malloc::{M_NOWAIT, M_WAITOK, MArray, MBox};
+use hal::mem::pod;
+use hal::sync::netlock::NetHeld;
 use hal::sys::endian::{htonl, htons, ntohl, ntohs};
 use hal::sys::errno::Errno;
 use hal::sys::net_if::{
@@ -1781,7 +1781,7 @@ pub(crate) mod tests {
     use std::vec;
     use std::vec::Vec;
 
-    use hal::netlock::NETLOCK;
+    use hal::sync::netlock::NETLOCK;
     use hal::sys::net_if::IFF_UP;
     use hal::sys::netinet_in::SockaddrIn;
     use hal::sys::netinet_ip::{IP_OFFMASK, IPOPT_LSRR, IPOPT_RR};

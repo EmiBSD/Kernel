@@ -161,9 +161,9 @@ use core::ops::Deref;
 use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering, fence};
 
 use hal::arch::current::vmparam::{MAXDSIZ, MAXSSIZ};
-use hal::klock;
-use hal::pool::{PR_WAITOK, PoolArc, TypedPool};
-use hal::rwlock::{RawRwlock, Rwlocked};
+use hal::mem::pool::{PR_WAITOK, PoolArc, TypedPool};
+use hal::sync::klock;
+use hal::sync::rwlock::{RawRwlock, Rwlocked};
 use hal::sys::errno::Errno;
 use hal::sys::mman::{PROT_NONE, PROT_READ, PROT_WRITE};
 use hal::sys::pclock::PcLock;
@@ -266,7 +266,7 @@ fn plimit_pool() -> &'static TypedPool<Plimit> {
         let _w = PLIMIT_POOL_INIT.write();
         if !PLIMIT_POOL_MADE.load(Ordering::Relaxed) {
             if PLIMIT_POOL
-                .init(hal::intr::mpfloor(), PR_WAITOK, "plimitpl")
+                .init(hal::cpu::intr::mpfloor(), PR_WAITOK, "plimitpl")
                 .is_err()
             {
                 kpanic(format_args!("lim_startup: cannot make plimitpl"));
@@ -917,7 +917,7 @@ pub fn tuagg_get_process<G: ProcGlue>(tu: &Tusage, pr: &Process<G>) {
 pub fn tuagg_add_process<G: ProcGlue>(
     pr: &Process<G>,
     p: &Thread<G>,
-    g: &hal::mutex::MutexedGuard<'_, PsMtx<G>>,
+    g: &hal::sync::mutex::MutexedGuard<'_, PsMtx<G>>,
 ) {
     // The guard is this process's (the thread list checks it).
     let _ = pr.ps_threads.is_empty(g);
@@ -951,7 +951,7 @@ pub fn rucheck_init<G: ProcGlue>(pr: &Process<G>) {
 
 /// `timeout_add_msec(&pr->ps_rucheck_to, RUCHECK_INTERVAL)`.
 pub fn rucheck_arm<G: ProcGlue>(pr: &ProcessRef<G>) {
-    let _ = hal::pin::project(pr.as_pin(), |p| &p.ps_rucheck_to).add_msec(RUCHECK_INTERVAL);
+    let _ = hal::ds::pin::project(pr.as_pin(), |p| &p.ps_rucheck_to).add_msec(RUCHECK_INTERVAL);
 }
 
 /// `rucheck`: check if the process (named by its pid, [`rucheck_init`]) exceeds its cpu
@@ -1009,7 +1009,10 @@ pub fn lim_fork<G: ProcGlue>(parent: &Process<G>, child: &ProcessRef<G>) {
 /// `lim_write_begin`: an exclusive copy of the process' resource limits to change (see the
 /// module's deviations); invalidates the calling thread's read copy. Under `rlimit_lock`'s
 /// writer (`w`), which excludes other writers, so `ps_limit` is read without `ps_mtx`.
-pub fn lim_write_begin<G: ProcGlue>(p: &Thread<G>, _w: &hal::rwlock::WriteWitness<'_>) -> Plimit {
+pub fn lim_write_begin<G: ProcGlue>(
+    p: &Thread<G>,
+    _w: &hal::sync::rwlock::WriteWitness<'_>,
+) -> Plimit {
     p.p_limit.clear();
     *ps_limit(p.process())
 }
@@ -1019,7 +1022,7 @@ pub fn lim_write_begin<G: ProcGlue>(p: &Thread<G>, _w: &hal::rwlock::WriteWitnes
 pub fn lim_write_commit<G: ProcGlue>(
     p: &Thread<G>,
     limit: Plimit,
-    _w: &hal::rwlock::WriteWitness<'_>,
+    _w: &hal::sync::rwlock::WriteWitness<'_>,
 ) {
     let pr = p.process();
     if *ps_limit(pr) != limit {
@@ -1165,7 +1168,7 @@ pub fn donice<G: ProcGlue>(curp: &Thread<G>, chgpr: &Process<G>, n: i32) -> Resu
     }
     chgpr.ps_nice.set(n as u8);
     let g = chgpr.ps_mtx.lock();
-    let h = hal::thread::sched_lock();
+    let h = hal::cpu::thread::sched_lock();
     for p in chgpr.ps_threads.iter(&g) {
         crate::sched::setpriority(&h, p, p.p_estcpu.get(), n as u8);
     }

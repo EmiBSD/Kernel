@@ -84,7 +84,7 @@
 //! - `sys_sigreturn` lives in `machdep.c` (amd64) and `sig_machdep.c` (arm64); the system
 //!   call table finds `pub fn sys_*` only under `sys/kern` and `sys/uvm`, so the entry here
 //!   forwards to `machine::MachineSignal::sys_sigreturn` (since N4.8b arm64's is the
-//!   kernel's `kernel::sig::sys_sigreturn` over `hal::sig`'s frame; `native_sigreturn` is its
+//!   kernel's `kernel::sig::sys_sigreturn` over `hal::cpu::sig`'s frame; `native_sigreturn` is its
 //!   `KernelApi` entry).
 //! - `sigio_setown`/`sigio_getown` take the `int` that `data` points to as `&i32`/`&mut i32`.
 //!
@@ -124,7 +124,7 @@ use crate::sys::ttycom::{TIOCGPGRP, TIOCSPGRP};
 use crate::sys::types::Register;
 use crate::sys::ucred::{CredRef, Ucred};
 use crate::unported;
-use hal::pin::pin_static;
+use hal::ds::pin::pin_static;
 use hal::user::UserPtr;
 use hal::vm::param::ptoa;
 use kernel::sig::UserTimespec;

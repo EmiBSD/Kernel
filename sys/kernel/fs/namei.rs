@@ -83,7 +83,7 @@
 //!   value has no uninitialised bytes), where the C's `pool_get` leaves it as it was; the
 //!   copy-in that follows is the C's.
 
-use hal::pool::{PR_WAITOK, PoolBox};
+use hal::mem::pool::{PR_WAITOK, PoolBox};
 use hal::sys::errno::Errno;
 use hal::sys::syslimits::PATH_MAX;
 

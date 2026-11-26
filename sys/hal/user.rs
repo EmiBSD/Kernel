@@ -52,7 +52,7 @@
 //! fault into `EFAULT` (`pcb_onfault`), as the C's `uiomove`/`kcopy` on the window do. Only
 //! the kernel map's token mints one ([`KernelMapper::foreign_window`]): its holder vouches,
 //! as for every address it maps, that the range is its own and that no Rust object lives in
-//! it (`sys/hal/trust.rs`); the window bounds every copy (one past its end panics). Since
+//! it (`sys/hal/mem/trust.rs`); the window bounds every copy (one past its end panics). Since
 //! N5.9 a window is also made over a memory object the kernel maps itself (tmpfs's aobj,
 //! whose pages a user mapping of the same file may write meanwhile), and copies straight to
 //! and from a uio's iovecs: to and from user addresses the assembly checks (`copyout_at`,
@@ -63,7 +63,7 @@
 //! A [`KcopyToken`] is the one holder of `kcopy` onto kernel addresses it names itself:
 //! `bsd`'s `uiomove`, whose `UIO_SYSSPACE` iovecs are kernel buffers their builders vouch
 //! for (`struct uio`'s contract), takes it once ([`KcopyToken::take`]). It is decision 30's
-//! documented trust, as the memory bridges' (`sys/hal/trust.rs`): nothing here can check
+//! documented trust, as the memory bridges' (`sys/hal/mem/trust.rs`): nothing here can check
 //! the addresses, and the token goes with `UioMove` when the last `UIO_SYSSPACE` builder is
 //! typed (N7).
 //!
@@ -112,14 +112,14 @@ use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::assert::hal_panic;
+use crate::sys::errno::Errno;
+use crate::sys::types::Vaddr;
 #[cfg(any(
     not(target_os = "none"),
     target_arch = "x86_64",
     target_arch = "aarch64"
 ))]
-use crate::pmap::KernelMapper;
-use crate::sys::errno::Errno;
-use crate::sys::types::Vaddr;
+use crate::vm::pmap::KernelMapper;
 
 /// The machine's copies (`copy.S`, `copystr.S`; the host's double).
 #[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
@@ -651,7 +651,7 @@ impl UserPtr<u32> {
 /// `hal::syscall`'s types), runs no function before `abi_init`, and R5 refuses it a static that could
 /// keep a token.
 ///
-/// The holder's contract (decision 30's documented trust, `sys/hal/trust.rs`): every address
+/// The holder's contract (decision 30's documented trust, `sys/hal/mem/trust.rs`): every address
 /// it passes is a kernel buffer of at least the length copied that its builder owns for the
 /// copy (a `UIO_SYSSPACE` iovec's, `struct uio`'s contract), holding no Rust object that
 /// something else references during the copy; nothing here can check it. A page that is
@@ -717,7 +717,7 @@ impl KcopyToken {
 /// (never `Clone`, never lent).
 ///
 /// The holder's contract, the `KcopyToken`'s (decision 30's documented trust,
-/// `sys/hal/trust.rs`): every kernel address it passes is a `UIO_SYSSPACE` iovec's buffer
+/// `sys/hal/mem/trust.rs`): every kernel address it passes is a `UIO_SYSSPACE` iovec's buffer
 /// of at least the length copied that its builder owns for the copy (`struct uio`'s
 /// contract), holding no Rust object that something else references during the copy;
 /// nothing here can check it. Gone with `UioMove` at N7, when a sysspace iovec is typed.

@@ -53,7 +53,7 @@
 //!   the FP registers they move are the running CPU's, so only the running thread's pcb is
 //!   ever right. Here they act on the running thread's pcb alone ([`save_current`],
 //!   [`load_current`], `ci_curpcb`, which the switch keeps), and the switch saves the old
-//!   thread's state itself before it leaves it (`hal::thread::switch_to`, N4.5a): no caller
+//!   thread's state itself before it leaves it (`hal::cpu::thread::switch_to`, N4.5a): no caller
 //!   can name another thread's pcb, whose state another CPU may be moving.
 
 use core::arch::asm;

@@ -113,12 +113,12 @@
 use core::mem::{offset_of, size_of};
 use core::sync::atomic::Ordering;
 
-use hal::intr::IPL_SOFTNET;
-use hal::mutex::Mutexed;
-use hal::netlock::{NETLOCK, NetHeld};
-use hal::owned::OwnedSlist;
-use hal::pod;
-use hal::pool::{BoxPool, PR_NOWAIT, PoolBox};
+use hal::cpu::intr::IPL_SOFTNET;
+use hal::ds::owned::OwnedSlist;
+use hal::mem::pod;
+use hal::mem::pool::{BoxPool, PR_NOWAIT, PoolBox};
+use hal::sync::mutex::Mutexed;
+use hal::sync::netlock::{NETLOCK, NetHeld};
 use hal::sys::netinet_icmp6::{
     ICMP6_PARAM_PROB, ICMP6_PARAMPROB_HEADER, ICMP6_TIME_EXCEED_REASSEMBLY, ICMP6_TIME_EXCEEDED,
 };
@@ -965,7 +965,7 @@ mod tests {
     use std::vec;
     use std::vec::Vec;
 
-    use hal::netlock::NETLOCK;
+    use hal::sync::netlock::NETLOCK;
     use hal::sys::netinet_icmp6::{
         ICMP6_PARAM_PROB, ICMP6_PARAMPROB_HEADER, ICMP6_TIME_EXCEED_REASSEMBLY, ICMP6_TIME_EXCEEDED,
     };

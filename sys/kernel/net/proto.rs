@@ -91,7 +91,7 @@
 use hal::sys::errno::Errno;
 use hal::sys::stat::Stat;
 
-use hal::netlock::NetHeld;
+use hal::sync::netlock::NetHeld;
 
 use crate::assert::kpanic;
 use crate::net::domain::Domain;

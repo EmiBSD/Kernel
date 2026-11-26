@@ -160,7 +160,7 @@
 
 use core::ffi::c_void;
 
-use hal::malloc::{M_WAITOK, MBox};
+use hal::mem::malloc::{M_WAITOK, MBox};
 
 use crate::kern::subr_prf::panic;
 use crate::net::if_::Ifmediareq;

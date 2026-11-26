@@ -62,7 +62,7 @@
 //! - A task without a function (one `task_set` never named) panics when a worker reaches it,
 //!   where the C calls through a null pointer (LZ's).
 //! - `task_del(tq, t)` of a task pending on another queue panics (the worklist refuses an
-//!   element on a list of another lock, `hal::pinlist`'s I2), where the C's `TAILQ_REMOVE`
+//!   element on a list of another lock, `hal::ds::pinlist`'s I2), where the C's `TAILQ_REMOVE`
 //!   unlinks it through the wrong head and corrupts both queues.
 //!
 //! ## Redesign
@@ -73,7 +73,7 @@
 //!   worker's included, so a queue destroyed before its creator ran (`TQ_S_CREATED`) or while
 //!   its last worker leaves is never freed under them. `systq` and `systqmp` are statics.
 //! - The worklist and the threads' list (`TAILQ`, `SLIST` of stack nodes) are
-//!   `hal::pinlist::PinList`s bound to the queue's mutex; a task is linked through
+//!   `hal::ds::pinlist::PinList`s bound to the queue's mutex; a task is linked through
 //!   `Pin<&Task>` (`task_add`), a worker's node and a barrier's task are pinned on their
 //!   stacks (`core::pin::pin!`) and unlinked before their frames go.
 //! - `struct task`'s `t_func`/`t_arg`, set by its owner while it is not pending and copied by a
@@ -87,7 +87,7 @@
 //!   takes `Pin<&Task>`, which a stack frame gives with `core::pin::pin!`.
 //! - N4.4: a task whose function dereferenced its `void *` (kqueue's `kqueue_task`, the
 //!   kqueue) takes a counted, erased argument instead ([`Task::set_shared`],
-//!   `hal::pool::AnyArc`): the task holds the handle until it is set again or cleared
+//!   `hal::mem::pool::AnyArc`): the task holds the handle until it is set again or cleared
 //!   ([`Task::clear`]), a worker clones it with the copy it takes, and the function gets its
 //!   object back by naming its type.
 //! - N6.3a: a task whose argument is an object that lives for ever (an interface's send and
@@ -109,13 +109,13 @@ use core::pin::Pin;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
-use hal::intr::{IPL_HIGH, IPL_NONE};
-use hal::mutex::Mutexed;
-use hal::once::OnceStatic;
-use hal::pinlist::{PinEntry, PinList};
-use hal::pool::{AnyArc, PR_WAITOK, PoolArc, TypedPool};
-use hal::rwlock::Rwlocked;
-use hal::sleep::{INFSLP, PWAIT};
+use hal::cpu::intr::{IPL_HIGH, IPL_NONE};
+use hal::ds::pinlist::{PinEntry, PinList};
+use hal::mem::pool::{AnyArc, PR_WAITOK, PoolArc, TypedPool};
+use hal::sync::mutex::Mutexed;
+use hal::sync::once::OnceStatic;
+use hal::sync::rwlock::Rwlocked;
+use hal::sync::sleep::{INFSLP, PWAIT};
 
 use crate::assert::kpanic;
 use crate::prf::{Str, printf};
@@ -548,7 +548,7 @@ fn destroy(tq: &Taskq) {
     }
 
     while g.running > 0 {
-        hal::sleep::wakeup(tq.bored());
+        hal::sync::sleep::wakeup(tq.bored());
         let running = ptr::from_ref(&g.running);
         let _ = g.sleep_nsec(running, PWAIT, "tqdestroy", INFSLP);
     }
@@ -589,7 +589,7 @@ pub(crate) fn taskq_create_thread(tq: TqHandle) {
             g.running -= 1;
             // could have been destroyed during kthread_create
             if g.life == TqState::Destroyed && g.running == 0 {
-                hal::sleep::wakeup_one(ptr::from_ref(&g.running));
+                hal::sync::sleep::wakeup_one(ptr::from_ref(&g.running));
             }
             break;
         }
@@ -604,7 +604,7 @@ pub(crate) fn taskq_create_thread(tq: TqHandle) {
 fn taskq_barrier_task(tq: &Taskq) {
     let mut g = tq.st.lock();
     g.bthreads += 1;
-    hal::sleep::wakeup(ptr::from_ref(&g.bthreads));
+    hal::sync::sleep::wakeup(ptr::from_ref(&g.bthreads));
 
     let bgen0 = g.bgen;
     loop {
@@ -621,7 +621,7 @@ fn taskq_barrier_task(tq: &Taskq) {
 fn taskq_do_barrier(tq: &Taskq) {
     let t = core::pin::pin!(Task::with(None, ptr::null_mut(), true));
     let t = t.into_ref();
-    let thread = hal::sleep::curproc_word();
+    let thread = hal::sync::sleep::curproc_word();
 
     let mut g = tq.st.lock();
     g.barriers += 1;
@@ -629,13 +629,13 @@ fn taskq_do_barrier(tq: &Taskq) {
     // is the barrier being run from a task inside the taskq?
     if tq.threads.iter(&g).any(|tt| tt.thread == thread) {
         g.bthreads += 1;
-        hal::sleep::wakeup(ptr::from_ref(&g.bthreads));
+        hal::sync::sleep::wakeup(ptr::from_ref(&g.bthreads));
     }
 
     while g.bthreads < tq.nthreads {
         // shove the task into the queue for a worker to pick up
         tq.worklist.insert_tail(&mut g, t);
-        hal::sleep::wakeup_one(tq.bored());
+        hal::sync::sleep::wakeup_one(tq.bored());
 
         let bthreads = ptr::from_ref(&g.bthreads);
         let _ = g.sleep_nsec(bthreads, PWAIT, "tqbar", INFSLP);
@@ -650,7 +650,7 @@ fn taskq_do_barrier(tq: &Taskq) {
     if g.barriers == 0 {
         // we're the last one out
         g.bgen = g.bgen.wrapping_add(1);
-        hal::sleep::wakeup(ptr::from_ref(&g.bgen));
+        hal::sync::sleep::wakeup(ptr::from_ref(&g.bgen));
         g.bthreads = 0;
     } else {
         let bgen0 = g.bgen;
@@ -692,7 +692,7 @@ pub fn task_add(tq: &Taskq, w: Pin<&Task>) -> bool {
     drop(g);
 
     if rv {
-        hal::sleep::wakeup_one(tq.bored());
+        hal::sync::sleep::wakeup_one(tq.bored());
     }
     rv
 }
@@ -759,7 +759,7 @@ fn taskq_next_work(tq: &Taskq) -> Option<Work> {
     drop(g);
 
     if more && tq.nthreads > 1 {
-        hal::sleep::wakeup_one(tq.bored());
+        hal::sync::sleep::wakeup_one(tq.bored());
     }
     work
 }
@@ -769,17 +769,17 @@ fn taskq_next_work(tq: &Taskq) -> Option<Work> {
 pub(crate) fn taskq_thread(tq: TqHandle) -> ! {
     let mpsafe = tq.flags & TASKQ_MPSAFE != 0;
     if mpsafe {
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
     }
 
     let last = taskq_worker(&tq);
 
     if mpsafe {
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
     }
 
     if let Some(running) = last {
-        hal::sleep::wakeup_one(running);
+        hal::sync::sleep::wakeup_one(running);
     }
 
     // The handle goes before the thread does (an exit never returns to drop it).
@@ -794,7 +794,7 @@ pub(crate) fn taskq_thread(tq: TqHandle) -> ! {
 fn taskq_worker(tq: &Taskq) -> Option<*const u32> {
     let me = core::pin::pin!(TaskqThread {
         entry: PinEntry::new(),
-        thread: hal::sleep::curproc_word(),
+        thread: hal::sync::sleep::curproc_word(),
     });
     let me = me.into_ref();
 
@@ -814,7 +814,7 @@ fn taskq_worker(tq: &Taskq) -> Option<*const u32> {
             Work::Barrier => taskq_barrier_task(tq),
         }
         // WITNESS_UNLOCK; NKCOV > 0: kcov_remote_leave.
-        hal::sleep::sched_pause();
+        hal::sync::sleep::sched_pause();
     }
 
     let mut g = tq.st.lock();
@@ -902,7 +902,7 @@ mod tests {
     }
 
     fn pinned(t: &'static Task) -> Pin<&'static Task> {
-        hal::pin::pin_static(t)
+        hal::ds::pin::pin_static(t)
     }
 
     /// `taskq_init` once per process (the pool, the system queues' creators).
@@ -1152,7 +1152,7 @@ mod tests {
     /// inside the taskq").
     fn barrier_from_inside(_arg: *mut c_void) {
         let tq = queue().clone().expect("the queue");
-        INSIDE.store(hal::sleep::curproc_word(), Ordering::SeqCst);
+        INSIDE.store(hal::sync::sleep::curproc_word(), Ordering::SeqCst);
         taskq_barrier(&tq);
         BARRIER_DONE.fetch_add(1, Ordering::SeqCst);
     }

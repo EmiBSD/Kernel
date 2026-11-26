@@ -877,7 +877,7 @@ pub fn doscheckpath<G: ProcGlue>(source: &Denode<G>, target: DenodeRef<G>) -> Re
         }
         let pmp: MsdosfsmountRef<G> = target.de_pmp.clone();
         #[cfg(feature = "diagnostic")]
-        if !hal::malloc::MArc::ptr_eq(&pmp, &source.de_pmp) {
+        if !hal::mem::malloc::MArc::ptr_eq(&pmp, &source.de_pmp) {
             kpanic(format_args!(
                 "doscheckpath: source and target on different filesystems"
             ));

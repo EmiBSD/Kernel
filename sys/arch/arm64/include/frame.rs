@@ -44,7 +44,7 @@
 //! `struct trapframe` and `struct switchframe` arrive with the trap and context-switch code
 //! (M4, M5). N4.5a: `callframe`, `trapframe` and `switchframe` are `hal`'s
 //! (`hal::arch::arm64::include::frame`, the switch builds them), re-exported here; `sigframe`
-//! stays. N4.8b: `sigframe` is `hal`'s too (`hal::sig`'s `sendsig` builds it), re-exported.
+//! stays. N4.8b: `sigframe` is `hal`'s too (`hal::cpu::sig`'s `sendsig` builds it), re-exported.
 
 pub use hal::arch::arm64::include::frame::{
     Callframe, SWITCHFRAME_SZ, Sigframe, Switchframe, TF_SIZE, Trapframe,

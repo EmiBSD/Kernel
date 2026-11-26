@@ -43,7 +43,7 @@
 //! LZ: sys/kern/kern_bufq.rs@3c62ede68802
 //!
 //! A queued buffer's token is parked in the buffer while it waits ([`super::buf::Buf::park`])
-//! and taken back by `bufq_dequeue`; the discipline's lists hold `hal::owned::Member`s, counted
+//! and taken back by `bufq_dequeue`; the discipline's lists hold `hal::ds::owned::Member`s, counted
 //! for a cache buffer, uncounted for a buffer a driver embeds (`'static`).
 //!
 //! ## Deviations
@@ -58,22 +58,22 @@
 //!   and nscan heads `malloc`ed and cast, `queue_adapter!` `SIMPLEQ`s over `&'static Buf`
 //!   -> the trait [`BufqDiscipline`] with two impls, [`Fifo`] and [`Nscan`], both heads in the
 //!   queue's state under its mutex (the queue's `bufq_type` picks one: `create`/`destroy`
-//!   are the state's reset, not a dispatch), their lists `hal::owned::SecondaryList`s.
+//!   are the state's reset, not a dispatch), their lists `hal::ds::owned::SecondaryList`s.
 //! - The queue is all zero when unused: a disk's softc, zeroed by autoconf, embeds it, and
 //!   `bufq_init` fills it in (`mtx_init(&bq->bufq_mtx, IPL_BIO)`: the mutex at `IPL_NONE`
 //!   raises to `IPL_MPFLOOR`, above `IPL_BIO`, as one at `IPL_BIO` does).
-//! - `bufqs` is a `hal::list::List` of `&'static` queues (a softc's) under its own mutex.
+//! - `bufqs` is a `hal::ds::list::List` of `&'static` queues (a softc's) under its own mutex.
 //! - N5.5b3: `bufq_queue` and `bufq_dequeue` are split at the queue's lock ([`bufq_park`],
 //!   [`bufq_unpark`]) and [`Fifo::new`] is the crate's, so a queue that is no registered `Bufq`
 //!   (mfs's node, which dies at reclaim) keeps the fifo discipline under a lock of its own.
 
 use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
-use hal::intr::{IPL_BIO, IPL_NONE, splassert, splraise};
-use hal::list::{List, ListEntry};
-use hal::mutex::Mutexed;
-use hal::owned::{Member, SecondaryList};
-use hal::sleep::{INFSLP, PRIBIO, wakeup};
+use hal::cpu::intr::{IPL_BIO, IPL_NONE, splassert, splraise};
+use hal::ds::list::{List, ListEntry};
+use hal::ds::owned::{Member, SecondaryList};
+use hal::sync::mutex::Mutexed;
+use hal::sync::sleep::{INFSLP, PRIBIO, wakeup};
 use hal::sys::errno::Errno;
 
 use super::bio::{BCSTATS, biodone, note_done, note_queued};
@@ -457,13 +457,13 @@ pub fn bufq_drain(bq: &Bufq) {
 /// `assertwaitok()` (`subr_xxx.c`): the caller may sleep: at no interrupt level
 /// (`splassert(IPL_NONE)`) and, under `diagnostic`, holding no mutex; nothing is checked
 /// after a panic or inside ddb (`hal::cpu::past_caring`, the C's `panicstr || db_active`),
-/// and `SMR_ASSERT_NONCRITICAL()` (`hal::smr`'s depth, since N6.0).
+/// and `SMR_ASSERT_NONCRITICAL()` (`hal::sync::smr`'s depth, since N6.0).
 fn assertwaitok() {
     if hal::cpu::past_caring() {
         return;
     }
     splassert(IPL_NONE, "assertwaitok");
-    hal::smr::assert_noncritical(); // SMR_ASSERT_NONCRITICAL()
+    hal::sync::smr::assert_noncritical(); // SMR_ASSERT_NONCRITICAL()
     #[cfg(feature = "diagnostic")]
     {
         let level = hal::cpu::curcpu().mutex_level();
@@ -564,7 +564,7 @@ mod tests {
     use crate::fs::bio::{brelse, getblk};
     use crate::fs::buf::{B_DONE, BUFQ_FIFO, BUFQ_NSCAN};
     use crate::testutil::{BufTestVnode, bufcache_install};
-    use hal::sleep::INFSLP;
+    use hal::sync::sleep::INFSLP;
     use hal::sys::types::Daddr;
 
     /// The queues' tests share the cache's counters (`kvaslots`): one at a time.

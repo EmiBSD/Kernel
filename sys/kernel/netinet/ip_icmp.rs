@@ -173,9 +173,9 @@
 use core::mem::size_of;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use hal::netlock::{NETLOCK, NetHeld};
-use hal::pod;
-use hal::rwlock::Guarded;
+use hal::mem::pod;
+use hal::sync::netlock::{NETLOCK, NetHeld};
+use hal::sync::rwlock::Guarded;
 use hal::sys::errno::Errno;
 use hal::sys::limits::INT_MAX;
 use hal::sys::net_if::{IFF_BROADCAST, IFF_POINTOPOINT, IFF_UP};
@@ -1132,7 +1132,7 @@ pub fn icmp_mtudisc_clone(
     rtableid: u32,
     ipsec: bool,
     net: &NetHeld<'_>,
-) -> Option<hal::pool::PoolArc<Rtentry>> {
+) -> Option<hal::mem::pool::PoolArc<Rtentry>> {
     let sin = sin_bytes(dst);
 
     let mut rt = rtalloc(view(&sin), RT_RESOLVE, rtableid, net)?;
@@ -1246,7 +1246,7 @@ pub fn icmp_mtudisc(nextmtu: u16, oip: &Ip, rtableid: u32, net: &NetHeld<'_>) {
 /// function): a cloned host route deleted and TCP told the MTU may grow, else the route's
 /// MTU forgotten. Under the net lock (`net`, the timer's).
 pub fn icmp_mtudisc_timeout<G: ProcGlue>(
-    rt: &hal::pool::PoolArc<Rtentry>,
+    rt: &hal::mem::pool::PoolArc<Rtentry>,
     rtableid: u32,
     net: &NetHeld<'_>,
 ) {

@@ -135,8 +135,8 @@
 use core::ops::Deref;
 use core::sync::atomic::{AtomicBool, AtomicI16, AtomicU32, Ordering};
 
-use hal::pool::{PR_WAITOK, PoolArc, PoolHome, TypedPool};
-use hal::rwlock::Rwlocked;
+use hal::mem::pool::{PR_WAITOK, PoolArc, PoolHome, TypedPool};
+use hal::sync::rwlock::Rwlocked;
 use hal::sys::errno::Errno;
 use hal::sys::types::{Gid, Uid};
 
@@ -346,7 +346,7 @@ fn ucred_pool() -> &'static TypedPool<Ucred> {
         let _w = UCRED_POOL_INIT.write();
         if !UCRED_POOL_MADE.load(Ordering::Relaxed) {
             if UCRED_POOL
-                .init_recorded(hal::intr::mpfloor(), 0, "ucredpl")
+                .init_recorded(hal::cpu::intr::mpfloor(), 0, "ucredpl")
                 .is_err()
             {
                 kpanic(format_args!("crget: cannot make ucredpl"));

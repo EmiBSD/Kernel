@@ -823,7 +823,7 @@ mod tests {
         /// The session's references (`s_count`).
         fn count(s: &SessionRef) -> usize {
             match s {
-                StaticOrPooled::Pooled(a) => hal::pool::PoolArc::count(a),
+                StaticOrPooled::Pooled(a) => hal::mem::pool::PoolArc::count(a),
                 StaticOrPooled::Static(_) => 0,
             }
         }
@@ -832,7 +832,7 @@ mod tests {
         procinit();
         let pr = test_process(1);
         let p = test_thread(pr);
-        pr.set_main_static(hal::pin::pin_static(p));
+        pr.set_main_static(hal::ds::pin::pin_static(p));
         let (_pg, sess) = test_setsid(pr);
         let base = count(&sess);
 

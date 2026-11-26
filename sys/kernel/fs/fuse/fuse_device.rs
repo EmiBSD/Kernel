@@ -143,13 +143,13 @@
 use core::ptr;
 use core::sync::atomic::Ordering;
 
-use hal::klock;
-use hal::malloc::{M_WAITOK, MArc, MArray};
-use hal::pinlist::{PinEntry, PinList};
-use hal::pool::PoolArc;
-use hal::rwlock::{RW_WRITE, RawRwlock};
-use hal::sleep::{INFSLP, PCATCH, PWAIT, wakeup, wakeup_one};
-use hal::slot::ReadMostly;
+use hal::ds::pinlist::{PinEntry, PinList};
+use hal::mem::malloc::{M_WAITOK, MArc, MArray};
+use hal::mem::pool::PoolArc;
+use hal::sync::klock;
+use hal::sync::rwlock::{RW_WRITE, RawRwlock};
+use hal::sync::sleep::{INFSLP, PCATCH, PWAIT, wakeup, wakeup_one};
+use hal::sync::slot::ReadMostly;
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::O_EXCL;
 use hal::sys::types::{Dev, minor};

@@ -127,7 +127,7 @@
 use core::mem::{offset_of, size_of};
 use core::sync::atomic::Ordering;
 
-use hal::malloc::{M_WAITOK, MArray};
+use hal::mem::malloc::{M_WAITOK, MArray};
 use hal::sys::dirent::{DT_UNKNOWN, Dirent, dirent_recsize};
 use hal::sys::errno::Errno;
 use hal::sys::mount::MNT_RDONLY;

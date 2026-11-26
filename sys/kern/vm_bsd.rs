@@ -500,7 +500,7 @@
 //!   (`Process::vmspace_share`) and a reference (the C's `uvmspace_addref`), given back by
 //!   `uvmspace_free`.
 //! - `pinsyscalls(2)`'s table is the kernel's `MArray` handed to the process (its
-//!   `ps_libcpin`, a `hal::slot::ReadMostly<kernel::proc::PinTable>` since N4.6a):
+//!   `ps_libcpin`, a `hal::sync::slot::ReadMostly<kernel::proc::PinTable>` since N4.6a):
 //!   `pin_check` borrows it, `exit` and `exec` replace it and it goes with its owner (the C's
 //!   `free(.., M_PINSYSCALL, ..)`).
 //! - `uvmexp` goes out to `vm.uvmexp` as the bytes `UvmexpCopy::to_ne_bytes` lays out (hal),
@@ -941,8 +941,8 @@ pub fn uvm_init() {
 
     // averunnable.fscale = FSCALE: M5.
 
-    // The u-areas `fork1` gives its threads (hal::thread's E4 provider).
-    let _ = hal::thread::register_uarea_memory(&kernel::vm::glue::UAREAS);
+    // The u-areas `fork1` gives its threads (hal::cpu::thread's E4 provider).
+    let _ = hal::cpu::thread::register_uarea_memory(&kernel::vm::glue::UAREAS);
     kernel::vm::init::uvm_machine_init(&VM_MACHINE);
 
     // Init the page sub-system. This includes allocating the vm_page structures, and setting
@@ -1039,8 +1039,8 @@ pub fn uvmspace_fork_or_share(parent: &Process, pr: &Process, share: bool) {
 
 /// `uvm_uarea_alloc`: a thread's u-area (`kernel::vm::glue::uvm_uarea_alloc`), as the
 /// legacy pointer `thread_new` stores in `p_addr`.
-pub fn uvm_uarea_alloc() -> Option<hal::thread::UArea> {
-    hal::thread::UArea::alloc()
+pub fn uvm_uarea_alloc() -> Option<hal::cpu::thread::UArea> {
+    hal::cpu::thread::UArea::alloc()
 }
 
 /// `uvm_uarea_free(p)`: frees `p`'s u-area (`kernel::vm::glue::uvm_uarea_free`) and clears
@@ -1345,7 +1345,7 @@ pub(crate) fn uvm_km_test_init() {
 mod tests {
     // Over the host's memory (`setup_real_memory`, which runs uvm_km_test_init).
 
-    use hal::malloc::MArray;
+    use hal::mem::malloc::MArray;
 
     use super::*;
     use crate::kern::subr_pool::tests::setup_real_memory;

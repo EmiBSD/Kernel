@@ -80,9 +80,9 @@ use core::pin::Pin;
 use core::ptr;
 use core::sync::atomic::Ordering;
 
-use hal::klock;
-use hal::malloc::{M_WAITOK, MArray};
-use hal::pinlist::PinList;
+use hal::ds::pinlist::PinList;
+use hal::mem::malloc::{M_WAITOK, MArray};
+use hal::sync::klock;
 use hal::sys::errno::Errno;
 use hal::sys::types::Ino;
 use libkern::siphash::{SipHash24Ctx, SiphashKey};

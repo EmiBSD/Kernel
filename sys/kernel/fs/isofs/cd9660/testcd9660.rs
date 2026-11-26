@@ -422,7 +422,7 @@ pub fn test_node(
         Err(e) => std::panic!("testcd9660: getnewvnode: {e:?}"),
     };
     let ip = IsoNode::new(vp, imp.im_dev, ino, imp.clone()).alloc();
-    vp.set_node(hal::malloc::MArc::erase(ip.clone()));
+    vp.set_node(hal::mem::malloc::MArc::erase(ip.clone()));
     ip.i_devvp.set(Some(imp.im_devvp));
     vref(imp.im_devvp);
     (ip, vp)

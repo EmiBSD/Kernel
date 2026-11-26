@@ -117,8 +117,8 @@ use crate::sys::time::Timeval;
 use crate::sys::timeout::Timeout;
 use crate::sys::tree::{RbEntry, RbHead};
 use crate::sys::types::{Pid, SaFamily, Time, Uid};
-use hal::link::SyncLink;
-use hal::rwlock::Rwlocked;
+use hal::ds::link::SyncLink;
+use hal::sync::rwlock::Rwlocked;
 use kernel::net::if_var::AtomicCell;
 use kernel::net::radix::RadixTree;
 

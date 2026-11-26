@@ -126,8 +126,8 @@
 //! `<net/if.h>`'s constants and structures are `hal::sys::net_if`'s.
 //!
 //! Locks and their order (the C's): the index map's `idxmaplk` (an rwlock, taken alone or
-//! inside the net lock), the net lock (`hal::netlock::NETLOCK`: `if_input_process` shared,
-//! `if_netisr` exclusive). The index map is read under SMR (`hal::smr`): `if_get` is a read
+//! inside the net lock), the net lock (`hal::sync::netlock::NETLOCK`: `if_input_process` shared,
+//! `if_netisr` exclusive). The index map is read under SMR (`hal::sync::smr`): `if_get` is a read
 //! section, two loads and a reference count, as the C's. Transitions against the C: `if_get`
 //! and `if_put`, one SMR section and two atomics each way (the C's); `if_input_process`, one
 //! shared net lock pair around its batch (the C's).
@@ -153,7 +153,7 @@
 //! | `if_addgroup`/`if_delgroup` (:3068-3167) | none (the caller's `NET_LOCK`) | none: each changed list is one `ReadMostly` claim (a compare-and-swap) |
 //! | `if_clone_create`/`_destroy` (:1408-1475) | `if_cloners_lock`, then `NET_LOCK` inside | the same |
 //! | `ifpromisc`, `ifsetlro`, `ifnewlladdr` (:3478-3650) | the caller's locks, `splnet` in `ifsetlro` | the same |
-//! | `ifioctl(SIOCSIFFLAGS)` (:2193-2208, :2318-2340) | `KERNEL_LOCK`, then `NET_LOCK` around the flags, the driver's `if_ioctl` and `if_up`/`if_down` (`splnet` there) | the same: the kernel lock, then the net lock as a detached holding (`hal::netlock::lock`), one `splnet` pair when `IFF_UP` changes |
+//! | `ifioctl(SIOCSIFFLAGS)` (:2193-2208, :2318-2340) | `KERNEL_LOCK`, then `NET_LOCK` around the flags, the driver's `if_ioctl` and `if_up`/`if_down` (`splnet` there) | the same: the kernel lock, then the net lock as a detached holding (`hal::sync::netlock::lock`), one `splnet` pair when `IFF_UP` changes |
 //! | `ifioctl`'s other requests (:2136-2597) | `KERNEL_LOCK` around the per-interface requests, `NET_LOCK` inside where each takes it; none for `SIOCGIFSFFPAGE`, `SIOCSIFMEDIA`, `SIOCGIFMEDIA`; `SIOCIFCREATE`/`DESTROY` the kernel lock alone, `SIOCSIFGATTR` both | the same, request by request |
 //! | `ifioctl_get` (:2599-2712) | `KERNEL_LOCK` around `if_unit`; `NET_LOCK_SHARED` then `KERNEL_LOCK` for `if_getdata`; `NET_LOCK_SHARED` for `SIOCGIFGATTR` | the same (`NETLOCK.read()`) |
 //! | `ifconf` (:2799-2930) | `if_tmplist_lock`, one `NET_LOCK_SHARED` for the interfaces, one per interface for its addresses | the same for an interface of up to 8 addresses; one more shared hold per further 8 (the redesign's `ifconf` paragraph) |
@@ -166,7 +166,7 @@
 //!   `taskq_destroy_leaked`, LZ's: six `taskqpl` items on two CPUs, four on four).
 //! - `malloc(M_WAITOK)` that fails panics where the C would sleep (the index map's arrays;
 //!   `malloc(9)` does not sleep yet; LZ's).
-//! - The index map's object is an item of the pool "ifmappl" (`hal::smr::SmrPtr` publishes
+//! - The index map's object is an item of the pool "ifmappl" (`hal::sync::smr::SmrPtr` publishes
 //!   pool items only, D-N6.3a-5): `vmstat -m` shows one pool row the C has not; the map's
 //!   slot array and the used-index bitmap keep the C's `malloc(M_IFADDR)`s and sizes.
 //! - `if_alloc_sadl` `panic(9)`s for a link name longer than a `sockaddr_dl` (an interface
@@ -202,7 +202,7 @@
 //!   always): the C's `pru_control` follows the socket.
 //! - `SIOCSIFXFLAGS`'s wake on LAN with a driver that has no `if_wol` answers `ENOTSUP` (the
 //!   C calls the handle unchecked once `IFCAP_WOL` is set; LZ's).
-//! - `ifconf` copies an address's `sa_len` bytes cut at its storage (`hal::link::SaLink`'s
+//! - `ifconf` copies an address's `sa_len` bytes cut at its storage (`hal::ds::link::SaLink`'s
 //!   copy), which every interface address fills; the row's length is its `sa_len`, as the C's.
 //!
 //! ## Redesign
@@ -246,7 +246,7 @@
 //!   N6.3b (D-N6.3a-9); `if_output_local` is.
 //! - `ifa_ifwithaddr`, `ifa_ifwithdstaddr`, `ifaof_ifpforaddr` compare the addresses' bytes
 //!   where the C compares through pointers: each interface address is a copy
-//!   (`hal::link::SaLink::read`, under the net lock it checks: `sa_len` bytes cut at the
+//!   (`hal::ds::link::SaLink::read`, under the net lock it checks: `sa_len` bytes cut at the
 //!   storage, and the family whatever `sa_len` says); an address shorter than the other's
 //!   length never matches (the C reads past it). The copy and the lock check are one per
 //!   address walked, beyond the C's loads (review 1's B2; the decision-43 row
@@ -255,7 +255,7 @@
 //!   the interface; `if_watchdog = NULL` is not needed: the watchdog's timeout and task find
 //!   the interface by its index, which `if_remove` freed before it.
 //! - `ifioctl(so, cmd, data, p)` (`caddr_t data`, cast to each request's structure) works on
-//!   `&mut [u8]`, the request viewed as its `abi_pod!` image (`hal::pod::view_mut`): in place
+//!   `&mut [u8]`, the request viewed as its `abi_pod!` image (`hal::mem::pod::view_mut`): in place
 //!   when it is aligned and at least an `ifreq` long (`sys_ioctl`'s buffers are), else on an
 //!   aligned zeroed copy (64 bytes on the stack, an `M_IOCTLOPS` block past that) copied back
 //!   after, so no request is read past its end or misaligned (N6.2a review's B1, `bsd`'s
@@ -264,7 +264,7 @@
 //!   memory is reached through `hal::user::UserPtr` only (`SIOCGIFDATA`, `SIOCSIFDESCR`, the
 //!   rows of `ifconf`, of the groups and of the cloners, `if_rxr_info_ioctl`).
 //! - `ifioctl` and `if_downall` take the net lock as a detached holding
-//!   (`hal::netlock::lock`/`unlock`, the C's `NET_LOCK()`), not a witness: the drivers they
+//!   (`hal::sync::netlock::lock`/`unlock`, the C's `NET_LOCK()`), not a witness: the drivers they
 //!   call through `if_ioctl` let it go and take it back (wg(4)'s `wg_up`/`wg_down`,
 //!   pflow(4)'s `pflowioctl`, pfsync(4)'s `pfsync_up`/`pfsync_down`), which only a detached
 //!   holding allows. `ifioctl`'s read-only paths take witnesses (`NETLOCK.read()`), which
@@ -301,18 +301,18 @@ use core::mem::size_of;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
-use hal::intr::IPL_NET;
-use hal::link::Link as HalLink;
-use hal::link::SaBytes;
-use hal::list::List;
-use hal::malloc::{M_NOWAIT, M_WAITOK, MArray, MBox};
-use hal::mutex::Mutexed;
-use hal::netlock::{NETLOCK, NetHeld, NetReader};
-use hal::once::OnceStatic;
-use hal::pool::BoxPool;
-use hal::rwlock::{Guarded, RW_READ, RW_WRITE, RawRwlock, WriteWitness};
-use hal::slot::ReadMostly;
-use hal::smr::{self, SmrLink, SmrLinked, SmrPtr, SmrRead};
+use hal::cpu::intr::IPL_NET;
+use hal::ds::link::Link as HalLink;
+use hal::ds::link::SaBytes;
+use hal::ds::list::List;
+use hal::mem::malloc::{M_NOWAIT, M_WAITOK, MArray, MBox};
+use hal::mem::pool::BoxPool;
+use hal::sync::mutex::Mutexed;
+use hal::sync::netlock::{NETLOCK, NetHeld, NetReader};
+use hal::sync::once::OnceStatic;
+use hal::sync::rwlock::{Guarded, RW_READ, RW_WRITE, RawRwlock, WriteWitness};
+use hal::sync::slot::ReadMostly;
+use hal::sync::smr::{self, SmrLink, SmrLinked, SmrPtr, SmrRead};
 use hal::sys::errno::Errno;
 use hal::sys::ioccom::{_ioc, IOC_IN, iocparm_len};
 use hal::sys::kernel::HZ;
@@ -377,7 +377,7 @@ use crate::proc::{ProcGlue, Thread, suser};
 use crate::sysctl::SysctlReq;
 use crate::task::TaskChain;
 use crate::task::{Task, Taskq, TaskqRef, task_add, task_del, taskq_create, taskq_destroy_leaked};
-use hal::pinlist::PinList;
+use hal::ds::pinlist::PinList;
 
 /// `NET_TASKQ`: the softnet task queues (`MULTIPROCESSOR`'s, the only kernel built).
 pub const NET_TASKQ: usize = 8;
@@ -433,11 +433,11 @@ pub trait Inet: Sync + 'static {
     /// `NET_ASSERT_LOCKED()` of a protocol input entered without a softnet stack and without
     /// the proof of the caller's holding (`ether_resolve`'s broadcast copy, reached through a
     /// driver's output, which carries none): `f` run with a proof `bsd` is lent for the call
-    /// (`hal::link::SaToken::lend_net`: the running process's write holding, which cannot be
+    /// (`hal::ds::link::SaToken::lend_net`: the running process's write holding, which cannot be
     /// let go meanwhile, or a read share joined for the call; one read-modify-write pair the C
     /// lacks), `panic(9)` without the lock (N6.4c2, until the drivers' output carries the
     /// proof). Default: `panic(9)`.
-    fn with_net_held(&self, _f: &mut dyn FnMut(&hal::netlock::NetHeld<'_>)) {
+    fn with_net_held(&self, _f: &mut dyn FnMut(&hal::sync::netlock::NetHeld<'_>)) {
         kpanic(format_args!("NET_ASSERT_LOCKED: no proof of the net lock"));
     }
 }
@@ -584,7 +584,7 @@ fn net_tq_barrier_task(_sn: &'static (dyn Any + Send + Sync)) {
     *g -= 1;
     if *g == 0 {
         drop(g);
-        hal::sleep::wakeup(&raw const NET_TQ_BARRIER);
+        hal::sync::sleep::wakeup(&raw const NET_TQ_BARRIER);
     }
 }
 
@@ -604,7 +604,12 @@ pub fn net_tq_barriers(wmesg: &'static str) {
     }
     let mut g = NET_TQ_BARRIER.lock();
     while *g != 0 {
-        let _ = g.sleep_nsec(&raw const NET_TQ_BARRIER, 0, wmesg, hal::sleep::INFSLP);
+        let _ = g.sleep_nsec(
+            &raw const NET_TQ_BARRIER,
+            0,
+            wmesg,
+            hal::sync::sleep::INFSLP,
+        );
     }
 }
 
@@ -735,7 +740,7 @@ pub fn if_idxmap_init(limit: u32) {
     setbit(&mut b, 0); // blacklist ifidx 0
     drop(st.usedidx.replace(b));
 
-    let Some(map) = IF_MAP_POOL.get(hal::pool::PR_WAITOK, || IfMap::new(limit)) else {
+    let Some(map) = IF_MAP_POOL.get(hal::mem::pool::PR_WAITOK, || IfMap::new(limit)) else {
         kpanic(format_args!("if_idxmap: out of memory"));
     };
     if let Some(old) = IF_MAP.store(&mut w, Some(map)) {
@@ -790,7 +795,7 @@ pub fn if_idxmap_alloc(ifp: &Ifnet) {
             st.usedidx = Some(nusedidx);
         }
 
-        let Some(nmap) = IF_MAP_POOL.get(hal::pool::PR_WAITOK, || nmap) else {
+        let Some(nmap) = IF_MAP_POOL.get(hal::mem::pool::PR_WAITOK, || nmap) else {
             kpanic(format_args!("if_idxmap: out of memory"));
         };
         if let Some(old) = IF_MAP.store(&mut w, Some(nmap)) {
@@ -949,11 +954,11 @@ pub fn if_qstart(ifp: &'static Ifnet, ifq: &'static Ifqueue) {
 pub fn if_qstart_compat<D: NetDriver + ?Sized>(driver: &D, ifq: &'static Ifqueue) {
     let ifp = ifq.ifq_if();
 
-    hal::klock::kernel_lock();
-    let s = hal::intr::splraise(IPL_NET);
+    hal::sync::klock::kernel_lock();
+    let s = hal::cpu::intr::splraise(IPL_NET);
     driver.start(ifp);
     drop(s);
-    hal::klock::kernel_unlock();
+    hal::sync::klock::kernel_unlock();
 }
 
 /// `if_start(ifp)`: the old start path of a driver without `IFXF_MPSAFE`.
@@ -1159,7 +1164,7 @@ pub fn if_attach_common(ifp: &'static Ifnet) {
     if_idxmap_alloc(ifp);
 
     let rt = IfRt {
-        if_refcnt: hal::refcnt::Refcnt::new(),
+        if_refcnt: hal::sync::refcnt::Refcnt::new(),
         if_snd: Ifqueue::new(ifp, 0, net_tq(0), ifp.if_snd_maxlen.get()),
         if_rcv: Ifiqueue::new(ifp, 0, net_tq(0)),
         ifqs: OnceStatic::new(),
@@ -1170,10 +1175,10 @@ pub fn if_attach_common(ifp: &'static Ifnet) {
         if_slowtimo: crate::timeout::Timeout::unset(),
         if_watchdogtask: Task::unset(),
         if_linkstatetask: Task::unset(),
-        hooks_mtx: Mutexed::new(hal::intr::IPL_NONE, ()),
-        if_addrhooks: hal::pinlist::PinList::new(),
-        if_linkstatehooks: hal::pinlist::PinList::new(),
-        if_detachhooks: hal::pinlist::PinList::new(),
+        hooks_mtx: Mutexed::new(hal::cpu::intr::IPL_NONE, ()),
+        if_addrhooks: hal::ds::pinlist::PinList::new(),
+        if_linkstatehooks: hal::ds::pinlist::PinList::new(),
+        if_detachhooks: hal::ds::pinlist::PinList::new(),
         driver,
     };
     if ifp.rt.set(rt).is_err() {
@@ -1359,7 +1364,7 @@ impl Default for TestDriver {
 impl NetDriver for TestDriver {
     fn ioctl(&self, _ifp: &'static Ifnet, _cmd: u64, data: &mut [u8]) -> Result<(), Errno> {
         self.ioctls.fetch_add(1, Ordering::Relaxed);
-        if let Some(ifr) = hal::pod::at::<Ifreq>(data, 0) {
+        if let Some(ifr) = hal::mem::pod::at::<Ifreq>(data, 0) {
             self.last_flags
                 .store(u32::from(ifr.ifr_flags() as u16), Ordering::Relaxed);
         }
@@ -1495,7 +1500,7 @@ fn if_slowtimo(arg: *mut core::ffi::c_void) {
         return;
     };
     let rt = ifp.rt();
-    let s = hal::intr::splraise(IPL_NET);
+    let s = hal::cpu::intr::splraise(IPL_NET);
 
     if rt.driver.has_watchdog() {
         let timer = ifp.if_timer.get();
@@ -1518,26 +1523,26 @@ fn if_watchdog_task(arg: *mut core::ffi::c_void) {
         return;
     };
 
-    hal::klock::kernel_lock();
-    let s = hal::intr::splraise(IPL_NET);
+    hal::sync::klock::kernel_lock();
+    let s = hal::cpu::intr::splraise(IPL_NET);
     let driver = ifp.rt().driver;
     if driver.has_watchdog() {
         driver.watchdog(ifp.ifp());
     }
     drop(s);
-    hal::klock::kernel_unlock();
+    hal::sync::klock::kernel_unlock();
 }
 
 /// `if_linkstate_task`: `if_linkstate` under the net and kernel locks.
 fn if_linkstate_task(arg: *mut core::ffi::c_void) {
     let net = NETLOCK.write();
-    hal::klock::kernel_lock();
+    hal::sync::klock::kernel_lock();
 
     if let Some(ifp) = IfRef::get(timer_ifidx(arg)) {
         if_linkstate(ifp.ifp(), &net_held(&net));
     }
 
-    hal::klock::kernel_unlock();
+    hal::sync::klock::kernel_unlock();
 }
 
 /// `if_linkstate(ifp)`: the routing socket and the routes told of the link state (not after a
@@ -1663,7 +1668,7 @@ pub fn ifname(b: &[u8; IFNAMSIZ]) -> &[u8] {
 /// `NET_ASSERT_LOCKED()` (`DIAGNOSTIC`): the net lock held, shared or exclusive, by a witness
 /// or a detached holding.
 fn net_assert_locked() {
-    kassert!(matches!(hal::netlock::status(), RW_WRITE | RW_READ));
+    kassert!(matches!(hal::sync::netlock::status(), RW_WRITE | RW_READ));
 }
 
 /// The bytes of a NUL-terminated name up to its NUL (the C's string), at most all of them.
@@ -2144,7 +2149,7 @@ pub fn if_detach(ifp: &'static Ifnet) {
 
     {
         let net = NETLOCK.write();
-        let s = hal::intr::splraise(IPL_NET);
+        let s = hal::cpu::intr::splraise(IPL_NET);
         // ifp->if_ioctl = if_detached_ioctl; ifp->if_watchdog = NULL: the timeout and the
         // watchdog task find the interface by its index, which if_remove freed, so neither
         // reaches the driver any more.
@@ -2326,7 +2331,7 @@ pub fn if_clone_destroy(name: &[u8]) -> Result<(), Errno> {
         return Err(Errno::EOPNOTSUPP);
     }
 
-    hal::klock::kernel_assert_locked();
+    hal::sync::klock::kernel_assert_locked();
     let _clone = IF_CLONERS_LOCK.write();
 
     let Some(ifp) = IFNETLIST
@@ -2339,7 +2344,7 @@ pub fn if_clone_destroy(name: &[u8]) -> Result<(), Errno> {
     {
         let w = NETLOCK.write();
         if ifp.if_flags.get() & IFF_UP != 0 {
-            let s = hal::intr::splraise(IPL_NET);
+            let s = hal::cpu::intr::splraise(IPL_NET);
             if_down(ifp, &net_held(&w));
             drop(s);
         }
@@ -2607,7 +2612,7 @@ pub fn if_downall() {
         let mut next = IFNETLIST.first();
         while let Some(ifp) = next {
             if ifp.if_flags.get() & IFF_UP != 0 {
-                hal::netlock::lend_detached(|net| if_down(ifp, net));
+                hal::sync::netlock::lend_detached(|net| if_down(ifp, net));
                 let _ = if_ioctl_flags(ifp, SIOCSIFFLAGS, ifp.if_flags.get());
             }
             next = List::<IfnetList>::next(ifp);
@@ -2664,7 +2669,7 @@ pub fn if_up(ifp: &'static Ifnet, net: &NetHeld<'_>) {
 /// `if_unit(name)`: the interface named `name`, a reference taken (the caller `if_put`s it).
 /// Called with the kernel lock.
 pub fn if_unit(name: &[u8]) -> Option<&'static Ifnet> {
-    hal::klock::kernel_assert_locked();
+    hal::sync::klock::kernel_assert_locked();
 
     let ifp = IFNETLIST
         .iter()
@@ -2792,17 +2797,17 @@ pub fn if_setrdomain(ifp: &'static Ifnet, rdomain: i32) -> Result<(), Errno> {
     }
 
     if rdomain != ifp.if_rdomain.get() {
-        let s = hal::intr::splraise(IPL_NET);
+        let s = hal::cpu::intr::splraise(IPL_NET);
         // We are tearing down the world. Take down the IF so:
         // 1. everything that cares gets a message
         // 2. the automagic IPv6 bits are recreated
         if ifp.if_flags.get() & IFF_UP != 0 {
             up = true;
-            hal::netlock::lend_detached(|net| if_down(ifp, net));
+            hal::sync::netlock::lend_detached(|net| if_down(ifp, net));
         }
         crate::netinet::igmp::rti_delete(ifp);
         // MROUTING: vif_delete(ifp); not configured.
-        hal::netlock::lend_detached(|net| {
+        hal::sync::netlock::lend_detached(|net| {
             crate::netinet::in_::in_ifdetach(ifp, net);
             crate::netinet6::in6_ifattach::in6_ifdetach(ifp, net);
         });
@@ -2826,8 +2831,8 @@ pub fn if_setrdomain(ifp: &'static Ifnet, rdomain: i32) -> Result<(), Errno> {
 
     // If we took down the IF, bring it back
     if up {
-        let s = hal::intr::splraise(IPL_NET);
-        hal::netlock::lend_detached(|net| if_up(ifp, net));
+        let s = hal::cpu::intr::splraise(IPL_NET);
+        hal::sync::netlock::lend_detached(|net| if_up(ifp, net));
         drop(s);
     }
 
@@ -2882,7 +2887,7 @@ fn with_request<R>(
 /// [`ifioctl_need`] long, so this fails only for a command whose length is shorter than its
 /// structure, which no `SIOC*` is: `EINVAL` then, never a short view).
 fn req_view<T: hal::user::AbiPod>(req: &mut [u8]) -> Result<&mut T, Errno> {
-    hal::pod::view_mut::<T>(req, 0).ok_or(Errno::EINVAL)
+    hal::mem::pod::view_mut::<T>(req, 0).ok_or(Errno::EINVAL)
 }
 
 /// `ifr->ifr_name`: the interface name every per-interface request starts with.
@@ -2900,13 +2905,13 @@ fn req_arg(req: &mut [u8], cmd: u64) -> &mut [u8] {
     &mut req[..n]
 }
 
-/// `NET_LOCK()` around `f`, as the detached holding `hal::netlock::lock` takes: the drivers
+/// `NET_LOCK()` around `f`, as the detached holding `hal::sync::netlock::lock` takes: the drivers
 /// `f` reaches through `if_ioctl` may let it go and take it back (wg(4)'s `wg_up` and
 /// `wg_down`, pflow(4)'s `pflowioctl`), which a witness would refuse (the module's redesign).
 fn net_locked<R>(f: impl FnOnce() -> R) -> R {
-    hal::netlock::lock();
+    hal::sync::netlock::lock();
     let r = f();
-    hal::netlock::unlock();
+    hal::sync::netlock::unlock();
     r
 }
 
@@ -3014,20 +3019,20 @@ fn ifioctl_req<G: ProcGlue>(
         SIOCIFCREATE | SIOCIFDESTROY => {
             suser(p)?;
             let name = req_name(req);
-            hal::klock::kernel_lock();
+            hal::sync::klock::kernel_lock();
             let error = if cmd == SIOCIFCREATE {
                 if_clone_create(&name, 0)
             } else {
                 if_clone_destroy(&name)
             };
-            hal::klock::kernel_unlock();
+            hal::sync::klock::kernel_unlock();
             return error;
         }
         SIOCSIFGATTR => {
             suser(p)?;
-            hal::klock::kernel_lock();
+            hal::sync::klock::kernel_lock();
             let error = net_locked(|| if_setgroupattribs(req));
-            hal::klock::kernel_unlock();
+            hal::sync::klock::kernel_unlock();
             return error;
         }
         SIOCGIFCONF | SIOCIFGCLONERS | SIOCGIFGMEMB | SIOCGIFGATTR | SIOCGIFGLIST
@@ -3037,10 +3042,10 @@ fn ifioctl_req<G: ProcGlue>(
         _ => {}
     }
 
-    hal::klock::kernel_lock();
+    hal::sync::klock::kernel_lock();
 
     let Some(ifp) = if_unit(&req_name(req)) else {
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
         return Err(Errno::ENXIO);
     };
     let oif_flags = ifp.if_flags.get();
@@ -3061,7 +3066,7 @@ fn ifioctl_req<G: ProcGlue>(
         ifp.if_lastchange.set(now.tv_sec, now.tv_usec);
     }
 
-    hal::klock::kernel_unlock();
+    hal::sync::klock::kernel_unlock();
 
     if_put(Some(ifp));
 
@@ -3086,7 +3091,7 @@ fn ifioctl_ifp<G: ProcGlue>(
                 AF_INET => {
                     // attach is a noop for AF_INET
                     if cmd == SIOCIFAFDETACH {
-                        hal::netlock::lend_detached(|net| {
+                        hal::sync::netlock::lend_detached(|net| {
                             crate::netinet::in_::in_ifdetach(ifp, net);
                         });
                     }
@@ -3099,7 +3104,7 @@ fn ifioctl_ifp<G: ProcGlue>(
                             &crate::netinet6::in6::NetHolding::Detached,
                         )
                     } else {
-                        hal::netlock::lend_detached(|net| {
+                        hal::sync::netlock::lend_detached(|net| {
                             crate::netinet6::in6_ifattach::in6_ifdetach(ifp, net);
                         });
                         Ok(())
@@ -3316,13 +3321,13 @@ fn if_setxflags(req: &mut [u8], ifp: &'static Ifnet, old: (i32, i32)) -> Result<
     // !SMALL_KERNEL
     if ifp.if_capabilities.get() & IFCAP_WOL != 0 {
         if rflags & IFXF_WOL != 0 && ifp.if_xflags.get() & IFXF_WOL == 0 {
-            let s = hal::intr::splraise(IPL_NET);
+            let s = hal::cpu::intr::splraise(IPL_NET);
             ifp.if_xflags.set(ifp.if_xflags.get() | IFXF_WOL);
             error = if_wol(ifp, true);
             drop(s);
         }
         if ifp.if_xflags.get() & IFXF_WOL != 0 && rflags & IFXF_WOL == 0 {
-            let s = hal::intr::splraise(IPL_NET);
+            let s = hal::cpu::intr::splraise(IPL_NET);
             ifp.if_xflags.set(ifp.if_xflags.get() & !IFXF_WOL);
             error = if_wol(ifp, false);
             drop(s);
@@ -3379,8 +3384,8 @@ fn if_setflags(
             ifp.if_xflags.set(oif_xflags);
         }
     } else if (oif_flags ^ ifp.if_flags.get()) & IFF_UP != 0 {
-        let s = hal::intr::splraise(IPL_NET);
-        hal::netlock::lend_detached(|net| {
+        let s = hal::cpu::intr::splraise(IPL_NET);
+        hal::sync::netlock::lend_detached(|net| {
             if ifp.if_flags.get() & IFF_UP != 0 {
                 if_up(ifp, net);
             } else {
@@ -3407,9 +3412,9 @@ fn ifioctl_get(cmd: u64, req: &mut [u8]) -> Result<(), Errno> {
         _ => {}
     }
 
-    hal::klock::kernel_lock();
+    hal::sync::klock::kernel_lock();
     let ifp = if_unit(&req_name(req));
-    hal::klock::kernel_unlock();
+    hal::sync::klock::kernel_unlock();
 
     let Some(ifp) = ifp.map(IfRef) else {
         return Err(Errno::ENXIO);
@@ -3443,17 +3448,17 @@ fn ifioctl_get(cmd: u64, req: &mut [u8]) -> Result<(), Errno> {
             let mut ifdata: IfData = hal::user::zeroed();
             {
                 let _net = NETLOCK.read();
-                hal::klock::kernel_lock();
+                hal::sync::klock::kernel_lock();
                 if_getdata(&ifp, &mut ifdata);
-                hal::klock::kernel_unlock();
+                hal::sync::klock::kernel_unlock();
             }
             return UserPtr::<IfData>::new(ifr.ifr_data() as usize).copyout(&ifdata);
         }
 
         SIOCGIFDESCR => {
-            hal::klock::kernel_lock();
+            hal::sync::klock::kernel_lock();
             let ifdescrbuf = name_array_of::<IFDESCRSIZE>(&ifp.if_description.get());
-            hal::klock::kernel_unlock();
+            hal::sync::klock::kernel_unlock();
 
             return UserPtr::<u8>::new(ifr.ifr_data() as usize)
                 .copyoutstr(&ifdescrbuf)
@@ -3594,7 +3599,7 @@ fn ifconf(req: &mut [u8]) -> Result<(), Errno> {
 }
 
 /// The proof the running code holds the net lock, from its witness `w`.
-fn net_held<W: hal::rwlock::Witness>(w: &W) -> NetHeld<'_> {
+fn net_held<W: hal::sync::rwlock::Witness>(w: &W) -> NetHeld<'_> {
     match NetHeld::of(w) {
         Some(h) => h,
         None => kpanic(format_args!("not a witness of the net lock")),
@@ -3793,7 +3798,7 @@ pub fn if_getdata(ifp: &Ifnet, data: &mut IfData) {
 static IFG_HEAD: ReadMostly<IfgSet> = ReadMostly::new(IfgSet::new());
 
 /// `ifg_head`, borrowed for a reader (the rule of `IfgGroup::members`).
-pub fn ifg_head() -> hal::slot::ReadMostlyRef<'static, IfgSet> {
+pub fn ifg_head() -> hal::sync::slot::ReadMostlyRef<'static, IfgSet> {
     IFG_HEAD.read()
 }
 
@@ -3803,7 +3808,9 @@ fn ifg_set_with(set: &IfgSet, g: &IfgRef, flags: i32) -> Option<IfgSet> {
     let a = MArray::new(M_IFGROUP, flags, old.len() + 1, |i| {
         old.get(i).map_or_else(|| g.clone(), Clone::clone)
     })?;
-    Some(IfgSet(Some(hal::malloc::MArc::new(M_IFGROUP, flags, a)?)))
+    Some(IfgSet(Some(hal::mem::malloc::MArc::new(
+        M_IFGROUP, flags, a,
+    )?)))
 }
 
 /// `set` without `g` (a new array, the order kept; empty as `None`).
@@ -3819,7 +3826,7 @@ fn ifg_set_without(set: &IfgSet, g: &IfgGroup) -> IfgSet {
             .cloned()
             .unwrap_or_else(|| kpanic(format_args!("ifg_set_without: count")))
     });
-    match a.and_then(|a| hal::malloc::MArc::new(M_IFGROUP, M_WAITOK, a)) {
+    match a.and_then(|a| hal::mem::malloc::MArc::new(M_IFGROUP, M_WAITOK, a)) {
         Some(a) => IfgSet(Some(a)),
         None => kpanic(format_args!("if_delgroup: out of memory")),
     }
@@ -3831,7 +3838,7 @@ fn ifg_members_with(m: &IfgMembers, ifp: &'static Ifnet) -> Option<IfgMembers> {
     let a = MArray::new(M_IFGROUP, M_NOWAIT, old.len() + 1, |i| {
         old.get(i).copied().unwrap_or(ifp)
     })?;
-    Some(IfgMembers(Some(hal::malloc::MArc::new(
+    Some(IfgMembers(Some(hal::mem::malloc::MArc::new(
         M_IFGROUP, M_NOWAIT, a,
     )?)))
 }
@@ -3849,7 +3856,7 @@ fn ifg_members_without(m: &IfgMembers, ifp: &Ifnet) -> IfgMembers {
             .copied()
             .unwrap_or_else(|| kpanic(format_args!("ifg_members_without: count")))
     });
-    match a.and_then(|a| hal::malloc::MArc::new(M_IFGROUP, M_WAITOK, a)) {
+    match a.and_then(|a| hal::mem::malloc::MArc::new(M_IFGROUP, M_WAITOK, a)) {
         Some(a) => IfgMembers(Some(a)),
         None => kpanic(format_args!("if_delgroup: out of memory")),
     }
@@ -3857,13 +3864,13 @@ fn ifg_members_without(m: &IfgMembers, ifp: &Ifnet) -> IfgMembers {
 
 /// A new group named `groupname` with no member (its count 1), unpublished.
 fn ifg_new(groupname: &[u8]) -> Option<IfgRef> {
-    hal::malloc::MArc::new(
+    hal::mem::malloc::MArc::new(
         M_IFGROUP,
         M_NOWAIT,
         IfgGroup {
             ifg_group: name_array(groupname),
             ifg_refcnt: AtomicU32::new(1),
-            ifg_pf_kif: hal::link::PtrWord::new(),
+            ifg_pf_kif: hal::ds::link::PtrWord::new(),
             ifg_carp_demoted: AtomicCell::new(),
             ifg_members: ReadMostly::new(IfgMembers::new()),
         },
@@ -4234,10 +4241,10 @@ pub fn ifpromisc(ifp: &'static Ifnet, pswitch: bool) -> Result<(), Errno> {
 /// stack for an interface that can (`ENOTSUP` otherwise; `EBUSY` for a bridge port). Under
 /// the net and kernel locks.
 pub fn ifsetlro(ifp: &'static Ifnet, on: bool) -> Result<(), Errno> {
-    let s = hal::intr::splraise(IPL_NET);
+    let s = hal::cpu::intr::splraise(IPL_NET);
 
     net_assert_locked(); // for ioctl
-    hal::klock::kernel_assert_locked();
+    hal::sync::klock::kernel_assert_locked();
 
     let error = 'out: {
         if if_ioctl_flags(ifp, SIOCSIFXFLAGS, if on { IFXF_LRO } else { 0 }).is_ok() {
@@ -4298,7 +4305,7 @@ pub fn ifnewlladdr(ifp: &'static Ifnet) {
     let i_am_router = crate::netinet6::ip6_var::IP6_FORWARDING.load(Ordering::Relaxed) != 0;
 
     net_assert_locked(); // for ioctl and in6
-    hal::klock::kernel_assert_locked();
+    hal::sync::klock::kernel_assert_locked();
 
     let up = ifp.if_flags.get() & IFF_UP != 0;
     let setflags = |flags: i32| {
@@ -4318,11 +4325,11 @@ pub fn ifnewlladdr(ifp: &'static Ifnet) {
     if !i_am_router {
         // T1: the link-local address, cloned before its reader ends (the purge takes the
         // writer), looked up only when it is to be updated, as the C does.
-        let ll = hal::netlock::lend_detached(|net| {
+        let ll = hal::sync::netlock::lend_detached(|net| {
             crate::netinet6::in6::in6ifa_ifpforlinklocal(&net.reader(), ifp, 0).cloned()
         });
         if let Some(ia6) = ll {
-            hal::netlock::lend_detached(|net| crate::netinet6::in6::in6_purgeaddr(&ia6, net));
+            hal::sync::netlock::lend_detached(|net| crate::netinet6::in6::in6_purgeaddr(&ia6, net));
             if_hooks_run(ifp, &ifp.rt().if_addrhooks);
             let _ = crate::netinet6::in6_ifattach::in6_ifattach(
                 ifp,
@@ -4685,7 +4692,7 @@ pub(crate) mod tests {
     /// No CPU but the caller's (the SMR thread's walk over the CPUs, on the host).
     struct Alone;
 
-    impl hal::smr::CpuWalk for Alone {
+    impl hal::sync::smr::CpuWalk for Alone {
         fn running(&self, _n: usize) -> bool {
             false
         }
@@ -4705,8 +4712,8 @@ pub(crate) mod tests {
         STOP.store(false, Ordering::SeqCst);
         let th = std::thread::spawn(|| {
             loop {
-                hal::smr::wait();
-                let _ = hal::smr::collect().run(&Alone);
+                hal::sync::smr::wait();
+                let _ = hal::sync::smr::collect().run(&Alone);
                 if STOP.load(Ordering::SeqCst) {
                     break;
                 }
@@ -4727,12 +4734,12 @@ pub(crate) mod tests {
         let r = f();
         STOP.store(true, Ordering::SeqCst);
         workers.join().expect("the softnets' workers");
-        hal::smr::defer_link(
-            Box::leak(Box::new(hal::smr::SmrLink::new())),
+        hal::sync::smr::defer_link(
+            Box::leak(Box::new(hal::sync::smr::SmrLink::new())),
             nothing,
             core::ptr::null_mut(),
         );
-        hal::smr::idle();
+        hal::sync::smr::idle();
         th.join().expect("the SMR thread");
         r
     }
@@ -4850,7 +4857,7 @@ pub(crate) mod tests {
             "the record no membership holds freed by the detach"
         );
         assert_eq!(
-            hal::malloc::MArc::count(&held),
+            hal::mem::malloc::MArc::count(&held),
             1,
             "the membership's handle alone"
         );
@@ -4871,9 +4878,9 @@ pub(crate) mod tests {
     /// `if_detach(ifp)` under the kernel lock, as its callers hold it (a driver's detach,
     /// `SIOCIFDESTROY`): bpf(4)'s `bpfdetach` asserts it.
     fn detach_locked(ifp: &'static Ifnet) {
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         if_detach(ifp);
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
     }
 
     /// A cloner of `tcl<unit>` interfaces over [`fresh_ifnet`].
@@ -4932,7 +4939,7 @@ pub(crate) mod tests {
         }
         assert!(if_cloners().any(|c| c.name() == b"tcl"));
 
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         assert_eq!(if_clone_create(b"tcl3", 0), Ok(()));
         assert_eq!(if_clone_create(b"tcl3", 0), Err(Errno::EEXIST));
         assert_eq!(if_clone_create(b"tcl99", 0), Err(Errno::ENOMEM));
@@ -4944,7 +4951,7 @@ pub(crate) mod tests {
         assert_eq!(with_smr_thread(|| if_clone_destroy(b"tcl3")), Ok(()));
         assert!(if_unit(b"tcl3").is_none());
         assert_eq!(group(b"tcl"), None);
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
     }
 
     #[test]
@@ -5513,9 +5520,9 @@ pub(crate) mod tests {
 
     /// `if_unit(name)` under the kernel lock, its reference dropped.
     fn if_unit_test(name: &[u8]) -> Option<&'static Ifnet> {
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         let ifp = if_unit(name);
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
         if_put(ifp);
         ifp
     }
@@ -5529,14 +5536,14 @@ pub(crate) mod tests {
 
     impl NetDriver for DropsNetLock {
         fn ioctl(&self, ifp: &'static Ifnet, _cmd: u64, _data: &mut [u8]) -> Result<(), Errno> {
-            hal::netlock::unlock();
+            hal::sync::netlock::unlock();
             if self.detach_next.swap(false, Ordering::Relaxed)
                 && let Some(next) = List::<IfnetList>::next(ifp)
             {
                 let _net = NETLOCK.write();
                 IFNETLIST.remove(next);
             }
-            hal::netlock::lock();
+            hal::sync::netlock::lock();
             Ok(())
         }
     }
@@ -5566,7 +5573,7 @@ pub(crate) mod tests {
         assert_eq!(ifp.if_flags.get() & IFF_UP, 0);
         assert_ne!(gone.if_flags.get() & IFF_UP, 0);
         assert_eq!(last.if_flags.get() & IFF_UP, 0);
-        assert_eq!(hal::netlock::status(), 0);
+        assert_eq!(hal::sync::netlock::status(), 0);
     }
 
     #[test]
@@ -5874,13 +5881,14 @@ pub(crate) mod tests {
         let ifa = match sa[1] {
             AF_INET => {
                 let ia = crate::netinet::in_var::in_ifaddr_alloc(ifp);
-                ia.ia_addr.set(hal::pod::at(sa, 0).expect("a sockaddr_in"));
+                ia.ia_addr
+                    .set(hal::mem::pod::at(sa, 0).expect("a sockaddr_in"));
                 IfaddrRef::In(ia)
             }
             _ => {
                 let ia6 = crate::netinet6::in6_var::in6_ifaddr_alloc(ifp, 0);
                 ia6.ia_addr
-                    .set(hal::pod::at(sa, 0).expect("a sockaddr_in6"));
+                    .set(hal::mem::pod::at(sa, 0).expect("a sockaddr_in6"));
                 IfaddrRef::In6(ia6)
             }
         };

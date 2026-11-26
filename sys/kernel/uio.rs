@@ -203,8 +203,8 @@
 use core::ffi::c_void;
 use core::ptr;
 
-use hal::malloc::{M_WAITOK, MArray};
-use hal::once::OnceStatic;
+use hal::mem::malloc::{M_WAITOK, MArray};
+use hal::sync::once::OnceStatic;
 use hal::sys::errno::Errno;
 use hal::sys::limits::SSIZE_MAX;
 use hal::sys::syslimits::IOV_MAX;

@@ -45,7 +45,7 @@
 use core::any::Any;
 
 use hal::bridges::AlreadyRegistered;
-use hal::once::OnceStatic;
+use hal::sync::once::OnceStatic;
 use hal::sys::errno::Errno;
 
 use crate::assert::kpanic;

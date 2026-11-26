@@ -75,7 +75,7 @@
 //! - The file table's operations are [`VnodeFileOps`], `struct fileops` as the kernel's
 //!   `FileOps` (decision 46); the file's vnode is the glue's answer for its object
 //!   ([`FileGlue::vnode_of`]: `(struct vnode *)fp->f_data`); each keeps the C's
-//!   `KERNEL_LOCK()`/`KERNEL_UNLOCK()` (`hal::klock`). `bsd`'s `vnops` table is the same
+//!   `KERNEL_LOCK()`/`KERNEL_UNLOCK()` (`hal::sync::klock`). `bsd`'s `vnops` table is the same
 //!   operations over these functions.
 //! - `vn_ioctl`'s `TIOCSCTTY` keeps the controlling terminal's vnode in the kernel's
 //!   `Session::ttyvp` (D-N5.2-9).
@@ -89,7 +89,7 @@ use core::pin::Pin;
 use core::ptr;
 use core::sync::atomic::Ordering;
 
-use hal::klock;
+use hal::sync::klock;
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::{
     F_FLOCK, F_UNLCK, FFSYNC, FNONBLOCK, FREAD, FWRITE, Flock, O_APPEND, O_CREAT, O_DIRECTORY,
@@ -981,7 +981,7 @@ mod tests {
                 .set_limit(crate::resource::PlimitRef::new(limits)),
         );
         let vp = open(p, b"/f", FREAD).unwrap();
-        let pin = hal::pin::pin_static(p);
+        let pin = hal::ds::pin::pin_static(p);
         let mut iov = [Iovec::new()];
         let buf = [0u8; 200];
         let mut uio = Uio::kernel_write(&mut iov, &buf, Some(p));

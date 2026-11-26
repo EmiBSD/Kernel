@@ -151,7 +151,7 @@
 
 use core::marker::PhantomData;
 
-use hal::malloc::MArc;
+use hal::mem::malloc::MArc;
 use hal::sys::dirent::{DT_DIR, DT_REG, Dirent, MAXNAMLEN, dirent_size};
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::Flock;

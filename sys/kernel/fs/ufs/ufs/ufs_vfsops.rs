@@ -86,8 +86,8 @@
 
 use core::sync::atomic::AtomicBool;
 
-use hal::pool::{BoxPool, TypedPool};
-use hal::slot::ReadMostly;
+use hal::mem::pool::{BoxPool, TypedPool};
+use hal::sync::slot::ReadMostly;
 use hal::sys::errno::Errno;
 
 use super::dinode::ROOTINO;
@@ -267,8 +267,8 @@ pub fn ufs_test_reset<G: ProcGlue>() {
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
-    use hal::intr::IPL_NONE;
-    use hal::pool::{BoxPool, PR_WAITOK, PoolArc, TypedPool};
+    use hal::cpu::intr::IPL_NONE;
+    use hal::mem::pool::{BoxPool, PR_WAITOK, PoolArc, TypedPool};
 
     use super::*;
     use crate::fs::testfs::{B, TestGlue, any_locked, setup_root, vget_node};

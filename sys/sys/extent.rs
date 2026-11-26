@@ -136,7 +136,7 @@ pub fn extent_create(
 ) -> Option<&'static Extent> {
     match storage {
         Some(fex) => fex.create(name, start, end, mtype, flags),
-        None => Extent::create(name, start, end, mtype, flags).map(hal::malloc::MBox::leak),
+        None => Extent::create(name, start, end, mtype, flags).map(hal::mem::malloc::MBox::leak),
     }
 }
 

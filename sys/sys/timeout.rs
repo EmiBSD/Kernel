@@ -111,13 +111,13 @@
 //!   were read and written by `kern_timeout.rs` and by three callers. Now the wheel links a
 //!   pinned `kernel::timeout::Timeout`, and [`Timeout`] is what a legacy structure embeds: the
 //!   values of `TIMEOUT_INITIALIZER` (written only by the `const` constructors) and a link to
-//!   its node (`hal::link::Link`). It stays valid all zero (`Timeout::zeroed`, a zeroed softc's
+//!   its node (`hal::ds::link::Link`). It stays valid all zero (`Timeout::zeroed`, a zeroed softc's
 //!   timeouts: the `unsafe impl Softc` proofs cite it), `Sync` without `unsafe`, and its
 //!   `const fn`s keep the statics compiling. The three direct field users read
 //!   [`Timeout::to_time`] or call [`Timeout::set_none`].
 //! - The node is found by the wrapper's address: the link when it names a node of this
 //!   address (one load and one compare per call, the served path), else the registry (a
-//!   `hal::tree::Tree` of the nodes by address under its own mutex), else a new node. A
+//!   `hal::ds::tree::Tree` of the nodes by address under its own mutex), else a new node. A
 //!   wrapper with no node claims one under the registry's lock: the link read again, the node
 //!   set fresh (the wheel's lock nested inside) and only then linked, so two first calls on
 //!   one wrapper (two CPUs' first `timeout_add` of a `TIMEOUT_INITIALIZER` static) set it
@@ -143,13 +143,13 @@ use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 pub use kernel::timeout::TimeoutFn;
 
-use hal::intr::IPL_HIGH;
-use hal::link::Link;
-use hal::mutex::Mutexed;
-use hal::pin::pin_static;
-use hal::pool::{PR_NOWAIT, PR_WAITOK, PoolArc, TypedPool};
-use hal::rwlock::Rwlocked;
-use hal::tree::{Tree, TreeEntry};
+use hal::cpu::intr::IPL_HIGH;
+use hal::ds::link::Link;
+use hal::ds::pin::pin_static;
+use hal::ds::tree::{Tree, TreeEntry};
+use hal::mem::pool::{PR_NOWAIT, PR_WAITOK, PoolArc, TypedPool};
+use hal::sync::mutex::Mutexed;
+use hal::sync::rwlock::Rwlocked;
 
 use crate::conf::param::{HZ, TICK, TICK_NSEC};
 use crate::kassert;

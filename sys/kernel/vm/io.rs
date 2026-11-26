@@ -81,7 +81,7 @@
 
 use hal::arch::current::param::{PAGE_MASK, PAGE_SIZE};
 use hal::arch::current::vmparam::VM_MAXUSER_ADDRESS;
-use hal::kmbuf::KmBuf;
+use hal::mem::kmbuf::KmBuf;
 use hal::sys::errno::Errno;
 use hal::user::ForeignWindow;
 use hal::vm::param::{round_page, trunc_page};

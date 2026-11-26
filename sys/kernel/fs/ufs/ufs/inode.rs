@@ -81,7 +81,7 @@
 //!   and UFS's `inode_ext.dirhash` are the inode's own since N5.5a2 ([`Inode::i_dquot`],
 //!   [`Inode::i_dirhash`]).
 //! - `i_ump` is [`Inode::ump`], the inode's counted handle on the mount's `struct ufsmount`
-//!   (`vfstoufs` of the file system's `vget`, N5.5b0: an `hal::malloc::MArc` cloned out of
+//!   (`vfstoufs` of the file system's `vget`, N5.5b0: an `hal::mem::malloc::MArc` cloned out of
 //!   the mount's typed slot, dropped with the inode), beside [`Inode::mount`] and the copies
 //!   of the words the UFS layer reads on every block (`um_fstype`, `um_nindir`,
 //!   `um_bptrtodb`, `um_seqinc`), written once by `vget`, which never change after the mount;
@@ -102,14 +102,14 @@
 //!   words, the vnode link, the glue member; N5.5a2's `i_dirhash` cell and `i_ump`, 400 at
 //!   N5.5a1), so the `ffsino` and `ext2inopl` pools' item size,
 //!   `vmstat -m`'s and `systat pool`'s Size column, grows with it (plus the 16 bytes of a
-//!   `TypedPool` item, sys/hal/pool.rs's deviation). No `diff-openbsd` scenario prints it; a
+//!   `TypedPool` item, sys/hal/mem/pool.rs's deviation). No `diff-openbsd` scenario prints it; a
 //!   pool's size follows its type (the standing rule), recorded here, not changed.
 //!
 //! ## Redesign
 //! - LZ's `pool_get` of a raw `ffs_ino_pool` item written with `ptr::write`, hung from
 //!   `v_data` and cast back by `vtoi`'s `unsafe` deref behind a tag check
 //!   (sys/ufs/ufs/inode.rs:865-873, sys/ufs/ffs/ffs_vfsops.rs:1332-1338) -> a
-//!   `hal::pool::TypedPool<Inode<G>>` item made by `init_recorded` (its [`PoolHome`] lets a
+//!   `hal::mem::pool::TypedPool<Inode<G>>` item made by `init_recorded` (its [`PoolHome`] lets a
 //!   `&Inode` be counted again), erased into the vnode's node slot, and [`InodeRef`] =
 //!   `PoolArc<Inode<G>>` (D-N5.5a-3): [`vtoi`] reads the slot (the type's check replaces the
 //!   tag's) and counts a handle, dropped where the C's pointer dies. Cost against the C's one
@@ -123,9 +123,9 @@
 //!   vfs_vnops.c's `vn_read`/`vn_write`/`vn_ioctl`, uvm_vnode.c's pager; the native
 //!   kernel::fs::vnops and kernel::vm::vnode the same), which orders the writes: a change is
 //!   a load and a store, as the C's `ip->i_flag |= f`, and the setters check the lock under
-//!   `diagnostic` (`hal::klock::kernel_assert_locked`).
+//!   `diagnostic` (`hal::sync::klock::kernel_assert_locked`).
 //!   Not D-N5.5a-4's `Guarded::new_kernel` cell: `klock::witness()` raises the interrupt
-//!   level (sys/hal/klock.rs:432-447), one spl pair per change where the C has none (on every
+//!   level (sys/hal/sync/klock.rs:432-447), one spl pair per change where the C has none (on every
 //!   `read`'s `IN_ACCESS`, every lookup's `i_diroff`); an atomic word needs no witness, and
 //!   its loads and stores are the C's plain ones. The identity (`i_dev`, `i_number`) is plain fields,
 //!   set when the pool makes the item; `i_vnode` a `Link` (`ffs_vinit` moves the inode to the
@@ -158,13 +158,13 @@
 use core::mem::offset_of;
 use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU64, Ordering};
 
-use hal::link::Link;
-use hal::malloc::MBox;
-use hal::once::OnceStatic;
-use hal::pinlist::PinEntry;
-use hal::pool::{PoolArc, PoolBox, PoolHome};
-use hal::rwlock::RecursiveRwlock;
-use hal::slot::ReadMostly;
+use hal::ds::link::Link;
+use hal::ds::pinlist::PinEntry;
+use hal::mem::malloc::MBox;
+use hal::mem::pool::{PoolArc, PoolBox, PoolHome};
+use hal::sync::once::OnceStatic;
+use hal::sync::rwlock::RecursiveRwlock;
+use hal::sync::slot::ReadMostly;
 use hal::sys::errno::Errno;
 use hal::sys::mount::{Fid, MNT_ASYNC};
 use hal::sys::types::{Daddr, Dev, Mode, Off};
@@ -236,7 +236,7 @@ impl CiCell {
     /// `ip->i_ci = ci`, by a holder of the kernel lock (checked under `diagnostic`).
     pub fn set(&self, ci: ClusterInfo) {
         #[cfg(feature = "diagnostic")]
-        hal::klock::kernel_assert_locked();
+        hal::sync::klock::kernel_assert_locked();
         let r = Ordering::Relaxed;
         self.lastr.store(ci.ci_lastr, r);
         self.lastw.store(ci.ci_lastw, r);
@@ -315,7 +315,7 @@ pub fn words_get<T: DinField>(w: &[AtomicU64], what: &str, off: usize) -> T {
 /// writes it orders.
 pub fn words_set<T: DinField>(w: &[AtomicU64], what: &str, off: usize, v: T) {
     #[cfg(feature = "diagnostic")]
-    hal::klock::kernel_assert_locked();
+    hal::sync::klock::kernel_assert_locked();
     let s = word_shift(off, T::SIZE);
     let mask = if T::SIZE == 8 {
         u64::MAX
@@ -362,7 +362,7 @@ pub fn words_read_bytes(w: &[AtomicU64], what: &str, off: usize, out: &mut [u8])
 /// of the kernel lock, checked under `diagnostic`).
 pub fn words_write_bytes(w: &[AtomicU64], what: &str, off: usize, src: &[u8]) {
     #[cfg(feature = "diagnostic")]
-    hal::klock::kernel_assert_locked();
+    hal::sync::klock::kernel_assert_locked();
     if off + src.len() > w.len() * 8 {
         kpanic(format_args!(
             "{what}: bytes {off}+{} past the end",
@@ -443,7 +443,7 @@ impl<const N: usize> DinWords<N> {
     #[inline]
     fn set_words(&self, words: [u64; N]) {
         #[cfg(feature = "diagnostic")]
-        hal::klock::kernel_assert_locked();
+        hal::sync::klock::kernel_assert_locked();
         self.put_words(words);
     }
 
@@ -1543,8 +1543,8 @@ mod tests {
 
     #[test]
     fn the_short_link_is_read_in_place_and_written_back_when_changed() {
-        use hal::intr::IPL_NONE;
-        use hal::pool::{BoxPool, PR_WAITOK};
+        use hal::cpu::intr::IPL_NONE;
+        use hal::mem::pool::{BoxPool, PR_WAITOK};
 
         use crate::fs::testfs::{TestGlue, setup};
         use crate::fs::ufs::ufs::ufsmount::UM_UFS2;

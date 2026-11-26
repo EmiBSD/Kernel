@@ -57,7 +57,7 @@
 //!
 //! Upstream: sys/netinet/ip_input.c @ 3ce1f3f79392
 
-use hal::netlock::NetLend;
+use hal::sync::netlock::NetLend;
 
 use crate::kern::proc_glue::BsdProcGlue as G;
 use crate::net::if_::net_held;
@@ -291,9 +291,9 @@ pub(crate) mod tests {
         ac.ac_enaddr.set(OURS);
         if_attach(&ac.ac_if);
         // The C holds the kernel lock across an attach (bpf_ifattach asserts it).
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         ether_ifattach(ac);
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
         &ac.ac_if
     }
 

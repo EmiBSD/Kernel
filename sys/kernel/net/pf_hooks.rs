@@ -37,8 +37,8 @@ use core::any::Any;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use hal::bridges::AlreadyRegistered;
-use hal::once::OnceStatic;
-use hal::pool::AnyArc;
+use hal::mem::pool::AnyArc;
+use hal::sync::once::OnceStatic;
 
 use hal::sys::errno::Errno;
 use hal::sys::types::SaFamily;

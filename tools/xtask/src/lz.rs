@@ -1361,7 +1361,7 @@ pub(crate) fn abi_pod_impls(rel: &str, toks: &[Tok]) -> usize {
 /// `sys/sys/queue.rs` has a `SlistAdapter` of its own (the `SLIST` adapters' blanket impl).
 const HAL_MACRO_TRAITS: [(&str, &str, &str, &str); 1] = [(
     "SlistAdapter",
-    "sys/hal/owned.rs",
+    "sys/hal/ds/owned.rs",
     "slist_adapter",
     "sys/sys/queue.rs",
 )];
@@ -2274,7 +2274,7 @@ mod tests {
         impl<A: SlistAdapter> Default for OwnedSlist<A> {}
         impl<'a, A: SlistAdapter> IntoIterator for &'a OwnedSlist<A> {}
     "#;
-        assert!(hal_macro_trait_impls("sys/hal/owned.rs", &lex(owned)).is_empty());
+        assert!(hal_macro_trait_impls("sys/hal/ds/owned.rs", &lex(owned)).is_empty());
         // The same macro body elsewhere is not the one the check trusts.
         assert_eq!(
             hal_macro_trait_impls("sys/kernel/x.rs", &lex(owned)),
@@ -2290,15 +2290,15 @@ mod tests {
         assert_eq!(
             hal_macro_trait_impls(
                 "sys/sys/queue.rs",
-                &lex("impl hal::owned::SlistAdapter for X {}")
+                &lex("impl hal::ds::owned::SlistAdapter for X {}")
             ),
             [("SlistAdapter", 1)]
         );
         for src in [
             "impl SlistAdapter for Mine { type Elem = u8; }",
-            "impl hal::owned::SlistAdapter for Mine {}",
+            "impl hal::ds::owned::SlistAdapter for Mine {}",
             "impl<T> r#SlistAdapter for W<T> {}",
-            "use hal::owned::SlistAdapter as S;",
+            "use hal::ds::owned::SlistAdapter as S;",
         ] {
             assert_eq!(
                 hal_macro_trait_impls("sys/kernel/x.rs", &lex(src)),

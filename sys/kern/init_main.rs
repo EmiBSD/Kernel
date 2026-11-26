@@ -163,8 +163,8 @@ use crate::sys::systm::{INFSLP, MOUNTROOT, SysArgs, kernel_lock, kernel_lock_ini
 use crate::sys::types::Register;
 use crate::sys::ucred::{CredRef, Ucred};
 use crate::unported;
-use hal::klock;
-use hal::pin::pin_static;
+use hal::ds::pin::pin_static;
+use hal::sync::klock;
 use hal::vm::param::{round_page, trunc_page};
 use kernel::fork::Start;
 use kernel::sig::SigactsRef;
@@ -284,10 +284,10 @@ pub fn main() -> ! {
     // KUBSAN and WITNESS are kernel options this configuration does not have.
 
     kernel_lock_init(); // KERNEL_LOCK_INIT()
-    // SCHED_LOCK_INIT(): hal::thread::SCHED_LOCK is made at IPL_SCHED.
+    // SCHED_LOCK_INIT(): hal::cpu::thread::SCHED_LOCK is made at IPL_SCHED.
 
-    // rw_obj_init(): the lock objects are hal's (`"rwobjpl"`, hal::rwlock::SharedRwlock).
-    if hal::rwlock::init_shared().is_err() {
+    // rw_obj_init(): the lock objects are hal's (`"rwobjpl"`, hal::sync::rwlock::SharedRwlock).
+    if hal::sync::rwlock::init_shared().is_err() {
         panic(format_args!("rw_obj_init: cannot make rwobjpl"));
     }
     uvm_init();
@@ -327,7 +327,7 @@ pub fn main() -> ! {
     let _ = unported!("srp_startup");
 
     // Initialize SMR subsystem: `smr_startup` (the C's queue head and wakeup timeout) has
-    // nothing left to do, `hal::smr`'s queues being statics (N6.0).
+    // nothing left to do, `hal::sync::smr`'s queues being statics (N6.0).
 
     // Initialize process and pgrp structures.
     procinit();
@@ -411,7 +411,7 @@ pub fn main() -> ! {
     let prev = PROCESS0.set_vmspace(Some(vm0));
     crate::kassert!(prev.is_none()); // process 0 had none
 
-    hal::thread::boot_uarea(pin_static(p)); // XXX (hal's proc0 u-area, E4)
+    hal::cpu::thread::boot_uarea(pin_static(p)); // XXX (hal's proc0 u-area, E4)
 
     // Charge root for one process.
     chgproccnt(0, 1);

@@ -48,7 +48,7 @@
 //!
 //! ## Redesign
 //! - N4.8b: into `hal` with the pcb it reads. LZ's `TCB_GET(p)` and `TCB_SET(p, addr)`
-//!   (`bsd`'s `tcb_get`/`tcb_set` over `p.pcb()`) are `hal::thread::tcb_get` and `tcb_set`
+//!   (`bsd`'s `tcb_get`/`tcb_set` over `p.pcb()`) are `hal::cpu::thread::tcb_get` and `tcb_set`
 //!   (the pcb through the switch's `with_pcb_of`, another thread's read under the
 //!   scheduler's lock, which the setter takes too); here is the register's half,
 //!   [`__aarch64_set_tcb`], which `TCB_SET` calls. arm64's header has no `TCB_INVALID`:

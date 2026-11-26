@@ -115,14 +115,14 @@
 //!   (`kernel::net::if_var::IfaddrRef::In6`, N6.5e): [`ifatoia6`] and [`In6Ifaddr::of`] match
 //!   the arm. A multicast record likewise (`kernel::net::if_var::IfmaddrRef::In6`, N6.5e's
 //!   5e2): [`ifmatoin6m`] and [`In6Multi::of`].
-//! - A multicast record is one `malloc(9)` block of `M_IPMADDR` (`hal::malloc::MArc`, N6.5e's
+//! - A multicast record is one `malloc(9)` block of `M_IPMADDR` (`hal::mem::malloc::MArc`, N6.5e's
 //!   5e2), made by [`in6_multi_alloc`] for its interface (its list cell keyed to that
 //!   interface's `if_maddrlock`) and freed with its last handle (`in6_delmulti`'s `free`): the
 //!   interface's list holds one, each membership one ([`In6Memberships`]' slots, nd6's proxy
 //!   join none: its membership is counted in `in6m_refcnt` alone, as the C's discarded
 //!   pointer). N6.5a's free list (and with it the high-water mark of `vmstat -m`'s
 //!   `in_multi` row) and the generic part's back-link to the record are gone.
-//! - An address is one `malloc(9)` block of `M_IFADDR` (`hal::malloc::MArc`, N6.5e), freed
+//! - An address is one `malloc(9)` block of `M_IFADDR` (`hal::mem::malloc::MArc`, N6.5e), freed
 //!   with its last handle (`ifafree`'s `free`): `vmstat -m`'s `ifaddr` row falls with the live
 //!   addresses as the C's; the free list, its mutex and `in6_ifafree` are gone. The generic
 //!   part's `ifa_list` and `ifa_tmplist` are the record's `ia_list` (a net cell) and
@@ -139,7 +139,7 @@
 //!   under the net lock (the C's struct assignment; a reader without it may see a mix, as
 //!   the C's may).
 //! - `ia6_memberships` (a `LIST_HEAD` the net lock guards) -> [`In6Memberships`] inside a
-//!   `hal::mutex::Mutexed` of the record (IPL_SOFTNET): the record is shared (`&'static`)
+//!   `hal::sync::mutex::Mutexed` of the record (IPL_SOFTNET): the record is shared (`&'static`)
 //!   and the C's writers, `in6_update_ifa` and `in6_purgeaddr`, hold the net lock that a
 //!   cell keyed to it cannot open for `bsd`'s detached holders. One mutex pair per join and
 //!   one per purge, control path only (named in `kernel::netinet6::in6`'s lock table).
@@ -149,12 +149,12 @@
 //! list's mutex pair per allocation and per last release is gone); the memberships' mutex once
 //! per join and once per purge (above the C's none: the net lock serves it).
 
-use hal::intr::IPL_SOFTNET;
-use hal::link::{Link, SaBytes, SaWords};
-use hal::malloc::{M_NOWAIT, M_WAITOK, MArc, MArray};
-use hal::mutex::Mutexed;
-use hal::refcnt::Refcnt;
-use hal::rwlock::Guarded;
+use hal::cpu::intr::IPL_SOFTNET;
+use hal::ds::link::{Link, SaBytes, SaWords};
+use hal::mem::malloc::{M_NOWAIT, M_WAITOK, MArc, MArray};
+use hal::sync::mutex::Mutexed;
+use hal::sync::refcnt::Refcnt;
+use hal::sync::rwlock::Guarded;
 use hal::sys::net_if::{IFF_LOOPBACK, IFF_POINTOPOINT};
 use hal::sys::netinet6_in6::{In6Addr, SockaddrIn6};
 use hal::sys::netinet6_in6_var::In6Addrlifetime;
@@ -172,7 +172,7 @@ pub const SIN6_LEN: u8 = 28;
 /// The offset of `sin6_addr` in a `struct sockaddr_in6`: its words 1 and 2 hold it.
 const SIN6_ADDR: usize = 8;
 
-/// A `struct sockaddr_in6` the kernel owns: its bytes in atomic words (`hal::link::SaWords`).
+/// A `struct sockaddr_in6` the kernel owns: its bytes in atomic words (`hal::ds::link::SaWords`).
 /// Valid all zero.
 #[derive(Debug, Default)]
 pub struct Sin6Words(SaWords);
@@ -698,8 +698,11 @@ mod tests {
             sizes[9], 328,
             "Rtentry (304 before: rt_ifa was an 8-byte Link)"
         );
-        assert_eq!(size_of::<hal::rwlock::Guarded<Option<IfaddrRef>>>(), 32);
-        assert_eq!(size_of::<hal::malloc::MArc<InIfaddr>>(), 8);
+        assert_eq!(
+            size_of::<hal::sync::rwlock::Guarded<Option<IfaddrRef>>>(),
+            32
+        );
+        assert_eq!(size_of::<hal::mem::malloc::MArc<InIfaddr>>(), 8);
         assert_eq!(size_of::<crate::net::if_var::IfmaddrRef>(), 16);
         assert_eq!(size_of::<Option<crate::net::if_var::IfmaddrRef>>(), 16);
         assert_eq!(size_of::<Mutexed<In6Memberships>>(), 64);

@@ -95,11 +95,11 @@ use super::super::include::param::{PAGE_MASK, PAGE_SIZE};
 use super::super::include::pte::{Lx_TYPE_MASK, Lx_TYPE_PT, PTE_RPGN};
 use super::layout::{PTED_VA_MANAGED_M, VP_ENTRIES, vp_idx};
 use crate::assert::hal_panic;
-use crate::mutex::MutexedGuard;
-use crate::pmap::Pmap;
-use crate::pool::{BoxPool, SharedBox};
+use crate::mem::pool::{BoxPool, SharedBox};
+use crate::mem::trust::check_frame;
+use crate::sync::mutex::MutexedGuard;
 use crate::sys::types::{Paddr, Vaddr};
-use crate::trust::check_frame;
+use crate::vm::pmap::Pmap;
 
 /// The kernel's `pte_desc`s one page holds (`PAGE_SIZE / sizeof(struct pte_desc)`).
 pub(super) const PTEDS_PER_PAGE: usize = PAGE_SIZE / size_of::<PteDesc>();
@@ -458,7 +458,7 @@ fn view<T: FrameView>(pa: Paddr) -> &'static T {
     // atomic: it races with nothing (the MMU's walks only read). No plain Rust reference to a
     // viewed frame exists (the frames are vp table pages, the kernel's descriptor pages and
     // frames handed to the pmap to fill, the trust of `PhysPages` and of the caller's `Paddr`,
-    // `sys/hal/pmap.rs`), and a view is used only while its frame is held (module docs).
+    // `sys/hal/vm/pmap.rs`), and a view is used only while its frame is held (module docs).
     unsafe { &*ptr::with_exposed_provenance::<T>(va) }
 }
 

@@ -82,7 +82,7 @@
 
 use core::ptr;
 
-use hal::malloc::{M_WAITOK, MArray};
+use hal::mem::malloc::{M_WAITOK, MArray};
 use hal::sys::dirent::{Dirent, dirent_recsize};
 use hal::sys::errno::Errno;
 use hal::user::UserPtr;

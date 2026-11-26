@@ -145,8 +145,8 @@
 use core::mem::size_of;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use hal::netlock::{NETLOCK, NetHeld};
-use hal::pool::{AnyArc, PoolArc};
+use hal::mem::pool::{AnyArc, PoolArc};
+use hal::sync::netlock::{NETLOCK, NetHeld};
 use hal::sys::errno::Errno;
 use hal::sys::net_route::{RTF_HOST, RTV_MTU};
 use hal::sys::netinet_in::SockaddrIn;
@@ -906,7 +906,7 @@ mod tests {
         let out = crate::netinet::tcp_subr::SACKHL_POOL.nout();
         for i in 0..3 {
             let h = crate::netinet::tcp_subr::SACKHL_POOL
-                .get(hal::pool::PR_WAITOK, || {
+                .get(hal::mem::pool::PR_WAITOK, || {
                     crate::netinet::tcp_var::Sackhole::new(i, i + 1, 1, i)
                 })
                 .expect("a hole");
@@ -946,7 +946,7 @@ mod tests {
                 tp.st.t_rcvtime = tcp_now();
                 tp.st.set_flags(TF_TMR_2MSL);
                 let h = crate::netinet::tcp_subr::SACKHL_POOL
-                    .get(hal::pool::PR_WAITOK, || Sackhole::new(1, 2, 1, 1))
+                    .get(hal::mem::pool::PR_WAITOK, || Sackhole::new(1, 2, 1, 1))
                     .expect("a hole");
                 let _ = tp.st.snd_holes.set(h);
                 (

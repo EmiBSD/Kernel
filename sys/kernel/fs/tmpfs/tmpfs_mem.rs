@@ -81,8 +81,8 @@
 use core::sync::atomic::Ordering;
 
 use hal::arch::current::param::PAGE_SHIFT;
-use hal::malloc::{M_WAITOK, MArray};
-use hal::pool::PR_WAITOK;
+use hal::mem::malloc::{M_WAITOK, MArray};
+use hal::mem::pool::PR_WAITOK;
 
 use crate::assert::{kassert, kpanic};
 use crate::fs::namei::Componentname;

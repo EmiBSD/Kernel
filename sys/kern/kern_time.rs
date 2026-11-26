@@ -110,7 +110,7 @@ use crate::sys::time::{
     timespec_to_timeval, timespecadd, timespecsub, timeval_to_timespec,
 };
 use crate::sys::types::{Register, Time};
-use hal::clock::ClockFrame;
+use hal::cpu::clock::ClockFrame;
 use hal::syscall::SysResult;
 use hal::user::UserPtr;
 

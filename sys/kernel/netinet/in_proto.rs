@@ -161,8 +161,8 @@ use core::marker::PhantomData;
 use core::mem::size_of;
 use core::sync::atomic::{AtomicU8, Ordering};
 
-use hal::netlock::NetHeld;
-use hal::once::OnceStatic;
+use hal::sync::netlock::NetHeld;
+use hal::sync::once::OnceStatic;
 use hal::sys::errno::Errno;
 use hal::sys::netinet_in::{
     IPPROTO_DIVERT, IPPROTO_DONE, IPPROTO_ICMP, IPPROTO_IGMP, IPPROTO_MAX, IPPROTO_RAW,

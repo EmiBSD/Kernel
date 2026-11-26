@@ -238,14 +238,14 @@ use core::pin::Pin;
 use core::ptr;
 use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, Ordering};
 
-use hal::intr::{IPL_TTY, SplGuard};
-use hal::klock;
-use hal::mutex::{Mutexed, MutexedGuard};
-use hal::once::OnceStatic;
-use hal::pinlist::{PinEntry, PinList};
-use hal::pool::{AnyArc, PR_WAITOK, PoolArc, PoolHome, TypedPool};
-use hal::rwlock::RawRwlock;
-use hal::sleep::{INFSLP, PCATCH};
+use hal::cpu::intr::{IPL_TTY, SplGuard};
+use hal::ds::pinlist::{PinEntry, PinList};
+use hal::mem::pool::{AnyArc, PR_WAITOK, PoolArc, PoolHome, TypedPool};
+use hal::sync::klock;
+use hal::sync::mutex::{Mutexed, MutexedGuard};
+use hal::sync::once::OnceStatic;
+use hal::sync::rwlock::RawRwlock;
+use hal::sync::sleep::{INFSLP, PCATCH};
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::{FNONBLOCK, FREAD, FWRITE};
 use hal::sys::filio::{FIOASYNC, FIOGETOWN, FIONREAD, FIOSETOWN};
@@ -1184,7 +1184,7 @@ impl<G: ProcGlue> Tty<G> {
         let Some(h) = PoolArc::from_ref(self) else {
             kpanic(format_args!("tty: restart_in of a tty not from ttymalloc"));
         };
-        let _ = hal::pin::project(h.as_pin(), |t| &t.t_rstrt_to).add(ticks);
+        let _ = hal::ds::pin::project(h.as_pin(), |t| &t.t_rstrt_to).add(ticks);
     }
 
     /// `timeout_del(&tp->t_rstrt_to)`.
@@ -1233,7 +1233,7 @@ impl<G: ProcGlue> TtyTables<G> {
             ttylist_lock: RawRwlock::new("ttylist"),
             ttylist: PinList::new(),
             tty_count: AtomicI32::new(0),
-            constty: Mutexed::new(hal::intr::IPL_HIGH, None),
+            constty: Mutexed::new(hal::cpu::intr::IPL_HIGH, None),
             constty_set: core::sync::atomic::AtomicBool::new(false),
             devsw: OnceStatic::new(),
         }
@@ -1306,7 +1306,7 @@ struct Sect<'a, G: ProcGlue> {
 impl<'a, G: ProcGlue> Sect<'a, G> {
     /// `s = spltty()`, and the state locked.
     fn new(tp: &'a Tty<G>) -> Self {
-        let spl = hal::intr::splraise(IPL_TTY);
+        let spl = hal::cpu::intr::splraise(IPL_TTY);
         Self {
             tp,
             g: Some(tp.st.lock()),
@@ -2356,7 +2356,7 @@ pub fn ttioctl<G: ProcGlue>(
                 return Err(Errno::ENXIO);
             };
             if t != i32::from(tp.t_line.get()) {
-                let _s = hal::intr::splraise(IPL_TTY);
+                let _s = hal::cpu::intr::splraise(IPL_TTY);
                 let _ = linesw(tp).close(tp, flag, Some(p));
                 if let Err(e) = new.open(device, tp, p) {
                     let _ = linesw(tp).open(device, tp, p);
@@ -2499,7 +2499,7 @@ pub fn ttioctl<G: ProcGlue>(
 /// `TIOCSETA`, `TIOCSETAW`, `TIOCSETAF`: the new termios `t` (its `EXTPROC` bit replaced by
 /// the tty's), at `spltty()` across, as the C.
 fn ttsetattr<G: ProcGlue>(tp: &Tty<G>, cmd: u64, t: &mut Termios) -> Result<(), Errno> {
-    let _spl = hal::intr::splraise(IPL_TTY);
+    let _spl = hal::cpu::intr::splraise(IPL_TTY);
     if cmd == TIOCSETAW || cmd == TIOCSETAF {
         ttywait(tp)?;
         if cmd == TIOCSETAF {
@@ -2562,7 +2562,7 @@ fn tty_ref<G: ProcGlue>(tp: &Tty<G>) -> TtyRef<G> {
 
 /// A counted handle of the group `pg` found under the kernel lock (`pgfind`'s): one of its
 /// members' (a group in the hash has at least one, and `pgrp0`'s is process 0's `static`).
-fn pgrp_ref_of<G: ProcGlue, W: hal::rwlock::Witness + ?Sized>(
+fn pgrp_ref_of<G: ProcGlue, W: hal::sync::rwlock::Witness + ?Sized>(
     w: &W,
     pg: Option<&crate::proc::Pgrp<G>>,
 ) -> Option<PgrpRef<G>> {
@@ -2639,7 +2639,7 @@ pub fn ttkqfilter<G: ProcGlue>(tp: &Tty<G>, kn: &Knote<G>) -> Result<(), Errno> 
         kpanic(format_args!("ttkqfilter: knote {kn:p} has a hook"));
     }
 
-    let _s = hal::intr::splraise(IPL_TTY);
+    let _s = hal::cpu::intr::splraise(IPL_TTY);
     klist.insert_legacy(kn);
     Ok(())
 }
@@ -2667,7 +2667,7 @@ fn kn_tty<G: ProcGlue>(kn: &Knote<G>) -> &Tty<G> {
 /// `filt_ttyrdetach`: unhooks a read or except knote.
 fn filt_ttyrdetach<G: ProcGlue>(kn: &Knote<G>) {
     let tp = kn_tty(kn);
-    let _s = hal::intr::splraise(IPL_TTY);
+    let _s = hal::cpu::intr::splraise(IPL_TTY);
     tp.t_rsel.si_note.remove_legacy(kn);
 }
 
@@ -2708,14 +2708,14 @@ impl<G: ProcGlue> Filter<G> for TtyWrite {
     /// `filt_ttywdetach`.
     fn detach(kn: &Knote<G>) {
         let tp = kn_tty(kn);
-        let _s = hal::intr::splraise(IPL_TTY);
+        let _s = hal::cpu::intr::splraise(IPL_TTY);
         tp.t_wsel.si_note.remove_legacy(kn);
     }
 
     /// `filt_ttywrite`: writable when the output queue is below its low-water mark.
     fn event(kn: &Knote<G>, _hint: i64) -> bool {
         let tp = kn_tty(kn);
-        let _s = hal::intr::splraise(IPL_TTY);
+        let _s = hal::cpu::intr::splraise(IPL_TTY);
         kn.kn_data()
             .set(i64::from(tp.t_outq.c_cn.get() - tp.t_outq.c_cc.get()));
         let mut active = tp.t_outq.c_cc.get() <= i32::from(tp.t_lowat.get());
@@ -2745,7 +2745,7 @@ impl<G: ProcGlue> Filter<G> for TtyExcept {
     fn event(kn: &Knote<G>, _hint: i64) -> bool {
         let tp = kn_tty(kn);
         let mut active = false;
-        let _s = hal::intr::splraise(IPL_TTY);
+        let _s = hal::cpu::intr::splraise(IPL_TTY);
         if kn.has_flags(__EV_POLL) {
             if tp.t_cflag() & CLOCAL == 0 && !tp.t_state_isset(TS_CARR_ON) {
                 kn.set_flags(__EV_HUP);
@@ -2857,7 +2857,7 @@ fn ttyflush_s<G: ProcGlue>(s: &mut Sect<'_, G>, rw: i32) {
         s.d_stop(rw);
         flushq(&tp.t_outq);
         s.out(|| {
-            hal::sleep::wakeup(ptr::from_ref(&tp.t_outq));
+            hal::sync::sleep::wakeup(ptr::from_ref(&tp.t_outq));
             selwakeup(&tp.t_wsel);
         });
     }
@@ -3030,7 +3030,7 @@ fn ttypend_s<G: ProcGlue>(s: &mut Sect<'_, G>) {
 /// `ttvtimeout`: the `VTIME` timer of a non-canonical read: its argument is the channel it
 /// wakes (`&tp->t_rawq`), compared and never followed.
 fn ttvtimeout(arg: *mut core::ffi::c_void) {
-    hal::sleep::wakeup(arg.cast_const());
+    hal::sync::sleep::wakeup(arg.cast_const());
 }
 
 /// What `ttread`'s queue checks decided.
@@ -3313,7 +3313,7 @@ pub fn ttycheckoutq<G: ProcGlue>(tp: &Tty<G>, wait: bool) -> bool {
             }
             tp.t_state_set(TS_ASLEEP);
             s.out(|| {
-                let _ = hal::sleep::tsleep_nsec(
+                let _ = hal::sync::sleep::tsleep_nsec(
                     ptr::from_ref(&tp.t_outq),
                     PZERO - 1,
                     "ttckoutq",
@@ -3353,7 +3353,7 @@ pub fn ttwrite<G: ProcGlue>(tp: &Tty<G>, uio: &mut dyn UioMove, flag: i32) -> Re
             }
             // Sleep awaiting carrier.
             let error = {
-                let _s = hal::intr::splraise(IPL_TTY);
+                let _s = hal::cpu::intr::splraise(IPL_TTY);
                 ttysleep(
                     tp,
                     ptr::from_ref(&tp.t_rawq).cast(),
@@ -3712,7 +3712,7 @@ pub fn ttwakeupwr<G: ProcGlue>(tp: &Tty<G>) {
     if tp.t_outq.c_cc.get() <= i32::from(tp.t_lowat.get()) {
         if tp.t_state_isset(TS_ASLEEP) {
             tp.t_state_clr(TS_ASLEEP);
-            hal::sleep::wakeup(ptr::from_ref(&tp.t_outq));
+            hal::sync::sleep::wakeup(ptr::from_ref(&tp.t_outq));
         }
         selwakeup(&tp.t_wsel);
     }
@@ -3733,7 +3733,7 @@ fn ttwakeup_s<G: ProcGlue>(s: &mut Sect<'_, G>) {
     if tp.t_state_isset(TS_ASYNC) {
         s.pgsignal(SIGIO);
     }
-    s.out(|| hal::sleep::wakeup(ptr::from_ref(&tp.t_rawq)));
+    s.out(|| hal::sync::sleep::wakeup(ptr::from_ref(&tp.t_rawq)));
 }
 
 /// `ttspeedtab`: look up a code for a specified speed in a conversion table; used by
@@ -3880,7 +3880,7 @@ pub fn ttyinfo<G: ProcGlue>(tp: &Tty<G>) {
 
 /// `ttyinfo`'s choice in the group `pg`: the most active process, then its most active
 /// thread; `None` when the group or the process has no member.
-fn pick<G: ProcGlue, W: hal::rwlock::Witness + ?Sized>(
+fn pick<G: ProcGlue, W: hal::sync::rwlock::Witness + ?Sized>(
     r: &W,
     pg: &crate::proc::Pgrp<G>,
 ) -> Option<Info> {
@@ -4056,10 +4056,10 @@ pub fn tputchar<G: ProcGlue>(c: i32, tp: &Tty<G>) -> i32 {
 /// wait for a state held across `wakeup` into a deadlock with a `printf` under
 /// `SCHED_LOCK`.
 pub fn tputchar_try<G: ProcGlue>(c: i32, tp: &Tty<G>) -> Option<i32> {
-    if hal::thread::sched_locked() || tp.st.owned() || tp.t_outq.locked_here() {
+    if hal::cpu::thread::sched_locked() || tp.st.owned() || tp.t_outq.locked_here() {
         return None;
     }
-    let spl = hal::intr::splraise(IPL_TTY);
+    let spl = hal::cpu::intr::splraise(IPL_TTY);
     let g = tp.st.try_lock()?;
     let mut s = Sect {
         tp,
@@ -4105,7 +4105,7 @@ pub fn ttysleep_nsec<G: ProcGlue>(
     nsecs: u64,
 ) -> Result<(), Errno> {
     let gen_ = tp.t_gen.get();
-    hal::sleep::tsleep_nsec(chan, pri, wmesg, nsecs)?;
+    hal::sync::sleep::tsleep_nsec(chan, pri, wmesg, nsecs)?;
     if tp.t_gen.get() == gen_ {
         Ok(())
     } else {
@@ -4181,7 +4181,7 @@ pub fn ttyfree<G: ProcGlue>(tp: &Tty<G>) {
     tp.t_rstrt_to.clear();
 
     {
-        let _s = hal::intr::splraise(IPL_TTY);
+        let _s = hal::cpu::intr::splraise(IPL_TTY);
         tp.t_rsel.si_note.invalidate();
         tp.t_wsel.si_note.invalidate();
     }
@@ -4200,7 +4200,7 @@ pub fn tty_count<G: ProcGlue>() -> i32 {
 /// `kern.tty.ttyinfo` copies out (an array of `M_SYSCTL` sized from `tty_count`), and how
 /// many ttys it holds (`*ttycp`: those visited, at most the count, fewer when some were
 /// freed before the list's lock was taken).
-fn ttystats_init<G: ProcGlue>() -> Option<(hal::malloc::MArray<u8>, usize)> {
+fn ttystats_init<G: ProcGlue>() -> Option<(hal::mem::malloc::MArray<u8>, usize)> {
     let t = tables::<G>();
     let ttyc = usize::try_from(t.tty_count.load(Ordering::Relaxed)).unwrap_or(0);
     let ttystatssiz = ttyc * size_of::<Itty>();
@@ -4208,7 +4208,7 @@ fn ttystats_init<G: ProcGlue>() -> Option<(hal::malloc::MArray<u8>, usize)> {
         return None;
     }
     let Some(mut out) =
-        hal::malloc::MArray::new(M_SYSCTL, hal::malloc::M_WAITOK, ttystatssiz, |_| 0u8)
+        hal::mem::malloc::MArray::new(M_SYSCTL, hal::mem::malloc::M_WAITOK, ttystatssiz, |_| 0u8)
     else {
         kpanic(format_args!("ttystats_init: out of memory"));
     };
@@ -4512,7 +4512,8 @@ mod tests {
         {
             let pr = p.process();
             let mut g = pr.ps_mtx.lock();
-            pr.ps_threads.insert_tail(&mut g, hal::pin::pin_static(p));
+            pr.ps_threads
+                .insert_tail(&mut g, hal::ds::pin::pin_static(p));
         }
         p.process().ps_threadcnt.set(1);
         Kg::set_curproc(Some(p));

@@ -69,8 +69,8 @@
 
 use core::mem::{offset_of, size_of};
 
-use hal::netlock::NetHeld;
-use hal::pod;
+use hal::mem::pod;
+use hal::sync::netlock::NetHeld;
 use hal::sys::netinet_icmp6::{ICMP6_PARAM_PROB, ICMP6_PARAMPROB_HEADER};
 use hal::sys::netinet_in::IPPROTO_DONE;
 use hal::sys::netinet_ip6::Ip6Rthdr;
@@ -137,7 +137,7 @@ mod tests {
     // one: every routing type with segments left (type 0 as unknown, RFC 5095), a short
     // header.
 
-    use hal::netlock::NETLOCK;
+    use hal::sync::netlock::NETLOCK;
     use hal::sys::netinet_in::IPPROTO_UDP;
     use hal::sys::netinet_ip6::{IPV6_VERSION, Ip6Hdr};
     use hal::sys::netinet6_in6::In6Addr;
@@ -177,7 +177,7 @@ mod tests {
         };
         ip6.set_ip6_vfc(IPV6_VERSION);
         let mut b = std::vec![0u8; 40];
-        assert!(hal::pod::put(&mut b, 0, &ip6));
+        assert!(hal::mem::pod::put(&mut b, 0, &ip6));
         b.extend_from_slice(&ext);
         let w = NETLOCK.write();
         let net = NetHeld::of(&w).expect("the net lock");

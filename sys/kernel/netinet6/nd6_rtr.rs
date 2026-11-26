@@ -73,14 +73,14 @@
 //!
 //! **Lock and spl transitions** against the C: the net lock held by the caller (the exclusive
 //! one, which `nd6_cache_lladdr` asserts); `KERNEL_LOCK` around `rtrequest_delete`, C-style
-//! (`hal::klock`); `rtable_walk`'s own table lock per walk, as the C's.
+//! (`hal::sync::klock`); `rtable_walk`'s own table lock per walk, as the C's.
 
 use core::mem::size_of;
 use core::sync::atomic::Ordering;
 
-use hal::netlock::NetHeld;
-use hal::pod;
-use hal::pool::PoolArc;
+use hal::mem::pod;
+use hal::mem::pool::PoolArc;
+use hal::sync::netlock::NetHeld;
 use hal::sys::errno::Errno;
 use hal::sys::net_route::{RTAX_DST, RTAX_GATEWAY, RTAX_NETMASK, RTF_HOST, RTF_STATIC, RTP_ANY};
 use hal::sys::netinet_icmp6::{
@@ -199,8 +199,8 @@ pub fn nd6_rtr_cache(m: MbufBox, off: i32, icmp6len: i32, icmp6_type: u8, net: &
 /// for link-local scope. Under the net lock (`net`).
 pub fn rt6_flush(gateway: &In6Addr, ifp: &'static Ifnet, net: &NetHeld<'_>) -> Result<(), Errno> {
     kassert!(matches!(
-        hal::netlock::status(),
-        hal::rwlock::RW_WRITE | hal::rwlock::RW_READ
+        hal::sync::netlock::status(),
+        hal::sync::rwlock::RW_WRITE | hal::sync::rwlock::RW_READ
     ));
 
     // We'll care only link-local addresses
@@ -225,9 +225,9 @@ pub fn rt6_flush(gateway: &In6Addr, ifp: &'static Ifnet, net: &NetHeld<'_>) -> R
             info.rti_info[RTAX_DST] = Some(r.dest_view());
             info.rti_info[RTAX_GATEWAY] = gw.as_ref().map(SaCopy::view);
             info.rti_info[RTAX_NETMASK] = rt_plen2mask(r, &mut sa_mask);
-            hal::klock::kernel_lock();
+            hal::sync::klock::kernel_lock();
             error = rtrequest_delete(&mut info, RTP_ANY, ifp, None, ifp.if_rdomain.get(), net);
-            hal::klock::kernel_unlock();
+            hal::sync::klock::kernel_unlock();
             if error.is_ok() {
                 error = Err(Errno::EAGAIN);
             }

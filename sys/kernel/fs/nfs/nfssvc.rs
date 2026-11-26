@@ -131,11 +131,11 @@
 //! - LZ's `nfssvc_sock` and `nfsd` were `malloc(9)` blocks cast to `&'static` (two `unsafe`
 //!   each to make and free), linked on `TailqHead`s in `Sync` wrappers (three `unsafe impl`,
 //!   four raw links), with `Cell` members, parked mbufs and a raw `*const Proc`. Here a
-//!   socket is an [`MArc`] of `M_NFSSVC` pinned on `nfssvc_sockhead`, a `hal::pinlist` list
+//!   socket is an [`MArc`] of `M_NFSSVC` pinned on `nfssvc_sockhead`, a `hal::ds::pinlist` list
 //!   bound to the kernel lock (the C's lock for all of the server, D-11): the list's
 //!   membership holds one handle (`ns_self`, set at the insert, taken at the unlink), an nfsd
 //!   holds one while it serves the socket, and `ns_sref` stays the C's count that decides the
-//!   unlink. An nfsd is an [`hal::malloc::MBox`] of `M_NFSD` its system call's frame owns, pinned on
+//!   unlink. An nfsd is an [`hal::mem::malloc::MBox`] of `M_NFSD` its system call's frame owns, pinned on
 //!   `nfsd_head`, its address the channel it sleeps on. The words the C changes under the
 //!   kernel lock are relaxed atomics (`ns_flag`, `ns_sref`, `nfsd_flag`; `ns_solock` is
 //!   `nfs_sndlock`'s flag word, its address the channel); the handles a list or a waker
@@ -146,7 +146,7 @@
 //!   sleeps (a record split by `m_copym(M_WAIT)`) works on the state taken out of the slot.
 //! - LZ's `nfsrv_descript` was a pool item cast to `&mut`, its request a parked chain and its
 //!   cursor a raw pointer into it (`nd_md`, `nd_dpos`). Here [`NfsrvDescript`] is a
-//!   [`hal::pool::PoolBox`] of "ndscpl" the nfsd owns for one request: `nd_mrep` owns the chain, the
+//!   [`hal::mem::pool::PoolBox`] of "ndscpl" the nfsd owns for one request: `nd_mrep` owns the chain, the
 //!   cursor is the bytes consumed of it (`nd_off`, read again with `XdrReader::at`, as the
 //!   client's `Reply`), and the address mbufs are owned (`nd_nam2`, the datagram's) or lent
 //!   (`nd_nam`, the connection's).
@@ -162,14 +162,14 @@ use core::mem::size_of;
 use core::ptr;
 use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
-use hal::klock;
-use hal::malloc::{M_WAITOK, MArc, MBox};
-use hal::owned::OwnedSlist;
-use hal::pinlist::{PinEntry, PinList};
-use hal::pool::{BoxPool, PR_WAITOK, PoolBox};
-use hal::rwlock::Guarded;
-use hal::sleep::{INFSLP, PCATCH, tsleep_nsec, wakeup};
-use hal::slot::LoanSlot;
+use hal::ds::owned::OwnedSlist;
+use hal::ds::pinlist::{PinEntry, PinList};
+use hal::mem::malloc::{M_WAITOK, MArc, MBox};
+use hal::mem::pool::{BoxPool, PR_WAITOK, PoolBox};
+use hal::sync::klock;
+use hal::sync::rwlock::Guarded;
+use hal::sync::sleep::{INFSLP, PCATCH, tsleep_nsec, wakeup};
+use hal::sync::slot::LoanSlot;
 use hal::sys::errno::Errno;
 use hal::sys::types::Pid;
 use hal::user::UserPtr;
@@ -1072,7 +1072,7 @@ pub fn nfsrv_init<G: ProcGlue>(terminating: bool) {
     if !terminating {
         let _ = t
             .nfsrv_descript_pl
-            .init(hal::intr::IPL_NONE, PR_WAITOK, "ndscpl");
+            .init(hal::cpu::intr::IPL_NONE, PR_WAITOK, "ndscpl");
     }
 }
 

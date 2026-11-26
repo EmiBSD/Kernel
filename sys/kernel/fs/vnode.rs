@@ -131,7 +131,7 @@
 //!   name cache's heads, `v_socket`, the device's lock list) were the glue's `VnodeG` until
 //!   each moved (the last, `v_socket`, at N6.2a).
 //! - N5.5a (D-N5.5a-6): a kernel file system's node is [`Vnode::node`]'s, a typed slot beside
-//!   the word: a pool item's counted handle with its type erased (`hal::pool::AnyArc`), set by
+//!   the word: a pool item's counted handle with its type erased (`hal::mem::pool::AnyArc`), set by
 //!   the file system's `vget` ([`Vnode::set_node`]), lent to who names its type
 //!   ([`Vnode::node_with`]: the UFS inode's `VTOI`, a type's check where LZ's cast trusted the
 //!   tag) and taken by its reclaim ([`Vnode::take_node`]). The word stays for the file systems
@@ -155,13 +155,13 @@ use core::ffi::c_void;
 use core::ptr;
 use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicU32, AtomicU64, Ordering};
 
-use hal::link::Link;
-use hal::list::ListEntry;
-use hal::malloc::{MArc, MBox};
-use hal::mutex::Mutexed;
-use hal::pool::AnyArc;
-use hal::rwlock::Guarded;
-use hal::slot::ReadMostly;
+use hal::ds::link::Link;
+use hal::ds::list::ListEntry;
+use hal::mem::malloc::{MArc, MBox};
+use hal::mem::pool::AnyArc;
+use hal::sync::mutex::Mutexed;
+use hal::sync::rwlock::Guarded;
+use hal::sync::slot::ReadMostly;
 use hal::sys::errno::Errno;
 use hal::sys::types::{Dev, Gid, Mode, Nlink, Uid};
 
@@ -541,17 +541,17 @@ pub fn makeimode(indx: Vtype, mode: Mode) -> Mode {
 }
 
 /// `LK_EXCLUSIVE`: exclusive lock (`<sys/lock.h>`).
-pub const LK_EXCLUSIVE: i32 = hal::rwlock::RW_WRITE;
+pub const LK_EXCLUSIVE: i32 = hal::sync::rwlock::RW_WRITE;
 /// `LK_SHARED`: shared lock.
-pub const LK_SHARED: i32 = hal::rwlock::RW_READ;
+pub const LK_SHARED: i32 = hal::sync::rwlock::RW_READ;
 /// `LK_TYPE_MASK`: type of lock sought.
 pub const LK_TYPE_MASK: i32 = LK_EXCLUSIVE | LK_SHARED;
 /// `LK_NOWAIT`: do not sleep to await lock.
-pub const LK_NOWAIT: i32 = hal::rwlock::RW_NOSLEEP;
+pub const LK_NOWAIT: i32 = hal::sync::rwlock::RW_NOSLEEP;
 /// `LK_RECURSEFAIL`: fail if recursive exclusive lock.
-pub const LK_RECURSEFAIL: i32 = hal::rwlock::RW_RECURSEFAIL;
+pub const LK_RECURSEFAIL: i32 = hal::sync::rwlock::RW_RECURSEFAIL;
 /// `LK_EXCLOTHER`: exclusive lock held by some other thread.
-pub const LK_EXCLOTHER: i32 = hal::rwlock::RW_WRITE_OTHER;
+pub const LK_EXCLOTHER: i32 = hal::sync::rwlock::RW_WRITE_OTHER;
 /// `LK_RWFLAGS`: the flags a file system's rrwlock takes.
 pub const LK_RWFLAGS: i32 = LK_EXCLUSIVE | LK_SHARED | LK_NOWAIT | LK_RECURSEFAIL | LK_EXCLOTHER;
 /// `LK_DRAIN`: wait for all lock activity to end.
@@ -564,7 +564,7 @@ pub const PINOD: i32 = 8;
 
 /// `vnode_mtx`: the `[V]` members of every vnode (`v_lflag`, `v_lockcount`) and their sleeps,
 /// at `IPL_BIO` (vfs_subr.c:122).
-pub static VNODE_MTX: Mutexed<()> = Mutexed::new(hal::intr::IPL_BIO, ());
+pub static VNODE_MTX: Mutexed<()> = Mutexed::new(hal::cpu::intr::IPL_BIO, ());
 
 /// The `[V]` members of a vnode, under [`VNODE_MTX`].
 #[derive(Clone, Copy, Debug, Default)]
@@ -1146,7 +1146,7 @@ pub fn vn_lock<G: ProcGlue>(vp: &'static Vnode<G>, flags: i32) -> Result<(), Err
                 Err(e) => error = e,
             }
             if do_wakeup && xlocked {
-                hal::sleep::wakeup_one(ptr::from_ref(&vp.vlock));
+                hal::sync::sleep::wakeup_one(ptr::from_ref(&vp.vlock));
             }
         }
         if flags & LK_RETRY == 0 {
@@ -1215,7 +1215,7 @@ mod tests {
     #[test]
     fn the_device_word_follows_the_specinfo() {
         use crate::fs::subr::M_VNODE;
-        use hal::malloc::M_WAITOK;
+        use hal::mem::malloc::M_WAITOK;
         let _g = crate::fs::testfs::setup();
         let vp: Vnode<crate::fs::testfs::TestGlue> = Vnode::new_unpooled();
         assert_eq!(vp.rdev.load(Ordering::Relaxed), 0, "no specinfo, no device");
@@ -1239,7 +1239,7 @@ mod tests {
     #[test]
     fn node_arc_lends_counted_handles_of_the_slot_s_type() {
         use crate::fs::subr::M_VNODE;
-        use hal::malloc::M_WAITOK;
+        use hal::mem::malloc::M_WAITOK;
         let _g = crate::fs::testfs::setup();
         let vp: &'static Vnode<crate::fs::testfs::TestGlue> =
             std::boxed::Box::leak(std::boxed::Box::new(Vnode::new_unpooled()));

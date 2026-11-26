@@ -79,7 +79,7 @@
 
 use core::sync::atomic::Ordering;
 
-use hal::once::OnceStatic;
+use hal::sync::once::OnceStatic;
 use hal::sys::types::{Vaddr, Vsize};
 use hal::vm::uvmexp::UVMEXP;
 

@@ -100,7 +100,7 @@
 //! - `f_data` is installed once with its type ([`Installed`]), so it is read by reference
 //!   (no cast; the pipe needs no slot of its own) and a close sees the object by reference
 //!   (`fo_close(fp, p)`), which drops with the item after `numfiles` falls.
-//! - `filehead` is a `hal::pinlist::PinList` under `fhdlk` ([`FileTables`]), the file's
+//! - `filehead` is a `hal::ds::pinlist::PinList` under `fhdlk` ([`FileTables`]), the file's
 //!   `f_list` a `PinEntry`: a file is unlinked by its close before its memory goes, checked.
 //! - The descriptor in flight in a unix-domain message (a raw `struct file *` in an mbuf) is a
 //!   parked reference ([`FileRef::forget`]/[`FileRef::adopt`]), counted by `f_count` as the
@@ -109,10 +109,10 @@
 use core::pin::Pin;
 use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, Ordering};
 
-use hal::mutex::{Mutexed, MutexedGuard};
-use hal::once::OnceStatic;
-use hal::pinlist::{PinAdapter, PinEntry, PinList};
-use hal::pool::{Last, PoolArc, PoolHome, TypedPool};
+use hal::ds::pinlist::{PinAdapter, PinEntry, PinList};
+use hal::mem::pool::{Last, PoolArc, PoolHome, TypedPool};
+use hal::sync::mutex::{Mutexed, MutexedGuard};
+use hal::sync::once::OnceStatic;
 use hal::sys::errno::Errno;
 use hal::sys::stat::Stat;
 use hal::sys::types::Off;
@@ -239,7 +239,7 @@ impl<G: FileGlue> File<G> {
             f_offset: AtomicI64::new(0),
             // We need to block interrupts as long as `f_mtx` is being taken with and without
             // the kernel lock.
-            stats: Mutexed::new(hal::intr::mpfloor(), FileStats::default()),
+            stats: Mutexed::new(hal::cpu::intr::mpfloor(), FileStats::default()),
         }
     }
 
@@ -609,10 +609,10 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     /// `i_hash`: the inode hash's adapter ([`ufs_glue_links!`](crate::ufs_glue_links)).
     type InodeHash: PinAdapter<Elem = crate::fs::ufs::ufs::inode::Inode<Self::Proc>>;
     /// `dq_hash`: the dquot hash's adapter ([`ufs_glue_links!`](crate::ufs_glue_links)).
-    type DqHash: hal::list::ListAdapter<Elem = crate::fs::ufs::ufs::ufs_quota::Dquot<Self::Proc>>;
+    type DqHash: hal::ds::list::ListAdapter<Elem = crate::fs::ufs::ufs::ufs_quota::Dquot<Self::Proc>>;
     /// `dq_freelist`: the dquot free list's adapter
     /// ([`ufs_glue_links!`](crate::ufs_glue_links)).
-    type DqFree: hal::list::ListAdapter<Elem = crate::fs::ufs::ufs::ufs_quota::Dquot<Self::Proc>>;
+    type DqFree: hal::ds::list::ListAdapter<Elem = crate::fs::ufs::ufs::ufs_quota::Dquot<Self::Proc>>;
 
     /// The open files, `fhdlk` and the pools (one `static` of `bsd`'s).
     fn tables() -> &'static FileTables<Self>;
@@ -750,7 +750,10 @@ pub fn fnew<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(p: &Thread<P>) -> 
         return None;
     }
     let cred = p.cred_ref();
-    if let Some(fp) = t.filepl.get_homed(hal::pool::PR_WAITOK, || File::new(cred)) {
+    if let Some(fp) = t
+        .filepl
+        .get_homed(hal::mem::pool::PR_WAITOK, || File::new(cred))
+    {
         Some(FileRef(Some(fp)))
     } else {
         t.numfiles.fetch_sub(1, Ordering::AcqRel);
@@ -779,7 +782,7 @@ mod tests {
     use std::string::String;
     use std::vec;
 
-    use hal::pool::PoolBox;
+    use hal::mem::pool::PoolBox;
 
     use super::*;
     use crate::cred::crget;

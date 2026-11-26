@@ -1013,7 +1013,7 @@ unsafe fn mp_cpu_start_tramp(_i: usize, arg: usize) {
     use crate::arch::amd64::isa::nvram::{NVRAM_RESET, NVRAM_RESET_JUMP};
     use crate::dev::isa::isareg::IO_RTC;
     use crate::sys::types::Paddr;
-    use hal::pmap::direct_map as pmap_direct_map;
+    use hal::vm::pmap::direct_map as pmap_direct_map;
 
     // SAFETY: the caller's guarantee: `arg` is the processor's cpu_info, never freed.
     let ci: &CpuInfo = unsafe { &*(arg as *const CpuInfo) };

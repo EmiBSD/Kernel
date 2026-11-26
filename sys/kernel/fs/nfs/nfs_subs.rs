@@ -123,10 +123,10 @@
 use core::ptr;
 use core::sync::atomic::{AtomicI32, AtomicI64, Ordering};
 
-use hal::intr::IPL_NONE;
-use hal::pool::PR_WAITOK;
+use hal::cpu::intr::IPL_NONE;
+use hal::mem::pool::PR_WAITOK;
 
-use hal::mutex::Mutexed;
+use hal::sync::mutex::Mutexed;
 
 use super::nfs::{NFS_TICKINTVL, NfsCounters};
 use super::nfs_bio::DEV_BSIZE;
@@ -1050,7 +1050,7 @@ pub(crate) fn nfs_test_reset<G: ProcGlue>() {
     let t = &vfs::<G>().nfs;
     {
         // Every caller of `vfs_test_reset` holds the kernel lock (the test set-ups).
-        let mut w = hal::klock::witness();
+        let mut w = hal::sync::klock::witness();
         core::mem::forget(core::mem::replace(
             t.nfs_bufq.get_mut(&mut w),
             crate::fs::bufq::Fifo::new(),

@@ -49,7 +49,7 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! arm64's pmap behind `hal::pmap`: `pmap.c`'s pmaps, pte descriptors, pv lists and mapping
+//! arm64's pmap behind `hal::vm::pmap`: `pmap.c`'s pmaps, pte descriptors, pv lists and mapping
 //! functions over the vp tables of `vp.rs`, the ASIDs of `asid.rs` and the TLB and cache
 //! operations of `cpufunc.rs`.
 //!
@@ -135,7 +135,7 @@
 //!   frame that is not a managed page (a device page mapped into a traced process): it may lie
 //!   outside the direct map, and device memory is not instruction-cached.
 //! - `pool_setlowat` (the pteds' 20, the pmaps' 2) is not called, as in LZ: the pool bridge has
-//!   no low-water mark (`hal::pool`).
+//!   no low-water mark (`hal::mem::pool`).
 //! - `pmap_copy_page`'s `splbio` (the buffer flipper's interrupt-context use) is not needed:
 //!   the copy maps nothing.
 //! - Stricter than OpenBSD's arm64, whose kernel leaves may execute (`ap_bits_kern[PROT_EXEC]`
@@ -176,19 +176,19 @@
 //!   another ASID. The C's walk-free `memset` of the root is the steal's zeroing; it extracts
 //!   the first page's address once and adds
 //!   `PAGE_SIZE`, here each page's address is extracted.
-//! - `struct pmap` is `hal::pmap::Pmap` around [`PmapMd`]: `pm_mtx` as a `Mutexed<()>` whose
+//! - `struct pmap` is `hal::vm::pmap::Pmap` around [`PmapMd`]: `pm_mtx` as a `Mutexed<()>` whose
 //!   guard is the [`Locked`] witness of every walk of a user pmap's descriptors, the root
 //!   table (`pm_vp`: its two pages), `have_4_level_pt`, `pm_privileged`, `pm_pt0pa`,
 //!   `pm_asid`, `pm_active`, `pm_guarded` as atomics, and the limit (`VM_MAXUSER_ADDRESS`, or
 //!   the EFI pmap's `1 << EFI_SPACE_BITS`). `pm_refs` is the pool handle's count
 //!   (`PmapRef`); the descriptors in user slots are counted ([`PmapMd`]'s `mapped`) for the
 //!   last drop's check.
-//! - `struct vm_page_md` is `hal::pmap::PageMd`: the pv list (`vp.rs`'s `PvHead`, a pv link
+//! - `struct vm_page_md` is `hal::vm::pmap::PageMd`: the pv list (`vp.rs`'s `PvHead`, a pv link
 //!   under `pv_mtx`) and the `PG_PMAP_MOD`/`REF`/`EXE` bits the C keeps in `pg_flags`.
 //! - A user mapping's `struct pte_desc` is a `SharedBox<PteDesc>` of the pool `"pted"`, owned
 //!   by its level-3 slot; the kernel's come from pages of descriptors (`pmap_kpted_alloc`).
 //!   Its pmap is a pointer dereferenced in one place ([`pted_pmap`]): a pmap with a mapping is
-//!   alive, since `hal::pmap`'s last drop panics while one is left; who must hold the pmap
+//!   alive, since `hal::vm::pmap`'s last drop panics while one is left; who must hold the pmap
 //!   after dropping `pv_mtx` (`pmap_page_protect`) rebuilds a counted handle
 //!   ([`pmap_reference_pted`], `PoolArc::from_value`), dropped once both locks are released.
 //! - `pmap_setttb`'s body is `Backend::load` (the ASID generation check, the empty table,
@@ -264,18 +264,18 @@ use super::vp::{
     direct_unmap, pted_page, pv_insert, pv_unlink, set_direct_map, words, zero_frame,
 };
 use crate::assert::{hal_panic, kassert};
-use crate::intr::{IPL_NONE, IPL_VM, splraise};
-use crate::mmio::DevCache;
-use crate::mutex::{Mutexed, MutexedGuard};
-use crate::pmap::{
-    BootstrapParams, KernelImage, PG_PMAP_MOD, PG_PMAP_REF, PMAP_CANFAIL, PMAP_WIRED, PageMd,
-    PhysPages, Pmap, PmapBackend, PmapCounter, PmapRef, PmapStatistics, VmProt,
-};
-use crate::pool::{BoxPool, PR_NOWAIT, PoolArc};
+use crate::cpu::intr::{IPL_NONE, IPL_VM, splraise};
+use crate::dev::mmio::DevCache;
+use crate::mem::pool::{BoxPool, PR_NOWAIT, PoolArc};
+use crate::sync::mutex::{Mutexed, MutexedGuard};
 use crate::sys::errno::Errno;
 use crate::sys::mman::{PROT_EXEC, PROT_NONE, PROT_READ, PROT_WRITE};
 use crate::sys::types::{Paddr, Vaddr, Vsize};
 use crate::vm::param::{atop, round_page, trunc_page};
+use crate::vm::pmap::{
+    BootstrapParams, KernelImage, PG_PMAP_MOD, PG_PMAP_REF, PMAP_CANFAIL, PMAP_WIRED, PageMd,
+    PhysPages, Pmap, PmapBackend, PmapCounter, PmapRef, PmapStatistics, VmProt,
+};
 
 /// The size of the `vmmap` window (see the deviations): large enough for the devices, wholly
 /// below `virtual_avail`, out of `kernel_map`'s way.
@@ -514,12 +514,12 @@ fn pmap_reference_pted(pted: &PteDesc) -> PmapRef {
     let Some(p) = NonNull::new(p) else {
         hal_panic(format_args!("pmap: a linked pted without a pmap"));
     };
-    // SAFETY: `p` is the address of a user pmap's value inside its item of `hal::pmap`'s pool
+    // SAFETY: `p` is the address of a user pmap's value inside its item of `hal::vm::pmap`'s pool
     // (`pmap_fill_pte` stored `ptr::from_ref` of the `&Pmap` a `PmapRef` derefs to, and every
     // pmap but the kernel's is one `create`/`create_efi` put in that pool). The descriptor is
     // linked and the caller holds the page's `pv_mtx`, so the mapping exists: every removal
     // unlinks it under this lock first. A user pmap with a mapping has a handle (its last drop
-    // panics while one is left, `hal::pmap`'s `Drop for Pmap`, and the panic leaves the item
+    // panics while one is left, `hal::vm::pmap`'s `Drop for Pmap`, and the panic leaves the item
     // in place), so the count is at least 1 for the whole call.
     PmapRef::User(unsafe { PoolArc::from_value(p) })
 }
@@ -1836,7 +1836,7 @@ impl PmapBackend for Backend {
         (p.first_avail, Vaddr::new(vstart))
     }
 
-    /// `pmap_init`'s pools (the user pmaps' is `hal::pmap::init`'s); the `TTBR0_EL1` switch is
+    /// `pmap_init`'s pools (the user pmaps' is `hal::vm::pmap::init`'s); the `TTBR0_EL1` switch is
     /// [`init_lower_half`]'s (see the deviations).
     fn init() {
         if PMAP_PTED_POOL.init(IPL_VM, 0, "pted").is_err() {

@@ -88,7 +88,7 @@
 //!
 //! The structures are the messages as they are on the wire, multi-byte fields in network
 //! order; packet data has no alignment guarantee, so they are copied in and out of mbufs
-//! (`hal::pod::at`/`put`), or viewed in place only where `hal::pod::view` finds them aligned.
+//! (`hal::mem::pod::at`/`put`), or viewed in place only where `hal::mem::pod::view` finds them aligned.
 //!
 //! ## Deviations
 //! - The shorthands (`icmp6_data32`, `icmp6_pptr`, `icmp6_mtu`, `icmp6_id`, `icmp6_seq`,

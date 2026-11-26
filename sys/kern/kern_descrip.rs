@@ -108,7 +108,7 @@
 
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use hal::link::Link;
+use hal::ds::link::Link;
 use kernel::api::{FdEntries, SysResult};
 use kernel::file::{FileGlue, FileTables};
 
@@ -905,7 +905,7 @@ mod tests {
         )
         .unwrap();
         // socreate's reference, parked by the adapter, becomes the file's.
-        let so = hal::pool::PoolArc::adopt(so).unwrap();
+        let so = hal::mem::pool::PoolArc::adopt(so).unwrap();
         let fp = fnew(p).unwrap();
         crate::kern::socket_glue::fp_install(&fp, so);
         let data = fp.data().unwrap();

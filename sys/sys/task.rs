@@ -196,7 +196,7 @@ pub fn task_add(tq: &Taskq, w: &'static Task) -> bool {
     if w.t_flags.load(Ordering::Relaxed) & TASK_ONQUEUE != 0 {
         return false;
     }
-    kernel::task::task_add(tq, hal::pin::pin_static(&w.t_node))
+    kernel::task::task_add(tq, hal::ds::pin::pin_static(&w.t_node))
 }
 
 /// `task_del(tq, w)`: `true` when the task was pending on `tq`.

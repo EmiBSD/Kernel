@@ -144,14 +144,14 @@ use core::marker::PhantomData;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering as Mem};
 
-use hal::intr::IPL_NONE;
-use hal::mutex::Mutexed;
-use hal::owned::{
+use hal::cpu::intr::IPL_NONE;
+use hal::ds::owned::{
     Member, OwnedAdapter, OwnedEntry, OwnedList, SecondaryAdapter, SecondaryEntry, SecondaryList,
     SecondaryRef, SecondaryTree,
 };
-use hal::pool::PR_WAITOK;
-use hal::rwlock::{Divisible, Guarded, WitnessPart};
+use hal::mem::pool::PR_WAITOK;
+use hal::sync::mutex::Mutexed;
+use hal::sync::rwlock::{Divisible, Guarded, WitnessPart};
 use hal::sys::errno::Errno;
 
 use super::mount::Mount;

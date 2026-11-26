@@ -92,8 +92,8 @@
 use core::ptr;
 use core::sync::atomic::Ordering;
 
-use hal::klock;
-use hal::sleep::{INFSLP, PCATCH, PWAIT, tsleep_nsec, wakeup, wakeup_one};
+use hal::sync::klock;
+use hal::sync::sleep::{INFSLP, PCATCH, PWAIT, tsleep_nsec, wakeup, wakeup_one};
 use hal::sys::errno::Errno;
 use hal::sys::types::Pid;
 
@@ -215,7 +215,8 @@ pub fn nfs_iod_nextwrite(vb: &'static VnodeBufs) -> Option<BufRef> {
         bp.set(B_ASYNC);
         DirtyPick::Take
     };
-    let DirtyScan::Taken(t) = vnode_dirty_scan(vb, "nfsiod", 0, hal::sleep::INFSLP, pick) else {
+    let DirtyScan::Taken(t) = vnode_dirty_scan(vb, "nfsiod", 0, hal::sync::sleep::INFSLP, pick)
+    else {
         return None;
     };
     t.buf().clr(B_READ | B_DONE | B_ERROR);

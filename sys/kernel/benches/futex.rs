@@ -181,7 +181,7 @@ impl ProcGlue for BenchGlue {
         kernel::tc::nanouptime()
     }
     fn process_ref(pr: &Process<Self>) -> proc::ProcessRef<Self> {
-        match hal::pool::PoolArc::from_ref(pr) {
+        match hal::mem::pool::PoolArc::from_ref(pr) {
             Some(a) => proc::StaticOrPooled::Pooled(a),
             None => std::process::exit(1),
         }
@@ -206,7 +206,7 @@ fn main() {
     // The address space of the shared op: the map pools over the doubles' pages.
     let _pages = testutil::pages_install(256 * 4096);
     testutil::init_shared_once();
-    hal::pmap::init();
+    hal::vm::pmap::init();
     kernel::vm::map::uvm_map_init();
     kernel::futex::futex_init();
 
@@ -234,7 +234,7 @@ fn main() {
         let _ = black_box(r);
     };
 
-    let lock = hal::rwlock::RawRwlock::new("benchlk");
+    let lock = hal::sync::rwlock::RawRwlock::new("benchlk");
     let word = UserPtr::<u32>::new(WORD);
 
     let mut benches: Vec<Bench<'_>> = Vec::new();

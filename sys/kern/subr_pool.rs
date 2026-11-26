@@ -374,8 +374,8 @@ pub static POOL_ALLOCATOR_MULTI: PoolAllocator = PoolAllocator {
     pa_pagesz: pool_alloc_sizes(PAGE_SIZE, 1 << 31, POOL_ALLOC_ALIGNED),
 };
 
-/// The allocator of a pool whose pages come from the kernel's `hal::pool::PageSource`
-/// (`hal::pool::PoolBackend::create_with`, N6.0): `pa_alloc` and `pa_free` ask the pool's
+/// The allocator of a pool whose pages come from the kernel's `hal::mem::pool::PageSource`
+/// (`hal::mem::pool::PoolBackend::create_with`, N6.0): `pa_alloc` and `pa_free` ask the pool's
 /// `pr_source`, `pa_pagesz` is `pool_allocator_multi`'s (the mbuf clusters' encoding, which
 /// `BsdPools::create_with` requires of the source).
 pub static POOL_ALLOCATOR_SOURCE: PoolAllocator = PoolAllocator {
@@ -884,7 +884,7 @@ pub fn pool_get(pp: &Pool, flags: i32) -> Option<NonNull<u8>> {
 /// `pool_get(pp, flags)` of an item the pool already holds (its per-CPU cache, or a page with
 /// a free item): never grows the pool, never sleeps and counts no failure (`pr_nfail`): `None`
 /// when it would have to grow, at the hard limit, or for a pool behind an rwlock (whose lock
-/// may sleep). `hal::pool::RawPool::get_idle`: the buffer cache's try under its lock, the
+/// may sleep). `hal::mem::pool::RawPool::get_idle`: the buffer cache's try under its lock, the
 /// C's `pool_get` at `splbio`, whose `PR_WAITOK` call counts nothing either. A pool with a
 /// per-CPU cache counts its cache's miss (`pc_nfail`) here and again in the `pool_get` that
 /// follows (`bufpl` has none). With the item, whether `pool_get` would yield now (its
@@ -1779,9 +1779,9 @@ pub fn pool_multi_alloc(pp: &Pool, flags: i32, _slowdown: &mut i32) -> Option<No
 /// `kv_align`), waiting with `PR_WAITOK`.
 pub fn pool_source_alloc(pp: &Pool, flags: i32, _slowdown: &mut i32) -> Option<NonNull<u8>> {
     let src = pp.pr_source.get()?;
-    // hal checks the page at its trust boundary (sys/hal/trust.rs) before the pool writes
+    // hal checks the page at its trust boundary (sys/hal/mem/trust.rs) before the pool writes
     // its page header into it.
-    hal::pool::source_page(
+    hal::mem::pool::source_page(
         src,
         pp.pr_pgsize.get() as usize,
         pool_inpghdr(pp),
@@ -2535,8 +2535,8 @@ pub(crate) mod tests {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         uvm_page_test_reset();
-        // hal::smr's queues may name links in the memory replaced here: forgotten.
-        hal::smr::smr_test_reset();
+        // hal::sync::smr's queues may name links in the memory replaced here: forgotten.
+        hal::sync::smr::smr_test_reset();
         UVMEXP.pagesize.store(PAGE_SIZE as i32, Ordering::Relaxed);
         uvm_setpagesize();
 

@@ -151,7 +151,7 @@
 //!   `ip6_hdrnestlimit` and `ip6_ours_enqueue` are gone.
 //! - [`ip6_savecontrol`] makes the control messages newest first, each in O(1), and
 //!   reverses the chain once at the end (the C appends through a pointer to the last
-//!   `m_next`): O(n) in the messages, as the C; their values are `hal::pod` images.
+//!   `m_next`): O(n) in the messages, as the C; their values are `hal::mem::pod` images.
 //! - LZ's `unsafe fn ip6_process_hopopts(mp, opthead: *const u8, hbhlen, ..)` (a slice made
 //!   from the caller's pointer) and `unsafe fn ip6_unknown_opt(mp, optp: *const u8, off)`
 //!   -> functions over the packet: the options are named by their offset in the packet
@@ -182,11 +182,11 @@
 use core::mem::{offset_of, size_of};
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use hal::intr::IPL_SOFTNET;
-use hal::malloc::M_NOWAIT;
-use hal::netlock::{NETLOCK, NetHeld};
-use hal::once::OnceStatic;
-use hal::pod;
+use hal::cpu::intr::IPL_SOFTNET;
+use hal::mem::malloc::M_NOWAIT;
+use hal::mem::pod;
+use hal::sync::netlock::{NETLOCK, NetHeld};
+use hal::sync::once::OnceStatic;
 use hal::sys::errno::Errno;
 use hal::sys::limits::INT_MAX;
 use hal::sys::net_if::{IFF_LOOPBACK, IFT_ENC};
@@ -1764,7 +1764,7 @@ mod tests {
         rest.extend_from_slice(&[0; 8]);
         let mut mp = Some(packet(IPPROTO_HOPOPTS, plen, dst, &rest));
         let (mut rtalert, mut jumbo) = (!0, 0);
-        let r = hal::netlock::NETLOCK.read();
+        let r = hal::sync::netlock::NETLOCK.read();
         let net = NetHeld::of(&r).expect("the net lock");
         let ok = ip6_process_hopopts(
             &mut mp,
@@ -1930,7 +1930,7 @@ mod tests {
     fn unknown_option_actions() {
         let _g = testroutes_setup();
         let mut mp = Some(packet(IPPROTO_UDP, 0, ula(2), &[0x1e, 0]));
-        let r = hal::netlock::NETLOCK.read();
+        let r = hal::sync::netlock::NETLOCK.read();
         let net = NetHeld::of(&r).expect("the net lock");
         assert!(ip6_unknown_opt(&mut mp, 0x1e, 42, &net));
         assert!(mp.is_some());

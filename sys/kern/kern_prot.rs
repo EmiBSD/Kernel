@@ -383,7 +383,7 @@ mod tests {
     fn thread(cr: CredRef) -> &'static Proc {
         let pr = test_process(1000);
         let p = test_thread(pr);
-        let Some(u) = hal::thread::UArea::alloc() else {
+        let Some(u) = hal::cpu::thread::UArea::alloc() else {
             std::panic!("no test u-area");
         };
         p.install_uarea(u);

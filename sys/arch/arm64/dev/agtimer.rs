@@ -69,7 +69,7 @@ use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 
 use hal::arch::arm64::timer;
-use hal::clock::ClockFrame;
+use hal::cpu::clock::ClockFrame;
 use kernel::clockintr::Intrclock;
 use kernel::tc::{TcEntry, Timecounter};
 

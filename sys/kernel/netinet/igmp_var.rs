@@ -63,7 +63,7 @@
 //! LZ: sys/netinet/igmp_var.rs@3c62ede68802
 //!
 //! ## Redesign
-//! - `igmpstat_inc` bumps `kernel::netinet::igmp`'s `IGMPCOUNTERS`, a `hal::percpu::Counters`
+//! - `igmpstat_inc` bumps `kernel::netinet::igmp`'s `IGMPCOUNTERS`, a `hal::sync::percpu::Counters`
 //!   (the C's `cpumem`; LZ: a static array of atomics), `#[inline]`.
 //! - `struct igmp_pktinfo`'s `ipi_list` is the list node `igmp_fasttimo` makes of each report
 //!   (`kernel::netinet::igmp`), not a member: the other callers keep the record on their

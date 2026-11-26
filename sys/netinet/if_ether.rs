@@ -202,7 +202,7 @@ mod tests {
             ether_type: htons(ETHERTYPE_ARP),
         };
         let mut bytes = [0u8; 14];
-        assert!(hal::pod::put(&mut bytes, 0, &eh));
+        assert!(hal::mem::pod::put(&mut bytes, 0, &eh));
         assert_eq!(&bytes[12..], &[0x08, 0x06]);
         assert!(ether_is_broadcast(&eh.ether_dhost));
         assert!(ether_is_multicast(&eh.ether_dhost));

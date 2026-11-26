@@ -79,7 +79,7 @@
 //!   header since N6.3c2 (D-N6.3c-21), the rest of the header file at N6.6a0 (the kernel's
 //!   TCP, N6.6a), whose commit deleted `bsd`'s copy (`bsd` re-exports this module).
 //! - [`Tcphdr`] and [`TcpInfo`] are `abi_pod!` images (their fields' tiling checked at compile
-//!   time), so they are copied as bytes (`hal::user::bytes_of`, `hal::pod::view`) where LZ
+//!   time), so they are copied as bytes (`hal::user::bytes_of`, `hal::mem::pod::view`) where LZ
 //!   transmuted or cast.
 
 use core::mem::size_of;

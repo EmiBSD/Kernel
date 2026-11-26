@@ -62,8 +62,8 @@
 //!   loop body relies on the compiler not optimising it away.
 //! - `arm_intr_func` and `intr_send_ipi_func` are `StaticCell`s written by the controller's
 //!   attach (`arm_set_intr_handler`) on the boot CPU before interrupts are enabled; `hal`
-//!   reaches `arm_intr_func` as `hal::intr::IntrHardware` ([`ArmIntrHardware`], N4.5c), and
-//!   `arm_smask`, `ci_cpl`, `ci_ipending` and the `arm_dflt_*` bodies are `hal::intr`'s.
+//!   reaches `arm_intr_func` as `hal::cpu::intr::IntrHardware` ([`ArmIntrHardware`], N4.5c), and
+//!   `arm_smask`, `ci_cpl`, `ci_ipending` and the `arm_dflt_*` bodies are `hal::cpu::intr`'s.
 //! - The controller and pre-registration lists are `LIST`s behind a `Sync` wrapper, touched
 //!   at attach time on the boot CPU; the handles are `NonNull<MachineIntrHandle>`.
 //!   `ampintc.c`'s `extern` use of `interrupt_controllers` is [`interrupt_controllers`].
@@ -112,18 +112,18 @@ fn arm_intr_func() -> &'static ArmIntrFunc {
     unsafe { ARM_INTR_FUNC.get() }
 }
 
-/// `arm_smask[level]` (`hal::intr::smask`, the table's owner since N4.5c).
+/// `arm_smask[level]` (`hal::cpu::intr::smask`, the table's owner since N4.5c).
 #[inline]
 pub fn arm_smask(level: i32) -> u64 {
-    hal::intr::smask(level)
+    hal::cpu::intr::smask(level)
 }
 
 /// `struct arm_intr_func` as `hal` calls it (decision 46: the C's function table is the
-/// trait `hal::intr::IntrHardware`): the table [`arm_set_intr_handler`] filled, the C's
+/// trait `hal::cpu::intr::IntrHardware`): the table [`arm_set_intr_handler`] filled, the C's
 /// defaults before.
 pub struct ArmIntrHardware;
 
-impl hal::intr::IntrHardware for ArmIntrHardware {
+impl hal::cpu::intr::IntrHardware for ArmIntrHardware {
     fn splraise(&self, ipl: i32) -> i32 {
         (arm_intr_func().raise)(ipl)
     }
@@ -273,31 +273,31 @@ pub static ARM_IRQ_DISPATCH: StaticCell<fn(&mut Trapframe)> = StaticCell::new(ar
 /// `arm_fiq_dispatch`: as `arm_irq_dispatch`, for FIQs.
 pub static ARM_FIQ_DISPATCH: StaticCell<fn(&mut Trapframe)> = StaticCell::new(arm_dflt_fiq);
 
-/// `arm_dflt_splraise`: raise the level in `ci_cpl` (`hal::intr`'s).
+/// `arm_dflt_splraise`: raise the level in `ci_cpl` (`hal::cpu::intr`'s).
 pub fn arm_dflt_splraise(newcpl: i32) -> i32 {
-    hal::intr::dflt_splraise(newcpl)
+    hal::cpu::intr::dflt_splraise(newcpl)
 }
 
-/// `arm_dflt_spllower`: lower the level, running what becomes unmasked (`hal::intr`'s).
+/// `arm_dflt_spllower`: lower the level, running what becomes unmasked (`hal::cpu::intr`'s).
 pub fn arm_dflt_spllower(newcpl: i32) -> i32 {
-    hal::intr::dflt_spllower(newcpl)
+    hal::cpu::intr::dflt_spllower(newcpl)
 }
 
 /// `arm_dflt_splx`: restore the level, running the pending soft interrupts it unmasks
-/// (`hal::intr`'s).
+/// (`hal::cpu::intr`'s).
 pub fn arm_dflt_splx(newcpl: i32) {
-    hal::intr::dflt_splx(newcpl);
+    hal::cpu::intr::dflt_splx(newcpl);
 }
 
-/// `arm_dflt_setipl`: set the level (`hal::intr`'s).
+/// `arm_dflt_setipl`: set the level (`hal::cpu::intr`'s).
 pub fn arm_dflt_setipl(newcpl: i32) {
-    hal::intr::dflt_setipl(newcpl);
+    hal::cpu::intr::dflt_setipl(newcpl);
 }
 
 /// `arm_do_pending_intr`: runs the soft interrupts pending above `pcpl`, highest first
-/// (`hal::intr::do_pending_intr`).
+/// (`hal::cpu::intr::do_pending_intr`).
 pub fn arm_do_pending_intr(pcpl: i32) {
-    hal::intr::do_pending_intr(pcpl);
+    hal::cpu::intr::do_pending_intr(pcpl);
 }
 
 /// `arm_set_intr_handler`: the interrupt controller registers its `spl` functions and
@@ -333,12 +333,12 @@ pub fn arm_set_intr_handler(
 }
 
 /// `arm_init_smask`: which soft interrupts each level leaves unmasked, once
-/// (`hal::intr::init_smask`, which owns the table since N4.5c).
+/// (`hal::cpu::intr::init_smask`, which owns the table since N4.5c).
 pub fn arm_init_smask() {
-    hal::intr::init_smask();
+    hal::cpu::intr::init_smask();
 }
 
-/// `splraise`: through `arm_intr_func` (what `hal::intr::splraise_raw` reaches through
+/// `splraise`: through `arm_intr_func` (what `hal::cpu::intr::splraise_raw` reaches through
 /// [`ArmIntrHardware`], called here without that hop).
 pub fn splraise(ipl: i32) -> i32 {
     (arm_intr_func().raise)(ipl)
@@ -356,7 +356,7 @@ pub fn splx(ipl: i32) {
 
 /// `softintr`: marks a soft interrupt pending on this CPU.
 pub fn softintr(si: i32) {
-    hal::intr::softintr(si as usize);
+    hal::cpu::intr::softintr(si as usize);
 }
 
 /// `arm_splassert_check`: the `DIAGNOSTIC` level check behind `splassert`.

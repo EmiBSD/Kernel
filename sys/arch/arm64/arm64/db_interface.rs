@@ -537,10 +537,10 @@ pub fn db_machine_init() {
     }
 }
 
-/// ddb's entry from `hal`'s trap code (`hal::trap::Debugger`, N4.8b): [`db_ktrap`].
+/// ddb's entry from `hal`'s trap code (`hal::cpu::trap::Debugger`, N4.8b): [`db_ktrap`].
 pub struct DdbDebugger;
 
-impl hal::trap::Debugger for DdbDebugger {
+impl hal::cpu::trap::Debugger for DdbDebugger {
     fn ktrap(&self, kind: i32, frame: &mut DbRegs) -> bool {
         db_ktrap(kind, frame)
     }

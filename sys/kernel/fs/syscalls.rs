@@ -71,7 +71,7 @@
 //! `readlink(2)` and `getdents(2)`). The kernel lock: the rows `syscalls.master` marks
 //! `NOLOCK` (`open`, `openat`, `__pledge_open`, `stat`, `lstat`, `fstatat`, `umask`,
 //! `__realpath`, `lseek`) run without it and take the C's inner spans themselves
-//! (`hal::klock::kernel_lock`/`kernel_unlock`: `doopenat` from before `vn_open` to the last
+//! (`hal::sync::klock::kernel_lock`/`kernel_unlock`: `doopenat` from before `vn_open` to the last
 //! `VOP_UNLOCK`, `dofstatat` around `namei`..`vput`, `__realpath` around `vfs_getcwd_common`
 //! and around `namei`..`vrele`); every other row runs under the lock `mi_syscall` takes.
 //!
@@ -133,7 +133,7 @@
 //!   for `unveil(NULL, NULL)`), `ps_uvdone` read through `ProcGlue::unveil_state`.
 //! - `truncate(2)`, `ftruncate(2)` and `dotruncate` take the thread pinned: the
 //!   `RLIMIT_FSIZE` overrun's `psignal(p, SIGXFSZ)` signals a pinned thread (`kernel::sig`).
-//! - `dounmount`'s work list (`SLIST_HEAD(, mount) mplist`) is a `hal::list::List` of the
+//! - `dounmount`'s work list (`SLIST_HEAD(, mount) mplist`) is a `hal::ds::list::List` of the
 //!   mounts' `mnt_dounmount` links on the stack (`insert_head`, `first` and `pop_head` O(1),
 //!   `iter` O(1) a step: docs/COLLECTIONS.md), drained on every path; the nested mounts are
 //!   found walking `mountlist_next` (O(1) a step) against that list, the C's two loops, and
@@ -153,10 +153,10 @@ use core::ptr;
 use core::slice;
 use core::sync::atomic::Ordering;
 
-use hal::klock;
-use hal::list::List;
-use hal::malloc::{M_WAITOK, MArray};
-use hal::sleep::INFSLP;
+use hal::ds::list::List;
+use hal::mem::malloc::{M_WAITOK, MArray};
+use hal::sync::klock;
+use hal::sync::sleep::INFSLP;
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::{
     AT_EACCESS, AT_FDCWD, AT_REMOVEDIR, AT_SYMLINK_FOLLOW, AT_SYMLINK_NOFOLLOW, F_FLOCK, F_RDLCK,
@@ -3121,7 +3121,7 @@ mod tests {
     /// counts the others out; a process signal finds it there), signals ready: what `fork1`
     /// leaves.
     fn listed(p: &'static Thread<Pg>) -> Pin<&'static Thread<Pg>> {
-        let pp = hal::pin::pin_static(p);
+        let pp = hal::ds::pin::pin_static(p);
         crate::sig::test_sigacts(p.process());
         crate::sig::siginit(p.process());
         {

@@ -146,7 +146,7 @@ use core::marker::PhantomData;
 use core::ptr;
 
 use hal::arch::current::param::PAGE_SIZE;
-use hal::pool::PoolArc;
+use hal::mem::pool::PoolArc;
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::{FWRITE, Flock, O_APPEND};
 use hal::sys::mount::{MNT_NOATIME, MNT_RDONLY};
@@ -911,7 +911,7 @@ pub fn tmpfs_rmdir<G: ProcGlue>(
         kassert!(node.dir().tn_parent.points_to(&dnode));
 
         // Directories with more than two entries ('.' and '..') cannot be removed.
-        if node.tn_size.get() > 0 && !node.dir().tn_dir.is_empty(&hal::klock::reader()) {
+        if node.tn_size.get() > 0 && !node.dir().tn_dir.is_empty(&hal::sync::klock::reader()) {
             break 'out Err(Errno::ENOTEMPTY);
         }
 
@@ -941,7 +941,7 @@ pub fn tmpfs_rmdir<G: ProcGlue>(
         // Destroy the directory entry. Note: the inode referred by it will not be destroyed
         // until the vnode is reclaimed.
         tmpfs_free_dirent(&tmp, de);
-        kassert!(node.dir().tn_dir.is_empty(&hal::klock::reader()));
+        kassert!(node.dir().tn_dir.is_empty(&hal::sync::klock::reader()));
 
         kassert!(node.tn_links.get() == 0);
         Ok(())

@@ -46,7 +46,7 @@ pub use hal::api::{
     EventEntries, FdEntries, FutexEntry, KernelApi, ProcEntries, SigreturnEntry, SocketEntries,
     SyscallHandler, SysctlEntry, TimeEntries, VfsEntries, VmEntries,
 };
-use hal::once::OnceStatic;
+use hal::sync::once::OnceStatic;
 pub use hal::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult};
 
 /// The registered handler: the table the ABI was given and its handler.

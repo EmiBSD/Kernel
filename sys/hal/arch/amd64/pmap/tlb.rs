@@ -137,8 +137,8 @@
 //! ## Redesign
 //! - LZ walks `CPU_INFO_FOREACH` over `bsd`'s `struct cpu_info` (`ci_proc_pmap`, `ci_cpuid`,
 //!   `cpu_is_running`) and calls `x86_fast_ipi`: `hal` reaches them through the
-//!   [`crate::pmap::TlbCpus`] bridge (bridges.toml; paid by N4). Before it is registered one
-//!   CPU runs and there is nobody to shoot at. `splvm()` is `hal::intr::splraise(IPL_VM)`,
+//!   [`crate::vm::pmap::TlbCpus`] bridge (bridges.toml; paid by N4). Before it is registered one
+//!   CPU runs and there is nobody to shoot at. `splvm()` is `hal::cpu::intr::splraise(IPL_VM)`,
 //!   `curcpu()->ci_cpuid` is `hal::cpu::cpu_number()`, `CPU_BUSY_CYCLE()` is `spin_loop`.
 //! - `rcr3`, `lcr3`, `invlpg`, `tlbflush`, `mfence`, `clflush` and `wbinvd` are private
 //!   `asm!` here (`cpufunc.h`'s, split from `bsd`'s `include/cpufunc.rs`, which keeps them for
@@ -158,8 +158,8 @@ use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use super::super::include::param::PAGE_SIZE;
 use super::super::include::vmparam::VM_MIN_KERNEL_ADDRESS;
 use crate::bridges;
-use crate::pmap::Pmap;
-use crate::pmap::TlbIpi;
+use crate::vm::pmap::Pmap;
+use crate::vm::pmap::TlbIpi;
 
 /// The CPUs `tlb_shoot_counts[]` has a word for: amd64's `MAXCPUS` (`<machine/cpu.h>`).
 pub const TLB_MAXCPUS: usize = 255;
@@ -357,7 +357,7 @@ fn shoot_send(mask: &ShootMask, ipi: TlbIpi) {
 pub fn pmap_tlb_shootpage(pm: &Pmap, va: usize, shootself: bool) {
     let (mask, targets) = shoot_targets(pm, va >= VM_MIN_KERNEL_ADDRESS);
     if targets != 0 {
-        let _s = crate::intr::splraise(crate::intr::IPL_VM);
+        let _s = crate::cpu::intr::splraise(crate::cpu::intr::IPL_VM);
         pmap_start_tlb_shoot(targets);
         TLB_SHOOT_ADDR1.0.store(va, Ordering::Relaxed);
         shoot_send(&mask, TlbIpi::Page);
@@ -372,7 +372,7 @@ pub fn pmap_tlb_shootpage(pm: &Pmap, va: usize, shootself: bool) {
 pub fn pmap_tlb_shootrange(pm: &Pmap, sva: usize, eva: usize, shootself: bool) {
     let (mask, targets) = shoot_targets(pm, sva >= VM_MIN_KERNEL_ADDRESS);
     if targets != 0 {
-        let _s = crate::intr::splraise(crate::intr::IPL_VM);
+        let _s = crate::cpu::intr::splraise(crate::cpu::intr::IPL_VM);
         pmap_start_tlb_shoot(targets);
         TLB_SHOOT_ADDR1.0.store(sva, Ordering::Relaxed);
         TLB_SHOOT_ADDR2.0.store(eva, Ordering::Relaxed);
@@ -391,7 +391,7 @@ pub fn pmap_tlb_shoottlb(pm: &Pmap, shootself: bool) {
     crate::assert::kassert!(!pm.is_kernel());
     let (mask, targets) = shoot_targets(pm, false);
     if targets != 0 {
-        let _s = crate::intr::splraise(crate::intr::IPL_VM);
+        let _s = crate::cpu::intr::splraise(crate::cpu::intr::IPL_VM);
         pmap_start_tlb_shoot(targets);
         shoot_send(&mask, TlbIpi::Tlb);
     }

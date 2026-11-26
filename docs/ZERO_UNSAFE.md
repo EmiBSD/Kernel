@@ -107,7 +107,7 @@ the image crate names `abi`; plus `libkern`/`libz` under `kernel`. `hal` depends
    use. Every bridge is a row of `bridges.toml` (`trait`, `for`, `paid_by` = the milestone whose
    subsystem removes it); `cargo xtask` counts them; N9 requires 0. A bridge carries no logic
    of its own (the same rule as `abi`). A trait a crate declares and receives as a value
-   (`hal::pmap::PhysPages` passed to `bootstrap`, `kernel::pipe::PipeGlue` the pair's generic
+   (`hal::vm::pmap::PhysPages` passed to `bootstrap`, `kernel::pipe::PipeGlue` the pair's generic
    parameter) is API, not a slot: it is a row only while `bsd` implements it, and the row goes
    at the milestone whose `kernel` module implements it, the trait staying (decision 39).
 3. **The syscall table lives in `abi` from N2 on.** Each entry is `Native(fn)` (translation into
@@ -419,7 +419,7 @@ found the two boot defects fixed in 74eabc4d and 6e996212); `sys/uvm/` is gone f
   `pm_mtx`, loads only through the `Switcher` token, PTPs without `pm_obj`, the pv chain owned
   by its page) and the arm64 one (a pted owned by its level-3 slot and torn down inside its
   page's `pv_mtx`, the C's 40-byte pted, ASIDs with rollover). Commit 6 moved `bsd`'s 55
-  caller files onto it: `sys/machine/pmap.rs` is an adapter over `hal::pmap` with no `unsafe`
+  caller files onto it: `sys/machine/pmap.rs` is an adapter over `hal::vm::pmap` with no `unsafe`
   block (its three legacy `unsafe fn` signatures, and arm64's `pmap_kenter_cache`, leave with
   their last caller); the LZ pmap files and `pmap_module.rs` left `sys/arch` (157 `[[module.fn]]`
   rows; no `[[dropped]]`, since `hal` modules list those files in `lz`). Commit 7 gave arm64
@@ -432,7 +432,7 @@ found the two boot defects fixed in 74eabc4d and 6e996212); `sys/uvm/` is gone f
   section symbols and an `ASSERT` each. Its fix-up 8b: TTBR1 is the root with ASID 0, no guard
   bit on the image's, the identity page's and the window's leaves (the kernel has no BTI pads),
   PXNTable and UXNTable on the direct map's level-0 slots, where a block entry panics.
-- **The kernel pmap's authority is a token** (the N3.1 plan's G8): `hal::pmap::KernelMapper`,
+- **The kernel pmap's authority is a token** (the N3.1 plan's G8): `hal::vm::pmap::KernelMapper`,
   zero-sized, not `Clone`, returned once by `bootstrap`; its `kenter`, `kremove` and the kernel
   pmap's `enter` are safe, possession being the proof. N3.2 moves it once into
   `kernel::vm::km` (`adopt_mapper`), which lends it to `bsd`'s legacy wrappers only through
@@ -550,7 +550,7 @@ adds an operation the C's switch lacks.
 | `struct consdev` | `dev/cons.h` | `Console` | N2 | done, `hal` |
 | `struct sysent`, `KernelApi` | `sys/systm.h` | the `Native`/`Legacy` table, the table `abi` calls the kernel through | N2 | done, `abi` |
 | `struct filterops` | `sys/event.h:234` | `Filter<G>`; `Filterops<G>` stays as the erased table for `bsd`'s 41 statics (44 at N4.4b; the pipe's three are `kernel::pipe`'s impls since N5.0) | N4.4b | **corrective slice** (below) |
-| `struct arm_intr_func` (`raise`, `lower`, `x`, `setipl`, the wakeup hooks) | `arch/arm64/include/intr.h` | `hal::intr::IntrHardware` (default methods: the `arm_dflt_*`); `bsd`'s `ArmIntrHardware` over the table the GIC drivers fill, registered by `initarm` | N4.5c | done, `hal` (the bridge is paid N7) |
+| `struct arm_intr_func` (`raise`, `lower`, `x`, `setipl`, the wakeup hooks) | `arch/arm64/include/intr.h` | `hal::cpu::intr::IntrHardware` (default methods: the `arm_dflt_*`); `bsd`'s `ArmIntrHardware` over the table the GIC drivers fill, registered by `initarm` | N4.5c | done, `hal` (the bridge is paid N7) |
 | `struct interrupt_controller` (`ic_establish`, `ic_disestablish`, `ic_route`, `ic_barrier`, ...) | `arch/arm64/include/intr.h` | none yet: the GIC drivers' own table, kept in `bsd` until they move | N7.2 | kept, reason: its implementers (agintc, ampintc) and every caller are drivers that move together at N7 |
 | `struct softintr_hand` | `kern/kern_softintr.c` | not a trait: one function and its argument, a callback, not an operations table | N4.5c | kept as `fn(*mut c_void)` + argument |
 | `struct linesw` | `sys/conf.h` | `LineDiscipline` | N4.6 | to name in the brief |
@@ -575,8 +575,8 @@ adds an operation the C's switch lacks.
 | `struct cryptocap` | `crypto/cryptodev.h` | `CryptoDriver` | N8 | to name |
 | `struct db_command` | `ddb/db_command.h` | `DbCommand` | N9.1 | to name |
 | `nfsrv3_procs[]` (the server's procedures by number) | `nfs/nfs_syscalls.c:78` | not a trait: an array of one function type, `NfsrvProc<G>`, indexed by `nd_procnum` (N6.7b2/b3) | N6.7b4 | done, `kernel::fs::nfs::nfs_serv::nfsrv3_procs`, handed to `sys_nfssvc` by `sysent[155]`'s row |
-| arm64 `struct bus_space` (`_space_read_1` .. `_space_write_8`, `_space_map`, `_space_unmap`, `_space_subregion`, `_space_vaddr`, `_space_mmap`) | `arch/arm64/include/bus.h` | not a trait: one implementation of the reads and writes (`generic_space_*`), so they are `hal::mmio::Mmio<R>`'s methods; the two entries a bus ever overrides (`_space_map` and `_space_mmap`, `simplebus`'s and `pciecam`'s copies of the tag) become each bus's own `map` over `kernel::vm::km::map_device` | N7.0 | done for the reads, writes and the map (`sys/hal/mmio.rs`); `bsd`'s tag keeps its table for its drivers (163 modules name `machine::bus`); the buses' `map` at N7.2b (simplebus) and N7.5 (pciecam) |
-| arm64 `struct machine_bus_dma_tag` (15 entries: `_dmamap_create` .. `_dmamem_mmap`) | `arch/arm64/include/bus.h` | `hal::dma::DmaMemory` for the memory half (`_dmamem_alloc_range` of one segment with `_dmamem_map`; `_dmamem_unmap` with `_dmamem_free`), implemented by `kernel::vm::km::bus_dma_memory` and passed as a value; the map half (`create`, `load`, `load_mbuf`, `load_uio`, `load_raw`, `unload`, `sync`, `mmap`) is `kernel::dev::bus_dma`'s at N7.3a; the SMMU implements both at N7.11 | N7.0, N7.3a | the memory half done (`sys/hal/dma.rs`); `bsd`'s tags keep their table for their drivers |
+| arm64 `struct bus_space` (`_space_read_1` .. `_space_write_8`, `_space_map`, `_space_unmap`, `_space_subregion`, `_space_vaddr`, `_space_mmap`) | `arch/arm64/include/bus.h` | not a trait: one implementation of the reads and writes (`generic_space_*`), so they are `hal::dev::mmio::Mmio<R>`'s methods; the two entries a bus ever overrides (`_space_map` and `_space_mmap`, `simplebus`'s and `pciecam`'s copies of the tag) become each bus's own `map` over `kernel::vm::km::map_device` | N7.0 | done for the reads, writes and the map (`sys/hal/dev/mmio.rs`); `bsd`'s tag keeps its table for its drivers (163 modules name `machine::bus`); the buses' `map` at N7.2b (simplebus) and N7.5 (pciecam) |
+| arm64 `struct machine_bus_dma_tag` (15 entries: `_dmamap_create` .. `_dmamem_mmap`) | `arch/arm64/include/bus.h` | `hal::dev::dma::DmaMemory` for the memory half (`_dmamem_alloc_range` of one segment with `_dmamem_map`; `_dmamem_unmap` with `_dmamem_free`), implemented by `kernel::vm::km::bus_dma_memory` and passed as a value; the map half (`create`, `load`, `load_mbuf`, `load_uio`, `load_raw`, `unload`, `sync`, `mmap`) is `kernel::dev::bus_dma`'s at N7.3a; the SMMU implements both at N7.11 | N7.0, N7.3a | the memory half done (`sys/hal/dev/dma.rs`); `bsd`'s tags keep their table for their drivers |
 
 Not traits: the per-architecture backends of `hal` (the pmaps, `bus_space`, `cpu_switch`) are
 `cfg`, one implementation per machine; only the host double needs a trait, and `MachineExec`,
@@ -899,7 +899,7 @@ Taken by the user on 2026-10-16, later, on the planner's options after the N2.2 
     defining crate; it moved at N3.1's first commit, 80cdbac9, into `sys/hal/sys/types.rs`,
     the page arithmetic into `sys/hal/vm/param.rs`, the per-arch page and address constants
     into `sys/hal/arch/<arch>/include/{param,vmparam}.rs` and `IPL_VM`/`IPL_HIGH` into
-    `hal::intr` until N4;
+    `hal::cpu::intr` until N4;
     `sys/sys/mod.rs` re-exports them so every path stands); `kernel` and `abi` name them through
     `hal`, byte-identical. One `Errno`: the runtime's interim `hal::errno::Errno` folds into
     `hal::sys::errno::Errno` at integration. The "41 constant headers" of decision 22 were never
@@ -960,7 +960,7 @@ Taken by the user on 2026-10-16, answering the question decisions 32-36 below le
     that dereferences what they return, checked for null, alignment and size on each answer,
     probed under `diagnostic`; `bsd` registers them with 0 `unsafe`. Stated cost: `hal`'s
     soundness rests on that registration until the bridges go (N3, N9); it is a documented
-    trust boundary, not a compiler-checked one. (`sys/hal/trust.rs` holds the checks;
+    trust boundary, not a compiler-checked one. (`sys/hal/mem/trust.rs` holds the checks;
     `sys/kern/hal_bridges.rs` the registrations, called by `stand::start_kernel` before
     `main()`.)
 
@@ -995,7 +995,7 @@ day (numbered R1-R5 on its branch so that other slices' entries did not collide;
 32-36 at the N2 close):
 
 32. **A runtime module that re-expresses one C file's algorithm keeps that file's licence and
-    provenance.** `sys/hal/mutex.rs` (`kern_lock.c`, `mutex.h`), `rwlock.rs` (`kern_rwlock.c`,
+    provenance.** `sys/hal/sync/mutex.rs` (`kern_lock.c`, `mutex.h`), `rwlock.rs` (`kern_rwlock.c`,
     `rwlock.h`), `percpu.rs` (`subr_percpu.c`, `percpu.h`) and `refcnt.rs` (`refcnt.h`,
     `kern_synch.c`) are `redesigned` `[[module]]`s with those LZ files in `lz`, their notices
     and `//! LZ:` lines, not `[[extra]]`s with the author's block alone: a translation is a
@@ -1060,7 +1060,7 @@ Taken by the user on 2026-10-16, at the N2 close ("(C) Ventana del kernel"):
 Taken by the main session on 2026-10-16 under the user's standing authority of that night
 (the N3.1 plan's D16):
 
-39. **`PhysPages` is a parameter, not a slot.** `hal::pmap::bootstrap(params, pages)` takes the
+39. **`PhysPages` is a parameter, not a slot.** `hal::vm::pmap::bootstrap(params, pages)` takes the
     page provider as a `&'static dyn PhysPages`, the kernel pmap keeps it and `create` copies it
     (as `KmBuf` keeps its `PageMemory`): the arrows stay down, the host tests pass a fake, and
     no registry slot outlives the bridge. While `bsd`'s `uvm_page` implements it
@@ -1073,7 +1073,7 @@ Taken by the main session on 2026-10-16 under the user's standing authority of t
 Taken by the main session on 2026-10-17 under the user's N3 authority ("porfavor toma
 decisiones recomendadas en N3"), on the review of N3.4a:
 
-- **Decision 30, extended to `hal::mapped`.** `MappedBytes` (made only through the kernel
+- **Decision 30, extended to `hal::mem::mapped`.** `MappedBytes` (made only through the kernel
   map's token, `KernelMapper::map_direct`/`map_frames`) trusts the token holder not to view a
   frame that backs kernel memory (the buffer cache's pages, busy with `PG_FAKE` for the
   buffer's life, or the kernel object's between allocation and unbusy) until the pages are
@@ -1134,7 +1134,7 @@ Taken by the user on 2026-10-18:
     `unsafe` added or the smokes' build profile changed. At the end, `just bench` again
     (debug, the same method) against `docs/bench/n3-after-*.toml`, and the final table.
     The user's answers on the way: the table needed no approval ("no hace falta que yo
-    apruebe la tabla"); `hal::owned`'s ownership check stays per node (checking it once per
+    apruebe la tabla"); `hal::ds::owned`'s ownership check stays per node (checking it once per
     search was measured, fork.big -8 % dev / -6 % release, and refused). Done in eeb155ed
     (the release flag), 737b7b5d (sys/kernel/benches/vm.rs), ac8b9ebf .. f5caa6de (seven
     optimizations), c51cb2c2 (the review's defect: `UVM_MAP_CLIP_END`'s KASSERT restored).
@@ -1297,7 +1297,7 @@ recommended, under the user's standing order):
     measured costs that went with it: `hal::module` (2,175 lines, 20 host tests, the
     loader's 3 `unsafe`: `hal` 199 -> 196; decision 22 had estimated about 30), the module's
     binary `sys/abi/ko` (199 lines), arm64's module window (`pmap/window.rs`, 291 lines, 32 KiB
-    of `.bss` tables) and `hal::pmap`'s `module_window`/`module_enter`, the `ModulePlatform`
+    of `.bss` tables) and `hal::vm::pmap`'s `module_window`/`module_enter`, the `ModulePlatform`
     bridge (`bridges.toml` 25 -> 24), `kernel::vm::km`'s `ModuleMemory`, `KernelApi`'s
     `copyin`/`copyout` (no caller but a test), `hal`'s `module-rt` feature (62 `cfg` lines),
     the second file on every medium (boot(8) and arm64's efiboot reading it, Limine's

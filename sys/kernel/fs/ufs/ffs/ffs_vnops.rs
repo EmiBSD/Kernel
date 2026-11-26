@@ -86,8 +86,8 @@
 //!   to `TIOCSCTTY` on `/dev/console`). The spl pairs are LZ's: `ffs_fsync`'s `splbio` around
 //!   the dirty-list scan, released for each write.
 
-use hal::intr::{IPL_BIO, splraise_raw, splx};
-use hal::sleep::INFSLP;
+use hal::cpu::intr::{IPL_BIO, splraise_raw, splx};
+use hal::sync::sleep::INFSLP;
 use hal::sys::errno::Errno;
 use hal::sys::mount::{MNT_NOATIME, MNT_WAIT};
 use hal::sys::stat::APPEND;

@@ -66,7 +66,7 @@
 //!   exclude the kernel, the device tree, the initrd and the bootloader's own data: the
 //!   `memreg_add`/`memreg_remove` bookkeeping, the EFI memory map walk, `pmap_avail_fixup`
 //!   and `pmap_physload_avail` have nothing left to do, and the direct map `pmap` uses is the
-//!   bootloader's (`hal::pmap`'s arm64 backend, deviations). The memory is loaded before
+//!   bootloader's (`hal::vm::pmap`'s arm64 backend, deviations). The memory is loaded before
 //!   `pmap_bootstrap` (after it in the C) because `pmap_bootstrap` steals its tables from
 //!   `vm_physmem[]`.
 //! - The message buffer is a static area (`kern/subr_log.rs`, `init_static_msgbuf`) instead of
@@ -107,7 +107,7 @@
 //!   (`cpu.rs`, deviations).
 //!
 //! ## Redesign
-//! - N3.1: the pmap is `hal`'s (`hal::pmap`, through `machine::pmap`). The facts LZ wrote
+//! - N3.1: the pmap is `hal`'s (`hal::vm::pmap`, through `machine::pmap`). The facts LZ wrote
 //!   into the pmap's statics before `pmap_bootstrap` (`PMAP_DIRECT_BASE`/`END`,
 //!   `PMAP_KERNEL_IMAGE_START`/`END`/`PHYS_OFF`) are its `BootstrapParams`; `setregs` sets
 //!   the pmap's branch-target guard through `Pmap::set_guarded`. N3.1 commit 8: the image's
@@ -196,8 +196,8 @@ use crate::sys::sysctl::SysctlBoundedArgs;
 use crate::sys::systm::PHYSMEM;
 use crate::sys::types::{Paddr, Psize, Register, Vaddr};
 use crate::unported;
-use hal::pmap::{BootstrapParams, KernelImage};
 use hal::vm::param::{atop, ptoa, round_page, trunc_page};
+use hal::vm::pmap::{BootstrapParams, KernelImage};
 use hal::vm::uvmexp::UVMEXP;
 use kernel::vm::km::{KvMap, install_submap};
 use kernel::vm::km::{kernel_map, kernel_map_min, uvm_km_suballoc};
@@ -409,7 +409,7 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
         .set(ptr::from_ref(&CPU_INFO_PRIMARY));
     // tpidr_el1 names the boot CPU's cpu_info, whose head is its core (hal::cpu).
     hal::cpu::set_current(&CPU_INFO_PRIMARY.core);
-    // `arm_intr_func` as `hal::intr` calls it: the C's defaults until a controller attaches
+    // `arm_intr_func` as `hal::cpu::intr` calls it: the C's defaults until a controller attaches
     // (`arm_set_intr_handler`), `arm_splassert_check` from the first `spl` on.
     let _ =
         hal::bridges::register_intr_hardware(&crate::arch::arm64::arm64::intr::ARM_INTR_HARDWARE);
@@ -432,8 +432,9 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
     hal::arch::arm64::exception::install_vectors();
     // The machine's per-CPU hooks a trap calls (`ci_flush_bp`, `ci_serror`, `fault()`'s
     // `ci_panicbuf`) and the kernel debugger's entry (`db_ktrap`), for `hal`'s trap code.
-    let _ = hal::trap::install_cpu_hooks(&crate::arch::arm64::arm64::cpu::ARM_CPU_HOOKS);
-    let _ = hal::trap::install_debugger(&crate::arch::arm64::arm64::db_interface::DDB_DEBUGGER);
+    let _ = hal::cpu::trap::install_cpu_hooks(&crate::arch::arm64::arm64::cpu::ARM_CPU_HOOKS);
+    let _ =
+        hal::cpu::trap::install_debugger(&crate::arch::arm64::arm64::db_interface::DDB_DEBUGGER);
 
     // The processors and the way to start them (MULTIPROCESSOR, cpu_start_secondary).
     // SAFETY: once, on the boot CPU, before any reader (cpu_attach runs much later).
@@ -490,7 +491,7 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
         }
     }
 
-    // The direct map is the bootloader's (see `hal::pmap`'s arm64 backend).
+    // The direct map is the bootloader's (see `hal::vm::pmap`'s arm64 backend).
     let regions = boot.memmap.regions();
     let map_end = regions
         .iter()
@@ -498,7 +499,7 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
         .max()
         .unwrap_or(0);
     // The kernel image by section, which pmap_bootstrap maps (`pmap_map_stolen`) and
-    // pmap_extract translates (`hal::pmap`'s arm64 backend), and the direct map:
+    // pmap_extract translates (`hal::vm::pmap`'s arm64 backend), and the direct map:
     // pmap_bootstrap's parameters.
     let params = BootstrapParams {
         direct_base: Vaddr::new(boot.hhdm_offset),
@@ -527,7 +528,7 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
     uvm_setpagesize();
 
     // Make all physical memory available to UVM (pmap_physload_avail and the EFI memory map
-    // loop of the C); before pmap_bootstrap, which steals from it (`hal::pmap`'s arm64
+    // loop of the C); before pmap_bootstrap, which steals from it (`hal::vm::pmap`'s arm64
     // backend).
 
     for r in usable() {
@@ -1225,7 +1226,7 @@ pub fn setregs(p: &Proc, pack: &ExecPackage<'_>, stack: Vaddr, _arginfo: &PsStri
 /// `cpu_startup`: machine-dependent startup code (see the module's deviations).
 pub fn cpu_startup() {
     // proc0.p_addr = proc0paddr, curpcb = &proc0paddr->u_pcb: hal's static u-area (E4).
-    hal::thread::boot_uarea(hal::pin::pin_static(&PROC0));
+    hal::cpu::thread::boot_uarea(hal::ds::pin::pin_static(&PROC0));
 
     // Give pmap a chance to set up a few more things now the vm is initialised: the
     // trampoline's tables (hal's `pmap_postinit`, N4.8d).
@@ -1282,7 +1283,7 @@ pub fn cpu_startup() {
         ptoa(free) / 1024 / 1024
     );
 
-    // curpcb = &proc0paddr->u_pcb (hal::thread::boot_uarea, above).
+    // curpcb = &proc0paddr->u_pcb (hal::cpu::thread::boot_uarea, above).
     let curpcb = PROC0.pcb();
     curpcb.pcb_flags.set(0);
     curpcb.pcb_tf.set(PROC0TF.as_ptr());

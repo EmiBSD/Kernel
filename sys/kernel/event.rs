@@ -118,9 +118,9 @@
 //! ([`KqRef`], `kq_refcnt`): its file's object, its thread's `p_kq`, every scan running on it,
 //! every knote it owns and its pending task. A knote ([`Knote`]) is an item of `knotepl`
 //! owned by one chain of its kqueue (a descriptor slot of `kq_knlist` or a bucket of
-//! `kq_knhash`, `hal::owned::OwnedList`s under `kq_lock`); while it lives it is also linked
+//! `kq_knhash`, `hal::ds::owned::OwnedList`s under `kq_lock`); while it lives it is also linked
 //! by address on its object's klist ([`Klist`], `kn_selnext`) and, while active, on the
-//! kqueue's pending queue (`kq_head`, `kn_tqe`), both `hal::pinlist::PinList`s.
+//! kqueue's pending queue (`kq_head`, `kn_tqe`), both `hal::ds::pinlist::PinList`s.
 //!
 //! `kqueue_register` turns a `struct kevent` change into a knote: it finds or makes the knote
 //! in its chain, attaches it to its object through the filter (`f_attach`; for a descriptor
@@ -159,7 +159,7 @@
 //!   is freed with its last [`KqRef`] (`KQRELE` is a drop: the table's `fd_kqlist` unlinked
 //!   then), a knote is owned by its chain and freed only when the chain gives its box back
 //!   (`OwnedList::take`), and a holder that drops `kq_lock` across a filter call keeps the
-//!   knote by a counted reference ([`KnHold`], `hal::owned::SecondaryRef`): the chain refuses
+//!   knote by a counted reference ([`KnHold`], `hal::ds::owned::SecondaryRef`): the chain refuses
 //!   to give back a counted knote, so `KN_PROCESSING`'s ownership is a type. The chains are
 //!   `MArray<OwnedList<..>>`s grown by moving the heads (a head has an identity, not an
 //!   address).
@@ -222,17 +222,17 @@ use core::pin::Pin;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU8, AtomicU32, Ordering};
 
-use hal::intr::{IPL_HIGH, IPL_NONE, IPL_SOFTCLOCK};
-use hal::klock;
-use hal::link::Link;
-use hal::malloc::{M_WAITOK, MArray, MBox};
-use hal::mutex::{Mutexed, MutexedGuard, SharedMutex};
-use hal::once::OnceStatic;
-use hal::owned::{OwnedEntry, OwnedList, SecondaryRef};
-use hal::pinlist::{PinEntry, PinList};
-use hal::pool::{AnyArc, BoxPool, PR_WAITOK, PoolArc, PoolBox, PoolHome, TypedPool};
-use hal::rwlock::{Divisible, Guarded, RW_WRITE, RawRwlock, Witness};
-use hal::sleep::{INFSLP, PCATCH};
+use hal::cpu::intr::{IPL_HIGH, IPL_NONE, IPL_SOFTCLOCK};
+use hal::ds::link::Link;
+use hal::ds::owned::{OwnedEntry, OwnedList, SecondaryRef};
+use hal::ds::pinlist::{PinEntry, PinList};
+use hal::mem::malloc::{M_WAITOK, MArray, MBox};
+use hal::mem::pool::{AnyArc, BoxPool, PR_WAITOK, PoolArc, PoolBox, PoolHome, TypedPool};
+use hal::sync::klock;
+use hal::sync::mutex::{Mutexed, MutexedGuard, SharedMutex};
+use hal::sync::once::OnceStatic;
+use hal::sync::rwlock::{Divisible, Guarded, RW_WRITE, RawRwlock, Witness};
+use hal::sync::sleep::{INFSLP, PCATCH};
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::{FNONBLOCK, FREAD, FWRITE, O_CLOEXEC};
 use hal::sys::pledge::PLEDGE_PROC;
@@ -922,7 +922,7 @@ impl<G: ProcGlue> Knote<G> {
     /// The knote, pinned: a knote its chain owns is a pool item that never moves (the
     /// pending queue and the object's klist link it by address).
     pub fn pinned(&self) -> Pin<&Self> {
-        match hal::owned::pinned::<G::KnLink>(self) {
+        match hal::ds::owned::pinned::<G::KnLink>(self) {
             Some(p) => p,
             None => kpanic(format_args!("knote {self:p}: owned by no kqueue")),
         }
@@ -944,14 +944,17 @@ impl<G: ProcGlue> Knote<G> {
     }
 
     /// `kn->kn_status`, mutably, for the holder of its kqueue's lock.
-    fn status_mut<'a, W: hal::rwlock::Exclusive + ?Sized>(&'a self, w: &'a mut W) -> &'a mut i32 {
+    fn status_mut<'a, W: hal::sync::rwlock::Exclusive + ?Sized>(
+        &'a self,
+        w: &'a mut W,
+    ) -> &'a mut i32 {
         self.status.get_mut(w)
     }
 }
 
 /// A knote held by a counted reference across the unlocked part of its processing
 /// (`KN_PROCESSING`): its chain cannot give it back while the reference lives, and
-/// `knote_drop` takes it back through it (`hal::owned::OwnedList::take`).
+/// `knote_drop` takes it back through it (`hal::ds::owned::OwnedList::take`).
 pub struct KnHold<G: ProcGlue>(SecondaryRef<G::KnLink>);
 
 impl<G: ProcGlue> KnHold<G> {
@@ -1101,7 +1104,7 @@ impl<G: ProcGlue> Klist<G> {
             KlistKind::Kernel => {
                 let _k = KernelHold::take();
                 let mut w = klock::witness();
-                let _s = hal::intr::splhigh();
+                let _s = hal::cpu::intr::splhigh();
                 self.insert_locked(&mut w, kn);
             }
             KlistKind::Own => {
@@ -1118,7 +1121,7 @@ impl<G: ProcGlue> Klist<G> {
             KlistKind::Kernel => {
                 let _k = KernelHold::take();
                 let mut w = klock::witness();
-                let _s = hal::intr::splhigh();
+                let _s = hal::cpu::intr::splhigh();
                 self.remove_locked(&mut w, kn);
             }
             KlistKind::Own => {
@@ -1180,7 +1183,7 @@ impl<G: ProcGlue> Klist<G> {
         match self.kind() {
             KlistKind::Kernel => {
                 let _k = KernelHold::take();
-                let _s = hal::intr::splhigh();
+                let _s = hal::cpu::intr::splhigh();
                 let r = klock::reader();
                 self.knote_locked(&r, hint);
             }
@@ -1258,7 +1261,7 @@ impl<G: ProcGlue> Klist<G> {
 
     /// `klist_invalidate`'s body, `p` the running thread (`curproc`).
     fn invalidate_as<W: Divisible>(&self, mut lock: impl FnMut() -> W, p: Option<&Thread<G>>) {
-        kassert!(!hal::netlock::write_held());
+        kassert!(!hal::sync::netlock::write_held());
 
         loop {
             let w = lock();
@@ -1274,7 +1277,7 @@ impl<G: ProcGlue> Klist<G> {
                     drop(g);
                     drop(w);
                     // XXX Timeout resolves potential loss of wakeup.
-                    let _ = hal::sleep::tsleep_nsec(chan, 0, "kqepts", SEC_NSEC);
+                    let _ = hal::sync::sleep::tsleep_nsec(chan, 0, "kqepts", SEC_NSEC);
                     continue;
                 }
             };
@@ -1696,7 +1699,7 @@ pub trait Filter<G: ProcGlue>: 'static {
         if Self::FLAGS & FILTEROP_MPSAFE != 0 {
             kpanic(format_args!("filter_modify: knote {kn:p} has no f_modify"));
         }
-        let _s = hal::intr::splhigh();
+        let _s = hal::cpu::intr::splhigh();
         knote_modify(kev, kn)
     }
 
@@ -1707,7 +1710,7 @@ pub trait Filter<G: ProcGlue>: 'static {
                 "filter_process: knote {kn:p} has no f_process"
             ));
         }
-        let _s = hal::intr::splhigh();
+        let _s = hal::cpu::intr::splhigh();
         knote_process(kn, kev)
     }
 }
@@ -1736,7 +1739,7 @@ fn fop_event<G: ProcGlue>(kn: &Knote<G>, hint: i64) -> bool {
 /// `kqueue_init`: the kqueue, knote and timer pools of `G`'s processes.
 pub fn kqueue_init<G: ProcGlue>() -> Result<(), Errno> {
     let pools = &G::tables().kq;
-    let mpfloor = hal::intr::mpfloor();
+    let mpfloor = hal::cpu::intr::mpfloor();
     pools
         .kqueuepl
         .init_recorded(mpfloor, PR_WAITOK, "kqueuepl")?;
@@ -1833,7 +1836,7 @@ impl<G: ProcGlue> Filter<G> for KqreadFilter {
 
 /// `kqueue_ps_list_lock` taken for writing unless this thread holds it already (the C's
 /// `rw_status(&kqueue_ps_list_lock) == RW_WRITE` test of a nested registration).
-fn ps_list_write() -> Option<hal::rwlock::WriteWitness<'static>> {
+fn ps_list_write() -> Option<hal::sync::rwlock::WriteWitness<'static>> {
     if KQUEUE_PS_LIST_LOCK.status() == RW_WRITE {
         None
     } else {
@@ -2543,7 +2546,7 @@ fn filter_modify<G: ProcGlue>(kev: &mut Kevent, kn: &Knote<G>) -> bool {
         if let Some(f_modify) = fop.f_modify {
             f_modify(kev, kn)
         } else {
-            let _s = hal::intr::splhigh();
+            let _s = hal::cpu::intr::splhigh();
             knote_modify(kev, kn)
         }
     }
@@ -2565,7 +2568,7 @@ fn filter_process<G: ProcGlue>(kn: &Knote<G>, kev: Option<&mut Kevent>) -> bool 
         if let Some(f_process) = fop.f_process {
             f_process(kn, kev)
         } else {
-            let _s = hal::intr::splhigh();
+            let _s = hal::cpu::intr::splhigh();
             knote_process(kn, kev)
         }
     }
@@ -3405,7 +3408,7 @@ fn kqueue_task<G: ProcGlue>(arg: &AnyArc) {
 fn kqueue_wakeup<G: ProcGlue>(kq: &Kqueue<G>, g: &mut KqGuard<'_, G>) {
     if kq.state() & KQ_SLEEP != 0 {
         kq.state_clear(g, KQ_SLEEP);
-        hal::sleep::wakeup(ptr::from_ref(kq));
+        hal::sync::sleep::wakeup(ptr::from_ref(kq));
     }
     if !kq.klist.is_empty() {
         // Defer activation to avoid recursion. The task's argument is the kqueue, counted,
@@ -3537,7 +3540,7 @@ fn knote_release<G: ProcGlue>(g: &mut KqGuard<'_, G>, h: KnHold<G>) {
 
     if *st & KN_WAITING != 0 {
         *st &= !KN_WAITING;
-        hal::sleep::wakeup(ptr::from_ref(kn));
+        hal::sync::sleep::wakeup(ptr::from_ref(kn));
     }
     *st &= !KN_PROCESSING;
     // kn should not be accessed anymore
@@ -3790,7 +3793,7 @@ fn knote_drop<G: ProcGlue>(kq: &Kqueue<G>, h: KnHold<G>, p: Option<&Thread<G>>) 
     let st = kn.status_mut(&mut g);
     if *st & KN_WAITING != 0 {
         *st &= !KN_WAITING;
-        hal::sleep::wakeup(ptr::from_ref(kn));
+        hal::sync::sleep::wakeup(ptr::from_ref(kn));
     }
     let isfd = kn.fop().f_flags & FILTEROP_ISFD != 0;
     let ident = kn.kn_id().get();
@@ -4085,7 +4088,7 @@ pub(crate) mod tests {
     /// Fresh tables, pools and a thread of process `pid` on the process lists.
     pub(crate) fn setup(pid: i32) -> T {
         testutil::install();
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         procinit::<Kg>(64, 64);
         let _ = filedesc_init::<Kf>();
         kqueue_init::<Kg>().unwrap();

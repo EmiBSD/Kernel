@@ -65,7 +65,7 @@
 //!   first, until N7), registered at boot; LZ called `crate::machine::cpu::boot` directly.
 //! - `rebooting` is read by the kernel crate here ([`rebooting`]), not through `SysInfo`.
 //! - The C's `KASSERT((howto & RB_NOSYNC) || curproc != NULL)` is kept over
-//!   `hal::sleep::curproc_word` (LZ's `reboot` had dropped it; the N4.8a review).
+//!   `hal::sync::sleep::curproc_word` (LZ's `reboot` had dropped it; the N4.8a review).
 //! - `sys_reboot` takes `opt` typed instead of LZ's `SysArgs` record and returns
 //!   `Result<Infallible, Errno>`: the only way back is `suser`'s error (`/* NOTREACHED */`
 //!   as a type). The secondary CPUs' stop is unconditional: the kernel is MP code only
@@ -75,7 +75,7 @@ use core::convert::Infallible;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use hal::bridges::AlreadyRegistered;
-use hal::once::OnceStatic;
+use hal::sync::once::OnceStatic;
 use hal::sys::errno::Errno;
 use hal::sys::reboot::RB_NOSYNC;
 
@@ -133,7 +133,7 @@ pub fn reboot(howto: i32) -> ! {
 /// `uvn_io` error path sleeps for the end while it is set, `"uvndead"`).
 fn reboot_flagging(howto: i32, rebooting: &AtomicBool) -> ! {
     // Syncing the file systems needs a thread to do it on.
-    kassert!(howto & RB_NOSYNC != 0 || hal::sleep::curproc_word() != 0);
+    kassert!(howto & RB_NOSYNC != 0 || hal::sync::sleep::curproc_word() != 0);
 
     stop_periodic_resettodr();
 

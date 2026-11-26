@@ -85,9 +85,9 @@ use core::marker::PhantomData;
 use core::mem::size_of;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use hal::netlock::NetHeld;
-use hal::percpu::Counters;
-use hal::pool::PoolArc;
+use hal::mem::pool::PoolArc;
+use hal::sync::netlock::NetHeld;
+use hal::sync::percpu::Counters;
 use hal::sys::errno::Errno;
 use hal::sys::net_route::RTF_LOCAL;
 use hal::sys::netinet_in::{INADDR_ANY, IPPROTO_ICMP, IPPROTO_TCP, IPPROTO_UDP, SockaddrIn};
@@ -647,13 +647,13 @@ mod tests {
         divert(&b, ifidx, PF_IN, 7000);
         let (name, data) = recv(&so).expect("diverted");
         assert_eq!(data, b);
-        let from = hal::pod::at::<SockaddrIn>(&name, 0).expect("a sockaddr_in");
+        let from = hal::mem::pod::at::<SockaddrIn>(&name, 0).expect("a sockaddr_in");
         assert_eq!(from.sin_addr.s_addr, u32::from_ne_bytes([10, 9, 80, 1]));
         // Outbound: from the wildcard.
         divert(&b, ifidx, PF_OUT, 7000);
         let (name, _) = recv(&so).expect("diverted");
         assert_eq!(
-            hal::pod::at::<SockaddrIn>(&name, 0).map(|s| s.sin_addr.s_addr),
+            hal::mem::pod::at::<SockaddrIn>(&name, 0).map(|s| s.sin_addr.s_addr),
             Some(0)
         );
         // Another port; an inbound packet of an interface that is gone.

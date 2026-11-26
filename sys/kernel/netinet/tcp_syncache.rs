@@ -203,12 +203,12 @@
 use core::mem::size_of;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use hal::malloc::{M_NOWAIT, M_WAITOK, MArray};
-use hal::mutex::MutexedGuard;
-use hal::netlock::{NETLOCK, NetHeld};
-use hal::pod;
-use hal::pool::{AnyArc, PR_NOWAIT, PoolArc};
-use hal::rwlock::WitnessPart;
+use hal::mem::malloc::{M_NOWAIT, M_WAITOK, MArray};
+use hal::mem::pod;
+use hal::mem::pool::{AnyArc, PR_NOWAIT, PoolArc};
+use hal::sync::mutex::MutexedGuard;
+use hal::sync::netlock::{NETLOCK, NetHeld};
+use hal::sync::rwlock::WitnessPart;
 use hal::sys::endian::{htonl, htons, ntohl};
 use hal::sys::errno::Errno;
 use hal::sys::mbuf::MT_DATA;
@@ -395,7 +395,7 @@ pub fn syn_cache_rm<G: ProcGlue>(g: &mut ScGuard<'_, G>, sc: &SynCache<G>) -> Sc
         b[bucket].sch_length -= 1;
     });
     let listener = sc.sc_s.get_mut(g).sc_inplisten.take();
-    hal::pinlist::PinRing::<ScTpq<G>>::remove(g, sc);
+    hal::ds::pinlist::PinRing::<ScTpq<G>>::remove(g, sc);
     // The lists' handle (both memberships hold one), and the timer's: deleted, its argument
     // given back (the C's refcnt_rele of a pending timer; a running one has its own clone).
     let list = PoolArc::adopt(sc);
@@ -467,7 +467,7 @@ pub fn syn_cache_init<G: ProcGlue>() {
     // Initialize the syn cache pool.
     let _ = t
         .syn_cache_pool
-        .init_recorded(hal::intr::IPL_SOFTNET, 0, "syncache");
+        .init_recorded(hal::cpu::intr::IPL_SOFTNET, 0, "syncache");
 }
 
 /// `syn_cache_insert`: puts the new entry `sc` (its `[I]` members and its listener set, its
@@ -581,11 +581,11 @@ pub fn syn_cache_insert<G: ProcGlue>(
     };
     // The timer holds the entry's handle since `syn_cache_timer_set` (the caller's, before the
     // mutex); `syn_cache_rm` gives it back.
-    let _ = hal::pin::project(sc.as_pin(), |s| &s.sc_timer).add_msec(u64::from(rxtcur));
+    let _ = hal::ds::pin::project(sc.as_pin(), |s| &s.sc_timer).add_msec(u64::from(rxtcur));
 
     // Link it from tcpcb entry: the lists' handle, forgotten until syn_cache_rm adopts it.
     PoolArc::forget(sc.clone());
-    hal::pin::project(tp.cb, |c| &c.t_sc).insert_head(g, sc.as_pin());
+    hal::ds::pin::project(tp.cb, |c| &c.t_sc).insert_head(g, sc.as_pin());
 
     // Put it into the bucket.
     with_buckets(g, active, |b, g| {
@@ -659,7 +659,7 @@ pub fn syn_cache_timer<G: ProcGlue>(arg: &AnyArc) {
     // The re-arm under the mutex, as the C's: the item is pinned in its pool item, reached
     // through a counted handle for the projection.
     if let Some(h) = PoolArc::from_ref(sc) {
-        let _ = hal::pin::project(h.as_pin(), |s| &s.sc_timer).add_msec(u64::from(rxtcur));
+        let _ = hal::ds::pin::project(h.as_pin(), |s| &s.sc_timer).add_msec(u64::from(rxtcur));
     }
     drop(g);
 
@@ -685,7 +685,7 @@ pub fn syn_cache_timer<G: ProcGlue>(arg: &AnyArc) {
 /// not make sense to keep them (if there's no tcb entry, syn cache entry will never be used).
 pub fn syn_cache_cleanup<G: ProcGlue>(tp: &Tp<'_, '_, G>) {
     // NET_ASSERT_LOCKED(): `tp` carries its proof.
-    let ring = hal::pin::project(tp.cb, |c| &c.t_sc);
+    let ring = hal::ds::pin::project(tp.cb, |c| &c.t_sc);
     let mut g = net::<G>().tcp.syn_cache.lock();
     // LIST_FOREACH_SAFE: the first entry taken off until none is left, its handle counted
     // first (the ring lends it under the guard the removal takes).
@@ -1687,7 +1687,7 @@ mod tests {
 
     use std::vec::Vec;
 
-    use hal::pod;
+    use hal::mem::pod;
     use hal::sys::netinet_tcp::TCPOPT_MAXSEG;
 
     use super::*;
@@ -1820,7 +1820,7 @@ mod tests {
         assert!(lookup(&zeroed, &dst).is_none(), "the source compared whole");
         drop(found);
 
-        let net_w = hal::netlock::NETLOCK.read();
+        let net_w = hal::sync::netlock::NETLOCK.read();
         let held = NetHeld::of(&net_w).expect("the net lock");
         // A RST outside [irs, irs + 1] leaves the entry; inside, it zaps it.
         let reset = count(TcpstatCounters::TcpsScReset);

@@ -81,7 +81,7 @@
 //! ## Redesign
 //! - LZ's chains of `sys/queue.rs` `ListHead`s in a `StaticCell`, linked and unlinked in
 //!   `unsafe` blocks whose argument was the kernel lock (sys/ufs/ufs/ufs_ihash.rs:48-60,
-//!   :205-226) -> `hal::pinlist::PinList`s of the pinned inodes (pool items, unlinked by
+//!   :205-226) -> `hal::ds::pinlist::PinList`s of the pinned inodes (pool items, unlinked by
 //!   `ufs_reclaim` before the last handle drops them), bound to the kernel lock: a walk takes
 //!   `klock::reader()` (a per-CPU count, no interrupt level), an insertion or a removal
 //!   `klock::witness()` (the C's `XXXLOCKING` made the kernel lock's witness). The witness
@@ -99,9 +99,9 @@
 
 use core::pin::Pin;
 
-use hal::klock;
-use hal::malloc::{M_WAITOK, MArray};
-use hal::pinlist::PinList;
+use hal::ds::pinlist::PinList;
+use hal::mem::malloc::{M_WAITOK, MArray};
+use hal::sync::klock;
 use hal::sys::errno::Errno;
 use hal::sys::mount::MNT_RDONLY;
 use hal::sys::types::Dev;
@@ -265,8 +265,8 @@ pub fn ufs_ihashrem<G: ProcGlue>(ip: &Inode<G>) {
 mod tests {
     use std::vec::Vec;
 
-    use hal::intr::IPL_NONE;
-    use hal::pool::{BoxPool, PR_WAITOK, PoolArc, TypedPool};
+    use hal::cpu::intr::IPL_NONE;
+    use hal::mem::pool::{BoxPool, PR_WAITOK, PoolArc, TypedPool};
 
     use super::*;
     use crate::fs::subr::vput;

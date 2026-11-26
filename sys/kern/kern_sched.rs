@@ -54,10 +54,10 @@
 //!   no CPU.
 //!
 //! ## Redesign
-//! - LZ's run queues and CPU sets were `hal::list::List`s in each `cpu_info`'s
+//! - LZ's run queues and CPU sets were `hal::ds::list::List`s in each `cpu_info`'s
 //!   `schedstate_percpu` and `struct cpuset`s of `cpu_info` pointers (`cpuset_infos`, a table
 //!   behind an `unsafe impl Sync`), changed under the legacy `SCHED_LOCK` mutex. They are
-//!   `kernel::sched`'s now: the queues `PinList`s under `hal::thread::SCHED_LOCK`'s hold, the
+//!   `kernel::sched`'s now: the queues `PinList`s under `hal::cpu::thread::SCHED_LOCK`'s hold, the
 //!   sets bit sets of CPU numbers. A CPU's number is its `CPU_INFO_UNIT` (its `hal::cpu` core's
 //!   number, `cpu_attach`), and the way back to its `cpu_info` is [`cpu_info_by_number`], a
 //!   table of the CPUs [`sched_init_cpu`] saw.
@@ -72,8 +72,8 @@ use core::ffi::c_void;
 use core::ptr;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use hal::once::OnceStatic;
-use hal::thread::SchedHold;
+use hal::cpu::thread::SchedHold;
+use hal::sync::once::OnceStatic;
 
 use crate::kern::init_main::PROC0;
 use crate::kern::kern_clock::statclock;
@@ -155,7 +155,7 @@ pub fn sched_init() {
 /// `sched_init_cpu`: called from `main()` for the boot cpu, then it's the responsibility
 /// of the MD code (`cpu_attach`) to call it for all other cpus: the CPU's scheduler state,
 /// its four clock interrupts and its idle thread through the deferred kthread queue (at once
-/// once that queue has run); its SMR queue is `hal::smr`'s, a static (N6.0).
+/// once that queue has run); its SMR queue is `hal::sync::smr`'s, a static (N6.0).
 pub fn sched_init_cpu(ci: &'static CpuInfo) {
     let n = cpu_number_of(ci);
     if CPU_INFOS[n].set(ci).is_err() {
@@ -179,7 +179,7 @@ pub fn sched_kthreads_create(v: *mut c_void) {
     let n = idle_arg_cpu(v);
     let mut idle: Option<&'static Proc> = None;
     let made = kernel::fork::fork1_with(
-        hal::pin::pin_static(&PROC0),
+        hal::ds::pin::pin_static(&PROC0),
         FORK_SHAREVM | FORK_SHAREFILES | FORK_NOZOMBIE | FORK_SYSTEM | FORK_IDLE,
         kernel::fork::Start::Idle(n),
         &mut |p| idle = Some(p.as_static()),
@@ -187,7 +187,7 @@ pub fn sched_kthreads_create(v: *mut c_void) {
     let (Ok(_), Some(p)) = (made, idle) else {
         panic(format_args!("fork idle"));
     };
-    kernel::sched::set_idleproc::<G>(n, hal::pin::pin_static(p));
+    kernel::sched::set_idleproc::<G>(n, hal::ds::pin::pin_static(p));
 
     // Name it as specified.
     let num = NUM.fetch_add(1, Ordering::Relaxed);
@@ -205,7 +205,7 @@ pub fn sched_idle(v: *mut c_void) {
 /// `sched_exit`: the exiting thread `p` (the running one) goes to its CPU's dead threads and
 /// the CPU to its idle thread, which hands it to the reaper.
 pub fn sched_exit(p: &Proc) -> ! {
-    kernel::sched::sched_exit::<G>(hal::pin::pin_static(p.as_static()))
+    kernel::sched::sched_exit::<G>(hal::ds::pin::pin_static(p.as_static()))
 }
 
 /// `sched_toidle`: switches to the idle thread without saving the current context (the
@@ -217,7 +217,7 @@ pub fn sched_toidle() -> ! {
 /// `setrunqueue`: puts `p` on CPU `cpu`'s run queue for `prio` (`None`: `sched_choosecpu`'s
 /// choice), under the hold `h`.
 pub fn setrunqueue(h: &mut SchedHold, cpu: Option<usize>, p: &Proc, prio: u8) {
-    kernel::sched::setrunqueue(h, cpu, hal::pin::pin_static(p.as_static()), prio);
+    kernel::sched::setrunqueue(h, cpu, hal::ds::pin::pin_static(p.as_static()), prio);
 }
 
 /// `remrunqueue`: takes `p` off its run queue.

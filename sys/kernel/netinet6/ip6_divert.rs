@@ -67,9 +67,9 @@ use core::marker::PhantomData;
 use core::mem::size_of;
 use core::sync::atomic::Ordering;
 
-use hal::netlock::NetHeld;
-use hal::percpu::Counters;
-use hal::pool::PoolArc;
+use hal::mem::pool::PoolArc;
+use hal::sync::netlock::NetHeld;
+use hal::sync::percpu::Counters;
 use hal::sys::errno::Errno;
 use hal::sys::netinet_icmp6::Icmp6Hdr;
 use hal::sys::netinet_in::{IPPROTO_ICMPV6, IPPROTO_IPV6};
@@ -400,7 +400,7 @@ impl<G: ProcGlue> Usrreqs<G> for Divert6Usrreqs<G> {
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
-    use hal::pod;
+    use hal::mem::pod;
     use hal::sys::netinet6_in6::In6Addr;
 
     use super::*;

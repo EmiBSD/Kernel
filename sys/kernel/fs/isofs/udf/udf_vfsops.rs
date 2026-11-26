@@ -151,10 +151,10 @@ use core::marker::PhantomData;
 use core::mem::offset_of;
 use core::ptr;
 
-use hal::intr::IPL_NONE;
-use hal::malloc::{M_NOWAIT, M_WAITOK, MArc, MArray};
-use hal::pool::{PR_WAITOK, PoolArc};
-use hal::sleep::INFSLP;
+use hal::cpu::intr::IPL_NONE;
+use hal::mem::malloc::{M_NOWAIT, M_WAITOK, MArc, MArray};
+use hal::mem::pool::{PR_WAITOK, PoolArc};
+use hal::sync::sleep::INFSLP;
 use hal::sys::endian::{letoh16, letoh32};
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::FREAD;
@@ -376,7 +376,7 @@ fn checktag_at(b: &[u8], id: u16) -> Result<(), Errno> {
 /// The `T` member at `off` of the descriptor `b` (zero when `b` ends first, which a block of
 /// `um_bsize` bytes holding one of these descriptors never does).
 fn member<T: hal::user::AbiPod>(b: &[u8], off: usize) -> T {
-    hal::pod::at(b, off).unwrap_or_else(zeroed)
+    hal::mem::pod::at(b, off).unwrap_or_else(zeroed)
 }
 
 /// `udf_mountfs`: read the volume's structures from `devvp` and set up its umount, hung from
@@ -932,7 +932,7 @@ pub fn udf_get_spartmap<G: ProcGlue>(
     ump.um_psecs
         .set(i32::from(letoh16(pms.packet_len)) / ump.um_bsize.get());
 
-    let Some(loc0) = hal::pod::at::<u32>(st_loc, 0) else {
+    let Some(loc0) = hal::mem::pod::at::<u32>(st_loc, 0) else {
         return Err(Errno::EINVAL);
     };
     // Failed to read sparing table: the buffer released, the table freed.

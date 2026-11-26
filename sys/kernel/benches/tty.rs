@@ -186,7 +186,7 @@ impl ProcGlue for BenchGlue {
         kernel::tc::nanouptime()
     }
     fn process_ref(pr: &Process<Self>) -> proc::ProcessRef<Self> {
-        match hal::pool::PoolArc::from_ref(pr) {
+        match hal::mem::pool::PoolArc::from_ref(pr) {
             Some(a) => proc::StaticOrPooled::Pooled(a),
             None => std::process::exit(1),
         }
@@ -335,7 +335,8 @@ fn main() {
 
     // The primitives the ops are made of: the queue's lock (a `Mutexed` at IPL_TTY), and
     // what LZ's queues paid instead (`spltty()`/`splx()`, a raise of the level alone).
-    static TTY_MTX: hal::mutex::Mutexed<u64> = hal::mutex::Mutexed::new(hal::intr::IPL_TTY, 0);
+    static TTY_MTX: hal::sync::mutex::Mutexed<u64> =
+        hal::sync::mutex::Mutexed::new(hal::cpu::intr::IPL_TTY, 0);
     benches.push(Bench {
         name: "prim.tty-lock",
         ops: PRIM,
@@ -347,7 +348,7 @@ fn main() {
         name: "prim.spltty",
         ops: PRIM,
         f: Box::new(prim(|| {
-            let s = hal::intr::splraise(hal::intr::IPL_TTY);
+            let s = hal::cpu::intr::splraise(hal::cpu::intr::IPL_TTY);
             drop(black_box(s));
         })),
     });

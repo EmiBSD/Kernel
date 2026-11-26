@@ -36,16 +36,16 @@
 //! The SMR thread of `smr_call(9)` (`kern_smr.c`'s `smr_thread` and `smr_startup_thread`)
 //! and the scheduler's walk of the CPUs a grace period waits for (`smr_grace_wait`'s
 //! `CPU_INFO_FOREACH`, `CPU_IS_RUNNING` and `sched_peg_curproc`); the protocol it drives is
-//! `hal::smr`'s.
+//! `hal::sync::smr`'s.
 //!
 //! Upstream: sys/kern/kern_smr.c @ 3ce1f3f79392
 //! LZ: sys/kern/kern_smr.rs@3c62ede68802
 //!
 //! The thread runs without the kernel lock: it waits for dispatched calls
-//! (`hal::smr::wait`: "bored", then "pause" for `SMR_PAUSE` unless expedited), takes them all
-//! (`hal::smr::collect`), waits for a grace period over the scheduler's CPUs
+//! (`hal::sync::smr::wait`: "bored", then "pause" for `SMR_PAUSE` unless expedited), takes them all
+//! (`hal::sync::smr::collect`), waits for a grace period over the scheduler's CPUs
 //! ([`SchedCpus`]: the thread pegged to each running CPU whose view is behind, whose switch
-//! makes it pass `hal::smr::idle`), runs them in their order, and reports a round that took 2
+//! makes it pass `hal::sync::smr::idle`), runs them in their order, and reports a round that took 2
 //! seconds or more, at most once every 5 minutes (`ratecheck`).
 //!
 //! ## Deviations
@@ -53,21 +53,21 @@
 //!
 //! ## Redesign
 //! - LZ's `smr_thread` over `bsd`'s `msleep_nsec`, `SimpleqHead` and `getmicrouptime` (with
-//!   an `unsafe` concatenation) -> [`thread`] over `hal::smr`'s `wait`, `collect` and
+//!   an `unsafe` concatenation) -> [`thread`] over `hal::sync::smr`'s `wait`, `collect` and
 //!   `Batch::run` (which runs `smr_grace_wait` over the walk before any call), the kernel's
 //!   clock (`kernel::tc`) and `ratecheck` (`kernel::time`).
 //! - `smr_startup_thread`'s `kthread_create(smr_thread, NULL, NULL, "smr")` -> [`start`], a
 //!   kernel thread whose start is `kernel::fork::Start::Smr`.
-//! - `smr_grace_wait`'s machine walk -> [`SchedCpus`], the `hal::smr::CpuWalk` the thread
-//!   hands `hal::smr::Batch::run` (decision 39: a parameter, no bridge; `running` is the
-//!   walk's contract, `sys/hal/trust.rs`).
-//! - `smr_startup` is gone: `hal::smr`'s queues are statics (no `SIMPLEQ_INIT`) and the
-//!   wakeup timeout is gone with `smr_wakeup` (`hal::smr`'s notes).
-//! - `smr_barrier()`/`smr_flush()` are `hal::smr::barrier`, which needs no walk.
+//! - `smr_grace_wait`'s machine walk -> [`SchedCpus`], the `hal::sync::smr::CpuWalk` the thread
+//!   hands `hal::sync::smr::Batch::run` (decision 39: a parameter, no bridge; `running` is the
+//!   walk's contract, `sys/hal/mem/trust.rs`).
+//! - `smr_startup` is gone: `hal::sync::smr`'s queues are statics (no `SIMPLEQ_INIT`) and the
+//!   wakeup timeout is gone with `smr_wakeup` (`hal::sync::smr`'s notes).
+//! - `smr_barrier()`/`smr_flush()` are `hal::sync::smr::barrier`, which needs no walk.
 
 use core::marker::PhantomData;
 
-use hal::smr::{self, CpuWalk};
+use hal::sync::smr::{self, CpuWalk};
 
 use crate::assert::kpanic;
 use crate::clock::Timeval;
@@ -76,7 +76,7 @@ use crate::proc::ProcGlue;
 /// `smr_logintvl`: how often a slow round is reported.
 const SMR_LOGINTVL: Timeval = Timeval::new(300, 0);
 
-/// The CPUs as the scheduler of the glue `G` knows them: the `hal::smr::CpuWalk` of
+/// The CPUs as the scheduler of the glue `G` knows them: the `hal::sync::smr::CpuWalk` of
 /// `smr_grace_wait`.
 pub struct SchedCpus<G>(PhantomData<fn() -> G>);
 
@@ -118,8 +118,8 @@ pub fn start<G: ProcGlue>() {
 /// `smr_thread()`: collects the dispatched calls, waits for a grace period and runs them, for
 /// ever, without the kernel lock.
 pub fn thread<G: ProcGlue>() -> ! {
-    hal::klock::kernel_assert_locked(); // KERNEL_ASSERT_LOCKED()
-    hal::klock::kernel_unlock(); // KERNEL_UNLOCK()
+    hal::sync::klock::kernel_assert_locked(); // KERNEL_ASSERT_LOCKED()
+    hal::sync::klock::kernel_unlock(); // KERNEL_UNLOCK()
 
     let cpus = SchedCpus::<G>::new();
     let mut loglast = Timeval::new(0, 0);
@@ -186,7 +186,7 @@ mod tests {
 
     #[test]
     fn a_round_runs_the_calls_dispatched_before_it_after_the_pause() {
-        // The page system's lock keeps `hal::smr`'s queues from a test's reset meanwhile.
+        // The page system's lock keeps `hal::sync::smr`'s queues from a test's reset meanwhile.
         let _mem = testutil::MEMORY
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -194,12 +194,12 @@ mod tests {
         let before = CALLS.load(Ordering::SeqCst);
         for _ in 0..3 {
             smr::defer_link(
-                Box::leak(Box::new(hal::smr::SmrLink::new())),
+                Box::leak(Box::new(hal::sync::smr::SmrLink::new())),
                 count,
                 core::ptr::null_mut(),
             );
         }
-        hal::smr::idle(); // this CPU's quiescent state: its calls dispatched
+        hal::sync::smr::idle(); // this CPU's quiescent state: its calls dispatched
         let t = std::time::Instant::now();
         let mut loglast = Timeval::new(0, 0);
         assert_eq!(round(&Alone, &mut loglast), 3, "the batch, in one round");

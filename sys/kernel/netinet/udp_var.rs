@@ -55,7 +55,7 @@
 //! LZ: sys/netinet/udp_var.rs@3c62ede68802
 //!
 //! ## Deviations
-//! - `udpcounters` (`struct cpumem *`) is [`UDPCOUNTERS`], a `hal::percpu::Counters` here
+//! - `udpcounters` (`struct cpumem *`) is [`UDPCOUNTERS`], a `hal::sync::percpu::Counters` here
 //!   beside the enum that indexes it (TCP's form, `tcp_var.rs`); `counters_alloc` at
 //!   `udp_init` is its static initialiser.
 //!
@@ -67,7 +67,7 @@
 //!   counters, summed by `udp_sysctl`. `udbtable`, the requests and the prototypes are
 //!   `udp_usrreq`'s; `udp6_output` is `netinet6::udp6_output`'s.
 
-use hal::percpu::Counters;
+use hal::sync::percpu::Counters;
 
 /// `enum udpstat_counters`: the index of each `struct udpstat` member.
 #[repr(usize)]

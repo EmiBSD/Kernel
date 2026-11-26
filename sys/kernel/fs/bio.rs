@@ -196,13 +196,13 @@
 use core::ptr;
 use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, AtomicUsize, Ordering as Mem};
 
-use hal::intr::IPL_BIO;
-use hal::mutex::{Mutexed, MutexedGuard};
-use hal::once::OnceStatic;
-use hal::owned::{Member, OwnedList, SecondaryList, SecondaryRef, SecondaryTree};
-use hal::pool::{PR_NOWAIT, PR_WAITOK};
-use hal::rwlock::Guarded;
-use hal::sleep::{INFSLP, PRIBIO, curproc_word, sched_pause, wakeup};
+use hal::cpu::intr::IPL_BIO;
+use hal::ds::owned::{Member, OwnedList, SecondaryList, SecondaryRef, SecondaryTree};
+use hal::mem::pool::{PR_NOWAIT, PR_WAITOK};
+use hal::sync::mutex::{Mutexed, MutexedGuard};
+use hal::sync::once::OnceStatic;
+use hal::sync::rwlock::Guarded;
+use hal::sync::sleep::{INFSLP, PRIBIO, curproc_word, sched_pause, wakeup};
 use hal::sys::errno::Errno;
 use hal::sys::mount::Bcachestats;
 use hal::sys::param::PAGE_SIZE;
@@ -567,14 +567,14 @@ struct QueueNote {
     /// `bufq_wait`, and one meant for an earlier buffer at the same address (a note of the
     /// same key claimed again) can only name a queue that buffer went on: only the pacing of
     /// the writer can change, never a result.
-    bq: hal::link::Link<super::bufq::Bufq>,
+    bq: hal::ds::link::Link<super::bufq::Bufq>,
 }
 
 impl QueueNote {
     const fn new() -> Self {
         Self {
             word: AtomicUsize::new(0),
-            bq: hal::link::Link::new(),
+            bq: hal::ds::link::Link::new(),
         }
     }
 }

@@ -110,7 +110,7 @@
 //!   argument: a session without a group has no process that could read what the timeout
 //!   clears.
 //! - [`BsdThreadG::p_self`] records the thread's `&'static` where it is placed (`thread_new`,
-//!   `proc0`): the run, sleep and dead-thread queues (`hal::list`, until N4.5) take one, and
+//!   `proc0`): the run, sleep and dead-thread queues (`hal::ds::list`, until N4.5) take one, and
 //!   LZ's convention is that a thread reference lives until the reaper (`curproc()`,
 //!   `curthread`).
 //!
@@ -135,11 +135,11 @@
 //!
 //! ## Redesign
 //! - LZ's `Cell<*const T>` members of `struct process`/`struct proc` (`ps_fd`, `ps_opptr`,
-//!   `p_fd`, `ps_uvpaths`) are `hal::link::PtrWord`s (an address, read and
+//!   `p_fd`, `ps_uvpaths`) are `hal::ds::link::PtrWord`s (an address, read and
 //!   dereferenced by the legacy code as before); `ps_textvp` and `s_ttyvp` (and `s_ttyp`
 //!   until N4.7b, when it became the kernel `Session`'s counted handle and `pgrp_destroy`
 //!   went with it), whose targets the legacy code treats as `'static`, were
-//!   `hal::link::Link`s, read without `unsafe`, until N5.3 made them the kernel's
+//!   `hal::ds::link::Link`s, read without `unsafe`, until N5.3 made them the kernel's
 //!   (`Process::textvp`, `Session::ttyvp`); the plain members are atomic words with LZ's
 //!   `get()`/`set()` ([`ItimerWord`], [`IsizeWord`]), so every value is `Send` and `Sync`
 //!   without a premise, as a pooled kernel object requires.
@@ -155,9 +155,9 @@ use core::pin::Pin;
 use core::ptr;
 use core::sync::atomic::{AtomicI64, AtomicIsize, Ordering};
 
-use hal::link::{Link, PtrWord};
-use hal::pool::PoolArc;
-use hal::rwlock::Witness;
+use hal::ds::link::{Link, PtrWord};
+use hal::mem::pool::PoolArc;
+use hal::sync::rwlock::Witness;
 use kernel::api::SysResult;
 use kernel::proc::{
     I32Word, Placed, ProcGlue, ProcTables, StaticOrPooled, UsizeWord, pgfind as k_pgfind,
@@ -571,7 +571,7 @@ impl ProcGlue for BsdProcGlue {
     }
 
     fn with_curproc<R>(f: impl FnOnce(Option<&Proc>) -> R) -> R {
-        hal::thread::try_with_current::<Proc, R>(|p| f(p.map(core::pin::Pin::get_ref)))
+        hal::cpu::thread::try_with_current::<Proc, R>(|p| f(p.map(core::pin::Pin::get_ref)))
     }
 
     fn pledge_fail(p: &Proc, error: Errno, code: u64) -> Errno {
@@ -610,17 +610,17 @@ impl ProcGlue for BsdProcGlue {
     /// around it as the C's.
     #[cfg(feature = "syscall_debug")]
     fn scdebug_call(p: &Proc, code: Register, args: &SysArgs) {
-        hal::klock::kernel_lock(); // KERNEL_LOCK()
+        hal::sync::klock::kernel_lock(); // KERNEL_LOCK()
         crate::kern::kern_xxx::scdebug_call(p, code, args);
-        hal::klock::kernel_unlock(); // KERNEL_UNLOCK()
+        hal::sync::klock::kernel_unlock(); // KERNEL_UNLOCK()
     }
 
     /// `scdebug_ret` under the feature `syscall_debug`.
     #[cfg(feature = "syscall_debug")]
     fn scdebug_ret(p: &Proc, code: Register, error: Result<(), Errno>, retval: &[Register; 2]) {
-        hal::klock::kernel_lock(); // KERNEL_LOCK()
+        hal::sync::klock::kernel_lock(); // KERNEL_LOCK()
         crate::kern::kern_xxx::scdebug_ret(p, code, error.err().map_or(0, |e| e as i32), retval);
-        hal::klock::kernel_unlock(); // KERNEL_UNLOCK()
+        hal::sync::klock::kernel_unlock(); // KERNEL_UNLOCK()
     }
 
     fn maxprocess() -> i32 {
@@ -644,7 +644,7 @@ impl ProcGlue for BsdProcGlue {
     /// kernel's `ffs_write`'s `vn_fsizechk` (LZ's `vn_fsizechk` adapter's pin).
     fn thread_pin(p: &Proc) -> Option<core::pin::Pin<&Proc>> {
         use crate::sys::proc::ProcExt;
-        Some(hal::pin::pin_static(p.as_static()))
+        Some(hal::ds::pin::pin_static(p.as_static()))
     }
 
     /// `timeout_set_flags(&pr->ps_realit_to, realitexpire, pr, KCLOCK_UPTIME, 0)`.
@@ -839,7 +839,7 @@ impl ProcGlue for BsdProcGlue {
 /// `s_verauthto`'s function: `zapverauth` of the session at `arg` (a timeout without
 /// `TIMEOUT_MPSAFE` runs under the kernel lock).
 fn zapverauth_timeout(arg: *mut c_void) {
-    let r = hal::klock::reader();
+    let r = hal::sync::klock::reader();
     if let Some(sess) = kernel::proc::session_find::<BsdProcGlue, _>(&r, arg.addr()) {
         zapverauth(sess);
     }
@@ -901,7 +901,7 @@ pub fn process_ref(pr: &Process) -> ProcessRef {
 pub fn allprocess_rescan(mut pick: impl FnMut(&Process) -> bool, mut work: impl FnMut(&Process)) {
     loop {
         let next = {
-            let r = hal::klock::reader();
+            let r = hal::sync::klock::reader();
             proc_tables()
                 .allprocess
                 .iter(&r)
@@ -918,20 +918,20 @@ pub fn allprocess_rescan(mut pick: impl FnMut(&Process) -> bool, mut work: impl 
 /// `prfind(pid)`, counted, for a holder of the kernel lock who keeps the process past the
 /// lookup (a sleep, a copy, a signal).
 pub fn prfind_ref(pid: Pid) -> Option<ProcessRef> {
-    let r = hal::klock::reader();
+    let r = hal::sync::klock::reader();
     prfind(&r, pid).map(process_ref)
 }
 
 /// `pr->ps_pgrp`, counted, for a holder of the kernel lock who keeps it past the reader
 /// (a sleep, a signal); `None` for a process in no group yet.
 pub fn pgrp_of(pr: &Process) -> Option<PgrpRef> {
-    let r = hal::klock::reader();
+    let r = hal::sync::klock::reader();
     pr.pgrp(&r).cloned()
 }
 
 /// `pr->ps_session`, counted, for a holder of the kernel lock who keeps it past the reader.
 pub fn session_of(pr: &Process) -> Option<crate::sys::proc::SessionRef> {
-    let r = hal::klock::reader();
+    let r = hal::sync::klock::reader();
     pr.pgrp(&r).and_then(|pg| pg.pg_session.get(&r).clone())
 }
 
@@ -969,7 +969,7 @@ pub fn with_uidinfo<R>(
 
 /// The thread `p` of a system call, pinned (`bsd`'s threads are placed, `ProcExt::as_static`).
 fn pinned(p: &Proc) -> Pin<&'static Proc> {
-    hal::pin::pin_static(crate::sys::proc::ProcExt::as_static(p))
+    hal::ds::pin::pin_static(crate::sys::proc::ProcExt::as_static(p))
 }
 
 /// `fork(2)`.
@@ -1609,7 +1609,7 @@ pub(crate) fn test_pooled_process(pid: Pid) -> &'static Process {
 pub(crate) fn test_proc(pid: Pid, cr: kernel::cred::CredRef) -> &'static Proc {
     let pr = test_pooled_process(pid);
     let p = test_thread(pr);
-    pr.set_main_static(hal::pin::pin_static(p));
+    pr.set_main_static(hal::ds::pin::pin_static(p));
     drop(p.set_cred(cr.clone()));
     drop(pr.set_ucred(cr));
     p
@@ -1706,7 +1706,7 @@ mod tests {
 
     /// `pr` on `allprocess` and its pid chain (what `fork1` does), under the kernel lock.
     fn link(pr: &'static Process) {
-        let mut w = hal::klock::witness();
+        let mut w = hal::sync::klock::witness();
         let t = proc_tables();
         t.allprocess.insert_head(&mut w, Pin::static_ref(pr));
         t.pidhash(pr.ps_pid)
@@ -1715,7 +1715,7 @@ mod tests {
 
     /// `pr` off them again.
     fn unlink(pr: &'static Process) {
-        let mut w = hal::klock::witness();
+        let mut w = hal::sync::klock::witness();
         let t = proc_tables();
         t.allprocess.remove(&mut w, pr);
         t.pidhash(pr.ps_pid).remove(&mut w, pr);
@@ -1859,14 +1859,14 @@ mod tests {
             &sess
         ));
         {
-            let r = hal::klock::reader();
+            let r = hal::sync::klock::reader();
             assert!(ptr::eq(session_leader(&r, &sess).expect("its leader"), pr));
             assert!(ptr::eq(pgfind(&r, 90).expect("the group"), &*pg));
             assert!(StaticOrPooled::ptr_eq(&pgrp_ref(&pg), &pg));
         }
         sess.set_leader(None);
         {
-            let r = hal::klock::reader();
+            let r = hal::sync::klock::reader();
             assert!(session_leader(&r, &sess).is_none());
         }
         unlink(pr);
@@ -1906,7 +1906,7 @@ mod tests {
         let continued = child(503, 1003, PS_CONTINUED);
         kernel_lock();
         {
-            let mut w = hal::klock::witness();
+            let mut w = hal::sync::klock::witness();
             for pr in [zombie, stopped, continued] {
                 parent.ps_children.insert_head(&mut w, Pin::static_ref(pr));
             }
@@ -1935,7 +1935,7 @@ mod tests {
             assert_eq!(info.si_status(), status, "pid {pid}");
         }
         {
-            let mut w = hal::klock::witness();
+            let mut w = hal::sync::klock::witness();
             for pr in [zombie, stopped, continued] {
                 parent.ps_children.remove(&mut w, pr);
             }
@@ -1955,19 +1955,19 @@ mod tests {
         let (pg, _sess) = test_setsid(parent);
         kernel_lock();
         {
-            let mut w = hal::klock::witness();
+            let mut w = hal::sync::klock::witness();
             pg.pg_members.insert_head(&mut w, Pin::static_ref(other));
             drop(other.set_pgrp(&mut w, Some(pg.clone())));
         }
         let first = process_ref(test_pooled_process(602));
         let second = process_ref(test_pooled_process(603));
         {
-            let mut w = hal::klock::witness();
+            let mut w = hal::sync::klock::witness();
             kernel::fork::fork_join_pgrp(&mut w, parent, &first);
             kernel::fork::fork_join_pgrp(&mut w, parent, &second);
         }
         {
-            let r = hal::klock::reader();
+            let r = hal::sync::klock::reader();
             let pids: std::vec::Vec<Pid> = pg.pg_members.iter(&r).map(|p| p.ps_pid).collect();
             assert_eq!(pids, [601, 600, 603, 602]);
             assert!(StaticOrPooled::ptr_eq(

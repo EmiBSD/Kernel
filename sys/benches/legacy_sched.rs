@@ -39,7 +39,7 @@
 //! - `prim.sched-lock`: the scheduler lock taken and released (`SCHED_LOCK`/`SCHED_UNLOCK`).
 //! - `prim.mtx-enter-leave`: a `mutex(9)` at `IPL_NONE` entered and left (the control: no
 //!   scheduler change touches it).
-//! - `prim.mtx-sched`, `prim.hal-mutex-sched`: a `mutex(9)` and a `hal::mutex::Mutexed` at
+//! - `prim.mtx-sched`, `prim.hal-mutex-sched`: a `mutex(9)` and a `hal::sync::mutex::Mutexed` at
 //!   `IPL_SCHED` entered and left: what the legacy and the `hal` scheduler lock are made of.
 //! - `prim.curcpu-hal`: `hal::cpu::curcpu()`, the running CPU's core (a thread-local on the
 //!   host, `TPIDR_EL1` on arm64), which every `hal` mutex reads for its owner word.
@@ -259,8 +259,8 @@ fn main() {
     }
 
     if wanted(names[7]) {
-        let mtx: &'static hal::mutex::Mutexed<()> =
-            Box::leak(Box::new(hal::mutex::Mutexed::new(IPL_SCHED, ())));
+        let mtx: &'static hal::sync::mutex::Mutexed<()> =
+            Box::leak(Box::new(hal::sync::mutex::Mutexed::new(IPL_SCHED, ())));
         let r = measure(N * ROUNDS, || {
             let t = Instant::now();
             for _ in 0..N * ROUNDS {

@@ -120,10 +120,10 @@
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use hal::intr::{IPL_BIO, splraise};
-use hal::malloc::{M_WAITOK, MArc, MBox};
-use hal::pool::AnyArc;
-use hal::sleep::tsleep_nsec;
+use hal::cpu::intr::{IPL_BIO, splraise};
+use hal::mem::malloc::{M_WAITOK, MArc, MBox};
+use hal::mem::pool::AnyArc;
+use hal::sync::sleep::tsleep_nsec;
 use hal::sys::dirent::MAXNAMLEN;
 use hal::sys::errno::Errno;
 use hal::sys::mount::{
@@ -483,7 +483,7 @@ pub fn nfs_mountroot<G: ProcGlue>(swdev0: &AtomicI32, swapdev: i32) -> Result<()
 /// `nfs_diskless` of the glue's tables.
 #[cfg(feature = "nfsclient")]
 fn vfs_nfs_diskless<G: ProcGlue>()
--> &'static hal::mutex::Mutexed<Option<super::nfsdiskless::NfsDiskless<G>>> {
+-> &'static hal::sync::mutex::Mutexed<Option<super::nfsdiskless::NfsDiskless<G>>> {
     &crate::fs::subr::vfs::<G>().nfs.nfs_diskless
 }
 
@@ -673,7 +673,7 @@ pub fn nfs_decode_args<G: ProcGlue>(nmp: &NfsMount<G>, argp: &NfsArgs, nargp: &m
     }
 
     let connected = {
-        let r = hal::klock::reader();
+        let r = hal::sync::klock::reader();
         nmp.nm_so.get(&r).is_some()
     };
     if adjsock && connected {
@@ -1238,9 +1238,9 @@ mod tests {
 
     /// `nfs_decode_args` with the kernel lock held (its socket test reads under it).
     fn decode(nmp: &NfsMount<G>, a: &NfsArgs, out: &mut NfsArgs) {
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         nfs_decode_args(nmp, a, out);
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
     }
 
     fn ld(a: &AtomicI32) -> i32 {

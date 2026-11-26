@@ -38,9 +38,9 @@ use std::collections::HashMap;
 use std::sync::MutexGuard;
 use std::vec::Vec;
 
-use hal::intr::IPL_NONE;
-use hal::malloc::MArc;
-use hal::pool::{BoxPool, PR_WAITOK, PoolArc, TypedPool};
+use hal::cpu::intr::IPL_NONE;
+use hal::mem::malloc::MArc;
+use hal::mem::pool::{BoxPool, PR_WAITOK, PoolArc, TypedPool};
 use hal::sys::errno::Errno;
 use hal::sys::mount::{Fid, MNT_LOCAL, Statfs};
 use hal::sys::types::{Daddr, Ino, Mode, Off, Uid};

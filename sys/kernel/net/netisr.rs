@@ -74,7 +74,7 @@ use core::ffi::c_void;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use hal::netlock::{NETLOCK, NetHeld};
+use hal::sync::netlock::{NETLOCK, NetHeld};
 
 use crate::net::domain::net;
 use crate::net::if_::net_tq;

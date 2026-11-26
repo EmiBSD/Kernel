@@ -497,7 +497,7 @@ pub struct Vmxnet3Txqueue {
     /// `ifq`.
     pub ifq: Cell<Option<&'static Ifqueue>>,
     /// `bpfp`: the queue's `bpf(4)` tap word (the queue's `bpf`).
-    pub bpfp: hal::link::Link<BpfTap>,
+    pub bpfp: hal::ds::link::Link<BpfTap>,
     // NKSTAT > 0: txkstat; kstat(4) is not configured.
     /// `queue`.
     pub queue: Cell<u32>,
@@ -799,8 +799,8 @@ impl Vmxnet3Softc {
 
 // SAFETY: `#[repr(C)]` with the device first; the arpcom and the ifmedia are all-zero valid
 // (`netinet/if_ether.rs`, `net/if_media.rs`), and every other member is a `Cell` of an
-// integer, a pointer or an `Option`, a `hal::link::Link` (an atomic pointer: zero is none) or
-// a queue's `BpfTap` (`hal::smr::SmrArcWord`, an atomic pointer and a marker: zero is no tap,
+// integer, a pointer or an `Option`, a `hal::ds::link::Link` (an atomic pointer: zero is none) or
+// a queue's `BpfTap` (`hal::sync::smr::SmrArcWord`, an atomic pointer and a marker: zero is no tap,
 // hal's `an_all_zero_counted_word_is_null`).
 unsafe impl Softc for Vmxnet3Softc {}
 

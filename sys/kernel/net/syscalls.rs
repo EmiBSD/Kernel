@@ -137,7 +137,7 @@
 use core::ptr;
 use core::sync::atomic::Ordering;
 
-use hal::sleep::{INFSLP, PCATCH};
+use hal::sync::sleep::{INFSLP, PCATCH};
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::{F_GETLK, F_POSIX, F_UNLCK, F_WRLCK, FNONBLOCK, FREAD, FWRITE, Flock};
 use hal::sys::limits::UCHAR_MAX;
@@ -1409,9 +1409,9 @@ pub fn sys_ypconnect<G: ProcGlue>(p: &Thread<G>, type_: i32) -> Result<i32, Errn
     if p.process().ps_flags.load(Ordering::Relaxed) & PS_CHROOT != 0 {
         return Err(Errno::EACCES);
     }
-    hal::klock::kernel_lock();
+    hal::sync::klock::kernel_lock();
     let data = ypbinding_read(p, domain);
-    hal::klock::kernel_unlock();
+    hal::sync::klock::kernel_unlock();
     let data = data?;
 
     let port_at = if type_ == SOCK_STREAM {

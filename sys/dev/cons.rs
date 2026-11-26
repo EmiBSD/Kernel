@@ -172,7 +172,7 @@ pub fn cn_devvp_set() -> bool {
 
 /// `constty = tp` (the kernel's, counted: `tp` is a tty of `ttymalloc`, which every tty is).
 pub fn set_constty(tp: Option<&Tty>) {
-    kernel::tty::set_constty::<BsdProcGlue>(tp.and_then(hal::pool::PoolArc::from_ref));
+    kernel::tty::set_constty::<BsdProcGlue>(tp.and_then(hal::mem::pool::PoolArc::from_ref));
 }
 
 /// `cnopen`: always open the 'real' console device, so we don't get nailed later. This

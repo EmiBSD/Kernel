@@ -151,7 +151,7 @@
 //!   slot's count keeps the pcb from `tcp_close`'s `in_pcbdetach` to then. `SO_DEBUG`'s
 //!   `otp` is the block's address before the request, never followed.
 //! - `tcp_ident` reads the two `sockaddr_storage`s whole and takes `sockaddr_in` or
-//!   `sockaddr_in6` from their first bytes by family (`hal::pod::at`), never cut at
+//!   `sockaddr_in6` from their first bytes by family (`hal::mem::pod::at`), never cut at
 //!   `sa_len`: the C's casts. `TCPCTL_DROP` drops the connection under its socket's lock
 //!   taken by `in_pcbsolock` (the C's), the pcb counted by the lookup until after the unlock.
 //! - `tcp_sysctl`'s port bitmaps go through the C's `malloc(M_SYSCTL)` buffer (an `MArray`,
@@ -172,9 +172,9 @@ use core::marker::PhantomData;
 use core::mem::size_of;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use hal::netlock::{NETLOCK, NetHeld};
-use hal::pool::PoolArc;
-use hal::rwlock::{RW_INTR, WitnessPart};
+use hal::mem::pool::PoolArc;
+use hal::sync::netlock::{NETLOCK, NetHeld};
+use hal::sync::rwlock::{RW_INTR, WitnessPart};
 use hal::sys::errno::Errno;
 use hal::sys::netinet_in::{INADDR_ANY, INADDR_BROADCAST, IPPROTO_TCP, SockaddrIn, in_multicast};
 use hal::sys::netinet_tcp::{
@@ -1192,7 +1192,7 @@ enum IdentAddrs {
 
 /// The `T` at the start of a `sockaddr_storage`, the storage read whole (the C's cast).
 fn storage_as<T: AbiPod>(ss: &hal::sys::socket::SockaddrStorage) -> Option<T> {
-    hal::pod::at(bytes_of(core::slice::from_ref(ss)), 0)
+    hal::mem::pod::at(bytes_of(core::slice::from_ref(ss)), 0)
 }
 
 /// `tcp_ident`: look up a socket for ident or tcpdrop, ... (`TCPCTL_IDENT`: the user ids of
@@ -1855,7 +1855,7 @@ mod tests {
 
     use std::vec::Vec;
 
-    use hal::netlock::{NETLOCK, NetHeld};
+    use hal::sync::netlock::{NETLOCK, NetHeld};
     use hal::sys::netinet_in::InAddr;
     use hal::sys::netinet_ip::Ip;
     use hal::sys::netinet_tcp::{TH_ACK, TH_FIN, TH_SYN, Tcphdr};
@@ -1925,8 +1925,8 @@ mod tests {
         };
         th.set_th_off((thlen / 4) as u8);
         let mut p = std::vec![0u8; len];
-        assert!(hal::pod::put(&mut p, 0, &ip));
-        assert!(hal::pod::put(&mut p, 20, &th));
+        assert!(hal::mem::pod::put(&mut p, 0, &ip));
+        assert!(hal::mem::pod::put(&mut p, 20, &th));
         p[40..40 + opts.len()].copy_from_slice(opts);
         p[20 + thlen..].copy_from_slice(data);
         let mut m = m_gethdr(M_DONTWAIT, MT_DATA).expect("an mbuf");
@@ -2312,7 +2312,7 @@ mod tests {
         let info = || -> TcpInfo {
             let b = get(&so, TCP_INFO).expect("TCP_INFO");
             assert_eq!(b.len(), size_of::<TcpInfo>());
-            hal::pod::at(&b, 0).expect("the structure")
+            hal::mem::pod::at(&b, 0).expect("the structure")
         };
         let root = info();
         assert_eq!(i32::from(root.tcpi_state), TCPS_ESTABLISHED);
@@ -2355,10 +2355,10 @@ mod tests {
             ..SockaddrIn::default()
         };
         let mut b = [0u8; size_of::<hal::sys::socket::SockaddrStorage>()];
-        assert!(hal::pod::put(&mut b, 0, &sin(f)));
-        t.faddr = hal::pod::at(&b, 0).expect("a storage");
-        assert!(hal::pod::put(&mut b, 0, &sin(l)));
-        t.laddr = hal::pod::at(&b, 0).expect("a storage");
+        assert!(hal::mem::pod::put(&mut b, 0, &sin(f)));
+        t.faddr = hal::mem::pod::at(&b, 0).expect("a storage");
+        assert!(hal::mem::pod::put(&mut b, 0, &sin(l)));
+        t.laddr = hal::mem::pod::at(&b, 0).expect("a storage");
         t
     }
 
@@ -2519,10 +2519,12 @@ mod tests {
         // The reassembly limit is the "tcpqe" pool's hard limit: refused below the items out.
         let reass = TCP_REASS_LIMIT.load(Ordering::Relaxed);
         let held = TCPQE_POOL
-            .get(hal::pool::PR_WAITOK, || crate::netinet::tcp_var::Tcpqent {
-                tcpqe_q: hal::owned::SlistLink::new(),
-                tcpqe_tcp: hal::sys::netinet_tcp::Tcphdr::default(),
-                tcpqe_m: None,
+            .get(hal::mem::pool::PR_WAITOK, || {
+                crate::netinet::tcp_var::Tcpqent {
+                    tcpqe_q: hal::ds::owned::SlistLink::new(),
+                    tcpqe_tcp: hal::sys::netinet_tcp::Tcphdr::default(),
+                    tcpqe_m: None,
+                }
             })
             .expect("an entry");
         assert_eq!(

@@ -105,7 +105,7 @@
 //!
 //! ## Redesign
 //! - The C's circular queues (`struct circq`, the `CIRCQ_*` macros, `timeout_from_circq`'s
-//!   cast; LZ: `circq_*` `unsafe fn`s over `Cell<*const Circq>`) are `hal::pinlist::PinRing`s:
+//!   cast; LZ: `circq_*` `unsafe fn`s over `Cell<*const Circq>`) are `hal::ds::pinlist::PinRing`s:
 //!   a timeout is linked through `Pin<&Timeout>` (a `static`, a pool item, a stack frame:
 //!   `core::pin::pin!`), its entry checked unlinked when it is dropped, and `CIRCQ_REMOVE`
 //!   names no queue, as the C's. The 2052 heads are a `static` (`pin_static`); the queues are
@@ -133,7 +133,7 @@
 //!   never while the node is still on the queue.
 //! - `timeout_startup` takes `hz`, `tick` and `tick_nsec` as data (`bsd`'s `conf/param.rs`,
 //!   never changed after boot); `softintr_establish` and `kthread_create[_deferred]` go through
-//!   `hal::softintr` (`hal`'s own since N4.5c) and `kernel::thread` (`kernel::fork`'s since
+//!   `hal::cpu::softintr` (`hal`'s own since N4.5c) and `kernel::thread` (`kernel::fork`'s since
 //!   N4.6a),
 //!   `nanouptime` is `kernel::tc`'s (through `kernel::clock`'s re-export; the `Uptime`
 //!   bridge is gone since N5.0).
@@ -141,7 +141,7 @@
 //!   `tostat` it takes under the lock, in the C's field order.
 //! - N4.4: a timeout whose function dereferenced its `void *` (kqueue's `filt_timerexpire`,
 //!   the knote) takes a counted, erased argument instead ([`Timeout::set_shared`],
-//!   `hal::pool::AnyArc`): the timeout holds the handle until it is set again or cleared
+//!   `hal::mem::pool::AnyArc`): the timeout holds the handle until it is set again or cleared
 //!   ([`Timeout::clear`]), the wheel clones it under its lock for the call, and the function
 //!   gets its object back by naming its type. The C's `fn(void *)` stays for the callers that
 //!   pass an address or nothing (`TimeoutFn`, the legacy adapter's).
@@ -151,15 +151,15 @@ use core::pin::Pin;
 use core::ptr;
 use core::sync::atomic::{AtomicI32, AtomicPtr, AtomicU32, Ordering};
 
-use hal::intr::{IPL_HIGH, IPL_SOFTCLOCK};
-use hal::mutex::{Mutexed, MutexedGuard};
-use hal::once::OnceStatic;
-use hal::pin::pin_static;
-use hal::pinlist::{BoundRing, PinEntry, PinRing};
-use hal::pool::AnyArc;
-use hal::rwlock::Guarded;
-use hal::sleep::{INFSLP, PSWP, PWAIT};
-use hal::softintr::SoftHandle;
+use hal::cpu::intr::{IPL_HIGH, IPL_SOFTCLOCK};
+use hal::cpu::softintr::SoftHandle;
+use hal::ds::pin::pin_static;
+use hal::ds::pinlist::{BoundRing, PinEntry, PinRing};
+use hal::mem::pool::AnyArc;
+use hal::sync::mutex::{Mutexed, MutexedGuard};
+use hal::sync::once::OnceStatic;
+use hal::sync::rwlock::Guarded;
+use hal::sync::sleep::{INFSLP, PSWP, PWAIT};
 
 use crate::assert::{kassert, kpanic};
 use crate::clock::{self, TICKS, Timespec};
@@ -247,7 +247,7 @@ enum Call {
 /// `struct timeout`. Not `Unpin`: it is linked into the wheel's queues through `Pin<&Self>`
 /// and must stay where it is while it is pending (a `static`, a pool item, `core::pin::pin!`).
 pub struct Timeout {
-    /// `to_list`: the queue entry (`hal::pinlist`).
+    /// `to_list`: the queue entry (`hal::ds::pinlist`).
     entry: PinEntry<Timeout>,
     /// \[T\] `to_func`, `to_kclock`, `to_abstime`.
     st: Guarded<ToState>,
@@ -586,9 +586,9 @@ impl Timeout {
         // barrier to run, so we just have to wait for it to pick up the barrier now.
         let chan = ptr::from_ref(&*barrier);
         loop {
-            hal::sleep::sleep_setup(chan, PWAIT, "tmobar");
+            hal::sync::sleep::sleep_setup(chan, PWAIT, "tmobar");
             let wait = !barrier.barrier_ran();
-            let _ = hal::sleep::sleep_finish(INFSLP, wait);
+            let _ = hal::sync::sleep::sleep_finish(INFSLP, wait);
             if !wait {
                 break;
             }
@@ -901,7 +901,8 @@ pub fn startup(hz: i32, tick: i32, tick_nsec: i32) {
 /// `softclock` threads deferred until threads can be made. Panics, as the C, when the soft
 /// interrupt cannot be had.
 pub fn proc_init() {
-    let Some(si) = hal::softintr::establish(IPL_SOFTCLOCK, softclock_si, core::ptr::null_mut())
+    let Some(si) =
+        hal::cpu::softintr::establish(IPL_SOFTCLOCK, softclock_si, core::ptr::null_mut())
     else {
         kpanic(format_args!(
             "timeout_proc_init: unable to register softclock interrupt"
@@ -1188,10 +1189,10 @@ pub fn softclock() {
     drop(g);
 
     if needsproc {
-        hal::sleep::wakeup(ptr::from_ref(Ctx::Proc.todo()));
+        hal::sync::sleep::wakeup(ptr::from_ref(Ctx::Proc.todo()));
     }
     if need_proc_mp {
-        hal::sleep::wakeup(ptr::from_ref(Ctx::ProcMp.todo()));
+        hal::sync::sleep::wakeup(ptr::from_ref(Ctx::ProcMp.todo()));
     }
 }
 
@@ -1214,9 +1215,9 @@ fn softclock_thread_run(ctx: Ctx) -> ! {
         // Avoid holding both timeout_mutex and SCHED_LOCK at the same time: the queue is
         // looked at between sleep_setup and sleep_finish, each of which takes and releases
         // the scheduler's lock (the C reads it bare; here the wheel's lock is taken briefly).
-        hal::sleep::sleep_setup(ptr::from_ref(todo), PSWP, "tmoslp");
+        hal::sync::sleep::sleep_setup(ptr::from_ref(todo), PSWP, "tmoslp");
         let empty = todo.is_empty(&WHEEL.lock());
-        let _ = hal::sleep::sleep_finish(INFSLP, empty);
+        let _ = hal::sync::sleep::sleep_finish(INFSLP, empty);
 
         let mut g = WHEEL.lock();
         g.stat.tos_thread_wakeups += 1;
@@ -1235,17 +1236,17 @@ fn softclock_thread_run(ctx: Ctx) -> ! {
 /// `softclock_thread()`: runs the `TIMEOUT_PROC` timeouts, under the kernel lock, pegged to
 /// the primary CPU ("be conservative for the moment"), at `splsoftclock`.
 pub(crate) fn softclock_thread() -> ! {
-    hal::klock::kernel_assert_locked();
+    hal::sync::klock::kernel_assert_locked();
     thread::peg_to_primary_cpu();
-    let _s = hal::intr::splraise(IPL_SOFTCLOCK);
+    let _s = hal::cpu::intr::splraise(IPL_SOFTCLOCK);
     softclock_thread_run(Ctx::Proc)
 }
 
 /// `softclock_thread_mp()`: runs the `TIMEOUT_PROC | TIMEOUT_MPSAFE` timeouts without the
 /// kernel lock, on any CPU.
 pub(crate) fn softclock_thread_mp() -> ! {
-    hal::klock::kernel_assert_locked();
-    hal::klock::kernel_unlock();
+    hal::sync::klock::kernel_assert_locked();
+    hal::sync::klock::kernel_unlock();
     softclock_thread_run(Ctx::ProcMp)
 }
 
@@ -1283,7 +1284,7 @@ pub fn stats() -> [u64; 12] {
 /// the waiter's channel; the waiter's condition is the barrier's `TIMEOUT_TRIGGERED` and its
 /// unlinked entry, both set under the lock when the context took it.
 fn barrier_signal(arg: *mut c_void) {
-    hal::sleep::wakeup_one(arg.cast_const());
+    hal::sync::sleep::wakeup_one(arg.cast_const());
 }
 
 // The wheel is cheap to lock but hot: the hot paths' shape (decision 43) keeps one lock, one
@@ -1749,12 +1750,12 @@ pub(crate) mod tests {
     #[test]
     fn a_shared_timeout_runs_with_its_counted_argument_until_cleared() {
         let _g = setup();
-        static P: hal::pool::TypedPool<Shared> = hal::pool::TypedPool::new();
+        static P: hal::mem::pool::TypedPool<Shared> = hal::mem::pool::TypedPool::new();
         static MADE: std::sync::Once = std::sync::Once::new();
-        MADE.call_once(|| P.init(0, hal::pool::PR_WAITOK, "sharedto").unwrap());
+        MADE.call_once(|| P.init(0, hal::mem::pool::PR_WAITOK, "sharedto").unwrap());
         let drops = std::sync::Arc::new(AtomicU32::new(0));
         let s = P
-            .get_shared(hal::pool::PR_WAITOK, || Shared {
+            .get_shared(hal::mem::pool::PR_WAITOK, || Shared {
                 calls: AtomicU32::new(0),
                 drops: std::sync::Arc::clone(&drops),
             })
@@ -1763,28 +1764,36 @@ pub(crate) mod tests {
         let to = pinned(&TO);
         to.set_shared(
             fire_shared,
-            hal::pool::PoolArc::erase(s.clone()),
+            hal::mem::pool::PoolArc::erase(s.clone()),
             KCLOCK_NONE,
             0,
         );
-        assert_eq!(hal::pool::PoolArc::count(&s), 2, "the timeout holds one");
+        assert_eq!(
+            hal::mem::pool::PoolArc::count(&s),
+            2,
+            "the timeout holds one"
+        );
         assert!(to.add(1));
         for _ in 0..3 {
             tick_once();
         }
         assert_eq!(s.calls.load(Ordering::Relaxed), 1);
-        assert_eq!(hal::pool::PoolArc::count(&s), 2, "the call's clone is gone");
+        assert_eq!(
+            hal::mem::pool::PoolArc::count(&s),
+            2,
+            "the call's clone is gone"
+        );
         // Set again with the C's function: the held argument goes back.
         to.set(Some(fire), ptr::null_mut(), KCLOCK_NONE, 0);
-        assert_eq!(hal::pool::PoolArc::count(&s), 1);
+        assert_eq!(hal::mem::pool::PoolArc::count(&s), 1);
         to.set_shared(
             fire_shared,
-            hal::pool::PoolArc::erase(s.clone()),
+            hal::mem::pool::PoolArc::erase(s.clone()),
             KCLOCK_NONE,
             0,
         );
         to.clear();
-        assert_eq!(hal::pool::PoolArc::count(&s), 1, "clear gives it back");
+        assert_eq!(hal::mem::pool::PoolArc::count(&s), 1, "clear gives it back");
         assert!(to.add(1));
         for _ in 0..3 {
             tick_once();

@@ -53,8 +53,8 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use std::vec::Vec;
 
-use hal::klock;
-use hal::pool::{PoolBackend, RawPool};
+use hal::mem::pool::{PoolBackend, RawPool};
+use hal::sync::klock;
 use hal::sys::errno::Errno;
 use hal::sys::types::Off;
 use kernel::descrip::{falloc, fdinit, fdinsert, fdplock, filedesc_init};
@@ -327,7 +327,7 @@ impl ProcGlue for BenchGlue {
         kernel::tc::nanouptime()
     }
     fn process_ref(pr: &Process<Self>) -> proc::ProcessRef<Self> {
-        match hal::pool::PoolArc::from_ref(pr) {
+        match hal::mem::pool::PoolArc::from_ref(pr) {
             Some(a) => proc::StaticOrPooled::Pooled(a),
             None => std::process::exit(1),
         }

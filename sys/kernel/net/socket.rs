@@ -169,7 +169,7 @@
 //! ## Redesign
 //! - LZ's `struct socket` was `Cell`s and raw pointers in a `socket_pool` item handed
 //!   around as `&'static Socket`, freed by `sorele`'s count. Here [`Socket`] is a counted
-//!   item of the glue's `sockpl` ([`SocketRef`], a `hal::pool::PoolArc`): the C's
+//!   item of the glue's `sockpl` ([`SocketRef`], a `hal::mem::pool::PoolArc`): the C's
 //!   `so_refcnt` is the handle's count, `soref` is `PoolArc::from_ref`, `sorele` a drop, and
 //!   `sorele`'s body the socket's `Drop` (U13). The C's existence reference (`soalloc`'s
 //!   one, dropped by `sofree`) is a reference parked on the item (`PoolArc::forget`) that
@@ -197,7 +197,7 @@
 //!   around the sleep as the shared case does (a sleeper keeping it would block its own
 //!   waker). `bsd`'s C-style callers lend their proof of the net lock ([`solocked_legacy`]):
 //!   a kernel protocol's socket gets their detached holding attached for the request
-//!   (`hal::rwlock::DetachableRwlock::attach`) or `so_lock` taken for it, and the lent net
+//!   (`hal::sync::rwlock::DetachableRwlock::attach`) or `so_lock` taken for it, and the lent net
 //!   lock is never let go (a wait or an unlock under it is `panic(9)`; none of `bsd`'s six
 //!   callers waits). Cost against the C: one uncontended `so_lock` pair per exclusive-lock
 //!   request of a kernel internet socket (`setsockopt`, `getsockopt`, `soclose`'s steps),
@@ -257,15 +257,15 @@ use core::sync::atomic::{
     Ordering,
 };
 
-use hal::intr::IPL_SOFTNET;
-use hal::mutex::{Mutexed, MutexedGuard};
-use hal::netlock::{NETLOCK, NetHeld};
-use hal::once::OnceStatic;
-use hal::pinlist::{PinEntry, PinList};
-use hal::pool::{AnyArc, PoolArc, PoolBox, PoolHome};
-use hal::rwlock::{Divisible, Guarded, ReadWitness, WitnessPart, WriteWitness};
-use hal::sleep::{INFSLP, PCATCH, wakeup, wakeup_one};
-use hal::slot::ReadMostly;
+use hal::cpu::intr::IPL_SOFTNET;
+use hal::ds::pinlist::{PinEntry, PinList};
+use hal::mem::pool::{AnyArc, PoolArc, PoolBox, PoolHome};
+use hal::sync::mutex::{Mutexed, MutexedGuard};
+use hal::sync::netlock::{NETLOCK, NetHeld};
+use hal::sync::once::OnceStatic;
+use hal::sync::rwlock::{Divisible, Guarded, ReadWitness, WitnessPart, WriteWitness};
+use hal::sync::sleep::{INFSLP, PCATCH, wakeup, wakeup_one};
+use hal::sync::slot::ReadMostly;
 use hal::sys::errno::Errno;
 use hal::sys::socket::{PF_INET, PF_INET6, SO_ACCEPTCONN, SOMAXCONN};
 use hal::sys::types::Off;
@@ -373,7 +373,7 @@ pub struct Sosplice<G: ProcGlue> {
     /// `ssp_task`: task for somove.
     task: Task,
     /// \[I\] `ssp_queue`: softnet queue where we add (set by each `sosplice`).
-    queue: hal::link::SyncLink<crate::task::Taskq>,
+    queue: hal::ds::link::SyncLink<crate::task::Taskq>,
 }
 
 /// `struct socket`: kernel structure per socket. Contains send and receive buffer queues,
@@ -404,7 +404,7 @@ pub struct Socket<G: ProcGlue> {
     /// `so_lock`: this socket lock (the UNIX domain's and the other per-socket domains'
     /// [`solock`]; taken with the shared net lock by `solock_shared` of an internet socket,
     /// and detached by `bsd`'s internet protocols).
-    pub(crate) so_lock: hal::rwlock::DetachableRwlock,
+    pub(crate) so_lock: hal::sync::rwlock::DetachableRwlock,
     /// \[s\] `so_state`: internal state flags `SS_*`.
     state: AtomicU32,
     /// \[s\] `so_options`: from socket call, see `socket.h`.
@@ -506,7 +506,7 @@ impl<G: ProcGlue> Socket<G> {
             egid: init.egid,
             rgid: init.rgid,
             cpid: init.cpid,
-            so_lock: hal::rwlock::DetachableRwlock::new("socket"),
+            so_lock: hal::sync::rwlock::DetachableRwlock::new("socket"),
             state: AtomicU32::new(init.state),
             options: AtomicI32::new(init.options),
             linger: AtomicI16::new(init.linger),
@@ -627,7 +627,7 @@ impl<G: ProcGlue> Socket<G> {
     /// still in `bsd`, `in_pcbsolock`, `sonewconn`'s returned socket): detached holdings
     /// only, which open no cell.
     #[inline]
-    pub fn so_lock_legacy(&self) -> &hal::rwlock::DetachableRwlock {
+    pub fn so_lock_legacy(&self) -> &hal::sync::rwlock::DetachableRwlock {
         &self.so_lock
     }
 
@@ -756,7 +756,7 @@ impl<G: ProcGlue> Socket<G> {
     /// (`sotounpcb(so)`, and `fptounp`'s read of `so_pcb` without the socket lock): one
     /// reader of the slot counted, no reference to the block taken. The holder must not sleep
     /// meanwhile (the slot's writer, `set_pcb`, would wait for it).
-    pub fn pcb_read(&self) -> hal::slot::ReadMostlyRef<'_, Option<AnyArc>> {
+    pub fn pcb_read(&self) -> hal::sync::slot::ReadMostlyRef<'_, Option<AnyArc>> {
         self.pcb.read()
     }
 
@@ -941,7 +941,7 @@ enum SoHold<'a> {
 
 /// Which part of a kernel internet socket's `so_lock` witness opens which `[s]` cells
 /// ([`SoLocked::inet`]): the socket's, the pcb's, the tcpcb's, the SYN cache entries'
-/// (`hal::rwlock::Guarded::keyed(so_lock's id, part, ..)`). One lock serialises them all in
+/// (`hal::sync::rwlock::Guarded::keyed(so_lock's id, part, ..)`). One lock serialises them all in
 /// the C; the parts let a request hold a reference into each at once.
 pub mod so_part {
     /// The socket's own cells.
@@ -976,7 +976,7 @@ pub struct InetLocked<'w> {
 #[must_use = "dropping it unlocks the socket"]
 pub struct SoLocked<'a> {
     /// The socket's `so_lock`, to take it again after a release.
-    lock: &'a hal::rwlock::DetachableRwlock,
+    lock: &'a hal::sync::rwlock::DetachableRwlock,
     /// `so_lock` held (or not, for a `bsd` protocol's internet socket under the net lock
     /// alone).
     so: SoHold<'a>,
@@ -1237,7 +1237,7 @@ pub fn solocked_legacy<'a, G: ProcGlue>(
         let hold = if so.so_lock.held_detached() {
             SoHold::Attached(so.so_lock.attach())
         } else {
-            kassert!(hal::netlock::write_held());
+            kassert!(hal::sync::netlock::write_held());
             SoHold::Witness(so.so_lock.lock().write())
         };
         SoLocked {
@@ -1371,7 +1371,7 @@ fn pair_netlock<G: ProcGlue>(so1: &Socket<G>) -> Option<ReadWitness<'static>> {
 /// a running process's own holding cannot be told from another's here)?
 pub fn solocked<G: ProcGlue>(so: &Socket<G>) -> bool {
     if so.is_inet() {
-        hal::netlock::status() != 0
+        hal::sync::netlock::status() != 0
     } else {
         so.so_lock.lock().status() != 0
     }
@@ -1428,9 +1428,9 @@ pub fn soalloc<G: ProcGlue>(
     init: SoInit,
 ) -> Option<SocketRef<G>> {
     let flags = if wait == crate::net::mbuf::M_WAIT {
-        hal::pool::PR_WAITOK
+        hal::mem::pool::PR_WAITOK
     } else {
-        hal::pool::PR_NOWAIT
+        hal::mem::pool::PR_NOWAIT
     };
     let so = net::<G>()
         .sockpl
@@ -2183,7 +2183,7 @@ pub fn soaccept_take<'h, G: ProcGlue, R>(
         };
         // Do not sleep after we have taken the socket out of the queue.
         if so.is_inet() {
-            kassert!(hal::netlock::status() != 0);
+            kassert!(hal::sync::netlock::status() != 0);
         }
         let mut ws = SoLocked::take(&so, NetHold::None);
         let Some(queued) = soqremque(&so, Onq::Q) else {
@@ -2444,7 +2444,8 @@ pub fn m_getuio<G: ProcGlue>(
         m_align, m_get, m_gethdr, mclgetl,
     };
 
-    let mut chain: hal::owned::OwnedSlist<crate::net::mbuf::MNext> = hal::owned::OwnedSlist::new();
+    let mut chain: hal::ds::owned::OwnedSlist<crate::net::mbuf::MNext> =
+        hal::ds::owned::OwnedSlist::new();
     let mut resid = uio.uio_resid as u64;
     let mut space = space;
     let max_hdr = MAX_HDR.load(Ordering::Relaxed) as u64;
@@ -2519,7 +2520,7 @@ struct RcvRecord {
     rec: crate::net::sockbuf::SbRecord,
     /// `MSG_PEEK`'s walk: the mbufs the read has passed, in order, nothing freed or counted
     /// out (they go back in front of `rec` with [`RcvRecord::into_record`]).
-    passed: hal::owned::OwnedSlist<crate::net::mbuf::MNext>,
+    passed: hal::ds::owned::OwnedSlist<crate::net::mbuf::MNext>,
     /// `MSG_PEEK` has passed the record's last mbuf too (`m == NULL`); that mbuf stays in
     /// `rec`, the record's last, where the senders' continuation joins it.
     past_last: bool,
@@ -2530,7 +2531,7 @@ impl RcvRecord {
     fn new(rec: crate::net::sockbuf::SbRecord) -> Self {
         Self {
             rec,
-            passed: hal::owned::OwnedSlist::new(),
+            passed: hal::ds::owned::OwnedSlist::new(),
             past_last: false,
         }
     }
@@ -2621,11 +2622,11 @@ pub fn soreceive<G: ProcGlue>(
         *p = None;
     }
     let want_control = controlp.is_some();
-    let mut controls: hal::owned::OwnedSlist<crate::net::mbuf::MNext> =
-        hal::owned::OwnedSlist::new();
+    let mut controls: hal::ds::owned::OwnedSlist<crate::net::mbuf::MNext> =
+        hal::ds::owned::OwnedSlist::new();
     let want_mp = mp0.is_some();
-    let mut mpchain: hal::owned::OwnedSlist<crate::net::mbuf::MNext> =
-        hal::owned::OwnedSlist::new();
+    let mut mpchain: hal::ds::owned::OwnedSlist<crate::net::mbuf::MNext> =
+        hal::ds::owned::OwnedSlist::new();
     let mut flags = match flagsp.as_deref() {
         Some(f) => *f & !MSG_EOR,
         None => 0,
@@ -3009,9 +3010,9 @@ pub fn soreceive<G: ProcGlue>(
 /// (`*controlp`), each a chain by `m_next`.
 fn soreceive_out(
     mp0: Option<&mut Option<MbufBox>>,
-    mpchain: hal::owned::OwnedSlist<crate::net::mbuf::MNext>,
+    mpchain: hal::ds::owned::OwnedSlist<crate::net::mbuf::MNext>,
     controlp: Option<&mut Option<MbufBox>>,
-    controls: hal::owned::OwnedSlist<crate::net::mbuf::MNext>,
+    controls: hal::ds::owned::OwnedSlist<crate::net::mbuf::MNext>,
 ) {
     if let Some(mp) = mp0 {
         *mp = mpchain.into_head();
@@ -3118,17 +3119,19 @@ impl<G: ProcGlue> Sosplice<G> {
 /// timeout and its task set with the socket (the C's `arg = so`, counted: [`soclose`]
 /// clears both after their barriers).
 fn sosplice_alloc<G: ProcGlue>(so: &Socket<G>) -> Option<&Sosplice<G>> {
-    let sp = net::<G>().sosppl.get(hal::pool::PR_WAITOK, || Sosplice {
-        socket: Guarded::new_mutexed(so.so_rcv.mutex(), None),
-        soback: Guarded::new_mutexed(so.so_snd.mutex(), None),
-        len: AtomicI64::new(0),
-        max: AtomicI64::new(0),
-        idle_sec: AtomicI64::new(0),
-        idle_usec: AtomicI64::new(0),
-        idleto: Timeout::new(noop_timeout, core::ptr::null_mut()),
-        task: Task::new(noop_task, core::ptr::null_mut()),
-        queue: hal::link::SyncLink::new(),
-    })?;
+    let sp = net::<G>()
+        .sosppl
+        .get(hal::mem::pool::PR_WAITOK, || Sosplice {
+            socket: Guarded::new_mutexed(so.so_rcv.mutex(), None),
+            soback: Guarded::new_mutexed(so.so_snd.mutex(), None),
+            len: AtomicI64::new(0),
+            max: AtomicI64::new(0),
+            idle_sec: AtomicI64::new(0),
+            idle_usec: AtomicI64::new(0),
+            idleto: Timeout::new(noop_timeout, core::ptr::null_mut()),
+            task: Task::new(noop_task, core::ptr::null_mut()),
+            queue: hal::ds::link::SyncLink::new(),
+        })?;
     sp.idleto.set_shared(
         soidle::<G>,
         PoolArc::erase(soref(so)),
@@ -3608,8 +3611,8 @@ pub fn somove<G: ProcGlue>(so: &Socket<G>, wait: i32) -> bool {
         }
 
         // Take at most len mbufs out of receive buffer.
-        let mut taken: hal::owned::OwnedSlist<crate::net::mbuf::MNext> =
-            hal::owned::OwnedSlist::new();
+        let mut taken: hal::ds::owned::OwnedSlist<crate::net::mbuf::MNext> =
+            hal::ds::owned::OwnedSlist::new();
         let mut off: u64 = 0;
         while off <= len {
             let Some(cur) = rec.first() else {
@@ -3828,7 +3831,7 @@ pub fn somove<G: ProcGlue>(so: &Socket<G>, wait: i32) -> bool {
     }
     let idle = sp.idle_nsec();
     if idle != 0 {
-        hal::pin::project(
+        hal::ds::pin::project(
             so.sp
                 .get()
                 .map_or_else(|| kpanic(format_args!("somove: no splice")), |b| b.as_pin()),
@@ -3861,7 +3864,7 @@ pub fn sorwakeup<G: ProcGlue>(so: &Socket<G>) {
             && let Some(b) = so.sp.get()
             && let Some(q) = b.queue.get()
         {
-            crate::task::task_add(q, hal::pin::project(b.as_pin(), |s| &s.task));
+            crate::task::task_add(q, hal::ds::pin::project(b.as_pin(), |s| &s.task));
         }
         let spliced = isspliced(so);
         drop(g);
@@ -3889,7 +3892,7 @@ pub fn sowwakeup<G: ProcGlue>(so: &Socket<G>) {
             && let Some(bsp) = back.sp.get()
             && let Some(q) = bsp.queue.get()
         {
-            crate::task::task_add(q, hal::pin::project(bsp.as_pin(), |s| &s.task));
+            crate::task::task_add(q, hal::ds::pin::project(bsp.as_pin(), |s| &s.task));
         }
         let spliced = issplicedback(so);
         drop(g);
@@ -4922,8 +4925,8 @@ mod tests {
         let tcp = Guarded::keyed(so.so_lock.lock().id(), so_part::TCP, 0u64);
         {
             let mut w = solock(&so);
-            assert_eq!(hal::netlock::status(), hal::rwlock::RW_WRITE);
-            assert_eq!(so.so_lock.lock().status(), hal::rwlock::RW_WRITE);
+            assert_eq!(hal::sync::netlock::status(), hal::sync::rwlock::RW_WRITE);
+            assert_eq!(so.so_lock.lock().status(), hal::sync::rwlock::RW_WRITE);
             assert!(w.so_lock().is_some());
             let mut l = w.inet().expect("the parts");
             // Two objects' cells open at once through their parts.
@@ -4935,11 +4938,11 @@ mod tests {
             drop(r);
         }
         assert_eq!(so.so_lock.lock().status(), 0);
-        assert_eq!(hal::netlock::status(), 0);
+        assert_eq!(hal::sync::netlock::status(), 0);
         {
             // solock_shared: the shared net lock, the same witness.
             let mut w = solock_shared(&so);
-            assert_eq!(hal::netlock::status(), hal::rwlock::RW_READ);
+            assert_eq!(hal::sync::netlock::status(), hal::sync::rwlock::RW_READ);
             let l = w.inet().expect("the parts");
             assert_eq!((*cell.get(&l.pcb), *tcp.get(&l.tcp)), (6, 6));
         }
@@ -4963,10 +4966,10 @@ mod tests {
         let so = inet_socket(&KernInet);
         // Nothing asserted while the detached holdings are held: a failure would leave them
         // held for the next test.
-        hal::netlock::lock();
+        hal::sync::netlock::lock();
         // The caller's detached holding of so_lock: attached for the request, detached back.
         so.so_lock.enter_write_detached();
-        let attached = hal::netlock::lend_detached(|net| {
+        let attached = hal::sync::netlock::lend_detached(|net| {
             let mut w = solocked_legacy(&so, Some(net));
             let attached = !so.so_lock.held_detached();
             let parts = w.inet().is_some();
@@ -4976,14 +4979,14 @@ mod tests {
         let kept = so.so_lock.held_detached();
         so.so_lock.exit_write_detached();
         // The exclusive net lock alone: so_lock taken for the request, let go by the drop.
-        let taken = hal::netlock::lend_detached(|net| {
+        let taken = hal::sync::netlock::lend_detached(|net| {
             let mut w = solocked_legacy(&so, Some(net));
-            let held = so.so_lock.lock().status() == hal::rwlock::RW_WRITE;
+            let held = so.so_lock.lock().status() == hal::sync::rwlock::RW_WRITE;
             let parts = w.inet().is_some();
             drop(w);
             held && parts && so.so_lock.lock().status() == 0
         });
-        hal::netlock::unlock();
+        hal::sync::netlock::unlock();
         assert!(attached, "the caller's holding attached for the request");
         assert!(kept, "the caller's holding detached back");
         assert!(taken, "so_lock taken for the request and let go");
@@ -4997,8 +5000,8 @@ mod tests {
     fn solocked_legacy_refuses_an_internet_socket_of_a_legacy_protocol() {
         let _g = net_setup();
         let so = inet_socket(&BsdInet);
-        let w = hal::netlock::NETLOCK.read();
-        let net = hal::netlock::NetHeld::of(&w).expect("the net lock");
+        let w = hal::sync::netlock::NETLOCK.read();
+        let net = hal::sync::netlock::NetHeld::of(&w).expect("the net lock");
         let _l = solocked_legacy(&so, Some(&net));
     }
 
@@ -5072,8 +5075,8 @@ mod tests {
                     "test",
                     INFSLP,
                 );
-                let held = so.so_lock.lock().status() == hal::rwlock::RW_WRITE
-                    && hal::netlock::status() == hal::rwlock::RW_WRITE;
+                let held = so.so_lock.lock().status() == hal::sync::rwlock::RW_WRITE
+                    && hal::sync::netlock::status() == hal::sync::rwlock::RW_WRITE;
                 drop(w);
                 r.is_ok() && held
             });

@@ -31,15 +31,15 @@
 //!
 //! What an op is:
 //! - `netlock.write`: the net lock's write witness taken and dropped
-//!   (`hal::netlock::NETLOCK.write()`), a free lock, the one running thread.
+//!   (`hal::sync::netlock::NETLOCK.write()`), a free lock, the one running thread.
 //! - `netlock.read`: its read witness taken and dropped (`NET_LOCK_SHARED()` and
 //!   `NET_UNLOCK_SHARED()`'s work).
-//! - `netlock.paired`: `hal::netlock::lock()` and `unlock()`, the C's `NET_LOCK()` and
+//! - `netlock.paired`: `hal::sync::netlock::lock()` and `unlock()`, the C's `NET_LOCK()` and
 //!   `NET_UNLOCK()` (the witness forgotten, then resumed and dropped).
-//! - `smr.read`: a read section opened and closed (`hal::smr::read()` and its drop: the
+//! - `smr.read`: a read section opened and closed (`hal::sync::smr::read()` and its drop: the
 //!   depth's load and store each way).
 //! - `smr.load`: `SmrPtr::load` of a published object inside one read section.
-//! - `smr.defer`: `hal::smr::defer_link` of an idle `'static` link on a CPU that is not idle
+//! - `smr.defer`: `hal::sync::smr::defer_link` of an idle `'static` link on a CPU that is not idle
 //!   (`smr_call`): claimed and queued on the CPU's list at `splhigh`; between rounds,
 //!   untimed, the links are dispatched, collected, run (a call that does nothing) and made
 //!   idle again (`smr_init`).
@@ -51,7 +51,7 @@
 //! - `pod.copy`: an IPv4 header (20 bytes, an `abi_pod!` image) copied out of a packet's
 //!   bytes at offset 16, one field changed, written back: the C's `m_copydata` and
 //!   `m_copyback` of a header.
-//! - `pod.view`: the same two fields changed in place through `hal::pod::view_mut` (the C's
+//! - `pod.view`: the same two fields changed in place through `hal::mem::pod::view_mut` (the C's
 //!   `mtod(m, struct ip *)`): the bounds and alignment checks, no copy.
 //! - `slist.push_tail`: one element pushed at the tail of an `OwnedSlist` (`ml_enqueue`,
 //!   `sbappend`'s tail: the link of the last element through the tail word); the list
@@ -350,11 +350,11 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use std::vec::Vec;
 
-use hal::netlock::{self, NETLOCK};
-use hal::owned::{OwnedEntry, OwnedList, OwnedSlist, SlistLink};
-use hal::pool::{BoxPool, PR_WAITOK, PageSource, PoolBackend, PoolBox, RawPool};
-use hal::rwlock::RawRwlock;
-use hal::smr::{self, CpuWalk, SmrLink, SmrLinked, SmrPtr};
+use hal::ds::owned::{OwnedEntry, OwnedList, OwnedSlist, SlistLink};
+use hal::mem::pool::{BoxPool, PR_WAITOK, PageSource, PoolBackend, PoolBox, RawPool};
+use hal::sync::netlock::{self, NETLOCK};
+use hal::sync::rwlock::RawRwlock;
+use hal::sync::smr::{self, CpuWalk, SmrLink, SmrLinked, SmrPtr};
 use kernel::net::domain::Domain;
 use kernel::net::mbuf::{
     M_COPYALL, M_DONTWAIT, MT_DATA, MbufBox, PACKET_TAG_DLT, PACKET_TAG_GRE, m_adj, m_copydata,
@@ -559,7 +559,7 @@ fn malloc_class(size: usize) -> Option<(usize, usize)> {
     (i < MALLOC_CLASSES).then_some((i, sz))
 }
 
-impl hal::malloc::Malloc for BenchMalloc {
+impl hal::mem::malloc::Malloc for BenchMalloc {
     fn malloc(&self, size: usize, _ty: i32, _flags: i32) -> Option<(NonNull<u8>, usize)> {
         match malloc_class(size) {
             Some((i, sz)) => Some((self.classes[i].get()?, sz)),
@@ -692,7 +692,7 @@ hal::slist_adapter!(
 /// The pool of the `slist.*` benches' elements.
 static SL_ELEMS: BoxPool<SlElem> = BoxPool::new();
 
-impl hal::pool::Pooled for SlElem {
+impl hal::mem::pool::Pooled for SlElem {
     const POOL: &'static BoxPool<Self> = &SL_ELEMS;
 }
 
@@ -949,10 +949,10 @@ fn main() {
         let r = measure(OPS, || {
             let t = Instant::now();
             for i in 0..OPS {
-                let mut ip: Ip = need(hal::pod::at(black_box(&pkt), IP_OFF), "short packet");
+                let mut ip: Ip = need(hal::mem::pod::at(black_box(&pkt), IP_OFF), "short packet");
                 ip.ip_ttl = ip.ip_ttl.wrapping_sub(1);
                 ip.ip_id = i as u16;
-                if !hal::pod::put(black_box(&mut pkt), IP_OFF, &ip) {
+                if !hal::mem::pod::put(black_box(&mut pkt), IP_OFF, &ip) {
                     eprintln!("net: short packet");
                     std::process::exit(1);
                 }
@@ -967,7 +967,7 @@ fn main() {
             let t = Instant::now();
             for i in 0..OPS {
                 let ip: &mut Ip = need(
-                    hal::pod::view_mut(black_box(&mut pkt), IP_OFF),
+                    hal::mem::pod::view_mut(black_box(&mut pkt), IP_OFF),
                     "short or misaligned packet",
                 );
                 ip.ip_ttl = ip.ip_ttl.wrapping_sub(1);
@@ -1205,7 +1205,10 @@ fn mbuf_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64
         let r = measure(OPS, || {
             let t = Instant::now();
             for _ in 0..OPS {
-                let ip = need(hal::pod::view::<Ip>(black_box(&h).data(), 14), "misaligned");
+                let ip = need(
+                    hal::mem::pod::view::<Ip>(black_box(&h).data(), 14),
+                    "misaligned",
+                );
                 black_box(ip.ip_ttl);
             }
             t.elapsed()
@@ -1651,7 +1654,7 @@ fn placement<T>(what: &str, p: &T) {
 }
 
 fn if_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
-    use hal::netlock::NetHeld;
+    use hal::sync::netlock::NetHeld;
     use hal::sys::net_if::{IFF_RUNNING, IFXF_CLONED};
     use kernel::net::if_::{
         if_attach, if_attach_queues, if_counters_alloc, if_enqueue_ifq, if_get, if_get_smr,
@@ -1938,7 +1941,7 @@ fn if_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))
 /// the list, over Internet address records (`malloc(9)` blocks
 /// held by counted handles).
 fn ifaddr_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
-    use hal::netlock::NetHeld;
+    use hal::sync::netlock::NetHeld;
     use kernel::net::if_::{if_attach, ifa_add, ifa_del, test_ifnet_fresh};
     use kernel::netinet::in_var::{InIfaddr, test_in_ifaddr};
 
@@ -2032,10 +2035,10 @@ impl kernel::net::if_::Inet for BenchInet {
         // idgen32 never answers 0; the rows do not fragment.
         1
     }
-    fn with_net_held(&self, f: &mut dyn FnMut(&hal::netlock::NetHeld<'_>)) {
+    fn with_net_held(&self, f: &mut dyn FnMut(&hal::sync::netlock::NetHeld<'_>)) {
         // The rows that reach it (ND's solicitation, ARP's request) hold the net lock
         // detached.
-        hal::netlock::lend_detached(|n| f(n));
+        hal::sync::netlock::lend_detached(|n| f(n));
     }
 }
 
@@ -2076,7 +2079,7 @@ fn route_info<'a>(
 }
 
 fn route_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
-    use hal::netlock::NetHeld;
+    use hal::sync::netlock::NetHeld;
     use hal::sys::net_route::{RTF_CONNECTED, RTF_MPATH, RTM_ADD, RTP_ANY, RTP_STATIC};
     use kernel::net::if_::{if_alloc_sadl, if_attach, if_test_reset, ifa_add, test_ifnet_fresh};
     use kernel::net::route::{
@@ -2250,7 +2253,7 @@ fn route_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f6
         let r = measure(OPS, || {
             let t = Instant::now();
             for _ in 0..OPS {
-                drop(black_box(hal::pool::PoolArc::try_from_ref(black_box(
+                drop(black_box(hal::mem::pool::PoolArc::try_from_ref(black_box(
                     &*found,
                 ))));
             }
@@ -2411,7 +2414,7 @@ fn bpf_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
     testutil::kernel_maps_install();
     mbinit(&BENCH_NMBCLUST);
     if_test_reset();
-    hal::klock::kernel_lock();
+    hal::sync::klock::kernel_lock();
 
     let quiet = test_ifnet_fresh(b"bnchq0", &BENCH_DRIVER);
     if_attach(quiet);
@@ -2479,7 +2482,7 @@ fn bpf_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
         report(BPF_ROWS[1], r);
         let mut st = [0u8; core::mem::size_of::<BpfStat>()];
         ioctl(BIOCGSTATS, &mut st);
-        let st: BpfStat = need(hal::pod::at(&st, 0), "the statistics");
+        let st: BpfStat = need(hal::mem::pod::at(&st, 0), "the statistics");
         if st.bs_drop != 0 {
             eprintln!("net: bpf.mtap.1 dropped {} packets", st.bs_drop);
             std::process::exit(1);
@@ -2637,10 +2640,10 @@ fn ether_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f6
     ifp.if_flags
         .set(IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST | IFF_RUNNING);
     ac.ac_enaddr.set(OURS);
-    hal::klock::kernel_lock();
+    hal::sync::klock::kernel_lock();
     if_attach(ifp);
     ether_ifattach(ac);
-    hal::klock::kernel_unlock();
+    hal::sync::klock::kernel_unlock();
     let d = need(ifp.if_driver.get().copied(), "the driver");
     placement("arpcom", ac);
     let mut ns = Netstack::new(0);
@@ -2712,9 +2715,9 @@ fn ether_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f6
     }
 
     if wanted(ETHER_ROWS[3]) {
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         let made = loop_clone_create(&LOOP_CLONER, 0);
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
         if made.is_err() {
             eprintln!("net: no lo0");
             std::process::exit(1);
@@ -2752,7 +2755,7 @@ fn ether_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f6
 const INET_ROWS: [&str; 3] = ["in.cksum.1500", "in4.cksum.40", "ip.output.lo"];
 
 fn inet_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
-    use hal::netlock::NetHeld;
+    use hal::sync::netlock::NetHeld;
     use hal::sys::sockio::SIOCAIFADDR;
     use kernel::net::if_::if_test_reset;
     use kernel::net::if_loop::{LOOP_CLONER, loop_clone_create};
@@ -2819,9 +2822,9 @@ fn inet_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64
         report(INET_ROWS[1], r);
     }
     if wanted(INET_ROWS[2]) {
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         let made = loop_clone_create(&LOOP_CLONER, 0);
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
         if made.is_err() {
             eprintln!("net: no lo0");
             std::process::exit(1);
@@ -2941,7 +2944,7 @@ impl kernel::net::proto::Protocol<G> for BenchTransport {
         _proto: i32,
         _af: i32,
         _ns: Option<&mut kernel::net::if_var::Netstack>,
-        _net: &hal::netlock::NetHeld<'_>,
+        _net: &hal::sync::netlock::NetHeld<'_>,
     ) -> i32 {
         if let Some(m) = mp.take() {
             stash(m);
@@ -2975,7 +2978,7 @@ fn loop_packet(p: u8, id: u16, off: u16, len: u16) -> Vec<u8> {
 }
 
 fn ip_input_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
-    use hal::netlock::NetHeld;
+    use hal::sync::netlock::NetHeld;
     use hal::sys::netinet_in::{IPPROTO_TCP, IPPROTO_UDP};
     use hal::sys::netinet_ip::IP_MF;
     use hal::sys::sockio::SIOCAIFADDR;
@@ -3006,9 +3009,9 @@ fn ip_input_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64,
     kernel::netinet::in_proto::inetsw_set::<G>(&BENCH_IP_SW);
     ip_init::<G>();
 
-    hal::klock::kernel_lock();
+    hal::sync::klock::kernel_lock();
     let made = loop_clone_create(&LOOP_CLONER, 0);
-    hal::klock::kernel_unlock();
+    hal::sync::klock::kernel_unlock();
     if made.is_err() {
         eprintln!("net: no lo0");
         std::process::exit(1);
@@ -3083,7 +3086,7 @@ fn ip_input_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64,
 const ARP_ROWS: [&str; 2] = ["arp.resolve.hit", "arp.resolve.miss"];
 
 fn arp_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
-    use hal::netlock::NetHeld;
+    use hal::sync::netlock::NetHeld;
     use hal::sys::net_ethertypes::ETHERTYPE_IP;
     use hal::sys::net_if::{
         IFF_BROADCAST, IFF_MULTICAST, IFF_RUNNING, IFF_SIMPLEX, IFF_UP, IFNAMSIZ, IFXF_CLONED,
@@ -3140,10 +3143,10 @@ fn arp_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
     ifp.if_flags
         .set(IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST | IFF_RUNNING | IFF_UP);
     ac.ac_enaddr.set(OURS);
-    hal::klock::kernel_lock();
+    hal::sync::klock::kernel_lock();
     if_attach(ifp);
     ether_ifattach(ac);
-    hal::klock::kernel_unlock();
+    hal::sync::klock::kernel_unlock();
     let mut req = [0u8; 64];
     req[16..18].copy_from_slice(&[16, hal::sys::socket::AF_INET]);
     req[20..24].copy_from_slice(&[10, 0, 2, 15]);
@@ -3169,7 +3172,7 @@ fn arp_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
         arp_tpa: [10, 0, 2, 15],
     };
     let mut b = [0u8; 28];
-    let _ = hal::pod::put(&mut b, 0, &ea);
+    let _ = hal::mem::pod::put(&mut b, 0, &ea);
     let gw = sin([10, 0, 2, 2]);
     let far = sin([10, 0, 2, 99]);
     let (hit, miss) = {
@@ -3188,7 +3191,7 @@ fn arp_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
     // `NET_LOCK`): a miss's request reads the route's `rt_ifa` (a net cell since N6.5e)
     // under the proof `BenchInet::with_net_held` lends from it. Taken detached for both rows,
     // outside the timing.
-    hal::netlock::lock();
+    hal::sync::netlock::lock();
     if wanted(ARP_ROWS[0]) {
         let dst = sav(&gw);
         let mut desten = [0u8; 6];
@@ -3229,7 +3232,7 @@ fn arp_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
         });
         report(ARP_ROWS[1], r);
     }
-    hal::netlock::unlock();
+    hal::sync::netlock::unlock();
 }
 const INPCB_ROWS: [&str; 3] = ["inpcb.lookup.hash", "inpcb.ref.unref", "inpcb.sotoinpcb"];
 
@@ -3405,7 +3408,7 @@ fn syncache_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64,
     let (src, dst) = (sa([10, 0, 0, 2], 40000), sa([10, 0, 0, 1], 80));
 
     let w = NETLOCK.read();
-    let net = need(hal::netlock::NetHeld::of(&w), "the net lock");
+    let net = need(hal::sync::netlock::NetHeld::of(&w), "the net lock");
     let mut solocked = need(in_pcbsolock(&inp, &net), "the listener's lock");
     let mut il = need(solocked.inet(), "a kernel protocol's lock");
     let tp = need(
@@ -3465,7 +3468,7 @@ const TCP_ROWS: [&str; 3] = [
 
 /// The TCP output rows (N6.6a3): see the file's documentation.
 fn tcp_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
-    use hal::netlock::NetHeld;
+    use hal::sync::netlock::NetHeld;
     use hal::sys::endian::htons;
     use hal::sys::netinet_in::InAddr;
     use hal::sys::sockio::SIOCAIFADDR;
@@ -3509,9 +3512,9 @@ fn tcp_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
     kernel::netinet::tcp_subr::tcp_init::<G>();
 
     // lo0 with 127.0.0.1/8, as the ip.output.lo row makes it.
-    hal::klock::kernel_lock();
+    hal::sync::klock::kernel_lock();
     let made = loop_clone_create(&LOOP_CLONER, 0);
-    hal::klock::kernel_unlock();
+    hal::sync::klock::kernel_unlock();
     if made.is_err() {
         eprintln!("net: no lo0");
         std::process::exit(1);
@@ -3635,7 +3638,10 @@ fn tcp_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
         report(TCP_ROWS[1], r);
     }
     // tcp_attach's last step, for tcp_send's tcp_sogetpcb: the pcb in the socket's locked slot.
-    drop(so.set_pcb_locked(&mut il.pcb, Some(hal::pool::PoolArc::erase(inp.clone()))));
+    drop(so.set_pcb_locked(
+        &mut il.pcb,
+        Some(hal::mem::pool::PoolArc::erase(inp.clone())),
+    ));
     drop(il);
     if wanted(TCP_ROWS[2]) {
         let r = measure(OPS / 10, || {
@@ -3731,7 +3737,7 @@ fn udp_nam(a: [u8; 4], port: u16) -> MbufBox {
 
 /// The UDP rows (N6.6b0): see the file's documentation.
 fn udp_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
-    use hal::netlock::NetHeld;
+    use hal::sync::netlock::NetHeld;
     use hal::sys::netinet_in::IPPROTO_UDP;
     use hal::sys::sockio::SIOCAIFADDR;
     use kernel::net::if_loop::{LOOP_CLONER, loop_clone_create};
@@ -3766,9 +3772,9 @@ fn udp_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
     kernel::netinet::udp_usrreq::udp_init::<G>();
 
     // lo0 with 127.0.0.1/8, as the ip.output.lo row makes it.
-    hal::klock::kernel_lock();
+    hal::sync::klock::kernel_lock();
     let made = loop_clone_create(&LOOP_CLONER, 0);
-    hal::klock::kernel_unlock();
+    hal::sync::klock::kernel_unlock();
     if made.is_err() {
         eprintln!("net: no lo0");
         std::process::exit(1);
@@ -3976,7 +3982,7 @@ fn loop6_icmp(ty: u8, len: u16) -> Vec<u8> {
 
 /// The raw IP and divert rows (N6.6b1): see the file's documentation.
 fn raw_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
-    use hal::netlock::NetHeld;
+    use hal::sync::netlock::NetHeld;
     use hal::sys::netinet_in::{IPPROTO_ICMP, IPPROTO_ICMPV6, IPPROTO_UDP};
     use hal::sys::socket::{AF_INET, AF_INET6};
     use hal::sys::sockio::SIOCAIFADDR;
@@ -4020,9 +4026,9 @@ fn raw_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
     divert_init::<G>();
 
     // lo0 with 127.0.0.1/8, as the ip.output.lo row makes it.
-    hal::klock::kernel_lock();
+    hal::sync::klock::kernel_lock();
     let made = loop_clone_create(&LOOP_CLONER, 0);
-    hal::klock::kernel_unlock();
+    hal::sync::klock::kernel_unlock();
     if made.is_err() {
         eprintln!("net: no lo0");
         std::process::exit(1);
@@ -4200,7 +4206,7 @@ const INET6_ROWS: [&str; 1] = ["in6.selectsrc"];
 
 /// The IPv6 address rows (N6.5a): see the file's documentation.
 fn inet6_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
-    use hal::netlock::NetHeld;
+    use hal::sync::netlock::NetHeld;
     use hal::sys::netinet6_in6::{IN6MASK64, In6Addr, SockaddrIn6};
     use hal::sys::netinet6_in6_var::In6Addrlifetime;
     use hal::sys::netinet6_nd6::ND6_INFINITE_LIFETIME;
@@ -4279,7 +4285,7 @@ const ND6_ROWS: [&str; 2] = ["nd6.resolve.hit", "nd6.resolve.miss"];
 
 /// The ND rows (N6.5b): see the file's documentation.
 fn nd6_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
-    use hal::netlock::NetHeld;
+    use hal::sync::netlock::NetHeld;
     use hal::sys::net_if::{
         IFF_BROADCAST, IFF_MULTICAST, IFF_RUNNING, IFF_SIMPLEX, IFF_UP, IFNAMSIZ, IFXF_CLONED,
         IFXF_MPSAFE,
@@ -4338,10 +4344,10 @@ fn nd6_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
     ifp.if_flags
         .set(IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST | IFF_RUNNING | IFF_UP);
     ac.ac_enaddr.set(OURS);
-    hal::klock::kernel_lock();
+    hal::sync::klock::kernel_lock();
     if_attach(ifp);
     ether_ifattach(ac);
-    hal::klock::kernel_unlock();
+    hal::sync::klock::kernel_unlock();
     let mut ifra = In6Aliasreq::zeroed();
     ifra.ifra_name = ifp.if_xname.get();
     ifra.ifra_addr = SockaddrIn6::with_addr(ours);
@@ -4349,7 +4355,7 @@ fn nd6_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
     ifra.ifra_lifetime.ia6t_vltime = ND6_INFINITE_LIFETIME;
     ifra.ifra_lifetime.ia6t_pltime = ND6_INFINITE_LIFETIME;
     let mut req = [0u8; 128];
-    let _ = hal::pod::put(&mut req, 0, &ifra);
+    let _ = hal::mem::pod::put(&mut req, 0, &ifra);
     if kernel::netinet6::in6::in6_ioctl(SIOCAIFADDR_IN6, &mut req, Some(ifp), true).is_err() {
         eprintln!("net: bnchn0 refused fd00:77::1/64");
         std::process::exit(1);
@@ -4360,7 +4366,7 @@ fn nd6_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
     // the bridge lends its proof from).
     let sin6 = |a: In6Addr| -> [u8; 28] {
         let mut b = [0u8; 28];
-        let _ = hal::pod::put(&mut b, 0, &SockaddrIn6::with_addr(a));
+        let _ = hal::mem::pod::put(&mut b, 0, &SockaddrIn6::with_addr(a));
         b
     };
     let (peer_sa, silent_sa) = (sin6(peer), sin6(silent));
@@ -4446,7 +4452,7 @@ const INET6_OUTPUT_ROWS: [&str; 1] = ["ip6.output.lo"];
 
 /// The IPv6 output row (N6.5c): see the file's documentation.
 fn inet6_output_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
-    use hal::netlock::NetHeld;
+    use hal::sync::netlock::NetHeld;
     use hal::sys::netinet6_in6::{IN6MASK128, In6Addr, SockaddrIn6};
     use hal::sys::netinet6_in6_var::In6Aliasreq;
     use hal::sys::netinet6_nd6::ND6_INFINITE_LIFETIME;
@@ -4480,9 +4486,9 @@ fn inet6_output_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, 
     kernel::netinet6::nd6::nd6_init();
 
     if wanted(INET6_OUTPUT_ROWS[0]) {
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         let made = loop_clone_create(&LOOP_CLONER, 0);
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
         if made.is_err() {
             eprintln!("net: no lo0");
             std::process::exit(1);
@@ -4504,7 +4510,7 @@ fn inet6_output_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, 
         ifra.ifra_lifetime.ia6t_vltime = ND6_INFINITE_LIFETIME;
         ifra.ifra_lifetime.ia6t_pltime = ND6_INFINITE_LIFETIME;
         let mut req = [0u8; 128];
-        let _ = hal::pod::put(&mut req, 0, &ifra);
+        let _ = hal::mem::pod::put(&mut req, 0, &ifra);
         if kernel::netinet6::in6::in6_ioctl(SIOCAIFADDR_IN6, &mut req, Some(lo), true).is_err() {
             eprintln!("net: lo0 refused ::1");
             std::process::exit(1);
@@ -4583,7 +4589,7 @@ fn loop6_packet(nxt: u8, rest: &[u8]) -> Vec<u8> {
 
 /// The IPv6 input rows (N6.5d): see the file's documentation.
 fn inet6_input_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
-    use hal::netlock::NetHeld;
+    use hal::sync::netlock::NetHeld;
     use hal::sys::netinet_in::{IPPROTO_FRAGMENT, IPPROTO_UDP};
     use hal::sys::netinet6_in6::{IN6MASK128, In6Addr, SockaddrIn6};
     use hal::sys::netinet6_in6_var::In6Aliasreq;
@@ -4619,9 +4625,9 @@ fn inet6_input_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f
     kernel::netinet6::in6_proto::inet6sw_set::<G>(&BENCH_IP6_SW);
     ip6_init::<G>();
 
-    hal::klock::kernel_lock();
+    hal::sync::klock::kernel_lock();
     let made = loop_clone_create(&LOOP_CLONER, 0);
-    hal::klock::kernel_unlock();
+    hal::sync::klock::kernel_unlock();
     if made.is_err() {
         eprintln!("net: no lo0");
         std::process::exit(1);
@@ -4643,7 +4649,7 @@ fn inet6_input_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f
     ifra.ifra_lifetime.ia6t_vltime = ND6_INFINITE_LIFETIME;
     ifra.ifra_lifetime.ia6t_pltime = ND6_INFINITE_LIFETIME;
     let mut req = [0u8; 128];
-    let _ = hal::pod::put(&mut req, 0, &ifra);
+    let _ = hal::mem::pod::put(&mut req, 0, &ifra);
     if kernel::netinet6::in6::in6_ioctl(SIOCAIFADDR_IN6, &mut req, Some(lo), true).is_err() {
         eprintln!("net: lo0 refused ::1");
         std::process::exit(1);

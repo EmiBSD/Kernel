@@ -121,8 +121,8 @@ use super::super::include::pte::{
     L4_MASK, L4_SHIFT, PG_FRAME, PG_LGFRAME, PG_PS, PG_UCMINUS, PG_V,
 };
 use super::layout::{NPDPG, PTP_LEVELS, va_sign_pos};
+use crate::mem::trust::check_frame;
 use crate::sys::types::{Paddr, Vaddr};
-use crate::trust::check_frame;
 
 /// `pmap_direct_base`: where physical address 0 is mapped (the boot glue's, at bootstrap).
 static DIRECT_BASE: AtomicUsize = AtomicUsize::new(0);
@@ -205,7 +205,7 @@ pub(super) fn frame(pa: Paddr) -> &'static [AtomicU64; NPDPG] {
     // read-write to RAM for the kernel's lifetime and nothing unmaps. So the 4096 bytes are
     // dereferenceable for `'static` and aligned for `[AtomicU64; 512]` (a page is). The frames
     // viewed are page-table pages and frames handed to the pmap to fill (the trust of
-    // `PhysPages` and of the caller's `Paddr`, `sys/hal/pmap.rs`): no plain Rust reference to
+    // `PhysPages` and of the caller's `Paddr`, `sys/hal/vm/pmap.rs`): no plain Rust reference to
     // them is alive while they are viewed, and every access through the view is atomic, so it
     // races with nothing (the MMU's A/D updates are atomic too). The view is used only while
     // the frame is held (module docs); the reference never outlives that use in a way that

@@ -72,7 +72,7 @@
 //! ## Redesign
 //! - LZ's `uvm_analloc() -> &'static VmAnon` (a pool item cast and written by hand, freed by
 //!   `uvm_anfree`'s `pool_put` while other holders may still name it) -> [`AnonRef`], a
-//!   `hal::pool::PoolArc<Anon>` of `"anonpl"`. The C's `an_ref` stays the count it is (the
+//!   `hal::mem::pool::PoolArc<Anon>` of `"anonpl"`. The C's `an_ref` stays the count it is (the
 //!   amap slots that hold the anon, [`Anon::refs`]), beside the handle count that owns the
 //!   memory: every place the C increments `an_ref` also clones a handle (`amap_copy`'s slot
 //!   copy; a new anon starts at one of each), and a thread that keeps an anon across a sleep
@@ -81,14 +81,14 @@
 //!   [`uvm_anfree`] does what the C's does to the page and the swap slot; the `pool_put` is
 //!   the drop of the last handle.
 //! - `an_lock: Cell<*const Rwlock>`, set by every caller right after `uvm_analloc` and cleared
-//!   before a fresh anon is freed -> a `hal::rwlock::SharedRwlock` handle given to
+//!   before a fresh anon is freed -> a `hal::sync::rwlock::SharedRwlock` handle given to
 //!   [`uvm_analloc`] and never changed: the anon holds a clone of its amap's lock, so the
 //!   C's `rw_obj_hold` that keeps the lock alive for a `PG_RELEASED` page (and the
 //!   `rw_obj_free` in `uvm_anon_release`) is the anon's own handle.
 //! - `an_ref` and `an_swslot` are relaxed atomics whose setters assert the C's lock rule
 //!   (the write lock for `an_ref`, the lock for `an_swslot`); they take no witness, because
 //!   an amap walk holds its chunk tables open through the write witness
-//!   (`hal::rwlock::Guarded::get_mut` borrows it) while it drops its anons' counts.
+//!   (`hal::sync::rwlock::Guarded::get_mut` borrows it) while it drops its anons' counts.
 //! - [`uvm_anon_release`] consumes the witness of the anon's lock (the C's `rw_exit`); the
 //!   caller drops its handle after it.
 //! - `MULTIPROCESSOR` is always configured (decision 40): [`uvm_anon_init_percpu`] always
@@ -100,9 +100,9 @@
 
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use hal::link::Link;
-use hal::pool::{PR_NOWAIT, PR_WAITOK, PoolArc, TypedPool};
-use hal::rwlock::{RW_READ, RW_WRITE, RawRwlock, SharedRwlock, Witness, WriteWitness};
+use hal::ds::link::Link;
+use hal::mem::pool::{PR_NOWAIT, PR_WAITOK, PoolArc, TypedPool};
+use hal::sync::rwlock::{RW_READ, RW_WRITE, RawRwlock, SharedRwlock, Witness, WriteWitness};
 use hal::sys::errno::Errno;
 use hal::sys::mman::PROT_NONE;
 use hal::vm::uvmexp::UVMEXP;
@@ -271,7 +271,7 @@ pub fn uvm_anfree(anon: &Anon) {
             pg.set_bits(PG_RELEASED);
             return;
         }
-        hal::pmap::page_protect(&pg.mdpage, PROT_NONE);
+        hal::vm::pmap::page_protect(&pg.mdpage, PROT_NONE);
         uvm_pagefree(pg, Owner::Anon(anon));
     } else {
         let slot = anon.swslot();
@@ -343,7 +343,7 @@ pub fn uvm_anon_release(anon: &Anon, w: WriteWitness<'_>) {
     kassert!(pg.owned_by_anon(anon));
     kassert!(anon.refs() == 0);
 
-    hal::pmap::page_protect(&pg.mdpage, PROT_NONE);
+    hal::vm::pmap::page_protect(&pg.mdpage, PROT_NONE);
     uvm_pagefree(pg, Owner::Anon(anon));
     kassert!(anon.page.is_none());
     uvm_anon_dropswap(anon);

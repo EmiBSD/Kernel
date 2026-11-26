@@ -62,8 +62,8 @@
 //!   removed in `unsafe` blocks, with `ft_proc` an `AtomicPtr<Proc>` read by the waiter and
 //!   swapped by the waker, `ft_fsq` an `AtomicPtr` dereferenced in `futex_unwait`, the keys
 //!   `Cell<*const ..>` and the buckets `unsafe impl Sync` (9 `unsafe`) -> a [`Futex`] pinned
-//!   on the waiter's stack (`core::pin::pin!`) on a `hal::pinlist::PinList` bound to its
-//!   bucket's `hal::rwlock::RawRwlock`, 0 `unsafe`: "waiting" (`ft_proc != NULL`) **is** being
+//!   on the waiter's stack (`core::pin::pin!`) on a `hal::ds::pinlist::PinList` bound to its
+//!   bucket's `hal::sync::rwlock::RawRwlock`, 0 `unsafe`: "waiting" (`ft_proc != NULL`) **is** being
 //!   linked ([`Futex::waiting`], the entry's own word, cleared last by the unlink itself), so
 //!   a waker never touches a futex after letting it go, and a frame dropped while linked stops
 //!   the kernel (the entry's drop) instead of leaving a dangling link. `ft_fsq` is the
@@ -90,15 +90,15 @@ use core::pin::{Pin, pin};
 use core::ptr;
 use core::sync::atomic::{AtomicI64, AtomicU32, AtomicUsize, Ordering};
 
-use hal::pinlist::{PinEntry, PinList};
-use hal::rwlock::{RawRwlock, WriteWitness};
-use hal::sleep::{INFSLP, PCATCH, PWAIT};
+use hal::cpu::thread::sched_lock;
+use hal::ds::pinlist::{PinEntry, PinList};
+use hal::sync::rwlock::{RawRwlock, WriteWitness};
+use hal::sync::sleep::{INFSLP, PCATCH, PWAIT};
 use hal::sys::errno::Errno;
 use hal::sys::futex::{
     FUTEX_FLAG_MASK, FUTEX_OP_MASK, FUTEX_PRIVATE_FLAG, FUTEX_REQUEUE, FUTEX_WAIT, FUTEX_WAKE,
 };
 use hal::sys::mman::MAP_INHERIT_SHARE;
-use hal::thread::sched_lock;
 use hal::user::UserPtr;
 use hal::vm::param::ptoa;
 
@@ -315,7 +315,7 @@ pub fn futex_shared_key(map: &VmMap, uaddr: usize) -> FutexKey {
             }
             key.off = entry.offset().wrapping_add(into);
         } else if let Some(a) = &h.amap {
-            key.amap = hal::pool::PoolArc::as_ptr(a).addr();
+            key.amap = hal::mem::pool::PoolArc::as_ptr(a).addr();
             key.off = (ptoa(h.pageoff as usize) as Voff).wrapping_add(into);
         }
     }
@@ -850,7 +850,7 @@ mod tests {
         // A waiter ahead of this thread, made by hand (never asleep): the requeue wakes it
         // and moves this thread's.
         let first: &'static Futex = Box::leak(Box::new(blank()));
-        let first = publish(&me, w1, hal::pin::pin_static(first));
+        let first = publish(&me, w1, hal::ds::pin::pin_static(first));
         let waker = std::thread::spawn(move || {
             let w = thread(64, 50);
             run_as(b, w);
@@ -861,12 +861,12 @@ mod tests {
             assert!(asleep_on_a_futex(me));
             assert_eq!(futex(&w, w1, FUTEX_WAKE_PRIVATE, 1, 0, 0), Ok(0));
             assert_eq!(futex(&w, w2, FUTEX_WAKE_PRIVATE, 1, 0, 0), Ok(1));
-            hal::thread::set_current_static::<T>(None);
+            hal::cpu::thread::set_current_static::<T>(None);
         });
         assert_eq!(futex(&me, w1, FUTEX_WAIT_PRIVATE, 5, 0, 0), Ok(0));
         waker.join().unwrap();
         assert_eq!(me.p_wchan.get(), 0);
-        hal::thread::set_current_static::<T>(None);
+        hal::cpu::thread::set_current_static::<T>(None);
     }
 
     #[test]
@@ -878,11 +878,11 @@ mod tests {
         crate::sched::sleep_timeout_init(me.get_ref());
         run_as(a, me);
         {
-            hal::klock::kernel_lock();
-            let mut w = hal::klock::witness();
+            hal::sync::klock::kernel_lock();
+            let mut w = hal::sync::klock::witness();
             TABLES.tidhash(65).insert_head(&mut w, me);
             drop(w);
-            hal::klock::kernel_unlock();
+            hal::sync::klock::kernel_unlock();
         }
         let [w1] = words(&me, 512, 1, true)[..] else {
             panic!("a word")
@@ -899,11 +899,11 @@ mod tests {
             run_as(b, w);
             until_asleep(me);
             // The softclock thread took the timeout off the wheel and runs its handler.
-            assert!(hal::pin::project(me, |t| &t.p_sleep_to).del());
-            hal::klock::kernel_lock();
+            assert!(hal::ds::pin::project(me, |t| &t.p_sleep_to).del());
+            hal::sync::klock::kernel_lock();
             crate::sched::endtsleep::<G>(ptr::without_provenance_mut(65));
-            hal::klock::kernel_unlock();
-            hal::thread::set_current_static::<T>(None);
+            hal::sync::klock::kernel_unlock();
+            hal::cpu::thread::set_current_static::<T>(None);
         });
         assert_eq!(
             futex(&me, w1, FUTEX_WAIT_PRIVATE, 1, ts.addr(), 0),
@@ -912,12 +912,12 @@ mod tests {
         timer.join().unwrap();
         // It took itself off its bucket.
         assert_eq!(futex(&me, w1, FUTEX_WAKE_PRIVATE, 1, 0, 0), Ok(0));
-        hal::klock::kernel_lock();
-        let mut w = hal::klock::witness();
+        hal::sync::klock::kernel_lock();
+        let mut w = hal::sync::klock::witness();
         TABLES.tidhash(65).remove(&mut w, me.get_ref());
         drop(w);
-        hal::klock::kernel_unlock();
-        hal::thread::set_current_static::<T>(None);
+        hal::sync::klock::kernel_unlock();
+        hal::cpu::thread::set_current_static::<T>(None);
     }
 
     /// Real page memory and the vm's pools (the map tests' set-up).
@@ -927,7 +927,7 @@ mod tests {
         let _ = uvm_anon_init(0);
         let _ = amap_init(0);
         let _ = uao_init();
-        hal::pmap::init();
+        hal::vm::pmap::init();
         uvm_map_init();
         uvmfault_init();
         guard
@@ -990,7 +990,7 @@ mod tests {
             let amap = h
                 .amap
                 .as_ref()
-                .map(|a| hal::pool::PoolArc::as_ptr(a).addr());
+                .map(|a| hal::mem::pool::PoolArc::as_ptr(a).addr());
             (amap, h.pageoff)
         };
         let amap = amap.expect("an amap after the fault");

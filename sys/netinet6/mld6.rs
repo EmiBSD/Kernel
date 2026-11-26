@@ -230,7 +230,7 @@ mod tests {
     }
 
     /// `ifp` joins `g`.
-    fn join(ifp: &'static Ifnet, g: In6Addr) -> hal::malloc::MArc<In6Multi> {
+    fn join(ifp: &'static Ifnet, g: In6Addr) -> hal::mem::malloc::MArc<In6Multi> {
         net_lock();
         let in6m = in6_addmulti(&g, ifp).expect("join");
         net_unlock();

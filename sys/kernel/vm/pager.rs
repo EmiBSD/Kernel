@@ -116,10 +116,10 @@
 //!   [`uvm_pager_init`] calls the pagers' init functions by name, and returns the error of
 //!   one that could not make its pool (pipe's precedent).
 //! - `uvm_pseg_lck` and `psegs[]` beside it, `msleep_nsec(&psegs, &uvm_pseg_lck, ..)` -> the
-//!   segments inside a `hal::mutex::Mutexed` at `IPL_VM` ([`PSEGS`]), slept on with
+//!   segments inside a `hal::sync::mutex::Mutexed` at `IPL_VM` ([`PSEGS`]), slept on with
 //!   `MutexedGuard::sleep_nsec`; the wait channel is still the segments' address.
 //! - `uvm_pagermapin(pps, npages, flags) -> vaddr_t` and `uvm_pagermapout(kva, npages)` ->
-//!   [`uvm_pagermapin`] returning a [`PagerWindow`]: the `hal::mapped::MappedBytes` view of the
+//!   [`uvm_pagermapin`] returning a [`PagerWindow`]: the `hal::mem::mapped::MappedBytes` view of the
 //!   pages (made with the kernel map's token, `kernel::vm::km`), and the pager segment it sits
 //!   in, given back after the mappings go; [`uvm_pagermapout`] is its drop. A window the
 //!   kernel map cannot enter at once is retried whole after `uvm_wait`, where the C retries the
@@ -130,15 +130,15 @@
 use core::ptr;
 
 use hal::arch::current::param::{PAGE_SHIFT, PAGE_SIZE};
-use hal::intr::IPL_VM;
-use hal::mapped::MappedBytes;
-use hal::mutex::{Mutexed, MutexedGuard};
-use hal::pmap::HAVE_PMAP_DIRECT;
-use hal::rwlock::WriteWitness;
-use hal::sleep::{INFSLP, PVM, wakeup};
+use hal::cpu::intr::IPL_VM;
+use hal::mem::mapped::MappedBytes;
+use hal::sync::mutex::{Mutexed, MutexedGuard};
+use hal::sync::rwlock::WriteWitness;
+use hal::sync::sleep::{INFSLP, PVM, wakeup};
 use hal::sys::errno::Errno;
 use hal::sys::mman::{PROT_READ, PROT_WRITE};
 use hal::sys::types::{Paddr, Vaddr};
+use hal::vm::pmap::HAVE_PMAP_DIRECT;
 
 use super::km::{KD_TRYLOCK, KP_NONE, KV_ANY, km_alloc, km_free, mapper};
 use super::object::{ObjRef, slot_page};
@@ -482,7 +482,7 @@ impl Drop for SegHold {
 
 /// The pages of a pager I/O mapped into kernel virtual space ([`uvm_pagermapin`]): their bytes
 /// as a slice. The drop removes the mappings, then gives the pager segment back
-/// ([`uvm_pagermapout`]). The pages stay busy while the window lives (`hal::mapped`'s rule).
+/// ([`uvm_pagermapout`]). The pages stay busy while the window lives (`hal::mem::mapped`'s rule).
 pub struct PagerWindow {
     /// The view (first, so it is dropped first: the mappings go before the segment).
     bytes: MappedBytes<'static>,
@@ -660,7 +660,7 @@ pub fn uvm_mk_pcluster(
                 // make sure "clean" bit is sync'd
                 if pclust.flags() & PG_CLEANCHK == 0 {
                     if pclust.flags() & (PG_CLEAN | PG_BUSY) == PG_CLEAN
-                        && hal::pmap::is_modified(&pclust.mdpage)
+                        && hal::vm::pmap::is_modified(&pclust.mdpage)
                     {
                         pclust.clear_bits(PG_CLEAN);
                     }
@@ -684,7 +684,7 @@ pub fn uvm_mk_pcluster(
             }
 
             // XXX: protect wired page? see above comment.
-            hal::pmap::page_protect(&pclust.mdpage, PROT_READ);
+            hal::vm::pmap::page_protect(&pclust.mdpage, PROT_READ);
             if forward {
                 // move forward one page
                 pps[ppsp + *npages as usize] = PageSlot::Page(pclust);
@@ -823,8 +823,8 @@ pub fn uvm_pager_dropcluster(
         // if we are operating on behalf of the pagedaemon and we had a successful pageout
         // update the page!
         if flags & PGO_PDFREECLUST != 0 {
-            let _ = hal::pmap::clear_reference(&pg.mdpage);
-            let _ = hal::pmap::clear_modify(&pg.mdpage);
+            let _ = hal::vm::pmap::clear_reference(&pg.mdpage);
+            let _ = hal::vm::pmap::clear_modify(&pg.mdpage);
             pg.set_bits(PG_CLEAN);
         }
     }
@@ -944,7 +944,7 @@ mod tests {
         let mut win = uvm_pagermapin(&pps, UVMPAGER_MAPIN_READ).expect("a window");
         let va = win.va();
         assert!(va.as_usize() >= SEEDED, "in a pager segment");
-        let kernel = hal::pmap::kernel();
+        let kernel = hal::vm::pmap::kernel();
         assert_eq!(kernel.extract(va), Some(p0.phys_addr()));
         assert_eq!(
             kernel.extract(va + hal::sys::types::Vsize::new(PAGE_SIZE)),
@@ -1023,7 +1023,7 @@ mod tests {
         let win = uvm_pagermapin(&pps, UVMPAGER_MAPIN_READ);
         hal::arch::current::fail_enters(0);
         assert!(win.is_none());
-        let kernel = hal::pmap::kernel();
+        let kernel = hal::vm::pmap::kernel();
         assert!(kernel.extract(first).is_none());
         let again = uvm_pseg_get(0).expect("the segment back");
         assert_eq!(again.as_usize(), first.as_usize());
@@ -1043,7 +1043,7 @@ mod tests {
         hal::arch::current::fail_enters(0);
         let win = win.expect("the retry's window");
         let va = win.va();
-        let kernel = hal::pmap::kernel();
+        let kernel = hal::vm::pmap::kernel();
         assert_eq!(kernel.extract(va), pps[0].page().map(VmPage::phys_addr));
         assert_eq!(
             kernel.extract(va + Vsize::new(PAGE_SIZE)),

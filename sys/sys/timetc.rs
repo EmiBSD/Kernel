@@ -101,7 +101,7 @@ pub struct Timecounter {
     pub tc_precision: Cell<u64>,
     /// The kernel's record of this counter (`kernel::tc::TcEntry`), made by `kern_tc`'s
     /// `tc_init` (N4.8a): the kernel's timehands read the counter through it.
-    pub tc_entry: hal::link::Link<kernel::tc::TcEntry>,
+    pub tc_entry: hal::ds::link::Link<kernel::tc::TcEntry>,
 }
 
 // SAFETY: a timecounter is written by its driver before `tc_init` and by `tc_init` on the
@@ -129,7 +129,7 @@ impl Timecounter {
             tc_next: SlistEntry::new(),
             tc_freq_adj: Cell::new(0),
             tc_precision: Cell::new(0),
-            tc_entry: hal::link::Link::new(),
+            tc_entry: hal::ds::link::Link::new(),
         }
     }
 

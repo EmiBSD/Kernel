@@ -77,7 +77,7 @@ use crate::sys::proc::Proc;
 use crate::sys::sched::SchedstatePercpu;
 use crate::sys::sysctl::{CTLTYPE_INT, CTLTYPE_QUAD, CTLTYPE_STRING};
 use hal::cpu::CpuCore;
-use hal::pmap::Pmap;
+use hal::vm::pmap::Pmap;
 
 /// `restore_daif`: writes `daif` back into `DAIF`.
 ///

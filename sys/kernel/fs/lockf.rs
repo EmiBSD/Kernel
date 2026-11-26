@@ -135,10 +135,10 @@ use core::cmp::Ordering;
 use core::ptr;
 use core::sync::atomic::{AtomicI32, Ordering as Mem};
 
-use hal::owned::{Member, OwnedEntry, OwnedList, SecondaryEntry, SecondaryList, SecondaryRef};
-use hal::pool::{BoxPool, PR_RWLOCK, PR_WAITOK, PoolBox};
-use hal::rwlock::{Divisible, Guarded, RawRwlock, WitnessPart, WriteWitness};
-use hal::sleep::{INFSLP, PCATCH, PLOCK, wakeup_one};
+use hal::ds::owned::{Member, OwnedEntry, OwnedList, SecondaryEntry, SecondaryList, SecondaryRef};
+use hal::mem::pool::{BoxPool, PR_RWLOCK, PR_WAITOK, PoolBox};
+use hal::sync::rwlock::{Divisible, Guarded, RawRwlock, WitnessPart, WriteWitness};
+use hal::sync::sleep::{INFSLP, PCATCH, PLOCK, wakeup_one};
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::{
     F_FLOCK, F_GETLK, F_INTR, F_POSIX, F_RDLCK, F_SETLK, F_UNLCK, F_WAIT, F_WRLCK, Flock,
@@ -300,8 +300,8 @@ impl Range {
 /// `lf_init`: initialise the pools.
 pub fn lf_init() {
     // A second call (a test's) keeps the first pools.
-    let _ = LOCKF_STATE_POOL.init(hal::intr::IPL_NONE, PR_WAITOK | PR_RWLOCK, "lockfspl");
-    let _ = LOCKF_POOL.init(hal::intr::IPL_NONE, PR_WAITOK | PR_RWLOCK, "lockfpl");
+    let _ = LOCKF_STATE_POOL.init(hal::cpu::intr::IPL_NONE, PR_WAITOK | PR_RWLOCK, "lockfspl");
+    let _ = LOCKF_POOL.init(hal::cpu::intr::IPL_NONE, PR_WAITOK | PR_RWLOCK, "lockfpl");
 }
 
 /// The slot's state, under part 0 of the witness: `panic(9)` when there is none (every
@@ -1421,7 +1421,7 @@ mod tests {
         drop(pr.set_ucred(crate::cred::CredRef::new(crate::cred::Ucred::new())));
         let t = crate::proc::thread_alloc::<G>(&pr, ());
         drop(t.set_cred(pr.ucred()));
-        let p: &'static Thread<G> = hal::pool::PoolBox::leak(t);
+        let p: &'static Thread<G> = hal::mem::pool::PoolBox::leak(t);
         core::mem::forget(pr);
         G::set_curproc(Some(p));
         p

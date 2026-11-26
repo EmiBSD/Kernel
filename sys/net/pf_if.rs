@@ -178,7 +178,7 @@ impl SaImage {
     fn of<T: hal::user::AbiPod>(sa: &T) -> Self {
         const { assert!(size_of::<T>() <= size_of::<SockaddrIn6>()) };
         let mut b = [0u8; size_of::<SockaddrIn6>()];
-        if !hal::pod::put(&mut b, 0, sa) {
+        if !hal::mem::pod::put(&mut b, 0, sa) {
             panic(format_args!(
                 "pfi_instance_add: an address larger than a sockaddr_in6"
             ));

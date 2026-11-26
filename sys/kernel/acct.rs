@@ -137,8 +137,8 @@
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
-use hal::klock;
-use hal::rwlock::Rwlocked;
+use hal::sync::klock;
+use hal::sync::rwlock::Rwlocked;
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::{FWRITE, O_APPEND};
 use hal::sys::mount::Statfs;
@@ -830,7 +830,7 @@ mod tests {
         crate::testutil::install();
         if !MADE.with(|m| m.replace(true)) {
             // As exit1 runs acct_process: the kernel lock held (the double counts it).
-            hal::klock::kernel_lock();
+            hal::sync::klock::kernel_lock();
             crate::proc::procinit::<Procs>(64, 64);
             crate::proc::procinit::<NoTty>(64, 64);
         }

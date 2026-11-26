@@ -18,9 +18,9 @@
 
 /* <CODE> */
 //! `<machine/pmap.h>` and the machine-dependent half of `<uvm/uvm_pmap.h>`: the physical map,
-//! what `uvm` asks the MMU code to do, over `hal::pmap` (N3.1).
+//! what `uvm` asks the MMU code to do, over `hal::vm::pmap` (N3.1).
 //!
-//! The pmaps themselves are `hal`'s (`sys/hal/pmap.rs`, the backends under
+//! The pmaps themselves are `hal`'s (`sys/hal/vm/pmap.rs`, the backends under
 //! `sys/hal/arch/<machine>/pmap/`); this module is `bsd`'s adapter to them, so that the
 //! callers of the contract keep its free functions by name: `pmap_kernel`, `pmap_enter`,
 //! `pmap_page_protect(pg, ..)`, `pmap_activate(p)` and the rest. What changed shape:
@@ -29,7 +29,7 @@
 //!   [`pmap_reference`] clones it, [`pmap_destroy`] drops it (the last drop frees the page
 //!   tables, and panics while a mapping is left, where the C freed silently). The kernel
 //!   pmap is `PmapRef::Kernel`; [`pmap_kernel`] still answers `&'static MachinePmap`.
-//! - The kernel pmap changes only through `hal::pmap::KernelMapper`, the token
+//! - The kernel pmap changes only through `hal::vm::pmap::KernelMapper`, the token
 //!   `pmap_bootstrap` hands out once; [`pmap_bootstrap`] (the machine's boot glue) gives it to
 //!   its owner, the kernel's allocator (`kernel::vm::km::adopt_mapper`, N3.2), which lends it
 //!   back here, to the holder of the one `kernel::vm::km::LegacyLend` (a private static:
@@ -38,15 +38,15 @@
 //!   ([`pmap_kenter_pa`], [`pmap_kremove`], with arm64's [`pmap_kenter_cache`]), whose
 //!   callers keep their `unsafe` blocks until their owners move (N3.5 `uvm_glue`, N4, N7).
 //!   Their bodies hold no `unsafe` block. `pmap_steal_memory`'s wrapper went with its caller,
-//!   `uvm_page` (N3.3): the kernel's boot allocations are `hal::bootmem`'s.
-//! - Loading a pmap's root takes `hal::pmap::Switcher`, the other token: private here too,
+//!   `uvm_page` (N3.3): the kernel's boot allocations are `hal::mem::bootmem`'s.
+//! - Loading a pmap's root takes `hal::vm::pmap::Switcher`, the other token: private here too,
 //!   used only by [`pmap_activate`] and the machine's switch path ([`pmap_setttb`]), each of
 //!   which records the switch (`ci_proc_pmap`, `ci_curpm`) where the shootdowns and the ASID
 //!   allocator look, through the machine's hooks of [`Pmap`].
 //! - The page allocator the pmap needs (`uvm_pagealloc`, `uvm_pagefree`, `PHYS_TO_VM_PAGE`,
 //!   `uvm_page_physsteal`, `uvm.page_init_done`) is the kernel's page system's
-//!   `hal::pmap::PhysPages`, `kernel::vm::page::PHYS_PAGES` (N3.3), given to
-//!   `hal::pmap::bootstrap` as a value (D16).
+//!   `hal::vm::pmap::PhysPages`, `kernel::vm::page::PHYS_PAGES` (N3.3), given to
+//!   `hal::vm::pmap::bootstrap` as a value (D16).
 //! - [`Pmap`] is what stays machine-dependent in `bsd`: the constants and the machine's own
 //!   steps around `hal` (arm64's console remap in `pmap_init`, the switch records).
 //!
@@ -56,9 +56,9 @@
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use hal::once::OnceStatic;
-use hal::pmap::{BootstrapParams, KernelMapper, Switcher};
-pub use hal::pmap::{KernelImage, PmapRef};
+use hal::sync::once::OnceStatic;
+use hal::vm::pmap::{BootstrapParams, KernelMapper, Switcher};
+pub use hal::vm::pmap::{KernelImage, PmapRef};
 use kernel::vm::km::LegacyLend;
 
 use crate::kern::subr_prf::panic;
@@ -72,13 +72,13 @@ use kernel::vm::page::{PHYS_TO_VM_PAGE, VmPage, vm_page_to_phys};
 use kernel::vm::types::{UvmConstraintRange, VmProt};
 
 /// `struct vm_page_md`: the pmap's per-page data inside `struct vm_page` (`hal`'s).
-pub type VmPageMd = hal::pmap::PageMd;
+pub type VmPageMd = hal::vm::pmap::PageMd;
 
 /// `struct pmap` (what a `pmap_t` points at; `hal`'s).
-pub type MachinePmap = hal::pmap::Pmap;
+pub type MachinePmap = hal::vm::pmap::Pmap;
 
 /// What stays machine-dependent of the physical map in `bsd`: the constants and the
-/// machine's steps around `hal::pmap`.
+/// machine's steps around `hal::vm::pmap`.
 pub trait Pmap {
     /// `__HAVE_PMAP_DIRECT`: physical memory is direct-mapped, so `pmap_map_direct` works.
     const HAVE_PMAP_DIRECT: bool;
@@ -99,7 +99,7 @@ pub trait Pmap {
     /// serve every request through the direct map. False on every real machine.
     const PMAP_NOMMU: bool;
 
-    /// `pmap_init`'s machine sequence: `hal::pmap::init()` and what the machine does around
+    /// `pmap_init`'s machine sequence: `hal::vm::pmap::init()` and what the machine does around
     /// it (arm64: the console's remap, then the lower half's translation registers).
     fn pmap_init_md();
 
@@ -168,12 +168,12 @@ fn switcher() -> &'static Switcher {
 }
 
 /// `pmap_bootstrap`, the boot glue's call (once, on the boot CPU, before anything maps):
-/// `hal::pmap::bootstrap` with the boot glue's facts and the kernel's page provider; the
+/// `hal::vm::pmap::bootstrap` with the boot glue's facts and the kernel's page provider; the
 /// kernel map's token goes to the kernel's allocator (`kernel::vm::km::adopt_mapper`), the
 /// context switch's is kept here. The first free physical page and the first free kernel
 /// virtual address (amd64's and arm64's answers).
 pub fn pmap_bootstrap(params: &BootstrapParams) -> (Paddr, Vaddr) {
-    let b = hal::pmap::bootstrap(params, &kernel::vm::page::PHYS_PAGES);
+    let b = hal::vm::pmap::bootstrap(params, &kernel::vm::page::PHYS_PAGES);
     let lent = kernel::vm::km::adopt_mapper(b.mapper).is_ok_and(|lend| LEND.set(lend).is_ok());
     if !lent || SWITCHER.set(b.switcher).is_err() {
         panic(format_args!("pmap_bootstrap: the tokens were kept already"));
@@ -192,14 +192,14 @@ pub fn pmap_prealloc_lowmem_ptps(first_avail: Paddr) -> Paddr {
 
 /// `pmap_kernel()`: the kernel's pmap.
 pub fn pmap_kernel() -> &'static MachinePmap {
-    hal::pmap::kernel()
+    hal::vm::pmap::kernel()
 }
 
 /// `pmap_create()`: a new, empty user pmap with one reference; its top-level table maps the
 /// kernel half. The C's `pool_get(PR_WAITOK)` never fails: no pmap is a panic.
 pub fn pmap_create() -> PmapRef {
     booted();
-    match hal::pmap::create() {
+    match hal::vm::pmap::create() {
         Some(pm) => pm,
         None => panic(format_args!("pmap_create: no pmap")),
     }
@@ -270,29 +270,29 @@ pub fn pmap_unwire(pmap: &MachinePmap, va: Vaddr) {
 /// `pmap_page_protect(pg, prot)`: lowers every mapping of `pg` to `prot`; `PROT_NONE`
 /// removes them all (what the object layer does before freeing a page).
 pub fn pmap_page_protect(pg: &VmPage, prot: VmProt) {
-    hal::pmap::page_protect(&pg.mdpage, prot);
+    hal::vm::pmap::page_protect(&pg.mdpage, prot);
 }
 
 /// `pmap_clear_modify(pg)`: clears the modified bit of every mapping of `pg`; whether any
 /// was set.
 pub fn pmap_clear_modify(pg: &VmPage) -> bool {
-    hal::pmap::clear_modify(&pg.mdpage)
+    hal::vm::pmap::clear_modify(&pg.mdpage)
 }
 
 /// `pmap_clear_reference(pg)`: clears the referenced bit of every mapping of `pg`; whether
 /// any was set.
 pub fn pmap_clear_reference(pg: &VmPage) -> bool {
-    hal::pmap::clear_reference(&pg.mdpage)
+    hal::vm::pmap::clear_reference(&pg.mdpage)
 }
 
 /// `pmap_is_modified(pg)`: whether any mapping of `pg` has its modified bit set.
 pub fn pmap_is_modified(pg: &VmPage) -> bool {
-    hal::pmap::is_modified(&pg.mdpage)
+    hal::vm::pmap::is_modified(&pg.mdpage)
 }
 
 /// `pmap_is_referenced(pg)`: whether any mapping of `pg` has its referenced bit set.
 pub fn pmap_is_referenced(pg: &VmPage) -> bool {
-    hal::pmap::is_referenced(&pg.mdpage)
+    hal::vm::pmap::is_referenced(&pg.mdpage)
 }
 
 /// `pmap_remove_holes(vm)`: makes the MMU's unmappable holes unavailable in the map
@@ -311,19 +311,19 @@ pub fn pmap_proc_iflush(pr: &Process, va: Vaddr, len: Vsize) {
 /// `pmap_zero_page`: zero-fills the page.
 pub fn pmap_zero_page(pg: &VmPage) {
     booted();
-    hal::pmap::zero_page(vm_page_to_phys(pg));
+    hal::vm::pmap::zero_page(vm_page_to_phys(pg));
 }
 
 /// `pmap_copy_page`: copies `src` into `dst`.
 pub fn pmap_copy_page(src: &VmPage, dst: &VmPage) {
     booted();
-    hal::pmap::copy_page(vm_page_to_phys(src), vm_page_to_phys(dst));
+    hal::vm::pmap::copy_page(vm_page_to_phys(src), vm_page_to_phys(dst));
 }
 
 /// `pmap_virtual_space`: the kernel virtual range still free, on machines without
 /// `PMAP_STEAL_MEMORY`.
 pub fn pmap_virtual_space(start: &mut Vaddr, end: &mut Vaddr) {
-    (*start, *end) = hal::pmap::virtual_space();
+    (*start, *end) = hal::vm::pmap::virtual_space();
 }
 
 /// `pmap_kenter_pa`: maps `pa` at `va` in the kernel pmap, wired, with `prot`.
@@ -410,13 +410,13 @@ pub fn pmap_efi_enter(pm: &MachinePmap) {
 /// this CPU ran on before [`pmap_efi_enter`], loaded again.
 #[cfg(target_arch = "aarch64")]
 pub fn pmap_efi_leave(to: &MachinePmap) {
-    hal::pmap::leave_efi(to, switcher());
+    hal::vm::pmap::leave_efi(to, switcher());
 }
 
 /// `pmap_growkernel`: grows the kernel page tables to cover `maxkvaddr`; returns how far
 /// they now reach.
 pub fn pmap_growkernel(maxkvaddr: Vaddr) -> Vaddr {
-    hal::pmap::growkernel(maxkvaddr)
+    hal::vm::pmap::growkernel(maxkvaddr)
 }
 
 /// `pmap_init`: the pmap module's own initialisation, once the page system is up.
@@ -427,12 +427,12 @@ pub fn pmap_init() {
 
 /// `pmap_map_direct`: the direct-map address of a page (`__HAVE_PMAP_DIRECT`).
 pub fn pmap_map_direct(pg: &VmPage) -> Vaddr {
-    hal::pmap::direct_map(vm_page_to_phys(pg))
+    hal::vm::pmap::direct_map(vm_page_to_phys(pg))
 }
 
 /// `pmap_unmap_direct`: the page behind a direct-map address.
 pub fn pmap_unmap_direct(va: Vaddr) -> Option<&'static VmPage> {
-    hal::pmap::direct_unmap(va).and_then(PHYS_TO_VM_PAGE)
+    hal::vm::pmap::direct_unmap(va).and_then(PHYS_TO_VM_PAGE)
 }
 /* </CODE> */
 
@@ -449,7 +449,7 @@ mod tests {
     use crate::kern::subr_pool::tests::setup_real_memory;
     use crate::sys::mman::{PROT_READ, PROT_WRITE};
     use crate::sys::param::PAGE_SIZE;
-    use hal::pmap::PMAP_WIRED;
+    use hal::vm::pmap::PMAP_WIRED;
 
     #[test]
     fn the_kernel_pmap_goes_through_the_token() {
@@ -481,7 +481,7 @@ mod tests {
 
     #[test]
     fn the_provider_knows_the_managed_pages() {
-        use hal::pmap::PhysPages;
+        use hal::vm::pmap::PhysPages;
         let _g = setup_real_memory();
         let pages = &kernel::vm::page::PHYS_PAGES;
         let pa = pages.alloc_ptp().expect("a page-table page");

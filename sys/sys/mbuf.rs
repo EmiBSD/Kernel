@@ -60,7 +60,7 @@
 //! than 50 files each). The protocol it keeps:
 //!
 //! - **An mbuf is in a link, or parked, never both.** An mbuf `bsd` holds in its own memory
-//!   (a variable, a queue head, `sb_mb`) is parked (`hal::pool::PoolBox::park`); an mbuf
+//!   (a variable, a queue head, `sb_mb`) is parked (`hal::mem::pool::PoolBox::park`); an mbuf
 //!   inside a chain or a packet list is owned by the link before it. [`park`] and [`unpark`]
 //!   cross the line; [`m_set_next`] and [`m_set_nextpkt`] move an mbuf from parked into a
 //!   link (the one the link held parked, and returned); a free (`m_free`, `m_freem`) takes a
@@ -84,13 +84,13 @@
 //!   ([`m_take_next`]).
 //! - `struct mbuf_queue` stays `bsd`'s here ([`MbufQueue`], LZ's shape over [`MbufList`]):
 //!   `bsd`'s softcs are zero-allocated and `mq_init` sets the queue's mutex level at run
-//!   time, which `hal::mutex::Mutexed` (the kernel's `MbufQueue`) fixes at construction.
+//!   time, which `hal::sync::mutex::Mutexed` (the kernel's `MbufQueue`) fixes at construction.
 
 use core::cell::UnsafeCell;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use hal::pool::{Parkable, PoolBox};
+use hal::mem::pool::{Parkable, PoolBox};
 pub use kernel::net::mbuf::{
     Ext, M_AUTH, M_BCAST, M_BITS, M_COMP, M_CONF, M_COPYALL, M_COPYFLAGS, M_DONTWAIT, M_EOR, M_EXT,
     M_EXTWR, M_FLOWID, M_ICMP_CSUM_IN_BAD, M_ICMP_CSUM_IN_OK, M_ICMP_CSUM_OUT, M_IPV4_CSUM_IN_BAD,
@@ -134,7 +134,7 @@ pub(crate) fn of_parked<T: Parkable>(p: NonNull<T>) -> &'static T {
     // after its tail, while another CPU decrypts one of those packets (`wg_decap`, which
     // writes its flags, its `m_off` and `m_len`, its header's lengths and the WireGuard
     // tag's `t_done`/`t_mbuf`) or encrypts it (`wg_encap`, which writes the tag's). The peek
-    // reads the flags word (`hal::overlay::Body`'s, an `AtomicU16` since review C1), the
+    // reads the flags word (`hal::mem::overlay::Body`'s, an `AtomicU16` since review C1), the
     // header's `ph_tagsset` and the tag list (`ph_tags` and each tag's `m_tag_link`, atomic
     // words, and each tag's `m_tag_id`, written once before the packet was queued); the
     // enqueue writes the tail's `m_nextpkt` (`OwnedSlist::push_tail` through a shared
@@ -237,7 +237,7 @@ pub fn m_ext_buf(m: &Mbuf) -> *mut u8 {
 /// which the socket buffer's walks write when the next mbuf is its head) leaves it there and
 /// returns none.
 fn set_link(
-    link: &mut hal::owned::SlistLink<Mbuf>,
+    link: &mut hal::ds::owned::SlistLink<Mbuf>,
     n: Option<&'static Mbuf>,
 ) -> Option<&'static Mbuf> {
     if let Some(n) = n

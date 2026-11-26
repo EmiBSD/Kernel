@@ -148,9 +148,9 @@ use crate::file::LockOwner;
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU8, Ordering};
 
-use hal::link::Link;
-use hal::list::ListEntry;
-use hal::pool::PoolArc;
+use hal::ds::link::Link;
+use hal::ds::list::ListEntry;
+use hal::mem::pool::PoolArc;
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::{FWRITE, Flock};
 use hal::sys::mount::{MNT_NODEV, MNT_WAIT};
@@ -309,7 +309,7 @@ impl<G: ProcGlue> Specinfo<G> {
 /// `si_specnext`'s adapter: a `speclisth` chain.
 pub struct BySpecnext<G: ProcGlue>(PhantomData<G>);
 
-impl<G: ProcGlue> hal::list::ListAdapter for BySpecnext<G> {
+impl<G: ProcGlue> hal::ds::list::ListAdapter for BySpecnext<G> {
     type Elem = Vnode<G>;
     fn entry(e: &Vnode<G>) -> &ListEntry<Vnode<G>> {
         &e.specnext
@@ -941,13 +941,13 @@ pub fn spec_fsync<G: ProcGlue>(vp: &'static Vnode<G>, waitfor: i32) -> Result<()
             DirtyPick::Take
         };
         if let DirtyScan::Taken(t) =
-            bio::vnode_dirty_scan(&vp.bufs, "spec_fsync", 0, hal::sleep::INFSLP, pick)
+            bio::vnode_dirty_scan(&vp.bufs, "spec_fsync", 0, hal::sync::sleep::INFSLP, pick)
         {
             bio::bawrite(t);
             continue;
         }
         if waitfor == MNT_WAIT {
-            let _ = bio::vwaitforio(&vp.bufs, 0, "spec_fsync", hal::sleep::INFSLP);
+            let _ = bio::vwaitforio(&vp.bufs, 0, "spec_fsync", hal::sync::sleep::INFSLP);
 
             #[cfg(feature = "diagnostic")]
             if !vp.bufs.dirty_is_empty() {
@@ -1013,7 +1013,7 @@ pub fn spec_close<G: ProcGlue>(
             if !xlocked {
                 let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
             }
-            let error = vinvalbuf(vp, V_SAVE, cred, p, 0, hal::sleep::INFSLP);
+            let error = vinvalbuf(vp, V_SAVE, cred, p, 0, hal::sync::sleep::INFSLP);
             if !xlocked {
                 let _ = vop_unlock(vp);
             }
@@ -1157,7 +1157,7 @@ pub fn spec_pathconf(name: i32, retval: &mut Register) -> Result<(), Errno> {
 /// session's `s_ttyvp` is `vp`, it is cleared and `true` returned (the caller `vrele`s the
 /// vnode); `false` otherwise. Under the kernel lock, as `spec_close` runs.
 fn session_ttyvp_take<G: ProcGlue>(p: &Thread<G>, vp: &'static Vnode<G>) -> bool {
-    let r = hal::klock::reader();
+    let r = hal::sync::klock::reader();
     match p.process().session(&r) {
         Some(s) if s.ttyvp.points_to(vp) => {
             s.ttyvp.set(None);

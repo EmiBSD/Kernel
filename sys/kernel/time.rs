@@ -134,11 +134,11 @@ use core::pin::Pin;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
-use hal::intr::IPL_HIGH;
-use hal::mutex::{Mutexed, MutexedGuard};
-use hal::pin::pin_static;
-use hal::rwlock::RwMode;
-use hal::sleep::{PCATCH, PWAIT};
+use hal::cpu::intr::IPL_HIGH;
+use hal::ds::pin::pin_static;
+use hal::sync::mutex::{Mutexed, MutexedGuard};
+use hal::sync::rwlock::RwMode;
+use hal::sync::sleep::{PCATCH, PWAIT};
 use hal::user::UserPtr;
 
 use crate::clock::{Bintime, STATHZ, Timespec, Timeval};
@@ -349,9 +349,9 @@ pub fn settime(ts: &Timespec, securelevel: i32) -> Result<(), Errno> {
     }
 
     tc_setrealtimeclock(ts);
-    hal::klock::kernel_lock(); // KERNEL_LOCK()
+    hal::sync::klock::kernel_lock(); // KERNEL_LOCK()
     resettodr();
-    hal::klock::kernel_unlock(); // KERNEL_UNLOCK()
+    hal::sync::klock::kernel_unlock(); // KERNEL_UNLOCK()
 
     Ok(())
 }
@@ -389,9 +389,9 @@ pub fn clock_gettime<G: ProcGlue>(p: &Thread<G>, clock_id: i32) -> Result<Timesp
         }
         // check for clock from pthread_getcpuclockid()
         _ if clock_type(clock_id) == CLOCK_THREAD_CPUTIME_ID => {
-            hal::klock::kernel_lock(); // KERNEL_LOCK()
+            hal::sync::klock::kernel_lock(); // KERNEL_LOCK()
             let error = {
-                let r = hal::klock::reader();
+                let r = hal::sync::klock::reader();
                 match tfind_user::<G, _>(&r, clock_ptid(clock_id), p.process()) {
                     None => Err(Errno::ESRCH),
                     Some(q) => {
@@ -401,7 +401,7 @@ pub fn clock_gettime<G: ProcGlue>(p: &Thread<G>, clock_id: i32) -> Result<Timesp
                     }
                 }
             };
-            hal::klock::kernel_unlock(); // KERNEL_UNLOCK()
+            hal::sync::klock::kernel_unlock(); // KERNEL_UNLOCK()
             error
         }
         _ => Err(Errno::EINVAL),
@@ -484,9 +484,9 @@ pub fn sys_clock_getres<G: ProcGlue>(
         }
         // check for clock from pthread_getcpuclockid()
         _ if clock_type(clock_id) == CLOCK_THREAD_CPUTIME_ID => {
-            hal::klock::kernel_lock(); // KERNEL_LOCK()
+            hal::sync::klock::kernel_lock(); // KERNEL_LOCK()
             let found = {
-                let r = hal::klock::reader();
+                let r = hal::sync::klock::reader();
                 tfind_user::<G, _>(&r, clock_ptid(clock_id), p.process()).is_some()
             };
             let error = if found {
@@ -495,7 +495,7 @@ pub fn sys_clock_getres<G: ProcGlue>(
             } else {
                 Err(Errno::ESRCH)
             };
-            hal::klock::kernel_unlock(); // KERNEL_UNLOCK()
+            hal::sync::klock::kernel_unlock(); // KERNEL_UNLOCK()
             error
         }
         _ => Err(Errno::EINVAL),
@@ -1295,7 +1295,7 @@ mod tests {
         uid: hal::sys::types::Uid,
     ) -> (
         crate::proc::ProcessRef<Procs>,
-        hal::pool::PoolBox<Thread<Procs>>,
+        hal::mem::pool::PoolBox<Thread<Procs>>,
     ) {
         std::thread_local! {
             static MADE: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };

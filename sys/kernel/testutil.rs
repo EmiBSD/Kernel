@@ -27,7 +27,7 @@
 //! words, the pending sleep) lets two test threads contend for a lock and sleep and wake each
 //! other as two processes do.
 //!
-//! - `IntrHardware`: `hal::intr`'s default levels (each test thread's core), whose
+//! - `IntrHardware`: `hal::cpu::intr`'s default levels (each test thread's core), whose
 //!   `splassert` fails the test.
 //! - `Sleep`: each test thread a process; a wait channel has a generation that every wakeup
 //!   bumps, `sleep_setup` records it and `sleep_finish` waits on one condition variable until
@@ -47,9 +47,9 @@
 //!   memory of [`FOREIGN_LEN`] bytes at [`FOREIGN_BASE`] ([`user_bytes`], [`foreign_bytes`],
 //!   [`set_foreign_bytes`] are its, re-exported).
 //! - `Printf`: every line formatted into one buffer the tests read ([`printf_count`]).
-//! - The kernel lock is `hal::klock`'s own since N4.5c, a per-thread depth on the host (no
+//! - The kernel lock is `hal::sync::klock`'s own since N4.5c, a per-thread depth on the host (no
 //!   exclusion; the tests that take it hold [`MEMORY`]); [`kernel_lock_depth`] reads it.
-//! - The soft interrupts are `hal::softintr`'s own (no bridge since N4.5c).
+//! - The soft interrupts are `hal::cpu::softintr`'s own (no bridge since N4.5c).
 //! - The clocks are not a double since N5.0: `kernel::tc`'s readers on its dummy counter (a
 //!   microsecond more per read at its nominal 1 MHz), whose timehands nothing winds up but a
 //!   test that calls `tc::tc_ticktock` (the coarse clocks stay where they are).
@@ -91,16 +91,16 @@ use std::vec;
 use std::vec::Vec;
 
 use hal::bridges;
-use hal::intr::IntrHardware;
-use hal::kmbuf::{PageKind, PageMemory};
-use hal::link::Link;
-use hal::malloc::Malloc;
-use hal::pmap::BootstrapParams;
-use hal::pool::{PR_WAITOK, PageSource, PoolBackend, RawPool};
+use hal::cpu::intr::IntrHardware;
+use hal::ds::link::Link;
+use hal::mem::kmbuf::{PageKind, PageMemory};
+use hal::mem::malloc::Malloc;
+use hal::mem::pool::{PR_WAITOK, PageSource, PoolBackend, RawPool};
 use hal::prf::Printf;
-use hal::sleep::{INFSLP, Sleep};
+use hal::sync::sleep::{INFSLP, Sleep};
 use hal::sys::errno::Errno;
 use hal::sys::types::{Paddr, Vaddr};
+use hal::vm::pmap::BootstrapParams;
 use hal::vm::uvmexp::UVMEXP;
 
 use crate::vm::km::{KvMap, LegacyLend};
@@ -173,7 +173,7 @@ fn pages(len: usize) -> Option<NonNull<u8>> {
     Some(NonNull::from(block).cast::<u8>())
 }
 
-/// The interrupt controller double: `hal::intr`'s default levels (each test thread's core),
+/// The interrupt controller double: `hal::cpu::intr`'s default levels (each test thread's core),
 /// and a `splassert` that fails the test.
 struct TestIntr;
 
@@ -580,10 +580,10 @@ impl PoolBackend for TestPools {
     }
 }
 
-/// How many times this thread holds the kernel lock (`hal::klock`'s host double, a
+/// How many times this thread holds the kernel lock (`hal::sync::klock`'s host double, a
 /// per-thread depth).
 pub fn kernel_lock_depth() -> u32 {
-    hal::klock::depth()
+    hal::sync::klock::depth()
 }
 
 /// The kernel thread double: a thread is a host thread that starts holding the kernel lock
@@ -603,7 +603,7 @@ impl TestKthread {
         std::thread::Builder::new()
             .name(String::from_utf8_lossy(name).into_owned())
             .spawn(move || {
-                hal::klock::kernel_lock();
+                hal::sync::klock::kernel_lock();
                 let r = std::panic::catch_unwind(move || {
                     crate::thread::run(ticket);
                 });
@@ -630,12 +630,12 @@ impl TestKthread {
 #[repr(C, align(4096))]
 struct TestPage([u8; 4096]);
 
-/// The u-area double (`hal::thread::UAreaMemory`): zeroed, page-aligned heap pages of the
+/// The u-area double (`hal::cpu::thread::UAreaMemory`): zeroed, page-aligned heap pages of the
 /// machine's `uspace`, leaked (a test's u-area is never given back to the heap; `free` keeps
 /// nothing).
 struct TestUAreas;
 
-impl hal::thread::UAreaMemory for TestUAreas {
+impl hal::cpu::thread::UAreaMemory for TestUAreas {
     fn alloc(&self) -> Option<core::num::NonZeroUsize> {
         let pages = TEST_VM_MACHINE.uspace.div_ceil(4096);
         let v: Vec<TestPage> = (0..pages).map(|_| TestPage([0; 4096])).collect();
@@ -792,7 +792,7 @@ impl VnodeOps for MemVnode {
                 .uvn
                 .get()
                 .is_some_and(|u| u.object().lock().status() != 0),
-            net_locked: hal::netlock::write_held(),
+            net_locked: hal::sync::netlock::write_held(),
             kernel_locked: kernel_lock_depth() > 0,
             vnode_locked: self.nlocked() > 0,
         });
@@ -993,7 +993,7 @@ pub fn install() {
             exit: TestKthread::exit,
             peg: TestKthread::peg,
         });
-        let _ = hal::thread::register_uarea_memory(&TEST_UAREAS);
+        let _ = hal::cpu::thread::register_uarea_memory(&TEST_UAREAS);
         // `bsd`'s host tests (this crate built with `doubles`, not `test`) drive their task
         // queues' workers by hand, as under LZ, where no deferred creation ever ran there.
         if cfg!(test) {
@@ -1032,13 +1032,13 @@ pub const fn page_memory() -> &'static dyn PageMemory {
     &TEST_PAGES
 }
 
-/// `hal::rwlock::init_shared()` once per test process (`rwobjpl`): called from tests in
+/// `hal::sync::rwlock::init_shared()` once per test process (`rwobjpl`): called from tests in
 /// parallel, the one that lost the race could get `EBUSY` while the winner's
 /// `OnceStatic::set` was still under way, and find no pool.
 pub fn init_shared_once() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        let _ = hal::rwlock::init_shared();
+        let _ = hal::sync::rwlock::init_shared();
     });
 }
 
@@ -1170,7 +1170,7 @@ pub fn cold_yields() -> u32 {
     COLD_YIELDS.with(Cell::get)
 }
 
-/// How many times this thread called `hal::sleep::sched_pause`.
+/// How many times this thread called `hal::sync::sleep::sched_pause`.
 pub fn sched_pauses() -> u32 {
     SCHED_PAUSES.with(Cell::get)
 }
@@ -1213,7 +1213,7 @@ pub fn kernel_maps_install() {
             uvm_map_set_uaddr,
         };
         init_shared_once();
-        hal::pmap::init();
+        hal::vm::pmap::init();
         uvm_map_init();
         let _ = crate::vm::aobj::uao_init();
         if crate::vm::aobj::kernel_object().is_none() {
@@ -1223,7 +1223,7 @@ pub fn kernel_maps_install() {
             );
         }
         let make = |min: usize, max: usize, flags: i32, bestfit: bool| {
-            let map = uvm_map_create(hal::pmap::PmapRef::Kernel, min, max, flags);
+            let map = uvm_map_create(hal::vm::pmap::PmapRef::Kernel, min, max, flags);
             if bestfit {
                 uvm_map_set_uaddr(map, UaddrSlot::Any(3), Some(uaddr_bestfit_create(min, max)));
             }
@@ -1234,7 +1234,7 @@ pub fn kernel_maps_install() {
             KvMap::Kernel,
             make(KM_VA_BASE, KM_KMEM_BASE, VM_MAP_PAGEABLE, true),
         );
-        let spl = hal::intr::splraise(hal::intr::IPL_VM);
+        let spl = hal::cpu::intr::splraise(hal::cpu::intr::IPL_VM);
         install(
             KvMap::Kmem,
             make(KM_KMEM_BASE, KM_EXEC_BASE, VM_MAP_INTRSAFE, true),
@@ -1296,7 +1296,7 @@ static LEND: OnceLock<LegacyLend> = OnceLock::new();
 pub fn pmap_boot() -> &'static LegacyLend {
     LEND.get_or_init(|| {
         install();
-        let b = hal::pmap::bootstrap(
+        let b = hal::vm::pmap::bootstrap(
             &BootstrapParams {
                 direct_base: Vaddr::new(0),
                 direct_end: Vaddr::new(usize::MAX),
@@ -1321,7 +1321,7 @@ pub fn pages_reset() -> MutexGuard<'static, ()> {
     let guard = lock(&MEMORY);
     let _ = pmap_boot();
     uvm_page_test_reset();
-    hal::smr::smr_test_reset();
+    hal::sync::smr::smr_test_reset();
     UVMEXP.pagesize.store(TEST_PAGE as i32, Ordering::Relaxed);
     uvm_setpagesize();
     guard
@@ -2250,7 +2250,7 @@ macro_rules! test_proc_glue {
                 $crate::tc::nanouptime()
             }
             fn process_ref(pr: &$crate::proc::Process<Self>) -> $crate::proc::ProcessRef<Self> {
-                match hal::pool::PoolArc::from_ref(pr) {
+                match hal::mem::pool::PoolArc::from_ref(pr) {
                     Some(a) => $crate::proc::StaticOrPooled::Pooled(a),
                     None => std::panic!("process_ref: not a pooled process"),
                 }
@@ -2404,7 +2404,7 @@ impl crate::fs::bio::BufVnode for BufTestVnode {
 /// `bufpages` pages, its kva slots, the kernel lock taken as a system call would.
 pub fn bufcache_install(bytes: usize, bufpages: i64) -> MutexGuard<'static, ()> {
     let g = pages_install(bytes);
-    hal::klock::kernel_lock();
+    hal::sync::klock::kernel_lock();
     crate::fs::bio::bio_test_reset();
     bufcache_init(bytes, bufpages);
     g

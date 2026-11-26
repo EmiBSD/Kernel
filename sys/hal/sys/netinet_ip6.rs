@@ -85,8 +85,8 @@
 //! LZ: sys/netinet/ip6.rs@3c62ede68802
 //!
 //! Every structure is the header as it is on the wire, multi-byte fields in network order.
-//! Packet data has no alignment guarantee: a header is copied (`hal::pod::at`), or viewed in
-//! place where `hal::pod::view` finds it aligned (the IPv6 header is 4-aligned behind an
+//! Packet data has no alignment guarantee: a header is copied (`hal::mem::pod::at`), or viewed in
+//! place where `hal::mem::pod::view` finds it aligned (the IPv6 header is 4-aligned behind an
 //! Ethernet header through `ETHER_ALIGN`, and the extension headers follow it at multiples of
 //! 8, RFC 8200).
 //!

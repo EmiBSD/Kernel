@@ -85,7 +85,7 @@ use crate::sys::proc::ProcExt;
 
 /// `cpu_fork`: finish a fork operation, with process `p2` nearly set up. Copy and update the
 /// kernel stack and pcb, making the child ready to run, and marking it so that it can return
-/// differently than the parent: `hal::thread::thread_setup` (the parent's FP state saved, the
+/// differently than the parent: `hal::cpu::thread::thread_setup` (the parent's FP state saved, the
 /// pcb copied, the trap frame copied with the user stack and TCB, the switch frame into the
 /// trampoline with `func`'s number and `arg`).
 pub fn cpu_fork(
@@ -104,11 +104,11 @@ pub fn cpu_fork(
     // address in the second), as `kernel::fork`'s own `cpu_fork` passes them.
     let (start, arg) =
         kernel::fork::Start::Legacy(func, arg.expose_provenance()).words(ptr::from_ref(p2).addr());
-    let h = hal::thread::sched_lock();
-    hal::thread::thread_setup(
+    let h = hal::cpu::thread::sched_lock();
+    hal::cpu::thread::thread_setup(
         &h,
-        hal::pin::pin_static(p1.as_static()),
-        hal::pin::pin_static(p2.as_static()),
+        hal::ds::pin::pin_static(p1.as_static()),
+        hal::ds::pin::pin_static(p2.as_static()),
         stack.addr(),
         tcb.expose_provenance(),
         start,

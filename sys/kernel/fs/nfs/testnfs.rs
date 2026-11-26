@@ -43,10 +43,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::vec::Vec;
 
-use hal::malloc::{M_WAITOK, MArc, MBox};
-use hal::netlock::{NETLOCK, NetHeld};
-use hal::pod;
-use hal::pool::PoolArc;
+use hal::mem::malloc::{M_WAITOK, MArc, MBox};
+use hal::mem::pod;
+use hal::mem::pool::PoolArc;
+use hal::sync::netlock::{NETLOCK, NetHeld};
 use hal::sys::errno::Errno;
 use hal::sys::mount::{Fid, Statfs};
 use hal::sys::netinet_in::{IPPROTO_TCP, IPPROTO_UDP, InAddr, SockaddrIn};
@@ -269,7 +269,7 @@ pub fn new_thread(pid: i32, uid: u32) -> (&'static crate::proc::Process<G>, &'st
     crate::sig::test_sigacts(&pr);
     let t = thread_alloc::<G>(&pr, ());
     drop(t.set_cred(pr.ucred()));
-    let p: &'static Thread<G> = hal::pool::PoolBox::leak(t);
+    let p: &'static Thread<G> = hal::mem::pool::PoolBox::leak(t);
     let pr: &'static crate::proc::Process<G> = match pr {
         crate::proc::StaticOrPooled::Static(r) => r,
         crate::proc::StaticOrPooled::Pooled(a) => PoolArc::leak(a),
@@ -313,7 +313,7 @@ impl crate::net::if_::Inet for DoublesInet {
         1
     }
     fn with_net_held(&self, f: &mut dyn FnMut(&NetHeld<'_>)) {
-        hal::netlock::lend_detached(|n| f(n));
+        hal::sync::netlock::lend_detached(|n| f(n));
     }
 }
 
@@ -386,7 +386,7 @@ fn setup_with(g: MutexGuard<'static, ()>, uid: u32) -> Fixture {
     crate::netinet::tcp_input::tcp_input_mlist_register::<crate::netinet::in_pcb::testinet::G>();
     crate::netinet::tcp_subr::tcp_init::<G>();
 
-    hal::klock::kernel_lock();
+    hal::sync::klock::kernel_lock();
     let made = crate::net::if_loop::loop_clone_create(&crate::net::if_loop::LOOP_CLONER, 0);
     assert_eq!(made, Ok(()), "lo0");
     let lo = crate::net::if_::IFNETLIST
@@ -527,7 +527,7 @@ impl Peer {
         let (st, cl, lo, sock, me) = (stop.clone(), calls.clone(), fx.lo, so.clone(), fx.user);
         let timer = MArc::erase(nmp.clone());
         let thread = std::thread::spawn(move || {
-            hal::klock::kernel_lock();
+            hal::sync::klock::kernel_lock();
             // The softnet's thread has a curproc (`sonewconn`'s attach reads it).
             NfsGlue::set_curproc(Some(me));
             let mut n = 0;

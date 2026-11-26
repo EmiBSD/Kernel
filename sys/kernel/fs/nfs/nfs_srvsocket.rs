@@ -102,10 +102,10 @@
 use core::mem;
 use core::sync::atomic::Ordering::Relaxed;
 
-use hal::klock;
-use hal::owned::OwnedSlist;
-use hal::pool::{AnyArc, PR_WAITOK, PoolBox};
-use hal::sleep::wakeup_one;
+use hal::ds::owned::OwnedSlist;
+use hal::mem::pool::{AnyArc, PR_WAITOK, PoolBox};
+use hal::sync::klock;
+use hal::sync::sleep::wakeup_one;
 use hal::sys::errno::Errno;
 use hal::sys::socket::MSG_DONTWAIT;
 
@@ -1076,10 +1076,11 @@ mod tests {
 
     /// The tables' pool made for `G` (once; a later test's call keeps it).
     fn pools() {
-        let _ = vfs::<G>()
-            .nfsrv
-            .nfsrv_descript_pl
-            .init(hal::intr::IPL_NONE, PR_WAITOK, "ndscpl");
+        let _ =
+            vfs::<G>()
+                .nfsrv
+                .nfsrv_descript_pl
+                .init(hal::cpu::intr::IPL_NONE, PR_WAITOK, "ndscpl");
     }
 
     #[test]
@@ -1115,11 +1116,11 @@ mod tests {
     #[test]
     fn wakenfsd_hands_the_socket_to_a_waiting_nfsd_or_marks_it() {
         let _g = crate::net::mbuf::tests::setup();
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         let t = &vfs::<G>().nfsrv;
-        let s: NfssvcSockRef<G> = hal::malloc::MArc::new(
+        let s: NfssvcSockRef<G> = hal::mem::malloc::MArc::new(
             super::super::nfssvc::M_NFSSVC,
-            hal::malloc::M_WAITOK,
+            hal::mem::malloc::M_WAITOK,
             mksock(),
         )
         .expect("a socket");
@@ -1146,7 +1147,7 @@ mod tests {
         assert_eq!(nfsd.flag() & NFSD_WAITING, 0);
         assert_eq!(s.ns_sref.load(Relaxed), 1);
         let got = nfsd.nfsd_slp.take().expect("handed the socket");
-        assert!(hal::malloc::MArc::ptr_eq(&got, &s));
+        assert!(hal::mem::malloc::MArc::ptr_eq(&got, &s));
         assert_eq!(s.flag() & SLP_DOREC, 0);
         // An invalid socket wakes no one.
         s.clear_flags(SLP_VALID);
@@ -1159,7 +1160,7 @@ mod tests {
             drop(s.ns_k.get_mut(&mut w).ns_self.take());
         }
         drop(got);
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
     }
 }
 /* </TESTS> */

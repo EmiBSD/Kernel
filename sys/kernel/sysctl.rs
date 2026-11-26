@@ -148,12 +148,12 @@ use core::ptr;
 use core::sync::atomic::{AtomicI32, Ordering};
 
 use hal::bridges::AlreadyRegistered;
-use hal::klock::{self, KernelReader};
-use hal::malloc::{M_WAITOK, MArray};
-use hal::mutex::MutexedGuard;
-use hal::once::OnceStatic;
-use hal::rwlock::{RW_INTR, RawRwlock, Rwlocked, WriteWitness};
-use hal::slot::ReadMostly;
+use hal::mem::malloc::{M_WAITOK, MArray};
+use hal::sync::klock::{self, KernelReader};
+use hal::sync::mutex::MutexedGuard;
+use hal::sync::once::OnceStatic;
+use hal::sync::rwlock::{RW_INTR, RawRwlock, Rwlocked, WriteWitness};
+use hal::sync::slot::ReadMostly;
 use hal::sys::errno::Errno;
 use hal::sys::limits::SHRT_MAX;
 use hal::sys::mman::{PROT_READ, PROT_WRITE};
@@ -2593,7 +2593,7 @@ mod tests {
     use std::sync::{Mutex as StdMutex, Once};
     use std::vec::Vec;
 
-    use hal::pool::PoolBox;
+    use hal::mem::pool::PoolBox;
     use hal::sys::sysctl::{
         CTL_DEBUG, HW_NCPU, KERN_PROC_SHOW_THREADS, KinfoFile, SYSCTL_INT_READONLY,
     };
@@ -2965,7 +2965,7 @@ mod tests {
         }
         testutil::install();
         if !MADE.with(|m| m.replace(true)) {
-            hal::klock::kernel_lock();
+            hal::sync::klock::kernel_lock();
             crate::proc::procinit::<Procs>(64, 64);
         }
     }

@@ -78,7 +78,7 @@ pub fn rtable_getsource(rtableid: u32, af: SaFamily) -> Option<SaCopy> {
 /// `rtable_iterate(rt0)`: the route after `rt0` on its multipath chain, `rt0`'s parked
 /// reference given back and the answer's parked.
 pub fn rtable_iterate(rt0: &'static Rtentry) -> Option<&'static Rtentry> {
-    let Some(rt0) = hal::pool::PoolArc::adopt(rt0) else {
+    let Some(rt0) = hal::mem::pool::PoolArc::adopt(rt0) else {
         crate::kern::subr_prf::panic(format_args!("rtable_iterate: route not referenced"));
     };
     kernel::net::rtable::rtable_iterate(rt0).map(park)

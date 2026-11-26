@@ -113,8 +113,8 @@
 use core::mem::size_of;
 use core::ptr;
 
-use hal::netlock::NetHeld;
 use hal::random::arc4random;
+use hal::sync::netlock::NetHeld;
 use hal::sys::endian::{htonl, htons};
 use hal::sys::errno::Errno;
 use hal::sys::net_if::{
@@ -389,7 +389,7 @@ fn connected_route(
 ) -> Result<(), Errno> {
     // The address's own socket address (ia_addr), copied.
     let mut a = [0u8; size_of::<SockaddrIn6>()];
-    let _ = hal::pod::put(&mut a, 0, &ifatoia6(ifa).ia_addr.get());
+    let _ = hal::mem::pod::put(&mut a, 0, &ifatoia6(ifa).ia_addr.get());
     let Some(dst) = SockaddrView::new(&a) else {
         kpanic(format_args!("in6_ifattach: a sockaddr_in6 too short"));
     };
@@ -478,7 +478,7 @@ fn in6_ifdetach_route(ifp: &'static Ifnet, allnodes: &In6Addr, net: &NetHeld<'_>
     sin6.sin6_addr
         .set_s6_addr16(1, htons(ifp.if_index.get() as u16));
     let mut b = [0u8; size_of::<SockaddrIn6>()];
-    let _ = hal::pod::put(&mut b, 0, &sin6);
+    let _ = hal::mem::pod::put(&mut b, 0, &sin6);
     let Some(dst) = SockaddrView::new(&b) else {
         return;
     };
@@ -531,8 +531,8 @@ mod tests {
     // kernel's interfaces): the EUI-64 of a hardware address, the sanity checks, the borrowed
     // and random identifiers.
 
-    use hal::malloc::{M_WAITOK, MBox};
-    use hal::netlock::NETLOCK;
+    use hal::mem::malloc::{M_WAITOK, MBox};
+    use hal::sync::netlock::NETLOCK;
     use hal::sys::net_if::{IFT_PPP, SockaddrDl};
 
     use super::*;

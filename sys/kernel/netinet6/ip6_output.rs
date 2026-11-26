@@ -141,7 +141,7 @@
 //!   the C's errnos, `MLD6_HBH`'s is asserted at compile time: N6.5c review N5), and
 //!   [`ip6_copyexthdr`] copies the slice.
 //! - The IPv6 header: LZ's `mtod_ip6`/`mtod_ip6_store` (an unaligned copy through `unsafe`)
-//!   -> [`ip6_load`]/[`ip6_store`], `hal::pod`'s view of the first mbuf's bytes when aligned
+//!   -> [`ip6_load`]/[`ip6_store`], `hal::mem::pod`'s view of the first mbuf's bytes when aligned
 //!   (the transports' packets), a copy otherwise; `ip6_output` loads the header once, works on
 //!   the copy and stores it before each step that reads the packet (IPsec, the loopback copy,
 //!   the hop-by-hop check, pf, the checksums, the interface), as `ip_output` does, and only
@@ -203,9 +203,9 @@
 use core::mem::{offset_of, size_of};
 use core::sync::atomic::Ordering;
 
-use hal::malloc::{M_NOWAIT, M_WAITOK, MArray, MBox};
-use hal::netlock::NetHeld;
-use hal::pod;
+use hal::mem::malloc::{M_NOWAIT, M_WAITOK, MArray, MBox};
+use hal::mem::pod;
+use hal::sync::netlock::NetHeld;
 use hal::sys::endian::{htonl, htons};
 use hal::sys::errno::Errno;
 use hal::sys::net_if::{
@@ -2558,7 +2558,7 @@ mod tests {
     use std::vec;
     use std::vec::Vec;
 
-    use hal::netlock::NETLOCK;
+    use hal::sync::netlock::NETLOCK;
     use hal::sys::net_if::{IFF_RUNNING, IFF_UP};
     use hal::sys::netinet_in::IPPROTO_IP;
     use hal::sys::netinet_ip6::{IP6OPT_ROUTER_ALERT, IPV6_VERSION};

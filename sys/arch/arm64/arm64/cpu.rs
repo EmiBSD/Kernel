@@ -2350,11 +2350,11 @@ pub fn cpu_init() {
     }
 }
 
-/// The machine's per-CPU hooks of `hal`'s trap code (`hal::trap::CpuHooks`), over the running
+/// The machine's per-CPU hooks of `hal`'s trap code (`hal::cpu::trap::CpuHooks`), over the running
 /// CPU's `cpu_info`: registered by `initarm` (N4.8b).
 pub struct ArmCpuHooks;
 
-impl hal::trap::CpuHooks for ArmCpuHooks {
+impl hal::cpu::trap::CpuHooks for ArmCpuHooks {
     /// `curcpu()->ci_flush_bp()`, a CPU whose choice is not made yet doing nothing.
     fn flush_bp(&self) {
         if let Some(flush_bp) = curcpu().ci_flush_bp.get() {
@@ -2642,7 +2642,7 @@ pub fn cpu_init_secondary(ci: &'static CpuInfo) -> ! {
 
     // Start from a clean slate regardless of whether this is the initial power up or a
     // wakeup of a suspended CPU.
-    hal::thread::set_current_static::<Proc>(None);
+    hal::cpu::thread::set_current_static::<Proc>(None);
     hal::arch::arm64::switch::clear_current_pcb();
     ci.ci_curpm.set(ptr::null());
     // ci_cpl = IPL_NONE, ci_ipending = 0, ci_idepth = 0
@@ -2652,13 +2652,13 @@ pub fn cpu_init_secondary(ci: &'static CpuInfo) -> ! {
     ci.core.reset_mutex_level();
 
     // Re-create the switchframe for this CPUs idle process: `sched_kthreads_create` forked
-    // it before the boot CPU set CPUF_GO, and it never exits. The frames are `hal::thread`'s
+    // it before the boot CPU set CPUF_GO, and it never exits. The frames are `hal::cpu::thread`'s
     // (N4.5a): `sched_idle` with the CPU's word (`idle_arg`, never 0).
     let n = crate::kern::kern_sched::cpu_number_of(ci);
     let (start, arg) = kernel::fork::Start::Idle(n).words(0);
     let restarted =
         kernel::sched::with_idleproc::<crate::kern::proc_glue::BsdProcGlue, _>(n, |h, p| {
-            hal::thread::thread_restart(h, p, start, arg);
+            hal::cpu::thread::thread_restart(h, p, start, arg);
         });
     if restarted.is_none() {
         panic(format_args!("cpu_init_secondary: no idle thread"));

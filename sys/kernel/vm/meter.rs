@@ -88,8 +88,8 @@
 use core::fmt;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use hal::intr::IPL_NONE;
-use hal::mutex::Mutexed;
+use hal::cpu::intr::IPL_NONE;
+use hal::sync::mutex::Mutexed;
 use hal::sys::errno::Errno;
 use hal::sys::vmmeter::Vmtotal;
 use hal::vm::uvmexp::{
@@ -169,7 +169,7 @@ pub fn uvm_sysctl<G: ProcGlue>(
 
         VM_UVMEXP => rdstruct(req, &uvmexp_read().to_ne_bytes()),
 
-        VM_NKMEMPAGES => rdint(req, hal::malloc::nkmempages()),
+        VM_NKMEMPAGES => rdint(req, hal::mem::malloc::nkmempages()),
 
         VM_PSSTRINGS => rdstruct(req, &(p.process().ps_strings.get() as u64).to_ne_bytes()),
 
@@ -277,7 +277,7 @@ pub fn uvm_total<G: ProcGlue>() -> Vmtotal {
     let mut total = Vmtotal::default();
 
     // calculate process statistics
-    let r = hal::klock::reader();
+    let r = hal::sync::klock::reader();
     for p in G::tables().allproc.iter(&r) {
         let state = ProcState {
             stat: i32::from(p.stat()),

@@ -112,7 +112,7 @@ mod tests {
     use std::vec::Vec;
     use std::{assert, assert_eq, vec};
 
-    use hal::pool::PoolBox;
+    use hal::mem::pool::PoolBox;
 
     use super::*;
     use crate::proc::{ProcessRef, process_alloc, procinit, thread_alloc};

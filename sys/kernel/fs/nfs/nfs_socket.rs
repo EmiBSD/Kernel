@@ -125,11 +125,11 @@
 use core::ptr;
 use core::sync::atomic::{AtomicI32, Ordering::Relaxed};
 
-use hal::klock;
-use hal::netlock::{NETLOCK, NetHeld};
-use hal::pool::{PR_WAITOK, PoolArc};
-use hal::rwlock::Divisible;
-use hal::sleep::{INFSLP, PCATCH, tsleep_nsec, wakeup};
+use hal::mem::pool::{PR_WAITOK, PoolArc};
+use hal::sync::klock;
+use hal::sync::netlock::{NETLOCK, NetHeld};
+use hal::sync::rwlock::Divisible;
+use hal::sync::sleep::{INFSLP, PCATCH, tsleep_nsec, wakeup};
 
 use super::nfs::{
     NFS_DEFAULT_TIMER, NFS_GETATTR_TIMER, NFS_LOOKUP_TIMER, NFS_MAX_TIMER, NFS_MAXREXMIT,
@@ -1342,7 +1342,7 @@ fn nfs_reply_header(reply: &mut Reply) -> Header {
 /// `timeout_set_proc`, a counted handle). The C's one walk under the net lock, kept: a
 /// reader of the kernel lock at a time, the place kept in a counted handle across the work
 /// done without it (the module's Redesign).
-pub fn nfs_timer<G: ProcGlue>(arg: &hal::pool::AnyArc) {
+pub fn nfs_timer<G: ProcGlue>(arg: &hal::mem::pool::AnyArc) {
     let Some(nmp) = arg.downcast_ref::<NfsMount<G>>() else {
         kpanic(format_args!("nfs_timer: not an nfs mount"));
     };
@@ -1702,7 +1702,7 @@ mod tests {
     use core::ffi::c_void;
     use std::sync::MutexGuard;
 
-    use hal::malloc::{M_WAITOK, MArc, MBox};
+    use hal::mem::malloc::{M_WAITOK, MArc, MBox};
 
     use super::*;
     use crate::fs::nfs::nfs_subs::{NFSV2_PROCID, nfs_get_xid, nfs_init};
@@ -1977,7 +1977,7 @@ mod tests {
         let done = std::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
         let (d, h, m) = (done.clone(), rep.clone(), nmp.clone());
         let waker = std::thread::spawn(move || {
-            hal::klock::kernel_lock();
+            hal::sync::klock::kernel_lock();
             {
                 let mut w = klock::witness();
                 drop(h.set_reply(&mut w, Some(Reply::new(chain(), 0))));

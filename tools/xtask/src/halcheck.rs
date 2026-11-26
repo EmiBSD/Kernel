@@ -38,13 +38,13 @@
 //!    not exceed `hal_ceiling` in the `[ratchet]` table of `unsafe-budget.toml`;
 //!    `unsafe-report --write` lowers the key and never raises it. A missing key is an error.
 //!
-//! Two more rules keep the premise of `hal::pinlist` (its I1: an element linked through
+//! Two more rules keep the premise of `hal::ds::pinlist` (its I1: an element linked through
 //! `Pin<&T>` is not `Unpin`, so safe code cannot move it while a list names it), over every
 //! `.rs` under `sys/`, on the lexed tokens (a comment or a string never matches):
 //!
 //! 5. **`PinAdapter` is implemented only by `pin_adapter!`.** An `impl .. PinAdapter for`, or
 //!    any naming of the trait's hidden seal `PinSealed` (it has no use but an impl), outside
-//!    `sys/hal/pinlist.rs` (the macro's body) is an error: every adapter then passes the
+//!    `sys/hal/ds/pinlist.rs` (the macro's body) is an error: every adapter then passes the
 //!    macro's compile-time refusal of an `Unpin` element.
 //! 6. **No `impl .. Unpin for` in `sys/kernel/` or `sys/abi/`.** A manual `Unpin` is the only
 //!    safe way to defeat `Pin` (a pinned value of an `Unpin` type may be moved); `hal`'s own
@@ -73,7 +73,7 @@ const HAL_DIR: &str = "sys/hal";
 const SYS_DIR: &str = "sys";
 
 /// The one file that may implement `PinAdapter` and name its seal: `pin_adapter!`'s.
-const PINLIST: &str = "sys/hal/pinlist.rs";
+const PINLIST: &str = "sys/hal/ds/pinlist.rs";
 
 /// The crates where rule 6 refuses an `impl Unpin`.
 const NO_UNPIN_DIRS: [&str; 2] = ["sys/kernel/", "sys/abi/"];
@@ -257,7 +257,7 @@ pub(crate) fn check_pin_premise(rel: &str, src: &str) -> Vec<Finding> {
         if w == "PinSealed" && !pinlist {
             add(
                 i,
-                "PinSealed named outside sys/hal/pinlist.rs: PinAdapter is implemented by pin_adapter! alone (pinlist's I1)",
+                "PinSealed named outside sys/hal/ds/pinlist.rs: PinAdapter is implemented by pin_adapter! alone (pinlist's I1)",
             );
         } else if w == "impl" {
             match impl_trait(toks, i).as_deref() {
@@ -502,8 +502,8 @@ mod tests {
         // Written by hand anywhere but pinlist.rs: refused, however the path is spelt.
         for src in [
             "impl PinAdapter for A {}\n",
-            "impl hal::pinlist::PinAdapter for A {\n    type Elem = N;\n}\n",
-            "impl<T: Sync> ::hal::pinlist::PinAdapter for A<T> {}\n",
+            "impl hal::ds::pinlist::PinAdapter for A {\n    type Elem = N;\n}\n",
+            "impl<T: Sync> ::hal::ds::pinlist::PinAdapter for A<T> {}\n",
             "impl<F: Fn() -> u8> PinAdapter for A<F> {}\n",
             "macro_rules! m { ($n:ident) => { impl $crate::pinlist::PinAdapter for $n {} }; }\n",
         ] {
@@ -514,14 +514,14 @@ mod tests {
         assert_eq!(
             premise_lines(
                 "sys/kernel/x.rs",
-                "\nimpl hal::pinlist::sealed::PinSealed for A {}\n"
+                "\nimpl hal::ds::pinlist::sealed::PinSealed for A {}\n"
             ),
             vec![2]
         );
         assert_eq!(
             premise_lines(
                 "sys/dev/x.rs",
-                "use hal::pinlist::sealed::PinSealed as S;\n"
+                "use hal::ds::pinlist::sealed::PinSealed as S;\n"
             )
             .len(),
             1
@@ -529,7 +529,7 @@ mod tests {
         // The macro's own file, a bound, a call, a comment or a string: allowed.
         assert!(
             premise_lines(
-                "sys/hal/pinlist.rs",
+                "sys/hal/ds/pinlist.rs",
                 "impl sealed::PinSealed for A {}\nimpl PinAdapter for A {}\n"
             )
             .is_empty()
@@ -551,12 +551,15 @@ mod tests {
         assert_eq!(
             premise_lines(
                 "sys/kernel/x.rs",
-                "impl hal::pinlist::sealed::r#PinSealed for A {}\n"
+                "impl hal::ds::pinlist::sealed::r#PinSealed for A {}\n"
             ),
             vec![1]
         );
         assert_eq!(
-            premise_lines("sys/net/x.rs", "impl hal::pinlist::r#PinAdapter for A {}\n"),
+            premise_lines(
+                "sys/net/x.rs",
+                "impl hal::ds::pinlist::r#PinAdapter for A {}\n"
+            ),
             vec![1]
         );
         // Rule 6: a raw Unpin, a renamed one (and the impl of the new name it would allow).

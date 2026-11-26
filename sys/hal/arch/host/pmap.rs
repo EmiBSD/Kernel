@@ -17,7 +17,7 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! The host double's pmap behind `hal::pmap`: each pmap's mappings in a `BTreeMap`, page by
+//! The host double's pmap behind `hal::vm::pmap`: each pmap's mappings in a `BTreeMap`, page by
 //! page. Not an OpenBSD file; it must not grow logic (`sys/hal/arch/host/mod.rs`).
 //!
 //! It keeps the behaviour of `bsd`'s host double (`sys/arch/host/mod.rs`, LZ's), which `bsd`'s
@@ -45,17 +45,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use super::param::{
     PAGE_MASK, PAGE_SIZE, VM_MAX_KERNEL_ADDRESS, VM_MAXUSER_ADDRESS, VM_MIN_KERNEL_ADDRESS,
 };
-use crate::intr::IPL_VM;
+use crate::cpu::intr::IPL_VM;
 #[cfg(target_arch = "aarch64")]
-use crate::mmio::DevCache;
-use crate::pmap::{BootstrapParams, PageMd, PhysPages, Pmap, PmapBackend, PmapStatistics, VmProt};
-use crate::pool::PR_WAITOK;
+use crate::dev::mmio::DevCache;
+use crate::mem::pool::PR_WAITOK;
 use crate::sys::errno::Errno;
 use crate::sys::mman::PROT_NONE;
 #[cfg(target_arch = "aarch64")]
 use crate::sys::mman::{PROT_READ, PROT_WRITE};
 use crate::sys::types::{Paddr, Vaddr, Vsize};
 use crate::vm::param::round_page;
+use crate::vm::pmap::{
+    BootstrapParams, PageMd, PhysPages, Pmap, PmapBackend, PmapStatistics, VmProt,
+};
 
 /// arm64's `EFI_SPACE_BITS`: the width of the EFI runtime pmap's address space.
 #[cfg(target_arch = "aarch64")]

@@ -170,7 +170,7 @@
 //! - LZ's `&'static Mbuf` from `pool_get` to `pool_put` (every field a `Cell`, the data area
 //!   an `UnsafeCell` read through raw pointers, 35 `unsafe` here and 8 in the header) becomes
 //!   an owned item: [`MbufBox`], a `PoolBox<Mbuf>` of `mbufpl`, whose drop is `m_free`'s body.
-//!   The chain is the item's own: `m_next` and `m_nextpkt` are `hal::owned::SlistLink`s (8
+//!   The chain is the item's own: `m_next` and `m_nextpkt` are `hal::ds::owned::SlistLink`s (8
 //!   bytes, the C's pointer), each owning the next mbuf, walked by `get`/`get_mut` (O(1) a
 //!   step) and changed by `set`/`take`; a dropped chain is freed one mbuf at a time. Every
 //!   function that may replace a chain's head takes and returns the box (`m_pullup`,
@@ -178,7 +178,7 @@
 //!   `m_copyback`, `m_defrag`, `m_split`, `m_copym`, which turns the source's clusters shared)
 //!   or `&Mbuf` where they change only lengths and offsets (`m_adj`, `m_align`,
 //!   `m_calchdrlen`); the readers `&Mbuf`. Out parameters are return values (LZ's).
-//! - `struct mbuf`'s two untagged unions are `hal::overlay::Body`: the packet header and the
+//! - `struct mbuf`'s two untagged unions are `hal::mem::overlay::Body`: the packet header and the
 //!   cluster description are typed values lent while their bits (`M_PKTHDR`, `M_EXT`) are
 //!   set, which only the typed transitions write ([`m_inithdr`], [`m_removehdr`],
 //!   [`m_move_hdr`], [`m_dup_pkthdr`], [`m_clget`], the drop); `MLEN` stays 224 and `MHLEN`
@@ -208,7 +208,7 @@
 //!   `data_raw`: the overlay's `M_EXT` tag test, then the cached cluster address or the
 //!   storage's start, plus the offset, about ten instructions where LZ loads one field);
 //!   `header.view` 0.5 -> 1.1 (c; 1.0 in d; the kernel row views 20 bytes through `data()`'s
-//!   tag test and bounds check and `hal::pod::view`'s length and alignment checks; LZ's reads
+//!   tag test and bounds check and `hal::mem::pod::view`'s length and alignment checks; LZ's reads
 //!   one byte through a raw pointer, unchecked); `header.copy` 4.4 -> 6.6 (c; 6.2 before C1 in
 //!   the same run, 6.3 in d: `m_copydata` of 20 bytes at offset 14 on both sides, the kernel's
 //!   a call that builds the `data()` slice, its tag tests and bounds check, and copies with a
@@ -256,7 +256,7 @@
 //!   atomic per share and per free of a shared cluster, none for an unshared one, as the C.
 //!   `mextfree_fns[]`, `m_extfree_pool`, `m_extfree_refs` and `m_extref`'s index juggling are
 //!   those types' drops.
-//! - `mbstat` is a `hal::percpu::Counters` from boot (the C's boot counters and
+//! - `mbstat` is a `hal::sync::percpu::Counters` from boot (the C's boot counters and
 //!   `counters_alloc_ncpus` in one); `kern.mbstat` reads [`mbstat_read`]. The pools' pages
 //!   are [`MbufPages`], the `PageSource` of `m_pool_allocator` (the memory limit, the DMA
 //!   constraint `m_pool_noconstraints` lifts for every pool at once, as the C does pool by
@@ -279,17 +279,17 @@ use core::fmt;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering};
 
-use hal::intr::{IPL_NET, IPL_VM, splraise};
-use hal::malloc::{M_NOWAIT, M_WAITOK};
-use hal::mutex::Mutexed;
-use hal::once::OnceStatic;
-use hal::overlay::{Body, Bytes};
-use hal::owned::{OwnedSlist, SlistLink};
-use hal::percpu::Counters;
-use hal::pool::{
+use hal::cpu::intr::{IPL_NET, IPL_VM, splraise};
+use hal::ds::owned::{OwnedSlist, SlistLink};
+use hal::mem::malloc::{M_NOWAIT, M_WAITOK};
+use hal::mem::overlay::{Body, Bytes};
+use hal::mem::pool::{
     BoxPool, PR_NOWAIT, PR_WAITOK, PageSource, ParkWord, Parkable, PoolArc, PoolBox, Pooled,
     TypedPool,
 };
+use hal::sync::mutex::Mutexed;
+use hal::sync::once::OnceStatic;
+use hal::sync::percpu::Counters;
 use hal::sys::errno::Errno;
 pub use hal::sys::mbuf::{
     MT_CONTROL, MT_DATA, MT_FREE, MT_FTABLE, MT_HEADER, MT_NTYPES, MT_OOBDATA, MT_SONAME,
@@ -581,7 +581,7 @@ pub const MBS_NCOUNTERS: usize = MbstatCounters::MbsNcounters as usize;
 pub struct MbufMeta {
     /// `m_type`: type of data in this mbuf.
     m_type: Cell<i16>,
-    /// The parked mark (`hal::pool::Parkable`): 1 while `bsd` holds the mbuf by address.
+    /// The parked mark (`hal::mem::pool::Parkable`): 1 while `bsd` holds the mbuf by address.
     park: ParkWord,
     _r: [u8; 3],
 }
@@ -596,7 +596,7 @@ pub struct MTag {
     pub m_tag_id: Cell<u16>,
     /// `m_tag_len`: length of data.
     pub m_tag_len: Cell<u16>,
-    /// The parked mark (`hal::pool::Parkable`): 1 while `bsd` holds the tag by address.
+    /// The parked mark (`hal::mem::pool::Parkable`): 1 while `bsd` holds the tag by address.
     park: ParkWord,
     _r: [u8; 3],
     /// `(t + 1)`: the tag's data, written in place by `bsd` through [`MTag::data`].
@@ -4183,10 +4183,13 @@ pub(crate) mod tests {
         m.set_data_off(2);
         m.m_len().set(60);
         m.data_mut().expect("writable")[14 + 8] = 64;
-        let ip = hal::pod::view::<Ip>(m.data(), 14).expect("aligned");
+        let ip = hal::mem::pod::view::<Ip>(m.data(), 14).expect("aligned");
         assert_eq!(ip.ttl, 64);
         m.set_data_off(3);
-        assert!(hal::pod::view::<Ip>(m.data(), 14).is_none(), "misaligned");
+        assert!(
+            hal::mem::pod::view::<Ip>(m.data(), 14).is_none(),
+            "misaligned"
+        );
         drop(m);
         all_back();
     }

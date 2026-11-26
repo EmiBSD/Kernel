@@ -49,13 +49,13 @@
 //! - On a machine without an MMU (`PMAP_NOMMU`: only the host test double) the arena
 //!   reserves no kernel virtual space (its slots are fake addresses, `kernel::vm::km`), the
 //!   pages are physically contiguous (`uvm_pagealloc_multi`) and a buffer's bytes are read
-//!   through the direct map (`hal::mapped`), LZ's deviation.
+//!   through the direct map (`hal::mem::mapped`), LZ's deviation.
 //!
 //! ## Redesign
 //! - LZ's `buf_kva_start`/`buf_kva_end` atomics and slot addresses as `usize`s -> the
 //!   arena `kernel::vm::km::BufArena` in the cache's state, handing out `BufSlot`s, the only
 //!   addresses a buffer's pages are entered at; `buf_map`'s `pmap_kenter_pa` loop through
-//!   `bsd`'s legacy `unsafe fn` -> `BufSlot::map`, a `hal::mapped::MappedBytes` over an
+//!   `bsd`'s legacy `unsafe fn` -> `BufSlot::map`, a `hal::mem::mapped::MappedBytes` over an
 //!   unmanaged mapping that the buffer's token holds while it is busy and the buffer keeps
 //!   while idle (`kernel::fs::buf::Kva`); `buf_unmap`'s `pmap_kremove` -> `BufArena::unmap`
 //!   of that view; `buf_fix_mapping` -> `MappedBytes::truncate`.
@@ -69,7 +69,7 @@
 
 use core::sync::atomic::Ordering;
 
-use hal::sleep::{INFSLP, PRIBIO, curproc_word, wakeup};
+use hal::sync::sleep::{INFSLP, PRIBIO, curproc_word, wakeup};
 use hal::sys::param::PAGE_SIZE;
 use hal::sys::types::Paddr;
 use hal::vm::param::{atop, ptoa, round_page};
@@ -81,7 +81,7 @@ use crate::vm::km::{BufArena, BufSlot};
 use crate::vm::object::uvm_obj_free;
 use crate::vm::page::{uvm_pagealloc_multi, uvm_pagelookup, vm_page_to_phys};
 use crate::vm::types::{UVM_PLA_NOWAIT, UVM_PLA_NOWAKE, UVM_PLA_WAITOK, Voff};
-use hal::owned::Member;
+use hal::ds::owned::Member;
 
 /// At most a slot's worth of pages.
 const SLOT_PAGES: usize = MAXPHYS / PAGE_SIZE;
@@ -135,7 +135,7 @@ pub(crate) fn buf_mem_init(g: &mut Cache, size: usize) {
 /// the kvm (sleeping for a slot, the cache's lock left meanwhile, when none is free).
 pub(crate) fn buf_acquire(
     g: &mut Cache,
-    r: hal::owned::SecondaryRef<super::buf::ByBufhead>,
+    r: hal::ds::owned::SecondaryRef<super::buf::ByBufhead>,
 ) -> BufRef {
     let Some(bp) = r.get() else {
         kpanic(format_args!("buf_acquire: no buffer"));
@@ -152,7 +152,7 @@ pub(crate) fn buf_acquire(
 /// had (off `buf_valist`).
 pub(crate) fn buf_acquire_nomap(
     g: &mut Cache,
-    r: hal::owned::SecondaryRef<super::buf::ByBufhead>,
+    r: hal::ds::owned::SecondaryRef<super::buf::ByBufhead>,
 ) -> BufRef {
     let Some(bp) = r.get() else {
         kpanic(format_args!("buf_acquire_nomap: no buffer"));
@@ -282,7 +282,7 @@ pub(crate) fn buf_dealloc_mem(g: &mut Cache, mut t: BufRef) -> Option<BufRef> {
 }
 
 /// The view `v` of a slot of the cache's arena taken back to its slot (`pmap_kremove`).
-fn unmap(g: &mut Cache, v: hal::mapped::MappedBytes<'static>) -> BufSlot {
+fn unmap(g: &mut Cache, v: hal::mem::mapped::MappedBytes<'static>) -> BufSlot {
     match &g.arena {
         Some(a) => a.unmap(v),
         None => kpanic(format_args!("buf_unmap: no buffer arena")),

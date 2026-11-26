@@ -70,7 +70,7 @@
 //!
 //! ## Redesign
 //! - LZ's `include/pmap.rs` holds this layout with `struct pmap`, `struct vm_page_md` and
-//!   `VM_MDPAGE_INIT`; those are `hal::pmap`'s and the backend's now (`backend.rs`), and this
+//!   `VM_MDPAGE_INIT`; those are `hal::vm::pmap`'s and the backend's now (`backend.rs`), and this
 //!   file keeps the layout alone, with what `pmap.c` computes from it: `VP_IDX0`..`VP_IDX3` as
 //!   [`vp_idx`] by level, `pmap_enter`'s and `pmap_kenter_pa`'s cache mode from the flag bits
 //!   of the physical address ([`cache_of_pa`]), the bitmap word and bits of an ASID pair
@@ -101,8 +101,8 @@ use super::super::include::pte::{
     attr_sh,
 };
 use super::super::include::vmparam::{VM_MAX_KERNEL_ADDRESS, VM_MIN_KERNEL_ADDRESS};
-use crate::pmap::{KernelImage, PG_PMAP2, PMAP_MD0, PMAP_MD1, PMAP_MD2, PMAP_MD3, VmProt};
 use crate::sys::mman::{PROT_EXEC, PROT_READ, PROT_WRITE};
+use crate::vm::pmap::{KernelImage, PG_PMAP2, PMAP_MD0, PMAP_MD1, PMAP_MD2, PMAP_MD3, VmProt};
 
 // V->P mapping data
 

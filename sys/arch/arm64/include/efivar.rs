@@ -53,7 +53,7 @@ use core::cell::Cell;
 use crate::dev::clock_subr::TodrChipHandle;
 use crate::dev::efi::efi::{EfiRuntimeServices, EfiSystemResourceTable};
 use crate::sys::device::{Device, Softc};
-use hal::pmap::Pmap;
+use hal::vm::pmap::Pmap;
 
 /// `struct efi_softc`.
 #[repr(C)]

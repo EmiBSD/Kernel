@@ -254,7 +254,7 @@ pub struct SockaddrUnion {
 }
 
 // A `#[repr(C)]` byte array: no holes (`hal::abi_pod!` checks it), so `struct tdb_ident`
-// can be read out of a packet tag's bytes with `hal::pod`.
+// can be read out of a packet tag's bytes with `hal::mem::pod`.
 hal::abi_pod!(SockaddrUnion {
     bytes: [u8; SIZEOF_SOCKADDR_IN6]
 });
@@ -1435,7 +1435,7 @@ pub struct TdbIdent {
 }
 
 // Integers, the union's bytes and the explicit padding, without holes (`hal::abi_pod!`
-// checks it): a tag's bytes read as one with `hal::pod::at`.
+// checks it): a tag's bytes read as one with `hal::mem::pod::at`.
 hal::abi_pod!(TdbIdent {
     spi: u32,
     dst: SockaddrUnion,

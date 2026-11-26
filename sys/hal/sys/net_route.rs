@@ -168,7 +168,7 @@
 //!
 //! ## Deviations
 //! - `ROUTE_FILTER(m)` is the `const fn` [`route_filter`].
-//! - `srtdnstosa(sdns)` is a view of the address's bytes (`hal::pod::view`), not a cast.
+//! - `srtdnstosa(sdns)` is a view of the address's bytes (`hal::mem::pod::view`), not a cast.
 //! - `struct rt_kmetrics`, `struct rtentry`, `struct route`, `struct rt_addrinfo`, `struct
 //!   rttimer_queue`, `enum rtstat_counters` and `RT_RESOLVE` are the kernel's
 //!   (`kernel::net::route`): `#ifdef _KERNEL`, never seen by userland.
@@ -179,7 +179,7 @@
 //!   (N6.3b; the `net_if` precedent of N6.3a). The `NET_RT_*` names and `RT_TABLEID_*` are
 //!   `<sys/socket.h>`'s ([`crate::sys::socket`]).
 //! - LZ's `#[repr(C)]` structures with a runtime size check -> `AbiPod` images, so a message
-//!   is built and read in a byte buffer through `hal::pod` with no padding byte left
+//!   is built and read in a byte buffer through `hal::mem::pod` with no padding byte left
 //!   uninitialised; LZ's size asserts (route.rs's) are `const` here.
 
 use core::mem::size_of;
@@ -732,7 +732,7 @@ const _: () = {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pod;
+    use crate::mem::pod;
 
     #[test]
     fn a_message_header_is_read_and_written_in_its_bytes() {

@@ -1437,7 +1437,7 @@ mod tests {
         #[test]
         fn fhtovp_checks_the_mount_the_export_and_the_port() {
             let (_g, _p, dir, _) = exported();
-            hal::klock::kernel_lock();
+            hal::sync::klock::kernel_lock();
             let udp = sock(SOCK_DGRAM);
             let tcp = sock(SOCK_STREAM);
             let tooweak = NFSERR_AUTHERR | AUTH_TOOWEAK as i32;
@@ -1526,13 +1526,13 @@ mod tests {
                 ok(nfsrv_fhtovp(&dir, false, &root_cred(), &udp, None)),
                 Err(tooweak)
             );
-            hal::klock::kernel_unlock();
+            hal::sync::klock::kernel_unlock();
         }
 
         #[test]
         fn fhtovp_maps_root_and_everyone_on_mapall_and_says_read_only() {
             let (_g, _p, dir, _) = exported();
-            hal::klock::kernel_lock();
+            hal::sync::klock::kernel_lock();
             let udp = sock(SOCK_DGRAM);
             let at = Some(client(700));
             // -maproot: uid 0 takes the anonymous ids and groups.
@@ -1581,7 +1581,7 @@ mod tests {
             let (vp, _) = nfsrv_fhtovp(&dir, false, &cr, &udp, at.as_deref()).expect("granted");
             vrele(vp);
             assert_eq!(cr.cr_ngroups.get(), 0);
-            hal::klock::kernel_unlock();
+            hal::sync::klock::kernel_unlock();
         }
 
         /// `nfs_namei` of the request bytes `req` (a name and its padding) under `dir`.
@@ -1626,7 +1626,7 @@ mod tests {
         #[test]
         fn namei_looks_names_up_under_the_handle_and_refuses_slashes_and_nuls() {
             let (_g, p, dir, file) = exported();
-            hal::klock::kernel_lock();
+            hal::sync::klock::kernel_lock();
             GRANT.with(|g| g.set(Ok(grant(MNT_EXPORTED | MNT_EXRDONLY, 32767))));
             let cr = root_cred();
             let (res, vp, flags) = namei(p, &dir, b"file", 4, &cr);
@@ -1653,7 +1653,7 @@ mod tests {
             // A name too long for the pathname buffer.
             let (res, _, _) = namei(p, &dir, b"f", MAXPATHLEN, &cr);
             assert_eq!(res, Err(Errno::ENAMETOOLONG.as_i32()));
-            hal::klock::kernel_unlock();
+            hal::sync::klock::kernel_unlock();
         }
     }
 }

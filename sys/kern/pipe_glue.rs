@@ -79,7 +79,7 @@
 //! - `pipe_stat`'s `st_uid`/`st_gid` are the file's `f_cred` (`File::cred`, N5.0), as the
 //!   C's; N4 copied them into the pipe's slot when `dopipe` made the file.
 
-use hal::pool::PoolArc;
+use hal::mem::pool::PoolArc;
 use hal::user::UserPtr;
 use kernel::pipe::{Dir, PipeEnd, PipeFilter, PipeIoctl, PipeKinfo, PipePair, Pipes, UioMove};
 
@@ -127,11 +127,11 @@ pub static PIPEOPS: Fileops = Fileops {
 /// The pipe buffers' pages: the kernel's `km_alloc` (`kernel::vm::km`, `kv_any` with
 /// `kp_pageable`).
 #[cfg(not(test))]
-const PIPE_PAGES: &dyn hal::kmbuf::PageMemory = kernel::vm::km::page_memory();
+const PIPE_PAGES: &dyn hal::mem::kmbuf::PageMemory = kernel::vm::km::page_memory();
 /// The host tests' pages: the kernel crate's double (the host has no MMU, so `km_alloc`
 /// refuses pageable memory there, as LZ's did).
 #[cfg(test)]
-const PIPE_PAGES: &dyn hal::kmbuf::PageMemory = kernel::testutil::page_memory();
+const PIPE_PAGES: &dyn hal::mem::kmbuf::PageMemory = kernel::testutil::page_memory();
 
 /// The pipes: `pipe_pair_pool`, `nbigpipe`, `amountpipekva`, over this glue.
 pub static PIPES: Pipes<BsdProcGlue> = Pipes::new(PIPE_PAGES);

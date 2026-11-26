@@ -245,7 +245,7 @@ use kernel::fs::vnode::{GETCWD_CHECK_ACCESS, LK_NOWAIT, VDIR, VROOT, Vattr};
 use kernel::fs::vnops::{vn_close, vn_open};
 use kernel::fs::vops::{Nd, VFS_ROOT, Vfs};
 
-use hal::rwlock::RecursiveRwlock;
+use hal::sync::rwlock::RecursiveRwlock;
 use hal::sys::errno::Errno;
 use hal::sys::types::makedev;
 use kernel::fs::subr::{cdevvp, getnewvnode, vdrop, vfinddev, vfs, vget, vhold, vput, vref, vrele};
@@ -650,7 +650,7 @@ fn names_root() -> &'static Thread<TestGlue> {
     pr.set_fd(kernel::descrip::fdinit());
     let t = kernel::proc::thread_alloc::<TestGlue>(&pr, ());
     drop(t.set_cred(pr.ucred()));
-    let p: &'static Thread<TestGlue> = hal::pool::PoolBox::leak(t);
+    let p: &'static Thread<TestGlue> = hal::mem::pool::PoolBox::leak(t);
     core::mem::forget(pr);
     vref(root);
     p.fd().set_cdir(Some(root));
@@ -1340,7 +1340,7 @@ fn nfs_srv_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, 
     let _g = kernel::testutil::pages_install(64 << 20);
     kernel::testutil::kernel_maps_install();
     kernel::net::mbuf::mbinit(&BENCH_NMBCLUST);
-    hal::klock::kernel_lock();
+    hal::sync::klock::kernel_lock();
 
     // A version 3 GETATTR call: xid, CALL, RPC 2, NFS, version 3, procedure 1, AUTH_UNIX of 28
     // bytes (stamp, an empty machine name, uid, gid, two groups), an AUTH_NULL verifier.
@@ -1401,7 +1401,7 @@ fn nfs_srv_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, 
             }),
         );
     }
-    hal::klock::kernel_unlock();
+    hal::sync::klock::kernel_unlock();
 }
 
 /// N6.7b3's rows (the module's docs): the nfs server's GETATTR and READ over an exported ffs,
@@ -1432,7 +1432,7 @@ fn nfs_srv_proc_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, 
     kernel::testutil::kernel_maps_install();
     mbinit(&BENCH_NMBCLUST);
     let _ = nmbclust_update(256 * 1024);
-    hal::klock::kernel_lock();
+    hal::sync::klock::kernel_lock();
     let mp = testffs::mount_root(p, 0);
     let args = ExportArgs {
         ex_flags: MNT_EXPORTED,
@@ -1521,7 +1521,7 @@ fn nfs_srv_proc_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, 
         );
     }
     testffs::unmount_root(p, mp);
-    hal::klock::kernel_unlock();
+    hal::sync::klock::kernel_unlock();
 }
 
 /// N6.8's rows (the module's docs): the nfs client over `lo0` and the scripted server of

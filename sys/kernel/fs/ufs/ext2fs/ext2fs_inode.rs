@@ -126,8 +126,8 @@
 //!   (`ext2fs_vnops.rs`); the C's `ip->i_e2din == NULL` is the inode's empty dinode slot
 //!   (`din_is_null`), and the inode's handle is dropped before `vrecycle`, as `ufs_inactive`'s.
 
-use hal::malloc::{M_WAITOK, MArray};
-use hal::sleep::INFSLP;
+use hal::mem::malloc::{M_WAITOK, MArray};
+use hal::sync::sleep::INFSLP;
 use hal::sys::errno::Errno;
 use hal::sys::mount::MNT_RDONLY;
 use hal::sys::types::{Daddr, Mode, Off};

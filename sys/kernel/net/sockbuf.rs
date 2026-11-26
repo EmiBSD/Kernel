@@ -152,7 +152,7 @@
 //!   [`MbufList`]), `last` (the last record's mbufs but its final one, by `m_next`) and
 //!   `tail` (that final mbuf, the C's `sb_mbtail`), so `sb_mb`, `sb_lastrecord` and
 //!   `sb_mbtail` are O(1) positions and `sbcompress` writes into `tail` through the guard's
-//!   `&mut` (D-N6.2-1). The brief's `hal::owned::OwnedSlist::last_mut` is not used: a `&mut`
+//!   `&mut` (D-N6.2-1). The brief's `hal::ds::owned::OwnedSlist::last_mut` is not used: a `&mut`
 //!   to a listed mbuf would let its holder relink the mbuf's own `m_next` (a `pub` field)
 //!   behind the list, leaving the list's tail word naming a freed mbuf; holding the final
 //!   mbuf outside the list needs no `unsafe` at all. Invariants: `tail` empty means `last`
@@ -183,11 +183,11 @@
 use core::mem;
 use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU16, AtomicU32, AtomicU64, Ordering};
 
-use hal::intr::IPL_MPFLOOR;
-use hal::mutex::{Mutexed, MutexedGuard};
-use hal::owned::{OwnedSlist, SlistIter};
-use hal::rwlock::{RW_INTR, RW_NOSLEEP, RawRwlock, WriteWitness};
-use hal::sleep::PCATCH;
+use hal::cpu::intr::IPL_MPFLOOR;
+use hal::ds::owned::{OwnedSlist, SlistIter};
+use hal::sync::mutex::{Mutexed, MutexedGuard};
+use hal::sync::rwlock::{RW_INTR, RW_NOSLEEP, RawRwlock, WriteWitness};
+use hal::sync::sleep::PCATCH;
 use hal::sys::errno::Errno;
 use hal::sys::socket::{Cmsghdr, cmsg_align, cmsg_len, cmsg_space};
 use hal::user::bytes_of;

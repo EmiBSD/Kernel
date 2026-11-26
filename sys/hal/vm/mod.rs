@@ -24,4 +24,14 @@
 #[forbid(unsafe_code)]
 pub mod param;
 pub mod uvmexp;
+// pmap(9) (N3.1). A machine's build has the module once its backend is in
+// `arch/<machine>/pmap/`: the host double's, amd64's (N3.1 commit 4) and arm64's (commit 5),
+// as the two pmap bridges of `bridges.rs`.
+#[cfg(any(
+    not(target_os = "none"),
+    target_arch = "x86_64",
+    target_arch = "aarch64"
+))]
+#[forbid(unsafe_code)]
+pub mod pmap;
 /* </CODE> */

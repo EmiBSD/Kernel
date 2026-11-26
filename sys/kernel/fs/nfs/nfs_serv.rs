@@ -199,7 +199,7 @@ use crate::sys::unistd::{_PC_CHOWN_RESTRICTED, _PC_LINK_MAX, _PC_NAME_MAX, _PC_N
 use crate::tc::microboottime;
 use crate::uio::{Iovec, Uio};
 use crate::vm::vnode::uvm_vnp_uncache;
-use hal::malloc::{M_WAITOK, MArray};
+use hal::mem::malloc::{M_WAITOK, MArray};
 
 /// `malloc(9)`'s `M_TEMP`: the read and write iovec arrays, the readdir buffer, the symlink
 /// target.
@@ -3495,7 +3495,7 @@ mod tests {
         crate::testutil::kernel_maps_install();
         mbinit(&crate::net::mbuf::tests::TEST_NMBCLUST);
         let _ = nmbclust_update(256 * 1024);
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         let mp = testffs::mount_root(p, 0);
         export(mp, flags, anon);
         let vp = VFS_ROOT(mp).expect("the root");

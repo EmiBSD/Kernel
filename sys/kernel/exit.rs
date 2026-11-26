@@ -98,8 +98,8 @@ use core::pin::Pin;
 use core::ptr;
 use core::sync::atomic::Ordering;
 
-use hal::klock;
-use hal::pool::PoolBox;
+use hal::mem::pool::PoolBox;
+use hal::sync::klock;
 use hal::sys::errno::Errno;
 use hal::sys::siginfo::{
     CLD_CONTINUED, CLD_DUMPED, CLD_EXITED, CLD_KILLED, CLD_STOPPED, CLD_TRAPPED, Siginfo,
@@ -136,7 +136,7 @@ const PWAIT: i32 = 32;
 const PCATCH: i32 = 0x100;
 
 /// The guard of a process's `ps_mtx`.
-type PsGuard<'a, G> = hal::mutex::MutexedGuard<'a, PsMtx<G>>;
+type PsGuard<'a, G> = hal::sync::mutex::MutexedGuard<'a, PsMtx<G>>;
 
 /// `exit(2)`: death of process.
 pub fn sys_exit<G: ProcGlue>(p: &Thread<G>, rval: i32) -> ! {
@@ -149,7 +149,7 @@ pub fn sys_exit<G: ProcGlue>(p: &Thread<G>, rval: i32) -> ! {
 #[allow(non_snake_case, reason = "the C name, sys___threxit")]
 pub fn sys___threxit<G: ProcGlue>(p: &Thread<G>, notdead: UserPtr<Pid>) -> ! {
     if !notdead.is_null() && notdead.copyout(&0).is_err() {
-        hal::thread::with_current::<Thread<G>, _>(|cur| crate::sig::psignal(cur, SIGSEGV));
+        hal::cpu::thread::with_current::<Thread<G>, _>(|cur| crate::sig::psignal(cur, SIGSEGV));
     }
     G::exit1(p, 0, 0, EXIT_THREAD)
 }
@@ -232,7 +232,7 @@ pub fn exit1<G: ProcGlue>(p: &Thread<G>, xexit: i32, xsig: i32, flags: i32) -> !
                 ptr::from_ref(&pr.ps_threads),
                 PWAIT,
                 "thrdeath",
-                hal::sleep::INFSLP,
+                hal::sync::sleep::INFSLP,
             );
         }
     }
@@ -459,7 +459,7 @@ pub fn exit1<G: ProcGlue>(p: &Thread<G>, xexit: i32, xsig: i32, flags: i32) -> !
     // the rest once we are off it.
     G::pmap_deactivate(p);
     drop(pr);
-    hal::thread::with_current::<Thread<G>, _>(|cur| {
+    hal::cpu::thread::with_current::<Thread<G>, _>(|cur| {
         kassert!(ptr::eq::<Thread<G>>(cur.get_ref(), p));
         crate::sched::sched_exit(cur)
     });
@@ -521,7 +521,7 @@ pub enum Dead<G: ProcGlue> {
 pub fn reaper<G: ProcGlue>() -> ! {
     klock::kernel_unlock();
 
-    kassert!(!hal::thread::sched_locked());
+    kassert!(!hal::cpu::thread::sched_locked());
 
     loop {
         // The first dead thread, off the deadproc list (`deadproc_mutex` is the scheduler's,
@@ -792,7 +792,7 @@ pub fn dowait6<G: ProcGlue>(
         }
         crate::sched::sleep_setup::<G>(ptr::from_ref(qr).addr(), PWAIT | PCATCH, "wait");
         crate::sched::sleep_finish::<G>(
-            hal::sleep::INFSLP,
+            hal::sync::sleep::INFSLP,
             qr.ps_flags.load(Ordering::Relaxed) & PS_WAITEVENT == 0,
         )?;
     }
@@ -1046,7 +1046,7 @@ pub fn process_zap<G: ProcGlue>(pr: ProcessRef<G>) {
 
 /// `p` as the pinned running thread for `f` (`curproc`), checked to be `p`.
 pub fn with_self<G: ProcGlue, R>(p: &Thread<G>, f: impl FnOnce(Pin<&Thread<G>>) -> R) -> R {
-    hal::thread::with_current::<Thread<G>, _>(|cur| {
+    hal::cpu::thread::with_current::<Thread<G>, _>(|cur| {
         kassert!(ptr::eq::<Thread<G>>(cur.get_ref(), p));
         f(cur)
     })
@@ -1069,7 +1069,7 @@ mod tests {
         crate::testutil::install();
         if !MADE.with(|m| m.replace(true)) {
             // As a system call runs: the kernel lock held (the double counts it per thread).
-            hal::klock::kernel_lock();
+            hal::sync::klock::kernel_lock();
             crate::proc::procinit::<Procs>(64, 64);
         }
         let pr = crate::proc::process_alloc::<Procs>(pid, ());

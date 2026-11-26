@@ -47,7 +47,7 @@ use std::boxed::Box;
 use std::sync::MutexGuard;
 use std::vec::Vec;
 
-use hal::rwlock::{RW_NOSLEEP, RW_READ, RW_RECURSEFAIL, RW_WRITE, RecursiveRwlock};
+use hal::sync::rwlock::{RW_NOSLEEP, RW_READ, RW_RECURSEFAIL, RW_WRITE, RecursiveRwlock};
 use hal::sys::errno::Errno;
 use hal::sys::mount::{Fid, MNT_LOCAL, Statfs};
 use hal::sys::types::{Dev, Ino, Mode, Uid};
@@ -1329,7 +1329,7 @@ pub fn setup() -> MutexGuard<'static, ()> {
 
 /// [`setup`] over the memory guard `g` the caller made.
 fn setup_on(g: MutexGuard<'static, ()>) -> MutexGuard<'static, ()> {
-    hal::klock::kernel_lock();
+    hal::sync::klock::kernel_lock();
     vfs_test_reset::<TestGlue>();
     // The buffer cache is the process's, not the thread's: a cache test's buffers (and
     // `bcstats.numbufs`, which `getnewvnode` reads to raise `maxvnodes`) must not reach the
@@ -1452,7 +1452,7 @@ fn thread_on(g: MutexGuard<'static, ()>) -> (MutexGuard<'static, ()>, &'static T
     pr.set_fd(crate::descrip::fdinit());
     let t = crate::proc::thread_alloc::<TestGlue>(&pr, ());
     drop(t.set_cred(pr.ucred()));
-    let p: &'static Thread<TestGlue> = hal::pool::PoolBox::leak(t);
+    let p: &'static Thread<TestGlue> = hal::mem::pool::PoolBox::leak(t);
     core::mem::forget(pr);
     if let Some(root) = super::init::rootvnode::<TestGlue>() {
         super::subr::vref(root);

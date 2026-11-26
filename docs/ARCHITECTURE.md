@@ -58,18 +58,18 @@ No `src/` directory (`[lib] path = "lib.rs"`), so C and Rust paths differ only b
 ### The runtime API (N2.3)
 
 What `kernel` builds on, all safe to call, every `unsafe` inside `hal` with its proof
-(docs/ZERO_UNSAFE.md decisions 30, 32-36): `hal::once::OnceStatic<T>` (a global set once at
-boot), `hal::mutex::Mutexed<T>` and `hal::rwlock::Rwlocked<T>` (locks that own their data; the
-write guard sleeps with `rwsleep` and runs a closure unlocked), `hal::percpu::PerCpu<T>`,
-`hal::refcnt::Refcnt`, `hal::intr::splraise` (a guard that restores only a level it raised),
-`hal::cpu` (the CPU's identity), `hal::kmbuf::KmBuf` (pageable kernel memory it owns),
-`hal::pool::TypedPool<T>` with `PoolArc<T>` (one `pool(9)` per type, so `vmstat -m` and
-`systat pool` name it), `hal::malloc::MBox<T>` (a `T` in a `malloc(9)` block of the C's type),
-`hal::user::UserPtr<T>` with `abi_pod!` (typed user copies), `hal::sleep` (`wakeup`) and
+(docs/ZERO_UNSAFE.md decisions 30, 32-36): `hal::sync::once::OnceStatic<T>` (a global set once at
+boot), `hal::sync::mutex::Mutexed<T>` and `hal::sync::rwlock::Rwlocked<T>` (locks that own their data; the
+write guard sleeps with `rwsleep` and runs a closure unlocked), `hal::sync::percpu::PerCpu<T>`,
+`hal::sync::refcnt::Refcnt`, `hal::cpu::intr::splraise` (a guard that restores only a level it raised),
+`hal::cpu` (the CPU's identity), `hal::mem::kmbuf::KmBuf` (pageable kernel memory it owns),
+`hal::mem::pool::TypedPool<T>` with `PoolArc<T>` (one `pool(9)` per type, so `vmstat -m` and
+`systat pool` name it), `hal::mem::malloc::MBox<T>` (a `T` in a `malloc(9)` block of the C's type),
+`hal::user::UserPtr<T>` with `abi_pod!` (typed user copies), `hal::sync::sleep` (`wakeup`) and
 `hal::cons` (the console primitive). What still lives in `bsd` is reached through
 `hal::bridges`, a registry of safe traits `bsd` fills at boot (`sys/kern/hal_bridges.rs`,
 called by `stand::start_kernel` before `main`) and checked on every answer
-(`sys/hal/trust.rs`). At the N3 close, 21: `IntrLevel`, `CpuId`, `Sleep`, `UserCopy`,
+(`sys/hal/mem/trust.rs`). At the N3 close, 21: `IntrLevel`, `CpuId`, `Sleep`, `UserCopy`,
 `ModulePlatform` (the boot entry; gone with the module at the N5 close, decision 47), `TlbCpus`, `KernelLock`, `SysInfo`, `VmProc`, `VmSysctl` and
 pipe's `PipeGlue`, `UioMove`, `PipeFiles` (paid by N4); `BufCacheStats`, `VnodeOps` (N5);
 `NetLock` (N6); `Console`, `Random` (N7); `PoolBackend`, `Malloc`, `Printf` (N9). N3 paid
@@ -141,7 +141,7 @@ define (`bus_dma_public_members` checks it at compile time).
 `param.rs`, `vmparam.rs` and `exec.rs` (the traits `MachineParam`, `VmParam`, `MachineExec`) live
 in `sys/hal/machine/` since N2.2, and `sys/machine/mod.rs` re-exports them under their old names.
 
-`pmap.rs` is an adapter over `hal::pmap` since N3.1 (docs/ZERO_UNSAFE.md 0.10): the `Pmap`
+`pmap.rs` is an adapter over `hal::vm::pmap` since N3.1 (docs/ZERO_UNSAFE.md 0.10): the `Pmap`
 trait's methods call the safe API of `hal`, whose two backends (`sys/hal/arch/amd64/pmap/`,
 `sys/hal/arch/arm64/pmap/`) replaced the LZ pmaps, and the host double's pmap is `hal`'s host
 backend (`sys/hal/arch/host/pmap.rs`). The adapter has no `unsafe` block: it holds the
@@ -154,11 +154,11 @@ with `sys/uvm/`.
 Since N3, memory is the kernel's (docs/ZERO_UNSAFE.md 0.10): `sys/kernel/vm/` holds the page
 array and its free ranges, the owners (anon, amap, object, aobj, pager, vnode), the fault
 handler, the map and the vmspace, the vm system calls (`Native` entries of the module) and the
-rest of uvm's 26 files, all `#![forbid(unsafe_code)]`. Their locks are `hal::rwlock`'s
+rest of uvm's 26 files, all `#![forbid(unsafe_code)]`. Their locks are `hal::sync::rwlock`'s
 `SharedRwlock` with `Guarded` cells: a cell opens only for a witness of its own lock, and the
 fault carries its witnesses through its loop; the lock order (map, amap, object, anon) stays
 the code's, as in the C, each acquisition saying where it stands. What they reach of the hardware is `hal`'s
-safe API: `hal::pmap` (the kernel pmap through the `KernelMapper` token, held by
+safe API: `hal::vm::pmap` (the kernel pmap through the `KernelMapper` token, held by
 `kernel::vm::km`), `MappedBytes` for the pager's windows, `ForeignWindow` for `uvm_io`'s
 copies, the intrusive lists and trees of the page system and the map. What they reach of `bsd`
 is a bridge of `bridges.toml` (`VmProc` and `VmSysctl` until N4's `Proc`, `VnodeOps` until N5).

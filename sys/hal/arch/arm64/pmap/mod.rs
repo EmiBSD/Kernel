@@ -17,7 +17,7 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! arm64's pmap behind `hal::pmap` (N3.1 commit 5): `backend` (the `PmapBackend`
+//! arm64's pmap behind `hal::vm::pmap` (N3.1 commit 5): `backend` (the `PmapBackend`
 //! implementation: pmaps, pte descriptors, pv lists, the mapping functions, the bootstrap),
 //! `vp` (the vp tables through the direct map: the frame view, the walks, the descriptor links),
 //! `asid` (the ASID pairs, generations and rollover), `cpufunc` (the TLB, cache and
@@ -46,7 +46,7 @@ pub use asid::asid_width;
 pub use backend::postinit;
 pub(crate) use backend::{Backend, PmapMd};
 // `VMMAP`, the device window's cursor, is the backend's alone since N7.0: only the kernel map's
-// token hands its space out (`hal::pmap::KernelMapper::device_va`).
+// token hands its space out (`hal::vm::pmap::KernelMapper::device_va`).
 pub use backend::{
     VMMAP_SIZE, init_lower_half, kernel_pt0pa, stolen_bounds, switch_mmu_kernel_table,
 };

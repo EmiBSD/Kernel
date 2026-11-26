@@ -61,7 +61,7 @@
 //! - The union `un_u` of two `long`s (`u_diroff`, `u_vatlen`) is one word with an accessor
 //!   pair per name.
 //! - `um_hashtbl`, `um_hashsz` and `um_hashkey` are one [`UdfHash`], set once by the mount
-//!   (absent before it, the C's `NULL` table); `um_hashmtx` is a `hal::mutex::Mutexed<()>`
+//!   (absent before it, the C's `NULL` table); `um_hashmtx` is a `hal::sync::mutex::Mutexed<()>`
 //!   whose guard is the chains' witness.
 //! - `um_vat` is the `malloc(M_UDFMOUNT)` block `udf_vat_get` makes ([`VatBlock`]: a counted
 //!   handle of the VAT's unode and the VAT's length, not a copy of the unode;
@@ -121,11 +121,11 @@
 //!   unode copy) -> [`Umount`], published where the C mallocs it (`udf_mountfs`,
 //!   udf_vfsops.c:249, before the anchor is read: the VAT's `udf_vget` goes through the
 //!   mount's slot during the mount, so it cannot be built whole; D-N5.8-6) in a counted
-//!   `malloc(M_UDFMOUNT)` block ([`Umount::alloc`], `hal::malloc::MArc`); every member the
+//!   `malloc(M_UDFMOUNT)` block ([`Umount::alloc`], `hal::mem::malloc::MArc`); every member the
 //!   C fills during the mount is a relaxed word under the kernel lock (`fs::word`,
 //!   docs/IDIOMS.md's row of a structure used mid-fill); the hash table and the root ICB
-//!   are `hal::once::OnceStatic`s set once by the mount (udf_vfsops.c:355, :384) and freed
-//!   with the structure (a read is one load); the sparing table is a `hal::slot::ReadMostly`
+//!   are `hal::sync::once::OnceStatic`s set once by the mount (udf_vfsops.c:355, :384) and freed
+//!   with the structure (a read is one load); the sparing table is a `hal::sync::slot::ReadMostly`
 //!   slot a later sparable map replaces (udf_vfsops.c:762, called per map of each logical
 //!   volume descriptor: a compare-and-swap pair per `udf_bmap_internal` of a sparable
 //!   volume, against the C's load), and so is the VAT block, which the unmount and the
@@ -135,15 +135,15 @@
 //!   `unsafe` slice of `b_data`) -> `fs::bio`'s `BufRef` tokens: [`UdfData::Buf`] holds the
 //!   chunk's token, [`UdfData::bytes`] lends its bytes. 0 `unsafe` (LZ: 4).
 
-use hal::intr::IPL_NONE;
-use hal::link::Link;
-use hal::malloc::{M_WAITOK, MArc, MArray, MBox};
-use hal::mutex::Mutexed;
-use hal::once::OnceStatic;
-use hal::pinlist::{PinEntry, PinList};
-use hal::pool::{PR_WAITOK, PoolArc, PoolHome};
-use hal::rwlock::RecursiveRwlock;
-use hal::slot::ReadMostly;
+use hal::cpu::intr::IPL_NONE;
+use hal::ds::link::Link;
+use hal::ds::pinlist::{PinEntry, PinList};
+use hal::mem::malloc::{M_WAITOK, MArc, MArray, MBox};
+use hal::mem::pool::{PR_WAITOK, PoolArc, PoolHome};
+use hal::sync::mutex::Mutexed;
+use hal::sync::once::OnceStatic;
+use hal::sync::rwlock::RecursiveRwlock;
+use hal::sync::slot::ReadMostly;
 use hal::sys::endian::letoh32;
 use hal::sys::errno::Errno;
 use hal::sys::types::{Daddr, Dev};

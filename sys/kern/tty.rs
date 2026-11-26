@@ -325,7 +325,7 @@ pub fn tty_init() {
 /// `ttymalloc`: allocate a tty structure and its associated buffers, and attach it to the
 /// tty list; the driver keeps it for the kernel's life (see the module's deviations).
 pub fn ttymalloc(baud: i32) -> &'static Tty {
-    hal::pool::PoolArc::leak(kernel::tty::ttymalloc::<BsdProcGlue>(baud))
+    hal::mem::pool::PoolArc::leak(kernel::tty::ttymalloc::<BsdProcGlue>(baud))
 }
 
 /// `ttyfree`: retire a tty (see the module's deviations).

@@ -190,11 +190,11 @@
 //!   tree's `rn_match` (two loads a node), one box load and the grant's 80 bytes copied; an
 //!   update one `klock::witness()` section (an spl pair the C lacks) after its sleeps.
 
-use hal::klock;
 #[cfg(feature = "nfsserver")]
-use hal::malloc::M_WAITOK;
-use hal::malloc::MBox;
-use hal::rwlock::Guarded;
+use hal::mem::malloc::M_WAITOK;
+use hal::mem::malloc::MBox;
+use hal::sync::klock;
+use hal::sync::rwlock::Guarded;
 use hal::sys::errno::Errno;
 use hal::sys::mount::ExportArgs;
 #[cfg(feature = "nfsserver")]
@@ -571,7 +571,7 @@ mod tests {
     /// A fresh mount, on no list; the kernel lock held (the system call's).
     fn fresh() -> (std::sync::MutexGuard<'static, ()>, &'static Mount<TestGlue>) {
         let g = crate::net::mbuf::tests::setup();
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         (g, Box::leak(Box::new(Mount::new_unpooled(None))))
     }
 

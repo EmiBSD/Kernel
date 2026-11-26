@@ -84,7 +84,7 @@ use crate::sys::queue::{ListAdapter, ListHead};
 use crate::sys::sched::sched_pause;
 use crate::sys::types::Off;
 use crate::sys::uio::{Uio, UioRw, UioSeg};
-use hal::once::OnceStatic;
+use hal::sync::once::OnceStatic;
 use hal::user::KcopyToken;
 
 /// `uio->uio_iov++; uio->uio_iovcnt--`: steps past the first iovec.

@@ -75,9 +75,9 @@ use core::ffi::c_void;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use hal::intr::IPL_SOFTCLOCK;
-use hal::mutex::Mutexed;
-use hal::pin::pin_static;
+use hal::cpu::intr::IPL_SOFTCLOCK;
+use hal::ds::pin::pin_static;
+use hal::sync::mutex::Mutexed;
 use hal::sys::errno::Errno;
 use hal::sys::sysctl::{KERN_WATCHDOG_AUTO, KERN_WATCHDOG_PERIOD};
 

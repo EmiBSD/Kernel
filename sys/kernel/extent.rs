@@ -119,7 +119,7 @@
 //!   records of `Cell`s linked by `queue.h` lists in `unsafe` blocks, the descriptors pool items
 //!   and storage bytes handed out as `&'static`, a fixed extent found by casting the extent
 //!   back to its storage, `extent_destroy` and the `*_with_descr` functions `unsafe fn`s with
-//!   the caller's promises. Now the regions are a `hal::owned::OwnedTree` ordered by start,
+//!   the caller's promises. Now the regions are a `hal::ds::owned::OwnedTree` ordered by start,
 //!   then end, then the descriptor's address, which owns each descriptor as its `PoolBox` and
 //!   gives it back when the region goes (a freed descriptor cannot stay linked), and a fixed
 //!   extent's freelist an `OwnedList` of the same boxes. The C's walks of the sorted list keep
@@ -133,16 +133,16 @@
 //!   `extent_free` on the region found; a removal or an insertion follows once the walk's
 //!   borrow has ended, by the region's exact key.
 //! - The extent's mutable state (its regions, the freelist, `EXF_WANTED` and `EXF_FLWANTED`)
-//!   is inside a `hal::mutex::Mutexed` at `IPL_VM`, the descriptors' pool's level; the C has no
+//!   is inside a `hal::sync::mutex::Mutexed` at `IPL_VM`, the descriptors' pool's level; the C has no
 //!   lock (its callers serialise; the IOMMUs take a mutex around it). `EXF_FIXED` and
 //!   `EXF_NOCOALESCE` are set at creation and read without it. The C's sleeps (`EX_WAITSPACE`,
 //!   a fixed extent's empty freelist) sleep on that mutex, on the same channels and with the
 //!   same priority and wait message (`extnt`); a descriptor from the pool is made before the
 //!   lock is taken (`PR_WAITOK` may sleep).
-//! - A non-fixed extent is a `hal::malloc::MBox` of the caller's `mtype` (the C's `malloc`,
+//! - A non-fixed extent is a `hal::mem::malloc::MBox` of the caller's `mtype` (the C's `malloc`,
 //!   the same `vmstat -m` row), whose drop is `extent_destroy`; a fixed one lives in its
 //!   [`ExtentFixed`] (a caller's `static`). Every extent is linked, pinned, on the list of all
-//!   extents (`hal::pinlist`), and leaves it when destroyed.
+//!   extents (`hal::ds::pinlist`), and leaves it when destroyed.
 //! - A caller's descriptor is a [`Descr`], a box of `extentpl` made in advance and given to the
 //!   extent, which owns it from then on (the C's `struct extent_region` embedded in the
 //!   caller's structure, linked raw).
@@ -152,16 +152,16 @@ use core::pin::Pin;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering as Mem};
 
-use hal::intr::{IPL_NONE, IPL_VM};
-use hal::malloc::{M_NOWAIT, M_WAITOK, MBox};
-use hal::mutex::{Mutexed, MutexedGuard};
-use hal::once::OnceStatic;
-use hal::owned::{OwnedEntry, OwnedList, OwnedTree};
-use hal::pin::pin_static;
-use hal::pinlist::{PinEntry, PinList};
-use hal::pool::{BoxPool, PR_NOWAIT, PR_WAITOK, PoolBox, StaticArena};
-use hal::rwlock::Rwlocked;
-use hal::sleep::{PCATCH, PRIBIO, wakeup};
+use hal::cpu::intr::{IPL_NONE, IPL_VM};
+use hal::ds::owned::{OwnedEntry, OwnedList, OwnedTree};
+use hal::ds::pin::pin_static;
+use hal::ds::pinlist::{PinEntry, PinList};
+use hal::mem::malloc::{M_NOWAIT, M_WAITOK, MBox};
+use hal::mem::pool::{BoxPool, PR_NOWAIT, PR_WAITOK, PoolBox, StaticArena};
+use hal::sync::mutex::{Mutexed, MutexedGuard};
+use hal::sync::once::OnceStatic;
+use hal::sync::rwlock::Rwlocked;
+use hal::sync::sleep::{PCATCH, PRIBIO, wakeup};
 
 use crate::assert::kpanic;
 use crate::prf::{Str, printf};

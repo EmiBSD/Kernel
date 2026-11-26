@@ -73,7 +73,7 @@
 //!   mount, which all three of its readers hold. The quota members (`um_quotas`, `um_cred`, `um_btime`,
 //!   `um_itime`, `um_qflags`) are the structure's own since N5.5a2.
 //! - The block is the structure and the count of its handles ([`UfsmountRef`], an
-//!   `hal::malloc::MArc`): 16 bytes more per mount in `vmstat -m`'s `UFS mount` row than the
+//!   `hal::mem::malloc::MArc`): 16 bytes more per mount in `vmstat -m`'s `UFS mount` row than the
 //!   C's (the request counts are the C's).
 //! - `MNINDIR`, `blkptrtodb` and `is_sequential` are functions with the macros' names in lower
 //!   case.
@@ -109,10 +109,10 @@
 
 use core::sync::atomic::{AtomicI64, AtomicU8};
 
-use hal::link::Link;
-use hal::malloc::{M_WAITOK, MArc};
-use hal::once::OnceStatic;
-use hal::slot::ReadMostly;
+use hal::ds::link::Link;
+use hal::mem::malloc::{M_WAITOK, MArc};
+use hal::sync::once::OnceStatic;
+use hal::sync::slot::ReadMostly;
 use hal::sys::types::Daddr;
 
 use super::inode::{I32Word, U32Word, U64Word};

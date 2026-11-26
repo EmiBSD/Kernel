@@ -243,7 +243,7 @@
 /* <CODE> */
 //! The scheduler: the sleep queues and `tsleep(9)`/`wakeup(9)` (`kern_synch.c`), the run
 //! queues, the CPU choice, the idle loop and the dead threads (`kern_sched.c`), and the
-//! 4.4BSD priorities, the load average and `mi_switch` (`sched_bsd.c`), over `hal::thread`'s
+//! 4.4BSD priorities, the load average and `mi_switch` (`sched_bsd.c`), over `hal::cpu::thread`'s
 //! switch and scheduler lock.
 //!
 //! Upstream: sys/kern/kern_synch.c @ 3ce1f3f79392
@@ -259,14 +259,14 @@
 //! LZ: sys/kern/kern_exit.rs@3c62ede68802
 //! LZ: sys/kern/kern_fork.rs@3c62ede68802
 //!
-//! **The lock.** `SCHED_LOCK` (`hal::thread::SCHED_LOCK`, at `IPL_SCHED`) keeps the sleep
-//! queues, the run queues and each CPU's idle-thread queue, all `hal::pinlist::PinList`s of
+//! **The lock.** `SCHED_LOCK` (`hal::cpu::thread::SCHED_LOCK`, at `IPL_SCHED`) keeps the sleep
+//! queues, the run queues and each CPU's idle-thread queue, all `hal::ds::pinlist::PinList`s of
 //! threads linked through their `p_runq`, and the `[S]` members of the threads, which are
 //! relaxed atomic words written under it (read without it by `ps`, the clock and the cost
-//! estimates, as in the C). Its witness is the hold `hal::thread::sched_lock` returns: every
+//! estimates, as in the C). Its witness is the hold `hal::cpu::thread::sched_lock` returns: every
 //! function that changes a queue takes `&mut SchedHold`, one that reads them `&SchedHold`.
 //! The hold is held across the switch: [`mi_switch`] takes it by value and gives it to
-//! `hal::thread::switch_to`, whose frame keeps it dormant until this thread runs again; it is
+//! `hal::cpu::thread::switch_to`, whose frame keeps it dormant until this thread runs again; it is
 //! dropped right after, before `assertwaitok`, `smr_idle`, the clock interrupts and the
 //! kernel lock's reacquisition, in the C's order (amendment A of the brief). A new thread
 //! releases the lock with the hold its trampoline adopted ([`trampoline_mi`]).
@@ -274,7 +274,7 @@
 //! **References and queues.** A reference to a thread found on a queue borrows the hold:
 //! nothing can relink the thread while it lives, and the thread, linked, cannot be freed
 //! (its entry's drop panics while linked). So a thread is moved between queues by the
-//! queues themselves (`hal::pinlist`'s `move_where`, `move_first_to`, `remove_where`), after
+//! queues themselves (`hal::ds::pinlist`'s `move_where`, `move_first_to`, `remove_where`), after
 //! its new place was decided from what a shared look at it showed: [`wakeup_n`] moves its
 //! sleepers to a local queue, then each to a run queue; [`sched_chooseproc`] makes the
 //! chosen thread's token ([`Next`]) while it is still linked, then takes it off. A thread
@@ -289,13 +289,13 @@
 //! What is still `bsd`'s reaches the scheduler through the process glue (`ProcGlue`'s
 //! scheduler hooks: the signal checks of a sleep, the clock interrupts and the CPU time
 //! accounting, the machine's idle cycle and inter-processor kicks), until each moves
-//! (N4.5b-c, N4.8). `smr_idle` is `hal::smr::idle` since N6.0, called directly (the glue's
-//! `smr_idle` hook is gone), and the idle thread each CPU gets is named to `hal::smr` for
-//! `smr_cpu_is_idle` (`hal::smr::set_idle_thread`).
+//! (N4.5b-c, N4.8). `smr_idle` is `hal::sync::smr::idle` since N6.0, called directly (the glue's
+//! `smr_idle` hook is gone), and the idle thread each CPU gets is named to `hal::sync::smr` for
+//! `smr_cpu_is_idle` (`hal::sync::smr::set_idle_thread`).
 //!
 //! ## Deviations
 //! - The `cold || panicstr` early return of `tsleep_nsec` is the glue's (`cold`, `cold_yield`),
-//!   as `hal::sleep`'s bridge had it.
+//!   as `hal::sync::sleep`'s bridge had it.
 //! - `endtsleep` finds its thread by tid under the kernel lock (the softclock thread runs a
 //!   timeout without `TIMEOUT_MPSAFE` with it), where the C's timeout argument is the thread:
 //!   a hash lookup on expiry, never on the sleep path.
@@ -313,7 +313,7 @@
 //!
 //! ## Redesign
 //! - LZ's three files keep the run queues in each `struct cpu_info`'s `schedstate_percpu` and
-//!   the sleep queues in a static table, as `hal::list::List`s of `&'static Proc` (N4.2's
+//!   the sleep queues in a static table, as `hal::ds::list::List`s of `&'static Proc` (N4.2's
 //!   interim), under the legacy `SCHED_LOCK` mutex taken and released by free functions in
 //!   different frames (`mi_switch`'s caller locks, `mi_switch` or the new thread's
 //!   `proc_trampoline_mi` unlocks). Here the queues are `PinList`s bound to `SCHED_LOCK`,
@@ -332,13 +332,13 @@ use core::ptr;
 use core::sync::atomic::{AtomicI32, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use hal::cpu::MAXCPUS;
-use hal::intr::IPL_NONE;
-use hal::mutex::{Mutexed, SharedMutex};
-use hal::once::OnceStatic;
-use hal::pinlist::PinList;
-use hal::sleep::{INFSLP, PCATCH, PRIMASK, PWAIT};
+use hal::cpu::intr::IPL_NONE;
+use hal::cpu::thread::{Next, SchedHold, sched_lock};
+use hal::ds::pinlist::PinList;
+use hal::sync::mutex::{Mutexed, SharedMutex};
+use hal::sync::once::OnceStatic;
+use hal::sync::sleep::{INFSLP, PCATCH, PRIMASK, PWAIT};
 use hal::sys::errno::Errno;
-use hal::thread::{Next, SchedHold, sched_lock};
 use hal::vm::uvmexp::UVMEXP;
 
 use crate::assert::{kassert, kpanic};
@@ -758,19 +758,19 @@ fn addr_of<G: ProcGlue>(p: &Thread<G>) -> usize {
 /// `curproc`, for `f`; the scheduler's callers always have one.
 #[inline]
 fn with_curproc<G: ProcGlue, R>(f: impl FnOnce(Pin<&Thread<G>>) -> R) -> R {
-    hal::thread::with_current::<Thread<G>, R>(f)
+    hal::cpu::thread::with_current::<Thread<G>, R>(f)
 }
 
 /// `SCHED_ASSERT_LOCKED()`.
 #[inline]
 fn sched_assert_locked() {
-    kassert!(hal::thread::sched_locked());
+    kassert!(hal::cpu::thread::sched_locked());
 }
 
 /// `SCHED_ASSERT_UNLOCKED()`.
 #[inline]
 fn sched_assert_unlocked() {
-    kassert!(!hal::thread::sched_locked());
+    kassert!(!hal::cpu::thread::sched_locked());
 }
 
 /// `sched_init`: setup the bare minimum to allow things like `setrunqueue()` to work even
@@ -801,14 +801,14 @@ pub fn set_idleproc<G: ProcGlue>(n: usize, p: Pin<&Thread<G>>) {
     }
     c.idleq.insert_tail(&mut h, p);
     c.idle_addr.store(addr_of(p.get_ref()), Ordering::Relaxed);
-    hal::smr::set_idle_thread(n, addr_of(p.get_ref())); // smr_cpu_is_idle's spc_idleproc
+    hal::sync::smr::set_idle_thread(n, addr_of(p.get_ref())); // smr_cpu_is_idle's spc_idleproc
     drop(h);
     set_thread_cpu(p.get_ref(), n);
 }
 
 /// `f` on CPU `n`'s idle thread, under the scheduler's hold `f` is lent
 /// (`spc->spc_idleproc`, for the machine that re-creates its frames when the CPU hatches,
-/// `hal::thread::thread_restart`); `None` before it is set.
+/// `hal::cpu::thread::thread_restart`); `None` before it is set.
 pub fn with_idleproc<G: ProcGlue, R>(
     n: usize,
     f: impl FnOnce(&SchedHold, Pin<&Thread<G>>) -> R,
@@ -835,7 +835,7 @@ fn idle_next<G: ProcGlue>(c: &SchedCpu<G>, h: &SchedHold) -> Next {
 /// `sched_idle(ci)`: the idle thread of CPU `n`. It runs without the kernel lock and never
 /// returns.
 pub fn sched_idle<G: ProcGlue>(n: usize) -> ! {
-    hal::klock::kernel_unlock();
+    hal::sync::klock::kernel_unlock();
 
     // The idle thread is setup in fork1(). When the CPU hatches we enter here for the first
     // time. The CPU is now ready to take work and so add it to sched_all_cpus when
@@ -865,9 +865,9 @@ pub fn sched_idle<G: ProcGlue>(n: usize) -> ! {
                 exit2::<G>(spc);
             }
 
-            hal::intr::splassert(hal::intr::IPL_NONE, "sched_idle");
+            hal::cpu::intr::splassert(hal::cpu::intr::IPL_NONE, "sched_idle");
 
-            hal::smr::idle();
+            hal::sync::smr::idle();
 
             t.idle_cpus.add(n);
             G::idle_enter();
@@ -924,7 +924,7 @@ pub fn reaper_next<G: ProcGlue, R>(mut take: impl FnMut(Pin<&Thread<G>>) -> R) -
         }
         let _ = g.sleep_nsec(
             ptr::from_ref(&t.deadproc),
-            hal::sleep::PVM,
+            hal::sync::sleep::PVM,
             "reaper",
             INFSLP,
         );
@@ -947,7 +947,7 @@ pub fn sched_exit<G: ProcGlue>(p: Pin<&Thread<G>>) -> ! {
 
     G::tuagg_add_runtime();
 
-    hal::klock::kernel_assert_locked();
+    hal::sync::klock::kernel_assert_locked();
     toidle(Some(p))
 }
 
@@ -959,13 +959,13 @@ pub fn sched_toidle<G: ProcGlue>() -> ! {
 }
 
 /// `sched_toidle`'s work, for the dead thread `old` (`sched_exit`'s), which `hal` marks dead
-/// as it leaves it (its u-area can then go, `hal::thread`'s E6), or for none.
+/// as it leaves it (its u-area can then go, `hal::cpu::thread`'s E6), or for none.
 fn toidle<G: ProcGlue>(old: Option<Pin<&Thread<G>>>) -> ! {
     let spc = tables::<G>().curcpu();
 
     // This process no longer needs to hold the kernel lock.
-    if hal::klock::kernel_lock_held() {
-        let _ = hal::klock::release_all();
+    if hal::sync::klock::kernel_lock_held() {
+        let _ = hal::sync::klock::release_all();
     }
 
     stop_clocks(spc);
@@ -977,7 +977,7 @@ fn toidle<G: ProcGlue>(old: Option<Pin<&Thread<G>>>) -> ! {
 
     UVMEXP.swtch.fetch_add(1, Ordering::Relaxed);
     // TRACEPOINT(sched, off__cpu, ...): dt(4), not configured.
-    hal::thread::exit_to_idle(h, old, next)
+    hal::cpu::thread::exit_to_idle(h, old, next)
 }
 
 /// Stops the optional clock interrupts of the running CPU (`mi_switch`, `sched_toidle`).
@@ -1240,7 +1240,7 @@ pub fn sched_choosecpu<G: ProcGlue>(h: &SchedHold, p: &Thread<G>) -> usize {
             || (pn == hal::cpu::cpu_number()
                 && pspc.nrun() == 0
                 && pspc.schedflags() & SPCF_SHOULDHALT == 0
-                && hal::thread::current_addr() == addr_of(p)))
+                && hal::cpu::thread::current_addr() == addr_of(p)))
     {
         SCHED_WASIDLE.fetch_add(1, Ordering::Relaxed);
         return pn;
@@ -1606,7 +1606,7 @@ pub fn roundrobin<G: ProcGlue>(count: u64) {
         return;
     };
 
-    if hal::thread::current_addr() != 0 {
+    if hal::cpu::thread::current_addr() != 0 {
         if spc.schedflags() & SPCF_SEENRR != 0 || count >= 2 {
             // The process has already been through a roundrobin without switching and may
             // be hogging the CPU. Indicate that the process should yield.
@@ -1640,7 +1640,7 @@ fn update_loadavg<G: ProcGlue>(_unused: *mut c_void) {
         ldavg.store(new as u32, Ordering::Relaxed);
     }
 
-    let _ = hal::pin::pin_static(&LOADAVG_TO).add_sec(5);
+    let _ = hal::ds::pin::pin_static(&LOADAVG_TO).add_sec(5);
 }
 
 /// `loadfactor(loadav)`: calculations for digital decay to forget 90% of usage in 5*loadav
@@ -1660,7 +1660,7 @@ fn schedcpu<G: ProcGlue>(_unused: *mut c_void) {
     let loadfac = loadfactor(AVERUNNABLE[0].load(Ordering::Relaxed));
     let stathz = G::stathz().max(1) as u32;
 
-    let r = hal::klock::reader();
+    let r = hal::sync::klock::reader();
     for p in G::tables().allproc.iter_pinned(&r) {
         // Idle threads are never placed on the runqueue, therefore computing their priority
         // is pointless.
@@ -1702,7 +1702,7 @@ fn schedcpu<G: ProcGlue>(_unused: *mut c_void) {
         drop(h);
     }
     drop(r);
-    let _ = hal::pin::pin_static(&SCHEDCPU_TO).add_sec(1);
+    let _ = hal::ds::pin::pin_static(&SCHEDCPU_TO).add_sec(1);
 }
 
 /// Whether `p` is a CPU's idle thread (`p == p->p_cpu->ci_schedstate.spc_idleproc`).
@@ -1821,8 +1821,8 @@ pub fn mi_switch<G: ProcGlue>(p: Pin<&Thread<G>>, mut h: SchedHold) {
     sched_assert_locked();
 
     // Release the kernel_lock, as we are about to yield the CPU.
-    let hold_count = if hal::klock::kernel_lock_held() {
-        hal::klock::release_all()
+    let hold_count = if hal::sync::klock::kernel_lock_held() {
+        hal::sync::klock::release_all()
     } else {
         0
     };
@@ -1845,7 +1845,7 @@ pub fn mi_switch<G: ProcGlue>(p: Pin<&Thread<G>>, mut h: SchedHold) {
     } else {
         UVMEXP.swtch.fetch_add(1, Ordering::Relaxed);
         // TRACEPOINT(sched, off__cpu, ...): dt(4), not configured.
-        hal::thread::switch_to(&mut h, p, next);
+        hal::cpu::thread::switch_to(&mut h, p, next);
         // TRACEPOINT(sched, on__cpu, NULL).
     }
 
@@ -1859,7 +1859,7 @@ pub fn mi_switch<G: ProcGlue>(p: Pin<&Thread<G>>, mut h: SchedHold) {
     sched_assert_unlocked();
 
     G::assertwaitok();
-    hal::smr::idle();
+    hal::sync::smr::idle();
 
     // We're running again; record our new start time. We might be running on a new CPU
     // now, so refetch the schedstate_percpu pointer.
@@ -1872,7 +1872,7 @@ pub fn mi_switch<G: ProcGlue>(p: Pin<&Thread<G>>, mut h: SchedHold) {
     // Reacquire the kernel_lock now. We do this after we've released the scheduler lock to
     // avoid deadlock, and before we reacquire the interlock and the scheduler lock.
     if hold_count != 0 {
-        hal::klock::acquire_count(hold_count);
+        hal::sync::klock::acquire_count(hold_count);
     }
 }
 
@@ -1887,14 +1887,14 @@ pub fn trampoline_mi<G: ProcGlue>(h: SchedHold) {
     G::spl0();
 
     sched_assert_unlocked();
-    kassert!(!hal::klock::kernel_lock_held()); // KERNEL_ASSERT_UNLOCKED()
+    kassert!(!hal::sync::klock::kernel_lock_held()); // KERNEL_ASSERT_UNLOCKED()
     G::assertwaitok();
-    hal::smr::idle();
+    hal::sync::smr::idle();
 
     // Start any optional clock interrupts needed by the thread.
     with_curproc::<G, _>(|p| start_clocks(spc, p.get_ref()));
 
-    hal::klock::kernel_lock();
+    hal::sync::klock::kernel_lock();
 }
 
 /// `setrunnable(p)`: change process state to be runnable, placing it on the run queue.
@@ -2044,7 +2044,7 @@ pub fn tsleep_nsec<G: ProcGlue>(
     let nowake = ptr::from_ref(&NOWAKE).addr();
     kassert!(priority & !(PRIMASK | PCATCH) == 0);
     kassert!(ident != nowake || priority & PCATCH != 0 || nsecs != INFSLP);
-    kassert!(ident == nowake || nsecs != INFSLP || hal::klock::kernel_lock_held());
+    kassert!(ident == nowake || nsecs != INFSLP || hal::sync::klock::kernel_lock_held());
 
     if G::cold() {
         // After a panic, or during autoconfiguration, just give interrupts a chance, then just
@@ -2189,7 +2189,7 @@ pub fn sleep_finish<G: ProcGlue>(nsecs: u64, do_sleep: bool) -> Result<(), Errno
             ));
         }
 
-        let sleep_to: Pin<&Timeout> = hal::pin::project(p, |t| &t.p_sleep_to);
+        let sleep_to: Pin<&Timeout> = hal::ds::pin::project(p, |t| &t.p_sleep_to);
         if nsecs != INFSLP {
             kassert!(p.p_flag.load(Ordering::Relaxed) & (P_TIMEOUT | P_TIMEOUTRAN) == 0);
             let _ = sleep_to.add_nsec(nsecs);
@@ -2324,7 +2324,7 @@ pub fn wakeup_proc<G: ProcGlue>(h: &mut SchedHold, p: Pin<&Thread<G>>) -> bool {
 /// found under the kernel lock the softclock thread holds for it (the module's deviations).
 pub(crate) fn endtsleep<G: ProcGlue>(arg: *mut c_void) {
     let tid = arg.addr() as i32;
-    let r = hal::klock::reader();
+    let r = hal::sync::klock::reader();
     let Some(p) = G::tables()
         .tidhash(tid)
         .iter_pinned(&r)
@@ -2427,14 +2427,14 @@ pub fn wakeup_all<G: ProcGlue>(chan: usize) {
     wakeup_n::<G>(chan, -1);
 }
 
-/// `wakeup(chan)` without a glue: through `hal::sleep`'s registration (the kernel's own
+/// `wakeup(chan)` without a glue: through `hal::sync::sleep`'s registration (the kernel's own
 /// scheduler once it is registered), for the scheduler's own channels.
 fn wakeup(chan: usize) {
-    hal::sleep::wakeup(ptr::without_provenance::<u8>(chan));
+    hal::sync::sleep::wakeup(ptr::without_provenance::<u8>(chan));
 }
 
-/// `hal::sleep::Sleep` over this scheduler for the glue `G`: what the runtime's sleeping
-/// locks and `hal::sleep`'s callers reach. The glue registers one `static` of it.
+/// `hal::sync::sleep::Sleep` over this scheduler for the glue `G`: what the runtime's sleeping
+/// locks and `hal::sync::sleep`'s callers reach. The glue registers one `static` of it.
 pub struct KernelSleep<G>(PhantomData<fn() -> G>);
 
 impl<G> KernelSleep<G> {
@@ -2450,9 +2450,9 @@ impl<G> Default for KernelSleep<G> {
     }
 }
 
-impl<G: ProcGlue> hal::sleep::Sleep for KernelSleep<G> {
+impl<G: ProcGlue> hal::sync::sleep::Sleep for KernelSleep<G> {
     fn curproc_word(&self) -> usize {
-        hal::thread::current_addr()
+        hal::cpu::thread::current_addr()
     }
 
     fn sleep_setup(&self, ident: *const (), prio: i32, wmesg: &'static str) {
@@ -2482,7 +2482,7 @@ impl<G: ProcGlue> hal::sleep::Sleep for KernelSleep<G> {
     }
 
     fn kernel_lock_held(&self) -> bool {
-        hal::klock::kernel_lock_held()
+        hal::sync::klock::kernel_lock_held()
     }
 
     fn cold(&self) -> bool {
@@ -2498,10 +2498,10 @@ impl<G: ProcGlue> hal::sleep::Sleep for KernelSleep<G> {
     }
 }
 
-/// The release check of the threads' pool (`procpl`, `hal::pool::BoxPool::init_checked`): a
-/// thread is freed only when no CPU runs it (`hal::thread`'s E2) and it is on no queue.
+/// The release check of the threads' pool (`procpl`, `hal::mem::pool::BoxPool::init_checked`): a
+/// thread is freed only when no CPU runs it (`hal::cpu::thread`'s E2) and it is on no queue.
 pub fn thread_releasable<G: ProcGlue>(p: &Thread<G>) -> bool {
-    !hal::thread::running_anywhere(p) && !p.p_runq.is_linked()
+    !hal::cpu::thread::running_anywhere(p) && !p.p_runq.is_linked()
 }
 
 const _: () = assert!(
@@ -2552,7 +2552,7 @@ pub(crate) mod tests {
         fn session_destroy(_sess: &crate::proc::Session<Self>) {}
 
         fn with_curproc<R>(f: impl FnOnce(Option<&Thread<Self>>) -> R) -> R {
-            hal::thread::try_with_current::<Thread<Self>, R>(|p| f(p.map(Pin::get_ref)))
+            hal::cpu::thread::try_with_current::<Thread<Self>, R>(|p| f(p.map(Pin::get_ref)))
         }
 
         fn exit1(_p: &Thread<Self>, _xexit: i32, xsig: i32, _flags: i32) -> ! {
@@ -2615,7 +2615,7 @@ pub(crate) mod tests {
         }
 
         fn process_ref(pr: &Process<Self>) -> crate::proc::ProcessRef<Self> {
-            match hal::pool::PoolArc::from_ref(pr) {
+            match hal::mem::pool::PoolArc::from_ref(pr) {
                 Some(a) => crate::proc::StaticOrPooled::Pooled(a),
                 None if core::ptr::eq(pr, &PR) => crate::proc::StaticOrPooled::Static(&PR),
                 None => std::panic!("process_ref: not a process of the tests"),
@@ -2671,7 +2671,7 @@ pub(crate) mod tests {
         t.p_tid.set(tid);
         t.p_usrpri.set(prio);
         t.p_slppri.set(prio);
-        hal::pin::pin_static(t)
+        hal::ds::pin::pin_static(t)
     }
 
     /// The core of virtual CPU `n`.
@@ -2690,10 +2690,10 @@ pub(crate) mod tests {
         ONCE.call_once(|| {
             crate::testutil::install();
             // The tid hash `endtsleep` looks its thread up in.
-            hal::klock::kernel_lock();
+            hal::sync::klock::kernel_lock();
             crate::proc::procinit::<SchedGlue>(64, 64);
-            hal::klock::kernel_unlock();
-            let _ = hal::thread::register_start(test_start);
+            hal::sync::klock::kernel_unlock();
+            let _ = hal::cpu::thread::register_start(test_start);
             for (i, &n) in VCPUS.iter().enumerate() {
                 let core: &'static hal::cpu::CpuCore =
                     Box::leak(Box::new(hal::cpu::CpuCore::new()));
@@ -2702,7 +2702,7 @@ pub(crate) mod tests {
                 let idle = thread(900 + i as i32, 127);
                 set_idleproc(n, idle);
                 let h = sched_lock();
-                hal::thread::thread_restart(&h, idle, START_IDLE, n);
+                hal::cpu::thread::thread_restart(&h, idle, START_IDLE, n);
                 drop(h);
                 SCHED.all_cpus.add(n);
             }
@@ -2718,7 +2718,7 @@ pub(crate) mod tests {
         p.p_flag.fetch_or(P_CPUPEG, Ordering::Relaxed);
         p.set_stat(SONPROC);
         set_thread_cpu(p.get_ref(), n);
-        hal::thread::set_current_static(Some(p));
+        hal::cpu::thread::set_current_static(Some(p));
     }
 
     #[test]
@@ -2833,7 +2833,7 @@ pub(crate) mod tests {
         let next = sched_chooseproc::<SchedGlue>(&mut h);
         assert_eq!(next.thread_addr(), spc.idle_addr());
         drop(h);
-        hal::thread::set_current_static::<T>(None);
+        hal::cpu::thread::set_current_static::<T>(None);
     }
 
     /// A wakeup between `sleep_setup` and `sleep_finish` leaves the thread on its CPU: the
@@ -2862,7 +2862,7 @@ pub(crate) mod tests {
         assert_eq!(sleep_finish::<SchedGlue>(INFSLP, false), Ok(()));
         assert!(!me.p_runq.is_linked());
         assert_eq!(me.p_wchan.get(), 0);
-        hal::thread::set_current_static::<T>(None);
+        hal::cpu::thread::set_current_static::<T>(None);
     }
 
     /// `wakeup_n(1)` wakes one of three sleepers, `wakeup` the others; each goes to a run
@@ -2921,7 +2921,7 @@ pub(crate) mod tests {
         run_as(n, me);
         let other = thread(51, 50);
         let mut h = sched_lock();
-        hal::thread::thread_setup(&h, me, other, 0, 0, START_BODY, idx);
+        hal::cpu::thread::thread_setup(&h, me, other, 0, 0, START_BODY, idx);
         setrunqueue(&mut h, Some(n), other, 50);
         drop(h);
         let before = RAN.load(Ordering::Relaxed);
@@ -2932,7 +2932,7 @@ pub(crate) mod tests {
         r#yield::<SchedGlue>();
         // The other thread finished its body and exited; this one runs again.
         assert_eq!(RAN.load(Ordering::Relaxed), before + 2);
-        hal::thread::set_current_static::<T>(None);
+        hal::cpu::thread::set_current_static::<T>(None);
     }
 
     /// A sleeper on one CPU is woken from another and resumed by its CPU's idle thread.
@@ -2948,16 +2948,16 @@ pub(crate) mod tests {
             run_as(b, w);
             std::thread::sleep(Duration::from_millis(20));
             wakeup_n::<SchedGlue>(chan, -1);
-            hal::thread::set_current_static::<T>(None);
+            hal::cpu::thread::set_current_static::<T>(None);
         });
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         let r = tsleep_nsec::<SchedGlue>(chan, PWAIT, "xcpu", INFSLP);
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
         assert_eq!(r, Ok(()));
         assert_eq!(me.stat(), SONPROC);
         assert_eq!(me.p_wchan.get(), 0);
         waker.join().unwrap();
-        hal::thread::set_current_static::<T>(None);
+        hal::cpu::thread::set_current_static::<T>(None);
     }
 
     /// The load average's and `p_pctcpu`'s constants are the C's doubles in `FSCALE` fixed
@@ -3034,7 +3034,7 @@ pub(crate) mod tests {
 
         spc.clear_schedflags(SPCF_SHOULDHALT);
         SCHED.all_cpus.add(n);
-        hal::thread::set_current_static::<T>(None);
+        hal::cpu::thread::set_current_static::<T>(None);
     }
 
     /// Two barriers on one CPU: the later caller's pass satisfies the earlier one's mark, but
@@ -3075,11 +3075,11 @@ pub(crate) mod tests {
         sleep_timeout_init(me.get_ref());
         run_as(a, me);
         {
-            hal::klock::kernel_lock();
-            let mut w = hal::klock::witness();
+            hal::sync::klock::kernel_lock();
+            let mut w = hal::sync::klock::witness();
             TABLES.tidhash(70).insert_head(&mut w, me);
             drop(w);
-            hal::klock::kernel_unlock();
+            hal::sync::klock::kernel_unlock();
         }
         let chan = ptr::from_ref(&NOWAKE).addr() + 0x300;
         let timer = std::thread::spawn(move || {
@@ -3093,15 +3093,15 @@ pub(crate) mod tests {
                 std::thread::sleep(Duration::from_millis(1));
             }
             // The softclock thread took the timeout off the wheel and runs its handler.
-            assert!(hal::pin::project(me, |t| &t.p_sleep_to).del());
-            hal::klock::kernel_lock();
+            assert!(hal::ds::pin::project(me, |t| &t.p_sleep_to).del());
+            hal::sync::klock::kernel_lock();
             endtsleep::<SchedGlue>(ptr::without_provenance_mut(70));
-            hal::klock::kernel_unlock();
-            hal::thread::set_current_static::<T>(None);
+            hal::sync::klock::kernel_unlock();
+            hal::cpu::thread::set_current_static::<T>(None);
         });
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         let r = tsleep_nsec::<SchedGlue>(chan, PWAIT, "tmo", 3_600_000_000_000);
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
         assert_eq!(r, Err(Errno::EWOULDBLOCK));
         assert_eq!(
             me.p_flag.load(Ordering::Relaxed) & (P_TIMEOUT | P_TIMEOUTRAN),
@@ -3109,12 +3109,12 @@ pub(crate) mod tests {
         );
         assert_eq!(me.p_wchan.get(), 0);
         timer.join().unwrap();
-        hal::klock::kernel_lock();
-        let mut w = hal::klock::witness();
+        hal::sync::klock::kernel_lock();
+        let mut w = hal::sync::klock::witness();
         TABLES.tidhash(70).remove(&mut w, me.get_ref());
         drop(w);
-        hal::klock::kernel_unlock();
-        hal::thread::set_current_static::<T>(None);
+        hal::sync::klock::kernel_unlock();
+        hal::cpu::thread::set_current_static::<T>(None);
     }
 
     /// A wakeup from another vCPU between `sleep_setup` and `sleep_finish`: the thread, still
@@ -3132,7 +3132,7 @@ pub(crate) mod tests {
             let w = thread(73, 50);
             run_as(b, w);
             wakeup_n::<SchedGlue>(chan, -1);
-            hal::thread::set_current_static::<T>(None);
+            hal::cpu::thread::set_current_static::<T>(None);
         });
         waker.join().unwrap();
         assert_eq!(me.p_wchan.get(), 0);
@@ -3140,7 +3140,7 @@ pub(crate) mod tests {
         assert!(!me.p_runq.is_linked());
         assert_eq!(sleep_finish::<SchedGlue>(INFSLP, true), Ok(()));
         assert_eq!(me.stat(), SONPROC);
-        hal::thread::set_current_static::<T>(None);
+        hal::cpu::thread::set_current_static::<T>(None);
     }
 
     /// `setrunnable` of a stopped thread: on a run queue at its user priority when it is out of
@@ -3174,7 +3174,7 @@ pub(crate) mod tests {
         assert_eq!(insched.stat(), SSLEEP);
         assert!(!insched.p_runq.is_linked());
         drop(h);
-        hal::thread::set_current_static::<T>(None);
+        hal::cpu::thread::set_current_static::<T>(None);
     }
 
     /// The kthread ping-pong of the selftest on two vCPUs: two threads, one per vCPU, hand a
@@ -3239,20 +3239,20 @@ pub(crate) mod tests {
             let w = thread(81, 50);
             run_as(b, w);
             wait_done();
-            hal::thread::set_current_static::<T>(None);
+            hal::cpu::thread::set_current_static::<T>(None);
         });
         let p0 = thread(82, 50);
         let p1 = thread(83, 50);
         let mut h = sched_lock();
-        hal::thread::thread_setup(&h, me, p0, 0, 0, START_BODY, idx);
-        hal::thread::thread_setup(&h, me, p1, 0, 0, START_BODY, idx + 1);
+        hal::cpu::thread::thread_setup(&h, me, p0, 0, 0, START_BODY, idx);
+        hal::cpu::thread::thread_setup(&h, me, p1, 0, 0, START_BODY, idx + 1);
         setrunqueue(&mut h, Some(a), p0, 50);
         setrunqueue(&mut h, Some(b), p1, 50);
         drop(h);
         wait_done();
         other.join().unwrap();
         assert_eq!(PINGS.load(Ordering::Relaxed), 2 * ROUNDS);
-        hal::thread::set_current_static::<T>(None);
+        hal::cpu::thread::set_current_static::<T>(None);
     }
 
     /// An unpegged sleeper woken from another vCPU goes where `sched_choosecpu` sends it (the
@@ -3303,11 +3303,11 @@ pub(crate) mod tests {
             let w = thread(91, 50);
             run_as(b, w);
             wait_done();
-            hal::thread::set_current_static::<T>(None);
+            hal::cpu::thread::set_current_static::<T>(None);
         });
         let x = thread(92, 50);
         let mut h = sched_lock();
-        hal::thread::thread_setup(&h, me, x, 0, 0, START_BODY, idx);
+        hal::cpu::thread::thread_setup(&h, me, x, 0, 0, START_BODY, idx);
         setrunqueue(&mut h, Some(a), x, 50);
         drop(h);
         // Let it run (this thread yields to it) until it sleeps.
@@ -3329,7 +3329,7 @@ pub(crate) mod tests {
         assert!(placed == Some(a) || placed == Some(b));
         wait_done();
         helper.join().unwrap();
-        hal::thread::set_current_static::<T>(None);
+        hal::cpu::thread::set_current_static::<T>(None);
     }
 
     /// The kernel's glue lends the thread hal names running (`with_curproc`, what the kqueue's
@@ -3341,7 +3341,7 @@ pub(crate) mod tests {
         run_as(VCPUS[0], me);
         let seen = SchedGlue::with_curproc(|p| p.map(addr_of));
         assert_eq!(seen, Some(addr_of(me.get_ref())));
-        hal::thread::set_current_static::<T>(None);
+        hal::cpu::thread::set_current_static::<T>(None);
         assert_eq!(SchedGlue::with_curproc(|p| p.map(addr_of)), None);
     }
 }

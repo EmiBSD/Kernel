@@ -143,13 +143,13 @@
 use core::mem::size_of;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use hal::intr::IPL_SOFTNET;
-use hal::mutex::Mutexed;
-use hal::netlock::{NETLOCK, NetHeld};
-use hal::once::OnceStatic;
-use hal::owned::{OwnedSlist, SlistAdapter};
-use hal::pod;
-use hal::pool::{BoxPool, PR_NOWAIT, PoolBox};
+use hal::cpu::intr::IPL_SOFTNET;
+use hal::ds::owned::{OwnedSlist, SlistAdapter};
+use hal::mem::pod;
+use hal::mem::pool::{BoxPool, PR_NOWAIT, PoolBox};
+use hal::sync::mutex::Mutexed;
+use hal::sync::netlock::{NETLOCK, NetHeld};
+use hal::sync::once::OnceStatic;
 use hal::sys::errno::Errno;
 use hal::sys::limits::INT_MAX;
 use hal::sys::net_if::{IFF_LOOPBACK, IFT_ENC};
@@ -1565,7 +1565,7 @@ pub fn ip_dooptions(
     let opts = &mut opts[..cnt0];
     let mut changed = false;
 
-    hal::klock::kernel_lock();
+    hal::sync::klock::kernel_lock();
     let res = dooptions_walk(
         opts,
         &mut ip,
@@ -1577,7 +1577,7 @@ pub fn ip_dooptions(
         &mut changed,
         net,
     );
-    hal::klock::kernel_unlock();
+    hal::sync::klock::kernel_unlock();
     if changed && !(ip_store(&mut m, &ip) && pkt_put(&mut m, IP_HDR_LEN, opts)) {
         // The header and its options, writable since ipv4_check: not taken.
         ipstat_inc(IpstatCounters::IpsIdropped);
@@ -2374,7 +2374,7 @@ pub(crate) mod tests {
     use std::sync::{MutexGuard, Once};
     use std::vec::Vec;
 
-    use hal::netlock::NETLOCK;
+    use hal::sync::netlock::NETLOCK;
     use hal::sys::netinet_in::{IPPROTO_ICMP, IPPROTO_RAW, IPPROTO_TCP, IPPROTO_UDP};
     use hal::sys::socket::{SOCK_DGRAM, SOCK_RAW, SOCK_STREAM};
 
@@ -2808,7 +2808,7 @@ pub(crate) mod tests {
         let (mut forward, mut changed) = (false, false);
         let w = NETLOCK.write();
         let net = NetHeld::of(&w).expect("the net lock");
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         let r = dooptions_walk(
             &mut o,
             &mut ip,
@@ -2820,7 +2820,7 @@ pub(crate) mod tests {
             &mut changed,
             &net,
         );
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
         drop(w);
         (r.map_err(|b| (b.type_, b.code)), o, forward, ip, m)
     }

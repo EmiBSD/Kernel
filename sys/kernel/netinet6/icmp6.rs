@@ -209,12 +209,12 @@ use core::cell::Cell;
 use core::mem::{offset_of, size_of};
 use core::sync::atomic::Ordering;
 
-use hal::malloc::{M_NOWAIT, MArray};
-use hal::netlock::NetHeld;
-use hal::pod;
-use hal::pool::PoolArc;
-use hal::rwlock::Guarded;
-use hal::slot::ReadMostly;
+use hal::mem::malloc::{M_NOWAIT, MArray};
+use hal::mem::pod;
+use hal::mem::pool::PoolArc;
+use hal::sync::netlock::NetHeld;
+use hal::sync::rwlock::Guarded;
+use hal::sync::slot::ReadMostly;
 use hal::sys::errno::Errno;
 use hal::sys::limits::INT_MAX;
 use hal::sys::net_if::{IFF_UP, IFXF_AUTOCONF6, SDL_DATA_OFFSET};
@@ -2027,7 +2027,7 @@ pub(crate) mod tests {
     use std::vec;
     use std::vec::Vec;
 
-    use hal::netlock::NETLOCK;
+    use hal::sync::netlock::NETLOCK;
     use hal::sys::netinet_in::IPPROTO_UDP;
     use hal::sys::socket::AF_INET6;
     use hal::user::UserPtr;

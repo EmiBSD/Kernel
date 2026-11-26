@@ -83,20 +83,20 @@
 //! ## Redesign
 //! - The ND messages are read out of the packet's bytes ([`nd6_msg`]: the C's
 //!   `ip6_exthdr_get`, in place when the first mbuf holds the message, else `m_pulldown`'s
-//!   contiguous copy) with `hal::pod::at` (the message's fixed part, 24 bytes, as LZ's copy),
+//!   contiguous copy) with `hal::mem::pod::at` (the message's fixed part, 24 bytes, as LZ's copy),
 //!   the options as a slice of the message (`nd6::nd6_options`, offsets, no pointers into the
 //!   packet); LZ's `nd6_msg`/`nd6_lladdr_of` `unsafe fn`s over raw pointers go. The messages
-//!   sent are written into their fresh mbuf with `hal::pod::put`.
+//!   sent are written into their fresh mbuf with `hal::mem::pod::put`.
 //! - `nd6_ns_output` and `nd6_na_output` hand their packet to the kernel's `ip6_output` (no
 //!   options; the multicast interface and hop limit as the C's stack `ip6_moptions`, an
 //!   `Ip6Moptions::output`); N6.5b's temporary `Inet::ip6_output_opts` leg went at N6.5c.
 //! - `struct dadq` (LZ: `Cell` counters, a `malloc`ed entry on a `TailqHead` freed by
 //!   `nd6_dad_reaper`, its timeout's argument a raw `ifa` dereferenced in an `unsafe` block)
 //!   -> [`Dadq`], a recycled `&'static` record (D-13: `malloc(M_IP6NDP)` once, then
-//!   [`DAD_FREE`]) on [`DADQ`], a `hal::list::List` under the net lock as the C's `dadq`
+//!   [`DAD_FREE`]) on [`DADQ`], a `hal::ds::list::List` under the net lock as the C's `dadq`
 //!   (`NET_ASSERT_LOCKED` at its changes, `NET_LOCK` in its timeout); `dad_ifa` the
 //!   `ifaref`'d address's counted handle (N6.5e: `kernel::net::if_var::IfaddrRef`) in a
-//!   `hal::slot::ReadMostly` cell (set under a holding that may be shared, so not a net cell):
+//!   `hal::sync::slot::ReadMostly` cell (set under a holding that may be shared, so not a net cell):
 //!   `nd6_dad_find` compares under a read, and the timer clones the handle out for its step
 //!   (no reader held across its sends and the destroy that hands the record to the reaper,
 //!   which empties the cell). Its timeout is embedded and pinned for ever (`Pin::static_ref`:
@@ -132,14 +132,14 @@ use core::pin::Pin;
 use core::ptr;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use hal::intr::IPL_SOFTNET;
-use hal::list::{List, ListEntry};
-use hal::malloc::{M_NOWAIT, MBox};
-use hal::mutex::Mutexed;
-use hal::netlock::{NETLOCK, NetHeld};
-use hal::pod;
-use hal::pool::PoolArc;
-use hal::slot::ReadMostly;
+use hal::cpu::intr::IPL_SOFTNET;
+use hal::ds::list::{List, ListEntry};
+use hal::mem::malloc::{M_NOWAIT, MBox};
+use hal::mem::pod;
+use hal::mem::pool::PoolArc;
+use hal::sync::mutex::Mutexed;
+use hal::sync::netlock::{NETLOCK, NetHeld};
+use hal::sync::slot::ReadMostly;
 use hal::sys::endian::htons;
 use hal::sys::net_if::{
     IFF_RUNNING, IFF_UP, IFNAMSIZ, IFT_CARP, IFT_ETHER, IFT_IEEE1394, IFT_IEEE80211,
@@ -774,7 +774,7 @@ pub fn nd6_ns_output(
 pub fn nd6_na_input(m: MbufBox, off: i32, icmp6len: i32, net: &NetHeld<'_>) {
     let i_am_router = IP6_FORWARDING.load(Ordering::Relaxed) != 0;
 
-    kassert!(hal::netlock::status() == hal::rwlock::RW_WRITE);
+    kassert!(hal::sync::netlock::status() == hal::sync::rwlock::RW_WRITE);
 
     let Some(ifp) = IfRef::get(m.m_pkthdr().ph_ifidx.get()) else {
         return; // m freed
@@ -1312,8 +1312,8 @@ pub fn nd6_dad_start(ifa: &IfaddrRef, net: &NetHeld<'_>) {
     let ip6_dad_count_local = IP6_DAD_COUNT.load(Ordering::Relaxed);
 
     kassert!(matches!(
-        hal::netlock::status(),
-        hal::rwlock::RW_WRITE | hal::rwlock::RW_READ
+        hal::sync::netlock::status(),
+        hal::sync::rwlock::RW_WRITE | hal::sync::rwlock::RW_READ
     ));
 
     // If we don't need DAD, don't do it. There are several cases:

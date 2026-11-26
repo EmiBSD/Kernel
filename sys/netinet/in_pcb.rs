@@ -173,7 +173,7 @@ use core::mem::size_of;
 use core::pin::Pin;
 use core::ptr;
 
-use hal::once::OnceStatic;
+use hal::sync::once::OnceStatic;
 use kernel::netinet::in_pcb as k;
 
 use crate::kern::proc_glue::BsdProcGlue;
@@ -359,7 +359,7 @@ pub fn in_pcbdisconnect(inp: &'static Inpcb) {
 /// `in_pcbdetach`: unlinks `inp` from its socket and its table and drops the socket's
 /// reference.
 pub fn in_pcbdetach(inp: &'static Inpcb) {
-    let Some(h) = hal::pool::PoolArc::from_ref(inp) else {
+    let Some(h) = hal::mem::pool::PoolArc::from_ref(inp) else {
         panic(format_args!("in_pcbdetach: inpcb {inp:p} not a pool item"));
     };
     k::in_pcbdetach(h, net_held("in_pcbdetach").net());
@@ -564,11 +564,11 @@ pub fn in_pcbset_addr(
     k::in_pcbset_addr(inp, &fsa.sin(), &lsa.sin(), rtableid)
 }
 
-/// `satosin6_const(sa)` of a generic socket address image, read out of it (`hal::pod`'s copy
+/// `satosin6_const(sa)` of a generic socket address image, read out of it (`hal::mem::pod`'s copy
 /// of its first `sizeof(struct sockaddr_in6)` bytes).
 #[cfg(feature = "inet6")]
 fn su_sin6(su: &SockaddrUnion) -> crate::netinet6::in6::SockaddrIn6 {
-    match hal::pod::at::<crate::netinet6::in6::SockaddrIn6>(su.as_bytes(), 0) {
+    match hal::mem::pod::at::<crate::netinet6::in6::SockaddrIn6>(su.as_bytes(), 0) {
         Some(sin6) => sin6,
         None => panic(format_args!(
             "su_sin6: a socket address union shorter than sockaddr_in6"
@@ -1121,7 +1121,7 @@ pub(crate) mod tests {
             // ifconfig's SIOCAIFADDR_IN6 through the kernel's in6_ioctl, over the request's
             // bytes as in6_control hands them.
             let mut req = [0u8; size_of::<In6Aliasreq>()];
-            assert!(hal::pod::put(&mut req, 0, &ifra));
+            assert!(hal::mem::pod::put(&mut req, 0, &ifra));
             kernel::netinet6::in6::in6_ioctl(SIOCAIFADDR_IN6, &mut req, Some(ifp), true)
                 .expect("SIOCAIFADDR_IN6");
             let ifa =

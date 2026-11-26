@@ -196,7 +196,7 @@ fn is_kernel_map(kva: usize) -> bool {
 /// write their pages install it, `kernel::testutil::pages_install`), the page faulted in once
 /// through the hook on a miss; `EFAULT` when it stays unmapped.
 fn kernel_map_bytes(va: usize, write: bool) -> Result<usize, Errno> {
-    let pmap = crate::pmap::kernel();
+    let pmap = crate::vm::pmap::kernel();
     if let Some(pa) = pmap.extract(Vaddr::new(va)) {
         return Ok(pa.as_usize());
     }

@@ -35,7 +35,7 @@ use std::rc::Rc;
 use std::sync::MutexGuard;
 use std::vec::Vec;
 
-use hal::malloc::{M_WAITOK, MArc};
+use hal::mem::malloc::{M_WAITOK, MArc};
 use hal::sys::dirent::Dirent;
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::{FREAD, FWRITE};

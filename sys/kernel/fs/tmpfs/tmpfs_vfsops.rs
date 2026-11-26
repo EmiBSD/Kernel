@@ -108,9 +108,9 @@ use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use hal::arch::current::param::{PAGE_SHIFT, PAGE_SIZE};
-use hal::intr::IPL_NONE;
-use hal::malloc::{M_WAITOK, MArc};
-use hal::pool::{PR_WAITOK, PoolArc, TypedPool};
+use hal::cpu::intr::IPL_NONE;
+use hal::mem::malloc::{M_WAITOK, MArc};
+use hal::mem::pool::{PR_WAITOK, PoolArc, TypedPool};
 use hal::sys::errno::Errno;
 use hal::sys::limits::INT_MAX;
 use hal::sys::mount::{
@@ -403,7 +403,7 @@ pub fn tmpfs_unmount<G: ProcGlue>(
             };
             loop {
                 let de = {
-                    let r = hal::klock::reader();
+                    let r = hal::sync::klock::reader();
                     node.dir().tn_dir.first(&r).and_then(PoolArc::from_ref)
                 };
                 let Some(de) = de else {

@@ -104,8 +104,8 @@ use core::cmp::{max, min};
 use core::ptr;
 use core::sync::atomic::Ordering;
 
-use hal::klock;
-use hal::sleep::{INFSLP, PCATCH, PRIBIO, tsleep_nsec, wakeup, wakeup_one};
+use hal::sync::klock;
+use hal::sync::sleep::{INFSLP, PCATCH, PRIBIO, tsleep_nsec, wakeup, wakeup_one};
 use hal::sys::errno::Errno;
 use hal::sys::types::{Daddr, Off};
 

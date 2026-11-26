@@ -77,10 +77,10 @@
 //!   twice in C, is one helper, `kernel_lock_bounce`.
 //!
 //! ## Redesign
-//! - LZ kept the sleep queues here (`slpque`, `hal::list::List`s of `&'static Proc` under the
+//! - LZ kept the sleep queues here (`slpque`, `hal::ds::list::List`s of `&'static Proc` under the
 //!   legacy `SCHED_LOCK`); they are `kernel::sched`'s `PinList`s under
-//!   `hal::thread::SCHED_LOCK`'s hold, and a sleeper is the running thread
-//!   (`hal::thread::with_current`), never a reference made from `curproc`'s pointer.
+//!   `hal::cpu::thread::SCHED_LOCK`'s hold, and a sleeper is the running thread
+//!   (`hal::cpu::thread::with_current`), never a reference made from `curproc`'s pointer.
 //!   `sleep_queue_init` has nothing left to do (the queues are empty when made).
 //! - `wakeup_proc` and `unsleep` take the scheduler's hold their caller has (the C's
 //!   `SCHED_ASSERT_LOCKED`), as a parameter.
@@ -91,7 +91,7 @@ use core::ffi::c_void;
 use core::ptr;
 use core::sync::atomic::{Ordering, fence};
 
-use hal::thread::SchedHold;
+use hal::cpu::thread::SchedHold;
 
 use crate::conf::param::TICK_NSEC;
 use crate::kassert;
@@ -303,7 +303,7 @@ pub fn sleep_finish(nsecs: u64, do_sleep: bool) -> Result<(), Errno> {
 /// `wakeup_proc`: if process hasn't been awakened (wchan non-zero), undo the sleep. If proc is
 /// stopped, just unsleep so it will remain stopped.
 pub fn wakeup_proc(h: &mut SchedHold, p: &Proc) -> bool {
-    kernel::sched::wakeup_proc(h, hal::pin::pin_static(p.as_static()))
+    kernel::sched::wakeup_proc(h, hal::ds::pin::pin_static(p.as_static()))
 }
 
 /// `unsleep`: remove a process from its wait queue.
@@ -326,7 +326,7 @@ pub fn wakeup<T: ?Sized>(chan: *const T) {
 /// `sched_yield(2)`: give the CPU up; a thread of a multi-threaded process drops to the
 /// lowest priority among its siblings so that they can make some progress.
 pub fn sys_sched_yield(p: &Proc, _v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
-    kernel::sched::sched_yield::<G>(hal::pin::pin_static(p.as_static()));
+    kernel::sched::sched_yield::<G>(hal::ds::pin::pin_static(p.as_static()));
     Ok(())
 }
 

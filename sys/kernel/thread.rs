@@ -98,9 +98,9 @@ use core::ffi::c_void;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use hal::intr::IPL_NONE;
-use hal::mutex::Mutexed;
-use hal::once::OnceStatic;
+use hal::cpu::intr::IPL_NONE;
+use hal::sync::mutex::Mutexed;
+use hal::sync::once::OnceStatic;
 use hal::sys::errno::Errno;
 
 use crate::assert::kpanic;
@@ -333,7 +333,7 @@ pub fn kthread_create_with<G: crate::proc::ProcGlue>(
 ) -> Result<hal::sys::types::Pid, Errno> {
     use crate::proc::{FORK_NOZOMBIE, FORK_SHAREFILES, FORK_SHAREVM, FORK_SYSTEM};
 
-    hal::klock::kernel_lock(); // KERNEL_LOCK()
+    hal::sync::klock::kernel_lock(); // KERNEL_LOCK()
 
     // First, create the new process. Share the memory, file descriptors and don't leave the
     // exit status around for the parent to wait for.
@@ -345,7 +345,7 @@ pub fn kthread_create_with<G: crate::proc::ProcGlue>(
     ) {
         Ok(c) => c,
         Err(error) => {
-            hal::klock::kernel_unlock(); // KERNEL_UNLOCK()
+            hal::sync::klock::kernel_unlock(); // KERNEL_UNLOCK()
             return Err(error);
         }
     };
@@ -353,7 +353,7 @@ pub fn kthread_create_with<G: crate::proc::ProcGlue>(
     // Name it as specified.
     child.process.set_comm(name);
 
-    hal::klock::kernel_unlock(); // KERNEL_UNLOCK()
+    hal::sync::klock::kernel_unlock(); // KERNEL_UNLOCK()
 
     // All done!
     Ok(child.tid)
@@ -362,7 +362,7 @@ pub fn kthread_create_with<G: crate::proc::ProcGlue>(
 /// `kthread_exit(9)`: the running kernel thread exits (a non-zero code is printed: its
 /// parent, process 0, does nothing with it).
 pub fn kthread_exit<G: crate::proc::ProcGlue>(ecode: i32) -> ! {
-    hal::thread::with_current::<crate::proc::Thread<G>, _>(|p| {
+    hal::cpu::thread::with_current::<crate::proc::Thread<G>, _>(|p| {
         if ecode != 0 {
             let comm = p.process().comm();
             hal::prf::printf(format_args!(

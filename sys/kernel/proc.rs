@@ -142,7 +142,7 @@
 //! scheduler's queues, `kernel::sched`, N4.5a).
 //!
 //! Locks, as the C's annotations: `[K]` the kernel lock (the lists, the hashes, the parent,
-//! child and group links: [`hal::klock`]'s witnesses), `[m]` the process's `ps_mtx` (its thread
+//! child and group links: [`hal::sync::klock`]'s witnesses), `[m]` the process's `ps_mtx` (its thread
 //! list and thread tree, its credentials, address space and limits: [`PsMtx`]), `[S]`
 //! `sched_lock` (still `bsd`'s, decision D5: the scheduler's members are atomic words written
 //! under it), `[a]` atomics, `[I]` set before the object is reachable. A thread's own `[o]`
@@ -159,9 +159,9 @@
 //!
 //! ## Redesign
 //! - The lists and hash chains (`LIST_ENTRY`/`TAILQ_ENTRY` with raw links under an `unsafe
-//!   impl Sync` saying "kernel lock") are `hal::pinlist::PinList`s of pinned elements bound to
+//!   impl Sync` saying "kernel lock") are `hal::ds::pinlist::PinList`s of pinned elements bound to
 //!   the kernel lock's identity and changed only with its exclusive witness
-//!   (`hal::klock::witness`); lookups borrow a witness (`prfind(&r, pid)`), and a caller that
+//!   (`hal::sync::klock::witness`); lookups borrow a witness (`prfind(&r, pid)`), and a caller that
 //!   keeps the process takes a handle (`PoolArc::from_ref`, `processpl` being recorded). A
 //!   process or thread dropped while linked stops the kernel (the C's "unlink before
 //!   `pool_put`" made a check). The adapters are `bsd`'s (`proc_glue_links!`), because the
@@ -177,17 +177,17 @@
 //!   owns its main thread's box in a slot (`PsMtx.main`, [`MainThread`], N4.6a: `fork1` sets
 //!   it, `process_zap` takes it; the C's `ps_mainproc`, read under `ps_mtx` with
 //!   [`Process::main_thread`]) and its other threads' boxes in a tree under `ps_mtx`
-//!   (`hal::owned::OwnedTree` keyed by the order they joined, each taken back by its `exit1`),
+//!   (`hal::ds::owned::OwnedTree` keyed by the order they joined, each taken back by its `exit1`),
 //!   so a thread's memory goes with its box, never behind a raw `pool_put`; `ps_threads` is
 //!   the list of the living ones, apart from the boxes.
 //! - The pin tables (`ps_pin`, `ps_libcpin`) are owned [`PinTable`]s in
-//!   `hal::slot::ReadMostly` cells (N4.6a), `ps_opptr` a counted handle under `ps_mtx`,
+//!   `hal::sync::slot::ReadMostly` cells (N4.6a), `ps_opptr` a counted handle under `ps_mtx`,
 //!   `initprocess` the tables' (`ProcTables::initprocess`): no raw word left to dereference.
 //! - `ps_ucred`, `ps_vmspace`, `ps_limit` are counted handles under `ps_mtx`, each with its
 //!   address in a word for the C's unlocked compares (`refreshcreds`, `lim_read_enter`,
 //!   `kinfo_proc`'s pointer fields).
 //! - The members the C keeps as plain words are atomic words with LZ's `get()`/`set()`
-//!   (`ps_xexit`, `p_estcpu`, ...); `p_wmesg` is a `hal::seqlock::StrSlot`; `p_comm`/`p_name`
+//!   (`ps_xexit`, `p_estcpu`, ...); `p_wmesg` is a `hal::sync::seqlock::StrSlot`; `p_comm`/`p_name`
 //!   are three atomic words ([`NameWord`]).
 //! - `p_stat`, `p_cpu`, `p_addr` and `p_md` are the thread's [`MachineSlot`], first in the
 //!   `#[repr(C)]` thread, where both machines' assembly reaches them (decision P1).
@@ -204,22 +204,22 @@ use core::sync::atomic::{
     Ordering,
 };
 
-use hal::intr::{IPL_HIGH, IPL_NONE};
-use hal::klock::{self, KernelWitness};
-use hal::malloc::{M_NOWAIT, M_WAITOK, MArray, MBox};
-use hal::mutex::Mutexed;
-use hal::once::OnceStatic;
-use hal::owned::{OwnedAdapter, OwnedEntry, OwnedTree};
-use hal::pin::pin_static;
-use hal::pinlist::{PinAdapter, PinEntry, PinList};
-use hal::pool::{BoxPool, PR_WAITOK, PoolArc, PoolBox, PoolHome, TypedPool};
-use hal::refcnt::Refcnt;
-use hal::rwlock::{Guarded, RawRwlock, Witness};
-use hal::seqlock::StrSlot;
-use hal::slot::ReadMostly;
+use hal::cpu::intr::{IPL_HIGH, IPL_NONE};
+use hal::cpu::thread::MachineSlot;
+use hal::ds::owned::{OwnedAdapter, OwnedEntry, OwnedTree};
+use hal::ds::pin::pin_static;
+use hal::ds::pinlist::{PinAdapter, PinEntry, PinList};
+use hal::mem::malloc::{M_NOWAIT, M_WAITOK, MArray, MBox};
+use hal::mem::pool::{BoxPool, PR_WAITOK, PoolArc, PoolBox, PoolHome, TypedPool};
+use hal::sync::klock::{self, KernelWitness};
+use hal::sync::mutex::Mutexed;
+use hal::sync::once::OnceStatic;
+use hal::sync::refcnt::Refcnt;
+use hal::sync::rwlock::{Guarded, RawRwlock, Witness};
+use hal::sync::seqlock::StrSlot;
+use hal::sync::slot::ReadMostly;
 use hal::sys::errno::Errno;
 use hal::sys::types::{Pid, Uid};
-use hal::thread::MachineSlot;
 
 use crate::assert::kpanic;
 use crate::cred::{CredRef, Ucred};
@@ -342,8 +342,8 @@ pub const SDEAD: u8 = 6;
 /// `SONPROC`: thread is currently on a CPU.
 pub const SONPROC: u8 = 7;
 
-// The switch stores `hal::thread`'s `SONPROC` into the new thread's slot.
-const _: () = assert!(hal::thread::SONPROC == SONPROC);
+// The switch stores `hal::cpu::thread`'s `SONPROC` into the new thread's slot.
+const _: () = assert!(hal::cpu::thread::SONPROC == SONPROC);
 
 /*
  * These flags are per-thread and kept in p_flag
@@ -878,7 +878,7 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     fn session_destroy(sess: &Session<Self>);
     /// `curproc`, lent to `f`: the thread running on this CPU (`None` before the first one,
     /// and on a host test thread that set none). The kernel's glue reads hal's
-    /// (`hal::thread::try_with_current`, the thread type `kernel::sched` switches); the test
+    /// (`hal::cpu::thread::try_with_current`, the thread type `kernel::sched` switches); the test
     /// glues of other thread types keep their own, since hal admits one thread type per
     /// process. The reference lives for `f` alone: nothing claims the thread past it.
     fn with_curproc<R>(f: impl FnOnce(Option<&Thread<Self>>) -> R) -> R;
@@ -1570,7 +1570,7 @@ pub struct Session<G: ProcGlue> {
     pub s_ttyp: Guarded<Option<crate::tty::TtyRef<G>>>,
     /// \[K\] `s_ttyvp`: vnode of controlling terminal, referenced (`vn_ioctl`'s
     /// `TIOCSCTTY`); written under the kernel lock, an atomic word read without it.
-    pub ttyvp: hal::link::SyncLink<crate::fs::vnode::Vnode<G>>,
+    pub ttyvp: hal::ds::link::SyncLink<crate::fs::vnode::Vnode<G>>,
     /// The members of `bsd`'s subsystems.
     pub g: G::SessionG,
 }
@@ -1588,7 +1588,7 @@ impl<G: ProcGlue> Session<G> {
             s_verauthppid: I32Word::new(0),
             s_verauthuid: U32Word::new(0),
             s_ttyp: Guarded::new_kernel(None),
-            ttyvp: hal::link::SyncLink::new(),
+            ttyvp: hal::ds::link::SyncLink::new(),
             g,
         }
     }
@@ -1805,9 +1805,9 @@ pub struct Process<G: ProcGlue> {
     /// \[a\] `ps_siglist`.
     pub ps_siglist: AtomicU32,
     /// \[m\] `ps_single`: thread for single-threading.
-    pub ps_single: hal::link::PtrWord<Thread<G>>,
+    pub ps_single: hal::ds::link::PtrWord<Thread<G>>,
     /// \[m\] `ps_trapped`: thread trapped for ptrace.
-    pub ps_trapped: hal::link::PtrWord<Thread<G>>,
+    pub ps_trapped: hal::ds::link::PtrWord<Thread<G>>,
     /// \[m\] `ps_suspendcnt`.
     pub ps_suspendcnt: U32Word,
     /// \[m\] `ps_exitcnt`.
@@ -1884,7 +1884,7 @@ pub struct Process<G: ProcGlue> {
     /// copy; `process_zap` drops it), none for process 0 and the kernel threads. Written by
     /// `exec` (single-threaded), `process_new` (before the process runs) and `process_zap`
     /// (after its last thread), read by `kern.file` and `uvm_wxcheck`: an atomic word.
-    pub textvp: hal::link::SyncLink<crate::fs::vnode::Vnode<G>>,
+    pub textvp: hal::ds::link::SyncLink<crate::fs::vnode::Vnode<G>>,
     /// The members of `bsd`'s subsystems.
     pub g: G::ProcessG,
 }
@@ -1914,8 +1914,8 @@ impl<G: ProcGlue> Process<G> {
             ps_lock: RawRwlock::new("pslock"),
             ps_flags: AtomicU32::new(0),
             ps_siglist: AtomicU32::new(0),
-            ps_single: hal::link::PtrWord::new(),
-            ps_trapped: hal::link::PtrWord::new(),
+            ps_single: hal::ds::link::PtrWord::new(),
+            ps_trapped: hal::ds::link::PtrWord::new(),
             ps_suspendcnt: U32Word::new(0),
             ps_exitcnt: U32Word::new(0),
             ps_threadcnt: U32Word::new(0),
@@ -1953,7 +1953,7 @@ impl<G: ProcGlue> Process<G> {
             ps_pin: ReadMostly::new(PinTable::NONE),
             ps_libcpin: ReadMostly::new(PinTable::NONE),
             ps_rucheck_to: crate::timeout::Timeout::unset(),
-            textvp: hal::link::SyncLink::new(),
+            textvp: hal::ds::link::SyncLink::new(),
             g,
         }
     }
@@ -2094,7 +2094,7 @@ impl<G: ProcGlue> Process<G> {
     pub fn set_pptr_locked(
         &self,
         w: &mut KernelWitness,
-        g: &mut hal::mutex::MutexedGuard<'_, PsMtx<G>>,
+        g: &mut hal::sync::mutex::MutexedGuard<'_, PsMtx<G>>,
         parent: ProcessRef<G>,
     ) -> Option<ProcessRef<G>> {
         // The thread list checks the guard is this process's.
@@ -2108,7 +2108,7 @@ impl<G: ProcGlue> Process<G> {
     /// kernel lock; a guard of another mutex is refused (as for `set_pptr_locked`).
     pub fn pptr_locked<'a>(
         &self,
-        g: &'a hal::mutex::MutexedGuard<'_, PsMtx<G>>,
+        g: &'a hal::sync::mutex::MutexedGuard<'_, PsMtx<G>>,
     ) -> Option<&'a ProcessRef<G>> {
         let _ = self.ps_threads.is_empty(g);
         g.pptr.as_ref()
@@ -2118,7 +2118,7 @@ impl<G: ProcGlue> Process<G> {
     /// kernel lock; a guard of another mutex is refused (as for `set_pptr_locked`).
     pub fn pgrp_locked<'a>(
         &self,
-        g: &'a hal::mutex::MutexedGuard<'_, PsMtx<G>>,
+        g: &'a hal::sync::mutex::MutexedGuard<'_, PsMtx<G>>,
     ) -> Option<&'a PgrpRef<G>> {
         let _ = self.ps_threads.is_empty(g);
         g.pgrp.as_ref()
@@ -2160,7 +2160,7 @@ impl<G: ProcGlue> Process<G> {
     /// 0) until `process_zap`.
     pub fn main_thread<'g>(
         &self,
-        g: &'g hal::mutex::MutexedGuard<'_, PsMtx<G>>,
+        g: &'g hal::sync::mutex::MutexedGuard<'_, PsMtx<G>>,
     ) -> Option<Pin<&'g Thread<G>>> {
         let _ = self.ps_threads.is_empty(g);
         g.main.get()
@@ -2170,7 +2170,7 @@ impl<G: ProcGlue> Process<G> {
     /// thread's box (`panic(9)` for a second one).
     pub fn set_main_locked(
         &self,
-        g: &mut hal::mutex::MutexedGuard<'_, PsMtx<G>>,
+        g: &mut hal::sync::mutex::MutexedGuard<'_, PsMtx<G>>,
         t: PoolBox<Thread<G>>,
     ) {
         let _ = self.ps_threads.is_empty(g);
@@ -2199,7 +2199,7 @@ impl<G: ProcGlue> Process<G> {
     /// for process 0's `static` one, or once taken).
     pub fn take_main_locked(
         &self,
-        g: &mut hal::mutex::MutexedGuard<'_, PsMtx<G>>,
+        g: &mut hal::sync::mutex::MutexedGuard<'_, PsMtx<G>>,
     ) -> Option<PoolBox<Thread<G>>> {
         let _ = self.ps_threads.is_empty(g);
         match core::mem::replace(&mut g.main, MainThread::None) {
@@ -2215,7 +2215,11 @@ impl<G: ProcGlue> Process<G> {
     /// The thread joins `ps_threads` (`TAILQ_INSERT_TAIL`), last, with its joining order;
     /// its box stays the caller's (the main thread's goes to [`Process::set_main_locked`], a
     /// secondary thread's to [`Process::insert_box_locked`]).
-    pub fn join_locked(&self, g: &mut hal::mutex::MutexedGuard<'_, PsMtx<G>>, t: Pin<&Thread<G>>) {
+    pub fn join_locked(
+        &self,
+        g: &mut hal::sync::mutex::MutexedGuard<'_, PsMtx<G>>,
+        t: Pin<&Thread<G>>,
+    ) {
         // The list first: it checks the guard is this process's.
         self.ps_threads.insert_tail(g, t);
         let seq = g.next_seq;
@@ -2227,7 +2231,7 @@ impl<G: ProcGlue> Process<G> {
     /// ([`Process::take_box_locked`]).
     pub fn insert_box_locked(
         &self,
-        g: &mut hal::mutex::MutexedGuard<'_, PsMtx<G>>,
+        g: &mut hal::sync::mutex::MutexedGuard<'_, PsMtx<G>>,
         t: PoolBox<Thread<G>>,
     ) {
         // The tree is the guard's own data (no other lock's): the guard's identity is checked
@@ -2241,7 +2245,7 @@ impl<G: ProcGlue> Process<G> {
     /// `None` when the tree has none (the main thread's is the slot's).
     pub fn take_box_locked(
         &self,
-        g: &mut hal::mutex::MutexedGuard<'_, PsMtx<G>>,
+        g: &mut hal::sync::mutex::MutexedGuard<'_, PsMtx<G>>,
         seq: u64,
     ) -> Option<PoolBox<Thread<G>>> {
         // As `insert_box_locked`: the `leave_locked` this pairs with checks the guard.
@@ -2250,7 +2254,11 @@ impl<G: ProcGlue> Process<G> {
 
     /// `TAILQ_REMOVE(&pr->ps_threads, p, p_thr_link)`: the thread leaves the list; its box
     /// stays where it is (the slot or the tree), which the caller deals with.
-    pub fn leave_locked(&self, g: &mut hal::mutex::MutexedGuard<'_, PsMtx<G>>, t: &Thread<G>) {
+    pub fn leave_locked(
+        &self,
+        g: &mut hal::sync::mutex::MutexedGuard<'_, PsMtx<G>>,
+        t: &Thread<G>,
+    ) {
         self.ps_threads.remove(g, t);
     }
 
@@ -2259,7 +2267,7 @@ impl<G: ProcGlue> Process<G> {
     /// none is there (cold: the walk is the C's dereference made checkable).
     pub fn thread_by_addr<'a>(
         &'a self,
-        g: &'a hal::mutex::MutexedGuard<'_, PsMtx<G>>,
+        g: &'a hal::sync::mutex::MutexedGuard<'_, PsMtx<G>>,
         addr: usize,
     ) -> Option<Pin<&'a Thread<G>>> {
         if addr == 0 {
@@ -2273,7 +2281,7 @@ impl<G: ProcGlue> Process<G> {
     /// `ps_opptr`, for a holder of this process's `ps_mtx` (`[K|m]`).
     pub fn opptr_locked<'a>(
         &self,
-        g: &'a hal::mutex::MutexedGuard<'_, PsMtx<G>>,
+        g: &'a hal::sync::mutex::MutexedGuard<'_, PsMtx<G>>,
     ) -> Option<&'a ProcessRef<G>> {
         let _ = self.ps_threads.is_empty(g);
         g.opptr.as_ref()
@@ -2282,7 +2290,7 @@ impl<G: ProcGlue> Process<G> {
     /// `pr->ps_opptr = op` under this process's `ps_mtx`: the old one.
     pub fn set_opptr_locked(
         &self,
-        g: &mut hal::mutex::MutexedGuard<'_, PsMtx<G>>,
+        g: &mut hal::sync::mutex::MutexedGuard<'_, PsMtx<G>>,
         op: Option<ProcessRef<G>>,
     ) -> Option<ProcessRef<G>> {
         let _ = self.ps_threads.is_empty(g);
@@ -2541,19 +2549,19 @@ impl<G: ProcGlue> Thread<G> {
     }
 
     /// `p_addr`: the u-area's address, 0 before `cpu_fork` (set and cleared through the
-    /// slot alone: `hal::thread::MachineSlot::install_uarea`, `take_uarea`, E4).
+    /// slot alone: `hal::cpu::thread::MachineSlot::install_uarea`, `take_uarea`, E4).
     #[inline]
     pub fn addr_word(&self) -> usize {
         self.machine.addr_word()
     }
 
     /// `p->p_addr = uaddr` of `thread_new`: the thread takes the u-area `u` (`hal`'s E4).
-    pub fn install_uarea(&self, u: hal::thread::UArea) {
+    pub fn install_uarea(&self, u: hal::cpu::thread::UArea) {
         self.machine.install_uarea(u);
     }
 
     /// The reaper's `uvm_uarea_free(p)`: the u-area given back, for a thread no CPU runs.
-    pub fn take_uarea(&self) -> Option<hal::thread::UArea> {
+    pub fn take_uarea(&self) -> Option<hal::cpu::thread::UArea> {
         self.machine.take_uarea()
     }
 
@@ -2613,7 +2621,7 @@ impl<G: ProcGlue> Thread<G> {
     /// The copy and the reference, under the process's `ps_mtx`.
     fn install_cred(
         &self,
-        g: &mut hal::mutex::MutexedGuard<'_, PsMtx<G>>,
+        g: &mut hal::sync::mutex::MutexedGuard<'_, PsMtx<G>>,
         cr: CredRef,
     ) -> Option<CredRef> {
         self.cred.copy_from(&cr);
@@ -2646,7 +2654,7 @@ impl<G: ProcGlue> Thread<G> {
     /// caller drops outside the lock.
     pub fn take_vmspace_locked(
         &self,
-        g: &mut hal::mutex::MutexedGuard<'_, PsMtx<G>>,
+        g: &mut hal::sync::mutex::MutexedGuard<'_, PsMtx<G>>,
     ) -> Option<VmspaceRef> {
         let old = self.vmspace.get_mut(g).take();
         self.vmspace_word.store(0, Ordering::Release);
@@ -2687,10 +2695,10 @@ impl<G: ProcGlue> Deref for Thread<G> {
     }
 }
 
-/// What `hal::thread`'s switch reaches of a thread: its slot, first in the `#[repr(C)]`
+/// What `hal::cpu::thread`'s switch reaches of a thread: its slot, first in the `#[repr(C)]`
 /// thread (decision P1), so the thread's address, `ci_curproc`, is the slot's for the
 /// assembly that reads the slot by `ci_curproc` plus an offset (arm64's `exception.S`).
-impl<G: ProcGlue> hal::thread::ThreadLayout for Thread<G> {
+impl<G: ProcGlue> hal::cpu::thread::ThreadLayout for Thread<G> {
     #[inline]
     fn machine(&self) -> &MachineSlot {
         &self.machine
@@ -3199,7 +3207,7 @@ mod tests {
     /// Fresh tables for this test thread, the kernel lock held (the double counts it).
     fn setup() {
         testutil::install();
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         procinit::<TestGlue>(64, 64);
     }
 

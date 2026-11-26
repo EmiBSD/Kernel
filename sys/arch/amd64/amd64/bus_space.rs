@@ -92,8 +92,8 @@ use crate::sys::param::{PAGE_SIZE, PGOFSET};
 use crate::sys::types::{Paddr, Vaddr, Vsize};
 use hal::arch::amd64::pmap::find_pte;
 use hal::arch::amd64::pmap::layout::{PMAP_NOCACHE, PMAP_WC};
-use hal::pmap::{direct_map as pmap_direct_map, direct_unmap, initialized as pmap_initialized};
 use hal::vm::param::{round_page, trunc_page};
+use hal::vm::pmap::{direct_map as pmap_direct_map, direct_unmap, initialized as pmap_initialized};
 use kernel::vm::km::{KD_NOWAIT, KP_NONE, KV_ANY};
 
 /// `BUS_SPACE_MAP_CACHEABLE`.

@@ -385,7 +385,7 @@ impl UsbdBus {
 // `Option` of a reference, `NonNull`, `fn` or counted handle (`MArc`, `#[repr(transparent)]`
 // over a `NonNull`, for which Rust guarantees `None` is zero), a raw pointer, an integer, a
 // structure of integers or a `bus_dma_tag_t` option, an atomic integer, or the bpf word
-// (`hal::smr::SmrArcWord`, an atomic pointer and a marker: zero is no tap, hal's
+// (`hal::sync::smr::SmrArcWord`, an atomic pointer and a marker: zero is no tap, hal's
 // `an_all_zero_counted_word_is_null`): all valid as zero bits.
 unsafe impl crate::sys::device::Softc for UsbdBus {}
 

@@ -75,7 +75,7 @@
 //! - LZ's queues of `Cell`s behind `unsafe impl Sync`, embedded in `struct ifnet` zeroed and
 //!   set up by `ifq_init` -> [`Ifqueue`] and [`Ifiqueue`], built whole by `if_attach_common`
 //!   into the interface's `IfRt` (or `MBox`ed by `if_attach_queues`): the state `ifq_mtx`
-//!   keeps is the data of a `hal::mutex::Mutexed` ([`IfqState`]), `ifq_len` and
+//!   keeps is the data of a `hal::sync::mutex::Mutexed` ([`IfqState`]), `ifq_len` and
 //!   `ifq_oactive` atomics beside it for the unlocked readers, the serializer's list a
 //!   `PinList` of tasks under `ifq_task_mtx`. A queue's own tasks (`ifq_start`, `ifq_restart`,
 //!   `ifq_bundle`, `ifiq_task`) take the queue as a `&'static` argument
@@ -105,12 +105,12 @@ use core::ffi::c_void;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use hal::intr::IPL_NET;
-use hal::link::{Link, PtrWord};
-use hal::malloc::{M_WAITOK, MBox};
-use hal::mutex::{Mutexed, MutexedGuard};
-use hal::pinlist::PinList;
-use hal::sleep::INFSLP;
+use hal::cpu::intr::IPL_NET;
+use hal::ds::link::{Link, PtrWord};
+use hal::ds::pinlist::PinList;
+use hal::mem::malloc::{M_WAITOK, MBox};
+use hal::sync::mutex::{Mutexed, MutexedGuard};
+use hal::sync::sleep::INFSLP;
 use hal::sys::errno::Errno;
 use hal::sys::net_bpf::BPF_DIRECTION_IN;
 use hal::sys::net_if::{IFF_RUNNING, IFQ_MAXPRIO, IFQ_NQUEUES, IFXF_MONITOR, IfData};
@@ -445,7 +445,7 @@ pub fn ifq_serialize(ifq: &Ifqueue, t: Pin<&Task>) {
     let _ = ifq.ser_list.try_insert_tail(&mut g, t);
 
     if g.cpu.is_none() {
-        g.cpu = Some(hal::mutex::mtx_curcpu());
+        g.cpu = Some(hal::sync::mutex::mtx_curcpu());
 
         loop {
             // work = *t: copy to caller to avoid races.
@@ -530,7 +530,7 @@ fn ifq_barrier_task(t: &'static (dyn Any + Send + Sync)) {
             .try_insert_tail(&mut g, Pin::static_ref(&ifq.ifq_bartask));
     }
     drop(g);
-    hal::sleep::wakeup(&raw const ifq.ser);
+    hal::sync::sleep::wakeup(&raw const ifq.ser);
 }
 
 /// `ifq_barrier`: waits until the work running in the queue's serialisation context (the
@@ -1308,7 +1308,7 @@ mod tests {
 
     use core::sync::atomic::{AtomicBool, AtomicU32};
 
-    use hal::once::OnceStatic;
+    use hal::sync::once::OnceStatic;
 
     use super::*;
     use crate::net::if_::tests::setup;

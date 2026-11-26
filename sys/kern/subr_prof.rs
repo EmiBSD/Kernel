@@ -74,7 +74,7 @@ use crate::sys::syscallargs::SysProfilArgs;
 use crate::sys::systm::{SysArgs, sysargs};
 use crate::sys::types::Register;
 use crate::unported;
-use hal::clock::ClockFrame;
+use hal::cpu::clock::ClockFrame;
 
 /// `profclock_period`: the kernel's (`kernel::clock`, N4.8a; `initclocks` sets it).
 pub use kernel::clock::PROFCLOCK_PERIOD;

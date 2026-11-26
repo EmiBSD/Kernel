@@ -119,8 +119,8 @@
 use core::fmt;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use hal::klock;
 pub use hal::prf::{log, printf};
+use hal::sync::klock;
 
 use crate::log::{Buf, LOG_INFO, logwakeup, msgbuf_putchar, msgbufmapped};
 use crate::proc::{PS_CONTROLT, ProcGlue, SessionRef, Thread};

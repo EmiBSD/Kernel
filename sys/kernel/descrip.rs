@@ -197,12 +197,12 @@
 
 use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
-use hal::link::SyncLink;
-use hal::malloc::{M_WAITOK, MArray};
-use hal::mutex::{Mutexed, SharedMutex};
-use hal::pinlist::PinList;
-use hal::pool::{PR_WAITOK, PoolArc};
-use hal::rwlock::{RW_WRITE, Rwlocked, WriteGuard};
+use hal::ds::link::SyncLink;
+use hal::ds::pinlist::PinList;
+use hal::mem::malloc::{M_WAITOK, MArray};
+use hal::mem::pool::{PR_WAITOK, PoolArc};
+use hal::sync::mutex::{Mutexed, SharedMutex};
+use hal::sync::rwlock::{RW_WRITE, Rwlocked, WriteGuard};
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::{
     F_DUPFD, F_DUPFD_CLOEXEC, F_DUPFD_CLOFORK, F_FLOCK, F_GETFD, F_GETFL, F_GETLK, F_GETOWN,
@@ -484,7 +484,7 @@ impl<G: FileGlue> Filedesc<G> {
     fn with(state: FdState, slots: Slots<G>) -> Self {
         Self {
             lock: Rwlocked::new("fdlock", state),
-            slots: Mutexed::new(hal::intr::mpfloor(), slots),
+            slots: Mutexed::new(hal::cpu::intr::mpfloor(), slots),
             shares: AtomicU32::new(1),
             fd_openfd: AtomicI32::new(0),
             fd_flags: AtomicI32::new(0),
@@ -492,7 +492,7 @@ impl<G: FileGlue> Filedesc<G> {
             cdir: SyncLink::new(),
             rdir: SyncLink::new(),
             kqlist: PinList::new(),
-            kqlist_mtx: Mutexed::new(hal::intr::IPL_HIGH, ()),
+            kqlist_mtx: Mutexed::new(hal::cpu::intr::IPL_HIGH, ()),
             nkqueues: AtomicU32::new(0),
             fd_nuserevents: AtomicU32::new(0),
         }
@@ -1542,8 +1542,9 @@ pub fn falloc<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(
 pub fn filedesc_init<G: FileGlue>() -> Result<(), Errno> {
     let t = G::tables();
     t.filepl
-        .init_recorded(hal::intr::mpfloor(), PR_WAITOK, "filepl")?;
-    t.fdescpl.init(hal::intr::IPL_NONE, PR_WAITOK, "fdescpl")
+        .init_recorded(hal::cpu::intr::mpfloor(), PR_WAITOK, "filepl")?;
+    t.fdescpl
+        .init(hal::cpu::intr::IPL_NONE, PR_WAITOK, "fdescpl")
 }
 
 /// Build a new filedesc structure (`fdinit`).
@@ -2256,7 +2257,7 @@ mod tests {
     use std::vec;
     use std::vec::Vec;
 
-    use hal::pool::PoolBox;
+    use hal::mem::pool::PoolBox;
     use hal::sys::ioccom::{_ior, _iow, _iowr};
 
     use super::*;
@@ -2724,7 +2725,7 @@ mod tests {
         }
         // A directory the table holds (one use), the kernel lock held as fdcopy's caller
         // holds it (vref's assertion).
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         let vn: &'static Vnode<Procs> =
             std::boxed::Box::leak(std::boxed::Box::new(Vnode::new_unpooled()));
         vn.set_vtype(VDIR);
@@ -2752,7 +2753,7 @@ mod tests {
         let _b = open_as(&p, 71, DTYPE_VNODE, FREAD);
         // A directory the table holds and the test too (two uses): fdfree's vrele leaves the
         // test's.
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         let vn: &'static Vnode<Procs> =
             std::boxed::Box::leak(std::boxed::Box::new(Vnode::new_unpooled()));
         vn.set_vtype(VDIR);

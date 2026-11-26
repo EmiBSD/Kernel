@@ -122,13 +122,13 @@
 //!   an `unsafe` block, freed by `pool_put` at its last `ln_refcnt`, a bare `&'static Rtentry`
 //!   back pointer) hung on `rt_llinfo` as the untagged legacy address, cast back at every
 //!   reader (`rt_ln`'s `unsafe`) -> a [`LlinfoNd6`] of the "nd6" [`BoxPool`], owned by the
-//!   route's word as `hal::link::TaggedLink`'s second kind (D-5): the word lends the record
+//!   route's word as `hal::ds::link::TaggedLink`'s second kind (D-5): the word lends the record
 //!   only to a guard of [`ND6_MTX`] (the C's "llinfo_nd6 live time, rt_llinfo and RTF_LLINFO
 //!   are protected by nd6_mtx", now `LlinfoNd6`'s `Tagged::LOCK`), gives the box back only to
 //!   the whole guard borrowed mutably (`RTM_DELETE`), and no lent record can be made a box
 //!   (N6.4b's B1: the box's raw form, never the park). Its one owner is the word, so
 //!   `ln_refcnt` (the list's reference and the iterator's) goes: the list links the pinned
-//!   record ([`ND6_LIST`], a `hal::pinlist::PinList` beside the mutex), and `nd6_timer` and
+//!   record ([`ND6_LIST`], a `hal::ds::pinlist::PinList` beside the mutex), and `nd6_timer` and
 //!   `nd6_purge` hold no reference to a record across the mutex's release, only its route.
 //! - `ln_rt`, the C's uncounted back pointer, is a counted handle (`PoolArc<Rtentry>`, \[I\];
 //!   `None` only for a walk's marker): the walks clone it under the mutex where the C
@@ -176,7 +176,7 @@
 //!   temporary legs) are called directly.
 //! - The held packets an unanswered neighbor drops get their `icmp6_error` through the
 //!   temporary `Inet::icmp6_error` leg until ICMPv6 moves (N6.5d).
-//! - `nd6_ioctl(cmd, data, ifp)` over the request's bytes (`hal::pod::at`/`put` of the
+//! - `nd6_ioctl(cmd, data, ifp)` over the request's bytes (`hal::mem::pod::at`/`put` of the
 //!   `struct in6_ndireq` and `struct in6_nbrinfo` images), called by the kernel's `in6_ioctl`.
 //! - `nd6_cache_lladdr`'s and `nd6_na_input`'s one section also reads and writes the route's
 //!   link-level gateway (`nd6_llchanged`, `nd6_llstore`: the `ReadMostly` cell's own pair), which
@@ -216,15 +216,15 @@ use core::pin::{Pin, pin};
 use core::ptr;
 use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, Ordering};
 
-use hal::intr::IPL_SOFTNET;
-use hal::link::{StaticMutex, Tagged};
-use hal::mutex::Mutexed;
-use hal::netlock::{NETLOCK, NetHeld};
-use hal::pinlist::{PinEntry, PinList};
-use hal::pod;
-use hal::pool::{BoxPool, PR_NOWAIT, PoolArc, PoolBox, Pooled};
+use hal::cpu::intr::IPL_SOFTNET;
+use hal::ds::link::{StaticMutex, Tagged};
+use hal::ds::pinlist::{PinEntry, PinList};
+use hal::mem::pod;
+use hal::mem::pool::{BoxPool, PR_NOWAIT, PoolArc, PoolBox, Pooled};
 use hal::random::arc4random;
-use hal::rwlock::{RW_READ, RW_WRITE};
+use hal::sync::mutex::Mutexed;
+use hal::sync::netlock::{NETLOCK, NetHeld};
+use hal::sync::rwlock::{RW_READ, RW_WRITE};
 use hal::sys::endian::{htonl, htons, ntohs};
 use hal::sys::errno::Errno;
 use hal::sys::net_if::{IFF_MULTICAST, IFT_CARP, IFT_ETHER, IFT_IEEE80211, SockaddrDl};
@@ -599,13 +599,13 @@ pub fn rt_key_in6(rt: &Rtentry) -> In6Addr {
 /// `NET_ASSERT_LOCKED()`.
 #[inline]
 fn net_assert_locked() {
-    kassert!(matches!(hal::netlock::status(), RW_WRITE | RW_READ));
+    kassert!(matches!(hal::sync::netlock::status(), RW_WRITE | RW_READ));
 }
 
 /// `NET_ASSERT_LOCKED_EXCLUSIVE()`.
 #[inline]
 fn net_assert_locked_exclusive() {
-    kassert!(hal::netlock::status() == RW_WRITE);
+    kassert!(hal::sync::netlock::status() == RW_WRITE);
 }
 
 /// `nd6_init`: the neighbor cache pool, and the slow timer started (the timeouts and the
@@ -1266,7 +1266,7 @@ pub fn nd6_rtrequest(ifp: &'static Ifnet, req: u8, rt: &Rtentry, net: &NetHeld<'
             if rt.rt_flags.isset(RTF_ANNOUNCE) && ifp.if_flags.get() & IFF_MULTICAST != 0 {
                 let llsol = nd6_llsol(&rt_key_in6(rt), ifp);
 
-                hal::klock::kernel_lock();
+                hal::sync::klock::kernel_lock();
                 // in6_lookupmulti's if_maddrlock, read (the module's deviations). The C
                 // keeps the uncounted pointer past the lookup (its kernel lock alone keeps
                 // it); here a handle cloned before the witness ends (T1), which in6_delmulti
@@ -1279,7 +1279,7 @@ pub fn nd6_rtrequest(ifp: &'static Ifnet, req: u8, rt: &Rtentry, net: &NetHeld<'
                 if let Some(in6m) = in6m {
                     in6_delmulti(in6m, net);
                 }
-                hal::klock::kernel_unlock();
+                hal::sync::klock::kernel_unlock();
             }
         }
         RTM_INVALIDATE if !rt.rt_flags.isset(RTF_LOCAL) => {
@@ -1402,11 +1402,11 @@ fn nd6_rtrequest_add(ifp: &'static Ifnet, req: u8, rt: &Rtentry, net: &NetHeld<'
     if !ifa6 && rt.rt_flags.isset(RTF_ANNOUNCE) && ifp.if_flags.get() & IFF_MULTICAST != 0 {
         let llsol = nd6_llsol(&key, ifp);
 
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         // The membership counted in the record (`in6m_refcnt`); its handle dropped here, as
         // the C discards the pointer: the list keeps the record, RTM_DELETE leaves it.
         drop(in6_addmulti(&llsol, ifp, net));
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
     }
 }
 
@@ -2189,10 +2189,10 @@ pub(crate) mod tests {
         ifp.if_flags
             .set(IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST | IFF_RUNNING | IFF_UP);
         ac.ac_enaddr.set(OURS);
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         if_attach(ifp);
         ether_ifattach(ac);
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
         ETHERS
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -2278,7 +2278,7 @@ pub(crate) mod tests {
     fn resolve(ifp: &'static Ifnet, rt: &Rtentry, dst: In6Addr) -> Result<[u8; 6], Errno> {
         let s = sin6_bytes(&dst);
         let mut desten = [0u8; ETHER_ADDR_LEN];
-        hal::netlock::lock();
+        hal::sync::netlock::lock();
         let r = nd6_resolve(
             ifp,
             Some(rt),
@@ -2286,7 +2286,7 @@ pub(crate) mod tests {
             SockaddrView::new(&s).expect("a view"),
             &mut desten,
         );
-        hal::netlock::unlock();
+        hal::sync::netlock::unlock();
         r.map(|m| {
             drop(m);
             desten

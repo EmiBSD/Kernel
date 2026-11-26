@@ -72,7 +72,7 @@
 //!   Cost: a `kern.intrcnt` read of a name, a vector or the number takes the lock (one spl
 //!   pair) where the C walks the list with none, since a list a detach changes needs its
 //!   lock to be walked; a count's read is the C's one pair.
-//! - `struct evcount` is valid all zero, every member an atomic (`hal::seqlock::StrSlot` for
+//! - `struct evcount` is valid all zero, every member an atomic (`hal::sync::seqlock::StrSlot` for
 //!   the name), so the zeroed interrupt records and softcs that embed one need no
 //!   initialisation, as in the C (`docs/IDIOMS.md`, a statistics record drivers embed).
 //! - `ec_data`, a `void *` the sysctl dereferenced as the counter's `int` vector, is the vector
@@ -91,7 +91,7 @@
 //!   interrupt path ([`evcount_inc`]) takes no lock and no count: one load of the number, the
 //!   block reached through the table, one relaxed add on its own CPU's line, as the C's
 //!   `counters_inc` writes only the CPU's own memory. A single counter needs no generation
-//!   number (one word cannot tear), so it is not a `hal::percpu::Counters<1>`, which holds
+//!   number (one word cannot tear), so it is not a `hal::sync::percpu::Counters<1>`, which holds
 //!   `MAXCPUS` slots by value (16 KiB) and would be built on the stack of the record's
 //!   constructor. Its only users are amd64's clock and IPI counters (N10).
 //! - `evcount_detach` takes the counter off the list it is on (a counter that asked to be
@@ -103,13 +103,13 @@
 
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 
-use hal::intr::IPL_HIGH;
-use hal::malloc::{M_WAITOK, MArray};
-use hal::mutex::Mutexed;
-use hal::once::OnceStatic;
-use hal::pin::pin_static;
-use hal::pinlist::{PinEntry, PinList};
-use hal::seqlock::StrSlot;
+use hal::cpu::intr::IPL_HIGH;
+use hal::ds::pin::pin_static;
+use hal::ds::pinlist::{PinEntry, PinList};
+use hal::mem::malloc::{M_WAITOK, MArray};
+use hal::sync::mutex::Mutexed;
+use hal::sync::once::OnceStatic;
+use hal::sync::seqlock::StrSlot;
 use hal::sys::errno::Errno;
 use hal::sys::sysctl::{
     KERN_INTRCNT_CNT, KERN_INTRCNT_NAME, KERN_INTRCNT_NUM, KERN_INTRCNT_VECTOR,

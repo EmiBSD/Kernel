@@ -91,7 +91,7 @@
 //! - LZ's `&'static MTag` from `pool_get` (13 `unsafe`: the item cast, the list's links, the
 //!   data's raw copies) becomes an owned [`MTagBox`]: `m_tag_get` returns it,
 //!   `m_tag_prepend` consumes it into the header's chain (`ph_tags`, a bare
-//!   `hal::owned::SlistLink` the header owns, one word as the C's `SLIST_HEAD`), whose drop
+//!   `hal::ds::owned::SlistLink` the header owns, one word as the C's `SLIST_HEAD`), whose drop
 //!   frees the tags one at a time (`m_tag_delete_chain`). `m_tag_delete` names the tag by its
 //!   address (it is the chain's while the caller holds the mbuf) and walks to its predecessor
 //!   as `SLIST_REMOVE` does, O(n); `m_tag_copy_chain` appends through a cursor on the last
@@ -104,9 +104,9 @@
 
 use core::ptr;
 
-use hal::malloc::M_WAITOK;
-use hal::owned::SlistLink;
-use hal::pool::{PR_NOWAIT, PR_WAITOK, PoolBox};
+use hal::ds::owned::SlistLink;
+use hal::mem::malloc::M_WAITOK;
+use hal::mem::pool::{PR_NOWAIT, PR_WAITOK, PoolBox};
 use hal::sys::errno::Errno;
 
 use crate::assert::{kassert, kpanic};

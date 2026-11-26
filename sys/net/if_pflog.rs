@@ -447,9 +447,9 @@ mod tests {
         ONCE.call_once(|| pflogattach(1));
 
         // The C holds the kernel lock across an attach (bpf_ifattach asserts it).
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         assert_eq!(pflog_clone_create(&PFLOG_CLONER, 0), Ok(()));
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
         let ifp = if_unit(b"pflog0").expect("pflog0");
         assert_eq!(ifp.if_type.get(), IFT_PFLOG);
         assert_eq!(ifp.if_mtu.get(), PFLOGMTU);
@@ -484,10 +484,10 @@ mod tests {
 
         // The cloner makes more units, by name.
         // The C holds the kernel lock across an attach (bpf_ifattach asserts it).
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         assert_eq!(if_clone_create(b"pflog1", 0), Ok(()));
         assert_eq!(if_clone_create(b"pflog1", 0), Err(Errno::EEXIST));
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
         net_lock();
         assert_eq!(pflog_getif(1).map(|sc| sc.sc_unit.get()), Some(1));
         net_unlock();

@@ -155,7 +155,7 @@
 //!
 //! ## Redesign
 //! - LZ's `include/pmap.rs` holds this layout with `struct pmap`, `struct pv_entry`,
-//!   `struct vm_page_md` and the inline frontends; those are `hal::pmap`'s and the backend's
+//!   `struct vm_page_md` and the inline frontends; those are `hal::vm::pmap`'s and the backend's
 //!   (`backend.rs`) now, and this file keeps the layout alone.
 //! - `kvtopte` (a pointer through the recursive mapping) and `ptp_va2o` (the offset of a PTP
 //!   in `pm_obj`) are gone: the backend walks the tables through the direct map and the walk
@@ -172,7 +172,7 @@ use super::super::include::pte::{
     PG_RW, PG_V, PdEntry,
 };
 use super::super::include::vmparam::{VM_MAX_KERNEL_ADDRESS, VM_MIN_KERNEL_ADDRESS};
-use crate::pmap::{PG_PMAP2, PMAP_MD0, PMAP_MD1, VmProt};
+use crate::vm::pmap::{PG_PMAP2, PMAP_MD0, PMAP_MD1, VmProt};
 
 /// `VA_SIGN_MASK`: the sign-extension bits of a canonical address.
 pub const VA_SIGN_MASK: usize = 0xffff_0000_0000_0000;
@@ -396,7 +396,7 @@ pub const PMAP_NOCACHE: i32 = 0x1;
 pub const PMAP_WC: i32 = 0x2;
 
 /// `PG_PMAP_WC`: the page is mapped write-combining (`PG_PMAP_MOD` and `PG_PMAP_REF` are
-/// `hal::pmap`'s, the same on every machine).
+/// `hal::vm::pmap`'s, the same on every machine).
 pub const PG_PMAP_WC: u32 = PG_PMAP2;
 
 /// `pmap_valid_entry(E)`: is PDE or PTE valid?

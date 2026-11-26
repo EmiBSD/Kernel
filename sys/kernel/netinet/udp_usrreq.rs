@@ -152,7 +152,7 @@
 //!   for an internet socket, which the caller's proof `net` is; the append under the receive
 //!   buffer's mutex): it reads the pcb's atomic members and the socket's options only. The pcb
 //!   is the lookup's or the walk's counted handle (the C's `in_pcbref`), or pf's ([`InpHold`]).
-//! - The UDP and IP headers are read once into copies through `hal::pod` (`ip6_exthdr_get`'s
+//! - The UDP and IP headers are read once into copies through `hal::mem::pod` (`ip6_exthdr_get`'s
 //!   bytes for the UDP header); the packet is never written by `udp_input` but for the
 //!   encapsulation's move of the IP header over the UDP header (one overlapping
 //!   `copy_within`, the C's `bcopy`). The checksum the C stores through its pointer is stored
@@ -162,7 +162,7 @@
 //! - The sender's address (`srcsa`, a union of `struct sockaddr_in` and `sockaddr_in6`) is
 //!   its bytes, `sa_len` of them handed to `sbappendaddr`; `dstsa`, which the C fills and
 //!   never reads, is not built.
-//! - `udp_output` writes `struct udpiphdr` with `hal::pod::put` over the prepended space,
+//! - `udp_output` writes `struct udpiphdr` with `hal::mem::pod::put` over the prepended space,
 //!   its `uh_sum` bytes read first and kept (the C does not set them: the checksum is
 //!   `in_proto_cksum_out`'s with `M_UDP_CSUM_OUT`, and without `udpcksum` the bytes are what
 //!   the mbuf held). The control messages are walked over the control mbuf's bytes with the
@@ -203,9 +203,9 @@ use core::marker::PhantomData;
 use core::mem::{offset_of, size_of};
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use hal::netlock::NetHeld;
-use hal::pod;
-use hal::pool::PoolArc;
+use hal::mem::pod;
+use hal::mem::pool::PoolArc;
+use hal::sync::netlock::NetHeld;
 use hal::sys::errno::Errno;
 use hal::sys::netinet_icmp6::{ICMP6_DST_UNREACH, ICMP6_DST_UNREACH_NOPORT};
 use hal::sys::netinet_in::{
@@ -1640,7 +1640,7 @@ pub(crate) mod testudp {
     use std::sync::MutexGuard;
     use std::vec::Vec;
 
-    use hal::netlock::{NETLOCK, NetHeld};
+    use hal::sync::netlock::{NETLOCK, NetHeld};
     use hal::sys::mbuf::{MT_CONTROL, MT_DATA, MT_SONAME};
     use hal::sys::socket::SOCK_DGRAM;
     use hal::user::AbiPod;
@@ -2646,7 +2646,7 @@ mod tests {
 
     /// `pr_ctlinput` of UDP under the shared net lock, as ICMP's input calls it.
     fn ctl4(cmd: i32, to: &SockaddrIn, arg: CtlArg<'_>) {
-        let w = hal::netlock::NETLOCK.read();
+        let w = hal::sync::netlock::NETLOCK.read();
         let net = NetHeld::of(&w).expect("the net lock");
         let sa = bytes_of(core::slice::from_ref(to));
         udp_ctlinput::<G>(
@@ -2793,7 +2793,7 @@ mod tests {
         };
         let to = sin6(a6(n, 2), 0);
         {
-            let w = hal::netlock::NETLOCK.read();
+            let w = hal::sync::netlock::NETLOCK.read();
             let net = NetHeld::of(&w).expect("the net lock");
             let sa = bytes_of(core::slice::from_ref(&to));
             let v = SockaddrView::new(sa).expect("an address");

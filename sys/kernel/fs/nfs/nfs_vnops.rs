@@ -158,10 +158,10 @@ use core::marker::PhantomData;
 use core::ptr;
 use core::sync::atomic::Ordering;
 
-use hal::klock;
-use hal::malloc::{M_WAITOK, MArray, MBox};
+use hal::mem::malloc::{M_WAITOK, MArray, MBox};
 use hal::random::arc4random_buf;
-use hal::sleep::{INFSLP, PCATCH};
+use hal::sync::klock;
+use hal::sync::sleep::{INFSLP, PCATCH};
 use hal::sys::dirent::{DT_UNKNOWN, Dirent, dirent_recsize, iftodt};
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::{FREAD, FWRITE, Flock, O_EXCL};

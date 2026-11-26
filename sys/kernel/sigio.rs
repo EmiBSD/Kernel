@@ -132,10 +132,10 @@
 use core::ptr;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use hal::intr::IPL_HIGH;
-use hal::klock;
-use hal::malloc::{M_WAITOK, MBox};
-use hal::mutex::Mutexed;
+use hal::cpu::intr::IPL_HIGH;
+use hal::mem::malloc::{M_WAITOK, MBox};
+use hal::sync::klock;
+use hal::sync::mutex::Mutexed;
 use hal::sys::errno::Errno;
 use hal::sys::ioccom::{_ior, _iow};
 use hal::sys::types::Pid;
@@ -523,7 +523,10 @@ pub fn sigio_copy(dst: &SigioRef, src: &SigioRef) {
 }
 
 /// The address of `pr`'s session (`pr->ps_session`), 0 without one: what the C compares.
-fn session_addr<G: ProcGlue, W: hal::rwlock::Witness + ?Sized>(w: &W, pr: &Process<G>) -> usize {
+fn session_addr<G: ProcGlue, W: hal::sync::rwlock::Witness + ?Sized>(
+    w: &W,
+    pr: &Process<G>,
+) -> usize {
     pr.session(w).map_or(0, |s| ptr::from_ref(s).addr())
 }
 
@@ -544,8 +547,8 @@ pub fn sigio_test_reset() {
 mod tests {
     use std::boxed::Box;
 
-    use hal::pin::pin_static;
-    use hal::pool::PoolBox;
+    use hal::ds::pin::pin_static;
+    use hal::mem::pool::PoolBox;
     use hal::sys::signal::{SIGIO, SIGURG, sigmask};
 
     use super::*;

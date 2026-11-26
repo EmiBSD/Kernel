@@ -187,7 +187,7 @@
 //!   adds (the ABI module `/abi_openbsd.ko`, put after the kernel's image and below `esym`,
 //!   so never free memory) into `BootInfo::abi_module`; the boot glue hands it to the module
 //!   loader through the direct map. No other path of the file changed.
-//! - N3.1: the pmap is `hal`'s (`hal::pmap`, through `machine::pmap`). The facts LZ wrote
+//! - N3.1: the pmap is `hal`'s (`hal::vm::pmap`, through `machine::pmap`). The facts LZ wrote
 //!   into the pmap's statics (`PMAP_DIRECT_BASE`/`END`) and `EFER.NXE`, which LZ's pmap read
 //!   itself, are `pmap_bootstrap`'s parameters; its answer `virtual_avail` is stored here as
 //!   the kernel map's base (LZ's pmap did it). The bootstrap now runs before `consinit`,
@@ -253,7 +253,7 @@ use crate::arch::amd64::include::specialreg::{
     SEV_STAT_SNP_ACTIVE, cpuid,
 };
 use hal::arch::amd64::pmap::layout::{L4_SLOT_DIRECT, NDML2_ENTRIES, va_sign_neg};
-use hal::pmap::BootstrapParams;
+use hal::vm::pmap::BootstrapParams;
 
 use crate::arch::amd64::include::tss::X86_64Tss;
 use crate::arch::amd64::include::vmparam::{VM_MAXUSER_ADDRESS, VM_PHYS_SIZE};

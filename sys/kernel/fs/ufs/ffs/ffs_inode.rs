@@ -74,8 +74,8 @@
 //!   with the inode the caller holds (the C's `ufs_itimes(vp)` takes it again through
 //!   `VTOI`, a count pair here).
 
-use hal::malloc::{M_WAITOK, MArray};
-use hal::sleep::INFSLP;
+use hal::mem::malloc::{M_WAITOK, MArray};
+use hal::sync::sleep::INFSLP;
 use hal::sys::errno::Errno;
 use hal::sys::types::{Daddr, Off};
 

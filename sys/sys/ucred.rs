@@ -76,8 +76,8 @@
 //!   count; a VOP is handed a borrow of one more reference (`cred()`), never the slot's
 //!   address.
 
-use hal::intr::IPL_NONE;
-use hal::mutex::Mutexed;
+use hal::cpu::intr::IPL_NONE;
+use hal::sync::mutex::Mutexed;
 
 pub use kernel::cred::{CountCell, CredRef, IdCell, Ucred, UcredCell};
 pub use kernel::fs::vops::Cred;

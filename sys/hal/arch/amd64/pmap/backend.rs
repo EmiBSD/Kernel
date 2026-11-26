@@ -137,7 +137,7 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! amd64's pmap behind `hal::pmap`: `pmap.c`'s pmaps, pv lists, page-table pages and
+//! amd64's pmap behind `hal::vm::pmap`: `pmap.c`'s pmaps, pv lists, page-table pages and
 //! mapping functions over the direct-map tables of `tables.rs` and the shootdowns of `tlb.rs`.
 //!
 //! Upstream: sys/arch/amd64/amd64/pmap.c @ 3ce1f3f79392
@@ -174,7 +174,7 @@
 //!   bootstrap. `pmap_growkernel` counts its PTPs from `virtual_avail` (`pmap_kva_start`),
 //!   keeps the page-table pages the boot loader installed on the way, and panics on a large
 //!   page there. The boot glue moves uvm's runtime `vm_min_kernel_address` to `virtual_avail`
-//!   ([`crate::pmap::Bootstrapped`]).
+//!   ([`crate::vm::pmap::Bootstrapped`]).
 //! - `pg_nx` comes from `EFER.NXE` as the boot loader left it (`BootstrapParams::nx`); the
 //!   C's `locore0.S` probes CPUID. PCID is off; `cpu_meltdown` is not configured (no
 //!   `pm_pdir_intel`); vmm's nested pmaps are not configured.
@@ -192,7 +192,7 @@
 //!   the console (`hal::cons`), not the message buffer. LZ printed both messages always and
 //!   panicked on an invalid PDE in every configuration.
 //! - `pool_sethiwat(&pmap_pv_pool, 32 * 1024)` (pmap.c) is not set (LZ did not either):
-//!   `hal::pool` has no high-water mark yet, so `vmstat -m`'s Hiwat column of `pvpl` is the
+//!   `hal::mem::pool` has no high-water mark yet, so `vmstat -m`'s Hiwat column of `pvpl` is the
 //!   pool's default.
 //! - `pmap_free_ptp` shoots the recursive view's page of a freed table on this CPU always,
 //!   where the C asks whether `curpcb`'s pmap is loaded (it is, but in the middle of a
@@ -201,7 +201,7 @@
 //!   the pin, so nothing enters an EFI runtime mapping, whose PTE the C makes without `PG_u`.
 //!
 //! ## Redesign
-//! - `struct pmap` is `hal::pmap::Pmap` around [`PmapMd`]: `pm_mtx` as a `Mutexed<()>` whose
+//! - `struct pmap` is `hal::vm::pmap::Pmap` around [`PmapMd`]: `pm_mtx` as a `Mutexed<()>` whose
 //!   guard is the [`Locked`] witness every walk of a user pmap takes, the root
 //!   (`pm_pdirpa`), the count of page-table pages in `resident_count` (so the last drop can
 //!   tell mappings from tables). `pm_obj`, `pm_ptphint`,
@@ -213,7 +213,7 @@
 //!   head to tail (`PvHead`, under `pv_mtx`); an entry leaves by a cursor, and dropping one
 //!   frees its tail one entry at a time (its `Drop`), never by recursion. Its pmap is a
 //!   pointer dereferenced in one place ([`PvEntry::pmap`]): a pmap with a mapping is alive,
-//!   since `hal::pmap`'s last drop panics while one is left.
+//!   since `hal::vm::pmap`'s last drop panics while one is left.
 //! - `pmap_reference(pve->pv_pmap)` + `pmap_destroy` around `pmap_page_remove`'s lock dance is
 //!   a counted handle rebuilt under `pv_mtx` ([`pmap_reference_pv`], `PoolArc::from_value`),
 //!   dropped once both locks are released: its drop may be the last, which frees the tables.
@@ -250,17 +250,17 @@ use super::tlb::{
 };
 use super::window;
 use crate::assert::{hal_panic, kassert};
-use crate::intr::IPL_VM;
-use crate::mutex::{Mutexed, MutexedGuard};
-use crate::pmap::{
-    BootstrapParams, KernelMapper, PG_PMAP_MOD, PG_PMAP_REF, PMAP_CANFAIL, PMAP_WIRED, PageMd,
-    PhysPages, Pmap, PmapBackend, PmapRef, PmapStatistics, VmProt,
-};
-use crate::pool::{BoxPool, PR_NOWAIT, PoolArc, PoolBox};
+use crate::cpu::intr::IPL_VM;
+use crate::mem::pool::{BoxPool, PR_NOWAIT, PoolArc, PoolBox};
+use crate::sync::mutex::{Mutexed, MutexedGuard};
 use crate::sys::errno::Errno;
 use crate::sys::mman::{PROT_EXEC, PROT_NONE, PROT_READ, PROT_WRITE};
 use crate::sys::types::{Paddr, Vaddr, Vsize};
 use crate::vm::param::{atop, round_page};
+use crate::vm::pmap::{
+    BootstrapParams, KernelMapper, PG_PMAP_MOD, PG_PMAP_REF, PMAP_CANFAIL, PMAP_WIRED, PageMd,
+    PhysPages, Pmap, PmapBackend, PmapRef, PmapStatistics, VmProt,
+};
 
 /// `PMAP_REMOVE_ALL`: `pmap_do_remove` removes every mapping.
 const PMAP_REMOVE_ALL: i32 = 0;
@@ -342,7 +342,7 @@ impl PvEntry {
         // SAFETY: an entry exists only while its mapping does: `pmap_enter` links it when it
         // enters the mapping, and every path that zaps the PTE unlinks it under the same
         // `pv_mtx` (`pmap_remove_ptes`, `pmap_page_remove`, `pmap_enter` changing the frame).
-        // A pmap with a mapping is never freed: `hal::pmap`'s last drop panics while
+        // A pmap with a mapping is never freed: `hal::vm::pmap`'s last drop panics while
         // `Backend::mappings` is not 0, leaving its pool item in place. The reference borrows
         // the entry, which the caller holds under the page's `pv_mtx` (or owns, unlinked from
         // its page's chain while it holds a counted handle to the pmap), so the pmap outlives
@@ -383,11 +383,11 @@ fn pmap_reference_pv(e: &PvEntry) -> PmapRef {
         return PmapRef::Kernel;
     }
     // SAFETY: `e.pmap` is the address of a user pmap's value inside its item of
-    // `hal::pmap`'s pool (`pmap_enter` recorded `NonNull::from(pmap)` of the `&Pmap` a
+    // `hal::vm::pmap`'s pool (`pmap_enter` recorded `NonNull::from(pmap)` of the `&Pmap` a
     // `PmapRef` derefs to, and every pmap but the kernel's is one `create` put in that pool).
     // The entry is linked and the caller holds the page's `pv_mtx`, so the mapping exists
     // (every removal unlinks the entry under this lock first), and a pmap with a mapping is
-    // never put back: `hal::pmap`'s `Drop for Pmap` panics while one is left, before
+    // never put back: `hal::vm::pmap`'s `Drop for Pmap` panics while one is left, before
     // `PoolArc`'s drop reaches the put. So the item is not put back during the call; a count
     // of 0 (the last handle gone, that drop under way) is refused by `from_value` itself.
     PmapRef::User(unsafe { PoolArc::from_value(e.pmap) })
@@ -465,7 +465,7 @@ fn ptp_md(pages: &dyn PhysPages, ptp: Paddr) -> &'static PageMd {
 }
 
 /// `+= delta` on a statistics counter (the C's `++`/`--` on a `long`).
-fn add(c: &crate::pmap::PmapCounter, delta: i64) {
+fn add(c: &crate::vm::pmap::PmapCounter, delta: i64) {
     c.set(c.get() + delta);
 }
 
@@ -918,7 +918,7 @@ fn pmap_page_remove(md: &PageMd) {
 
     pmap_tlb_shootwait();
     if freed.n != 0 {
-        // Every pmap has the kernel pmap's provider (`hal::pmap::create`).
+        // Every pmap has the kernel pmap's provider (`hal::vm::pmap::create`).
         freed.free(KERNEL_PMAP.pages());
     }
 }
@@ -1422,7 +1422,7 @@ impl PmapBackend for Backend {
     }
 
     /// `pmap_init`: the pv entries' pool (the C's `pmap_bootstrap` makes it with the pmap
-    /// pool, `hal::pmap::init`'s).
+    /// pool, `hal::vm::pmap::init`'s).
     fn init() {
         if PV_POOL.init(IPL_VM, 0, "pvpl").is_err() {
             hal_panic(format_args!("pmap_init: the pv pool"));
@@ -1704,7 +1704,7 @@ impl PmapBackend for Backend {
             ));
         }
 
-        let _s = crate::intr::splhigh(); // to be safe
+        let _s = crate::cpu::intr::splhigh(); // to be safe
         pmap_alloc_level(cur, PTP_LEVELS, &needed_kptp);
         PMAP_MAXKVADDR.store(maxkvaddr, Ordering::Relaxed);
         Vaddr::new(maxkvaddr)

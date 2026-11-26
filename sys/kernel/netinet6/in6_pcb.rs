@@ -173,9 +173,9 @@
 
 use core::mem::size_of;
 
-use hal::netlock::NetHeld;
-use hal::pod;
-use hal::pool::PoolArc;
+use hal::mem::pod;
+use hal::mem::pool::PoolArc;
+use hal::sync::netlock::NetHeld;
 use hal::sys::endian::htonl;
 use hal::sys::errno::Errno;
 use hal::sys::net_route::RTF_HOST;
@@ -872,7 +872,7 @@ mod tests {
 
     use std::vec::Vec;
 
-    use hal::netlock::NETLOCK;
+    use hal::sync::netlock::NETLOCK;
     use hal::sys::endian::htons;
 
     use super::*;

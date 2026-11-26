@@ -115,11 +115,11 @@
 use core::ptr;
 use core::sync::atomic::Ordering;
 
-use hal::intr::IPL_SOFTNET;
-use hal::netlock::NetHeld;
-use hal::once::OnceStatic;
-use hal::pin::pin_static;
-use hal::pool::{BoxPool, TypedPool};
+use hal::cpu::intr::IPL_SOFTNET;
+use hal::ds::pin::pin_static;
+use hal::mem::pool::{BoxPool, TypedPool};
+use hal::sync::netlock::NetHeld;
+use hal::sync::once::OnceStatic;
 use hal::sys::errno::Errno;
 use hal::sys::socket::{PF_UNSPEC, SOCK_RAW};
 

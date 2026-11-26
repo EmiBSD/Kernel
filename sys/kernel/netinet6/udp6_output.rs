@@ -96,7 +96,7 @@
 //!   (each send lending the net lock to `ip6_output`, `in6_pcbselsrc` and
 //!   `in6_pcbaddrisavail`) is the kernel's, the caller's proof of the net lock passed down.
 //!   The destination `sockaddr_in6` is `in6_nam2sin6`'s copy (the C copies it too, "protect
-//!   *sin6 from overwrites"); the headers are written with `hal::pod::put` where `m_prepend`
+//!   *sin6 from overwrites"); the headers are written with `hal::mem::pod::put` where `m_prepend`
 //!   made room.
 //! - The pcb's sticky options are lent once per send (`Inpcb::outputopts6`, under the socket
 //!   lock), from `ip6_setpktopts` to `ip6_output`'s return, where LZ lent them three or four
@@ -109,8 +109,8 @@
 
 use core::mem::size_of;
 
-use hal::netlock::NetHeld;
-use hal::pod;
+use hal::mem::pod;
+use hal::sync::netlock::NetHeld;
 use hal::sys::errno::Errno;
 use hal::sys::netinet_in::IPPROTO_UDP;
 use hal::sys::netinet_ip6::{IPV6_FLOWINFO_MASK, IPV6_VERSION, IPV6_VERSION_MASK, Ip6Hdr};

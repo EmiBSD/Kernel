@@ -99,12 +99,12 @@
 
 use core::sync::atomic::{AtomicI16, AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering};
 
-use hal::link::Link;
-use hal::malloc::MBox;
-use hal::pinlist::PinEntry;
-use hal::pool::{PoolArc, PoolHome};
-use hal::rwlock::{Guarded, RawRwlock, RecursiveRwlock};
-use hal::slot::ReadMostly;
+use hal::ds::link::Link;
+use hal::ds::pinlist::PinEntry;
+use hal::mem::malloc::MBox;
+use hal::mem::pool::{PoolArc, PoolHome};
+use hal::sync::rwlock::{Guarded, RawRwlock, RecursiveRwlock};
+use hal::sync::slot::ReadMostly;
 
 use super::nfsproto::{NFS_MAXFHSIZE, Nfsfh, Nfsuint64};
 use crate::assert::kpanic;

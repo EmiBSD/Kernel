@@ -52,8 +52,8 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use std::vec::Vec;
 
-use hal::kmbuf::{PageKind, PageMemory};
-use hal::pool::{PoolBackend, RawPool};
+use hal::mem::kmbuf::{PageKind, PageMemory};
+use hal::mem::pool::{PoolBackend, RawPool};
 use hal::sys::errno::Errno;
 use hal::user::UserPtr;
 use kernel::descrip::{falloc, fd_getfile, fdinit, fdinsert, fdplock, fdrelease, filedesc_init};
@@ -356,7 +356,7 @@ impl ProcGlue for BenchGlue {
         kernel::tc::nanouptime()
     }
     fn process_ref(pr: &Process<Self>) -> proc::ProcessRef<Self> {
-        match hal::pool::PoolArc::from_ref(pr) {
+        match hal::mem::pool::PoolArc::from_ref(pr) {
             Some(a) => proc::StaticOrPooled::Pooled(a),
             None => std::process::exit(1),
         }
@@ -532,7 +532,12 @@ static VFS_TABLES: kernel::fs::subr::VfsTables<BenchGlue> = kernel::fs::subr::Vf
 static PIPES: Pipes<BenchGlue> = Pipes::new(&BENCH_PAGES);
 
 /// The pair and the pipe of a pipe file (the pair counted again, as `bsd`'s `pipe_of`).
-fn pipe_of(fp: &File<BenchFiles>) -> (hal::pool::PoolArc<kernel::pipe::PipePair<BenchGlue>>, Dir) {
+fn pipe_of(
+    fp: &File<BenchFiles>,
+) -> (
+    hal::mem::pool::PoolArc<kernel::pipe::PipePair<BenchGlue>>,
+    Dir,
+) {
     match fp.data() {
         Some(BenchData::Pipe(end)) => (end.pair().clone(), end.dir()),
         _ => std::process::exit(1),
@@ -685,7 +690,7 @@ fn main() {
     let _ = hal::bridges::register_pool_backend(&BENCH_POOLS);
     testutil::install();
     kernel::tc::inittimecounter();
-    hal::klock::kernel_lock();
+    hal::sync::klock::kernel_lock();
     proc::procinit::<BenchGlue>(1024, 1024);
     let _ = filedesc_init::<BenchFiles>();
     if kqueue_init::<BenchGlue>().is_err() || PIPES.init(9).is_err() {

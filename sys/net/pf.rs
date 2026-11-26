@@ -10309,7 +10309,7 @@ impl kernel::net::pf_hooks::Pf for BsdPf {
     /// the packet; else, if the key names a pcb, the handle taken under `pf_inp_mtx` (the C's
     /// `in_pcbref` there, pf.c:8866-8869), where pf's own count of the pcb (`sk_inp`'s, which
     /// `pf_state_key_unlink_inpcb` drops under the same mutex) keeps it: one count, as the C.
-    fn inp_lookup(&self, m: &Mbuf) -> Option<hal::pool::AnyArc> {
+    fn inp_lookup(&self, m: &Mbuf) -> Option<hal::mem::pool::AnyArc> {
         let sk = pf_mbuf_statekey(m);
         if !pf_state_key_isvalid(sk) {
             pf_mbuf_unlink_state_key(m);
@@ -10318,9 +10318,9 @@ impl kernel::net::pf_hooks::Pf for BsdPf {
         let sk = sk?;
         sk.sk_inp.get()?;
         mtx_enter(&PF_INP_MTX);
-        let h = sk.sk_inp.get().and_then(hal::pool::PoolArc::from_ref);
+        let h = sk.sk_inp.get().and_then(hal::mem::pool::PoolArc::from_ref);
         mtx_leave(&PF_INP_MTX);
-        h.map(hal::pool::PoolArc::erase)
+        h.map(hal::mem::pool::PoolArc::erase)
     }
 
     /// `tcp_input`'s `pf_inp_link(m, inp)` for the kernel's TCP (N6.6a0): pf links its state
@@ -10404,8 +10404,8 @@ fn inpcb_set_pf_sk(inp: &Inpcb, sk: Option<&'static PfStateKey>) {
 }
 
 /// The key `mbinit`'s `register_pf` gave pf, the only writer of the pcbs' pf words.
-pub(crate) static PF_KEY: hal::once::OnceStatic<&'static kernel::net::pf_hooks::PfKey> =
-    hal::once::OnceStatic::new();
+pub(crate) static PF_KEY: hal::sync::once::OnceStatic<&'static kernel::net::pf_hooks::PfKey> =
+    hal::sync::once::OnceStatic::new();
 
 /// [`PF_KEY`]: `panic(9)` before pf registered (no pcb is linked before the first packet).
 fn pf_key() -> &'static kernel::net::pf_hooks::PfKey {

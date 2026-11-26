@@ -175,7 +175,7 @@ pub trait Cpu {
     fn ci_curproc(ci: &Self::CpuInfo) -> *const Proc;
 
     /// `ci->ci_curproc = p` on the running CPU `ci` for a thread that lives for ever (`main`'s
-    /// `curproc = &proc0`, a test's thread), or none: `hal::thread::set_current_static` (the
+    /// `curproc = &proc0`, a test's thread), or none: `hal::cpu::thread::set_current_static` (the
     /// switch writes it itself).
     fn set_curproc(ci: &Self::CpuInfo, p: Option<&'static Proc>);
 

@@ -136,8 +136,8 @@ use core::marker::PhantomData;
 use core::mem::{MaybeUninit, offset_of};
 use core::ptr;
 
-use hal::malloc::{M_WAITOK, MArc};
-use hal::sleep::INFSLP;
+use hal::mem::malloc::{M_WAITOK, MArc};
+use hal::sync::sleep::INFSLP;
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::{FREAD, FWRITE};
 use hal::sys::mount::{

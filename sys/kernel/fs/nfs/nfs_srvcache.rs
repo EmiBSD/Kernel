@@ -139,16 +139,16 @@ use core::ptr;
 use core::sync::atomic::Ordering::Relaxed;
 use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU8, AtomicU16, AtomicU32};
 
-use hal::klock;
-use hal::malloc::{M_WAITOK, MArray};
-use hal::owned::{
+use hal::ds::owned::{
     Member, OwnedAdapter, OwnedEntry, OwnedList, SecondaryAdapter, SecondaryEntry, SecondaryList,
     SecondaryRef,
 };
-use hal::pool::{BoxPool, PR_WAITOK, PoolBox};
-use hal::rwlock::Guarded;
-use hal::sleep::{INFSLP, tsleep_nsec, wakeup};
-use hal::slot::LoanSlot;
+use hal::mem::malloc::{M_WAITOK, MArray};
+use hal::mem::pool::{BoxPool, PR_WAITOK, PoolBox};
+use hal::sync::klock;
+use hal::sync::rwlock::Guarded;
+use hal::sync::sleep::{INFSLP, tsleep_nsec, wakeup};
+use hal::sync::slot::LoanSlot;
 use libkern::siphash::{SipHash24, SiphashKey};
 
 use super::nfs_srvsocket::nfs_rephead;
@@ -423,7 +423,7 @@ pub fn nfsrv_initcache<G: ProcGlue>() {
     let c = &vfs::<G>().nfsrv.cache;
     let _ = c
         .nfsrvcachepl
-        .init(hal::intr::IPL_NONE, PR_WAITOK, "nfsrvcpl");
+        .init(hal::cpu::intr::IPL_NONE, PR_WAITOK, "nfsrvcpl");
     let desired = c.desirednfsrvcache.load(Relaxed);
     if desired <= 0 {
         kpanic(format_args!("hashinit: bad cnt"));
@@ -733,7 +733,7 @@ mod tests {
     /// Memory, mbufs, the kernel lock, and an empty cache of at most `desired` entries.
     fn fresh(desired: i64) -> std::sync::MutexGuard<'static, ()> {
         let g = crate::net::mbuf::tests::setup();
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         nfsrv_cache_test_reset::<G>();
         vfs::<G>()
             .nfsrv
@@ -749,7 +749,7 @@ mod tests {
     /// back.
     fn done() {
         nfsrv_cleancache::<G>();
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
     }
 
     /// An `MT_SONAME` mbuf of `family` holding the address `a`, port `port`.
@@ -785,7 +785,7 @@ mod tests {
 
     /// The xids on the LRU list, least recently used first.
     fn lru_xids() -> Vec<u32> {
-        let r = hal::klock::reader();
+        let r = hal::sync::klock::reader();
         vfs::<G>()
             .nfsrv
             .cache
@@ -988,7 +988,7 @@ mod tests {
         nd.nd_nam2 = Some(nam(0, [1, 2, 3, 4], 9));
         assert_eq!(nfsrv_getcache(&mut nd, &s).0, RC_DOIT);
         {
-            let r = hal::klock::reader();
+            let r = hal::sync::klock::reader();
             let t = vfs::<G>().nfsrv.cache.table.get(&r);
             let rp = t.lru().first().expect("an entry");
             assert_eq!(rp.flag() & (RC_NAM | RC_INETADDR), RC_NAM);
@@ -1003,7 +1003,7 @@ mod tests {
         assert_eq!(num(), 2);
         // Cleaned twice, the copy is freed once (the C frees it again).
         {
-            let r = hal::klock::reader();
+            let r = hal::sync::klock::reader();
             let t = vfs::<G>().nfsrv.cache.table.get(&r);
             let rp = t.lru().first().expect("an entry");
             nfsrv_cleanentry(rp);
@@ -1043,7 +1043,7 @@ mod tests {
         let rp = held.get().expect("held");
         assert_eq!(rp.flag() & RC_LOCKED, RC_LOCKED);
         let chain_has_it = {
-            let r = hal::klock::reader();
+            let r = hal::sync::klock::reader();
             let t = vfs::<G>().nfsrv.cache.table.get(&r);
             t.chain(21)
                 .is_some_and(|c| c.iter().any(|e| ptr::eq(e, rp)))

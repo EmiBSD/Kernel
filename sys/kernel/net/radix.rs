@@ -252,7 +252,7 @@
 //!   C's climb, plus a climb of the duplicated key chain to its head once a chain (O(1)
 //!   amortised a leaf, docs/COLLECTIONS.md).
 
-use hal::malloc::{M_NOWAIT, MArray};
+use hal::mem::malloc::{M_NOWAIT, MArray};
 use hal::prf::log;
 
 use crate::assert::{kassert, kpanic};
@@ -2213,7 +2213,7 @@ mod tests {
     use std::format;
     use std::vec::Vec;
 
-    use hal::malloc::MBox;
+    use hal::mem::malloc::MBox;
 
     use super::*;
     use crate::crypto::testutil::XorShift;
@@ -2654,7 +2654,7 @@ mod tests {
         testutil::install();
         let before = testutil::malloc_out(M_RTABLE);
         let mut h: RadixTree<MBox<u32>, 16> = RadixTree::new(OFF, M_RTABLE);
-        let v = MBox::new(99, hal::malloc::M_WAITOK, 1u32).expect("a box");
+        let v = MBox::new(99, hal::mem::malloc::M_WAITOK, 1u32).expect("a box");
         assert!(h.add(&sin([10, 0, 0, 7]), None, v).is_ok());
         let node = size_of::<Slot<MBox<u32>, 16>>();
         let mask = size_of::<Slot<(), 16>>();

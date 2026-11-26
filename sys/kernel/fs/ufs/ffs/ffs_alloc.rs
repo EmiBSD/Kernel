@@ -100,11 +100,11 @@
 
 use core::sync::atomic::Ordering;
 
-use hal::intr::IPL_NONE;
-use hal::mutex::Mutexed;
+use hal::cpu::intr::IPL_NONE;
 #[cfg(feature = "ffs2")]
 use hal::random::arc4random;
 use hal::random::arc4random_uniform;
+use hal::sync::mutex::Mutexed;
 use hal::sys::errno::Errno;
 use hal::sys::types::{Daddr, Ino, Mode, Uid};
 
@@ -1208,7 +1208,7 @@ pub fn ffs_nodealloccg<G: ProcGlue>(ip: &Inode<G>, cg: u32, mut ipref: Daddr, mo
                             fsbtodb(fs, ino_to_fsba(fs, ino)),
                             fs.fs_bsize(),
                             0,
-                            hal::sleep::INFSLP,
+                            hal::sync::sleep::INFSLP,
                         ) {
                             break b;
                         }

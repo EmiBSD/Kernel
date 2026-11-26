@@ -44,7 +44,7 @@
 //! - `prim.pool-get-put`: one item of a 48-byte pool taken and given back, over the
 //!   recycling pool backend this bench registers (the doubles' pool never reuses an item).
 //! - `prim.concat-empty`: `CIRCQ_CONCAT` of an empty ring onto another (a static
-//!   `hal::pinlist::PinRing` pair), under a mutex held across the batch: what each of
+//!   `hal::ds::pinlist::PinRing` pair), under a mutex held across the batch: what each of
 //!   `timeout_hardclock_update`'s `MOVEBUCKET`s and expired-bucket dumps costs on an idle
 //!   wheel, the lock apart.
 
@@ -61,9 +61,9 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use std::vec::Vec;
 
-use hal::pin::pin_static;
-use hal::pinlist::{PinEntry, PinRing};
-use hal::pool::{PoolBackend, RawPool};
+use hal::ds::pin::pin_static;
+use hal::ds::pinlist::{PinEntry, PinRing};
+use hal::mem::pool::{PoolBackend, RawPool};
 use kernel::clock::TICKS;
 use kernel::testutil;
 use kernel::timeout::{self, KCLOCK_NONE, Timeout};
@@ -368,7 +368,7 @@ fn main() {
         eprintln!("timeout bench: extent_create failed");
         std::process::exit(2);
     };
-    let ex: &'static kernel::extent::Extent = hal::malloc::MBox::leak(ex);
+    let ex: &'static kernel::extent::Extent = hal::mem::malloc::MBox::leak(ex);
     for i in 0..16u64 {
         if ex
             .alloc_region(i * 0x10_0000, 0x1000, kernel::extent::EX_NOWAIT)
@@ -395,8 +395,11 @@ fn main() {
     });
     // One pool item taken and given back (an extent descriptor's size), over the recycling
     // backend: what each of extent.alloc-free's two descriptors costs.
-    static PRIM_POOL: hal::pool::BoxPool<[u64; 6]> = hal::pool::BoxPool::new();
-    if PRIM_POOL.init(hal::intr::IPL_VM, 0, "benchpl").is_err() {
+    static PRIM_POOL: hal::mem::pool::BoxPool<[u64; 6]> = hal::mem::pool::BoxPool::new();
+    if PRIM_POOL
+        .init(hal::cpu::intr::IPL_VM, 0, "benchpl")
+        .is_err()
+    {
         eprintln!("timeout bench: cannot make benchpl");
         std::process::exit(2);
     }
@@ -404,18 +407,19 @@ fn main() {
         name: "prim.pool-get-put",
         ops: PRIM,
         f: Box::new(prim(|| {
-            black_box(PRIM_POOL.get(hal::pool::PR_NOWAIT, || [0u64; 6]));
+            black_box(PRIM_POOL.get(hal::mem::pool::PR_NOWAIT, || [0u64; 6]));
         })),
     });
     static CHAN: u8 = 0;
     benches.push(Bench {
         name: "prim.wakeup-one",
         ops: PRIM,
-        f: Box::new(prim(|| hal::sleep::wakeup_one(&raw const CHAN))),
+        f: Box::new(prim(|| hal::sync::sleep::wakeup_one(&raw const CHAN))),
     });
 
     // The primitives the ops are made of, to tell the wheel's cost from the lock's.
-    static PRIM_MTX: hal::mutex::Mutexed<u64> = hal::mutex::Mutexed::new(hal::intr::IPL_HIGH, 0);
+    static PRIM_MTX: hal::sync::mutex::Mutexed<u64> =
+        hal::sync::mutex::Mutexed::new(hal::cpu::intr::IPL_HIGH, 0);
     benches.push(Bench {
         name: "prim.mutex",
         ops: PRIM,
@@ -425,7 +429,8 @@ fn main() {
     });
     // An empty ring spliced onto another, the lock held across the batch (the wheel's
     // dumps of empty buckets).
-    static CONCAT_MTX: hal::mutex::Mutexed<()> = hal::mutex::Mutexed::new(hal::intr::IPL_HIGH, ());
+    static CONCAT_MTX: hal::sync::mutex::Mutexed<()> =
+        hal::sync::mutex::Mutexed::new(hal::cpu::intr::IPL_HIGH, ());
     static RING_DST: PinRing<NodeRing> = PinRing::new();
     static RING_SRC: PinRing<NodeRing> = PinRing::new();
     benches.push(Bench {

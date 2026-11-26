@@ -55,7 +55,7 @@
 //! - `prim.mutexed`: a `hal::Mutexed` taken and released (`fd_fplock`'s cost on these
 //!   doubles; LZ's `mtx_enter`/`mtx_leave` over `bsd`'s was 3.0 ns in the same run as the
 //!   "before").
-//! - `prim.mplock`: the ticket lock of `kernel_lock` (`hal::klock::MpLock`, a value of the
+//! - `prim.mplock`: the ticket lock of `kernel_lock` (`hal::sync::klock::MpLock`, a value of the
 //!   bench's own: the host's kernel lock is a per-thread double) taken and released
 //!   (`__mp_lock` + `__mp_unlock`).
 //!
@@ -92,8 +92,8 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use std::vec::Vec;
 
-use hal::klock;
-use hal::pool::{PoolBackend, RawPool};
+use hal::mem::pool::{PoolBackend, RawPool};
+use hal::sync::klock;
 use hal::sys::errno::Errno;
 use hal::sys::types::Off;
 use hal::sys::types::Pid;
@@ -368,7 +368,7 @@ impl ProcGlue for BenchGlue {
         kernel::tc::nanouptime()
     }
     fn process_ref(pr: &Process<Self>) -> proc::ProcessRef<Self> {
-        match hal::pool::PoolArc::from_ref(pr) {
+        match hal::mem::pool::PoolArc::from_ref(pr) {
             Some(a) => proc::StaticOrPooled::Pooled(a),
             None => std::process::exit(1),
         }
@@ -614,13 +614,14 @@ fn main() {
             let _ = fdrelease(t3, fdplock(t3.fd()), new);
         })),
     });
-    let mtx = hal::mutex::Mutexed::new(hal::intr::mpfloor(), 0u32);
+    let mtx = hal::sync::mutex::Mutexed::new(hal::cpu::intr::mpfloor(), 0u32);
     benches.push(Bench {
         name: "prim.mutexed",
         ops: PRIM,
         f: Box::new(prim(|| *black_box(&mtx).lock() += 1)),
     });
-    let mpl: &'static hal::klock::MpLock = Box::leak(Box::new(hal::klock::MpLock::new()));
+    let mpl: &'static hal::sync::klock::MpLock =
+        Box::leak(Box::new(hal::sync::klock::MpLock::new()));
     benches.push(Bench {
         name: "prim.mplock",
         ops: PRIM,
@@ -659,7 +660,7 @@ fn main() {
     kernel::sig::test_sigacts(&pr);
     let st: &'static proc::Thread<BenchGlue> =
         Box::leak(Box::new(proc::thread_alloc::<BenchGlue>(&pr, ())));
-    let sp = hal::pin::pin_static(st);
+    let sp = hal::ds::pin::pin_static(st);
     let pr4 = &pr;
     benches.push(Bench {
         name: "sig.sigactsinit",

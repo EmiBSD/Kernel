@@ -112,7 +112,7 @@
 //!   volatile `unsafe` stores in `clfree`, every operation bracketed by `spltty()`/`splx()`.
 //!   Here a [`Clist`] owns its ring: the counts, the cursors and the two `MArray<u8>` blocks
 //!   (`M_TTYS`, counted in `vmstat -m`'s `ttys` row as the C's) are a `Ring` inside a
-//!   `hal::mutex::Mutexed` at `IPL_TTY`, the C's per-operation `spltty()` made a lock that
+//!   `hal::sync::mutex::Mutexed` at `IPL_TTY`, the C's per-operation `spltty()` made a lock that
 //!   owns what it guards; `clfree` scrubs with `libkern::explicit_bzero` and frees by
 //!   dropping the blocks.
 //! - `c_cc` and `c_cn` are also kept as relaxed words beside the ring ([`Clist::c_cc`],
@@ -137,9 +137,9 @@
 //!   the two drivers keep their own exclusion around it as well (`splusb()` and the kernel
 //!   lock, the C's) until N7 gives them [`Clist::new_at`] with their level.
 
-use hal::intr::IPL_TTY;
-use hal::malloc::{M_WAITOK, MArray};
-use hal::mutex::{Mutexed, MutexedGuard};
+use hal::cpu::intr::IPL_TTY;
+use hal::mem::malloc::{M_WAITOK, MArray};
+use hal::sync::mutex::{Mutexed, MutexedGuard};
 
 use crate::assert::kpanic;
 use crate::proc::I32Word;
@@ -980,7 +980,7 @@ mod tests {
         assert_eq!(words(q), (0, 8));
         assert_eq!(q.getc(), -1);
         // A free of a queue never allocated does nothing.
-        let r: &'static Clist = Box::leak(Box::new(Clist::new_at(hal::intr::IPL_NONE)));
+        let r: &'static Clist = Box::leak(Box::new(Clist::new_at(hal::cpu::intr::IPL_NONE)));
         r.clfree();
         assert_eq!(words(r), (0, 0));
     }

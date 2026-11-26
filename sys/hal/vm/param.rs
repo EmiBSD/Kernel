@@ -96,7 +96,7 @@
 //! - LZ keeps the page arithmetic in `bsd`'s `sys/uvm/uvm_param.rs`, with inherent `impl`
 //!   blocks on `Paddr`, `Vaddr` and `Vsize`. Rust allows an inherent `impl` only in the crate
 //!   that defines the type, and N3.1 moves `<sys/types.h>` into `hal` (`sys/hal/sys/types.rs`)
-//!   because every signature of `hal::pmap` takes those newtypes; so the arithmetic moves with
+//!   because every signature of `hal::vm::pmap` takes those newtypes; so the arithmetic moves with
 //!   them, here, and `bsd`'s `uvm_param.rs` re-exports it beside what it keeps
 //!   (`VM_KERNEL_SPACE_SIZE`, over the `VmParam` trait `hal` has no implementor of).
 //! - The page geometry comes from `crate::arch::current::param` (the machine's

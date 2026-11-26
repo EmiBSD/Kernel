@@ -142,10 +142,10 @@ use core::mem::offset_of;
 use core::ptr;
 use core::sync::atomic::Ordering;
 
-use hal::intr::{IPL_BIO, IPL_NONE, splraise};
-use hal::malloc::MArc;
-use hal::pool::{PR_WAITOK, PoolArc};
-use hal::sleep::INFSLP;
+use hal::cpu::intr::{IPL_BIO, IPL_NONE, splraise};
+use hal::mem::malloc::MArc;
+use hal::mem::pool::{PR_WAITOK, PoolArc};
+use hal::sync::sleep::INFSLP;
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::{FREAD, FWRITE};
 use hal::sys::mount::{

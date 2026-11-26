@@ -80,7 +80,7 @@
 //! ## Redesign
 //! - The thread's start (`void (*func)(void *)` and `void *arg`, which `cpu_fork` writes in
 //!   the switch frame and `proc_trampoline` calls) is a [`Start`], two machine words for
-//!   `hal::thread::thread_setup`: fixed tags for the kernel's starts (`child_return`,
+//!   `hal::cpu::thread::thread_setup`: fixed tags for the kernel's starts (`child_return`,
 //!   `fork_return`, an idle thread, a ticket of `kernel::thread`, `init`, the reaper,
 //!   accounting) and, for a function of `bsd`'s, a tag naming its slot in a 64-slot table
 //!   filed at first use (LZ's `STARTS`, moved here) with the argument's exposed address. No
@@ -109,15 +109,15 @@ use core::pin::Pin;
 use core::ptr;
 use core::sync::atomic::{AtomicI32, AtomicU32, Ordering, fence};
 
-use hal::intr::IPL_NONE;
-use hal::klock;
-use hal::mutex::Mutexed;
-use hal::once::OnceStatic;
-use hal::pool::PoolBox;
+use hal::cpu::intr::IPL_NONE;
+use hal::cpu::thread::{SchedHold, UArea};
+use hal::mem::pool::PoolBox;
+use hal::sync::klock;
+use hal::sync::mutex::Mutexed;
+use hal::sync::once::OnceStatic;
 use hal::sys::errno::Errno;
 use hal::sys::types::{Pid, Uid};
 use hal::sys::vmmeter::Forkstat;
-use hal::thread::{SchedHold, UArea};
 use hal::user::UserPtr;
 use hal::vm::uvmexp::UVMEXP;
 
@@ -310,15 +310,15 @@ hal::abi_pod!(Tfork {
 });
 
 /// `kernel::fork`'s registration: [`thread_start`] is the start of every new thread
-/// (`hal::thread::register_start`), and this glue makes the kernel's own threads
+/// (`hal::cpu::thread::register_start`), and this glue makes the kernel's own threads
 /// (`kernel::thread`'s timeout and task threads), once, before the first fork (`main`, before
 /// `procinit`).
 pub fn init<G: ProcGlue>() -> Result<(), hal::bridges::AlreadyRegistered> {
     crate::thread::install_ops::<G>();
-    hal::thread::register_start(thread_start::<G>)
+    hal::cpu::thread::register_start(thread_start::<G>)
 }
 
-/// The start `hal::thread` calls on a new thread with the scheduler's hold its switch kept
+/// The start `hal::cpu::thread` calls on a new thread with the scheduler's hold its switch kept
 /// and the two words `fork1` gave: `proc_trampoline_mi` (`kernel::sched::trampoline_mi`,
 /// which releases the hold), then what [`Start`] names. Returns to the trampoline when the
 /// thread is to return to user mode (`child_return`).
@@ -351,7 +351,7 @@ fn thread_start<G: ProcGlue>(hold: SchedHold, start: usize, arg: usize) {
 /// `fork_return`: the first thing a forked child runs when the parent asked `ptrace(2)` to
 /// report forks: stop for the tracer, then return to user mode as `child_return` does.
 fn fork_return<G: ProcGlue>() {
-    hal::thread::with_current::<Thread<G>, _>(|p| {
+    hal::cpu::thread::with_current::<Thread<G>, _>(|p| {
         if p.process().ps_flags.load(Ordering::Relaxed) & PS_TRACED != 0 {
             crate::sig::psignal(p, SIGTRAP);
         }
@@ -387,7 +387,7 @@ pub fn sys___tfork<G: ProcGlue>(
     UserPtr::<u8>::new(param).copyin_slice(&mut raw[..psize])?;
     let tf = tfork_from_bytes(&raw);
     // KTRACE: not configured.
-    if hal::thread::tcb_invalid(tf.tf_tcb) {
+    if hal::cpu::thread::tcb_invalid(tf.tf_tcb) {
         return Err(Errno::EINVAL);
     }
     thread_fork(p, tf.tf_stack, tf.tf_tcb, UserPtr::new(tf.tf_tid))
@@ -786,7 +786,7 @@ pub fn fork1_with<G: ProcGlue>(
                 ptr::from_ref::<Process<G>>(&curpr).addr(),
                 PWAIT,
                 "ppwait",
-                hal::sleep::INFSLP,
+                hal::sync::sleep::INFSLP,
             );
         }
     }
@@ -816,8 +816,8 @@ fn cpu_fork<G: ProcGlue>(
     (start, arg): (usize, usize),
 ) {
     G::pmap_activate(&child);
-    let h = hal::thread::sched_lock();
-    hal::thread::thread_setup(&h, parent, child, stack, tcb, start, arg);
+    let h = hal::cpu::thread::sched_lock();
+    hal::cpu::thread::thread_setup(&h, parent, child, stack, tcb, start, arg);
     drop(h);
 }
 
@@ -825,7 +825,7 @@ fn cpu_fork<G: ProcGlue>(
 /// `ps_mtx`, which comes before the scheduler's lock).
 fn fork_thread_start<G: ProcGlue>(p: Pin<&Thread<G>>) {
     let cpu = fork_cpu::<G>();
-    let mut h = hal::thread::sched_lock();
+    let mut h = hal::cpu::thread::sched_lock();
     // TRACEPOINT(sched, fork, ...): dt(4), not configured.
     crate::sched::setrunqueue(&mut h, Some(cpu), p, p.p_usrpri.get());
     drop(h);

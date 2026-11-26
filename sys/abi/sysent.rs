@@ -40,7 +40,7 @@
 //! `acct.rs`). N4.6b: sysctl(2) (`KernelApi::sysctl`, `sys/kernel/sysctl.rs`). N4.8: the
 //! ten time system calls and reboot(2) (`KernelApi::time`, `sys/kernel/time.rs` and
 //! `reboot.rs`). N4.8b: sigreturn(2) (`KernelApi::sigreturn`, `sys/kernel/sig.rs` over
-//! `hal::sig`'s frame). N5.4: the VFS system calls' sixty-five (`KernelApi::vfs`,
+//! `hal::cpu::sig`'s frame). N5.4: the VFS system calls' sixty-five (`KernelApi::vfs`,
 //! `sys/kernel/fs/syscalls.rs` and `getcwd.rs`: the sixty-four of `vfs_syscalls.c`, `open(2)`,
 //! `stat(2)`, `mount(2)`, `unveil(2)`, ..., and `__getcwd(2)`), which write the return
 //! registers themselves. N6.2b: the socket system calls' nineteen (`KernelApi::socket`,

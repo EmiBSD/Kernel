@@ -122,10 +122,10 @@ use core::pin::Pin;
 use core::ptr;
 use core::sync::atomic::Ordering;
 
-use hal::klock;
-use hal::once::OnceStatic;
-use hal::pinlist::PinList;
-use hal::pool::{PR_WAITOK, PoolArc};
+use hal::ds::pinlist::PinList;
+use hal::mem::pool::{PR_WAITOK, PoolArc};
+use hal::sync::klock;
+use hal::sync::once::OnceStatic;
 use hal::sys::errno::Errno;
 use libkern::siphash::{SipHash24Ctx, SiphashKey};
 
@@ -452,7 +452,7 @@ pub(crate) fn test_mount(flag: i32) -> TestMount {
     use super::nfsmount::M_NFSMNT;
     use crate::fs::testfs::TestGlue as G;
     use core::sync::atomic::Ordering;
-    use hal::malloc::{M_WAITOK, MArc, MBox};
+    use hal::mem::malloc::{M_WAITOK, MArc, MBox};
     fn nop(_: *mut core::ffi::c_void) {}
     let (g, p) = crate::fs::testfs::test_thread_cached(64 << 20, 64);
     let root = crate::fs::init::rootvnode::<G>()
@@ -553,9 +553,9 @@ pub(crate) fn test_node(
     let np = vfs::<G>()
         .nfs
         .nfs_node_pool
-        .get_homed(hal::pool::PR_WAITOK, || NfsNode::new(vp, fh))
+        .get_homed(hal::mem::pool::PR_WAITOK, || NfsNode::new(vp, fh))
         .expect("a node");
-    vp.set_node(hal::pool::PoolArc::erase(np.clone()));
+    vp.set_node(hal::mem::pool::PoolArc::erase(np.clone()));
     (vp, np)
 }
 /* </CODE> */

@@ -51,7 +51,7 @@
 /* </LICENSES> */
 /* <CODE> */
 //! arm64 `<machine/signal.h>`: `sig_atomic_t` and `struct sigcontext`, which the signal frame
-//! carries on the user stack (`hal::sig`) and a handler sees.
+//! carries on the user stack (`hal::cpu::sig`) and a handler sees.
 //!
 //! Upstream: sys/arch/arm64/include/signal.h @ 3ce1f3f79392
 //! LZ: sys/arch/arm64/include/signal.rs@3c62ede68802

@@ -93,9 +93,9 @@
 use core::marker::PhantomData;
 use core::sync::atomic::AtomicI32;
 
-use hal::intr::IPL_NONE;
-use hal::malloc::{M_WAITOK, MArc};
-use hal::pool::PR_WAITOK;
+use hal::cpu::intr::IPL_NONE;
+use hal::mem::malloc::{M_WAITOK, MArc};
+use hal::mem::pool::PR_WAITOK;
 use hal::sys::errno::Errno;
 use hal::sys::mount::{Fid, FusefsArgs, MNT_FORCE, MNT_UPDATE, Statfs};
 use hal::sys::sysctl::{SYSCTL_INT_READONLY, SysctlBoundedArgs};

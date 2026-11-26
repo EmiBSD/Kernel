@@ -199,7 +199,7 @@ didn't get a copy, you may request one from <license@ipv6.nrl.navy.mil>.
 //! - LZ's `struct arpcom` (in `bsd`'s `netinet/if_ether.rs`, `Cell`s behind an `unsafe impl
 //!   Sync`, reached from an interface by a checked cast, `arpcom_of`'s `unsafe`) -> the
 //!   kernel's [`Arpcom`], still `ac_if` first and embedded in the drivers' zeroed softcs; the
-//!   interface names it by [`Ifnet::if_arpcom`] (a `hal::link::Link` set by
+//!   interface names it by [`Ifnet::if_arpcom`] (a `hal::ds::link::Link` set by
 //!   `ether_ifattach`), so `arpcom_of` is one load and no cast. Every member is valid all zero
 //!   (the softcs are `M_ZERO`): `ac_enaddr` an atomic word, the counts atomics, the ports
 //!   `Link`s, the multicast list a `OnceStatic` that `ether_ifattach` fills (the C's
@@ -236,7 +236,7 @@ didn't get a copy, you may request one from <license@ipv6.nrl.navy.mil>.
 //!   IPv4 checksums (`in_hdr_cksum_out`, `in_proto_cksum_out`) since N6.4a, ND's
 //!   (`nd6_resolve`, `nd6_rtrequest`) since N6.5b, `in6_proto_cksum_out` since N6.5c.
 //!   `ether_rtrequest` takes the net lock's proof its caller (`if_rtrequest`) has.
-//! - The Ethernet header is read and written as a copy (`hal::pod::at`/`put`, 14 bytes,
+//! - The Ethernet header is read and written as a copy (`hal::mem::pod::at`/`put`, 14 bytes,
 //!   D-N6.3c-20): where a frame starts depends on the driver (two bytes past a word with
 //!   `ETHER_ALIGN`), and a copy of 14 bytes per frame is the price of not trusting it (N12).
 //!
@@ -249,12 +249,12 @@ didn't get a copy, you may request one from <license@ipv6.nrl.navy.mil>.
 
 use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 
-use hal::intr::IPL_NET;
-use hal::link::Link;
-use hal::malloc::{M_NOWAIT, MBox};
-use hal::mutex::{Mutexed, MutexedGuard};
-use hal::netlock::NetHeld;
-use hal::once::OnceStatic;
+use hal::cpu::intr::IPL_NET;
+use hal::ds::link::Link;
+use hal::mem::malloc::{M_NOWAIT, MBox};
+use hal::sync::mutex::{Mutexed, MutexedGuard};
+use hal::sync::netlock::NetHeld;
+use hal::sync::once::OnceStatic;
 use hal::sys::errno::Errno;
 use hal::sys::net_bpf::DLT_EN10MB;
 use hal::sys::net_ethertypes::{
@@ -610,7 +610,7 @@ impl LinkLayer for Ether {
         ifp: &'static Ifnet,
         req: u8,
         rt: Option<&Rtentry>,
-        net: &hal::netlock::NetHeld<'_>,
+        net: &hal::sync::netlock::NetHeld<'_>,
     ) {
         ether_rtrequest(ifp, req, rt, net);
     }
@@ -652,7 +652,7 @@ pub fn ether_ioctl(ifp: &Ifnet, arp: &Arpcom, cmd: u64, data: &[u8]) -> Result<(
         SIOCSIFADDR => Ok(()),
 
         SIOCSIFMTU => {
-            let ifr = hal::pod::at::<Ifreq>(data, 0).ok_or(Errno::EINVAL)?;
+            let ifr = hal::mem::pod::at::<Ifreq>(data, 0).ok_or(Errno::EINVAL)?;
             let mtu = ifr.ifr_mtu();
             if mtu < ETHERMIN as i32 || mtu as u32 > ifp.if_hardmtu.get() {
                 Err(Errno::EINVAL)
@@ -795,7 +795,7 @@ pub fn ether_resolve(
 /// `memcpy(eh, dst->sa_data, sizeof(*eh))`: the header in a socket address's 14 data bytes;
 /// `None` for an address shorter than a `struct sockaddr` (no sender makes one).
 fn sa_data_header(dst: SockaddrView<'_>) -> Option<EtherHeader> {
-    hal::pod::at::<EtherHeader>(dst.bytes(), 2)
+    hal::mem::pod::at::<EtherHeader>(dst.bytes(), 2)
 }
 
 /// `ether_encap(ifp, m, dst, rt, &error)`: the destination resolved and the Ethernet header
@@ -822,7 +822,7 @@ pub fn ether_encap(
     m_adj(&m, ETHER_ALIGN as i32);
     // m_prepend left the header's bytes at m_data, in a writable mbuf of its own when there
     // was no leading space.
-    let written = m.data_mut().is_some_and(|d| hal::pod::put(d, 0, &eh));
+    let written = m.data_mut().is_some_and(|d| hal::mem::pod::put(d, 0, &eh));
     if written {
         Ok(Some(m))
     } else {
@@ -875,7 +875,7 @@ pub fn ether_input(
     let mut sdelim = false;
 
     // Drop short frames
-    let Some(eh) = hal::pod::at::<EtherHeader>(m.data(), 0) else {
+    let Some(eh) = hal::mem::pod::at::<EtherHeader>(m.data(), 0) else {
         return;
     };
     let dst = ether_addr_to_e64(&eh.ether_dhost);
@@ -922,7 +922,7 @@ pub fn ether_input(
     // Is the packet specifically addressed to this port? A port may have handed back another
     // mbuf: the header is read again from the frame as it is now (the C's second mtod), and
     // the type with it; the destination stays the first read's, as the C's `dst`.
-    let Some(eh) = hal::pod::at::<EtherHeader>(m.data(), 0) else {
+    let Some(eh) = hal::mem::pod::at::<EtherHeader>(m.data(), 0) else {
         return;
     };
     let self_ = ac.ac_enaddr.e64();
@@ -1001,7 +1001,7 @@ pub fn ether_input(
 pub fn ether_brport_isset(ifp: &Ifnet) -> Result<(), Errno> {
     let ac = arpcom_of(ifp);
 
-    hal::klock::kernel_assert_locked();
+    hal::sync::klock::kernel_assert_locked();
     if !ac.ac_brport.is_none() {
         return Err(Errno::EBUSY);
     }
@@ -1014,7 +1014,7 @@ pub fn ether_brport_isset(ifp: &Ifnet) -> Result<(), Errno> {
 pub fn ether_brport_set(ifp: &Ifnet, ep: &'static EtherPortSlot) {
     let ac = arpcom_of(ifp);
 
-    hal::klock::kernel_assert_locked();
+    hal::sync::klock::kernel_assert_locked();
     if !ac.ac_brport.is_none() {
         ifp.if_xname.with_str(|n| {
             kpanic(format_args!("{} setting an already set brport", Str(n)));
@@ -1029,7 +1029,7 @@ pub fn ether_brport_set(ifp: &Ifnet, ep: &'static EtherPortSlot) {
 pub fn ether_brport_clr(ifp: &Ifnet) {
     let ac = arpcom_of(ifp);
 
-    hal::klock::kernel_assert_locked();
+    hal::sync::klock::kernel_assert_locked();
     if ac.ac_brport.is_none() {
         ifp.if_xname.with_str(|n| {
             kpanic(format_args!("{} clearing an already clear brport", Str(n)));
@@ -1048,7 +1048,7 @@ pub fn ether_brport_get(ifp: &Ifnet) -> Option<&'static EtherPortSlot> {
 /// `ether_brport_get_locked(ifp)`: the bridge port, under the kernel lock.
 pub fn ether_brport_get_locked(ifp: &Ifnet) -> Option<&'static EtherPortSlot> {
     let ac = arpcom_of(ifp);
-    hal::klock::kernel_assert_locked();
+    hal::sync::klock::kernel_assert_locked();
     ac.ac_brport.get()
 }
 
@@ -1237,7 +1237,7 @@ pub fn ether_multiaddr(sa: &[u8]) -> Result<([u8; ETHER_ADDR_LEN], [u8; ETHER_AD
         }
 
         Some(AF_INET) => {
-            let sin = hal::pod::at::<SockaddrIn>(sa, 0).ok_or(Errno::EINVAL)?;
+            let sin = hal::mem::pod::at::<SockaddrIn>(sa, 0).ok_or(Errno::EINVAL)?;
             if sin.sin_addr.s_addr == INADDR_ANY {
                 // An IP address of INADDR_ANY means listen to or stop listening to all of the
                 // Ethernet multicast addresses used for IP. (This is for the sake of IP
@@ -1250,7 +1250,7 @@ pub fn ether_multiaddr(sa: &[u8]) -> Result<([u8; ETHER_ADDR_LEN], [u8; ETHER_AD
         }
 
         Some(AF_INET6) => {
-            let sin6 = hal::pod::at::<SockaddrIn6>(sa, 0).ok_or(Errno::EINVAL)?;
+            let sin6 = hal::mem::pod::at::<SockaddrIn6>(sa, 0).ok_or(Errno::EINVAL)?;
             if in6_is_addr_unspecified(&sin6.sin6_addr) {
                 // An IP6 address of 0 means listen to or stop listening to all of the Ethernet
                 // multicast address used for IP6.
@@ -1380,7 +1380,7 @@ pub fn ether_extract_headers(m0: &Mbuf, ext: &mut EtherExtracted) {
     kassert!(m0.flags() & M_PKTHDR != 0);
     ext.paylen = m0.m_pkthdr().len.get() as u32;
 
-    let Some(eh) = hal::pod::at::<EtherHeader>(m0.data(), 0) else {
+    let Some(eh) = hal::mem::pod::at::<EtherHeader>(m0.data(), 0) else {
         return;
     };
     ext.eh = Some(0);
@@ -1402,7 +1402,7 @@ pub fn ether_extract_headers(m0: &Mbuf, ext: &mut EtherExtracted) {
                 return;
             };
             let seg = m.data().get(hoff as usize..).unwrap_or(&[]);
-            let Some(ip) = hal::pod::at::<Ip>(seg, 0) else {
+            let Some(ip) = hal::mem::pod::at::<Ip>(seg, 0) else {
                 return;
             };
             ext.ip4 = Some(hlen as u32);
@@ -1433,7 +1433,7 @@ pub fn ether_extract_headers(m0: &Mbuf, ext: &mut EtherExtracted) {
                 return;
             };
             let seg = m.data().get(hoff as usize..).unwrap_or(&[]);
-            let Some(ip6) = hal::pod::at::<Ip6Hdr>(seg, 0) else {
+            let Some(ip6) = hal::mem::pod::at::<Ip6Hdr>(seg, 0) else {
                 return;
             };
             ext.ip6 = Some(hlen as u32);
@@ -1461,7 +1461,7 @@ pub fn ether_extract_headers(m0: &Mbuf, ext: &mut EtherExtracted) {
                 return;
             };
             let seg = m.data().get(hoff as usize..).unwrap_or(&[]);
-            let Some(th) = hal::pod::at::<Tcphdr>(seg, 0) else {
+            let Some(th) = hal::mem::pod::at::<Tcphdr>(seg, 0) else {
                 return;
             };
             ext.tcp = Some(toff);
@@ -1617,10 +1617,10 @@ mod tests {
         ifp.if_flags
             .set(IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST | IFF_RUNNING);
         ac.ac_enaddr.set(OURS);
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         if_attach(ifp);
         ether_ifattach(ac);
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
         ac
     }
 
@@ -1992,10 +1992,10 @@ mod tests {
             .set(IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST | IFF_RUNNING);
         ac.ac_enaddr.set(OURS);
         assert_eq!(ac.multiaddrs().iter().count(), 0, "a zeroed softc's list");
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         if_attach(ifp);
         ether_ifattach(ac);
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
         assert_eq!(ac.multiaddrs().iter().count(), 0);
         let g1 = mreq(&sin([224, 0, 0, 1]));
         assert_eq!(
@@ -2108,7 +2108,7 @@ mod tests {
         );
         assert_eq!(crate::net::ifq::ifq_len(ifp.if_snd()), before + 1);
         let m = crate::net::ifq::ifq_dequeue(ifp.if_snd()).expect("the frame");
-        let eh = hal::pod::at::<EtherHeader>(m.data(), 0).expect("a header");
+        let eh = hal::mem::pod::at::<EtherHeader>(m.data(), 0).expect("a header");
         assert_eq!((eh.ether_dhost, eh.ether_shost), (PEER, OURS));
         assert_eq!(m.m_pkthdr().len.get(), 34);
         let mut first = [0u8; 1];
@@ -2206,12 +2206,12 @@ mod tests {
         let ac = test_arpcom(b"tet5");
         let ifp = &ac.ac_if;
         let mut ns = Netstack::new(0);
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         assert_eq!(ether_brport_isset(ifp), Ok(()));
         ether_brport_set(ifp, &SWAP_SLOT);
         assert_eq!(ether_brport_isset(ifp), Err(Errno::EBUSY));
         assert!(ether_brport_get_locked(ifp).is_some());
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
         // An IPv4 frame the port replaces by one of an unknown type: dropped, as the C's
         // second read of the header finds (the first read's type would have queued it).
         ether_input(
@@ -2221,9 +2221,9 @@ mod tests {
             None,
         );
         assert_eq!(ml_len(&ns.ns_proto), 0);
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         ether_brport_clr(ifp);
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
         ether_input(
             ifp,
             frame(OURS, PEER, ETHERTYPE_IP, &[0u8; 46]),

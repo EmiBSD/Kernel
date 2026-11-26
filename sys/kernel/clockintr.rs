@@ -91,8 +91,8 @@
 //!   `gmonclock`, neither in LZ) is one more slot.
 //! - `cl_arg` is gone: every binder at the pin passes `NULL` (decision 9; dt(4) would bring
 //!   the typed argument back). The callback is `fn(&Clockrequest, &ClockFrame)`, the frame
-//!   `hal::clock`'s typed one, not a `void *`.
-//! - `struct clockqueue` leaves `cpu_info`: [`CPUS`] is a `hal::percpu::PerCpu<ClockCpu>`
+//!   `hal::cpu::clock`'s typed one, not a `void *`.
+//! - `struct clockqueue` leaves `cpu_info`: [`CPUS`] is a `hal::sync::percpu::PerCpu<ClockCpu>`
 //!   (decision 26's `Clockqueue` boundary, typed here, after N4.5's `SchedCpu`); the C's
 //!   `Cell<*const Clockqueue>` back pointers (`cl_queue`, `cr_queue`) are the handle's CPU
 //!   number and the running CPU's own queue.
@@ -107,13 +107,13 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering, fence};
 
-use hal::clock::ClockFrame;
-use hal::intr::IPL_CLOCK;
-use hal::link::Link;
-use hal::mutex::{Mutexed, MutexedGuard};
-use hal::once::OnceStatic;
-use hal::percpu::{PerCpu, PerCpuInit};
-use hal::sleep::{INFSLP, PWAIT};
+use hal::cpu::clock::ClockFrame;
+use hal::cpu::intr::IPL_CLOCK;
+use hal::ds::link::Link;
+use hal::sync::mutex::{Mutexed, MutexedGuard};
+use hal::sync::once::OnceStatic;
+use hal::sync::percpu::{PerCpu, PerCpuInit};
+use hal::sync::sleep::{INFSLP, PWAIT};
 
 use crate::assert::{kassert, kpanic};
 use crate::clock::{PROFCLOCK_PERIOD, STATCLOCK_AVG, STATCLOCK_IS_RANDOMIZED, hardclock_period};
@@ -673,7 +673,7 @@ pub fn clockintr_dispatch(frame: &ClockFrame) -> bool {
     }
     cq.dispatching.store(1, Ordering::Relaxed);
 
-    hal::intr::splassert(IPL_CLOCK, "clockintr_dispatch");
+    hal::cpu::intr::splassert(IPL_CLOCK, "clockintr_dispatch");
     kassert!(cq.init.load(Ordering::Relaxed));
 
     let mut g = cq.q.lock();
@@ -728,7 +728,7 @@ pub fn clockintr_dispatch(frame: &ClockFrame) -> bool {
             if g.flags & CQ_NEED_WAKEUP != 0 {
                 g.flags &= !CQ_NEED_WAKEUP;
                 drop(g);
-                hal::sleep::wakeup(core::ptr::from_ref(&cq.barrier));
+                hal::sync::sleep::wakeup(core::ptr::from_ref(&cq.barrier));
                 g = cq.q.lock();
             }
             run += 1;
@@ -849,7 +849,7 @@ pub fn clockintr_cancel(cl: Clockintr) {
 pub fn clockintr_bind(cl: Clockintr, func: ClockintrFn) {
     let cq = cl.queue();
 
-    hal::intr::splassert(hal::intr::IPL_NONE, "clockintr_bind");
+    hal::cpu::intr::splassert(hal::cpu::intr::IPL_NONE, "clockintr_bind");
 
     let mut g = cq.q.lock();
     kassert!(g.cl[cl.slot.index()].func.is_none());
@@ -1123,7 +1123,7 @@ mod tests {
         );
         assert_eq!(this().q.lock().npend, 2);
 
-        let _s = hal::intr::splraise(IPL_CLOCK);
+        let _s = hal::cpu::intr::splraise(IPL_CLOCK);
         assert!(clockintr_dispatch(&frame()));
         assert_eq!(RUNS.load(Ordering::Relaxed), base + 2);
         // `a` ran and is idle; `b` rescheduled itself 1 ms after its dispatch time.
@@ -1240,7 +1240,7 @@ mod tests {
         std::thread::scope(|s| {
             s.spawn(|| {
                 TEST_CPU.with(|c| c.set(Some(204)));
-                let _s = hal::intr::splraise(IPL_CLOCK);
+                let _s = hal::cpu::intr::splraise(IPL_CLOCK);
                 assert!(clockintr_dispatch(&frame()));
             });
             while !BARRIER_IN.load(Ordering::SeqCst) {

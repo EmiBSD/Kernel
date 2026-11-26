@@ -147,8 +147,8 @@
 //!   `M_DEVBUF` made from `Ifnet::new()` and leaked (the deviation above), no raw cast.
 //! - `looutput` takes the destination as a `SockaddrView` (its family, a byte) where LZ's
 //!   `unsafe fn` read a raw `*const Sockaddr`; `loioctl` reads `SIOCSIFMTU`'s `struct ifreq`
-//!   as a copy out of the request's bytes (`hal::pod::at`), never a cast; its `if_up` takes
-//!   the caller's detached net lock as a lent proof (`hal::netlock::lend_detached`: every
+//!   as a copy out of the request's bytes (`hal::mem::pod::at`), never a cast; its `if_up` takes
+//!   the caller's detached net lock as a lent proof (`hal::sync::netlock::lend_detached`: every
 //!   caller of `SIOCSIFADDR`, `in_ifinit` and `in6_ifinit`, holds `NET_LOCK()`).
 //! - `loop_clone_destroy`'s walk of `ifnetlist` runs under the net lock's shared witness, as
 //!   the C's `NET_LOCK_SHARED()` section.
@@ -158,8 +158,8 @@
 //! row); `loop_clone_destroy` the C's one shared net lock section; `looutput`, `loinput` and
 //! `loioctl` none beyond the C's (`if_output_local`'s queue mutex, `if_up`'s).
 
-use hal::malloc::{M_WAITOK, MBox};
-use hal::netlock::NETLOCK;
+use hal::mem::malloc::{M_WAITOK, MBox};
+use hal::sync::netlock::NETLOCK;
 use hal::sys::errno::Errno;
 use hal::sys::net_bpf::DLT_LOOP;
 use hal::sys::net_if::{
@@ -250,7 +250,7 @@ impl LinkLayer for Loop {
         ifp: &'static Ifnet,
         req: u8,
         rt: Option<&Rtentry>,
-        _net: &hal::netlock::NetHeld<'_>,
+        _net: &hal::sync::netlock::NetHeld<'_>,
     ) {
         lortrequest(ifp, req, rt);
     }
@@ -430,7 +430,7 @@ pub fn loioctl(ifp: &'static Ifnet, cmd: u64, data: &mut [u8]) -> Result<(), Err
         SIOCSIFADDR => {
             ifp.if_flags.set(ifp.if_flags.get() | IFF_RUNNING);
             // send up RTM_IFINFO, under the caller's NET_LOCK()
-            hal::netlock::lend_detached(|net| if_up(ifp, net));
+            hal::sync::netlock::lend_detached(|net| if_up(ifp, net));
             // Everything else is done at a higher level.
             Ok(())
         }
@@ -438,7 +438,7 @@ pub fn loioctl(ifp: &'static Ifnet, cmd: u64, data: &mut [u8]) -> Result<(), Err
         SIOCADDMULTI | SIOCDELMULTI => Ok(()),
 
         SIOCSIFMTU => {
-            let ifr = hal::pod::at::<Ifreq>(data, 0).ok_or(Errno::EINVAL)?;
+            let ifr = hal::mem::pod::at::<Ifreq>(data, 0).ok_or(Errno::EINVAL)?;
             ifp.if_mtu.set(ifr.ifr_mtu() as u32);
             Ok(())
         }
@@ -484,12 +484,12 @@ mod tests {
 
     /// `loop_clone_create` under the kernel lock, as `loopattach` and `SIOCIFCREATE` run.
     fn create(unit: i32) -> &'static Ifnet {
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         assert_eq!(LOOP_CLONER.create(unit), Ok(()));
         let name = lo_name(unit as u32);
         let ifp = if_unit(&name).expect("created");
         if_put(Some(ifp));
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
         ifp
     }
 
@@ -510,10 +510,10 @@ mod tests {
         assert!(ifp.if_counters.get().is_some());
         // The driver and the link layer are the loopback's.
         assert!(!lo_bpf_mtap(&ifp.if_bpf, &test_packet(0, 60), 0));
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         assert_eq!(loop_clone_destroy(ifp), Err(Errno::EPERM));
         assert_eq!(if_clone_destroy(b"lo0"), Err(Errno::EPERM));
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
     }
 
     #[test]
@@ -523,7 +523,7 @@ mod tests {
         let lo2 = create(2);
         assert_eq!(lo2.if_xname.get()[..4], *b"lo2\0");
         assert_ne!(rtable_loindex(0), lo2.if_index.get(), "not lo0's domain");
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         assert_eq!(crate::net::rtable::rtable_add(2), Ok(()));
         rtable_l2set(2, 2, lo2.if_index.get());
         lo2.if_rdomain.set(2);
@@ -547,7 +547,7 @@ mod tests {
         );
         assert!(if_unit(b"lo1").is_none());
         let _ = lo1;
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
         assert_eq!(rtable_loindex(0), lo0.if_index.get());
     }
 
@@ -640,7 +640,7 @@ mod tests {
         // SIOCSIFMTU: the request's MTU.
         let mut ifr = Ifreq::default();
         ifr.set_ifr_mtu(16384);
-        assert!(hal::pod::put(&mut req, 0, &ifr));
+        assert!(hal::mem::pod::put(&mut req, 0, &ifr));
         assert_eq!(loioctl(ifp, SIOCSIFMTU, &mut req), Ok(()));
         assert_eq!(ifp.if_mtu.get(), 16384);
         // The multicast requests have nothing to do; the rest is not the loopback's.
@@ -651,12 +651,12 @@ mod tests {
             Err(Errno::ENOTTY)
         );
         // SIOCSIFADDR: running and up, under the caller's net lock.
-        hal::netlock::lock();
+        hal::sync::netlock::lock();
         assert_eq!(
             crate::net::if_::if_ioctl(ifp, SIOCSIFADDR, &mut req),
             Ok(())
         );
-        hal::netlock::unlock();
+        hal::sync::netlock::unlock();
         assert_ne!(ifp.if_flags.get() & IFF_RUNNING, 0);
         assert_ne!(ifp.if_flags.get() & hal::sys::net_if::IFF_UP, 0);
     }

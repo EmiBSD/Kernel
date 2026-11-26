@@ -94,7 +94,7 @@
 //!   list unlinked under the net lock, the index map's `smr::barrier`, the softnet barriers,
 //!   the reference count finalized; docs/SCAFFOLDING.md, removed by N7's `NetDevice`). Every
 //!   member outside [`Ifnet::rt`] is valid all zero, each by the `hal` test that proves its
-//!   type so (`hal::link`, `hal::list`, `hal::once`, `hal::mutex`'s `an_all_zero_*`) or as an
+//!   type so (`hal::ds::link`, `hal::ds::list`, `hal::sync::once`, `hal::sync::mutex`'s `an_all_zero_*`) or as an
 //!   atomic; what is not (the queues' mutexes and tasks, the reference count's protocol, the
 //!   timeout, the hooks' lists, the driver's table) is built by `if_attach_common` into the
 //!   set-once [`IfRt`] (D-N6.3a-1). The zero-validity of the members:
@@ -103,22 +103,22 @@
 //!   |---|---|---|
 //!   | `if_softc`, `if_mcast`, `if_mcast6`, `if_carp`, `if_pf_kif` | `PtrWord` | NULL (an `AtomicPtr`) |
 //!   | `if_nd` | [`NdIfinfoCell`](crate::netinet6::nd6::NdIfinfoCell) | `nd6_ifattach` not run (two atomics) |
-//!   | `if_bpf` | [`BpfTap`](crate::net::bpf::BpfTap) (`hal::smr::SmrArcWord`) | no tap (an `AtomicPtr`: `hal::smr`'s `an_all_zero_counted_word_is_null`) |
+//!   | `if_bpf` | [`BpfTap`](crate::net::bpf::BpfTap) (`hal::sync::smr::SmrArcWord`) | no tap (an `AtomicPtr`: `hal::sync::smr`'s `an_all_zero_counted_word_is_null`) |
 //!   | `if_xname`, `if_description` | [`AtomicBytes`] | the empty string |
 //!   | `if_index`, `if_flags`, `if_xflags`, `if_type`, ..., `if_snd_maxlen` | [`AtomicCell`] | 0 |
 //!   | `if_lastchange` | [`IfLastchange`] | `{ 0, 0 }` |
 //!   | `if_data_counters`, `if_counters` | [`AtomicCell`]s, [`IfCountersSlot`] | 0, not allocated |
-//!   | `if_list`, `if_tmplist` | `hal::list::ListEntry` | on no list (`an_all_zero_list_is_empty_and_an_all_zero_entry_unlinked`) |
-//!   | `if_sadl` | `ReadMostly<Option<MBox<SockaddrDl>>>` | no reader, `None` (`hal::slot`'s `an_all_zero_cell_of_no_box_or_handle_holds_none`) |
+//!   | `if_list`, `if_tmplist` | `hal::ds::list::ListEntry` | on no list (`an_all_zero_list_is_empty_and_an_all_zero_entry_unlinked`) |
+//!   | `if_sadl` | `ReadMostly<Option<MBox<SockaddrDl>>>` | no reader, `None` (`hal::sync::slot`'s `an_all_zero_cell_of_no_box_or_handle_holds_none`) |
 //!   | `if_groups` | `ReadMostly<IfgSet>` (an `Option<MArc<MArray<..>>>`) | no reader, no group (the same test) |
-//!   | `if_driver`, `if_link`, `rt` | `hal::once::OnceStatic` | empty (`an_all_zero_cell_is_an_empty_one`) |
-//!   | `if_arpcom` | `hal::link::Link` | no `arpcom` (an `AtomicPtr`) |
+//!   | `if_driver`, `if_link`, `rt` | `hal::sync::once::OnceStatic` | empty (`an_all_zero_cell_is_an_empty_one`) |
+//!   | `if_arpcom` | `hal::ds::link::Link` | no `arpcom` (an `AtomicPtr`) |
 //!   | `detached` | an atomic | attached |
 //!
 //! - The members `bsd` reads or writes under its detached net lock (the drivers' `*_start`
 //!   test `IFF_RUNNING` with no lock at all, as the C's) are atomics with LZ's `get()`/`set()`
 //!   ([`AtomicCell`]), links or lists, never a `Guarded` keyed to the net lock, whose witness
-//!   a detached holding cannot make (`hal::netlock`; D-N6.3a-2): the 51 files that read
+//!   a detached holding cannot make (`hal::sync::netlock`; D-N6.3a-2): the 51 files that read
 //!   `if_flags` compile unchanged.
 //! - LZ's nine `Cell<Option<fn>>` hooks (`if_input`, `if_output`, `if_start`, `if_ioctl`,
 //!   ...) and `if_rtrequest` -> [`NetDriver`], the interface's driver: one object per
@@ -147,8 +147,8 @@
 //!   (D-5). The three addresses are read through the handle ([`IfaddrRef::ifa_addr`]): the
 //!   family record's own words, or a linked address's `SaLink`.
 //! - `if_addrlist` (a `TAILQ` of the records, `[N]`) -> [`IfaList`] in [`IfRt`]: a chain of
-//!   handles in net cells (`hal::rwlock::Guarded::new_net`), the head's and each record's
-//!   `ia_list`, read under a `hal::netlock::NetReader` and changed under the `NetWriter`
+//!   handles in net cells (`hal::sync::rwlock::Guarded::new_net`), the head's and each record's
+//!   `ia_list`, read under a `hal::sync::netlock::NetReader` and changed under the `NetWriter`
 //!   (`NET_ASSERT_LOCKED()` and `NET_ASSERT_LOCKED_EXCLUSIVE()`, made in every build). The list
 //!   holds the creation reference of each address; a walk lends `&'r IfaddrRef`s for the
 //!   reader's life, counting nothing (the C's uncounted pointers). It is not in [`Ifnet`]: a
@@ -189,12 +189,12 @@
 //!   the memberships, the C's meaning (D-8). LZ's (and N6.4a's) recycled `&'static` records,
 //!   their two free lists and their back-links from the generic part are gone.
 //! - `if_maddrlist` (a `TAILQ` of the records, `[m]`) -> [`IfmaList`] in [`IfRt`]: a chain of
-//!   handles in cells keyed to `if_maddrlock` (`hal::rwlock::Guarded::new_keyed`), the
+//!   handles in cells keyed to `if_maddrlock` (`hal::sync::rwlock::Guarded::new_keyed`), the
 //!   head's and each record's `ifma_list`, read under a witness of the lock in either mode,
 //!   changed under its write witness; a walk lends `&'w IfmaddrRef`s for the witness's life,
 //!   counting nothing. Inserting at the head is O(1) as the C's; removing walks to the
 //!   predecessor (O(n), D-4; the last leave of a group only) and opens its cell through a
-//!   clone (T3). The list sits in a set-once cell of [`IfRt`] (`hal::once::OnceStatic`)
+//!   clone (T3). The list sits in a set-once cell of [`IfRt`] (`hal::sync::once::OnceStatic`)
 //!   keyed by `if_attach_common` once the structure is where it stays: a cell is keyed to
 //!   its lock's address, which [`IfRt`] does not have before it is placed (the map's state
 //!   cell of `kernel::vm::map` is the precedent). The C reaches its list head inside the
@@ -205,7 +205,7 @@
 //!   (D-9), where the C leaves the dying interface's list: a record no membership holds any
 //!   more is freed there, one a membership still holds with that membership's last handle.
 //! - `if_maddrlock` (a `SplitRwlock` before N6.5e, entered and left C-style through six
-//!   helpers of `bsd`'s `net/if_var.rs`) -> a `hal::rwlock::RawRwlock` in [`IfRt`] taken
+//!   helpers of `bsd`'s `net/if_var.rs`) -> a `hal::sync::rwlock::RawRwlock` in [`IfRt`] taken
 //!   through its witnesses: `rw_enter_write` is `write()`, `rw_exit_write` the witness's drop.
 //!   The functions the C calls holding it (`in_lookupmulti`, `in6_lookupmulti`,
 //!   `igmp_joingroup`, `igmp_leavegroup`, `mld6_start_listening`, `mld6_stop_listening`)
@@ -235,17 +235,17 @@ use core::sync::atomic::{
     Ordering,
 };
 
-use hal::intr::IPL_NET;
-use hal::link::{Link, PtrWord, SaBytes, SaLink};
-use hal::list::ListEntry;
-use hal::malloc::{MArc, MArray, MBox};
-use hal::mutex::Mutexed;
-use hal::netlock::NetHeld;
-use hal::once::OnceStatic;
-use hal::pinlist::PinList;
-use hal::refcnt::Refcnt;
-use hal::rwlock::{Exclusive, Guarded, RawRwlock, Witness};
-use hal::slot::ReadMostly;
+use hal::cpu::intr::IPL_NET;
+use hal::ds::link::{Link, PtrWord, SaBytes, SaLink};
+use hal::ds::list::ListEntry;
+use hal::ds::pinlist::PinList;
+use hal::mem::malloc::{MArc, MArray, MBox};
+use hal::sync::mutex::Mutexed;
+use hal::sync::netlock::NetHeld;
+use hal::sync::once::OnceStatic;
+use hal::sync::refcnt::Refcnt;
+use hal::sync::rwlock::{Exclusive, Guarded, RawRwlock, Witness};
+use hal::sync::slot::ReadMostly;
 use hal::sys::errno::Errno;
 use hal::sys::net_if::{IFDESCRSIZE, IFNAMSIZ, IfRxring, SockaddrDl};
 
@@ -696,7 +696,7 @@ pub trait NetDriver: Sync + 'static {
         ifp: &'static Ifnet,
         req: u8,
         rt: Option<&crate::net::route::Rtentry>,
-        net: &hal::netlock::NetHeld<'_>,
+        net: &hal::sync::netlock::NetHeld<'_>,
     ) {
         link_rtrequest(ifp, req, rt, net);
     }
@@ -762,7 +762,7 @@ pub trait LinkLayer: Sync + 'static {
         ifp: &'static Ifnet,
         req: u8,
         rt: Option<&crate::net::route::Rtentry>,
-        net: &hal::netlock::NetHeld<'_>,
+        net: &hal::sync::netlock::NetHeld<'_>,
     );
 }
 
@@ -800,7 +800,7 @@ pub fn link_rtrequest(
     ifp: &'static Ifnet,
     req: u8,
     rt: Option<&crate::net::route::Rtentry>,
-    net: &hal::netlock::NetHeld<'_>,
+    net: &hal::sync::netlock::NetHeld<'_>,
 ) {
     if let Some(&l) = ifp.if_link.get() {
         l.rtrequest(ifp, req, rt, net);
@@ -830,7 +830,7 @@ pub struct IfRt {
     /// \[N\] `if_addrlist`: list of addresses per if ([`Ifnet::if_addrlist`]).
     pub(crate) if_addrlist: IfaList,
     /// `if_maddrlock`: keeps [`IfRt::if_maddrlist()`] and the `[m]` members of its records, taken
-    /// through its witnesses (`rw_enter_write` is [`hal::rwlock::RawRwlock::write`], the
+    /// through its witnesses (`rw_enter_write` is [`hal::sync::rwlock::RawRwlock::write`], the
     /// witness's drop `rw_exit_write`); the functions the C calls holding it take the
     /// witness, the C's `rw_assert_wrlock`/`rw_assert_anylock` (N6.5e).
     pub if_maddrlock: RawRwlock,
@@ -1146,14 +1146,14 @@ impl Ifnet {
         self.detached.load(Ordering::Acquire) & bit != 0
     }
 
-    /// `ifp->if_sadl`, borrowed for a reader that does not sleep with it (`hal::slot`'s
+    /// `ifp->if_sadl`, borrowed for a reader that does not sleep with it (`hal::sync::slot`'s
     /// rule): `None` before `if_alloc_sadl`.
-    pub fn sadl(&self) -> hal::slot::ReadMostlyRef<'_, Option<MBox<SockaddrDl>>> {
+    pub fn sadl(&self) -> hal::sync::slot::ReadMostlyRef<'_, Option<MBox<SockaddrDl>>> {
         self.if_sadl.read()
     }
 
     /// `ifp->if_groups`, borrowed for a reader (the rule of [`IfgGroup::members`]).
-    pub fn groups(&self) -> hal::slot::ReadMostlyRef<'_, IfgSet> {
+    pub fn groups(&self) -> hal::sync::slot::ReadMostlyRef<'_, IfgSet> {
         self.if_groups.read()
     }
 
@@ -1288,7 +1288,7 @@ impl Drop for LinkedIfa {
 
 /// A counted reference of an interface address (a `struct ifaddr *` the C holds with
 /// `ifaref`), one arm per family. The family records are `malloc(9)` blocks of `M_IFADDR`
-/// (`hal::malloc::MArc`), freed with their last handle (`ifafree`'s `free(ifa, M_IFADDR,
+/// (`hal::mem::malloc::MArc`), freed with their last handle (`ifafree`'s `free(ifa, M_IFADDR,
 /// 0)`); enc(4)'s is linked ([`LinkedIfa`]). It derefs to the generic part ([`Ifaddr`]).
 /// `Clone` is `ifaref`, the drop `ifafree` ([`crate::net::route::ifaref`],
 /// [`crate::net::route::ifafree`]): the handles' count is the C's `ifa_refcnt`
@@ -1399,18 +1399,18 @@ impl IfaddrRef {
 
 /// `TAILQ_HEAD(, ifaddr) if_addrlist`: an interface's addresses in the order they were added
 /// (the order `ifconf`, the routing socket and every walk see). A chain of counted handles in
-/// net cells (`hal::netlock`): the head's cell holds the first address's, each address's own
+/// net cells (`hal::sync::netlock`): the head's cell holds the first address's, each address's own
 /// `ia_list` the next one's. The list holds one reference of each address, its creation
 /// reference ([`crate::net::if_::ifa_add`] takes it, [`crate::net::if_::ifa_del`] gives it
 /// back). A walk lends `&'r IfaddrRef`s for the life of its witness
-/// (`hal::netlock::NetHeld::reader`), uncounted as the C's pointers, O(1) a step; a change
+/// (`hal::sync::netlock::NetHeld::reader`), uncounted as the C's pointers, O(1) a step; a change
 /// takes the writer, which no reader can be out beside.
 ///
 /// An address a walk lends cannot outlive the reader it borrows (a reference past its
 /// record's last handle cannot be written):
 ///
 /// ```compile_fail,E0515
-/// use hal::netlock::{NETLOCK, NetHeld};
+/// use hal::sync::netlock::{NETLOCK, NetHeld};
 /// use kernel::net::if_var::{IfaList, IfaddrRef};
 /// fn kept(list: &IfaList) -> Option<&IfaddrRef> {
 ///     let w = NETLOCK.read();
@@ -1592,7 +1592,7 @@ impl IfmaddrRef {
 
 /// `TAILQ_HEAD(, ifmaddr) if_maddrlist`: an interface's multicast records, the newest first
 /// (`TAILQ_INSERT_HEAD`, the order every walk sees). A chain of counted handles in cells
-/// keyed to the interface's `if_maddrlock` (`hal::rwlock::Guarded::new_keyed`): the head's
+/// keyed to the interface's `if_maddrlock` (`hal::sync::rwlock::Guarded::new_keyed`): the head's
 /// and each record's own `ifma_list`. The list holds one reference of each record, from the
 /// join that made it ([`IfmaList::insert_head`]) to the leave that ends its last membership
 /// ([`IfmaList::remove`]) or the interface's detach ([`IfmaList::pop_head`]). A walk lends
@@ -1721,7 +1721,7 @@ impl IfgGroup {
 
     /// `ifg_members`, borrowed for a reader. A reader that sleeps with it holds the net lock,
     /// which every writer holds exclusively (the C's protocol), so no writer waits for it.
-    pub fn members(&self) -> hal::slot::ReadMostlyRef<'_, IfgMembers> {
+    pub fn members(&self) -> hal::sync::slot::ReadMostlyRef<'_, IfgMembers> {
         self.ifg_members.read()
     }
 
@@ -1732,14 +1732,14 @@ impl IfgGroup {
 }
 
 /// A counted reference to a group (`struct ifg_list`'s `ifgl_group`, `ifg_head`'s links).
-pub type IfgRef = hal::malloc::MArc<IfgGroup>;
+pub type IfgRef = hal::mem::malloc::MArc<IfgGroup>;
 
 /// A list of groups (`TAILQ_HEAD(, ifg_list) if_groups`, `ifg_head`), as one counted array
 /// replaced whole by each change (the module's redesign), empty as `None`. A reader that
 /// copies out (and may sleep) keeps a [`IfgSet::snapshot`] in place of the C's temporary
 /// list and references (`ifg_tmplist`, `ifgroup_icref`).
 #[derive(Default)]
-pub struct IfgSet(pub(crate) Option<hal::malloc::MArc<MArray<IfgRef>>>);
+pub struct IfgSet(pub(crate) Option<hal::mem::malloc::MArc<MArray<IfgRef>>>);
 
 impl IfgSet {
     /// The empty list.
@@ -1778,7 +1778,7 @@ impl IfgSet {
 /// `TAILQ_HEAD(, ifg_member) ifg_members`: a group's members, in the order they joined, as one
 /// array replaced whole by each change, empty as `None`.
 #[derive(Default)]
-pub struct IfgMembers(pub(crate) Option<hal::malloc::MArc<MArray<&'static Ifnet>>>);
+pub struct IfgMembers(pub(crate) Option<hal::mem::malloc::MArc<MArray<&'static Ifnet>>>);
 
 impl IfgMembers {
     /// The empty list.
@@ -1826,9 +1826,9 @@ pub fn if_rxr_cwm(r: &IfRxring) -> u32 {
 /// `hal`'s one `SaToken`, for the kernel's tests (whose binary has no `bsd` to take it at
 /// boot): they publish their interface addresses as `bsd`'s protocols do.
 #[cfg(test)]
-pub(crate) fn sa_test_token() -> &'static hal::link::SaToken {
-    static TOKEN: std::sync::OnceLock<&'static hal::link::SaToken> = std::sync::OnceLock::new();
-    TOKEN.get_or_init(|| match hal::link::SaToken::take() {
+pub(crate) fn sa_test_token() -> &'static hal::ds::link::SaToken {
+    static TOKEN: std::sync::OnceLock<&'static hal::ds::link::SaToken> = std::sync::OnceLock::new();
+    TOKEN.get_or_init(|| match hal::ds::link::SaToken::take() {
         Some(t) => t,
         None => panic!("the SaToken was taken outside sa_test_token"),
     })
@@ -1923,7 +1923,7 @@ mod tests {
             ])));
         ifa.ifa_addr.set(sa_test_token(), Some(sdl));
         {
-            let w = hal::netlock::NETLOCK.read();
+            let w = hal::sync::netlock::NETLOCK.read();
             let net = NetHeld::of(&w).expect("the net lock's witness");
             assert_eq!(
                 l.ifa_addr(&net).map(|b| (b.family(), b.len())),
@@ -1954,7 +1954,7 @@ mod tests {
         assert!(ifp.rt.get().is_none() && ifp.if_driver.get().is_none());
         assert!(ifp.sadl().is_none() && ifp.if_arpcom.get().is_none());
         assert!(ifp.if_link.get().is_none());
-        assert!(!hal::list::List::<IfnetList>::is_linked(&ifp));
+        assert!(!hal::ds::list::List::<IfnetList>::is_linked(&ifp));
         let ifa = IfaddrLinked::new();
         assert!(ifa.ifa_addr.is_none() && ifa.ifa_dstaddr.is_none());
         assert!(ifa.ifa_netmask.is_none() && ifa.ifa.ifa_ifp.get().is_none());

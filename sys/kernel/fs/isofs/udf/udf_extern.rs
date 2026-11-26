@@ -35,7 +35,7 @@
 //! ## Redesign
 //! - LZ's `pub use` of the three `Pool` statics of `udf_vfsops.rs` (the C's `extern struct
 //!   pool udf_trans_pool, unode_pool, udf_ds_pool`) -> [`UdfTables`], the three pools of a
-//!   glue typed by what they hold (`hal::pool`'s `TypedPool` of the recorded unodes,
+//!   glue typed by what they hold (`hal::mem::pool`'s `TypedPool` of the recorded unodes,
 //!   `BoxPool`s of the directory streams and of the name buffers), the member `udf` of the
 //!   glue's VFS tables (a static generic over the glue cannot exist), made by `udf_init` with
 //!   the C's names and flags (D-N5.8-7), and the C's `extern struct vops udf_vops`
@@ -45,7 +45,7 @@
 //!   switch's first `smoke-fs` had found the array's own alignment, 2, misaligning the
 //!   pool's item headers). 0 `unsafe` (LZ: 0).
 
-use hal::pool::{BoxPool, TypedPool};
+use hal::mem::pool::{BoxPool, TypedPool};
 use hal::sys::dirent::MAXNAMLEN;
 
 use crate::fs::isofs::udf::udf::{UdfDirstream, Unicode, Unode};

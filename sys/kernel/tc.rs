@@ -130,7 +130,7 @@
 //!   (`th_generation = 0`, release fence, the fields, release fence, the new generation;
 //!   readers: the generation, acquire fence, the fields, acquire fence, the generation
 //!   again). `th_next` is the ring's other index ([`TH`], [`ACTIVE`]); `th_counter` and
-//!   `timecounter` are `hal::link::Link`s to `&'static` entries. `memcpy(th, tho, ...)` is a
+//!   `timecounter` are `hal::ds::link::Link`s to `&'static` entries. `memcpy(th, tho, ...)` is a
 //!   field-by-field copy (`Timehands::copy_from`).
 //! - `windup_mtx` is [`WINDUP`], a `Mutexed<Windup>` whose guard [`tc_windup`] takes: the C's
 //!   `MUTEX_ASSERT_LOCKED` becomes the parameter, and the `[W]` state the C keeps in statics
@@ -143,7 +143,7 @@
 //!   ([`timekeep_object`]: `kern_exec.c`'s `exec_timekeep_map` on its first call, the
 //!   `uao_create`, the kernel mapping and its wiring), and `kern_exec.c`'s `timekeep`
 //!   pointer is [`TIMEKEEP`] (`bsd`'s `kern_exec.rs` keeps the per-process mapping).
-//! - `tc_list` is a `hal::list::List` of `&'static TcEntry`, newest first as the C's SLIST.
+//! - `tc_list` is a `hal::ds::list::List` of `&'static TcEntry`, newest first as the C's SLIST.
 //! - The `log(LOG_INFO, ...)` of a clock step and `enqueue_randomness` reach `bsd` through
 //!   the `Printf` and `Random` bridges (`hal::prf::log`, `hal::random::enqueue_randomness`).
 
@@ -151,12 +151,12 @@ use core::sync::atomic::{
     AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering, fence,
 };
 
-use hal::intr::IPL_CLOCK;
-use hal::link::Link;
-use hal::list::{List, ListEntry};
-use hal::mutex::{Mutexed, MutexedGuard};
-use hal::once::OnceStatic;
-use hal::rwlock::{RW_WRITE, RawRwlock, RwWitness, Witness, WriteWitness};
+use hal::cpu::intr::IPL_CLOCK;
+use hal::ds::link::Link;
+use hal::ds::list::{List, ListEntry};
+use hal::sync::mutex::{Mutexed, MutexedGuard};
+use hal::sync::once::OnceStatic;
+use hal::sync::rwlock::{RW_WRITE, RawRwlock, RwWitness, Witness, WriteWitness};
 pub use hal::sys::timetc::{TK_VERSION, Timekeep, TimekeepAtomic};
 
 use crate::assert::{kassert, kpanic};

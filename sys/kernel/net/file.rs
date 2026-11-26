@@ -116,7 +116,7 @@
 
 use core::marker::PhantomData;
 
-use hal::pool::PoolArc;
+use hal::mem::pool::PoolArc;
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::FNONBLOCK;
 use hal::sys::filio::{FIOASYNC, FIOGETOWN, FIONREAD, FIOSETOWN};

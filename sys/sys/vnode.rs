@@ -145,7 +145,9 @@ pub use kernel::fs::vnops::{
 /// `vn_fsizechk(vp, uio, ioflag, &overrun)`: the kernel's, its thread the uio's
 /// (`uio_procp`), pinned for `SIGXFSZ` as `bsd` pins its threads (`ProcExt::as_static`).
 pub fn vn_fsizechk(vp: &'static Vnode, uio: &mut Uio<'_>, ioflag: i32) -> Result<usize, Errno> {
-    let p = uio.uio_procp.map(|p| hal::pin::pin_static(p.as_static()));
+    let p = uio
+        .uio_procp
+        .map(|p| hal::ds::pin::pin_static(p.as_static()));
     kernel::fs::vnops::vn_fsizechk(vp, uio, ioflag, p)
 }
 
@@ -822,7 +824,7 @@ mod tests {
         // (N5.9t2), through vfsconflist[]'s entry (vfsinit ran its tmpfs_init).
         let (_g, p) = crate::kern::vfs_subr::tests::setup();
         Machine::set_curproc(Machine::curcpu(), Some(p));
-        let _ = hal::rwlock::init_shared();
+        let _ = hal::sync::rwlock::init_shared();
         let _ = kernel::vm::aobj::uao_init();
         kernel::fs::subr::vfs::<crate::kern::proc_glue::BsdProcGlue>()
             .tmpfs

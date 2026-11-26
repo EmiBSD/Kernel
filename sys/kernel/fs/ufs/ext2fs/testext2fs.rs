@@ -32,7 +32,7 @@ use core::cell::Cell;
 use std::boxed::Box;
 use std::sync::MutexGuard;
 
-use hal::pool::PR_WAITOK;
+use hal::mem::pool::PR_WAITOK;
 use hal::sys::errno::Errno;
 use hal::sys::mount::{MNT_LOCAL, MNT_SWAPPABLE, MOUNT_EXT2FS, UfsArgs};
 use hal::sys::types::Daddr;

@@ -413,9 +413,9 @@ pub fn getlbns(
 mod tests {
     use std::sync::MutexGuard;
 
-    use hal::intr::IPL_NONE;
-    use hal::pool::{BoxPool, PR_WAITOK, PoolArc, TypedPool};
-    use hal::sleep::INFSLP;
+    use hal::cpu::intr::IPL_NONE;
+    use hal::mem::pool::{BoxPool, PR_WAITOK, PoolArc, TypedPool};
+    use hal::sync::sleep::INFSLP;
 
     use super::*;
     use crate::fs::bio::getblk;

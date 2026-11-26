@@ -135,7 +135,7 @@ pub type PgrpRef = kernel::proc::PgrpRef<BsdProcGlue>;
 /// A counted reference to a session (`SESSHOLD`).
 pub type SessionRef = kernel::proc::SessionRef<BsdProcGlue>;
 /// The guard of a process's `ps_mtx`.
-pub type PsGuard<'a> = hal::mutex::MutexedGuard<'a, PsMtx<BsdProcGlue>>;
+pub type PsGuard<'a> = hal::sync::mutex::MutexedGuard<'a, PsMtx<BsdProcGlue>>;
 
 /// What `bsd` reads of a thread through its words: LZ's accessors that turn an address the
 /// thread holds into a reference, each one `unsafe` deref until N4.5's `current()`.
@@ -185,7 +185,7 @@ impl ProcExt for Proc {
         let u = ptr::with_exposed_provenance::<User>(self.addr_word());
         kassert!(!u.is_null());
         // SAFETY: `p_addr` is the exposed address of the u-area the thread's slot owns
-        // (`hal::thread`'s E4: a `UArea` installed by `thread_new`, `hal`'s static one for
+        // (`hal::cpu::thread`'s E4: a `UArea` installed by `thread_new`, `hal`'s static one for
         // `proc0`), zeroed memory whose bottom is a `struct user` (`u_pcb` first); it is given
         // back only by the reaper's `uvm_uarea_free` (`take_uarea`), which `hal` refuses while
         // the thread's context lives (E6: only once it switched away for good, dead); the
@@ -345,7 +345,7 @@ pub fn refreshcreds(p: &Proc) {
 pub const ZERO_TIMEVAL: Timeval = Timeval::new(0, 0);
 const _: () = assert!(
     core::mem::offset_of!(Proc, machine) == 0,
-    "the machine's slot is the thread's first member: ci_curproc names both (hal::thread)"
+    "the machine's slot is the thread's first member: ci_curproc names both (hal::cpu::thread)"
 );
 /* </CODE> */
 

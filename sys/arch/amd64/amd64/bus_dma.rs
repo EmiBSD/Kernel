@@ -162,9 +162,9 @@ use crate::sys::types::{Off, Paddr, Vaddr};
 use crate::sys::uio::{Uio, UioSeg::UIO_USERSPACE};
 use crate::unported;
 use hal::arch::amd64::pmap::layout::{PMAP_NOCACHE, PMAP_NOCRYPT};
-use hal::pmap::{PMAP_CANFAIL, PMAP_WIRED};
-use hal::pmap::{direct_map as pmap_direct_map, direct_unmap};
 use hal::vm::param::round_page;
+use hal::vm::pmap::{PMAP_CANFAIL, PMAP_WIRED};
+use hal::vm::pmap::{direct_map as pmap_direct_map, direct_unmap};
 use kernel::vm::km::{KD_TRYLOCK, KD_WAITOK, KP_NONE, KV_ANY, NO_CONSTRAINT};
 use kernel::vm::page::{
     PHYS_TO_VM_PAGE, Pglist, VmPage, uvm_pagecount, uvm_pglistalloc, uvm_pglistfree,

@@ -85,7 +85,7 @@ use crate::sys::mbuf::{Mbuf, mtod};
 /// may sit at any alignment in the mbuf, so the header is copied out (`docs/C_TO_RUST.md`).
 /// Panics if the first mbuf is shorter than a header.
 pub fn mtod_ip(m: &Mbuf) -> Ip {
-    match hal::pod::at::<Ip>(m.data(), 0) {
+    match hal::mem::pod::at::<Ip>(m.data(), 0) {
         Some(ip) => ip,
         None => {
             crate::kern::subr_prf::panic(format_args!("mtod_ip: mbuf shorter than an ip header"))

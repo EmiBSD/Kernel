@@ -143,9 +143,9 @@
 
 use core::ptr;
 
-use hal::malloc::{M_CANFAIL, M_WAITOK, MArray};
-use hal::mutex::Mutexed;
-use hal::sleep::{INFSLP, PCATCH};
+use hal::mem::malloc::{M_CANFAIL, M_WAITOK, MArray};
+use hal::sync::mutex::Mutexed;
+use hal::sync::sleep::{INFSLP, PCATCH};
 use hal::sys::errno::Errno;
 use hal::user::UserPtr;
 
@@ -344,7 +344,7 @@ fn sleep_for_nothing(timeout: Option<&Timespec>, wmesg: &'static str) -> Result<
         }
         nsecs = sleep_nsecs(ts);
     }
-    match hal::sleep::tsleep_nsec(ptr::from_ref(&NOWAKE), PSOCK | PCATCH, wmesg, nsecs) {
+    match hal::sync::sleep::tsleep_nsec(ptr::from_ref(&NOWAKE), PSOCK | PCATCH, wmesg, nsecs) {
         Err(Errno::ERESTART) => Err(Errno::EINTR),
         Err(Errno::EWOULDBLOCK) => Ok(()),
         other => other,
@@ -557,9 +557,9 @@ pub fn selwakeup<G: ProcGlue>(sip: &Selinfo<G>) {
     if sip.si_note.is_empty() {
         return;
     }
-    hal::klock::kernel_lock();
+    hal::sync::klock::kernel_lock();
     sip.si_note.knote_legacy(i64::from(NOTE_SUBMIT));
-    hal::klock::kernel_unlock();
+    hal::sync::klock::kernel_unlock();
 }
 
 /// Only copyout the revents field.
@@ -828,7 +828,7 @@ pub fn ppollregister<G: ProcGlue>(
 }
 
 /// `poll_lasterr`: the last report of an unclaimed event (`ratecheck`'s `(sec, usec)`).
-static POLL_LASTERR: Mutexed<(i64, i64)> = Mutexed::new(hal::intr::IPL_NONE, (0, 0));
+static POLL_LASTERR: Mutexed<(i64, i64)> = Mutexed::new(hal::cpu::intr::IPL_NONE, (0, 0));
 /// `poll_errintvl`: at most one report per five seconds.
 const POLL_ERRINTVL: (i64, i64) = (5, 0);
 

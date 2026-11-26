@@ -75,7 +75,7 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! arm64's half of `hal::thread`: the context switch of `cpuswitch.S` (pulled in from the
+//! arm64's half of `hal::cpu::thread`: the context switch of `cpuswitch.S` (pulled in from the
 //! `.S` file next to this module, whose `{NAME}` placeholders are what `assym.h` provides in
 //! C), `cpu_switchto`'s FPU work (`machdep.c`), `cpu_fork`'s frames (`vm_machdep.c`), and the
 //! running thread's pcb.
@@ -103,7 +103,7 @@
 //! - No retguard: the cookie load/calc/check around the stack pivot has no counterpart in
 //!   this kernel yet (LZ's).
 //! - The switch frame's `sf_x19` holds the thread's start word, which the trampoline hands
-//!   to the start registered with `hal::thread` (`register_start`), instead of a function
+//!   to the start registered with `hal::cpu::thread` (`register_start`), instead of a function
 //!   pointer the trampoline `blr`s: no address crosses as code.
 //!
 //! ## Redesign
@@ -130,9 +130,9 @@ use crate::arch::arm64::include::param::PAGE_SIZE;
 use crate::arch::arm64::include::pcb::{PCB_FPU, Pcb};
 use crate::arch::arm64::include::tcb::__aarch64_set_tcb;
 use crate::assert::hal_panic;
+use crate::cpu::thread::{MachineSlot, SONPROC};
 use crate::cpu::{CORE_CURPCB, CORE_CURPROC};
 use crate::sys::types::Register;
-use crate::thread::{MachineSlot, SONPROC};
 
 /// `UPAGES`: the u-area's pages (arm64 `<machine/param.h>`; `bsd`'s `param.rs` asserts it).
 pub const UPAGES: usize = 6;
@@ -145,7 +145,7 @@ const fn stackalign(p: usize) -> usize {
 }
 
 /// `proc0paddr`: `proc0`'s u-area, `USPACE` zero bytes, page aligned (`locore`'s reservation
-/// in the C), `hal`'s own so that its address is never a caller's (`hal::thread`'s E4). Bytes
+/// in the C), `hal`'s own so that its address is never a caller's (`hal::cpu::thread`'s E4). Bytes
 /// as atomics: the pcb at its bottom and the stack above it are written through the address
 /// (by `proc0` itself and the switch), which a shared reference to cells permits.
 #[repr(C, align(4096))]
@@ -154,12 +154,12 @@ struct BootUarea([AtomicU8; USPACE]);
 /// `proc0`'s u-area.
 static PROC0_UAREA: BootUarea = BootUarea([const { AtomicU8::new(0) }; USPACE]);
 
-/// The address of `proc0`'s u-area (`hal::thread::boot_uarea`).
+/// The address of `proc0`'s u-area (`hal::cpu::thread::boot_uarea`).
 pub(crate) fn boot_uarea_word() -> usize {
     ptr::from_ref(&PROC0_UAREA).expose_provenance()
 }
 
-/// `curpcb = &proc0paddr->u_pcb` on this CPU (`hal::thread::boot_uarea`): the pcb at the
+/// `curpcb = &proc0paddr->u_pcb` on this CPU (`hal::cpu::thread::boot_uarea`): the pcb at the
 /// bottom of `proc0`'s u-area, zero bytes as `Pcb::new()` makes it.
 pub(crate) fn set_boot_pcb() {
     crate::cpu::curcpu().set_curpcb(ptr::with_exposed_provenance::<()>(boot_uarea_word()));
@@ -217,7 +217,7 @@ fn with_pcb_of<R>(slot: &MachineSlot, f: impl FnOnce(Option<&Pcb>) -> R) -> R {
 pub(crate) fn with_curpcb<R>(f: impl FnOnce(Option<&Pcb>) -> R) -> R {
     let pcb = crate::cpu::curcpu().curpcb().cast::<Pcb>();
     // SAFETY: `ci_curpcb` is null or the running thread's pcb (E5): the switch stores the new
-    // thread's `p_addr` there (its u-area's `u_pcb`, E4), `hal::thread::boot_uarea` `proc0`'s
+    // thread's `p_addr` there (its u-area's `u_pcb`, E4), `hal::cpu::thread::boot_uarea` `proc0`'s
     // (`hal`'s static), `clear_current_pcb` null; it is written by this CPU alone. The running
     // thread is not freed while it runs (E2), nor is its u-area given back (`take_uarea`
     // refuses a running thread, E4), so the pcb is alive for `f`; pcbs are only shared, as
@@ -228,13 +228,13 @@ pub(crate) fn with_curpcb<R>(f: impl FnOnce(Option<&Pcb>) -> R) -> R {
 
 /// `TCB_GET(p)` of the thread whose slot is `slot`: its pcb's `pcb_tcb` (0 without a u-area),
 /// for a caller that runs the thread or holds the scheduler's lock (`with_pcb_of`'s premise;
-/// `hal::thread::tcb_get`).
+/// `hal::cpu::thread::tcb_get`).
 pub(crate) fn tcb_of(slot: &MachineSlot) -> usize {
     with_pcb_of(slot, |pcb| pcb.map_or(0, |pcb| pcb.pcb_tcb.get().addr()))
 }
 
 /// `TCB_SET(p, addr)` for the running thread, whose slot is `slot`, under the scheduler's lock
-/// (`hal::thread::tcb_set`): its pcb's `pcb_tcb`, which the switch loads into `TPIDR_EL0`
+/// (`hal::cpu::thread::tcb_set`): its pcb's `pcb_tcb`, which the switch loads into `TPIDR_EL0`
 /// whenever it runs again, and `TPIDR_EL0` now.
 pub(crate) fn set_tcb(slot: &MachineSlot, tcb: usize) {
     with_pcb_of(slot, |pcb| {
@@ -251,7 +251,7 @@ pub(crate) const fn tcb_invalid(addr: usize) -> bool {
 }
 
 /// `ci->ci_curpcb = NULL` on this CPU: a secondary CPU's start, before its first thread (E5:
-/// the other writers are the switch and `hal::thread::boot_uarea`). Refused (`panic(9)`)
+/// the other writers are the switch and `hal::cpu::thread::boot_uarea`). Refused (`panic(9)`)
 /// while the CPU runs a thread (`curproc` not null): a running thread's pcb is the one its
 /// copy faults and the switch save into.
 pub fn clear_current_pcb() {
@@ -264,7 +264,7 @@ pub fn clear_current_pcb() {
 
 /// `cpu_switchto(old, new)`: the old thread's FP state saved and the FPU dropped (when there
 /// is an old thread), then the assembly. Returns on the old thread's stack once a switch
-/// back to it is made. The caller (`hal::thread::switch_to`, `exit_to_idle`) holds the
+/// back to it is made. The caller (`hal::cpu::thread::switch_to`, `exit_to_idle`) holds the
 /// scheduler's lock and checked the token `new_slot`/`new_thread` come from (E1, E3).
 pub(crate) fn switch(
     old: Option<&MachineSlot>,
@@ -402,10 +402,10 @@ fn build_frames(
 }
 
 /// What `hal_proc_trampoline` calls with the switch frame's `sf_x19` and `sf_x20`: the
-/// machine-independent start (`hal::thread`'s trampoline, then the registered start). When
+/// machine-independent start (`hal::cpu::thread`'s trampoline, then the registered start). When
 /// it returns the assembly takes `syscall_return` to user mode.
 extern "C" fn trampoline_run(start: usize, arg: usize) {
-    crate::thread::trampoline(start, arg);
+    crate::cpu::thread::trampoline(start, arg);
 }
 
 /* </CODE> */

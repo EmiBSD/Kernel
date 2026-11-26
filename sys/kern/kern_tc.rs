@@ -57,7 +57,7 @@
 //! - The C's `tc_list` takes any number of counters; here a driver's legacy `struct
 //!   timecounter` gets its `TcEntry` from [`ENTRIES`], eight slots, and a ninth `tc_init`
 //!   is `panic(9)` ("tc_init: more than 8 timecounters"). The kernel's own list stays open
-//!   (a `TcEntry` is any `&'static`, the `hal::link::Link` row of `docs/IDIOMS.md`, which
+//!   (a `TcEntry` is any `&'static`, the `hal::ds::link::Link` row of `docs/IDIOMS.md`, which
 //!   rejects a capped table for that reason); the cap is only this adapter's, for the
 //!   drivers that have not moved (i8254, the TSC, acpitimer(4), acpihpet(4): four at most
 //!   on one machine, none on arm64, whose agtimer(4) brings its own entry), and it goes
@@ -76,7 +76,7 @@
 //!   [`tc_reset_quality`] and [`tc_set_frequency`] reach the entry through the counter's
 //!   `tc_entry` link.
 
-use hal::once::OnceStatic;
+use hal::sync::once::OnceStatic;
 use kernel::tc::TcEntry;
 
 use crate::sys::errno::Errno;

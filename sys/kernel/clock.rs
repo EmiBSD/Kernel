@@ -109,7 +109,7 @@
 //! - N4.8a: `hardclock`, `initclocks`, `sysctl_clockrate`, `tstohz` and the clock statics
 //!   (`stathz`, `profhz`, `profprocs`, `jiffies`, the hardclock, statclock and profclock
 //!   periods; the round-robin period is `kernel::sched`'s) are here, `bsd`'s `kern_clock.rs`
-//!   re-exporting them; `hardclock` takes the typed `hal::clock::ClockFrame` and does what
+//!   re-exporting them; `hardclock` takes the typed `hal::cpu::clock::ClockFrame` and does what
 //!   the C's does (the timehands' tick, `ticks`, `jiffies`, the timeout wheel); `statclock`,
 //!   which charges the running thread, stays `bsd`'s until N4.6b. The machine's `cpu_initclocks`,
 //!   `cpu_startclock`, `setstatclockrate` and `delay(9)` are the [`ClockHardware`] bridge
@@ -141,7 +141,7 @@ use hal::bridges::AlreadyRegistered;
 pub use crate::tc::{getnanouptime, nanoboottime, nanotime, nanouptime};
 
 use crate::assert::{kassert, kpanic};
-use hal::once::OnceStatic;
+use hal::sync::once::OnceStatic;
 use hal::sys::errno::Errno;
 use hal::sys::kernel::HZ;
 
@@ -622,7 +622,7 @@ pub fn initclocks() {
 
 /// `hardclock`: the real-time timer, interrupting hz times per second: the timehands wound
 /// up every `tc_tick`, `ticks` and `jiffies` counted, the timeout wheel updated.
-pub fn hardclock(_frame: &hal::clock::ClockFrame) {
+pub fn hardclock(_frame: &hal::cpu::clock::ClockFrame) {
     crate::tc::tc_ticktock();
     TICKS.fetch_add(1, Ordering::Relaxed);
     JIFFIES.fetch_add(1, Ordering::Relaxed);

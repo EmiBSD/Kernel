@@ -177,7 +177,7 @@ use crate::sys::types::Register;
 use crate::sys::un::SockaddrUn;
 use crate::sys::vnode::{Vattr, Vnode, makeimode};
 use crate::unported;
-use hal::klock;
+use hal::sync::klock;
 use hal::user::UserPtr;
 use kernel::netinet::in_pcb::in_pcbsolock;
 use kernel::sysctl::{RdString, SysctlNode, SysctlReq};
@@ -751,7 +751,7 @@ pub fn fill_file(
 fn file_data_addr(fp: &File) -> u64 {
     match fp.data() {
         Some(BsdFileData::Vnode(v)) => v.get().map_or(0, |vp| ptrtoint64(vp)),
-        Some(BsdFileData::Socket(so)) => hal::pool::PoolArc::as_ptr(so).addr() as u64,
+        Some(BsdFileData::Socket(so)) => hal::mem::pool::PoolArc::as_ptr(so).addr() as u64,
         Some(BsdFileData::Kqueue(kq)) => kq.addr() as u64,
         _ => 0,
     }
@@ -1964,7 +1964,7 @@ mod tests {
         let p = test_thread(pr);
         drop(p.set_cred(cr.clone()));
         drop(pr.set_ucred(cr));
-        pr.set_main_static(hal::pin::pin_static(p));
+        pr.set_main_static(hal::ds::pin::pin_static(p));
         // The group (pgid 42) and the session it leads: the test's references are leaked
         // with the process.
         core::mem::forget(test_setsid(pr));
@@ -2145,7 +2145,7 @@ mod tests {
             assert_eq!(w.elem_count, 0, "every pcb filled");
             let b = user(KF, n * size);
             (0..n)
-                .map(|i| hal::pod::at::<KinfoFile>(&b, i * size).expect("an element"))
+                .map(|i| hal::mem::pod::at::<KinfoFile>(&b, i * size).expect("an element"))
                 .find(|kf| kf.inp_lport == u32::from(lport))
                 .expect("the socket's element")
         };
@@ -2445,7 +2445,7 @@ mod tests {
         let mut ki = KinfoProc::zeroed();
         for _ in 0..2 {
             kernel_lock();
-            let r = hal::klock::reader();
+            let r = hal::sync::klock::reader();
             let g = pr.ps_mtx.lock();
             let held = fill_kproc(&r, pr, &mut ki, None, false, &g);
             drop((g, r));
@@ -2461,7 +2461,7 @@ mod tests {
         // given back all the same.
         kernel_lock();
         {
-            let mut w = hal::klock::witness();
+            let mut w = hal::sync::klock::witness();
             let t = crate::kern::proc_glue::proc_tables();
             t.pidhash(pr.ps_pid)
                 .insert_head(&mut w, core::pin::Pin::static_ref(pr));
@@ -2475,7 +2475,7 @@ mod tests {
         };
         assert!(sysctl_proc_args(p, &[pr.ps_pid, KERN_PROC_NARGV], &mut req).is_err());
         {
-            let mut w = hal::klock::witness();
+            let mut w = hal::sync::klock::witness();
             let t = crate::kern::proc_glue::proc_tables();
             t.pidhash(pr.ps_pid).remove(&mut w, pr);
         }

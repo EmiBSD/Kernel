@@ -126,7 +126,7 @@
 //! - Input walks the table with `in_pcb_iterator` (one step and a count pair per pcb, an
 //!   `m_copym` per extra match, the mutex let go around each append: the C's); the
 //!   prototype's protocol is one word's load ([`IpProto::ip_p`]). The headers are read and
-//!   written through `hal::pod` (`ip_load`, `ip_store`), never a pointer kept across an mbuf
+//!   written through `hal::mem::pod` (`ip_load`, `ip_store`), never a pointer kept across an mbuf
 //!   call.
 //! - [`rip_chkhdr`] reads the options as the bytes of the pulled-up header, each length
 //!   checked before the byte it covers is read; it answers the packet or `None` (freed).
@@ -148,8 +148,8 @@ use core::marker::PhantomData;
 use core::mem::size_of;
 use core::pin::pin;
 
-use hal::netlock::NetHeld;
-use hal::pool::PoolArc;
+use hal::mem::pool::PoolArc;
+use hal::sync::netlock::NetHeld;
 use hal::sys::errno::Errno;
 use hal::sys::netinet_in::{
     INADDR_ANY, INADDR_BROADCAST, IP_HDRINCL, IPPROTO_DONE, IPPROTO_ICMP, IPPROTO_IP, IPPROTO_MAX,
@@ -826,7 +826,7 @@ pub(crate) mod testraw {
     use std::sync::MutexGuard;
     use std::vec::Vec;
 
-    use hal::netlock::NETLOCK;
+    use hal::sync::netlock::NETLOCK;
     use hal::sys::netinet6_in6::In6Addr;
     use hal::sys::socket::{AF_INET6, SOCK_RAW};
 
@@ -1057,7 +1057,7 @@ pub(crate) mod testraw {
         ip.set_ip_v(4);
         ip.set_ip_hl(5);
         let mut b = std::vec![0u8; len];
-        assert!(hal::pod::put(&mut b, 0, &ip));
+        assert!(hal::mem::pod::put(&mut b, 0, &ip));
         b[20..].copy_from_slice(payload);
         b
     }
@@ -1220,7 +1220,7 @@ mod tests {
         for so in [&any, &bound, &wild] {
             let (name, data) = recv(so).expect("a copy");
             assert_eq!(data, echo, "the whole datagram, its header included");
-            let src = hal::pod::at::<SockaddrIn>(&name, 0).expect("a sockaddr_in");
+            let src = hal::mem::pod::at::<SockaddrIn>(&name, 0).expect("a sockaddr_in");
             assert_eq!(src.sin_addr.s_addr, u32::from_ne_bytes([10, 9, 61, 2]));
             assert_eq!(src.sin_len, 16);
         }
