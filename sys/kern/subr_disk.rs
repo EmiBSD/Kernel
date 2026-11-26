@@ -128,7 +128,7 @@ use crate::kern::kern_synch::tsleep_nsec;
 use crate::kern::kern_synch::wakeup;
 use crate::kern::kern_task::{SYSTQ, task_add, task_set};
 use crate::kern::kern_tc::microuptime;
-use crate::kern::subr_autoconf::ALLDEVS;
+use crate::kern::subr_autoconf::{device_hold, legacy_device};
 use crate::kern::subr_autoconf::{device_lookup, device_ref, device_unref};
 use crate::kern::subr_prf::Str;
 use crate::kern::subr_prf::{addlog, log, panic, printf, snprintf};
@@ -1623,7 +1623,9 @@ pub fn getdisk(str: &[u8], defpart: u32) -> Option<(&'static Device, Dev)> {
     let found = parsedisk(str, defpart);
     if found.is_none() {
         let _ = printf(format_args!("use one of: exit"));
-        for dv in ALLDEVS.0.iter() {
+        let mut d = kernel::dev::autoconf::alldevs_next(None);
+        while let Some(n) = d {
+            let dv = legacy_device(&n);
             if dv.dv_class.get() == DV_DISK {
                 let _ = printf(format_args!(" {}[a-p]", dv.xname()));
             }
@@ -1631,6 +1633,7 @@ pub fn getdisk(str: &[u8], defpart: u32) -> Option<(&'static Device, Dev)> {
             if dv.dv_class.get() == DV_IFNET {
                 let _ = printf(format_args!(" {}", dv.xname()));
             }
+            d = kernel::dev::autoconf::alldevs_next(Some(&n));
         }
         let _ = printf(format_args!("\n"));
     }
@@ -1652,21 +1655,24 @@ pub fn parsedisk(str: &[u8], defpart: u32) -> Option<(&'static Device, Dev)> {
         _ => defpart,
     };
 
-    for dv in ALLDEVS.0.iter() {
+    let mut d = kernel::dev::autoconf::alldevs_next(None);
+    while let Some(n) = d {
+        let dv = legacy_device(&n);
         if dv.dv_class.get() == DV_DISK && dv.xname().as_bytes() == &str[..len] {
             let majdev = findblkmajor(dv);
             if majdev < 0 {
                 return None;
             }
             return Some((
-                dv,
+                device_hold(&n),
                 makediskdev(majdev as u32, dv.dv_unit.get() as u32, part),
             ));
         }
         #[cfg(feature = "nfsclient")]
         if dv.dv_class.get() == DV_IFNET && dv.xname().as_bytes() == &str[..len] {
-            return Some((dv, NODEV));
+            return Some((device_hold(&n), NODEV));
         }
+        d = kernel::dev::autoconf::alldevs_next(Some(&n));
     }
     None
 }

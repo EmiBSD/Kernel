@@ -94,62 +94,30 @@
 //!   (`findblkmajor`, `setroot`, `parsedisk`, ...) and `loadfirmware` functions belong to files
 //!   that are not ported (`subr_suspend.c`, `kern/subr_disk.c`, `dev/firmload.c`); only their
 //!   types and constants are here.
+//! - N7.1a: the device tree is the kernel's (`kernel::dev`); this file is the legacy driver
+//!   interface over it. The constants and [`Devclass`] are the kernel's, re-exported. A
+//!   [`Device`] is the legacy header of a kernel node's softc: written once from the node when
+//!   `config_make_softc` makes it, its `dv_flags` mirrored by the kernel on each change, its
+//!   `dv_ref` the legacy holders' count (the node holds one); `dv_list` and `alldevs`'
+//!   `Devicelist` went (the node's link). [`Cfdriver::cd_units`] is the kernel's unit table;
+//!   `cd_devs`/`cd_ndevs` are its mirror, kept by the kernel's hooks, for the drivers that
+//!   read them (`cd_dev`, `device_lookup`'s per-I/O path).
 
 use core::cell::Cell;
 use core::ffi::c_void;
 use core::ptr::NonNull;
 use core::sync::atomic::AtomicI32;
 
-use crate::queue_adapter;
+// The constants and the classes are the kernel's (N7.1a), under their names here.
+use kernel::dev::device::UnitTable;
+pub use kernel::dev::device::{
+    CD_COCOVM, CD_INDIRECT, CD_SKIPHIBERNATE, DETACH_FORCE, DETACH_QUIET, DV_CPU, DV_DISK, DV_DULL,
+    DV_IFNET, DV_TAPE, DV_TTY, DVACT_DEACTIVATE, DVACT_POWERDOWN, DVACT_QUIESCE, DVACT_RESUME,
+    DVACT_SUSPEND, DVACT_WAKEUP, DVF_ACTIVE, Devclass, FSTATE_DNOTFOUND, FSTATE_DSTAR,
+    FSTATE_FOUND, FSTATE_NOTFOUND, FSTATE_STAR, QUIET, UNCONF, UNSUPP,
+};
+
 use crate::sys::errno::Errno;
-use crate::sys::queue::{TailqEntry, TailqHead};
-
-/// `DVACT_DEACTIVATE`: deactivate the device.
-pub const DVACT_DEACTIVATE: i32 = 1;
-/// `DVACT_QUIESCE`: warn the device about suspend.
-pub const DVACT_QUIESCE: i32 = 2;
-/// `DVACT_SUSPEND`: suspend the device.
-pub const DVACT_SUSPEND: i32 = 3;
-/// `DVACT_RESUME`: resume the device.
-pub const DVACT_RESUME: i32 = 4;
-/// `DVACT_WAKEUP`: tell device to recover after resume.
-pub const DVACT_WAKEUP: i32 = 5;
-/// `DVACT_POWERDOWN`: power device down.
-pub const DVACT_POWERDOWN: i32 = 6;
-
-/// `DVF_ACTIVE`: device is activated (`dv_flags`).
-pub const DVF_ACTIVE: i32 = 0x0001;
-
-/// `FSTATE_NOTFOUND`: has not been found.
-pub const FSTATE_NOTFOUND: i16 = 0;
-/// `FSTATE_FOUND`: has been found.
-pub const FSTATE_FOUND: i16 = 1;
-/// `FSTATE_STAR`: duplicable.
-pub const FSTATE_STAR: i16 = 2;
-/// `FSTATE_DNOTFOUND`: has not been found, and is disabled.
-pub const FSTATE_DNOTFOUND: i16 = 3;
-/// `FSTATE_DSTAR`: duplicable, and is disabled.
-pub const FSTATE_DSTAR: i16 = 4;
-
-/// `DETACH_FORCE`: force detachment; hardware gone (`config_detach`, `ca_detach`).
-pub const DETACH_FORCE: i32 = 0x01;
-/// `DETACH_QUIET`: don't print a notice.
-pub const DETACH_QUIET: i32 = 0x02;
-
-/// `CD_INDIRECT` (`cd_mode`): the children match against a preallocated softc.
-pub const CD_INDIRECT: i32 = 1;
-/// `CD_SKIPHIBERNATE`: not attached when unhibernating.
-pub const CD_SKIPHIBERNATE: i32 = 2;
-/// `CD_COCOVM`: allow a device on a VM employing confidential computing methods, e.g. AMD
-/// SEV.
-pub const CD_COCOVM: i32 = 4;
-
-/// `QUIET`: print nothing (a `cfprint_t` result).
-pub const QUIET: i32 = 0;
-/// `UNCONF`: print " not configured\n".
-pub const UNCONF: i32 = 1;
-/// `UNSUPP`: print " not supported\n".
-pub const UNSUPP: i32 = 2;
 
 /// `SLEEP_RESUME` (`sleep_mode`).
 pub const SLEEP_RESUME: i32 = 0;
@@ -161,28 +129,6 @@ pub const SLEEP_HIBERNATE: i32 = 2;
 /// `FIRMWARE_MAX`: the largest file `loadfirmware` reads.
 pub const FIRMWARE_MAX: usize = 24 * 1024 * 1024;
 
-/// `enum devclass`: minimal device classes. Note that all "system" device types are listed
-/// here.
-#[repr(i32)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(non_camel_case_types)] // OpenBSD names, verbatim, for grep-ability
-pub enum Devclass {
-    /// Generic, no special info.
-    DV_DULL = 0,
-    /// CPU (carries resource utilization).
-    DV_CPU = 1,
-    /// Disk drive (label, etc).
-    DV_DISK = 2,
-    /// Network interface.
-    DV_IFNET = 3,
-    /// Tape device.
-    DV_TAPE = 4,
-    /// Serial line interface (???).
-    DV_TTY = 5,
-}
-
-pub use Devclass::*;
-
 /// `struct device`: what every softc starts with.
 ///
 /// Allocated zeroed by `config_make_softc`, so every field is valid as all-zero bits:
@@ -191,8 +137,6 @@ pub use Devclass::*;
 pub struct Device {
     /// `dv_class`: this device's classification.
     pub dv_class: Cell<Devclass>,
-    /// `dv_list`: entry on list of all devices (`alldevs`).
-    pub dv_list: TailqEntry<Device>,
     /// `dv_cfdata`: config data that found us.
     pub dv_cfdata: Cell<Option<&'static Cfdata>>,
     /// `dv_unit`: device unit number.
@@ -257,19 +201,6 @@ pub unsafe trait Softc: Sized {}
 
 // SAFETY: a device is trivially its own head, and all-zero is valid (see `Device`).
 unsafe impl Softc for Device {}
-
-queue_adapter!(
-    /// `TAILQ_ENTRY(device) dv_list`: `alldevs`.
-    pub DeviceList: Device, dv_list => TailqEntry<Device>
-);
-
-/// `TAILQ_HEAD(devicelist, device)`, made `Sync`: the device lists are touched under the
-/// kernel lock.
-pub struct Devicelist(pub TailqHead<DeviceList>);
-
-// SAFETY: see the type's doc; one CPU here, and autoconfiguration does not run from
-// interrupts.
-unsafe impl Sync for Devicelist {}
 
 /// `struct cfdata`: configuration data (i.e., data placed in `ioconf.c`).
 pub struct Cfdata {
@@ -453,6 +384,9 @@ pub struct Cfdriver {
     pub cd_mode: i32,
     /// `cd_ndevs`: size of `cd_devs` array.
     pub cd_ndevs: Cell<i32>,
+    /// The kernel's `cd_devs` (N7.1a): the attached devices' nodes, of which `cd_devs` and
+    /// `cd_ndevs` are the mirror.
+    pub cd_units: UnitTable,
 }
 
 impl Cfdriver {
@@ -464,6 +398,7 @@ impl Cfdriver {
             cd_class,
             cd_mode,
             cd_ndevs: Cell::new(0),
+            cd_units: UnitTable::new(),
         }
     }
 
@@ -472,13 +407,16 @@ impl Cfdriver {
         if unit < 0 || unit >= self.cd_ndevs.get() {
             return None;
         }
-        // SAFETY: `cd_devs` has `cd_ndevs` initialised slots (`config_make_softc`).
+        // SAFETY: `cd_devs` has `cd_ndevs` initialised slots: the kernel's hooks keep the
+        // mirror the size of its unit table (`subr_autoconf.rs`'s `mirror_resize`, which
+        // zeroes the new slots), under the tree's lock as the C's kernel lock.
         unsafe { *self.cd_devs.get().add(unit as usize) }
     }
 }
 
-// SAFETY: `cd_devs` and `cd_ndevs` change under the kernel lock (`config_make_softc`,
-// `config_attach`, `config_detach`); one CPU here.
+// SAFETY: `cd_devs` and `cd_ndevs` change only in the kernel's hooks, under its tree lock
+// (`mirror_set`, `mirror_resize`), and are read by the drivers under the kernel lock as in
+// LZ; `cd_units` is `Sync` itself.
 unsafe impl Sync for Cfdriver {}
 
 /// `cfprint_t`: configuration printing function. The second argument is `None` if the

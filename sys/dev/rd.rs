@@ -81,14 +81,15 @@ use core::mem::size_of;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
-use crate::kern::kern_malloc::{malloc, mallocarray};
-use crate::kern::subr_autoconf::{ALLDEVS, device_ref, device_unref};
+use kernel::dev::autoconf::config_attach_by_hand;
+use kernel::dev::device::Aux;
+
+use crate::kern::subr_autoconf::device_unref;
 use crate::kern::subr_disk::{
     bounds_check_with_label, disk_attach, disk_closepart, disk_detach, disk_gone, disk_lock,
     disk_lock_nointr, disk_lookup, disk_openpart, disk_unlock, dkcksum, initdisklabel,
     setdisklabel,
 };
-use crate::kern::subr_prf::{panic, snprintf};
 use crate::machine::disklabel::{readdisklabel, writedisklabel};
 use crate::machine::intr::{splbio, splx};
 use crate::sys::buf::BufLegacy;
@@ -96,7 +97,7 @@ use crate::sys::buf::biodone;
 use crate::sys::buf::{B_ERROR, B_READ, B_WRITE, Buf};
 use crate::sys::buf::{minphys, physio};
 use crate::sys::device::{
-    CfMatch, Cfattach, Cfdata, Cfdriver, DV_DISK, DVF_ACTIVE, Device, FSTATE_NOTFOUND, Softc,
+    CfMatch, Cfattach, Cfdata, Cfdriver, DV_DISK, Device, FSTATE_NOTFOUND, Softc,
 };
 use crate::sys::disk::Disk;
 use crate::sys::disklabel::{
@@ -106,7 +107,6 @@ use crate::sys::disklabel::{
 use crate::sys::dkio::{DIOCGDINFO, DIOCGPART, DIOCGPDINFO, DIOCRLDINFO, DIOCSDINFO, DIOCWDINFO};
 use crate::sys::errno::Errno;
 use crate::sys::fcntl::FWRITE;
-use crate::sys::malloc::{M_DEVBUF, M_NOWAIT, M_ZERO};
 use crate::sys::param::{DEV_BSHIFT, DEV_BSIZE};
 use crate::sys::proc::Proc;
 use crate::sys::types::{Daddr, Dev};
@@ -250,47 +250,15 @@ pub fn rdattach(_num: i32) {
         unsafe { crate::conf::swapgeneric::swapconf_rdroot() };
     }
     // There's only one rd_root_image, so only attach one rd.
-    let num = 1usize;
+    let num = 1i32;
 
     // XXX: Fake up more?
 
-    RD_CD.cd_ndevs.set(num as i32);
-    let slot = size_of::<Option<NonNull<Device>>>();
-    let Some(devs) = mallocarray(num, slot, M_DEVBUF, M_NOWAIT) else {
-        panic(format_args!("rdattach: out of memory"));
-    };
-    let devs = devs.cast::<Option<NonNull<Device>>>();
-    RD_CD.cd_devs.set(devs.as_ptr());
-
     for i in 0..num {
-        // Allocate the softc and initialize it.
-        let Some(mem) = malloc(size_of::<RdSoftc>(), M_DEVBUF, M_NOWAIT | M_ZERO) else {
-            panic(format_args!("rdattach: out of memory"));
-        };
-        let sc = mem.cast::<RdSoftc>();
-        // SAFETY: `size_of::<RdSoftc>()` zeroed bytes, aligned (malloc's chunks are aligned
-        // to their power-of-two size); all-zero is a valid `RdSoftc` (`Softc`).
-        let dev: &'static Device = unsafe { &(*sc.as_ptr()).sc_dev };
-        dev.dv_class.set(DV_DISK);
-        dev.dv_cfdata.set(Some(&RD_CF));
-        dev.dv_flags.set(DVF_ACTIVE);
-        dev.dv_unit.set(i as i32);
-        let mut name = [0u8; 16];
-        if snprintf(&mut name, format_args!("rd{i}")) >= name.len() {
-            panic(format_args!("rdattach: device name too long"));
-        }
-        dev.dv_xname.set(name);
-        dev.dv_ref.store(1, Ordering::Relaxed);
-
-        // Attach it to the device tree.
-        // SAFETY: `devs` has `num` slots, `i < num`.
-        unsafe { devs.as_ptr().add(i).write(Some(NonNull::from(dev))) };
-        // SAFETY: the device is in no list and lives until it is detached.
-        unsafe { ALLDEVS.0.insert_tail(dev) };
-        device_ref(dev);
-
-        // Finish initializing.
-        rd_attach(None, dev, ptr::null_mut());
+        // Allocate the softc and initialize it, attach it to the device tree (rd_cd's array
+        // of exactly `num` units, alldevs), and finish initializing (rd_attach, no parent):
+        // the kernel's attach by hand (N7.1a), in the C's order.
+        let _ = config_attach_by_hand(&RD_CF, i, &Aux::Legacy(0));
     }
 }
 

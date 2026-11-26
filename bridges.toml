@@ -628,3 +628,24 @@ paid_by = "N8"
 trait = "MediaCallbacks"
 for = ["sys/kernel/net/if_media.rs"]
 paid_by = "N7"
+
+# bsd: the machine's cfdata[]/cfroots[]/mainbus_cd, its device_register, boothowto and rootvp
+# for the kernel's autoconfiguration (N7.1a), implemented by sys/kern/subr_autoconf.rs's
+# BsdConfigGlue over machine::autoconf and registered by bsd's config_init. Paid when the
+# tables become the registry (decision 45 (3), N9.1; boot -c's UKC edits them at N7.1c).
+# kernel::dev::autoconf::ConfigGlue
+[[bridge]]
+trait = "ConfigGlue"
+for = ["sys/kernel/dev/autoconf.rs"]
+paid_by = "N9"
+
+# bsd: every legacy driver's attachment, `impl DriverOps for Cfdata` in
+# sys/kern/subr_autoconf.rs (the shim: ca_match/ca_attach/ca_detach/ca_activate over the
+# legacy header, the zeroed softc of ca_devsize, the dv_flags and cd_devs mirrors). The trait
+# is API and stays; the row goes when the last legacy driver implements it natively (N7.14;
+# N10 for amd64's if U3 is taken).
+# kernel::dev::device::DriverOps
+[[bridge]]
+trait = "DriverOps"
+for = ["sys/kernel/dev/autoconf.rs"]
+paid_by = "N7"

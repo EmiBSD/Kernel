@@ -4422,7 +4422,7 @@ status = "inherited"
 rust = "sys/dev/rd.rs"
 lz = ["sys/dev/rd.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
+adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/dev/autoconf.rs"]
 
 [[module]]
 rust = "sys/dev/rnd.rs"
@@ -5599,13 +5599,14 @@ kind = "renamed"
 [[module]]
 rust = "sys/kern/subr_autoconf.rs"
 lz = ["sys/kern/subr_autoconf.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/dev/autoconf.rs", "sys/kernel/dev/device.rs"]
 
 [[module]]
 rust = "sys/kern/subr_disk.rs"
 lz = ["sys/kern/subr_disk.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs", "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs", "sys/kernel/fs/isofs/udf/udf_subr.rs", "sys/kernel/fs/nfs/nfs_vfsops.rs", "sys/kernel/fs/nfs/nfs_boot.rs"]
+adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs", "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs", "sys/kernel/fs/isofs/udf/udf_subr.rs", "sys/kernel/fs/nfs/nfs_vfsops.rs", "sys/kernel/fs/nfs/nfs_boot.rs", "sys/kernel/dev/autoconf.rs"]
 
 [[module]]
 rust = "sys/kern/subr_evcount.rs"
@@ -8073,7 +8074,8 @@ status = "inherited"
 [[module]]
 rust = "sys/sys/device.rs"
 lz = ["sys/sys/device.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/dev/device.rs", "sys/kernel/dev/autoconf.rs"]
 
 [[module]]
 rust = "sys/hal/sys/dirent.rs"
@@ -20559,9 +20561,60 @@ lz = ["sys/sys/device.rs"]
 status = "redesigned"
 notes = "N7.1a: struct device as the kernel's counted node (DevRef = MArc<Device>), written once when made, dv_flags an atomic, linked on alldevs and the deferred queues through PinEntrys keyed to the tree's lock; the driver's softc an erased handle (AnyArc) only the driver names; cd_devs/cd_ndevs a UnitTable (an MArray of handles in a Guarded keyed to TREE, grown as the C's array); void *aux -> Aux, the void *match of cfmatch_t -> Match (owned: an indirect bus's losing softc is dropped); struct cfattach+cfdriver -> trait DriverOps, struct cfdata -> trait ConfigRow; the constants and Devclass moved here and re-exported by bsd's sys/sys/device.rs, which keeps the legacy header, Cfdata/Cfattach/Cfdriver and the suspend/firmware prototypes"
 
+[[module.fn]]
+lz = "sys/sys/device.rs::Devicelist"
+native = ["sys/kernel/dev/autoconf.rs::ALLDEVS", "Device"]
+kind = "merged"
+
 [[module]]
 rust = "sys/kernel/dev/autoconf.rs"
 crate = "kernel"
 lz = ["sys/kern/subr_autoconf.rs"]
 status = "redesigned"
 notes = "N7.1a: autoconfiguration in the kernel crate: config_search/scan/rootsearch/found_sm/rootfound/attach/make_softc/detach/deactivate/defer/mountroot, the deferred queues, config_pending, config_detach_children, config_suspend[_all], config_activate_children, device_lookup, device_mainbus over DevRef nodes; alldevs and the two deferred queues hal::pinlist::PinLists under TREE (a Mutexed<()> at IPL_NONE, never held across a driver's function), autoconf_attdet a Mutexed<i32> at IPL_HIGH slept on with sleep_nsec; a walk carries the next node's handle (unit table or the node's parked slot), the deferred record is the node's slot (no malloc); the machine's table, device_register, boothowto and rootvp through the ConfigGlue bridge; config_mountroot asks root_mounted (LZ's rootvp stub went); config_attach_by_hand for rdattach; hotplug and NMPATH gaps kept"
+
+[[module.fn]]
+lz = "sys/kern/subr_autoconf.rs::DeferredConfig"
+native = ["sys/kernel/dev/device.rs::Deferred", "sys/kernel/dev/device.rs::Device"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/subr_autoconf.rs::DeferredConfigQueue"
+native = ["DEFERRED_CONFIG_QUEUE"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/subr_autoconf.rs::AUTOCONF_ATTDET_MTX"
+native = ["ATTDET"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/subr_autoconf.rs::AUTOCONF_ATTDET"
+native = ["ATTDET"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/subr_autoconf.rs::xname"
+native = ["sys/kernel/dev/device.rs::Device::xname_bytes"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/subr_autoconf.rs::free_match"
+native = []
+kind = "dropped"
+reason = "a losing match is dropped: Match::Softc owns the indirect softc's node, so mapply's replacement of the best match (or the loser going out of scope) gives the softc back"
+
+[[module.fn]]
+lz = "sys/kern/subr_autoconf.rs::parent_matches"
+native = ["parent_hits"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/subr_autoconf.rs::set_cd_dev"
+native = ["sys/kernel/dev/device.rs::UnitTable::set"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/subr_autoconf.rs::rootvp"
+native = ["sys/kern/subr_autoconf.rs::BsdConfigGlue::root_mounted"]
+kind = "moved"

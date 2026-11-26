@@ -64,12 +64,16 @@
 //!
 //! Upstream: sys/kern/subr_autoconf.c @ 3ce1f3f79392
 //!
-//! A bus driver's attach function describes each device it finds in an attach-arguments
-//! structure and calls `config_found`; `config_search` walks `cfdata[]` for the entries whose
-//! parents include the bus, runs their match functions and keeps the best; `config_attach`
-//! makes the softc, names it (`dv_xname`), files it in `alldevs` and the driver's `cd_devs`,
-//! prints `"<name> at <parent>"` and calls the driver's attach function. The machine starts it
-//! all with `config_rootfound("mainbus", ...)` from `cpu_configure`.
+//! Since N7.1a the device tree is the kernel's (`kernel::dev::autoconf`): this file is the
+//! shim `bsd`'s drivers reach it through, every name and signature LZ's, carrying no logic.
+//! A legacy driver's `Cfdata` is both a kernel [`ConfigRow`] and a [`DriverOps`] (a row is
+//! its own driver object): its probe, attach, detach and activate call the `Cfattach`'s
+//! functions with the legacy header, and the softc it makes is the zeroed block of
+//! `ca_devsize` bytes LZ made, its header written from the kernel's [`Ident`] and held by the
+//! node through a [`LegacySoftc`] (one `dv_ref`). A legacy `&Device` names its node through
+//! `cf_driver.cd_units` and `dv_unit`; `void *aux` crosses as [`Aux::Legacy`]; the machine's
+//! table, `device_register`, `boothowto` and `rootvp` are the kernel's [`ConfigGlue`]
+//! (`bridges.toml`).
 //!
 //! ## Deviations
 //! - `cfdata[]`, `cfroots[]` and `mainbus_cd` come from the machine
@@ -80,203 +84,288 @@
 //! - Devices are `NonNull<Device>` where the C may free them (`config_attach`'s result,
 //!   `config_detach`, `device_unref`, `device_lookup`), so no reference outlives the softc;
 //!   `config_detach` and `device_unref` are `unsafe` for that reason.
-//! - `config_detach`'s last loop in C leaves `cf` at `cfdata[]`'s terminating entry and then
-//!   writes `cf->cf_unit = 0` into it when the driver has no units left, a store nothing reads;
-//!   without a terminating entry the store is not made.
-//! - `hotplug(4)` is in both GENERICs (`NHOTPLUG > 0`) but `dev/hotplug.c` is not ported:
-//!   `hotplug_device_attach`/`hotplug_device_detach` are reported when not `cold`.
+//! - `dv_ref` counts the legacy holders and the node's one reference: after an attach it is 1
+//!   where the C's is 2 (`config_make_softc`'s and `config_attach`'s are the node's handles,
+//!   the unit table's among them); the block goes when both counts are gone.
+//! - A device made by hand (a test's parent, never `config_make_softc`'s) has no node: each
+//!   call that names it makes a shadow node for the call, not in the tree, which gives no
+//!   reference back.
 //! - `NMPATH` is 0: `mpath(4)` is not in the machines' `ioconf.rs` (`scsi/mpath.c` is not
 //!   ported), so `device_mpath` returns `None`, as the C compiles it with a count of 0.
-//! - `config_mountroot` sees no root vnode (`rootvp`; there is no VFS until M10), so it always
-//!   queues the function for `config_process_deferred_mountroot`, as the C does before the
-//!   root is mounted.
-//! - `autoconf_verbose` starts at 0 (`AUTOCONF_VERBOSE`, a kernel option not configured).
+//! - The `hotplug(4)` gap and `autoconf_verbose` are the kernel's (`kernel::dev::autoconf`).
 
+use core::any::Any;
 use core::ffi::c_void;
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicI32, Ordering};
+use core::sync::atomic::Ordering;
 
-use crate::kern::init_main::BOOTHOWTO;
-use crate::kern::kern_lock::{mtx_enter, mtx_leave};
+use hal::malloc::MArc;
+use hal::pool::AnyArc;
+use kernel::dev::autoconf::{self as kac, ConfigGlue};
+pub use kernel::dev::autoconf::{AUTOCONF_SERIAL, AUTOCONF_VERBOSE, CONFIG_PENDING};
+use kernel::dev::device::{
+    Aux, ConfigRow, Deferred, DevRef, Device as Node, DriverOps, Ident, Match, UnitTable,
+};
+
+use crate::kassert;
+use crate::kern::init_main::{BOOTHOWTO, rootvp};
 use crate::kern::kern_malloc::{free, malloc, mallocarray};
-use crate::kern::kern_synch::{msleep_nsec, wakeup};
-use crate::kern::subr_prf::{Str, panic, printf, snprintf};
+use crate::kern::subr_prf::{Str, panic};
 use crate::machine::autoconf::{cfdata, cfroots, device_register, mainbus_cd};
-use crate::machine::intr::IPL_HIGH;
 use crate::sys::device::{
-    CD_COCOVM, CD_INDIRECT, CD_SKIPHIBERNATE, CfMatch, Cfdata, Cfdriver, CfmatchT, CfprintT,
-    CfscanT, DETACH_FORCE, DETACH_QUIET, DV_IFNET, DV_TAPE, DVACT_DEACTIVATE, DVACT_POWERDOWN,
-    DVACT_QUIESCE, DVACT_RESUME, DVACT_SUSPEND, DVACT_WAKEUP, DVF_ACTIVE, Device, DeviceList,
-    Devicelist, FSTATE_DNOTFOUND, FSTATE_DSTAR, FSTATE_FOUND, FSTATE_NOTFOUND, FSTATE_STAR,
+    CfMatch, Cfdata, Cfdriver, CfmatchT, CfprintT, CfscanT, DVF_ACTIVE, Devclass, Device,
     SoftcMatch,
 };
 use crate::sys::errno::Errno;
-use crate::sys::malloc::{M_DEVBUF, M_NOWAIT, M_ZERO, MINALLOCSIZE};
-use crate::sys::mutex::Mutex;
-use crate::sys::param::PWAIT;
-use crate::sys::queue::{TailqEntry, TailqHead};
-use crate::sys::reboot::{RB_COCOVM, RB_UNHIBERNATE};
-use crate::sys::systm::{COLD, INFSLP};
-use crate::{kassert, queue_adapter, unported};
+use crate::sys::malloc::{M_DEVBUF, M_NOWAIT, M_ZERO};
 
-/// `msgs[]`: what `config_found` prints after a `cfprint_t` returns `QUIET`, `UNCONF` or
-/// `UNSUPP`.
-const MSGS: [&str; 3] = ["", " not configured\n", " unsupported\n"];
-
-/// `struct matchinfo`: the state of one search for the best match.
-struct Matchinfo<'a> {
-    /// `fn`: the submatch function, `None` for each candidate's `ca_match`.
-    fn_: Option<CfmatchT>,
-    /// `parent`; `None` (`ROOT`) for a root search.
-    parent: Option<&'a Device>,
-    /// `match`: the best match so far.
-    match_: Option<CfMatch>,
-    /// `aux`.
-    aux: *mut c_void,
-    /// `indirect`: the parent's driver is `CD_INDIRECT`.
-    indirect: bool,
-    /// `pri`: the best match level so far.
-    pri: i32,
+/// The softc a legacy driver's node holds: the `struct device` heading the block LZ's
+/// `config_make_softc` allocates, and one `dv_ref` on it (`owns`), given back by the drop.
+/// A shadow (`owns == false`) names a device made by hand and holds nothing.
+struct LegacySoftc {
+    /// The header.
+    dev: NonNull<Device>,
+    /// The node holds one `dv_ref` on the block.
+    owns: bool,
 }
 
-/// `struct deferred_config`: a device whose configuration waits for its parent's other
-/// children, or for the root file system.
-struct DeferredConfig {
-    /// `dc_queue`.
-    dc_queue: TailqEntry<DeferredConfig>,
-    /// `dc_dev`.
-    dc_dev: NonNull<Device>,
-    /// `dc_func`.
-    dc_func: fn(&Device),
+// SAFETY: a `LegacySoftc` only names the block; the block's `Cell`s are read and written by
+// the legacy drivers and this shim under the kernel lock, as LZ's `unsafe impl Sync for
+// Cfdriver`/`Cfdata` rest on, and `dv_ref` is atomic. Moving the name to another CPU moves no
+// access with it.
+unsafe impl Send for LegacySoftc {}
+// SAFETY: as for `Send`: a shared `LegacySoftc` hands out only the shared header
+// (`legacy_device`), whose members are `Cell`s touched under the kernel lock and an atomic.
+unsafe impl Sync for LegacySoftc {}
+
+impl Drop for LegacySoftc {
+    fn drop(&mut self) {
+        if self.owns {
+            // SAFETY: an owning `LegacySoftc` holds one `dv_ref` on a live block (taken when
+            // the block was made, or handed over by a `SoftcMatch`), given back here once.
+            unsafe { device_unref(self.dev) };
+        }
+    }
 }
 
-queue_adapter!(
-    /// `TAILQ_ENTRY(deferred_config) dc_queue`.
-    DcQueue: DeferredConfig, dc_queue => TailqEntry<DeferredConfig>
-);
+/// A legacy driver's `fn(&Device)` deferred by `config_defer`/`config_mountroot`, the
+/// kernel's [`Deferred::arg`].
+struct LegacyFn(fn(&Device));
 
-/// A deferred-configuration queue head, made `Sync`: the queues are touched under the kernel
-/// lock, from process context.
-struct DeferredConfigQueue(TailqHead<DcQueue>);
+/// The machine's table and the state autoconfiguration reads, for the kernel.
+struct BsdConfigGlue;
 
-// SAFETY: see the type's doc; one CPU here.
-unsafe impl Sync for DeferredConfigQueue {}
+static BSD_GLUE: BsdConfigGlue = BsdConfigGlue;
 
-/// `autoconf_verbose`: trace probe calls.
-pub static AUTOCONF_VERBOSE: AtomicI32 = AtomicI32::new(0);
-
-/// `deferred_config_queue`.
-static DEFERRED_CONFIG_QUEUE: DeferredConfigQueue = DeferredConfigQueue(TailqHead::new());
-/// `mountroot_config_queue`.
-static MOUNTROOT_CONFIG_QUEUE: DeferredConfigQueue = DeferredConfigQueue(TailqHead::new());
-
-/// `alldevs`: list of all devices.
-pub static ALLDEVS: Devicelist = Devicelist(TailqHead::new());
-
-/// `config_pending`: semaphore for mountroot.
-pub static CONFIG_PENDING: AtomicI32 = AtomicI32::new(0);
-
-/// `autoconf_attdet_mtx`: protects `autoconf_attdet` and `autoconf_serial`.
-static AUTOCONF_ATTDET_MTX: Mutex = Mutex::new(IPL_HIGH);
-/// `autoconf_attdet`: if > 0, devices are being attached and any thread which tries to detach
-/// will sleep; if < 0 devices are being detached and any thread which tries to attach will
-/// sleep. Protected by: `autoconf_attdet_mtx`.
-static AUTOCONF_ATTDET: AtomicI32 = AtomicI32::new(0);
-
-/// `autoconf_serial`: versioned state of the devices tree so that changes can be detected.
-pub static AUTOCONF_SERIAL: AtomicI32 = AtomicI32::new(0);
-
-/// A C string argument up to its first NUL.
-fn cstr(s: &[u8]) -> &[u8] {
-    &s[..s.iter().position(|&c| c == 0).unwrap_or(s.len())]
+/// The legacy header of a legacy driver's node.
+pub fn legacy_device(n: &Node) -> &Device {
+    let Some(ls) = n.softc().downcast_ref::<LegacySoftc>() else {
+        panic(format_args!(
+            "autoconf: {} is not a legacy device",
+            n.xname()
+        ));
+    };
+    // SAFETY: `ls.dev` heads a live block for as long as `ls` lives: an owning
+    // `LegacySoftc` holds a `dv_ref` and `device_unref` frees only at 0; a shadow names a
+    // device made by hand, static or leaked, which nothing frees. The reference borrows `n`,
+    // whose softc handle keeps `ls` alive; only shared references to the header are made (its
+    // members are `Cell`s and an atomic).
+    unsafe { ls.dev.as_ref() }
 }
 
-/// `dv_xname` as a printable string.
-fn xname(dev: &Device) -> [u8; 16] {
-    dev.dv_xname.get()
+/// `parsedisk`'s device, kept for ever: one `dv_ref` taken and never given back, so the
+/// block is never freed (the boot device the C keeps as a pointer).
+pub fn device_hold(n: &Node) -> &'static Device {
+    let dv = legacy_device(n);
+    device_ref(dv);
+    // SAFETY: the reference just taken is never given back, so `dv_ref` never reaches 0 and
+    // `device_unref`, the only place the block is freed, never frees it: it lives for the
+    // rest of the kernel's life. Only shared references to the header are made.
+    unsafe { NonNull::from(dv).as_ref() }
+}
+
+/// A kernel node's handle for the legacy `cfdata` row.
+fn cfdata_of(row: &'static dyn ConfigRow) -> &'static Cfdata {
+    let any: &'static dyn Any = row;
+    match any.downcast_ref::<Cfdata>() {
+        Some(cf) => cf,
+        None => panic(format_args!("autoconf: a native row for a legacy driver")),
+    }
+}
+
+/// `void *aux` for the kernel.
+fn aux_of(aux: *mut c_void) -> Aux<'static> {
+    Aux::Legacy(aux.expose_provenance())
+}
+
+/// The kernel's `aux` back as the legacy driver's `void *`.
+fn aux_ptr(aux: &Aux<'_>) -> *mut c_void {
+    match aux {
+        Aux::Legacy(a) => ptr::with_exposed_provenance_mut(*a),
+        Aux::Typed(_) => panic(format_args!(
+            "autoconf: a native bus's arguments for a legacy driver"
+        )),
+    }
+}
+
+/// The erased softc of a legacy node.
+fn new_softc(ls: LegacySoftc) -> AnyArc {
+    match MArc::new(M_DEVBUF, hal::malloc::M_NOWAIT, ls) {
+        Some(a) => MArc::erase(a),
+        None => panic(format_args!(
+            "config_make_softc: allocation for device softc failed"
+        )),
+    }
+}
+
+/// The node of a legacy device: the one in its driver's unit table, or, for a device made by
+/// hand, a shadow for the call (the module's deviations).
+fn node_of(dev: &Device) -> DevRef {
+    let cf = dev.cfdata();
+    if let Some(n) = cf.cf_driver.cd_units.get(dev.dv_unit.get())
+        && ptr::eq(legacy_device(&n), dev)
+    {
+        return n;
+    }
+    let xname = dev.dv_xname.get();
+    let id = Ident {
+        class: dev.dv_class.get(),
+        unit: dev.dv_unit.get(),
+        xname: &xname,
+        row: cf,
+        parent: None,
+    };
+    kac::device_adopt(
+        &id,
+        dev.dv_flags.get(),
+        new_softc(LegacySoftc {
+            dev: NonNull::from(dev),
+            owns: false,
+        }),
+    )
+}
+
+/// The legacy view of a match, lent to a legacy match function for the call.
+fn view(m: &Match) -> CfMatch {
+    match m {
+        Match::Row(row) => CfMatch::Cfdata(cfdata_of(*row)),
+        Match::Softc(d) => {
+            let p = NonNull::from(legacy_device(d));
+            // SAFETY: `SoftcMatch::new`'s contract, that the softc outlives the value: the
+            // value is only lent (`&CfMatch`) to a legacy match function for the call, while
+            // `d` holds the node and its `dv_ref`; a `SoftcMatch` has no drop, so this view
+            // frees nothing when it goes.
+            CfMatch::Softc(unsafe { SoftcMatch::new(p) })
+        }
+    }
+}
+
+/// A preallocated softc handed to a legacy caller, who owns it from now on (it attaches it
+/// or `free`s it, as the C's): one `dv_ref` taken for the claim before the node's goes.
+fn release_softc(d: DevRef) -> SoftcMatch {
+    let dv = legacy_device(&d);
+    device_ref(dv);
+    let p = NonNull::from(dv);
+    drop(d);
+    // SAFETY: the reference `device_ref` took above is the claim: `dv_ref` stays at least 1
+    // once the node's goes with `d`, so the block lives until the claim's holder attaches it
+    // (`adopt` hands the reference to the new node) or frees it (`free`, as the C's loser):
+    // `SoftcMatch::new`'s contract.
+    unsafe { SoftcMatch::new(p) }
+}
+
+/// A kernel match handed to a legacy caller (`config_search`, `config_scan`).
+fn release(m: Match) -> CfMatch {
+    match m {
+        Match::Row(row) => CfMatch::Cfdata(cfdata_of(row)),
+        Match::Softc(d) => CfMatch::Softc(release_softc(d)),
+    }
+}
+
+/// A legacy match given to the kernel: a preallocated softc becomes a node again, taking
+/// over the claim's `dv_ref`.
+fn adopt(m: CfMatch, parent: Option<&DevRef>) -> Match {
+    match m {
+        CfMatch::Cfdata(cf) => Match::Row(cf),
+        CfMatch::Softc(sc) => {
+            let dv = sc.device();
+            let xname = dv.dv_xname.get();
+            let id = Ident {
+                class: dv.dv_class.get(),
+                unit: dv.dv_unit.get(),
+                xname: &xname,
+                row: dv.cfdata(),
+                parent,
+            };
+            let flags = dv.dv_flags.get();
+            let softc = new_softc(LegacySoftc {
+                dev: sc.into_raw(),
+                owns: true,
+            });
+            Match::Softc(kac::device_adopt(&id, flags, softc))
+        }
+    }
+}
+
+/// A legacy submatch for the kernel.
+fn submatch(f: CfmatchT, aux: *mut c_void) -> impl Fn(Option<&DevRef>, &Match, &Aux<'_>) -> i32 {
+    move |parent, m, _| f(parent.map(|p| legacy_device(p)), &view(m), aux)
+}
+
+/// A legacy print function for the kernel.
+fn printer(f: CfprintT, aux: *mut c_void) -> impl Fn(&Aux<'_>, Option<&[u8]>) -> i32 {
+    move |_, pnp| f(aux, pnp)
+}
+
+/// `cd->cd_devs[unit] = dev`: the mirror of the kernel's unit table.
+fn mirror_set(cd: &Cfdriver, unit: i32, dev: Option<NonNull<Device>>) {
+    if unit < 0 || unit >= cd.cd_ndevs.get() {
+        panic(format_args!(
+            "autoconf: unit {unit} outside the cd_devs mirror"
+        ));
+    }
+    // SAFETY: `cd_devs` has `cd_ndevs` slots (`mirror_resize` keeps the mirror the size of the
+    // kernel's table) and `unit` is within them (checked above); the kernel calls this under
+    // its tree lock, the writers' lock, and readers take the slot by value.
+    unsafe { *cd.cd_devs.get().add(unit as usize) = dev };
+}
+
+/// The `cd_devs` array made `len` slots (0: freed), the slots in use copied.
+fn mirror_resize(cd: &Cfdriver, len: usize) {
+    let old = usize::try_from(cd.cd_ndevs.get()).unwrap_or(0);
+    let slot = size_of::<Option<NonNull<Device>>>();
+    let osp = NonNull::new(cd.cd_devs.get());
+    if len == 0 {
+        // nothing found; deallocate
+        if let Some(osp) = osp {
+            free(osp.cast(), M_DEVBUF, old * slot);
+        }
+        cd.cd_devs.set(ptr::null_mut());
+        cd.cd_ndevs.set(0);
+        return;
+    }
+    let Some(nsp) = mallocarray(len, slot, M_DEVBUF, M_NOWAIT | M_ZERO) else {
+        panic(format_args!(
+            "config_make_softc: {}ing dev array",
+            if old != 0 { "expand" } else { "creat" }
+        ));
+    };
+    let nsp = nsp.cast::<Option<NonNull<Device>>>();
+    if let Some(osp) = osp {
+        // SAFETY: the old array has `old` slots, the new one `len` zeroed ones, and
+        // `old.min(len)` are copied; distinct allocations.
+        unsafe { ptr::copy_nonoverlapping(osp.as_ptr(), nsp.as_ptr(), old.min(len)) };
+        free(osp.cast(), M_DEVBUF, old * slot);
+    }
+    cd.cd_devs.set(nsp.as_ptr());
+    cd.cd_ndevs.set(len as i32);
 }
 
 /// `config_init`: initialize autoconfiguration data structures. This occurs before console
 /// initialization as that might require use of this subsystem. Furthermore this means that
 /// malloc et al. isn't yet available.
 pub fn config_init() {
-    DEFERRED_CONFIG_QUEUE.0.init();
-    MOUNTROOT_CONFIG_QUEUE.0.init();
-    ALLDEVS.0.init();
-}
-
-/// Frees a softc preallocated for a match that lost (`free(match, M_DEVBUF, ca_devsize)`).
-fn free_match(match_: CfMatch) {
-    if let CfMatch::Softc(sc) = match_ {
-        let size = sc.device().cfdata().cf_attach.ca_devsize;
-        free(sc.into_raw().cast(), M_DEVBUF, size);
-    }
-}
-
-/// `mapply`: apply the matching function and choose the best. This is used a few times and we
-/// want to keep the code small.
-fn mapply(m: &mut Matchinfo<'_>, cf: &'static Cfdata) {
-    let match_ = if m.indirect {
-        // SAFETY: a fresh softc, owned by this match until it wins or is freed below.
-        CfMatch::Softc(unsafe { SoftcMatch::new(config_make_softc(m.parent, cf)) })
-    } else {
-        CfMatch::Cfdata(cf)
-    };
-
-    let verbose = AUTOCONF_VERBOSE.load(Ordering::Relaxed) != 0;
-    if verbose {
-        printf(format_args!(
-            ">>> probing for {}",
-            Str(cf.cf_driver.cd_name)
-        ));
-        if cf.cf_fstate.get() == FSTATE_STAR {
-            printf(format_args!("*\n"));
-        } else {
-            printf(format_args!("{}\n", cf.cf_unit.get()));
-        }
-    }
-    let pri = match m.fn_ {
-        Some(f) => f(m.parent, &match_, m.aux),
-        None => match cf.cf_attach.ca_match {
-            Some(ca_match) => ca_match(m.parent, &match_, m.aux),
-            None => panic(format_args!(
-                "mapply: no match function for '{}' device",
-                Str(cf.cf_driver.cd_name)
-            )),
-        },
-    };
-    if verbose {
-        printf(format_args!(
-            ">>> {} probe returned {}\n",
-            Str(cf.cf_driver.cd_name),
-            pri
-        ));
-    }
-
-    if pri > m.pri {
-        if let Some(old) = m.match_.take() {
-            free_match(old);
-        }
-        m.match_ = Some(match_);
-        m.pri = pri;
-    } else {
-        free_match(match_);
-    }
-}
-
-/// Whether `parent`'s `cfdata` is `cfdata[p]` for one of `cf`'s potential parents `p`, once
-/// per such parent (the C applies the match once per matching parent index).
-fn parent_matches(parent: &Device, cf: &Cfdata) -> usize {
-    let table = cfdata();
-    let pcf = parent.dv_cfdata.get();
-    cf.cf_parents
-        .iter()
-        .filter(|&&p| {
-            table
-                .get(p as usize)
-                .is_some_and(|c| pcf.is_some_and(|pcf| ptr::eq(pcf, c)))
-        })
-        .count()
+    kac::config_init(&BSD_GLUE);
 }
 
 /// `config_search`: iterate over all potential children of some device, calling the given
@@ -287,86 +376,24 @@ fn parent_matches(parent: &Device, cf: &Cfdata) -> usize {
 /// Note that this function is designed so that it can be used to apply an arbitrary function
 /// to all potential children (its return value can be ignored).
 pub fn config_search(fn_: Option<CfmatchT>, parent: &Device, aux: *mut c_void) -> Option<CfMatch> {
-    let mut m = Matchinfo {
-        fn_,
-        parent: Some(parent),
-        match_: None,
-        aux,
-        indirect: parent.cfdata().cf_driver.cd_mode & CD_INDIRECT != 0,
-        pri: 0,
-    };
-    let boothowto = BOOTHOWTO.load(Ordering::Relaxed);
-
-    for cf in cfdata() {
-        // Skip cf if no longer eligible, otherwise scan through parents for one matching
-        // `parent', and try match function.
-        let fstate = cf.cf_fstate.get();
-        if fstate == FSTATE_FOUND {
-            continue;
-        }
-        if fstate == FSTATE_DNOTFOUND || fstate == FSTATE_DSTAR {
-            continue;
-        }
-        let cd = cf.cf_driver;
-        if boothowto & RB_UNHIBERNATE != 0 {
-            if cd.cd_mode & CD_SKIPHIBERNATE != 0 {
-                continue;
-            }
-            if cd.cd_class == DV_IFNET {
-                continue;
-            }
-            if cd.cd_class == DV_TAPE {
-                continue;
-            }
-        }
-        if boothowto & RB_COCOVM != 0 && cd.cd_mode & CD_COCOVM == 0 {
-            continue;
-        }
-        for _ in 0..parent_matches(parent, cf) {
-            mapply(&mut m, cf);
-        }
-    }
-
-    if AUTOCONF_VERBOSE.load(Ordering::Relaxed) != 0 {
-        match &m.match_ {
-            Some(found) => printf(format_args!(
-                ">>> {} probe won\n",
-                Str(found.cfdata().cf_driver.cd_name)
-            )),
-            None => printf(format_args!(">>> no winning probe\n")),
-        };
-    }
-    m.match_
+    let p = node_of(parent);
+    let sub = fn_.map(|f| submatch(f, aux));
+    kac::config_search(
+        sub.as_ref().map(|s| s as kac::Submatch<'_>),
+        &p,
+        &aux_of(aux),
+    )
+    .map(release)
 }
 
 /// `config_scan`: iterate over all potential children of some device, calling the given
 /// function for each one.
-///
-/// Note that this function is designed so that it can be used to apply an arbitrary function
-/// to all potential children (its return value can be ignored).
 pub fn config_scan(fn_: CfscanT, parent: &Device) {
-    let indirect = parent.cfdata().cf_driver.cd_mode & CD_INDIRECT != 0;
-
-    for cf in cfdata() {
-        // Skip cf if no longer eligible, otherwise scan through parents for one matching
-        // `parent', and try match function.
-        let fstate = cf.cf_fstate.get();
-        if fstate == FSTATE_FOUND {
-            continue;
-        }
-        if fstate == FSTATE_DNOTFOUND || fstate == FSTATE_DSTAR {
-            continue;
-        }
-        for _ in 0..parent_matches(parent, cf) {
-            let match_ = if indirect {
-                // SAFETY: a fresh softc, handed to `fn_`, which owns it from now on.
-                CfMatch::Softc(unsafe { SoftcMatch::new(config_make_softc(Some(parent), cf)) })
-            } else {
-                CfMatch::Cfdata(cf)
-            };
-            fn_(parent, match_);
-        }
-    }
+    let p = node_of(parent);
+    kac::config_scan(
+        &|par: &DevRef, m: Match| fn_(legacy_device(par), release(m)),
+        &p,
+    );
 }
 
 /// `config_rootsearch`: find the given root device. This is much like `config_search`, but
@@ -376,30 +403,13 @@ pub fn config_rootsearch(
     rootname: &[u8],
     aux: *mut c_void,
 ) -> Option<CfMatch> {
-    let mut m = Matchinfo {
-        fn_,
-        parent: None,
-        match_: None,
-        aux,
-        indirect: false,
-        pri: 0,
-    };
-    let table = cfdata();
-    // Look at root entries for matching name. We do not bother with found-state here since
-    // only one instance of each possible root child should ever be searched.
-    for &p in cfroots() {
-        let Some(cf) = table.get(p as usize) else {
-            continue;
-        };
-        let fstate = cf.cf_fstate.get();
-        if fstate == FSTATE_DNOTFOUND || fstate == FSTATE_DSTAR {
-            continue;
-        }
-        if cstr(cf.cf_driver.cd_name) == cstr(rootname) {
-            mapply(&mut m, cf);
-        }
-    }
-    m.match_
+    let sub = fn_.map(|f| submatch(f, aux));
+    kac::config_rootsearch(
+        sub.as_ref().map(|s| s as kac::Submatch<'_>),
+        rootname,
+        &aux_of(aux),
+    )
+    .map(release)
 }
 
 /// `config_found_sm`: the given `aux` argument describes a device that has been found on the
@@ -411,20 +421,18 @@ pub fn config_found_sm(
     parent: &Device,
     aux: *mut c_void,
     print: Option<CfprintT>,
-    submatch: Option<CfmatchT>,
+    submatch_: Option<CfmatchT>,
 ) -> Option<NonNull<Device>> {
-    if let Some(match_) = config_search(submatch, parent, aux) {
-        return Some(config_attach(Some(parent), match_, aux, print));
-    }
-    if let Some(print) = print {
-        let name = xname(parent);
-        let r = print(aux, Some(cstr(&name)));
-        printf(format_args!(
-            "{}",
-            MSGS.get(r as usize).copied().unwrap_or("")
-        ));
-    }
-    None
+    let p = node_of(parent);
+    let pr = print.map(|f| printer(f, aux));
+    let sub = submatch_.map(|f| submatch(f, aux));
+    let d = kac::config_found_sm(
+        &p,
+        &aux_of(aux),
+        pr.as_ref().map(|f| f as kac::Print<'_>),
+        sub.as_ref().map(|s| s as kac::Submatch<'_>),
+    )?;
+    Some(NonNull::from(legacy_device(&d)))
 }
 
 /// `config_found(d, a, p)`: `config_found_sm` without a submatch function (`<sys/device.h>`).
@@ -438,14 +446,8 @@ pub fn config_found(
 
 /// `config_rootfound`: as `config_found_sm`, but for root devices.
 pub fn config_rootfound(rootname: &[u8], aux: *mut c_void) -> Option<NonNull<Device>> {
-    if let Some(match_) = config_rootsearch(None, rootname, aux) {
-        return Some(config_attach(None, match_, aux, None));
-    }
-    printf(format_args!(
-        "root device {} not configured\n",
-        Str(rootname)
-    ));
-    None
+    let d = kac::config_rootfound(rootname, &aux_of(aux))?;
+    Some(NonNull::from(legacy_device(&d)))
 }
 
 /// `config_attach`: attach a found device. Allocates memory for device variables.
@@ -455,191 +457,24 @@ pub fn config_attach(
     aux: *mut c_void,
     print: Option<CfprintT>,
 ) -> NonNull<Device> {
-    mtx_enter(&AUTOCONF_ATTDET_MTX);
-    while AUTOCONF_ATTDET.load(Ordering::Relaxed) < 0 {
-        let _ = msleep_nsec(
-            ptr::from_ref(&AUTOCONF_ATTDET),
-            &AUTOCONF_ATTDET_MTX,
-            PWAIT,
-            "autoconf",
-            INFSLP,
-        );
-    }
-    AUTOCONF_ATTDET.fetch_add(1, Ordering::Relaxed);
-    mtx_leave(&AUTOCONF_ATTDET_MTX);
-
-    let (devp, cf) = match match_ {
-        CfMatch::Softc(sc) => {
-            let cf = sc.device().cfdata();
-            (sc.into_raw(), cf)
-        }
-        CfMatch::Cfdata(cf) => (config_make_softc(parent, cf), cf),
-    };
-    // SAFETY: the softc was just made (or handed over by the search); it is freed only by
-    // `config_detach`, which cannot run before this attach has finished (autoconf_attdet).
-    let dev = unsafe { devp.as_ref() };
-
-    let cd = cf.cf_driver;
-    let ca = cf.cf_attach;
-    let unit = dev.dv_unit.get();
-
-    kassert!(!cd.cd_devs.get().is_null());
-    kassert!(unit < cd.cd_ndevs.get());
-    kassert!(cd.cd_dev(unit).is_none());
-    set_cd_dev(cd, unit, Some(devp));
-
-    // If this is a "STAR" device and we used the last unit, prepare for another one.
-    if cf.cf_fstate.get() == FSTATE_STAR {
-        if unit == i32::from(cf.cf_unit.get()) {
-            cf.cf_unit.set(cf.cf_unit.get() + 1);
-        }
-    } else {
-        cf.cf_fstate.set(FSTATE_FOUND);
-    }
-
-    // SAFETY: the device is in no list yet and stays in place until `config_detach` unlinks
-    // it.
-    unsafe { ALLDEVS.0.insert_tail(dev) };
-    device_ref(dev);
-
-    let name = xname(dev);
-    match parent {
-        None => {
-            printf(format_args!("{} at root", Str(&name)));
-        }
-        Some(p) => {
-            let pname = xname(p);
-            printf(format_args!("{} at {}", Str(&name), Str(&pname)));
-            if let Some(print) = print {
-                let _ = print(aux, None);
-            }
-        }
-    }
-
-    // Before attaching, clobber any unfound devices that are otherwise identical, or bump the
-    // unit number on all starred cfdata for this device.
-    for c in cfdata() {
-        if ptr::eq(c.cf_driver, cd) && i32::from(c.cf_unit.get()) == unit {
-            if c.cf_fstate.get() == FSTATE_NOTFOUND {
-                c.cf_fstate.set(FSTATE_FOUND);
-            }
-            if c.cf_fstate.get() == FSTATE_STAR {
-                c.cf_unit.set(c.cf_unit.get() + 1);
-            }
-        }
-    }
-    device_register(dev, aux);
-    (ca.ca_attach)(parent, dev, aux);
-    config_process_deferred_children(dev);
-    // NHOTPLUG > 0
-    if !COLD.load(Ordering::Relaxed) {
-        let _ = unported!("hotplug_device_attach (dev/hotplug.c)");
-    }
-
-    mtx_enter(&AUTOCONF_ATTDET_MTX);
-    if AUTOCONF_ATTDET.fetch_sub(1, Ordering::Relaxed) == 1 {
-        wakeup(ptr::from_ref(&AUTOCONF_ATTDET));
-    }
-    AUTOCONF_SERIAL.fetch_add(1, Ordering::Relaxed);
-    mtx_leave(&AUTOCONF_ATTDET_MTX);
-    devp
-}
-
-/// `cd->cd_devs[unit] = dev`.
-fn set_cd_dev(cd: &Cfdriver, unit: i32, dev: Option<NonNull<Device>>) {
-    kassert!(unit >= 0 && unit < cd.cd_ndevs.get());
-    // SAFETY: `cd_devs` has `cd_ndevs` slots (`config_make_softc`), changed under the kernel
-    // lock.
-    unsafe { *cd.cd_devs.get().add(unit as usize) = dev };
+    let p = parent.map(node_of);
+    let m = adopt(match_, p.as_ref());
+    let pr = print.map(|f| printer(f, aux));
+    let d = kac::config_attach(
+        p.as_ref(),
+        m,
+        &aux_of(aux),
+        pr.as_ref().map(|f| f as kac::Print<'_>),
+    );
+    NonNull::from(legacy_device(&d))
 }
 
 /// `config_make_softc`: allocates the softc of a device `cf` describes below `parent`, picks
-/// its unit, names it and makes room for it in the driver's `cd_devs`.
+/// its unit, names it and makes room for it in the driver's `cd_devs`; the caller owns it
+/// (it attaches it or frees it).
 pub fn config_make_softc(parent: Option<&Device>, cf: &'static Cfdata) -> NonNull<Device> {
-    let cd = cf.cf_driver;
-    let ca = cf.cf_attach;
-    if ca.ca_devsize < size_of::<Device>() {
-        panic(format_args!("config_make_softc"));
-    }
-
-    // get memory for all device vars
-    let Some(mem) = malloc(ca.ca_devsize, M_DEVBUF, M_NOWAIT | M_ZERO) else {
-        panic(format_args!(
-            "config_make_softc: allocation for device softc failed"
-        ));
-    };
-    let devp = mem.cast::<Device>();
-    kassert!(devp.as_ptr().is_aligned());
-    // SAFETY: `ca_devsize` zeroed bytes, at least a `Device`, suitably aligned (malloc's
-    // chunks are aligned to their power-of-two size); all-zero is a valid `Device`.
-    let dev = unsafe { devp.as_ref() };
-
-    dev.dv_class.set(cd.cd_class);
-    dev.dv_cfdata.set(Some(cf));
-    dev.dv_flags.set(DVF_ACTIVE); // always initially active
-
-    // If this is a STAR device, search for a free unit number
-    if cf.cf_fstate.get() == FSTATE_STAR {
-        let mut unit = i32::from(cf.cf_starunit1);
-        while unit < i32::from(cf.cf_unit.get()) {
-            if cd.cd_ndevs.get() == 0 || unit >= cd.cd_ndevs.get() || cd.cd_dev(unit).is_none() {
-                break;
-            }
-            unit += 1;
-        }
-        dev.dv_unit.set(unit);
-    } else {
-        dev.dv_unit.set(i32::from(cf.cf_unit.get()));
-    }
-    let unit = dev.dv_unit.get();
-
-    // Build the device name into dv_xname.
-    let mut name = [0u8; 16];
-    if snprintf(&mut name, format_args!("{}{}", Str(cd.cd_name), unit)) >= name.len() {
-        panic(format_args!("config_make_softc: device name too long"));
-    }
-    dev.dv_xname.set(name);
-    dev.dv_parent.set(parent.map(NonNull::from));
-
-    // put this device in the devices array
-    if unit >= cd.cd_ndevs.get() {
-        // Need to expand the array.
-        let old = cd.cd_ndevs.get();
-        let mut new = if old == 0 {
-            (MINALLOCSIZE / size_of::<*const c_void>()) as i32
-        } else {
-            old * 2
-        };
-        while new <= unit {
-            new *= 2;
-        }
-        let slot = size_of::<Option<NonNull<Device>>>();
-        let Some(nsp) = mallocarray(new as usize, slot, M_DEVBUF, M_NOWAIT | M_ZERO) else {
-            panic(format_args!(
-                "config_make_softc: {}ing dev array",
-                if old != 0 { "expand" } else { "creat" }
-            ));
-        };
-        let nsp = nsp.cast::<Option<NonNull<Device>>>();
-        if let Some(osp) = NonNull::new(cd.cd_devs.get()) {
-            // SAFETY: the old array has `old` slots, the new one `new > old` zeroed ones;
-            // distinct allocations.
-            unsafe { ptr::copy_nonoverlapping(osp.as_ptr(), nsp.as_ptr(), old as usize) };
-            free(osp.cast(), M_DEVBUF, old as usize * slot);
-        }
-        cd.cd_devs.set(nsp.as_ptr());
-        cd.cd_ndevs.set(new);
-    }
-    if cd.cd_dev(unit).is_some() {
-        panic(format_args!(
-            "config_make_softc: duplicate {}",
-            Str(&dev.dv_xname.get())
-        ));
-    }
-
-    dev.dv_ref.store(1, Ordering::Relaxed);
-
-    devp
+    let p = parent.map(node_of);
+    release_softc(kac::config_make_softc(p.as_ref(), cf)).into_raw()
 }
 
 /// `config_detach`: detach a device. Optionally forced (e.g. because of hardware removal) and
@@ -653,422 +488,94 @@ pub fn config_make_softc(parent: Option<&Device>, cf: &'static Cfdata) -> NonNul
 /// `dev` is an attached device. On success it has been freed (unless someone else holds a
 /// reference from `device_lookup`/`device_ref`), so the caller must not use it again.
 pub unsafe fn config_detach(dev: NonNull<Device>, flags: i32) -> Result<(), Errno> {
-    mtx_enter(&AUTOCONF_ATTDET_MTX);
-    while AUTOCONF_ATTDET.load(Ordering::Relaxed) > 0 {
-        let _ = msleep_nsec(
-            ptr::from_ref(&AUTOCONF_ATTDET),
-            &AUTOCONF_ATTDET_MTX,
-            PWAIT,
-            "autoconf",
-            INFSLP,
-        );
-    }
-    AUTOCONF_ATTDET.fetch_sub(1, Ordering::Relaxed);
-    mtx_leave(&AUTOCONF_ATTDET_MTX);
-
-    // SAFETY: the caller's guarantee; the device stays allocated until the last
-    // `device_unref` below.
-    let d = unsafe { dev.as_ref() };
-    let devname = xname(d);
-
-    let cf = d.cfdata();
-    #[cfg(feature = "diagnostic")]
-    if cf.cf_fstate.get() != FSTATE_FOUND && cf.cf_fstate.get() != FSTATE_STAR {
-        panic(format_args!("config_detach: bad device fstate"));
-    }
-    let ca = cf.cf_attach;
-    let cd = cf.cf_driver;
-
-    let rv = 'done: {
-        // Ensure the device is deactivated. If the device has an activation entry point and
-        // DVF_ACTIVE is still set, the device is busy, and the detach fails.
-        let mut rv = config_deactivate(d);
-
-        // Try to detach the device. If that's not possible, then we either panic() (for the
-        // forced but failed case), or return an error.
-        if rv.is_ok() {
-            rv = match ca.ca_detach {
-                Some(detach) => detach(d, flags),
-                None => Err(Errno::EOPNOTSUPP),
-            };
-        }
-        if let Err(e) = rv {
-            if flags & DETACH_FORCE == 0 {
-                break 'done rv;
-            }
-            panic(format_args!(
-                "config_detach: forced detach of {} failed ({})",
-                Str(&devname),
-                e as i32
-            ));
-        }
-
-        // The device has now been successfully detached.
-
-        #[cfg(feature = "diagnostic")]
-        {
-            // Sanity: If you're successfully detached, you should have no children. (Note
-            // that because children must be attached after parents, we only need to search
-            // the latter part of the list.)
-            let mut found = false;
-            let mut c = TailqHead::<DeviceList>::next(d);
-            while let Some(child) = c {
-                if child.dv_parent.get() == Some(dev) {
-                    printf(format_args!(
-                        "config_detach: {} attached at {}\n",
-                        Str(&xname(child)),
-                        Str(&devname)
-                    ));
-                    found = true;
-                }
-                c = TailqHead::<DeviceList>::next(child);
-            }
-            if found {
-                panic(format_args!(
-                    "config_detach: detached device ({}) has children",
-                    Str(&devname)
-                ));
-            }
-        }
-
-        // Mark cfdata to show that the unit can be reused, if possible. Note that we can only
-        // re-use a starred unit number if the unit being detached had the last assigned unit
-        // number.
-        let unit = d.dv_unit.get();
-        for c in cfdata() {
-            if ptr::eq(c.cf_driver, cd) {
-                if c.cf_fstate.get() == FSTATE_FOUND && i32::from(c.cf_unit.get()) == unit {
-                    c.cf_fstate.set(FSTATE_NOTFOUND);
-                }
-                if c.cf_fstate.get() == FSTATE_STAR && i32::from(c.cf_unit.get()) == unit + 1 {
-                    c.cf_unit.set(c.cf_unit.get() - 1);
-                }
-            }
-        }
-
-        // Unlink from device list.
-        // SAFETY: an attached device is in `alldevs`.
-        unsafe { ALLDEVS.0.remove(d) };
-        // SAFETY: `config_attach` took this reference; `config_make_softc`'s is still held.
-        unsafe { device_unref(dev) };
-
-        // Remove from cfdriver's array, tell the world, and free softc.
-        set_cd_dev(cd, unit, None);
-        if flags & DETACH_QUIET == 0 {
-            printf(format_args!("{} detached\n", Str(&devname)));
-        }
-
-        // SAFETY: the last reference autoconfiguration holds; `d` is not used after this.
-        unsafe { device_unref(dev) };
-
-        // If the device now has no units in use, deallocate its softc array.
-        let ndevs = cd.cd_ndevs.get();
-        if (0..ndevs).all(|i| cd.cd_dev(i).is_none()) {
-            // nothing found; deallocate
-            if let Some(sp) = NonNull::new(cd.cd_devs.get()) {
-                free(
-                    sp.cast(),
-                    M_DEVBUF,
-                    ndevs as usize * size_of::<Option<NonNull<Device>>>(),
-                );
-            }
-            cd.cd_devs.set(ptr::null_mut());
-            cd.cd_ndevs.set(0);
-            // cf->cf_unit = 0: see the module's deviations.
-        }
-
-        // NHOTPLUG > 0
-        if !COLD.load(Ordering::Relaxed) {
-            let _ = unported!("hotplug_device_detach (dev/hotplug.c)");
-        }
-
-        // Return success.
-        Ok(())
-    };
-
-    mtx_enter(&AUTOCONF_ATTDET_MTX);
-    if AUTOCONF_ATTDET.fetch_add(1, Ordering::Relaxed) == -1 {
-        wakeup(ptr::from_ref(&AUTOCONF_ATTDET));
-    }
-    AUTOCONF_SERIAL.fetch_add(1, Ordering::Relaxed);
-    mtx_leave(&AUTOCONF_ATTDET_MTX);
-    rv
+    // SAFETY: the caller's guarantee: an attached device, alive for the call (its node, which
+    // `node_of` finds, holds a reference until the detach gives it up).
+    let n = node_of(unsafe { dev.as_ref() });
+    kac::config_detach(n, flags)
 }
 
 /// `config_deactivate`: clears `DVF_ACTIVE` and tells the device (`DVACT_DEACTIVATE`); the
 /// flag comes back if the device refuses.
 pub fn config_deactivate(dev: &Device) -> Result<(), Errno> {
-    let oflags = dev.dv_flags.get();
-    let mut rv = Ok(());
+    kac::config_deactivate(&node_of(dev))
+}
 
-    if oflags & DVF_ACTIVE != 0 {
-        dev.dv_flags.set(oflags & !DVF_ACTIVE);
-        rv = config_suspend(dev, DVACT_DEACTIVATE);
-        if rv.is_err() {
-            dev.dv_flags.set(oflags);
-        }
+/// The legacy function of a deferral, for the kernel.
+fn run_deferred(dev: &DevRef, arg: Option<&AnyArc>) {
+    match arg.and_then(|a| a.downcast_ref::<LegacyFn>()) {
+        Some(f) => (f.0)(legacy_device(dev)),
+        None => panic(format_args!(
+            "autoconf: a legacy deferral without its function"
+        )),
     }
-    rv
+}
+
+/// The kernel's record of a legacy deferral (the C's `malloc`ed `struct deferred_config`).
+fn deferred(func: fn(&Device), what: &str) -> Deferred {
+    match MArc::new(M_DEVBUF, hal::malloc::M_NOWAIT, LegacyFn(func)) {
+        Some(f) => Deferred {
+            func: run_deferred,
+            arg: Some(MArc::erase(f)),
+        },
+        None => panic(format_args!("{what}: can't allocate defer structure")),
+    }
 }
 
 /// `config_defer`: defer the configuration of the specified device until all of its parent's
 /// devices have been attached.
 pub fn config_defer(dev: &Device, func: fn(&Device)) {
-    if dev.dv_parent.get().is_none() {
-        panic(format_args!(
-            "config_defer: can't defer config of a root device"
-        ));
-    }
-
-    #[cfg(feature = "diagnostic")]
-    for dc in DEFERRED_CONFIG_QUEUE.0.iter() {
-        if ptr::eq(dc.dc_dev.as_ptr(), dev) {
-            panic(format_args!("config_defer: deferred twice"));
-        }
-    }
-
-    let Some(mem) = malloc(size_of::<DeferredConfig>(), M_DEVBUF, M_NOWAIT) else {
-        panic(format_args!("config_defer: can't allocate defer structure"));
-    };
-    let dc = mem.cast::<DeferredConfig>();
-    // SAFETY: a fresh allocation the size of a `DeferredConfig`, aligned as malloc's chunks
-    // are; written before use, linked until `config_process_deferred_children` frees it.
-    unsafe {
-        dc.write(DeferredConfig {
-            dc_queue: TailqEntry::new(),
-            dc_dev: NonNull::from(dev),
-            dc_func: func,
-        });
-        DEFERRED_CONFIG_QUEUE.0.insert_tail(dc.as_ref());
-    }
-    config_pending_incr();
-}
-
-/// `rootvp`: the vnode of the root file system. There is no VFS yet (M10), so the root is
-/// never mounted and this is `NULL`.
-fn rootvp() -> Option<NonNull<c_void>> {
-    None
+    kac::config_defer(&node_of(dev), deferred(func, "config_defer"));
 }
 
 /// `config_mountroot`: defer the configuration of the specified device until after root file
 /// system is mounted.
 pub fn config_mountroot(dev: &Device, func: fn(&Device)) {
-    // No need to defer if root file system is already mounted.
-    if rootvp().is_some() {
-        func(dev);
-        return;
-    }
-
-    #[cfg(feature = "diagnostic")]
-    for dc in MOUNTROOT_CONFIG_QUEUE.0.iter() {
-        if ptr::eq(dc.dc_dev.as_ptr(), dev) {
-            panic(format_args!("config_mountroot: deferred twice"));
-        }
-    }
-
-    let Some(mem) = malloc(size_of::<DeferredConfig>(), M_DEVBUF, M_NOWAIT) else {
-        panic(format_args!(
-            "config_mountroot: can't allocate defer structure"
-        ));
-    };
-    let dc = mem.cast::<DeferredConfig>();
-    // SAFETY: as in `config_defer`; freed by `config_process_deferred_mountroot`.
-    unsafe {
-        dc.write(DeferredConfig {
-            dc_queue: TailqEntry::new(),
-            dc_dev: NonNull::from(dev),
-            dc_func: func,
-        });
-        MOUNTROOT_CONFIG_QUEUE.0.insert_tail(dc.as_ref());
-    }
+    kac::config_mountroot(&node_of(dev), deferred(func, "config_mountroot"));
 }
 
 /// `config_process_deferred_children`: process the deferred configuration queue for a
 /// device.
 pub fn config_process_deferred_children(parent: &Device) {
-    for dc in DEFERRED_CONFIG_QUEUE.0.iter() {
-        let devp = dc.dc_dev;
-        let func = dc.dc_func;
-        // SAFETY: a deferred device stays attached until its configuration has run.
-        let dev = unsafe { devp.as_ref() };
-        if dev.dv_parent.get() == Some(NonNull::from(parent)) {
-            // SAFETY: `dc` is in this queue; the iterator has already read its successor.
-            unsafe { DEFERRED_CONFIG_QUEUE.0.remove(dc) };
-            func(dev);
-            free(
-                NonNull::from(dc).cast(),
-                M_DEVBUF,
-                size_of::<DeferredConfig>(),
-            );
-            config_pending_decr();
-        }
-    }
+    kac::config_process_deferred_children(&node_of(parent));
 }
 
 /// `config_process_deferred_mountroot`: process the deferred configuration queue after the
 /// root file system is mounted.
 pub fn config_process_deferred_mountroot() {
-    while let Some(dc) = MOUNTROOT_CONFIG_QUEUE.0.first() {
-        let devp = dc.dc_dev;
-        let func = dc.dc_func;
-        // SAFETY: `dc` is the queue's first element.
-        unsafe { MOUNTROOT_CONFIG_QUEUE.0.remove(dc) };
-        // SAFETY: as in `config_process_deferred_children`.
-        func(unsafe { devp.as_ref() });
-        free(
-            NonNull::from(dc).cast(),
-            M_DEVBUF,
-            size_of::<DeferredConfig>(),
-        );
-    }
+    kac::config_process_deferred_mountroot();
 }
 
 /// `config_pending_incr`: manipulate the `config_pending` semaphore.
 pub fn config_pending_incr() {
-    CONFIG_PENDING.fetch_add(1, Ordering::Relaxed);
+    kac::config_pending_incr();
 }
 
 /// `config_pending_decr`.
 pub fn config_pending_decr() {
-    #[cfg(feature = "diagnostic")]
-    if CONFIG_PENDING.load(Ordering::Relaxed) == 0 {
-        panic(format_args!("config_pending_decr: config_pending == 0"));
-    }
-    if CONFIG_PENDING.fetch_sub(1, Ordering::Relaxed) == 1 {
-        wakeup(ptr::from_ref(&CONFIG_PENDING));
-    }
+    kac::config_pending_decr();
 }
 
 /// `config_detach_children`: detaches every child of `parent`, last attached first.
-///
-/// The `config_detach` routine may sleep, meaning devices may be added to the queue. However,
-/// all devices will be added to the tail of the queue, the queue won't be re-organized, and
-/// the subtree of parent here should be locked for purposes of adding/removing children.
-///
-/// Note that we can not afford trying to walk the device list once - our "next" device might
-/// be a child of the device we are about to detach, so it would disappear. Just play it safe
-/// and restart from the parent.
 pub fn config_detach_children(parent: &Device, flags: i32) -> Result<(), Errno> {
-    let parentp = NonNull::from(parent);
-    let mut dev = ALLDEVS.0.last();
-    while let Some(d) = dev {
-        if d.dv_parent.get() == Some(parentp) {
-            // SAFETY: `d` is attached (it is in `alldevs`) and not used after the detach.
-            unsafe { config_detach(NonNull::from(d), flags)? };
-            dev = ALLDEVS.0.last();
-        } else {
-            dev = ALLDEVS.0.prev(d);
-        }
-    }
-    Ok(())
+    kac::config_detach_children(&node_of(parent), flags)
 }
 
 /// `config_suspend`: hands `act` to the device's `ca_activate`, or to its children when it
 /// has none.
 pub fn config_suspend(dev: &Device, act: i32) -> Result<(), Errno> {
-    let ca = dev.cfdata().cf_attach;
-
-    device_ref(dev);
-    let r = match ca.ca_activate {
-        Some(activate) => activate(dev, act),
-        None => config_activate_children(dev, act),
-    };
-    // SAFETY: the caller's reference keeps `dv_ref` above the one taken here, so this does not
-    // free the device.
-    unsafe { device_unref(NonNull::from(dev)) };
-    r
+    kac::config_suspend(&node_of(dev), act)
 }
 
 /// `config_suspend_all`: `config_suspend` on the `mpath` and `mainbus` trees, in the order
 /// that suits `act`.
 pub fn config_suspend_all(act: i32) -> Result<(), Errno> {
-    let mainbus = device_mainbus();
-    let mpath = device_mpath();
-    // SAFETY: the root devices are never detached.
-    let mainbus = mainbus.map(|d| unsafe { d.as_ref() });
-    // SAFETY: as above.
-    let mpath = mpath.map(|d| unsafe { d.as_ref() });
-    let mut rv = Ok(());
-
-    match act {
-        DVACT_QUIESCE | DVACT_SUSPEND | DVACT_POWERDOWN => {
-            if let Some(mpath) = mpath {
-                config_suspend(mpath, act)?;
-            }
-            if let Some(mainbus) = mainbus {
-                rv = config_suspend(mainbus, act);
-            }
-        }
-        DVACT_RESUME | DVACT_WAKEUP => {
-            if let Some(mainbus) = mainbus {
-                config_suspend(mainbus, act)?;
-            }
-            if let Some(mpath) = mpath {
-                rv = config_suspend(mpath, act);
-            }
-        }
-        _ => {}
-    }
-
-    rv
+    kac::config_suspend_all(act)
 }
 
 /// `config_activate_children`: call the `ca_activate` for each of our children, letting each
 /// decide whether they wish to do the same for their children and more.
 pub fn config_activate_children(parent: &Device, act: i32) -> Result<(), Errno> {
-    let parentp = NonNull::from(parent);
-    let mut rv = Ok(());
-
-    let mut d = TailqHead::<DeviceList>::next(parent);
-    while let Some(dv) = d {
-        if dv.dv_parent.get() != Some(parentp) {
-            d = TailqHead::<DeviceList>::next(dv);
-            continue;
-        }
-        match act {
-            DVACT_QUIESCE | DVACT_SUSPEND | DVACT_RESUME | DVACT_WAKEUP | DVACT_POWERDOWN => {
-                rv = config_suspend(dv, act);
-            }
-            DVACT_DEACTIVATE => rv = config_deactivate(dv),
-            _ => {}
-        }
-        if rv.is_ok() {
-            d = TailqHead::<DeviceList>::next(dv);
-            continue;
-        }
-
-        // Found a device that refuses the action. If we were being asked to suspend, we can
-        // try to resume all previous devices.
-        #[cfg(feature = "diagnostic")]
-        printf(format_args!(
-            "config_activate_children: device {} failed {}\n",
-            Str(&xname(dv)),
-            act
-        ));
-        if act == DVACT_RESUME {
-            printf(format_args!("failing resume cannot be handled\n"));
-        }
-        if act == DVACT_POWERDOWN {
-            return rv;
-        }
-        if act != DVACT_SUSPEND {
-            return rv;
-        }
-
-        let mut p = ALLDEVS.0.prev(dv);
-        while let Some(pd) = p {
-            if ptr::eq(pd, parent) {
-                break;
-            }
-            if pd.dv_parent.get() == Some(parentp) {
-                printf(format_args!("resume {}\n", Str(&xname(pd))));
-                let _ = config_suspend(pd, DVACT_RESUME);
-            }
-            p = ALLDEVS.0.prev(pd);
-        }
-        return rv;
-    }
-    rv
+    kac::config_activate_children(&node_of(parent), act)
 }
 
 /// `device_lookup`: lookup a device in the cfdriver device array. Does not return a device if
@@ -1080,7 +587,8 @@ pub fn config_activate_children(parent: &Device, act: i32) -> Result<(), Errno> 
 /// Context: process only
 pub fn device_lookup(cd: &Cfdriver, unit: i32) -> Option<NonNull<Device>> {
     let dv = cd.cd_dev(unit)?;
-    // SAFETY: a unit in `cd_devs` is attached, hence allocated.
+    // SAFETY: a unit in the `cd_devs` mirror is attached: its node, in the kernel's unit
+    // table, holds a `dv_ref` on the block until the detach has cleared the slot.
     let d = unsafe { dv.as_ref() };
 
     if d.dv_flags.get() & DVF_ACTIVE == 0 {
@@ -1132,31 +640,191 @@ pub unsafe fn device_unref(dv: NonNull<Device>) {
     }
 }
 
-/// Host tests: no attach in progress after `setup_real_memory`. A test that panicked inside
-/// `config_attach` leaves `autoconf_attdet` raised, and every later `config_detach` would
-/// sleep on it for ever: the failure is reported by that test, not as a hung test run.
+/// Host tests: the kernel's tree forgotten (its nodes are an earlier test's memory) and no
+/// attach in progress. A test that panicked inside `config_attach` leaves `autoconf_attdet`
+/// raised, and every later `config_detach` would sleep on it for ever.
 #[cfg(test)]
 pub(crate) fn autoconf_test_reset() {
-    AUTOCONF_ATTDET.store(0, Ordering::Relaxed);
+    kac::autoconf_test_reset();
+}
+
+impl ConfigRow for Cfdata {
+    fn driver(&'static self) -> &'static dyn DriverOps {
+        self
+    }
+    fn parents(&self) -> &'static [i16] {
+        self.cf_parents
+    }
+    fn starunit1(&self) -> i16 {
+        self.cf_starunit1
+    }
+    fn unit(&self) -> i16 {
+        self.cf_unit.get()
+    }
+    fn set_unit(&self, unit: i16) {
+        self.cf_unit.set(unit);
+    }
+    fn fstate(&self) -> i16 {
+        self.cf_fstate.get()
+    }
+    fn set_fstate(&self, fstate: i16) {
+        self.cf_fstate.set(fstate);
+    }
+}
+
+/// A legacy row is its own driver object: its `Cfattach`'s functions with its `Cfdriver`'s
+/// constants (`bridges.toml`'s `DriverOps`).
+impl DriverOps for Cfdata {
+    fn name(&self) -> &'static [u8] {
+        self.cf_driver.cd_name
+    }
+    fn class(&self) -> Devclass {
+        self.cf_driver.cd_class
+    }
+    fn mode(&self) -> i32 {
+        self.cf_driver.cd_mode
+    }
+    fn units(&self) -> &'static UnitTable {
+        &self.cf_driver.cd_units
+    }
+
+    /// LZ's `config_make_softc`'s allocation: `ca_devsize` zeroed bytes, the header written
+    /// from the kernel's identity, `dv_ref` 1 (the node's).
+    fn make_softc(&self, id: &Ident<'_>) -> AnyArc {
+        let ca = self.cf_attach;
+        if ca.ca_devsize < size_of::<Device>() {
+            panic(format_args!("config_make_softc"));
+        }
+
+        // get memory for all device vars
+        let Some(mem) = malloc(ca.ca_devsize, M_DEVBUF, M_NOWAIT | M_ZERO) else {
+            panic(format_args!(
+                "config_make_softc: allocation for device softc failed"
+            ));
+        };
+        let devp = mem.cast::<Device>();
+        kassert!(devp.as_ptr().is_aligned());
+        // SAFETY: `ca_devsize` zeroed bytes, at least a `Device`, suitably aligned (malloc's
+        // chunks are aligned to their power-of-two size); all-zero is a valid `Device`.
+        let dev = unsafe { devp.as_ref() };
+
+        dev.dv_class.set(id.class);
+        dev.dv_cfdata.set(Some(cfdata_of(id.row)));
+        dev.dv_flags.set(DVF_ACTIVE); // always initially active
+        dev.dv_unit.set(id.unit);
+        dev.dv_xname.set(*id.xname);
+        dev.dv_parent
+            .set(id.parent.map(|p| NonNull::from(legacy_device(p))));
+        dev.dv_ref.store(1, Ordering::Relaxed);
+
+        new_softc(LegacySoftc {
+            dev: devp,
+            owns: true,
+        })
+    }
+
+    fn probe(&self, parent: Option<&DevRef>, m: &Match, aux: &Aux<'_>) -> i32 {
+        let Some(ca_match) = self.cf_attach.ca_match else {
+            panic(format_args!(
+                "mapply: no match function for '{}' device",
+                Str(self.cf_driver.cd_name)
+            ));
+        };
+        ca_match(parent.map(|p| legacy_device(p)), &view(m), aux_ptr(aux))
+    }
+
+    fn attach(&self, parent: Option<&DevRef>, dev: &DevRef, aux: &Aux<'_>) {
+        (self.cf_attach.ca_attach)(
+            parent.map(|p| legacy_device(p)),
+            legacy_device(dev),
+            aux_ptr(aux),
+        );
+    }
+
+    fn detach(&self, dev: &DevRef, flags: i32) -> Result<(), Errno> {
+        match self.cf_attach.ca_detach {
+            Some(detach) => detach(legacy_device(dev), flags),
+            None => Err(Errno::EOPNOTSUPP),
+        }
+    }
+
+    fn activate(&self, dev: &DevRef, act: i32) -> Option<Result<(), Errno>> {
+        self.cf_attach
+            .ca_activate
+            .map(|activate| activate(legacy_device(dev), act))
+    }
+
+    fn flags_set(&self, dev: &Node, flags: i32) {
+        legacy_device(dev).dv_flags.set(flags);
+    }
+
+    fn unit_set(&self, unit: i32, dev: Option<&Node>) {
+        mirror_set(
+            self.cf_driver,
+            unit,
+            dev.map(|d| NonNull::from(legacy_device(d))),
+        );
+    }
+
+    fn units_resized(&self, len: usize) {
+        mirror_resize(self.cf_driver, len);
+    }
+}
+
+impl ConfigGlue for BsdConfigGlue {
+    fn rows(&self) -> usize {
+        cfdata().len()
+    }
+    fn row(&self, i: usize) -> &'static dyn ConfigRow {
+        match cfdata().get(i) {
+            Some(cf) => cf,
+            None => panic(format_args!("autoconf: cfdata[{i}] out of the table")),
+        }
+    }
+    fn roots(&self) -> &'static [i16] {
+        cfroots()
+    }
+    fn mainbus(&self) -> &'static UnitTable {
+        &mainbus_cd().cd_units
+    }
+    fn device_register(&self, dev: &DevRef, aux: &Aux<'_>) {
+        device_register(legacy_device(dev), aux_ptr(aux));
+    }
+    fn boothowto(&self) -> i32 {
+        BOOTHOWTO.load(Ordering::Relaxed)
+    }
+    fn root_mounted(&self) -> bool {
+        rootvp().is_some()
+    }
 }
 /* </CODE> */
 
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
-    // Host tests for autoconfiguration over a test `ioconf`: a root bus `troot0` and a starred
-    // child driver `tchild*` below it, attached, looked up, deferred and detached.
+    // Host tests for the shim over the kernel's autoconfiguration, with a test `ioconf`: a
+    // root bus `troot0` and a starred child driver `tchild*` below it, attached, looked up,
+    // deferred and detached through the legacy names, the legacy header mirroring its node.
 
+    use core::sync::atomic::{AtomicI32, AtomicUsize};
     use std::boxed::Box;
     use std::sync::MutexGuard;
-    use std::sync::atomic::AtomicUsize;
     use std::vec::Vec;
     use std::{assert, assert_eq};
 
     use super::*;
+    use crate::kern::init_main::set_rootvp;
     use crate::kern::subr_pool::tests::setup_real_memory;
     use crate::machine::Machine;
-    use crate::sys::device::{CD_INDIRECT, Cfattach, DV_DULL, QUIET, UNCONF};
+    use crate::sys::device::{
+        CD_INDIRECT, Cfattach, DETACH_QUIET, DV_DULL, DVACT_RESUME, DVACT_SUSPEND, FSTATE_FOUND,
+        FSTATE_NOTFOUND, FSTATE_STAR, QUIET, UNCONF,
+    };
+
+    /// A C string up to its first NUL.
+    fn cstr(s: &[u8]) -> &[u8] {
+        &s[..s.iter().position(|&c| c == 0).unwrap_or(s.len())]
+    }
 
     /// What the child's attach arguments say: whether to match, and at which level.
     struct ChildArgs {
@@ -1284,12 +952,15 @@ mod tests {
         ptr::from_mut(args).cast()
     }
 
+    /// `alldevs`, by the legacy headers' names.
     fn alldevs() -> Vec<Vec<u8>> {
-        ALLDEVS
-            .0
-            .iter()
-            .map(|d| cstr(&d.dv_xname.get()).to_vec())
-            .collect()
+        let mut v = Vec::new();
+        let mut d = kac::alldevs_next(None);
+        while let Some(n) = d {
+            v.push(cstr(&legacy_device(&n).dv_xname.get()).to_vec());
+            d = kac::alldevs_next(Some(&n));
+        }
+        v
     }
 
     #[test]
@@ -1306,11 +977,44 @@ mod tests {
         let r = unsafe { root.as_ref() };
         assert_eq!(
             r.dv_ref.load(Ordering::Relaxed),
-            2,
-            "config_make_softc's and config_attach's"
+            1,
+            "the node's (config_make_softc's and config_attach's are its handles)"
         );
         assert!(r.dv_flags.get() & DVF_ACTIVE != 0);
         assert!(r.parent().is_none());
+        // The header mirrors its node, which the driver's unit table holds.
+        let n = root_cd.cd_units.get(0).expect("troot0's node");
+        assert!(ptr::eq(legacy_device(&n), r));
+        assert_eq!(n.xname(), "troot0");
+        assert_eq!(root_cd.cd_ndevs.get() as usize, root_cd.cd_units.len());
+    }
+
+    /// The block goes only when the node's last handle and the last legacy `device_ref` are
+    /// both gone.
+    #[test]
+    fn a_legacy_block_outlives_both_counts() {
+        let (_g, _, _, child_cd) = setup(0);
+        let root = config_rootfound(b"troot", ptr::null_mut()).expect("troot0");
+        // SAFETY: attached above.
+        let r = unsafe { root.as_ref() };
+        let mut yes = ChildArgs { pri: 1 };
+        let a = config_found(r, aux(&mut yes), None).expect("tchild0");
+        let looked = device_lookup(child_cd, 0).expect("active");
+        let node = child_cd.cd_units.get(0).expect("tchild0's node");
+        // SAFETY: attached; on success the lookup's reference and `node` keep it.
+        assert_eq!(unsafe { config_detach(a, DETACH_QUIET) }, Ok(()));
+        assert!(child_cd.cd_dev(0).is_none(), "the mirror's slot is cleared");
+        // SAFETY: the lookup's reference keeps the block.
+        let d = unsafe { looked.as_ref() };
+        assert_eq!(
+            d.dv_ref.load(Ordering::Relaxed),
+            2,
+            "the node's and the lookup's"
+        );
+        drop(node);
+        assert_eq!(d.dv_ref.load(Ordering::Relaxed), 1, "the lookup's");
+        // SAFETY: the last reference; the block is freed and not used again.
+        unsafe { device_unref(looked) };
     }
 
     #[test]
@@ -1417,10 +1121,14 @@ mod tests {
         assert!(device_lookup(child_cd, 1).is_none());
         assert!(device_lookup(child_cd, -1).is_none());
         assert_eq!(device_lookup(child_cd, 0), Some(a));
-        assert_eq!(d.dv_ref.load(Ordering::Relaxed), 3);
+        assert_eq!(
+            d.dv_ref.load(Ordering::Relaxed),
+            2,
+            "the node's and the lookup's"
+        );
         // SAFETY: gives back the lookup's reference.
         unsafe { device_unref(a) };
-        assert_eq!(d.dv_ref.load(Ordering::Relaxed), 2);
+        assert_eq!(d.dv_ref.load(Ordering::Relaxed), 1);
 
         assert_eq!(config_deactivate(d), Ok(()));
         assert!(device_lookup(child_cd, 0).is_none(), "inactive");
@@ -1436,6 +1144,9 @@ mod tests {
         let a = config_found(r, aux(&mut yes), None).expect("tchild0");
         // SAFETY: attached above.
         let d = unsafe { a.as_ref() };
+        // No root file system for config_mountroot below (an earlier test may have set one).
+        let saved_root = rootvp();
+        set_rootvp(None);
 
         config_defer(d, deferred);
         assert_eq!(CONFIG_PENDING.load(Ordering::Relaxed), 1);
@@ -1457,6 +1168,7 @@ mod tests {
         );
         config_process_deferred_mountroot();
         assert_eq!(DEFERRED_RAN.load(Ordering::Relaxed), 2);
+        set_rootvp(saved_root);
     }
 
     #[test]
