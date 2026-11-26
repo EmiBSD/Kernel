@@ -115,6 +115,17 @@
 //!   `_end`) go in `KernelImage`, for the pmap to map the image by section.
 //! - N6.8 (the user's decision of 2026-11-15): `cpu_startup` prints the release's code name
 //!   (`conf/vers.rs`'s `CODENAME`) on a line of its own after the version.
+//! - N7.2b0: the device tree is read in place for the kernel's run (`hal::mem::fdtblob`; the
+//!   C copies it into stolen memory mapped read-only, `arm64/machdep.c`'s `initarm`), so
+//!   `initarm` refuses a tree any of whose frames lies in a usable region, before uvm is given
+//!   them: what kept the frames out of the page allocator was the boot protocol alone.
+//! - N7.2b0 review: `getbootinfo` takes `openbsd,sr-bootuuid` and `openbsd,sr-bootkey` (copied
+//!   for softraid(4), wiped with `explicit_bzero`) before `fdt_init`, where the C wipes them
+//!   after: `fdt_init` adopts the blob as a shared `&'static [u8]` for the run, and a write
+//!   behind it would alias it, so the wipe goes through `hal`'s one mutable view
+//!   (`fdtblob::with_boot_mut`) first (LZ's `bootarg_bzero` is gone). The kernel's
+//!   `fdt_take_property` parses the borrowed blob with `fdt_init`'s own `check_head`, so the
+//!   wipe and the install accept the same blobs; every other `/chosen` read stays after.
 
 use core::arch::asm;
 use core::cell::UnsafeCell;
@@ -165,12 +176,12 @@ use crate::dev::fdt::pscivar::PSCI_SUCCESS;
 use crate::dev::fdt::simplefb::simplefb_init_cons;
 use crate::dev::ofw::fdt::fdt_node_property_int;
 use crate::dev::ofw::fdt::{
-    FdtNode, FdtReg, fdt_child_node, fdt_find_node, fdt_get_reg, fdt_get_size, fdt_init,
+    FdtHead, FdtNode, FdtReg, fdt_child_node, fdt_find_node, fdt_get_reg, fdt_get_size, fdt_init,
     fdt_is_compatible, fdt_next_node, fdt_node_property,
 };
 use crate::dev::ofw::openfirm::{OF_finddevice, OF_getprop, OF_getproplen};
 use crate::dev::softraid::{SR_BOOTKEY, SR_BOOTUUID};
-use crate::dev::softraidvar::{SR_CRYPTO_MAXKEYBYTES, SR_UUID_MAX, SrUuid};
+use crate::dev::softraidvar::{SR_UUID_MAX, SrUuid};
 use crate::kern::init_main::{BOOTHOWTO, PROC0};
 use crate::kern::kern_malloc::{kmeminit_nkmempages, nkmempages};
 use crate::kern::kern_sysctl::{sysctl_bounded_arr, sysctl_int, sysctl_rdquad, sysctl_rdstring};
@@ -196,10 +207,11 @@ use crate::sys::sysctl::SysctlBoundedArgs;
 use crate::sys::systm::PHYSMEM;
 use crate::sys::types::{Paddr, Psize, Register, Vaddr};
 use crate::unported;
-use hal::mem::explicit_bzero;
+use hal::mem::fdtblob;
 use hal::vm::param::{atop, ptoa, round_page, trunc_page};
 use hal::vm::pmap::{BootstrapParams, KernelImage};
 use hal::vm::uvmexp::UVMEXP;
+use kernel::dev::ofw::fdt::fdt_take_property;
 use kernel::vm::km::{KvMap, install_submap};
 use kernel::vm::km::{kernel_map, kernel_map_min, uvm_km_suballoc};
 use kernel::vm::map::VM_MAP_PAGEABLE;
@@ -524,6 +536,32 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
 
     let usable = || regions.iter().filter(|r| r.kind == MemKind::Usable);
 
+    // The device tree is read in place for the kernel's whole run (`hal::mem::fdtblob`, where
+    // the C copies it into stolen memory): none of its frames may be memory uvm is given.
+    // Limine's tree is in the direct map, or in the kernel image when `stand` rewrote it for
+    // the frame buffer; boot(8)'s is in the direct map.
+    if let Some(dtb) = boot.dtb {
+        let va = dtb.as_ptr() as usize;
+        let len = fdt_get_size(dtb.as_ptr());
+        let (kvirt, kphys) = (boot.kernel_virt.as_usize(), boot.kernel_phys.as_usize());
+        let image_end = ptr::addr_of!(_end) as usize;
+        let ends_by = |end: usize| va.checked_add(len).is_some_and(|e| e <= end);
+        let pa = if (kvirt..image_end).contains(&va) && ends_by(image_end) {
+            (va - kvirt).wrapping_add(kphys)
+        } else if va >= boot.hhdm_offset && ends_by(params.direct_end.as_usize()) {
+            va - boot.hhdm_offset
+        } else {
+            return Err("initarm: the device tree is outside the direct map and the image");
+        };
+        let end = pa.saturating_add(len);
+        if usable().any(|r| {
+            let base = r.base.as_usize();
+            base < end && pa < base.saturating_add(r.length.as_usize())
+        }) {
+            return Err("initarm: the device tree lies in usable memory");
+        }
+    }
+
     UVMEXP.pagesize.store(PAGE_SIZE as i32, Ordering::Relaxed);
     uvm_setpagesize();
 
@@ -646,7 +684,7 @@ pub unsafe fn getbootinfo(arg: usize) -> Result<BootInfo, &'static str> {
     // The FDT, through the direct map (the C maps it at the first free KVA).
     let config = abp.arg2 as u64;
     // SAFETY: once, on the boot CPU, before anything reads the direct map's table.
-    if config == 0 || !unsafe { bootarg_direct_map(config, config + 1) } {
+    if config == 0 || !unsafe { bootarg_direct_map(config, config + size_of::<FdtHead>() as u64) } {
         return Err("getbootinfo: no FDT");
     }
     let fdt = (DIRECT_BASE + config as usize) as *const u8;
@@ -655,8 +693,28 @@ pub unsafe fn getbootinfo(arg: usize) -> Result<BootInfo, &'static str> {
     if size == 0 || !unsafe { bootarg_direct_map(config, config + size as u64) } {
         return Err("getbootinfo: no FDT");
     }
+    // `openbsd,sr-bootuuid` and `openbsd,sr-bootkey` (efiboot's softraid boot volume and
+    // key): copied for softraid(4) and wiped from the tree, as the C's `initarm` does, through
+    // `hal`'s one mutable view of the blob, before `fdt_init` adopts it for the run and every
+    // other `/chosen` property is read below.
+    let _ = fdtblob::with_boot_mut(|blob| {
+        let mut uuid = SrUuid {
+            sui_id: [0; SR_UUID_MAX],
+        };
+        if fdt_take_property(blob, b"/chosen", b"openbsd,sr-bootuuid", &mut uuid.sui_id) {
+            // SAFETY: the boot CPU, before softraid reads it (NSOFTRAID > 0: softraid0 is
+            // configured).
+            unsafe { SR_BOOTUUID.write(uuid) };
+        }
+        // SAFETY: as for the UUID: the boot CPU, before softraid reads it, and no other
+        // reference to the key exists; the key goes straight from the blob into it.
+        let key = unsafe { SR_BOOTKEY.get_mut() };
+        let _ = fdt_take_property(blob, b"/chosen", b"openbsd,sr-bootkey", key);
+    });
+    // A blob `fdt_get_size` took by its magic and the kernel's reader refuses is still one
+    // the boot cannot read: LZ's message (`fdt_get_size` checked the whole header there).
     if fdt_init(fdt) == 0 {
-        return Err("getbootinfo: corrupt FDT");
+        return Err("getbootinfo: no FDT");
     }
 
     let mut howto = 0;
@@ -693,27 +751,7 @@ pub unsafe fn getbootinfo(arg: usize) -> Result<BootInfo, &'static str> {
             // SAFETY: the boot CPU, before autoconfiguration reads it.
             unsafe { BOOTMAC.write(Some(lladdr)) };
         }
-        let p = prop(b"openbsd,sr-bootuuid");
-        if p.len() == size_of::<SrUuid>() {
-            let mut uuid = SrUuid {
-                sui_id: [0; SR_UUID_MAX],
-            };
-            uuid.sui_id.copy_from_slice(p);
-            // SAFETY: the boot CPU, before softraid reads it (NSOFTRAID > 0: softraid0 is
-            // configured).
-            unsafe { SR_BOOTUUID.write(uuid) };
-        }
-        // SAFETY: the property lies in the device tree efiboot allocated, mapped
-        // read-write by the direct map; nothing holds a reference into it but `p`, which is
-        // not used again.
-        unsafe { bootarg_bzero(p) };
-        let p = prop(b"openbsd,sr-bootkey");
-        if p.len() == SR_CRYPTO_MAXKEYBYTES {
-            // SAFETY: as for the UUID.
-            unsafe { SR_BOOTKEY.get_mut().copy_from_slice(p) };
-        }
-        // SAFETY: as above.
-        unsafe { bootarg_bzero(p) };
+        // `openbsd,sr-bootuuid` and `openbsd,sr-bootkey` were taken before `fdt_init`.
 
         let p = prop(b"openbsd,uefi-mmap-start");
         if p.len() == 8 {
@@ -999,20 +1037,6 @@ unsafe fn bootarg_direct_map(start: u64, end: u64) -> bool {
     // access through them (they replace invalid entries, so no TLB entry is stale).
     unsafe { asm!("dsb ishst", "isb", options(nostack, preserves_flags)) };
     true
-}
-
-/// `explicit_bzero(prop, len)` on a property of the device tree.
-///
-/// # Safety
-///
-/// `p` is a property of the boot(8) device tree, writable through the direct map, and no
-/// other reference to its bytes is used afterwards.
-unsafe fn bootarg_bzero(p: &[u8]) {
-    if p.is_empty() {
-        return;
-    }
-    // SAFETY: the caller's guarantee; the bytes are plain memory.
-    explicit_bzero(unsafe { core::slice::from_raw_parts_mut(p.as_ptr().cast_mut(), p.len()) });
 }
 
 /// The processors and the way to start them under boot(8): `/cpus`'s `cpu` nodes and

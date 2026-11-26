@@ -19,10 +19,11 @@
 /* <CODE> */
 //! Open Firmware and the flattened device tree: OpenBSD `sys/dev/ofw/`.
 //!
-//! `fdt` is the blob parser with the `OF_*` accessors; `openfirm` the interface header;
-//! `ofw_gpio` and `ofw_pinctrl` the GPIO and pin controller registries, `ofw_misc` the
-//! provider registries (register maps, IOMMUs) (M16f).
+//! `fdt` is LZ's names over the kernel's reader (`kernel::dev::ofw::fdt`, N7.2b0); `openfirm`
+//! the interface header; `ofw_gpio` and `ofw_pinctrl` the GPIO and pin controller registries,
+//! `ofw_misc` the provider registries (register maps, IOMMUs) (M16f).
 
+#[forbid(unsafe_code)]
 pub mod fdt;
 pub mod ofw_gpio;
 pub mod ofw_misc;

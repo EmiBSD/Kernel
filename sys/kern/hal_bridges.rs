@@ -409,6 +409,11 @@ static TLB_CPUS_REGISTERED: AtomicBool = AtomicBool::new(false);
 /// keeps its first implementation). Called by `stand::start_kernel` before `main()`: the boot
 /// contract of the module docs.
 pub fn hal_bridges_register() {
+    // The device tree's naming ends here (hal::mem::fdtblob, N7.2b0): arm64's getbootinfo and
+    // initarm named and adopted it; from now on a first address, or a mutable view, panics,
+    // so no forbid crate can make hal view an address of its choosing (amd64's boot names
+    // none). Sealing can only refuse.
+    hal::mem::fdtblob::seal();
     // hal's one kcopy token, first in bsd's boot (a safe copy onto any kernel address its
     // holder names, N4.8b): the kernel functions initarm already called take nothing, and an
     // earlier take by anyone panics the boot here, so no forbid crate can hold it. The ABI is
