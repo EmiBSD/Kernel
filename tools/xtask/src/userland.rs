@@ -2351,7 +2351,6 @@ mod images;
 mod libraries;
 pub(crate) mod miniroot;
 mod passwd;
-mod published;
 mod ramdisk;
 mod seed;
 pub(crate) use ramdisk::TIMESTAMP;
