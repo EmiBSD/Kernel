@@ -452,7 +452,8 @@ pub struct Arpcom {
     pub ac_if: Ifnet,
     /// `ac_enaddr`: the hardware address.
     pub ac_enaddr: EtherAddrCell,
-    /// `ac_multiaddrs`: the multicast records, made by `ether_ifattach` (the C's `LIST_INIT`).
+    /// `ac_multiaddrs`: the multicast records, made by `ether_ifattach` (the C's `LIST_INIT`)
+    /// or by the first walk before it ([`Arpcom::multiaddrs`]), empty either way.
     ac_multi: OnceStatic<Mutexed<EtherMultis>>,
     /// `ac_multicnt`: the records' count (written under the list's mutex).
     pub ac_multicnt: AtomicCell<i32>,
@@ -479,14 +480,17 @@ impl Arpcom {
     }
 
     /// The multicast records, locked (a driver's `ETHER_FIRST_MULTI` .. `ETHER_NEXT_MULTI`
-    /// walk is `for enm in ac.multiaddrs().iter()`). `panic(9)` before `ether_ifattach`.
+    /// walk is `for enm in ac.multiaddrs().iter()`). Before `ether_ifattach` the list is
+    /// empty, as the C's zeroed softc's `LIST_HEAD` is: re(4)'s attach programs its filter
+    /// (`re_wol(ifp, 0)` -> `re_iff`) before it attaches the interface, so the first such
+    /// walk makes the empty list, and `ether_ifattach` keeps it.
     pub fn multiaddrs(&self) -> MutexedGuard<'_, EtherMultis> {
-        match self.ac_multi.get() {
-            Some(m) => m.lock(),
-            None => self
-                .ac_if
-                .if_xname
-                .with_str(|n| kpanic(format_args!("{}: no ether_ifattach", Str(n)))),
+        loop {
+            if let Some(m) = self.ac_multi.get() {
+                return m.lock();
+            }
+            // Lost to another maker: the list is there on the next turn.
+            let _ = self.ac_multi.set(Mutexed::new(IPL_NET, EtherMultis::new()));
         }
     }
 }
@@ -1110,6 +1114,8 @@ pub fn ether_ifattach(ac: &'static Arpcom) {
     if_alloc_sadl(ifp);
     // memcpy(LLADDR(ifp->if_sadl), ac->ac_enaddr, ifp->if_addrlen)
     if_sadl_set_lladdr(ifp, &ac.ac_enaddr.get());
+    // LIST_INIT(&ac->ac_multiaddrs): a list a driver's walk made before this one is kept,
+    // empty as this one (nothing joins a group before the interface is attached).
     let _ = ac.ac_multi.set(Mutexed::new(IPL_NET, EtherMultis::new()));
     bpfattach(&ifp.if_bpf, ifp, DLT_EN10MB, ETHER_HDR_LEN as u32);
 }
@@ -1966,6 +1972,38 @@ mod tests {
         );
         ether_ifdetach_records(ac);
         assert_eq!(ac.multiaddrs().iter().count(), 0);
+    }
+
+    /// A driver that programs its filter before `ether_ifattach` (re(4)'s attach: `re_wol(ifp,
+    /// 0)` -> `re_iff`) walks an empty list, as the C's zeroed `LIST_HEAD`; the attach keeps
+    /// that list and the groups joined later are on it.
+    #[test]
+    fn a_walk_before_ether_ifattach_finds_no_record() {
+        let _g = setup();
+        let ac: &'static Arpcom = Box::leak(Box::new(Arpcom::new()));
+        let d: &'static TestDriver = Box::leak(Box::new(TestDriver::new()));
+        let ifp = &ac.ac_if;
+        let mut n = [0u8; IFNAMSIZ];
+        n[..4].copy_from_slice(b"tet9");
+        ifp.if_xname.set(n);
+        assert!(ifp.if_driver.set(d).is_ok());
+        ifp.if_xflags.set(IFXF_MPSAFE);
+        ifp.if_flags
+            .set(IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST | IFF_RUNNING);
+        ac.ac_enaddr.set(OURS);
+        assert_eq!(ac.multiaddrs().iter().count(), 0, "a zeroed softc's list");
+        hal::klock::kernel_lock();
+        if_attach(ifp);
+        ether_ifattach(ac);
+        hal::klock::kernel_unlock();
+        assert_eq!(ac.multiaddrs().iter().count(), 0);
+        let g1 = mreq(&sin([224, 0, 0, 1]));
+        assert_eq!(
+            ether_ioctl(ifp, ac, SIOCADDMULTI, &g1),
+            Err(Errno::ENETRESET)
+        );
+        assert_eq!(ac.multiaddrs().iter().count(), 1);
+        ether_ifdetach_records(ac);
     }
 
     /// `ether_ifdetach`'s loop over the records (its `if_deactivate` needs the interface's
