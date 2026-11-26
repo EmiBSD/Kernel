@@ -1368,7 +1368,6 @@ pub fn nfs_timer<G: ProcGlue>(arg: &hal::pool::AnyArc) {
         };
     }
     drop(place);
-    drop(net);
     drop(nw);
     nmp.nm_rtimeout.as_pin().add(NFS_TICKS.load(Relaxed));
 }

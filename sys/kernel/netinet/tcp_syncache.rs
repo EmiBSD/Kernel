@@ -817,7 +817,6 @@ pub fn syn_cache_get<G: ProcGlue>(
     let mut g = syn_cache_lock::<G>();
     let Some(sc) = syn_cache_lookup(&mut g, src, dst, listeninp.inp_rtableid.get()) else {
         drop(g);
-        drop(lil);
         drop(listenso);
         return SynCacheGet::NotFound(m);
     };
@@ -848,7 +847,6 @@ pub fn syn_cache_get<G: ProcGlue>(
             let _ = syn_cache_respond_with(&sc, Some(m), now, do_ecn, &mut l, net);
             drop(l);
         }
-        drop(lil);
         drop(listenso);
         // syn_cache_put(sc)
         drop(sc);
@@ -883,7 +881,6 @@ pub fn syn_cache_get<G: ProcGlue>(
     let Some(so) = sonewconn(listenso_ref, SS_ISCONNECTED, M_DONTWAIT, Some(net)) else {
         // resetandabort: no socket, no pcb, no control block.
         reset_abort(&m);
-        drop(lil);
         drop(listenso);
         drop(m);
         drop(sc);
@@ -903,7 +900,6 @@ pub fn syn_cache_get<G: ProcGlue>(
         let mut w = solock_attach(&so, net);
         syn_cache_abort_child(&so, &mut w);
         drop(w);
-        drop(lil);
         drop(listenso);
         drop(m);
         drop(sc);
@@ -1080,7 +1076,6 @@ pub fn syn_cache_get<G: ProcGlue>(
         // in_pcbsounlock(inp, so); in_pcbsounlock(listeninp, listenso); in_pcbunref(inp);
         // m_freem(m); syn_cache_put(sc)
         drop(w);
-        drop(lil);
         drop(listenso);
         drop(inp);
         drop(m);
@@ -1091,7 +1086,6 @@ pub fn syn_cache_get<G: ProcGlue>(
 
     // The new socket returned locked: its witness detached again.
     w.detach();
-    drop(lil);
     // in_pcbsounlock(listeninp, listenso)
     drop(listenso);
     tcpstat_inc(TcpstatCounters::TcpsScCompleted);

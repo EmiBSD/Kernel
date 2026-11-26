@@ -756,7 +756,6 @@ pub fn nfs_access<G: ProcGlue>(
             }
         }
     };
-    drop(x);
     drop(reply);
 
     // If we got the same result as for a previous, different request, OR it in. Don't
@@ -1364,7 +1363,6 @@ pub fn nfs_lookup<G: ProcGlue>(
                 cnp.cn_flags |= PDIRUNLOCK;
             }
         }
-        drop(x);
         drop(reply);
 
         if cnp.cn_nameiop != LOOKUP && flags & ISLASTCN != 0 {

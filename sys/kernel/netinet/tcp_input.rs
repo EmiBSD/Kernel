@@ -792,8 +792,6 @@ fn tcp_input_pcb<G: ProcGlue>(
 
                     TH_ACK => {
                         // The listener's lock goes to syn_cache_get, which lets it go.
-                        drop(tp);
-                        drop(il);
                         let Some(m) = s.m.take() else {
                             kpanic(format_args!("tcp_input: the segment is gone"));
                         };
@@ -880,7 +878,6 @@ fn tcp_input_pcb<G: ProcGlue>(
     if let Some(c) = closed {
         tcp_free(inp, &mut il.pcb, c);
     }
-    drop(il);
     settle(w, next)
 }
 
@@ -905,7 +902,6 @@ fn tcp_input_child<G: ProcGlue>(
     if let Some(c) = closed {
         tcp_free(inp, &mut il.pcb, c);
     }
-    drop(il);
     settle(w, next)
 }
 
