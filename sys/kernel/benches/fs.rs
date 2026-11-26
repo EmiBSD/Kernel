@@ -177,10 +177,6 @@
 //! - `nfs.rpc.null.udp`, `nfs.rpc.null.tcp`: `nfs_request` of a NULL call to the peer and
 //!   its reply (`nfsm_rpchead`, the record mark over TCP, the send, `nfs_reply` asleep in
 //!   `soreceive`, the reply matched by xid and its header consumed).
-//! - `nfs.timer.16q`: `nfs_timer` over 16 requests queued on the mount, each held by a
-//!   requester thread the peer leaves unanswered (a timeout of `i32::MAX` ticks: none is
-//!   due): the net lock's writer, the walk of 16 steps (the round-trip time counted, the
-//!   interruption test), the timeout armed again.
 //! - `nfs.rexmit.udp`: a NULL call whose first datagram is never answered: two calls of
 //!   `nfs_timer` from the peer (the round-trip time past the timeout of one tick, the
 //!   window halved, the datagram sent again from the mount's socket), then the reply to
@@ -788,7 +784,6 @@ fn main() {
         "nfs.xdr.build.write8k",
         "nfs.rpc.null.udp",
         "nfs.rpc.null.tcp",
-        "nfs.timer.16q",
         "nfs.rexmit.udp",
         "nfs.getattr.cached",
         "nfs.lookup.cached",
@@ -1533,14 +1528,14 @@ fn nfs_srv_proc_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, 
 /// `testnfs`, which looks at its socket without pause.
 #[allow(
     clippy::too_many_lines,
-    reason = "one fixture shared by nine rows, each its own block"
+    reason = "one fixture shared by eight rows, each its own block"
 )]
 fn nfs_client_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
     use core::sync::atomic::Ordering::Relaxed;
     use kernel::fs::namei::{Componentname, ISLASTCN, LOCKPARENT, LOOKUP, MAKEENTRY};
     use kernel::fs::nfs::nfs_bio::nfs_write;
     use kernel::fs::nfs::nfs_node::nfs_nget;
-    use kernel::fs::nfs::nfs_socket::{Request, nfs_request, nfs_timer};
+    use kernel::fs::nfs::nfs_socket::{Request, nfs_request};
     use kernel::fs::nfs::nfs_subs::nfs_vfs_init;
     use kernel::fs::nfs::nfs_vnops::{nfs_getattr, nfs_lookup, nfs_read, nfs_readrpc, nfs_setcred};
     use kernel::fs::nfs::nfsm_subs::XdrWriter;
@@ -1558,10 +1553,9 @@ fn nfs_client_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f6
     use kernel::sys::socket::{SOCK_DGRAM, SOCK_STREAM};
     use kernel::uio::{Iovec, Uio};
 
-    const ROWS: [&str; 9] = [
+    const ROWS: [&str; 8] = [
         "nfs.rpc.null.udp",
         "nfs.rpc.null.tcp",
-        "nfs.timer.16q",
         "nfs.rexmit.udp",
         "nfs.getattr.cached",
         "nfs.lookup.cached",
@@ -1713,87 +1707,8 @@ fn nfs_client_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f6
         tn::unmount(&fx, nmp);
         p.stop();
     }
-    // 16 requests queued: 16 requester threads of the glue, the peer answering none of them
-    // until a 17th call comes, then all.
-    if wanted(ROWS[2]) {
-        let nmp = tn::nfsmount(&fx, SOCK_DGRAM, NFSMNT_NFSV3 | NFSMNT_DUMBTIMR);
-        nmp.nm_timeo.store(i32::MAX, Relaxed);
-        need(tn::connect(&nmp), "connect");
-        let seen = std::sync::Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
-        let s2 = seen.clone();
-        let p = tn::Peer::start_polling(
-            &fx,
-            SOCK_DGRAM,
-            &nmp,
-            Box::new(move |n, c| {
-                let mut all = s2.lock().unwrap();
-                all.push(c.to_vec());
-                if n <= 16 {
-                    return Vec::new();
-                }
-                all.iter()
-                    .map(|c| Out::Data(tn::reply(c, 0, 0, 0, &[])))
-                    .collect()
-            }),
-            Duration::ZERO,
-        );
-        let done = AtomicU32::new(0);
-        // The requesters' threads are made here: the glue's process tables are this thread's.
-        let ts: Vec<_> = (0..16).map(|i| tn::new_thread(100 + i, 1000).1).collect();
-        std::thread::scope(|s| {
-            let nmp = &nmp;
-            let (fx, done) = (&fx, &done);
-            for t in ts {
-                s.spawn(move || {
-                    tn::G::set_curproc(Some(t));
-                    hal::klock::kernel_lock();
-                    let r = nfs_request(
-                        nmp,
-                        fx.vp,
-                        NFSPROC_NULL,
-                        Request {
-                            body: XdrWriter::reqhead(0),
-                            procp: Some(t),
-                            cred: t.ucred(),
-                        },
-                    );
-                    if r.1.is_err() {
-                        eprintln!("fs: a queued request failed");
-                        std::process::exit(1);
-                    }
-                    done.fetch_add(1, Relaxed);
-                    hal::klock::kernel_unlock();
-                });
-            }
-            // The peer has seen the 16 calls: they are queued.
-            let t0 = Instant::now();
-            while p.calls().len() < 16 {
-                if t0.elapsed() > Duration::from_secs(60) {
-                    eprintln!("fs: the 16 requests never arrived");
-                    std::process::exit(1);
-                }
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            let timer = hal::malloc::MArc::erase(nmp.clone());
-            report(
-                ROWS[2],
-                measure(|| {
-                    rounds(|| {
-                        nfs_timer::<Gl>(black_box(&timer));
-                    })
-                }),
-            );
-            // The 17th call releases them all.
-            rpc(nmp);
-            while done.load(Relaxed) < 16 {
-                std::thread::sleep(Duration::from_millis(1));
-            }
-        });
-        p.stop();
-        tn::unmount(&fx, nmp);
-    }
     // A datagram lost: the peer ticks the timer twice at the first copy, answers the second.
-    if wanted(ROWS[3]) {
+    if wanted(ROWS[2]) {
         let nmp = tn::nfsmount(&fx, SOCK_DGRAM, NFSMNT_NFSV3 | NFSMNT_DUMBTIMR);
         nmp.nm_timeo.store(1, Relaxed);
         nmp.nm_retry.store(1_000_000, Relaxed);
@@ -1811,7 +1726,7 @@ fn nfs_client_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f6
             }),
             Duration::ZERO,
         );
-        report(ROWS[3], measure_ops(RPC_OPS / 2, || rpc(&nmp)));
+        report(ROWS[2], measure_ops(RPC_OPS / 2, || rpc(&nmp)));
         p.stop();
         tn::unmount(&fx, nmp);
     }
@@ -1854,7 +1769,7 @@ fn nfs_client_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f6
         np
     };
 
-    if wanted(ROWS[4]) {
+    if wanted(ROWS[3]) {
         let (nmp, dnp) = mount();
         let p = peer(&fx, SOCK_DGRAM, &nmp, |_| {
             (0, fattr3(NFDIR as u32, 0o755, 512, 2, 1000, 1000))
@@ -1866,7 +1781,7 @@ fn nfs_client_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f6
             "the first GETATTR",
         );
         report(
-            ROWS[4],
+            ROWS[3],
             measure(|| {
                 rounds(|| {
                     black_box(nfs_getattr(black_box(dvp), &mut va, cred(), fx.user).is_ok());
@@ -1881,7 +1796,7 @@ fn nfs_client_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f6
         drop(dnp);
         tn::unmount(&fx, nmp);
     }
-    if wanted(ROWS[5]) {
+    if wanted(ROWS[4]) {
         let (nmp, dnp) = mount();
         let p = peer(&fx, SOCK_DGRAM, &nmp, move |pr| match pr as usize {
             NFSPROC_LOOKUP => {
@@ -1912,7 +1827,7 @@ fn nfs_client_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f6
         look();
         look();
         let first = p.calls().len();
-        report(ROWS[5], measure(|| rounds(look)));
+        report(ROWS[4], measure(|| rounds(look)));
         if p.calls().len() != first {
             eprintln!("fs: nfs.lookup.cached went to the server");
             std::process::exit(1);
@@ -1921,7 +1836,7 @@ fn nfs_client_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f6
         drop(dnp);
         tn::unmount(&fx, nmp);
     }
-    if wanted(ROWS[6]) {
+    if wanted(ROWS[5]) {
         let (nmp, dnp) = mount();
         let np = file(8192);
         let vp = nfstov(&np);
@@ -1939,7 +1854,7 @@ fn nfs_client_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f6
         };
         read();
         let first = p.calls().len();
-        report(ROWS[6], measure(|| rounds(&mut read)));
+        report(ROWS[5], measure(|| rounds(&mut read)));
         if p.calls().len() != first {
             eprintln!("fs: nfs.read.8k.cached went to the server");
             std::process::exit(1);
@@ -1949,7 +1864,7 @@ fn nfs_client_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f6
         drop((np, dnp));
         tn::unmount(&fx, nmp);
     }
-    if wanted(ROWS[7]) {
+    if wanted(ROWS[6]) {
         let (nmp, dnp) = mount();
         let np = file(1 << 30);
         let vp = nfstov(&np);
@@ -1957,7 +1872,7 @@ fn nfs_client_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f6
         kernel::testutil::set_copy_kernel(true);
         let mut buf = vec![0u8; 8192];
         report(
-            ROWS[7],
+            ROWS[6],
             measure_ops(RPC_OPS, || {
                 let mut iov = [Iovec::new()];
                 let mut uio = Uio::kernel_read(&mut iov, &mut buf, Some(fx.user));
@@ -1970,7 +1885,7 @@ fn nfs_client_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f6
         drop((np, dnp));
         tn::unmount(&fx, nmp);
     }
-    if wanted(ROWS[8]) {
+    if wanted(ROWS[7]) {
         let (nmp, dnp) = mount();
         let np = file(8192);
         let vp = nfstov(&np);
@@ -1988,7 +1903,7 @@ fn nfs_client_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f6
         };
         write();
         let first = p.calls().len();
-        report(ROWS[8], measure_ops(RPC_OPS, &mut write));
+        report(ROWS[7], measure_ops(RPC_OPS, &mut write));
         eprintln!(
             "fs: nfs.write.8k.async: {} calls over {} writes",
             p.calls().len() - first,

@@ -69,7 +69,7 @@ use crate::net::if_var::Ifnet;
 use crate::net::ifq::ifiq_test_take;
 use crate::net::mbuf::{
     M_TCP_CSUM_IN_OK, M_TCP_CSUM_OUT, M_UDP_CSUM_IN_OK, M_UDP_CSUM_OUT, M_WAIT, MHLEN, MT_DATA,
-    MbufBox, m_copydata, m_gethdr, mclget, ml_dequeue,
+    MbufBox, m_copydata, m_gethdr, ml_dequeue,
 };
 use crate::net::proto::Protocol;
 use crate::net::socket::{SocketRef, sobind, soclose, socreate, solock, soreceive, sosend};
@@ -325,7 +325,7 @@ impl crate::net::if_::Inet for DoublesInet {
 pub fn bench_setup(uid: u32) -> Fixture {
     use crate::net::rtable::{RtDom, rtable_init_doms, rtable_test_reset};
     static NMBCLUST: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(256 * 1024);
-    let g = crate::testutil::pages_install(64 << 20);
+    let g = crate::testutil::bufcache_install(64 << 20, 1024);
     crate::testutil::kernel_maps_install();
     crate::net::mbuf::mbinit(&NMBCLUST);
     crate::net::mbuf::nmbclust_update(256 * 1024).expect("the limit");
@@ -740,13 +740,16 @@ fn abort(c: &SocketRef<G>) {
 
 /// Sends `b` on `so` (to `to` when given), without waiting.
 fn send(so: &SocketRef<G>, to: Option<&MbufBox>, b: &[u8]) {
-    let mut m = m_gethdr(M_WAIT, MT_DATA).expect("an mbuf");
-    if b.len() > MHLEN {
-        mclget(&mut m, M_WAIT);
-    }
-    m.m_len().set(b.len() as u32);
-    m.m_pkthdr().len.set(b.len() as i32);
-    m.data_mut().expect("room").copy_from_slice(b);
+    let m = if b.len() > MHLEN {
+        // More than a cluster holds (an 8 KiB READ reply, the benchmarks'): a chain.
+        crate::net::mbuf::m_devget(b, 0).expect("an mbuf chain")
+    } else {
+        let mut m = m_gethdr(M_WAIT, MT_DATA).expect("an mbuf");
+        m.m_len().set(b.len() as u32);
+        m.m_pkthdr().len.set(b.len() as i32);
+        m.data_mut().expect("room").copy_from_slice(b);
+        m
+    };
     let _ = sosend(so, to.map(|t| &**t), None, Some(m), None, MSG_DONTWAIT);
 }
 
