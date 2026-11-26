@@ -87,7 +87,6 @@ pub mod kern_time;
 // still reached at this path by its callers.
 pub use crate::sys::timeout as kern_timeout;
 pub mod kern_unveil;
-pub mod kern_watchdog;
 pub mod kern_xxx;
 #[forbid(unsafe_code)]
 pub mod pipe_glue;

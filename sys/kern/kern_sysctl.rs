@@ -142,7 +142,6 @@ use crate::kern::kern_sched::{cpu_is_online, sysctl_hwblockcpu, sysctl_hwsmt};
 use crate::kern::kern_sensors::{sensor_find, sensordev_get};
 use crate::kern::kern_sig::NOSUIDCOREDUMP;
 use crate::kern::kern_tc::{microboottime, nanotime, tc_setrealtimeclock};
-use crate::kern::kern_watchdog::sysctl_wdog;
 use crate::kern::pipe_glue::pipe_kinfo;
 use crate::kern::proc_glue::{BsdProcGlue, proc_tables, process_ref};
 use crate::kern::socket_glue::fp_socket;
@@ -1433,11 +1432,6 @@ fn kern_audio(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
     sysctl_audio(name, req.oldp, req.oldlenp, req.newp, req.newlen)
 }
 
-/// `kern.watchdog`.
-fn kern_watchdog(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
-    sysctl_wdog(name, req.oldp, req.oldlenp, req.newp, req.newlen)
-}
-
 /// `hw.sensors`.
 fn hw_sensors(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
     sysctl_sensors(name, req.oldp, req.oldlenp, req.newp, req.newlen)
@@ -1497,9 +1491,9 @@ static KERN_NODES: [(i32, &dyn SysctlNode); 27] = [
     (KERN_POOL, &Node(kern_pool)),
     (KERN_CPUSTATS, &Node(kern_cpustats)),
     (KERN_AUDIO, &Node(kern_audio)),
-    // `kern.intrcnt` and `kern.evcount`: the kernel's nodes (N7.1b).
+    // `kern.intrcnt`, `kern.watchdog` and `kern.evcount`: the kernel's nodes (N7.1b).
     (KERN_INTRCNT, &kernel::evcount::IntrcntNode),
-    (KERN_WATCHDOG, &Node(kern_watchdog)),
+    (KERN_WATCHDOG, &kernel::watchdog::WatchdogNode),
     (KERN_EVCOUNT, &kernel::evcount::EvcountNode),
     // `kern.clockintr` and `kern.timecounter`: the kernel's nodes (N4.8a).
     (KERN_CLOCKINTR, &kernel::clockintr::ClockintrNode),

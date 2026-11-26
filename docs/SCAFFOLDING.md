@@ -224,6 +224,7 @@ Locations are on `main` at the commit that last edited this file.
 |---|---|---|---|
 | `pub use kernel::clock_subr` (LZ's path `crate::kern::clock_subr`) and `sys/sys/time.rs`'s re-export of `ClockYmdhms` and `POSIX_BASE_YEAR` | `sys/kern/mod.rs`, `sys/sys/time.rs` | The time-of-day chips still in `bsd` import the date arithmetic by LZ's paths (`efi_machdep.rs`; amd64's `isa/clock.rs`, frozen, decision 44) | N7.2b (`efi_machdep`, `plrtc` implement `Todr`), N10 (amd64's) |
 | `sys/sys/evcount.rs`: a re-export of `kernel::evcount::Evcount` | `sys/sys/evcount.rs` | The interrupt controllers still in `bsd` embed `struct evcount` by LZ's path (`ampintc`, `agintc`; amd64's `intr.rs`, frozen) | N7.2a (the GIC drivers), N10 (amd64's) |
+| The word-form callbacks: `wdog_register(cb: fn(*mut c_void, i32) -> i32, arg: usize)` and `wdog_shutdown(arg: usize)` | `sys/kernel/watchdog.rs` | ipmi(4), still in `bsd`, passes its softc as an untyped pointer | N7.12 (ipmi), with amd64's at N10 |
 
 ## Arriving
 

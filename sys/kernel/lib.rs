@@ -125,4 +125,5 @@ pub mod timeout;
 pub mod tty;
 pub mod uio;
 pub mod vm;
+pub mod watchdog;
 /* </CODE> */

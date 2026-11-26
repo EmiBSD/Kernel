@@ -284,7 +284,7 @@ paid_by = "N7"
 # kern.clockintr and kern.utc_offset (N4.8a), kern.tty (N4.7b), kern.numvnodes, kern.nchstats,
 # kern.bufcachepercent (N5), kern.maxclusters, kern.mbstat, kern.file (N6, its socket half;
 # its vnode half N5), kern.pfstatus (N8), kern.stackgap_random (N8.4), kern.consdev,
-# kern.watchdog, kern.audio, hw.sensors, hw.ucomnames, hw.machine,
+# kern.audio, hw.sensors, hw.ucomnames, hw.machine,
 # hw.smt, hw.blockcpu (N7), kern.malloc, kern.pool, kern.pool_debug (N9); and the bounded
 # integers of kern_vars[]/hw_vars[] whose variables are bsd's (maxvnodes, maxproc, maxfiles,
 # nfiles, ttycount, maxthread, somaxconn, sominconn, nosuidcoredump, fscale, splassert,
@@ -295,7 +295,7 @@ paid_by = "N7"
 # kern.bufcachepercent are the kernel's nodes (fs::subr::NumvnodesNode,
 # fs::bio::BufcachepercentNode) that bsd's table still registers, as kern.nchstats's (N5.3).
 # N7.1b: kern.intrcnt and kern.evcount are kernel::evcount's nodes (IntrcntNode, EvcountNode),
-# registered by bsd's table likewise.
+# kern.watchdog kernel::watchdog's (WatchdogNode), registered by bsd's table likewise.
 # kernel::sysctl::SysctlNode
 [[bridge]]
 trait = "SysctlNode"

@@ -162,7 +162,6 @@ use crate::kern::kern_rwlock::{rw_enter_write, rw_exit_write, rw_init};
 use crate::kern::kern_sensors::{sensor_attach, sensordev_install};
 use crate::kern::kern_synch::{msleep_nsec, tsleep_nsec, wakeup};
 use crate::kern::kern_task::{TaskqRef, task_add, task_del, task_set, taskq_create};
-use crate::kern::kern_watchdog::{wdog_register, wdog_shutdown};
 use crate::kern::subr_autoconf::device_lookup;
 use crate::kern::subr_prf::{Str, panicstr, snprintf};
 use crate::machine::bus::{
@@ -192,6 +191,7 @@ use crate::sys::task::{SYSTQ, TASKQ_MPSAFE, Task};
 use crate::sys::time::{msec_to_nsec, sec_to_nsec};
 use crate::sys::types::{Dev, minor};
 use crate::{kassert, kprintf};
+use kernel::watchdog::{wdog_register, wdog_shutdown};
 
 // ---- ipmi.h ----
 
@@ -2119,7 +2119,7 @@ pub fn ipmi_attach_common(sc: &'static IpmiSoftc, ia: &IpmiAttachArgs) {
         ipmi_watchdog_tickle,
         ptr::from_ref(sc).cast_mut().cast(),
     );
-    wdog_register(ipmi_watchdog, ptr::from_ref(sc).cast_mut().cast());
+    wdog_register(ipmi_watchdog, ptr::from_ref(sc).expose_provenance());
 
     // SAFETY: the softc is the device's, never detached, and `dv_xname` is not written
     // after attach.
@@ -2138,7 +2138,7 @@ pub fn ipmi_attach_common(sc: &'static IpmiSoftc, ia: &IpmiAttachArgs) {
 /// `ipmi_activate(self, act)`: disarms the watchdog at powerdown.
 pub fn ipmi_activate(self_: &Device, act: i32) -> Result<(), Errno> {
     if act == DVACT_POWERDOWN {
-        wdog_shutdown(ptr::from_ref(self_).cast_mut().cast());
+        wdog_shutdown(ptr::from_ref(self_).addr());
     }
 
     Ok(())

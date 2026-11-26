@@ -3588,7 +3588,7 @@ notes = "M16a: license: NetBSD Foundation BSD-2, kept whole; the whole header: s
 rust = "sys/dev/ipmi.rs"
 lz = ["sys/dev/ipmi.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/task.rs"]
+adapted_by = ["sys/kernel/task.rs", "sys/kernel/watchdog.rs"]
 
 [[module]]
 rust = "sys/dev/ipmivar.rs"
@@ -5529,7 +5529,7 @@ kind = "moved"
 rust = "sys/kern/kern_sysctl.rs"
 lz = ["sys/kern/kern_sysctl.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/log.rs", "sys/kernel/tty.rs", "sys/kernel/sysctl.rs", "sys/kernel/clockintr.rs", "sys/kernel/tc.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/unix.rs", "sys/kernel/net/syscalls.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/tcp_var.rs", "sys/kernel/netinet/tcp_usrreq.rs", "sys/kernel/netinet/udp_usrreq.rs", "sys/kernel/netinet/raw_ip.rs", "sys/kernel/netinet6/raw_ip6.rs", "sys/kernel/netinet/ip_divert.rs", "sys/kernel/netinet6/ip6_divert.rs", "sys/kernel/evcount.rs"]
+adapted_by = ["sys/kernel/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/log.rs", "sys/kernel/tty.rs", "sys/kernel/sysctl.rs", "sys/kernel/clockintr.rs", "sys/kernel/tc.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/unix.rs", "sys/kernel/net/syscalls.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/tcp_var.rs", "sys/kernel/netinet/tcp_usrreq.rs", "sys/kernel/netinet/udp_usrreq.rs", "sys/kernel/netinet/raw_ip.rs", "sys/kernel/netinet6/raw_ip6.rs", "sys/kernel/netinet/ip_divert.rs", "sys/kernel/netinet6/ip6_divert.rs", "sys/kernel/evcount.rs", "sys/kernel/watchdog.rs"]
 notes = "N4.6b: the bsd half of sysctl(2): kern.file, the helpers over bsd copyin/copyout for the nodes still in bsd, and sysctl_register_legacy (Node/ProcNode adapters, the CTL_* trees, the kern/hw leaves, directories and kern_vars/hw_vars entries whose state is bsd's, hw.machine, physmem), BsdDiskExport (the DiskExport bridge), native_sysctl (the KernelApi entry); the dispatcher, the vslock and kern.proc moved into sys/kernel/sysctl.rs; adapted, not redesigned, until kern.file moves (N5/N6): its unsafe blocks (three at N4.6b: the bound address mbuf viewed as a slice, in_pcb_iterator and its abort; two since N6.4c1, DISKLIST's insert and remove, the pcb's gone with the kernel's pcb) keep the file from the forbid a redesigned bsd module needs (lz check, ZERO_UNSAFE section 5); N4.8a: kern.clockintr and kern.timecounter are the kernel's ClockintrNode and TcNode in KERN_NODES (LZ's kern.clockintr unported! closed)"
 
 [[module]]
@@ -5550,11 +5550,6 @@ rust = "sys/kern/kern_unveil.rs"
 lz = ["sys/kern/kern_unveil.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/fs/vops.rs"]
-
-[[module]]
-rust = "sys/kern/kern_watchdog.rs"
-lz = ["sys/kern/kern_watchdog.rs"]
-status = "inherited"
 
 [[module]]
 rust = "sys/kern/kern_xxx.rs"
@@ -20583,4 +20578,19 @@ reason = "the PinLists are constant heads: nothing to initialise on first use"
 [[module.fn]]
 lz = "sys/kern/subr_evcount.rs::lists"
 native = ["EVCOUNT_LIST", "EVCOUNT_PERCPU_INIT_LIST"]
+kind = "merged"
+
+[[module]]
+rust = "sys/kernel/watchdog.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_watchdog.rs"]
+status = "redesigned"
+notes = "N7.1b: the watchdog framework in the kernel, 0 unsafe: the callback and its argument (a word, the pointer's exposed address, handed back and never read through) in one Mutexed at IPL_SOFTCLOCK, copied out before the call; wdog_timeout a pinned kernel Timeout static; kern.watchdog the kernel's WatchdogNode over sysctl_wdog, every bound and errno the C's"
+[[module.fn]]
+lz = "sys/kern/kern_watchdog.rs::WDOG_CTL_CB"
+native = ["WDOG_CTL"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/kern/kern_watchdog.rs::WDOG_CTL_CB_ARG"
+native = ["WDOG_CTL"]
 kind = "merged"
