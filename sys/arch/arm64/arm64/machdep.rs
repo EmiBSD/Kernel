@@ -115,6 +115,10 @@
 //!   `_end`) go in `KernelImage`, for the pmap to map the image by section.
 //! - N6.8 (the user's decision of 2026-11-15): `cpu_startup` prints the release's code name
 //!   (`conf/vers.rs`'s `CODENAME`) on a line of its own after the version.
+//! - N7.2b0: the device tree is read in place for the kernel's run (`hal::mem::fdtblob`; the
+//!   C copies it into stolen memory mapped read-only, `arm64/machdep.c`'s `initarm`), so
+//!   `initarm` refuses a tree any of whose frames lies in a usable region, before uvm is given
+//!   them: what kept the frames out of the page allocator was the boot protocol alone.
 
 use core::arch::asm;
 use core::cell::UnsafeCell;
@@ -523,6 +527,30 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
     };
 
     let usable = || regions.iter().filter(|r| r.kind == MemKind::Usable);
+
+    // The device tree is read in place for the kernel's whole run (`hal::mem::fdtblob`, where
+    // the C copies it into stolen memory): none of its frames may be memory uvm is given.
+    // Limine's tree is in the direct map, or in the kernel image when `stand` rewrote it for
+    // the frame buffer; boot(8)'s is in the direct map.
+    if let Some(dtb) = boot.dtb {
+        let va = dtb.as_ptr() as usize;
+        let len = fdt_get_size(dtb.as_ptr());
+        let (kvirt, kphys) = (boot.kernel_virt.as_usize(), boot.kernel_phys.as_usize());
+        let pa = if (kvirt..ptr::addr_of!(_end) as usize).contains(&va) {
+            (va - kvirt).wrapping_add(kphys)
+        } else if va >= boot.hhdm_offset {
+            va - boot.hhdm_offset
+        } else {
+            return Err("initarm: the device tree is outside the direct map");
+        };
+        let end = pa.saturating_add(len);
+        if usable().any(|r| {
+            let base = r.base.as_usize();
+            base < end && pa < base.saturating_add(r.length.as_usize())
+        }) {
+            return Err("initarm: the device tree lies in usable memory");
+        }
+    }
 
     UVMEXP.pagesize.store(PAGE_SIZE as i32, Ordering::Relaxed);
     uvm_setpagesize();
