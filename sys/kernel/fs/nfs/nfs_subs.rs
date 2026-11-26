@@ -516,13 +516,11 @@ impl XdrWriter {
         for t in [&a.va_atime, &a.va_mtime] {
             if t.tv_nsec == i64::from(VNOVAL) {
                 self.u32(NFSV3SATTRTIME_DONTCHANGE);
+            } else if t.tv_sec == gettime() {
+                self.u32(NFSV3SATTRTIME_TOSERVER);
             } else {
-                if t.tv_sec == gettime() {
-                    self.u32(NFSV3SATTRTIME_TOSERVER);
-                } else {
-                    self.u32(NFSV3SATTRTIME_TOCLIENT);
-                    self.pod(&txdr_nfsv3time(t));
-                }
+                self.u32(NFSV3SATTRTIME_TOCLIENT);
+                self.pod(&txdr_nfsv3time(t));
             }
         }
     }

@@ -268,7 +268,7 @@ pub fn nfs_boot_init<G: ProcGlue>(nd: &mut NfsDiskless<G>, procp: &Thread<G>) ->
     HOSTNAMELEN.store(MAXHOSTNAMELEN as i32, core::sync::atomic::Ordering::Relaxed);
 
     // this returns gateway IP address
-    let _gw_ip = match bp_whoami(procp, &mut bp_sin, &my_ip) {
+    let _gw_ip = match bp_whoami(procp, &mut bp_sin, my_ip) {
         Ok(gw) => gw,
         Err(e) => kpanic(format_args!(
             "nfs_boot: bootparam whoami, error={}",
@@ -414,7 +414,7 @@ fn remote_path(host: &mut [u8; MNAMELEN], pathname: &[u8]) {
 fn bp_whoami<G: ProcGlue>(
     p: &Thread<G>,
     bpsin: &mut SockaddrIn,
-    my_ip: &InAddr,
+    my_ip: InAddr,
 ) -> Result<InAddr, Errno> {
     // Build request message for PMAPPROC_CALLIT: struct whoami_call (the program, version and
     // procedure to call and the length of the argument, all words) and the encapsulated data
@@ -424,7 +424,7 @@ fn bp_whoami<G: ProcGlue>(
     w.u32(BOOTPARAM_VERS);
     w.u32(BOOTPARAM_WHOAMI);
     w.u32(XDR_INADDR_SIZE as u32);
-    xdr_inaddr_encode(&mut w, my_ip);
+    xdr_inaddr_encode(&mut w, &my_ip);
 
     // RPC: portmap/callit
     bpsin.sin_port = PMAPPORT.to_be();
@@ -938,7 +938,7 @@ mod tests {
                 s_addr: u32::from_ne_bytes([10, 77, 32, 1]),
             };
             assert_eq!(
-                bp_whoami(p, &mut bp, &me).map(|a| a.s_addr.to_ne_bytes()),
+                bp_whoami(p, &mut bp, me).map(|a| a.s_addr.to_ne_bytes()),
                 Ok([10, 77, 32, 254])
             );
             assert_eq!(bp.sin_addr.s_addr.to_ne_bytes(), [10, 77, 32, 2]);

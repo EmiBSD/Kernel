@@ -551,7 +551,7 @@ pub fn udp_input<G: ProcGlue>(
         // every unicast datagram. Those applications open the multiple sockets to overcome an
         // inadequacy of the UDP socket interface, but for backwards compatibility we avoid the
         // problem here rather than fixing the interface. Maybe 4.5BSD will remedy this?)
-        udp_input_mcast::<G>(m, ip.as_ref(), ip6.as_ref(), iphlen, &uh, &srcsa, ns);
+        udp_input_mcast::<G>(m, ip.as_ref(), ip6.as_ref(), iphlen, uh, &srcsa, ns);
         return IPPROTO_DONE;
     }
 
@@ -661,7 +661,7 @@ pub fn udp_input<G: ProcGlue>(
         ip.as_ref(),
         ip6.as_ref(),
         iphlen,
-        &uh,
+        uh,
         &srcsa,
         ipsecflowinfo,
         ns,
@@ -681,7 +681,7 @@ fn udp_input_mcast<G: ProcGlue>(
     ip: Option<&Ip>,
     ip6: Option<&Ip6Hdr>,
     iphlen: i32,
-    uh: &Udphdr,
+    uh: Udphdr,
     srcsa: &SrcAddr,
     mut ns: Option<&mut Netstack>,
 ) {
@@ -800,7 +800,7 @@ fn udp_sbappend<G: ProcGlue>(
     ip: Option<&Ip>,
     ip6: Option<&Ip6Hdr>,
     hlen: i32,
-    uh: &Udphdr,
+    uh: Udphdr,
     srcaddr: &SrcAddr,
     ipsecflowinfo: u32,
     ns: Option<&mut Netstack>,
@@ -812,7 +812,7 @@ fn udp_sbappend<G: ProcGlue>(
     let hlen = hlen + size_of::<Udphdr>() as i32;
 
     if let Some(InpUpcall { f, arg }) = inp.upcall() {
-        match f(arg, m, ip, ip6, uh, hlen, ns) {
+        match f(arg, m, ip, ip6, &uh, hlen, ns) {
             Some(n) => m = n,
             None => return,
         }
@@ -1439,10 +1439,9 @@ fn udp_disconnect<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) -> Result<(
     Ok(())
 }
 
-/// `udp_shutdown`: no more sending.
-fn udp_shutdown<G: ProcGlue>(so: &Socket<G>, _w: &mut SoLocked<'_>) -> Result<(), Errno> {
+/// `udp_shutdown`: no more sending (the C's answer is always 0: the request's `Ok`).
+fn udp_shutdown<G: ProcGlue>(so: &Socket<G>, _w: &mut SoLocked<'_>) {
     socantsendmore(so);
-    Ok(())
 }
 
 /// `udp_send`: `udp_output` of the datagram `m` to `addr` (or the peer) with `control`,
@@ -1568,7 +1567,8 @@ impl<G: ProcGlue> Usrreqs<G> for UdpUsrreqs<G> {
         udp_disconnect(so, w)
     }
     fn shutdown(&self, so: &Socket<G>, w: &mut SoLocked<'_>) -> Result<(), Errno> {
-        udp_shutdown(so, w)
+        udp_shutdown(so, w);
+        Ok(())
     }
     /// NULL in the C's table: never called (UDP has no `PR_WANTRCVD`).
     fn rcvd(&self, _so: &Socket<G>, _w: &mut SoLocked<'_>) {

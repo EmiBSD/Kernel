@@ -943,15 +943,6 @@ impl<T, const K: usize> RadixTree<T, K> {
         rm.generation = generation;
     }
 
-    /// D-20's repair made once more (`rn_del_radix_mask`): counted for the tests.
-    #[inline]
-    fn note_repair(&mut self) {
-        #[cfg(any(test, feature = "doubles"))]
-        {
-            self.repairs += 1;
-        }
-    }
-
     /// The deletes D-20 repaired so far: where radix.c would have left a normal annotation
     /// naming a freed route. The differential test against `bsd`'s tree (until N6.7b1)
     /// compared the two only until the first, since the C then reads freed memory.
@@ -1939,8 +1930,12 @@ fn rn_del_radix_mask<T, const K: usize>(h: &mut RadixTree<T, K>, tt: u32) -> i32
         // the annotation in rn_add_radix_mask's duplicated-key branch, or shares it). radix.c
         // reads the annotation as a mask's here, logs "inconsistent annotation" and leaves it
         // naming the route it frees; the normal branch's bookkeeping runs instead, so the
-        // tree is the one built without this route.
-        h.note_repair();
+        // tree is the one built without this route. D-20's repair made once more: counted for
+        // the tests.
+        #[cfg(any(test, feature = "doubles"))]
+        {
+            h.repairs += 1;
+        }
         if h.rm_leaf(m) != tt {
             // One sharer less (radix.c leaves the count as it was).
             let rm = h.rmm(m);

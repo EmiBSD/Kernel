@@ -372,7 +372,8 @@ pub fn nfs_fsinfo<G: ProcGlue>(
 /// `NETDEV` (`<sys/swap.h>`): `swdevt[0]` of a swap file on NFS.
 pub const NETDEV: i32 = -2;
 
-/// `NODEV` (`<sys/param.h>`).
+/// `NODEV` (`<sys/param.h>`), read by the diskless boot only.
+#[cfg(feature = "nfsclient")]
 const NODEV: i32 = -1;
 
 /// `nfs_mountroot()`: mount a remote root fs via NFS. It goes like this:
@@ -1011,6 +1012,7 @@ pub fn nfs_sysctl<G: ProcGlue>(
     newlen: usize,
     _p: &Thread<G>,
 ) -> Result<(), Errno> {
+    const STATS_SIZE: usize = size_of::<Nfsstats>();
     // All names at this level are terminal.
     if name.len() > 1 {
         return Err(Errno::ENOTDIR); // overloaded
@@ -1019,7 +1021,6 @@ pub fn nfs_sysctl<G: ProcGlue>(
         return Err(Errno::EOPNOTSUPP);
     };
 
-    const STATS_SIZE: usize = size_of::<Nfsstats>();
     match first {
         NFS_NFSSTATS => {
             if oldp == 0 {

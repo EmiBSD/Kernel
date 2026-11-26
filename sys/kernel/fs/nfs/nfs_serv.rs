@@ -162,7 +162,7 @@ use super::nfsproto::{
     nfsv3tov_type, nfsx_cookieverf, nfsx_fattr, nfsx_postopattr, nfsx_postoporfattr,
     nfsx_preopattr, nfsx_srvfh, nfsx_statfs, nfsx_wccdata, nfsx_wccorfattr, nfsx_writeverf,
 };
-use super::nfssvc::{ND_NFSV3, NfsrvDescript, NfsrvProc, NfssvcSock, nd_reader, nfs_srvmaxdata};
+use super::nfssvc::{ND_NFSV3, NfsrvDescript, NfsrvProc, NfssvcSock, nfs_srvmaxdata};
 use super::xdr_subs::{
     fxdr_nfsv2time, fxdr_nfsv3time, fxdr_unsigned, txdr_hyper, txdr_unsigned, xdr_bytes,
 };
@@ -508,11 +508,15 @@ fn nfsm_srvmtofh(r: &mut XdrReader<'_>, v3: bool) -> Result<Option<Fhandle>, Err
 /// descriptor's other members stay usable) and the file handle they begin with
 /// ([`nfsm_srvmtofh`]).
 fn srv_args(
-    mrep: &Option<MbufBox>,
+    mrep: Option<&MbufBox>,
     off: usize,
     v3: bool,
 ) -> Result<(XdrReader<'_>, Option<Fhandle>), Errno> {
-    let mut r = nd_reader(mrep, off)?;
+    // nd_reader's answer: no request chain is EBADRPC.
+    let mut r = match mrep {
+        Some(m) => XdrReader::at(m, off)?,
+        None => return Err(Errno::EBADRPC),
+    };
     let fh = nfsm_srvmtofh(&mut r, v3)?;
     Ok((r, fh))
 }
@@ -545,7 +549,7 @@ pub fn nfsrv3_access<G: ProcGlue>(
     p: &Thread<G>,
 ) -> Answer {
     let v3 = nd.nd_flag & ND_NFSV3 != 0;
-    let (mut r, fh) = match srv_args(&nd.nd_mrep, nd.nd_off, v3) {
+    let (mut r, fh) = match srv_args(nd.nd_mrep.as_ref(), nd.nd_off, v3) {
         Ok((r, Some(fh))) => (r, fh),
         Ok((_, None)) => return nfsm_reply_only(nd, slp, Errno::EBADRPC.as_i32(), 0),
         Err(e) => return bad_request(nd, e),
@@ -596,7 +600,7 @@ pub fn nfsrv_getattr<G: ProcGlue>(
     p: &Thread<G>,
 ) -> Answer {
     let v3 = nd.nd_flag & ND_NFSV3 != 0;
-    let fh = match srv_args(&nd.nd_mrep, nd.nd_off, v3) {
+    let fh = match srv_args(nd.nd_mrep.as_ref(), nd.nd_off, v3) {
         Ok((_, Some(fh))) => fh,
         Ok((_, None)) => return nfsm_reply_only(nd, slp, Errno::EBADRPC.as_i32(), 0),
         Err(e) => return bad_request(nd, e),
@@ -670,7 +674,7 @@ pub fn nfsrv_setattr<G: ProcGlue>(
     p: &Thread<G>,
 ) -> Answer {
     let v3 = nd.nd_flag & ND_NFSV3 != 0;
-    let (mut r, fh) = match srv_args(&nd.nd_mrep, nd.nd_off, v3) {
+    let (mut r, fh) = match srv_args(nd.nd_mrep.as_ref(), nd.nd_off, v3) {
         Ok((r, Some(fh))) => (r, fh),
         Ok((_, None)) => return nfsm_reply_only(nd, slp, Errno::EBADRPC.as_i32(), 0),
         Err(e) => return bad_request(nd, e),
@@ -747,7 +751,7 @@ pub fn nfsrv_lookup<G: ProcGlue>(
     p: &Thread<G>,
 ) -> Answer {
     let v3 = nd.nd_flag & ND_NFSV3 != 0;
-    let (mut r, fh) = match srv_args(&nd.nd_mrep, nd.nd_off, v3) {
+    let (mut r, fh) = match srv_args(nd.nd_mrep.as_ref(), nd.nd_off, v3) {
         Ok((r, Some(fh))) => (r, fh),
         Ok((_, None)) => return nfsm_reply_only(nd, slp, Errno::EBADRPC.as_i32(), 0),
         Err(e) => return bad_request(nd, e),
@@ -827,7 +831,7 @@ pub fn nfsrv_readlink<G: ProcGlue>(
     p: &Thread<G>,
 ) -> Answer {
     let v3 = nd.nd_flag & ND_NFSV3 != 0;
-    let fh = match srv_args(&nd.nd_mrep, nd.nd_off, v3) {
+    let fh = match srv_args(nd.nd_mrep.as_ref(), nd.nd_off, v3) {
         Ok((_, Some(fh))) => fh,
         Ok((_, None)) => return nfsm_reply_only(nd, slp, Errno::EBADRPC.as_i32(), 0),
         Err(e) => return bad_request(nd, e),
@@ -943,7 +947,7 @@ pub fn nfsrv_read<G: ProcGlue>(
     p: &Thread<G>,
 ) -> Answer {
     let v3 = nd.nd_flag & ND_NFSV3 != 0;
-    let (mut r, fh) = match srv_args(&nd.nd_mrep, nd.nd_off, v3) {
+    let (mut r, fh) = match srv_args(nd.nd_mrep.as_ref(), nd.nd_off, v3) {
         Ok((r, Some(fh))) => (r, fh),
         Ok((_, None)) => return nfsm_reply_only(nd, slp, Errno::EBADRPC.as_i32(), 0),
         Err(e) => return bad_request(nd, e),
@@ -1102,7 +1106,7 @@ pub fn nfsrv_write<G: ProcGlue>(
     if nd.nd_mrep.is_none() {
         return (None, 0);
     }
-    let (mut r, fh) = match srv_args(&nd.nd_mrep, nd.nd_off, v3) {
+    let (mut r, fh) = match srv_args(nd.nd_mrep.as_ref(), nd.nd_off, v3) {
         Ok((r, Some(fh))) => (r, fh),
         Ok((_, None)) => return nfsm_reply_only(nd, slp, Errno::EBADRPC.as_i32(), 0),
         Err(e) => return bad_request(nd, e),
@@ -1288,7 +1292,7 @@ pub fn nfsrv_create<G: ProcGlue>(
     p: &Thread<G>,
 ) -> Answer {
     let v3 = nd.nd_flag & ND_NFSV3 != 0;
-    let (mut r, fh) = match srv_args(&nd.nd_mrep, nd.nd_off, v3) {
+    let (mut r, fh) = match srv_args(nd.nd_mrep.as_ref(), nd.nd_off, v3) {
         Ok((r, Some(fh))) => (r, fh),
         Ok((_, None)) => return nfsm_reply_only(nd, slp, Errno::EBADRPC.as_i32(), 0),
         Err(e) => return bad_request(nd, e),
@@ -1470,9 +1474,8 @@ pub fn nfsrv_create<G: ProcGlue>(
     }
     let mut nfh = Nfsfh::new();
     if error == 0 {
-        let vp = match vp {
-            Some(vp) => vp,
-            None => kpanic(format_args!("nfsrv_create: created without a vnode")),
+        let Some(vp) = vp else {
+            kpanic(format_args!("nfsrv_create: created without a vnode"));
         };
         error = match nfsrv_vptofh(vp) {
             Ok(f) => {
@@ -1521,7 +1524,7 @@ pub fn nfsrv_mknod<G: ProcGlue>(
     p: &Thread<G>,
 ) -> Answer {
     let v3 = nd.nd_flag & ND_NFSV3 != 0;
-    let (mut r, fh) = match srv_args(&nd.nd_mrep, nd.nd_off, v3) {
+    let (mut r, fh) = match srv_args(nd.nd_mrep.as_ref(), nd.nd_off, v3) {
         Ok((r, Some(fh))) => (r, fh),
         Ok((_, None)) => return nfsm_reply_only(nd, slp, Errno::EBADRPC.as_i32(), 0),
         Err(e) => return bad_request(nd, e),
@@ -1695,7 +1698,7 @@ pub fn nfsrv_remove<G: ProcGlue>(
     p: &Thread<G>,
 ) -> Answer {
     let v3 = nd.nd_flag & ND_NFSV3 != 0;
-    let (mut r, fh) = match srv_args(&nd.nd_mrep, nd.nd_off, v3) {
+    let (mut r, fh) = match srv_args(nd.nd_mrep.as_ref(), nd.nd_off, v3) {
         Ok((r, Some(fh))) => (r, fh),
         Ok((_, None)) => return nfsm_reply_only(nd, slp, Errno::EBADRPC.as_i32(), 0),
         Err(e) => return bad_request(nd, e),
@@ -1801,7 +1804,7 @@ pub fn nfsrv_rename<G: ProcGlue>(
     p: &Thread<G>,
 ) -> Answer {
     let v3 = nd.nd_flag & ND_NFSV3 != 0;
-    let (mut r, ffh) = match srv_args(&nd.nd_mrep, nd.nd_off, v3) {
+    let (mut r, ffh) = match srv_args(nd.nd_mrep.as_ref(), nd.nd_off, v3) {
         Ok((r, Some(fh))) => (r, fh),
         Ok((_, None)) => return nfsm_reply_only(nd, slp, Errno::EBADRPC.as_i32(), 0),
         Err(e) => return bad_request(nd, e),
@@ -2008,7 +2011,7 @@ pub fn nfsrv_link<G: ProcGlue>(
     p: &Thread<G>,
 ) -> Answer {
     let v3 = nd.nd_flag & ND_NFSV3 != 0;
-    let (mut r, fh) = match srv_args(&nd.nd_mrep, nd.nd_off, v3) {
+    let (mut r, fh) = match srv_args(nd.nd_mrep.as_ref(), nd.nd_off, v3) {
         Ok((r, Some(fh))) => (r, fh),
         Ok((_, None)) => return nfsm_reply_only(nd, slp, Errno::EBADRPC.as_i32(), 0),
         Err(e) => return bad_request(nd, e),
@@ -2126,7 +2129,7 @@ pub fn nfsrv_symlink<G: ProcGlue>(
     p: &Thread<G>,
 ) -> Answer {
     let v3 = nd.nd_flag & ND_NFSV3 != 0;
-    let (mut r, fh) = match srv_args(&nd.nd_mrep, nd.nd_off, v3) {
+    let (mut r, fh) = match srv_args(nd.nd_mrep.as_ref(), nd.nd_off, v3) {
         Ok((r, Some(fh))) => (r, fh),
         Ok((_, None)) => return nfsm_reply_only(nd, slp, Errno::EBADRPC.as_i32(), 0),
         Err(e) => return bad_request(nd, e),
@@ -2275,7 +2278,7 @@ pub fn nfsrv_mkdir<G: ProcGlue>(
     p: &Thread<G>,
 ) -> Answer {
     let v3 = nd.nd_flag & ND_NFSV3 != 0;
-    let (mut r, fh) = match srv_args(&nd.nd_mrep, nd.nd_off, v3) {
+    let (mut r, fh) = match srv_args(nd.nd_mrep.as_ref(), nd.nd_off, v3) {
         Ok((r, Some(fh))) => (r, fh),
         Ok((_, None)) => return nfsm_reply_only(nd, slp, Errno::EBADRPC.as_i32(), 0),
         Err(e) => return bad_request(nd, e),
@@ -2381,7 +2384,7 @@ pub fn nfsrv_rmdir<G: ProcGlue>(
     p: &Thread<G>,
 ) -> Answer {
     let v3 = nd.nd_flag & ND_NFSV3 != 0;
-    let (mut r, fh) = match srv_args(&nd.nd_mrep, nd.nd_off, v3) {
+    let (mut r, fh) = match srv_args(nd.nd_mrep.as_ref(), nd.nd_off, v3) {
         Ok((r, Some(fh))) => (r, fh),
         Ok((_, None)) => return nfsm_reply_only(nd, slp, Errno::EBADRPC.as_i32(), 0),
         Err(e) => return bad_request(nd, e),
@@ -2549,9 +2552,19 @@ fn nfsrv_readdir_siz(siz: i32, xfer: i32) -> usize {
     (if siz > xfer || siz <= 0 { xfer } else { siz }) as usize
 }
 
+/// What [`nfsrv_readdir_pass`] answers: the read's result, the bytes read, the offset it
+/// ended at, the eof flag and the attributes' result (`None` when none were asked for).
+type ReaddirPass = (
+    Result<(), Errno>,
+    usize,
+    u64,
+    i32,
+    Option<Result<(), Errno>>,
+);
+
 /// One pass of a readdir over `vp` (unlocked) from the cookie `off`: `vn_lock`,
-/// `VOP_READDIR` into `rbuf`, the attributes when `at` is asked for, `VOP_UNLOCK`. The read's
-/// result, the bytes read, the offset it ended at, the eof flag and the attributes' result.
+/// `VOP_READDIR` into `rbuf`, the attributes when `at` is asked for, `VOP_UNLOCK`; its
+/// answer is a [`ReaddirPass`].
 fn nfsrv_readdir_pass<G: ProcGlue>(
     vp: &'static Vnode<G>,
     rbuf: &mut [u8],
@@ -2559,13 +2572,7 @@ fn nfsrv_readdir_pass<G: ProcGlue>(
     cred: Cred<'_>,
     p: &Thread<G>,
     at: Option<&mut Vattr>,
-) -> (
-    Result<(), Errno>,
-    usize,
-    u64,
-    i32,
-    Option<Result<(), Errno>>,
-) {
+) -> ReaddirPass {
     let fullsiz = rbuf.len();
     let mut iv = [Iovec::new()];
     let mut io = Uio::<G>::kernel_read(&mut iv, rbuf, None);
@@ -2611,7 +2618,7 @@ pub fn nfsrv_readdir<G: ProcGlue>(
     p: &Thread<G>,
 ) -> Answer {
     let v3 = nd.nd_flag & ND_NFSV3 != 0;
-    let (mut r, fh) = match srv_args(&nd.nd_mrep, nd.nd_off, v3) {
+    let (mut r, fh) = match srv_args(nd.nd_mrep.as_ref(), nd.nd_off, v3) {
         Ok((r, Some(fh))) => (r, fh),
         Ok((_, None)) => return nfsm_reply_only(nd, slp, Errno::EBADRPC.as_i32(), 0),
         Err(e) => return bad_request(nd, e),
@@ -2770,7 +2777,7 @@ pub fn nfsrv_readdirplus<G: ProcGlue>(
     p: &Thread<G>,
 ) -> Answer {
     let v3 = nd.nd_flag & ND_NFSV3 != 0;
-    let (mut r, fh) = match srv_args(&nd.nd_mrep, nd.nd_off, v3) {
+    let (mut r, fh) = match srv_args(nd.nd_mrep.as_ref(), nd.nd_off, v3) {
         Ok((r, Some(fh))) => (r, fh),
         Ok((_, None)) => return nfsm_reply_only(nd, slp, Errno::EBADRPC.as_i32(), 0),
         Err(e) => return bad_request(nd, e),
@@ -2961,7 +2968,7 @@ pub fn nfsrv_commit<G: ProcGlue>(
     p: &Thread<G>,
 ) -> Answer {
     let v3 = nd.nd_flag & ND_NFSV3 != 0;
-    let (mut r, fh) = match srv_args(&nd.nd_mrep, nd.nd_off, v3) {
+    let (mut r, fh) = match srv_args(nd.nd_mrep.as_ref(), nd.nd_off, v3) {
         Ok((r, Some(fh))) => (r, fh),
         Ok((_, None)) => return nfsm_reply_only(nd, slp, Errno::EBADRPC.as_i32(), 0),
         Err(e) => return bad_request(nd, e),
@@ -3002,7 +3009,7 @@ pub fn nfsrv_statfs<G: ProcGlue>(
     p: &Thread<G>,
 ) -> Answer {
     let v3 = nd.nd_flag & ND_NFSV3 != 0;
-    let fh = match srv_args(&nd.nd_mrep, nd.nd_off, v3) {
+    let fh = match srv_args(nd.nd_mrep.as_ref(), nd.nd_off, v3) {
         Ok((_, Some(fh))) => fh,
         Ok((_, None)) => return nfsm_reply_only(nd, slp, Errno::EBADRPC.as_i32(), 0),
         Err(e) => return bad_request(nd, e),
@@ -3057,7 +3064,7 @@ pub fn nfsrv_fsinfo<G: ProcGlue>(
     p: &Thread<G>,
 ) -> Answer {
     let v3 = nd.nd_flag & ND_NFSV3 != 0;
-    let fh = match srv_args(&nd.nd_mrep, nd.nd_off, v3) {
+    let fh = match srv_args(nd.nd_mrep.as_ref(), nd.nd_off, v3) {
         Ok((_, Some(fh))) => fh,
         Ok((_, None)) => return nfsm_reply_only(nd, slp, Errno::EBADRPC.as_i32(), 0),
         Err(e) => return bad_request(nd, e),
@@ -3114,7 +3121,7 @@ pub fn nfsrv_pathconf<G: ProcGlue>(
     p: &Thread<G>,
 ) -> Answer {
     let v3 = nd.nd_flag & ND_NFSV3 != 0;
-    let fh = match srv_args(&nd.nd_mrep, nd.nd_off, v3) {
+    let fh = match srv_args(nd.nd_mrep.as_ref(), nd.nd_off, v3) {
         Ok((_, Some(fh))) => fh,
         Ok((_, None)) => return nfsm_reply_only(nd, slp, Errno::EBADRPC.as_i32(), 0),
         Err(e) => return bad_request(nd, e),

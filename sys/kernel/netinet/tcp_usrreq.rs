@@ -932,7 +932,7 @@ pub fn tcp_shutdown<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) -> Result
                 let error = tcp_output(&mut tp);
                 (TpOrClosed::Open(tp), error)
             }
-            closed => (closed, Ok(())),
+            closed @ TpOrClosed::Closed(_) => (closed, Ok(())),
         }
     };
 
@@ -1136,7 +1136,7 @@ pub fn tcp_dodisconnect<'a, 'w, G: ProcGlue>(tp: Tp<'a, 'w, G>) -> TpOrClosed<'a
                 let _ = tcp_output(&mut tp);
                 TpOrClosed::Open(tp)
             }
-            closed => closed,
+            closed @ TpOrClosed::Closed(_) => closed,
         }
     }
 }
@@ -1365,6 +1365,7 @@ fn tcp_ident_drop<G: ProcGlue>(inp: &Inpcb<G>, net: &NetHeld<'_>) -> Result<(), 
 /// `ASSIGN(field)` of `tcp_sysctl_tcpstat` for every member, in the counters' order.
 macro_rules! tcpstat_assign {
     ($counters:expr; $($f:ident),* $(,)?) => {{
+        const _: () = assert!([$(stringify!($f)),*].len() == TCPS_NCOUNTERS);
         let counters: &[u64; TCPS_NCOUNTERS] = $counters;
         let mut tcpstat = Tcpstat::default();
         let mut i = 0;
@@ -1372,7 +1373,6 @@ macro_rules! tcpstat_assign {
             tcpstat.$f = counters[i] as _;
             i += 1;
         )*
-        const _: () = assert!([$(stringify!($f)),*].len() == TCPS_NCOUNTERS);
         let _ = i;
         tcpstat
     }};

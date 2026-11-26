@@ -833,7 +833,7 @@ fn nfs_receive_stream<G: ProcGlue>(
                     nfs_sndunlock(&nmp.nm_flag);
                     return Err(error);
                 }
-                continue 'tryagain;
+                // goto tryagain: the loop goes round.
             }
         }
     }
@@ -1329,12 +1329,11 @@ fn nfs_reply_header(reply: &mut Reply) -> Header {
         (h, off)
     };
     match h {
-        Ok(Header::Bad(e)) => Header::Bad(e),
+        Ok(Header::Bad(e)) | Err(e) => Header::Bad(e),
         Ok(h) => {
             reply.set_offset(off);
             h
         }
-        Err(e) => Header::Bad(e),
     }
 }
 
@@ -1476,9 +1475,7 @@ fn nfs_timer_step<G: ProcGlue>(
         return None;
     }
 
-    let Some(so) = nmp.nm_so.get(r).clone() else {
-        return None;
-    };
+    let so = nmp.nm_so.get(r).clone()?;
 
     // If there is enough space and the window allows.. Resend it. Set r_rtt to -1 in case we
     // fail to send it now.

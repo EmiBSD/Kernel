@@ -148,6 +148,7 @@
 //!     over a stand-in holding this SYN's IP options (none if it has none, where the C's
 //!     carries the first SYN's), the entry's own `sc_ipopts` left as the first SYN's (the C
 //!     replaces them with this SYN's when it has some, so the entry's timer sends those).
+//!
 //!   The IP options are a source route only, recorded only under `net.inet.ip.sourceroute=1`
 //!   (`ip_srcroute` answers none otherwise, and `ip_dooptions` drops a source-routed packet,
 //!   ip_input.c:1254 and :1474): with the default sysctl these differences show nothing.
@@ -508,9 +509,9 @@ pub fn syn_cache_insert<G: ProcGlue>(
         for (w, b) in g.sets[active]
             .scs_random
             .iter_mut()
-            .zip(seed.chunks_exact(4))
+            .zip(seed.as_chunks::<4>().0)
         {
-            *w = u32::from_ne_bytes([b[0], b[1], b[2], b[3]]);
+            *w = u32::from_ne_bytes(*b);
         }
         // The seed's copy on the stack wiped: the set's words are its storage.
         libkern::explicit_bzero(&mut seed);

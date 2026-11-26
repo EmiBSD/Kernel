@@ -158,6 +158,10 @@ pub struct NfsNhash<G: ProcGlue> {
 
 impl<G: ProcGlue> NfsNhash<G> {
     /// Every chain empty, no key yet (the glue's tables' value).
+    #[allow(
+        clippy::large_stack_arrays,
+        reason = "a const fn the glue's static tables are made with at compile time (nfs.rs)"
+    )]
     pub const fn new() -> Self {
         Self {
             chains: [const { PinList::new() }; NFS_NHASHSIZE],

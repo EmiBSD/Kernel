@@ -151,7 +151,7 @@ use hal::sys::errno::Errno;
 use hal::sys::net_route::{RTF_HOST, RTV_MTU};
 use hal::sys::netinet_in::SockaddrIn;
 use hal::sys::netinet_ip::Ip;
-use hal::sys::socket::{AF_INET, AF_INET6, SO_DEBUG, SO_KEEPALIVE};
+use hal::sys::socket::{AF_INET, SO_DEBUG, SO_KEEPALIVE};
 
 use crate::assert::{kassert, kpanic};
 use crate::net::proto::PR_SLOWHZ;
@@ -179,8 +179,6 @@ use crate::timeout::{KCLOCK_NONE, SharedFn, TIMEOUT_MPSAFE, TIMEOUT_PROC};
 
 /// `AF_INET` as the `int` of `tp->pf`.
 const AF_INET_I32: i32 = AF_INET as i32;
-/// `AF_INET6` as the `int` of `tp->pf`.
-const AF_INET6_I32: i32 = AF_INET6 as i32;
 
 // Definitions of the TCP timers.
 
@@ -586,15 +584,14 @@ pub fn tcp_timer_rexmt<G: ProcGlue>(arg: &AnyArc) {
                 }
 
                 let rt = match tp.st.pf {
-                    // We can not turn off path MTU for IPv6. Do nothing for now, maybe lower
-                    // to minimum MTU.
-                    AF_INET6_I32 => None,
                     AF_INET_I32 => icmp_mtudisc_clone(
                         inp.inp_faddr.get(),
                         inp.inp_rtableid.get(),
                         false,
                         tp.net,
                     ),
+                    // AF_INET6: we can not turn off path MTU for IPv6. Do nothing for now,
+                    // maybe lower to minimum MTU. No other family has a route here.
                     _ => None,
                 };
                 if let Some(rt) = rt {

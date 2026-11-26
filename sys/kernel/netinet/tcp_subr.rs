@@ -798,8 +798,7 @@ pub fn tcp_freeq(st: &mut TcpState) -> bool {
 /// (`sotoinpcb_locked`), is emptied with it (N6.6a5): `in_pcbdetach` emptied the counted one,
 /// and the pcb and its socket count each other until both are. A request has taken it out
 /// already (`tcp_usrreq`'s `tcp_free_request`).
-pub fn tcp_free<G: ProcGlue>(inp: &Inpcb<G>, pcb: &mut WitnessPart<'_>, closed: Closed) {
-    let Closed(()) = closed;
+pub fn tcp_free<G: ProcGlue>(inp: &Inpcb<G>, pcb: &mut WitnessPart<'_>, Closed(()): Closed) {
     drop(inp.take_tcpcb(pcb));
     if let Some(slot) = inp.socket().set_pcb_locked(pcb, None) {
         kassert!(
@@ -857,7 +856,7 @@ fn tcp_notify_tp<G: ProcGlue>(tp: &mut Tp<'_, '_, G>, error: Option<Errno>) {
 
 /// The returned TCP header's first eight bytes (ports and sequence number, network order)
 /// as a header whose other members are zero (the C reads only those through its pointer).
-fn th_of8(b: &[u8; 8]) -> Tcphdr {
+fn th_of8(b: [u8; 8]) -> Tcphdr {
     Tcphdr {
         th_sport: u16::from_ne_bytes([b[0], b[1]]),
         th_dport: u16::from_ne_bytes([b[2], b[3]]),
@@ -964,7 +963,7 @@ pub fn tcp6_ctlinput<G: ProcGlue>(
 
     let mut b = [0u8; 8];
     m_copydata(m, off, &mut b);
-    let th = th_of8(&b);
+    let th = th_of8(b);
 
     // Check to see if we have a valid TCP connection corresponding to the address in the
     // ICMPv6 message payload.
@@ -1035,7 +1034,7 @@ fn tcp_quote(msg: &[u8]) -> Option<Quote> {
     let nextmtu = u16::from_ne_bytes([msg[6], msg[7]]);
     Some(Quote {
         ip,
-        th: th_of8(&t),
+        th: th_of8(t),
         nextmtu,
     })
 }

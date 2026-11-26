@@ -522,7 +522,7 @@ fn rdonly<G: ProcGlue>(vp: &Vnode<G>) -> bool {
 
 /// The reader of a reply (`info.nmi_md`, `info.nmi_dpos` once `nfs_request` read the RPC
 /// header), `None` for no reply.
-fn mrep(reply: &Option<Reply>) -> Result<Mrep<'_>, Errno> {
+fn mrep(reply: Option<&Reply>) -> Result<Mrep<'_>, Errno> {
     match reply {
         Some(r) => Ok(Some(r.reader()?)),
         None => Ok(None),
@@ -740,7 +740,7 @@ pub fn nfs_access<G: ProcGlue>(
             cred: cr,
         },
     );
-    let mut x = mrep(&reply)?;
+    let mut x = mrep(reply.as_ref())?;
     let mut attrflag = 0;
     nfsm_postop_attr(&mut x, np, v3, &mut attrflag)?;
     let error = if let Err(e) = res {
@@ -943,7 +943,7 @@ pub(crate) fn nfs_getattr_np<G: ProcGlue>(
         },
     );
     res.map_err(NfsError::errno)?;
-    let mut x = mrep(&reply)?;
+    let mut x = mrep(reply.as_ref())?;
     nfsm_loadattr(rd(&mut x), np, v3, Some(vap))
 }
 
@@ -1115,7 +1115,7 @@ pub fn nfs_setattrrpc<G: ProcGlue>(
             cred,
         },
     );
-    let mut x = mrep(&reply)?;
+    let mut x = mrep(reply.as_ref())?;
     if v3 {
         nfsm_wcc_data(&mut x, np, &mut wccflag)?;
     } else if res.is_ok() {
@@ -1267,7 +1267,7 @@ pub fn nfs_lookup<G: ProcGlue>(
                 cred: ucred(cnp.cn_cred),
             },
         );
-        let mut x = match mrep(&reply) {
+        let mut x = match mrep(reply.as_ref()) {
             Ok(x) => x,
             Err(e) => break 'nfsmout e.into(),
         };
@@ -1473,7 +1473,7 @@ pub fn nfs_readlinkrpc<G: ProcGlue>(
             },
         )
     });
-    let mut x = mrep(&reply)?;
+    let mut x = mrep(reply.as_ref())?;
     if v3 {
         let mut attrflag = 0;
         nfsm_postop_attr(&mut x, np, v3, &mut attrflag)?;
@@ -1527,7 +1527,7 @@ pub fn nfs_readrpc<G: ProcGlue>(
                     cred: &cred,
                 },
             );
-            let mut x = mrep(&reply)?;
+            let mut x = mrep(reply.as_ref())?;
             if v3 {
                 let mut attrflag = 0;
                 nfsm_postop_attr(&mut x, np, v3, &mut attrflag)?;
@@ -1618,7 +1618,7 @@ pub fn nfs_writerpc<G: ProcGlue>(
                     cred: &cred,
                 },
             );
-            let mut x = mrep(&reply)?;
+            let mut x = mrep(reply.as_ref())?;
             let mut wccflag = NFSV3_WCCRATTR;
             if v3 {
                 wccflag = NFSV3_WCCCHK;
@@ -1647,9 +1647,9 @@ pub fn nfs_writerpc<G: ProcGlue>(
                 }
 
                 // Return the lowest commitment level obtained by any of the RPCs.
-                if committed == NFSV3WRITE_FILESYNC {
-                    committed = commit;
-                } else if committed == NFSV3WRITE_DATASYNC && commit == NFSV3WRITE_UNSTABLE {
+                if committed == NFSV3WRITE_FILESYNC
+                    || (committed == NFSV3WRITE_DATASYNC && commit == NFSV3WRITE_UNSTABLE)
+                {
                     committed = commit;
                 }
                 if nmp.flag() & NFSMNT_HASWRITEVERF == 0 {
@@ -1779,7 +1779,7 @@ pub fn nfs_mknodrpc<G: ProcGlue>(
                 cred: ucred(cnp.cn_cred),
             },
         );
-        let mut x = match mrep(&reply) {
+        let mut x = match mrep(reply.as_ref()) {
             Ok(x) => x,
             Err(e) => break 'nfsmout Err(e.into()),
         };
@@ -1919,7 +1919,7 @@ pub fn nfs_create<G: ProcGlue>(
                     cred: ucred(cnp.cn_cred),
                 },
             );
-            let mut x = match mrep(&reply) {
+            let mut x = match mrep(reply.as_ref()) {
                 Ok(x) => x,
                 Err(e) => break 'nfsmout Err(e.into()),
             };
@@ -2109,7 +2109,7 @@ pub fn nfs_removerpc<G: ProcGlue>(
                 cred,
             },
         );
-        let mut x = match mrep(&reply) {
+        let mut x = match mrep(reply.as_ref()) {
             Ok(x) => x,
             Err(e) => break 'nfsmout Err(e.into()),
         };
@@ -2274,7 +2274,7 @@ pub fn nfs_renamerpc<G: ProcGlue>(
                 cred,
             },
         );
-        let mut x = match mrep(&reply) {
+        let mut x = match mrep(reply.as_ref()) {
             Ok(x) => x,
             Err(e) => break 'nfsmout Err(e.into()),
         };
@@ -2344,7 +2344,7 @@ pub fn nfs_link<G: ProcGlue>(
                 cred: ucred(cnp.cn_cred),
             },
         );
-        let mut x = match mrep(&reply) {
+        let mut x = match mrep(reply.as_ref()) {
             Ok(x) => x,
             Err(e) => break 'nfsmout Err(e.into()),
         };
@@ -2422,7 +2422,7 @@ pub fn nfs_symlink<G: ProcGlue>(
                 cred: ucred(cnp.cn_cred),
             },
         );
-        let mut x = match mrep(&reply) {
+        let mut x = match mrep(reply.as_ref()) {
             Ok(x) => x,
             Err(e) => break 'nfsmout Err(e.into()),
         };
@@ -2492,7 +2492,7 @@ pub fn nfs_mkdir<G: ProcGlue>(
                 cred: ucred(cnp.cn_cred),
             },
         );
-        let mut x = match mrep(&reply) {
+        let mut x = match mrep(reply.as_ref()) {
             Ok(x) => x,
             Err(e) => break 'nfsmout Err(e.into()),
         };
@@ -2576,7 +2576,7 @@ pub fn nfs_rmdir<G: ProcGlue>(
                 cred: ucred(cnp.cn_cred),
             },
         );
-        let mut x = match mrep(&reply) {
+        let mut x = match mrep(reply.as_ref()) {
             Ok(x) => x,
             Err(e) => break 'nfsmout Err(e.into()),
         };
@@ -2856,7 +2856,7 @@ fn readdir_pack<G: ProcGlue>(
                     cred,
                 },
             );
-            let mut x = mrep(&reply)?;
+            let mut x = mrep(reply.as_ref())?;
             if v3 {
                 let mut attrflag = 0;
                 nfsm_postop_attr(&mut x, dnp, v3, &mut attrflag)?;
@@ -3033,7 +3033,7 @@ fn readdirplus_pack<G: ProcGlue>(
                     cred,
                 },
             );
-            let mut x = mrep(&reply)?;
+            let mut x = mrep(reply.as_ref())?;
             let mut attrflag = 0;
             nfsm_postop_attr(&mut x, dnp, true, &mut attrflag)?;
             res?;
@@ -3306,7 +3306,7 @@ pub fn nfs_lookitup<G: ProcGlue>(
         if res.is_err() && !v3 {
             break 'nfsmout res;
         }
-        let mut x = match mrep(&reply) {
+        let mut x = match mrep(reply.as_ref()) {
             Ok(x) => x,
             Err(e) => break 'nfsmout Err(e.into()),
         };
@@ -3394,7 +3394,7 @@ pub fn nfs_commit<G: ProcGlue>(
             cred: &cred,
         },
     );
-    let mut x = mrep(&reply)?;
+    let mut x = mrep(reply.as_ref())?;
     nfsm_wcc_data(&mut x, np, &mut wccflag)?;
     res?;
     let verf = rd(&mut x).get::<NFSX_V3WRITEVERF>()?;

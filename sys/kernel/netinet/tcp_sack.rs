@@ -275,10 +275,7 @@ pub fn tcp_reass<G: ProcGlue>(
 
     // While we overlap succeeding segments trim them or, if they are completely covered,
     // dequeue them.
-    loop {
-        let Some(q) = link.get_mut() else {
-            break;
-        };
+    while let Some(q) = link.get_mut() {
         let qhdr = &mut q.tcpqe_tcp;
         let i = th
             .th_seq

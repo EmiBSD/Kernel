@@ -545,41 +545,43 @@ fn getstream<G: ProcGlue>(slp: &NfssvcSock<G>, st: &mut NsRcv, waitflag: i32) ->
 
         // Now get the record part.
         let mut recm = OwnedSlist::<MNext>::new();
-        if st.ns_cc == st.ns_reclen {
-            recm = mem::take(&mut st.ns_raw);
-            st.ns_cc = 0;
-            st.ns_reclen = 0;
-        } else if st.ns_cc > st.ns_reclen {
-            let reclen = st.ns_reclen as u32;
-            let mut len: u32 = 0;
-            while len < reclen {
-                let Some(mut m) = st.ns_raw.pop_head() else {
-                    break;
-                };
-                let ml = m.m_len().get();
-                if len + ml > reclen {
-                    let want = reclen - len;
-                    let Some(m2) = m_copym(&mut m, 0, want as i32, waitflag) else {
-                        // Nothing cut: the stream as it was.
-                        st.ns_raw.push_head(m);
-                        recm.concat(&mut st.ns_raw);
-                        st.ns_raw = recm;
-                        return Err(Errno::EWOULDBLOCK);
-                    };
-                    m.data_add(want as isize);
-                    m.m_len().set(ml - want);
-                    st.ns_raw.push_head(m);
-                    append_chain(&mut recm, m2);
-                    len = reclen;
-                } else {
-                    len += ml;
-                    recm.push_tail(m);
-                }
+        match st.ns_cc.cmp(&st.ns_reclen) {
+            core::cmp::Ordering::Equal => {
+                recm = mem::take(&mut st.ns_raw);
+                st.ns_cc = 0;
+                st.ns_reclen = 0;
             }
-            st.ns_cc -= len as i32;
-            st.ns_reclen = 0;
-        } else {
-            return Ok(());
+            core::cmp::Ordering::Greater => {
+                let reclen = st.ns_reclen as u32;
+                let mut len: u32 = 0;
+                while len < reclen {
+                    let Some(mut m) = st.ns_raw.pop_head() else {
+                        break;
+                    };
+                    let ml = m.m_len().get();
+                    if len + ml > reclen {
+                        let want = reclen - len;
+                        let Some(m2) = m_copym(&mut m, 0, want as i32, waitflag) else {
+                            // Nothing cut: the stream as it was.
+                            st.ns_raw.push_head(m);
+                            recm.concat(&mut st.ns_raw);
+                            st.ns_raw = recm;
+                            return Err(Errno::EWOULDBLOCK);
+                        };
+                        m.data_add(want as isize);
+                        m.m_len().set(ml - want);
+                        st.ns_raw.push_head(m);
+                        append_chain(&mut recm, m2);
+                        len = reclen;
+                    } else {
+                        len += ml;
+                        recm.push_tail(m);
+                    }
+                }
+                st.ns_cc -= len as i32;
+                st.ns_reclen = 0;
+            }
+            core::cmp::Ordering::Less => return Ok(()),
         }
 
         // Accumulate the fragments into a record.
