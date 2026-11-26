@@ -448,10 +448,10 @@ fn rel_of(root: &Path, f: &Path) -> String {
 /// (`sys/lib/sysdefs/<group>/<header>.rs`), and a header's LZ file is `sys/sys/<header>.rs`;
 /// `libkern` and `libz` are grouped the same way, their LZ files `sys/lib/<crate>/<file>.rs`.
 fn lz_home(rust: &str) -> String {
-    if let Some(rest) = rust.strip_prefix("sys/lib/sysdefs/") {
-        if let Some((_group, file)) = rest.split_once('/') {
-            return format!("sys/sys/{file}");
-        }
+    if let Some(rest) = rust.strip_prefix("sys/lib/sysdefs/")
+        && let Some((_group, file)) = rest.split_once('/')
+    {
+        return format!("sys/sys/{file}");
     }
     for leaf in ["libkern", "libz"] {
         if let Some(rest) = rust.strip_prefix(&format!("sys/lib/{leaf}/"))
