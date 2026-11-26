@@ -3359,8 +3359,11 @@ smoke-virtio: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
 # later messages go to the screen and the shell reads them from dmesg(8); the login stays on
 # the serial line (/dev/console is still pluart0's). The shell clears screen 0 of
 # /dev/ttyC0 and writes a line at its top, as the OpenBSD 8.0 probe did; `--screen-text` finds
-# it in QEMU's screendump of the GPU's scanout. Part of `smoke`.
-viogpu_line := 'dmesg | grep -e viogpu -e wsdisplay0 -e selftest..wscons; x=wrote; print "\033[2J\033[HVIOGPU-TEXT-42" > /dev/ttyC0 && echo viogpu-$x\n'
+# it in QEMU's screendump of the GPU's scanout. viogpu copies the frame buffer to the host on
+# a 10 ms timeout (`viogpu_refresh_timeout`), so the marker the screendump waits for is printed
+# a second after the write, past many refreshes (N6.8: on four CPUs the dump once caught the
+# line drawn up to its tenth cell). Part of `smoke`.
+viogpu_line := 'dmesg | grep -e viogpu -e wsdisplay0 -e selftest..wscons; x=wrote; print "\033[2J\033[HVIOGPU-TEXT-42" > /dev/ttyC0 && sleep 1 && echo viogpu-$x\n'
 smoke-viogpu: (build-arm64 "--features qemu")
     @test -f target/userland/arm64/ramdisk.ffs || \
         { echo "smoke-viogpu: no ramdisk image; run just userland first"; exit 1; }
