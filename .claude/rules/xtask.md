@@ -17,7 +17,11 @@ paths:
   the make-subset evaluator `bsdmake.rs`; M16c: the base set's `/etc/firmware/fxp-*`
   files, which `sys/dev/microcode/fxp/build.c` writes, made from `rcvbundl.h` by
   `userland/firmware.rs`; a worktree's first build, and its first `comp`, is seeded from the
-  main checkout's by an APFS clone with the paths rebased, `userland/seed.rs`), `comp` (M14: OpenBSD's clang, lld and libc++ from
+  main checkout's by an APFS clone with the paths rebased, `userland/seed.rs`; N6.8: the
+  ramdisk alone also takes the files `tools/xtask/userland-set.toml` pins from EmiBSD/Userland's
+  published set in `$EMIBSD_USERLAND_DIST` (netstat(1) and libkvm.so.18.0), the tarball and its
+  base set checked against their pinned SHA-256s, only the named members taken out,
+  `userland/published.rs`; a local copy, not a download), `comp` (M14: OpenBSD's clang, lld and libc++ from
   `gnu/llvm` by its build glue, `userland/comp.rs`; outside `ci`, `just comp`), `devtools-native`
   (2026-11-11: `smoke-devtools-native`'s disk, `comp`'s staging root without its libc++ headers
   and clang resource directory, DevTools' native LLVM and Rust trees laid over it from tarballs

@@ -1348,7 +1348,7 @@ pub(crate) fn devtools_native(
 }
 
 /// Refuses `file` unless its SHA-256, by the host's `shasum`, is `want` (lowercase hex).
-fn check_sha256(file: &Path, want: &str) -> Result<()> {
+pub(super) fn check_sha256(file: &Path, want: &str) -> Result<()> {
     let out = Command::new("shasum")
         .args(["-a", "256"])
         .arg(file)

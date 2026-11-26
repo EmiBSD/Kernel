@@ -1,0 +1,32 @@
+# The files the smokes' ramdisk takes from EmiBSD/Userland's published set, not from our own
+# `just userland` (N6.8, the user's request of 2026-11-25: "la ultima version de userland tiene
+# netstat, no puede tomarla y probarla?"). Read by `cargo xtask userland`
+# (tools/xtask/src/userland/published.rs) when it makes the ramdisk.
+#
+# Why: netstat(1) is a dynamic PIE that needs libkvm.so, which this build makes only as a static
+# archive; Userland's set has both, built from the same OpenBSD pin (its MANIFEST's base system
+# pin, 3ce1f3f79392) with DevTools' clang. netstat runs over this build's libc.so.104.0,
+# libutil.so.22.0 and ld.so: every symbol netstat and libkvm.so.18.0 import is defined there
+# (checked with llvm-nm on 2026-11-26), so the existing programs' libraries are not changed.
+# A later slice moves every smoke onto Userland's sets (the user's decision of 2026-11-15);
+# until then only `files` are taken.
+#
+# The tarball is read from `$EMIBSD_USERLAND_DIST` (the justfile's `userland_dist`, by default
+# ~/devel/emibsd/Userland/dist), which is read-only for this repository: it is never built,
+# written or downloaded here. Checked twice before anything is extracted: the tarball must
+# hash to `sha256` (its own `.sha256` beside it says the same), and the base set inside it to
+# `base_sha256` (the release's SHA256 file). A new release is a new pin, in its own commit.
+
+release = "2026.11.6"
+
+[arch.arm64]
+tarball = "userland-2026.11.6-arm64.tar.zst"
+sha256 = "1a642b0c7c0d582e1a02966d814f954907fdaea9c5a753f785399f38f82a3cf9"
+base = "base80.tar.zst"
+base_sha256 = "04fe9b0a3b1fcf0abd3f37b937b2ea471890706cef6acdaec8a08f7414c979b0"
+# Path in the set and in the ramdisk, and its mode (root:bin, as bsd.own.mk's BINMODE 555
+# and LIBMODE 444 install them).
+files = [
+    { path = "usr/bin/netstat", mode = 0o555 },
+    { path = "usr/lib/libkvm.so.18.0", mode = 0o444 },
+]

@@ -58,6 +58,10 @@
 //! the clone: enough for `init(8)` to run `/etc/rc` and a `getty(8)` on the console, and for
 //! `login(1)` to check a password. `/etc/pwd.db` and `/etc/spwd.db` are made by OpenBSD's
 //! own pwd_mkdb(8), with the root password's bcrypt hash (`passwd.rs`).
+//!
+//! Beside this build's programs, the ramdisk holds the files `tools/xtask/userland-set.toml`
+//! pins from EmiBSD/Userland's published set (N6.8: netstat(1) and libkvm.so.18.0, which this
+//! build does not make; `published.rs`), in the image only, never in `root/` or the sets.
 
 use super::*;
 
@@ -1035,6 +1039,8 @@ pub(super) fn build_ramdisk(ctx: &Ctx<'_>) -> Result<()> {
         let p = staging.join(dir.trim_start_matches('/'));
         fs::create_dir_all(&p).map_err(|e| format!("{}: {e}", p.display()))?;
     }
+    // N6.8: netstat(1) and libkvm.so from Userland's published set (`published.rs`).
+    let published = published::stage(ctx, &staging)?;
     // M10c: the FAT, ISO 9660 and UDF images vnconfig(8) attaches (`images.rs`).
     images::make_images(ctx, &makefs, &staging.join("root/images"))?;
     // M12: the tone `just smoke-audio` plays with aucat(1).
@@ -1060,6 +1066,7 @@ pub(super) fn build_ramdisk(ctx: &Ctx<'_>) -> Result<()> {
     // Owners, groups and modes (module docs); the programs' own come from their Makefiles.
     let installed = ctx.owners.lock().map_err(|_| "lock poisoned")?.clone();
     let mut attrs = image_attrs(&installed);
+    attrs.extend(published);
     attrs.push(Attr::root("/etc/ssl", 0, 0o755));
     for (name, _) in &ssl {
         attrs.push(Attr::root(&format!("/etc/ssl/{name}"), 0, 0o444));

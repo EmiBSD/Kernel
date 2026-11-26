@@ -3356,9 +3356,14 @@ symbolize arch:
 # ffs ramdisk image) with DevTools' clang and lld (`EMIBSD_LLVM_BIN`; docs/SETUP.md, "Userland
 # toolchain"). Slow and tool-dependent, so not part of `ci`. For the architectures of `archs`
 # only (the user's decision of 2026-11-07: amd64's waits for N10, as its kernel does).
+# The ramdisk also takes netstat(1) and libkvm.so.18.0 from EmiBSD/Userland's published set in
+# `userland_dist` (read-only here), pinned with their SHA-256s in tools/xtask/userland-set.toml
+# (N6.8, the user's request of 2026-11-25; `userland/published.rs`).
+userland_dist := env_var_or_default("EMIBSD_USERLAND_DIST", env_var("HOME") + "/devel/emibsd/Userland/dist")
+
 userland:
-    {{ if has_amd64 == "true" { "" } else { "echo 'userland: amd64 SKIPPED (decision 44)' # " } }}{{xtask}} userland --arch amd64
-    {{xtask}} userland --arch arm64
+    {{ if has_amd64 == "true" { "" } else { "echo 'userland: amd64 SKIPPED (decision 44)' # " } }}EMIBSD_USERLAND_DIST="{{userland_dist}}" {{xtask}} userland --arch amd64
+    EMIBSD_USERLAND_DIST="{{userland_dist}}" {{xtask}} userland --arch arm64
 
 # --- toolchain (DevTools T3, the user's decision of 2026-10-31) -----------------------------
 
