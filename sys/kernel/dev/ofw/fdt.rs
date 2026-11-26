@@ -41,17 +41,20 @@
 //! Upstream: sys/dev/ofw/fdt.h @ 3ce1f3f79392
 //! LZ: sys/dev/ofw/fdt.rs@e8249449d905
 //!
-//! A read-only parser over the bootloader's blob, which `hal::mem::fdtblob` hands over as a
-//! `&'static [u8]` (the machine's boot gives it to [`fdt_init`]). Every word, name and value
-//! is read with its length test: a malformed tree reads as the function's own nothing, never
-//! past the blob. On a well-formed tree every result is the C's.
+//! A parser over the bootloader's blob, which `hal::mem::fdtblob` hands over as a
+//! `&'static [u8]` (the machine's boot gives it to [`fdt_init`]); the installed tree is only
+//! read. The one write is the boot's, before the install: [`fdt_take_property`] wipes
+//! boot(8)'s softraid secrets through `hal`'s one mutable view of the blob. Every word, name
+//! and value is read with its length test: a malformed tree reads as the function's own
+//! nothing, never past the blob. On a well-formed tree every result is the C's.
 //!
 //! ## Deviations
 //! - The read side only, as LZ: the write side (`fdt_finalize`, `fdt_add_str`,
 //!   `fdt_node_set_property`, `fdt_node_add_property`, `OF_setprop`),
 //!   `fdt_next_property`/`OF_nextprop`, `OF_getpropstr`/`OF_freepropstr`, `OF_translate` and the
 //!   `DEBUG` printers are not ported (LZ's gap: they come with the drivers that need them). A
-//!   write side would need another `hal` piece: the blob is read-only here.
+//!   write side on the installed tree would need another `hal` piece: once `fdt_init` has
+//!   adopted the blob it is only read (the boot's wipe runs before, over a borrowed blob).
 //! - The blob is read in place for the kernel's run (LZ's standing deviation): the C copies it
 //!   into stolen memory mapped read-only (`arm64/machdep.c`); arm64's `initarm` refuses a blob
 //!   in usable memory instead.
@@ -76,6 +79,12 @@
 //!   searches recurse as deep as the tree, as the C.
 //! - `fdt_get_reg` returns the `FdtReg` (`Result<FdtReg, Errno>`) instead of filling an out
 //!   parameter; `fdt_translate_reg`'s sums wrap as the C's unsigned arithmetic.
+//! - `Fdt<'a>`: the reader also parses a borrowed blob without installing it (`parse`, the same
+//!   `check_head` as `fdt_init`). [`fdt_take_property`] uses it for boot(8)'s
+//!   `openbsd,sr-bootuuid` and `openbsd,sr-bootkey` (the C's `initarm` copies them out and
+//!   `explicit_bzero`s them in the tree; LZ's `bootarg_bzero` wrote through a shared slice of
+//!   the installed blob): the value is copied out when its length matches and zeroed whatever
+//!   it is, over the boot's mutable view, before `fdt_init` installs the blob.
 
 #![allow(
     non_snake_case,

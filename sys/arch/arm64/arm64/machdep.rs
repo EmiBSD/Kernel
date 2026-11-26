@@ -119,6 +119,13 @@
 //!   C copies it into stolen memory mapped read-only, `arm64/machdep.c`'s `initarm`), so
 //!   `initarm` refuses a tree any of whose frames lies in a usable region, before uvm is given
 //!   them: what kept the frames out of the page allocator was the boot protocol alone.
+//! - N7.2b0 review: `getbootinfo` takes `openbsd,sr-bootuuid` and `openbsd,sr-bootkey` (copied
+//!   for softraid(4), wiped with `explicit_bzero`) before `fdt_init`, where the C wipes them
+//!   after: `fdt_init` adopts the blob as a shared `&'static [u8]` for the run, and a write
+//!   behind it would alias it, so the wipe goes through `hal`'s one mutable view
+//!   (`fdtblob::with_boot_mut`) first (LZ's `bootarg_bzero` is gone). The kernel's
+//!   `fdt_take_property` parses the borrowed blob with `fdt_init`'s own `check_head`, so the
+//!   wipe and the install accept the same blobs; every other `/chosen` read stays after.
 
 use core::arch::asm;
 use core::cell::UnsafeCell;
