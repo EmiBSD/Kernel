@@ -87,7 +87,7 @@
 //!
 //! ## Redesign
 //! - LZ's in-place `byte_view!` casts (a `&`/`&mut` of the entry over the block's bytes) ->
-//!   `hal::abi_pod!` images copied out and back (D-N5.7-6): one 32-byte copy per entry viewed
+//!   `sysdefs::abi_pod!` images copied out and back (D-N5.7-6): one 32-byte copy per entry viewed
 //!   in a directory scan, where the C reads one to eleven bytes in place; O(1) a step as the
 //!   C's (ROADMAP N12's row). The `at_mut` view's writers write the copy back with
 //!   `Direntry::put`.
@@ -170,7 +170,7 @@ impl Direntry {
     }
 }
 
-hal::abi_pod!(Direntry {
+sysdefs::abi_pod!(Direntry {
     deName: [u8; 8],
     deExtension: [u8; 3],
     deAttributes: u8,
@@ -217,7 +217,7 @@ pub struct Winentry {
     pub wePart3: [u8; 4],
 }
 
-hal::abi_pod!(Winentry {
+sysdefs::abi_pod!(Winentry {
     weCnt: u8,
     wePart1: [u8; 10],
     weAttributes: u8,

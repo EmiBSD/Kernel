@@ -29,7 +29,7 @@
 
 use hal::syscall::{Register, Rval, SysResult};
 
-use hal::sys::syscall::{SYS_reboot, SYS_sendsyslog, SYS_sysctl};
+use sysdefs::syscall::{SYS_reboot, SYS_sendsyslog, SYS_sysctl};
 
 use super::native;
 

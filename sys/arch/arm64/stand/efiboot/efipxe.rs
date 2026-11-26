@@ -78,7 +78,6 @@ use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use efi::include::efi::*;
-use libkern::staticcell::StaticCell;
 use libsa::dev::set_errno;
 use libsa::globals::GATEIP;
 use libsa::hdr::if_ether::{ETHER_ALIGN, ETHER_CRC_LEN, ETHER_HDR_LEN};
@@ -89,6 +88,7 @@ use libsa::net::RECV_SIZE;
 use libsa::netif::{Netif, NetifDif, NetifDriver, NetifStats, netif_close, netif_open};
 use libsa::saerrno::Errno;
 use libsa::stand::{OpenFile, SEEK_CUR, SEEK_END, SEEK_SET};
+use libsa::staticcell::StaticCell;
 use libsa::tftp::{SERVIP, tftp_open};
 
 use crate::efiboot::{

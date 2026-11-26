@@ -146,14 +146,14 @@ use hal::cpu::intr::{IPL_BIO, IPL_NONE, splraise};
 use hal::mem::malloc::MArc;
 use hal::mem::pool::{PR_WAITOK, PoolArc};
 use hal::sync::sleep::INFSLP;
-use hal::sys::errno::Errno;
-use hal::sys::fcntl::{FREAD, FWRITE};
-use hal::sys::mount::{
+use hal::user::UserPtr;
+use sysdefs::errno::Errno;
+use sysdefs::fcntl::{FREAD, FWRITE};
+use sysdefs::mount::{
     Fid, MNAMELEN, MNT_FORCE, MNT_LAZY, MNT_LOCAL, MNT_RDONLY, MNT_RELOAD, MNT_UPDATE, MNT_WAIT,
     MNT_WANTRDWR, Statfs, UfsArgs,
 };
-use hal::sys::types::{Daddr, Dev, Ino, Off, Uid, major};
-use hal::user::UserPtr;
+use sysdefs::types::{Daddr, Dev, Ino, Off, Uid, major};
 
 use super::ext2fs::{
     E2FS_ERRORS, E2FS_ISCLEAN, E2FS_MAGIC, E2FS_REV0, E2FS_REV1, EXT2_GD_SIZE,
@@ -201,7 +201,7 @@ use crate::net::mbuf::Mbuf;
 use crate::proc::{ProcGlue, Thread};
 use crate::time::inittodr;
 use crate::time::tc::gettime;
-use hal::sys::disk::DM_OPENBLCK;
+use sysdefs::disk::DM_OPENBLCK;
 
 /// `DEV_BSIZE`.
 const DEV_BSIZE: Off = 1 << DEV_BSHIFT;
@@ -324,7 +324,7 @@ pub fn ext2fs_mount<G: ProcGlue>(
     ndp: &mut Nd<'_, G>,
     p: &Thread<G>,
 ) -> Result<(), Errno> {
-    let args = UfsArgs::from_bytes(data);
+    let args = hal::user::pod_from_bytes::<UfsArgs>(data);
     let mut ump: Option<UfsmountRef<G>> = None;
     let mut fname = [0u8; MNAMELEN];
     let mut fspec = [0u8; MNAMELEN];
@@ -1350,7 +1350,7 @@ mod tests {
     use std::vec::Vec;
     use std::{assert, assert_eq, assert_ne, vec};
 
-    use hal::sys::mount::MNT_RDONLY;
+    use sysdefs::mount::MNT_RDONLY;
 
     use super::super::ext2fs_dinode::{EXT4_EXTENTS, Ext2fsDinode};
     use super::super::ext2fs_inode::{ext2fs_size, ext2fs_truncate};
@@ -1838,7 +1838,7 @@ mod tests {
             "no ufs_args"
         );
         let mut data = vec![0u8; UfsArgs::SIZE];
-        let mut args = UfsArgs::from_bytes(&data).unwrap();
+        let mut args = hal::user::pod_from_bytes::<UfsArgs>(&data).unwrap();
         for (fspec, want) in [
             (&b"/f"[..], Errno::ENOTBLK),
             (b"/dev/sd0c", Errno::ENOTBLK),

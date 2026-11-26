@@ -84,8 +84,8 @@
 use core::pin::Pin;
 use core::sync::atomic::Ordering;
 
+use crate::sys::staticcell::StaticCell;
 use hal::cpu::thread::SchedHold;
-use libkern::StaticCell;
 
 use crate::kern::kern_clockintr::clockrequest_advance;
 use crate::kern::proc_glue::BsdProcGlue;

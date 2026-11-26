@@ -80,7 +80,7 @@
 //!   mfs_args` (`MfsArgs`) with MFS, `iso_args`, `msdosfs_args`, `udf_args` and `tmpfs_args`
 //!   with M10c, `nfs_args` with NFS (M10e), `ntfs_args` with NTFS (M10d)); each
 //!   `*Args::from_bytes` reads them out of the kernel copy of the mount arguments. Since N5.4
-//!   they are `hal`'s (`hal::sys::mount`, D-N5.4-3), re-exported here, their holes named.
+//!   they are `hal`'s (`sysdefs::mount`, D-N5.4-3), re-exported here, their holes named.
 //! - `VFS_*` are functions with the macros' names (`#[allow(non_snake_case)]`).
 //! - `struct netcred` and `struct netexport` are the kernel's (`kernel::fs::export`, N6.7b0),
 //!   and so is the export check: the NFS server calls the table's `checkexp`
@@ -99,9 +99,11 @@ use crate::sys::proc::Proc;
 use crate::sys::sysctl::Sysctlfn;
 use crate::sys::types::{Ino, Uid};
 use crate::sys::vnode::Vnode;
+use kernel::fs::export::ExportGrant;
+use kernel::fs::vops::Cred;
 /// `struct bcachestats`: buffer cache statistics, `hal`'s (N5.1: one copy for the kernel's
 /// cache and `vfs.generic.bcachestat`).
-pub use hal::sys::mount::{
+pub use sysdefs::mount::{
     Bcachestats, Fhandle, Fid, Fsid, MAXFIDSZ, MFSNAMELEN, MNAMELEN, MNT_ASYNC, MNT_BITS,
     MNT_DEFEXPORTED, MNT_DELEXPORT, MNT_DOOMED, MNT_EXPORTANON, MNT_EXPORTED, MNT_EXRDONLY,
     MNT_FORCE, MNT_LAZY, MNT_LOCAL, MNT_NOATIME, MNT_NODEV, MNT_NOEXEC, MNT_NOPERM, MNT_NOSUID,
@@ -112,12 +114,10 @@ pub use hal::sys::mount::{
     MOUNT_UDF, MOUNT_UFS, MountInfo, Statfs, VB_DUPOK, VB_NOWAIT, VB_READ, VB_WAIT, VB_WRITE,
     VFS_BCACHESTAT, VFS_CONF, VFS_GENERIC, VFS_MAXTYPENUM, VfsconfAbi,
 };
-use kernel::fs::export::ExportGrant;
-use kernel::fs::vops::Cred;
 
 /// The file systems' mount arguments, `hal`'s since N5.4 (D-N5.4-3: one copy for the
 /// kernel's `mount(2)` and the file systems that read them).
-pub use hal::sys::mount::{
+pub use sysdefs::mount::{
     ExportArgs, FusefsArgs, ISOFSMNT_EXTATT, ISOFSMNT_GENS, ISOFSMNT_NOJOLIET, ISOFSMNT_NORRIP,
     ISOFSMNT_SESS, IsoArgs, MSDOSFSMNT_LONGNAME, MSDOSFSMNT_NOWIN95, MSDOSFSMNT_SHORTNAME, MfsArgs,
     MsdosfsArgs, NFS_ARGSVERSION, NFSMNT_ACDIRMAX, NFSMNT_ACDIRMIN, NFSMNT_ACREGMAX,
@@ -368,11 +368,11 @@ mod tests {
         bytes[..4].copy_from_slice(&NFS_ARGSVERSION.to_ne_bytes());
         bytes[44..48].copy_from_slice(&(NFSMNT_NFSV3 | NFSMNT_RSIZE).to_ne_bytes());
         bytes[96..100].copy_from_slice(&7i32.to_ne_bytes());
-        let args = NfsArgs::from_bytes(&bytes).expect("arguments");
+        let args = hal::user::pod_from_bytes::<NfsArgs>(&bytes).expect("arguments");
         assert_eq!(args.version, NFS_ARGSVERSION);
         assert_eq!(args.flags, NFSMNT_NFSV3 | NFSMNT_RSIZE);
         assert_eq!(args.acregmin, 7);
-        assert!(NfsArgs::from_bytes(&bytes[..NfsArgs::SIZE - 1]).is_none());
+        assert!(hal::user::pod_from_bytes::<NfsArgs>(&bytes[..NfsArgs::SIZE - 1]).is_none());
     }
 }
 /* </TESTS> */

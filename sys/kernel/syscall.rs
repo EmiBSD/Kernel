@@ -110,9 +110,9 @@ use core::sync::atomic::Ordering;
 use hal::bridges::AlreadyRegistered;
 use hal::cpu::trap::{FaultSource, TrapHandler};
 use hal::sync::once::OnceStatic;
-use hal::sys::errno::Errno;
-use hal::sys::syscall::{SYS_MAXSYSCALL, SYS_sigreturn};
 use hal::syscall::{ENOSYS, Register, Rval, SysArgs, SysResult};
+use sysdefs::errno::Errno;
+use sysdefs::syscall::{SYS_MAXSYSCALL, SYS_sigreturn};
 
 use crate::assert::kpanic;
 use crate::proc::acct::APINSYS;
@@ -519,7 +519,7 @@ impl<G: ProcGlue> TrapHandler for KernelTrap<G> {
             #[cfg(target_arch = "aarch64")]
             if map
                 .pmap()
-                .fault_fixup(hal::sys::types::Vaddr::new(va), access)
+                .fault_fixup(sysdefs::types::Vaddr::new(va), access)
             {
                 return Ok(());
             }
@@ -531,7 +531,7 @@ impl<G: ProcGlue> TrapHandler for KernelTrap<G> {
             #[cfg(target_arch = "aarch64")]
             if map
                 .pmap()
-                .fault_fixup(hal::sys::types::Vaddr::new(va), access)
+                .fault_fixup(sysdefs::types::Vaddr::new(va), access)
             {
                 return Ok(());
             }
@@ -563,7 +563,7 @@ impl<G: ProcGlue> TrapHandler for KernelTrap<G> {
                 sig,
                 trapno,
                 code,
-                hal::sys::siginfo::Sigval::from_ptr(addr),
+                sysdefs::siginfo::Sigval::from_ptr(addr),
             );
         });
     }
@@ -605,7 +605,7 @@ mod tests {
     use hal::ds::pin::pin_static;
     use hal::mem::malloc::{M_WAITOK, MArray};
     use hal::mem::pool::PoolBox;
-    use hal::sys::syscall::{SYS_getpid, SYS_read};
+    use sysdefs::syscall::{SYS_getpid, SYS_read};
 
     crate::test_file_glue!(Yf, Yg);
     crate::test_proc_glue!(Yg, Yf);
@@ -780,7 +780,7 @@ mod tests {
         use crate::vm::types::{UVM_FLAG_COPYONW, UVM_FLAG_FIXED, UVM_FLAG_STACK, uvm_mapflag};
         use hal::arch::current::param::PAGE_SIZE;
         use hal::arch::current::vmparam::{VM_MAXUSER_ADDRESS, VM_MIN_ADDRESS};
-        use hal::sys::mman::{MADV_NORMAL, MAP_INHERIT_COPY, PROT_EXEC, PROT_READ, PROT_WRITE};
+        use sysdefs::mman::{MADV_NORMAL, MAP_INHERIT_COPY, PROT_EXEC, PROT_READ, PROT_WRITE};
 
         let _pages = testutil::pages_install(1024 * 4096);
         testutil::init_shared_once();
@@ -840,11 +840,11 @@ mod tests {
         pr.ps_threadcnt.set(1);
         Vg::set_curproc(Some(t));
         // SIGSEGV caught: trapsignal delivers it through the machine's frame (recorded).
-        let mut sa = hal::sys::signal::Sigaction {
+        let mut sa = sysdefs::signal::Sigaction {
             sa_handler: 0x4000,
             ..Default::default()
         };
-        crate::sig::setsigvec(&p, hal::sys::signal::SIGSEGV, &mut sa);
+        crate::sig::setsigvec(&p, sysdefs::signal::SIGSEGV, &mut sa);
         let _ = hal::cpu::sig::take_sent();
         let getpid = SYS_getpid as Register;
 
@@ -868,7 +868,7 @@ mod tests {
         assert!(!ran, "the body ran past a failed MAP_STACK check");
         let sent = hal::cpu::sig::take_sent();
         assert_eq!(sent.len(), 1, "SIGSEGV");
-        assert_eq!(sent[0].sig, hal::sys::signal::SIGSEGV);
+        assert_eq!(sent[0].sig, sysdefs::signal::SIGSEGV);
 
         hal::cpu::trap::set_user_regs(0, 0);
         VG_VM.with(|c| c.set(None));

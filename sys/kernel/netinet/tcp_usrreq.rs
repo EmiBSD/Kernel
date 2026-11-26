@@ -157,7 +157,7 @@
 //! - `tcp_sysctl`'s port bitmaps go through the C's `malloc(M_SYSCTL)` buffer (an `MArray`,
 //!   where LZ put 8 KiB on the stack; N6.6b0: `in_pcb::in_sysctl_ports`, which
 //!   `udp_sysctl`'s identical block shares); `tcp_sysctl_tcpstat` builds `struct tcpstat` from the
-//!   per-CPU counters in the C's `ASSIGN` order and copies its bytes out (`hal::sys`'s image,
+//!   per-CPU counters in the C's `ASSIGN` order and copies its bytes out (`sysdefs`'s image,
 //!   holes named). `tcp_syn_hash_size` and `tcp_syn_use_limit` are atomics beside the SYN
 //!   cache's mutex (`TcpTables`), written under it and read without it, as the C's
 //!   `atomic_load_int`.
@@ -175,13 +175,14 @@ use core::sync::atomic::{AtomicI32, Ordering};
 use hal::mem::pool::PoolArc;
 use hal::sync::netlock::{NETLOCK, NetHeld};
 use hal::sync::rwlock::{RW_INTR, WitnessPart};
-use hal::sys::errno::Errno;
-use hal::sys::netinet_in::{INADDR_ANY, INADDR_BROADCAST, IPPROTO_TCP, SockaddrIn, in_multicast};
-use hal::sys::netinet_tcp::{
+use hal::user::{UserPtr, bytes_of};
+use sysdefs::errno::Errno;
+use sysdefs::netinet_in::{INADDR_ANY, INADDR_BROADCAST, IPPROTO_TCP, SockaddrIn, in_multicast};
+use sysdefs::netinet_tcp::{
     TCP_INFO, TCP_MAXSEG, TCP_MD5SIG, TCP_MSS, TCP_NODELAY, TCP_NOPUSH, TCP_SACK_ENABLE,
     TCPI_OPT_ECN, TCPI_OPT_SACK, TCPI_OPT_TIMESTAMPS, TCPI_OPT_WSCALE, TcpInfo,
 };
-use hal::sys::netinet_tcp_var::{
+use sysdefs::netinet_tcp_var::{
     TCPCTL_ACK_ON_PUSH, TCPCTL_ALWAYS_KEEPALIVE, TCPCTL_BADDYNAMIC, TCPCTL_DROP, TCPCTL_ECN,
     TCPCTL_IDENT, TCPCTL_KEEPIDLE, TCPCTL_KEEPINITTIME, TCPCTL_KEEPINTVL, TCPCTL_MSSDFLT,
     TCPCTL_REASS_LIMIT, TCPCTL_RFC1323, TCPCTL_RFC3390, TCPCTL_ROOTONLY, TCPCTL_RSTPPSLIMIT,
@@ -189,16 +190,14 @@ use hal::sys::netinet_tcp_var::{
     TCPCTL_SYN_CACHE_LIMIT, TCPCTL_SYN_HASH_SIZE, TCPCTL_SYN_USE_LIMIT, TCPCTL_TSO,
     TcpIdentMapping, Tcpstat,
 };
-use hal::sys::netinet6_in6::{
-    In6Addr, SockaddrIn6, in6_is_addr_multicast, in6_is_addr_unspecified,
-};
-use hal::sys::socket::{
+use sysdefs::netinet6_in6::{In6Addr, SockaddrIn6, in6_is_addr_multicast, in6_is_addr_unspecified};
+use sysdefs::pod::AbiPod;
+use sysdefs::socket::{
     AF_INET, AF_INET6, MSG_PEEK, PF_INET, PF_INET6, SO_ACCEPTCONN, SO_DEBUG, SO_LINGER,
     SO_OOBINLINE,
 };
-use hal::sys::stat::Stat;
-use hal::sys::sysctl::SysctlBoundedArgs;
-use hal::user::{AbiPod, UserPtr, bytes_of};
+use sysdefs::stat::Stat;
+use sysdefs::sysctl::SysctlBoundedArgs;
 
 use crate::assert::kpanic;
 use crate::base::sysctl::{SYSCTL_LOCK, SysctlReq, bounded_arr, int, int_bounded, rdstruct};
@@ -1191,7 +1190,7 @@ enum IdentAddrs {
 }
 
 /// The `T` at the start of a `sockaddr_storage`, the storage read whole (the C's cast).
-fn storage_as<T: AbiPod>(ss: &hal::sys::socket::SockaddrStorage) -> Option<T> {
+fn storage_as<T: AbiPod>(ss: &sysdefs::socket::SockaddrStorage) -> Option<T> {
     hal::mem::pod::at(bytes_of(core::slice::from_ref(ss)), 0)
 }
 
@@ -1856,9 +1855,9 @@ mod tests {
     use std::vec::Vec;
 
     use hal::sync::netlock::{NETLOCK, NetHeld};
-    use hal::sys::netinet_in::InAddr;
-    use hal::sys::netinet_ip::Ip;
-    use hal::sys::netinet_tcp::{TH_ACK, TH_FIN, TH_SYN, Tcphdr};
+    use sysdefs::netinet_in::InAddr;
+    use sysdefs::netinet_ip::Ip;
+    use sysdefs::netinet_tcp::{TH_ACK, TH_FIN, TH_SYN, Tcphdr};
 
     use super::*;
     use crate::base::sysctl::SECURELEVEL;
@@ -2354,7 +2353,7 @@ mod tests {
             },
             ..SockaddrIn::default()
         };
-        let mut b = [0u8; size_of::<hal::sys::socket::SockaddrStorage>()];
+        let mut b = [0u8; size_of::<sysdefs::socket::SockaddrStorage>()];
         assert!(hal::mem::pod::put(&mut b, 0, &sin(f)));
         t.faddr = hal::mem::pod::at(&b, 0).expect("a storage");
         assert!(hal::mem::pod::put(&mut b, 0, &sin(l)));
@@ -2522,7 +2521,7 @@ mod tests {
             .get(hal::mem::pool::PR_WAITOK, || {
                 crate::netinet::tcp_var::Tcpqent {
                     tcpqe_q: hal::ds::owned::SlistLink::new(),
-                    tcpqe_tcp: hal::sys::netinet_tcp::Tcphdr::default(),
+                    tcpqe_tcp: sysdefs::netinet_tcp::Tcphdr::default(),
                     tcpqe_m: None,
                 }
             })
@@ -2605,8 +2604,8 @@ mod tests {
         .expect("disconnect");
         let (_ip, rst, _o, _p) = last(d);
         assert_eq!(
-            rst.th_flags & hal::sys::netinet_tcp::TH_RST,
-            hal::sys::netinet_tcp::TH_RST
+            rst.th_flags & sysdefs::netinet_tcp::TH_RST,
+            sysdefs::netinet_tcp::TH_RST
         );
         assert_eq!(testtcp::tcpcbs(), cbs - 1);
         so.st_set(SS_NOFDREF);
@@ -2659,7 +2658,7 @@ mod tests {
                 &TcpProto,
                 M_WAIT,
                 crate::net::socket::SoInit {
-                    so_type: hal::sys::socket::SOCK_STREAM,
+                    so_type: sysdefs::socket::SOCK_STREAM,
                     state: 0,
                     options: 0,
                     linger: 0,
@@ -2703,7 +2702,7 @@ mod tests {
         let v4: &dyn Protocol<testtcp::G> = &TcpProtocol::<testtcp::G>::NEW;
         let v6: &dyn Protocol<testtcp::G> = &Tcp6Protocol::<testtcp::G>::NEW;
         for (pr, family) in [(v4, i32::from(AF_INET)), (v6, i32::from(AF_INET6))] {
-            assert_eq!(i32::from(pr.ty()), hal::sys::socket::SOCK_STREAM);
+            assert_eq!(i32::from(pr.ty()), sysdefs::socket::SOCK_STREAM);
             assert_eq!(i32::from(pr.protocol()), IPPROTO_TCP);
             assert_eq!(pr.flags(), flags);
             assert_eq!(pr.domain().family(), family);
@@ -2784,7 +2783,7 @@ mod tests {
         let r = locked(&so, |w| tcp_sockaddr(&so, w, &mut m));
         assert_eq!(r, Err(Errno::ECONNABORTED));
         let r = locked(&so, |w| {
-            use hal::sys::netinet_in::{IP_TOS, IPPROTO_IP};
+            use sysdefs::netinet_in::{IP_TOS, IPPROTO_IP};
             tcp_ctloutput(PRCO_GETOPT, &so, w, IPPROTO_IP, IP_TOS, Some(&mut m))
         });
         assert_eq!(r, Err(Errno::ECONNRESET), "no pcb: the C's ECONNRESET");

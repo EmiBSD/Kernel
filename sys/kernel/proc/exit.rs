@@ -100,16 +100,16 @@ use core::sync::atomic::Ordering;
 
 use hal::mem::pool::PoolBox;
 use hal::sync::klock;
-use hal::sys::errno::Errno;
-use hal::sys::siginfo::{
+use hal::user::UserPtr;
+use sysdefs::errno::Errno;
+use sysdefs::siginfo::{
     CLD_CONTINUED, CLD_DUMPED, CLD_EXITED, CLD_KILLED, CLD_STOPPED, CLD_TRAPPED, Siginfo,
 };
-use hal::sys::types::Pid;
-use hal::sys::wait::{
+use sysdefs::types::Pid;
+use sysdefs::wait::{
     _WCONTINUED, Idtype, P_ALL, P_PGID, P_PID, WAIT_ANY, WAIT_MYPGRP, WCONTINUED, WEXITED, WNOHANG,
     WNOWAIT, WSTOPPED, WTRAPPED, WUNTRACED, w_exitcode, w_stopcode, wcoredump, wstatus,
 };
-use hal::user::UserPtr;
 
 use crate::assert::{kassert, kpanic};
 use crate::proc::fork::{NPROCESSES, NTHREADS, freepid};

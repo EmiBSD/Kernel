@@ -36,8 +36,7 @@
 //!   `Mutexed`, `Rwlocked` or `UnsafeCell`: no state in `abi`; plain tables are fine.
 //! * **R6** (decision 52, the user, 2026-11-26) `kernel` named only through `kernel::api`
 //!   (whole: its group modules and their functions, `kernel::api::syscall_legacy`), the
-//!   door of one function per system call; `hal` named only through `hal::sys::*` (whole)
-//!   and, of `hal::syscall`, its types (`HandlerInfo`, `Register`, `Rval`, `SysArgs`,
+//!   door of one function per system call; `hal` named only through, of `hal::syscall`, its types (`HandlerInfo`, `Register`, `Rval`, `SysArgs`,
 //!   `SysResult`, `SyscallFn`, `ENOSYS`) and `set_handler`, the registration of the ABI's
 //!   handler; decision 53 (the user, 2026-11-26, N7.abi2) adds `UserRegs` (the view of the
 //!   trapping thread's user registers, valid for the handler's call), `Gpr` (the machine's
@@ -54,8 +53,11 @@
 //!   `kernel`'s public API acts on the kernel's own state (`hal::cpu::set_panicking`, the
 //!   kcopy tokens, the kernel's tables). The rule is textual: it trusts what the allowed
 //!   modules export (a `pub` item added to `kernel::api`, or a `pub use` added to
-//!   `hal::sys`, widens it without a change under `sys/abi/`), and like R1-R5 it reads only
+//!   `hal::syscall`, widens it without a change under `sys/abi/`), and like R1-R5 it reads only
 //!   the files under `sys/abi/` (no `#[path]` module or `include!`d file elsewhere exists).
+//!   Decision 54 (the user, 2026-11-26): the ABI edge's constants and `#[repr(C)]` structures
+//!   are the leaf crate `sysdefs` (data only, no `unsafe`, no state), which `abi` names freely
+//!   and R6 does not read; `hal::sys` no longer exists, so a path through it is a finding.
 //!   Before decision 52 the door was `hal::api`'s `KernelApi` table and R3 also counted the
 //!   calls through a `&KernelApi` parameter.
 //!
@@ -71,8 +73,8 @@ use crate::halcheck::Finding;
 use crate::unsafereport::{Tok, lex_pos, matching, scan};
 
 const ABI_DIR: &str = "sys/abi";
-/// The modules of `hal` that `abi` may name whole (R6): the constant headers of the ABI edge.
-const HAL_MODULES: [&str; 1] = ["sys"];
+// No module of `hal` is named whole since decision 54: the constant headers of the ABI edge are
+// `sysdefs`, a leaf crate of data that `abi` names freely (R6 has nothing to say of it).
 /// The items of `hal::syscall` that `abi` may name (R6): the system call's types, the
 /// registration of the ABI's handler and (decision 53) the trap's user registers, `UserRegs`
 /// and `Gpr`, with `ChildFn`; its other functions re-enter or read the system call path.
@@ -186,7 +188,7 @@ pub(crate) fn abi_check(root: &Path) -> Result<()> {
         return Err(format!("abi-check: {} finding(s)", findings.len()).into());
     }
     println!(
-        "abi-check: {} files; no loop, branches only on nr or Ok/Err/Some/None, at most one kernel call and {MAX_BODY_LINES} lines per fn, no state, kernel only through kernel::api, hal only through hal::sys and hal::syscall's types and set_handler",
+        "abi-check: {} files; no loop, branches only on nr or Ok/Err/Some/None, at most one kernel call and {MAX_BODY_LINES} lines per fn, no state, kernel only through kernel::api, hal only through hal::syscall's types and set_handler (sysdefs freely)",
         files.len()
     );
     Ok(())
@@ -673,7 +675,6 @@ fn hal_tree(toks: &[Tok], k: usize, out: &mut Vec<(usize, String)>) {
                 hal_tree(toks, j, out);
             }
         }
-        Some(Tok::Ident(m)) if HAL_MODULES.contains(&m.as_str()) => {}
         Some(Tok::Ident(m)) if m == "syscall" => {
             if !is_sep(toks, k + 1) {
                 out.push((
@@ -692,12 +693,12 @@ fn hal_tree(toks: &[Tok], k: usize, out: &mut Vec<(usize, String)>) {
         Some(Tok::Ident(m)) => out.push((
             k,
             format!(
-                "R6: `hal::{m}` is outside the hal paths abi may name (hal::sys, hal::syscall's types and set_handler)"
+                "R6: `hal::{m}` is outside the hal paths abi may name (hal::syscall's types and set_handler; the headers are sysdefs')"
             ),
         )),
         _ => out.push((
             k,
-            "R6: a glob of hal's root (abi names only hal::sys and hal::syscall's types and set_handler)"
+            "R6: a glob of hal's root (abi names only hal::syscall's types and set_handler)"
                 .to_string(),
         )),
     }
@@ -884,7 +885,7 @@ mod tests {
     }
 
     #[test]
-    fn r6_hal_only_through_sys_and_syscall_types() {
+    fn r6_hal_only_through_syscall_types() {
         // What the crate names today, and the forms of the same paths.
         clean("use hal::syscall::{HandlerInfo, Register};\n");
         // Decision 53: the trap's user registers, their names and a forked child's return.
@@ -897,12 +898,18 @@ mod tests {
         one("fn f(r: &R) { hal::syscall::child(r); }\n", "R6");
         one("use hal::syscall::{Gpr, handler_info};\n", "R6");
         one("fn f() { hal::syscall::dispatch(1, &A, &mut R); }\n", "R6");
-        clean("use hal::sys::syscall::{SYS_exit, SYS_read};\nuse hal::sys::errno::*;\n");
-        clean("use hal::{syscall::SysArgs, sys::syscall::{SYS_exit, SYS_read}};\n");
-        clean("fn f() -> i32 { hal::sys::errno::Errno::ENOSYS.as_i32() }\n");
-        clean("use hal::sys as headers;\n");
+        clean("use sysdefs::syscall::{SYS_exit, SYS_read};\nuse sysdefs::errno::*;\n");
+        clean("use hal::syscall::SysArgs;\nuse sysdefs::syscall::{SYS_exit, SYS_read};\n");
+        clean("fn f() -> i32 { sysdefs::errno::Errno::ENOSYS.as_i32() }\n");
+        clean("use sysdefs as headers;\n");
+        // `hal::sys` is gone (decision 54): the headers are not hal's to name.
+        one("use hal::sys::errno::*;\n", "R6");
+        one(
+            "fn f() -> i32 { hal::sys::errno::Errno::ENOSYS.as_i32() }\n",
+            "R6",
+        );
         // `::hal` is the crate: clean here because the path is allowed.
-        clean("pub use ::hal::sys::syscall::SYS_exit;\n");
+        clean("pub use ::sysdefs::syscall::SYS_exit;\n");
         // Another crate's or this crate's module, a field and a comment are not the crate.
         clean("use other::hal::cpu;\nuse crate::hal::x;\nuse self::hal::y;\nuse super::hal::z;\n");
         clean("fn f(s: S) { s.hal.cpu(); }\n");
@@ -914,15 +921,15 @@ mod tests {
             "fn f() { let t = ::hal::user::KcopyToken::take(); }\n",
             "R6",
         );
-        one("use hal::{sys::errno, user::KcopyToken};\n", "R6");
-        one("use hal::{sys::{errno::Errno}, bridges};\n", "R6");
+        one("use hal::{syscall::SysArgs, user::KcopyToken};\n", "R6");
+        one("use hal::{syscall::{SysArgs}, bridges};\n", "R6");
         // Decision 52: the KernelApi table is gone, and hal::api with it.
         one("use hal::api::KernelApi;\n", "R6");
         one("fn f(a: &hal::api::KernelApi) {}\n", "R6");
         // A glob of the root, `self` in a group, `hal` alone.
         one("use hal::*;\n", "R6");
-        one("use hal::{sys::errno, *};\n", "R6");
-        one("use hal::{self, sys::errno};\n", "R6");
+        one("use hal::{syscall::SysArgs, *};\n", "R6");
+        one("use hal::{self, syscall::SysArgs};\n", "R6");
         one("use hal as h;\n", "R6");
         one("extern crate hal;\n", "R6");
         assert_eq!(msgs("use hal::{cpu, user::X};\n"), ["1:R6", "1:R6"]);
@@ -985,7 +992,7 @@ mod tests {
             "use hal::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult, SyscallFn, ENOSYS};\n",
         );
         clean("fn f(r: hal::syscall::Rval) -> i32 { hal::syscall::ENOSYS }\n");
-        clean("use hal::{sys::errno, syscall::{SysArgs, SysResult}};\n");
+        clean("use hal::{syscall::{SysArgs, SysResult}};\n");
         clean("fn f() { let _ = hal::syscall::set_handler(g, I); }\n");
         clean("use ::hal::syscall::set_handler;\n");
         // Its other functions, a glob, the module itself or an alias of it.
@@ -996,8 +1003,11 @@ mod tests {
         one("use hal::syscall;\n", "R6");
         one("use hal::syscall as s;\n", "R6");
         one("use hal::syscall::{self, SysArgs};\n", "R6");
-        one("use hal::{syscall, sys::errno};\n", "R6");
-        one("use hal::{sys::errno, syscall::{handler_info}};\n", "R6");
+        one("use hal::{syscall, syscall::SysArgs};\n", "R6");
+        one(
+            "use hal::{syscall::{SysArgs}, syscall::{handler_info}};\n",
+            "R6",
+        );
     }
 
     #[test]

@@ -87,23 +87,23 @@ use core::sync::atomic::Ordering;
 
 use hal::mem::pod;
 use hal::sync::netlock::NetHeld;
-use hal::sys::errno::Errno;
-use hal::sys::net_if::IFF_POINTOPOINT;
-use hal::sys::net_route::{RTF_DYNAMIC, RTF_GATEWAY, RTF_MODIFIED};
-use hal::sys::netinet_icmp6::{
+use sysdefs::errno::Errno;
+use sysdefs::net_if::IFF_POINTOPOINT;
+use sysdefs::net_route::{RTF_DYNAMIC, RTF_GATEWAY, RTF_MODIFIED};
+use sysdefs::netinet_icmp6::{
     ICMP6_DST_UNREACH, ICMP6_DST_UNREACH_ADDR, ICMP6_DST_UNREACH_BEYONDSCOPE,
     ICMP6_DST_UNREACH_NOROUTE, ICMP6_PACKET_TOO_BIG, ICMP6_TIME_EXCEED_TRANSIT,
     ICMP6_TIME_EXCEEDED, ICMPV6_PLD_MAXLEN, ND_REDIRECT,
 };
-use hal::sys::netinet_in::{IPPROTO_ESP, IPPROTO_TCP, IPPROTO_UDP};
-use hal::sys::netinet_ip6::{IPV6_HLIMDEC, Ip6Hdr};
-use hal::sys::netinet_tcp::Tcphdr;
-use hal::sys::netinet_udp::Udphdr;
-use hal::sys::netinet6_in6::{
+use sysdefs::netinet_in::{IPPROTO_ESP, IPPROTO_TCP, IPPROTO_UDP};
+use sysdefs::netinet_ip6::{IPV6_HLIMDEC, Ip6Hdr};
+use sysdefs::netinet_tcp::Tcphdr;
+use sysdefs::netinet_udp::Udphdr;
+use sysdefs::netinet6_in6::{
     SockaddrIn6, in6_is_addr_multicast, in6_is_addr_unspecified, in6_is_scope_embed,
 };
-use hal::sys::netinet6_ip6_var::Ip6statCounters;
-use hal::sys::socket::AF_INET6;
+use sysdefs::netinet6_ip6_var::Ip6statCounters;
+use sysdefs::socket::AF_INET6;
 
 use crate::net::if_::{if_get, if_output_tso, if_put};
 use crate::net::ipsec_hooks::{SpdError, TdbHold, ipsec};
@@ -523,10 +523,10 @@ mod tests {
 
     use std::vec::Vec;
 
-    use hal::sys::netinet_icmp6::ND_NA_FLAG_OVERRIDE;
-    use hal::sys::netinet_icmp6::ND_NA_FLAG_SOLICITED;
-    use hal::sys::netinet_in::IPPROTO_NONE;
-    use hal::sys::netinet6_in6::In6Addr;
+    use sysdefs::netinet_icmp6::ND_NA_FLAG_OVERRIDE;
+    use sysdefs::netinet_icmp6::ND_NA_FLAG_SOLICITED;
+    use sysdefs::netinet_in::IPPROTO_NONE;
+    use sysdefs::netinet6_in6::In6Addr;
 
     use super::*;
     use crate::net::if_var::Ifnet;

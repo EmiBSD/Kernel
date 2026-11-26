@@ -32,7 +32,7 @@
 //! printers (N6.7a5): `nfs_vfsops`, `nfs_debug`; the server (`option NFSSERVER`), built
 //! beside `bsd`'s and switched on by N6.7b4: `nfssvc`, `nfs_srvsubs`, `nfs_srvsocket`,
 //! `nfs_srvcache` (N6.7b2), `nfs_serv` (the procedures, N6.7b3).
-//! Userland's headers are `hal::sys`'s images (`nfs_nfs`,
+//! Userland's headers are `sysdefs`'s images (`nfs_nfs`,
 //! `nfs_nfsproto`, `nfs_rpcv2`), re-exported by the modules of the same name.
 
 #[cfg(feature = "nfsclient")]
@@ -69,5 +69,5 @@ pub mod nfssvc;
 pub mod testnfs;
 pub mod xdr_subs;
 
-pub use crate::sys::nfs_rpcv2 as rpcv2;
+pub use sysdefs::nfs_rpcv2 as rpcv2;
 /* </CODE> */

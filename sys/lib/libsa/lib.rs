@@ -80,6 +80,7 @@ pub mod saerrno;
 pub mod snprintf;
 pub mod stand;
 pub mod stat;
+pub mod staticcell;
 pub mod strerror;
 pub mod strtol;
 pub mod strtoll;

@@ -113,7 +113,7 @@
 //!   C: a member read is a load and a shift of its word; a descriptor read four loads, the
 //!   slot's read section and a bounds compare where the C indexes a pointer; no lock and no
 //!   interrupt-level change.
-//! - [`Ext2fs`] and [`Ext2Gd`] are `hal::abi_pod!` images (`pod_from_bytes`/`pod_to_bytes`):
+//! - [`Ext2fs`] and [`Ext2Gd`] are `sysdefs::abi_pod!` images (`pod_from_bytes`/`pod_to_bytes`):
 //!   LZ's `read_unaligned`/`write_unaligned` of the super-block (two `unsafe`) and its
 //!   `mem::zeroed` (one) go, and so do `Ext2Gd`'s byte-by-byte conversions: the descriptors
 //!   are copied as the bytes they are on a little-endian machine, as the C's `memcpy`.
@@ -123,8 +123,8 @@ use core::sync::atomic::AtomicU64;
 
 use hal::mem::malloc::{M_WAITOK, MArray};
 use hal::sync::slot::ReadMostly;
-use hal::sys::types::{Daddr, Off};
 use hal::user::{pod_from_bytes, pod_to_bytes, zeroed};
+use sysdefs::types::{Daddr, Off};
 
 use super::ext2fs_bswap::{e2fs_cg_bswap, e2fs_sb_bswap};
 use super::ext2fs_dinode::EXT2_REV0_DINODE_SIZE;
@@ -645,7 +645,7 @@ impl Default for Ext2fs {
     }
 }
 
-hal::abi_pod!(Ext2fs {
+sysdefs::abi_pod!(Ext2fs {
     e2fs_icount: u32,
     e2fs_bcount: u32,
     e2fs_rbcount: u32,
@@ -762,7 +762,7 @@ pub struct Ext2Gd {
     pub reserved2: [u32; 3],
 }
 
-hal::abi_pod!(Ext2Gd {
+sysdefs::abi_pod!(Ext2Gd {
     ext2bgd_b_bitmap: u32,
     ext2bgd_i_bitmap: u32,
     ext2bgd_i_tables: u32,

@@ -146,7 +146,7 @@ pub use crate::arch::current::gpr::Gpr;
 pub use crate::arch::current::syscall::UserRegs;
 
 /// `register_t`: a machine register as a system call sees it (64 bits on both machines).
-pub type Register = isize;
+pub use sysdefs::types::Register;
 
 /// The six argument registers of a system call, in the C ABI's order.
 pub type SysArgs = [Register; 6];
@@ -165,7 +165,7 @@ pub type SyscallFn = fn(&UserRegs);
 pub type ChildFn = fn(&UserRegs);
 
 /// `ENOSYS` (`<sys/errno.h>`): what an unanswered system call returns.
-pub const ENOSYS: i32 = crate::sys::errno::Errno::ENOSYS.as_i32();
+pub const ENOSYS: i32 = sysdefs::errno::Errno::ENOSYS.as_i32();
 
 /// What the registered handler says about itself, for the boot line the image's boot glue
 /// prints.

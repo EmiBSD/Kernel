@@ -161,8 +161,8 @@ use crate::fs::subr::{siphash_key, vfs};
 use crate::net::mbuf::{M_COPYALL, M_WAIT, Mbuf, MbufBox, m_copym};
 use crate::proc::ProcGlue;
 use crate::sched::PZERO;
-use crate::sys::socket::{AF_INET, AF_UNSPEC};
-use crate::sys::types::SaFamily;
+use sysdefs::socket::{AF_INET, AF_UNSPEC};
+use sysdefs::types::SaFamily;
 
 /// `NFSRVCACHESIZ`: the entries the cache holds at most (`desirednfsrvcache`'s default).
 pub const NFSRVCACHESIZ: usize = 2048;
@@ -726,7 +726,7 @@ mod tests {
     };
     use crate::fs::testfs::TestGlue;
     use crate::net::mbuf::{MT_SONAME, m_devget};
-    use hal::sys::errno::Errno;
+    use sysdefs::errno::Errno;
 
     type G = TestGlue;
 

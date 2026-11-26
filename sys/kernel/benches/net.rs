@@ -647,7 +647,7 @@ struct Ip {
     ip_src: u32,
     ip_dst: u32,
 }
-hal::abi_pod!(Ip {
+sysdefs::abi_pod!(Ip {
     ip_vhl: u8,
     ip_tos: u8,
     ip_len: u16,
@@ -1412,8 +1412,8 @@ fn krecv_flags(so: &kernel::net::socket::Socket<G>, buf: &mut [u8], flags: i32) 
 }
 
 fn socket_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
-    use hal::sys::socket::{AF_UNIX, SOCK_STREAM};
     use kernel::net::socket::{soclose, soconnect2, socreate, solock};
+    use sysdefs::socket::{AF_UNIX, SOCK_STREAM};
     if !SOCKET_ROWS.iter().any(|n| wanted(n)) {
         return;
     }
@@ -1493,7 +1493,7 @@ fn socket_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f
         let r = measure(OPS / 16, || {
             let t = Instant::now();
             for _ in 0..OPS / 16 {
-                krecv_flags(&b, black_box(&mut *inb), hal::sys::socket::MSG_PEEK);
+                krecv_flags(&b, black_box(&mut *inb), sysdefs::socket::MSG_PEEK);
             }
             t.elapsed()
         });
@@ -1512,7 +1512,7 @@ fn socket_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f
             let r = measure(OPS / 16, || {
                 let t = Instant::now();
                 for _ in 0..OPS / 16 {
-                    krecv_flags(&b, black_box(&mut one), hal::sys::socket::MSG_PEEK);
+                    krecv_flags(&b, black_box(&mut one), sysdefs::socket::MSG_PEEK);
                 }
                 t.elapsed()
             });
@@ -1618,7 +1618,7 @@ impl kernel::net::if_var::NetDriver for BenchDriver {
         _ifp: &'static kernel::net::if_var::Ifnet,
         _cmd: u64,
         _data: &mut [u8],
-    ) -> Result<(), hal::sys::errno::Errno> {
+    ) -> Result<(), sysdefs::errno::Errno> {
         Ok(())
     }
 
@@ -1655,7 +1655,6 @@ fn placement<T>(what: &str, p: &T) {
 
 fn if_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
     use hal::sync::netlock::NetHeld;
-    use hal::sys::net_if::{IFF_RUNNING, IFXF_CLONED};
     use kernel::base::task::Task;
     use kernel::net::if_::{
         if_attach, if_attach_queues, if_counters_alloc, if_enqueue_ifq, if_get, if_get_smr,
@@ -1665,6 +1664,7 @@ fn if_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))
     use kernel::net::if_var::{IfCounters, IfaddrRef, counters_pkt};
     use kernel::net::ifq::{ifiq_input, ifiq_test_take, ifq_dequeue, ifq_enqueue, ifq_serialize};
     use kernel::net::mbuf::{M_FLOWID, MbufList, ml_dequeue, ml_enqueue};
+    use sysdefs::net_if::{IFF_RUNNING, IFXF_CLONED};
 
     if !IF_ROWS.iter().any(|n| wanted(n)) {
         return;
@@ -1800,9 +1800,9 @@ fn if_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))
         // Eight listed interfaces of two addresses each, 10.i.0.1 and 172.16.i.1; the
         // address looked for is the last one walked (the C's two nested TAILQ walks whole).
         let sin = |a: [u8; 4]| -> std::vec::Vec<u8> {
-            let mut sa: hal::sys::socket::Sockaddr = hal::user::zeroed();
+            let mut sa: sysdefs::socket::Sockaddr = hal::user::zeroed();
             sa.sa_len = 16;
-            sa.sa_family = hal::sys::socket::AF_INET;
+            sa.sa_family = sysdefs::socket::AF_INET;
             sa.sa_data[2..6].copy_from_slice(&a);
             hal::user::bytes_of(core::slice::from_ref(&sa)).to_vec()
         };
@@ -1904,7 +1904,7 @@ fn if_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))
         use kernel::netinet::in_::{in_addmulti, in_delmulti, in_hasmulti};
         let mifp = test_ifnet_fresh(b"bnch3", &BENCH_DRIVER);
         if_attach(mifp);
-        let group = |n: u8| hal::sys::netinet_in::InAddr {
+        let group = |n: u8| sysdefs::netinet_in::InAddr {
             s_addr: u32::from_ne_bytes([224, 0, 0, 100 + n]),
         };
         let joined: Vec<_> = {
@@ -2049,7 +2049,7 @@ static BENCH_INET: BenchInet = BenchInet;
 fn sin(a: [u8; 4]) -> [u8; 16] {
     let mut s = [0u8; 16];
     s[0] = 16;
-    s[1] = hal::sys::socket::AF_INET;
+    s[1] = sysdefs::socket::AF_INET;
     s[4..8].copy_from_slice(&a);
     s
 }
@@ -2066,7 +2066,7 @@ fn route_info<'a>(
     gw: &'a [u8],
     ifa: &'a kernel::net::if_var::IfaddrRef,
 ) -> kernel::net::route::RtAddrinfo<'a> {
-    use hal::sys::net_route::{
+    use sysdefs::net_route::{
         RTAX_DST, RTAX_GATEWAY, RTAX_NETMASK, RTF_GATEWAY, RTF_STATIC, RTF_UP,
     };
     let mut info = kernel::net::route::RtAddrinfo::new();
@@ -2080,7 +2080,6 @@ fn route_info<'a>(
 
 fn route_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
     use hal::sync::netlock::NetHeld;
-    use hal::sys::net_route::{RTF_CONNECTED, RTF_MPATH, RTM_ADD, RTP_ANY, RTP_STATIC};
     use kernel::net::if_::{if_alloc_sadl, if_attach, if_test_reset, ifa_add, test_ifnet_fresh};
     use kernel::net::route::{
         Route, route_init, rt_hash, rt_ifa_add, rtlabel_test_reset, rtrequest, rtrequest_delete,
@@ -2088,6 +2087,7 @@ fn route_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f6
     use kernel::net::rtable::{
         RtDom, rtable_init_doms, rtable_lookup, rtable_match, rtable_test_reset,
     };
+    use sysdefs::net_route::{RTF_CONNECTED, RTF_MPATH, RTM_ADD, RTP_ANY, RTP_STATIC};
 
     if !ROUTE_ROWS.iter().any(|n| wanted(n)) {
         return;
@@ -2109,13 +2109,13 @@ fn route_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f6
     route_init();
     rtable_init_doms(&[
         RtDom {
-            family: hal::sys::socket::AF_INET,
+            family: sysdefs::socket::AF_INET,
             rtoffset: 4,
             maxplen: 32,
             sasize: 16,
         },
         RtDom {
-            family: hal::sys::socket::AF_INET6,
+            family: sysdefs::socket::AF_INET6,
             rtoffset: 8,
             maxplen: 128,
             sasize: 28,
@@ -2126,7 +2126,7 @@ fn route_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f6
     // gateway).
     let ifp = test_ifnet_fresh(b"rtb0", &BENCH_DRIVER);
     ifp.if_flags
-        .set(ifp.if_flags.get() | hal::sys::net_if::IFF_UP | hal::sys::net_if::IFF_BROADCAST);
+        .set(ifp.if_flags.get() | sysdefs::net_if::IFF_UP | sysdefs::net_if::IFF_BROADCAST);
     if_alloc_sadl(ifp);
     if_attach(ifp);
     let ifa = kernel::netinet::in_var::test_in_ifaddr(
@@ -2324,7 +2324,7 @@ fn route_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f6
                         std::process::exit(1);
                     }
                     let mut del = route_info(&net9, &mask24, &gw, ifa);
-                    del.rti_info[hal::sys::net_route::RTAX_GATEWAY] = None;
+                    del.rti_info[sysdefs::net_route::RTAX_GATEWAY] = None;
                     if rtrequest_delete(&mut del, RTP_STATIC, ifp, None, 0, &net).is_err() {
                         eprintln!("net: the delete of 10.9.0.0/24");
                         std::process::exit(1);
@@ -2362,8 +2362,8 @@ const BPF_ROWS: [&str; 5] = [
 const BPF_CAPS: usize = 16_384;
 
 /// `tcpdump -d 'ip and udp and dst port 53'` on Ethernet.
-const BPF_DNS: [hal::sys::net_bpf::BpfInsn; 11] = {
-    use hal::sys::net_bpf::{
+const BPF_DNS: [sysdefs::net_bpf::BpfInsn; 11] = {
+    use sysdefs::net_bpf::{
         BPF_ABS, BPF_B, BPF_H, BPF_IND, BPF_JEQ, BPF_JMP, BPF_JSET, BPF_K, BPF_LD, BPF_LDX,
         BPF_MSH, BPF_RET, bpf_jump, bpf_stmt,
     };
@@ -2392,18 +2392,18 @@ fn bpf_packet(bytes: &[u8]) -> MbufBox {
 }
 
 fn bpf_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
-    use hal::sys::net_bpf::{
-        BIOCFLUSH, BIOCGSTATS, BIOCSBLEN, BIOCSETF, BIOCSETIF, BPF_A, BPF_ABS, BPF_ADD, BPF_ALU,
-        BPF_DIRECTION_IN, BPF_H, BPF_JEQ, BPF_JMP, BPF_K, BPF_LD, BPF_MAXBUFSIZE, BPF_RET, BPF_ST,
-        BpfInsn, BpfProgram, BpfStat, DLT_EN10MB, bpf_jump, bpf_stmt,
-    };
-    use hal::sys::netinet_if_ether::ETHER_HDR_LEN;
-    use hal::sys::types::makedev;
     use hal::user::UserPtr;
     use kernel::fs::spec::CLONE_SHIFT;
     use kernel::net::bpf::{BpfPkt, bpf_mtap, bpfattach, bpfclose, bpfioctl, bpfopen};
     use kernel::net::bpf_filter::{_bpf_lfilter, bpf_validate};
     use kernel::net::if_::{if_attach, if_test_reset, test_ifnet_fresh};
+    use sysdefs::net_bpf::{
+        BIOCFLUSH, BIOCGSTATS, BIOCSBLEN, BIOCSETF, BIOCSETIF, BPF_A, BPF_ABS, BPF_ADD, BPF_ALU,
+        BPF_DIRECTION_IN, BPF_H, BPF_JEQ, BPF_JMP, BPF_K, BPF_LD, BPF_MAXBUFSIZE, BPF_RET, BPF_ST,
+        BpfInsn, BpfProgram, BpfStat, DLT_EN10MB, bpf_jump, bpf_stmt,
+    };
+    use sysdefs::netinet_if_ether::ETHER_HDR_LEN;
+    use sysdefs::types::makedev;
 
     if !BPF_ROWS.iter().any(|n| wanted(n)) {
         return;
@@ -2573,7 +2573,7 @@ impl kernel::net::if_var::NetDriver for EtherBenchDriver {
         _ifp: &'static kernel::net::if_var::Ifnet,
         _cmd: u64,
         _data: &mut [u8],
-    ) -> Result<(), hal::sys::errno::Errno> {
+    ) -> Result<(), sysdefs::errno::Errno> {
         Ok(())
     }
 
@@ -2600,17 +2600,17 @@ fn unadj(m: &kernel::net::mbuf::Mbuf, n: usize) {
 }
 
 fn ether_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
-    use hal::sys::net_ethertypes::ETHERTYPE_IP;
-    use hal::sys::net_if::{
-        IFF_BROADCAST, IFF_MULTICAST, IFF_RUNNING, IFF_SIMPLEX, IFNAMSIZ, IFXF_CLONED, IFXF_MPSAFE,
-    };
-    use hal::sys::socket::{AF_UNSPEC, pseudo_AF_HDRCMPLT};
     use kernel::net::if_::{if_attach, if_test_reset};
     use kernel::net::if_ethersubr::{Arpcom, ether_ifattach};
     use kernel::net::if_loop::{LOOP_CLONER, loop_clone_create};
     use kernel::net::if_var::Netstack;
     use kernel::net::ifq::{ifiq_test_take, ifq_dequeue};
     use kernel::net::mbuf::ml_dequeue;
+    use sysdefs::net_ethertypes::ETHERTYPE_IP;
+    use sysdefs::net_if::{
+        IFF_BROADCAST, IFF_MULTICAST, IFF_RUNNING, IFF_SIMPLEX, IFNAMSIZ, IFXF_CLONED, IFXF_MPSAFE,
+    };
+    use sysdefs::socket::{AF_UNSPEC, pseudo_AF_HDRCMPLT};
 
     const OURS: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
     const PEER: [u8; 6] = [0x52, 0x54, 0x00, 0xaa, 0xbb, 0xcc];
@@ -2675,7 +2675,7 @@ fn ether_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f6
     for (row, family) in [
         (1, pseudo_AF_HDRCMPLT),
         (2, AF_UNSPEC),
-        (4, hal::sys::socket::AF_INET),
+        (4, sysdefs::socket::AF_INET),
     ] {
         if !wanted(ETHER_ROWS[row]) {
             continue;
@@ -2686,7 +2686,7 @@ fn ether_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f6
         sa[0] = 16;
         sa[1] = family;
         let mut m = Some(lead_packet(32, 46));
-        if family == hal::sys::socket::AF_INET {
+        if family == sysdefs::socket::AF_INET {
             sa[4..8].copy_from_slice(&[224, 0, 0, 1]);
             if let Some(p) = m.as_ref() {
                 p.m_flags().set(p.flags() | kernel::net::mbuf::M_MCAST);
@@ -2756,7 +2756,6 @@ const INET_ROWS: [&str; 3] = ["in.cksum.1500", "in4.cksum.40", "ip.output.lo"];
 
 fn inet_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
     use hal::sync::netlock::NetHeld;
-    use hal::sys::sockio::SIOCAIFADDR;
     use kernel::net::if_::if_test_reset;
     use kernel::net::if_loop::{LOOP_CLONER, loop_clone_create};
     use kernel::net::ifq::ifiq_test_take;
@@ -2765,6 +2764,7 @@ fn inet_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64
     use kernel::netinet::in_cksum::in_cksum;
     use kernel::netinet::in4_cksum::in4_cksum;
     use kernel::netinet::ip_output::ip_output;
+    use sysdefs::sockio::SIOCAIFADDR;
 
     if !INET_ROWS.iter().any(|n| wanted(n)) {
         return;
@@ -2780,7 +2780,7 @@ fn inet_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64
     kernel::net::route::rtlabel_test_reset();
     kernel::net::route::route_init();
     kernel::net::rtable::rtable_init_doms(&[kernel::net::rtable::RtDom {
-        family: hal::sys::socket::AF_INET,
+        family: sysdefs::socket::AF_INET,
         rtoffset: 4,
         maxplen: 32,
         sasize: 16,
@@ -2893,8 +2893,8 @@ struct BenchTransport {
 
 /// The UDP entry.
 static BENCH_UDP_IN: BenchTransport = BenchTransport {
-    ty: hal::sys::socket::SOCK_DGRAM as i16,
-    proto: hal::sys::netinet_in::IPPROTO_UDP as i16,
+    ty: sysdefs::socket::SOCK_DGRAM as i16,
+    proto: sysdefs::netinet_in::IPPROTO_UDP as i16,
     flags: kernel::net::proto::PR_ATOMIC
         | kernel::net::proto::PR_ADDR
         | kernel::net::proto::PR_MPINPUT,
@@ -2902,14 +2902,14 @@ static BENCH_UDP_IN: BenchTransport = BenchTransport {
 };
 /// The TCP entry.
 static BENCH_TCP_IN: BenchTransport = BenchTransport {
-    ty: hal::sys::socket::SOCK_STREAM as i16,
-    proto: hal::sys::netinet_in::IPPROTO_TCP as i16,
+    ty: sysdefs::socket::SOCK_STREAM as i16,
+    proto: sysdefs::netinet_in::IPPROTO_TCP as i16,
     flags: kernel::net::proto::PR_CONNREQUIRED,
     v6: false,
 };
 /// The raw wildcard.
 static BENCH_RAW_IN: BenchTransport = BenchTransport {
-    ty: hal::sys::socket::SOCK_RAW as i16,
+    ty: sysdefs::socket::SOCK_RAW as i16,
     proto: 0,
     flags: kernel::net::proto::PR_ATOMIC | kernel::net::proto::PR_ADDR,
     v6: false,
@@ -2949,7 +2949,7 @@ impl kernel::net::proto::Protocol<G> for BenchTransport {
         if let Some(m) = mp.take() {
             stash(m);
         }
-        hal::sys::netinet_in::IPPROTO_DONE
+        sysdefs::netinet_in::IPPROTO_DONE
     }
 }
 
@@ -2979,14 +2979,14 @@ fn loop_packet(p: u8, id: u16, off: u16, len: u16) -> Vec<u8> {
 
 fn ip_input_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
     use hal::sync::netlock::NetHeld;
-    use hal::sys::netinet_in::{IPPROTO_TCP, IPPROTO_UDP};
-    use hal::sys::netinet_ip::IP_MF;
-    use hal::sys::sockio::SIOCAIFADDR;
     use kernel::net::if_::if_test_reset;
     use kernel::net::if_loop::{LOOP_CLONER, loop_clone_create};
     use kernel::net::if_var::Netstack;
     use kernel::net::mbuf::m_devget;
     use kernel::netinet::ip_input::{ip_init, ipintr, ipv4_input};
+    use sysdefs::netinet_in::{IPPROTO_TCP, IPPROTO_UDP};
+    use sysdefs::netinet_ip::IP_MF;
+    use sysdefs::sockio::SIOCAIFADDR;
 
     if !IP_INPUT_ROWS.iter().any(|n| wanted(n)) {
         return;
@@ -3000,7 +3000,7 @@ fn ip_input_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64,
     kernel::net::route::rtlabel_test_reset();
     kernel::net::route::route_init();
     kernel::net::rtable::rtable_init_doms(&[kernel::net::rtable::RtDom {
-        family: hal::sys::socket::AF_INET,
+        family: sysdefs::socket::AF_INET,
         rtoffset: 4,
         maxplen: 32,
         sasize: 16,
@@ -3087,19 +3087,19 @@ const ARP_ROWS: [&str; 2] = ["arp.resolve.hit", "arp.resolve.miss"];
 
 fn arp_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
     use hal::sync::netlock::NetHeld;
-    use hal::sys::net_ethertypes::ETHERTYPE_IP;
-    use hal::sys::net_if::{
-        IFF_BROADCAST, IFF_MULTICAST, IFF_RUNNING, IFF_SIMPLEX, IFF_UP, IFNAMSIZ, IFXF_CLONED,
-        IFXF_MPSAFE,
-    };
-    use hal::sys::net_if_arp::{ARPHRD_ETHER, ARPOP_REPLY, Arphdr};
-    use hal::sys::netinet_if_ether::EtherArp;
-    use hal::sys::sockio::SIOCAIFADDR;
     use kernel::net::if_::{if_attach, if_test_reset};
     use kernel::net::if_ethersubr::{Arpcom, ether_ifattach};
     use kernel::net::mbuf::m_devget;
     use kernel::net::route::{RT_RESOLVE, rtalloc};
     use kernel::netinet::if_ether::{arpinit, arpresolve, in_arpinput};
+    use sysdefs::net_ethertypes::ETHERTYPE_IP;
+    use sysdefs::net_if::{
+        IFF_BROADCAST, IFF_MULTICAST, IFF_RUNNING, IFF_SIMPLEX, IFF_UP, IFNAMSIZ, IFXF_CLONED,
+        IFXF_MPSAFE,
+    };
+    use sysdefs::net_if_arp::{ARPHRD_ETHER, ARPOP_REPLY, Arphdr};
+    use sysdefs::netinet_if_ether::EtherArp;
+    use sysdefs::sockio::SIOCAIFADDR;
 
     const OURS: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x57];
     const PEER: [u8; 6] = [0x52, 0x54, 0x00, 0xaa, 0xbb, 0xcd];
@@ -3118,7 +3118,7 @@ fn arp_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
     kernel::net::route::rtlabel_test_reset();
     kernel::net::route::route_init();
     kernel::net::rtable::rtable_init_doms(&[kernel::net::rtable::RtDom {
-        family: hal::sys::socket::AF_INET,
+        family: sysdefs::socket::AF_INET,
         rtoffset: 4,
         maxplen: 32,
         sasize: 16,
@@ -3148,9 +3148,9 @@ fn arp_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
     ether_ifattach(ac);
     hal::sync::klock::kernel_unlock();
     let mut req = [0u8; 64];
-    req[16..18].copy_from_slice(&[16, hal::sys::socket::AF_INET]);
+    req[16..18].copy_from_slice(&[16, sysdefs::socket::AF_INET]);
     req[20..24].copy_from_slice(&[10, 0, 2, 15]);
-    req[48..50].copy_from_slice(&[16, hal::sys::socket::AF_INET]);
+    req[48..50].copy_from_slice(&[16, sysdefs::socket::AF_INET]);
     req[52..56].copy_from_slice(&[255, 255, 255, 0]);
     if kernel::netinet::in_::in_ioctl(SIOCAIFADDR, &mut req, Some(ifp), true).is_err() {
         eprintln!("net: bncha0 refused 10.0.2.15");
@@ -3237,11 +3237,11 @@ fn arp_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
 const INPCB_ROWS: [&str; 3] = ["inpcb.lookup.hash", "inpcb.ref.unref", "inpcb.sotoinpcb"];
 
 fn inpcb_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
-    use hal::sys::netinet_in::InAddr;
     use kernel::net::socket::{SoInit, soalloc};
     use kernel::netinet::in_pcb::{
         Inpcbtable, in_init, in_pcballoc, in_pcbinit, in_pcblookup, in_pcbrehash,
     };
+    use sysdefs::netinet_in::InAddr;
 
     const PCBS: u16 = 1024;
 
@@ -3276,7 +3276,7 @@ fn inpcb_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f6
                 &kernel::netinet::in_proto::UdpProtocol::<G>::NEW,
                 kernel::net::mbuf::M_WAIT,
                 SoInit {
-                    so_type: hal::sys::socket::SOCK_DGRAM,
+                    so_type: sysdefs::socket::SOCK_DGRAM,
                     state: 0,
                     options: 0,
                     linger: 0,
@@ -3337,7 +3337,7 @@ fn inpcb_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f6
             let t0 = Instant::now();
             for _ in 0..OPS {
                 let so = black_box(so);
-                let w = if so.dom_family() == i32::from(hal::sys::socket::AF_INET) {
+                let w = if so.dom_family() == i32::from(sysdefs::socket::AF_INET) {
                     so.legacy_pcb()
                 } else {
                     0
@@ -3382,7 +3382,7 @@ fn syncache_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64,
             &kernel::netinet::in_proto::UdpProtocol::<G>::NEW,
             kernel::net::mbuf::M_WAIT,
             SoInit {
-                so_type: hal::sys::socket::SOCK_DGRAM,
+                so_type: sysdefs::socket::SOCK_DGRAM,
                 state: 0,
                 options: 0,
                 linger: 0,
@@ -3400,7 +3400,7 @@ fn syncache_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64,
     let sa = |a: [u8; 4], port: u16| {
         let mut s = [0u8; 28];
         s[0] = 16;
-        s[1] = hal::sys::socket::AF_INET;
+        s[1] = sysdefs::socket::AF_INET;
         s[2..4].copy_from_slice(&port.to_be_bytes());
         s[4..8].copy_from_slice(&a);
         s
@@ -3469,9 +3469,6 @@ const TCP_ROWS: [&str; 3] = [
 /// The TCP output rows (N6.6a3): see the file's documentation.
 fn tcp_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
     use hal::sync::netlock::NetHeld;
-    use hal::sys::endian::htons;
-    use hal::sys::netinet_in::InAddr;
-    use hal::sys::sockio::SIOCAIFADDR;
     use kernel::net::if_loop::{LOOP_CLONER, loop_clone_create};
     use kernel::net::ifq::ifiq_test_take;
     use kernel::net::mbuf::{M_WAIT, MT_DATA, m_gethdr, ml_dequeue};
@@ -3486,6 +3483,9 @@ fn tcp_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
     use kernel::netinet::tcp_timer::{TCPT_KEEP, TCPT_REXMT, tcp_timer_arm, tcp_timer_disarm};
     use kernel::netinet::tcp_usrreq::tcp_send;
     use kernel::netinet::tcp_var::intotcpcb;
+    use sysdefs::endian::htons;
+    use sysdefs::netinet_in::InAddr;
+    use sysdefs::sockio::SIOCAIFADDR;
 
     if !TCP_ROWS.iter().any(|n| wanted(n)) {
         return;
@@ -3501,7 +3501,7 @@ fn tcp_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
     kernel::net::route::rtlabel_test_reset();
     kernel::net::route::route_init();
     kernel::net::rtable::rtable_init_doms(&[kernel::net::rtable::RtDom {
-        family: hal::sys::socket::AF_INET,
+        family: sysdefs::socket::AF_INET,
         rtoffset: 4,
         maxplen: 32,
         sasize: 16,
@@ -3544,7 +3544,7 @@ fn tcp_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
             &kernel::netinet::in_proto::UdpProtocol::<G>::NEW,
             M_WAIT,
             SoInit {
-                so_type: hal::sys::socket::SOCK_STREAM,
+                so_type: sysdefs::socket::SOCK_STREAM,
                 state: 0,
                 options: 0,
                 linger: 0,
@@ -3701,7 +3701,7 @@ fn udp_socket() -> kernel::net::socket::SocketRef<G> {
             &kernel::netinet::in_proto::UdpProtocol::<G>::NEW,
             M_WAIT,
             SoInit {
-                so_type: hal::sys::socket::SOCK_DGRAM,
+                so_type: sysdefs::socket::SOCK_DGRAM,
                 state: 0,
                 options: 0,
                 linger: 0,
@@ -3738,8 +3738,6 @@ fn udp_nam(a: [u8; 4], port: u16) -> MbufBox {
 /// The UDP rows (N6.6b0): see the file's documentation.
 fn udp_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
     use hal::sync::netlock::NetHeld;
-    use hal::sys::netinet_in::IPPROTO_UDP;
-    use hal::sys::sockio::SIOCAIFADDR;
     use kernel::net::if_loop::{LOOP_CLONER, loop_clone_create};
     use kernel::net::ifq::ifiq_test_take;
     use kernel::net::mbuf::{
@@ -3747,6 +3745,8 @@ fn udp_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
     };
     use kernel::net::socket::solock;
     use kernel::netinet::udp_usrreq::{udp_bind, udp_connect, udp_input, udp_send};
+    use sysdefs::netinet_in::IPPROTO_UDP;
+    use sysdefs::sockio::SIOCAIFADDR;
 
     if !UDP_ROWS.iter().any(|n| wanted(n)) {
         return;
@@ -3761,7 +3761,7 @@ fn udp_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
     kernel::net::route::rtlabel_test_reset();
     kernel::net::route::route_init();
     kernel::net::rtable::rtable_init_doms(&[kernel::net::rtable::RtDom {
-        family: hal::sys::socket::AF_INET,
+        family: sysdefs::socket::AF_INET,
         rtoffset: 4,
         maxplen: 32,
         sasize: 16,
@@ -3876,7 +3876,7 @@ fn udp_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
             .map(|_| {
                 let so = udp_socket();
                 let mut w = solock(&so);
-                so.set_options(&w, hal::sys::socket::SO_REUSEPORT, true);
+                so.set_options(&w, sysdefs::socket::SO_REUSEPORT, true);
                 if udp_bind(&so, &mut w, &udp_nam([0, 0, 0, 0], 7001), p).is_err() {
                     eprintln!("net: udp_bind failed");
                     std::process::exit(1);
@@ -3939,7 +3939,7 @@ fn raw_socket(
             pr,
             M_WAIT,
             SoInit {
-                so_type: hal::sys::socket::SOCK_RAW,
+                so_type: sysdefs::socket::SOCK_RAW,
                 state: kernel::net::sockbuf::SS_PRIV,
                 options: 0,
                 linger: 0,
@@ -3972,7 +3972,7 @@ fn loop6_icmp(ty: u8, len: u16) -> Vec<u8> {
     let mut b = vec![0u8; usize::from(len)];
     b[0] = 0x60;
     b[4..6].copy_from_slice(&(len - 40).to_be_bytes());
-    b[6] = hal::sys::netinet_in::IPPROTO_ICMPV6 as u8;
+    b[6] = sysdefs::netinet_in::IPPROTO_ICMPV6 as u8;
     b[7] = 64;
     b[23] = 1;
     b[39] = 1;
@@ -3983,9 +3983,6 @@ fn loop6_icmp(ty: u8, len: u16) -> Vec<u8> {
 /// The raw IP and divert rows (N6.6b1): see the file's documentation.
 fn raw_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
     use hal::sync::netlock::NetHeld;
-    use hal::sys::netinet_in::{IPPROTO_ICMP, IPPROTO_ICMPV6, IPPROTO_UDP};
-    use hal::sys::socket::{AF_INET, AF_INET6};
-    use hal::sys::sockio::SIOCAIFADDR;
     use kernel::net::if_loop::{LOOP_CLONER, loop_clone_create};
     use kernel::net::ifq::ifiq_test_take;
     use kernel::net::mbuf::{M_WAIT, MT_DATA, m_devget, m_gethdr, ml_dequeue};
@@ -3996,6 +3993,9 @@ fn raw_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
     use kernel::netinet::raw_ip::{rip_init, rip_input, rip_send};
     use kernel::netinet6::in6_proto::Rip6Protocol;
     use kernel::netinet6::raw_ip6::{rip6_init, rip6_input};
+    use sysdefs::netinet_in::{IPPROTO_ICMP, IPPROTO_ICMPV6, IPPROTO_UDP};
+    use sysdefs::socket::{AF_INET, AF_INET6};
+    use sysdefs::sockio::SIOCAIFADDR;
 
     if !RAW_ROWS.iter().any(|n| wanted(n)) {
         return;
@@ -4207,12 +4207,12 @@ const INET6_ROWS: [&str; 1] = ["in6.selectsrc"];
 /// The IPv6 address rows (N6.5a): see the file's documentation.
 fn inet6_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
     use hal::sync::netlock::NetHeld;
-    use hal::sys::netinet6_in6::{IN6MASK64, In6Addr, SockaddrIn6};
-    use hal::sys::netinet6_in6_var::In6Addrlifetime;
-    use hal::sys::netinet6_nd6::ND6_INFINITE_LIFETIME;
     use kernel::net::if_::{IFNETLIST, if_test_reset, ifa_add, test_ifnet};
     use kernel::netinet6::in6::in6_ifawithscope;
     use kernel::netinet6::in6_var::in6_ifaddr_alloc;
+    use sysdefs::netinet6_in6::{IN6MASK64, In6Addr, SockaddrIn6};
+    use sysdefs::netinet6_in6_var::In6Addrlifetime;
+    use sysdefs::netinet6_nd6::ND6_INFINITE_LIFETIME;
 
     if !INET6_ROWS.iter().any(|n| wanted(n)) {
         return;
@@ -4225,9 +4225,9 @@ fn inet6_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f6
 
     let addr = |b: [u8; 16]| In6Addr { s6_addr: b };
     let (ifp, _) = test_ifnet(b"vio1");
-    ifp.if_type.set(hal::sys::net_if::IFT_ETHER);
+    ifp.if_type.set(sysdefs::net_if::IFT_ETHER);
     ifp.if_flags
-        .set(hal::sys::net_if::IFF_UP | hal::sys::net_if::IFF_RUNNING);
+        .set(sysdefs::net_if::IFF_UP | sysdefs::net_if::IFF_RUNNING);
     let idx = ifp.if_index.get() as u16;
     let ll = {
         let mut a = addr([
@@ -4286,18 +4286,18 @@ const ND6_ROWS: [&str; 2] = ["nd6.resolve.hit", "nd6.resolve.miss"];
 /// The ND rows (N6.5b): see the file's documentation.
 fn nd6_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
     use hal::sync::netlock::NetHeld;
-    use hal::sys::net_if::{
-        IFF_BROADCAST, IFF_MULTICAST, IFF_RUNNING, IFF_SIMPLEX, IFF_UP, IFNAMSIZ, IFXF_CLONED,
-        IFXF_MPSAFE,
-    };
-    use hal::sys::netinet6_in6::{In6Addr, SockaddrIn6};
-    use hal::sys::netinet6_in6_var::In6Aliasreq;
-    use hal::sys::netinet6_nd6::ND6_INFINITE_LIFETIME;
     use kernel::net::if_::{SIOCAIFADDR_IN6, if_attach, if_test_reset};
     use kernel::net::if_ethersubr::{Arpcom, ether_ifattach};
     use kernel::net::route::{RT_RESOLVE, rtalloc};
     use kernel::netinet6::nd6::{nd6_init, nd6_resolve, nd6_test_reset};
     use kernel::netinet6::nd6_nbr::{dad_test_reset, nd6_na_cache};
+    use sysdefs::net_if::{
+        IFF_BROADCAST, IFF_MULTICAST, IFF_RUNNING, IFF_SIMPLEX, IFF_UP, IFNAMSIZ, IFXF_CLONED,
+        IFXF_MPSAFE,
+    };
+    use sysdefs::netinet6_in6::{In6Addr, SockaddrIn6};
+    use sysdefs::netinet6_in6_var::In6Aliasreq;
+    use sysdefs::netinet6_nd6::ND6_INFINITE_LIFETIME;
 
     const OURS: [u8; 6] = [0x52, 0x54, 0x00, 0xbb, 0x00, 0x01];
     const PEER: [u8; 6] = [0x52, 0x54, 0x00, 0xbb, 0x00, 0x02];
@@ -4314,7 +4314,7 @@ fn nd6_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
     kernel::net::route::rtlabel_test_reset();
     kernel::net::route::route_init();
     kernel::net::rtable::rtable_init_doms(&[kernel::net::rtable::RtDom {
-        family: hal::sys::socket::AF_INET6,
+        family: sysdefs::socket::AF_INET6,
         rtoffset: 8,
         maxplen: 128,
         sasize: 28,
@@ -4351,7 +4351,7 @@ fn nd6_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
     let mut ifra = In6Aliasreq::zeroed();
     ifra.ifra_name = ifp.if_xname.get();
     ifra.ifra_addr = SockaddrIn6::with_addr(ours);
-    ifra.ifra_prefixmask = SockaddrIn6::with_addr(hal::sys::netinet6_in6::IN6MASK64);
+    ifra.ifra_prefixmask = SockaddrIn6::with_addr(sysdefs::netinet6_in6::IN6MASK64);
     ifra.ifra_lifetime.ia6t_vltime = ND6_INFINITE_LIFETIME;
     ifra.ifra_lifetime.ia6t_pltime = ND6_INFINITE_LIFETIME;
     let mut req = [0u8; 128];
@@ -4381,8 +4381,8 @@ fn nd6_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
             ifp,
             &hit,
             Some(&PEER),
-            hal::sys::netinet_icmp6::ND_NA_FLAG_SOLICITED
-                | hal::sys::netinet_icmp6::ND_NA_FLAG_OVERRIDE,
+            sysdefs::netinet_icmp6::ND_NA_FLAG_SOLICITED
+                | sysdefs::netinet_icmp6::ND_NA_FLAG_OVERRIDE,
             false,
             &peer,
             &peer,
@@ -4453,9 +4453,6 @@ const INET6_OUTPUT_ROWS: [&str; 1] = ["ip6.output.lo"];
 /// The IPv6 output row (N6.5c): see the file's documentation.
 fn inet6_output_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
     use hal::sync::netlock::NetHeld;
-    use hal::sys::netinet6_in6::{IN6MASK128, In6Addr, SockaddrIn6};
-    use hal::sys::netinet6_in6_var::In6Aliasreq;
-    use hal::sys::netinet6_nd6::ND6_INFINITE_LIFETIME;
     use kernel::net::if_::{SIOCAIFADDR_IN6, if_test_reset};
     use kernel::net::if_loop::{LOOP_CLONER, loop_clone_create};
     use kernel::net::ifq::ifiq_test_take;
@@ -4463,6 +4460,9 @@ fn inet6_output_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, 
     use kernel::net::route::Route;
     use kernel::netinet6::ip6_output::ip6_output;
     use kernel::netinet6::ip6_var::Ip6Pktopts;
+    use sysdefs::netinet6_in6::{IN6MASK128, In6Addr, SockaddrIn6};
+    use sysdefs::netinet6_in6_var::In6Aliasreq;
+    use sysdefs::netinet6_nd6::ND6_INFINITE_LIFETIME;
 
     if !INET6_OUTPUT_ROWS.iter().any(|n| wanted(n)) {
         return;
@@ -4476,7 +4476,7 @@ fn inet6_output_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, 
     kernel::net::route::rtlabel_test_reset();
     kernel::net::route::route_init();
     kernel::net::rtable::rtable_init_doms(&[kernel::net::rtable::RtDom {
-        family: hal::sys::socket::AF_INET6,
+        family: sysdefs::socket::AF_INET6,
         rtoffset: 8,
         maxplen: 128,
         sasize: 28,
@@ -4551,8 +4551,8 @@ const INET6_INPUT_ROWS: [&str; 2] = ["ip6.input.deliver", "frag6.reass.2"];
 
 /// The IPv6 input rows' UDP entry (`PR_MPINPUT`: delivered in place by `ip6_ours`).
 static BENCH_UDP6_IN: BenchTransport = BenchTransport {
-    ty: hal::sys::socket::SOCK_DGRAM as i16,
-    proto: hal::sys::netinet_in::IPPROTO_UDP as i16,
+    ty: sysdefs::socket::SOCK_DGRAM as i16,
+    proto: sysdefs::netinet_in::IPPROTO_UDP as i16,
     flags: kernel::net::proto::PR_ATOMIC
         | kernel::net::proto::PR_ADDR
         | kernel::net::proto::PR_MPINPUT,
@@ -4560,7 +4560,7 @@ static BENCH_UDP6_IN: BenchTransport = BenchTransport {
 };
 /// Their raw wildcard (`ip6_init`'s raw entry).
 static BENCH_RAW6_IN: BenchTransport = BenchTransport {
-    ty: hal::sys::socket::SOCK_RAW as i16,
+    ty: sysdefs::socket::SOCK_RAW as i16,
     proto: 0,
     flags: kernel::net::proto::PR_ATOMIC
         | kernel::net::proto::PR_ADDR
@@ -4590,15 +4590,15 @@ fn loop6_packet(nxt: u8, rest: &[u8]) -> Vec<u8> {
 /// The IPv6 input rows (N6.5d): see the file's documentation.
 fn inet6_input_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
     use hal::sync::netlock::NetHeld;
-    use hal::sys::netinet_in::{IPPROTO_FRAGMENT, IPPROTO_UDP};
-    use hal::sys::netinet6_in6::{IN6MASK128, In6Addr, SockaddrIn6};
-    use hal::sys::netinet6_in6_var::In6Aliasreq;
-    use hal::sys::netinet6_nd6::ND6_INFINITE_LIFETIME;
     use kernel::net::if_::{SIOCAIFADDR_IN6, if_test_reset};
     use kernel::net::if_loop::{LOOP_CLONER, loop_clone_create};
     use kernel::net::if_var::Netstack;
     use kernel::net::mbuf::m_devget;
     use kernel::netinet6::ip6_input::{ip6_init, ipv6_input};
+    use sysdefs::netinet_in::{IPPROTO_FRAGMENT, IPPROTO_UDP};
+    use sysdefs::netinet6_in6::{IN6MASK128, In6Addr, SockaddrIn6};
+    use sysdefs::netinet6_in6_var::In6Aliasreq;
+    use sysdefs::netinet6_nd6::ND6_INFINITE_LIFETIME;
 
     if !INET6_INPUT_ROWS.iter().any(|n| wanted(n)) {
         return;
@@ -4612,7 +4612,7 @@ fn inet6_input_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f
     kernel::net::route::rtlabel_test_reset();
     kernel::net::route::route_init();
     kernel::net::rtable::rtable_init_doms(&[kernel::net::rtable::RtDom {
-        family: hal::sys::socket::AF_INET6,
+        family: sysdefs::socket::AF_INET6,
         rtoffset: 8,
         maxplen: 128,
         sasize: 28,

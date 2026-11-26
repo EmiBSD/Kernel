@@ -203,21 +203,21 @@ use hal::mem::malloc::{M_WAITOK, MArray};
 use hal::mem::pool::{PR_WAITOK, PoolArc};
 use hal::sync::mutex::{Mutexed, SharedMutex};
 use hal::sync::rwlock::{RW_WRITE, Rwlocked, WriteGuard};
-use hal::sys::errno::Errno;
-use hal::sys::fcntl::{
+use hal::user::UserPtr;
+use sysdefs::errno::Errno;
+use sysdefs::fcntl::{
     F_DUPFD, F_DUPFD_CLOEXEC, F_DUPFD_CLOFORK, F_FLOCK, F_GETFD, F_GETFL, F_GETLK, F_GETOWN,
     F_ISATTY, F_POSIX, F_RDLCK, F_SETFD, F_SETFL, F_SETLK, F_SETLKW, F_SETOWN, F_UNLCK, F_WAIT,
     F_WRLCK, FASYNC, FCNTLFLAGS, FD_CLOEXEC, FD_CLOFORK, FNONBLOCK, FREAD, FWRITE, Flock, LOCK_EX,
     LOCK_NB, LOCK_SH, LOCK_UN, O_CLOEXEC, O_CLOFORK, fflags, oflags,
 };
-use hal::sys::filio::{FIOASYNC, FIOCLEX, FIOGETOWN, FIONBIO, FIONCLEX, FIOSETOWN};
-use hal::sys::ioccom::{IOC_IN, IOC_OUT, IOC_VOID, IOCPARM_MAX, iocparm_len};
-use hal::sys::limits::SSIZE_MAX;
-use hal::sys::stat::Stat;
-use hal::sys::syslimits::PIPE_BUF;
-use hal::sys::types::{Off, Register};
-use hal::sys::unistd::{_PC_PIPE_BUF, SEEK_CUR, SEEK_SET};
-use hal::user::UserPtr;
+use sysdefs::filio::{FIOASYNC, FIOCLEX, FIOGETOWN, FIONBIO, FIONCLEX, FIOSETOWN};
+use sysdefs::ioccom::{IOC_IN, IOC_OUT, IOC_VOID, IOCPARM_MAX, iocparm_len};
+use sysdefs::limits::SSIZE_MAX;
+use sysdefs::stat::Stat;
+use sysdefs::syslimits::PIPE_BUF;
+use sysdefs::types::{Off, Register};
+use sysdefs::unistd::{_PC_PIPE_BUF, SEEK_CUR, SEEK_SET};
 
 use crate::assert::{kassert, kpanic};
 use crate::file::uio::{IovBuf, Iovec, Uio, UioRw, UioSeg, iovec_copyin};
@@ -2258,7 +2258,7 @@ mod tests {
     use std::vec::Vec;
 
     use hal::mem::pool::PoolBox;
-    use hal::sys::ioccom::{_ior, _iow, _iowr};
+    use sysdefs::ioccom::{_ior, _iow, _iowr};
 
     use super::*;
     use crate::file::FileTables;
@@ -2268,7 +2268,7 @@ mod tests {
     use crate::proc::resource::{Plimit, PlimitRef};
     use crate::proc::{ProcessRef, process_alloc, procinit, thread_alloc};
     use crate::testutil::{self, TestFileData, file_log};
-    use hal::sys::stat::Stat;
+    use sysdefs::stat::Stat;
 
     crate::test_file_glue!(Files, Procs);
     crate::test_proc_glue!(Procs, Files);

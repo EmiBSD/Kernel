@@ -158,7 +158,7 @@ didn't get a copy, you may request one from <license@ipv6.nrl.navy.mil>.
 //! `ether_encap`), receiving and handing frames to the protocols (`ether_input`), the
 //! multicast filters (`ether_addmulti`, `ether_delmulti`), the CRCs of the drivers' hashes and
 //! a quick look inside a frame (`ether_extract_headers`). `<netinet/if_ether.h>`'s userland
-//! part is `hal::sys::netinet_if_ether`'s, `<net/ethertypes.h>` `hal::sys::net_ethertypes`'s.
+//! part is `sysdefs::netinet_if_ether`'s, `<net/ethertypes.h>` `sysdefs::net_ethertypes`'s.
 //!
 //! Upstream: sys/net/if_ethersubr.c @ 3ce1f3f79392
 //! Upstream: sys/netinet/if_ether.h @ 3ce1f3f79392
@@ -222,7 +222,7 @@ didn't get a copy, you may request one from <license@ipv6.nrl.navy.mil>.
 //!   exists at the pin (bridge, veb, tpmr, aggr, trunk are not ported), so the slots are read
 //!   with one load each and set only by `ether_brport_set` under the kernel lock.
 //! - `struct ether_extracted`'s pointers into the mbuf -> offsets into the packet
-//!   (`Option<u32>`; D-N6.3c-21): the headers are read as copies of `hal::sys`'s images
+//!   (`Option<u32>`; D-N6.3c-21): the headers are read as copies of `sysdefs`'s images
 //!   (`Ip`, `Ip6Hdr`, `Tcphdr`, `Udphdr`) at the C's points and with the C's bounds; `bsd`'s
 //!   `sys/net/if_ethersubr.rs` turns the offsets back into the pointers its legacy users
 //!   dereference (tcp_input's software LRO, vio, vmx).
@@ -255,27 +255,27 @@ use hal::mem::malloc::{M_NOWAIT, MBox};
 use hal::sync::mutex::{Mutexed, MutexedGuard};
 use hal::sync::netlock::NetHeld;
 use hal::sync::once::OnceStatic;
-use hal::sys::errno::Errno;
-use hal::sys::net_bpf::DLT_EN10MB;
-use hal::sys::net_ethertypes::{
+use sysdefs::errno::Errno;
+use sysdefs::net_bpf::DLT_EN10MB;
+use sysdefs::net_ethertypes::{
     ETHERTYPE_ARP, ETHERTYPE_IP, ETHERTYPE_IPV6, ETHERTYPE_QINQ, ETHERTYPE_REVARP, ETHERTYPE_VLAN,
 };
-use hal::sys::net_if::{
+use sysdefs::net_if::{
     IFCAP_CSUM_IPv4, IFCAP_CSUM_TCPv4, IFCAP_CSUM_TCPv6, IFCAP_CSUM_UDPv4, IFCAP_CSUM_UDPv6,
     IFF_MULTICAST, IFF_NOARP, IFF_RUNNING, IFF_SIMPLEX, IFNAMSIZ, IFT_ETHER, Ifreq,
 };
-use hal::sys::netinet_if_ether::{
+use sysdefs::netinet_if_ether::{
     ETHER_ADDR_LEN, ETHER_ALIGN, ETHER_HDR_LEN, ETHERMIN, ETHERMTU, EtherHeader, EtherVlanHeader,
     eth64_is_broadcast, eth64_is_multicast, ether_is_multicast,
 };
-use hal::sys::netinet_in::{INADDR_ANY, IPPROTO_TCP, IPPROTO_UDP, InAddr, SockaddrIn};
-use hal::sys::netinet_ip::{IP_MF, IP_OFFMASK, Ip};
-use hal::sys::netinet_ip6::Ip6Hdr;
-use hal::sys::netinet_tcp::Tcphdr;
-use hal::sys::netinet_udp::Udphdr;
-use hal::sys::netinet6_in6::{In6Addr, SockaddrIn6, in6_is_addr_unspecified};
-use hal::sys::socket::{AF_INET, AF_INET6, AF_UNSPEC, pseudo_AF_HDRCMPLT};
-use hal::sys::sockio::{SIOCADDMULTI, SIOCDELMULTI, SIOCSIFADDR, SIOCSIFMTU};
+use sysdefs::netinet_in::{INADDR_ANY, IPPROTO_TCP, IPPROTO_UDP, InAddr, SockaddrIn};
+use sysdefs::netinet_ip::{IP_MF, IP_OFFMASK, Ip};
+use sysdefs::netinet_ip6::Ip6Hdr;
+use sysdefs::netinet_tcp::Tcphdr;
+use sysdefs::netinet_udp::Udphdr;
+use sysdefs::netinet6_in6::{In6Addr, SockaddrIn6, in6_is_addr_unspecified};
+use sysdefs::socket::{AF_INET, AF_INET6, AF_UNSPEC, pseudo_AF_HDRCMPLT};
+use sysdefs::sockio::{SIOCADDMULTI, SIOCDELMULTI, SIOCSIFADDR, SIOCSIFMTU};
 
 use crate::assert::{kassert, kpanic};
 use crate::base::prf::{Str, printf};
@@ -1586,7 +1586,7 @@ mod tests {
     use std::sync::MutexGuard;
     use std::vec::Vec;
 
-    use hal::sys::net_if::{IFF_BROADCAST, IFNAMSIZ, IFXF_MPSAFE};
+    use sysdefs::net_if::{IFF_BROADCAST, IFNAMSIZ, IFXF_MPSAFE};
 
     use super::*;
     use crate::net::if_::{TestDriver, if_attach};
@@ -1892,7 +1892,7 @@ mod tests {
         }
         let mut link = [0u8; 20];
         link[0] = 20;
-        link[1] = hal::sys::socket::AF_LINK;
+        link[1] = sysdefs::socket::AF_LINK;
         assert_eq!(ether_multiaddr(&link), Err(Errno::EAFNOSUPPORT));
     }
 
@@ -1967,7 +1967,7 @@ mod tests {
         }
         assert_eq!(ifp.if_mtu.get(), 1400);
         assert_eq!(
-            ether_ioctl(ifp, ac, hal::sys::sockio::SIOCGIFMEDIA, &[]),
+            ether_ioctl(ifp, ac, sysdefs::sockio::SIOCGIFMEDIA, &[]),
             Err(Errno::ENOTTY)
         );
         ether_ifdetach_records(ac);
@@ -2074,7 +2074,7 @@ mod tests {
         // Another family, and an interface that is not running.
         let mut link = [0u8; 20];
         link[0] = 20;
-        link[1] = hal::sys::socket::AF_LINK;
+        link[1] = sysdefs::socket::AF_LINK;
         let dst = SockaddrView::new(&link).expect("an address");
         assert!(matches!(
             ether_resolve(ifp, pkt(), dst, Some(&rt), &mut EtherHeader::default()),

@@ -138,6 +138,8 @@ use core::cell::Cell;
 use core::ffi::c_void;
 use core::mem::{offset_of, size_of};
 use core::ptr::{self, NonNull};
+use hal::sysbytes::DisklabelBytes;
+use hal::user::AbiBytes;
 
 use crate::kern::subr_autoconf::device_unref;
 use crate::kern::subr_prf::{panic, printf};

@@ -88,7 +88,7 @@ use core::ffi::c_void;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 use crate::arch::amd64::amd64::ioapic::NIOAPICS;
 use crate::arch::amd64::amd64::machdep::{

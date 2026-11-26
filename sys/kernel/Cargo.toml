@@ -37,6 +37,7 @@ doubles = []
 [dependencies]
 hal = { path = "../hal" }
 libkern.workspace = true
+sysdefs.workspace = true
 libz.workspace = true
 bitflags.workspace = true
 

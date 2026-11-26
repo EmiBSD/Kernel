@@ -96,10 +96,10 @@
 use core::sync::atomic::Ordering;
 
 use hal::sync::klock;
-use hal::sys::errno::Errno;
-use hal::sys::syslimits::NGROUPS_MAX;
-use hal::sys::types::{Gid, Pid, Uid};
 use hal::user::UserPtr;
+use sysdefs::errno::Errno;
+use sysdefs::syslimits::NGROUPS_MAX;
+use sysdefs::types::{Gid, Pid, Uid};
 
 use crate::proc::cred::{CredRef, Ucred, crset};
 use crate::proc::{

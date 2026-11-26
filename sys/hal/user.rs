@@ -108,18 +108,19 @@
 
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
+use sysdefs::pod::AbiPod;
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::assert::hal_panic;
-use crate::sys::errno::Errno;
-use crate::sys::types::Vaddr;
 #[cfg(any(
     not(target_os = "none"),
     target_arch = "x86_64",
     target_arch = "aarch64"
 ))]
 use crate::vm::pmap::KernelMapper;
+use sysdefs::errno::Errno;
+use sysdefs::types::Vaddr;
 
 /// The machine's copies (`copy.S`, `copystr.S`; the host's double).
 #[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
@@ -129,7 +130,7 @@ use crate::arch::current::copy as machine;
 /// `UserCopy` bridge was registered.
 #[cfg(not(any(not(target_os = "none"), target_arch = "aarch64")))]
 mod machine {
-    use crate::sys::errno::Errno;
+    use sysdefs::errno::Errno;
 
     /// `copyin`: no user address space.
     pub(super) fn copyin(_uaddr: usize, _kbuf: &mut [u8]) -> Result<(), Errno> {
@@ -402,139 +403,6 @@ impl KernelMapper {
     }
 }
 
-/// A type the kernel copies to and from userland as the bytes it is in memory: every byte of
-/// a value is initialised and every bit pattern is a valid value.
-///
-/// Implemented only by [`abi_pod!`] (which checks it at compile time) and, here, for the
-/// integers and for arrays of `AbiPod` types; a hand-written impl is refused by `cargo xtask
-/// lz check`.
-pub trait AbiPod: Copy + 'static {}
-
-/// The integer primitives: initialised, any pattern valid. Not `bool` or `char`, which have
-/// invalid patterns, nor pointers.
-macro_rules! abi_pod_primitive {
-    ($($t:ty),+) => {
-        $(impl AbiPod for $t {})+
-    };
-}
-
-abi_pod_primitive!(u8, u16, u32, u64, usize, i8, i16, i32, i64, isize);
-
-// An array of `AbiPod` elements has no padding between them (a type's size is a multiple of
-// its alignment), so it is `AbiPod` too.
-impl<T: AbiPod, const N: usize> AbiPod for [T; N] {}
-
-/// Declares the structure `$ty` [`AbiPod`] after checking, at compile time, that the fields
-/// listed are its fields, in order, of exactly the types listed, each `AbiPod`, and that they
-/// tile it with no padding and none left out.
-///
-/// ```
-/// #[derive(Clone, Copy)]
-/// #[repr(C)]
-/// struct Timespec {
-///     tv_sec: i64,
-///     tv_nsec: i64,
-/// }
-/// hal::abi_pod!(Timespec { tv_sec: i64, tv_nsec: i64 });
-/// fn main() {}
-/// ```
-///
-/// A structure with padding is refused:
-///
-/// ```compile_fail
-/// #[derive(Clone, Copy)]
-/// #[repr(C)]
-/// struct Padded {
-///     a: u8,
-///     b: u32,
-/// }
-/// hal::abi_pod!(Padded { a: u8, b: u32 });
-/// fn main() {}
-/// ```
-///
-/// So is a field whose type only dereferences to the one listed:
-///
-/// ```compile_fail
-/// #[derive(Clone, Copy)]
-/// #[repr(C)]
-/// struct Ref {
-///     r: &'static u64,
-/// }
-/// hal::abi_pod!(Ref { r: u64 });
-/// fn main() {}
-/// ```
-///
-/// So is a union (its fields overlap, so its bytes are not each a field's):
-///
-/// ```compile_fail
-/// #[derive(Clone, Copy)]
-/// #[repr(C)]
-/// union Both {
-///     a: u32,
-///     b: u32,
-/// }
-/// hal::abi_pod!(Both { a: u32 });
-/// fn main() {}
-/// ```
-///
-/// And a structure with a field left out, even a zero-sized one that the tiling cannot see:
-///
-/// ```compile_fail
-/// #[derive(Clone, Copy)]
-/// #[repr(C)]
-/// struct Hidden {
-///     a: u64,
-///     marker: core::marker::PhantomData<&'static u8>,
-/// }
-/// hal::abi_pod!(Hidden { a: u64 });
-/// fn main() {}
-/// ```
-#[macro_export]
-macro_rules! abi_pod {
-    ($ty:path { $($field:ident : $fty:ty),+ $(,)? }) => {
-        // `AbiPod`'s contract: initialised bytes, any pattern valid. The checks below prove
-        // it; this macro is the only writer of the impl (`cargo xtask lz check`).
-        impl $crate::user::AbiPod for $ty {}
-
-        const _: () = {
-            // Every field's type is `AbiPod`.
-            const fn field_is_abi_pod<F: $crate::user::AbiPod>() {}
-            $(field_is_abi_pod::<$fty>();)+
-            // The fields, in the order listed, tile the structure: no padding before or
-            // between them, none after, none left out.
-            let mut off = 0usize;
-            $(
-                assert!(
-                    ::core::mem::offset_of!($ty, $field) == off,
-                    "abi_pod!: padding before a field, or the fields out of order"
-                );
-                off += ::core::mem::size_of::<$fty>();
-            )+
-            assert!(
-                off == ::core::mem::size_of::<$ty>(),
-                "abi_pod!: padding at the end, or a field left out"
-            );
-        };
-
-        // Each field is exactly of the type listed: a raw pointer never deref-coerces, so a
-        // field that only dereferences to it (a reference, a `Box`) does not compile here.
-        // And the listed fields are all the fields of a struct: the pattern names every one
-        // and has no `..`, so a field left out (a zero-sized one included) does not compile,
-        // and binding a union's field by value needs `unsafe`, so a union does not either.
-        // Compile time only; never called.
-        #[allow(
-            clippy::used_underscore_binding,
-            reason = "the check binds every field by its name, the named holes too"
-        )]
-        const _: fn(&$ty) = |v: &$ty| {
-            $(let _: *const $fty = ::core::ptr::addr_of!(v.$field);)+
-            let $ty { $($field),+ } = *v;
-            $(let _ = $field;)+
-        };
-
-    };
-}
-
 /// A user address of a `T` (or of the first of several): typed, never dereferenced by the
 /// kernel, only copied through.
 #[repr(transparent)]
@@ -647,7 +515,7 @@ impl UserPtr<u32> {
 /// `bsd`'s boot (`hal_bridges_register`'s first step, before the boot glue calls
 /// `abi::abi_init`; an earlier take by anyone panics the boot there), so no `forbid` crate
 /// can hold it: their later takes get `None`. The ABI, linked into the image (decision 47),
-/// cannot name it (`abi-check` R6 keeps `abi` to `kernel::api`, `hal::sys` and
+/// cannot name it (`abi-check` R6 keeps `abi` to `kernel::api`, `sysdefs` and
 /// `hal::syscall`'s types and registration), runs no function before `abi_init`, and R5 refuses it a static that could
 /// keep a token.
 ///
@@ -786,6 +654,23 @@ pub fn bytes_of_mut<T: AbiPod>(objs: &mut [T]) -> &mut [u8] {
     // view while it lives.
     unsafe { core::slice::from_raw_parts_mut(objs.as_mut_ptr().cast::<u8>(), size_of_val(objs)) }
 }
+
+/// A value's own bytes, for every [`AbiPod`] type: `value.as_bytes()` is [`bytes_of`] of one
+/// element. The data shapes of `sysdefs` hold no byte reinterpretation (decision 54), so what
+/// the C does with `(u_int8_t *)&x` is this trait, in scope where it is done.
+pub trait AbiBytes: AbiPod {
+    /// The value's bytes, in memory order.
+    fn as_bytes(&self) -> &[u8] {
+        bytes_of(core::slice::from_ref(self))
+    }
+
+    /// The value's bytes, writable: every bit pattern is a valid value.
+    fn as_bytes_mut(&mut self) -> &mut [u8] {
+        bytes_of_mut(core::slice::from_mut(self))
+    }
+}
+
+impl<T: AbiPod> AbiBytes for T {}
 /* </CODE> */
 
 /* <TESTS> */
@@ -805,7 +690,7 @@ mod tests {
         udata: u64,
     }
 
-    crate::abi_pod!(Kevent {
+    sysdefs::abi_pod!(Kevent {
         ident: u64,
         filter: i16,
         flags: u16,
@@ -821,7 +706,7 @@ mod tests {
         tag: [u8; 8],
     }
 
-    crate::abi_pod!(Nested {
+    sysdefs::abi_pod!(Nested {
         k: [Kevent; 2],
         tag: [u8; 8]
     });

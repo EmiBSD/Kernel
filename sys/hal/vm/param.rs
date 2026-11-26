@@ -95,7 +95,7 @@
 //! ## Redesign
 //! - LZ keeps the page arithmetic in `bsd`'s `sys/uvm/uvm_param.rs`, with inherent `impl`
 //!   blocks on `Paddr`, `Vaddr` and `Vsize`. Rust allows an inherent `impl` only in the crate
-//!   that defines the type, and N3.1 moves `<sys/types.h>` into `hal` (`sys/hal/sys/types.rs`)
+//!   that defines the type, and N3.1 moves `<sys/types.h>` into `hal` (`sys/lib/sysdefs/types.rs`)
 //!   because every signature of `hal::vm::pmap` takes those newtypes; so the arithmetic moves with
 //!   them, here, and `bsd`'s `uvm_param.rs` re-exports it beside what it keeps
 //!   (`VM_KERNEL_SPACE_SIZE`, over the `VmParam` trait `hal` has no implementor of).
@@ -104,7 +104,13 @@
 //!   same values, which `bsd`'s `sys/machine/param.rs` users still read through the trait.
 
 use crate::arch::current::param::{PAGE_MASK, PAGE_SHIFT};
-use crate::sys::types::{Paddr, Vaddr, Vsize};
+
+// `sysdefs::param` states the page geometry the address newtypes use: it must be the machine's.
+const _: () = assert!(
+    PAGE_SHIFT == sysdefs::param::PAGE_SHIFT
+        && PAGE_MASK == sysdefs::param::PAGE_MASK
+        && crate::arch::current::param::PAGE_SIZE == sysdefs::param::PAGE_SIZE
+);
 
 /// Default page size.
 pub const DEFAULT_PAGE_SIZE: usize = 4096;
@@ -128,63 +134,13 @@ pub const fn round_page(x: usize) -> usize {
 pub const fn trunc_page(x: usize) -> usize {
     x & !PAGE_MASK
 }
-
-impl Paddr {
-    /// `atop(pa)`: the page frame number of this address.
-    pub const fn atop(self) -> usize {
-        atop(self.0)
-    }
-
-    /// `ptoa(pgno)`: the address of page frame `pgno`.
-    pub const fn ptoa(pgno: usize) -> Paddr {
-        Paddr(ptoa(pgno))
-    }
-
-    /// `round_page`.
-    #[must_use]
-    pub const fn round_page(self) -> Paddr {
-        Paddr(round_page(self.0))
-    }
-
-    /// `trunc_page`.
-    #[must_use]
-    pub const fn trunc_page(self) -> Paddr {
-        Paddr(trunc_page(self.0))
-    }
-}
-
-impl Vaddr {
-    /// `round_page`.
-    #[must_use]
-    pub const fn round_page(self) -> Vaddr {
-        Vaddr(round_page(self.0))
-    }
-
-    /// `trunc_page`.
-    #[must_use]
-    pub const fn trunc_page(self) -> Vaddr {
-        Vaddr(trunc_page(self.0))
-    }
-}
-
-impl Vsize {
-    /// `round_page`.
-    #[must_use]
-    pub const fn round_page(self) -> Vsize {
-        Vsize(round_page(self.0))
-    }
-
-    /// `atop`.
-    pub const fn atop(self) -> usize {
-        atop(self.0)
-    }
-}
 /* </CODE> */
 
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sysdefs::types::{Paddr, Vaddr, Vsize};
 
     #[test]
     fn page_arithmetic() {

@@ -60,13 +60,13 @@
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use libkern::staticcell::StaticCell;
 use libsa::cons::cnset;
 use libsa::hdr::reboot::{RB_ASKNAME, RB_CONFIG, RB_KDB, RB_SINGLE};
 use libsa::hdr::types::NODEV;
 use libsa::printf;
 use libsa::printf::Str;
 use libsa::putchar::putchar;
+use libsa::staticcell::StaticCell;
 use libsa::strtol::strtol;
 
 use crate::boot::{boot_md, prog_ident};

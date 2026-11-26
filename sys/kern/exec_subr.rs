@@ -394,7 +394,7 @@ pub fn vmcmd_randomize(_p: &Proc, cmd: &mut ExecVmcmd<'_>) -> Result<(), Errno> 
     let error = if len < RANDOMIZE_CTX_THRESHOLD {
         arc4random_buf(&mut buf[..len]);
         let e = copyout(&buf[..len], cmd.ev_addr);
-        libkern::explicit_bzero(&mut buf[..len]);
+        hal::mem::explicit_bzero(&mut buf[..len]);
         e
     } else if let Some(mut ctx) = arc4random_ctx_new() {
         let mut e;
@@ -413,7 +413,7 @@ pub fn vmcmd_randomize(_p: &Proc, cmd: &mut ExecVmcmd<'_>) -> Result<(), Errno> 
             }
         }
         arc4random_ctx_free(ctx);
-        libkern::explicit_bzero(buf);
+        hal::mem::explicit_bzero(buf);
         e
     } else {
         // arc4random_ctx_new: no memory (see the module's deviations).

@@ -300,9 +300,10 @@ const D1_DRIVER_WORDS: [&str; 11] = [
 
 /// Rule D2: the `hal` groups a file under `sys/kernel/dev/` may name. Macros exported at the
 /// root of `hal` (`hal::list_adapter!`, `hal::tree_adapter!`, `hal::pin_adapter!`) are the
-/// `ds` group's and are allowed too. Not allowed: `vm`, `arch`, `machine`, `api`, `syscall`.
+/// `ds` group's and are allowed too. Not allowed: `vm`, `arch`, `machine`, `api`, `syscall` (and `sys`, which is the crate `sysdefs` since decision 54, a leaf of data that a file under `sys/kernel/dev/` names freely).
 const D2_ALLOWED: [&str; 12] = [
-    "dev", "sync", "mem", "ds", "cpu", "sys", "user", "prf", "assert", "random", "bridges", "cons",
+    "dev", "sync", "mem", "ds", "cpu", "user", "sysbytes", "prf", "assert", "random", "bridges",
+    "cons",
 ];
 
 /// Rules D1 and D2 over one file's text (`rel` is its path from the workspace root): drivers
@@ -361,7 +362,7 @@ pub(crate) fn check_dev_rules(rel: &str, src: &str) -> Vec<Finding> {
                         add(
                             i,
                             format!(
-                                "D2: sys/kernel/dev/ names `hal::{n}`; a device service reaches hal through hal::dev, sync, mem, ds, cpu, sys, user, prf, assert, random, bridges or cons"
+                                "D2: sys/kernel/dev/ names `hal::{n}`; a device service reaches hal through hal::dev, sync, mem, ds, cpu, user, sysbytes, prf, assert, random, bridges or cons"
                             ),
                         );
                     }
@@ -389,7 +390,7 @@ pub(crate) fn check_dev_rules(rel: &str, src: &str) -> Vec<Finding> {
                                     add(
                                         k,
                                         format!(
-                                            "D2: sys/kernel/dev/ names `hal::{{{n}`; a device service reaches hal through hal::dev, sync, mem, ds, cpu, sys, user, prf, assert, random, bridges or cons"
+                                            "D2: sys/kernel/dev/ names `hal::{{{n}`; a device service reaches hal through hal::dev, sync, mem, ds, cpu, user, sysbytes, prf, assert, random, bridges or cons"
                                         ),
                                     );
                                 }
@@ -541,8 +542,9 @@ mod tests {
         for src in [
             "use hal::sync::mutex::Mutexed;\n",
             "use hal::cons::putc;\n",
+            "use hal::sysbytes::DisklabelBytes;\n",
             "use hal::{cpu::intr::IPL_BIO, ds::link::Link, sync::percpu::PerCpu};\n",
-            "use hal::{sys::errno::Errno, bridges};\n",
+            "use hal::{bridges, user::X};\nuse sysdefs::errno::Errno;\n",
             "hal::pin_adapter!(X);\n",
             "let n = hal::user::copyin();\n",
             "use hal::dev::mmio::Mmio;\n",
@@ -555,6 +557,7 @@ mod tests {
             "use hal::machine::x;\n",
             "use hal::api::KernelApi;\n",
             "use hal::syscall::SysArgs;\n",
+            "use hal::sys::errno::Errno;\n",
             "use hal::{sync::mutex::Mutexed, vm::param::PAGE_SIZE};\n",
         ] {
             assert_eq!(dev_msgs(k, src), vec!["1:D2"], "{src}");

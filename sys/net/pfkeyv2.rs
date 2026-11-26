@@ -252,7 +252,7 @@ use crate::sys::systm::{
     net_assert_locked, net_lock, net_lock_shared, net_unlock, net_unlock_shared,
 };
 use crate::sys::types::Pid;
-use libkern::explicit_bzero;
+use hal::mem::explicit_bzero;
 
 /// `PF_KEY_V2`.
 pub const PF_KEY_V2: u8 = 2;

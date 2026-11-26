@@ -65,7 +65,7 @@
 //! - `trap.c`'s `accesstype`, a pure decode of the data-abort syndrome, sits beside the bits
 //!   it reads, so the host tests check it (`sys/hal/arch/host/mod.rs` compiles this header).
 
-use crate::sys::mman::{PROT_EXEC, PROT_READ, PROT_WRITE};
+use sysdefs::mman::{PROT_EXEC, PROT_READ, PROT_WRITE};
 
 /// `INSN_SIZE`: every A64 instruction is four bytes.
 pub const INSN_SIZE: usize = 4;

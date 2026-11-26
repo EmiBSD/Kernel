@@ -126,7 +126,7 @@
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr;
 
-use libkern::staticcell::StaticCell;
+use crate::staticcell::StaticCell;
 
 /// `ALIGN(p)`: `_ALIGNBYTES` is `sizeof(long) - 1` on amd64 and arm64.
 const fn align(n: usize) -> usize {

@@ -49,15 +49,15 @@ use crate::cpu::intr::IPL_VM;
 #[cfg(target_arch = "aarch64")]
 use crate::dev::mmio::DevCache;
 use crate::mem::pool::PR_WAITOK;
-use crate::sys::errno::Errno;
-use crate::sys::mman::PROT_NONE;
-#[cfg(target_arch = "aarch64")]
-use crate::sys::mman::{PROT_READ, PROT_WRITE};
-use crate::sys::types::{Paddr, Vaddr, Vsize};
 use crate::vm::param::round_page;
 use crate::vm::pmap::{
     BootstrapParams, PageMd, PhysPages, Pmap, PmapBackend, PmapStatistics, VmProt,
 };
+use sysdefs::errno::Errno;
+use sysdefs::mman::PROT_NONE;
+#[cfg(target_arch = "aarch64")]
+use sysdefs::mman::{PROT_READ, PROT_WRITE};
+use sysdefs::types::{Paddr, Vaddr, Vsize};
 
 /// arm64's `EFI_SPACE_BITS`: the width of the EFI runtime pmap's address space.
 #[cfg(target_arch = "aarch64")]

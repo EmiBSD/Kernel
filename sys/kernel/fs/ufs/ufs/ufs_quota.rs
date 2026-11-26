@@ -119,12 +119,12 @@ use hal::mem::malloc::{M_WAITOK, MArray, MBox};
 use hal::random::arc4random;
 use hal::sync::sleep::INFSLP;
 use hal::sync::slot::ReadMostly;
-use hal::sys::errno::Errno;
-use hal::sys::fcntl::{FREAD, FWRITE};
-use hal::sys::mount::{MNT_QUOTA, VB_NOWAIT, VB_READ};
-use hal::sys::types::{Daddr, Off, Uid};
 use hal::user::{UserPtr, bytes_of, pod_from_bytes};
 use libkern::siphash::{SipHash24Ctx, SiphashKey};
+use sysdefs::errno::Errno;
+use sysdefs::fcntl::{FREAD, FWRITE};
+use sysdefs::mount::{MNT_QUOTA, VB_NOWAIT, VB_READ};
+use sysdefs::types::{Daddr, Off, Uid};
 
 use super::inode::{DinWords, Inode, vtoi};
 use super::quota::{

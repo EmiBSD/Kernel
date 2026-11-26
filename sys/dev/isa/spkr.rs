@@ -81,7 +81,7 @@
 use core::ffi::c_void;
 use core::ptr::NonNull;
 
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 use crate::dev::isa::pcppi::pcppi_bell;
 use crate::dev::isa::pcppivar::{PCPPI_BELL_SLEEP, PcppiAttachArgs, PcppiTag};

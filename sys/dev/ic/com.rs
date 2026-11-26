@@ -110,7 +110,7 @@ use core::ffi::c_void;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicUsize, Ordering};
 
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 use crate::dev::cons::{CN_HIGHPRI, CN_LOWPRI, Consdev, cn_tab, set_cn_tab};
 use crate::dev::ic::comreg::*;

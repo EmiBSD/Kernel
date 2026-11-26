@@ -140,30 +140,30 @@ use hal::mem::pool::PoolArc;
 use hal::sync::mutex::Mutexed;
 use hal::sync::netlock::{NETLOCK, NetHeld};
 use hal::sync::slot::ReadMostly;
-use hal::sys::endian::htons;
-use hal::sys::net_if::{
+use sysdefs::endian::htons;
+use sysdefs::net_if::{
     IFF_RUNNING, IFF_UP, IFNAMSIZ, IFT_CARP, IFT_ETHER, IFT_IEEE1394, IFT_IEEE80211,
     IFT_PROPVIRTUAL, SockaddrDl,
 };
-use hal::sys::net_route::{
+use sysdefs::net_route::{
     RTF_ANNOUNCE, RTF_CLONED, RTF_CLONING, RTF_LLINFO, RTF_REJECT, RTM_CHGADDRATTR, RTM_RESOLVE,
 };
-use hal::sys::netinet_icmp6::{
+use sysdefs::netinet_icmp6::{
     Icmp6Hdr, Icmp6statCounters, ND_NA_FLAG_OVERRIDE, ND_NA_FLAG_ROUTER, ND_NA_FLAG_SOLICITED,
     ND_NEIGHBOR_ADVERT, ND_NEIGHBOR_SOLICIT, ND_OPT_SOURCE_LINKADDR, ND_OPT_TARGET_LINKADDR,
     NdNeighborAdvert, NdNeighborSolicit, NdOptHdr,
 };
-use hal::sys::netinet_if_ether::ETHER_ADDR_LEN;
-use hal::sys::netinet_in::IPPROTO_ICMPV6;
-use hal::sys::netinet_ip6::{IPV6_VERSION, Ip6Hdr};
-use hal::sys::netinet6_in6::{
+use sysdefs::netinet_if_ether::ETHER_ADDR_LEN;
+use sysdefs::netinet_in::IPPROTO_ICMPV6;
+use sysdefs::netinet_ip6::{IPV6_VERSION, Ip6Hdr};
+use sysdefs::netinet6_in6::{
     __IPV6_ADDR_INT16_MLL, __IPV6_ADDR_INT32_ONE, IN6ADDR_LINKLOCAL_ALLNODES,
     IN6ADDR_LINKLOCAL_ALLROUTERS, In6Addr, SockaddrIn6, in6_are_addr_equal, in6_is_addr_linklocal,
     in6_is_addr_multicast, in6_is_addr_unspecified, in6_is_scope_embed,
 };
-use hal::sys::netinet6_in6_var::{IN6_IFF_ANYCAST, IN6_IFF_DUPLICATED, IN6_IFF_TENTATIVE};
-use hal::sys::netinet6_nd6::{ND6_LLINFO_INCOMPLETE, ND6_LLINFO_REACHABLE, ND6_LLINFO_STALE};
-use hal::sys::socket::AF_LINK;
+use sysdefs::netinet6_in6_var::{IN6_IFF_ANYCAST, IN6_IFF_DUPLICATED, IN6_IFF_TENTATIVE};
+use sysdefs::netinet6_nd6::{ND6_LLINFO_INCOMPLETE, ND6_LLINFO_REACHABLE, ND6_LLINFO_STALE};
+use sysdefs::socket::AF_LINK;
 
 use crate::assert::{kassert, kpanic};
 use crate::base::log::{LOG_ERR, LOG_INFO};

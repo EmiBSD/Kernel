@@ -130,7 +130,7 @@ use core::cell::Cell;
 use core::ffi::c_void;
 use core::ptr::{self, NonNull};
 
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 use crate::dev::ic::pckbc::{
     PCKBC_CONSDATA, pckbc_enqueue_cmd, pckbc_flush, pckbc_poll_cmd, pckbc_poll_data,

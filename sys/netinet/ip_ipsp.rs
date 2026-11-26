@@ -205,13 +205,13 @@ use crate::sys::refcnt::{DT_REFCNT_IDX_TDB, Refcnt};
 #[cfg(feature = "inet6")]
 use crate::sys::socket::AF_INET6;
 use crate::sys::socket::{AF_INET, Sockaddr};
+use crate::sys::staticcell::StaticCell;
 use crate::sys::systm::{net_assert_locked, net_assert_locked_exclusive, net_lock, net_unlock};
 use crate::sys::timeout::{KCLOCK_NONE, TIMEOUT_MPSAFE, TIMEOUT_PROC, Timeout};
 use crate::sys::tree::{RbtEntry, RbtHead};
 use crate::sys::types::SaFamily;
 use crate::{kassert, queue_adapter, tree_adapter};
 use libkern::siphash::{SipHash24Ctx, SiphashKey};
-use libkern::staticcell::StaticCell;
 
 /// `DPRINTF(fmt, args...)` of the IPsec files: `printf("%s: " fmt "\n", __func__, args)`
 /// when the kernel has `option ENCDEBUG` (feature `encdebug`) and `net.inet.ip.encdebug` is
@@ -253,9 +253,9 @@ pub struct SockaddrUnion {
     bytes: [u8; SIZEOF_SOCKADDR_IN6],
 }
 
-// A `#[repr(C)]` byte array: no holes (`hal::abi_pod!` checks it), so `struct tdb_ident`
+// A `#[repr(C)]` byte array: no holes (`sysdefs::abi_pod!` checks it), so `struct tdb_ident`
 // can be read out of a packet tag's bytes with `hal::mem::pod`.
-hal::abi_pod!(SockaddrUnion {
+sysdefs::abi_pod!(SockaddrUnion {
     bytes: [u8; SIZEOF_SOCKADDR_IN6]
 });
 
@@ -1434,9 +1434,9 @@ pub struct TdbIdent {
     pub rdomain: u32,
 }
 
-// Integers, the union's bytes and the explicit padding, without holes (`hal::abi_pod!`
+// Integers, the union's bytes and the explicit padding, without holes (`sysdefs::abi_pod!`
 // checks it): a tag's bytes read as one with `hal::mem::pod::at`.
-hal::abi_pod!(TdbIdent {
+sysdefs::abi_pod!(TdbIdent {
     spi: u32,
     dst: SockaddrUnion,
     proto: u8,

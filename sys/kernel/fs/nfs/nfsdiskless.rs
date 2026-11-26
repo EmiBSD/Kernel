@@ -67,7 +67,7 @@
 //! The prototypes of `nfs_boot_init` and `nfs_boot_getfh` are the functions of `nfs_boot`.
 //!
 //! ## Deviations
-//! - `ndm_args` is `hal::sys::mount::NfsArgs`, whose pointer members (`addr`, `fh`,
+//! - `ndm_args` is `sysdefs::mount::NfsArgs`, whose pointer members (`addr`, `fh`,
 //!   `hostname`) are user addresses; the kernel's `nfs_boot_getfh` leaves them `NULL` and the
 //!   members of the structure are passed themselves (`nfs_boot`'s Redesign).
 //!
@@ -78,9 +78,9 @@
 //!   `sw_vp` is (`Option<&'static Vnode<G>>`); nothing in it points into itself, so it may
 //!   move.
 
-use hal::sys::mount::{MNAMELEN, NfsArgs};
-use hal::sys::netinet_in::SockaddrIn;
 use hal::user::zeroed;
+use sysdefs::mount::{MNAMELEN, NfsArgs};
+use sysdefs::netinet_in::SockaddrIn;
 
 use super::nfsproto::NFSX_V3FHMAX;
 use crate::fs::vnode::Vnode;

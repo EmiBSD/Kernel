@@ -63,7 +63,7 @@
 //! The C declares every field as a byte array, `char x[ISODCL(from, to)]` with the 1-based
 //! byte positions of the standard, and reads the numbers with `isonum_7xx` (the section of
 //! ECMA-119 that defines each encoding). The fixed-size structures are `#[repr(C)]` structures
-//! of byte arrays here too, each a `hal::abi_pod!` image (alignment 1, no padding, any bit
+//! of byte arrays here too, each a `sysdefs::abi_pod!` image (alignment 1, no padding, any bit
 //! pattern valid) read out of a buffer at its offset with `fs::pod`'s `pod_view!` (`at`).
 //!
 //! ## Deviations
@@ -82,7 +82,7 @@
 //! ## Redesign
 //! - LZ's `from_bytes_impl!` (an `unsafe` cast of the buffer's bytes to a `&` of the
 //!   structure, four structures here and the Rock Ridge entries of `cd9660_rrip.rs`) ->
-//!   `hal::abi_pod!` images with `fs::pod`'s `pod_view!` (`at(buf, off)`: a copy out with
+//!   `sysdefs::abi_pod!` images with `fs::pod`'s `pod_view!` (`at(buf, off)`: a copy out with
 //!   `pod_from_bytes`, `None` past the end; D-N5.8-4, docs/IDIOMS.md's row of the on-disk
 //!   structures of byte fields, msdosfs's `bpb.rs` the precedent). Cost
 //!   against the C's in-place access: one copy of the structure per view: a volume descriptor
@@ -119,7 +119,7 @@ pub struct IsoVolumeDescriptor {
     pub data: [u8; isodcl(8, 2048)],
 }
 
-hal::abi_pod!(IsoVolumeDescriptor {
+sysdefs::abi_pod!(IsoVolumeDescriptor {
     type_: [u8; 1],
     id: [u8; 5],
     version: [u8; 1],
@@ -211,7 +211,7 @@ pub struct IsoPrimaryDescriptor {
     pub unused5: [u8; isodcl(1396, 2048)],
 }
 
-hal::abi_pod!(IsoPrimaryDescriptor {
+sysdefs::abi_pod!(IsoPrimaryDescriptor {
     type_: [u8; 1],
     id: [u8; 5],
     version: [u8; 1],
@@ -326,7 +326,7 @@ pub struct IsoSupplementaryDescriptor {
     pub unused5: [u8; isodcl(1396, 2048)],
 }
 
-hal::abi_pod!(IsoSupplementaryDescriptor {
+sysdefs::abi_pod!(IsoSupplementaryDescriptor {
     type_: [u8; 1],
     id: [u8; 5],
     version: [u8; 1],
@@ -490,7 +490,7 @@ pub struct IsoExtendedAttributes {
     pub len_au: [u8; isodcl(247, 250)],
 }
 
-hal::abi_pod!(IsoExtendedAttributes {
+sysdefs::abi_pod!(IsoExtendedAttributes {
     owner: [u8; 4],
     group: [u8; 4],
     perm: [u8; 2],

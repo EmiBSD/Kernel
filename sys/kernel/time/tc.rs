@@ -137,7 +137,7 @@
 //!   (`tc_update_timekeep`'s `last_tc`) lives in it. The `[T,W]` changes ([`tc_windup`]'s new
 //!   boot time and adjustment, `tc_adjfreq`'s and `tc_adjtime`'s setters) take a witness of
 //!   [`TC_LOCK`], checked as the C's `rw_assert_wrlock`.
-//! - The timekeep page is written through `hal::sys::timetc::TimekeepAtomic` ([`TIMEKEEP`],
+//! - The timekeep page is written through `sysdefs::timetc::TimekeepAtomic` ([`TIMEKEEP`],
 //!   attached once by whoever maps it), the C's write order kept; LZ wrote it through a raw
 //!   `&mut` of `kern_exec`'s pointer. The object itself is made here too
 //!   ([`timekeep_object`]: `kern_exec.c`'s `exec_timekeep_map` on its first call, the
@@ -147,6 +147,7 @@
 //! - The `log(LOG_INFO, ...)` of a clock step and `enqueue_randomness` reach `bsd` through
 //!   the `Printf` and `Random` bridges (`hal::prf::log`, `hal::random::enqueue_randomness`).
 
+use crate::time::clock::TimespecExt;
 use core::sync::atomic::{
     AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering, fence,
 };
@@ -157,13 +158,13 @@ use hal::ds::list::{List, ListEntry};
 use hal::sync::mutex::{Mutexed, MutexedGuard};
 use hal::sync::once::OnceStatic;
 use hal::sync::rwlock::{RW_WRITE, RawRwlock, RwWitness, Witness, WriteWitness};
-pub use hal::sys::timetc::{TK_VERSION, Timekeep, TimekeepAtomic};
+pub use sysdefs::timetc::{TK_VERSION, Timekeep, TimekeepAtomic};
 
 use crate::assert::{kassert, kpanic};
 use crate::base::prf::printf;
 use crate::base::sysctl::{self, SysctlNode, SysctlReq};
-use crate::sys::errno::Errno;
 use crate::time::clock::{Bintime, Timespec, Timeval};
+use sysdefs::errno::Errno;
 
 /// `LOG_INFO` (`<sys/syslog.h>`): the priority of a clock step's log line.
 const LOG_INFO: i32 = 6;
@@ -901,8 +902,8 @@ pub fn timekeep_attach(tk: &'static TimekeepAtomic) -> Result<(), &'static Timek
 pub fn timekeep_object(
     ru: Option<&crate::proc::resource::Rusage>,
 ) -> Result<crate::vm::object::ObjRef, Errno> {
-    use crate::sys::mman::{MADV_RANDOM, MAP_INHERIT_SHARE, PROT_READ, PROT_WRITE};
     use crate::vm::km::kernel_map;
+    use sysdefs::mman::{MADV_RANDOM, MAP_INHERIT_SHARE, PROT_READ, PROT_WRITE};
 
     static OBJECT: OnceStatic<crate::vm::object::ObjRef> = OnceStatic::new();
 
@@ -911,7 +912,7 @@ pub fn timekeep_object(
     }
 
     let timekeep_sz = hal::vm::param::round_page(core::mem::size_of::<Timekeep>());
-    let Some(obj) = crate::vm::aobj::uao_create(hal::sys::types::Vsize::new(timekeep_sz), 0) else {
+    let Some(obj) = crate::vm::aobj::uao_create(sysdefs::types::Vsize::new(timekeep_sz), 0) else {
         return Err(Errno::ENOMEM);
     };
     // hal views this page as a TimekeepAtomic (below): no kernel window may map it
@@ -956,7 +957,7 @@ pub fn timekeep_object(
         return Err(Errno::ENOMEM);
     }
 
-    let Some(tk) = crate::vm::km::timekeep_view(hal::sys::types::Vaddr::new(va)) else {
+    let Some(tk) = crate::vm::km::timekeep_view(sysdefs::types::Vaddr::new(va)) else {
         kpanic(format_args!(
             "timekeep_object: no view of the wired page at {va:#x}"
         ));

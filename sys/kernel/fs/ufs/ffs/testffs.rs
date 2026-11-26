@@ -31,10 +31,10 @@ use std::sync::MutexGuard;
 use std::vec;
 use std::vec::Vec;
 
-use hal::sys::errno::Errno;
-use hal::sys::mount::{MNT_LOCAL, MNT_SWAPPABLE, MOUNT_FFS, UfsArgs, VB_WAIT, VB_WRITE};
-use hal::sys::types::Mode;
 use hal::user::{pod_from_bytes, pod_to_bytes};
+use sysdefs::errno::Errno;
+use sysdefs::mount::{MNT_LOCAL, MNT_SWAPPABLE, MOUNT_FFS, UfsArgs, VB_WAIT, VB_WRITE};
+use sysdefs::types::Mode;
 
 use super::ffs_subr::{ffs_clrblock, ffs_isblock, ffs_setblock};
 use super::ffs_vfsops::{Ffs, ffs_init, ffs_mountfs, ffs_vget};

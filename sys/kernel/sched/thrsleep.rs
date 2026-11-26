@@ -117,6 +117,7 @@
 //! - `<machine/spinlock.h>`'s word and values are `hal::sync::spinlock`'s, one definition for both
 //!   machines (LZ's `MachineSpinlock` trait is not taken).
 
+use crate::time::clock::TimespecExt;
 use core::pin::{Pin, pin};
 use core::ptr;
 
@@ -126,8 +127,8 @@ use hal::ds::pinlist::{PinEntry, PinList};
 use hal::sync::mutex::{Mutexed, MutexedGuard};
 use hal::sync::sleep::{INFSLP, PCATCH, PWAIT};
 use hal::sync::spinlock::{_ATOMIC_LOCK_UNLOCKED, AtomicLock};
-use hal::sys::errno::Errno;
 use hal::user::UserPtr;
+use sysdefs::errno::Errno;
 
 use crate::proc::{ProcGlue, Thread};
 use crate::sched::{sleep_finish, sleep_setup, wakeup_n_locked};

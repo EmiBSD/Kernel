@@ -88,7 +88,7 @@
 //! Neither file has an `$OpenBSD$` line; both keep their FreeBSD notices.
 //!
 //! ## Deviations
-//! - The three on-disk structures are `hal::abi_pod!` images (12 bytes each, pinned below),
+//! - The three on-disk structures are `sysdefs::abi_pod!` images (12 bytes each, pinned below),
 //!   little-endian on disk, read in native order as the C reads them in place.
 //! - The prototypes of the header are the functions of the `.c`'s part of this module.
 //! - `ext4_ext_find_extent` returns `Option<&mut Ext4ExtentPath>` (the C's path or NULL).
@@ -117,8 +117,8 @@
 
 use core::mem::size_of;
 
-use hal::sys::types::Daddr;
 use hal::user::pod_from_bytes;
+use sysdefs::types::Daddr;
 
 use super::ext2fs::{Ext2Superblock, fsbtodb};
 use super::ext2fs_dinode::{NDADDR, NIADDR};
@@ -195,19 +195,19 @@ pub struct Ext4ExtentCache {
     pub ec_type: u32,
 }
 
-hal::abi_pod!(Ext4Extent {
+sysdefs::abi_pod!(Ext4Extent {
     e_blk: u32,
     e_len: u16,
     e_start_hi: u16,
     e_start_lo: u32,
 });
-hal::abi_pod!(Ext4ExtentIndex {
+sysdefs::abi_pod!(Ext4ExtentIndex {
     ei_blk: u32,
     ei_leaf_lo: u32,
     ei_leaf_hi: u16,
     ei_unused: u16,
 });
-hal::abi_pod!(Ext4ExtentHeader {
+sysdefs::abi_pod!(Ext4ExtentHeader {
     eh_magic: u16,
     eh_ecount: u16,
     eh_max: u16,
@@ -258,7 +258,7 @@ impl Ext4ExtentPath {
     }
 
     /// The 12 bytes of slot `slot` of the node as a `T` (zero past the node).
-    fn entry<T: hal::user::AbiPod + Default>(&self, slot: usize) -> T {
+    fn entry<T: sysdefs::pod::AbiPod + Default>(&self, slot: usize) -> T {
         let at = slot * EXT4_ENTRY_SIZE;
         self.node()
             .get(at..at + EXT4_ENTRY_SIZE)

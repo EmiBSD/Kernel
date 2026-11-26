@@ -75,7 +75,7 @@ use core::ffi::c_void;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 use crate::arch::amd64::amd64::bus_space::{
     BUS_SPACE_MAP_LINEAR, BUS_SPACE_MAP_PREFETCHABLE, X86_BUS_SPACE_MEM, bus_space_map,

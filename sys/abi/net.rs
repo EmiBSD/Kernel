@@ -27,7 +27,7 @@
 use crate::scarg::{int, ptr, size_t, u_int};
 use hal::syscall::{Register, Rval, SysArgs, SysResult};
 
-use hal::sys::syscall::{
+use sysdefs::syscall::{
     SYS_accept, SYS_accept4, SYS_bind, SYS_connect, SYS_getpeername, SYS_getsockname,
     SYS_getsockopt, SYS_listen, SYS_recvfrom, SYS_recvmmsg, SYS_recvmsg, SYS_sendmmsg, SYS_sendmsg,
     SYS_sendto, SYS_setsockopt, SYS_shutdown, SYS_socket, SYS_socketpair, SYS_ypconnect,

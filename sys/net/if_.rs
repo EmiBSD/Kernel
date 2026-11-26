@@ -109,7 +109,7 @@
 
 /* <CODE> */
 //! Network interfaces for `bsd`'s network code: `net/if.c` is the kernel's since N6.3a
-//! (`kernel::net::if_`, with `<net/if.h>` in `hal::sys::net_if`), re-exported here under LZ's
+//! (`kernel::net::if_`, with `<net/if.h>` in `sysdefs::net_if`), re-exported here under LZ's
 //! paths, with the forwards that turn `bsd`'s parked mbufs into the kernel's boxes; what
 //! stays `bsd`'s is what names `bsd`'s types until their slice moves them: the output
 //! helpers over `bsd`'s route and socket address (`if_output_ml`, `if_output_tso`: N6.3b;
@@ -175,7 +175,6 @@ use crate::sys::task::Task;
 use crate::sys::types::SaFamily;
 use crate::{kassert, unported};
 
-pub use hal::sys::net_if::*;
 pub use kernel::net::if_::{
     ETHER_ADDR_LEN as IF_ETHER_ADDR_LEN, IFQ_CONGESTION, NET_TASKQ, Softnet, if_addgroup,
     if_alloc_sadl, if_attach_iqueues, if_attach_queues, if_clone_create, if_clone_destroy,
@@ -188,6 +187,7 @@ pub use kernel::net::if_::{
     net_sn, net_tq, net_tq_barriers, softnet_count, softnet_init, softnet_percpu, unhandled_af,
 };
 pub use kernel::net::if_var::{counters_inc, counters_pkt};
+pub use sysdefs::net_if::*;
 
 /// `ifnetlist`: all attached interfaces (the kernel's list), in LZ's tuple shape.
 pub static IFNETLIST: IfnetHead = IfnetHead(&kernel::net::if_::IFNETLIST);
@@ -804,6 +804,7 @@ pub(crate) mod tests {
     use crate::sys::mbuf::mtod;
     use crate::sys::sockio::*;
     use crate::sys::systm::{net_lock, net_unlock};
+    use hal::sysbytes::IfreqAddr;
 
     #[test]
     fn ifreq_union_accessors() {

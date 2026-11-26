@@ -106,7 +106,7 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! Raw IPv6 sockets: `netinet6/raw_ip6.c` (its statistics' image is `hal::sys::
+//! Raw IPv6 sockets: `netinet6/raw_ip6.c` (its statistics' image is `sysdefs::
 //! netinet6_raw_ip6`). A `SOCK_RAW` socket of the inet6 domain (ping6's `IPPROTO_ICMPV6`
 //! one, or any protocol number) has a control block in `rawin6pcbtable`. `rip6_input`, the
 //! input of every protocol without a handler of its own and the end of `icmp6_input`, hands
@@ -173,20 +173,20 @@ use hal::mem::pod;
 use hal::mem::pool::PoolArc;
 use hal::sync::netlock::NetHeld;
 use hal::sync::percpu::Counters;
-use hal::sys::errno::Errno;
-use hal::sys::netinet_icmp6::{
+use hal::user::bytes_of;
+use sysdefs::errno::Errno;
+use sysdefs::netinet_icmp6::{
     ICMP6_PARAM_PROB, ICMP6_PARAMPROB_NEXTHEADER, Icmp6Hdr, Icmp6statCounters,
 };
-use hal::sys::netinet_in::{IPPROTO_DONE, IPPROTO_ICMPV6, IPPROTO_IPV6, IPPROTO_MAX, IPPROTO_NONE};
-use hal::sys::netinet_ip6::{IPV6_FLOWINFO_MASK, IPV6_VERSION, IPV6_VERSION_MASK, Ip6Hdr};
-use hal::sys::netinet6_in6::{
+use sysdefs::netinet_in::{IPPROTO_DONE, IPPROTO_ICMPV6, IPPROTO_IPV6, IPPROTO_MAX, IPPROTO_NONE};
+use sysdefs::netinet_ip6::{IPV6_FLOWINFO_MASK, IPV6_VERSION, IPV6_VERSION_MASK, Ip6Hdr};
+use sysdefs::netinet6_in6::{
     IPV6_CHECKSUM, In6Addr, SA6_ANY, SockaddrIn6, in6_are_addr_equal, in6_is_addr_unspecified,
     in6_is_addr_v4mapped,
 };
-use hal::sys::netinet6_ip6_var::Ip6statCounters;
-use hal::sys::netinet6_raw_ip6::{RIP6S_NCOUNTERS, RIPV6CTL_STATS, Rip6stat};
-use hal::sys::socket::AF_INET6;
-use hal::user::bytes_of;
+use sysdefs::netinet6_ip6_var::Ip6statCounters;
+use sysdefs::netinet6_raw_ip6::{RIP6S_NCOUNTERS, RIPV6CTL_STATS, Rip6stat};
+use sysdefs::socket::AF_INET6;
 
 use crate::assert::{kassert, kpanic};
 use crate::base::sysctl::{SysctlReq, rdstruct};
@@ -1053,10 +1053,10 @@ mod tests {
     use core::sync::atomic::AtomicU32;
     use std::vec::Vec;
 
-    use hal::sys::netinet_icmp6::Icmp6Filter;
-    use hal::sys::netinet_in::IPPROTO_TCP;
-    use hal::sys::netinet6_in6::ICMP6_FILTER;
-    use hal::sys::socket::AF_INET;
+    use sysdefs::netinet_icmp6::Icmp6Filter;
+    use sysdefs::netinet_in::IPPROTO_TCP;
+    use sysdefs::netinet6_in6::ICMP6_FILTER;
+    use sysdefs::socket::AF_INET;
 
     use super::*;
     use crate::net::mbuf::{M_WAIT, MT_SOOPTS, m_get};

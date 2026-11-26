@@ -146,7 +146,7 @@ pub fn tcp_signature_tdb_zeroize(tdbp: &Tdb) -> Result<(), Errno> {
     if let Some(p) = NonNull::new(tdbp.tdb_amxkey.get()) {
         let len = usize::from(tdbp.tdb_amxkeylen.get());
         // SAFETY: the key of `len` bytes `tcp_signature_tdb_init` allocated.
-        libkern::explicit_bzero(unsafe { core::slice::from_raw_parts_mut(p.as_ptr(), len) });
+        hal::mem::explicit_bzero(unsafe { core::slice::from_raw_parts_mut(p.as_ptr(), len) });
         crate::kern::kern_malloc::free(p, M_XDATA, len);
         tdbp.tdb_amxkey.set(ptr::null_mut());
     }

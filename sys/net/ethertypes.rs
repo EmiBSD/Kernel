@@ -49,9 +49,9 @@
 
 /* <CODE> */
 //! Ethernet protocol types: `<net/ethertypes.h>`, `hal`'s since N6.3c
-//! (`hal::sys::net_ethertypes`), re-exported under LZ's path for `bsd`'s importers.
+//! (`sysdefs::net_ethertypes`), re-exported under LZ's path for `bsd`'s importers.
 //!
 //! Upstream: sys/net/ethertypes.h @ 3ce1f3f79392
 
-pub use hal::sys::net_ethertypes::*;
+pub use sysdefs::net_ethertypes::*;
 /* </CODE> */

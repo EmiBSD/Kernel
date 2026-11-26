@@ -93,10 +93,10 @@
 use core::ffi::c_void;
 use core::ptr;
 
+use crate::sys::staticcell::StaticCell;
 use alloc::alloc::{Layout, alloc};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use libkern::StaticCell;
 
 use crate::dev::wscons::ascii::*;
 #[cfg(test)]

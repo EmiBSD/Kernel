@@ -137,8 +137,8 @@ use core::sync::atomic::{AtomicBool, AtomicI16, AtomicU32, Ordering};
 
 use hal::mem::pool::{PR_WAITOK, PoolArc, PoolHome, TypedPool};
 use hal::sync::rwlock::Rwlocked;
-use hal::sys::errno::Errno;
-use hal::sys::types::{Gid, Uid};
+use sysdefs::errno::Errno;
+use sysdefs::types::{Gid, Uid};
 
 use crate::assert::kpanic;
 

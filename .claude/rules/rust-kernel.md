@@ -59,7 +59,7 @@ paths:
   dangle), so `lz check` does not police them; write them only through the macros all the
   same. Code in `sys/kernel/` uses this family; `bsd` keeps `sys/sys/queue.rs` and
   `sys/sys/tree.rs` until their last user moves.
-- Dependencies allowed in `sys/`: `libkern`, `libz`, `bitflags`; dev-only `proptest`. The boot
+- Dependencies allowed in `sys/`: `libkern`, `libz`, `sysdefs` (our own leaf crate, decision 54), `bitflags`; dev-only `proptest`. The boot
   loaders' crates (M14) may also use `libsa`, `boot` and `efi` (ours, OpenBSD code); the kernel
   does not depend on them. Lists and trees
   are our own (`sys/sys/queue.rs`, `sys/sys/tree.rs`), not `intrusive-collections`. Not allowed: `limine` (0.6+ is nightly-only, 0.5 is frozen at base revision 3; the

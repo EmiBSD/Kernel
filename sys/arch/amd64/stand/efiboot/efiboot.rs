@@ -82,12 +82,12 @@ use efi::include::efi::*;
 use efi::include::eficonsctl::{
     EFI_CONSOLE_CONTROL_PROTOCOL_GUID, EfiConsoleControlProtocol, EfiConsoleControlScreenText,
 };
-use libkern::staticcell::StaticCell;
 use libsa::cons::{cn_tab, cnischar};
 use libsa::hdr::cons::{CN_LOWPRI, CN_MIDPRI, ConsDev};
 use libsa::hdr::types::{Dev, Time, makedev, minor};
 use libsa::printf;
 use libsa::sa_alloc::{alloc, free};
+use libsa::staticcell::StaticCell;
 
 use crate::biosvar::{
     BCD_MMIO, BEI_64BIT, BEI_ESRT, BIOS_MAP_ACPI, BIOS_MAP_END, BIOS_MAP_FREE, BIOS_MAP_NVS,

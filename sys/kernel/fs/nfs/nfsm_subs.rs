@@ -128,13 +128,14 @@
 
 use core::slice;
 
-use hal::user::{AbiPod, bytes_of_mut, zeroed};
+use hal::user::{bytes_of_mut, zeroed};
+use sysdefs::pod::AbiPod;
 
 use crate::assert::kpanic;
 use crate::net::mbuf::{
     M_WAIT, MChainBuilder, MLEN, MT_DATA, Mbuf, MbufBox, m_get, m_trailingspace,
 };
-use crate::sys::errno::Errno;
+use sysdefs::errno::Errno;
 
 /// A reply's dissection cursor (the C's `nmi_md` and `nmi_dpos`): the mbuf it is in and the
 /// offset of the next byte in that mbuf's data, over a chain it borrows and never changes.
@@ -564,7 +565,7 @@ mod tests {
 
     use super::*;
     use crate::net::mbuf::tests::setup;
-    use crate::sys::nfs_nfsproto::{NFSX_V2FATTR, NFSX_V3FATTR, NfsFattr, Nfsv3Time};
+    use sysdefs::nfs_nfsproto::{NFSX_V2FATTR, NFSX_V3FATTR, NfsFattr, Nfsv3Time};
 
     #[test]
     fn reads_cross_mbufs_and_skip_empty_ones() {

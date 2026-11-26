@@ -134,6 +134,7 @@ pub mod clockintr;
 pub mod tc;
 pub mod timeout;
 
+use crate::time::clock::TimespecExt;
 use core::ffi::c_void;
 use core::pin::Pin;
 use core::ptr;
@@ -152,7 +153,6 @@ use crate::base::task::{SYSTQ, Task, task_add, task_del};
 use crate::proc::resource::{Tusage, tuagg_get_proc, tuagg_get_process};
 use crate::proc::{ProcGlue, Thread, suser, tfind_user};
 use crate::sched::{NOWAKE, tsleep_nsec};
-use crate::sys::errno::Errno;
 use crate::time::clock::{Bintime, STATHZ, Timespec, Timeval};
 use crate::time::tc::{
     TC_LOCK, getmicrouptime, getnanouptime, microtime, microuptime, nanoruntime, nanotime,
@@ -160,6 +160,7 @@ use crate::time::tc::{
     tc_setrealtimeclock,
 };
 use crate::time::timeout::Timeout;
+use sysdefs::errno::Errno;
 
 /// `CLOCK_REALTIME`.
 pub const CLOCK_REALTIME: i32 = 0;
@@ -221,7 +222,7 @@ impl Itimerspec {
     }
 }
 
-hal::abi_pod!(Itimerspec {
+sysdefs::abi_pod!(Itimerspec {
     it_interval: Timespec,
     it_value: Timespec
 });
@@ -236,7 +237,7 @@ pub struct Itimerval {
     pub it_value: Timeval,
 }
 
-hal::abi_pod!(Itimerval {
+sysdefs::abi_pod!(Itimerval {
     it_interval: Timeval,
     it_value: Timeval
 });
@@ -251,7 +252,7 @@ pub struct Timezone {
     pub tz_dsttime: i32,
 }
 
-hal::abi_pod!(Timezone {
+sysdefs::abi_pod!(Timezone {
     tz_minuteswest: i32,
     tz_dsttime: i32
 });
@@ -270,7 +271,7 @@ pub struct Clockinfo {
     pub profhz: i32,
 }
 
-hal::abi_pod!(Clockinfo {
+sysdefs::abi_pod!(Clockinfo {
     hz: i32,
     tick: i32,
     stathz: i32,
@@ -1044,6 +1045,7 @@ mod tests {
 
     use super::*;
     use crate::testutil;
+    use crate::time::clock::TimespecExt;
 
     /// The chip handle and the clock are global: the todr tests serialise.
     static LOCK: StdMutex<()> = StdMutex::new(());
@@ -1296,8 +1298,8 @@ mod tests {
 
     /// A thread of a new process `pid` whose uids are all `uid`.
     fn thread_as(
-        pid: hal::sys::types::Pid,
-        uid: hal::sys::types::Uid,
+        pid: sysdefs::types::Pid,
+        uid: sysdefs::types::Uid,
     ) -> (
         crate::proc::ProcessRef<Procs>,
         hal::mem::pool::PoolBox<Thread<Procs>>,
@@ -1322,7 +1324,7 @@ mod tests {
     }
 
     /// A user pointer to a `T` this test wrote at `UTIME + off`.
-    fn user<T: hal::user::AbiPod>(off: usize, v: &T) -> UserPtr<T> {
+    fn user<T: sysdefs::pod::AbiPod>(off: usize, v: &T) -> UserPtr<T> {
         let u = UserPtr::<T>::new(UTIME + off);
         u.copyout(v).unwrap();
         u

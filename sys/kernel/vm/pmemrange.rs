@@ -144,10 +144,10 @@ use hal::ds::tree::{Tree, TreeEntry};
 use hal::mem::bootmem;
 use hal::sync::mutex::{Mutexed, MutexedGuard};
 use hal::sync::sleep::wakeup;
-use hal::sys::errno::Errno;
-use hal::sys::types::Paddr;
 use hal::vm::param::{atop, round_page, trunc_page};
 use hal::vm::uvmexp::UVMEXP;
+use sysdefs::errno::Errno;
+use sysdefs::types::Paddr;
 
 use super::page::{
     self, PG_ZERO, PQ_FREE, Pglist, VmPage, nth, nth_back, uvm_pagezero, uvm_pagezero_target,

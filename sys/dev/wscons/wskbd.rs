@@ -154,7 +154,7 @@ use core::ffi::c_void;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, Ordering};
 
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 use crate::dev::audio::{AUDIO_KBDCONTROL_ENABLE, wskbd_set_mixervolume_dev};
 use crate::dev::wscons::wscons_callbacks::{

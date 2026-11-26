@@ -102,7 +102,7 @@
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, Ordering};
 
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 use crate::dev::consfile::consfile_attach;
 use crate::dev::rnd::{arc4random, random_start};

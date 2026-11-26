@@ -110,15 +110,15 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! Multicast Listener Discovery: `<netinet6/mld6.h>` (`hal::sys::netinet6_mld6`) and
+//! Multicast Listener Discovery: `<netinet6/mld6.h>` (`sysdefs::netinet6_mld6`) and
 //! `netinet6/mld6.c`, the kernel's since N6.5a (`kernel::netinet6::mld6`), re-exported whole;
 //! LZ's tests drive it through `bsd`'s Ethernet fixture and output path.
 //!
 //! Upstream: sys/netinet6/mld6.h @ 3ce1f3f79392
 //! Upstream: sys/netinet6/mld6.c @ 3ce1f3f79392
 
-pub use hal::sys::netinet6_mld6::*;
 pub use kernel::netinet6::mld6::*;
+pub use sysdefs::netinet6_mld6::*;
 /* </CODE> */
 
 /* <TESTS> */

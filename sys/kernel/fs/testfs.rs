@@ -48,10 +48,10 @@ use std::sync::MutexGuard;
 use std::vec::Vec;
 
 use hal::sync::rwlock::{RW_NOSLEEP, RW_READ, RW_RECURSEFAIL, RW_WRITE, RecursiveRwlock};
-use hal::sys::errno::Errno;
-use hal::sys::mount::{Fid, MNT_LOCAL, Statfs};
-use hal::sys::types::{Dev, Ino, Mode, Uid};
 use hal::user::UserPtr;
+use sysdefs::errno::Errno;
+use sysdefs::mount::{Fid, MNT_LOCAL, Statfs};
+use sysdefs::types::{Dev, Ino, Mode, Uid};
 
 use super::cache::{cache_enter, cache_lookup};
 use super::mount::{Mount, Vfsconf, mountlist_insert_tail, vfs_mount_alloc, vfs_unbusy};
@@ -125,9 +125,9 @@ pub const DISK: usize = 13;
 pub const N: usize = 14;
 
 /// `/dev/ttyp0`'s device number.
-pub const TTY_DEV: Dev = hal::sys::types::makedev(1, 0);
+pub const TTY_DEV: Dev = sysdefs::types::makedev(1, 0);
 /// `/dev/sd0c`'s device number.
-pub const DISK_DEV: Dev = hal::sys::types::makedev(2, 2);
+pub const DISK_DEV: Dev = sysdefs::types::makedev(2, 2);
 
 /// The tree's kinds.
 pub const KINDS: [Kind; N] = [
@@ -698,7 +698,7 @@ impl Vnops<TestGlue> for TestVops {
         vp: &'static Vnode<TestGlue>,
         id: crate::file::LockOwner,
         op: i32,
-        fl: &mut hal::sys::fcntl::Flock,
+        fl: &mut sysdefs::fcntl::Flock,
         flags: i32,
     ) -> Result<(), Errno> {
         let Some(node) = node_of(vp) else {
@@ -974,29 +974,25 @@ impl Vnops<TestGlue> for TestVops {
         };
         let parent = tree_node(dir).map_or(ROOT, |n| n.parent);
         let mut entries: Vec<(u64, u8, Vec<u8>)> = std::vec![
-            (100 + dir as u64, hal::sys::dirent::DT_DIR, b".".to_vec()),
-            (
-                100 + parent as u64,
-                hal::sys::dirent::DT_DIR,
-                b"..".to_vec()
-            ),
+            (100 + dir as u64, sysdefs::dirent::DT_DIR, b".".to_vec()),
+            (100 + parent as u64, sysdefs::dirent::DT_DIR, b"..".to_vec()),
         ];
         for (i, n) in tree_children(dir) {
             let ty = match n.kind {
-                Kind::Dir => hal::sys::dirent::DT_DIR,
-                Kind::Reg => hal::sys::dirent::DT_REG,
-                Kind::Sock => hal::sys::dirent::DT_SOCK,
-                Kind::Chr => hal::sys::dirent::DT_CHR,
-                Kind::Lnk(_) => hal::sys::dirent::DT_LNK,
-                Kind::Blk => hal::sys::dirent::DT_BLK,
-                Kind::Bad => hal::sys::dirent::DT_UNKNOWN,
+                Kind::Dir => sysdefs::dirent::DT_DIR,
+                Kind::Reg => sysdefs::dirent::DT_REG,
+                Kind::Sock => sysdefs::dirent::DT_SOCK,
+                Kind::Chr => sysdefs::dirent::DT_CHR,
+                Kind::Lnk(_) => sysdefs::dirent::DT_LNK,
+                Kind::Blk => sysdefs::dirent::DT_BLK,
+                Kind::Bad => sysdefs::dirent::DT_UNKNOWN,
             };
             entries.push((100 + i as u64, ty, n.name));
         }
         let mut at: i64 = 0;
         *eofflag = 0;
         for (fileno, ty, name) in entries {
-            let reclen = hal::sys::dirent::dirent_recsize(name.len());
+            let reclen = sysdefs::dirent::dirent_recsize(name.len());
             let start = at;
             at += reclen as i64;
             if start < uio.uio_offset {
@@ -1011,7 +1007,7 @@ impl Vnops<TestGlue> for TestVops {
             rec[16..18].copy_from_slice(&(reclen as u16).to_ne_bytes());
             rec[18] = ty;
             rec[19] = name.len() as u8;
-            let off = hal::sys::dirent::Dirent::NAME_OFFSET;
+            let off = sysdefs::dirent::Dirent::NAME_OFFSET;
             rec[off..off + name.len()].copy_from_slice(&name);
             <TestFiles as crate::file::FileGlue>::uiomove(&mut rec, uio)?;
         }
@@ -1024,11 +1020,11 @@ impl Vnops<TestGlue> for TestVops {
         &self,
         _vp: &'static Vnode<TestGlue>,
         name: i32,
-        retval: &mut hal::sys::types::Register,
+        retval: &mut sysdefs::types::Register,
     ) -> Result<(), Errno> {
         match name {
-            hal::sys::unistd::_PC_LINK_MAX => *retval = 32767,
-            hal::sys::unistd::_PC_NAME_MAX => *retval = 255,
+            sysdefs::unistd::_PC_LINK_MAX => *retval = 32767,
+            sysdefs::unistd::_PC_NAME_MAX => *retval = 255,
             _ => return Err(Errno::EINVAL),
         }
         Ok(())
@@ -1099,7 +1095,7 @@ impl Vfs<TestGlue> for TestFs {
         _p: &Thread<TestGlue>,
     ) -> Result<(), Errno> {
         UNMOUNTS.fetch_add(1, Ordering::SeqCst);
-        let flags = if f & hal::sys::mount::MNT_FORCE != 0 {
+        let flags = if f & sysdefs::mount::MNT_FORCE != 0 {
             super::vnode::FORCECLOSE
         } else {
             0

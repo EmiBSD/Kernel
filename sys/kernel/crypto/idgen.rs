@@ -60,12 +60,12 @@
 //!   accident, and `init` wipes the old key as it replaces the context. The generators live
 //!   in `static`s, which are never dropped, as the C's never freed `static` contexts.
 
-use libkern::explicit_bzero;
+use hal::mem::explicit_bzero;
 
 use super::wipe;
-use crate::sys::types::Time;
 use crate::time::tc::getuptime;
 use hal::random::{arc4random, arc4random_buf};
+use sysdefs::types::Time;
 
 /// `IDGEN32_ROUNDS`: Feistel rounds of the permutation.
 pub const IDGEN32_ROUNDS: u32 = 31;

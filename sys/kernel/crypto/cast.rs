@@ -52,7 +52,7 @@
 //! - [`CastKey`] zeroes its subkeys when dropped (`docs/IDIOMS.md`), so it is no longer `Copy`
 //!   or `PartialEq`.
 
-use libkern::explicit_bzero;
+use hal::mem::explicit_bzero;
 
 use super::wipe;
 

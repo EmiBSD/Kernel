@@ -53,13 +53,13 @@ use std::vec::Vec;
 use core::pin::Pin;
 
 use hal::mem::malloc::{M_WAITOK, MArray};
-use hal::sys::errno::Errno;
-use hal::sys::syscall::SYS_getpid;
 use hal::syscall::Register;
 use hal::user::UserPtr;
 use kernel::proc::{self, PinTable, ProcGlue, ProcTables, Process, Session, Thread};
 use kernel::testutil;
 use kernel::vm::map::{InentryCache, Vmspace, VmspaceRef};
+use sysdefs::errno::Errno;
+use sysdefs::syscall::SYS_getpid;
 
 // ---------------------------------------------------------------------------------------
 // The harness (vm.rs's).
@@ -239,7 +239,7 @@ fn main() {
     let _ = VM.set(vm);
     let t: &'static Thread<BenchGlue> = Box::leak(Box::new(Thread::new_static(&PR, ())));
     let p: Pin<&'static Thread<BenchGlue>> = hal::ds::pin::pin_static(t);
-    let mut pins = std::vec![0u32; hal::sys::syscall::SYS_MAXSYSCALL];
+    let mut pins = std::vec![0u32; sysdefs::syscall::SYS_MAXSYSCALL];
     pins[SYS_getpid as usize] = 0x40;
     let Some(pins) = MArray::new(kernel::vm::mmap::M_PINSYSCALL, M_WAITOK, pins.len(), |i| {
         pins[i]

@@ -94,7 +94,7 @@ use core::fmt::{self, Write};
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, Ordering};
 
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 use crate::ddb::db_output::{db_putchar, db_stack_dump};
 use crate::ddb::db_usrreq::DB_LOG;

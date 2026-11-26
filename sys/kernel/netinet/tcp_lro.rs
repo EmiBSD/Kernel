@@ -131,11 +131,11 @@ use core::cmp::max;
 use core::mem::size_of;
 use core::sync::atomic::Ordering;
 
-use hal::sys::net_if::IFXF_LRO;
-use hal::sys::netinet_if_ether::{ETHER_HDR_LEN, EtherVlanHeader, evl_prioftag, evl_vlanoftag};
-use hal::sys::netinet_ip::{IP_MAXPACKET, Ip};
-use hal::sys::netinet_ip6::IPV6_MAXPACKET;
-use hal::sys::netinet_tcp::{
+use sysdefs::net_if::IFXF_LRO;
+use sysdefs::netinet_if_ether::{ETHER_HDR_LEN, EtherVlanHeader, evl_prioftag, evl_vlanoftag};
+use sysdefs::netinet_ip::{IP_MAXPACKET, Ip};
+use sysdefs::netinet_ip6::IPV6_MAXPACKET;
+use sysdefs::netinet_tcp::{
     TCPOLEN_TSTAMP_APPA, TCPOPT_EOL, TCPOPT_TSTAMP_HDR, TH_ACK, TH_PUSH, Tcphdr,
 };
 
@@ -652,13 +652,13 @@ mod tests {
     use std::vec;
     use std::vec::Vec;
 
-    use hal::sys::net_ethertypes::{ETHERTYPE_IP, ETHERTYPE_IPV6};
-    use hal::sys::netinet_in::IPPROTO_TCP;
-    use hal::sys::netinet_tcp::{TCPOLEN_TIMESTAMP, TCPOPT_NOP, TCPOPT_TIMESTAMP, TH_SYN};
+    use sysdefs::net_ethertypes::{ETHERTYPE_IP, ETHERTYPE_IPV6};
+    use sysdefs::netinet_in::IPPROTO_TCP;
+    use sysdefs::netinet_tcp::{TCPOLEN_TIMESTAMP, TCPOPT_NOP, TCPOPT_TIMESTAMP, TH_SYN};
 
     use super::*;
     use crate::net::if_::test_ifnet;
-    use hal::sys::mbuf::MT_DATA;
+    use sysdefs::mbuf::MT_DATA;
 
     use crate::net::mbuf::{
         M_COPYALL, M_DONTWAIT, MCLBYTES, m_clget, m_clget_hdr, m_copydata, m_copym, m_get,

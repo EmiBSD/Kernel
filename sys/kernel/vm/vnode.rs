@@ -172,9 +172,9 @@ use hal::sync::klock::{kernel_assert_locked, kernel_lock, kernel_unlock};
 use hal::sync::mutex::Mutexed;
 use hal::sync::rwlock::{RW_NOSLEEP, RW_WRITE, Rwlocked, Witness, WriteWitness};
 use hal::sync::sleep::{INFSLP, PVM, tsleep_nsec, wakeup};
-use hal::sys::errno::Errno;
-use hal::sys::mman::{PROT_NONE, PROT_READ, PROT_WRITE};
 use hal::vm::param::{round_page, trunc_page};
+use sysdefs::errno::Errno;
+use sysdefs::mman::{PROT_NONE, PROT_READ, PROT_WRITE};
 
 use super::object::{ObjKind, ObjRef, Object, pagewait_relock, slot_page};
 use super::page::{

@@ -46,7 +46,7 @@
 //!   pool's item headers). 0 `unsafe` (LZ: 0).
 
 use hal::mem::pool::{BoxPool, TypedPool};
-use hal::sys::dirent::MAXNAMLEN;
+use sysdefs::dirent::MAXNAMLEN;
 
 use crate::fs::isofs::udf::udf::{UdfDirstream, Unicode, Unode};
 use crate::fs::isofs::udf::udf_vnops::UdfVnops;

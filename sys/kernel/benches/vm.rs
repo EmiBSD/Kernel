@@ -80,11 +80,6 @@ use hal::arch::current::vmparam::{MAXSSIZ, USRSTACK, VM_MAXUSER_ADDRESS, VM_MIN_
 use hal::mem::malloc::Malloc;
 use hal::mem::pool::{PoolBackend, RawPool};
 use hal::sync::rwlock::SharedRwlock;
-use hal::sys::errno::Errno;
-use hal::sys::mman::{
-    MADV_NORMAL, MADV_RANDOM, MAP_ANON, MAP_INHERIT_COPY, MAP_INHERIT_SHARE, MAP_PRIVATE,
-    PROT_EXEC, PROT_NONE, PROT_READ, PROT_WRITE,
-};
 use kernel::proc::{ProcGlue, ProcTables, Process, Session, Thread};
 use kernel::testutil;
 use kernel::vm::amap::{amap_init, amap_lookup};
@@ -105,6 +100,11 @@ use kernel::vm::types::{
     Voff, uvm_mapflag,
 };
 use kernel::vm::vnode::{uvn_attach, uvn_init};
+use sysdefs::errno::Errno;
+use sysdefs::mman::{
+    MADV_NORMAL, MADV_RANDOM, MAP_ANON, MAP_INHERIT_COPY, MAP_INHERIT_SHARE, MAP_PRIVATE,
+    PROT_EXEC, PROT_NONE, PROT_READ, PROT_WRITE,
+};
 
 /// The page size of the doubles.
 const PAGE: usize = 4096;

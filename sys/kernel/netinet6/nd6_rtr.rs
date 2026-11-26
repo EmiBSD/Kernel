@@ -81,15 +81,15 @@ use core::sync::atomic::Ordering;
 use hal::mem::pod;
 use hal::mem::pool::PoolArc;
 use hal::sync::netlock::NetHeld;
-use hal::sys::errno::Errno;
-use hal::sys::net_route::{RTAX_DST, RTAX_GATEWAY, RTAX_NETMASK, RTF_HOST, RTF_STATIC, RTP_ANY};
-use hal::sys::netinet_icmp6::{
+use sysdefs::errno::Errno;
+use sysdefs::net_route::{RTAX_DST, RTAX_GATEWAY, RTAX_NETMASK, RTF_HOST, RTF_STATIC, RTP_ANY};
+use sysdefs::netinet_icmp6::{
     Icmp6statCounters, ND_ROUTER_ADVERT, ND_ROUTER_SOLICIT, NdRouterAdvert, NdRouterSolicit,
 };
-use hal::sys::netinet6_in6::{
+use sysdefs::netinet6_in6::{
     In6Addr, in6_are_addr_equal, in6_is_addr_linklocal, in6_is_addr_unspecified,
 };
-use hal::sys::socket::AF_INET6;
+use sysdefs::socket::AF_INET6;
 
 use crate::assert::kassert;
 use crate::net::if_::IfRef;

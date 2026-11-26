@@ -159,10 +159,10 @@ use hal::mem::malloc::{M_WAITOK, MArc, MArray};
 use hal::sync::klock;
 use hal::sync::sleep::INFSLP;
 use hal::sync::slot::ReadMostly;
-use hal::sys::errno::Errno;
-use hal::sys::mount::MNT_RDONLY;
-use hal::sys::types::{Daddr, Dev};
 use libkern::siphash::{SipHash24Ctx, SiphashKey};
+use sysdefs::errno::Errno;
+use sysdefs::mount::MNT_RDONLY;
+use sysdefs::types::{Daddr, Dev};
 
 use crate::assert::kpanic;
 use crate::base::prf::printf;

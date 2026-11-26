@@ -70,7 +70,7 @@
 //! attachment, driver, unit, state, locators, flags, parents (indices into `CFDATA`), the
 //! start of its locator names and the first unit a starred entry may take.
 
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 use crate::arch::arm64::arm64::acpi_machdep::ACPI_FDT_CA;
 use crate::arch::arm64::arm64::cpu::{CPU_CA, CPU_CD};

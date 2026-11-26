@@ -76,6 +76,7 @@
 
 use core::ffi::c_void;
 use core::sync::atomic::Ordering;
+use kernel::time::clock::TimespecExt;
 
 use crate::dev::clock_subr::TodrChipHandle;
 use crate::kern::kern_clock::hardclock_period;
@@ -457,6 +458,7 @@ const _: () = {
 mod tests {
     use super::*;
     use crate::sys::types::Suseconds;
+    use kernel::time::clock::TimespecExt;
     use kernel::time::itimerfix;
 
     #[test]

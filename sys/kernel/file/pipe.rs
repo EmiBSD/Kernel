@@ -153,10 +153,10 @@ use hal::mem::kmbuf::{KmBuf, PageMemory};
 use hal::mem::pool::{PR_WAITOK, PoolArc, TypedPool};
 use hal::sync::rwlock::{RW_WRITE, Rwlocked, WriteGuard};
 use hal::sync::sleep::{PCATCH, wakeup};
-use hal::sys::errno::Errno;
-use hal::sys::fcntl::{FREAD, FWRITE};
-use hal::sys::signal::SIGIO;
 use hal::user::UserPtr;
+use sysdefs::errno::Errno;
+use sysdefs::fcntl::{FREAD, FWRITE};
+use sysdefs::signal::SIGIO;
 
 pub use crate::file::uio::UioMove;
 
@@ -1525,7 +1525,7 @@ mod tests {
         }
         pr.ps_threadcnt.set(1);
         Kg::set_curproc(Some(t));
-        let mut sa = hal::sys::signal::Sigaction {
+        let mut sa = sysdefs::signal::Sigaction {
             sa_handler: 0x4000,
             ..Default::default()
         };
@@ -1932,7 +1932,7 @@ mod tests {
         assert_eq!(write(&pp, Dir::Wr, b"d", false), (Ok(()), 1));
         assert_eq!(
             owner.ps_siglist.load(Ordering::Relaxed),
-            hal::sys::signal::sigmask(SIGIO)
+            sysdefs::signal::sigmask(SIGIO)
         );
         assert_eq!(pp.ioctl(Dir::Rd, PipeIoctl::Async(false)), Ok(None));
         assert!(!pp.end(Dir::Rd).has(PIPE_ASYNC));

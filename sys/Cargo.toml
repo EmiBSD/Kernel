@@ -91,6 +91,7 @@ abi = { path = "abi" }
 hal = { path = "hal" }
 kernel = { path = "kernel" }
 libkern.workspace = true
+sysdefs.workspace = true
 libz.workspace = true
 
 # The host tests register the kernel crate's doubles of hal's bridges (never the real ones):

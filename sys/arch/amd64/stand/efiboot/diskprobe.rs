@@ -63,7 +63,6 @@ use core::ptr;
 use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
 use boot::bootarg::addbootarg;
-use libkern::staticcell::StaticCell;
 use libsa::hdr::disklabel::{
     DTYPE_ATAPI, DTYPE_ESDI, DTYPE_SCSI, DTYPE_ST506, FS_SWAP, RAW_PART, dl_getpoffset,
     dl_getpsize, dl_sectoblk,
@@ -73,6 +72,7 @@ use libsa::hdr::param::{DEV_BSIZE, MAXBSIZE};
 use libsa::hdr::reboot::makebootdev;
 use libsa::printf;
 use libsa::stand::F_READ;
+use libsa::staticcell::StaticCell;
 
 use crate::biosvar::{
     BDI_BADLABEL, BDI_EL_TORITO, BDI_GOODLABEL, BDI_HIBVALID, BDI_INVALID, BOOTARG_CKSUMLEN,

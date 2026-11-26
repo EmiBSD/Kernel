@@ -247,7 +247,7 @@ impl AesCtrCtx {
     /// Zeroes the counter block and the key.
     pub(crate) fn zeroize(&mut self) {
         self.ac_key.zeroize();
-        libkern::explicit_bzero(&mut self.ac_block);
+        hal::mem::explicit_bzero(&mut self.ac_block);
     }
 }
 
@@ -275,7 +275,7 @@ impl AesXtsCtx {
     pub(crate) fn zeroize(&mut self) {
         self.key1.zeroize();
         self.key2.zeroize();
-        libkern::explicit_bzero(&mut self.tweak);
+        hal::mem::explicit_bzero(&mut self.tweak);
     }
 }
 
@@ -591,7 +591,7 @@ fn aes_ctr_crypt(key: &mut Kschedule, data: &mut [u8]) {
     for i in 0..AESCTR_BLOCKSIZE {
         data[i] ^= keystream[i];
     }
-    libkern::explicit_bzero(&mut keystream);
+    hal::mem::explicit_bzero(&mut keystream);
 }
 
 /// `aes_ctr_setkey`: the AES key followed by the 4-byte nonce.
@@ -657,8 +657,8 @@ fn aes_xts_crypt(ctx: &mut AesXtsCtx, data: &mut [u8], do_encrypt: bool) {
     if carry_in != 0 {
         ctx.tweak[0] ^= AES_XTS_ALPHA;
     }
-    libkern::explicit_bzero(&mut block);
-    libkern::explicit_bzero(&mut out);
+    hal::mem::explicit_bzero(&mut block);
+    hal::mem::explicit_bzero(&mut out);
 }
 
 /// `aes_xts_encrypt`.

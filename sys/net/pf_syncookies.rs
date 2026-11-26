@@ -101,7 +101,7 @@
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use libkern::explicit_bzero;
+use hal::mem::explicit_bzero;
 
 use crate::dev::rnd::arc4random_buf;
 use crate::kassert;

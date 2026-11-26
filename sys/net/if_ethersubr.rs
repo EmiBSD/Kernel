@@ -200,6 +200,7 @@ mod tests {
     use crate::net::if_::{IFF_BROADCAST, IFF_MULTICAST, IFF_NOARP, IFF_RUNNING, IFF_SIMPLEX};
     use crate::net::if_var::IfnetLegacy;
     use crate::sys::mbuf::mtod;
+    use hal::sysbytes::In6IfreqRu;
 
     const OURS: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
     const PEER: [u8; 6] = [0x52, 0x55, 0x0a, 0x00, 0x02, 0x02];
@@ -384,7 +385,7 @@ mod tests {
         use kernel::net::proto::SockaddrView;
 
         let (_g, ifp) = nd6_setup();
-        let mut eh = hal::sys::netinet_if_ether::EtherHeader::default();
+        let mut eh = sysdefs::netinet_if_ether::EtherHeader::default();
         let view =
             |s: &SockaddrIn6| -> Vec<u8> { hal::user::bytes_of(core::slice::from_ref(s)).to_vec() };
 
@@ -420,8 +421,8 @@ mod tests {
             ifp,
             &handle,
             Some(&PEER_MAC),
-            hal::sys::netinet_icmp6::ND_NA_FLAG_SOLICITED
-                | hal::sys::netinet_icmp6::ND_NA_FLAG_OVERRIDE,
+            sysdefs::netinet_icmp6::ND_NA_FLAG_SOLICITED
+                | sysdefs::netinet_icmp6::ND_NA_FLAG_OVERRIDE,
             false,
             &PEER6,
             &PEER6,

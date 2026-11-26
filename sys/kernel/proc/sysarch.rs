@@ -86,7 +86,7 @@
 
 use core::sync::atomic::Ordering;
 
-use hal::sys::errno::Errno;
+use sysdefs::errno::Errno;
 
 use crate::proc::{PS_PLEDGE, ProcGlue, Thread};
 

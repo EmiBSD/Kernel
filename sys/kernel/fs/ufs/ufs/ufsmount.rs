@@ -113,7 +113,7 @@ use hal::ds::link::Link;
 use hal::mem::malloc::{M_WAITOK, MArc};
 use hal::sync::once::OnceStatic;
 use hal::sync::slot::ReadMostly;
-use hal::sys::types::Daddr;
+use sysdefs::types::Daddr;
 
 use super::inode::{I32Word, U32Word, U64Word};
 use super::quota::MAXQUOTAS;

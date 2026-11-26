@@ -151,12 +151,12 @@ use core::cmp::min;
 use core::mem::size_of;
 
 use hal::mem::pod;
-use hal::sys::errno::Errno;
-use hal::sys::net_if::{IFCAP_TSOv4, IFCAP_TSOv6};
-use hal::sys::netinet_in::IPPROTO_TCP;
-use hal::sys::netinet_ip::{IP_MF, IP_OFFMASK, Ip};
-use hal::sys::netinet_ip6::Ip6Hdr;
-use hal::sys::netinet_tcp::{TH_FIN, TH_PUSH, Tcphdr};
+use sysdefs::errno::Errno;
+use sysdefs::net_if::{IFCAP_TSOv4, IFCAP_TSOv6};
+use sysdefs::netinet_in::IPPROTO_TCP;
+use sysdefs::netinet_ip::{IP_MF, IP_OFFMASK, Ip};
+use sysdefs::netinet_ip6::Ip6Hdr;
+use sysdefs::netinet_tcp::{TH_FIN, TH_PUSH, Tcphdr};
 
 use crate::assert::kpanic;
 use crate::net::if_::if_output_ml;
@@ -484,9 +484,9 @@ mod tests {
     use std::vec;
     use std::vec::Vec;
 
-    use hal::sys::mbuf::MT_DATA;
-    use hal::sys::netinet_in::IPPROTO_IPV6;
-    use hal::sys::netinet_tcp::TH_ACK;
+    use sysdefs::mbuf::MT_DATA;
+    use sysdefs::netinet_in::IPPROTO_IPV6;
+    use sysdefs::netinet_tcp::TH_ACK;
 
     use super::*;
     use crate::net::if_::test_ifnet_with;
@@ -666,7 +666,7 @@ mod tests {
     fn with_dst<R>(f: impl FnOnce(SockaddrView<'_>) -> R) -> R {
         let mut sin = [0u8; 16];
         sin[0] = 16;
-        sin[1] = hal::sys::socket::AF_INET;
+        sin[1] = sysdefs::socket::AF_INET;
         f(SockaddrView::new(&sin).expect("a socket address"))
     }
 

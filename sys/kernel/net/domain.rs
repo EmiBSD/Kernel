@@ -120,8 +120,8 @@ use hal::ds::pin::pin_static;
 use hal::mem::pool::{BoxPool, TypedPool};
 use hal::sync::netlock::NetHeld;
 use hal::sync::once::OnceStatic;
-use hal::sys::errno::Errno;
-use hal::sys::socket::{PF_UNSPEC, SOCK_RAW};
+use sysdefs::errno::Errno;
+use sysdefs::socket::{PF_UNSPEC, SOCK_RAW};
 
 use crate::net::mbuf::{MAX_HDR, MAX_LINKHDR, MAX_PROTOHDR, Mbuf, MbufBox};
 use crate::net::proto::{Protocol, SockaddrView};
@@ -153,7 +153,7 @@ pub trait Domain<G: ProcGlue>: Sync + 'static {
         &self,
         _so: &Socket<G>,
         _w: &crate::net::socket::SoLocked<'_>,
-    ) -> Option<hal::sys::socket::Sockpeercred> {
+    ) -> Option<sysdefs::socket::Sockpeercred> {
         None
     }
     /// `dom_sasize`: size of sockaddr structure.

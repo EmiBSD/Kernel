@@ -1304,7 +1304,7 @@ mod tests {
 
     /// The mount arguments: owner 1000, group 100, mode 0555, `flag`.
     fn args(flag: u64) -> NtfsArgs {
-        let mut a = NtfsArgs::from_bytes(&[0u8; NtfsArgs::SIZE]).unwrap();
+        let mut a = hal::user::pod_from_bytes::<NtfsArgs>(&[0u8; NtfsArgs::SIZE]).unwrap();
         a.uid = 1000;
         a.gid = 100;
         a.mode = 0o555;

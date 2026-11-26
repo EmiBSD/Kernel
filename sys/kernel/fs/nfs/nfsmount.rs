@@ -287,7 +287,7 @@ impl<G: ProcGlue> NfsMount<G> {
     }
 
     /// `nmp->nm_mountp->mnt_stat.f_mntfromname`, for the messages.
-    pub fn mntfromname(&self) -> [u8; crate::sys::mount::MNAMELEN] {
+    pub fn mntfromname(&self) -> [u8; sysdefs::mount::MNAMELEN] {
         self.nm_mountp.stat().f_mntfromname
     }
 }

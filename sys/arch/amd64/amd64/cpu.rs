@@ -147,7 +147,7 @@ use core::ffi::c_void;
 use core::ptr;
 use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 use crate::arch::amd64::amd64::fpu::XSAVE_MASK;
 use crate::arch::amd64::amd64::identcpu::{HAS_RDRAND, HAS_RDSEED, identifycpu};

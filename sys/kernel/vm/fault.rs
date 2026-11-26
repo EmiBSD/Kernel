@@ -228,12 +228,12 @@ use hal::mem::malloc::M_NOWAIT;
 use hal::mem::pool::PR_WAITOK;
 use hal::sync::rwlock::{RwMode, RwWitness, SharedRwlock, Witness, WriteWitness};
 use hal::sync::sleep::{PVM, tsleep_nsec, wakeup};
-use hal::sys::errno::Errno;
-use hal::sys::mman::{MADV_NORMAL, MADV_SEQUENTIAL, PROT_NONE, PROT_WRITE};
-use hal::sys::types::{Paddr, Vaddr};
 use hal::vm::param::{atop, trunc_page};
 use hal::vm::pmap::{PMAP_CANFAIL, PMAP_WC, PMAP_WIRED, PmapRef};
 use hal::vm::uvmexp::{UVMEXP, UvmExpCounters, counters_inc};
+use sysdefs::errno::Errno;
+use sysdefs::mman::{MADV_NORMAL, MADV_SEQUENTIAL, PROT_NONE, PROT_WRITE};
+use sysdefs::types::{Paddr, Vaddr};
 
 use super::amap::{
     AMAP_SHARED, Amap, AmapRef, amap_add, amap_chunk_alloc, amap_lookup, amap_lookups,
@@ -2479,9 +2479,9 @@ mod tests {
 
     use hal::ds::tree::Tree;
     use hal::sync::rwlock::{RW_READ, RW_WRITE, ReadGuard, Rwlocked, WriteGuard};
-    use hal::sys::mman::{PROT_EXEC, PROT_READ};
-    use hal::sys::types::Vsize;
     use hal::vm::uvmexp::counters_read;
+    use sysdefs::mman::{PROT_EXEC, PROT_READ};
+    use sysdefs::types::Vsize;
 
     use super::*;
     use crate::testutil;
@@ -3156,9 +3156,9 @@ mod tests {
         // a sequential one.
         let table = [
             (MADV_NORMAL, 3, 4),
-            (hal::sys::mman::MADV_RANDOM, 0, 0),
+            (sysdefs::mman::MADV_RANDOM, 0, 0),
             (MADV_SEQUENTIAL, 8, 7),
-            (hal::sys::mman::MADV_WILLNEED, 0, 0),
+            (sysdefs::mman::MADV_WILLNEED, 0, 0),
         ];
         for (advice, nback, nforw) in table {
             let a = UVMADVICE[advice as usize];

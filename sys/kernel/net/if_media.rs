@@ -149,7 +149,7 @@
 //! fill it (`ifmedia_init`, `ifmedia_add`, `ifmedia_set`, `ifmedia_delete_instance`) and to
 //! answer `SIOCGIFMEDIA`/`SIOCSIFMEDIA` (`ifmedia_ioctl`), `ifmedia_match` and
 //! `ifmedia_baudrate`, the interface speed of a media word. `<net/if_media.h>`'s words are
-//! `hal::sys::net_if_media`'s.
+//! `sysdefs::net_if_media`'s.
 //!
 //! Upstream: sys/net/if_media.h @ 3ce1f3f79392, sys/net/if_media.c @ 3ce1f3f79392
 //! LZ: sys/net/if_media.rs@3c62ede68802
@@ -167,7 +167,7 @@
 //! | the list, its count, the callbacks | `hal::sync::once::OnceStatic` (what `ifmedia_init` builds) | empty (`an_all_zero_cell_is_an_empty_one`) |
 //!
 //! ## Deviations
-//! - The description tables of `<net/if_media.h>` are left out (`hal::sys::net_if_media`'s
+//! - The description tables of `<net/if_media.h>` are left out (`sysdefs::net_if_media`'s
 //!   deviation), and with them `ifmedia_debug` and `ifmedia_printword` (`IFMEDIA_DEBUG` is
 //!   not defined); `ifmedia_get`'s "multiple match" message is printed under feature
 //!   `diagnostic` (`DIAGNOSTIC`).
@@ -216,14 +216,14 @@ use hal::cpu::intr::IPL_NET;
 use hal::mem::malloc::{M_NOWAIT, M_WAITOK, MArray, MBox};
 use hal::sync::mutex::{Mutexed, MutexedGuard};
 use hal::sync::once::OnceStatic;
-use hal::sys::errno::Errno;
-use hal::sys::net_if::{Ifmediareq, Ifreq};
-use hal::sys::net_if_media::{
+use hal::user::UserPtr;
+use sysdefs::errno::Errno;
+use sysdefs::net_if::{Ifmediareq, Ifreq};
+use sysdefs::net_if_media::{
     IFM_AUTO, IFM_INST_ANY, IFM_NMASK, IFM_NONE, IFM_TMASK, IFMEDIA_BAUDRATE_DESCRIPTIONS,
     ifm_inst, ifm_subtype,
 };
-use hal::sys::sockio::{SIOCGIFMEDIA, SIOCSIFMEDIA};
-use hal::user::UserPtr;
+use sysdefs::sockio::{SIOCGIFMEDIA, SIOCSIFMEDIA};
 
 use crate::assert::kpanic;
 use crate::base::prf::printf;
@@ -757,12 +757,12 @@ mod tests {
     use std::sync::atomic::AtomicU32;
     use std::{assert, assert_eq};
 
-    use hal::sys::net_if::{if_kbps, if_mbps};
-    use hal::sys::net_if_media::{
+    use sysdefs::net_if::{if_kbps, if_mbps};
+    use sysdefs::net_if_media::{
         IFM_10_T, IFM_100_TX, IFM_100G_SR4, IFM_1000_T, IFM_ACTIVE, IFM_AVALID, IFM_ETHER, IFM_FDX,
         IFM_IEEE80211, IFM_IEEE80211_HT_MCS0, ifm_makeword,
     };
-    use hal::sys::sockio::SIOCSIFADDR;
+    use sysdefs::sockio::SIOCSIFADDR;
 
     use super::*;
     use crate::net::if_::test_ifnet;
@@ -810,7 +810,7 @@ mod tests {
     }
 
     /// `ifmedia_ioctl` on the image of the request `req`.
-    fn ioctl<T: hal::user::AbiPod>(
+    fn ioctl<T: sysdefs::pod::AbiPod>(
         ifp: &'static Ifnet,
         ifm: &Ifmedia,
         cmd: u64,

@@ -138,15 +138,15 @@ use core::ptr;
 
 use hal::mem::malloc::{M_WAITOK, MArc};
 use hal::sync::sleep::INFSLP;
-use hal::sys::errno::Errno;
-use hal::sys::fcntl::{FREAD, FWRITE};
-use hal::sys::mount::{
+use hal::user::UserPtr;
+use sysdefs::errno::Errno;
+use sysdefs::fcntl::{FREAD, FWRITE};
+use sysdefs::mount::{
     Fid, ISOFSMNT_EXTATT, ISOFSMNT_GENS, ISOFSMNT_NOJOLIET, ISOFSMNT_NORRIP, ISOFSMNT_SESS,
     IsoArgs, MNAMELEN, MNT_FORCE, MNT_LOCAL, MNT_RDONLY, MNT_UPDATE, Statfs,
 };
-use hal::sys::syslimits::NAME_MAX;
-use hal::sys::types::{Daddr, Dev, Ino, Uid, major};
-use hal::user::UserPtr;
+use sysdefs::syslimits::NAME_MAX;
+use sysdefs::types::{Daddr, Dev, Ino, Uid, major};
 
 use crate::assert::kpanic;
 use crate::base::prf::printf;
@@ -199,7 +199,7 @@ const VD_DBLOCKS: i32 = (ISO_DEFAULT_BLOCK_SIZE >> DEV_BSHIFT) as i32;
 /// of a multi-session disc, which `iso_mountfs` asks of the device when the mount names
 /// none (the device may not support it). A private copy until N7 brings `<sys/cdio.h>`'s
 /// constants to the kernel, which replace it.
-const CDIOREADMSADDR: u64 = hal::sys::ioccom::_iowr::<i32>(b'c', 6);
+const CDIOREADMSADDR: u64 = sysdefs::ioccom::_iowr::<i32>(b'c', 6);
 
 /// `offsetof(struct iso_volume_descriptor, type)`.
 const VD_TYPE: usize = offset_of!(IsoVolumeDescriptor, type_);
@@ -317,7 +317,7 @@ pub fn cd9660_mountroot<G: ProcGlue>(rootdev: Dev, swapdev: Dev) -> Result<(), E
         <G::FileGlue as FileGlue>::set_rootvp(Some(rvp));
 
         let mp = vfs_rootmountalloc::<G>(b"cd9660", b"root_device")?;
-        let Some(mut args) = IsoArgs::from_bytes(&[0u8; IsoArgs::SIZE]) else {
+        let Some(mut args) = hal::user::pod_from_bytes::<IsoArgs>(&[0u8; IsoArgs::SIZE]) else {
             kpanic(format_args!("cd9660_mountroot: no iso_args"));
         };
         args.flags = ISOFSMNT_ROOT;
@@ -347,7 +347,7 @@ pub fn cd9660_mount<G: ProcGlue>(
     _ndp: &mut Nd<'_, G>,
     p: &Thread<G>,
 ) -> Result<(), Errno> {
-    let args = IsoArgs::from_bytes(data);
+    let args = hal::user::pod_from_bytes::<IsoArgs>(data);
 
     if mp.flag() & MNT_RDONLY == 0 {
         return Err(Errno::EROFS);
@@ -1154,9 +1154,9 @@ fn strncpy(dst: &mut [u8], src: &[u8]) {
 pub fn iso_disklabelspoof(
     dev: Dev,
     io: crate::dev::disk::Strat<'_>,
-    lp: &mut hal::sys::disklabel::Disklabel,
+    lp: &mut sysdefs::disklabel::Disklabel,
 ) -> Result<(), Errno> {
-    use hal::sys::disklabel::{
+    use sysdefs::disklabel::{
         DISKMAGIC, FS_ISO9660, MAXPARTITIONS, RAW_PART, dl_getdsize, dl_setpoffset, dl_setpsize,
     };
 
@@ -1207,9 +1207,9 @@ mod tests {
     use std::vec::Vec;
     use std::{assert, assert_eq, assert_ne, vec};
 
-    use hal::sys::dirent::Dirent;
-    use hal::sys::fcntl::O_RDONLY;
-    use hal::sys::types::makedev;
+    use sysdefs::dirent::Dirent;
+    use sysdefs::fcntl::O_RDONLY;
+    use sysdefs::types::makedev;
 
     use super::*;
     use crate::file::descrip::{sys_close, sys_read};
@@ -1531,7 +1531,7 @@ mod tests {
     fn a_continuation_area_in_the_supplementary_descriptor_s_block_is_read() {
         use core::sync::atomic::Ordering;
 
-        use hal::sys::stat::S_IFDIR;
+        use sysdefs::stat::S_IFDIR;
 
         use crate::fs::bio::BCSTATS;
         use crate::fs::isofs::cd9660::testcd9660::mkiso::{ce, er, px, sp};

@@ -70,7 +70,6 @@
 
 pub mod arch;
 pub mod machine;
-pub mod sys;
 #[forbid(unsafe_code)]
 pub mod syscall;
 
@@ -92,6 +91,8 @@ pub mod dev;
 pub mod ds;
 pub mod mem;
 pub mod sync;
+#[forbid(unsafe_code)]
+pub mod sysbytes;
 
 #[forbid(unsafe_code)]
 pub mod prf;

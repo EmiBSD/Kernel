@@ -128,13 +128,13 @@ use super::include::param::PAGE_MASK;
 use super::include::signal::Sigcontext;
 use crate::cpu::sig::{SigDelivery, SigreturnError};
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]
-use crate::sys::errno::Errno;
-use crate::sys::signal::SS_DISABLE;
-#[cfg(all(target_os = "none", target_arch = "aarch64"))]
-use crate::sys::signal::Sigset;
-use crate::sys::types::Register;
-#[cfg(all(target_os = "none", target_arch = "aarch64"))]
 use crate::user::UserPtr;
+#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+use sysdefs::errno::Errno;
+use sysdefs::signal::SS_DISABLE;
+#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+use sysdefs::signal::Sigset;
+use sysdefs::types::Register;
 
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]
 use super::trap::UserFrame;
@@ -286,8 +286,8 @@ mod tests {
     // The frame's arithmetic and the context checks on arm64's layouts (the host compiles
     // this file with arm64's headers, `arch/host/mod.rs`).
     use super::*;
-    use crate::sys::siginfo::Siginfo;
-    use crate::sys::signal::{SIGSEGV, SIGUSR1, Sigaltstack};
+    use sysdefs::siginfo::Siginfo;
+    use sysdefs::signal::{SIGSEGV, SIGUSR1, Sigaltstack};
 
     const SIGCODE: usize = 0x7f7f_f000;
     const COOKIE: u64 = 0x5a5a_1234_dead_beef;

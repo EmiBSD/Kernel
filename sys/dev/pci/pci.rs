@@ -92,7 +92,7 @@ use core::ptr::{self, NonNull};
 use core::slice;
 use core::sync::atomic::{AtomicI32, AtomicPtr, Ordering};
 
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 use crate::dev::pci::pci_map::{pci_mapreg_info, pci_mapreg_probe};
 use crate::dev::pci::pci_quirks::pci_lookup_quirkdata;

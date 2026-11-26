@@ -374,7 +374,7 @@ pub(crate) fn moves_to_hal(rel: &str) -> bool {
 /// A row that is a v2 crate (`kernel`, `abi`, `hal`): no per-row budget, `crate_errors` and
 /// `hal_ceiling` bound it instead.
 pub(crate) fn is_crate_row(name: &str) -> bool {
-    matches!(name, "kernel" | "abi" | "hal")
+    matches!(name, "kernel" | "abi" | "hal" | "lib/sysdefs")
 }
 
 /// What `--check` says of the crates: `kernel` and `abi` must be 0 (the compiler already

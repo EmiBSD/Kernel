@@ -15,7 +15,8 @@ stay a leaf.
 - Functions with OpenBSD-specific semantics are ported faithfully: `strlcpy`/`strlcat` return the
   length that *would* have been written; `crc32` table and polynomial; `timingsafe_bcmp` and
   `timingsafe_memcmp` in constant time (no early return, no data-dependent branches);
-  `explicit_bzero` via `write_volatile`; `getsn`, `scanc`, `skpc`.
+  `getsn`, `scanc`, `skpc`. (`explicit_bzero` is `hal::mem::explicit_bzero` since decision 55: this crate
+  is `#![forbid(unsafe_code)]`, so a function that needs `unsafe` does not belong in it.)
 - Signatures use slices (`&[u8]`, `&mut [u8]`) where C uses pointer + length; return `usize` where
   C returns `size_t`; C strings are `&[u8]` NUL-terminated or `&CStr`, never `&str` (kernel strings
   are not UTF-8).

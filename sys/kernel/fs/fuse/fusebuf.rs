@@ -71,8 +71,8 @@
 
 use hal::mem::pool::{PR_WAITOK, PoolArc};
 use hal::sync::sleep::{INFSLP, PWAIT, tsleep_nsec};
-use hal::sys::errno::Errno;
-use hal::sys::types::{Dev, Ino};
+use sysdefs::errno::Errno;
+use sysdefs::types::{Dev, Ino};
 
 use crate::assert::{kassert, kpanic};
 use crate::fs::fuse::fuse_device::fuse_device_queue_fbuf;

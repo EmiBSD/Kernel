@@ -123,7 +123,7 @@
 //! and an input queue `if_rcv` bound to a softnet task queue); passes received packets from
 //! the input queues to the driver's `if_input` and the protocols in the softnet threads
 //! (`if_input_process`, `if_input_proto`); and owns the `netisr` word (`if_netisr`).
-//! `<net/if.h>`'s constants and structures are `hal::sys::net_if`'s.
+//! `<net/if.h>`'s constants and structures are `sysdefs::net_if`'s.
 //!
 //! Locks and their order (the C's): the index map's `idxmaplk` (an rwlock, taken alone or
 //! inside the net lock), the net lock (`hal::sync::netlock::NETLOCK`: `if_input_process` shared,
@@ -313,11 +313,12 @@ use hal::sync::once::OnceStatic;
 use hal::sync::rwlock::{Guarded, RW_READ, RW_WRITE, RawRwlock, WriteWitness};
 use hal::sync::slot::ReadMostly;
 use hal::sync::smr::{self, SmrLink, SmrLinked, SmrPtr, SmrRead};
-use hal::sys::errno::Errno;
-use hal::sys::ioccom::{_ioc, IOC_IN, iocparm_len};
-use hal::sys::kernel::HZ;
-use hal::sys::net_bpf::{BPF_DIRECTION_IN, BPF_DIRECTION_OUT};
-use hal::sys::net_if::{
+use hal::user::UserPtr;
+use sysdefs::errno::Errno;
+use sysdefs::ioccom::{_ioc, IOC_IN, iocparm_len};
+use sysdefs::kernel::HZ;
+use sysdefs::net_bpf::{BPF_DIRECTION_IN, BPF_DIRECTION_OUT};
+use sysdefs::net_if::{
     IF_HDRPRIO_MAX, IF_HDRPRIO_MIN, IF_HDRPRIO_OUTER, IF_HDRPRIO_PACKET, IF_HDRPRIO_PAYLOAD,
     IFAN_ARRIVAL, IFAN_DEPARTURE, IFCAP_LRO, IFCAP_TSOv4, IFCAP_TSOv6, IFCAP_WOL, IFDESCRSIZE,
     IFF_CANTCHANGE, IFF_LOOPBACK, IFF_OACTIVE, IFF_POINTOPOINT, IFF_PROMISC, IFF_UP, IFG_ALL,
@@ -328,9 +329,9 @@ use hal::sys::net_if::{
     IfSffpage, IfTimeval, Ifconf, IfgAttrib, IfgReq, Ifgroupreq, Ifreq, SDL_DATA_OFFSET,
     SockaddrDl,
 };
-use hal::sys::net_route::{RTF_BLACKHOLE, RTF_REJECT, RTP_ANY};
-use hal::sys::socket::{AF_INET, AF_INET6, AF_LINK, AF_MAX, RT_TABLEID_MAX, Sockaddr};
-use hal::sys::sockio::{
+use sysdefs::net_route::{RTF_BLACKHOLE, RTF_REJECT, RTP_ANY};
+use sysdefs::socket::{AF_INET, AF_INET6, AF_LINK, AF_MAX, RT_TABLEID_MAX, Sockaddr};
+use sysdefs::sockio::{
     SIOCADDMULTI, SIOCAIFADDR, SIOCAIFGROUP, SIOCDELLABEL, SIOCDELMULTI, SIOCDIFADDR, SIOCDIFGROUP,
     SIOCDIFPARENT, SIOCDIFPHYADDR, SIOCDPWE3NEIGHBOR, SIOCDVNETID, SIOCGIFCONF, SIOCGIFDATA,
     SIOCGIFDESCR, SIOCGIFFLAGS, SIOCGIFGATTR, SIOCGIFGLIST, SIOCGIFGMEMB, SIOCGIFGROUP,
@@ -344,8 +345,7 @@ use hal::sys::sockio::{
     SIOCSPWE3CTRLWORD, SIOCSPWE3FAT, SIOCSPWE3NEIGHBOR, SIOCSRXHPRIO, SIOCSTXHPRIO,
     SIOCSVNETFLOWID, SIOCSVNETID,
 };
-use hal::sys::types::SaFamily;
-use hal::user::UserPtr;
+use sysdefs::types::SaFamily;
 
 use crate::assert::{kassert, kpanic};
 use crate::base::prf::{Str, printf};
@@ -1452,7 +1452,7 @@ pub fn test_ifnet(name: &[u8]) -> (&'static Ifnet, &'static TestDriver) {
 /// A packet header mbuf of priority `prio` and length `len` (no data).
 #[cfg(any(test, feature = "doubles"))]
 pub fn test_packet(prio: u8, len: i32) -> MbufBox {
-    let Some(m) = crate::net::mbuf::m_gethdr(crate::net::mbuf::M_DONTWAIT, hal::sys::mbuf::MT_DATA)
+    let Some(m) = crate::net::mbuf::m_gethdr(crate::net::mbuf::M_DONTWAIT, sysdefs::mbuf::MT_DATA)
     else {
         kpanic(format_args!("test_packet: no mbuf"));
     };
@@ -1970,7 +1970,7 @@ pub fn if_output_tso(
     rt: Option<&crate::net::route::Rtentry>,
     mtu: u32,
 ) -> Result<(), Errno> {
-    use hal::sys::net_if::{IFCAP_TSOv4, IFCAP_TSOv6};
+    use sysdefs::net_if::{IFCAP_TSOv4, IFCAP_TSOv6};
 
     let af = dst.family();
     let ifcap = match af {
@@ -2016,7 +2016,7 @@ pub fn if_output_tso(
 /// net lock (`net`). The link layer of the point-to-point drivers (`bsd`'s gif, gre, tun, ...:
 /// their `NetDriver::rtrequest`, N6.3b2).
 pub fn p2p_rtrequest(ifp: &Ifnet, req: u8, rt: &crate::net::route::Rtentry, net: &NetHeld<'_>) {
-    use hal::sys::net_route::{RTF_LLINFO, RTF_LOCAL, RTM_ADD};
+    use sysdefs::net_route::{RTF_LLINFO, RTF_LOCAL, RTM_ADD};
 
     if req != RTM_ADD || !rt.rt_flags.isset(RTF_LOCAL) {
         return;
@@ -2892,7 +2892,7 @@ fn with_request<R>(
 /// The request's structure `T` at its start ([`with_request`] made it aligned and at least
 /// [`ifioctl_need`] long, so this fails only for a command whose length is shorter than its
 /// structure, which no `SIOC*` is: `EINVAL` then, never a short view).
-fn req_view<T: hal::user::AbiPod>(req: &mut [u8]) -> Result<&mut T, Errno> {
+fn req_view<T: sysdefs::pod::AbiPod>(req: &mut [u8]) -> Result<&mut T, Errno> {
     hal::mem::pod::view_mut::<T>(req, 0).ok_or(Errno::EINVAL)
 }
 
@@ -4834,7 +4834,7 @@ pub(crate) mod tests {
         let _g = setup();
         let (ifp, _) = fresh_ifnet(b"tmd0");
         if_attach(ifp);
-        let group = |n: u8| hal::sys::netinet_in::InAddr {
+        let group = |n: u8| sysdefs::netinet_in::InAddr {
             s_addr: u32::from_ne_bytes([224, 0, 0, n]),
         };
         let out = crate::testutil::malloc_out(M_IPMADDR);
@@ -4991,8 +4991,8 @@ pub(crate) mod tests {
 
     /// A `sockaddr_in` of `a.b.c.d`, leaked (an address's storage lives while it is linked):
     /// an `in_ifaddr`'s `ia_addr`, as `bsd` publishes it.
-    fn sin(a: [u8; 4]) -> &'static core::cell::Cell<hal::sys::socket::Sockaddr> {
-        let mut sa: hal::sys::socket::Sockaddr = hal::user::zeroed();
+    fn sin(a: [u8; 4]) -> &'static core::cell::Cell<sysdefs::socket::Sockaddr> {
+        let mut sa: sysdefs::socket::Sockaddr = hal::user::zeroed();
         sa.sa_len = 16;
         sa.sa_family = AF_INET;
         sa.sa_data[2..6].copy_from_slice(&a);
@@ -5000,7 +5000,7 @@ pub(crate) mod tests {
     }
 
     /// The bytes of a socket address.
-    fn bytes(sa: &core::cell::Cell<hal::sys::socket::Sockaddr>) -> std::vec::Vec<u8> {
+    fn bytes(sa: &core::cell::Cell<sysdefs::socket::Sockaddr>) -> std::vec::Vec<u8> {
         hal::user::bytes_of(core::slice::from_ref(&sa.get())).to_vec()
     }
 
@@ -5292,7 +5292,7 @@ pub(crate) mod tests {
             if_input_local(
                 ifp,
                 test_packet(0, 64),
-                hal::sys::socket::AF_UNSPEC,
+                sysdefs::socket::AF_UNSPEC,
                 None,
                 None
             ),
@@ -5361,9 +5361,9 @@ pub(crate) mod tests {
     // (`unix::tests::setup`), the interface layer reset as `setup` does, interfaces with a
     // `TestDriver` attached by name, the user's memory the host double's.
 
-    use hal::sys::net_if::{IFF_RUNNING, IfLaddrreq, IfParent, Ifaliasreq, Ifmediareq};
-    use hal::sys::socket::{AF_UNIX, SOCK_DGRAM};
-    use hal::sys::sockio::{SIOCGIFPARENT, SIOCGLIFPHYADDR};
+    use sysdefs::net_if::{IFF_RUNNING, IfLaddrreq, IfParent, Ifaliasreq, Ifmediareq};
+    use sysdefs::socket::{AF_UNIX, SOCK_DGRAM};
+    use sysdefs::sockio::{SIOCGIFPARENT, SIOCGLIFPHYADDR};
 
     use crate::fs::testfs::TestGlue;
 
@@ -5412,7 +5412,7 @@ pub(crate) mod tests {
     }
 
     /// A request structure `T` whose first bytes are the interface name `name`.
-    fn named<T: hal::user::AbiPod>(name: &[u8]) -> T {
+    fn named<T: sysdefs::pod::AbiPod>(name: &[u8]) -> T {
         let mut r: T = hal::user::zeroed();
         hal::user::bytes_of_mut(core::slice::from_mut(&mut r))[..name.len()].copy_from_slice(name);
         r
@@ -5420,7 +5420,7 @@ pub(crate) mod tests {
 
     /// `ifioctl(NULL, cmd, req, p)` on the request structure `req` (the kernel's own request,
     /// no socket).
-    fn ioctl<T: hal::user::AbiPod>(p: &Thread<Tg>, cmd: u64, req: &mut T) -> Result<(), Errno> {
+    fn ioctl<T: sysdefs::pod::AbiPod>(p: &Thread<Tg>, cmd: u64, req: &mut T) -> Result<(), Errno> {
         assert_eq!(iocparm_len(cmd) as usize, size_of::<T>(), "{cmd:#x}");
         ifioctl::<Tg>(
             None,
@@ -6071,7 +6071,7 @@ pub(crate) mod tests {
         }
         // A void command's 8 bytes: read as an ifreq of a zeroed copy (no name: none found).
         let mut word = [0u8; 8];
-        let void = hal::sys::ioccom::_io(b'i', 200);
+        let void = sysdefs::ioccom::_io(b'i', 200);
         assert_eq!(ifioctl::<Tg>(None, void, &mut word, p), Err(Errno::ENXIO));
         // A short, misaligned request in place of an if_afreq still reaches its interface.
         let (_ifp, _) = listed_ifnet(b"twh0");

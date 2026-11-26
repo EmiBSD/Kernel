@@ -80,7 +80,7 @@ use core::ptr;
 use core::sync::atomic::Ordering;
 
 #[cfg(feature = "nfsclient")]
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 use crate::arch::amd64::amd64::bus_dma::bus_dma_init;
 use crate::arch::amd64::amd64::cpu::{RDRAND_TMO, rdrand};

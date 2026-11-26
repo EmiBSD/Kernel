@@ -147,17 +147,17 @@ use core::ptr;
 
 use hal::arch::current::param::PAGE_SIZE;
 use hal::mem::pool::PoolArc;
-use hal::sys::errno::Errno;
-use hal::sys::fcntl::{FWRITE, Flock, O_APPEND};
-use hal::sys::mount::{MNT_NOATIME, MNT_RDONLY};
-use hal::sys::stat::{APPEND, IMMUTABLE, S_ISTXT};
-use hal::sys::syslimits::LINK_MAX;
-use hal::sys::types::{Daddr, Gid, Mode, Nlink, Off, Register, Uid};
-use hal::sys::unistd::{
+use hal::vm::param::round_page;
+use sysdefs::errno::Errno;
+use sysdefs::fcntl::{FWRITE, Flock, O_APPEND};
+use sysdefs::mount::{MNT_NOATIME, MNT_RDONLY};
+use sysdefs::stat::{APPEND, IMMUTABLE, S_ISTXT};
+use sysdefs::syslimits::LINK_MAX;
+use sysdefs::types::{Daddr, Gid, Mode, Nlink, Off, Register, Uid};
+use sysdefs::unistd::{
     _PC_CHOWN_RESTRICTED, _PC_FILESIZEBITS, _PC_LINK_MAX, _PC_NAME_MAX, _PC_NO_TRUNC,
     _PC_TIMESTAMP_RESOLUTION,
 };
-use hal::vm::param::round_page;
 
 use crate::assert::{kassert, kpanic};
 use crate::file::event::{
@@ -585,7 +585,7 @@ pub fn tmpfs_getattr<G: ProcGlue>(vp: &'static Vnode<G>, vap: &mut Vattr) -> Res
     vap.va_rdev = if vp.vtype() == VBLK || vp.vtype() == VCHR {
         node.rdev()
     } else {
-        VNOVAL as hal::sys::types::Dev
+        VNOVAL as sysdefs::types::Dev
     };
     vap.va_bytes = round_page(node.tn_size.get() as usize) as u64;
     vap.va_filerev = VNOVAL as u64;
@@ -620,7 +620,7 @@ pub fn tmpfs_setattr<G: ProcGlue>(
         || vap.va_blocksize != i64::from(VNOVAL)
         || goodtime(&vap.va_ctime)
         || vap.va_gen != VNOVAL as u64
-        || vap.va_rdev != VNOVAL as hal::sys::types::Dev
+        || vap.va_rdev != VNOVAL as sysdefs::types::Dev
         || vap.va_bytes != VNOVAL as u64
     {
         return Err(Errno::EINVAL);
@@ -2417,7 +2417,7 @@ macro_rules! tmpfs_common_slots {
             mode: i32,
             cred: crate::fs::vops::Cred<'_>,
             _p: &crate::proc::Thread<G>,
-        ) -> Result<(), hal::sys::errno::Errno> {
+        ) -> Result<(), sysdefs::errno::Errno> {
             crate::fs::tmpfs::tmpfs_vnops::tmpfs_access(vp, mode, cred)
         }
         fn getattr(
@@ -2426,7 +2426,7 @@ macro_rules! tmpfs_common_slots {
             vap: &mut crate::fs::vnode::Vattr,
             _cred: crate::fs::vops::Cred<'_>,
             _p: &crate::proc::Thread<G>,
-        ) -> Result<(), hal::sys::errno::Errno> {
+        ) -> Result<(), sysdefs::errno::Errno> {
             crate::fs::tmpfs::tmpfs_vnops::tmpfs_getattr(vp, vap)
         }
         fn setattr(
@@ -2435,40 +2435,40 @@ macro_rules! tmpfs_common_slots {
             vap: &mut crate::fs::vnode::Vattr,
             cred: crate::fs::vops::Cred<'_>,
             p: &crate::proc::Thread<G>,
-        ) -> Result<(), hal::sys::errno::Errno> {
+        ) -> Result<(), sysdefs::errno::Errno> {
             crate::fs::tmpfs::tmpfs_vnops::tmpfs_setattr(vp, vap, cred, p)
         }
         fn inactive(
             &self,
             vp: &'static crate::fs::vnode::Vnode<G>,
             p: Option<&crate::proc::Thread<G>>,
-        ) -> Result<(), hal::sys::errno::Errno> {
+        ) -> Result<(), sysdefs::errno::Errno> {
             crate::fs::tmpfs::tmpfs_vnops::tmpfs_inactive(vp, p)
         }
         fn reclaim(
             &self,
             vp: &'static crate::fs::vnode::Vnode<G>,
             _p: Option<&crate::proc::Thread<G>>,
-        ) -> Result<(), hal::sys::errno::Errno> {
+        ) -> Result<(), sysdefs::errno::Errno> {
             crate::fs::tmpfs::tmpfs_vnops::tmpfs_reclaim(vp)
         }
         fn lock(
             &self,
             vp: &'static crate::fs::vnode::Vnode<G>,
             flags: i32,
-        ) -> Result<(), hal::sys::errno::Errno> {
+        ) -> Result<(), sysdefs::errno::Errno> {
             crate::fs::tmpfs::tmpfs_vnops::tmpfs_lock(vp, flags)
         }
         fn unlock(
             &self,
             vp: &'static crate::fs::vnode::Vnode<G>,
-        ) -> Result<(), hal::sys::errno::Errno> {
+        ) -> Result<(), sysdefs::errno::Errno> {
             crate::fs::tmpfs::tmpfs_vnops::tmpfs_unlock(vp)
         }
         fn print(
             &self,
             vp: &'static crate::fs::vnode::Vnode<G>,
-        ) -> Result<(), hal::sys::errno::Errno> {
+        ) -> Result<(), sysdefs::errno::Errno> {
             crate::fs::tmpfs::tmpfs_vnops::tmpfs_print(vp)
         }
         fn islocked(&self, vp: &'static crate::fs::vnode::Vnode<G>) -> i32 {
@@ -2697,12 +2697,12 @@ mod tests {
     use std::vec::Vec;
     use std::{assert, assert_eq, assert_ne, vec};
 
-    use hal::sys::dirent::Dirent;
-    use hal::sys::fcntl::{AT_FDCWD, AT_REMOVEDIR, FREAD, O_CREAT, O_RDWR};
-    use hal::sys::mount::Statfs;
-    use hal::sys::stat::{S_IFCHR, S_IFIFO};
-    use hal::sys::types::makedev;
     use hal::user::UserPtr;
+    use sysdefs::dirent::Dirent;
+    use sysdefs::fcntl::{AT_FDCWD, AT_REMOVEDIR, FREAD, O_CREAT, O_RDWR};
+    use sysdefs::mount::Statfs;
+    use sysdefs::stat::{S_IFCHR, S_IFIFO};
+    use sysdefs::types::makedev;
 
     use super::*;
     use crate::file::descrip::{sys_close, sys_read, sys_write};
@@ -2860,7 +2860,7 @@ mod tests {
         assert_eq!((va.va_nlink, va.va_size, va.va_bytes), (1, 0, 0));
         assert_eq!(va.va_fileid, vptonode(vp).tn_id.get());
         assert_eq!(va.va_blocksize, PAGE_SIZE as i64);
-        assert_eq!(va.va_rdev, VNOVAL as hal::sys::types::Dev);
+        assert_eq!(va.va_rdev, VNOVAL as sysdefs::types::Dev);
         assert_eq!(
             stat(p, b"/").expect("stat /").va_size,
             TMPFS_DIRENT_CHARGE as u64,
@@ -3402,7 +3402,7 @@ mod tests {
             0,
             0o600,
             None,
-            VNOVAL as hal::sys::types::Dev,
+            VNOVAL as sysdefs::types::Dev,
         )
         .expect("a fifo node");
         assert_eq!(

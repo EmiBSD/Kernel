@@ -75,7 +75,7 @@
 //!   or all-zero word, the reduction by the low bit of `V` likewise), with no branch on the
 //!   data or the key; the loops run over the 128 bit positions and the data length.
 
-use libkern::explicit_bzero;
+use hal::mem::explicit_bzero;
 
 use super::aes::AesCtx;
 use super::wipe;

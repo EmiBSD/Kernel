@@ -28,9 +28,13 @@ flowchart TB
     L4["4 · hardware · QEMU amd64 / arm64, real machines"]
     L0 -->|"syscall"| L1
     L1 -->|"kernel::api, one function per syscall"| L2
-    L1 -->|"hal::sys, hal::syscall's types"| L3
+    L1 -->|"hal::syscall's types"| L3
     L2 -->|"safe API"| L3
     L3 --> L4
+    S["S · sysdefs · sys/lib/sysdefs/ · a leaf crate under every layer (decision 54)<br/>#![forbid(unsafe_code)] · 0 unsafe · data only: OpenBSD's basic types, constants and #[repr(C)] ABI structures, AbiPod and abi_pod!<br/>depends on nothing · no state, no logic, no byte reinterpretation (that is hal::user and hal::sysbytes)"]
+    L1 -->|"data"| S
+    L2 -->|"data"| S
+    L3 -->|"data"| S
     B["bsd · sys/ · the LZ tree, legacy · 10,196 unsafe at the N3 close → the crate is deleted at N9<br/>boots and passes every smoke throughout · calls kernel and hal, never the reverse<br/>registers at boot: the bridge impls, the sysent[] rows (LegacySyscalls) · calls abi_init (decision 47)"]
     B -->|"calls down"| L2
     B -->|"calls down"| L3
@@ -55,7 +59,9 @@ sequenceDiagram
 ```
 
 
-Dependencies, one direction: `bsd → abi → kernel → hal` and `bsd → kernel`, `bsd → hal`;
+Dependencies, one direction: `bsd → abi → kernel → hal` and `bsd → kernel`, `bsd → hal`, and every one of
+these crates `→ sysdefs` (decision 54, the user, 2026-11-26: the basic types in one leaf crate under every
+layer, instead of each layer inventing its own; `abi` names it freely, and `hal` holds only mechanism);
 `abi` calls the kernel directly, and only through `kernel::api`, one function per system
 call (decision 52: the `KernelApi` table of `hal::api`, needed while `abi` was a loadable
 module, is gone, so a system call is a direct call where it was an indirect one). Only the
@@ -69,17 +75,22 @@ implementations) exist only as registrations, made by `bsd`'s boot glue before `
 |---|---|---|---|
 | `hal` | `sys/hal/` | the only `unsafe` of the system, every site with a soundness proof, Miri on its host tests | the hardware primitives (page tables, traps, context switch, the interrupt level, ports and MMIO, caches, `bus_dma`'s hardware side, early boot: moved in from `sys/arch` and `sys/machine` with the kernel owner of each boundary, decision 26; the drivers of `sys/arch` go to `kernel::dev`, decision 28), the host test double (`sys/arch/host`), the constant headers of `sys/sys/` (decision 27: 18 at N2, `types.rs` at N3.1), the pmaps behind `hal::Pmap` (N3.1), and the runtime written new: `Mutexed<T>`, `Rwlocked<T>`, `SharedRwlock` with `Guarded` cells and witnesses (locks that own their data), `TypedPool<T>`/`PoolArc<T>`/`PoolBox<T>`, `MBox<T>`, `MArray<T>`, `KmBuf` (owned memory), `MappedBytes` (a byte view of busy frames, N3.4), `OnceStatic<T>` (the init-once static that replaces `StaticCell`), `List`/`Tree` over `'static` elements (N3.3) and the owned intrusive trees and lists (N3.5), written new for `kernel::vm` (`queue.rs`, `tree.rs`, `subr_tree.rs` stay in `bsd` for their legacy users), `PerCpu<T>`, `Smr`, `Refcnt`, `UserPtr<T>` with `abi_pod!` (typed copyin/copyout), `Mmio<Regs>`, `DmaBuf`, the interrupt-level guard, the console primitive, the bridge registry |
 | `kernel` | `sys/kernel/` | **0**, `#![forbid(unsafe_code)]` at the root: the compiler refuses any | every decision the operating system makes: memory (vm), processes, scheduler, signals, descriptors, kqueue, pipes, VFS and the file systems, the network stack, the drivers' logic, crypto, pf, pledge, unveil, exec. Its own types, ownership first, no C shape |
+| `sysdefs` | `sys/lib/sysdefs/` | **0**, `#![forbid(unsafe_code)]` at the root; depends on nothing | OpenBSD's basic types, constants and `#[repr(C)]` ABI structures (what was `hal::sys`, 72 modules), `AbiPod` and `abi_pod!` (`pod`), the page geometry (`param`): data shapes only, no logic, no state; the byte views of them (`bytes_of`, `pod_from_bytes`, `AbiBytes`, `hal::sysbytes`) are `hal`'s, because a reinterpretation of bytes is `unsafe` |
 | `abi` | `sys/abi/`, linked into the kernel image (decision 47; the loadable module of decision 22 until the N5 close) | **0**, `#![forbid(unsafe_code)]` (the user allowed `unsafe` here; none is needed: `UserPtr` is safe) | OpenBSD's userland interface, byte-identical: the syscall table, the `#[repr(C)]` structs (`stat`, `kevent`, `sockaddr`, `kinfo_*`, ...), ioctl and sysctl encodings, errno (the constant headers through `hal`, decision 27). Translation only (decision 21): bytes to the kernel's types, one kernel entry point per syscall, the `Result` to an errno; no check on what a value means, no state |
 | `bsd` | `sys/` (the LZ tree, today's crate) | 10,196 in 1,069 files at the N3 close (`unsafe-report`, 2026-10-18; 10,583 in 1,103 at the N2 close, 10,604 in 1,161 before N2): 1,538 of them the hardware, the host double and the lists and trees that have not moved yet, the other 8,658 legacy (8,501 outside `unsafe-core.toml`) (a file counts as `hal` only once it compiles there), **0 files at N9** | what gets replaced. It keeps booting, running every smoke and `diff-openbsd` throughout; it links the three crates and calls down into them; the kernel crate never calls it except through a registered bridge (0.3) |
 
 The boot loaders (`sys/stand`, `sys/lib/libsa`, `sys/arch/*/stand`: 621 `unsafe`) are separate
-binaries that run before the kernel; they are outside the four crates and unchanged. `libkern`
-and `libz` stay crates of their own, leaves below `hal`; `StaticCell` stays in `libkern` (`hal`
-depends on it, so it cannot move up) and `hal::OnceStatic` replaces its uses one by one.
+binaries that run before the kernel; they are outside the four crates and unchanged. `libkern`,
+`libz` and `sysdefs` stay crates of their own, leaves below `hal`, and since decision 55 (the
+user, 2026-11-26) each is `#![forbid(unsafe_code)]` at its root: `explicit_bzero` is
+`hal::mem::explicit_bzero`, and `StaticCell` is `bsd`'s (`sys/sys/staticcell.rs`, dying with its
+last user at N9) and `libsa`'s (the boot loaders' own copy; `libsa` is the one crate under
+`sys/lib/` that keeps `unsafe`, as the boot loaders' exception). `hal::OnceStatic` replaces
+`StaticCell`'s uses one by one.
 
 Dependencies, one direction: `bsd -> kernel -> hal`; `abi -> kernel` (`kernel::api` alone)
-and `abi -> hal` (`hal::sys`, `hal::syscall`'s types and the handler's registration, decision
-52); only the image crate names `abi`; plus `libkern`/`libz` under `kernel`. `hal` depends on nothing of ours but `libkern`. No cycle: a kernel-to-legacy call is a bridge.
+and `abi -> hal` (`hal::syscall`'s types and the handler's registration, decision
+52); only the image crate names `abi`; plus `libkern`/`libz` under `kernel`; and all of them `-> sysdefs`. `hal` depends on nothing of ours but `libkern` and `sysdefs`. No cycle: a kernel-to-legacy call is a bridge.
 
 ### 0.2 What the compiler guarantees
 
@@ -94,7 +105,7 @@ and `abi -> hal` (`hal::sys`, `hal::syscall`'s types and the handler's registrat
   branches on anything but the syscall number, its own conversion's `Ok`/`Err` and the byte
   layout, that calls more than one `kernel` entry point, or that exceeds the per-syscall line
   limit (decision 21), and on a path into `kernel` outside `kernel::api` or into `hal`
-  outside `hal::sys::*`, `hal::syscall`'s types and `set_handler` (R6, decisions 47 and 52:
+  outside `hal::syscall`'s types and `set_handler` (`sysdefs` is free, decision 54; R6, decisions 47 and 52:
   linked into the image, `abi` shares `hal`'s and `kernel`'s statics; decision 53 adds
   `UserRegs`, `Gpr` and `ChildFn`, with which `abi::arch::<arch>` owns the system call
   convention and `hal`'s trap interprets nothing userland sends).

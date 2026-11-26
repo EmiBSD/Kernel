@@ -165,7 +165,7 @@ use hal::sync::sleep::{PCATCH, PRIBIO, wakeup};
 
 use crate::assert::kpanic;
 use crate::base::prf::{Str, printf};
-use crate::sys::errno::Errno;
+use sysdefs::errno::Errno;
 
 /// `ER_ALLOC`: region descriptor dynamically allocated.
 pub const ER_ALLOC: i32 = 0x01;

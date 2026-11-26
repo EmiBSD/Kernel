@@ -45,7 +45,7 @@ pub mod xform_ipcomp;
 
 /// `explicit_bzero(&x, sizeof(x))` for a context that is a plain value: overwrites it with its
 /// default (all zero) and keeps the compiler from proving the store dead, so the secret it held
-/// does not outlive the call. The byte buffers use `libkern::explicit_bzero`.
+/// does not outlive the call. The byte buffers use `hal::mem::explicit_bzero`.
 pub fn wipe<T: Default>(x: &mut T) {
     *x = T::default();
     core::hint::black_box(&*x);

@@ -3736,12 +3736,12 @@ check-hal:
 
 # sys/abi/ holds no logic: no loop, branches only on nr or Ok/Err/Some/None, at most one kernel
 # call and 40 lines per fn, no state (decision 25), and names kernel only through kernel::api
-# and hal only through hal::sys, hal::syscall's types and set_handler (R6, decisions 47 and
+# and hal only through hal::syscall's types and set_handler, sysdefs freely (R6, decisions 47 and
 # 52; cargo xtask abi-check)
 check-abi:
     {{xtask}} abi-check
 
-# Regenerate the system call tables from reference/.../syscalls.master (sys/hal/sys/syscall.rs,
+# Regenerate the system call tables from reference/.../syscalls.master (sys/lib/sysdefs/syscall.rs,
 # sys/sys/syscallargs.rs, kern/init_sysent.rs, kern/syscalls.rs). Rerun after porting a sys_*
 # function.
 gen-syscalls:

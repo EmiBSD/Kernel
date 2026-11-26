@@ -63,7 +63,7 @@
 //!   wiped on drop), so one that is freed without a `finalize` leaves no key either; the
 //!   contexts are therefore not `Copy`.
 
-use libkern::explicit_bzero;
+use hal::mem::explicit_bzero;
 
 use super::md5::{MD5_BLOCK_LENGTH, MD5_DIGEST_LENGTH, Md5Ctx};
 use super::sha1::{SHA1_BLOCK_LENGTH, SHA1_DIGEST_LENGTH, Sha1Ctx};

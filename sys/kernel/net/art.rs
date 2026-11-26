@@ -161,7 +161,7 @@ use hal::cpu::intr::IPL_SOFTNET;
 use hal::mem::pool::{PR_NOWAIT, PoolArc, TypedPool};
 use hal::sync::rwlock::Exclusive;
 use hal::sync::smr::{SmrArcLink, SmrArcWord, SmrCounted, SmrRead, SmrRef, SmrTaggedWord, Tag};
-use hal::sys::errno::Errno;
+use sysdefs::errno::Errno;
 
 use crate::assert::{kassert, kpanic};
 

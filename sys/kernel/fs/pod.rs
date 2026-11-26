@@ -18,7 +18,7 @@
 
 /* <CODE> */
 //! The views of the file systems' on-disk structures over a buffer's bytes: a structure made
-//! of bytes only (a `hal::abi_pod!` image, which the compiler lays out without padding) gets
+//! of bytes only (a `sysdefs::abi_pod!` image, which the compiler lays out without padding) gets
 //! from [`pod_view!`] its `SIZE`, `at(buf, off)` (the structure that starts at byte `off`,
 //! copied out; `None` when the buffer ends first) and `put(buf, off, &v)` (written back
 //! there; `false`, nothing written, when the buffer is too short): the C's cast of a pointer
@@ -32,7 +32,7 @@
 //! the macro's two functions are `hal::mem::pod::{at, put}` (where the network stack's in-place
 //! views, `hal::mem::pod::{view, view_mut}`, sit beside them).
 
-/// Gives an on-disk structure (a `hal::abi_pod!` of bytes) its views over a buffer's bytes:
+/// Gives an on-disk structure (a `sysdefs::abi_pod!` of bytes) its views over a buffer's bytes:
 /// `SIZE`, `at(buf, off)` (the structure that starts at byte `off`, copied out; `None` when
 /// `buf` ends before it does) and `put(buf, off, &v)` (written back there; `false`, nothing
 /// written, when `buf` is too short): the C's `(struct foo *)(bp->b_data + off)`.
@@ -72,7 +72,7 @@ mod tests {
         b: [u8; 2],
     }
 
-    hal::abi_pod!(Three { a: u8, b: [u8; 2] });
+    sysdefs::abi_pod!(Three { a: u8, b: [u8; 2] });
     pod_view!(Three);
 
     #[test]

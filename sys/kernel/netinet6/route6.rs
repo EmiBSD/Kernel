@@ -71,10 +71,10 @@ use core::mem::{offset_of, size_of};
 
 use hal::mem::pod;
 use hal::sync::netlock::NetHeld;
-use hal::sys::netinet_icmp6::{ICMP6_PARAM_PROB, ICMP6_PARAMPROB_HEADER};
-use hal::sys::netinet_in::IPPROTO_DONE;
-use hal::sys::netinet_ip6::Ip6Rthdr;
-use hal::sys::netinet6_ip6_var::Ip6statCounters;
+use sysdefs::netinet_icmp6::{ICMP6_PARAM_PROB, ICMP6_PARAMPROB_HEADER};
+use sysdefs::netinet_in::IPPROTO_DONE;
+use sysdefs::netinet_ip6::Ip6Rthdr;
+use sysdefs::netinet6_ip6_var::Ip6statCounters;
 
 use crate::net::if_var::Netstack;
 use crate::net::mbuf::MbufBox;
@@ -138,9 +138,9 @@ mod tests {
     // header.
 
     use hal::sync::netlock::NETLOCK;
-    use hal::sys::netinet_in::IPPROTO_UDP;
-    use hal::sys::netinet_ip6::{IPV6_VERSION, Ip6Hdr};
-    use hal::sys::netinet6_in6::In6Addr;
+    use sysdefs::netinet_in::IPPROTO_UDP;
+    use sysdefs::netinet_ip6::{IPV6_VERSION, Ip6Hdr};
+    use sysdefs::netinet6_in6::In6Addr;
 
     use super::*;
     use crate::net::mbuf::m_devget;
@@ -228,8 +228,8 @@ mod tests {
             assert_eq!(
                 take_icmp6_errors(),
                 [(
-                    hal::sys::netinet_icmp6::ICMP6_PARAM_PROB,
-                    hal::sys::netinet_icmp6::ICMP6_PARAMPROB_HEADER
+                    sysdefs::netinet_icmp6::ICMP6_PARAM_PROB,
+                    sysdefs::netinet_icmp6::ICMP6_PARAMPROB_HEADER
                 )]
             );
             assert_eq!(

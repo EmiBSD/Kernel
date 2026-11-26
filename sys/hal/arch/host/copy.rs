@@ -65,9 +65,9 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::vec::Vec;
 
 use super::param::{PAGE_MASK, PAGE_SIZE};
-use crate::sys::errno::Errno;
-use crate::sys::types::{Paddr, Vaddr};
 use crate::user::RawCopy;
+use sysdefs::errno::Errno;
+use sysdefs::types::{Paddr, Vaddr};
 
 /// Where the double's user address space starts.
 pub const USER_BASE: usize = 0x1000_0000;

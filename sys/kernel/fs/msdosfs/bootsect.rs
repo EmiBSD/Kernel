@@ -53,7 +53,7 @@
 //!
 //! ## Redesign
 //! - LZ's `#[repr(C)]` union `Bootsector` read through three `unsafe` member accessors
-//!   (`bs33`, `bs50`, `bs710`), and the `byte_view!` in-place casts -> three `hal::abi_pod!`
+//!   (`bs33`, `bs50`, `bs710`), and the `byte_view!` in-place casts -> three `sysdefs::abi_pod!`
 //!   images with `pod_view!`'s `at` (a copy of the 512 bytes, `None` past the end) and the
 //!   offset of their `bsBPB` ([`BSBPB_OFF`]). 0 `unsafe` (LZ: 3).
 
@@ -93,7 +93,7 @@ pub struct Bootsector33 {
     pub bsBootSectSig1: u8,
 }
 
-hal::abi_pod!(Bootsector33 {
+sysdefs::abi_pod!(Bootsector33 {
     bsJump: [u8; 3],
     bsOemName: [u8; 8],
     bsBPB: [u8; 19],
@@ -123,7 +123,7 @@ pub struct Extboot {
     pub exFileSysType: [u8; 8],
 }
 
-hal::abi_pod!(Extboot {
+sysdefs::abi_pod!(Extboot {
     exDriveNumber: u8,
     exReserved1: u8,
     exBootSignature: u8,
@@ -154,7 +154,7 @@ pub struct Bootsector50 {
     pub bsBootSectSig1: u8,
 }
 
-hal::abi_pod!(Bootsector50 {
+sysdefs::abi_pod!(Bootsector50 {
     bsJump: [u8; 3],
     bsOemName: [u8; 8],
     bsBPB: [u8; 25],
@@ -190,7 +190,7 @@ pub struct Bootsector710 {
     pub bsBootSectSig1: u8,
 }
 
-hal::abi_pod!(Bootsector710 {
+sysdefs::abi_pod!(Bootsector710 {
     bsJump: [u8; 3],
     bsOEMName: [u8; 8],
     bsBPB: [u8; 53],

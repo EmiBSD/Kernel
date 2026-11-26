@@ -110,10 +110,8 @@ use hal::mem::malloc::{M_WAITOK, MArray};
 use hal::sync::mutex::Mutexed;
 use hal::sync::once::OnceStatic;
 use hal::sync::seqlock::StrSlot;
-use hal::sys::errno::Errno;
-use hal::sys::sysctl::{
-    KERN_INTRCNT_CNT, KERN_INTRCNT_NAME, KERN_INTRCNT_NUM, KERN_INTRCNT_VECTOR,
-};
+use sysdefs::errno::Errno;
+use sysdefs::sysctl::{KERN_INTRCNT_CNT, KERN_INTRCNT_NAME, KERN_INTRCNT_NUM, KERN_INTRCNT_VECTOR};
 
 use crate::assert::kassert;
 use crate::base::sysctl::{SysctlNode, SysctlReq, rdint, rdquad, rdstring};

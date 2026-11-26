@@ -37,7 +37,7 @@ paths = [
     "sys/arch/host/**",
     # Runtime: the primitives every subsystem builds on.
     # Statics.
-    "sys/lib/libkern/staticcell.rs",
+    "sys/sys/staticcell.rs",
     # Locks and reference counts.
     "sys/sys/mutex.rs",
     "sys/kern/kern_lock.rs",
@@ -63,6 +63,4 @@ paths = [
     "sys/kern/subr_prf.rs",
     "sys/sys/systm.rs",
     "sys/kern/kern_tc.rs",
-    # The volatile store N1's redesign kept (redesigned, so core or forbid).
-    "sys/lib/libkern/explicit_bzero.rs",
 ]

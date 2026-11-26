@@ -152,18 +152,18 @@
 use core::marker::PhantomData;
 
 use hal::mem::malloc::MArc;
-use hal::sys::dirent::{DT_DIR, DT_REG, Dirent, MAXNAMLEN, dirent_size};
-use hal::sys::errno::Errno;
-use hal::sys::fcntl::Flock;
-use hal::sys::mount::{
+use sysdefs::dirent::{DT_DIR, DT_REG, Dirent, MAXNAMLEN, dirent_size};
+use sysdefs::errno::Errno;
+use sysdefs::fcntl::Flock;
+use sysdefs::mount::{
     MNT_NOATIME, MNT_WAIT, MSDOSFSMNT_LONGNAME, MSDOSFSMNT_NOWIN95, MSDOSFSMNT_SHORTNAME,
 };
-use hal::sys::stat::{
+use sysdefs::stat::{
     S_IFDIR, S_IRGRP, S_IROTH, S_IRUSR, S_IWGRP, S_IWOTH, S_IWUSR, S_IXGRP, S_IXOTH, S_IXUSR,
     SF_ARCHIVED, SF_SETTABLE,
 };
-use hal::sys::types::{Daddr, Dev, Gid, Mode, Nlink, Off, Register, Uid};
-use hal::sys::unistd::{
+use sysdefs::types::{Daddr, Dev, Gid, Mode, Nlink, Off, Register, Uid};
+use sysdefs::unistd::{
     _PC_CHOWN_RESTRICTED, _PC_LINK_MAX, _PC_NAME_MAX, _PC_NO_TRUNC, _PC_TIMESTAMP_RESOLUTION,
 };
 
@@ -1926,7 +1926,7 @@ pub fn msdosfs_strategy<G: ProcGlue>(vp: &'static Vnode<G>, bp: IoBuf) -> Result
 pub fn msdosfs_print<G: ProcGlue>(vp: &'static Vnode<G>) -> Result<(), Errno> {
     #[cfg(any(feature = "debug", feature = "diagnostic"))]
     {
-        use hal::sys::types::{major, minor};
+        use sysdefs::types::{major, minor};
         let dep = vtode(vp);
 
         crate::base::prf::printf(format_args!(
@@ -2580,11 +2580,11 @@ mod tests {
         use std::vec::Vec;
         use std::{assert, assert_eq, assert_ne, vec};
 
-        use hal::sys::fcntl::{FREAD, FWRITE, O_CREAT, O_RDONLY};
-        use hal::sys::mount::{MNT_RDONLY, MNT_WAIT, MSDOSFSMNT_LONGNAME};
-        use hal::sys::stat::SF_ARCHIVED;
-        use hal::sys::unistd::{_PC_LINK_MAX, _PC_NAME_MAX, _PC_TIMESTAMP_RESOLUTION};
         use hal::user::UserPtr;
+        use sysdefs::fcntl::{FREAD, FWRITE, O_CREAT, O_RDONLY};
+        use sysdefs::mount::{MNT_RDONLY, MNT_WAIT, MSDOSFSMNT_LONGNAME};
+        use sysdefs::stat::SF_ARCHIVED;
+        use sysdefs::unistd::{_PC_LINK_MAX, _PC_NAME_MAX, _PC_TIMESTAMP_RESOLUTION};
 
         use super::super::super::bpb::{getulong, getushort};
         use super::super::super::denode::WIN_MAXLEN;
@@ -2833,7 +2833,7 @@ mod tests {
 
         /// `DIRENT_SIZE` of an entry with a name of `namlen` bytes.
         fn dirent_size_of(namlen: usize) -> usize {
-            hal::sys::dirent::dirent_recsize(namlen)
+            sysdefs::dirent::dirent_recsize(namlen)
         }
 
         /// Writes everything back (`msdosfs_sync` with `MNT_WAIT`) and returns the disk as an
@@ -3376,7 +3376,7 @@ mod tests {
 
             // kevent(2): msdosfs_kqfilter hooks each filter on the vnode's klist.
             let _ = crate::file::event::kqueue_init::<TestGlue>();
-            let fd = sys_open(p, c("/README.TXT"), hal::sys::fcntl::O_RDWR, 0).expect("open");
+            let fd = sys_open(p, c("/README.TXT"), sysdefs::fcntl::O_RDWR, 0).expect("open");
             assert_eq!(sys_read(p, fd, UBUF, 1000), Ok(1000));
             let kfd = sys_kqueue(p).expect("kqueue");
             let changes = [

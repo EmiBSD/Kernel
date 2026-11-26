@@ -113,7 +113,7 @@
 //!   Here a [`Clist`] owns its ring: the counts, the cursors and the two `MArray<u8>` blocks
 //!   (`M_TTYS`, counted in `vmstat -m`'s `ttys` row as the C's) are a `Ring` inside a
 //!   `hal::sync::mutex::Mutexed` at `IPL_TTY`, the C's per-operation `spltty()` made a lock that
-//!   owns what it guards; `clfree` scrubs with `libkern::explicit_bzero` and frees by
+//!   owns what it guards; `clfree` scrubs with `hal::mem::explicit_bzero` and frees by
 //!   dropping the blocks.
 //! - `c_cc` and `c_cn` are also kept as relaxed words beside the ring ([`Clist::c_cc`],
 //!   [`Clist::c_cn`]), written under the ring's lock by every operation, for the readers the
@@ -699,10 +699,10 @@ impl Default for Clist {
 /// `explicit_bzero` of a ring's blocks before they are freed (by the caller's drop).
 fn scrub(mut r: Ring) -> Ring {
     if let Some(cs) = &mut r.cs {
-        libkern::explicit_bzero(cs);
+        hal::mem::explicit_bzero(cs);
     }
     if let Some(cq) = &mut r.cq {
-        libkern::explicit_bzero(cq);
+        hal::mem::explicit_bzero(cq);
     }
     r
 }

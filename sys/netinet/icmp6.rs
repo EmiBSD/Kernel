@@ -77,13 +77,13 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! Internet Control Message Protocol for IPv6: `<netinet/icmp6.h>`, `hal::sys::netinet_icmp6`
+//! Internet Control Message Protocol for IPv6: `<netinet/icmp6.h>`, `sysdefs::netinet_icmp6`
 //! re-exported whole (N6.5a); the counters' increments over `netinet6/icmp6.rs`'s
 //! `ICMP6COUNTERS`, which are the kernel's (`kernel::netinet6::ip6_var`, N6.5a).
 //!
 //! Upstream: sys/netinet/icmp6.h @ 3ce1f3f79392
 
-pub use hal::sys::netinet_icmp6::*;
+pub use sysdefs::netinet_icmp6::*;
 
 /// `icmp6stat_inc(c)`.
 #[inline]

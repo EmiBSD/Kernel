@@ -78,7 +78,7 @@
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use libkern::staticcell::StaticCell;
+use crate::staticcell::StaticCell;
 
 use crate::dev::set_errno;
 use crate::ether::{readether, sendether};

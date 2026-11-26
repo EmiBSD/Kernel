@@ -106,7 +106,7 @@
 
 /* <CODE> */
 //! Constants and structures defined by the internet system, per RFC 790, September 1981, and
-//! numerous additions: `<netinet/in.h>` (`hal::sys::netinet_in`, re-exported whole); and
+//! numerous additions: `<netinet/in.h>` (`sysdefs::netinet_in`, re-exported whole); and
 //! `netinet/in.c`, the Internet addresses of the interfaces, the kernel's since N6.4a
 //! (`kernel::netinet::in_`), with LZ's shapes for `bsd`'s callers.
 //!
@@ -132,11 +132,11 @@ use crate::sys::errno::Errno;
 use crate::sys::socket::Sockaddr;
 use crate::sys::socketvar::{SS_PRIV, Socket};
 
-pub use hal::sys::netinet_in::*;
 pub use kernel::netinet::in_::{
     in_broadcast, in_canforward, in_hasmulti, in_ifp2ia, in_len2mask, in_lookupmulti, in_mask2len,
     in_prefixlen2mask, in_socktrim,
 };
+pub use sysdefs::netinet_in::*;
 
 /// `satosin(sa)`: a generic `sockaddr` seen as a `sockaddr_in`.
 pub const fn satosin(sa: *mut Sockaddr) -> *mut SockaddrIn {

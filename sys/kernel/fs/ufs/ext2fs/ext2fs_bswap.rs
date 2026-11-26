@@ -72,7 +72,7 @@
 //! ## Redesign
 //! - `e2fs_i_bswap` reads the inode size from the kernel's in-core super-block
 //!   (`ext2fs::Ext2Superblock`, D-N5.6-3) where LZ's took `&MExt2fs`; the swappers are
-//!   otherwise LZ's, over the `hal::abi_pod!` images of `ext2fs.rs` and `ext2fs_dinode.rs`.
+//!   otherwise LZ's, over the `sysdefs::abi_pod!` images of `ext2fs.rs` and `ext2fs_dinode.rs`.
 
 use core::mem::size_of;
 

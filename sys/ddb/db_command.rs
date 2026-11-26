@@ -121,7 +121,7 @@
 use core::fmt;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 use crate::ddb::db_expr::db_expression;
 use crate::ddb::db_lex::{

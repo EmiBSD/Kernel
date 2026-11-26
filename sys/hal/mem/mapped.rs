@@ -213,13 +213,13 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::arch::current::param::PAGE_SIZE;
 use crate::assert::hal_panic;
-use crate::sys::errno::Errno;
-use crate::sys::mman::{PROT_READ, PROT_WRITE};
-use crate::sys::timetc::TimekeepAtomic;
-use crate::sys::types::{Paddr, Vaddr, Vsize};
 use crate::vm::pmap::{
     self, HAVE_PMAP_DIRECT, KernelMapper, PMAP_CANFAIL, PMAP_NOMMU, PMAP_WIRED, PageMd, VmProt,
 };
+use sysdefs::errno::Errno;
+use sysdefs::mman::{PROT_READ, PROT_WRITE};
+use sysdefs::timetc::TimekeepAtomic;
+use sysdefs::types::{Paddr, Vaddr, Vsize};
 
 /// The bytes of frames mapped into kernel virtual space, `len` of them from [`MappedBytes::va`]
 /// (the pager's window), as a slice; the drop removes the mappings it entered and gives the
@@ -630,7 +630,7 @@ static TIMEKEEP_VIEWED: AtomicBool = AtomicBool::new(false);
 
 impl KernelMapper {
     /// The page shared with userland for the timehands (`struct timekeep`), viewed at `va` as
-    /// the kernel writes it (`hal::sys::timetc::TimekeepAtomic`): `exec_timekeep_map`'s
+    /// the kernel writes it (`sysdefs::timetc::TimekeepAtomic`): `exec_timekeep_map`'s
     /// first call maps the timekeep object into the kernel map, wires it, and hands the
     /// address over (N4.8a; LZ wrote it through a raw `&mut` of the address).
     ///
@@ -722,8 +722,8 @@ mod tests {
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
     use super::*;
-    use crate::sys::mman::PROT_NONE;
     use crate::testutil;
+    use sysdefs::mman::PROT_NONE;
 
     /// The kernel map's token of this test process, and a window of a test's own (`slot`
     /// apart from the other tests' windows and the pmap tests' addresses).

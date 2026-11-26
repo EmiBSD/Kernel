@@ -91,7 +91,7 @@
 
 use alloc::vec::Vec;
 
-use libkern::staticcell::StaticCell;
+use libsa::staticcell::StaticCell;
 
 /// `BAPIV_ANCIENT`: MD old i386 bootblocks.
 pub const BAPIV_ANCIENT: i32 = 0x0000_0000;

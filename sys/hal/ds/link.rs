@@ -138,7 +138,8 @@ use crate::mem::pool::{PoolBox, Pooled};
 use crate::sync::mutex::Mutexed;
 use crate::sync::netlock::{NetHeld, NetLend};
 use crate::sync::rwlock::{Divisible, Exclusive, LockId, Witness};
-use crate::user::{AbiPod, pod_from_bytes, pod_to_bytes};
+use crate::user::{pod_from_bytes, pod_to_bytes};
+use sysdefs::pod::AbiPod;
 
 /// The longest socket address an [`SaLink`] reads (`struct sockaddr_dl`'s 32 bytes; the
 /// internet ones are 16 and 28): the size of [`SaBytes`]'s buffer, and the largest image
@@ -1899,7 +1900,7 @@ mod tests {
     /// a linked image.
     #[test]
     fn a_kernel_owned_address_reads_its_own_words() {
-        use crate::sys::netinet_in::{InAddr, SockaddrIn};
+        use sysdefs::netinet_in::{InAddr, SockaddrIn};
         let w = SaWords::new();
         let sin = SockaddrIn {
             sin_len: 16,

@@ -177,7 +177,8 @@ use crate::sys::socket::AF_INET;
 #[cfg(feature = "inet6")]
 use crate::sys::socket::AF_INET6;
 use crate::sys::systm::{kernel_lock, kernel_unlock};
-use libkern::{explicit_bzero, timingsafe_bcmp};
+use hal::mem::explicit_bzero;
+use libkern::timingsafe_bcmp;
 
 /// `struct espstat`: the ESP statistics as `net.inet.esp.stats` returns them.
 #[repr(C)]

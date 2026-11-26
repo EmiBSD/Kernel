@@ -98,7 +98,7 @@
 //! Upstream: sys/isofs/cd9660/cd9660_rrip.c @ 3ce1f3f79392
 //! LZ: sys/isofs/cd9660/cd9660_rrip.rs@3c62ede68802
 //!
-//! The entries are `hal::abi_pod!` images of byte arrays (as `iso.rs` has the volume
+//! The entries are `sysdefs::abi_pod!` images of byte arrays (as `iso.rs` has the volume
 //! descriptors), read out of the entry's bytes with `at(entry, 0)`; `at` failing is the C's
 //! `isonum_711(p->h.length) < sizeof(*p)`, since an entry's slice is exactly its length.
 //!
@@ -135,7 +135,7 @@
 //!   mount.
 //!
 //! ## Redesign
-//! - LZ's `from_bytes_impl!` views of the entries (an `unsafe` cast each) -> `hal::abi_pod!`
+//! - LZ's `from_bytes_impl!` views of the entries (an `unsafe` cast each) -> `sysdefs::abi_pod!`
 //!   images read by `fs::pod`'s `pod_view!` (a copy of 4 to 36 bytes per entry read, where
 //!   the C reads in place: D-N5.8-5's class).
 //! - LZ's lent continuation buffer (`b.data()`'s `unsafe` view, held as `&'static`) ->
@@ -150,9 +150,9 @@
 use core::marker::PhantomData;
 use core::sync::atomic::Ordering;
 
-use hal::sys::mount::MNAMELEN;
-use hal::sys::syslimits::NAME_MAX;
-use hal::sys::types::{Daddr, Dev, Off, major, makedev, minor};
+use sysdefs::mount::MNAMELEN;
+use sysdefs::syslimits::NAME_MAX;
+use sysdefs::types::{Daddr, Dev, Off, major, makedev, minor};
 
 use crate::assert::kpanic;
 use crate::base::prf::printf;
@@ -194,7 +194,7 @@ pub struct IsoSuspHeader {
     pub version: [u8; isodcl(3, 3)],
 }
 
-hal::abi_pod!(IsoSuspHeader {
+sysdefs::abi_pod!(IsoSuspHeader {
     type_: [u8; 2],
     length: [u8; 1],
     version: [u8; 1],
@@ -217,7 +217,7 @@ pub struct IsoRripAttr {
     pub gid: [u8; isodcl(28, 35)],
 }
 
-hal::abi_pod!(IsoRripAttr {
+sysdefs::abi_pod!(IsoRripAttr {
     h: IsoSuspHeader,
     mode: [u8; 8],
     links: [u8; 8],
@@ -238,7 +238,7 @@ pub struct IsoRripDevice {
     pub dev_t_low: [u8; isodcl(12, 19)],
 }
 
-hal::abi_pod!(IsoRripDevice {
+sysdefs::abi_pod!(IsoRripDevice {
     h: IsoSuspHeader,
     dev_t_high: [u8; 8],
     dev_t_low: [u8; 8],
@@ -270,7 +270,7 @@ pub struct IsoRripSlinkComponent {
     pub name: [u8; 1],
 }
 
-hal::abi_pod!(IsoRripSlinkComponent {
+sysdefs::abi_pod!(IsoRripSlinkComponent {
     cflag: [u8; 1],
     clen: [u8; 1],
     name: [u8; 1],
@@ -291,7 +291,7 @@ pub struct IsoRripSlink {
     pub component: [u8; isodcl(5, 5)],
 }
 
-hal::abi_pod!(IsoRripSlink {
+sysdefs::abi_pod!(IsoRripSlink {
     h: IsoSuspHeader,
     flags: [u8; 1],
     component: [u8; 1],
@@ -308,7 +308,7 @@ pub struct IsoRripAltname {
     pub flags: [u8; isodcl(4, 4)],
 }
 
-hal::abi_pod!(IsoRripAltname {
+sysdefs::abi_pod!(IsoRripAltname {
     h: IsoSuspHeader,
     flags: [u8; 1],
 });
@@ -324,7 +324,7 @@ pub struct IsoRripClink {
     pub dir_loc: [u8; isodcl(4, 11)],
 }
 
-hal::abi_pod!(IsoRripClink {
+sysdefs::abi_pod!(IsoRripClink {
     h: IsoSuspHeader,
     dir_loc: [u8; 8],
 });
@@ -340,7 +340,7 @@ pub struct IsoRripPlink {
     pub dir_loc: [u8; isodcl(4, 11)],
 }
 
-hal::abi_pod!(IsoRripPlink {
+sysdefs::abi_pod!(IsoRripPlink {
     h: IsoSuspHeader,
     dir_loc: [u8; 8],
 });
@@ -354,7 +354,7 @@ pub struct IsoRripReldir {
     pub h: IsoSuspHeader,
 }
 
-hal::abi_pod!(IsoRripReldir { h: IsoSuspHeader });
+sysdefs::abi_pod!(IsoRripReldir { h: IsoSuspHeader });
 pod_view!(IsoRripReldir);
 
 /// `ISO_SUSP_TSTAMP_FORM17`.
@@ -388,7 +388,7 @@ pub struct IsoRripTstamp {
     pub time: [u8; isodcl(5, 5)],
 }
 
-hal::abi_pod!(IsoRripTstamp {
+sysdefs::abi_pod!(IsoRripTstamp {
     h: IsoSuspHeader,
     flags: [u8; 1],
     time: [u8; 1],
@@ -405,7 +405,7 @@ pub struct IsoRripIdflag {
     pub flags: [u8; isodcl(4, 4)],
 }
 
-hal::abi_pod!(IsoRripIdflag {
+sysdefs::abi_pod!(IsoRripIdflag {
     h: IsoSuspHeader,
     flags: [u8; 1],
 });
@@ -427,7 +427,7 @@ pub struct IsoRripExtref {
     pub version: [u8; isodcl(7, 7)],
 }
 
-hal::abi_pod!(IsoRripExtref {
+sysdefs::abi_pod!(IsoRripExtref {
     h: IsoSuspHeader,
     len_id: [u8; 1],
     len_des: [u8; 1],
@@ -448,7 +448,7 @@ pub struct IsoRripOffset {
     pub skip: [u8; isodcl(6, 6)],
 }
 
-hal::abi_pod!(IsoRripOffset {
+sysdefs::abi_pod!(IsoRripOffset {
     h: IsoSuspHeader,
     check: [u8; 2],
     skip: [u8; 1],
@@ -469,7 +469,7 @@ pub struct IsoRripCont {
     pub length: [u8; isodcl(20, 27)],
 }
 
-hal::abi_pod!(IsoRripCont {
+sysdefs::abi_pod!(IsoRripCont {
     h: IsoSuspHeader,
     location: [u8; 8],
     offset: [u8; 8],
@@ -1292,7 +1292,7 @@ mod tests {
     use crate::fs::isofs::cd9660::cd9660_extern::{ISO_FTYPE_RRIP, IsoMntRef};
     use crate::fs::isofs::cd9660::testcd9660::{attach_image, image, rec, test_mnt, test_node};
     use crate::fs::testfs::TestGlue;
-    use hal::sys::stat::{S_IFCHR, S_IFDIR, S_IFLNK, S_IFREG};
+    use sysdefs::stat::{S_IFCHR, S_IFDIR, S_IFLNK, S_IFREG};
 
     /// A 733 field: the value little-endian, then big-endian.
     fn both32(v: u32) -> [u8; 8] {

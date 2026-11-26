@@ -77,7 +77,7 @@
 use alloc::vec::Vec;
 use core::ptr;
 
-use libkern::staticcell::StaticCell;
+use libsa::staticcell::StaticCell;
 
 /// `FDT_MAGIC`.
 pub const FDT_MAGIC: u32 = 0xd00d_feed;

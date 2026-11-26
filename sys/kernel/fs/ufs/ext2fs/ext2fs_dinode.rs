@@ -133,7 +133,7 @@
 //! - `e2di_rdev` and `e2di_shortlink` (macros for `e2di_blocks[0]` and `e2di_blocks`) are
 //!   [`Ext2Inode`]'s accessors ([`Ext2Inode::e2di_rdev`], [`Ext2Inode::e2di_shortlink`]): the
 //!   two byte views of LZ's `Ext2fsDinode` (two `unsafe` slices) and its `copy_nonoverlapping`
-//!   copies (two more) go; [`Ext2fsDinode`] is a `hal::abi_pod!` image.
+//!   copies (two more) go; [`Ext2fsDinode`] is a `sysdefs::abi_pod!` image.
 
 use core::cmp::min;
 use core::mem::{offset_of, size_of};
@@ -232,7 +232,7 @@ pub struct Ext2fsDinode {
     pub e2di_version_hi: u32,
 }
 
-hal::abi_pod!(Ext2fsDinode {
+sysdefs::abi_pod!(Ext2fsDinode {
     e2di_mode: u16,
     e2di_uid_low: u16,
     e2di_size: u32,

@@ -179,7 +179,7 @@
 //!   softnet's stack, the C's arguments; it answers the packet back or `None` when it took it.
 //! - `udp_sysctl`'s port bitmaps go through `in_pcb::in_sysctl_ports` (the C's
 //!   `M_SYSCTL` buffer, shared with TCP), closing LZ's stack-buffer deviation;
-//!   `udp_sysctl_udpstat` builds `struct udpstat` (`hal::sys`'s image) from the per-CPU
+//!   `udp_sysctl_udpstat` builds `struct udpstat` (`sysdefs`'s image) from the per-CPU
 //!   counters in their order.
 //! - `udbtable` and `udb6table` are members of the glue's network tables (`NetTables`),
 //!   reached by [`udbtable`] and [`udb6table`] (pf's socket lookup and `kern.file`'s walk,
@@ -206,30 +206,30 @@ use core::sync::atomic::{AtomicI32, Ordering};
 use hal::mem::pod;
 use hal::mem::pool::PoolArc;
 use hal::sync::netlock::NetHeld;
-use hal::sys::errno::Errno;
-use hal::sys::netinet_icmp6::{ICMP6_DST_UNREACH, ICMP6_DST_UNREACH_NOPORT};
-use hal::sys::netinet_in::{
+use hal::user::bytes_of;
+use sysdefs::errno::Errno;
+use sysdefs::netinet_icmp6::{ICMP6_DST_UNREACH, ICMP6_DST_UNREACH_NOPORT};
+use sysdefs::netinet_in::{
     INADDR_ANY, IP_IPSECFLOWINFO, IP_RECVDSTPORT, IP_SENDSRCADDR, IPPROTO_DONE, IPPROTO_IP,
     IPPROTO_IPV6, IPPROTO_UDP, InAddr, SockaddrIn,
 };
-use hal::sys::netinet_ip::{IP_MAXPACKET, Ip};
-use hal::sys::netinet_ip_icmp::{ICMP_MINLEN, ICMP_UNREACH, ICMP_UNREACH_PORT};
-use hal::sys::netinet_ip_var::Ipovly;
-use hal::sys::netinet_ip6::Ip6Hdr;
-use hal::sys::netinet_udp::Udphdr;
-use hal::sys::netinet_udp_var::{
+use sysdefs::netinet_ip::{IP_MAXPACKET, Ip};
+use sysdefs::netinet_ip_icmp::{ICMP_MINLEN, ICMP_UNREACH, ICMP_UNREACH_PORT};
+use sysdefs::netinet_ip_var::Ipovly;
+use sysdefs::netinet_ip6::Ip6Hdr;
+use sysdefs::netinet_udp::Udphdr;
+use sysdefs::netinet_udp_var::{
     UDPCTL_BADDYNAMIC, UDPCTL_CHECKSUM, UDPCTL_RECVSPACE, UDPCTL_ROOTONLY, UDPCTL_SENDSPACE,
     UDPCTL_STATS, Udpiphdr, Udpstat,
 };
-use hal::sys::netinet6_in6::{
+use sysdefs::netinet6_in6::{
     IPV6_RECVDSTPORT, In6Addr, SA6_ANY, SockaddrIn6, in6_are_addr_equal, in6_is_addr_unspecified,
 };
-use hal::sys::socket::{
+use sysdefs::socket::{
     AF_INET, AF_INET6, CMSG_DATA_OFFSET, Cmsghdr, PF_INET6, SO_BROADCAST, SO_REUSEADDR,
     SO_REUSEPORT, SO_TIMESTAMP, cmsg_align, cmsg_len,
 };
-use hal::sys::sysctl::SysctlBoundedArgs;
-use hal::user::bytes_of;
+use sysdefs::sysctl::SysctlBoundedArgs;
 
 use crate::assert::{kassert, kpanic};
 use crate::base::sysctl::{SysctlReq, bounded_arr, rdstruct};
@@ -1641,9 +1641,9 @@ pub(crate) mod testudp {
     use std::vec::Vec;
 
     use hal::sync::netlock::{NETLOCK, NetHeld};
-    use hal::sys::mbuf::{MT_CONTROL, MT_DATA, MT_SONAME};
-    use hal::sys::socket::SOCK_DGRAM;
-    use hal::user::AbiPod;
+    use sysdefs::mbuf::{MT_CONTROL, MT_DATA, MT_SONAME};
+    use sysdefs::pod::AbiPod;
+    use sysdefs::socket::SOCK_DGRAM;
 
     use super::*;
     use crate::net::mbuf::{M_WAIT, m_get, m_gethdr};
@@ -1909,8 +1909,8 @@ mod tests {
 
     use std::vec::Vec;
 
-    use hal::sys::netinet_icmp6::Icmp6Hdr;
-    use hal::sys::netinet_ip_icmp::ICMP_UNREACH_PORT;
+    use sysdefs::netinet_icmp6::Icmp6Hdr;
+    use sysdefs::netinet_ip_icmp::ICMP_UNREACH_PORT;
 
     use super::testudp::{
         self, G, Rec, Udp6Proto, UdpProto, cksum4_ok, close, input, locked, nam, pkt, records, sin,
@@ -2016,7 +2016,7 @@ mod tests {
         let mut b = std::vec![0u8; cmsg_align(cmsg_len(data.len()))];
         assert!(pod::put(&mut b, 0, &cm));
         b[CMSG_DATA_OFFSET..CMSG_DATA_OFFSET + data.len()].copy_from_slice(data);
-        let mut m = m_get(M_WAIT, hal::sys::mbuf::MT_CONTROL).expect("an mbuf");
+        let mut m = m_get(M_WAIT, sysdefs::mbuf::MT_CONTROL).expect("an mbuf");
         m.m_len().set(b.len() as u32);
         m.data_mut().expect("writable").copy_from_slice(&b);
         m
@@ -2313,7 +2313,7 @@ mod tests {
 
     #[test]
     fn ipsec_levels_and_the_udpencap_port() {
-        use hal::sys::netinet_in::{
+        use sysdefs::netinet_in::{
             IP_AUTH_LEVEL, IP_ESP_TRANS_LEVEL, IPSEC_LEVEL_BYPASS, IPSEC_LEVEL_DEFAULT,
             IPSEC_LEVEL_REQUIRE,
         };
@@ -2321,7 +2321,7 @@ mod tests {
         let (_g, _p) = testudp::setup();
         let so = testudp::socket(&UdpProto);
         let int_opt = |op: i32, name: i32, v: i32| -> Result<i32, Errno> {
-            let mut m = m_get(M_WAIT, hal::sys::mbuf::MT_SOOPTS).expect("an mbuf");
+            let mut m = m_get(M_WAIT, sysdefs::mbuf::MT_SOOPTS).expect("an mbuf");
             m.m_len().set(4);
             m.data_mut()
                 .expect("writable")

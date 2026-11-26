@@ -98,10 +98,10 @@ use hal::mem::malloc::Malloc;
 use hal::mem::pool::{PR_WAITOK, PageSource, PoolBackend, RawPool};
 use hal::prf::Printf;
 use hal::sync::sleep::{INFSLP, Sleep};
-use hal::sys::errno::Errno;
-use hal::sys::types::{Paddr, Vaddr};
 use hal::vm::pmap::BootstrapParams;
 use hal::vm::uvmexp::UVMEXP;
+use sysdefs::errno::Errno;
+use sysdefs::types::{Paddr, Vaddr};
 
 use crate::vm::km::{KvMap, LegacyLend};
 use crate::vm::page::{
@@ -885,7 +885,7 @@ pub fn memory_is_the_doubles() -> Option<bool> {
 pub fn test_uiomove_out<G: crate::proc::ProcGlue>(
     buf: &[u8],
     uio: &mut crate::file::uio::Uio<'_, G>,
-) -> Result<(), hal::sys::errno::Errno> {
+) -> Result<(), sysdefs::errno::Errno> {
     use crate::file::uio::{UioRw, UioSeg};
     if uio.uio_rw != UioRw::UIO_READ {
         let mut copy = buf.to_vec();
@@ -903,7 +903,7 @@ pub fn test_uiomove_out<G: crate::proc::ProcGlue>(
         }
         let cnt = iov.iov_len.min(buf.len() - done);
         if uiomove_fault_now() {
-            return Err(hal::sys::errno::Errno::EFAULT);
+            return Err(sysdefs::errno::Errno::EFAULT);
         }
         let addr = iov.iov_base.addr();
         if uio.uio_segflg == UioSeg::UIO_USERSPACE {
@@ -916,7 +916,7 @@ pub fn test_uiomove_out<G: crate::proc::ProcGlue>(
         iov.iov_base = iov.iov_base.wrapping_byte_add(cnt);
         iov.iov_len -= cnt;
         uio.uio_resid -= cnt;
-        uio.uio_offset += cnt as hal::sys::types::Off;
+        uio.uio_offset += cnt as sysdefs::types::Off;
         done += cnt;
     }
     Ok(())
@@ -929,7 +929,7 @@ pub fn test_uiomove_out<G: crate::proc::ProcGlue>(
 pub fn test_uiomove<G: crate::proc::ProcGlue>(
     buf: &mut [u8],
     uio: &mut crate::file::uio::Uio<'_, G>,
-) -> Result<(), hal::sys::errno::Errno> {
+) -> Result<(), sysdefs::errno::Errno> {
     use crate::file::uio::{UioRw, UioSeg};
     let mut done = 0;
     while done < buf.len() && uio.uio_resid > 0 {
@@ -943,7 +943,7 @@ pub fn test_uiomove<G: crate::proc::ProcGlue>(
         }
         let cnt = iov.iov_len.min(buf.len() - done);
         if uiomove_fault_now() {
-            return Err(hal::sys::errno::Errno::EFAULT);
+            return Err(sysdefs::errno::Errno::EFAULT);
         }
         if uio.uio_segflg == UioSeg::UIO_USERSPACE {
             let addr = iov.iov_base.addr();
@@ -967,7 +967,7 @@ pub fn test_uiomove<G: crate::proc::ProcGlue>(
         iov.iov_base = iov.iov_base.wrapping_byte_add(cnt);
         iov.iov_len -= cnt;
         uio.uio_resid -= cnt;
-        uio.uio_offset += cnt as hal::sys::types::Off;
+        uio.uio_offset += cnt as sysdefs::types::Off;
         done += cnt;
     }
     Ok(())
@@ -1013,9 +1013,9 @@ pub fn install() {
 /// (the C counts on `curproc`'s; the tests read none); `false` before the maps exist.
 fn kernel_fault(va: usize, write: bool) -> bool {
     let access = if write {
-        hal::sys::mman::PROT_WRITE
+        sysdefs::mman::PROT_WRITE
     } else {
-        hal::sys::mman::PROT_READ
+        sysdefs::mman::PROT_READ
     };
     crate::vm::km::map_of(KvMap::Kernel)
         .is_some_and(|map| crate::vm::fault::uvm_fault(map, va, 0, access, None).is_ok())
@@ -1218,7 +1218,7 @@ pub fn kernel_maps_install() {
         let _ = crate::vm::aobj::uao_init();
         if crate::vm::aobj::kernel_object().is_none() {
             let _ = crate::vm::aobj::uao_create(
-                hal::sys::types::Vsize::new(16 << 20),
+                sysdefs::types::Vsize::new(16 << 20),
                 crate::vm::aobj::UAO_FLAG_KERNOBJ,
             );
         }
@@ -1406,8 +1406,8 @@ std::thread_local! {
     static FILE_LOG: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     static FILE_LOG_ON: Cell<bool> = const { Cell::new(true) };
     static MAXFILES: Cell<i32> = const { Cell::new(1000) };
-    static NAMEI_PLEDGE: Cell<Option<hal::sys::errno::Errno>> = const { Cell::new(None) };
-    static UNVEIL_FINAL: Cell<Option<hal::sys::errno::Errno>> = const { Cell::new(None) };
+    static NAMEI_PLEDGE: Cell<Option<sysdefs::errno::Errno>> = const { Cell::new(None) };
+    static UNVEIL_FINAL: Cell<Option<sysdefs::errno::Errno>> = const { Cell::new(None) };
     static UNVEIL_FINAL_MATCH: Cell<Option<u32>> = const { Cell::new(None) };
     static COPY_KERNEL: Cell<bool> = const { Cell::new(false) };
     static UIOMOVE_FAULT: Cell<Option<usize>> = const { Cell::new(None) };
@@ -1415,13 +1415,13 @@ std::thread_local! {
 
 /// What the test proc glues' `pledge_namei` answers on this thread from now on (`None`:
 /// allowed).
-pub fn set_namei_pledge(e: Option<hal::sys::errno::Errno>) {
+pub fn set_namei_pledge(e: Option<sysdefs::errno::Errno>) {
     NAMEI_PLEDGE.with(|c| c.set(e));
 }
 
 /// The test proc glues' `pledge_namei`: the answer [`set_namei_pledge`] set, the call logged
 /// (while [`file_log_on`]).
-pub fn namei_pledge(path: &[u8]) -> Result<(), hal::sys::errno::Errno> {
+pub fn namei_pledge(path: &[u8]) -> Result<(), sysdefs::errno::Errno> {
     if file_log_on() {
         file_log_push(std::format!(
             "pledge_namei {}",
@@ -1432,46 +1432,46 @@ pub fn namei_pledge(path: &[u8]) -> Result<(), hal::sys::errno::Errno> {
 }
 
 std::thread_local! {
-    static PLEDGE_FLOCK: Cell<Option<hal::sys::errno::Errno>> = const { Cell::new(None) };
-    static PLEDGE_CHOWN: Cell<Option<hal::sys::errno::Errno>> = const { Cell::new(None) };
-    static UNVEIL_ADD: Cell<Option<hal::sys::errno::Errno>> = const { Cell::new(None) };
+    static PLEDGE_FLOCK: Cell<Option<sysdefs::errno::Errno>> = const { Cell::new(None) };
+    static PLEDGE_CHOWN: Cell<Option<sysdefs::errno::Errno>> = const { Cell::new(None) };
+    static UNVEIL_ADD: Cell<Option<sysdefs::errno::Errno>> = const { Cell::new(None) };
     static UNVEIL_DONE: Cell<bool> = const { Cell::new(false) };
-    static UNVEIL_PATHS_PID: Cell<Option<hal::sys::types::Pid>> = const { Cell::new(None) };
+    static UNVEIL_PATHS_PID: Cell<Option<sysdefs::types::Pid>> = const { Cell::new(None) };
 }
 
 /// The process whose unveil table the test proc glues' `unveil_state` says has paths
 /// (`ps_uvpaths != NULL`), on this thread from now on.
-pub fn set_unveil_paths_pid(pid: Option<hal::sys::types::Pid>) {
+pub fn set_unveil_paths_pid(pid: Option<sysdefs::types::Pid>) {
     UNVEIL_PATHS_PID.with(|c| c.set(pid));
 }
 
 /// The process [`set_unveil_paths_pid`] named.
-pub fn unveil_paths_pid() -> Option<hal::sys::types::Pid> {
+pub fn unveil_paths_pid() -> Option<sysdefs::types::Pid> {
     UNVEIL_PATHS_PID.with(Cell::get)
 }
 
 /// What the test file glues' `pledge_flock` answers on this thread from now on (`None`:
 /// allowed).
-pub fn set_pledge_flock(e: Option<hal::sys::errno::Errno>) {
+pub fn set_pledge_flock(e: Option<sysdefs::errno::Errno>) {
     PLEDGE_FLOCK.with(|c| c.set(e));
 }
 
 /// The test file glues' `pledge_flock`: the answer [`set_pledge_flock`] set.
-pub fn pledge_flock_answer() -> Result<(), hal::sys::errno::Errno> {
+pub fn pledge_flock_answer() -> Result<(), sysdefs::errno::Errno> {
     PLEDGE_FLOCK.with(Cell::get).map_or(Ok(()), Err)
 }
 
 /// What the test proc glues' `pledge_chown` answers on this thread from now on.
-pub fn set_pledge_chown(e: Option<hal::sys::errno::Errno>) {
+pub fn set_pledge_chown(e: Option<sysdefs::errno::Errno>) {
     PLEDGE_CHOWN.with(|c| c.set(e));
 }
 
 /// The test proc glues' `pledge_chown`: the answer [`set_pledge_chown`] set, the call logged
 /// with its ids (while [`file_log_on`]).
 pub fn pledge_chown_answer(
-    uid: hal::sys::types::Uid,
-    gid: hal::sys::types::Gid,
-) -> Result<(), hal::sys::errno::Errno> {
+    uid: sysdefs::types::Uid,
+    gid: sysdefs::types::Gid,
+) -> Result<(), sysdefs::errno::Errno> {
     if file_log_on() {
         file_log_push(std::format!("pledge_chown {uid} {gid}"));
     }
@@ -1479,7 +1479,7 @@ pub fn pledge_chown_answer(
 }
 
 /// What the test proc glues' `unveil_add` answers on this thread from now on.
-pub fn set_unveil_add(e: Option<hal::sys::errno::Errno>) {
+pub fn set_unveil_add(e: Option<sysdefs::errno::Errno>) {
     UNVEIL_ADD.with(|c| c.set(e));
 }
 
@@ -1489,7 +1489,7 @@ pub fn unveil_add_answer(
     vp: bool,
     dvp: bool,
     permissions: &[u8],
-) -> Result<(), hal::sys::errno::Errno> {
+) -> Result<(), sysdefs::errno::Errno> {
     if file_log_on() {
         file_log_push(std::format!(
             "unveil_add vp={vp} dvp={dvp} {}",
@@ -1520,13 +1520,13 @@ pub fn unveil_done_reset() {
 }
 
 /// What the test proc glues' `unveil_check_final` answers on this thread from now on.
-pub fn set_unveil_final(e: Option<hal::sys::errno::Errno>) {
+pub fn set_unveil_final(e: Option<sysdefs::errno::Errno>) {
     UNVEIL_FINAL.with(|c| c.set(e));
 }
 
 /// The test proc glues' `unveil_check_final`: the answer [`set_unveil_final`] set, logged
 /// (while [`file_log_on`]).
-pub fn unveil_final() -> Result<(), hal::sys::errno::Errno> {
+pub fn unveil_final() -> Result<(), sysdefs::errno::Errno> {
     hook_log("unveil_check_final");
     UNVEIL_FINAL.with(Cell::get).map_or(Ok(()), Err)
 }
@@ -1661,7 +1661,7 @@ pub fn set_pledge_net(error: Option<Errno>) {
 /// request once [`set_pledge_protexec`] made the thread pledged without `prot_exec` (and past
 /// its first `kbind(2)`), `Ok` otherwise.
 pub fn pledge_protexec_answer(prot: crate::vm::types::VmProt) -> Result<(), Errno> {
-    if PLEDGE_PROTEXEC_DENIED.with(Cell::get) && prot & hal::sys::mman::PROT_EXEC != 0 {
+    if PLEDGE_PROTEXEC_DENIED.with(Cell::get) && prot & sysdefs::mman::PROT_EXEC != 0 {
         return Err(Errno::EPERM);
     }
     Ok(())
@@ -1695,9 +1695,9 @@ impl<G: crate::proc::ProcGlue> crate::fs::vops::Vnops<G> for FileVops {
         &self,
         _vp: &'static crate::fs::vnode::Vnode<G>,
         name: i32,
-        retval: &mut hal::sys::types::Register,
+        retval: &mut sysdefs::types::Register,
     ) -> Result<(), Errno> {
-        *retval = 1000 + name as hal::sys::types::Register;
+        *retval = 1000 + name as sysdefs::types::Register;
         Ok(())
     }
     fn advlock(
@@ -1705,7 +1705,7 @@ impl<G: crate::proc::ProcGlue> crate::fs::vops::Vnops<G> for FileVops {
         _vp: &'static crate::fs::vnode::Vnode<G>,
         id: crate::file::LockOwner,
         op: i32,
-        fl: &mut hal::sys::fcntl::Flock,
+        fl: &mut sysdefs::fcntl::Flock,
         flags: i32,
     ) -> Result<(), Errno> {
         file_log_push(std::format!(
@@ -1791,7 +1791,7 @@ macro_rules! test_file_glue {
                 _fp: &$crate::file::File<$name>,
                 _uio: &mut $crate::file::uio::Uio<'_, $proc>,
                 _fflags: i32,
-            ) -> Result<(), hal::sys::errno::Errno> {
+            ) -> Result<(), sysdefs::errno::Errno> {
                 $crate::file::event::kqueue_rw()
             }
             fn write(
@@ -1799,7 +1799,7 @@ macro_rules! test_file_glue {
                 _fp: &$crate::file::File<$name>,
                 _uio: &mut $crate::file::uio::Uio<'_, $proc>,
                 _fflags: i32,
-            ) -> Result<(), hal::sys::errno::Errno> {
+            ) -> Result<(), sysdefs::errno::Errno> {
                 $crate::file::event::kqueue_rw()
             }
             fn ioctl(
@@ -1808,24 +1808,24 @@ macro_rules! test_file_glue {
                 _com: u64,
                 _data: &mut [u8],
                 _p: &$crate::proc::Thread<$proc>,
-            ) -> Result<(), hal::sys::errno::Errno> {
+            ) -> Result<(), sysdefs::errno::Errno> {
                 $crate::file::event::kqueue_ioctl()
             }
             fn kqfilter(
                 &self,
                 fp: &$crate::file::File<$name>,
                 kn: &$crate::file::event::Knote<$proc>,
-            ) -> Result<(), hal::sys::errno::Errno> {
+            ) -> Result<(), sysdefs::errno::Errno> {
                 $crate::file::event::kqueue_kqfilter::<$proc>(fp, kn)
             }
             fn stat(
                 &self,
                 fp: &$crate::file::File<$name>,
-                st: &mut hal::sys::stat::Stat,
+                st: &mut sysdefs::stat::Stat,
                 _p: &$crate::proc::Thread<$proc>,
-            ) -> Result<(), hal::sys::errno::Errno> {
+            ) -> Result<(), sysdefs::errno::Errno> {
                 let (size, _blksize) = $crate::file::event::kqueue_stat::<$proc>(fp);
-                *st = hal::sys::stat::Stat::default();
+                *st = sysdefs::stat::Stat::default();
                 st.st_size = size as i64;
                 Ok(())
             }
@@ -1833,7 +1833,7 @@ macro_rules! test_file_glue {
                 &self,
                 fp: &$crate::file::File<$name>,
                 p: Option<&$crate::proc::Thread<$proc>>,
-            ) -> Result<(), hal::sys::errno::Errno> {
+            ) -> Result<(), sysdefs::errno::Errno> {
                 $crate::file::event::kqueue_close::<$proc>(fp, p)
             }
         }
@@ -1851,16 +1851,16 @@ macro_rules! test_file_glue {
                 _fp: &$crate::file::File<$name>,
                 _uio: &mut $crate::file::uio::Uio<'_, $proc>,
                 _fflags: i32,
-            ) -> Result<(), hal::sys::errno::Errno> {
-                Err(hal::sys::errno::Errno::ENODEV)
+            ) -> Result<(), sysdefs::errno::Errno> {
+                Err(sysdefs::errno::Errno::ENODEV)
             }
             fn write(
                 &self,
                 _fp: &$crate::file::File<$name>,
                 _uio: &mut $crate::file::uio::Uio<'_, $proc>,
                 _fflags: i32,
-            ) -> Result<(), hal::sys::errno::Errno> {
-                Err(hal::sys::errno::Errno::ENODEV)
+            ) -> Result<(), sysdefs::errno::Errno> {
+                Err(sysdefs::errno::Errno::ENODEV)
             }
             fn ioctl(
                 &self,
@@ -1868,16 +1868,16 @@ macro_rules! test_file_glue {
                 _com: u64,
                 _data: &mut [u8],
                 _p: &$crate::proc::Thread<$proc>,
-            ) -> Result<(), hal::sys::errno::Errno> {
-                Err(hal::sys::errno::Errno::ENOTTY)
+            ) -> Result<(), sysdefs::errno::Errno> {
+                Err(sysdefs::errno::Errno::ENOTTY)
             }
             fn kqfilter(
                 &self,
                 fp: &$crate::file::File<$name>,
                 kn: &$crate::file::event::Knote<$proc>,
-            ) -> Result<(), hal::sys::errno::Errno> {
+            ) -> Result<(), sysdefs::errno::Errno> {
                 let Some(end) = fp.data().and_then(|d| d.pipe.as_ref()) else {
-                    return Err(hal::sys::errno::Errno::EBADF);
+                    return Err(sysdefs::errno::Errno::EBADF);
                 };
                 let filter = match kn.kn_filter().get() {
                     $crate::file::event::EVFILT_READ => Some($crate::file::pipe::PipeFilter::Read),
@@ -1900,9 +1900,9 @@ macro_rules! test_file_glue {
             fn stat(
                 &self,
                 _fp: &$crate::file::File<$name>,
-                _st: &mut hal::sys::stat::Stat,
+                _st: &mut sysdefs::stat::Stat,
                 _p: &$crate::proc::Thread<$proc>,
-            ) -> Result<(), hal::sys::errno::Errno> {
+            ) -> Result<(), sysdefs::errno::Errno> {
                 Ok(())
             }
             /// The end is the file's object, dropped with the file's item (`pipe_destroy`).
@@ -1910,7 +1910,7 @@ macro_rules! test_file_glue {
                 &self,
                 _fp: &$crate::file::File<$name>,
                 _p: Option<&$crate::proc::Thread<$proc>>,
-            ) -> Result<(), hal::sys::errno::Errno> {
+            ) -> Result<(), sysdefs::errno::Errno> {
                 Ok(())
             }
         }
@@ -2002,25 +2002,23 @@ macro_rules! test_file_glue {
             fn pledge_fcntl(
                 _p: &$crate::proc::Thread<$proc>,
                 _cmd: i32,
-            ) -> Result<(), hal::sys::errno::Errno> {
+            ) -> Result<(), sysdefs::errno::Errno> {
                 Ok(())
             }
-            fn pledge_flock(
-                _p: &$crate::proc::Thread<$proc>,
-            ) -> Result<(), hal::sys::errno::Errno> {
+            fn pledge_flock(_p: &$crate::proc::Thread<$proc>) -> Result<(), sysdefs::errno::Errno> {
                 $crate::testutil::pledge_flock_answer()
             }
             fn pledge_ioctl(
                 _p: &$crate::proc::Thread<$proc>,
                 _com: u64,
                 _fp: &$crate::file::File<Self>,
-            ) -> Result<(), hal::sys::errno::Errno> {
+            ) -> Result<(), sysdefs::errno::Errno> {
                 Ok(())
             }
             fn uiomove(
                 buf: &mut [u8],
                 uio: &mut $crate::file::uio::Uio<'_, $proc>,
-            ) -> Result<(), hal::sys::errno::Errno> {
+            ) -> Result<(), sysdefs::errno::Errno> {
                 $crate::testutil::test_uiomove(buf, uio)
             }
             fn vfs() -> &'static $crate::fs::subr::VfsTables<$proc> {
@@ -2051,7 +2049,7 @@ macro_rules! test_file_glue {
             fn uiomove_out(
                 buf: &[u8],
                 uio: &mut $crate::file::uio::Uio<'_, $proc>,
-            ) -> Result<(), hal::sys::errno::Errno> {
+            ) -> Result<(), sysdefs::errno::Errno> {
                 $crate::testutil::test_uiomove_out(buf, uio)
             }
         }
@@ -2113,48 +2111,48 @@ macro_rules! test_proc_glue {
             }
             fn pledge_fail(
                 _p: &$crate::proc::Thread<Self>,
-                error: hal::sys::errno::Errno,
+                error: sysdefs::errno::Errno,
                 code: u64,
-            ) -> hal::sys::errno::Errno {
+            ) -> sysdefs::errno::Errno {
                 $crate::testutil::file_log_push(std::format!("pledge_fail {code:#x}"));
                 error
             }
             fn pledge_syscall(
                 _p: &$crate::proc::Thread<Self>,
                 code: i32,
-            ) -> Result<(), (hal::sys::errno::Errno, u64)> {
+            ) -> Result<(), (sysdefs::errno::Errno, u64)> {
                 $crate::testutil::pledge_refusal(code)
             }
             fn pledge_sysctl(
                 _p: &$crate::proc::Thread<Self>,
                 _mib: &[i32],
                 _new: usize,
-            ) -> Result<(), hal::sys::errno::Errno> {
+            ) -> Result<(), sysdefs::errno::Errno> {
                 Ok(())
             }
             fn pledge_adjtime(
                 _p: &$crate::proc::Thread<Self>,
                 _delta: usize,
-            ) -> Result<(), hal::sys::errno::Errno> {
+            ) -> Result<(), sysdefs::errno::Errno> {
                 Ok(())
             }
             fn pledge_recvfd(
                 _p: &$crate::proc::Thread<Self>,
                 _fp: &$crate::file::File<Self::FileGlue>,
-            ) -> Result<(), hal::sys::errno::Errno> {
+            ) -> Result<(), sysdefs::errno::Errno> {
                 $crate::testutil::pledge_fd_answer()
             }
             fn pledge_sendfd(
                 _p: &$crate::proc::Thread<Self>,
                 _fp: &$crate::file::File<Self::FileGlue>,
-            ) -> Result<(), hal::sys::errno::Errno> {
+            ) -> Result<(), sysdefs::errno::Errno> {
                 $crate::testutil::pledge_fd_answer()
             }
             fn pledge_socket(
                 _p: &$crate::proc::Thread<Self>,
                 domain: i32,
                 state: u32,
-            ) -> Result<(), hal::sys::errno::Errno> {
+            ) -> Result<(), sysdefs::errno::Errno> {
                 $crate::testutil::pledge_net_answer(std::format!(
                     "pledge_socket {domain} {state:#x}"
                 ))
@@ -2162,7 +2160,7 @@ macro_rules! test_proc_glue {
             fn pledge_sendit(
                 _p: &$crate::proc::Thread<Self>,
                 to: usize,
-            ) -> Result<(), hal::sys::errno::Errno> {
+            ) -> Result<(), sysdefs::errno::Errno> {
                 $crate::testutil::pledge_net_answer(std::format!("pledge_sendit {to:#x}"))
             }
             fn pledge_sockopt(
@@ -2171,7 +2169,7 @@ macro_rules! test_proc_glue {
                 pr: &'static dyn $crate::net::proto::Protocol<Self>,
                 level: i32,
                 optname: i32,
-            ) -> Result<(), hal::sys::errno::Errno> {
+            ) -> Result<(), sysdefs::errno::Errno> {
                 $crate::testutil::pledge_net_answer(std::format!(
                     "pledge_sockopt {set} {} {} {level} {optname}",
                     pr.domain().family(),
@@ -2181,14 +2179,14 @@ macro_rules! test_proc_glue {
             fn pledge_protexec(
                 _p: &$crate::proc::Thread<Self>,
                 prot: $crate::vm::types::VmProt,
-            ) -> Result<(), hal::sys::errno::Errno> {
+            ) -> Result<(), sysdefs::errno::Errno> {
                 $crate::testutil::pledge_protexec_answer(prot)
             }
             fn pledge_namei(
                 _p: &$crate::proc::Thread<Self>,
                 _ni: &mut $crate::fs::vops::Nd<'_, Self>,
                 path: &[u8],
-            ) -> Result<(), hal::sys::errno::Errno> {
+            ) -> Result<(), sysdefs::errno::Errno> {
                 $crate::testutil::namei_pledge(path)
             }
             fn checkzoneinfopath(path: &[u8]) -> bool {
@@ -2212,22 +2210,22 @@ macro_rules! test_proc_glue {
             fn unveil_check_final(
                 _p: &$crate::proc::Thread<Self>,
                 ni: &mut $crate::fs::vops::Nd<'_, Self>,
-            ) -> Result<(), hal::sys::errno::Errno> {
+            ) -> Result<(), sysdefs::errno::Errno> {
                 $crate::testutil::unveil_final_at(ni.ni_unveil_match);
                 $crate::testutil::unveil_final()
             }
             fn pledge_chown(
                 _p: &$crate::proc::Thread<Self>,
-                uid: hal::sys::types::Uid,
-                gid: hal::sys::types::Gid,
-            ) -> Result<(), hal::sys::errno::Errno> {
+                uid: sysdefs::types::Uid,
+                gid: sysdefs::types::Gid,
+            ) -> Result<(), sysdefs::errno::Errno> {
                 $crate::testutil::pledge_chown_answer(uid, gid)
             }
             fn unveil_add(
                 _p: &$crate::proc::Thread<Self>,
                 ni: &$crate::fs::vops::Nd<'_, Self>,
                 permissions: &[u8],
-            ) -> Result<(), hal::sys::errno::Errno> {
+            ) -> Result<(), sysdefs::errno::Errno> {
                 $crate::testutil::unveil_add_answer(
                     ni.ni_vp.is_some(),
                     ni.ni_dvp.is_some(),
@@ -2375,8 +2373,8 @@ impl crate::fs::bio::BufVnode for BufTestVnode {
 
     fn bmap(
         &'static self,
-        bn: hal::sys::types::Daddr,
-    ) -> Result<(hal::sys::types::Daddr, i32), Errno> {
+        bn: sysdefs::types::Daddr,
+    ) -> Result<(sysdefs::types::Daddr, i32), Errno> {
         Ok((bn, self.run.load(Ordering::Relaxed)))
     }
 
@@ -2384,7 +2382,7 @@ impl crate::fs::bio::BufVnode for BufTestVnode {
         crate::vm::vnode::VType::VREG
     }
 
-    fn rdev(&self) -> hal::sys::types::Dev {
+    fn rdev(&self) -> sysdefs::types::Dev {
         crate::fs::bio::NODEV
     }
 

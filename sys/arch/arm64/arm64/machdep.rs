@@ -122,7 +122,7 @@ use core::ffi::CStr;
 use core::ptr::{self, NonNull, addr_of, addr_of_mut};
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 use crate::arch::arm64::arm64::autoconf::BOOTMAC;
 use crate::arch::arm64::arm64::bus_space::ARM64_BS_TAG;
@@ -196,6 +196,7 @@ use crate::sys::sysctl::SysctlBoundedArgs;
 use crate::sys::systm::PHYSMEM;
 use crate::sys::types::{Paddr, Psize, Register, Vaddr};
 use crate::unported;
+use hal::mem::explicit_bzero;
 use hal::vm::param::{atop, ptoa, round_page, trunc_page};
 use hal::vm::pmap::{BootstrapParams, KernelImage};
 use hal::vm::uvmexp::UVMEXP;
@@ -204,7 +205,6 @@ use kernel::vm::km::{kernel_map, kernel_map_min, uvm_km_suballoc};
 use kernel::vm::map::VM_MAP_PAGEABLE;
 use kernel::vm::page::{VmPage, uvm_setpagesize};
 use kernel::vm::types::UvmConstraintRange;
-use libkern::explicit_bzero::explicit_bzero;
 
 #[cfg(feature = "qemu")]
 use crate::arch::arm64::arm64::qemu;

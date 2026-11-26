@@ -119,13 +119,14 @@
 
 use hal::cpu::intr::IPL_NONE;
 use hal::sync::mutex::Mutexed;
-use hal::sys::mbuf::{MT_DATA, MT_SONAME, MT_SOOPTS};
-use hal::sys::netinet_in::{
+use hal::user::bytes_of;
+use sysdefs::mbuf::{MT_DATA, MT_SONAME, MT_SOOPTS};
+use sysdefs::netinet_in::{
     INADDR_ANY, IP_PORTRANGE, IP_PORTRANGE_DEFAULT, IP_PORTRANGE_LOW, IPPROTO_IP, IPPROTO_UDP,
     InAddr, SockaddrIn,
 };
-use hal::sys::socket::{AF_INET, SO_BROADCAST, SO_RCVTIMEO, SOCK_DGRAM, SOL_SOCKET};
-use hal::user::{AbiPod, bytes_of};
+use sysdefs::pod::AbiPod;
+use sysdefs::socket::{AF_INET, SO_BROADCAST, SO_RCVTIMEO, SOCK_DGRAM, SOL_SOCKET};
 
 use super::nfsm_subs::{XdrReader, XdrWriter, nfsm_rndup};
 use super::rpcv2::{RPC_REPLY, RPCAUTH_MAXSIZ, RPCAUTH_UNIX};
@@ -142,8 +143,8 @@ use crate::net::socket::{
 };
 use crate::netinet::if_ether::InAddrFmt;
 use crate::proc::{ProcGlue, Thread};
-use crate::sys::errno::Errno;
 use crate::time::clock::Timeval;
+use sysdefs::errno::Errno;
 
 /// `PMAPPORT`: RPC definitions for the portmapper.
 pub const PMAPPORT: u16 = 111;
@@ -211,7 +212,7 @@ struct RpcCall {
     verf_authlen: u32,
 }
 
-hal::abi_pod!(RpcCall {
+sysdefs::abi_pod!(RpcCall {
     rp_xid: u32,
     rp_direction: u32,
     rp_rpcvers: u32,
@@ -678,10 +679,10 @@ pub(crate) mod testkrpc {
     use std::vec;
     use std::vec::Vec;
 
-    use hal::sys::netinet_in::{IPPROTO_UDP, InAddr, SockaddrIn};
-    use hal::sys::netinet_ip::Ip;
-    use hal::sys::netinet_udp::Udphdr;
-    use hal::sys::socket::AF_INET;
+    use sysdefs::netinet_in::{IPPROTO_UDP, InAddr, SockaddrIn};
+    use sysdefs::netinet_ip::Ip;
+    use sysdefs::netinet_udp::Udphdr;
+    use sysdefs::socket::AF_INET;
 
     use super::RPC_REPLY;
     use crate::fs::nfs::nfsm_subs::nfsm_rndup;
@@ -693,7 +694,7 @@ pub(crate) mod testkrpc {
     use crate::netinet::in_pcb::testinet;
     use crate::netinet::udp_usrreq::testudp::{self, G};
     use crate::proc::{ProcGlue, Thread};
-    use crate::sys::errno::Errno;
+    use sysdefs::errno::Errno;
 
     /// The segments `segs` as one chain, its first mbuf a packet header's (the total length
     /// in it), the others plain mbufs.
@@ -758,9 +759,9 @@ pub(crate) mod testkrpc {
 
     impl NetDriver for Wire {
         fn ioctl(&self, ifp: &'static Ifnet, cmd: u64, _data: &mut [u8]) -> Result<(), Errno> {
-            if cmd == hal::sys::sockio::SIOCSIFADDR {
+            if cmd == sysdefs::sockio::SIOCSIFADDR {
                 ifp.if_flags
-                    .set(ifp.if_flags.get() | hal::sys::net_if::IFF_UP);
+                    .set(ifp.if_flags.get() | sysdefs::net_if::IFF_UP);
             }
             Ok(())
         }

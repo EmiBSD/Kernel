@@ -53,18 +53,18 @@
 //!   `fdinsert`, `closef`, `vfs_syscalls`' `getvnode`, `namei`'s `ndinit`, `vn_open`) and a
 //!   hand-read `struct dk_diskmap`; it is the kernel's, over the kernel's own (`file::
 //!   descrip`, `fs::{syscalls, lookup, vnops}`), generic over the glue, the argument an
-//!   `AbiPod` read (`hal::sys::dkio::DkDiskmap`), the user's name through `UserPtr`'s
+//!   `AbiPod` read (`sysdefs::dkio::DkDiskmap`), the user's name through `UserPtr`'s
 //!   `copyinstr`/`copyoutstr`. `ni_pledge = PLEDGE_RPATH` and `ni_unveil = UNVEIL_READ` are
 //!   kept: the device node is opened as a path the caller may read.
 
 use core::sync::atomic::Ordering;
 
 use hal::mem::malloc::{M_WAITOK, MArray};
-use hal::sys::dkio::{DIOCMAP, DkDiskmap};
-use hal::sys::pledge::PLEDGE_RPATH;
-use hal::sys::syslimits::PATH_MAX;
-use hal::sys::types::Dev;
 use hal::user::{UserPtr, pod_from_bytes};
+use sysdefs::dkio::{DIOCMAP, DkDiskmap};
+use sysdefs::pledge::PLEDGE_RPATH;
+use sysdefs::syslimits::PATH_MAX;
+use sysdefs::types::Dev;
 
 use crate::assert::{kassert, kpanic};
 use crate::dev::disk::disk_map;
@@ -77,7 +77,7 @@ use crate::fs::syscalls::getvnode;
 use crate::fs::vnops::{vn_close, vn_open};
 use crate::fs::vops::{Cred, vop_unlock};
 use crate::proc::{ProcGlue, Thread};
-use crate::sys::errno::Errno;
+use sysdefs::errno::Errno;
 
 /// `M_DEVBUF` (`<sys/malloc.h>`): the device name buffers.
 const M_DEVBUF: i32 = 2;

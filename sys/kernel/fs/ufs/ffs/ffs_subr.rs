@@ -75,8 +75,8 @@
 //!   discarded vnode's slot (`take_node`/`set_node`: the inode's handle moves, its lock with
 //!   it, as the C moves `v_data`).
 
-use hal::sys::errno::Errno;
-use hal::sys::types::{Daddr, Dev, Off};
+use sysdefs::errno::Errno;
+use sysdefs::types::{Daddr, Dev, Off};
 
 use super::fs::{AROUND, CgView, FRAGTBL, INSIDE, Superblock, blkoff, blksize, lblkno};
 use crate::assert::kpanic;

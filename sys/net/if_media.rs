@@ -145,7 +145,7 @@
 
 /* <CODE> */
 //! `<net/if_media.h>` and `net/if_media.c` for `bsd`'s drivers: the media words are
-//! `hal::sys::net_if_media`'s (N6.3a1) and `struct ifmedia` with its functions
+//! `sysdefs::net_if_media`'s (N6.3a1) and `struct ifmedia` with its functions
 //! `kernel::net::if_media`'s (N6.3a2), re-exported here under LZ's paths. What stays is
 //! LZ's shape of the two calls whose arguments are the drivers': [`ifmedia_init`] takes the
 //! driver's two callbacks as function pointers and wraps them in a [`LegacyMedia`] (one
@@ -155,7 +155,7 @@
 //! Upstream: sys/net/if_media.h @ 3ce1f3f79392, sys/net/if_media.c @ 3ce1f3f79392
 //!
 //! ## Deviations
-//! - The kernel's (`kernel::net::if_media`) and `hal`'s (`hal::sys::net_if_media`) are this
+//! - The kernel's (`kernel::net::if_media`) and `hal`'s (`sysdefs::net_if_media`) are this
 //!   module's for what it re-exports.
 
 use core::ffi::c_void;
@@ -168,11 +168,11 @@ use crate::net::if_var::Ifnet;
 use crate::sys::errno::Errno;
 use crate::sys::malloc::M_DEVBUF;
 
-pub use hal::sys::net_if_media::*;
 pub use kernel::net::if_media::{
     Ifmedia, IfmediaEntry, MediaCallbacks, ifmedia_baudrate, ifmedia_delete_instance,
     ifmedia_ioctl, ifmedia_match, ifmedia_set,
 };
+pub use sysdefs::net_if_media::*;
 
 /// `ifm_change_cb_t`: the driver's media change callback.
 pub type IfmChangeCbT = fn(&'static Ifnet) -> Result<(), Errno>;

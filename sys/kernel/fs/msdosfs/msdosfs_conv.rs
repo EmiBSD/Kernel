@@ -101,7 +101,7 @@
 //!
 //! ## Redesign
 //! - N5.7c1: moved into the kernel crate unchanged in shape (LZ's module had no `unsafe`):
-//!   the long name entry is the `hal::abi_pod!` [`Winentry`] value `direntry.rs` copies out of
+//!   the long name entry is the `sysdefs::abi_pod!` [`Winentry`] value `direntry.rs` copies out of
 //!   a directory block, the `struct dirent` `hal`'s, the console line the kernel's `printf`.
 //!   `regyear` and `leapyear` are `static`s, as the C's arrays: one object each, which
 //!   `dos2unixtime` and `unix2dostime` borrow, never a promoted constant.
@@ -111,7 +111,7 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use hal::sys::dirent::Dirent;
+use sysdefs::dirent::Dirent;
 
 use crate::base::prf::printf;
 use crate::fs::msdosfs::denode::WIN_MAXLEN;
@@ -783,7 +783,7 @@ mod tests {
     // with their quirks, the long name entries, and the tables against the C file.
 
     use super::*;
-    use hal::sys::dirent::MAXNAMLEN;
+    use sysdefs::dirent::MAXNAMLEN;
 
     fn ts(tv_sec: i64, tv_nsec: i64) -> Timespec {
         Timespec { tv_sec, tv_nsec }

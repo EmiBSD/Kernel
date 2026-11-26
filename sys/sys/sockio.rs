@@ -48,10 +48,10 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! Socket `ioctl(2)` commands: `<sys/sockio.h>`, `hal`'s since N6.3a (`hal::sys::sockio`),
+//! Socket `ioctl(2)` commands: `<sys/sockio.h>`, `hal`'s since N6.3a (`sysdefs::sockio`),
 //! re-exported under LZ's path for `bsd`'s importers.
 //!
 //! Upstream: sys/sys/sockio.h @ 3ce1f3f79392
 
-pub use hal::sys::sockio::*;
+pub use sysdefs::sockio::*;
 /* </CODE> */

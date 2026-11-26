@@ -55,7 +55,7 @@ use core::ptr;
 use core::sync::atomic::Ordering;
 
 #[cfg(feature = "nfsclient")]
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 use crate::arch::arm64::arm64::bus_dma::bus_dma_init;
 use crate::arch::arm64::arm64::cpu::cpu_identify_cleanup;

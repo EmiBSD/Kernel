@@ -111,14 +111,14 @@ use hal::arch::current::param::{PAGE_SHIFT, PAGE_SIZE};
 use hal::cpu::intr::IPL_NONE;
 use hal::mem::malloc::{M_WAITOK, MArc};
 use hal::mem::pool::{PR_WAITOK, PoolArc, TypedPool};
-use hal::sys::errno::Errno;
-use hal::sys::limits::INT_MAX;
-use hal::sys::mount::{
+use hal::vm::uvmexp::UVMEXP;
+use sysdefs::errno::Errno;
+use sysdefs::limits::INT_MAX;
+use sysdefs::mount::{
     Fid, MNAMELEN, MNT_FORCE, MNT_LOCAL, MNT_RDONLY, MNT_UPDATE, MNT_WANTRDWR, Statfs, TmpfsArgs,
 };
-use hal::sys::stat::ALLPERMS;
-use hal::sys::types::{Gid, Ino, Mode, Uid};
-use hal::vm::uvmexp::UVMEXP;
+use sysdefs::stat::ALLPERMS;
+use sysdefs::types::{Gid, Ino, Mode, Uid};
 
 use crate::assert::{kassert, kpanic};
 use crate::base::prf::printf;
@@ -272,7 +272,7 @@ pub fn tmpfs_mount<G: ProcGlue>(
         return tmpfs_mount_update(mp);
     }
 
-    let Some(args) = TmpfsArgs::from_bytes(data) else {
+    let Some(args) = hal::user::pod_from_bytes::<TmpfsArgs>(data) else {
         return Err(Errno::EINVAL);
     };
 
@@ -672,8 +672,8 @@ mod tests {
     };
     use crate::fs::vnode::{VLNK, VREG, VROOT, Vattr, Vtype};
     use crate::testutil::{malloc_out, malloc_requests};
-    use hal::sys::dirent::Dirent;
-    use hal::sys::types::{Dev, Off};
+    use sysdefs::dirent::Dirent;
+    use sysdefs::types::{Dev, Off};
 
     type P = &'static Thread<TestGlue>;
 

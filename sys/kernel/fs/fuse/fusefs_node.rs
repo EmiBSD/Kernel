@@ -66,7 +66,7 @@
 use hal::ds::pinlist::PinEntry;
 use hal::mem::malloc::MArc;
 use hal::sync::rwlock::RecursiveRwlock;
-use hal::sys::types::{Ino, Off};
+use sysdefs::types::{Ino, Off};
 
 use crate::assert::kpanic;
 use crate::fs::fuse::fusefs::FusefsMntRef;

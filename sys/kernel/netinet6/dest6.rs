@@ -67,9 +67,9 @@
 use core::mem::size_of;
 
 use hal::sync::netlock::NetHeld;
-use hal::sys::netinet_in::IPPROTO_DONE;
-use hal::sys::netinet_ip6::{IP6OPT_MINLEN, IP6OPT_PAD1, IP6OPT_PADN, Ip6Dest};
-use hal::sys::netinet6_ip6_var::Ip6statCounters;
+use sysdefs::netinet_in::IPPROTO_DONE;
+use sysdefs::netinet_ip6::{IP6OPT_MINLEN, IP6OPT_PAD1, IP6OPT_PADN, Ip6Dest};
+use sysdefs::netinet6_ip6_var::Ip6statCounters;
 
 use crate::net::if_var::Netstack;
 use crate::net::mbuf::MbufBox;
@@ -167,10 +167,10 @@ mod tests {
     use std::vec::Vec;
 
     use hal::sync::netlock::NETLOCK;
-    use hal::sys::netinet_icmp6::{ICMP6_PARAM_PROB, ICMP6_PARAMPROB_OPTION};
-    use hal::sys::netinet_in::IPPROTO_UDP;
-    use hal::sys::netinet_ip6::{IPV6_VERSION, Ip6Hdr};
-    use hal::sys::netinet6_in6::In6Addr;
+    use sysdefs::netinet_icmp6::{ICMP6_PARAM_PROB, ICMP6_PARAMPROB_OPTION};
+    use sysdefs::netinet_in::IPPROTO_UDP;
+    use sysdefs::netinet_ip6::{IPV6_VERSION, Ip6Hdr};
+    use sysdefs::netinet6_in6::In6Addr;
 
     use super::*;
     use crate::net::mbuf::m_devget;

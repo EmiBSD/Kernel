@@ -56,7 +56,7 @@
 //!
 //! The states themselves (`TCP_NSTATES`, `TCPS_*`) are what userland reads (`tcp_info`'s
 //! `tcpi_state`, `kinfo_file`'s `t_state`, pf's state table): they are
-//! `hal::sys::netinet_tcp_fsm`'s and re-exported here.
+//! `sysdefs::netinet_tcp_fsm`'s and re-exported here.
 //!
 //! ## Deviations
 //! - `TCPS_HAVERCVDSYN(s)`, `TCPS_HAVEESTABLISHED(s)` and `TCPS_HAVERCVDFIN(s)` are `const fn`s
@@ -70,8 +70,8 @@
 //! - N6.6a1: LZ's module moved into the kernel whole (it holds no state and no `unsafe`);
 //!   `bsd`'s importers reach it under LZ's path through `sys/netinet/mod.rs`'s re-export.
 
-use hal::sys::netinet_tcp::{TH_ACK, TH_FIN, TH_RST, TH_SYN};
-pub use hal::sys::netinet_tcp_fsm::{
+use sysdefs::netinet_tcp::{TH_ACK, TH_FIN, TH_RST, TH_SYN};
+pub use sysdefs::netinet_tcp_fsm::{
     TCP_NSTATES, TCPS_CLOSE_WAIT, TCPS_CLOSED, TCPS_CLOSING, TCPS_ESTABLISHED, TCPS_FIN_WAIT_1,
     TCPS_FIN_WAIT_2, TCPS_LAST_ACK, TCPS_LISTEN, TCPS_SYN_RECEIVED, TCPS_SYN_SENT, TCPS_TIME_WAIT,
 };

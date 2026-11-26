@@ -29,7 +29,7 @@
 
 use hal::syscall::{Register, Rval, SysResult};
 
-use hal::sys::syscall::{
+use sysdefs::syscall::{
     SYS_kevent, SYS_kqueue, SYS_kqueue1, SYS_poll, SYS_ppoll, SYS_pselect, SYS_select,
 };
 

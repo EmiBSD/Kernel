@@ -195,12 +195,12 @@ use hal::sync::klock;
 use hal::sync::mutex::{Mutexed, MutexedGuard, SharedMutex};
 use hal::sync::rwlock::Rwlocked;
 use hal::sync::sleep::{INFSLP, PCATCH};
-use hal::sys::errno::Errno;
-use hal::sys::filio::{FIOASYNC, FIOGETOWN, FIONREAD, FIOSETOWN};
-use hal::sys::ioccom::_iow;
-use hal::sys::signal::SIGIO;
-use hal::sys::types::Pid;
 use hal::user::{UserPtr, pod_from_bytes, pod_to_bytes};
+use sysdefs::errno::Errno;
+use sysdefs::filio::{FIOASYNC, FIOGETOWN, FIONREAD, FIOSETOWN};
+use sysdefs::ioccom::_iow;
+use sysdefs::signal::SIGIO;
+use sysdefs::types::Pid;
 
 use crate::file::event::{
     EVFILT_READ, FILTEROP_ISFD, FILTEROP_MPSAFE, Filter, Filterops, Kevent, Klist, Knote,
@@ -393,7 +393,7 @@ pub struct MsgbufHeader {
     pub msg_bufd: i64,
 }
 
-hal::abi_pod!(MsgbufHeader {
+sysdefs::abi_pod!(MsgbufHeader {
     msg_magic: i64,
     msg_bufx: i64,
     msg_bufr: i64,
@@ -1396,7 +1396,7 @@ mod tests {
     use crate::proc::cred::{CredRef, Ucred};
     use crate::testutil::{self, TestFileData, USER_BASE};
     use crate::tty::{TtyDevsw, register_ttydevsw};
-    use hal::sys::stat::Stat;
+    use sysdefs::stat::Stat;
 
     /// The tests that use the global buffers (`LOG_MTX`) or the user memory from [`UMSG`] on
     /// run one at a time. That memory is one array for the whole process: `kern.msgbuf`'s
@@ -1857,7 +1857,7 @@ mod tests {
             self.tty
         }
         fn stop(&self, _tp: &crate::tty::Tty<Kg>, _rw: i32) {}
-        fn console_dev(&self) -> Option<hal::sys::types::Dev> {
+        fn console_dev(&self) -> Option<sysdefs::types::Dev> {
             None
         }
         fn console_write(&self, uio: &mut Uio<'_, Kg>) -> Result<(), Errno> {

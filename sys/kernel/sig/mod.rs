@@ -152,18 +152,18 @@ use hal::sync::klock;
 use hal::sync::mutex::{Mutexed, MutexedGuard};
 use hal::sync::rwlock::{Exclusive, Guarded, Witness};
 use hal::sync::sleep::{INFSLP, PCATCH, PWAIT};
-use hal::sys::errno::Errno;
-use hal::sys::siginfo::{ILL_BTCFI, SI_USER, Siginfo, Sigval};
-use hal::sys::signal::{
+use hal::user::UserPtr;
+use sysdefs::errno::Errno;
+use sysdefs::siginfo::{ILL_BTCFI, SI_USER, Siginfo, Sigval};
+use sysdefs::signal::{
     MINSIGSTKSZ, NSIG, SA_NOCLDSTOP, SA_NOCLDWAIT, SA_NODEFER, SA_ONSTACK, SA_RESETHAND,
     SA_RESTART, SA_SIGINFO, SIG_BLOCK, SIG_DFL, SIG_IGN, SIG_SETMASK, SIG_UNBLOCK, SIGABRT,
     SIGALRM, SIGBUS, SIGCHLD, SIGCONT, SIGFPE, SIGHUP, SIGILL, SIGINT, SIGKILL, SIGPROF, SIGSEGV,
     SIGSTOP, SIGSYS, SIGTERM, SIGTSTP, SIGTTIN, SIGTTOU, SIGUSR1, SIGUSR2, SIGVTALRM, SIGXFSZ,
     SS_DISABLE, SS_ONSTACK, Sig, Sigaction, Sigaltstack, Sigset, sigmask,
 };
-use hal::sys::types::Pid;
-use hal::sys::wait::WCOREFLAG;
-use hal::user::UserPtr;
+use sysdefs::types::Pid;
+use sysdefs::wait::WCOREFLAG;
 
 use crate::assert::{kassert, kpanic};
 use crate::file::event::{NOTE_SIGNAL, knote_process_locked};
@@ -472,7 +472,7 @@ pub struct UserTimespec {
     pub tv_nsec: i64,
 }
 
-hal::abi_pod!(UserTimespec {
+sysdefs::abi_pod!(UserTimespec {
     tv_sec: i64,
     tv_nsec: i64
 });
@@ -2471,8 +2471,8 @@ mod tests {
     use std::boxed::Box;
 
     use hal::ds::pin::pin_static;
-    use hal::sys::siginfo::SEGV_MAPERR;
-    use hal::sys::signal::{SIGEMT, SIGINFO, SIGIO, SIGQUIT, SIGTHR, SIGTRAP, SIGURG, SIGWINCH};
+    use sysdefs::siginfo::SEGV_MAPERR;
+    use sysdefs::signal::{SIGEMT, SIGINFO, SIGIO, SIGQUIT, SIGTHR, SIGTRAP, SIGURG, SIGWINCH};
 
     use super::*;
     use crate::proc::cred::Ucred;

@@ -134,16 +134,17 @@
 //!   thread shutting down), as the C's `vn_close(vp, FWRITE, NOCRED, p)` with
 //!   `p = curproc`.
 
+use crate::time::clock::TimespecExt;
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use hal::sync::klock;
 use hal::sync::rwlock::Rwlocked;
-use hal::sys::errno::Errno;
-use hal::sys::fcntl::{FWRITE, O_APPEND};
-use hal::sys::mount::Statfs;
-use hal::sys::types::{Dev, Gid, Pid, Uid};
 use hal::user::UserPtr;
+use sysdefs::errno::Errno;
+use sysdefs::fcntl::{FWRITE, O_APPEND};
+use sysdefs::mount::Statfs;
+use sysdefs::types::{Dev, Gid, Pid, Uid};
 
 use crate::assert::kpanic;
 use crate::fs::lookup::ndinit;
@@ -189,7 +190,7 @@ pub struct Acct {
     pub ac_flag: u32,
 }
 
-hal::abi_pod!(Acct {
+sysdefs::abi_pod!(Acct {
     ac_comm: [u8; _MAXCOMLEN],
     ac_utime: Comp,
     ac_stime: Comp,

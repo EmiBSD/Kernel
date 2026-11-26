@@ -112,7 +112,7 @@ use core::ffi::c_void;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 use crate::arch::amd64::amd64::bus_dma::{
     _bus_dmamap_create, _bus_dmamap_destroy, _bus_dmamap_load, _bus_dmamap_load_mbuf,

@@ -153,16 +153,16 @@ use hal::mem::malloc::MArc;
 use hal::mem::pool::{PR_WAITOK, PoolArc};
 use hal::random::arc4random;
 use hal::sync::sleep::INFSLP;
-use hal::sys::errno::Errno;
-use hal::sys::fcntl::{FREAD, FWRITE};
-use hal::sys::mount::{
+use hal::user::{UserPtr, pod_from_bytes};
+use sysdefs::errno::Errno;
+use sysdefs::fcntl::{FREAD, FWRITE};
+use sysdefs::mount::{
     Fid, MNAMELEN, MNT_FORCE, MNT_LAZY, MNT_LOCAL, MNT_QUOTA, MNT_RDONLY, MNT_RELOAD, MNT_UPDATE,
     MNT_WAIT, MNT_WANTRDWR, Statfs, UfsArgs,
 };
-use hal::sys::param::PAGE_SIZE;
-use hal::sys::sysctl::SysctlBoundedArgs;
-use hal::sys::types::{Daddr, Dev, Ino, Mode, Off, Uid, major};
-use hal::user::{UserPtr, pod_from_bytes};
+use sysdefs::param::PAGE_SIZE;
+use sysdefs::sysctl::SysctlBoundedArgs;
+use sysdefs::types::{Daddr, Dev, Ino, Mode, Off, Uid, major};
 
 use super::ffs_alloc::{ffs_inode_alloc, ffs_inode_free};
 use super::ffs_balloc::ffs_balloc;
@@ -215,7 +215,7 @@ use crate::net::mbuf::Mbuf;
 use crate::proc::{ProcGlue, Thread};
 use crate::time::inittodr;
 use crate::time::tc::gettime;
-use hal::sys::disk::DM_OPENBLCK;
+use sysdefs::disk::DM_OPENBLCK;
 
 /// `DEV_BSIZE`.
 const DEV_BSIZE: i64 = 1 << DEV_BSHIFT;
@@ -395,7 +395,7 @@ pub fn ffs_mount<G: ProcGlue>(
     ndp: &mut Nd<'_, G>,
     p: &Thread<G>,
 ) -> Result<(), Errno> {
-    let args = UfsArgs::from_bytes(data);
+    let args = hal::user::pod_from_bytes::<UfsArgs>(data);
     let mut ump: Option<UfsmountRef<G>> = None;
     let mut ronly = 0;
     let mut fname = [0u8; MNAMELEN];
@@ -1777,7 +1777,7 @@ mod tests {
     use std::vec::Vec;
     use std::{assert, assert_eq, assert_ne};
 
-    use hal::sys::fcntl::{O_CREAT, O_RDONLY, O_RDWR};
+    use sysdefs::fcntl::{O_CREAT, O_RDONLY, O_RDWR};
 
     use super::*;
     use crate::file::descrip::{sys_close, sys_read, sys_write};
@@ -2081,7 +2081,7 @@ mod tests {
             "no ufs_args"
         );
         let mut data = vec![0u8; UfsArgs::SIZE];
-        let mut args = UfsArgs::from_bytes(&data).unwrap();
+        let mut args = hal::user::pod_from_bytes::<UfsArgs>(&data).unwrap();
         for (fspec, want) in [
             (&b"/f"[..], Errno::ENOTBLK),
             (b"/dev/sd0c", Errno::ENOTBLK),

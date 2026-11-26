@@ -90,7 +90,7 @@
 use core::ffi::c_void;
 use core::ptr;
 
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 use crate::dev::wscons::wsconsio::{WSSCREEN_NAME_SIZE, WsdisplayFont, WsdisplayParam};
 use crate::sys::device::Cfdata;

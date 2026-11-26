@@ -116,7 +116,7 @@
 
 /* <CODE> */
 //! ICMP (`netinet/ip_icmp.c`), the kernel's since N6.4c2 (`kernel::netinet::ip_icmp`; the
-//! header, `<netinet/ip_icmp.h>`, is `hal::sys::netinet_ip_icmp`): the kernel's items under
+//! header, `<netinet/ip_icmp.h>`, is `sysdefs::netinet_ip_icmp`): the kernel's items under
 //! LZ's path, LZ's signatures over parked mbufs for `bsd`'s callers (pf, the transports, the
 //! protocol table's ICMP entry), and [`IcmpPkt`], `bsd`'s view of a message inside a packet
 //! for its readers (TCP's path MTU, the tests) until they move.
@@ -142,12 +142,12 @@ use crate::netinet::in_::InAddr;
 use crate::netinet::ip::Ip;
 use crate::sys::mbuf::{Mbuf, mtod, unpark};
 
-pub use hal::sys::netinet_ip_icmp::*;
 pub use kernel::netinet::icmp_var::ICMPCOUNTERS;
 pub use kernel::netinet::ip_icmp::{
     ICMP_REDIRACCEPT, ICMP_REDIRECT_TIMEOUT_Q, ICMP_REDIRTIMEOUT, ICMPBMCASTECHO, ICMPERRPPSLIM,
     ICMPMASKREPL, ICMPTSTAMPREPL, IP_MTUDISC_TIMEOUT_Q, iptime,
 };
+pub use sysdefs::netinet_ip_icmp::*;
 
 /// The offset of `icmp_hun` (the second word).
 const ICMP_HUN: usize = ICMP_HUN_OFFSET;

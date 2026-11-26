@@ -35,9 +35,9 @@ use std::collections::BTreeMap;
 use std::sync::MutexGuard;
 use std::vec::Vec;
 
-use hal::sys::errno::Errno;
-use hal::sys::mount::{IsoArgs, MNT_LOCAL, MNT_RDONLY, MOUNT_CD9660};
-use hal::sys::types::Daddr;
+use sysdefs::errno::Errno;
+use sysdefs::mount::{IsoArgs, MNT_LOCAL, MNT_RDONLY, MOUNT_CD9660};
+use sysdefs::types::Daddr;
 
 use crate::fs::bio::biodone;
 use crate::fs::buf::{B_READ, BufRef};
@@ -658,7 +658,7 @@ pub static TEST_CD9660_CONF: Vfsconf<TestGlue> = Vfsconf::new(
 
 /// Mount arguments of `flags` (`ISOFSMNT_*`) and session `sess`, no device name.
 pub fn args(flags: i32, sess: i32) -> IsoArgs {
-    let Some(mut a) = IsoArgs::from_bytes(&[0u8; IsoArgs::SIZE]) else {
+    let Some(mut a) = hal::user::pod_from_bytes::<IsoArgs>(&[0u8; IsoArgs::SIZE]) else {
         std::panic!("testcd9660: no iso_args");
     };
     a.flags = flags;

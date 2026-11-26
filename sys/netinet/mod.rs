@@ -22,20 +22,20 @@
 //! Headers become modules as in `sys/sys` (`ip_icmp.h` → `ip_icmp.rs`). `in.h` is `in_.rs`
 //! because `in` is a Rust keyword (`docs/C_TO_RUST.md`).
 //!
-//! The modules the kernel's `kernel::netinet` and `hal::sys::netinet_*` absorbed (N6.4a) keep
+//! The modules the kernel's `kernel::netinet` and `sysdefs::netinet_*` absorbed (N6.4a) keep
 //! their LZ paths here as re-exports, for `bsd`'s importers (docs/SCAFFOLDING.md); TCP is the
 //! kernel's since N6.6a5 (`tcp_seq` and `tcp_var` re-exported for pf, the drivers' TSO and
 //! LRO counters and IPsec's output; `tcp_subr` keeps the TCP_SIGNATURE transform, IPsec's,
-//! until N8); UDP since N6.6b0 (`udp` and `udp_var` re-export `hal::sys`'s images for pf,
+//! until N8); UDP since N6.6b0 (`udp` and `udp_var` re-export `sysdefs`'s images for pf,
 //! IPsec, pflow and the tests); raw IP and divert since N6.6b1 (nothing re-exported).
 
-pub use hal::sys::netinet_ip as ip;
-pub use hal::sys::netinet_tcp as tcp;
-pub use hal::sys::netinet_udp as udp;
-pub use hal::sys::netinet_udp_var as udp_var;
 pub use kernel::netinet::{
     in_cksum, in_systm, in4_cksum, inet_nat64, ip_ecn, ip_id, tcp_fsm, tcp_seq, tcp_var,
 };
+pub use sysdefs::netinet_ip as ip;
+pub use sysdefs::netinet_tcp as tcp;
+pub use sysdefs::netinet_udp as udp;
+pub use sysdefs::netinet_udp_var as udp_var;
 
 pub mod icmp6;
 #[forbid(unsafe_code)]

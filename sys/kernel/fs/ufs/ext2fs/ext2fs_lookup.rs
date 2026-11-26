@@ -128,10 +128,10 @@ use core::mem::{offset_of, size_of};
 use core::sync::atomic::Ordering;
 
 use hal::mem::malloc::{M_WAITOK, MArray};
-use hal::sys::dirent::{DT_UNKNOWN, Dirent, dirent_recsize};
-use hal::sys::errno::Errno;
-use hal::sys::mount::MNT_RDONLY;
-use hal::sys::types::Off;
+use sysdefs::dirent::{DT_UNKNOWN, Dirent, dirent_recsize};
+use sysdefs::errno::Errno;
+use sysdefs::mount::MNT_RDONLY;
+use sysdefs::types::Off;
 
 use super::ext2fs::{E2FS_REV0, EXT2F_INCOMPAT_FTYPE, Ext2Superblock};
 use super::ext2fs_dir::{
@@ -1119,7 +1119,7 @@ mod tests {
     use std::vec::Vec;
     use std::{assert, assert_eq, format};
 
-    use hal::sys::mount::MNT_RDONLY;
+    use sysdefs::mount::MNT_RDONLY;
 
     use super::super::testext2fs::newfs::{self, B, ROOTDIR};
     use super::super::testext2fs::{attach, mount, new_file, root};

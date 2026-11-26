@@ -126,7 +126,7 @@
 //!   no copy of the message state behind; `Clone` stays for the callers that fork a prefixed
 //!   hash (the TCP ISS secret).
 
-use libkern::explicit_bzero;
+use hal::mem::explicit_bzero;
 
 use super::wipe;
 

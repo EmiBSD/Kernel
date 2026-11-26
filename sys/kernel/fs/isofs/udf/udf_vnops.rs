@@ -148,15 +148,15 @@ use core::sync::atomic::Ordering;
 
 use hal::mem::malloc::{M_WAITOK, MArray};
 use hal::mem::pool::{PR_WAITOK, PoolBox};
-use hal::sys::dirent::{DT_DIR, DT_UNKNOWN, Dirent, MAXNAMLEN, dirent_size};
-use hal::sys::endian::{letoh16, letoh32, letoh64};
-use hal::sys::errno::Errno;
-use hal::sys::syslimits::NAME_MAX;
-use hal::sys::types::{Daddr, Ino, Mode, Nlink, Off, Register};
-use hal::sys::unistd::{
+use hal::user::bytes_of_mut;
+use sysdefs::dirent::{DT_DIR, DT_UNKNOWN, Dirent, MAXNAMLEN, dirent_size};
+use sysdefs::endian::{letoh16, letoh32, letoh64};
+use sysdefs::errno::Errno;
+use sysdefs::syslimits::NAME_MAX;
+use sysdefs::types::{Daddr, Ino, Mode, Nlink, Off, Register};
+use sysdefs::unistd::{
     _PC_CHOWN_RESTRICTED, _PC_LINK_MAX, _PC_NAME_MAX, _PC_NO_TRUNC, _PC_TIMESTAMP_RESOLUTION,
 };
-use hal::user::bytes_of_mut;
 
 use crate::assert::kpanic;
 use crate::base::prf::printf;

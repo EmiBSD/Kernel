@@ -97,7 +97,7 @@
 //!   reached as `&'static Fs` through an `unsafe` cast (sys/ufs/ffs/ffs_vfsops.rs:897-911),
 //!   its in-core pointers raw and dereferenced behind bounds checks (`Fs::fs_cs`,
 //!   `contigdirs`, `set_maxcluster`: four `unsafe` blocks, fs.rs:400-445) -> two types (D-N5.5b-2):
-//!   [`Fs`], the on-disk structure as a plain `hal::abi_pod!` (read out of a buffer by
+//!   [`Fs`], the on-disk structure as a plain `sysdefs::abi_pod!` (read out of a buffer by
 //!   `pod_from_bytes`, laid out by `newfs`, the layout asserted against the C's offsets), and
 //!   [`Superblock`], the in-core copy: the C's `fs_sbsize` bytes as relaxed atomic words
 //!   (the dinode's idiom, `DinWords`, over a `malloc(M_UFSMNT)` array of the C's
@@ -126,8 +126,8 @@ use core::sync::atomic::{AtomicI32, AtomicU8, AtomicU64, Ordering};
 
 use hal::mem::malloc::{M_WAITOK, MArray};
 use hal::sync::slot::ReadMostly;
-use hal::sys::types::{Daddr, Off};
 use hal::user::pod_from_bytes;
+use sysdefs::types::{Daddr, Off};
 
 use crate::assert::kpanic;
 use crate::file::select::howmany;
@@ -212,7 +212,7 @@ pub struct Csum {
     pub cs_nffree: i32,
 }
 
-hal::abi_pod!(Csum {
+sysdefs::abi_pod!(Csum {
     cs_ndir: i32,
     cs_nbfree: i32,
     cs_nifree: i32,
@@ -235,7 +235,7 @@ pub struct CsumTotal {
     pub cs_spare: [i64; 4],
 }
 
-hal::abi_pod!(CsumTotal {
+sysdefs::abi_pod!(CsumTotal {
     cs_ndir: i64,
     cs_nbfree: i64,
     cs_nifree: i64,
@@ -436,7 +436,7 @@ pub struct Fs {
     pub fs_space: [u8; 8],
 }
 
-hal::abi_pod!(Fs {
+sysdefs::abi_pod!(Fs {
     fs_firstfield: i32,
     fs_unused_1: i32,
     fs_sblkno: i32,
@@ -1104,7 +1104,7 @@ pub struct Cg {
     pub cg_sparecon64: [i64; 3],
 }
 
-hal::abi_pod!(Cg {
+sysdefs::abi_pod!(Cg {
     cg_firstfield: i32,
     cg_magic: i32,
     cg_time: i32,

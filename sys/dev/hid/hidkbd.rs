@@ -109,7 +109,7 @@ use core::ptr::{self, NonNull};
 use core::slice;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 use crate::dev::hid::hid::{
     HIO_CONST, HIO_VARIABLE, HUL_CAPS_LOCK, HUL_COMPOSE, HUL_NUM_LOCK, HUL_SCROLL_LOCK,

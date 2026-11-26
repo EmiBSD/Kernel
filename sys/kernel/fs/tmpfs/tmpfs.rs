@@ -132,8 +132,8 @@ use hal::mem::pool::{PoolArc, PoolHome};
 use hal::sync::once::OnceStatic;
 use hal::sync::rwlock::{RawRwlock, RecursiveRwlock, Rwlocked};
 use hal::sync::slot::ReadMostly;
-use hal::sys::mount::Fid;
-use hal::sys::types::{Dev, Ino};
+use sysdefs::mount::Fid;
+use sysdefs::types::{Dev, Ino};
 
 use crate::assert::{kassert, kpanic};
 use crate::fs::lockf::LockfSlot;

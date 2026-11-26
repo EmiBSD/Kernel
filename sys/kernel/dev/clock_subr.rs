@@ -80,7 +80,7 @@
 //!   `crate::kern::clock_subr` stays a re-export of this module for the chips' drivers still
 //!   in `bsd` (`docs/SCAFFOLDING.md`).
 
-use hal::sys::types::Time;
+use sysdefs::types::Time;
 
 /// `SECDAY`: seconds in a day (`<sys/time.h>`).
 const SECDAY: i64 = 86400;

@@ -185,13 +185,13 @@ use hal::sync::mutex::{Mutexed, MutexedGuard};
 use hal::sync::once::OnceStatic;
 use hal::sync::rwlock::{Guarded, RW_READ, RW_WRITE, SplitRwlock};
 use hal::sync::sleep::INFSLP;
-use hal::sys::errno::Errno;
-use hal::sys::mount::{
+use libkern::siphash::SiphashKey;
+use sysdefs::errno::Errno;
+use sysdefs::mount::{
     Fsid, MFSNAMELEN, MNAMELEN, MNT_ASYNC, MNT_NOPERM, MNT_RDONLY, MNT_STALLED, MNT_WAIT, Statfs,
     VB_DUPOK, VB_WAIT, VB_WRITE,
 };
-use hal::sys::types::{Daddr, Dev, Gid, Mode, Uid, major, makedev, minor};
-use libkern::siphash::SiphashKey;
+use sysdefs::types::{Daddr, Dev, Gid, Mode, Uid, major, makedev, minor};
 
 use super::bio::{self, BufVnode, DirtyPick, DirtyScan, NODEV};
 use super::buf::{B_BUSY, B_DELWRI, Buf, BufRef};
@@ -1247,7 +1247,7 @@ pub fn vclean<G: ProcGlue>(vp: &'static Vnode<G>, flags: i32, p: Option<&Thread<
     // Note that the VOP_INACTIVE will unlock the vnode
     if active != 0 {
         if flags & DOCLOSE != 0 {
-            let _ = vop_close(vp, hal::sys::fcntl::FNONBLOCK, Cred::NOCRED, p);
+            let _ = vop_close(vp, sysdefs::fcntl::FNONBLOCK, Cred::NOCRED, p);
         }
         let _ = vop_inactive(vp, p);
     } else {
@@ -1482,7 +1482,7 @@ pub fn vprint<G: ProcGlue>(label: Option<&str>, vp: &'static Vnode<G>) {
 /// List all of the locked vnodes in the system. Called when debugging the kernel.
 #[cfg(feature = "debug")]
 pub fn printlockedvnodes<G: ProcGlue>() {
-    use hal::sys::mount::{VB_NOWAIT, VB_READ};
+    use sysdefs::mount::{VB_NOWAIT, VB_READ};
     crate::base::prf::printf(format_args!("Locked vnodes\n"));
 
     for mp in super::mount::mountlist::<G>(false) {
@@ -1535,7 +1535,7 @@ impl<G: ProcGlue> crate::base::sysctl::SysctlNode for VfsSysctl<G> {
         req: &mut crate::base::sysctl::SysctlReq<'_>,
     ) -> Result<(), Errno> {
         use crate::base::sysctl::{rdint, rdstruct};
-        use hal::sys::mount::{VFS_BCACHESTAT, VFS_CONF, VFS_GENERIC, VFS_MAXTYPENUM, VfsconfAbi};
+        use sysdefs::mount::{VFS_BCACHESTAT, VFS_CONF, VFS_GENERIC, VFS_MAXTYPENUM, VfsconfAbi};
 
         // all sysctl names at this level are at least name and field
         if name.len() < 2 {
@@ -1616,11 +1616,11 @@ pub fn vfs_mountedon<G: ProcGlue>(vp: &'static Vnode<G>) -> Result<(), Errno> {
 /// (its bytes in the C's layout, as `getdents(2)` hands them to userland): the readdir of
 /// msdosfs (N5.7c2) and of cd9660 (N5.8c2), which keep the entry as the structure.
 pub fn dirent_uiomove<G: ProcGlue>(
-    dp: &hal::sys::dirent::Dirent,
+    dp: &sysdefs::dirent::Dirent,
     uio: &mut Uio<'_, G>,
 ) -> Result<(), Errno> {
     use core::mem::offset_of;
-    use hal::sys::dirent::{Dirent, MAXNAMLEN};
+    use sysdefs::dirent::{Dirent, MAXNAMLEN};
 
     let mut b = [0u8; size_of::<Dirent>()];
     let at = |f: usize, len: usize| f..f + len;
@@ -2091,7 +2091,7 @@ mod tests {
         self, B, C, INACTIVE, RECLAIM, ROOT, TEST_CONF, TEST_VOPS, TestGlue, UNLOCKS, setup_root,
     };
     use crate::fs::vnode::{VBIOONSYNCLIST, VnodeKind};
-    use hal::sys::mount::{MNT_UNMOUNT, VB_NOWAIT, VB_READ};
+    use sysdefs::mount::{MNT_UNMOUNT, VB_NOWAIT, VB_READ};
 
     type V = Vnode<TestGlue>;
 

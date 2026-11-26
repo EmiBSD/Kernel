@@ -88,7 +88,7 @@ use core::sync::atomic::AtomicBool;
 
 use hal::mem::pool::{BoxPool, TypedPool};
 use hal::sync::slot::ReadMostly;
-use hal::sys::errno::Errno;
+use sysdefs::errno::Errno;
 
 use super::dinode::ROOTINO;
 #[cfg(feature = "ffs2")]

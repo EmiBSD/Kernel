@@ -68,7 +68,7 @@
 //! - Line bytes are unsigned, as `char` is on arm64; on amd64 C reads bytes above 0x7f as
 //!   negative, which both treat as white space before a token and as its end inside one.
 
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 use crate::ddb::db_command::{DbResult, db_error};
 use crate::ddb::db_input::db_readline;

@@ -146,6 +146,7 @@
 //!   gets its object back by naming its type. The C's `fn(void *)` stays for the callers that
 //!   pass an address or nothing (`TimeoutFn`, the legacy adapter's).
 
+use crate::time::clock::TimespecExt;
 use core::ffi::c_void;
 use core::pin::Pin;
 use core::ptr;
@@ -1378,6 +1379,7 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::testutil;
+    use crate::time::clock::TimespecExt;
 
     /// Serialises the tests that drive the wheel (and `kernel::time::tc`'s clock step, which moves
     /// it).

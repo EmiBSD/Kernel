@@ -18,6 +18,7 @@ diagnostic = []     # `option DIAGNOSTIC` -> the runtime's KASSERT(9)s are activ
 
 [dependencies]
 libkern.workspace = true
+sysdefs.workspace = true
 
 
 [lints]

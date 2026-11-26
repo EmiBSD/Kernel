@@ -61,7 +61,7 @@
 //! ## Redesign
 //! - LZ's `fuse_abi!` wrote an `unsafe impl AbiPod` per protocol structure and
 //!   `abi_bytes`/`abi_bytes_mut` made byte slices of them with two `unsafe` blocks: the
-//!   structures are `hal::abi_pod!`s now (the tiling checked at compile time; of LZ's 37 size
+//!   structures are `sysdefs::abi_pod!`s now (the tiling checked at compile time; of LZ's 37 size
 //!   and offset checks 36 kept beside it, `align_of::<FusebufOp>() == 8` replaced by the
 //!   union's size being whole words, and every member the daemon's bytes depend on pinned by
 //!   a test), their bytes `hal::user::bytes_of`/`bytes_of_mut`.
@@ -89,8 +89,9 @@ use hal::ds::pinlist::PinEntry;
 use hal::mem::malloc::MArray;
 use hal::mem::pool::PoolHome;
 use hal::sync::slot::ReadMostly;
-use hal::sys::types::Ino;
-use hal::user::{AbiPod, bytes_of, bytes_of_mut};
+use hal::user::{bytes_of, bytes_of_mut};
+use sysdefs::pod::AbiPod;
+use sysdefs::types::Ino;
 
 use crate::fs::ufs::ufs::inode::{words_read_bytes, words_write_bytes};
 use crate::fs::word::{I32Word, U64Word};
@@ -209,7 +210,7 @@ pub struct FuseAttr {
     /// `padding`.
     pub padding: u32,
 }
-hal::abi_pod!(FuseAttr {
+sysdefs::abi_pod!(FuseAttr {
     ino: u64,
     size: u64,
     blocks: u64,
@@ -247,7 +248,7 @@ pub struct FuseEntryOut {
     /// `attr`.
     pub attr: FuseAttr,
 }
-hal::abi_pod!(FuseEntryOut {
+sysdefs::abi_pod!(FuseEntryOut {
     nodeid: u64,
     generation: u64,
     entry_valid: u64,
@@ -264,7 +265,7 @@ pub struct FuseForgetIn {
     /// `nlookup`.
     pub nlookup: u64,
 }
-hal::abi_pod!(FuseForgetIn { nlookup: u64 });
+sysdefs::abi_pod!(FuseForgetIn { nlookup: u64 });
 
 /// `struct fuse_getattr_in`.
 #[repr(C)]
@@ -277,7 +278,7 @@ pub struct FuseGetattrIn {
     /// `fh`: not implemented.
     pub fh: u64,
 }
-hal::abi_pod!(FuseGetattrIn {
+sysdefs::abi_pod!(FuseGetattrIn {
     getattr_flags: u32,
     dummy: u32,
     fh: u64,
@@ -296,7 +297,7 @@ pub struct FuseAttrOut {
     /// `attr`.
     pub attr: FuseAttr,
 }
-hal::abi_pod!(FuseAttrOut {
+sysdefs::abi_pod!(FuseAttrOut {
     attr_valid: u64,
     attr_valid_nsec: u32,
     dummy: u32,
@@ -316,7 +317,7 @@ pub struct FuseMknodIn {
     /// `padding`.
     pub padding: u32,
 }
-hal::abi_pod!(FuseMknodIn {
+sysdefs::abi_pod!(FuseMknodIn {
     mode: u32,
     rdev: u32,
     umask: u32,
@@ -332,7 +333,7 @@ pub struct FuseMkdirIn {
     /// `umask`.
     pub umask: u32,
 }
-hal::abi_pod!(FuseMkdirIn {
+sysdefs::abi_pod!(FuseMkdirIn {
     mode: u32,
     umask: u32
 });
@@ -344,7 +345,7 @@ pub struct FuseRenameIn {
     /// `newdir`.
     pub newdir: u64,
 }
-hal::abi_pod!(FuseRenameIn { newdir: u64 });
+sysdefs::abi_pod!(FuseRenameIn { newdir: u64 });
 
 /// `struct fuse_link_in`.
 #[repr(C)]
@@ -353,7 +354,7 @@ pub struct FuseLinkIn {
     /// `oldnodeid`.
     pub oldnodeid: u64,
 }
-hal::abi_pod!(FuseLinkIn { oldnodeid: u64 });
+sysdefs::abi_pod!(FuseLinkIn { oldnodeid: u64 });
 
 /// `struct fuse_setattr_in`.
 #[repr(C)]
@@ -392,7 +393,7 @@ pub struct FuseSetattrIn {
     /// `unused5`.
     pub unused5: u32,
 }
-hal::abi_pod!(FuseSetattrIn {
+sysdefs::abi_pod!(FuseSetattrIn {
     valid: u32,
     padding: u32,
     fh: u64,
@@ -420,7 +421,7 @@ pub struct FuseOpenIn {
     /// `unused`.
     pub unused: u32,
 }
-hal::abi_pod!(FuseOpenIn {
+sysdefs::abi_pod!(FuseOpenIn {
     flags: u32,
     unused: u32
 });
@@ -436,7 +437,7 @@ pub struct FuseOpenOut {
     /// `padding`.
     pub padding: u32,
 }
-hal::abi_pod!(FuseOpenOut {
+sysdefs::abi_pod!(FuseOpenOut {
     fh: u64,
     open_flags: u32,
     padding: u32,
@@ -455,7 +456,7 @@ pub struct FuseReleaseIn {
     /// `lock_owner`.
     pub lock_owner: u64,
 }
-hal::abi_pod!(FuseReleaseIn {
+sysdefs::abi_pod!(FuseReleaseIn {
     fh: u64,
     flags: u32,
     release_flags: u32,
@@ -475,7 +476,7 @@ pub struct FuseFlushIn {
     /// `lock_owner`.
     pub lock_owner: u64,
 }
-hal::abi_pod!(FuseFlushIn {
+sysdefs::abi_pod!(FuseFlushIn {
     fh: u64,
     unused: u32,
     padding: u32,
@@ -501,7 +502,7 @@ pub struct FuseReadIn {
     /// `padding`.
     pub padding: u32,
 }
-hal::abi_pod!(FuseReadIn {
+sysdefs::abi_pod!(FuseReadIn {
     fh: u64,
     offset: u64,
     size: u32,
@@ -530,7 +531,7 @@ pub struct FuseWriteIn {
     /// `padding`.
     pub padding: u32,
 }
-hal::abi_pod!(FuseWriteIn {
+sysdefs::abi_pod!(FuseWriteIn {
     fh: u64,
     offset: u64,
     size: u32,
@@ -549,7 +550,7 @@ pub struct FuseWriteOut {
     /// `padding`.
     pub padding: u32,
 }
-hal::abi_pod!(FuseWriteOut {
+sysdefs::abi_pod!(FuseWriteOut {
     size: u32,
     padding: u32
 });
@@ -579,7 +580,7 @@ pub struct FuseKstatfs {
     /// `spare`.
     pub spare: [u32; 6],
 }
-hal::abi_pod!(FuseKstatfs {
+sysdefs::abi_pod!(FuseKstatfs {
     blocks: u64,
     bfree: u64,
     bavail: u64,
@@ -599,7 +600,7 @@ pub struct FuseStatfsOut {
     /// `st`.
     pub st: FuseKstatfs,
 }
-hal::abi_pod!(FuseStatfsOut { st: FuseKstatfs });
+sysdefs::abi_pod!(FuseStatfsOut { st: FuseKstatfs });
 
 /// `struct fuse_fsync_in`.
 #[repr(C)]
@@ -612,7 +613,7 @@ pub struct FuseFsyncIn {
     /// `padding`.
     pub padding: u32,
 }
-hal::abi_pod!(FuseFsyncIn {
+sysdefs::abi_pod!(FuseFsyncIn {
     fh: u64,
     fsync_flags: u32,
     padding: u32,
@@ -631,7 +632,7 @@ pub struct FuseInitIn {
     /// `flags`.
     pub flags: u32,
 }
-hal::abi_pod!(FuseInitIn {
+sysdefs::abi_pod!(FuseInitIn {
     major: u32,
     minor: u32,
     max_readahead: u32,
@@ -657,7 +658,7 @@ pub struct FuseInitOut {
     /// `max_write`.
     pub max_write: u32,
 }
-hal::abi_pod!(FuseInitOut {
+sysdefs::abi_pod!(FuseInitOut {
     major: u32,
     minor: u32,
     max_readahead: u32,
@@ -688,7 +689,7 @@ pub struct FuseInHeader {
     /// `padding`.
     pub padding: u32,
 }
-hal::abi_pod!(FuseInHeader {
+sysdefs::abi_pod!(FuseInHeader {
     len: u32,
     opcode: u32,
     unique: u64,
@@ -710,7 +711,7 @@ pub struct FuseOutHeader {
     /// `unique`: the ID of the request answered; 0 for a notification.
     pub unique: u64,
 }
-hal::abi_pod!(FuseOutHeader {
+sysdefs::abi_pod!(FuseOutHeader {
     len: u32,
     error: i32,
     unique: u64,
@@ -730,7 +731,7 @@ pub struct FuseDirent {
     /// `type`.
     pub r#type: u32,
 }
-hal::abi_pod!(FuseDirent {
+sysdefs::abi_pod!(FuseDirent {
     ino: u64,
     off: u64,
     namelen: u32,

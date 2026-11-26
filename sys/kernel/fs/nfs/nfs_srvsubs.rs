@@ -137,8 +137,8 @@
 
 use core::mem::size_of;
 
-use hal::sys::errno::Errno;
-use hal::sys::types::{SaFamily, major, minor};
+use sysdefs::errno::Errno;
+use sysdefs::types::{SaFamily, major, minor};
 
 use super::nfs_subs::{nfs_false, nfs_true, txdr_nfsv2time};
 use super::nfsm_subs::{XdrReader, XdrWriter, nfsm_padlen};
@@ -170,11 +170,11 @@ use crate::fs::vops::vop_unlock;
 use crate::net::mbuf::Mbuf;
 use crate::proc::cred::UcredCell;
 use crate::proc::{ProcGlue, Thread};
-use crate::sys::mount::{Fhandle, MNT_EXPORTANON, MNT_EXRDONLY};
-use crate::sys::netinet_in::{IPPORT_RESERVED, SockaddrIn};
-use crate::sys::socket::{AF_INET, SOCK_STREAM};
-use crate::sys::syslimits::NGROUPS_MAX;
 use crate::time::tc::getnanotime;
+use sysdefs::mount::{Fhandle, MNT_EXPORTANON, MNT_EXRDONLY};
+use sysdefs::netinet_in::{IPPORT_RESERVED, SockaddrIn};
+use sysdefs::socket::{AF_INET, SOCK_STREAM};
+use sysdefs::syslimits::NGROUPS_MAX;
 
 /// `nfsrv_v2errmap`: maps errno values to NFS error numbers. Use `NFSERR_IO` as the catch
 /// all for ones not specifically defined in RFC 1094. Everything after the table maps to
@@ -1263,7 +1263,7 @@ mod tests {
     mod export {
         use core::cell::Cell;
 
-        use hal::sys::types::Ino;
+        use sysdefs::types::Ino;
 
         use super::*;
         use crate::fs::export::ExportGrant;
@@ -1278,8 +1278,8 @@ mod tests {
         use crate::fs::vops::{Cred, Nd, Vfs};
         use crate::net::mbuf::MbufBox;
         use crate::proc::Thread;
-        use crate::sys::mount::{Fid, MNT_EXPORTED, MNT_LOCAL, Statfs};
-        use crate::sys::socket::SOCK_DGRAM;
+        use sysdefs::mount::{Fid, MNT_EXPORTED, MNT_LOCAL, Statfs};
+        use sysdefs::socket::SOCK_DGRAM;
 
         type G = TestGlue;
 
@@ -1364,7 +1364,7 @@ mod tests {
 
         /// A grant of `exflags`, the anonymous ids `anon`, groups 5 and 6.
         fn grant(exflags: i32, anon: u32) -> ExportGrant {
-            let mut groups = [0; crate::sys::syslimits::NGROUPS_MAX];
+            let mut groups = [0; sysdefs::syslimits::NGROUPS_MAX];
             groups[0] = 5;
             groups[1] = 6;
             ExportGrant {
@@ -1573,7 +1573,7 @@ mod tests {
             vrele(vp);
             assert_eq!(
                 cr.cr_ngroups.get() as usize,
-                crate::sys::syslimits::NGROUPS_MAX
+                sysdefs::syslimits::NGROUPS_MAX
             );
             big.ngroups = -1;
             GRANT.with(|g| g.set(Ok(big)));

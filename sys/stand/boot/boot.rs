@@ -68,7 +68,6 @@
 
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, Ordering};
 
-use libkern::staticcell::StaticCell;
 use libsa::arc4::{RANDOMCTX, rc4_keysetup, rc4_skip};
 use libsa::cread::{close, open, read};
 use libsa::dev::errno;
@@ -84,6 +83,7 @@ use libsa::printf::Str;
 use libsa::saerrno::Errno;
 use libsa::snprintf;
 use libsa::stand::{BOOTRANDOM, BOOTRANDOM_MAX};
+use libsa::staticcell::StaticCell;
 use libsa::strerror::strerror;
 
 use crate::cmd::{BOOTDEVLEN, CmdState, CmdTable, cstr, getcmd, read_conf, strlcpy, upgrade};

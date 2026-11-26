@@ -9,3 +9,6 @@ One line per lesson, appended at the end; task state goes in HANDOFF.md
 - rustfmt resolves cfg-gated `mod` files: a new `pub mod arm64;` under a cfg needs its file in the same commit or `cargo fmt` (the hook) fails.
 - Before moving an inherited header into hal, grep it for `crate::reftest` (test-only, pub(crate) in bsd): such files cannot move byte-identical.
 - A sweep that renames an LZ item (method) of an adapted module forces [[module.fn]] rows: keep the old method and let the new name delegate, or lz check fails; a path-prefix rewrite must skip `::tests::` imports and the frozen amd64 tree.
+- BSD sed has no `\b`: use perl -pi for word-boundary rewrites; the guard also refuses heredocs and `cd` with git, so write python/bash scripts to the scratchpad with Write and run them by path.
+- Moving data types into a forbid crate: inherent methods that view bytes (bytes_of, pod_from_bytes, zeroed) cannot go; make them hal extension traits and fix call sites from rustc E0599 output (a script reading the check log inserts the `use`); inherited LZ headers keep byte identity only if their `crate::sys::x` paths still resolve (alias `pub(crate) use crate as sys`).
+- A libkern item with `unsafe` is also used by the boot loaders (libsa, efiboot use StaticCell): grep sys/stand and sys/arch/*/stand before moving a libkern item.

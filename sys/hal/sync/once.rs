@@ -34,9 +34,9 @@
 //!
 //! ## Redesign
 //! - Replaces `StaticCell<T>` for new code whose value is written once (the registry of the
-//!   bridges first, docs/ZERO_UNSAFE.md section 0.1). `StaticCell` stays in `libkern` for the
-//!   legacy tree (`hal` depends on `libkern`, so `libkern` cannot re-export this type); its
-//!   uses move subsystem by subsystem.
+//!   bridges first, docs/ZERO_UNSAFE.md section 0.1). `StaticCell` lives in `bsd`
+//!   (`sys/sys/staticcell.rs`, decision 55) for the legacy tree, and in `libsa` for the boot
+//!   loaders; its uses move subsystem by subsystem.
 //! - The state is one atomic byte: `EMPTY`, `BUSY` while the winner of [`OnceStatic::set`]
 //!   writes, `READY` once it is visible. A concurrent second `set` fails instead of waiting;
 //!   a reader that races with the writer sees `None`, which is the documented "before set".

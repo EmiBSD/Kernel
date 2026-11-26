@@ -98,12 +98,12 @@ use hal::mem::malloc::{M_WAITOK, MBox};
 use hal::sync::once::OnceStatic;
 use hal::sync::rwlock::RawRwlock;
 use hal::sync::sleep::PCATCH;
-use hal::sys::errno::Errno;
-use hal::sys::fcntl::{FNONBLOCK, FREAD, FWRITE};
-use hal::sys::filio::FIONREAD;
-use hal::sys::signal::{NSIG, SIGINFO, SIGTTIN};
-use hal::sys::types::{Dev, major, makedev, minor};
 use hal::user::{pod_from_bytes, pod_to_bytes};
+use sysdefs::errno::Errno;
+use sysdefs::fcntl::{FNONBLOCK, FREAD, FWRITE};
+use sysdefs::filio::FIONREAD;
+use sysdefs::signal::{NSIG, SIGINFO, SIGTTIN};
+use sysdefs::types::{Dev, major, makedev, minor};
 
 use crate::assert::kpanic;
 use crate::base::sysctl::SysctlReq;
@@ -651,7 +651,7 @@ pub fn ptcread<G: ProcGlue>(dev: Dev, uio: &mut dyn UioMove, flag: i32) -> Resul
     }
     ttwakeupwr(tp);
     if bufcc != 0 {
-        libkern::explicit_bzero(&mut buf[..bufcc]);
+        hal::mem::explicit_bzero(&mut buf[..bufcc]);
     }
     error
 }
@@ -794,7 +794,7 @@ pub fn ptcwrite<G: ProcGlue>(dev: Dev, uio: &mut dyn UioMove, flag: i32) -> Resu
     };
     // done:
     if bufcc != 0 {
-        libkern::explicit_bzero(&mut buf[..bufcc]);
+        hal::mem::explicit_bzero(&mut buf[..bufcc]);
     }
     error
 }

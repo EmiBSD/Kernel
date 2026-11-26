@@ -88,9 +88,9 @@
 
 use hal::cpu::intr::{IPL_BIO, splraise_raw, splx};
 use hal::sync::sleep::INFSLP;
-use hal::sys::errno::Errno;
-use hal::sys::mount::{MNT_NOATIME, MNT_WAIT};
-use hal::sys::stat::APPEND;
+use sysdefs::errno::Errno;
+use sysdefs::mount::{MNT_NOATIME, MNT_WAIT};
+use sysdefs::stat::APPEND;
 
 use super::ffs_vfsops::Ffs;
 use super::fs::{blkoff, blksize, lblkno, lblktosize};
@@ -481,7 +481,7 @@ mod tests {
     use std::vec;
     use std::vec::Vec;
 
-    use hal::sys::types::Off;
+    use sysdefs::types::Off;
 
     use super::*;
     use crate::file::uio::{Iovec, UioRw, UioSeg};

@@ -250,15 +250,15 @@ use hal::sync::mutex::{Mutexed, MutexedGuard};
 use hal::sync::once::OnceStatic;
 use hal::sync::rwlock::RawRwlock;
 use hal::sync::sleep::{INFSLP, PCATCH};
-use hal::sys::errno::Errno;
-use hal::sys::fcntl::{FNONBLOCK, FREAD, FWRITE};
-use hal::sys::filio::{FIOASYNC, FIOGETOWN, FIONREAD, FIOSETOWN};
-use hal::sys::pledge::{PLEDGE_RPATH, PLEDGE_WPATH};
-use hal::sys::signal::{
+use hal::user::{pod_from_bytes, pod_to_bytes};
+use sysdefs::errno::Errno;
+use sysdefs::fcntl::{FNONBLOCK, FREAD, FWRITE};
+use sysdefs::filio::{FIOASYNC, FIOGETOWN, FIONREAD, FIOSETOWN};
+use sysdefs::pledge::{PLEDGE_RPATH, PLEDGE_WPATH};
+use sysdefs::signal::{
     SIGHUP, SIGINFO, SIGINT, SIGIO, SIGQUIT, SIGTSTP, SIGTTIN, SIGTTOU, SIGWINCH,
 };
-use hal::sys::types::{Dev, Pid};
-use hal::user::{pod_from_bytes, pod_to_bytes};
+use sysdefs::types::{Dev, Pid};
 
 use crate::assert::kpanic;
 use crate::base::sysctl::{SysctlNode, SysctlReq, rdquad, rdstruct};
@@ -315,7 +315,7 @@ pub const KERN_TTY_INFO: i32 = 5;
 pub const KERN_TTY_MAXID: usize = 8;
 
 /// Get ptys (`PTMGET`, `/dev/ptm`'s ioctl).
-pub const PTMGET: u64 = hal::sys::ioccom::_ior::<Ptmget>(b't', 1);
+pub const PTMGET: u64 = sysdefs::ioccom::_ior::<Ptmget>(b't', 1);
 /// The cloning pty device.
 pub const PATH_PTMDEV: &[u8] = b"/dev/ptm";
 /// XXX evil hardcoding of tty gid.
@@ -625,7 +625,7 @@ pub struct Ptmget {
     pub sn: [u8; 16],
 }
 
-hal::abi_pod!(Ptmget {
+sysdefs::abi_pod!(Ptmget {
     cfd: i32,
     sfd: i32,
     cn: [u8; 16],
@@ -665,7 +665,7 @@ pub struct Itty {
     pub _pad1: [u8; 3],
 }
 
-hal::abi_pod!(Itty {
+sysdefs::abi_pod!(Itty {
     t_dev: Dev,
     t_rawq_c_cc: i32,
     t_canq_c_cc: i32,
@@ -2143,7 +2143,7 @@ fn int_ret(data: &mut [u8], v: i32) -> Result<(), Errno> {
 }
 
 /// Returns a structure through an ioctl's argument.
-fn pod_ret<T: hal::user::AbiPod>(data: &mut [u8], v: &T) -> Result<(), Errno> {
+fn pod_ret<T: sysdefs::pod::AbiPod>(data: &mut [u8], v: &T) -> Result<(), Errno> {
     if pod_to_bytes(v, data) {
         Ok(())
     } else {
@@ -2597,7 +2597,7 @@ struct TstampTimeval {
     tv_usec: i64,
 }
 
-hal::abi_pod!(TstampTimeval {
+sysdefs::abi_pod!(TstampTimeval {
     tv_sec: i64,
     tv_usec: i64,
 });
@@ -3511,7 +3511,7 @@ pub fn ttwrite<G: ProcGlue>(tp: &Tty<G>, uio: &mut dyn UioMove, flag: i32) -> Re
             drop(s);
             uio.set_resid(uio.resid() + cc);
             if obufcc != 0 {
-                libkern::explicit_bzero(&mut obuf[..obufcc]);
+                hal::mem::explicit_bzero(&mut obuf[..obufcc]);
             }
             return if uio.resid() == cnt {
                 Err(Errno::EWOULDBLOCK)
@@ -3545,7 +3545,7 @@ pub fn ttwrite<G: ProcGlue>(tp: &Tty<G>, uio: &mut dyn UioMove, flag: i32) -> Re
     };
     // done:
     if obufcc != 0 {
-        libkern::explicit_bzero(&mut obuf[..obufcc]);
+        hal::mem::explicit_bzero(&mut obuf[..obufcc]);
     }
     error
 }
@@ -4476,7 +4476,7 @@ mod tests {
     use std::sync::Mutex;
     use std::vec::Vec;
 
-    use hal::sys::signal::sigmask;
+    use sysdefs::signal::sigmask;
 
     use super::*;
     use crate::file::event::tests::{Kg, T, new_kqueue, setup, thread_of};
@@ -4531,7 +4531,7 @@ mod tests {
     /// A tty set up as a driver's open would: default termios, open, carrier on.
     fn test_tty() -> TtyRef<Kg> {
         let tp = ttymalloc::<Kg>(9600);
-        tp.t_dev.set(hal::sys::types::makedev(12, 0));
+        tp.t_dev.set(sysdefs::types::makedev(12, 0));
         ttychars(&tp);
         tp.set_t_iflag(TTYDEF_IFLAG);
         tp.set_t_oflag(TTYDEF_OFLAG);

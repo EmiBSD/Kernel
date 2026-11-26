@@ -89,7 +89,7 @@
 
 use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 use crate::arch::amd64::amd64::cpu::{
     CPU_EBXFEATURE, CPU_ECXFEATURE, CPU_FEATURE, CPU_ID, ECPU_ECXFEATURE,

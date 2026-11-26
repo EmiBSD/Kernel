@@ -92,7 +92,7 @@
 //!   the file systems copy what they need from, where the C passes a pointer they write NULs
 //!   into and restore.
 
-use libkern::staticcell::StaticCell;
+use crate::staticcell::StaticCell;
 
 use crate::dev::set_errno;
 use crate::saerrno::Errno;

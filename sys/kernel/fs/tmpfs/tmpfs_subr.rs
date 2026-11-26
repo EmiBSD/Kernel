@@ -152,19 +152,19 @@ use core::sync::atomic::Ordering;
 use hal::arch::current::param::{PAGE_MASK, PAGE_SHIFT, PAGE_SIZE};
 use hal::mem::pool::PoolArc;
 use hal::sync::rwlock::WriteWitness;
-use hal::sys::dirent::{
+use hal::vm::param::{round_page, trunc_page};
+use sysdefs::dirent::{
     DT_BLK, DT_CHR, DT_DIR, DT_FIFO, DT_LNK, DT_REG, DT_SOCK, Dirent, MAXNAMLEN, dirent_size,
 };
-use hal::sys::errno::Errno;
-use hal::sys::mman::{MADV_NORMAL, MADV_SEQUENTIAL};
-use hal::sys::mount::MNT_RDONLY;
-use hal::sys::stat::{
+use sysdefs::errno::Errno;
+use sysdefs::mman::{MADV_NORMAL, MADV_SEQUENTIAL};
+use sysdefs::mount::MNT_RDONLY;
+use sysdefs::stat::{
     ALLPERMS, APPEND, IMMUTABLE, S_ISGID, S_ISTXT, SF_APPEND, SF_IMMUTABLE, SF_SETTABLE,
     UF_SETTABLE,
 };
-use hal::sys::syslimits::LINK_MAX;
-use hal::sys::types::{Dev, Gid, Mode, Off, Uid, Vsize};
-use hal::vm::param::{round_page, trunc_page};
+use sysdefs::syslimits::LINK_MAX;
+use sysdefs::types::{Dev, Gid, Mode, Off, Uid, Vsize};
 
 use crate::assert::{kassert, kpanic};
 use crate::base::sysctl::SECURELEVEL;

@@ -33,8 +33,8 @@
 use std::sync::MutexGuard;
 use std::vec::Vec;
 
-use hal::sys::errno::Errno;
-use hal::sys::mount::{
+use sysdefs::errno::Errno;
+use sysdefs::mount::{
     MNT_LOCAL, MNT_RDONLY, MNT_SWAPPABLE, MNT_WAIT, MOUNT_MSDOS, MSDOSFSMNT_LONGNAME, MsdosfsArgs,
 };
 
@@ -451,7 +451,7 @@ pub static TEST_MSDOS_CONF: Vfsconf<TestGlue> = Vfsconf::new(
 
 /// Zeroed mount arguments (`msdosfs_mountfs` does not read them).
 pub fn noargs() -> MsdosfsArgs {
-    match MsdosfsArgs::from_bytes(&[0u8; MsdosfsArgs::SIZE]) {
+    match hal::user::pod_from_bytes::<MsdosfsArgs>(&[0u8; MsdosfsArgs::SIZE]) {
         Some(a) => a,
         None => std::panic!("testmsdosfs: no msdosfs_args"),
     }

@@ -58,7 +58,7 @@
 //!   what changed shape: the knote owned by its kqueue's chain, the klist's three kinds, the
 //!   counted kqueue); this header keeps their names for the filters still in `bsd` (the 44
 //!   `struct filterops` of 18 files, their `kn_hook` derefs among them), with 0 `unsafe`:
-//!   `Kevent` is `hal::abi_pod!`'s (LZ's `unsafe impl AbiPod`), `Klist` needs no `unsafe impl
+//!   `Kevent` is `sysdefs::abi_pod!`'s (LZ's `unsafe impl AbiPod`), `Klist` needs no `unsafe impl
 //!   Sync`, `struct klistops` is gone with the kinds, and `kn_kq`/`kqs_kq` are counted
 //!   handles.
 //! - `knote_modify_fn`/`knote_process_fn` keep LZ's form (an event function as an `fn`

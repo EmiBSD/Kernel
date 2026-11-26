@@ -107,8 +107,9 @@ use core::mem::{ManuallyDrop, offset_of};
 use core::ptr::{self, NonNull};
 use core::slice;
 use core::sync::atomic::{Ordering, compiler_fence};
+use hal::user::AbiBytes;
 
-use libkern::explicit_bzero;
+use hal::mem::explicit_bzero;
 
 use crate::crypto::crypto::{crypto_freesession, crypto_getreq, crypto_invoke, crypto_newsession};
 use crate::crypto::cryptodev::{

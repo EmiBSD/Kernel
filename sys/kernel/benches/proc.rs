@@ -94,9 +94,6 @@ use std::vec::Vec;
 
 use hal::mem::pool::{PoolBackend, RawPool};
 use hal::sync::klock;
-use hal::sys::errno::Errno;
-use hal::sys::types::Off;
-use hal::sys::types::Pid;
 use kernel::file::descrip::{
     falloc, fd_getfile, fdalloc, fdcopy, fdinit, fdinsert, fdplock, fdprepforexec, fdrelease,
     filedesc_init, finishdup,
@@ -106,6 +103,9 @@ use kernel::proc::cred::{CredRef, Ucred, crdup};
 use kernel::proc::resource::{self, PlimitRef, RLIMIT_NOFILE};
 use kernel::proc::{self, ProcGlue, ProcTables, Process, Session};
 use kernel::testutil;
+use sysdefs::errno::Errno;
+use sysdefs::types::Off;
+use sysdefs::types::Pid;
 
 // ---------------------------------------------------------------------------------------
 // The harness (vm.rs's).
@@ -414,7 +414,7 @@ impl FileOps<BenchFiles> for BenchOps {
     fn stat(
         &self,
         _: &File<BenchFiles>,
-        _: &mut hal::sys::stat::Stat,
+        _: &mut sysdefs::stat::Stat,
         _: &proc::Thread<BenchGlue>,
     ) -> Result<(), Errno> {
         Ok(())
@@ -675,7 +675,7 @@ fn main() {
         f: Box::new(prim(|| {
             kernel::sig::ptsignal(
                 sp,
-                black_box(hal::sys::signal::SIGUSR1),
+                black_box(sysdefs::signal::SIGUSR1),
                 kernel::sig::SignalType::STHREAD,
             );
             st.p_siglist.store(0, Ordering::Relaxed);
@@ -710,7 +710,7 @@ fn main() {
         listed.set_main_locked(&mut g, lt);
     }
     static OSTYPE: kernel::base::sysctl::RdString = kernel::base::sysctl::RdString(b"EmiBSD");
-    let _ = kernel::base::sysctl::register_kern(hal::sys::sysctl::KERN_OSTYPE, &OSTYPE);
+    let _ = kernel::base::sysctl::register_kern(sysdefs::sysctl::KERN_OSTYPE, &OSTYPE);
     let ubuf = testutil::USER_BASE + 0x7000;
     benches.push(Bench {
         name: "prim.copyout-int",
@@ -746,12 +746,12 @@ fn main() {
             };
             let _ = black_box(kernel::base::sysctl::kern_sysctl(
                 &t,
-                &[hal::sys::sysctl::KERN_OSTYPE],
+                &[sysdefs::sysctl::KERN_OSTYPE],
                 &mut req,
             ));
         })),
     });
-    let kp_size = size_of::<hal::sys::sysctl::KinfoProc>() as i32;
+    let kp_size = size_of::<sysdefs::sysctl::KinfoProc>() as i32;
     benches.push(Bench {
         name: "sysctl.kern-proc-pid",
         ops: PRIM,
@@ -763,7 +763,7 @@ fn main() {
                 newp: 0,
                 newlen: 0,
             };
-            let name = [hal::sys::sysctl::KERN_PROC_PID, 4545, kp_size, 1];
+            let name = [sysdefs::sysctl::KERN_PROC_PID, 4545, kp_size, 1];
             let _ = black_box(kernel::base::sysctl::sysctl_doproc(&t, &name, &mut req));
         })),
     });

@@ -139,12 +139,12 @@ use hal::ds::owned::{Member, OwnedEntry, OwnedList, SecondaryEntry, SecondaryLis
 use hal::mem::pool::{BoxPool, PR_RWLOCK, PR_WAITOK, PoolBox};
 use hal::sync::rwlock::{Divisible, Guarded, RawRwlock, WitnessPart, WriteWitness};
 use hal::sync::sleep::{INFSLP, PCATCH, PLOCK, wakeup_one};
-use hal::sys::errno::Errno;
-use hal::sys::fcntl::{
+use sysdefs::errno::Errno;
+use sysdefs::fcntl::{
     F_FLOCK, F_GETLK, F_INTR, F_POSIX, F_RDLCK, F_SETLK, F_UNLCK, F_WAIT, F_WRLCK, Flock,
 };
-use hal::sys::types::{Off, Pid, Uid};
-use hal::sys::unistd::{SEEK_CUR, SEEK_END, SEEK_SET};
+use sysdefs::types::{Off, Pid, Uid};
+use sysdefs::unistd::{SEEK_CUR, SEEK_END, SEEK_SET};
 
 use crate::assert::{kassert, kpanic};
 use crate::file::LockOwner;

@@ -71,7 +71,7 @@ use core::ffi::c_void;
 use core::ptr;
 use core::sync::atomic::{AtomicI32, AtomicU32, AtomicUsize, Ordering};
 
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 use crate::dev::cons::{CN_MIDPRI, Consdev, cn_tab, set_cn_tab};
 use crate::dev::ic::com::comopen;
