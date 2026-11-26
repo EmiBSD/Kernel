@@ -669,9 +669,13 @@ smoke-net: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
 # disabled), a ping to QEMU's gateway that gets its reply, `pfctl -e` (DIOCSTART) and `pfctl
 # -si` again (enabled), `pfctl -f /etc/pf.conf` (a ruleset transaction: DIOCXBEGIN,
 # DIOCADDRULE, DIOCXCOMMIT; the ramdisk's pf.conf blocks ICMP to 10.0.2.2) and `pfctl -sr`, the
-# same ping blocked, `pfctl -d` (DIOCSTOP) and the ping through again. The echoes print
-# computed markers so that the expected lines are not matched by the typed commands. Not part
-# of `smoke`.
+# same ping blocked; then a table (N6.8, after the radix tree moved into the kernel): `pfctl
+# -t smoke -T add` (DIOCRADDTABLES, DIOCRADDADDRS), `-T show` (DIOCRGETADDRS), `-T test`
+# (DIOCRTSTADDRS), a ruleset that blocks ICMP to `<smoke>`, the ping blocked by the table,
+# `-T delete` (DIOCRDELADDRS), the test missing and the ping through with the rule still
+# loaded; then `pfctl -d` (DIOCSTOP) and the ping through again. The echoes print computed
+# markers, and the rule names its table through a shell variable, so that the expected lines
+# are not matched by the typed commands. Not part of `smoke`.
 smoke-pf: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
     @test {{ramdisks}} || \
         { echo "smoke-pf: no ramdisk image; run just userland first"; exit 1; }
@@ -682,11 +686,26 @@ smoke-pf: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
         --send-after "# " --send 'pfctl -e\n' --send-after "# " --send 'pfctl -si\n' \
         --send-after "# " --send 'pfctl -f /etc/pf.conf\n' --send-after "# " --send 'pfctl -sr\n' \
         --send-after "# " --send 'ping -c 1 -w 2 10.0.2.2 || echo blocked-$((2+2))\n' \
+        --send-after "# " --send 'pfctl -t smoke -T add 10.0.2.2 192.0.2.0/24\n' \
+        --send-after "# " --send 'pfctl -t smoke -T show\n' \
+        --send-after "# " --send 'pfctl -t smoke -T test 10.0.2.2 && echo table-match-$((4+4))\n' \
+        --send-after "# " --send 't=smoke; echo "block drop quick inet proto icmp from any to <$t>" | pfctl -f -\n' \
+        --send-after "# " --send 'pfctl -sr\n' \
+        --send-after "# " --send 'ping -c 1 -w 2 10.0.2.2 || echo table-blocked-$((5+5))\n' \
+        --send-after "# " --send 'pfctl -t smoke -T delete 10.0.2.2\n' \
+        --send-after "# " --send 'pfctl -t smoke -T test 10.0.2.2 || echo table-miss-$((6+6))\n' \
+        --send-after "# " --send 'ping -c 1 10.0.2.2 && echo table-pass-$((7+7))\n' \
         --send-after "# " --send 'pfctl -d\n' \
         --send-after "# " --send 'ping -c 1 10.0.2.2 && echo after-pfctl-d-$((3+3))\n' \
         --expect "rc: multi-user" --expect "Status: Disabled" --expect "before-pf-2" \
         --expect "pf enabled" --expect "Status: Enabled" \
         --expect "block drop quick inet proto icmp from any to 10.0.2.2" --expect "blocked-4" \
+        --expect "1 table created." --expect "2/2 addresses added." \
+        --expect "   10.0.2.2" --expect "   192.0.2.0/24" \
+        --expect "1/1 addresses match." --expect "table-match-8" \
+        --expect "block drop quick inet proto icmp from any to <smoke>" --expect "table-blocked-10" \
+        --expect "1/1 addresses deleted." --expect "0/1 addresses match." --expect "table-miss-12" \
+        --expect "table-pass-14" \
         --expect "pf disabled" --expect "after-pfctl-d-6"
     {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --expect-ramdisk --until-seen \
         --send-after "login:" --send 'root\n' --send-after "Password:" --send 'emibsd\n' \
@@ -695,11 +714,26 @@ smoke-pf: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
         --send-after "# " --send 'pfctl -e\n' --send-after "# " --send 'pfctl -si\n' \
         --send-after "# " --send 'pfctl -f /etc/pf.conf\n' --send-after "# " --send 'pfctl -sr\n' \
         --send-after "# " --send 'ping -c 1 -w 2 10.0.2.2 || echo blocked-$((2+2))\n' \
+        --send-after "# " --send 'pfctl -t smoke -T add 10.0.2.2 192.0.2.0/24\n' \
+        --send-after "# " --send 'pfctl -t smoke -T show\n' \
+        --send-after "# " --send 'pfctl -t smoke -T test 10.0.2.2 && echo table-match-$((4+4))\n' \
+        --send-after "# " --send 't=smoke; echo "block drop quick inet proto icmp from any to <$t>" | pfctl -f -\n' \
+        --send-after "# " --send 'pfctl -sr\n' \
+        --send-after "# " --send 'ping -c 1 -w 2 10.0.2.2 || echo table-blocked-$((5+5))\n' \
+        --send-after "# " --send 'pfctl -t smoke -T delete 10.0.2.2\n' \
+        --send-after "# " --send 'pfctl -t smoke -T test 10.0.2.2 || echo table-miss-$((6+6))\n' \
+        --send-after "# " --send 'ping -c 1 10.0.2.2 && echo table-pass-$((7+7))\n' \
         --send-after "# " --send 'pfctl -d\n' \
         --send-after "# " --send 'ping -c 1 10.0.2.2 && echo after-pfctl-d-$((3+3))\n' \
         --expect "rc: multi-user" --expect "Status: Disabled" --expect "before-pf-2" \
         --expect "pf enabled" --expect "Status: Enabled" \
         --expect "block drop quick inet proto icmp from any to 10.0.2.2" --expect "blocked-4" \
+        --expect "1 table created." --expect "2/2 addresses added." \
+        --expect "   10.0.2.2" --expect "   192.0.2.0/24" \
+        --expect "1/1 addresses match." --expect "table-match-8" \
+        --expect "block drop quick inet proto icmp from any to <smoke>" --expect "table-blocked-10" \
+        --expect "1/1 addresses deleted." --expect "0/1 addresses match." --expect "table-miss-12" \
+        --expect "table-pass-14" \
         --expect "pf disabled" --expect "after-pfctl-d-6"
 
 # M9c: OpenBSD's ipsecctl(8) loads a static ESP tunnel through PF_KEY and reads it back.
