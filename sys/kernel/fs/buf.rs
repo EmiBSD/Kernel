@@ -1228,7 +1228,10 @@ mod tests {
     fn a_busy_buffer_is_not_acquired_again() {
         let bufhead: &'static mut OwnedList<ByBufhead> = Box::leak(Box::new(OwnedList::new()));
         bufhead.push(fresh());
-        let _t = BufRef::acquire(&mut CACHE.lock(), head(bufhead));
+        // The first token is never dropped: unwinding from the second acquire would
+        // `brelse` it into whatever cache a concurrent test of `fs::bio` has installed (this
+        // test's buffer comes from the doubles' pool, not from a cache of its own).
+        let _t = core::mem::ManuallyDrop::new(BufRef::acquire(&mut CACHE.lock(), head(bufhead)));
         let _u = BufRef::acquire(&mut CACHE.lock(), head(bufhead));
     }
 
