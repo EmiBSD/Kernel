@@ -88,8 +88,9 @@
 //!
 //! ## Deviations
 //! - A pre-registration's record is never freed: the C frees it when its handler is
-//!   disestablished (`arm_intr_prereg_disestablish_fdt`); here it is leaked (about 100 bytes
-//!   of `M_DEVBUF` per disestablish of a handler established before its controller attached),
+//!   disestablished (`arm_intr_prereg_disestablish_fdt`); here it is leaked (a 136-byte
+//!   `Prereg`, a 256-byte `M_DEVBUF` block, per disestablish of a handler established before
+//!   its controller attached),
 //!   because a record is reached through the cookie the driver holds and through the
 //!   registration walk, and a `&'static` read in safe code cannot be freed under either. The
 //!   same choice as the controllers' handler records (P12; `docs/SCAFFOLDING.md`).
