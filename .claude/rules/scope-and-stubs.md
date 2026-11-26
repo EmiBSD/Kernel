@@ -53,7 +53,7 @@ LZ ports OpenBSD incrementally, and this tree inherits its gaps. These rules kee
     one blank line. The original blocks are never touched: never shortened, reworded,
     reordered or replaced.
   - A module with `license = "none"`, an `[[extra]]`, and every `.rs` outside `lineage.toml`
-    (crate roots, `mod.rs`, `sys/bsd/machine/`, `sys/bsd/stand/`, `sys/boot/{boot,efi}/`,
+    (crate roots, `mod.rs`, `sys/bsd/machine/`, `sys/bsd/stand/`, `sys/boot/{loader,efi}/`,
     `sys/bsd/arch/host/`, `tools/`): the
     author's block is the only block of the zone, and the zone is the file's first.
   - New files carry it from their first commit; generated files carry it from the generator

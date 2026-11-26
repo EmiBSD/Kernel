@@ -1,7 +1,7 @@
 ---
 paths:
   - "sys/bsd/stand/**"
-  - "sys/boot/boot/**"
+  - "sys/boot/loader/**"
   - "sys/boot/efi/**"
   - "sys/bsd/arch/*/conf/**"
   - "sys/bsd/build.rs"
@@ -14,7 +14,7 @@ paths:
 
 - Boot protocol is Limine (base revision 6) on UEFI for both archs until OpenBSD's own boot loader
   boots the same kernel (M14, the user's decision): `boot(8)`/efiboot are being ported
-  (`sys/boot/libsa`, `sys/boot/boot`, `sys/boot/efi`, `sys/boot/<arch>/efiboot`;
+  (`sys/boot/libsa`, `sys/boot/loader`, `sys/boot/efi`, `sys/boot/<arch>`;
   docs/ARCHITECTURE.md, "Boot loaders"), with the kernel's own `bootarg` entry beside Limine's.
   No Multiboot, no Linux image header, no direct `-kernel` loading.
 - efiboot is built for the `none` targets (no UEFI target), position-independent:

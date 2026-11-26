@@ -81,14 +81,14 @@ reason = "absorbed by sys/bsd/kern/sched/runqueue.rs"
 - LZ's tree is flat; this one keeps LZ's files under two directories of their own (the user's
   layout of 2026-11-26): the legacy package `bsd` in `sys/bsd/` (LZ's `sys/<x>` is
   `sys/bsd/<x>`) and the boot loaders in `sys/boot/` (LZ's `sys/lib/libsa/`, `sys/stand/efi/`,
-  `sys/stand/boot/` and `sys/arch/<arch>/stand/<dir>/` are `sys/boot/libsa/`, `efi/`, `boot/`
-  and `sys/boot/<arch>/<dir>/`). `rust`, `adapted_by` and a fn row's `sys/...` targets are
+  `sys/stand/boot/`, `sys/arch/<arch>/stand/efiboot/` and amd64's `sys/arch/amd64/stand/libsa/`
+  are `sys/boot/libsa/`, `efi/`, `loader/`, `sys/boot/<arch>/` and `sys/boot/amd64/{disk,libsa,mdrandom}.rs`). `rust`, `adapted_by` and a fn row's `sys/...` targets are
   native paths; `lz` lists and fn rows' `lz` are LZ's. "The LZ file of the same path" reads a
   native path in LZ's layout (`lz_flat` in `tools/xtask/src/main.rs`, under `lz check`'s
   `lz_home`), and so do the exclusions below and an `lz-sync.toml` record's `modules`, which
   may name either form.
 - Every `.rs` under `sys/` except `mod.rs`, `lib.rs`, `main.rs`, `build.rs`, `sys/bsd/machine/`,
-  `sys/bsd/arch/host/`, `sys/bsd/stand/`, `sys/boot/boot/` and `sys/boot/efi/` (LZ's
+  `sys/bsd/arch/host/`, `sys/bsd/stand/`, `sys/boot/loader/` and `sys/boot/efi/` (LZ's
   `sys/machine/`, `sys/arch/host/` and `sys/stand/`) is referenced by exactly one `[[module]]`
   or `[[extra]]`.
 - The reverse direction: every `.rs` at the LZ pin (same exclusions) appears in some `lz` list,

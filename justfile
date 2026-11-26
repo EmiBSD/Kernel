@@ -131,8 +131,8 @@ build-init-arm64:
 
 build: build-amd64 build-arm64 build-init-amd64 build-init-arm64 efiboot-amd64 efiboot-arm64
 
-# M14: OpenBSD's efiboot, amd64's BOOTX64.EFI (sys/boot/amd64/efiboot, with libsa and
-# boot(8)'s sys/boot/boot). Linked position-independent at 0 (relocation-model=pie, which
+# M14: OpenBSD's efiboot, amd64's BOOTX64.EFI (sys/boot/amd64, with libsa and
+# boot(8)'s sys/boot/loader). Linked position-independent at 0 (relocation-model=pie, which
 # replaces the kernel's static one: RUSTFLAGS overrides .cargo/config.toml's target
 # rustflags), in a target directory of its own so the kernel's builds are not redone, then
 # made a PE32+ image with `llvm-objcopy -O binary` (cargo xtask efiboot): target/efiboot/
@@ -141,7 +141,7 @@ efiboot-amd64:
     {{ if has_amd64 == "true" { "" } else { "echo 'efiboot-amd64: amd64 SKIPPED (decision 44)' # " } }}RUSTFLAGS="-C relocation-model=pie" cargo build -p efiboot-amd64 --target {{amd64}} --target-dir target/efiboot
     {{no_amd64}}{{xtask}} efiboot --arch amd64 --elf target/efiboot/{{amd64}}/debug/bootx64
 
-# M14 track A3: arm64's BOOTAA64.EFI (sys/boot/arm64/efiboot), built as amd64's:
+# M14 track A3: arm64's BOOTAA64.EFI (sys/boot/arm64), built as amd64's:
 # target/efiboot/arm64/BOOTAA64.EFI, its PE header OpenBSD's own (`.peheader`, start.S).
 efiboot-arm64:
     RUSTFLAGS="-C relocation-model=pie" cargo build -p efiboot-arm64 --target {{arm64}} --target-dir target/efiboot
@@ -3689,7 +3689,7 @@ test:
     cargo test -p libkern -p libz -p bsd -p xtask
     cargo test -p hal -p kernel -p abi --features kernel/quota,kernel/ufs_dirhash,kernel/ffs2,kernel/mfs,kernel/ext2fs,kernel/msdosfs,kernel/cd9660,kernel/udf,kernel/tmpfs,kernel/fuse,kernel/nfsclient,kernel/nfsserver,kernel/boot_config
     cargo test -p hal --features diagnostic
-    cargo test -p libsa -p boot -p efi
+    cargo test -p libsa -p loader -p efi
     cargo test -p efiboot-arm64
 
 # tests that cross-check constants against the C reference tree
@@ -3708,8 +3708,8 @@ clippy:
     cargo clippy -p init --target {{arm64}} -- -D warnings
     cargo clippy -p libkern -p libz -p hal -p bsd -p xtask -- -D warnings
     cargo clippy -p hal --features diagnostic -- -D warnings
-    cargo clippy -p libsa -p boot -p efi -- -D warnings
-    cargo clippy -p libsa -p boot -p efi --target {{arm64}} -- -D warnings
+    cargo clippy -p libsa -p loader -p efi -- -D warnings
+    cargo clippy -p libsa -p loader -p efi --target {{arm64}} -- -D warnings
     {{no_amd64}}cargo clippy -p efiboot-amd64 --target {{amd64}} -- -D warnings
     cargo clippy -p efiboot-arm64 --target {{arm64}} -- -D warnings
     cargo clippy -p hal -p kernel -p abi -- -D warnings

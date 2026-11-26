@@ -633,18 +633,24 @@ fn short(hash: &str) -> &str {
 }
 
 /// The boot loaders' directories of `sys/boot/` and the LZ path of each (the user's layout of
-/// 2026-11-26); the per-arch ones (`sys/boot/<arch>/<dir>/`, LZ's `sys/arch/<arch>/stand/<dir>/`)
-/// follow one rule in [`lz_flat`].
+/// 2026-11-26); the per-arch ones (`sys/boot/<arch>/`, LZ's `sys/arch/<arch>/stand/efiboot/`, and
+/// amd64's three libsa files, LZ's `sys/arch/amd64/stand/libsa/`) follow the rules in
+/// [`lz_flat`].
 const BOOT_HOMES: [(&str, &str); 3] = [
     ("sys/boot/libsa/", "sys/lib/libsa/"),
     ("sys/boot/efi/", "sys/stand/efi/"),
-    ("sys/boot/boot/", "sys/stand/boot/"),
+    ("sys/boot/loader/", "sys/stand/boot/"),
 ];
 
+/// The files of `sys/boot/amd64/` that LZ keeps in `sys/arch/amd64/stand/libsa/` (the rest of
+/// `sys/boot/<arch>/` is LZ's `stand/efiboot/`).
+const AMD64_LIBSA: [&str; 3] = ["disk.rs", "libsa.rs", "mdrandom.rs"];
+
 /// A native path as LZ's tree lays it out (LZ's `sys/` is one flat tree): `sys/bsd/<x>`, the
-/// legacy package `bsd`, is LZ's `sys/<x>`; `sys/boot/libsa/`, `efi/` and `boot/` are LZ's
-/// `sys/lib/libsa/`, `sys/stand/efi/` and `sys/stand/boot/`; `sys/boot/<arch>/<dir>/` is LZ's
-/// `sys/arch/<arch>/stand/<dir>/`. Every other path is returned as it is. Each rule replaces a
+/// legacy package `bsd`, is LZ's `sys/<x>`; `sys/boot/libsa/`, `efi/` and `loader/` are LZ's
+/// `sys/lib/libsa/`, `sys/stand/efi/` and `sys/stand/boot/`; `sys/boot/<arch>/<x>` is LZ's
+/// `sys/arch/<arch>/stand/efiboot/<x>`, except amd64's `disk.rs`, `libsa.rs` and `mdrandom.rs`,
+/// which are LZ's `sys/arch/amd64/stand/libsa/`. Every other path is returned as it is. Each rule replaces a
 /// prefix and keeps the rest, so the file's path below its directory is the same in both trees.
 /// The tools that name a file by LZ's layout (the lineage's homes, the unsafe report's rows and
 /// crates, the structure that is not ported) read a native path through it.
@@ -659,15 +665,21 @@ pub(crate) fn lz_flat(rel: &str) -> String {
     }
     if let Some(rest) = rel.strip_prefix("sys/boot/")
         && let Some((arch, tail)) = rest.split_once('/')
+        && !tail.contains('/')
     {
-        return format!("sys/arch/{arch}/stand/{tail}");
+        let dir = if arch == "amd64" && AMD64_LIBSA.contains(&tail) {
+            "libsa"
+        } else {
+            "efiboot"
+        };
+        return format!("sys/arch/{arch}/stand/{dir}/{tail}");
     }
     rel.to_string()
 }
 
 /// The native path of an LZ path, [`lz_flat`]'s inverse: LZ's `sys/lib/libsa/`,
-/// `sys/stand/efi/`, `sys/stand/boot/` and `sys/arch/<arch>/stand/<dir>/` are the loaders'
-/// `sys/boot/...`; LZ's `sys/lib/libkern/` and `sys/lib/libz/` stay (the leaf crates, grouped
+/// `sys/stand/efi/`, `sys/stand/boot/`, `sys/arch/<arch>/stand/efiboot/` and amd64's
+/// `sys/arch/amd64/stand/libsa/` are the loaders' `sys/boot/...`; LZ's `sys/lib/libkern/` and `sys/lib/libz/` stay (the leaf crates, grouped
 /// by purpose since, are found by hand as before); every other `sys/<x>` is the legacy tree's
 /// `sys/bsd/<x>`. A path outside `sys/` (LZ's justfile, `tools/`) is the same in both trees.
 pub(crate) fn native_of_lz(lz: &str) -> String {
@@ -682,8 +694,10 @@ pub(crate) fn native_of_lz(lz: &str) -> String {
     if let Some(after) = rest.strip_prefix("arch/")
         && let Some((arch, tail)) = after.split_once('/')
         && let Some(dir) = tail.strip_prefix("stand/")
+        && let Some((sub, file)) = dir.split_once('/')
+        && matches!(sub, "efiboot" | "libsa")
     {
-        return format!("sys/boot/{arch}/{dir}");
+        return format!("sys/boot/{arch}/{file}");
     }
     if rest.starts_with("lib/libkern/") || rest.starts_with("lib/libz/") {
         return lz.to_string();
@@ -753,14 +767,18 @@ mod tests {
             ),
             ("sys/boot/libsa/open.rs", "sys/lib/libsa/open.rs"),
             ("sys/boot/efi/lib.rs", "sys/stand/efi/lib.rs"),
-            ("sys/boot/boot/cmd.rs", "sys/stand/boot/cmd.rs"),
+            ("sys/boot/loader/cmd.rs", "sys/stand/boot/cmd.rs"),
             (
-                "sys/boot/arm64/efiboot/efiboot.rs",
+                "sys/boot/arm64/efiboot.rs",
                 "sys/arch/arm64/stand/efiboot/efiboot.rs",
             ),
             (
-                "sys/boot/amd64/libsa/disk.rs",
+                "sys/boot/amd64/disk.rs",
                 "sys/arch/amd64/stand/libsa/disk.rs",
+            ),
+            (
+                "sys/boot/amd64/efiboot.rs",
+                "sys/arch/amd64/stand/efiboot/efiboot.rs",
             ),
             // Unchanged: the new crates, LZ's own paths, init.
             ("sys/hal/arch/arm64/trap.rs", "sys/hal/arch/arm64/trap.rs"),
@@ -789,14 +807,18 @@ mod tests {
             ),
             ("sys/lib/libsa/open.rs", "sys/boot/libsa/open.rs"),
             ("sys/stand/efi/lib.rs", "sys/boot/efi/lib.rs"),
-            ("sys/stand/boot/cmd.rs", "sys/boot/boot/cmd.rs"),
+            ("sys/stand/boot/cmd.rs", "sys/boot/loader/cmd.rs"),
             (
                 "sys/arch/arm64/stand/efiboot/start.S",
-                "sys/boot/arm64/efiboot/start.S",
+                "sys/boot/arm64/start.S",
             ),
             (
                 "sys/arch/amd64/stand/libsa/disk.rs",
-                "sys/boot/amd64/libsa/disk.rs",
+                "sys/boot/amd64/disk.rs",
+            ),
+            (
+                "sys/arch/amd64/stand/efiboot/main.rs",
+                "sys/boot/amd64/main.rs",
             ),
             ("justfile", "justfile"),
             ("tools/xtask/src/main.rs", "tools/xtask/src/main.rs"),
@@ -818,7 +840,7 @@ mod tests {
             "sys/bsd/machine/cpu.rs",
             "sys/bsd/arch/host/alloc.rs",
             "sys/bsd/stand/limine.rs",
-            "sys/boot/boot/cmd.rs",
+            "sys/boot/loader/cmd.rs",
             "sys/boot/efi/include/efiapi.rs",
             "sys/machine/cpu.rs",
             "sys/stand/limine.rs",
@@ -828,7 +850,7 @@ mod tests {
         for rel in [
             "sys/bsd/kern/kern_exec.rs",
             "sys/boot/libsa/open.rs",
-            "sys/boot/arm64/efiboot/efiboot.rs",
+            "sys/boot/arm64/efiboot.rs",
         ] {
             assert!(!is_structural(rel), "{rel}");
         }

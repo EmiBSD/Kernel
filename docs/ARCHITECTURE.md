@@ -66,9 +66,9 @@ No `src/` directory (`[lib] path = "lib.rs"`), so C and Rust paths differ only b
 `sys/` holds six purpose directories (the user's decision of 2026-11-26): `abi/`, `hal/`,
 `kernel/` and `lib/` (`sysdefs`, `libkern`, `libz`), the crates of the design; `bsd/`, the
 whole LZ tree, legacy, deleted at N9; and `boot/`, the boot loaders, separate binaries outside
-the zero-unsafe plan: `libsa/`, `efi/`, `boot/` (boot(8)), `arm64/efiboot/` and amd64's
-`efiboot/` and `libsa/` (frozen, decision 44). Package names did not change (`bsd`, `libsa`,
-`efi`, `boot`, `efiboot-arm64`, `efiboot-amd64`), nor did any module path. `bsd/stand/` is not
+the zero-unsafe plan: `libsa/`, `efi/`, `loader/` (boot(8)), `arm64/` and `amd64/` (the efiboot crates, amd64's with
+its three libsa files; frozen, decision 44). Package names did not change but `boot`, now `loader`
+(`bsd`, `libsa`, `efi`, `efiboot-arm64`, `efiboot-amd64`), nor did any module path. `bsd/stand/` is not
 a loader: it is the kernel binary's own boot entry (`bsd`'s `mod stand`: Limine's `_start` and
 boot(8)'s `bootarg_main`), and stays counted with the loaders by `unsafe-report`, as before the
 move. `init/` stays at the root.
@@ -77,8 +77,9 @@ LZ's tree is flat (`sys/kern/`, `sys/lib/libsa/`, `sys/stand/`, `sys/arch/<arch>
 every LZ path in this repository is LZ's: `lineage.toml`'s `lz` lists and fn rows, the
 `lz-sync.toml` records, ROADMAP's scope cells, the citations of `reference/emibsd-lz`, the
 `LZ:` trailers. One map turns a native path into LZ's, `lz_flat` in `tools/xtask/src/main.rs`:
-`sys/bsd/<x>` is `sys/<x>`; `sys/boot/libsa/`, `efi/`, `boot/` are `sys/lib/libsa/`,
-`sys/stand/efi/`, `sys/stand/boot/`; `sys/boot/<arch>/<dir>/` is `sys/arch/<arch>/stand/<dir>/`.
+`sys/bsd/<x>` is `sys/<x>`; `sys/boot/libsa/`, `efi/`, `loader/` are `sys/lib/libsa/`,
+`sys/stand/efi/`, `sys/stand/boot/`; `sys/boot/<arch>/<x>` is `sys/arch/<arch>/stand/efiboot/<x>`
+(amd64's `disk.rs`, `libsa.rs` and `mdrandom.rs`: `sys/arch/amd64/stand/libsa/`).
 `lz check` compares an inherited module with the LZ file it names that way, `unsafe-report`
 keeps LZ's row names (`kern`, `dev/pci`, `arch/arm64`, `lib/libsa`), `/progress` matches
 ROADMAP's rows through it, and `cargo xtask lz patch` applies an LZ commit through its inverse
@@ -459,7 +460,7 @@ headers (`fdreg.h`, `nec765reg.h`) compile everywhere with their host tests.
 | (none for Limine) | `sys/stand/limine.rs` | the `limine` crate was dropped: 0.6+ needs nightly (`ptr_metadata`), 0.5 is stable but frozen at base revision 3, which Limine has already tried to drop once. The protocol is about twenty `#[repr(C)]` structs; they are written from `PROTOCOL.md` |
 | `bitflags` | `sys/` | typed flag sets for `#define` groups; a macro, no runtime |
 | (none for lists and trees) | `sys/sys/queue.rs`, `sys/sys/tree.rs` | `intrusive-collections` was dropped at M1: the OpenBSD macros are short, their semantics are the project's to keep, and a crate's policy changes would bind us as the `limine` crate's did |
-| `libsa`, `boot`, `efi` | `sys/lib/libsa`, `sys/stand/boot`, `sys/stand/efi` | not crates.io crates: OpenBSD code ported here (M14), split into crates as OpenBSD builds libsa as a library and compiles `sys/stand/boot` into every boot program; the boot loaders (`sys/arch/amd64/stand/efiboot`, package `efiboot-amd64`) depend on them, the kernel does not. `libsa` dev-depends on `bsd` for the host tests that pin its header layouts to the kernel's |
+| `libsa`, `loader` (was `boot`), `efi` | `sys/lib/libsa`, `sys/stand/boot`, `sys/stand/efi` | not crates.io crates: OpenBSD code ported here (M14), split into crates as OpenBSD builds libsa as a library and compiles `sys/stand/boot` into every boot program; the boot loaders (`sys/arch/amd64/stand/efiboot`, package `efiboot-amd64`) depend on them, the kernel does not. `libsa` dev-depends on `bsd` for the host tests that pin its header layouts to the kernel's |
 | `sysdefs` | `sys/lib/sysdefs` | not a crates.io crate: our own leaf crate (decision 54), OpenBSD's basic types, constants and `#[repr(C)]` ABI structures, `forbid(unsafe_code)`, no dependencies |
 | `proptest` | dev-only | property tests for libkern |
 | `serde`, `toml` | `tools/xtask` | tracker parsing |
@@ -1034,7 +1035,7 @@ M14; track A1 did amd64's efiboot): three crates and one binary.
   `bsd`). The module for `alloc.c` is `sa_alloc` (`alloc` is Rust's crate). Host tests run
   the FFS1, FFS2 and ISO 9660 readers on images OpenBSD's makefs made
   (`testdata/gen_fixtures.py`), and `loadfile` on a hand-made ELF.
-- `sys/stand/boot` (package `boot`): boot(8)'s machine-independent files (`boot.c`,
+- `sys/stand/boot` (`sys/boot/loader/`, package `loader`; the efiboot crates' inherited sources still name it `boot::`, a dependency rename): boot(8)'s machine-independent files (`boot.c`,
   `cmd.c`, `vars.c`, `bootarg.c`), which OpenBSD compiles into each boot program. The
   command state is passed to the commands (`fn(&mut CmdState) -> i32`).
 - `sys/stand/efi` (package `efi`): the UEFI headers of `sys/stand/efi/include` as

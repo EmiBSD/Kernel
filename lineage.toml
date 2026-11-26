@@ -1535,95 +1535,95 @@ status = "inherited"
 notes = "M16a: the whole file: pciide_machdep_compat_intr_establish (ISA IRQ 14/15, IST_EDGE, IPL_BIO, named after the device) and pciide_machdep_compat_intr_disestablish, reached by pciide.c through machine::pciide_machdep (trait PciideMachdep; arm64, which has no pciide_machdep.c and no ISA bus, and the host establish nothing)"
 
 [[module]]
-rust = "sys/boot/amd64/efiboot/cmd_i386.rs"
+rust = "sys/boot/amd64/cmd_i386.rs"
 lz = ["sys/arch/amd64/stand/efiboot/cmd_i386.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/boot/amd64/efiboot/conf.rs"
+rust = "sys/boot/amd64/conf.rs"
 lz = ["sys/arch/amd64/stand/efiboot/conf.rs"]
 status = "redesigned"
 
 [[module]]
-rust = "sys/boot/amd64/efiboot/dev_i386.rs"
+rust = "sys/boot/amd64/dev_i386.rs"
 lz = ["sys/arch/amd64/stand/efiboot/dev_i386.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/boot/amd64/efiboot/diskprobe.rs"
+rust = "sys/boot/amd64/diskprobe.rs"
 lz = ["sys/arch/amd64/stand/efiboot/diskprobe.rs"]
 status = "adapted"
 adapted_by = ["sys/bsd/sys/staticcell.rs"]
 
 [[module]]
-rust = "sys/boot/amd64/efiboot/efiboot.rs"
+rust = "sys/boot/amd64/efiboot.rs"
 lz = ["sys/arch/amd64/stand/efiboot/efiboot.rs"]
 status = "adapted"
 adapted_by = ["sys/bsd/sys/staticcell.rs"]
 
 [[module]]
-rust = "sys/boot/amd64/efiboot/efidev.rs"
+rust = "sys/boot/amd64/efidev.rs"
 lz = ["sys/arch/amd64/stand/efiboot/efidev.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/boot/amd64/efiboot/efipxe.rs"
+rust = "sys/boot/amd64/efipxe.rs"
 lz = ["sys/arch/amd64/stand/efiboot/efipxe.rs"]
 status = "adapted"
 adapted_by = ["sys/bsd/sys/staticcell.rs"]
 
 [[module]]
-rust = "sys/boot/amd64/efiboot/efirng.rs"
+rust = "sys/boot/amd64/efirng.rs"
 lz = ["sys/arch/amd64/stand/efiboot/efirng.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/boot/amd64/efiboot/exec_i386.rs"
+rust = "sys/boot/amd64/exec_i386.rs"
 lz = ["sys/arch/amd64/stand/efiboot/exec_i386.rs"]
 status = "redesigned"
 
 [[module]]
-rust = "sys/boot/amd64/efiboot/heap.rs"
+rust = "sys/boot/amd64/heap.rs"
 lz = ["sys/arch/amd64/stand/efiboot/heap.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/boot/amd64/efiboot/machdep.rs"
+rust = "sys/boot/amd64/machdep.rs"
 lz = ["sys/arch/amd64/stand/efiboot/machdep.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/boot/amd64/efiboot/memprobe.rs"
+rust = "sys/boot/amd64/memprobe.rs"
 lz = ["sys/arch/amd64/stand/efiboot/memprobe.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/boot/amd64/efiboot/run_i386.rs"
+rust = "sys/boot/amd64/run_i386.rs"
 lz = ["sys/arch/amd64/stand/efiboot/run_i386.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/boot/amd64/efiboot/self_reloc.rs"
+rust = "sys/boot/amd64/self_reloc.rs"
 lz = ["sys/arch/amd64/stand/efiboot/self_reloc.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/boot/amd64/efiboot/start_amd64.rs"
+rust = "sys/boot/amd64/start_amd64.rs"
 lz = ["sys/arch/amd64/stand/efiboot/start_amd64.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/boot/amd64/libsa/disk.rs"
+rust = "sys/boot/amd64/disk.rs"
 lz = ["sys/arch/amd64/stand/libsa/disk.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/boot/amd64/libsa/libsa.rs"
+rust = "sys/boot/amd64/libsa.rs"
 lz = ["sys/arch/amd64/stand/libsa/libsa.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/boot/amd64/libsa/mdrandom.rs"
+rust = "sys/boot/amd64/mdrandom.rs"
 lz = ["sys/arch/amd64/stand/libsa/mdrandom.rs"]
 status = "inherited"
 
@@ -2090,80 +2090,80 @@ native = ["VM_MAX_KERNEL_ADDRESS"]
 kind = "moved"
 
 [[module]]
-rust = "sys/boot/arm64/efiboot/conf.rs"
+rust = "sys/boot/arm64/conf.rs"
 lz = ["sys/arch/arm64/stand/efiboot/conf.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/boot/arm64/efiboot/disk.rs"
+rust = "sys/boot/arm64/disk.rs"
 lz = ["sys/arch/arm64/stand/efiboot/disk.rs"]
 status = "inherited"
 license = "none"
 
 [[module]]
-rust = "sys/boot/arm64/efiboot/dt_blob.rs"
+rust = "sys/boot/arm64/dt_blob.rs"
 lz = ["sys/arch/arm64/stand/efiboot/dt_blob.rs"]
 status = "adapted"
 adapted_by = ["sys/bsd/sys/staticcell.rs"]
 license = "none"
 
 [[module]]
-rust = "sys/boot/arm64/efiboot/efiacpi.rs"
+rust = "sys/boot/arm64/efiacpi.rs"
 lz = ["sys/arch/arm64/stand/efiboot/efiacpi.rs"]
 status = "adapted"
 adapted_by = ["sys/bsd/sys/staticcell.rs"]
 
 [[module]]
-rust = "sys/boot/arm64/efiboot/efiboot.rs"
+rust = "sys/boot/arm64/efiboot.rs"
 lz = ["sys/arch/arm64/stand/efiboot/efiboot.rs"]
 status = "adapted"
 adapted_by = ["sys/bsd/sys/staticcell.rs"]
 
 [[module]]
-rust = "sys/boot/arm64/efiboot/efidev.rs"
+rust = "sys/boot/arm64/efidev.rs"
 lz = ["sys/arch/arm64/stand/efiboot/efidev.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/boot/arm64/efiboot/efipxe.rs"
+rust = "sys/boot/arm64/efipxe.rs"
 lz = ["sys/arch/arm64/stand/efiboot/efipxe.rs"]
 status = "adapted"
 adapted_by = ["sys/bsd/sys/staticcell.rs"]
 
 [[module]]
-rust = "sys/boot/arm64/efiboot/efirng.rs"
+rust = "sys/boot/arm64/efirng.rs"
 lz = ["sys/arch/arm64/stand/efiboot/efirng.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/boot/arm64/efiboot/exec.rs"
+rust = "sys/boot/arm64/exec.rs"
 lz = ["sys/arch/arm64/stand/efiboot/exec.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/boot/arm64/efiboot/fdt.rs"
+rust = "sys/boot/arm64/fdt.rs"
 lz = ["sys/arch/arm64/stand/efiboot/fdt.rs"]
 status = "adapted"
 adapted_by = ["sys/bsd/sys/staticcell.rs"]
 
 [[module]]
-rust = "sys/boot/arm64/efiboot/heap.rs"
+rust = "sys/boot/arm64/heap.rs"
 lz = ["sys/arch/arm64/stand/efiboot/heap.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/boot/arm64/efiboot/self_reloc.rs"
+rust = "sys/boot/arm64/self_reloc.rs"
 lz = ["sys/arch/arm64/stand/efiboot/self_reloc.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/boot/arm64/efiboot/smbios.rs"
+rust = "sys/boot/arm64/smbios.rs"
 lz = ["sys/arch/arm64/stand/efiboot/smbios.rs"]
 status = "adapted"
 adapted_by = ["sys/bsd/sys/staticcell.rs"]
 
 [[module]]
-rust = "sys/boot/arm64/efiboot/start.rs"
+rust = "sys/boot/arm64/start.rs"
 lz = ["sys/arch/arm64/stand/efiboot/start.rs"]
 status = "inherited"
 
@@ -7954,24 +7954,24 @@ status = "adapted"
 adapted_by = ["sys/kernel/dev/disk.rs"]
 
 [[module]]
-rust = "sys/boot/boot/boot.rs"
+rust = "sys/boot/loader/boot.rs"
 lz = ["sys/stand/boot/boot.rs"]
 status = "adapted"
 adapted_by = ["sys/bsd/sys/staticcell.rs"]
 
 [[module]]
-rust = "sys/boot/boot/bootarg.rs"
+rust = "sys/boot/loader/bootarg.rs"
 lz = ["sys/stand/boot/bootarg.rs"]
 status = "adapted"
 adapted_by = ["sys/bsd/sys/staticcell.rs"]
 
 [[module]]
-rust = "sys/boot/boot/cmd.rs"
+rust = "sys/boot/loader/cmd.rs"
 lz = ["sys/stand/boot/cmd.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/boot/boot/vars.rs"
+rust = "sys/boot/loader/vars.rs"
 lz = ["sys/stand/boot/vars.rs"]
 status = "adapted"
 adapted_by = ["sys/bsd/sys/staticcell.rs"]

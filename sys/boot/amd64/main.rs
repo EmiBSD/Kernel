@@ -35,12 +35,11 @@
 
 extern crate alloc;
 
-#[path = "../../../bsd/arch/amd64/include/biosvar.rs"]
+#[path = "../../bsd/arch/amd64/include/biosvar.rs"]
 mod biosvar;
 mod cmd_i386;
 mod conf;
 mod dev_i386;
-#[path = "../libsa/disk.rs"]
 mod disk;
 mod diskprobe;
 mod efiboot;
@@ -49,10 +48,9 @@ mod efipxe;
 mod efirng;
 mod exec_i386;
 mod heap;
-#[path = "../libsa/libsa.rs"]
+#[path = "libsa.rs"]
 mod libsa_md;
 mod machdep;
-#[path = "../libsa/mdrandom.rs"]
 mod mdrandom;
 mod memprobe;
 mod run_i386;

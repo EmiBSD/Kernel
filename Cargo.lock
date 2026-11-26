@@ -24,14 +24,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
 
 [[package]]
-name = "boot"
-version = "0.0.1"
-dependencies = [
- "libkern",
- "libsa",
-]
-
-[[package]]
 name = "bsd"
 version = "0.0.1"
 dependencies = [
@@ -57,22 +49,22 @@ version = "0.0.1"
 name = "efiboot-amd64"
 version = "0.0.1"
 dependencies = [
- "boot",
  "efi",
  "libkern",
  "libsa",
  "libz",
+ "loader",
 ]
 
 [[package]]
 name = "efiboot-arm64"
 version = "0.0.1"
 dependencies = [
- "boot",
  "efi",
  "libkern",
  "libsa",
  "libz",
+ "loader",
 ]
 
 [[package]]
@@ -147,6 +139,14 @@ dependencies = [
 [[package]]
 name = "libz"
 version = "0.0.1"
+
+[[package]]
+name = "loader"
+version = "0.0.1"
+dependencies = [
+ "libkern",
+ "libsa",
+]
 
 [[package]]
 name = "log"

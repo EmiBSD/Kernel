@@ -28,7 +28,8 @@ libkern.workspace = true
 libsa.workspace = true
 libz.workspace = true
 efi.workspace = true
-boot.workspace = true
+# the crate is `loader`; the sources (inherited from LZ) keep naming it `boot::`
+boot = { package = "loader", path = "../loader" }
 
 [lints]
 workspace = true

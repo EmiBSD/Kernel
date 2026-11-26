@@ -504,7 +504,7 @@ pub(crate) struct FileMeasure {
     pub(crate) forbid: bool,
     /// One of the modules the forbid ratchet counts: under `sys/` and not structure (a crate
     /// root, `mod.rs`, `build.rs`, or a file of `sys/bsd/machine/`, `sys/bsd/arch/host/`, `sys/bsd/stand/`,
-    /// `sys/boot/{boot,efi}/`: LZ's `sys/machine/`, `sys/arch/host/`, `sys/stand/`).
+    /// `sys/boot/{loader,efi}/`: LZ's `sys/machine/`, `sys/arch/host/`, `sys/stand/`).
     pub(crate) module: bool,
     /// Its `unsafe` in kernel code.
     pub(crate) kernel: Counts,
@@ -1137,7 +1137,7 @@ fn child_module_paths(parent: &Path, name: &str) -> [PathBuf; 2] {
 ///
 /// The legacy tree and the loaders are read in LZ's layout (`crate::lz_flat`), so their rows
 /// keep LZ's names: `sys/bsd/kern/..` is `kern`, `sys/boot/libsa/..` is `lib/libsa`,
-/// `sys/boot/boot/..` and `sys/boot/efi/..` are `stand`, `sys/boot/<a>/..` is `arch/<a>`.
+/// `sys/boot/loader/..` and `sys/boot/efi/..` are `stand`, `sys/boot/<a>/..` is `arch/<a>`.
 pub(crate) fn subsystem(root: &Path, rel: &str) -> String {
     if rel.starts_with("init/") {
         return "init".to_string();
@@ -2131,12 +2131,9 @@ mod tests {
         );
         assert_eq!(subsystem(root, "sys/bsd/stand/limine.rs"), "stand");
         assert_eq!(subsystem(root, "sys/boot/libsa/open.rs"), "lib/libsa");
-        assert_eq!(subsystem(root, "sys/boot/boot/cmd.rs"), "stand");
+        assert_eq!(subsystem(root, "sys/boot/loader/cmd.rs"), "stand");
         assert_eq!(subsystem(root, "sys/boot/efi/lib.rs"), "stand");
-        assert_eq!(
-            subsystem(root, "sys/boot/arm64/efiboot/fdt.rs"),
-            "arch/arm64"
-        );
+        assert_eq!(subsystem(root, "sys/boot/arm64/fdt.rs"), "arch/arm64");
         assert_eq!(subsystem(root, "sys/hal/arch/arm64/trap.rs"), "hal");
     }
 
@@ -2802,10 +2799,10 @@ mod tests {
             ("sys/bsd/lib.rs", Some("bsd")),
             ("sys/bsd/stand/limine.rs", Some("boot")),
             ("sys/boot/libsa/open.rs", Some("boot")),
-            ("sys/boot/boot/cmd.rs", Some("boot")),
+            ("sys/boot/loader/cmd.rs", Some("boot")),
             ("sys/boot/efi/lib.rs", Some("boot")),
-            ("sys/boot/arm64/efiboot/fdt.rs", Some("boot")),
-            ("sys/boot/amd64/libsa/disk.rs", Some("boot")),
+            ("sys/boot/arm64/fdt.rs", Some("boot")),
+            ("sys/boot/amd64/disk.rs", Some("boot")),
         ] {
             assert_eq!(crate_of_file(rel), want, "{rel}");
         }
@@ -2836,7 +2833,7 @@ mod tests {
             ("sys/bsd/arch/arm64/arm64/machdep.rs", true),
             ("sys/bsd/sys/queue.rs", true),
             ("sys/bsd/kern/kern_sig.rs", false),
-            ("sys/boot/arm64/efiboot/fdt.rs", false),
+            ("sys/boot/arm64/fdt.rs", false),
         ] {
             assert_eq!(moves_to_hal(rel), want, "{rel}");
         }

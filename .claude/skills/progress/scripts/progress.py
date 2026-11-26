@@ -280,23 +280,27 @@ def fmt(n) -> str:
     return "—" if n is None else f"{n:,}"
 
 
+AMD64_LIBSA = ("disk.rs", "libsa.rs", "mdrandom.rs")
 BOOT_HOMES = (("sys/boot/libsa/", "sys/lib/libsa/"), ("sys/boot/efi/", "sys/stand/efi/"),
-              ("sys/boot/boot/", "sys/stand/boot/"))
+              ("sys/boot/loader/", "sys/stand/boot/"))
 
 
 def lz_layout(path: str) -> str:
     """A native path as LZ's flat tree lays it out, as xtask's `lz_flat` reads it: sys/bsd/<x>
-    (the legacy package bsd) is sys/<x>; sys/boot/libsa/, efi/ and boot/ are sys/lib/libsa/,
-    sys/stand/efi/ and sys/stand/boot/; sys/boot/<arch>/<dir>/ is sys/arch/<arch>/stand/<dir>/.
+    (the legacy package bsd) is sys/<x>; sys/boot/libsa/, efi/ and loader/ are sys/lib/libsa/,
+    sys/stand/efi/ and sys/stand/boot/; sys/boot/<arch>/<x> is sys/arch/<arch>/stand/efiboot/<x>
+    (amd64's disk.rs, libsa.rs and mdrandom.rs: sys/arch/amd64/stand/libsa/).
     ROADMAP's scope cells and the crate rules name files that way; every other path is kept."""
     if path.startswith("sys/bsd/"):
         return "sys/" + path[len("sys/bsd/"):]
     for native, lz in BOOT_HOMES:
         if path.startswith(native):
             return lz + path[len(native):]
-    m = re.match(r"sys/boot/([^/]+)/(.*)", path)
+    m = re.match(r"sys/boot/([^/]+)/([^/]+)$", path)
     if m:
-        return f"sys/arch/{m.group(1)}/stand/{m.group(2)}"
+        arch, name = m.groups()
+        sub = "libsa" if arch == "amd64" and name in AMD64_LIBSA else "efiboot"
+        return f"sys/arch/{arch}/stand/{sub}/{name}"
     return path
 
 
