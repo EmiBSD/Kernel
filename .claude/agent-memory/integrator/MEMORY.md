@@ -65,3 +65,7 @@ One line per lesson, appended at the end; task state goes in HANDOFF.md
 - `clippy --fix` leaves `x = y` without its `;` where it turned a match into `if let` (semicolon_if_nothing_returned, 6 at N6.8): rerun the diagnostics after every --fix.
 - Host-test flake (N6.8): fs::bio::tests::getblk_brelse_and_incore_keep_the_books saw BCSTATS.numbufs 2 for 1 (bio.rs:2840) in 1 of 17 runs of the kernel's test binary; looping the binary (target/debug/deps/kernel-*) 15 times under the lock measured it in 11 min.
 - `just comp` in a fresh worktree seeds from main but still recompiled clang's libraries at N6.8 (994 s); budget a quarter hour of the lock for it before ci-full.
+- Whole-tree move (sys/bsd, sys/boot, 2026-11-26): land xtask's path map first (lz_flat, a no-op before the move), then each git mv commit keeps lz check and unsafe-report identical; compare host outputs with the moved paths read back through the map (scratchpad compare.py), not by eye.
+- The worktree guard refuses a sed or heredoc whose text names `reference/openbsd-src` (even a comment being rewritten) and a python heredoc with long replacement text: make those edits with Edit.
+- `lz status --write` at a slice base rewrites README's and STATUS's blocks, which lag the tree between closes; revert it in an unrelated commit and say the output is unchanged.
+- sys/stand/{mod,limine,bootarg,fdtfb}.rs are bsd's binary entry but unsafe-report counted them in `boot` (55 unsafe); a move that reclassifies them changes the crates line, so crate_of_file reads them in LZ's layout and keeps them in boot.
