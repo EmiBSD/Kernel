@@ -585,18 +585,24 @@ reference/emibsd-lz/    LandingZone, full history, gitignored, read-only (what e
 lz/PINNED.md            the LZ commit this tree is synced to
 lineage.toml            native module -> LZ files and items (the source of truth for provenance)
 lz-sync.toml            one triage record per LZ commit after the pin
-unsafe-budget.toml      per-subsystem unsafe totals that `just ci` enforces
-sys/                    the kernel (package `bsd`): LZ's subsystem directories, redesigned inside
-  kern/ uvm/ dev/ net/ netinet/ crypto/ ufs/ ddb/
-  sys/                  header types
-  machine/              the <machine/*.h> contract (traits)
-  arch/{amd64,arm64}/   per-arch code
-  arch/host/            std-backed test double for `cargo test`
-  stand/                boot glue (Limine; boot(8)/efiboot under arch/*/stand)
-  lib/libkern/ lib/libz/
+bridges.toml            each trait the kernel reaches bsd through, and the milestone that removes it
+unsafe-budget.toml      the unsafe ceilings that `just ci` enforces (hal's, bsd's legacy)
+sys/                    six directories, one purpose each
+  kernel/               crate `kernel`: every decision of the OS, #![forbid(unsafe_code)]
+                        proc/ sched/ sig/ time/ file/ tty/ base/ dev/ vm/ fs/ net/ netinet/ netinet6/ crypto/
+  abi/                  crate `abi`: OpenBSD's system call interface, translation only, forbid
+  hal/                  crate `hal`: the hardware and the runtime, the only `unsafe`
+                        sync/ mem/ ds/ cpu/ vm/ dev/ arch/ machine/
+  lib/                  leaf crates, forbid: sysdefs/ (OpenBSD's types, constants and
+                        shared structures), libkern/, libz/
+  bsd/                  package `bsd`: the LandingZone tree still being replaced, deleted at N9
+                        kern/ uvm/ dev/ net/ netinet/ ... (LZ's sys/<x>), stand/ the kernel's boot entry
+  boot/                 the boot loaders, outside the zero-unsafe plan
+                        libsa/ loader/ (boot(8)) efi/ arm64/ amd64/ (efiboot per arch)
 init/                   the Rust init, the kernel's self-test
-tools/xtask/            images, QEMU, smoke tests, userland build, the lz tooling, unsafe-report
-docs/                   the process (PHASE2), architecture, idioms, roadmap, sync, journal, status
+tools/xtask/            images, QEMU, smoke tests, userland build, the lz tooling, unsafe-report, hal-check
+tools/<name>/           small C test programs built into the ramdisk (bench, difftest, fusehello, ...)
+docs/                   the process (PHASE2), architecture, ZERO_UNSAFE, idioms, roadmap, sync, journal, status
 .claude/                rules, agent roles, the /progress skill, agent memory
 ```
 
