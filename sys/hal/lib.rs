@@ -102,6 +102,8 @@ pub mod clock;
 pub mod cons;
 #[forbid(unsafe_code)]
 pub mod cpu;
+// Memory shared with a device (N7.0).
+pub mod dma;
 pub mod intr;
 #[forbid(unsafe_code)]
 pub mod klock;

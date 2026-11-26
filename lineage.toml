@@ -1668,7 +1668,7 @@ rust = "sys/hal/arch/arm64/cpufunc.rs"
 crate = "hal"
 lz = ["sys/arch/arm64/arm64/cpufunc.rs"]
 status = "redesigned"
-notes = "N4.8b: the cache, TLB and idle instructions for the code outside the pmap, safe for any argument: cpu_wfi (its own asm), the four TLB flushes and cpu_dcache_wb_range, cpu_dcache_wbinv_range, cpu_icache_sync_range, cpu_idcache_wbinv_range over the pmap's copies (pmap/cpufunc.rs); bsd's duplicates deleted (its cpufunc.rs kept them until N4)"
+notes = "N4.8b: the cache, TLB and idle instructions for the code outside the pmap, safe for any argument: cpu_wfi (its own asm), the four TLB flushes and cpu_dcache_wb_range, cpu_dcache_wbinv_range, cpu_icache_sync_range, cpu_idcache_wbinv_range over the pmap's copies (pmap/cpufunc.rs); bsd's duplicates deleted (its cpufunc.rs kept them until N4); N7.0: cpu_dcache_inv_dma, dc ivac over a hal::dma::DmaBuf's own bytes (the range checked inside the buffer, whose mapping is page-aligned whole pages, so every line discarded is its own): 1 unsafe; bsd's cpu_dcache_inv_range stays for its bus_dma"
 
 [[module]]
 rust = "sys/arch/arm64/arm64/cpuswitch.rs"
@@ -14596,6 +14596,21 @@ lz = "sys/arch/arm64/arm64/bus_space.rs::generic_space_unmap"
 native = ["KernelMapper::unmap_device", "sys/kernel/vm/km.rs::unmap_device"]
 kind = "split"
 
+[[module]]
+rust = "sys/hal/dma.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/arm64/bus_dma.rs", "sys/arch/arm64/include/bus.rs"]
+status = "redesigned"
+notes = "N7.0: bus_dmamem(9)'s owned memory as a value: DmaBuf (one segment and its mapping from a bus's DmaMemory, a trait the kernel implements and passes as a value; freed by the drop, unmap then free; read/write of AbiPod types, copy_in/copy_out/zero word-wide where aligned, every range checked, writes by &mut self, no reference or slice of the bytes ever made; sync = _dmamap_sync_segment's switch over its own bytes, a barrier on a coherent tag), DmaReq (size, align, boundary, range, the BUS_DMA_* flags as named fields: the machines' values differ), DmaBlock, DmaSeg (bus_dma_segment_t), DmaSync (BUS_DMASYNC_*, hal's own values); alloc checks the provider's answer (check_block, and the segment's length, alignment, range and boundary: panic(9)); 2 unsafe (the one volatile load and store); dc ivac is arch/arm64/cpufunc.rs's cpu_dcache_inv_dma; bsd's arm64 bus_dma.rs and include/bus.rs keep every LZ item for their drivers; one segment only (a deviation until a kernel driver asks more)"
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/bus_dma.rs::_dmamap_sync_segment"
+native = ["DmaBuf::sync"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/arch/arm64/include/bus.rs::BusDmaSegment"
+native = ["DmaSeg"]
+kind = "renamed"
+
 [[extra]]
 rust = "sys/hal/user.rs"
 crate = "hal"
@@ -14609,7 +14624,7 @@ reason = "hal runtime, written new: the console primitive (cnputc, cngetc, cnpol
 [[extra]]
 rust = "sys/hal/trust.rs"
 crate = "hal"
-reason = "hal runtime, written new: the trust boundary of the memory bridges (alignment and size checks, the diagnostic probe); docs/ZERO_UNSAFE.md decision 30; N6.3a: the premise of hal::link::SaLink (a socket address lent by an interface address: the SaToken holder's contract and the readers' shared holding, review 1's B2); N6.5e: the token holder's proofs are lent (SaToken::lend_net, N6.5e review 1), exact, so the contract's proof-by-check clause is gone; N6.5e (5e1): the internet records read their own words (counted handles), so the SaLink boundary is enc(4)'s address alone; N7.0: the device mappings (hal::mmio::Mmio): what map_device checks (no managed frame, never executable) and what stays the token holder's word (the virtual range its own, the physical range a device's registers, not RAM outside the managed pages)"
+reason = "hal runtime, written new: the trust boundary of the memory bridges (alignment and size checks, the diagnostic probe); docs/ZERO_UNSAFE.md decision 30; N6.3a: the premise of hal::link::SaLink (a socket address lent by an interface address: the SaToken holder's contract and the readers' shared holding, review 1's B2); N6.5e: the token holder's proofs are lent (SaToken::lend_net, N6.5e review 1), exact, so the contract's proof-by-check clause is gone; N6.5e (5e1): the internet records read their own words (counted handles), so the SaLink boundary is enc(4)'s address alone; N7.0: the device mappings (hal::mmio::Mmio): what map_device checks (no managed frame, never executable) and what stays the token holder's word (the virtual range its own, the physical range a device's registers, not RAM outside the managed pages); N7.0: the DMA memory provider's contract (hal::dma::DmaMemory: mapped kernel memory holding no Rust object, the segment's frames, the caller's alone until free) and what DmaBuf::alloc checks"
 
 [[extra]]
 rust = "sys/kern/hal_bridges.rs"
