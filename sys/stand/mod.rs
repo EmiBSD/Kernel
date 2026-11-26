@@ -409,8 +409,8 @@ fn boot_framebuffer(hhdm_offset: usize) -> Option<BootFramebuffer> {
 
 /// The copy of the device tree with efiboot's `/chosen/framebuffer` node (`fdtfb.rs`).
 #[cfg(target_arch = "aarch64")]
-static FDT_COPY: crate::sys::staticcell::StaticCell<[u8; FDT_COPY_SIZE]> =
-    crate::sys::staticcell::StaticCell::new([0; FDT_COPY_SIZE]);
+static FDT_COPY: bsd::sys::staticcell::StaticCell<[u8; FDT_COPY_SIZE]> =
+    bsd::sys::staticcell::StaticCell::new([0; FDT_COPY_SIZE]);
 
 /// Room for the device tree copy: QEMU's `virt` tree is about 8 KiB of structure and strings.
 #[cfg(target_arch = "aarch64")]
