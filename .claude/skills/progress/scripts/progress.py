@@ -88,7 +88,7 @@ if sys.version_info < (3, 11):  # macOS's /usr/bin/python3 is 3.9: re-exec under
 
 import tomllib  # noqa: E402
 
-MS_ID = re.compile(r"N\d+[a-z]*")
+MS_ID = re.compile(r"N\d+[a-z]*(?![.\d])")
 STATUSES = ("redesigned", "adapted", "inherited")
 DONE = ("redesigned", "adapted")
 # The smallest sample the pace is computed from: below it, Est. left reads n/a.
@@ -129,7 +129,7 @@ def parse_roadmap(root: Path) -> list[dict]:
         cells = [c.strip() for c in re.split(r"(?<!\\)\|", line)][1:-1]
         if len(cells) < 3:
             continue
-        m = re.match(r"\*\*(N\d+[a-z]*)\s*(.*?)\*\*", cells[0])
+        m = re.match(r"\*\*(N\d+(?:\.\d+)?[a-z]*)\s*(.*?)\*\*", cells[0])
         if not m:
             continue
         dm = re.search(r"\b(?:done|Met|met)\**\s+(\d{4}-\d{2}-\d{2})", line)
@@ -306,7 +306,7 @@ class Plan:
     def __init__(self, root: Path, rows: list[dict], pin: str):
         self.rows = rows
         self.ids = [r["id"] for r in rows]
-        self.children = {rid: [c for c in self.ids if re.fullmatch(re.escape(rid) + r"[a-z]", c)]
+        self.children = {rid: [c for c in self.ids if re.fullmatch(re.escape(rid) + r"(?:[a-z]|\.\d+)", c)]
                          for rid in self.ids}
         self.is_child = {c for cs in self.children.values() for c in cs}
         self.pats = []  # (specificity, -row index, pattern, row id)
@@ -361,9 +361,24 @@ class Plan:
             return "met " + self.dates[rid]
         if self.row(rid)["row_date"] and finished(rid):
             return "met " + self.row(rid)["row_date"]
-        if rid in self.wip or busy(rid):
+        if rid in self.wip or rid == self.current(finished, busy):
             return "under way"
         return "pending"
+
+    def current(self, finished, busy) -> str | None:
+        """The milestone in progress: the first top-level row, in ROADMAP order, not met."""
+        for rid in self.ids:
+            if rid in self.is_child:
+                continue
+            if not self.status_met(rid, finished):
+                return rid
+        return None
+
+    def status_met(self, rid: str, finished) -> bool:
+        kids = self.children[rid]
+        if kids and all(self.status_met(c, finished) for c in kids):
+            return True
+        return rid in self.dates or bool(self.row(rid)["row_date"] and finished(rid))
 
 
 CRATES = (("hal", "sys/hal/"), ("kernel", "sys/kernel/"), ("abi", "sys/abi/"),
@@ -440,8 +455,12 @@ def unsafe_report(root: Path, want: str | None, doc: dict, plan: Plan, modules: 
         return (agg[rid]["moved"] > 0 or agg[rid]["redesigned"] > 0) and not finished(rid)
 
     def est(rid: str) -> str:
+        if not plan.has_patterns(rid):
+            return "—"
         if finished(rid):
-            return "done"
+            return "done" if plan.status_met(rid, finished) else "nothing in bsd"
+        if plan.status_met(rid, finished):
+            return "done (rest with bsd at N9)"
         if not per_day:
             return "n/a"
         d = agg[rid]["bsd_unsafe"] / per_day
