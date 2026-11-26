@@ -22,8 +22,10 @@
 //! M9b (WireGuard) and M9c (IPsec ESP) need a tunnel between two machines. Each VM keeps its
 //! `vio0` on QEMU's user-mode network and gets a second virtio-net NIC, `vio1`, on a link that
 //! only the two of them share (`boot::VmLink`: a pair of localhost UDP sockets, QEMU's `dgram`
-//! netdev). Every VM has its own image and its own EDK2 variable store (`-a` / `-b` file
-//! suffixes), so the two QEMUs never write to the same file.
+//! netdev). Every VM has its own Limine image and its own EDK2 variable store (`-a` / `-b`
+//! file suffixes), so the two QEMUs never write to the same file; an efiboot boot (`--image`
+//! or `--kernel K --root ...`, `efiboot.rs`) has both VMs attach one image with
+//! `snapshot=on`, which neither writes, and each types its boot line at its `boot> `.
 //!
 //! Each VM runs its own script, the same `send-after`/`send`/`expect` machinery as `smoke
 //! --until-seen`:
@@ -220,6 +222,8 @@ struct Vm {
     done_at: Option<f32>,
     /// The QEMU exit status, if it exited before the script was satisfied.
     exited: Option<Option<i32>>,
+    /// An efiboot boot's: types the boot line at each `boot> ` (`efiboot.rs`).
+    typist: Option<crate::efiboot::BootTypist>,
 }
 
 impl Vm {
@@ -245,27 +249,17 @@ impl Vm {
 
 /// Boots two VMs of `arch` from `kernel` (or the images already built when `None`) and
 /// runs `plan` on them.
-pub fn smoke2(
-    root: &Path,
-    arch: Arch,
-    kernel: Option<&Path>,
-    cmdline: Option<&str>,
-    init: Option<&Path>,
-    ramdisk: Option<&Path>,
-    plan: Plan,
-) -> Result<()> {
-    let boot = Boot {
-        root,
-        arch,
-        kernel,
-        cmdline,
-        init,
-        ramdisk,
-    };
+pub(crate) fn smoke2(boot: &Boot<'_>, mut plan: Plan) -> Result<()> {
+    // `--expect-root`: both VMs find their root by the image's DUID.
+    if let Some(line) = boot.efiboot.and_then(|e| e.expect_root.as_ref()) {
+        plan.a.expects.push(line.clone());
+        plan.b.expects.push(line.clone());
+    }
+    let arch = boot.arch;
     let mut attempt = 1;
     loop {
         let ports = free_udp_ports()?;
-        match run(&boot, &plan, ports, attempt == LINK_ATTEMPTS)? {
+        match run(boot, &plan, ports, attempt == LINK_ATTEMPTS)? {
             Outcome::Done => return Ok(()),
             Outcome::LinkPortTaken => {
                 println!(
@@ -291,13 +285,17 @@ const LINK_ATTEMPTS: u32 = 3;
 const PORT_TAKEN: &str = "Address already in use";
 
 /// The boot arguments of a [`smoke2`] run, the same for every attempt.
-struct Boot<'a> {
-    root: &'a Path,
-    arch: Arch,
-    kernel: Option<&'a Path>,
-    cmdline: Option<&'a str>,
-    init: Option<&'a Path>,
-    ramdisk: Option<&'a Path>,
+pub(crate) struct Boot<'a> {
+    pub root: &'a Path,
+    pub arch: Arch,
+    /// The kernel of both VMs' Limine images (or the images already built when `None`).
+    pub kernel: Option<&'a Path>,
+    pub cmdline: Option<&'a str>,
+    pub init: Option<&'a Path>,
+    pub ramdisk: Option<&'a Path>,
+    /// `--image` or `--kernel K --root ...` (`efiboot.rs`): one efiboot image both VMs
+    /// attach with `snapshot=on`, and the line each types at its `boot> `.
+    pub efiboot: Option<&'a crate::efiboot::EfiBoot>,
 }
 
 /// How one attempt of [`smoke2`] ended, when it did not fail.
@@ -318,15 +316,19 @@ fn run(boot: &Boot<'_>, plan: &Plan, ports: (u16, u16), last: bool) -> Result<Ou
         cmdline,
         init,
         ramdisk,
+        efiboot,
     } = *boot;
     let started = Instant::now();
     let limit = boot::time_limit(plan.timeout);
     let mut vms: Vec<Vm> = Vec::new();
     for (index, script) in [plan.a.clone(), plan.b.clone()].into_iter().enumerate() {
         let link = vm_link(index, ports);
-        let image = match kernel {
-            Some(k) => boot::image_tagged(root, arch, Some(link.tag), k, cmdline, init, ramdisk)?,
-            None => {
+        let image = match (efiboot, kernel) {
+            (Some(e), _) => e.image.clone(),
+            (None, Some(k)) => {
+                boot::image_tagged(root, arch, Some(link.tag), k, cmdline, init, ramdisk)?
+            }
+            (None, None) => {
                 let p = boot::image_path(root, arch, Some(link.tag));
                 if !p.is_file() {
                     kill_all(&mut vms);
@@ -376,6 +378,9 @@ fn run(boot: &Boot<'_>, plan: &Plan, ports: (u16, u16), last: bool) -> Result<Ou
             script,
             done_at: None,
             exited: None,
+            typist: efiboot
+                .and_then(|e| e.boot_line.as_deref())
+                .map(crate::efiboot::BootTypist::new),
         });
     }
 
@@ -393,6 +398,19 @@ fn run(boot: &Boot<'_>, plan: &Plan, ports: (u16, u16), last: bool) -> Result<Ou
                 continue;
             }
             let t = vm.snapshot();
+            if let (Some(typist), Some(stdin)) = (vm.typist.as_mut(), vm.stdin.as_mut())
+                && let Some(line) = typist.poll(&String::from_utf8_lossy(&t))
+            {
+                if let Err(e) = boot::send_paced(stdin, line) {
+                    failure = Some(format!("vm {}: writing to the serial console: {e}", vm.tag));
+                }
+                println!(
+                    "xtask: vm {}: typed {line:?} at {:?} after {:.1}s",
+                    vm.tag,
+                    crate::efiboot::BOOT_PROMPT,
+                    started.elapsed().as_secs_f32()
+                );
+            }
             if let (Some(text), Some(stdin)) = (vm.script.step(&t), vm.stdin.as_mut()) {
                 let sent = boot::send_paced(stdin, &text);
                 if let Err(e) = sent {

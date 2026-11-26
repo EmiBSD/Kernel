@@ -674,6 +674,205 @@ pub(crate) fn efiboot_disk(
         &boot::image_path(root, arch, None),
     )
 }
+
+/// The prompt boot(8) prints when `boot.conf` set no `boot` command (`BOOT_CONF`).
+pub(crate) const BOOT_PROMPT: &str = "boot> ";
+
+/// The options of `smoke`, `smoke2` and `qemu` that are only an efiboot boot's, and the
+/// Limine ones an efiboot boot refuses (no command line, no modules).
+const EFIBOOT_ONLY: &[&str] = &["--boot-flags", "--boot-on", "--owners", "--efi"];
+const EFIBOOT_ONLY_SWITCHES: &[&str] = &["--boot-manual", "--expect-root", "--strip-debug"];
+const LIMINE_ONLY: &[&str] = &["--cmdline", "--init", "--ramdisk"];
+const LIMINE_ONLY_SWITCHES: &[&str] = &["--expect-ramdisk"];
+
+/// How a boot goes through efiboot: `--image tree|init` (a [`Shared`] image) or `--kernel K
+/// --root ...` (a per-run image, [`image`], in the run directory).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct EfiBoot {
+    /// The image the VM attaches with `snapshot=on` (never written).
+    pub image: PathBuf,
+    /// What xtask types at every `boot> ` (`boot`, with `--boot-flags`' flags); `None` with
+    /// `--boot-manual`, where the recipe's own sends type there.
+    pub boot_line: Option<String>,
+    /// `--expect-root`: the root line's tail, `(<duid>.a) swap on`: the kernel found its root
+    /// by the DUID efiboot passed.
+    pub expect_root: Option<String>,
+}
+
+/// The line typed at `boot> ` for `--boot-flags FLAGS` (boot(8)'s own `-a`, `-c`, `-d`,
+/// `-s`: `boot -s`); plain `boot` without them.
+fn boot_line(flags: Option<&str>) -> Result<String> {
+    match flags {
+        None => Ok("boot\n".to_string()),
+        Some(f) => {
+            let ok = f
+                .strip_prefix('-')
+                .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b"acds".contains(&b)));
+            if !ok {
+                return Err(format!(
+                    "--boot-flags {f}: boot(8)'s flags, `-` and some of a, c, d, s"
+                )
+                .into());
+            }
+            Ok(format!("boot {f}\n"))
+        }
+    }
+}
+
+/// The efiboot boot `args` ask for (`--image` or `--root`), or `None` for a Limine boot or
+/// an existing image; with `--root` the per-run image is made here, at the run directory's
+/// `emibsd-<arch>.img`. Sets the boot medium (`--boot-on nvme|ahci`) and `snapshot=on` for the
+/// VMs this run starts.
+pub(crate) fn boot_args(root: &Path, arch: Arch, args: &[&str]) -> Result<Option<EfiBoot>> {
+    let shared = optional_flag(args, "--image");
+    let root_spec = optional_flag(args, "--root");
+    if shared.is_none() && root_spec.is_none() {
+        let stray: Vec<&str> = EFIBOOT_ONLY
+            .iter()
+            .filter(|o| optional_flag(args, o).is_some())
+            .chain(EFIBOOT_ONLY_SWITCHES.iter().filter(|o| args.contains(o)))
+            .copied()
+            .collect();
+        if !stray.is_empty() {
+            return Err(format!(
+                "{}: an efiboot boot's, with --image tree|init or --kernel K --root ...",
+                stray.join(", ")
+            )
+            .into());
+        }
+        return Ok(None);
+    }
+    let limine: Vec<&str> = LIMINE_ONLY
+        .iter()
+        .filter(|o| optional_flag(args, o).is_some())
+        .chain(LIMINE_ONLY_SWITCHES.iter().filter(|o| args.contains(o)))
+        .copied()
+        .collect();
+    if !limine.is_empty() {
+        return Err(format!(
+            "{}: a Limine boot's; boot(8) passes only its flags (--boot-flags), init is \
+             /sbin/init on the root, the root is the image's partition a",
+            limine.join(", ")
+        )
+        .into());
+    }
+    if arch != Arch::Arm64 {
+        return Err("an efiboot boot is arm64's until N10's first step enables amd64's".into());
+    }
+    let (image_path, duid) = match (shared, root_spec) {
+        (Some(_), Some(_)) => return Err("--image and --root: one or the other".into()),
+        (Some(name), None) => {
+            let fixed: Vec<&str> = ["--kernel", "--duid", "--owners", "--efi"]
+                .into_iter()
+                .filter(|o| optional_flag(args, o).is_some())
+                .chain(args.contains(&"--strip-debug").then_some("--strip-debug"))
+                .collect();
+            if !fixed.is_empty() {
+                return Err(format!(
+                    "--image {name}: a shared image is made by `just efiboot-images-{}`; {} \
+                     go with --kernel K --root ...",
+                    arch.name(),
+                    fixed.join(", ")
+                )
+                .into());
+            }
+            let p = shared_path(root, arch, Shared::parse(name)?);
+            if !p.is_file() {
+                return Err(format!(
+                    "{} does not exist; run `just efiboot-images-{}`",
+                    p.display(),
+                    arch.name()
+                )
+                .into());
+            }
+            (p, DUID)
+        }
+        (None, Some(spec)) => {
+            let kernel = PathBuf::from(flag(args, "--kernel")?);
+            let duid = optional_flag(args, "--duid")
+                .map(crate::hwopts::parse_duid)
+                .transpose()?
+                .unwrap_or(DUID);
+            let efi =
+                optional_flag(args, "--efi").map_or_else(|| default_efi(root, arch), PathBuf::from);
+            let out = boot::image_path(root, arch, None);
+            image(
+                root,
+                &ImageSpec {
+                    arch,
+                    efi: &efi,
+                    kernel: &kernel,
+                    root: parse_root(root, arch, spec, optional_flag(args, "--owners"))?,
+                    duid,
+                    fstab_dev: None,
+                    strip_debug: args.contains(&"--strip-debug"),
+                },
+                &out,
+            )?;
+            (out, duid)
+        }
+        // Returned above.
+        (None, None) => return Ok(None),
+    };
+    let boot_line = if args.contains(&"--boot-manual") {
+        if optional_flag(args, "--boot-flags").is_some() {
+            return Err(
+                "--boot-manual and --boot-flags: the recipe types its own boot line".into(),
+            );
+        }
+        None
+    } else {
+        Some(boot_line(optional_flag(args, "--boot-flags"))?)
+    };
+    let medium = match optional_flag(args, "--boot-on") {
+        None => boot::BootMedium::Disk,
+        Some("nvme") if optional_flag(args, "--nvme").is_none() => boot::BootMedium::Nvme,
+        Some("ahci") if optional_flag(args, "--ahci").is_none() => boot::BootMedium::Ahci,
+        Some(m @ ("nvme" | "ahci")) => {
+            return Err(
+                format!("--boot-on {m} and --{m} FILE: the boot disk is that device's").into(),
+            );
+        }
+        Some(other) => return Err(format!("--boot-on {other}: expected nvme or ahci").into()),
+    };
+    boot::set_boot_medium(medium);
+    boot::set_boot_snapshot(true);
+    Ok(Some(EfiBoot {
+        image: image_path,
+        boot_line,
+        expect_root: args
+            .contains(&"--expect-root")
+            .then(|| format!("({}.a) swap on", duid_hex(duid))),
+    }))
+}
+
+/// Types the boot line once at each `boot> ` that appears on a serial transcript (the
+/// prompt of every boot, a `--reboot`'s second one included).
+#[derive(Clone, Debug)]
+pub(crate) struct BootTypist {
+    line: String,
+    /// How many prompts were answered.
+    answered: usize,
+}
+
+impl BootTypist {
+    pub(crate) fn new(line: &str) -> BootTypist {
+        BootTypist {
+            line: line.to_string(),
+            answered: 0,
+        }
+    }
+
+    /// The line to type now, when `transcript` shows a prompt not answered yet.
+    pub(crate) fn poll(&mut self, transcript: &str) -> Option<&str> {
+        let prompts = transcript.matches(BOOT_PROMPT).count();
+        if prompts <= self.answered {
+            return None;
+        }
+        self.answered = prompts;
+        Some(&self.line)
+    }
+}
 /* </CODE> */
 
 /* <TESTS> */
@@ -752,6 +951,54 @@ mod tests {
         let label = (OPENBSD_START + 1) as usize * SECTOR as usize;
         assert_eq!(&disk[label + 64..label + 72], &DUID);
         assert_eq!(disk[(ALIGN * SECTOR) as usize], 0x5a);
+    }
+
+    #[test]
+    fn the_boot_line_is_boot_with_boot8s_own_flags() {
+        assert_eq!(boot_line(None).unwrap(), "boot\n");
+        assert_eq!(boot_line(Some("-s")).unwrap(), "boot -s\n");
+        assert_eq!(boot_line(Some("-ds")).unwrap(), "boot -ds\n");
+        assert_eq!(boot_line(Some("-c")).unwrap(), "boot -c\n");
+        for bad in ["s", "-", "-x", "-s selftest=fb", "/bsd"] {
+            assert!(boot_line(Some(bad)).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_typist_answers_each_prompt_once() {
+        let mut t = BootTypist::new("boot -s\n");
+        assert_eq!(t.poll(">> EmiBSD/arm64 BOOTAA64 1.26\n"), None);
+        assert_eq!(t.poll("efiboot: boot.conf read\nboot> "), Some("boot -s\n"));
+        assert_eq!(
+            t.poll("efiboot: boot.conf read\nboot> boot -s\nbooting"),
+            None
+        );
+        // A `--reboot`: the firmware, efiboot and its prompt again.
+        let again = "boot> boot -s\nbooting sd0a:/bsd\n...\n>> EmiBSD/arm64 BOOTAA64 1.26\nboot> ";
+        assert_eq!(t.poll(again), Some("boot -s\n"));
+        assert_eq!(t.poll(again), None);
+    }
+
+    #[test]
+    fn boot_args_keep_efiboot_and_limine_options_apart() {
+        let r = Path::new("/nonexistent-root");
+        let a = Arch::Arm64;
+        let err = |args: &[&str]| boot_args(r, a, args).unwrap_err().to_string();
+        assert_eq!(boot_args(r, a, &["--arch", "arm64"]).unwrap(), None);
+        assert_eq!(
+            boot_args(r, a, &["--kernel", "k", "--cmdline", "-s"]).unwrap(),
+            None
+        );
+        assert!(err(&["--boot-flags", "-s"]).contains("--boot-flags"));
+        assert!(err(&["--expect-root"]).contains("--expect-root"));
+        assert!(err(&["--image", "tree", "--cmdline", "-s"]).contains("--cmdline"));
+        assert!(err(&["--image", "tree", "--expect-ramdisk"]).contains("--expect-ramdisk"));
+        assert!(err(&["--root", "tree", "--init", "none"]).contains("--init"));
+        assert!(err(&["--image", "tree", "--root", "tree"]).contains("one or the other"));
+        assert!(err(&["--image", "tree", "--kernel", "k"]).contains("--kernel"));
+        assert!(err(&["--image", "bare"]).contains("shared images"));
+        assert!(err(&["--image", "tree"]).contains("efiboot-images-arm64"));
+        assert!(boot_args(r, Arch::Amd64, &["--image", "tree"]).is_err());
     }
 
     #[test]

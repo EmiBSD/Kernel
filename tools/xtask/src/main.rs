@@ -75,6 +75,20 @@
 //!                                          boot TWO VMs of A at once, each with vio1 on a
 //!                                          private link, each running its own script; pass
 //!                                          when both saw all they expect (twovm.rs)
+//! cargo xtask smoke|smoke2|qemu ... --image tree|init
+//! cargo xtask smoke|smoke2|qemu ... --kernel K --root bare|init[=FILE]|tree[=DIR]
+//!                   [--owners FILE] [--duid HEX16] [--efi FILE] [--strip-debug]
+//!                   [--boot-flags -FLAGS | --boot-manual] [--expect-root] [--boot-on nvme|ahci]
+//!                                          boot through efiboot (efiboot.rs): a shared
+//!                                          image of `just efiboot-images-A`, or a per-run
+//!                                          one made first (efiboot-image's options), both
+//!                                          attached with snapshot=on; smoke and smoke2
+//!                                          type `boot [-FLAGS]` at every `boot> ` unless
+//!                                          --boot-manual (the recipe types); --expect-root
+//!                                          expects `(<duid>.a) swap on`; --boot-on puts the
+//!                                          image on an NVMe or AHCI disk; --cmdline,
+//!                                          --init, --ramdisk and --expect-ramdisk are
+//!                                          Limine's and refused with it; arm64 only
 //! cargo xtask smoke-all [-j N] [--just PATH] RECIPE...
 //!                                          run the justfile's smoke RECIPEs with
 //!                                          `just --no-deps`, N (default 4) at a time, each
@@ -303,6 +317,7 @@ fn run(args: &[String]) -> Result<()> {
             let kernel = optional_flag(rest, "--kernel").map(PathBuf::from);
             let init = init_flag(&root, arch, rest);
             let ramdisk = ramdisk_flag(&root, arch, rest);
+            let efiboot = efiboot::boot_args(&root, arch, rest)?;
             boot::qemu(
                 &root,
                 arch,
@@ -314,6 +329,7 @@ fn run(args: &[String]) -> Result<()> {
                     count: disks_flag(rest)?,
                     set: optional_flag(rest, "--disk-set"),
                 },
+                efiboot.as_ref(),
             )
         }
         ["smoke", rest @ ..] => {
@@ -344,6 +360,9 @@ fn run(args: &[String]) -> Result<()> {
                 .collect();
             let init = init_flag(&root, arch, rest);
             let ramdisk = ramdisk_flag(&root, arch, rest);
+            // `--image` or `--kernel K --root ...`: an efiboot boot (efiboot.rs), whose
+            // per-run image is made here, once, before any boot.
+            let efiboot = efiboot::boot_args(&root, arch, rest)?;
             // Killed when dropped, after the run.
             let _servers = https::start(&root, &flags(rest, "--https-server"))?;
             boot::smoke(
@@ -375,6 +394,7 @@ fn run(args: &[String]) -> Result<()> {
                         )),
                         None => None,
                     },
+                    efiboot: efiboot.as_ref(),
                 },
             )
         }
@@ -387,14 +407,18 @@ fn run(args: &[String]) -> Result<()> {
             let init = init_flag(&root, arch, rest);
             let ramdisk = ramdisk_flag(&root, arch, rest);
             let plan = twovm::parse_plan(rest)?;
+            let efiboot = efiboot::boot_args(&root, arch, rest)?;
             let _servers = https::start(&root, &flags(rest, "--https-server"))?;
             twovm::smoke2(
-                &root,
-                arch,
-                kernel.as_deref(),
-                optional_flag(rest, "--cmdline"),
-                init.as_deref(),
-                ramdisk.as_deref(),
+                &twovm::Boot {
+                    root: &root,
+                    arch,
+                    kernel: kernel.as_deref(),
+                    cmdline: optional_flag(rest, "--cmdline"),
+                    init: init.as_deref(),
+                    ramdisk: ramdisk.as_deref(),
+                    efiboot: efiboot.as_ref(),
+                },
                 plan,
             )
         }
