@@ -41,7 +41,7 @@ on the side it must match, and a concrete failing input or sequence when it is a
 2. `unsafe`: each `// SAFETY:` states a real invariant that holds at that site and says who
    upholds it ("the C does this" is not an argument); aliasing of `&mut`; lifetimes of raw
    pointers and `NonNull`; MMIO only through `bus_space`; no `static mut`; `crate::arch::*` not
-   named outside `sys/arch/` and `sys/machine/`; the subsystem's count not above LZ's without a
+   named outside `sys/bsd/arch/` and `sys/bsd/machine/`; the subsystem's count not above LZ's without a
    reason in the commit body (`cargo xtask unsafe-report`); no `unsafe-budget.toml` line raised.
 3. Rules: zones and their order, the author's ISC block first in `<LICENSES>` and every LZ
    source's notice whole; `//! Upstream:` and `//! LZ:` lines per source and a `## Redesign`

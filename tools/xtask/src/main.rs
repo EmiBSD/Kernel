@@ -29,6 +29,8 @@
 //!                                          LZ commits after the pin without an lz-sync.toml record
 //! cargo xtask lz trace <lz path>:<item> | --rust <path>:<item> | --c <c path>:<item>
 //!                                          where an item's code is now, or came from (lz.rs)
+//! cargo xtask lz patch <commit>            an LZ commit's patch with its paths in this tree's
+//!                                          layout (sys/bsd/, sys/boot/), for `git am -3`
 //! cargo xtask image --arch A --kernel K [--cmdline C] [--init I] [--ramdisk R]
 //!                                          build target/emibsd-A.img (Limine + /bsd),
 //!                                          C as the kernel command line (boot(8) flags);
@@ -226,7 +228,7 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 const REFERENCE_DIR: &str = "reference/openbsd-src";
 
 const USAGE: &str = "usage: cargo xtask <lz check | lz status [--write] | lz drift [--fetch] [--security] [--functions] [--strict] | \
-                     lz trace <lz path>:<item> | lz trace --rust <path>:<item> | lz trace --c <c path>:<item> | image --arch A --kernel K [--cmdline C] [--init I] [--ramdisk R] | \
+                     lz trace <lz path>:<item> | lz trace --rust <path>:<item> | lz trace --c <c path>:<item> | lz patch <commit> | image --arch A --kernel K [--cmdline C] [--init I] [--ramdisk R] | \
                      qemu --arch A [--kernel K] [--init I] [--ramdisk R] [--disk-fresh] [--disks N] [--disk-set NAME] [--nvme FILE] [--ahci FILE] [--scsi-cd ISO] [--lsi FILE [--lsi-cd ISO]] [--pci-serial FILE] [--pci-bridges] [--machine pc] [--ide|--megasas|--megasas-gen2|--mptsas|--pvscsi|--am53c974|--dc390|--ufs|--sdhci|--floppy FILE]... [--ipmi] [--reboot] [--vio-mq] [--fb] | gen-syscalls [--check] | \
                      smoke --arch A [--kernel K] [--cmdline C] [--init I] [--ramdisk R] [--expect-ramdisk] [--disk-fresh] [--disks N] [--disk-set NAME] [--nvme FILE] [--ahci FILE] [--scsi-cd ISO] [--lsi FILE [--lsi-cd ISO]] [--pci-serial FILE] [--pci-bridges] [--machine pc] [--ide|--megasas|--megasas-gen2|--mptsas|--pvscsi|--am53c974|--dc390|--ufs|--sdhci|--floppy FILE]... [--ipmi] [--reboot] [--vio-mq] [--expect-pci-serial T]... [--fb] [--screenshot-after L [--screen-text ROW:COL:TEXT]] [--sendkey-after L --sendkeys K] [--usb] [--usb-hc xhci|ehci|uhci|ohci] [--usb-mouse] [--usb-tablet] [--usb-wacom-tablet] [--usb-ccid] [--usb-net] [--usb-serial FILE [--usb-serial-send-after L --usb-serial-send T]... [--expect-usb-serial T]...] [--audio hda|ac97|usb] [--expect-tone] [--status N] [--send-after L --send T]... [--until-seen] [--timeout S] [--https-server DIR:PORT:MODE]... [--reject L]... --expect L... | \
                      smoke2 --arch A [--kernel K] [--cmdline C] [--timeout S] [--show-transcripts] [--disk-fresh] [--disks N] [--both-|--a-|--b-send-after L --send T]... [--both-|--a-|--b-expect L]... [--reject L]... [--https-server DIR:PORT:MODE]... | \
@@ -272,6 +274,7 @@ fn run(args: &[String]) -> Result<()> {
             flags.contains(&"--strict"),
         ),
         ["lz", "trace", rest @ ..] => lz::trace(&root, rest),
+        ["lz", "patch", commit] => lz::patch(&root, commit),
         ["image", rest @ ..] => {
             let arch = boot::Arch::parse(flag(rest, "--arch")?)?;
             let kernel = PathBuf::from(flag(rest, "--kernel")?);
@@ -629,8 +632,70 @@ fn short(hash: &str) -> &str {
     hash.get(..12).unwrap_or(hash)
 }
 
-/// Files that are structure, not ports: never need a `ports.toml` entry.
+/// The boot loaders' directories of `sys/boot/` and the LZ path of each (the user's layout of
+/// 2026-11-26); the per-arch ones (`sys/boot/<arch>/<dir>/`, LZ's `sys/arch/<arch>/stand/<dir>/`)
+/// follow one rule in [`lz_flat`].
+const BOOT_HOMES: [(&str, &str); 3] = [
+    ("sys/boot/libsa/", "sys/lib/libsa/"),
+    ("sys/boot/efi/", "sys/stand/efi/"),
+    ("sys/boot/boot/", "sys/stand/boot/"),
+];
+
+/// A native path as LZ's tree lays it out (LZ's `sys/` is one flat tree): `sys/bsd/<x>`, the
+/// legacy package `bsd`, is LZ's `sys/<x>`; `sys/boot/libsa/`, `efi/` and `boot/` are LZ's
+/// `sys/lib/libsa/`, `sys/stand/efi/` and `sys/stand/boot/`; `sys/boot/<arch>/<dir>/` is LZ's
+/// `sys/arch/<arch>/stand/<dir>/`. Every other path is returned as it is. Each rule replaces a
+/// prefix and keeps the rest, so the file's path below its directory is the same in both trees.
+/// The tools that name a file by LZ's layout (the lineage's homes, the unsafe report's rows and
+/// crates, the structure that is not ported) read a native path through it.
+pub(crate) fn lz_flat(rel: &str) -> String {
+    if let Some(rest) = rel.strip_prefix("sys/bsd/") {
+        return format!("sys/{rest}");
+    }
+    for (native, lz) in BOOT_HOMES {
+        if let Some(rest) = rel.strip_prefix(native) {
+            return format!("{lz}{rest}");
+        }
+    }
+    if let Some(rest) = rel.strip_prefix("sys/boot/")
+        && let Some((arch, tail)) = rest.split_once('/')
+    {
+        return format!("sys/arch/{arch}/stand/{tail}");
+    }
+    rel.to_string()
+}
+
+/// The native path of an LZ path, [`lz_flat`]'s inverse: LZ's `sys/lib/libsa/`,
+/// `sys/stand/efi/`, `sys/stand/boot/` and `sys/arch/<arch>/stand/<dir>/` are the loaders'
+/// `sys/boot/...`; LZ's `sys/lib/libkern/` and `sys/lib/libz/` stay (the leaf crates, grouped
+/// by purpose since, are found by hand as before); every other `sys/<x>` is the legacy tree's
+/// `sys/bsd/<x>`. A path outside `sys/` (LZ's justfile, `tools/`) is the same in both trees.
+pub(crate) fn native_of_lz(lz: &str) -> String {
+    for (native, home) in BOOT_HOMES {
+        if let Some(rest) = lz.strip_prefix(home) {
+            return format!("{native}{rest}");
+        }
+    }
+    let Some(rest) = lz.strip_prefix("sys/") else {
+        return lz.to_string();
+    };
+    if let Some(after) = rest.strip_prefix("arch/")
+        && let Some((arch, tail)) = after.split_once('/')
+        && let Some(dir) = tail.strip_prefix("stand/")
+    {
+        return format!("sys/boot/{arch}/{dir}");
+    }
+    if rest.starts_with("lib/libkern/") || rest.starts_with("lib/libz/") {
+        return lz.to_string();
+    }
+    format!("sys/bsd/{rest}")
+}
+
+/// Files that are structure, not ports: never need a `ports.toml` entry. `rel` is a native or
+/// an LZ path: a native one is read through [`lz_flat`].
 fn is_structural(rel: &str) -> bool {
+    let rel = lz_flat(rel);
+    let rel = rel.as_str();
     let name = rel.rsplit('/').next().unwrap_or(rel);
     matches!(name, "mod.rs" | "lib.rs" | "main.rs" | "build.rs")
         || rel.starts_with("sys/machine/")
@@ -675,6 +740,99 @@ fn git(repo: &Path, args: &[&str]) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lz_flat_reads_the_bsd_and_boot_directories_as_lz_lays_them_out() {
+        for (native, lz) in [
+            ("sys/bsd/kern/kern_exec.rs", "sys/kern/kern_exec.rs"),
+            ("sys/bsd/lib.rs", "sys/lib.rs"),
+            ("sys/bsd/stand/limine.rs", "sys/stand/limine.rs"),
+            (
+                "sys/bsd/arch/arm64/arm64/machdep.rs",
+                "sys/arch/arm64/arm64/machdep.rs",
+            ),
+            ("sys/boot/libsa/open.rs", "sys/lib/libsa/open.rs"),
+            ("sys/boot/efi/lib.rs", "sys/stand/efi/lib.rs"),
+            ("sys/boot/boot/cmd.rs", "sys/stand/boot/cmd.rs"),
+            (
+                "sys/boot/arm64/efiboot/efiboot.rs",
+                "sys/arch/arm64/stand/efiboot/efiboot.rs",
+            ),
+            (
+                "sys/boot/amd64/libsa/disk.rs",
+                "sys/arch/amd64/stand/libsa/disk.rs",
+            ),
+            // Unchanged: the new crates, LZ's own paths, init.
+            ("sys/hal/arch/arm64/trap.rs", "sys/hal/arch/arm64/trap.rs"),
+            ("sys/kernel/proc/fork.rs", "sys/kernel/proc/fork.rs"),
+            ("sys/lib/libkern/lib.rs", "sys/lib/libkern/lib.rs"),
+            ("sys/kern/kern_exec.rs", "sys/kern/kern_exec.rs"),
+            ("init/src/main.rs", "init/src/main.rs"),
+        ] {
+            assert_eq!(lz_flat(native), lz, "{native}");
+        }
+    }
+
+    #[test]
+    fn native_of_lz_is_lz_flat_inverse() {
+        for (lz, native) in [
+            ("sys/kern/kern_exec.rs", "sys/bsd/kern/kern_exec.rs"),
+            ("sys/Cargo.toml", "sys/bsd/Cargo.toml"),
+            ("sys/stand/limine.rs", "sys/bsd/stand/limine.rs"),
+            (
+                "sys/arch/arm64/arm64/machdep.rs",
+                "sys/bsd/arch/arm64/arm64/machdep.rs",
+            ),
+            (
+                "sys/arch/arm64/conf/kernel.ld",
+                "sys/bsd/arch/arm64/conf/kernel.ld",
+            ),
+            ("sys/lib/libsa/open.rs", "sys/boot/libsa/open.rs"),
+            ("sys/stand/efi/lib.rs", "sys/boot/efi/lib.rs"),
+            ("sys/stand/boot/cmd.rs", "sys/boot/boot/cmd.rs"),
+            (
+                "sys/arch/arm64/stand/efiboot/start.S",
+                "sys/boot/arm64/efiboot/start.S",
+            ),
+            (
+                "sys/arch/amd64/stand/libsa/disk.rs",
+                "sys/boot/amd64/libsa/disk.rs",
+            ),
+            ("justfile", "justfile"),
+            ("tools/xtask/src/main.rs", "tools/xtask/src/main.rs"),
+        ] {
+            assert_eq!(native_of_lz(lz), native, "{lz}");
+            assert_eq!(lz_flat(native), lz, "{native}");
+        }
+        // The leaf crates stay where LZ has them (their groups are found by hand).
+        assert_eq!(
+            native_of_lz("sys/lib/libkern/strlcpy.rs"),
+            "sys/lib/libkern/strlcpy.rs"
+        );
+    }
+
+    #[test]
+    fn structure_is_read_in_lz_layout() {
+        for rel in [
+            "sys/bsd/machine/mod.rs",
+            "sys/bsd/machine/cpu.rs",
+            "sys/bsd/arch/host/alloc.rs",
+            "sys/bsd/stand/limine.rs",
+            "sys/boot/boot/cmd.rs",
+            "sys/boot/efi/include/efiapi.rs",
+            "sys/machine/cpu.rs",
+            "sys/stand/limine.rs",
+        ] {
+            assert!(is_structural(rel), "{rel}");
+        }
+        for rel in [
+            "sys/bsd/kern/kern_exec.rs",
+            "sys/boot/libsa/open.rs",
+            "sys/boot/arm64/efiboot/efiboot.rs",
+        ] {
+            assert!(!is_structural(rel), "{rel}");
+        }
+    }
 
     #[test]
     fn smp_is_optional_and_bounded() {

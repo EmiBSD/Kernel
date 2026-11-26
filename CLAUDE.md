@@ -16,7 +16,7 @@ Everything in this repository (code, comments, docs, commits) is in English.
   before then, and a `hal` boundary type is still designed with the amd64 C in view (the
   planner's "amd64 constraints" paragraph).
 - Generic code (`kern/`, `uvm/`, `dev/`, `sys/`) reaches arch code ONLY through `crate::machine`.
-  `crate::arch::amd64` / `crate::arch::arm64` are never named outside `sys/arch/` and `sys/machine/`.
+  `crate::arch::amd64` / `crate::arch::arm64` are never named outside `sys/bsd/arch/` and `sys/bsd/machine/`.
 - The system-call ABI and the behaviour OpenBSD's userland sees never change: the ABI equals
   LZ's at the pin, and additions arrive only through `lz-sync:` commits (`.claude/rules/lz-sync.md`).
   One exception, decision 48: `exec_elf` also accepts the ELF note name "EmiBSD" (same id as
@@ -38,7 +38,7 @@ Everything in this repository (code, comments, docs, commits) is in English.
   (decision 47) and holds no logic (`.claude/rules/abi.md`). Section 0 of that document and its one diagram are the
   only description of the architecture; `unsafe-core.toml` and the per-module `forbid` of v1
   are superseded.
-- No `std` outside `sys/arch/host/`, `sys/hal/arch/host/`, `#[cfg(test)]` code, the host benchmark
+- No `std` outside `sys/bsd/arch/host/`, `sys/hal/arch/host/`, `#[cfg(test)]` code, the host benchmark
   targets under `sys/*/benches/` (`harness = false`, never linked into a kernel image) and `tools/xtask/`.
 - The toolchain is EmiBSD's own, DevTools' build of stable Rust and LLVM (decision 49, the user,
   2026-11-11): the justfile pins the releases (`devtools_rust`, `devtools_llvm`; `just
@@ -57,17 +57,19 @@ lz/PINNED.md                 the LZ commit this tree is synced to (machine-read 
 lineage.toml                 native module -> LZ files and items, the source of truth for provenance
 lz-sync.toml                 one triage record per LZ commit after the pin
 unsafe-budget.toml           per-subsystem unsafe totals that `just ci` enforces
-sys/                         package `bsd`: the LZ tree, legacy, replaced subsystem by subsystem, deleted at N9
-  kern/ uvm/ dev/ net/ ...   LZ's subsystems, still the kernel that boots while they move out
+sys/                         six purpose directories (the user's layout of 2026-11-26)
   hal/                       crate `hal`: the hardware (arch/amd64, arch/arm64, machine, moved here at N2) and the runtime; the ONLY unsafe
                              groups: sync/ mem/ ds/ cpu/ vm/ dev/ (docs/ARCHITECTURE.md)
   kernel/                    crate `kernel`: every decision of the OS, #![forbid(unsafe_code)] at the root
                              groups: proc/ sched/ sig/ time/ file/ tty/ base/ dev/ vm/ fs/ net/ crypto/
   abi/                       crate `abi`: OpenBSD's userland interface, linked into the kernel image, forbid, no logic
-  stand/                     the boot loaders (separate binaries, outside the four crates)
-  lib/libkern/ lib/libz/     leaf crates, forbid(unsafe_code) at their roots (decision 55); lib/libsa/ (the boot loaders') is the exception
+  lib/libkern/ lib/libz/     leaf crates, forbid(unsafe_code) at their roots (decision 55)
   lib/sysdefs/               crate `sysdefs`: OpenBSD's basic types, constants and #[repr(C)] ABI structures, the data under every layer (decision 54); forbid, no logic
                              the three leaf crates are grouped by purpose, root = lib.rs only (hal-check L1): sysdefs base/proc/sig/time/vm/file/fs/dev/net/netinet/netinet6, libkern string/mem/hash/rand, libz base/deflate/inflate/check
+  bsd/                       package `bsd`: the LZ tree, legacy, replaced subsystem by subsystem, deleted at N9; LZ's sys/<x> is sys/bsd/<x>
+    kern/ uvm/ dev/ net/ ... LZ's subsystems, still the kernel that boots while they move out; stand/ is the kernel binary's boot entry (Limine, boot(8))
+  boot/                      the boot loaders, separate binaries outside the zero-unsafe plan: libsa/ efi/ boot/ (boot(8)) arm64/efiboot/ amd64/{efiboot,libsa}/
+                             (LZ's sys/lib/libsa, sys/stand/{efi,boot}, sys/arch/<arch>/stand/*; libsa is the exception to decision 55)
 tools/xtask/                 host tooling: `cargo xtask {image,qemu,smoke,lz,unsafe-report,diff-openbsd,...}`
 docs/                        PHASE2 (the process), ARCHITECTURE, IDIOMS, ROADMAP (N0..), SYNC, JOURNAL, STATUS, SETUP, C_TO_RUST (frozen)
 ```
@@ -154,7 +156,7 @@ the session.
 - `unsafe` in `sys/kernel/` or `sys/abi/` (the build refuses it); a path added to `hal`'s
   ceiling or a new bridge without a `bridges.toml` row.
 - Raise a subsystem's unsafe budget, bump `lz/PINNED.md` or drop an LZ file without the user.
-- Touch amd64 before N10 (decision 44): build, boot, fix or redesign `sys/arch/amd64/`,
+- Touch amd64 before N10 (decision 44): build, boot, fix or redesign `sys/bsd/arch/amd64/`, `sys/boot/amd64/`,
   `sys/hal/arch/amd64/` or the amd64 half of a `hal` boundary; an LZ commit that touches only
   those files is cherry-picked without compiling or recorded `deferred-to-N10`.
 - Mix a redesign with an `lz-sync:` or a `lineage:` commit.

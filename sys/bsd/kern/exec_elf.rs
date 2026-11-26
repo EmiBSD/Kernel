@@ -1501,7 +1501,8 @@ mod tests {
 
     /// OpenBSD's static PIE programs, when `cargo xtask userland --arch amd64` built them.
     fn userland_binaries() -> Vec<(PathBuf, Vec<u8>)> {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/userland/amd64/root");
+        let root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/userland/amd64/root");
         let mut out = Vec::new();
         for name in ["sbin/init", "bin/ksh", "bin/echo", "bin/ls"] {
             let path = root.join(name);

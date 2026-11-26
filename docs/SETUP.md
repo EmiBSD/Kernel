@@ -56,7 +56,7 @@ Code's LSP plugin alike (the user's decision of 2026-11-01): the tree is analyse
 `just build` builds it, arm64 (`aarch64-emibsd-none-softfloat`) with `--features qemu`, and
 `checkOnSave` is off, so no `cargo check` runs on a save (decision 23: develop first, compile
 later; nothing runs while `/tmp/emibsd/ci.lock` exists). What is left is the index and
-rust-analyzer's own diagnostics; the host side (`sys/arch/host`, the tests) is out of that
+rust-analyzer's own diagnostics; the host side (`sys/bsd/arch/host`, the tests) is out of that
 view, and `just clippy` checks every target regardless. The server was the toolchain's
 component (`rustup component add rust-analyzer`) while the kernel was built with rustup's
 toolchain; DevTools' Rust carries no `rust-analyzer` (asked of DevTools on 2026-11-11, the

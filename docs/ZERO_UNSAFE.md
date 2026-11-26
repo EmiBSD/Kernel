@@ -35,7 +35,7 @@ flowchart TB
     L1 -->|"data"| S
     L2 -->|"data"| S
     L3 -->|"data"| S
-    B["bsd · sys/ · the LZ tree, legacy · 10,196 unsafe at the N3 close → the crate is deleted at N9<br/>boots and passes every smoke throughout · calls kernel and hal, never the reverse<br/>registers at boot: the bridge impls, the sysent[] rows (LegacySyscalls) · calls abi_init (decision 47)"]
+    B["bsd · sys/bsd/ · the LZ tree, legacy · 10,196 unsafe at the N3 close → the crate is deleted at N9<br/>boots and passes every smoke throughout · calls kernel and hal, never the reverse<br/>registers at boot: the bridge impls, the sysent[] rows (LegacySyscalls) · calls abi_init (decision 47)"]
     B -->|"calls down"| L2
     B -->|"calls down"| L3
 ```
@@ -77,15 +77,15 @@ implementations) exist only as registrations, made by `bsd`'s boot glue before `
 | `kernel` | `sys/kernel/` | **0**, `#![forbid(unsafe_code)]` at the root: the compiler refuses any | every decision the operating system makes: memory (vm), processes, scheduler, signals, descriptors, kqueue, pipes, VFS and the file systems, the network stack, the drivers' logic, crypto, pf, pledge, unveil, exec. Its own types, ownership first, no C shape |
 | `sysdefs` | `sys/lib/sysdefs/` | **0**, `#![forbid(unsafe_code)]` at the root; depends on nothing | OpenBSD's basic types, constants and `#[repr(C)]` ABI structures (what was `hal::sys`, 72 modules), `AbiPod` and `abi_pod!` (`pod`), the page geometry (`param`): data shapes only, no logic, no state; the byte views of them (`bytes_of`, `pod_from_bytes`, `AbiBytes`, `hal::sysbytes`) are `hal`'s, because a reinterpretation of bytes is `unsafe` |
 | `abi` | `sys/abi/`, linked into the kernel image (decision 47; the loadable module of decision 22 until the N5 close) | **0**, `#![forbid(unsafe_code)]` (the user allowed `unsafe` here; none is needed: `UserPtr` is safe) | OpenBSD's userland interface, byte-identical: the syscall table, the `#[repr(C)]` structs (`stat`, `kevent`, `sockaddr`, `kinfo_*`, ...), ioctl and sysctl encodings, errno (the constant headers through `hal`, decision 27). Translation only (decision 21): bytes to the kernel's types, one kernel entry point per syscall, the `Result` to an errno; no check on what a value means, no state |
-| `bsd` | `sys/` (the LZ tree, today's crate) | 10,196 in 1,069 files at the N3 close (`unsafe-report`, 2026-10-18; 10,583 in 1,103 at the N2 close, 10,604 in 1,161 before N2): 1,538 of them the hardware, the host double and the lists and trees that have not moved yet, the other 8,658 legacy (8,501 outside `unsafe-core.toml`) (a file counts as `hal` only once it compiles there), **0 files at N9** | what gets replaced. It keeps booting, running every smoke and `diff-openbsd` throughout; it links the three crates and calls down into them; the kernel crate never calls it except through a registered bridge (0.3) |
+| `bsd` | `sys/bsd/` (the LZ tree, today's crate; `sys/` until 2026-11-26) | 10,196 in 1,069 files at the N3 close (`unsafe-report`, 2026-10-18; 10,583 in 1,103 at the N2 close, 10,604 in 1,161 before N2): 1,538 of them the hardware, the host double and the lists and trees that have not moved yet, the other 8,658 legacy (8,501 outside `unsafe-core.toml`) (a file counts as `hal` only once it compiles there), **0 files at N9** | what gets replaced. It keeps booting, running every smoke and `diff-openbsd` throughout; it links the three crates and calls down into them; the kernel crate never calls it except through a registered bridge (0.3) |
 
-The boot loaders (`sys/stand`, `sys/lib/libsa`, `sys/arch/*/stand`: 621 `unsafe`) are separate
+The boot loaders (`sys/boot/`, LZ's `sys/stand`, `sys/lib/libsa` and `sys/arch/*/stand`, counted with `bsd`'s boot entry `sys/bsd/stand/`: 621 `unsafe`) are separate
 binaries that run before the kernel; they are outside the four crates and unchanged. `libkern`,
 `libz` and `sysdefs` stay crates of their own, leaves below `hal`, and since decision 55 (the
 user, 2026-11-26) each is `#![forbid(unsafe_code)]` at its root: `explicit_bzero` is
-`hal::mem::explicit_bzero`, and `StaticCell` is `bsd`'s (`sys/sys/staticcell.rs`, dying with its
-last user at N9) and `libsa`'s (the boot loaders' own copy; `libsa` is the one crate under
-`sys/lib/` that keeps `unsafe`, as the boot loaders' exception). `hal::OnceStatic` replaces
+`hal::mem::explicit_bzero`, and `StaticCell` is `bsd`'s (`sys/bsd/sys/staticcell.rs`, dying with its
+last user at N9) and `libsa`'s (the boot loaders' own copy; `libsa`, `sys/lib/libsa` until
+2026-11-26 and `sys/boot/libsa` since, keeps `unsafe`, as the boot loaders' exception). `hal::OnceStatic` replaces
 `StaticCell`'s uses one by one.
 
 Dependencies, one direction: `bsd -> kernel -> hal`; `abi -> kernel` (`kernel::api` alone)

@@ -5,10 +5,11 @@ and the per-module `forbid` below:** the boundary is the crate. `sys/kernel/` an
 carry `#![forbid(unsafe_code)]` at their roots (no budget: the build refuses one `unsafe`);
 `sys/hal/` is the only crate with `unsafe`, under `hal_ceiling` in `unsafe-budget.toml`
 (lowered by `--write`, raised only by the user, in a commit of its own, when a milestone adds a
-listed piece: 2,150 at N2, 2,230 by N7); `sys/` (`bsd`, the LZ tree) is legacy under
+listed piece: 2,150 at N2, 2,230 by N7); `sys/bsd/` (`bsd`, the LZ tree) is legacy under
 `legacy_ceiling`, which only falls, until the crate is deleted at N9. `cargo xtask
-unsafe-report` prints, beside its rows, a `crates` block: `kernel`, `abi`, `hal`, `lib` (the leaf crates under `sys/lib/`
-but `libsa`, forbid like `kernel` and `abi`), `bsd` and `boot`, files and
+unsafe-report` prints, beside its rows, a `crates` block: `kernel`, `abi`, `hal`, `lib` (the leaf crates under `sys/lib/`:
+`sysdefs`, `libkern`, `libz`, forbid like `kernel` and `abi`), `bsd` and `boot` (`sys/boot/`, the
+loaders, with `bsd`'s boot entry `sys/bsd/stand/`), files and
 `unsafe` each, and the headline ends with them. A file that has not moved is in `bsd`; under the
 `bsd` line an informative line gives the part N2 moves into `hal` (the hardware and the lists
 and trees): a move, not a reduction. `--check` fails when `kernel`, `abi` or `lib` is above 0,
@@ -39,7 +40,8 @@ Safety is the first goal of the native system (`docs/PHASE2.md`): zero `unsafe` 
   with `--shapes`; they gate nothing.
 - `unsafe-budget.toml` holds the `[ratchet]` table (`forbid_floor`, `legacy_ceiling`) and, per
   `cargo xtask unsafe-report` row (`kern`, `uvm`, `net`, `dev/pci`, `arch/amd64`,
-  `lib/libkern`, ...), the kernel total (blocks + fn + impl + trait + other) the subsystem may
+  `lib/libkern`, ...; named as LZ lays the files out, so `sys/bsd/kern/` is `kern` and
+  `sys/boot/libsa/` is `lib/libsa`), the kernel total (blocks + fn + impl + trait + other) the subsystem may
   not exceed; the core's rows among them. Test code is not budgeted.
 - `cargo xtask unsafe-report --check` runs in `just ci` and fails when any subsystem exceeds its
   budget, when the `forbid` modules fall below `forbid_floor`, when legacy rises above

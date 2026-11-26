@@ -399,7 +399,10 @@ fn join_type(tokens: &[&str]) -> String {
 /// The `sys_*` functions the tree defines: name -> module path.
 fn ported_syscalls(root: &Path) -> Result<BTreeMap<String, String>> {
     let mut found = BTreeMap::new();
-    for (dir, module) in [("sys/kern", "crate::kern"), ("sys/dev", "crate::dev")] {
+    for (dir, module) in [
+        ("sys/bsd/kern", "crate::kern"),
+        ("sys/bsd/dev", "crate::dev"),
+    ] {
         let mut names: Vec<_> = fs::read_dir(root.join(dir))?
             .filter_map(|e| e.ok())
             .map(|e| e.path())
@@ -702,9 +705,12 @@ pub fn generate(root: &Path) -> Result<Vec<(&'static str, String)>> {
             "sys/lib/sysdefs/proc/syscall.rs",
             rustfmt(root, &zoned(&numbers))?,
         ),
-        ("sys/sys/syscallargs.rs", rustfmt(root, &zoned(&args))?),
-        ("sys/kern/init_sysent.rs", rustfmt(root, &zoned(&sysent))?),
-        ("sys/kern/syscalls.rs", rustfmt(root, &zoned(&names))?),
+        ("sys/bsd/sys/syscallargs.rs", rustfmt(root, &zoned(&args))?),
+        (
+            "sys/bsd/kern/init_sysent.rs",
+            rustfmt(root, &zoned(&sysent))?,
+        ),
+        ("sys/bsd/kern/syscalls.rs", rustfmt(root, &zoned(&names))?),
     ])
 }
 

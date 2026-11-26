@@ -24,12 +24,12 @@
 //! interface inventory, generated from the tree and never by hand:
 //!
 //! - `[drivers]`: `configured` is every device and pseudo-device of the arm64 kernel by its
-//!   man4 name, read from `sys/arch/arm64/conf/ioconf.rs` (the driver of each `Cfdata::new`
+//!   man4 name, read from `sys/bsd/arch/arm64/conf/ioconf.rs` (the driver of each `Cfdata::new`
 //!   entry, named by its `*_CD` static, and `PDEVNAMES`); `attached_qemu_virt` is the subset
 //!   whose attach line (`<name><unit> at <parent>`) is in the boot log of the release kernel.
 //! - `[syscalls]`: every number below `SYS_MAXSYSCALL` in exactly one list. `native` is
 //!   `sys/abi/sysent.rs`'s `Sysent::Native` entries; the rest are `Legacy`, which `bsd`'s
-//!   generated table `sys/kern/init_sysent.rs` answers: a row whose handler is `sys_nosys`
+//!   generated table `sys/bsd/kern/init_sysent.rs` answers: a row whose handler is `sys_nosys`
 //!   (unimplemented, obsolete, or "not ported") is `absent`, the others `legacy`. A call that
 //!   is implemented but reaches an `unported!` path inside is not told apart here: no
 //!   `partial` list is written, because no reliable mechanical mapping from a handler to
@@ -70,7 +70,7 @@ const PAGES: &[(&str, &str)] = &[
     (
         "config(8)",
         "EmiBSD's kernel is not configured with config(8): the autoconfiguration tables are \
-         hand-written (sys/arch/arm64/conf/ioconf.rs) and there is no kernel configuration \
+         hand-written (sys/bsd/arch/arm64/conf/ioconf.rs) and there is no kernel configuration \
          file to build.",
     ),
     (
@@ -88,7 +88,7 @@ const PAGES: &[(&str, &str)] = &[
     ),
     (
         "boot(8)",
-        "unverified: EmiBSD's loaders (sys/stand/boot, sys/arch/arm64/stand/efiboot) are \
+        "unverified: EmiBSD's loaders (sys/boot/boot, sys/boot/arm64/efiboot) are \
          ports of OpenBSD's, and the pin carries no arm64 boot.8 to compare with.",
     ),
 ];
@@ -474,7 +474,7 @@ pub fn manual(root: &Path, args: &[&str]) -> Result<()> {
     arch_arm64(args)?;
     let log = read(Path::new(crate::flag(args, "--boot-log")?))?;
     let out = PathBuf::from(crate::flag(args, "--out")?);
-    let configured = parse_ioconf(&read(&root.join("sys/arch/arm64/conf/ioconf.rs"))?)?;
+    let configured = parse_ioconf(&read(&root.join("sys/bsd/arch/arm64/conf/ioconf.rs"))?)?;
     let seen = parse_attached(&log);
     let attached: Vec<String> = configured
         .iter()
@@ -487,7 +487,7 @@ pub fn manual(root: &Path, args: &[&str]) -> Result<()> {
     let (consts, max) =
         parse_syscall_consts(&read(&root.join("sys/lib/sysdefs/proc/syscall.rs"))?)?;
     let native = parse_native(&read(&root.join("sys/abi/sysent.rs"))?);
-    let rows = parse_init_sysent(&read(&root.join("sys/kern/init_sysent.rs"))?)?;
+    let rows = parse_init_sysent(&read(&root.join("sys/bsd/kern/init_sysent.rs"))?)?;
     let mut syscalls = classify(&rows, &native, &consts, max)?;
     let header = parse_syscall_h(&read(
         &root.join("reference/openbsd-src/sys/sys/syscall.h"),

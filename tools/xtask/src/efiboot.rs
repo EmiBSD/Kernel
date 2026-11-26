@@ -17,7 +17,7 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! M14: OpenBSD's efiboot as the boot loader (`sys/arch/amd64/stand/efiboot`).
+//! M14: OpenBSD's efiboot as the boot loader (`sys/boot/amd64/efiboot`).
 //!
 //! - `cargo xtask efiboot --arch amd64 --elf FILE [--out FILE]`: the PE32+ image
 //!   `BOOTX64.EFI` of the efiboot ELF that `just efiboot-amd64` linked (position-independent,

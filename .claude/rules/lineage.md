@@ -9,10 +9,10 @@ it tracks LZ files.
 lz = "<full LZ commit>"            # must equal the Commit: line of lz/PINNED.md
 
 [[module]]
-rust   = "sys/kern/sched/runqueue.rs"          # the native file
+rust   = "sys/bsd/kern/sched/runqueue.rs"      # the native file (LZ's sys/<x> is sys/bsd/<x>)
 lz     = ["sys/kern/kern_sched.rs"]            # LZ files it derives from, at the pinned commit
 status = "inherited"                           # inherited | adapted | redesigned
-adapted_by = ["sys/kern/sched/runqueue.rs"]    # adapted only: the redesigned modules whose API forced the change
+adapted_by = ["sys/bsd/kern/sched/runqueue.rs"] # adapted only: the redesigned modules whose API forced the change
 notes = "..."                                  # optional: LZ's wip notes carried over at N0 (what is partial)
 license = "Mach"                               # optional: a non-ISC/BSD/MIT licence, or "none"
 [[module.fn]]                                  # function level: only the exceptions (below)
@@ -23,12 +23,12 @@ reason = "..."                                 # required for dropped
 lines  = "L120-L188"                           # optional, LZ lines at the pin, split only
 
 [[extra]]                                      # a native file with no LZ source
-rust   = "sys/kern/unported.rs"
+rust   = "sys/bsd/kern/unported.rs"
 reason = "project helper: visible stubs for unported subsystems"
 
 [[dropped]]                                    # an LZ file nothing derives from any more
 lz     = "sys/kern/kern_foo.rs"
-reason = "absorbed by sys/kern/sched/runqueue.rs"
+reason = "absorbed by sys/bsd/kern/sched/runqueue.rs"
 ```
 
 - `inherited` means untouched since the pin: the file's blob id equals the LZ file's at the
@@ -78,8 +78,19 @@ reason = "absorbed by sys/kern/sched/runqueue.rs"
   the module's status stays what it was. `lz status` and `cargo xtask unsafe-report` print the
   seams as their own group. A seam into `file` or `kern_event` is refused: those slots are typed
   first.
-- Every `.rs` under `sys/` except `mod.rs`, `lib.rs`, `main.rs`, `build.rs`, `sys/machine/`,
-  `sys/arch/host/` and `sys/stand/` is referenced by exactly one `[[module]]` or `[[extra]]`.
+- LZ's tree is flat; this one keeps LZ's files under two directories of their own (the user's
+  layout of 2026-11-26): the legacy package `bsd` in `sys/bsd/` (LZ's `sys/<x>` is
+  `sys/bsd/<x>`) and the boot loaders in `sys/boot/` (LZ's `sys/lib/libsa/`, `sys/stand/efi/`,
+  `sys/stand/boot/` and `sys/arch/<arch>/stand/<dir>/` are `sys/boot/libsa/`, `efi/`, `boot/`
+  and `sys/boot/<arch>/<dir>/`). `rust`, `adapted_by` and a fn row's `sys/...` targets are
+  native paths; `lz` lists and fn rows' `lz` are LZ's. "The LZ file of the same path" reads a
+  native path in LZ's layout (`lz_flat` in `tools/xtask/src/main.rs`, under `lz check`'s
+  `lz_home`), and so do the exclusions below and an `lz-sync.toml` record's `modules`, which
+  may name either form.
+- Every `.rs` under `sys/` except `mod.rs`, `lib.rs`, `main.rs`, `build.rs`, `sys/bsd/machine/`,
+  `sys/bsd/arch/host/`, `sys/bsd/stand/`, `sys/boot/boot/` and `sys/boot/efi/` (LZ's
+  `sys/machine/`, `sys/arch/host/` and `sys/stand/`) is referenced by exactly one `[[module]]`
+  or `[[extra]]`.
 - The reverse direction: every `.rs` at the LZ pin (same exclusions) appears in some `lz` list,
   is an `[[extra]]` of the same path (a project helper N0 carried over), or is a `[[dropped]]`
   with a reason. Dropping an LZ file is the user's decision, recorded in

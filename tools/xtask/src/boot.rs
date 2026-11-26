@@ -152,7 +152,7 @@ pub fn skip_disabled(who: &str, arch: Arch) -> Result<bool> {
 }
 
 /// Exit status QEMU reports when the kernel leaves with `ExitStatus::Success`
-/// (`sys/machine/cpu.rs`).
+/// (`sys/bsd/machine/cpu.rs`).
 pub const QEMU_SUCCESS_STATUS: i32 = 33;
 /// Longest a smoke boot may take, EDK2 and Limine included, under TCG.
 pub(crate) const SMOKE_TIMEOUT: Duration = Duration::from_secs(180);
@@ -231,7 +231,7 @@ const IMAGE_SECTORS: u64 = 256 * 1024 * 1024 / SECTOR;
 /// First partition sector: 1 MiB, the conventional alignment.
 const PART_START: u64 = 2048;
 
-/// The ramdisk module's name on the ESP and in `limine.conf`; `sys/stand` looks it up by
+/// The ramdisk module's name on the ESP and in `limine.conf`; `sys/bsd/stand` looks it up by
 /// this name and hands it to rd(4).
 pub const RAMDISK_MODULE: &str = "ramdisk.ffs";
 
@@ -519,7 +519,7 @@ pub fn image_tagged(
     let ramdisk_bytes = ramdisk.map(read).transpose()?;
     let efi_path = limine_file(arch.limine_efi())?;
     let efi = read(&efi_path)?;
-    let mut conf = read(&root.join("sys/stand/limine.conf"))?;
+    let mut conf = read(&root.join("sys/bsd/stand/limine.conf"))?;
     // The entry is the last block of the file; `cmdline:` and `module_path:` are more keys
     // of it.
     if !conf.ends_with(b"\n") {

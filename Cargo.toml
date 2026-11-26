@@ -1,12 +1,12 @@
 [workspace]
 resolver = "3"
-members = ["sys", "sys/hal", "sys/kernel", "sys/abi", "sys/lib/libkern", "sys/lib/libz", "sys/lib/sysdefs", "tools/xtask", "init",
+members = ["sys/bsd", "sys/hal", "sys/kernel", "sys/abi", "sys/lib/libkern", "sys/lib/libz", "sys/lib/sysdefs", "tools/xtask", "init",
     # M14: boot(8)/efiboot (docs/ARCHITECTURE.md, "Boot loaders")
-    "sys/stand/efi", "sys/lib/libsa", "sys/stand/boot", "sys/arch/amd64/stand/efiboot",
-    "sys/arch/arm64/stand/efiboot"]
+    "sys/boot/efi", "sys/boot/libsa", "sys/boot/boot", "sys/boot/amd64/efiboot",
+    "sys/boot/arm64/efiboot"]
 # `cargo check` / `cargo test` at the root build the kernel and libkern for the HOST
 # (through sys/arch/host). Kernel images always name a target; `just` does that.
-default-members = ["sys", "sys/hal", "sys/kernel", "sys/abi", "sys/lib/libkern", "sys/lib/libz", "sys/lib/sysdefs"]
+default-members = ["sys/bsd", "sys/hal", "sys/kernel", "sys/abi", "sys/lib/libkern", "sys/lib/libz", "sys/lib/sysdefs"]
 
 [workspace.package]
 version = "0.0.1"
@@ -22,14 +22,14 @@ libkern = { path = "sys/lib/libkern" }
 libz = { path = "sys/lib/libz" }
 sysdefs = { path = "sys/lib/sysdefs" }
 # M14: the boot loaders' crates, OpenBSD code ported here (docs/ARCHITECTURE.md, "Boot loaders").
-libsa = { path = "sys/lib/libsa" }
-efi = { path = "sys/stand/efi" }
-boot = { path = "sys/stand/boot" }
+libsa = { path = "sys/boot/libsa" }
+efi = { path = "sys/boot/efi" }
+boot = { path = "sys/boot/boot" }
 # No `limine` crate: 0.6+ needs nightly (`ptr_metadata`), 0.5 is frozen at base revision 3.
-# The protocol structs live in sys/stand/limine.rs (docs/ARCHITECTURE.md, "Dependencies").
+# The protocol structs live in sys/bsd/stand/limine.rs (docs/ARCHITECTURE.md, "Dependencies").
 bitflags = { version = "2", default-features = false }                  # typed flag sets for #define groups
 # No `intrusive-collections`: queue.h and tree.h are ported as our own intrusive structures
-# (sys/sys/queue.rs, sys/sys/tree.rs); see docs/ARCHITECTURE.md, "Dependencies".
+# (sys/bsd/sys/queue.rs, sys/bsd/sys/tree.rs); see docs/ARCHITECTURE.md, "Dependencies".
 # host tooling only (tools/xtask)
 serde = { version = "1", features = ["derive"] }
 toml = "1"

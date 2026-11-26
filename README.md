@@ -553,7 +553,7 @@ and re-baselined the budget).
 
 Four tiers:
 
-1. Host unit tests (`just test`): pure logic runs on macOS through `sys/arch/host`.
+1. Host unit tests (`just test`): pure logic runs on macOS through `sys/bsd/arch/host`.
 2. Reference-backed tests (`just test-ref`): constants are cross-checked against the C headers.
 3. QEMU smoke tests (`just smoke`): boot arm64 headless (amd64 is frozen until N10, decision 44;
    its expectations stay in the recipes and a skipped boot is never green) and assert serial

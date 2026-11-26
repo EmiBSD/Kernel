@@ -12,9 +12,12 @@ records every decision. LZ is never written to: `reference/emibsd-lz/` is a read
   2026-10-19),
   then `cargo xtask lz drift --security`. Every listed commit gets one record in
   `lz-sync.toml`, in a commit with the `lz-sync:` scope that does nothing else:
-  - `applied`: an inherited module takes the change as a cherry-pick (`git -C
-    reference/emibsd-lz format-patch -1 <hash>` and `git am`, or `git cherry-pick` with the
-    clone as a remote); an adapted module as a cherry-pick with conflicts expected at its call
+  - `applied`: an inherited module takes the change as a cherry-pick, `cargo xtask lz patch
+    <hash> | git am -3`: LZ's flat `sys/` is this tree's `sys/bsd/` (the legacy tree) and
+    `sys/boot/` (the loaders, LZ's `sys/lib/libsa/`, `sys/stand/{efi,boot}/`,
+    `sys/arch/<arch>/stand/`; the user's layout of 2026-11-26), and `lz patch` writes the
+    patch's file headers in that layout (a plain `format-patch | git am` or `git cherry-pick`
+    would write LZ's paths; `docs/SYNC.md` step 2); an adapted module as a cherry-pick with conflicts expected at its call
     sites, resolved by hand; a redesigned module takes it re-implemented in its new shape. The
     record names the EmiBSD commit and the `method`: `cherry-pick`, `cherry-pick-conflicts` or
     `reimplemented`. The three totals go in every `lz-sync:` commit body and in the JOURNAL.

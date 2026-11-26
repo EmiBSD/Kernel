@@ -1,9 +1,11 @@
 ---
 paths:
-  - "sys/stand/**"
-  - "sys/arch/*/conf/**"
-  - "sys/build.rs"
-  - "sys/main.rs"
+  - "sys/bsd/stand/**"
+  - "sys/boot/boot/**"
+  - "sys/boot/efi/**"
+  - "sys/bsd/arch/*/conf/**"
+  - "sys/bsd/build.rs"
+  - "sys/bsd/main.rs"
   - ".cargo/**"
   - "rust-toolchain.toml"
 ---
@@ -12,7 +14,7 @@ paths:
 
 - Boot protocol is Limine (base revision 6) on UEFI for both archs until OpenBSD's own boot loader
   boots the same kernel (M14, the user's decision): `boot(8)`/efiboot are being ported
-  (`sys/lib/libsa`, `sys/stand/boot`, `sys/stand/efi`, `sys/arch/<arch>/stand/efiboot`;
+  (`sys/boot/libsa`, `sys/boot/boot`, `sys/boot/efi`, `sys/boot/<arch>/efiboot`;
   docs/ARCHITECTURE.md, "Boot loaders"), with the kernel's own `bootarg` entry beside Limine's.
   No Multiboot, no Linux image header, no direct `-kernel` loading.
 - efiboot is built for the `none` targets (no UEFI target), position-independent:
@@ -22,16 +24,16 @@ paths:
   use statics, the GOT, formatting or panics.
 - Limine requests are `#[used] static`s in `.requests`, bracketed by the start/end marker sections,
   all referenced from `_start`. The linker script `KEEP`s them.
-- `sys/stand/limine.rs` holds the protocol structs (base revision tag, request/response
+- `sys/bsd/stand/limine.rs` holds the protocol structs (base revision tag, request/response
   `#[repr(C)]` layouts, magic IDs), written from the Limine protocol specification
   (https://github.com/limine-bootloader/limine-protocol, `PROTOCOL.md` and `include/limine.h`),
-  not from a crate. `sys/stand/` converts responses into `stand::BootInfo` (arch-neutral: memory
+  not from a crate. `sys/bsd/stand/` converts responses into `stand::BootInfo` (arch-neutral: memory
   map, HHDM offset, DTB/RSDP pointers, framebuffer, modules) and hands that to
   `machine::Machine::early_init`, then `kern::init_main::main`. Nothing else sees Limine types.
-  boot(8)'s entry (`sys/stand/bootarg.rs`, called by both archs' `locore0.S`) takes its
+  boot(8)'s entry (`sys/bsd/stand/bootarg.rs`, called by both archs' `locore0.S`) takes its
   `BootInfo` from `machine::Cpu::getbootinfo` and shares the tail (`stand::start_kernel`).
   Limine's `_start` is not `#[no_mangle]`: the symbol `_start` is arm64's `locore0.S` entry.
-- `sys/arch/{amd64,arm64}/conf/kernel.ld`: `PHDRS` text/rodata/data (M16d: and the C's
+- `sys/bsd/arch/{amd64,arm64}/conf/kernel.ld`: `PHDRS` text/rodata/data (M16d: and the C's
   `openbsd_randomize` `PT_OPENBSD_RANDOMIZE` header over `.openbsd.randomdata` inside rodata,
   which boot(8) fills with the seed; `etext` on both archs), `.requests*` kept,
   `.eh_frame*`/`.note*` discarded. arm64 (M14, so efiboot can load it): base
@@ -43,7 +45,7 @@ paths:
   from `0x1000000` by `AT()`, page-aligned sections with the symbols `locore0.S` reads, `.got`
   inside `.data` (nothing after `end`), `ENTRY(start)` (the 32-bit boot(8) entry); Limine enters
   `_start` through its entry point request. The two scripts no longer have to be identical.
-  `sys/build.rs` passes the script with `rustc-link-arg-bins` only when `target_os = "none"`.
+  `sys/bsd/build.rs` passes the script with `rustc-link-arg-bins` only when `target_os = "none"`.
 - `.cargo/config.toml` never sets `[build] target`: a plain `cargo test`/`cargo check` must build
   for the host. Kernel builds always name the target through `just`.
 - Rustflags are per target: `relocation-model=static` (non-PIE higher-half kernel) and

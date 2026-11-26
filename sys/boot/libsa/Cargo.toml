@@ -21,4 +21,4 @@ workspace = true
 # The host tests check that the kernel headers libsa declares again (hdr/) keep the
 # kernel's layouts.
 [dev-dependencies]
-bsd = { path = "../.." }
+bsd = { path = "../../bsd" }
