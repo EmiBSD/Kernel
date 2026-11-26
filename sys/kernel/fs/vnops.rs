@@ -580,9 +580,9 @@ pub fn vn_stat<G: ProcGlue>(
     sb.st_gid = va.va_gid;
     sb.st_rdev = va.va_rdev;
     sb.st_size = va.va_size as Off;
-    sb.st_atim = va.va_atime.into();
-    sb.st_mtim = va.va_mtime.into();
-    sb.st_ctim = va.va_ctime.into();
+    sb.st_atim = va.va_atime;
+    sb.st_mtim = va.va_mtime;
+    sb.st_ctim = va.va_ctime;
     sb.st_blksize = va.va_blocksize as i32;
     sb.st_flags = va.va_flags as u32;
     sb.st_gen = va.va_gen as u32;

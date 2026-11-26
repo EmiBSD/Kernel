@@ -116,7 +116,7 @@ pub struct ClockYmdhms {
 /// `leapyear`: a year divisible by 4, except the centuries not divisible by 400. The cheap
 /// test (`year & 3`) comes first, as in the C, so most years take no division.
 fn leapyear(year: i32) -> bool {
-    year & 3 == 0 && (year % 100 != 0 || year % 400 == 0)
+    year.trailing_zeros() >= 2 && (year % 100 != 0 || year % 400 == 0)
 }
 
 /// `days_in_year(a)`.

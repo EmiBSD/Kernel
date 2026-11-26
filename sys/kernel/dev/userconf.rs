@@ -940,7 +940,7 @@ impl<'a, C: UkcCons> Userconf<'a, C> {
                                 UC_DISABLE => self.userconf_disable(i),
                                 UC_SHOW => self.userconf_pdev(i),
                                 _ => {
-                                    uc_printf!(self, "Unknown routine /{}/\n", char::from(routine))
+                                    uc_printf!(self, "Unknown routine /{}/\n", char::from(routine));
                                 }
                             }
                         }
