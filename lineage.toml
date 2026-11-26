@@ -16465,10 +16465,6 @@ reason = "the diskstats array is an MArray owned by sysctl_disklock's Rwlocked s
 lz = "sys/kern/kern_sysctl.rs::sysctl_intrcnt"
 native = ["sys/kernel/evcount.rs::IntrcntNode"]
 kind = "moved"
-[[module.fn]]
-lz = "sys/kern/kern_sysctl.rs::sysctl_sensors"
-native = ["sys/kernel/sensors.rs::sysctl_sensors"]
-kind = "moved"
 
 [[module]]
 rust = "sys/kernel/syscall.rs"
@@ -20606,7 +20602,7 @@ notes = "N7.1b: <sys/sensors.h>'s ABI half: enum sensor_type and sensor_status (
 [[module]]
 rust = "sys/kernel/sensors.rs"
 crate = "kernel"
-lz = ["sys/kern/kern_sensors.rs", "sys/sys/sensors.rs"]
+lz = ["sys/kern/kern_sensors.rs", "sys/sys/sensors.rs", "sys/kern/kern_sysctl.rs"]
 status = "redesigned"
 notes = "N7.1b: kern_sensors.c and struct ksensor/ksensordev in the kernel, 0 unsafe: the records valid all zero with relaxed-atomic members (AtomicCell, AtomicBytes, TypeCell, StatusCell, TimevalCell) keeping LZ's get/set, sensordev_list and each device's sensors PinLists under one Mutexed (the C's kernel lock and splhigh), the C's ordered walks with the insert as a splice; struct sensor_task a counted M_DEVBUF block held by its timeout and task (set_shared), period in an Rwlocked \"sensor\" held across the call, the dying run clearing both; the function a legacy fn(*mut c_void) and its argument an exposed address; hw.sensors the kernel's SensorsNode (sysctl_sensors moved from kern_sysctl.rs)"
 [[module.fn]]
