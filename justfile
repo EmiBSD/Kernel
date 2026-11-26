@@ -3401,7 +3401,6 @@ userland:
 # as it is. Needs `gh` (logged in) and `zstd` (docs/SETUP.md, "DevTools toolchain").
 toolchain_dir := env_var_or_default("EMIBSD_TOOLCHAINS", env_var("HOME") + "/devel/emibsd/toolchains")
 devtools_llvm := "llvm-23.1.4+emibsd.7"
-# README.md's rust badge names this release's Rust version: a bump updates it in the same commit.
 devtools_rust := "rust-1.99.1+emibsd.6"
 devtools_llvm_sha256_arm64 := "317ecf91c61fc67d8e6ebcdc401f40eb5236414b38b08bffb43229e52bca117f"
 devtools_rust_sha256_arm64 := "d8c2eea3392e926cdff657a2350fd8771e456076825fc83bbfc77dfee82dc5d7"

@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-ISC-007ec6" alt="License: ISC"></a>
-  <a href="docs/SETUP.md"><img src="https://img.shields.io/badge/rust-1.99.1%20(DevTools)-b7410e" alt="Rust: 1.99.1, DevTools' build of stable Rust (decision 49)"></a>
+  <a href="docs/SETUP.md"><img src="https://img.shields.io/badge/rust-1.99.1-b7410e" alt="Rust: 1.99.1"></a>
   <a href="docs/ROADMAP.md"><img src="https://img.shields.io/github/v/tag/EmiBSD/Kernel?label=milestone" alt="Milestone: the latest n&lt;N&gt;-&lt;name&gt; tag"></a>
   <a href="docs/ROADMAP.md"><img src="https://img.shields.io/badge/status-experimental-e05d44" alt="Status: experimental"></a>
   <a href="https://www.emibsd.org"><img src="https://img.shields.io/badge/website-emibsd.org-9f9f9f" alt="Website: www.emibsd.org"></a>
