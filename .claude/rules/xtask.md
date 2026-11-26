@@ -49,7 +49,7 @@ paths:
   `core_unsafe`, `core_unsafe_files`, `legacy_unsafe`, `legacy_unsafe_files` (the files that
   hold any), `modules` (the files the forbid ratchet counts: under `sys/`, apart from crate
   roots, `mod.rs`, `build.rs`, `sys/bsd/machine/`, `sys/bsd/arch/host/`, `sys/bsd/stand/`,
-  `sys/boot/boot/` and `sys/boot/efi/`),
+  `sys/boot/loader/` and `sys/boot/efi/`),
   `forbid_modules`, `core_budget` (over the rows that hold core files, each row's budget
   minus its legacy)} (the v1 groups stay until N9, the pace baseline reads `legacy`); `crates` (additive,
   `schema` stays 1) {`kernel`, `abi`, `hal`, `lib` (the leaf crates `sys/lib/sysdefs/`, `libkern/`, `libz/`;
@@ -66,7 +66,7 @@ paths:
   `legacy`), `module`, `test` (a test-only file), `unsafe` (kernel code), `static_cell`,
   `send_sync`, `raw_cell`, `unsafe_cell`}].
 - LZ's layout (2026-11-26): the legacy tree is `sys/bsd/` and the loaders `sys/boot/`, LZ's
-  `sys/<x>`, `sys/lib/libsa/`, `sys/stand/{efi,boot}/` and `sys/arch/<arch>/stand/<dir>/`.
+  `sys/<x>`, `sys/lib/libsa/`, `sys/stand/{efi,boot}/`, `sys/arch/<arch>/stand/efiboot/` (`sys/boot/<arch>/`) and amd64's `sys/arch/amd64/stand/libsa/` (`sys/boot/amd64/{disk,libsa,mdrandom}.rs`).
   `lz_flat` (`main.rs`) reads a native path as LZ lays it out; `lz` (an inherited module's LZ
   file, structure, the `lz-sync.toml` records' `modules`, `trace --rust`), `unsafe-report`
   (the row names, so `unsafe-budget.toml` keeps LZ's, the crates, `to_hal`) and `/progress`

@@ -151,7 +151,7 @@ OpenBSD and LZ lay them out: since 2026-11-26 this tree keeps the legacy ones un
 | Directory | Name | What it is |
 |---|---|---|
 | `sys/bsd/` | | the legacy package `bsd`: LZ's whole tree (its `sys/<x>`), the kernel that boots while its subsystems move into `kernel` and `hal`; deleted at N9 |
-| `sys/boot/` | | the boot loaders, separate binaries outside the zero-unsafe plan: `libsa/`, `efi/`, `boot/` (`boot(8)`), `arm64/efiboot/`, amd64's `efiboot/` and `libsa/` (LZ's `sys/lib/libsa/`, `sys/stand/{efi,boot}/`, `sys/arch/<arch>/stand/`) |
+| `sys/boot/` | | the boot loaders, separate binaries outside the zero-unsafe plan: `libsa/`, `efi/`, `loader/` (`boot(8)`), `arm64/` and `amd64/` (the efiboot crates, amd64's with its libsa files) (LZ's `sys/lib/libsa/`, `sys/stand/{efi,boot}/`, `sys/arch/<arch>/stand/{efiboot,libsa}/`) |
 
 ### The core
 
@@ -255,7 +255,7 @@ driver's own structures.
 
 | Directory | Name | What it is |
 |---|---|---|
-| `sys/stand/` | standalone | the boot loaders' common code (here `sys/boot/boot/`, `sys/boot/efi/` and, the kernel's own boot entry, `sys/bsd/stand/`): `boot` (OpenBSD's `boot(8)`: the prompt, `boot.conf`, loading `/bsd`), `efi` (the UEFI glue), `bootarg` (what the loader passes the kernel), `fdtfb` (a framebuffer from the device tree), `limine` and `limine.conf` (the Limine scaffolding) |
+| `sys/stand/` | standalone | the boot loaders' common code (here `sys/boot/loader/`, `sys/boot/efi/` and, the kernel's own boot entry, `sys/bsd/stand/`): `boot` (OpenBSD's `boot(8)`: the prompt, `boot.conf`, loading `/bsd`), `efi` (the UEFI glue), `bootarg` (what the loader passes the kernel), `fdtfb` (a framebuffer from the device tree), `limine` and `limine.conf` (the Limine scaffolding) |
 | `sys/lib/libsa/` | standalone library | the loaders' libc (`libsa(9)`; here `sys/boot/libsa/`): a tiny `alloc`, `printf`, `open`/`read`/`stat` over `ufs`/`ufs2`/`cd9660`, `loadfile`/`loadfile_elf` (loading the kernel), the network boot (`arp`, `ether`, `netif`, `netudp`, `tftp`, `in_cksum`), `disklabel`, `cons` |
 | `sys/lib/libkern/` | kernel library | what the kernel takes from libc (`libkern(9)`): `strlcpy`, `strlcat`, `strnlen`, `strncasecmp`, `scanc`, `skpc`, `getsn`, `crc32c`, `explicit_bzero`, `timingsafe_bcmp` (constant-time compare), `random` (the kernel's `arc4random`), `staticcell` |
 | `sys/lib/libz/` | zlib | what the kernel compiles of zlib: crc32, adler32, deflate, inflate (compressed kernels and `ipcomp`) |

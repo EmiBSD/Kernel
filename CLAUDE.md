@@ -68,7 +68,7 @@ sys/                         six purpose directories (the user's layout of 2026-
                              the three leaf crates are grouped by purpose, root = lib.rs only (hal-check L1): sysdefs base/proc/sig/time/vm/file/fs/dev/net/netinet/netinet6, libkern string/mem/hash/rand, libz base/deflate/inflate/check
   bsd/                       package `bsd`: the LZ tree, legacy, replaced subsystem by subsystem, deleted at N9; LZ's sys/<x> is sys/bsd/<x>
     kern/ uvm/ dev/ net/ ... LZ's subsystems, still the kernel that boots while they move out; stand/ is the kernel binary's boot entry (Limine, boot(8))
-  boot/                      the boot loaders, separate binaries outside the zero-unsafe plan: libsa/ efi/ boot/ (boot(8)) arm64/efiboot/ amd64/{efiboot,libsa}/
+  boot/                      the boot loaders, separate binaries outside the zero-unsafe plan: libsa/ efi/ loader/ (boot(8)) arm64/ amd64/ (efiboot, with amd64's libsa files)
                              (LZ's sys/lib/libsa, sys/stand/{efi,boot}, sys/arch/<arch>/stand/*; libsa is the exception to decision 55)
 tools/xtask/                 host tooling: `cargo xtask {image,qemu,smoke,lz,unsafe-report,diff-openbsd,...}`
 docs/                        PHASE2 (the process), ARCHITECTURE, IDIOMS, ROADMAP (N0..), SYNC, JOURNAL, STATUS, SETUP, C_TO_RUST (frozen)
