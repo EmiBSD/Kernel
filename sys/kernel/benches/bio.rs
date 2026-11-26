@@ -83,8 +83,8 @@ use kernel::fs::bio::{
 use kernel::fs::buf::{B_INVAL, BUFQ_FIFO, BUFQ_NSCAN, Buf, BufRef, ByBufhead};
 use kernel::fs::bufq::{Bufq, bufq_dequeue, bufq_done, bufq_init, bufq_queue};
 use kernel::testutil::{BufTestVnode, bufcache_install};
-use sysdefs::param::PAGE_SIZE;
-use sysdefs::types::Daddr;
+use sysdefs::base::param::PAGE_SIZE;
+use sysdefs::base::types::Daddr;
 
 /// The host memory loaded as the physical memory.
 const BLOCK_BYTES: usize = 64 << 20;

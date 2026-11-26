@@ -161,21 +161,21 @@ use crate::proc::{ProcGlue, Thread, tfind};
 use crate::sched::{NOWAKE, PZERO};
 use crate::sig::{sigignore, sigpending};
 use crate::time::clock::sec_to_nsec;
-use sysdefs::errno::Errno;
-use sysdefs::mount::{
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::Pid;
+use sysdefs::fs::mount::{
     NFSMNT_DUMBTIMR, NFSMNT_INT, NFSMNT_NFSV3, NFSMNT_NOCONN, NFSMNT_RCVLOCK, NFSMNT_SNDLOCK,
     NFSMNT_SOFT, NFSMNT_WANTRCV, NFSMNT_WANTSND,
 };
-use sysdefs::netinet_in::{
+use sysdefs::fs::nfs::rpcv2::RPCAUTH_UNIX;
+use sysdefs::net::socket::{
+    AF_INET, MSG_EOR, MSG_WAITALL, SHUT_RDWR, SO_KEEPALIVE, SOCK_DGRAM, SOCK_STREAM, SOL_SOCKET,
+};
+use sysdefs::netinet::in_::{
     INADDR_ANY, IP_PORTRANGE, IP_PORTRANGE_DEFAULT, IP_PORTRANGE_LOW, IPPROTO_IP, IPPROTO_TCP,
     InAddr, SockaddrIn,
 };
-use sysdefs::netinet_tcp::TCP_NODELAY;
-use sysdefs::nfs_rpcv2::RPCAUTH_UNIX;
-use sysdefs::socket::{
-    AF_INET, MSG_EOR, MSG_WAITALL, SHUT_RDWR, SO_KEEPALIVE, SOCK_DGRAM, SOCK_STREAM, SOL_SOCKET,
-};
-use sysdefs::types::Pid;
+use sysdefs::netinet::tcp::TCP_NODELAY;
 
 /// `NFS_CWNDSCALE`: the scale of the congestion window and of the sent count. There is a
 /// congestion window for outstanding rpcs maintained per mount point. The cwnd size is
@@ -1711,7 +1711,7 @@ mod tests {
     use crate::fs::testfs::TestGlue as G;
     use crate::net::mbuf::{MT_DATA, MbufBox, m_gethdr};
     use crate::time::timeout::Timeout;
-    use sysdefs::signal::{SIGINT, SIGUSR1, sigmask};
+    use sysdefs::sig::signal::{SIGINT, SIGUSR1, sigmask};
 
     fn nop(_: *mut c_void) {}
 
@@ -2146,7 +2146,7 @@ mod tests {
     use std::boxed::Box;
 
     use crate::fs::nfs::testnfs::{self as tn, Out};
-    use sysdefs::netinet_in::IPPORT_RESERVED;
+    use sysdefs::netinet::in_::IPPORT_RESERVED;
 
     /// An RPC of procedure `procnum` with no arguments, made by the fixture's requester with
     /// its credential.

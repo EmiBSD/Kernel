@@ -27,7 +27,7 @@
 use crate::scarg::{int, off_t, ptr, size_t, u_long};
 use hal::syscall::{Register, Rval, SysArgs, SysResult};
 
-use sysdefs::syscall::{
+use sysdefs::proc::syscall::{
     SYS_break, SYS_kbind, SYS_madvise, SYS_mimmutable, SYS_minherit, SYS_mlock, SYS_mlockall,
     SYS_mmap, SYS_mprotect, SYS_mquery, SYS_msync, SYS_munlock, SYS_munlockall, SYS_munmap,
     SYS_pinsyscalls,

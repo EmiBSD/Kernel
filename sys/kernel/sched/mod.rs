@@ -342,7 +342,7 @@ use hal::sync::mutex::{Mutexed, SharedMutex};
 use hal::sync::once::OnceStatic;
 use hal::sync::sleep::{INFSLP, PCATCH, PRIMASK, PWAIT};
 use hal::vm::uvmexp::UVMEXP;
-use sysdefs::errno::Errno;
+use sysdefs::base::errno::Errno;
 
 use crate::assert::{kassert, kpanic};
 use crate::proc::{
@@ -2151,7 +2151,7 @@ fn sleep_signal_check<G: ProcGlue>(p: &Thread<G>, after_sleep: bool) -> Result<(
                 // This is for stop signals delivered before sleep_setup() was called. We need
                 // to do the full dance here before going to sleep.
                 p.p_siglist
-                    .fetch_and(!sysdefs::signal::sigmask(signo), Ordering::Relaxed);
+                    .fetch_and(!sysdefs::sig::signal::sigmask(signo), Ordering::Relaxed);
                 pr.ps_flags.fetch_or(PS_STOPPING, Ordering::Relaxed);
                 let mut h = sched_lock();
                 sig::process_stop(pr, P_SUSPSIG, SINGLE_SUSPEND, &g, &mut h);
@@ -2564,16 +2564,16 @@ pub(crate) mod tests {
 
         fn pledge_fail(
             _p: &Thread<Self>,
-            error: sysdefs::errno::Errno,
+            error: sysdefs::base::errno::Errno,
             _code: u64,
-        ) -> sysdefs::errno::Errno {
+        ) -> sysdefs::base::errno::Errno {
             error
         }
 
         fn pledge_syscall(
             _p: &Thread<Self>,
             _code: i32,
-        ) -> Result<(), (sysdefs::errno::Errno, u64)> {
+        ) -> Result<(), (sysdefs::base::errno::Errno, u64)> {
             Ok(())
         }
 
@@ -2581,28 +2581,31 @@ pub(crate) mod tests {
             _p: &Thread<Self>,
             _mib: &[i32],
             _new: usize,
-        ) -> Result<(), sysdefs::errno::Errno> {
+        ) -> Result<(), sysdefs::base::errno::Errno> {
             Ok(())
         }
-        fn pledge_adjtime(_p: &Thread<Self>, _delta: usize) -> Result<(), sysdefs::errno::Errno> {
+        fn pledge_adjtime(
+            _p: &Thread<Self>,
+            _delta: usize,
+        ) -> Result<(), sysdefs::base::errno::Errno> {
             Ok(())
         }
         fn pledge_recvfd(
             _p: &Thread<Self>,
             _fp: &crate::file::File<Self::FileGlue>,
-        ) -> Result<(), sysdefs::errno::Errno> {
+        ) -> Result<(), sysdefs::base::errno::Errno> {
             Ok(())
         }
         fn pledge_sendfd(
             _p: &Thread<Self>,
             _fp: &crate::file::File<Self::FileGlue>,
-        ) -> Result<(), sysdefs::errno::Errno> {
+        ) -> Result<(), sysdefs::base::errno::Errno> {
             Ok(())
         }
         fn pledge_protexec(
             _p: &Thread<Self>,
             _prot: crate::vm::types::VmProt,
-        ) -> Result<(), sysdefs::errno::Errno> {
+        ) -> Result<(), sysdefs::base::errno::Errno> {
             Ok(())
         }
         /// The test glue keeps no interval timers: nothing is set, the old value stays zero.

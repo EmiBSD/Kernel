@@ -80,7 +80,7 @@
 
 /* <CODE> */
 //! Ethernet: `<netinet/if_ether.h>` and `netinet/if_ether.c` under LZ's path for `bsd`'s
-//! importers. The userland half of the header is `sysdefs::netinet_if_ether` (re-exported
+//! importers. The userland half of the header is `sysdefs::netinet::if_ether` (re-exported
 //! here), `struct arpcom` and the Ethernet layer are `kernel::net::if_ethersubr`, and ARP
 //! itself is `kernel::netinet::if_ether` since N6.4b (re-exported here); what is left of
 //! `bsd`'s own is the pointer view of `struct ether_extracted` (N6.3c2's R5) and ND's
@@ -108,7 +108,7 @@ pub use kernel::netinet::if_ether::{
     REVARP_FINISHED, REVARP_IFIDX, REVARP_MYIP, REVARP_SRVIP, revarprequest, revarpwhoami,
     revarpwhoarewe,
 };
-pub use sysdefs::netinet_if_ether::*;
+pub use sysdefs::netinet::if_ether::*;
 
 use crate::netinet::ip::Ip;
 use crate::netinet::ip6::Ip6Hdr;

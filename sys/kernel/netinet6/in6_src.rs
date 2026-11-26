@@ -113,16 +113,16 @@
 
 use hal::mem::pod;
 use hal::sync::netlock::NetHeld;
-use sysdefs::endian::{htons, ntohs};
-use sysdefs::errno::Errno;
-use sysdefs::net_if::IFF_UP;
-use sysdefs::net_route::{RTF_BLACKHOLE, RTF_GATEWAY, RTF_HOST, RTF_LOCAL, RTF_REJECT};
-use sysdefs::netinet6_in6::{
+use sysdefs::base::endian::{htons, ntohs};
+use sysdefs::base::errno::Errno;
+use sysdefs::net::if_::IFF_UP;
+use sysdefs::net::route::{RTF_BLACKHOLE, RTF_GATEWAY, RTF_HOST, RTF_LOCAL, RTF_REJECT};
+use sysdefs::net::socket::AF_INET6;
+use sysdefs::netinet6::in6::{
     In6Addr, In6Pktinfo, SockaddrIn6, in6_is_addr_linklocal, in6_is_addr_mc_intfacelocal,
     in6_is_addr_mc_linklocal, in6_is_addr_multicast, in6_is_addr_unspecified, in6_is_scope_embed,
 };
-use sysdefs::netinet6_in6_var::{IN6_IFF_ANYCAST, IN6_IFF_DUPLICATED, IN6_IFF_TENTATIVE};
-use sysdefs::socket::AF_INET6;
+use sysdefs::netinet6::in6_var::{IN6_IFF_ANYCAST, IN6_IFF_DUPLICATED, IN6_IFF_TENTATIVE};
 
 use crate::net::if_::{IfRef, ifa_ifwithaddr};
 use crate::net::route::{Route, Rtentry};

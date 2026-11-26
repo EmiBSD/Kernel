@@ -209,9 +209,9 @@ use hal::sync::sleep::{PVM, wakeup};
 use hal::vm::param::{DEFAULT_PAGE_SIZE, atop, ptoa, round_page, trunc_page};
 use hal::vm::pmap::{PageMd, PhysPages};
 use hal::vm::uvmexp::UVMEXP;
-use sysdefs::errno::Errno;
-use sysdefs::mman::PROT_NONE;
-use sysdefs::types::Paddr;
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::Paddr;
+use sysdefs::vm::mman::PROT_NONE;
 
 use super::km::NO_CONSTRAINT;
 use super::object::Object;

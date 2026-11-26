@@ -130,11 +130,11 @@ use crate::cpu::sig::{SigDelivery, SigreturnError};
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]
 use crate::user::UserPtr;
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]
-use sysdefs::errno::Errno;
-use sysdefs::signal::SS_DISABLE;
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::Register;
+use sysdefs::sig::signal::SS_DISABLE;
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]
-use sysdefs::signal::Sigset;
-use sysdefs::types::Register;
+use sysdefs::sig::signal::Sigset;
 
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]
 use super::trap::UserFrame;
@@ -286,8 +286,8 @@ mod tests {
     // The frame's arithmetic and the context checks on arm64's layouts (the host compiles
     // this file with arm64's headers, `arch/host/mod.rs`).
     use super::*;
-    use sysdefs::siginfo::Siginfo;
-    use sysdefs::signal::{SIGSEGV, SIGUSR1, Sigaltstack};
+    use sysdefs::sig::siginfo::Siginfo;
+    use sysdefs::sig::signal::{SIGSEGV, SIGUSR1, Sigaltstack};
 
     const SIGCODE: usize = 0x7f7f_f000;
     const COOKIE: u64 = 0x5a5a_1234_dead_beef;

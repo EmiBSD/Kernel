@@ -67,7 +67,7 @@ use kernel::file::{File, FileGlue, FileOps, FileTables};
 use kernel::proc::resource::{self, PlimitRef};
 use kernel::proc::{self, ProcGlue, ProcTables, Process, Session, Thread};
 use kernel::testutil;
-use sysdefs::errno::Errno;
+use sysdefs::base::errno::Errno;
 
 // ---------------------------------------------------------------------------------------
 // The harness (event.rs's).
@@ -429,11 +429,11 @@ impl FileOps<BenchFiles> for BenchKqueueOps {
     fn stat(
         &self,
         fp: &File<BenchFiles>,
-        st: &mut sysdefs::stat::Stat,
+        st: &mut sysdefs::file::stat::Stat,
         _p: &Thread<BenchGlue>,
     ) -> Result<(), Errno> {
         let (size, _blksize) = kernel::file::event::kqueue_stat::<BenchGlue>(fp);
-        *st = sysdefs::stat::Stat::default();
+        *st = sysdefs::file::stat::Stat::default();
         st.st_size = size as i64;
         Ok(())
     }
@@ -598,7 +598,7 @@ impl FileOps<BenchFiles> for BenchPipeOps {
     fn stat(
         &self,
         _fp: &File<BenchFiles>,
-        _st: &mut sysdefs::stat::Stat,
+        _st: &mut sysdefs::file::stat::Stat,
         _p: &Thread<BenchGlue>,
     ) -> Result<(), Errno> {
         Ok(())

@@ -102,7 +102,7 @@
 //! pcb under the table's mutex and appends under the receive buffer's.
 //!
 //! ## Deviations
-//! - `MROUTING` is not configured: the `MRT_*` options (`sysdefs::netinet_ip_mroute`)
+//! - `MROUTING` is not configured: the `MRT_*` options (`sysdefs::netinet::ip_mroute`)
 //!   answer `EOPNOTSUPP`, the C's `#else`, and `rip_detach` has no `ip_mrouter_done`.
 //! - `rip_sendspace`/`rip_recvspace` (`u_long`s no sysctl names) are the constants
 //!   [`RIP_SENDSPACE`] and [`RIP_RECVSPACE`].
@@ -151,21 +151,21 @@ use core::pin::pin;
 use hal::mem::pool::PoolArc;
 use hal::sync::netlock::NetHeld;
 use hal::user::bytes_of;
-use sysdefs::errno::Errno;
-use sysdefs::netinet_in::{
+use sysdefs::base::errno::Errno;
+use sysdefs::base::pod::AbiPod;
+use sysdefs::net::socket::{AF_INET, SO_BINDANY, SO_TIMESTAMP};
+use sysdefs::netinet::in_::{
     INADDR_ANY, INADDR_BROADCAST, IP_HDRINCL, IPPROTO_DONE, IPPROTO_ICMP, IPPROTO_IP, IPPROTO_MAX,
     InAddr, SockaddrIn,
 };
-use sysdefs::netinet_ip::{
+use sysdefs::netinet::ip::{
     IP_MAXPACKET, IPOPT_EOL, IPOPT_NOP, IPOPT_OLEN, IPOPT_OPTVAL, IPVERSION, Ip, MAXTTL,
 };
-use sysdefs::netinet_ip_icmp::{ICMP_UNREACH, ICMP_UNREACH_PROTOCOL};
-use sysdefs::netinet_ip_mroute::{
+use sysdefs::netinet::ip_icmp::{ICMP_UNREACH, ICMP_UNREACH_PROTOCOL};
+use sysdefs::netinet::ip_mroute::{
     MRT_ADD_MFC, MRT_ADD_VIF, MRT_API_CONFIG, MRT_API_SUPPORT, MRT_ASSERT, MRT_DEL_MFC,
     MRT_DEL_VIF, MRT_DONE, MRT_INIT, MRT_VERSION,
 };
-use sysdefs::pod::AbiPod;
-use sysdefs::socket::{AF_INET, SO_BINDANY, SO_TIMESTAMP};
 
 use crate::assert::{kassert, kpanic};
 use crate::net::domain::net;
@@ -828,8 +828,8 @@ pub(crate) mod testraw {
     use std::vec::Vec;
 
     use hal::sync::netlock::NETLOCK;
-    use sysdefs::netinet6_in6::In6Addr;
-    use sysdefs::socket::{AF_INET6, SOCK_RAW};
+    use sysdefs::net::socket::{AF_INET6, SOCK_RAW};
+    use sysdefs::netinet6::in6::In6Addr;
 
     use super::*;
     use crate::net::domain::Domain;
@@ -1030,7 +1030,7 @@ pub(crate) mod testraw {
 
     /// A `sockaddr_in6` of `addr` in a name mbuf.
     pub(crate) fn nam6(addr: In6Addr) -> MbufBox {
-        let sin6 = sysdefs::netinet6_in6::SockaddrIn6 {
+        let sin6 = sysdefs::netinet6::in6::SockaddrIn6 {
             sin6_len: 28,
             sin6_family: AF_INET6,
             sin6_addr: addr,
@@ -1095,7 +1095,7 @@ pub(crate) mod testraw {
 mod tests {
     use std::vec::Vec;
 
-    use sysdefs::netinet_in::{IP_TTL, IPPROTO_TCP, IPPROTO_UDP};
+    use sysdefs::netinet::in_::{IP_TTL, IPPROTO_TCP, IPPROTO_UDP};
 
     use super::testraw::{
         self, G, RAW, close, ip4, ips, locked, nam, nam4, pkt, recv, socket, with_net,

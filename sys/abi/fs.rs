@@ -27,7 +27,7 @@
 use crate::scarg::{int, off_t, ptr, size_t, u_int};
 use hal::syscall::{Register, Rval, SysArgs, SysResult};
 
-use sysdefs::syscall::{
+use sysdefs::proc::syscall::{
     SYS___getcwd, SYS___pledge_open, SYS___realpath, SYS_access, SYS_chdir, SYS_chflags,
     SYS_chflagsat, SYS_chmod, SYS_chown, SYS_chroot, SYS_faccessat, SYS_fchdir, SYS_fchflags,
     SYS_fchmod, SYS_fchmodat, SYS_fchown, SYS_fchownat, SYS_fhopen, SYS_fhstat, SYS_fhstatfs,

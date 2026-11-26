@@ -50,7 +50,7 @@
 /* <CODE> */
 //! Internet interface addresses and multicast records, the kernel's half of
 //! `<netinet/in_var.h>`: `struct in_ifaddr`, `struct in_multi` and their casts from the
-//! generic records. The userland half (`struct in_aliasreq`) is `sysdefs::netinet_in_var`;
+//! generic records. The userland half (`struct in_aliasreq`) is `sysdefs::netinet::in_var`;
 //! the prototypes are `kernel::netinet::in_`'s (`in.c`).
 //!
 //! Upstream: sys/netinet/in_var.h @ 3ce1f3f79392
@@ -104,9 +104,9 @@ use hal::mem::malloc::{M_WAITOK, MArc};
 use hal::sync::refcnt::Refcnt;
 use hal::sync::rwlock::Guarded;
 use hal::sync::slot::ReadMostly;
-use sysdefs::net_if::IFF_BROADCAST;
-use sysdefs::netinet_in::{InAddr, SockaddrIn};
-use sysdefs::socket::AF_INET;
+use sysdefs::net::if_::IFF_BROADCAST;
+use sysdefs::net::socket::AF_INET;
+use sysdefs::netinet::in_::{InAddr, SockaddrIn};
 
 use crate::assert::kpanic;
 use crate::net::if_::{IF_TMPLIST_LOCK, M_IFADDR};

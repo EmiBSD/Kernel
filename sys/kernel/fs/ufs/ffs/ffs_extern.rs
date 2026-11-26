@@ -64,7 +64,7 @@
 //!   goes: their callers name the defining modules (`ffs_vfsops`, `ffs_vnops`, `ffs_alloc`,
 //!   ...), and the pools are the glue's tables' (`UfsTables`); the constants are LZ's.
 
-use sysdefs::sysctl::{CTLTYPE_INT, Ctlname};
+use sysdefs::proc::sysctl::{CTLTYPE_INT, Ctlname};
 
 /// `FFS_CLUSTERREAD`: cluster reading enabled.
 pub const FFS_CLUSTERREAD: i32 = 1;

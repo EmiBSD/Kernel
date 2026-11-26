@@ -124,7 +124,7 @@ use core::sync::atomic::AtomicU64;
 use hal::mem::malloc::{M_WAITOK, MArray};
 use hal::sync::slot::ReadMostly;
 use hal::user::{pod_from_bytes, pod_to_bytes, zeroed};
-use sysdefs::types::{Daddr, Off};
+use sysdefs::base::types::{Daddr, Off};
 
 use super::ext2fs_bswap::{e2fs_cg_bswap, e2fs_sb_bswap};
 use super::ext2fs_dinode::EXT2_REV0_DINODE_SIZE;

@@ -66,8 +66,8 @@ use std::vec::Vec;
 
 use super::param::{PAGE_MASK, PAGE_SIZE};
 use crate::user::RawCopy;
-use sysdefs::errno::Errno;
-use sysdefs::types::{Paddr, Vaddr};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Paddr, Vaddr};
 
 /// Where the double's user address space starts.
 pub const USER_BASE: usize = 0x1000_0000;

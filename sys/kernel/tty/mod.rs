@@ -251,14 +251,14 @@ use hal::sync::once::OnceStatic;
 use hal::sync::rwlock::RawRwlock;
 use hal::sync::sleep::{INFSLP, PCATCH};
 use hal::user::{pod_from_bytes, pod_to_bytes};
-use sysdefs::errno::Errno;
-use sysdefs::fcntl::{FNONBLOCK, FREAD, FWRITE};
-use sysdefs::filio::{FIOASYNC, FIOGETOWN, FIONREAD, FIOSETOWN};
-use sysdefs::pledge::{PLEDGE_RPATH, PLEDGE_WPATH};
-use sysdefs::signal::{
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Dev, Pid};
+use sysdefs::file::fcntl::{FNONBLOCK, FREAD, FWRITE};
+use sysdefs::file::filio::{FIOASYNC, FIOGETOWN, FIONREAD, FIOSETOWN};
+use sysdefs::proc::pledge::{PLEDGE_RPATH, PLEDGE_WPATH};
+use sysdefs::sig::signal::{
     SIGHUP, SIGINFO, SIGINT, SIGIO, SIGQUIT, SIGTSTP, SIGTTIN, SIGTTOU, SIGWINCH,
 };
-use sysdefs::types::{Dev, Pid};
 
 use crate::assert::kpanic;
 use crate::base::sysctl::{SysctlNode, SysctlReq, rdquad, rdstruct};
@@ -315,7 +315,7 @@ pub const KERN_TTY_INFO: i32 = 5;
 pub const KERN_TTY_MAXID: usize = 8;
 
 /// Get ptys (`PTMGET`, `/dev/ptm`'s ioctl).
-pub const PTMGET: u64 = sysdefs::ioccom::_ior::<Ptmget>(b't', 1);
+pub const PTMGET: u64 = sysdefs::base::ioccom::_ior::<Ptmget>(b't', 1);
 /// The cloning pty device.
 pub const PATH_PTMDEV: &[u8] = b"/dev/ptm";
 /// XXX evil hardcoding of tty gid.
@@ -2143,7 +2143,7 @@ fn int_ret(data: &mut [u8], v: i32) -> Result<(), Errno> {
 }
 
 /// Returns a structure through an ioctl's argument.
-fn pod_ret<T: sysdefs::pod::AbiPod>(data: &mut [u8], v: &T) -> Result<(), Errno> {
+fn pod_ret<T: sysdefs::base::pod::AbiPod>(data: &mut [u8], v: &T) -> Result<(), Errno> {
     if pod_to_bytes(v, data) {
         Ok(())
     } else {
@@ -4476,7 +4476,7 @@ mod tests {
     use std::sync::Mutex;
     use std::vec::Vec;
 
-    use sysdefs::signal::sigmask;
+    use sysdefs::sig::signal::sigmask;
 
     use super::*;
     use crate::file::event::tests::{Kg, T, new_kqueue, setup, thread_of};
@@ -4531,7 +4531,7 @@ mod tests {
     /// A tty set up as a driver's open would: default termios, open, carrier on.
     fn test_tty() -> TtyRef<Kg> {
         let tp = ttymalloc::<Kg>(9600);
-        tp.t_dev.set(sysdefs::types::makedev(12, 0));
+        tp.t_dev.set(sysdefs::base::types::makedev(12, 0));
         ttychars(&tp);
         tp.set_t_iflag(TTYDEF_IFLAG);
         tp.set_t_oflag(TTYDEF_OFLAG);

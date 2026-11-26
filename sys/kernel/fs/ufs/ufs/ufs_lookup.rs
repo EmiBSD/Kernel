@@ -96,9 +96,9 @@
 
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use sysdefs::errno::Errno;
-use sysdefs::mount::MNT_RDONLY;
-use sysdefs::types::Off;
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::Off;
+use sysdefs::fs::mount::MNT_RDONLY;
 
 use super::dinode::{IFDIR, IFMT, ISVTX, ROOTINO, Ufsino};
 use super::dir::{
@@ -697,7 +697,7 @@ pub fn ufs_makedirentry<G: ProcGlue>(
     let pad = namelen & !(DIR_ROUNDUP - 1);
     newdirp.d_name[pad..pad + DIR_ROUNDUP].fill(0);
     newdirp.d_name[..namelen].copy_from_slice(cnp.name());
-    newdirp.d_type = sysdefs::dirent::iftodt(ip.dip_mode());
+    newdirp.d_type = sysdefs::file::dirent::iftodt(ip.dip_mode());
 }
 
 /// `ufs_direnter`: write a directory entry after a call to namei, using the parameters that

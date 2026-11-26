@@ -163,12 +163,12 @@ use core::sync::atomic::{AtomicU8, Ordering};
 
 use hal::sync::netlock::NetHeld;
 use hal::sync::once::OnceStatic;
-use sysdefs::errno::Errno;
-use sysdefs::netinet_in::{
+use sysdefs::base::errno::Errno;
+use sysdefs::net::socket::{AF_INET, PF_INET, SOCK_DGRAM, SOCK_RAW, SOCK_STREAM};
+use sysdefs::netinet::in_::{
     IPPROTO_DIVERT, IPPROTO_DONE, IPPROTO_ICMP, IPPROTO_IGMP, IPPROTO_MAX, IPPROTO_RAW,
     IPPROTO_TCP, IPPROTO_UDP, SockaddrIn,
 };
-use sysdefs::socket::{AF_INET, PF_INET, SOCK_DGRAM, SOCK_RAW, SOCK_STREAM};
 
 use crate::assert::kpanic;
 use crate::base::sysctl::SysctlReq;
@@ -791,7 +791,7 @@ mod tests {
     // the raw entry's requests shared), the domain as `inetdomain`, and `ip_init`'s
     // `ip_protox[]` maps every number to its entry or the raw one.
 
-    use sysdefs::netinet_in::{IPPROTO_TCP, IPPROTO_UDP};
+    use sysdefs::netinet::in_::{IPPROTO_TCP, IPPROTO_UDP};
 
     use super::*;
     use crate::netinet::ip_input::tests::{G, ICMP, RAW, SW, TCP, UDP, setup};

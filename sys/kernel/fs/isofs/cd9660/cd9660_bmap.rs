@@ -69,8 +69,8 @@
 //!   widths: the block number is the `doff_t` sum shifted into the `daddr_t` (wrapping), the
 //!   run the 64-bit difference stored into the C's `int nblk`. 0 `unsafe` (LZ: 0).
 
-use sysdefs::errno::Errno;
-use sysdefs::types::Daddr;
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::Daddr;
 
 use crate::fs::bio::DEV_BSHIFT;
 use crate::fs::isofs::cd9660::cd9660_node::vtoi;

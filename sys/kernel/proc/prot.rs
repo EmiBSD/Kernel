@@ -97,9 +97,9 @@ use core::sync::atomic::Ordering;
 
 use hal::sync::klock;
 use hal::user::UserPtr;
-use sysdefs::errno::Errno;
-use sysdefs::syslimits::NGROUPS_MAX;
-use sysdefs::types::{Gid, Pid, Uid};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::syslimits::NGROUPS_MAX;
+use sysdefs::base::types::{Gid, Pid, Uid};
 
 use crate::proc::cred::{CredRef, Ucred, crset};
 use crate::proc::{

@@ -80,7 +80,7 @@ use hal::ds::pinlist::PinList;
 use hal::mem::malloc::MArc;
 use hal::mem::pool::TypedPool;
 use hal::sync::slot::ReadMostly;
-use sysdefs::types::Dev;
+use sysdefs::base::types::Dev;
 
 use crate::assert::kpanic;
 use crate::fs::fuse::fuse_device::FuseDLink;

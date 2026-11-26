@@ -112,13 +112,13 @@ use hal::cpu::intr::IPL_NONE;
 use hal::mem::malloc::{M_WAITOK, MArc};
 use hal::mem::pool::{PR_WAITOK, PoolArc, TypedPool};
 use hal::vm::uvmexp::UVMEXP;
-use sysdefs::errno::Errno;
-use sysdefs::limits::INT_MAX;
-use sysdefs::mount::{
+use sysdefs::base::errno::Errno;
+use sysdefs::base::limits::INT_MAX;
+use sysdefs::base::types::{Gid, Ino, Mode, Uid};
+use sysdefs::file::stat::ALLPERMS;
+use sysdefs::fs::mount::{
     Fid, MNAMELEN, MNT_FORCE, MNT_LOCAL, MNT_RDONLY, MNT_UPDATE, MNT_WANTRDWR, Statfs, TmpfsArgs,
 };
-use sysdefs::stat::ALLPERMS;
-use sysdefs::types::{Gid, Ino, Mode, Uid};
 
 use crate::assert::{kassert, kpanic};
 use crate::base::prf::printf;
@@ -672,8 +672,8 @@ mod tests {
     };
     use crate::fs::vnode::{VLNK, VREG, VROOT, Vattr, Vtype};
     use crate::testutil::{malloc_out, malloc_requests};
-    use sysdefs::dirent::Dirent;
-    use sysdefs::types::{Dev, Off};
+    use sysdefs::base::types::{Dev, Off};
+    use sysdefs::file::dirent::Dirent;
 
     type P = &'static Thread<TestGlue>;
 

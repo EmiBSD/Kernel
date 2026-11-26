@@ -128,7 +128,7 @@
 //! The Berkeley packet filter, bpf(4): `net/bpf.c`'s device (`/dev/bpf`, a cloning character
 //! device, major 23 on both machines) and the taps the drivers call, with `<net/bpfdesc.h>`'s
 //! descriptor (`struct bpf_d`, [`BpfD`]) and tap (`struct bpf_if`, [`BpfIf`]). `<net/bpf.h>`'s
-//! user interface is `sysdefs::net_bpf`'s, the filter machine `kernel::net::bpf_filter`'s.
+//! user interface is `sysdefs::net::bpf`'s, the filter machine `kernel::net::bpf_filter`'s.
 //!
 //! Upstream: sys/net/bpf.h @ 3ce1f3f79392
 //! Upstream: sys/net/bpf.c @ 3ce1f3f79392
@@ -270,10 +270,12 @@ use hal::sync::once::OnceStatic;
 use hal::sync::slot::ReadMostly;
 use hal::sync::smr::{self, SmrArcLink, SmrArcWord, SmrCounted, SmrRef};
 use hal::user::UserPtr;
-use sysdefs::errno::Errno;
-use sysdefs::filio::{FIOASYNC, FIOGETOWN, FIONREAD, FIOSETOWN};
-use sysdefs::mbuf::MT_DATA;
-use sysdefs::net_bpf::{
+use sysdefs::base::errno::Errno;
+use sysdefs::base::param::PAGE_SIZE;
+use sysdefs::base::pod::AbiPod;
+use sysdefs::base::types::{Dev, minor};
+use sysdefs::file::filio::{FIOASYNC, FIOGETOWN, FIONREAD, FIOSETOWN};
+use sysdefs::net::bpf::{
     BIOCDWTIMEOUT, BIOCFLUSH, BIOCGBLEN, BIOCGDIRFILT, BIOCGDLT, BIOCGDLTLIST, BIOCGETIF,
     BIOCGFILDROP, BIOCGHDRCMPLT, BIOCGRSIG, BIOCGRTIMEOUT, BIOCGSTATS, BIOCGWTIMEOUT,
     BIOCIMMEDIATE, BIOCLOCK, BIOCPROMISC, BIOCSBLEN, BIOCSDIRFILT, BIOCSDLT, BIOCSETF, BIOCSETFNR,
@@ -284,15 +286,13 @@ use sysdefs::net_bpf::{
     BpfStat, BpfVersion, DLT_EN10MB, DLT_IEEE802_11, DLT_IEEE802_11_RADIO, DLT_LOOP, DLT_NULL,
     DLT_PPP, DLT_RAW, DLT_SLIP, SIZEOF_BPF_HDR, bpf_wordalign,
 };
-use sysdefs::net_if::{IFF_UP, IFNAMSIZ};
-use sysdefs::netinet_if_ether::ETHER_HDR_LEN;
-use sysdefs::param::PAGE_SIZE;
-use sysdefs::pod::AbiPod;
-use sysdefs::signal::{NSIG, SIGIO};
-use sysdefs::socket::{
+use sysdefs::net::if_::{IFF_UP, IFNAMSIZ};
+use sysdefs::net::mbuf::MT_DATA;
+use sysdefs::net::socket::{
     AF_INET, AF_UNSPEC, NET_BPF_BUFSIZE, NET_BPF_MAXBUFSIZE, SockaddrStorage, pseudo_AF_HDRCMPLT,
 };
-use sysdefs::types::{Dev, minor};
+use sysdefs::netinet::if_ether::ETHER_HDR_LEN;
+use sysdefs::sig::signal::{NSIG, SIGIO};
 
 use crate::assert::{kassert, kpanic};
 use crate::base::sysctl::{SysctlReq, int_bounded};
@@ -2312,8 +2312,8 @@ mod tests {
     use std::vec::Vec;
 
     use hal::sync::smr::CpuWalk;
-    use sysdefs::net_bpf::{BPF_F_DIR_IN, BPF_F_DIR_MASK, BPF_K, BPF_RET, bpf_stmt};
-    use sysdefs::types::makedev;
+    use sysdefs::base::types::makedev;
+    use sysdefs::net::bpf::{BPF_F_DIR_IN, BPF_F_DIR_MASK, BPF_K, BPF_RET, bpf_stmt};
 
     use super::*;
     use crate::file::uio::{Iovec, UioRw, UioSeg};
@@ -2577,7 +2577,7 @@ mod tests {
             }
         );
         let mut prog = program(&[
-            bpf_stmt(sysdefs::net_bpf::BPF_LD | sysdefs::net_bpf::BPF_MEM, 99),
+            bpf_stmt(sysdefs::net::bpf::BPF_LD | sysdefs::net::bpf::BPF_MEM, 99),
             bpf_stmt(BPF_RET | BPF_K, 0),
         ]);
         assert_eq!(ioctl(d, p, BIOCSETF, &mut prog), Err(Errno::EINVAL));

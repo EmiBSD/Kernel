@@ -196,11 +196,11 @@ use hal::sync::mutex::{Mutexed, MutexedGuard, SharedMutex};
 use hal::sync::rwlock::Rwlocked;
 use hal::sync::sleep::{INFSLP, PCATCH};
 use hal::user::{UserPtr, pod_from_bytes, pod_to_bytes};
-use sysdefs::errno::Errno;
-use sysdefs::filio::{FIOASYNC, FIOGETOWN, FIONREAD, FIOSETOWN};
-use sysdefs::ioccom::_iow;
-use sysdefs::signal::SIGIO;
-use sysdefs::types::Pid;
+use sysdefs::base::errno::Errno;
+use sysdefs::base::ioccom::_iow;
+use sysdefs::base::types::Pid;
+use sysdefs::file::filio::{FIOASYNC, FIOGETOWN, FIONREAD, FIOSETOWN};
+use sysdefs::sig::signal::SIGIO;
 
 use crate::file::event::{
     EVFILT_READ, FILTEROP_ISFD, FILTEROP_MPSAFE, Filter, Filterops, Kevent, Klist, Knote,
@@ -1396,7 +1396,7 @@ mod tests {
     use crate::proc::cred::{CredRef, Ucred};
     use crate::testutil::{self, TestFileData, USER_BASE};
     use crate::tty::{TtyDevsw, register_ttydevsw};
-    use sysdefs::stat::Stat;
+    use sysdefs::file::stat::Stat;
 
     /// The tests that use the global buffers (`LOG_MTX`) or the user memory from [`UMSG`] on
     /// run one at a time. That memory is one array for the whole process: `kern.msgbuf`'s
@@ -1857,7 +1857,7 @@ mod tests {
             self.tty
         }
         fn stop(&self, _tp: &crate::tty::Tty<Kg>, _rw: i32) {}
-        fn console_dev(&self) -> Option<sysdefs::types::Dev> {
+        fn console_dev(&self) -> Option<sysdefs::base::types::Dev> {
             None
         }
         fn console_write(&self, uio: &mut Uio<'_, Kg>) -> Result<(), Errno> {

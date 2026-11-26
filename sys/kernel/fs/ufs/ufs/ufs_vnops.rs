@@ -121,18 +121,18 @@
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use sysdefs::dirent::{DT_DIR, Dirent, iftodt};
-use sysdefs::errno::Errno;
-use sysdefs::fcntl::{FWRITE, Flock, O_APPEND, O_TRUNC};
-use sysdefs::mount::{MNT_NOATIME, MNT_RDONLY};
-use sysdefs::param::PAGE_SIZE;
-use sysdefs::stat::{
+use sysdefs::base::errno::Errno;
+use sysdefs::base::param::PAGE_SIZE;
+use sysdefs::base::syslimits::{LINK_MAX, NAME_MAX};
+use sysdefs::base::types::{Daddr, Dev, Gid, Mode, Nlink, Register, Uid};
+use sysdefs::file::dirent::{DT_DIR, Dirent, iftodt};
+use sysdefs::file::fcntl::{FWRITE, Flock, O_APPEND, O_TRUNC};
+use sysdefs::file::stat::{
     ALLPERMS, APPEND, IMMUTABLE, S_ISTXT, S_IXGRP, S_IXOTH, S_IXUSR, SF_APPEND, SF_IMMUTABLE,
     SF_SETTABLE, UF_SETTABLE,
 };
-use sysdefs::syslimits::{LINK_MAX, NAME_MAX};
-use sysdefs::types::{Daddr, Dev, Gid, Mode, Nlink, Register, Uid};
-use sysdefs::unistd::{
+use sysdefs::fs::mount::{MNT_NOATIME, MNT_RDONLY};
+use sysdefs::proc::unistd::{
     _PC_2_SYMLINKS, _PC_ALLOC_SIZE_MIN, _PC_CHOWN_RESTRICTED, _PC_FILESIZEBITS, _PC_LINK_MAX,
     _PC_NAME_MAX, _PC_NO_TRUNC, _PC_REC_INCR_XFER_SIZE, _PC_REC_MAX_XFER_SIZE,
     _PC_REC_MIN_XFER_SIZE, _PC_REC_XFER_ALIGN, _PC_SYMLINK_MAX, _PC_TIMESTAMP_RESOLUTION,
@@ -1768,7 +1768,7 @@ pub fn ufs_strategy<G: ProcGlue>(vp: &'static Vnode<G>, bp: IoBuf) -> Result<(),
 pub fn ufs_print<G: ProcGlue>(vp: &'static Vnode<G>) -> Result<(), Errno> {
     #[cfg(any(feature = "debug", feature = "diagnostic"))]
     {
-        use sysdefs::types::{major, minor};
+        use sysdefs::base::types::{major, minor};
         let ip = vtoi(vp);
 
         crate::base::prf::printf(format_args!(
@@ -2588,7 +2588,7 @@ mod tests {
         assert_eq!((eof, off), (1, BSIZE as i64));
         // Three dirents of 32 bytes: ".", "..", "file" (d_type DIR, DIR, REG).
         let types: std::vec::Vec<u8> = (0..3).map(|i| buf[i * 32 + 18]).collect();
-        assert_eq!(types, [DT_DIR, DT_DIR, sysdefs::dirent::DT_REG]);
+        assert_eq!(types, [DT_DIR, DT_DIR, sysdefs::file::dirent::DT_REG]);
         assert_eq!(&buf[64 + 24..64 + 28], b"file");
         assert_eq!(u16::from_ne_bytes([buf[16], buf[17]]), 32);
         // A request smaller than what is left of the block is EINVAL.
@@ -2744,11 +2744,18 @@ mod tests {
             l_start: 0,
             l_len: 0,
             l_pid: 0,
-            l_type: sysdefs::fcntl::F_WRLCK,
+            l_type: sysdefs::file::fcntl::F_WRLCK,
             l_whence: 0,
         };
-        vop_advlock(f, LockOwner::Table(1), sysdefs::fcntl::F_GETLK, &mut fl, 0).unwrap();
-        assert_eq!(fl.l_type, sysdefs::fcntl::F_UNLCK);
+        vop_advlock(
+            f,
+            LockOwner::Table(1),
+            sysdefs::file::fcntl::F_GETLK,
+            &mut fl,
+            0,
+        )
+        .unwrap();
+        assert_eq!(fl.l_type, sysdefs::file::fcntl::F_UNLCK);
         let mut data = [0u8; 8];
         assert_eq!(
             vop_ioctl(f, 0, &mut data, 0, Cred::real(cred), p),
@@ -2778,19 +2785,22 @@ mod tests {
         let mut vpp = None;
         assert_eq!(vop_lookup(root, &mut vpp, &mut c), Err(Errno::EJUSTRETURN));
         let mut va = vattr(VCHR, 0o600);
-        va.va_rdev = sysdefs::types::makedev(1, 3);
+        va.va_rdev = sysdefs::base::types::makedev(1, 3);
         crate::fs::vops::vop_mknod(root, &mut vpp, &mut c, &mut va).unwrap();
         assert!(vpp.is_none());
         let n = lookup(p, cred, root, b"n").unwrap();
         assert_eq!(n.vtype(), VCHR);
-        assert_eq!(vtoi(n).dip_rdev(), i64::from(sysdefs::types::makedev(1, 3)));
+        assert_eq!(
+            vtoi(n).dip_rdev(),
+            i64::from(sysdefs::base::types::makedev(1, 3))
+        );
         vput(n);
         // A lookup aborted gives its name back.
         let mut c = cn(p, cred, CREATE, LOCKPARENT, b"m");
         crate::fs::vops::vop_abortop(root, &mut c).unwrap();
         let f = create(p, cred, root, b"f").unwrap();
         crate::fs::vops::vop_print(f).unwrap();
-        crate::fs::vops::vop_fsync(f, Cred::real(cred), sysdefs::mount::MNT_WAIT, p).unwrap();
+        crate::fs::vops::vop_fsync(f, Cred::real(cred), sysdefs::fs::mount::MNT_WAIT, p).unwrap();
         let _ = vop_unlock(f);
         // revoke: the vnode is cleaned, its inode reclaimed off it.
         crate::fs::vops::vop_revoke(f, crate::fs::vnode::REVOKEALL).unwrap();

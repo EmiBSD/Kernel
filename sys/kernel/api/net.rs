@@ -29,7 +29,7 @@
 
 use hal::syscall::{Register, Rval, SysResult};
 
-use sysdefs::syscall::{
+use sysdefs::proc::syscall::{
     SYS_accept, SYS_accept4, SYS_bind, SYS_connect, SYS_getpeername, SYS_getsockname,
     SYS_getsockopt, SYS_listen, SYS_recvfrom, SYS_recvmmsg, SYS_recvmsg, SYS_sendmmsg, SYS_sendmsg,
     SYS_sendto, SYS_setsockopt, SYS_shutdown, SYS_socket, SYS_socketpair, SYS_ypconnect,

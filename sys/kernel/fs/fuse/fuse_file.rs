@@ -49,7 +49,7 @@
 //!   (`fb_setup`'s), dropped by `fb_delete` as the C's. Otherwise LZ's functions over the
 //!   kernel's node and mount.
 
-use sysdefs::errno::Errno;
+use sysdefs::base::errno::Errno;
 
 use crate::fs::fuse::fusebuf::{fb_delete, fb_queue, fb_setup};
 use crate::fs::fuse::fusebuf_h::{
@@ -185,7 +185,7 @@ mod tests {
 
     /// Answers `FUSE_OPEN` with handle 77, `FUSE_OPENDIR` with 78, a release of handle 78
     /// with `EIO`, any other release with success.
-    fn daemon(dev: sysdefs::types::Dev) {
+    fn daemon(dev: sysdefs::base::types::Dev) {
         while let Some(req) = read_req(dev) {
             let fh = if req.hdr.opcode == FUSE_RELEASE || req.hdr.opcode == FUSE_RELEASEDIR {
                 req.op::<FuseReleaseIn>().fh

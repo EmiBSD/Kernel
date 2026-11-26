@@ -76,7 +76,7 @@
 //!   LZ's handler called it by name (and `hal` through its trap handler, N4.8b..N7.abi2).
 
 use hal::syscall::{Gpr, Register, Rval, SysResult, UserRegs};
-use sysdefs::errno::Errno;
+use sysdefs::base::errno::Errno;
 
 use crate::scarg::int;
 use crate::sysent::{SYSENT, Sysent, dispatch};

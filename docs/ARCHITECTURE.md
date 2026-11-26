@@ -319,7 +319,7 @@ window beside the image (decision 37), with the `Legacy` fallback of decision 29
 missing; decision 47 records what went with it. The pieces now:
 
 - **The table.** `sys/abi/sysent.rs`: one `Native(fn) | Legacy` entry per number of
-  `<sys/syscall.h>` (`sysdefs::syscall`), 170 of 331 `Native` (`NATIVE`; pipe and pipe2 the
+  `<sys/syscall.h>` (`sysdefs::proc::syscall`), 170 of 331 `Native` (`NATIVE`; pipe and pipe2 the
   first, at N2.6). The translations are one file per group of the kernel (`proc.rs`, `vm.rs`,
   `file.rs`, `event.rs`, `time.rs`, `base.rs`, `fs.rs`, `net.rs`, N7). A `Native` entry calls
   its `kernel::api` function, which runs the same `sysent[]` row through `mi_syscall` (the

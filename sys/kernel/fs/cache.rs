@@ -152,7 +152,7 @@ use hal::ds::owned::{
 use hal::mem::pool::PR_WAITOK;
 use hal::sync::mutex::Mutexed;
 use hal::sync::rwlock::{Divisible, Guarded, WitnessPart};
-use sysdefs::errno::Errno;
+use sysdefs::base::errno::Errno;
 
 use super::mount::Mount;
 use super::namei::{

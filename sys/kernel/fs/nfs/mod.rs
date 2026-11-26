@@ -69,5 +69,5 @@ pub mod nfssvc;
 pub mod testnfs;
 pub mod xdr_subs;
 
-pub use sysdefs::nfs_rpcv2 as rpcv2;
+pub use sysdefs::fs::nfs::rpcv2;
 /* </CODE> */

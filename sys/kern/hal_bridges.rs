@@ -27,7 +27,7 @@
 //! bridge, registered once. This file is those implementations: each method is one call into
 //! the legacy function of the same name and nothing else (a bridge carries no logic,
 //! section 0.3.2), with the C's modes spelled out; `Errno` is one type on both sides
-//! (`sysdefs::errno`, which `crate::sys::errno` re-exports).
+//! (`sysdefs::base::errno`, which `crate::sys::errno` re-exports).
 //! It writes no `unsafe` (decision 30: the memory bridges are safe traits). One piece of
 //! storage is its own: the `struct pool`s of the first pools `hal` makes (`pmap_init`'s, before
 //! `kmeminit`, as the C's static pools) are a static array, handed out once each.

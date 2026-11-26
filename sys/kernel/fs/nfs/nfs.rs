@@ -52,7 +52,7 @@
 
 /* <CODE> */
 //! `<nfs/nfs.h>` in the kernel: what the header declares for the client and the server
-//! beyond userland's image (`sysdefs::nfs_nfs`, re-exported here). N6.7a0 brings the
+//! beyond userland's image (`sysdefs::fs::nfs::nfs`, re-exported here). N6.7a0 brings the
 //! statistics' counters; N6.7a1 the client's outstanding request (`struct nfsreq`, its flags),
 //! the RTT timers, the header's macros over `hz` and `nfs_ticks`, the reply a request ends
 //! with ([`Reply`]) and the error it ends with ([`NfsError`]), and the client's pools
@@ -128,11 +128,11 @@ use crate::fs::bufq::Fifo;
 use crate::net::mbuf::{Mbuf, MbufBox};
 use crate::net::proto::PR_CONNREQUIRED;
 use crate::proc::ProcGlue;
-use sysdefs::errno::Errno;
-pub use sysdefs::nfs_nfs::*;
-use sysdefs::nfs_nfsproto::NFS_NPROCS;
-use sysdefs::signal::{SIGHUP, SIGINT, SIGKILL, SIGQUIT, SIGTERM, Sigset, sigmask};
-use sysdefs::types::Pid;
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::Pid;
+pub use sysdefs::fs::nfs::nfs::*;
+use sysdefs::fs::nfs::nfsproto::NFS_NPROCS;
+use sysdefs::sig::signal::{SIGHUP, SIGINT, SIGKILL, SIGQUIT, SIGTERM, Sigset, sigmask};
 
 /// `B_INVAFTERWRITE`: the buffer flag `nfs_bioread` sets on a block whose valid range does
 /// not cover a read, so that its release after the write invalidates it (`B_INVAL`).
@@ -754,7 +754,7 @@ pub fn nfsignore_soerror(s: i32, e: Errno) -> bool {
 /// lent) speaks version 3.
 #[inline]
 pub fn nfs_isv3<G: ProcGlue>(nmp: &NfsMount<G>) -> bool {
-    nmp.flag() & sysdefs::mount::NFSMNT_NFSV3 != 0
+    nmp.flag() & sysdefs::fs::mount::NFSMNT_NFSV3 != 0
 }
 
 /// `NFS_CMPFH(n, f, s)`: whether the node's handle is the `fh` of a reply (the same size, the
@@ -839,7 +839,7 @@ mod tests {
     /// inside the client (the three tests of the C compare it) and is `EIO` outward.
     #[test]
     fn a_reply_status_is_an_errno_or_stays_a_status() {
-        use sysdefs::nfs_nfsproto::{NFSERR_BAD_COOKIE, NFSERR_NOTSUPP, NFSERR_STALE};
+        use sysdefs::fs::nfs::nfsproto::{NFSERR_BAD_COOKIE, NFSERR_NOTSUPP, NFSERR_STALE};
         let stale = NfsError::from_status(NFSERR_STALE as u32);
         assert_eq!(stale, NfsError::Errno(Errno::ESTALE));
         assert_eq!(stale.raw(), NFSERR_STALE);

@@ -106,8 +106,8 @@ use core::sync::atomic::Ordering;
 
 use hal::sync::klock;
 use hal::sync::sleep::{INFSLP, PCATCH, PRIBIO, tsleep_nsec, wakeup, wakeup_one};
-use sysdefs::errno::Errno;
-use sysdefs::types::{Daddr, Off};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Daddr, Off};
 
 use super::nfs::{B_INVAFTERWRITE, NfsError, nfs_isv3};
 use super::nfs_socket::nfs_sigintr;
@@ -148,8 +148,8 @@ use crate::fs::vops::Cred;
 use crate::proc::{ProcGlue, Thread};
 use crate::time::clock::sec_to_nsec;
 use crate::vm::vnode::{uvm_vnp_setsize, uvm_vnp_uncache};
-use sysdefs::mount::{NFSMNT_GOTFSINFO, NFSMNT_INT, NFSMNT_NFSV3};
-use sysdefs::signal::SIGKILL;
+use sysdefs::fs::mount::{NFSMNT_GOTFSINFO, NFSMNT_INT, NFSMNT_NFSV3};
+use sysdefs::sig::signal::SIGKILL;
 
 /// `DEV_BSIZE` (`<sys/param.h>`): the block size `b_blkno` counts in.
 pub const DEV_BSIZE: i32 = 1 << DEV_BSHIFT;
@@ -910,7 +910,7 @@ mod tests {
     use crate::fs::nfs::nfs_syscalls::{nfs_bufq_get, nfs_bufq_peek};
     use crate::fs::nfs::nfsm_subs::TestRng;
     use crate::fs::vnode::VREG;
-    use sysdefs::signal::{SIGINT, sigmask};
+    use sysdefs::sig::signal::{SIGINT, sigmask};
 
     #[test]
     fn the_cache_block_of_an_offset() {

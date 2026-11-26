@@ -288,7 +288,7 @@ use crate::sync::klock::{self, KernelReader, KernelWitness};
 use crate::sync::mutex::{Mutexed, MutexedGuard};
 use crate::sync::netlock::{self, NetReader, NetWriter};
 use crate::sync::sleep::{self, INFSLP, PCATCH, PLOCK, PRIMASK, chan};
-use sysdefs::errno::Errno;
+use sysdefs::base::errno::Errno;
 
 /// `RWLOCK_WRLOCK`: the word holds a writer.
 const RWLOCK_WRLOCK: usize = 0x04;

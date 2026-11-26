@@ -53,7 +53,7 @@
 //!
 //! Upstream: sys/netinet/ip_var.h @ 3ce1f3f79392
 //!
-//! Since N6.4a the header's userland half is `sysdefs::netinet_ip_var` and its counters and
+//! Since N6.4a the header's userland half is `sysdefs::netinet::ip_var` and its counters and
 //! `ip_output` flags `kernel::netinet::ip_var` (with `ipcounters`, which `ip_input.c`
 //! defines), re-exported here under LZ's names, with the reassembly records (`struct ipqent`,
 //! `struct ipq`, `struct ipoffnxt`, N6.4c2); what is left is LZ's header copies `mtod_ip` and
@@ -76,7 +76,7 @@ pub use kernel::netinet::ip_var::{
     IPCOUNTERS, IPMTUDISCTIMEOUT, IPS_NCOUNTERS, IpMoptions, Ipoffnxt, Ipq, Ipqent, IpstatCounters,
     ipstat_add, ipstat_dec, ipstat_inc,
 };
-pub use sysdefs::netinet_ip_var::{Ipoption, Ipovly, Ipstat, MAX_IPOPTLEN};
+pub use sysdefs::netinet::ip_var::{Ipoption, Ipovly, Ipstat, MAX_IPOPTLEN};
 
 use crate::netinet::ip::Ip;
 use crate::sys::mbuf::{Mbuf, mtod};

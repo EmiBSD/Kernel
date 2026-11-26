@@ -312,7 +312,7 @@ use core::sync::atomic::{AtomicI32, AtomicU32, AtomicUsize, Ordering};
 
 use crate::assert::hal_panic;
 use crate::sync::rwlock::{LockId, RW_READ, RW_WRITE, RawRwlock, ReadWitness, Witness, rw_self};
-use sysdefs::errno::Errno;
+use sysdefs::base::errno::Errno;
 
 /// The proof that the running process holds the net lock, for a reader of what it guards
 /// that is not a `Guarded` cell (`hal::ds::link::SaLink::read`, review 2's S-a): made from a

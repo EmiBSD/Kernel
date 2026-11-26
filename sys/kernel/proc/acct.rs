@@ -141,10 +141,10 @@ use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use hal::sync::klock;
 use hal::sync::rwlock::Rwlocked;
 use hal::user::UserPtr;
-use sysdefs::errno::Errno;
-use sysdefs::fcntl::{FWRITE, O_APPEND};
-use sysdefs::mount::Statfs;
-use sysdefs::types::{Dev, Gid, Pid, Uid};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Dev, Gid, Pid, Uid};
+use sysdefs::file::fcntl::{FWRITE, O_APPEND};
+use sysdefs::fs::mount::Statfs;
 
 use crate::assert::kpanic;
 use crate::fs::lookup::ndinit;

@@ -42,7 +42,7 @@
 //!   and [`PSWP`], [`PRIBIO`].
 
 use crate::bridges;
-use sysdefs::errno::Errno;
+use sysdefs::base::errno::Errno;
 
 /// `PSWP`: the highest sleep priority (the softclock threads' `"tmoslp"`).
 pub const PSWP: i32 = 0;

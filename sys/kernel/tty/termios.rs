@@ -159,7 +159,7 @@
 //! - `bsd`'s three headers stay as they are until the terminal moves (N4.7b), when they
 //!   become aliases of these.
 
-use sysdefs::ioccom::{_io, _ior, _iow};
+use sysdefs::base::ioccom::{_io, _ior, _iow};
 
 use crate::proc::resource::Timeval;
 

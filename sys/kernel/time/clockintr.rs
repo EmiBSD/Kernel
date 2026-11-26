@@ -121,7 +121,7 @@ use crate::time::clock::{
     PROFCLOCK_PERIOD, STATCLOCK_AVG, STATCLOCK_IS_RANDOMIZED, hardclock_period,
 };
 use crate::time::tc::nsecuptime;
-use sysdefs::errno::Errno;
+use sysdefs::base::errno::Errno;
 
 /// `CQ_INIT`: `clockintr_cpu_init()` done.
 pub const CQ_INIT: u32 = 0x0000_0001;

@@ -65,7 +65,7 @@
 //!   LZ's was a `Vec`).
 
 use hal::random::arc4random_uniform;
-use sysdefs::netinet6_in6::In6Addr;
+use sysdefs::netinet6::in6::In6Addr;
 
 // States for MLD stop-listening processing
 

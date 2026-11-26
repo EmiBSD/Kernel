@@ -104,8 +104,8 @@ use hal::ds::link::Link;
 use hal::mem::pool::{PR_NOWAIT, PR_WAITOK, PoolArc, TypedPool};
 use hal::sync::rwlock::{RW_READ, RW_WRITE, RawRwlock, SharedRwlock, Witness, WriteWitness};
 use hal::vm::uvmexp::UVMEXP;
-use sysdefs::errno::Errno;
-use sysdefs::mman::PROT_NONE;
+use sysdefs::base::errno::Errno;
+use sysdefs::vm::mman::PROT_NONE;
 
 use super::amap::Amap;
 use super::page::{Owner, OwnerTag, PG_BUSY, PG_RELEASED, PageAnon, VmPage, uvm_pagefree};

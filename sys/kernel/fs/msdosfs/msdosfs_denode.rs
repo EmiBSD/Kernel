@@ -160,9 +160,9 @@ use hal::sync::klock;
 use hal::sync::sleep::INFSLP;
 use hal::sync::slot::ReadMostly;
 use libkern::siphash::{SipHash24Ctx, SiphashKey};
-use sysdefs::errno::Errno;
-use sysdefs::mount::MNT_RDONLY;
-use sysdefs::types::{Daddr, Dev};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Daddr, Dev};
+use sysdefs::fs::mount::MNT_RDONLY;
 
 use crate::assert::kpanic;
 use crate::base::prf::printf;

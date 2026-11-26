@@ -81,7 +81,7 @@
 //! statistics (`ip6counters`, and ICMPv6's `icmp6counters` beside them), the packet-option
 //! and `ip6_output` flags, and the configuration variables (`ip6_defhlim`, `ip6_forwarding`,
 //! ..., defined by `in6_proto.c`). The userland half (`struct ip6stat` and the indices of its
-//! words) is `sysdefs::netinet6_ip6_var`. The control options of outgoing packets
+//! words) is `sysdefs::netinet6::ip6_var`. The control options of outgoing packets
 //! ([`Ip6Pktopts`], with the borrowed view `ip6_output` takes, [`Ip6OutOpts`]) and the
 //! multicast options ([`Ip6Moptions`]) are here since N6.5c, the reassembly records
 //! ([`Ip6q`], [`Ip6asfrag`]) since N6.5d.
@@ -152,10 +152,10 @@ use hal::ds::owned::{OwnedSlist, SlistLink};
 use hal::mem::malloc::{MArray, MBox};
 use hal::mem::pool::{BoxPool, Pooled};
 use hal::sync::percpu::Counters;
-use sysdefs::netinet_icmp6::{ICP6S_NCOUNTERS, Icmp6statCounters};
-use sysdefs::netinet_ip6::IPV6_DEFHLIM;
-use sysdefs::netinet6_in6::{IPV6_DEFAULT_MULTICAST_HOPS, In6Addr, In6Pktinfo};
-use sysdefs::netinet6_ip6_var::{IP6S_NCOUNTERS, Ip6statCounters};
+use sysdefs::netinet::icmp6::{ICP6S_NCOUNTERS, Icmp6statCounters};
+use sysdefs::netinet::ip6::IPV6_DEFHLIM;
+use sysdefs::netinet6::in6::{IPV6_DEFAULT_MULTICAST_HOPS, In6Addr, In6Pktinfo};
+use sysdefs::netinet6::ip6_var::{IP6S_NCOUNTERS, Ip6statCounters};
 
 use crate::assert::kpanic;
 use crate::net::mbuf::MbufBox;

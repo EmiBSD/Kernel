@@ -108,7 +108,7 @@
 
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
-use sysdefs::pod::AbiPod;
+use sysdefs::base::pod::AbiPod;
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -119,8 +119,8 @@ use crate::assert::hal_panic;
     target_arch = "aarch64"
 ))]
 use crate::vm::pmap::KernelMapper;
-use sysdefs::errno::Errno;
-use sysdefs::types::Vaddr;
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::Vaddr;
 
 /// The machine's copies (`copy.S`, `copystr.S`; the host's double).
 #[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
@@ -130,7 +130,7 @@ use crate::arch::current::copy as machine;
 /// `UserCopy` bridge was registered.
 #[cfg(not(any(not(target_os = "none"), target_arch = "aarch64")))]
 mod machine {
-    use sysdefs::errno::Errno;
+    use sysdefs::base::errno::Errno;
 
     /// `copyin`: no user address space.
     pub(super) fn copyin(_uaddr: usize, _kbuf: &mut [u8]) -> Result<(), Errno> {

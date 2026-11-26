@@ -162,8 +162,8 @@ use hal::mem::pool::AnyArc;
 use hal::sync::mutex::Mutexed;
 use hal::sync::rwlock::Guarded;
 use hal::sync::slot::ReadMostly;
-use sysdefs::errno::Errno;
-use sysdefs::types::{Dev, Gid, Mode, Nlink, Uid};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Dev, Gid, Mode, Nlink, Uid};
 
 use super::bio::VnodeBufs;
 use super::mount::Mount;
@@ -475,7 +475,7 @@ pub const GETCWD_CHECK_ACCESS: i32 = 0x0001;
 /// The `<sys/stat.h>` file types and permission bits `IFTOVT`, `VTTOIF` and `vaccess` read
 /// (the ABI's values).
 pub mod stat {
-    use sysdefs::types::Mode;
+    use sysdefs::base::types::Mode;
     /// `S_IFMT`: type of file mask.
     pub const S_IFMT: Mode = 0o170000;
     /// `S_IFIFO`: named pipe (fifo).
@@ -1220,7 +1220,10 @@ mod tests {
         let vp: Vnode<crate::fs::testfs::TestGlue> = Vnode::new_unpooled();
         assert_eq!(vp.rdev.load(Ordering::Relaxed), 0, "no specinfo, no device");
         // NODEV is all ones: bit 31 and the low half read back whole, apart from the mark.
-        for dev in [sysdefs::types::makedev(4, 2), super::super::bio::NODEV] {
+        for dev in [
+            sysdefs::base::types::makedev(4, 2),
+            super::super::bio::NODEV,
+        ] {
             let Some(si) = MBox::new(M_VNODE, M_WAITOK, Specinfo::new(dev, 0, None)) else {
                 panic!("no memory for a specinfo");
             };

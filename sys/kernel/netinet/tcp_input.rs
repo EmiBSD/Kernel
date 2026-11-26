@@ -200,22 +200,22 @@ use hal::sync::netlock::NetHeld;
 use hal::sync::once::OnceStatic;
 use hal::sync::rwlock::Guarded;
 use libkern::timingsafe_bcmp;
-use sysdefs::errno::Errno;
-use sysdefs::net_if::IFF_LOOPBACK;
-use sysdefs::netinet_in::{IPPROTO_DONE, IPPROTO_TCP, SockaddrIn};
-use sysdefs::netinet_ip::{IPTOS_ECN_CE, IPTOS_ECN_MASK, Ip};
-use sysdefs::netinet_ip6::{IPV6_MMTU, Ip6Frag, Ip6Hdr};
-use sysdefs::netinet_tcp::{
+use sysdefs::base::errno::Errno;
+use sysdefs::net::if_::IFF_LOOPBACK;
+use sysdefs::net::socket::{AF_INET, AF_INET6, SO_ACCEPTCONN, SO_DEBUG, SO_OOBINLINE};
+use sysdefs::netinet::in_::{IPPROTO_DONE, IPPROTO_TCP, SockaddrIn};
+use sysdefs::netinet::ip::{IPTOS_ECN_CE, IPTOS_ECN_MASK, Ip};
+use sysdefs::netinet::ip6::{IPV6_MMTU, Ip6Frag, Ip6Hdr};
+use sysdefs::netinet::tcp::{
     MAX_TCPOPTLEN, TCP_MAX_WINSHIFT, TCP_MAXWIN, TCPOLEN_MAXSEG, TCPOLEN_SACK_PERMITTED,
     TCPOLEN_SIGLEN, TCPOLEN_SIGNATURE, TCPOLEN_TIMESTAMP, TCPOLEN_TSTAMP_APPA, TCPOLEN_WINDOW,
     TCPOPT_EOL, TCPOPT_MAXSEG, TCPOPT_NOP, TCPOPT_SACK, TCPOPT_SACK_PERMITTED, TCPOPT_SIGNATURE,
     TCPOPT_TIMESTAMP, TCPOPT_TSTAMP_HDR, TCPOPT_WINDOW, TH_ACK, TH_CWR, TH_ECE, TH_FIN, TH_PUSH,
     TH_RST, TH_SYN, TH_URG, TcpSeq, Tcphdr,
 };
-use sysdefs::netinet6_in6::{
+use sysdefs::netinet6::in6::{
     SockaddrIn6, in6_are_addr_equal, in6_is_addr_multicast, in6_is_addr_unspecified,
 };
-use sysdefs::socket::{AF_INET, AF_INET6, SO_ACCEPTCONN, SO_DEBUG, SO_OOBINLINE};
 
 use crate::assert::{kassert, kpanic};
 use crate::crypto::md5::MD5_DIGEST_LENGTH;
@@ -3072,7 +3072,7 @@ mod tests {
             st.t_rttmin = rttmin;
             st.t_rtttime = 5;
             st.t_rxtshift = 3;
-            st.t_softerror = Some(sysdefs::errno::Errno::EHOSTDOWN);
+            st.t_softerror = Some(sysdefs::base::errno::Errno::EHOSTDOWN);
             tcp_xmit_timer(&mut st, rtt);
             assert_eq!(
                 (st.t_srtt, st.t_rttvar, st.t_rxtcur),
@@ -3227,8 +3227,8 @@ mod tests {
 
     // tcp_dooptions and tcp_pulloutofband (N6.6a4).
 
-    use sysdefs::netinet_in::{IPPROTO_TCP, InAddr};
-    use sysdefs::netinet_tcp::{TCPOLEN_SACK, TH_ACK};
+    use sysdefs::netinet::in_::{IPPROTO_TCP, InAddr};
+    use sysdefs::netinet::tcp::{TCPOLEN_SACK, TH_ACK};
 
     use crate::crypto::md5::Md5Ctx;
     use crate::net::mbuf::{M_COPYALL, MT_DATA, MbufBox, m_clget, m_copym, m_gethdr};
@@ -3726,7 +3726,7 @@ mod tests {
     // the socket buffers and the test interface's wire.
 
     use hal::sync::netlock::NETLOCK;
-    use sysdefs::netinet6_in6::In6Addr;
+    use sysdefs::netinet6::in6::In6Addr;
 
     use crate::net::mbuf::MbufList;
     use crate::net::socket::Socket;

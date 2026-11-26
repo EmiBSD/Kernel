@@ -251,9 +251,11 @@ use hal::sync::rwlock::{RW_INTR, RawRwlock, WriteWitness};
 use hal::sync::sleep::tsleep_nsec;
 use hal::sync::slot::ReadMostly;
 use libz::crc32;
-use sysdefs::disk::{DKF_CONSTRUCTED, DKF_NOLABELREAD, DKF_OPENED, DM_OPENBLCK, DM_OPENPART};
-use sysdefs::disk::{DS_DISKNAMELEN, Diskstats};
-use sysdefs::disklabel::{
+use sysdefs::base::types::{Daddr, Dev, major, makedev, minor};
+use sysdefs::base::uuid::Uuid;
+use sysdefs::dev::disk::{DKF_CONSTRUCTED, DKF_NOLABELREAD, DKF_OPENED, DM_OPENBLCK, DM_OPENPART};
+use sysdefs::dev::disk::{DS_DISKNAMELEN, Diskstats};
+use sysdefs::dev::disklabel::{
     DISKLABEL_SIZE, DISKMAGIC, DOS_LABELSECTOR, DOS_MAXEBR, DOSBBSECTOR, DOSMBR_SIGNATURE,
     DOSMBR_SIGNATURE_OFF, DOSPTYP_EFI, DOSPTYP_EFISYS, DOSPTYP_EXTEND, DOSPTYP_EXTENDL,
     DOSPTYP_FAT12, DOSPTYP_FAT16B, DOSPTYP_FAT16L, DOSPTYP_FAT16S, DOSPTYP_FAT32, DOSPTYP_FAT32L,
@@ -265,13 +267,11 @@ use sysdefs::disklabel::{
     dl_partname2num, dl_partnum2name, dl_sectoblk, dl_setbend, dl_setbstart, dl_setdsize,
     dl_setpoffset, dl_setpsize, makediskdev,
 };
-use sysdefs::dkio::DIOCGDINFO;
-use sysdefs::fcntl::FREAD;
-use sysdefs::net_if::IfTimeval;
-use sysdefs::reboot::RB_ASKNAME;
-use sysdefs::stat::{S_IFBLK, S_IFCHR};
-use sysdefs::types::{Daddr, Dev, major, makedev, minor};
-use sysdefs::uuid::Uuid;
+use sysdefs::dev::dkio::DIOCGDINFO;
+use sysdefs::file::fcntl::FREAD;
+use sysdefs::file::stat::{S_IFBLK, S_IFCHR};
+use sysdefs::net::if_::IfTimeval;
+use sysdefs::proc::reboot::RB_ASKNAME;
 
 use crate::assert::kpanic;
 use crate::base::log::LOG_PRINTF;
@@ -292,7 +292,7 @@ use crate::fs::vops::{Cred, vop_close, vop_ioctl, vop_open};
 use crate::proc::ProcGlue;
 use crate::time::clock::{Timeval, sec_to_nsec};
 use crate::time::tc::microuptime;
-use sysdefs::errno::Errno;
+use sysdefs::base::errno::Errno;
 
 /// `DUID_SIZE`.
 pub const DUID_SIZE: usize = 8;
@@ -2304,11 +2304,11 @@ pub fn dk_mountroot<G: ProcGlue>() -> Result<(), Errno> {
     }
     let fstype = dl.d_partitions[part].p_fstype;
     #[cfg(feature = "ext2fs")]
-    if fstype == sysdefs::disklabel::FS_EXT2FS {
+    if fstype == sysdefs::dev::disklabel::FS_EXT2FS {
         return crate::fs::ufs::ext2fs::ext2fs_vfsops::ext2fs_mountroot::<G>(rootdev, swapdev);
     }
     #[cfg(feature = "cd9660")]
-    if fstype == sysdefs::disklabel::FS_ISO9660 {
+    if fstype == sysdefs::dev::disklabel::FS_ISO9660 {
         return crate::fs::isofs::cd9660::cd9660_vfsops::cd9660_mountroot::<G>(rootdev, swapdev);
     }
     if fstype != FS_BSDFFS {
@@ -2635,7 +2635,7 @@ mod tests {
     use super::*;
     use hal::sysbytes::DisklabelBytes;
     use hal::user::AbiBytes;
-    use sysdefs::disklabel::{DOSPARTOFF, DOSPTYP_FAT32, FS_SWAP};
+    use sysdefs::dev::disklabel::{DOSPARTOFF, DOSPTYP_FAT32, FS_SWAP};
 
     /// The in-memory disk the strategy below reads and writes, in `DEV_BSIZE` sectors.
     static IMG: Mutex<Vec<u8>> = Mutex::new(Vec::new());

@@ -36,17 +36,17 @@
 
 use crate::assert::hal_panic;
 use crate::user::{AbiBytes, bytes_of, bytes_of_mut, pod_from_bytes, pod_to_bytes, zeroed};
-use sysdefs::disklabel::{
+use sysdefs::base::pod::AbiPod;
+use sysdefs::dev::disklabel::{
     DISKLABEL_PARTITIONS_OFFSET, DISKLABEL_SIZE, Disklabel, MAXPARTITIONSUNIT, Partition,
 };
-use sysdefs::mount::Fhandle;
-use sysdefs::net_if::{Ifaliasreq, Ifreq};
-use sysdefs::netinet_ip_icmp::Icmp;
-use sysdefs::netinet6_in6::SockaddrIn6;
-use sysdefs::netinet6_in6_var::{Icmp6Ifstat, In6Addrlifetime, In6Ifreq, In6Ifstat};
-use sysdefs::nfs_nfsproto::Nfsfh;
-use sysdefs::pod::AbiPod;
-use sysdefs::socket::Sockaddr;
+use sysdefs::fs::mount::Fhandle;
+use sysdefs::fs::nfs::nfsproto::Nfsfh;
+use sysdefs::net::if_::{Ifaliasreq, Ifreq};
+use sysdefs::net::socket::Sockaddr;
+use sysdefs::netinet::ip_icmp::Icmp;
+use sysdefs::netinet6::in6::SockaddrIn6;
+use sysdefs::netinet6::in6_var::{Icmp6Ifstat, In6Addrlifetime, In6Ifreq, In6Ifstat};
 
 /// `Disklabel` as the C casts it from a sector buffer, and its checksum words.
 pub trait DisklabelBytes: Sized {
@@ -287,7 +287,7 @@ in6_ifreq_accessor! {
 mod tests {
     mod disk {
         use super::super::*;
-        use sysdefs::disk::*;
+        use sysdefs::dev::disk::*;
 
         #[test]
         fn diskstats_is_its_112_bytes() {
@@ -300,7 +300,7 @@ mod tests {
 
     mod disklabel {
         use super::super::*;
-        use sysdefs::disklabel::*;
+        use sysdefs::dev::disklabel::*;
 
         #[test]
         fn label_bytes_follow_the_c_layout() {
@@ -324,7 +324,7 @@ mod tests {
     }
 
     mod mbuf {
-        use sysdefs::mbuf::*;
+        use sysdefs::net::mbuf::*;
 
         #[test]
         fn mbstat_is_the_c_s_seventeen_words() {
@@ -341,11 +341,11 @@ mod tests {
     mod mount {
         use super::super::*;
         use crate::user::bytes_of;
-        use sysdefs::mount::*;
+        use sysdefs::fs::mount::*;
 
         /// The bytes of a `T` whose every byte is its own offset (mod 256), then the `T` read
         /// out of them.
-        fn offsets<T: sysdefs::pod::AbiPod>(len: usize) -> Option<T> {
+        fn offsets<T: sysdefs::base::pod::AbiPod>(len: usize) -> Option<T> {
             let b: [u8; 256] = core::array::from_fn(|i| i as u8);
             let v: [u8; 512] = core::array::from_fn(|i| b[i % 256]);
             crate::user::pod_from_bytes(&v[..len])
@@ -421,7 +421,7 @@ mod tests {
     }
 
     mod net_if {
-        use sysdefs::net_if::*;
+        use sysdefs::net::if_::*;
 
         #[test]
         fn lladdr_follows_the_name() {
@@ -457,9 +457,9 @@ mod tests {
         use super::super::In6IfreqRu;
         use crate::user::bytes_of;
         use core::mem::offset_of;
-        use sysdefs::netinet6_in6::In6Addr;
-        use sysdefs::netinet6_in6::SockaddrIn6;
-        use sysdefs::netinet6_in6_var::*;
+        use sysdefs::netinet6::in6::In6Addr;
+        use sysdefs::netinet6::in6::SockaddrIn6;
+        use sysdefs::netinet6::in6_var::*;
 
         #[test]
         fn the_union_members_sit_at_its_start() {
@@ -496,7 +496,7 @@ mod tests {
 
     mod netinet6_raw_ip6 {
         use crate::user::bytes_of;
-        use sysdefs::netinet6_raw_ip6::*;
+        use sysdefs::netinet6::raw_ip6::*;
 
         #[test]
         fn the_statistics_are_the_c_layout() {
@@ -515,8 +515,8 @@ mod tests {
 
     mod netinet_in_var {
         use crate::user::bytes_of;
-        use sysdefs::netinet_in::InAddr;
-        use sysdefs::netinet_in_var::*;
+        use sysdefs::netinet::in_::InAddr;
+        use sysdefs::netinet::in_var::*;
 
         #[test]
         fn the_address_sits_where_the_union_does() {
@@ -543,8 +543,8 @@ mod tests {
 
     mod netinet_ip {
         use crate::user::bytes_of;
-        use sysdefs::endian::{htonl, htons, ntohs};
-        use sysdefs::netinet_ip::*;
+        use sysdefs::base::endian::{htonl, htons, ntohs};
+        use sysdefs::netinet::ip::*;
 
         #[test]
         fn header_layout_on_the_wire() {
@@ -589,7 +589,7 @@ mod tests {
 
     mod netinet_ip_divert {
         use crate::user::bytes_of;
-        use sysdefs::netinet_ip_divert::*;
+        use sysdefs::netinet::ip_divert::*;
 
         #[test]
         fn the_statistics_are_the_c_layout() {
@@ -608,8 +608,8 @@ mod tests {
 
     mod netinet_ip_icmp {
         use super::super::*;
-        use sysdefs::netinet_in::InAddr;
-        use sysdefs::netinet_ip_icmp::*;
+        use sysdefs::netinet::in_::InAddr;
+        use sysdefs::netinet::ip_icmp::*;
 
         #[test]
         fn the_unions_members_sit_at_their_offsets() {
@@ -653,8 +653,8 @@ mod tests {
 
     mod netinet_tcp {
         use crate::user::bytes_of;
-        use sysdefs::endian::{htonl, htons, ntohl, ntohs};
-        use sysdefs::netinet_tcp::*;
+        use sysdefs::base::endian::{htonl, htons, ntohl, ntohs};
+        use sysdefs::netinet::tcp::*;
 
         #[test]
         fn header_layout_on_the_wire() {
@@ -704,8 +704,8 @@ mod tests {
 
     mod netinet_tcp_var {
         use crate::user::{bytes_of, pod_from_bytes};
-        use sysdefs::netinet_tcp_var::*;
-        use sysdefs::socket::AF_INET6;
+        use sysdefs::net::socket::AF_INET6;
+        use sysdefs::netinet::tcp_var::*;
 
         #[test]
         fn a_mapping_round_trips_through_its_bytes_whole() {
@@ -748,9 +748,9 @@ mod tests {
 
     mod netinet_udp_var {
         use crate::user::bytes_of;
-        use sysdefs::netinet_ip_var::Ipovly;
-        use sysdefs::netinet_udp::Udphdr;
-        use sysdefs::netinet_udp_var::*;
+        use sysdefs::netinet::ip_var::Ipovly;
+        use sysdefs::netinet::udp::Udphdr;
+        use sysdefs::netinet::udp_var::*;
 
         #[test]
         fn the_statistics_are_thirteen_words_in_the_c_order() {
@@ -794,7 +794,7 @@ mod tests {
 
     mod nfs_nfsproto {
         use super::super::*;
-        use sysdefs::nfs_nfsproto::*;
+        use sysdefs::fs::nfs::nfsproto::*;
 
         #[test]
         fn file_handle_generic_member_is_the_first_bytes() {
@@ -812,8 +812,8 @@ mod tests {
 
     mod socket {
         use crate::user::{bytes_of, pod_from_bytes};
-        use sysdefs::socket::*;
-        use sysdefs::types::Socklen;
+        use sysdefs::base::types::Socklen;
+        use sysdefs::net::socket::*;
 
         #[test]
         fn the_images_round_trip_through_their_bytes() {
@@ -876,7 +876,7 @@ mod tests {
 
     mod un {
         use crate::user::{bytes_of, pod_from_bytes};
-        use sysdefs::un::*;
+        use sysdefs::net::un::*;
 
         #[test]
         fn a_sockaddr_un_round_trips_through_its_bytes() {
@@ -895,7 +895,7 @@ mod tests {
 
     mod net_route {
         use crate::mem::pod;
-        use sysdefs::net_route::*;
+        use sysdefs::net::route::*;
 
         #[test]
         fn a_message_header_is_read_and_written_in_its_bytes() {

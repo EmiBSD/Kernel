@@ -46,7 +46,7 @@ use core::any::Any;
 
 use hal::bridges::AlreadyRegistered;
 use hal::sync::once::OnceStatic;
-use sysdefs::errno::Errno;
+use sysdefs::base::errno::Errno;
 
 use crate::assert::kpanic;
 use crate::net::if_var::{IfaddrRef, Netstack};
@@ -55,7 +55,7 @@ use crate::net::route::Route;
 
 /// `sizeof(union sockaddr_union)`: its largest member, a `struct sockaddr_in6` (the SA
 /// lookups' address arguments, [`Ipsec::tcp_signature_tdb`]'s).
-pub const SOCKADDR_UNION_LEN: usize = core::mem::size_of::<sysdefs::netinet6_in6::SockaddrIn6>();
+pub const SOCKADDR_UNION_LEN: usize = core::mem::size_of::<sysdefs::netinet6::in6::SockaddrIn6>();
 
 /// `struct ipsec_level`: the security levels of a socket (`inp_seclevel`, `ip_ipsp.h`), the
 /// argument `ip_output` passes to the SPD lookup.
@@ -230,7 +230,7 @@ pub trait Ipsec: Sync {
         _ns: Option<&mut Netstack>,
     ) -> i32 {
         drop(mp.take());
-        sysdefs::netinet_in::IPPROTO_DONE
+        sysdefs::netinet::in_::IPPROTO_DONE
     }
 
     /// `udpencap_ctlinput(cmd, sa, rdomain, v)` (`udp_ctlinput`'s path MTU discovery for

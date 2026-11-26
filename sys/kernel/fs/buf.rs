@@ -126,9 +126,9 @@ use hal::ds::owned::{OwnedEntry, SecondaryEntry, SecondaryRef};
 use hal::mem::mapped::MappedBytes;
 use hal::mem::pool::BoxPool;
 use hal::sync::rwlock::Guarded;
-use sysdefs::errno::Errno;
-use sysdefs::param::PAGE_SIZE;
-use sysdefs::types::{Daddr, Dev, Off};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::param::PAGE_SIZE;
+use sysdefs::base::types::{Daddr, Dev, Off};
 
 use super::bio::{CACHE, Cache, VnodeBufs};
 use super::bufq::Bufq;

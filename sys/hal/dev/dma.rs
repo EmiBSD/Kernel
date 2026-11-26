@@ -163,8 +163,8 @@ use crate::arch::current::param::PAGE_SIZE;
 use crate::assert::hal_panic;
 use crate::mem::trust::check_block;
 use crate::user::{bytes_of, bytes_of_mut, zeroed};
-use sysdefs::errno::Errno;
-use sysdefs::pod::AbiPod;
+use sysdefs::base::errno::Errno;
+use sysdefs::base::pod::AbiPod;
 
 /// The word a copy moves at a time where the buffer's address is aligned for it.
 type Word = u64;

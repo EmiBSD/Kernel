@@ -242,8 +242,8 @@ use kernel::fs::syscalls::{sys_lseek, sys_open, sys_stat};
 use kernel::fs::vnode::{GETCWD_CHECK_ACCESS, LK_NOWAIT, VDIR, VROOT, Vattr};
 use kernel::fs::vnops::{vn_close, vn_open};
 use kernel::fs::vops::{Nd, VFS_ROOT, Vfs};
-use sysdefs::fcntl::{F_POSIX, F_SETLK, F_UNLCK, F_WRLCK, FREAD, Flock, O_RDONLY};
-use sysdefs::unistd::SEEK_SET;
+use sysdefs::file::fcntl::{F_POSIX, F_SETLK, F_UNLCK, F_WRLCK, FREAD, Flock, O_RDONLY};
+use sysdefs::proc::unistd::SEEK_SET;
 
 use hal::sync::rwlock::RecursiveRwlock;
 use kernel::file::uio::{Iovec, Uio};
@@ -255,8 +255,8 @@ use kernel::fs::vnode::{
 };
 use kernel::fs::vops::{Cred, Vnops, vop_islocked, vop_readdir, vop_unlock};
 use kernel::proc::Thread;
-use sysdefs::errno::Errno;
-use sysdefs::types::makedev;
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::makedev;
 
 /// Repetitions per bench.
 const REPS: usize = 7;
@@ -559,7 +559,7 @@ impl Vfs<TestGlue> for NamesFs {
         &self,
         _mp: &'static Mount<TestGlue>,
         _cmds: i32,
-        _uid: sysdefs::types::Uid,
+        _uid: sysdefs::base::types::Uid,
         _arg: usize,
         _p: &Thread<TestGlue>,
     ) -> Result<(), Errno> {
@@ -568,7 +568,7 @@ impl Vfs<TestGlue> for NamesFs {
     fn statfs(
         &self,
         _mp: &'static Mount<TestGlue>,
-        _sbp: &mut sysdefs::mount::Statfs,
+        _sbp: &mut sysdefs::fs::mount::Statfs,
         _p: &Thread<TestGlue>,
     ) -> Result<(), Errno> {
         Ok(())
@@ -586,21 +586,21 @@ impl Vfs<TestGlue> for NamesFs {
     fn vget(
         &self,
         mp: &'static Mount<TestGlue>,
-        ino: sysdefs::types::Ino,
+        ino: sysdefs::base::types::Ino,
     ) -> Result<&'static Vnode<TestGlue>, Errno> {
         nvget(mp, ino as usize)
     }
     fn fhtovp(
         &self,
         _mp: &'static Mount<TestGlue>,
-        _fid: &sysdefs::mount::Fid,
+        _fid: &sysdefs::fs::mount::Fid,
     ) -> Result<&'static Vnode<TestGlue>, Errno> {
         Err(Errno::EOPNOTSUPP)
     }
     fn vptofh(
         &self,
         _vp: &'static Vnode<TestGlue>,
-        _fid: &mut sysdefs::mount::Fid,
+        _fid: &mut sysdefs::fs::mount::Fid,
     ) -> Result<(), Errno> {
         Err(Errno::EOPNOTSUPP)
     }
@@ -616,7 +616,7 @@ impl Vfs<TestGlue> for NamesFs {
 
 /// The names bench's configured type.
 static NAMES_CONF: Vfsconf<TestGlue> =
-    Vfsconf::new(&NAMES_FS, b"namesfs", 98, sysdefs::mount::MNT_LOCAL, 0);
+    Vfsconf::new(&NAMES_FS, b"namesfs", 98, sysdefs::fs::mount::MNT_LOCAL, 0);
 
 /// The names bench's file system as root, and a thread of a process of its own with
 /// credentials and a descriptor table whose current directory is that root (what
@@ -628,7 +628,7 @@ fn names_root() -> &'static Thread<TestGlue> {
         *m = Some(mp);
     }
     mountlist_insert_tail(mp);
-    mp.flag_set(sysdefs::mount::MNT_ROOTFS);
+    mp.flag_set(sysdefs::fs::mount::MNT_ROOTFS);
     let root = need(VFS_ROOT(mp), "VFS_ROOT");
     kernel::fs::init::set_rootvnode(Some(root));
     vref(root);
@@ -1425,9 +1425,9 @@ fn nfs_srv_proc_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, 
     use kernel::fs::ufs::ffs::testffs::{self, newfs};
     use kernel::fs::vops::VFS_VPTOFH;
     use kernel::net::mbuf::{m_devget, mbinit, nmbclust_update};
-    use sysdefs::mount::{ExportArgs, MNT_EXPORTED, Xucred};
-    use sysdefs::mount::{Fhandle, Fid};
-    use sysdefs::syslimits::NGROUPS_MAX;
+    use sysdefs::base::syslimits::NGROUPS_MAX;
+    use sysdefs::fs::mount::{ExportArgs, MNT_EXPORTED, Xucred};
+    use sysdefs::fs::mount::{Fhandle, Fid};
 
     const ROWS: [&str; 2] = ["nfs.srv.getattr.udp", "nfs.srv.read.8k"];
     if !ROWS.iter().any(|n| wanted(n)) {
@@ -1471,7 +1471,7 @@ fn nfs_srv_proc_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, 
     vput(rvp);
     let slp = NfssvcSock::<TestGlue>::new(None);
     slp.ns_sotype
-        .store(sysdefs::socket::SOCK_DGRAM, Ordering::Relaxed);
+        .store(sysdefs::net::socket::SOCK_DGRAM, Ordering::Relaxed);
     let procs = nfsrv3_procs::<TestGlue>();
     let client = [16u8, 2, 3, 32, 127, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0];
     // One request through procedure `procnum`: the reply, if any, is dropped.
@@ -1559,8 +1559,8 @@ fn nfs_client_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f6
     use kernel::fs::subr::vput;
     use kernel::fs::vnode::{VDIR, VREG};
     use kernel::fs::vops::Cred;
-    use sysdefs::mount::{NFSMNT_DUMBTIMR, NFSMNT_GOTFSINFO, NFSMNT_NFSV3};
-    use sysdefs::socket::{SOCK_DGRAM, SOCK_STREAM};
+    use sysdefs::fs::mount::{NFSMNT_DUMBTIMR, NFSMNT_GOTFSINFO, NFSMNT_NFSV3};
+    use sysdefs::net::socket::{SOCK_DGRAM, SOCK_STREAM};
 
     const ROWS: [&str; 8] = [
         "nfs.rpc.null.udp",
@@ -2005,7 +2005,7 @@ fn fuse_rows(
     use kernel::fs::fuse::fusebuf::{fb_delete, fb_queue, fb_setup};
     use kernel::fs::fuse::fusebuf_h::{FUSE_GETATTR, FuseAttrOut, FuseInHeader, FuseOutHeader};
     use kernel::fs::fuse::testfuse;
-    use sysdefs::types::Dev;
+    use sysdefs::base::types::Dev;
 
     /// The bench's daemon: reads the one request queued into a buffer and answers it with a
     /// `fuse_attr_out` written from another, no allocation.
@@ -2433,7 +2433,7 @@ fn ffs_rows(wanted: &dyn Fn(&str) -> bool, names: &[&str], report: &dyn Fn(&str,
     use kernel::fs::syscalls::{sys_getdents, sys_unlink};
     use kernel::fs::ufs::ffs::testffs::{self, newfs};
     use kernel::fs::ufs::ufs::inode::vtoi;
-    use sysdefs::fcntl::{O_CREAT, O_RDWR};
+    use sysdefs::file::fcntl::{O_CREAT, O_RDWR};
 
     let mut img = newfs::Image::new(FFS_IMAGE);
     img.add_file(b"f", b"hello, world\n");

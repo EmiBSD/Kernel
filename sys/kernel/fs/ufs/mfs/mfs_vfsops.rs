@@ -61,7 +61,7 @@
 //! last, so the child sleeps in [`mfs_start`] until the file system is unmounted.
 //!
 //! ## Deviations
-//! - `mfs_minor` is an atomic; `mfs_args` is `sysdefs::mount::MfsArgs`, read from the kernel
+//! - `mfs_minor` is an atomic; `mfs_args` is `sysdefs::fs::mount::MfsArgs`, read from the kernel
 //!   copy of the arguments. A new mount whose arguments are missing (the C's NULL `data`)
 //!   answers `EINVAL` where the C dereferences it (only an in-kernel caller passes none).
 //! - `EXPORTMFS` (the update that only changes the export list) is not configured: an update
@@ -100,13 +100,13 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use hal::mem::malloc::MArc;
 use hal::sync::sleep::{INFSLP, PCATCH, PWAIT};
 use hal::user::UserPtr;
-use sysdefs::errno::Errno;
-use sysdefs::mount::{
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Ino, Uid, makedev};
+use sysdefs::fs::mount::{
     Fid, MNAMELEN, MNT_FORCE, MNT_RDONLY, MNT_UPDATE, MNT_WANTRDWR, MfsArgs, Statfs, VB_NOWAIT,
     VB_WRITE,
 };
-use sysdefs::signal::{SIGKILL, sigmask};
-use sysdefs::types::{Ino, Uid, makedev};
+use sysdefs::sig::signal::{SIGKILL, sigmask};
 
 use super::mfs_vnops::mfs_serve;
 use super::mfsnode::{Mfsnode, vtomfs};
@@ -382,9 +382,9 @@ pub(super) mod fixture {
     use std::vec::Vec;
 
     use hal::user::UserPtr;
-    use sysdefs::errno::Errno;
-    use sysdefs::fcntl::{O_CREAT, O_RDONLY, O_RDWR};
-    use sysdefs::mount::{MNT_LOCAL, MOUNT_MFS, MfsArgs, VB_WAIT, VB_WRITE};
+    use sysdefs::base::errno::Errno;
+    use sysdefs::file::fcntl::{O_CREAT, O_RDONLY, O_RDWR};
+    use sysdefs::fs::mount::{MNT_LOCAL, MOUNT_MFS, MfsArgs, VB_WAIT, VB_WRITE};
 
     use super::{Mfs, mfs_init, mfs_mount};
     use crate::file::descrip::{sys_close, sys_read, sys_write};
@@ -593,8 +593,8 @@ mod tests {
 
     use std::vec::Vec;
 
-    use sysdefs::mount::MNT_RDONLY;
-    use sysdefs::signal::SIGTERM;
+    use sysdefs::fs::mount::MNT_RDONLY;
+    use sysdefs::sig::signal::SIGTERM;
 
     use super::fixture::{
         FSPEC, TEST_MFS_CONF, UFSPEC, UIMAGE, attach, image, mfs_args, mount, mount_root,
@@ -611,7 +611,7 @@ mod tests {
     use crate::fs::ufs::ffs::testffs::newfs::{FFS1_4M, Image, Params, check};
     use crate::fs::ufs::mfs::mfsnode::{M_MFSNODE, mfstov};
     use crate::testutil::malloc_out;
-    use sysdefs::types::major;
+    use sysdefs::base::types::major;
 
     /// FFS1, 128 KB in one cylinder group: what fits the user memory of the copy double (the
     /// super-block search reads 64 KiB in first, so an image needs 72 KiB at least).
@@ -827,7 +827,11 @@ mod tests {
 
         // The mount is busy (a reader in it): the unmount cannot start, the signal is
         // "processed".
-        vfs_busy(mp, sysdefs::mount::VB_READ | sysdefs::mount::VB_WAIT).unwrap();
+        vfs_busy(
+            mp,
+            sysdefs::fs::mount::VB_READ | sysdefs::fs::mount::VB_WAIT,
+        )
+        .unwrap();
         p.p_siglist.fetch_or(sigmask(SIGTERM), Ordering::Relaxed);
         mfs_signalled(mp, p);
         assert_eq!(p.p_siglist.load(Ordering::Relaxed) & sigmask(SIGTERM), 0);

@@ -91,7 +91,7 @@ use crate::sys::errno::Errno;
 use crate::sys::malloc::M_DEVBUF;
 use crate::sys::mbuf::{Mbuf, MbufList, MbufQueue, mq_drops, mq_len};
 use crate::sys::socket::Sockaddr;
-use sysdefs::net_if::SockaddrDl;
+use sysdefs::net::if_::SockaddrDl;
 
 pub use crate::net::if_::{IF_TMPLIST_LOCK, IFNETLIST};
 pub use kernel::net::if_var::{

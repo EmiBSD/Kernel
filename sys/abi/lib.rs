@@ -35,7 +35,7 @@
 //! registered, the one upward call, with the trap's registers uninterpreted: the per-arch
 //! system call convention is this crate's ([`arch`], decision 53). The constant headers of the ABI edge
 //! (`<sys/syscall.h>`, `<sys/errno.h>`, ...) are `hal`'s, inherited from LZ (`sys/lib/sysdefs/`,
-//! the user's decision of 2026-10-16): the numbers of the table are `sysdefs::syscall`'s,
+//! the user's decision of 2026-10-16): the numbers of the table are `sysdefs::proc::syscall`'s,
 //! not a copy of them.
 //!
 //! The translations sit in one file per group of the kernel ([`proc`], [`vm`], [`file`],

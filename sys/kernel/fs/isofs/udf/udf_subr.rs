@@ -97,9 +97,9 @@
 use core::mem::offset_of;
 
 use hal::mem::malloc::{M_WAITOK, MBox};
-use sysdefs::endian::{letoh32, letoh64};
-use sysdefs::errno::Errno;
-use sysdefs::types::{Daddr, Dev, Ino, Off};
+use sysdefs::base::endian::{letoh32, letoh64};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Daddr, Dev, Ino, Off};
 
 use crate::assert::kpanic;
 use crate::fs::isofs::udf::ecma167_udf::{
@@ -333,9 +333,9 @@ const _: () = assert!(PVD_VOL_ID + 32 == SPOOF_HEAD);
 pub fn udf_disklabelspoof<G: ProcGlue>(
     dev: Dev,
     io: crate::dev::disk::Strat<'_>,
-    lp: &mut sysdefs::disklabel::Disklabel,
+    lp: &mut sysdefs::dev::disklabel::Disklabel,
 ) -> Result<(), Errno> {
-    use sysdefs::disklabel::{
+    use sysdefs::dev::disklabel::{
         DISKMAGIC, FS_UDF, MAXPARTITIONS, RAW_PART, dl_getdsize, dl_setpoffset, dl_setpsize,
     };
 

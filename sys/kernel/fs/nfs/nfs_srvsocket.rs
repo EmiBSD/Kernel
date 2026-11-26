@@ -106,8 +106,8 @@ use hal::ds::owned::OwnedSlist;
 use hal::mem::pool::{AnyArc, PR_WAITOK, PoolBox};
 use hal::sync::klock;
 use hal::sync::sleep::wakeup_one;
-use sysdefs::errno::Errno;
-use sysdefs::socket::MSG_DONTWAIT;
+use sysdefs::base::errno::Errno;
+use sysdefs::net::socket::MSG_DONTWAIT;
 
 use super::nfs_socket::count_uio;
 use super::nfs_srvsubs::nfsrv_errmap;
@@ -139,8 +139,8 @@ use crate::net::proto::PR_CONNREQUIRED;
 use crate::net::socket::{Socket, soreceive};
 use crate::proc::ProcGlue;
 use crate::proc::cred::UcredCell;
-use sysdefs::socket::SOCK_STREAM;
-use sysdefs::syslimits::NGROUPS_MAX;
+use sysdefs::base::syslimits::NGROUPS_MAX;
+use sysdefs::net::socket::SOCK_STREAM;
 
 /// The receive's count of bytes wanted: "as many as there are" (`uio_resid = 1000000000`).
 const RCV_ALL: usize = 1_000_000_000;
@@ -709,7 +709,7 @@ mod tests {
     use crate::fs::nfs::nfssvc::{Nfsd, NfssvcSockRef};
     use crate::fs::testfs::TestGlue;
     use crate::net::mbuf::m_devget;
-    use sysdefs::nfs_rpcv2::AUTH_BADCRED;
+    use sysdefs::fs::nfs::rpcv2::AUTH_BADCRED;
 
     type G = TestGlue;
 

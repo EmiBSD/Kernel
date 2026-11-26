@@ -122,7 +122,7 @@ use super::super::include::pte::{
 };
 use super::layout::{NPDPG, PTP_LEVELS, va_sign_pos};
 use crate::mem::trust::check_frame;
-use sysdefs::types::{Paddr, Vaddr};
+use sysdefs::base::types::{Paddr, Vaddr};
 
 /// `pmap_direct_base`: where physical address 0 is mapped (the boot glue's, at bootstrap).
 static DIRECT_BASE: AtomicUsize = AtomicUsize::new(0);

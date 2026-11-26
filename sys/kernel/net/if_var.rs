@@ -246,8 +246,8 @@ use hal::sync::once::OnceStatic;
 use hal::sync::refcnt::Refcnt;
 use hal::sync::rwlock::{Exclusive, Guarded, RawRwlock, Witness};
 use hal::sync::slot::ReadMostly;
-use sysdefs::errno::Errno;
-use sysdefs::net_if::{IFDESCRSIZE, IFNAMSIZ, IfRxring, SockaddrDl};
+use sysdefs::base::errno::Errno;
+use sysdefs::net::if_::{IFDESCRSIZE, IFNAMSIZ, IfRxring, SockaddrDl};
 
 use crate::assert::kpanic;
 use crate::base::prf::Str;
@@ -1979,13 +1979,13 @@ mod tests {
     /// A multicast record of `ifp` for group 224.0.0.`n`, the allocator's one handle.
     fn group_of(ifp: &Ifnet, n: u8) -> MArc<InMulti> {
         let inm = crate::netinet::in_var::in_multi_alloc(ifp);
-        inm.inm_sin.set(sysdefs::netinet_in::SockaddrIn {
+        inm.inm_sin.set(sysdefs::netinet::in_::SockaddrIn {
             sin_len: 16,
-            sin_family: sysdefs::socket::AF_INET,
-            sin_addr: sysdefs::netinet_in::InAddr {
+            sin_family: sysdefs::net::socket::AF_INET,
+            sin_addr: sysdefs::netinet::in_::InAddr {
                 s_addr: u32::from_ne_bytes([224, 0, 0, n]),
             },
-            ..sysdefs::netinet_in::SockaddrIn::default()
+            ..sysdefs::netinet::in_::SockaddrIn::default()
         });
         inm
     }

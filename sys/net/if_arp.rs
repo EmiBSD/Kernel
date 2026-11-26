@@ -49,9 +49,9 @@
 
 /* <CODE> */
 //! Address Resolution Protocol: `<net/if_arp.h>`, `hal`'s since N6.4b
-//! (`sysdefs::net_if_arp`), re-exported under LZ's path for `bsd`'s importers.
+//! (`sysdefs::net::if_arp`), re-exported under LZ's path for `bsd`'s importers.
 //!
 //! Upstream: sys/net/if_arp.h @ 3ce1f3f79392
 
-pub use sysdefs::net_if_arp::*;
+pub use sysdefs::net::if_arp::*;
 /* </CODE> */

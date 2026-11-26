@@ -63,9 +63,9 @@
 //!   C's `fbuf->op.out.entry`. The `FUSE_FORGET` of the reclaim path is handed to the device's
 //!   queue, which frees it once read (or at once when no device is open).
 
-use sysdefs::errno::Errno;
-use sysdefs::mount::MNT_RDONLY;
-use sysdefs::types::Ino;
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::Ino;
+use sysdefs::fs::mount::MNT_RDONLY;
 
 use crate::fs::fuse::fuse_device::fuse_device_queue_fbuf;
 use crate::fs::fuse::fusebuf::{fb_delete, fb_queue, fb_setup};
@@ -294,8 +294,8 @@ mod tests {
 
     use std::{assert, assert_eq, assert_ne};
 
-    use sysdefs::mount::MNT_RDONLY;
-    use sysdefs::types::Dev;
+    use sysdefs::base::types::Dev;
+    use sysdefs::fs::mount::MNT_RDONLY;
 
     use super::*;
     use crate::fs::fuse::fuse_device::fuseclose;

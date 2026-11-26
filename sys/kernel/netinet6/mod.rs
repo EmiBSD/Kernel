@@ -19,7 +19,7 @@
 /* <CODE> */
 //! The IPv6 protocols (N6.5): OpenBSD's `sys/netinet6/`, as its modules move from `bsd`
 //! (`docs/ROADMAP.md`'s N6 row). N6.4c1 brings the protocol control block's IPv6 lookups
-//! (D-17); the userland halves of the headers are `sysdefs::netinet6_*`.
+//! (D-17); the userland halves of the headers are `sysdefs::netinet6::*`.
 
 pub mod dest6;
 pub mod frag6;

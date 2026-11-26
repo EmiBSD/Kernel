@@ -125,12 +125,14 @@ use core::marker::PhantomData;
 use core::ptr;
 
 use hal::user::pod_from_bytes;
-use sysdefs::errno::Errno;
-use sysdefs::fcntl::oflags;
-use sysdefs::fcntl::{FREAD, FWRITE, Flock, O_CREAT, O_EXCL, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY};
-use sysdefs::mount::MNT_RDONLY;
-use sysdefs::stat::{ALLPERMS, S_BLKSIZE, S_IFMT, S_IRUSR, S_IRWXU, S_ISTXT, S_IXUSR};
-use sysdefs::types::{Daddr, Dev, Gid, Mode, Nlink, Register, Uid};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Daddr, Dev, Gid, Mode, Nlink, Register, Uid};
+use sysdefs::file::fcntl::oflags;
+use sysdefs::file::fcntl::{
+    FREAD, FWRITE, Flock, O_CREAT, O_EXCL, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY,
+};
+use sysdefs::file::stat::{ALLPERMS, S_BLKSIZE, S_IFMT, S_IRUSR, S_IRWXU, S_ISTXT, S_IXUSR};
+use sysdefs::fs::mount::MNT_RDONLY;
 
 use crate::assert::kpanic;
 use crate::file::event::{
@@ -173,7 +175,7 @@ use crate::fs::vnode::{
 use crate::fs::vops::{Cn, Cred, IoBuf, VFS_VGET, Vnops, vop_abortop, vop_getattr, vop_unlock};
 use crate::proc::{ProcGlue, Thread};
 use crate::vm::vnode::{uvm_vnp_setsize, uvm_vnp_uncache};
-use sysdefs::dirent::{Dirent, MAXNAMLEN, dirent_recsize};
+use sysdefs::file::dirent::{Dirent, MAXNAMLEN, dirent_recsize};
 
 /// `fusefs_vops`: the operations of a FUSE vnode (the glue's `FuseTables::vops`, one
 /// address).
@@ -2077,7 +2079,7 @@ mod tests {
     use std::vec::Vec;
     use std::{assert, assert_eq, assert_ne, vec};
 
-    use sysdefs::types::{Dev, Off};
+    use sysdefs::base::types::{Dev, Off};
 
     use super::*;
     use crate::file::event::{EVFILT_USER, kqueue_alloc, kqueue_init, test_knote, test_knote_drop};
@@ -2103,7 +2105,7 @@ mod tests {
         vop_mknod, vop_open, vop_pathconf, vop_readlink, vop_remove, vop_rename, vop_rmdir,
         vop_symlink,
     };
-    use sysdefs::unistd::_PC_LINK_MAX;
+    use sysdefs::proc::unistd::_PC_LINK_MAX;
 
     type P = &'static Thread<TestGlue>;
     type V = &'static Vnode<TestGlue>;

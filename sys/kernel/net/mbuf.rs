@@ -291,14 +291,14 @@ use hal::mem::pool::{
 use hal::sync::mutex::Mutexed;
 use hal::sync::once::OnceStatic;
 use hal::sync::percpu::Counters;
-use sysdefs::errno::Errno;
-pub use sysdefs::mbuf::{
+use sysdefs::base::errno::Errno;
+use sysdefs::base::param::PAGE_SIZE;
+use sysdefs::base::types::Vaddr;
+use sysdefs::net::if_::{IFQCTL_DROPS, IFQCTL_LEN, IFQCTL_MAXLEN};
+pub use sysdefs::net::mbuf::{
     MT_CONTROL, MT_DATA, MT_FREE, MT_FTABLE, MT_HEADER, MT_NTYPES, MT_OOBDATA, MT_SONAME,
     MT_SOOPTS, Mbstat,
 };
-use sysdefs::net_if::{IFQCTL_DROPS, IFQCTL_LEN, IFQCTL_MAXLEN};
-use sysdefs::param::PAGE_SIZE;
-use sysdefs::types::Vaddr;
 
 use crate::assert::{kassert, kdassert, kpanic};
 use crate::base::sysctl::{SysctlReq, int as sysctl_int, rdint as sysctl_rdint};

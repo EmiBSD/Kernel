@@ -48,12 +48,12 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! Interface types: `<net/if_types.h>`, `hal`'s since N6.3a (`sysdefs::net_if`),
+//! Interface types: `<net/if_types.h>`, `hal`'s since N6.3a (`sysdefs::net::if_`),
 //! re-exported under LZ's path for `bsd`'s importers.
 //!
 //! Upstream: sys/net/if_types.h @ 3ce1f3f79392
 
-pub use sysdefs::net_if::{
+pub use sysdefs::net::if_::{
     IFT_1822, IFT_A12MPPSWITCH, IFT_AAL2, IFT_AAL5, IFT_ADSL, IFT_AFLANE8023, IFT_AFLANE8025,
     IFT_ARAP, IFT_ARCNET, IFT_ARCNETPLUS, IFT_ASYNC, IFT_ATM, IFT_ATMDXI, IFT_ATMFUNI, IFT_ATMIMA,
     IFT_ATMLOGICAL, IFT_ATMRADIO, IFT_ATMSUBINTERFACE, IFT_ATMVCIENDPT, IFT_ATMVIRTUAL,

@@ -182,21 +182,21 @@ use hal::sync::mutex::Mutexed;
 use hal::sync::netlock::NetHeld;
 use hal::sync::once::OnceStatic;
 use hal::sync::rwlock::WitnessPart;
-use sysdefs::endian::{htonl, htons, ntohl, ntohs};
-use sysdefs::errno::Errno;
-use sysdefs::mbuf::MT_HEADER;
-use sysdefs::net_route::{RTF_HOST, RTV_MTU};
-use sysdefs::netinet_in::{INADDR_ANY, IPPROTO_TCP, SockaddrIn};
-use sysdefs::netinet_ip::{Ip, Ippseudo};
-use sysdefs::netinet_ip_icmp::ICMP_MINLEN;
-use sysdefs::netinet_ip_var::Ipovly;
-use sysdefs::netinet_ip6::{IPV6_FLOWLABEL_MASK, Ip6Hdr, Ip6HdrPseudo};
-use sysdefs::netinet_tcp::{
+use sysdefs::base::endian::{htonl, htons, ntohl, ntohs};
+use sysdefs::base::errno::Errno;
+use sysdefs::net::mbuf::MT_HEADER;
+use sysdefs::net::route::{RTF_HOST, RTV_MTU};
+use sysdefs::net::socket::{AF_INET, AF_INET6};
+use sysdefs::netinet::in_::{INADDR_ANY, IPPROTO_TCP, SockaddrIn};
+use sysdefs::netinet::ip::{Ip, Ippseudo};
+use sysdefs::netinet::ip_icmp::ICMP_MINLEN;
+use sysdefs::netinet::ip_var::Ipovly;
+use sysdefs::netinet::ip6::{IPV6_FLOWLABEL_MASK, Ip6Hdr, Ip6HdrPseudo};
+use sysdefs::netinet::tcp::{
     TCP_MAX_WINSHIFT, TCP_MAXWIN, TCP_MSS, TCPOLEN_TSTAMP_APPA, TCPOPT_TSTAMP_HDR, TH_ACK, TH_RST,
     TcpSeq, Tcphdr,
 };
-use sysdefs::netinet6_in6::{SA6_ANY, SockaddrIn6, in6_is_addr_unspecified, in6_is_addr_v4mapped};
-use sysdefs::socket::{AF_INET, AF_INET6};
+use sysdefs::netinet6::in6::{SA6_ANY, SockaddrIn6, in6_is_addr_unspecified, in6_is_addr_v4mapped};
 
 use crate::assert::{kassert, kpanic};
 use crate::crypto::md5::{MD5_DIGEST_LENGTH, Md5Ctx};
@@ -440,7 +440,7 @@ pub fn tcp_template<G: ProcGlue>(tp: &mut Tp<'_, '_, G>) -> Option<MbufBox> {
 
 /// Writes the header `v` at `off` of `d`, the data of an mbuf this file just sized for it
 /// (`MHLEN` holds an IPv6 and a TCP header with their options: the C's `CTASSERT`s).
-pub(crate) fn put_hdr<T: sysdefs::pod::AbiPod>(d: &mut [u8], off: usize, v: &T) {
+pub(crate) fn put_hdr<T: sysdefs::base::pod::AbiPod>(d: &mut [u8], off: usize, v: &T) {
     if !pod::put(d, off, v) {
         kpanic(format_args!(
             "tcp: a header of {} bytes at {off} of {}",
@@ -642,7 +642,7 @@ pub fn tcp_respond<G: ProcGlue>(
 
 /// A header read out of `template` at `off` (unaligned, as the C's `memcpy`); `panic(9)`
 /// when the bytes are shorter (LZ's `read_from`; the C's callers pass whole headers).
-fn read_hdr<T: sysdefs::pod::AbiPod>(template: &[u8], off: usize) -> T {
+fn read_hdr<T: sysdefs::base::pod::AbiPod>(template: &[u8], off: usize) -> T {
     match pod::at::<T>(template, off) {
         Some(h) => h,
         None => kpanic(format_args!(
@@ -1609,7 +1609,7 @@ pub(crate) mod testtcp {
             &testinet::InetDom
         }
         fn ty(&self) -> i16 {
-            sysdefs::socket::SOCK_STREAM as i16
+            sysdefs::net::socket::SOCK_STREAM as i16
         }
         fn protocol(&self) -> i16 {
             IPPROTO_TCP as i16
@@ -1627,7 +1627,7 @@ pub(crate) mod testtcp {
             &testinet::Inet6Dom
         }
         fn ty(&self) -> i16 {
-            sysdefs::socket::SOCK_STREAM as i16
+            sysdefs::net::socket::SOCK_STREAM as i16
         }
         fn protocol(&self) -> i16 {
             IPPROTO_TCP as i16
@@ -1647,7 +1647,7 @@ pub(crate) mod testtcp {
             proto,
             M_WAIT,
             crate::net::socket::SoInit {
-                so_type: sysdefs::socket::SOCK_STREAM,
+                so_type: sysdefs::net::socket::SOCK_STREAM,
                 state: 0,
                 options: 0,
                 linger: 0,
@@ -1691,7 +1691,7 @@ pub(crate) mod testtcp {
 
     /// A listener of [`TcpProto`] bound to `addr`:`port` (`[0; 4]`: the wildcard).
     pub(crate) fn listen_at(addr: [u8; 4], port: u16) -> (SocketRef<G>, InpcbRef<G>) {
-        use sysdefs::netinet_in::InAddr;
+        use sysdefs::netinet::in_::InAddr;
 
         listen_proto(
             &TcpProto,
@@ -1710,7 +1710,7 @@ pub(crate) mod testtcp {
 
     /// A listener of [`Tcp6Proto`] bound to [`addr`]:`port`.
     pub(crate) fn listen6_at(
-        addr: sysdefs::netinet6_in6::In6Addr,
+        addr: sysdefs::netinet6::in6::In6Addr,
         port: u16,
     ) -> (SocketRef<G>, InpcbRef<G>) {
         listen_proto(
@@ -1774,7 +1774,7 @@ pub(crate) mod testtcp {
         n: u8,
         peer: [u8; 4],
     ) -> (SocketRef<G>, InpcbRef<G>, &'static Wire) {
-        use sysdefs::netinet_in::InAddr;
+        use sysdefs::netinet::in_::InAddr;
 
         let (_ifp, d) = testinet::iface(name, [10, 9, n, 1]);
         if peer[..2] == [10, 20] {
@@ -1828,7 +1828,7 @@ pub(crate) mod testtcp {
 
     /// `route add 10.20.p.0/24 10.9.n.254` (through the interface of 10.9.`n`.1).
     fn gateway_route(n: u8, p: u8) {
-        use sysdefs::net_route::{
+        use sysdefs::net::route::{
             RTAX_DST, RTAX_GATEWAY, RTAX_NETMASK, RTF_GATEWAY, RTF_STATIC, RTF_UP, RTM_ADD,
             RTP_STATIC,
         };
@@ -1862,8 +1862,8 @@ pub(crate) mod testtcp {
     }
 
     /// 2001:db8:`n`::`h`.
-    pub(crate) fn a6(n: u8, h: u8) -> sysdefs::netinet6_in6::In6Addr {
-        let mut a = sysdefs::netinet6_in6::In6Addr::default();
+    pub(crate) fn a6(n: u8, h: u8) -> sysdefs::netinet6::in6::In6Addr {
+        let mut a = sysdefs::netinet6::in6::In6Addr::default();
         a.s6_addr[..4].copy_from_slice(&[0x20, 0x01, 0x0d, 0xb8]);
         a.s6_addr[5] = n;
         a.s6_addr[15] = h;
@@ -1873,7 +1873,7 @@ pub(crate) mod testtcp {
     /// A new test interface `name` (MTU 1500, not Ethernet, so no neighbor to resolve) with
     /// 2001:db8:`n`::1/64 and its routes: its wire.
     pub(crate) fn iface6(name: &[u8], n: u8) -> &'static Wire {
-        use sysdefs::net_if::{IFF_MULTICAST, IFF_RUNNING, IFF_UP};
+        use sysdefs::net::if_::{IFF_MULTICAST, IFF_RUNNING, IFF_UP};
 
         let d: &'static Wire = std::boxed::Box::leak(std::boxed::Box::default());
         let ifp = crate::net::if_::test_ifnet_with(name, d);
@@ -1953,7 +1953,7 @@ pub(crate) mod testtcp {
 
     /// Appends `bytes` to the send buffer of `so`, as `sosend` leaves them for `tcp_output`.
     pub(crate) fn queue(so: &crate::net::socket::Socket<G>, bytes: &[u8]) {
-        let mut m = m_gethdr(M_WAIT, sysdefs::mbuf::MT_DATA).expect("an mbuf");
+        let mut m = m_gethdr(M_WAIT, sysdefs::net::mbuf::MT_DATA).expect("an mbuf");
         if bytes.len() > crate::net::mbuf::MHLEN {
             assert!(
                 crate::net::mbuf::m_clget(&mut m, M_WAIT, bytes.len() as u32),
@@ -2160,7 +2160,7 @@ pub(crate) mod testtcp {
                     r.push((skip, protoff, af, head));
                 }
             }
-            sysdefs::netinet_in::IPPROTO_DONE
+            sysdefs::netinet::in_::IPPROTO_DONE
         }
         fn udpencap_ctlinput(&self, _rdomain: u32, _icmp: &[u8]) {
             self.udpencap_ctl.fetch_add(1, Ordering::Relaxed);
@@ -2179,7 +2179,7 @@ pub(crate) mod testtcp {
             let net6 = a6(SIG_NET, 0).s6_addr;
             let inet6 = |u: &[u8; SOCKADDR_UNION_LEN]| {
                 u[0] == 28
-                    && u[1] == sysdefs::socket::AF_INET6
+                    && u[1] == sysdefs::net::socket::AF_INET6
                     && u[2..8] == [0; 6]
                     && u[8..16] == net6[..8]
                     && u[24..] == [0; 4]
@@ -2203,8 +2203,8 @@ mod tests {
     // an independent MD5 of the same bytes, a reply to a segment as the wire sees it.
 
     use hal::sync::netlock::NETLOCK;
-    use sysdefs::netinet_in::InAddr;
-    use sysdefs::netinet6_in6::In6Addr;
+    use sysdefs::netinet::in_::InAddr;
+    use sysdefs::netinet6::in6::In6Addr;
 
     use super::*;
     use crate::net::mbuf::{MT_DATA, m_gethdr};
@@ -2400,7 +2400,7 @@ mod tests {
             th_sport: htons(1234),
             th_dport: htons(80),
             th_seq: 1000,
-            th_flags: sysdefs::netinet_tcp::TH_SYN,
+            th_flags: sysdefs::netinet::tcp::TH_SYN,
             ..Tcphdr::default()
         };
         let before = d.sent.load(Ordering::Relaxed);
@@ -2852,7 +2852,7 @@ mod tests {
     /// 2001:db8:`n`::2) and the TCP header's first eight bytes (7000 to 80, `seq`) at 40.
     fn ctl6(cmd: i32, n: u8, seq: u32) {
         use core::cell::Cell;
-        use sysdefs::netinet_icmp6::Icmp6Hdr;
+        use sysdefs::netinet::icmp6::Icmp6Hdr;
 
         use crate::netinet::tcp_subr::testtcp::a6;
         use crate::netinet6::icmp6::Ip6CtlParam;

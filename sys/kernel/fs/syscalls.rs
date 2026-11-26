@@ -159,29 +159,29 @@ use hal::mem::malloc::{M_WAITOK, MArray};
 use hal::sync::klock;
 use hal::sync::sleep::INFSLP;
 use hal::user::{UserPtr, bytes_of};
-use sysdefs::errno::Errno;
-use sysdefs::fcntl::{
+use sysdefs::base::errno::Errno;
+use sysdefs::base::limits::INT_MAX;
+use sysdefs::base::types::{Dev, Gid, Mode, Off, Register, Uid, major};
+use sysdefs::file::fcntl::{
     AT_EACCESS, AT_FDCWD, AT_REMOVEDIR, AT_SYMLINK_FOLLOW, AT_SYMLINK_NOFOLLOW, F_FLOCK, F_RDLCK,
     F_SETLK, F_WAIT, F_WRLCK, FMASK, FNONBLOCK, FREAD, FWRITE, Flock, O_ACCMODE, O_CLOEXEC,
     O_CLOFORK, O_CREAT, O_DIRECTORY, O_EXLOCK, O_RDONLY, O_RDWR, O_SHLOCK, O_TRUNC, fflags,
 };
-use sysdefs::limits::INT_MAX;
-use sysdefs::mount::{
+use sysdefs::file::stat::{
+    ACCESSPERMS, ALLPERMS, S_IFBLK, S_IFCHR, S_IFIFO, S_IFMT, S_ISTXT, Stat, UTIME_NOW, UTIME_OMIT,
+};
+use sysdefs::fs::mount::{
     Fhandle, Fsid, MFSNAMELEN, MNAMELEN, MNT_ASYNC, MNT_DOOMED, MNT_FORCE, MNT_LAZY, MNT_NOATIME,
     MNT_NODEV, MNT_NOEXEC, MNT_NOPERM, MNT_NOSUID, MNT_NOWAIT, MNT_OP_FLAGS, MNT_RDONLY,
     MNT_RELOAD, MNT_ROOTFS, MNT_SYNCHRONOUS, MNT_UPDATE, MNT_VISFLAGMASK, MNT_WAIT, MNT_WANTRDWR,
     MNT_WXALLOWED, Statfs, VB_DUPOK, VB_NOWAIT, VB_READ, VB_WAIT, VB_WRITE,
 };
-use sysdefs::pledge::{
+use sysdefs::proc::pledge::{
     PLEDGE_CHOWN, PLEDGE_CPATH, PLEDGE_DPATH, PLEDGE_FATTR, PLEDGE_RPATH, PLEDGE_TTY,
     PLEDGE_UNVEIL, PLEDGE_WPATH,
 };
-use sysdefs::signal::SIGXFSZ;
-use sysdefs::stat::{
-    ACCESSPERMS, ALLPERMS, S_IFBLK, S_IFCHR, S_IFIFO, S_IFMT, S_ISTXT, Stat, UTIME_NOW, UTIME_OMIT,
-};
-use sysdefs::types::{Dev, Gid, Mode, Off, Register, Uid, major};
-use sysdefs::unistd::{R_OK, SEEK_SET, W_OK, X_OK};
+use sysdefs::proc::unistd::{R_OK, SEEK_SET, W_OK, X_OK};
+use sysdefs::sig::signal::SIGXFSZ;
 
 use super::cache::{cache_purge, cache_purgevfs};
 use super::getcwd::{M_TEMP, vfs_getcwd_common};
@@ -3038,11 +3038,11 @@ mod tests {
     use std::vec;
     use std::vec::Vec;
 
-    use sysdefs::fcntl::{O_NONBLOCK, O_WRONLY};
-    use sysdefs::mount::MNT_UNMOUNT;
-    use sysdefs::signal::sigmask;
-    use sysdefs::stat::{S_IFLNK, S_IFREG};
-    use sysdefs::unistd::{_PC_LINK_MAX, _PC_PATH_MAX};
+    use sysdefs::file::fcntl::{O_NONBLOCK, O_WRONLY};
+    use sysdefs::file::stat::{S_IFLNK, S_IFREG};
+    use sysdefs::fs::mount::MNT_UNMOUNT;
+    use sysdefs::proc::unistd::{_PC_LINK_MAX, _PC_PATH_MAX};
+    use sysdefs::sig::signal::sigmask;
 
     use super::*;
     use crate::file::FileOps;
@@ -4599,7 +4599,7 @@ mod tests {
             n
         };
         assert_eq!(sys_lseek(p, fd, 40, SEEK_SET), Ok(40));
-        assert_eq!(sys_lseek(p, fd, 2, sysdefs::unistd::SEEK_CUR), Ok(42));
+        assert_eq!(sys_lseek(p, fd, 2, sysdefs::proc::unistd::SEEK_CUR), Ok(42));
         assert_eq!(seeks(p, fd), 2);
         assert_eq!(sys_lseek(p, fd, -100, SEEK_SET), Err(Errno::EINVAL));
         assert_eq!(seeks(p, fd), 2);
@@ -4637,13 +4637,13 @@ mod tests {
         let mut names = Vec::new();
         let mut at = 0;
         while at < n {
-            let d = sysdefs::dirent::Dirent::from_bytes(&b[at..]).unwrap();
+            let d = sysdefs::file::dirent::Dirent::from_bytes(&b[at..]).unwrap();
             assert_eq!(d.d_reclen % 8, 0);
             assert_eq!(
                 usize::from(d.d_reclen),
-                sysdefs::dirent::dirent_recsize(d.d_namlen.into())
+                sysdefs::file::dirent::dirent_recsize(d.d_namlen.into())
             );
-            let o = sysdefs::dirent::Dirent::NAME_OFFSET;
+            let o = sysdefs::file::dirent::Dirent::NAME_OFFSET;
             names.push(b[at + o..at + o + usize::from(d.d_namlen)].to_vec());
             at += usize::from(d.d_reclen);
         }

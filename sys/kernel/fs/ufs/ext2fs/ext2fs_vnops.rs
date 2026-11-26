@@ -120,14 +120,16 @@
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use sysdefs::errno::Errno;
-use sysdefs::fcntl::{FWRITE, Flock, O_APPEND};
-use sysdefs::mount::{MNT_NOATIME, MNT_WAIT};
-use sysdefs::param::PAGE_SIZE;
-use sysdefs::stat::{ACCESSPERMS, ALLPERMS, APPEND, IMMUTABLE, S_ISTXT, SF_APPEND, SF_IMMUTABLE};
-use sysdefs::syslimits::LINK_MAX;
-use sysdefs::types::{Daddr, Dev, Gid, Mode, Nlink, Off, Register, Uid};
-use sysdefs::unistd::_PC_TIMESTAMP_RESOLUTION;
+use sysdefs::base::errno::Errno;
+use sysdefs::base::param::PAGE_SIZE;
+use sysdefs::base::syslimits::LINK_MAX;
+use sysdefs::base::types::{Daddr, Dev, Gid, Mode, Nlink, Off, Register, Uid};
+use sysdefs::file::fcntl::{FWRITE, Flock, O_APPEND};
+use sysdefs::file::stat::{
+    ACCESSPERMS, ALLPERMS, APPEND, IMMUTABLE, S_ISTXT, SF_APPEND, SF_IMMUTABLE,
+};
+use sysdefs::fs::mount::{MNT_NOATIME, MNT_WAIT};
+use sysdefs::proc::unistd::_PC_TIMESTAMP_RESOLUTION;
 
 use super::ext2fs_alloc::ext2fs_inode_alloc;
 use super::ext2fs_bmap::ext2fs_bmap;
@@ -1684,7 +1686,7 @@ mod tests {
     use core::sync::atomic::AtomicI32;
     use std::{assert, assert_eq, assert_ne};
 
-    use sysdefs::mount::MNT_RDONLY;
+    use sysdefs::fs::mount::MNT_RDONLY;
 
     use super::super::testext2fs::newfs::{self, HELLO};
     use super::super::testext2fs::{attach, mount, new_file, root, vget};
@@ -1757,7 +1759,7 @@ mod tests {
         let mut r: Register = 0;
         ext2fs_pathconf(vp, _PC_TIMESTAMP_RESOLUTION, &mut r).unwrap();
         assert_eq!(r, 1_000_000_000);
-        ext2fs_pathconf(vp, sysdefs::unistd::_PC_LINK_MAX, &mut r).unwrap();
+        ext2fs_pathconf(vp, sysdefs::proc::unistd::_PC_LINK_MAX, &mut r).unwrap();
         assert_eq!(r, LINK_MAX as Register);
         assert_eq!(ext2fs_pathconf(vp, 9999, &mut r), Err(Errno::EINVAL));
         drop(d);
@@ -1845,13 +1847,13 @@ mod tests {
         use std::{assert, assert_eq, assert_ne, format, vec};
 
         use hal::user::UserPtr;
-        use sysdefs::dirent::Dirent;
-        use sysdefs::fcntl::{O_CREAT, O_RDONLY, O_RDWR};
-        use sysdefs::mount::MNT_RDONLY;
-        use sysdefs::stat::{S_IFCHR, S_IFIFO};
-        use sysdefs::syslimits::LINK_MAX;
-        use sysdefs::types::makedev;
-        use sysdefs::unistd::{_PC_LINK_MAX, _PC_TIMESTAMP_RESOLUTION};
+        use sysdefs::base::syslimits::LINK_MAX;
+        use sysdefs::base::types::makedev;
+        use sysdefs::file::dirent::Dirent;
+        use sysdefs::file::fcntl::{O_CREAT, O_RDONLY, O_RDWR};
+        use sysdefs::file::stat::{S_IFCHR, S_IFIFO};
+        use sysdefs::fs::mount::MNT_RDONLY;
+        use sysdefs::proc::unistd::{_PC_LINK_MAX, _PC_TIMESTAMP_RESOLUTION};
 
         use super::super::super::ext2fs::{E2FS_ISCLEAN, Ext2fs};
         use super::super::super::ext2fs_dinode::{EXT2_ROOTINO, Ext2fsDinode};

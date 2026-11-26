@@ -142,13 +142,13 @@ pub use crate::time::tc::{getnanouptime, nanoboottime, nanotime, nanouptime};
 
 use crate::assert::{kassert, kpanic};
 use hal::sync::once::OnceStatic;
-use sysdefs::errno::Errno;
-use sysdefs::kernel::HZ;
+use sysdefs::base::errno::Errno;
+use sysdefs::base::kernel::HZ;
 
 /// One second in nanoseconds.
 const NSEC_PER_SEC: i64 = 1_000_000_000;
 
-pub use sysdefs::stat::Timespec;
+pub use sysdefs::file::stat::Timespec;
 
 /// `struct timespec`'s arithmetic (`<sys/time.h>`'s macros): the type is `sysdefs`' (decision
 /// 54), `{ sec, nsec }` and `ZERO` are its own, the rest is here.

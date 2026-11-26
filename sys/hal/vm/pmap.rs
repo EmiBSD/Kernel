@@ -208,9 +208,9 @@ use crate::dev::mmio::DevCache;
 use crate::mem::pool::{PR_WAITOK, PoolArc, TypedPool};
 use crate::sync::mutex::Mutexed;
 use crate::sync::once::OnceStatic;
-use sysdefs::errno::Errno;
-use sysdefs::mman::{PROT_NONE, PROT_READ, PROT_WRITE};
-use sysdefs::types::{Paddr, Vaddr, Vsize};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Paddr, Vaddr, Vsize};
+use sysdefs::vm::mman::{PROT_NONE, PROT_READ, PROT_WRITE};
 
 /// `vm_prot_t`: a combination of `PROT_READ`, `PROT_WRITE`, `PROT_EXEC` (`<sys/mman.h>`), the
 /// same type as `uvm_extern`'s.
@@ -1292,7 +1292,7 @@ mod tests {
     use super::*;
     use crate::arch::current::param::PAGE_SIZE;
     use crate::testutil;
-    use sysdefs::mman::{PROT_NONE, PROT_READ, PROT_WRITE};
+    use sysdefs::vm::mman::{PROT_NONE, PROT_READ, PROT_WRITE};
 
     /// The tests that count the pmap pool's items run one at a time (the pool is shared).
     fn serial() -> MutexGuard<'static, ()> {
@@ -1560,7 +1560,7 @@ mod tests {
         let md = PageMd::new();
         assert!(md.claim_view(false));
         md.check_protect(PROT_READ);
-        md.check_protect(PROT_READ | sysdefs::mman::PROT_EXEC);
+        md.check_protect(PROT_READ | sysdefs::vm::mman::PROT_EXEC);
     }
 
     #[test]
@@ -1568,7 +1568,7 @@ mod tests {
     fn exec_alone_would_strip_a_views_read_access() {
         let md = PageMd::new();
         assert!(md.claim_view(false));
-        md.check_protect(sysdefs::mman::PROT_EXEC);
+        md.check_protect(sysdefs::vm::mman::PROT_EXEC);
     }
 
     #[test]

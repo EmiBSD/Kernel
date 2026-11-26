@@ -544,7 +544,7 @@ mod tests {
             "use hal::cons::putc;\n",
             "use hal::sysbytes::DisklabelBytes;\n",
             "use hal::{cpu::intr::IPL_BIO, ds::link::Link, sync::percpu::PerCpu};\n",
-            "use hal::{bridges, user::X};\nuse sysdefs::errno::Errno;\n",
+            "use hal::{bridges, user::X};\nuse sysdefs::base::errno::Errno;\n",
             "hal::pin_adapter!(X);\n",
             "let n = hal::user::copyin();\n",
             "use hal::dev::mmio::Mmio;\n",

@@ -70,7 +70,7 @@
 //! - N6.6a2: [`tcp_rcvseqinit`] and [`tcp_sendseqinit`] over the kernel's control block's
 //!   members (`TcpState`), the C's macros as functions.
 
-use sysdefs::netinet_tcp::TcpSeq;
+use sysdefs::netinet::tcp::TcpSeq;
 
 use crate::netinet::tcp_var::TcpState;
 

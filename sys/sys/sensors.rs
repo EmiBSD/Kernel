@@ -47,7 +47,7 @@
 //!
 //! Upstream: sys/sys/sensors.h @ 3ce1f3f79392
 //!
-//! Status: `ported`. Since N7.1b the user structures, types and flags are `sysdefs::sensors`'s
+//! Status: `ported`. Since N7.1b the user structures, types and flags are `sysdefs::dev::sensors`'s
 //! and `struct ksensor`, `struct ksensordev` and `struct sensor_task` with their functions
 //! `kernel::dev::sensors`'s, re-exported here for the drivers still in `bsd`
 //! (`docs/SCAFFOLDING.md`).
@@ -55,7 +55,7 @@
 pub use kernel::dev::sensors::{
     Ksensor, Ksensordev, SensorTask, SensorTaskRef, StatusCell, TimevalCell, TypeCell,
 };
-pub use sysdefs::sensors::*;
+pub use sysdefs::dev::sensors::*;
 /* </CODE> */
 
 /* <TESTS> */
