@@ -119,11 +119,12 @@ use crate::sys::timeout::Timeout;
 use crate::sys::types::{Paddr, Vaddr, Vsize, major};
 use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 use crate::sys::vnode::IO_NDELAY;
+use hal::dma::{DmaBuf, DmaReq, DmaSync};
 use hal::pmap::PMAP_WIRED;
 use hal::vm::uvmexp::UVMEXP;
 use kernel::fork::NTHREADS;
 use kernel::vm::fault::{VM_FAULT_INVALID, uvm_fault};
-use kernel::vm::km::{KD_NOWAIT, KD_WAITOK, KP_NONE, KP_PAGEABLE, KV_ANY};
+use kernel::vm::km::{KD_NOWAIT, KD_WAITOK, KP_NONE, KP_PAGEABLE, KV_ANY, bus_dma_memory};
 use kernel::vm::map::Vmspace;
 use kernel::vm::map::{uvm_mapanon, uvm_unmap, uvmspace_alloc, uvmspace_free};
 use kernel::vm::page::{
@@ -941,6 +942,45 @@ pub fn bus_dma_check(t: BusDmaTag) {
     }
     // SAFETY: allocated above, every map that loaded it is unloaded and destroyed.
     unsafe { bus_dmamem_free(t, &segs) };
+
+    // The kernel's own DMA memory (N7.0): two pages of `hal::dma::DmaBuf` from the plain tag's
+    // provider, zeroed, the first and last words and a copy across the page boundary written
+    // and read back, each sync, then the drop's unmap and free.
+    let req = DmaReq {
+        size: 2 * PAGE_SIZE,
+        align: PAGE_SIZE,
+        nowait: true,
+        zero: true,
+        ..DmaReq::default()
+    };
+    match DmaBuf::alloc(bus_dma_memory(true), &req) {
+        Ok(mut b) => {
+            let last = b.len() - size_of::<u64>();
+            let zeroed = b.read::<u64>(8) == 0;
+            b.write::<u64>(0, 0x0123_4567_89ab_cdef);
+            b.write::<u64>(last, !0x0123_4567_89ab_cdef);
+            let pattern: [u8; 64] = core::array::from_fn(|i| i as u8 ^ 0xa5);
+            b.copy_in(PAGE_SIZE - 32, &pattern);
+            for ops in [
+                DmaSync::PREREAD | DmaSync::PREWRITE,
+                DmaSync::POSTREAD,
+                DmaSync::PREWRITE,
+                DmaSync::POSTWRITE,
+            ] {
+                b.sync(0, b.len(), ops);
+            }
+            let mut back = [0u8; 64];
+            b.copy_out(PAGE_SIZE - 32, &mut back);
+            if !zeroed
+                || b.read::<u64>(0) != 0x0123_4567_89ab_cdef
+                || b.read::<u64>(last) != !0x0123_4567_89ab_cdef
+                || back != pattern
+            {
+                fail("DmaBuf");
+            }
+        }
+        Err(_) => fail("DmaBuf"),
+    }
 
     match failed {
         None => {
