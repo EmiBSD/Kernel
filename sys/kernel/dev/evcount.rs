@@ -131,6 +131,10 @@ struct PcpuCount {
 
 impl PcpuCount {
     /// A zero count.
+    #[allow(
+        clippy::declare_interior_mutable_const,
+        reason = "a fresh zero count per use: it only initialises each element of a new array"
+    )]
     const ZERO: Self = PcpuCount {
         count: AtomicU64::new(0),
         _pad: [0; 7],
@@ -277,22 +281,18 @@ fn percpu_claim() -> Option<u32> {
         i
     };
     let slot = &PERCPU[i as usize];
-    match slot.get() {
-        Some(words) => {
-            for w in words.iter() {
-                w.count.store(0, Ordering::Relaxed);
-            }
+    if let Some(words) = slot.get() {
+        for w in words.iter() {
+            w.count.store(0, Ordering::Relaxed);
         }
-        None => {
-            let Some(words) =
-                MArray::new(M_COUNTERS, M_WAITOK, hal::cpu::ncpus(), |_| PcpuCount::ZERO)
-            else {
-                percpu_release(i + 1);
-                return None;
-            };
-            // This caller claimed the slot, which had no block: its `set` is the only one.
-            let _ = slot.set(words);
-        }
+    } else {
+        let Some(words) = MArray::new(M_COUNTERS, M_WAITOK, hal::cpu::ncpus(), |_| PcpuCount::ZERO)
+        else {
+            percpu_release(i + 1);
+            return None;
+        };
+        // This caller claimed the slot, which had no block: its `set` is the only one.
+        let _ = slot.set(words);
     }
     Some(i + 1)
 }

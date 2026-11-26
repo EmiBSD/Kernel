@@ -1867,12 +1867,11 @@ impl KmBusDma {
     /// serves, as `km_alloc`'s.
     fn alloc_in(&self, nommu: bool, req: &DmaReq) -> Result<DmaBlock, Errno> {
         let size = round_page(req.size);
-        let (low, high) = match req.range {
-            Some((low, high)) => (Paddr::new(low as usize), Paddr::new(high as usize)),
-            None => {
-                let c = super::init::machine().dma_constraint;
-                (c.ucr_low, c.ucr_high)
-            }
+        let (low, high) = if let Some((low, high)) = req.range {
+            (Paddr::new(low as usize), Paddr::new(high as usize))
+        } else {
+            let c = super::init::machine().dma_constraint;
+            (c.ucr_low, c.ucr_high)
         };
         let mut plaflag = if req.nowait {
             UVM_PLA_NOWAIT
@@ -1893,7 +1892,7 @@ impl KmBusDma {
             1,
             plaflag,
         )?;
-        let Some(first) = pgl.first().map(|pg| pg.phys_addr()) else {
+        let Some(first) = pgl.first().map(super::page::VmPage::phys_addr) else {
             kpanic(format_args!("_dmamem_alloc_range: empty page list"));
         };
         let sva = if nommu {

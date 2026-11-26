@@ -388,6 +388,10 @@ struct DiskStats {
 
 /// `struct disk`: a disk's name, device, lock, statistics, open masks and in-core label (the
 /// module's redesign: a counted block, [`DiskRef`]).
+#[allow(
+    clippy::struct_field_names,
+    reason = "the fields keep the C struct disk's dk_* names"
+)]
 pub struct Disk {
     /// `dk_link`: link in global disklist.
     dk_link: PinEntry<Disk>,
@@ -545,7 +549,7 @@ impl Disk {
         self.dk_device
             .read()
             .as_ref()
-            .is_some_and(|d| core::ptr::eq(&**d, dv))
+            .is_some_and(|d| core::ptr::eq(core::ptr::from_ref(&**d), dv))
     }
 
     /// Whether the disk is on `disklist` (between `disk_attach` and `disk_detach`).
@@ -616,8 +620,7 @@ impl Disk {
     /// `&dk->dk_label->d_partitions[part]`'s address, for `DIOCGPART` (as [`Self::label_ptr`]).
     pub fn partition_ptr(&self, part: u32) -> *mut Partition {
         self.label_ptr()
-            .cast::<u8>()
-            .wrapping_add(
+            .wrapping_byte_add(
                 offset_of!(Disklabel, d_partitions)
                     + (part as usize).min(MAXPARTITIONSUNIT as usize - 1) * size_of::<Partition>(),
             )
@@ -1582,7 +1585,7 @@ pub fn setdisklabel(olp: &mut Disklabel, nlp: &mut Disklabel, openmask: u64) -> 
     if duid_iszero(&nlp.d_uid) {
         loop {
             arc4random_buf(&mut nlp.d_uid);
-            if !duid_iszero(&nlp.d_uid) && !duid_taken(&nlp.d_uid) {
+            if !duid_iszero(&nlp.d_uid) && !duid_taken(nlp.d_uid) {
                 break;
             }
         }
@@ -1605,10 +1608,10 @@ pub fn setdisklabel(olp: &mut Disklabel, nlp: &mut Disklabel, openmask: u64) -> 
 }
 
 /// `setdisklabel`'s walk of `disklist`: whether an attached disk's label carries `uid`.
-fn duid_taken(uid: &[u8; DUID_SIZE]) -> bool {
+fn duid_taken(uid: [u8; DUID_SIZE]) -> bool {
     let mut d = disk_next(None);
     while let Some(dk) = d {
-        if dk.uid() == *uid {
+        if dk.uid() == uid {
             return true;
         }
         d = disk_next(Some(&dk));
@@ -1749,10 +1752,10 @@ pub fn diskerr(bp: &Buf, dname: &str, what: &str, pri: i32, blkdone: i32, g: Opt
         sn %= cyl.max(1);
         let _ = write!(line, " tn {} sn {})", sn / trk.max(1), sn % trk.max(1));
     }
-    if pri != LOG_PRINTF {
-        hal::prf::log(pri, format_args!("{}", Str(line.bytes())));
-    } else {
+    if pri == LOG_PRINTF {
         printf(format_args!("{}", Str(line.bytes())));
+    } else {
+        hal::prf::log(pri, format_args!("{}", Str(line.bytes())));
     }
 }
 
@@ -2057,9 +2060,8 @@ pub fn disk_readlabel<G: ProcGlue>(dl: &mut Disklabel, dev: Dev) -> Result<(), D
     let chrdev = blktochr::<G>(dev);
     let rawdev = makediskdev(major(chrdev), diskunit(chrdev), RAW_PART);
 
-    let vn = match cdevvp::<G>(rawdev) {
-        Ok(Some(vn)) => vn,
-        _ => return Err(DiskReadlabelError::NoVnode { dev, rawdev }),
+    let Ok(Some(vn)) = cdevvp::<G>(rawdev) else {
+        return Err(DiskReadlabelError::NoVnode { dev, rawdev });
     };
 
     G::with_curproc(|p| {

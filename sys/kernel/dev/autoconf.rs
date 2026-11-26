@@ -402,7 +402,7 @@ fn parent_hits(t: &dyn RowTable, parent: &DevRef, cf: &dyn ConfigRow) -> usize {
         .take_while(|&&p| p >= 0)
         .filter(|&&p| {
             let p = p as usize;
-            p < n && ptr::addr_eq(t.row(p) as *const dyn ConfigRow, prow)
+            p < n && ptr::addr_eq(ptr::from_ref::<dyn ConfigRow>(t.row(p)), prow)
         })
         .count()
 }
@@ -463,7 +463,7 @@ pub fn config_search(f: Option<Submatch<'_>>, parent: &DevRef, aux: &Aux<'_>) ->
                 Str(found.row().driver().name())
             )),
             None => printf(format_args!(">>> no winning probe\n")),
-        };
+        }
     }
     m.best
 }

@@ -516,15 +516,12 @@ pub fn sensor_attach(sensdev: &Ksensordev, sens: &'static Ksensor) {
             };
             at = Some((k, numt));
         }
-        match at {
-            Some((k, numt)) => {
-                sens.numt.set(numt);
-                insert_after_nth(sh, &mut w, k, pin_static(sens));
-            }
-            None => {
-                sens.numt.set(0);
-                sh.insert_head(&mut w, pin_static(sens));
-            }
+        if let Some((k, numt)) = at {
+            sens.numt.set(numt);
+            insert_after_nth(sh, &mut w, k, pin_static(sens));
+        } else {
+            sens.numt.set(0);
+            sh.insert_head(&mut w, pin_static(sens));
         }
     }
     // we only increment maxnumt[] if the sensor was added to the last position of sensors
@@ -687,7 +684,7 @@ fn sensor_task_tick_on(st: &SensorTaskRef) {
 pub fn sensor_quiesce() {
     SENSORS_QUIESCED.store(1, Ordering::SeqCst);
     loop {
-        sleep_setup(&SENSORS_RUNNING, PZERO, "sensorpause");
+        sleep_setup(core::ptr::from_ref(&SENSORS_RUNNING), PZERO, "sensorpause");
         let busy = SENSORS_RUNNING.load(Ordering::SeqCst) > 0;
         let _ = sleep_finish(INFSLP, busy);
         if !busy {
@@ -717,7 +714,7 @@ fn sensor_task_work(arg: &AnyArc) {
     if SENSORS_RUNNING.fetch_sub(1, Ordering::SeqCst) == 1
         && SENSORS_QUIESCED.load(Ordering::SeqCst) != 0
     {
-        wakeup(&SENSORS_RUNNING);
+        wakeup(core::ptr::from_ref(&SENSORS_RUNNING));
     }
 
     if period == 0 {
@@ -763,12 +760,11 @@ fn sysctl_sensors(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
             let us = {
                 let w = SENSORS_LOCK.lock();
                 // `(enum sensor_type)name[1]`: a value outside the enum matches no sensor.
-                let ks = match SensorType::from_i32(ty) {
-                    Some(t) => sensor_find(&w, dev, t, numt)?,
-                    None => {
-                        sensordev_get(&w, dev)?;
-                        return Err(Errno::ENOENT);
-                    }
+                let ks = if let Some(t) = SensorType::from_i32(ty) {
+                    sensor_find(&w, dev, t, numt)?
+                } else {
+                    sensordev_get(&w, dev)?;
+                    return Err(Errno::ENOENT);
                 };
                 let tv = ks.tv.get();
                 Sensor {

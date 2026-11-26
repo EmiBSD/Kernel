@@ -173,7 +173,8 @@ pub fn diskmapioctl<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(
     // Stop here if the 'struct file *' has been replaced, for example by another thread
     // calling dup2(2), while this thread was sleeping in vn_open(). Note that this would
     // not happen for correct usages of "/dev/diskmap".
-    let error = if !g.ofile(fd).is_some_and(|f| FileRef::ptr_eq(&f, &fp0)) {
+    let replaced = !g.ofile(fd).is_some_and(|f| FileRef::ptr_eq(&f, &fp0));
+    let error = if replaced {
         Some(Errno::EAGAIN)
     } else {
         match fnew(p) {
