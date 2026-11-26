@@ -468,6 +468,7 @@ pub fn mi_syscall_return<G: ProcGlue>(
 /// glue, so it reaches [`mi_syscall_return`] through the trap handler the boot glue
 /// registered (`KernelTrap<G>`, docs/SCAFFOLDING.md, until N9); `panic(9)` without one,
 /// which no system call can see (the handler is registered before the first process).
+#[inline]
 pub fn syscall_return(code: Register, error: SysResult, rval: &Rval) {
     match hal::cpu::trap::handler() {
         Some(h) => h.syscall_return(code, error, rval),
