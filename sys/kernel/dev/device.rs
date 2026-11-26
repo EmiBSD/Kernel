@@ -508,6 +508,17 @@ impl UnitTable {
     }
 }
 
+impl UnitTable {
+    /// Host tests: the array forgotten, neither freed nor its handles dropped (they are an
+    /// earlier test's memory, leaked with it).
+    #[cfg(any(test, feature = "doubles"))]
+    pub(crate) fn forget(&self, w: &mut MutexedGuard<'_, ()>) {
+        if let Some(slots) = self.slots.get_mut(w).take() {
+            core::mem::forget(slots);
+        }
+    }
+}
+
 impl Default for UnitTable {
     fn default() -> Self {
         Self::new()

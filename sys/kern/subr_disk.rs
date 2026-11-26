@@ -1625,13 +1625,13 @@ pub fn getdisk(str: &[u8], defpart: u32) -> Option<(&'static Device, Dev)> {
         let _ = printf(format_args!("use one of: exit"));
         let mut d = kernel::dev::autoconf::alldevs_next(None);
         while let Some(n) = d {
-            let dv = legacy_device(&n);
-            if dv.dv_class.get() == DV_DISK {
-                let _ = printf(format_args!(" {}[a-p]", dv.xname()));
+            // The kernel's node: a native device has no legacy header.
+            if n.class() == DV_DISK {
+                let _ = printf(format_args!(" {}[a-p]", n.xname()));
             }
             #[cfg(feature = "nfsclient")]
-            if dv.dv_class.get() == DV_IFNET {
-                let _ = printf(format_args!(" {}", dv.xname()));
+            if n.class() == DV_IFNET {
+                let _ = printf(format_args!(" {}", n.xname()));
             }
             d = kernel::dev::autoconf::alldevs_next(Some(&n));
         }
@@ -1657,19 +1657,19 @@ pub fn parsedisk(str: &[u8], defpart: u32) -> Option<(&'static Device, Dev)> {
 
     let mut d = kernel::dev::autoconf::alldevs_next(None);
     while let Some(n) = d {
-        let dv = legacy_device(&n);
-        if dv.dv_class.get() == DV_DISK && dv.xname().as_bytes() == &str[..len] {
-            let majdev = findblkmajor(dv);
+        // The kernel's node's class and name; the legacy header only for the match.
+        if n.class() == DV_DISK && n.xname().as_bytes() == &str[..len] {
+            let majdev = findblkmajor(legacy_device(&n));
             if majdev < 0 {
                 return None;
             }
             return Some((
                 device_hold(&n),
-                makediskdev(majdev as u32, dv.dv_unit.get() as u32, part),
+                makediskdev(majdev as u32, n.unit() as u32, part),
             ));
         }
         #[cfg(feature = "nfsclient")]
-        if dv.dv_class.get() == DV_IFNET && dv.xname().as_bytes() == &str[..len] {
+        if n.class() == DV_IFNET && n.xname().as_bytes() == &str[..len] {
             return Some((device_hold(&n), NODEV));
         }
         d = kernel::dev::autoconf::alldevs_next(Some(&n));
@@ -2705,6 +2705,86 @@ mod tests {
         assert_eq!(&d, b"01234567");
         strncpy(&mut d, b"xyz");
         assert_eq!(&d, b"xyz\0\0\0\0\0");
+    }
+
+    /// A native driver (no legacy header): `getdisk`/`parsedisk` read the kernel's node and
+    /// never ask it for a legacy one.
+    struct Native {
+        units: &'static kernel::dev::device::UnitTable,
+    }
+
+    impl kernel::dev::device::ConfigRow for Native {
+        fn driver(&'static self) -> &'static dyn kernel::dev::device::DriverOps {
+            self
+        }
+        fn parents(&self) -> &'static [i16] {
+            &[]
+        }
+        fn starunit1(&self) -> i16 {
+            0
+        }
+        fn unit(&self) -> i16 {
+            0
+        }
+        fn set_unit(&self, _unit: i16) {}
+        fn fstate(&self) -> i16 {
+            0
+        }
+        fn set_fstate(&self, _fstate: i16) {}
+    }
+
+    impl kernel::dev::device::DriverOps for Native {
+        fn name(&self) -> &'static [u8] {
+            b"tnat"
+        }
+        fn class(&self) -> crate::sys::device::Devclass {
+            DV_DISK
+        }
+        fn mode(&self) -> i32 {
+            0
+        }
+        fn units(&self) -> &'static kernel::dev::device::UnitTable {
+            self.units
+        }
+        fn make_softc(&self, _id: &kernel::dev::device::Ident<'_>) -> hal::pool::AnyArc {
+            hal::malloc::MArc::erase(
+                hal::malloc::MArc::new(2, hal::malloc::M_NOWAIT, 0u32).expect("a softc"),
+            )
+        }
+        fn probe(
+            &self,
+            _parent: Option<&kernel::dev::device::DevRef>,
+            _m: &kernel::dev::device::Match,
+            _aux: &kernel::dev::device::Aux<'_>,
+        ) -> i32 {
+            0
+        }
+        fn attach(
+            &self,
+            _parent: Option<&kernel::dev::device::DevRef>,
+            _dev: &kernel::dev::device::DevRef,
+            _aux: &kernel::dev::device::Aux<'_>,
+        ) {
+        }
+    }
+
+    #[test]
+    fn a_native_node_on_alldevs_is_walked_by_its_kernel_fields() {
+        let (_g, _bp) = setup(1);
+        let native: &'static Native = Box::leak(Box::new(Native {
+            units: Box::leak(Box::new(kernel::dev::device::UnitTable::new())),
+        }));
+        let n = kernel::dev::autoconf::config_attach_by_hand(
+            native,
+            0,
+            &kernel::dev::device::Aux::Legacy(0),
+        );
+        assert_eq!(n.xname(), "tnat0");
+        assert!(parsedisk(b"nosuchdisk0a", 0).is_none());
+        assert!(
+            getdisk(b"nosuchdisk0a", 0).is_none(),
+            "the list names tnat0[a-p]"
+        );
     }
 }
 /* </TESTS> */

@@ -80,6 +80,11 @@
 //! - `NMPATH` is 0 (`mpath(4)` is not configured, `scsi/mpath.c` is not ported):
 //!   `config_suspend_all` has no `mpath` tree, as the C compiles it with a count of 0.
 //! - `autoconf_verbose` starts at 0 (`AUTOCONF_VERBOSE`, a kernel option not configured).
+//! - `config_attach` tells a preallocated softc from a row by the [`Match`] it is given
+//!   instead of by the parent's `CD_INDIRECT`, which is what produced that variant (LZ's).
+//! - `config_detach`'s last loop in C leaves `cf` at `cfdata[]`'s terminating entry and then
+//!   writes `cf->cf_unit = 0` into it when the driver has no units left, a store nothing
+//!   reads; without a terminating entry the store is not made (LZ's).
 //! - A device deferred twice (`config_defer`, `config_mountroot`) is `panic(9)` in every
 //!   kernel, not only under `DIAGNOSTIC`: the queue's record is the node's slot, which holds
 //!   one function (a driver's bug in the C, which a non-`DIAGNOSTIC` kernel runs twice).
@@ -104,7 +109,9 @@
 //!   alive and [`device_lookup`] refuses it (inactive, out of the table).
 //! - `config_mountroot` asks the glue whether the root is mounted (the C's `rootvp == NULL`);
 //!   LZ's stub said never. No caller at the pin runs after the root is mounted.
-//! - Cost against the C: a walk of `alldevs` from a driver's function (activate, detach
+//! - Cost against the C: `cfdata[]` is lent once per walk ([`ConfigGlue::with_rows`]: the
+//!   machine finds its end once, as LZ trims it once), each row then an index, so a search
+//!   is O(rows x parents) as the C's, one indirect call per member read; a walk of `alldevs` from a driver's function (activate, detach
 //!   children) takes [`TREE`] once a step to get the next node's handle (the C follows a
 //!   pointer under the kernel lock); attach takes it three times, detach twice; these are
 //!   attach-time paths (decision 43's `device_lookup` of `bsd`'s drivers stays the legacy
@@ -197,10 +204,9 @@ static GLUE: OnceStatic<&'static dyn ConfigGlue> = OnceStatic::new();
 /// kernel state autoconfiguration reads (`boothowto`, `rootvp`): what `config(8)` and the
 /// machine give `subr_autoconf.c`. A bridge while `bsd` implements it (`bridges.toml`).
 pub trait ConfigGlue: Sync {
-    /// The rows of `cfdata[]` in use (the C's walks stop at the first free slot).
-    fn rows(&self) -> usize;
-    /// `&cfdata[i]`, `i < rows()`.
-    fn row(&self, i: usize) -> &'static dyn ConfigRow;
+    /// `cfdata[]`'s rows in use (the C's walks stop at the first free slot), lent to `f` for
+    /// one walk: the machine finds the end once, and each row is an index.
+    fn with_rows(&self, f: &mut dyn FnMut(&dyn RowTable));
     /// `cfroots[]`: the root rows, as indices into `cfdata[]`.
     fn roots(&self) -> &'static [i16];
     /// `mainbus_cd`'s units.
@@ -211,6 +217,33 @@ pub trait ConfigGlue: Sync {
     fn boothowto(&self) -> i32;
     /// `rootvp != NULL`: the root file system is mounted.
     fn root_mounted(&self) -> bool;
+}
+
+/// `cfdata[]` as one walk sees it: its rows in use, each found in O(1).
+pub trait RowTable {
+    /// The rows in use.
+    fn len(&self) -> usize;
+    /// No row in use.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    /// `&cfdata[i]`, `i < len()`.
+    fn row(&self, i: usize) -> &'static dyn ConfigRow;
+}
+
+/// The glue's table for one walk: `f`'s result.
+fn with_rows<R>(f: impl FnOnce(&dyn RowTable) -> R) -> R {
+    let mut f = Some(f);
+    let mut out = None;
+    glue().with_rows(&mut |t| {
+        if let Some(f) = f.take() {
+            out = Some(f(t));
+        }
+    });
+    match out {
+        Some(r) => r,
+        None => kpanic(format_args!("autoconf: the glue lent no cfdata[]")),
+    }
 }
 
 /// A C string argument up to its first NUL.
@@ -328,15 +361,15 @@ fn mapply(m: &mut Matchinfo<'_>, cf: &'static dyn ConfigRow) {
 
 /// How many of `cf`'s potential parents are `parent`'s row (the C applies the match once per
 /// matching parent index; its list ends at the first negative index).
-fn parent_hits(g: &dyn ConfigGlue, parent: &DevRef, cf: &dyn ConfigRow) -> usize {
-    let n = g.rows();
+fn parent_hits(t: &dyn RowTable, parent: &DevRef, cf: &dyn ConfigRow) -> usize {
+    let n = t.len();
     let prow: *const dyn ConfigRow = parent.row();
     cf.parents()
         .iter()
         .take_while(|&&p| p >= 0)
         .filter(|&&p| {
             let p = p as usize;
-            p < n && ptr::addr_eq(g.row(p) as *const dyn ConfigRow, prow)
+            p < n && ptr::addr_eq(t.row(p) as *const dyn ConfigRow, prow)
         })
         .count()
 }
@@ -376,17 +409,19 @@ pub fn config_search(f: Option<Submatch<'_>>, parent: &DevRef, aux: &Aux<'_>) ->
     };
     let boothowto = g.boothowto();
 
-    for i in 0..g.rows() {
-        // Skip cf if no longer eligible, otherwise scan through parents for one matching
-        // `parent', and try match function.
-        let cf = g.row(i);
-        if !eligible(cf, boothowto) {
-            continue;
+    with_rows(|t| {
+        for i in 0..t.len() {
+            // Skip cf if no longer eligible, otherwise scan through parents for one matching
+            // `parent', and try match function.
+            let cf = t.row(i);
+            if !eligible(cf, boothowto) {
+                continue;
+            }
+            for _ in 0..parent_hits(t, parent, cf) {
+                mapply(&mut m, cf);
+            }
         }
-        for _ in 0..parent_hits(g, parent, cf) {
-            mapply(&mut m, cf);
-        }
-    }
+    });
 
     if AUTOCONF_VERBOSE.load(Ordering::Relaxed) != 0 {
         match &m.best {
@@ -403,26 +438,27 @@ pub fn config_search(f: Option<Submatch<'_>>, parent: &DevRef, aux: &Aux<'_>) ->
 /// `config_scan`: iterate over all potential children of some device, calling the given
 /// function for each one.
 pub fn config_scan(f: Scan<'_>, parent: &DevRef) {
-    let g = glue();
     let indirect = parent.driver().mode() & CD_INDIRECT != 0;
 
-    for i in 0..g.rows() {
-        // Skip cf if no longer eligible, otherwise scan through parents for one matching
-        // `parent', and try match function.
-        let cf = g.row(i);
-        let fstate = cf.fstate();
-        if fstate == FSTATE_FOUND || fstate == FSTATE_DNOTFOUND || fstate == FSTATE_DSTAR {
-            continue;
+    with_rows(|t| {
+        for i in 0..t.len() {
+            // Skip cf if no longer eligible, otherwise scan through parents for one matching
+            // `parent', and try match function.
+            let cf = t.row(i);
+            let fstate = cf.fstate();
+            if fstate == FSTATE_FOUND || fstate == FSTATE_DNOTFOUND || fstate == FSTATE_DSTAR {
+                continue;
+            }
+            for _ in 0..parent_hits(t, parent, cf) {
+                let m = if indirect {
+                    Match::Softc(config_make_softc(Some(parent), cf))
+                } else {
+                    Match::Row(cf)
+                };
+                f(parent, m);
+            }
         }
-        for _ in 0..parent_hits(g, parent, cf) {
-            let m = if indirect {
-                Match::Softc(config_make_softc(Some(parent), cf))
-            } else {
-                Match::Row(cf)
-            };
-            f(parent, m);
-        }
-    }
+    });
 }
 
 /// `config_rootsearch`: find the given root device. This is much like `config_search`, but
@@ -439,21 +475,22 @@ pub fn config_rootsearch(f: Option<Submatch<'_>>, rootname: &[u8], aux: &Aux<'_>
     };
     // Look at root entries for matching name. We do not bother with found-state here since
     // only one instance of each possible root child should ever be searched.
-    let n = g.rows();
-    for &p in g.roots().iter().take_while(|&&p| p >= 0) {
-        let p = p as usize;
-        if p >= n {
-            continue;
+    with_rows(|t| {
+        for &p in g.roots().iter().take_while(|&&p| p >= 0) {
+            let p = p as usize;
+            if p >= t.len() {
+                continue;
+            }
+            let cf = t.row(p);
+            let fstate = cf.fstate();
+            if fstate == FSTATE_DNOTFOUND || fstate == FSTATE_DSTAR {
+                continue;
+            }
+            if cstr(cf.driver().name()) == cstr(rootname) {
+                mapply(&mut m, cf);
+            }
         }
-        let cf = g.row(p);
-        let fstate = cf.fstate();
-        if fstate == FSTATE_DNOTFOUND || fstate == FSTATE_DSTAR {
-            continue;
-        }
-        if cstr(cf.driver().name()) == cstr(rootname) {
-            mapply(&mut m, cf);
-        }
-    }
+    });
     m.best
 }
 
@@ -573,11 +610,10 @@ pub fn config_attach(
 
     // Before attaching, clobber any unfound devices that are otherwise identical, or bump the
     // unit number on all starred cfdata for this device.
-    {
+    with_rows(|t| {
         let _w = TREE.lock();
-        let g = glue();
-        for i in 0..g.rows() {
-            let c = g.row(i);
+        for i in 0..t.len() {
+            let c = t.row(i);
             if same_driver(c, units) && i32::from(c.unit()) == unit {
                 if c.fstate() == FSTATE_NOTFOUND {
                     c.set_fstate(FSTATE_FOUND);
@@ -587,7 +623,7 @@ pub fn config_attach(
                 }
             }
         }
-    }
+    });
     glue().device_register(&dev, aux);
     drv.attach(parent, &dev, aux);
     config_process_deferred_children(&dev);
@@ -784,14 +820,13 @@ pub fn config_detach(dev: DevRef, flags: i32) -> Result<(), Errno> {
         }
 
         let unit = dev.unit();
-        let old = {
+        let old = with_rows(|t| {
             let mut w = TREE.lock();
             // Mark cfdata to show that the unit can be reused, if possible. Note that we can
             // only re-use a starred unit number if the unit being detached had the last
             // assigned unit number.
-            let g = glue();
-            for i in 0..g.rows() {
-                let c = g.row(i);
+            for i in 0..t.len() {
+                let c = t.row(i);
                 if same_driver(c, units) {
                     if c.fstate() == FSTATE_FOUND && i32::from(c.unit()) == unit {
                         c.set_fstate(FSTATE_NOTFOUND);
@@ -807,7 +842,7 @@ pub fn config_detach(dev: DevRef, flags: i32) -> Result<(), Errno> {
             let old = units.set(&mut w, unit, None);
             drv.unit_set(unit, None);
             old
-        };
+        });
         // The array's reference (the C's `device_unref` of `config_attach`'s).
         drop(old);
 
@@ -1110,12 +1145,21 @@ pub fn device_mainbus() -> Option<DevRef> {
 
 /// Host tests: forgets the tree an earlier test left (its nodes are that test's memory,
 /// leaked with it, never dropped into the next) and any attach a failed test left counted,
-/// which would make every later `config_detach` sleep on it for ever.
+/// which would make every later `config_detach` sleep on it for ever. The unit table of every
+/// attached node's driver is forgotten too, not freed: a `static` driver's table would
+/// otherwise free that memory into the next test's when it grows (testing.md). A table grown
+/// by a `config_make_softc` whose device never attached is not reachable from here.
 #[cfg(any(test, feature = "doubles"))]
 pub fn autoconf_test_reset() {
     *ATTDET.lock() = 0;
     let mut w = TREE.lock();
-    while ALLDEVS.remove_first(&mut w) {}
+    loop {
+        let Some(units) = ALLDEVS.first(&w).map(|d| d.driver().units()) else {
+            break;
+        };
+        units.forget(&mut w);
+        ALLDEVS.remove_first(&mut w);
+    }
     while DEFERRED_CONFIG_QUEUE.remove_first(&mut w) {}
     while MOUNTROOT_CONFIG_QUEUE.remove_first(&mut w) {}
     CONFIG_PENDING.store(0, Ordering::Relaxed);
@@ -1147,6 +1191,8 @@ mod tests {
     static LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
     /// The softcs alive (made and not yet dropped).
     static SOFTCS: AtomicUsize = AtomicUsize::new(0);
+    /// The tables the glue lent (one per walk of `cfdata[]`).
+    static WALKS: AtomicUsize = AtomicUsize::new(0);
 
     fn log(s: String) {
         LOG.lock().unwrap_or_else(PoisonError::into_inner).push(s);
@@ -1326,15 +1372,35 @@ mod tests {
         root_mounted: AtomicBool,
     }
 
-    impl ConfigGlue for Glue {
-        fn rows(&self) -> usize {
-            self.rows
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .len()
+    impl Glue {
+        /// The test's row `i`.
+        fn row(&self, i: usize) -> &'static Row {
+            self.rows.lock().unwrap_or_else(PoisonError::into_inner)[i]
+        }
+    }
+
+    /// One walk's copy of the test's rows (a walk may nest: a probe or attach that searches).
+    struct Rows(Vec<&'static Row>);
+
+    impl RowTable for Rows {
+        fn len(&self) -> usize {
+            self.0.len()
         }
         fn row(&self, i: usize) -> &'static dyn ConfigRow {
-            self.rows.lock().unwrap_or_else(PoisonError::into_inner)[i]
+            self.0[i]
+        }
+    }
+
+    impl ConfigGlue for Glue {
+        fn with_rows(&self, f: &mut dyn FnMut(&dyn RowTable)) {
+            let rows = Rows(
+                self.rows
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone(),
+            );
+            WALKS.fetch_add(1, Ordering::Relaxed);
+            f(&rows);
         }
         fn roots(&self) -> &'static [i16] {
             &[0]
@@ -1764,6 +1830,123 @@ mod tests {
         assert_eq!(r.fstate(), FSTATE_NOTFOUND);
         assert_eq!(names(), ["trd0"]);
         assert_eq!(take_log(), ["attach trd0 at root"]);
+    }
+
+    #[test]
+    fn a_search_borrows_the_table_once() {
+        let _s = setup(b"tro", 0);
+        let child = new_driver(b"tco", 0, 0);
+        for _ in 0..8 {
+            add_row(row(child, &[0], 0, FSTATE_STAR, 0));
+        }
+        let root = config_rootfound(b"tro", &Aux::Legacy(0)).expect("tro0");
+        let a = args(0);
+        let before = WALKS.load(Ordering::Relaxed);
+        assert!(config_search(None, &root, &Aux::Typed(&a)).is_none());
+        assert_eq!(
+            WALKS.load(Ordering::Relaxed),
+            before + 1,
+            "one walk, nine rows"
+        );
+    }
+
+    /// Runs `f` on a thread of its own (not cold, so it really sleeps), and says whether it
+    /// was still running after `ms` milliseconds.
+    fn blocked_for<T: Send + 'static>(
+        ms: u64,
+        f: impl FnOnce() -> T + Send + 'static,
+    ) -> (bool, std::thread::JoinHandle<T>) {
+        let done = std::sync::Arc::new(AtomicBool::new(false));
+        let d = done.clone();
+        let h = std::thread::spawn(move || {
+            testutil::set_cold(false);
+            let r = f();
+            d.store(true, Ordering::SeqCst);
+            r
+        });
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+        (!done.load(Ordering::SeqCst), h)
+    }
+
+    #[test]
+    fn an_attach_waits_for_a_detach_in_flight() {
+        let _s = setup(b"trp", 0);
+        // A detach in flight (`config_detach` between its two halves).
+        attdet_enter(false);
+        let (waited, h) = blocked_for(50, || {
+            config_rootfound(b"trp", &Aux::Legacy(0)).map(|d| String::from(d.xname()))
+        });
+        assert!(waited, "the attach waits");
+        assert_eq!(names(), Vec::<String>::new());
+        attdet_leave(false);
+        assert_eq!(h.join().expect("the attach"), Some(String::from("trp0")));
+        assert_eq!(*ATTDET.lock(), 0);
+    }
+
+    #[test]
+    fn a_detach_waits_for_an_attach_in_flight() {
+        let _s = setup(b"trq", 0);
+        let child = new_driver(b"tcq", 0, 0);
+        add_row(row(child, &[0], 0, FSTATE_STAR, 0));
+        let root = config_rootfound(b"trq", &Aux::Legacy(0)).expect("trq0");
+        let a = args(1);
+        let c = config_found(&root, &Aux::Typed(&a), None).expect("tcq0");
+        // An attach in flight.
+        attdet_enter(true);
+        let (waited, h) = blocked_for(50, move || config_detach(c, DETACH_QUIET));
+        assert!(waited, "the detach waits");
+        assert!(child.units.get(0).is_some(), "still attached");
+        attdet_leave(true);
+        assert_eq!(h.join().expect("the detach"), Ok(()));
+        assert!(child.units.get(0).is_none());
+        assert_eq!(*ATTDET.lock(), 0);
+    }
+
+    #[test]
+    fn config_pending_wakes_its_sleeper_at_zero() {
+        let _s = setup(b"trr", 0);
+        config_pending_incr();
+        config_pending_incr();
+        let asleep = std::sync::Arc::new(AtomicBool::new(false));
+        let s = asleep.clone();
+        let (waited, h) = blocked_for(0, move || {
+            // init_main's wait for the deferred configurations, with a bound for the test.
+            let mut woken = 0;
+            while CONFIG_PENDING.load(Ordering::SeqCst) != 0 {
+                s.store(true, Ordering::SeqCst);
+                if hal::sleep::tsleep_nsec(
+                    ptr::from_ref(&CONFIG_PENDING),
+                    PWAIT,
+                    "cfpend",
+                    5_000_000_000,
+                )
+                .is_ok()
+                {
+                    woken += 1;
+                }
+            }
+            woken
+        });
+        let _ = waited;
+        while !asleep.load(Ordering::SeqCst) {
+            std::thread::yield_now();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        config_pending_decr();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert!(!h.is_finished(), "1 left: no wakeup");
+        config_pending_decr();
+        assert_eq!(h.join().expect("the sleeper"), 1, "woken once, at zero");
+    }
+
+    #[test]
+    fn the_reset_forgets_the_unit_tables() {
+        let s = setup(b"trs", 0);
+        let _root = config_rootfound(b"trs", &Aux::Legacy(0)).expect("trs0");
+        assert_eq!(s.root.units.len(), 2);
+        autoconf_test_reset();
+        assert!(s.root.units.is_empty(), "forgotten, not freed");
+        assert!(alldevs_next(None).is_none());
     }
 }
 /* </TESTS> */

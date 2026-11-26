@@ -5601,6 +5601,7 @@ rust = "sys/kern/subr_autoconf.rs"
 lz = ["sys/kern/subr_autoconf.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/dev/autoconf.rs", "sys/kernel/dev/device.rs"]
+notes = "N7.1a: the shim over kernel::dev::autoconf, every LZ name and signature kept for bsd's drivers (U4) and no logic of its own: impl ConfigRow and DriverOps for Cfdata (the DriverOps bridge), BsdConfigGlue (the ConfigGlue bridge, cfdata[] lent once per walk), LegacySoftc holding the node's dv_ref, node_of (a shadow node for a device made by hand), the cd_devs/cd_ndevs mirror kept by the kernel's hooks, device_hold for parsedisk, and the re-exports of AUTOCONF_SERIAL/CONFIG_PENDING/AUTOCONF_VERBOSE; docs/SCAFFOLDING.md; goes with the last legacy driver (N7.14)"
 
 [[module]]
 rust = "sys/kern/subr_disk.rs"
@@ -8076,6 +8077,7 @@ rust = "sys/sys/device.rs"
 lz = ["sys/sys/device.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/dev/device.rs", "sys/kernel/dev/autoconf.rs"]
+notes = "N7.1a: the legacy driver interface over kernel::dev::device: the constants and Devclass re-exported from the kernel, the legacy header written once from its node (dv_list and the alldevs types gone), Cfdriver::cd_units the kernel's unit table with cd_devs/cd_ndevs its mirror"
 
 [[module]]
 rust = "sys/hal/sys/dirent.rs"

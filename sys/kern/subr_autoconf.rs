@@ -90,6 +90,9 @@
 //! - A device made by hand (a test's parent, never `config_make_softc`'s) has no node: each
 //!   call that names it makes a shadow node for the call, not in the tree, which gives no
 //!   reference back.
+//! - `parsedisk` returns the device it names as `&'static Device` (the C's pointer kept as
+//!   `bootdv`): it takes one `dv_ref` it never gives back ([`device_hold`]), so the block is
+//!   never freed (docs/SCAFFOLDING.md).
 //! - `NMPATH` is 0: `mpath(4)` is not in the machines' `ioconf.rs` (`scsi/mpath.c` is not
 //!   ported), so `device_mpath` returns `None`, as the C compiles it with a count of 0.
 //! - The `hotplug(4)` gap and `autoconf_verbose` are the kernel's (`kernel::dev::autoconf`).
@@ -101,7 +104,7 @@ use core::sync::atomic::Ordering;
 
 use hal::malloc::MArc;
 use hal::pool::AnyArc;
-use kernel::dev::autoconf::{self as kac, ConfigGlue};
+use kernel::dev::autoconf::{self as kac, ConfigGlue, RowTable};
 pub use kernel::dev::autoconf::{AUTOCONF_SERIAL, AUTOCONF_VERBOSE, CONFIG_PENDING};
 use kernel::dev::device::{
     Aux, ConfigRow, Deferred, DevRef, Device as Node, DriverOps, Ident, Match, UnitTable,
@@ -155,6 +158,9 @@ struct LegacyFn(fn(&Device));
 /// The machine's table and the state autoconfiguration reads, for the kernel.
 struct BsdConfigGlue;
 
+/// `cfdata[]` up to its first free slot, for one walk of the kernel's.
+struct CfTable(&'static [Cfdata]);
+
 static BSD_GLUE: BsdConfigGlue = BsdConfigGlue;
 
 /// The legacy header of a legacy driver's node.
@@ -165,11 +171,17 @@ pub fn legacy_device(n: &Node) -> &Device {
             n.xname()
         ));
     };
-    // SAFETY: `ls.dev` heads a live block for as long as `ls` lives: an owning
-    // `LegacySoftc` holds a `dv_ref` and `device_unref` frees only at 0; a shadow names a
-    // device made by hand, static or leaked, which nothing frees. The reference borrows `n`,
-    // whose softc handle keeps `ls` alive; only shared references to the header are made (its
-    // members are `Cell`s and an atomic).
+    // SAFETY: `ls.dev` heads a live block for as long as `ls` lives, and the reference
+    // borrows `n`, whose softc handle keeps `ls` alive. An owning `LegacySoftc` holds a
+    // `dv_ref`, and `device_unref`, the only place a softc block is freed, frees only at 0.
+    // A shadow (`owns == false`, a device made by hand, `node_of`) is held by two kinds of
+    // handle only: the shim call that made it from the caller's `&Device`, which keeps the
+    // device alive for the call, and the nodes of the children attached below it in such a
+    // call (their `dv_parent`). Those children are `bsd`'s, whose nodes `bsd` holds only in
+    // the unit table and for the length of a shim call, so a child's node goes with its
+    // detach; and a parent is not freed while it has attached children, the premise LZ's
+    // `Device::parent` already rests on (its owner detaches them first). Only shared
+    // references to the header are made (its members are `Cell`s and an atomic).
     unsafe { ls.dev.as_ref() }
 }
 
@@ -642,9 +654,21 @@ pub unsafe fn device_unref(dv: NonNull<Device>) {
 
 /// Host tests: the kernel's tree forgotten (its nodes are an earlier test's memory) and no
 /// attach in progress. A test that panicked inside `config_attach` leaves `autoconf_attdet`
-/// raised, and every later `config_detach` would sleep on it for ever.
+/// raised, and every later `config_detach` would sleep on it for ever. The `cd_devs` mirror
+/// of every attached legacy device's driver is forgotten first, not freed, as the kernel
+/// forgets its unit table: a `static` driver's array would otherwise be freed into the next
+/// test's memory when it grows.
 #[cfg(test)]
 pub(crate) fn autoconf_test_reset() {
+    let mut d = kac::alldevs_next(None);
+    while let Some(n) = d {
+        if n.softc().downcast_ref::<LegacySoftc>().is_some() {
+            let cd = legacy_device(&n).cfdata().cf_driver;
+            cd.cd_devs.set(ptr::null_mut());
+            cd.cd_ndevs.set(0);
+        }
+        d = kac::alldevs_next(Some(&n));
+    }
     kac::autoconf_test_reset();
 }
 
@@ -771,15 +795,22 @@ impl DriverOps for Cfdata {
     }
 }
 
-impl ConfigGlue for BsdConfigGlue {
-    fn rows(&self) -> usize {
-        cfdata().len()
+impl RowTable for CfTable {
+    fn len(&self) -> usize {
+        self.0.len()
     }
     fn row(&self, i: usize) -> &'static dyn ConfigRow {
-        match cfdata().get(i) {
+        match self.0.get(i) {
             Some(cf) => cf,
             None => panic(format_args!("autoconf: cfdata[{i}] out of the table")),
         }
+    }
+}
+
+impl ConfigGlue for BsdConfigGlue {
+    fn with_rows(&self, f: &mut dyn FnMut(&dyn RowTable)) {
+        // cfdata() finds the first free slot once, for the whole walk (LZ's walks trim once).
+        f(&CfTable(cfdata()));
     }
     fn roots(&self) -> &'static [i16] {
         cfroots()
