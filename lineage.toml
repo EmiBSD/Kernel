@@ -2168,7 +2168,7 @@ status = "inherited"
 [[module]]
 rust = "sys/conf/vers.rs"
 lz = ["sys/conf/vers.rs"]
-status = "inherited"
+status = "redesigned"
 
 [[module]]
 rust = "sys/crypto/aes.rs"

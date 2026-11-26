@@ -294,7 +294,7 @@ smoke-boot: (build-amd64 "--features qemu") (build-arm64 "--features qemu") buil
         --expect "selftest: vio up ok" --expect "selftest: vio rx ok"
     {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --ramdisk none --expect-ramdisk \
         --expect "bsd: booted on arm64" --expect "The Regents of the University of California" \
-        --expect "EmiBSD 8.0 (GENERIC) #" \
+        --expect "EmiBSD 8.0 (GENERIC) #" --expect "Arica" \
         --expect "real mem  = " --expect "avail mem = " --expect "selftest: pmap kernel mapping ok" \
         --expect "selftest: malloc/pool stress ok" --expect "selftest: mbufs ok" \
         --expect "selftest: buffer cache ok" --expect "selftest: pager map ok" \
@@ -2136,7 +2136,7 @@ smoke-efiboot: (build-amd64 "--features qemu") (build-arm64 "--features qemu") e
         --expect "-r-xr-xr-x 0,0" --expect "booting sd0a:/bsd: " --expect "]=0x" \
         --expect "bsd: booted on arm64 by boot(8) efiboot" --expect "bsd: boot(8) bootarg protocol, " \
         --expect "abi: 331 syscalls, 190 native" \
-        --expect "bsd: {{ncpu}} processors, boot processor hwid 0x0" --expect "EmiBSD 8.0 (GENERIC) #" \
+        --expect "bsd: {{ncpu}} processors, boot processor hwid 0x0" --expect "EmiBSD 8.0 (GENERIC) #" --expect "Arica" \
         --expect "random: good seed from bootblocks" --reject "warning: no entropy supplied by boot loader" \
         --expect "cpu0 at mainbus0 mpidr 0: ARM Cortex-A72" --expect "cpu{{aps}} at mainbus0 mpidr {{aps}}: ARM Cortex-A72" \
         --expect "cpu: {{aps}} of {{aps}} application processors running" \
@@ -3923,7 +3923,7 @@ _dist-arm64: dist-clean-tree build-release-arm64 build-init-arm64 efiboot-arm64
     mkdir -p target/smoke/dist
     EMIBSD_RUN_DIR=target/smoke/dist {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/release/bsd --ramdisk none --expect-ramdisk --until-seen \
         --expect "bsd: booted on arm64" --expect "abi: 331 syscalls, 190 native" --expect "EmiBSD 8.0 (GENERIC) #" \
-        --expect "init: hello from user mode" --expect "init: EmiBSD 8.0" --expect "init: processes ok" \
+        --expect "Arica" --expect "init: hello from user mode" --expect "init: EmiBSD 8.0" --expect "init: processes ok" \
         --expect "init: unveil ok" --expect "panic: init died (signal 0, exit " | tee target/smoke/dist/boot.log
     rdsize=$({{xtask}} rdsetroot -s target/bsdrd/{{arm64}}/release/bsd)
     [[ "$rdsize" == "$(( {{miniroot_sectors}} * 512 ))" ]] || { echo "dist: rd_root_size is $rdsize, not {{miniroot_sectors}} sectors" >&2; exit 1; }
