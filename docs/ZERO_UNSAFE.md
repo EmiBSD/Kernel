@@ -51,7 +51,7 @@ sequenceDiagram
     B->>K: register the sysent[] rows (kernel::syscall::LegacySyscalls)
     B->>A: abi_init(), before main()
     A->>HAL: register the syscall handler (hal::syscall::set_handler)
-    Note over HAL: from here every syscall trap → abi's handler → kernel::api (Native, or syscall_legacy) → bsd's sysent[] row through mi_syscall
+    Note over HAL: from here every syscall trap → abi's handler (the registers as UserRegs, decision 53) → kernel::api (Native, or syscall_legacy) → bsd's sysent[] row through mi_syscall; then abi writes x0 and the carry and calls kernel::api::syscall_return
 ```
 
 
@@ -95,7 +95,9 @@ and `abi -> hal` (`hal::sys`, `hal::syscall`'s types and the handler's registrat
   layout, that calls more than one `kernel` entry point, or that exceeds the per-syscall line
   limit (decision 21), and on a path into `kernel` outside `kernel::api` or into `hal`
   outside `hal::sys::*`, `hal::syscall`'s types and `set_handler` (R6, decisions 47 and 52:
-  linked into the image, `abi` shares `hal`'s and `kernel`'s statics).
+  linked into the image, `abi` shares `hal`'s and `kernel`'s statics; decision 53 adds
+  `UserRegs`, `Gpr` and `ChildFn`, with which `abi::arch::<arch>` owns the system call
+  convention and `hal`'s trap interprets nothing userland sends).
 
 ### 0.3 The migration mechanism
 

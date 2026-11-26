@@ -26,7 +26,9 @@
 //! [`proc`] (the processes, futex(2), sigreturn(2)), [`vm`], [`file`] (pipe(2) and the
 //! descriptors), [`event`], [`time`], [`base`] (sysctl(2), sendsyslog(2), reboot(2)),
 //! [`fs`] (the VFS and nfssvc(2)) and [`net`] (the sockets), plus [`syscall_legacy`], the
-//! `Legacy` path of the system calls nothing translates yet.
+//! `Legacy` path of the system calls nothing translates yet, and [`syscall_return`], the
+//! end of every system call (`mi_syscall_return`), which the ABI calls once it wrote the
+//! trapping thread's return registers (decision 53: the per-arch convention is the ABI's).
 //!
 //! Every one of them still runs its call's `sysent[]` row, which `bsd` holds, through
 //! `mi_syscall` (the credentials, the `MAP_STACK` check, the pinned syscalls, pledge, the
@@ -66,6 +68,9 @@ pub mod vm;
 use hal::syscall::{ENOSYS, Register, Rval, SysArgs, SysResult};
 
 pub use crate::syscall::legacy_syscall as syscall_legacy;
+/// `mi_syscall_return`, which the ABI's per-arch handler calls after it wrote the return
+/// registers (decision 53).
+pub use crate::syscall::syscall_return;
 
 /// A `Native` call: `ENOSYS` unless `nr` is `want`'s number, else row `nr` of `sysent[]`
 /// through `mi_syscall` with `args` and the trap's return registers, as on the `Legacy` path.

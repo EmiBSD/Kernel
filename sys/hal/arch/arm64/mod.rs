@@ -29,6 +29,8 @@ pub mod exception;
 // The context switch and the FP state (N4.5a; the switch's assembly calls two symbols of
 // `bsd`'s, `switch.rs`).
 pub mod fpu;
+// The general registers by name, which the ABI's system call convention reads (decision 53).
+pub mod gpr;
 pub mod include;
 pub mod pmap;
 // The signal frame (N4.8b): `hal::cpu::sig`'s, on the trap code's user frame.

@@ -13837,19 +13837,19 @@ rust = "sys/hal/syscall.rs"
 lz = ["sys/arch/amd64/amd64/trap.rs", "sys/arch/arm64/arm64/syscall.rs"]
 status = "redesigned"
 crate = "hal"
-notes = "N2.4a: the system call dispatch point both traps call (the sysent[] choice of amd64 syscall and arm64 svc_handler) and its registry; Result<(), i32> at the edge; N5 close (decision 47): one registration, the ABI's handler (abi::abi_init through KernelApi, before main()); decision 29's Legacy fallback slot (set_legacy, legacy) is gone with the module, dispatch answers ENOSYS with nothing registered"
+notes = "N2.4a: the system call dispatch point both traps call (the sysent[] choice of amd64 syscall and arm64 svc_handler) and its registry; Result<(), i32> at the edge; N5 close (decision 47): one registration, the ABI's handler (abi::abi_init through KernelApi, before main()); decision 29's Legacy fallback slot (set_legacy, legacy) is gone with the module, dispatch answers ENOSYS with nothing registered; N7.abi2 (decision 53): the handler is fn(&UserRegs) plus a ChildFn, registered by set_handler(call, child, info) and called by enter (and child for a forked child), the per-arch convention abi::arch's; UserRegs and Gpr re-exported from hal::arch::<m> (gpr.rs, syscall.rs; the host double's arm64 names); dispatch and route gone, no handler is panic(9)"
 
 [[module.fn]]
 lz = "sys/arch/amd64/amd64/trap.rs::syscall"
-native = ["sys/arch/amd64/amd64/trap.rs::syscall", "dispatch", "sys/kern/abi_module.rs::legacy_syscall"]
+native = ["sys/arch/amd64/amd64/trap.rs::syscall", "sys/abi/sysent.rs::dispatch", "sys/kern/abi_module.rs::legacy_syscall"]
 kind = "split"
 lines = "L352-L357"
 
 [[module.fn]]
 lz = "sys/arch/arm64/arm64/syscall.rs::svc_handler"
-native = ["sys/hal/arch/arm64/syscall.rs::svc_handler", "dispatch", "sys/kern/abi_module.rs::legacy_syscall"]
+native = ["sys/hal/arch/arm64/syscall.rs::svc_handler", "enter", "sys/abi/arch/arm64.rs::svc", "sys/abi/arch/arm64.rs::call", "sys/abi/sysent.rs::dispatch", "sys/kern/abi_module.rs::legacy_syscall"]
 kind = "split"
-lines = "L83-L88"
+lines = "L77-L107"
 
 [[extra]]
 rust = "sys/arch/amd64/amd64/qemu.rs"
@@ -14083,7 +14083,7 @@ reason = "hal runtime, written new (N3.3 fix-up): printf(9) for the crates above
 [[extra]]
 rust = "sys/hal/cpu/trap.rs"
 crate = "hal"
-reason = "hal runtime, written new (N4.8b): what the machine's trap code asks the kernel: the TrapHandler registration (the fault on the chosen map, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast, mi_child_return), the CpuHooks (ci_flush_bp, ci_serror, fault()'s ci_panicbuf) and the Debugger (db_ktrap); forbid, 0 unsafe; bridges.toml TrapHandler, CpuHooks, Debugger; N4.8b b3: proc_pc and proc_stack, PROC_PC/PROC_STACK of the running thread (arm64: its UserFrame; the host: a test's registers), replacing ProcGlue::proc_pc and proc_stack"
+reason = "hal runtime, written new (N4.8b): what the machine's trap code asks the kernel: the TrapHandler registration (the fault on the chosen map, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast, mi_child_return), the CpuHooks (ci_flush_bp, ci_serror, fault()'s ci_panicbuf) and the Debugger (db_ktrap); forbid, 0 unsafe; bridges.toml TrapHandler, CpuHooks, Debugger; N4.8b b3: proc_pc and proc_stack, PROC_PC/PROC_STACK of the running thread (arm64: its UserFrame; the host: a test's registers), replacing ProcGlue::proc_pc and proc_stack; N7.abi2 (decision 53): handler() pub, for kernel::syscall::syscall_return"
 
 [[extra]]
 rust = "sys/hal/cpu/sig.rs"
@@ -14192,7 +14192,25 @@ rust = "sys/hal/arch/arm64/syscall.rs"
 crate = "hal"
 lz = ["sys/arch/arm64/arm64/syscall.rs"]
 status = "redesigned"
-notes = "N4.8b: svc_handler (the frame's fix-ups around hal::syscall::dispatch, mi_syscall_return through hal::cpu::trap::TrapHandler) and child_return (the running thread's pcb_tf, the kernel lock released, mi_child_return through the handler); N4.8b b4: the number truncated to an int as the C's (syscall.c:46: gap 2, the user's decision 6 of N4.8), the doc comment of svc_handler the user asked for (BRIEF-N4.8 section 13)"
+notes = "N4.8b: svc_handler (the frame's fix-ups around hal::syscall::dispatch, mi_syscall_return through hal::cpu::trap::TrapHandler) and child_return (the running thread's pcb_tf, the kernel lock released, mi_child_return through the handler); N4.8b b4: the number truncated to an int as the C's (syscall.c:46: gap 2, the user's decision 6 of N4.8), the doc comment of svc_handler the user asked for (BRIEF-N4.8 section 13); N7.abi2 (decision 53): the machine's half only (curproc, the counter, the interrupts, the barrier skip), the ABI's handler called with a UserRegs (three methods: gprs, set_return with the carry, restart's -12) and child_return's frame writes the ABI's ChildFn; the number, the arguments, x0 and the carry, ERESTART and EJUSTRETURN are sys/abi/arch/arm64.rs's, mi_syscall_return its call to kernel::api::syscall_return"
+
+[[module]]
+rust = "sys/abi/arch/arm64.rs"
+crate = "abi"
+lz = ["sys/arch/arm64/arm64/syscall.rs"]
+status = "redesigned"
+notes = "N7.abi2 (decision 53, the user, 2026-11-26): arm64's system call convention, out of hal: svc reads x8 as an int (scarg::int) and x0..x5 through hal::syscall::UserRegs, runs sysent::dispatch, writes x0 and the carry (or restart, or nothing for EJUSTRETURN) as the C's switch, then kernel::api::syscall_return; child is the forked child's x0 = 0, carry clear; registered by abi_init with hal::syscall::set_handler"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/syscall.rs::child_return"
+native = ["sys/hal/arch/arm64/syscall.rs::child_return", "child"]
+kind = "split"
+lines = "L118-L121"
+
+[[extra]]
+rust = "sys/hal/arch/arm64/gpr.rs"
+crate = "hal"
+reason = "N7.abi2 (decision 53): arm64's general registers x0..x29 by name (hal::syscall::Gpr), the index of struct trapframe's tf_x, written new so the ABI's system call convention names registers rather than numbers; the host double compiles the same file (hal::arch::host::gpr); no LZ source: LZ indexed tf_x by number"
 
 [[module]]
 rust = "sys/hal/arch/arm64/sig.rs"
@@ -14656,7 +14674,7 @@ reason = "copy of sys/crypto/testutil.rs (host test helper: hex vectors, seeded 
 [[extra]]
 rust = "sys/kernel/api.rs"
 crate = "kernel"
-reason = "N2.4a (decision 22): the kernel side of KernelApi (the type is hal::api): table() builds it with the kernel registration that keeps the ABI's handler and registers its trampoline in hal; no LZ source: OpenBSD has no table between its system calls and the kernel; N4.8b: table() takes the sigreturn entry; N5.4: table() takes the VFS entries; N5 close (decision 47): the ABI is linked into the image, table() loses copyin and copyout (no caller: abi copies through hal::UserPtr), the registration is Registered in ABI and its trampoline abi_syscall answers ENOSYS before it, as hal does; N5 close (the abi casts): table()'s pipe2 takes the flags as the C's int (i32); N6.7b4: table() takes nfssvc(2)'s entry; N7 (decision 52, the user, 2026-11-26): the table goes with hal::api: kernel::api becomes abi's direct door, one plain function per Native system call in eight group modules (sys/kernel/api/*.rs, moved from bsd's native_* glue) and syscall_legacy, over the LegacySyscalls bridge of kernel::syscall; the registration and its trampoline abi_syscall are gone (abi registers its handler in hal::syscall itself)"
+reason = "N2.4a (decision 22): the kernel side of KernelApi (the type is hal::api): table() builds it with the kernel registration that keeps the ABI's handler and registers its trampoline in hal; no LZ source: OpenBSD has no table between its system calls and the kernel; N4.8b: table() takes the sigreturn entry; N5.4: table() takes the VFS entries; N5 close (decision 47): the ABI is linked into the image, table() loses copyin and copyout (no caller: abi copies through hal::UserPtr), the registration is Registered in ABI and its trampoline abi_syscall answers ENOSYS before it, as hal does; N5 close (the abi casts): table()'s pipe2 takes the flags as the C's int (i32); N6.7b4: table() takes nfssvc(2)'s entry; N7 (decision 52, the user, 2026-11-26): the table goes with hal::api: kernel::api becomes abi's direct door, one plain function per Native system call in eight group modules (sys/kernel/api/*.rs, moved from bsd's native_* glue) and syscall_legacy, over the LegacySyscalls bridge of kernel::syscall; the registration and its trampoline abi_syscall are gone (abi registers its handler in hal::syscall itself); N7.abi2 (decision 53): syscall_return, mi_syscall_return for the ABI once it wrote the registers, through the registered TrapHandler (docs/SCAFFOLDING.md)"
 
 [[extra]]
 rust = "sys/kernel/api/base.rs"
@@ -14701,7 +14719,7 @@ reason = "N7 (decision 52): kernel::api::vm, abi's direct door for the fifteen v
 [[extra]]
 rust = "sys/abi/sysent.rs"
 crate = "abi"
-reason = "N2.4a (decisions 21, 22): the ABI's system call table, one Native | Legacy entry per number of sys/sys/syscall.rs (every entry Legacy at N2.4; pipe and pipe2 Native at N2.6, through KernelApi::pipe2), and the dispatcher KernelApi's registration hands to hal; bsd's sys/kern/init_sysent.rs stays the Legacy path until every entry is Native; N3.5 S1: the translations of the fifteen vm system calls (sys_obreak, sys_mmap, ... sys_munlockall over KernelApi::vm, mmap/mquery's address in rval[0]), out of the table until the flip (S2) makes them Native; N4.8b: sigreturn(2) Native through KernelApi::sigreturn (NATIVE 94); N5.4: the VFS system calls' sixty-five (the sixty-four of vfs_syscalls.c and __getcwd) Native through KernelApi::vfs, each translation one call with the arguments as the entries type them (NATIVE 170); N5 close (decision 47): linked into the image, its handler registered by abi_init, which bsd's boot glue calls before main(); N5 close (the abi casts): pipe2's flags read as the C's int and handed to KernelApi::pipe2 as i32, no argument reaches the kernel untyped; N5 close (the abi casts): every argument read through scarg, the C's SCARG per type family, the crate-wide allow of the cast lints gone; N6.2b: the nineteen socket system calls Native through KernelApi::socket (NATIVE 170 -> 189); N6.7b4: nfssvc(2) Native (KernelApi::nfssvc), NATIVE 190; N7 (decision 52's slice): the 190 translations moved to one file per kernel group (base.rs, event.rs, file.rs, fs.rs, net.rs, proc.rs, time.rs, vm.rs), this file keeps the table and the dispatcher; N7 (decision 52): abi depends on kernel and calls kernel::api directly, NativeFn and the handler lose the &KernelApi argument, the Legacy path is kernel::api::syscall_legacy; the tests run the kernel::api path over a test LegacySyscalls"
+reason = "N2.4a (decisions 21, 22): the ABI's system call table, one Native | Legacy entry per number of sys/sys/syscall.rs (every entry Legacy at N2.4; pipe and pipe2 Native at N2.6, through KernelApi::pipe2), and the dispatcher KernelApi's registration hands to hal; bsd's sys/kern/init_sysent.rs stays the Legacy path until every entry is Native; N3.5 S1: the translations of the fifteen vm system calls (sys_obreak, sys_mmap, ... sys_munlockall over KernelApi::vm, mmap/mquery's address in rval[0]), out of the table until the flip (S2) makes them Native; N4.8b: sigreturn(2) Native through KernelApi::sigreturn (NATIVE 94); N5.4: the VFS system calls' sixty-five (the sixty-four of vfs_syscalls.c and __getcwd) Native through KernelApi::vfs, each translation one call with the arguments as the entries type them (NATIVE 170); N5 close (decision 47): linked into the image, its handler registered by abi_init, which bsd's boot glue calls before main(); N5 close (the abi casts): pipe2's flags read as the C's int and handed to KernelApi::pipe2 as i32, no argument reaches the kernel untyped; N5 close (the abi casts): every argument read through scarg, the C's SCARG per type family, the crate-wide allow of the cast lints gone; N6.2b: the nineteen socket system calls Native through KernelApi::socket (NATIVE 170 -> 189); N6.7b4: nfssvc(2) Native (KernelApi::nfssvc), NATIVE 190; N7 (decision 52's slice): the 190 translations moved to one file per kernel group (base.rs, event.rs, file.rs, fs.rs, net.rs, proc.rs, time.rs, vm.rs), this file keeps the table and the dispatcher; N7 (decision 52): abi depends on kernel and calls kernel::api directly, NativeFn and the handler lose the &KernelApi argument, the Legacy path is kernel::api::syscall_legacy; the tests run the kernel::api path over a test LegacySyscalls; N7.abi2 (decision 53): the handler syscall is gone, sys/abi/arch/<arch>.rs reads the number and arguments from the trap's UserRegs and runs dispatch over SYSENT"
 
 [[extra]]
 rust = "sys/abi/base.rs"
@@ -14750,7 +14768,7 @@ reason = "N5 close (the abi casts, the user's decision of 2026-10-29): SCARG, sy
 
 [[extra]]
 rust = "sys/kern/abi_module.rs"
-reason = "N2.4a: bsd's side of the ABI until its subsystems move (deleted at N9): the Legacy system call path the traps' sysent[] choice became (ENOSYS outside the table, else mi_syscall) and the KernelApi table bsd fills; N4.8b: KernelApi::sigreturn is kern_sig.rs's native_sigreturn; N5.4: KernelApi::vfs is kern/vfs_syscalls.rs's VFS_ENTRIES (the 65 VFS system calls' native_* over kern_descrip::native); N5 close (decision 47): the ABI is linked into the image, one boot step (abi_boot, from stand::start_kernel after hal_bridges_register) hands KERNEL_API to abi::abi_init before main() and prints the handler's line (abi: N syscalls, M native); the ModulePlatform bridge, the boot hand-over, the Legacy fallback's registration and the load from main are gone; no unsafe; N6.7b4: KernelApi::nfssvc (vfs_syscalls::native_nfssvc); N7 (decision 52): the KernelApi table is gone; bsd's sysent[] rows are registered as the kernel's LegacySyscalls bridge (BsdLegacySyscalls) before abi::abi_init(), which takes no argument; the end-to-end test checks every Native call hands its row exactly sy_narg arguments"
+reason = "N2.4a: bsd's side of the ABI until its subsystems move (deleted at N9): the Legacy system call path the traps' sysent[] choice became (ENOSYS outside the table, else mi_syscall) and the KernelApi table bsd fills; N4.8b: KernelApi::sigreturn is kern_sig.rs's native_sigreturn; N5.4: KernelApi::vfs is kern/vfs_syscalls.rs's VFS_ENTRIES (the 65 VFS system calls' native_* over kern_descrip::native); N5 close (decision 47): the ABI is linked into the image, one boot step (abi_boot, from stand::start_kernel after hal_bridges_register) hands KERNEL_API to abi::abi_init before main() and prints the handler's line (abi: N syscalls, M native); the ModulePlatform bridge, the boot hand-over, the Legacy fallback's registration and the load from main are gone; no unsafe; N6.7b4: KernelApi::nfssvc (vfs_syscalls::native_nfssvc); N7 (decision 52): the KernelApi table is gone; bsd's sysent[] rows are registered as the kernel's LegacySyscalls bridge (BsdLegacySyscalls) before abi::abi_init(), which takes no argument; the end-to-end test checks every Native call hands its row exactly sy_narg arguments; N7.abi2 (decision 53): syscall (amd64's path to hal::syscall::dispatch) and errno_of gone with dispatch, frozen amd64's trap names it until N10"
 
 [[module]]
 rust = "sys/kernel/time/clock.rs"

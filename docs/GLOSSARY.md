@@ -129,6 +129,7 @@ explaining, and a new directory under `sys/`, is a new row here, in the same com
 | `unported!` | The macro that makes an inherited gap visible: prints it once and returns `ENOSYS`; never a `todo!()` or a silently dropped path |
 | `unsafe-report` | `cargo xtask unsafe-report`: counts every `unsafe` block, fn, impl and trait per subsystem and per crate; `--check` enforces the budget, `--write` records the totals |
 | `Unsafe:` | A commit trailer, `subsystem before -> after`, one line per subsystem whose `unsafe` count the commit moved |
+| `UserRegs`, `Gpr` | `hal::syscall`'s view of the trapping thread's user registers, handed to the ABI's system call handler for its call alone (decision 53): read registers, write one with the error flag (the carry), `restart()`. `Gpr` names the machine's registers (`Gpr::X8` on arm64). The system call convention built on them is `abi::arch::<arch>`'s |
 | `UserPtr<T>` | `hal`'s typed pointer into userland memory: the one way a `copyin`/`copyout` happens, safe at the call site, `abi_pod!` on the type |
 | UVM | OpenBSD's virtual memory system (`uvm(9)`), redesigned into `kernel::vm` at N3; `sys/uvm/` is deleted |
 | VFS | **Virtual File System.** The layer independent of any file system (`vfs(9)`: vnodes, mounts, the name cache), under which FFS, MFS, NFS and the rest sit; N5 |

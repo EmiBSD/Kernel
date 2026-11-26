@@ -28,17 +28,20 @@
 //! the crate depends on `kernel` and `hal`, never on `bsd`, and `abi-check` R6 confines what
 //! it names: of `kernel`, only `kernel::api` (one function per system call); of `hal`, only
 //! the passive `hal::sys::*`, `hal::syscall`'s types and the registration of its handler
-//! ([`abi_init`]), since `hal`'s public API otherwise acts on the kernel's own state. Neither
+//! ([`abi_init`]), and (decision 53) `hal::syscall::UserRegs`, the trapping thread's user
+//! registers, since `hal`'s public API otherwise acts on the kernel's own state. Neither
 //! `kernel` nor `hal` names it: the image's boot glue calls [`abi_init`]
-//! (`sys/kern/abi_module.rs` until N9), and `hal`'s dispatch point calls the handler it
-//! registered, the one upward call. The constant headers of the ABI edge
+//! (`sys/kern/abi_module.rs` until N9), and `hal`'s system call trap calls the handler it
+//! registered, the one upward call, with the trap's registers uninterpreted: the per-arch
+//! system call convention is this crate's ([`arch`], decision 53). The constant headers of the ABI edge
 //! (`<sys/syscall.h>`, `<sys/errno.h>`, ...) are `hal`'s, inherited from LZ (`sys/hal/sys/`,
 //! the user's decision of 2026-10-16): the numbers of the table are `hal::sys::syscall`'s,
 //! not a copy of them.
 //!
 //! The translations sit in one file per group of the kernel ([`proc`], [`vm`], [`file`],
 //! [`event`], [`time`], [`base`], [`fs`], [`net`]), the table and the dispatcher in
-//! [`sysent`], the argument reads in [`scarg`].
+//! [`sysent`], the argument reads in [`scarg`], the per-arch registers of a system call in
+//! [`arch`].
 #![no_std]
 #![forbid(unsafe_code)]
 // `clippy::pedantic` is on in this crate (the user's decision of 2026-10-29, measured first:
@@ -81,6 +84,7 @@
 #[cfg(test)]
 extern crate std;
 
+pub mod arch;
 pub mod base;
 pub mod event;
 pub mod file;
@@ -95,10 +99,11 @@ pub mod vm;
 use hal::syscall::SyscallFn;
 
 /// The ABI's entry point, which the image's boot glue calls once, before `main()` and so
-/// before any system call: registers the system call handler and what its table holds.
-/// `hal` keeps the first handler registered: when one was already there, the `Err` hands it
-/// back and the boot glue must not go on with it.
+/// before any system call: registers the machine's system call handler, its forked child's
+/// first return ([`arch`]) and what the table holds. `hal` keeps the first handler
+/// registered: when one was already there, the `Err` hands it back and the boot glue must
+/// not go on with it.
 pub fn abi_init() -> Result<(), SyscallFn> {
-    hal::syscall::set_handler(sysent::syscall, sysent::INFO)
+    hal::syscall::set_handler(arch::current::svc, arch::current::child, sysent::INFO)
 }
 /* </CODE> */

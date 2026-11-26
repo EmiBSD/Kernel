@@ -23,8 +23,10 @@
 //! bridge, and the boot step that registers that bridge and calls `abi::abi_init` before
 //! `main()`, so the ABI's handler answers every system call from the first one on.
 //!
-//! The arch traps reach `hal`'s dispatch point (arm64's directly, amd64's through
-//! [`syscall`]), which calls the ABI's handler; every entry of its table, `Native` (through
+//! arm64's trap in `hal` hands the ABI's handler the trap's registers (decision 53: the
+//! per-arch system call convention is `abi::arch`'s); amd64's frozen trap still names the
+//! `syscall` function this file had over `hal`'s `dispatch`, both gone with decision 53,
+//! until N10 rewrites that entry (decision 44). Every entry of the ABI's table, `Native` (through
 //! its `kernel::api` function) or `Legacy` (through `kernel::api::syscall_legacy`), comes
 //! back here, to [`BsdLegacySyscalls`], for its row. Either way a system call reaches
 //! `mi_syscall` with the same thread, number, arguments and return registers as LZ's, and
@@ -58,12 +60,6 @@ impl LegacySyscalls for BsdLegacySyscalls {
 
 /// The one implementation the boot step registers.
 static LEGACY_SYSCALLS: BsdLegacySyscalls = BsdLegacySyscalls;
-
-/// The system call path amd64's trap calls where it chose the `sysent[]` entry: `hal`'s
-/// dispatch point, its errno value back as an [`Errno`].
-pub fn syscall(code: Register, args: &SysArgs, rval: &mut [Register; 2]) -> Result<(), Errno> {
-    hal::syscall::dispatch(code, args, rval).map_err(errno_of)
-}
 
 /// Row `code` of `sysent[]` ([`BsdLegacySyscalls`]): what the traps did before (`ENOSYS`
 /// for a number outside `sysent[]`, else `mi_syscall` on the entry), for the thread on this
@@ -100,14 +96,6 @@ pub fn abi_boot() {
         ));
     };
     crate::kprintf!("abi: {} syscalls, {} native\n", info.syscalls, info.native);
-}
-
-/// An errno value from `hal` back as the [`Errno`] it was made from.
-fn errno_of(raw: i32) -> Errno {
-    match Errno::from_raw(raw) {
-        Some(e) => e,
-        None => panic(format_args!("syscall: errno {raw} out of range")),
-    }
 }
 /* </CODE> */
 
@@ -162,7 +150,7 @@ mod tests {
             let digits = 123_456 / 10i32.pow(6 - k) * 10i32.pow(6 - k);
             let mut rval = [-7; 2];
             assert_eq!(
-                abi::sysent::syscall(nr as Register, &args, &mut rval),
+                abi::sysent::dispatch(&abi::sysent::SYSENT, nr as Register, &args, &mut rval),
                 Err(nr as i32 * 1_000_000 + digits),
                 "SYS {nr}: sy_narg {k}"
             );
