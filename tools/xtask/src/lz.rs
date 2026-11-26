@@ -2211,10 +2211,10 @@ mod tests {
                     @@ -1,2 +1,2 @@\n\
                     --- a/sys/kern/not_a_header.rs\n\
                     +x\n\
-                    diff --git a/sys/boot/libsa/old.rs b/sys/boot/arm64/efiboot/new.rs\n\
+                    diff --git a/sys/boot/libsa/old.rs b/sys/boot/arm64/new.rs\n\
                     similarity index 90%\n\
                     rename from sys/boot/libsa/old.rs\n\
-                    rename to sys/boot/arm64/efiboot/new.rs\n\
+                    rename to sys/boot/arm64/new.rs\n\
                     diff --git a/justfile b/justfile\n\
                     --- a/justfile\n\
                     +++ b/justfile\n\
@@ -2242,7 +2242,7 @@ mod tests {
         assert_eq!(lz_home("sys/bsd/stand/limine.rs"), "sys/stand/limine.rs");
         assert_eq!(lz_home("sys/boot/libsa/open.rs"), "sys/lib/libsa/open.rs");
         assert_eq!(
-            lz_home("sys/boot/arm64/efiboot/fdt.rs"),
+            lz_home("sys/boot/arm64/fdt.rs"),
             "sys/arch/arm64/stand/efiboot/fdt.rs"
         );
     }

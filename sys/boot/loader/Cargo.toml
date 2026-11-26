@@ -1,5 +1,5 @@
 [package]
-name = "boot"
+name = "loader"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
