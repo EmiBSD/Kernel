@@ -1310,30 +1310,6 @@ impl crate::machine::autoconf::Autoconf for Machine {
     }
 }
 
-/// The disk label location (`<machine/disklabel.h>`) and label I/O (`disksubr.c`).
-impl crate::machine::disklabel::MachineDisklabel for Machine {
-    const LABELSECTOR: u64 = include::disklabel::LABELSECTOR;
-    const LABELOFFSET: usize = include::disklabel::LABELOFFSET;
-    const MAXPARTITIONS: usize = include::disklabel::MAXPARTITIONS;
-
-    fn readdisklabel(
-        dev: crate::sys::types::Dev,
-        strat: crate::sys::conf::DevTypeStrategy,
-        lp: &mut crate::sys::disklabel::Disklabel,
-        spoofonly: bool,
-    ) -> Result<(), crate::sys::errno::Errno> {
-        arm64::disksubr::readdisklabel(dev, strat, lp, spoofonly)
-    }
-
-    fn writedisklabel(
-        dev: crate::sys::types::Dev,
-        strat: crate::sys::conf::DevTypeStrategy,
-        lp: &mut crate::sys::disklabel::Disklabel,
-    ) -> Result<(), crate::sys::errno::Errno> {
-        arm64::disksubr::writedisklabel(dev, strat, lp)
-    }
-}
-
 /// The device switch tables (`arm64/arm64/conf.c`).
 impl crate::machine::conf::Conf for Machine {
     fn nchrdev() -> u32 {

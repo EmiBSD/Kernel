@@ -52,7 +52,6 @@ use kernel::fs::vops::Cred;
 
 use crate::kassert;
 use crate::kern::kern_descrip::{BsdFileData, closef, fdinsert, fnew};
-use crate::kern::subr_disk::disk_map;
 use crate::kern::vfs_syscalls::getvnode;
 use crate::kern::vfs_vops::VOP_UNLOCK;
 use crate::machine::copy::{copyinstr, copyoutstr};
@@ -68,6 +67,7 @@ use crate::sys::syslimits::PATH_MAX;
 use crate::sys::types::Dev;
 use crate::sys::uio::Uio;
 use crate::sys::vnode::{VNOPS, vn_close, vn_open};
+use kernel::dev::disk::disk_map;
 
 /// `*(struct dk_diskmap *)addr`, read from the ioctl's argument buffer.
 fn dk_diskmap_load(addr: &[u8]) -> DkDiskmap {

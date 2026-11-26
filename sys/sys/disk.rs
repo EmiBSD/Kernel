@@ -60,189 +60,238 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! `<sys/disk.h>`: disk device structures (`struct disk`, `struct diskstats`) and the global
-//! list of disks.
+//! `<sys/disk.h>` and the disk layer as `bsd`'s disk drivers name them, until the last of
+//! them moves (sd, cd: N7.4b; rd, vnd, softraid: N7.7; wd, fd: N10): the kernel's
+//! `kernel::dev::disk` (`struct disk`, `disklist`, the label code) and
+//! `kernel::dev::disksubr` (`readdisklabel`, `writedisklabel`), with the driver's side of
+//! the handle.
 //!
 //! Upstream: sys/sys/disk.h @ 3ce1f3f79392
 //!
-//! A disk driver embeds a [`Disk`] in its softc, after the [`Device`], and hands it to
-//! `disk_attach` (`kern/subr_disk.rs`), which links it on `disklist` and allocates its in-core
-//! label. The functions the header declares (`disk_init` .. `duid_format`) live in
-//! `kern/subr_disk.rs`, with `disklist`, `disk_count` and `disk_change`.
+//! A softc holds a [`DiskSlot`] where the C embeds `struct disk sc_dk`: valid all zero (an
+//! `M_ZERO` softc), filled by [`DiskSlot::construct`] with the disk's name and flags before
+//! [`disk_attach`], emptied by [`DiskSlot::destroy`] after [`disk_detach`]. The functions
+//! here keep LZ's names and take the slot (`disk_busy(&sc.sc_dk)`); the member reads are the
+//! slot's methods (`sc.sc_dk.openmask()` for `sc->sc_dk.dk_openmask`). The label routines
+//! take the driver's strategy routine (`DevTypeStrategy`) and lend the kernel's buffer token
+//! to it (`sys::buf::lend`, `biowait`, `token_of`).
 //!
 //! ## Deviations
-//! - Every member that changes after attach is a `Cell` (or the `Rwlock`/`Mutex` the C has):
-//!   the C changes them through `struct disk *` under `dk_lock`, `dk_mtx` or the kernel lock;
-//!   one CPU here. All-zero is a valid `Disk` (it lives in an `M_ZERO` softc).
-//! - `dk_name` is a copy of the name (`DS_DISKNAMELEN` bytes, NUL padded) instead of a
-//!   `char *` into the softc's `dv_xname`: the same bytes without a self-reference.
-//! - `dk_device` and `dk_label` are `Option<NonNull<_>>` (the C's possibly NULL pointers);
-//!   [`Disk::label`] and [`Disk::label_mut`] reach the label.
-//! - The header's constants and `struct diskstats` are `hal::sys::disk`'s (N7.1d),
-//!   re-exported here.
+//! - A slot read before `construct` (or after `destroy`) is `panic(9)` where the C reads the
+//!   zeroed `struct disk`: no driver of the tree does (each constructs in its attach).
+//!
+//! The shim holds no `unsafe` (docs/SCAFFOLDING.md, "The disk's legacy edge").
 
-use core::cell::Cell;
-use core::ptr::NonNull;
+use core::ptr::{self, NonNull};
 
+use hal::sync::slot::ReadMostly;
 pub use hal::sys::disk::*;
+pub use kernel::dev::disk::{
+    DUID_SIZE, Disk, DiskLock, DiskRef, LabelGeom, bounds_check_with_label, checkdisklabel,
+    diskerr, dkcksum, duid_equal, duid_format, duid_iszero, initdisklabel, setdisklabel,
+};
 
-use crate::queue_adapter;
-use crate::sys::device::Device;
-use crate::sys::disklabel::Disklabel;
-use crate::sys::mutex::Mutex;
-use crate::sys::queue::{TailqEntry, TailqHead};
-use crate::sys::rwlock::Rwlock;
-use crate::sys::time::Timeval;
+use crate::kern::proc_glue::BsdProcGlue;
+use crate::kern::subr_autoconf::{device_lookup, node_of};
+use crate::kern::subr_prf::panic;
+use crate::machine::conf::{bdevsw, cdevsw, nblkdev, nchrdev};
+use crate::machine::intr::{splbio, splx};
+use crate::sys::buf::{Buf, BufRef, biowait, lend, token_of};
+use crate::sys::conf::{DevTypeOpen, DevTypeStrategy};
+use crate::sys::device::{Cfdriver, Device};
+use crate::sys::disklabel::{Disklabel, MAXPARTITIONS, diskminor};
+use crate::sys::errno::Errno;
 use crate::sys::types::Dev;
+use crate::sys::vnode::{VBLK, VCHR, vdevgone};
 
-/// `struct disk`.
-pub struct Disk {
-    /// `dk_link`: link in global disklist.
-    pub dk_link: TailqEntry<Disk>,
-    /// `dk_lock`: disk lock.
-    pub dk_lock: Rwlock,
-    /// `dk_mtx`: busy/unbusy mtx.
-    pub dk_mtx: Mutex,
-    /// `dk_name`: disk name.
-    pub dk_name: Cell<[u8; DS_DISKNAMELEN]>,
-    /// `dk_device`: disk device structure.
-    pub dk_device: Cell<Option<NonNull<Device>>>,
-    /// `dk_devno`: disk device number.
-    pub dk_devno: Cell<Dev>,
-    /// `dk_flags`: disk flags (`DKF_*`).
-    pub dk_flags: Cell<i32>,
+/// `struct disk sc_dk` in a legacy softc: the kernel's disk handle, `None` (all zero) until
+/// the driver constructs it.
+pub struct DiskSlot(ReadMostly<Option<DiskRef>>);
 
-    // Metrics data; note that some metrics may have no meaning on certain types of disks.
-    /// `dk_busy`: busy counter.
-    pub dk_busy: Cell<i32>,
-    /// `dk_rxfer`: total number of read transfers.
-    pub dk_rxfer: Cell<u64>,
-    /// `dk_wxfer`: total number of write transfers.
-    pub dk_wxfer: Cell<u64>,
-    /// `dk_seek`: total independent seek operations.
-    pub dk_seek: Cell<u64>,
-    /// `dk_rbytes`: total bytes read.
-    pub dk_rbytes: Cell<u64>,
-    /// `dk_wbytes`: total bytes written.
-    pub dk_wbytes: Cell<u64>,
-    /// `dk_attachtime`: time disk was attached.
-    pub dk_attachtime: Cell<Timeval>,
-    /// `dk_timestamp`: time of first busy or any unbusy.
-    pub dk_timestamp: Cell<Timeval>,
-    /// `dk_time`: total time spent busy.
-    pub dk_time: Cell<Timeval>,
-
-    /// `dk_bopenmask`: block devices open.
-    pub dk_bopenmask: Cell<u64>,
-    /// `dk_copenmask`: character devices open.
-    pub dk_copenmask: Cell<u64>,
-    /// `dk_openmask`: composite (bopen|copen).
-    pub dk_openmask: Cell<u64>,
-    /// `dk_state`: label state (`DK_*`).
-    pub dk_state: Cell<i32>,
-    /// `dk_blkshift`: shift to convert `DEV_BSIZE` to blks.
-    pub dk_blkshift: Cell<i32>,
-    /// `dk_byteshift`: shift to convert bytes to blks.
-    pub dk_byteshift: Cell<i32>,
-
-    /// `dk_label`: disk label information. Storage for the in-core disk label must be
-    /// dynamically allocated, otherwise the size of this structure becomes
-    /// machine-dependent.
-    pub dk_label: Cell<Option<NonNull<Disklabel>>>,
-}
-
-// SAFETY: the members change under `dk_lock`, `dk_mtx` or the kernel lock, as in C; the kernel
-// runs one CPU.
-unsafe impl Sync for Disk {}
-
-impl Disk {
-    /// A disk that is not attached (all zero, as in an `M_ZERO` softc).
+impl DiskSlot {
+    /// An empty slot (all zero, as in an `M_ZERO` softc).
     pub const fn new() -> Self {
-        Self {
-            dk_link: TailqEntry::new(),
-            dk_lock: Rwlock::new(""),
-            dk_mtx: Mutex::new(0),
-            dk_name: Cell::new([0; DS_DISKNAMELEN]),
-            dk_device: Cell::new(None),
-            dk_devno: Cell::new(0),
-            dk_flags: Cell::new(0),
-            dk_busy: Cell::new(0),
-            dk_rxfer: Cell::new(0),
-            dk_wxfer: Cell::new(0),
-            dk_seek: Cell::new(0),
-            dk_rbytes: Cell::new(0),
-            dk_wbytes: Cell::new(0),
-            dk_attachtime: Cell::new(Timeval::new(0, 0)),
-            dk_timestamp: Cell::new(Timeval::new(0, 0)),
-            dk_time: Cell::new(Timeval::new(0, 0)),
-            dk_bopenmask: Cell::new(0),
-            dk_copenmask: Cell::new(0),
-            dk_openmask: Cell::new(0),
-            dk_state: Cell::new(0),
-            dk_blkshift: Cell::new(0),
-            dk_byteshift: Cell::new(0),
-            dk_label: Cell::new(None),
+        Self(ReadMostly::new(None))
+    }
+
+    /// `disk_construct` with the `dk_name` and `dk_flags` the driver sets before
+    /// `disk_attach`: the kernel's block made and held here.
+    pub fn construct(&self, name: &[u8], flags: i32) {
+        drop(self.0.replace(Some(Disk::new(name, flags))));
+    }
+
+    /// Whether the disk was constructed (and not destroyed).
+    pub fn is_constructed(&self) -> bool {
+        self.0.read().is_some()
+    }
+
+    /// The disk, a handle: `panic(9)` before `construct`.
+    pub fn get(&self) -> DiskRef {
+        match self.try_get() {
+            Some(dk) => dk,
+            None => panic(format_args!("disk: the softc's disk is not constructed")),
         }
     }
 
-    /// `dk_name` up to its NUL, as a `&str` (`"?"` if it is not UTF-8).
-    pub fn name(&self) -> &str {
-        // SAFETY: `dk_name` is written once by the driver's attach, before the disk is
-        // shared, and never again, so no `set` overlaps this view of the cell's bytes.
-        let bytes = unsafe { &*self.dk_name.as_ptr() };
-        let len = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
-        core::str::from_utf8(&bytes[..len]).unwrap_or("?")
+    /// The disk, a handle, if constructed.
+    pub fn try_get(&self) -> Option<DiskRef> {
+        self.0.read().clone()
     }
 
-    /// `*dk->dk_label`, read: `None` before `disk_attach` allocated it.
-    pub fn label(&self) -> Option<Disklabel> {
-        // SAFETY: `dk_label` is NULL or the label `disk_attach` allocated, which lives until
-        // `disk_detach`; the copy is taken while no `label_mut` borrow is live (the
-        // drivers' rule, see `label_mut`).
-        self.dk_label.get().map(|p| unsafe { *p.as_ptr() })
+    /// `f` on the disk, without a handle of its own (the I/O path's reads): `panic(9)` before
+    /// `construct`. `f` must not sleep (a reader of the slot).
+    pub fn with<R>(&self, f: impl FnOnce(&Disk) -> R) -> R {
+        match &*self.0.read() {
+            Some(dk) => f(dk),
+            None => panic(format_args!("disk: the softc's disk is not constructed")),
+        }
     }
 
-    /// `dk->dk_label`, read in place: `f` gets the label (`None` before `disk_attach`
-    /// allocated it). The I/O paths (`sdstrategy`, `sdstart`, `sdminphys`) read it this way:
-    /// a `Disklabel` is over a kilobyte (64 partitions), and copying it into each frame of a
-    /// stacked I/O (a softraid volume's strategy calling its chunks') exhausts the kernel
-    /// stack.
-    pub fn with_label<R>(&self, f: impl FnOnce(Option<&Disklabel>) -> R) -> R {
-        // SAFETY: as in `label`: the allocation lives until `disk_detach`, and the shared
-        // borrow ends with `f`, while no `label_mut` borrow is live (the drivers' rule).
-        f(self.dk_label.get().map(|p| unsafe { &*p.as_ptr() }))
+    /// The slot emptied after `disk_detach`, the handle dropped: at `splbio`, so no disk
+    /// interrupt of this CPU reads the slot while the writer waits for its readers.
+    pub fn destroy(&self) {
+        let s = splbio();
+        let old = self.0.replace(None);
+        splx(s);
+        drop(old);
     }
 
-    /// `dk->dk_label`, writable: `None` before `disk_attach` allocated it.
-    ///
-    /// # Safety
-    ///
-    /// The caller is the disk's driver, serialised against every other user of the label
-    /// (by `dk_lock`, the kernel lock or `splbio`, as the C's callers are), and keeps no
-    /// other reference to the label while the returned one is live.
-    #[allow(clippy::mut_from_ref)] // the C's `struct disklabel *` member, shared by pointer
-    pub unsafe fn label_mut(&self) -> Option<&mut Disklabel> {
-        // SAFETY: the caller's contract; the pointer is the live allocation of `disk_attach`.
-        self.dk_label.get().map(|p| unsafe { &mut *p.as_ptr() })
+    /// `dk_openmask`.
+    pub fn openmask(&self) -> u64 {
+        self.with(Disk::openmask)
+    }
+
+    /// `dk_bopenmask`.
+    pub fn bopenmask(&self) -> u64 {
+        self.with(Disk::bopenmask)
+    }
+
+    /// `dk_copenmask`.
+    pub fn copenmask(&self) -> u64 {
+        self.with(Disk::copenmask)
+    }
+
+    /// `*dk_label`, copied out (an ioctl's or an open's: 1,172 bytes, never on the I/O
+    /// path, which reads [`DiskSlot::geom`]).
+    pub fn label(&self) -> Disklabel {
+        let mut lp = Disklabel::zeroed();
+        self.with(|dk| dk.label(&mut lp));
+        lp
+    }
+
+    /// `*dk_label = *lp`, by a holder of the disk lock or the kernel lock.
+    pub fn label_store(&self, lp: &Disklabel) {
+        self.with(|dk| dk.label_store(lp));
+    }
+
+    /// The geometry of partition `part` of the in-core label (the I/O path's).
+    pub fn geom(&self, part: u32) -> LabelGeom {
+        self.with(|dk| dk.geom(part))
+    }
+
+    /// `dk_label`'s address, for `DIOCGPART` (`Disk::label_ptr`).
+    pub fn label_ptr(&self) -> *mut Disklabel {
+        self.with(Disk::label_ptr)
+    }
+
+    /// `&dk_label->d_partitions[part]`'s address, for `DIOCGPART`.
+    pub fn partition_ptr(&self, part: u32) -> *mut crate::sys::disklabel::Partition {
+        self.with(|dk| dk.partition_ptr(part))
     }
 }
 
-impl Default for Disk {
+impl Default for DiskSlot {
     fn default() -> Self {
         Self::new()
     }
 }
 
-queue_adapter!(
-    /// `TAILQ_ENTRY(disk) dk_link`: `disklist`.
-    pub DiskList: Disk, dk_link => TailqEntry<Disk>
-);
+/// `disk_attach(dv, &sc->sc_dk)`: the slot's disk attached for the legacy device `dv` (its
+/// kernel node, `subr_autoconf`'s `node_of`).
+pub fn disk_attach(dv: Option<&Device>, sc_dk: &DiskSlot) {
+    let node = dv.map(node_of);
+    kernel::dev::disk::disk_attach::<BsdProcGlue>(node.as_ref(), &sc_dk.get());
+}
 
-/// `TAILQ_HEAD(disklist_head, disk)`: the disklist is a TAILQ.
-pub struct DisklistHead(pub TailqHead<DiskList>);
+/// `disk_detach(&sc->sc_dk)`.
+pub fn disk_detach(sc_dk: &DiskSlot) {
+    kernel::dev::disk::disk_detach(&sc_dk.get());
+}
 
-// SAFETY: the list changes under the kernel lock (`disk_attach`, `disk_detach`); one CPU here.
-unsafe impl Sync for DisklistHead {}
+/// `disk_openpart(&sc->sc_dk, part, fmt, haslabel)`.
+pub fn disk_openpart(sc_dk: &DiskSlot, part: u32, fmt: i32, haslabel: bool) -> Result<(), Errno> {
+    sc_dk.with(|dk| kernel::dev::disk::disk_openpart(dk, part, fmt, haslabel))
+}
+
+/// `disk_closepart(&sc->sc_dk, part, fmt)`.
+pub fn disk_closepart(sc_dk: &DiskSlot, part: u32, fmt: i32) {
+    sc_dk.with(|dk| kernel::dev::disk::disk_closepart(dk, part, fmt));
+}
+
+/// `disk_busy(&sc->sc_dk)`.
+pub fn disk_busy(sc_dk: &DiskSlot) {
+    sc_dk.with(kernel::dev::disk::disk_busy);
+}
+
+/// `disk_unbusy(&sc->sc_dk, bcount, blkno, read)`.
+pub fn disk_unbusy(sc_dk: &DiskSlot, bcount: i64, blkno: crate::sys::types::Daddr, read: bool) {
+    sc_dk.with(|dk| kernel::dev::disk::disk_unbusy(dk, bcount, blkno, read));
+}
+
+/// `disk_lookup(cd, unit)`: the unit's device, referenced (`device_lookup`; the caller gives
+/// it back with `device_unref`), when it has completed attaching its disk.
+pub fn disk_lookup(cd: &Cfdriver, unit: i32) -> Option<NonNull<Device>> {
+    let node = cd.cd_units.get(unit)?;
+    kernel::dev::disk::disk_of_device(&node)?;
+    device_lookup(cd, unit)
+}
+
+/// The driver's strategy routine as the label code calls it (a `kernel::dev::disk::Strat`):
+/// the token lent to the driver as the legacy `&'static Buf`, waited for, and taken back.
+pub fn label_io(strat: DevTypeStrategy) -> impl FnMut(BufRef) -> (BufRef, Result<(), Errno>) {
+    move |t| {
+        let bp: &'static Buf = lend(t);
+        strat(bp);
+        let error = biowait(bp);
+        (token_of(bp), error)
+    }
+}
+
+/// `readdisklabel(dev, strat, lp, spoofonly)` (the kernel's `disksubr`).
+pub fn readdisklabel(
+    dev: Dev,
+    strat: DevTypeStrategy,
+    lp: &mut Disklabel,
+    spoofonly: bool,
+) -> Result<(), Errno> {
+    let mut io = label_io(strat);
+    kernel::dev::disksubr::readdisklabel::<BsdProcGlue>(dev, &mut io, lp, spoofonly)
+}
+
+/// `writedisklabel(dev, strat, lp)` (the kernel's `disksubr`).
+pub fn writedisklabel(dev: Dev, strat: DevTypeStrategy, lp: &mut Disklabel) -> Result<(), Errno> {
+    let mut io = label_io(strat);
+    kernel::dev::disksubr::writedisklabel(dev, &mut io, lp)
+}
+
+/// `disk_gone`: revokes the vnodes of every partition of a disk that is going away (the
+/// device switch's entries whose open is `open`).
+pub fn disk_gone(open: DevTypeOpen, unit: u32) {
+    // Locate the lowest minor number to be detached.
+    let mn = diskminor(unit, 0);
+    let mx = mn + MAXPARTITIONS as u32 - 1;
+
+    for bmaj in 0..nblkdev() {
+        if ptr::fn_addr_eq(bdevsw(bmaj).d_open, open) {
+            vdevgone(bmaj, mn, mx, VBLK);
+        }
+    }
+    for cmaj in 0..nchrdev() {
+        if ptr::fn_addr_eq(cdevsw(cmaj).d_open, open) {
+            vdevgone(cmaj, mn, mx, VCHR);
+        }
+    }
+}
 /* </CODE> */
 
 /* <TESTS> */
@@ -251,33 +300,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_new_disk_has_no_label_and_its_name_reads_back() {
-        let dk = Disk::new();
-        assert!(dk.label().is_none());
-        assert_eq!(dk.name(), "");
-        let mut name = [0u8; DS_DISKNAMELEN];
-        name[..3].copy_from_slice(b"rd0");
-        dk.dk_name.set(name);
-        assert_eq!(dk.name(), "rd0");
-    }
+    fn a_zeroed_slot_is_empty_constructs_and_is_empty_after_destroy() {
+        // An M_ZERO softc's slot.
+        // SAFETY: test code; `DiskSlot` is a `ReadMostly` (a zero state word) of an
+        // `Option<MArc>` (`#[repr(transparent)]` over a `NonNull`: `None` is all zero).
+        let slot: DiskSlot = unsafe { core::mem::zeroed() };
+        assert!(!slot.is_constructed());
+        assert!(slot.try_get().is_none());
 
-    #[test]
-    #[ignore = "needs OPENBSD_SRC (just test-ref)"]
-    fn values_match_the_c_header() {
-        let defs = crate::reftest::defines("sys/sys/disk.h");
-        let ours: &[(&str, i64)] = &[
-            ("DS_DISKNAMELEN", DS_DISKNAMELEN as i64),
-            ("DKF_CONSTRUCTED", DKF_CONSTRUCTED.into()),
-            ("DKF_OPENED", DKF_OPENED.into()),
-            ("DKF_NOLABELREAD", DKF_NOLABELREAD.into()),
-            ("DK_CLOSED", DK_CLOSED.into()),
-            ("DK_OPENRAW", DK_OPENRAW.into()),
-            ("DM_OPENPART", DM_OPENPART.into()),
-            ("DM_OPENBLCK", DM_OPENBLCK.into()),
-        ];
-        for (name, value) in ours {
-            assert_eq!(crate::reftest::int(&defs, name), Some(*value), "{name}");
-        }
+        let (_g, _p) = crate::kern::vfs_subr::tests::setup();
+        slot.construct(b"sd9", 0);
+        assert!(slot.is_constructed());
+        assert_eq!(slot.get().name(), b"sd9");
+        assert_eq!(slot.openmask(), 0);
+        assert_eq!(slot.geom(0), LabelGeom::default());
+        slot.destroy();
+        assert!(!slot.is_constructed());
     }
 }
 /* </TESTS> */

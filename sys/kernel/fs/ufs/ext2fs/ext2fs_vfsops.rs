@@ -71,8 +71,8 @@
 //! - [`ext2fs_mount`] looks the device name up in a `Nameidata` of its own (`ndinit` around
 //!   the kernel copy of the name), as `ffs_mount` does; a mount that is not an update and has
 //!   no arguments is `EINVAL` (the C reads through the NULL `args`; only in-kernel callers
-//!   pass none). `disk_map` is `bsd`'s until N7, reached through the glue
-//!   (`FileGlue::disk_map`); the export list (`um_export`) is the mount's (`Mount::export`,
+//!   pass none). `disk_map` is the kernel's (`dev::disk`, N7.1d; it was
+//!   `bsd`'s, reached through `FileGlue::disk_map`); the export list (`um_export`) is the mount's (`Mount::export`,
 //!   N6.7b0): [`ext2fs_mount`] updates it with `vfs_export`, [`ext2fs_mountfs`] empties it
 //!   where the C's `malloc(M_ZERO)` of the `ufsmount` starts it empty, and `vfs_checkexp` is
 //!   `ufs_check_export`'s body, `kernel::fs::export::check`, as ffs's.
@@ -171,7 +171,7 @@ use super::ext2fs_inode::ext2fs_setsize;
 use super::ext2fs_subr::ext2fs_vinit;
 use crate::assert::kpanic;
 use crate::base::prf::{Str, printf};
-use crate::file::{DM_OPENBLCK, FileGlue};
+use crate::file::FileGlue;
 use crate::fs::bio::{DEV_BSHIFT, bawrite, bread, brelse, bwrite, getblk_wait};
 use crate::fs::export::{ExportGrant, check, vfs_export};
 use crate::fs::lookup::{namei, ndinit};
@@ -201,6 +201,7 @@ use crate::net::mbuf::Mbuf;
 use crate::proc::{ProcGlue, Thread};
 use crate::time::inittodr;
 use crate::time::tc::gettime;
+use hal::sys::disk::DM_OPENBLCK;
 
 /// `DEV_BSIZE`.
 const DEV_BSIZE: Off = 1 << DEV_BSHIFT;
@@ -378,7 +379,7 @@ pub fn ext2fs_mount<G: ProcGlue>(
     };
     UserPtr::<u8>::new(a.fspec).copyinstr(&mut fspec)?;
 
-    if !<G::FileGlue as FileGlue>::disk_map(&fspec, &mut fname, DM_OPENBLCK) {
+    if !crate::dev::disk::disk_map(&fspec, &mut fname, DM_OPENBLCK) {
         fname = fspec;
     }
 

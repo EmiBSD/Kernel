@@ -1690,12 +1690,6 @@ status = "inherited"
 notes = "M2: db_stack_trace_print from a given frame (db_stack_dump); M4: the trace from ddb_regs (tf_x[29], tf_elr); no symbols (addresses printed, no interrupt/trap markers, xtask symbolize offline), db_get_value is a plain read; the C's double count decrement is kept; /t (tfind, switchframe), stacktrace_save_at/utrace are M5"
 
 [[module]]
-rust = "sys/arch/arm64/arm64/disksubr.rs"
-lz = ["sys/arch/arm64/arm64/disksubr.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs", "sys/kernel/fs/isofs/udf/udf_subr.rs"]
-
-[[module]]
 rust = "sys/arch/arm64/arm64/fpu.rs"
 lz = ["sys/arch/arm64/arm64/fpu.rs"]
 status = "adapted"
@@ -3053,13 +3047,14 @@ notes = "M16a: license: NetBSD Foundation BSD-2, kept whole; the whole header: t
 rust = "sys/dev/ata/wd.rs"
 lz = ["sys/dev/ata/wd.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
+adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/dev/disk.rs"]
 notes = "M16a: the whole driver but B_FORMAT (not defined: wdformat), WD_DUMP_NOT_TRUSTED (not defined) and HIBERNATE: wd_ca/wd_cd, wdprobe, wdattach (model string in wd_model), wdactivate, wddetach, wdstrategy, wdstart, __wdstart, wddone, wdrestart, wdread/wdwrite (physio), wdopen (wdopen_noproc for wdsize), wdclose, wdgetdefaultlabel, wdgetdisklabel (the label built in a local and installed as sd.rs does), wdioctl (DIOCRLDINFO's label malloc'ed as in the C; the rest to wdc_ioctl), wdsize, wddump (nothing calls it yet: dumpsys not ported), wd_get_params (always on sc_params, as every caller), wd_flushcache (keeps the C's test of ERR_NODEV against the AT_* flags), wd_standby. bdevsw 0 / cdevsw 3 on both archs (NWD 1 on amd64, 0 on arm64 as GENERIC). Host tests (model string, strncpy)"
 
 [[module]]
 rust = "sys/dev/ata/wdvar.rs"
 lz = ["sys/dev/ata/wdvar.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/dev/disk.rs"]
 notes = "M16a: the whole header: struct ata_bio (AtaBio: Cells; lp the in-core label read in place by AtaBio::label; databuf a raw pointer; wd a NonNull), ATA_* bio flags, the error codes, struct wd_softc (WdSoftc, repr(C) Softc; sc_params an UnsafeCell with params/params_mut), WDF_*, the drive states RECAL..READY; wdc_ata_bio is ata_wdc.rs's, wddone wd.rs's, wd_hibernate_io not compiled (HIBERNATE not configured). Reference-backed test of every define"
 
 [[module]]
@@ -3102,7 +3097,7 @@ notes = "struct consdev with fn pointers and Cell fields, CN_*; cninit/constab a
 rust = "sys/dev/diskmap.rs"
 lz = ["sys/dev/diskmap.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc/cred.rs", "sys/kernel/file/mod.rs", "sys/kernel/file/descrip.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs", "sys/hal/sys/dkio.rs"]
+adapted_by = ["sys/kernel/proc/cred.rs", "sys/kernel/file/mod.rs", "sys/kernel/file/descrip.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs", "sys/hal/sys/dkio.rs", "sys/kernel/dev/disk.rs"]
 
 [[module]]
 rust = "sys/dev/efi/efi.rs"
@@ -4424,7 +4419,7 @@ status = "inherited"
 rust = "sys/dev/rd.rs"
 lz = ["sys/dev/rd.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/dev/autoconf.rs"]
+adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/dev/autoconf.rs", "sys/kernel/dev/disk.rs"]
 
 [[module]]
 rust = "sys/dev/rnd.rs"
@@ -4516,7 +4511,7 @@ notes = "M16a: the whole header: struct sdmmc_csd/cid/scr, sdmmc_response, struc
 rust = "sys/dev/softraid.rs"
 lz = ["sys/dev/softraid.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/crypto/md5.rs", "sys/kernel/base/task.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/dev/sensors.rs"]
+adapted_by = ["sys/kernel/crypto/md5.rs", "sys/kernel/base/task.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/dev/sensors.rs", "sys/kernel/dev/disk.rs"]
 
 [[module]]
 rust = "sys/dev/softraid_concat.rs"
@@ -4810,7 +4805,7 @@ license = "ISC. M12: XHCI_CMD_TIMEOUT/MAX_CMDS/MAX_EVTS/MAX_XFER"
 rust = "sys/dev/vnd.rs"
 lz = ["sys/dev/vnd.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/crypto/blf.rs", "sys/kernel/proc/mod.rs", "sys/kern/proc_glue.rs", "sys/kernel/proc/cred.rs", "sys/hal/cpu/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs"]
+adapted_by = ["sys/kernel/crypto/blf.rs", "sys/kernel/proc/mod.rs", "sys/kern/proc_glue.rs", "sys/kernel/proc/cred.rs", "sys/hal/cpu/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs", "sys/kernel/dev/disk.rs"]
 notes = "N5.3: vnd_rdwr, a private vn_rdwr over b_data's address (vfs_vnops.c:308-340 but the unused aresid == NULL leg), no unsafe: the kernel's vn_rdwr takes a slice and vndstrategy has only the buffer's address; accepted by the main session (D-N5.3-10, review 1 S4); N7 removes it with vnd's redesign"
 
 [[module]]
@@ -5043,7 +5038,7 @@ adapted_by = ["sys/kernel/vm/object.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd
 rust = "sys/kern/init_main.rs"
 lz = ["sys/kern/init_main.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/syscall.rs", "sys/kernel/file/pipe.rs", "sys/hal/sync/rwlock.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/init.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/pdaemon.rs", "sys/kernel/vm/types.rs", "sys/hal/ds/list.rs", "sys/kernel/proc/mod.rs", "sys/kern/proc_glue.rs", "sys/kernel/proc/cred.rs", "sys/kernel/proc/resource.rs", "sys/kernel/file/mod.rs", "sys/kernel/file/descrip.rs", "sys/hal/cpu/thread.rs", "sys/kernel/sched/mod.rs", "sys/kernel/file/event.rs", "sys/kernel/sig/mod.rs", "sys/kernel/time/clockintr.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/sync.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/base/smr.rs", "sys/kernel/sched/thrsleep.rs", "sys/kernel/fs/nfs/nfs_subs.rs", "sys/kernel/dev/evcount.rs"]
+adapted_by = ["sys/hal/syscall.rs", "sys/kernel/file/pipe.rs", "sys/hal/sync/rwlock.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/init.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/pdaemon.rs", "sys/kernel/vm/types.rs", "sys/hal/ds/list.rs", "sys/kernel/proc/mod.rs", "sys/kern/proc_glue.rs", "sys/kernel/proc/cred.rs", "sys/kernel/proc/resource.rs", "sys/kernel/file/mod.rs", "sys/kernel/file/descrip.rs", "sys/hal/cpu/thread.rs", "sys/kernel/sched/mod.rs", "sys/kernel/file/event.rs", "sys/kernel/sig/mod.rs", "sys/kernel/time/clockintr.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/sync.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/base/smr.rs", "sys/kernel/sched/thrsleep.rs", "sys/kernel/fs/nfs/nfs_subs.rs", "sys/kernel/dev/evcount.rs", "sys/kernel/dev/disk.rs"]
 notes = "M2: main() skeleton in the C's order (consinit, copyright, then every step reports itself unported until its subsystem lands), copyright, boothowto, db_active, ncpus, ncpusfound; main takes no framep and never returns; proc0/process0, start_init, check_console, kthreads are M5; M5-a: timeout_startup, SCHED_LOCK_INIT, sched_init, clockqueue_init, sched_init_cpu and timeout_proc_init are called; initclocks runs (the LAPIC timer on amd64, agtimer on arm64) and selftest=clock checks it; M5-b1: proc0/process0/pgrp0/session0 are statics here; main sets curproc first, calls procinit, builds process 0 as the C does (process_initialize, the lists and hashes, PS_SYSTEM/P_SYSTEM, SONPROC, nice, the name), p_addr = proc0paddr, chgproccnt(0, 1), ci_randseed; crget, the p_sleep_to timeout (endtsleep, M5-b2), signal_init/siginit, fdinit, lim_startup and uvmspace_init stay reported; M5-b2: proc0 p_sleep_to (endtsleep), sleep_queue_init, scheduler_start, kthread_run_deferred_queue (idle and softclock threads), the proc0 tsleep loop (without feature qemu) and selftest=kthread; M6-b: initprocess (null until start_init), the reaper kthread, the boot modules printed (init as a Limine module); the kthread selftest runs after the reaper exists; M6-b2: vmspace0 (uvmspace_init over pmap_kernel, process0/proc0 point at it), fork1 of init (FORK_FORK, start_init) sets initprocess, start_init_exec with its wakeup, start_init (waits for main, check_console reported, execs the init module through exec_image and returns to user mode; 'init: not found' panics as in C), set_init_module from stand; proc0 sleeps in its tsleep loop under qemu too (init's exit ends the run); the kthread selftest still exits early; M7a: rw_obj_init runs; M7a-3b: limit0 with lim_startup and uvm_init_limits; M7b: taskq_init runs (systq and systqmp threads from kthread_run_deferred_queue), selftest=taskq after the reaper exists; kern_prot.c: proc0's credentials (crget, cr_ngroups = 1) are real; M7b: mbinit runs (followed by selftest mbufs under feature qemu), mbcpuinit runs; M7b: config_init, the config_pending wait (tsleep on config_pending) and config_process_deferred_mountroot run (subr_autoconf.c); kern_descrip.c: filedesc_init runs, process 0 gets fdinit() as ps_fd/p_fd, start_init installs the console stand-in (dev/consfile.rs) at descriptors 0, 1 and 2 before the exec, where init(8) would open /dev/console; kern_sig.c: sigacts0, signal_init, siginit(&sigacts0), process 0's ps_sigacts; start_init clears init's ps_sigflags; M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot; M8: pty, NPTY 16), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; M8: tty_init runs (tty.c); M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; ffs: rootvp and swapdev_vp (AtomicPtr with rootvp()/set_rootvp() and swapdev_vp()/set_swapdev_vp()), set by ffs_mountroot; M8: disk_init runs (subr_disk.c), rd(4) attaches from pdevinit and selftest rd_check (feature qemu) opens rd0a through bdevsw and reads the ffs superblock right after; M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; M8: start_init is the C's (the argument page at USRSTACK - PAGE_SIZE, the boot flags and path copied out, sys_execve of each initpaths[] entry), then exec_image of the init boot module with the same arguments while no root file system exists; init_exec is not needed (exec_maxhdrsz is a const fn); uvmpd_tune where the page daemon would start; M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; M8: start_init is the C's (the argument page at USRSTACK - PAGE_SIZE, the boot flags and path copied out, sys_execve of each initpaths[] entry), then exec_image of the init boot module with the same arguments while no root file system exists; init_exec is not needed (exec_maxhdrsz is a const fn); uvmpd_tune where the page daemon would start; M8: futex_init; M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; M8: start_init is the C's (the argument page at USRSTACK - PAGE_SIZE, the boot flags and path copied out, sys_execve of each initpaths[] entry), then exec_image of the init boot module with the same arguments while no root file system exists; init_exec is not needed (exec_maxhdrsz is a const fn); uvmpd_tune where the page daemon would start; M8: futex_init; M8: start_periodic_resettodr; M8: diskconf runs (machine::autoconf::diskconf, setroot); with a ramdisk the root is mounted from rd0a and start_init execs OpenBSD's /sbin/init from it, without one main still says it cannot mount root and execs the init boot module; sockets: soinit runs; domaininit initialises unixdomain too; kern_event.c: kqueue_init and kqueue_init_percpu are called; M9b: CRYPTO (GENERIC's option) is configured: crypto_init and swcr_init run after the pseudo-devices, wg attaches from pdevinit; M9d: NSTOEPLITZ: stoeplitz_init runs before the pseudo-devices; pf and pflog attach from pdevinit; M10e: main calls nfs_init (nfs_subs.rs) before vfsinit under nfsserver or nfsclient, as the C; M11a: KERNEL_LOCK_INIT and KERNEL_LOCK (sys::systm functions, nothing without MULTIPROCESSOR) and cpu_boot_secondary_processors (MULTIPROCESSOR) in their places; M11a: smr_startup, smr_startup_thread, start_init's KERNEL_UNLOCK before init's first return to user mode; with MULTIPROCESSOR and qemu `selftest: N cpus running` after cpu_boot_secondary_processors (selftest=kthread boots the APs itself first); pool_gc_pages (MULTIPROCESSOR) reported until the per-CPU pool caches; M13 (vmx): the qemu network self-test (selftest::ping_gateway) runs after cpu_boot_secondary_processors and the per-CPU checks, so intr_barrier reaches queue interrupts on the APs; M16d: random_start(boothowto & RB_GOODRANDOM) is called (was an unported! report); __guard_local is GUARD_LOCAL (export_name __guard_local) in .openbsd.randomdata, read by random_start; N3.5 S2: LZ's static VMSPACE0 (vmspace0) is gone: process 0's vmspace is an item of vmsppl made by kernel::vm::map::uvmspace_alloc_kernel (the C's uvmspace_init(&vmspace0, pmap_kernel(), ..)), held by PROCESS0's ps_vmspace"
 
 [[module]]
@@ -5470,7 +5465,6 @@ lz = "sys/kern/kern_sched.rs::cpuset_cardinality"
 native = ["sys/kernel/sched/mod.rs::Cpuset::cardinality"]
 kind = "renamed"
 
-
 [[module]]
 rust = "sys/kern/kern_sig.rs"
 lz = ["sys/kern/kern_sig.rs"]
@@ -5526,7 +5520,7 @@ kind = "moved"
 rust = "sys/kern/kern_sysctl.rs"
 lz = ["sys/kern/kern_sysctl.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/file/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc/mod.rs", "sys/kern/proc_glue.rs", "sys/kernel/proc/cred.rs", "sys/kernel/proc/resource.rs", "sys/kernel/file/mod.rs", "sys/kernel/file/descrip.rs", "sys/kernel/file/event.rs", "sys/kernel/sig/mod.rs", "sys/kernel/base/log.rs", "sys/kernel/tty/mod.rs", "sys/kernel/base/sysctl.rs", "sys/kernel/time/clockintr.rs", "sys/kernel/time/tc.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/unix.rs", "sys/kernel/net/syscalls.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/tcp_var.rs", "sys/kernel/netinet/tcp_usrreq.rs", "sys/kernel/netinet/udp_usrreq.rs", "sys/kernel/netinet/raw_ip.rs", "sys/kernel/netinet6/raw_ip6.rs", "sys/kernel/netinet/ip_divert.rs", "sys/kernel/netinet6/ip6_divert.rs", "sys/kernel/dev/evcount.rs", "sys/kernel/dev/watchdog.rs", "sys/kernel/dev/sensors.rs", "sys/hal/sys/disk.rs"]
+adapted_by = ["sys/kernel/file/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc/mod.rs", "sys/kern/proc_glue.rs", "sys/kernel/proc/cred.rs", "sys/kernel/proc/resource.rs", "sys/kernel/file/mod.rs", "sys/kernel/file/descrip.rs", "sys/kernel/file/event.rs", "sys/kernel/sig/mod.rs", "sys/kernel/base/log.rs", "sys/kernel/tty/mod.rs", "sys/kernel/base/sysctl.rs", "sys/kernel/time/clockintr.rs", "sys/kernel/time/tc.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/unix.rs", "sys/kernel/net/syscalls.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/tcp_var.rs", "sys/kernel/netinet/tcp_usrreq.rs", "sys/kernel/netinet/udp_usrreq.rs", "sys/kernel/netinet/raw_ip.rs", "sys/kernel/netinet6/raw_ip6.rs", "sys/kernel/netinet/ip_divert.rs", "sys/kernel/netinet6/ip6_divert.rs", "sys/kernel/dev/evcount.rs", "sys/kernel/dev/watchdog.rs", "sys/kernel/dev/sensors.rs", "sys/hal/sys/disk.rs", "sys/kernel/dev/disk.rs"]
 notes = "N4.6b: the bsd half of sysctl(2): kern.file, the helpers over bsd copyin/copyout for the nodes still in bsd, and sysctl_register_legacy (Node/ProcNode adapters, the CTL_* trees, the kern/hw leaves, directories and kern_vars/hw_vars entries whose state is bsd's, hw.machine, physmem), BsdDiskExport (the DiskExport bridge), native_sysctl (the KernelApi entry); the dispatcher, the vslock and kern.proc moved into sys/kernel/base/sysctl.rs; adapted, not redesigned, until kern.file moves (N5/N6): its unsafe blocks (three at N4.6b: the bound address mbuf viewed as a slice, in_pcb_iterator and its abort; two since N6.4c1, DISKLIST's insert and remove, the pcb's gone with the kernel's pcb) keep the file from the forbid a redesigned bsd module needs (lz check, ZERO_UNSAFE section 5); N4.8a: kern.clockintr and kern.timecounter are the kernel's ClockintrNode and TcNode in KERN_NODES (LZ's kern.clockintr unported! closed)"
 
 [[module]]
@@ -5586,14 +5580,15 @@ kind = "renamed"
 rust = "sys/kern/subr_autoconf.rs"
 lz = ["sys/kern/subr_autoconf.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/dev/autoconf.rs", "sys/kernel/dev/device.rs"]
+adapted_by = ["sys/kernel/dev/autoconf.rs", "sys/kernel/dev/device.rs", "sys/kernel/dev/disk.rs"]
 notes = "N7.1a: the shim over kernel::dev::autoconf, every LZ name and signature kept for bsd's drivers (U4) and no logic of its own: impl ConfigRow and DriverOps for Cfdata (the DriverOps bridge), BsdConfigGlue (the ConfigGlue bridge, cfdata[] lent once per walk), LegacySoftc holding the node's dv_ref, node_of (a shadow node for a device made by hand), the cd_devs/cd_ndevs mirror kept by the kernel's hooks, device_hold for parsedisk, and the re-exports of AUTOCONF_SERIAL/CONFIG_PENDING/AUTOCONF_VERBOSE; docs/SCAFFOLDING.md; goes with the last legacy driver (N7.14)"
 
 [[module]]
 rust = "sys/kern/subr_disk.rs"
 lz = ["sys/kern/subr_disk.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs", "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs", "sys/kernel/fs/isofs/udf/udf_subr.rs", "sys/kernel/fs/nfs/nfs_vfsops.rs", "sys/kernel/fs/nfs/nfs_boot.rs", "sys/kernel/dev/autoconf.rs"]
+adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs", "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs", "sys/kernel/fs/isofs/udf/udf_subr.rs", "sys/kernel/fs/nfs/nfs_vfsops.rs", "sys/kernel/fs/nfs/nfs_boot.rs", "sys/kernel/dev/autoconf.rs", "sys/kernel/dev/disk.rs"]
+notes = "N7.1d: the label code, the list, disk_map, disk_readlabel and disk_lookup are the kernel's (sys/kernel/dev/disk.rs); keeps the root choice over disk_next until N7.1d's next step"
 
 [[module]]
 rust = "sys/kern/subr_log.rs"
@@ -7828,7 +7823,7 @@ adapted_by = ["sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs"]
 rust = "sys/ntfs/ntfs_vfsops.rs"
 lz = ["sys/ntfs/ntfs_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc/cred.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/export.rs"]
+adapted_by = ["sys/kernel/proc/cred.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/export.rs", "sys/kernel/dev/disk.rs"]
 
 [[module]]
 rust = "sys/ntfs/ntfs_vnops.rs"
@@ -7845,7 +7840,7 @@ status = "inherited"
 rust = "sys/scsi/cd.rs"
 lz = ["sys/scsi/cd.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
+adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/dev/disk.rs"]
 
 [[module]]
 rust = "sys/scsi/scsi_all.rs"
@@ -7887,12 +7882,13 @@ status = "inherited"
 rust = "sys/scsi/sd.rs"
 lz = ["sys/scsi/sd.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
+adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/dev/disk.rs"]
 
 [[module]]
 rust = "sys/scsi/sdvar.rs"
 lz = ["sys/scsi/sdvar.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/dev/disk.rs"]
 
 [[module]]
 rust = "sys/stand/boot/boot.rs"
@@ -8057,7 +8053,7 @@ status = "inherited"
 rust = "sys/sys/device.rs"
 lz = ["sys/sys/device.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/dev/device.rs", "sys/kernel/dev/autoconf.rs"]
+adapted_by = ["sys/kernel/dev/device.rs", "sys/kernel/dev/autoconf.rs", "sys/kernel/dev/disk.rs"]
 notes = "N7.1a: the legacy driver interface over kernel::dev::device: the constants and Devclass re-exported from the kernel, the legacy header written once from its node (dv_list and the alldevs types gone), Cfdriver::cd_units the kernel's unit table with cd_devs/cd_ndevs its mirror"
 
 [[module]]
@@ -8070,8 +8066,8 @@ status = "inherited"
 rust = "sys/sys/disk.rs"
 lz = ["sys/sys/disk.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/sys/disk.rs"]
-notes = "N7.1d: the constants and struct diskstats are hal::sys::disk's, re-exported"
+adapted_by = ["sys/hal/sys/disk.rs", "sys/kernel/dev/disk.rs", "sys/kernel/dev/disksubr.rs"]
+notes = "N7.1d: the constants and struct diskstats are hal::sys::disk's, re-exported; N7.1d: the drivers' shim over the kernel's disk: DiskSlot (ReadMostly<Option<DiskRef>>, valid all zero) in the softcs, LZ's function names over the slot, readdisklabel/writedisklabel over a closure lending the token (label_io), disk_gone; 0 unsafe (LZ 7)"
 
 [[module]]
 rust = "sys/sys/disklabel.rs"
@@ -9715,7 +9711,6 @@ crate = "hal"
 lz = ["sys/netinet/ip6.rs"]
 status = "redesigned"
 notes = "N6.3c2 (D-N6.3c-21, early for N6.4-N6.6): the image the kernel's Ethernet layer reads, as an abi_pod! with its const size assert: struct ip6_hdr (40). N6.5a: netinet/ip6.h whole (N6.4a's R3): the twelve extension-header and option images (ip6_hdr_pseudo 40, ip6_ext, ip6_hbh, ip6_dest, ip6_opt 2, ip6_opt_jumbo 6, ip6_opt_nsap 4, ip6_opt_tunnel 3, ip6_opt_router 4, ip6_rthdr 4, ip6_rthdr0 8, ip6_frag 8) as abi_pod!s, IPV6_*, IP6TOS_*, IP6OPT_*, IP6_ALERT_*, IP6F_* and IP6OPT_TYPE; Ip6Hdr's vfc/hops accessors; LZ's four tests; ip6_exthdr_get stays with the mbufs (bsd's ip6.rs, which keeps its copy until N6.5c/d)"
-
 
 [[module]]
 rust = "sys/hal/sys/netinet_ip_divert.rs"
@@ -12198,13 +12193,13 @@ reason = "the VAT block is an MBox in the mount's um_vat slot: udf_unmount and t
 
 [[module.fn]]
 lz = "sys/isofs/udf/udf_subr.rs::udf_disklabelspoof"
-native = ["sys/kern/subr_disk.rs::udf_disklabelspoof", "udf_volume_id"]
+native = ["udf_disklabelspoof", "udf_volume_id"]
 kind = "split"
 lines = "L164-L258"
 
 [[module.fn]]
 lz = "sys/isofs/udf/udf_subr.rs::spoof_read"
-native = ["sys/kern/subr_disk.rs::spoof_with"]
+native = ["sys/kernel/dev/disk.rs::LabelBuf::read_block"]
 kind = "merged"
 [[module]]
 rust = "sys/kernel/fs/isofs/udf/udf_vfsops.rs"
@@ -13060,13 +13055,8 @@ native = ["sys/kernel/fs/ufs/ffs/ffs_vfsops.rs::mname_copy"]
 kind = "merged"
 
 [[module.fn]]
-lz = "sys/isofs/cd9660/cd9660_vfsops.rs::strncpy"
-native = ["sys/kern/subr_disk.rs::strncpy"]
-kind = "moved"
-
-[[module.fn]]
 lz = "sys/isofs/cd9660/cd9660_vfsops.rs::iso_disklabelspoof"
-native = ["sys/kern/subr_disk.rs::iso_disklabelspoof", "iso_volume_label"]
+native = ["iso_disklabelspoof", "iso_volume_label"]
 kind = "split"
 lines = "L615-L696"
 
@@ -13737,7 +13727,7 @@ status = "inherited"
 rust = "sys/ufs/ffs/ffs_vfsops.rs"
 lz = ["sys/ufs/ffs/ffs_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc/mod.rs", "sys/kern/proc_glue.rs", "sys/kernel/proc/cred.rs", "sys/kernel/proc/resource.rs", "sys/kernel/file/mod.rs", "sys/kernel/file/descrip.rs", "sys/hal/cpu/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs", "sys/kernel/fs/ufs/ufs/ufs_ihash.rs", "sys/kernel/fs/ufs/ufs/ufs_dirhash.rs", "sys/kernel/fs/ufs/ufs/ufs_quota.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/ufs/ufs/ufs_vnops.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/msdosfs/msdosfs_vfsops.rs", "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs", "sys/kernel/fs/isofs/udf/udf_vfsops.rs", "sys/kernel/fs/export.rs"]
+adapted_by = ["sys/kernel/proc/mod.rs", "sys/kern/proc_glue.rs", "sys/kernel/proc/cred.rs", "sys/kernel/proc/resource.rs", "sys/kernel/file/mod.rs", "sys/kernel/file/descrip.rs", "sys/hal/cpu/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs", "sys/kernel/fs/ufs/ufs/ufs_ihash.rs", "sys/kernel/fs/ufs/ufs/ufs_dirhash.rs", "sys/kernel/fs/ufs/ufs/ufs_quota.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/ufs/ufs/ufs_vnops.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/msdosfs/msdosfs_vfsops.rs", "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs", "sys/kernel/fs/isofs/udf/udf_vfsops.rs", "sys/kernel/fs/export.rs", "sys/kernel/dev/disk.rs"]
 notes = "N5.5b2: an adapter of no logic but ffs_mountroot over the kernel's (bsd's ROOTDEV and the machine's swapdev until N7), and in its TESTS the fixture bsd's nfs, quota and dirhash tests mount an FFS image with (over the kernel's newfs; mfs's tests are the kernel's since N5.5b3), the export tests (decision 43's ufs bench until N5.5b3, the kernel's benches/fs.rs ffs rows since), since N5.7c3 msdosfs's export test (the kernel's msdosfs over this disk and bsd's glue, VFS_CHECKEXP's MOUNT_MSDOS arm), and since N5.8c2 cd9660's export test (MOUNT_CD9660's arm) and the CD label spoof's test (subr_disk.rs's shell over the kernel's iso_volume_label, through this disk's strategy), and since N5.8u2 udf's two (a_udf_volume_refuses_every_export, MOUNT_UDF's arm; a_udf_volume_gets_a_disk_label, the UDF label spoof's shell over the kernel's udf_volume_id); the file system is the kernel's sys/kernel/fs/ufs/ffs/ffs_vfsops.rs"
 
 [[module]]
@@ -14191,7 +14181,6 @@ lz = ["sys/arch/arm64/arm64/exception.rs"]
 status = "redesigned"
 license = "none"
 notes = "N4.8b: exception.S (Andrew Turner's licence in the .S) and trampoline.S (Mark Kettenis's ISC notice in the .S, a C source LZ had not ported: gap 3, the user's decision 7) pulled in by one global_asm; the handlers reached by sym operands; ci_trampoline_vectors is the CpuCore's word (CORE_TRAMPOLINE_VECTORS), set by set_bhb_mitigation (cpu_mitigate_spectre_bhb's table) or attached (none); N4.8d: the switch is the C's (tramp_return to pmap_tramp's root and the odd ASID, every EL0 vector back to the kernel's), pmap_tramp in pmap/backend.rs, the offset a const operand from pmap/layout.rs (TRAMP_ROOT_OFFSET)"
-
 
 [[module]]
 rust = "sys/hal/arch/arm64/trap.rs"
@@ -15168,7 +15157,6 @@ reason = "decision 43: host microbenchmarks of bsd's run and sleep queues (setru
 [[extra]]
 rust = "sys/benches/legacy_pf.rs"
 reason = "decision 43, D-13, N6.7b1: the host microbenchmark of pf's table lookup (pf.table.match: pfr_match_addr of an address inside one of a table's 1,000 /24s) over bsd's pool(9) and malloc(9) on host memory (setup_real_memory's bring-up) and the kernel crate's doubles, run before and after pf's tables moved onto the kernel's radix tree, a harness = false bench target of bsd, never a kernel image; no OpenBSD or LZ source"
-
 
 [[extra]]
 rust = "sys/kernel/benches/fs.rs"
@@ -16559,6 +16547,11 @@ lz = "sys/kern/kern_sysctl.rs::sysctl_intrcnt"
 native = ["sys/kernel/dev/evcount.rs::IntrcntNode"]
 kind = "moved"
 
+[[module.fn]]
+lz = "sys/kern/kern_sysctl.rs::disk_stats_copy"
+native = ["sys/kernel/dev/disk.rs::disk_stats"]
+kind = "moved"
+
 [[module]]
 rust = "sys/kernel/syscall.rs"
 crate = "kernel"
@@ -16572,7 +16565,6 @@ crate = "kernel"
 lz = ["sys/kern/uipc_domain.rs", "sys/sys/domain.rs"]
 status = "redesigned"
 notes = "N6.2a: struct domain as the trait Domain<G> (dom_externalize/dom_dispose as one optional DomRights entry, Domain::rights(), None by default, the protocols &'static dyn Protocol, SO_PEERCRED's peercred); domains[], sockpl/sosppl, the 200/500 ms protocol timeouts (armed through pin_static of the glue's tables), the upcall and IfLegacy slots in NetTables<G> (FileGlue::net, D-N6.2-7); domaininit, soinit, pffinddomain/pffindtype/pffindproto, pfctlinput, pfslowtimo/pffasttimo; net_sysctl stays bsd's until the socket layer's switch; N6.6a0: Domain::legacy moved to Protocol::legacy (a domain's sockets may be served by both: the kernel's TCP beside bsd's UDP)"
-
 
 [[module.fn]]
 lz = "sys/kern/uipc_domain.rs::PFFAST_TIMEOUT"
@@ -16594,7 +16586,6 @@ crate = "kernel"
 lz = ["sys/sys/protosw.rs"]
 status = "redesigned"
 notes = "N6.2a: struct protosw and struct pr_usrreqs as the traits Protocol<G> and Usrreqs<G> (decision 46): the NULL entries default methods answering what the C's pru_* wrappers answer, every request taking the socket and its lock's witness (SoLocked), owned mbufs where the protocol disposes of them; pr_input and pru_control's ifp wait for N6.3a/N6.4's types (D-N6.2-4); SockaddrView over an address's bytes; PR_* and PRCO_* constants; N6.6a0: Protocol::legacy (default false; bsd's Protosw true), the socket lock's form per protocol, replacing Domain::legacy"
-
 
 [[module.fn]]
 lz = "sys/sys/protosw.rs::usrreqs"
@@ -16706,7 +16697,6 @@ crate = "kernel"
 lz = ["sys/kern/uipc_socket.rs", "sys/kern/uipc_socket2.rs", "sys/sys/socketvar.rs"]
 status = "redesigned"
 notes = "N6.2a: struct socket as a counted sockpl item (SocketRef = PoolArc, soref = from_ref, sorele = drop, sorele's body the Drop; the existence reference parked by soalloc and adopted once by sofree); solock as SoLocked (net lock exclusive or shared with so_lock, or so_lock: hal DetachableRwlock, detached holdings for bsd's C-style sites and sonewconn's returned-locked socket); the [s] members atomics, so_pcb a ReadMostly<Option<AnyArc>> for the kernel's protocols beside bsd's legacy_pcb word; the connection queues under one per-socket leaf mutex cq (also so_timeo's interlock), the queue's reference parked per queued child (D-N6.2-1, D-N6.2-U1 shape B); socreate..soclose, sosend/m_getuio, soreceive over the receive buffer's first record taken out for its copies, the splice (sosplice/sounsplice/somove/soidle/sotask, the task and idle timeout counted and cleared by soclose), sosetopt/sogetopt, the wakeups, so_upcall as two atomics and one registered function (D-N6.2-3), so_print/sobuf_print; doaccept's queue loop, lock and hand-over as soaccept_take; N6.6a0 (D-1): the socket lock per protocol (Protocol::legacy at soalloc, Domain::legacy gone); a kernel protocol's internet socket holds so_lock by a witness under either net holding: solock takes it after the exclusive net lock (uncontended), SoLocked::inet opens it in four parts (InetLocked: so, pcb, tcp, syn, so_part) with the net lock's proof; solocked_legacy takes bsd's lent proof (NetHold::Lent carries it; a wait or unlock under it is panic(9)), attaches a kernel socket's detached holding (SoHold::Attached, detached back by the drop) or takes so_lock for the request; sosleep_nsec's exclusive case lets so_lock go around the sleep; N6.6a0: solock_net(so, net), the socket's lock under the caller's proof of the net lock (in_pcbsolock's); N6.6a0 review (should-fix 1): solock_nonet(so, net) and solock_pair(so1, so2, net) carry the caller's net proof for an internet socket (panic without it), sonewconn takes the listener's, soclose's queued children get the listener's (SoLocked::net_proof); soconnect2 and sosplice take the pair's shared net lock themselves; N6.6a4: solock_attach (a detached holding of so_lock attached back to a witness under the caller's proof: tcp_input_mlist's kept socket, sonewconn's), SoLocked::detach (the witness given back as a detached holding, the net lock's proof the caller's), Socket::set_inet_pcb (so_pcb's typed slot for a kernel internet protocol's socket)"
-
 
 [[module.fn]]
 lz = "sys/kern/uipc_socket.rs::MbufTail"
@@ -16841,7 +16831,6 @@ lz = ["sys/kern/uipc_socket2.rs", "sys/sys/socketvar.rs"]
 status = "redesigned"
 notes = "N6.2a: struct sockbuf as the kernel's (Sockbuf<G>): sb_lock a hal RawRwlock (sblock gives SbLocked), sb_mtx a Mutexed owning the records (SbData: records an MbufList by m_nextpkt, the last record as an OwnedSlist<MNext> plus its final mbuf (sb_mbtail) held outside the list, so sbcompress writes it through the guard with no hal last_mut), the counters, limits, flags and state atomics written only through the guard (SbGuard) and read without it by the filters and kern.file; sbappend/sbappendstream/sbappendrecord/sbappendaddr/sbappendcontrol/sbcompress/sbdrop/sbdroprecord/sbflush/sbreserve/sbrelease/sbcreatecontrol/sbwait/sowakeup's locked half over it; a reader's first record taken out for a copy with the mutex released (take_first_record/put_back_record, the continuation kept aside when a sender closes the record meanwhile); SOCKBUF_DEBUG's sblastrecordchk/sblastmbufchk gone with the fields they checked, sbcheck kept for the tests"
 
-
 [[module.fn]]
 lz = "sys/kern/uipc_socket2.rs::sbmtxassertlocked"
 native = ["SbGuard"]
@@ -16942,7 +16931,6 @@ crate = "kernel"
 lz = ["sys/kern/uipc_usrreq.rs", "sys/kern/uipc_proto.rs", "sys/sys/unpcb.rs"]
 status = "redesigned"
 notes = "N6.2a: the UNIX domain: Unix<G> (struct domain, unixdomain) with its three UnixProto entries (unixsw[]) and the two request tables (UipcUsrreqs, UipcDgramUsrreqs: uipc_usrreqs, uipc_dgram_usrreqs) as Domain/Protocol/Usrreqs impls; struct unpcb as a counted item of the glue's unpcb pool (UnpRef = PoolArc: unp_ref/unp_rele are a handle's clone and drop, unp_detach's refcnt_finalize the count itself), held erased in the socket's read-mostly so_pcb slot and holding its socket counted, the cycle cut by unp_detach; the [s] members one cell keyed to so_lock (UnpState), unp_refs a pinned list keyed to it, the [G] counters atomics written under unp_gc_lock and unp_file a counted reference keyed to it while the file is in flight (gc's f_count == unp_msgcount + 1); unp_addr the sockaddr_un's bytes; struct fdpass kept 16 bytes in the control mbuf, its fp the slot (+1) of the glue's in-flight table (D-N6.2-2), which owns the references, links its free and deferred (unp_deferred) slots, grows by doubling, and replaces unp_df_lock; unp_rights an atomic reserved by a CAS loop (unp_rights_mtx); every check of unp_internalize/unp_externalize kept (EMFILE at maxfiles/10, E2BIG, ENOBUFS, EBADF, EDEADLK at FDUP_MAX_COUNT, UF_PLEDGEOPEN EPERM, pledge_sendfd/pledge_recvfd through ProcGlue, DTYPE_KQUEUE/DTYPE_VMM EINVAL, fd_rdir VBLK/VDIR EPERM, EMSGSIZE, the back-outs); unp_gc as a Task on SYSTQMP over unp_head; the vnode bind through kernel::fs (namei, VOP_CREATE, VnodeUn::Socket); uipc_sysctl over kernel::base::sysctl's SysctlReq; NKCOV 0"
-
 
 [[module.fn]]
 lz = "sys/kern/uipc_usrreq.rs::SUN_NONAME_LEN"
@@ -17166,7 +17154,6 @@ lz = ["sys/kern/sys_socket.rs", "sys/kern/uipc_socket.rs"]
 status = "redesigned"
 notes = "N6.2a: socketops as SocketFileOps<G> (FileOps over the glue's counted socket of the file, FileGlue::socket_of/socket_file): soo_read, soo_write, soo_ioctl (FIOASYNC, FIONREAD, the owner, SIOCATMARK; the 'i' group through the glue's IfLegacy until N6.3a2, the kernel's ifioctl since, 'r' EOPNOTSUPP, else pru_control unlocked), soo_kqfilter, soo_stat, soo_close; the three socket filters (soread/sowrite/soexcept_filtops) as the Filter impls SoRead, SoWrite, SoExcept over Filterops::of, the knote holding a counted handle of its socket in its hook (the tty's shape) and the buffers' klists under sb_mtx"
 
-
 [[module.fn]]
 lz = "sys/kern/uipc_socket.rs::SOREAD_FILTOPS"
 native = ["SocketFileOps::SOREAD_FILTOPS"]
@@ -17329,7 +17316,6 @@ crate = "kernel"
 lz = ["sys/kern/uipc_mbuf.rs", "sys/sys/mbuf.rs"]
 status = "redesigned"
 notes = "N6.1: struct mbuf as an owned pool item (MbufBox = PoolBox<Mbuf> of mbufpl, 256 bytes, align 64): m_next/m_nextpkt owned SlistLinks, m_data an offset (m_off) into the data storage (data()/data_mut() bounds-checked slices, data_raw() for bsd's mtod), the two unions a hal::mem::overlay::Body (Pkthdr live by M_PKTHDR, Ext by M_EXT; MFlags keeps the tag bits); clusters BoxPool<Bytes<N>> x8 (mcl2k..mcl64k, the C's names and item sizes) as ClusterBox, shared through PoolArc<ExtRefs> of mextrefs (64-byte item) made on the first share; the drop is m_free's (mbstat at splnet, M_ZEROIZE carried, the chain and the packet list freed one at a time); MbufPages the PageSource of m_pool_allocator (the memory limit, kp_dma_contig until m_pool_noconstraints); mbstat a hal::sync::percpu::Counters from boot (mbstat_read for kern.mbstat); MbufList = OwnedSlist<MPkt> (struct mbuf_queue, the mq_* and sysctl_mq stay bsd's until N6.3a, review S4); the pf legs through the Pf bridge; m_copyback into a shared cluster takes a copy of its own (Deviations); MEXTADD of a driver's own storage not implemented (no user: D-N6.1-2)"
-
 
 [[module.fn]]
 lz = "sys/sys/mbuf.rs::MEXTFREE_POOL"
@@ -19380,7 +19366,6 @@ rust = "sys/kernel/fs/isofs/udf/testudf.rs"
 crate = "kernel"
 reason = "N5.8u1-u2: the kernel udf's test fixtures (host tests and benches only, cfg(any(test, feature = doubles))): mkudf, LZ's in-memory UDF builder (udf_vnops.rs's tests: tags, time stamps, file entries, allocation and file identifier descriptors, the anchor, the volume descriptor sequence, the test volume M10C) with the variants named tests need (a VAT, sparing tables, a metadata partition, a block size and a root ICB length to patch); TEST_UDF_CONF and the mounts through udf_mountfs over testffs's device (try_mount, mount_root, unmount, root); a mount structure over testffs's device (test_ump), unodes of it (test_node, fentry_copy) with vnodes of udf's own table (N5.8u1's TestUdfVops gone); no OpenBSD or LZ source"
 
-
 [[extra]]
 rust = "sys/kernel/fs/tmpfs/testtmpfs.rs"
 crate = "kernel"
@@ -20667,12 +20652,86 @@ lz = "sys/sys/device.rs::Devicelist"
 native = ["sys/kernel/dev/autoconf.rs::ALLDEVS", "Device"]
 kind = "merged"
 
+[[module.fn]]
+lz = "sys/sys/device.rs::Nam2blk"
+native = ["sys/kernel/dev/disk.rs::Nam2blk"]
+kind = "moved"
+
 [[module]]
 rust = "sys/kernel/dev/disk.rs"
 crate = "kernel"
 lz = ["sys/kern/subr_disk.rs", "sys/sys/disk.rs"]
 status = "redesigned"
 notes = "N7.1d: struct disk a counted block (MArc, Disk::new for disk_construct), its lock a RawRwlock (Disk::lock/lock_nointr, the guard's drop disk_unlock), dk_mtx a Mutexed of the metrics at IPL_BIO, the in-core label 147 relaxed words (label_store, label, geom's LabelGeom on the I/O path), disklist a PinList under DISKS with each disk's list handle parked on it (disk_next walks), the label task a set_shared task; the label code over a LabelBuf (the geteblk token and a Strat closure: strat + biowait); softraid's two callbacks registered (softraid_hooks); LZ's 22 + 7 unsafe gone"
+
+[[module.fn]]
+lz = "sys/kern/subr_disk.rs::buf_bytes"
+native = ["LabelBuf::bytes_at"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/subr_disk.rs::disk_construct"
+native = ["Disk::new"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/subr_disk.rs::disk_lock"
+native = ["Disk::lock"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/subr_disk.rs::disk_lock_nointr"
+native = ["Disk::lock_nointr"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/subr_disk.rs::disk_unlock"
+native = []
+kind = "dropped"
+reason = "the drop of Disk::lock's guard (DiskLock) is disk_unlock"
+
+[[module.fn]]
+lz = "sys/kern/subr_disk.rs::disk_gone"
+native = ["sys/sys/disk.rs::disk_gone"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/kern/subr_disk.rs::DiskAttachTask"
+native = ["Disk"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/subr_disk.rs::SOFTRAID_DISK_ATTACH"
+native = ["softraid_hooks", "softraid_hooks_off"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/sys/disk.rs::Disk::label_mut"
+native = ["Disk::label_store"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/sys/disk.rs::Disk::with_label"
+native = ["Disk::geom", "Disk::label"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/sys/disk.rs::DisklistHead"
+native = ["DISKLIST"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/disk.rs::Disk::default"
+native = []
+kind = "dropped"
+reason = "a disk is made by Disk::new with its name and flags (disk_construct); the all-zero value a softc holds is the shim's empty DiskSlot (its Default)"
+
+[[module]]
+rust = "sys/kernel/dev/disksubr.rs"
+crate = "kernel"
+lz = ["sys/arch/arm64/arm64/disksubr.rs"]
+status = "redesigned"
+notes = "N7.1d: readdisklabel/writedisklabel over the disk layer's LabelBuf (the geteblk token and the driver's Strat closure; brelse its drop) instead of a &'static Buf with an unsafe view of b_data; the ISO 9660 and UDF spoofs called at home (fs::isofs); bsd's MachineDisklabel trait gone (the constants are hal::sys::disklabel's); amd64's disksubr.c is N10's"
 
 [[module]]
 rust = "sys/kernel/dev/autoconf.rs"

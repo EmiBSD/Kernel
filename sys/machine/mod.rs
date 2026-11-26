@@ -21,7 +21,7 @@
 //!
 //! Generic code reaches architecture code ONLY through this module. One module per OpenBSD header
 //! ([`param`], [`vmparam`], [`cpu`], [`cons`], [`bus`], [`pmap`], [`intr`], [`db_machdep`],
-//! [`disklabel`], [`fdt`], [`proc`], [`signal`], [`tcb`], [`pci_machdep`], [`isa_machdep`], [`atomic`];
+//! [`fdt`], [`proc`], [`signal`], [`tcb`], [`pci_machdep`], [`isa_machdep`], [`atomic`];
 //! [`acpi_machdep`] is the machine half of `<dev/acpi/acpivar.h>` (each arch's `acpi_machdep.c`)
 //! and [`pciide_machdep`] that of `<dev/pci/pciidevar.h>` (each arch's `pciide_machdep.c`);
 //! [`autoconf`] is what `ioconf.c` and the machine's `autoconf.c` give `subr_autoconf.c`;
@@ -45,7 +45,6 @@ pub mod cons;
 pub mod copy;
 pub mod cpu;
 pub mod db_machdep;
-pub mod disklabel;
 pub use hal::machine::{exec, param, vmparam};
 pub mod fdt;
 pub mod intr;
@@ -72,7 +71,6 @@ pub use cons::*;
 pub use copy::*;
 pub use cpu::*;
 pub use db_machdep::*;
-pub use disklabel::*;
 pub use fdt::*;
 pub use hal::machine::exec::*;
 pub use hal::machine::param::*;
@@ -108,7 +106,6 @@ const _: () = {
             + PciMachdep
             + PciideMachdep
             + DbMachdep
-            + MachineDisklabel
             + Pmap
             + Intr
             + Fdt

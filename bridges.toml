@@ -303,16 +303,6 @@ trait = "SysctlNode"
 for = ["sys/kernel/base/sysctl.rs"]
 paid_by = "N9"
 
-# bsd: the disk list as sysctl_diskinit reads it (sys/kern/subr_disk.rs's disklist,
-# disk_count and disk_change, each disk's name, label uid and struct diskstats under its
-# dk_mtx), implemented by sys/kern/kern_sysctl.rs (BsdDiskExport) and installed by
-# sysctl_register_legacy (N4.6b), for hw.disknames and hw.diskstats. N7, with the disks.
-# kernel::base::sysctl::DiskExport
-[[bridge]]
-trait = "DiskExport"
-for = ["sys/kernel/base/sysctl.rs"]
-paid_by = "N7"
-
 # bsd: the console's half of the device switch that sendsyslog(2) writes through when no
 # syslogd(8) socket is set (dosendsyslog's KERNEL_LOCK leg): cnwrite and its test `constty ||
 # cn_devvp` (dev/cons.c), implemented by sys/kern/subr_log.rs (BsdTtyDevsw, over dev/cons.rs's

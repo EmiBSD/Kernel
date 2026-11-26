@@ -24,6 +24,7 @@ pub mod autoconf;
 pub mod clock_subr;
 pub mod device;
 pub mod disk;
+pub mod disksubr;
 pub mod evcount;
 pub mod sensors;
 pub mod watchdog;

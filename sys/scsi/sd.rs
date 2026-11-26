@@ -120,13 +120,7 @@ use libkern::strlcpy;
 use crate::kern::init_main::BOOTHOWTO;
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::subr_autoconf::device_unref;
-use crate::kern::subr_disk::{
-    bounds_check_with_label, disk_attach, disk_busy, disk_closepart, disk_detach, disk_gone,
-    disk_lock, disk_lock_nointr, disk_lookup, disk_openpart, disk_unbusy, disk_unlock, dkcksum,
-    initdisklabel, setdisklabel,
-};
 use crate::kern::subr_prf::{Str, panic, printf, snprintf};
-use crate::machine::disklabel::{readdisklabel, writedisklabel};
 use crate::machine::intr::{splbio, splx};
 use crate::scsi::scsi_all::{
     PR_ALLOW, PR_PREVENT, READ_CAP_16_TPE, SENSE_NOT_READY_BECOMING_READY,
@@ -169,6 +163,11 @@ use crate::sys::device::{
     CD_COCOVM, CfMatch, Cfattach, Cfdriver, DV_DISK, DVACT_DEACTIVATE, DVACT_POWERDOWN,
     DVACT_RESUME, DVACT_SUSPEND, Device,
 };
+use crate::sys::disk::{
+    bounds_check_with_label, disk_attach, disk_busy, disk_closepart, disk_detach, disk_gone,
+    disk_lookup, disk_openpart, disk_unbusy, dkcksum, initdisklabel, setdisklabel,
+};
+use crate::sys::disk::{readdisklabel, writedisklabel};
 use crate::sys::disklabel::{
     DISKLABEL_SIZE, DISKMAGIC, DTYPE_FLOPPY, DTYPE_SCSI, Disklabel, FS_SWAP, Partinfo, RAW_PART,
     disklabeldev, diskpart, diskunit, dl_blkspersec, dl_blktosec, dl_getpoffset, dl_getpsize,
@@ -352,7 +351,7 @@ pub fn sdattach(_parent: Option<&Device>, self_: &Device, aux: *mut c_void) {
     let xname = sc.sc_dev.xname().as_bytes();
     let n = xname.len().min(name.len());
     name[..n].copy_from_slice(&xname[..n]);
-    sc.sc_dk.dk_name.set(name);
+    sc.sc_dk.construct(&name, 0);
     let _ = bufq_init(&sc.sc_bufq, sortby);
 
     // Enable write cache by default.
@@ -460,10 +459,14 @@ pub fn sdopen_noproc(dev: Dev, flag: i32, fmt: i32) -> Result<(), Errno> {
         unref();
         return Err(EACCES);
     }
-    if let Err(e) = disk_lock(&sc.sc_dk) {
-        unref();
-        return Err(e);
-    }
+    let dk = sc.sc_dk.get();
+    let lock = match dk.lock() {
+        Ok(l) => l,
+        Err(e) => {
+            unref();
+            return Err(e);
+        }
+    };
 
     let error = 'die: {
         if sc.isset(SDF_DYING) {
@@ -472,7 +475,7 @@ pub fn sdopen_noproc(dev: Dev, flag: i32, fmt: i32) -> Result<(), Errno> {
 
         // `true`: go to `out`; `false`: go to `bad` with `error`.
         let mut error = Ok(());
-        let out = if sc.sc_dk.dk_openmask.get() != 0 {
+        let out = if sc.sc_dk.openmask() != 0 {
             // If any partition is open, but the disk has been invalidated, disallow further
             // opens of non-raw partition.
             if !link_isset(link, SDEV_MEDIA_LOADED) && !rawopen {
@@ -546,11 +549,7 @@ pub fn sdopen_noproc(dev: Dev, flag: i32, fmt: i32) -> Result<(), Errno> {
                     // Load the partition info if not already loaded.
                     let mut lp = Disklabel::zeroed();
                     error = sdgetdisklabel(dev, sc, &mut lp, false);
-                    // SAFETY: under the disk lock, with no partition open: nobody else
-                    // holds the in-core label.
-                    if let Some(dl) = unsafe { sc.sc_dk.label_mut() } {
-                        *dl = lp;
-                    }
+                    sc.sc_dk.label_store(&lp);
                     // SC_DEBUG(link, SDEV_DB3, ("Disklabel loaded\n")).
                     !matches!(error, Err(EIO | ENXIO))
                 }
@@ -566,7 +565,7 @@ pub fn sdopen_noproc(dev: Dev, flag: i32, fmt: i32) -> Result<(), Errno> {
         }
 
         // bad:
-        if sc.sc_dk.dk_openmask.get() == 0 {
+        if sc.sc_dk.openmask() == 0 {
             if sc.isset(SDF_DYING) {
                 break 'die Err(ENXIO);
             }
@@ -587,7 +586,7 @@ pub fn sdopen_noproc(dev: Dev, flag: i32, fmt: i32) -> Result<(), Errno> {
     };
 
     // die:
-    disk_unlock(&sc.sc_dk);
+    drop(lock);
     unref();
     error
 }
@@ -609,16 +608,17 @@ pub fn sdclose(dev: Dev, flag: i32, fmt: i32, _p: Option<&Proc>) -> Result<(), E
     }
     let link = sc.link();
 
-    disk_lock_nointr(&sc.sc_dk);
+    let dk = sc.sc_dk.get();
+    let lock = dk.lock_nointr();
 
     disk_closepart(&sc.sc_dk, part, fmt);
 
-    if (flag & FWRITE != 0 || sc.sc_dk.dk_openmask.get() == 0) && sc.isset(SDF_DIRTY) {
+    if (flag & FWRITE != 0 || sc.sc_dk.openmask() == 0) && sc.isset(SDF_DIRTY) {
         let _ = sd_flush(sc, 0);
     }
 
     let error = 'die: {
-        if sc.sc_dk.dk_openmask.get() == 0 {
+        if sc.sc_dk.openmask() == 0 {
             if sc.isset(SDF_DYING) {
                 break 'die Err(ENXIO);
             }
@@ -648,13 +648,10 @@ pub fn sdclose(dev: Dev, flag: i32, fmt: i32, _p: Option<&Proc>) -> Result<(), E
     };
 
     // die:
-    disk_unlock(&sc.sc_dk);
+    drop(lock);
     unref();
     error
 }
-
-/// The zeroed label the I/O paths read before `disk_attach` allocated one.
-static ZERO_LABEL: Disklabel = Disklabel::zeroed();
 
 /// `sdstrategy`: actually translates the requested transfer into one the physical driver
 /// can understand. The transfer is described by a buf and will include only one physical
@@ -685,9 +682,7 @@ pub fn sdstrategy(bp: &'static Buf) {
             }
 
             // Validate the request.
-            let ok = sc
-                .sc_dk
-                .with_label(|lp| bounds_check_with_label(bp, lp.unwrap_or(&ZERO_LABEL)));
+            let ok = bounds_check_with_label(bp, &sc.sc_dk.geom(diskpart(bp.dev())));
             if !ok {
                 break 'done;
             }
@@ -803,16 +798,12 @@ pub fn sdstart(xs: &'static ScsiXfer) {
     xs.cookie.set(ptr::from_ref(bp).cast_mut().cast());
     xs.bp.set(Some(bp));
 
-    let (secno, nsecs) = sc.sc_dk.with_label(|lp| {
-        let lp = lp.unwrap_or(&ZERO_LABEL);
-        let p = &lp.d_partitions[diskpart(bp.dev()) as usize];
-        let secno = dl_getpoffset(p) + dl_blktosec(lp, bp.blkno() as u64);
-        let nsecs = howmany(
-            usize::try_from(bp.bcount()).unwrap_or(0),
-            lp.d_secsize as usize,
-        ) as u32;
-        (secno, nsecs)
-    });
+    let g = sc.sc_dk.geom(diskpart(bp.dev()));
+    let secno = g.poffset + g.blktosec(bp.blkno() as u64);
+    let nsecs = howmany(
+        usize::try_from(bp.bcount()).unwrap_or(0),
+        g.secsize as usize,
+    ) as u32;
     let disksize = sc.params.get().disksize;
 
     let cmdlen = xs.with_cmd(|cmd: &mut ScsiGeneric| {
@@ -946,7 +937,7 @@ pub fn sdminphys(bp: &Buf) {
         if !link_isset(link, SDEV_ATAPI | SDEV_UMASS)
             && sid_ansii_rev(&link.inqdata.get()) < SCSI_REV_2
         {
-            let secsize = sc.sc_dk.with_label(|lp| lp.map_or(0, |lp| lp.d_secsize));
+            let secsize = sc.sc_dk.geom(0).secsize;
             let max = i64::from(secsize) * 0xff;
 
             if bp.bcount() > max {
@@ -1025,10 +1016,7 @@ fn sdioctl_locked(
         DIOCRLDINFO => {
             let mut lp = Disklabel::zeroed();
             let _ = sdgetdisklabel(dev, sc, &mut lp, false);
-            // SAFETY: the driver's own label; no other reference to it is live.
-            if let Some(dl) = unsafe { sc.sc_dk.label_mut() } {
-                *dl = lp;
-            }
+            sc.sc_dk.label_store(&lp);
             Ok(())
         }
 
@@ -1040,22 +1028,16 @@ fn sdioctl_locked(
         }
 
         DIOCGDINFO => {
-            if let Some(lp) = sc.sc_dk.label() {
-                copyout_label(&lp, addr);
-            }
+            copyout_label(&sc.sc_dk.label(), addr);
             Ok(())
         }
 
         DIOCGPART => {
-            if let Some(lp) = sc.sc_dk.dk_label.get() {
-                let pi = Partinfo {
-                    disklab: lp.as_ptr(),
-                    // SAFETY: `lp` is the live in-core label; the projection only computes
-                    // the address of one of its partitions.
-                    part: unsafe { &raw mut (*lp.as_ptr()).d_partitions[part as usize] },
-                };
-                pi.store(addr);
-            }
+            let pi = Partinfo {
+                disklab: sc.sc_dk.label_ptr(),
+                part: sc.sc_dk.partition_ptr(part),
+            };
+            pi.store(addr);
             Ok(())
         }
 
@@ -1064,20 +1046,21 @@ fn sdioctl_locked(
                 return Err(EBADF);
             }
 
-            disk_lock(&sc.sc_dk)?;
+            let dk = sc.sc_dk.get();
+            let lock = dk.lock()?;
 
             let mut nlp = Disklabel::from_bytes(addr);
-            // SAFETY: under the disk lock; the borrow ends before the strategy runs.
-            let mut error = match unsafe { sc.sc_dk.label_mut() } {
-                Some(olp) => setdisklabel(olp, &mut nlp, sc.sc_dk.dk_openmask.get()),
-                None => Err(ENXIO),
-            };
+            let mut olp = sc.sc_dk.label();
+            let mut error = setdisklabel(&mut olp, &mut nlp, sc.sc_dk.openmask());
+            if error.is_ok() {
+                sc.sc_dk.label_store(&olp);
+            }
             if error.is_ok() && cmd == DIOCWDINFO {
-                let mut lp = sc.sc_dk.label().unwrap_or_default();
+                let mut lp = sc.sc_dk.label();
                 error = writedisklabel(disklabeldev(dev), sdstrategy, &mut lp);
             }
 
-            disk_unlock(&sc.sc_dk);
+            drop(lock);
             error
         }
 
@@ -1391,14 +1374,10 @@ pub fn sdgetdisklabel(
     lp.d_checksum = dkcksum(lp);
 
     // The label sdstrategy checks the reads below against (see the module's deviations).
-    if sc.sc_dk.dk_openmask.get() == 0 {
+    if sc.sc_dk.openmask() == 0 {
         let mut incore = *lp;
         if initdisklabel(&mut incore).is_ok() {
-            // SAFETY: no partition is open and the caller serialises label changes (the
-            // disk lock in `sdopen`): nobody else holds the in-core label.
-            if let Some(dl) = unsafe { sc.sc_dk.label_mut() } {
-                *dl = incore;
-            }
+            sc.sc_dk.label_store(&incore);
         }
     }
 
@@ -1472,13 +1451,13 @@ pub fn sdsize(dev: Dev) -> Daddr {
         }
 
         let part = diskpart(dev);
-        let omask = sc.sc_dk.dk_openmask.get() & (1u64 << part);
+        let omask = sc.sc_dk.openmask() & (1u64 << part);
 
         if omask == 0 && sdopen_noproc(dev, 0, S_IFBLK as i32).is_err() {
             break 'exit -1;
         }
 
-        let lp = sc.sc_dk.label().unwrap_or_default();
+        let lp = sc.sc_dk.label();
         if sc.isset(SDF_DYING) {
             break 'exit -1;
         }
@@ -1529,7 +1508,7 @@ pub fn sddump(dev: Dev, blkno: Daddr, va: *mut u8, size: usize) -> Result<(), Er
     // #if 0: make sure it was initialized (SDEV_MEDIA_LOADED, else ENXIO).
 
     // Convert to disk sectors. Request must be a multiple of size.
-    let lp = sc.sc_dk.label().unwrap_or_default();
+    let lp = sc.sc_dk.label();
     let sectorsize = lp.d_secsize;
     if sectorsize == 0 || !size.is_multiple_of(sectorsize as usize) {
         return Err(EFAULT);
@@ -2362,8 +2341,8 @@ mod tests {
         lp.d_secsize = 512;
         lp.d_type = DTYPE_SCSI;
         lp.d_partitions[0].p_offset = 64;
-        let lp: &'static mut Disklabel = Box::leak(Box::new(lp));
-        sc.sc_dk.dk_label.set(Some(NonNull::from(lp)));
+        sc.sc_dk.construct(b"sd0", 0);
+        sc.sc_dk.label_store(&lp);
         let mut dp = sc.params.get();
         dp.disksize = disksize;
         dp.secsize = 512;

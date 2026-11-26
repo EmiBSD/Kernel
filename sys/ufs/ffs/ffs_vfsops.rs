@@ -541,17 +541,18 @@ pub(crate) mod tests {
     #[cfg(feature = "cd9660")]
     #[test]
     fn a_cd_gets_a_disk_label() {
-        use crate::kern::subr_disk::{dkcksum, iso_disklabelspoof};
+        use crate::sys::disk::{dkcksum, label_io};
         use crate::sys::disklabel::{
             DISKMAGIC, Disklabel, FS_ISO9660, MAXPARTITIONS, RAW_PART, dl_getpoffset, dl_getpsize,
         };
+        use kernel::fs::isofs::cd9660::cd9660_vfsops::iso_disklabelspoof;
         use kernel::fs::isofs::cd9660::testcd9660::image;
 
         let (_g, _p) = setup(image::image_bytes());
         let mut lp = Disklabel::zeroed();
         lp.d_secsize = 512;
         lp.d_secperunit = 100;
-        iso_disklabelspoof(DISKDEV, transfer, &mut lp).unwrap();
+        iso_disklabelspoof(DISKDEV, &mut label_io(transfer), &mut lp).unwrap();
         assert_eq!(&lp.d_typename, b"M10C            ");
         assert_eq!(&lp.d_packname, b"                ");
         for i in [0, RAW_PART as usize] {
@@ -570,7 +571,7 @@ pub(crate) mod tests {
         *DISK.lock().unwrap_or_else(|e| e.into_inner()) = vec![0u8; image::IMAGE_SIZE];
         let mut lp = Disklabel::zeroed();
         assert_eq!(
-            iso_disklabelspoof(DISKDEV, transfer, &mut lp),
+            iso_disklabelspoof(DISKDEV, &mut label_io(transfer), &mut lp),
             Err(Errno::EINVAL)
         );
         assert_eq!((lp.d_magic, lp.d_npartitions), (0, 0));
@@ -622,12 +623,13 @@ pub(crate) mod tests {
     #[cfg(feature = "udf")]
     #[test]
     fn a_udf_volume_gets_a_disk_label() {
-        use crate::kern::subr_disk::{dkcksum, udf_disklabelspoof};
+        use crate::sys::disk::{dkcksum, label_io};
         use crate::sys::disklabel::{
             DISKMAGIC, Disklabel, FS_UDF, MAXPARTITIONS, RAW_PART, dl_getpoffset, dl_getpsize,
             dl_setdsize,
         };
         use kernel::fs::isofs::udf::testudf::mkudf::{self, B, PLEN, PSTART};
+        use kernel::fs::isofs::udf::udf_subr::udf_disklabelspoof;
         use kernel::fs::isofs::udf::udf_vfsops::udf_init;
 
         let (_g, _p) = setup(mkudf::image().0);
@@ -642,7 +644,12 @@ pub(crate) mod tests {
             lp
         };
         let mut lp = label();
-        udf_disklabelspoof(DISKDEV, transfer, &mut lp).unwrap();
+        udf_disklabelspoof::<crate::kern::proc_glue::BsdProcGlue>(
+            DISKDEV,
+            &mut label_io(transfer),
+            &mut lp,
+        )
+        .unwrap();
         assert_eq!(&lp.d_typename[..5], b"M10C\0");
         for i in [0, RAW_PART as usize] {
             assert_eq!(lp.d_partitions[i].p_fstype, FS_UDF);
@@ -660,7 +667,11 @@ pub(crate) mod tests {
         DISK.lock().unwrap_or_else(|e| e.into_inner())[256 * B..257 * B].fill(0);
         let mut lp = label();
         assert_eq!(
-            udf_disklabelspoof(DISKDEV, transfer, &mut lp),
+            udf_disklabelspoof::<crate::kern::proc_glue::BsdProcGlue>(
+                DISKDEV,
+                &mut label_io(transfer),
+                &mut lp
+            ),
             Err(Errno::EINVAL)
         );
         assert_eq!((lp.d_magic, lp.d_npartitions), (0, 0));

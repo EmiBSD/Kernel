@@ -99,7 +99,7 @@ use core::mem::offset_of;
 use hal::mem::malloc::{M_WAITOK, MBox};
 use hal::sys::endian::{letoh32, letoh64};
 use hal::sys::errno::Errno;
-use hal::sys::types::{Daddr, Ino, Off};
+use hal::sys::types::{Daddr, Dev, Ino, Off};
 
 use crate::assert::kpanic;
 use crate::fs::isofs::udf::ecma167_udf::{
@@ -324,6 +324,56 @@ fn udf_vat_read<G: ProcGlue>(ump: &Umount<G>, sector: &mut u32) -> Result<(), Er
 }
 
 const _: () = assert!(PVD_VOL_ID + 32 == SPOOF_HEAD);
+/// `udf_disklabelspoof`: do a lazy probe on the underlying media to check if it's a UDF
+/// volume (the descriptors read raw through the driver's strategy `io`, [`udf_volume_id`]),
+/// in which case we fake a disk label for it (the whole medium in partitions `a` and `c`).
+/// Home here from `bsd`'s `subr_disk.rs` (N7.1d): the C's `geteblk(2048)` buffer is the disk
+/// layer's `LabelBuf`, each read's `b_resid` the C's `b_blkno / d_secpercyl` (only when
+/// `d_secpercyl` is not 0: the C divides by it).
+pub fn udf_disklabelspoof<G: ProcGlue>(
+    dev: Dev,
+    io: crate::dev::disk::Strat<'_>,
+    lp: &mut hal::sys::disklabel::Disklabel,
+) -> Result<(), Errno> {
+    use hal::sys::disklabel::{
+        DISKMAGIC, FS_UDF, MAXPARTITIONS, RAW_PART, dl_getdsize, dl_setpoffset, dl_setpsize,
+    };
+
+    let spc = lp.d_secpercyl;
+    let vid = {
+        // bsize = 2048: the C's.
+        let mut bp = crate::dev::disk::LabelBuf::new(dev, 2048, io);
+        udf_volume_id::<G>(&mut |blkno, out| {
+            let resid = (spc != 0).then(|| (blkno / Daddr::from(spc)) as usize);
+            bp.read_block(blkno, resid, out)
+        })?
+    };
+
+    // Okay, it's a UDF volume. Spoof a disk label for it (the type name only when the
+    // volume's name translated).
+    if let Some(vid) = vid {
+        libkern::strlcpy(&mut lp.d_typename, &vid);
+    }
+
+    for p in lp.d_partitions.iter_mut().take(MAXPARTITIONS) {
+        dl_setpsize(p, 0);
+        dl_setpoffset(p, 0);
+    }
+
+    // Fake two partitions, 'a' and 'c'.
+    let dsize = dl_getdsize(lp);
+    dl_setpsize(&mut lp.d_partitions[0], dsize);
+    lp.d_partitions[0].p_fstype = FS_UDF;
+    dl_setpsize(&mut lp.d_partitions[RAW_PART as usize], dsize);
+    lp.d_partitions[RAW_PART as usize].p_fstype = FS_UDF;
+    lp.d_npartitions = MAXPARTITIONS as u16;
+    lp.d_version = 1;
+
+    lp.d_magic = DISKMAGIC;
+    lp.d_magic2 = DISKMAGIC;
+    lp.d_checksum = crate::dev::disk::dkcksum(lp);
+    Ok(())
+}
 /* </CODE> */
 
 /* <TESTS> */

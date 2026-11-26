@@ -123,7 +123,6 @@ use crate::kern::sched_bsd::scheduler_start;
 use crate::kern::subr_autoconf::{
     CONFIG_PENDING, config_init, config_process_deferred_mountroot, config_rootfound,
 };
-use crate::kern::subr_disk::disk_init;
 use crate::kern::subr_prf::{Str, panic};
 use crate::kern::tty::tty_init;
 use crate::kern::uipc_domain::domaininit;
@@ -141,6 +140,7 @@ use crate::sys::buf::buf_daemon;
 use crate::sys::lockf::lf_init;
 use crate::sys::namei::{namei, ndinit};
 use crate::sys::vnode::{vref, vrele};
+use kernel::dev::disk::disk_init;
 
 use crate::kern::vm_bsd::uvm_init;
 use crate::kern::vm_bsd::uvm_init_limits;

@@ -70,7 +70,7 @@ use crate::dev::ata::atavar::AtaDriveDatas;
 use crate::kern::subr_prf::panic;
 use crate::sys::buf::{Buf, Bufq};
 use crate::sys::device::{Device, Softc};
-use crate::sys::disk::Disk;
+use crate::sys::disk::DiskSlot;
 use crate::sys::disklabel::Disklabel;
 use crate::sys::timeout::Timeout;
 use crate::sys::types::Daddr;
@@ -226,7 +226,7 @@ pub struct WdSoftc {
     /// `sc_dev`.
     pub sc_dev: Device,
     /// `sc_dk`.
-    pub sc_dk: Disk,
+    pub sc_dk: DiskSlot,
     /// `sc_bufq`.
     pub sc_bufq: Bufq,
 

@@ -1136,6 +1136,57 @@ const _: () = {
     assert!(IFID_SIZE as usize <= size_of::<Fid>());
     assert!(ISO_LABEL_HEAD == 132);
 };
+/// `strncpy(dst, src, sizeof(dst))`: copy up to the first NUL, zero-fill the rest.
+fn strncpy(dst: &mut [u8], src: &[u8]) {
+    let n = src
+        .iter()
+        .take(dst.len())
+        .position(|&c| c == 0)
+        .unwrap_or(dst.len().min(src.len()));
+    dst[..n].copy_from_slice(&src[..n]);
+    dst[n..].fill(0);
+}
+
+/// `iso_disklabelspoof`: test to see if the device is an ISOFS filesystem (the volume
+/// descriptors read raw through the driver's strategy `io`, [`iso_volume_label`]), and if
+/// so build a disk label for it (the whole disc in partitions `a` and `c`). Home here from
+/// `bsd`'s `subr_disk.rs` (N7.1d): the C's `geteblk` buffer is the disk layer's `LabelBuf`.
+pub fn iso_disklabelspoof(
+    dev: Dev,
+    io: crate::dev::disk::Strat<'_>,
+    lp: &mut hal::sys::disklabel::Disklabel,
+) -> Result<(), Errno> {
+    use hal::sys::disklabel::{
+        DISKMAGIC, FS_ISO9660, MAXPARTITIONS, RAW_PART, dl_getdsize, dl_setpoffset, dl_setpsize,
+    };
+
+    let volume_id = {
+        let mut bp = crate::dev::disk::LabelBuf::new(dev, ISO_DEFAULT_BLOCK_SIZE, io);
+        iso_volume_label(&mut |blkno, out| bp.read_block(blkno, None, out))?
+    };
+
+    // build a disklabel for the CD
+    strncpy(&mut lp.d_typename, &volume_id);
+    strncpy(&mut lp.d_packname, &volume_id[16..]);
+    for p in lp.d_partitions.iter_mut().take(MAXPARTITIONS) {
+        dl_setpsize(p, 0);
+        dl_setpoffset(p, 0);
+    }
+    let dsize = dl_getdsize(lp);
+    dl_setpoffset(&mut lp.d_partitions[0], 0);
+    dl_setpsize(&mut lp.d_partitions[0], dsize);
+    lp.d_partitions[0].p_fstype = FS_ISO9660;
+    dl_setpoffset(&mut lp.d_partitions[RAW_PART as usize], 0);
+    dl_setpsize(&mut lp.d_partitions[RAW_PART as usize], dsize);
+    lp.d_partitions[RAW_PART as usize].p_fstype = FS_ISO9660;
+    lp.d_npartitions = MAXPARTITIONS as u16;
+    lp.d_version = 1;
+
+    lp.d_magic = DISKMAGIC;
+    lp.d_magic2 = DISKMAGIC;
+    lp.d_checksum = crate::dev::disk::dkcksum(lp);
+    Ok(())
+}
 /* </CODE> */
 
 /* <TESTS> */
@@ -1885,6 +1936,20 @@ mod tests {
         assert_eq!(label(&bad, false).0, Err(Errno::EINVAL));
         let (r, asked) = label(&img, true);
         assert_eq!((r, asked), (Err(Errno::EINVAL), vec![64]));
+    }
+
+    /// `iso_disklabelspoof`'s `strncpy` (LZ's test, moved with it): it stops at the
+    /// source's first NUL and zero-fills the rest, truncates a longer source, and
+    /// zero-fills past a shorter one.
+    #[test]
+    fn strncpy_stops_at_a_nul_truncates_and_zero_fills() {
+        let mut d = [b'x'; 8];
+        strncpy(&mut d, b"ab\0cd");
+        assert_eq!(&d, b"ab\0\0\0\0\0\0");
+        strncpy(&mut d, b"0123456789");
+        assert_eq!(&d, b"01234567");
+        strncpy(&mut d, b"xyz");
+        assert_eq!(&d, b"xyz\0\0\0\0\0");
     }
 }
 /* </TESTS> */

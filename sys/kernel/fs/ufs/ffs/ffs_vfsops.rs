@@ -65,8 +65,8 @@
 //! - `ffs_mount` looks the device name up in a `Nameidata` of its own (`ndinit` around the
 //!   kernel copy of the name) instead of reinitialising the caller's `ndp`, whose lifetime
 //!   cannot hold a local name (LZ's).
-//! - `disk_map` is `bsd`'s until N7: [`ffs_mount`] calls it through the glue
-//!   (`FileGlue::disk_map`, docs/SCAFFOLDING.md). The export list (`um_export`) is the
+//! - `disk_map` is the kernel's (`dev::disk`, N7.1d): [`ffs_mount`] called it through the
+//!   glue (`FileGlue::disk_map`) while it was `bsd`'s. The export list (`um_export`) is the
 //!   mount's (`Mount::export`, `kernel::fs::export`, N6.7b0): [`ffs_mount`] updates it with
 //!   `vfs_export`, [`ffs_mountfs`] empties it where the C's `malloc(M_ZERO)` of the `ufsmount`
 //!   starts it empty, and `vfs_checkexp` is `ufs_check_export`'s body,
@@ -177,7 +177,7 @@ use super::fs::{
 use crate::assert::kpanic;
 use crate::base::prf::printf;
 use crate::base::sysctl::{SysctlReq, bounded_arr};
-use crate::file::{DM_OPENBLCK, FileGlue};
+use crate::file::FileGlue;
 use crate::fs::bio::getblk_wait;
 use crate::fs::bio::{DEV_BSHIFT, bawrite, bread, brelse, bwrite};
 use crate::fs::buf::{B_INVAL, B_NOCACHE, BufRef};
@@ -215,6 +215,7 @@ use crate::net::mbuf::Mbuf;
 use crate::proc::{ProcGlue, Thread};
 use crate::time::inittodr;
 use crate::time::tc::gettime;
+use hal::sys::disk::DM_OPENBLCK;
 
 /// `DEV_BSIZE`.
 const DEV_BSIZE: i64 = 1 << DEV_BSHIFT;
@@ -475,7 +476,7 @@ pub fn ffs_mount<G: ProcGlue>(
                 break 'error_1 Err(e);
             }
 
-            if !<G::FileGlue as FileGlue>::disk_map(&fspec, &mut fname, DM_OPENBLCK) {
+            if !crate::dev::disk::disk_map(&fspec, &mut fname, DM_OPENBLCK) {
                 fname = fspec;
             }
 

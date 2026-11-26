@@ -433,13 +433,9 @@ pub struct Pdevinit {
     pub pdev_count: i32,
 }
 
-/// `struct nam2blk`: a disk driver's name and block major (`nam2blk[]` in each `autoconf.c`).
-pub struct Nam2blk {
-    /// `name`.
-    pub name: &'static [u8],
-    /// `maj`.
-    pub maj: i32,
-}
+/// `struct nam2blk`: a disk driver's name and block major (`nam2blk[]` in each
+/// `autoconf.c`): the kernel's (`kernel::dev::disk`, N7.1d).
+pub use kernel::dev::disk::Nam2blk;
 
 /// The attachment of a free `cfdata[]` slot ([`Cfdata::free`]): the C's NULL `cf_attach`.
 /// Nothing attaches through it: every walk of `cfdata[]` ends before the first free slot

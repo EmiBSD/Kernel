@@ -111,9 +111,8 @@
 //!   `SysctlNode`s (`Node`, a function over a name and a `SysctlReq`; `ProcNode`, one that
 //!   wants the calling thread), the `kern_vars[]`/`hw_vars[]` entries whose variables are
 //!   `bsd`'s, `hw.machine` and `physmem`.
-//! - `BsdDiskExport` is the `DiskExport` bridge (`bridges.toml`): the disk list walked
-//!   under its lock, each disk's name, DUID and `struct diskstats` handed to the kernel's
-//!   `sysctl_diskinit` as bytes.
+//! - N7.1d: `BsdDiskExport`, the `DiskExport` bridge, is paid: the disk list and
+//!   `sysctl_diskinit` are the kernel's (`kernel::dev::disk`, `kernel::base::sysctl`).
 //! - `native_sysctl` is `sysctl(2)`'s entry in the `KernelApi` table (the ABI's):
 //!   the kernel's `sys_sysctl` over `bsd`'s glue.
 //! - `sysctl_vslock` returns the kernel's `VsLock` guard (its drop is `sysctl_vsunlock`);
@@ -133,7 +132,7 @@ use crate::kern::init_main::{NCPUS, NCPUSFOUND};
 use crate::kern::kern_clock::sysctl_clockrate;
 use crate::kern::kern_descrip::{BsdFileData, NUMFILES, fd_getfile, fd_iterfile};
 use crate::kern::kern_event::kqueue_kinfo;
-use crate::kern::kern_lock::{mtx_enter, mtx_leave, pc_cons_enter, pc_cons_leave};
+use crate::kern::kern_lock::{pc_cons_enter, pc_cons_leave};
 use crate::kern::kern_malloc::sysctl_malloc;
 use crate::kern::kern_prot::suser;
 use crate::kern::kern_sched::{cpu_is_online, sysctl_hwblockcpu, sysctl_hwsmt};
@@ -143,7 +142,6 @@ use crate::kern::pipe_glue::pipe_kinfo;
 use crate::kern::proc_glue::{BsdProcGlue, proc_tables, process_ref};
 use crate::kern::socket_glue::fp_socket;
 use crate::kern::subr_autoconf::AUTOCONF_SERIAL;
-use crate::kern::subr_disk::{DISK_CHANGE, DISK_COUNT, DISKLIST, duid_format, duid_iszero};
 use crate::kern::subr_pool::{POOL_DEBUG, pool_reclaim_all, sysctl_dopool};
 use crate::kern::subr_prf::{SPLASSERT_CTL, panic};
 use crate::kern::uipc_socket2::soassertlocked;
@@ -156,7 +154,6 @@ use crate::netinet::in_::IPPROTO_TCP;
 use crate::netinet::in_pcb::{
     Inpcb, Inpcbtable, in_pcb_iterator, in_pcb_iterator_abort, sotoinpcb,
 };
-use crate::sys::disk::{DS_DISKNAMELEN, Disk, Diskstats};
 use crate::sys::errno::Errno;
 use crate::sys::fcntl::{FREAD, FWRITE};
 use crate::sys::file::FileExt;
@@ -228,7 +225,7 @@ static KERN_VARS: [SysctlBoundedArgs; 13] = [
 static HW_VARS: [SysctlBoundedArgs; 3] = [
     SysctlBoundedArgs::readonly(HW_NCPU, &NCPUS),
     SysctlBoundedArgs::readonly(HW_NCPUFOUND, &NCPUSFOUND),
-    SysctlBoundedArgs::readonly(HW_DISKCOUNT, &DISK_COUNT),
+    SysctlBoundedArgs::readonly(HW_DISKCOUNT, &kernel::dev::disk::DISK_COUNT),
 ];
 
 /// `sysctl_vslock(addr, len)` for `curproc` (the network's protocol handlers that are not
@@ -1239,59 +1236,6 @@ fn ptrtoint64<T>(x: *const T) -> u64 {
     x as usize as u64
 }
 
-/// The per-disk copy of `sysctl_diskinit`: `dk`'s name and statistics into `sdk`.
-fn disk_stats_copy(sdk: &mut Diskstats, dk: &Disk) {
-    strlcpy(&mut sdk.ds_name, &dk.dk_name.get());
-    mtx_enter(&dk.dk_mtx);
-    sdk.ds_busy = dk.dk_busy.get();
-    sdk.ds_rxfer = dk.dk_rxfer.get();
-    sdk.ds_wxfer = dk.dk_wxfer.get();
-    sdk.ds_seek = dk.dk_seek.get();
-    sdk.ds_rbytes = dk.dk_rbytes.get();
-    sdk.ds_wbytes = dk.dk_wbytes.get();
-    let tv = |t: crate::sys::time::Timeval| hal::sys::net_if::IfTimeval {
-        tv_sec: t.tv_sec,
-        tv_usec: t.tv_usec,
-    };
-    sdk.ds_attachtime = tv(dk.dk_attachtime.get());
-    sdk.ds_timestamp = tv(dk.dk_timestamp.get());
-    sdk.ds_time = tv(dk.dk_time.get());
-    mtx_leave(&dk.dk_mtx);
-}
-
-/// The disk list (`subr_disk.c`'s `disklist`, `disk_count`, `disk_change`) as the kernel's
-/// `sysctl_diskinit` reads it (`kernel::base::sysctl::DiskExport`).
-struct BsdDiskExport;
-
-impl kernel::base::sysctl::DiskExport for BsdDiskExport {
-    fn take_change(&self) -> bool {
-        DISK_CHANGE.swap(0, Ordering::Relaxed) != 0
-    }
-
-    fn count(&self) -> usize {
-        DISK_COUNT.load(Ordering::Relaxed).max(0) as usize
-    }
-
-    fn for_each(&self, f: &mut kernel::base::sysctl::DiskVisit<'_>) {
-        for dk in DISKLIST.0.iter() {
-            let label_uid = dk.label().map(|lp| lp.d_uid).filter(|u| !duid_iszero(u));
-            let duid = label_uid.map(|u| duid_format(&u));
-            let name = dk.dk_name.get();
-            let mut sdk = Diskstats::default();
-            disk_stats_copy(&mut sdk, dk);
-            f(
-                &name[..strnlen(&name, DS_DISKNAMELEN)],
-                duid.as_ref().map(|d| &d[..]),
-                sdk.as_bytes(),
-            );
-        }
-    }
-}
-
-static BSD_DISK_EXPORT: BsdDiskExport = BsdDiskExport;
-
-const _: () = assert!(size_of::<Diskstats>() == kernel::base::sysctl::DISKSTATS_SIZE);
-
 /// A node of a subsystem still in `bsd` (`kernel::base::sysctl::SysctlNode`): its function over
 /// the name below it and the request.
 struct Node(fn(&[i32], &mut SysctlReq<'_>) -> Result<(), Errno>);
@@ -1673,7 +1617,6 @@ pub fn sysctl_register_legacy() {
     }
     let _ = kernel::base::sysctl::register_kern_vars(&KERN_VARS);
     let _ = kernel::base::sysctl::register_hw_vars(&HW_VARS);
-    let _ = kernel::base::sysctl::install_disk_export(&BSD_DISK_EXPORT);
     let _ = kernel::base::sysctl::register_physmem(&crate::sys::systm::PHYSMEM);
 }
 /* </CODE> */
@@ -1688,7 +1631,6 @@ mod tests {
     // put on the list by hand, and `sysctl(2)` itself through its argument registers.
 
     use std::assert_eq;
-    use std::boxed::Box;
     use std::sync::MutexGuard;
 
     use super::*;
@@ -2366,51 +2308,6 @@ mod tests {
         put(name, &ids);
         let args = [name as Register, 2, 0, 0, 0, 0];
         assert_eq!(sys_sysctl(p, &args, &mut retval), Err(Errno::EOPNOTSUPP));
-    }
-
-    #[test]
-    fn the_disk_export_follows_the_disklist() {
-        use kernel::base::sysctl::DiskExport;
-
-        let _g = setup();
-
-        // Other tests may have left their disks on the list: this one is the last.
-        let dk: &'static Disk = Box::leak(Box::new(Disk::new()));
-        let mut name = [0u8; DS_DISKNAMELEN];
-        name[..4].copy_from_slice(b"tst9");
-        dk.dk_name.set(name);
-        dk.dk_rxfer.set(5);
-        dk.dk_rbytes.set(4096);
-        if DISKLIST.0.is_empty() {
-            DISKLIST.0.init();
-        }
-        // SAFETY: the disk is leaked, in no list; the setup guard serialises the tests.
-        unsafe { DISKLIST.0.insert_tail(dk) };
-        DISK_COUNT.fetch_add(1, Ordering::Relaxed);
-        DISK_CHANGE.store(1, Ordering::Relaxed);
-
-        assert!(BSD_DISK_EXPORT.take_change());
-        assert!(!BSD_DISK_EXPORT.take_change());
-        assert_eq!(
-            BSD_DISK_EXPORT.count(),
-            DISK_COUNT.load(Ordering::Relaxed) as usize
-        );
-        dk.dk_wxfer.set(9);
-        let mut last = None;
-        BSD_DISK_EXPORT.for_each(&mut |name, duid, ds| {
-            let mut sdk = Diskstats::default();
-            sdk.as_bytes_mut().copy_from_slice(ds);
-            last = Some((name.to_vec(), duid.map(<[u8]>::to_vec), sdk));
-        });
-        let (name, duid, sdk) = last.unwrap();
-        assert_eq!((&name[..], duid), (&b"tst9"[..], None));
-        assert_eq!(&sdk.ds_name[..5], b"tst9\0");
-        assert_eq!((sdk.ds_rxfer, sdk.ds_wxfer, sdk.ds_rbytes), (5, 9, 4096));
-
-        // SAFETY: inserted above; the guard is still held.
-        unsafe { DISKLIST.0.remove(dk) };
-        DISK_COUNT.fetch_sub(1, Ordering::Relaxed);
-        DISK_CHANGE.store(1, Ordering::Relaxed);
     }
 
     #[test]

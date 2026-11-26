@@ -80,9 +80,10 @@
 //! - `sr_bootuuid`/`sr_bootkey` ([`SR_BOOTUUID`], [`SR_BOOTKEY`]): amd64's `bios_bootsr`
 //!   and arm64's `openbsd,sr-boot*` properties come from OpenBSD's own loaders; with Limine
 //!   nothing sets them (`replaced-by-limine`), so they stay zero.
-//! - `softraid_disk_attach` is `subr_disk.rs`'s `SOFTRAID_DISK_ATTACH` flag, which
-//!   `sr_attach` sets and `disk_attach`/`disk_detach` test before calling
-//!   [`sr_disk_attach`].
+//! - `softraid_disk_attach` is the kernel disk layer's registered hook
+//!   (`kernel::dev::disk::softraid_hooks`, N7.1d), which `sr_attach` sets (with
+//!   [`sr_map_root`] for `setroot`) and `sr_detach` switches off: `disk_attach`/`disk_detach`
+//!   call [`sr_disk_attach`] through it.
 //! - The bio(4) ioctl structures are read out of the ioctl's bytes (`bio_arg`) and the
 //!   members the C changes are written back one by one with the status (`bio_put`): the
 //!   structures have padding, which a whole-structure copy would turn into uninitialised
@@ -142,9 +143,7 @@ use crate::kern::kern_rwlock::{rw_assert_wrlock, rw_enter_write, rw_exit_write, 
 use crate::kern::kern_synch::{tsleep_nsec, wakeup};
 use crate::kern::kern_task::{TaskqRef, task_add, task_set, taskq_create, taskq_destroy_leaked};
 use crate::kern::subr_autoconf::{config_detach, config_found, config_suspend};
-use crate::kern::subr_disk::{
-    DISKLIST, DUID_SIZE, ROOTDUID, SOFTRAID_DISK_ATTACH, duid_iszero, findblkname,
-};
+use crate::kern::subr_disk::ROOTDUID;
 use crate::kern::subr_pool::{pool_get, pool_put};
 use crate::kern::subr_prf::{Str, panic, printf, snprintf};
 use crate::kern::subr_xxx::blktochr;
@@ -178,7 +177,7 @@ use crate::sys::buf::{biowait, with_private_buf};
 use crate::sys::device::{
     CD_COCOVM, CfMatch, Cfattach, Cfdriver, DETACH_FORCE, DV_DULL, DVACT_POWERDOWN, Device,
 };
-use crate::sys::disk::Disk;
+use crate::sys::disk::{DUID_SIZE, DiskRef, duid_iszero};
 use crate::sys::disklabel::{
     Disklabel, FS_RAID, MAXPARTITIONS, RAW_PART, diskpart, diskunit, dl_getpsize, dl_partnum2name,
     dl_sectoblk, makediskdev,
@@ -203,6 +202,7 @@ use crate::sys::types::{Daddr, Dev, major};
 use crate::sys::ucred::NOCRED;
 use crate::sys::vnode::vn_lock;
 use crate::sys::vnode::{bdevvp, cdevvp, vput};
+use kernel::dev::disk::{disk_next, findblkname};
 
 /// `SR_META_NOTCLAIMED`.
 pub const SR_META_NOTCLAIMED: i32 = 0;
@@ -1417,10 +1417,19 @@ pub fn sr_boot_assembly(sc: &'static SrSoftc) -> i32 {
         loop {
             // The first disk not checked yet (the C restarts its scan after each probe,
             // since it may have slept).
-            let dk = DISKLIST.0.iter().find(|dk| {
-                let devno = dk.dk_devno.get();
-                devno != NODEV && !sdklist.iter().any(|sdk| sdk.sdk_devno.get() == devno)
-            });
+            let dk = {
+                let mut d = disk_next(None);
+                let mut found = None;
+                while let Some(x) = d {
+                    let devno = x.devno();
+                    if devno != NODEV && !sdklist.iter().any(|sdk| sdk.sdk_devno.get() == devno) {
+                        found = Some(x);
+                        break;
+                    }
+                    d = disk_next(Some(&x));
+                }
+                found
+            };
             let Some(dk) = dk else {
                 break;
             };
@@ -1431,18 +1440,18 @@ pub fn sr_boot_assembly(sc: &'static SrSoftc) -> i32 {
             };
             // SAFETY: a zeroed entry (`SrZeroed`), freed below.
             let sdk: &'static SrDisk = unsafe { sdkp.as_ref() };
-            sdk.sdk_devno.set(dk.dk_devno.get());
+            sdk.sdk_devno.set(dk.devno());
             // SAFETY: a new entry in no list, freed after it is unlinked.
             unsafe { sdklist.insert_head(sdk) };
 
             // Only check sd(4) and wd(4) devices.
-            let name = dk.dk_name.get();
+            let name = dk.name();
             if !name.starts_with(b"sd") && !name.starts_with(b"wd") {
                 continue;
             }
 
             // native softraid uses partitions
-            let devno = dk.dk_devno.get();
+            let devno = dk.devno();
             rw_enter_write(&sc.sc_lock);
             with_status(sc, |bs| bio_status_init(bs, &sc.sc_dev));
             sr_meta_native_bootprobe(sc, devno, &bch);
@@ -1994,7 +2003,7 @@ pub fn sr_hotplug_unregister(_sd: &SrDiscipline, func: SrHotplugFn) {
 }
 
 /// `sr_disk_attach`: `softraid_disk_attach`, called by `disk_attach`/`disk_detach`.
-pub fn sr_disk_attach(diskp: &Disk, action: i32) {
+pub fn sr_disk_attach(diskp: &DiskRef, action: i32) {
     for mhe in SR_HOTPLUG_CALLBACKS.0.iter() {
         if let (Some(sd), Some(f)) = (mhe.sh_sd.get(), mhe.sh_hotplug.get())
             && sd.sd_ready.get() != 0
@@ -2063,7 +2072,7 @@ pub fn sr_attach(_parent: Option<&Device>, self_: &Device, _aux: *mut c_void) {
     let bus = config_found(&sc.sc_dev, ptr::from_mut(&mut saa).cast(), Some(scsiprint));
     sc.sc_scsibus.set(bus.map(NonNull::cast::<ScsibusSoftc>));
 
-    SOFTRAID_DISK_ATTACH.store(true, Ordering::Relaxed);
+    kernel::dev::disk::softraid_hooks(sr_disk_attach, sr_map_root);
 
     sr_boot_assembly(sc);
 
@@ -2078,7 +2087,7 @@ pub fn sr_detach(self_: &Device, flags: i32) -> Result<(), Errno> {
 
     // DNPRINTF(SR_D_MISC, "sr_detach")
 
-    SOFTRAID_DISK_ATTACH.store(false, Ordering::Relaxed);
+    kernel::dev::disk::softraid_hooks_off();
 
     sr_shutdown(0);
 
@@ -4217,13 +4226,20 @@ pub fn sr_ioctl_installboot(
         return Err(Errno::EINVAL);
     };
 
-    let label = DISKLIST
-        .0
-        .iter()
-        .find(|dk| sr_name_eq(&dk.dk_name.get(), &bb.bb_dev))
-        .and_then(|dk| dk.label());
-    let duid = match label {
-        Some(l) if !duid_iszero(&l.d_uid) => l.d_uid,
+    let uid = {
+        let mut d = disk_next(None);
+        let mut found = None;
+        while let Some(dk) = d {
+            if sr_name_eq(dk.name(), &bb.bb_dev) {
+                found = Some(dk.uid());
+                break;
+            }
+            d = disk_next(Some(&dk));
+        }
+        found
+    };
+    let duid = match uid {
+        Some(u) if !duid_iszero(&u) => u,
         _ => {
             sr_error(sc, format_args!("failed to get DUID for softraid volume"));
             return Err(Errno::EINVAL);

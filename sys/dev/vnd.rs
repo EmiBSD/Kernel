@@ -112,26 +112,26 @@ use crate::dev::vndioctl::{VNDIOCCLR, VNDIOCGET, VNDIOCSET, VNDNLEN, VndIoctl, V
 use crate::kern::kern_malloc::{free, malloc, mallocarray};
 use crate::kern::kern_prot::{crdup, crfree, suser};
 use crate::kern::subr_autoconf::device_ref;
-use crate::kern::subr_disk::{
-    bounds_check_with_label, disk_attach, disk_closepart, disk_construct, disk_detach, disk_lock,
-    disk_lock_nointr, disk_openpart, disk_unlock, dkcksum, initdisklabel, setdisklabel,
-};
 use crate::kern::subr_prf::{panic, printf, snprintf};
 use crate::kern::vfs_vops::{VOP_GETATTR, VOP_READ, VOP_UNLOCK, VOP_WRITE};
 use crate::machine::conf::bdevsw;
 use crate::machine::copy::{copyin, copyinstr};
 use crate::machine::cpu::curproc;
-use crate::machine::disklabel::{readdisklabel, writedisklabel};
 use crate::machine::intr::{splbio, splx};
 use crate::sys::buf::BufLegacy;
 use crate::sys::buf::biodone;
 use crate::sys::buf::{B_ERROR, B_READ, B_WRITE, Buf};
 use crate::sys::buf::{minphys, physio};
 use crate::sys::device::Device;
-use crate::sys::disk::Disk;
+use crate::sys::disk::DiskSlot;
+use crate::sys::disk::{LabelGeom, readdisklabel, writedisklabel};
+use crate::sys::disk::{
+    bounds_check_with_label, disk_attach, disk_closepart, disk_detach, disk_openpart, dkcksum,
+    initdisklabel, setdisklabel,
+};
 use crate::sys::disklabel::{
-    DISKLABEL_SIZE, DISKMAGIC, Disklabel, Partinfo, disklabeldev, diskpart, diskunit,
-    dl_getpoffset, dl_getpsize, dl_setdsize,
+    DISKLABEL_SIZE, DISKMAGIC, Disklabel, Partinfo, disklabeldev, diskpart, diskunit, dl_getpsize,
+    dl_setdsize,
 };
 use crate::sys::dkio::{DIOCGDINFO, DIOCGPART, DIOCGPDINFO, DIOCRLDINFO, DIOCSDINFO, DIOCWDINFO};
 use crate::sys::errno::Errno;
@@ -169,7 +169,7 @@ pub struct VndSoftc {
     /// `sc_dev`.
     pub sc_dev: Device,
     /// `sc_dk`.
-    pub sc_dk: Disk,
+    pub sc_dk: DiskSlot,
     /// `sc_file`: file we're covering.
     pub sc_file: Cell<[u8; VNDNLEN]>,
     /// `sc_flags`: flags (`VNF_*`).
@@ -278,7 +278,8 @@ pub fn vndattach(num: i32) {
         let mut name = [0u8; 16];
         snprintf(&mut name, format_args!("vnd{i}"));
         sc.sc_dev.dv_xname.set(name);
-        disk_construct(&sc.sc_dk);
+        // disk_construct, with the name VNDIOCSET's attach gives (the unit's own xname).
+        sc.sc_dk.construct(&name, 0);
         device_ref(&sc.sc_dev);
     }
     VND_SOFTC.store(base.as_ptr(), Ordering::Relaxed);
@@ -290,7 +291,8 @@ pub fn vndopen(dev: Dev, flags: i32, mode: i32, _p: &Proc) -> Result<(), Errno> 
     let unit = diskunit(dev);
     let sc = vnd_softc(unit).ok_or(Errno::ENXIO)?;
 
-    disk_lock(&sc.sc_dk)?;
+    let dk = sc.sc_dk.get();
+    let lock = dk.lock()?;
 
     let result = (|| {
         if flags & FWRITE != 0 && sc.sc_flags.get() & VNF_READONLY != 0 {
@@ -299,16 +301,12 @@ pub fn vndopen(dev: Dev, flags: i32, mode: i32, _p: &Proc) -> Result<(), Errno> 
 
         if sc.sc_flags.get() & VNF_INITED != 0
             && sc.sc_flags.get() & VNF_HAVELABEL == 0
-            && sc.sc_dk.dk_openmask.get() == 0
+            && sc.sc_dk.openmask() == 0
         {
             sc.sc_flags.set(sc.sc_flags.get() | VNF_HAVELABEL);
             let mut lp = Disklabel::zeroed();
             let _ = vndgetdisklabel(dev, sc, &mut lp, false);
-            // SAFETY: under the disk lock, with no partition open: nobody else holds the
-            // in-core label.
-            if let Some(dl) = unsafe { sc.sc_dk.label_mut() } {
-                *dl = lp;
-            }
+            sc.sc_dk.label_store(&lp);
         }
 
         let part = diskpart(dev);
@@ -321,7 +319,7 @@ pub fn vndopen(dev: Dev, flags: i32, mode: i32, _p: &Proc) -> Result<(), Errno> 
     })();
 
     // bad:
-    disk_unlock(&sc.sc_dk);
+    drop(lock);
     result
 }
 
@@ -356,14 +354,10 @@ pub fn vndgetdisklabel(
     lp.d_checksum = dkcksum(lp);
 
     // The label vndstrategy checks the reads below against (see the module's deviations).
-    if sc.sc_dk.dk_openmask.get() == 0 {
+    if sc.sc_dk.openmask() == 0 {
         let mut incore = *lp;
         if initdisklabel(&mut incore).is_ok() {
-            // SAFETY: no partition is open and the caller serialises label changes (the
-            // disk lock in `vndopen`): nobody else holds the in-core label.
-            if let Some(dl) = unsafe { sc.sc_dk.label_mut() } {
-                *dl = incore;
-            }
+            sc.sc_dk.label_store(&incore);
         }
     }
 
@@ -383,7 +377,8 @@ pub fn vndclose(dev: Dev, _flags: i32, mode: i32, _p: Option<&Proc>) -> Result<(
     let unit = diskunit(dev);
     let sc = vnd_softc(unit).ok_or(Errno::ENXIO)?;
 
-    disk_lock_nointr(&sc.sc_dk);
+    let dk = sc.sc_dk.get();
+    let lock = dk.lock_nointr();
 
     let part = diskpart(dev);
 
@@ -391,7 +386,7 @@ pub fn vndclose(dev: Dev, _flags: i32, mode: i32, _p: Option<&Proc>) -> Result<(
 
     // The C keeps, under `#if 0`, a reset of VNF_HAVELABEL once the last partition closes.
 
-    disk_unlock(&sc.sc_dk);
+    drop(lock);
     Ok(())
 }
 
@@ -403,7 +398,7 @@ pub fn vndstrategy(bp: &'static Buf) {
         if sc.sc_flags.get() & VNF_HAVELABEL == 0 {
             None
         } else {
-            sc.sc_dk.label().map(|lp| (sc, lp))
+            Some((sc, sc.sc_dk.geom(diskpart(bp.dev()))))
         }
     });
 
@@ -414,7 +409,7 @@ pub fn vndstrategy(bp: &'static Buf) {
             bp.set(B_ERROR);
             bp.set_resid(usize::try_from(bp.bcount()).unwrap_or(0));
         }
-        Some((sc, lp)) => vnd_transfer(sc, bp, &lp),
+        Some((sc, g)) => vnd_transfer(sc, bp, &g),
     }
 
     // done:
@@ -424,7 +419,7 @@ pub fn vndstrategy(bp: &'static Buf) {
 }
 
 /// The transfer of `vndstrategy`, once the unit and its label are known.
-fn vnd_transfer(sc: &VndSoftc, bp: &'static Buf, lp: &Disklabel) {
+fn vnd_transfer(sc: &VndSoftc, bp: &'static Buf, g: &LabelGeom) {
     // Many of the distrib scripts assume they can issue arbitrary sized requests to raw
     // vnd devices irrespective of the emulated disk geometry.
     //
@@ -435,7 +430,7 @@ fn vnd_transfer(sc: &VndSoftc, bp: &'static Buf, lp: &Disklabel) {
     // blocks at a time.
     let origbcount = bp.bcount();
     if sc.sc_keyctx.get().is_none() {
-        let secsize = i64::from(lp.d_secsize);
+        let secsize = i64::from(g.secsize);
         bp.set_bcount(origbcount.wrapping_add(secsize - 1) & !(secsize - 1));
         #[cfg(feature = "diagnostic")]
         if bp.bcount() != origbcount
@@ -454,7 +449,7 @@ fn vnd_transfer(sc: &VndSoftc, bp: &'static Buf, lp: &Disklabel) {
         }
     }
 
-    if !bounds_check_with_label(bp, lp) {
+    if !bounds_check_with_label(bp, g) {
         bp.set_bcount(origbcount);
         bp.set_resid(usize::try_from(origbcount).unwrap_or(0));
         return;
@@ -464,8 +459,7 @@ fn vnd_transfer(sc: &VndSoftc, bp: &'static Buf, lp: &Disklabel) {
         bp.set_bcount(origbcount);
     }
 
-    let p = &lp.d_partitions[diskpart(bp.dev()) as usize];
-    let off = (dl_getpoffset(p) * u64::from(lp.d_secsize))
+    let off = (g.poffset * u64::from(g.secsize))
         .wrapping_add((bp.blkno() as u64).wrapping_mul(DEV_BSIZE as u64)) as Off;
 
     if sc.sc_keyctx.get().is_some() && !bp.isset(B_READ) {
@@ -597,9 +591,10 @@ pub fn vndioctl(dev: Dev, cmd: u64, addr: &mut [u8], flag: i32, p: &Proc) -> Res
         VNDIOCSET => vndioctl_set(dev, sc, addr, p),
 
         VNDIOCCLR => {
-            disk_lock(&sc.sc_dk)?;
+            let dk = sc.sc_dk.get();
+            let lock = dk.lock()?;
             if sc.sc_flags.get() & VNF_INITED == 0 {
-                disk_unlock(&sc.sc_dk);
+                drop(lock);
                 return Err(Errno::ENXIO);
             }
 
@@ -607,11 +602,10 @@ pub fn vndioctl(dev: Dev, cmd: u64, addr: &mut [u8], flag: i32, p: &Proc) -> Res
             // and block flavors of this partition are open.
             let part = diskpart(dev);
             let pmask = 1u64 << part;
-            if sc.sc_dk.dk_openmask.get() & !pmask != 0
-                || (sc.sc_dk.dk_bopenmask.get() & pmask != 0
-                    && sc.sc_dk.dk_copenmask.get() & pmask != 0)
+            if sc.sc_dk.openmask() & !pmask != 0
+                || (sc.sc_dk.bopenmask() & pmask != 0 && sc.sc_dk.copenmask() & pmask != 0)
             {
-                disk_unlock(&sc.sc_dk);
+                drop(lock);
                 return Err(Errno::EBUSY);
             }
 
@@ -630,7 +624,7 @@ pub fn vndioctl(dev: Dev, cmd: u64, addr: &mut [u8], flag: i32, p: &Proc) -> Res
 
             // Detach the disk.
             disk_detach(&sc.sc_dk);
-            disk_unlock(&sc.sc_dk);
+            drop(lock);
             Ok(())
         }
 
@@ -674,10 +668,7 @@ pub fn vndioctl(dev: Dev, cmd: u64, addr: &mut [u8], flag: i32, p: &Proc) -> Res
             }
             let mut lp = Disklabel::zeroed();
             let _ = vndgetdisklabel(dev, sc, &mut lp, false);
-            // SAFETY: the driver's own label, no other reference to it is live.
-            if let Some(dl) = unsafe { sc.sc_dk.label_mut() } {
-                *dl = lp;
-            }
+            sc.sc_dk.label_store(&lp);
             Ok(())
         }
 
@@ -695,9 +686,7 @@ pub fn vndioctl(dev: Dev, cmd: u64, addr: &mut [u8], flag: i32, p: &Proc) -> Res
             if sc.sc_flags.get() & VNF_HAVELABEL == 0 {
                 return Err(Errno::ENOTTY);
             }
-            if let Some(lp) = sc.sc_dk.label() {
-                copyout_label(&lp, addr);
-            }
+            copyout_label(&sc.sc_dk.label(), addr);
             Ok(())
         }
 
@@ -705,16 +694,11 @@ pub fn vndioctl(dev: Dev, cmd: u64, addr: &mut [u8], flag: i32, p: &Proc) -> Res
             if sc.sc_flags.get() & VNF_HAVELABEL == 0 {
                 return Err(Errno::ENOTTY);
             }
-            if let Some(lp) = sc.sc_dk.dk_label.get() {
-                let part = diskpart(dev) as usize;
-                let pi = Partinfo {
-                    disklab: lp.as_ptr(),
-                    // SAFETY: `lp` is the live in-core label; the projection only computes
-                    // the address of one of its partitions.
-                    part: unsafe { &raw mut (*lp.as_ptr()).d_partitions[part] },
-                };
-                pi.store(addr);
-            }
+            let pi = Partinfo {
+                disklab: sc.sc_dk.label_ptr(),
+                part: sc.sc_dk.partition_ptr(diskpart(dev)),
+            };
+            pi.store(addr);
             Ok(())
         }
 
@@ -726,20 +710,21 @@ pub fn vndioctl(dev: Dev, cmd: u64, addr: &mut [u8], flag: i32, p: &Proc) -> Res
                 return Err(Errno::EBADF);
             }
 
-            disk_lock(&sc.sc_dk)?;
+            let dk = sc.sc_dk.get();
+            let lock = dk.lock()?;
 
             let mut nlp = Disklabel::from_bytes(addr);
-            // SAFETY: under the disk lock; the borrow ends before the strategy runs.
-            let mut result = match unsafe { sc.sc_dk.label_mut() } {
-                Some(olp) => setdisklabel(olp, &mut nlp, /* sc->sc_dk.dk_openmask */ 0),
-                None => Err(Errno::ENXIO),
-            };
+            let mut olp = sc.sc_dk.label();
+            let mut result = setdisklabel(&mut olp, &mut nlp, /* sc->sc_dk.dk_openmask */ 0);
+            if result.is_ok() {
+                sc.sc_dk.label_store(&olp);
+            }
             if result.is_ok() && cmd == DIOCWDINFO {
-                let mut lp = sc.sc_dk.label().unwrap_or_default();
+                let mut lp = sc.sc_dk.label();
                 result = writedisklabel(disklabeldev(dev), vndstrategy, &mut lp);
             }
 
-            disk_unlock(&sc.sc_dk);
+            drop(lock);
             result
         }
 
@@ -826,11 +811,13 @@ fn vndioctl_set(dev: Dev, sc: &'static VndSoftc, addr: &mut [u8], p: &Proc) -> R
             (vattr.va_size / vio.vnd_secsize as u64) as usize
         };
 
-        if let Err(e) = disk_lock(&sc.sc_dk) {
-            break 'fail e;
-        }
+        let dk = sc.sc_dk.get();
+        let lock = match dk.lock() {
+            Ok(l) => l,
+            Err(e) => break 'fail e,
+        };
         if sc.sc_flags.get() & VNF_INITED != 0 {
-            disk_unlock(&sc.sc_dk);
+            drop(lock);
             break 'fail Errno::EBUSY;
         }
 
@@ -874,15 +861,10 @@ fn vndioctl_set(dev: Dev, sc: &'static VndSoftc, addr: &mut [u8], p: &Proc) -> R
         vio.vnd_size = (sc.sc_size.get() as u64).wrapping_mul(sc.sc_secsize.get() as u64) as Off;
         sc.sc_flags.set(sc.sc_flags.get() | VNF_INITED);
 
-        // Attach the disk.
-        let mut dkname = [0u8; 16];
-        let xname = sc.sc_dev.xname().as_bytes();
-        let n = xname.len().min(dkname.len());
-        dkname[..n].copy_from_slice(&xname[..n]);
-        sc.sc_dk.dk_name.set(dkname);
+        // Attach the disk (its dk_name, the unit's xname, given at vndattach's construct).
         disk_attach(Some(&sc.sc_dev), &sc.sc_dk);
 
-        disk_unlock(&sc.sc_dk);
+        drop(lock);
 
         ioctl_ret(addr, &vio);
         return Ok(());
@@ -1117,7 +1099,7 @@ mod tests {
         sc.sc_vp.set(Some(vp));
         sc.sc_cred.set(cred);
         sc.sc_flags.set(VNF_INITED);
-        sc.sc_dk.dk_name.set(*b"vnd0\0\0\0\0\0\0\0\0\0\0\0\0");
+        sc.sc_dk.construct(b"vnd0", 0);
         disk_attach(Some(&sc.sc_dev), &sc.sc_dk);
 
         // The host has no `readdisklabel`; the label vndstrategy checks against is the
@@ -1134,7 +1116,7 @@ mod tests {
         );
         assert_eq!(lp.d_ncylinders, 0);
         assert_eq!(dkcksum(&lp), 0);
-        let incore = sc.sc_dk.label().expect("in-core label");
+        let incore = sc.sc_dk.label();
         assert_eq!(
             dl_getpsize(&incore.d_partitions[RAW_PART as usize]),
             SECTORS as u64
@@ -1156,9 +1138,9 @@ mod tests {
         let raw = makediskdev(VND_BMAJ, 1, RAW_PART);
         let sc = vnd_softc(1).expect("vnd1");
         vndopen(raw, FREAD, S_IFCHR as i32, p).expect("raw open");
-        assert_eq!(sc.sc_dk.dk_copenmask.get(), 1 << RAW_PART);
+        assert_eq!(sc.sc_dk.copenmask(), 1 << RAW_PART);
         vndclose(raw, FREAD, S_IFCHR as i32, Some(p)).expect("close");
-        assert_eq!(sc.sc_dk.dk_openmask.get(), 0);
+        assert_eq!(sc.sc_dk.openmask(), 0);
         assert_eq!(
             vndopen(makediskdev(VND_BMAJ, 1, 0), FREAD, S_IFBLK as i32, p),
             Err(Errno::ENXIO)
@@ -1346,7 +1328,7 @@ mod tests {
         vndclose(raw, FREAD, S_IFCHR as i32, Some(p)).expect("close");
         assert_eq!(sc.sc_flags.get(), 0);
         assert!(sc.sc_vp.get().is_none() && sc.sc_cred.cred().is_none());
-        assert!(sc.sc_dk.label().is_none());
+        assert!(!sc.sc_dk.get().is_attached());
         assert_eq!(sc.sc_file.get()[0], 0);
         end();
     }

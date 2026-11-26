@@ -179,7 +179,7 @@
 
 use core::fmt::{self, Write as _};
 use core::mem::offset_of;
-use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 
 use hal::cpu::intr::{IPL_BIO, IPL_NONE};
 use hal::ds::pinlist::{PinEntry, PinList};
@@ -482,6 +482,11 @@ impl Disk {
             .is_some_and(|d| core::ptr::eq(&**d, dv))
     }
 
+    /// Whether the disk is on `disklist` (between `disk_attach` and `disk_detach`).
+    pub fn is_attached(&self) -> bool {
+        self.dk_link.is_linked()
+    }
+
     /// `dk_flags`.
     pub fn flags(&self) -> i32 {
         self.dk_flags.load(Ordering::Relaxed)
@@ -624,6 +629,8 @@ impl Disk {
 pub struct LabelBuf<'a> {
     /// The buffer, `None` only while the strategy holds it.
     t: Option<BufRef>,
+    /// `geteblk`'s size.
+    size: usize,
     /// `(*strat)(bp); biowait(bp)`.
     io: Strat<'a>,
 }
@@ -638,7 +645,36 @@ impl<'a> LabelBuf<'a> {
     pub fn new(dev: Dev, size: usize, io: Strat<'a>) -> Self {
         let t = geteblk(size);
         t.buf().set_dev(dev);
-        Self { t: Some(t), io }
+        Self {
+            t: Some(t),
+            size,
+            io,
+        }
+    }
+
+    /// The label spoofs' read of the block `blkno` (`iso_disklabelspoof`,
+    /// `udf_disklabelspoof`): the whole buffer read raw by the driver's strategy (`b_blkno`,
+    /// `b_bcount`, the flags, `b_resid = resid` when given), its first `out.len()` bytes
+    /// copied out when the transfer succeeded.
+    pub fn read_block(
+        &mut self,
+        blkno: Daddr,
+        resid: Option<usize>,
+        out: &mut [u8],
+    ) -> Result<(), Errno> {
+        let b = self.buf();
+        b.set_blkno(blkno);
+        b.set_bcount(self.size as i64);
+        b.clr(B_READ | B_WRITE | B_DONE);
+        b.set(B_BUSY | B_READ | B_RAW);
+        if let Some(r) = resid {
+            b.set_resid(r);
+        }
+        self.strategy()?;
+        let data = self.bytes();
+        let n = out.len().min(data.len());
+        out[..n].copy_from_slice(&data[..n]);
+        Ok(())
     }
 
     /// The buffer's token.
@@ -735,10 +771,29 @@ pub static DISK_CHANGE: AtomicI32 = AtomicI32::new(0);
 /// `softraid_disk_attach` (softraid callback, do not use!) and `sr_map_root`.
 static SOFTRAID: OnceStatic<SoftraidHooks> = OnceStatic::new();
 
-/// Registers softraid(4)'s callbacks (`softraid_disk_attach = sr_disk_attach`, and the root
-/// mapping `setroot` calls), once (`sr_attach`); a second registration is ignored.
+/// `softraid_disk_attach != NULL`: set by `sr_attach`, cleared by `sr_detach`.
+static SOFTRAID_ON: AtomicBool = AtomicBool::new(false);
+
+/// `softraid_disk_attach = sr_disk_attach` (`sr_attach`): softraid(4)'s callbacks registered
+/// (the first registration's are kept: there is one softraid) and the attach hook switched
+/// on.
 pub fn softraid_hooks(attach: fn(&DiskRef, i32), map_root: fn()) {
     let _ = SOFTRAID.set(SoftraidHooks { attach, map_root });
+    SOFTRAID_ON.store(true, Ordering::Relaxed);
+}
+
+/// `softraid_disk_attach = NULL` (`sr_detach`).
+pub fn softraid_hooks_off() {
+    SOFTRAID_ON.store(false, Ordering::Relaxed);
+}
+
+/// `softraid_disk_attach`, when it is set.
+fn softraid_attach_hook() -> Option<fn(&DiskRef, i32)> {
+    if SOFTRAID_ON.load(Ordering::Relaxed) {
+        SOFTRAID.get().map(|h| h.attach)
+    } else {
+        None
+    }
 }
 
 /// `sr_map_root()`, when softraid(4) registered it (`setroot`'s `NSOFTRAID > 0`).
@@ -1686,8 +1741,8 @@ pub fn disk_attach<G: ProcGlue>(dv: Option<&DevRef>, dk: &DiskRef) {
         }
     }
 
-    if let Some(h) = SOFTRAID.get() {
-        (h.attach)(dk, 1);
+    if let Some(attach) = softraid_attach_hook() {
+        attach(dk, 1);
     }
 }
 
@@ -1716,8 +1771,8 @@ fn disk_attach_callback<G: ProcGlue>(a: &AnyArc) {
 pub fn disk_detach(dk: &DiskRef) {
     hal::sync::klock::kernel_assert_locked();
 
-    if let Some(h) = SOFTRAID.get() {
-        (h.attach)(dk, -1);
+    if let Some(attach) = softraid_attach_hook() {
+        attach(dk, -1);
     }
 
     // Free the space used by the disklabel structures: they are the block's, freed with it.
