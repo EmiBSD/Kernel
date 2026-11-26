@@ -16,6 +16,9 @@
 # the option's answer (the bit, 8), ICMP6_FILTER and IPV6_CHECKSUM's refusals, a divert socket
 # reinjecting a UDP datagram out and in with no pf rule, the divert and rip6 sysctls, and the
 # raw and divert sockets an unprivileged process is refused (EACCES).
+# Before `tcp`, lo0 gets 127.0.0.1/8 (N6.8), as netstart(8) gives it on OpenBSD at boot and as
+# nfs.scn does: EmiBSD's ramdisk rc configures no interface, so its bind to 127.0.0.1 was
+# EADDRNOTAVAIL; bringing lo0 up also gives it ::1. The step ids before it do not move.
 
 ## probes
 ! mkdir /mnt/sc
@@ -35,6 +38,7 @@ $ difftest syscalls mmapfile
 $ difftest syscalls sysctl
 $ difftest syscalls ostype
 $ difftest syscalls tty
+! ifconfig lo0 inet 127.0.0.1/8 up
 $ difftest syscalls tcp
 $ difftest syscalls udp
 $ difftest syscalls raw

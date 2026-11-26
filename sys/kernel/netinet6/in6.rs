@@ -1263,10 +1263,7 @@ pub fn in6_addmulti(
     hal::klock::kernel_lock();
     let error = if_ioctl(ifp, SIOCADDMULTI, ifr_bytes(&mut ifr));
     hal::klock::kernel_unlock();
-    if let Err(e) = error {
-        // free(new_in6m): its one handle's drop.
-        return Err(e);
-    }
+    error?;
 
     let mut w = lock.write();
     // check again after unlock and lock

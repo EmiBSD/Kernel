@@ -294,7 +294,7 @@ smoke-boot: (build-amd64 "--features qemu") (build-arm64 "--features qemu") buil
         --expect "selftest: vio up ok" --expect "selftest: vio rx ok"
     {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --ramdisk none --expect-ramdisk \
         --expect "bsd: booted on arm64" --expect "The Regents of the University of California" \
-        --expect "EmiBSD 8.0 (GENERIC) #" \
+        --expect "EmiBSD 8.0 (GENERIC) #" --expect "Arica" \
         --expect "real mem  = " --expect "avail mem = " --expect "selftest: pmap kernel mapping ok" \
         --expect "selftest: malloc/pool stress ok" --expect "selftest: mbufs ok" \
         --expect "selftest: buffer cache ok" --expect "selftest: pager map ok" \
@@ -648,30 +648,60 @@ smoke-wg: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
 # M9a: OpenBSD's ifconfig(8) and ping(8) from the ramdisk, multi-user, logged in as root
 # (`smoke-login`'s sends). vio0's address (10.0.2.15/24) and the default route through QEMU's
 # gateway come from the kernel's boot self-test (`selftest: ping`), so no /etc/hostname.vio0
-# is needed. Part of `smoke`.
+# is needed. N6.8: then netstat(1) (built by `just userland` since N6.8, the user's request
+# of 2026-11-25 and his choice of 2026-11-26), after lo0 gets 127.0.0.1/8 (as
+# netstart(8) gives it; the ramdisk's rc does not) and nc(1) listens on TCP port 7777:
+# `netstat -rn` (sysctl NET_RT_DUMP: the default route, vio0's network, the loopback hosts of
+# both families; no 127/8 network route, which OpenBSD's in_ifinit adds for no loopback),
+# `netstat -an` (sysctl KERN_FILE through libkvm: the listening socket) and `netstat -s -p
+# tcp` (sysctl TCPCTL_STATS). Only the lines whose columns do not depend on traffic are
+# expected (the Refs and Use counts are not). Part of `smoke`.
+netstat_sends := "--send-after '# ' --send 'ifconfig lo0 inet 127.0.0.1/8 up; nc -l 7777 & sleep 1\\n' " + \
+    "--send-after '# ' --send 'netstat -rn\\n' " + \
+    "--send-after '# ' --send 'netstat -an\\n' " + \
+    "--send-after '# ' --send 'netstat -s -p tcp && echo netstat-tcp-$((5+5))\\n'"
+netstat_expects := "--expect 'Routing tables' --expect 'Internet:' " + \
+    "--expect 'Destination        Gateway            Flags   Refs      Use   Mtu  Prio Iface' " + \
+    "--expect 'default            10.0.2.2           UGS ' " + \
+    "--expect '10.0.2/24          10.0.2.15          UCn ' " + \
+    "--expect '127.0.0.1          127.0.0.1          UH' --expect 'Internet6:' " + \
+    "--expect '::1                                         ::1                                     UH' " + \
+    "--expect 'Active Internet connections (including servers)' " + \
+    "--expect 'Proto   Recv-Q Send-Q  Local Address          Foreign Address        TCP-State' " + \
+    "--expect 'tcp          0      0  *.7777                 *.*                    LISTEN' " + \
+    "--expect 'connections established (including accepts)' --expect 'netstat-tcp-10'"
+
 smoke-net: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
     @test {{ramdisks}} || \
         { echo "smoke-net: no ramdisk image; run just userland first"; exit 1; }
     {{xtask}} smoke {{reject}} {{smp}} --arch amd64 --kernel target/{{amd64}}/debug/bsd --expect-ramdisk --until-seen \
         --send-after "login:" --send 'root\n' --send-after "Password:" --send 'emibsd\n' \
         --send-after "# " --send 'ifconfig vio0\n' --send-after "# " --send 'ping -c 1 10.0.2.2\n' \
+        {{netstat_sends}} \
         --expect "rc: multi-user" --expect "vio0: flags=" --expect "inet 10.0.2.15 netmask 0xffffff00" \
         --expect "PING 10.0.2.2 (10.0.2.2): 56 data bytes" \
-        --expect "1 packets transmitted, 1 packets received, 0.0% packet loss"
+        --expect "1 packets transmitted, 1 packets received, 0.0% packet loss" \
+        {{netstat_expects}}
     {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --expect-ramdisk --until-seen \
         --send-after "login:" --send 'root\n' --send-after "Password:" --send 'emibsd\n' \
         --send-after "# " --send 'ifconfig vio0\n' --send-after "# " --send 'ping -c 1 10.0.2.2\n' \
+        {{netstat_sends}} \
         --expect "rc: multi-user" --expect "vio0: flags=" --expect "inet 10.0.2.15 netmask 0xffffff00" \
         --expect "PING 10.0.2.2 (10.0.2.2): 56 data bytes" \
-        --expect "1 packets transmitted, 1 packets received, 0.0% packet loss"
+        --expect "1 packets transmitted, 1 packets received, 0.0% packet loss" \
+        {{netstat_expects}}
 
 # M9d: pf(4) from userland. Logs in as `smoke-login` does, then: `pfctl -si` (DIOCGETSTATUS:
 # disabled), a ping to QEMU's gateway that gets its reply, `pfctl -e` (DIOCSTART) and `pfctl
 # -si` again (enabled), `pfctl -f /etc/pf.conf` (a ruleset transaction: DIOCXBEGIN,
 # DIOCADDRULE, DIOCXCOMMIT; the ramdisk's pf.conf blocks ICMP to 10.0.2.2) and `pfctl -sr`, the
-# same ping blocked, `pfctl -d` (DIOCSTOP) and the ping through again. The echoes print
-# computed markers so that the expected lines are not matched by the typed commands. Not part
-# of `smoke`.
+# same ping blocked; then a table (N6.8, after the radix tree moved into the kernel): `pfctl
+# -t smoke -T add` (DIOCRADDTABLES, DIOCRADDADDRS), `-T show` (DIOCRGETADDRS), `-T test`
+# (DIOCRTSTADDRS), a ruleset that blocks ICMP to `<smoke>`, the ping blocked by the table,
+# `-T delete` (DIOCRDELADDRS), the test missing and the ping through with the rule still
+# loaded; then `pfctl -d` (DIOCSTOP) and the ping through again. The echoes print computed
+# markers, and the rule names its table through a shell variable, so that the expected lines
+# are not matched by the typed commands. Not part of `smoke`.
 smoke-pf: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
     @test {{ramdisks}} || \
         { echo "smoke-pf: no ramdisk image; run just userland first"; exit 1; }
@@ -682,11 +712,26 @@ smoke-pf: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
         --send-after "# " --send 'pfctl -e\n' --send-after "# " --send 'pfctl -si\n' \
         --send-after "# " --send 'pfctl -f /etc/pf.conf\n' --send-after "# " --send 'pfctl -sr\n' \
         --send-after "# " --send 'ping -c 1 -w 2 10.0.2.2 || echo blocked-$((2+2))\n' \
+        --send-after "# " --send 'pfctl -t smoke -T add 10.0.2.2 192.0.2.0/24\n' \
+        --send-after "# " --send 'pfctl -t smoke -T show\n' \
+        --send-after "# " --send 'pfctl -t smoke -T test 10.0.2.2 && echo table-match-$((4+4))\n' \
+        --send-after "# " --send 't=smoke; echo "block drop quick inet proto icmp from any to <$t>" | pfctl -f -\n' \
+        --send-after "# " --send 'pfctl -sr\n' \
+        --send-after "# " --send 'ping -c 1 -w 2 10.0.2.2 || echo table-blocked-$((5+5))\n' \
+        --send-after "# " --send 'pfctl -t smoke -T delete 10.0.2.2\n' \
+        --send-after "# " --send 'pfctl -t smoke -T test 10.0.2.2 || echo table-miss-$((6+6))\n' \
+        --send-after "# " --send 'ping -c 1 10.0.2.2 && echo table-pass-$((7+7))\n' \
         --send-after "# " --send 'pfctl -d\n' \
         --send-after "# " --send 'ping -c 1 10.0.2.2 && echo after-pfctl-d-$((3+3))\n' \
         --expect "rc: multi-user" --expect "Status: Disabled" --expect "before-pf-2" \
         --expect "pf enabled" --expect "Status: Enabled" \
         --expect "block drop quick inet proto icmp from any to 10.0.2.2" --expect "blocked-4" \
+        --expect "1 table created." --expect "2/2 addresses added." \
+        --expect "   10.0.2.2" --expect "   192.0.2.0/24" \
+        --expect "1/1 addresses match." --expect "table-match-8" \
+        --expect "block drop quick inet proto icmp from any to <smoke>" --expect "table-blocked-10" \
+        --expect "1/1 addresses deleted." --expect "0/1 addresses match." --expect "table-miss-12" \
+        --expect "table-pass-14" \
         --expect "pf disabled" --expect "after-pfctl-d-6"
     {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --expect-ramdisk --until-seen \
         --send-after "login:" --send 'root\n' --send-after "Password:" --send 'emibsd\n' \
@@ -695,11 +740,26 @@ smoke-pf: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
         --send-after "# " --send 'pfctl -e\n' --send-after "# " --send 'pfctl -si\n' \
         --send-after "# " --send 'pfctl -f /etc/pf.conf\n' --send-after "# " --send 'pfctl -sr\n' \
         --send-after "# " --send 'ping -c 1 -w 2 10.0.2.2 || echo blocked-$((2+2))\n' \
+        --send-after "# " --send 'pfctl -t smoke -T add 10.0.2.2 192.0.2.0/24\n' \
+        --send-after "# " --send 'pfctl -t smoke -T show\n' \
+        --send-after "# " --send 'pfctl -t smoke -T test 10.0.2.2 && echo table-match-$((4+4))\n' \
+        --send-after "# " --send 't=smoke; echo "block drop quick inet proto icmp from any to <$t>" | pfctl -f -\n' \
+        --send-after "# " --send 'pfctl -sr\n' \
+        --send-after "# " --send 'ping -c 1 -w 2 10.0.2.2 || echo table-blocked-$((5+5))\n' \
+        --send-after "# " --send 'pfctl -t smoke -T delete 10.0.2.2\n' \
+        --send-after "# " --send 'pfctl -t smoke -T test 10.0.2.2 || echo table-miss-$((6+6))\n' \
+        --send-after "# " --send 'ping -c 1 10.0.2.2 && echo table-pass-$((7+7))\n' \
         --send-after "# " --send 'pfctl -d\n' \
         --send-after "# " --send 'ping -c 1 10.0.2.2 && echo after-pfctl-d-$((3+3))\n' \
         --expect "rc: multi-user" --expect "Status: Disabled" --expect "before-pf-2" \
         --expect "pf enabled" --expect "Status: Enabled" \
         --expect "block drop quick inet proto icmp from any to 10.0.2.2" --expect "blocked-4" \
+        --expect "1 table created." --expect "2/2 addresses added." \
+        --expect "   10.0.2.2" --expect "   192.0.2.0/24" \
+        --expect "1/1 addresses match." --expect "table-match-8" \
+        --expect "block drop quick inet proto icmp from any to <smoke>" --expect "table-blocked-10" \
+        --expect "1/1 addresses deleted." --expect "0/1 addresses match." --expect "table-miss-12" \
+        --expect "table-pass-14" \
         --expect "pf disabled" --expect "after-pfctl-d-6"
 
 # M9c: OpenBSD's ipsecctl(8) loads a static ESP tunnel through PF_KEY and reads it back.
@@ -2102,7 +2162,7 @@ smoke-efiboot: (build-amd64 "--features qemu") (build-arm64 "--features qemu") e
         --expect "-r-xr-xr-x 0,0" --expect "booting sd0a:/bsd: " --expect "]=0x" \
         --expect "bsd: booted on arm64 by boot(8) efiboot" --expect "bsd: boot(8) bootarg protocol, " \
         --expect "abi: 331 syscalls, 190 native" \
-        --expect "bsd: {{ncpu}} processors, boot processor hwid 0x0" --expect "EmiBSD 8.0 (GENERIC) #" \
+        --expect "bsd: {{ncpu}} processors, boot processor hwid 0x0" --expect "EmiBSD 8.0 (GENERIC) #" --expect "Arica" \
         --expect "random: good seed from bootblocks" --reject "warning: no entropy supplied by boot loader" \
         --expect "cpu0 at mainbus0 mpidr 0: ARM Cortex-A72" --expect "cpu{{aps}} at mainbus0 mpidr {{aps}}: ARM Cortex-A72" \
         --expect "cpu: {{aps}} of {{aps}} application processors running" \
@@ -3299,8 +3359,11 @@ smoke-virtio: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
 # later messages go to the screen and the shell reads them from dmesg(8); the login stays on
 # the serial line (/dev/console is still pluart0's). The shell clears screen 0 of
 # /dev/ttyC0 and writes a line at its top, as the OpenBSD 8.0 probe did; `--screen-text` finds
-# it in QEMU's screendump of the GPU's scanout. Part of `smoke`.
-viogpu_line := 'dmesg | grep -e viogpu -e wsdisplay0 -e selftest..wscons; x=wrote; print "\033[2J\033[HVIOGPU-TEXT-42" > /dev/ttyC0 && echo viogpu-$x\n'
+# it in QEMU's screendump of the GPU's scanout. viogpu copies the frame buffer to the host on
+# a 10 ms timeout (`viogpu_refresh_timeout`), so the marker the screendump waits for is printed
+# a second after the write, past many refreshes (N6.8: on four CPUs the dump once caught the
+# line drawn up to its tenth cell). Part of `smoke`.
+viogpu_line := 'dmesg | grep -e viogpu -e wsdisplay0 -e selftest..wscons; x=wrote; print "\033[2J\033[HVIOGPU-TEXT-42" > /dev/ttyC0 && sleep 1 && echo viogpu-$x\n'
 smoke-viogpu: (build-arm64 "--features qemu")
     @test -f target/userland/arm64/ramdisk.ffs || \
         { echo "smoke-viogpu: no ramdisk image; run just userland first"; exit 1; }
@@ -3889,7 +3952,7 @@ _dist-arm64: dist-clean-tree build-release-arm64 build-init-arm64 efiboot-arm64
     mkdir -p target/smoke/dist
     EMIBSD_RUN_DIR=target/smoke/dist {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/release/bsd --ramdisk none --expect-ramdisk --until-seen \
         --expect "bsd: booted on arm64" --expect "abi: 331 syscalls, 190 native" --expect "EmiBSD 8.0 (GENERIC) #" \
-        --expect "init: hello from user mode" --expect "init: EmiBSD 8.0" --expect "init: processes ok" \
+        --expect "Arica" --expect "init: hello from user mode" --expect "init: EmiBSD 8.0" --expect "init: processes ok" \
         --expect "init: unveil ok" --expect "panic: init died (signal 0, exit " | tee target/smoke/dist/boot.log
     rdsize=$({{xtask}} rdsetroot -s target/bsdrd/{{arm64}}/release/bsd)
     [[ "$rdsize" == "$(( {{miniroot_sectors}} * 512 ))" ]] || { echo "dist: rd_root_size is $rdsize, not {{miniroot_sectors}} sectors" >&2; exit 1; }

@@ -242,6 +242,10 @@ mod tests {
     #[test]
     fn request_print_short_and_full() {
         let tm = test_mount(0);
+        // The mbuf pools, as the server's fixture makes them (nfs_serv's `served`): without
+        // them `m_get` finds no pool unless an earlier test of the run made one.
+        crate::testutil::kernel_maps_install();
+        crate::net::mbuf::mbinit(&crate::net::mbuf::tests::TEST_NMBCLUST);
         let m = m_get(M_WAIT, MT_DATA).expect("an mbuf");
         let rep = NfsReq::<G>::new(6, 0x1234_5678, m, Some(42), 0x1000);
         rep.r_flags.store(0x22, Ordering::Relaxed);

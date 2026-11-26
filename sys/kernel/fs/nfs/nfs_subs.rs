@@ -514,15 +514,13 @@ impl XdrWriter {
             self.word(nfs_false);
         }
         for t in [&a.va_atime, &a.va_mtime] {
-            if t.tv_nsec != i64::from(VNOVAL) {
-                if t.tv_sec != gettime() {
-                    self.u32(NFSV3SATTRTIME_TOCLIENT);
-                    self.pod(&txdr_nfsv3time(t));
-                } else {
-                    self.u32(NFSV3SATTRTIME_TOSERVER);
-                }
-            } else {
+            if t.tv_nsec == i64::from(VNOVAL) {
                 self.u32(NFSV3SATTRTIME_DONTCHANGE);
+            } else if t.tv_sec == gettime() {
+                self.u32(NFSV3SATTRTIME_TOSERVER);
+            } else {
+                self.u32(NFSV3SATTRTIME_TOCLIENT);
+                self.pod(&txdr_nfsv3time(t));
             }
         }
     }
@@ -963,17 +961,17 @@ impl<'a> Range<'a> {
     /// The range widened to the buffer's dirty bytes (made the buffer's when not valid).
     fn add(&self, bp: &Buf) {
         let (lo, hi) = commit_range(bp);
-        if !self.is_valid() {
-            self.lo.store(lo, Ordering::Relaxed);
-            self.hi.store(hi, Ordering::Relaxed);
-            self.flags.fetch_or(self.valid, Ordering::Relaxed);
-        } else {
+        if self.is_valid() {
             if hi > self.hi.load(Ordering::Relaxed) {
                 self.hi.store(hi, Ordering::Relaxed);
             }
             if lo < self.lo.load(Ordering::Relaxed) {
                 self.lo.store(lo, Ordering::Relaxed);
             }
+        } else {
+            self.lo.store(lo, Ordering::Relaxed);
+            self.hi.store(hi, Ordering::Relaxed);
+            self.flags.fetch_or(self.valid, Ordering::Relaxed);
         }
     }
 

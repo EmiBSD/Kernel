@@ -54,6 +54,7 @@
 //! report.
 //!
 //! Upstream: sys/conf/newvers.sh @ 3ce1f3f79392 (replaced: see below)
+//! LZ: sys/conf/vers.rs@e8249449d905
 //!
 //! The system is **EmiBSD**, release **8.0** (the user's decision, 2026-10-03: the release
 //! number tracks the OpenBSD release the reference pin follows; the pin's `newvers.sh` says
@@ -80,6 +81,15 @@
 //!   release, as the user decided.
 //! - The strings are `&str` (their bytes are ASCII and NUL-free); `sysctl_rdstring` and the
 //!   console take their bytes.
+//!
+//! ## Redesign
+//! - N6.8 (the user's decision of 2026-11-15): [`CODENAME`], the release's code name
+//!   (EmiBSD's cycles are named after Chile's regions, north to south: `Arica` is the one
+//!   that follows OpenBSD 8.0), which `cpu_startup` prints on a line of its own after
+//!   [`VERSION`]'s two, at boot only, so it is in `dmesg(8)`. It is in no string a sysctl
+//!   reports: `kern.ostype`, `kern.osrelease`, `kern.osversion`, `kern.version` and so
+//!   `uname(1)` are unchanged. arm64 prints it; amd64's `cpu_startup` is frozen until N10
+//!   (decision 44), which adds the same line there.
 
 /// The operating system's name; a macro so `concat!` can build the other strings from it.
 macro_rules! ost {
@@ -154,6 +164,10 @@ pub const VERSION: &str = concat!(
     env!("EMIBSD_VERS_DIR"),
     "\n"
 );
+
+/// The release's code name, printed at boot after [`VERSION`], on a line of its own; no
+/// sysctl reports it. It follows the release: `8.0` is `Arica`.
+pub const CODENAME: &str = "Arica";
 
 const _: () = {
     // `const char version[512]` in C.

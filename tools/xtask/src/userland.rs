@@ -212,6 +212,7 @@ const VARIANTS: &[Variant] = &[
     Variant::statically("usr.bin/su"),
     Variant::statically("usr.bin/fstat"),
     Variant::statically("usr.bin/vmstat"),
+    Variant::statically("usr.bin/netstat"),
     // M10e: the NFS userland. portmap and showmount are in dynamic directories; mountd and
     // nfsd are in /sbin but their Makefiles end with `LDSTATIC=` (not static by default).
     Variant::statically("usr.sbin/portmap"),
@@ -359,6 +360,8 @@ const PROGRAMS: &[&str] = &[
     "bin/df",
     "usr.bin/fstat",
     "usr.bin/vmstat",
+    // N6.8 (the user, 2026-11-26): netstat(1) for smoke-net, over libkvm and libutil.
+    "usr.bin/netstat",
     // M9+: over libpcap (LIBRARIES); `iapp.h` from usr.sbin/hostapd (-I../hostapd).
     "usr.sbin/tcpdump",
     // M10b: disk quotas (quota(1) over librpcsvc, LIBRARIES) and su(1) to write as a user

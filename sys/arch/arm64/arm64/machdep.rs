@@ -113,6 +113,8 @@
 //!   the pmap's branch-target guard through `Pmap::set_guarded`. N3.1 commit 8: the image's
 //!   section bounds (`__text_start`, `_etext`, `__rodata_start`, `_erodata`, `__data_start`,
 //!   `_end`) go in `KernelImage`, for the pmap to map the image by section.
+//! - N6.8 (the user's decision of 2026-11-15): `cpu_startup` prints the release's code name
+//!   (`conf/vers.rs`'s `CODENAME`) on a line of its own after the version.
 
 use core::arch::asm;
 use core::cell::UnsafeCell;
@@ -151,7 +153,7 @@ use crate::arch::arm64::include::pte::{
 };
 use crate::arch::arm64::include::reg::Fpreg;
 use crate::arch::arm64::include::vmparam::{VM_MIN_KERNEL_ADDRESS, VM_PHYS_SIZE, VM_PHYSSEG_MAX};
-use crate::conf::vers::VERSION;
+use crate::conf::vers::{CODENAME, VERSION};
 use crate::dev::efi::efi::{
     EFI_MEMORY_DESCRIPTOR_VERSION, EfiACPIMemoryNVS, EfiACPIReclaimMemory, EfiBootServicesCode,
     EfiBootServicesData, EfiConventionalMemory, EfiLoaderCode, EfiLoaderData, EfiMemoryDescriptor,
@@ -1233,6 +1235,8 @@ pub fn cpu_startup() {
 
     // Identify ourselves for the msgbuf (everything printed earlier will not be buffered).
     kprintf!("{}", VERSION);
+    // The release's code name on a line of its own (N6.8; `conf/vers.rs`, Redesign).
+    kprintf!("{}\n", CODENAME);
 
     let physmem = PHYSMEM.load(Ordering::Relaxed);
     kprintf!(

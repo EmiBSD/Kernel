@@ -148,6 +148,7 @@
 //!     over a stand-in holding this SYN's IP options (none if it has none, where the C's
 //!     carries the first SYN's), the entry's own `sc_ipopts` left as the first SYN's (the C
 //!     replaces them with this SYN's when it has some, so the entry's timer sends those).
+//!
 //!   The IP options are a source route only, recorded only under `net.inet.ip.sourceroute=1`
 //!   (`ip_srcroute` answers none otherwise, and `ip_dooptions` drops a source-routed packet,
 //!   ip_input.c:1254 and :1474): with the default sysctl these differences show nothing.
@@ -508,9 +509,9 @@ pub fn syn_cache_insert<G: ProcGlue>(
         for (w, b) in g.sets[active]
             .scs_random
             .iter_mut()
-            .zip(seed.chunks_exact(4))
+            .zip(seed.as_chunks::<4>().0)
         {
-            *w = u32::from_ne_bytes([b[0], b[1], b[2], b[3]]);
+            *w = u32::from_ne_bytes(*b);
         }
         // The seed's copy on the stack wiped: the set's words are its storage.
         libkern::explicit_bzero(&mut seed);
@@ -694,7 +695,7 @@ pub fn syn_cache_cleanup<G: ProcGlue>(tp: &Tp<'_, '_, G>) {
                 .get(&g)
                 .sc_inplisten
                 .as_ref()
-                .is_some_and(|l| core::ptr::eq::<Inpcb<G>>(&**l, tp.inp))
+                .is_some_and(|l| core::ptr::eq::<Inpcb<G>>(&raw const **l, tp.inp))
         );
         let removed = syn_cache_rm(&mut g, &sc);
         // syn_cache_put under the mutex, as the C's.
@@ -749,7 +750,7 @@ fn sc_of<G: ProcGlue>(g: &ScGuard<'_, G>, sc: &SynCache<G>, inp: &Inpcb<G>) -> b
         .get(g)
         .sc_inplisten
         .as_ref()
-        .is_some_and(|l| core::ptr::eq::<Inpcb<G>>(&**l, inp))
+        .is_some_and(|l| core::ptr::eq::<Inpcb<G>>(&raw const **l, inp))
 }
 
 /// `in_pcbset_addr(inp, src, dst, rtableid)` of a new connection: the foreign address and
@@ -817,7 +818,6 @@ pub fn syn_cache_get<G: ProcGlue>(
     let mut g = syn_cache_lock::<G>();
     let Some(sc) = syn_cache_lookup(&mut g, src, dst, listeninp.inp_rtableid.get()) else {
         drop(g);
-        drop(lil);
         drop(listenso);
         return SynCacheGet::NotFound(m);
     };
@@ -848,7 +848,6 @@ pub fn syn_cache_get<G: ProcGlue>(
             let _ = syn_cache_respond_with(&sc, Some(m), now, do_ecn, &mut l, net);
             drop(l);
         }
-        drop(lil);
         drop(listenso);
         // syn_cache_put(sc)
         drop(sc);
@@ -883,7 +882,6 @@ pub fn syn_cache_get<G: ProcGlue>(
     let Some(so) = sonewconn(listenso_ref, SS_ISCONNECTED, M_DONTWAIT, Some(net)) else {
         // resetandabort: no socket, no pcb, no control block.
         reset_abort(&m);
-        drop(lil);
         drop(listenso);
         drop(m);
         drop(sc);
@@ -903,7 +901,6 @@ pub fn syn_cache_get<G: ProcGlue>(
         let mut w = solock_attach(&so, net);
         syn_cache_abort_child(&so, &mut w);
         drop(w);
-        drop(lil);
         drop(listenso);
         drop(m);
         drop(sc);
@@ -970,7 +967,7 @@ pub fn syn_cache_get<G: ProcGlue>(
 
                     // Give the new socket our cached route reference (another listener's
                     // entry's stays with it: the pcb's cache is looked up when first used).
-                    if let Some(l) = l.as_deref_mut() {
+                    if let Some(l) = l {
                         inp.set_route(core::mem::take(&mut l.sc_route));
                     }
 
@@ -1080,7 +1077,6 @@ pub fn syn_cache_get<G: ProcGlue>(
         // in_pcbsounlock(inp, so); in_pcbsounlock(listeninp, listenso); in_pcbunref(inp);
         // m_freem(m); syn_cache_put(sc)
         drop(w);
-        drop(lil);
         drop(listenso);
         drop(inp);
         drop(m);
@@ -1091,7 +1087,6 @@ pub fn syn_cache_get<G: ProcGlue>(
 
     // The new socket returned locked: its witness detached again.
     w.detach();
-    drop(lil);
     // in_pcbsounlock(listeninp, listenso)
     drop(listenso);
     tcpstat_inc(TcpstatCounters::TcpsScCompleted);
@@ -1442,7 +1437,7 @@ fn syn_cache_respond_with<G: ProcGlue>(
 
     // Compute the size of the TCP options.
     let optlen = 4
-        + if i.sc_request_r_scale != 15 { 4 } else { 0 }
+        + if i.sc_request_r_scale == 15 { 0 } else { 4 }
         + if i.sc_fixflags & SCF_SACK_PERMIT != 0 {
             4
         } else {

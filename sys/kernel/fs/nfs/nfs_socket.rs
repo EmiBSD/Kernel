@@ -700,17 +700,17 @@ fn nfs_copy_mreq<G: ProcGlue>(rep: &NfsReq<G>, how: i32) -> Option<MbufBox> {
 /// (`*aname`), which the C's caller frees at once, is dropped here.
 pub fn nfs_receive<G: ProcGlue>(rep: &Rep<'_, G>) -> Result<Option<MbufBox>, Errno> {
     G::with_curproc(|p| {
-        if rep.nmp.nm_sotype.load(Relaxed) != SOCK_DGRAM {
-            nfs_receive_stream(rep, p) // XXX: the C's `p = curproc`
-        } else {
+        if rep.nmp.nm_sotype.load(Relaxed) == SOCK_DGRAM {
             nfs_receive_dgram(rep, p)
+        } else {
+            nfs_receive_stream(rep, p) // XXX: the C's `p = curproc`
         }
     })
 }
 
 /// A uio of `resid` bytes and no iovec: `soreceive`'s count when the data comes back as a
 /// chain (`mp0`).
-pub(crate) fn count_uio<'a, G: ProcGlue>(resid: usize, p: Option<&'a Thread<G>>) -> Uio<'a, G> {
+pub(crate) fn count_uio<G: ProcGlue>(resid: usize, p: Option<&Thread<G>>) -> Uio<'_, G> {
     Uio {
         uio_iov: &mut [],
         uio_offset: 0,
@@ -833,7 +833,7 @@ fn nfs_receive_stream<G: ProcGlue>(
                     nfs_sndunlock(&nmp.nm_flag);
                     return Err(error);
                 }
-                continue 'tryagain;
+                // goto tryagain: the loop goes round.
             }
         }
     }
@@ -1156,10 +1156,10 @@ pub fn nfs_request<G: ProcGlue>(
         rep.r_rtt.store(0, Relaxed);
         rep.r_rexmit.store(0, Relaxed);
         rep.r_flags.store(
-            if NFS_PTIMERS[procnum] != NFS_DEFAULT_TIMER {
-                R_TIMING
-            } else {
+            if NFS_PTIMERS[procnum] == NFS_DEFAULT_TIMER {
                 0
+            } else {
+                R_TIMING
             },
             Relaxed,
         );
@@ -1329,12 +1329,11 @@ fn nfs_reply_header(reply: &mut Reply) -> Header {
         (h, off)
     };
     match h {
-        Ok(Header::Bad(e)) => Header::Bad(e),
+        Ok(Header::Bad(e)) | Err(e) => Header::Bad(e),
         Ok(h) => {
             reply.set_offset(off);
             h
         }
-        Err(e) => Header::Bad(e),
     }
 }
 
@@ -1368,7 +1367,6 @@ pub fn nfs_timer<G: ProcGlue>(arg: &hal::pool::AnyArc) {
         };
     }
     drop(place);
-    drop(net);
     drop(nw);
     nmp.nm_rtimeout.as_pin().add(NFS_TICKS.load(Relaxed));
 }
@@ -1477,9 +1475,7 @@ fn nfs_timer_step<G: ProcGlue>(
         return None;
     }
 
-    let Some(so) = nmp.nm_so.get(r).clone() else {
-        return None;
-    };
+    let so = nmp.nm_so.get(r).clone()?;
 
     // If there is enough space and the window allows.. Resend it. Set r_rtt to -1 in case we
     // fail to send it now.
@@ -1520,28 +1516,25 @@ fn nfs_timer_resend<G: ProcGlue>(
             None => return,
         }
     };
-    match error {
-        Err(error) => {
-            if nfsignore_soerror(nmp.nm_soflags.load(Relaxed), error) {
-                so.set_error(None);
-            }
+    if let Err(error) = error {
+        if nfsignore_soerror(nmp.nm_soflags.load(Relaxed), error) {
+            so.set_error(None);
         }
-        Ok(()) => {
-            // Iff first send, start timing else turn timing off, backoff timer and divide
-            // congestion window by 2.
-            if rep.flags() & R_SENT != 0 {
-                rep.clear_flags(R_TIMING);
-                let x = rep.r_rexmit.load(Relaxed).wrapping_add(1);
-                rep.r_rexmit.store(x.min(NFS_MAXREXMIT), Relaxed);
-                let cwnd = nmp.nm_cwnd.load(Relaxed) >> 1;
-                nmp.nm_cwnd.store(cwnd.max(NFS_CWNDSCALE), Relaxed);
-                NFSSTATS.rpcretries.fetch_add(1, Relaxed);
-            } else {
-                rep.set_flags(R_SENT);
-                nmp.nm_sent.fetch_add(NFS_CWNDSCALE, Relaxed);
-            }
-            rep.r_rtt.store(0, Relaxed);
+    } else {
+        // Iff first send, start timing else turn timing off, backoff timer and divide
+        // congestion window by 2.
+        if rep.flags() & R_SENT != 0 {
+            rep.clear_flags(R_TIMING);
+            let x = rep.r_rexmit.load(Relaxed).wrapping_add(1);
+            rep.r_rexmit.store(x.min(NFS_MAXREXMIT), Relaxed);
+            let cwnd = nmp.nm_cwnd.load(Relaxed) >> 1;
+            nmp.nm_cwnd.store(cwnd.max(NFS_CWNDSCALE), Relaxed);
+            NFSSTATS.rpcretries.fetch_add(1, Relaxed);
+        } else {
+            rep.set_flags(R_SENT);
+            nmp.nm_sent.fetch_add(NFS_CWNDSCALE, Relaxed);
         }
+        rep.r_rtt.store(0, Relaxed);
     }
 }
 

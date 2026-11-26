@@ -1798,10 +1798,8 @@ pub fn icmp6_ctloutput<G: ProcGlue>(
                     return Err(Errno::EINVAL);
                 };
                 // bcopy(p, inp->inp_icmp6filt, sizeof(struct icmp6_filter)), a word at a time.
-                for (w, b) in filt.iter().zip(m.data().chunks_exact(4)) {
-                    let mut v = [0u8; 4];
-                    v.copy_from_slice(b);
-                    w.store(u32::from_ne_bytes(v), Ordering::Relaxed);
+                for (w, b) in filt.iter().zip(m.data().as_chunks::<4>().0) {
+                    w.store(u32::from_ne_bytes(*b), Ordering::Relaxed);
                 }
                 Ok(())
             }
@@ -1816,8 +1814,8 @@ pub fn icmp6_ctloutput<G: ProcGlue>(
                     kpanic(format_args!("icmp6_ctloutput: no mbuf for PRCO_GETOPT"));
                 };
                 let mut b = [0u8; FILTER_LEN];
-                for (w, o) in filt.iter().zip(b.chunks_exact_mut(4)) {
-                    o.copy_from_slice(&w.load(Ordering::Relaxed).to_ne_bytes());
+                for (w, o) in filt.iter().zip(b.as_chunks_mut::<4>().0) {
+                    *o = w.load(Ordering::Relaxed).to_ne_bytes();
                 }
                 m.m_len().set(FILTER_LEN as u32);
                 match m.data_mut() {

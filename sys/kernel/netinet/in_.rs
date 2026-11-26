@@ -1020,14 +1020,14 @@ pub fn in_lookupmulti<'w, W: Witness + ?Sized>(
     ifp: &'w Ifnet,
     w: &'w W,
 ) -> Option<&'w MArc<InMulti>> {
-    lookupmulti(addr, ifp.if_maddrlist(), w)
+    lookupmulti(*addr, ifp.if_maddrlist(), w)
 }
 
 /// [`in_lookupmulti`]'s walk of the list `list` (`TAILQ_FOREACH`, O(1) a step), for a caller
 /// that has the interface's [`IfRt`](crate::net::if_var::IfRt) at hand already.
 #[inline]
 fn lookupmulti<'w, W: Witness + ?Sized>(
-    addr: &InAddr,
+    addr: InAddr,
     list: &'w IfmaList,
     w: &'w W,
 ) -> Option<&'w MArc<InMulti>> {
@@ -1148,7 +1148,7 @@ pub fn in_delmulti(inm: MArc<InMulti>, net: &NetHeld<'_>) {
 pub fn in_hasmulti(addr: &InAddr, ifp: &Ifnet) -> bool {
     let rt = ifp.rt();
     let r = rt.if_maddrlock.read();
-    lookupmulti(addr, rt.if_maddrlist(), &r).is_some()
+    lookupmulti(*addr, rt.if_maddrlist(), &r).is_some()
 }
 
 /// `in_ifdetach(ifp)`: every IPv4 address of `ifp` removed.
