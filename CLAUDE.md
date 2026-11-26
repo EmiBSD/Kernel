@@ -65,7 +65,7 @@ sys/                         package `bsd`: the LZ tree, legacy, replaced subsys
                              groups: proc/ sched/ sig/ time/ file/ tty/ base/ dev/ vm/ fs/ net/ crypto/
   abi/                       crate `abi`: OpenBSD's userland interface, linked into the kernel image, forbid, no logic
   stand/                     the boot loaders (separate binaries, outside the four crates)
-  lib/libkern/ lib/libz/     leaf crates
+  lib/libkern/ lib/libz/     leaf crates, forbid(unsafe_code) at their roots (decision 55); lib/libsa/ (the boot loaders') is the exception
   lib/sysdefs/               crate `sysdefs`: OpenBSD's basic types, constants and #[repr(C)] ABI structures, the data under every layer (decision 54); forbid, no logic
 tools/xtask/                 host tooling: `cargo xtask {image,qemu,smoke,lz,unsafe-report,diff-openbsd,...}`
 docs/                        PHASE2 (the process), ARCHITECTURE, IDIOMS, ROADMAP (N0..), SYNC, JOURNAL, STATUS, SETUP, C_TO_RUST (frozen)

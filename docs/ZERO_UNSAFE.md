@@ -80,9 +80,13 @@ implementations) exist only as registrations, made by `bsd`'s boot glue before `
 | `bsd` | `sys/` (the LZ tree, today's crate) | 10,196 in 1,069 files at the N3 close (`unsafe-report`, 2026-10-18; 10,583 in 1,103 at the N2 close, 10,604 in 1,161 before N2): 1,538 of them the hardware, the host double and the lists and trees that have not moved yet, the other 8,658 legacy (8,501 outside `unsafe-core.toml`) (a file counts as `hal` only once it compiles there), **0 files at N9** | what gets replaced. It keeps booting, running every smoke and `diff-openbsd` throughout; it links the three crates and calls down into them; the kernel crate never calls it except through a registered bridge (0.3) |
 
 The boot loaders (`sys/stand`, `sys/lib/libsa`, `sys/arch/*/stand`: 621 `unsafe`) are separate
-binaries that run before the kernel; they are outside the four crates and unchanged. `libkern`
-and `libz` stay crates of their own, leaves below `hal`; `StaticCell` stays in `libkern` (`hal`
-depends on it, so it cannot move up) and `hal::OnceStatic` replaces its uses one by one.
+binaries that run before the kernel; they are outside the four crates and unchanged. `libkern`,
+`libz` and `sysdefs` stay crates of their own, leaves below `hal`, and since decision 55 (the
+user, 2026-11-26) each is `#![forbid(unsafe_code)]` at its root: `explicit_bzero` is
+`hal::mem::explicit_bzero`, and `StaticCell` is `bsd`'s (`sys/sys/staticcell.rs`, dying with its
+last user at N9) and `libsa`'s (the boot loaders' own copy; `libsa` is the one crate under
+`sys/lib/` that keeps `unsafe`, as the boot loaders' exception). `hal::OnceStatic` replaces
+`StaticCell`'s uses one by one.
 
 Dependencies, one direction: `bsd -> kernel -> hal`; `abi -> kernel` (`kernel::api` alone)
 and `abi -> hal` (`hal::syscall`'s types and the handler's registration, decision

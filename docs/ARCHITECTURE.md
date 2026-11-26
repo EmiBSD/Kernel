@@ -53,7 +53,9 @@ reason `bsd` was one crate until 2026-10-16 (v1: a module could become a crate o
 nothing from `crate::{kern, uvm, arch, machine}`). Under v2 an upward call is never a
 dependency: it is a trait `kernel` or `hal` declares and `bsd` implements and registers in
 `hal`'s registry at boot, one row of `bridges.toml` each (section 0.3). `sys/lib/libkern` and
-`sys/lib/libz` stay leaves, as `sysdefs` is (OpenBSD builds both as libraries too; libz holds what the kernel
+`sys/lib/libz` stay leaves, as `sysdefs` is, and all three are `#![forbid(unsafe_code)]` (decision
+55: `explicit_bzero` went to `hal::mem`, `StaticCell` to `bsd` and, as the boot loaders' own copy,
+to `libsa`, the one `sys/lib/` crate that keeps `unsafe`) (OpenBSD builds both as libraries too; libz holds what the kernel
 compiles of zlib: crc32, adler32, deflate, inflate; zlib licence).
 
 No `src/` directory (`[lib] path = "lib.rs"`), so C and Rust paths differ only by extension.
