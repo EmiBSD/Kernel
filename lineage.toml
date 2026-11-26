@@ -5648,11 +5648,6 @@ native = ["rbe_rotate"]
 kind = "merged"
 
 [[module]]
-rust = "sys/kern/subr_userconf.rs"
-lz = ["sys/kern/subr_userconf.rs"]
-status = "inherited"
-
-[[module]]
 rust = "sys/kern/subr_xxx.rs"
 lz = ["sys/kern/subr_xxx.rs"]
 status = "inherited"
@@ -20770,4 +20765,8 @@ notes = "N7.1c: subr_userconf.c's UKC editor in the kernel, 0 unsafe, behind the
 [[module.fn]]
 lz = "sys/kern/subr_userconf.rs::Userconf::locator_names"
 native = ["Userconf::locnamp_at", "Userconf::nlocs"]
+kind = "split"
+[[module.fn]]
+lz = "sys/kern/subr_userconf.rs::user_config"
+native = ["user_config", "sys/machine/autoconf.rs::user_config"]
 kind = "split"

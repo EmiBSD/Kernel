@@ -1294,7 +1294,7 @@ pub fn cpu_startup() {
         != 0
     {
         #[cfg(feature = "boot_config")]
-        crate::kern::subr_userconf::user_config();
+        crate::machine::autoconf::user_config();
         #[cfg(not(feature = "boot_config"))]
         kprintf!("kernel does not support -c; continuing..\n");
     }
