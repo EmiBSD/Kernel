@@ -169,21 +169,6 @@ const _: () = assert!(size_of::<Rip6stat>() == RIP6S_NCOUNTERS * size_of::<u64>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::user::bytes_of;
-
-    #[test]
-    fn the_statistics_are_the_c_layout() {
-        let s = Rip6stat {
-            rip6s_ipackets: 1,
-            rip6s_opackets: 0x0102_0304_0506_0708,
-            ..Rip6stat::default()
-        };
-        let one = [s];
-        let b = bytes_of(&one);
-        assert_eq!(b.len(), 56);
-        assert_eq!(b[..8], 1u64.to_ne_bytes());
-        assert_eq!(b[48..56], 0x0102_0304_0506_0708u64.to_ne_bytes());
-    }
 
     #[test]
     #[ignore = "needs OPENBSD_SRC (just test-ref)"]

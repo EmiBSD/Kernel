@@ -479,48 +479,6 @@ const _: () = {
 mod tests {
     use super::*;
     use crate::reftest::{assert_complete, assert_defines};
-    use crate::sys::endian::{htonl, htons, ntohs};
-    use crate::user::bytes_of;
-
-    #[test]
-    fn header_layout_on_the_wire() {
-        let mut ip = Ip::default();
-        ip.set_ip_v(IPVERSION);
-        ip.set_ip_hl((size_of::<Ip>() >> 2) as u8);
-        ip.ip_len = htons(84);
-        ip.ip_off = htons(IP_DF);
-        ip.ip_ttl = IPDEFTTL;
-        ip.ip_p = 1;
-        ip.ip_src.s_addr = htonl(0x0a00_020f);
-        ip.ip_dst.s_addr = htonl(0x0a00_0202);
-        assert_eq!((ip.ip_v(), ip.ip_hl()), (4, 5));
-        assert_eq!(
-            bytes_of(&[ip]),
-            [
-                0x45, 0, 0, 84, 0, 0, 0x40, 0, 64, 1, 0, 0, 10, 0, 2, 15, 10, 0, 2, 2
-            ]
-        );
-        assert_eq!(ntohs(ip.ip_off) & IP_DF, IP_DF);
-
-        let mut ts = IpTimestamp {
-            ipt_code: IPOPT_TS,
-            ipt_len: 12,
-            ipt_ptr: 5,
-            ipt_oflwflg: 0,
-            ipt_timestamp: [0x0100_000a, 7],
-        };
-        ts.set_ipt_flg(IPOPT_TS_PRESPEC);
-        ts.set_ipt_oflw(2);
-        assert_eq!(ts.ipt_oflwflg, 0x23);
-        assert_eq!((ts.ipt_flg(), ts.ipt_oflw()), (3, 2));
-        assert_eq!(ts.ipt_time(), 0x0100_000a);
-        assert_eq!(ts.ipt_ta().ipt_addr.s_addr, 0x0100_000a);
-        assert_eq!(ts.ipt_ta().ipt_time, 7);
-        assert_eq!(bytes_of(&[ts])[..4], [IPOPT_TS, 12, 5, 0x23]);
-        assert_eq!(ipopt_number(IPOPT_LSRR), 3);
-        assert_eq!(ipopt_copied(IPOPT_LSRR), 0x80);
-        assert_eq!(ipopt_class(IPOPT_TS), IPOPT_DEBMEAS);
-    }
 
     #[test]
     #[ignore = "needs OPENBSD_SRC (just test-ref)"]

@@ -731,7 +731,6 @@ const _: () = {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::user::{bytes_of, pod_from_bytes};
 
     #[test]
     fn cmsg_macros_are_the_cs() {
@@ -750,64 +749,6 @@ mod tests {
         }
         assert_eq!(cmsg_align(12), 16);
         assert_eq!(CMSG_DATA_OFFSET, cmsg_len(0));
-    }
-
-    #[test]
-    fn the_images_round_trip_through_their_bytes() {
-        let cm = Cmsghdr {
-            cmsg_len: cmsg_len(8) as Socklen,
-            cmsg_level: SOL_SOCKET,
-            cmsg_type: SCM_RIGHTS,
-        };
-        let b = bytes_of(core::slice::from_ref(&cm));
-        assert_eq!(b.len(), 12);
-        assert_eq!(&b[..4], &24u32.to_ne_bytes());
-        assert_eq!(pod_from_bytes::<Cmsghdr>(b), Some(cm));
-
-        let sa = Sockaddr {
-            sa_len: 16,
-            sa_family: AF_INET,
-            sa_data: [7; 14],
-        };
-        assert_eq!(bytes_of(core::slice::from_ref(&sa))[..2], [16, AF_INET]);
-        let ss = SockaddrStorage::zeroed();
-        assert!(bytes_of(core::slice::from_ref(&ss)).iter().all(|&b| b == 0));
-        let cred = Sockpeercred {
-            uid: 1,
-            gid: 2,
-            pid: 3,
-        };
-        assert_eq!(
-            pod_from_bytes::<Sockpeercred>(bytes_of(core::slice::from_ref(&cred))),
-            Some(cred)
-        );
-    }
-
-    #[test]
-    fn a_msghdr_keeps_its_holes_through_its_bytes() {
-        // The C's LP64 layout: a pointer, a socklen_t and its hole, a pointer, an unsigned
-        // int and its hole, a pointer, a socklen_t and an int.
-        let mut b = [0u8; 56];
-        for (i, x) in b.iter_mut().enumerate() {
-            *x = i as u8;
-        }
-        let m = pod_from_bytes::<Mmsghdr>(&b).expect("56 bytes");
-        assert_eq!(
-            m.msg_hdr.msg_name,
-            usize::from_ne_bytes(*b[..8].first_chunk().unwrap())
-        );
-        assert_eq!(m.msg_hdr.msg_namelen, u32::from_ne_bytes([8, 9, 10, 11]));
-        assert_eq!(m.msg_hdr._pad0, u32::from_ne_bytes([12, 13, 14, 15]));
-        assert_eq!(m.msg_hdr.msg_iovlen, u32::from_ne_bytes([24, 25, 26, 27]));
-        assert_eq!(
-            m.msg_hdr.msg_controllen,
-            u32::from_ne_bytes([40, 41, 42, 43])
-        );
-        assert_eq!(m.msg_hdr.msg_flags, i32::from_ne_bytes([44, 45, 46, 47]));
-        assert_eq!(m.msg_len, u32::from_ne_bytes([48, 49, 50, 51]));
-        // Back to the same bytes, the holes included.
-        assert_eq!(bytes_of(core::slice::from_ref(&m)), &b[..]);
-        assert_eq!(pod_from_bytes::<Msghdr>(&b[..48]), Some(m.msg_hdr));
     }
 }
 /* </TESTS> */

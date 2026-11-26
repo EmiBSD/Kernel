@@ -155,7 +155,7 @@ pub fn fusefs_mount<G: ProcGlue>(
         return Err(Errno::EOPNOTSUPP);
     }
 
-    let Some(args) = FusefsArgs::from_bytes(data) else {
+    let Some(args) = hal::user::pod_from_bytes::<FusefsArgs>(data) else {
         return Err(Errno::EINVAL);
     };
 

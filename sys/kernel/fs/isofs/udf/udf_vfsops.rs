@@ -303,7 +303,7 @@ pub fn udf_mount<G: ProcGlue>(
         return Ok(());
     }
 
-    let Some(args) = UdfArgs::from_bytes(data) else {
+    let Some(args) = hal::user::pod_from_bytes::<UdfArgs>(data) else {
         return Err(Errno::EINVAL);
     };
 

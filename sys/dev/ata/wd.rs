@@ -108,6 +108,8 @@ use core::ffi::c_void;
 use core::mem::size_of;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use hal::sysbytes::DisklabelBytes;
+use hal::user::AbiBytes;
 
 use crate::dev::ata::ata::{ata_get_params, ata_perror, exec_on_stack};
 use crate::dev::ata::ata_wdc::wdc_ata_bio;

@@ -188,7 +188,7 @@ pub fn store_mount_args<G: ProcGlue>(mp: &Mount<G>, args: &NfsArgs) {
 
 /// `mp->mnt_stat.mount_info.nfs_args`.
 pub fn mount_args<G: ProcGlue>(mp: &Mount<G>) -> NfsArgs {
-    match NfsArgs::from_bytes(&mp.stat().mount_info.__align) {
+    match hal::user::pod_from_bytes::<NfsArgs>(&mp.stat().mount_info.__align) {
         Some(a) => a,
         None => kpanic(format_args!("nfs: mount_info is shorter than nfs_args")),
     }
@@ -711,7 +711,7 @@ pub fn nfs_mount<G: ProcGlue>(
     _ndp: &mut Nd<'_, G>,
     p: &Thread<G>,
 ) -> Result<(), Errno> {
-    let args = NfsArgs::from_bytes(data);
+    let args = hal::user::pod_from_bytes::<NfsArgs>(data);
 
     if let Some(a) = &args
         && a.flags & (NFSMNT_NFSV3 | NFSMNT_RDIRPLUS) == NFSMNT_RDIRPLUS

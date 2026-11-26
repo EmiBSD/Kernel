@@ -961,8 +961,8 @@ pub(crate) mod tests {
             inp.set_fport(&g, htons(53));
         }
         solock(so);
-        let mut kf = KinfoFile::zeroed();
-        let mut kfp = KinfoFile::zeroed();
+        let mut kf = hal::user::zeroed::<KinfoFile>();
+        let mut kfp = hal::user::zeroed::<KinfoFile>();
         {
             // The holding fill_file is handed, as kern.file's walk hands it its own.
             let lend = crate::net::if_::net_held("kern.file");
@@ -1275,7 +1275,7 @@ pub(crate) mod tests {
             let inp = sotoinpcb(so).expect("attached");
             locked(|| in_pcbbind(inp, Some(nam6(sin6(a6("fd00:77::1"), 5353))), p)).expect("bind");
             solock(so);
-            let mut kf = KinfoFile::zeroed();
+            let mut kf = hal::user::zeroed::<KinfoFile>();
             {
                 let lend = crate::net::if_::net_held("kern.file");
                 let mut w = kernel::net::socket::solocked_legacy(so, Some(lend.net()));

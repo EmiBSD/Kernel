@@ -130,18 +130,6 @@ crate::abi_pod!(Diskstats {
     ds_time: IfTimeval,
 });
 
-impl Diskstats {
-    /// The structure's bytes, as `hw.diskstats` copies them out.
-    pub fn as_bytes(&self) -> &[u8] {
-        crate::user::bytes_of(core::slice::from_ref(self))
-    }
-
-    /// The structure's bytes, writable.
-    pub fn as_bytes_mut(&mut self) -> &mut [u8] {
-        crate::user::bytes_of_mut(core::slice::from_mut(self))
-    }
-}
-
 /// `DKF_CONSTRUCTED`.
 pub const DKF_CONSTRUCTED: i32 = 0x0001;
 /// `DKF_OPENED`.
@@ -184,14 +172,6 @@ const _: () = {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn diskstats_is_its_112_bytes() {
-        let mut ds = Diskstats::default();
-        assert_eq!(ds.as_bytes().len(), 112);
-        ds.as_bytes_mut()[24..32].copy_from_slice(&7u64.to_ne_bytes());
-        assert_eq!(ds.ds_rxfer, 7);
-    }
 
     #[test]
     #[ignore = "needs OPENBSD_SRC (just test-ref)"]

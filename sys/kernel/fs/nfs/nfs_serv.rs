@@ -141,6 +141,7 @@
 
 use core::ptr;
 use core::sync::atomic::Ordering::Relaxed;
+use hal::sysbytes::NfsfhGeneric;
 
 use super::nfs_srvsocket::nfs_rephead;
 use super::nfs_srvsubs::{
@@ -3308,6 +3309,7 @@ mod tests {
     use crate::fs::vops::VFS_ROOT;
     use crate::net::mbuf::{m_devget, mbinit, nmbclust_update};
     use crate::sys::socket::{AF_INET, SOCK_STREAM};
+    use hal::sysbytes::NfsfhGeneric;
 
     type G = TestGlue;
 

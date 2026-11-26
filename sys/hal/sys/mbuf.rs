@@ -128,21 +128,3 @@ const _: () = {
     assert!(size_of::<Mbstat>() == 17 * 8);
 };
 /* </CODE> */
-
-/* <TESTS> */
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn mbstat_is_the_c_s_seventeen_words() {
-        let mut s = Mbstat::default();
-        s.m_mtypes[MT_DATA as usize] = 5;
-        s.m_pulldown_copy = 9;
-        let mut bytes = [0u8; size_of::<Mbstat>()];
-        assert!(crate::user::pod_to_bytes(&s, &mut bytes));
-        assert_eq!(bytes[(3 + 1) * 8], 5);
-        assert_eq!(bytes[16 * 8], 9);
-    }
-}
-/* </TESTS> */

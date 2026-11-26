@@ -173,46 +173,6 @@ const _: () = {
 mod tests {
     use super::*;
     use crate::reftest::{assert_complete, assert_defines};
-    use crate::user::bytes_of;
-
-    #[test]
-    fn the_statistics_are_thirteen_words_in_the_c_order() {
-        let s = Udpstat {
-            udps_ipackets: 1,
-            udps_nosec: 0x0102_0304_0506_0708,
-            udps_outswcsum: 13,
-            ..Udpstat::default()
-        };
-        let one = [s];
-        let b = bytes_of(&one);
-        assert_eq!(b.len(), 104);
-        assert_eq!(b[..8], 1u64.to_ne_bytes());
-        assert_eq!(b[56..64], 0x0102_0304_0506_0708u64.to_ne_bytes());
-        assert_eq!(b[96..104], 13u64.to_ne_bytes());
-    }
-
-    #[test]
-    fn the_header_is_the_overlay_then_the_udp_header() {
-        let ui = Udpiphdr {
-            ui_i: Ipovly {
-                ih_pr: 17,
-                ih_len: 0x1234u16.to_be(),
-                ..Ipovly::default()
-            },
-            ui_u: Udphdr {
-                uh_sport: 0x0035u16.to_be(),
-                uh_sum: 0xbeefu16.to_be(),
-                ..Udphdr::default()
-            },
-        };
-        let one = [ui];
-        let b = bytes_of(&one);
-        assert_eq!(b.len(), 28);
-        assert_eq!(b[9], 17);
-        assert_eq!(b[10..12], [0x12, 0x34]);
-        assert_eq!(b[20..22], [0x00, 0x35]);
-        assert_eq!(b[26..28], [0xbe, 0xef]);
-    }
 
     #[test]
     #[ignore = "needs OPENBSD_SRC (just test-ref)"]

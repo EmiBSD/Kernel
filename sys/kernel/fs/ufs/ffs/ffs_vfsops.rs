@@ -395,7 +395,7 @@ pub fn ffs_mount<G: ProcGlue>(
     ndp: &mut Nd<'_, G>,
     p: &Thread<G>,
 ) -> Result<(), Errno> {
-    let args = UfsArgs::from_bytes(data);
+    let args = hal::user::pod_from_bytes::<UfsArgs>(data);
     let mut ump: Option<UfsmountRef<G>> = None;
     let mut ronly = 0;
     let mut fname = [0u8; MNAMELEN];
@@ -2081,7 +2081,7 @@ mod tests {
             "no ufs_args"
         );
         let mut data = vec![0u8; UfsArgs::SIZE];
-        let mut args = UfsArgs::from_bytes(&data).unwrap();
+        let mut args = hal::user::pod_from_bytes::<UfsArgs>(&data).unwrap();
         for (fspec, want) in [
             (&b"/f"[..], Errno::ENOTBLK),
             (b"/dev/sd0c", Errno::ENOTBLK),

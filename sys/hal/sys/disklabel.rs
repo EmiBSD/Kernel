@@ -88,24 +88,18 @@
 //!   machine's constants come from `hal`'s arch include instead of `bsd`'s
 //!   `MachineDisklabel` trait, whose functions are the kernel's `disksubr`.
 
-#[cfg(all(target_os = "none", target_arch = "aarch64"))]
-pub use crate::arch::arm64::include::disklabel::{LABELOFFSET, LABELSECTOR, MAXPARTITIONS};
 use crate::sys::types::{Dev, major, makedev, minor};
 use crate::sys::uuid::Uuid;
-use crate::user::{bytes_of, bytes_of_mut};
 
 /// `DEV_BSIZE` (`<sys/param.h>`): the size of a disk block, as the kernel's file systems
 /// define it.
 const DEV_BSIZE: usize = 512;
 
-/// `LABELSECTOR` (`<machine/disklabel.h>`) off the target (the host): amd64's and arm64's.
-#[cfg(not(all(target_os = "none", target_arch = "aarch64")))]
+/// `LABELSECTOR` (`<machine/disklabel.h>`): amd64's and arm64's value.
 pub const LABELSECTOR: u64 = 1;
-/// `LABELOFFSET` (`<machine/disklabel.h>`) off the target (the host): amd64's and arm64's.
-#[cfg(not(all(target_os = "none", target_arch = "aarch64")))]
+/// `LABELOFFSET` (`<machine/disklabel.h>`): amd64's and arm64's value.
 pub const LABELOFFSET: usize = 0;
-/// `MAXPARTITIONS` (`<machine/disklabel.h>`) off the target (the host): amd64's and arm64's.
-#[cfg(not(all(target_os = "none", target_arch = "aarch64")))]
+/// `MAXPARTITIONS` (`<machine/disklabel.h>`): amd64's and arm64's value.
 pub const MAXPARTITIONS: usize = 16;
 
 /// `_PATH_DISKTAB`: disk description table, see disktab(5).
@@ -318,38 +312,6 @@ impl Disklabel {
             d_spare3: 0,
             d_partitions: [Partition::new(); MAXPARTITIONSUNIT as usize],
         }
-    }
-
-    /// The label's bytes, in memory order: what the C sees through `(u_int16_t *)lp` or
-    /// writes to a sector with `*dlp = *lp`.
-    pub fn as_bytes(&self) -> &[u8] {
-        bytes_of(core::slice::from_ref(self))
-    }
-
-    /// The label's bytes, writable: every bit pattern is a valid `Disklabel`.
-    pub fn as_bytes_mut(&mut self) -> &mut [u8] {
-        bytes_of_mut(core::slice::from_mut(self))
-    }
-
-    /// The label at the start of `bytes`, as the C casts a sector buffer to
-    /// `struct disklabel *`; bytes past the end of `bytes` read as zero.
-    pub fn from_bytes(bytes: &[u8]) -> Self {
-        let mut lp = Self::zeroed();
-        let n = bytes.len().min(DISKLABEL_SIZE);
-        lp.as_bytes_mut()[..n].copy_from_slice(&bytes[..n]);
-        lp
-    }
-
-    /// The `u_int16_t` words from the start of the label to `&d_partitions[npartitions]`,
-    /// the range `dkcksum` XORs (`npartitions` is clamped to the table).
-    pub fn cksum_words(&self, npartitions: usize) -> impl Iterator<Item = u16> + '_ {
-        let end = DISKLABEL_PARTITIONS_OFFSET
-            + npartitions.min(MAXPARTITIONSUNIT as usize) * core::mem::size_of::<Partition>();
-        self.as_bytes()[..end]
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|&w| u16::from_ne_bytes(w))
     }
 }
 
@@ -999,26 +961,6 @@ mod tests {
         assert_eq!(disklabelv1_ffs_frag(fb), 8);
         assert_eq!(disklabelv1_ffs_fsize(fb), 2048);
         assert_eq!(disklabelv1_ffs_fragblock(0, 8), 0);
-    }
-
-    #[test]
-    fn label_bytes_follow_the_c_layout() {
-        let mut d = Disklabel::zeroed();
-        d.d_magic = DISKMAGIC;
-        d.d_secsize = 512;
-        d.d_npartitions = 3;
-        d.d_partitions[0].p_fstype = FS_BSDFFS;
-        let b = d.as_bytes();
-        assert_eq!(&b[0..4], &DISKMAGIC.to_ne_bytes());
-        assert_eq!(&b[40..44], &512u32.to_ne_bytes());
-        assert_eq!(&b[138..140], &3u16.to_ne_bytes());
-        assert_eq!(b[148 + 12], FS_BSDFFS);
-        assert_eq!(
-            Disklabel::from_bytes(&b[..512]).d_partitions[0].p_fstype,
-            FS_BSDFFS
-        );
-        // The checksum range ends after the third partition.
-        assert_eq!(d.cksum_words(3).count(), (148 + 3 * 16) / 2);
     }
 
     #[test]

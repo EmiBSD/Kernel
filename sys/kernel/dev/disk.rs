@@ -237,6 +237,8 @@
 use core::fmt::{self, Write as _};
 use core::mem::offset_of;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU64, Ordering};
+use hal::sysbytes::DisklabelBytes;
+use hal::user::AbiBytes;
 
 use hal::cpu::intr::{IPL_BIO, IPL_NONE};
 use hal::ds::pinlist::{PinEntry, PinList};
@@ -2626,6 +2628,8 @@ mod tests {
 
     use super::*;
     use hal::sys::disklabel::{DOSPARTOFF, DOSPTYP_FAT32, FS_SWAP};
+    use hal::sysbytes::DisklabelBytes;
+    use hal::user::AbiBytes;
 
     /// The in-memory disk the strategy below reads and writes, in `DEV_BSIZE` sectors.
     static IMG: Mutex<Vec<u8>> = Mutex::new(Vec::new());

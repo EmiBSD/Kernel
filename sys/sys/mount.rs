@@ -368,11 +368,11 @@ mod tests {
         bytes[..4].copy_from_slice(&NFS_ARGSVERSION.to_ne_bytes());
         bytes[44..48].copy_from_slice(&(NFSMNT_NFSV3 | NFSMNT_RSIZE).to_ne_bytes());
         bytes[96..100].copy_from_slice(&7i32.to_ne_bytes());
-        let args = NfsArgs::from_bytes(&bytes).expect("arguments");
+        let args = hal::user::pod_from_bytes::<NfsArgs>(&bytes).expect("arguments");
         assert_eq!(args.version, NFS_ARGSVERSION);
         assert_eq!(args.flags, NFSMNT_NFSV3 | NFSMNT_RSIZE);
         assert_eq!(args.acregmin, 7);
-        assert!(NfsArgs::from_bytes(&bytes[..NfsArgs::SIZE - 1]).is_none());
+        assert!(hal::user::pod_from_bytes::<NfsArgs>(&bytes[..NfsArgs::SIZE - 1]).is_none());
     }
 }
 /* </TESTS> */

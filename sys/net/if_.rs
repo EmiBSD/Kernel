@@ -804,6 +804,7 @@ pub(crate) mod tests {
     use crate::sys::mbuf::mtod;
     use crate::sys::sockio::*;
     use crate::sys::systm::{net_lock, net_unlock};
+    use hal::sysbytes::IfreqAddr;
 
     #[test]
     fn ifreq_union_accessors() {

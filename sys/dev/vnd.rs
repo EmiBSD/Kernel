@@ -104,6 +104,8 @@ use core::ffi::c_void;
 use core::mem::size_of;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicI32, AtomicPtr, Ordering};
+use hal::sysbytes::DisklabelBytes;
+use hal::user::AbiBytes;
 
 use libkern::{explicit_bzero, strlcpy};
 
@@ -988,6 +990,7 @@ mod tests {
     use crate::sys::vnode::{
         VREG, VT_NON, VopGetattrArgs, VopInactiveArgs, VopReadArgs, VopWriteArgs, Vops,
     };
+    use hal::sysbytes::DisklabelBytes;
 
     /// vnd's block major (`bdevsw[14]` on both archs).
     const VND_BMAJ: u32 = 14;

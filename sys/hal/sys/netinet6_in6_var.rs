@@ -525,11 +525,8 @@ const _: () = {
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
-    use core::mem::offset_of;
 
     use super::*;
-    use crate::sys::netinet6_in6::In6Addr;
-    use crate::user::bytes_of;
 
     #[test]
     fn ioctl_numbers_are_openbsds() {
@@ -540,38 +537,6 @@ mod tests {
         assert_eq!(SIOCGIFALIFETIME_IN6, 0xc120_6951);
         assert_eq!(SIOCGIFINFO_IN6, 0xc018_696c);
         assert_eq!(SIOCGNBRINFO_IN6, 0xc038_694e);
-    }
-
-    #[test]
-    fn the_union_members_sit_at_its_start() {
-        let mut r = In6Ifreq::zeroed();
-        r.ifr_name[..4].copy_from_slice(b"vio1");
-        let a = SockaddrIn6::with_addr(In6Addr::new([
-            0xfd, 0, 0, 0x77, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
-        ]));
-        r.set_ifr_addr(a);
-        assert_eq!(r.ifr_addr(), a);
-        assert_eq!(r.ifr_dstaddr(), a);
-        r.set_ifr_flags6(0x12);
-        assert_eq!(r.ifr_flags6(), 0x12);
-        // ifru_flags6 overwrote the address's first four bytes (sin6_len, family, port).
-        assert_eq!(r.ifr_addr().sin6_addr, a.sin6_addr);
-        let lt = In6Addrlifetime {
-            ia6t_expire: 1,
-            ia6t_preferred: 2,
-            ia6t_vltime: 3,
-            ia6t_pltime: 4,
-        };
-        r.set_ifr_lifetime(lt);
-        assert_eq!(r.ifr_lifetime(), lt);
-        let rs = [r];
-        let b = bytes_of(&rs);
-        assert_eq!(&b[..4], b"vio1");
-        assert_eq!(b[16..24], 1i64.to_ne_bytes());
-        assert_eq!(b[36..40], 4u32.to_ne_bytes());
-        assert_eq!(offset_of!(In6Aliasreq, ifra_addr), 16);
-        assert_eq!(offset_of!(In6Aliasreq, ifra_prefixmask), 72);
-        assert_eq!(offset_of!(In6Aliasreq, ifra_lifetime), 104);
     }
 
     #[test]

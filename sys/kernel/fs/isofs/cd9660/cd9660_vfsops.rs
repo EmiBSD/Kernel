@@ -317,7 +317,7 @@ pub fn cd9660_mountroot<G: ProcGlue>(rootdev: Dev, swapdev: Dev) -> Result<(), E
         <G::FileGlue as FileGlue>::set_rootvp(Some(rvp));
 
         let mp = vfs_rootmountalloc::<G>(b"cd9660", b"root_device")?;
-        let Some(mut args) = IsoArgs::from_bytes(&[0u8; IsoArgs::SIZE]) else {
+        let Some(mut args) = hal::user::pod_from_bytes::<IsoArgs>(&[0u8; IsoArgs::SIZE]) else {
             kpanic(format_args!("cd9660_mountroot: no iso_args"));
         };
         args.flags = ISOFSMNT_ROOT;
@@ -347,7 +347,7 @@ pub fn cd9660_mount<G: ProcGlue>(
     _ndp: &mut Nd<'_, G>,
     p: &Thread<G>,
 ) -> Result<(), Errno> {
-    let args = IsoArgs::from_bytes(data);
+    let args = hal::user::pod_from_bytes::<IsoArgs>(data);
 
     if mp.flag() & MNT_RDONLY == 0 {
         return Err(Errno::EROFS);

@@ -252,7 +252,7 @@ pub fn msdosfs_mount<G: ProcGlue>(
     _ndp: &mut Nd<'_, G>,
     p: &Thread<G>,
 ) -> Result<(), Errno> {
-    let args = MsdosfsArgs::from_bytes(data);
+    let args = hal::user::pod_from_bytes::<MsdosfsArgs>(data);
     let mut fname = [0u8; MNAMELEN];
     let mut fspec = [0u8; MNAMELEN];
     let mut updpmp = None;

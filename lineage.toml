@@ -83,7 +83,8 @@ notes = "M2: db_stack_trace_print from a given frame (db_stack_dump); M4: the tr
 [[module]]
 rust = "sys/arch/amd64/amd64/disksubr.rs"
 lz = ["sys/arch/amd64/amd64/disksubr.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/sys/disklabel.rs"]
 
 [[module]]
 rust = "sys/arch/amd64/amd64/efifb.rs"
@@ -6682,6 +6683,16 @@ lz = ["sys/nfs/nfsproto.rs"]
 status = "redesigned"
 notes = "N6.7a0 (D-10): nfsproto.h's constants and wire structures, LZ's eleven unsafe impl AbiPod as abi_pod!, Nfsfh's fhandle_t member through hal::user's pod_from_bytes/pod_to_bytes; the conversions are kernel::fs::nfs::nfsproto's; bsd's nfs::nfsproto is the kernel's module, which re-exports this one"
 
+[[module.fn]]
+lz = "sys/nfs/nfsproto.rs::Nfsfh::fh_generic"
+native = ["sys/hal/sysbytes.rs::Nfsfh::fh_generic"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/nfs/nfsproto.rs::Nfsfh::set_fh_generic"
+native = ["sys/hal/sysbytes.rs::Nfsfh::set_fh_generic"]
+kind = "moved"
+
 [[module]]
 rust = "sys/hal/sys/nfs_rpcv2.rs"
 crate = "hal"
@@ -9562,6 +9573,26 @@ status = "redesigned"
 notes = "N6.3a: net/if.h's constants and request images (AbiPod, the unions as byte arrays, the pointers as u64 words), if_types.h's IFT_* and if_dl.h's sockaddr_dl moved into hal for kernel::net and bsd; bsd's if_types.rs and if_dl.rs re-export them, bsd's if_.rs keeps LZ's structures for its ifioctl until N6.3a2"
 
 [[module.fn]]
+lz = "sys/net/if_.rs::Ifreq::ifr_addr_mut"
+native = ["sys/hal/sysbytes.rs::Ifreq::ifr_addr_mut"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/net/if_.rs::Ifreq::ifr_dstaddr_mut"
+native = ["sys/hal/sysbytes.rs::Ifreq::ifr_dstaddr_mut"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/net/if_.rs::Ifreq::ifr_broadaddr_mut"
+native = ["sys/hal/sysbytes.rs::Ifreq::ifr_broadaddr_mut"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/net/if_.rs::Ifaliasreq::ifra_addr_mut"
+native = ["sys/hal/sysbytes.rs::Ifaliasreq::ifra_addr_mut"]
+kind = "moved"
+
+[[module.fn]]
 lz = "sys/net/if_.rs::IfgrqIfgrqu"
 native = ["IfgReq"]
 kind = "merged"
@@ -10117,12 +10148,37 @@ lz = ["sys/sys/sysctl.rs"]
 status = "redesigned"
 notes = "N4.6b: sysctl.h's ids, name tables and structures moved into hal so kernel::base::sysctl and bsd share one copy; kinfo_proc and kinfo_file AbiPod through hal::abi_pod! (LZ: two MaybeUninit::zeroed and bsd's SysctlPlain impls); bsd's sys/sys/sysctl.rs re-exports it"
 
+[[module.fn]]
+lz = "sys/sys/sysctl.rs::KinfoProc::zeroed"
+native = ["sys/hal/user.rs::zeroed"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/sysctl.rs::KinfoFile::zeroed"
+native = ["sys/hal/user.rs::zeroed"]
+kind = "merged"
+
 [[module]]
 rust = "sys/hal/sys/mount.rs"
 crate = "hal"
 lz = ["sys/sys/mount.rs", "sys/kern/vfs_subr.rs"]
 status = "redesigned"
 notes = "N5.1: struct bcachestats moved into hal so kernel::fs::bio (bcstats' owner) and bsd (vfs.generic.bcachestat) share one copy, AbiPod through hal::abi_pod! (LZ declared it in vfs_bio.rs); bsd's sys/sys/mount.rs re-exports it; N5.2: the ABI half of mount.h (struct statfs, fsid_t, struct fid, fhandle_t, MountInfo, the MOUNT_*, MNT_*, VB_*, VFS_* constants) and vfs.generic.conf's VfsconfAbi (LZ's private struct of vfs_subr.rs) moved here, Statfs, Fhandle, Fsid, Fid and MountInfo AbiPod through abi_pod! (LZ's two unsafe impl AbiPod go); N5.4 (D-N5.4-3): the mount arguments moved here, ExportArgs, UfsArgs, MfsArgs, IsoArgs, NfsArgs, MsdosfsArgs, NtfsArgs, UdfArgs, TmpfsArgs and FusefsArgs with their constants, and <sys/ucred.h>'s struct xucred (Xucred, which export_args embeds; ucred.h's licence block and Upstream/LZ lines with it), each AbiPod through abi_pod! with its holes named and from_bytes over hal::user::pod_from_bytes; bsd's sys/sys/mount.rs and sys/sys/ucred.rs re-export them"
+
+[[module.fn]]
+lz = "sys/sys/mount.rs::UfsArgs::from_bytes"
+native = ["sys/hal/user.rs::pod_from_bytes"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/mount.rs::MfsArgs::from_bytes"
+native = ["sys/hal/user.rs::pod_from_bytes"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/mount.rs::mount_args_from_bytes"
+native = ["mount_args_size"]
+kind = "renamed"
 
 [[module]]
 rust = "sys/hal/sys/disk.rs"
@@ -10137,6 +10193,26 @@ crate = "hal"
 lz = ["sys/sys/disklabel.rs"]
 status = "redesigned"
 notes = "N7.1d: <sys/disklabel.h> whole but struct partinfo (bsd's until N7.3c); Disklabel and Partition AbiPod through abi_pod!, as_bytes/as_bytes_mut over hal::user::bytes_of (LZ's two unsafe casts go, slices for arrays); LABELSECTOR, LABELOFFSET, MAXPARTITIONS from hal's arm64 include (the host's values amd64's and arm64's) instead of bsd's MachineDisklabel"
+
+[[module.fn]]
+lz = "sys/sys/disklabel.rs::Disklabel::as_bytes"
+native = ["sys/hal/user.rs::AbiBytes"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/sys/disklabel.rs::Disklabel::as_bytes_mut"
+native = ["sys/hal/user.rs::AbiBytes"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/sys/disklabel.rs::Disklabel::from_bytes"
+native = ["sys/hal/sysbytes.rs::Disklabel::from_bytes"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/sys/disklabel.rs::Disklabel::cksum_words"
+native = ["sys/hal/sysbytes.rs::Disklabel::cksum_words"]
+kind = "moved"
 
 [[module]]
 rust = "sys/hal/sys/dkio.rs"
@@ -20981,3 +21057,8 @@ kind = "split"
 lz = "sys/kern/subr_userconf.rs::user_config"
 native = ["user_config", "sys/machine/autoconf.rs::user_config"]
 kind = "split"
+
+[[extra]]
+rust = "sys/hal/sysbytes.rs"
+crate = "hal"
+reason = "decision 54: the byte views of sysdefs' data shapes (Disklabel's from_bytes and cksum_words, Icmp's icmp_dun words, the ifreq address members viewed in place, Nfsfh's fh_generic) as extension traits over hal::user's bytes_of and hal::mem::pod, and the tests of those views, which cannot live in a crate that forbids unsafe"

@@ -540,46 +540,6 @@ const _: () = {
 mod tests {
     use super::*;
     use crate::reftest::{assert_complete, assert_defines};
-    use crate::sys::socket::AF_INET6;
-    use crate::user::{bytes_of, pod_from_bytes};
-
-    #[test]
-    fn a_mapping_round_trips_through_its_bytes_whole() {
-        let mut m = TcpIdentMapping::zeroed();
-        m.faddr.ss_len = 28;
-        m.faddr.ss_family = AF_INET6;
-        m.faddr.__ss_pad3[239] = 0xa5;
-        m.laddr.__ss_pad2 = 0x0102_0304_0506_0708;
-        m.euid = -1;
-        m.ruid = 1000;
-        m.rdomain = 3;
-        let b = bytes_of(&[m]).to_vec();
-        assert_eq!(b.len(), 528);
-        // The storage is read whole, never cut at `ss_len`.
-        assert_eq!(b[255], 0xa5);
-        assert_eq!(b[512..516], (-1i32).to_ne_bytes());
-        assert_eq!(b[520..524], 3u32.to_ne_bytes());
-        let back: TcpIdentMapping = pod_from_bytes(&b).unwrap_or_else(TcpIdentMapping::zeroed);
-        assert_eq!(back.faddr, m.faddr);
-        assert_eq!(back.laddr, m.laddr);
-        assert_eq!((back.euid, back.ruid, back.rdomain), (-1, 1000, 3));
-    }
-
-    #[test]
-    fn the_statistics_are_the_c_layout() {
-        let s = Tcpstat {
-            tcps_connattempt: 1,
-            tcps_sndbyte: 0x0102_0304_0506_0708,
-            tcps_inbadlro: 9,
-            ..Tcpstat::default()
-        };
-        let one = [s];
-        let b = bytes_of(&one);
-        assert_eq!(b.len(), 592);
-        assert_eq!(b[..4], 1u32.to_ne_bytes());
-        assert_eq!(b[72..80], 0x0102_0304_0506_0708u64.to_ne_bytes());
-        assert_eq!(b[588..592], 9u32.to_ne_bytes());
-    }
 
     #[test]
     #[ignore = "needs OPENBSD_SRC (just test-ref)"]

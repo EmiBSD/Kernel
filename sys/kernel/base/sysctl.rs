@@ -147,6 +147,7 @@
 
 use core::ptr;
 use core::sync::atomic::{AtomicI32, Ordering};
+use hal::user::AbiBytes;
 
 use hal::bridges::AlreadyRegistered;
 use hal::mem::malloc::{M_WAITOK, MArray};
@@ -1681,7 +1682,7 @@ pub fn sysctl_doproc<G: ProcGlue>(
 
     let show_pointers = suser(p).is_ok();
 
-    let mut kproc = KinfoProc::zeroed();
+    let mut kproc = hal::user::zeroed::<KinfoProc>();
     // One element's bytes copied out at `dp`.
     let copy = |kproc: &KinfoProc, dp: usize| {
         UserPtr::<u8>::new(dp).copyout_slice(&bytes_of(core::slice::from_ref(kproc))[..elem_size])
@@ -1885,7 +1886,7 @@ pub fn fill_kproc<G: ProcGlue>(
 
     // FILL_KPROC(ki, strlcpy, p, pr, pr->ps_ucred, pr->ps_pgrp, p, pr, s, vm,
     //     pr->ps_limit, pr->ps_sigacts, &tu, isthread, show_pointers)
-    *ki = KinfoProc::zeroed();
+    *ki = hal::user::zeroed::<KinfoProc>();
 
     if show_pointers {
         ki.p_paddr = ptrtoint64(p);
@@ -2588,6 +2589,7 @@ mod tests {
     use crate::proc::cred::{CredRef, Ucred};
     use crate::proc::{ProcessRef, SessionTty};
     use crate::testutil;
+    use hal::user::AbiBytes;
 
     /// A user buffer of the double's memory (its own range).
     const UBUF: usize = testutil::USER_BASE + 0x9000;
@@ -2995,7 +2997,7 @@ mod tests {
 
     /// `fill_kproc` of `pr` (or its main thread when `thread`), as `sysctl_doproc` calls it.
     fn kproc(pr: &Process<Procs>, thread: bool, show_pointers: bool) -> KinfoProc {
-        let mut ki = KinfoProc::zeroed();
+        let mut ki = hal::user::zeroed::<KinfoProc>();
         let r = klock::reader();
         let g = pr.ps_mtx.lock();
         let main = pr.main_thread(&g).map(|p| p.get_ref());

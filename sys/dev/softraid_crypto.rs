@@ -107,6 +107,7 @@ use core::mem::{ManuallyDrop, offset_of};
 use core::ptr::{self, NonNull};
 use core::slice;
 use core::sync::atomic::{Ordering, compiler_fence};
+use hal::user::AbiBytes;
 
 use libkern::explicit_bzero;
 

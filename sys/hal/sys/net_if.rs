@@ -1434,15 +1434,6 @@ crate::abi_pod!(Ifreq {
     ifr_ifru: [u8; 16],
 });
 
-/// A union's first 16 bytes as the `sockaddr` its address members are (a `sockaddr` is 16
-/// bytes of alignment 1, so the view always fits).
-fn sockaddr_mut(u: &mut [u8]) -> &mut Sockaddr {
-    match crate::mem::pod::view_mut::<Sockaddr>(u, 0) {
-        Some(sa) => sa,
-        None => crate::assert::hal_panic(format_args!("a union shorter than a sockaddr")),
-    }
-}
-
 impl Ifreq {
     /// An all-zero request.
     pub const fn zeroed() -> Self {
@@ -1480,21 +1471,6 @@ impl Ifreq {
     /// Sets `ifr_broadaddr`.
     pub fn set_ifr_broadaddr(&mut self, sa: &Sockaddr) {
         put_sockaddr(&mut self.ifr_ifru, sa);
-    }
-
-    /// `&ifr->ifr_addr`, to write in place (the union's 16 bytes viewed as a `sockaddr`).
-    pub fn ifr_addr_mut(&mut self) -> &mut Sockaddr {
-        sockaddr_mut(&mut self.ifr_ifru)
-    }
-
-    /// `&ifr->ifr_dstaddr`, to write in place.
-    pub fn ifr_dstaddr_mut(&mut self) -> &mut Sockaddr {
-        sockaddr_mut(&mut self.ifr_ifru)
-    }
-
-    /// `&ifr->ifr_broadaddr`, to write in place.
-    pub fn ifr_broadaddr_mut(&mut self) -> &mut Sockaddr {
-        sockaddr_mut(&mut self.ifr_ifru)
     }
 
     ifr_accessor! {
@@ -1560,11 +1536,6 @@ impl Ifaliasreq {
     /// Sets `ifra_addr`.
     pub fn set_ifra_addr(&mut self, sa: &Sockaddr) {
         put_sockaddr(&mut self.ifra_ifrau, sa);
-    }
-
-    /// `&ifra->ifra_addr`, to write in place.
-    pub fn ifra_addr_mut(&mut self) -> &mut Sockaddr {
-        sockaddr_mut(&mut self.ifra_ifrau)
     }
 
     /// `ifra_broadaddr`: the `ifra_dstaddr` member.
@@ -1942,35 +1913,6 @@ mod tests {
             ifc_ifcu: 0x7f7f_0000,
         };
         assert_eq!((ifc.ifc_buf(), ifc.ifc_req()), (0x7f7f_0000, 0x7f7f_0000));
-    }
-
-    #[test]
-    fn lladdr_follows_the_name() {
-        let mut sdl = SockaddrDl {
-            sdl_len: 32,
-            sdl_family: 18,
-            sdl_nlen: 4,
-            sdl_alen: 6,
-            ..SockaddrDl::default()
-        };
-        sdl.sdl_data[..10].copy_from_slice(b"vio0\x52\x54\x00\x12\x34\x56");
-        let mut b = [0u8; 32];
-        assert!(crate::mem::pod::put(&mut b, 0, &sdl));
-        assert_eq!(
-            SockaddrDl::lladdr(&b),
-            Some(&[0x52, 0x54, 0x00, 0x12, 0x34, 0x56][..])
-        );
-        SockaddrDl::lladdr_mut(&mut b)
-            .unwrap()
-            .copy_from_slice(&[1, 2, 3, 4, 5, 6]);
-        assert_eq!(
-            &b[SDL_DATA_OFFSET + 4..SDL_DATA_OFFSET + 10],
-            &[1, 2, 3, 4, 5, 6]
-        );
-        // A header that names more bytes than there are.
-        b[6] = 200;
-        assert_eq!(SockaddrDl::lladdr(&b), None);
-        assert_eq!(SockaddrDl::lladdr(&b[..3]), None);
     }
 
     #[test]

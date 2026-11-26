@@ -755,13 +755,6 @@ pub struct KinfoProc {
     pub p_name: [u8; KI_MAXCOMLEN],
 }
 
-impl KinfoProc {
-    /// `memset(kp, 0, sizeof(*kp))`.
-    pub fn zeroed() -> Self {
-        crate::user::zeroed()
-    }
-}
-
 // Every member an integer or an array of them, the C's one padding hole a member (`p_pad0`):
 // the tiling `abi_pod!` checks is the structure's whole layout.
 crate::abi_pod!(KinfoProc {
@@ -1135,13 +1128,6 @@ pub struct KinfoFile {
     pub va_nlink: u32,
     /// The four bytes of tail padding the C compiler adds to round the size to 8.
     pub kf_pad1: u32,
-}
-
-impl KinfoFile {
-    /// `memset(kf, 0, sizeof(*kf))`.
-    pub fn zeroed() -> Self {
-        crate::user::zeroed()
-    }
 }
 
 // As `kinfo_proc`: the C's two padding holes are members (`kf_pad0`, `kf_pad1`).

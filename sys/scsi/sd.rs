@@ -114,6 +114,8 @@ use core::mem::{offset_of, size_of};
 use core::ptr::{self, NonNull};
 use core::slice;
 use core::sync::atomic::{AtomicBool, Ordering};
+use hal::sysbytes::DisklabelBytes;
+use hal::user::AbiBytes;
 
 use libkern::strlcpy;
 

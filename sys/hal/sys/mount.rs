@@ -621,12 +621,6 @@ pub struct UfsArgs {
 impl UfsArgs {
     /// `sizeof(struct ufs_args)`: the `vfc_datasize` of the UFS file systems.
     pub const SIZE: usize = size_of::<UfsArgs>();
-
-    /// The arguments in the kernel copy `sys_mount` made of them (at least `SIZE` bytes),
-    /// `None` when there are none (the C's NULL `data`).
-    pub fn from_bytes(data: &[u8]) -> Option<Self> {
-        crate::user::pod_from_bytes(data)
-    }
 }
 
 crate::abi_pod!(UfsArgs {
@@ -653,12 +647,6 @@ pub struct MfsArgs {
 impl MfsArgs {
     /// `sizeof(struct mfs_args)`: the `vfc_datasize` of MFS.
     pub const SIZE: usize = size_of::<MfsArgs>();
-
-    /// The arguments in the kernel copy `sys_mount` made of them (at least `SIZE` bytes),
-    /// `None` when there are none (the C's NULL `data`).
-    pub fn from_bytes(data: &[u8]) -> Option<Self> {
-        crate::user::pod_from_bytes(data)
-    }
 }
 
 crate::abi_pod!(MfsArgs {
@@ -671,17 +659,11 @@ crate::abi_pod!(MfsArgs {
 /// The `SIZE` and `from_bytes` of a file system's mount arguments, as [`UfsArgs`] has them:
 /// `sys_mount` copies `vfc_datasize` bytes in, and the file system reads its structure out
 /// (`pod_from_bytes`: the first `SIZE` bytes, `None` for fewer).
-macro_rules! mount_args_from_bytes {
+macro_rules! mount_args_size {
     ($t:ident, $c:literal) => {
         impl $t {
             #[doc = concat!("`sizeof(struct ", $c, ")`: the `vfc_datasize` of its file system.")]
             pub const SIZE: usize = size_of::<$t>();
-
-            /// The arguments in the kernel copy `sys_mount` made of them (at least `SIZE`
-            /// bytes), `None` when there are none (the C's NULL `data`).
-            pub fn from_bytes(data: &[u8]) -> Option<Self> {
-                crate::user::pod_from_bytes(data)
-            }
         }
     };
 }
@@ -700,7 +682,7 @@ pub struct IsoArgs {
     pub sess: i32,
 }
 
-mount_args_from_bytes!(IsoArgs, "iso_args");
+mount_args_size!(IsoArgs, "iso_args");
 
 crate::abi_pod!(IsoArgs {
     fspec: usize,
@@ -781,7 +763,7 @@ pub struct NfsArgs {
     pub acdirmax: i32,
 }
 
-mount_args_from_bytes!(NfsArgs, "nfs_args");
+mount_args_size!(NfsArgs, "nfs_args");
 
 crate::abi_pod!(NfsArgs {
     version: i32,
@@ -909,7 +891,7 @@ pub struct MsdosfsArgs {
     pub flags: i32,
 }
 
-mount_args_from_bytes!(MsdosfsArgs, "msdosfs_args");
+mount_args_size!(MsdosfsArgs, "msdosfs_args");
 
 crate::abi_pod!(MsdosfsArgs {
     fspec: usize,
@@ -949,7 +931,7 @@ pub struct NtfsArgs {
     pub flag: u64,
 }
 
-mount_args_from_bytes!(NtfsArgs, "ntfs_args");
+mount_args_size!(NtfsArgs, "ntfs_args");
 
 crate::abi_pod!(NtfsArgs {
     fspec: usize,
@@ -979,7 +961,7 @@ pub struct UdfArgs {
     pub _pad0: u32,
 }
 
-mount_args_from_bytes!(UdfArgs, "udf_args");
+mount_args_size!(UdfArgs, "udf_args");
 
 crate::abi_pod!(UdfArgs {
     fspec: usize,
@@ -1013,7 +995,7 @@ pub struct TmpfsArgs {
     pub _pad1: u32,
 }
 
-mount_args_from_bytes!(TmpfsArgs, "tmpfs_args");
+mount_args_size!(TmpfsArgs, "tmpfs_args");
 
 crate::abi_pod!(TmpfsArgs {
     ta_version: i32,
@@ -1046,7 +1028,7 @@ pub struct FusefsArgs {
     pub _pad0: u32,
 }
 
-mount_args_from_bytes!(FusefsArgs, "fusefs_args");
+mount_args_size!(FusefsArgs, "fusefs_args");
 
 crate::abi_pod!(FusefsArgs {
     name: usize,
@@ -1103,87 +1085,3 @@ const _: () = {
     assert!(size_of::<VfsconfAbi>() == 48);
 };
 /* </CODE> */
-
-/* <TESTS> */
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::user::bytes_of;
-
-    /// The bytes of a `T` whose every byte is its own offset (mod 256), then the `T` read
-    /// out of them.
-    fn offsets<T: crate::user::AbiPod>(len: usize) -> Option<T> {
-        let b: [u8; 256] = core::array::from_fn(|i| i as u8);
-        let v: [u8; 512] = core::array::from_fn(|i| b[i % 256]);
-        crate::user::pod_from_bytes(&v[..len])
-    }
-
-    #[test]
-    fn short_arguments_are_none_like_the_cs_null_data() {
-        assert!(UfsArgs::from_bytes(&[0; UfsArgs::SIZE - 1]).is_none());
-        assert!(MfsArgs::from_bytes(&[]).is_none());
-        assert!(NfsArgs::from_bytes(&[0; 111]).is_none());
-        assert!(TmpfsArgs::from_bytes(&[0; 39]).is_none());
-        assert!(FusefsArgs::from_bytes(&[0; 23]).is_none());
-        assert!(UdfArgs::from_bytes(&[0; 16]).is_some());
-    }
-
-    #[test]
-    fn the_fields_are_read_at_the_cs_offsets() {
-        let m: MfsArgs = offsets(MfsArgs::SIZE).unwrap();
-        assert_eq!(
-            m.base.to_ne_bytes(),
-            core::array::from_fn(|i| (128 + i) as u8)
-        );
-        assert_eq!(
-            m.size.to_ne_bytes(),
-            core::array::from_fn(|i| (136 + i) as u8)
-        );
-        assert_eq!(
-            m.export_info.ex_addr.to_ne_bytes(),
-            core::array::from_fn(|i| (8 + 88 + i) as u8)
-        );
-        let n: NfsArgs = offsets(NfsArgs::SIZE).unwrap();
-        assert_eq!(
-            n.hostname.to_ne_bytes(),
-            core::array::from_fn(|i| (88 + i) as u8)
-        );
-        assert_eq!(
-            n.acdirmax.to_ne_bytes(),
-            core::array::from_fn(|i| (108 + i) as u8)
-        );
-        let t: TmpfsArgs = offsets(TmpfsArgs::SIZE).unwrap();
-        assert_eq!(
-            t.ta_root_mode.to_ne_bytes(),
-            core::array::from_fn(|i| (32 + i) as u8)
-        );
-        let x: NtfsArgs = offsets(NtfsArgs::SIZE).unwrap();
-        assert_eq!(
-            x.flag.to_ne_bytes(),
-            core::array::from_fn(|i| (144 + i) as u8)
-        );
-        assert_eq!(
-            x.export_info.ex_anon.cr_groups[0].to_ne_bytes(),
-            core::array::from_fn(|i| (8 + 8 + 12 + i) as u8)
-        );
-    }
-
-    #[test]
-    fn a_structure_reads_back_from_its_own_bytes() {
-        let mut u = UfsArgs::from_bytes(&[0; UfsArgs::SIZE]).unwrap();
-        u.fspec = 0x1234;
-        u.export_info.ex_flags = 7;
-        u.export_info.ex_anon.cr_ngroups = 3;
-        u.export_info.ex_masklen = 16;
-        let back = UfsArgs::from_bytes(bytes_of(core::slice::from_ref(&u))).unwrap();
-        assert_eq!(back.fspec, 0x1234);
-        assert_eq!(back.export_info.ex_flags, 7);
-        assert_eq!(back.export_info.ex_anon.cr_ngroups, 3);
-        assert_eq!(back.export_info.ex_masklen, 16);
-        // A longer copy (the kernel's vfc_datasize bytes) reads its first SIZE.
-        let mut long = [0u8; UfsArgs::SIZE + 8];
-        long[..UfsArgs::SIZE].copy_from_slice(bytes_of(core::slice::from_ref(&u)));
-        assert_eq!(UfsArgs::from_bytes(&long).unwrap().fspec, 0x1234);
-    }
-}
-/* </TESTS> */

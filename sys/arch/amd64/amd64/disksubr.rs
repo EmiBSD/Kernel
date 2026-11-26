@@ -70,6 +70,7 @@ use crate::sys::disklabel::{
 };
 use crate::sys::errno::Errno;
 use crate::sys::types::{Daddr, Dev};
+use hal::user::AbiBytes;
 
 /// Attempt to read a disk label from a device using the indicated strategy routine. The
 /// label must be partly set up before this: secpercyl, secsize and anything required for a

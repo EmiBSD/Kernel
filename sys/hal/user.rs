@@ -786,6 +786,23 @@ pub fn bytes_of_mut<T: AbiPod>(objs: &mut [T]) -> &mut [u8] {
     // view while it lives.
     unsafe { core::slice::from_raw_parts_mut(objs.as_mut_ptr().cast::<u8>(), size_of_val(objs)) }
 }
+
+/// A value's own bytes, for every [`AbiPod`] type: `value.as_bytes()` is [`bytes_of`] of one
+/// element. The data shapes of `sysdefs` hold no byte reinterpretation (decision 54), so what
+/// the C does with `(u_int8_t *)&x` is this trait, in scope where it is done.
+pub trait AbiBytes: AbiPod {
+    /// The value's bytes, in memory order.
+    fn as_bytes(&self) -> &[u8] {
+        bytes_of(core::slice::from_ref(self))
+    }
+
+    /// The value's bytes, writable: every bit pattern is a valid value.
+    fn as_bytes_mut(&mut self) -> &mut [u8] {
+        bytes_of_mut(core::slice::from_mut(self))
+    }
+}
+
+impl<T: AbiPod> AbiBytes for T {}
 /* </CODE> */
 
 /* <TESTS> */

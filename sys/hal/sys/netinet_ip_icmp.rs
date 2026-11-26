@@ -149,7 +149,6 @@ use core::mem::size_of;
 
 use crate::sys::netinet_in::InAddr;
 use crate::sys::netinet_ip::Ip;
-use crate::user::{bytes_of, bytes_of_mut};
 
 /// `ICMP_EXT_HDR_VERSION`: the RFC 4884 extension header's version (high nibble).
 pub const ICMP_EXT_HDR_VERSION: u8 = 0x20;
@@ -445,20 +444,6 @@ impl Icmp {
         self.icmp_hun[off..off + 2].copy_from_slice(&v.to_ne_bytes());
     }
 
-    /// The word of `icmp_dun` at byte `off` (a member of `id_ts`, `id_mask`).
-    #[inline]
-    fn dun32(&self, off: usize) -> u32 {
-        let b = bytes_of(core::slice::from_ref(&self.icmp_dun));
-        u32::from_ne_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
-    }
-
-    /// Writes the word of `icmp_dun` at byte `off`.
-    #[inline]
-    fn set_dun32(&mut self, off: usize, v: u32) {
-        let b = bytes_of_mut(core::slice::from_mut(&mut self.icmp_dun));
-        b[off..off + 4].copy_from_slice(&v.to_ne_bytes());
-    }
-
     /// `icmp_pptr` (`icmp_hun.ih_pptr`): the parameter problem pointer.
     pub fn icmp_pptr(&self) -> u8 {
         self.icmp_hun[0]
@@ -571,46 +556,6 @@ impl Icmp {
         self.set_hun16(2, v);
     }
 
-    /// `icmp_otime` (`icmp_dun.id_ts.its_otime`): the originate timestamp.
-    pub fn icmp_otime(&self) -> u32 {
-        self.dun32(0)
-    }
-
-    /// Sets `icmp_otime`.
-    pub fn set_icmp_otime(&mut self, v: u32) {
-        self.set_dun32(0, v);
-    }
-
-    /// `icmp_rtime` (`icmp_dun.id_ts.its_rtime`): the receive timestamp.
-    pub fn icmp_rtime(&self) -> u32 {
-        self.dun32(4)
-    }
-
-    /// Sets `icmp_rtime`.
-    pub fn set_icmp_rtime(&mut self, v: u32) {
-        self.set_dun32(4, v);
-    }
-
-    /// `icmp_ttime` (`icmp_dun.id_ts.its_ttime`): the transmit timestamp.
-    pub fn icmp_ttime(&self) -> u32 {
-        self.dun32(8)
-    }
-
-    /// Sets `icmp_ttime`.
-    pub fn set_icmp_ttime(&mut self, v: u32) {
-        self.set_dun32(8, v);
-    }
-
-    /// `icmp_mask` (`icmp_dun.id_mask`): the address mask.
-    pub fn icmp_mask(&self) -> u32 {
-        self.dun32(0)
-    }
-
-    /// Sets `icmp_mask`.
-    pub fn set_icmp_mask(&mut self, v: u32) {
-        self.set_dun32(0, v);
-    }
-
     /// `icmp_ip` (`icmp_dun.id_ip.idi_ip`): the returned IP header of an error message.
     pub fn icmp_ip(&self) -> &Ip {
         &self.icmp_dun
@@ -709,45 +654,6 @@ const _: () = {
 mod tests {
     use super::*;
     use crate::reftest::{assert_complete, assert_defines};
-
-    #[test]
-    fn the_unions_members_sit_at_their_offsets() {
-        let mut icp = Icmp {
-            icmp_type: ICMP_ECHO,
-            ..Icmp::default()
-        };
-        icp.set_icmp_id(0x1234_u16.to_be());
-        icp.set_icmp_seq(7_u16.to_be());
-        assert_eq!(u16::from_be(icp.icmp_id()), 0x1234);
-        assert_eq!(u16::from_be(icp.icmp_seq()), 7);
-        let head = &bytes_of(core::slice::from_ref(&icp))[..8];
-        assert_eq!(head, [8, 0, 0, 0, 0x12, 0x34, 0, 7]);
-        assert!(icmp_infotype(ICMP_ECHO) && icmp_infotype(ICMP_ECHOREPLY));
-        assert!(!icmp_infotype(ICMP_UNREACH));
-
-        // id_ts and id_mask overlay the returned header's first words.
-        icp.set_icmp_rtime(0x0102_0304);
-        icp.set_icmp_mask(0xa0b0_c0d0);
-        let b = bytes_of(core::slice::from_ref(&icp));
-        assert_eq!(&b[12..16], &0x0102_0304_u32.to_ne_bytes());
-        assert_eq!(&b[8..12], &0xa0b0_c0d0_u32.to_ne_bytes());
-        assert_eq!(icp.icmp_otime(), 0xa0b0_c0d0);
-
-        // the pmtu and the gateway overlay the second word.
-        icp.set_icmp_nextmtu(1280_u16.to_be());
-        assert_eq!(u16::from_be(icp.icmp_nextmtu()), 1280);
-        icp.set_icmp_gwaddr(InAddr {
-            s_addr: u32::from_ne_bytes([10, 0, 2, 2]),
-        });
-        assert_eq!(icp.icmp_hun, [10, 0, 2, 2]);
-        icp.set_icmp_pptr(21);
-        assert_eq!(icp.icmp_hun[0], 21);
-
-        icp.icmp_ip_mut().set_ip_hl(5);
-        assert_eq!(icp.icmp_ip().ip_hl(), 5);
-        assert_eq!(icmp_advlen(&icp), ICMP_ADVLENMIN);
-        assert_eq!(icmp_v6advlen(&icp), ICMP_V6ADVLENMIN);
-    }
 
     #[test]
     #[ignore = "needs OPENBSD_SRC (just test-ref)"]

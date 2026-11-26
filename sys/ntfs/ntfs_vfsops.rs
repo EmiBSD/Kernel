@@ -223,7 +223,7 @@ pub fn ntfs_mount(
     _ndp: &mut Nameidata<'_>,
     p: &Proc,
 ) -> Result<(), Errno> {
-    let args = NtfsArgs::from_bytes(data);
+    let args = hal::user::pod_from_bytes::<NtfsArgs>(data);
     let mut fname = [0u8; MNAMELEN];
     let mut fspec = [0u8; MNAMELEN];
 

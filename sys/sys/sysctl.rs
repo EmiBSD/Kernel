@@ -135,10 +135,10 @@ mod tests {
 
     #[test]
     fn the_byte_views_are_the_structures_sizes() {
-        let kp = KinfoProc::zeroed();
+        let kp = hal::user::zeroed::<KinfoProc>();
         assert_eq!(kp.as_bytes().len(), 648);
         assert!(kp.as_bytes().iter().all(|&b| b == 0));
-        let kf = KinfoFile::zeroed();
+        let kf = hal::user::zeroed::<KinfoFile>();
         assert_eq!(kf.as_bytes().len(), 632);
         assert_eq!(Cpustats::default().as_bytes().len(), 56);
     }

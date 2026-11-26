@@ -150,7 +150,7 @@ pub fn mfs_mount<G: ProcGlue>(
     _ndp: &mut Nd<'_, G>,
     p: &Thread<G>,
 ) -> Result<(), Errno> {
-    let args = MfsArgs::from_bytes(data);
+    let args = hal::user::pod_from_bytes::<MfsArgs>(data);
 
     // If updating, check whether changing from read-only to read/write; if there is no device
     // name, that's all we do.
@@ -635,13 +635,13 @@ mod tests {
     #[test]
     fn mfs_args_are_read_from_the_kernel_copy() {
         let a = mfs_args(0x1000, 0x7000_0000, 8 << 20);
-        let args = MfsArgs::from_bytes(&a).unwrap();
+        let args = hal::user::pod_from_bytes::<MfsArgs>(&a).unwrap();
         assert_eq!(args.fspec, 0x1000);
         assert_eq!(args.base, 0x7000_0000);
         assert_eq!(args.size, 8 << 20);
         assert_eq!(args.export_info.ex_flags, 0);
-        assert!(MfsArgs::from_bytes(&a[..MfsArgs::SIZE - 1]).is_none());
-        assert!(MfsArgs::from_bytes(&[]).is_none());
+        assert!(hal::user::pod_from_bytes::<MfsArgs>(&a[..MfsArgs::SIZE - 1]).is_none());
+        assert!(hal::user::pod_from_bytes::<MfsArgs>(&[]).is_none());
         assert_eq!(TEST_MFS_CONF.vfc_datasize, MfsArgs::SIZE);
     }
 

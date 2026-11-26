@@ -658,7 +658,7 @@ pub static TEST_CD9660_CONF: Vfsconf<TestGlue> = Vfsconf::new(
 
 /// Mount arguments of `flags` (`ISOFSMNT_*`) and session `sess`, no device name.
 pub fn args(flags: i32, sess: i32) -> IsoArgs {
-    let Some(mut a) = IsoArgs::from_bytes(&[0u8; IsoArgs::SIZE]) else {
+    let Some(mut a) = hal::user::pod_from_bytes::<IsoArgs>(&[0u8; IsoArgs::SIZE]) else {
         std::panic!("testcd9660: no iso_args");
     };
     a.flags = flags;

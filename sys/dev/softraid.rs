@@ -113,6 +113,7 @@ use core::ffi::c_void;
 use core::mem::offset_of;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicPtr, Ordering};
+use hal::user::AbiBytes;
 
 use libkern::{StaticCell, explicit_bzero, strlcpy};
 

@@ -272,7 +272,7 @@ pub fn tmpfs_mount<G: ProcGlue>(
         return tmpfs_mount_update(mp);
     }
 
-    let Some(args) = TmpfsArgs::from_bytes(data) else {
+    let Some(args) = hal::user::pod_from_bytes::<TmpfsArgs>(data) else {
         return Err(Errno::EINVAL);
     };
 

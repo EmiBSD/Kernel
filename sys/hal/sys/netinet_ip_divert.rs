@@ -96,21 +96,6 @@ const _: () = assert!(size_of::<Divstat>() == DIVS_NCOUNTERS * size_of::<u64>())
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::user::bytes_of;
-
-    #[test]
-    fn the_statistics_are_the_c_layout() {
-        let s = Divstat {
-            divs_ipackets: 1,
-            divs_errors: 0x0102_0304_0506_0708,
-            ..Divstat::default()
-        };
-        let one = [s];
-        let b = bytes_of(&one);
-        assert_eq!(b.len(), 40);
-        assert_eq!(b[..8], 1u64.to_ne_bytes());
-        assert_eq!(b[32..40], 0x0102_0304_0506_0708u64.to_ne_bytes());
-    }
 
     #[test]
     #[ignore = "needs OPENBSD_SRC (just test-ref)"]

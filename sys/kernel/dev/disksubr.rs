@@ -71,6 +71,7 @@
 //!   machine code is involved: the label's place (`LABELSECTOR`) is `hal::sys::disklabel`'s.
 
 use core::sync::atomic::Ordering;
+use hal::user::AbiBytes;
 
 use hal::sys::disklabel::{DISKLABEL_SIZE, DOS_LABELSECTOR, Disklabel, dl_blkoffset, dl_blktosec};
 use hal::sys::types::{Daddr, Dev};

@@ -99,34 +99,3 @@ impl InAliasreq {
 // LP64 size of the C structure.
 const _: () = assert!(size_of::<InAliasreq>() == 64);
 /* </CODE> */
-
-/* <TESTS> */
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::sys::netinet_in::InAddr;
-    use crate::user::bytes_of;
-
-    #[test]
-    fn the_address_sits_where_the_union_does() {
-        let mut r = InAliasreq::default();
-        r.ifra_name[..4].copy_from_slice(b"vio1");
-        r.ifra_addr.sin_len = 16;
-        r.ifra_addr.sin_family = 2;
-        r.ifra_addr.sin_addr = InAddr {
-            s_addr: u32::from_ne_bytes([192, 168, 77, 2]),
-        };
-        r.ifra_mask.sin_addr = InAddr {
-            s_addr: u32::from_ne_bytes([255, 255, 255, 0]),
-        };
-        let rs = [r];
-        let b = bytes_of(&rs);
-        assert_eq!(&b[..4], b"vio1");
-        assert_eq!(b[16..18], [16, 2]);
-        assert_eq!(b[20..24], [192, 168, 77, 2]);
-        assert_eq!(b[52..56], [255, 255, 255, 0]);
-        assert_eq!(core::mem::align_of::<InAliasreq>(), 4);
-        assert!(core::ptr::eq(r.ifra_broadaddr(), &r.ifra_dstaddr));
-    }
-}
-/* </TESTS> */

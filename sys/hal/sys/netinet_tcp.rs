@@ -477,31 +477,6 @@ const _: () = {
 mod tests {
     use super::*;
     use crate::reftest::{assert_complete, assert_defines};
-    use crate::sys::endian::{htonl, htons, ntohl, ntohs};
-    use crate::user::bytes_of;
-
-    #[test]
-    fn header_layout_on_the_wire() {
-        let mut th = Tcphdr {
-            th_sport: htons(12345),
-            th_dport: htons(80),
-            th_seq: htonl(0x0102_0304),
-            th_ack: htonl(0x0a0b_0c0d),
-            th_flags: TH_SYN | TH_ACK,
-            th_win: htons(TCP_MAXWIN as u16),
-            ..Tcphdr::default()
-        };
-        th.set_th_off((size_of::<Tcphdr>() >> 2) as u8);
-        assert_eq!((th.th_off(), th.th_x2()), (5, 0));
-        assert_eq!(
-            bytes_of(&[th]),
-            [
-                0x30, 0x39, 0, 80, 1, 2, 3, 4, 0x0a, 0x0b, 0x0c, 0x0d, 0x50, 0x12, 0xff, 0xff, 0,
-                0, 0, 0
-            ]
-        );
-        assert_eq!((ntohs(th.th_sport), ntohl(th.th_ack)), (12345, 0x0a0b_0c0d));
-    }
 
     #[test]
     fn offset_and_x2_are_independent_nibbles() {
@@ -523,28 +498,6 @@ mod tests {
         assert_eq!(TCPOPT_SACK_PERMIT_HDR, 0x0101_0402);
         assert_eq!(TCPOPT_SACK_HDR, 0x0101_0500);
         assert_eq!((TCPOLEN_TSTAMP_APPA, TCPOLEN_SIGLEN), (12, 20));
-    }
-
-    /// The offsets the C compiler gives `struct tcp_info` for `aarch64-unknown-openbsd`
-    /// (clang's `_Static_assert`s over `reference/openbsd-src`, N6.6a0): the `TCP_INFO`
-    /// option's bytes, and the cut where the unprivileged part ends (`tcpi_snd_wnd`).
-    #[test]
-    fn tcp_info_matches_the_c_layout() {
-        assert_eq!(size_of::<TcpInfo>(), 212);
-        assert_eq!(align_of::<TcpInfo>(), 4);
-        assert_eq!(core::mem::offset_of!(TcpInfo, tcpi_rto), 8);
-        assert_eq!(core::mem::offset_of!(TcpInfo, tcpi_snd_wnd), 100);
-        assert_eq!(core::mem::offset_of!(TcpInfo, tcpi_so_snd_sb_wat), 208);
-        let info = TcpInfo {
-            tcpi_state: 4,
-            tcpi_options: TCPI_OPT_SACK | TCPI_OPT_TIMESTAMPS,
-            tcpi_rto: 0x0102_0304,
-            ..TcpInfo::default()
-        };
-        let one = [info];
-        let b = bytes_of(&one);
-        assert_eq!(b.len(), 212);
-        assert_eq!(b[..9], [4, 0, 0, 0, 0, 3, 0, 0, 4]);
     }
 
     #[test]

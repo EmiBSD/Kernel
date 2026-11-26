@@ -604,7 +604,7 @@ pub fn fill_file(
     so: Option<(&Socket, &mut kernel::net::socket::SoLocked<'_>)>,
     show_pointers: bool,
 ) {
-    *kf = KinfoFile::zeroed();
+    *kf = hal::user::zeroed::<KinfoFile>();
 
     kf.fd_fd = fd; // might not really be an fd
 
@@ -1094,7 +1094,7 @@ pub fn sysctl_file(name: &[i32], where_: usize, sizep: &mut usize, p: &Proc) -> 
     }
 
     let mut w = FileWalk {
-        kf: KinfoFile::zeroed(),
+        kf: hal::user::zeroed::<KinfoFile>(),
         p,
         show_pointers: curproc().is_some_and(|cp| suser(cp).is_ok()),
         dp: where_,
@@ -1922,7 +1922,7 @@ mod tests {
         let other_ref = fp.clone();
         fp.set_offset(77);
 
-        let mut kf = KinfoFile::zeroed();
+        let mut kf = hal::user::zeroed::<KinfoFile>();
         fill_file(&mut kf, Some(&fp), None, 3, None, Some(pr), p, None, false);
         assert_eq!((kf.fd_fd, kf.f_type, kf.f_count), (3, 5, 2));
         assert_eq!((kf.f_flag, kf.f_uid, kf.f_gid), (3, 1000, 20));
@@ -2035,7 +2035,7 @@ mod tests {
         let size = size_of::<KinfoFile>();
         let walk = |show_pointers: bool| -> KinfoFile {
             let mut w = FileWalk {
-                kf: KinfoFile::zeroed(),
+                kf: hal::user::zeroed::<KinfoFile>(),
                 p,
                 show_pointers,
                 dp: 0,
@@ -2050,7 +2050,7 @@ mod tests {
             let n = w.needed / size;
             assert!((1..=MAX).contains(&n), "{n} TCP pcbs");
             let mut w = FileWalk {
-                kf: KinfoFile::zeroed(),
+                kf: hal::user::zeroed::<KinfoFile>(),
                 p,
                 show_pointers,
                 dp: KF,
@@ -2319,7 +2319,7 @@ mod tests {
         assert!(pr.set_vmspace(Some(vm.clone())).is_none());
         assert_eq!(vm.vm_refcnt.load(Ordering::Relaxed), 1);
 
-        let mut ki = KinfoProc::zeroed();
+        let mut ki = hal::user::zeroed::<KinfoProc>();
         for _ in 0..2 {
             kernel_lock();
             let r = hal::sync::klock::reader();

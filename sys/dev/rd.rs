@@ -80,6 +80,8 @@ use core::ffi::c_void;
 use core::mem::size_of;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
+use hal::sysbytes::DisklabelBytes;
+use hal::user::AbiBytes;
 
 use kernel::dev::autoconf::config_attach_by_hand;
 use kernel::dev::device::Aux;
@@ -562,6 +564,7 @@ mod tests {
     use crate::kern::vfs_subr::tests::setup;
     use crate::sys::buf::{B_BUSY, B_DONE, B_WRITE};
     use crate::sys::disklabel::{RAW_PART, dl_getpsize, makediskdev};
+    use hal::sysbytes::DisklabelBytes;
 
     /// Image sectors.
     const SECTORS: usize = 64;

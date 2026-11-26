@@ -172,6 +172,7 @@
 
 use core::mem::size_of;
 use core::sync::atomic::{AtomicI32, Ordering};
+use hal::sysbytes::IcmpDun;
 
 use hal::mem::pod;
 use hal::sync::netlock::{NETLOCK, NetHeld};

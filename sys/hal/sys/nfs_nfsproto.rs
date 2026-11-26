@@ -489,18 +489,6 @@ impl Nfsfh {
             fh_bytes: [0; NFS_MAXFHSIZE],
         }
     }
-
-    /// `fh_generic`: the `fhandle_t` member (a copy).
-    pub fn fh_generic(&self) -> Fhandle {
-        // `fhandle_t` fits in the 64 bytes (the size check below), so this never falls back.
-        crate::user::pod_from_bytes(&self.fh_bytes).unwrap_or_else(crate::user::zeroed)
-    }
-
-    /// Stores `fh` as the `fh_generic` member.
-    pub fn set_fh_generic(&mut self, fh: &Fhandle) {
-        // Always room: `NFSX_V3FH <= NFS_MAXFHSIZE` (the size check below).
-        let _ = crate::user::pod_to_bytes(fh, &mut self.fh_bytes);
-    }
 }
 
 impl Default for Nfsfh {
@@ -852,9 +840,8 @@ mod tests {
     // Host tests for `<nfs/nfsproto.h>`: the union accessors, the file handle and, against
     // the C header, the constants.
 
-    use std::string::String;
-
     use super::*;
+    use std::string::String;
 
     #[test]
     fn union_accessors_name_the_c_words() {
@@ -872,19 +859,6 @@ mod tests {
         sf.set_sf_invarsec(9);
         sf.set_sf_afiles(Nfsuint64::from_words([4, 5]));
         assert_eq!(sf.sf_un[10..13], [4, 5, 9]);
-    }
-
-    #[test]
-    fn file_handle_generic_member_is_the_first_bytes() {
-        let mut fh = Nfsfh::new();
-        let mut g = Fhandle::default();
-        g.fh_fsid.val = [1, 2];
-        g.fh_fid.fid_len = 12;
-        g.fh_fid.fid_data[0] = 0xaa;
-        fh.set_fh_generic(&g);
-        assert_eq!(fh.fh_generic(), g);
-        assert_eq!(fh.fh_bytes[0..4], 1i32.to_ne_bytes());
-        assert!(fh.fh_bytes[NFSX_V3FH..].iter().all(|&b| b == 0));
     }
 
     #[test]

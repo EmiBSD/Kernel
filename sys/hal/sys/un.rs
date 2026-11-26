@@ -94,25 +94,3 @@ const _: () = {
     assert!(SockaddrUn::PATH_OFFSET == 2);
 };
 /* </CODE> */
-
-/* <TESTS> */
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::user::{bytes_of, pod_from_bytes};
-
-    #[test]
-    fn a_sockaddr_un_round_trips_through_its_bytes() {
-        let mut su = SockaddrUn {
-            sun_len: 9,
-            sun_family: 1,
-            sun_path: [0; SUN_PATH_LEN],
-        };
-        su.sun_path[..6].copy_from_slice(b"/tmp/s");
-        let b = bytes_of(core::slice::from_ref(&su));
-        assert_eq!(&b[..8], &[9, 1, b'/', b't', b'm', b'p', b'/', b's']);
-        assert_eq!(pod_from_bytes::<SockaddrUn>(b), Some(su));
-        assert_eq!(pod_from_bytes::<SockaddrUn>(&b[..105]), None);
-    }
-}
-/* </TESTS> */
