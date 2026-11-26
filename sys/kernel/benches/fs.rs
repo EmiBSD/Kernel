@@ -1738,12 +1738,13 @@ fn nfs_client_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f6
             Duration::ZERO,
         );
         let done = AtomicU32::new(0);
+        // The requesters' threads are made here: the glue's process tables are this thread's.
+        let ts: Vec<_> = (0..16).map(|i| tn::new_thread(100 + i, 1000).1).collect();
         std::thread::scope(|s| {
             let nmp = &nmp;
             let (fx, done) = (&fx, &done);
-            for i in 0..16 {
+            for t in ts {
                 s.spawn(move || {
-                    let (_, t) = tn::new_thread(100 + i, 1000);
                     tn::G::set_curproc(Some(t));
                     hal::klock::kernel_lock();
                     let r = nfs_request(
