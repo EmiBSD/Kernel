@@ -65,8 +65,8 @@ pub mod nfsnode;
 pub mod nfsproto;
 #[cfg(feature = "nfsserver")]
 pub mod nfssvc;
-#[cfg(test)]
-pub(crate) mod testnfs;
+#[cfg(any(test, feature = "doubles"))]
+pub mod testnfs;
 pub mod xdr_subs;
 
 pub use crate::sys::nfs_rpcv2 as rpcv2;

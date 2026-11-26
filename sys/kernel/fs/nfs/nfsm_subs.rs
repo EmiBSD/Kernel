@@ -485,7 +485,7 @@ pub(crate) fn test_chain(segs: &[&[u8]]) -> MbufBox {
 }
 
 /// The chain's bytes, first to last.
-#[cfg(test)]
+#[cfg(any(test, feature = "doubles"))]
 pub(crate) fn test_bytes(m: &Mbuf) -> std::vec::Vec<u8> {
     let mut v = std::vec::Vec::new();
     let mut n = Some(m);

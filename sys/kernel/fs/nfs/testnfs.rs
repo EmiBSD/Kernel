@@ -81,7 +81,7 @@ crate::test_file_glue!(NfsFiles, NfsGlue);
 crate::test_proc_glue!(NfsGlue, NfsFiles);
 
 /// The fixture's glue.
-pub(crate) type G = NfsGlue;
+pub type G = NfsGlue;
 
 /// `inetsw[]` of the glue: the kernel's UDP and TCP, and (N6.7b2) the `IPPROTO_RAW` row
 /// (the nfs server's refusal of a raw socket).
@@ -94,7 +94,7 @@ static SW: [&dyn Protocol<G>; 3] = [
 static DOMS: [&dyn Domain<G>; 1] = [&InetDomain::<G>::NEW];
 
 /// The server's port.
-pub(crate) const PEER_PORT: u16 = 2049;
+pub const PEER_PORT: u16 = 2049;
 
 /// The test file system the client's mount is of: it holds the client's structure and does
 /// nothing else.
@@ -260,7 +260,7 @@ static TEST_VOPS: TestVops = TestVops;
 static CONF: [Vfsconf<G>; 1] = [Vfsconf::new(&TEST_VFS, b"nfs", 2, 0, 0)];
 
 /// A thread of a process of its own, the credential's user `uid`.
-fn new_thread(pid: i32, uid: u32) -> (&'static crate::proc::Process<G>, &'static Thread<G>) {
+pub fn new_thread(pid: i32, uid: u32) -> (&'static crate::proc::Process<G>, &'static Thread<G>) {
     let pr = process_alloc::<G>(pid, ());
     let mut c = Ucred::new();
     c.cr_uid.set(uid);
@@ -279,15 +279,15 @@ fn new_thread(pid: i32, uid: u32) -> (&'static crate::proc::Process<G>, &'static
 
 /// A test's fixture: the requester (this thread's `curproc`), the mount and the vnode of the
 /// RPCs, `lo0`, and the guard of the tests that hold kernel memory.
-pub(crate) struct Fixture {
+pub struct Fixture {
     /// The requester.
-    pub(crate) user: &'static Thread<G>,
+    pub user: &'static Thread<G>,
     /// The client's mount.
-    pub(crate) mp: &'static Mount<G>,
+    pub mp: &'static Mount<G>,
     /// A vnode of it (`nfs_request`'s).
-    pub(crate) vp: &'static Vnode<G>,
+    pub vp: &'static Vnode<G>,
     /// `lo0`.
-    pub(crate) lo: &'static Ifnet,
+    pub lo: &'static Ifnet,
     /// The memory's guard.
     _g: MutexGuard<'static, ()>,
 }
@@ -296,8 +296,64 @@ pub(crate) struct Fixture {
 /// routes forgotten), the glue's process 0 (root) once per thread, a requester of `uid`, the
 /// glue's internet domain made again (`in_init`, `udp_init`, `tcp_init`), `lo0` with
 /// 127.0.0.1/8, the glue's VFS tables with a mount and a vnode, "nfsreqpl".
-pub(crate) fn setup(uid: u32) -> Fixture {
+#[cfg(test)]
+pub fn setup(uid: u32) -> Fixture {
     let (g, _tp) = crate::netinet::in_pcb::testinet::setup();
+    setup_with(g, uid)
+}
+
+/// The internet protocols' legs the bench's network needs (the tests' `TestInet` is in
+/// `net::route`'s tests): the net lock's proof lent from a detached holding.
+#[cfg(not(test))]
+struct DoublesInet;
+
+#[cfg(not(test))]
+impl crate::net::if_::Inet for DoublesInet {
+    fn ip6_randomid(&self) -> u32 {
+        1
+    }
+    fn with_net_held(&self, f: &mut dyn FnMut(&NetHeld<'_>)) {
+        hal::netlock::lend_detached(|n| f(n));
+    }
+}
+
+/// The fixture for the host benchmarks (N6.8, the nfs rows of `benches/fs.rs`): what
+/// `testinet::setup` makes for the tests (kernel memory, the mbufs, the interface and routing
+/// tables), made over the doubles alone, then [`setup_with`]'s. Once per process: it makes
+/// `lo0` and takes the kernel's page system for the run.
+#[cfg(not(test))]
+pub fn bench_setup(uid: u32) -> Fixture {
+    use crate::net::rtable::{RtDom, rtable_init_doms, rtable_test_reset};
+    static NMBCLUST: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(256 * 1024);
+    let g = crate::testutil::pages_install(64 << 20);
+    crate::testutil::kernel_maps_install();
+    crate::net::mbuf::mbinit(&NMBCLUST);
+    crate::net::mbuf::nmbclust_update(256 * 1024).expect("the limit");
+    let _ = crate::net::if_::register_inet(&DoublesInet);
+    crate::net::if_::if_test_reset();
+    rtable_test_reset();
+    crate::net::route::rtlabel_test_reset();
+    crate::net::route::route_init();
+    rtable_init_doms(&[
+        RtDom {
+            family: AF_INET,
+            rtoffset: 4,
+            maxplen: 32,
+            sasize: 16,
+        },
+        RtDom {
+            family: hal::sys::socket::AF_INET6,
+            rtoffset: 8,
+            maxplen: 128,
+            sasize: 28,
+        },
+    ]);
+    crate::netinet::ip_id::ip_randomid_init();
+    setup_with(g, uid)
+}
+
+/// The rest of the fixture, over the network and memory the caller made.
+fn setup_with(g: MutexGuard<'static, ()>, uid: u32) -> Fixture {
     std::thread_local! {
         static MADE: Cell<bool> = const { Cell::new(false) };
     }
@@ -326,6 +382,7 @@ pub(crate) fn setup(uid: u32) -> Fixture {
     // tests run in (N6.7a1: an nfs test run first made it this glue's, and
     // `the_softnet_reaches_tcp_input_mlist` found no socket). `pump` calls `tcp_input`
     // itself, as it skips IP's input for the same reason.
+    #[cfg(test)]
     crate::netinet::tcp_input::tcp_input_mlist_register::<crate::netinet::in_pcb::testinet::G>();
     crate::netinet::tcp_subr::tcp_init::<G>();
 
@@ -374,7 +431,7 @@ pub(crate) fn setup(uid: u32) -> Fixture {
 }
 
 /// The `sockaddr_in` of 127.0.0.1:`port`.
-pub(crate) fn lo_sin(port: u16) -> SockaddrIn {
+pub fn lo_sin(port: u16) -> SockaddrIn {
     SockaddrIn {
         sin_len: 16,
         sin_family: AF_INET,
@@ -389,7 +446,7 @@ pub(crate) fn lo_sin(port: u16) -> SockaddrIn {
 /// The client's structure for `fx`'s mount, of socket type `sotype`, mount flags `flag`,
 /// the server 127.0.0.1:2049 (`mountnfs`'s fill, as `nfs_decode_args` leaves a default
 /// mount): placed in the mount's slot, not connected yet. Its timeout calls nothing.
-pub(crate) fn nfsmount(fx: &Fixture, sotype: i32, flag: i32) -> NfsMountRef<G> {
+pub fn nfsmount(fx: &Fixture, sotype: i32, flag: i32) -> NfsMountRef<G> {
     fn nop(_: *mut core::ffi::c_void) {}
     let sa = lo_sin(PEER_PORT);
     let nam = NfsNam::new(super::xdr_subs::xdr_bytes(&sa)).expect("an address");
@@ -410,7 +467,7 @@ pub(crate) fn nfsmount(fx: &Fixture, sotype: i32, flag: i32) -> NfsMountRef<G> {
 
 /// Disconnects the client and empties the mount's slot (`nfs_unmount`'s tail), the timeout
 /// deleted.
-pub(crate) fn unmount(fx: &Fixture, nmp: NfsMountRef<G>) {
+pub fn unmount(fx: &Fixture, nmp: NfsMountRef<G>) {
     nfs_disconnect(&nmp);
     nmp.nm_rtimeout.del();
     drop(fx.mp.take_node());
@@ -418,7 +475,7 @@ pub(crate) fn unmount(fx: &Fixture, nmp: NfsMountRef<G>) {
 }
 
 /// What the peer does for a call.
-pub(crate) enum Out {
+pub enum Out {
     /// Sends these bytes back (a datagram, or a record with its mark).
     Data(Vec<u8>),
     /// Calls `nfs_timer` this many times (the softclock's ticks while the requester sleeps).
@@ -429,10 +486,10 @@ pub(crate) enum Out {
 
 /// The peer's script: the call's number (from 1) and its bytes (a stream's without the mark)
 /// to what it does.
-pub(crate) type Script = Box<dyn FnMut(usize, &[u8]) -> Vec<Out> + Send>;
+pub type Script = Box<dyn FnMut(usize, &[u8]) -> Vec<Out> + Send>;
 
 /// The scripted peer: its socket(s), the calls it saw, its thread.
-pub(crate) struct Peer {
+pub struct Peer {
     stop: Arc<AtomicBool>,
     calls: Arc<Mutex<Vec<(u16, Vec<u8>)>>>,
     thread: Option<JoinHandle<()>>,
@@ -442,11 +499,19 @@ pub(crate) struct Peer {
 impl Peer {
     /// A peer on 127.0.0.1:2049 of socket type `sotype`, answering by `script`; `nmp` is the
     /// mount whose timer `Out::Tick` runs.
-    pub(crate) fn start(
+    pub fn start(fx: &Fixture, sotype: i32, nmp: &NfsMountRef<G>, script: Script) -> Self {
+        Self::start_polling(fx, sotype, nmp, script, std::time::Duration::from_millis(1))
+    }
+
+    /// [`Peer::start`] with the pause between the peer's looks at its socket: the tests'
+    /// millisecond, or none (`Duration::ZERO`: the thread only yields) for the benchmarks,
+    /// whose RPCs would otherwise time the pause.
+    pub fn start_polling(
         fx: &Fixture,
         sotype: i32,
         nmp: &NfsMountRef<G>,
         mut script: Script,
+        poll: std::time::Duration,
     ) -> Self {
         let so = socreate(fx.user, i32::from(AF_INET), sotype, 0).expect("the peer's socket");
         {
@@ -530,7 +595,11 @@ impl Peer {
                         }
                     }
                 }
-                std::thread::sleep(std::time::Duration::from_millis(1));
+                if poll.is_zero() {
+                    std::thread::yield_now();
+                } else {
+                    std::thread::sleep(poll);
+                }
             }
             if let Some(c) = conn {
                 abort(&c);
@@ -545,12 +614,12 @@ impl Peer {
     }
 
     /// The calls the peer saw, in order, each with its sender's port (0 on a stream).
-    pub(crate) fn calls(&self) -> Vec<(u16, Vec<u8>)> {
+    pub fn calls(&self) -> Vec<(u16, Vec<u8>)> {
         self.calls.lock().unwrap().clone()
     }
 
     /// Stops the peer's thread and closes its socket.
-    pub(crate) fn stop(mut self) {
+    pub fn stop(mut self) {
         self.stop.store(true, Relaxed);
         if let Some(t) = self.thread.take() {
             t.join().expect("the peer");
@@ -560,7 +629,7 @@ impl Peer {
 }
 
 /// `addr` in a name mbuf.
-pub(crate) fn name(addr: &SockaddrIn) -> MbufBox {
+pub fn name(addr: &SockaddrIn) -> MbufBox {
     let b = super::xdr_subs::xdr_bytes(addr);
     let mut m = crate::net::mbuf::m_get(M_WAIT, crate::net::mbuf::MT_SONAME).expect("an mbuf");
     m.m_len().set(b.len() as u32);
@@ -570,7 +639,7 @@ pub(crate) fn name(addr: &SockaddrIn) -> MbufBox {
 
 /// The softnet's work by hand: every packet `lo0` queued for input given to its transport,
 /// under the net lock's shared holding (`ip_deliver`'s).
-pub(crate) fn pump(lo: &'static Ifnet) {
+pub fn pump(lo: &'static Ifnet) {
     let mut ml = ifiq_test_take(lo.if_rcv());
     while let Some(m) = ml_dequeue(&mut ml) {
         let mut h = [0u8; 20];
@@ -682,13 +751,13 @@ fn send(so: &SocketRef<G>, to: Option<&MbufBox>, b: &[u8]) {
 }
 
 /// The raw words of a call: its xid (as it lies) and its procedure number.
-pub(crate) fn call_xid(call: &[u8]) -> [u8; 4] {
+pub fn call_xid(call: &[u8]) -> [u8; 4] {
     call[..4].try_into().unwrap()
 }
 
 /// An accepted reply to the call `call`, after its verifier (of `verf` bytes) the
 /// `accept_stat` `astat` and, for a success, the NFS status `status` and `body`.
-pub(crate) fn reply(call: &[u8], verf: u32, astat: u32, status: u32, body: &[u8]) -> Vec<u8> {
+pub fn reply(call: &[u8], verf: u32, astat: u32, status: u32, body: &[u8]) -> Vec<u8> {
     let mut r = call_xid(call).to_vec();
     for w in [1u32, 0, 0, verf] {
         r.extend_from_slice(&w.to_be_bytes());
@@ -703,7 +772,7 @@ pub(crate) fn reply(call: &[u8], verf: u32, astat: u32, status: u32, body: &[u8]
 }
 
 /// A denied reply: `RPC_MISMATCH` (with its two version words) or `AUTH_ERROR`.
-pub(crate) fn denied(call: &[u8], mismatch: bool) -> Vec<u8> {
+pub fn denied(call: &[u8], mismatch: bool) -> Vec<u8> {
     let mut r = call_xid(call).to_vec();
     let words: &[u32] = if mismatch {
         &[1, 1, 0, 2, 2]
@@ -717,7 +786,7 @@ pub(crate) fn denied(call: &[u8], mismatch: bool) -> Vec<u8> {
 }
 
 /// Connects the client (`nfs_connect` as the requester).
-pub(crate) fn connect(nmp: &NfsMount<G>) -> Result<(), Errno> {
+pub fn connect(nmp: &NfsMount<G>) -> Result<(), Errno> {
     nfs_connect(nmp, None)
 }
 
@@ -761,6 +830,7 @@ impl Drop for Fixture {
             crate::netinet::in_::in_ifdetach(self.lo, &net);
             crate::netinet6::in6_ifattach::in6_ifdetach(self.lo, &net);
         }
+        #[cfg(test)]
         crate::net::route::tests::grace();
     }
 }
