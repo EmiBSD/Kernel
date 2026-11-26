@@ -37,6 +37,8 @@ pub mod mapped;
 ))]
 pub mod bootmem;
 pub mod explicit_bzero;
+// The bootloader's device tree as bytes (N7.2b0): machine-independent, unused on amd64.
+pub mod fdtblob;
 pub mod overlay;
 pub mod pod;
 pub(crate) mod trust;

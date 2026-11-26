@@ -172,6 +172,25 @@
 //! device's writes race nothing the language sees, and a discarded line loses nothing a
 //! reference observes.
 //!
+//! The bootloader's device tree (`hal::mem::fdtblob`, N7.2b0) is an eighth, the machine's boot's
+//! word, as `PhysPages::steal`'s frames are the provider's: the first address given to
+//! `fdtblob::probe` is the device tree the bootloader handed over, its 40-byte header mapped
+//! there when `probe` is called and all its `fh_size` bytes when `fdtblob::adopt` is, for the
+//! kernel's whole run (the direct map, never torn down, or the kernel image), never written
+//! after (the kernel has no write side of the tree), and none of its frames given to an
+//! allocator. Who upholds it: the machine's boot, on the boot CPU, which names the tree first
+//! (arm64's `getbootinfo` and `initarm`, through `bsd`'s `fdt_get_size`/`fdt_init`); a later
+//! caller gets that blob or `panic(9)` (another address), and a first address named once the
+//! boot's bridges are registered (the `KcopyToken` taken, before which no `forbid` crate's code
+//! picks an address) is `panic(9)` too, so on amd64, whose boot names none, no tree is ever
+//! viewed. What `fdtblob` checks: the address not null, the range not wrapping and at most
+//! `isize::MAX` bytes, the magic FDT's. What arm64's `initarm` checks: the blob's physical range
+//! (through the direct map or the image) overlaps no usable region, so the page allocator never
+//! hands out its frames; that `fh_size` is no larger than what the boot mapped is the boot's
+//! word (boot(8)'s path maps exactly `fh_size` bytes, `getbootinfo`). The `// SAFETY:` of
+//! `fdtblob`'s one slice rests on it. The boundary goes when the blob is relocated into memory
+//! the kernel owns (the C's copy into stolen pages, N9's `initarm`).
+//!
 //! ## Redesign
 //! - Not a port: the C trusts `km_alloc`, `pool_get` and `malloc` silently. Here the trust is
 //!   one function every memory piece calls, so it is audited in one place.

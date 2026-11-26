@@ -3856,6 +3856,13 @@ adapted_by = ["sys/sys/staticcell.rs"]
 notes = "M4: the read side (fdt_check_head, fdt_init, fdt_get_size, fdt_get_str, skip_*, fdt_node_property(_ints/_int), fdt_next_node, fdt_child_node, fdt_node_name, fdt_find_node, fdt_parent_node, fdt_find_phandle, fdt_get_cells, fdt_translate_reg, fdt_get_reg, fdt_is_compatible) and OF_peer/child/parent/finddevice/getnodebyname/getnodebyphandle/getproplen/getprop/getpropbool/getpropint/getpropintarray/getpropint64(array)/is_compatible/is_enabled/getindex; nodes are pointers into the blob, OF handles offsets as in C, property values slices (None for -1); the write side, fdt_next_property/OF_nextprop, OF_getpropstr, OF_translate and the DEBUG printers come with their users (M5)"
 
 [[module]]
+rust = "sys/hal/mem/fdtblob.rs"
+crate = "hal"
+lz = ["sys/dev/ofw/fdt.rs"]
+status = "redesigned"
+notes = "N7.2b0: the bootloader's device tree as bytes, the raw reads of LZ's fdt.rs (be32, cstr, the header's fields, a property's value) replaced by one view: probe(va) records the first address (another later, or a first one after the KcopyToken is taken, is panic(9)) and answers fh_size when the magic is FDT's; adopt() makes the &'static [u8] of the whole blob once (OnceStatic); one unsafe (bytes), the boot's word a paragraph of sys/hal/mem/trust.rs"
+
+[[module]]
 rust = "sys/dev/ofw/ofw_gpio.rs"
 lz = ["sys/dev/ofw/ofw_gpio.rs"]
 status = "inherited"
@@ -14740,7 +14747,7 @@ kind = "renamed"
 [[extra]]
 rust = "sys/hal/user.rs"
 crate = "hal"
-reason = "hal runtime, written new: UserPtr<T>, the safe AbiPod trait and abi_pod!, the UserCopy bridge; N3.5 S0: ForeignWindow, a window onto foreign pages minted by KernelMapper::foreign_window, copied through the bridge's kcopy_in/kcopy_out and bounded, never referenced (uvm_io, sys_kbind); N4.7a: pod_from_bytes/pod_to_bytes, an ioctl argument read or written as its AbiPod structure over the byte views (no unsafe of their own); docs/ZERO_UNSAFE.md 0.1, decision 17; N4.8b: the UserCopy bridge is gone: the copies are the machine's, hal's own (arch/arm64/copy.rs, the host's arch/host/copy.rs), an EFAULT stub where hal has none (amd64 until N10, and the ABI module's runtime until the N5 close: decision 47 dropped hal's module-rt feature); KcopyToken, the one holder of kcopy onto kernel addresses it names (bsd's uiomove UIO_SYSSPACE leg, decision 13 of N4.8), taken once; ForeignWindow and the token each one unsafe per direction over the machine's kcopy_in/kcopy_out"
+reason = "hal runtime, written new: UserPtr<T>, the safe AbiPod trait and abi_pod!, the UserCopy bridge; N3.5 S0: ForeignWindow, a window onto foreign pages minted by KernelMapper::foreign_window, copied through the bridge's kcopy_in/kcopy_out and bounded, never referenced (uvm_io, sys_kbind); N4.7a: pod_from_bytes/pod_to_bytes, an ioctl argument read or written as its AbiPod structure over the byte views (no unsafe of their own); docs/ZERO_UNSAFE.md 0.1, decision 17; N4.8b: the UserCopy bridge is gone: the copies are the machine's, hal's own (arch/arm64/copy.rs, the host's arch/host/copy.rs), an EFAULT stub where hal has none (amd64 until N10, and the ABI module's runtime until the N5 close: decision 47 dropped hal's module-rt feature); KcopyToken, the one holder of kcopy onto kernel addresses it names (bsd's uiomove UIO_SYSSPACE leg, decision 13 of N4.8), taken once; ForeignWindow and the token each one unsafe per direction over the machine's kcopy_in/kcopy_out; N7.2b0: KcopyToken::taken (pub(crate)), the mark of the boot's first phase hal::mem::fdtblob seals on"
 
 [[extra]]
 rust = "sys/hal/cons.rs"
@@ -14750,7 +14757,7 @@ reason = "hal runtime, written new: the console primitive (cnputc, cngetc, cnpol
 [[extra]]
 rust = "sys/hal/mem/trust.rs"
 crate = "hal"
-reason = "hal runtime, written new: the trust boundary of the memory bridges (alignment and size checks, the diagnostic probe); docs/ZERO_UNSAFE.md decision 30; N6.3a: the premise of hal::ds::link::SaLink (a socket address lent by an interface address: the SaToken holder's contract and the readers' shared holding, review 1's B2); N6.5e: the token holder's proofs are lent (SaToken::lend_net, N6.5e review 1), exact, so the contract's proof-by-check clause is gone; N6.5e (5e1): the internet records read their own words (counted handles), so the SaLink boundary is enc(4)'s address alone; N7.0: the device mappings (hal::dev::mmio::Mmio): what map_device checks (no managed frame, never executable) and what stays the token holder's word (the virtual range its own, the physical range a device's registers, not RAM outside the managed pages); N7.0: the DMA memory provider's contract (hal::dev::dma::DmaMemory: mapped kernel memory holding no Rust object, the segment's frames, the caller's alone until free) and what DmaBuf::alloc checks"
+reason = "hal runtime, written new: the trust boundary of the memory bridges (alignment and size checks, the diagnostic probe); docs/ZERO_UNSAFE.md decision 30; N6.3a: the premise of hal::ds::link::SaLink (a socket address lent by an interface address: the SaToken holder's contract and the readers' shared holding, review 1's B2); N6.5e: the token holder's proofs are lent (SaToken::lend_net, N6.5e review 1), exact, so the contract's proof-by-check clause is gone; N6.5e (5e1): the internet records read their own words (counted handles), so the SaLink boundary is enc(4)'s address alone; N7.0: the device mappings (hal::dev::mmio::Mmio): what map_device checks (no managed frame, never executable) and what stays the token holder's word (the virtual range its own, the physical range a device's registers, not RAM outside the managed pages); N7.0: the DMA memory provider's contract (hal::dev::dma::DmaMemory: mapped kernel memory holding no Rust object, the segment's frames, the caller's alone until free) and what DmaBuf::alloc checks; N7.2b0: the bootloader's device tree (hal::mem::fdtblob): the machine's boot names it first, mapped and never written for the run, its frames outside every usable region (arm64's initarm checks), a first address after the KcopyToken is taken refused"
 
 [[extra]]
 rust = "sys/kern/hal_bridges.rs"
