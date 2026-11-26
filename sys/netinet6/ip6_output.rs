@@ -99,7 +99,7 @@
 //!   configured: `ip6_output_ipsec_send` runs `pf_test` on the SA's `enc(4)` interface. The
 //!   IPv6 halves of `netinet/ip_spd.rs` and `netinet/ipsec_output.rs` are still comments
 //!   there (phase 2 of the INET6 port), so an IPv6 flow finds no policy yet.
-//! - `ip6_id_ctx` is behind a mutex of its own (a `hal::mutex::Mutexed`, IPL_SOFTNET; the C
+//! - `ip6_id_ctx` is behind a mutex of its own (a `hal::sync::mutex::Mutexed`, IPL_SOFTNET; the C
 //!   calls `idgen32` unlocked; here `ip6_randomid` can run on several CPUs under the shared net
 //!   lock).
 
@@ -107,8 +107,8 @@ use core::mem::size_of;
 use core::ptr;
 use core::sync::atomic::Ordering;
 
-use hal::intr::IPL_SOFTNET;
-use hal::mutex::Mutexed;
+use hal::cpu::intr::IPL_SOFTNET;
+use hal::sync::mutex::Mutexed;
 
 use crate::crypto::idgen::Idgen32Ctx;
 use crate::kern::kern_tc::gettime;
@@ -228,8 +228,8 @@ pub fn ip6_output_ipsec_lookup(
     while let Some(tag) = mtag {
         if tag.m_tag_id.get() == PACKET_TAG_IPSEC_OUT_DONE {
             // `IPSEC_OUT_DONE` tags carry a `struct tdb_ident`: a copy of the tag's data
-            // (`PACKET_TAG_MAXSIZE` bytes, more than the structure), read through `hal::pod`.
-            if let Some(tdbi) = hal::pod::at::<TdbIdent>(&tag.bytes(), 0)
+            // (`PACKET_TAG_MAXSIZE` bytes, more than the structure), read through `hal::mem::pod`.
+            if let Some(tdbi) = hal::mem::pod::at::<TdbIdent>(&tag.bytes(), 0)
                 && tdbi.spi == t.tdb_spi.get()
                 && tdbi.proto == t.tdb_sproto.get()
                 && tdbi.rdomain == t.tdb_rdomain.get()

@@ -40,8 +40,8 @@
 //! Upstream: sys/kern/kern_lock.c @ 3ce1f3f79392
 //! LZ: sys/kern/kern_lock.rs@3c62ede68802
 //!
-//! The kernel lock (`kernel_lock`, the ticket lock `__mp_lock`) is `hal::klock`'s, the
-//! mutexes (`struct mutex` with its parking lots, `struct db_mutex`) `hal::mutex`'s since
+//! The kernel lock (`kernel_lock`, the ticket lock `__mp_lock`) is `hal::sync::klock`'s, the
+//! mutexes (`struct mutex` with its parking lots, `struct db_mutex`) `hal::sync::mutex`'s since
 //! N4.5c; this module keeps the C's functions for `bsd` (`mtx_enter(&m)` in 128 files) and
 //! the producer/consumer generation lock (`pc_lock_init`, `pc_sprod_*`, `pc_mprod_*`,
 //! `pc_cons_*`), which stays here. `mtx_print_parks` (a debugging printer of the parking
@@ -52,18 +52,18 @@
 //!   ordering; `membar_enter_after_atomic` is an `Acquire` fence and `membar_enter` a
 //!   `SeqCst` one.
 //! - `KERNEL_LOCK()`/`KERNEL_UNLOCK()` are `sys::systm::kernel_lock()`/`kernel_unlock()`.
-//! - On the host the kernel lock is `hal::klock`'s per-thread double (every test thread is a
+//! - On the host the kernel lock is `hal::sync::klock`'s per-thread double (every test thread is a
 //!   CPU of its own there): `__mp_release_all`/`__mp_acquire_count` of `kernel_lock` reach
 //!   it; `__mp_lock`/`__mp_unlock` of it (amd64's interrupt entry) take the machine's ticket
 //!   lock.
 //!
 //! ## Redesign
 //! - N4.5c: the kernel lock, the mutex and its parking lots, and the debugger's mutex moved
-//!   into `hal` (`hal::klock`, `hal::mutex`), where they are written without `unsafe` (LZ: 8
+//!   into `hal` (`hal::sync::klock`, `hal::sync::mutex`), where they are written without `unsafe` (LZ: 8
 //!   here, 2 in `<sys/mutex.h>`): the interrupt masking of the ticket lock and of the lots is
 //!   `hal::cpu`'s guard, a parked waiter a pinned stack element of a list bound to its lot's
 //!   lock. The functions below forward to their methods; the uniprocessor branches LZ kept
-//!   unbuilt are gone (decision 40); the release checks of N4.2 are `hal::klock`'s.
+//!   unbuilt are gone (decision 40); the release checks of N4.2 are `hal::sync::klock`'s.
 
 use core::sync::atomic::{Ordering, fence};
 
@@ -71,7 +71,7 @@ use crate::sys::mutex::{DbMutex, Mutex, mutex_ipl};
 use crate::sys::pclock::PcLock;
 
 /// The name `kernel_lock` the C's `__mp_*(&kernel_lock)` calls pass: the lock itself is
-/// `hal::klock`'s, reached only through its functions (which refuse a release by a CPU that
+/// `hal::sync::klock`'s, reached only through its functions (which refuse a release by a CPU that
 /// does not hold it); this value only says which lock is meant.
 pub struct KernelLockName;
 
@@ -81,48 +81,48 @@ pub static KERNEL_LOCK: KernelLockName = KernelLockName;
 /// `_kernel_lock_init`: `KERNEL_LOCK_INIT()`, once, from `main`: the ticket lock reset and
 /// the parking lots checked empty.
 pub fn _kernel_lock_init() {
-    hal::klock::init();
-    hal::mutex::init_parking();
+    hal::sync::klock::init();
+    hal::sync::mutex::init_parking();
 }
 
 /// `_kernel_lock`: acquire the kernel lock. Intended for use in the scheduler and the lower
 /// half of the kernel.
 pub fn _kernel_lock() {
-    hal::klock::kernel_lock();
+    hal::sync::klock::kernel_lock();
 }
 
 /// `_kernel_unlock`: release the kernel lock.
 pub fn _kernel_unlock() {
-    hal::klock::kernel_unlock();
+    hal::sync::klock::kernel_unlock();
 }
 
 /// `_kernel_lock_held`: this CPU holds the kernel lock (always true after a panic or in ddb).
 pub fn _kernel_lock_held() -> bool {
-    hal::klock::kernel_lock_held()
+    hal::sync::klock::kernel_lock_held()
 }
 
 /// `__mp_lock(&kernel_lock)`: takes the kernel lock, recursively (an interrupt handler's
 /// entry: no scheduler assertion).
 pub fn __mp_lock(_mpl: &KernelLockName) {
-    hal::klock::mp_lock();
+    hal::sync::klock::mp_lock();
 }
 
 /// `__mp_unlock(&kernel_lock)`: drops one level of this CPU's hold (`panic(9)` unless it
 /// holds the lock; the last level refuses a witness out).
 pub fn __mp_unlock(_mpl: &KernelLockName) {
-    hal::klock::kernel_unlock();
+    hal::sync::klock::kernel_unlock();
 }
 
 /// `__mp_release_all(&kernel_lock)`: drops every level of this CPU's hold; returns how many
 /// there were (0, releasing nothing, when it holds none).
 pub fn __mp_release_all(_mpl: &KernelLockName) -> u32 {
-    hal::klock::release_all()
+    hal::sync::klock::release_all()
 }
 
 /// `__mp_acquire_count(&kernel_lock, count)`: takes it `count` times (what
 /// `__mp_release_all` returned).
 pub fn __mp_acquire_count(_mpl: &KernelLockName, count: u32) {
-    hal::klock::acquire_count(count);
+    hal::sync::klock::acquire_count(count);
 }
 
 /// `__mtx_init`: a free mutex raising to `wantipl`.
@@ -324,15 +324,15 @@ mod tests {
     }
 
     /// The last `KERNEL_UNLOCK` with a witness out panics before the lock is released; the
-    /// witness dropped, it releases (`hal::klock`'s check, through `bsd`'s names).
+    /// witness dropped, it releases (`hal::sync::klock`'s check, through `bsd`'s names).
     #[test]
     fn the_last_kernel_unlock_with_a_witness_out_panics() {
         std::thread::spawn(|| {
             _kernel_lock();
             _kernel_lock();
-            let r = hal::klock::reader();
+            let r = hal::sync::klock::reader();
             _kernel_unlock();
-            assert_eq!(hal::klock::depth(), 1);
+            assert_eq!(hal::sync::klock::depth(), 1);
             let got = std::panic::catch_unwind(_kernel_unlock);
             let msg = got
                 .err()
@@ -342,10 +342,10 @@ mod tests {
                 msg.contains("KERNEL_UNLOCK: the kernel lock released with a witness out (1)"),
                 "{msg}"
             );
-            assert_eq!(hal::klock::depth(), 1, "nothing was released");
+            assert_eq!(hal::sync::klock::depth(), 1, "nothing was released");
             drop(r);
             _kernel_unlock();
-            assert_eq!(hal::klock::depth(), 0);
+            assert_eq!(hal::sync::klock::depth(), 0);
         })
         .join()
         .unwrap();
@@ -357,7 +357,7 @@ mod tests {
     fn a_whole_release_with_a_witness_out_panics() {
         std::thread::spawn(|| {
             _kernel_lock();
-            let w = hal::klock::witness();
+            let w = hal::sync::klock::witness();
             let got = std::panic::catch_unwind(|| __mp_release_all(&KERNEL_LOCK));
             let msg = got
                 .err()
@@ -371,7 +371,7 @@ mod tests {
             assert_eq!(__mp_release_all(&KERNEL_LOCK), 1);
             __mp_acquire_count(&KERNEL_LOCK, 1);
             _kernel_unlock();
-            assert_eq!(hal::klock::depth(), 0);
+            assert_eq!(hal::sync::klock::depth(), 0);
         })
         .join()
         .unwrap();

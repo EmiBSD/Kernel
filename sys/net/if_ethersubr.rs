@@ -217,9 +217,9 @@ mod tests {
             .set(IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST | IFF_RUNNING);
         ac.ac_enaddr.set(OURS);
         // The C holds the kernel lock across an attach (bpf_ifattach asserts it).
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         ether_ifattach(ac);
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
         ac
     }
 
@@ -415,7 +415,7 @@ mod tests {
 
         // Its advertisement resolves it: the next packet gets the neighbor's address.
         net_lock();
-        let handle = hal::pool::PoolArc::from_ref(rt).expect("a routing table's route");
+        let handle = hal::mem::pool::PoolArc::from_ref(rt).expect("a routing table's route");
         nd6_na_cache(
             ifp,
             &handle,

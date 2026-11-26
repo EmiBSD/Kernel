@@ -146,7 +146,7 @@ use core::marker::PhantomData;
 use core::ptr;
 
 use hal::arch::current::param::PAGE_SIZE;
-use hal::pool::PoolArc;
+use hal::mem::pool::PoolArc;
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::{FWRITE, Flock, O_APPEND};
 use hal::sys::mount::{MNT_NOATIME, MNT_RDONLY};
@@ -160,12 +160,12 @@ use hal::sys::unistd::{
 use hal::vm::param::round_page;
 
 use crate::assert::{kassert, kpanic};
-use crate::clock::Timespec;
-use crate::event::{
+use crate::file::event::{
     __EV_POLL, __EV_SELECT, EV_EOF, EV_ONESHOT, EVFILT_READ, EVFILT_VNODE, EVFILT_WRITE,
     FILTEROP_ISFD, Filter, Filterops, Knote, NOTE_EOF, NOTE_EXTEND, NOTE_LINK, NOTE_RENAME,
     NOTE_REVOKE, NOTE_WRITE,
 };
+use crate::file::uio::{Uio, UioRw, UioSeg, uiomove_user_out};
 use crate::file::{FileGlue, LockOwner, foffset};
 use crate::fs::cache::{cache_enter, cache_lookup, cache_purge};
 use crate::fs::default;
@@ -196,7 +196,7 @@ use crate::fs::vnode::{
 use crate::fs::vnops::vn_fsizechk;
 use crate::fs::vops::{Cn, Cred, IoBuf, Vnops, vop_abortop, vop_access, vop_islocked, vop_unlock};
 use crate::proc::{ProcGlue, Thread};
-use crate::uio::{Uio, UioRw, UioSeg, uiomove_user_out};
+use crate::time::clock::Timespec;
 use crate::vm::vnode::uvm_vnp_uncache;
 
 /// `tmpfs_vops`: vnode operations vector used for files stored in a tmpfs file system (the
@@ -911,7 +911,7 @@ pub fn tmpfs_rmdir<G: ProcGlue>(
         kassert!(node.dir().tn_parent.points_to(&dnode));
 
         // Directories with more than two entries ('.' and '..') cannot be removed.
-        if node.tn_size.get() > 0 && !node.dir().tn_dir.is_empty(&hal::klock::reader()) {
+        if node.tn_size.get() > 0 && !node.dir().tn_dir.is_empty(&hal::sync::klock::reader()) {
             break 'out Err(Errno::ENOTEMPTY);
         }
 
@@ -941,7 +941,7 @@ pub fn tmpfs_rmdir<G: ProcGlue>(
         // Destroy the directory entry. Note: the inode referred by it will not be destroyed
         // until the vnode is reclaimed.
         tmpfs_free_dirent(&tmp, de);
-        kassert!(node.dir().tn_dir.is_empty(&hal::klock::reader()));
+        kassert!(node.dir().tn_dir.is_empty(&hal::sync::klock::reader()));
 
         kassert!(node.tn_links.get() == 0);
         Ok(())
@@ -1110,7 +1110,7 @@ pub fn tmpfs_print<G: ProcGlue>(vp: &'static Vnode<G>) -> Result<(), Errno> {
     {
         let node = vptonode(vp);
 
-        crate::prf::printf(format_args!(
+        crate::base::prf::printf(format_args!(
             "tag VT_TMPFS, tmpfs_node {:p}, flags 0x{:x}, links {}\n\tmode 0{:o}, owner {}, group {}, size {}",
             &*node,
             node.tn_flags.get(),
@@ -1121,7 +1121,7 @@ pub fn tmpfs_print<G: ProcGlue>(vp: &'static Vnode<G>) -> Result<(), Errno> {
             node.tn_size.get()
         ));
         // FIFO: fifo_printinfo(vp) for a VFIFO (miscfs/fifofs, not ported).
-        crate::prf::printf(format_args!("\n"));
+        crate::base::prf::printf(format_args!("\n"));
     }
     #[cfg(not(any(feature = "debug", feature = "diagnostic")))]
     let _ = vp;
@@ -2705,8 +2705,9 @@ mod tests {
     use hal::user::UserPtr;
 
     use super::*;
-    use crate::descrip::{sys_close, sys_read, sys_write};
-    use crate::event::{EV_ADD, Kevent, NOTE_DELETE, kqueue_init, sys_kevent, sys_kqueue};
+    use crate::file::descrip::{sys_close, sys_read, sys_write};
+    use crate::file::event::{EV_ADD, Kevent, NOTE_DELETE, kqueue_init, sys_kevent, sys_kqueue};
+    use crate::file::uio::Iovec;
     use crate::fs::lookup::{namei, ndinit};
     use crate::fs::namei::{FOLLOW, LOCKLEAF, LOOKUP, NiDirp};
     use crate::fs::subr::{vfs, vops_id};
@@ -2724,7 +2725,6 @@ mod tests {
     use crate::fs::vops::{
         vop_getattr, vop_kqfilter, vop_open, vop_pathconf, vop_readdir, vop_setattr,
     };
-    use crate::uio::Iovec;
 
     type V = &'static Vnode<TestGlue>;
     type P = &'static Thread<TestGlue>;

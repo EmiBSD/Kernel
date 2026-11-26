@@ -93,7 +93,7 @@
 //!   impl Sync`), with `r_procp` a raw `*const Proc`, `r_mreq`, `r_mrep` and `r_md` parked
 //!   mbufs and `r_dpos` a raw position in one. [`NfsReq`] is a counted item of "nfsreqpl"
 //!   ([`NfsTables::nfsreqpl`]) that `nfs_request`'s frame holds, linked on the mount's
-//!   `nm_reqsq` (`hal::pinlist`, bound to the kernel lock) through its own `r_chain`. The C
+//!   `nm_reqsq` (`hal::ds::pinlist`, bound to the kernel lock) through its own `r_chain`. The C
 //!   keeps every member under the kernel lock: the scalars are relaxed atomics written there
 //!   (`IDIOMS`' "a few words read unlocked"), the request's chain and its reply one cell of
 //!   the kernel lock opened only by an exclusive witness ([`PART_REQ`]); whether a reply is in
@@ -109,11 +109,11 @@
 
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 
-use hal::intr::IPL_NONE;
-use hal::mutex::Mutexed;
-use hal::pinlist::PinEntry;
-use hal::pool::{BoxPool, PoolHome, TypedPool};
-use hal::rwlock::{ExclGuarded, Guarded, Rwlocked};
+use hal::cpu::intr::IPL_NONE;
+use hal::ds::pinlist::PinEntry;
+use hal::mem::pool::{BoxPool, PoolHome, TypedPool};
+use hal::sync::mutex::Mutexed;
+use hal::sync::rwlock::{ExclGuarded, Guarded, Rwlocked};
 
 use super::nfs_kq::{Kevq, NfsKevq};
 use super::nfs_node::NfsNhash;
@@ -575,7 +575,7 @@ impl<G: ProcGlue> NfsReq<G> {
             r_chain: PinEntry::new(),
             r_home: PoolHome::new(),
             r_m: ExclGuarded::keyed(
-                hal::klock::kernel_lock_id(),
+                hal::sync::klock::kernel_lock_id(),
                 PART_REQ,
                 NfsReqChains {
                     r_mreq: Some(mreq),
@@ -604,7 +604,7 @@ impl<G: ProcGlue> NfsReq<G> {
 
     /// `rep->r_mrep = m` (and `r_md`, `r_dpos`), for the holder of an exclusive witness
     /// that opens [`PART_REQ`]; the reply there before, if any, is given back.
-    pub fn set_reply<W: hal::rwlock::Exclusive + ?Sized>(
+    pub fn set_reply<W: hal::sync::rwlock::Exclusive + ?Sized>(
         &self,
         w: &mut W,
         rep: Option<Reply>,
@@ -705,7 +705,7 @@ pub static nfs_niothreads: AtomicI32 = AtomicI32::new(-1);
 
 /// `NFS_HZ`: ticks per second of the NFS timer (`hz / nfs_ticks`).
 pub fn nfs_hz() -> i32 {
-    crate::timeout::hz() / super::nfs_subs::NFS_TICKS.load(Ordering::Relaxed).max(1)
+    crate::time::timeout::hz() / super::nfs_subs::NFS_TICKS.load(Ordering::Relaxed).max(1)
 }
 
 /// `NFS_TIMEO`: default timeout = 1 second.

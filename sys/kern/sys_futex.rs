@@ -33,17 +33,17 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! `futex(2)`'s `sysent[]` row and `futex_init`, over `kernel::futex`.
+//! `futex(2)`'s `sysent[]` row and `futex_init`, over `kernel::sched::futex`.
 //!
 //! Upstream: sys/kern/sys_futex.c @ 3ce1f3f79392
 //! LZ: sys/kern/sys_futex.rs@3c62ede68802
 //!
 //! ## Deviations
-//! - `KTRACE` is not configured (`kernel::futex`'s).
+//! - `KTRACE` is not configured (`kernel::sched::futex`'s).
 //!
 //! ## Redesign
 //! - N4.6c: the futex itself (the buckets, the waiters on their stacks, `futex_wait`,
-//!   `futex_wake`, `futex_requeue`, the private and shared keys) is `kernel::futex`'s, with 0
+//!   `futex_wake`, `futex_requeue`, the private and shared keys) is `kernel::sched::futex`'s, with 0
 //!   `unsafe` (LZ: 9, the raw list links, the `ft_proc` and `ft_fsq` pointers, the buckets'
 //!   `Sync`). This row turns the system call's arguments into the kernel's (the word and
 //!   `g` as addresses, `timeout` as the address of a `struct timespec` or, for
@@ -60,15 +60,15 @@ use crate::sys::syscallargs::SysFutexArgs;
 use crate::sys::systm::{SysArgs, sysargs};
 use crate::sys::types::Register;
 
-/// `futex_init`: the buckets' lock-ordering ids (`kernel::futex::futex_init`).
+/// `futex_init`: the buckets' lock-ordering ids (`kernel::sched::futex::futex_init`).
 pub fn futex_init() {
-    kernel::futex::futex_init();
+    kernel::sched::futex::futex_init();
 }
 
 /// `futex(2)`.
 pub fn sys_futex(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysFutexArgs = sysargs(v);
-    retval[0] = kernel::futex::sys_futex(
+    retval[0] = kernel::sched::futex::sys_futex(
         p,
         uap.f.get().addr(),
         uap.op.get(),

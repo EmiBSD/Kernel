@@ -106,13 +106,13 @@
 //! - A u-area is a [`Vaddr`] (`bsd` keeps `p_addr`).
 
 use hal::arch::current::vmparam::{DFLDSIZ, DFLSSIZ, MAXDSIZ, MAXSSIZ};
-use hal::kmbuf::KmBuf;
-use hal::pmap::Pmap;
-use hal::rwlock::RwMode;
+use hal::mem::kmbuf::KmBuf;
+use hal::sync::rwlock::RwMode;
 use hal::sys::errno::Errno;
 use hal::sys::types::{Paddr, Vaddr};
 use hal::user::UserPtr;
 use hal::vm::param::{atop, ptoa, round_page, trunc_page};
+use hal::vm::pmap::Pmap;
 use hal::vm::uvmexp::UVMEXP;
 
 use super::fault::{FaultMap, FaultMapGuard, uvm_fault_unwire_locked, uvm_fault_wire};
@@ -120,8 +120,8 @@ use super::init::machine;
 use super::km::{KD_WAITOK, KP_ZERO, KmemVaMode, KvMap, PhysWindow, dma_memory, km_alloc, km_free};
 use super::map::{VmMap, uvm_map_pageable};
 use super::types::VmProt;
-use crate::prf::unported;
-use crate::resource::Rusage;
+use crate::base::prf::unported;
+use crate::proc::resource::Rusage;
 
 /// The u-area mode (`kv_uarea`): `kernel_map`, `USPACE_ALIGN`ed.
 pub fn kv_uarea() -> KmemVaMode {
@@ -345,13 +345,13 @@ pub fn uvm_uarea_free(va: Vaddr) {
     km_free(va, machine().uspace, &kv_uarea(), &KP_ZERO);
 }
 
-/// The kernel's u-areas as `hal::thread`'s provider (`UAreaMemory`, its E4): [`uvm_uarea_alloc`]
+/// The kernel's u-areas as `hal::cpu::thread`'s provider (`UAreaMemory`, its E4): [`uvm_uarea_alloc`]
 /// and [`uvm_uarea_free`], zeroed wired `USPACE` bytes of `kernel_map` (`kv_uarea`,
 /// `KP_ZERO`), each given out once until it comes back. Registered by the boot (`bsd`'s
 /// `uvm_init`).
 pub struct UAreas;
 
-impl hal::thread::UAreaMemory for UAreas {
+impl hal::cpu::thread::UAreaMemory for UAreas {
     fn alloc(&self) -> Option<core::num::NonZeroUsize> {
         uvm_uarea_alloc().and_then(|va| core::num::NonZeroUsize::new(va.as_usize()))
     }

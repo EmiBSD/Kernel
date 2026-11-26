@@ -75,7 +75,7 @@
 //!   back by `vtomfs` (an `unsafe` deref giving every caller a `&'static Mfsnode`) -> an
 //!   [`Mfsnode`] built whole by `mfs_mount` (its members are written once, before the vnode
 //!   is used, as the C fills them before `ffs_mountfs`) in a counted `malloc(M_MFSNODE)` block
-//!   ([`MfsnodeRef`], `hal::malloc::MArc`) erased into the device vnode's typed slot
+//!   ([`MfsnodeRef`], `hal::mem::malloc::MArc`) erased into the device vnode's typed slot
 //!   (`Vnode::set_node`) where the C sets `v_data`; `mfs_reclaim` takes it back
 //!   (`Vnode::take_node`) where the C frees it, and the last handle frees the block (the
 //!   vnode's, or `mfs_start`'s, which the file system's process holds until it returns).
@@ -87,9 +87,9 @@
 
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use hal::intr::{IPL_BIO, splraise};
-use hal::malloc::{M_WAITOK, MArc};
-use hal::mutex::Mutexed;
+use hal::cpu::intr::{IPL_BIO, splraise};
+use hal::mem::malloc::{M_WAITOK, MArc};
+use hal::sync::mutex::Mutexed;
 use hal::sys::errno::Errno;
 use hal::sys::types::Pid;
 

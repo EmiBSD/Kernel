@@ -69,8 +69,8 @@
 //!   (kept as the C's design, D-N5.9-9: an unresponsive daemon hangs its callers until it is
 //!   killed and its device closes).
 
-use hal::pool::{PR_WAITOK, PoolArc};
-use hal::sleep::{INFSLP, PWAIT, tsleep_nsec};
+use hal::mem::pool::{PR_WAITOK, PoolArc};
+use hal::sync::sleep::{INFSLP, PWAIT, tsleep_nsec};
 use hal::sys::errno::Errno;
 use hal::sys::types::{Dev, Ino};
 
@@ -88,7 +88,7 @@ use crate::fs::fuse::fusebuf_h::{
 use crate::fs::fuse::fusefs::M_FUSEFS;
 use crate::fs::subr::vfs;
 use crate::proc::{ProcGlue, THREAD_PID_OFFSET, Thread};
-use hal::malloc::{M_WAITOK, MArray};
+use hal::mem::malloc::{M_WAITOK, MArray};
 
 /// `struct fusebuf *` held: a counted handle to a request's `"fmsg"` pool item.
 pub type FusebufRef = PoolArc<Fusebuf>;
@@ -177,9 +177,9 @@ pub fn fb_queue<G: ProcGlue>(dev: Dev, fbuf: &FusebufRef) -> Result<(), Errno> {
     let chan = PoolArc::as_ptr(fbuf);
     #[cfg(any(test, feature = "doubles"))]
     if let Some(daemon) = crate::fs::fuse::testfuse::test_daemon() {
-        hal::sleep::sleep_setup(chan, PWAIT, "fuse");
+        hal::sync::sleep::sleep_setup(chan, PWAIT, "fuse");
         daemon(dev);
-        let _ = hal::sleep::sleep_finish(INFSLP, true);
+        let _ = hal::sync::sleep::sleep_finish(INFSLP, true);
         return fb_result(fbuf);
     }
     let _ = tsleep_nsec(chan, PWAIT, "fuse", INFSLP);

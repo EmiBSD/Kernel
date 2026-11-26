@@ -209,12 +209,12 @@ use core::cell::Cell;
 use core::mem::{offset_of, size_of};
 use core::sync::atomic::Ordering;
 
-use hal::malloc::{M_NOWAIT, MArray};
-use hal::netlock::NetHeld;
-use hal::pod;
-use hal::pool::PoolArc;
-use hal::rwlock::Guarded;
-use hal::slot::ReadMostly;
+use hal::mem::malloc::{M_NOWAIT, MArray};
+use hal::mem::pod;
+use hal::mem::pool::PoolArc;
+use hal::sync::netlock::NetHeld;
+use hal::sync::rwlock::Guarded;
+use hal::sync::slot::ReadMostly;
 use hal::sys::errno::Errno;
 use hal::sys::limits::INT_MAX;
 use hal::sys::net_if::{IFF_UP, IFXF_AUTOCONF6, SDL_DATA_OFFSET};
@@ -255,7 +255,7 @@ use hal::sys::socket::{AF_INET6, AF_LINK};
 use hal::sys::sysctl::SysctlBoundedArgs;
 
 use crate::assert::kpanic;
-use crate::clock::Timeval;
+use crate::base::sysctl::{SYSCTL_LOCK, SysctlReq, bounded_arr, int_bounded, rdint, rdstruct};
 use crate::net::domain::pfctlinput;
 use crate::net::if_::{if_get, if_put, ifa_ifwithaddr};
 use crate::net::if_var::Netstack;
@@ -300,7 +300,7 @@ use crate::netinet6::nd6_nbr::{nd6_na_input, nd6_ns_input};
 use crate::netinet6::nd6_rtr::nd6_rtr_cache;
 use crate::netinet6::raw_ip6::rip6_input;
 use crate::proc::ProcGlue;
-use crate::sysctl::{SYSCTL_LOCK, SysctlReq, bounded_arr, int_bounded, rdint, rdstruct};
+use crate::time::clock::Timeval;
 use crate::time::{PPSRATECHECK_MTX, ppsratecheck_held, ppsratecheck_locked};
 
 /// `sizeof(struct ip6_hdr)`.
@@ -2027,7 +2027,7 @@ pub(crate) mod tests {
     use std::vec;
     use std::vec::Vec;
 
-    use hal::netlock::NETLOCK;
+    use hal::sync::netlock::NETLOCK;
     use hal::sys::netinet_in::IPPROTO_UDP;
     use hal::sys::socket::AF_INET6;
     use hal::user::UserPtr;

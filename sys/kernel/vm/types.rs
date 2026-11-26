@@ -96,7 +96,7 @@
 //!   (N3.2, DECISIONS G1): those that name only `hal`'s types are here, in the kernel crate,
 //!   so the kernel's `km` can use them; the map's and the address space's stay in `bsd` with
 //!   the map. `bsd`'s module re-exports these by name, so its 49 users compile unchanged.
-//! - `vm_prot_t` is one type, `hal::pmap::VmProt` (the pmap's, N3.1); this alias names it.
+//! - `vm_prot_t` is one type, `hal::vm::pmap::VmProt` (the pmap's, N3.1); this alias names it.
 //! - N3.5 S1: the kernel's `uvm_coredump_walkmap` (`vm::unix`) takes its callbacks as
 //!   `&mut dyn FnMut` closures, the walk's over a [`CoredumpSeg`]: the `void *cookie` the C
 //!   threads through is whatever the closure captures. The two `fn` types went with `bsd`'s
@@ -111,8 +111,8 @@ pub type VmFault = i32;
 pub type VmInherit = i32;
 /// `voff_t`: XXX offset within a uvm_object.
 pub type Voff = Off;
-/// `vm_prot_t` (the pmap's type, `hal::pmap::VmProt`).
-pub type VmProt = hal::pmap::VmProt;
+/// `vm_prot_t` (the pmap's type, `hal::vm::pmap::VmProt`).
+pub type VmProt = hal::vm::pmap::VmProt;
 
 // Bit assignments assigned by UVM_MAPFLAG() and extracted by
 // UVM_{PROTECTION,INHERIT,MAXPROTECTION,ADVICE}(): bits 0-2 protection, bits 4-5 inheritance,

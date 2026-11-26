@@ -116,7 +116,7 @@ use crate::sys::malloc::{M_DEVBUF, M_NOWAIT};
 use crate::sys::proc::Proc;
 use crate::sys::types::{Paddr, Psize};
 use hal::arch::amd64::pmap::layout::PMAP_WC;
-use hal::pmap::direct_map as pmap_direct_map;
+use hal::vm::pmap::direct_map as pmap_direct_map;
 
 /// `CB_TAG_VERSION`.
 #[allow(dead_code)] // the C defines it; the table walk does not use it

@@ -95,8 +95,8 @@ use core::marker::PhantomData;
 use core::ptr;
 use core::sync::atomic::Ordering;
 
-use hal::intr::{IPL_BIO, splraise};
-use hal::sleep::{INFSLP, wakeup};
+use hal::cpu::intr::{IPL_BIO, splraise};
+use hal::sync::sleep::{INFSLP, wakeup};
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::Flock;
 use hal::sys::types::{Daddr, Register};
@@ -104,8 +104,9 @@ use hal::user::UserPtr;
 
 use super::mfsnode::{Mfsnode, vtomfs};
 use crate::assert::kpanic;
-use crate::event::Knote;
 use crate::file::LockOwner;
+use crate::file::event::Knote;
+use crate::file::uio::Uio;
 use crate::fs::bio::{DEV_BSHIFT, biodone};
 use crate::fs::buf::{B_ERROR, B_READ, BufRef};
 use crate::fs::default;
@@ -114,7 +115,6 @@ use crate::fs::subr::vinvalbuf;
 use crate::fs::vnode::{V_SAVE, VBLK, Vattr, Vnode};
 use crate::fs::vops::{Cn, Cred, IoBuf, Vnops, vop_unlock};
 use crate::proc::{ProcGlue, Thread};
-use crate::uio::Uio;
 
 /// `mfs_vops`: mfs vnode operations (the glue's `UfsTables::mfs_vops`, one address).
 pub struct MfsVnops<G: ProcGlue> {
@@ -233,7 +233,7 @@ pub fn mfs_close<G: ProcGlue>(
     // There should be no way to have any more buffers on this vnode.
     #[cfg(feature = "diagnostic")]
     if mfsp.queued() {
-        crate::prf::printf(format_args!("mfs_close: dirty buffers\n"));
+        crate::base::prf::printf(format_args!("mfs_close: dirty buffers\n"));
     }
 
     // Send a request to the filesystem server to exit.
@@ -274,7 +274,7 @@ pub fn mfs_print<G: ProcGlue>(vp: &'static Vnode<G>) -> Result<(), Errno> {
     {
         let mfsp = vtomfs(vp);
 
-        crate::prf::printf(format_args!(
+        crate::base::prf::printf(format_args!(
             "tag VT_MFS, tid {}, base {:#x}, size {}\n",
             mfsp.mfs_tid, mfsp.mfs_baseoff, mfsp.mfs_size
         ));
@@ -562,7 +562,7 @@ mod tests {
         vp.set_vtype(VBLK);
         assert!(checkalias(vp, makedev(255, minor), None).is_none());
         let mfsp = Mfsnode::new(vp, UIMAGE, LEN as i64, tid);
-        vp.set_node(hal::malloc::MArc::erase(mfsp.clone()));
+        vp.set_node(hal::mem::malloc::MArc::erase(mfsp.clone()));
         (vp, mfsp)
     }
 
@@ -629,7 +629,7 @@ mod tests {
         assert!(checkalias(vp, makedev(255, 902), None).is_none());
         // The process's memory is gone: no such address (below the copy double's).
         let mfsp = Mfsnode::new(vp, 0x1000, LEN as i64, p.p_tid.get());
-        vp.set_node(hal::malloc::MArc::erase(mfsp.clone()));
+        vp.set_node(hal::mem::malloc::MArc::erase(mfsp.clone()));
         let (t, r) = bread(&vp.bufs, 0, 512);
         assert_eq!(r, Err(Errno::EFAULT));
         assert!(t.buf().isset(B_ERROR));

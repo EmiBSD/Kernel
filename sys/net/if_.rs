@@ -139,12 +139,12 @@
 //! - The three lookups among them (`ifa_ifwithaddr`, `ifa_ifwithdstaddr`, `ifaof_ifpforaddr`)
 //!   `panic(9)` at the start of their walk when the net lock is not held, where the C's
 //!   `NET_ASSERT_LOCKED()` (a splassert) only prints and goes on: the kernel's copy of an
-//!   address needs the proof (`hal::netlock::NetHeld`, N6.3a1 review 1 B2, review 2 S-a);
+//!   address needs the proof (`hal::sync::netlock::NetHeld`, N6.3a1 review 1 B2, review 2 S-a);
 //!   every caller the C has holds the lock.
 //! - Calls into files that are not ported report themselves with `unported!` and go on as
 //!   the C would with an empty subsystem: `inet_ntop` for `AF_INET` (`ifa_print_all`;
 //!   `AF_INET6` prints with nd6's `In6Ntop`).
-//! - `ifa_print_all` (`DDB`) takes a proof of the net lock (`hal::netlock::NetHeld`) where the
+//! - `ifa_print_all` (`DDB`) takes a proof of the net lock (`hal::sync::netlock::NetHeld`) where the
 //!   C's ddb walks the address lists with no lock at all: since N6.5e the lists are net cells,
 //!   read only under a witness. ddb, which runs with the machine stopped and holds no lock,
 //!   cannot give one, so a ddb command that prints the addresses (none calls this yet; LZ has
@@ -291,7 +291,7 @@ impl kernel::net::if_var::NetDriver for LegacyNetDriver {
         ifp: &'static Ifnet,
         req: u8,
         rt: Option<&kernel::net::route::Rtentry>,
-        net: &hal::netlock::NetHeld<'_>,
+        net: &hal::sync::netlock::NetHeld<'_>,
     ) {
         match self.if_rtrequest.get() {
             Some(rtrequest) => rtrequest(ifp, i32::from(req), rt.map(as_static)),
@@ -338,7 +338,7 @@ pub fn ipv4_input_proto(
     ifp: &'static Ifnet,
     m: kernel::net::mbuf::MbufBox,
     ns: Option<&mut Netstack>,
-    net: &hal::netlock::NetHeld<'_>,
+    net: &hal::sync::netlock::NetHeld<'_>,
 ) {
     kernel::netinet::ip_input::ipv4_input::<crate::kern::proc_glue::BsdProcGlue>(ifp, m, ns, net);
 }
@@ -349,7 +349,7 @@ pub fn ipv6_input_proto(
     ifp: &'static Ifnet,
     m: kernel::net::mbuf::MbufBox,
     ns: Option<&mut Netstack>,
-    net: &hal::netlock::NetHeld<'_>,
+    net: &hal::sync::netlock::NetHeld<'_>,
 ) {
     kernel::netinet6::ip6_input::ipv6_input::<crate::kern::proc_glue::BsdProcGlue>(ifp, m, ns, net);
 }
@@ -359,7 +359,7 @@ impl kernel::net::if_::Inet for BsdNetLegs {
         crate::netinet6::ip6_output::ip6_id_generate()
     }
 
-    fn with_net_held(&self, f: &mut dyn FnMut(&hal::netlock::NetHeld<'_>)) {
+    fn with_net_held(&self, f: &mut dyn FnMut(&hal::sync::netlock::NetHeld<'_>)) {
         f(net_held("if_input_proto").net());
     }
 }
@@ -465,7 +465,7 @@ pub fn if_input_proto(
 /// `if_get_smr(index)`: the interface at `index` for a caller inside an SMR read section,
 /// no reference taken.
 pub fn if_get_smr(index: u32) -> Option<&'static Ifnet> {
-    kernel::net::if_::if_get_smr(index, &hal::smr::read())
+    kernel::net::if_::if_get_smr(index, &hal::sync::smr::read())
 }
 
 /// `if_put(ifp)`: one reference less (NULL is nothing).
@@ -538,7 +538,7 @@ unsafe fn sa_bytes<'a>(sa: *const Sockaddr) -> &'a [u8] {
 /// `SaToken` (the C's `NET_ASSERT_LOCKED()`, made exact: the running process's write holding,
 /// which cannot be let go while the guard lives, or a read share the guard joins);
 /// `panic(9)` without the lock, where the C's splassert would only print.
-pub(crate) fn net_held(what: &str) -> hal::netlock::NetLend {
+pub(crate) fn net_held(what: &str) -> hal::sync::netlock::NetLend {
     match crate::net::if_var::sa_token().lend_net() {
         Some(lend) => lend,
         None => panic(format_args!("{what}: the net lock is not held")),
@@ -773,7 +773,7 @@ pub unsafe fn ifioctl(so: *const c_void, cmd: u64, data: *mut u8, p: &Proc) -> R
 /// `ifa_print_all` (`DDB`): debug function, can be called from ddb>. The addresses are read
 /// under the net lock `net` proves (N6.5e: the lists are net cells; the C's ddb walks them
 /// unlocked, and no ddb command calls this yet).
-pub fn ifa_print_all(net: &hal::netlock::NetHeld<'_>) {
+pub fn ifa_print_all(net: &hal::sync::netlock::NetHeld<'_>) {
     let r = net.reader();
     for ifp in IFNETLIST.0.iter() {
         for ifa in ifp.if_addrlist().iter(&r) {
@@ -1054,10 +1054,10 @@ pub(crate) mod tests {
 
         let _g = crate::netinet::ip_input::tests::setup();
         // The C holds the kernel lock across an attach (bpf_ifattach asserts it).
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         loop_clone_create(&LOOP_CLONER, 0).expect("lo0");
         loop_clone_create(&LOOP_CLONER, 1).expect("lo1");
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
         let lo0 = if_get(rtable_loindex(0)).expect("lo0");
         let lo1 = if_unit(b"lo1").expect("lo1");
         assert!(withaddr(lo0, &IN6ADDR_LOOPBACK).is_none());
@@ -1181,7 +1181,7 @@ pub(crate) mod tests {
             kernel::net::if_::if_ioctl(ifp, SIOCGIFFLAGS, &mut bytes[1..33]),
             Ok(())
         );
-        let ifr: Ifreq = hal::pod::at(&bytes[1..33], 0).expect("an ifreq");
+        let ifr: Ifreq = hal::mem::pod::at(&bytes[1..33], 0).expect("an ifreq");
         assert_eq!(ifr.ifr_flags(), 0x1234);
         // A request longer than the copy must be aligned already: refused at byte 1, taken
         // at byte 0 (SIOCGLIFPHYADDR's `if_laddrreq`, 536 bytes).

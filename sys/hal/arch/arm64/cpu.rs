@@ -85,7 +85,7 @@ pub(crate) fn current() -> Option<&'static CpuCore> {
 }
 
 /// Installs `core` in `TPIDR_EL1` on the running CPU (the boot CPU's `initarm`). Once a core
-/// is installed, installing another one on this CPU is refused (`hal::thread`'s E5: a core
+/// is installed, installing another one on this CPU is refused (`hal::cpu::thread`'s E5: a core
 /// names one CPU, whose owner word every lock it holds carries); installing the same one
 /// again changes nothing.
 pub(crate) fn set_current(c: &'static CpuCore) {
@@ -131,7 +131,7 @@ pub(crate) fn intr_disable() -> u64 {
 
 /// `intr_restore(s)`: `DAIF` set back to what [`intr_disable`] returned
 /// (`restore_daif`); its callers are `hal::cpu::IntrGuard`'s drop, with its own saved state,
-/// and `hal::mutex::DbMutex::leave`, with the state its owner's `enter` saved on this CPU.
+/// and `hal::sync::mutex::DbMutex::leave`, with the state its owner's `enter` saved on this CPU.
 #[inline]
 pub(crate) fn intr_restore(daif: u64) {
     // SAFETY: `msr daif` writes this CPU's interrupt mask: no memory operand, no stack, no

@@ -233,8 +233,8 @@ use crate::sys::task::{TASKQ_MPSAFE, Task, Taskq, TaskqRef};
 use crate::sys::time::{Timespec, Timeval, timespecadd};
 use crate::sys::timeout::{Timeout, timeout_pending};
 use crate::sys::types::{InPort, SaFamily};
-use hal::intr::IPL_NONE;
-use hal::mutex::Mutexed;
+use hal::cpu::intr::IPL_NONE;
+use hal::sync::mutex::Mutexed;
 use libkern::StaticCell;
 use libkern::siphash::AtomicSiphashKey;
 
@@ -4295,9 +4295,9 @@ mod tests {
     /// `ifconfig wg<unit> create`: the new interface's softc.
     fn create(unit: i32) -> &'static WgSoftc {
         // The C holds the kernel lock across an attach (bpf_ifattach asserts it).
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         wg_clone_create(&WG_CLONER, unit).expect("wg_clone_create");
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
         let mut name = [0u8; IFNAMSIZ];
         let _ = snprintf(&mut name, format_args!("wg{unit}"));
         let ifp = if_unit(cstr(&name)).expect("the interface is attached");
@@ -4881,7 +4881,7 @@ mod tests {
     fn handshake_workers_by_hand<R>(f: impl FnOnce() -> R) -> R {
         use std::sync::atomic::AtomicBool;
         let tq = wg_handshake_taskq();
-        kernel::task::run_by_hand(tq);
+        kernel::base::task::run_by_hand(tq);
         let done = AtomicBool::new(false);
         std::thread::scope(|sc| {
             for _ in 0..2 {
@@ -4892,10 +4892,10 @@ mod tests {
                             std::time::Instant::now() < deadline,
                             "the barrier never came"
                         );
-                        if kernel::task::worklist_is_empty(tq) {
+                        if kernel::base::task::worklist_is_empty(tq) {
                             std::thread::sleep(std::time::Duration::from_millis(1));
                         } else {
-                            kernel::task::run_next_by_hand(tq);
+                            kernel::base::task::run_next_by_hand(tq);
                         }
                     }
                 });
@@ -4947,8 +4947,8 @@ mod tests {
         d.extend_from_slice(payload);
         let m = packet(&d);
         // The kernel's UDP hands the upcall copies of the headers it read.
-        let ip: Ip = hal::pod::at(&d, 0).expect("an IP header");
-        let uh: hal::sys::netinet_udp::Udphdr = hal::pod::at(&d, 20).expect("a UDP header");
+        let ip: Ip = hal::mem::pod::at(&d, 0).expect("an IP header");
+        let uh: hal::sys::netinet_udp::Udphdr = hal::mem::pod::at(&d, 20).expect("a UDP header");
         let r = wg_input(
             ptr::from_ref(sc).addr(),
             crate::sys::mbuf::unpark(m),
@@ -5186,8 +5186,8 @@ mod tests {
         d.extend_from_slice(payload);
         let m = packet(&d);
         // The kernel's UDP hands the upcall copies of the headers it read.
-        let ip6: hal::sys::netinet_ip6::Ip6Hdr = hal::pod::at(&d, 0).expect("an IPv6 header");
-        let uh: hal::sys::netinet_udp::Udphdr = hal::pod::at(&d, 40).expect("a UDP header");
+        let ip6: hal::sys::netinet_ip6::Ip6Hdr = hal::mem::pod::at(&d, 0).expect("an IPv6 header");
+        let uh: hal::sys::netinet_udp::Udphdr = hal::mem::pod::at(&d, 40).expect("a UDP header");
         let r = wg_input(
             ptr::from_ref(sc).addr(),
             crate::sys::mbuf::unpark(m),

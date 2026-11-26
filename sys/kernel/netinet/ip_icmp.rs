@@ -173,9 +173,9 @@
 use core::mem::size_of;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use hal::netlock::{NETLOCK, NetHeld};
-use hal::pod;
-use hal::rwlock::Guarded;
+use hal::mem::pod;
+use hal::sync::netlock::{NETLOCK, NetHeld};
+use hal::sync::rwlock::Guarded;
 use hal::sys::errno::Errno;
 use hal::sys::limits::INT_MAX;
 use hal::sys::net_if::{IFF_BROADCAST, IFF_POINTOPOINT, IFF_UP};
@@ -224,7 +224,7 @@ use hal::sys::net_route::{
     RTF_HOST, RTF_LLINFO, RTF_LOCAL, RTF_REJECT, RTM_ADD, RTV_MTU, SockaddrRtlabel,
 };
 
-use crate::clock::Timeval;
+use crate::base::sysctl::{SysctlReq, bounded_arr, int_bounded, rdstruct, sysctl_vslock};
 use crate::net::route::{
     RT_RESOLVE, RtAddrinfo, Rtentry, RttimerQueue, rt_timer_add, rt_timer_queue_change,
     rt_timer_queue_init, rtalloc, rtdeletemsg, rtisvalid, rtlabel_id2sa, rtredirect, rtrequest,
@@ -247,7 +247,7 @@ use crate::netinet::ip_output::{ip_insertoptions, ip_load, ip_store};
 use crate::netinet::ip_var::{IpstatCounters, ipstat_inc};
 use crate::netinet::raw_ip::rip_input;
 use crate::proc::ProcGlue;
-use crate::sysctl::{SysctlReq, bounded_arr, int_bounded, rdstruct, sysctl_vslock};
+use crate::time::clock::Timeval;
 use crate::time::{PPSRATECHECK_MTX, ppsratecheck_held, ppsratecheck_locked};
 
 /// `sizeof(struct ip)`.
@@ -1077,7 +1077,7 @@ pub fn icmp_send(m: MbufBox, opts: Option<&[u8]>) {
 /// `iptime()`: the time since midnight UTC in milliseconds, network order (a timestamp of
 /// the timestamp messages and option).
 pub fn iptime() -> u32 {
-    let atv = crate::tc::microtime();
+    let atv = crate::time::tc::microtime();
     let t = (atv.tv_sec % (24 * 60 * 60)) * 1000 + atv.tv_usec / 1000;
     (t as u32).to_be()
 }
@@ -1132,7 +1132,7 @@ pub fn icmp_mtudisc_clone(
     rtableid: u32,
     ipsec: bool,
     net: &NetHeld<'_>,
-) -> Option<hal::pool::PoolArc<Rtentry>> {
+) -> Option<hal::mem::pool::PoolArc<Rtentry>> {
     let sin = sin_bytes(dst);
 
     let mut rt = rtalloc(view(&sin), RT_RESOLVE, rtableid, net)?;
@@ -1246,7 +1246,7 @@ pub fn icmp_mtudisc(nextmtu: u16, oip: &Ip, rtableid: u32, net: &NetHeld<'_>) {
 /// function): a cloned host route deleted and TCP told the MTU may grow, else the route's
 /// MTU forgotten. Under the net lock (`net`, the timer's).
 pub fn icmp_mtudisc_timeout<G: ProcGlue>(
-    rt: &hal::pool::PoolArc<Rtentry>,
+    rt: &hal::mem::pool::PoolArc<Rtentry>,
     rtableid: u32,
     net: &NetHeld<'_>,
 ) {

@@ -342,7 +342,7 @@ crate::abi_pod!(In6Ifreq {
 /// largest one's size).
 #[inline]
 fn ru_get<T: AbiPod>(u: &[u8]) -> T {
-    match crate::pod::at::<T>(u, 0) {
+    match crate::mem::pod::at::<T>(u, 0) {
         Some(v) => v,
         None => hal_panic(format_args!("in6_ifreq: a member longer than the union")),
     }
@@ -351,7 +351,7 @@ fn ru_get<T: AbiPod>(u: &[u8]) -> T {
 /// A member of the union `u` written at its offset 0.
 #[inline]
 fn ru_put<T: AbiPod>(u: &mut [u8], v: &T) {
-    if !crate::pod::put(u, 0, v) {
+    if !crate::mem::pod::put(u, 0, v) {
         hal_panic(format_args!("in6_ifreq: a member longer than the union"));
     }
 }

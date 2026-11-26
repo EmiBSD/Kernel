@@ -163,7 +163,7 @@
 //!   `si_rdev` (`Vnode::rdev`), one load per element of an alias chain's walk.
 //! - N5.7c2: the file systems' node hashes share [`hashinit`] (`kern_subr.c`'s `hashinit(9)`,
 //!   LZ's `kern_subr.rs` one, which returns its table as a slice of `queue.h` heads: here
-//!   `hal::pinlist` chains in a `malloc(9)` array, `MArray<PinList<A>>`, with the mask; `bsd`
+//!   `hal::ds::pinlist` chains in a `malloc(9)` array, `MArray<PinList<A>>`, with the mask; `bsd`
 //!   keeps LZ's for its own file systems, `kern_subr.rs`'s other items stay there) and
 //!   [`siphash_key`] (the C's `arc4random_buf` of a `SIPHASH_KEY`: four `arc4random()`
 //!   words), the UFS inode hash's and msdosfs's denode hash; `VfsTables` gains msdosfs's
@@ -175,16 +175,16 @@ use core::any::Any;
 use core::ptr;
 use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, Ordering};
 
-use hal::intr::{IPL_BIO, IPL_NONE};
-use hal::link::Link;
-use hal::list::{List, ListEntry};
-use hal::malloc::{MArray, MBox};
-use hal::mutex::{Mutexed, MutexedGuard};
-use hal::once::OnceStatic;
-use hal::pinlist::{PinAdapter, PinList};
-use hal::pool::{BoxPool, PR_WAITOK, PoolBox, TypedPool};
-use hal::rwlock::{Guarded, RW_READ, RW_WRITE, SplitRwlock};
-use hal::sleep::INFSLP;
+use hal::cpu::intr::{IPL_BIO, IPL_NONE};
+use hal::ds::link::Link;
+use hal::ds::list::{List, ListEntry};
+use hal::ds::pinlist::{PinAdapter, PinList};
+use hal::mem::malloc::{MArray, MBox};
+use hal::mem::pool::{BoxPool, PR_WAITOK, PoolBox, TypedPool};
+use hal::sync::mutex::{Mutexed, MutexedGuard};
+use hal::sync::once::OnceStatic;
+use hal::sync::rwlock::{Guarded, RW_READ, RW_WRITE, SplitRwlock};
+use hal::sync::sleep::INFSLP;
 use hal::sys::errno::Errno;
 use hal::sys::mount::{
     Fsid, MFSNAMELEN, MNAMELEN, MNT_ASYNC, MNT_NOPERM, MNT_RDONLY, MNT_STALLED, MNT_WAIT, Statfs,
@@ -217,10 +217,10 @@ use super::vops::{
     vop_unlock, vop_write,
 };
 use crate::assert::{kassert, kpanic};
-use crate::cred::{Ucred, groupmember};
+use crate::file::uio::{Iovec, Uio};
 use crate::file::{FileGlue, VFS_STALLING};
+use crate::proc::cred::{Ucred, groupmember};
 use crate::proc::{ProcGlue, Thread};
-use crate::uio::{Iovec, Uio};
 use crate::vm::types::Voff;
 use crate::vm::vnode::{Uvn, VType, VnodeOps};
 
@@ -232,7 +232,7 @@ const M_WAITOK: i32 = 0x0001;
 /// `v_freelist`'s adapter: the free list and the hold list.
 pub struct ByFreelist<G: ProcGlue>(core::marker::PhantomData<G>);
 
-impl<G: ProcGlue> hal::list::ListAdapter for ByFreelist<G> {
+impl<G: ProcGlue> hal::ds::list::ListAdapter for ByFreelist<G> {
     type Elem = Vnode<G>;
     fn entry(e: &Vnode<G>) -> &ListEntry<Vnode<G>> {
         &e.freelist
@@ -941,7 +941,7 @@ pub fn vget<G: ProcGlue>(vp: &'static Vnode<G>, flags: i32) -> Result<(), Errno>
 
 /// Vnode reference.
 pub fn vref<G: ProcGlue>(vp: &'static Vnode<G>) {
-    hal::klock::kernel_assert_locked();
+    hal::sync::klock::kernel_assert_locked();
 
     #[cfg(feature = "diagnostic")]
     {
@@ -1229,18 +1229,18 @@ pub fn vclean<G: ProcGlue>(vp: &'static Vnode<G>, flags: i32, p: Option<&Thread<
     if flags & DOCLOSE != 0
         && let Err(error) = vinvalbuf(vp, V_SAVE, Cred::NOCRED, p, 0, INFSLP)
     {
-        crate::prf::printf(format_args!(
+        crate::base::prf::printf(format_args!(
             "vclean: failed to flush buffers, error {}; discarding dirty buffers",
             error as i32
         ));
         if let Some(mp) = vp.mount() {
             let (name, len) = mp.mntonname();
-            crate::prf::printf(format_args!(
+            crate::base::prf::printf(format_args!(
                 "; mounted on: {}",
                 core::str::from_utf8(&name[..len]).unwrap_or("?")
             ));
         }
-        crate::prf::printf(format_args!("\n"));
+        crate::base::prf::printf(format_args!("\n"));
         let _ = vinvalbuf(vp, 0, Cred::NOCRED, p, 0, INFSLP);
     }
     // If purging an active vnode, it must be closed and deactivated before being reclaimed.
@@ -1271,7 +1271,7 @@ pub fn vclean<G: ProcGlue>(vp: &'static Vnode<G>, flags: i32, p: Option<&Thread<
 
     // Done with purge, notify sleepers of the grim news.
     vp.set_ops_id(VopsId::DEAD);
-    VN_KNOTE(vp, crate::event::NOTE_REVOKE);
+    VN_KNOTE(vp, crate::file::event::NOTE_REVOKE);
     vp.set_tag(VT_NON);
     // VFSLCKDEBUG: not configured.
     {
@@ -1284,7 +1284,7 @@ pub fn vclean<G: ProcGlue>(vp: &'static Vnode<G>, flags: i32, p: Option<&Thread<
         }
     }
     if do_wakeup {
-        hal::sleep::wakeup(ptr::from_ref(vp));
+        hal::sync::sleep::wakeup(ptr::from_ref(vp));
     }
 }
 
@@ -1432,7 +1432,7 @@ pub fn vcount<G: ProcGlue>(vp: &'static Vnode<G>) -> i32 {
 #[cfg(any(feature = "debug", feature = "diagnostic"))]
 pub fn vprint<G: ProcGlue>(label: Option<&str>, vp: &'static Vnode<G>) {
     use super::vnode::{VBIOONSYNCLIST, VBIOWAIT, VTEXT, VTYPE_NAMES};
-    use crate::prf::printf;
+    use crate::base::prf::printf;
 
     if let Some(label) = label {
         printf(format_args!("{}: ", label));
@@ -1483,7 +1483,7 @@ pub fn vprint<G: ProcGlue>(label: Option<&str>, vp: &'static Vnode<G>) {
 #[cfg(feature = "debug")]
 pub fn printlockedvnodes<G: ProcGlue>() {
     use hal::sys::mount::{VB_NOWAIT, VB_READ};
-    crate::prf::printf(format_args!("Locked vnodes\n"));
+    crate::base::prf::printf(format_args!("Locked vnodes\n"));
 
     for mp in super::mount::mountlist::<G>(false) {
         if vfs_busy(mp, VB_READ | VB_NOWAIT).is_err() {
@@ -1509,9 +1509,13 @@ impl<G: ProcGlue> NumvnodesNode<G> {
     pub const NODE: NumvnodesNode<G> = NumvnodesNode(core::marker::PhantomData);
 }
 
-impl<G: ProcGlue> crate::sysctl::SysctlNode for NumvnodesNode<G> {
-    fn sysctl(&self, _name: &[i32], req: &mut crate::sysctl::SysctlReq<'_>) -> Result<(), Errno> {
-        crate::sysctl::rdint(req, vfs::<G>().numvnodes.load(Ordering::Relaxed) as i32)
+impl<G: ProcGlue> crate::base::sysctl::SysctlNode for NumvnodesNode<G> {
+    fn sysctl(
+        &self,
+        _name: &[i32],
+        req: &mut crate::base::sysctl::SysctlReq<'_>,
+    ) -> Result<(), Errno> {
+        crate::base::sysctl::rdint(req, vfs::<G>().numvnodes.load(Ordering::Relaxed) as i32)
     }
 }
 
@@ -1524,9 +1528,13 @@ impl<G: ProcGlue> VfsSysctl<G> {
     pub const NODE: VfsSysctl<G> = VfsSysctl(core::marker::PhantomData);
 }
 
-impl<G: ProcGlue> crate::sysctl::SysctlNode for VfsSysctl<G> {
-    fn sysctl(&self, name: &[i32], req: &mut crate::sysctl::SysctlReq<'_>) -> Result<(), Errno> {
-        use crate::sysctl::{rdint, rdstruct};
+impl<G: ProcGlue> crate::base::sysctl::SysctlNode for VfsSysctl<G> {
+    fn sysctl(
+        &self,
+        name: &[i32],
+        req: &mut crate::base::sysctl::SysctlReq<'_>,
+    ) -> Result<(), Errno> {
+        use crate::base::sysctl::{rdint, rdstruct};
         use hal::sys::mount::{VFS_BCACHESTAT, VFS_CONF, VFS_GENERIC, VFS_MAXTYPENUM, VfsconfAbi};
 
         // all sysctl names at this level are at least name and field
@@ -1718,13 +1726,13 @@ pub fn vfs_stall<G: ProcGlue>(p: &Thread<G>, stall: bool) -> Result<(), Errno> {
         let name = core::str::from_utf8(&name[..len]).unwrap_or("?");
         if stall {
             if let Err(error) = vfs_busy(mp, VB_WRITE | VB_WAIT | VB_DUPOK) {
-                crate::prf::printf(format_args!("{name}: busy\n"));
+                crate::base::prf::printf(format_args!("{name}: busy\n"));
                 allerror = Err(error);
                 continue;
             }
             crate::vm::vnode::uvm_vnp_sync(Some(mp.addr()));
             if let Err(error) = VFS_SYNC(mp, MNT_WAIT, 1, Cred::real(p.ucred()), p) {
-                crate::prf::printf(format_args!("{name}: failed to sync\n"));
+                crate::base::prf::printf(format_args!("{name}: failed to sync\n"));
                 vfs_unbusy(mp);
                 allerror = Err(error);
                 continue;
@@ -2296,7 +2304,7 @@ mod tests {
     /// `kern.numvnodes` (kern_sysctl.c:608-609): the table's count as an `int`, read-only.
     #[test]
     fn numvnodes_is_the_table_s_count_read_only() {
-        use crate::sysctl::{SysctlNode, SysctlReq};
+        use crate::base::sysctl::{SysctlNode, SysctlReq};
         let (_g, _mp) = setup_root();
         vfs::<TestGlue>().numvnodes.store(1234, Ordering::SeqCst);
         let old = crate::testutil::USER_BASE + 0x1f00;
@@ -2516,7 +2524,7 @@ mod tests {
 
     /// An element for `hashinit`'s chains.
     struct HashElem {
-        e: hal::pinlist::PinEntry<HashElem>,
+        e: hal::ds::pinlist::PinEntry<HashElem>,
     }
 
     hal::pin_adapter!(ByHash: HashElem, e);
@@ -2527,10 +2535,10 @@ mod tests {
     fn hashinit_rounds_up_to_a_power_of_two() {
         crate::testutil::install();
         for (elements, size) in [(1, 1), (2, 2), (3, 4), (32, 32), (64, 64), (65, 128)] {
-            let (tbl, mask) = hashinit::<ByHash>(elements, 28, hal::malloc::M_WAITOK).unwrap();
+            let (tbl, mask) = hashinit::<ByHash>(elements, 28, hal::mem::malloc::M_WAITOK).unwrap();
             assert_eq!((tbl.len(), mask), (size, size as u64 - 1));
         }
-        let r = std::panic::catch_unwind(|| hashinit::<ByHash>(0, 28, hal::malloc::M_WAITOK));
+        let r = std::panic::catch_unwind(|| hashinit::<ByHash>(0, 28, hal::mem::malloc::M_WAITOK));
         assert!(r.is_err(), "hashinit: bad cnt");
     }
 

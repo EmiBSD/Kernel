@@ -151,7 +151,7 @@
 //!   `ip6_hdrnestlimit` and `ip6_ours_enqueue` are gone.
 //! - [`ip6_savecontrol`] makes the control messages newest first, each in O(1), and
 //!   reverses the chain once at the end (the C appends through a pointer to the last
-//!   `m_next`): O(n) in the messages, as the C; their values are `hal::pod` images.
+//!   `m_next`): O(n) in the messages, as the C; their values are `hal::mem::pod` images.
 //! - LZ's `unsafe fn ip6_process_hopopts(mp, opthead: *const u8, hbhlen, ..)` (a slice made
 //!   from the caller's pointer) and `unsafe fn ip6_unknown_opt(mp, optp: *const u8, off)`
 //!   -> functions over the packet: the options are named by their offset in the packet
@@ -169,7 +169,7 @@
 //!   where the region is (the chain back, the index of its mbuf and the offset there;
 //!   `m_pulldown` when the first mbuf does not hold it), and [`ip6_exthdr_bytes`] lends its
 //!   bytes; `nd6_nbr`'s `nd6_msg` of N6.5b is this shape.
-//! - `ip6_sysctl` takes the request as `kernel::sysctl`'s `SysctlReq`; `net.inet6.ip6.stats`
+//! - `ip6_sysctl` takes the request as `kernel::base::sysctl`'s `SysctlReq`; `net.inet6.ip6.stats`
 //!   is summed straight into the heap image `rdstruct` copies out (the C's `malloc(M_TEMP)`
 //!   and `counters_read`).
 //!
@@ -182,11 +182,11 @@
 use core::mem::{offset_of, size_of};
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use hal::intr::IPL_SOFTNET;
-use hal::malloc::M_NOWAIT;
-use hal::netlock::{NETLOCK, NetHeld};
-use hal::once::OnceStatic;
-use hal::pod;
+use hal::cpu::intr::IPL_SOFTNET;
+use hal::mem::malloc::M_NOWAIT;
+use hal::mem::pod;
+use hal::sync::netlock::{NETLOCK, NetHeld};
+use hal::sync::once::OnceStatic;
 use hal::sys::errno::Errno;
 use hal::sys::limits::INT_MAX;
 use hal::sys::net_if::{IFF_LOOPBACK, IFT_ENC};
@@ -219,6 +219,8 @@ use hal::sys::netinet6_ip6_var::{IP6S_NCOUNTERS, Ip6stat, Ip6statCounters};
 use hal::sys::socket::{AF_INET6, AF_UNSPEC, SCM_TIMESTAMP, SO_TIMESTAMP, SOL_SOCKET};
 use hal::sys::sysctl::SysctlBoundedArgs;
 
+use crate::base::sysctl::{SYSCTL_LOCK, SysctlReq, bounded_arr, int_bounded, rdstruct};
+use crate::base::task::{Task, task_add};
 use crate::net::if_::{niq_enqueue, sysctl_niq};
 use crate::net::if_var::{Ifnet, Netstack, Niqueue, niq_dequeue};
 use crate::net::ipsec_hooks::ipsec;
@@ -255,8 +257,6 @@ use crate::netinet6::ip6_var::{
 };
 use crate::netinet6::nd6::nd6_init;
 use crate::proc::ProcGlue;
-use crate::sysctl::{SYSCTL_LOCK, SysctlReq, bounded_arr, int_bounded, rdstruct};
-use crate::task::{Task, task_add};
 
 /// `sizeof(struct ip6_hdr)`.
 const IP6_HDR_LEN: i32 = size_of::<Ip6Hdr>() as i32;
@@ -1764,7 +1764,7 @@ mod tests {
         rest.extend_from_slice(&[0; 8]);
         let mut mp = Some(packet(IPPROTO_HOPOPTS, plen, dst, &rest));
         let (mut rtalert, mut jumbo) = (!0, 0);
-        let r = hal::netlock::NETLOCK.read();
+        let r = hal::sync::netlock::NETLOCK.read();
         let net = NetHeld::of(&r).expect("the net lock");
         let ok = ip6_process_hopopts(
             &mut mp,
@@ -1930,7 +1930,7 @@ mod tests {
     fn unknown_option_actions() {
         let _g = testroutes_setup();
         let mut mp = Some(packet(IPPROTO_UDP, 0, ula(2), &[0x1e, 0]));
-        let r = hal::netlock::NETLOCK.read();
+        let r = hal::sync::netlock::NETLOCK.read();
         let net = NetHeld::of(&r).expect("the net lock");
         assert!(ip6_unknown_opt(&mut mp, 0x1e, 42, &net));
         assert!(mp.is_some());

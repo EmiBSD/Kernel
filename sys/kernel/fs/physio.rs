@@ -87,7 +87,7 @@
 //!   physio holds its `B_BUSY` token, which the strategy routine consumes and `biodone` parks
 //!   in the buffer for physio to take back at `B_DONE` (under the cache's lock, the C's
 //!   `splbio`, so no wakeup is lost). The list's `take` frees the box only when no count is
-//!   left on it (`hal::owned`'s I4): a driver that kept the buffer past `biodone` panics
+//!   left on it (`hal::ds::owned`'s I4): a driver that kept the buffer past `biodone` panics
 //!   instead of writing into a freed item.
 //! - `vmapbuf`/`vunmapbuf` (the machine's `vm_machdep.c`) are `kernel::vm::km::PhysWindow`,
 //!   made by the `DeviceLock` that wired the range and borrowing it, so the window is gone
@@ -97,9 +97,9 @@
 
 use core::ptr;
 
-use hal::owned::{OwnedList, SecondaryRef};
-use hal::pool::PR_WAITOK;
-use hal::sleep::{INFSLP, PRIBIO};
+use hal::ds::owned::{OwnedList, SecondaryRef};
+use hal::mem::pool::PR_WAITOK;
+use hal::sync::sleep::{INFSLP, PRIBIO};
 use hal::sys::errno::Errno;
 use hal::sys::mman::{PROT_READ, PROT_WRITE};
 use hal::sys::types::{Daddr, Dev, Off};
@@ -109,8 +109,8 @@ use super::buf::{
     B_BUSY, B_DONE, B_ERROR, B_PHYS, B_RAW, B_READ, B_WRITE, BUFPL, Buf, BufRef, ByBufhead, MAXPHYS,
 };
 use crate::assert::{kassert, kpanic};
+use crate::file::uio::Uio;
 use crate::proc::{ProcGlue, Thread};
-use crate::uio::Uio;
 use crate::vm::glue::{uvm_vslock_device, uvm_vsunlock_device};
 
 /// `DEV_BSIZE`: the block size `b_blkno` counts in.
@@ -333,15 +333,15 @@ mod tests {
     use std::sync::Mutex;
     use std::vec::Vec;
 
-    use hal::intr::IPL_BIO;
+    use hal::cpu::intr::IPL_BIO;
     use hal::sys::mman::{MADV_NORMAL, MAP_INHERIT_COPY};
     use hal::sys::param::PAGE_SIZE;
 
     use super::*;
-    use crate::event::tests::Kg;
+    use crate::file::event::tests::Kg;
+    use crate::file::uio::{Iovec, UioRw, UioSeg};
     use crate::fs::bio::biodone;
     use crate::fs::buf::B_ASYNC;
-    use crate::uio::{Iovec, UioRw, UioSeg};
     use crate::vm::map::tests::{setup, thread, user_vmspace};
     use crate::vm::map::uvm_mapanon;
     use crate::vm::types::{UVM_FLAG_COPYONW, UVM_FLAG_FIXED, uvm_mapflag};
@@ -422,7 +422,7 @@ mod tests {
 
     /// The user thread of `pid` with `len` bytes of anonymous memory mapped at `va` in a
     /// vmspace of its own, and bufpl ready.
-    fn user_thread(pid: i32, va: usize, len: usize) -> crate::event::tests::T {
+    fn user_thread(pid: i32, va: usize, len: usize) -> crate::file::event::tests::T {
         let p = thread(pid);
         let vm = user_vmspace();
         let mut a = va;

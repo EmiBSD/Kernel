@@ -62,7 +62,7 @@
 //!   says (a file, a control block, a queue, a parked reference of [`soref`]): see
 //!   [`as_static`].
 
-use hal::pool::PoolArc;
+use hal::mem::pool::PoolArc;
 
 pub use kernel::net::sockbuf::{
     SB_ASYNC, SB_MAX, SB_MAX_VAR, SB_NOINTR, SB_SPLICE, SB_WAIT, SBL_NOINTR, SBL_WAIT,

@@ -91,20 +91,20 @@
 //! - LZ's `Dirhash` of `Cell`s under one `unsafe impl Sync`, whose `dh_hash` and
 //!   `dh_blkfree` were raw `malloc`/`pool_get` pointers read through `unsafe` derefs behind
 //!   index checks (sys/ufs/ufs/dirhash.rs:150-210 at the pin) -> [`Dirhash`]: the members
-//!   `dh_mtx` protects are its data ([`DhTables`] in a `hal::rwlock::Rwlocked`, `dh_mtx`
+//!   `dh_mtx` protects are its data ([`DhTables`] in a `hal::sync::rwlock::Rwlocked`, `dh_mtx`
 //!   itself), the two levels an `MArray` of `M_DIRHASH` holding the `ufsdirhash_pool` blocks
 //!   (`PoolBox`es) and the free counts an `MArray` of bytes, both in [`DhArrays`], `None` once
 //!   recycled (the C's `dh_hash == NULL`); `DH_ENTRY` and `dh_blkfree[]` are slice indexing
 //!   (a bad slot a bounds panic, where the C reads out of bounds).
-//! - `dh_list` is a `hal::pinlist::PinEntry` of `ufsdirhash_list` (the dirhash is pinned in
+//! - `dh_list` is a `hal::ds::pinlist::PinEntry` of `ufsdirhash_list` (the dirhash is pinned in
 //!   its `MBox`, and the entry's drop panics while linked: the C's "remove before free").
 
 use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
-use hal::malloc::MArray;
-use hal::pinlist::PinEntry;
-use hal::pool::PoolBox;
-use hal::rwlock::Rwlocked;
+use hal::ds::pinlist::PinEntry;
+use hal::mem::malloc::MArray;
+use hal::mem::pool::PoolBox;
+use hal::sync::rwlock::Rwlocked;
 
 use super::dir::{Doff, MAXNAMLEN, directsiz};
 use crate::assert::kpanic;

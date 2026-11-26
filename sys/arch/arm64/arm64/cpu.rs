@@ -2112,7 +2112,7 @@ pub fn cpu_attach(_parent: Option<&Device>, dev: &Device, aux: *mut c_void) {
         // Lenovo X13s ships with broken EL2 firmware that hangs the machine if we enable
         // PAuth.
         // `hw_vendor`/`hw_prod` are set by mainbus's attach, which precedes the CPUs'
-        // (kernel::sysctl's OnceStatics).
+        // (kernel::base::sysctl's OnceStatics).
         let (vendor, prod) = (hw_vendor.read(), hw_prod.read());
         if let (Some(vendor), Some(prod)) = (vendor, prod)
             && cstr(vendor) == b"LENOVO"
@@ -2129,7 +2129,7 @@ pub fn cpu_attach(_parent: Option<&Device>, dev: &Device, aux: *mut c_void) {
         if OF_getproplen(ci.ci_node.get(), b"clocks") > 0 {
             CPU_NODE.store(ci.ci_node.get(), Ordering::Relaxed);
             // cpu_cpuspeed = cpu_clockspeed (the boot CPU's attach registers it once).
-            let _ = kernel::sysctl::register_cpuspeed(cpu_clockspeed);
+            let _ = kernel::base::sysctl::register_cpuspeed(cpu_clockspeed);
         }
 
         cpu_init();
@@ -2350,11 +2350,11 @@ pub fn cpu_init() {
     }
 }
 
-/// The machine's per-CPU hooks of `hal`'s trap code (`hal::trap::CpuHooks`), over the running
+/// The machine's per-CPU hooks of `hal`'s trap code (`hal::cpu::trap::CpuHooks`), over the running
 /// CPU's `cpu_info`: registered by `initarm` (N4.8b).
 pub struct ArmCpuHooks;
 
-impl hal::trap::CpuHooks for ArmCpuHooks {
+impl hal::cpu::trap::CpuHooks for ArmCpuHooks {
     /// `curcpu()->ci_flush_bp()`, a CPU whose choice is not made yet doing nothing.
     fn flush_bp(&self) {
         if let Some(flush_bp) = curcpu().ci_flush_bp.get() {
@@ -2428,7 +2428,7 @@ pub fn cpu_boot_secondary_processors() {
 
             c.ci_randseed.set((arc4random() & 0x7fff_ffff) + 1);
             // The randomized statclock's seed, the queue's own (N4.8a).
-            kernel::clockintr::set_randseed(
+            kernel::time::clockintr::set_randseed(
                 crate::kern::kern_sched::cpu_number_of(c),
                 c.ci_randseed.get(),
             );
@@ -2642,7 +2642,7 @@ pub fn cpu_init_secondary(ci: &'static CpuInfo) -> ! {
 
     // Start from a clean slate regardless of whether this is the initial power up or a
     // wakeup of a suspended CPU.
-    hal::thread::set_current_static::<Proc>(None);
+    hal::cpu::thread::set_current_static::<Proc>(None);
     hal::arch::arm64::switch::clear_current_pcb();
     ci.ci_curpm.set(ptr::null());
     // ci_cpl = IPL_NONE, ci_ipending = 0, ci_idepth = 0
@@ -2652,13 +2652,13 @@ pub fn cpu_init_secondary(ci: &'static CpuInfo) -> ! {
     ci.core.reset_mutex_level();
 
     // Re-create the switchframe for this CPUs idle process: `sched_kthreads_create` forked
-    // it before the boot CPU set CPUF_GO, and it never exits. The frames are `hal::thread`'s
+    // it before the boot CPU set CPUF_GO, and it never exits. The frames are `hal::cpu::thread`'s
     // (N4.5a): `sched_idle` with the CPU's word (`idle_arg`, never 0).
     let n = crate::kern::kern_sched::cpu_number_of(ci);
-    let (start, arg) = kernel::fork::Start::Idle(n).words(0);
+    let (start, arg) = kernel::proc::fork::Start::Idle(n).words(0);
     let restarted =
         kernel::sched::with_idleproc::<crate::kern::proc_glue::BsdProcGlue, _>(n, |h, p| {
-            hal::thread::thread_restart(h, p, start, arg);
+            hal::cpu::thread::thread_restart(h, p, start, arg);
         });
     if restarted.is_none() {
         panic(format_args!("cpu_init_secondary: no idle thread"));

@@ -205,9 +205,9 @@
 //! ## Redesign
 //! - LZ's `Inpcb` was an `inpcb_pool` item of `Cell`s and `queue.h` entries handed around as
 //!   `&'static Inpcb`, freed by `pool_put` at the last `in_pcbunref`. Here it is a counted item
-//!   of the glue's "inpcb" pool ([`InpcbRef`], a `hal::pool::PoolArc`; `pool_home!` so a list
+//!   of the glue's "inpcb" pool ([`InpcbRef`], a `hal::mem::pool::PoolArc`; `pool_home!` so a list
 //!   element or a borrowed pcb gives a counted handle, the C's `in_pcbref`), on three pinned
-//!   lists (`hal::pinlist`) keyed to the table's mutex: the queue and the two hash chains.
+//!   lists (`hal::ds::pinlist`) keyed to the table's mutex: the queue and the two hash chains.
 //!   Every member is an atomic or a cell that can be shared between CPUs: the \[t\] addresses,
 //!   ports and routing table are relaxed atomics written only through setters that take the
 //!   table's guard (D-6: the C reads them unlocked under the socket lock on the transports'
@@ -222,7 +222,7 @@
 //!   [`Inpcb::legacy_ref`] and drops them with [`Inpcb::legacy_rele`], which takes the
 //!   [`LegacyKey`] only `bsd`'s boot holds, so no safe kernel code can drop a count `bsd`'s
 //!   `&'static` rests on. docs/SCAFFOLDING.md row; docs/IDIOMS.md row.
-//! - The \[s\] route cache is a `hal::slot::ReadMostly` (the kernel's pcb must be `Sync`; LZ's
+//! - The \[s\] route cache is a `hal::sync::slot::ReadMostly` (the kernel's pcb must be `Sync`; LZ's
 //!   was a `Cell`) lent out and back as LZ's `RouteCell` was ([`Inpcb::route`]), checked
 //!   against the socket lock at run time as LZ checked it (D-5's fallback, R1: the brief's
 //!   cell opened by either of two locks cannot be opened by `bsd`'s detached holdings, and a
@@ -260,7 +260,7 @@
 //! - The IPv6 packet and multicast options are the kernel's typed cells since N6.5c (D-10),
 //!   lent by [`Inpcb::outputopts6`] and [`Inpcb::moptions6`] under the socket lock (the C's
 //!   union of `inp_options` and `inp_outputopts6` is two members here, as in LZ).
-//! - N6.6a0 (D-15): the IPv4 options are the kernel's cell, a `hal::slot::LoanSlot` of the
+//! - N6.6a0 (D-15): the IPv4 options are the kernel's cell, a `hal::sync::slot::LoanSlot` of the
 //!   chain (an mbuf chain is not `Sync`, so not a `ReadMostly`), lent by [`Inpcb::options`]
 //!   under the socket lock's check and freed by [`in_pcbdetach`]; `bsd`'s transports reached
 //!   it through their adapter's loans (`InpcbLegacy`) until the last of them, raw IP, moved
@@ -276,7 +276,7 @@
 //!   field of its own so it fills a byte of the pcb's padding: the item grows by 24 bytes
 //!   where a `OnceStatic` of the words would take 32. The per-protocol pcb's word went with
 //!   `bsd`'s TCP at N6.6a5, the kernel's slot being the tcpcb's; `inp_upcall` is set once
-//!   (`hal::once::OnceStatic`), as wg(4) sets
+//!   (`hal::sync::once::OnceStatic`), as wg(4) sets
 //!   it on a new socket; `inp_pf_sk` is pf's word ([`PfSlot`]).
 //! - The table: [`Inpcbtable`] holds the queue (a pinned list keyed to its mutex) and the
 //!   SipHash keys; its mutex holds the hash arrays (`MArray`s of pinned lists, `hashinit`'s),
@@ -338,15 +338,15 @@
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 
-use hal::intr::IPL_SOFTNET;
-use hal::malloc::{M_NOWAIT, M_WAITOK, MArray, MBox};
-use hal::mutex::{Mutexed, MutexedGuard};
-use hal::netlock::{NETLOCK, NetHeld};
-use hal::once::OnceStatic;
-use hal::pinlist::{PinEntry, PinList};
-use hal::pool::{AnyArc, PR_NOWAIT, PR_WAITOK, PoolArc, PoolBox, PoolHome, TypedPool};
-use hal::rwlock::{Guarded, RW_WRITE, Witness, WitnessPart};
-use hal::slot::{LoanSlot, ReadMostly, SlotLoan};
+use hal::cpu::intr::IPL_SOFTNET;
+use hal::ds::pinlist::{PinEntry, PinList};
+use hal::mem::malloc::{M_NOWAIT, M_WAITOK, MArray, MBox};
+use hal::mem::pool::{AnyArc, PR_NOWAIT, PR_WAITOK, PoolArc, PoolBox, PoolHome, TypedPool};
+use hal::sync::mutex::{Mutexed, MutexedGuard};
+use hal::sync::netlock::{NETLOCK, NetHeld};
+use hal::sync::once::OnceStatic;
+use hal::sync::rwlock::{Guarded, RW_WRITE, Witness, WitnessPart};
+use hal::sync::slot::{LoanSlot, ReadMostly, SlotLoan};
 use hal::sys::errno::Errno;
 use hal::sys::net_if::IFF_UP;
 use hal::sys::net_route::{RTF_DYNAMIC, RTF_GATEWAY};
@@ -366,6 +366,7 @@ use libkern::siphash::AtomicSiphashKey;
 
 use crate::assert::kassert;
 use crate::assert::kpanic;
+use crate::base::sysctl::{M_SYSCTL, SECURELEVEL, SysctlReq, structure};
 use crate::fs::subr::{hashinit, siphash_key};
 use crate::net::if_::{if_get, ifa_ifwithaddr};
 use crate::net::if_var::AtomicCell;
@@ -392,7 +393,6 @@ use crate::netinet6::in6_pcb::{
 use crate::netinet6::ip6_output::{ip6_freemoptions, ip6_freepcbopts};
 use crate::netinet6::ip6_var::{Ip6Moptions, Ip6Pktopts};
 use crate::proc::{ProcGlue, Thread, suser};
-use crate::sysctl::{M_SYSCTL, SECURELEVEL, SysctlReq, structure};
 
 // flags in inp_flags:
 
@@ -936,7 +936,7 @@ impl SeclevelCell {
 
 /// The capability to drop a count of `bsd`'s ([`Inpcb::legacy_rele`]): one per kernel, taken
 /// by `bsd`'s `in_init` at boot, so no code of the kernel crate can drop a count a `bsd`
-/// `&'static Inpcb` rests on (the `hal::link::SaToken` and `TdbKey` precedents).
+/// `&'static Inpcb` rests on (the `hal::ds::link::SaToken` and `TdbKey` precedents).
 pub struct LegacyKey(());
 
 /// The one [`LegacyKey`].
@@ -1257,7 +1257,7 @@ impl<G: ProcGlue> Inpcb<G> {
     /// lock holder of an Internet socket, `soassertlocked`'s two cases).
     pub fn route_locked(&self) -> bool {
         self.socket().so_lock_legacy().lock().status() == RW_WRITE
-            || hal::netlock::status() == RW_WRITE
+            || hal::sync::netlock::status() == RW_WRITE
     }
 
     /// `panic(9)` unless [`Inpcb::route_locked`].
@@ -2798,7 +2798,7 @@ pub fn in_pcbselsrc<G: ProcGlue>(
                 .ifa_ifp
                 .get()
                 .is_some_and(|ifp| ifp.if_flags.get() & IFF_UP != 0)
-            && let Some(sin) = hal::pod::at::<SockaddrIn>(ip4_source.bytes(), 0)
+            && let Some(sin) = hal::mem::pod::at::<SockaddrIn>(ip4_source.bytes(), 0)
         {
             return Ok(sin.sin_addr);
         }
@@ -3178,8 +3178,8 @@ pub(crate) mod testinet {
     use std::boxed::Box;
     use std::sync::{MutexGuard, Once};
 
-    use hal::netlock::NETLOCK;
-    use hal::pod;
+    use hal::mem::pod;
+    use hal::sync::netlock::NETLOCK;
     use hal::sys::net_if::{IFF_BROADCAST, IFF_MULTICAST};
     use hal::sys::netinet_in_var::InAliasreq;
     use hal::sys::socket::{PF_INET, SOCK_DGRAM};
@@ -3552,7 +3552,7 @@ mod tests {
     use std::sync::OnceLock;
     use std::vec::Vec;
 
-    use hal::netlock::NETLOCK;
+    use hal::sync::netlock::NETLOCK;
     use hal::sys::endian::htons;
 
     use super::testinet::{self, G as Tg};
@@ -4059,7 +4059,8 @@ mod tests {
             let r = NETLOCK.read();
             let net = NetHeld::of(&r).expect("the net lock's witness");
             let mut w = in_pcbsolock(&keep, &net).expect("attached");
-            let held = keep.socket().so_lock_legacy().lock().status() == hal::rwlock::RW_WRITE;
+            let held =
+                keep.socket().so_lock_legacy().lock().status() == hal::sync::rwlock::RW_WRITE;
             let parts = w.inet().is_some();
             drop(w);
             (held, parts)

@@ -230,7 +230,7 @@ unsafe fn usl_sync_check(sdp: NonNull<UslSyncdata>) -> bool {
     // SAFETY: the caller's contract.
     let sd = unsafe { sdp.as_ref() };
     let alive = {
-        let r = hal::klock::reader();
+        let r = hal::sync::klock::reader();
         prfind(&r, sd.s_pid).is_some_and(|pr| ptr::eq(pr, sd.s_process))
     };
     if alive {

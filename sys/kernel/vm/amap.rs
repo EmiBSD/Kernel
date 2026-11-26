@@ -77,7 +77,7 @@
 //! ## Redesign
 //! - LZ's `amap_alloc() -> &'static VmAmap` (a pool item cast and written by hand, freed by
 //!   `amap_free`'s `pool_put` while map entries could still name it) -> [`AmapRef`], a
-//!   `hal::pool::PoolArc<Amap>` of `"amappl"`. `am_ref` stays the C's count of the map
+//!   `hal::mem::pool::PoolArc<Amap>` of `"amappl"`. `am_ref` stays the C's count of the map
 //!   entries that reference the amap ([`Amap::refs`], read without the lock where the C reads
 //!   it so, a relaxed atomic), beside the handle count that owns the memory: the map entries'
 //!   handles and those of threads that keep the amap across a sleep. Each anon of a slot is
@@ -85,9 +85,9 @@
 //!   handle into the slot (the copy of [`amap_copy_from`]); [`amap_add`] takes the caller's
 //!   handle into the slot, [`amap_unadd`] hands the slot's back.
 //! - `am_lock: Cell<*const Rwlock>` (`rw_obj_alloc`, `rw_obj_hold` by a copy, `rw_obj_free` by
-//!   each) -> the amap's `hal::rwlock::SharedRwlock`, which its anons and its copies clone;
+//!   each) -> the amap's `hal::sync::rwlock::SharedRwlock`, which its anons and its copies clone;
 //!   what the C keeps under it (the slot count in use, the `ppref` array, the chunk tables)
-//!   is an [`AmapState`] inside a `hal::rwlock::Guarded` keyed to that lock: the functions
+//!   is an [`AmapState`] inside a `hal::sync::rwlock::Guarded` keyed to that lock: the functions
 //!   that read it take a witness of the lock (`&impl Witness`), those that change it the write
 //!   witness (`&mut WriteWitness`), and a witness of another lock is `panic(9)`, so the C's
 //!   `KASSERT(anon->an_lock == amap->am_lock)` is the check that opens the state.
@@ -97,11 +97,11 @@
 //!   [`amap_alloc1`] and live outside the lock ([`Amap::nslot`]).
 //! - `am_ppref: Cell<*mut i32>` with `PPREF_NONE` (`(int *)-1`) for "the array could not be
 //!   had" -> [`Ppref`]: `None` (`NULL`), `Failed` (`PPREF_NONE`), `Some` of a
-//!   `hal::malloc::MArray<i32>` of `M_UVMAMAP`; `pp_getreflen`/`pp_setreflen` index a slice.
+//!   `hal::mem::malloc::MArray<i32>` of `M_UVMAMAP`; `pp_getreflen`/`pp_setreflen` index a slice.
 //! - The normal amap's `am_buckets` array of chunk pointers, with every chunk also on the
 //!   `am_chunks` `TAILQ` (a bucket's chunks consecutive on it), and the chunks' `ac_list`
 //!   links -> an `MArray` of buckets, each the head of an owned chain of the bucket's chunks
-//!   (`hal::pool::PoolBox<Chunk>` items of `"amapchunkpl"`, each owning the next: the C's run
+//!   (`hal::mem::pool::PoolBox<Chunk>` items of `"amapchunkpl"`, each owning the next: the C's run
 //!   of a bucket on the list is the chain). A new chunk joins the end of its bucket's chain,
 //!   where the C inserts it after the bucket's last; `AMAP_CHUNK_FOREACH` walks the buckets in
 //!   order, and [`amap_wiperange`] always walks the buckets of the range (the C walks the
@@ -133,9 +133,9 @@ use core::mem;
 use core::sync::atomic::{AtomicI32, Ordering};
 
 use hal::arch::current::param::{PAGE_SHIFT, PAGE_SIZE};
-use hal::malloc::{M_NOWAIT, M_WAITOK, MArray};
-use hal::pool::{BoxPool, PR_NOWAIT, PR_WAITOK, PoolArc, PoolBox, TypedPool};
-use hal::rwlock::{Guarded, RW_WRITE, SharedRwlock, Witness, WriteWitness};
+use hal::mem::malloc::{M_NOWAIT, M_WAITOK, MArray};
+use hal::mem::pool::{BoxPool, PR_NOWAIT, PR_WAITOK, PoolArc, PoolBox, TypedPool};
+use hal::sync::rwlock::{Guarded, RW_WRITE, SharedRwlock, Witness, WriteWitness};
 use hal::sys::errno::Errno;
 use hal::sys::limits::INT_MAX;
 use hal::sys::mman::PROT_NONE;
@@ -146,7 +146,7 @@ use super::page::{
 };
 use super::pmemrange::uvm_wait;
 use crate::assert::{kassert, kpanic};
-use crate::prf::unported;
+use crate::base::prf::unported;
 
 /// `AMAP_SHARED`: amap is shared.
 pub const AMAP_SHARED: i32 = 0x1;
@@ -1373,7 +1373,7 @@ pub fn amap_add(
         if let Some(opg) = oanon.page()
             && shared
         {
-            hal::pmap::page_protect(&opg.mdpage, PROT_NONE);
+            hal::vm::pmap::page_protect(&opg.mdpage, PROT_NONE);
             // XXX: suppose page is supposed to be wired somewhere?
         }
         chunk.anons[slot] = Some(anon);

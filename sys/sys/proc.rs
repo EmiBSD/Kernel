@@ -100,6 +100,7 @@ pub use crate::kern::proc_glue::{
     ProcessSiblingLink as ProcessSibling, ThreadHashLink as ProcHash, ThreadListLink as ProcList,
     ThreadThrLink as ProcThrLink,
 };
+pub use kernel::proc::resource::{TU_ITICKS, TU_STICKS, TU_TICKS_COUNT, TU_UTICKS, Tusage};
 pub use kernel::proc::{
     _MAXCOMLEN, BOGO_PC, EXIT_NORMAL, EXIT_THREAD, EXIT_THREAD_NOCHECK, FORK_FORK, FORK_IDLE,
     FORK_NOZOMBIE, FORK_PPWAIT, FORK_PTRACE, FORK_SHAREFILES, FORK_SHAREVM, FORK_SYSTEM,
@@ -114,7 +115,6 @@ pub use kernel::proc::{
     SINGLE_MASK, SINGLE_SUSPEND, SINGLE_UNWIND, SONPROC, SRUN, SSLEEP, SSTOP, SZOMB,
     THREAD_PID_OFFSET, TID_MASK, Uidinfo,
 };
-pub use kernel::resource::{TU_ITICKS, TU_STICKS, TU_TICKS_COUNT, TU_UTICKS, Tusage};
 
 /// `struct p_inentry`: the map's own cache type (`kernel::vm::map::InentryCache`, which
 /// `uvm_map_inentry` fills: `ie_start`, `ie_end`, `ie_serial`).
@@ -135,7 +135,7 @@ pub type PgrpRef = kernel::proc::PgrpRef<BsdProcGlue>;
 /// A counted reference to a session (`SESSHOLD`).
 pub type SessionRef = kernel::proc::SessionRef<BsdProcGlue>;
 /// The guard of a process's `ps_mtx`.
-pub type PsGuard<'a> = hal::mutex::MutexedGuard<'a, PsMtx<BsdProcGlue>>;
+pub type PsGuard<'a> = hal::sync::mutex::MutexedGuard<'a, PsMtx<BsdProcGlue>>;
 
 /// What `bsd` reads of a thread through its words: LZ's accessors that turn an address the
 /// thread holds into a reference, each one `unsafe` deref until N4.5's `current()`.
@@ -185,7 +185,7 @@ impl ProcExt for Proc {
         let u = ptr::with_exposed_provenance::<User>(self.addr_word());
         kassert!(!u.is_null());
         // SAFETY: `p_addr` is the exposed address of the u-area the thread's slot owns
-        // (`hal::thread`'s E4: a `UArea` installed by `thread_new`, `hal`'s static one for
+        // (`hal::cpu::thread`'s E4: a `UArea` installed by `thread_new`, `hal`'s static one for
         // `proc0`), zeroed memory whose bottom is a `struct user` (`u_pcb` first); it is given
         // back only by the reaper's `uvm_uarea_free` (`take_uarea`), which `hal` refuses while
         // the thread's context lives (E6: only once it switched away for good, dead); the
@@ -219,13 +219,13 @@ impl ProcExt for Proc {
     }
 }
 
-/// The glue's `thread_placed` (`kernel::fork`'s `fork1` and `thread_fork`, N4.6a): records
+/// The glue's `thread_placed` (`kernel::proc::fork`'s `fork1` and `thread_fork`, N4.6a): records
 /// the new thread's own `&'static` (`ProcExt::place`), which `bsd`'s run, sleep and signal
 /// adapters lend the kernel (`as_static`, until N4.8 retires them with `curproc()`'s). Only
 /// the glue calls it, with the kernel's witness: no other safe caller can name a thread here.
 pub(crate) fn place_thread(placed: Placed<'_, BsdProcGlue>) {
     let at = ptr::from_ref::<Proc>(placed.thread().get_ref());
-    // SAFETY: `placed` is a `kernel::proc::Placed`, which only `kernel::fork` makes (its
+    // SAFETY: `placed` is a `kernel::proc::Placed`, which only `kernel::proc::fork` makes (its
     // constructor is `pub(crate)` in `kernel`, its field private, it is neither `Clone` nor
     // `Copy`), once per thread, in `fork1` or `thread_fork`, right after linking the thread,
     // with the pin of a `procpl` box it then gives to the thread's process (its slot for the
@@ -345,7 +345,7 @@ pub fn refreshcreds(p: &Proc) {
 pub const ZERO_TIMEVAL: Timeval = Timeval::new(0, 0);
 const _: () = assert!(
     core::mem::offset_of!(Proc, machine) == 0,
-    "the machine's slot is the thread's first member: ci_curproc names both (hal::thread)"
+    "the machine's slot is the thread's first member: ci_curproc names both (hal::cpu::thread)"
 );
 /* </CODE> */
 

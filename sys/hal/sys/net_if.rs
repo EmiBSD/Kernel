@@ -204,19 +204,19 @@
 //!   userland's: the kernel never builds one.
 //! - `LLADDR(s)` is [`SockaddrDl::lladdr`], over the bytes of a `sockaddr_dl` that may be
 //!   longer than the structure (`if_alloc_sadl`'s), so it takes the whole slice; `satosdl`,
-//!   `sdltosa` and the other casts are views of an address's bytes (`hal::pod::view`).
+//!   `sdltosa` and the other casts are views of an address's bytes (`hal::mem::pod::view`).
 //! - `link_ntoa(3)` is userland.
 //!
 //! ## Redesign
 //! - LZ's `#[repr(C)]` structures with `#[repr(C)] union` members read through `unsafe`
 //!   accessors (`IfrIfru`, `IfraIfrau`, `IfgrIfgru`, `IfgrqIfgrqu`, `IfcIfcu`) and raw pointer
 //!   members -> `AbiPod` images: the unions are byte arrays, the pointers `u64` words, so the
-//!   kernel views a request in its `ioctl(2)` buffer with `hal::pod::view_mut` and copies a
+//!   kernel views a request in its `ioctl(2)` buffer with `hal::mem::pod::view_mut` and copies a
 //!   message out as its bytes, with no `unsafe` and no padding byte left uninitialised
 //!   (N6.3a, decision 47's ABI edge; `bsd`'s `sys/net/if_.rs` keeps LZ's structures for its
 //!   `ifioctl` until N6.3a2).
 //! - `struct if_data`'s `ifi_lastchange` is an [`IfTimeval`]: `struct timeval`'s image, as
-//!   the kernel's `Timeval` is `kernel::clock`'s and `hal` names nothing of the kernel.
+//!   the kernel's `Timeval` is `kernel::time::clock`'s and `hal` names nothing of the kernel.
 //! - `if.c`'s functions are the kernel's (`kernel::net::if_`, N6.3a); only the header's part
 //!   of LZ's `sys/net/if_.rs` is here.
 //! - The three headers are one module: `if_types.h` and `if_dl.h` are the constants and the
@@ -1437,7 +1437,7 @@ crate::abi_pod!(Ifreq {
 /// A union's first 16 bytes as the `sockaddr` its address members are (a `sockaddr` is 16
 /// bytes of alignment 1, so the view always fits).
 fn sockaddr_mut(u: &mut [u8]) -> &mut Sockaddr {
-    match crate::pod::view_mut::<Sockaddr>(u, 0) {
+    match crate::mem::pod::view_mut::<Sockaddr>(u, 0) {
         Some(sa) => sa,
         None => crate::assert::hal_panic(format_args!("a union shorter than a sockaddr")),
     }
@@ -1955,7 +1955,7 @@ mod tests {
         };
         sdl.sdl_data[..10].copy_from_slice(b"vio0\x52\x54\x00\x12\x34\x56");
         let mut b = [0u8; 32];
-        assert!(crate::pod::put(&mut b, 0, &sdl));
+        assert!(crate::mem::pod::put(&mut b, 0, &sdl));
         assert_eq!(
             SockaddrDl::lladdr(&b),
             Some(&[0x52, 0x54, 0x00, 0x12, 0x34, 0x56][..])

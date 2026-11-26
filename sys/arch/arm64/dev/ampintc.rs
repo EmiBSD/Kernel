@@ -120,7 +120,7 @@ use crate::sys::malloc::{M_DEVBUF, M_NOWAIT, M_WAITOK, M_ZERO};
 use crate::sys::queue::{ListEntry, TailqEntry, TailqHead};
 use crate::sys::systm::{kernel_lock, kernel_unlock};
 use crate::sys::types::Vaddr;
-use kernel::evcount::{evcount_attach, evcount_detach};
+use kernel::dev::evcount::{evcount_attach, evcount_detach};
 
 // registers
 /// `ICD_DCR`: the distributor control register.

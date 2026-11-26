@@ -73,9 +73,9 @@ use std::hint::black_box;
 use std::time::{Duration, Instant};
 use std::vec::Vec;
 
-use hal::intr::{IPL_BIO, splraise};
-use hal::owned::SecondaryRef;
-use hal::sleep::INFSLP;
+use hal::cpu::intr::{IPL_BIO, splraise};
+use hal::ds::owned::SecondaryRef;
+use hal::sync::sleep::INFSLP;
 use hal::sys::param::PAGE_SIZE;
 use hal::sys::types::Daddr;
 use kernel::fs::bio::{

@@ -25,7 +25,7 @@
 //! asserts on it (the interrupt level, the spin count), so tests running in parallel do not
 //! see each other's.
 //!
-//! - `IntrHardware`: the default levels (`hal::intr`'s, each test thread's core), whose
+//! - `IntrHardware`: the default levels (`hal::cpu::intr`'s, each test thread's core), whose
 //!   `splassert` fails the test.
 //! - The running CPU is no bridge (N4.5a): `hal::cpu`'s host backend makes every test thread
 //!   a CPU of its own, so two test threads contend for a lock and update per-CPU counters as
@@ -44,7 +44,7 @@
 //! - The user copy is no bridge (N4.8b): `hal::arch::host::copy`, the host machine's, whose
 //!   user memory starts at [`user_base`] and whose foreign memory at [`foreign_base`].
 //! - `Console`: the output kept in one buffer, the input a queue the tests feed.
-//! - The soft interrupts are no bridge (N4.5c): `hal::softintr`'s own queues; a test runs a
+//! - The soft interrupts are no bridge (N4.5c): `hal::cpu::softintr`'s own queues; a test runs a
 //!   level's queue itself (`dispatch`), or lowers its level below it.
 
 use std::alloc::{Layout, alloc, alloc_zeroed, dealloc};
@@ -59,13 +59,13 @@ use std::time::{Duration, Instant};
 
 use crate::bridges;
 use crate::cons::Console;
-use crate::intr::IntrHardware;
-use crate::kmbuf::{PageKind, PageMemory};
-use crate::malloc::{MALLOC_ALIGN, Malloc};
-use crate::pmap::{BootstrapParams, Bootstrapped, PageMd, PhysPages};
-use crate::pool::{PR_WAITOK, PageSource, PoolBackend, RawPool};
+use crate::cpu::intr::IntrHardware;
+use crate::mem::kmbuf::{PageKind, PageMemory};
+use crate::mem::malloc::{MALLOC_ALIGN, Malloc};
+use crate::mem::pool::{PR_WAITOK, PageSource, PoolBackend, RawPool};
 use crate::prf::Printf;
-use crate::sleep::{INFSLP, Sleep};
+use crate::sync::sleep::{INFSLP, Sleep};
+use crate::vm::pmap::{BootstrapParams, Bootstrapped, PageMd, PhysPages};
 
 use crate::sys::errno::Errno;
 use crate::sys::types::{Paddr, Vaddr};
@@ -109,7 +109,7 @@ static MEMORY_FRAMES: Mutex<std::vec::Vec<(usize, &'static [PageMd])>> =
 /// Signalled by every wakeup.
 static WAKE: Condvar = Condvar::new();
 
-/// The interrupt controller double: the default levels (`crate::intr`'s, the host thread's
+/// The interrupt controller double: the default levels (`crate::cpu::intr`'s, the host thread's
 /// core), and a `splassert` that fails the test.
 struct TestIntr;
 
@@ -220,7 +220,7 @@ impl Sleep for TestSleep {
 /// The `arc4random(9)` double: a per-thread xorshift64* sequence ([`set_random_seed`]).
 struct TestRandom;
 
-impl crate::pmap::Random for TestRandom {
+impl crate::vm::pmap::Random for TestRandom {
     fn random_u32(&self) -> u32 {
         RANDOM.with(|s| {
             let mut x = s.get();
@@ -650,9 +650,9 @@ pub(crate) fn pmap_boot() -> &'static Bootstrapped {
             first_avail: Paddr::new(0x20_0000),
             image: None,
         };
-        let b = crate::pmap::bootstrap(&params, &FAKE_PAGES);
+        let b = crate::vm::pmap::bootstrap(&params, &FAKE_PAGES);
         assert_eq!(b.first_avail, Paddr::new(0x20_0000));
-        crate::pmap::init();
+        crate::vm::pmap::init();
         b
     })
 }

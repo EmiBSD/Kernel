@@ -2746,9 +2746,9 @@ mod tests {
         fn units(&self) -> &'static kernel::dev::device::UnitTable {
             self.units
         }
-        fn make_softc(&self, _id: &kernel::dev::device::Ident<'_>) -> hal::pool::AnyArc {
-            hal::malloc::MArc::erase(
-                hal::malloc::MArc::new(2, hal::malloc::M_NOWAIT, 0u32).expect("a softc"),
+        fn make_softc(&self, _id: &kernel::dev::device::Ident<'_>) -> hal::mem::pool::AnyArc {
+            hal::mem::malloc::MArc::erase(
+                hal::mem::malloc::MArc::new(2, hal::mem::malloc::M_NOWAIT, 0u32).expect("a softc"),
             )
         }
         fn probe(

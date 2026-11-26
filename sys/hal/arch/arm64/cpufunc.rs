@@ -58,7 +58,7 @@
 //! The operations that are not (`cpu_dcache_inv_range`'s `dc ivac`, which discards dirty
 //! lines; `cpu_setttb`; the firmware calls `smc`/`hvc`) stay `bsd`'s until their callers
 //! have typed ones. The first typed one (N7.0): `cpu_dcache_inv_dma`, `dc ivac` over the
-//! bytes of a `hal::dma::DmaBuf`, which no reference observes.
+//! bytes of a `hal::dev::dma::DmaBuf`, which no reference observes.
 //!
 //! ## Deviations
 //! - The `CPTAG_REPEAT_TLBI` code patch (an erratum workaround that repeats the `tlbi` on
@@ -72,14 +72,14 @@
 //!   names for its callers (re-exported) and the operations that stay its own. A zero length
 //!   now handles one line, as the C's `cache_handle_range` (LZ's loop handled none).
 //! - N7.0: `cpu_dcache_inv_range` (LZ: an `unsafe fn` over any address, `bsd`'s, which its
-//!   `bus_dma` keeps) has a safe twin for `hal::dma::DmaBuf::sync`, `cpu_dcache_inv_dma`,
+//!   `bus_dma` keeps) has a safe twin for `hal::dev::dma::DmaBuf::sync`, `cpu_dcache_inv_dma`,
 //!   whose argument is the buffer itself: the range is checked inside it, so the lines it
 //!   discards are the buffer's own.
 
 use core::arch::asm;
 
 use super::pmap::cpufunc as pmap;
-use crate::dma::DmaBuf;
+use crate::dev::dma::DmaBuf;
 
 /// `cpu_wfi`: `dsb sy; wfi`: waits for an interrupt, the default `cpu_idle_cycle_fcn`.
 pub fn cpu_wfi() {
@@ -160,7 +160,7 @@ pub(crate) fn cpu_dcache_inv_dma(buf: &DmaBuf, off: usize, len: usize) {
     // alignment and its own page-multiple test), and a data cache line (`CTR_EL0.DminLine`, at
     // most 2 KiB) never crosses a page, so every line the loop rounds out to holds only bytes
     // of that mapping: kernel memory the provider granted `buf` alone, holding no Rust object,
-    // reached only by `buf`'s volatile accesses (`DmaMemory`'s contract, `sys/hal/trust.rs`).
+    // reached only by `buf`'s volatile accesses (`DmaMemory`'s contract, `sys/hal/mem/trust.rs`).
     // Discarding a dirty line there can lose only bytes the CPU stored through `buf` and did
     // not write back first (a missing `PREWRITE`, the caller's error as in the C); no reference
     // observes them and any bit pattern is a value of the types `buf` reads, so nothing the

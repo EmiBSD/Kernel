@@ -159,7 +159,7 @@ impl Cpu for Machine {
 
     fn set_curproc(ci: &include::cpu::CpuInfo, p: Option<&'static Proc>) {
         crate::kassert!(core::ptr::eq(ci, include::cpu::curcpu()));
-        hal::thread::set_current_static(p.map(hal::pin::pin_static));
+        hal::cpu::thread::set_current_static(p.map(hal::ds::pin::pin_static));
     }
 
     fn cpu_rnd_messybits() -> u32 {
@@ -346,12 +346,12 @@ impl VmParam for Machine {
 }
 
 impl Pmap for Machine {
-    /// The bootloader's direct map (`hal::pmap`'s arm64 backend, deviations).
-    const HAVE_PMAP_DIRECT: bool = hal::pmap::HAVE_PMAP_DIRECT;
-    const PMAP_STEAL_MEMORY: bool = hal::pmap::PMAP_STEAL_MEMORY;
-    const PMAP_WC: usize = hal::pmap::PMAP_WC;
-    const PMAP_NOCACHE: usize = hal::pmap::PMAP_NOCACHE;
-    const PMAP_NOMMU: bool = hal::pmap::PMAP_NOMMU;
+    /// The bootloader's direct map (`hal::vm::pmap`'s arm64 backend, deviations).
+    const HAVE_PMAP_DIRECT: bool = hal::vm::pmap::HAVE_PMAP_DIRECT;
+    const PMAP_STEAL_MEMORY: bool = hal::vm::pmap::PMAP_STEAL_MEMORY;
+    const PMAP_WC: usize = hal::vm::pmap::PMAP_WC;
+    const PMAP_NOCACHE: usize = hal::vm::pmap::PMAP_NOCACHE;
+    const PMAP_NOMMU: bool = hal::vm::pmap::PMAP_NOMMU;
     const UVM_MD_CONSTRAINTS: &'static [&'static UvmConstraintRange] =
         &arm64::machdep::UVM_MD_CONSTRAINTS;
     const DMA_CONSTRAINT: &'static UvmConstraintRange = &arm64::machdep::DMA_CONSTRAINT;
@@ -361,7 +361,7 @@ impl Pmap for Machine {
     /// `TTBR0_EL1` goes, and the lower half gets its translation registers. Last, the boot
     /// CPU records that it runs on the kernel pmap.
     fn pmap_init_md() {
-        hal::pmap::init();
+        hal::vm::pmap::init();
         crate::dev::ic::pluart::pluartcn_remap();
         hal::arch::arm64::pmap::init_lower_half();
         // `curcpu()->ci_curpm = pmap_kernel()` (arm64 pmap.c:1409, in pmap_bootstrap once the
@@ -370,7 +370,7 @@ impl Pmap for Machine {
         // cold and before any cpu_switchto, reload the pmap this records.
         include::cpu::curcpu()
             .ci_curpm
-            .set(hal::pmap::kernel().as_ptr());
+            .set(hal::vm::pmap::kernel().as_ptr());
     }
 
     /// The bounds as `pmap_steal_memory` leaves them, without `pmap_virtual_space`'s side
@@ -381,14 +381,14 @@ impl Pmap for Machine {
 
     /// `pmap_activate`: one more thread uses the pmap (`pm_active`); switched in now when `p`
     /// is the running thread and the CPU is not on it already.
-    fn pmap_activate_md(p: &Proc, pm: &hal::pmap::Pmap) -> bool {
+    fn pmap_activate_md(p: &Proc, pm: &hal::vm::pmap::Pmap) -> bool {
         pm.activate();
         let ci = include::cpu::curcpu();
         core::ptr::eq(p, ci.curproc_ptr()) && !core::ptr::eq(pm.as_ptr(), ci.ci_curpm.get())
     }
 
     /// `pmap_setttb`'s record: the CPU's pmap, then the branch predictor flush.
-    fn pmap_switched_md(pm: &hal::pmap::Pmap) {
+    fn pmap_switched_md(pm: &hal::vm::pmap::Pmap) {
         let ci = include::cpu::curcpu();
         ci.ci_curpm.set(pm.as_ptr());
         if let Some(flush_bp) = ci.ci_flush_bp.get() {
@@ -397,13 +397,13 @@ impl Pmap for Machine {
     }
 
     /// `pmap_deactivate`, on the running thread.
-    fn pmap_deactivate_md(p: &Proc, pm: &hal::pmap::Pmap) {
+    fn pmap_deactivate_md(p: &Proc, pm: &hal::vm::pmap::Pmap) {
         crate::kassert!(core::ptr::eq(p, include::cpu::curcpu().curproc_ptr()));
         pm.deactivate();
     }
 
     /// `pmap_purge`: the last thread of the exiting process, on its CPU.
-    fn pmap_purge_md(p: &Proc, pm: &hal::pmap::Pmap) {
+    fn pmap_purge_md(p: &Proc, pm: &hal::vm::pmap::Pmap) {
         crate::kassert!(p.process().ps_threadcnt.get() == 0);
         crate::kassert!(core::ptr::eq(p, include::cpu::curcpu().curproc_ptr()));
         pm.purge();
@@ -1454,7 +1454,7 @@ impl UserCopy for Machine {
 impl MachineSignal for Machine {
     type Sigcontext = include::signal::Sigcontext;
 
-    /// The kernel's (`kernel::sig::sendsig`, over `hal::sig`'s frame, N4.8b) for the running
+    /// The kernel's (`kernel::sig::sendsig`, over `hal::cpu::sig`'s frame, N4.8b) for the running
     /// thread; `EFAULT` without one.
     fn sendsig(
         catcher: Sig,
@@ -1472,7 +1472,7 @@ impl MachineSignal for Machine {
         )
     }
 
-    /// The kernel's (`kernel::sig::sys_sigreturn`, over `hal::sig`'s frame, N4.8b).
+    /// The kernel's (`kernel::sig::sys_sigreturn`, over `hal::cpu::sig`'s frame, N4.8b).
     fn sys_sigreturn(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
         let uap: &crate::sys::syscallargs::SysSigreturnArgs = crate::sys::systm::sysargs(v);
         kernel::sig::sys_sigreturn::<crate::kern::proc_glue::BsdProcGlue>(

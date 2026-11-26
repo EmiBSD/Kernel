@@ -40,12 +40,12 @@
 //! LZ: sys/sys/clockintr.rs@3c62ede68802
 //!
 //! ## Redesign
-//! - N4.8a: the structures and constants are `kernel::clockintr`'s (a `struct clockintr` a
+//! - N4.8a: the structures and constants are `kernel::time::clockintr`'s (a `struct clockintr` a
 //!   `Copy` handle of a CPU's slot, `struct clockqueue` a `PerCpu<ClockCpu>` out of
 //!   `cpu_info`, `struct intrclock` the `Intrclock` trait), re-exported here for `bsd`'s
 //!   binders and clock drivers. 0 `unsafe` (LZ 2).
 
-pub use kernel::clockintr::{
+pub use kernel::time::clockintr::{
     CL_BARRIER, CL_FLAG_MASK, CQ_IGNORE_REQUEST, CQ_INIT, CQ_INTRCLOCK, CQ_NEED_WAKEUP,
     CQ_STATE_MASK, CR_RESCHEDULE, Clockintr, ClockintrFn, ClockintrStat, Clockrequest, Intrclock,
     Slot,

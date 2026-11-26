@@ -155,17 +155,17 @@
 //!   symbol, above), so nothing sees the difference.
 //!
 //! ## Redesign
-//! - The ring and `tcp_debx` are the data of a `hal::mutex::Mutexed` (`tcp_debug_mtx`,
+//! - The ring and `tcp_debx` are the data of a `hal::sync::mutex::Mutexed` (`tcp_debug_mtx`,
 //!   `IPL_SOFTNET`), where LZ had a `StaticCell` changed under a separate mutex by an
-//!   `unsafe` access; the headers are read with `hal::pod::at` (LZ: two unaligned raw reads).
+//!   `unsafe` access; the headers are read with `hal::mem::pod::at` (LZ: two unaligned raw reads).
 //!   The snapshot is taken from the kernel's [`TcpState`] (the members `struct tcpcb` keeps
 //!   under the socket lock).
 
 use core::mem::size_of;
 
-use hal::intr::IPL_SOFTNET;
-use hal::mutex::Mutexed;
-use hal::pod;
+use hal::cpu::intr::IPL_SOFTNET;
+use hal::mem::pod;
+use hal::sync::mutex::Mutexed;
 use hal::sys::netinet_in::InAddr;
 use hal::sys::netinet_ip::IPVERSION;
 use hal::sys::netinet_ip_var::Ipovly;

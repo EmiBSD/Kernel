@@ -251,7 +251,7 @@ pub static CDEVSW: Devsw<Cdevsw, 101> = Devsw([
         ptytty,
         ptckqfilter,
     )),
-    // 7: /dev/klog (N4.7a: kernel::log, through subr_log.rs's entry points)
+    // 7: /dev/klog (N4.7a: kernel::base::log, through subr_log.rs's entry points)
     Cell::new(cdev_log_init(
         1,
         logopen,

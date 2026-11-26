@@ -105,7 +105,7 @@
 //!   `udf_vget` an alias (the spec table, `udf_vfsops.rs`).
 //! - LZ's hash (a raw `hashinit` slice of `sys/queue.rs` chains linked and unlinked in
 //!   `unsafe` blocks under a legacy `Mutex`) -> the mount's `UdfHash` of pinned unodes
-//!   (`PoolArc::as_pin`) under `um_hashmtx`, a `hal::mutex::Mutexed<()>` at `IPL_NONE` whose
+//!   (`PoolArc::as_pin`) under `um_hashmtx`, a `hal::sync::mutex::Mutexed<()>` at `IPL_NONE` whose
 //!   guard is the chains' witness (the C's mutex, never held across `vget` or a sleep:
 //!   `udf_hashlookup` drops it before `vget` and walks again on `ENOENT` or a recycled vnode,
 //!   udf_vnops.c:113-140); `udf_hashins` inserts without a duplicate scan, as the C (two
@@ -146,8 +146,8 @@
 use core::marker::PhantomData;
 use core::sync::atomic::Ordering;
 
-use hal::malloc::{M_WAITOK, MArray};
-use hal::pool::{PR_WAITOK, PoolBox};
+use hal::mem::malloc::{M_WAITOK, MArray};
+use hal::mem::pool::{PR_WAITOK, PoolBox};
 use hal::sys::dirent::{DT_DIR, DT_UNKNOWN, Dirent, MAXNAMLEN, dirent_size};
 use hal::sys::endian::{letoh16, letoh32, letoh64};
 use hal::sys::errno::Errno;
@@ -159,8 +159,9 @@ use hal::sys::unistd::{
 use hal::user::bytes_of_mut;
 
 use crate::assert::kpanic;
-use crate::clock::Timespec;
+use crate::base::prf::printf;
 use crate::file::FileGlue;
+use crate::file::uio::Uio;
 use crate::fs::bio::{DEV_BSHIFT, biodone};
 use crate::fs::buf::{B_ERROR, BufRef};
 use crate::fs::cache::{cache_enter, cache_lookup};
@@ -187,9 +188,8 @@ use crate::fs::vnode::{
     vn_lock,
 };
 use crate::fs::vops::{Cn, Cred, IoBuf, Vnops, vop_access, vop_bmap, vop_strategy, vop_unlock};
-use crate::prf::printf;
 use crate::proc::{ProcGlue, Thread};
-use crate::uio::Uio;
+use crate::time::clock::Timespec;
 
 /// `UDF_INVALID_BMAP`: the C's -1, `ERESTART`'s value (the module's deviations).
 pub const UDF_INVALID_BMAP: Errno = Errno::ERESTART;
@@ -1662,7 +1662,7 @@ mod tests {
     use std::vec;
     use std::vec::Vec;
 
-    use hal::malloc::{M_WAITOK, MArray};
+    use hal::mem::malloc::{M_WAITOK, MArray};
 
     use super::*;
     use crate::fs::bio::BCSTATS;

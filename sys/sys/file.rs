@@ -166,7 +166,7 @@ impl FileExt for File {
     }
 
     fn f_cred_ptr(&self) -> *const Ucred {
-        kernel::cred::CredRef::as_ptr(self.cred())
+        kernel::proc::cred::CredRef::as_ptr(self.cred())
     }
 }
 

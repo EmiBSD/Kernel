@@ -36,18 +36,18 @@
 
 /* <CODE> */
 //! Schedulable clock interrupts: `kern/kern_clockintr.c`, at its LZ path for `bsd`'s
-//! callers, over the kernel crate's `kernel::clockintr`.
+//! callers, over the kernel crate's `kernel::time::clockintr`.
 //!
 //! Upstream: sys/kern/kern_clockintr.c @ 3ce1f3f79392
 //! LZ: sys/kern/kern_clockintr.rs@3c62ede68802
 //!
 //! ## Redesign
-//! - N4.8a: the queues, the dispatch and the binders' API moved into `kernel::clockintr`
+//! - N4.8a: the queues, the dispatch and the binders' API moved into `kernel::time::clockintr`
 //!   (one `ClockCpu` per CPU in a `PerCpu`, a clock interrupt a `(CPU, Slot)` handle, the
 //!   `[m]` state inside the queue's `Mutexed`, `CL_BARRIER` sleeping). This path re-exports
 //!   the names `bsd`'s binders and clock drivers call. 0 `unsafe` (LZ 7).
 
-pub use kernel::clockintr::{
+pub use kernel::time::clockintr::{
     clockintr_advance, clockintr_bind, clockintr_cancel, clockintr_cpu_init, clockintr_dispatch,
     clockintr_hardclock, clockintr_schedule, clockintr_stagger, clockintr_trigger,
     clockintr_unbind, clockqueue_init, clockqueue_intrclock_install, clockrequest_advance,

@@ -154,9 +154,9 @@ use core::marker::PhantomData;
 use core::mem::MaybeUninit;
 use core::ptr;
 
-use hal::intr::{IPL_BIO, splraise};
-use hal::malloc::{M_WAITOK, MArc};
-use hal::sleep::INFSLP;
+use hal::cpu::intr::{IPL_BIO, splraise};
+use hal::mem::malloc::{M_WAITOK, MArc};
+use hal::sync::sleep::INFSLP;
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::{FREAD, FWRITE};
 use hal::sys::mount::{
@@ -168,6 +168,7 @@ use hal::sys::types::{Ino, Uid, major};
 use hal::user::UserPtr;
 
 use crate::assert::kpanic;
+use crate::base::prf::printf;
 use crate::file::{DM_OPENBLCK, FileGlue};
 use crate::fs::bio::{bread, brelse};
 use crate::fs::buf::{B_INVAL, BufRef};
@@ -207,7 +208,6 @@ use crate::fs::vops::{
 };
 use crate::fs::word::U32Word;
 use crate::net::mbuf::Mbuf;
-use crate::prf::printf;
 use crate::proc::{ProcGlue, Thread};
 use crate::vm::io::MAXBSIZE;
 

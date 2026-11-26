@@ -84,7 +84,7 @@ use crate::sys::queue::{ListAdapter, ListHead};
 use crate::sys::sched::sched_pause;
 use crate::sys::types::Off;
 use crate::sys::uio::{Uio, UioRw, UioSeg};
-use hal::once::OnceStatic;
+use hal::sync::once::OnceStatic;
 use hal::user::KcopyToken;
 
 /// `uio->uio_iov++; uio->uio_iovcnt--`: steps past the first iovec.
@@ -160,14 +160,14 @@ pub fn uiomove(cp: &mut [u8], uio: &mut Uio<'_>) -> Result<(), Errno> {
 
 /// `uiomove(cp, n, uio)` of a read out of `cp`, bytes no one writes meanwhile (a socket's
 /// receive buffer, whose clusters may be shared): a user uio through the kernel's checked
-/// copy (`kernel::uio::uiomove_user_out`), a kernel one (nfs's `UIO_SYSSPACE`) through the
+/// copy (`kernel::file::uio::uiomove_user_out`), a kernel one (nfs's `UIO_SYSSPACE`) through the
 /// token's `kcopy_out`, as [`uiomove`] moves them.
 pub fn uiomove_out(cp: &[u8], uio: &mut Uio<'_>) -> Result<(), Errno> {
     if uio.uio_rw != UioRw::UIO_READ {
         panic(format_args!("uiomove_out: not a read"));
     }
     if uio.uio_segflg == UioSeg::UIO_USERSPACE {
-        return kernel::uio::uiomove_user_out(cp, uio);
+        return kernel::file::uio::uiomove_user_out(cp, uio);
     }
     let mut n = cp.len().min(uio.uio_resid);
     let mut done = 0;

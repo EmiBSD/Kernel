@@ -126,12 +126,12 @@
 //!   (the C's 0 or 1).
 //! - `tcp_respond`'s `caddr_t template` is a byte slice: the IP header, followed by the TCP
 //!   header when `th0` is `None` (the template of a connection); the headers are written in
-//!   place into the new mbuf with `hal::pod`. `flags` is the `u8` of `th_flags`. Without a
+//!   place into the new mbuf with `hal::mem::pod`. `flags` is the `u8` of `th_flags`. Without a
 //!   control block it uses `ip6_defhlim`, what the C's `in6_selecthlim(NULL)` returns
 //!   (`in6_selecthlim` takes a pcb here); the caller passes its proof of the net lock.
 //! - `tcp_signature` returns `bool` (`true` for the C's 0); its `char *sig` is the 16-byte
 //!   digest array; the pseudo header and the TCP header are hashed as the bytes the C's
-//!   structures hold (`hal::pod`). `tcp_signature_apply` is the closure handed to `m_apply`.
+//!   structures hold (`hal::mem::pod`). `tcp_signature_apply` is the closure handed to `m_apply`.
 //!   The five `tcp_signature_tdb_*` functions (the `XF_TCPSIGNATURE` transform, IPsec's
 //!   `xformsw` row over `bsd`'s `struct tdb`) stay `bsd`'s until IPsec moves (D-10, N8).
 //!
@@ -139,7 +139,7 @@
 //! - N6.6a2: the kernel's TCP is built beside `bsd`'s, unregistered until N6.6a5 (D-2):
 //!   these globals and functions are the kernel's own, `bsd`'s `sys/netinet/tcp_subr.rs`
 //!   keeps its until the switch. `tcpqe_pool` and `sackhl_pool` are `BoxPool`s whose items
-//!   the queues own (`hal::pool::Pooled`), `tcpcb_pool` is the glue's (`tcp_var::TcpTables`);
+//!   the queues own (`hal::mem::pool::Pooled`), `tcpcb_pool` is the glue's (`tcp_var::TcpTables`);
 //!   `tcp_iss` is an `AtomicU32` beside `tcp_timer_mtx`, a `Mutexed<()>` whose holders alone
 //!   write it (since N6.6a5, when pf reads it without the mutex, the C's `READ_ONCE`);
 //!   `tcp_secret` is a `OnceStatic` set by `tcp_init` (LZ: a `StaticCell` written under
@@ -152,7 +152,7 @@
 //!   statements later under the same lock). A use after the close does not compile.
 //! - `tcp_template` takes the template out of the control block and gives it back filled
 //!   (the C returns the pointer its callers store); `tcp_respond` writes its headers in
-//!   place (`hal::pod`, where LZ wrote unaligned under `unsafe`), and lends the pcb's route
+//!   place (`hal::mem::pod`, where LZ wrote unaligned under `unsafe`), and lends the pcb's route
 //!   cache and IPv6 options to the output call. `tcp_signature`'s key is lent by IPsec's
 //!   `tdb_amxkey` leg to the MD5 update, never copied (D-9); the digest is compared with
 //!   `timingsafe_bcmp` by its callers.
@@ -164,7 +164,7 @@
 //!   answers a counted route, held where the C holds the cache's pointer.
 //! - N6.6a3: `tcp_drop` consumes the control block and answers `tcp_close`'s [`Closed`].
 //!   The control inputs (LZ's `unsafe fn`s over raw `sockaddr` and `void *` contracts, 17
-//!   `unsafe` in all) read the ICMP quote through `hal::pod` (the IPv4 header, the eight TCP
+//!   `unsafe` in all) read the ICMP quote through `hal::mem::pod` (the IPv4 header, the eight TCP
 //!   bytes, `icmp_nextmtu`) and the ICMPv6 parameter by reference; the connection is locked
 //!   by `in_pcbsolock` under the caller's proof and opened by `intotcpcb`, and the C's
 //!   `notify` function pointer is a closure (the walks') or [`tcp_notify`]'s work on the block
@@ -175,13 +175,13 @@
 use core::mem::size_of;
 use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
 
-use hal::intr::IPL_SOFTNET;
-use hal::mutex::Mutexed;
-use hal::netlock::NetHeld;
-use hal::once::OnceStatic;
-use hal::pod;
-use hal::pool::{BoxPool, PR_NOWAIT, PR_WAITOK, PoolArc};
-use hal::rwlock::WitnessPart;
+use hal::cpu::intr::IPL_SOFTNET;
+use hal::mem::pod;
+use hal::mem::pool::{BoxPool, PR_NOWAIT, PR_WAITOK, PoolArc};
+use hal::sync::mutex::Mutexed;
+use hal::sync::netlock::NetHeld;
+use hal::sync::once::OnceStatic;
+use hal::sync::rwlock::WitnessPart;
 use hal::sys::endian::{htonl, htons, ntohl, ntohs};
 use hal::sys::errno::Errno;
 use hal::sys::mbuf::MT_HEADER;
@@ -1510,7 +1510,7 @@ pub fn tcp_test_reset<G: ProcGlue>() {
 pub(crate) mod testtcp {
     use std::sync::MutexGuard;
 
-    use hal::netlock::{NETLOCK, NetHeld};
+    use hal::sync::netlock::{NETLOCK, NetHeld};
 
     use super::*;
     use crate::net::sockbuf::SS_NOFDREF;
@@ -2202,7 +2202,7 @@ mod tests {
     // Host tests of the kernel's `tcp_subr.rs`: window scaling, the RFC 2385 digests against
     // an independent MD5 of the same bytes, a reply to a segment as the wire sees it.
 
-    use hal::netlock::NETLOCK;
+    use hal::sync::netlock::NETLOCK;
     use hal::sys::netinet_in::InAddr;
     use hal::sys::netinet6_in6::In6Addr;
 
@@ -2496,7 +2496,7 @@ mod tests {
         );
         // The pcb is detached: its socket's lock finds no pcb any more.
         {
-            let w = hal::netlock::NETLOCK.read();
+            let w = hal::sync::netlock::NETLOCK.read();
             let net = NetHeld::of(&w).expect("the net lock");
             assert!(crate::netinet::in_pcb::in_pcbsolock(&inp, &net).is_none());
         }
@@ -2658,7 +2658,7 @@ mod tests {
         let q: std::vec::Vec<_> = (0..3)
             .map(|_| {
                 TCPQE_POOL.get(PR_NOWAIT, || Tcpqent {
-                    tcpqe_q: hal::owned::SlistLink::new(),
+                    tcpqe_q: hal::ds::owned::SlistLink::new(),
                     tcpqe_tcp: Tcphdr::default(),
                     tcpqe_m: None,
                 })

@@ -154,7 +154,7 @@ pub type Segsz = i32;
 /// Length type for network syscalls (`socklen_t`).
 pub type Socklen = u32;
 /// Microseconds, signed (`suseconds_t`, a `long`: 64 bits on both LP64 machines, the type of
-/// `struct timeval`'s `tv_usec` in `kernel::clock`).
+/// `struct timeval`'s `tv_usec` in `kernel::time::clock`).
 pub type Suseconds = i64;
 /// Epoch time (`time_t`).
 pub type Time = i64;

@@ -80,7 +80,7 @@
 //!   goes to the real console.
 //! - The `struct tty *tp` of `kprintf`/`kputchar` is an `Option<&Tty>`; `kprintf` keeps its
 //!   three arguments and [`kprintf_tp`] is the form with the tty. `tprintf_open`,
-//!   `tprintf_close` and `tprintf` are the kernel's (`kernel::prf`, N6.7a0).
+//!   `tprintf_close` and `tprintf` are the kernel's (`kernel::base::prf`, N6.7a0).
 //! - `panicstr` is behind [`panicstr`] (a flag); the first message is kept in a single
 //!   `panicbuf`, per CPU from M5 (`ci_panicbuf`).
 //! - `db_panic` defaults to 0: a panic prints the stack trace and reboots, as OpenBSD does with
@@ -764,7 +764,7 @@ mod tests {
 
     /// The message buffer's write pointer.
     fn log_bufx() -> usize {
-        let h = kernel::log::msgbuf_header(Buf::Msgbuf).unwrap();
+        let h = kernel::base::log::msgbuf_header(Buf::Msgbuf).unwrap();
         h.msg_bufx as usize
     }
 
@@ -772,7 +772,7 @@ mod tests {
     /// wrapped in between).
     fn log_text(before: usize, after: usize) -> std::vec::Vec<u8> {
         let mut text = std::vec![0u8; after.saturating_sub(before)];
-        let n = kernel::log::msgbuf_read(Buf::Msgbuf, before, &mut text);
+        let n = kernel::base::log::msgbuf_read(Buf::Msgbuf, before, &mut text);
         text.truncate(n);
         text
     }
@@ -816,14 +816,14 @@ mod tests {
         use crate::kern::proc_glue::{procinit, test_process, test_setsid, test_thread};
         use crate::sys::proc::SessionRef;
         use crate::sys::vnode::Vnode;
-        use kernel::prf::{tprintf, tprintf_close, tprintf_open};
+        use kernel::base::prf::{tprintf, tprintf_close, tprintf_open};
         use kernel::proc::StaticOrPooled;
         use std::boxed::Box;
 
         /// The session's references (`s_count`).
         fn count(s: &SessionRef) -> usize {
             match s {
-                StaticOrPooled::Pooled(a) => hal::pool::PoolArc::count(a),
+                StaticOrPooled::Pooled(a) => hal::mem::pool::PoolArc::count(a),
                 StaticOrPooled::Static(_) => 0,
             }
         }
@@ -832,7 +832,7 @@ mod tests {
         procinit();
         let pr = test_process(1);
         let p = test_thread(pr);
-        pr.set_main_static(hal::pin::pin_static(p));
+        pr.set_main_static(hal::ds::pin::pin_static(p));
         let (_pg, sess) = test_setsid(pr);
         let base = count(&sess);
 

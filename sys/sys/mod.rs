@@ -25,7 +25,7 @@
 
 #[forbid(unsafe_code)]
 pub mod _time;
-pub use ::kernel::acct;
+pub use ::kernel::proc::acct;
 pub mod ataio;
 pub mod audioio;
 pub mod buf;

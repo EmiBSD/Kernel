@@ -117,7 +117,7 @@
 //!   and its caller writes back.
 //! - `de_forw`/`de_back` name a `de_chain` member the structure does not have; they are dead
 //!   macros and are left out.
-//! - `de_lock` is a `hal::rwlock::RecursiveRwlock` (the C's `rrw_init_flags(.., RWL_DUPOK |
+//! - `de_lock` is a `hal::sync::rwlock::RecursiveRwlock` (the C's `rrw_init_flags(.., RWL_DUPOK |
 //!   RWL_IS_VNODE)`: both are `WITNESS` flags, which the kernel's lock has none of, as the
 //!   UFS inode's).
 //! - The vnode operation prototypes (`msdosfs_lookup`, ...) are the functions of
@@ -133,7 +133,7 @@
 //!   drop, so `de_lockf` sat in a `ManuallyDrop`) -> a [`Denode`] made whole where the C fills
 //!   it ([`Denode::new`]: the identity `de_vnode`, `de_dev`, `de_pmp` and the entry's position
 //!   given, the rest zero as `M_ZERO` leaves it) and published in a counted
-//!   `malloc(M_MSDOSFSNODE)` block ([`DenodeRef`], `hal::malloc::MArc`; `vmstat -m`'s `MSDOSFS
+//!   `malloc(M_MSDOSFSNODE)` block ([`DenodeRef`], `hal::mem::malloc::MArc`; `vmstat -m`'s `MSDOSFS
 //!   node` row, the C's requests; a typed pool would add a pool row userland sees, D-N5.7-2)
 //!   erased into the vnode's typed slot (`Vnode::set_node` in `deget`, where the C sets
 //!   `v_data`; `take_node` in `msdosfs_reclaim`, mfs's precedent): the last handle frees the
@@ -147,7 +147,7 @@
 //!   (`fs::word`; docs/IDIOMS.md's counters' row: every msdosfs path is `KERNEL_LOCK`ed, as
 //!   ufs's): `de_flag`, `de_dirclust`/`de_diroffset` (`reinsert` moves a renamed denode),
 //!   the lookup's `de_fndoffset`/`de_fndcnt`, `de_refcnt`, the entry's members, the fat cache.
-//!   `de_devvp` is a `hal::link::Link` (`None` until `deget` has hashed the denode, taken by
+//!   `de_devvp` is a `hal::ds::link::Link` (`None` until `deget` has hashed the denode, taken by
 //!   `msdosfs_reclaim` for its `vrele`). `de_pmp` is a counted handle of the mount structure
 //!   held for the denode's life, as `i_ump` ([`Denode::pmp`] borrows it: one load, the C's).
 //! - The template denode `msdosfs_create` and `msdosfs_mkdir` fill on the stack (`struct
@@ -155,15 +155,14 @@
 //!   published; `createde` reads it as the C does (a count pair of `de_pmp` per create,
 //!   ROADMAP N12's row).
 
-use hal::link::Link;
-use hal::malloc::{M_WAITOK, MArc};
-use hal::pinlist::PinEntry;
-use hal::rwlock::RecursiveRwlock;
+use hal::ds::link::Link;
+use hal::ds::pinlist::PinEntry;
+use hal::mem::malloc::{M_WAITOK, MArc};
+use hal::sync::rwlock::RecursiveRwlock;
 use hal::sys::mount::{Fid, MSDOSFSMNT_NOWIN95};
 use hal::sys::types::Dev;
 
 use crate::assert::kpanic;
-use crate::clock::Timespec;
 use crate::fs::lockf::LockfSlot;
 use crate::fs::msdosfs::bpb::{getulong, getushort, putulong, putushort};
 use crate::fs::msdosfs::direntry::{
@@ -175,6 +174,7 @@ use crate::fs::msdosfs::msdosfsmount::{Msdosfsmount, MsdosfsmountRef};
 use crate::fs::vnode::{VT_MSDOSFS, Vnode};
 use crate::fs::word::{I32Word, I64Word, U8Word, U16Word, U32Word, U64Word};
 use crate::proc::ProcGlue;
+use crate::time::clock::Timespec;
 
 /// `M_MSDOSFSNODE`: the malloc type of the denodes (`<sys/malloc.h>`; `vmstat -m`'s
 /// `MSDOSFS node`).

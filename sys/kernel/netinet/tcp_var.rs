@@ -91,7 +91,7 @@
 //!
 //! ## Redesign
 //! - N6.6a1 (D-16): `tcpcounters` (the C's `struct cpumem *` from `counters_alloc`) is
-//!   [`TCPCOUNTERS`], a `hal::percpu::Counters` here beside the enum that indexes it, where LZ
+//!   [`TCPCOUNTERS`], a `hal::sync::percpu::Counters` here beside the enum that indexes it, where LZ
 //!   had a static array of shared atomics in `bsd`'s `tcp_subr.rs` that every softnet wrote
 //!   (one cache line per counter group for all CPUs). [`tcpstat_inc`], [`tcpstat_add`] and
 //!   [`tcpstat_pkt`] are the C's `counters_inc`/`counters_add`/`counters_pkt` on this CPU's
@@ -108,7 +108,7 @@
 //!   the pcb's slot owns (`Inpcb::inp_tcpcb`, keyed to the socket's `so_lock` in part `PCB`):
 //!   its timers and its SYN cache list stand apart (the wheel's lock and the SYN cache's
 //!   mutex guard them), every other member is a plain field of [`TcpState`], one
-//!   `hal::rwlock::ExclGuarded` cell keyed to `so_lock` in part `TCP` (an mbuf chain is `Send`
+//!   `hal::sync::rwlock::ExclGuarded` cell keyed to `so_lock` in part `TCP` (an mbuf chain is `Send`
 //!   but not `Sync`, so the cell opens only to an exclusive witness, D-15's cell (c)).
 //!   [`intotcpcb`] opens both through the socket lock's parts and answers a [`Tp`]: the pcb,
 //!   its socket, the pinned control block, its state mutably, the SYN part and the net lock's
@@ -116,7 +116,7 @@
 //!   carries the pcb); the back pointer was the C's way to the socket and the pcb, which the
 //!   caller already holds.
 //! - The reassembly queue and the SACK holes are bare owned chains
-//!   (`hal::owned::SlistLink`, the link owning the next entry's box, D-13): `tcpqe_q` and
+//!   (`hal::ds::owned::SlistLink`, the link owning the next entry's box, D-13): `tcpqe_q` and
 //!   `next` own the following entry; the entries are "tcpqe" and "sackhl" `BoxPool` items.
 //!   The C walks both forward only, inserting and removing where it stands.
 //! - The SYN cache entry ([`SynCache`]) is a counted "syncache" item (`PoolArc`, the C's
@@ -147,15 +147,15 @@
 use core::pin::Pin;
 use core::sync::atomic::{AtomicI32, AtomicU64};
 
-use hal::intr::IPL_SOFTNET;
-use hal::malloc::MArray;
-use hal::mutex::Mutexed;
-use hal::netlock::NetHeld;
-use hal::owned::SlistLink;
-use hal::percpu::Counters;
-use hal::pinlist::{PinEntry, PinList, PinRing};
-use hal::pool::{BoxPool, PoolHome, Pooled, TypedPool};
-use hal::rwlock::{ExclGuarded, Guarded, LockId, WitnessPart};
+use hal::cpu::intr::IPL_SOFTNET;
+use hal::ds::owned::SlistLink;
+use hal::ds::pinlist::{PinEntry, PinList, PinRing};
+use hal::mem::malloc::MArray;
+use hal::mem::pool::{BoxPool, PoolHome, Pooled, TypedPool};
+use hal::sync::mutex::Mutexed;
+use hal::sync::netlock::NetHeld;
+use hal::sync::percpu::Counters;
+use hal::sync::rwlock::{ExclGuarded, Guarded, LockId, WitnessPart};
 use hal::sys::errno::Errno;
 use hal::sys::netinet_tcp::{MAX_SACK_BLKS, TcpSeq, Tcphdr};
 
@@ -168,7 +168,7 @@ use crate::netinet::in_pcb::{Inpcb, InpcbRef, Inpcbtable};
 use crate::netinet::tcp_subr::{SACKHL_POOL, TCP_STARTTIME, TCPQE_POOL};
 use crate::netinet::tcp_timer::TCPT_NTIMERS;
 use crate::proc::ProcGlue;
-use crate::timeout::Timeout;
+use crate::time::timeout::Timeout;
 
 // t_flags.
 
@@ -605,11 +605,11 @@ impl<G: ProcGlue> Tcpcb<G> {
     /// `&tp->t_timer[timer]`, pinned with the control block; `panic(9)` past `TCPT_NTIMERS`.
     pub fn timer(self: Pin<&Self>, timer: usize) -> Pin<&Timeout> {
         match timer {
-            0 => hal::pin::project(self, |t| &t.t_timer[0]),
-            1 => hal::pin::project(self, |t| &t.t_timer[1]),
-            2 => hal::pin::project(self, |t| &t.t_timer[2]),
-            3 => hal::pin::project(self, |t| &t.t_timer[3]),
-            4 => hal::pin::project(self, |t| &t.t_timer[4]),
+            0 => hal::ds::pin::project(self, |t| &t.t_timer[0]),
+            1 => hal::ds::pin::project(self, |t| &t.t_timer[1]),
+            2 => hal::ds::pin::project(self, |t| &t.t_timer[2]),
+            3 => hal::ds::pin::project(self, |t| &t.t_timer[3]),
+            4 => hal::ds::pin::project(self, |t| &t.t_timer[4]),
             _ => kpanic(format_args!("tcp timer {timer} of {TCPT_NTIMERS}")),
         }
     }
@@ -1182,7 +1182,7 @@ pub fn tcpstat_pkt(pcounter: TcpstatCounters, bcounter: TcpstatCounters, v: u64)
 pub fn tcp_now() -> u64 {
     TCP_STARTTIME
         .load(core::sync::atomic::Ordering::Relaxed)
-        .wrapping_add(crate::tc::getnsecruntime() / 1_000_000)
+        .wrapping_add(crate::time::tc::getnsecruntime() / 1_000_000)
 }
 
 /// `TCP_TIME(sec)`: `tcp_now()` is in milliseconds.

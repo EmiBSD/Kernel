@@ -184,7 +184,9 @@ fn set_nam6(nam: &Mbuf, sin6: SockaddrIn6) {
     let nam = mut_of(nam);
     nam.m_len().set(size_of::<SockaddrIn6>() as u32);
     // An `MT_SONAME` mbuf of `MLEN` bytes, writable: the C's store cannot fail.
-    let written = nam.data_mut().is_some_and(|d| hal::pod::put(d, 0, &sin6));
+    let written = nam
+        .data_mut()
+        .is_some_and(|d| hal::mem::pod::put(d, 0, &sin6));
     if !written {
         panic(format_args!("set_nam6: a name mbuf without room"));
     }

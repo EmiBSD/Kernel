@@ -128,15 +128,15 @@
 //! - The address `ioctl`s over the request's bytes: LZ's `unsafe fn`s over `caddr_t data`
 //!   (with an aligned copy of an unaligned request) -> [`in_ioctl`] over `&mut [u8]`, the
 //!   `struct ifreq`'s and `struct in_aliasreq`'s addresses read and written by copies at their
-//!   offsets (`hal::pod::at`/`put`, the C's `*sin` copies and `*satosin(..) = ia->ia_addr`
+//!   offsets (`hal::mem::pod::at`/`put`, the C's `*sin` copies and `*satosin(..) = ia->ia_addr`
 //!   stores); `in_sa2sin` and `in_nam2sin` answer the checked `sockaddr_in` by value.
-//! - `NET_LOCK()` stays detached (`hal::netlock::lock`) for the requests that change an
+//! - `NET_LOCK()` stays detached (`hal::sync::netlock::lock`) for the requests that change an
 //!   address, since the driver's `SIOCSIFADDR` may let it go and take it again (wg(4)'s
 //!   `wg_up`, D-14); the steps that need its proof (the routes) borrow it in closures
-//!   (`hal::netlock::lend_detached`), never across the driver's two requests. The kernel lock
+//!   (`hal::sync::netlock::lend_detached`), never across the driver's two requests. The kernel lock
 //!   is taken C-style around the same span, in the C's order (net, then kernel).
 //!   `NET_LOCK_SHARED()` of `in_ioctl_get` is a witness (no driver call).
-//! - (N6.5e's 5e2) A multicast record is a counted handle (`hal::malloc::MArc` of
+//! - (N6.5e's 5e2) A multicast record is a counted handle (`hal::mem::malloc::MArc` of
 //!   `kernel::netinet::in_var::InMulti`), freed with its last one where the C frees it: the
 //!   interface's list holds one ([`in_addmulti`] links it, [`in_delmulti`] at the last leave
 //!   and `if_detach` take it off), each membership one: `in_addmulti` answers the joiner's
@@ -172,10 +172,10 @@
 
 use core::mem::{offset_of, size_of};
 
-use hal::malloc::MArc;
-use hal::netlock::{NETLOCK, NetHeld, NetReader};
-use hal::pod;
-use hal::rwlock::{RW_READ, RW_WRITE, Witness};
+use hal::mem::malloc::MArc;
+use hal::mem::pod;
+use hal::sync::netlock::{NETLOCK, NetHeld, NetReader};
+use hal::sync::rwlock::{RW_READ, RW_WRITE, Witness};
 use hal::sys::endian::{htonl, ntohl};
 use hal::sys::errno::Errno;
 use hal::sys::ioccom::iocparm_len;
@@ -225,7 +225,7 @@ const SA_DATA: usize = 2;
 /// `NET_ASSERT_LOCKED()`.
 #[inline]
 fn net_assert_locked() {
-    kassert!(matches!(hal::netlock::status(), RW_WRITE | RW_READ));
+    kassert!(matches!(hal::sync::netlock::status(), RW_WRITE | RW_READ));
 }
 
 /// The `sockaddr_in` image of `sin`, for the routes' requests.
@@ -439,13 +439,13 @@ pub fn in_ioctl(
         sin = Some(in_sa2sin(&data[IFR_ADDR..IFR_ADDR + SIN_SIZE])?);
     }
 
-    hal::netlock::lock();
-    hal::klock::kernel_lock();
+    hal::sync::netlock::lock();
+    hal::sync::klock::kernel_lock();
 
     let error = 'err: {
         // T1: the address, cloned before the reader ends, kept for the request (the driver's
         // request below may let the detached lock go).
-        let found = hal::netlock::lend_detached(|net| {
+        let found = hal::sync::netlock::lend_detached(|net| {
             first_or_exact(&net.reader(), ifp, sin.map(|s| s.sin_addr)).cloned()
         });
         let Some(ifa) = found else {
@@ -469,7 +469,7 @@ pub fn in_ioctl(
                     ia.ia_dstaddr.set(oldaddr);
                     break 'err Err(e);
                 }
-                hal::netlock::lend_detached(|net| {
+                hal::sync::netlock::lend_detached(|net| {
                     let _ = in_scrubhost(&ifa, &oldaddr, net);
                     let _ = in_addhost(&ifa, &ia.ia_dstaddr.get(), net);
                 });
@@ -509,8 +509,8 @@ pub fn in_ioctl(
         }
     };
     // err:
-    hal::klock::kernel_unlock();
-    hal::netlock::unlock();
+    hal::sync::klock::kernel_unlock();
+    hal::sync::netlock::unlock();
     error
 }
 
@@ -546,13 +546,13 @@ fn in_ioctl_set_ifaddr(cmd: u64, data: &mut [u8], ifp: &'static Ifnet) -> Result
 
     let sin = in_sa2sin(&data[IFR_ADDR..IFR_ADDR + SIN_SIZE])?;
 
-    hal::netlock::lock();
-    hal::klock::kernel_lock();
+    hal::sync::netlock::lock();
+    hal::sync::klock::kernel_lock();
 
     // find first address: an existing one cloned before the reader ends (T1), or a new one,
     // whose creation reference `in_ifinit` gives to `ifa_add` and whose clone the request
     // keeps (T1).
-    let found = hal::netlock::lend_detached(|net| in_ifp2ia(&net.reader(), ifp).cloned());
+    let found = hal::sync::netlock::lend_detached(|net| in_ifp2ia(&net.reader(), ifp).cloned());
     let (ia, created) = if let Some(ia) = found {
         (ia, None)
     } else {
@@ -560,14 +560,14 @@ fn in_ioctl_set_ifaddr(cmd: u64, data: &mut [u8], ifp: &'static Ifnet) -> Result
         (created.clone(), Some(created))
     };
 
-    hal::netlock::lend_detached(|net| in_ifscrub(ifp, &ia, net));
+    hal::sync::netlock::lend_detached(|net| in_ifscrub(ifp, &ia, net));
     let error = in_ifinit(ifp, &ia, &sin, created);
     if error.is_ok() {
         if_addrhooks_run(ifp);
     }
 
-    hal::klock::kernel_unlock();
-    hal::netlock::unlock();
+    hal::sync::klock::kernel_unlock();
+    hal::sync::netlock::unlock();
     error
 }
 
@@ -580,12 +580,12 @@ fn in_ioctl_change_ifaddr(cmd: u64, data: &mut [u8], ifp: &'static Ifnet) -> Res
         sin = Some(in_sa2sin(&data[IFRA_ADDR..IFRA_ADDR + SIN_SIZE])?);
     }
 
-    hal::netlock::lock();
-    hal::klock::kernel_lock();
+    hal::sync::netlock::lock();
+    hal::sync::klock::kernel_lock();
 
     // find first address, if no exact match wanted (T1: cloned before the reader ends, kept
     // for the request)
-    let ia = hal::netlock::lend_detached(|net| {
+    let ia = hal::sync::netlock::lend_detached(|net| {
         ifp.if_addrlist()
             .iter(&net.reader())
             .find(|ifa| {
@@ -653,7 +653,7 @@ fn in_ioctl_change_ifaddr(cmd: u64, data: &mut [u8], ifp: &'static Ifnet) -> Res
                     }
                 };
                 if let Some(m) = masksin {
-                    hal::netlock::lend_detached(|net| in_ifscrub(ifp, &ifa, net));
+                    hal::sync::netlock::lend_detached(|net| in_ifscrub(ifp, &ifa, net));
                     ia.ia_netmask.set(m);
                     let mut sm = ia.ia_sockmask.get();
                     sm.sin_addr.s_addr = m;
@@ -661,7 +661,7 @@ fn in_ioctl_change_ifaddr(cmd: u64, data: &mut [u8], ifp: &'static Ifnet) -> Res
                     needinit = true;
                 }
                 if let Some(d) = dstsin {
-                    hal::netlock::lend_detached(|net| in_ifscrub(ifp, &ifa, net));
+                    hal::sync::netlock::lend_detached(|net| in_ifscrub(ifp, &ifa, net));
                     ia.ia_dstaddr.set(d);
                     needinit = true;
                 }
@@ -692,7 +692,7 @@ fn in_ioctl_change_ifaddr(cmd: u64, data: &mut [u8], ifp: &'static Ifnet) -> Res
                 // Even if the individual steps were safe, shouldn't these kinds of changes
                 // happen atomically? What should happen to a packet that was routed after the
                 // scrub but before the other steps?
-                hal::netlock::lend_detached(|net| in_purgeaddr(&ia, net));
+                hal::sync::netlock::lend_detached(|net| in_purgeaddr(&ia, net));
                 if_addrhooks_run(ifp);
                 Ok(())
             }
@@ -701,8 +701,8 @@ fn in_ioctl_change_ifaddr(cmd: u64, data: &mut [u8], ifp: &'static Ifnet) -> Res
         }
     };
 
-    hal::klock::kernel_unlock();
-    hal::netlock::unlock();
+    hal::sync::klock::kernel_unlock();
+    hal::sync::netlock::unlock();
     error
 }
 
@@ -779,7 +779,7 @@ pub fn in_ifinit(
     // `ifa_add` below.
     let lst = match created {
         Some(c) => c,
-        None => hal::netlock::lend_detached(|net| {
+        None => hal::sync::netlock::lend_detached(|net| {
             let _ = rt_ifa_dellocal(ifa, net);
             ifa_del(ifp, ifa, net)
         }),
@@ -810,7 +810,7 @@ pub fn in_ifinit(
         error = Err(e);
     }
 
-    hal::netlock::lend_detached(|net| {
+    hal::sync::netlock::lend_detached(|net| {
         'out: {
             // Add the address to the local list and the global tree. If an error occurred,
             // put back the original address.
@@ -1068,13 +1068,13 @@ pub fn in_addmulti(addr: &InAddr, ifp: &'static Ifnet, net: &NetHeld<'_>) -> Opt
     // Ask the network driver to update its multicast reception filter appropriately for the
     // new address.
     let mut ifr = multi_ifreq(*addr);
-    hal::klock::kernel_lock();
+    hal::sync::klock::kernel_lock();
     if if_ioctl(ifp, SIOCADDMULTI, &mut ifr).is_err() {
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
         // free(new_inm): its one handle's drop.
         return None;
     }
-    hal::klock::kernel_unlock();
+    hal::sync::klock::kernel_unlock();
 
     let mut w = lock.write();
     // check again after unlock and lock
@@ -1132,9 +1132,9 @@ pub fn in_delmulti(inm: MArc<InMulti>, net: &NetHeld<'_>) {
 
         // Notify the network driver to update its multicast reception filter.
         let mut ifr = multi_ifreq(inm.inm_addr());
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         let _ = if_ioctl(ifp.ifp(), SIOCDELMULTI, &mut ifr);
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
         // if_put(ifp): the reference's drop.
     }
 

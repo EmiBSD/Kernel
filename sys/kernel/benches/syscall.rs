@@ -52,7 +52,7 @@ use std::vec::Vec;
 
 use core::pin::Pin;
 
-use hal::malloc::{M_WAITOK, MArray};
+use hal::mem::malloc::{M_WAITOK, MArray};
 use hal::sys::errno::Errno;
 use hal::sys::syscall::SYS_getpid;
 use hal::syscall::Register;
@@ -195,11 +195,11 @@ impl ProcGlue for BenchGlue {
     ) {
     }
     /// No per-CPU slice start: the uptime itself (no running part).
-    fn spc_runtime() -> kernel::clock::Timespec {
-        kernel::tc::nanouptime()
+    fn spc_runtime() -> kernel::time::clock::Timespec {
+        kernel::time::tc::nanouptime()
     }
     fn process_ref(pr: &Process<Self>) -> proc::ProcessRef<Self> {
-        match hal::pool::PoolArc::from_ref(pr) {
+        match hal::mem::pool::PoolArc::from_ref(pr) {
             Some(a) => proc::StaticOrPooled::Pooled(a),
             None => std::process::exit(1),
         }
@@ -222,12 +222,12 @@ fn main() {
         .collect();
     testutil::install();
     // The thread's user registers (`PROC_PC`, `PROC_STACK`), in hal's host double.
-    hal::trap::set_user_regs(PC, SP);
+    hal::cpu::trap::set_user_regs(PC, SP);
     // The prologue's thread: an address space (the map pools over the doubles' pages), a
     // libc pin table naming getpid at PC, a MAP_STACK cache over SP.
     let _pages = testutil::pages_install(256 * 4096);
     testutil::init_shared_once();
-    hal::pmap::init();
+    hal::vm::pmap::init();
     kernel::vm::map::uvm_map_init();
     let vm = kernel::vm::map::uvmspace_alloc(
         hal::arch::current::vmparam::VM_MIN_ADDRESS,
@@ -238,7 +238,7 @@ fn main() {
     let serial = vm.vm_map.sserial();
     let _ = VM.set(vm);
     let t: &'static Thread<BenchGlue> = Box::leak(Box::new(Thread::new_static(&PR, ())));
-    let p: Pin<&'static Thread<BenchGlue>> = hal::pin::pin_static(t);
+    let p: Pin<&'static Thread<BenchGlue>> = hal::ds::pin::pin_static(t);
     let mut pins = std::vec![0u32; hal::sys::syscall::SYS_MAXSYSCALL];
     pins[SYS_getpid as usize] = 0x40;
     let Some(pins) = MArray::new(kernel::vm::mmap::M_PINSYSCALL, M_WAITOK, pins.len(), |i| {

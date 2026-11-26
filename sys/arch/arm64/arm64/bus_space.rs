@@ -70,7 +70,7 @@
 //!   `km_free`.
 //! - After `pmap_init` the flags map to three of the four memory types the C uses, as LZ
 //!   wrote it: `BUS_SPACE_MAP_CACHEABLE` to write-back, `BUS_SPACE_MAP_PREFETCHABLE` to
-//!   Device-nGnRE (`hal::mmio::DevCache::Posted`) and anything else to Device-nGnRnE. The C
+//!   Device-nGnRE (`hal::dev::mmio::DevCache::Posted`) and anything else to Device-nGnRnE. The C
 //!   (`bus_space.c`, `generic_space_map`) lets the later flag win: `BUS_SPACE_MAP_PREFETCHABLE`
 //!   maps normal uncached memory (`PMAP_CACHE_CI`, `DevCache::Uncached`) and
 //!   `BUS_SPACE_MAP_POSTED` Device-nGnRE, which LZ ignores. Kept because every boot maps through
@@ -92,9 +92,9 @@ use crate::sys::errno::Errno;
 use crate::sys::types::{Off, Paddr, Vaddr, Vsize};
 use crate::unported;
 use hal::arch::arm64::pmap::VMMAP_SIZE;
-use hal::mmio::{DevCache, Untyped};
-use hal::pmap::initialized as pmap_initialized;
+use hal::dev::mmio::{DevCache, Untyped};
 use hal::vm::param::{round_page, trunc_page};
+use hal::vm::pmap::initialized as pmap_initialized;
 use kernel::vm::km::{KP_NONE, KV_ANY, map_device};
 
 /// `arm64_bs_tag`: the one bus space of the machine.

@@ -145,7 +145,9 @@ pub use kernel::fs::vnops::{
 /// `vn_fsizechk(vp, uio, ioflag, &overrun)`: the kernel's, its thread the uio's
 /// (`uio_procp`), pinned for `SIGXFSZ` as `bsd` pins its threads (`ProcExt::as_static`).
 pub fn vn_fsizechk(vp: &'static Vnode, uio: &mut Uio<'_>, ioflag: i32) -> Result<usize, Errno> {
-    let p = uio.uio_procp.map(|p| hal::pin::pin_static(p.as_static()));
+    let p = uio
+        .uio_procp
+        .map(|p| hal::ds::pin::pin_static(p.as_static()));
     kernel::fs::vnops::vn_fsizechk(vp, uio, ioflag, p)
 }
 
@@ -822,7 +824,7 @@ mod tests {
         // (N5.9t2), through vfsconflist[]'s entry (vfsinit ran its tmpfs_init).
         let (_g, p) = crate::kern::vfs_subr::tests::setup();
         Machine::set_curproc(Machine::curcpu(), Some(p));
-        let _ = hal::rwlock::init_shared();
+        let _ = hal::sync::rwlock::init_shared();
         let _ = kernel::vm::aobj::uao_init();
         kernel::fs::subr::vfs::<crate::kern::proc_glue::BsdProcGlue>()
             .tmpfs
@@ -830,14 +832,14 @@ mod tests {
             .store(0, core::sync::atomic::Ordering::Relaxed);
         let tmpfs_conf = || vfs_byname(b"tmpfs").expect("tmpfs in vfsconflist[]");
         // Unlimited resources (vn_fsizechk reads RLIMIT_FSIZE).
-        let mut limits = kernel::resource::Plimit::new();
+        let mut limits = kernel::proc::resource::Plimit::new();
         for l in &mut limits.pl_rlimit {
-            l.rlim_cur = kernel::resource::RLIM_INFINITY;
-            l.rlim_max = kernel::resource::RLIM_INFINITY;
+            l.rlim_cur = kernel::proc::resource::RLIM_INFINITY;
+            l.rlim_max = kernel::proc::resource::RLIM_INFINITY;
         }
         drop(
             p.process()
-                .set_limit(kernel::resource::PlimitRef::new(limits)),
+                .set_limit(kernel::proc::resource::PlimitRef::new(limits)),
         );
         // The record locks' pools (init_main's lf_init).
         crate::sys::lockf::lf_init();

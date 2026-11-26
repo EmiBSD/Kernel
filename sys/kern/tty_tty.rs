@@ -140,7 +140,7 @@ pub fn cttyioctl(_dev: Dev, cmd: u64, addr: &mut [u8], flag: i32, p: &Proc) -> R
         }
         TIOCNOTTY => {
             let leader = {
-                let r = hal::klock::reader();
+                let r = hal::sync::klock::reader();
                 p.process().sess_leader(&r)
             };
             if !leader {

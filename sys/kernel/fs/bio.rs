@@ -196,13 +196,13 @@
 use core::ptr;
 use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, AtomicUsize, Ordering as Mem};
 
-use hal::intr::IPL_BIO;
-use hal::mutex::{Mutexed, MutexedGuard};
-use hal::once::OnceStatic;
-use hal::owned::{Member, OwnedList, SecondaryList, SecondaryRef, SecondaryTree};
-use hal::pool::{PR_NOWAIT, PR_WAITOK};
-use hal::rwlock::Guarded;
-use hal::sleep::{INFSLP, PRIBIO, curproc_word, sched_pause, wakeup};
+use hal::cpu::intr::IPL_BIO;
+use hal::ds::owned::{Member, OwnedList, SecondaryList, SecondaryRef, SecondaryTree};
+use hal::mem::pool::{PR_NOWAIT, PR_WAITOK};
+use hal::sync::mutex::{Mutexed, MutexedGuard};
+use hal::sync::once::OnceStatic;
+use hal::sync::rwlock::Guarded;
+use hal::sync::sleep::{INFSLP, PRIBIO, curproc_word, sched_pause, wakeup};
 use hal::sys::errno::Errno;
 use hal::sys::mount::Bcachestats;
 use hal::sys::param::PAGE_SIZE;
@@ -567,14 +567,14 @@ struct QueueNote {
     /// `bufq_wait`, and one meant for an earlier buffer at the same address (a note of the
     /// same key claimed again) can only name a queue that buffer went on: only the pacing of
     /// the writer can change, never a result.
-    bq: hal::link::Link<super::bufq::Bufq>,
+    bq: hal::ds::link::Link<super::bufq::Bufq>,
 }
 
 impl QueueNote {
     const fn new() -> Self {
         Self {
             word: AtomicUsize::new(0),
-            bq: hal::link::Link::new(),
+            bq: hal::ds::link::Link::new(),
         }
     }
 }
@@ -793,10 +793,14 @@ pub fn bufinit(physmem: usize) {
 /// [`BufcachepercentNode`] in its `kern` table, as `kern.nchstats`'s node.
 pub struct BufcachepercentNode;
 
-impl crate::sysctl::SysctlNode for BufcachepercentNode {
-    fn sysctl(&self, _name: &[i32], req: &mut crate::sysctl::SysctlReq<'_>) -> Result<(), Errno> {
+impl crate::base::sysctl::SysctlNode for BufcachepercentNode {
+    fn sysctl(
+        &self,
+        _name: &[i32],
+        req: &mut crate::base::sysctl::SysctlReq<'_>,
+    ) -> Result<(), Errno> {
         let opct = BUFCACHEPERCENT.load(Mem::Relaxed);
-        crate::sysctl::int(req, &BUFCACHEPERCENT)?;
+        crate::base::sysctl::int(req, &BUFCACHEPERCENT)?;
         let pct = BUFCACHEPERCENT.load(Mem::Relaxed);
         if !(5..=90).contains(&pct) {
             BUFCACHEPERCENT.store(opct, Mem::Relaxed);
@@ -3342,7 +3346,7 @@ mod tests {
     /// it the high water mark; the same share again resizes nothing.
     #[test]
     fn bufcachepercent_is_bounded_and_resizes_the_cache() {
-        use crate::sysctl::{SysctlNode, SysctlReq};
+        use crate::base::sysctl::{SysctlNode, SysctlReq};
         use hal::user::UserPtr;
         let _g = bufcache_install(BYTES, 64);
         let old = crate::testutil::USER_BASE + 0x1f00;

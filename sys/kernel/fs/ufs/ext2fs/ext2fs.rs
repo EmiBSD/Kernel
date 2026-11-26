@@ -121,8 +121,8 @@
 use core::mem::{offset_of, size_of};
 use core::sync::atomic::AtomicU64;
 
-use hal::malloc::{M_WAITOK, MArray};
-use hal::slot::ReadMostly;
+use hal::mem::malloc::{M_WAITOK, MArray};
+use hal::sync::slot::ReadMostly;
 use hal::sys::types::{Daddr, Off};
 use hal::user::{pod_from_bytes, pod_to_bytes, zeroed};
 

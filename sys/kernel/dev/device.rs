@@ -88,7 +88,7 @@
 //!   driver cast the header back to its softc (`Device::softc::<T>()`, an `unsafe fn`). Here
 //!   the node is its own counted block, written once when it is made (class, unit, name, row,
 //!   parent) with the flags an atomic, linked on `alldevs` and the deferred queues through
-//!   `PinEntry`s ([`hal::pinlist`]), and the softc is an erased handle the node owns: no
+//!   `PinEntry`s ([`hal::ds::pinlist`]), and the softc is an erased handle the node owns: no
 //!   cast, no layout rule, and a node outlives every handle to it.
 //! - `cd_devs`/`cd_ndevs` (a `mallocarray`ed array of raw pointers in `Cell`s) -> a
 //!   [`UnitTable`] per driver: an `MArray` of handles in a cell keyed to the tree's lock,
@@ -102,11 +102,11 @@
 use core::any::Any;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use hal::malloc::{M_NOWAIT, MArc, MArray};
-use hal::mutex::MutexedGuard;
-use hal::pinlist::PinEntry;
-use hal::pool::AnyArc;
-use hal::rwlock::Guarded;
+use hal::ds::pinlist::PinEntry;
+use hal::mem::malloc::{M_NOWAIT, MArc, MArray};
+use hal::mem::pool::AnyArc;
+use hal::sync::mutex::MutexedGuard;
+use hal::sync::rwlock::Guarded;
 
 use crate::assert::kpanic;
 use crate::dev::autoconf::TREE;

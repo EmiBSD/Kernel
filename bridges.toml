@@ -17,7 +17,7 @@
 # `kernel` reaches code that has not moved into them yet. The trait is declared by the crate
 # that calls it and held in a `OnceStatic<&'static dyn Trait>`; `bsd`'s `main()` registers an
 # implementation over its legacy code before first use. A bridge carries no logic of its own.
-# A trait a crate receives as a value (`hal::pmap::PhysPages`, `kernel::uio::UioMove`) is a
+# A trait a crate receives as a value (`hal::vm::pmap::PhysPages`, `kernel::file::uio::UioMove`) is a
 # row only while `bsd` implements it; the row goes when a `kernel` module does, and the trait
 # stays as API (decision 39). N9 requires this file to hold no row.
 #
@@ -35,10 +35,10 @@
 # replacing IntrLevel: the level itself is hal's). Decision 46: the C's function table as a
 # trait. N4.8b: dispatch_irq and dispatch_fiq (arm_irq_dispatch, arm_fiq_dispatch), which
 # hal's arm_cpu_irq/arm_cpu_fiq call. Paid when the GIC drivers move (N7).
-# hal::intr::IntrHardware
+# hal::cpu::intr::IntrHardware
 [[bridge]]
 trait = "IntrHardware"
-for = ["sys/hal/intr.rs"]
+for = ["sys/hal/cpu/intr.rs"]
 paid_by = "N7"
 
 # bsd: pool_init/pool_get/pool_put, pr_nout, pr_npages (RawPool::npages, N5.9f2: vfs.fuse's
@@ -49,20 +49,20 @@ paid_by = "N7"
 # trait the kernel implements (N6.1's MbufPages), over subr_pool.rs's POOL_ALLOCATOR_SOURCE.
 # N6.6a0: pool_sethardlimit (RawPool::set_hardlimit, EINVAL below the items out; TCP's "tcpqe"
 # and "sackhl" limits and net.inet.tcp.reasslimit/sackholelimit, from 6a2).
-# hal::pool::PoolBackend
+# hal::mem::pool::PoolBackend
 [[bridge]]
 trait = "PoolBackend"
-for = ["sys/hal/pool.rs"]
+for = ["sys/hal/mem/pool.rs"]
 paid_by = "N9"
 
 # bsd: malloc/free with the C's malloc types (sys/kern/kern_malloc.rs), so vmstat -m counts an
 # MBox in its type's row; a safe trait, the same boot contract. N4.6b: nkmempages (vm.nkmempages,
 # the VmSysctl bridge's member that moved here).
 
-# hal::malloc::Malloc
+# hal::mem::malloc::Malloc
 [[bridge]]
 trait = "Malloc"
-for = ["sys/hal/malloc.rs"]
+for = ["sys/hal/mem/malloc.rs"]
 paid_by = "N9"
 
 
@@ -72,19 +72,19 @@ paid_by = "N9"
 # claim of ci_panicbuf, implemented by sys/arch/arm64/arm64/cpu.rs (ArmCpuHooks) over the
 # running CPU's cpu_info and registered by arm64's initarm. Paid when the CPU and PSCI drivers
 # move (N7).
-# hal::trap::CpuHooks
+# hal::cpu::trap::CpuHooks
 [[bridge]]
 trait = "CpuHooks"
-for = ["sys/hal/trap.rs", "sys/hal/arch/arm64/trap.rs"]
+for = ["sys/hal/cpu/trap.rs", "sys/hal/arch/arm64/trap.rs"]
 paid_by = "N7"
 
 # bsd: ddb's db_ktrap (sys/arch/arm64/arm64/db_interface.rs, DdbDebugger), the kernel
 # debugger's entry from a trap (N4.8b), registered by arm64's initarm; absent, a kernel
 # breakpoint panics as the C without DDB. Paid with ddb (N9).
-# hal::trap::Debugger
+# hal::cpu::trap::Debugger
 [[bridge]]
 trait = "Debugger"
-for = ["sys/hal/trap.rs", "sys/hal/arch/arm64/trap.rs"]
+for = ["sys/hal/cpu/trap.rs", "sys/hal/arch/arm64/trap.rs"]
 paid_by = "N9"
 
 # bsd: cnputc, cngetc, cnpollc of sys/dev/cons.rs, registered once consinit() has run.
@@ -95,9 +95,9 @@ for = ["sys/hal/cons.rs"]
 paid_by = "N7"
 
 # bsd: printf of sys/kern/subr_prf.rs (the console and the message buffer, under printf's lock),
-# and its log(9) (N4.7b: kernel::pty's tablefull; N4.8a: kernel::tc's clock-step line),
+# and its log(9) (N4.7b: kernel::tty::pty's tablefull; N4.8a: kernel::time::tc's clock-step line),
 # implemented by sys/kern/hal_bridges.rs (BsdPrintf) and registered before main(); the kernel
-# crate's lines (kernel::prf: unported!, vm::page, vm::pmemrange, vm::km) go through it.
+# crate's lines (kernel::base::prf: unported!, vm::page, vm::pmemrange, vm::km) go through it.
 # subr_prf goes with the bsd crate.
 # hal::prf::Printf
 [[bridge]]
@@ -105,32 +105,32 @@ trait = "Printf"
 for = ["sys/hal/prf.rs"]
 paid_by = "N9"
 
-# bsd: uiomove over a Uio (sys/kern/kern_subr.rs; the Uio itself is kernel::uio's since
+# bsd: uiomove over a Uio (sys/kern/kern_subr.rs; the Uio itself is kernel::file::uio's since
 # N4.3, bsd's alias in sys/sys/uio.rs), passed down by the glue's fo_read/fo_write as
 # &mut dyn UioMove; N3.5 S1: uio_rw (is_write) for uvm_io (kern.proc_args). N4.3: paid by
 # N7, with the last UIO_SYSSPACE builder (uiomove's kernel-address leg copies to an
 # address its builder vouched for, which no safe hal function may do; VFS, net, the
 # drivers and crypto type theirs in their slices). N4.7b: set_resid (ttwrite's give-back of
 # what it copied in but did not queue) for the terminal's read and write paths.
-# kernel::uio::UioMove (re-exported by kernel::pipe)
+# kernel::file::uio::UioMove (re-exported by kernel::file::pipe)
 [[bridge]]
 trait = "UioMove"
-for = ["sys/kernel/pipe.rs", "sys/kernel/vm/io.rs", "sys/kernel/tty.rs"]
+for = ["sys/kernel/file/pipe.rs", "sys/kernel/vm/io.rs", "sys/kernel/tty/mod.rs"]
 paid_by = "N7"
 
 # bsd: what a file is open on and the calls the descriptors make into the subsystems still in
-# bsd (sys/kern/kern_descrip.rs, BsdFileGlue, the glue kernel::file and kernel::descrip are
+# bsd (sys/kern/kern_descrip.rs, BsdFileGlue, the glue kernel::file and kernel::file::descrip are
 # instantiated with: the objects (vnode, socket, pipe, kqueue), struct fileops, the vnode
 # layer's VOP_ADVLOCK/VOP_PATHCONF/VISTTY and the positioned-I/O checks (N5), SS_DNS (N6),
 # SIGPIPE (N4.5), the stall wait (N5), pledge's fcntl/flock/ioctl hooks (N8, the last),
 # maxfiles and tablefull). N4.4: knote_fdclose, fdkq_free and the Knote/FdKq types left (kqueue
-# is kernel::event's); a kqueue file's fileops and object (kqueue_file, kqueue_of) and a vnode
+# is kernel::file::event's); a kqueue file's fileops and object (kqueue_file, kqueue_of) and a vnode
 # file's revocation (vnode_revoked, N5) came. N4.6b: getcwd (kern.proc_cwd's
 # vfs_getcwd_common, N5). N5.0: a vnode file's vnode as the pager sees it (vnode_ops, N5:
 # mmap(2)'s and mquery(2)'s getvnode, with the VmProc bridge's end), and a pipe file's pipe
 # (pipe_of, N8 with Data: the pipe's kernel filters find the pair through it, with the
 # PipeGlue bridge's end) and a new pipe file's pipeops and object (pipe_file, N8 with Ops and
-# Data: kernel::pipe's dopipe installs them, with the PipeFiles bridge's end). N5.3:
+# Data: kernel::file::pipe's dopipe installs them, with the PipeFiles bridge's end). N5.3:
 # UnveilMatch (the unveil node a lookup matched, kern_unveil's until N8) and vnode_of (a vnode
 # file's kernel vnode, for namei's fd-relative start and the vnode files' operations) joined
 # it; the Stat and Vnode types and the vref, vrele, stat_hide_gen and stat_copyout legs left
@@ -140,7 +140,7 @@ paid_by = "N7"
 # and abortop (vop_generic_abortop gives the pathname buffer back itself); then
 # session_ttyvp_take (spec_close reads the kernel's Session::ttyvp); then the vnode file
 # legs: stall_wait (kernel::fs::subr's vfs_stall_barrier), advlock, pathconf, isatty and
-# position_check (kernel::descrip's VOP_ADVLOCK, VOP_PATHCONF, VISTTY and v_type on the
+# position_check (kernel::file::descrip's VOP_ADVLOCK, VOP_PATHCONF, VISTTY and v_type on the
 # vnode vnode_of gives), vnode_revoked (kqueue_scan's dead_vops test), getcwd (kern.proc_cwd's
 # vfs_getcwd_common); vnode_ops stays a provided member whose default is the kernel's vnode
 # (a test glue answers with a pager double). N5.4: vnode_file (a new vnode file's vnops and
@@ -151,7 +151,7 @@ paid_by = "N7"
 # kernel::file::FileGlue
 [[bridge]]
 trait = "FileGlue"
-for = ["sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/syscalls.rs"]
+for = ["sys/kernel/file/mod.rs", "sys/kernel/file/descrip.rs", "sys/kernel/file/event.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/syscalls.rs"]
 paid_by = "N8"
 
 # bsd: CPU_INFO_FOREACH, cpu_is_running, ci_proc_pmap, ci_cflushsz, x86_fast_ipi with
@@ -160,7 +160,7 @@ paid_by = "N8"
 # (BsdTlbCpus); arm64 broadcasts tlbi and registers none. Re-dated N10 by the user's decision
 # 11 of N4.6 (N4.5's decision 8: amd64 is frozen until N10, decision 44); paid_by stays N4
 # until xtask's schema accepts N10 (it takes N2..N9).
-# hal::pmap::TlbCpus
+# hal::vm::pmap::TlbCpus
 # Re-dated N10 at the N4 close (the user, 2026-10-24; decision 11 of N4.6): amd64's, frozen until N10 (decision 44); bridges.rs accepts N10 since.
 [[bridge]]
 trait = "TlbCpus"
@@ -170,11 +170,11 @@ paid_by = "N10"
 # bsd: arc4random (sys/dev/rnd.rs), for arm64's ASID allocator (pmap_find_asid's random pick)
 # and, N3.5 S1, hal::random's arc4random/arc4random_uniform (the kernel map's randomisation),
 # implemented by sys/kern/hal_bridges.rs (BsdRandom). N4.7b: enqueue_randomness (the terminal's
-# every input character, tty.c's ttyinput), hal::random::enqueue_randomness; N4.8a: kernel::tc's
+# every input character, tty.c's ttyinput), hal::random::enqueue_randomness; N4.8a: kernel::time::tc's
 # (the new counter's first readings, the clock steps). N6.6a0: random_buf (rnd.c's
 # arc4random_buf, one lock pair for the buffer), hal::random::arc4random_buf, for TCP's ISS
 # secret and the SYN cache's hash seeds (from 6a2).
-# hal::pmap::Random
+# hal::vm::pmap::Random
 [[bridge]]
 trait = "Random"
 for = ["sys/hal/arch/arm64/pmap/asid.rs", "sys/hal/random.rs"]
@@ -182,20 +182,20 @@ paid_by = "N7"
 
 # bsd: the machine's clock hardware (crate::machine::cpu's cpu_initclocks, cpu_startclock,
 # setstatclockrate, delay; arm64's arm_clock_func in intr.rs, first registration winning),
-# implemented by sys/kern/hal_bridges.rs (BsdClockHardware), for kernel::clock's initclocks.
+# implemented by sys/kern/hal_bridges.rs (BsdClockHardware), for kernel::time::clock's initclocks.
 # N7, with the clock drivers.
-# kernel::clock::ClockHardware
+# kernel::time::clock::ClockHardware
 [[bridge]]
 trait = "ClockHardware"
-for = ["sys/kernel/clock.rs"]
+for = ["sys/kernel/time/clock.rs"]
 paid_by = "N7"
 
 # bsd: the machine's boot(9) (machdep's: vfs_shutdown, config_suspend_all, the halt or reset),
-# implemented by sys/kern/hal_bridges.rs (BsdMachineBoot), for kernel::reboot::reboot. N7.
-# kernel::reboot::MachineBoot
+# implemented by sys/kern/hal_bridges.rs (BsdMachineBoot), for kernel::base::reboot::reboot. N7.
+# kernel::base::reboot::MachineBoot
 [[bridge]]
 trait = "MachineBoot"
-for = ["sys/kernel/reboot.rs"]
+for = ["sys/kernel/base/reboot.rs"]
 paid_by = "N7"
 
 # bsd: the time-of-day chips (struct todr_chip_handle of efi_machdep.rs and plrtc.rs on arm64),
@@ -204,24 +204,24 @@ paid_by = "N7"
 # kernel::time::Todr
 [[bridge]]
 trait = "Todr"
-for = ["sys/kernel/time.rs"]
+for = ["sys/kernel/time/mod.rs"]
 paid_by = "N7"
 
 # bsd: the hardware timecounters: agtimer(4)'s AgtimerTc (sys/arch/arm64/dev/agtimer.rs) and
 # the drivers' struct timecounter (sys/sys/timetc.rs: acpitimer, acpihpet), received by
-# kernel::tc::tc_init through their TcEntry. N7, with the drivers.
-# kernel::tc::Timecounter
+# kernel::time::tc::tc_init through their TcEntry. N7, with the drivers.
+# kernel::time::tc::Timecounter
 [[bridge]]
 trait = "Timecounter"
-for = ["sys/kernel/tc.rs"]
+for = ["sys/kernel/time/tc.rs"]
 paid_by = "N7"
 
 # bsd: each CPU's interrupt clock, agtimer(4)'s AgtimerIntrclock (sys/arch/arm64/dev/agtimer.rs),
-# received by kernel::clockintr::clockintr_cpu_init. N7, with the driver.
-# kernel::clockintr::Intrclock
+# received by kernel::time::clockintr::clockintr_cpu_init. N7, with the driver.
+# kernel::time::clockintr::Intrclock
 [[bridge]]
 trait = "Intrclock"
-for = ["sys/kernel/clockintr.rs"]
+for = ["sys/kernel/time/clockintr.rs"]
 paid_by = "N7"
 
 # bsd: struct vops, the operations table of each bsd file system (ntfs
@@ -277,7 +277,7 @@ for = ["sys/kernel/fs/spec.rs", "sys/kernel/fs/subr.rs"]
 paid_by = "N7"
 
 # bsd: the sysctl(2) nodes of the subsystems still in bsd, registered by id with
-# kernel::sysctl's dispatcher by sys/kern/kern_sysctl.rs's sysctl_register_legacy (from
+# kernel::base::sysctl's dispatcher by sys/kern/kern_sysctl.rs's sysctl_register_legacy (from
 # hal_bridges_register, N4.6b): the net (N6), vfs (N5), machdep (with arm64's machdep; amd64's
 # at N10) and ddb (N9) trees; kern.ostype/osrelease/osversion/version (conf/vers, N9.1),
 # kern.clockrate, kern.boottime, kern.cp_time, kern.cp_time2, kern.cpustats, kern.timecounter,
@@ -290,27 +290,27 @@ paid_by = "N7"
 # nfiles, ttycount, maxthread, somaxconn, sominconn, nosuidcoredump, fscale, splassert,
 # maxlocksperuid, autoconf_serial, ncpu, ncpufound, diskcount) and physmem's variable. Each
 # registration leaves with its subsystem; N9 the last. Decision 46: the C's sysctlfn dispatch
-# as one trait. N5.4: the vfs tree left it (kernel::sysctl serves CTL_VFS itself with
+# as one trait. N5.4: the vfs tree left it (kernel::base::sysctl serves CTL_VFS itself with
 # kernel::fs::subr::VfsSysctl, and register_top refuses the id); kern.numvnodes and
 # kern.bufcachepercent are the kernel's nodes (fs::subr::NumvnodesNode,
 # fs::bio::BufcachepercentNode) that bsd's table still registers, as kern.nchstats's (N5.3).
-# N7.1b: kern.intrcnt and kern.evcount are kernel::evcount's nodes (IntrcntNode, EvcountNode),
-# kern.watchdog kernel::watchdog's (WatchdogNode) and hw.sensors kernel::sensors's
+# N7.1b: kern.intrcnt and kern.evcount are kernel::dev::evcount's nodes (IntrcntNode, EvcountNode),
+# kern.watchdog kernel::dev::watchdog's (WatchdogNode) and hw.sensors kernel::dev::sensors's
 # (SensorsNode), registered by bsd's tables likewise.
-# kernel::sysctl::SysctlNode
+# kernel::base::sysctl::SysctlNode
 [[bridge]]
 trait = "SysctlNode"
-for = ["sys/kernel/sysctl.rs"]
+for = ["sys/kernel/base/sysctl.rs"]
 paid_by = "N9"
 
 # bsd: the disk list as sysctl_diskinit reads it (sys/kern/subr_disk.rs's disklist,
 # disk_count and disk_change, each disk's name, label uid and struct diskstats under its
 # dk_mtx), implemented by sys/kern/kern_sysctl.rs (BsdDiskExport) and installed by
 # sysctl_register_legacy (N4.6b), for hw.disknames and hw.diskstats. N7, with the disks.
-# kernel::sysctl::DiskExport
+# kernel::base::sysctl::DiskExport
 [[bridge]]
 trait = "DiskExport"
-for = ["sys/kernel/sysctl.rs"]
+for = ["sys/kernel/base/sysctl.rs"]
 paid_by = "N7"
 
 # bsd: the console's half of the device switch that sendsyslog(2) writes through when no
@@ -326,7 +326,7 @@ paid_by = "N7"
 # kernel::tty::TtyDevsw
 [[bridge]]
 trait = "TtyDevsw"
-for = ["sys/kernel/log.rs", "sys/kernel/tty.rs"]
+for = ["sys/kernel/base/log.rs", "sys/kernel/tty/mod.rs"]
 paid_by = "N7"
 
 # bsd: the members of bsd's subsystems a process, thread, group and session carry (sigacts,
@@ -337,18 +337,18 @@ paid_by = "N7"
 # (s_verauthto); implemented by
 # sys/kern/proc_glue.rs (BsdProcGlue, N4.2), which kernel::proc receives as its type
 # parameter. N4.4: the knote and kqueue list adapters (proc_glue_links!), with_curproc
-# (bsd's reads hal::thread's curproc since N4.5a),
+# (bsd's reads hal::cpu::thread's curproc since N4.5a),
 # pledge_fail (N4.7) and process_ref (filt_procattach's counted process); the klist store
 # left (ps_klist is the kernel's). N4.5a: the scheduler's hooks (kernel::sched):
 # cold and cold_yield, tuagg_add_runtime and
 # exit_account (kern_resource), the clock interrupts' stop and start (kern_clockintr,
 # spc_runtime), assertwaitok, smr_idle, spl0, the machine's idle cycle, cpu_unidle and
-# need_resched, the CPU topology and pmap_resident_count; the scheduler's hal::sleep::Sleep is
+# need_resched, the CPU topology and pmap_resident_count; the scheduler's hal::sync::sleep::Sleep is
 # kernel::sched::KernelSleep (the Sleep row is gone, decision 39). N4.5b: the signals are
 # kernel::sig's (sleep_signal_check is kernel::sched's, pgsignal and prsignal left the trait);
 # their calls out: coredump (the file systems, N5), and the machine's sendsig, signotify,
 # PROC_STACK and TCB_GET (N4.8). N4.6a: exit1 and initprocess's address left the trait (the
-# kernel's own: kernel::exit, ProcTables::initprocess); the process code's calls out joined
+# kernel's own: kernel::proc::exit, ProcTables::initprocess); the process code's calls out joined
 # it: maxprocess and maxthread (conf/param), log(9), thread_placed (bsd's &'static of a new
 # thread, N4.8), process_initialized (ps_realit_to, N4.8a), process_forked and textvp_release
 # (the text vnode, N5; the unveils, N8), session_has_tty_vnode and session_ttydev (N4.7b),
@@ -358,10 +358,10 @@ paid_by = "N7"
 # prologue's calls out joined it (kernel::syscall): proc_pc and sigcode_svc_offset (the
 # machine, N4.8b's b3 or N10), user_vmspace (the thread's word, until its [o] members are
 # typed), pledge_syscall (kern_pledge, N8) and scdebug_call/scdebug_ret (SYSCALL_DEBUG,
-# kern_xxx); hal::trap::TrapHandler is kernel::syscall's own (KernelTrap), no row. N4.8b b3:
-# sendsig, signotify, proc_stack and proc_pc left the trait (hal::sig's frame, kernel::sig's
-# signotify over hal::thread's aston and cpu_unidle, hal::trap::proc_pc/proc_stack); b3c:
-# tcb_get, tcb_set and tcb_invalid left it (hal::thread). Re-dated N8 (the user's
+# kern_xxx); hal::cpu::trap::TrapHandler is kernel::syscall's own (KernelTrap), no row. N4.8b b3:
+# sendsig, signotify, proc_stack and proc_pc left the trait (hal::cpu::sig's frame, kernel::sig's
+# signotify over hal::cpu::thread's aston and cpu_unidle, hal::cpu::trap::proc_pc/proc_stack); b3c:
+# tcb_get, tcb_set and tcb_invalid left it (hal::cpu::thread). Re-dated N8 (the user's
 # decision 11 of N4.6): its members reach N5 and N8. N4.6b: sysctl's calls out joined it:
 # pledge_sysctl (N8), session_tty (s_ttyp's t_dev, t_pgrp and t_session, N4.7b), unveil_state
 # (ps_uvpaths, ps_uvdone, N8) and cpu_unit (CPU_INFO_UNIT, the machine). N5.0: vm's calls
@@ -375,7 +375,7 @@ paid_by = "N7"
 # vrele and uvm_wxcheck's MNT_WXALLOWED read the member, D-N5.2-9). N5.4: the system calls'
 # hooks joined it (kernel::fs::syscalls): pledge_chown, unveil_add, unveil_removevnode and
 # unveil_set_done (kern_pledge and kern_unveil, N8, required as the other pledge hooks).
-# N6.0: smr_idle left it (hal::smr::idle, called by the scheduler itself). N6.2a: the UNIX
+# N6.0: smr_idle left it (hal::sync::smr::idle, called by the scheduler itself). N6.2a: the UNIX
 # domain's descriptor passing joined it (kernel::net::unix): pledge_recvfd and pledge_sendfd
 # (kern_pledge, N8). N6.2b: the socket system calls' hooks joined it (kernel::net::syscalls):
 # pledge_socket, pledge_sendit and pledge_sockopt (kern_pledge, N8, at the C's points; a glue
@@ -383,7 +383,7 @@ paid_by = "N7"
 # kernel::proc::ProcGlue
 [[bridge]]
 trait = "ProcGlue"
-for = ["sys/kernel/proc.rs", "sys/kernel/event.rs", "sys/kernel/sched.rs", "sys/kernel/sig.rs", "sys/kernel/fork.rs", "sys/kernel/exit.rs", "sys/kernel/acct.rs", "sys/kernel/prot.rs", "sys/kernel/resource.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/net/unix.rs", "sys/kernel/net/syscalls.rs", "sys/kernel/sysarch.rs"]
+for = ["sys/kernel/proc/mod.rs", "sys/kernel/file/event.rs", "sys/kernel/sched/mod.rs", "sys/kernel/sig/mod.rs", "sys/kernel/proc/fork.rs", "sys/kernel/proc/exit.rs", "sys/kernel/proc/acct.rs", "sys/kernel/proc/prot.rs", "sys/kernel/proc/resource.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/net/unix.rs", "sys/kernel/net/syscalls.rs", "sys/kernel/proc/sysarch.rs"]
 paid_by = "N8"
 
 # bsd: pf(4)'s mbuf legs (net/pf.c's pf_mbuf_link_state_key, pf_mbuf_link_inpcb,

@@ -73,7 +73,7 @@
 //!   code for a kernel that never compiles them (LZ kept them behind `not(nfsclient)`).
 //! - `nfsbootdevname` (a `char *` set by `setroot()` in `subr_disk.c`) is [`NFSBOOTDEVNAME`],
 //!   a copy of the name, with a setter, [`set_nfsbootdevname`].
-//! - The C's `hostname`/`hostnamelen`/`domainname`/`domainnamelen` are `kernel::sysctl`'s, the
+//! - The C's `hostname`/`hostnamelen`/`domainname`/`domainnamelen` are `kernel::base::sysctl`'s, the
 //!   names read and written under their locks.
 //! - `bp_whoami` returns the gateway address instead of storing it through `gw_ip`;
 //!   `bp_getfile`'s `serv_name` and `pathname` are slices (`MNAMELEN` and `MAXPATHLEN`
@@ -103,7 +103,7 @@
 //!   through the raw `ifioctl` (`*mut c_void` data, 3 `unsafe`), and kept `nfsbootdevname` in
 //!   a `StaticCell`. A request is built with an [`XdrWriter`] and a reply read with one
 //!   [`XdrReader`]; the interface requests go through the kernel's `ifioctl` over the
-//!   structures' bytes (`hal::pod`); the device name is a `Mutexed` copy; LZ's `Ipv4` printer
+//!   structures' bytes (`hal::mem::pod`); the device name is a `Mutexed` copy; LZ's `Ipv4` printer
 //!   is `if_ether`'s `InAddrFmt`. The reply parsers are their own functions
 //!   (`bp_whoami_reply`, `bp_getfile_reply`, `md_mount_reply`) so that the host tests drive
 //!   them with a chain.
@@ -113,9 +113,9 @@
 //!   `nfs_mount_diskless` (N6.7a5) passes the members themselves (LZ's form), and a user
 //!   address of the kernel's own structure is never made.
 
-use hal::intr::IPL_NONE;
-use hal::mutex::Mutexed;
-use hal::netlock::{NETLOCK, NetHeld};
+use hal::cpu::intr::IPL_NONE;
+use hal::sync::mutex::Mutexed;
+use hal::sync::netlock::{NETLOCK, NetHeld};
 use hal::sys::mount::{MNAMELEN, NFSMNT_NFSV3, NfsArgs};
 use hal::sys::net_if::{IFF_UP, IFNAMSIZ, Ifreq};
 use hal::sys::netinet_in::{InAddr, SockaddrIn};
@@ -134,6 +134,11 @@ use super::nfsm_subs::{XdrReader, XdrWriter};
 use super::nfsproto::{NFS_PROG, NFS_VER2, NFS_VER3, NFSX_V2FH, NFSX_V3FHMAX};
 use super::rpcv2::{RPCMNT_MOUNT, RPCPROG_MNT};
 use crate::assert::kpanic;
+use crate::base::prf::{Str, printf};
+use crate::base::sysctl::{
+    DOMAINNAMELEN, HOSTNAMELEN, MAXHOSTNAMELEN, with_domainname_mut, with_hostname,
+    with_hostname_mut,
+};
 use crate::fs::namei::MAXPATHLEN;
 use crate::net::if_::{if_put, if_unit, ifioctl};
 use crate::net::if_var::Ifnet;
@@ -141,13 +146,8 @@ use crate::net::mbuf::{Mbuf, MbufBox};
 use crate::net::socket::{soclose, socreate};
 use crate::netinet::if_ether::{InAddrFmt, revarpwhoami};
 use crate::netinet::in_var::InIfaddr;
-use crate::prf::{Str, printf};
 use crate::proc::{ProcGlue, Thread};
 use crate::sys::errno::Errno;
-use crate::sysctl::{
-    DOMAINNAMELEN, HOSTNAMELEN, MAXHOSTNAMELEN, with_domainname_mut, with_hostname,
-    with_hostname_mut,
-};
 
 /// `nfsbootdevname`: the name of the root device when booting from the network (a NUL-padded
 /// copy of `rootdv->dv_xname`), set by `setroot()` through [`set_nfsbootdevname`].
@@ -663,11 +663,11 @@ mod tests {
     use crate::fs::nfs::nfsm_subs::{nfsm_rndup, test_chain};
     use crate::netinet::udp_usrreq::testudp;
 
-    /// The names `f` sees, `kernel::sysctl`'s, put back after (the WHOAMI tests store theirs),
+    /// The names `f` sees, `kernel::base::sysctl`'s, put back after (the WHOAMI tests store theirs),
     /// under the lock of the tests that write them (`kern.hostname`'s round trip).
     fn with_names_saved(f: impl FnOnce()) {
         use core::sync::atomic::Ordering::Relaxed;
-        let _names = crate::sysctl::names_test_lock();
+        let _names = crate::base::sysctl::names_test_lock();
         let h = with_hostname(|h| h.to_vec());
         let hl = HOSTNAMELEN.load(Relaxed);
         let d = with_domainname_mut(|d| d.to_vec());
@@ -833,7 +833,7 @@ mod tests {
             assert_eq!(with_hostname(|h| h[..7].to_vec()), b"emibsd\0");
             assert_eq!(DOMAINNAMELEN.load(Relaxed), 11);
             assert_eq!(
-                crate::sysctl::with_domainname(|d| d[..12].to_vec()),
+                crate::base::sysctl::with_domainname(|d| d[..12].to_vec()),
                 b"example.org\0"
             );
             // Short anywhere, or no sender: EBADRPC.

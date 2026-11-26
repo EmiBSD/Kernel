@@ -17,7 +17,7 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! amd64's pmap behind `hal::pmap` (N3.1): `backend` (the `PmapBackend` implementation: pmaps,
+//! amd64's pmap behind `hal::vm::pmap` (N3.1): `backend` (the `PmapBackend` implementation: pmaps,
 //! pv lists, PTPs, the mapping functions), `tables` (the frame view of the direct map, the
 //! walks, the PTE bits the boot path decides), `tlb` (the shootdown protocol and the MMU's
 //! instructions), `window` (the ABI module's executable window) and `layout` (the slot layout

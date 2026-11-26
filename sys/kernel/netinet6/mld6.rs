@@ -137,7 +137,7 @@
 //! - `mld6_input` takes the packet by value (`MbufBox`) and reads the header by copy
 //!   (`m_copydata`, the C's `ip6_exthdr_get` plus LZ's copy), no `unsafe`; the packet is
 //!   freed by its drop at the end.
-//! - The IPv6 and MLD headers of a report are written into the two mbufs by `hal::pod::put`
+//! - The IPv6 and MLD headers of a report are written into the two mbufs by `hal::mem::pod::put`
 //!   (LZ: `mtod_ip6_store` and an unaligned write, one `unsafe`).
 //!
 //! **Lock and spl transitions** against the C: `mld6_input` takes `if_maddrlock` write once
@@ -149,10 +149,10 @@
 use core::mem::size_of;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use hal::malloc::{M_NOWAIT, MBox};
-use hal::netlock::{NETLOCK, NetHeld};
-use hal::pod;
-use hal::rwlock::{Witness, WriteWitness};
+use hal::mem::malloc::{M_NOWAIT, MBox};
+use hal::mem::pod;
+use hal::sync::netlock::{NETLOCK, NetHeld};
+use hal::sync::rwlock::{Witness, WriteWitness};
 use hal::sys::endian::{htons, ntohs};
 use hal::sys::net_if::IFF_LOOPBACK;
 use hal::sys::netinet_icmp6::{

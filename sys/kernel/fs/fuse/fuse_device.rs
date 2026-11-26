@@ -143,24 +143,25 @@
 use core::ptr;
 use core::sync::atomic::Ordering;
 
-use hal::klock;
-use hal::malloc::{M_WAITOK, MArc, MArray};
-use hal::pinlist::{PinEntry, PinList};
-use hal::pool::PoolArc;
-use hal::rwlock::{RW_WRITE, RawRwlock};
-use hal::sleep::{INFSLP, PCATCH, PWAIT, wakeup, wakeup_one};
-use hal::slot::ReadMostly;
+use hal::ds::pinlist::{PinEntry, PinList};
+use hal::mem::malloc::{M_WAITOK, MArc, MArray};
+use hal::mem::pool::PoolArc;
+use hal::sync::klock;
+use hal::sync::rwlock::{RW_WRITE, RawRwlock};
+use hal::sync::sleep::{INFSLP, PCATCH, PWAIT, wakeup, wakeup_one};
+use hal::sync::slot::ReadMostly;
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::O_EXCL;
 use hal::sys::types::{Dev, minor};
 use hal::user::bytes_of_mut;
 
 use crate::assert::{kassert, kpanic};
-use crate::event::{
+use crate::file::FileGlue;
+use crate::file::event::{
     EVFILT_READ, EVFILT_WRITE, FILTEROP_ISFD, FILTEROP_MPSAFE, Filter, Filterops, Kevent, Klist,
     Knote, knote_modify, knote_process, seltrue_kqfilter,
 };
-use crate::file::FileGlue;
+use crate::file::uio::Uio;
 use crate::fs::fuse::fusebuf::FusebufRef;
 use crate::fs::fuse::fusebuf_h::{
     FUSE_FORGET, FUSE_INIT, FUSE_KERNEL_VERSION, FUSEBUF_OP_SIZE, FUSEBUFMAXSIZE, FbLink,
@@ -171,7 +172,6 @@ use crate::fs::subr::vfs;
 use crate::fs::vnode::IO_NDELAY;
 use crate::fs::word::U32Word;
 use crate::proc::{ProcGlue, Thread};
-use crate::uio::Uio;
 
 /// `NFUSE`: the number of fuse pseudo-devices (`pseudo-device fuse` in GENERIC: 1).
 pub const NFUSE: i32 = 1;
@@ -831,7 +831,9 @@ mod tests {
     use hal::user::bytes_of;
 
     use super::*;
-    use crate::event::{EVFILT_VNODE, kqueue_alloc, kqueue_init, test_knote, test_knote_drop};
+    use crate::file::event::{
+        EVFILT_VNODE, kqueue_alloc, kqueue_init, test_knote, test_knote_drop,
+    };
     use crate::fs::fuse::fuse_vfsops::PENDING;
     use crate::fs::fuse::fusebuf::{fb_delete, fb_queue, fb_setup};
     use crate::fs::fuse::fusebuf_h::{

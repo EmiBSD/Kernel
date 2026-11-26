@@ -52,10 +52,10 @@
 //! - N4.8b: from `bsd` into `hal`. `svc_handler` read `ci_curproc` through a raw pointer and
 //!   called `bsd`'s `abi_module::syscall` and `mi_syscall_return` by name; here the running
 //!   thread is checked in `hal::cpu`'s core, the call is `hal::syscall::dispatch`, and the
-//!   machine-independent return is `hal::trap::TrapHandler::syscall_return`.
+//!   machine-independent return is `hal::cpu::trap::TrapHandler::syscall_return`.
 //! - `child_return(void *arg)` cast its argument back to the thread; here it takes nothing:
 //!   the child is the running thread, whose trap frame is its pcb's `pcb_tf`
-//!   (`hal::thread`'s `thread_setup` built it), and its machine-independent half is the trap
+//!   (`hal::cpu::thread`'s `thread_setup` built it), and its machine-independent half is the trap
 //!   handler's `child_return` (`mi_child_return`).
 //! - The frame is the running thread's `UserFrame` (`trap.rs`'s frame premise), borrowed
 //!   before and after the call, never across it: the call reaches the same frame through
@@ -146,7 +146,7 @@ pub(crate) fn svc_handler(frame: UserFrame) {
         }
     });
 
-    match crate::trap::handler() {
+    match crate::cpu::trap::handler() {
         Some(h) => h.syscall_return(code, error, &rval),
         None => hal_panic(format_args!("svc_handler: no trap handler")),
     }
@@ -167,9 +167,9 @@ pub fn child_return() {
     });
 
     // The kernel lock `proc_trampoline_mi` took for the new thread.
-    crate::klock::kernel_unlock();
+    crate::sync::klock::kernel_unlock();
 
-    match crate::trap::handler() {
+    match crate::cpu::trap::handler() {
         Some(h) => h.child_return(),
         None => hal_panic(format_args!("child_return: no trap handler")),
     }

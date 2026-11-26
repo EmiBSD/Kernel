@@ -149,7 +149,7 @@ use crate::sys::ucred::{CredRef, CredSlot};
 use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 use crate::sys::vnode::{IO_NOCACHE, IO_NODELOCKED, IO_NOLIMIT, IO_SYNC, VBLK, Vattr, Vnode};
 use crate::sys::vnode::{RdwrBuf, vn_close, vn_lock, vn_open, vn_rdwr};
-use hal::malloc::MArray;
+use hal::mem::malloc::MArray;
 use kernel::fs::vops::Cred;
 
 /// `NVND`: vnd(4) units (`pseudo-device vnd 4` in GENERIC).
@@ -269,7 +269,7 @@ pub fn vndattach(num: i32) {
         // SAFETY: `n` zeroed softcs, aligned (malloc's chunks are aligned to their
         // power-of-two size); all-zero is a valid `VndSoftc` (the device and the disk are
         // all-zero valid, the `Option`s are `None`, and `sc_cred` is an unlocked
-        // `hal::mutex::Mutexed` at `IPL_NONE` (0) around `Option<CredRef>`, whose `None` is
+        // `hal::sync::mutex::Mutexed` at `IPL_NONE` (0) around `Option<CredRef>`, whose `None` is
         // the all-zero word: a `CredRef` is one non-null pointer, so its `Option` takes the
         // null niche, as the size assertion in `sys/ucred.rs` checks), never freed.
         let sc: &'static VndSoftc = unsafe { &*base.as_ptr().add(i) };

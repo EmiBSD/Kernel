@@ -181,7 +181,7 @@ mod tests {
         let mut h = [0u8; size_of::<RtMsghdr>()];
         let n = buf.len().min(h.len());
         h[..n].copy_from_slice(&buf[..n]);
-        hal::pod::at::<RtMsghdr>(&h, 0).unwrap_or_default()
+        hal::mem::pod::at::<RtMsghdr>(&h, 0).unwrap_or_default()
     }
 
     /// The IPv4 address of the `sockaddr_in` at `off` in `buf`.
@@ -246,7 +246,7 @@ mod tests {
             v.extend_from_slice(crate::net::route::sa_of(sa));
         }
         rtm.rtm_msglen = v.len() as u16;
-        assert!(hal::pod::put(&mut v, 0, &rtm));
+        assert!(hal::mem::pod::put(&mut v, 0, &rtm));
         v
     }
 
@@ -569,7 +569,7 @@ mod tests {
         let mut cr = crate::sys::ucred::Ucred::new();
         cr.cr_uid.set(1000);
         cr.cr_ruid.set(1000);
-        let user = crate::kern::proc_glue::test_proc(PID + 1, kernel::cred::CredRef::new(cr));
+        let user = crate::kern::proc_glue::test_proc(PID + 1, kernel::proc::cred::CredRef::new(cr));
         Machine::set_curproc(Machine::curcpu(), Some(user));
         assert_eq!(
             send(a, &request(RTM_ADD, 6, flags, &default)),

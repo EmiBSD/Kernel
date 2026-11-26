@@ -196,9 +196,9 @@
 use core::mem::size_of;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use hal::netlock::NetHeld;
-use hal::once::OnceStatic;
-use hal::rwlock::Guarded;
+use hal::sync::netlock::NetHeld;
+use hal::sync::once::OnceStatic;
+use hal::sync::rwlock::Guarded;
 use hal::sys::errno::Errno;
 use hal::sys::net_if::IFF_LOOPBACK;
 use hal::sys::netinet_in::{IPPROTO_DONE, IPPROTO_TCP, SockaddrIn};
@@ -218,7 +218,6 @@ use hal::sys::socket::{AF_INET, AF_INET6, SO_ACCEPTCONN, SO_DEBUG, SO_OOBINLINE}
 use libkern::timingsafe_bcmp;
 
 use crate::assert::{kassert, kpanic};
-use crate::clock::Timeval;
 use crate::crypto::md5::MD5_DIGEST_LENGTH;
 use crate::net::if_::{if_get, unhandled_af};
 use crate::net::if_var::Netstack;
@@ -277,8 +276,9 @@ use crate::netinet6::in6_pcb::{in6_pcblookup, in6_pcblookup_listen};
 use crate::netinet6::ip6_input::{ip6_exthdr_bytes, ip6_exthdr_get};
 use crate::netinet6::ip6_output::ip6_load;
 use crate::proc::ProcGlue;
+use crate::time::clock::Timeval;
+use crate::time::timeout::hz;
 use crate::time::{PPSRATECHECK_MTX, ppsratecheck_held, ppsratecheck_locked};
-use crate::timeout::hz;
 
 /// `sizeof(struct tcphdr)`.
 const TCP_HDR_LEN: usize = size_of::<Tcphdr>();
@@ -941,7 +941,7 @@ impl TcpInputState {
             return None;
         };
         let mut th: Tcphdr = ip6_exthdr_bytes(&m, at, o, TCP_HDR_LEN)
-            .and_then(|b| hal::pod::at(b, 0))
+            .and_then(|b| hal::mem::pod::at(b, 0))
             .unwrap_or_default();
 
         let mut tlen = m.m_pkthdr().len.get() - iphlen;
@@ -1017,7 +1017,7 @@ impl TcpInputState {
             let Some(b) = ip6_exthdr_bytes(&m, at, o, off as usize) else {
                 kpanic(format_args!("tcp_input: the pulled up header is not there"));
             };
-            th = hal::pod::at(b, 0).unwrap_or(th);
+            th = hal::mem::pod::at(b, 0).unwrap_or(th);
             opt[..optlen].copy_from_slice(&b[TCP_HDR_LEN..]);
             have_optp = true;
             // Do quick retrieval of timestamp options ("options prediction?"). If timestamp
@@ -1164,16 +1164,16 @@ impl TcpInputState {
     fn save_ti(&mut self) {
         let hlen = match (&self.ip, &self.ip6) {
             (None, Some(ip6)) => {
-                let _ = hal::pod::put(&mut self.saveti, 0, ip6);
+                let _ = hal::mem::pod::put(&mut self.saveti, 0, ip6);
                 size_of::<Ip6Hdr>()
             }
             (Some(ip), _) => {
-                let _ = hal::pod::put(&mut self.saveti, 0, ip);
+                let _ = hal::mem::pod::put(&mut self.saveti, 0, ip);
                 size_of::<Ip>()
             }
             (None, None) => 0,
         };
-        let _ = hal::pod::put(&mut self.saveti, hlen, &self.th);
+        let _ = hal::mem::pod::put(&mut self.saveti, hlen, &self.th);
     }
 
     /// A listener's SYN from its own address (`th_dport == th_sport` is the caller's test).
@@ -3263,8 +3263,8 @@ mod tests {
         let mut th = th;
         th.set_th_off((thlen / 4) as u8);
         let mut p = std::vec![0u8; len];
-        assert!(hal::pod::put(&mut p, 0, &ip));
-        assert!(hal::pod::put(&mut p, 20, &th));
+        assert!(hal::mem::pod::put(&mut p, 0, &ip));
+        assert!(hal::mem::pod::put(&mut p, 20, &th));
         p[40..40 + opts.len()].copy_from_slice(opts);
         p[20 + thlen..].copy_from_slice(data);
         let mut m = m_gethdr(M_DONTWAIT, MT_DATA).expect("an mbuf");
@@ -3294,7 +3294,7 @@ mod tests {
         let mut th0 = *th;
         th0.th_sum = 0;
         th0.set_th_off((thlen / 4) as u8);
-        assert!(hal::pod::put(&mut h, 0, &th0));
+        assert!(hal::mem::pod::put(&mut h, 0, &th0));
         ctx.update(&h);
         ctx.update(data);
         ctx.update(SIG_KEY);
@@ -3725,7 +3725,7 @@ mod tests {
     // kernel's tcp_input, as a wire carries them; what changes is read off the control block,
     // the socket buffers and the test interface's wire.
 
-    use hal::netlock::NETLOCK;
+    use hal::sync::netlock::NETLOCK;
     use hal::sys::netinet6_in6::In6Addr;
 
     use crate::net::mbuf::MbufList;
@@ -4683,8 +4683,8 @@ mod tests {
             ip6_src: testtcp::a6(119, 2),
             ip6_dst: testtcp::a6(119, 1),
         };
-        assert!(hal::pod::put(&mut p, 0, &ip6));
-        assert!(hal::pod::put(&mut p, 40, &thv));
+        assert!(hal::mem::pod::put(&mut p, 0, &ip6));
+        assert!(hal::mem::pod::put(&mut p, 40, &thv));
         p[60..].copy_from_slice(data);
         let mut m = m_gethdr(M_DONTWAIT, MT_DATA).expect("an mbuf");
         m.m_len().set(p.len() as u32);
@@ -4710,8 +4710,8 @@ mod tests {
             ip6_plen: 20u16.to_be(),
             ..ip6
         };
-        assert!(hal::pod::put(&mut p3, 0, &ip6));
-        assert!(hal::pod::put(&mut p3, 40, &thv));
+        assert!(hal::mem::pod::put(&mut p3, 0, &ip6));
+        assert!(hal::mem::pod::put(&mut p3, 40, &thv));
         let mut m = m_gethdr(M_DONTWAIT, MT_DATA).expect("an mbuf");
         m.m_len().set(60);
         m.m_pkthdr().len.set(60);
@@ -4747,8 +4747,8 @@ mod tests {
             ip6_dst: dst,
         };
         let mut p = std::vec![0u8; 40 + thlen + data.len()];
-        assert!(hal::pod::put(&mut p, 0, &ip6));
-        assert!(hal::pod::put(&mut p, 40, &th));
+        assert!(hal::mem::pod::put(&mut p, 0, &ip6));
+        assert!(hal::mem::pod::put(&mut p, 40, &th));
         p[60..40 + thlen].copy_from_slice(opts);
         p[40 + thlen..].copy_from_slice(data);
         p
@@ -4809,7 +4809,7 @@ mod tests {
         let mut th0 = *th;
         th0.th_sum = 0;
         th0.set_th_off((thlen / 4) as u8);
-        assert!(hal::pod::put(&mut h, 0, &th0));
+        assert!(hal::mem::pod::put(&mut h, 0, &th0));
         ctx.update(&h);
         ctx.update(data);
         ctx.update(SIG_KEY);

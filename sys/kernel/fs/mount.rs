@@ -104,7 +104,7 @@
 //! ## Redesign
 //! - A mount is never freed (D-N5.2-2, the user's): `vfs_mount_alloc` takes a mount from the
 //!   free list or allocates one (`malloc(M_MOUNT, M_WAITOK | M_ZERO)`, leaked: `MBox::leak`),
-//!   and the release of its last reference (`mnt_refs`, a `hal::refcnt::Refcnt`: the creator's,
+//!   and the release of its last reference (`mnt_refs`, a `hal::sync::refcnt::Refcnt`: the creator's,
 //!   and one per `vfs_busy` while it waits) puts it on the free list instead of freeing it.
 //!   So `&'static Mount<G>` is true for every holder (the vnodes' `v_mount`, the pager's
 //!   mount identities, the `bsd` file systems) and a `vfs_busy` sleeper never wakes on a reused
@@ -134,7 +134,7 @@
 //! - N5.5b0: `mnt_data` of a kernel file system is the mount's typed node slot
 //!   ([`Mount::node`]: `ReadMostly<Option<AnyArc>>`, the vnode's `v_data` slot's type): the
 //!   file system hangs its counted per-mount structure there where the C sets `mnt_data`
-//!   ([`Mount::set_node`], an erased `hal::malloc::MArc`), takes it back where the C clears
+//!   ([`Mount::set_node`], an erased `hal::mem::malloc::MArc`), takes it back where the C clears
 //!   it ([`Mount::take_node`], the unmount, after `vflush`) and reaches it by naming its type
 //!   ([`Mount::node_arc`]: a counted handle, held across the sleeps the operation makes, the
 //!   C's `VFSTOUFS(mp)` made a count). The raw `data` word stays for the file systems still in
@@ -146,15 +146,15 @@ use core::ffi::c_void;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
-use hal::intr::IPL_NONE;
-use hal::link::Link;
-use hal::list::{List, ListEntry};
-use hal::malloc::{MArc, MBox};
-use hal::mutex::Mutexed;
-use hal::pool::AnyArc;
-use hal::refcnt::Refcnt;
-use hal::rwlock::{RW_NOSLEEP, RW_READ, RW_WRITE, SplitRwlock};
-use hal::slot::ReadMostly;
+use hal::cpu::intr::IPL_NONE;
+use hal::ds::link::Link;
+use hal::ds::list::{List, ListEntry};
+use hal::mem::malloc::{MArc, MBox};
+use hal::mem::pool::AnyArc;
+use hal::sync::mutex::Mutexed;
+use hal::sync::refcnt::Refcnt;
+use hal::sync::rwlock::{RW_NOSLEEP, RW_READ, RW_WRITE, SplitRwlock};
+use hal::sync::slot::ReadMostly;
 use hal::sys::errno::Errno;
 use hal::sys::mount::{
     Fsid, MFSNAMELEN, MNAMELEN, MNT_UNMOUNT, Statfs, VB_NOWAIT, VB_READ, VB_WAIT, VB_WRITE,
@@ -227,7 +227,7 @@ impl<G: ProcGlue> Vfsconf<G> {
 /// `mnt_vnodelist`'s adapter: a mount's vnodes, through `v_mntvnodes`.
 pub struct ByMntvnodes<G: ProcGlue>(core::marker::PhantomData<G>);
 
-impl<G: ProcGlue> hal::list::ListAdapter for ByMntvnodes<G> {
+impl<G: ProcGlue> hal::ds::list::ListAdapter for ByMntvnodes<G> {
     type Elem = Vnode<G>;
     fn entry(e: &Vnode<G>) -> &ListEntry<Vnode<G>> {
         &e.mntvnodes
@@ -237,7 +237,7 @@ impl<G: ProcGlue> hal::list::ListAdapter for ByMntvnodes<G> {
 /// `mnt_list`'s adapter: `mountlist`, or the free mounts.
 pub struct ByMntList<G: ProcGlue>(core::marker::PhantomData<G>);
 
-impl<G: ProcGlue> hal::list::ListAdapter for ByMntList<G> {
+impl<G: ProcGlue> hal::ds::list::ListAdapter for ByMntList<G> {
     type Elem = Mount<G>;
     fn entry(e: &Mount<G>) -> &ListEntry<Mount<G>> {
         &e.list
@@ -247,7 +247,7 @@ impl<G: ProcGlue> hal::list::ListAdapter for ByMntList<G> {
 /// `mnt_dounmount`'s adapter: `dounmount`'s stack of the mounts to unmount after one.
 pub struct ByDounmount<G: ProcGlue>(core::marker::PhantomData<G>);
 
-impl<G: ProcGlue> hal::list::ListAdapter for ByDounmount<G> {
+impl<G: ProcGlue> hal::ds::list::ListAdapter for ByDounmount<G> {
     type Elem = Mount<G>;
     fn entry(e: &Mount<G>) -> &ListEntry<Mount<G>> {
         &e.dounmount

@@ -123,10 +123,10 @@
 use core::ptr;
 use core::sync::atomic::{AtomicI32, AtomicI64, Ordering};
 
-use hal::intr::IPL_NONE;
-use hal::pool::PR_WAITOK;
+use hal::cpu::intr::IPL_NONE;
+use hal::mem::pool::PR_WAITOK;
 
-use hal::mutex::Mutexed;
+use hal::sync::mutex::Mutexed;
 
 use super::nfs::{NFS_TICKINTVL, NfsCounters};
 use super::nfs_bio::DEV_BSIZE;
@@ -156,10 +156,9 @@ use super::xdr_subs::{
 };
 use crate::assert::kassert;
 use crate::assert::kpanic;
-use crate::clock::Timespec;
-use crate::cred::Ucred;
 use crate::crypto::idgen::Idgen32Ctx;
 use crate::file::FileGlue;
+use crate::file::uio::{Uio, UioRw};
 use crate::fs::bio::vnode_dirty_for_each;
 use crate::fs::buf::{B_BUSY, B_DELWRI, B_NEEDCOMMIT, Buf};
 use crate::fs::cache::cache_purge;
@@ -172,6 +171,7 @@ use crate::net::mbuf::{
     M_WAIT, MLEN, MT_DATA, MbufBox, m_align, m_calchdrlen, m_get, m_gethdr, mclget,
 };
 use crate::proc::ProcGlue;
+use crate::proc::cred::Ucred;
 use crate::sys::errno::Errno;
 use crate::sys::mount::NFSMNT_NFSV3;
 use crate::sys::nfs_rpcv2::{
@@ -179,8 +179,8 @@ use crate::sys::nfs_rpcv2::{
     RPCAUTH_NULL, RPCAUTH_UNIX,
 };
 use crate::sys::types::{Dev, Gid, Mode, Off, Uid, makedev};
-use crate::tc::gettime;
-use crate::uio::{Uio, UioRw};
+use crate::time::clock::Timespec;
+use crate::time::tc::gettime;
 use crate::vm::io::MAXBSIZE;
 use crate::vm::vnode::uvm_vnp_setsize;
 
@@ -584,7 +584,7 @@ fn uio_skip<G: ProcGlue>(uio: &mut Uio<'_, G>, mut n: usize) {
 /// are constants here. A second call (a test glue's, which forgets the server's tables
 /// first, `nfsrv_test_reset`) makes the server's tables again and keeps the pools.
 pub fn nfs_init<G: ProcGlue>() {
-    let ticks = (crate::timeout::hz() * NFS_TICKINTVL + 500) / 1000;
+    let ticks = (crate::time::timeout::hz() * NFS_TICKINTVL + 500) / 1000;
     NFS_TICKS.store(ticks.max(1), Ordering::Relaxed);
     #[cfg(feature = "nfsserver")]
     {
@@ -1050,7 +1050,7 @@ pub(crate) fn nfs_test_reset<G: ProcGlue>() {
     let t = &vfs::<G>().nfs;
     {
         // Every caller of `vfs_test_reset` holds the kernel lock (the test set-ups).
-        let mut w = hal::klock::witness();
+        let mut w = hal::sync::klock::witness();
         core::mem::forget(core::mem::replace(
             t.nfs_bufq.get_mut(&mut w),
             crate::fs::bufq::Fifo::new(),
@@ -1083,10 +1083,10 @@ mod tests {
     use std::vec;
     use std::vec::Vec;
 
+    use crate::file::uio::{Iovec, Uio, UioSeg};
     use crate::fs::nfs::nfsm_subs::{TestRng, nfsm_rndup, test_bytes, test_chain, test_lens};
     use crate::fs::vnode::Vattr;
     use crate::net::mbuf::tests::setup;
-    use crate::uio::{Iovec, Uio, UioSeg};
 
     crate::test_file_glue!(Files, Procs);
     crate::test_proc_glue!(Procs, Files);

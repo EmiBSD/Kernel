@@ -27,7 +27,7 @@
 //! words, the pending sleep) lets two test threads contend for a lock and sleep and wake each
 //! other as two processes do.
 //!
-//! - `IntrHardware`: `hal::intr`'s default levels (each test thread's core), whose
+//! - `IntrHardware`: `hal::cpu::intr`'s default levels (each test thread's core), whose
 //!   `splassert` fails the test.
 //! - `Sleep`: each test thread a process; a wait channel has a generation that every wakeup
 //!   bumps, `sleep_setup` records it and `sleep_finish` waits on one condition variable until
@@ -47,10 +47,10 @@
 //!   memory of [`FOREIGN_LEN`] bytes at [`FOREIGN_BASE`] ([`user_bytes`], [`foreign_bytes`],
 //!   [`set_foreign_bytes`] are its, re-exported).
 //! - `Printf`: every line formatted into one buffer the tests read ([`printf_count`]).
-//! - The kernel lock is `hal::klock`'s own since N4.5c, a per-thread depth on the host (no
+//! - The kernel lock is `hal::sync::klock`'s own since N4.5c, a per-thread depth on the host (no
 //!   exclusion; the tests that take it hold [`MEMORY`]); [`kernel_lock_depth`] reads it.
-//! - The soft interrupts are `hal::softintr`'s own (no bridge since N4.5c).
-//! - The clocks are not a double since N5.0: `kernel::tc`'s readers on its dummy counter (a
+//! - The soft interrupts are `hal::cpu::softintr`'s own (no bridge since N4.5c).
+//! - The clocks are not a double since N5.0: `kernel::time::tc`'s readers on its dummy counter (a
 //!   microsecond more per read at its nominal 1 MHz), whose timehands nothing winds up but a
 //!   test that calls `tc::tc_ticktock` (the coarse clocks stay where they are).
 //! - `thread`'s operations: a host thread holding the kernel lock double from its start; a
@@ -91,16 +91,16 @@ use std::vec;
 use std::vec::Vec;
 
 use hal::bridges;
-use hal::intr::IntrHardware;
-use hal::kmbuf::{PageKind, PageMemory};
-use hal::link::Link;
-use hal::malloc::Malloc;
-use hal::pmap::BootstrapParams;
-use hal::pool::{PR_WAITOK, PageSource, PoolBackend, RawPool};
+use hal::cpu::intr::IntrHardware;
+use hal::ds::link::Link;
+use hal::mem::kmbuf::{PageKind, PageMemory};
+use hal::mem::malloc::Malloc;
+use hal::mem::pool::{PR_WAITOK, PageSource, PoolBackend, RawPool};
 use hal::prf::Printf;
-use hal::sleep::{INFSLP, Sleep};
+use hal::sync::sleep::{INFSLP, Sleep};
 use hal::sys::errno::Errno;
 use hal::sys::types::{Paddr, Vaddr};
+use hal::vm::pmap::BootstrapParams;
 use hal::vm::uvmexp::UVMEXP;
 
 use crate::vm::km::{KvMap, LegacyLend};
@@ -173,7 +173,7 @@ fn pages(len: usize) -> Option<NonNull<u8>> {
     Some(NonNull::from(block).cast::<u8>())
 }
 
-/// The interrupt controller double: `hal::intr`'s default levels (each test thread's core),
+/// The interrupt controller double: `hal::cpu::intr`'s default levels (each test thread's core),
 /// and a `splassert` that fails the test.
 struct TestIntr;
 
@@ -580,16 +580,16 @@ impl PoolBackend for TestPools {
     }
 }
 
-/// How many times this thread holds the kernel lock (`hal::klock`'s host double, a
+/// How many times this thread holds the kernel lock (`hal::sync::klock`'s host double, a
 /// per-thread depth).
 pub fn kernel_lock_depth() -> u32 {
-    hal::klock::depth()
+    hal::sync::klock::depth()
 }
 
 /// The kernel thread double: a thread is a host thread that starts holding the kernel lock
 /// double (as a kernel thread starts under the kernel lock); a deferred creation runs at once
 /// in this crate's tests (the install runs `kthread_run_deferred_queue`) and waits, never run,
-/// in `kernel::thread`'s queue in `bsd`'s (a queue destroyed then is in `TQ_S_CREATED` and makes no
+/// in `kernel::proc::thread`'s queue in `bsd`'s (a queue destroyed then is in `TQ_S_CREATED` and makes no
 /// thread), and `kthread_exit` unwinds the host thread with [`KthreadExit`], which its
 /// spawner catches.
 struct TestKthread;
@@ -598,14 +598,14 @@ struct TestKthread;
 struct KthreadExit;
 
 impl TestKthread {
-    /// `kthread_create` of a ticket: a host thread running `kernel::thread::run`.
+    /// `kthread_create` of a ticket: a host thread running `kernel::proc::thread::run`.
     fn create(name: &'static [u8], ticket: usize) -> Result<(), Errno> {
         std::thread::Builder::new()
             .name(String::from_utf8_lossy(name).into_owned())
             .spawn(move || {
-                hal::klock::kernel_lock();
+                hal::sync::klock::kernel_lock();
                 let r = std::panic::catch_unwind(move || {
-                    crate::thread::run(ticket);
+                    crate::proc::thread::run(ticket);
                 });
                 if let Err(e) = r
                     && !e.is::<KthreadExit>()
@@ -630,12 +630,12 @@ impl TestKthread {
 #[repr(C, align(4096))]
 struct TestPage([u8; 4096]);
 
-/// The u-area double (`hal::thread::UAreaMemory`): zeroed, page-aligned heap pages of the
+/// The u-area double (`hal::cpu::thread::UAreaMemory`): zeroed, page-aligned heap pages of the
 /// machine's `uspace`, leaked (a test's u-area is never given back to the heap; `free` keeps
 /// nothing).
 struct TestUAreas;
 
-impl hal::thread::UAreaMemory for TestUAreas {
+impl hal::cpu::thread::UAreaMemory for TestUAreas {
     fn alloc(&self) -> Option<core::num::NonZeroUsize> {
         let pages = TEST_VM_MACHINE.uspace.div_ceil(4096);
         let v: Vec<TestPage> = (0..pages).map(|_| TestPage([0; 4096])).collect();
@@ -792,7 +792,7 @@ impl VnodeOps for MemVnode {
                 .uvn
                 .get()
                 .is_some_and(|u| u.object().lock().status() != 0),
-            net_locked: hal::netlock::write_held(),
+            net_locked: hal::sync::netlock::write_held(),
             kernel_locked: kernel_lock_depth() > 0,
             vnode_locked: self.nlocked() > 0,
         });
@@ -884,9 +884,9 @@ pub fn memory_is_the_doubles() -> Option<bool> {
 /// over a copy.
 pub fn test_uiomove_out<G: crate::proc::ProcGlue>(
     buf: &[u8],
-    uio: &mut crate::uio::Uio<'_, G>,
+    uio: &mut crate::file::uio::Uio<'_, G>,
 ) -> Result<(), hal::sys::errno::Errno> {
-    use crate::uio::{UioRw, UioSeg};
+    use crate::file::uio::{UioRw, UioSeg};
     if uio.uio_rw != UioRw::UIO_READ {
         let mut copy = buf.to_vec();
         return test_uiomove(&mut copy, uio);
@@ -928,9 +928,9 @@ pub fn test_uiomove_out<G: crate::proc::ProcGlue>(
 /// the iovecs advance as `uiomove(9)`'s.
 pub fn test_uiomove<G: crate::proc::ProcGlue>(
     buf: &mut [u8],
-    uio: &mut crate::uio::Uio<'_, G>,
+    uio: &mut crate::file::uio::Uio<'_, G>,
 ) -> Result<(), hal::sys::errno::Errno> {
-    use crate::uio::{UioRw, UioSeg};
+    use crate::file::uio::{UioRw, UioSeg};
     let mut done = 0;
     while done < buf.len() && uio.uio_resid > 0 {
         let Some(iov) = uio.uio_iov.first_mut() else {
@@ -985,26 +985,26 @@ pub fn install() {
         let _ = bridges::register_printf(&TEST_PRINTF);
         let _ = bridges::register_random(&TEST_RANDOM);
 
-        // The clocks are kernel::tc's readers (N5.0): the dummy counter, a microsecond per
+        // The clocks are kernel::time::tc's readers (N5.0): the dummy counter, a microsecond per
         // read at its nominal 1 MHz, warmed up as initclocks does.
-        crate::tc::inittimecounter();
-        crate::thread::install_test_ops(crate::thread::Ops {
+        crate::time::tc::inittimecounter();
+        crate::proc::thread::install_test_ops(crate::proc::thread::Ops {
             create: TestKthread::create,
             exit: TestKthread::exit,
             peg: TestKthread::peg,
         });
-        let _ = hal::thread::register_uarea_memory(&TEST_UAREAS);
+        let _ = hal::cpu::thread::register_uarea_memory(&TEST_UAREAS);
         // `bsd`'s host tests (this crate built with `doubles`, not `test`) drive their task
         // queues' workers by hand, as under LZ, where no deferred creation ever ran there.
         if cfg!(test) {
-            crate::thread::kthread_run_deferred_queue();
+            crate::proc::thread::kthread_run_deferred_queue();
         }
         crate::vm::init::uvm_machine_init(&TEST_VM_MACHINE);
         // The host's data abort for kernel-map addresses (N5.9t1): a kernel copy through a
         // window onto an object's pages faults them in, as kdata_abort does.
         hal::arch::host::copy::set_kernel_fault_hook(kernel_fault);
         // The window leg's token (N5.9t1, review 1's B2), as bsd's boot takes it.
-        crate::uio::window_kcopy_take();
+        crate::file::uio::window_kcopy_take();
     });
 }
 
@@ -1026,19 +1026,19 @@ pub fn printf_count(s: &str) -> usize {
     lock(&PRINTF_OUT).matches(s).count()
 }
 
-/// The kernel map double, for `KmBuf` and `kernel::pipe::Pipes::new` (a provider passed as a
+/// The kernel map double, for `KmBuf` and `kernel::file::pipe::Pipes::new` (a provider passed as a
 /// value, not a registered bridge; a `const fn` so a test's `static` can name it).
 pub const fn page_memory() -> &'static dyn PageMemory {
     &TEST_PAGES
 }
 
-/// `hal::rwlock::init_shared()` once per test process (`rwobjpl`): called from tests in
+/// `hal::sync::rwlock::init_shared()` once per test process (`rwobjpl`): called from tests in
 /// parallel, the one that lost the race could get `EBUSY` while the winner's
 /// `OnceStatic::set` was still under way, and find no pool.
 pub fn init_shared_once() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        let _ = hal::rwlock::init_shared();
+        let _ = hal::sync::rwlock::init_shared();
     });
 }
 
@@ -1170,7 +1170,7 @@ pub fn cold_yields() -> u32 {
     COLD_YIELDS.with(Cell::get)
 }
 
-/// How many times this thread called `hal::sleep::sched_pause`.
+/// How many times this thread called `hal::sync::sleep::sched_pause`.
 pub fn sched_pauses() -> u32 {
     SCHED_PAUSES.with(Cell::get)
 }
@@ -1213,7 +1213,7 @@ pub fn kernel_maps_install() {
             uvm_map_set_uaddr,
         };
         init_shared_once();
-        hal::pmap::init();
+        hal::vm::pmap::init();
         uvm_map_init();
         let _ = crate::vm::aobj::uao_init();
         if crate::vm::aobj::kernel_object().is_none() {
@@ -1223,7 +1223,7 @@ pub fn kernel_maps_install() {
             );
         }
         let make = |min: usize, max: usize, flags: i32, bestfit: bool| {
-            let map = uvm_map_create(hal::pmap::PmapRef::Kernel, min, max, flags);
+            let map = uvm_map_create(hal::vm::pmap::PmapRef::Kernel, min, max, flags);
             if bestfit {
                 uvm_map_set_uaddr(map, UaddrSlot::Any(3), Some(uaddr_bestfit_create(min, max)));
             }
@@ -1234,7 +1234,7 @@ pub fn kernel_maps_install() {
             KvMap::Kernel,
             make(KM_VA_BASE, KM_KMEM_BASE, VM_MAP_PAGEABLE, true),
         );
-        let spl = hal::intr::splraise(hal::intr::IPL_VM);
+        let spl = hal::cpu::intr::splraise(hal::cpu::intr::IPL_VM);
         install(
             KvMap::Kmem,
             make(KM_KMEM_BASE, KM_EXEC_BASE, VM_MAP_INTRSAFE, true),
@@ -1296,7 +1296,7 @@ static LEND: OnceLock<LegacyLend> = OnceLock::new();
 pub fn pmap_boot() -> &'static LegacyLend {
     LEND.get_or_init(|| {
         install();
-        let b = hal::pmap::bootstrap(
+        let b = hal::vm::pmap::bootstrap(
             &BootstrapParams {
                 direct_base: Vaddr::new(0),
                 direct_end: Vaddr::new(usize::MAX),
@@ -1321,7 +1321,7 @@ pub fn pages_reset() -> MutexGuard<'static, ()> {
     let guard = lock(&MEMORY);
     let _ = pmap_boot();
     uvm_page_test_reset();
-    hal::smr::smr_test_reset();
+    hal::sync::smr::smr_test_reset();
     UVMEXP.pagesize.store(TEST_PAGE as i32, Ordering::Relaxed);
     uvm_setpagesize();
     guard
@@ -1376,14 +1376,14 @@ pub struct TestFileData<P: crate::proc::ProcGlue> {
     /// `SS_DNS` of the socket.
     pub dns: bool,
     /// A kqueue file's kqueue.
-    pub kq: Option<crate::event::KqRef<P>>,
+    pub kq: Option<crate::file::event::KqRef<P>>,
     /// A vnode file's vnode (`vnode_ops`): a [`MemVnode`] or any other double.
     pub vnode: Option<&'static dyn VnodeOps>,
     /// A vnode file's vnode as the vnode layer sees it (`vnode_of`; [`test_vnode`] makes
     /// one).
     pub kvnode: Option<&'static crate::fs::vnode::Vnode<P>>,
     /// A pipe file's pipe (`pipe_of`), dropped with the file's item (`pipe_destroy`).
-    pub pipe: Option<crate::pipe::PipeEnd<P>>,
+    pub pipe: Option<crate::file::pipe::PipeEnd<P>>,
     /// A socket file's socket (`socket_of`), dropped with the file's item.
     pub socket: Option<crate::net::socket::SocketRef<P>>,
 }
@@ -1789,18 +1789,18 @@ macro_rules! test_file_glue {
             fn read(
                 &self,
                 _fp: &$crate::file::File<$name>,
-                _uio: &mut $crate::uio::Uio<'_, $proc>,
+                _uio: &mut $crate::file::uio::Uio<'_, $proc>,
                 _fflags: i32,
             ) -> Result<(), hal::sys::errno::Errno> {
-                $crate::event::kqueue_rw()
+                $crate::file::event::kqueue_rw()
             }
             fn write(
                 &self,
                 _fp: &$crate::file::File<$name>,
-                _uio: &mut $crate::uio::Uio<'_, $proc>,
+                _uio: &mut $crate::file::uio::Uio<'_, $proc>,
                 _fflags: i32,
             ) -> Result<(), hal::sys::errno::Errno> {
-                $crate::event::kqueue_rw()
+                $crate::file::event::kqueue_rw()
             }
             fn ioctl(
                 &self,
@@ -1809,14 +1809,14 @@ macro_rules! test_file_glue {
                 _data: &mut [u8],
                 _p: &$crate::proc::Thread<$proc>,
             ) -> Result<(), hal::sys::errno::Errno> {
-                $crate::event::kqueue_ioctl()
+                $crate::file::event::kqueue_ioctl()
             }
             fn kqfilter(
                 &self,
                 fp: &$crate::file::File<$name>,
-                kn: &$crate::event::Knote<$proc>,
+                kn: &$crate::file::event::Knote<$proc>,
             ) -> Result<(), hal::sys::errno::Errno> {
-                $crate::event::kqueue_kqfilter::<$proc>(fp, kn)
+                $crate::file::event::kqueue_kqfilter::<$proc>(fp, kn)
             }
             fn stat(
                 &self,
@@ -1824,7 +1824,7 @@ macro_rules! test_file_glue {
                 st: &mut hal::sys::stat::Stat,
                 _p: &$crate::proc::Thread<$proc>,
             ) -> Result<(), hal::sys::errno::Errno> {
-                let (size, _blksize) = $crate::event::kqueue_stat::<$proc>(fp);
+                let (size, _blksize) = $crate::file::event::kqueue_stat::<$proc>(fp);
                 *st = hal::sys::stat::Stat::default();
                 st.st_size = size as i64;
                 Ok(())
@@ -1834,7 +1834,7 @@ macro_rules! test_file_glue {
                 fp: &$crate::file::File<$name>,
                 p: Option<&$crate::proc::Thread<$proc>>,
             ) -> Result<(), hal::sys::errno::Errno> {
-                $crate::event::kqueue_close::<$proc>(fp, p)
+                $crate::file::event::kqueue_close::<$proc>(fp, p)
             }
         }
 
@@ -1849,7 +1849,7 @@ macro_rules! test_file_glue {
             fn read(
                 &self,
                 _fp: &$crate::file::File<$name>,
-                _uio: &mut $crate::uio::Uio<'_, $proc>,
+                _uio: &mut $crate::file::uio::Uio<'_, $proc>,
                 _fflags: i32,
             ) -> Result<(), hal::sys::errno::Errno> {
                 Err(hal::sys::errno::Errno::ENODEV)
@@ -1857,7 +1857,7 @@ macro_rules! test_file_glue {
             fn write(
                 &self,
                 _fp: &$crate::file::File<$name>,
-                _uio: &mut $crate::uio::Uio<'_, $proc>,
+                _uio: &mut $crate::file::uio::Uio<'_, $proc>,
                 _fflags: i32,
             ) -> Result<(), hal::sys::errno::Errno> {
                 Err(hal::sys::errno::Errno::ENODEV)
@@ -1874,22 +1874,26 @@ macro_rules! test_file_glue {
             fn kqfilter(
                 &self,
                 fp: &$crate::file::File<$name>,
-                kn: &$crate::event::Knote<$proc>,
+                kn: &$crate::file::event::Knote<$proc>,
             ) -> Result<(), hal::sys::errno::Errno> {
                 let Some(end) = fp.data().and_then(|d| d.pipe.as_ref()) else {
                     return Err(hal::sys::errno::Errno::EBADF);
                 };
                 let filter = match kn.kn_filter().get() {
-                    $crate::event::EVFILT_READ => Some($crate::pipe::PipeFilter::Read),
-                    $crate::event::EVFILT_WRITE => Some($crate::pipe::PipeFilter::Write),
-                    $crate::event::EVFILT_EXCEPT => Some($crate::pipe::PipeFilter::Except),
+                    $crate::file::event::EVFILT_READ => Some($crate::file::pipe::PipeFilter::Read),
+                    $crate::file::event::EVFILT_WRITE => {
+                        Some($crate::file::pipe::PipeFilter::Write)
+                    }
+                    $crate::file::event::EVFILT_EXCEPT => {
+                        Some($crate::file::pipe::PipeFilter::Except)
+                    }
                     _ => None,
                 };
                 end.pair().kqfilter(
                     end.dir(),
                     filter,
-                    kn.has_flags($crate::event::__EV_SELECT),
-                    kn.has_flags($crate::event::__EV_POLL),
+                    kn.has_flags($crate::file::event::__EV_SELECT),
+                    kn.has_flags($crate::file::event::__EV_POLL),
                     kn,
                 )
             }
@@ -1939,7 +1943,9 @@ macro_rules! test_file_glue {
             fn dns_socket(d: &Self::Data) -> bool {
                 d.dns
             }
-            fn kqueue_file(kq: $crate::event::KqRef<$proc>) -> (&'static Self::Ops, Self::Data) {
+            fn kqueue_file(
+                kq: $crate::file::event::KqRef<$proc>,
+            ) -> (&'static Self::Ops, Self::Data) {
                 (
                     &TEST_KQUEUE_OPS,
                     $crate::testutil::TestFileData {
@@ -1949,7 +1955,7 @@ macro_rules! test_file_glue {
                     },
                 )
             }
-            fn kqueue_of(d: &Self::Data) -> Option<&$crate::event::KqRef<$proc>> {
+            fn kqueue_of(d: &Self::Data) -> Option<&$crate::file::event::KqRef<$proc>> {
                 d.kq.as_ref()
             }
             fn vnode_of(d: &Self::Data) -> Option<&'static $crate::fs::vnode::Vnode<$proc>> {
@@ -1963,7 +1969,7 @@ macro_rules! test_file_glue {
                         .map(|vp| vp as &'static dyn $crate::vm::vnode::VnodeOps)
                 })
             }
-            fn pipe_of(d: &Self::Data) -> Option<&$crate::pipe::PipeEnd<$proc>> {
+            fn pipe_of(d: &Self::Data) -> Option<&$crate::file::pipe::PipeEnd<$proc>> {
                 d.pipe.as_ref()
             }
             fn vnode_file(
@@ -1978,7 +1984,9 @@ macro_rules! test_file_glue {
                     },
                 )
             }
-            fn pipe_file(end: $crate::pipe::PipeEnd<$proc>) -> (&'static Self::Ops, Self::Data) {
+            fn pipe_file(
+                end: $crate::file::pipe::PipeEnd<$proc>,
+            ) -> (&'static Self::Ops, Self::Data) {
                 (
                     &TEST_PIPE_OPS,
                     $crate::testutil::TestFileData {
@@ -2011,7 +2019,7 @@ macro_rules! test_file_glue {
             }
             fn uiomove(
                 buf: &mut [u8],
-                uio: &mut $crate::uio::Uio<'_, $proc>,
+                uio: &mut $crate::file::uio::Uio<'_, $proc>,
             ) -> Result<(), hal::sys::errno::Errno> {
                 $crate::testutil::test_uiomove(buf, uio)
             }
@@ -2042,7 +2050,7 @@ macro_rules! test_file_glue {
             }
             fn uiomove_out(
                 buf: &[u8],
-                uio: &mut $crate::uio::Uio<'_, $proc>,
+                uio: &mut $crate::file::uio::Uio<'_, $proc>,
             ) -> Result<(), hal::sys::errno::Errno> {
                 $crate::testutil::test_uiomove_out(buf, uio)
             }
@@ -2053,8 +2061,8 @@ macro_rules! test_file_glue {
 /// Declares `$name`, a `kernel::proc::ProcGlue` of the tests whose descriptors are the file
 /// glue `$files` ([`test_file_glue!`](crate::test_file_glue)): no member of `bsd`'s, per-thread
 /// tables, every hook a no-op. For the tests of the modules over the processes
-/// (`kernel::descrip`), which need threads with tables and credentials. A last argument
-/// `{ fn hook(..) { .. } ... }` adds or overrides members of the glue (`kernel::acct`'s
+/// (`kernel::file::descrip`), which need threads with tables and credentials. A last argument
+/// `{ fn hook(..) { .. } ... }` adds or overrides members of the glue (`kernel::proc::acct`'s
 /// `session_ttydev`).
 #[macro_export]
 macro_rules! test_proc_glue {
@@ -2246,11 +2254,11 @@ macro_rules! test_proc_glue {
             ) {
             }
             /// No per-CPU slice start: the uptime itself (no running part).
-            fn spc_runtime() -> $crate::clock::Timespec {
-                $crate::tc::nanouptime()
+            fn spc_runtime() -> $crate::time::clock::Timespec {
+                $crate::time::tc::nanouptime()
             }
             fn process_ref(pr: &$crate::proc::Process<Self>) -> $crate::proc::ProcessRef<Self> {
-                match hal::pool::PoolArc::from_ref(pr) {
+                match hal::mem::pool::PoolArc::from_ref(pr) {
                     Some(a) => $crate::proc::StaticOrPooled::Pooled(a),
                     None => std::panic!("process_ref: not a pooled process"),
                 }
@@ -2404,7 +2412,7 @@ impl crate::fs::bio::BufVnode for BufTestVnode {
 /// `bufpages` pages, its kva slots, the kernel lock taken as a system call would.
 pub fn bufcache_install(bytes: usize, bufpages: i64) -> MutexGuard<'static, ()> {
     let g = pages_install(bytes);
-    hal::klock::kernel_lock();
+    hal::sync::klock::kernel_lock();
     crate::fs::bio::bio_test_reset();
     bufcache_init(bytes, bufpages);
     g

@@ -164,7 +164,7 @@
 //!   `KASSERT(rw_status(lock) == flt->upper_lock_type)` at each step) -> the locks are
 //!   witnesses that travel: [`FaultInfo`] holds the map's guard (`Option<M::Guard>`: `Some`
 //!   exactly while the maps are locked), and the amap's and the object's witnesses
-//!   (`hal::rwlock::RwWitness`, the mode the C keeps in `flt->upper_lock_type` is the
+//!   (`hal::sync::rwlock::RwWitness`, the mode the C keeps in `flt->upper_lock_type` is the
 //!   witness's arm) are values in [`uvm_fault`]'s loop frame, returned by the function that
 //!   takes the lock and consumed by the one that releases it. [`uvmfault_unlockall`] takes
 //!   the witnesses it releases; [`uvmfault_anonget`] consumes the amap's and gives one back,
@@ -206,7 +206,7 @@
 //!   bumped where the C bumps `curproc`'s; `None` for a fault no thread takes (N5.0: until
 //!   then the map's notes asked the `VmProc` bridge for `curproc`).
 //! - `pmap_enter` on `kernel_map`'s pmap goes through the kernel map's token (`vm::km`), a
-//!   user pmap's through the handle (`hal::pmap::PmapRef`); `pmap_update` has nothing to do
+//!   user pmap's through the handle (`hal::vm::pmap::PmapRef`); `pmap_update` has nothing to do
 //!   (`hal`'s pmap does its TLB work in each call).
 //! - `uvm_fault_unwire_locked(map, start, end)` takes the map's guard as the proof of the
 //!   lock (`vm_map_assert_anylock`), and `uvm_map_lock_entry`/`uvm_map_unlock_entry` around
@@ -224,15 +224,15 @@ use core::ptr;
 use core::sync::atomic::Ordering;
 
 use hal::arch::current::param::{PAGE_SHIFT, PAGE_SIZE};
-use hal::malloc::M_NOWAIT;
-use hal::pmap::{PMAP_CANFAIL, PMAP_WC, PMAP_WIRED, PmapRef};
-use hal::pool::PR_WAITOK;
-use hal::rwlock::{RwMode, RwWitness, SharedRwlock, Witness, WriteWitness};
-use hal::sleep::{PVM, tsleep_nsec, wakeup};
+use hal::mem::malloc::M_NOWAIT;
+use hal::mem::pool::PR_WAITOK;
+use hal::sync::rwlock::{RwMode, RwWitness, SharedRwlock, Witness, WriteWitness};
+use hal::sync::sleep::{PVM, tsleep_nsec, wakeup};
 use hal::sys::errno::Errno;
 use hal::sys::mman::{MADV_NORMAL, MADV_SEQUENTIAL, PROT_NONE, PROT_WRITE};
 use hal::sys::types::{Paddr, Vaddr};
 use hal::vm::param::{atop, trunc_page};
+use hal::vm::pmap::{PMAP_CANFAIL, PMAP_WC, PMAP_WIRED, PmapRef};
 use hal::vm::uvmexp::{UVMEXP, UvmExpCounters, counters_inc};
 
 use super::amap::{
@@ -257,8 +257,8 @@ use super::pager::{
 use super::pmemrange::uvm_wait;
 use super::types::{MADV_MASK, PROT_MASK, UVM_PGA_ZERO, VmFault, VmProt, Voff};
 use crate::assert::{kassert, kpanic};
-use crate::prf::unported;
-use crate::resource::Rusage;
+use crate::base::prf::unported;
+use crate::proc::resource::Rusage;
 
 /// `VM_FAULT_INVALID`: invalid mapping.
 pub const VM_FAULT_INVALID: VmFault = 0x0;
@@ -949,7 +949,7 @@ fn uvmfault_anonget<'w, M: FaultMap>(
                 }
 
                 // We have successfully read the page, activate it.
-                let _ = hal::pmap::clear_modify(&pg.mdpage);
+                let _ = hal::vm::pmap::clear_modify(&pg.mdpage);
                 uvm_pageactivate(pg, Owner::Anon(&**anon));
                 pg.clear_bits(PG_WANTED | PG_BUSY | PG_FAKE);
                 // UVM_PAGE_OWN(pg, NULL): not configured.
@@ -1886,7 +1886,7 @@ fn uvm_fault_lower<'v, M: FaultMap>(
 
             // promote to shared amap? make sure all sharing procs see it
             if aref.amap.flags() & AMAP_SHARED != 0 {
-                hal::pmap::page_protect(&src.mdpage, PROT_NONE);
+                hal::vm::pmap::page_protect(&src.mdpage, PROT_NONE);
             }
             // MULTIPROCESSOR && !__HAVE_PMAP_MPSAFE_ENTER_COW: both machines define the latter.
             // done with copied uobjpage.
@@ -2477,10 +2477,10 @@ mod tests {
     use std::vec;
     use std::vec::Vec;
 
-    use hal::rwlock::{RW_READ, RW_WRITE, ReadGuard, Rwlocked, WriteGuard};
+    use hal::ds::tree::Tree;
+    use hal::sync::rwlock::{RW_READ, RW_WRITE, ReadGuard, Rwlocked, WriteGuard};
     use hal::sys::mman::{PROT_EXEC, PROT_READ};
     use hal::sys::types::Vsize;
-    use hal::tree::Tree;
     use hal::vm::uvmexp::counters_read;
 
     use super::*;
@@ -2510,7 +2510,7 @@ mod tests {
         let _ = uvm_anon_init(0);
         let _ = amap_init(0);
         let _ = uao_init();
-        hal::pmap::init();
+        hal::vm::pmap::init();
         no_swap_get();
         guard
     }
@@ -2893,7 +2893,7 @@ mod tests {
                     timestamp: 0,
                 },
             ),
-            pmap: hal::pmap::create().expect("a pmap"),
+            pmap: hal::vm::pmap::create().expect("a pmap"),
             ru: Rusage::new(),
         }))
     }
@@ -3122,7 +3122,7 @@ mod tests {
 
     /// An amap of `npages` pages (a normal one, chunks made as anons arrive, past 16).
     fn amap(npages: usize) -> AmapRef {
-        amap_alloc(npages * PAGE_SIZE, hal::malloc::M_WAITOK, true).expect("an amap")
+        amap_alloc(npages * PAGE_SIZE, hal::mem::malloc::M_WAITOK, true).expect("an amap")
     }
 
     /// An anon of `amap` at page `slot` with a resident, active page.
@@ -3596,7 +3596,7 @@ mod tests {
         assert_eq!(count(UvmExpCounters::FltPgrele), pgrele + 1);
         assert!(anon.page().is_none());
         assert_eq!(
-            hal::pool::PoolArc::count(&anon),
+            hal::mem::pool::PoolArc::count(&anon),
             1,
             "only the test's handle is left"
         );
@@ -3963,10 +3963,10 @@ mod tests {
         let _g = setup();
         let _ = uvn_init();
         // uvn_attach runs under the kernel lock; the fault takes it in uvn_io.
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         let vp = testutil::mem_vnode((0..PAGE_SIZE + 100).map(|i| (i % 251) as u8).collect());
         let o = uvn_attach(vp, PROT_READ | PROT_WRITE).expect("attached");
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
         let map = map_of(vec![FakeEntry::with_object(VA, 3, &o)]);
 
         // The file's second page (100 bytes, then zeroes) is read in and mapped (case 2A).

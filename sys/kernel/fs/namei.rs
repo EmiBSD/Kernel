@@ -83,7 +83,7 @@
 //!   value has no uninitialised bytes), where the C's `pool_get` leaves it as it was; the
 //!   copy-in that follows is the C's.
 
-use hal::pool::{PR_WAITOK, PoolBox};
+use hal::mem::pool::{PR_WAITOK, PoolBox};
 use hal::sys::errno::Errno;
 use hal::sys::syslimits::PATH_MAX;
 
@@ -91,8 +91,8 @@ use super::vnode::Vnode;
 use super::vops::Cred;
 use crate::assert::{kassert, kpanic};
 use crate::file::FileGlue;
+use crate::file::uio::UioSeg;
 use crate::proc::{ProcGlue, Thread};
-use crate::uio::UioSeg;
 
 pub use hal::sys::fcntl::AT_FDCWD;
 

@@ -131,11 +131,11 @@
 //! - LZ's `nfssvc_sock` and `nfsd` were `malloc(9)` blocks cast to `&'static` (two `unsafe`
 //!   each to make and free), linked on `TailqHead`s in `Sync` wrappers (three `unsafe impl`,
 //!   four raw links), with `Cell` members, parked mbufs and a raw `*const Proc`. Here a
-//!   socket is an [`MArc`] of `M_NFSSVC` pinned on `nfssvc_sockhead`, a `hal::pinlist` list
+//!   socket is an [`MArc`] of `M_NFSSVC` pinned on `nfssvc_sockhead`, a `hal::ds::pinlist` list
 //!   bound to the kernel lock (the C's lock for all of the server, D-11): the list's
 //!   membership holds one handle (`ns_self`, set at the insert, taken at the unlink), an nfsd
 //!   holds one while it serves the socket, and `ns_sref` stays the C's count that decides the
-//!   unlink. An nfsd is an [`hal::malloc::MBox`] of `M_NFSD` its system call's frame owns, pinned on
+//!   unlink. An nfsd is an [`hal::mem::malloc::MBox`] of `M_NFSD` its system call's frame owns, pinned on
 //!   `nfsd_head`, its address the channel it sleeps on. The words the C changes under the
 //!   kernel lock are relaxed atomics (`ns_flag`, `ns_sref`, `nfsd_flag`; `ns_solock` is
 //!   `nfs_sndlock`'s flag word, its address the channel); the handles a list or a waker
@@ -146,7 +146,7 @@
 //!   sleeps (a record split by `m_copym(M_WAIT)`) works on the state taken out of the slot.
 //! - LZ's `nfsrv_descript` was a pool item cast to `&mut`, its request a parked chain and its
 //!   cursor a raw pointer into it (`nd_md`, `nd_dpos`). Here [`NfsrvDescript`] is a
-//!   [`hal::pool::PoolBox`] of "ndscpl" the nfsd owns for one request: `nd_mrep` owns the chain, the
+//!   [`hal::mem::pool::PoolBox`] of "ndscpl" the nfsd owns for one request: `nd_mrep` owns the chain, the
 //!   cursor is the bytes consumed of it (`nd_off`, read again with `XdrReader::at`, as the
 //!   client's `Reply`), and the address mbufs are owned (`nd_nam2`, the datagram's) or lent
 //!   (`nd_nam`, the connection's).
@@ -162,14 +162,14 @@ use core::mem::size_of;
 use core::ptr;
 use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
-use hal::klock;
-use hal::malloc::{M_WAITOK, MArc, MBox};
-use hal::owned::OwnedSlist;
-use hal::pinlist::{PinEntry, PinList};
-use hal::pool::{BoxPool, PR_WAITOK, PoolBox};
-use hal::rwlock::Guarded;
-use hal::sleep::{INFSLP, PCATCH, tsleep_nsec, wakeup};
-use hal::slot::LoanSlot;
+use hal::ds::owned::OwnedSlist;
+use hal::ds::pinlist::{PinEntry, PinList};
+use hal::mem::malloc::{M_WAITOK, MArc, MBox};
+use hal::mem::pool::{BoxPool, PR_WAITOK, PoolBox};
+use hal::sync::klock;
+use hal::sync::rwlock::Guarded;
+use hal::sync::sleep::{INFSLP, PCATCH, tsleep_nsec, wakeup};
+use hal::sync::slot::LoanSlot;
 use hal::sys::errno::Errno;
 use hal::sys::types::Pid;
 use hal::user::UserPtr;
@@ -187,8 +187,7 @@ use super::nfsproto::{
     NFS_MAXDATA, NFS_MAXDGRAMDATA, NFS_MAXPACKET, NFS_NPROCS, NFS_V2MAXDATA, NFSX_UNSIGNED,
 };
 use crate::assert::kpanic;
-use crate::cred::UcredCell;
-use crate::descrip::closef;
+use crate::file::descrip::closef;
 use crate::file::{File, FileGlue, FileRef, FileSlot};
 use crate::fs::subr::vfs;
 use crate::net::mbuf::{M_WAIT, MNext, Mbuf, MbufBox, MbufList, m_get, m_prepend};
@@ -197,6 +196,7 @@ use crate::net::sockbuf::{PSOCK, SB_NOINTR};
 use crate::net::socket::{Socket, SocketRef, solock_shared, soreserve, sosetopt, soshutdown};
 use crate::net::syscalls::{getsock, sockargs};
 use crate::netinet::in_::in_nam2sin;
+use crate::proc::cred::UcredCell;
 use crate::proc::{ProcGlue, Thread, suser};
 use crate::sys::mbuf::{MT_SONAME, MT_SOOPTS};
 use crate::sys::netinet_in::{IPPORT_RESERVED, IPPROTO_TCP, IPPROTO_UDP};
@@ -1072,7 +1072,7 @@ pub fn nfsrv_init<G: ProcGlue>(terminating: bool) {
     if !terminating {
         let _ = t
             .nfsrv_descript_pl
-            .init(hal::intr::IPL_NONE, PR_WAITOK, "ndscpl");
+            .init(hal::cpu::intr::IPL_NONE, PR_WAITOK, "ndscpl");
     }
 }
 
@@ -1253,7 +1253,7 @@ mod tests {
         use hal::sys::socket::{AF_INET, MSG_DONTWAIT, SO_LINGER, SOCK_DGRAM, SOCK_STREAM};
 
         use super::super::*;
-        use crate::descrip::{fdinit, sys_close};
+        use crate::file::descrip::{fdinit, sys_close};
         use crate::fs::nfs::nfs_srvsocket::nfs_rephead;
         use crate::fs::nfs::nfsm_subs::test_bytes;
         use crate::fs::nfs::testnfs::{self, Fixture, G, lo_sin, name, pump};
@@ -1262,7 +1262,7 @@ mod tests {
             sobind, soclose, soconnect, socreate, solisten, solock, soreceive, sosend,
         };
         use crate::net::syscalls::{sys_bind, sys_socket};
-        use crate::resource::{Plimit, PlimitRef, RLIM_INFINITY, RLIMIT_NOFILE};
+        use crate::proc::resource::{Plimit, PlimitRef, RLIM_INFINITY, RLIMIT_NOFILE};
         use crate::testutil::USER_BASE;
 
         /// The server's port.
@@ -1647,9 +1647,9 @@ mod tests {
             let fx = server();
             // Not the super user: EPERM, before anything else.
             let user = fx.user;
-            let mut c = crate::cred::Ucred::new();
+            let mut c = crate::proc::cred::Ucred::new();
             c.cr_uid.set(1000);
-            let root = user.set_cred(crate::cred::CredRef::new(c));
+            let root = user.set_cred(crate::proc::cred::CredRef::new(c));
             assert_eq!(
                 sys_nfssvc(user, NFSSVC_ADDSOCK, UARGS, &PROCS),
                 Err(Errno::EPERM)

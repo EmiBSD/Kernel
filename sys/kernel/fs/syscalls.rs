@@ -60,7 +60,7 @@
 //! `link`, `symlink`, `unlink`, `rename`, `mkdir`, `rmdir`), attributes (`access`, `stat`,
 //! `pathconf`, `readlink`, `chflags`, `chmod`, `chown`, `utimes`, `truncate`), `lseek`,
 //! `fsync`, `getdents`, `umask` and `revoke`. `__getcwd(2)` is `kernel::fs::getcwd`'s, the
-//! positioned reads and writes `kernel::descrip`'s.
+//! positioned reads and writes `kernel::file::descrip`'s.
 //!
 //! Upstream: sys/kern/vfs_syscalls.c @ 3ce1f3f79392
 //! LZ: sys/kern/vfs_syscalls.rs@3c62ede68802
@@ -71,7 +71,7 @@
 //! `readlink(2)` and `getdents(2)`). The kernel lock: the rows `syscalls.master` marks
 //! `NOLOCK` (`open`, `openat`, `__pledge_open`, `stat`, `lstat`, `fstatat`, `umask`,
 //! `__realpath`, `lseek`) run without it and take the C's inner spans themselves
-//! (`hal::klock::kernel_lock`/`kernel_unlock`: `doopenat` from before `vn_open` to the last
+//! (`hal::sync::klock::kernel_lock`/`kernel_unlock`: `doopenat` from before `vn_open` to the last
 //! `VOP_UNLOCK`, `dofstatat` around `namei`..`vput`, `__realpath` around `vfs_getcwd_common`
 //! and around `namei`..`vrele`); every other row runs under the lock `mi_syscall` takes.
 //!
@@ -81,7 +81,7 @@
 //! (`FileGlue::vnode_file`, N8 with `Data`), the device switch (`spec::Devsw`, N7).
 //!
 //! ## Deviations
-//! - N4.2 (`kernel::cred`): `access(2)`/`faccessat(2)` give the thread a placed copy of its
+//! - N4.2 (`kernel::proc::cred`): `access(2)`/`faccessat(2)` give the thread a placed copy of its
 //!   credentials with the real ids as effective ones (`CredRef::new`) for the check and put
 //!   the old ones back after, where the C `crdup`s and edits in place.
 //! - `VFS_STATFS(mp, &mp->mnt_stat, p)` works on a copy of `mnt_stat` that is stored back
@@ -122,7 +122,7 @@
 //!   `MAXPATHLEN * 4` bytes (its zero fill a cost the C's `malloc` lacks, N12's row beside the
 //!   `PathBuf` fill). The ten LZ had more (the mount list's and `dounmount`'s queue links,
 //!   `queued`'s cast, `NameiBuf::as_mut`, the `iovec_free`s of `preadv`/`pwritev`) went with
-//!   the typed lists, `PathBuf` and `kernel::descrip` before this slice.
+//!   the typed lists, `PathBuf` and `kernel::file::descrip` before this slice.
 //! - The vnode a file is open on is installed through `FileGlue::vnode_file` (the
 //!   `pipe_file`/`kqueue_file` shape: the operations and the object, `bsd`'s `vnops` and
 //!   `BsdFileData::vnode` until `Data` is the kernel's, N8); read back through
@@ -133,7 +133,7 @@
 //!   for `unveil(NULL, NULL)`), `ps_uvdone` read through `ProcGlue::unveil_state`.
 //! - `truncate(2)`, `ftruncate(2)` and `dotruncate` take the thread pinned: the
 //!   `RLIMIT_FSIZE` overrun's `psignal(p, SIGXFSZ)` signals a pinned thread (`kernel::sig`).
-//! - `dounmount`'s work list (`SLIST_HEAD(, mount) mplist`) is a `hal::list::List` of the
+//! - `dounmount`'s work list (`SLIST_HEAD(, mount) mplist`) is a `hal::ds::list::List` of the
 //!   mounts' `mnt_dounmount` links on the stack (`insert_head`, `first` and `pop_head` O(1),
 //!   `iter` O(1) a step: docs/COLLECTIONS.md), drained on every path; the nested mounts are
 //!   found walking `mountlist_next` (O(1) a step) against that list, the C's two loops, and
@@ -153,10 +153,10 @@ use core::ptr;
 use core::slice;
 use core::sync::atomic::Ordering;
 
-use hal::klock;
-use hal::list::List;
-use hal::malloc::{M_WAITOK, MArray};
-use hal::sleep::INFSLP;
+use hal::ds::list::List;
+use hal::mem::malloc::{M_WAITOK, MArray};
+use hal::sync::klock;
+use hal::sync::sleep::INFSLP;
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::{
     AT_EACCESS, AT_FDCWD, AT_REMOVEDIR, AT_SYMLINK_FOLLOW, AT_SYMLINK_NOFOLLOW, F_FLOCK, F_RDLCK,
@@ -211,17 +211,17 @@ use super::vops::{
     vop_rename, vop_revoke, vop_rmdir, vop_setattr, vop_symlink, vop_unlock,
 };
 use crate::assert::kpanic;
-use crate::clock::{Timespec, Timeval};
-use crate::cred::CredRef;
-use crate::descrip::{
+use crate::file::descrip::{
     UF_EXCLOSE, UF_FORKCLOSE, UF_PLEDGEOPEN, closef, dupfdopen, falloc, fd_getfile, fdinsert,
     fdplock, fdpunlock, fdremove,
 };
+use crate::file::uio::{Iovec, Uio, UioRw, UioSeg};
 use crate::file::{DTYPE_VNODE, FIF_HASLOCK, File, FileGlue, FileOps, FileRef, LockOwner, foffset};
+use crate::proc::cred::CredRef;
+use crate::proc::resource::{RLIMIT_FSIZE, lim_cur_proc};
 use crate::proc::{PS_CHROOT, PS_PLEDGE, ProcGlue, SINGLE_UNWIND, Thread, suser};
-use crate::resource::{RLIMIT_FSIZE, lim_cur_proc};
 use crate::sig::{psignal, single_thread_clear, single_thread_set};
-use crate::uio::{Iovec, Uio, UioRw, UioSeg};
+use crate::time::clock::{Timespec, Timeval};
 use crate::vm::vnode::{uvm_vnp_sync, uvm_vnp_uncache};
 
 /// The vnode a successful lookup left in a `nameidata` slot.
@@ -414,7 +414,7 @@ pub fn sys_mount<G: ProcGlue>(
     let path_len = cstrlen(&fspath);
     let mut error = VFS_MOUNT(mp, &fspath[..path_len], &mut args[..], &mut nd, p);
     if error.is_ok() {
-        let now = crate::tc::gettime();
+        let now = crate::time::tc::gettime();
         mp.with_stat(|sp| sp.f_ctime = now as u64);
     }
     if mp.flag() & MNT_UPDATE != 0 {
@@ -2586,7 +2586,7 @@ pub fn dovutimens<G: ProcGlue>(
             vattr.va_vaflags |= VA_UTIMES_NULL;
         }
 
-        let now = crate::tc::getnanotime();
+        let now = crate::time::tc::getnanotime();
         if ts[0].tv_nsec == UTIME_NOW {
             ts[0] = now;
         }
@@ -3044,13 +3044,13 @@ mod tests {
     use hal::sys::unistd::{_PC_LINK_MAX, _PC_PATH_MAX};
 
     use super::*;
-    use crate::cred::Ucred;
-    use crate::descrip::sys_close;
     use crate::file::FileOps;
+    use crate::file::descrip::sys_close;
     use crate::fs::testfs::{
         self, A, ABS, B, C, D, DEV, DISK, F, LNK, ROOT, S, TEST_DATASIZE, TTY, TestFiles, TestGlue,
         test_thread, tree_find, usecounts, vnode_in,
     };
+    use crate::proc::cred::Ucred;
     use crate::testutil::{self, TestFileData, USER_BASE};
 
     type Pg = TestGlue;
@@ -3121,7 +3121,7 @@ mod tests {
     /// counts the others out; a process signal finds it there), signals ready: what `fork1`
     /// leaves.
     fn listed(p: &'static Thread<Pg>) -> Pin<&'static Thread<Pg>> {
-        let pp = hal::pin::pin_static(p);
+        let pp = hal::ds::pin::pin_static(p);
         crate::sig::test_sigacts(p.process());
         crate::sig::siginit(p.process());
         {
@@ -3199,7 +3199,11 @@ mod tests {
         ) -> Result<(), Errno> {
             Err(Errno::ENOTTY)
         }
-        fn kqfilter(&self, _: &File<TestFiles>, _: &crate::event::Knote<Pg>) -> Result<(), Errno> {
+        fn kqfilter(
+            &self,
+            _: &File<TestFiles>,
+            _: &crate::file::event::Knote<Pg>,
+        ) -> Result<(), Errno> {
             Err(Errno::EINVAL)
         }
         fn stat(&self, _: &File<TestFiles>, _: &mut Stat, _: &Thread<Pg>) -> Result<(), Errno> {
@@ -4539,16 +4543,16 @@ mod tests {
         assert_eq!(sys_truncate(pp, path(b"/f"), 100), Ok(()));
         assert_eq!(testfs::last_setattr().unwrap().va_size, 100);
         // A limit of 200: 300 shrinks the 512-byte file and is allowed; 1000 extends it.
-        let mut limits = crate::resource::Plimit::new();
+        let mut limits = crate::proc::resource::Plimit::new();
         for l in &mut limits.pl_rlimit {
-            l.rlim_cur = crate::resource::RLIM_INFINITY;
-            l.rlim_max = crate::resource::RLIM_INFINITY;
+            l.rlim_cur = crate::proc::resource::RLIM_INFINITY;
+            l.rlim_max = crate::proc::resource::RLIM_INFINITY;
         }
-        limits.pl_rlimit[crate::resource::RLIMIT_NOFILE].rlim_cur = 512;
+        limits.pl_rlimit[crate::proc::resource::RLIMIT_NOFILE].rlim_cur = 512;
         limits.pl_rlimit[RLIMIT_FSIZE].rlim_cur = 200;
         drop(
             p.process()
-                .set_limit(crate::resource::PlimitRef::new(limits)),
+                .set_limit(crate::proc::resource::PlimitRef::new(limits)),
         );
         assert_eq!(sys_truncate(pp, path(b"/f"), 300), Ok(()));
         let pending = |p: &Thread<Pg>| {

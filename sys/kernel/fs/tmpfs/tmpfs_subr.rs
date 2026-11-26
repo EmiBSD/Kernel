@@ -150,8 +150,8 @@
 use core::sync::atomic::Ordering;
 
 use hal::arch::current::param::{PAGE_MASK, PAGE_SHIFT, PAGE_SIZE};
-use hal::pool::PoolArc;
-use hal::rwlock::WriteWitness;
+use hal::mem::pool::PoolArc;
+use hal::sync::rwlock::WriteWitness;
 use hal::sys::dirent::{
     DT_BLK, DT_CHR, DT_DIR, DT_FIFO, DT_LNK, DT_REG, DT_SOCK, Dirent, MAXNAMLEN, dirent_size,
 };
@@ -167,9 +167,9 @@ use hal::sys::types::{Dev, Gid, Mode, Off, Uid, Vsize};
 use hal::vm::param::{round_page, trunc_page};
 
 use crate::assert::{kassert, kpanic};
-use crate::clock::Timespec;
-use crate::cred::{Ucred, groupmember, suser_ucred};
-use crate::event::{NOTE_ATTRIB, NOTE_DELETE, NOTE_EXTEND, NOTE_LINK, NOTE_WRITE};
+use crate::base::sysctl::SECURELEVEL;
+use crate::file::event::{NOTE_ATTRIB, NOTE_DELETE, NOTE_EXTEND, NOTE_LINK, NOTE_WRITE};
+use crate::file::uio::{Uio, uiomove_window};
 use crate::fs::mount::Mount;
 use crate::fs::namei::{Componentname, MAXPATHLEN, SAVESTART};
 use crate::fs::subr::{checkalias, dirent_uiomove, vfs, vget, vgone, vops_id, vrele};
@@ -191,10 +191,10 @@ use crate::fs::vnode::{
     Vtype, vn_lock,
 };
 use crate::fs::vops::{Cred, vop_access, vop_islocked};
+use crate::proc::cred::{Ucred, groupmember, suser_ucred};
 use crate::proc::{ProcGlue, Thread};
-use crate::sysctl::SECURELEVEL;
-use crate::tc::{getnanotime, nanotime};
-use crate::uio::{Uio, uiomove_window};
+use crate::time::clock::Timespec;
+use crate::time::tc::{getnanotime, nanotime};
 use crate::vm::aobj::{
     UAO_FLAG_CANFAIL, uao_create, uao_detach, uao_grow, uao_reference, uao_shrink,
 };
@@ -237,7 +237,7 @@ pub fn tmpfs_alloc_node<G: ProcGlue>(
         }
         VDIR => TnSpec::Dir(TnDir::new()),
         VFIFO | VSOCK => TnSpec::None,
-        VLNK => TnSpec::Lnk(hal::once::OnceStatic::new()),
+        VLNK => TnSpec::Lnk(hal::sync::once::OnceStatic::new()),
         VREG => TnSpec::Reg(TnReg::new()),
         VNON | VBAD => {
             kassert!(false);
@@ -370,7 +370,7 @@ pub(super) fn free_node_unlinked<G: ProcGlue>(tmp: &TmpfsMount<G>, node: TmpfsNo
             }
         }
         TnSpec::Dir(dir) => {
-            kassert!(dir.tn_dir.is_empty(&hal::klock::reader()));
+            kassert!(dir.tn_dir.is_empty(&hal::sync::klock::reader()));
             kassert!(
                 dir.tn_parent.is_none()
                     || tmp.tm_root.get().is_some_and(|r| PoolArc::ptr_eq(r, &node))
@@ -639,7 +639,7 @@ pub fn tmpfs_dir_attach<G: ProcGlue>(
 
     // Insert the entry to the directory (parent of inode).
     {
-        let mut w = hal::klock::witness();
+        let mut w = hal::sync::klock::witness();
         dnode.dir().tn_dir.insert_tail(&mut w, de.as_pin());
     }
     // The directory's place holds the entry until tmpfs_dir_detach takes it off.
@@ -712,7 +712,7 @@ pub fn tmpfs_dir_detach<G: ProcGlue>(dnode: &TmpfsNodeRef<G>, de: &TmpfsDirentRe
         drop(dir.tn_readdir_lastp.set(None));
     }
     {
-        let mut w = hal::klock::witness();
+        let mut w = hal::sync::klock::witness();
         dir.tn_dir.remove(&mut w, de);
     }
     drop(PoolArc::adopt(&**de));
@@ -747,7 +747,7 @@ pub fn tmpfs_dir_lookup<G: ProcGlue>(
     tmpfs_validate_dir(node);
 
     let de = {
-        let r = hal::klock::reader();
+        let r = hal::sync::klock::reader();
         node.dir()
             .tn_dir
             .iter(&r)
@@ -845,7 +845,7 @@ pub fn tmpfs_dir_lookupbyseq<G: ProcGlue>(
         kassert!(de.td_seq.get() != TMPFS_DIRSEQ_NONE);
         return Some(de);
     }
-    let r = hal::klock::reader();
+    let r = hal::sync::klock::reader();
     node.dir()
         .tn_dir
         .iter(&r)
@@ -863,7 +863,7 @@ fn dir_next<G: ProcGlue>(
     dnode: &TmpfsNode<G>,
     de: &TmpfsDirentRef<G>,
 ) -> Option<TmpfsDirentRef<G>> {
-    let r = hal::klock::reader();
+    let r = hal::sync::klock::reader();
     dnode.dir().tn_dir.next(&r, de).and_then(PoolArc::from_ref)
 }
 
@@ -900,7 +900,7 @@ pub fn tmpfs_dir_getdotents<G: ProcGlue>(
             dp.d_fileno = parent.tn_id.get();
             dirent_setname(dp, b"..");
             let first = {
-                let r = hal::klock::reader();
+                let r = hal::sync::klock::reader();
                 dir.tn_dir.first(&r).and_then(PoolArc::from_ref)
             };
             match first {
@@ -1475,11 +1475,11 @@ mod tests {
     use std::vec::Vec;
 
     use super::*;
+    use crate::file::uio::{Iovec, UioRw, UioSeg};
     use crate::fs::subr::vput;
     use crate::fs::testfs::{TestGlue, UBUF};
     use crate::fs::tmpfs::testtmpfs;
     use crate::fs::tmpfs::tmpfs_vfsops::{tmpfs_root, tmpfs_unmount};
-    use crate::uio::{Iovec, UioRw, UioSeg};
     use crate::vm::km::kernel_map;
     use hal::user::UserPtr;
 

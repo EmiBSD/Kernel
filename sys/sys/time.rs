@@ -56,7 +56,7 @@
 //! Status: `wip`. Milestone M5 ports the three time structures, `timezone`, `itimerval`,
 //! `clockinfo`, the `timer*`/`timespec*`/`bintime*` operations, the conversions between the
 //! representations and the `*_TO_NSEC` helpers. `struct clock_ymdhms` and `POSIX_BASE_YEAR` are
-//! `kernel::clock_subr`'s, re-exported (N7.1b), beside its conversions; the prototypes of the time functions
+//! `kernel::dev::clock_subr`'s, re-exported (N7.1b), beside its conversions; the prototypes of the time functions
 //! (`bintime()`, `nanouptime()`, ...) are in `kern/kern_tc.rs`, `clock_gettime` and
 //! `itimer_update` in `kern/kern_time.rs`, `ratecheck`/`ppsratecheck` with it.
 //!
@@ -70,12 +70,12 @@
 //!
 //! ## Redesign
 //! - N4.8a (decision 8): the structures are the kernel's, re-exported: `struct timeval`,
-//!   `struct timespec` and `struct bintime` from `kernel::clock`, `struct timezone`, `struct
+//!   `struct timespec` and `struct bintime` from `kernel::time::clock`, `struct timezone`, `struct
 //!   itimerval` and `struct clockinfo` from `kernel::time`, with the C's field names and
 //!   types (`suseconds_t` is `i64`), `AbiPod` through `hal::abi_pod!` (LZ's four `unsafe impl
 //!   AbiPod` gone: `machine::copy`'s legacy trait covers every `hal` `AbiPod` type). The free
 //!   functions of the macros (`timespecadd`, `bintime_to_timespec`, ...) stay here over them.
-//! - N7.1b: `struct clock_ymdhms` and `POSIX_BASE_YEAR` move to `kernel::clock_subr` with the
+//! - N7.1b: `struct clock_ymdhms` and `POSIX_BASE_YEAR` move to `kernel::dev::clock_subr` with the
 //!   conversions they serve, re-exported here for `bsd`'s time-of-day chips.
 
 use core::cell::Cell;
@@ -110,11 +110,11 @@ pub const SECDAY: i64 = 86400;
 /// `SECYR`: seconds in a (non-leap) year.
 pub const SECYR: i64 = SECDAY * 365;
 
-// The kernel's one `struct timeval`, `struct timespec`, `struct bintime` (`kernel::clock`) and
+// The kernel's one `struct timeval`, `struct timespec`, `struct bintime` (`kernel::time::clock`) and
 // `struct timezone`, `struct itimerval`, `struct clockinfo` (`kernel::time`), N4.8a (decision
 // 8): the same layouts and field names, `AbiPod` through `hal::abi_pod!`.
-pub use kernel::clock::{Bintime, Timespec, Timeval};
-pub use kernel::clock_subr::{ClockYmdhms, POSIX_BASE_YEAR};
+pub use kernel::dev::clock_subr::{ClockYmdhms, POSIX_BASE_YEAR};
+pub use kernel::time::clock::{Bintime, Timespec, Timeval};
 pub use kernel::time::{Clockinfo, Itimerval, Timezone};
 
 /// A `Timespec` behind a `Cell`, for the statics the clock code updates in place.

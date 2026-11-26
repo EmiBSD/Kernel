@@ -68,7 +68,8 @@ use hal::sys::errno::Errno;
 use hal::sys::fcntl::Flock;
 use hal::sys::types::{Daddr, Register};
 
-use crate::event::{__EV_POLL, EVFILT_EXCEPT, EVFILT_READ, EVFILT_WRITE, Knote, Kqueue};
+use crate::file::event::{__EV_POLL, EVFILT_EXCEPT, EVFILT_READ, EVFILT_WRITE, Knote, Kqueue};
+use crate::file::uio::Uio;
 use crate::fs::buf::B_ERROR;
 use crate::fs::default;
 use crate::fs::vnode::{LK_DRAIN, PINOD, VISTTY, VNODE_MTX, VXLOCK, VXWANT, Vattr, Vnode};
@@ -76,7 +77,6 @@ use crate::fs::vops::{
     Cn, Cred, IoBuf, Vnops, vop_bmap, vop_ioctl, vop_lock, vop_strategy, vop_unlock,
 };
 use crate::proc::{ProcGlue, Thread};
-use crate::uio::Uio;
 
 /// `dead_vops`: the operations of a revoked vnode.
 pub struct DeadVops<G: ProcGlue>(PhantomData<G>);
@@ -302,7 +302,7 @@ impl<G: ProcGlue> Vnops<G> for DeadVops<G> {
     }
     fn print(&self, _: &'static Vnode<G>) -> Result<(), Errno> {
         if cfg!(any(feature = "debug", feature = "diagnostic")) {
-            crate::prf::printf(format_args!("tag VT_NON, dead vnode\n"));
+            crate::base::prf::printf(format_args!("tag VT_NON, dead vnode\n"));
         }
         Ok(())
     }

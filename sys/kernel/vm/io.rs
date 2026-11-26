@@ -81,7 +81,7 @@
 
 use hal::arch::current::param::{PAGE_MASK, PAGE_SIZE};
 use hal::arch::current::vmparam::VM_MAXUSER_ADDRESS;
-use hal::kmbuf::KmBuf;
+use hal::mem::kmbuf::KmBuf;
 use hal::sys::errno::Errno;
 use hal::user::ForeignWindow;
 use hal::vm::param::{round_page, trunc_page};
@@ -89,7 +89,7 @@ use hal::vm::param::{round_page, trunc_page};
 use super::km::{page_memory, uvm_map_extract_window};
 use super::map::{UVM_EXTRACT_FIXPROT, VmMap};
 use super::types::UVM_IO_FIXPROT;
-use crate::uio::UioMove;
+use crate::file::uio::UioMove;
 
 /// `MAXBSIZE` (`<sys/param.h>`): the largest chunk `uvm_io` extracts at once.
 pub const MAXBSIZE: usize = 64 * 1024;

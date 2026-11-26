@@ -190,11 +190,11 @@
 //!   tree's `rn_match` (two loads a node), one box load and the grant's 80 bytes copied; an
 //!   update one `klock::witness()` section (an spl pair the C lacks) after its sleeps.
 
-use hal::klock;
 #[cfg(feature = "nfsserver")]
-use hal::malloc::M_WAITOK;
-use hal::malloc::MBox;
-use hal::rwlock::Guarded;
+use hal::mem::malloc::M_WAITOK;
+use hal::mem::malloc::MBox;
+use hal::sync::klock;
+use hal::sync::rwlock::Guarded;
 use hal::sys::errno::Errno;
 use hal::sys::mount::ExportArgs;
 #[cfg(feature = "nfsserver")]
@@ -209,14 +209,14 @@ use super::mount::Mount;
 #[cfg(feature = "nfsserver")]
 use crate::assert::kpanic;
 #[cfg(feature = "nfsserver")]
-use crate::cred::crfromxucred;
-use crate::cred::{NGROUPS_MAX, Ucred};
-#[cfg(feature = "nfsserver")]
 use crate::net::mbuf::MLEN;
 use crate::net::mbuf::Mbuf;
 use crate::net::radix::RadixTree;
 use crate::net::rtable::M_RTABLE;
 use crate::proc::ProcGlue;
+#[cfg(feature = "nfsserver")]
+use crate::proc::cred::crfromxucred;
+use crate::proc::cred::{NGROUPS_MAX, Ucred};
 
 /// `M_NETADDR`: the `malloc(9)` type of an export entry ("Export Host", `<sys/malloc.h>`).
 pub const M_NETADDR: i32 = 49;
@@ -571,7 +571,7 @@ mod tests {
     /// A fresh mount, on no list; the kernel lock held (the system call's).
     fn fresh() -> (std::sync::MutexGuard<'static, ()>, &'static Mount<TestGlue>) {
         let g = crate::net::mbuf::tests::setup();
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         (g, Box::leak(Box::new(Mount::new_unpooled(None))))
     }
 

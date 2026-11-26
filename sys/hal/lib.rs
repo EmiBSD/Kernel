@@ -86,69 +86,14 @@ extern crate std;
 pub(crate) mod reftest;
 
 pub(crate) mod assert;
-// Typed memory stolen at boot over the pmap's `steal_memory` (N3.3): wherever the pmap is.
-#[cfg(any(
-    not(target_os = "none"),
-    target_arch = "x86_64",
-    target_arch = "aarch64"
-))]
-pub mod bootmem;
 pub mod bridges;
-// The clock frame (N4.8a): wherever a machine's frame is (arm64 and the host; amd64's
-// `struct intrframe` at N10).
-#[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
-#[forbid(unsafe_code)]
-pub mod clock;
 pub mod cons;
-#[forbid(unsafe_code)]
 pub mod cpu;
-// Memory shared with a device (N7.0).
-pub mod dma;
-pub mod intr;
-#[forbid(unsafe_code)]
-pub mod klock;
-pub mod kmbuf;
-pub mod link;
-#[forbid(unsafe_code)]
-pub mod list;
-pub mod malloc;
-// The byte view of frames mapped for I/O over the pmap (N3.4a): wherever the pmap is.
-#[cfg(any(
-    not(target_os = "none"),
-    target_arch = "x86_64",
-    target_arch = "aarch64"
-))]
-pub mod mapped;
-// Device registers over the kernel map's token (N7.0): wherever the pmap is.
-#[cfg(any(
-    not(target_os = "none"),
-    target_arch = "x86_64",
-    target_arch = "aarch64"
-))]
-pub mod mmio;
-pub mod mutex;
-#[forbid(unsafe_code)]
-pub mod netlock;
-pub mod once;
-pub mod overlay;
-pub mod owned;
-pub mod percpu;
-pub mod pin;
-pub mod pinlist;
-// pmap(9) (N3.1). A machine's build has the module once its backend is in
-// `arch/<machine>/pmap/`: the host double's, amd64's (N3.1 commit 4) and arm64's (commit 5),
-// as the two pmap bridges of `bridges.rs`.
-#[cfg(any(
-    not(target_os = "none"),
-    target_arch = "x86_64",
-    target_arch = "aarch64"
-))]
-#[forbid(unsafe_code)]
-pub mod pmap;
+pub mod dev;
+pub mod ds;
+pub mod mem;
+pub mod sync;
 
-pub mod pod;
-
-pub mod pool;
 #[forbid(unsafe_code)]
 pub mod prf;
 // arc4random(9) over the pmap's `Random` bridge (N3.5): wherever that bridge is.
@@ -159,32 +104,8 @@ pub mod prf;
 ))]
 #[forbid(unsafe_code)]
 pub mod random;
-pub mod refcnt;
-pub mod rwlock;
-pub mod seqlock;
-// The signal frame of the running thread (N4.8b): wherever a machine's trap code is (arm64;
-// amd64's is N10's) and on the host, where it is a double.
-#[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
-#[forbid(unsafe_code)]
-pub mod sig;
-pub mod sleep;
-pub mod slot;
-pub mod smr;
-#[forbid(unsafe_code)]
-pub mod softintr;
-#[forbid(unsafe_code)]
-pub mod spinlock;
 #[cfg(test)]
 pub(crate) mod testutil;
-pub mod thread;
-// What the machine's trap code asks the kernel (N4.8b): wherever a machine's trap code is
-// (arm64; amd64's is N10's) and on the host, where it has no entry.
-#[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
-#[forbid(unsafe_code)]
-pub mod trap;
-#[forbid(unsafe_code)]
-pub mod tree;
-pub(crate) mod trust;
 pub mod user;
 pub mod vm;
 /* </CODE> */

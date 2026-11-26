@@ -173,9 +173,9 @@
 
 use core::mem::size_of;
 
-use hal::netlock::NetHeld;
-use hal::pod;
-use hal::pool::PoolArc;
+use hal::mem::pod;
+use hal::mem::pool::PoolArc;
+use hal::sync::netlock::NetHeld;
 use hal::sys::endian::htonl;
 use hal::sys::errno::Errno;
 use hal::sys::net_route::RTF_HOST;
@@ -561,7 +561,7 @@ pub fn in6_pcbnotify<G: ProcGlue>(
     }
     if in6_is_addr_v4mapped(&dst.sin6_addr) {
         #[cfg(feature = "diagnostic")]
-        crate::prf::printf(format_args!(
+        crate::base::prf::printf(format_args!(
             "in6_pcbnotify: Huh?  Thought we never got called with mapped!\n"
         ));
         return;
@@ -872,7 +872,7 @@ mod tests {
 
     use std::vec::Vec;
 
-    use hal::netlock::NETLOCK;
+    use hal::sync::netlock::NETLOCK;
     use hal::sys::endian::htons;
 
     use super::*;

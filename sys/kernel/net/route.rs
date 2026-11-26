@@ -210,7 +210,7 @@
 //!   | `pool_get`'s first reference | the handle `rtrequest` holds until it answers |
 //!   | (none: `rtt_rt` is a bare pointer) | a timer's `rtt_rt`, subtracted by [`rt_refcnt`] |
 //!   | (none: an unlinked route's `rt_next` is a bare pointer) | the `rt_next` an unlinked route keeps, subtracted by [`rt_refcnt`] (`rt_backrefs`) |
-//!   | (none: `rtfree` drops it at once) | a chain word's reference retired and not released yet, subtracted by [`rt_refcnt`] (`hal::smr::retired_count`) |
+//!   | (none: `rtfree` drops it at once) | a chain word's reference retired and not released yet, subtracted by [`rt_refcnt`] (`hal::sync::smr::retired_count`) |
 //!   | (none: `la_rt` is a bare pointer) | the `la_rt` of the ARP record the route's `rt_llinfo` owns, subtracted by [`rt_refcnt`] (`TaggedLink::is_typed`; N6.4b) |
 //!   | (none: `ln_rt` is a bare pointer) | the `ln_rt` of the ND record the route's `rt_llinfo` owns, subtracted the same way (either kind; N6.5b) |
 //!
@@ -230,7 +230,7 @@
 //!   lent for a reader's life ([`Rtentry::ifa`], the C's uncounted load), changed by the
 //!   routing socket's `RTM_CHANGE` under the writer ([`Rtentry::set_ifa`]), dropped with the
 //!   route (`ifafree`); `rt_llinfo` a word (D-N6.3b-10), since N6.4b a
-//!   `hal::link::TaggedLink` owning ARP's record (lent under `arp_mtx`) or holding ND's
+//!   `hal::ds::link::TaggedLink` owning ARP's record (lent under `arp_mtx`) or holding ND's
 //!   legacy address (D-4), since N6.5b of two kinds, ARP's record or ND's (lent under
 //!   `nd6_mtx`, D-N6.5-5); `rt_cachecnt`
 //!   inside `rt_mtx`'s `Mutexed`; `rt_timer` a `PinList` under `RTTIMER_MTX`'s witness.
@@ -273,19 +273,19 @@
 use core::fmt;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 
-use hal::intr::{IPL_MPFLOOR, IPL_NET, IPL_SOFTNET};
-use hal::klock;
-use hal::link::TaggedLink;
-use hal::malloc::{M_NOWAIT, MArray, MBox};
-use hal::mutex::{Mutexed, MutexedGuard};
-use hal::netlock::{NetHeld, NetReader};
-use hal::once::OnceStatic;
-use hal::percpu::Counters;
-use hal::pinlist::{PinEntry, PinList};
-use hal::pool::{AnyArc, PR_NOWAIT, PoolArc, PoolHome, TypedPool};
-use hal::rwlock::{Exclusive, Guarded, Witness};
-use hal::slot::ReadMostly;
-use hal::smr::{SmrArcLink, SmrArcWord, SmrCounted};
+use hal::cpu::intr::{IPL_MPFLOOR, IPL_NET, IPL_SOFTNET};
+use hal::ds::link::TaggedLink;
+use hal::ds::pinlist::{PinEntry, PinList};
+use hal::mem::malloc::{M_NOWAIT, MArray, MBox};
+use hal::mem::pool::{AnyArc, PR_NOWAIT, PoolArc, PoolHome, TypedPool};
+use hal::sync::klock;
+use hal::sync::mutex::{Mutexed, MutexedGuard};
+use hal::sync::netlock::{NetHeld, NetReader};
+use hal::sync::once::OnceStatic;
+use hal::sync::percpu::Counters;
+use hal::sync::rwlock::{Exclusive, Guarded, Witness};
+use hal::sync::slot::ReadMostly;
+use hal::sync::smr::{SmrArcLink, SmrArcWord, SmrCounted};
 use hal::sys::errno::Errno;
 use hal::sys::net_if::{IFF_LOOPBACK, IFF_POINTOPOINT, IFF_UP, link_state_is_up};
 use hal::sys::net_route::{
@@ -311,7 +311,7 @@ use crate::net::rtable::{
 use crate::net::rtsock;
 use crate::netinet::if_ether::LlinfoArp;
 use crate::netinet6::nd6::LlinfoNd6;
-use crate::timeout::{KCLOCK_NONE, TIMEOUT_PROC, Timeout};
+use crate::time::timeout::{KCLOCK_NONE, TIMEOUT_PROC, Timeout};
 
 /// `RT_RESOLVE`: `rtalloc`'s flag to add and resolve the link-layer route of a cloning one.
 pub const RT_RESOLVE: i32 = 1;
@@ -660,7 +660,7 @@ impl Drop for Rtentry {
         }
         // The successor this route kept when it left its chain is no longer named by it.
         if self.rt_next_kept.load(Ordering::Relaxed) {
-            let g = hal::smr::read();
+            let g = hal::sync::smr::read();
             if let Some(n) = self.rt_next.load(&g) {
                 n.rt_backrefs.fetch_sub(1, Ordering::Relaxed);
             }
@@ -2537,7 +2537,7 @@ pub fn rt_timer_add(
             rtt_timeout: Timeout::unset(),
             rtt_queue: queue,
             rtt_rt: Guarded::new_static_mutexed(&RTTIMER_MTX, None),
-            rtt_expire: crate::tc::getuptime()
+            rtt_expire: crate::time::tc::getuptime()
                 + i64::from(queue.rtq_timeout.load(Ordering::Relaxed)),
             rtt_tableid: rtableid,
         })
@@ -2571,7 +2571,7 @@ pub fn rt_timer_add(
         queue.rtq_head.insert_tail(&mut g, rnew.as_pin());
         // The membership's reference, taken back when the timer leaves its queue.
         PoolArc::forget(PoolArc::clone(&rnew));
-        hal::pin::project(rnew.as_pin(), |r| &r.rtt_timeout)
+        hal::ds::pin::project(rnew.as_pin(), |r| &r.rtt_timeout)
             .add_sec(queue.rtq_timeout.load(Ordering::Relaxed));
         queue.rtq_count.fetch_add(1, Ordering::Relaxed);
         (old, oldrt)
@@ -2593,7 +2593,7 @@ fn rt_timer_timer(arg: &AnyArc) {
     };
     let rtq = r.rtt_queue;
 
-    let w = hal::netlock::NETLOCK.write();
+    let w = hal::sync::netlock::NETLOCK.write();
     let (parked, rt) = {
         let mut g = RTTIMER_MTX.lock();
 
@@ -2918,7 +2918,7 @@ pub fn rt_refcnt(rt: &Rtentry) -> usize {
     PoolArc::count_of(rt)
         .saturating_sub(rt.rt_ntimers.load(Ordering::Relaxed) as usize)
         .saturating_sub(rt.rt_backrefs.load(Ordering::Relaxed) as usize)
-        .saturating_sub(hal::smr::retired_count(rt))
+        .saturating_sub(hal::sync::smr::retired_count(rt))
         .saturating_sub(usize::from(rt.rt_llinfo.is_typed()))
 }
 
@@ -3036,8 +3036,8 @@ pub(crate) mod tests {
     use std::sync::MutexGuard;
     use std::vec::Vec;
 
-    use hal::netlock::NETLOCK;
-    use hal::smr;
+    use hal::sync::netlock::NETLOCK;
+    use hal::sync::smr;
     use hal::sys::net_if::IFF_BROADCAST;
     use hal::sys::net_route::{RTM_ADD, RTP_ANY};
 
@@ -3200,7 +3200,7 @@ pub(crate) mod tests {
 
     /// The internet protocols of the tests: IPv6 multipath on demand, the IPv6 cache counters
     /// counted, the fragment ids a counter, the net lock's proof lent from
-    /// a test's detached holding (`hal::netlock::lock`).
+    /// a test's detached holding (`hal::sync::netlock::lock`).
     struct TestInet {
         ids: AtomicU32,
     }
@@ -3214,10 +3214,10 @@ pub(crate) mod tests {
                 .max(1)
         }
         fn with_net_held(&self, f: &mut dyn FnMut(&NetHeld<'_>)) {
-            if !hal::netlock::held_detached() {
+            if !hal::sync::netlock::held_detached() {
                 panic!("the tests' with_net_held: no detached net lock");
             }
-            hal::netlock::lend_detached(|n| f(n));
+            hal::sync::netlock::lend_detached(|n| f(n));
         }
     }
 

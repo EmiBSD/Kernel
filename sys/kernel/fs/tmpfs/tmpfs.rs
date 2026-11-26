@@ -125,13 +125,13 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use hal::link::Link;
-use hal::malloc::{MArc, MArray};
-use hal::once::OnceStatic;
-use hal::pinlist::{PinEntry, PinList};
-use hal::pool::{PoolArc, PoolHome};
-use hal::rwlock::{RawRwlock, RecursiveRwlock, Rwlocked};
-use hal::slot::ReadMostly;
+use hal::ds::link::Link;
+use hal::ds::pinlist::{PinEntry, PinList};
+use hal::mem::malloc::{MArc, MArray};
+use hal::mem::pool::{PoolArc, PoolHome};
+use hal::sync::once::OnceStatic;
+use hal::sync::rwlock::{RawRwlock, RecursiveRwlock, Rwlocked};
+use hal::sync::slot::ReadMostly;
 use hal::sys::mount::Fid;
 use hal::sys::types::{Dev, Ino};
 
@@ -142,7 +142,7 @@ use crate::fs::vnode::{VDIR, VNOVAL, VT_TMPFS, Vnode, Vtype};
 use crate::fs::vops::vop_islocked;
 use crate::fs::word::{I64Word, U16Word, U32Word, U64Word};
 use crate::proc::ProcGlue;
-use crate::resource::TimespecWord;
+use crate::proc::resource::TimespecWord;
 use crate::vm::aobj::Aobj;
 use crate::vm::km::ObjectWindow;
 use crate::vm::types::Voff;
@@ -791,14 +791,14 @@ mod tests {
         let (_g, _p) = super::super::testtmpfs::setup();
         let de = TmpfsDirent::<TestGlue>::new();
         assert!(!de.name_is(b""), "a fresh entry has no name");
-        let mut b = MArray::new(127, hal::malloc::M_WAITOK, 32, |_| 0u8).expect("a block");
+        let mut b = MArray::new(127, hal::mem::malloc::M_WAITOK, 32, |_| 0u8).expect("a block");
         b[..4].copy_from_slice(b"file");
         assert!(de.set_name(b, 4).is_none());
         assert!(de.name_is(b"file"));
         assert!(!de.name_is(b"fil"), "a shorter name with the same bytes");
         assert!(!de.name_is(b"filE"));
         // tmpfs_rename's new name: a fresh block, the old one handed back for its free.
-        let mut b = MArray::new(127, hal::malloc::M_WAITOK, 64, |_| 0u8).expect("a block");
+        let mut b = MArray::new(127, hal::mem::malloc::M_WAITOK, 64, |_| 0u8).expect("a block");
         b[..5].copy_from_slice(b"other");
         assert_eq!(de.set_name(b, 5).map(|b| b.len()), Some(32));
         assert!(de.name_is(b"other"));

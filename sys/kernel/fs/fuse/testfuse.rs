@@ -35,7 +35,7 @@ use std::rc::Rc;
 use std::sync::MutexGuard;
 use std::vec::Vec;
 
-use hal::malloc::{M_WAITOK, MArc};
+use hal::mem::malloc::{M_WAITOK, MArc};
 use hal::sys::dirent::Dirent;
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::{FREAD, FWRITE};
@@ -43,7 +43,8 @@ use hal::sys::mount::{FusefsArgs, MOUNT_FUSEFS};
 use hal::sys::types::{Dev, Ino, Off, makedev};
 use hal::user::{AbiPod, bytes_of, bytes_of_mut, pod_from_bytes};
 
-use crate::descrip::{falloc, fdinsert, fdplock, fdpunlock};
+use crate::file::descrip::{falloc, fdinsert, fdplock, fdpunlock};
+use crate::file::uio::{Iovec, Uio, UioRw, UioSeg};
 use crate::file::{DTYPE_VNODE, FileGlue};
 use crate::fs::fuse::fuse_device::{fuse_device_set_fmp, fuseopen, fuseread, fusewrite};
 use crate::fs::fuse::fuse_vfsops::{FusefsVfs, PENDING, fusefs_init, fusefs_mount};
@@ -69,7 +70,6 @@ use crate::fs::testfs::{TEST_CONF, TestGlue};
 use crate::fs::vnode::{IO_NDELAY, VT_FUSEFS, Vnode};
 use crate::fs::vops::{Cred, VFS_ROOT, vop_read, vop_readdir, vop_write};
 use crate::proc::{ProcGlue, Thread};
-use crate::uio::{Iovec, Uio, UioRw, UioSeg};
 
 /// fuse(4)'s character major (`cdevsw[92]`).
 pub const FUSE_MAJOR: u32 = 92;

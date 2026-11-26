@@ -92,7 +92,7 @@ use core::sync::atomic::{Ordering, fence};
 
 use libkern::{strlcat, strlcpy};
 
-use kernel::sensors::{sensor_attach, sensor_task_register, sensordev_install};
+use kernel::dev::sensors::{sensor_attach, sensor_task_register, sensordev_install};
 
 use crate::dev::bio::{bio_register, bio_status, bio_status_init};
 use crate::dev::biovar::{

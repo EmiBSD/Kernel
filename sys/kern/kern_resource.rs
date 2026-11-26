@@ -54,14 +54,14 @@
 
 /* <CODE> */
 //! Resource limits and usage: `kern/kern_resource.c`, `bsd`'s `sysent[]` rows and names
-//! over `kernel::resource`.
+//! over `kernel::proc::resource`.
 //!
 //! Upstream: sys/kern/kern_resource.c @ 3ce1f3f79392
 //! LZ: sys/kern/kern_resource.rs@3c62ede68802
 //!
 //! An adapter (N4.6a): the limits, the usage counters and their arithmetic (N4.2) and the
 //! functions over a process and the five system calls (N4.6a) are the kernel crate's
-//! (`kernel::resource`). What stays here: the rows of `sysent[]` (`getpriority`,
+//! (`kernel::proc::resource`). What stays here: the rows of `sysent[]` (`getpriority`,
 //! `setpriority`, `setrlimit`, `getrlimit`, `getrusage`, which decode their arguments for
 //! the kernel's), `tuagg_add_runtime` over the CPU's `spc_runtime` (the clock's, N4.8a),
 //! `calctsru`/`calcru` at the statistics clock's rate, `lim_startup` with the system's
@@ -69,15 +69,15 @@
 //!
 //! ## Deviations
 //! - `struct plimit` is plain data shared through counted `PlimitRef`s, never written once
-//!   placed (`kernel::resource`'s deviations). A thread's read reference `p_limit` is its own
-//!   copy of the values (`kernel::resource::LimitCache`), refreshed by `lim_read_enter` when
+//!   placed (`kernel::proc::resource`'s deviations). A thread's read reference `p_limit` is its own
+//!   copy of the values (`kernel::proc::resource::LimitCache`), refreshed by `lim_read_enter` when
 //!   the process's limits changed.
 //!
 //! ## Redesign
 //! - N4.6a: `dosetrlimit`, `dogetrusage`, `donice`, `rucheck`, `lim_fork`,
 //!   `lim_write_begin`/`lim_write_commit`, `lim_cur_proc`, `tuagg_get_proc`,
 //!   `tuagg_get_process`, `tuagg_add_process` and the system calls' bodies moved to
-//!   `kernel::resource`; `rucheck`'s timeout names its process by pid (no cast of a `void *`
+//!   `kernel::proc::resource`; `rucheck`'s timeout names its process by pid (no cast of a `void *`
 //!   back to a process).
 
 use core::sync::atomic::Ordering;
@@ -100,7 +100,7 @@ use crate::sys::systm::{SysArgs, sysargs};
 use crate::sys::time::{Timespec, timespecsub};
 use crate::sys::types::{Register, Rlim};
 
-pub use kernel::resource::{
+pub use kernel::proc::resource::{
     MAXDMAP, MAXSMAP, dogetrusage, donice, dosetrlimit, lim_copy, lim_cur_proc, lim_fork, lim_free,
     ruadd, tuagg_add_process, tuagg_get_proc, tuagg_get_process, tuagg_sumup,
 };
@@ -128,7 +128,7 @@ pub fn tuagg_add_runtime() {
 /// `calctsru`: transform the running time and tick information in a struct tusage into
 /// user, system, and interrupt time usage, at the statistics clock's rate.
 pub fn calctsru(tup: &Tusage) -> (Timespec, Timespec, Timespec) {
-    let (u, s, i) = kernel::resource::calctsru(tup, STATHZ.load(Ordering::Relaxed));
+    let (u, s, i) = kernel::proc::resource::calctsru(tup, STATHZ.load(Ordering::Relaxed));
     (u, s, i)
 }
 
@@ -137,31 +137,31 @@ pub fn calctsru(tup: &Tusage) -> (Timespec, Timespec, Timespec) {
 pub fn calcru(
     tup: &Tusage,
 ) -> (
-    kernel::resource::Timeval,
-    kernel::resource::Timeval,
-    kernel::resource::Timeval,
+    kernel::proc::resource::Timeval,
+    kernel::proc::resource::Timeval,
+    kernel::proc::resource::Timeval,
 ) {
-    kernel::resource::calcru(tup, STATHZ.load(Ordering::Relaxed))
+    kernel::proc::resource::calcru(tup, STATHZ.load(Ordering::Relaxed))
 }
 
 /// `sys_getpriority`.
 pub fn sys_getpriority(curp: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysGetpriorityArgs = sysargs(v);
     retval[0] =
-        kernel::resource::sys_getpriority(curp, uap.which.get(), uap.who.get())? as Register;
+        kernel::proc::resource::sys_getpriority(curp, uap.which.get(), uap.who.get())? as Register;
     Ok(())
 }
 
 /// `sys_setpriority`.
 pub fn sys_setpriority(curp: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysSetpriorityArgs = sysargs(v);
-    kernel::resource::sys_setpriority(curp, uap.which.get(), uap.who.get(), uap.prio.get())
+    kernel::proc::resource::sys_setpriority(curp, uap.which.get(), uap.who.get(), uap.prio.get())
 }
 
 /// `sys_setrlimit`.
 pub fn sys_setrlimit(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysSetrlimitArgs = sysargs(v);
-    kernel::resource::sys_setrlimit(
+    kernel::proc::resource::sys_setrlimit(
         p,
         uap.which.get() as u32,
         UserPtr::new(uap.rlp.get() as usize),
@@ -171,13 +171,13 @@ pub fn sys_setrlimit(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Resu
 /// `sys_getrlimit`.
 pub fn sys_getrlimit(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysGetrlimitArgs = sysargs(v);
-    kernel::resource::sys_getrlimit(p, uap.which.get(), UserPtr::new(uap.rlp.get() as usize))
+    kernel::proc::resource::sys_getrlimit(p, uap.which.get(), UserPtr::new(uap.rlp.get() as usize))
 }
 
 /// `sys_getrusage`.
 pub fn sys_getrusage(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysGetrusageArgs = sysargs(v);
-    kernel::resource::sys_getrusage(p, uap.who.get(), UserPtr::new(uap.rusage.get() as usize))
+    kernel::proc::resource::sys_getrusage(p, uap.who.get(), UserPtr::new(uap.rusage.get() as usize))
 }
 
 /// `lim_startup`: the pool (the kernel crate's, made at its first need), and the limits of
@@ -186,7 +186,7 @@ pub fn lim_startup(limit0: &mut Plimit) {
     let maxfiles = MAXFILES.load(Ordering::Relaxed) as usize;
     let free =
         hal::vm::param::ptoa(hal::vm::uvmexp::UVMEXP.free.load(Ordering::Relaxed) as usize) as Rlim;
-    *limit0 = kernel::resource::lim_startup(maxfiles, free, crate::sys::param::PAGE_SIZE);
+    *limit0 = kernel::proc::resource::lim_startup(maxfiles, free, crate::sys::param::PAGE_SIZE);
 }
 
 /// `lim_read_enter`: begin read access to the process' resource limits: the calling

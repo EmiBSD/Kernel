@@ -81,7 +81,7 @@
 //!   glue's VFS tables ([`MsdosfsTables`], `VfsTables::msdosfs`), made by `msdosfs_init` (from
 //!   `vfsinit`, before any mount); `msdosfs_dehash` (`DEHASH`) is [`Dehash::msdosfs_dehash`],
 //!   the table's own.
-//! - The chains are pinned lists of the denodes (`hal::pinlist`, through `de_hash`); the C's
+//! - The chains are pinned lists of the denodes (`hal::ds::pinlist`, through `de_hash`); the C's
 //!   `de_prev == NULL` (a denode on no chain) is the entry's own state, which
 //!   `msdosfs_hashrem` clears always (the C only under `DIAGNOSTIC`), so that a denode
 //!   unhashed twice (a `reinsert` whose `msdosfs_hashins` failed, then `msdosfs_reclaim`) is
@@ -121,8 +121,8 @@
 //!   unlinked in `unsafe` blocks whose argument was the kernel lock (`Dehashtbl`'s `unsafe
 //!   impl Sync`/`Send`, the cells' writes in `msdosfs_init` and reads in `msdosfs_dehash`) ->
 //!   [`Dehash`], `ufs_ihash.rs`'s `Ihash` shape (N5.5a1): a `hashinit` table of
-//!   `hal::pinlist::PinList`s of the pinned denodes (`Pin<&Denode>` from the counted block,
-//!   `hal::malloc::MArc::as_pin`) bound to the kernel lock, in a `ReadMostly` cell of the
+//!   `hal::ds::pinlist::PinList`s of the pinned denodes (`Pin<&Denode>` from the counted block,
+//!   `hal::mem::malloc::MArc::as_pin`) bound to the kernel lock, in a `ReadMostly` cell of the
 //!   glue's tables (`MsdosfsTables::dehash`), so the host tests start each test afresh
 //!   (`msdosfs_test_reset`). The adapter of the chains, LZ's `DeHash` (`queue_adapter!` in
 //!   `denode.rs`), is [`DeHashLink`], declared here by the generic form of
@@ -154,17 +154,18 @@
 
 use core::pin::Pin;
 
-use hal::klock;
-use hal::malloc::{M_WAITOK, MArc, MArray};
-use hal::pinlist::PinList;
-use hal::sleep::INFSLP;
-use hal::slot::ReadMostly;
+use hal::ds::pinlist::PinList;
+use hal::mem::malloc::{M_WAITOK, MArc, MArray};
+use hal::sync::klock;
+use hal::sync::sleep::INFSLP;
+use hal::sync::slot::ReadMostly;
 use hal::sys::errno::Errno;
 use hal::sys::mount::MNT_RDONLY;
 use hal::sys::types::{Daddr, Dev};
 use libkern::siphash::{SipHash24Ctx, SiphashKey};
 
 use crate::assert::kpanic;
+use crate::base::prf::printf;
 use crate::fs::bio::{bdwrite, bread, brelse, bwrite};
 use crate::fs::cache::cache_purge;
 use crate::fs::msdosfs::denode::{
@@ -189,9 +190,8 @@ use crate::fs::vnode::{
     vn_lock,
 };
 use crate::fs::vops::{Cred, vop_unlock};
-use crate::prf::printf;
 use crate::proc::{ProcGlue, Thread};
-use crate::tc::getnanotime;
+use crate::time::tc::getnanotime;
 use crate::vm::vnode::{uvm_vnp_setsize, uvm_vnp_uncache};
 
 hal::pin_adapter!(

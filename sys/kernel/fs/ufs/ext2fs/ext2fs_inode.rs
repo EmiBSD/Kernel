@@ -126,8 +126,8 @@
 //!   (`ext2fs_vnops.rs`); the C's `ip->i_e2din == NULL` is the inode's empty dinode slot
 //!   (`din_is_null`), and the inode's handle is dropped before `vrecycle`, as `ufs_inactive`'s.
 
-use hal::malloc::{M_WAITOK, MArray};
-use hal::sleep::INFSLP;
+use hal::mem::malloc::{M_WAITOK, MArray};
+use hal::sync::sleep::INFSLP;
 use hal::sys::errno::Errno;
 use hal::sys::mount::MNT_RDONLY;
 use hal::sys::types::{Daddr, Mode, Off};
@@ -150,7 +150,7 @@ use crate::fs::ufs::ufs::inode::{IN_ACCESS, IN_CHANGE, IN_MODIFIED, IN_UPDATE, I
 use crate::fs::vnode::{IO_SYNC, V_SAVE, V_SAVEMETA, VDIR, VLNK, VREG, Vnode};
 use crate::fs::vops::{Cred, IoBuf, vop_strategy, vop_unlock};
 use crate::proc::{ProcGlue, Thread};
-use crate::tc::{getnanotime, gettime};
+use crate::time::tc::{getnanotime, gettime};
 use crate::vm::vnode::{uvm_vnp_setsize, uvm_vnp_uncache};
 
 /// `SINGLE`: index of single indirect block.

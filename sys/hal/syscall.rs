@@ -129,7 +129,7 @@
 //!   handler change under it. Decision 29's second slot, the `Legacy` fallback the traps took
 //!   when the module was not loaded, went with the module at the N5 close (decision 47).
 
-use crate::once::OnceStatic;
+use crate::sync::once::OnceStatic;
 
 /// `register_t`: a machine register as a system call sees it (64 bits on both machines).
 pub type Register = isize;

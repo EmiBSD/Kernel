@@ -161,8 +161,8 @@ use core::marker::PhantomData;
 use core::mem::size_of;
 use core::sync::atomic::{AtomicU8, Ordering};
 
-use hal::netlock::NetHeld;
-use hal::once::OnceStatic;
+use hal::sync::netlock::NetHeld;
+use hal::sync::once::OnceStatic;
 use hal::sys::errno::Errno;
 use hal::sys::netinet_in::{
     IPPROTO_DIVERT, IPPROTO_DONE, IPPROTO_ICMP, IPPROTO_IGMP, IPPROTO_MAX, IPPROTO_RAW,
@@ -171,6 +171,7 @@ use hal::sys::netinet_in::{
 use hal::sys::socket::{AF_INET, PF_INET, SOCK_DGRAM, SOCK_RAW, SOCK_STREAM};
 
 use crate::assert::kpanic;
+use crate::base::sysctl::SysctlReq;
 use crate::net::domain::{Domain, net};
 use crate::net::if_var::Netstack;
 use crate::net::mbuf::{Mbuf, MbufBox};
@@ -189,7 +190,6 @@ use crate::netinet::udp_usrreq::{
     UdpUsrreqs, udp_ctlinput, udp_ctloutput, udp_init, udp_input, udp_sysctl,
 };
 use crate::proc::ProcGlue;
-use crate::sysctl::SysctlReq;
 
 /// `inetsw[]` as the glue recorded it, with the index of its raw entry: one record, so no
 /// reader sees the table without its raw entry (`kernel::netinet6::in6_proto`'s shape).

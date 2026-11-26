@@ -85,8 +85,8 @@
 use core::mem::size_of;
 use core::sync::atomic::Ordering;
 
-use hal::netlock::NetHeld;
-use hal::pod;
+use hal::mem::pod;
+use hal::sync::netlock::NetHeld;
 use hal::sys::errno::Errno;
 use hal::sys::net_if::IFF_POINTOPOINT;
 use hal::sys::net_route::{RTF_DYNAMIC, RTF_GATEWAY, RTF_MODIFIED};
@@ -561,9 +561,9 @@ mod tests {
     /// detached, as ND's tests take it: the driver's output reaches `nd6_resolve`'s
     /// solicitation without the proof, which the `Inet` double lends from that holding).
     fn forward(m: MbufBox, flags: i32) {
-        hal::netlock::lock();
-        hal::netlock::lend_detached(|net| ip6_forward(m, None, flags, net));
-        hal::netlock::unlock();
+        hal::sync::netlock::lock();
+        hal::sync::netlock::lend_detached(|net| ip6_forward(m, None, flags, net));
+        hal::sync::netlock::unlock();
     }
 
     /// The IPv6 packets `ifp` sent since the last call (its Ethernet frames' payloads).

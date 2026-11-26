@@ -60,10 +60,10 @@
 //!
 //! The scheduler is `kernel::sched` (N4.5a): `mi_switch`, `setrunnable`, `setpriority`,
 //! `schedclock`, `yield`, `preempt`, the load average, `schedcpu` and `roundrobin`'s work
-//! live there, over `hal::thread`'s `SCHED_LOCK`. This module keeps LZ's names for `bsd`'s
+//! live there, over `hal::cpu::thread`'s `SCHED_LOCK`. This module keeps LZ's names for `bsd`'s
 //! callers: the lock's `SCHED_LOCK()`/`SCHED_UNLOCK()` pair as a hold
 //! ([`sched_lock`]/[`sched_unlock`]), the clock interrupt `roundrobin` with the clockintr
-//! signature, the running thread found by `hal::thread::with_current`, `struct cpu_info` read
+//! signature, the running thread found by `hal::cpu::thread::with_current`, `struct cpu_info` read
 //! as the CPU's number, and `averunnable` as `struct loadavg`. The CPU throttling
 //! (`cpu_setperf`, `perflevel`, the `perfpolicy_*` knobs, `setperf_auto`,
 //! `sysctl_hwsetperf`, `sysctl_hwperfpolicy`) needs sysctl and the power sensors (M7).
@@ -75,7 +75,7 @@
 //! - LZ's `SCHED_LOCK` was a `mutex(9)` taken by `sched_lock()` and released by
 //!   `sched_unlock()` in any frame (`mi_switch`'s caller locks, `mi_switch` or the new
 //!   thread's `proc_trampoline_mi` unlocks). Here [`sched_lock`] returns the hold of
-//!   `hal::thread::SCHED_LOCK`, the witness the scheduler's functions take (`&SchedHold` to
+//!   `hal::cpu::thread::SCHED_LOCK`, the witness the scheduler's functions take (`&SchedHold` to
 //!   read, `&mut SchedHold` to change a queue), and [`sched_unlock`] or [`mi_switch`] consume
 //!   it; `SCHED_LOCK_INIT()` has nothing left to do (the lock is a static made at its level).
 //! - The scheduler's own state left `struct schedstate_percpu` for `kernel::sched::SchedCpu`
@@ -84,7 +84,7 @@
 use core::pin::Pin;
 use core::sync::atomic::Ordering;
 
-use hal::thread::SchedHold;
+use hal::cpu::thread::SchedHold;
 use libkern::StaticCell;
 
 use crate::kern::kern_clockintr::clockrequest_advance;
@@ -122,7 +122,7 @@ pub fn roundrobin_period() -> u64 {
 /// `SCHED_LOCK()`: the scheduler lock's hold, the witness of the run and sleep queues.
 #[inline]
 pub fn sched_lock() -> SchedHold {
-    hal::thread::sched_lock()
+    hal::cpu::thread::sched_lock()
 }
 
 /// `SCHED_UNLOCK()`: the hold given back.
@@ -133,12 +133,12 @@ pub fn sched_unlock(h: SchedHold) {
 
 /// `SCHED_ASSERT_LOCKED()`.
 pub fn sched_assert_locked() {
-    crate::kassert!(hal::thread::sched_locked());
+    crate::kassert!(hal::cpu::thread::sched_locked());
 }
 
 /// `SCHED_ASSERT_UNLOCKED()`.
 pub fn sched_assert_unlocked() {
-    crate::kassert!(!hal::thread::sched_locked());
+    crate::kassert!(!hal::cpu::thread::sched_locked());
 }
 
 /// CPU `n`'s scheduler state (`ci->ci_schedstate`'s scheduler members), once it joined.
@@ -152,7 +152,7 @@ pub fn curcpu_schedflags() -> i32 {
 }
 
 /// `roundrobin`: force switch among equal priority processes every 100ms.
-pub fn roundrobin(cr: &Clockrequest, _frame: &hal::clock::ClockFrame) {
+pub fn roundrobin(cr: &Clockrequest, _frame: &hal::cpu::clock::ClockFrame) {
     let count = clockrequest_advance(cr, roundrobin_period());
     kernel::sched::roundrobin::<G>(count);
 }
@@ -173,12 +173,12 @@ pub fn preempt() {
 /// whose `p_stat` its caller already changed from `SONPROC` under the hold `h`; returns once
 /// it is scheduled again, the hold released.
 pub fn mi_switch(h: SchedHold) {
-    hal::thread::with_current(|p: Pin<&Proc>| kernel::sched::mi_switch(p, h));
+    hal::cpu::thread::with_current(|p: Pin<&Proc>| kernel::sched::mi_switch(p, h));
 }
 
 /// `setrunnable`: change process state to be runnable, placing it on the run queue.
 pub fn setrunnable(h: &mut SchedHold, p: &Proc) {
-    kernel::sched::setrunnable(h, hal::pin::pin_static(p.as_static()));
+    kernel::sched::setrunnable(h, hal::ds::pin::pin_static(p.as_static()));
 }
 
 /// `setpriority`: compute the priority of a process.

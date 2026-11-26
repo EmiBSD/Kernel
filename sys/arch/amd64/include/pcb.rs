@@ -95,7 +95,7 @@ use core::cell::{Cell, UnsafeCell};
 use core::ptr;
 
 use crate::arch::amd64::include::fpu::Savefpu;
-use hal::pmap::Pmap;
+use hal::vm::pmap::Pmap;
 
 /// `struct pcb`. Please note that the `pcb_savefpu` field in struct below must be on a
 /// 64-byte boundary.

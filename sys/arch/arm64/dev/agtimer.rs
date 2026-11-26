@@ -69,9 +69,9 @@ use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 
 use hal::arch::arm64::timer;
-use hal::clock::ClockFrame;
-use kernel::clockintr::Intrclock;
-use kernel::tc::{TcEntry, Timecounter};
+use hal::cpu::clock::ClockFrame;
+use kernel::time::clockintr::Intrclock;
+use kernel::time::tc::{TcEntry, Timecounter};
 
 use crate::arch::arm64::arm64::intr::{
     arm_clock_register, arm_intr_establish_fdt_idx, arm_intr_route,
@@ -97,7 +97,7 @@ const TIMER_FREQUENCY: i32 = 24 * 1000 * 1000;
 pub static AGTIMER_FREQUENCY: AtomicI32 = AtomicI32::new(TIMER_FREQUENCY);
 
 /// The generic timer's virtual counter as the kernel's timecounters read it: the hardware's
-/// half of `agtimer_timecounter` (N4.8a: `kernel::tc::Timecounter`). The frequency is the
+/// half of `agtimer_timecounter` (N4.8a: `kernel::time::tc::Timecounter`). The frequency is the
 /// attach's (`clock-frequency`, `CNTFRQ_EL0`); the Allwinner A64's erratum switches the
 /// reader (`hal`'s flag) and the `tc_user` userland's libc reads.
 pub struct AgtimerTc {
@@ -189,7 +189,7 @@ static AGTIMER: AgtimerSoftc = AgtimerSoftc {
 };
 
 /// `agtimer_intrclock`: the virtual timer as each CPU's interrupt clock (N4.8a:
-/// `kernel::clockintr::Intrclock`; the C's null cookie: the callbacks read [`AGTIMER`]).
+/// `kernel::time::clockintr::Intrclock`; the C's null cookie: the callbacks read [`AGTIMER`]).
 pub struct AgtimerIntrclock;
 
 impl Intrclock for AgtimerIntrclock {
@@ -302,7 +302,7 @@ pub fn agtimer_attach(_parent: Option<&Device>, _self: &Device, aux: *mut c_void
         .freq
         .store(u64::from(sc.sc_ticks_per_second.get()), Ordering::Relaxed);
     // tc_priv = sc: the counter reads no softc (the hardware half is `AGTIMER_TC`).
-    kernel::tc::tc_init(&AGTIMER_TIMECOUNTER);
+    kernel::time::tc::tc_init(&AGTIMER_TIMECOUNTER);
 
     // agtimer_intrclock.ic_cookie = sc: the callbacks read AGTIMER (see the deviations).
     sc.sc_attached.store(true, Ordering::Relaxed);
@@ -437,7 +437,7 @@ pub fn agtimer_startclock() {
 
     clockintr_cpu_init(Some(&AGTIMER_INTRCLOCK));
     // The kernel's dispatch checks every uptime it reads under the smokes (feature qemu).
-    kernel::clockintr::set_uptime_check(cfg!(feature = "qemu"));
+    kernel::time::clockintr::set_uptime_check(cfg!(feature = "qemu"));
 
     let mut reg = agtimer_get_ctrl();
     reg &= !CNTV_CTL_IMASK;

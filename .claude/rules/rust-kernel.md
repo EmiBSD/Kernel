@@ -49,10 +49,10 @@ paths:
   three). The element's field must be exactly the entry type, never a pointer to it (the
   macro checks it at compile time).
 - `hal`'s lists and trees (N3.3) are a second family, for elements that live for ever
-  (`&'static`, the page array and the pmemranges): `hal::list::List` (TAILQ) and
-  `hal::tree::Tree` (RBT), whose links are `hal::link::Link`s and whose mutators are safe.
-  Their adapters are the safe traits `hal::list::ListAdapter` and `hal::tree::TreeAdapter`,
-  written by `hal::list_adapter!` and `hal::tree_adapter!` (`sys/hal/tree.rs`: a different
+  (`&'static`, the page array and the pmemranges): `hal::ds::list::List` (TAILQ) and
+  `hal::ds::tree::Tree` (RBT), whose links are `hal::ds::link::Link`s and whose mutators are safe.
+  Their adapters are the safe traits `hal::ds::list::ListAdapter` and `hal::ds::tree::TreeAdapter`,
+  written by `hal::list_adapter!` and `hal::tree_adapter!` (`sys/hal/ds/tree.rs`: a different
   macro from `bsd`'s `tree_adapter!` of the same name; say `hal::tree_adapter!` or
   `crate::tree_adapter!` to tell them apart). No premise rests on these adapters (an `entry`
   that names the wrong field scrambles that list or tree, it never makes a reference

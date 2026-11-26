@@ -156,13 +156,13 @@ use super::ufs_lookup::{
     ufs_lookup, ufs_makedirentry, vmount,
 };
 use crate::assert::kpanic;
-use crate::clock::Timespec;
-use crate::cred::{Ucred, groupmember, suser_ucred};
-use crate::event::{
+use crate::base::sysctl::SECURELEVEL;
+use crate::file::event::{
     __EV_POLL, __EV_SELECT, EV_EOF, EV_ONESHOT, EVFILT_READ, EVFILT_VNODE, EVFILT_WRITE,
     FILTEROP_ISFD, Filter, Filterops, Knote, NOTE_ATTRIB, NOTE_DELETE, NOTE_EOF, NOTE_LINK,
     NOTE_RENAME, NOTE_REVOKE, NOTE_TRUNCATE, NOTE_WRITE,
 };
+use crate::file::uio::{Uio, UioRw};
 use crate::file::{FileGlue, LockOwner, foffset};
 use crate::fs::bio::{biodone, brelse};
 use crate::fs::buf::{B_CLRBUF, B_ERROR, BufRef};
@@ -189,10 +189,10 @@ use crate::fs::vops::{
     Cn, Cred, IoBuf, Vnops, vop_abortop, vop_access, vop_bmap, vop_bwrite, vop_read, vop_remove,
     vop_strategy, vop_unlock,
 };
+use crate::proc::cred::{Ucred, groupmember, suser_ucred};
 use crate::proc::{ProcGlue, Thread};
-use crate::sysctl::SECURELEVEL;
-use crate::tc::getnanotime;
-use crate::uio::{Uio, UioRw};
+use crate::time::clock::Timespec;
+use crate::time::tc::getnanotime;
 use crate::vm::vnode::{uvm_vnp_setsize, uvm_vnp_uncache};
 
 /// `mastertemplate`: a virgin directory (no blushing please).
@@ -1771,19 +1771,19 @@ pub fn ufs_print<G: ProcGlue>(vp: &'static Vnode<G>) -> Result<(), Errno> {
         use hal::sys::types::{major, minor};
         let ip = vtoi(vp);
 
-        crate::prf::printf(format_args!(
+        crate::base::prf::printf(format_args!(
             "tag VT_UFS, ino {}, on dev {}, {}",
             ip.i_number,
             major(ip.i_dev),
             minor(ip.i_dev)
         ));
-        crate::prf::printf(format_args!(
+        crate::base::prf::printf(format_args!(
             " flags 0x{:x}, effnlink {}, nlink {}\n",
             ip.i_flag.get(),
             ip.i_effnlink.get(),
             ip.dip_nlink()
         ));
-        crate::prf::printf(format_args!(
+        crate::base::prf::printf(format_args!(
             "\tmode 0{:o}, owner {}, group {}, size {}",
             ip.dip_mode(),
             ip.dip_uid(),
@@ -1791,7 +1791,7 @@ pub fn ufs_print<G: ProcGlue>(vp: &'static Vnode<G>) -> Result<(), Errno> {
             ip.dip_size()
         ));
         // FIFO: fifo_printinfo(vp) for a VFIFO (fifofs, not ported).
-        crate::prf::printf(format_args!("\n"));
+        crate::base::prf::printf(format_args!("\n"));
     }
     #[cfg(not(any(feature = "debug", feature = "diagnostic")))]
     let _ = vp;
@@ -2378,7 +2378,7 @@ mod tests {
     use super::*;
     use crate::fs::testfs::TestGlue;
 
-    use crate::cred::Ucred;
+    use crate::file::uio::Iovec;
     use crate::fs::namei::{CREATE, LOCKPARENT, LOOKUP, RENAME, SAVENAME, SAVESTART, WANTPARENT};
     use crate::fs::subr::vgone;
     use crate::fs::ufs::ufs::testufs::{self, BSIZE, cn, create, lookup, setup, vattr};
@@ -2387,7 +2387,7 @@ mod tests {
         vop_link, vop_lookup, vop_mkdir, vop_open, vop_pathconf, vop_readdir, vop_readlink,
         vop_remove, vop_rename, vop_rmdir, vop_setattr, vop_symlink,
     };
-    use crate::uio::Iovec;
+    use crate::proc::cred::Ucred;
 
     /// A credential of `uid` (group 0), not root's when `uid` is not 0.
     fn user(uid: u32) -> Ucred {
@@ -2755,7 +2755,7 @@ mod tests {
             Err(Errno::ENOTTY)
         );
         let kn = Knote::<TestGlue>::detached();
-        kn.kn_filter().set(crate::event::EVFILT_PROC);
+        kn.kn_filter().set(crate::file::event::EVFILT_PROC);
         assert_eq!(vop_kqfilter(f, 0, &kn), Err(Errno::EINVAL));
         // close of a file referenced twice updates its times.
         vtoi(f).set_flag(IN_ACCESS);

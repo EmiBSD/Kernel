@@ -61,7 +61,7 @@ use core::cell::Cell;
 use core::ffi::c_void;
 use core::ptr::{self, NonNull};
 
-use kernel::sensors::{sensor_attach, sensor_task_register, sensordev_install};
+use kernel::dev::sensors::{sensor_attach, sensor_task_register, sensordev_install};
 
 use crate::dev::fdt::simplefb::SIMPLEFB_BURN_HOOK;
 use crate::dev::ofw::fdt::{

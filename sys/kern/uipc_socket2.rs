@@ -225,7 +225,7 @@ pub fn soassertlocked_readonly(so: &Socket) {
 /// `soassertlocked(so)`: the socket's locks are held to change its state.
 pub fn soassertlocked(so: &Socket) {
     if is_inet(so) {
-        if hal::netlock::status() == RW_READ {
+        if hal::sync::netlock::status() == RW_READ {
             net_assert_locked("soassertlocked");
 
             if SPLASSERT_CTL.load(Ordering::Relaxed) > 0
@@ -251,11 +251,11 @@ pub fn sosleep_nsec(
     nsecs: u64,
 ) -> Result<(), Errno> {
     if is_inet(so) {
-        let shared = hal::netlock::status() == RW_READ;
+        let shared = hal::sync::netlock::status() == RW_READ;
         if shared {
             so.so_lock_legacy().exit_write_detached();
         }
-        let ret = hal::netlock::sleep_nsec(ident, prio, wmesg, nsecs);
+        let ret = hal::sync::netlock::sleep_nsec(ident, prio, wmesg, nsecs);
         if shared {
             so.so_lock_legacy().enter_write_detached();
         }

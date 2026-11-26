@@ -166,7 +166,7 @@ use crate::netinet6::in6_var::In6Multi;
 use crate::sys::errno::Errno;
 use crate::sys::socket::Sockaddr;
 use crate::sys::socketvar::{SS_PRIV, Socket};
-use hal::malloc::MArc;
+use hal::mem::malloc::MArc;
 
 pub use hal::sys::netinet6_in6::*;
 pub use kernel::netinet6::in6::{

@@ -70,9 +70,9 @@
 //! ## Deviations
 //! - The pointer authentication keys (`pm_ap*key`) the C copies from the parent's pmap wait
 //!   for user pmaps (M6): kernel threads share the kernel pmap.
-//! - The switch frame's `sf_x19` holds the start word of `kernel::fork::Start` (for a `bsd`
+//! - The switch frame's `sf_x19` holds the start word of `kernel::proc::fork::Start` (for a `bsd`
 //!   function, its slot in the kernel's table), which the trampoline hands back to
-//!   `kernel::fork`'s registered start: no code address crosses into `hal`, whose
+//!   `kernel::proc::fork`'s registered start: no code address crosses into `hal`, whose
 //!   `thread_setup` builds the frames (N4.5a). Since N4.6a the kernel's `fork1` calls
 //!   `thread_setup` itself; `cpu_fork` stays for the machine contract (amd64's, N10).
 
@@ -85,7 +85,7 @@ use crate::sys::proc::ProcExt;
 
 /// `cpu_fork`: finish a fork operation, with process `p2` nearly set up. Copy and update the
 /// kernel stack and pcb, making the child ready to run, and marking it so that it can return
-/// differently than the parent: `hal::thread::thread_setup` (the parent's FP state saved, the
+/// differently than the parent: `hal::cpu::thread::thread_setup` (the parent's FP state saved, the
 /// pcb copied, the trap frame copied with the user stack and TCB, the switch frame into the
 /// trampoline with `func`'s number and `arg`).
 pub fn cpu_fork(
@@ -101,14 +101,14 @@ pub fn cpu_fork(
     pmap_activate(p2);
 
     // Both words of the start: a NULL `arg` is the new thread itself (`words` puts `p2`'s
-    // address in the second), as `kernel::fork`'s own `cpu_fork` passes them.
-    let (start, arg) =
-        kernel::fork::Start::Legacy(func, arg.expose_provenance()).words(ptr::from_ref(p2).addr());
-    let h = hal::thread::sched_lock();
-    hal::thread::thread_setup(
+    // address in the second), as `kernel::proc::fork`'s own `cpu_fork` passes them.
+    let (start, arg) = kernel::proc::fork::Start::Legacy(func, arg.expose_provenance())
+        .words(ptr::from_ref(p2).addr());
+    let h = hal::cpu::thread::sched_lock();
+    hal::cpu::thread::thread_setup(
         &h,
-        hal::pin::pin_static(p1.as_static()),
-        hal::pin::pin_static(p2.as_static()),
+        hal::ds::pin::pin_static(p1.as_static()),
+        hal::ds::pin::pin_static(p2.as_static()),
         stack.addr(),
         tcb.expose_provenance(),
         start,

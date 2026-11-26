@@ -91,7 +91,7 @@
 //! members of `struct schedstate_percpu` the clock interrupts use: the four clockintr
 //! handles, `spc_cp_time` with its lock, `spc_schedticks`, `spc_spinning`, `spc_runtime`;
 //! M11a the SMR members (`spc_deferred`, `spc_ndeferred`, `spc_smrdepth`, `spc_smrexpedite`,
-//! `spc_smrgp`; `hal::smr`'s per-CPU state since N6.0) and `cpu_is_idle`. N4.5a: the scheduler's members
+//! `spc_smrgp`; `hal::sync::smr`'s per-CPU state since N6.0) and `cpu_is_idle`. N4.5a: the scheduler's members
 //! (`spc_qs`, `spc_whichqs`, `spc_nrun`, `spc_idleproc`, `spc_deadproc`, `spc_schedflags`,
 //! `spc_curpriority`) are `kernel::sched::SchedCpu`'s, reached by the CPU's number; the
 //! functions it declares are `kernel::sched`'s, under their names in `kern/kern_sched.rs` and
@@ -162,11 +162,11 @@ pub struct SchedstatePercpu {
     pub spc_cp_time: [AtomicU64; CPUSTATES],
 
     // `spc_itimer`, `spc_profclock`, `spc_roundrobin`, `spc_statclock`: the CPU's slots of
-    // `kernel::clockintr`'s queue (`Clockintr::of(cpu, Slot::...)`, N4.8a).
+    // `kernel::time::clockintr`'s queue (`Clockintr::of(cpu, Slot::...)`, N4.8a).
     /// `spc_spinning` (volatile): this cpu is currently spinning.
     pub spc_spinning: AtomicU32,
     // `spc_deferred`, `spc_ndeferred`, `spc_smrdepth`, `spc_smrexpedite`, `spc_smrgp`: the
-    // CPU's state in `hal::smr` (N6.0).
+    // CPU's state in `hal::sync::smr` (N6.0).
 }
 
 // SAFETY: one CPU's clock state. The `Cell` members are owned by that CPU ([o]: the clock

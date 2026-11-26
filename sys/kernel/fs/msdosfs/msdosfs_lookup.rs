@@ -136,6 +136,7 @@ use hal::sys::mount::{MSDOSFSMNT_NOWIN95, MSDOSFSMNT_SHORTNAME};
 use hal::sys::types::Daddr;
 
 use crate::assert::kpanic;
+use crate::base::prf::printf;
 use crate::fs::bio::{bread, brelse, bwrite};
 use crate::fs::buf::BufRef;
 use crate::fs::cache::{cache_enter, cache_lookup};
@@ -159,7 +160,6 @@ use crate::fs::namei::{
 use crate::fs::subr::{vput, vref};
 use crate::fs::vnode::{LK_EXCLUSIVE, LK_RETRY, VEXEC, VROOT, VWRITE, Vnode, vn_lock};
 use crate::fs::vops::{Cred, vop_access, vop_unlock};
-use crate::prf::printf;
 use crate::proc::ProcGlue;
 
 /// `sizeof(struct direntry)`.
@@ -877,7 +877,7 @@ pub fn doscheckpath<G: ProcGlue>(source: &Denode<G>, target: DenodeRef<G>) -> Re
         }
         let pmp: MsdosfsmountRef<G> = target.de_pmp.clone();
         #[cfg(feature = "diagnostic")]
-        if !hal::malloc::MArc::ptr_eq(&pmp, &source.de_pmp) {
+        if !hal::mem::malloc::MArc::ptr_eq(&pmp, &source.de_pmp) {
             kpanic(format_args!(
                 "doscheckpath: source and target on different filesystems"
             ));

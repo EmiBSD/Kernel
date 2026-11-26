@@ -79,7 +79,7 @@
 //!   `&'static`) -> an [`IsoMnt`] built whole by `iso_mountfs` in its locals (D-N5.8-6: the C
 //!   writes no member after the mount, cd9660_vfsops.c:339-420), every member plain, and
 //!   published once in a counted `malloc(M_ISOFSMNT)` block ([`IsoMntRef`],
-//!   `hal::malloc::MArc`, [`IsoMnt::alloc`]; `vmstat -m`'s `ISOFS mount` row, 16 bytes more
+//!   `hal::mem::malloc::MArc`, [`IsoMnt::alloc`]; `vmstat -m`'s `ISOFS mount` row, 16 bytes more
 //!   per block for the count and the type, as the `UFS mount` row) erased into the mount's
 //!   typed slot where the C sets `mnt_data`; the unmount takes it back after `vflush`, the
 //!   last handle frees the block (docs/IDIOMS.md, the row of a C in-core structure filled
@@ -91,7 +91,7 @@
 //!   row); a node holds one handle for its life and borrows it (`IsoNode::mnt`, one load,
 //!   the C's `ip->i_mnt`). 0 `unsafe` (LZ: 1).
 
-use hal::malloc::{M_WAITOK, MArc};
+use hal::mem::malloc::{M_WAITOK, MArc};
 use hal::sys::types::Dev;
 
 use crate::assert::kpanic;

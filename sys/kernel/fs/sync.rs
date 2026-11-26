@@ -79,7 +79,7 @@ use core::marker::PhantomData;
 use core::ptr;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use hal::list::{List, ListEntry};
+use hal::ds::list::{List, ListEntry};
 use hal::sys::errno::Errno;
 use hal::sys::mount::{MNT_ASYNC, MNT_LAZY, VB_NOWAIT, VB_READ};
 
@@ -107,7 +107,7 @@ pub static SYNCER_CHAN: AtomicI32 = AtomicI32::new(0);
 /// `v_synclist`'s adapter: a slot of the wheel.
 pub struct BySynclist<G: ProcGlue>(PhantomData<G>);
 
-impl<G: ProcGlue> hal::list::ListAdapter for BySynclist<G> {
+impl<G: ProcGlue> hal::ds::list::ListAdapter for BySynclist<G> {
     type Elem = Vnode<G>;
     fn entry(e: &Vnode<G>) -> &ListEntry<Vnode<G>> {
         &e.synclist
@@ -221,11 +221,11 @@ pub fn syncer_remove<G: ProcGlue>(vp: &'static Vnode<G>) {
 /// System filesystem synchronizer daemon (the `update` thread's body).
 pub fn syncer_thread<G: ProcGlue>() -> ! {
     // `syncerproc`, as the buffer cache knows it (its kva and page reserves).
-    super::bio::set_syncer(hal::sleep::curproc_word());
+    super::bio::set_syncer(hal::sync::sleep::curproc_word());
     let t = vfs::<G>();
 
     loop {
-        let start = crate::tc::getnsecuptime();
+        let start = crate::time::tc::getnsecuptime();
 
         // Push files whose dirty time has expired.
         let slot = {
@@ -264,7 +264,7 @@ pub fn syncer_thread<G: ProcGlue>() -> ! {
                     super::subr::vprint(Some("fsync failed"), vp);
                     if let Some(mp) = vp.mount() {
                         let (name, len) = mp.mntonname();
-                        crate::prf::printf(format_args!(
+                        crate::base::prf::printf(format_args!(
                             "mounted on: {}\n",
                             core::str::from_utf8(&name[..len]).unwrap_or("?")
                         ));
@@ -277,16 +277,16 @@ pub fn syncer_thread<G: ProcGlue>() -> ! {
             }
             drop(w);
 
-            hal::sleep::sched_pause();
+            hal::sync::sleep::sched_pause();
         }
 
         // If it has taken us less than a second to process the current work, then wait.
         // Otherwise start right over again. We can still lose time if any single round takes
         // more than two seconds, but it does not really matter as we are just trying to
         // generally pace the filesystem activity.
-        let elapsed = crate::tc::getnsecuptime().saturating_sub(start);
+        let elapsed = crate::time::tc::getnsecuptime().saturating_sub(start);
         if elapsed < SEC {
-            let _ = hal::sleep::tsleep_nsec(
+            let _ = hal::sync::sleep::tsleep_nsec(
                 ptr::from_ref(&SYNCER_CHAN),
                 PPAUSE,
                 "syncer",
@@ -442,7 +442,7 @@ pub fn sync_inactive<G: ProcGlue>(vp: &'static Vnode<G>) -> Result<(), Errno> {
 /// Print out a syncer vnode.
 pub fn sync_print() -> Result<(), Errno> {
     if cfg!(any(feature = "debug", feature = "diagnostic")) {
-        crate::prf::printf(format_args!("syncer vnode\n"));
+        crate::base::prf::printf(format_args!("syncer vnode\n"));
     }
     Ok(())
 }

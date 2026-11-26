@@ -176,7 +176,7 @@
 //!   `In6Addr` and one `SockaddrIn6` exist (N6.4c1's `Addr6` and `Hdr6` traits keep reading
 //!   both images until `bsd`'s last copy goes); `struct ipv6_mreq`, `struct in6_pktinfo` and
 //!   `struct ip6_mtuinfo` are `abi_pod!` images (copied in and out of option buffers by
-//!   `hal::pod`); the address tests and the views are `#[inline]` (read per packet across the
+//!   `hal::mem::pod`); the address tests and the views are `#[inline]` (read per packet across the
 //!   crates, N6.4a's R12).
 
 use core::mem::size_of;

@@ -140,7 +140,7 @@
 //!   (the socket lock's parts and the net lock's proof its caller holds): no lend of the net
 //!   lock per segment (`bsd`'s `ip_output` adapter lends it through the `SaToken`, a
 //!   contended pair per packet; here `tp.net` is the entry's own proof), the header written
-//!   with `hal::pod` into the new mbuf's data (LZ: unaligned stores under `unsafe`), the
+//!   with `hal::mem::pod` into the new mbuf's data (LZ: unaligned stores under `unsafe`), the
 //!   template read from the control block's own mbuf (LZ: a parked `&'static Mbuf`). `bsd`'s
 //!   `sys/netinet/tcp_output.rs` stays for `bsd`'s TCP until the switch (N6.6a5).
 //! - The SACK holes are an owned chain in the control block's state: for one pass the chain
@@ -163,8 +163,8 @@ use core::cmp::min;
 use core::mem::size_of;
 use core::sync::atomic::Ordering;
 
-use hal::owned::SlistLink;
-use hal::pod;
+use hal::ds::owned::SlistLink;
+use hal::mem::pod;
 use hal::sys::endian::{htonl, htons};
 use hal::sys::errno::Errno;
 use hal::sys::mbuf::MT_HEADER;
@@ -247,15 +247,15 @@ pub fn tcp_print_holes(holes: &SlistLink<Sackhole>) {
     if p.is_none() {
         return;
     }
-    crate::prf::printf(format_args!("Hole report: start--end dups rxmit\n"));
+    crate::base::prf::printf(format_args!("Hole report: start--end dups rxmit\n"));
     while let Some(h) = p {
-        crate::prf::printf(format_args!(
+        crate::base::prf::printf(format_args!(
             "{:x}--{:x} d {} r {:x}\n",
             h.start, h.end, h.dups, h.rxmit
         ));
         p = h.next.get();
     }
-    crate::prf::printf(format_args!("\n"));
+    crate::base::prf::printf(format_args!("\n"));
 }
 
 /// `tcp_sack_output`: the first SACK hole with pending retransmissions (enough duplicate
@@ -1717,7 +1717,9 @@ mod tests {
                 st.snd_max = 3000;
                 st.t_dupacks = 3;
                 let h = crate::netinet::tcp_subr::SACKHL_POOL
-                    .get(hal::pool::PR_WAITOK, || Sackhole::new(1500, 2000, 3, 1500))
+                    .get(hal::mem::pool::PR_WAITOK, || {
+                        Sackhole::new(1500, 2000, 3, 1500)
+                    })
                     .expect("a hole");
                 let _ = st.snd_holes.set(h);
             },
@@ -2116,7 +2118,7 @@ mod tests {
         st.snd_una = 1000;
         let hole = |s, e, d, r| {
             crate::netinet::tcp_subr::SACKHL_POOL
-                .get(hal::pool::PR_WAITOK, || Sackhole::new(s, e, d, r))
+                .get(hal::mem::pool::PR_WAITOK, || Sackhole::new(s, e, d, r))
                 .expect("a hole")
         };
         // Old (rxmit below snd_una), too few dups, done (rxmit at end), then the one.

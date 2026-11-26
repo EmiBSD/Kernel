@@ -48,20 +48,20 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! `<sys/filedesc.h>` for `bsd`: the kernel's descriptor table (`kernel::descrip`) bound to
+//! `<sys/filedesc.h>` for `bsd`: the kernel's descriptor table (`kernel::file::descrip`) bound to
 //! `bsd`'s glue.
 //!
 //! Upstream: sys/sys/filedesc.h @ 3ce1f3f79392
 //! LZ: sys/sys/filedesc.rs@3c62ede68802
 //!
 //! ## Redesign
-//! - N4.3: `struct filedesc` and `struct filedesc0` moved into `kernel::descrip` (a pool item
+//! - N4.3: `struct filedesc` and `struct filedesc0` moved into `kernel::file::descrip` (a pool item
 //!   whose slots and bitmaps sit inside the locks that guard them; `filedesc0`'s internal
 //!   arrays are its first storage); this module names its one instance (`Filedesc`,
 //!   `FdRef`, `FdGuard` over `BsdFileGlue`) and re-exports the constants and the lock calls.
 //!   `p->p_fd` and `pr->ps_fd` are the kernel's `Thread::fd` and `Process::fd`.
 
-pub use kernel::descrip::{
+pub use kernel::file::descrip::{
     FD_ADVLOCK, NDENTRIES, NDENTRYMASK, NDENTRYSHIFT, NDEXTENT, NDFILE, UF_EXCLOSE, UF_FORKCLOSE,
     UF_PLEDGED, UF_PLEDGEOPEN, fdpassertlocked, fdplock, fdpunlock, ndhislots, ndloslots, ndreduce,
 };
@@ -69,13 +69,13 @@ pub use kernel::descrip::{
 use crate::kern::kern_descrip::BsdFileGlue;
 
 /// `struct filedesc` of `bsd`'s processes.
-pub type Filedesc = kernel::descrip::Filedesc<BsdFileGlue>;
+pub type Filedesc = kernel::file::descrip::Filedesc<BsdFileGlue>;
 
 /// A counted reference to a `struct filedesc` (`ps_fd`).
-pub type FdRef = kernel::descrip::FdRef<BsdFileGlue>;
+pub type FdRef = kernel::file::descrip::FdRef<BsdFileGlue>;
 
 /// `fdplock(fdp)` held.
-pub type FdGuard<'a> = kernel::descrip::FdGuard<'a, BsdFileGlue>;
+pub type FdGuard<'a> = kernel::file::descrip::FdGuard<'a, BsdFileGlue>;
 
 /// `OFILESIZE`: storage required per open file descriptor.
 pub const OFILESIZE: usize = size_of::<*const ()>() + size_of::<u8>();
@@ -85,6 +85,6 @@ pub const OFILESIZE: usize = size_of::<*const ()>() + size_of::<u8>();
 const _: () = {
     const fn send_sync<T: Send + Sync>() {}
     send_sync::<crate::kern::kern_descrip::BsdFileData>();
-    send_sync::<kernel::cred::CredRef>();
+    send_sync::<kernel::proc::cred::CredRef>();
 };
 /* </CODE> */

@@ -1863,7 +1863,7 @@ pub fn geticblen<T: IcbLen>(icb: &T) -> u32 {
 /// The member `T` of a C union held as its bytes, read at the union's start (`T` is never
 /// longer than the bytes: asserted below for each union): a copy out.
 fn member<T: AbiPod>(bytes: &[u8]) -> T {
-    hal::pod::at(bytes, 0).unwrap_or_else(zeroed)
+    hal::mem::pod::at(bytes, 0).unwrap_or_else(zeroed)
 }
 
 // The C's sizes (the fixed parts, see the module's deviations) and the offsets the code

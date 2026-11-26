@@ -102,7 +102,7 @@
 //! - `uvm_pmr_assertvalid` (`DEBUG`) is compiled for feature `debug` and for the host tests.
 //! - `uvm_pagezero_thread` needs a kernel thread (N4) and is not here.
 //! - The per-CPU page cache keeps each CPU's magazines in [`UVM_PMR_CACHES`] (a
-//!   `hal::percpu::PerCpu`, the slot of `cpu_number()`) instead of `curcpu()->ci_uvm`: the
+//!   `hal::sync::percpu::PerCpu`, the slot of `cpu_number()`) instead of `curcpu()->ci_uvm`: the
 //!   uvm type stays out of the machine's `struct cpu_info`. The kernel is always
 //!   `MULTIPROCESSOR` (decision 40), so the C's single-CPU versions (`!(MULTIPROCESSOR &&
 //!   __HAVE_UVM_PERCPU)`: straight from and to the allocator, nothing to drain) are not here.
@@ -114,7 +114,7 @@
 //!   `BufCacheStats` bridge of N3.3 is gone); 0 before `bufinit`, their values at boot.
 //!
 //! ## Redesign
-//! - The ranges' and the pages' links are `hal::tree::Tree`/`hal::list::List` over `'static`
+//! - The ranges' and the pages' links are `hal::ds::tree::Tree`/`hal::ds::list::List` over `'static`
 //!   elements (the page array and the pmemranges are stolen at boot and never freed), so the
 //!   mutators are safe; `pmr_static` and `VmPage::forever` are gone.
 //! - `pg + n` and `pg[1]` (the size tree's node) are array indices (`page::nth`,
@@ -122,11 +122,11 @@
 //!   array broke" (`prev + prev->fpgsz != pg`) is `prev.index + prev.fpgsz != pg.index`.
 //! - `uvm.fpageqlock` and `uvm.pmr_control` -> [`FREE`], a `Mutexed<FreeState>` the
 //!   functions take as proof; the range counters are relaxed atomics under it.
-//! - `uvm_pmr_allocpmr` builds the range in boot-stolen memory with `hal::bootmem::steal_one`
+//! - `uvm_pmr_allocpmr` builds the range in boot-stolen memory with `hal::mem::bootmem::steal_one`
 //!   (the C's `uvm_pageboot_alloc` and `memset`/`RBT_INIT`).
-//! - The per-CPU magazines hold [`hal::link::Link`]s to pages instead of
-//!   `Cell<*const VmPage>`, their counts atomics: `hal::percpu::PerCpu<UvmPmrCache>`.
-//! - `splbio()`/`splx(s)` -> `hal::intr::splraise(IPL_BIO)`'s guard.
+//! - The per-CPU magazines hold [`hal::ds::link::Link`]s to pages instead of
+//!   `Cell<*const VmPage>`, their counts atomics: `hal::sync::percpu::PerCpu<UvmPmrCache>`.
+//! - `splbio()`/`splx(s)` -> `hal::cpu::intr::splraise(IPL_BIO)`'s guard.
 //! - `uvm_pmr_cache_put`'s lock-free `uvm_pmemrange_find` (the C walks the range tree without
 //!   `uvm.fpageqlock`, since the ranges change only in `uvm_pmr_init`) -> the ranges' bounds
 //!   and use, copied at the end of `uvm_pmr_init` into a static index of atomics published by
@@ -138,14 +138,14 @@ use core::cmp::Ordering as Cmp;
 use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 
-use hal::bootmem;
-use hal::intr::IPL_VM;
-use hal::list::{List, ListEntry};
-use hal::mutex::{Mutexed, MutexedGuard};
-use hal::sleep::wakeup;
+use hal::cpu::intr::IPL_VM;
+use hal::ds::list::{List, ListEntry};
+use hal::ds::tree::{Tree, TreeEntry};
+use hal::mem::bootmem;
+use hal::sync::mutex::{Mutexed, MutexedGuard};
+use hal::sync::sleep::wakeup;
 use hal::sys::errno::Errno;
 use hal::sys::types::Paddr;
-use hal::tree::{Tree, TreeEntry};
 use hal::vm::param::{atop, round_page, trunc_page};
 use hal::vm::uvmexp::UVMEXP;
 
@@ -158,8 +158,8 @@ use super::types::{
     UVM_PLA_ZERO, UvmConstraintRange,
 };
 use crate::assert::{kassert, kdassert, kpanic};
-use crate::prf::{printf, unported};
-use hal::{intr::IPL_BIO, link::Link, percpu::PerCpu, percpu::PerCpuInit};
+use crate::base::prf::{printf, unported};
+use hal::{cpu::intr::IPL_BIO, ds::link::Link, sync::percpu::PerCpu, sync::percpu::PerCpuInit};
 
 /// Dirty memory.
 pub const UVM_PMR_MEMTYPE_DIRTY: usize = 0;
@@ -476,7 +476,7 @@ pub fn uvm_lock_fpageq() -> MutexedGuard<'static, FreeState> {
 
 /// Validate the flags of the page (used in asserts). Any free page must have the PQ_FREE flag
 /// set. Free pages may be zeroed. Pmap flags are left untouched (they live in
-/// `hal::pmap::PageMd` since N3.1). The PQ_FREE flag is not checked here: by not checking, we
+/// `hal::vm::pmap::PageMd` since N3.1). The PQ_FREE flag is not checked here: by not checking, we
 /// can easily use this check in pages which are freed.
 fn valid_flags(pg_flags: u32) -> bool {
     pg_flags & !(PQ_FREE | PG_ZERO) == 0
@@ -1797,7 +1797,7 @@ pub fn uvm_pmr_use_inc(low: Paddr, high: Paddr) {
 }
 
 /// `uvm_pmr_allocpmr`: allocate a pmemrange. If called from `uvm_page_init`, the boot
-/// allocator is used (`hal::bootmem`, over `pmap_steal_memory`). If called after `uvm_init`,
+/// allocator is used (`hal::mem::bootmem`, over `pmap_steal_memory`). If called after `uvm_init`,
 /// malloc is used (and if called in between, you're dead): that path is not reachable here
 /// (module deviations) and panics.
 pub fn uvm_pmr_allocpmr() -> &'static UvmPmemrange {
@@ -2152,7 +2152,7 @@ fn uvm_pmr_cache_alloc(upci: &UvmPmrCacheItem) -> bool {
     let flags = UVM_PLA_NOWAIT | UVM_PLA_NOWAKE;
     let npages = UVM_PMR_CACHEMAGSZ;
 
-    hal::intr::splassert(IPL_BIO, "uvm_pmr_cache_alloc");
+    hal::cpu::intr::splassert(IPL_BIO, "uvm_pmr_cache_alloc");
     kassert!(upci.npages() == 0);
 
     let pgl = Pglist::new();
@@ -2179,7 +2179,7 @@ pub fn uvm_pmr_cache_get(flags: i32) -> Option<&'static VmPage> {
 
     // XXX The buffer flipper (incorrectly?) allocates & frees pages (from
     // uvm_pagerealloc_multi()) from interrupt context!
-    let s = hal::intr::splraise(IPL_BIO);
+    let s = hal::cpu::intr::splraise(IPL_BIO);
     let actv = upc.upc_actv.load(Ordering::Relaxed);
     let mut upci = &upc.upc_magz[actv];
     if upci.npages() == 0 {
@@ -2218,7 +2218,7 @@ pub fn uvm_pmr_cache_get(flags: i32) -> Option<&'static VmPage> {
 /// `uvm_pmr_cache_free`: gives every page of the magazine back to the allocator; the number
 /// of pages.
 fn uvm_pmr_cache_free(upci: &UvmPmrCacheItem) -> u32 {
-    hal::intr::splassert(IPL_BIO, "uvm_pmr_cache_free");
+    hal::cpu::intr::splassert(IPL_BIO, "uvm_pmr_cache_free");
 
     let pgl = Pglist::new();
     let n = upci.npages();
@@ -2256,7 +2256,7 @@ pub fn uvm_pmr_cache_put(pg: &'static VmPage) {
 
     // XXX The buffer flipper (incorrectly?) allocates & frees pages (from
     // uvm_pagerealloc_multi()) from interrupt context!
-    let s = hal::intr::splraise(IPL_BIO);
+    let s = hal::cpu::intr::splraise(IPL_BIO);
     let actv = upc.upc_actv.load(Ordering::Relaxed);
     let mut upci = &upc.upc_magz[actv];
     if upci.npages() >= UVM_PMR_CACHEMAGSZ {
@@ -2285,7 +2285,7 @@ pub fn uvm_pmr_cache_drain() -> u32 {
 
     // XXX The buffer flipper (incorrectly?) allocates & frees pages (from
     // uvm_pagerealloc_multi()) from interrupt context!
-    let s = hal::intr::splraise(IPL_BIO);
+    let s = hal::cpu::intr::splraise(IPL_BIO);
     freed += uvm_pmr_cache_free(&upc.upc_magz[0]);
     freed += uvm_pmr_cache_free(&upc.upc_magz[1]);
     drop(s);

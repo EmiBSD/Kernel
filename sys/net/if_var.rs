@@ -79,9 +79,9 @@
 //!   without a netstack (`ip_input`'s local `iproute`) until `struct route` is the kernel's
 //!   (N6.3b).
 
-use hal::link::{Link, SaToken};
-use hal::malloc::{M_WAITOK, MBox};
-use hal::once::OnceStatic;
+use hal::ds::link::{Link, SaToken};
+use hal::mem::malloc::{M_WAITOK, MBox};
+use hal::sync::once::OnceStatic;
 
 use crate::kern::subr_prf::{Str, panic};
 use crate::kern::uipc_mbuf::{mq_delist, mq_dequeue, sysctl_mq};
@@ -436,7 +436,7 @@ pub fn if_sadl_ptr(ifp: &Ifnet) -> *const SockaddrDl {
         .map_or(core::ptr::null(), core::ptr::from_ref)
 }
 
-/// `hal`'s one `SaToken` (`hal::link::SaLink::set`'s), for the internet protocols that publish
+/// `hal`'s one `SaToken` (`hal::ds::link::SaLink::set`'s), for the internet protocols that publish
 /// their interface addresses' storage (`ifa->ifa_addr = sintosa(&ia->ia_addr)`, N6.3a).
 static SA_TOKEN: OnceStatic<&'static SaToken> = OnceStatic::new();
 
@@ -446,7 +446,7 @@ const SA_TOKEN_TAKE_SPINS: u32 = 1 << 20;
 
 /// Takes `hal`'s one `SaToken` for `bsd`'s internet protocols. `hal_bridges_register` calls it
 /// in the boot, before any code of the kernel or ABI crates runs, so none of them can make an
-/// interface address name a storage (the token's contract, `sys/hal/trust.rs`); another call
+/// interface address name a storage (the token's contract, `sys/hal/mem/trust.rs`); another call
 /// keeps what is held. `panic(9)` when the token is gone and was not stored here: someone
 /// else took it.
 pub fn sa_token_take() {
@@ -493,7 +493,7 @@ pub(crate) fn if_sadl_test_set(ifp: &Ifnet, sdl: SockaddrDl) {
 }
 
 /// `ifnetlist` as LZ's callers name it (`IFNETLIST.0.iter()`): the kernel's list.
-pub struct IfnetHead(pub &'static hal::list::List<IfnetList>);
+pub struct IfnetHead(pub &'static hal::ds::list::List<IfnetList>);
 
 /// `struct niqueue`: a network stack input queue.
 pub struct Niqueue {

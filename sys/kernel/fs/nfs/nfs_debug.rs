@@ -66,8 +66,8 @@
 use core::fmt;
 use core::sync::atomic::Ordering;
 
-use hal::klock;
-use hal::rwlock::Exclusive;
+use hal::sync::klock;
+use hal::sync::rwlock::Exclusive;
 
 use super::nfs::NfsReq;
 use super::nfs_node::nfs_nhash_foreach;
@@ -251,7 +251,7 @@ mod tests {
         rep.r_flags.store(0x22, Ordering::Relaxed);
         rep.r_rexmit.store(3, Ordering::Relaxed);
         rep.r_rtt.store(7, Ordering::Relaxed);
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         let w = klock::witness();
         let mut s = String::new();
         nfs_request_print(&rep, None, false, &w, &mut s).unwrap();
@@ -267,7 +267,7 @@ mod tests {
         assert!(lines[1].contains("mrep 0x0 md 0x0 nfsmount 0x"), "{s}");
         assert!(lines[1].ends_with("vnode 0x1000 timer 0 rtt 7"), "{s}");
         drop(w);
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
     }
 
     /// The short line has the size, the flags, the vnode and the access stamp; the full one
@@ -294,7 +294,7 @@ mod tests {
             )
         );
         // The walk of the hash finds the node once it is hashed, and not after.
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         crate::fs::nfs::nfs_node::nfs_ninsert(np.as_pin()).expect("hashed");
         let mut s = String::new();
         db_show_all_nfsnodes::<G>(false, &mut s).unwrap();
@@ -311,7 +311,7 @@ mod tests {
         let mut s = String::new();
         db_show_all_nfsnodes::<G>(false, &mut s).unwrap();
         assert!(!s.contains(&std::format!("vnode {vp:p}")), "{s}");
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
     }
 }
 /* </TESTS> */

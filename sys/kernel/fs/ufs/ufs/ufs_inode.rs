@@ -185,8 +185,8 @@ mod tests {
     use std::sync::Mutex;
     use std::vec::Vec;
 
-    use hal::intr::IPL_NONE;
-    use hal::pool::{BoxPool, PR_WAITOK, PoolArc, TypedPool};
+    use hal::cpu::intr::IPL_NONE;
+    use hal::mem::pool::{BoxPool, PR_WAITOK, PoolArc, TypedPool};
     use hal::sys::types::{Mode, Off};
 
     use super::*;
@@ -363,7 +363,7 @@ mod tests {
         assert_eq!(ip.i_flag.get() & IN_HASHED, 0);
         assert!(ufs_ihashget::<TestGlue>(9, 6).is_none());
         assert_eq!(devvp.usecount(), held - 1);
-        assert!(ip.i_dquot.iter().all(hal::link::Link::is_none));
+        assert!(ip.i_dquot.iter().all(hal::ds::link::Link::is_none));
         assert!(ip.i_dirhash.read().is_none());
     }
 }

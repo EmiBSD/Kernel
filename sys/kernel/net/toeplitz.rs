@@ -130,7 +130,7 @@
 //! ## Redesign
 //! - N6.6a1 (D-14): LZ's module moved into the kernel. LZ kept the system cache in a
 //!   `StaticCell` written through `get_mut` by `stoeplitz_init` and read through `get` (two
-//!   `unsafe`, sound by the boot order alone); here it is a `hal::once::OnceStatic` set once
+//!   `unsafe`, sound by the boot order alone); here it is a `hal::sync::once::OnceStatic` set once
 //!   by [`stoeplitz_init`] and read by [`stoeplitz_cache`] (no `unsafe`): one acquire load per
 //!   hash where the C loads its `const` pointer, on a per-connection path (the flow id) and
 //!   pf's per-packet state hash (`pf_pkt_hash`).
@@ -142,8 +142,8 @@
 
 use core::sync::atomic::{AtomicU16, Ordering};
 
-use hal::once::OnceStatic;
 use hal::random::arc4random;
+use hal::sync::once::OnceStatic;
 
 use crate::assert::kassert;
 

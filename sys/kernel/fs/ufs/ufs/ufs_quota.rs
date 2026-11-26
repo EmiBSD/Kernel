@@ -71,7 +71,7 @@
 //!   [`DqTables`] in the glue's VFS tables (`UfsTables::dq`), made by `ufs_quota_init` (from
 //!   `ufs_init`, before any mount), so a host test's file systems start afresh
 //!   (`ufs_test_reset` forgets it, the dquots of the old table with it, never freed).
-//! - A hash chain is a `hal::list::List` (a tail queue's two links, 16 bytes) where the C's
+//! - A hash chain is a `hal::ds::list::List` (a tail queue's two links, 16 bytes) where the C's
 //!   `LIST_HEAD` is 8, so the table `hashinit` makes in `M_DQUOT` is twice the C's and
 //!   `vmstat -m`'s "UFS quota" MemUse grows by that much; no `diff-openbsd` scenario prints
 //!   it.
@@ -99,7 +99,7 @@
 //!   given up for a `&'static` (`MBox::leak`): the C never frees one (ufs_quota.c has no
 //!   `free(dq`; recycled through the free list).
 //! - LZ's `sys/queue.rs` hash chains and free list in `StaticCell`s, linked in `unsafe`
-//!   blocks whose argument was the kernel lock (:1092-1166) -> `hal::list::List`s of the
+//!   blocks whose argument was the kernel lock (:1092-1166) -> `hal::ds::list::List`s of the
 //!   `'static` dquots (atomic links, a broken precondition a panic): no witness, no lock and
 //!   no interrupt level the C does not take; LZ's `dq_hashed` flag (a second removal through
 //!   stale links after `dqget`'s read error) is the list entry's own `is_linked`.
@@ -113,12 +113,12 @@
 use core::ptr;
 use core::sync::atomic::{AtomicI64, AtomicU16, AtomicU32, Ordering};
 
-use hal::link::Link;
-use hal::list::{List, ListEntry};
-use hal::malloc::{M_WAITOK, MArray, MBox};
+use hal::ds::link::Link;
+use hal::ds::list::{List, ListEntry};
+use hal::mem::malloc::{M_WAITOK, MArray, MBox};
 use hal::random::arc4random;
-use hal::sleep::INFSLP;
-use hal::slot::ReadMostly;
+use hal::sync::sleep::INFSLP;
+use hal::sync::slot::ReadMostly;
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::{FREAD, FWRITE};
 use hal::sys::mount::{MNT_QUOTA, VB_NOWAIT, VB_READ};
@@ -134,8 +134,8 @@ use super::quota::{
 };
 use super::ufsmount::{QTF_CLOSING, QTF_OPENING, Ufsmount, vfstoufs};
 use crate::assert::kpanic;
-use crate::cred::{CredRef, Ucred};
 use crate::file::FileGlue;
+use crate::file::uio::{Iovec, Uio, UioRw};
 use crate::fs::lookup::ndinit;
 use crate::fs::mount::{Mount, vfs_busy, vfs_unbusy};
 use crate::fs::namei::NiDirp;
@@ -143,10 +143,10 @@ use crate::fs::subr::{vfs, vfs_mount_foreach_vnode, vget, vput};
 use crate::fs::vnode::{LK_EXCLUSIVE, LK_NOWAIT, LK_RETRY, PINOD, VSYSTEM, Vnode, Vtype, vn_lock};
 use crate::fs::vnops::{vn_close, vn_open};
 use crate::fs::vops::{Cred, vop_read, vop_unlock, vop_write};
+use crate::proc::cred::{CredRef, Ucred};
 use crate::proc::{ProcGlue, Thread, suser};
 use crate::sched::{tsleep_nsec, wakeup_all};
-use crate::tc::gettime;
-use crate::uio::{Iovec, Uio, UioRw};
+use crate::time::tc::gettime;
 
 /// `M_DQUOT`: the malloc type of the dquots and their hash table (`<sys/malloc.h>`;
 /// `vmstat -m`'s "UFS quota").
@@ -334,7 +334,7 @@ pub enum Limit {
 fn with_dq<G: ProcGlue, R>(f: impl FnOnce(&DqTables<G>) -> R) -> R {
     // The tables' lists are kept consistent by the kernel lock, as the C's.
     #[cfg(feature = "diagnostic")]
-    hal::klock::kernel_assert_locked();
+    hal::sync::klock::kernel_assert_locked();
     let t = vfs::<G>().ufs.dq.read();
     match t.as_ref() {
         Some(dt) => f(dt),

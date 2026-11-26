@@ -148,11 +148,11 @@ use core::mem::offset_of;
 use core::ptr;
 use core::sync::atomic::Ordering;
 
-use hal::intr::{IPL_BIO, IPL_NONE, splraise};
-use hal::malloc::MArc;
-use hal::pool::{PR_WAITOK, PoolArc};
+use hal::cpu::intr::{IPL_BIO, IPL_NONE, splraise};
+use hal::mem::malloc::MArc;
+use hal::mem::pool::{PR_WAITOK, PoolArc};
 use hal::random::arc4random;
-use hal::sleep::INFSLP;
+use hal::sync::sleep::INFSLP;
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::{FREAD, FWRITE};
 use hal::sys::mount::{
@@ -175,6 +175,8 @@ use super::fs::{
     ino_to_fsbo, nindir,
 };
 use crate::assert::kpanic;
+use crate::base::prf::printf;
+use crate::base::sysctl::{SysctlReq, bounded_arr};
 use crate::file::{DM_OPENBLCK, FileGlue};
 use crate::fs::bio::getblk_wait;
 use crate::fs::bio::{DEV_BSHIFT, bawrite, bread, brelse, bwrite};
@@ -210,11 +212,9 @@ use crate::fs::vops::{
     Cred, IoBuf, Nd, VFS_STATFS, VFS_SYNC, Vfs, vop_close, vop_fsync, vop_open, vop_unlock,
 };
 use crate::net::mbuf::Mbuf;
-use crate::prf::printf;
 use crate::proc::{ProcGlue, Thread};
-use crate::sysctl::{SysctlReq, bounded_arr};
-use crate::tc::gettime;
 use crate::time::inittodr;
+use crate::time::tc::gettime;
 
 /// `DEV_BSIZE`.
 const DEV_BSIZE: i64 = 1 << DEV_BSHIFT;
@@ -745,7 +745,7 @@ fn read_summary<G: ProcGlue>(fs: &Superblock, devvp: &'static Vnode<G>) -> Resul
 
 /// `howmany(x, y)` of the super-block's `int`s (a negative `x` counts as none).
 fn howmany(x: i32, y: i32) -> i32 {
-    crate::select::howmany(x.max(0) as usize, y.max(1) as usize) as i32
+    crate::file::select::howmany(x.max(0) as usize, y.max(1) as usize) as i32
 }
 
 /// `ffs_validate`: checks if a super block is sane enough to be mounted.
@@ -1779,7 +1779,7 @@ mod tests {
     use hal::sys::fcntl::{O_CREAT, O_RDONLY, O_RDWR};
 
     use super::*;
-    use crate::descrip::{sys_close, sys_read, sys_write};
+    use crate::file::descrip::{sys_close, sys_read, sys_write};
     use crate::fs::mount::vfs_mount_alloc;
     use crate::fs::syscalls::{
         sys_fsync, sys_getdents, sys_mkdir, sys_open, sys_readlink, sys_rename, sys_rmdir,

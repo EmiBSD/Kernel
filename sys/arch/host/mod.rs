@@ -389,7 +389,7 @@ impl Cpu for Machine {
 
     /// The running thread's core's, as [`Cpu::ci_curproc`] reads it.
     fn set_curproc(_ci: &HostCpuInfo, p: Option<&'static Proc>) {
-        hal::thread::set_current_static(p.map(hal::pin::pin_static));
+        hal::cpu::thread::set_current_static(p.map(hal::ds::pin::pin_static));
     }
 
     /// The host has no cycle counter to read; the monotonic clock's nanoseconds stand in.
@@ -542,33 +542,33 @@ impl VmParam for Machine {
 }
 
 impl Pmap for Machine {
-    const HAVE_PMAP_DIRECT: bool = hal::pmap::HAVE_PMAP_DIRECT;
-    const PMAP_WC: usize = hal::pmap::PMAP_WC;
-    const PMAP_NOCACHE: usize = hal::pmap::PMAP_NOCACHE;
-    const PMAP_NOMMU: bool = hal::pmap::PMAP_NOMMU;
-    const PMAP_STEAL_MEMORY: bool = hal::pmap::PMAP_STEAL_MEMORY;
+    const HAVE_PMAP_DIRECT: bool = hal::vm::pmap::HAVE_PMAP_DIRECT;
+    const PMAP_WC: usize = hal::vm::pmap::PMAP_WC;
+    const PMAP_NOCACHE: usize = hal::vm::pmap::PMAP_NOCACHE;
+    const PMAP_NOMMU: bool = hal::vm::pmap::PMAP_NOMMU;
+    const PMAP_STEAL_MEMORY: bool = hal::vm::pmap::PMAP_STEAL_MEMORY;
     const UVM_MD_CONSTRAINTS: &'static [&'static UvmConstraintRange] =
         &[&ISA_CONSTRAINT, &DMA_CONSTRAINT];
     const DMA_CONSTRAINT: &'static UvmConstraintRange = &DMA_CONSTRAINT;
 
     fn pmap_init_md() {
-        hal::pmap::init();
+        hal::vm::pmap::init();
     }
 
     fn pmap_steal_bounds() -> (Vaddr, Vaddr) {
-        hal::pmap::virtual_space()
+        hal::vm::pmap::virtual_space()
     }
 
     /// The host switches nothing.
-    fn pmap_activate_md(_p: &Proc, _pm: &hal::pmap::Pmap) -> bool {
+    fn pmap_activate_md(_p: &Proc, _pm: &hal::vm::pmap::Pmap) -> bool {
         false
     }
 
-    fn pmap_switched_md(_pm: &hal::pmap::Pmap) {}
+    fn pmap_switched_md(_pm: &hal::vm::pmap::Pmap) {}
 
-    fn pmap_deactivate_md(_p: &Proc, _pm: &hal::pmap::Pmap) {}
+    fn pmap_deactivate_md(_p: &Proc, _pm: &hal::vm::pmap::Pmap) {}
 
-    fn pmap_purge_md(_p: &Proc, _pm: &hal::pmap::Pmap) {}
+    fn pmap_purge_md(_p: &Proc, _pm: &hal::vm::pmap::Pmap) {}
 
     /// The host has no boot path: the pmap is bootstrapped on first use, once per process,
     /// over `hal`'s host backend. Its page provider reads `uvm`'s globals on each call, so the
@@ -580,7 +580,7 @@ impl Pmap for Machine {
     fn pmap_bootstrap_lazy() {
         static ONCE: std::sync::Once = std::sync::Once::new();
         ONCE.call_once(|| {
-            let _ = crate::machine::pmap::pmap_bootstrap(&hal::pmap::BootstrapParams {
+            let _ = crate::machine::pmap::pmap_bootstrap(&hal::vm::pmap::BootstrapParams {
                 direct_base: Vaddr::new(0),
                 direct_end: Vaddr::new(usize::MAX),
                 nx: false,
@@ -596,7 +596,7 @@ impl Pmap for Machine {
                 // kernel lock and the net lock are `hal`'s own (N4.2, N6.0): no bridge of
                 // bsd's to register before them.
                 kernel::testutil::install();
-                hal::pmap::init();
+                hal::vm::pmap::init();
             }
         });
     }
@@ -1062,23 +1062,23 @@ impl Intr for Machine {
     const IPL_MPSAFE: i32 = 0x100;
     const IPL_WAKEUP: i32 = 0x200;
 
-    /// The host has no interrupts: the level is `hal::intr`'s (the test thread's core), whose
+    /// The host has no interrupts: the level is `hal::cpu::intr`'s (the test thread's core), whose
     /// lowering runs the soft interrupts pending on it, as on the machines.
     fn splraise(ipl: i32) -> i32 {
-        hal::intr::splraise_raw(ipl)
+        hal::cpu::intr::splraise_raw(ipl)
     }
 
     fn spllower(ipl: i32) -> i32 {
-        hal::intr::spllower(ipl)
+        hal::cpu::intr::spllower(ipl)
     }
 
     fn splx(s: i32) {
-        hal::intr::splx(s);
+        hal::cpu::intr::splx(s);
     }
 
     fn softintr(si: i32) {
         if let Ok(si) = usize::try_from(si) {
-            hal::intr::softintr(si);
+            hal::cpu::intr::softintr(si);
         }
     }
 

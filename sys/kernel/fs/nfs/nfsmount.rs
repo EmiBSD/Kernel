@@ -75,7 +75,7 @@
 //!   (`panic(9)` for a mount that holds none, LZ's check): the handle may be kept across the
 //!   RPC's sleeps. The timeout holds a second one (`nm_rtimeout`'s argument, `nfs_vfsops`).
 //! - The C keeps the structure under the kernel lock: the scalars are relaxed atomics written
-//!   there, `nm_reqsq` a `hal::pinlist` list bound to it (walked under `klock::reader`,
+//!   there, `nm_reqsq` a `hal::ds::pinlist` list bound to it (walked under `klock::reader`,
 //!   changed under `klock::witness`), `nm_so` a counted socket handle in a kernel-lock cell
 //!   (cloned out for a send or a receive, so no witness is held across either).
 //! - `nm_rtimeout` is a `struct timeout` in a block of its own (an `MBox`, pinned there), so
@@ -91,11 +91,11 @@
 
 use core::sync::atomic::{AtomicI32, AtomicU16, AtomicU64, Ordering};
 
-use hal::malloc::{MArc, MBox};
-use hal::once::OnceStatic;
-use hal::pinlist::PinList;
-use hal::rwlock::Guarded;
-use hal::slot::LoanSlot;
+use hal::ds::pinlist::PinList;
+use hal::mem::malloc::{MArc, MBox};
+use hal::sync::once::OnceStatic;
+use hal::sync::rwlock::Guarded;
+use hal::sync::slot::LoanSlot;
 
 use super::nfs::{NFS_MAX_TIMER, RChain};
 use super::nfsproto::NFSX_V3WRITEVERF;
@@ -105,7 +105,7 @@ use crate::fs::vnode::Vnode;
 use crate::net::mbuf::{MLEN, MT_SONAME, Mbuf, MbufBox, m_get};
 use crate::net::socket::SocketRef;
 use crate::proc::ProcGlue;
-use crate::timeout::Timeout;
+use crate::time::timeout::Timeout;
 
 /// `M_NFSMNT`: the NFS mount structures (`<sys/malloc.h>`'s 23, "NFS mount").
 pub const M_NFSMNT: i32 = 23;

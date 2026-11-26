@@ -96,16 +96,16 @@
 //!   the pin) -> the inode's `i_dirhash` cell, a `ReadMostly<Option<MBox<Dirhash>>>`: the
 //!   dirhash is an `MBox` of `M_DIRHASH` the inode owns, its tables the data of `dh_mtx`
 //!   (`dirhash.rs`). Each function reads the cell for its whole run, across the directory
-//!   block reads that sleep, where `hal::slot` asks a reader not to sleep: its reason is a
+//!   block reads that sleep, where `hal::sync::slot` asks a reader not to sleep: its reason is a
 //!   writer left spinning on a sleeping reader, and this cell's writers (`ufsdirhash_build`
 //!   and `ufsdirhash_free`) run only under the inode's lock, which every reader's caller
 //!   holds, so no writer can wait on one; a function drops its read before it calls
 //!   `ufsdirhash_free` itself.
 //! - LZ's `ufsdirhash_list` (a `sys/queue.rs` tail queue in a static, `unsafe` links) and
-//!   `ufsdirhash_mtx` -> a `hal::pinlist::PinList` bound to the lock (`SharedRwlock` over a
+//!   `ufsdirhash_mtx` -> a `hal::ds::pinlist::PinList` bound to the lock (`SharedRwlock` over a
 //!   static `RawRwlock`): the list's witness is the write lock's; `TAILQ_REMOVE` +
 //!   `TAILQ_INSERT_AFTER(dh_next)` is `PinList::step_over`.
-//! - LZ's `pool_get` blocks behind raw pointers -> `ufsdirhash_pool` a `hal::pool::BoxPool`
+//! - LZ's `pool_get` blocks behind raw pointers -> `ufsdirhash_pool` a `hal::mem::pool::BoxPool`
 //!   of `[doff_t; DH_NBLKOFF]`, its items `PoolBox`es in the `MArray`; a recycle takes the
 //!   arrays out of the tables under both locks and drops them after, as the C frees them.
 //! - The directory blocks come from `UFS_BUFATOFF` as the busy buffer's token (`IoBuf`'s,
@@ -115,12 +115,12 @@
 use core::ptr;
 use core::sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering};
 
-use hal::intr::IPL_NONE;
-use hal::malloc::{M_NOWAIT, MArray, MBox};
-use hal::pinlist::PinList;
-use hal::pool::{BoxPool, PR_WAITOK};
+use hal::cpu::intr::IPL_NONE;
+use hal::ds::pinlist::PinList;
+use hal::mem::malloc::{M_NOWAIT, MArray, MBox};
+use hal::mem::pool::{BoxPool, PR_WAITOK};
 use hal::random::arc4random;
-use hal::rwlock::{RawRwlock, SharedRwlock, WriteWitness};
+use hal::sync::rwlock::{RawRwlock, SharedRwlock, WriteWitness};
 use hal::sys::errno::Errno;
 use hal::sys::types::Off;
 use libkern::siphash::{SipHash24, SiphashKey};
@@ -1079,7 +1079,7 @@ mod tests {
     use std::vec;
     use std::vec::Vec;
 
-    use hal::malloc::M_WAITOK;
+    use hal::mem::malloc::M_WAITOK;
 
     use super::*;
     use crate::fs::testfs::setup;

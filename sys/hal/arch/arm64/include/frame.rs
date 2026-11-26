@@ -34,7 +34,7 @@
 
 /* <CODE> */
 //! arm64 `<machine/frame.h>`: the stack frames the kernel walks and builds, as the context
-//! switch (`hal::thread`) and the exception entry need them.
+//! switch (`hal::cpu::thread`) and the exception entry need them.
 //!
 //! Upstream: sys/arch/arm64/include/frame.h @ 3ce1f3f79392
 //! LZ: sys/arch/arm64/include/frame.rs@3c62ede68802
@@ -44,7 +44,7 @@
 //!   move from `bsd`'s header, which keeps `struct sigframe` (it names the signal context and
 //!   `siginfo`, `bsd`'s until N4.5b) and re-exports these: the switch and `cpu_fork` are
 //!   `hal`'s and build the frames.
-//! - N4.8b: `struct sigframe` follows (`hal::sig`'s `sendsig` builds it), with the signal
+//! - N4.8b: `struct sigframe` follows (`hal::cpu::sig`'s `sendsig` builds it), with the signal
 //!   context (`signal.rs`); LZ's `unsafe impl AbiPod` is `hal::abi_pod!`.
 
 use super::signal::Sigcontext;

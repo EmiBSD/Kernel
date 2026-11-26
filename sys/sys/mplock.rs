@@ -47,17 +47,17 @@
 //! LZ: sys/sys/mplock.rs@3c62ede68802
 //!
 //! Both architectures' `<machine/mplock.h>` say `__USE_MI_MPLOCK`, so this is the only
-//! `struct __mp_lock`: `hal::klock::MpLock`, whose methods are `kern_lock.c`'s functions
+//! `struct __mp_lock`: `hal::sync::klock::MpLock`, whose methods are `kern_lock.c`'s functions
 //! (`kern/kern_lock.rs` keeps their C names).
 //!
 //! ## Deviations
-//! - `mpl_cpus[]`, `mpl_ticket` and `mpl_users` are atomics (private to `hal::klock`): each
+//! - `mpl_cpus[]`, `mpl_ticket` and `mpl_users` are atomics (private to `hal::sync::klock`): each
 //!   CPU writes its own `__mp_lock_cpu` but `__mp_lock_held` reads every CPU's, and the
 //!   ticket is the C's `volatile` word. `WITNESS` (`mpl_lock_obj`) is not configured.
 //!
 //! ## Redesign
-//! - N4.5c: `struct __mp_lock` and `struct __mp_lock_cpu` moved into `hal::klock` with the
+//! - N4.5c: `struct __mp_lock` and `struct __mp_lock_cpu` moved into `hal::sync::klock` with the
 //!   kernel lock; this module re-exports the lock's type under its header's path.
 
-pub use hal::klock::MpLock;
+pub use hal::sync::klock::MpLock;
 /* </CODE> */

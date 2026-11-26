@@ -2728,7 +2728,7 @@ mod tests {
     #[test]
     fn files_belong_to_one_crate() {
         for (rel, want) in [
-            ("sys/kernel/pipe.rs", Some("kernel")),
+            ("sys/kernel/file/pipe.rs", Some("kernel")),
             ("sys/abi/lib.rs", Some("abi")),
             ("sys/hal/lock.rs", Some("hal")),
             ("sys/stand/boot/main.rs", Some("boot")),

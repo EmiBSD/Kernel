@@ -136,8 +136,8 @@ use core::marker::PhantomData;
 use core::mem::{MaybeUninit, offset_of};
 use core::ptr;
 
-use hal::malloc::{M_WAITOK, MArc};
-use hal::sleep::INFSLP;
+use hal::mem::malloc::{M_WAITOK, MArc};
+use hal::sync::sleep::INFSLP;
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::{FREAD, FWRITE};
 use hal::sys::mount::{
@@ -149,6 +149,7 @@ use hal::sys::types::{Daddr, Dev, Ino, Uid, major};
 use hal::user::UserPtr;
 
 use crate::assert::kpanic;
+use crate::base::prf::printf;
 use crate::file::FileGlue;
 use crate::fs::bio::{DEV_BSHIFT, bread, brelse};
 use crate::fs::buf::BufRef;
@@ -183,7 +184,6 @@ use crate::fs::vnode::{
 };
 use crate::fs::vops::{Cred, Nd, VFS_VGET, Vfs, vop_close, vop_ioctl, vop_open, vop_unlock};
 use crate::net::mbuf::Mbuf;
-use crate::prf::printf;
 use crate::proc::{ProcGlue, Thread};
 use crate::time::inittodr;
 use crate::vm::io::MAXBSIZE;
@@ -1161,7 +1161,7 @@ mod tests {
     use hal::sys::types::makedev;
 
     use super::*;
-    use crate::descrip::{sys_close, sys_read};
+    use crate::file::descrip::{sys_close, sys_read};
     use crate::fs::bio::{NODEV, biodone};
     use crate::fs::buf::B_ERROR;
     use crate::fs::isofs::cd9660::testcd9660::mkiso::{Iso, record, ucs2};

@@ -89,8 +89,8 @@ use core::ffi::c_void;
 use core::ptr;
 use core::sync::atomic::Ordering;
 
-use hal::owned::{OwnedList, SecondaryRef};
-use hal::pool::PR_WAITOK;
+use hal::ds::owned::{OwnedList, SecondaryRef};
+use hal::mem::pool::PR_WAITOK;
 use kernel::fs::bio;
 
 use crate::kern::subr_prf::panic;
@@ -222,7 +222,7 @@ fn legacy_ref(bp: &Buf) -> &'static Buf {
     // SAFETY: `bp` is busy and its token is the caller's or parked in it (each caller's own
     // state, above). Either `bp` is a `bufpl` item an owning list keeps (`bufhead`, or
     // physio's or `with_private_buf`'s own) and that token holds a counted link to it: the
-    // owner refuses to free a counted element (`hal::owned`'s I4) and a pool item never
+    // owner refuses to free a counted element (`hal::ds::owned`'s I4) and a pool item never
     // moves, so the item stays at this address, initialised, while the token lives, parked
     // or held. Or no list owns it, and then it is a buffer a driver embeds, which is
     // `'static` already: only `BufRef::foreign` makes a token of a buffer no list owns and
@@ -449,7 +449,7 @@ mod tests {
     fn a_zeroed_bufq_is_an_unused_queue() {
         // SAFETY: `Bufq` is atomics, a `Mutexed` (an atomic owner word, an integer level, the
         // state of integers and two empty `SecondaryList`s: null links, a zero identity, a
-        // false poison flag) and a `hal::list` entry of null links: every member is valid
+        // false poison flag) and a `hal::ds::list` entry of null links: every member is valid
         // all zero, the claim the test checks by using it.
         let bq: &'static Bufq = Box::leak(Box::new(unsafe { core::mem::zeroed::<Bufq>() }));
         assert!(!bufq_peek(bq));

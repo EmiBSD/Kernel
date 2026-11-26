@@ -64,7 +64,7 @@
 //! ## Deviations
 //! - `struct kevq` entries ([`Kevq`]) are items of a pool of their own ("nfskevqpl", made by
 //!   `nfs_vfs_init`) where the C `malloc`s them (`M_KEVENT`): the watch list owns them
-//!   (`hal::owned::OwnedList`), and an owning list takes pool items (`kqueue`'s timers'
+//!   (`hal::ds::owned::OwnedList`), and an owning list takes pool items (`kqueue`'s timers'
 //!   `kqtimerpl` precedent; the user's decision of 2026-11-24): `vmstat -m` shows a new pool
 //!   row, "nfskevqpl", and its `M_KEVENT` ("kevent") row no longer counts the watched NFS
 //!   vnodes.
@@ -80,14 +80,14 @@
 //!   `kn_hook` a raw word cast back to the vnode. Here the list and `pnfskq` are one value
 //!   in a `Rwlocked` (`nfskevq_lock`, the C's rwlock: `NfsTables::kevq`) that owns its
 //!   entries; the poller keeps the entry it works on with the lock dropped by a counted
-//!   reference (`hal::owned::SecondaryRef`, `kernel::event`'s `KnHold` shape: the C's
+//!   reference (`hal::ds::owned::SecondaryRef`, `kernel::file::event`'s `KnHold` shape: the C's
 //!   `KEVQ_BUSY` stays the flag `nfs_kqunwatch` waits on, and the list could not give the
 //!   entry back while the reference lives), and walks on from it with `next(e)`, O(1) a
 //!   step as the C's `SLIST_FOREACH`; the reference is taken only for an entry whose
 //!   attributes expired, where the C makes its `VOP_GETATTR` call. `nfs_kqunwatch` keeps the
 //!   entry it waits for the same way across its sleep (`rwsleep`, the C's exit, `tsleep` and
 //!   enter, in one step) and frees it through the reference (`OwnedList::take`).
-//! - The filters are `kernel::event::Filter` impls ([`NfsRead`], [`NfsWrite`], [`NfsVnode`])
+//! - The filters are `kernel::file::event::Filter` impls ([`NfsRead`], [`NfsWrite`], [`NfsVnode`])
 //!   whose tables are made at compile time; `kn_hook` is the knote's typed vnode hook
 //!   (`Knote::set_hook_vnode`), ufs's form. `filt_nfsread` reaches the node only past its
 //!   `NOTE_REVOKE` test (the vnode has none any more then; the C loads the NULL `v_data` and
@@ -100,11 +100,11 @@ use core::marker::PhantomData;
 use core::ptr;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use hal::owned::{OwnedAdapter, OwnedEntry, OwnedList, SecondaryRef};
-use hal::pool::PR_WAITOK;
-use hal::rwlock::Rwlocked;
-use hal::sleep::{INFSLP, tsleep_nsec, wakeup};
-use hal::slot::ReadMostly;
+use hal::ds::owned::{OwnedAdapter, OwnedEntry, OwnedList, SecondaryRef};
+use hal::mem::pool::PR_WAITOK;
+use hal::sync::rwlock::Rwlocked;
+use hal::sync::sleep::{INFSLP, tsleep_nsec, wakeup};
+use hal::sync::slot::ReadMostly;
 use hal::sys::errno::Errno;
 use hal::sys::types::{Nlink, Pid};
 
@@ -112,8 +112,7 @@ use super::nfs_subs::nfs_getattrcache;
 use super::nfsmount::vfstonfs;
 use super::nfsnode::{nfs_invalidate_attrcache, vtonfs};
 use crate::assert::kpanic;
-use crate::clock::{Timespec, sec_to_nsec};
-use crate::event::{
+use crate::file::event::{
     __EV_POLL, __EV_SELECT, EV_EOF, EV_ONESHOT, EVFILT_READ, EVFILT_VNODE, EVFILT_WRITE,
     FILTEROP_ISFD, Filter, Filterops, Knote, NOTE_ATTRIB, NOTE_DELETE, NOTE_EOF, NOTE_EXTEND,
     NOTE_LINK, NOTE_REVOKE, NOTE_TRUNCATE, NOTE_WRITE,
@@ -125,6 +124,7 @@ use crate::fs::vops::{Cred, vop_getattr};
 use crate::net::sockbuf::PSOCK;
 use crate::proc::{ProcGlue, Thread};
 use crate::sys::nfs_nfs::NFS_MINATTRTIMO;
+use crate::time::clock::{Timespec, sec_to_nsec};
 
 /// `KEVQ_BUSY`: currently being processed.
 const KEVQ_BUSY: u32 = 0x01;
@@ -235,7 +235,7 @@ fn pnfskq_chan<G: ProcGlue>() -> *const () {
 pub fn nfs_kqpoll<G: ProcGlue>() -> ! {
     // `struct vattr attr`: one for the poller's life, as the C's (the pass's docs).
     let mut attr = Vattr::new();
-    hal::thread::with_current::<Thread<G>, _>(|p| {
+    hal::cpu::thread::with_current::<Thread<G>, _>(|p| {
         while nfs_kqpoll_pass(&p, &mut attr) {
             // wait a while before checking for changes again
             let _ = tsleep_nsec(
@@ -246,7 +246,7 @@ pub fn nfs_kqpoll<G: ProcGlue>() -> ! {
             );
         }
     });
-    crate::thread::kthread_exit::<G>(0)
+    crate::proc::thread::kthread_exit::<G>(0)
 }
 
 /// One pass of [`nfs_kqpoll`]'s loop over the watch list, as the thread `p`: `true` while
@@ -521,7 +521,10 @@ pub fn nfs_kqwatch<G: ProcGlue>(vp: &'static Vnode<G>) -> Result<(), Errno> {
 
     // ensure the poller is running
     if g.pnfskq.is_none() {
-        let tid = crate::thread::kthread_create::<G>(b"nfskqpoll", crate::fork::Start::NfsKqPoll)?;
+        let tid = crate::proc::thread::kthread_create::<G>(
+            b"nfskqpoll",
+            crate::proc::fork::Start::NfsKqPoll,
+        )?;
         g.pnfskq = Some(tid);
     }
 
@@ -580,7 +583,7 @@ mod tests {
     use crate::fs::nfs::nfs_node::{TEST_GETATTR, test_mount, test_node};
     use crate::fs::testfs::TestGlue as G;
     use crate::fs::vnode::VREG;
-    use crate::tc::gettime;
+    use crate::time::tc::gettime;
 
     /// The watch list's entries: each vnode and its count, head first.
     fn watched() -> std::vec::Vec<(usize, u32)> {
@@ -640,15 +643,15 @@ mod tests {
         let t = test_mount(0);
         fake_poller();
         let (vp, _np) = test_node(t.mp, VREG, &[2; 8]);
-        let _ = crate::event::kqueue_init::<G>();
-        let kq = crate::event::kqueue_alloc::<G>(t.p.process().fd_ref()).expect("a kqueue");
-        let bad = crate::event::test_knote(&kq, 1);
+        let _ = crate::file::event::kqueue_init::<G>();
+        let kq = crate::file::event::kqueue_alloc::<G>(t.p.process().fd_ref()).expect("a kqueue");
+        let bad = crate::file::event::test_knote(&kq, 1);
         bad.kn().kn_filter().set(-100);
         assert_eq!(nfs_kqfilter(vp, bad.kn()), Err(Errno::EINVAL));
         assert!(watched().is_empty());
-        crate::event::test_knote_drop(&kq, bad);
+        crate::file::event::test_knote_drop(&kq, bad);
 
-        let h = crate::event::test_knote(&kq, 2);
+        let h = crate::file::event::test_knote(&kq, 2);
         let poll = h.kn();
         poll.kn_filter().set(EVFILT_VNODE);
         poll.set_flags(__EV_POLL);
@@ -657,16 +660,16 @@ mod tests {
         assert!(!vp.klist.is_empty());
         <NfsVnode as Filter<G>>::detach(poll);
         assert!(vp.klist.is_empty());
-        crate::event::test_knote_drop(&kq, h);
+        crate::file::event::test_knote_drop(&kq, h);
 
-        let h = crate::event::test_knote(&kq, 3);
+        let h = crate::file::event::test_knote(&kq, 3);
         let kev = h.kn();
         kev.kn_filter().set(EVFILT_WRITE);
         nfs_kqfilter(vp, kev).expect("attached");
         assert_eq!(watched(), [(at(vp), 1)]);
         <NfsWrite as Filter<G>>::detach(kev);
         assert!(watched().is_empty() && vp.klist.is_empty());
-        crate::event::test_knote_drop(&kq, h);
+        crate::file::event::test_knote_drop(&kq, h);
     }
 
     /// `nfs_kqwatch` counts the watchers of a vnode on one entry and puts a new vnode first;
@@ -707,8 +710,8 @@ mod tests {
     fn a_poll_pass_posts_the_changes_of_the_expired_vnodes() {
         let t = test_mount(0);
         fake_poller();
-        let _ = crate::event::kqueue_init::<G>();
-        let kq = crate::event::kqueue_alloc::<G>(t.p.process().fd_ref()).expect("a kqueue");
+        let _ = crate::file::event::kqueue_init::<G>();
+        let kq = crate::file::event::kqueue_alloc::<G>(t.p.process().fd_ref()).expect("a kqueue");
         let (fresh, nfresh) = test_node(t.mp, VREG, &[5; 8]);
         let (stale, nstale) = test_node(t.mp, VREG, &[6; 8]);
         let mut va = Vattr::new();
@@ -719,7 +722,7 @@ mod tests {
         nfs_kqwatch(fresh).expect("watched");
         // A kevent knote on `stale` that asks for every vnode event: it records the hints
         // the poller posts.
-        let h = crate::event::test_knote(&kq, 1);
+        let h = crate::file::event::test_knote(&kq, 1);
         let kn = h.kn();
         kn.kn_filter().set(EVFILT_VNODE);
         kn.kn_sfflags
@@ -751,11 +754,11 @@ mod tests {
         let mut changed = va;
         changed.va_size = 20;
         changed.va_nlink = 3;
-        changed.va_mtime = crate::clock::Timespec {
+        changed.va_mtime = crate::time::clock::Timespec {
             tv_sec: 5,
             tv_nsec: 6,
         };
-        changed.va_ctime = crate::clock::Timespec {
+        changed.va_ctime = crate::time::clock::Timespec {
             tv_sec: 7,
             tv_nsec: 8,
         };
@@ -800,7 +803,7 @@ mod tests {
         assert_eq!(seen(stale).2, 3);
         *TEST_GETATTR.lock().unwrap() = None;
         <NfsVnode as Filter<G>>::detach(kn);
-        crate::event::test_knote_drop(&kq, h);
+        crate::file::event::test_knote_drop(&kq, h);
         assert!(!nfs_kqpoll_pass(t.p, &mut attr), "nothing left to watch");
         assert_eq!(kevq::<G>().read().pnfskq, None);
     }

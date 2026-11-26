@@ -62,13 +62,13 @@
 //! ## Deviations
 //! - The `sysctlfn` prototype is [`Sysctlfn`]: a name slice instead of `int *` plus `u_int`,
 //!   user addresses as `usize` for `oldp`/`newp`, and `Result<(), Errno>`. The other
-//!   prototypes are `kernel::sysctl`'s (`SysctlNode`) and their subsystems'.
+//!   prototypes are `kernel::base::sysctl`'s (`SysctlNode`) and their subsystems'.
 //! - [`SysctlPlain`] is not OpenBSD's: it gives the structures `sysctl_rdstruct` and
 //!   `sysctl_struct` copy their bytes, which C does with a `void *` and a size.
 //!
 //! ## Redesign
 //! - N4.6b: the header (ids, names, `kinfo_proc`, `kinfo_file`, `kinfo_vmentry`,
-//!   `sysctl_bounded_args`) is `hal::sys::sysctl`, shared with `kernel::sysctl`.
+//!   `sysctl_bounded_args`) is `hal::sys::sysctl`, shared with `kernel::base::sysctl`.
 //! - [`SysctlPlain`] is a safe trait implemented for every `hal::user::AbiPod` type (a
 //!   blanket impl), its byte views `hal::user::bytes_of` and `bytes_of_mut`: the `unsafe
 //!   trait`, its two `unsafe` byte views and its 12 `unsafe impl`s (LZ) are gone, and the
@@ -108,7 +108,7 @@ pub trait SysctlPlain: hal::user::AbiPod {
 
 impl<T: hal::user::AbiPod> SysctlPlain for T {}
 
-// `struct timeval` and `struct clockinfo` are the kernel's (`kernel::clock::Timeval`,
+// `struct timeval` and `struct clockinfo` are the kernel's (`kernel::time::clock::Timeval`,
 // `kernel::time::Clockinfo`, N4.8a), `AbiPod` where they are defined.
 
 // `struct diskstats`: the C's one padding hole a member (`ds_pad0`).

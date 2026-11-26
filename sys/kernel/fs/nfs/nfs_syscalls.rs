@@ -92,8 +92,8 @@
 use core::ptr;
 use core::sync::atomic::Ordering;
 
-use hal::klock;
-use hal::sleep::{INFSLP, PCATCH, PWAIT, tsleep_nsec, wakeup, wakeup_one};
+use hal::sync::klock;
+use hal::sync::sleep::{INFSLP, PCATCH, PWAIT, tsleep_nsec, wakeup, wakeup_one};
 use hal::sys::errno::Errno;
 use hal::sys::types::Pid;
 
@@ -215,7 +215,8 @@ pub fn nfs_iod_nextwrite(vb: &'static VnodeBufs) -> Option<BufRef> {
         bp.set(B_ASYNC);
         DirtyPick::Take
     };
-    let DirtyScan::Taken(t) = vnode_dirty_scan(vb, "nfsiod", 0, hal::sleep::INFSLP, pick) else {
+    let DirtyScan::Taken(t) = vnode_dirty_scan(vb, "nfsiod", 0, hal::sync::sleep::INFSLP, pick)
+    else {
         return None;
     };
     t.buf().clr(B_READ | B_DONE | B_ERROR);
@@ -238,7 +239,7 @@ pub fn nfssvc_iod<G: ProcGlue>() -> ! {
     // Assign my position or return error if too many already running.
     let iod = match nfs_iod_attach::<G>(tid) {
         Ok(iod) => iod,
-        Err(e) => crate::thread::kthread_exit::<G>(e as i32),
+        Err(e) => crate::proc::thread::kthread_exit::<G>(e as i32),
     };
 
     // Just loop around doin our stuff until SIGKILL.
@@ -271,7 +272,7 @@ pub fn nfssvc_iod<G: ProcGlue>() -> ! {
         }
         if let Err(e) = error {
             nfs_iod_detach::<G>(iod);
-            crate::thread::kthread_exit::<G>(e as i32);
+            crate::proc::thread::kthread_exit::<G>(e as i32);
         }
     }
 }
@@ -297,7 +298,10 @@ pub fn nfs_getset_niothreads<G: ProcGlue>(set: bool) {
 
         let mut start = n - have;
         while start > 0 {
-            let _ = crate::thread::kthread_create::<G>(b"nfsio", crate::fork::Start::NfsIod);
+            let _ = crate::proc::thread::kthread_create::<G>(
+                b"nfsio",
+                crate::proc::fork::Start::NfsIod,
+            );
             start -= 1;
         }
 

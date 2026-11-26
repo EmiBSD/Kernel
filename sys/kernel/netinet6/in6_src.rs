@@ -111,8 +111,8 @@
 //! **Lock and spl transitions** against the C: none; the pcb's route loan is two word moves
 //! (N6.4c1's `InpLoan`), not a lock.
 
-use hal::netlock::NetHeld;
-use hal::pod;
+use hal::mem::pod;
+use hal::sync::netlock::NetHeld;
 use hal::sys::endian::{htons, ntohs};
 use hal::sys::errno::Errno;
 use hal::sys::net_if::IFF_UP;
@@ -492,7 +492,7 @@ mod tests {
     // kernel's interfaces (LZ's tests of the pcb paths stay in bsd's adapter, over its
     // fixture).
 
-    use hal::netlock::NETLOCK;
+    use hal::sync::netlock::NETLOCK;
 
     use super::*;
     use crate::netinet6::in6::tests::{a6, iface, setup, test_ia6, zoned};

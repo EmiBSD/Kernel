@@ -75,7 +75,7 @@
 //!   (`kernel::net::if_var::IfaddrRef::In`, N6.5e): [`ifatoia`] and [`InIfaddr::of`] match
 //!   the arm (`panic(9)` and `None` for another family's). A multicast record likewise
 //!   (`kernel::net::if_var::IfmaddrRef::In`, N6.5e's 5e2): [`ifmatoinm`] and [`InMulti::of`].
-//! - A multicast record is one `malloc(9)` block of `M_IPMADDR` (`hal::malloc::MArc`, N6.5e's
+//! - A multicast record is one `malloc(9)` block of `M_IPMADDR` (`hal::mem::malloc::MArc`, N6.5e's
 //!   5e2), made by [`in_multi_alloc`] and freed with its last handle (`in_delmulti`'s
 //!   `free(inm, M_IPMADDR, ..)`): the interface's list holds one, each holder of a membership
 //!   one (`ia_allhosts`, a socket's options, pfsync's), and `inm_refcnt` counts the
@@ -83,11 +83,11 @@
 //!   `vmstat -m`'s `in_multi` row) and the generic part's back-link to the record are gone;
 //!   the record's list cell is keyed to its interface's `if_maddrlock`, so it is made for one
 //!   interface ([`in_multi_alloc`] takes it).
-//! - An address is one `malloc(9)` block of `M_IFADDR` (`hal::malloc::MArc`, N6.5e): the
+//! - An address is one `malloc(9)` block of `M_IFADDR` (`hal::mem::malloc::MArc`, N6.5e): the
 //!   last handle's drop is `ifafree`'s `free(ifa, M_IFADDR, 0)`, so `vmstat -m`'s `ifaddr`
 //!   row falls with the live addresses as the C's; LZ's (and N6.4a's) free list, its mutex and
 //!   `in_ifafree` are gone. The generic part's `ifa_list` and `ifa_tmplist` are the record's
-//!   `ia_list` (a net cell, `hal::rwlock::Guarded::new_net`) and `ia_tmplist` (keyed to
+//!   `ia_list` (a net cell, `hal::sync::rwlock::Guarded::new_net`) and `ia_tmplist` (keyed to
 //!   `if_tmplist_lock`): a `Guarded` is not valid all zero, which enc(4)'s generic part, in a
 //!   zeroed softc, must be.
 //! - The C's `struct sockaddr_in` members -> [`SinWords`], the address in atomic words, read
@@ -99,11 +99,11 @@
 //! - `ia_net`, `ia_netmask`, `inm_state`, `inm_timer`: relaxed atomics (the C's plain words
 //!   under the net lock or `if_maddrlock`).
 
-use hal::link::{Link, SaBytes, SaWords};
-use hal::malloc::{M_WAITOK, MArc};
-use hal::refcnt::Refcnt;
-use hal::rwlock::Guarded;
-use hal::slot::ReadMostly;
+use hal::ds::link::{Link, SaBytes, SaWords};
+use hal::mem::malloc::{M_WAITOK, MArc};
+use hal::sync::refcnt::Refcnt;
+use hal::sync::rwlock::Guarded;
+use hal::sync::slot::ReadMostly;
 use hal::sys::net_if::IFF_BROADCAST;
 use hal::sys::netinet_in::{InAddr, SockaddrIn};
 use hal::sys::socket::AF_INET;
@@ -119,7 +119,7 @@ const SIN_LEN: u8 = 16;
 /// `in_multi`).
 pub const M_IPMADDR: i32 = 54;
 
-/// A `struct sockaddr_in` the kernel owns: its bytes in atomic words (`hal::link::SaWords`).
+/// A `struct sockaddr_in` the kernel owns: its bytes in atomic words (`hal::ds::link::SaWords`).
 /// Valid all zero.
 #[derive(Debug, Default)]
 pub struct SinWords(SaWords);

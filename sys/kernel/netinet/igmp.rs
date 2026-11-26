@@ -147,7 +147,7 @@
 //! - `rti_head` (a `LIST` of `malloc(M_MRTABLE)`'d records) -> the chain of `MBox`es that
 //!   `igmp_mtx` owns ([`IGMP_MTX`], the route labels' shape); `LIST_EMPTY` without the lock
 //!   (`igmp_slowtimo`'s shortcut) is [`RTI_ANY`], kept beside it under the mutex.
-//! - `igmpcounters` (`counters_alloc`) -> [`IGMPCOUNTERS`], a `hal::percpu::Counters`.
+//! - `igmpcounters` (`counters_alloc`) -> [`IGMPCOUNTERS`], a `hal::sync::percpu::Counters`.
 //! - `igmp_fasttimo`'s `struct igmp_pktlist` of `malloc(M_MRTABLE, M_NOWAIT)`'d records -> a
 //!   chain of `MBox`es of the same type and flags (a report that cannot be allocated is
 //!   skipped, as the C's), built at the head and sent from the oldest.
@@ -156,7 +156,7 @@
 //!   C's), but the reports take its bytes from the constant image of that `struct ipoption`
 //!   ([`ROUTER_ALERT`]), which `ip_output` takes as bytes: no lock per report to reach the
 //!   mbuf, which cannot be a shared global (an `Mbuf` is not `Sync`) (N6.4a's R16).
-//! - The IGMP and IP headers are read and written through `hal::pod` at their offsets;
+//! - The IGMP and IP headers are read and written through `hal::mem::pod` at their offsets;
 //!   `igmp_input`'s `KERNEL_LOCK()` is the kernel lock taken C-style around
 //!   `igmp_input_if`, as the C.
 //!
@@ -167,13 +167,13 @@
 
 use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
-use hal::intr::IPL_SOFTNET;
-use hal::malloc::{M_NOWAIT, M_WAITOK, MBox};
-use hal::mutex::Mutexed;
-use hal::netlock::{NETLOCK, NetHeld};
-use hal::percpu::Counters;
-use hal::pod;
-use hal::rwlock::{Witness, WriteWitness};
+use hal::cpu::intr::IPL_SOFTNET;
+use hal::mem::malloc::{M_NOWAIT, M_WAITOK, MBox};
+use hal::mem::pod;
+use hal::sync::mutex::Mutexed;
+use hal::sync::netlock::{NETLOCK, NetHeld};
+use hal::sync::percpu::Counters;
+use hal::sync::rwlock::{Witness, WriteWitness};
 use hal::sys::endian::{htons, ntohs};
 use hal::sys::errno::Errno;
 use hal::sys::net_if::IFF_LOOPBACK;
@@ -191,6 +191,7 @@ use hal::sys::netinet_in::{
 use hal::sys::netinet_ip::{IPOPT_RA, Ip};
 
 use crate::assert::{kassert, kpanic};
+use crate::base::sysctl::{SysctlReq, rdstruct};
 use crate::net::if_::{IFNETLIST, IfRef};
 use crate::net::if_var::Ifnet;
 use crate::net::mbuf::{
@@ -206,7 +207,6 @@ use crate::netinet::in_cksum::in_cksum;
 use crate::netinet::in_var::{InMulti, ifatoia};
 use crate::netinet::ip_output::{ip_load, ip_output, ip_store};
 use crate::netinet::ip_var::IpMoptions;
-use crate::sysctl::{SysctlReq, rdstruct};
 
 /// `ip_output`'s flags for a report: none (`IP_MULTICASTOPTS`).
 const IP_MULTICASTOPTS: i32 = 0;
@@ -455,9 +455,9 @@ pub fn igmp_input(m: MbufBox, off: i32, net: &NetHeld<'_>) -> Option<MbufBox> {
 
     let ifp = IfRef::get(m.m_pkthdr().ph_ifidx.get())?;
 
-    hal::klock::kernel_lock();
+    hal::sync::klock::kernel_lock();
     let m = igmp_input_if(ifp.ifp(), m, off, net);
-    hal::klock::kernel_unlock();
+    hal::sync::klock::kernel_unlock();
     // if_put(ifp): the reference's drop.
     m
 }

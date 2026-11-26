@@ -17,7 +17,7 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! The host's half of `hal::thread`'s switch: a double over host threads, so the
+//! The host's half of `hal::cpu::thread`'s switch: a double over host threads, so the
 //! scheduler's tests switch for real (N4.5a).
 //!
 //! Every kernel thread that runs is a host thread: the test's own for the thread it installs
@@ -42,14 +42,14 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
 use crate::cpu::CpuCore;
-use crate::thread::{MachineSlot, SONPROC};
+use crate::cpu::thread::{MachineSlot, SONPROC};
 
 /// `proc0`'s u-area on the host: bytes enough for `bsd`'s host `struct user` (whose pcb is a
 /// word), page aligned; the host builds no frames in it.
 #[repr(C, align(4096))]
 struct BootUarea([core::sync::atomic::AtomicU8; 4096]);
 
-/// `proc0`'s u-area (`hal::thread::boot_uarea`).
+/// `proc0`'s u-area (`hal::cpu::thread::boot_uarea`).
 static PROC0_UAREA: BootUarea = BootUarea([const { core::sync::atomic::AtomicU8::new(0) }; 4096]);
 
 /// The address of `proc0`'s u-area.
@@ -112,7 +112,7 @@ pub(crate) fn switch(
     let new_addr = new_slot.addr().get();
     {
         // SAFETY: `new_slot` comes from a `Next` the caller checked against the scheduler's
-        // hold it holds (`hal::thread`'s E3): the slot of a thread chosen under that hold,
+        // hold it holds (`hal::cpu::thread`'s E3): the slot of a thread chosen under that hold,
         // which is not freed while the hold is held, and whose members are atomics (the
         // machine's assembly stores into them through the same address). The reference ends
         // in this block, before the hold can be released.
@@ -180,7 +180,7 @@ fn spawn(addr: usize, start: usize, arg: usize) {
     let g = gate(addr);
     std::thread::spawn(move || {
         wait(&g);
-        crate::thread::trampoline(start, arg);
+        crate::cpu::thread::trampoline(start, arg);
         // A thread whose start returns leaves for user mode on a machine; the host has none.
         loop {
             std::thread::park();

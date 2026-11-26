@@ -125,11 +125,11 @@
 use core::ptr;
 use core::sync::atomic::{AtomicI32, Ordering::Relaxed};
 
-use hal::klock;
-use hal::netlock::{NETLOCK, NetHeld};
-use hal::pool::{PR_WAITOK, PoolArc};
-use hal::rwlock::Divisible;
-use hal::sleep::{INFSLP, PCATCH, tsleep_nsec, wakeup};
+use hal::mem::pool::{PR_WAITOK, PoolArc};
+use hal::sync::klock;
+use hal::sync::netlock::{NETLOCK, NetHeld};
+use hal::sync::rwlock::Divisible;
+use hal::sync::sleep::{INFSLP, PCATCH, tsleep_nsec, wakeup};
 
 use super::nfs::{
     NFS_DEFAULT_TIMER, NFS_GETATTR_TIMER, NFS_LOOKUP_TIMER, NFS_MAX_TIMER, NFS_MAXREXMIT,
@@ -142,11 +142,11 @@ use super::nfsm_subs::{XdrReader, XdrWriter, nfsm_rndup};
 use super::nfsmount::NfsMount;
 use super::nfsproto::{NFS_MAXPACKET, NFS_MAXPKTHDR, NFS_NPROCS, NFSERR_TRYLATER, NFSX_UNSIGNED};
 use crate::assert::{kassert, kpanic};
-use crate::clock::sec_to_nsec;
-use crate::cred::Ucred;
+use crate::base::log::{LOG_ERR, LOG_INFO};
+use crate::base::prf::{Str, log, printf, tprintf, tprintf_close, tprintf_open};
+use crate::file::uio::{Uio, UioRw, UioSeg};
 use crate::fs::cache::cache_purge;
 use crate::fs::vnode::Vnode;
-use crate::log::{LOG_ERR, LOG_INFO};
 use crate::net::mbuf::{
     M_COPYALL, M_DONTWAIT, M_WAIT, MT_SONAME, MT_SOOPTS, Mbuf, MbufBox, m_copym, m_get, m_prepend,
 };
@@ -156,7 +156,7 @@ use crate::net::socket::{
     Socket, SocketRef, sobind, soclose, soconnect, socreate, solock_net, solock_shared, soreceive,
     soreserve, sosend, sosetopt, soshutdown, sosleep_nsec,
 };
-use crate::prf::{Str, log, printf, tprintf, tprintf_close, tprintf_open};
+use crate::proc::cred::Ucred;
 use crate::proc::{ProcGlue, Thread, tfind};
 use crate::sched::{NOWAKE, PZERO};
 use crate::sig::{sigignore, sigpending};
@@ -175,7 +175,7 @@ use crate::sys::socket::{
     AF_INET, MSG_EOR, MSG_WAITALL, SHUT_RDWR, SO_KEEPALIVE, SOCK_DGRAM, SOCK_STREAM, SOL_SOCKET,
 };
 use crate::sys::types::Pid;
-use crate::uio::{Uio, UioRw, UioSeg};
+use crate::time::clock::sec_to_nsec;
 
 /// `NFS_CWNDSCALE`: the scale of the congestion window and of the sent count. There is a
 /// congestion window for outstanding rpcs maintained per mount point. The cwnd size is
@@ -848,7 +848,7 @@ fn nfs_receive_record<G: ProcGlue>(
 ) -> Result<Option<MbufBox>, Errno> {
     let nmp = rep.nmp;
     let mut mark = [0u8; NFSX_UNSIGNED];
-    let mut aio = [crate::uio::Iovec::new()];
+    let mut aio = [crate::file::uio::Iovec::new()];
     let short = {
         let mut auio = Uio::kernel_read(&mut aio, &mut mark, p);
         let mut error;
@@ -1342,7 +1342,7 @@ fn nfs_reply_header(reply: &mut Reply) -> Header {
 /// `timeout_set_proc`, a counted handle). The C's one walk under the net lock, kept: a
 /// reader of the kernel lock at a time, the place kept in a counted handle across the work
 /// done without it (the module's Redesign).
-pub fn nfs_timer<G: ProcGlue>(arg: &hal::pool::AnyArc) {
+pub fn nfs_timer<G: ProcGlue>(arg: &hal::mem::pool::AnyArc) {
     let Some(nmp) = arg.downcast_ref::<NfsMount<G>>() else {
         kpanic(format_args!("nfs_timer: not an nfs mount"));
     };
@@ -1702,7 +1702,7 @@ mod tests {
     use core::ffi::c_void;
     use std::sync::MutexGuard;
 
-    use hal::malloc::{M_WAITOK, MArc, MBox};
+    use hal::mem::malloc::{M_WAITOK, MArc, MBox};
 
     use super::*;
     use crate::fs::nfs::nfs_subs::{NFSV2_PROCID, nfs_get_xid, nfs_init};
@@ -1711,7 +1711,7 @@ mod tests {
     use crate::fs::testfs::TestGlue as G;
     use crate::net::mbuf::{MT_DATA, MbufBox, m_gethdr};
     use crate::sys::signal::{SIGINT, SIGUSR1, sigmask};
-    use crate::timeout::Timeout;
+    use crate::time::timeout::Timeout;
 
     fn nop(_: *mut c_void) {}
 
@@ -1977,7 +1977,7 @@ mod tests {
         let done = std::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
         let (d, h, m) = (done.clone(), rep.clone(), nmp.clone());
         let waker = std::thread::spawn(move || {
-            hal::klock::kernel_lock();
+            hal::sync::klock::kernel_lock();
             {
                 let mut w = klock::witness();
                 drop(h.set_reply(&mut w, Some(Reply::new(chain(), 0))));
@@ -2346,7 +2346,7 @@ mod tests {
     #[test]
     fn trylater_sends_the_request_again() {
         let fx = tn::setup(0);
-        NFS_TICKS.store(crate::timeout::hz(), Relaxed);
+        NFS_TICKS.store(crate::time::timeout::hz(), Relaxed);
         let nmp = tn::nfsmount(&fx, SOCK_DGRAM, NFSMNT_NFSV3);
         assert_eq!(tn::connect(&nmp), Ok(()));
         let requests = NFSSTATS.rpcrequests.load(Relaxed);

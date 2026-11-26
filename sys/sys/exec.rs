@@ -289,7 +289,7 @@ pub struct ExecPackage<'a> {
     /// `ep_pinend`: executable region end.
     pub ep_pinend: usize,
     /// `ep_pins`: array of system call offsets (`M_PINSYSCALL`, `ep_npins` entries).
-    pub ep_pins: Option<hal::malloc::MArray<u32>>,
+    pub ep_pins: Option<hal::mem::malloc::MArray<u32>>,
     /// `ep_npins`: entries in array.
     pub ep_npins: i32,
     /// `ep_execpath`: execve path on userland stack (0 for NULL).

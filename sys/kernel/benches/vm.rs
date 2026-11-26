@@ -77,9 +77,9 @@ use std::time::{Duration, Instant};
 use std::vec::Vec;
 
 use hal::arch::current::vmparam::{MAXSSIZ, USRSTACK, VM_MAXUSER_ADDRESS, VM_MIN_ADDRESS};
-use hal::malloc::Malloc;
-use hal::pool::{PoolBackend, RawPool};
-use hal::rwlock::SharedRwlock;
+use hal::mem::malloc::Malloc;
+use hal::mem::pool::{PoolBackend, RawPool};
+use hal::sync::rwlock::SharedRwlock;
 use hal::sys::errno::Errno;
 use hal::sys::mman::{
     MADV_NORMAL, MADV_RANDOM, MAP_ANON, MAP_INHERIT_COPY, MAP_INHERIT_SHARE, MAP_PRIVATE,
@@ -362,11 +362,11 @@ impl ProcGlue for BenchGlue {
     ) {
     }
     /// No per-CPU slice start: the uptime itself (no running part).
-    fn spc_runtime() -> kernel::clock::Timespec {
-        kernel::tc::nanouptime()
+    fn spc_runtime() -> kernel::time::clock::Timespec {
+        kernel::time::tc::nanouptime()
     }
     fn process_ref(pr: &Process<Self>) -> kernel::proc::ProcessRef<Self> {
-        match hal::pool::PoolArc::from_ref(pr) {
+        match hal::mem::pool::PoolArc::from_ref(pr) {
             Some(a) => kernel::proc::StaticOrPooled::Pooled(a),
             None => kernel_panic("process_ref of the static process"),
         }
@@ -384,14 +384,14 @@ static THREAD: std::sync::OnceLock<&'static Thread<BenchGlue>> = std::sync::Once
 /// stack, as the doubles' answer before N5.0).
 fn thread() -> &'static Thread<BenchGlue> {
     THREAD.get_or_init(|| {
-        let lim = kernel::resource::lim_startup(7030, 1 << 30, PAGE);
-        drop(PR.set_limit(kernel::resource::PlimitRef::new(lim)));
+        let lim = kernel::proc::resource::lim_startup(7030, 1 << 30, PAGE);
+        drop(PR.set_limit(kernel::proc::resource::PlimitRef::new(lim)));
         Box::leak(Box::new(Thread::new_static(&PR, ())))
     })
 }
 
 /// The faulting thread's counters (`curproc->p_ru`).
-fn ru() -> Option<&'static kernel::resource::Rusage> {
+fn ru() -> Option<&'static kernel::proc::resource::Rusage> {
     Some(&thread().p_ru)
 }
 
@@ -408,7 +408,7 @@ fn setup() -> MutexGuard<'static, ()> {
     ok(uvm_anon_init(0), "uvm_anon_init");
     ok(amap_init(0), "amap_init");
     ok(uao_init(), "uao_init");
-    hal::pmap::init();
+    hal::vm::pmap::init();
     uvm_map_init();
     uvmfault_init();
     ok(uvn_init(), "uvn_init");
@@ -460,9 +460,9 @@ impl Program {
     /// The vnode's object for one mapping (`uvn_attach` under the kernel lock, as exec's
     /// `vmcmd_map_pagedvn`).
     fn object(&self, prot: i32) -> ObjRef {
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         let o = some(uvn_attach(self.vp, prot), "uvn_attach");
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
         o
     }
 
@@ -697,9 +697,9 @@ fn main() {
     let bigfile = testutil::mem_vnode((0..FAULT_PAGES * PAGE).map(|i| (i % 253) as u8).collect());
     let lower = user_vmspace();
     let map_file = |vm: &Vmspace, prot: i32| -> usize {
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         let o = some(uvn_attach(bigfile, prot), "uvn_attach");
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
         let mut a = 0x4000_0000;
         let f = uvm_mapflag(
             prot,
@@ -1228,7 +1228,7 @@ fn main() {
         name: "prim.zero-page",
         ops: PRIM,
         f: Box::new(prim(move || {
-            hal::pmap::zero_page(black_box(held.phys_addr()))
+            hal::vm::pmap::zero_page(black_box(held.phys_addr()))
         })),
     });
 

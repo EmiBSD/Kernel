@@ -303,7 +303,7 @@
 //! boot paths install ([`install_submap`]); a mode's virtual space is `uvm_map`/`uvm_unmap`
 //! of the map its `kv_map` names ([`map_of`]). The pages are the kernel's own
 //! (`super::page`: `uvm_pglistalloc`, `uvm_pglistfree`, `uvm_pagefree`, since N3.3). The kernel pmap
-//! changes only through `hal::pmap::KernelMapper`, the token `pmap_bootstrap` hands out once:
+//! changes only through `hal::vm::pmap::KernelMapper`, the token `pmap_bootstrap` hands out once:
 //! it is kept here ([`adopt_mapper`]), the owner of the fact it stands for (the caller owns the
 //! kernel virtual addresses it maps), and lent to `machine::pmap` alone, the holder of the one
 //! [`LegacyLend`], until the last caller of its kernel-pmap wrappers moves ([`legacy_mapper`],
@@ -344,7 +344,7 @@
 //!   whole list back (`uvm_pglistfree`) when there is no space; `km_free` collects the pages
 //!   of the range on one list, removes the mappings and frees the list. N3.2's per-chunk
 //!   frees and its frame-at-a-time callback (two deviations) are gone with it.
-//! - The page provider of `hal::kmbuf::KmBuf` ([`page_memory`]) is implemented here and
+//! - The page provider of `hal::mem::kmbuf::KmBuf` ([`page_memory`]) is implemented here and
 //!   passed down as a value.
 //! - `pmap_update` is nothing on both machines (every pmap call does its own TLB work), so it
 //!   is not called.
@@ -396,21 +396,21 @@
 //!   kernel object, whose pages hold `KmBuf`'s Rust slices; the map entry owning the object
 //!   reference it was given) and unmapped by its drop; [`KernelWindow`]'s twin over the
 //!   C's other source of a kernel range. Its bytes move only by copies through the window
-//!   (`kernel::uio::uiomove_window` straight to the uio's iovecs), never through a slice.
+//!   (`kernel::file::uio::uiomove_window` straight to the uio's iovecs), never through a slice.
 //! - N7.0: `bus_space_map`'s and `bus_space_unmap`'s bodies (LZ: arm64's `generic_space_map`
 //!   and `generic_space_unmap` in `bsd`, the `vmmap` cursor bumped by hand and every page
 //!   entered through the legacy `pmap_kenter_cache` `unsafe fn`) are [`map_device`] and
 //!   [`unmap_device`]: the space chosen here, as the token's holder (the device window by
 //!   `KernelMapper::device_va`, else `km_alloc(kv_any, kp_none, kd_nowait)`), the pages
 //!   entered and the block made by `hal` (`KernelMapper::map_device`, which refuses managed
-//!   frames: `sys/hal/mmio.rs`), and the reverse. `bsd`'s `generic_space_map` keeps its name
+//!   frames: `sys/hal/dev/mmio.rs`), and the reverse. `bsd`'s `generic_space_map` keeps its name
 //!   and signature over [`map_device`] for its drivers (`machine::bus`, 163 modules) and takes
 //!   the address out of the block; its `generic_space_unmap` stays its own until they move.
 //! - N7.0: `bus_dmamem_alloc_range` of one segment with `bus_dmamem_map`, and
 //!   `bus_dmamem_unmap` with `bus_dmamem_free` (LZ: arm64's `_dmamem_*` in `bsd`, a segment
 //!   array, a `NonNull<u8>` mapping entered through the legacy `pmap_kenter_cache`, and the two
 //!   handed back separately on every exit path) are the provider [`bus_dma_memory`] of
-//!   `hal::dma::DmaBuf` for a bus with no IOMMU, a value as [`page_memory`]: the C's order
+//!   `hal::dev::dma::DmaBuf` for a bus with no IOMMU, a value as [`page_memory`]: the C's order
 //!   (the pages within the range, then `kv_any`/`kp_none` space, `kd_trylock` under
 //!   `BUS_DMA_NOWAIT`, each page entered write-back or, for `BUS_DMA_COHERENT` on a
 //!   non-coherent tag or `BUS_DMA_NOCACHE`, uncached; the reverse on free), one segment, the
@@ -422,18 +422,15 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use hal::arch::current::param::{PAGE_SHIFT, PAGE_SIZE};
 
-use hal::dma::{DmaBlock, DmaMemory, DmaReq, DmaSeg};
-use hal::kmbuf::{PageKind, PageMemory};
-use hal::mapped::MappedBytes;
+use hal::dev::dma::{DmaBlock, DmaMemory, DmaReq, DmaSeg};
 #[cfg(target_arch = "aarch64")]
-use hal::mmio::{DevCache, Mmio, RegBlock};
-use hal::once::OnceStatic;
-use hal::pmap::{
-    HAVE_PMAP_DIRECT, KernelMapper, PMAP_NOCACHE, PMAP_NOMMU, PMAP_WIRED, Pmap, PmapRef,
-};
-use hal::pool::PoolArc;
-use hal::rwlock::{Witness, WriteWitness};
-use hal::sleep::{INFSLP, PVM, tsleep_nsec, wakeup};
+use hal::dev::mmio::{DevCache, Mmio, RegBlock};
+use hal::mem::kmbuf::{PageKind, PageMemory};
+use hal::mem::mapped::MappedBytes;
+use hal::mem::pool::PoolArc;
+use hal::sync::once::OnceStatic;
+use hal::sync::rwlock::{Witness, WriteWitness};
+use hal::sync::sleep::{INFSLP, PVM, tsleep_nsec, wakeup};
 use hal::sys::errno::Errno;
 use hal::sys::mman::{
     MADV_NORMAL, MADV_RANDOM, MAP_INHERIT_NONE, PROT_NONE, PROT_READ, PROT_WRITE,
@@ -441,6 +438,9 @@ use hal::sys::mman::{
 use hal::sys::types::{Paddr, Vaddr, Vsize};
 use hal::user::ForeignWindow;
 use hal::vm::param::round_page;
+use hal::vm::pmap::{
+    HAVE_PMAP_DIRECT, KernelMapper, PMAP_NOCACHE, PMAP_NOMMU, PMAP_WIRED, Pmap, PmapRef,
+};
 use hal::vm::uvmexp::UVMEXP;
 
 use super::amap::AMAP_REFALL;
@@ -460,8 +460,8 @@ use super::types::{
     uvm_mapflag,
 };
 use crate::assert::{kassert, kpanic};
+use crate::base::prf::unported;
 use crate::fs::buf::MAXPHYS;
-use crate::prf::unported;
 
 /// `VM_KERNEL_SPACE_SIZE` (`<uvm/uvm_param.h>`): the size of the kernel's virtual address
 /// space (the kernel object's).
@@ -836,7 +836,7 @@ impl BufArena {
     /// `UVM_MAPFLAG(PROT_NONE, PROT_NONE, MAP_INHERIT_NONE, MADV_NORMAL, 0)`); `panic(9)` when
     /// the map has no room, as the C. On a machine without an MMU (the host double) no map is
     /// touched: the slots are a range of fake addresses no other arena of the process reuses
-    /// (a buffer's bytes are read through the direct map there, `hal::mapped`).
+    /// (a buffer's bytes are read through the direct map there, `hal::mem::mapped`).
     pub fn reserve(size: usize) -> BufArena {
         Self::reserve_in(PMAP_NOMMU, size)
     }
@@ -914,7 +914,7 @@ impl BufSlot {
     }
 
     /// `buf_map`'s loop: the buffer's busy pages `frames` (at most `MAXPHYS` bytes) entered at
-    /// the slot, unmanaged and read-write (`pmap_kenter_pa`: `hal::pmap::KernelMapper::
+    /// the slot, unmanaged and read-write (`pmap_kenter_pa`: `hal::vm::pmap::KernelMapper::
     /// kenter_frames`, which claims each frame for the view); the view's drop, or
     /// [`BufArena::unmap`], removes them. Panics on more pages than a slot holds.
     pub fn map(self, frames: &[Paddr]) -> MappedBytes<'static> {
@@ -1063,7 +1063,7 @@ pub fn adopt_mapper(m: KernelMapper) -> Result<LegacyLend, KernelMapper> {
 /// `pmap_enter` on `kernel_map`, `kernel::vm::fault`) has bootstrapped the pmap first: the
 /// kernel's tests in their set-up, `bsd`'s in `uvm_km_test_init`.
 ///
-/// The holders keep the token's contract (`hal::mapped`): no live pager window is overlaid.
+/// The holders keep the token's contract (`hal::mem::mapped`): no live pager window is overlaid.
 /// The fault handler enters pages only at addresses of an entry with an amap or an object, and
 /// a pager window lies in space `km_alloc` reserved with neither (`kv_any`, `kp_none`: the
 /// pager segments), so a fault on a window's address is case 0 and fails with `EFAULT` before
@@ -1086,8 +1086,8 @@ pub(super) fn mapper() -> VmMapper {
     VmMapper(token())
 }
 
-/// The timekeep page's kernel view at `va` (`hal::pmap::KernelMapper::timekeep_view`): for
-/// `kernel::tc::timekeep_object`, which made `va` the kernel map's wired, never-unmapped
+/// The timekeep page's kernel view at `va` (`hal::vm::pmap::KernelMapper::timekeep_view`): for
+/// `kernel::time::tc::timekeep_object`, which made `va` the kernel map's wired, never-unmapped
 /// mapping of the timekeep object; `hal` checks the page is managed and wired, claims its
 /// frame for good and makes the view once per boot (`None` otherwise).
 pub(crate) fn timekeep_view(va: Vaddr) -> Option<&'static hal::sys::timetc::TimekeepAtomic> {
@@ -1213,7 +1213,7 @@ pub fn uvm_map_extract_window(
 
 /// The window onto an extracted range, minted by the kernel map's token: the window
 /// consumes the range, so it is the range's only window, and the range is unmapped only
-/// after the window is gone (the token's contract, `hal::pmap::KernelMapper::foreign_window`).
+/// after the window is gone (the token's contract, `hal::vm::pmap::KernelMapper::foreign_window`).
 pub fn foreign_window(range: Extracted) -> KernelWindow {
     let window = token().foreign_window(range.va, range.len);
     KernelWindow { window, range }
@@ -1488,7 +1488,7 @@ pub fn uvm_km_pgremove(uobj: &ObjRef, w: &mut WriteWitness<'_>, startva: Vaddr, 
 pub fn uvm_km_pgremove_intrsafe(start: Vaddr, end: Vaddr) {
     let mut va = start.as_usize();
     while va < end.as_usize() {
-        if let Some(pa) = hal::pmap::kernel().extract(Vaddr::new(va)) {
+        if let Some(pa) = hal::vm::pmap::kernel().extract(Vaddr::new(va)) {
             match PHYS_TO_VM_PAGE(pa) {
                 Some(pg) => uvm_pagefree(pg, Owner::None),
                 None => kpanic(format_args!("uvm_km_pgremove_intrsafe: no page")),
@@ -1564,7 +1564,9 @@ fn alloc_in(
     // __HAVE_PMAP_DIRECT: only use direct mappings for single page or single segment
     // allocations.
     if HAVE_PMAP_DIRECT && (kv.kv_singlepage || kp.kp_maxseg == 1 || nommu) {
-        let first = pgl.first().map(|pg| hal::pmap::direct_map(pg.phys_addr()));
+        let first = pgl
+            .first()
+            .map(|pg| hal::vm::pmap::direct_map(pg.phys_addr()));
         // The pages are the caller's now: off this function's list.
         while pgl.pop_head().is_some() {}
         return first;
@@ -1644,12 +1646,12 @@ fn free_in(nommu: bool, va: Vaddr, sz: usize, kv: &KmemVaMode, kp: &KmemPaMode) 
     if !kp.kp_nomem {
         // __HAVE_PMAP_DIRECT
         if HAVE_PMAP_DIRECT && (kv.kv_singlepage || kp.kp_maxseg == 1 || nommu) {
-            let frames = (sva..eva).step_by(PAGE_SIZE).map(|va| {
-                match hal::pmap::direct_unmap(Vaddr::new(va)) {
+            let frames = (sva..eva)
+                .step_by(PAGE_SIZE)
+                .map(|va| match hal::vm::pmap::direct_unmap(Vaddr::new(va)) {
                     Some(pa) => pa,
                     None => kpanic(format_args!("km_free: unmanaged page at {va:#x}")),
-                }
-            });
+                });
             free_frames("km_free", frames);
             return;
         }
@@ -1661,7 +1663,7 @@ fn free_in(nommu: bool, va: Vaddr, sz: usize, kv: &KmemVaMode, kp: &KmemPaMode) 
             // page is on a free list while it is still mapped).
             let pgl = Pglist::new();
             for va in (sva..eva).step_by(PAGE_SIZE) {
-                if let Some(pa) = hal::pmap::kernel().extract(Vaddr::new(va)) {
+                if let Some(pa) = hal::vm::pmap::kernel().extract(Vaddr::new(va)) {
                     match PHYS_TO_VM_PAGE(pa) {
                         Some(pg) => pgl.insert_tail(pg),
                         None => {
@@ -1681,7 +1683,7 @@ fn free_in(nommu: bool, va: Vaddr, sz: usize, kv: &KmemVaMode, kp: &KmemPaMode) 
     }
 }
 
-/// The C's physical-page mode of a [`KmBuf`](hal::kmbuf::KmBuf)'s kind.
+/// The C's physical-page mode of a [`KmBuf`](hal::mem::kmbuf::KmBuf)'s kind.
 fn kp_of(kind: PageKind) -> &'static KmemPaMode {
     match kind {
         PageKind::Pageable => &KP_PAGEABLE,
@@ -1689,10 +1691,10 @@ fn kp_of(kind: PageKind) -> &'static KmemPaMode {
     }
 }
 
-/// `hal::kmbuf::KmBuf`'s pages: `km_alloc`/`km_free` with `&kv_any`.
+/// `hal::mem::kmbuf::KmBuf`'s pages: `km_alloc`/`km_free` with `&kv_any`.
 struct KmPageMemory;
 
-// The provider's contract (`hal::kmbuf::PageMemory`): a block `km_alloc` returns is fresh
+// The provider's contract (`hal::mem::kmbuf::PageMemory`): a block `km_alloc` returns is fresh
 // kernel memory of `len` bytes, zeroed (`kp_zero`, or `kp_pageable`'s zero-fill faults),
 // page-aligned, which nothing else references until `free` hands it to `km_free` with the
 // same modes.
@@ -1715,7 +1717,7 @@ impl PageMemory for KmPageMemory {
 
 static KM_PAGE_MEMORY: KmPageMemory = KmPageMemory;
 
-/// `hal::kmbuf::KmBuf`'s wired pages within the machine's DMA range (`dma_constraint`, the
+/// `hal::mem::kmbuf::KmBuf`'s wired pages within the machine's DMA range (`dma_constraint`, the
 /// `kp_dma_zero` mode): `uvm_vslock_device`'s bounce buffer.
 struct KmDmaMemory;
 
@@ -1729,7 +1731,7 @@ impl KmDmaMemory {
     }
 }
 
-// The provider's contract (`hal::kmbuf::PageMemory`), as `KmPageMemory`'s: a block is fresh,
+// The provider's contract (`hal::mem::kmbuf::PageMemory`), as `KmPageMemory`'s: a block is fresh,
 // zeroed, page-aligned kernel memory nothing else references until `free`. Only wired
 // blocks: a pageable one has no physical range to keep to.
 impl PageMemory for KmDmaMemory {
@@ -1848,7 +1850,7 @@ pub fn unmap_device<R: RegBlock>(m: Mmio<R>) {
 }
 
 /// The DMA memory of a bus with no IOMMU, whose bus address is the physical address
-/// (`hal::dma::DmaMemory`; arm64's `_dmamem_*` of `bus_dma.c`), for a tag that keeps DMA
+/// (`hal::dev::dma::DmaMemory`; arm64's `_dmamem_*` of `bus_dma.c`), for a tag that keeps DMA
 /// coherent or not.
 struct KmBusDma {
     /// The tag's `BUS_DMA_COHERENT`.
@@ -1897,7 +1899,7 @@ impl KmBusDma {
             kpanic(format_args!("_dmamem_alloc_range: empty page list"));
         };
         let sva = if nommu {
-            hal::pmap::direct_map(first)
+            hal::vm::pmap::direct_map(first)
         } else {
             let kd = if req.nowait { &KD_TRYLOCK } else { &KD_WAITOK };
             let Ok(sva) = map_va(size, &KV_ANY, &KP_NONE, kd) else {
@@ -1955,7 +1957,7 @@ impl KmBusDma {
     }
 }
 
-// The provider's contract (`hal::dma::DmaMemory`): a block is `len` bytes of fresh kernel
+// The provider's contract (`hal::dev::dma::DmaMemory`): a block is `len` bytes of fresh kernel
 // space `alloc_in` mapped onto the segment's frames alone (or their direct map), read and
 // write, pages of the page system's that nothing else holds until `free` hands them back.
 impl DmaMemory for KmBusDma {
@@ -1973,7 +1975,7 @@ static KM_BUS_DMA: KmBusDma = KmBusDma { coherent: false };
 
 /// The DMA memory of a bus with no IOMMU (the bus address is the physical address), for a tag
 /// that keeps DMA coherent (`BUS_DMA_COHERENT` in its `_flags`) or not: what
-/// `hal::dma::DmaBuf::alloc` takes, a provider passed as a value.
+/// `hal::dev::dma::DmaBuf::alloc` takes, a provider passed as a value.
 pub const fn bus_dma_memory(coherent: bool) -> &'static dyn DmaMemory {
     if coherent {
         &KM_BUS_DMA_COHERENT
@@ -1988,7 +1990,7 @@ pub const fn dma_memory() -> &'static dyn PageMemory {
     &KM_DMA_MEMORY
 }
 
-/// The kernel map's pages as `hal::kmbuf::KmBuf` takes them: `km_alloc(&kv_any, &kp_pageable
+/// The kernel map's pages as `hal::mem::kmbuf::KmBuf` takes them: `km_alloc(&kv_any, &kp_pageable
 /// or &kp_zero, &kd_waitok or &kd_nowait)`, a provider passed as a value.
 pub const fn page_memory() -> &'static dyn PageMemory {
     &KM_PAGE_MEMORY
@@ -2022,10 +2024,10 @@ mod tests {
     use super::*;
     use crate::testutil;
 
-    use hal::dma::DmaBuf;
-    use hal::kmbuf::KmBuf;
+    use hal::dev::dma::DmaBuf;
     #[cfg(target_arch = "aarch64")]
-    use hal::mmio::Untyped;
+    use hal::dev::mmio::Untyped;
+    use hal::mem::kmbuf::KmBuf;
     use hal::vm::uvmexp::UVMEXP;
 
     /// 16 MiB of pages for each test.
@@ -2042,7 +2044,7 @@ mod tests {
     /// kernel object (`kp_object`).
     fn entry_at(which: KvMap, va: Vaddr) -> Option<bool> {
         let map = map_of(which)?;
-        let spl = hal::intr::splraise(hal::intr::IPL_VM);
+        let spl = hal::cpu::intr::splraise(hal::cpu::intr::IPL_VM);
         let g = map.lock_read();
         let r = g
             .lookup(va.as_usize())
@@ -2080,7 +2082,7 @@ mod tests {
     }
 
     fn extract(va: usize) -> Option<Paddr> {
-        hal::pmap::kernel().extract(Vaddr::new(va))
+        hal::vm::pmap::kernel().extract(Vaddr::new(va))
     }
 
     #[test]
@@ -2330,7 +2332,7 @@ mod tests {
     fn pgremove_intrsafe_frees_what_is_mapped() {
         let _g = setup();
         // kv_intrsafe: the callers raise to IPL_VM (pool(9)), as kmem_map's uvm_map asserts.
-        let spl = hal::intr::splraise(hal::intr::IPL_VM);
+        let spl = hal::cpu::intr::splraise(hal::cpu::intr::IPL_VM);
         let before = avail();
         let va = alloc_in(false, 2 * PAGE_SIZE, &KV_INTRSAFE, &KP_ZERO, &KD_NOWAIT).expect("space");
         assert!(va.as_usize() >= testutil::KM_KMEM_BASE, "kmem_map's space");
@@ -2387,7 +2389,7 @@ mod tests {
     /// `n` pages of the buffer cache's for the dummy object `obj` (`buf_alloc_pages`), and
     /// their frames.
     fn buffer_pages(obj: &crate::vm::object::Object, n: usize) -> std::vec::Vec<Paddr> {
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         obj.reinit_dummy(1);
         crate::vm::page::uvm_pagealloc_multi(obj, 0, n * PAGE_SIZE, UVM_PLA_NOWAIT)
             .expect("the pages");
@@ -2507,7 +2509,13 @@ mod tests {
         let frame = testutil_frame();
         let user = testutil::KM_VA_END - 16 * PAGE_SIZE;
         token().kenter(Vaddr::new(user), frame, PROT_READ);
-        let w = PhysWindow::map_in(false, &KV_EXEC, hal::pmap::kernel(), user, user + PAGE_SIZE);
+        let w = PhysWindow::map_in(
+            false,
+            &KV_EXEC,
+            hal::vm::pmap::kernel(),
+            user,
+            user + PAGE_SIZE,
+        );
         assert_eq!(w.va().as_usize(), testutil::KM_EXEC_BASE);
         assert_eq!(w.len(), PAGE_SIZE);
         assert_eq!(extract(w.va().as_usize()), Some(frame));
@@ -2525,7 +2533,7 @@ mod tests {
         let w = PhysWindow::map_in(
             true,
             &KV_PHYSWAIT,
-            hal::pmap::kernel(),
+            hal::vm::pmap::kernel(),
             0x40_0000,
             0x40_2000,
         );
@@ -2631,7 +2639,7 @@ mod tests {
     /// A frame of the page system's, for a test that maps it (given back by the next set-up).
     fn testutil_frame() -> Paddr {
         let va = alloc_in(true, PAGE_SIZE, &KV_ANY, &KP_ZERO, &KD_NOWAIT).expect("a page");
-        hal::pmap::direct_unmap(va).expect("its frame")
+        hal::vm::pmap::direct_unmap(va).expect("its frame")
     }
 
     /// Two pages of host memory standing for a device's registers: outside the page system,

@@ -228,10 +228,10 @@ pub const IPL_WAKEUP: i32 = <Machine as Intr>::IPL_WAKEUP;
 // (N3.3) and timeout(9)'s soft interrupt (N4.1) use, until the interrupt tables enter `hal`
 // at N4, are the machine's.
 const _: () = {
-    assert!(hal::intr::IPL_SOFTCLOCK == IPL_SOFTCLOCK);
-    assert!(hal::intr::IPL_BIO == IPL_BIO);
-    assert!(hal::intr::IPL_VM == IPL_VM);
-    assert!(hal::intr::IPL_HIGH == IPL_HIGH);
-    assert!(hal::intr::IPL_SCHED == IPL_SCHED);
+    assert!(hal::cpu::intr::IPL_SOFTCLOCK == IPL_SOFTCLOCK);
+    assert!(hal::cpu::intr::IPL_BIO == IPL_BIO);
+    assert!(hal::cpu::intr::IPL_VM == IPL_VM);
+    assert!(hal::cpu::intr::IPL_HIGH == IPL_HIGH);
+    assert!(hal::cpu::intr::IPL_SCHED == IPL_SCHED);
 };
 /* </CODE> */

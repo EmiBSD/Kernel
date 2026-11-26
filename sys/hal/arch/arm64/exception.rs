@@ -29,7 +29,7 @@
 //!
 //! **What the assembly reaches.** `ci_curproc`, `ci_curpcb` and `ci_trampoline_vectors` at
 //! the offsets of the [`CpuCore`] that `TPIDR_EL1` names (`hal::cpu`); the running thread's
-//! `md_astpending` in its `MachineSlot`, first in the thread (`hal::thread`), through
+//! `md_astpending` in its `MachineSlot`, first in the thread (`hal::cpu::thread`), through
 //! `ci_curproc`; its pcb's `pcb_flags` (`PCB_SINGLESTEP`); the trap frame it builds on the
 //! kernel stack. It calls [`do_el1h_sync`](super::trap), `do_el0_sync`, the two error
 //! entries, `ast` and the IRQ/FIQ entries of `trap.rs` with the frame in `x0`.
@@ -80,8 +80,8 @@ use super::include::frame::{TF_SIZE, Trapframe};
 use super::include::pcb::Pcb;
 use super::include::proc::Mdproc;
 use super::pmap::layout::TRAMP_ROOT_OFFSET;
+use crate::cpu::thread::MachineSlot;
 use crate::cpu::{CORE_CURPCB, CORE_CURPROC, CORE_TRAMPOLINE_VECTORS, CpuCore};
-use crate::thread::MachineSlot;
 
 /// The bytes of one trampoline table (`.align 11`).
 const TRAMPOLINE_TABLE: usize = 2048;

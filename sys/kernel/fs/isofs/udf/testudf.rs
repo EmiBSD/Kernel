@@ -29,8 +29,8 @@
 use std::sync::MutexGuard;
 use std::vec::Vec;
 
-use hal::malloc::{M_WAITOK, MArc, MArray};
-use hal::pool::PoolArc;
+use hal::mem::malloc::{M_WAITOK, MArc, MArray};
+use hal::mem::pool::PoolArc;
 use hal::sys::errno::Errno;
 use hal::sys::mount::{MNT_LOCAL, MNT_RDONLY, MOUNT_UDF, UdfArgs};
 

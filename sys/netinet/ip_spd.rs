@@ -118,7 +118,7 @@ use crate::sys::socket::AF_INET6;
 use crate::sys::socket::{AF_INET, PF_KEY};
 use crate::sys::systm::{net_assert_locked, net_assert_locked_exclusive};
 use crate::sys::timeout::Timeout;
-use hal::malloc::MBox;
+use hal::mem::malloc::MBox;
 use kernel::net::radix::RadixTree;
 use libkern::staticcell::StaticCell;
 

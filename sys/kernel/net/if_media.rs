@@ -164,7 +164,7 @@
 //! | member | type | all zero |
 //! |---|---|---|
 //! | `ifm_mask`, `ifm_media`, the selected entry's words | `crate::net::if_var::AtomicCell` | 0, no entry selected |
-//! | the list, its count, the callbacks | `hal::once::OnceStatic` (what `ifmedia_init` builds) | empty (`an_all_zero_cell_is_an_empty_one`) |
+//! | the list, its count, the callbacks | `hal::sync::once::OnceStatic` (what `ifmedia_init` builds) | empty (`an_all_zero_cell_is_an_empty_one`) |
 //!
 //! ## Deviations
 //! - The description tables of `<net/if_media.h>` are left out (`hal::sys::net_if_media`'s
@@ -212,10 +212,10 @@
 //! - Functions returning 0 or an errno return `Result<(), Errno>`; `ifmedia_match` returns
 //!   `bool` (LZ's).
 
-use hal::intr::IPL_NET;
-use hal::malloc::{M_NOWAIT, M_WAITOK, MArray, MBox};
-use hal::mutex::{Mutexed, MutexedGuard};
-use hal::once::OnceStatic;
+use hal::cpu::intr::IPL_NET;
+use hal::mem::malloc::{M_NOWAIT, M_WAITOK, MArray, MBox};
+use hal::sync::mutex::{Mutexed, MutexedGuard};
+use hal::sync::once::OnceStatic;
 use hal::sys::errno::Errno;
 use hal::sys::net_if::{Ifmediareq, Ifreq};
 use hal::sys::net_if_media::{
@@ -226,9 +226,9 @@ use hal::sys::sockio::{SIOCGIFMEDIA, SIOCSIFMEDIA};
 use hal::user::UserPtr;
 
 use crate::assert::kpanic;
+use crate::base::prf::printf;
 use crate::net::if_::M_IFADDR;
 use crate::net::if_var::{AtomicCell, Ifnet};
-use crate::prf::printf;
 
 /// `M_TEMP` (`<sys/malloc.h>`, `bsd`'s): `SIOCGIFMEDIA`'s copy of the media words.
 const M_TEMP: i32 = 127;
@@ -499,7 +499,7 @@ pub fn ifmedia_ioctl(
     match cmd {
         // Set the current media.
         SIOCSIFMEDIA => {
-            let newmedia = hal::pod::view_mut::<Ifreq>(data, 0)
+            let newmedia = hal::mem::pod::view_mut::<Ifreq>(data, 0)
                 .ok_or(Errno::EINVAL)?
                 .ifr_media();
             // Before ifmedia_init the list is empty: no media matches.
@@ -547,7 +547,7 @@ pub fn ifmedia_ioctl(
 
         // Get list of available media and current media on interface.
         SIOCGIFMEDIA => {
-            let ifmr = hal::pod::view_mut::<Ifmediareq>(data, 0).ok_or(Errno::EINVAL)?;
+            let ifmr = hal::mem::pod::view_mut::<Ifmediareq>(data, 0).ok_or(Errno::EINVAL)?;
 
             if ifmr.ifm_count < 0 {
                 return Err(Errno::EINVAL);

@@ -67,6 +67,7 @@ use core::marker::PhantomData;
 
 use hal::sys::errno::Errno;
 
+use crate::file::uio::Uio;
 use crate::fs::default;
 use crate::fs::tmpfs::tmpfs::{TMPFS_NODE_ACCESSED, TMPFS_NODE_MODIFIED, vptonode};
 use crate::fs::tmpfs::tmpfs_subr::tmpfs_update;
@@ -74,7 +75,6 @@ use crate::fs::tmpfs::tmpfs_vnops::tmpfs_common_slots;
 use crate::fs::vnode::Vnode;
 use crate::fs::vops::{Cred, IoBuf, Vnops};
 use crate::proc::{ProcGlue, Thread};
-use crate::uio::Uio;
 
 /// `tmpfs_specvops`: vnode operations vector used for special devices stored in a tmpfs
 /// file system (the glue's `TmpfsTables::specvops`, one address).

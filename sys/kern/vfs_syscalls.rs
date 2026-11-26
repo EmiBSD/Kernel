@@ -67,7 +67,7 @@
 //! Upstream: sys/kern/vfs_syscalls.c @ 3ce1f3f79392
 //!
 //! Since N5.4 every call is `kernel::fs::syscalls`'s (and `kernel::fs::getcwd`'s, and
-//! `kernel::descrip`'s for the positioned I/O): each row here unpacks its `struct
+//! `kernel::file::descrip`'s for the positioned I/O): each row here unpacks its `struct
 //! sys_*_args` into the kernel function's typed arguments (a user address as a `UserPtr`)
 //! and puts its answer in `retval[0]`. The helpers other `bsd` modules and their tests call
 //! keep LZ's names and signatures over the kernel's (`dounmount` and `getvnode` themselves,
@@ -116,7 +116,7 @@ fn uptr<T, U>(a: *const T) -> UserPtr<U> {
 
 /// The thread pinned, as the kernel's `truncate` calls take it (`proc_glue`'s `pinned`).
 fn pinned(p: &Proc) -> Pin<&'static Proc> {
-    hal::pin::pin_static(crate::sys::proc::ProcExt::as_static(p))
+    hal::ds::pin::pin_static(crate::sys::proc::ProcExt::as_static(p))
 }
 
 /// Mount a file system.
@@ -682,10 +682,10 @@ pub fn sys_revoke(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<
     fs::sys_revoke(p, uptr(uap.path.get()))
 }
 
-/// Positional read system call (`sysent[]`'s row: `kernel::descrip::sys_pread`).
+/// Positional read system call (`sysent[]`'s row: `kernel::file::descrip::sys_pread`).
 pub fn sys_pread(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysPreadArgs = sysargs(v);
-    let n = kernel::descrip::sys_pread(
+    let n = kernel::file::descrip::sys_pread(
         p,
         uap.fd.get(),
         uap.buf.get().addr(),
@@ -696,10 +696,10 @@ pub fn sys_pread(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<()
     Ok(())
 }
 
-/// Positional scatter read system call (`sysent[]`'s row: `kernel::descrip::sys_preadv`).
+/// Positional scatter read system call (`sysent[]`'s row: `kernel::file::descrip::sys_preadv`).
 pub fn sys_preadv(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysPreadvArgs = sysargs(v);
-    let n = kernel::descrip::sys_preadv(
+    let n = kernel::file::descrip::sys_preadv(
         p,
         uap.fd.get(),
         UserPtr::new(uap.iovp.get().addr()),
@@ -710,10 +710,10 @@ pub fn sys_preadv(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(
     Ok(())
 }
 
-/// Positional write system call (`sysent[]`'s row: `kernel::descrip::sys_pwrite`).
+/// Positional write system call (`sysent[]`'s row: `kernel::file::descrip::sys_pwrite`).
 pub fn sys_pwrite(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysPwriteArgs = sysargs(v);
-    let n = kernel::descrip::sys_pwrite(
+    let n = kernel::file::descrip::sys_pwrite(
         p,
         uap.fd.get(),
         uap.buf.get().addr(),
@@ -724,10 +724,10 @@ pub fn sys_pwrite(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(
     Ok(())
 }
 
-/// Positional gather write system call (`sysent[]`'s row: `kernel::descrip::sys_pwritev`).
+/// Positional gather write system call (`sysent[]`'s row: `kernel::file::descrip::sys_pwritev`).
 pub fn sys_pwritev(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysPwritevArgs = sysargs(v);
-    let n = kernel::descrip::sys_pwritev(
+    let n = kernel::file::descrip::sys_pwritev(
         p,
         uap.fd.get(),
         UserPtr::new(uap.iovp.get().addr()),

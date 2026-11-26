@@ -46,7 +46,7 @@
 //! - `pmap_setttb` (LZ `arm64/pmap.rs`, whose pmap moved into `hal` at N3.1) is only the
 //!   C-named entry the switch's assembly branches to: it turns the `struct proc *` into a
 //!   `&Proc` and calls `machine::pmap::pmap_setttb`, where the ASID check, the empty table
-//!   first and `cpu_setttb` are `hal`'s (`hal::pmap`, the arm64 backend's `load`) and the
+//!   first and `cpu_setttb` are `hal`'s (`hal::vm::pmap`, the arm64 backend's `load`) and the
 //!   `ci_curpm` record and the branch-predictor flush are `pmap_switched_md`'s. It is an
 //!   `unsafe extern "C" fn`: its one caller is the assembly, and a safe signature would let
 //!   any Rust caller pass a dangling pointer.
@@ -60,14 +60,14 @@ use crate::sys::proc::Proc;
 
 /// `pmap_setttb(p)`: loads `p`'s address space into `TTBR0_EL1` (the ASID check, the empty
 /// table first, `cpu_setttb`, then `ci_curpm` and the branch-predictor flush:
-/// `machine::pmap::pmap_setttb` over `hal::pmap`), for every switch `hal_cpu_switchto` makes
+/// `machine::pmap::pmap_setttb` over `hal::vm::pmap`), for every switch `hal_cpu_switchto` makes
 /// (hence `extern "C"` by its C name, N3.1: moved here from LZ's `arm64/pmap.rs`).
 ///
 /// # Safety
 ///
 /// `p` is a live `struct proc *` (a `Proc`, opaque to the ABI) that stays alive for the
 /// call: the thread being switched to, `hal_cpu_switchto`'s `newproc`, which the switch's
-/// caller keeps alive (`hal::thread`'s E3). Only `hal_cpu_switchto` calls this.
+/// caller keeps alive (`hal::cpu::thread`'s E3). Only `hal_cpu_switchto` calls this.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pmap_setttb(p: *const c_void) {
     // SAFETY: the caller's guarantee: `p` points to a live `Proc` for the whole call; a

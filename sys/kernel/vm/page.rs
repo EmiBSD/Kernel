@@ -121,7 +121,7 @@
 //! for real. Each page carries a list entry (`pageq`: the active and inactive queues, the free
 //! lists of `pmemrange`, any caller's [`Pglist`]) and a tree entry (`objt`: its object's
 //! pages by offset, or a free range's place in its pmemrange's trees), its owner, its offset
-//! in the owner, status bits and the pmap's data (`hal::pmap::PageMd`, embedded).
+//! in the owner, status bits and the pmap's data (`hal::vm::pmap::PageMd`, embedded).
 //!
 //! Locks, as in the C: `I` immutable after creation, `a` atomic operations, `Q` the page
 //! queues ([`PageQueues`], the data of the queue mutex, `uvm.pageqlock`), `F` the free page
@@ -130,7 +130,7 @@
 //! `Q` before the pmap's `pv_mtx`.
 //!
 //! The physical segments (`vm_physmem[]`) are written while the system boots
-//! ([`uvm_page_physload`], [`uvm_page_physsteal`] behind `hal::pmap::steal_memory`) and frozen by [`uvm_page_init`] into
+//! ([`uvm_page_physload`], [`uvm_page_physsteal`] behind `hal::vm::pmap::steal_memory`) and frozen by [`uvm_page_init`] into
 //! a table published once, which [`page_of`] (`PHYS_TO_VM_PAGE`) reads without a lock.
 //!
 //! A page records its owner's identity ([`OwnerTag`]) and never follows it; every operation
@@ -144,8 +144,8 @@
 //! ## Deviations
 //! - The `!PMAP_STEAL_MEMORY` path of `uvm_pageboot_alloc` (`pmap_virtual_space`, a frame at a
 //!   time from `uvm_page_physget`, `pmap_kenter_pa` per page) is not written: every backend
-//!   of `hal::pmap` (amd64, arm64, the host double) defines `PMAP_STEAL_MEMORY`, and the boot
-//!   allocations are `hal::bootmem`'s over `steal_memory`. `uvm_page_physget` had no other
+//!   of `hal::vm::pmap` (amd64, arm64, the host double) defines `PMAP_STEAL_MEMORY`, and the boot
+//!   allocations are `hal::mem::bootmem`'s over `steal_memory`. `uvm_page_physget` had no other
 //!   caller.
 //! - `uvm_page_physload` after `uvm_page_init` needs `km_alloc` for the new segment's pages; as
 //!   in LZ the segment is ignored, which is what the C does when that allocation fails:
@@ -183,10 +183,10 @@
 //!   `Mutexed` ([`uvm_lock_pageq`]); `uvm_pagedequeue`'s `MUTEX_ASSERT_LOCKED(&uvm.pageqlock)` is
 //!   its `&mut PageQueues` parameter, a check made a type. `uvm.page_init_done` is an atomic
 //!   ([`page_init_done`]). The other fields of `struct uvm` stay in `bsd` (N3.5).
-//! - `uvm_pagelookup` searches the object's tree with a comparison ([`hal::tree::Tree::find_by`])
+//! - `uvm_pagelookup` searches the object's tree with a comparison ([`hal::ds::tree::Tree::find_by`])
 //!   instead of an on-stack key page.
-//! - `hal::pmap::PhysPages` is implemented here ([`PHYS_PAGES`]), passed by the boot glue to
-//!   `hal::pmap::bootstrap`.
+//! - `hal::vm::pmap::PhysPages` is implemented here ([`PHYS_PAGES`]), passed by the boot glue to
+//!   `hal::vm::pmap::bootstrap`.
 //! - N3.4b: `uvm_pagewait(pg, lock, wmesg)` (`rwsleep_nsec` with `PNORELOCK` on the owner's
 //!   lock) is [`uvm_pagewait`] taking the owner and a witness of its lock by value
 //!   ([`OwnerWitness`]: either kind, since the C asks `rw_lock_held`), consumed by the sleep,
@@ -197,20 +197,20 @@ use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicUsize, Ordering as Mem};
 
 use hal::arch::current::param::{PAGE_MASK, PAGE_SHIFT, PAGE_SIZE};
-use hal::bootmem;
-use hal::intr::IPL_VM;
-use hal::link::Link;
-use hal::list::{List, ListEntry};
-use hal::mutex::{Mutexed, MutexedGuard};
-use hal::once::OnceStatic;
-use hal::pmap::{PageMd, PhysPages};
-use hal::rwlock::{ReadWitness, RwWitness, WriteWitness};
-use hal::sleep::{PVM, wakeup};
+use hal::cpu::intr::IPL_VM;
+use hal::ds::link::Link;
+use hal::ds::list::{List, ListEntry};
+use hal::ds::tree::{Tree, TreeEntry};
+use hal::mem::bootmem;
+use hal::sync::mutex::{Mutexed, MutexedGuard};
+use hal::sync::once::OnceStatic;
+use hal::sync::rwlock::{ReadWitness, RwWitness, WriteWitness};
+use hal::sync::sleep::{PVM, wakeup};
 use hal::sys::errno::Errno;
 use hal::sys::mman::PROT_NONE;
 use hal::sys::types::Paddr;
-use hal::tree::{Tree, TreeEntry};
 use hal::vm::param::{DEFAULT_PAGE_SIZE, atop, ptoa, round_page, trunc_page};
+use hal::vm::pmap::{PageMd, PhysPages};
 use hal::vm::uvmexp::UVMEXP;
 
 use super::km::NO_CONSTRAINT;
@@ -221,7 +221,7 @@ use super::types::{
     UVM_PLA_ZERO, UvmConstraintRange, Voff,
 };
 use crate::assert::{kassert, kpanic};
-use crate::prf::printf;
+use crate::base::prf::printf;
 
 // pg_flags: object flags
 
@@ -412,7 +412,7 @@ impl VmPage {
 
     /// The page as a wait channel (`tsleep(pg, ..)`, `wakeup(pg)`): its address.
     pub fn chan(&self) -> *const () {
-        hal::sleep::chan(ptr::from_ref(self))
+        hal::sync::sleep::chan(ptr::from_ref(self))
     }
 
     /// The owner identity of the page, set under the owner's lock.
@@ -506,7 +506,7 @@ pub trait PageAnon {
 }
 
 /// A witness of a page owner's lock that [`uvm_pagewait`] gives up for its sleep
-/// (`PNORELOCK`): the write witness or a read witness of a `hal::rwlock::SharedRwlock`.
+/// (`PNORELOCK`): the write witness or a read witness of a `hal::sync::rwlock::SharedRwlock`.
 pub trait OwnerWitness {
     /// Queued on `ident`, the lock released, asleep; the lock is not taken again.
     fn release_for_sleep(self, ident: *const (), prio: i32, wmesg: &'static str);
@@ -717,7 +717,7 @@ impl PageQueues {
     }
 }
 
-/// The page provider of `hal::pmap` (`hal::pmap::PhysPages`), over this module's functions.
+/// The page provider of `hal::vm::pmap` (`hal::vm::pmap::PhysPages`), over this module's functions.
 pub struct PhysPagesImpl;
 
 /// The segment table while the system boots.
@@ -730,7 +730,7 @@ static PAGEQ: Mutexed<PageQueues> = Mutexed::new(IPL_VM, PageQueues::new());
 static PAGE_INIT_DONE: AtomicBool = AtomicBool::new(false);
 /// `&uvm.pagedaemon`, the page daemon's wait channel (its address; the daemon is N3.5's).
 static PAGEDAEMON: u8 = 0;
-/// `pmap_steal_memory`'s provider, handed to `hal::pmap::bootstrap` by the boot glue.
+/// `pmap_steal_memory`'s provider, handed to `hal::vm::pmap::bootstrap` by the boot glue.
 pub static PHYS_PAGES: PhysPagesImpl = PhysPagesImpl;
 
 /// The published table, once [`uvm_page_init`] has run.
@@ -765,7 +765,7 @@ pub fn page_init_done() -> bool {
 
 /// The page daemon's wait channel (`&uvm.pagedaemon`).
 pub fn pagedaemon_chan() -> *const () {
-    hal::sleep::chan(ptr::from_ref(&PAGEDAEMON))
+    hal::sync::sleep::chan(ptr::from_ref(&PAGEDAEMON))
 }
 
 /// `uvm_lock_pageq()`: the page queues, locked until the guard drops (`uvm_unlock_pageq()`).
@@ -1010,7 +1010,7 @@ pub fn uvm_setpagesize() {
 /// start or the end) of the first segment with room; a segment used up on the way is removed.
 ///
 /// Not a function of the C: the `vm_physmem[]` half of amd64's `pmap_steal_memory`, which every
-/// `pmap_steal_memory` working through a direct map shares (`hal::pmap::PhysPages::steal`).
+/// `pmap_steal_memory` working through a direct map shares (`hal::vm::pmap::PhysPages::steal`).
 /// `None` when no segment has `npg` free frames at a boundary. Panics once stealing is closed:
 /// when `uvm_page_init` has published the page array, right before it hands the segments'
 /// free frames to the allocator (a frame stolen after that could be both stolen and free; the
@@ -1217,13 +1217,13 @@ pub fn uvm_pglistfree(list: &Pglist) {
 /// buffer's life, and `PG_CLEAN`); `ENOMEM` when the pages are not there (`flags`:
 /// `UVM_PLA_NOWAIT | UVM_PLA_NOWAKE` or `UVM_PLA_WAITOK`). The caller holds the kernel lock.
 /// On a machine without an MMU (the host double) the pages are one physically contiguous
-/// segment: the buffer's bytes are read through the direct map there (`hal::mapped`).
+/// segment: the buffer's bytes are read through the direct map there (`hal::mem::mapped`).
 pub fn uvm_pagealloc_multi(obj: &Object, off: Voff, size: usize, flags: i32) -> Result<(), Errno> {
     kassert!(obj.is_bufcache());
-    hal::klock::kernel_assert_locked();
+    hal::sync::klock::kernel_assert_locked();
 
     let plist = Pglist::new();
-    let nsegs = if hal::pmap::PMAP_NOMMU {
+    let nsegs = if hal::vm::pmap::PMAP_NOMMU {
         1
     } else {
         atop(round_page(size)) as i32
@@ -1398,7 +1398,7 @@ pub fn uvm_page_unbusy(pgs: &[Option<&VmPage>], owner: Owner<'_>) {
                 Owner::None => false,
             });
             pg.clear_bits(PG_WANTED);
-            hal::pmap::page_protect(&pg.mdpage, PROT_NONE);
+            hal::vm::pmap::page_protect(&pg.mdpage, PROT_NONE);
             uvm_pagefree(pg, owner);
         } else {
             kassert!(pg.flags() & PG_FAKE == 0);
@@ -1489,7 +1489,7 @@ pub fn uvm_pagedeactivate(pg: &VmPage, owner: Owner<'_>) {
     }
 
     // Make sure next access to this page will fault.
-    hal::pmap::page_protect(&pg.mdpage, PROT_NONE);
+    hal::vm::pmap::page_protect(&pg.mdpage, PROT_NONE);
 
     uvm_pagedequeue(&mut q, pg, owner);
     q.inactive.insert_tail(static_of(pg));
@@ -1497,10 +1497,10 @@ pub fn uvm_pagedeactivate(pg: &VmPage, owner: Owner<'_>) {
     UVMEXP.inactive.fetch_add(1, Mem::Relaxed);
     drop(q);
 
-    let _ = hal::pmap::clear_reference(&pg.mdpage);
+    let _ = hal::vm::pmap::clear_reference(&pg.mdpage);
     // update the "clean" bit. this isn't 100% accurate, and doesn't have to be. we'll re-sync
     // it after we zap all mappings when scanning the inactive list.
-    if pg.flags() & PG_CLEAN != 0 && hal::pmap::is_modified(&pg.mdpage) {
+    if pg.flags() & PG_CLEAN != 0 && hal::vm::pmap::is_modified(&pg.mdpage) {
         pg.clear_bits(PG_CLEAN);
     }
 }
@@ -1564,13 +1564,13 @@ pub fn uvm_obj_free_pages(obj: &dyn PageObject) {
 /// `uvm_pagezero`: zero-fills the page.
 pub fn uvm_pagezero(pg: &VmPage) {
     pg.clear_bits(PG_CLEAN);
-    hal::pmap::zero_page(pg.phys_addr);
+    hal::vm::pmap::zero_page(pg.phys_addr);
 }
 
 /// `uvm_pagecopy`: copies `src` into `dst`.
 pub fn uvm_pagecopy(src: &VmPage, dst: &VmPage) {
     dst.clear_bits(PG_CLEAN);
-    hal::pmap::copy_page(src.phys_addr, dst.phys_addr);
+    hal::vm::pmap::copy_page(src.phys_addr, dst.phys_addr);
 }
 
 /// `uvm_page_owner_locked_p`: whether `owner`, which must be the page's, is locked (for
@@ -1605,12 +1605,12 @@ pub fn uvm_pagecount(constraint: &UvmConstraintRange) -> usize {
         .sum()
 }
 
-// The page provider's contract (`hal::pmap::PhysPages`, a documented trust boundary): a frame
+// The page provider's contract (`hal::vm::pmap::PhysPages`, a documented trust boundary): a frame
 // `alloc_ptp` or `steal` hands out is RAM of the loaded segments (inside the direct map) that
 // nothing else uses until `free_ptp` takes it back (stolen frames never come back); `md_of`
 // answers the `PageMd` embedded in the frame's page, the same for ever (the array is never
 // freed); `is_busy` answers the page's `PG_BUSY` as this module keeps it, on which hal's
-// byte views rest (`sys/hal/mapped.rs`: only busy pages are viewed, and `clear_bits` keeps a
+// byte views rest (`sys/hal/mem/mapped.rs`: only busy pages are viewed, and `clear_bits` keeps a
 // viewed page busy); `is_wired` its `wire_count`, on which the timekeep view rests.
 impl PhysPages for PhysPagesImpl {
     fn alloc_ptp(&self) -> Option<Paddr> {
@@ -1810,10 +1810,10 @@ mod tests {
     #[test]
     #[should_panic(expected = "pmap_steal_memory: after uvm_page_init")]
     fn boot_memory_after_init_panics() {
-        // `hal::bootmem` over the kernel's provider: once the page system is up, the pmap
+        // `hal::mem::bootmem` over the kernel's provider: once the page system is up, the pmap
         // refuses to steal before any frame is taken.
         let _g = testutil::pages_setup(&[(0x100, 0x200)], &[]);
-        let _ = hal::bootmem::steal_one(|| 0u64);
+        let _ = hal::mem::bootmem::steal_one(|| 0u64);
     }
 
     #[test]
@@ -2019,7 +2019,7 @@ mod tests {
     fn pagewait_sleeps_without_the_lock_until_the_page_is_unbusied() {
         let _g = setup();
         crate::testutil::init_shared_once();
-        let lock = hal::rwlock::SharedRwlock::new("testlk").expect("a lock object");
+        let lock = hal::sync::rwlock::SharedRwlock::new("testlk").expect("a lock object");
         let anon: &'static Anon =
             std::boxed::Box::leak(std::boxed::Box::new(Anon { page: Link::new() }));
         let pg = uvm_pagealloc(Owner::Anon(anon), 0, 0).expect("a page");
@@ -2030,7 +2030,7 @@ mod tests {
             let w = l2.write();
             uvm_pagewait(pg, Owner::Anon(anon), w, "testwt");
             // PNORELOCK: back without the lock.
-            assert_ne!(l2.status(), hal::rwlock::RW_WRITE);
+            assert_ne!(l2.status(), hal::sync::rwlock::RW_WRITE);
         });
         // The sleeper set PG_WANTED under the lock, then released it for its sleep.
         loop {

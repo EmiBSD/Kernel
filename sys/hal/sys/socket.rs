@@ -67,7 +67,7 @@
 //! - `CMSG_FIRSTHDR`/`CMSG_NXTHDR`/`CMSG_DATA`, which walk a `msg_control` buffer by
 //!   pointer, are `bsd`'s `sys/sys/socket.rs` (LZ's, for `bsd`'s internet protocols); the
 //!   kernel reads a control message by its offset ([`CMSG_DATA_OFFSET`]). `struct splice`
-//!   holds a `struct timeval` (`kernel::clock`'s) and is `kernel::net::socket`'s.
+//!   holds a `struct timeval` (`kernel::time::clock`'s) and is `kernel::net::socket`'s.
 //!
 //! ## Redesign
 //! - N6.2a: moved from `bsd`'s `sys/sys/socket.rs` with the socket layer's redesign

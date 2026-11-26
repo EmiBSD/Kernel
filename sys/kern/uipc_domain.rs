@@ -373,7 +373,7 @@ impl Protocol<G> for Protosw {
         sa: SockaddrView<'_>,
         rdomain: u32,
         arg: CtlArg<'_>,
-        _net: &hal::netlock::NetHeld<'_>,
+        _net: &hal::sync::netlock::NetHeld<'_>,
     ) {
         let Some(ctlinput) = self.pr_ctlinput else {
             return;
@@ -449,7 +449,7 @@ impl Protocol<G> for Protosw {
         proto: i32,
         af: i32,
         ns: Option<&mut kernel::net::if_var::Netstack>,
-        _net: &hal::netlock::NetHeld<'_>,
+        _net: &hal::sync::netlock::NetHeld<'_>,
     ) -> i32 {
         let input = need(self.pr_input, "pr_input");
         let mut m = mp.take().map(park);
@@ -465,7 +465,11 @@ impl Protocol<G> for Protosw {
     fn has_sysctl(&self) -> bool {
         self.pr_sysctl.is_some()
     }
-    fn sysctl(&self, name: &[i32], req: &mut kernel::sysctl::SysctlReq<'_>) -> Result<(), Errno> {
+    fn sysctl(
+        &self,
+        name: &[i32],
+        req: &mut kernel::base::sysctl::SysctlReq<'_>,
+    ) -> Result<(), Errno> {
         match self.pr_sysctl {
             Some(sysctl) => sysctl(name, req.oldp, req.oldlenp, req.newp, req.newlen),
             None => Err(Errno::EOPNOTSUPP),
@@ -676,7 +680,7 @@ pub fn net_sysctl(
         return net_link_sysctl(&name[1..], oldp, oldlenp, newp, newlen);
     }
     if family == i32::from(PF_UNIX) {
-        let mut req = kernel::sysctl::SysctlReq {
+        let mut req = kernel::base::sysctl::SysctlReq {
             oldp,
             oldlenp,
             newp,
@@ -711,7 +715,7 @@ pub fn net_sysctl(
             } else {
                 None
             };
-            let mut req = kernel::sysctl::SysctlReq {
+            let mut req = kernel::base::sysctl::SysctlReq {
                 oldp,
                 oldlenp,
                 newp,
@@ -812,8 +816,8 @@ mod tests {
         let ctl = |pr: &Protosw, sa: &[u8], ip: Option<&[u8]>| {
             let sa = SockaddrView::new(sa).expect("an address");
             let arg = ip.map_or(CtlArg::None, CtlArg::Ip);
-            let w = hal::netlock::NETLOCK.read();
-            let net = hal::netlock::NetHeld::of(&w).expect("the net lock");
+            let w = hal::sync::netlock::NETLOCK.read();
+            let net = hal::sync::netlock::NetHeld::of(&w).expect("the net lock");
             Protocol::<G>::ctlinput(pr, PRC_MSGSIZE, sa, 0, arg, &net);
         };
         let mut sin = [0u8; 16];
@@ -866,8 +870,8 @@ mod tests {
             sin6[..2].copy_from_slice(&[28, crate::sys::socket::AF_INET6]);
             let ctl6 = |pr: &Protosw| {
                 let sa = SockaddrView::new(&sin6).expect("an address");
-                let w = hal::netlock::NETLOCK.read();
-                let net = hal::netlock::NetHeld::of(&w).expect("the net lock");
+                let w = hal::sync::netlock::NETLOCK.read();
+                let net = hal::sync::netlock::NetHeld::of(&w).expect("the net lock");
                 Protocol::<G>::ctlinput(pr, PRC_MSGSIZE, sa, 0, CtlArg::Ip6(&p), &net);
             };
             ctl6(&inet6);

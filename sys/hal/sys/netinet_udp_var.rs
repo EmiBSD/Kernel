@@ -66,7 +66,7 @@
 //!   part (`enum udpstat_counters`, `udpstat_inc`) is `kernel::netinet::udp_var`'s.
 //! - [`Udpstat`] and [`Udpiphdr`] are `abi_pod!` images (their tiling checked at compile
 //!   time, so a sysctl copies their bytes out and `udp_output` writes the header with
-//!   `hal::pod::put`); sizes and offsets pinned against the C (clang's static asserts,
+//!   `hal::mem::pod::put`); sizes and offsets pinned against the C (clang's static asserts,
 //!   `aarch64-unknown-openbsd`): 104 and 28 bytes, no hole.
 
 use core::mem::size_of;

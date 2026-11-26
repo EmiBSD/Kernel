@@ -177,11 +177,11 @@ impl ProcGlue for BenchGlue {
     ) {
     }
     /// No per-CPU slice start: the uptime itself (no running part).
-    fn spc_runtime() -> kernel::clock::Timespec {
-        kernel::tc::nanouptime()
+    fn spc_runtime() -> kernel::time::clock::Timespec {
+        kernel::time::tc::nanouptime()
     }
     fn process_ref(pr: &Process<Self>) -> proc::ProcessRef<Self> {
-        match hal::pool::PoolArc::from_ref(pr) {
+        match hal::mem::pool::PoolArc::from_ref(pr) {
             Some(a) => proc::StaticOrPooled::Pooled(a),
             None => std::process::exit(1),
         }
@@ -206,9 +206,9 @@ fn main() {
     // The address space of the shared op: the map pools over the doubles' pages.
     let _pages = testutil::pages_install(256 * 4096);
     testutil::init_shared_once();
-    hal::pmap::init();
+    hal::vm::pmap::init();
     kernel::vm::map::uvm_map_init();
-    kernel::futex::futex_init();
+    kernel::sched::futex::futex_init();
 
     let t: &'static Thread<BenchGlue> = Box::leak(Box::new(Thread::new_static(&PR, ())));
     let vm = kernel::vm::map::uvmspace_alloc(VM_MIN_ADDRESS, VM_MAXUSER_ADDRESS, true, false);
@@ -219,22 +219,22 @@ fn main() {
     }
 
     let wait = || {
-        let r = kernel::futex::sys_futex::<BenchGlue>(t, WORD, FUTEX_WAIT_PRIVATE, 2, 0, 0);
+        let r = kernel::sched::futex::sys_futex::<BenchGlue>(t, WORD, FUTEX_WAIT_PRIVATE, 2, 0, 0);
         debug_assert_eq!(r, Err(Errno::EAGAIN));
         let _ = black_box(r);
     };
     let wake = || {
-        let r = kernel::futex::sys_futex::<BenchGlue>(t, WORD, FUTEX_WAKE_PRIVATE, 1, 0, 0);
+        let r = kernel::sched::futex::sys_futex::<BenchGlue>(t, WORD, FUTEX_WAKE_PRIVATE, 1, 0, 0);
         debug_assert_eq!(r, Ok(0));
         let _ = black_box(r);
     };
     let wake_shared = || {
-        let r = kernel::futex::sys_futex::<BenchGlue>(t, UNMAPPED, FUTEX_WAKE, 1, 0, 0);
+        let r = kernel::sched::futex::sys_futex::<BenchGlue>(t, UNMAPPED, FUTEX_WAKE, 1, 0, 0);
         debug_assert_eq!(r, Ok(0));
         let _ = black_box(r);
     };
 
-    let lock = hal::rwlock::RawRwlock::new("benchlk");
+    let lock = hal::sync::rwlock::RawRwlock::new("benchlk");
     let word = UserPtr::<u32>::new(WORD);
 
     let mut benches: Vec<Bench<'_>> = Vec::new();

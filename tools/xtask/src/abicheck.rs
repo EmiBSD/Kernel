@@ -796,7 +796,7 @@ mod tests {
     #[test]
     fn r3_at_most_one_kernel_call() {
         clean("fn f(a: &KernelApi) { a.pipe(1); }\n");
-        clean("fn f() { kernel::pipe::new(1); }\n");
+        clean("fn f() { kernel::file::pipe::new(1); }\n");
         clean("fn f() { let x = Wrap(1); kernel::open(x); }\n");
         one("fn f() { kernel::a(1); kernel::b(2); }\n", "R3");
         one("fn f(api: &KernelApi) { api.a(1); api.b(2); }\n", "R3");

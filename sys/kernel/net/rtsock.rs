@@ -181,13 +181,13 @@
 use core::pin::Pin;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use hal::intr::IPL_SOFTNET;
-use hal::malloc::{M_NOWAIT, M_WAITOK, MArray};
-use hal::netlock::{NETLOCK, NetHeld, NetReader};
-use hal::once::OnceStatic;
-use hal::pinlist::{PinEntry, PinList};
-use hal::pool::{AnyArc, PR_NOWAIT, PR_WAITOK, PoolArc, PoolHome, TypedPool};
-use hal::rwlock::{Guarded, RawRwlock};
+use hal::cpu::intr::IPL_SOFTNET;
+use hal::ds::pinlist::{PinEntry, PinList};
+use hal::mem::malloc::{M_NOWAIT, M_WAITOK, MArray};
+use hal::mem::pool::{AnyArc, PR_NOWAIT, PR_WAITOK, PoolArc, PoolHome, TypedPool};
+use hal::sync::netlock::{NETLOCK, NetHeld, NetReader};
+use hal::sync::once::OnceStatic;
+use hal::sync::rwlock::{Guarded, RawRwlock};
 use hal::sys::errno::Errno;
 use hal::sys::net_if::{
     IFF_POINTOPOINT, IfAnnouncemsghdr, IfData, IfIeee80211Data, IfIeee80211Msghdr, IfMsghdr,
@@ -216,6 +216,7 @@ use hal::sys::types::{Pid, SaFamily};
 use hal::user::{AbiPod, UserPtr};
 
 use crate::assert::kpanic;
+use crate::base::sysctl::{SysctlReq, rdstruct};
 use crate::net::domain::{Domain, net};
 use crate::net::if_::{
     IF_TMPLIST_LOCK, IFNETLIST, if_get, if_getdata, if_group_routechange, if_put, if_ref,
@@ -245,9 +246,8 @@ use crate::net::socket::{
     soreserve, sorwakeup,
 };
 use crate::proc::{ProcGlue, suser};
-use crate::sysctl::{SysctlReq, rdstruct};
-use crate::timeout::{KCLOCK_NONE, TIMEOUT_MPSAFE, TIMEOUT_PROC, Timeout};
-use hal::list::List;
+use crate::time::timeout::{KCLOCK_NONE, TIMEOUT_MPSAFE, TIMEOUT_PROC, Timeout};
+use hal::ds::list::List;
 
 /// `ROUTESNDQ`: a routing socket's send buffer.
 pub const ROUTESNDQ: u64 = 8192;
@@ -503,7 +503,7 @@ fn currtable<G: ProcGlue>() -> u32 {
 }
 
 /// The proof the running code holds the net lock, from its witness `w`.
-fn net_held<W: hal::rwlock::Witness>(w: &W) -> NetHeld<'_> {
+fn net_held<W: hal::sync::rwlock::Witness>(w: &W) -> NetHeld<'_> {
     match NetHeld::of(w) {
         Some(h) => h,
         None => kpanic(format_args!("not a witness of the net lock")),
@@ -525,11 +525,11 @@ fn sdl_index(sa: SockaddrView<'_>) -> u32 {
 
 /// A header `T` at the start of `buf` changed by `f` (copied out and written back).
 fn hdr_edit<T: AbiPod>(buf: &mut [u8], f: impl FnOnce(&mut T)) {
-    let Some(mut h) = hal::pod::at::<T>(buf, 0) else {
+    let Some(mut h) = hal::mem::pod::at::<T>(buf, 0) else {
         kpanic(format_args!("routing message shorter than its header"));
     };
     f(&mut h);
-    hal::pod::put(buf, 0, &h);
+    hal::mem::pod::put(buf, 0, &h);
 }
 
 /// `route_prinit()`: the list's lock and the control blocks' pool; the glue's listeners
@@ -805,7 +805,7 @@ fn rtm_senddesync<G: ProcGlue>(so: &Socket<G>, rop: Pin<&Rtpcb<G>>, w: &mut SoLo
         }
     }
     // Try again in ROUTE_DESYNC_RESEND_TIMEOUT milliseconds.
-    hal::pin::project(rop, |r| &r.rop_timeout).add_msec(ROUTE_DESYNC_RESEND_TIMEOUT);
+    hal::ds::pin::project(rop, |r| &r.rop_timeout).add_msec(ROUTE_DESYNC_RESEND_TIMEOUT);
 }
 
 /// The header fields `route_input` filters on, copied out of the message (zeros past a
@@ -1137,7 +1137,7 @@ fn route_output_unlocked<G: ProcGlue>(
         }
         _ => return Err(Errno::EPROTONOSUPPORT),
     };
-    let Some(mut hdr) = hal::pod::at::<RtMsghdr>(&rtm, 0) else {
+    let Some(mut hdr) = hal::mem::pod::at::<RtMsghdr>(&rtm, 0) else {
         kpanic(format_args!("route_output: a short message"));
     };
 
@@ -1278,7 +1278,7 @@ fn route_output_unlocked<G: ProcGlue>(
     let len = if reported {
         usize::from(u16_at(&rtm, 0))
     } else {
-        hal::pod::put(&mut rtm, 0, &hdr);
+        hal::mem::pod::put(&mut rtm, 0, &hdr);
         len
     };
     match error {
@@ -1763,8 +1763,8 @@ pub fn rtm_setmetrics(which: u32, in_: &RtMetrics, out: &RtKmetrics) {
     if which & RTV_EXPIRE != 0 {
         let mut expire = in_.rmx_expire;
         if expire != 0 {
-            expire -= crate::tc::gettime();
-            expire += crate::tc::getuptime();
+            expire -= crate::time::tc::gettime();
+            expire += crate::time::tc::getuptime();
         }
 
         out.rmx_expire.set(expire);
@@ -1781,8 +1781,8 @@ pub fn rtm_getmetrics(rt: &Rtentry, out: &mut RtMetrics) {
         expire = rt_timer_get_expire(rt);
     }
     if expire != 0 {
-        expire -= crate::tc::getuptime();
-        expire += crate::tc::gettime();
+        expire -= crate::time::tc::getuptime();
+        expire += crate::time::tc::gettime();
     }
 
     *out = RtMetrics::default();
@@ -2898,7 +2898,7 @@ mod tests {
         let mut h = [0u8; RT_MSGHDR];
         let n = (buf.len() - off).min(h.len());
         h[..n].copy_from_slice(&buf[off..off + n]);
-        hal::pod::at(&h, 0).expect("a header")
+        hal::mem::pod::at(&h, 0).expect("a header")
     }
 
     /// The messages of an answer: (offset, header) of each, by `rtm_msglen`.
@@ -3141,7 +3141,7 @@ mod tests {
         let ms = tap::stop();
 
         assert_eq!(ms.len(), 4);
-        let an: IfAnnouncemsghdr = hal::pod::at(&ms[0], 0).expect("an announcement");
+        let an: IfAnnouncemsghdr = hal::mem::pod::at(&ms[0], 0).expect("an announcement");
         assert_eq!(
             (an.ifan_type, usize::from(an.ifan_msglen), an.ifan_what),
             (RTM_IFANNOUNCE, size_of::<IfAnnouncemsghdr>(), IFAN_ARRIVAL)
@@ -3150,12 +3150,12 @@ mod tests {
         ifp.if_xname
             .with_str(|n| assert_eq!(&an.ifan_name[..n.len()], n));
 
-        let ifm: IfMsghdr = hal::pod::at(&ms[1], 0).expect("an interface message");
+        let ifm: IfMsghdr = hal::mem::pod::at(&ms[1], 0).expect("an interface message");
         assert_eq!((ifm.ifm_type, ifm.ifm_addrs), (RTM_IFINFO, RTA_IFP));
         assert_eq!(ifm.ifm_flags, ifp.if_flags.get());
         assert_eq!(ms[1][IF_MSGHDR + 1], AF_LINK);
 
-        let ifam: IfaMsghdr = hal::pod::at(&ms[2], 0).expect("an address message");
+        let ifam: IfaMsghdr = hal::mem::pod::at(&ms[2], 0).expect("an address message");
         assert_eq!(ifam.ifam_type, RTM_NEWADDR);
         // And RTAX_BRD: an Internet address's `ifa_dstaddr` always names its record's
         // `ia_dstaddr` (in.c's `in_ioctl_change_ifaddr`), as the fixture's record is since
@@ -3300,14 +3300,14 @@ mod tests {
         let (off, h) = msgs[0];
         assert_eq!(h.rtm_type, RTM_IFINFO);
         assert_eq!(usize::from(h.rtm_hdrlen), IF_MSGHDR);
-        let ifm: IfMsghdr = hal::pod::at(&buf, off).expect("an interface message");
+        let ifm: IfMsghdr = hal::mem::pod::at(&buf, off).expect("an interface message");
         assert_eq!(i32::from(ifm.ifm_index), index);
         assert_eq!(ifm.ifm_addrs, RTA_IFP);
         assert_eq!(ifm.ifm_flags, ifp.if_flags.get());
         assert_eq!(buf[off + IF_MSGHDR + 1], AF_LINK);
         let (off, h) = msgs[1];
         assert_eq!(h.rtm_type, RTM_NEWADDR);
-        let ifam: IfaMsghdr = hal::pod::at(&buf, off).expect("an address message");
+        let ifam: IfaMsghdr = hal::mem::pod::at(&buf, off).expect("an address message");
         assert_eq!(i32::from(ifam.ifam_index), index);
         // RTAX_BRD too: the record's `ia_dstaddr`, as above.
         assert_eq!(ifam.ifam_addrs, RTA_IFA | RTA_NETMASK | RTA_BRD);
@@ -3328,7 +3328,7 @@ mod tests {
         // NET_RT_IFNAMES: the index and the name.
         let names = answer(&[0, NET_RT_IFNAMES, index]);
         assert_eq!(names.len(), size_of::<IfNameindexMsg>());
-        let ifn: IfNameindexMsg = hal::pod::at(&names, 0).expect("a name");
+        let ifn: IfNameindexMsg = hal::mem::pod::at(&names, 0).expect("a name");
         assert_eq!(ifn.if_index, index as u32);
         ifp.if_xname.with_str(|n| {
             assert_eq!(&ifn.if_name[..n.len()], n);
@@ -3344,7 +3344,8 @@ mod tests {
         let before = RTCOUNTERS.read()[3];
         RTCOUNTERS.inc(3);
         assert_eq!(sysctl(&[0, NET_RT_STATS, 0], UDUMP, 20), (Ok(()), 20));
-        let s: Rtstat = hal::pod::at(&user_bytes(UDUMP, 20).expect("rtstat"), 0).expect("rtstat");
+        let s: Rtstat =
+            hal::mem::pod::at(&user_bytes(UDUMP, 20).expect("rtstat"), 0).expect("rtstat");
         assert_eq!(u64::from(s.rts_unreach), before + 1);
 
         // NET_RT_SOURCE: none set, then the interface's address, then none again.

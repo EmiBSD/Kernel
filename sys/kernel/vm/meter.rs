@@ -69,11 +69,11 @@
 //! - `maxslp` keeps its lowercase C name: `MAXSLP` is the constant it starts from (LZ's).
 //!
 //! ## Redesign
-//! - N4.6b: the sysctl helpers are `kernel::sysctl`'s (`rdint`, `int`, `rdstruct`,
+//! - N4.6b: the sysctl helpers are `kernel::base::sysctl`'s (`rdint`, `int`, `rdstruct`,
 //!   `string`), `averunnable` `kernel::sched`'s, the thread list the glue's tables
 //!   (`allproc`), `nkmempages` the `Malloc` bridge's member; the request's user addresses
-//!   travel as a [`SysctlReq`] (`kernel::sysctl`'s since N4.7b, re-exported here); the
-//!   dispatch is `kernel::sysctl::sys_sysctl`'s (`CTL_VM`, vslocked). LZ's `VmSysctl` bridge
+//!   travel as a [`SysctlReq`] (`kernel::base::sysctl`'s since N4.7b, re-exported here); the
+//!   dispatch is `kernel::base::sysctl::sys_sysctl`'s (`CTL_VM`, vslocked). LZ's `VmSysctl` bridge
 //!   (N3.5 to N4.6b) is gone. The dispatch of this tree, every value and every check (the
 //!   three minimum percentages' sum) are here; `vm.uvmexp` is copied out as the bytes of
 //!   `struct uvmexp` (`UvmexpCopy::to_ne_bytes`).
@@ -88,8 +88,8 @@
 use core::fmt;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use hal::intr::IPL_NONE;
-use hal::mutex::Mutexed;
+use hal::cpu::intr::IPL_NONE;
+use hal::sync::mutex::Mutexed;
 use hal::sys::errno::Errno;
 use hal::sys::vmmeter::Vmtotal;
 use hal::vm::uvmexp::{
@@ -99,9 +99,9 @@ use hal::vm::uvmexp::{
 };
 
 use super::init::machine;
+pub use crate::base::sysctl::SysctlReq;
+use crate::base::sysctl::{int, rdint, rdstruct, string};
 use crate::proc::{ProcGlue, Thread};
-pub use crate::sysctl::SysctlReq;
-use crate::sysctl::{int, rdint, rdstruct, string};
 
 /// `MAXSLP`: the time for a process to be blocked before being very swappable. This is a
 /// number of seconds which the system takes as being a non-trivial amount of real time. You
@@ -169,7 +169,7 @@ pub fn uvm_sysctl<G: ProcGlue>(
 
         VM_UVMEXP => rdstruct(req, &uvmexp_read().to_ne_bytes()),
 
-        VM_NKMEMPAGES => rdint(req, hal::malloc::nkmempages()),
+        VM_NKMEMPAGES => rdint(req, hal::mem::malloc::nkmempages()),
 
         VM_PSSTRINGS => rdstruct(req, &(p.process().ps_strings.get() as u64).to_ne_bytes()),
 
@@ -277,7 +277,7 @@ pub fn uvm_total<G: ProcGlue>() -> Vmtotal {
     let mut total = Vmtotal::default();
 
     // calculate process statistics
-    let r = hal::klock::reader();
+    let r = hal::sync::klock::reader();
     for p in G::tables().allproc.iter(&r) {
         let state = ProcState {
             stat: i32::from(p.stat()),
@@ -512,7 +512,7 @@ mod tests {
     /// calling thread's `vm.psstrings`.
     #[test]
     fn the_vm_sysctls_answer_as_the_c() {
-        let p = crate::event::tests::setup(96);
+        let p = crate::file::event::tests::setup(96);
         let mut len = 0usize;
         let mut req = SysctlReq {
             oldp: 0,

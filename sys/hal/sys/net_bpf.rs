@@ -126,7 +126,7 @@
 //! - LZ's `#[repr(C)]` structures with an `unsafe impl AbiPod` each and a runtime size check
 //!   -> `abi_pod!` images (no `unsafe`) with `const` size asserts.
 //! - The `BIOCSRTIMEOUT`/`BIOCGRTIMEOUT`/`BIOCSWTIMEOUT`/`BIOCGWTIMEOUT` numbers are sized by
-//!   `struct timeval`'s image in `hal`, [`IfTimeval`] (16 bytes on LP64, as `kernel::clock`'s
+//!   `struct timeval`'s image in `hal`, [`IfTimeval`] (16 bytes on LP64, as `kernel::time::clock`'s
 //!   `Timeval`), and `BIOCGETIF`/`BIOCSETIF` by [`Ifreq`].
 
 use core::mem::size_of;

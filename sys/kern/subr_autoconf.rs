@@ -102,8 +102,8 @@ use core::ffi::c_void;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::Ordering;
 
-use hal::malloc::MArc;
-use hal::pool::AnyArc;
+use hal::mem::malloc::MArc;
+use hal::mem::pool::AnyArc;
 use kernel::dev::autoconf::{self as kac, ConfigGlue, RowTable};
 pub use kernel::dev::autoconf::{AUTOCONF_SERIAL, AUTOCONF_VERBOSE, CONFIG_PENDING};
 use kernel::dev::device::{
@@ -222,7 +222,7 @@ fn aux_ptr(aux: &Aux<'_>) -> *mut c_void {
 
 /// The erased softc of a legacy node.
 fn new_softc(ls: LegacySoftc) -> AnyArc {
-    match MArc::new(M_DEVBUF, hal::malloc::M_NOWAIT, ls) {
+    match MArc::new(M_DEVBUF, hal::mem::malloc::M_NOWAIT, ls) {
         Some(a) => MArc::erase(a),
         None => panic(format_args!(
             "config_make_softc: allocation for device softc failed"
@@ -524,7 +524,7 @@ fn run_deferred(dev: &DevRef, arg: Option<&AnyArc>) {
 
 /// The kernel's record of a legacy deferral (the C's `malloc`ed `struct deferred_config`).
 fn deferred(func: fn(&Device), what: &str) -> Deferred {
-    match MArc::new(M_DEVBUF, hal::malloc::M_NOWAIT, LegacyFn(func)) {
+    match MArc::new(M_DEVBUF, hal::mem::malloc::M_NOWAIT, LegacyFn(func)) {
         Some(f) => Deferred {
             func: run_deferred,
             arg: Some(MArc::erase(f)),

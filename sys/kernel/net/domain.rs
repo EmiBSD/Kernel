@@ -115,11 +115,11 @@
 use core::ptr;
 use core::sync::atomic::Ordering;
 
-use hal::intr::IPL_SOFTNET;
-use hal::netlock::NetHeld;
-use hal::once::OnceStatic;
-use hal::pin::pin_static;
-use hal::pool::{BoxPool, TypedPool};
+use hal::cpu::intr::IPL_SOFTNET;
+use hal::ds::pin::pin_static;
+use hal::mem::pool::{BoxPool, TypedPool};
+use hal::sync::netlock::NetHeld;
+use hal::sync::once::OnceStatic;
 use hal::sys::errno::Errno;
 use hal::sys::socket::{PF_UNSPEC, SOCK_RAW};
 
@@ -127,7 +127,7 @@ use crate::net::mbuf::{MAX_HDR, MAX_LINKHDR, MAX_PROTOHDR, Mbuf, MbufBox};
 use crate::net::proto::{Protocol, SockaddrView};
 use crate::net::socket::{Socket, Sosplice};
 use crate::proc::ProcGlue;
-use crate::timeout::{KCLOCK_NONE, TIMEOUT_MPSAFE, TIMEOUT_PROC, Timeout};
+use crate::time::timeout::{KCLOCK_NONE, TIMEOUT_MPSAFE, TIMEOUT_PROC, Timeout};
 
 /// `struct domain`.
 pub trait Domain<G: ProcGlue>: Sync + 'static {
@@ -214,7 +214,7 @@ pub struct NetTables<G: ProcGlue> {
     pub(crate) divb6table: crate::netinet::in_pcb::Inpcbtable<G>,
     /// `if_input_task_locked`: `if_netisr`, the protocols' software interrupt (N6.3a: here,
     /// since its yield is the glue's scheduler's).
-    pub(crate) if_input_task_locked: crate::task::Task,
+    pub(crate) if_input_task_locked: crate::base::task::Task,
 }
 
 impl<G: ProcGlue> NetTables<G> {
@@ -249,7 +249,7 @@ impl<G: ProcGlue> NetTables<G> {
             rawin6pcbtable: crate::netinet::in_pcb::Inpcbtable::new(),
             divbtable: crate::netinet::in_pcb::Inpcbtable::new(),
             divb6table: crate::netinet::in_pcb::Inpcbtable::new(),
-            if_input_task_locked: crate::task::Task::new(
+            if_input_task_locked: crate::base::task::Task::new(
                 crate::net::netisr::if_netisr::<G>,
                 ptr::null_mut(),
             ),

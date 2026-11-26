@@ -17,7 +17,7 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! Host microbenchmarks of N4.7b's hot paths (decision 43): the clists (`kernel::clist`)
+//! Host microbenchmarks of N4.7b's hot paths (decision 43): the clists (`kernel::tty::clist`)
 //! and, from the tty's commit on, the line discipline's per-character input, its output
 //! processing and the tty's lock, over the kernel's host doubles (`kernel::testutil`,
 //! feature `doubles`). Never part of a kernel image; it measures and changes nothing.
@@ -49,12 +49,12 @@ use std::time::{Duration, Instant};
 use std::vec::Vec;
 
 use hal::sys::errno::Errno;
-use kernel::clist::Clist;
+use kernel::file::uio::UioMove;
 use kernel::proc::{self, ProcGlue, ProcTables, Process, Session, Thread};
-use kernel::termios::{ECHO, ICANON, TTYDEF_CFLAG, TTYDEF_IFLAG, TTYDEF_LFLAG, TTYDEF_OFLAG};
 use kernel::testutil;
+use kernel::tty::clist::Clist;
+use kernel::tty::termios::{ECHO, ICANON, TTYDEF_CFLAG, TTYDEF_IFLAG, TTYDEF_LFLAG, TTYDEF_OFLAG};
 use kernel::tty::{TS_CARR_ON, TS_ISOPEN, Tty, TtyRef, ttsetwater, ttychars, ttyinput, ttymalloc};
-use kernel::uio::UioMove;
 
 // ---------------------------------------------------------------------------------------
 // The harness (vm.rs's).
@@ -182,11 +182,11 @@ impl ProcGlue for BenchGlue {
     ) {
     }
     /// No per-CPU slice start: the uptime itself (no running part).
-    fn spc_runtime() -> kernel::clock::Timespec {
-        kernel::tc::nanouptime()
+    fn spc_runtime() -> kernel::time::clock::Timespec {
+        kernel::time::tc::nanouptime()
     }
     fn process_ref(pr: &Process<Self>) -> proc::ProcessRef<Self> {
-        match hal::pool::PoolArc::from_ref(pr) {
+        match hal::mem::pool::PoolArc::from_ref(pr) {
             Some(a) => proc::StaticOrPooled::Pooled(a),
             None => std::process::exit(1),
         }
@@ -335,7 +335,8 @@ fn main() {
 
     // The primitives the ops are made of: the queue's lock (a `Mutexed` at IPL_TTY), and
     // what LZ's queues paid instead (`spltty()`/`splx()`, a raise of the level alone).
-    static TTY_MTX: hal::mutex::Mutexed<u64> = hal::mutex::Mutexed::new(hal::intr::IPL_TTY, 0);
+    static TTY_MTX: hal::sync::mutex::Mutexed<u64> =
+        hal::sync::mutex::Mutexed::new(hal::cpu::intr::IPL_TTY, 0);
     benches.push(Bench {
         name: "prim.tty-lock",
         ops: PRIM,
@@ -347,7 +348,7 @@ fn main() {
         name: "prim.spltty",
         ops: PRIM,
         f: Box::new(prim(|| {
-            let s = hal::intr::splraise(hal::intr::IPL_TTY);
+            let s = hal::cpu::intr::splraise(hal::cpu::intr::IPL_TTY);
             drop(black_box(s));
         })),
     });

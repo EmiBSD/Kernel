@@ -52,18 +52,18 @@
 //! fault into `EFAULT` (`pcb_onfault`), as the C's `uiomove`/`kcopy` on the window do. Only
 //! the kernel map's token mints one ([`KernelMapper::foreign_window`]): its holder vouches,
 //! as for every address it maps, that the range is its own and that no Rust object lives in
-//! it (`sys/hal/trust.rs`); the window bounds every copy (one past its end panics). Since
+//! it (`sys/hal/mem/trust.rs`); the window bounds every copy (one past its end panics). Since
 //! N5.9 a window is also made over a memory object the kernel maps itself (tmpfs's aobj,
 //! whose pages a user mapping of the same file may write meanwhile), and copies straight to
 //! and from a uio's iovecs: to and from user addresses the assembly checks (`copyout_at`,
 //! `copyin_at`), and to and from kernel buffers for the one holder of the
-//! [`WindowKcopyToken`] (`kcopy_to`, `kcopy_from`): `kernel::uio`'s window leg of
+//! [`WindowKcopyToken`] (`kcopy_to`, `kcopy_from`): `kernel::file::uio`'s window leg of
 //! `uiomove`, so no other code that holds a window can name a kernel address to it.
 //!
 //! A [`KcopyToken`] is the one holder of `kcopy` onto kernel addresses it names itself:
 //! `bsd`'s `uiomove`, whose `UIO_SYSSPACE` iovecs are kernel buffers their builders vouch
 //! for (`struct uio`'s contract), takes it once ([`KcopyToken::take`]). It is decision 30's
-//! documented trust, as the memory bridges' (`sys/hal/trust.rs`): nothing here can check
+//! documented trust, as the memory bridges' (`sys/hal/mem/trust.rs`): nothing here can check
 //! the addresses, and the token goes with `UioMove` when the last `UIO_SYSSPACE` builder is
 //! typed (N7).
 //!
@@ -97,7 +97,7 @@
 //!   [`ForeignWindow::kcopy_to`] and [`ForeignWindow::kcopy_from`], one private `raw` over the
 //!   machine's `copy_raw` (the C's `uiomove((void *)va + off, n, uio)`: one copy per byte, no
 //!   bounce, no slice of the window). The two kernel-address legs take a
-//!   [`WindowKcopyToken`], one per kernel, taken by `kernel::uio` (review 1's B2: a safe
+//!   [`WindowKcopyToken`], one per kernel, taken by `kernel::file::uio` (review 1's B2: a safe
 //!   copy onto any kernel address its caller names, open to whoever holds a window, would
 //!   have been the arbitrary kernel write decision 13 of N4.8 refused).
 //! - N4.8b: the `UserCopy` bridge is gone: the copies are the machine's, `hal`'s own
@@ -112,14 +112,14 @@ use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::assert::hal_panic;
+use crate::sys::errno::Errno;
+use crate::sys::types::Vaddr;
 #[cfg(any(
     not(target_os = "none"),
     target_arch = "x86_64",
     target_arch = "aarch64"
 ))]
-use crate::pmap::KernelMapper;
-use crate::sys::errno::Errno;
-use crate::sys::types::Vaddr;
+use crate::vm::pmap::KernelMapper;
 
 /// The machine's copies (`copy.S`, `copystr.S`; the host's double).
 #[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
@@ -283,7 +283,7 @@ impl ForeignWindow<'_> {
     }
 
     /// `kcopy(va + off, kva, n)`: `n` bytes of the window from `off` to the kernel buffer at
-    /// `kva`, for the holder of the [`WindowKcopyToken`] alone (`kernel::uio`'s window leg
+    /// `kva`, for the holder of the [`WindowKcopyToken`] alone (`kernel::file::uio`'s window leg
     /// of `uiomove`, whose `kva` is a `UIO_SYSSPACE` read's iovec: its builder vouches for the
     /// buffer, `struct uio`'s contract); `EFAULT` when a page faults. A range past the
     /// window's end panics.
@@ -337,7 +337,7 @@ impl ForeignWindow<'_> {
             // checks (`ToUser`, `FromUser`), or a kernel buffer of at least `n` bytes that no
             // Rust reference covers during the copy (`ToKernel`, `FromKernel`): those two legs
             // are reached only through a `&WindowKcopyToken` (`kcopy_to`, `kcopy_from`), whose
-            // one holder, `kernel::uio` (taken once at boot, never lent), passes only a
+            // one holder, `kernel::file::uio` (taken once at boot, never lent), passes only a
             // `UIO_SYSSPACE` iovec's address, whose builder vouches for it (`struct uio`'s
             // contract, the trust `KcopyToken` documents; `Uio`'s public fields let kernel code
             // build such an iovec, the same trust `bsd`'s `uiomove` rests on, not new in kind).
@@ -382,7 +382,7 @@ impl KernelMapper {
     /// `uvm_fault(kernel_map)`, a failed fault being `EFAULT` by `pcb_onfault`, as the C's
     /// `uiomove` from the same address), and unmaps that range only after the window is gone;
     /// the kernel-address legs ([`ForeignWindow::kcopy_to`], [`ForeignWindow::kcopy_from`])
-    /// take the [`WindowKcopyToken`], whose one holder (`kernel::uio`) names only
+    /// take the [`WindowKcopyToken`], whose one holder (`kernel::file::uio`) names only
     /// `UIO_SYSSPACE` iovecs whose builders vouch for them.
     /// (N3.5 S1 makes the first a type: windows minted only from the extract's or the map's
     /// result, `kernel::vm::km::KernelWindow` and `ObjectWindow`.) A range that wraps the
@@ -651,7 +651,7 @@ impl UserPtr<u32> {
 /// `hal::syscall`'s types), runs no function before `abi_init`, and R5 refuses it a static that could
 /// keep a token.
 ///
-/// The holder's contract (decision 30's documented trust, `sys/hal/trust.rs`): every address
+/// The holder's contract (decision 30's documented trust, `sys/hal/mem/trust.rs`): every address
 /// it passes is a kernel buffer of at least the length copied that its builder owns for the
 /// copy (a `UIO_SYSSPACE` iovec's, `struct uio`'s contract), holding no Rust object that
 /// something else references during the copy; nothing here can check it. A page that is
@@ -709,15 +709,15 @@ impl KcopyToken {
 
 /// The right to a [`ForeignWindow`]'s kernel-address legs ([`ForeignWindow::kcopy_to`],
 /// [`ForeignWindow::kcopy_from`]), the [`KcopyToken`]'s shape for the kernel's window leg
-/// of `uiomove` (`kernel::uio::uiomove_window`, N5.9t1, the main session's decision on
-/// review 1): one per kernel, taken once, by `kernel::uio` at `bsd`'s boot right after the
+/// of `uiomove` (`kernel::file::uio::uiomove_window`, N5.9t1, the main session's decision on
+/// review 1): one per kernel, taken once, by `kernel::file::uio` at `bsd`'s boot right after the
 /// `KcopyToken` (`hal_bridges_register`, before the boot glue calls `abi::abi_init`, the
 /// [`KcopyToken`]'s argument) and by the host tests' doubles' install; later takes get
-/// `None`, so no other module of any crate can hold it, and `kernel::uio` keeps it private
+/// `None`, so no other module of any crate can hold it, and `kernel::file::uio` keeps it private
 /// (never `Clone`, never lent).
 ///
 /// The holder's contract, the `KcopyToken`'s (decision 30's documented trust,
-/// `sys/hal/trust.rs`): every kernel address it passes is a `UIO_SYSSPACE` iovec's buffer
+/// `sys/hal/mem/trust.rs`): every kernel address it passes is a `UIO_SYSSPACE` iovec's buffer
 /// of at least the length copied that its builder owns for the copy (`struct uio`'s
 /// contract), holding no Rust object that something else references during the copy;
 /// nothing here can check it. Gone with `UioMove` at N7, when a sysspace iovec is typed.

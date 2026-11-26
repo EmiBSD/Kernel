@@ -66,7 +66,7 @@
 
 use core::mem::size_of;
 
-use hal::netlock::NetHeld;
+use hal::sync::netlock::NetHeld;
 use hal::sys::netinet_in::IPPROTO_DONE;
 use hal::sys::netinet_ip6::{IP6OPT_MINLEN, IP6OPT_PAD1, IP6OPT_PADN, Ip6Dest};
 use hal::sys::netinet6_ip6_var::Ip6statCounters;
@@ -166,7 +166,7 @@ mod tests {
 
     use std::vec::Vec;
 
-    use hal::netlock::NETLOCK;
+    use hal::sync::netlock::NETLOCK;
     use hal::sys::netinet_icmp6::{ICMP6_PARAM_PROB, ICMP6_PARAMPROB_OPTION};
     use hal::sys::netinet_in::IPPROTO_UDP;
     use hal::sys::netinet_ip6::{IPV6_VERSION, Ip6Hdr};
@@ -212,7 +212,7 @@ mod tests {
         };
         ip6.set_ip6_vfc(IPV6_VERSION);
         let mut b = std::vec![0u8; 40];
-        assert!(hal::pod::put(&mut b, 0, &ip6));
+        assert!(hal::mem::pod::put(&mut b, 0, &ip6));
         b.extend_from_slice(ext);
         m_devget(&b, 0).expect("a packet")
     }

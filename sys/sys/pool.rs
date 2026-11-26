@@ -377,9 +377,9 @@ pub struct Pool {
     pub pr_pgmask: Cell<usize>,
     /// Backend allocator.
     pub pr_alloc: Cell<Option<&'static PoolAllocator>>,
-    /// The kernel's page source of a pool made by `hal::pool::PoolBackend::create_with`
+    /// The kernel's page source of a pool made by `hal::mem::pool::PoolBackend::create_with`
     /// (N6.0), which `pr_alloc`'s `POOL_ALLOCATOR_SOURCE` asks; `None` otherwise.
-    pub pr_source: Cell<Option<&'static dyn hal::pool::PageSource>>,
+    pub pr_source: Cell<Option<&'static dyn hal::mem::pool::PageSource>>,
     /// tsleep(9) identifier.
     pub pr_wchan: Cell<&'static str>,
     /// `PR_*`.

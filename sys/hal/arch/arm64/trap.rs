@@ -91,10 +91,10 @@
 //! `pcb_onfault` recovery and its `ci_idepth == 0` rule, the instruction emulation of the ID
 //! registers, the FPU and SVE traps, the frame's fix-ups. Every decision the C makes in
 //! machine-independent code (the fault, the signal, `refreshcreds`, `userret`, `mi_ast`,
-//! `sigexit`) is asked of the registered `hal::trap::TrapHandler`; the branch predictor
-//! flush and the SError report of the CPU code still in `bsd` are `hal::trap::CpuHooks`;
-//! the kernel debugger is `hal::trap::Debugger`; the interrupt controller's dispatch is
-//! `hal::intr::IntrHardware`'s.
+//! `sigexit`) is asked of the registered `hal::cpu::trap::TrapHandler`; the branch predictor
+//! flush and the SError report of the CPU code still in `bsd` are `hal::cpu::trap::CpuHooks`;
+//! the kernel debugger is `hal::cpu::trap::Debugger`; the interrupt controller's dispatch is
+//! `hal::cpu::intr::IntrHardware`'s.
 //!
 //! **The frame premise.** Every `extern "C"` handler here is reached only from the assembly
 //! of `exception.S` (`sym` operands, no symbol another object could call), with `x0` the trap
@@ -116,25 +116,25 @@
 //!   does, then panics with the same message as the non-`DDB` build: ddb-lite has no command
 //!   loop to stay in, and returning would re-execute the faulting instruction (LZ's).
 //! - `kdata_abort`'s unprivileged access with no thread running uses the kernel map where the
-//!   C dereferences `p` (the trap handler's choice, `hal::trap::FaultSource::KernelUser`).
+//!   C dereferences `p` (the trap handler's choice, `hal::cpu::trap::FaultSource::KernelUser`).
 //!
 //! ## Redesign
 //! - N4.8b: from `bsd` into `hal`. LZ called `uvm_fault`, `trapsignal`, `userret`, ... by
 //!   name and read `ci_curproc`/`ci_curpcb` through raw pointers; here the machine-independent
-//!   calls go through `hal::trap::TrapHandler` (one registration), the running thread's pcb
-//!   through `hal::thread`'s `with_curpcb` (its premise E5), and the handlers are entered by
+//!   calls go through `hal::cpu::trap::TrapHandler` (one registration), the running thread's pcb
+//!   through `hal::cpu::thread`'s `with_curpcb` (its premise E5), and the handlers are entered by
 //!   `sym` (no `#[no_mangle]`). `fault()`'s `panicstr` claim and `ci_panicbuf` are the
-//!   CPU hooks' (`hal::trap::CpuHooks::fault`), `db_ktrap` the `Debugger` registration (absent:
+//!   CPU hooks' (`hal::cpu::trap::CpuHooks::fault`), `db_ktrap` the `Debugger` registration (absent:
 //!   the C without `DDB`, `panic("No debugger in kernel")` for a kernel breakpoint).
 //! - `ast.c`'s `ast()` and `intr.c`'s `arm_cpu_irq`/`arm_cpu_fiq` join the trap: the IRQ
-//!   entry dispatches through `hal::intr::IntrHardware::dispatch_irq` (the controller's
+//!   entry dispatches through `hal::cpu::intr::IntrHardware::dispatch_irq` (the controller's
 //!   `arm_irq_dispatch`, which `bsd`'s GIC drivers register, N7).
 //! - `cpu_id_aa64pfr0`, `pfr1`, `isar0`, `isar1`, `isar2` (`cpu.c`'s userland view of the ID
 //!   registers, `emulate_msr`'s answers) are this module's statics, which `bsd`'s CPU code
 //!   writes (`cpu_identify_cleanup`).
 //! - N4.8d: `do_el0_sync` reads the frame's `elr` or `sp` in the arm that uses it, not once
 //!   for every exception, and `udata_abort` hands `PROC_STACK(p)`, read from the frame it
-//!   holds, to the kernel's `MAP_STACK` check in `hal::trap::FaultSource::User { sp }`: a user
+//!   holds, to the kernel's `MAP_STACK` check in `hal::cpu::trap::FaultSource::User { sp }`: a user
 //!   fault borrows the frame once instead of twice, a system call not at all here.
 
 use core::fmt;
@@ -157,6 +157,7 @@ use super::include::frame::Trapframe;
 use super::include::vmparam::VM_MAXUSER_ADDRESS;
 use super::switch::with_curpcb;
 use crate::assert::hal_panic;
+use crate::cpu::trap::{FaultSource, TrapHandler};
 use crate::cpu::{MAXCPUS, cpu_number, curcpu};
 use crate::sys::errno::Errno;
 use crate::sys::siginfo::{
@@ -164,7 +165,6 @@ use crate::sys::siginfo::{
 };
 use crate::sys::signal::{SIGBUS, SIGILL, SIGKILL, SIGSEGV, SIGTRAP};
 use crate::sys::types::Register;
-use crate::trap::{FaultSource, TrapHandler};
 use crate::vm::param::trunc_page;
 use crate::vm::uvmexp::UVMEXP;
 
@@ -202,7 +202,7 @@ fn esr_far() -> (u64, u64) {
 /// The registered trap handler; a trap that needs one before it is registered is
 /// `panic(9)` (no user process runs before `bsd` registers it).
 fn handler(what: &str) -> &'static dyn TrapHandler {
-    match crate::trap::handler() {
+    match crate::cpu::trap::handler() {
         Some(h) => h,
         None => hal_panic(format_args!("{what}: no trap handler")),
     }
@@ -275,9 +275,9 @@ impl UserFrame {
         // from it), or the running thread's `pcb_tf`, which only ever names that same place:
         // `make_current` stores an EL0 entry's frame (an entry from user mode starts on an
         // empty kernel stack, so its frame is always at the top), `cpu_fork`
-        // (`hal::thread::thread_setup`) the frame it built at the top of the child's u-area,
+        // (`hal::cpu::thread::thread_setup`) the frame it built at the top of the child's u-area,
         // `bsd`'s `cpu_startup` `proc0`'s static one; the u-area is alive while its thread runs
-        // (`hal::thread` E2, E4) and the kernel stack below never grows into the frame.
+        // (`hal::cpu::thread` E2, E4) and the kernel stack below never grows into the frame.
         // Unique: no reference to that storage is kept anywhere else: every EL0 entry (the
         // synchronous one, the IRQ and FIQ ones, the error and the AST) holds it as a
         // `UserFrame` and every access in `hal` goes through this function; the kernel-mode
@@ -295,20 +295,20 @@ impl UserFrame {
     }
 }
 
-/// `PROC_PC(p)` of the running thread (`hal::trap::proc_pc`): its user frame's `tf_elr`, 0
+/// `PROC_PC(p)` of the running thread (`hal::cpu::trap::proc_pc`): its user frame's `tf_elr`, 0
 /// without one.
 pub(crate) fn proc_pc() -> usize {
     UserFrame::current().map_or(0, |f| f.with(|tf| tf.tf_elr as usize))
 }
 
-/// `PROC_STACK(p)` of the running thread (`hal::trap::proc_stack`): its user frame's
+/// `PROC_STACK(p)` of the running thread (`hal::cpu::trap::proc_stack`): its user frame's
 /// `tf_sp`, 0 without one.
 pub(crate) fn proc_stack() -> usize {
     UserFrame::current().map_or(0, |f| f.with(|tf| tf.tf_sp as usize))
 }
 
 /// `PROC_PC(p)` and `PROC_STACK(p)` of the running thread in one borrow
-/// (`hal::trap::proc_regs`, the system call prologue's), `(0, 0)` without a frame.
+/// (`hal::cpu::trap::proc_regs`, the system call prologue's), `(0, 0)` without a frame.
 pub(crate) fn proc_regs() -> (usize, usize) {
     UserFrame::current().map_or((0, 0), |f| {
         f.with(|tf| (tf.tf_elr as usize, tf.tf_sp as usize))
@@ -342,10 +342,10 @@ fn is_unpriv_ldst(elr: u64) -> bool {
 }
 
 /// `fault`: `panicstr` claimed for this CPU's `ci_panicbuf`, the fatal fault's message
-/// formatted into it and printed (`hal::trap::CpuHooks::fault`, the CPU code's); the `panic()`
+/// formatted into it and printed (`hal::cpu::trap::CpuHooks::fault`, the CPU code's); the `panic()`
 /// that follows is then the second one on this CPU.
 fn fault(args: fmt::Arguments<'_>) {
-    crate::trap::fault(args);
+    crate::cpu::trap::fault(args);
 }
 
 /// `udata_abort`: a data or instruction abort from EL0: the branch predictor flushed for a
@@ -358,7 +358,7 @@ fn udata_abort(esr: u64, far: u64, exe: bool, sp: usize) {
 
     let va = trunc_page(far as usize);
     if va >= VM_MAXUSER_ADDRESS {
-        crate::trap::flush_bp();
+        crate::cpu::trap::flush_bp();
     }
 
     if esr & ISS_DATA_DFSC_MASK == ISS_DATA_DFSC_ALIGN {
@@ -396,13 +396,13 @@ fn kdata_abort(frame: &mut Trapframe, esr: u64, far: u64, exe: bool) {
         FaultSource::KernelUser
     } else if pcb_onfault() != 0 {
         FaultSource::Kernel
-    } else if crate::trap::have_debugger() {
+    } else if crate::cpu::trap::have_debugger() {
         fault(format_args!(
             "attempt to {} user address 0x{:x} from EL1",
             if exe { "execute" } else { "access" },
             far
         ));
-        let _ = crate::trap::debugger_ktrap(esr_elx_exception(esr) as i32, frame);
+        let _ = crate::cpu::trap::debugger_ktrap(esr_elx_exception(esr) as i32, frame);
         FaultSource::Kernel
     } else {
         hal_panic(format_args!(
@@ -415,7 +415,7 @@ fn kdata_abort(frame: &mut Trapframe, esr: u64, far: u64, exe: bool) {
     // Handle referenced/modified emulation, then uvm_fault (and uvm_grow on a process's
     // map): the kernel's, on the map `source` names. Before the handler is registered no
     // fault is served.
-    let error = match crate::trap::handler() {
+    let error = match crate::cpu::trap::handler() {
         Some(h) => h.page_fault(source, va, access_type),
         None => Err(Errno::EFAULT),
     };
@@ -537,7 +537,7 @@ pub(crate) extern "C" fn do_el1h_sync(frame: &mut Trapframe) {
             false
         }
         EXCP_BRK | EXCP_WATCHPT_EL1 | EXCP_SOFTSTP_EL1 => {
-            if crate::trap::debugger_ktrap(exception as i32, frame).is_none() {
+            if crate::cpu::trap::debugger_ktrap(exception as i32, frame).is_none() {
                 hal_panic(format_args!("No debugger in kernel"));
             }
             // Step over permanent breakpoints.
@@ -557,7 +557,7 @@ pub(crate) extern "C" fn do_el1h_sync(frame: &mut Trapframe) {
             "esr 0x{:08x} far 0x{:016x} elr 0x{:016x}",
             esr, far, frame.tf_elr
         ));
-        let _ = crate::trap::debugger_ktrap(exception as i32, frame);
+        let _ = crate::cpu::trap::debugger_ktrap(exception as i32, frame);
         hal_panic(format_args!(
             "esr 0x{:08x} far 0x{:016x} elr 0x{:016x}",
             esr, far, frame.tf_elr
@@ -572,7 +572,7 @@ fn serror(elr: Register) {
 
     crate::prf::printf(format_args!("SError: {elr:x} esr {esr:x} far {far:0x}\n"));
 
-    crate::trap::serror();
+    crate::cpu::trap::serror();
 }
 
 /// `do_el1h_error`: an SError taken at EL1, called from `handle_el1h_error` (`exception.S`).
@@ -611,28 +611,28 @@ pub(crate) extern "C" fn do_el0_sync(frame: *mut Trapframe) {
     )]
     match exception {
         EXCP_UNKNOWN => {
-            crate::trap::flush_bp();
+            crate::cpu::trap::flush_bp();
             h.trapsignal(SIGILL, esr, ILL_ILLOPC, elr());
         }
         EXCP_SVE => fpu::sve_load_current(),
         EXCP_FP_SIMD | EXCP_TRAP_FP => fpu::load_current(),
         EXCP_BRANCH_TGT => {
-            crate::trap::flush_bp();
+            crate::cpu::trap::flush_bp();
             h.trapsignal(SIGILL, esr, ILL_BTCFI, elr());
         }
         EXCP_MSR if frame.with(|tf| emulate_msr(tf, esr)) => {}
         EXCP_MSR | EXCP_FPAC => {
-            crate::trap::flush_bp();
+            crate::cpu::trap::flush_bp();
             h.trapsignal(SIGILL, esr, ILL_ILLOPC, elr());
         }
         EXCP_SVC => super::syscall::svc_handler(frame),
         EXCP_INSN_ABORT_L => udata_abort(esr, far, true, sp()),
         EXCP_PC_ALIGN => {
-            crate::trap::flush_bp();
+            crate::cpu::trap::flush_bp();
             h.trapsignal(SIGBUS, esr, BUS_ADRALN, elr());
         }
         EXCP_SP_ALIGN => {
-            crate::trap::flush_bp();
+            crate::cpu::trap::flush_bp();
             h.trapsignal(SIGBUS, esr, BUS_ADRALN, sp());
         }
         EXCP_DATA_ABORT_L => udata_abort(esr, far, false, sp()),
@@ -644,8 +644,8 @@ pub(crate) extern "C" fn do_el0_sync(frame: *mut Trapframe) {
             // only here to debug !?!?
             crate::prf::printf(format_args!("exception {exception:x} esr_el1 {esr:x}\n"));
             frame.with(|tf| dumpregs(tf));
-            crate::trap::flush_bp();
-            crate::klock::kernel_lock();
+            crate::cpu::trap::flush_bp();
+            crate::sync::klock::kernel_lock();
             h.sigexit(SIGILL);
             // KERNEL_UNLOCK(): sigexit does not return.
         }
@@ -700,7 +700,7 @@ fn irq(frame: &mut Trapframe) {
 
     UVMEXP.intrs.fetch_add(1, Ordering::Relaxed);
     ci.idepth_add(1);
-    crate::intr::dispatch_irq(frame);
+    crate::cpu::intr::dispatch_irq(frame);
     ci.idepth_add(-1);
 }
 
@@ -710,7 +710,7 @@ fn fiq(frame: &mut Trapframe) {
 
     UVMEXP.intrs.fetch_add(1, Ordering::Relaxed);
     ci.idepth_add(1);
-    crate::intr::dispatch_fiq(frame);
+    crate::cpu::intr::dispatch_fiq(frame);
     ci.idepth_add(-1);
 }
 

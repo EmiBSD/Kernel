@@ -93,7 +93,7 @@
 //! Every decision the socket system calls make is the kernel crate's; this file holds what
 //! `bsd`'s tables need to reach it: the `sysent[]` rows of the nineteen calls (each unpacks
 //! its `struct sys_*_args` into the kernel function's typed arguments and puts its answer in
-//! `retval[0]`), `setrtable(2)`'s and `getrtable(2)`'s rows over `kernel::prot`, the
+//! `retval[0]`), `setrtable(2)`'s and `getrtable(2)`'s rows over `kernel::proc::prot`, the
 //! `Native` entries of `KernelApi::socket` (`SOCKET_ENTRIES`: `mi_syscall` on the same
 //! rows, the prologue's pledge and pinned system calls), `socketops` over the kernel's
 //! `SocketFileOps` with `fp_install` and `fp_socket` for `bsd`'s callers.
@@ -357,16 +357,16 @@ pub fn sys_getpeername(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Re
 }
 
 /// `setrtable(2)`: moves the process to routing table `rtableid`; only root may leave a
-/// table other than 0 (`sysent[]`'s row: `kernel::prot::sys_setrtable`).
+/// table other than 0 (`sysent[]`'s row: `kernel::proc::prot::sys_setrtable`).
 pub fn sys_setrtable(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysSetrtableArgs = sysargs(v);
-    kernel::prot::sys_setrtable(p, uap.rtableid.get())
+    kernel::proc::prot::sys_setrtable(p, uap.rtableid.get())
 }
 
 /// `getrtable(2)`: the process's routing table (`sysent[]`'s row:
-/// `kernel::prot::sys_getrtable`).
+/// `kernel::proc::prot::sys_getrtable`).
 pub fn sys_getrtable(p: &Proc, _v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
-    retval[0] = kernel::prot::sys_getrtable(p) as Register;
+    retval[0] = kernel::proc::prot::sys_getrtable(p) as Register;
     Ok(())
 }
 

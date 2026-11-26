@@ -82,8 +82,8 @@
 
 use core::ffi::c_void;
 
+use kernel::file::uio::UioMove;
 use kernel::tty::TtyDevsw;
-use kernel::uio::UioMove;
 
 use crate::dev::cons::{cn_devvp_set, cn_tab, cnwrite, constty};
 use crate::kern::kern_subr::uiomove;
@@ -325,7 +325,7 @@ pub fn tty_init() {
 /// `ttymalloc`: allocate a tty structure and its associated buffers, and attach it to the
 /// tty list; the driver keeps it for the kernel's life (see the module's deviations).
 pub fn ttymalloc(baud: i32) -> &'static Tty {
-    hal::pool::PoolArc::leak(kernel::tty::ttymalloc::<BsdProcGlue>(baud))
+    hal::mem::pool::PoolArc::leak(kernel::tty::ttymalloc::<BsdProcGlue>(baud))
 }
 
 /// `ttyfree`: retire a tty (see the module's deviations).
@@ -346,7 +346,7 @@ pub fn sysctl_tty(
     newp: usize,
     newlen: usize,
 ) -> Result<(), Errno> {
-    let mut req = kernel::sysctl::SysctlReq {
+    let mut req = kernel::base::sysctl::SysctlReq {
         oldp,
         oldlenp,
         newp,

@@ -34,38 +34,38 @@
 
 /* <CODE> */
 //! Machine-independent soft interrupts: `kern/kern_softintr.c` (`__USE_MI_SOFTINTR`), the
-//! names `bsd`'s drivers and machines call, over `hal::softintr` (N4.5c).
+//! names `bsd`'s drivers and machines call, over `hal::cpu::softintr` (N4.5c).
 //!
 //! Upstream: sys/kern/kern_softintr.c @ 3ce1f3f79392
 //! LZ: sys/kern/kern_softintr.rs@3c62ede68802
 //!
 //! ## Deviations
-//! - The handle is a `hal::softintr::SoftHandle` (`Copy`) where the C passes `void *`.
+//! - The handle is a `hal::cpu::softintr::SoftHandle` (`Copy`) where the C passes `void *`.
 //!
 //! ## Redesign
-//! - The queues, the handlers and `softintr_lock` are `hal::softintr`'s (the module's
+//! - The queues, the handlers and `softintr_lock` are `hal::cpu::softintr`'s (the module's
 //!   `## Redesign` says how they are owned); this module keeps the C's function names for
 //!   `bsd`, and `softintr_disestablish`'s wait for a running handler (`sched_barrier`, the
 //!   kernel scheduler's, between `hal`'s two steps).
 
-use hal::softintr::SoftintrFn;
+use hal::cpu::softintr::SoftintrFn;
 
 use crate::kern::kern_sched::{cpu_info_by_number, sched_barrier};
 use crate::kern::subr_xxx::assertwaitok;
 
-pub use hal::softintr::{
+pub use hal::cpu::softintr::{
     SIF_MPSAFE, SIS_DYING, SIS_PENDING, SIS_RESTART, SoftHandle, SoftintrHand,
 };
 
-/// `softintr_init`: the queues (`hal::softintr::init`).
+/// `softintr_init`: the queues (`hal::cpu::softintr::init`).
 pub fn softintr_init() {
-    hal::softintr::init();
+    hal::cpu::softintr::init();
 }
 
 /// `softintr_dispatch`: runs the handlers pending at `level`, from the soft interrupt stub.
 pub fn softintr_dispatch(level: i32) {
     if let Ok(level) = usize::try_from(level) {
-        hal::softintr::dispatch(level);
+        hal::cpu::softintr::dispatch(level);
     }
 }
 
@@ -76,7 +76,7 @@ pub fn softintr_establish(
     func: SoftintrFn,
     arg: *mut core::ffi::c_void,
 ) -> Option<SoftHandle> {
-    hal::softintr::establish(ipl, func, arg)
+    hal::cpu::softintr::establish(ipl, func, arg)
 }
 
 /// `softintr_disestablish`: removes a handler, waiting for it if it is running elsewhere;

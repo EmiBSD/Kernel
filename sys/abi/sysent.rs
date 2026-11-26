@@ -27,20 +27,20 @@
 //! is not even read here but to pick the entry, and an out-of-range number goes to the
 //! fallback too, which answers `ENOSYS` as the traps did. A subsystem that moves into
 //! `kernel` flips its entries to `Native` and raises [`NATIVE`]: N2.6, pipe(2) and pipe2(2)
-//! (`KernelApi::pipe2`, `sys/kernel/pipe.rs`). N3.5: the virtual memory system's fifteen
+//! (`KernelApi::pipe2`, `sys/kernel/file/pipe.rs`). N3.5: the virtual memory system's fifteen
 //! (`KernelApi::vm`, `sys/kernel/vm/mmap.rs` and `unix.rs`): written in S1, `Native` since
 //! the flip (S2). N4.3: the descriptor tables' twenty (`KernelApi::fd`,
-//! `sys/kernel/descrip.rs`: `read(2)`, `write(2)`, `close(2)`, `dup(2)`, `fcntl(2)`,
+//! `sys/kernel/file/descrip.rs`: `read(2)`, `write(2)`, `close(2)`, `dup(2)`, `fcntl(2)`,
 //! `ioctl(2)`, ...), which write the return registers themselves. N4.4: the event system
-//! calls' seven (`KernelApi::event`, `sys/kernel/event.rs` and `select.rs`: `kqueue(2)`,
+//! calls' seven (`KernelApi::event`, `sys/kernel/file/event.rs` and `select.rs`: `kqueue(2)`,
 //! `kqueue1(2)`, `kevent(2)`, `select(2)`, `pselect(2)`, `poll(2)`, `ppoll(2)`). N4.7a:
-//! `sendsyslog(2)` (`KernelApi::sendsyslog`, `sys/kernel/log.rs`). N4.6c: futex(2)
-//! (`KernelApi::futex`, `sys/kernel/futex.rs`). N4.6a: the process system calls'
-//! forty-six (`KernelApi::proc`, `sys/kernel/fork.rs`, `exit.rs`, `resource.rs`, `prot.rs`,
-//! `acct.rs`). N4.6b: sysctl(2) (`KernelApi::sysctl`, `sys/kernel/sysctl.rs`). N4.8: the
-//! ten time system calls and reboot(2) (`KernelApi::time`, `sys/kernel/time.rs` and
-//! `reboot.rs`). N4.8b: sigreturn(2) (`KernelApi::sigreturn`, `sys/kernel/sig.rs` over
-//! `hal::sig`'s frame). N5.4: the VFS system calls' sixty-five (`KernelApi::vfs`,
+//! `sendsyslog(2)` (`KernelApi::sendsyslog`, `sys/kernel/base/log.rs`). N4.6c: futex(2)
+//! (`KernelApi::futex`, `sys/kernel/sched/futex.rs`). N4.6a: the process system calls'
+//! forty-six (`KernelApi::proc`, `sys/kernel/proc/fork.rs`, `exit.rs`, `resource.rs`, `prot.rs`,
+//! `acct.rs`). N4.6b: sysctl(2) (`KernelApi::sysctl`, `sys/kernel/base/sysctl.rs`). N4.8: the
+//! ten time system calls and reboot(2) (`KernelApi::time`, `sys/kernel/time/mod.rs` and
+//! `reboot.rs`). N4.8b: sigreturn(2) (`KernelApi::sigreturn`, `sys/kernel/sig/mod.rs` over
+//! `hal::cpu::sig`'s frame). N5.4: the VFS system calls' sixty-five (`KernelApi::vfs`,
 //! `sys/kernel/fs/syscalls.rs` and `getcwd.rs`: the sixty-four of `vfs_syscalls.c`, `open(2)`,
 //! `stat(2)`, `mount(2)`, `unveil(2)`, ..., and `__getcwd(2)`), which write the return
 //! registers themselves. N6.2b: the socket system calls' nineteen (`KernelApi::socket`,

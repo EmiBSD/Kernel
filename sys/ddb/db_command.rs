@@ -159,7 +159,7 @@ use crate::sys::reboot::{
 use crate::sys::socket::{AF_INET, AF_INET6};
 use crate::sys::socketvar::Socket;
 use crate::unported;
-use kernel::log::{msgbuf_header, msgbuf_read};
+use kernel::base::log::{msgbuf_header, msgbuf_read};
 use kernel::vm::meter::uvmexp_print;
 
 /// `CS_OWN`: non-standard syntax.
@@ -655,11 +655,11 @@ fn db_proc_print_cmd(addr: DbExpr, have_addr: bool, _count: DbExpr, modif: &[u8]
     if modif.first() == Some(&b't') {
         // The tid hash is `[K]`: it opens through a reader of the kernel lock, which only
         // the CPU holding that lock can make; ddb entered without it says so.
-        if !hal::klock::kernel_lock_held() {
+        if !hal::sync::klock::kernel_lock_held() {
             db_printf(format_args!("kernel lock not held\n"));
             return Ok(());
         }
-        let r = hal::klock::reader();
+        let r = hal::sync::klock::reader();
         addr = tfind(&r, addr as i32).map_or(0, |p| core::ptr::from_ref(p) as DbExpr);
         if addr == 0 {
             db_printf(format_args!("not found\n"));

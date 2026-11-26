@@ -70,8 +70,8 @@
 
 use core::sync::atomic::Ordering;
 
-use hal::intr::IPL_NONE;
-use hal::pool::PR_WAITOK;
+use hal::cpu::intr::IPL_NONE;
+use hal::mem::pool::PR_WAITOK;
 
 use super::mount::Vfsconf;
 use super::subr::{vfs, vntblinit};

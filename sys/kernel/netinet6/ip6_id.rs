@@ -114,7 +114,7 @@
 //!
 //! ## Redesign
 //! - LZ's `StaticCell<Randomtab>` beside a `bsd` `Mutex` (one `unsafe` `get_mut` under it)
-//!   -> [`RANDOMTAB_20`], a `hal::mutex::Mutexed<Randomtab>` (IPL_SOFTNET): the state inside
+//!   -> [`RANDOMTAB_20`], a `hal::sync::mutex::Mutexed<Randomtab>` (IPL_SOFTNET): the state inside
 //!   the lock that guards it, no `unsafe` (`kernel::netinet::ip_id`'s precedent for the
 //!   module, N6.4a). `ip6id_pmod`, `ip6id_initid` and `ip6id_randomid` are the C's `static`
 //!   functions again (private).
@@ -122,12 +122,12 @@
 //! **Lock and spl transitions** against the C: `ip6_randomflowlabel` takes `RANDOMTAB_20`
 //! once (one spl pair); the C takes nothing (the deviation above).
 
-use hal::intr::IPL_SOFTNET;
-use hal::mutex::Mutexed;
+use hal::cpu::intr::IPL_SOFTNET;
 use hal::random::{arc4random, arc4random_uniform};
+use hal::sync::mutex::Mutexed;
 use hal::sys::types::Time;
 
-use crate::tc::getuptime;
+use crate::time::tc::getuptime;
 
 /// `struct randomtab`: the parameters and state of one identifier generator.
 pub struct Randomtab {

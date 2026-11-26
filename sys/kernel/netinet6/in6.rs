@@ -175,11 +175,11 @@
 //! - The address `ioctl`s over the request's bytes: LZ's `unsafe fn`s over `caddr_t data`
 //!   (with an aligned copy of an unaligned request, 14 `unsafe`) -> [`in6_ioctl`] over
 //!   `&mut [u8]`, the `struct in6_ifreq`'s and `struct in6_aliasreq`'s addresses read and
-//!   written by copies at their offsets (`hal::pod::at`/`put`, the C's `*sa6` reads and
+//!   written by copies at their offsets (`hal::mem::pod::at`/`put`, the C's `*sa6` reads and
 //!   `ifr->ifr_*` stores); `in6_sa2sin6` and `in6_nam2sin6` answer the checked
 //!   `sockaddr_in6` by value (`kernel::netinet::in_`'s shape).
 //! - `KERNEL_LOCK(); NET_LOCK();` (in6.c's order, the reverse of in.c's, both kept: D-17)
-//!   with the net lock detached (`hal::netlock::lock`) for the requests that change an
+//!   with the net lock detached (`hal::sync::netlock::lock`) for the requests that change an
 //!   address, since the driver's `SIOCSIFADDR` may let it go and take it again (wg(4)'s
 //!   `wg_up`); the steps that need its proof borrow it ([`NetHolding`]), never across the
 //!   driver's request. Callers that already hold a proof (`if_up`) pass it.
@@ -218,10 +218,10 @@
 use core::mem::{offset_of, size_of};
 use core::ptr;
 
-use hal::malloc::MArc;
-use hal::netlock::{NETLOCK, NetHeld, NetReader};
-use hal::pod;
-use hal::rwlock::{RW_READ, RW_WRITE, Witness};
+use hal::mem::malloc::MArc;
+use hal::mem::pod;
+use hal::sync::netlock::{NETLOCK, NetHeld, NetReader};
+use hal::sync::rwlock::{RW_READ, RW_WRITE, Witness};
 use hal::sys::endian::{htonl, htons};
 use hal::sys::errno::Errno;
 use hal::sys::ioccom::iocparm_len;
@@ -271,7 +271,7 @@ use crate::netinet6::mld6::{mld6_sendpkt, mld6_start_listening, mld6_stop_listen
 use crate::netinet6::mld6_var::Mld6Pktinfo;
 use crate::netinet6::nd6::{nd6_expire_timer_update, nd6_ioctl};
 use crate::netinet6::nd6_nbr::{nd6_dad_start, nd6_dad_stop};
-use crate::tc::{gettime, getuptime};
+use crate::time::tc::{gettime, getuptime};
 
 /// The size of a `struct sockaddr_in6`.
 const SIN6_SIZE: usize = size_of::<SockaddrIn6>();
@@ -290,8 +290,8 @@ const SA_DATA: usize = 2;
 /// driver's `SIOCSIFADDR`, which may let it go: wg(4)'s `wg_up`), or a proof the caller
 /// already has (`if_up`'s), under which every step runs.
 pub enum NetHolding<'a> {
-    /// `hal::netlock::lock()`'s holding: the steps that need the proof borrow it
-    /// (`hal::netlock::lend_detached`), the driver's request runs outside any loan.
+    /// `hal::sync::netlock::lock()`'s holding: the steps that need the proof borrow it
+    /// (`hal::sync::netlock::lend_detached`), the driver's request runs outside any loan.
     Detached,
     /// The caller's proof.
     Held(&'a NetHeld<'a>),
@@ -302,7 +302,7 @@ impl NetHolding<'_> {
     #[inline]
     pub fn with<R>(&self, f: impl FnOnce(&NetHeld<'_>) -> R) -> R {
         match self {
-            Self::Detached => hal::netlock::lend_detached(f),
+            Self::Detached => hal::sync::netlock::lend_detached(f),
             Self::Held(n) => f(n),
         }
     }
@@ -311,7 +311,7 @@ impl NetHolding<'_> {
 /// `NET_ASSERT_LOCKED()`.
 #[inline]
 pub(crate) fn net_assert_locked() {
-    kassert!(matches!(hal::netlock::status(), RW_WRITE | RW_READ));
+    kassert!(matches!(hal::sync::netlock::status(), RW_WRITE | RW_READ));
 }
 
 /// The `sockaddr_in6` image of `sin6`, for the routes' requests.
@@ -501,8 +501,8 @@ fn in6_ioctl_change_ifaddr(cmd: u64, data: &mut [u8], ifp: &'static Ifnet) -> Re
         sa6 = Some(in6_sa2sin6(&data[off..off + SIN6_SIZE])?);
     }
 
-    hal::klock::kernel_lock();
-    hal::netlock::lock();
+    hal::sync::klock::kernel_lock();
+    hal::sync::netlock::lock();
 
     let error = 'err: {
         let mut ia6 = None;
@@ -518,7 +518,7 @@ fn in6_ioctl_change_ifaddr(cmd: u64, data: &mut [u8], ifp: &'static Ifnet) -> Re
             }
             sa6 = Some(s);
             // T1: cloned before the reader ends, kept for the request.
-            ia6 = hal::netlock::lend_detached(|net| {
+            ia6 = hal::sync::netlock::lend_detached(|net| {
                 in6ifa_ifpwithaddr(&net.reader(), ifp, &s.sin6_addr).cloned()
             });
         }
@@ -531,7 +531,7 @@ fn in6_ioctl_change_ifaddr(cmd: u64, data: &mut [u8], ifp: &'static Ifnet) -> Re
             let Some(ia6) = ia6 else {
                 break 'err Err(Errno::EADDRNOTAVAIL);
             };
-            hal::netlock::lend_detached(|net| in6_purgeaddr(&ia6, net));
+            hal::sync::netlock::lend_detached(|net| in6_purgeaddr(&ia6, net));
             if_addrhooks_run(ifp);
             Ok(())
         } else {
@@ -575,7 +575,7 @@ fn in6_ioctl_change_ifaddr(cmd: u64, data: &mut [u8], ifp: &'static Ifnet) -> Re
 
             // T1: cloned before the reader ends, kept for the request.
             let ifa = sa6.and_then(|s| {
-                hal::netlock::lend_detached(|net| {
+                hal::sync::netlock::lend_detached(|net| {
                     in6ifa_ifpwithaddr(&net.reader(), ifp, &s.sin6_addr).cloned()
                 })
             });
@@ -587,7 +587,7 @@ fn in6_ioctl_change_ifaddr(cmd: u64, data: &mut [u8], ifp: &'static Ifnet) -> Re
 
             // Perform DAD, if needed.
             if ia6.ia6_flags.get() & IN6_IFF_TENTATIVE != 0 {
-                hal::netlock::lend_detached(|net| nd6_dad_start(&ifa, net));
+                hal::sync::netlock::lend_detached(|net| nd6_dad_start(&ifa, net));
             }
 
             if !newifaddr {
@@ -603,7 +603,7 @@ fn in6_ioctl_change_ifaddr(cmd: u64, data: &mut [u8], ifp: &'static Ifnet) -> Re
 
             // ifa->ifa_addr: the address's own socket address, copied.
             let a = sin6_bytes(&ia6.ia_addr.get());
-            let error = hal::netlock::lend_detached(|net| {
+            let error = hal::sync::netlock::lend_detached(|net| {
                 let e = rt_ifa_add(
                     &ifa,
                     RTF_CLONING | RTF_CONNECTED | RTF_MPATH,
@@ -625,8 +625,8 @@ fn in6_ioctl_change_ifaddr(cmd: u64, data: &mut [u8], ifp: &'static Ifnet) -> Re
     };
 
     // err:
-    hal::netlock::unlock();
-    hal::klock::kernel_unlock();
+    hal::sync::netlock::unlock();
+    hal::sync::klock::kernel_unlock();
     error
 }
 
@@ -1260,9 +1260,9 @@ pub fn in6_addmulti(
     // Ask the network driver to update its multicast reception filter appropriately for the
     // new address.
     let mut ifr = multi_ifreq(*addr);
-    hal::klock::kernel_lock();
+    hal::sync::klock::kernel_lock();
     let error = if_ioctl(ifp, SIOCADDMULTI, ifr_bytes(&mut ifr));
-    hal::klock::kernel_unlock();
+    hal::sync::klock::kernel_unlock();
     error?;
 
     let mut w = lock.write();
@@ -1328,9 +1328,9 @@ pub fn in6_delmulti(in6m: MArc<In6Multi>, net: &NetHeld<'_>) {
 
         // Notify the network driver to update its multicast reception filter.
         let mut ifr = multi_ifreq(in6m.in6m_addr());
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         let _ = if_ioctl(ifp.ifp(), SIOCDELMULTI, ifr_bytes(&mut ifr));
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
         // if_put(ifp): the reference's drop.
     }
 
@@ -1456,8 +1456,8 @@ pub fn in6_prefixlen2mask(maskp: &mut In6Addr, len: i32) {
 
     // sanity check
     if !(0..=128).contains(&len) {
-        crate::prf::log(
-            crate::log::LOG_ERR,
+        crate::base::prf::log(
+            crate::base::log::LOG_ERR,
             format_args!("in6_prefixlen2mask: invalid prefix length({len})\n"),
         );
         return;

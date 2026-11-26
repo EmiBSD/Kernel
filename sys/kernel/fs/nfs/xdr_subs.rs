@@ -80,9 +80,9 @@ use core::slice;
 
 use hal::user::{AbiPod, bytes_of, bytes_of_mut, zeroed};
 
-use crate::clock::Timespec;
 use crate::sys::nfs_nfsproto::{Nfsv2Time, Nfsv3Time};
 use crate::sys::types::Time;
+use crate::time::clock::Timespec;
 
 pub use super::nfs_subs::txdr_nfsv2time;
 

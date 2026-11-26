@@ -133,7 +133,7 @@ const _: () = {
     assert!(<Machine as MachineParam>::PAGE_SIZE == hp::PAGE_SIZE);
     assert!(<Machine as MachineParam>::PAGE_MASK == hp::PAGE_MASK);
     assert!(<Machine as MachineParam>::KERNBASE == hp::KERNBASE);
-    // N4.7a: the message buffer's size, which kernel::log's static takes from hal.
+    // N4.7a: the message buffer's size, which kernel::base::log's static takes from hal.
     assert!(<Machine as MachineParam>::MSGBUFSIZE == hp::MSGBUFSIZE);
     assert!(<Machine as VmParam>::VM_MIN_ADDRESS == hv::VM_MIN_ADDRESS);
     assert!(<Machine as VmParam>::VM_MAXUSER_ADDRESS == hv::VM_MAXUSER_ADDRESS);

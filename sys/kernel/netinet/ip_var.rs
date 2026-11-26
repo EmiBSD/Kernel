@@ -62,7 +62,7 @@
 //!
 //! ## Redesign
 //! - LZ's `IPCOUNTERS`, a static array of atomics in `bsd`'s `ip_input.rs` (`<sys/percpu.h>`
-//!   was not ported) -> [`IPCOUNTERS`], a `hal::percpu::Counters` here beside the enum that
+//!   was not ported) -> [`IPCOUNTERS`], a `hal::sync::percpu::Counters` here beside the enum that
 //!   indexes it (`rtcounters`' shape, `kernel::net::route`): per CPU, as the C's `cpumem`, read
 //!   whole by `net.inet.ip.stats` (`Counters::read`). `ipstat_inc`, `ipstat_add` and
 //!   `ipstat_dec` are `#[inline]`: called per packet from `bsd`'s protocols across the crate
@@ -86,14 +86,14 @@
 //!   length, malloc type and allocator; the D-3 class, docs/SCAFFOLDING.md's pool-size row);
 //!   the vector's is the C's, `imo_max_memberships` pointers.
 //! - N6.5e's 5e2: each slot holds the membership's counted handle of its record
-//!   (`hal::malloc::MArc`, still 8 bytes with `None` its niche), which `in_addmulti` gives
+//!   (`hal::mem::malloc::MArc`, still 8 bytes with `None` its niche), which `in_addmulti` gives
 //!   and `in_delmulti` takes back, where it held a `&'static` record; growing the vector moves
 //!   the handles into the new one.
 //! - N6.4c2, the reassembly records: LZ's `struct ipqent` and `struct ipq` were pool items
 //!   written whole through `unsafe` and linked on `bsd`'s `LIST`s (`IpqList`, `Ipqehead`) by
 //!   `&'static` references, the fragment's header reached through the raw `ipqe_ip`
 //!   pointer and read and written with unaligned copies. Here [`Ipqent`] and [`Ipq`] are
-//!   items of `ip_input.c`'s pools ("ipqe", "ipq") owned by `hal::owned::OwnedSlist`s (the
+//!   items of `ip_input.c`'s pools ("ipqe", "ipq") owned by `hal::ds::owned::OwnedSlist`s (the
 //!   C's `LIST`s, walked forward only, D-15): a datagram's fragments in its
 //!   [`Ipq::ipq_fragq`], the datagrams in `ip_input`'s queue. `ipqe_ip` is gone: the three
 //!   header members `ip_reass` reads and changes (the offset, the data length, the type of
@@ -107,10 +107,10 @@
 use core::cell::Cell;
 use core::sync::atomic::AtomicI32;
 
-use hal::malloc::{MArc, MArray};
-use hal::owned::{OwnedSlist, SlistLink};
-use hal::percpu::Counters;
-use hal::pool::{BoxPool, Pooled};
+use hal::ds::owned::{OwnedSlist, SlistLink};
+use hal::mem::malloc::{MArc, MArray};
+use hal::mem::pool::{BoxPool, Pooled};
+use hal::sync::percpu::Counters;
 use hal::sys::netinet_in::InAddr;
 use hal::sys::netinet_ip::IPDEFTTL;
 use hal::sys::socket::SO_BROADCAST;

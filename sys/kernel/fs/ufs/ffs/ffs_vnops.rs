@@ -86,8 +86,8 @@
 //!   to `TIOCSCTTY` on `/dev/console`). The spl pairs are LZ's: `ffs_fsync`'s `splbio` around
 //!   the dirty-list scan, released for each write.
 
-use hal::intr::{IPL_BIO, splraise_raw, splx};
-use hal::sleep::INFSLP;
+use hal::cpu::intr::{IPL_BIO, splraise_raw, splx};
+use hal::sync::sleep::INFSLP;
 use hal::sys::errno::Errno;
 use hal::sys::mount::{MNT_NOATIME, MNT_WAIT};
 use hal::sys::stat::APPEND;
@@ -95,8 +95,9 @@ use hal::sys::stat::APPEND;
 use super::ffs_vfsops::Ffs;
 use super::fs::{blkoff, blksize, lblkno, lblktosize};
 use crate::assert::kpanic;
-use crate::event::{NOTE_EXTEND, NOTE_WRITE};
 use crate::file::FileGlue;
+use crate::file::event::{NOTE_EXTEND, NOTE_WRITE};
+use crate::file::uio::Uio;
 use crate::fs::bio::{DirtyPick, DirtyScan, bawrite, bdwrite, bread, bread_cluster, brelse};
 use crate::fs::bio::{bwrite, vnode_dirty_for_each, vnode_dirty_scan};
 use crate::fs::buf::{B_BUSY, B_CLRBUF, B_DELWRI, B_NOCACHE, B_SCANNED, B_SYNC, Buf};
@@ -111,7 +112,6 @@ use crate::fs::vnode::{
 use crate::fs::vnops::vn_fsizechk;
 use crate::fs::vops::Cred;
 use crate::proc::{ProcGlue, Thread};
-use crate::uio::Uio;
 use crate::vm::vnode::{uvm_vnp_setsize, uvm_vnp_uncache};
 
 /// The slots of `ffs_vops` and `ffs_specvops` that are ffs's own.
@@ -161,7 +161,7 @@ pub fn ffs_read<G: ProcGlue>(
 
     #[cfg(feature = "diagnostic")]
     {
-        if uio.uio_rw != crate::uio::UioRw::UIO_READ {
+        if uio.uio_rw != crate::file::uio::UioRw::UIO_READ {
             kpanic(format_args!("ffs_read: mode"));
         }
 
@@ -254,7 +254,7 @@ pub fn ffs_write<G: ProcGlue>(
     let ip = vtoi(vp);
 
     #[cfg(feature = "diagnostic")]
-    if uio.uio_rw != crate::uio::UioRw::UIO_WRITE {
+    if uio.uio_rw != crate::file::uio::UioRw::UIO_WRITE {
         kpanic(format_args!("ffs_write: mode"));
     }
 
@@ -484,13 +484,13 @@ mod tests {
     use hal::sys::types::Off;
 
     use super::*;
-    use crate::cred::Ucred;
+    use crate::file::uio::{Iovec, UioRw, UioSeg};
     use crate::fs::subr::vput;
     use crate::fs::testfs::TestGlue;
     use crate::fs::ufs::ffs::testffs::newfs::{FFS1_1G, FFS2_1G, Image, Params};
     use crate::fs::ufs::ffs::testffs::{new_file, pattern, setup};
     use crate::fs::ufs::ufs::dinode::IFREG;
-    use crate::uio::{Iovec, UioRw, UioSeg};
+    use crate::proc::cred::Ucred;
 
     /// The image: FFS2's with `option FFS2`, FFS1's without (ffs_mountfs refuses an FFS2
     /// super-block without it, as the C's ffs_validate does).

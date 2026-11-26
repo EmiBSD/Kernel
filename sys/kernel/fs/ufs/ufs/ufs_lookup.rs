@@ -114,6 +114,8 @@ use super::ufs_dirhash::{
 };
 use super::ufs_vnops::ucred;
 use crate::assert::kpanic;
+use crate::base::prf::printf;
+use crate::file::uio::UioRw;
 use crate::fs::bio::{bdwrite, brelse, bwrite};
 use crate::fs::buf::BufRef;
 use crate::fs::cache::{cache_enter, cache_lookup};
@@ -128,9 +130,7 @@ use crate::fs::vnode::{
 };
 use crate::fs::vnops::{RdwrBuf, vn_rdwr};
 use crate::fs::vops::{Cred, IoBuf, VFS_VGET, vop_access, vop_bwrite, vop_unlock};
-use crate::prf::printf;
 use crate::proc::ProcGlue;
-use crate::uio::UioRw;
 use crate::vm::vnode::uvm_vnp_setsize;
 
 /// `dirchk`: full validation of directory entries during lookups (1 with `DIAGNOSTIC`).

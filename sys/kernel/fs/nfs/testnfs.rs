@@ -43,10 +43,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::vec::Vec;
 
-use hal::malloc::{M_WAITOK, MArc, MBox};
-use hal::netlock::{NETLOCK, NetHeld};
-use hal::pod;
-use hal::pool::PoolArc;
+use hal::mem::malloc::{M_WAITOK, MArc, MBox};
+use hal::mem::pod;
+use hal::mem::pool::PoolArc;
+use hal::sync::netlock::{NETLOCK, NetHeld};
 use hal::sys::errno::Errno;
 use hal::sys::mount::{Fid, Statfs};
 use hal::sys::netinet_in::{IPPROTO_TCP, IPPROTO_UDP, InAddr, SockaddrIn};
@@ -59,7 +59,6 @@ use super::nfs_socket::{nfs_connect, nfs_disconnect, nfs_timer};
 use super::nfs_subs::nfs_init;
 use super::nfsm_subs::test_bytes;
 use super::nfsmount::{M_NFSMNT, NfsMount, NfsMountRef, NfsNam};
-use crate::cred::{CredRef, Ucred};
 use crate::fs::mount::{Mount, Vfsconf, vfs_mount_alloc, vfs_unbusy};
 use crate::fs::subr::{getnewvnode, vfs_test_reset};
 use crate::fs::vnode::{VT_NFS, Vnode};
@@ -74,8 +73,9 @@ use crate::net::mbuf::{
 use crate::net::proto::Protocol;
 use crate::net::socket::{SocketRef, sobind, soclose, socreate, solock, soreceive, sosend};
 use crate::netinet::in_proto::{InetDomain, RipProtocol, TcpProtocol, UdpProtocol, inetsw_set};
+use crate::proc::cred::{CredRef, Ucred};
 use crate::proc::{ProcGlue, Thread, process_alloc, thread_alloc};
-use crate::timeout::Timeout;
+use crate::time::timeout::Timeout;
 
 crate::test_file_glue!(NfsFiles, NfsGlue);
 crate::test_proc_glue!(NfsGlue, NfsFiles);
@@ -200,7 +200,7 @@ impl crate::fs::spec::Devsw<G> for NfsDevsw {
     fn cdev_read(
         &self,
         _dev: i32,
-        _uio: &mut crate::uio::Uio<'_, G>,
+        _uio: &mut crate::file::uio::Uio<'_, G>,
         _i: i32,
     ) -> Result<(), Errno> {
         Err(Errno::ENXIO)
@@ -208,7 +208,7 @@ impl crate::fs::spec::Devsw<G> for NfsDevsw {
     fn cdev_write(
         &self,
         _dev: i32,
-        _uio: &mut crate::uio::Uio<'_, G>,
+        _uio: &mut crate::file::uio::Uio<'_, G>,
         _i: i32,
     ) -> Result<(), Errno> {
         Err(Errno::ENXIO)
@@ -223,7 +223,11 @@ impl crate::fs::spec::Devsw<G> for NfsDevsw {
     ) -> Result<(), Errno> {
         Err(Errno::ENXIO)
     }
-    fn cdev_kqfilter(&self, _dev: i32, _kn: &crate::event::Knote<G>) -> Option<Result<(), Errno>> {
+    fn cdev_kqfilter(
+        &self,
+        _dev: i32,
+        _kn: &crate::file::event::Knote<G>,
+    ) -> Option<Result<(), Errno>> {
         None
     }
     fn bdev_open(&self, _dev: i32, _o: i32, _t: i32, _p: &Thread<G>) -> Result<(), Errno> {
@@ -269,7 +273,7 @@ pub fn new_thread(pid: i32, uid: u32) -> (&'static crate::proc::Process<G>, &'st
     crate::sig::test_sigacts(&pr);
     let t = thread_alloc::<G>(&pr, ());
     drop(t.set_cred(pr.ucred()));
-    let p: &'static Thread<G> = hal::pool::PoolBox::leak(t);
+    let p: &'static Thread<G> = hal::mem::pool::PoolBox::leak(t);
     let pr: &'static crate::proc::Process<G> = match pr {
         crate::proc::StaticOrPooled::Static(r) => r,
         crate::proc::StaticOrPooled::Pooled(a) => PoolArc::leak(a),
@@ -313,7 +317,7 @@ impl crate::net::if_::Inet for DoublesInet {
         1
     }
     fn with_net_held(&self, f: &mut dyn FnMut(&NetHeld<'_>)) {
-        hal::netlock::lend_detached(|n| f(n));
+        hal::sync::netlock::lend_detached(|n| f(n));
     }
 }
 
@@ -359,7 +363,7 @@ fn setup_with(g: MutexGuard<'static, ()>, uid: u32) -> Fixture {
     }
     if !MADE.with(|m| m.replace(true)) {
         crate::proc::procinit::<G>(64, 64);
-        let _ = crate::descrip::filedesc_init::<NfsFiles>();
+        let _ = crate::file::descrip::filedesc_init::<NfsFiles>();
         let (pr0, p0) = new_thread(0, 0);
         G::tables().set_process0(pr0, Pin::static_ref(p0));
     }
@@ -386,7 +390,7 @@ fn setup_with(g: MutexGuard<'static, ()>, uid: u32) -> Fixture {
     crate::netinet::tcp_input::tcp_input_mlist_register::<crate::netinet::in_pcb::testinet::G>();
     crate::netinet::tcp_subr::tcp_init::<G>();
 
-    hal::klock::kernel_lock();
+    hal::sync::klock::kernel_lock();
     let made = crate::net::if_loop::loop_clone_create(&crate::net::if_loop::LOOP_CLONER, 0);
     assert_eq!(made, Ok(()), "lo0");
     let lo = crate::net::if_::IFNETLIST
@@ -527,7 +531,7 @@ impl Peer {
         let (st, cl, lo, sock, me) = (stop.clone(), calls.clone(), fx.lo, so.clone(), fx.user);
         let timer = MArc::erase(nmp.clone());
         let thread = std::thread::spawn(move || {
-            hal::klock::kernel_lock();
+            hal::sync::klock::kernel_lock();
             // The softnet's thread has a curproc (`sonewconn`'s attach reads it).
             NfsGlue::set_curproc(Some(me));
             let mut n = 0;

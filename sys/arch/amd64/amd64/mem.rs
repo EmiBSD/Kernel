@@ -91,7 +91,7 @@ use crate::sys::proc::Proc;
 use crate::sys::types::{Dev, Off, Paddr, minor};
 use crate::sys::uio::{Uio, UioRw};
 use crate::unported;
-use hal::pmap::direct_map as pmap_direct_map;
+use hal::vm::pmap::direct_map as pmap_direct_map;
 
 /// The bytes `/dev/mem` and `/dev/zero` move per step.
 const MEM_CHUNK: usize = 512;

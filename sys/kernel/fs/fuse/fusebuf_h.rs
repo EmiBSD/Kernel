@@ -85,10 +85,10 @@ use core::mem::offset_of;
 use core::slice;
 use core::sync::atomic::AtomicU64;
 
-use hal::malloc::MArray;
-use hal::pinlist::PinEntry;
-use hal::pool::PoolHome;
-use hal::slot::ReadMostly;
+use hal::ds::pinlist::PinEntry;
+use hal::mem::malloc::MArray;
+use hal::mem::pool::PoolHome;
+use hal::sync::slot::ReadMostly;
 use hal::sys::types::Ino;
 use hal::user::{AbiPod, bytes_of, bytes_of_mut};
 

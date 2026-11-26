@@ -23,7 +23,7 @@
 //! (`cargo test`, on macOS or Linux) have a machine under `hal::arch::current`. It may use
 //! `std` (rust-kernel.md: the host doubles); it must not grow logic: behaviour belongs in the
 //! generic code it stands under. Its page geometry and address-space bounds are amd64's
-//! (`param`, which also serves as `vmparam`); its pmap (`pmap`, behind `hal::pmap`) is a
+//! (`param`, which also serves as `vmparam`); its pmap (`pmap`, behind `hal::vm::pmap`) is a
 //! `BTreeMap` of mappings per pmap, as `bsd`'s host double's was.
 //!
 //! The constant headers of the two machines are compiled here for their host tests only

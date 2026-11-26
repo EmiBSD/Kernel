@@ -109,15 +109,15 @@
 
 use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
-use hal::intr::{IPL_NONE, IPL_SOFTNET};
-use hal::klock;
-use hal::link::Link;
-use hal::malloc::{M_NOWAIT, M_WAITOK, MArray, MBox};
-use hal::netlock::NetHeld;
-use hal::pool::{BoxPool, PR_NOWAIT, PR_WAITOK, PoolArc, TypedPool};
-use hal::rwlock::{Exclusive, RawRwlock};
-use hal::slot::ReadMostly;
-use hal::smr::{
+use hal::cpu::intr::{IPL_NONE, IPL_SOFTNET};
+use hal::ds::link::Link;
+use hal::mem::malloc::{M_NOWAIT, M_WAITOK, MArray, MBox};
+use hal::mem::pool::{BoxPool, PR_NOWAIT, PR_WAITOK, PoolArc, TypedPool};
+use hal::sync::klock;
+use hal::sync::netlock::NetHeld;
+use hal::sync::rwlock::{Exclusive, RawRwlock};
+use hal::sync::slot::ReadMostly;
+use hal::sync::smr::{
     self, SmrArcLink, SmrArcWord, SmrCounted, SmrLink, SmrLinked, SmrPtr, SmrRead, SmrRef,
     SmrRetiredArc,
 };
@@ -665,7 +665,7 @@ pub fn rtable_setsource(
     src: Option<SockaddrView<'_>>,
     _net: &NetHeld<'_>,
 ) -> Result<(), Errno> {
-    kassert!(hal::netlock::write_held());
+    kassert!(hal::sync::netlock::write_held());
     let tbl = rtable_get(rtableid, af).ok_or(Errno::EAFNOSUPPORT)?;
     let _ = tbl.r_source.replace(src.and_then(SaCopy::of));
     Ok(())
@@ -1803,7 +1803,7 @@ mod tests {
     #[test]
     fn the_source_address_is_set_read_and_cleared() {
         let _g = testroutes_setup();
-        let w = hal::netlock::NETLOCK.write();
+        let w = hal::sync::netlock::NETLOCK.write();
         let net = NetHeld::of(&w).expect("the net lock");
         let net = &net;
         assert!(rtable_getsource(0, AF_INET, net).is_none());

@@ -108,9 +108,9 @@ use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use hal::arch::current::param::{PAGE_SHIFT, PAGE_SIZE};
-use hal::intr::IPL_NONE;
-use hal::malloc::{M_WAITOK, MArc};
-use hal::pool::{PR_WAITOK, PoolArc, TypedPool};
+use hal::cpu::intr::IPL_NONE;
+use hal::mem::malloc::{M_WAITOK, MArc};
+use hal::mem::pool::{PR_WAITOK, PoolArc, TypedPool};
 use hal::sys::errno::Errno;
 use hal::sys::limits::INT_MAX;
 use hal::sys::mount::{
@@ -121,6 +121,7 @@ use hal::sys::types::{Gid, Ino, Mode, Uid};
 use hal::vm::uvmexp::UVMEXP;
 
 use crate::assert::{kassert, kpanic};
+use crate::base::prf::printf;
 use crate::fs::export::ExportGrant;
 use crate::fs::mount::{Mount, Vfsconf};
 use crate::fs::subr::{copy_statfs_info, vflush, vfs, vfs_getnewfsid};
@@ -140,7 +141,6 @@ use crate::fs::vnode::{
 };
 use crate::fs::vops::{Cred, Nd, Vfs, vop_unlock};
 use crate::net::mbuf::Mbuf;
-use crate::prf::printf;
 use crate::proc::{ProcGlue, Thread};
 
 /// `M_MISCFSMNT`: the malloc type of `struct tmpfs_mount` (`vmstat -m`'s "miscfs mount").
@@ -403,7 +403,7 @@ pub fn tmpfs_unmount<G: ProcGlue>(
             };
             loop {
                 let de = {
-                    let r = hal::klock::reader();
+                    let r = hal::sync::klock::reader();
                     node.dir().tn_dir.first(&r).and_then(PoolArc::from_ref)
                 };
                 let Some(de) = de else {
@@ -657,6 +657,7 @@ mod tests {
     use std::vec::Vec;
 
     use super::*;
+    use crate::file::uio::{Iovec, Uio};
     use crate::fs::namei::Componentname;
     use crate::fs::subr::{vput, vrele};
     use crate::fs::testfs::TestGlue;
@@ -671,7 +672,6 @@ mod tests {
     };
     use crate::fs::vnode::{VLNK, VREG, VROOT, Vattr, Vtype};
     use crate::testutil::{malloc_out, malloc_requests};
-    use crate::uio::{Iovec, Uio};
     use hal::sys::dirent::Dirent;
     use hal::sys::types::{Dev, Off};
 

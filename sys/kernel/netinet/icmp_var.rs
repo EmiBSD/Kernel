@@ -63,13 +63,13 @@
 //!
 //! ## Redesign
 //! - LZ's `ICMPCOUNTERS`, a static array of atomics in `bsd`'s `ip_icmp.rs` -> [`ICMPCOUNTERS`],
-//!   a `hal::percpu::Counters` here beside the enum that indexes it (`ipcounters`' shape,
+//!   a `hal::sync::percpu::Counters` here beside the enum that indexes it (`ipcounters`' shape,
 //!   `kernel::netinet::ip_var`): per CPU, as the C's `cpumem`, read whole by
 //!   `net.inet.icmp.stats`. `icmpstat_inc` and `icmpstat_inc_hist` are `#[inline]`.
 
 use core::mem::size_of;
 
-use hal::percpu::Counters;
+use hal::sync::percpu::Counters;
 use hal::sys::netinet_icmp_var::{ICMP_NHIST, Icmpstat};
 
 /// `enum icmpstat_counters`: the per-CPU ICMP counters, one per word of [`Icmpstat`].

@@ -86,7 +86,7 @@
 //!   secret and the SYN cache's hash seeds, where four `arc4random` words would take the
 //!   generator's lock four times.
 
-pub use crate::pmap::Random;
+pub use crate::vm::pmap::Random;
 
 use crate::assert::hal_panic;
 use crate::bridges;

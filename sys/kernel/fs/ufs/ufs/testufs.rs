@@ -38,9 +38,9 @@ use std::collections::HashMap;
 use std::sync::MutexGuard;
 use std::vec::Vec;
 
-use hal::intr::IPL_NONE;
-use hal::malloc::MArc;
-use hal::pool::{BoxPool, PR_WAITOK, PoolArc, TypedPool};
+use hal::cpu::intr::IPL_NONE;
+use hal::mem::malloc::MArc;
+use hal::mem::pool::{BoxPool, PR_WAITOK, PoolArc, TypedPool};
 use hal::sys::errno::Errno;
 use hal::sys::mount::{Fid, MNT_LOCAL, Statfs};
 use hal::sys::types::{Daddr, Ino, Mode, Off, Uid};
@@ -52,6 +52,7 @@ use super::ufs_ihash::{ufs_ihashget, ufs_ihashinit, ufs_ihashins};
 use super::ufs_vnops::{MASTERTEMPLATE, UfsFs, UfsSpecVnops, UfsVnops};
 use super::ufsmount::{UM_UFS2, Ufsmount, vfstoufs};
 use crate::file::FileGlue;
+use crate::file::uio::Uio;
 use crate::fs::bio::{biodone, bread, brelse, bwrite, getblk};
 use crate::fs::buf::{B_CLRBUF, B_READ, BufRef};
 use crate::fs::mount::{Mount, Vfsconf, vfs_mount_alloc, vfs_unbusy};
@@ -61,7 +62,6 @@ use crate::fs::testfs::{TestGlue, set_bdev_strategy, setup_root_cached, test_thr
 use crate::fs::vnode::{VBLK, VCHR, VREG, VT_UFS, Vattr, Vnode, iftovt};
 use crate::fs::vops::{Cred, IoBuf, Nd, Vfs, vop_create, vop_lookup};
 use crate::proc::Thread;
-use crate::uio::Uio;
 
 /// The block size: one directory block, the mount's `f_iosize`.
 pub const BSIZE: usize = DIRBLKSIZ;
@@ -520,7 +520,7 @@ impl UfsFs<TestGlue> for TestUfs {
 /// credential `cred`, as `namei` leaves it for the last component.
 pub fn cn<'a>(
     p: &'a Thread<TestGlue>,
-    cred: &'a crate::cred::Ucred,
+    cred: &'a crate::proc::cred::Ucred,
     op: u64,
     flags: u64,
     name: &'static [u8],
@@ -543,7 +543,7 @@ pub fn vattr(t: crate::fs::vnode::Vtype, mode: Mode) -> Vattr {
 /// locked and referenced; `dvp` stays locked.
 pub fn create(
     p: &Thread<TestGlue>,
-    cred: &crate::cred::Ucred,
+    cred: &crate::proc::cred::Ucred,
     dvp: &'static Vnode<TestGlue>,
     name: &'static [u8],
 ) -> Result<&'static Vnode<TestGlue>, Errno> {
@@ -563,7 +563,7 @@ pub fn create(
 /// and referenced (`dvp` itself, referenced again, for ".").
 pub fn lookup(
     p: &Thread<TestGlue>,
-    cred: &crate::cred::Ucred,
+    cred: &crate::proc::cred::Ucred,
     dvp: &'static Vnode<TestGlue>,
     name: &'static [u8],
 ) -> Result<&'static Vnode<TestGlue>, Errno> {

@@ -30,7 +30,7 @@
 //! system (`mmap(2)` and its siblings, `kbind(2)`, `pinsyscalls(2)`, `break`, N3.5);
 //! [`FdEntries`], the twenty of the descriptor tables and their I/O (`read(2)`, `close(2)`,
 //! `dup(2)`, `fcntl(2)`, `ioctl(2)`, ..., N4.3); [`EventEntries`], the seven of kqueue and
-//! select/poll (N4.4); `sendsyslog`, `sendsyslog(2)`'s entry (`kernel::log`, N4.7a); `futex`,
+//! select/poll (N4.4); `sendsyslog`, `sendsyslog(2)`'s entry (`kernel::base::log`, N4.7a); `futex`,
 //! futex(2)'s ([`FutexEntry`], N4.6c); [`ProcEntries`], the forty-six of the processes (fork,
 //! exit, wait, the limits, the ids and credentials, accounting, the TCB, the thread names, the
 //! routing table, N4.6a); `sysctl`, sysctl(2)'s ([`SysctlEntry`], N4.6b); [`TimeEntries`], the

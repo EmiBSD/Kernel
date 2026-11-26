@@ -62,7 +62,7 @@
 //! implementation is tweaked to minimise pointer traversal during lookups by only accessing
 //! the heaps: it never follows a pointer to or through an [`ArtTable`]. A heap is an array of
 //! words whose meaning depends on where they are: most name a node (a leaf entry) or the next
-//! heap to traverse, the two kinds told apart by the word's low bit (`hal::smr`'s
+//! heap to traverse, the two kinds told apart by the word's low bit (`hal::sync::smr`'s
 //! [`SmrTaggedWord`]). The first two entries are not used by the search: `heap[0]` names the
 //! heap's [`ArtTable`], and `heap[1]` holds the node that would be in the parent heap if this
 //! table were not using its slot, the default entry (route) of the table. Nodes hold the
@@ -107,7 +107,7 @@
 //!
 //! ## Redesign
 //! - The heap words (`art_heap_entry`, a bare `uintptr_t` the C changes with
-//!   `SMR_PTR_SET_LOCKED`) and `art_root` are `hal::smr`'s counted words: every word that
+//!   `SMR_PTR_SET_LOCKED`) and `art_root` are `hal::sync::smr`'s counted words: every word that
 //!   names a node or a heap holds a reference of it (a node's home index and each fringe copy
 //!   [`art_allot`] makes, `heap[0]` its table, a parent's slot its child's heap), so a reader's
 //!   reference is sound by SMR alone. `art_allot` clones the new node's handle into each word
@@ -157,10 +157,10 @@
 use core::ptr;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use hal::intr::IPL_SOFTNET;
-use hal::pool::{PR_NOWAIT, PoolArc, TypedPool};
-use hal::rwlock::Exclusive;
-use hal::smr::{SmrArcLink, SmrArcWord, SmrCounted, SmrRead, SmrRef, SmrTaggedWord, Tag};
+use hal::cpu::intr::IPL_SOFTNET;
+use hal::mem::pool::{PR_NOWAIT, PoolArc, TypedPool};
+use hal::sync::rwlock::Exclusive;
+use hal::sync::smr::{SmrArcLink, SmrArcWord, SmrCounted, SmrRead, SmrRef, SmrTaggedWord, Tag};
 use hal::sys::errno::Errno;
 
 use crate::assert::{kassert, kpanic};
@@ -1195,8 +1195,8 @@ mod tests {
     use std::vec;
     use std::vec::Vec;
 
-    use hal::rwlock::RawRwlock;
-    use hal::smr;
+    use hal::sync::rwlock::RawRwlock;
+    use hal::sync::smr;
 
     use super::*;
     use crate::testutil;

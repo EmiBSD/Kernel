@@ -54,19 +54,19 @@
 //!
 //! Status: an adapter (N4.2) except `ADDUPROF`, which waits for `addupc_task`
 //! (`subr_prof.c`, with the profiling AST). `struct plimit` is the kernel crate's
-//! (`kernel::resource::Plimit`, plain data placed and shared through `PlimitRef`); the
+//! (`kernel::proc::resource::Plimit`, plain data placed and shared through `PlimitRef`); the
 //! prototypes are the functions of `kern/kern_resource.rs`.
 //!
 //! ## Deviations
 //! - A thread's read reference (`p_limit`) is its own copy of the limits
-//!   (`kernel::resource::LimitCache`), which `lim_read_enter` refreshes and lends.
+//!   (`kernel::proc::resource::LimitCache`), which `lim_read_enter` refreshes and lends.
 
 use crate::kassert;
 use crate::kern::kern_resource::lim_read_enter;
 use crate::sys::resource::RLIM_NLIMITS;
 use crate::sys::types::Rlim;
 
-pub use kernel::resource::{LimitCache, Plimit, PlimitRef};
+pub use kernel::proc::resource::{LimitCache, Plimit, PlimitRef};
 
 /// `lim_read_leave`: finish read access to resource limits.
 pub fn lim_read_leave(_limit: &LimitCache) {

@@ -86,9 +86,9 @@
 use core::sync::atomic::Ordering;
 
 // The clock's statics, `hardclock`, `initclocks` and `sysctl_clockrate` live in the kernel
-// crate (N4.1: `ticks`; N4.8a: the rest, `kernel::clock`); re-exported under their names for
+// crate (N4.1: `ticks`; N4.8a: the rest, `kernel::time::clock`); re-exported under their names for
 // the readers of this path.
-pub use kernel::clock::{
+pub use kernel::time::clock::{
     HARDCLOCK_PERIOD, JIFFIES, PROFHZ, PROFPROCS, STATCLOCK_AVG, STATCLOCK_IS_RANDOMIZED,
     STATCLOCK_MASK, STATCLOCK_MIN, STATHZ, TICKS, hardclock, hardclock_period, initclocks, ticks,
 };
@@ -106,7 +106,7 @@ use crate::sys::proc::ProcExt;
 use crate::sys::proc::{P_SYSTEM, TU_ITICKS, TU_STICKS, TU_UTICKS, tu_enter, tu_leave};
 use crate::sys::sched::{CP_IDLE, CP_INTR, CP_NICE, CP_SPIN, CP_SYS, CP_USER};
 use crate::sys::time::{Timespec, Timeval, timespec_to_timeval};
-use hal::clock::ClockFrame;
+use hal::cpu::clock::ClockFrame;
 
 /// `tvtohz`: compute number of hz in the specified amount of time.
 pub fn tvtohz(tv: &Timeval) -> i32 {
@@ -269,15 +269,15 @@ pub fn statclock(cr: &Clockrequest, frame: &ClockFrame) {
 }
 
 /// `sysctl_clockrate`: `kern.clockrate`, with `kern_sysctl.c`'s arguments
-/// (`kernel::clock::sysctl_clockrate`).
+/// (`kernel::time::clock::sysctl_clockrate`).
 pub fn sysctl_clockrate(where_: usize, sizep: &mut usize, newp: usize) -> Result<(), Errno> {
-    let mut req = kernel::sysctl::SysctlReq {
+    let mut req = kernel::base::sysctl::SysctlReq {
         oldp: where_,
         oldlenp: sizep,
         newp,
         newlen: 0,
     };
-    kernel::clock::sysctl_clockrate(&mut req)
+    kernel::time::clock::sysctl_clockrate(&mut req)
 }
 /* </CODE> */
 

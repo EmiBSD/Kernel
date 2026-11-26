@@ -157,7 +157,7 @@ use crate::sys::uio::UioRw;
 use crate::sys::vnode::vput;
 use crate::sys::vnode::{IO_UNIT, VREAD, VREG, Vnode};
 use crate::sys::vnode::{vn_marktext, vn_rdwr};
-use hal::malloc::MArray;
+use hal::mem::malloc::MArray;
 use hal::vm::param::{round_page, trunc_page};
 use kernel::proc::PinTable;
 use kernel::vm::map::{VM_MAP_PINSYSCALL_ONCE, uvm_map_hint, uvm_map_mquery, uvm_map_pie};

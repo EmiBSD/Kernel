@@ -154,10 +154,10 @@
 //! without the mutex in the C (`bd_promisc`, `bd_dirfilt`, `bd_fildrop`, `bd_hdrcmplt`,
 //! `bd_async`, `bd_sig`, `bd_locked`) are relaxed atomics, read by the taps unlocked as in the
 //! C. `bpf_detachd` lets `bd_mtx` go around `ifpromisc`, under the net lock taken detached
-//! (`hal::netlock::lock`, the C's `NET_LOCK()`), as `bpfwrite` holds it around the output.
+//! (`hal::sync::netlock::lock`, the C's `NET_LOCK()`), as `bpfwrite` holds it around the output.
 //!
 //! **Lifetimes.** A descriptor and a tap are counted `malloc(M_DEVBUF)` blocks (`MArc`), as
-//! the C mallocs them, published to the taps through counted SMR words (`hal::smr`'s S4): a
+//! the C mallocs them, published to the taps through counted SMR words (`hal::sync::smr`'s S4): a
 //! word holds a reference, a reference that leaves a word is released after a grace period,
 //! so a tap's walk is sound by SMR alone. The holders, against the C's `bpf_get`/`bpf_put`:
 //!
@@ -200,7 +200,7 @@
 //!   N12).
 //! - A descriptor lookup that the C assumes succeeds (`bpfclose`, `bpfread`, `bpfwrite`,
 //!   `bpfioctl` on an open device) answers `ENXIO` when it does not.
-//! - The ioctls read and write their argument through `hal::pod`; a request shorter than its
+//! - The ioctls read and write their argument through `hal::mem::pod`; a request shorter than its
 //!   structure is `EINVAL`. `BIOCGETIF`/`BIOCSETIF` use only the `struct ifreq`'s name, and
 //!   `bpf_setif`'s name comparison stops at `IFNAMSIZ` where the C's `strcmp` reads on.
 //! - `bpf_movein`: `MGETHDR`, `MCLGETL` and `m_tag_get` with `M_WAIT` sleep rather than fail
@@ -260,15 +260,15 @@ use core::mem::size_of;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU64, Ordering};
 
-use hal::intr::IPL_NET;
-use hal::klock;
-use hal::malloc::{M_CANFAIL, M_NOWAIT, M_WAITOK, MArc, MArray};
-use hal::mutex::{Mutexed, MutexedGuard};
-use hal::once::OnceStatic;
-use hal::pinlist::{PinEntry, PinList};
-use hal::pool::AnyArc;
-use hal::slot::ReadMostly;
-use hal::smr::{self, SmrArcLink, SmrArcWord, SmrCounted, SmrRef};
+use hal::cpu::intr::IPL_NET;
+use hal::ds::pinlist::{PinEntry, PinList};
+use hal::mem::malloc::{M_CANFAIL, M_NOWAIT, M_WAITOK, MArc, MArray};
+use hal::mem::pool::AnyArc;
+use hal::sync::klock;
+use hal::sync::mutex::{Mutexed, MutexedGuard};
+use hal::sync::once::OnceStatic;
+use hal::sync::slot::ReadMostly;
+use hal::sync::smr::{self, SmrArcLink, SmrArcWord, SmrCounted, SmrRef};
 use hal::sys::errno::Errno;
 use hal::sys::filio::{FIOASYNC, FIOGETOWN, FIONREAD, FIOSETOWN};
 use hal::sys::mbuf::MT_DATA;
@@ -294,12 +294,14 @@ use hal::sys::types::{Dev, minor};
 use hal::user::{AbiPod, UserPtr};
 
 use crate::assert::{kassert, kpanic};
-use crate::clock::{Timeval, sec_to_nsec};
-use crate::event::{
+use crate::base::sysctl::{SysctlReq, int_bounded};
+use crate::base::task::{SYSTQ, Task, task_add, task_del};
+use crate::file::FileGlue;
+use crate::file::event::{
     EVFILT_READ, FILTEROP_ISFD, FILTEROP_MPSAFE, Filter, Filterops, Kevent, Klist, Knote,
     knote_modify, knote_process,
 };
-use crate::file::FileGlue;
+use crate::file::uio::Uio;
 use crate::fs::spec::CLONE_SHIFT;
 use crate::fs::vnode::{IO_NDELAY, VCHR};
 use crate::net::bpf_filter::{_bpf_lfilter, BpfOps, bpf_validate};
@@ -312,14 +314,12 @@ use crate::net::mbuf::{
 use crate::net::mbuf2::{m_tag_get, m_tag_prepend};
 use crate::net::proto::SockaddrView;
 use crate::proc::{ProcGlue, Thread};
-use crate::sigio::{
+use crate::sig::sigio::{
     SigioRef, TIOCGPGRP, TIOCSPGRP, pgsigio, sigio_free, sigio_getown, sigio_setown,
 };
-use crate::sysctl::{SysctlReq, int_bounded};
-use crate::task::{SYSTQ, Task, task_add, task_del};
-use crate::tc::{microtime, nsecuptime};
-use crate::timeout::{KCLOCK_NONE, Timeout};
-use crate::uio::Uio;
+use crate::time::clock::{Timeval, sec_to_nsec};
+use crate::time::tc::{microtime, nsecuptime};
+use crate::time::timeout::{KCLOCK_NONE, Timeout};
 
 /// `M_DEVBUF` (`<sys/malloc.h>`, `bsd`'s: docs/SCAFFOLDING.md "copies"): the descriptors',
 /// taps', programs' and buffers' malloc type.
@@ -336,10 +336,10 @@ const MAXTSLP: u64 = u64::MAX - 1;
 const PRINET: i32 = 26;
 
 /// `INFSLP`: no timeout.
-const INFSLP: u64 = hal::sleep::INFSLP;
+const INFSLP: u64 = hal::sync::sleep::INFSLP;
 
 /// `PCATCH`.
-const PCATCH: i32 = hal::sleep::PCATCH;
+const PCATCH: i32 = hal::sync::sleep::PCATCH;
 
 /// `NBPFILTER`: the count `config(8)` writes into `bpfilter.h` for `pseudo-device bpfilter`
 /// (GENERIC).
@@ -902,9 +902,9 @@ fn bpf_detachd<'a>(d: &'a BpfD, mut s: MutexedGuard<'a, BpfSlots>) -> MutexedGua
         d.bd_promisc.store(false, Ordering::Relaxed);
 
         drop(s);
-        hal::netlock::lock();
+        hal::sync::netlock::lock();
         let error = ifp.map_or(Ok(()), |ifp| ifpromisc(ifp, false));
-        hal::netlock::unlock();
+        hal::sync::netlock::unlock();
         s = d.bd_mtx.lock();
 
         if let Err(e) = error
@@ -1154,14 +1154,17 @@ pub fn bpfread<G: ProcGlue>(dev: Dev, uio: &mut Uio<'_, G>, ioflag: i32) -> Resu
 /// hold); `pin` lends a handle to queue the task with. With `bd_mtx` held.
 fn bpf_wakeup(d: &BpfD, s: &MutexedGuard<'_, BpfSlots>, pin: impl FnOnce() -> BpfDRef) {
     if s.nreaders != 0 {
-        hal::sleep::wakeup(ptr::from_ref::<BpfD>(d));
+        hal::sync::sleep::wakeup(ptr::from_ref::<BpfD>(d));
     }
 
     (d.bd_klist.knote)(d, s, 0);
 
     if d.bd_async.load(Ordering::Relaxed) != 0 && d.bd_sig.load(Ordering::Relaxed) != 0 {
         let h = pin();
-        let _ = task_add(&SYSTQ, hal::pin::project(h.as_pin(), |d| &d.bd_wake_task));
+        let _ = task_add(
+            &SYSTQ,
+            hal::ds::pin::project(h.as_pin(), |d| &d.bd_wake_task),
+        );
     }
 }
 
@@ -1233,9 +1236,9 @@ pub fn bpfwrite<G: ProcGlue>(dev: Dev, uio: &mut Uio<'_, G>, _ioflag: i32) -> Re
         kpanic(format_args!("bpfwrite: a short destination"));
     };
 
-    hal::netlock::lock();
+    hal::sync::netlock::lock();
     let error = ifp.driver().output(ifp, m, view, None);
-    hal::netlock::unlock();
+    hal::sync::netlock::unlock();
     error
 }
 
@@ -1293,12 +1296,12 @@ fn bpf_get_wtimeout(d: &BpfD) -> Result<Timeval, Errno> {
 
 /// The ioctl's argument, of type `T` (`*(T *)addr`): `EINVAL` for a request too short.
 fn arg<T: AbiPod>(addr: &[u8]) -> Result<T, Errno> {
-    hal::pod::at(addr, 0).ok_or(Errno::EINVAL)
+    hal::mem::pod::at(addr, 0).ok_or(Errno::EINVAL)
 }
 
 /// The ioctl's answer (`*(T *)addr = v`): `EINVAL` for a request too short.
 fn ret<T: AbiPod>(addr: &mut [u8], v: &T) -> Result<(), Errno> {
-    if hal::pod::put(addr, 0, v) {
+    if hal::mem::pod::put(addr, 0, v) {
         Ok(())
     } else {
         Err(Errno::EINVAL)
@@ -1407,9 +1410,9 @@ pub fn bpfioctl<G: ProcGlue>(
             None => Err(Errno::EINVAL),
             Some(bif) => match bif.bif_ifp {
                 Some(ifp) if !d.bd_promisc.load(Ordering::Relaxed) => {
-                    hal::netlock::lock();
+                    hal::sync::netlock::lock();
                     let error = ifpromisc(ifp, true);
-                    hal::netlock::unlock();
+                    hal::sync::netlock::unlock();
                     if error.is_ok() {
                         d.bd_promisc.store(true, Ordering::Relaxed);
                     }
@@ -1920,7 +1923,7 @@ fn bpf_catchpacket(
     bh.bh_datalen = pktlen as u32;
     bh.bh_hdrlen = hdrlen as u16;
     bh.bh_caplen = (totlen - hdrlen) as u32;
-    let _ = hal::pod::put(rec, 0, &bh);
+    let _ = hal::mem::pod::put(rec, 0, &bh);
     bpf_mcopy(pkt, &mut rec[hdrlen..]);
     d.bd_slen.store((curlen + totlen) as i32, Ordering::Relaxed);
 
@@ -1938,7 +1941,7 @@ fn bpf_catchpacket(
                 d.bd_state.store(BPF_S_WAIT, Ordering::Relaxed);
 
                 let h = dref.arc();
-                let _ = hal::pin::project(h.as_pin(), |d| &d.bd_wait_tmo).add_nsec(wtout);
+                let _ = hal::ds::pin::project(h.as_pin(), |d| &d.bd_wait_tmo).add_nsec(wtout);
             }
         }
     }
@@ -2307,17 +2310,17 @@ mod tests {
     use std::vec;
     use std::vec::Vec;
 
-    use hal::smr::CpuWalk;
+    use hal::sync::smr::CpuWalk;
     use hal::sys::net_bpf::{BPF_F_DIR_IN, BPF_F_DIR_MASK, BPF_K, BPF_RET, bpf_stmt};
     use hal::sys::types::makedev;
 
     use super::*;
+    use crate::file::uio::{Iovec, UioRw, UioSeg};
     use crate::net::if_::{if_test_reset, test_ifnet, test_ifnet_with};
     use crate::net::if_var::NetDriver;
     use crate::net::mbuf::{M_DONTWAIT, m_cat, m_get};
     use crate::net::unix::tests::G;
     use crate::testutil::{USER_BASE, USER_LEN, user_bytes};
-    use crate::uio::{Iovec, UioRw, UioSeg};
 
     /// The tests' user memory (the user-copy double's map, `hal/arch/host/copy.rs`): a program
     /// at `UPROG`, a read or write buffer of up to 8 KiB at `UBUF`, words at `UWORD`.
@@ -2343,7 +2346,7 @@ mod tests {
     fn setup() -> (MutexGuard<'static, ()>, &'static Thread<G>) {
         let (g, p) = crate::net::unix::tests::setup();
         if_test_reset();
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         bpf_test_reset();
         let _ = BPF_MAJOR.set(23);
         let _ = BPF_REVOKE.set(test_revoke);
@@ -2358,9 +2361,9 @@ mod tests {
     /// `ioctl(2)` on the descriptor with an argument of type `T`, given and read back.
     fn ioctl<T: AbiPod>(d: Dev, p: &Thread<G>, cmd: u64, arg: &mut T) -> Result<(), Errno> {
         let mut data = vec![0u8; size_of::<T>().max(32)];
-        assert!(hal::pod::put(&mut data, 0, arg));
+        assert!(hal::mem::pod::put(&mut data, 0, arg));
         let r = bpfioctl::<G>(d, cmd, &mut data, 0, p);
-        *arg = hal::pod::at(&data, 0).expect("the answer");
+        *arg = hal::mem::pod::at(&data, 0).expect("the answer");
         r
     }
 
@@ -2434,8 +2437,8 @@ mod tests {
 
     /// The releases queued on this CPU, run after a grace period.
     fn grace() {
-        hal::smr::idle();
-        let _ = hal::smr::collect().run(&Alone);
+        hal::sync::smr::idle();
+        let _ = hal::sync::smr::collect().run(&Alone);
     }
 
     #[test]
@@ -2539,7 +2542,7 @@ mod tests {
         assert_eq!(n, 30 + 60);
         let (r, buf) = read(d, p, blen as usize);
         assert_eq!(r, Ok(()));
-        let bh: BpfHdr = hal::pod::at(&buf, 0).expect("a header");
+        let bh: BpfHdr = hal::mem::pod::at(&buf, 0).expect("a header");
         assert_eq!((bh.bh_caplen, bh.bh_datalen, bh.bh_hdrlen), (60, 60, 30));
         assert_eq!(bh.bh_ifidx, 3);
         assert_eq!(bh.bh_flags & BPF_F_DIR_MASK, BPF_F_DIR_IN);
@@ -2558,7 +2561,7 @@ mod tests {
         ioctl(d, p, BIOCSETF, &mut prog).expect("BIOCSETF");
         assert!(!bpf_mtap_ether(&ifp.if_bpf, &m, BPF_DIRECTION_IN));
         let (_, buf) = read(d, p, blen as usize);
-        let bh: BpfHdr = hal::pod::at(&buf, 0).expect("a header");
+        let bh: BpfHdr = hal::mem::pod::at(&buf, 0).expect("a header");
         assert_eq!((bh.bh_caplen, bh.bh_datalen), (4, 60));
         let mut prog = program(&[bpf_stmt(BPF_RET | BPF_K, 0)]);
         ioctl(d, p, BIOCSETFNR, &mut prog).expect("BIOCSETFNR");
@@ -2604,7 +2607,7 @@ mod tests {
         assert!(bpfilter_lookup(7 << CLONE_SHIFT).is_none());
         assert_eq!(bpfclose::<G>(d, 0, 0, None), Err(Errno::ENXIO));
         bpfdetach(ifp);
-        let r = hal::klock::reader();
+        let r = hal::sync::klock::reader();
         assert!(
             !BPF_IFLIST
                 .iter(&r)
@@ -2630,7 +2633,7 @@ mod tests {
             assert!(!bpf_mtap(&ifp.if_bpf, &m, BPF_DIRECTION_IN));
         };
         let caught = |buf: &[u8]| -> (u32, u32, u8) {
-            let bh: BpfHdr = hal::pod::at(buf, 0).expect("a header");
+            let bh: BpfHdr = hal::mem::pod::at(buf, 0).expect("a header");
             (bh.bh_caplen, bh.bh_datalen, buf[30])
         };
         tap(1); // stored
@@ -2787,7 +2790,7 @@ mod tests {
         // The program in place, then replaced: the old one waits for a grace period.
         let d0 = bpfilter_lookup(10 << CLONE_SHIFT).expect("open");
         let old = {
-            let g = hal::smr::read();
+            let g = hal::sync::smr::read();
             d0.bd_rfilter
                 .load(&g)
                 .map(SmrRef::arc)
@@ -2796,14 +2799,18 @@ mod tests {
         assert_eq!(old.insns.len(), BPF_MAXINSNS as usize);
         let mut one = program(&[ret]);
         ioctl(d, p, BIOCSETF, &mut one).expect("BIOCSETF");
-        assert_eq!(hal::smr::retired_count(&*old), 1, "retired, not released");
+        assert_eq!(
+            hal::sync::smr::retired_count(&*old),
+            1,
+            "retired, not released"
+        );
         // The write filter is the other word.
         ioctl(d, p, BIOCSETWF, &mut one).expect("BIOCSETWF");
         {
-            let g = hal::smr::read();
+            let g = hal::sync::smr::read();
             assert!(d0.bd_wfilter.load(&g).is_some() && d0.bd_rfilter.load(&g).is_some());
         }
-        while hal::smr::retired_count(&*old) != 0 {
+        while hal::sync::smr::retired_count(&*old) != 0 {
             grace();
         }
         drop(old);
@@ -2919,7 +2926,7 @@ mod tests {
             "closed by the revoke"
         );
         assert!(!ifp.if_bpf.is_set());
-        let r = hal::klock::reader();
+        let r = hal::sync::klock::reader();
         assert!(
             !BPF_IFLIST
                 .iter(&r)
@@ -3066,15 +3073,15 @@ mod tests {
         bpfopen::<G>(d, 0, 0, p).expect("bpfopen");
         setif(d, p, b"bpfrace0").expect("BIOCSETIF");
 
-        let g = hal::smr::read();
+        let g = hal::sync::smr::read();
         let bp = ifp.if_bpf.load(&g).expect("tapped");
         let held = bp.bif_dlist.load(&g).expect("a listener");
         // The close, on another thread, while this reader stands on the descriptor.
         thread::scope(|s| {
             s.spawn(|| {
-                hal::klock::kernel_lock();
+                hal::sync::klock::kernel_lock();
                 bpfclose::<G>(d, 0, 0, None).expect("bpfclose");
-                hal::klock::kernel_unlock();
+                hal::sync::klock::kernel_unlock();
             });
         });
         // The old descriptor, whole; the chain and the driver's word empty.
@@ -3082,7 +3089,7 @@ mod tests {
         assert!(held.bd_mtx.lock().bif.is_none(), "detached");
         assert!(bp.bif_dlist.load(&g).is_none() && !ifp.if_bpf.is_set());
         assert!(
-            hal::smr::retired_count(held.get()) >= 1,
+            hal::sync::smr::retired_count(held.get()) >= 1,
             "the chain's reference waits for the section"
         );
         drop(g);
@@ -3128,7 +3135,7 @@ mod tests {
                     let _ = bpf_mtap(&ifp.if_bpf, &m, BPF_DIRECTION_IN);
                     taps.fetch_add(1, Ordering::Relaxed);
                     if walk.asked.load(Ordering::SeqCst) {
-                        hal::smr::idle();
+                        hal::sync::smr::idle();
                         walk.asked.store(false, Ordering::SeqCst);
                     }
                 }
@@ -3144,8 +3151,8 @@ mod tests {
                 setif(d, p, b"bpfrace1").expect("BIOCSETIF");
                 thread::yield_now();
                 bpfclose::<G>(d, 0, 0, None).expect("bpfclose");
-                hal::smr::idle();
-                let _ = hal::smr::collect().run(&walk);
+                hal::sync::smr::idle();
+                let _ = hal::sync::smr::collect().run(&walk);
             }
             stop.store(true, Ordering::SeqCst);
         });

@@ -90,7 +90,7 @@
 //!   `bdwrite`/`brelse` that consumes it): 0 `unsafe`, the same reads and writes of the
 //!   same bytes, a bounds check per map access.
 //! - LZ's three `static StaticCell<Timeval>` rate limits written through `unsafe`
-//!   `get_mut` -> `Mutexed<Timespec>` statics read by `kernel::fork::ratecheck`: the one lock
+//!   `get_mut` -> `Mutexed<Timespec>` statics read by `kernel::proc::fork::ratecheck`: the one lock
 //!   section is the C's `ratecheck_mtx` section (`kern_time.c`), on the error message's path
 //!   only. `uprintf` is the kernel's (`tty.rs`), which closes LZ's visible `unported!` gap:
 //!   "write failed, file system is full" and "create/symlink failed, no inodes free" reach
@@ -100,11 +100,11 @@
 
 use core::sync::atomic::Ordering;
 
-use hal::intr::IPL_NONE;
-use hal::mutex::Mutexed;
+use hal::cpu::intr::IPL_NONE;
 #[cfg(feature = "ffs2")]
 use hal::random::arc4random;
 use hal::random::arc4random_uniform;
+use hal::sync::mutex::Mutexed;
 use hal::sys::errno::Errno;
 use hal::sys::types::{Daddr, Ino, Mode, Uid};
 
@@ -118,8 +118,8 @@ use super::fs::{
 #[cfg(feature = "ffs2")]
 use super::fs::{ino_to_fsba, inopb};
 use crate::assert::kpanic;
-use crate::clock::Timespec;
-use crate::fork::ratecheck;
+use crate::base::log::LOG_ERR;
+use crate::base::prf::{log, printf};
 #[cfg(feature = "ffs2")]
 use crate::fs::bio::{bawrite, getblk};
 use crate::fs::bio::{bdwrite, bread, brelse, btodb, buf_adjcnt};
@@ -129,9 +129,9 @@ use crate::fs::ufs::ufs::inode::{IN_CHANGE, IN_UPDATE, Inode, vtoi};
 use crate::fs::ufs::ufs::quota::{ufs_quota_alloc_blocks, ufs_quota_free_blocks};
 use crate::fs::vnode::{VROOT, Vnode};
 use crate::fs::vops::{Cred, VFS_VGET};
-use crate::log::LOG_ERR;
-use crate::prf::{log, printf};
 use crate::proc::ProcGlue;
+use crate::proc::fork::ratecheck;
+use crate::time::clock::Timespec;
 use crate::vm::vnode::uvm_vnp_uncache;
 use libkern::{scanc, skpc};
 
@@ -900,7 +900,7 @@ fn cg_settime(cgp: &mut CgView<'_>) {
 
 /// `nanotime(&now); now.tv_sec`.
 fn clock_now() -> i64 {
-    crate::tc::nanotime().tv_sec
+    crate::time::tc::nanotime().tv_sec
 }
 
 /// `ffs_fragextend`: determine whether a fragment can be extended. Check to see if the
@@ -1208,7 +1208,7 @@ pub fn ffs_nodealloccg<G: ProcGlue>(ip: &Inode<G>, cg: u32, mut ipref: Daddr, mo
                             fsbtodb(fs, ino_to_fsba(fs, ino)),
                             fs.fs_bsize(),
                             0,
-                            hal::sleep::INFSLP,
+                            hal::sync::sleep::INFSLP,
                         ) {
                             break b;
                         }
@@ -1576,9 +1576,9 @@ mod tests {
     use super::super::testffs::newfs::{FFS1_1G, FFS2_1G, Image, Params, check_with, super_block};
     use super::super::testffs::{disk, new_file, setup, sync};
     use super::*;
-    use crate::cred::Ucred;
     use crate::fs::subr::vput;
     use crate::fs::ufs::ufs::dinode::IFREG;
+    use crate::proc::cred::Ucred;
 
     /// The formats the tests build: FFS2's only with `option FFS2`.
     const FORMATS: &[Params] = if cfg!(feature = "ffs2") {

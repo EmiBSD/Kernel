@@ -89,9 +89,9 @@
 //! - The pager functions take the [`Aobj`], not an object cast back from its first member.
 //! - The swap bookkeeping (the `u_swap` union of `u_swslots`, a `mallocarray` of slots, and
 //!   `u_swhash`, a `hashinit` table of `LIST_HEAD`s of `uao_swhash_elt` pool items) -> a
-//!   [`Swap`] inside a `hal::rwlock::Guarded` keyed to the object's lock: `None` (`NOSWAP`, or
-//!   nothing made), `Array` of a `hal::malloc::MArray<i32>`, `Hash` of an `MArray` of buckets,
-//!   each the head of an owned chain of [`SwhashElt`] (`hal::pool::PoolBox` items of
+//!   [`Swap`] inside a `hal::sync::rwlock::Guarded` keyed to the object's lock: `None` (`NOSWAP`, or
+//!   nothing made), `Array` of a `hal::mem::malloc::MArray<i32>`, `Hash` of an `MArray` of buckets,
+//!   each the head of an owned chain of [`SwhashElt`] (`hal::mem::pool::PoolBox` items of
 //!   `"uaoeltpl"`, each owning the next: the C's bucket list). Reading a slot takes a witness
 //!   of the object's lock, changing one the write witness; a witness of another lock is
 //!   `panic(9)`. An element is 96 bytes, as the C's item; a bucket head is 16 bytes where the
@@ -115,12 +115,12 @@ use core::mem;
 use core::sync::atomic::{AtomicI32, Ordering};
 
 use hal::arch::current::param::{PAGE_SHIFT, PAGE_SIZE};
-use hal::intr::IPL_NONE;
+use hal::cpu::intr::IPL_NONE;
 #[cfg(feature = "tmpfs")]
-use hal::malloc::M_CANFAIL;
-use hal::malloc::{M_NOWAIT, M_WAITOK, MArray};
-use hal::pool::{BoxPool, PR_NOWAIT, PR_WAITOK, PoolArc, PoolBox, TypedPool};
-use hal::rwlock::{Guarded, RawRwlock, Witness, WriteWitness};
+use hal::mem::malloc::M_CANFAIL;
+use hal::mem::malloc::{M_NOWAIT, M_WAITOK, MArray};
+use hal::mem::pool::{BoxPool, PR_NOWAIT, PR_WAITOK, PoolArc, PoolBox, TypedPool};
+use hal::sync::rwlock::{Guarded, RawRwlock, Witness, WriteWitness};
 use hal::sys::errno::Errno;
 use hal::sys::mman::{PROT_NONE, PROT_READ, PROT_WRITE};
 use hal::sys::types::Vsize;
@@ -139,7 +139,7 @@ use super::pager::{
 use super::pmemrange::uvm_wait;
 use super::types::{VmProt, Voff};
 use crate::assert::{kassert, kpanic};
-use crate::prf::{printf, unported};
+use crate::base::prf::{printf, unported};
 
 /// `M_UVMAOBJ` (`<sys/malloc.h>`): the malloc type of the swap slot arrays and hash tables.
 pub const M_UVMAOBJ: i32 = 99;
@@ -156,7 +156,7 @@ pub const UAO_FLAG_CANFAIL: i32 = 0x4;
 /// `UAO_FLAG_NOSWAP`: internal: aobj can't swap (kernel obj only!).
 pub const UAO_FLAG_NOSWAP: i32 = 0x8;
 /// `UAO_FLAG_HALVIEW` (not the C's, N5.9t1): internal: `hal` views the object's page as a
-/// Rust object (`kernel::tc::timekeep_object`'s page, `hal::mapped`'s `TimekeepAtomic`), so
+/// Rust object (`kernel::time::tc::timekeep_object`'s page, `hal::mem::mapped`'s `TimekeepAtomic`), so
 /// no kernel window may map it (`vm::km::uvm_map_object_window` refuses it). Set once,
 /// before the view is made, never cleared.
 pub const UAO_FLAG_HALVIEW: i32 = 0x4000_0000;
@@ -878,7 +878,7 @@ pub fn uao_detach(aobj: &Aobj) {
     let lock = uobj.lock();
     let mut w = lock.write();
     while let Some(pg) = uobj.pages().root() {
-        hal::pmap::page_protect(&pg.mdpage, PROT_NONE);
+        hal::vm::pmap::page_protect(&pg.mdpage, PROT_NONE);
         if pg.flags() & PG_BUSY != 0 {
             uvm_pagewait(pg, Owner::Object(uobj), w, "uao_det");
             w = lock.write();
@@ -970,7 +970,7 @@ pub fn uao_flush(
         }
 
         // free the swap slot and the page.
-        hal::pmap::page_protect(&pg.mdpage, PROT_NONE);
+        hal::vm::pmap::page_protect(&pg.mdpage, PROT_NONE);
 
         // freeing swapslot here is not strictly necessary. however, leaving it here doesn't
         // save much because we need to update swap accounting anyway.
@@ -1203,7 +1203,7 @@ pub fn uao_get_sync(
                 let _ = unported!("uao_get: SWSLOT_BAD / uvm_swap_markbad (swap, M7)");
 
                 if ptmp.flags() & PG_WANTED != 0 {
-                    hal::sleep::wakeup(ptmp.chan());
+                    hal::sync::sleep::wakeup(ptmp.chan());
                 }
                 ptmp.clear_bits(PG_WANTED | PG_BUSY);
                 // UVM_PAGE_OWN(ptmp, NULL): not configured.
@@ -1220,7 +1220,7 @@ pub fn uao_get_sync(
         // it is the callers job to: check if the page is released, unbusy the page, activate
         // the page.
         ptmp.clear_bits(PG_FAKE);
-        let _ = hal::pmap::clear_modify(&ptmp.mdpage); // ... and clean
+        let _ = hal::vm::pmap::clear_modify(&ptmp.mdpage); // ... and clean
         *slot = PageSlot::Page(ptmp);
     } // lcv loop
 

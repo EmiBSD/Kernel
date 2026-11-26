@@ -58,10 +58,10 @@
 //! through [`sendit`]), the receive calls (`recvfrom(2)`, `recvmsg(2)`, `recvmmsg(2)`,
 //! through [`recvit`]), `shutdown(2)`, `setsockopt(2)` and `getsockopt(2)`,
 //! `getsockname(2)` and `getpeername(2)`, and `ypconnect(2)`, over the socket layer
-//! (`kernel::net::socket`) and the descriptor tables (`kernel::descrip`). [`sockargs`] copies
+//! (`kernel::net::socket`) and the descriptor tables (`kernel::file::descrip`). [`sockargs`] copies
 //! a socket address or control data in from user space into an mbuf, [`getsock`] finds the
 //! socket file of a descriptor, [`copyaddrout`] copies an address back out. `setrtable(2)`
-//! and `getrtable(2)`, the C file's other two, are `kernel::prot`'s (N4.6a).
+//! and `getrtable(2)`, the C file's other two, are `kernel::proc::prot`'s (N4.6a).
 //!
 //! The ABI reaches these through `KernelApi::socket` (`hal::api::SocketEntries`): `bsd`'s
 //! `native_*` wrappers run the system call prologue still in `bsd` (pledge, the pinned
@@ -105,11 +105,11 @@
 //!   (`UserPtr<Msghdr>::copyin`, `copyout`), their holes with them: `recvmsg(2)` and the
 //!   `mmsg` calls copy the structure back out whole, the user's padding bytes kept, as the
 //!   C's `copyout(&msg)` of the structure it copied in (LZ copied field by field and zeroed
-//!   them). The iovecs go to a `kernel::uio::IovBuf` (`IovBuf::copyin`: the stack part or one
+//!   them). The iovecs go to a `kernel::file::uio::IovBuf` (`IovBuf::copyin`: the stack part or one
 //!   `M_IOV` array, freed with the buffer; `sendmmsg(2)` and `recvmmsg(2)` keep one buffer
 //!   across their messages and grow its array as the C's), and the kernel copy of the iovecs
 //!   is a slice passed beside the message (the C swaps `msg_iov` back and forth around the
-//!   call). The lengths are summed by `kernel::uio::iovec_resid` where the C sums them, after
+//!   call). The lengths are summed by `kernel::file::uio::iovec_resid` where the C sums them, after
 //!   the descriptor and the pledge check.
 //! - An address or control mbuf is a `MbufBox` (dropped where the C `m_freem`s it), lent as
 //!   `&Mbuf` to the protocol (`sobind`, `soconnect`, `sosend`'s `addr`); a received address
@@ -126,7 +126,7 @@
 //!   `pledge_sockopt`, `bsd`'s `kern_pledge` until N8), called at the C's points with the
 //!   C's arguments (`pledge_sockopt`'s protocol is the socket's `Protocol`, whose domain's
 //!   family and number `kern_pledge` reads); none is skipped or moved.
-//! - `getsock` is this module's for every caller (`kernel::log`'s `LIOCSFD` had a copy);
+//! - `getsock` is this module's for every caller (`kernel::base::log`'s `LIOCSFD` had a copy);
 //!   `copyaddrout` no longer takes the thread (it was `KTRACE`'s).
 //! - Locks against the C, per call: one `fd_getfile` (the table's), the file's `f_mtx` once
 //!   for the transfer counters, `solock_shared` around `sobind`, `solisten`, `soconnect` and
@@ -137,7 +137,7 @@
 use core::ptr;
 use core::sync::atomic::Ordering;
 
-use hal::sleep::{INFSLP, PCATCH};
+use hal::sync::sleep::{INFSLP, PCATCH};
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::{F_GETLK, F_POSIX, F_UNLCK, F_WRLCK, FNONBLOCK, FREAD, FWRITE, Flock};
 use hal::sys::limits::UCHAR_MAX;
@@ -152,10 +152,11 @@ use hal::sys::unistd::SEEK_SET;
 use hal::user::UserPtr;
 
 use crate::assert::kpanic;
-use crate::clock::Timespec;
-use crate::descrip::{
+use crate::base::sysctl::{MAXHOSTNAMELEN, with_domainname};
+use crate::file::descrip::{
     UF_EXCLOSE, UF_FORKCLOSE, closef, falloc, fd_getfile, fdinsert, fdplock, fdpunlock, fdremove,
 };
+use crate::file::uio::{IovBuf, Iovec, Uio, UioRw, UioSeg, iovec_resid};
 use crate::file::{DTYPE_SOCKET, File, FileGlue, FileRef, LockOwner};
 use crate::fs::lookup::{namei, ndinit};
 use crate::fs::namei::{KERNELPATH, LOCKLEAF, LOOKUP, MAXPATHLEN, NOFOLLOW, NiDirp, pathbuf_get};
@@ -174,8 +175,7 @@ use crate::net::socket::{
     sosleep_nsec,
 };
 use crate::proc::{PS_CHROOT, PS_PLEDGE, ProcGlue, Thread, suser};
-use crate::sysctl::{MAXHOSTNAMELEN, with_domainname};
-use crate::uio::{IovBuf, Iovec, Uio, UioRw, UioSeg, iovec_resid};
+use crate::time::clock::Timespec;
 
 /// `sizeof(struct sockaddr_in)` (`<netinet/in.h>`).
 pub const SOCKADDR_IN_SIZE: usize = 16;
@@ -929,7 +929,7 @@ pub fn sys_recvmmsg<G: ProcGlue>(
         if !ts.is_valid() {
             return Err(Errno::EINVAL);
         }
-        Some(crate::tc::getnanotime().add(ts))
+        Some(crate::time::tc::getnanotime().add(ts))
     };
 
     let mut flags = flags;
@@ -962,7 +962,7 @@ pub fn sys_recvmmsg<G: ProcGlue>(
         }
 
         if let Some(ts) = deadline
-            && crate::tc::getnanotime().sub(ts).tv_sec > 0
+            && crate::time::tc::getnanotime().sub(ts).tv_sec > 0
         {
             break;
         }
@@ -1409,9 +1409,9 @@ pub fn sys_ypconnect<G: ProcGlue>(p: &Thread<G>, type_: i32) -> Result<i32, Errn
     if p.process().ps_flags.load(Ordering::Relaxed) & PS_CHROOT != 0 {
         return Err(Errno::EACCES);
     }
-    hal::klock::kernel_lock();
+    hal::sync::klock::kernel_lock();
     let data = ypbinding_read(p, domain);
-    hal::klock::kernel_unlock();
+    hal::sync::klock::kernel_unlock();
     let data = data?;
 
     let port_at = if type_ == SOCK_STREAM {
@@ -1594,8 +1594,8 @@ mod tests {
     use hal::user::{AbiPod, bytes_of, pod_from_bytes};
 
     use super::*;
-    use crate::descrip::{fd_getfile_flags, sys_close};
     use crate::file::DTYPE_VNODE;
+    use crate::file::descrip::{fd_getfile_flags, sys_close};
     use crate::net::domain::net;
     use crate::net::unix::tests::{G, file, setup, teardown};
     use crate::testutil::{USER_BASE, USER_LEN, file_log, set_pledge_net, user_bytes};
@@ -2504,7 +2504,7 @@ mod tests {
             b
         });
         let set = |name: &[u8]| {
-            crate::sysctl::with_domainname_mut(|d| {
+            crate::base::sysctl::with_domainname_mut(|d| {
                 d.fill(0);
                 d[..name.len()].copy_from_slice(name);
             });
@@ -2525,7 +2525,7 @@ mod tests {
         assert_eq!(sys_ypconnect(p, SOCK_DGRAM), Err(Errno::ENOENT));
         assert_eq!(crate::testutil::kernel_lock_depth(), depth);
 
-        crate::sysctl::with_domainname_mut(|d| d.copy_from_slice(&saved));
+        crate::base::sysctl::with_domainname_mut(|d| d.copy_from_slice(&saved));
         teardown();
     }
 

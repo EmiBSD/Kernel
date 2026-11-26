@@ -20,6 +20,13 @@
 //! `cargo xtask hal-check`: the rules of the `hal` crate (`sys/hal/`), the only crate of the
 //! system where `unsafe` may live (docs/ZERO_UNSAFE.md, sections 0.1 and 0.2; decision 20).
 //!
+//! Rules D1 and D2 keep drivers and devices apart (hal's groups, 2026-11-26): D1, no file under
+//! `sys/hal/dev/` names `kernel::`, `bsd::` or a driver word (agintc, ampintc, gic but `gicsys`,
+//! virtio, vio, pluart, psci, pci, nvme, ahci, usb); D2, a file under `sys/kernel/dev/` names
+//! `hal::` only through `dev`, `sync`, `mem`, `ds`, `cpu`, `sys`, `user`, `prf`, `assert`,
+//! `random`, `bridges` and `cons` (and the root's `*_adapter!` macros), never `vm`, `arch`,
+//! `machine`, `api` or `syscall`.
+//!
 //! The crate's API is safe and every site is proved, so over every `.rs` under `sys/hal/`:
 //!
 //! 1. **No `pub unsafe fn`.** An `unsafe fn` is `pub(crate)` (or `pub(super)`, `pub(self)`,
@@ -38,13 +45,13 @@
 //!    not exceed `hal_ceiling` in the `[ratchet]` table of `unsafe-budget.toml`;
 //!    `unsafe-report --write` lowers the key and never raises it. A missing key is an error.
 //!
-//! Two more rules keep the premise of `hal::pinlist` (its I1: an element linked through
+//! Two more rules keep the premise of `hal::ds::pinlist` (its I1: an element linked through
 //! `Pin<&T>` is not `Unpin`, so safe code cannot move it while a list names it), over every
 //! `.rs` under `sys/`, on the lexed tokens (a comment or a string never matches):
 //!
 //! 5. **`PinAdapter` is implemented only by `pin_adapter!`.** An `impl .. PinAdapter for`, or
 //!    any naming of the trait's hidden seal `PinSealed` (it has no use but an impl), outside
-//!    `sys/hal/pinlist.rs` (the macro's body) is an error: every adapter then passes the
+//!    `sys/hal/ds/pinlist.rs` (the macro's body) is an error: every adapter then passes the
 //!    macro's compile-time refusal of an `Unpin` element.
 //! 6. **No `impl .. Unpin for` in `sys/kernel/` or `sys/abi/`.** A manual `Unpin` is the only
 //!    safe way to defeat `Pin` (a pinned value of an `Unpin` type may be moved); `hal`'s own
@@ -73,7 +80,7 @@ const HAL_DIR: &str = "sys/hal";
 const SYS_DIR: &str = "sys";
 
 /// The one file that may implement `PinAdapter` and name its seal: `pin_adapter!`'s.
-const PINLIST: &str = "sys/hal/pinlist.rs";
+const PINLIST: &str = "sys/hal/ds/pinlist.rs";
 
 /// The crates where rule 6 refuses an `impl Unpin`.
 const NO_UNPIN_DIRS: [&str; 2] = ["sys/kernel/", "sys/abi/"];
@@ -152,6 +159,7 @@ pub(crate) fn hal_check(root: &Path) -> Result<()> {
             None => fs::read_to_string(f).map_err(|e| format!("{}: {e}", f.display()))?,
         };
         findings.extend(check_pin_premise(&rel, &src));
+        findings.extend(check_dev_rules(&rel, &src));
     }
     let ceiling = crate::unsafereport::load_budget(root)?
         .1
@@ -178,7 +186,7 @@ pub(crate) fn hal_check(root: &Path) -> Result<()> {
         return Err(format!("hal-check: {} finding(s)", findings.len()).into());
     }
     println!(
-        "hal-check: {} files, {sites} unsafe sites <= hal_ceiling {}; no pub unsafe fn, every block proved, no static mut; {} files of sys/: PinAdapter only through pin_adapter!, no impl Unpin in kernel or abi",
+        "hal-check: {} files, {sites} unsafe sites <= hal_ceiling {}; no pub unsafe fn, every block proved, no static mut; {} files of sys/: PinAdapter only through pin_adapter!, no impl Unpin in kernel or abi; D1 and D2 hold",
         files.len(),
         ceiling.unwrap_or(0),
         all.len()
@@ -257,7 +265,7 @@ pub(crate) fn check_pin_premise(rel: &str, src: &str) -> Vec<Finding> {
         if w == "PinSealed" && !pinlist {
             add(
                 i,
-                "PinSealed named outside sys/hal/pinlist.rs: PinAdapter is implemented by pin_adapter! alone (pinlist's I1)",
+                "PinSealed named outside sys/hal/ds/pinlist.rs: PinAdapter is implemented by pin_adapter! alone (pinlist's I1)",
             );
         } else if w == "impl" {
             match impl_trait(toks, i).as_deref() {
@@ -269,6 +277,127 @@ pub(crate) fn check_pin_premise(rel: &str, src: &str) -> Vec<Finding> {
                     i,
                     "impl Unpin in kernel or abi: a manual Unpin defeats Pin (pinlist's I1)",
                 ),
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+/// The directory of `hal`'s driver-facing group (rule D1).
+const HAL_DEV_DIR: &str = "sys/hal/dev/";
+
+/// The directory of the kernel's device services (rule D2).
+const KERNEL_DEV_DIR: &str = "sys/kernel/dev/";
+
+/// Rule D1: identifiers that name a driver or a bus. `sys/hal/dev/` holds the typed registers
+/// and DMA memory every driver uses, so none of them may appear there: a driver's name in
+/// `hal` is a driver in the wrong crate. Kept short on purpose (a long deny-list is brittle);
+/// `gic` is refused as a prefix too, except `gicsys` (the GIC system registers N7 adds).
+const D1_DRIVER_WORDS: [&str; 11] = [
+    "agintc", "ampintc", "gic", "virtio", "vio", "pluart", "psci", "pci", "nvme", "ahci", "usb",
+];
+
+/// Rule D2: the `hal` groups a file under `sys/kernel/dev/` may name. Macros exported at the
+/// root of `hal` (`hal::list_adapter!`, `hal::tree_adapter!`, `hal::pin_adapter!`) are the
+/// `ds` group's and are allowed too. Not allowed: `vm`, `arch`, `machine`, `api`, `syscall`.
+const D2_ALLOWED: [&str; 12] = [
+    "dev", "sync", "mem", "ds", "cpu", "sys", "user", "prf", "assert", "random", "bridges", "cons",
+];
+
+/// Rules D1 and D2 over one file's text (`rel` is its path from the workspace root): drivers
+/// and devices stay apart. D1: no file under `sys/hal/dev/` names `kernel::` or `bsd::` or a
+/// driver word. D2: a file under `sys/kernel/dev/` names `hal::` only through the groups of
+/// [`D2_ALLOWED`].
+pub(crate) fn check_dev_rules(rel: &str, src: &str) -> Vec<Finding> {
+    let d1 = rel.starts_with(HAL_DEV_DIR);
+    let d2 = rel.starts_with(KERNEL_DEV_DIR);
+    let mut out = Vec::new();
+    if !d1 && !d2 {
+        return out;
+    }
+    let lexed = lex_pos(src);
+    let toks = &lexed.toks;
+    let colons = |i: usize| {
+        toks.get(i) == Some(&Tok::Punct(':')) && toks.get(i + 1) == Some(&Tok::Punct(':'))
+    };
+    let mut add = |i: usize, message: String| {
+        out.push(Finding {
+            path: rel.to_string(),
+            line: lexed.lines[i],
+            message,
+        });
+    };
+    for (i, t) in toks.iter().enumerate() {
+        let Tok::Ident(w) = t else { continue };
+        let w = plain(w);
+        if d1 {
+            let lower = w.to_ascii_lowercase();
+            if (w == "kernel" || w == "bsd") && colons(i + 1) {
+                add(
+                    i,
+                    format!(
+                        "D1: sys/hal/dev/ names `{w}::`: the driver-facing group knows no driver or kernel module"
+                    ),
+                );
+            } else if D1_DRIVER_WORDS.contains(&lower.as_str())
+                || (lower.starts_with("gic") && !lower.starts_with("gicsys"))
+            {
+                add(
+                    i,
+                    format!(
+                        "D1: sys/hal/dev/ names `{w}`, a driver or bus: only typed registers and DMA memory live here"
+                    ),
+                );
+            }
+        }
+        if d2 && w == "hal" && colons(i + 1) {
+            let allowed = |name: &str| D2_ALLOWED.contains(&name);
+            match toks.get(i + 3) {
+                Some(Tok::Ident(n)) => {
+                    let n = plain(n);
+                    let is_macro = toks.get(i + 4) == Some(&Tok::Punct('!'));
+                    if !allowed(n) && !is_macro {
+                        add(
+                            i,
+                            format!(
+                                "D2: sys/kernel/dev/ names `hal::{n}`; a device service reaches hal through hal::dev, sync, mem, ds, cpu, sys, user, prf, assert, random, bridges or cons"
+                            ),
+                        );
+                    }
+                }
+                Some(Tok::Punct('{')) => {
+                    let mut depth = 0usize;
+                    let mut first = true;
+                    for (k, tk) in toks.iter().enumerate().skip(i + 3) {
+                        match tk {
+                            Tok::Punct('{') => {
+                                depth += 1;
+                                first = true;
+                            }
+                            Tok::Punct('}') => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    break;
+                                }
+                            }
+                            Tok::Punct(',') => first = true,
+                            Tok::Ident(n) if depth == 1 && first => {
+                                first = false;
+                                let n = plain(n);
+                                if !allowed(n) {
+                                    add(
+                                        k,
+                                        format!(
+                                            "D2: sys/kernel/dev/ names `hal::{{{n}`; a device service reaches hal through hal::dev, sync, mem, ds, cpu, sys, user, prf, assert, random, bridges or cons"
+                                        ),
+                                    );
+                                }
+                            }
+                            _ => first = false,
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -376,6 +505,62 @@ fn has_safety_comment(lexed: &Lexed, line: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn dev_msgs(rel: &str, src: &str) -> Vec<String> {
+        check_dev_rules(rel, src)
+            .iter()
+            .map(|f| format!("{}:{}", f.line, &f.message[..2]))
+            .collect()
+    }
+
+    #[test]
+    fn d1_keeps_drivers_out_of_hal_dev() {
+        let hal = "sys/hal/dev/x.rs";
+        assert!(dev_msgs(hal, "use crate::mem::pool::TypedPool;\nstruct Mmio;\n").is_empty());
+        assert!(dev_msgs(hal, "struct GicSys; fn gicsys_read() {}\n").is_empty());
+        assert!(dev_msgs(hal, "// agintc and virtio in a comment\nlet s = \"pci\";\n").is_empty());
+        for src in [
+            "use kernel::dev::x;\n",
+            "fn f() { bsd::dev::y(); }\n",
+            "struct Agintc;\n",
+            "fn virtio() {}\n",
+            "use x::PCI;\n",
+            "mod gic;\n",
+            "mod gicv3;\n",
+            "fn nvme() {}\n",
+        ] {
+            assert_eq!(dev_msgs(hal, src), vec!["1:D1"], "{src}");
+        }
+        // Only sys/hal/dev/ is policed.
+        assert!(dev_msgs("sys/hal/mem/x.rs", "struct Agintc;\n").is_empty());
+    }
+
+    #[test]
+    fn d2_limits_the_hal_groups_of_kernel_dev() {
+        let k = "sys/kernel/dev/x.rs";
+        for src in [
+            "use hal::sync::mutex::Mutexed;\n",
+            "use hal::cons::putc;\n",
+            "use hal::{cpu::intr::IPL_BIO, ds::link::Link, sync::percpu::PerCpu};\n",
+            "use hal::{sys::errno::Errno, bridges};\n",
+            "hal::pin_adapter!(X);\n",
+            "let n = hal::user::copyin();\n",
+            "use hal::dev::mmio::Mmio;\n",
+        ] {
+            assert!(dev_msgs(k, src).is_empty(), "{src}");
+        }
+        for src in [
+            "use hal::vm::pmap::Pmap;\n",
+            "use hal::arch::arm64::x;\n",
+            "use hal::machine::x;\n",
+            "use hal::api::KernelApi;\n",
+            "use hal::syscall::SysArgs;\n",
+            "use hal::{sync::mutex::Mutexed, vm::param::PAGE_SIZE};\n",
+        ] {
+            assert_eq!(dev_msgs(k, src), vec!["1:D2"], "{src}");
+        }
+        assert!(dev_msgs("sys/kernel/proc/x.rs", "use hal::vm::pmap::Pmap;\n").is_empty());
+    }
 
     fn lines_of(src: &str) -> Vec<usize> {
         check_source("sys/hal/x.rs", src, false)
@@ -502,8 +687,8 @@ mod tests {
         // Written by hand anywhere but pinlist.rs: refused, however the path is spelt.
         for src in [
             "impl PinAdapter for A {}\n",
-            "impl hal::pinlist::PinAdapter for A {\n    type Elem = N;\n}\n",
-            "impl<T: Sync> ::hal::pinlist::PinAdapter for A<T> {}\n",
+            "impl hal::ds::pinlist::PinAdapter for A {\n    type Elem = N;\n}\n",
+            "impl<T: Sync> ::hal::ds::pinlist::PinAdapter for A<T> {}\n",
             "impl<F: Fn() -> u8> PinAdapter for A<F> {}\n",
             "macro_rules! m { ($n:ident) => { impl $crate::pinlist::PinAdapter for $n {} }; }\n",
         ] {
@@ -514,14 +699,14 @@ mod tests {
         assert_eq!(
             premise_lines(
                 "sys/kernel/x.rs",
-                "\nimpl hal::pinlist::sealed::PinSealed for A {}\n"
+                "\nimpl hal::ds::pinlist::sealed::PinSealed for A {}\n"
             ),
             vec![2]
         );
         assert_eq!(
             premise_lines(
                 "sys/dev/x.rs",
-                "use hal::pinlist::sealed::PinSealed as S;\n"
+                "use hal::ds::pinlist::sealed::PinSealed as S;\n"
             )
             .len(),
             1
@@ -529,7 +714,7 @@ mod tests {
         // The macro's own file, a bound, a call, a comment or a string: allowed.
         assert!(
             premise_lines(
-                "sys/hal/pinlist.rs",
+                "sys/hal/ds/pinlist.rs",
                 "impl sealed::PinSealed for A {}\nimpl PinAdapter for A {}\n"
             )
             .is_empty()
@@ -551,12 +736,15 @@ mod tests {
         assert_eq!(
             premise_lines(
                 "sys/kernel/x.rs",
-                "impl hal::pinlist::sealed::r#PinSealed for A {}\n"
+                "impl hal::ds::pinlist::sealed::r#PinSealed for A {}\n"
             ),
             vec![1]
         );
         assert_eq!(
-            premise_lines("sys/net/x.rs", "impl hal::pinlist::r#PinAdapter for A {}\n"),
+            premise_lines(
+                "sys/net/x.rs",
+                "impl hal::ds::pinlist::r#PinAdapter for A {}\n"
+            ),
             vec![1]
         );
         // Rule 6: a raw Unpin, a renamed one (and the impl of the new name it would allow).

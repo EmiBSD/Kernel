@@ -113,14 +113,14 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use hal::sys::dirent::Dirent;
 
-use crate::clock::Timespec;
+use crate::base::prf::printf;
 use crate::fs::msdosfs::denode::WIN_MAXLEN;
 use crate::fs::msdosfs::direntry::{
     ATTR_WIN95, DD_DAY_MASK, DD_DAY_SHIFT, DD_MONTH_MASK, DD_MONTH_SHIFT, DD_YEAR_MASK,
     DD_YEAR_SHIFT, DT_2SECONDS_MASK, DT_2SECONDS_SHIFT, DT_HOURS_MASK, DT_HOURS_SHIFT,
     DT_MINUTES_MASK, DT_MINUTES_SHIFT, SLOT_E5, WIN_CHARS, WIN_CNT, WIN_LAST, Winentry,
 };
-use crate::prf::printf;
+use crate::time::clock::Timespec;
 
 /// `regyear`: days in each month in a regular year.
 pub static REGYEAR: [u16; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];

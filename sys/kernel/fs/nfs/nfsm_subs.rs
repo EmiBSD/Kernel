@@ -276,7 +276,7 @@ impl<'a> XdrReader<'a> {
     /// chain ends first (`nfsm_mbuftouio`, `nfs_subs`).
     pub fn to_uio<G: crate::proc::ProcGlue>(
         &mut self,
-        uio: &mut crate::uio::Uio<'_, G>,
+        uio: &mut crate::file::uio::Uio<'_, G>,
         len: i32,
     ) -> Result<(), Errno> {
         let Ok(siz) = usize::try_from(len) else {

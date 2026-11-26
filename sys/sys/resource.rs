@@ -53,18 +53,18 @@
 //! Upstream: sys/sys/resource.h @ 3ce1f3f79392
 //!
 //! Status: an adapter (N4.2). `struct rusage`, `struct rlimit`, the `RLIMIT_*`/`RLIM_*`
-//! constants and `RUSAGE_SIZE` are the kernel crate's (`kernel::resource`); this header keeps
+//! constants and `RUSAGE_SIZE` are the kernel crate's (`kernel::proc::resource`); this header keeps
 //! the `PRIO_*` and `RUSAGE_*` constants and `struct loadavg`. `dosetrlimit`, `donice` and
 //! `dogetrusage` are `kern_resource.c`'s.
 //!
 //! ## Deviations
-//! - `struct rusage`'s counters are relaxed atomic words (`kernel::resource::Word`), its
-//!   times `kernel::resource::Timeval`s: the owning thread bumps them (`ru_nvcsw++`) and a
+//! - `struct rusage`'s counters are relaxed atomic words (`kernel::proc::resource::Word`), its
+//!   times `kernel::proc::resource::Timeval`s: the owning thread bumps them (`ru_nvcsw++`) and a
 //!   pooled thread must be `Send` and `Sync`.
 
 use crate::sys::types::Fixpt;
 
-pub use kernel::resource::{
+pub use kernel::proc::resource::{
     RLIM_INFINITY, RLIM_NLIMITS, RLIM_SAVED_CUR, RLIM_SAVED_MAX, RLIMIT_CORE, RLIMIT_CPU,
     RLIMIT_DATA, RLIMIT_FSIZE, RLIMIT_MEMLOCK, RLIMIT_NOFILE, RLIMIT_NPROC, RLIMIT_RSS,
     RLIMIT_STACK, RUSAGE_SIZE, Rlimit, Rusage,

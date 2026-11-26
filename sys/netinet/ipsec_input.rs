@@ -1336,7 +1336,7 @@ unsafe fn ipsec_common_ctlinput(
 pub fn udpencap_ctlinput(rdomain: u32, icmp: &[u8]) {
     net_assert_locked("udpencap_ctlinput");
 
-    let Some(ip) = hal::pod::at::<Ip>(icmp, ICMP_IP_OFFSET) else {
+    let Some(ip) = hal::mem::pod::at::<Ip>(icmp, ICMP_IP_OFFSET) else {
         return;
     };
     let Some(&[hi, lo]) = icmp.get(ICMP_NEXTMTU_OFFSET..ICMP_NEXTMTU_OFFSET + 2) else {

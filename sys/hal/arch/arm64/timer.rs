@@ -64,7 +64,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use crate::arch::arm64::include::frame::Trapframe;
 use crate::assert::kassert;
 
-/// `struct clockframe`: on arm64 the trap frame the exception entry saved (`hal::clock`
+/// `struct clockframe`: on arm64 the trap frame the exception entry saved (`hal::cpu::clock`
 /// reads it through [`clkf_usermode`] and [`clkf_pc`]).
 pub type ClockFrame = Trapframe;
 

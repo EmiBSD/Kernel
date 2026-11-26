@@ -17,10 +17,10 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! The host double of the kernel lock (`crate::klock`): a per-thread depth. Every test thread
+//! The host double of the kernel lock (`crate::sync::klock`): a per-thread depth. Every test thread
 //! is a CPU of its own here, and tests that take the kernel lock wait for each other's
 //! threads, so the double counts each thread's holds and excludes nothing (the ticket lock is
-//! tested on its own, `crate::klock`'s tests).
+//! tested on its own, `crate::sync::klock`'s tests).
 
 extern crate std;
 

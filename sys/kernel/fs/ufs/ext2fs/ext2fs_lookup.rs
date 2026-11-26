@@ -127,7 +127,7 @@
 use core::mem::{offset_of, size_of};
 use core::sync::atomic::Ordering;
 
-use hal::malloc::{M_WAITOK, MArray};
+use hal::mem::malloc::{M_WAITOK, MArray};
 use hal::sys::dirent::{DT_UNKNOWN, Dirent, dirent_recsize};
 use hal::sys::errno::Errno;
 use hal::sys::mount::MNT_RDONLY;
@@ -142,7 +142,9 @@ use super::ext2fs_dir::{
 use super::ext2fs_inode::{ext2fs_setsize, ext2fs_size, ext2fs_truncate};
 use super::ext2fs_subr::ext2fs_bufatoff;
 use crate::assert::kpanic;
+use crate::base::prf::printf;
 use crate::file::FileGlue;
+use crate::file::uio::{Iovec, Uio, UioRw};
 use crate::fs::bio::brelse;
 use crate::fs::buf::BufRef;
 use crate::fs::cache::{cache_enter, cache_lookup};
@@ -161,9 +163,7 @@ use crate::fs::vnode::{Vnode, vn_lock};
 use crate::fs::vnops::{RdwrBuf, vn_rdwr};
 use crate::fs::vops::vop_write;
 use crate::fs::vops::{Cred, IoBuf, VFS_VGET, vop_access, vop_bwrite, vop_read, vop_unlock};
-use crate::prf::printf;
 use crate::proc::ProcGlue;
-use crate::uio::{Iovec, Uio, UioRw};
 
 /// `MINDIRSIZ`: the first half of a `struct ext2fs_dirtemplate`, an entry whose name is at
 /// most 4 bytes.

@@ -53,7 +53,7 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! `<sys/tty.h>` for `bsd`: the kernel's terminal (`kernel::tty`, `kernel::clist`, N4.7b)
+//! `<sys/tty.h>` for `bsd`: the kernel's terminal (`kernel::tty`, `kernel::tty::clist`, N4.7b)
 //! under the path the drivers name, bound to `bsd`'s glue, with the sysctl names table that
 //! `bsd`'s `kern_sysctl` prints.
 //!
@@ -62,7 +62,7 @@
 //!
 //! ## Redesign
 //! - N4.7b: `struct tty` and `struct clist` are the kernel's (`kernel::tty::Tty`,
-//!   `kernel::clist::Clist`: their modules' documentation has the shape); `Tty` here is the
+//!   `kernel::tty::clist::Clist`: their modules' documentation has the shape); `Tty` here is the
 //!   kernel's bound to `BsdProcGlue`, so the drivers' `&Tty`, `tp.t_state_isset(..)`,
 //!   `tp.t_cflag()`, `tp.t_dev.get()`, `tp.t_outq.c_cc.get()` keep their meaning. LZ's six
 //!   `unsafe` (`Ptmget`'s and `Itty`'s marker impls, the `Sync` of `Tty` and of the list head,
@@ -73,7 +73,7 @@ use crate::kern::proc_glue::BsdProcGlue;
 use crate::sys::proc::Process;
 use crate::sys::sysctl::{CTLTYPE_QUAD, CTLTYPE_STRUCT, Ctlname};
 
-pub use kernel::clist::Clist;
+pub use kernel::tty::clist::Clist;
 pub use kernel::tty::{
     BACKSPACE, CONTROL, DMBIC, DMBIS, DMGET, DMSET, Itty, KERN_TTY_INFO, KERN_TTY_MAXID,
     KERN_TTY_TKCANCC, KERN_TTY_TKNIN, KERN_TTY_TKNOUT, KERN_TTY_TKRAWCC, NEWLINE, OBUFSIZ,

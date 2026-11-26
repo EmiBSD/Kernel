@@ -56,7 +56,7 @@
 //! Upstream: sys/arch/arm64/include/signal.h @ 3ce1f3f79392
 //!
 //! Status: `ported` (with `kern_sig.c`). N4.8b: both are `hal`'s
-//! (`hal::arch::arm64::include::signal`, beside the signal frame `hal::sig` builds),
+//! (`hal::arch::arm64::include::signal`, beside the signal frame `hal::cpu::sig` builds),
 //! re-exported here.
 
 pub use hal::arch::arm64::include::signal::{SigAtomic, Sigcontext};

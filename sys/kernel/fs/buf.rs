@@ -60,7 +60,7 @@
 //! LZ: sys/sys/buf.rs@3c62ede68802
 //!
 //! A buffer is a `bufpl` item ([`BUFPL`]) that the buffer cache's `bufhead` owns
-//! (`hal::owned::OwnedList`), linked through its own entries on the vnode's tree and lists,
+//! (`hal::ds::owned::OwnedList`), linked through its own entries on the vnode's tree and lists,
 //! the cache's queues, `buf_valist` and a disk's queue; physio's buffer is a `bufpl` item on
 //! physio's own list; a driver may embed one in its softc (`softraid`'s `ccb_buf`, `fd`'s
 //! format buffer) and hand it down by address. Locks: the cache's (`splbio`, `kernel::fs`'s
@@ -73,7 +73,7 @@
 //! [`BufRef::foreign`] for a buffer a driver embeds), consumed by the call that ends it. It
 //! holds what keeps the buffer alive (a counted link to a pool item that `bufhead` or physio
 //! owns, which they refuse to free while counted; or the `'static` of an embedded one) and,
-//! while the buffer is mapped, the view of its bytes (`hal::mapped::MappedBytes`), so
+//! while the buffer is mapped, the view of its bytes (`hal::mem::mapped::MappedBytes`), so
 //! [`BufRef::data`] is the buffer's bytes as a slice, with no lock taken. While a driver or a
 //! disk queue holds the buffer by address (`bsd`'s `&'static Buf`, the C's `struct buf *`),
 //! the token is parked in the buffer ([`Buf::park`]) and taken back by whoever ends that
@@ -103,7 +103,7 @@
 //!   kernel runs one CPU"), `b_data` a raw pointer behind `unsafe fn data()`, the links
 //!   `queue_adapter!` entries -> [`Buf`]: the scalars atomics (the C's `volatile long`
 //!   `b_flags` and the owner's fields, read and written Relaxed where the C reads them
-//!   unlocked), the links `hal::owned` entries ([`ByBufhead`], [`ByLblkno`], [`ByVnbufs`],
+//!   unlocked), the links `hal::ds::owned` entries ([`ByBufhead`], [`ByLblkno`], [`ByVnbufs`],
 //!   [`ByFreelist`], [`ByValist`], [`ByBufq`]), the busy state, the pages' object and the
 //!   callback one `Guarded` cell of the cache's lock (`CACHE`: the cache's paths, which hold
 //!   it already, change them with no lock of their own), with a state byte beside it for the
@@ -112,7 +112,7 @@
 //!   take were a measured part of QEMU's `fileread` regression.)
 //! - `B_BUSY`'s owner -> [`BufRef`], with the view of the bytes: `data()` is safe, one owner
 //!   at a time by construction (the C's rule "touch a buffer only while you have it busy").
-//! - `bufpool` (`pool_init(.., "bufpl")`) -> [`BUFPL`], a `hal::pool::BoxPool<Buf>` of the
+//! - `bufpool` (`pool_init(.., "bufpl")`) -> [`BUFPL`], a `hal::mem::pool::BoxPool<Buf>` of the
 //!   same name (`vmstat -m`'s `bufpl` row; its item size is this type's, larger than the C's
 //!   by the token's slot and the owned links: the pinned test below).
 
@@ -121,11 +121,11 @@ use core::mem;
 use core::ptr;
 use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU8, AtomicUsize, Ordering as Mem};
 
-use hal::link::Link;
-use hal::mapped::MappedBytes;
-use hal::owned::{OwnedEntry, SecondaryEntry, SecondaryRef};
-use hal::pool::BoxPool;
-use hal::rwlock::Guarded;
+use hal::ds::link::Link;
+use hal::ds::owned::{OwnedEntry, SecondaryEntry, SecondaryRef};
+use hal::mem::mapped::MappedBytes;
+use hal::mem::pool::BoxPool;
+use hal::sync::rwlock::Guarded;
 use hal::sys::errno::Errno;
 use hal::sys::param::PAGE_SIZE;
 use hal::sys::types::{Daddr, Dev, Off};
@@ -1153,9 +1153,9 @@ mod tests {
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::sync::Once;
 
-    use hal::intr::IPL_BIO;
-    use hal::owned::OwnedList;
-    use hal::pool::{PR_WAITOK, PoolBox};
+    use hal::cpu::intr::IPL_BIO;
+    use hal::ds::owned::OwnedList;
+    use hal::mem::pool::{PR_WAITOK, PoolBox};
 
     use super::*;
 

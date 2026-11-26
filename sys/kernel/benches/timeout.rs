@@ -44,7 +44,7 @@
 //! - `prim.pool-get-put`: one item of a 48-byte pool taken and given back, over the
 //!   recycling pool backend this bench registers (the doubles' pool never reuses an item).
 //! - `prim.concat-empty`: `CIRCQ_CONCAT` of an empty ring onto another (a static
-//!   `hal::pinlist::PinRing` pair), under a mutex held across the batch: what each of
+//!   `hal::ds::pinlist::PinRing` pair), under a mutex held across the batch: what each of
 //!   `timeout_hardclock_update`'s `MOVEBUCKET`s and expired-bucket dumps costs on an idle
 //!   wheel, the lock apart.
 
@@ -61,12 +61,12 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use std::vec::Vec;
 
-use hal::pin::pin_static;
-use hal::pinlist::{PinEntry, PinRing};
-use hal::pool::{PoolBackend, RawPool};
-use kernel::clock::TICKS;
+use hal::ds::pin::pin_static;
+use hal::ds::pinlist::{PinEntry, PinRing};
+use hal::mem::pool::{PoolBackend, RawPool};
 use kernel::testutil;
-use kernel::timeout::{self, KCLOCK_NONE, Timeout};
+use kernel::time::clock::TICKS;
+use kernel::time::timeout::{self, KCLOCK_NONE, Timeout};
 
 // ---------------------------------------------------------------------------------------
 // The harness (vm.rs's).
@@ -346,32 +346,32 @@ fn main() {
 
     // task(9): one task added and run by hand (`task_add` then the worker's
     // `taskq_next_work` and the call), on a queue with no thread.
-    static TQ: kernel::task::Taskq = kernel::task::taskq_unthreaded(b"benchtq");
-    static TASK: kernel::task::Task = kernel::task::Task::new(noop, ptr::null_mut());
-    kernel::task::run_by_hand(&TQ);
+    static TQ: kernel::base::task::Taskq = kernel::base::task::taskq_unthreaded(b"benchtq");
+    static TASK: kernel::base::task::Task = kernel::base::task::Task::new(noop, ptr::null_mut());
+    kernel::base::task::run_by_hand(&TQ);
     benches.push(Bench {
         name: "task.add-next",
         ops: PRIM,
         f: Box::new(prim(|| {
-            black_box(kernel::task::task_add(&TQ, pin_static(&TASK)));
-            kernel::task::run_next_by_hand(&TQ);
+            black_box(kernel::base::task::task_add(&TQ, pin_static(&TASK)));
+            kernel::base::task::run_next_by_hand(&TQ);
         })),
     });
     // extent(9): one page allocated and freed (a coalescing extent of 16 regions).
-    let Some(ex) = kernel::extent::Extent::create(
+    let Some(ex) = kernel::base::extent::Extent::create(
         b"bench",
         0,
         0xffff_ffff,
         2, // M_DEVBUF
-        kernel::extent::EX_WAITOK,
+        kernel::base::extent::EX_WAITOK,
     ) else {
         eprintln!("timeout bench: extent_create failed");
         std::process::exit(2);
     };
-    let ex: &'static kernel::extent::Extent = hal::malloc::MBox::leak(ex);
+    let ex: &'static kernel::base::extent::Extent = hal::mem::malloc::MBox::leak(ex);
     for i in 0..16u64 {
         if ex
-            .alloc_region(i * 0x10_0000, 0x1000, kernel::extent::EX_NOWAIT)
+            .alloc_region(i * 0x10_0000, 0x1000, kernel::base::extent::EX_NOWAIT)
             .is_err()
         {
             eprintln!("timeout bench: extent_alloc_region failed");
@@ -382,11 +382,11 @@ fn main() {
         name: "extent.alloc-free",
         ops: PRIM,
         f: Box::new(prim(move || {
-            let Ok(a) = ex.alloc(0x1000, 0x1000, 0, 0, kernel::extent::EX_NOWAIT) else {
+            let Ok(a) = ex.alloc(0x1000, 0x1000, 0, 0, kernel::base::extent::EX_NOWAIT) else {
                 std::process::exit(3);
             };
             if ex
-                .free(black_box(a), 0x1000, kernel::extent::EX_NOWAIT)
+                .free(black_box(a), 0x1000, kernel::base::extent::EX_NOWAIT)
                 .is_err()
             {
                 std::process::exit(3);
@@ -395,8 +395,11 @@ fn main() {
     });
     // One pool item taken and given back (an extent descriptor's size), over the recycling
     // backend: what each of extent.alloc-free's two descriptors costs.
-    static PRIM_POOL: hal::pool::BoxPool<[u64; 6]> = hal::pool::BoxPool::new();
-    if PRIM_POOL.init(hal::intr::IPL_VM, 0, "benchpl").is_err() {
+    static PRIM_POOL: hal::mem::pool::BoxPool<[u64; 6]> = hal::mem::pool::BoxPool::new();
+    if PRIM_POOL
+        .init(hal::cpu::intr::IPL_VM, 0, "benchpl")
+        .is_err()
+    {
         eprintln!("timeout bench: cannot make benchpl");
         std::process::exit(2);
     }
@@ -404,18 +407,19 @@ fn main() {
         name: "prim.pool-get-put",
         ops: PRIM,
         f: Box::new(prim(|| {
-            black_box(PRIM_POOL.get(hal::pool::PR_NOWAIT, || [0u64; 6]));
+            black_box(PRIM_POOL.get(hal::mem::pool::PR_NOWAIT, || [0u64; 6]));
         })),
     });
     static CHAN: u8 = 0;
     benches.push(Bench {
         name: "prim.wakeup-one",
         ops: PRIM,
-        f: Box::new(prim(|| hal::sleep::wakeup_one(&raw const CHAN))),
+        f: Box::new(prim(|| hal::sync::sleep::wakeup_one(&raw const CHAN))),
     });
 
     // The primitives the ops are made of, to tell the wheel's cost from the lock's.
-    static PRIM_MTX: hal::mutex::Mutexed<u64> = hal::mutex::Mutexed::new(hal::intr::IPL_HIGH, 0);
+    static PRIM_MTX: hal::sync::mutex::Mutexed<u64> =
+        hal::sync::mutex::Mutexed::new(hal::cpu::intr::IPL_HIGH, 0);
     benches.push(Bench {
         name: "prim.mutex",
         ops: PRIM,
@@ -425,7 +429,8 @@ fn main() {
     });
     // An empty ring spliced onto another, the lock held across the batch (the wheel's
     // dumps of empty buckets).
-    static CONCAT_MTX: hal::mutex::Mutexed<()> = hal::mutex::Mutexed::new(hal::intr::IPL_HIGH, ());
+    static CONCAT_MTX: hal::sync::mutex::Mutexed<()> =
+        hal::sync::mutex::Mutexed::new(hal::cpu::intr::IPL_HIGH, ());
     static RING_DST: PinRing<NodeRing> = PinRing::new();
     static RING_SRC: PinRing<NodeRing> = PinRing::new();
     benches.push(Bench {
@@ -447,14 +452,14 @@ fn main() {
         name: "prim.nanouptime",
         ops: PRIM,
         f: Box::new(prim(|| {
-            black_box(kernel::clock::nanouptime());
+            black_box(kernel::time::clock::nanouptime());
         })),
     });
     benches.push(Bench {
         name: "prim.ticks",
         ops: PRIM,
         f: Box::new(prim(|| {
-            black_box(kernel::clock::ticks());
+            black_box(kernel::time::clock::ticks());
         })),
     });
 

@@ -104,8 +104,8 @@ use core::cmp::{max, min};
 use core::ptr;
 use core::sync::atomic::Ordering;
 
-use hal::klock;
-use hal::sleep::{INFSLP, PCATCH, PRIBIO, tsleep_nsec, wakeup, wakeup_one};
+use hal::sync::klock;
+use hal::sync::sleep::{INFSLP, PCATCH, PRIBIO, tsleep_nsec, wakeup, wakeup_one};
 use hal::sys::errno::Errno;
 use hal::sys::types::{Daddr, Off};
 
@@ -129,9 +129,9 @@ use super::nfsproto::{
     NFS_MAXPATHLEN, NFSV3WRITE_DATASYNC, NFSV3WRITE_FILESYNC, NFSV3WRITE_UNSTABLE,
 };
 use crate::assert::kpanic;
-use crate::clock::sec_to_nsec;
-use crate::event::{NOTE_EXTEND, NOTE_TRUNCATE, NOTE_WRITE};
 use crate::file::FileGlue;
+use crate::file::event::{NOTE_EXTEND, NOTE_TRUNCATE, NOTE_WRITE};
+use crate::file::uio::{Iovec, Uio};
 use crate::fs::bio::{
     BCSTATS, DEV_BSHIFT, bdwrite, biodone, biowait, brelse, buf_dirty, getblk, getblk_wait, incore,
 };
@@ -148,7 +148,7 @@ use crate::fs::vops::Cred;
 use crate::proc::{ProcGlue, Thread};
 use crate::sys::mount::{NFSMNT_GOTFSINFO, NFSMNT_INT, NFSMNT_NFSV3};
 use crate::sys::signal::SIGKILL;
-use crate::uio::{Iovec, Uio};
+use crate::time::clock::sec_to_nsec;
 use crate::vm::vnode::{uvm_vnp_setsize, uvm_vnp_uncache};
 
 /// `DEV_BSIZE` (`<sys/param.h>`): the block size `b_blkno` counts in.
@@ -223,7 +223,7 @@ pub fn nfs_bioread<G: ProcGlue>(
     cred: Cred<'_>,
 ) -> Result<(), Errno> {
     #[cfg(feature = "diagnostic")]
-    if uio.uio_rw != crate::uio::UioRw::UIO_READ {
+    if uio.uio_rw != crate::file::uio::UioRw::UIO_READ {
         kpanic(format_args!("nfs_read mode"));
     }
     if uio.uio_resid == 0 {
@@ -408,7 +408,7 @@ pub fn nfs_write<G: ProcGlue>(
     cred: Cred<'_>,
 ) -> Result<(), Errno> {
     #[cfg(feature = "diagnostic")]
-    if uio.uio_rw != crate::uio::UioRw::UIO_WRITE {
+    if uio.uio_rw != crate::file::uio::UioRw::UIO_WRITE {
         kpanic(format_args!("nfs_write mode"));
     }
     if vp.vtype() != VREG {

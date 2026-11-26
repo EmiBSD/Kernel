@@ -45,7 +45,7 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! `bsd`'s `kern_event.c` over the kernel's (`kernel::event`): the names `bsd`'s event sources
+//! `bsd`'s `kern_event.c` over the kernel's (`kernel::file::event`): the names `bsd`'s event sources
 //! call (`klist_insert_locked`, `knote_locked`, `seltrue_kqfilter`, ...), the `struct
 //! fileops` of a kqueue file (`kqueueops`, the `bsd` object a kqueue descriptor is), the
 //! `sysent[]` rows of `kqueue(2)`, `kqueue1(2)` and `kevent(2)`, and the host tests' helpers
@@ -55,7 +55,7 @@
 //! LZ: sys/kern/kern_event.rs@3c62ede68802
 //!
 //! ## Redesign
-//! - N4.4: every decision of `kern_event.c` is `kernel::event`'s (`sys/kernel/event.rs`
+//! - N4.4: every decision of `kern_event.c` is `kernel::file::event`'s (`sys/kernel/file/event.rs`
 //!   says what changed shape). This module keeps LZ's path, which the filters of 18 files and
 //!   their callers import (their `use` lines unchanged), with 0 `unsafe` (LZ: 70).
 //! - `klist_insert_locked`, `klist_remove_locked` and `knote_locked` are the klist's legacy
@@ -69,9 +69,9 @@
 
 use hal::user::UserPtr;
 use kernel::api::{EventEntries, SysResult};
-use kernel::event::Kqueue as KKqueue;
+use kernel::file::event::Kqueue as KKqueue;
 
-pub use kernel::event::{
+pub use kernel::file::event::{
     knote_processexec, knote_processexit, knote_processfork, kqpoll_done, kqpoll_exit, kqpoll_init,
     kqueue_register, kqueue_scan, kqueue_scan_setup,
 };
@@ -110,14 +110,14 @@ pub static DEAD_FILTOPS: Filterops = KKqueue::<BsdProcGlue>::DEAD_FILTOPS;
 
 /// `kqueue_init`: the knote, kqueue and timer pools.
 pub fn kqueue_init() {
-    if kernel::event::kqueue_init::<BsdProcGlue>().is_err() {
+    if kernel::file::event::kqueue_init::<BsdProcGlue>().is_err() {
         panic(format_args!("kqueue_init: cannot make the pools"));
     }
 }
 
 /// `kqueue_init_percpu`: the knote pool's per-CPU caches.
 pub fn kqueue_init_percpu() {
-    kernel::event::kqueue_init_percpu::<BsdProcGlue>();
+    kernel::file::event::kqueue_init_percpu::<BsdProcGlue>();
 }
 
 /// The kqueue a kqueue file holds (`fp->f_data`), counted.
@@ -130,27 +130,27 @@ pub fn fp_kqueue(fp: &File) -> KqRef {
 
 /// `kqueue_read`.
 pub fn kqueue_read(_fp: &File, _uio: &mut Uio<'_>, _fflags: i32) -> Result<(), Errno> {
-    kernel::event::kqueue_rw()
+    kernel::file::event::kqueue_rw()
 }
 
 /// `kqueue_write`.
 pub fn kqueue_write(_fp: &File, _uio: &mut Uio<'_>, _fflags: i32) -> Result<(), Errno> {
-    kernel::event::kqueue_rw()
+    kernel::file::event::kqueue_rw()
 }
 
 /// `kqueue_ioctl`.
 pub fn kqueue_ioctl(_fp: &File, _com: u64, _data: &mut [u8], _p: &Proc) -> Result<(), Errno> {
-    kernel::event::kqueue_ioctl()
+    kernel::file::event::kqueue_ioctl()
 }
 
 /// `kqueue_kqfilter`: a kqueue is readable when it has pending events.
 pub fn kqueue_kqfilter(fp: &File, kn: &Knote) -> Result<(), Errno> {
-    kernel::event::kqueue_kqfilter::<BsdProcGlue>(fp, kn)
+    kernel::file::event::kqueue_kqfilter::<BsdProcGlue>(fp, kn)
 }
 
 /// `kqueue_stat`: the pending count as the size, a FIFO.
 pub fn kqueue_stat(fp: &File, st: &mut Stat, _p: &Proc) -> Result<(), Errno> {
-    let (size, blksize) = kernel::event::kqueue_stat::<BsdProcGlue>(fp);
+    let (size, blksize) = kernel::file::event::kqueue_stat::<BsdProcGlue>(fp);
 
     *st = Stat::default();
     st.st_size = size; // unlocked read
@@ -161,12 +161,12 @@ pub fn kqueue_stat(fp: &File, st: &mut Stat, _p: &Proc) -> Result<(), Errno> {
 
 /// `kqueue_close`: the descriptor's last close.
 pub fn kqueue_close(fp: &File, p: Option<&Proc>) -> Result<(), Errno> {
-    kernel::event::kqueue_close::<BsdProcGlue>(fp, p)
+    kernel::file::event::kqueue_close::<BsdProcGlue>(fp, p)
 }
 
 /// `seltrue_kqfilter(dev, kn)`: the kqfilter of a device that is always ready.
 pub fn seltrue_kqfilter(_dev: Dev, kn: &Knote) -> Result<(), Errno> {
-    kernel::event::seltrue_kqfilter(kn)
+    kernel::file::event::seltrue_kqfilter(kn)
 }
 
 /// `knote(list, hint)`: takes the list's lock, which for a kernel-lock list is the kernel
@@ -174,7 +174,7 @@ pub fn seltrue_kqfilter(_dev: Dev, kn: &Knote) -> Result<(), Errno> {
 /// which the C's `knote` takes and its filters read under: its caller takes that lock and
 /// calls [`knote_locked`] instead; `knote` on one stops the kernel.
 pub fn knote(list: &Klist, hint: i64) {
-    if list.kind() == kernel::event::KlistKind::Own {
+    if list.kind() == kernel::file::event::KlistKind::Own {
         panic(format_args!(
             "knote: klist {:p} is its owner's lock's: take it and call knote_locked",
             list
@@ -232,21 +232,21 @@ pub fn klist_init_rwlock(klist: &Klist, _rwl: &Rwlock) {
 
 /// `kqueue(2)`.
 pub fn sys_kqueue(p: &Proc, _v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
-    retval[0] = kernel::event::sys_kqueue(p)? as Register;
+    retval[0] = kernel::file::event::sys_kqueue(p)? as Register;
     Ok(())
 }
 
 /// `kqueue1(2)`: `kqueue(2)` with `O_CLOEXEC` and `O_NONBLOCK`.
 pub fn sys_kqueue1(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysKqueue1Args = sysargs(v);
-    retval[0] = kernel::event::sys_kqueue1(p, uap.flags.get())? as Register;
+    retval[0] = kernel::file::event::sys_kqueue1(p, uap.flags.get())? as Register;
     Ok(())
 }
 
 /// `kevent(2)`: registers the changes, then collects the pending events.
 pub fn sys_kevent(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysKeventArgs = sysargs(v);
-    retval[0] = kernel::event::sys_kevent(
+    retval[0] = kernel::file::event::sys_kevent(
         p,
         uap.fd.get(),
         UserPtr::new(uap.changelist.get().addr()),
@@ -354,31 +354,35 @@ pub(crate) mod tests {
 
     /// `dokqueue` without the descriptor: a kqueue on the thread's table.
     pub(crate) fn new_kqueue(p: &Proc) -> KqRef {
-        let kq = kernel::event::kqueue_alloc::<BsdProcGlue>(p.process().fd_ref()).unwrap();
-        kernel::event::fd_kqlist_insert(&kq);
+        let kq = kernel::file::event::kqueue_alloc::<BsdProcGlue>(p.process().fd_ref()).unwrap();
+        kernel::file::event::fd_kqlist_insert(&kq);
         kq
     }
 
     /// `kqueue_close` of a kqueue made by `new_kqueue`.
     pub(crate) fn close_kqueue(p: &Proc, kq: KqRef) {
-        kernel::event::kqueue_purge(Some(p), &kq);
-        kernel::event::kqueue_terminate(Some(p), &kq);
+        kernel::file::event::kqueue_purge(Some(p), &kq);
+        kernel::file::event::kqueue_terminate(Some(p), &kq);
         assert_eq!(kq.refs(), 1);
     }
 
     /// A knote a new kqueue of `p` owns, attached to no object, for a test that hooks it on
     /// an object's klist as a filter's attach does (the kqueue pools made if they are not):
     /// the kqueue and the knote, given back by [`owned_knote_drop`].
-    pub(crate) fn owned_knote(p: &Proc) -> (KqRef, kernel::event::KnHold<BsdProcGlue>) {
-        let _ = kernel::event::kqueue_init::<BsdProcGlue>();
+    pub(crate) fn owned_knote(p: &Proc) -> (KqRef, kernel::file::event::KnHold<BsdProcGlue>) {
+        let _ = kernel::file::event::kqueue_init::<BsdProcGlue>();
         let kq = new_kqueue(p);
-        let h = kernel::event::test_knote(&kq, 1);
+        let h = kernel::file::event::test_knote(&kq, 1);
         (kq, h)
     }
 
     /// Gives back an [`owned_knote`] (unhooked by the test) and its kqueue.
-    pub(crate) fn owned_knote_drop(p: &Proc, kq: KqRef, h: kernel::event::KnHold<BsdProcGlue>) {
-        kernel::event::test_knote_drop(&kq, h);
+    pub(crate) fn owned_knote_drop(
+        p: &Proc,
+        kq: KqRef,
+        h: kernel::file::event::KnHold<BsdProcGlue>,
+    ) {
+        kernel::file::event::test_knote_drop(&kq, h);
         close_kqueue(p, kq);
     }
 
@@ -387,7 +391,7 @@ pub(crate) mod tests {
         let start = core::pin::pin!(Knote::marker(kq));
         let end = core::pin::pin!(Knote::marker(kq));
         let s = kqueue_scan_setup(kq, start.as_ref(), end.as_ref());
-        let mut ts = kernel::clock::Timespec::ZERO;
+        let mut ts = kernel::time::clock::Timespec::ZERO;
         let n = out.len();
         kqueue_scan(&s, n, out, Some(&mut ts), p)
     }
@@ -409,13 +413,13 @@ pub(crate) mod tests {
     /// `doppoll` without the copies: register the pollfds on the thread's poll kqueue,
     /// collect what is ready without sleeping.
     pub(crate) fn poll_once(p: &Proc, pl: &mut [Pollfd]) -> usize {
-        use kernel::select::{ppollcollect, ppollregister};
+        use kernel::file::select::{ppollcollect, ppollregister};
         let nfds = pl.len() as u32;
         assert_eq!(kqpoll_init(p, nfds), Ok(()));
         let (mut nevents, mut ncollected) = (0, 0);
         ppollregister(p, pl, &mut nevents, &mut ncollected);
         if nevents > 0 {
-            let kq = kernel::event::thread_kq(p).clone();
+            let kq = kernel::file::event::thread_kq(p).clone();
             let mut kev = [Kevent::default(); crate::sys::eventvar::KQ_NEVENTS];
             let count = nevents.min(kev.len());
             let (ready, error) = scan(p, &kq, &mut kev[..count]);
@@ -432,16 +436,16 @@ pub(crate) mod tests {
     pub(crate) fn select_once(
         p: &Proc,
         nd: usize,
-        r: kernel::select::FdMask,
-        w: kernel::select::FdMask,
-    ) -> Result<[kernel::select::FdMask; 3], Errno> {
-        use kernel::select::{FdMask, pselcollect, pselregister};
+        r: kernel::file::select::FdMask,
+        w: kernel::file::select::FdMask,
+    ) -> Result<[kernel::file::select::FdMask; 3], Errno> {
+        use kernel::file::select::{FdMask, pselcollect, pselregister};
         assert_eq!(kqpoll_init(p, nd as u32), Ok(()));
         let pibits = [r, w, 0];
         let mut pobits = [0 as FdMask; 3];
         let mut ncollected = 0;
         let result = pselregister(p, &pibits, 1, nd).and_then(|nevents| {
-            let kq = kernel::event::thread_kq(p).clone();
+            let kq = kernel::file::event::thread_kq(p).clone();
             let mut kev = [Kevent::default(); crate::sys::eventvar::KQ_NEVENTS];
             let count = nevents.min(kev.len());
             let (ready, mut error) = scan(p, &kq, &mut kev[..count]);

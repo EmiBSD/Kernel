@@ -449,7 +449,7 @@
 //!   N4.6b: `BsdVmSysctl`
 //!   (`kernel::vm::meter::VmSysctl`) is gone: the sysctl helpers, `averunnable` and `allproc`
 //!   are the kernel's, `nkmempages` the `Malloc` bridge's, and `CTL_VM` is dispatched by
-//!   `kernel::sysctl`.
+//!   `kernel::base::sysctl`.
 //! - The fifteen `sysent[]` entries of the vm system calls (`sys_mmap`, ..., `sys_obreak`):
 //!   the `sysargs` unpacked and handed to `kernel::vm::mmap`/`unix` with the process's
 //!   address space; and their `Native` entries for the ABI (`native_mmap`, ...,
@@ -467,7 +467,7 @@
 //!   `vm::page`'s, with the buffer cache),
 //!   `paddr_is_dma_reachable`, `uvm_page_physdump`, `uvm_pmr_print`); the vnode as the
 //!   kernel's pager reaches it (`uvm_vnode.c`: `impl VnodeOps for Vnode`; N5.0: `BsdSysInfo` is
-//!   gone, the pager reads `kernel::tc` and `kernel::reboot` itself) and the
+//!   gone, the pager reads `kernel::time::tc` and `kernel::base::reboot` itself) and the
 //!   file systems' `uvn_attach`/`uvm_vnp_*` with `bsd`'s signatures; and `uvm_km.c`'s `bsd`
 //!   shapes (`kp_dma*` over the machine's `dma_constraint`, `km_alloc`/`km_free` with the
 //!   legacy pointer, `vm_min_kernel_address`).
@@ -500,7 +500,7 @@
 //!   (`Process::vmspace_share`) and a reference (the C's `uvmspace_addref`), given back by
 //!   `uvmspace_free`.
 //! - `pinsyscalls(2)`'s table is the kernel's `MArray` handed to the process (its
-//!   `ps_libcpin`, a `hal::slot::ReadMostly<kernel::proc::PinTable>` since N4.6a):
+//!   `ps_libcpin`, a `hal::sync::slot::ReadMostly<kernel::proc::PinTable>` since N4.6a):
 //!   `pin_check` borrows it, `exit` and `exec` replace it and it goes with its owner (the C's
 //!   `free(.., M_PINSYSCALL, ..)`).
 //! - `uvmexp` goes out to `vm.uvmexp` as the bytes `UvmexpCopy::to_ne_bytes` lays out (hal),
@@ -515,7 +515,7 @@ use hal::user::UserPtr;
 use hal::vm::param::{round_page, trunc_page};
 use hal::vm::uvmexp::UVMEXP;
 use kernel::api::VmEntries;
-use kernel::pipe::UioMove;
+use kernel::file::pipe::UioMove;
 use kernel::vm::anon::Anon;
 use kernel::vm::init::VmMachine;
 use kernel::vm::km::{KmemDynMode, KmemPaMode, KmemVaMode, pa_mode};
@@ -609,7 +609,7 @@ fn vmspace_take(pr: &Process) -> Option<VmspaceRef> {
     pr.set_vmspace(None)
 }
 
-/// A `struct uio` as `uvm_io` moves bytes through it (`kernel::pipe::UioMove`): `uiomove`
+/// A `struct uio` as `uvm_io` moves bytes through it (`kernel::file::pipe::UioMove`): `uiomove`
 /// in the uio's own direction; no file, so never non-blocking.
 pub struct VmUio<'a, 'b>(pub &'a mut Uio<'b>);
 
@@ -941,8 +941,8 @@ pub fn uvm_init() {
 
     // averunnable.fscale = FSCALE: M5.
 
-    // The u-areas `fork1` gives its threads (hal::thread's E4 provider).
-    let _ = hal::thread::register_uarea_memory(&kernel::vm::glue::UAREAS);
+    // The u-areas `fork1` gives its threads (hal::cpu::thread's E4 provider).
+    let _ = hal::cpu::thread::register_uarea_memory(&kernel::vm::glue::UAREAS);
     kernel::vm::init::uvm_machine_init(&VM_MACHINE);
 
     // Init the page sub-system. This includes allocating the vm_page structures, and setting
@@ -1039,8 +1039,8 @@ pub fn uvmspace_fork_or_share(parent: &Process, pr: &Process, share: bool) {
 
 /// `uvm_uarea_alloc`: a thread's u-area (`kernel::vm::glue::uvm_uarea_alloc`), as the
 /// legacy pointer `thread_new` stores in `p_addr`.
-pub fn uvm_uarea_alloc() -> Option<hal::thread::UArea> {
-    hal::thread::UArea::alloc()
+pub fn uvm_uarea_alloc() -> Option<hal::cpu::thread::UArea> {
+    hal::cpu::thread::UArea::alloc()
 }
 
 /// `uvm_uarea_free(p)`: frees `p`'s u-area (`kernel::vm::glue::uvm_uarea_free`) and clears
@@ -1345,7 +1345,7 @@ pub(crate) fn uvm_km_test_init() {
 mod tests {
     // Over the host's memory (`setup_real_memory`, which runs uvm_km_test_init).
 
-    use hal::malloc::MArray;
+    use hal::mem::malloc::MArray;
 
     use super::*;
     use crate::kern::subr_pool::tests::setup_real_memory;

@@ -41,7 +41,7 @@
 //!   again under its `ps_mtx` (`thread_join`'s and `exit1`'s moves: the C's
 //!   `TAILQ_INSERT_TAIL` and `TAILQ_REMOVE` of `ps_threads`).
 //!
-//! N4.3's descriptors (`kernel::descrip`), over a table of 19 open files (the "before" a
+//! N4.3's descriptors (`kernel::file::descrip`), over a table of 19 open files (the "before" a
 //! scratch test of `bsd`'s kern_descrip.rs at abfbed96, whose pools were `bsd`'s):
 //! - `prim.fd-get`: `fd_getfile(fdp, 3)` then `FRELE`.
 //! - `prim.fd-dup-close`: `dup(3)` as the C makes it (`fd_getfile`, `fdalloc`,
@@ -55,7 +55,7 @@
 //! - `prim.mutexed`: a `hal::Mutexed` taken and released (`fd_fplock`'s cost on these
 //!   doubles; LZ's `mtx_enter`/`mtx_leave` over `bsd`'s was 3.0 ns in the same run as the
 //!   "before").
-//! - `prim.mplock`: the ticket lock of `kernel_lock` (`hal::klock::MpLock`, a value of the
+//! - `prim.mplock`: the ticket lock of `kernel_lock` (`hal::sync::klock::MpLock`, a value of the
 //!   bench's own: the host's kernel lock is a per-thread double) taken and released
 //!   (`__mp_lock` + `__mp_unlock`).
 //!
@@ -68,7 +68,7 @@
 //! - `sig.userret-empty`: `userret` of a thread with nothing pending (every return to user
 //!   mode).
 //!
-//! N4.6b's sysctl core (`kernel::sysctl`; not a decision-43 hot path, BRIEF-N4.6 G6: the
+//! N4.6b's sysctl core (`kernel::base::sysctl`; not a decision-43 hot path, BRIEF-N4.6 G6: the
 //! numbers show what the registry and the dispatcher cost over the user-copy double):
 //! - `prim.copyout-int`: one `int` copied out through the kernel's user-copy double (the
 //!   floor every `sysctl.*` op below pays at least once).
@@ -92,19 +92,19 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use std::vec::Vec;
 
-use hal::klock;
-use hal::pool::{PoolBackend, RawPool};
+use hal::mem::pool::{PoolBackend, RawPool};
+use hal::sync::klock;
 use hal::sys::errno::Errno;
 use hal::sys::types::Off;
 use hal::sys::types::Pid;
-use kernel::cred::{CredRef, Ucred, crdup};
-use kernel::descrip::{
+use kernel::file::descrip::{
     falloc, fd_getfile, fdalloc, fdcopy, fdinit, fdinsert, fdplock, fdprepforexec, fdrelease,
     filedesc_init, finishdup,
 };
 use kernel::file::{DTYPE_PIPE, File, FileOps, foffset};
+use kernel::proc::cred::{CredRef, Ucred, crdup};
+use kernel::proc::resource::{self, PlimitRef, RLIMIT_NOFILE};
 use kernel::proc::{self, ProcGlue, ProcTables, Process, Session};
-use kernel::resource::{self, PlimitRef, RLIMIT_NOFILE};
 use kernel::testutil;
 
 // ---------------------------------------------------------------------------------------
@@ -364,11 +364,11 @@ impl ProcGlue for BenchGlue {
     ) {
     }
     /// No per-CPU slice start: the uptime itself (no running part).
-    fn spc_runtime() -> kernel::clock::Timespec {
-        kernel::tc::nanouptime()
+    fn spc_runtime() -> kernel::time::clock::Timespec {
+        kernel::time::tc::nanouptime()
     }
     fn process_ref(pr: &Process<Self>) -> proc::ProcessRef<Self> {
-        match hal::pool::PoolArc::from_ref(pr) {
+        match hal::mem::pool::PoolArc::from_ref(pr) {
             Some(a) => proc::StaticOrPooled::Pooled(a),
             None => std::process::exit(1),
         }
@@ -382,7 +382,7 @@ impl FileOps<BenchFiles> for BenchOps {
     fn read(
         &self,
         _: &File<BenchFiles>,
-        _: &mut kernel::uio::Uio<'_, BenchGlue>,
+        _: &mut kernel::file::uio::Uio<'_, BenchGlue>,
         _: i32,
     ) -> Result<(), Errno> {
         Ok(())
@@ -390,7 +390,7 @@ impl FileOps<BenchFiles> for BenchOps {
     fn write(
         &self,
         _: &File<BenchFiles>,
-        _: &mut kernel::uio::Uio<'_, BenchGlue>,
+        _: &mut kernel::file::uio::Uio<'_, BenchGlue>,
         _: i32,
     ) -> Result<(), Errno> {
         Ok(())
@@ -407,7 +407,7 @@ impl FileOps<BenchFiles> for BenchOps {
     fn kqfilter(
         &self,
         _: &File<BenchFiles>,
-        _: &kernel::event::Knote<BenchGlue>,
+        _: &kernel::file::event::Knote<BenchGlue>,
     ) -> Result<(), Errno> {
         Err(Errno::EINVAL)
     }
@@ -614,13 +614,14 @@ fn main() {
             let _ = fdrelease(t3, fdplock(t3.fd()), new);
         })),
     });
-    let mtx = hal::mutex::Mutexed::new(hal::intr::mpfloor(), 0u32);
+    let mtx = hal::sync::mutex::Mutexed::new(hal::cpu::intr::mpfloor(), 0u32);
     benches.push(Bench {
         name: "prim.mutexed",
         ops: PRIM,
         f: Box::new(prim(|| *black_box(&mtx).lock() += 1)),
     });
-    let mpl: &'static hal::klock::MpLock = Box::leak(Box::new(hal::klock::MpLock::new()));
+    let mpl: &'static hal::sync::klock::MpLock =
+        Box::leak(Box::new(hal::sync::klock::MpLock::new()));
     benches.push(Bench {
         name: "prim.mplock",
         ops: PRIM,
@@ -659,7 +660,7 @@ fn main() {
     kernel::sig::test_sigacts(&pr);
     let st: &'static proc::Thread<BenchGlue> =
         Box::leak(Box::new(proc::thread_alloc::<BenchGlue>(&pr, ())));
-    let sp = hal::pin::pin_static(st);
+    let sp = hal::ds::pin::pin_static(st);
     let pr4 = &pr;
     benches.push(Bench {
         name: "sig.sigactsinit",
@@ -708,8 +709,8 @@ fn main() {
         listed.join_locked(&mut g, lt.as_pin());
         listed.set_main_locked(&mut g, lt);
     }
-    static OSTYPE: kernel::sysctl::RdString = kernel::sysctl::RdString(b"EmiBSD");
-    let _ = kernel::sysctl::register_kern(hal::sys::sysctl::KERN_OSTYPE, &OSTYPE);
+    static OSTYPE: kernel::base::sysctl::RdString = kernel::base::sysctl::RdString(b"EmiBSD");
+    let _ = kernel::base::sysctl::register_kern(hal::sys::sysctl::KERN_OSTYPE, &OSTYPE);
     let ubuf = testutil::USER_BASE + 0x7000;
     benches.push(Bench {
         name: "prim.copyout-int",
@@ -723,13 +724,13 @@ fn main() {
         ops: PRIM,
         f: Box::new(prim(|| {
             let mut len = 4usize;
-            let mut req = kernel::sysctl::SysctlReq {
+            let mut req = kernel::base::sysctl::SysctlReq {
                 oldp: ubuf,
                 oldlenp: &mut len,
                 newp: 0,
                 newlen: 0,
             };
-            let _ = black_box(kernel::sysctl::rdint(&mut req, black_box(42)));
+            let _ = black_box(kernel::base::sysctl::rdint(&mut req, black_box(42)));
         })),
     });
     benches.push(Bench {
@@ -737,13 +738,13 @@ fn main() {
         ops: PRIM,
         f: Box::new(prim(|| {
             let mut len = 32usize;
-            let mut req = kernel::sysctl::SysctlReq {
+            let mut req = kernel::base::sysctl::SysctlReq {
                 oldp: ubuf,
                 oldlenp: &mut len,
                 newp: 0,
                 newlen: 0,
             };
-            let _ = black_box(kernel::sysctl::kern_sysctl(
+            let _ = black_box(kernel::base::sysctl::kern_sysctl(
                 &t,
                 &[hal::sys::sysctl::KERN_OSTYPE],
                 &mut req,
@@ -756,14 +757,14 @@ fn main() {
         ops: PRIM,
         f: Box::new(prim(|| {
             let mut len = kp_size as usize;
-            let mut req = kernel::sysctl::SysctlReq {
+            let mut req = kernel::base::sysctl::SysctlReq {
                 oldp: ubuf,
                 oldlenp: &mut len,
                 newp: 0,
                 newlen: 0,
             };
             let name = [hal::sys::sysctl::KERN_PROC_PID, 4545, kp_size, 1];
-            let _ = black_box(kernel::sysctl::sysctl_doproc(&t, &name, &mut req));
+            let _ = black_box(kernel::base::sysctl::sysctl_doproc(&t, &name, &mut req));
         })),
     });
 

@@ -73,7 +73,7 @@
 //! - The pager operations (`struct uvm_pagerops`, a table of nine `Option<fn>` reached through
 //!   `uobj->pgops`, each casting its `&UvmObject` back to the `uvm_aobj` or `uvm_vnode` it is
 //!   the first member of, `#[repr(C)]`) -> [`ObjRef`], an enum of the handles to the objects a
-//!   map entry, the buffer cache or exec holds (`Aobj`: a counted `hal::pool::PoolArc` of
+//!   map entry, the buffer cache or exec holds (`Aobj`: a counted `hal::mem::pool::PoolArc` of
 //!   `"aobjpl"`; `Kernel`: the kernel object, a static; `Vnode`: a vnode's object, which is never
 //!   freed), whose methods are the operations ([`ObjRef::get`], [`ObjRef::get_sync`],
 //!   [`ObjRef::put`], [`ObjRef::flush`], [`ObjRef::reference`], [`ObjRef::detach`],
@@ -88,7 +88,7 @@
 //!   the lock held across, releasing it around their I/O and sleeps: they borrow the write
 //!   witness mutably. Each checks that the witness is its object's lock's.
 //! - `vmobjlock: Cell<*const Rwlock>` (`rw_obj_alloc`, `rw_obj_free` in `uvm_obj_destroy`) ->
-//!   `Option<hal::rwlock::SharedRwlock>`, `None` for the dummies; `uvm_obj_setlock` is
+//!   `Option<hal::sync::rwlock::SharedRwlock>`, `None` for the dummies; `uvm_obj_setlock` is
 //!   [`Object::setlock`] on an object still its maker's (`&mut`: the C's "caller is responsible
 //!   to ensure that UVM objects is not use" as a type). [`uvm_obj_destroy`] keeps the C's
 //!   assertion; the lock goes with the object's memory (the last handle).
@@ -106,11 +106,13 @@ use core::ptr;
 use core::sync::atomic::{AtomicI32, Ordering};
 
 use hal::arch::current::param::{PAGE_SHIFT, PAGE_SIZE};
-use hal::pool::PoolArc;
-use hal::rwlock::{LockId, RW_READ, RW_WRITE, RawRwlock, SharedRwlock, Witness, WriteWitness};
-use hal::sleep::PVM;
+use hal::ds::tree::Tree;
+use hal::mem::pool::PoolArc;
+use hal::sync::rwlock::{
+    LockId, RW_READ, RW_WRITE, RawRwlock, SharedRwlock, Witness, WriteWitness,
+};
+use hal::sync::sleep::PVM;
 use hal::sys::mman::{MADV_SEQUENTIAL, PROT_READ, PROT_WRITE};
-use hal::tree::Tree;
 
 use super::aobj::{
     Aobj, uao_detach, uao_dropswap, uao_flush, uao_get_locked, uao_get_sync, uao_reference,
@@ -741,7 +743,7 @@ pub fn uvm_obj_unwire(uobj: &Object, start: Voff, end: Voff) {
 /// attached to a buffer. The kernel lock is held.
 pub fn uvm_obj_free(uobj: &Object) {
     kassert!(uobj.is_bufcache());
-    hal::klock::kernel_assert_locked();
+    hal::sync::klock::kernel_assert_locked();
 
     // Extract from rb tree in offset order, clean each page and free them as one list.
     uvm_obj_free_pages(uobj);

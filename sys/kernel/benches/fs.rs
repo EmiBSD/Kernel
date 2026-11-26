@@ -69,7 +69,7 @@
 //! entry calls it, the paths and the `struct stat` in the user memory of the host's double,
 //! over the names bench's file system and thread:
 //! - `open.close`: `open("/f", O_RDONLY)` and `close` of the descriptor.
-//! - `fstat`: `fstat` of a descriptor of `/f` (`kernel::descrip`'s, the vnode file's stat).
+//! - `fstat`: `fstat` of a descriptor of `/f` (`kernel::file::descrip`'s, the vnode file's stat).
 //! - `lseek`: `lseek(fd, 0, SEEK_SET)`.
 //! - `stat.3`: `stat("/a/b/c")` with the three names cached.
 //!
@@ -245,9 +245,10 @@ use kernel::fs::vnode::{GETCWD_CHECK_ACCESS, LK_NOWAIT, VDIR, VROOT, Vattr};
 use kernel::fs::vnops::{vn_close, vn_open};
 use kernel::fs::vops::{Nd, VFS_ROOT, Vfs};
 
-use hal::rwlock::RecursiveRwlock;
+use hal::sync::rwlock::RecursiveRwlock;
 use hal::sys::errno::Errno;
 use hal::sys::types::makedev;
+use kernel::file::uio::{Iovec, Uio};
 use kernel::fs::subr::{cdevvp, getnewvnode, vdrop, vfinddev, vfs, vget, vhold, vput, vref, vrele};
 use kernel::fs::testfs::{TestGlue, setup_root};
 use kernel::fs::ufs::ufs::testufs;
@@ -256,7 +257,6 @@ use kernel::fs::vnode::{
 };
 use kernel::fs::vops::{Cred, Vnops, vop_islocked, vop_readdir, vop_unlock};
 use kernel::proc::Thread;
-use kernel::uio::{Iovec, Uio};
 
 /// Repetitions per bench.
 const REPS: usize = 7;
@@ -634,23 +634,25 @@ fn names_root() -> &'static Thread<TestGlue> {
     vref(root);
     let _ = vop_unlock(root);
     kernel::proc::procinit::<TestGlue>(64, 64);
-    let _ = kernel::descrip::filedesc_init::<kernel::fs::testfs::TestFiles>();
+    let _ = kernel::file::descrip::filedesc_init::<kernel::fs::testfs::TestFiles>();
     kernel::testutil::set_test_maxfiles(4096);
     let pr = kernel::proc::process_alloc::<TestGlue>(1, ());
-    drop(pr.set_ucred(kernel::cred::CredRef::new(kernel::cred::Ucred::new())));
+    drop(pr.set_ucred(kernel::proc::cred::CredRef::new(
+        kernel::proc::cred::Ucred::new(),
+    )));
     // The limits of `lim_startup` that matter here: descriptors to open.
-    let mut limits = kernel::resource::Plimit::new();
+    let mut limits = kernel::proc::resource::Plimit::new();
     for l in &mut limits.pl_rlimit {
-        l.rlim_cur = kernel::resource::RLIM_INFINITY;
-        l.rlim_max = kernel::resource::RLIM_INFINITY;
+        l.rlim_cur = kernel::proc::resource::RLIM_INFINITY;
+        l.rlim_max = kernel::proc::resource::RLIM_INFINITY;
     }
-    limits.pl_rlimit[kernel::resource::RLIMIT_NOFILE].rlim_cur = 512;
-    limits.pl_rlimit[kernel::resource::RLIMIT_NOFILE].rlim_max = 512;
-    drop(pr.set_limit(kernel::resource::PlimitRef::new(limits)));
-    pr.set_fd(kernel::descrip::fdinit());
+    limits.pl_rlimit[kernel::proc::resource::RLIMIT_NOFILE].rlim_cur = 512;
+    limits.pl_rlimit[kernel::proc::resource::RLIMIT_NOFILE].rlim_max = 512;
+    drop(pr.set_limit(kernel::proc::resource::PlimitRef::new(limits)));
+    pr.set_fd(kernel::file::descrip::fdinit());
     let t = kernel::proc::thread_alloc::<TestGlue>(&pr, ());
     drop(t.set_cred(pr.ucred()));
-    let p: &'static Thread<TestGlue> = hal::pool::PoolBox::leak(t);
+    let p: &'static Thread<TestGlue> = hal::mem::pool::PoolBox::leak(t);
     core::mem::forget(pr);
     vref(root);
     p.fd().set_cdir(Some(root));
@@ -1115,7 +1117,10 @@ fn main() {
     need(upath_abc.copyout_slice(b"/a/b/c\0"), "copyout");
     lookup_rele(p, b"/a/b/c", FOLLOW);
     let fd = need(sys_open(p, upath_f, O_RDONLY, 0), "open");
-    need(kernel::descrip::sys_fstat(p, fd, ustat.addr()), "fstat");
+    need(
+        kernel::file::descrip::sys_fstat(p, fd, ustat.addr()),
+        "fstat",
+    );
     need(sys_lseek(p, fd, 0, SEEK_SET), "lseek");
     need(sys_stat(p, upath_abc, ustat), "stat");
     if wanted(names[19]) {
@@ -1124,7 +1129,7 @@ fn main() {
             measure(|| {
                 rounds(|| {
                     if let Ok(fd) = sys_open(p, black_box(upath_f), O_RDONLY, 0) {
-                        let _ = kernel::descrip::sys_close(p, fd);
+                        let _ = kernel::file::descrip::sys_close(p, fd);
                     }
                 })
             }),
@@ -1135,7 +1140,11 @@ fn main() {
             names[20],
             measure(|| {
                 rounds(|| {
-                    let _ = black_box(kernel::descrip::sys_fstat(p, black_box(fd), ustat.addr()));
+                    let _ = black_box(kernel::file::descrip::sys_fstat(
+                        p,
+                        black_box(fd),
+                        ustat.addr(),
+                    ));
                 })
             }),
         );
@@ -1160,7 +1169,7 @@ fn main() {
             }),
         );
     }
-    let _ = kernel::descrip::sys_close(p, fd);
+    let _ = kernel::file::descrip::sys_close(p, fd);
 
     // N5.5a3's rows: the UFS layer's lookup and readdir over its double (`testufs`: a fresh
     // mount with a root directory of eight files, its blocks in the buffer cache). The
@@ -1340,7 +1349,7 @@ fn nfs_srv_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, 
     let _g = kernel::testutil::pages_install(64 << 20);
     kernel::testutil::kernel_maps_install();
     kernel::net::mbuf::mbinit(&BENCH_NMBCLUST);
-    hal::klock::kernel_lock();
+    hal::sync::klock::kernel_lock();
 
     // A version 3 GETATTR call: xid, CALL, RPC 2, NFS, version 3, procedure 1, AUTH_UNIX of 28
     // bytes (stamp, an empty machine name, uid, gid, two groups), an AUTH_NULL verifier.
@@ -1401,7 +1410,7 @@ fn nfs_srv_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, 
             }),
         );
     }
-    hal::klock::kernel_unlock();
+    hal::sync::klock::kernel_unlock();
 }
 
 /// N6.7b3's rows (the module's docs): the nfs server's GETATTR and READ over an exported ffs,
@@ -1432,7 +1441,7 @@ fn nfs_srv_proc_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, 
     kernel::testutil::kernel_maps_install();
     mbinit(&BENCH_NMBCLUST);
     let _ = nmbclust_update(256 * 1024);
-    hal::klock::kernel_lock();
+    hal::sync::klock::kernel_lock();
     let mp = testffs::mount_root(p, 0);
     let args = ExportArgs {
         ex_flags: MNT_EXPORTED,
@@ -1521,7 +1530,7 @@ fn nfs_srv_proc_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, 
         );
     }
     testffs::unmount_root(p, mp);
-    hal::klock::kernel_unlock();
+    hal::sync::klock::kernel_unlock();
 }
 
 /// N6.8's rows (the module's docs): the nfs client over `lo0` and the scripted server of
@@ -1532,6 +1541,7 @@ fn nfs_srv_proc_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, 
 )]
 fn nfs_client_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
     use core::sync::atomic::Ordering::Relaxed;
+    use kernel::file::uio::{Iovec, Uio};
     use kernel::fs::namei::{Componentname, ISLASTCN, LOCKPARENT, LOOKUP, MAKEENTRY};
     use kernel::fs::nfs::nfs_bio::nfs_write;
     use kernel::fs::nfs::nfs_node::nfs_nget;
@@ -1551,7 +1561,6 @@ fn nfs_client_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f6
     use kernel::fs::vops::Cred;
     use kernel::sys::mount::{NFSMNT_DUMBTIMR, NFSMNT_GOTFSINFO, NFSMNT_NFSV3};
     use kernel::sys::socket::{SOCK_DGRAM, SOCK_STREAM};
-    use kernel::uio::{Iovec, Uio};
 
     const ROWS: [&str; 8] = [
         "nfs.rpc.null.udp",
@@ -1670,8 +1679,8 @@ fn nfs_client_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f6
     let fx = tn::bench_setup(1000);
     // A wall clock past the servers' times (the attribute cache's stamps are seconds; 0 is
     // "no attributes").
-    if kernel::tc::gettime() == 0 {
-        kernel::tc::TIME_SECOND.store(1_000_000, Relaxed);
+    if kernel::time::tc::gettime() == 0 {
+        kernel::time::tc::TIME_SECOND.store(1_000_000, Relaxed);
     }
     nfs_vfs_init::<Gl>(fx.mp.vfc()).expect("nfs_vfs_init");
     let rpc = |nmp: &NfsMount<Gl>| {
@@ -1749,7 +1758,7 @@ fn nfs_client_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f6
         need(tn::connect(&nmp), "connect");
         let dnp = need(nfs_nget(fx.mp, &rootfh), "the root");
         nfstov(&dnp).set_vtype(VDIR);
-        let _ = dnp.n_mtime.replace(kernel::clock::Timespec {
+        let _ = dnp.n_mtime.replace(kernel::time::clock::Timespec {
             tv_sec: 1000,
             tv_nsec: 0,
         });
@@ -2168,7 +2177,7 @@ fn tmpfs_rows(
 /// N5.8u2's udf rows (the module's docs), `names` theirs in order.
 #[cfg(feature = "udf")]
 fn udf_rows(wanted: &dyn Fn(&str) -> bool, names: &[&str], report: &dyn Fn(&str, (f64, f64, f64))) {
-    use kernel::descrip::{sys_close, sys_read};
+    use kernel::file::descrip::{sys_close, sys_read};
     use kernel::fs::isofs::udf::testudf::{self, mkudf};
     use kernel::fs::syscalls::sys_getdents;
 
@@ -2230,7 +2239,7 @@ fn cd9660_rows(
     names: &[&str],
     report: &dyn Fn(&str, (f64, f64, f64)),
 ) {
-    use kernel::descrip::{sys_close, sys_read};
+    use kernel::file::descrip::{sys_close, sys_read};
     use kernel::fs::isofs::cd9660::testcd9660::{self, image};
     use kernel::fs::syscalls::sys_getdents;
     use kernel::fs::ufs::ffs::testffs;
@@ -2293,7 +2302,7 @@ fn msdos_rows(
     names: &[&str],
     report: &dyn Fn(&str, (f64, f64, f64)),
 ) {
-    use kernel::descrip::sys_close;
+    use kernel::file::descrip::sys_close;
     use kernel::fs::msdosfs::testmsdosfs::{self, mkfat};
     use kernel::fs::syscalls::sys_getdents;
     use kernel::fs::ufs::ffs::testffs;
@@ -2357,7 +2366,7 @@ fn ext2_rows(
     names: &[&str],
     report: &dyn Fn(&str, (f64, f64, f64)),
 ) {
-    use kernel::descrip::sys_close;
+    use kernel::file::descrip::sys_close;
     use kernel::fs::syscalls::sys_getdents;
     use kernel::fs::ufs::ext2fs::testext2fs::{self, newfs};
     use kernel::fs::ufs::ffs::testffs;
@@ -2421,7 +2430,7 @@ const FFS_IMAGE: kernel::fs::ufs::ffs::testffs::newfs::Params =
 /// N5.5b3's ffs rows (the module's docs), `names` theirs in order.
 fn ffs_rows(wanted: &dyn Fn(&str) -> bool, names: &[&str], report: &dyn Fn(&str, (f64, f64, f64))) {
     use hal::sys::fcntl::{O_CREAT, O_RDWR};
-    use kernel::descrip::sys_close;
+    use kernel::file::descrip::sys_close;
     use kernel::fs::syscalls::{sys_getdents, sys_unlink};
     use kernel::fs::ufs::ffs::testffs::{self, newfs};
     use kernel::fs::ufs::ufs::inode::vtoi;

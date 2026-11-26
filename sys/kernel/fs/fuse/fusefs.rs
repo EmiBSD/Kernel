@@ -59,7 +59,7 @@
 //!
 //! ## Redesign
 //! - `struct fusefs_mnt` ([`FusefsMnt`]) is a counted block of `malloc(M_FUSEFS)`
-//!   ([`FusefsMntRef`], `hal::malloc::MArc`): the mount's typed slot holds one (N5.9f2's
+//!   ([`FusefsMntRef`], `hal::mem::malloc::MArc`): the mount's typed slot holds one (N5.9f2's
 //!   `fusefs_mount` hangs it where the C sets `mnt_data`), every node and the device it
 //!   serves hold one, so `VFSTOFUSEFS` is a handle ([`vfstofusefs`]) and no reference
 //!   outlives the block; LZ's `&'static` over a raw block and its `unsafe` deref are gone.
@@ -76,10 +76,10 @@
 
 use core::sync::atomic::AtomicI32;
 
-use hal::malloc::MArc;
-use hal::pinlist::PinList;
-use hal::pool::TypedPool;
-use hal::slot::ReadMostly;
+use hal::ds::pinlist::PinList;
+use hal::mem::malloc::MArc;
+use hal::mem::pool::TypedPool;
+use hal::sync::slot::ReadMostly;
 use hal::sys::types::Dev;
 
 use crate::assert::kpanic;

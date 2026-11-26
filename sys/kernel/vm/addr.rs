@@ -74,8 +74,8 @@
 //!   [`Selector::name`]. The kernel bootstrap selector is one `static` (its range set by
 //!   [`uvm_addr_init`]) that every kernel map shares, as in the C.
 //! - The free-space trees (`uaddr_free_rbtree` on `dfree.rbtree`) are
-//!   `hal::owned::SecondaryTree`s over the map's entries, which the map's address tree owns,
-//!   and a pivot's `entry` is a `hal::owned::SecondaryRef`: both are counted in the entry, so
+//!   `hal::ds::owned::SecondaryTree`s over the map's entries, which the map's address tree owns,
+//!   and a pivot's `entry` is a `hal::ds::owned::SecondaryRef`: both are counted in the entry, so
 //!   the address tree refuses to give an entry back while a free tree or a pivot still names
 //!   it (the C's rule that `uvm_mapent_free_remove` comes before `uvm_mapent_addr_remove`,
 //!   and that `uaddr_pivot_remove` clears the pivots, as checked preconditions).
@@ -90,9 +90,9 @@ use core::cmp::Ordering;
 use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 use hal::arch::current::param::{PAGE_MASK, PAGE_SHIFT, PAGE_SIZE};
-use hal::intr::IPL_VM;
-use hal::owned::{OwnedTree, SecondaryRef, SecondaryTree};
-use hal::pool::{BoxPool, PR_WAITOK, PoolBox};
+use hal::cpu::intr::IPL_VM;
+use hal::ds::owned::{OwnedTree, SecondaryRef, SecondaryTree};
+use hal::mem::pool::{BoxPool, PR_WAITOK, PoolBox};
 use hal::random::{arc4random, arc4random_uniform};
 use hal::sys::errno::Errno;
 
@@ -1335,10 +1335,10 @@ mod tests {
     use hal::arch::current::vmparam::{
         BRKSIZ, MAXSSIZ, USRSTACK, VM_MAXUSER_ADDRESS, VM_MIN_ADDRESS, VM_MIN_KERNEL_ADDRESS,
     };
-    use hal::pmap::PmapRef;
     use hal::sys::mman::{
         MADV_NORMAL, MADV_RANDOM, MAP_INHERIT_COPY, MAP_INHERIT_NONE, PROT_READ, PROT_WRITE,
     };
+    use hal::vm::pmap::PmapRef;
 
     use super::*;
     use crate::testutil;
@@ -1357,7 +1357,7 @@ mod tests {
         testutil::init_shared_once();
         let _ = uvm_anon_init(0);
         let _ = amap_init(0);
-        hal::pmap::init();
+        hal::vm::pmap::init();
         uvm_map_init();
         guard
     }

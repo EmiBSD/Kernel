@@ -76,7 +76,7 @@
 
 /* <CODE> */
 //! `<sys/extent.h>`: `extent(9)`, the general purpose extent manager. The extent itself is the
-//! kernel crate's (`kernel::extent`, N4.1); this is the legacy API the callers in `bsd` keep,
+//! kernel crate's (`kernel::base::extent`, N4.1); this is the legacy API the callers in `bsd` keep,
 //! over it.
 //!
 //! Upstream: sys/sys/extent.h @ 3ce1f3f79392
@@ -92,7 +92,7 @@
 //!   regions and takes the extent off the list of all extents, but the extent's own
 //!   `malloc(9)` block stays, since references to it may remain (one destroy site on arm64:
 //!   `ppb_detach`). A deviation of this adapter, until those callers hold an
-//!   `kernel::extent::ExtentRef`.
+//!   `kernel::base::extent::ExtentRef`.
 //!
 //! ## Redesign
 //! - LZ's header held the `#[repr(C)]` records of `Cell`s (`struct extent`, `struct
@@ -100,7 +100,7 @@
 //!   `extent_destroy` and the `*_with_descr` functions `unsafe fn`s. The types and the
 //!   constants are the kernel's now, re-exported; the functions keep their C names and
 //!   arguments here over the kernel's methods, all safe: a fixed extent's storage is a
-//!   `kernel::extent::ExtentFixed` (`storage` names it as a `FixedRegions`), and a caller's
+//!   `kernel::base::extent::ExtentFixed` (`storage` names it as a `FixedRegions`), and a caller's
 //!   descriptor (`*_with_descr`) is a [`Descr`] made in advance by [`extent_descr`] and given
 //!   to the extent, where the C links the caller's own `struct extent_region` (the SMMU's map
 //!   state embedded one).
@@ -109,7 +109,7 @@
 use crate::kern::subr_prf::db_printf;
 use crate::sys::errno::Errno;
 
-pub use kernel::extent::{
+pub use kernel::base::extent::{
     Descr, ER_ALLOC, ER_DISCARD, EX_BOUNDZERO, EX_CATCH, EX_CONFLICTOK, EX_FAST, EX_FILLED,
     EX_MALLOCOK, EX_NOALIGN, EX_NOBOUNDARY, EX_NOCOALESCE, EX_NOWAIT, EX_WAITOK, EX_WAITSPACE,
     EXF_BITS, EXF_FIXED, EXF_FLWANTED, EXF_NOCOALESCE, EXF_WANTED, Extent, ExtentFixed, ExtentList,
@@ -118,7 +118,7 @@ pub use kernel::extent::{
 
 /// `extent_print_all()`: every extent registered (DDB `show extents`).
 pub fn extent_print_all() {
-    kernel::extent::extent_print_all(|a| {
+    kernel::base::extent::extent_print_all(|a| {
         db_printf(a);
     });
 }
@@ -136,7 +136,7 @@ pub fn extent_create(
 ) -> Option<&'static Extent> {
     match storage {
         Some(fex) => fex.create(name, start, end, mtype, flags),
-        None => Extent::create(name, start, end, mtype, flags).map(hal::malloc::MBox::leak),
+        None => Extent::create(name, start, end, mtype, flags).map(hal::mem::malloc::MBox::leak),
     }
 }
 
@@ -238,7 +238,7 @@ pub fn extent_print(ex: &Extent) {
 /// sleep); `None` when memory is short. The C's caller embeds a `struct extent_region` in a
 /// structure of its own instead.
 pub fn extent_descr(flags: i32) -> Option<Descr> {
-    kernel::extent::descr(flags)
+    kernel::base::extent::descr(flags)
 }
 /* </CODE> */
 

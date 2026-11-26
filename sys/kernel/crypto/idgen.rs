@@ -64,7 +64,7 @@ use libkern::explicit_bzero;
 
 use super::wipe;
 use crate::sys::types::Time;
-use crate::tc::getuptime;
+use crate::time::tc::getuptime;
 use hal::random::{arc4random, arc4random_buf};
 
 /// `IDGEN32_ROUNDS`: Feistel rounds of the permutation.

@@ -96,7 +96,7 @@
 
 use core::mem::offset_of;
 
-use hal::malloc::{M_WAITOK, MBox};
+use hal::mem::malloc::{M_WAITOK, MBox};
 use hal::sys::endian::{letoh32, letoh64};
 use hal::sys::errno::Errno;
 use hal::sys::types::{Daddr, Ino, Off};
@@ -332,7 +332,7 @@ mod tests {
     use std::vec;
     use std::vec::Vec;
 
-    use hal::pool::PoolArc;
+    use hal::mem::pool::PoolArc;
 
     use super::*;
     use crate::fs::isofs::udf::testudf::mkudf::{B, dstring, file_entry, volume};

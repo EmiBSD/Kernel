@@ -50,7 +50,7 @@
 /* <CODE> */
 //! `<sys/syscall_mi.h>`: the machine-independent part of a system call, around the
 //! machine's entry (`hal::arch::arm64::syscall::svc_handler`), and the machine-independent
-//! calls of the machine's trap code (`hal::trap::TrapHandler`).
+//! calls of the machine's trap code (`hal::cpu::trap::TrapHandler`).
 //!
 //! Upstream: sys/sys/syscall_mi.h @ 3ce1f3f79392
 //! LZ: sys/sys/syscall_mi.rs@3c62ede68802
@@ -85,7 +85,7 @@
 //!   `MAP_STACK` mapping gets `SIGSEGV` (from `uvm_map_inentry`) and fails with `EPERM`, as
 //!   in the C; a thread whose glue names no address space ([`ProcGlue::user_vmspace`],
 //!   `None`) fails the check, so a glue cannot skip it by forgetting it.
-//! - `pin_check` reads the pin tables through `hal::slot::ReadMostly` (N4.6a) and the
+//! - `pin_check` reads the pin tables through `hal::sync::slot::ReadMostly` (N4.6a) and the
 //!   machine's facts (`PROC_PC`, the `sigcode` offsets) through the glue; the tables' guards
 //!   end before the kernel lock and the terminal are taken (a `ReadMostly` reader never
 //!   waits).
@@ -93,7 +93,7 @@
 //!   `kernel::tty::uprintf`, as the C's `uprintf` (LZ printed it on the console: it had no
 //!   `uprintf`); a process without one, as diff-openbsd's `syscalls/entry` children, prints
 //!   nothing.
-//! - `KernelTrap<G>` implements `hal::trap::TrapHandler` (`bsd`'s `BsdTrap` before, N4.8b
+//! - `KernelTrap<G>` implements `hal::cpu::trap::TrapHandler` (`bsd`'s `BsdTrap` before, N4.8b
 //!   b1): the fault on the map `hal` chose (`pmap_fault_fixup`, `uvm_fault`, `uvm_grow`, the
 //!   `MAP_STACK` check of a user fault), `trapsignal`, `sigexit`, `refreshcreds`, `userret`,
 //!   [`mi_syscall_return`], [`mi_ast`] and [`mi_child_return`], on the running thread.
@@ -102,13 +102,13 @@ use core::marker::PhantomData;
 use core::pin::Pin;
 use core::sync::atomic::Ordering;
 
+use hal::cpu::trap::{FaultSource, TrapHandler};
 use hal::sys::errno::Errno;
 use hal::sys::syscall::{SYS_MAXSYSCALL, SYS_sigreturn};
 use hal::syscall::{Register, Rval, SysArgs, SysResult};
-use hal::trap::{FaultSource, TrapHandler};
 
-use crate::acct::APINSYS;
 use crate::assert::kpanic;
+use crate::proc::acct::APINSYS;
 use crate::proc::{P_OWEUPC, PS_PLEDGE, PinTable, ProcGlue, SINGLE_DEEP, SINGLE_UNWIND, Thread};
 use crate::vm::map::{Vmspace, uvm_map_inentry, uvm_map_inentry_sp};
 
@@ -119,7 +119,7 @@ pub const SY_NOLOCK: i32 = 0x01;
 /// `MULTIPROCESSOR`: [`mi_syscall`]'s callers keep the kernel lock for them although
 /// `sysent` marks them `SY_NOLOCK` (see the module's deviations). LZ's M11e audit left only
 /// the unported `__thrsleep(2)` and `__thrwakeup(2)`; their port (LZ 9fd12af2c575,
-/// `kernel::thrsleep`) takes the C's locks (the buckets' mutexes and `SCHED_LOCK`, as
+/// `kernel::sched::thrsleep`) takes the C's locks (the buckets' mutexes and `SCHED_LOCK`, as
 /// `futex(2)`), so the table is empty and stays as the place for the next unaudited one.
 pub const SY_NOLOCK_DEFERRED: &[i32] = &[];
 
@@ -146,7 +146,7 @@ impl core::fmt::Display for Comm<'_> {
     }
 }
 
-/// What `hal`'s trap code asks the kernel (`hal::trap::TrapHandler`), for the threads of
+/// What `hal`'s trap code asks the kernel (`hal::cpu::trap::TrapHandler`), for the threads of
 /// glue `G`: registered once by the kernel's boot path (`bsd`'s `hal_bridges_register`).
 pub struct KernelTrap<G: ProcGlue>(PhantomData<fn() -> G>);
 
@@ -226,7 +226,7 @@ fn pin_verdict<'t>(
 /// `pin_check`: check if a system call is entered from precisely the correct location.
 #[inline]
 pub fn pin_check<G: ProcGlue>(p: Pin<&Thread<G>>, code: Register) -> Result<(), Errno> {
-    pin_check_at(p, code, hal::trap::proc_pc())
+    pin_check_at(p, code, hal::cpu::trap::proc_pc())
 }
 
 /// [`pin_check`] for a thread whose `PROC_PC(p)` is `pc` (`mi_syscall` read it with the stack
@@ -237,7 +237,7 @@ fn pin_check_at<G: ProcGlue>(p: Pin<&Thread<G>>, code: Register, pc: usize) -> R
 
     // point at start of syscall instruction
     let addr = pc.wrapping_sub(G::sigcode_svc_offset());
-    // The two tables, borrowed for the check (`hal::slot::ReadMostly`: exec and exit
+    // The two tables, borrowed for the check (`hal::sync::slot::ReadMostly`: exec and exit
     // replace them only when no thread reads them).
     let ppin = pr.ps_pin.read();
     let plibcpin = pr.ps_libcpin.read();
@@ -268,7 +268,7 @@ fn pin_check_at<G: ProcGlue>(p: Pin<&Thread<G>>, code: Register, pc: usize) -> R
     drop(plibcpin);
 
     // KTRACE (KTR_PINSYSCALL): not configured.
-    hal::klock::kernel_lock(); // KERNEL_LOCK()
+    hal::sync::klock::kernel_lock(); // KERNEL_LOCK()
     // XXX remove or simplify this uprintf() call after OpenBSD 7.5 release
     let comm = pr.comm();
     crate::tty::uprintf(
@@ -302,7 +302,7 @@ fn pin_check_at<G: ProcGlue>(p: Pin<&Thread<G>>, code: Register, pc: usize) -> R
     }
     // Send uncatchable SIGABRT for coredump
     crate::sig::sigabort(p);
-    hal::klock::kernel_unlock(); // KERNEL_UNLOCK()
+    hal::sync::klock::kernel_unlock(); // KERNEL_UNLOCK()
     Err(error)
 }
 
@@ -311,7 +311,7 @@ fn pin_check_at<G: ProcGlue>(p: Pin<&Thread<G>>, code: Register, pc: usize) -> R
 #[inline]
 fn refreshcreds<G: ProcGlue>(p: &Thread<G>) {
     if p.cred_stale() {
-        crate::prot::dorefreshcreds(p);
+        crate::proc::prot::dorefreshcreds(p);
     }
 }
 
@@ -384,7 +384,7 @@ pub fn mi_syscall<G: ProcGlue>(
     // dt(4), KTRACE: not configured.
 
     // PROC_PC and PROC_STACK, in one access to the frame.
-    let (pc, sp) = hal::trap::proc_regs();
+    let (pc, sp) = hal::cpu::trap::proc_regs();
 
     // SP must be within MAP_STACK space
     if !stack_in_map_stack(p, sp) {
@@ -395,17 +395,17 @@ pub fn mi_syscall<G: ProcGlue>(
 
     let pledged = p.process().ps_flags.load(Ordering::Relaxed) & PS_PLEDGE != 0;
     if pledged && let Err((error, tval)) = G::pledge_syscall(&p, code as i32) {
-        hal::klock::kernel_lock(); // KERNEL_LOCK()
+        hal::sync::klock::kernel_lock(); // KERNEL_LOCK()
         let error = G::pledge_fail(&p, error, tval);
-        hal::klock::kernel_unlock(); // KERNEL_UNLOCK()
+        hal::sync::klock::kernel_unlock(); // KERNEL_UNLOCK()
         return Err(error);
     }
     if lock {
-        hal::klock::kernel_lock(); // KERNEL_LOCK()
+        hal::sync::klock::kernel_lock(); // KERNEL_LOCK()
     }
     let error = body(argp, retval);
     if lock {
-        hal::klock::kernel_unlock(); // KERNEL_UNLOCK()
+        hal::sync::klock::kernel_unlock(); // KERNEL_UNLOCK()
     }
 
     error
@@ -436,7 +436,7 @@ pub fn mi_child_return<G: ProcGlue>(p: Pin<&Thread<G>>) {
 pub fn mi_ast<G: ProcGlue>(p: Pin<&Thread<G>>, resched: bool) {
     if p.p_flag.load(Ordering::Relaxed) & P_OWEUPC != 0 {
         // KERNEL_LOCK(); ADDUPROF(p); KERNEL_UNLOCK(): the profiling clock (subr_prof.c).
-        let _ = crate::prf::unported!("mi_ast: ADDUPROF (subr_prof.c)");
+        let _ = crate::base::prf::unported!("mi_ast: ADDUPROF (subr_prof.c)");
     }
     if resched {
         crate::sched::preempt::<G>();
@@ -448,7 +448,7 @@ pub fn mi_ast<G: ProcGlue>(p: Pin<&Thread<G>>, resched: bool) {
 
 /// The running thread, for `f`; a trap without one is `panic(9)` (the machine checked it).
 fn with_trapped<G: ProcGlue, R>(f: impl FnOnce(Pin<&Thread<G>>) -> R) -> R {
-    hal::thread::with_current::<Thread<G>, R>(f)
+    hal::cpu::thread::with_current::<Thread<G>, R>(f)
 }
 
 impl<G: ProcGlue> TrapHandler for KernelTrap<G> {
@@ -458,11 +458,11 @@ impl<G: ProcGlue> TrapHandler for KernelTrap<G> {
         &self,
         source: FaultSource,
         va: usize,
-        access: hal::pmap::VmProt,
+        access: hal::vm::pmap::VmProt,
     ) -> Result<(), Errno> {
         // The fault counts on curproc->p_ru: the thread on this CPU's, when there is one
         // (a kernel fault taken with no thread counts nowhere; the C has always one).
-        let kernel_fault = |va, ru: Option<&crate::resource::Rusage>| {
+        let kernel_fault = |va, ru: Option<&crate::proc::resource::Rusage>| {
             let map = crate::vm::km::kernel_map();
             #[cfg(target_arch = "aarch64")]
             if map
@@ -547,12 +547,12 @@ impl<G: ProcGlue> TrapHandler for KernelTrap<G> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cred::{CredRef, Ucred};
+    use crate::proc::cred::{CredRef, Ucred};
     use crate::proc::{process_alloc, procinit, thread_alloc};
     use crate::testutil;
-    use hal::malloc::{M_WAITOK, MArray};
-    use hal::pin::pin_static;
-    use hal::pool::PoolBox;
+    use hal::ds::pin::pin_static;
+    use hal::mem::malloc::{M_WAITOK, MArray};
+    use hal::mem::pool::PoolBox;
     use hal::sys::syscall::{SYS_getpid, SYS_read};
 
     crate::test_file_glue!(Yf, Yg);
@@ -676,13 +676,13 @@ mod tests {
     #[test]
     fn no_map_stack_is_eperm_and_runs_nothing() {
         testutil::install();
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         procinit::<Yg>(64, 64);
         let pr = process_alloc::<Yg>(4242, ());
         drop(pr.set_ucred(CredRef::new(Ucred::new())));
         let t = thread_alloc::<Yg>(&pr, ());
         drop(t.set_cred(pr.ucred()));
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
         let t: &'static PoolBox<Thread<Yg>> = std::boxed::Box::leak(std::boxed::Box::new(t));
         let p = pin_static::<Thread<Yg>>(t);
         let mut ran = false;
@@ -735,7 +735,7 @@ mod tests {
         let _ = crate::vm::anon::uvm_anon_init(0);
         let _ = crate::vm::amap::amap_init(0);
         let _ = crate::vm::aobj::uao_init();
-        hal::pmap::init();
+        hal::vm::pmap::init();
         uvm_map_init();
         crate::vm::fault::uvmfault_init();
 
@@ -766,14 +766,14 @@ mod tests {
             std::boxed::Box::leak(std::boxed::Box::new(vm));
         VG_VM.with(|c| c.set(Some(&**vm)));
 
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         procinit::<Vg>(64, 64);
         let pr = process_alloc::<Vg>(4343, ());
         drop(pr.set_ucred(CredRef::new(Ucred::new())));
         crate::sig::test_sigacts(&pr);
         let t = thread_alloc::<Vg>(&pr, ());
         drop(t.set_cred(pr.ucred()));
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
         // libc's pins: getpid at its + 0x40, where the thread's pc is.
         let mut pins = [0u32; 32];
         pins[SYS_getpid as usize] = 0x40;
@@ -793,10 +793,10 @@ mod tests {
             ..Default::default()
         };
         crate::sig::setsigvec(&p, hal::sys::signal::SIGSEGV, &mut sa);
-        let _ = hal::sig::take_sent();
+        let _ = hal::cpu::sig::take_sent();
         let getpid = SYS_getpid as Register;
 
-        hal::trap::set_user_regs(pc, stk + 2 * PAGE_SIZE);
+        hal::cpu::trap::set_user_regs(pc, stk + 2 * PAGE_SIZE);
         let mut ran = false;
         let r = mi_syscall(p, getpid, false, &[0; 6], &mut [0; 2], |_, _| {
             ran = true;
@@ -804,9 +804,9 @@ mod tests {
         });
         assert_eq!(r, Ok(()));
         assert!(ran, "a MAP_STACK stack reaches the body");
-        assert!(hal::sig::take_sent().is_empty());
+        assert!(hal::cpu::sig::take_sent().is_empty());
 
-        hal::trap::set_user_regs(pc, plain + PAGE_SIZE);
+        hal::cpu::trap::set_user_regs(pc, plain + PAGE_SIZE);
         let mut ran = false;
         let r = mi_syscall(p, getpid, false, &[0; 6], &mut [0; 2], |_, _| {
             ran = true;
@@ -814,11 +814,11 @@ mod tests {
         });
         assert_eq!(r, Err(Errno::EPERM));
         assert!(!ran, "the body ran past a failed MAP_STACK check");
-        let sent = hal::sig::take_sent();
+        let sent = hal::cpu::sig::take_sent();
         assert_eq!(sent.len(), 1, "SIGSEGV");
         assert_eq!(sent[0].sig, hal::sys::signal::SIGSEGV);
 
-        hal::trap::set_user_regs(0, 0);
+        hal::cpu::trap::set_user_regs(0, 0);
         VG_VM.with(|c| c.set(None));
         Vg::set_curproc(None);
         core::mem::forget(pr);
@@ -830,11 +830,11 @@ mod tests {
     #[should_panic(expected = "trap: a user fault with no address space")]
     fn a_user_fault_without_an_address_space_panics() {
         testutil::install();
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         procinit::<Yg>(64, 64);
         let pr = process_alloc::<Yg>(4244, ());
         let t = thread_alloc::<Yg>(&pr, ());
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
         core::mem::forget(pr);
         let t: &'static PoolBox<Thread<Yg>> = std::boxed::Box::leak(std::boxed::Box::new(t));
         let _ = user_page_fault(pin_static::<Thread<Yg>>(t), 0x7f00_0000, |_| Ok(()));

@@ -133,7 +133,7 @@ use core::arch::{asm, global_asm};
 use core::ptr;
 
 use crate::assert::hal_panic;
-use crate::pmap::Pmap;
+use crate::vm::pmap::Pmap;
 
 // `switch_mmu_kernel` (`locore.S`): loads `TTBR1_EL1` with `x0` and drops every TLB entry of
 // every CPU (the broadcast `tlbi vmalle1is`, completed by `dsb ish`), then returns. Called
@@ -319,7 +319,7 @@ pub(super) fn cpu_setttb(pm: &Pmap) {
 /// `WRITE_SPECIALREG(ttbr0_el1, pmap_kernel()->pm_pt0pa); isb`: the lower half to the kernel's
 /// empty table.
 pub(super) fn ttbr0_empty() {
-    let pt0pa = crate::pmap::kernel().md.pt0pa();
+    let pt0pa = crate::vm::pmap::kernel().md.pt0pa();
     if pt0pa == 0 {
         hal_panic(format_args!(
             "pmap: TTBR0_EL1 switched before pmap_bootstrap"

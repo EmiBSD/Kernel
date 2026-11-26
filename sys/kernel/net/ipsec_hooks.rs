@@ -45,7 +45,7 @@
 use core::any::Any;
 
 use hal::bridges::AlreadyRegistered;
-use hal::once::OnceStatic;
+use hal::sync::once::OnceStatic;
 use hal::sys::errno::Errno;
 
 use crate::assert::kpanic;
@@ -269,7 +269,11 @@ pub trait Ipsec: Sync {
     /// `ipsec_sysctl(name, namelen, oldp, oldlenp, newp, newlen)`: the IPsec names of
     /// `net.inet.ip` (`ip_sysctl`, N6.4c2). Default: `EOPNOTSUPP` (the C without `IPSEC`,
     /// whose `ipctl_vars` has none of them).
-    fn sysctl(&self, _name: &[i32], _req: &mut crate::sysctl::SysctlReq<'_>) -> Result<(), Errno> {
+    fn sysctl(
+        &self,
+        _name: &[i32],
+        _req: &mut crate::base::sysctl::SysctlReq<'_>,
+    ) -> Result<(), Errno> {
         Err(Errno::EOPNOTSUPP)
     }
 }

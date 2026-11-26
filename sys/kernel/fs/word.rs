@@ -55,7 +55,7 @@ macro_rules! word {
             #[inline]
             pub fn set(&self, v: $t) {
                 #[cfg(feature = "diagnostic")]
-                hal::klock::kernel_assert_locked();
+                hal::sync::klock::kernel_assert_locked();
                 self.0.store(v, Ordering::Relaxed);
             }
         }

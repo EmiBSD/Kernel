@@ -173,7 +173,7 @@
 
 use core::fmt;
 
-use hal::pool::PoolArc;
+use hal::mem::pool::PoolArc;
 use kernel::net::proto::SockaddrView;
 
 use crate::kern::subr_prf::{db_printf, panic};

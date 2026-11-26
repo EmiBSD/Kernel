@@ -437,7 +437,7 @@ pub fn ipip_input_if(
                         sin_addr: src,
                         ..SockaddrIn::default()
                     };
-                    hal::pod::put(&mut ss, 0, &sin);
+                    hal::mem::pod::put(&mut ss, 0, &sin);
                 }
                 #[cfg(feature = "inet6")]
                 InnerSrc::V6(src) => {
@@ -447,7 +447,7 @@ pub fn ipip_input_if(
                         sin6_addr: src,
                         ..SockaddrIn6::default()
                     };
-                    hal::pod::put(&mut ss, 0, &sin6);
+                    hal::mem::pod::put(&mut ss, 0, &sin6);
                 }
             }
             let rt = rtalloc(&ss, 0, m.m_pkthdr().ph_rtableid.get());

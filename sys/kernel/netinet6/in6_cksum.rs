@@ -104,7 +104,7 @@
 //!   the header panics where the C would read past it. `#[inline]`: the transports call it
 //!   per packet across the crate boundary (N6.3c1's R12).
 
-use hal::pod;
+use hal::mem::pod;
 use hal::sys::endian::htonl;
 use hal::sys::netinet6_in6::{In6Addr, in6_is_scope_embed};
 

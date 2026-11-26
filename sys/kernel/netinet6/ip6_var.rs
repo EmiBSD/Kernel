@@ -103,9 +103,9 @@
 //! - LZ's `IP6COUNTERS` (a static array of atomics in `bsd`'s `ip6_input.rs`) and
 //!   `ICMP6COUNTERS` (`icmp6.rs`'s), `<sys/percpu.h>` not ported -> [`IP6COUNTERS`] and
 //!   [`ICMP6COUNTERS`], [`StatCounters`] here beside the increments that use them: the
-//!   scalar words per CPU (`hal::percpu::Counters`, the C's `cpumem`, N6.4a's R13 for IPv4),
+//!   scalar words per CPU (`hal::sync::percpu::Counters`, the C's `cpumem`, N6.4a's R13 for IPv4),
 //!   the 256-word histograms (`ip6s_nxthist`, `icp6s_outhist`, `icp6s_inhist`) as LZ's
-//!   shared atomics with relaxed adds. `hal::percpu` gives each CPU of `MAXCPUS` (256) a copy
+//!   shared atomics with relaxed adds. `hal::sync::percpu` gives each CPU of `MAXCPUS` (256) a copy
 //!   at compile time where the C allocates `ncpus` at boot: per CPU, the three histograms
 //!   alone were 1.5 MiB of the 1.86 MiB of `.bss` the whole structures took (N6.5a's review,
 //!   S3); split, the two statistics take about 0.37 MiB. Both are summed into the one
@@ -148,10 +148,10 @@ use core::cell::Cell;
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 
-use hal::malloc::{MArray, MBox};
-use hal::owned::{OwnedSlist, SlistLink};
-use hal::percpu::Counters;
-use hal::pool::{BoxPool, Pooled};
+use hal::ds::owned::{OwnedSlist, SlistLink};
+use hal::mem::malloc::{MArray, MBox};
+use hal::mem::pool::{BoxPool, Pooled};
+use hal::sync::percpu::Counters;
 use hal::sys::netinet_icmp6::{ICP6S_NCOUNTERS, Icmp6statCounters};
 use hal::sys::netinet_ip6::IPV6_DEFHLIM;
 use hal::sys::netinet6_in6::{IPV6_DEFAULT_MULTICAST_HOPS, In6Addr, In6Pktinfo};
@@ -868,7 +868,8 @@ mod tests {
         assert_eq!(o.hlim, 9, "the other options kept");
 
         let mut sticky = Ip6Pktopts::new();
-        sticky.ip6po_dest1 = MArray::new(M_IP6OPT, hal::malloc::M_WAITOK, two.len(), |i| two[i]);
+        sticky.ip6po_dest1 =
+            MArray::new(M_IP6OPT, hal::mem::malloc::M_WAITOK, two.len(), |i| two[i]);
         let v = sticky.as_opts();
         assert_eq!(
             (v.hbh(), v.dest1(), v.dest2()),

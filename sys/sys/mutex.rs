@@ -39,8 +39,8 @@
 //! Upstream: sys/sys/mutex.h @ 3ce1f3f79392
 //! LZ: sys/sys/mutex.rs@3c62ede68802
 //!
-//! `bsd`'s names over `hal::mutex` (N4.5c): `struct mutex` is `hal::mutex::RawMutex`,
-//! `struct db_mutex` `hal::mutex::DbMutex`; the functions (`mtx_enter`, ...) stay in
+//! `bsd`'s names over `hal::sync::mutex` (N4.5c): `struct mutex` is `hal::sync::mutex::RawMutex`,
+//! `struct db_mutex` `hal::sync::mutex::DbMutex`; the functions (`mtx_enter`, ...) stay in
 //! `kern/kern_lock.rs`. `WITNESS` (`lock_object`, `MTX_LO_INITIALIZER`) is not configured.
 //!
 //! ## Deviations
@@ -55,7 +55,7 @@
 //!   `MUTEX_ASSERT_LOCKED`/`UNLOCKED`, `__MUTEX_IPL`, `mtx_curcpu`) for the 128 files that
 //!   use them. The uniprocessor `__MUTEX_IPL` is gone (decision 40).
 
-pub use hal::mutex::{DbMutex, RawMutex as Mutex, mtx_curcpu, mutex_ipl};
+pub use hal::sync::mutex::{DbMutex, RawMutex as Mutex, mtx_curcpu, mutex_ipl};
 
 /// `MTX_NOWITNESS`.
 pub const MTX_NOWITNESS: i32 = 0x01;

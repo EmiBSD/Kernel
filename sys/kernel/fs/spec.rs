@@ -148,9 +148,9 @@ use crate::file::LockOwner;
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU8, Ordering};
 
-use hal::link::Link;
-use hal::list::ListEntry;
-use hal::pool::PoolArc;
+use hal::ds::link::Link;
+use hal::ds::list::ListEntry;
+use hal::mem::pool::PoolArc;
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::{FWRITE, Flock};
 use hal::sys::mount::{MNT_NODEV, MNT_WAIT};
@@ -174,10 +174,10 @@ use super::vops::{
     Cred, IoBuf, Vnops, vop_access, vop_getattr, vop_islocked, vop_setattr, vop_unlock,
 };
 use crate::assert::kpanic;
-use crate::event::{__EV_POLL, __EV_SELECT, Knote, seltrue_kqfilter};
 use crate::file::FileGlue;
+use crate::file::event::{__EV_POLL, __EV_SELECT, Knote, seltrue_kqfilter};
+use crate::file::uio::{Uio, UioRw};
 use crate::proc::{ProcGlue, Thread};
-use crate::uio::{Uio, UioRw};
 
 /// `CLONE_SHIFT`: we use the upper 16 bits of the minor to record the clone instance. This
 /// gives us 8 bits for encoding the real minor number.
@@ -309,7 +309,7 @@ impl<G: ProcGlue> Specinfo<G> {
 /// `si_specnext`'s adapter: a `speclisth` chain.
 pub struct BySpecnext<G: ProcGlue>(PhantomData<G>);
 
-impl<G: ProcGlue> hal::list::ListAdapter for BySpecnext<G> {
+impl<G: ProcGlue> hal::ds::list::ListAdapter for BySpecnext<G> {
     type Elem = Vnode<G>;
     fn entry(e: &Vnode<G>) -> &ListEntry<Vnode<G>> {
         &e.specnext
@@ -464,7 +464,7 @@ macro_rules! spec_shared_slots {
             &self,
             vp: &'static crate::fs::vnode::Vnode<G>,
             _fflag: i32,
-            kn: &crate::event::Knote<G>,
+            kn: &crate::file::event::Knote<G>,
         ) -> Result<(), hal::sys::errno::Errno> {
             crate::fs::spec::spec_kqfilter(vp, kn)
         }
@@ -525,7 +525,7 @@ macro_rules! spec_shared_slots {
         fn readdir(
             &self,
             _: &'static crate::fs::vnode::Vnode<G>,
-            _: &mut crate::uio::Uio<'_, G>,
+            _: &mut crate::file::uio::Uio<'_, G>,
             _: crate::fs::vops::Cred<'_>,
             _: &mut i32,
         ) -> Result<(), hal::sys::errno::Errno> {
@@ -534,7 +534,7 @@ macro_rules! spec_shared_slots {
         fn readlink(
             &self,
             _: &'static crate::fs::vnode::Vnode<G>,
-            _: &mut crate::uio::Uio<'_, G>,
+            _: &mut crate::file::uio::Uio<'_, G>,
             _: crate::fs::vops::Cred<'_>,
         ) -> Result<(), hal::sys::errno::Errno> {
             crate::fs::default::vop_generic_badop()
@@ -678,7 +678,7 @@ impl<G: ProcGlue> Vnops<G> for SpecVops<G> {
 
 /// The securelevel `spec_open` checks (`kern.securelevel`).
 fn securelevel() -> i32 {
-    crate::sysctl::SECURELEVEL.load(Ordering::Relaxed)
+    crate::base::sysctl::SECURELEVEL.load(Ordering::Relaxed)
 }
 
 /// Open a special file.
@@ -889,7 +889,7 @@ fn spec_bsize<G: ProcGlue>(vp: &'static Vnode<G>) -> i32 {
         // (*bdevsw[majordev].d_ioctl)(vp->v_rdev, DIOCGPART, &dpart, FREAD, p): N7's ioctl
         // path through the device switch. Without it the C's ioctl failure path:
         // BLKDEV_IOSIZE.
-        let _ = crate::prf::unported!("spec_read/spec_write: DIOCGPART (disklabel.h)");
+        let _ = crate::base::prf::unported!("spec_read/spec_write: DIOCGPART (disklabel.h)");
     }
     BLKDEV_IOSIZE
 }
@@ -941,13 +941,13 @@ pub fn spec_fsync<G: ProcGlue>(vp: &'static Vnode<G>, waitfor: i32) -> Result<()
             DirtyPick::Take
         };
         if let DirtyScan::Taken(t) =
-            bio::vnode_dirty_scan(&vp.bufs, "spec_fsync", 0, hal::sleep::INFSLP, pick)
+            bio::vnode_dirty_scan(&vp.bufs, "spec_fsync", 0, hal::sync::sleep::INFSLP, pick)
         {
             bio::bawrite(t);
             continue;
         }
         if waitfor == MNT_WAIT {
-            let _ = bio::vwaitforio(&vp.bufs, 0, "spec_fsync", hal::sleep::INFSLP);
+            let _ = bio::vwaitforio(&vp.bufs, 0, "spec_fsync", hal::sync::sleep::INFSLP);
 
             #[cfg(feature = "diagnostic")]
             if !vp.bufs.dirty_is_empty() {
@@ -1013,7 +1013,7 @@ pub fn spec_close<G: ProcGlue>(
             if !xlocked {
                 let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
             }
-            let error = vinvalbuf(vp, V_SAVE, cred, p, 0, hal::sleep::INFSLP);
+            let error = vinvalbuf(vp, V_SAVE, cred, p, 0, hal::sync::sleep::INFSLP);
             if !xlocked {
                 let _ = vop_unlock(vp);
             }
@@ -1128,7 +1128,7 @@ pub fn spec_access<G: ProcGlue>(
 /// Print out the contents of a special device vnode.
 pub fn spec_print<G: ProcGlue>(vp: &'static Vnode<G>) -> Result<(), Errno> {
     if cfg!(any(feature = "debug", feature = "diagnostic")) {
-        crate::prf::printf(format_args!(
+        crate::base::prf::printf(format_args!(
             "tag VT_NON, dev {}, {}\n",
             major(vp.rdev()),
             minor(vp.rdev())
@@ -1157,7 +1157,7 @@ pub fn spec_pathconf(name: i32, retval: &mut Register) -> Result<(), Errno> {
 /// session's `s_ttyvp` is `vp`, it is cleared and `true` returned (the caller `vrele`s the
 /// vnode); `false` otherwise. Under the kernel lock, as `spec_close` runs.
 fn session_ttyvp_take<G: ProcGlue>(p: &Thread<G>, vp: &'static Vnode<G>) -> bool {
-    let r = hal::klock::reader();
+    let r = hal::sync::klock::reader();
     match p.process().session(&r) {
         Some(s) if s.ttyvp.points_to(vp) => {
             s.ttyvp.set(None);

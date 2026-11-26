@@ -75,10 +75,10 @@
 //! `smr_barrier`, `smr_flush`, `SMR_ASSERT_CRITICAL`, `SMR_ASSERT_NONCRITICAL`,
 //! `SMR_PTR_GET`, `SMR_PTR_GET_LOCKED` and `SMR_PTR_SET_LOCKED` (as [`SmrPtr`]); M11e the
 //! singly-linked lists (`SMR_SLIST_*`, [`SmrSlistHead`]), for `bpf.c` and `if_pflow.c`. Since
-//! N6.0 the protocol is `hal::smr`'s and the SMR thread `kernel::smr`'s (`kern/kern_smr.rs` is
-//! gone): `struct smr_entry` is `hal::smr::SmrLink`, and `smr_init`, `smr_call`,
+//! N6.0 the protocol is `hal::sync::smr`'s and the SMR thread `kernel::base::smr`'s (`kern/kern_smr.rs` is
+//! gone): `struct smr_entry` is `hal::sync::smr::SmrLink`, and `smr_init`, `smr_call`,
 //! `smr_barrier`, `smr_flush`, `smr_read_enter`, `smr_read_leave` and the two assertions are
-//! one-line adapters over `hal::smr`, keeping their names for this tree's callers (the
+//! one-line adapters over `hal::sync::smr`, keeping their names for this tree's callers (the
 //! `crate::kern::kern_smr` path of the read sections is an alias of this module,
 //! `kern/mod.rs`).
 //!
@@ -91,7 +91,7 @@
 //!   (`first_locked`, ...), and published with `Release` (the C's `membar_producer`).
 //!   A removed element keeps its link, as in C, so a reader standing on it goes on.
 //! - `smr_call` takes a `&'static SmrEntry`: the entry must outlive the deferral; a queued
-//!   entry is never queued again (`hal::smr::SmrLink`'s state word, `panic(9)` in every
+//!   entry is never queued again (`hal::sync::smr::SmrLink`'s state word, `panic(9)` in every
 //!   kernel, where the C's `KASSERT` is `DIAGNOSTIC`'s).
 //! - `SMR_PTR_GET` is an `Acquire` load where the C's `READ_ONCE` relies on the hardware's
 //!   dependency ordering, which Rust's memory model does not offer; `SMR_PTR_SET_LOCKED` is a
@@ -104,9 +104,9 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::sys::queue::Adapter;
 
-/// `struct smr_entry`: a deferred call, embedded in the object it destroys; `hal::smr`'s
+/// `struct smr_entry`: a deferred call, embedded in the object it destroys; `hal::sync::smr`'s
 /// link since N6.0 (`SmrEntry::new()` is an idle entry, the zero the C's allocators give).
-pub type SmrEntry = hal::smr::SmrLink;
+pub type SmrEntry = hal::sync::smr::SmrLink;
 
 /// `SMR_PTR_GET`/`SMR_PTR_GET_LOCKED`/`SMR_PTR_SET_LOCKED` over one SMR-protected pointer:
 /// readers load it inside a read section, the writer stores it under its lock.
@@ -297,43 +297,43 @@ pub fn smr_init(smr: &SmrEntry) {
 /// `smr_call(entry, func, arg)`: `func(arg)` once every CPU has left its read sections.
 #[inline]
 pub fn smr_call(entry: &'static SmrEntry, func: fn(*mut c_void), arg: *mut c_void) {
-    hal::smr::defer_link(entry, func, arg);
+    hal::sync::smr::defer_link(entry, func, arg);
 }
 
 /// `smr_barrier()`: waits until every read section that started before it has ended.
 #[inline]
 pub fn smr_barrier() {
-    hal::smr::barrier(false);
+    hal::sync::smr::barrier(false);
 }
 
 /// `smr_flush()`: `smr_barrier` without the pause between rounds.
 #[inline]
 pub fn smr_flush() {
-    hal::smr::barrier(true);
+    hal::sync::smr::barrier(true);
 }
 
 /// `smr_read_enter()` (`kern_smr.c`): starts a read section.
 #[inline]
 pub fn smr_read_enter() {
-    hal::smr::read_enter();
+    hal::sync::smr::read_enter();
 }
 
 /// `smr_read_leave()` (`kern_smr.c`): ends a read section.
 #[inline]
 pub fn smr_read_leave() {
-    hal::smr::read_leave();
+    hal::sync::smr::read_leave();
 }
 
 /// `SMR_ASSERT_CRITICAL()` (`DIAGNOSTIC`): inside a read section.
 #[inline]
 pub fn smr_assert_critical() {
-    hal::smr::assert_critical();
+    hal::sync::smr::assert_critical();
 }
 
 /// `SMR_ASSERT_NONCRITICAL()` (`DIAGNOSTIC`): outside every read section.
 #[inline]
 pub fn smr_assert_noncritical() {
-    hal::smr::assert_noncritical();
+    hal::sync::smr::assert_noncritical();
 }
 /* </CODE> */
 

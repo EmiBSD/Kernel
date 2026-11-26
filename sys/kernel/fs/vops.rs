@@ -177,11 +177,11 @@ use super::export::ExportGrant;
 use super::mount::{Mount, Vfsconf};
 use super::vnode::{VBIOERROR, VDIR, VNODE_MTX, Vattr, Vnode};
 use crate::assert::{kassert, kpanic};
-use crate::cred::Ucred;
-use crate::event::Knote;
+use crate::file::event::Knote;
+use crate::file::uio::Uio;
 use crate::net::mbuf::Mbuf;
+use crate::proc::cred::Ucred;
 use crate::proc::{ProcGlue, Thread};
-use crate::uio::Uio;
 
 /// `struct componentname` of the glue `G` (`bsd`'s until N5.3's switch, the kernel's
 /// `fs::namei::Componentname` for the test glues).

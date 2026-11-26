@@ -80,7 +80,7 @@
 /* <CODE> */
 //! arm64's signal frame: `sig_machdep.c`'s `sendsig` and the machine half of
 //! `sys_sigreturn`, on the running thread's user context (`trap.rs`'s `UserFrame`), behind
-//! `hal::sig`.
+//! `hal::cpu::sig`.
 //!
 //! Upstream: sys/arch/arm64/arm64/sig_machdep.c @ 3ce1f3f79392
 //! LZ: sys/arch/arm64/arm64/sig_machdep.rs@3c62ede68802
@@ -107,14 +107,14 @@
 //! - N4.8b: from `bsd` into `hal`. LZ's `sendsig` read `curproc`'s `p_sigstk`, `ps_sigcode`
 //!   and `ps_sigcookie` and took the frame through a raw `pcb_tf` dereference (its own
 //!   `unsafe`, alive across the copy); here the kernel hands those members in a
-//!   `hal::sig::SigDelivery`, and the frame is the running thread's `UserFrame`, borrowed to
+//!   `hal::cpu::sig::SigDelivery`, and the frame is the running thread's `UserFrame`, borrowed to
 //!   read the registers and again to point them at the handler, never across `copyout`
 //!   (whose fault may sleep in `uvm_fault`): no `unsafe` of its own.
 //! - `sys_sigreturn` is split at the machine's edge: the `PROC_PC` check against
 //!   `ps_sigcoderet`, the `sigexit` of a bad cookie and the mask (`& ~sigcantmask`) are the
 //!   kernel's `sys_sigreturn` (`kernel::sig`); the copy, the cookie and mode checks and the
 //!   registers are [`sigreturn`] here, which answers the mask or why it refused
-//!   (`hal::sig::SigreturnError`).
+//!   (`hal::cpu::sig::SigreturnError`).
 //! - The frame's arithmetic and the checks are functions of the frame and the context
 //!   alone ([`signal_frame`], [`enter_handler`], [`check_cookie`], [`check_mode`],
 //!   [`restore`]), so the host tests run them on arm64's layouts.
@@ -126,7 +126,7 @@ use super::include::armreg::{PSR_BTYPE, PSR_F, PSR_I, PSR_M_EL0t, PSR_M_MASK};
 use super::include::frame::{Sigframe, Trapframe};
 use super::include::param::PAGE_MASK;
 use super::include::signal::Sigcontext;
-use crate::sig::{SigDelivery, SigreturnError};
+use crate::cpu::sig::{SigDelivery, SigreturnError};
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]
 use crate::sys::errno::Errno;
 use crate::sys::signal::SS_DISABLE;

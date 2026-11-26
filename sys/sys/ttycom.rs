@@ -53,16 +53,16 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! `<sys/ttycom.h>` for `bsd`: the kernel's (`kernel::termios`, N4.7a) under the path the
+//! `<sys/ttycom.h>` for `bsd`: the kernel's (`kernel::tty::termios`, N4.7a) under the path the
 //! drivers and the ioctl paths name.
 //!
 //! Upstream: sys/sys/ttycom.h @ 3ce1f3f79392
 //! LZ: sys/sys/ttycom.rs@3c62ede68802
 //!
 //! ## Redesign
-//! - N4.7b: every item is `kernel::termios`'s (one module for termios.h, ttycom.h and
+//! - N4.7b: every item is `kernel::tty::termios`'s (one module for termios.h, ttycom.h and
 //!   ttydefaults.h, `struct winsize` and `struct tstamps` `abi_pod!` types); LZ's two `unsafe
 //!   impl AbiPod` are gone with the types.
 
-pub use kernel::termios::*;
+pub use kernel::tty::termios::*;
 /* </CODE> */

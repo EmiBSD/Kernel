@@ -47,10 +47,10 @@
 //!
 //! Upstream: sys/sys/evcount.h @ 3ce1f3f79392
 //!
-//! Status: `ported`. `struct evcount` and its functions are `kernel::evcount`'s since N7.1b,
+//! Status: `ported`. `struct evcount` and its functions are `kernel::dev::evcount`'s since N7.1b,
 //! re-exported here for the drivers still in `bsd` (`docs/SCAFFOLDING.md`).
 
-pub use kernel::evcount::Evcount;
+pub use kernel::dev::evcount::Evcount;
 /* </CODE> */
 
 /* <TESTS> */
@@ -58,7 +58,7 @@ pub use kernel::evcount::Evcount;
 mod tests {
     use core::sync::atomic::Ordering;
 
-    use kernel::evcount::{evcount_attach, evcount_detach, evcount_inc};
+    use kernel::dev::evcount::{evcount_attach, evcount_detach, evcount_inc};
 
     use super::*;
     use crate::net::if_::tests::zeroed_static;

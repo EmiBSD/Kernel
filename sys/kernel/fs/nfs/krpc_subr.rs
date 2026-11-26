@@ -117,8 +117,8 @@
 //!   `Mutexed<Option<..>>` made on first use (LZ: a `StaticCell` under a private mutex and an
 //!   `AtomicBool`).
 
-use hal::intr::IPL_NONE;
-use hal::mutex::Mutexed;
+use hal::cpu::intr::IPL_NONE;
+use hal::sync::mutex::Mutexed;
 use hal::sys::mbuf::{MT_DATA, MT_SONAME, MT_SOOPTS};
 use hal::sys::netinet_in::{
     INADDR_ANY, IP_PORTRANGE, IP_PORTRANGE_DEFAULT, IP_PORTRANGE_LOW, IPPROTO_IP, IPPROTO_UDP,
@@ -130,8 +130,9 @@ use hal::user::{AbiPod, bytes_of};
 use super::nfsm_subs::{XdrReader, XdrWriter, nfsm_rndup};
 use super::rpcv2::{RPC_REPLY, RPCAUTH_MAXSIZ, RPCAUTH_UNIX};
 use super::xdr_subs::txdr_unsigned;
-use crate::clock::Timeval;
+use crate::base::prf::printf;
 use crate::crypto::idgen::Idgen32Ctx;
+use crate::file::uio::{Uio, UioRw, UioSeg};
 use crate::net::mbuf::{
     M_COPYALL, M_WAIT, MCLBYTES, Mbuf, MbufBox, m_adj, m_calchdrlen, m_cat, m_copym, m_get,
     m_gethdr,
@@ -140,10 +141,9 @@ use crate::net::socket::{
     Socket, sobind, soclose, socreate, solock_shared, soreceive, sosend, sosetopt,
 };
 use crate::netinet::if_ether::InAddrFmt;
-use crate::prf::printf;
 use crate::proc::{ProcGlue, Thread};
 use crate::sys::errno::Errno;
-use crate::uio::{Uio, UioRw, UioSeg};
+use crate::time::clock::Timeval;
 
 /// `PMAPPORT`: RPC definitions for the portmapper.
 pub const PMAPPORT: u16 = 111;
@@ -482,7 +482,7 @@ fn krpc_exchange<G: ProcGlue>(
         while secs > 0 {
             let mut from: Option<MbufBox> = None;
             let mut m: Option<MbufBox> = None;
-            let mut iov: [crate::uio::Iovec; 0] = [];
+            let mut iov: [crate::file::uio::Iovec; 0] = [];
             let mut auio = Uio::<G> {
                 uio_iov: &mut iov,
                 uio_offset: 0,
@@ -903,8 +903,8 @@ pub(crate) mod testkrpc {
             uh_sum: 0x1234u16.to_be(),
         };
         let mut p = vec![0u8; len];
-        assert!(hal::pod::put(&mut p, 0, &ip));
-        assert!(hal::pod::put(&mut p, 20, &uh));
+        assert!(hal::mem::pod::put(&mut p, 0, &ip));
+        assert!(hal::mem::pod::put(&mut p, 20, &uh));
         p[28..].copy_from_slice(payload);
         let m = pkt_chain(&[&p]);
         let ph = m.m_pkthdr();
@@ -925,7 +925,7 @@ pub(crate) mod testkrpc {
             static PROC0: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
         }
         if !PROC0.with(|m| m.replace(true)) {
-            G::tables().set_process0(p.process(), hal::pin::pin_static(p));
+            G::tables().set_process0(p.process(), hal::ds::pin::pin_static(p));
         }
         let wire: &'static Wire = std::boxed::Box::leak(std::boxed::Box::default());
         let _ifp = testinet::iface_with(name, [10, 77, n, 1], wire);
@@ -935,14 +935,14 @@ pub(crate) mod testkrpc {
     /// A thread of user `uid` (not the superuser), for the privilege tests.
     pub(crate) fn user_thread(uid: u32) -> &'static Thread<G> {
         let pr = crate::proc::process_alloc::<G>(4000 + uid as i32, ());
-        let mut ids = crate::cred::Ucred::new();
+        let mut ids = crate::proc::cred::Ucred::new();
         ids.cr_uid.set(uid);
         ids.cr_ruid.set(uid);
-        drop(pr.set_ucred(crate::cred::CredRef::new(ids)));
+        drop(pr.set_ucred(crate::proc::cred::CredRef::new(ids)));
         let t = crate::proc::thread_alloc::<G>(&pr, ());
         drop(t.set_cred(pr.ucred()));
         core::mem::forget(pr);
-        hal::pool::PoolBox::leak(t)
+        hal::mem::pool::PoolBox::leak(t)
     }
 
     /// The address `a`, port 0, as a `sockaddr_in`.
@@ -1460,7 +1460,7 @@ mod tests {
         );
         assert_eq!(r.map(|m| test_bytes(&m)), Ok(b"hi".to_vec()));
         let from = from.expect("the sender");
-        let sa: SockaddrIn = hal::pod::at(from.data(), 0).expect("a sockaddr_in");
+        let sa: SockaddrIn = hal::mem::pod::at(from.data(), 0).expect("a sockaddr_in");
         assert_eq!(sa.sin_addr.s_addr.to_ne_bytes(), [10, 77, 6, 9]);
         assert_eq!(sa.sin_port, PMAPPORT.to_be());
         let seen = peer.stop();

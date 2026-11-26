@@ -114,7 +114,7 @@
 //!   struct as bytes in an `unsafe` block; `cd9660_readlink` writes no raw iovec (above).
 //! - `struct isoreaddir` (`readdir`'s three entries and offsets) and `cd9660_read`'s `struct
 //!   ra` (the read-ahead blocks and sizes) are `malloc(M_TEMP)` blocks of the structure's
-//!   size as the C's (`hal::malloc::MBox`, freed where the C frees them, by the drop on every
+//!   size as the C's (`hal::mem::malloc::MBox`, freed where the C frees them, by the drop on every
 //!   path), where LZ kept them on the stack: `vmstat -m`'s `temp` row counts the C's requests
 //!   (the main session's D-N5.8-R2 after review 1, D-N5.7-U5's principle).
 //! - `cd9660_strategy` is `ufs_strategy`'s shape: the buffer's token (`IoBuf::into_token`,
@@ -126,7 +126,7 @@
 
 use core::marker::PhantomData;
 
-use hal::malloc::{M_WAITOK, MArray, MBox};
+use hal::mem::malloc::{M_WAITOK, MArray, MBox};
 use hal::sys::dirent::{DT_UNKNOWN, Dirent, MAXNAMLEN, dirent_size};
 use hal::sys::errno::Errno;
 use hal::sys::stat::ALLPERMS;
@@ -137,10 +137,11 @@ use hal::sys::unistd::{
 };
 
 use crate::assert::kpanic;
-use crate::event::{
+use crate::file::event::{
     __EV_POLL, __EV_SELECT, EV_EOF, EV_ONESHOT, EVFILT_READ, EVFILT_VNODE, EVFILT_WRITE,
     FILTEROP_ISFD, Filter, Filterops, Knote, NOTE_EOF, NOTE_REVOKE,
 };
+use crate::file::uio::{Iovec, Uio, UioSeg};
 use crate::file::{FileGlue, foffset};
 use crate::fs::bio::{DEV_BSHIFT, biodone, bread, breadn, brelse};
 use crate::fs::buf::{B_ERROR, BufRef};
@@ -166,7 +167,6 @@ use crate::fs::vnode::{
 };
 use crate::fs::vops::{Cn, Cred, IoBuf, Vnops, vop_abortop, vop_bmap, vop_strategy};
 use crate::proc::{ProcGlue, Thread};
-use crate::uio::{Iovec, Uio, UioSeg};
 
 /// `M_TEMP`: miscellaneous temporary data buffers (`<sys/malloc.h>`; `bsd`'s `sys/malloc.rs`
 /// until N7 moves the header).
@@ -880,7 +880,7 @@ pub fn cd9660_strategy<G: ProcGlue>(vp: &'static Vnode<G>, bp: IoBuf) -> Result<
 /// `cd9660_print` (`vop_print`): print out the contents of an inode.
 pub fn cd9660_print() -> Result<(), Errno> {
     #[cfg(any(feature = "debug", feature = "diagnostic"))]
-    crate::prf::printf(format_args!("tag VT_ISOFS, isofs vnode\n"));
+    crate::base::prf::printf(format_args!("tag VT_ISOFS, isofs vnode\n"));
     Ok(())
 }
 
@@ -1291,8 +1291,8 @@ mod tests {
     use hal::user::UserPtr;
 
     use super::*;
-    use crate::descrip::{sys_close, sys_read};
-    use crate::event::{EV_ADD, Kevent, NOTE_DELETE, NOTE_WRITE, sys_kevent, sys_kqueue};
+    use crate::file::descrip::{sys_close, sys_read};
+    use crate::file::event::{EV_ADD, Kevent, NOTE_DELETE, NOTE_WRITE, sys_kevent, sys_kqueue};
     use crate::fs::isofs::cd9660::cd9660_extern::IsoFtype;
     use crate::fs::isofs::cd9660::testcd9660::mkiso::{self, Iso, er, nm, pn, px, record, sl, sp};
     use crate::fs::isofs::cd9660::testcd9660::{
@@ -1916,7 +1916,7 @@ mod tests {
     #[test]
     fn the_filters_attach_through_kevent() {
         let (_g, p, mp) = setup(image::image_bytes(), 0);
-        let _ = crate::event::kqueue_init::<TestGlue>();
+        let _ = crate::file::event::kqueue_init::<TestGlue>();
         let fd = sys_open(p, up(0, b"/m10c-iso.txt"), O_RDONLY, 0).expect("open");
         assert_eq!(sys_read(p, fd, UBUF, 5), Ok(5));
         let kfd = sys_kqueue(p).expect("kqueue");

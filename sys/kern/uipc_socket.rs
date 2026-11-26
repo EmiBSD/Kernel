@@ -120,7 +120,7 @@ pub(crate) fn soalloc(
         },
     )?;
     let r = as_static(&so);
-    hal::pool::PoolArc::forget(so);
+    hal::mem::pool::PoolArc::forget(so);
     Some(r)
 }
 
@@ -130,7 +130,7 @@ pub fn socreate(dom: i32, type_: i32, proto: i32) -> Result<&'static Socket, Err
     let p = curproc_or_panic("socreate");
     let so = kernel::net::socket::socreate(p, dom, type_, proto)?;
     let r = as_static(&so);
-    hal::pool::PoolArc::forget(so);
+    hal::mem::pool::PoolArc::forget(so);
     Ok(r)
 }
 
@@ -138,7 +138,7 @@ pub fn socreate(dom: i32, type_: i32, proto: i32) -> Result<&'static Socket, Err
 /// parked reference given back.
 pub fn soclose(so: &Socket, flags: i32) -> Result<(), Errno> {
     let error = kernel::net::socket::soclose(so, flags);
-    match hal::pool::PoolArc::adopt(so) {
+    match hal::mem::pool::PoolArc::adopt(so) {
         Some(r) => drop(r),
         None => panic(format_args!("soclose: socket {so:p} not socreate'd")),
     }
@@ -157,7 +157,7 @@ pub fn sofree(so: &Socket, keep_lock: bool) {
 /// The proof of the net lock `bsd`'s caller holds on an internet socket, lent for one
 /// request (`solocked_legacy`'s `net`); `None` for the other sockets, whose lock is their
 /// `so_lock`.
-fn net_lend(so: &Socket, what: &str) -> Option<hal::netlock::NetLend> {
+fn net_lend(so: &Socket, what: &str) -> Option<hal::sync::netlock::NetLend> {
     so.is_inet().then(|| crate::net::if_::net_held(what))
 }
 

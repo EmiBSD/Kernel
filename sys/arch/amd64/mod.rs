@@ -374,31 +374,31 @@ impl VmParam for Machine {
 }
 
 impl Pmap for Machine {
-    const HAVE_PMAP_DIRECT: bool = hal::pmap::HAVE_PMAP_DIRECT;
-    const PMAP_STEAL_MEMORY: bool = hal::pmap::PMAP_STEAL_MEMORY;
-    const PMAP_WC: usize = hal::pmap::PMAP_WC;
-    const PMAP_NOCACHE: usize = hal::pmap::PMAP_NOCACHE;
-    const PMAP_NOMMU: bool = hal::pmap::PMAP_NOMMU;
+    const HAVE_PMAP_DIRECT: bool = hal::vm::pmap::HAVE_PMAP_DIRECT;
+    const PMAP_STEAL_MEMORY: bool = hal::vm::pmap::PMAP_STEAL_MEMORY;
+    const PMAP_WC: usize = hal::vm::pmap::PMAP_WC;
+    const PMAP_NOCACHE: usize = hal::vm::pmap::PMAP_NOCACHE;
+    const PMAP_NOMMU: bool = hal::vm::pmap::PMAP_NOMMU;
     const UVM_MD_CONSTRAINTS: &'static [&'static UvmConstraintRange] =
         &amd64::machdep::UVM_MD_CONSTRAINTS;
     const DMA_CONSTRAINT: &'static UvmConstraintRange = &amd64::machdep::DMA_CONSTRAINT;
 
     /// `pmap_init`: the pmap pools (the C's `pmap_bootstrap` makes them; nothing else).
     fn pmap_init_md() {
-        hal::pmap::init();
+        hal::vm::pmap::init();
     }
 
     /// `pmap_steal_memory`'s `*vstartp`/`*vendp`: `virtual_avail` and the end of the managed
     /// kernel window, as `pmap_virtual_space` answers them.
     fn pmap_steal_bounds() -> (Vaddr, Vaddr) {
-        hal::pmap::virtual_space()
+        hal::vm::pmap::virtual_space()
     }
 
     /// `pmap_activate`: `p`'s pcb gets the pmap and the `%cr3` value `cpu_switchto` loads
     /// (PCID is not enabled); for the running thread the pmap is loaded now, marked in use by
     /// this processor first when the process is a user one (`ci_proc_pmap`, which the TLB
     /// shootdowns read).
-    fn pmap_activate_md(p: &Proc, pm: &hal::pmap::Pmap) -> bool {
+    fn pmap_activate_md(p: &Proc, pm: &hal::vm::pmap::Pmap) -> bool {
         let pcb = p.pcb();
         pcb.pcb_pmap.set(pm.as_ptr());
         pcb.pcb_cr3.set(pm.cr3());
@@ -420,10 +420,10 @@ impl Pmap for Machine {
     }
 
     /// amd64 records nothing more: `cpu_switchto` loads `pcb_cr3` itself.
-    fn pmap_switched_md(_pm: &hal::pmap::Pmap) {}
+    fn pmap_switched_md(_pm: &hal::vm::pmap::Pmap) {}
 
     /// `pmap_deactivate`: the pmap no longer in use by this processor.
-    fn pmap_deactivate_md(p: &Proc, pm: &hal::pmap::Pmap) {
+    fn pmap_deactivate_md(p: &Proc, pm: &hal::vm::pmap::Pmap) {
         if p.p_flag.load(core::sync::atomic::Ordering::Relaxed) & crate::sys::proc::P_SYSTEM == 0 {
             let ci = include::cpu::curcpu();
             crate::kassert!(core::ptr::eq(
@@ -438,7 +438,7 @@ impl Pmap for Machine {
     }
 
     /// No `__HAVE_PMAP_PURGE` on amd64.
-    fn pmap_purge_md(_p: &Proc, _pm: &hal::pmap::Pmap) {}
+    fn pmap_purge_md(_p: &Proc, _pm: &hal::vm::pmap::Pmap) {}
 
     /// `init_x86_64` bootstraps the pmap (`machdep.rs`).
     fn pmap_bootstrap_lazy() {}

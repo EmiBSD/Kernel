@@ -34,13 +34,13 @@
 
 /* <CODE> */
 //! `<sys/task.h>`: `task_add(9)`, the work items a task queue runs in a thread. The queues
-//! and their threads are the kernel crate's (`kernel::task`, N4.1); this is the legacy API the
+//! and their threads are the kernel crate's (`kernel::base::task`, N4.1); this is the legacy API the
 //! callers in `bsd` keep, over it.
 //!
 //! Upstream: sys/sys/task.h @ 3ce1f3f79392
 //!
 //! Status: `ported` (M7b); adapted at N4.1: the functions of `kern/kern_task.rs` live here
-//! now (`crate::kern::kern_task` names this module), over `kernel::task`.
+//! now (`crate::kern::kern_task` names this module), over `kernel::base::task`.
 //!
 //! ## Deviations
 //! - `struct taskq` is the kernel crate's ([`Taskq`], re-exported), and `taskq_create` hands
@@ -68,14 +68,14 @@
 //!   `kcov` is not configured.
 //! - `task_add` takes a `&'static Task` (LZ's: a pending task outlives its place on the
 //!   worklist); a task on a stack frame (`sched_barrier`'s, `ipmi`'s) is the kernel's
-//!   `kernel::task::Task`, pinned there (`core::pin::pin!`).
+//!   `kernel::base::task::Task`, pinned there (`core::pin::pin!`).
 
 use core::cell::Cell;
 use core::ffi::c_void;
 use core::ptr;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-pub use kernel::task::{TASKQ_MPSAFE, TaskFn, Taskq, TaskqRef};
+pub use kernel::base::task::{TASKQ_MPSAFE, TaskFn, Taskq, TaskqRef};
 
 use crate::queue_adapter;
 use crate::sys::proc::Process;
@@ -97,8 +97,8 @@ pub struct Task {
     pub t_flags: AtomicU32,
     /// `t_process`: kcov identifier (not configured, never written).
     pub t_process: Cell<*const Process>,
-    /// The kernel's task, what a task queue links (`kernel::task`).
-    pub t_node: kernel::task::Task,
+    /// The kernel's task, what a task queue links (`kernel::base::task`).
+    pub t_node: kernel::base::task::Task,
 }
 
 // SAFETY: the link and `t_flags` change under the lock of the list the task is on; `t_func`,
@@ -116,7 +116,7 @@ impl Task {
             t_arg: Cell::new(arg),
             t_flags: AtomicU32::new(0),
             t_process: Cell::new(ptr::null()),
-            t_node: kernel::task::Task::new(func, arg),
+            t_node: kernel::base::task::Task::new(func, arg),
         }
     }
 
@@ -128,7 +128,7 @@ impl Task {
             t_arg: Cell::new(ptr::null_mut()),
             t_flags: AtomicU32::new(0),
             t_process: Cell::new(ptr::null()),
-            t_node: kernel::task::Task::unset(),
+            t_node: kernel::base::task::Task::unset(),
         }
     }
 }
@@ -139,9 +139,9 @@ queue_adapter!(
 );
 
 /// `systq`: the system task queue, under the kernel lock.
-pub static SYSTQ: &Taskq = &kernel::task::SYSTQ;
+pub static SYSTQ: &Taskq = &kernel::base::task::SYSTQ;
 /// `systqmp`: the system task queue without the kernel lock.
-pub static SYSTQMP: &Taskq = &kernel::task::SYSTQMP;
+pub static SYSTQMP: &Taskq = &kernel::base::task::SYSTQMP;
 
 /// `task_pending(_t)`: is the task on a queue, or on a list of its user's, waiting to run?
 pub fn task_pending(t: &Task) -> bool {
@@ -150,34 +150,34 @@ pub fn task_pending(t: &Task) -> bool {
 
 /// `taskq_init()`: the system queues' threads, deferred (called by `main`).
 pub fn taskq_init() {
-    kernel::task::taskq_init();
+    kernel::base::task::taskq_init();
 }
 
 /// `taskq_create(name, nthreads, ipl, flags)`: the queue's counted handle.
 pub fn taskq_create(name: &'static [u8], nthreads: u32, ipl: i32, flags: u32) -> Option<TaskqRef> {
-    kernel::task::taskq_create(name, nthreads, ipl, flags)
+    kernel::base::task::taskq_create(name, nthreads, ipl, flags)
 }
 
 /// `taskq_destroy(tq)`: the queue's threads stopped and waited for; its memory goes with its
 /// last handle.
 pub fn taskq_destroy(tq: TaskqRef) {
-    kernel::task::taskq_destroy(tq);
+    kernel::base::task::taskq_destroy(tq);
 }
 
 /// `taskq_destroy(tq)` of a queue whose handle was given up for a `&'static Taskq` (the
 /// module's deviations): its threads stopped and waited for; its memory stays.
 pub fn taskq_destroy_leaked(tq: &'static Taskq) {
-    kernel::task::taskq_destroy_leaked(tq);
+    kernel::base::task::taskq_destroy_leaked(tq);
 }
 
 /// `taskq_barrier(tq)`.
 pub fn taskq_barrier(tq: &Taskq) {
-    kernel::task::taskq_barrier(tq);
+    kernel::base::task::taskq_barrier(tq);
 }
 
 /// `taskq_del_barrier(tq, t)`.
 pub fn taskq_del_barrier(tq: &Taskq, t: &Task) {
-    kernel::task::taskq_del_barrier(tq, &t.t_node);
+    kernel::base::task::taskq_del_barrier(tq, &t.t_node);
 }
 
 /// `task_set(t, fn, arg)`: the function and argument of both faces of the task.
@@ -191,17 +191,17 @@ pub fn task_set(t: &Task, func: TaskFn, arg: *mut c_void) {
 /// `task_add(tq, w)`: `true` when the task was added (the C's 1). A task its user's own list
 /// holds (`TASK_ONQUEUE` in `t_flags`: `ifq.rs`'s serializer) is not added, as the C's test of
 /// its one flag returns 0 before taking the queue's mutex; one pending on a queue already is
-/// refused by `kernel::task::task_add`.
+/// refused by `kernel::base::task::task_add`.
 pub fn task_add(tq: &Taskq, w: &'static Task) -> bool {
     if w.t_flags.load(Ordering::Relaxed) & TASK_ONQUEUE != 0 {
         return false;
     }
-    kernel::task::task_add(tq, hal::pin::pin_static(&w.t_node))
+    kernel::base::task::task_add(tq, hal::ds::pin::pin_static(&w.t_node))
 }
 
 /// `task_del(tq, w)`: `true` when the task was pending on `tq`.
 pub fn task_del(tq: &Taskq, w: &Task) -> bool {
-    kernel::task::task_del(tq, &w.t_node)
+    kernel::base::task::task_del(tq, &w.t_node)
 }
 /* </CODE> */
 
@@ -230,20 +230,20 @@ mod tests {
     #[test]
     fn task_add_refuses_a_task_its_users_list_holds() {
         kernel::testutil::install();
-        static TQ: Taskq = kernel::task::taskq_unthreaded(b"tqflags");
+        static TQ: Taskq = kernel::base::task::taskq_unthreaded(b"tqflags");
         static T: Task = Task::zeroed();
         task_set(&T, nothing, ptr::null_mut());
         // On ifq's serializer list: the C returns 0 and leaves the queue alone.
         T.t_flags.store(TASK_ONQUEUE, Ordering::Relaxed);
         assert!(!task_add(&TQ, &T));
         assert!(!T.t_node.pending());
-        assert!(kernel::task::worklist_is_empty(&TQ));
+        assert!(kernel::base::task::worklist_is_empty(&TQ));
         // Off that list: added, and refused while pending.
         T.t_flags.store(0, Ordering::Relaxed);
         assert!(task_add(&TQ, &T));
         assert!(!task_add(&TQ, &T));
         assert!(task_del(&TQ, &T));
-        assert!(kernel::task::worklist_is_empty(&TQ));
+        assert!(kernel::base::task::worklist_is_empty(&TQ));
     }
 }
 /* </TESTS> */

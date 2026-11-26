@@ -117,7 +117,7 @@
 //!   every msdosfs path is `KERNEL_LOCK`ed); the bitmap is an `MArray<AtomicU32>` of
 //!   `M_MSDOSFSFAT` ([`inusemap_alloc`], the C's `mallocarray(M_CANFAIL)`, `None` -> `EINVAL`),
 //!   its words changed by a load and a store under the same lock. The structure is published
-//!   in a counted `malloc(M_MSDOSFSMNT)` block ([`MsdosfsmountRef`], `hal::malloc::MArc`;
+//!   in a counted `malloc(M_MSDOSFSMNT)` block ([`MsdosfsmountRef`], `hal::mem::malloc::MArc`;
 //!   `vmstat -m`'s `MSDOSFS mount` row, 16 bytes more per block for the count and the type, as
 //!   the `UFS mount` row) erased into the mount's typed slot, where the C sets `mnt_data`; the
 //!   unmount takes it back after `vflush` and the last handle frees the block. The structure
@@ -136,7 +136,7 @@
 use core::ops::{Shl, Shr};
 use core::sync::atomic::AtomicU32;
 
-use hal::malloc::{M_CANFAIL, M_WAITOK, MArc, MArray};
+use hal::mem::malloc::{M_CANFAIL, M_WAITOK, MArc, MArray};
 use hal::sys::errno::Errno;
 use hal::sys::mount::{MSDOSFSMNT_LONGNAME, MSDOSFSMNT_NOWIN95, MSDOSFSMNT_SHORTNAME};
 use hal::sys::types::Dev;

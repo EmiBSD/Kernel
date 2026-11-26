@@ -47,16 +47,16 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! Kernel thread handling: `kern/kern_kthread.c`, `bsd`'s names over `kernel::thread`.
+//! Kernel thread handling: `kern/kern_kthread.c`, `bsd`'s names over `kernel::proc::thread`.
 //!
 //! Upstream: sys/kern/kern_kthread.c @ 3ce1f3f79392
 //! LZ: sys/kern/kern_kthread.rs@3c62ede68802
 //!
-//! An adapter (N4.6a): `kthread_create` is `kernel::thread::kthread_create_with` of a
-//! `bsd` thread function and its argument (`kernel::fork::Start::Legacy`: the argument's
+//! An adapter (N4.6a): `kthread_create` is `kernel::proc::thread::kthread_create_with` of a
+//! `bsd` thread function and its argument (`kernel::proc::fork::Start::Legacy`: the argument's
 //! address, 0 standing for the new thread, the C's `arg ? arg : p`), and `kthread_exit` the
 //! kernel's. The deferred creations (`kthread_create_deferred`,
-//! `kthread_run_deferred_queue`, `kthread_create_now`) are `kernel::thread`'s since N4.5a,
+//! `kthread_run_deferred_queue`, `kthread_create_now`) are `kernel::proc::thread`'s since N4.5a,
 //! re-exported here under their names.
 //!
 //! ## Deviations
@@ -66,22 +66,24 @@
 //!
 //! ## Redesign
 //! - LZ kept the deferred queue here, a `SIMPLEQ` of `malloc`'d entries behind an
-//!   `unsafe impl Sync`; it is `kernel::thread`'s `VecDeque` inside a mutex, where the
+//!   `unsafe impl Sync`; it is `kernel::proc::thread`'s `VecDeque` inside a mutex, where the
 //!   kernel's own deferred creations wait in the same order.
-//! - N4.6a: the creation and the exit are the kernel's (`kernel::thread::kthread_create`,
-//!   over `kernel::fork::fork1`); LZ's `fork1(&proc0, ..., func, arg)` with the function
+//! - N4.6a: the creation and the exit are the kernel's (`kernel::proc::thread::kthread_create`,
+//!   over `kernel::proc::fork::fork1`); LZ's `fork1(&proc0, ..., func, arg)` with the function
 //!   pointer filed by `cpu_fork` became a `Start::Legacy` in two words.
 
 use core::ffi::c_void;
 
-use kernel::fork::Start;
+use kernel::proc::fork::Start;
 
 use crate::kern::proc_glue::BsdProcGlue;
 use crate::kern::subr_prf::panic;
 use crate::sys::errno::Errno;
 use crate::sys::proc::{Proc, ProcExt};
 
-pub use kernel::thread::{KTHREAD_CREATE_NOW, kthread_create_deferred, kthread_run_deferred_queue};
+pub use kernel::proc::thread::{
+    KTHREAD_CREATE_NOW, kthread_create_deferred, kthread_run_deferred_queue,
+};
 
 /// `kthread_create`: fork a kernel thread running `func(arg)` (a NULL `arg` is the new
 /// thread itself), named `name`, sharing proc0's address space and descriptors and leaving
@@ -92,7 +94,7 @@ pub fn kthread_create(
     name: &[u8],
 ) -> Result<&'static Proc, Errno> {
     let mut made: Option<&'static Proc> = None;
-    kernel::thread::kthread_create_with::<BsdProcGlue>(
+    kernel::proc::thread::kthread_create_with::<BsdProcGlue>(
         name,
         Start::Legacy(func, arg.expose_provenance()),
         &mut |p| made = Some(p.as_static()),
@@ -106,6 +108,6 @@ pub fn kthread_create(
 /// `kthread_exit`: cause a kernel thread to exit. Assumes the exiting thread is the current
 /// context.
 pub fn kthread_exit(ecode: i32) -> ! {
-    kernel::thread::kthread_exit::<BsdProcGlue>(ecode)
+    kernel::proc::thread::kthread_exit::<BsdProcGlue>(ecode)
 }
 /* </CODE> */

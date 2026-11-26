@@ -1580,7 +1580,7 @@ mod tests {
     fn pledged(promises: u64) -> &'static Proc {
         let pr = crate::kern::proc_glue::test_process(1);
         let p = crate::kern::proc_glue::test_thread(pr);
-        pr.set_main_static(hal::pin::pin_static(p));
+        pr.set_main_static(hal::ds::pin::pin_static(p));
         pr.ps_flags.fetch_or(PS_PLEDGE, Ordering::Relaxed);
         pr.ps_pledge
             .store(promises | PLEDGE_ERROR, Ordering::Relaxed);
@@ -1592,7 +1592,7 @@ mod tests {
     fn unpledged() -> &'static Proc {
         let pr = crate::kern::proc_glue::test_process(1);
         let p = crate::kern::proc_glue::test_thread(pr);
-        pr.set_main_static(hal::pin::pin_static(p));
+        pr.set_main_static(hal::ds::pin::pin_static(p));
         p
     }
 
@@ -2008,7 +2008,7 @@ mod tests {
         let _g = crate::kern::subr_pool::tests::setup_real_memory();
         crate::kern::kern_descrip::filedesc_init();
         let route = pledged(PLEDGE_STDIO | PLEDGE_ROUTE);
-        drop(route.set_cred(kernel::cred::crget()));
+        drop(route.set_cred(kernel::proc::cred::crget()));
         let fp = crate::kern::kern_descrip::fnew(route).unwrap();
         fp.install(
             DTYPE_SOCKET,

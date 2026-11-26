@@ -115,7 +115,7 @@
 //!   ([`VnodeOps::mount_id`]); `uvm_vnp_uncache` returns `bool`.
 //! - `UVM_PAGE_OWN` is not configured; the `DEBUG` printfs are compiled out as in C.
 //! - `uvn_io` lets go of the net lock only when `NET_LOCK()` took it (a detached holding,
-//!   `hal::netlock::held_detached`): one held through a witness cannot be released behind its
+//!   `hal::sync::netlock::held_detached`): one held through a witness cannot be released behind its
 //!   owner, so it is `panic(9)` until N6.2 gives kernel code that holds the lock across a user
 //!   copy its own answer (the witness's `unlocked`); the C releases the lock whatever holds it.
 //!   Every holder today is `bsd`'s `NET_LOCK()`, which the pager releases as the C does.
@@ -128,10 +128,10 @@
 //!   `VOP_READ`/`VOP_WRITE` take the pager window's bytes as a slice and the offset (a
 //!   `UIO_SYSSPACE` uio over them with `curproc`'s credentials). The sequence of `uvn_io` (the net lock let go, the kernel lock, `vn_lock`,
 //!   the VOP, the unlocks) is composed here from those one-call methods, the kernel lock
-//!   (`hal::klock`, `hal`'s own since N4.5c) and the net lock (`hal::netlock`, `hal`'s own
+//!   (`hal::sync::klock`, `hal`'s own since N4.5c) and the net lock (`hal::sync::netlock`, `hal`'s own
 //!   static since N6.0: the `NetLock` bridge is gone).
-//!   `ratecheck`'s clock is `kernel::tc`'s `getmicrouptime`, and `rebooting` and its wait
-//!   channel `&rebooting` are `kernel::reboot`'s (N5.0: the `SysInfo` bridge that read them
+//!   `ratecheck`'s clock is `kernel::time::tc`'s `getmicrouptime`, and `rebooting` and its wait
+//!   channel `&rebooting` are `kernel::base::reboot`'s (N5.0: the `SysInfo` bridge that read them
 //!   through `bsd` is gone; the channel is the same static's address it gave).
 //! - `ratecheck(9)` (`kern_time.c`): the pager keeps its own copy for [`uvn_flush`]'s
 //!   rate-limited error message, over `getmicrouptime`. The C's
@@ -140,14 +140,14 @@
 //!   function-local `static`) sits in a mutex of its own at `IPL_HIGH`, so the same update is
 //!   made under a lock, per call site rather than shared.
 //! - A `struct uvm_vnode` is a `uvm_vnode_pool` item that is never freed (the vnode keeps it
-//!   in `v_uvm` across recycling, as in C): a `hal::pool::PoolArc` of `"uvmvnodes"` leaked
+//!   in `v_uvm` across recycling, as in C): a `hal::mem::pool::PoolArc` of `"uvmvnodes"` leaked
 //!   once made (`PoolArc::leak`), so a true `&'static Uvn`, which the map's handle
 //!   (`kernel::vm::object::ObjRef::Vnode`) and the vnode hold; no `#[repr(C)]` first-member
 //!   cast: the pager functions take the [`Uvn`].
 //! - `u_flags`, `u_nio`, `u_size` (\[v\]) are relaxed atomics whose setters assert the
-//!   object's lock; `u_wlist` (\[K\]) and `u_syncq` (\[S\]) are `hal::list` entries, the write
+//!   object's lock; `u_wlist` (\[K\]) and `u_syncq` (\[S\]) are `hal::ds::list` entries, the write
 //!   list a static list under the kernel lock (asserted where the C asserts it), the sync queue
-//!   inside the `hal::rwlock::Rwlocked` that is `uvn_sync_lock` (its `RWL_IS_VNODE` flag is a
+//!   inside the `hal::sync::rwlock::Rwlocked` that is `uvn_sync_lock` (its `RWL_IS_VNODE` flag is a
 //!   witness(4) class, nothing here): the C's `SIMPLEQ_INIT` of the queue becomes taking each
 //!   uvn off it as it is synced.
 //! - `uvn_get` is two functions: [`uvn_get_locked`] (`PGO_LOCKED`: a witness of either mode,
@@ -165,13 +165,13 @@ use core::ptr;
 use core::sync::atomic::{AtomicI32, AtomicI64, Ordering};
 
 use hal::arch::current::param::{PAGE_SHIFT, PAGE_SIZE};
-use hal::intr::{IPL_HIGH, IPL_NONE};
-use hal::klock::{kernel_assert_locked, kernel_lock, kernel_unlock};
-use hal::list::{List, ListEntry};
-use hal::mutex::Mutexed;
-use hal::pool::{PR_WAITOK, PoolArc, TypedPool};
-use hal::rwlock::{RW_NOSLEEP, RW_WRITE, Rwlocked, Witness, WriteWitness};
-use hal::sleep::{INFSLP, PVM, tsleep_nsec, wakeup};
+use hal::cpu::intr::{IPL_HIGH, IPL_NONE};
+use hal::ds::list::{List, ListEntry};
+use hal::mem::pool::{PR_WAITOK, PoolArc, TypedPool};
+use hal::sync::klock::{kernel_assert_locked, kernel_lock, kernel_unlock};
+use hal::sync::mutex::Mutexed;
+use hal::sync::rwlock::{RW_NOSLEEP, RW_WRITE, Rwlocked, Witness, WriteWitness};
+use hal::sync::sleep::{INFSLP, PVM, tsleep_nsec, wakeup};
 use hal::sys::errno::Errno;
 use hal::sys::mman::{PROT_NONE, PROT_READ, PROT_WRITE};
 use hal::vm::param::{round_page, trunc_page};
@@ -191,7 +191,7 @@ use super::pager::{
 use super::pmemrange::uvm_wait;
 use super::types::{VmProt, Voff};
 use crate::assert::{kassert, kpanic};
-use crate::prf::{printf, unported};
+use crate::base::prf::{printf, unported};
 
 // u_flags values
 
@@ -415,7 +415,7 @@ pub trait VnodeOps: Sync {
 
 /// `getmicrouptime()` as `(tv_sec, tv_usec)`.
 fn uptime() -> (i64, i64) {
-    let tv = crate::tc::getmicrouptime();
+    let tv = crate::time::tc::getmicrouptime();
     (tv.tv_sec, tv.tv_usec)
 }
 
@@ -807,9 +807,9 @@ pub fn uvn_flush(
         } else {
             // freeing: nuke all mappings so we can sync PG_CLEAN bit with no race
             if pp.flags() & PG_CLEAN != 0 && flags & PGO_FREE != 0 && pp.flags() & PQ_ACTIVE != 0 {
-                hal::pmap::page_protect(&pp.mdpage, PROT_NONE);
+                hal::vm::pmap::page_protect(&pp.mdpage, PROT_NONE);
             }
-            if pp.flags() & PG_CLEAN != 0 && hal::pmap::is_modified(&pp.mdpage) {
+            if pp.flags() & PG_CLEAN != 0 && hal::vm::pmap::is_modified(&pp.mdpage) {
                 pp.clear_bits(PG_CLEAN);
             }
             pp.set_bits(PG_CLEANCHK);
@@ -830,7 +830,7 @@ pub fn uvn_flush(
                     q = uvm_lock_pageq();
                     continue; // the same offset again
                 }
-                hal::pmap::page_protect(&pp.mdpage, PROT_NONE);
+                hal::vm::pmap::page_protect(&pp.mdpage, PROT_NONE);
                 // dequeue to prevent lock recursion
                 if pp.flags() & (PQ_ACTIVE | PQ_INACTIVE) != 0 {
                     uvm_pagedequeue(&mut q, pp, owner);
@@ -851,7 +851,7 @@ pub fn uvn_flush(
             // ReTry:
             pp.set_bits(PG_BUSY);
             // UVM_PAGE_OWN(pp, "uvn_flush"): not configured.
-            hal::pmap::page_protect(&pp.mdpage, PROT_READ);
+            hal::vm::pmap::page_protect(&pp.mdpage, PROT_READ);
             npages = FLUSH_PPS as i32;
 
             let result = uvm_pager_put(
@@ -914,7 +914,7 @@ pub fn uvn_flush(
                 // UVM_PAGE_OWN(ptmp, NULL): not configured.
                 ptmp.set_bits(PG_CLEAN | PG_CLEANCHK);
                 if flags & PGO_FREE == 0 {
-                    let _ = hal::pmap::clear_modify(&ptmp.mdpage);
+                    let _ = hal::vm::pmap::clear_modify(&ptmp.mdpage);
                 }
             }
 
@@ -937,7 +937,7 @@ pub fn uvn_flush(
                     }
                     retval = false;
                 }
-                hal::pmap::page_protect(&ptmp.mdpage, PROT_NONE);
+                hal::vm::pmap::page_protect(&ptmp.mdpage, PROT_NONE);
                 // dequeue first to prevent lock recursion
                 if ptmp.flags() & (PQ_ACTIVE | PQ_INACTIVE) != 0 {
                     uvm_pagedequeue(&mut q, ptmp, owner);
@@ -1218,7 +1218,7 @@ pub fn uvn_get_sync(
 
         // data is valid ...
         ptmp.clear_bits(PG_FAKE);
-        let _ = hal::pmap::clear_modify(&ptmp.mdpage); // ... and clean
+        let _ = hal::vm::pmap::clear_modify(&ptmp.mdpage); // ... and clean
         *slot = PageSlot::Page(ptmp);
     }
 
@@ -1298,10 +1298,10 @@ fn uvn_io(uvn: &Uvn, w: &mut WriteWitness<'_>, pps: &[PageSlot], flags: i32, rw:
         // This process may already have the NET_LOCK(), if we faulted in copyin() or
         // copyout() in the network stack (a detached holding: `NET_LOCK()`'s, which
         // `NET_UNLOCK()` may release; a witness's is never let go behind it).
-        let netunlocked = hal::netlock::held_detached();
+        let netunlocked = hal::sync::netlock::held_detached();
         if netunlocked {
-            hal::netlock::unlock();
-        } else if hal::netlock::write_held() {
+            hal::sync::netlock::unlock();
+        } else if hal::sync::netlock::write_held() {
             // Held through a witness, which cannot be let go behind its owner: until N6.2
             // gives such a holder its own answer, a panic rather than a silent deadlock with
             // the vnode lock (the C releases it whatever holds it).
@@ -1343,7 +1343,7 @@ fn uvn_io(uvn: &Uvn, w: &mut WriteWitness<'_>, pps: &[PageSlot], flags: i32, rw:
         kernel_unlock();
 
         if netunlocked {
-            hal::netlock::lock();
+            hal::sync::netlock::lock();
         }
 
         // NOTE: vnode now unlocked (unless vnislocked)
@@ -1380,11 +1380,11 @@ fn uvn_io(uvn: &Uvn, w: &mut WriteWitness<'_>, pps: &[PageSlot], flags: i32, rw:
             VM_PAGER_AGAIN
         }
         Err(_) => {
-            if crate::reboot::rebooting() {
+            if crate::base::reboot::rebooting() {
                 kernel_lock();
-                while crate::reboot::rebooting() {
+                while crate::base::reboot::rebooting() {
                     // tsleep_nsec(&rebooting, ...): the address of the flag itself.
-                    let chan: *const () = ptr::from_ref(&crate::reboot::REBOOTING).cast();
+                    let chan: *const () = ptr::from_ref(&crate::base::reboot::REBOOTING).cast();
                     let _ = tsleep_nsec(chan, PVM, "uvndead", INFSLP);
                 }
                 kernel_unlock();
@@ -1739,7 +1739,7 @@ mod tests {
     fn a_read_lets_go_of_the_object_and_net_locks_and_holds_the_kernel_lock() {
         let (_g, vp) = setup(10);
         let uobj = uvn_attach(vp, PROT_READ).expect("attached");
-        hal::netlock::lock(); // the net lock (hal's one static), held by this thread
+        hal::sync::netlock::lock(); // the net lock (hal's one static), held by this thread
         let pg = get(&uobj, 0);
         let seen = vp.last_read().expect("a VOP_READ");
         assert!(
@@ -1748,13 +1748,13 @@ mod tests {
         );
         assert!(!seen.net_locked, "the net lock is let go for the VOP");
         assert!(seen.kernel_locked && seen.vnode_locked);
-        assert!(hal::netlock::write_held(), "and taken again");
+        assert!(hal::sync::netlock::write_held(), "and taken again");
         assert_eq!(vp.nlocked(), 0, "the vnode is unlocked after");
         let b = bytes(pg);
         assert_eq!(b[..10], [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
         assert!(b[10..].iter().all(|&x| x == 0), "the tail is zeroed");
         assert_eq!(uvn(&uobj).nio(), 0);
-        hal::netlock::unlock();
+        hal::sync::netlock::unlock();
         let w = uobj.lock().write();
         super::super::page::uvm_page_unbusy(&[Some(pg)], Owner::Object(&*uobj));
         drop(w);
@@ -1784,7 +1784,7 @@ mod tests {
         testutil::install();
         // The coarse uptime moves only when the timehands are wound up: one windup, so the
         // clock no longer reads (0, 0), the C's "never checked" mark.
-        crate::tc::tc_ticktock();
+        crate::time::tc::tc_ticktock();
         static LAST: Mutexed<(i64, i64)> = Mutexed::new(IPL_HIGH, (0, 0));
         // (0, 0) passes at once, whatever the clock says.
         assert!(ratecheck(&LAST, (5, 0)));

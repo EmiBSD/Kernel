@@ -165,14 +165,14 @@ pub fn constty() -> Option<TtyRef> {
 }
 
 /// `cn_devvp != NULL`: the real console's vnode is held (`cnopen` ran), so `cnwrite` reaches
-/// its tty (the test of `subr_log.c`'s `dosendsyslog`, for `kernel::log`).
+/// its tty (the test of `subr_log.c`'s `dosendsyslog`, for `kernel::base::log`).
 pub fn cn_devvp_set() -> bool {
     !CN_DEVVP.load(Ordering::Relaxed).is_null()
 }
 
 /// `constty = tp` (the kernel's, counted: `tp` is a tty of `ttymalloc`, which every tty is).
 pub fn set_constty(tp: Option<&Tty>) {
-    kernel::tty::set_constty::<BsdProcGlue>(tp.and_then(hal::pool::PoolArc::from_ref));
+    kernel::tty::set_constty::<BsdProcGlue>(tp.and_then(hal::mem::pool::PoolArc::from_ref));
 }
 
 /// `cnopen`: always open the 'real' console device, so we don't get nailed later. This

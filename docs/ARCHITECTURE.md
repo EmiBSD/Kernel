@@ -55,21 +55,63 @@ compiles of zlib: crc32, adler32, deflate, inflate; zlib licence).
 
 No `src/` directory (`[lib] path = "lib.rs"`), so C and Rust paths differ only by extension.
 
+### hal's groups (2026-11-26)
+
+`sys/hal/` is grouped by purpose, one directory per group, so a driver or a subsystem names only
+the groups it needs (the user approved the layout on 2026-11-26). The root keeps what other
+rules name by path (`api`, `syscall`, `sys`, `user`, `machine`, `arch`) and the small leaves.
+
+| Group | Holds | Used by |
+|---|---|---|
+| `hal::sync` | mutex, rwlock, spinlock, seqlock, smr, refcnt, once, klock, netlock, sleep, percpu, slot | everything in `kernel` |
+| `hal::mem` | malloc, pool, kmbuf, mapped, bootmem, pod, overlay, trust | `kernel::fs`, `kernel::net`, `kernel::dev`, `kernel::vm` |
+| `hal::ds` | list, pinlist, pin, link, tree, owned | `kernel::fs`, `kernel::net`, `kernel::dev` |
+| `hal::cpu` | the running CPU (`curcpu`), thread, trap, intr, softintr, clock, sig | proc, sched, signals; `kernel::dev` only for spl and interrupts |
+| `hal::vm` | the page arithmetic, uvmexp and the pmap | `kernel::vm` |
+| `hal::dev` | mmio, dma: the only driver-facing group (N7 adds the GIC system registers and the SMCCC call) | `kernel::dev` and the drivers |
+| root | api, syscall, sys, user, machine, arch, bridges, assert, prf, cons, random | as before |
+
+`cpu`'s own file is `cpu/curcpu.rs`, re-exported by `cpu/mod.rs`: its `#[forbid(unsafe_code)]`
+must not cover `thread.rs`, and a group's own name as a module trips `clippy::module_inception`.
+The paths `hal::cpu::cpu_number` and the others did not change. `cargo xtask hal-check` keeps
+drivers and devices apart (rules D1 and D2, `.claude/rules/xtask.md`).
+
+### The kernel's groups (2026-11-26)
+
+`sys/kernel/` is grouped the same way (the user approved it on 2026-11-26). A group whose name
+is also one of its modules keeps that module as the group's `mod.rs` (`kernel::proc::Proc`, not
+`kernel::proc::proc::Proc`; `sched`, `sig`, `time`, `file` and `tty` the same), so those paths are
+as they were. `netinet` and `netinet6` keep their names. The root keeps `lib.rs`, `api.rs`,
+`syscall.rs`, `assert.rs`, `testutil.rs`, `reftest.rs` and `benches/`.
+
+| Group | Holds | hal groups it uses |
+|---|---|---|
+| `kernel::proc` | proc (mod.rs), fork, exit, cred, prot, resource, acct, thread, sysarch | sync, mem, ds, cpu |
+| `kernel::sched` | sched (mod.rs), futex, thrsleep | sync, cpu |
+| `kernel::sig` | sig (mod.rs), sigio | sync, cpu |
+| `kernel::time` | time (mod.rs), clock, clockintr, tc, timeout | sync, cpu |
+| `kernel::file` | file (mod.rs), descrip, event, select, pipe, uio | sync, mem, ds |
+| `kernel::tty` | tty (mod.rs), pty, clist, termios | sync, mem, ds |
+| `kernel::base` | task, smr, extent, log, sysctl, reboot, prf | sync, mem, ds |
+| `kernel::dev` | autoconf, device, evcount, sensors, watchdog, clock_subr | dev, sync, mem, ds, cpu's spl and interrupts, cons (rule D2) |
+| `kernel::vm` | the page system | vm, mem |
+| `kernel::fs`, `net`, `netinet`, `netinet6`, `crypto` | VFS and file systems, the network stack, crypto | sync, mem, ds |
+
 ### The runtime API (N2.3)
 
 What `kernel` builds on, all safe to call, every `unsafe` inside `hal` with its proof
-(docs/ZERO_UNSAFE.md decisions 30, 32-36): `hal::once::OnceStatic<T>` (a global set once at
-boot), `hal::mutex::Mutexed<T>` and `hal::rwlock::Rwlocked<T>` (locks that own their data; the
-write guard sleeps with `rwsleep` and runs a closure unlocked), `hal::percpu::PerCpu<T>`,
-`hal::refcnt::Refcnt`, `hal::intr::splraise` (a guard that restores only a level it raised),
-`hal::cpu` (the CPU's identity), `hal::kmbuf::KmBuf` (pageable kernel memory it owns),
-`hal::pool::TypedPool<T>` with `PoolArc<T>` (one `pool(9)` per type, so `vmstat -m` and
-`systat pool` name it), `hal::malloc::MBox<T>` (a `T` in a `malloc(9)` block of the C's type),
-`hal::user::UserPtr<T>` with `abi_pod!` (typed user copies), `hal::sleep` (`wakeup`) and
+(docs/ZERO_UNSAFE.md decisions 30, 32-36): `hal::sync::once::OnceStatic<T>` (a global set once at
+boot), `hal::sync::mutex::Mutexed<T>` and `hal::sync::rwlock::Rwlocked<T>` (locks that own their data; the
+write guard sleeps with `rwsleep` and runs a closure unlocked), `hal::sync::percpu::PerCpu<T>`,
+`hal::sync::refcnt::Refcnt`, `hal::cpu::intr::splraise` (a guard that restores only a level it raised),
+`hal::cpu` (the CPU's identity), `hal::mem::kmbuf::KmBuf` (pageable kernel memory it owns),
+`hal::mem::pool::TypedPool<T>` with `PoolArc<T>` (one `pool(9)` per type, so `vmstat -m` and
+`systat pool` name it), `hal::mem::malloc::MBox<T>` (a `T` in a `malloc(9)` block of the C's type),
+`hal::user::UserPtr<T>` with `abi_pod!` (typed user copies), `hal::sync::sleep` (`wakeup`) and
 `hal::cons` (the console primitive). What still lives in `bsd` is reached through
 `hal::bridges`, a registry of safe traits `bsd` fills at boot (`sys/kern/hal_bridges.rs`,
 called by `stand::start_kernel` before `main`) and checked on every answer
-(`sys/hal/trust.rs`). At the N3 close, 21: `IntrLevel`, `CpuId`, `Sleep`, `UserCopy`,
+(`sys/hal/mem/trust.rs`). At the N3 close, 21: `IntrLevel`, `CpuId`, `Sleep`, `UserCopy`,
 `ModulePlatform` (the boot entry; gone with the module at the N5 close, decision 47), `TlbCpus`, `KernelLock`, `SysInfo`, `VmProc`, `VmSysctl` and
 pipe's `PipeGlue`, `UioMove`, `PipeFiles` (paid by N4); `BufCacheStats`, `VnodeOps` (N5);
 `NetLock` (N6); `Console`, `Random` (N7); `PoolBackend`, `Malloc`, `Printf` (N9). N3 paid
@@ -141,7 +183,7 @@ define (`bus_dma_public_members` checks it at compile time).
 `param.rs`, `vmparam.rs` and `exec.rs` (the traits `MachineParam`, `VmParam`, `MachineExec`) live
 in `sys/hal/machine/` since N2.2, and `sys/machine/mod.rs` re-exports them under their old names.
 
-`pmap.rs` is an adapter over `hal::pmap` since N3.1 (docs/ZERO_UNSAFE.md 0.10): the `Pmap`
+`pmap.rs` is an adapter over `hal::vm::pmap` since N3.1 (docs/ZERO_UNSAFE.md 0.10): the `Pmap`
 trait's methods call the safe API of `hal`, whose two backends (`sys/hal/arch/amd64/pmap/`,
 `sys/hal/arch/arm64/pmap/`) replaced the LZ pmaps, and the host double's pmap is `hal`'s host
 backend (`sys/hal/arch/host/pmap.rs`). The adapter has no `unsafe` block: it holds the
@@ -154,11 +196,11 @@ with `sys/uvm/`.
 Since N3, memory is the kernel's (docs/ZERO_UNSAFE.md 0.10): `sys/kernel/vm/` holds the page
 array and its free ranges, the owners (anon, amap, object, aobj, pager, vnode), the fault
 handler, the map and the vmspace, the vm system calls (`Native` entries of the module) and the
-rest of uvm's 26 files, all `#![forbid(unsafe_code)]`. Their locks are `hal::rwlock`'s
+rest of uvm's 26 files, all `#![forbid(unsafe_code)]`. Their locks are `hal::sync::rwlock`'s
 `SharedRwlock` with `Guarded` cells: a cell opens only for a witness of its own lock, and the
 fault carries its witnesses through its loop; the lock order (map, amap, object, anon) stays
 the code's, as in the C, each acquisition saying where it stands. What they reach of the hardware is `hal`'s
-safe API: `hal::pmap` (the kernel pmap through the `KernelMapper` token, held by
+safe API: `hal::vm::pmap` (the kernel pmap through the `KernelMapper` token, held by
 `kernel::vm::km`), `MappedBytes` for the pager's windows, `ForeignWindow` for `uvm_io`'s
 copies, the intrusive lists and trees of the page system and the map. What they reach of `bsd`
 is a bridge of `bridges.toml` (`VmProc` and `VmSysctl` until N4's `Proc`, `VnodeOps` until N5).
@@ -725,7 +767,7 @@ Makefile order, not shuffled (`sort -R`), and no relink kits (`/usr/share/relink
 `ld.so.a`) are made; `test-ld.so` is not built or run on the Mac (as in OpenBSD's cross
 builds), `smoke-cc` is that test. The kernel side is `uvm_mmap.c`'s file half
 (`uvm_mmapfile` over `uvn_attach`; device mappings other than `/dev/zero` report the
-unported `udv_attach`). `__thrsleep`/`__thrwakeup` (`kern_synch.c`) are `kernel::thrsleep`'s
+unported `udv_attach`). `__thrsleep`/`__thrwakeup` (`kern_synch.c`) are `kernel::sched::thrsleep`'s
 (LZ 9fd12af2c575, taken by `lz-sync`), reached through `bsd`'s `sysent` rows (`Legacy` in the
 ABI); the one compiled caller at the pin is the shared librthread's `_rthread_dl_lock`, when
 two threads contend for ld.so's lock (libc's `FILE` locks and the pthread mutexes are

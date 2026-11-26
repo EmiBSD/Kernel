@@ -167,8 +167,7 @@ use super::xdr_subs::{
     fxdr_nfsv2time, fxdr_nfsv3time, fxdr_unsigned, txdr_hyper, txdr_unsigned, xdr_bytes,
 };
 use crate::assert::kpanic;
-use crate::clock::Timespec;
-use crate::cred::{Ucred, suser_ucred};
+use crate::file::uio::{Iovec, Uio};
 use crate::fs::lookup::{ndinit, vfs_lookup};
 use crate::fs::mount::Mount;
 use crate::fs::namei::{
@@ -189,6 +188,7 @@ use crate::fs::vops::{
 use crate::net::mbuf::{
     M_WAIT, MChainBuilder, MINCLSIZE, MT_DATA, Mbuf, MbufBox, m_cat, m_get, m_trailingspace, mclget,
 };
+use crate::proc::cred::{Ucred, suser_ucred};
 use crate::proc::{ProcGlue, Thread};
 use crate::sys::dirent::Dirent;
 use crate::sys::errno::Errno;
@@ -196,10 +196,10 @@ use crate::sys::mount::{Fhandle, Fid, MNT_RDONLY, MNT_WAIT, Statfs};
 use crate::sys::socket::SOCK_DGRAM;
 use crate::sys::types::{Dev, Mode, Off, Register, makedev};
 use crate::sys::unistd::{_PC_CHOWN_RESTRICTED, _PC_LINK_MAX, _PC_NAME_MAX, _PC_NO_TRUNC};
-use crate::tc::microboottime;
-use crate::uio::{Iovec, Uio};
+use crate::time::clock::Timespec;
+use crate::time::tc::microboottime;
 use crate::vm::vnode::uvm_vnp_uncache;
-use hal::malloc::{M_WAITOK, MArray};
+use hal::mem::malloc::{M_WAITOK, MArray};
 
 /// `malloc(9)`'s `M_TEMP`: the read and write iovec arrays, the readdir buffer, the symlink
 /// target.
@@ -3495,7 +3495,7 @@ mod tests {
         crate::testutil::kernel_maps_install();
         mbinit(&crate::net::mbuf::tests::TEST_NMBCLUST);
         let _ = nmbclust_update(256 * 1024);
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         let mp = testffs::mount_root(p, 0);
         export(mp, flags, anon);
         let vp = VFS_ROOT(mp).expect("the root");

@@ -49,18 +49,18 @@
 
 /* <CODE> */
 //! Priorities and facilities of the system log: `<sys/syslog.h>`, as the kernel sees it, for
-//! `bsd`: the kernel crate's (`kernel::log`), re-exported at the path its callers use.
+//! `bsd`: the kernel crate's (`kernel::base::log`), re-exported at the path its callers use.
 //!
 //! Upstream: sys/sys/syslog.h @ 3ce1f3f79392
 //! LZ: sys/sys/syslog.rs@3c62ede68802
 //!
 //! ## Redesign
-//! - N4.7a: the header moved into `kernel::log` with the message buffer and
+//! - N4.7a: the header moved into `kernel::base::log` with the message buffer and
 //!   `sendsyslog(2)`, which read it; its 37 users in `bsd` keep this path. LZ's deviation
 //!   (`struct syslog_data`, `SYSLOG_NAMES` and the userland prototypes are not kernel
 //!   material) went with it.
 
-pub use kernel::log::{
+pub use kernel::base::log::{
     _PATH_LOG, LIOCSFD, LOG_ALERT, LOG_AUTH, LOG_AUTHPRIV, LOG_CONS, LOG_CRIT, LOG_CRON,
     LOG_DAEMON, LOG_DEBUG, LOG_EMERG, LOG_ERR, LOG_FACMASK, LOG_FTP, LOG_INFO, LOG_KERN,
     LOG_LOCAL0, LOG_LOCAL1, LOG_LOCAL2, LOG_LOCAL3, LOG_LOCAL4, LOG_LOCAL5, LOG_LOCAL6, LOG_LOCAL7,

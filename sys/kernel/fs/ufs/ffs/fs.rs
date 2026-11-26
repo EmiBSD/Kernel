@@ -124,12 +124,13 @@
 use core::mem::offset_of;
 use core::sync::atomic::{AtomicI32, AtomicU8, AtomicU64, Ordering};
 
-use hal::malloc::{M_WAITOK, MArray};
-use hal::slot::ReadMostly;
+use hal::mem::malloc::{M_WAITOK, MArray};
+use hal::sync::slot::ReadMostly;
 use hal::sys::types::{Daddr, Off};
 use hal::user::pod_from_bytes;
 
 use crate::assert::kpanic;
+use crate::file::select::howmany;
 use crate::fs::bio::DEV_BSHIFT;
 use crate::fs::ufs::ufs::dinode::{NDADDR, Ufsino};
 use crate::fs::ufs::ufs::inode::{
@@ -137,7 +138,6 @@ use crate::fs::ufs::ufs::inode::{
 };
 use crate::fs::ufs::ufs::ufsmount::M_UFSMNT;
 use crate::proc::ProcGlue;
-use crate::select::howmany;
 
 pub use super::ffs_tables::{AROUND, FRAGTBL, INSIDE};
 
@@ -727,7 +727,7 @@ impl Superblock {
     /// `ffs_reload`'s reads), by a holder of the kernel lock.
     pub fn write_csum_bytes(&self, off: usize, src: &[u8]) {
         #[cfg(feature = "diagnostic")]
-        hal::klock::kernel_assert_locked();
+        hal::sync::klock::kernel_assert_locked();
         let words = self.csum_range(off, src.len());
         for (part, w) in src.as_chunks::<4>().0.iter().zip(words) {
             w.store(i32::from_ne_bytes(*part), Ordering::Relaxed);
@@ -758,7 +758,7 @@ impl Superblock {
     /// `fs->fs_maxcluster[cg] = v`, by a holder of the kernel lock.
     pub fn set_maxcluster(&self, cg: u32, v: i32) {
         #[cfg(feature = "diagnostic")]
-        hal::klock::kernel_assert_locked();
+        hal::sync::klock::kernel_assert_locked();
         self.maxcluster_word(cg).store(v, Ordering::Relaxed);
     }
 
@@ -937,7 +937,7 @@ impl CsumWords<'_> {
     #[inline]
     fn add(self, i: usize, d: i32) {
         #[cfg(feature = "diagnostic")]
-        hal::klock::kernel_assert_locked();
+        hal::sync::klock::kernel_assert_locked();
         let w = &self.0[i];
         w.store(w.load(Ordering::Relaxed).wrapping_add(d), Ordering::Relaxed);
     }

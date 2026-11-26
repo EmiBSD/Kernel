@@ -151,7 +151,7 @@
 
 use core::marker::PhantomData;
 
-use hal::malloc::MArc;
+use hal::mem::malloc::MArc;
 use hal::sys::dirent::{DT_DIR, DT_REG, Dirent, MAXNAMLEN, dirent_size};
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::Flock;
@@ -168,12 +168,12 @@ use hal::sys::unistd::{
 };
 
 use crate::assert::kpanic;
-use crate::cred::{groupmember, suser_ucred};
-use crate::event::{
+use crate::file::event::{
     __EV_POLL, __EV_SELECT, EV_EOF, EV_ONESHOT, EVFILT_READ, EVFILT_VNODE, EVFILT_WRITE,
     FILTEROP_ISFD, Filter, Filterops, Knote, NOTE_ATTRIB, NOTE_DELETE, NOTE_EOF, NOTE_EXTEND,
     NOTE_LINK, NOTE_RENAME, NOTE_REVOKE, NOTE_TRUNCATE, NOTE_WRITE,
 };
+use crate::file::uio::Uio;
 use crate::file::{FileGlue, LockOwner, foffset};
 use crate::fs::bio::{
     bawrite, bdwrite, biodone, bread, bread_cluster, brelse, bwrite, getblk_wait,
@@ -218,9 +218,9 @@ use crate::fs::vnops::vn_fsizechk;
 use crate::fs::vops::{
     Cn, Cred, IoBuf, Vnops, vop_abortop, vop_access, vop_islocked, vop_strategy, vop_unlock,
 };
+use crate::proc::cred::{groupmember, suser_ucred};
 use crate::proc::{ProcGlue, Thread};
-use crate::tc::getnanotime;
-use crate::uio::Uio;
+use crate::time::tc::getnanotime;
 use crate::vm::io::MAXBSIZE;
 use crate::vm::vnode::{uvm_vnp_setsize, uvm_vnp_uncache};
 
@@ -1929,13 +1929,13 @@ pub fn msdosfs_print<G: ProcGlue>(vp: &'static Vnode<G>) -> Result<(), Errno> {
         use hal::sys::types::{major, minor};
         let dep = vtode(vp);
 
-        crate::prf::printf(format_args!(
+        crate::base::prf::printf(format_args!(
             "tag VT_MSDOSFS, startcluster {}, dircluster {}, diroffset {} ",
             dep.de_StartCluster.get(),
             dep.de_dirclust.get(),
             dep.de_diroffset.get()
         ));
-        crate::prf::printf(format_args!(
+        crate::base::prf::printf(format_args!(
             " dev {}, {}, {}\n",
             major(dep.de_dev),
             minor(dep.de_dev),
@@ -1946,7 +1946,7 @@ pub fn msdosfs_print<G: ProcGlue>(vp: &'static Vnode<G>) -> Result<(), Errno> {
             }
         ));
         #[cfg(feature = "diagnostic")]
-        crate::prf::printf(format_args!("\n"));
+        crate::base::prf::printf(format_args!("\n"));
     }
     #[cfg(not(any(feature = "debug", feature = "diagnostic")))]
     let _ = vp;
@@ -2379,6 +2379,7 @@ impl<G: ProcGlue> Vnops<G> for MsdosfsVnops<G> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::file::uio::Iovec;
     use crate::fs::msdosfs::denode::MSDOSFSROOT_OFS;
     use crate::fs::msdosfs::msdosfs_denode::deget;
     use crate::fs::msdosfs::testmsdosfs::full_root;
@@ -2386,7 +2387,6 @@ mod tests {
     use crate::fs::subr::{vfs, vgone, vops_id};
     use crate::fs::testfs::TestGlue;
     use crate::fs::ufs::ufs::testufs::{cn, vattr};
-    use crate::uio::Iovec;
     use std::vec::Vec;
 
     /// `getdents(2)` of `vp` from `offset` into a buffer of `len` bytes: the result, the
@@ -2595,10 +2595,10 @@ mod tests {
         use super::super::super::testmsdosfs::mkfat::{self, Dir, Image};
         use super::super::super::testmsdosfs::{attach, mount_root, try_mount};
         use super::super::*;
-        use crate::clock::Timespec;
-        use crate::descrip::{sys_close, sys_read, sys_write};
-        use crate::event::{EV_ADD, EVFILT_READ, EVFILT_VNODE, EVFILT_WRITE, Kevent};
-        use crate::event::{sys_kevent, sys_kqueue};
+        use crate::file::descrip::{sys_close, sys_read, sys_write};
+        use crate::file::event::{EV_ADD, EVFILT_READ, EVFILT_VNODE, EVFILT_WRITE, Kevent};
+        use crate::file::event::{sys_kevent, sys_kqueue};
+        use crate::file::uio::{Iovec, Uio, UioRw};
         use crate::fs::lookup::{namei, ndinit};
         use crate::fs::mount::Mount;
         use crate::fs::namei::{FOLLOW, LOCKLEAF, LOOKUP, NiDirp};
@@ -2612,7 +2612,7 @@ mod tests {
         use crate::fs::vops::{
             vop_access, vop_getattr, vop_islocked, vop_pathconf, vop_readdir, vop_setattr,
         };
-        use crate::uio::{Iovec, Uio, UioRw};
+        use crate::time::clock::Timespec;
 
         /// The long-named file of the smoke image, and its DOS name.
         const FATNAME: &[u8] = b"m10c-fat.txt";
@@ -3224,7 +3224,7 @@ mod tests {
             vrele(dvp);
 
             // access: the mask and the read-only attribute, for another user
-            let mut other = crate::cred::Ucred::new();
+            let mut other = crate::proc::cred::Ucred::new();
             other.cr_uid.set(1000);
             other.cr_gid.set(1000);
             let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
@@ -3375,7 +3375,7 @@ mod tests {
             vrele(vp);
 
             // kevent(2): msdosfs_kqfilter hooks each filter on the vnode's klist.
-            let _ = crate::event::kqueue_init::<TestGlue>();
+            let _ = crate::file::event::kqueue_init::<TestGlue>();
             let fd = sys_open(p, c("/README.TXT"), hal::sys::fcntl::O_RDWR, 0).expect("open");
             assert_eq!(sys_read(p, fd, UBUF, 1000), Ok(1000));
             let kfd = sys_kqueue(p).expect("kqueue");

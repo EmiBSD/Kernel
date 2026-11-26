@@ -119,10 +119,10 @@ use crate::sys::timeout::Timeout;
 use crate::sys::types::{Paddr, Vaddr, Vsize, major};
 use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 use crate::sys::vnode::IO_NDELAY;
-use hal::dma::{DmaBuf, DmaReq, DmaSync};
-use hal::pmap::PMAP_WIRED;
+use hal::dev::dma::{DmaBuf, DmaReq, DmaSync};
+use hal::vm::pmap::PMAP_WIRED;
 use hal::vm::uvmexp::UVMEXP;
-use kernel::fork::NTHREADS;
+use kernel::proc::fork::NTHREADS;
 use kernel::vm::fault::{VM_FAULT_INVALID, uvm_fault};
 use kernel::vm::km::{KD_NOWAIT, KD_WAITOK, KP_NONE, KP_PAGEABLE, KV_ANY, bus_dma_memory};
 use kernel::vm::map::Vmspace;
@@ -943,7 +943,7 @@ pub fn bus_dma_check(t: BusDmaTag) {
     // SAFETY: allocated above, every map that loaded it is unloaded and destroyed.
     unsafe { bus_dmamem_free(t, &segs) };
 
-    // The kernel's own DMA memory (N7.0): two pages of `hal::dma::DmaBuf` from the plain tag's
+    // The kernel's own DMA memory (N7.0): two pages of `hal::dev::dma::DmaBuf` from the plain tag's
     // provider, zeroed, the first and last words and a copy across the page boundary written
     // and read back, each sync, then the drop's unmap and free; once on a coherent tag (each
     // sync a barrier) and once on one that is not, whose syncs run the cache operations

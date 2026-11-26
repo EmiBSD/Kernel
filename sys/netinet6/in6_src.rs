@@ -180,9 +180,9 @@ mod tests {
             ipi6_ifindex: ifindex,
         };
         Ip6Pktopts {
-            ip6po_pktinfo: hal::malloc::MBox::new(
+            ip6po_pktinfo: hal::mem::malloc::MBox::new(
                 kernel::netinet6::ip6_var::M_IP6OPT,
-                hal::malloc::M_WAITOK,
+                hal::mem::malloc::M_WAITOK,
                 pi,
             ),
             ..Ip6Pktopts::new()

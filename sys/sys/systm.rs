@@ -208,12 +208,12 @@ pub fn kernel_assert_unlocked() {
 /// `NET_LOCK()`: network stack data structures are, unless stated otherwise, protected by the
 /// net lock. It's a single non-recursive lock for the whole subsystem.
 pub fn net_lock() {
-    hal::netlock::lock();
+    hal::sync::netlock::lock();
 }
 
 /// `NET_UNLOCK()`.
 pub fn net_unlock() {
-    hal::netlock::unlock();
+    hal::sync::netlock::unlock();
 }
 
 /// `NET_LOCK_SHARED()`: reader version of `NET_LOCK()`. The "softnet" thread should be the
@@ -223,19 +223,19 @@ pub fn net_unlock() {
 /// system call can use shared netlock if it has additional locks to protect socket and pcb
 /// data structures.
 pub fn net_lock_shared() {
-    hal::netlock::lock_shared();
+    hal::sync::netlock::lock_shared();
 }
 
 /// `NET_UNLOCK_SHARED()`.
 pub fn net_unlock_shared() {
-    hal::netlock::unlock_shared();
+    hal::sync::netlock::unlock_shared();
 }
 
 /// `NET_ASSERT_UNLOCKED()` (`DIAGNOSTIC`): this thread does not hold the net lock exclusively.
 pub fn net_assert_unlocked(func: &str) {
     #[cfg(feature = "diagnostic")]
     {
-        let s = hal::netlock::status();
+        let s = hal::sync::netlock::status();
         if crate::kern::subr_prf::SPLASSERT_CTL.load(core::sync::atomic::Ordering::Relaxed) > 0
             && s == crate::sys::rwlock::RW_WRITE
         {
@@ -251,7 +251,7 @@ pub fn net_assert_locked(func: &str) {
     #[cfg(feature = "diagnostic")]
     {
         use crate::sys::rwlock::{RW_READ, RW_WRITE};
-        let s = hal::netlock::status();
+        let s = hal::sync::netlock::status();
         if crate::kern::subr_prf::SPLASSERT_CTL.load(core::sync::atomic::Ordering::Relaxed) > 0
             && s != RW_WRITE
             && s != RW_READ
@@ -268,7 +268,7 @@ pub fn net_assert_locked_exclusive(func: &str) {
     #[cfg(feature = "diagnostic")]
     {
         use crate::sys::rwlock::RW_WRITE;
-        let s = hal::netlock::status();
+        let s = hal::sync::netlock::status();
         if crate::kern::subr_prf::SPLASSERT_CTL.load(core::sync::atomic::Ordering::Relaxed) > 0
             && s != RW_WRITE
         {

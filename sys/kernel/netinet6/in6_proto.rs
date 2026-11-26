@@ -149,8 +149,8 @@ use core::marker::PhantomData;
 use core::mem::{offset_of, size_of};
 use core::sync::atomic::{AtomicU8, Ordering};
 
-use hal::netlock::NetHeld;
-use hal::once::OnceStatic;
+use hal::sync::netlock::NetHeld;
+use hal::sync::once::OnceStatic;
 use hal::sys::errno::Errno;
 use hal::sys::netinet_in::{
     IPPROTO_DIVERT, IPPROTO_DSTOPTS, IPPROTO_FRAGMENT, IPPROTO_ICMPV6, IPPROTO_IPV6, IPPROTO_MAX,
@@ -160,6 +160,7 @@ use hal::sys::netinet6_in6::SockaddrIn6;
 use hal::sys::socket::{AF_INET6, PF_INET6, SOCK_DGRAM, SOCK_RAW, SOCK_STREAM};
 
 use crate::assert::kpanic;
+use crate::base::sysctl::SysctlReq;
 use crate::net::domain::{Domain, net};
 use crate::net::if_var::Netstack;
 use crate::net::mbuf::{Mbuf, MbufBox};
@@ -177,7 +178,6 @@ use crate::netinet6::raw_ip6::{
     Rip6Usrreqs, rip6_ctlinput, rip6_ctloutput, rip6_init, rip6_input, rip6_sysctl,
 };
 use crate::proc::ProcGlue;
-use crate::sysctl::SysctlReq;
 
 /// `inet6sw[]` as the glue recorded it, with the index of its raw entry: one record, so no
 /// reader sees the table without its raw entry.
@@ -1046,7 +1046,7 @@ mod tests {
     use core::sync::atomic::Ordering::Relaxed;
     use std::sync::MutexGuard;
 
-    use hal::netlock::NETLOCK;
+    use hal::sync::netlock::NETLOCK;
     use hal::sys::netinet_in::{IPPROTO_DONE, IPPROTO_ESP, IPPROTO_TCP, IPPROTO_UDP};
     use hal::sys::netinet6_ip6_var::Ip6statCounters;
 
@@ -1114,7 +1114,7 @@ mod tests {
         sin6[..2].copy_from_slice(&[24, AF_INET6]);
         let sa = SockaddrView::new(&sin6).expect("an address");
         {
-            let w = hal::netlock::NETLOCK.read();
+            let w = hal::sync::netlock::NETLOCK.read();
             let net = NetHeld::of(&w).expect("the net lock");
             icmp6.ctlinput(PRC_MSGSIZE, sa, 0, CtlArg::None, &net);
         }

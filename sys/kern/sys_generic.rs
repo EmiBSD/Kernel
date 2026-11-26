@@ -55,8 +55,8 @@
 
 /* <CODE> */
 //! `sys_generic.c`'s `sysent[]` rows: `read`, `readv`, `write`, `writev`, `ioctl` and `utrace`
-//! (`kernel::descrip`'s since N4.3), `select`, `pselect`, `poll` and `ppoll`
-//! (`kernel::select`'s since N4.4), and `selwakeup` under LZ's path.
+//! (`kernel::file::descrip`'s since N4.3), `select`, `pselect`, `poll` and `ppoll`
+//! (`kernel::file::select`'s since N4.4), and `selwakeup` under LZ's path.
 //!
 //! Upstream: sys/kern/sys_generic.c @ 3ce1f3f79392
 //! LZ: sys/kern/sys_generic.rs@3c62ede68802
@@ -65,9 +65,9 @@
 //! - `KTRACE` is not configured.
 //!
 //! ## Redesign
-//! - N4.3: the generic read/write/ioctl/utrace bodies moved into `kernel::descrip` (and
-//!   `kernel::uio`); N4.4: `select(2)`/`poll(2)` (`dopselect`, `doppoll`, the register and
-//!   collect helpers, `pollout`, `selwakeup`) into `kernel::select`, over `kernel::event`'s
+//! - N4.3: the generic read/write/ioctl/utrace bodies moved into `kernel::file::descrip` (and
+//!   `kernel::file::uio`); N4.4: `select(2)`/`poll(2)` (`dopselect`, `doppoll`, the register and
+//!   collect helpers, `pollout`, `selwakeup`) into `kernel::file::select`, over `kernel::file::event`'s
 //!   thread poll kqueue. The rows here turn the system call arguments into the kernel's
 //!   typed ones, with 0 `unsafe` (LZ: 3, the scan's setup and `POLL_LASTERR`). The signal
 //!   mask of `pselect`/`ppoll` is copied in here and installed by `kern_sig`'s
@@ -92,18 +92,19 @@ use crate::sys::syscallargs::{
 use crate::sys::systm::{SysArgs, sysargs};
 use crate::sys::types::Register;
 
-/// Read system call (`sysent[]`'s row: `kernel::descrip::sys_read`).
+/// Read system call (`sysent[]`'s row: `kernel::file::descrip::sys_read`).
 pub fn sys_read(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysReadArgs = sysargs(v);
-    let n = kernel::descrip::sys_read(p, uap.fd.get(), uap.buf.get().addr(), uap.nbyte.get())?;
+    let n =
+        kernel::file::descrip::sys_read(p, uap.fd.get(), uap.buf.get().addr(), uap.nbyte.get())?;
     retval[0] = n as Register;
     Ok(())
 }
 
-/// Scatter read system call (`sysent[]`'s row: `kernel::descrip::sys_readv`).
+/// Scatter read system call (`sysent[]`'s row: `kernel::file::descrip::sys_readv`).
 pub fn sys_readv(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysReadvArgs = sysargs(v);
-    let n = kernel::descrip::sys_readv(
+    let n = kernel::file::descrip::sys_readv(
         p,
         uap.fd.get(),
         UserPtr::new(uap.iovp.get().addr()),
@@ -113,18 +114,19 @@ pub fn sys_readv(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<()
     Ok(())
 }
 
-/// Write system call (`sysent[]`'s row: `kernel::descrip::sys_write`).
+/// Write system call (`sysent[]`'s row: `kernel::file::descrip::sys_write`).
 pub fn sys_write(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysWriteArgs = sysargs(v);
-    let n = kernel::descrip::sys_write(p, uap.fd.get(), uap.buf.get().addr(), uap.nbyte.get())?;
+    let n =
+        kernel::file::descrip::sys_write(p, uap.fd.get(), uap.buf.get().addr(), uap.nbyte.get())?;
     retval[0] = n as Register;
     Ok(())
 }
 
-/// Gather write system call (`sysent[]`'s row: `kernel::descrip::sys_writev`).
+/// Gather write system call (`sysent[]`'s row: `kernel::file::descrip::sys_writev`).
 pub fn sys_writev(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysWritevArgs = sysargs(v);
-    let n = kernel::descrip::sys_writev(
+    let n = kernel::file::descrip::sys_writev(
         p,
         uap.fd.get(),
         UserPtr::new(uap.iovp.get().addr()),
@@ -134,13 +136,13 @@ pub fn sys_writev(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(
     Ok(())
 }
 
-/// Ioctl system call (`sysent[]`'s row: `kernel::descrip::sys_ioctl`).
+/// Ioctl system call (`sysent[]`'s row: `kernel::file::descrip::sys_ioctl`).
 pub fn sys_ioctl(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysIoctlArgs = sysargs(v);
-    kernel::descrip::sys_ioctl(p, uap.fd.get(), uap.com.get(), uap.data.get().addr())
+    kernel::file::descrip::sys_ioctl(p, uap.fd.get(), uap.com.get(), uap.data.get().addr())
 }
 
-/// Select system call (`sysent[]`'s row: `kernel::select::sys_select`).
+/// Select system call (`sysent[]`'s row: `kernel::file::select::sys_select`).
 pub fn sys_select(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysSelectArgs = sysargs(v);
     let sets = [
@@ -148,7 +150,8 @@ pub fn sys_select(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(
         UserPtr::new(uap.ou.get().addr()),
         UserPtr::new(uap.ex.get().addr()),
     ];
-    let n = kernel::select::sys_select(p, uap.nd.get(), sets, UserPtr::new(uap.tv.get().addr()))?;
+    let n =
+        kernel::file::select::sys_select(p, uap.nd.get(), sets, UserPtr::new(uap.tv.get().addr()))?;
     retval[0] = n as Register;
     Ok(())
 }
@@ -161,7 +164,7 @@ fn copyin_mask(umask: usize) -> Result<Option<Sigset>, Errno> {
     UserPtr::<Sigset>::new(umask).copyin().map(Some)
 }
 
-/// `pselect(2)` (`sysent[]`'s row: `kernel::select::dopselect`).
+/// `pselect(2)` (`sysent[]`'s row: `kernel::file::select::dopselect`).
 pub fn sys_pselect(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysPselectArgs = sysargs(v);
     let sets = [
@@ -170,10 +173,10 @@ pub fn sys_pselect(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<
         UserPtr::new(uap.ex.get().addr()),
     ];
     // The timeout is copied in and checked before the mask, as the C.
-    let tsp = kernel::select::copyin_timespec(UserPtr::new(uap.ts.get().addr()))?;
+    let tsp = kernel::file::select::copyin_timespec(UserPtr::new(uap.ts.get().addr()))?;
     let mask = copyin_mask(uap.mask.get().addr())?;
     let sigsuspend = mask.map(|m| move || dosigsuspend(p, m & !sigcantmask()));
-    let n = kernel::select::dopselect(
+    let n = kernel::file::select::dopselect(
         p,
         uap.nd.get(),
         sets,
@@ -186,13 +189,13 @@ pub fn sys_pselect(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<
 
 /// `selwakeup(sip)`: do a wakeup when a selectable event occurs.
 pub fn selwakeup(sip: &Selinfo) {
-    kernel::select::selwakeup::<BsdProcGlue>(sip);
+    kernel::file::select::selwakeup::<BsdProcGlue>(sip);
 }
 
-/// `poll(2)` (`sysent[]`'s row: `kernel::select::sys_poll`).
+/// `poll(2)` (`sysent[]`'s row: `kernel::file::select::sys_poll`).
 pub fn sys_poll(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysPollArgs = sysargs(v);
-    let n = kernel::select::sys_poll(
+    let n = kernel::file::select::sys_poll(
         p,
         UserPtr::new(uap.fds.get().addr()),
         uap.nfds.get(),
@@ -202,13 +205,13 @@ pub fn sys_poll(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(),
     Ok(())
 }
 
-/// `ppoll(2)` (`sysent[]`'s row: `kernel::select::doppoll`).
+/// `ppoll(2)` (`sysent[]`'s row: `kernel::file::select::doppoll`).
 pub fn sys_ppoll(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysPpollArgs = sysargs(v);
-    let tsp = kernel::select::copyin_timespec(UserPtr::new(uap.ts.get().addr()))?;
+    let tsp = kernel::file::select::copyin_timespec(UserPtr::new(uap.ts.get().addr()))?;
     let mask = copyin_mask(uap.mask.get().addr())?;
     let sigsuspend = mask.map(|m| move || dosigsuspend(p, m & !sigcantmask()));
-    let n = kernel::select::doppoll(
+    let n = kernel::file::select::doppoll(
         p,
         UserPtr::new(uap.fds.get().addr()),
         uap.nfds.get(),
@@ -300,7 +303,7 @@ pub fn native_ppoll(
 /// `utrace(2)`: a user record for the process's `ktrace(1)` trace. `KTRACE` is not
 /// configured, so there is no trace to add to and the call succeeds, as the C's `#else`.
 pub fn sys_utrace(curp: &Proc, _v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
-    // KTRACE: ktruser(curp, label, addr, len) (`kernel::descrip::sys_utrace`).
-    kernel::descrip::sys_utrace(curp)
+    // KTRACE: ktruser(curp, label, addr, len) (`kernel::file::descrip::sys_utrace`).
+    kernel::file::descrip::sys_utrace(curp)
 }
 /* </CODE> */

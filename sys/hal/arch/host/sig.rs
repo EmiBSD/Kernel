@@ -17,8 +17,8 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! The host's double of the running thread's user context: the signal frame (`hal::sig`)
-//! and the registers `hal::trap::proc_pc`/`proc_stack` read. There is no user context, so
+//! The host's double of the running thread's user context: the signal frame (`hal::cpu::sig`)
+//! and the registers `hal::cpu::trap::proc_pc`/`proc_stack` read. There is no user context, so
 //! `sendsig` records what it was asked, per test thread, and fails when the test says so;
 //! `sigreturn` answers what the test set (`EFAULT` by default: no context to read); the
 //! program counter and stack pointer are what the test set (0 before). The frame's own logic
@@ -29,7 +29,7 @@ extern crate std;
 use core::cell::{Cell, RefCell};
 use std::vec::Vec;
 
-use crate::sig::{SigDelivery, SigreturnError};
+use crate::cpu::sig::{SigDelivery, SigreturnError};
 use crate::sys::errno::Errno;
 use crate::sys::siginfo::Siginfo;
 use crate::sys::signal::{Sig, Sigset};
@@ -117,7 +117,7 @@ pub(crate) fn proc_regs() -> (usize, usize) {
 }
 
 /// The user program counter and stack pointer this test thread's "trap frame" holds
-/// (`hal::trap::proc_pc`, `proc_stack`).
+/// (`hal::cpu::trap::proc_pc`, `proc_stack`).
 pub fn set_user_regs(pc: usize, sp: usize) {
     USER_REGS.with(|c| c.set((pc, sp)));
 }

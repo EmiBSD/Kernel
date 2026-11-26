@@ -144,7 +144,7 @@
 //!
 //! ## Deviations
 //! - `NKCOV` is 0: no kcov descriptors to refuse.
-//! - `pool_get(PR_WAITOK)` can fail here (see `hal::pool`): `uipc_attach` answers `ENOBUFS`
+//! - `pool_get(PR_WAITOK)` can fail here (see `hal::mem::pool`): `uipc_attach` answers `ENOBUFS`
 //!   as for `PR_NOWAIT`. `unp_externalize`'s `mallocarray(M_WAITOK)` answers `ENOMEM`, and an
 //!   `fdexpand` failing there (it cannot in C) ends the call with its error; in both cases the
 //!   files go to the collector as the C's other failures send them.
@@ -158,7 +158,7 @@
 //!   bound address is a copy, and the callers free the mbuf). Its checks are the C's, the
 //!   `m_trailingspace` refusal included.
 //! - The in-flight table's array is `malloc(M_TEMP, M_WAITOK)`: a refusal (none in the
-//!   kernel; `hal::malloc` before its bridge) is `panic(9)`, as LZ's `unp_discard` panicked
+//!   kernel; `hal::mem::malloc` before its bridge) is `panic(9)`, as LZ's `unp_discard` panicked
 //!   for its deferral: the files in flight cannot be kept without it.
 //! - `unpcb`'s item is the control block's Rust layout (376 bytes, where the C's `struct
 //!   unpcb` is 144 on LP64), as every kernel pool's since N3: `vmstat -m` shows that size
@@ -172,7 +172,7 @@
 //! - LZ's `struct unpcb` was a pool item of `Cell`s and raw `&'static` links (`unp_conn`,
 //!   `unp_vnode`, `unp_file`, `unp_addr`), counted by a `refcnt` that `unp_detach` waited on
 //!   before `pool_put`. Here [`Unpcb`] is a counted item of the glue's `unpcb` pool
-//!   ([`UnpRef`], a `hal::pool::PoolArc`): `unp_ref`/`unp_rele` are a handle's clone and drop,
+//!   ([`UnpRef`], a `hal::mem::pool::PoolArc`): `unp_ref`/`unp_rele` are a handle's clone and drop,
 //!   and `unp_detach`'s `refcnt_finalize` is the count itself (the last handle frees the
 //!   control block; the lock dances that held one, `unp_solock_peer` and `unp_detach`'s, keep
 //!   it alive while they wait). The socket holds it erased in its read-mostly `so_pcb` slot
@@ -213,13 +213,13 @@ use core::marker::PhantomData;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering};
 
-use hal::intr::IPL_SOFTNET;
-use hal::malloc::{M_WAITOK, MArray};
-use hal::mutex::{Mutexed, MutexedGuard};
-use hal::pin::pin_static;
-use hal::pinlist::{PinEntry, PinList};
-use hal::pool::{PR_NOWAIT, PR_WAITOK, PoolArc, PoolHome, TypedPool};
-use hal::rwlock::{Guarded, RawRwlock, WriteWitness};
+use hal::cpu::intr::IPL_SOFTNET;
+use hal::ds::pin::pin_static;
+use hal::ds::pinlist::{PinEntry, PinList};
+use hal::mem::malloc::{M_WAITOK, MArray};
+use hal::mem::pool::{PR_NOWAIT, PR_WAITOK, PoolArc, PoolHome, TypedPool};
+use hal::sync::mutex::{Mutexed, MutexedGuard};
+use hal::sync::rwlock::{Guarded, RawRwlock, WriteWitness};
 use hal::sys::errno::Errno;
 use hal::sys::pledge::PLEDGE_UNIX;
 use hal::sys::socket::{
@@ -233,8 +233,9 @@ use hal::sys::un::SockaddrUn;
 use hal::user::{bytes_of, pod_from_bytes};
 
 use crate::assert::{kassert, kpanic};
-use crate::clock::Timespec;
-use crate::descrip::{
+use crate::base::sysctl::{SysctlReq, bounded_arr, rdint};
+use crate::base::task::{Task, Taskq, task_add};
+use crate::file::descrip::{
     UF_EXCLOSE, UF_FORKCLOSE, UF_PLEDGED, UF_PLEDGEOPEN, closef, fd_getfile_flags, fdalloc,
     fdexpand, fdplock, fdremove,
 };
@@ -263,8 +264,7 @@ use crate::net::socket::{
     sounlock_detached, sowwakeup,
 };
 use crate::proc::{ProcGlue, Thread};
-use crate::sysctl::{SysctlReq, bounded_arr, rdint};
-use crate::task::{Task, Taskq, task_add};
+use crate::time::clock::Timespec;
 
 /// `M_TEMP` (`<sys/malloc.h>`): `unp_externalize`'s array and the in-flight table.
 const M_TEMP: i32 = 127;
@@ -388,7 +388,7 @@ impl<G: ProcGlue> Unpcb<G> {
         Self {
             home: PoolHome::new(),
             socket: soref(so),
-            ctime: crate::tc::getnanotime(),
+            ctime: crate::time::tc::getnanotime(),
             s: Guarded::new_keyed(
                 so.so_lock.lock(),
                 UnpState {
@@ -1006,7 +1006,7 @@ fn uipc_bind<G: ProcGlue>(
         nd.ni_pledge = PLEDGE_UNIX;
         nd.ni_unveil = UNVEIL_CREATE;
 
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         // SHOULD BE ABLE TO ADOPT EXISTING AND wakeup() ALA FIFO's
         uipc_bind_create(&mut nd, p)
     });
@@ -1019,7 +1019,7 @@ fn uipc_bind<G: ProcGlue>(
         drop(vp.set_socket(Some(soref(so))));
         let _ = vop_unlock(vp);
     });
-    hal::klock::kernel_unlock();
+    hal::sync::klock::kernel_unlock();
     st(&unp, w).flags &= !UNP_BINDING;
 
     r
@@ -1483,9 +1483,9 @@ fn unp_detach<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>, unp: UnpRef<G>)
             let _ = vop_lock(vp, LK_EXCLUSIVE);
             let vso = vp.set_socket(None);
 
-            hal::klock::kernel_lock();
+            hal::sync::klock::kernel_lock();
             vput(vp);
-            hal::klock::kernel_unlock();
+            hal::sync::klock::kernel_unlock();
             vso
         });
         // The vnode's reference to the socket: never its last (the caller holds one).
@@ -1564,7 +1564,7 @@ fn unp_connect<G: ProcGlue>(
         nd.ni_pledge = PLEDGE_UNIX;
         nd.ni_unveil = UNVEIL_WRITE;
 
-        hal::klock::kernel_lock();
+        hal::sync::klock::kernel_lock();
         let error = match namei(&mut nd) {
             Ok(()) => match nd.ni_vp {
                 Some(vp) => {
@@ -1576,7 +1576,7 @@ fn unp_connect<G: ProcGlue>(
             },
             Err(e) => Err(e),
         };
-        hal::klock::kernel_unlock();
+        hal::sync::klock::kernel_unlock();
         error
     });
 
@@ -1736,7 +1736,7 @@ fn unp_disconnect<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>, unp: &Unpcb
 /// `fptounp(fp)`: `f` on the control block of a UNIX socket file, `None` for any other file
 /// (the socket's slot read as the C reads `so_pcb`, without the socket lock). `f` runs
 /// inside the slot's read section, so it must not sleep nor take a lock that may
-/// (`hal::slot`'s rule): the collector's scan, atomics alone. A caller that takes
+/// (`hal::sync::slot`'s rule): the collector's scan, atomics alone. A caller that takes
 /// `unp_gc_lock` uses [`fptounp`].
 fn with_fptounp<G: ProcGlue, R>(
     fp: &File<G::FileGlue>,
@@ -2017,7 +2017,7 @@ fn externalize_files<G: ProcGlue>(
 
     // Make sure the recipient should be able to see the descriptors.. fdp->fd_rdir requires
     // KERNEL_LOCK().
-    hal::klock::kernel_lock();
+    hal::sync::klock::kernel_lock();
     let mut error = Ok(());
     for x in pass.iter() {
         let Some(fp) = x.fp.get() else {
@@ -2044,7 +2044,7 @@ fn externalize_files<G: ProcGlue>(
             }
         }
     }
-    hal::klock::kernel_unlock();
+    hal::sync::klock::kernel_unlock();
     error?;
 
     let mut g = fdplock(fdp);
@@ -2337,12 +2337,12 @@ fn internalize_files<G: ProcGlue>(
 fn unp_gc_tq() -> &'static Taskq {
     #[cfg(test)]
     {
-        static TQ: Taskq = crate::task::taskq_unthreaded(b"unpgctq");
+        static TQ: Taskq = crate::base::task::taskq_unthreaded(b"unpgctq");
         &TQ
     }
     #[cfg(not(test))]
     {
-        &crate::task::SYSTQMP
+        &crate::base::task::SYSTQMP
     }
 }
 
@@ -2463,7 +2463,7 @@ pub fn unp_gc<G: ProcGlue>() {
             // accessible by concurrent PRU_SEND thread.
             let mut sg = sb.lock();
             let m = sg.take_all_zeroed();
-            sg.set_timeo_nsecs(hal::sleep::INFSLP);
+            sg.set_timeo_nsecs(hal::sync::sleep::INFSLP);
             drop(sg);
 
             let mut m = m;
@@ -2811,7 +2811,8 @@ pub(crate) mod tests {
     use hal::user::UserPtr;
 
     use super::*;
-    use crate::descrip::{falloc, fd_getfile, fdinsert, sys_close};
+    use crate::file::descrip::{falloc, fd_getfile, fdinsert, sys_close};
+    use crate::file::uio::{Iovec, Uio, UioRw, UioSeg};
     use crate::fs::testfs::{TestFiles, TestGlue, test_thread_cached};
     use crate::net::domain::{domaininit, soinit};
     use crate::net::mbuf::{MT_SONAME, MT_SOOPTS, m_get, mbinit, nmbclust_update};
@@ -2820,7 +2821,6 @@ pub(crate) mod tests {
         solock_shared, soreceive, sosend, soshutdown,
     };
     use crate::testutil::{self, TestFileData, USER_BASE, user_bytes};
-    use crate::uio::{Iovec, Uio, UioRw, UioSeg};
 
     pub(crate) type G = TestGlue;
     pub(crate) type So = SocketRef<G>;
@@ -2884,7 +2884,7 @@ pub(crate) mod tests {
     /// A file at a new descriptor of `p`: a socket file of `so` (the glue's `socket_file`),
     /// or, without one, a file of type `ty` holding nothing.
     pub(crate) fn file(p: &Thread<G>, ty: i32, so: Option<So>) -> i32 {
-        let mut g = crate::descrip::fdplock(p.fd());
+        let mut g = crate::file::descrip::fdplock(p.fd());
         let (fp, fd) = falloc(p, &mut g).expect("falloc");
         match so {
             Some(so) => {
