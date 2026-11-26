@@ -249,9 +249,9 @@ pub fn pipe_stat(fp: &File, ub: &mut Stat, _p: &Proc) -> Result<(), Errno> {
     ub.st_blksize = st.blksize;
     ub.st_size = st.size;
     ub.st_blocks = st.blocks;
-    ub.st_atim = st.atime.into();
-    ub.st_mtim = st.mtime.into();
-    ub.st_ctim = st.ctime.into();
+    ub.st_atim = st.atime;
+    ub.st_mtim = st.mtime;
+    ub.st_ctim = st.ctime;
     ub.st_uid = cred.cr_uid.get();
     ub.st_gid = cred.cr_gid.get();
     // Left as 0: st_dev, st_ino, st_nlink, st_rdev, st_flags, st_gen.
