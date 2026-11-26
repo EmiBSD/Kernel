@@ -70,98 +70,80 @@ whole picture, and every decision that crosses repositories, is in
 ## The target: the kernel at N9
 
 The module view of the one architecture diagram ([docs/ZERO_UNSAFE.md](docs/ZERO_UNSAFE.md)
-section 0.1, which stays the source): three crates, the arrows down only, `bsd` (the LZ tree)
-deleted and the bridges at zero. Each `kernel` box names the milestone that moves it
-(section 0.8); `crypto` is there since N2, its users arrive at N8; `arch/amd64` is frozen from
-N4 and homologated at N10.
+section 0.1, which stays the source), as the tree is laid out since 2026-11-26: `sys/` holds six
+directories, each one purpose. The dependencies point down only; `bsd` (the LZ tree) is deleted
+at N9 and the bridges reach zero. Each `kernel` group names the milestone that moves its code
+(section 0.8); `arch/amd64` is frozen from N4 and homologated at N10.
 
 ```mermaid
 flowchart TB
-    U["0 · USERLAND of OpenBSD<br/>binaries unchanged · ABI byte-identical"]
+    U["USERLAND of OpenBSD · binaries unchanged · the ABI byte-identical"]
 
-    subgraph ABI["1 · abi · sys/abi/ · linked into the kernel image · forbid(unsafe) · no logic"]
+    subgraph ABI["sys/abi · abi · linked into the image · forbid(unsafe) · translation only, no logic"]
         direction LR
-        A1["sysent: the syscall table, every entry Native"]
-        A2["bytes ⇄ the kernel's types · errno from Result"]
-        A3["abi_init: the one call the image makes, at boot, with KernelApi"]
+        A1["sysent: the syscall table"]
+        A2["arch/arm64: OpenBSD's convention, named registers (Gpr::X8), the return and the carry, restart"]
+        A3["bytes ⇄ the kernel's types · errno from Result"]
     end
 
-    subgraph K["2 · kernel · sys/kernel/ · forbid(unsafe) at the root · every decision of the OS"]
+    subgraph K["sys/kernel · kernel · forbid(unsafe) · every decision of the OS"]
         direction TB
-        KA["api: KernelApi, the table abi calls"]
-        subgraph K3["N3 · memory"]
-            VM["vm: map · fault · amap · anon · object · aobj · page · pmemrange · km · pager · vnode · swap · pdaemon · mmap"]
+        KA["api: one function per system call, abi's only door (decision 52)"]
+        subgraph KG["groups"]
+            direction LR
+            KP["proc · sched · sig · time (N4)"]
+            KF["file · tty · base (N4, N5)"]
+            KV["vm (N3)"]
+            KS["fs: vfs · ufs · nfs · tmpfs … (N5, N6)"]
+            KN["net · netinet · netinet6 (N6)"]
+            KD["dev: autoconf · disk · ofw · intr · the drivers (N7)"]
+            KX["exec · pledge · unveil · pf · ipsec · wg (N8)"]
         end
-        subgraph K4["N4 · processes and scheduling"]
-            PR["proc: proc · cred · fork · exit · signals · resource · sysctl core"]
-            SC["sched: sleep queues · run queues · kthread · smr"]
-            TM["timeout · task · extent · clock"]
-            FD["fs: descriptors (FileData) · pipe"]
-            EV["event: kqueue"]
-            TT["tty · pty · log"]
-            AC["autoconf · bufq · disk"]
-        end
-        subgraph K5["N5 · VFS"]
-            VF["vfs: lookup · cache · syscalls · bio"]
-            FS["fs: ufs · isofs · msdosfs · nfs · ntfs · tmpfs"]
-        end
-        subgraph K6["N6 · network"]
-            NT["net: if · route · bpf · mbuf logic"]
-            IN["netinet · netinet6 · sockets"]
-        end
-        subgraph K7["N7 · devices"]
-            DV["dev: the drivers' logic over hal::Mmio / hal::DmaBuf"]
-            SI["scsi"]
-        end
-        subgraph K8["N8 · security, last, with extra tests"]
-            SE["exec · pledge · unveil"]
-            PF["pf · pflog · pfsync"]
-            IP["ipsec · wireguard"]
-        end
-        CR["crypto: blf · chacha · poly1305 · sha · md5 · hmac · rmd160 …"]
     end
 
-    subgraph HAL["3 · hal · sys/hal/ · the ONLY unsafe · every site with a SAFETY proof · ceiling raised only by the user"]
+    subgraph HAL["sys/hal · hal · the ONLY unsafe · a SAFETY proof per site · ceiling raised only by the user"]
         direction LR
-        subgraph HW["hardware"]
-            H1["arch/arm64 · arch/amd64 (homologated at N10) · arch/host (the test double)"]
-            H2["machine: the contract generic code sees"]
-            H3["pmap · cpu · intr · softintr · trap and syscall entry · clock handler"]
-            H4["cons · bootmem · Mmio · DmaBuf"]
-        end
-        subgraph RT["runtime"]
-            R1["locks: mutex · rwlock · klock · netlock · Guarded"]
-            R2["memory: pool · malloc · mapped · kmbuf"]
-            R3["owned structures: owned (list, tree) · pinlist · link"]
-            R4["once · percpu · refcnt · sleep"]
-            R5["user: UserPtr, the typed copy from userland"]
-            R6["syscall: the dispatch point · bridges: only KernelApi left"]
-            R7["random · trust · sys/ shared types (errno, syscall, limits, pledge …)"]
-        end
+        H1["cpu: trap · syscall entry (UserRegs) · intr · clock"]
+        H2["vm: pmap · mem: pool · malloc · fdtblob"]
+        H3["sync: locks · ds: lists, trees · dev: Mmio · DmaBuf"]
+        H4["user: UserPtr · machine · arch/arm64 · arch/amd64 (N10)"]
     end
 
-    LEAF["libkern · libz · leaf crates below hal"]
-    STAND["sys/stand · the boot loaders · separate binaries, outside the crates"]
-    M["4 · hardware · QEMU arm64 / amd64, real machines"]
+    subgraph LIB["sys/lib · the leaf crates · forbid(unsafe) · named by every layer"]
+        direction LR
+        L1["sysdefs: the domain model, OpenBSD's types and structures (base · proc · sig · time · vm · file · fs · dev · net · netinet · netinet6)"]
+        L2["libkern: string · mem · hash · rand"]
+        L3["libz: deflate · inflate · check"]
+    end
 
-    U -->|"syscall"| ABI
-    ABI -->|"KernelApi, one entry per syscall"| K
+    BOOT["sys/boot · boot(8) · efiboot · efi · libsa: separate binaries, outside the plan"]
+    BSD["sys/bsd · the LZ tree, legacy · emptied slice by slice · deleted at N9"]
+    M["hardware · QEMU arm64 / amd64, real machines"]
+
+    U -->|"svc: the trap"| HAL
+    HAL -.->|"the registers, to the handler abi registered"| ABI
+    ABI -->|"kernel::api"| K
     K -->|"safe API"| HAL
     HAL --> M
-    HAL -.-> LEAF
-    STAND -.->|"loads the kernel"| HAL
+    ABI -.-> LIB
+    K -.-> LIB
+    HAL -.-> LIB
+    BOOT -.->|"loads the kernel"| HAL
 ```
 
-What goes up (the syscall handler, `KernelApi`) is a registration in `hal` at boot, never a
-dependency. Today's numbers are under [Status](#status); the exit criterion per milestone is
-in [docs/ROADMAP.md](docs/ROADMAP.md).
+The trap enters in `hal`, because the vector is assembly and registers; `hal` interprets
+nothing userland sends and hands the saved registers to the dispatcher `abi` registered at
+boot (decision 53). That is the one upward call, a registration and never a dependency, like
+the panic handler. `abi` reads OpenBSD's convention and calls `kernel::api`, and the kernel
+reaches the hardware only through `hal`'s safe API. Today's numbers are under
+[Status](#status); the exit criterion per milestone is in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Status
 
-Status: N5 (VFS and file systems: the buffer cache, vnode, mount, VFS core, names, files and
-system calls, and ufs/ffs/mfs, ext2fs, msdosfs, cd9660, udf, tmpfs and fuse in `kernel::fs`;
-nfs moves at N6 and ntfs at N10) met on 2026-11-07, after N4 (processes and scheduling) on
-2026-10-24; N6 (network stack) next. Since decision 44 (2026-10-18) only arm64 is built and tested until N10
+Status: N6 (network stack: the mbuf, sockets, the interface core, routing, bpf, IPv4, IPv6,
+TCP, UDP and the nfs client and server in `kernel::net`, `netinet`, `netinet6` and `fs::nfs`)
+met on 2026-11-26 (tag `n6-network`), after N5 (VFS and file systems) on 2026-11-07; N7
+(devices) under way. Since decision 44 (2026-10-18) only arm64 is built and tested until N10
 homologates amd64 (`docs/ZERO_UNSAFE.md` section 10).
 
 | Milestone | Scope | State |
@@ -172,13 +154,13 @@ homologates amd64 (`docs/ZERO_UNSAFE.md` section 10).
 | N3 | Memory: uvm into `kernel::vm`, the pmaps into `hal` behind `hal::Pmap` | done |
 | N4 | Processes and scheduling (kern) | done |
 | N5 | VFS and file systems | done |
-| N6 | Network stack | next |
-| N7 | Devices: bus_space, DMA, the driver model | next |
+| N6 | Network stack | done |
+| N7 | Devices: bus_space, DMA, the driver model | under way |
 | N8 | Security subsystems, last: pf, IPsec, WireGuard, softraid CRYPTO, the crypto framework | next |
 | N9 | Close on arm64: `bsd` deleted, the amd64 tree frozen (decision 44) | next |
 | N10 | amd64 homologation: the frozen tree compiled and its `hal` halves written; the same smokes, installer, diff-openbsd and bench on amd64 | next |
 | N11 | Verification: the semantic unsafe count, the idiomaticity rubric, an organic battery from OpenBSD's regress, hvf for arm64 | next |
-| N12 | Performance: what decision 42 left open, closed on both archs with QEMU profiles | next |
+| N12 | Performance: what decision 42 left open, closed on both archs with QEMU profiles | under way (N12.1) |
 
 Exit criteria are in [docs/ROADMAP.md](docs/ROADMAP.md); the current state is in
 [docs/STATUS.md](docs/STATUS.md). The port's milestones (M0..M16b at `lz-origin`, and onwards)
