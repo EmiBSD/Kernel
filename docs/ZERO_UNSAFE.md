@@ -150,6 +150,11 @@ the new runtime; the ceiling in `unsafe-budget.toml`, lowered only), and `bsd` (
 are 0** (deleted, or a 0-`unsafe` adapter listed as such) and its subsystem answers in
 `kernel`. The old `forbid` count is gone: nothing in `kernel` needs marking.
 
+Since decisions 54 and 55 (2026-11-26) a fifth number sits beside them: `lib`, the kernel's
+leaf crates under `sys/lib/` (`sysdefs`, `libkern`, `libz`; `libsa` is the boot loaders'),
+`#![forbid(unsafe_code)]` at their roots, so always 0 and held there by `--check`. They are
+under every layer and are not the LZ tree, so their files never count as a row's `bsd` files.
+
 Since decision 44 (2026-10-18) a fifth class exists from N9 on: `frozen`, the amd64 tree
 (`sys/arch/amd64/`, `sys/hal/arch/amd64/`, the amd64 implementations of `sys/machine`) left as
 it is, `inherited`, outside every crate, until N10 homologates it; `/progress` and

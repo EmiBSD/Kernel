@@ -27,8 +27,9 @@ Sources, all read live (nothing is typed in by hand):
     counts it as a module; the totals; the ratchet with its baseline; the pace.
     unsafe-report is the one parser of the Rust sources: this script reads none.
     The crate of a file (docs/ZERO_UNSAFE.md section 0) is derived here from its
-    path: sys/hal/, sys/kernel/, sys/abi/, the boot loaders (sys/stand/,
-    sys/lib/libsa/, sys/arch/*/stand/), and bsd (the LZ tree, legacy) for the rest of sys/;
+    path: sys/hal/, sys/kernel/, sys/abi/, lib (the leaf crates sys/lib/sysdefs/, libkern/,
+    libz/), the boot loaders (sys/stand/, sys/lib/libsa/, sys/arch/*/stand/), and bsd (the LZ
+    tree, legacy) for the rest of sys/;
   - docs/ROADMAP.md: the milestone table (id, title, scope, exit criterion). A
     file belongs to the N row whose scope cell names its path in backticks: a
     directory (`sys/uvm/`), a file (`sys/sys/queue.rs`) or a glob
@@ -382,12 +383,14 @@ class Plan:
 
 
 CRATES = (("hal", "sys/hal/"), ("kernel", "sys/kernel/"), ("abi", "sys/abi/"),
+          ("lib", "sys/lib/sysdefs/"), ("lib", "sys/lib/libkern/"), ("lib", "sys/lib/libz/"),
           ("boot", "sys/stand/"), ("boot", "sys/lib/libsa/"))
 
 
 def crate_of(path: str) -> str:
     """The crate a file belongs to under docs/ZERO_UNSAFE.md section 0, by its path: hal,
-    kernel, abi, boot (the loaders, outside the four crates) or bsd (the LZ tree, legacy)."""
+    kernel, abi, lib (the leaf crates sysdefs, libkern, libz: forbid, decisions 54 and 55), boot
+    (the loaders, outside the four crates) or bsd (the LZ tree, legacy)."""
     for name, prefix in CRATES:
         if path.startswith(prefix):
             return name
@@ -466,7 +469,7 @@ def unsafe_report(root: Path, want: str | None, doc: dict, plan: Plan, modules: 
         d = agg[rid]["bsd_unsafe"] / per_day
         return "<0.1 d" if d < 0.1 else f"~{d:.1f} d"
 
-    crate_unsafe = {c: 0 for c in ("kernel", "abi", "hal", "bsd", "boot")}
+    crate_unsafe = {c: 0 for c in ("kernel", "abi", "hal", "lib", "bsd", "boot")}
     crate_files = {c: 0 for c in crate_unsafe}
     for f in files:
         crate_unsafe[f["crate"]] += f["unsafe"]
@@ -502,7 +505,8 @@ def unsafe_report(root: Path, want: str | None, doc: dict, plan: Plan, modules: 
           f"abi {crate_unsafe['abi']:,} in {crate_files['abi']:,}; "
           f"hal {crate_unsafe['hal']:,} in {crate_files['hal']:,}"
           + (f" (ceiling {hal_ceiling:,})" if hal_ceiling is not None else "")
-          + f"; bsd {crate_unsafe['bsd']:,} in {crate_files['bsd']:,}; "
+          + f"; lib {crate_unsafe['lib']:,} in {crate_files['lib']:,}"
+          f"; bsd {crate_unsafe['bsd']:,} in {crate_files['bsd']:,}; "
           f"boot loaders {crate_unsafe['boot']:,} in {crate_files['boot']:,} (outside the plan). "
           f"Bridges open: {len(br)}.")
     stray = sorted(f["path"] for f in files_of["unassigned"]
@@ -523,7 +527,7 @@ def unsafe_report(root: Path, want: str | None, doc: dict, plan: Plan, modules: 
             print()
             print("| File | Status | Crate | Unsafe | LZ lines | Rust lines | LZ sources |")
             print("|---|---|---|---:|---:|---:|---|")
-            order = {"bsd": 0, "hal": 1, "kernel": 2, "abi": 3, "boot": 4}
+            order = {"bsd": 0, "hal": 1, "kernel": 2, "abi": 3, "lib": 4, "boot": 5}
             for f in sorted(sel, key=lambda f: (order[f["crate"]], -f["unsafe"], f["path"])):
                 srcs = by_path.get(f["path"], {}).get("lz", [])
                 vals = [lz_len.get(p) for p in srcs]
@@ -557,7 +561,7 @@ def unsafe_report(root: Path, want: str | None, doc: dict, plan: Plan, modules: 
     print()
     print("Method: one source, `cargo xtask unsafe-report --json`; this script reads no Rust. "
           "A file's crate comes from its path (docs/ZERO_UNSAFE.md section 0): sys/hal/, "
-          "sys/kernel/, sys/abi/, the boot loaders (sys/stand/, sys/lib/libsa/, sys/arch/*/stand/, outside the "
+          "sys/kernel/, sys/abi/, lib (the leaf crates sys/lib/sysdefs/, libkern/, libz/, forbid), the boot loaders (sys/stand/, sys/lib/libsa/, sys/arch/*/stand/, outside the "
           "plan), and bsd for everything else under sys/ (the LZ tree, legacy). A file belongs "
           "to the N row whose scope cell names its path in backticks (a directory, a file or a "
           "glob), the most specific pattern winning; a row whose scope is prose resolves "

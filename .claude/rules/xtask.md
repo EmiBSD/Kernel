@@ -51,7 +51,8 @@ paths:
   roots, `mod.rs`, `build.rs`, `sys/machine/`, `sys/arch/host/` and `sys/stand/`),
   `forbid_modules`, `core_budget` (over the rows that hold core files, each row's budget
   minus its legacy)} (the v1 groups stay until N9, the pace baseline reads `legacy`); `crates` (additive,
-  `schema` stays 1) {`kernel`, `abi`, `hal`, `boot` (`sys/stand/`, `sys/lib/libsa/`,
+  `schema` stays 1) {`kernel`, `abi`, `hal`, `lib` (the leaf crates `sys/lib/sysdefs/`, `libkern/`, `libz/`;
+  `--check` holds it at 0 like `kernel` and `abi`, 2026-11-26), `boot` (`sys/stand/`, `sys/lib/libsa/`,
   `sys/arch/*/stand/`), `bsd` (every other file under `sys/`, and `init/`; it also carries
   `to_hal` {`files`, `unsafe`}, the hardware and the lists and trees that N2 moves into `hal`:
   still `bsd` until they move)}: each {`files`, `unsafe`}, kernel code, test code apart}; `ratchet` {`forbid_floor`, `legacy_ceiling`,

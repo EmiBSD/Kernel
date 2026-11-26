@@ -331,12 +331,15 @@ pub(crate) struct CrateCount {
 }
 
 /// The crates `unsafe-report` prints, in order (docs/ZERO_UNSAFE.md 0.4). A file that has not
-/// moved is in `bsd`, whatever its destination.
-pub(crate) const CRATE_NAMES: [&str; 5] = ["kernel", "abi", "hal", "bsd", "boot"];
+/// moved is in `bsd`, whatever its destination. `lib` is the kernel's leaf crates under
+/// `sys/lib/` (`sysdefs`, `libkern`, `libz`; decisions 54 and 55): `#![forbid(unsafe_code)]`,
+/// under every layer, not part of the LZ tree that N9 deletes.
+pub(crate) const CRATE_NAMES: [&str; 6] = ["kernel", "abi", "hal", "lib", "bsd", "boot"];
 
-/// The crate a file belongs to (`rel` relative to the root): `kernel`, `abi`, `hal`, `boot`
-/// (`sys/stand/`, `sys/lib/libsa/`, `sys/arch/*/stand/`), or `bsd` for every
-/// other file under `sys/` and `init/`; `None` for anything else.
+/// The crate a file belongs to (`rel` relative to the root): `kernel`, `abi`, `hal`, `lib`
+/// (`sys/lib/sysdefs/`, `sys/lib/libkern/`, `sys/lib/libz/`), `boot` (`sys/stand/`,
+/// `sys/lib/libsa/`, `sys/arch/*/stand/`), or `bsd` for every other file under `sys/` and
+/// `init/`; `None` for anything else.
 pub(crate) fn crate_of_file(rel: &str) -> Option<&'static str> {
     if rel.starts_with("init/") {
         // The binary that links the crates: part of the legacy `bsd` (STATUS counts it there).
@@ -349,6 +352,7 @@ pub(crate) fn crate_of_file(rel: &str) -> Option<&'static str> {
         ["kernel", ..] => "kernel",
         ["abi", ..] => "abi",
         ["hal", ..] => "hal",
+        ["lib", "sysdefs" | "libkern" | "libz", ..] => "lib",
         _ => "bsd",
     })
 }
@@ -377,7 +381,7 @@ pub(crate) fn is_crate_row(name: &str) -> bool {
     matches!(name, "kernel" | "abi" | "hal" | "lib/sysdefs")
 }
 
-/// What `--check` says of the crates: `kernel` and `abi` must be 0 (the compiler already
+/// What `--check` says of the crates: `kernel`, `abi` and `lib` must be 0 (the compiler already
 /// refuses it), `hal` at or under `hal_ceiling` when the key is there, and the `bsd` files
 /// outside the core at or under `legacy_ceiling`. The hardware that moves into `hal` is in
 /// `unsafe-core.toml`, so it is already outside that count; the 159 `unsafe` of the old runtime
@@ -389,7 +393,7 @@ pub(crate) fn crate_errors(
 ) -> Vec<String> {
     let n = |c: &str| crates.get(c).map_or(0, |x| x.unsafe_n);
     let mut out = Vec::new();
-    for c in ["kernel", "abi"] {
+    for c in ["kernel", "abi", "lib"] {
         if n(c) > 0 {
             out.push(format!(
                 "{c}: {} unsafe; the crate is #![forbid(unsafe_code)] and holds none",
@@ -416,7 +420,7 @@ pub(crate) fn crate_errors(
     out
 }
 
-/// `crates: kernel 0, abi 0, hal 0, bsd 10604 (1698 to move into hal), boot 621` without the
+/// `crates: kernel 0, abi 0, hal 0, lib 0, bsd 10604 (1698 to move into hal), boot 621` without the
 /// `crates: ` (the `unsafe` of each).
 pub(crate) fn crates_summary(
     crates: &BTreeMap<&'static str, CrateCount>,
@@ -2470,7 +2474,7 @@ mod tests {
         };
         assert_eq!(
             totals_line(&k, &Counts::default(), &g),
-            "Unsafe (`cargo xtask unsafe-report`): kernel 5 blocks, 4 fn, 3 impl, 2 trait, 1 other; tests 0 more; core 10, legacy 5, forbid 400 of 1165 modules; crates: kernel 0, abi 0, hal 0, bsd 0 (0 to move into hal), boot 0."
+            "Unsafe (`cargo xtask unsafe-report`): kernel 5 blocks, 4 fn, 3 impl, 2 trait, 1 other; tests 0 more; core 10, legacy 5, forbid 400 of 1165 modules; crates: kernel 0, abi 0, hal 0, lib 0, bsd 0 (0 to move into hal), boot 0."
         );
     }
 
@@ -2699,7 +2703,7 @@ mod tests {
              \"core_unsafe_files\": 1, \"legacy_unsafe\": 3, \"legacy_unsafe_files\": 3, \
              \"modules\": 5, \"forbid_modules\": 2, \"core_budget\": 8}},\n  \
              \"crates\": {{\"kernel\": {{\"files\": 0, \"unsafe\": 0}}, \"abi\": {{\"files\": 0, \"unsafe\": 0}}, \
-             \"hal\": {{\"files\": 0, \"unsafe\": 0}}, \"bsd\": {{\"files\": 8, \"unsafe\": 5, \"to_hal\": {{\"files\": 0, \"unsafe\": 0}}}}, \
+             \"hal\": {{\"files\": 0, \"unsafe\": 0}}, \"lib\": {{\"files\": 0, \"unsafe\": 0}}, \"bsd\": {{\"files\": 8, \"unsafe\": 5, \"to_hal\": {{\"files\": 0, \"unsafe\": 0}}}}, \
              \"boot\": {{\"files\": 0, \"unsafe\": 0}}}},\n  \
              \"ratchet\": {{\"forbid_floor\": 2, \"legacy_ceiling\": 3, \"legacy_baseline\": 9, \
              \"hal_ceiling\": null, \"baseline_date\": \"2026-10-10\"}},\n  \
@@ -2740,7 +2744,10 @@ mod tests {
             ("sys/kern/subr_tree.rs", Some("bsd")),
             ("sys/sys/errno.rs", Some("bsd")),
             ("sys/kern/kern_sig.rs", Some("bsd")),
-            ("sys/lib/libkern/lib.rs", Some("bsd")),
+            ("sys/lib/libkern/lib.rs", Some("lib")),
+            ("sys/lib/sysdefs/types.rs", Some("lib")),
+            ("sys/lib/libz/inflate.rs", Some("lib")),
+            ("sys/lib/libsa/staticcell.rs", Some("boot")),
             ("init/src/main.rs", Some("bsd")),
             ("tools/xtask/src/main.rs", None),
         ] {
@@ -2757,7 +2764,7 @@ mod tests {
         assert_eq!(m.groups.bsd_noncore, 3);
         assert_eq!(
             crates_summary(&m.groups.crates, m.groups.to_hal),
-            "kernel 0, abi 0, hal 0, bsd 5 (0 to move into hal), boot 0"
+            "kernel 0, abi 0, hal 0, lib 0, bsd 5 (0 to move into hal), boot 0"
         );
         for (rel, want) in [
             ("sys/arch/amd64/amd64/pmap.rs", true),
@@ -2819,6 +2826,15 @@ mod tests {
             },
         );
         assert_eq!(crate_errors(Some(&r), &abi, 0).len(), 1);
+        let mut lib = c(0, 0, 0);
+        lib.insert(
+            "lib",
+            CrateCount {
+                files: 1,
+                unsafe_n: 1,
+            },
+        );
+        assert_eq!(crate_errors(Some(&r), &lib, 0).len(), 1);
         // No ratchet or no hal_ceiling: only the compiler's two rules apply here.
         assert!(crate_errors(None, &c(0, 99, 99), 99).is_empty());
     }
