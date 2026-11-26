@@ -1317,8 +1317,11 @@ cd_steps := disk_login + " " + \
 # write, a rename, the removal of an open file (its silly rename gone at the close), then a
 # version 2 mount over UDP. N6.7b4 (D-15), the server's export list: a second export line,
 # `/export2` (an msdosfs on a vnd of the ramdisk's FAT image, a file system of its own, since
-# the options are per file system and address) `-ro -network 192.168.77.0 -mask
-# 255.255.255.0`, which showmount lists; B reads it and a write is refused (EROFS); then A
+# the options are per file system and address) `-ro -maproot=root -network 192.168.77.0
+# -mask 255.255.255.0`, which showmount lists; B reads it and a write is refused (EROFS: root
+# kept as root, so msdosfs's lookup grants the directory's write access and the export's
+# read-only flag answers, as the C's order does; squashed to nobody, the lookup's EACCES
+# comes first); then A
 # kills its nfsds (the last one out makes the server's tables again) and starts them again,
 # and B mounts and reads /export from the new ones. The markers are built with `$((..))`, so that the typed commands do not
 # match them; the commands are short, since a long line can overflow arm64's pluart input
@@ -1341,7 +1344,7 @@ nfs_a := "--a-send-after '# ' --a-send 'ifconfig vio1 inet 192.168.77.1/24 up\\n
     "--a-send-after '# ' --a-send 'mount_msdos /dev/vnd0c /export2 && echo nfs-fat-$((3+3))\\n' " + \
     "--a-send-after '# ' --a-send 'echo \"/export -maproot=root 192.168.77.2\" >/etc/exports\\n' " + \
     "--a-send-after '# ' --a-send 'n=\"-network 192.168.77.0 -mask 255.255.255.0\"\\n' " + \
-    "--a-send-after '# ' --a-send 'echo \"/export2 -ro $n\" >>/etc/exports\\n' " + \
+    "--a-send-after '# ' --a-send 'echo \"/export2 -ro -maproot=root $n\" >>/etc/exports\\n' " + \
     "--a-send-after '# ' --a-send 'portmap; sleep 1; mountd; nfsd -tu -n 4\\n' " + \
     "--a-send-after '# ' --a-send 'sleep 1; echo nfs-up-$((2+3))\\n' " + \
     "--a-send-after '# ' --a-send 'cd /export; until [ -f b-tcp.txt ]; do sleep 1; done\\n' " + \
