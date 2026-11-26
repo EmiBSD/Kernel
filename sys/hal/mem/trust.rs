@@ -175,7 +175,8 @@
 //! The bootloader's device tree (`hal::mem::fdtblob`, N7.2b0) is an eighth, the machine's boot's
 //! word, as `PhysPages::steal`'s frames are the provider's: the first pointer given to
 //! `fdtblob::probe` is the device tree the bootloader handed over, with the provenance the boot
-//! made it with, its 40-byte header mapped there when `probe` is called and all its `fh_size`
+//! made it with, which allows writes (made from an address, or from a `&mut`/`*mut` of the
+//! memory, never from a `&[u8]`: `with_boot_mut` writes through it), its 40-byte header mapped there when `probe` is called and all its `fh_size`
 //! bytes when `fdtblob::with_boot_mut` or `fdtblob::adopt` is, for the kernel's whole run (the
 //! direct map, never torn down, or `stand`'s `FDT_COPY` static in the kernel image, whose one
 //! `&mut`, `stand`'s `get_mut` in `_start`, ends before the boot names the tree), and none of

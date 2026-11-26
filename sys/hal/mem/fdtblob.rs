@@ -185,7 +185,15 @@ impl Blob {
         if p.is_null() {
             return None;
         }
-        if self.state.swap(ADOPTED, Ordering::AcqRel) == LENT {
+        // LENT is never overwritten: a refused adopt leaves the state as it found it, so a
+        // later one (after an unwinding test, or from another CPU) is refused too.
+        if self
+            .state
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |s| {
+                (s != LENT).then_some(ADOPTED)
+            })
+            .is_err()
+        {
             hal_panic(format_args!(
                 "fdtblob: adopt inside the boot's mutable view"
             ));
@@ -242,11 +250,11 @@ fn bytes(p: *const u8, len: usize) -> &'static [u8] {
     // before the boot named the tree). The only write after the boot named them is the one
     // mutable view of `with_bytes_mut`, and `Blob`'s state keeps the two apart: no shared view
     // lives while the mutable one does (`probe` and `adopt` panic while the state is `LENT`,
-    // and the header reads of `probe` and `with_boot_mut` are dropped before the mutable view
-    // is made), and once `adopt` has run no mutable view is made again (`ADOPTED`). Checked here: `p`
-    // is not null, the range does not wrap and is at most `isize::MAX` bytes; `u8` has no
-    // alignment and no invalid value. So the slice aliases no live `&mut` and reads only
-    // initialised bytes that live for the run.
+    // and `adopt`'s refusal leaves it `LENT`; the header reads of `probe` and `with_boot_mut`
+    // are dropped before the mutable view is made), and once `adopt` has run no mutable view
+    // is made again (`ADOPTED`). Checked here: `p` is not null, the range does not wrap and
+    // is at most `isize::MAX` bytes; `u8` has no alignment and no invalid value. So the slice
+    // aliases no live `&mut` and reads only initialised bytes that live for the run.
     unsafe { core::slice::from_raw_parts(p, len) }
 }
 
@@ -272,7 +280,8 @@ fn with_bytes_mut<R>(p: *mut u8, len: usize, f: impl FnOnce(&mut [u8]) -> R) -> 
 /// The device tree at `p`, as the machine's boot names it with only its header mapped: its
 /// size (the header's `fh_size`) when the magic is FDT's, 0 otherwise or when `p` is null.
 /// The first pointer recorded is the kernel's tree: another one later, or a first one after
-/// [`seal`], is `panic(9)`. The pointer keeps the provenance the boot made it with.
+/// [`seal`], is `panic(9)`. The pointer keeps the provenance the boot made it with, which
+/// must allow writes (never one made from a `&[u8]`): [`with_boot_mut`] writes through it.
 pub fn probe(p: *const u8) -> usize {
     BLOB.probe(p)
 }
@@ -415,6 +424,28 @@ mod tests {
         let b = Blob::new();
         let _ = b.probe(leaked(FDT_MAGIC, 48));
         let _ = b.with_boot_mut(|_| b.adopt().map(<[u8]>::len));
+    }
+
+    #[test]
+    fn an_adopt_refused_inside_the_view_stays_refused() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+        let b = Blob::new();
+        let _ = b.probe(leaked(FDT_MAGIC, 48));
+        let _ = b.with_boot_mut(|_| {
+            let first = catch_unwind(AssertUnwindSafe(|| b.adopt().map(<[u8]>::len)));
+            assert!(first.is_err(), "the first adopt is refused");
+            let second = catch_unwind(AssertUnwindSafe(|| b.adopt().map(<[u8]>::len)));
+            assert!(
+                second.is_err(),
+                "and so is the second: LENT was not overwritten"
+            );
+            assert_eq!(b.state.load(Ordering::Acquire), LENT);
+        });
+        assert_eq!(
+            b.adopt().map(<[u8]>::len),
+            Some(48),
+            "after the view, as usual"
+        );
     }
 
     #[test]
