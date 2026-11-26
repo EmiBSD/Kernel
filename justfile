@@ -648,8 +648,8 @@ smoke-wg: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
 # M9a: OpenBSD's ifconfig(8) and ping(8) from the ramdisk, multi-user, logged in as root
 # (`smoke-login`'s sends). vio0's address (10.0.2.15/24) and the default route through QEMU's
 # gateway come from the kernel's boot self-test (`selftest: ping`), so no /etc/hostname.vio0
-# is needed. N6.8: then netstat(1), from Userland's published set (tools/xtask/
-# userland-set.toml; the user's request of 2026-11-25), after lo0 gets 127.0.0.1/8 (as
+# is needed. N6.8: then netstat(1) (built by `just userland` since N6.8, the user's request
+# of 2026-11-25 and his choice of 2026-11-26), after lo0 gets 127.0.0.1/8 (as
 # netstart(8) gives it; the ramdisk's rc does not) and nc(1) listens on TCP port 7777:
 # `netstat -rn` (sysctl NET_RT_DUMP: the default route, vio0's network, the loopback hosts of
 # both families; no 127/8 network route, which OpenBSD's in_ifinit adds for no loopback),
