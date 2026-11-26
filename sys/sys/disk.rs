@@ -80,6 +80,9 @@
 //! - A pseudo-device's disk whose `struct device` its driver made by hand (vnd(4): no
 //!   `cfdata`, no node in the kernel's tree) attaches without a `dk_device`
 //!   (`disk_attach_unit`): its block device comes from its name and unit, as the C's.
+//! - `disk_busy` and `disk_unbusy` on an empty slot do nothing: a transfer that finishes
+//!   after its driver's detach destroyed the slot (wd's, N10) has no statistics left to
+//!   count, where the C's `struct disk` outlives the detach in the softc.
 //! - A slot read before `construct` (or after `destroy`) is `panic(9)` where the C reads the
 //!   zeroed `struct disk`: no driver of the tree does (each constructs in its attach).
 //!
@@ -251,12 +254,16 @@ pub fn disk_closepart(sc_dk: &DiskSlot, part: u32, fmt: i32) {
 
 /// `disk_busy(&sc->sc_dk)`.
 pub fn disk_busy(sc_dk: &DiskSlot) {
-    sc_dk.with(kernel::dev::disk::disk_busy);
+    if let Some(dk) = &*sc_dk.0.read() {
+        kernel::dev::disk::disk_busy(dk);
+    }
 }
 
 /// `disk_unbusy(&sc->sc_dk, bcount, blkno, read)`.
 pub fn disk_unbusy(sc_dk: &DiskSlot, bcount: i64, blkno: crate::sys::types::Daddr, read: bool) {
-    sc_dk.with(|dk| kernel::dev::disk::disk_unbusy(dk, bcount, blkno, read));
+    if let Some(dk) = &*sc_dk.0.read() {
+        kernel::dev::disk::disk_unbusy(dk, bcount, blkno, read);
+    }
 }
 
 /// `disk_lookup(cd, unit)`: the unit's device, referenced (`device_lookup`; the caller gives

@@ -14524,7 +14524,7 @@ notes = "N3.4c: the NetLock bridge (NET_LOCK, NET_UNLOCK, rw_status(&netlock) of
 [[module.fn]]
 lz = "sys/sys/systm.rs::MountrootFn"
 native = ["sys/kernel/dev/disk.rs::Mountroot"]
-kind = "moved"
+kind = "renamed"
 
 [[module]]
 rust = "sys/hal/sync/rwlock.rs"
@@ -20739,6 +20739,10 @@ lz = "sys/conf/swapgeneric.rs::MOUNTROOT"
 native = ["MOUNTROOT", "mountroot_set", "mountroot_get", "Mountroot"]
 kind = "split"
 
+[[module.fn]]
+lz = "sys/kern/subr_disk.rs::disk_lookup"
+native = ["sys/sys/disk.rs::disk_lookup", "Disk::is_attached"]
+kind = "split"
 
 [[module]]
 rust = "sys/kernel/dev/disksubr.rs"

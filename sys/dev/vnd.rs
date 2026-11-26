@@ -575,8 +575,12 @@ pub fn vndbdevsize(vp: &'static Vnode, p: &Proc) -> usize {
         return 0;
     }
     // SAFETY: `DIOCGPART` answered with `Disk::partition_ptr`: a `Partition` inside the
-    // disk's in-core label, the relaxed `AtomicU64` words of its `Disk` block, which lives
-    // while the device is attached (its softc's slot holds it; the vnode is open). The words
+    // disk's in-core label, the relaxed `AtomicU64` words of its `Disk` block. The block is
+    // alive for this read: nothing sleeps between the driver's `partition_ptr` in its ioctl
+    // and this read (`device_unref` does not sleep), and a detach (which frees the block
+    // through the slot's `destroy`) runs under the kernel lock, which this thread holds,
+    // after it sets the driver's dying flag (sd's `SDF_DYING`), so a `DIOCGPART` racing it
+    // answers `ENXIO` and this read is not reached. The words
     // are 8-aligned and the partition sits at 148 + 16 * n bytes, so the pointer is aligned
     // for `Partition` (4); every bit pattern is a valid `Partition` (integers). Every store
     // to the words is made by a holder of the kernel lock (`words_write_bytes`, asserted

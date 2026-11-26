@@ -132,7 +132,7 @@
 
 /* <CODE> */
 //! The disk layer: `struct disk` and the list of attached disks (`disk_attach`,
-//! `disk_detach`, `disk_lookup`, `disk_openpart`, the statistics of `disk_busy` and
+//! `disk_detach`, `disk_openpart`, the statistics of `disk_busy` and
 //! `disk_unbusy`), the label code (`dkcksum`, `initdisklabel`, `checkdisklabel`,
 //! `readdoslabel` and its GPT, MBR and FAT spoofs, `setdisklabel`), the transfer bounds
 //! (`bounds_check_with_label`), `diskerr`, `disk_readlabel`, `disk_map` (the DUID lookup of
@@ -2158,25 +2158,6 @@ pub fn disk_map(path: &[u8], mappath: &mut [u8], flags: i32) -> bool {
     }
 
     true
-}
-
-/// Lookup a disk device and verify that it has completed attaching: `Some` of the unit's
-/// device (the C's `device_lookup` reference: the handle) when an attached disk is it.
-pub fn disk_lookup(units: &crate::dev::device::UnitTable, unit: i32) -> Option<DevRef> {
-    let dv = crate::dev::autoconf::device_lookup(units, unit)?;
-    disk_of_device(&dv).map(|_| dv)
-}
-
-/// The attached disk whose device is `dv` (`TAILQ_FOREACH` matching `dk_device`).
-pub fn disk_of_device(dv: &Device) -> Option<DiskRef> {
-    let mut d = disk_next(None);
-    while let Some(dk) = d {
-        if dk.is_device(dv) {
-            return Some(dk);
-        }
-        d = disk_next(Some(&dk));
-    }
-    None
 }
 
 /// `duid_equal`.
