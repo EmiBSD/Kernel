@@ -4422,7 +4422,7 @@ status = "inherited"
 rust = "sys/dev/rd.rs"
 lz = ["sys/dev/rd.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
+adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/dev/autoconf.rs"]
 
 [[module]]
 rust = "sys/dev/rnd.rs"
@@ -5599,13 +5599,15 @@ kind = "renamed"
 [[module]]
 rust = "sys/kern/subr_autoconf.rs"
 lz = ["sys/kern/subr_autoconf.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/dev/autoconf.rs", "sys/kernel/dev/device.rs"]
+notes = "N7.1a: the shim over kernel::dev::autoconf, every LZ name and signature kept for bsd's drivers (U4) and no logic of its own: impl ConfigRow and DriverOps for Cfdata (the DriverOps bridge), BsdConfigGlue (the ConfigGlue bridge, cfdata[] lent once per walk), LegacySoftc holding the node's dv_ref, node_of (a shadow node for a device made by hand), the cd_devs/cd_ndevs mirror kept by the kernel's hooks, device_hold for parsedisk, and the re-exports of AUTOCONF_SERIAL/CONFIG_PENDING/AUTOCONF_VERBOSE; docs/SCAFFOLDING.md; goes with the last legacy driver (N7.14)"
 
 [[module]]
 rust = "sys/kern/subr_disk.rs"
 lz = ["sys/kern/subr_disk.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs", "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs", "sys/kernel/fs/isofs/udf/udf_subr.rs", "sys/kernel/fs/nfs/nfs_vfsops.rs", "sys/kernel/fs/nfs/nfs_boot.rs"]
+adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs", "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs", "sys/kernel/fs/isofs/udf/udf_subr.rs", "sys/kernel/fs/nfs/nfs_vfsops.rs", "sys/kernel/fs/nfs/nfs_boot.rs", "sys/kernel/dev/autoconf.rs"]
 
 [[module]]
 rust = "sys/kern/subr_evcount.rs"
@@ -8073,7 +8075,9 @@ status = "inherited"
 [[module]]
 rust = "sys/sys/device.rs"
 lz = ["sys/sys/device.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/dev/device.rs", "sys/kernel/dev/autoconf.rs"]
+notes = "N7.1a: the legacy driver interface over kernel::dev::device: the constants and Devclass re-exported from the kernel, the legacy header written once from its node (dv_list and the alldevs types gone), Cfdriver::cd_units the kernel's unit table with cd_devs/cd_ndevs its mirror"
 
 [[module]]
 rust = "sys/hal/sys/dirent.rs"
@@ -14023,7 +14027,7 @@ rust = "sys/hal/pinlist.rs"
 crate = "hal"
 lz = ["sys/sys/queue.rs", "sys/kern/kern_timeout.rs"]
 status = "redesigned"
-notes = "N4.1 P1: PinList<A> (queue.h's TAILQ, the ends in a movable head) and PinRing<A> (kern_timeout.c's CIRCQ with a sentinel head, CIRCQ_REMOVE naming no list, O(1) CIRCQ_CONCAT) over pinned elements whose owners free them: linked through Pin<&T>, PinEntry's drop panics while linked, the lists bound to one lock's identity (checked once per operation) so a splice retags nothing; pin_adapter! refuses an Unpin element; timeout(9)'s wheel and task(9)'s queues; sys/sys/queue.rs stays for the legacy tree and the circq items move here with kern_timeout.rs's rows; N5.7c2: pin_adapter!'s generic form (impl[..] Name<..>: Elem<..>, field), the adapter of a glue-generic element declared where the element is, its Unpin refusal in a function generic over the same parameters; N6.5b: PinList::move_last_to_head (TAILQ_LAST, TAILQ_REMOVE, TAILQ_INSERT_HEAD of nd6_rtrequest's forced garbage collection, O(1), naming no element so its caller reads the moved element afterwards through first)"
+notes = "N4.1 P1: PinList<A> (queue.h's TAILQ, the ends in a movable head) and PinRing<A> (kern_timeout.c's CIRCQ with a sentinel head, CIRCQ_REMOVE naming no list, O(1) CIRCQ_CONCAT) over pinned elements whose owners free them: linked through Pin<&T>, PinEntry's drop panics while linked, the lists bound to one lock's identity (checked once per operation) so a splice retags nothing; pin_adapter! refuses an Unpin element; timeout(9)'s wheel and task(9)'s queues; sys/sys/queue.rs stays for the legacy tree and the circq items move here with kern_timeout.rs's rows; N5.7c2: pin_adapter!'s generic form (impl[..] Name<..>: Elem<..>, field), the adapter of a glue-generic element declared where the element is, its Unpin refusal in a function generic over the same parameters; N6.5b: PinList::move_last_to_head (TAILQ_LAST, TAILQ_REMOVE, TAILQ_INSERT_HEAD of nd6_rtrequest's forced garbage collection, O(1), naming no element so its caller reads the moved element afterwards through first); N7.1a: PinList::prev (TAILQ_PREV of config_detach_children and the refused suspend's resume walk, O(1), the mirror of next)"
 
 [[module.fn]]
 lz = "sys/kern/kern_timeout.rs::circq_init"
@@ -20629,3 +20633,68 @@ lz = "sys/uvm/uvm_vnode.rs::_"
 native = []
 kind = "dropped"
 reason = "the offset assertion of UvmVnode's #[repr(C)] first member: no cast, no layout to check"
+
+[[module]]
+rust = "sys/kernel/dev/device.rs"
+crate = "kernel"
+lz = ["sys/sys/device.rs"]
+status = "redesigned"
+notes = "N7.1a: struct device as the kernel's counted node (DevRef = MArc<Device>), written once when made, dv_flags an atomic, linked on alldevs and the deferred queues through PinEntrys keyed to the tree's lock; the driver's softc an erased handle (AnyArc) only the driver names; cd_devs/cd_ndevs a UnitTable (an MArray of handles in a Guarded keyed to TREE, grown as the C's array); void *aux -> Aux, the void *match of cfmatch_t -> Match (owned: an indirect bus's losing softc is dropped); struct cfattach+cfdriver -> trait DriverOps, struct cfdata -> trait ConfigRow; the constants and Devclass moved here and re-exported by bsd's sys/sys/device.rs, which keeps the legacy header, Cfdata/Cfattach/Cfdriver and the suspend/firmware prototypes"
+
+[[module.fn]]
+lz = "sys/sys/device.rs::Devicelist"
+native = ["sys/kernel/dev/autoconf.rs::ALLDEVS", "Device"]
+kind = "merged"
+
+[[module]]
+rust = "sys/kernel/dev/autoconf.rs"
+crate = "kernel"
+lz = ["sys/kern/subr_autoconf.rs"]
+status = "redesigned"
+notes = "N7.1a: autoconfiguration in the kernel crate: config_search/scan/rootsearch/found_sm/rootfound/attach/make_softc/detach/deactivate/defer/mountroot, the deferred queues, config_pending, config_detach_children, config_suspend[_all], config_activate_children, device_lookup, device_mainbus over DevRef nodes; alldevs and the two deferred queues hal::pinlist::PinLists under TREE (a Mutexed<()> at IPL_NONE, never held across a driver's function), autoconf_attdet a Mutexed<i32> at IPL_HIGH slept on with sleep_nsec; a walk carries the next node's handle (unit table or the node's parked slot), the deferred record is the node's slot (no malloc); the machine's table, device_register, boothowto and rootvp through the ConfigGlue bridge; config_mountroot asks root_mounted (LZ's rootvp stub went); config_attach_by_hand for rdattach; hotplug and NMPATH gaps kept"
+
+[[module.fn]]
+lz = "sys/kern/subr_autoconf.rs::DeferredConfig"
+native = ["sys/kernel/dev/device.rs::Deferred", "sys/kernel/dev/device.rs::Device"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/subr_autoconf.rs::DeferredConfigQueue"
+native = ["DEFERRED_CONFIG_QUEUE"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/subr_autoconf.rs::AUTOCONF_ATTDET_MTX"
+native = ["ATTDET"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/subr_autoconf.rs::AUTOCONF_ATTDET"
+native = ["ATTDET"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/subr_autoconf.rs::xname"
+native = ["sys/kernel/dev/device.rs::Device::xname_bytes"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/subr_autoconf.rs::free_match"
+native = []
+kind = "dropped"
+reason = "a losing match is dropped: Match::Softc owns the indirect softc's node, so mapply's replacement of the best match (or the loser going out of scope) gives the softc back"
+
+[[module.fn]]
+lz = "sys/kern/subr_autoconf.rs::parent_matches"
+native = ["parent_hits"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/subr_autoconf.rs::set_cd_dev"
+native = ["sys/kernel/dev/device.rs::UnitTable::set"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/subr_autoconf.rs::rootvp"
+native = ["sys/kern/subr_autoconf.rs::BsdConfigGlue::root_mounted"]
+kind = "moved"

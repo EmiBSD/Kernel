@@ -564,6 +564,7 @@ adds an operation the C's switch lacks.
 | `mextfree_fns[]` (the external storage free functions `MEXTADD` names by index) | `kern/uipc_mbuf.c` | `ExtFree`, deferred to N7 with its first driver | N6.1 | not a trait: no user at the pin (only the mbuf files register one); a cluster's and a shared cluster's frees are `ClusterBox`'s and `ExtRefs`'s drops (D-N6.1-2) |
 | the `pf_mbuf_*` hooks of `uipc_mbuf.c` (`NPF > 0`) | `net/pfvar.h` | `Pf` (`kernel::net::pf_hooks`), a bridge row paid by N8 | N6.1 | done: the four mbuf legs; N6.3c adds the stack's |
 | `if_output`/`if_ll_output` of `struct ifnet` | `net/if_var.h:212` | `LinkLayer` (the driver side is decision 45's `NetDevice`) | N6.1 | to name |
+| `struct cfattach` with its `struct cfdriver`, `struct cfdata` | `sys/device.h` | `DriverOps`, `ConfigRow` (`kernel::dev::device`), the attach protocol `kern/subr_autoconf.c` calls; `bsd`'s drivers through one implementation over `Cfdata` (`bridges.toml`) | N7.1a | done; `Driver` and `Bus` over it at N7.6 |
 | `struct cfattach`, `cdevsw`/`bdevsw`, the driver side of `ifnet` | `sys/device.h`, `sys/conf.h` | `Driver`, `Bus`, `NetDevice`, `BlockDevice`, `CharDevice`, `Console` | N7.2 | decision 45 |
 | `wsdisplay_accessops`, `wsdisplay_emulops`, `wskbd_accessops`, `wsmouse_accessops` | `dev/wscons/*var.h` | `WsDisplay`, `WsEmul`, `WsKbd`, `WsMouse` | N7.3 | to name |
 | `struct audio_hw_if` | `dev/audio_if.h` | `AudioHw` | N7.7 | to name |

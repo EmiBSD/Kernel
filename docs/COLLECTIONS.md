@@ -46,6 +46,7 @@ one poison load and one identity compare. None of them walks to check.
 | `is_empty(w)` | `TAILQ_EMPTY` | O(1) |
 | `first(w)`, `last(w)`, `first_pinned(w)` | `TAILQ_FIRST`, `TAILQ_LAST` | O(1) |
 | `next(w, e)` | `TAILQ_NEXT` | O(1) |
+| `prev(w, e)` | `TAILQ_PREV` (`config_detach_children`, a refused suspend's resume walk) | O(1) |
 | `iter(w)`, `iter_pinned(w)` | `TAILQ_FOREACH` | O(1) a step, O(n) the walk |
 | `insert_head`, `insert_tail` | `TAILQ_INSERT_HEAD`, `TAILQ_INSERT_TAIL` | O(1) |
 | `insert_after(w, after, e)` | `TAILQ_INSERT_AFTER` | O(1) |

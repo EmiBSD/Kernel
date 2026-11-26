@@ -423,3 +423,6 @@ metadata:
 - Rust 1.99 deprecates `AtomicUsize::fetch_update` (renamed `try_update`, same arguments): the tree spells `try_update` (N7.0).
 - A generic `const fn` with `assert!` (`hal::mmio::Reg::new` against `R::SIZE`) is evaluated at compile time in a `const` item on 1.99: prove such a claim with `compile_fail` doctests beside a passing one of the same shape (`cargo test -p hal --doc mmio`) (N7.0).
 - The worktree guard refuses a Bash call that `cd`s into the scratchpad or runs a heredoc script from there: edit scratch files with Edit/Write and run every command from the worktree root (N7.0).
+- lz check's `[[module.fn]]` targets must be parsed items: a struct field (`Device::all`) or a `hal::pin_adapter!`-made type (`AllLink`) is refused as "not found"; name the owning struct (N7.1a).
+- The worktree guard refuses a Bash call that chains a heredoc (python or `cat >>`) with other commands, or several `sed -e` with `\n`-continued replacements: run the heredoc alone, or edit with the Edit tool (N7.1a).
+- `cargo xtask lz trace` takes `<lz path>:<item>` with ONE colon; `path::item` answers "not found" (N7.1a).
