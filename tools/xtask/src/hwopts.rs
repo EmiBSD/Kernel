@@ -845,7 +845,7 @@ fn ahci_args(arch: Arch, image: &Path) -> Vec<String> {
 }
 
 /// The bytes of a DUID written as 16 hexadecimal digits.
-fn parse_duid(hex: &str) -> Result<[u8; 8]> {
+pub(crate) fn parse_duid(hex: &str) -> Result<[u8; 8]> {
     let bad = || format!("--duid {hex}: expected 16 hexadecimal digits");
     if hex.len() != 16 || !hex.is_ascii() {
         return Err(bad().into());

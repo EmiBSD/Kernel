@@ -17,7 +17,7 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! M14: OpenBSD's efiboot as the boot loader (`sys/boot/amd64`).
+//! M14: OpenBSD's efiboot as the boot loader (`sys/boot/amd64`, `sys/boot/arm64`).
 //!
 //! - `cargo xtask efiboot --arch amd64 --elf FILE [--out FILE]`: the PE32+ image
 //!   `BOOTX64.EFI` of the efiboot ELF that `just efiboot-amd64` linked (position-independent,
@@ -26,29 +26,45 @@
 //!   objcopy's `efi-app-x86_64` target, which llvm-objcopy does not have). The default output
 //!   is `target/efiboot/<arch>/BOOTX64.EFI`. llvm-objcopy is `$EMIBSD_LLVM_BIN`'s (DevTools'
 //!   LLVM, which the justfile names), else the Rust toolchain's own when it has one.
-//! - `cargo xtask efiboot-disk --arch amd64 --efi FILE --kernel FILE`: the boot image of
-//!   `smoke-efiboot`, written where `smoke` without `--kernel` boots from (the run
-//!   directory's `emibsd-<arch>.img`), laid out as OpenBSD installs a disk that boots with
-//!   efiboot: an MBR whose first partition is the OpenBSD one (`DOSPTYP_OPENBSD`, from sector
-//!   64; the disklabel in its sector 1, partition `a` the FFS holding `/bsd`,
-//!   `/etc/boot.conf` and `/etc/random.seed`, `c` the whole disk) and whose second is the
-//!   EFI system partition (FAT, `EFI/BOOT/BOOTX64.EFI`). The FFS is made by OpenBSD's makefs,
-//!   the host build `cargo xtask userland` leaves (`userland/ramdisk.rs`); the label and the
-//!   MBR come from `hwopts.rs`, as `nvme-root`'s.
-//! - `... efiboot-disk ... --root-dev DEV` (M14 track A2): partition `a` is a whole root, the
-//!   tree `just userland` stages for the ramdisk (`target/userland/<arch>/ramdisk-root`, with
-//!   its ownership table `host/owners.txt`) plus the three files above, its `/etc/fstab`
-//!   naming `/dev/DEV` as `/` (diskmap(4) is not ported: the kernel's name for the disk,
-//!   `sd1a` on amd64 q35, where the boot image is on the AHCI port after the virtio disk).
-//!   boot(8) passes the label's DUID (`BOOTARG_BOOTDUID`), by which the kernel finds its root.
+//! - The efiboot image ([`image`], the one builder; the removal of Limine, 2026-11-26): a disk
+//!   laid out as OpenBSD installs one that boots with efiboot: an MBR whose first partition is
+//!   the OpenBSD one (`DOSPTYP_OPENBSD`, from sector 64; the disklabel in its sector 1, with
+//!   the image's DUID, partition `a` an FFS, `c` the whole disk) and whose second is the EFI
+//!   system partition (FAT, `EFI/BOOT/BOOT{X64,AA64}.EFI`). The FFS is made by OpenBSD's
+//!   makefs, the host build `cargo xtask userland` leaves (`userland/ramdisk.rs`); the label
+//!   and the MBR come from `hwopts.rs`, as `nvme-root`'s. Partition `a` always holds `/bsd`
+//!   (stripped of its debug sections with `--strip-debug`, as OpenBSD installs `bsd` and keeps
+//!   `bsd.gdb`; `.symtab` stays, so ddb names symbols), `/etc/boot.conf` and
+//!   `/etc/random.seed`; [`Root`] says what else: nothing (install media), `/sbin/init` (the
+//!   freestanding stand-in of `init/`, which the kernel's own `initpaths` loop execs), or a
+//!   whole staged tree (`target/userland/<arch>/ramdisk-root` by default, with its ownership
+//!   table `host/owners.txt`), whose fstab root line names the label's DUID
+//!   (`454649424f4f5430.a / ffs rw 1 1`, as the installer writes it; diskmap(4) resolves it),
+//!   or `/dev/<dev>` for the older `efiboot-disk --root-dev`. boot(8) passes the label's DUID
+//!   (`BOOTARG_BOOTDUID`, arm64's `openbsd,bootduid`), by which the kernel finds its root.
+//! - `cargo xtask efiboot-image --arch A --kernel K --root bare|init[=FILE]|tree[=DIR]
+//!   [--owners FILE] [--duid HEX16] [--efi FILE] [--strip-debug] (--shared | --out FILE)`:
+//!   one such image. `--shared` writes one of the two images every recipe may boot
+//!   ([`Shared`], `target/efiboot/<arch>/emibsd-{tree,init}.img`, made by `just
+//!   efiboot-images-arm64`); a VM attaches it with `snapshot=on`, so it is never written and
+//!   is as fresh at each QEMU start as a ramdisk. `--out FILE` is a per-run image in the run
+//!   directory (`EMIBSD_RUN_DIR`). The file is written whole under a temporary name and
+//!   renamed, so a reader never sees half an image.
+//! - `cargo xtask efiboot-disk --arch A --efi FILE --kernel FILE [--root-dev DEV]`: the
+//!   image of `smoke-efiboot`, `smoke-acpi` and the installer's media (`install.rs`), where
+//!   `smoke` without `--kernel` boots from (the run directory's `emibsd-<arch>.img`): a bare
+//!   root, or with `--root-dev` the staged tree with its fstab root `/dev/DEV`. It is
+//!   [`image`] with those arguments.
 
 use std::fs;
 use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Instant;
 
 use crate::Result;
 use crate::boot::{self, Arch};
+use crate::{flag, optional_flag};
 
 /// The bytes of a sector.
 const SECTOR: u64 = 512;
@@ -58,8 +74,8 @@ const OPENBSD_START: u64 = 64;
 const ALIGN: u64 = 2048;
 /// The EFI system partition's size: 8 MiB.
 const ESP_SECTORS: u64 = 16384;
-/// The DUID of the efiboot disk's label (`EFIBOOT0` in ASCII).
-const DUID: [u8; 8] = *b"EFIBOOT0";
+/// The DUID of the efiboot images' label (`EFIBOOT0` in ASCII, `454649424f4f5430`).
+pub(crate) const DUID: [u8; 8] = *b"EFIBOOT0";
 
 /// `boot.conf` on the disk: efiboot runs it before its prompt. It sets no `boot` command,
 /// so the prompt comes, and turns the prompt's timeout off so that the smoke types at it.
@@ -161,6 +177,138 @@ fn check_pe(image: &[u8]) -> std::result::Result<(), String> {
     Ok(())
 }
 
+/// What partition `a` holds besides `/bsd`, `/etc/boot.conf` and `/etc/random.seed`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Root {
+    /// Nothing else: the installer's media (`/bsd` is then bsd.rd).
+    Bare,
+    /// `/sbin/init`: this file (the freestanding stand-in of `init/`).
+    Init(PathBuf),
+    /// A whole root: the staged tree `dir`, with its ownership table `owners` (the makefs
+    /// shim's `mode uid gid path` lines).
+    Tree { dir: PathBuf, owners: PathBuf },
+}
+
+/// One efiboot image ([`image`]).
+#[derive(Clone, Debug)]
+pub(crate) struct ImageSpec<'a> {
+    pub arch: Arch,
+    /// efiboot's PE image (`target/efiboot/<arch>/BOOT*.EFI`).
+    pub efi: &'a Path,
+    /// The kernel, copied to `/bsd`.
+    pub kernel: &'a Path,
+    pub root: Root,
+    /// The label's DUID, which efiboot passes and the kernel finds its root by.
+    pub duid: [u8; 8],
+    /// With [`Root::Tree`]: `/dev/<dev>` as the fstab root (`efiboot-disk --root-dev`)
+    /// instead of the DUID.
+    pub fstab_dev: Option<&'a str>,
+    /// `/bsd` without its `.debug_*` sections (`llvm-objcopy --strip-debug`).
+    pub strip_debug: bool,
+}
+
+/// The two images every recipe may boot ([`shared_path`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Shared {
+    /// [`Root::Tree`] of the default staged tree.
+    Tree,
+    /// [`Root::Init`] of the default stand-in.
+    Init,
+}
+
+impl Shared {
+    /// The name `--image` and `--root` take.
+    pub(crate) fn parse(name: &str) -> Result<Shared> {
+        match name {
+            "tree" => Ok(Shared::Tree),
+            "init" => Ok(Shared::Init),
+            other => Err(format!("`{other}`: the shared images are `tree` and `init`").into()),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Shared::Tree => "tree",
+            Shared::Init => "init",
+        }
+    }
+}
+
+/// `target/efiboot/<arch>/emibsd-{tree,init}.img`: a shared image, made by `just
+/// efiboot-images-<arch>` and booted read-only (`snapshot=on`) by any number of VMs.
+pub(crate) fn shared_path(root: &Path, arch: Arch, which: Shared) -> PathBuf {
+    root.join(format!(
+        "target/efiboot/{}/emibsd-{}.img",
+        arch.name(),
+        which.name()
+    ))
+}
+
+/// efiboot's PE image as `just efiboot-<arch>` leaves it.
+pub(crate) fn default_efi(root: &Path, arch: Arch) -> PathBuf {
+    root.join(format!("target/efiboot/{}/{}", arch.name(), efi_name(arch)))
+}
+
+/// The tree `just userland` stages, with its ownership table.
+fn default_tree(root: &Path, arch: Arch) -> Root {
+    Root::Tree {
+        dir: root.join(format!("target/userland/{}/ramdisk-root", arch.name())),
+        owners: root.join(format!("target/userland/{}/host/owners.txt", arch.name())),
+    }
+}
+
+/// The stand-in `just build-init-<arch>` leaves.
+fn default_init(root: &Path, arch: Arch) -> Result<Root> {
+    boot::default_init(root, arch)
+        .map(Root::Init)
+        .ok_or_else(|| {
+            format!(
+                "no init stand-in in target/{}/debug/init: run `just build-init-{}` first",
+                arch.target(),
+                arch.name()
+            )
+            .into()
+        })
+}
+
+/// `--root bare|init[=FILE]|tree[=DIR]` (with `--owners FILE` for a tree of its own).
+pub(crate) fn parse_root(
+    root: &Path,
+    arch: Arch,
+    spec: &str,
+    owners: Option<&str>,
+) -> Result<Root> {
+    let (name, path) = match spec.split_once('=') {
+        Some((n, p)) if !p.is_empty() => (n, Some(PathBuf::from(p))),
+        Some(_) => return Err(format!("--root {spec}: a path after `=`").into()),
+        None => (spec, None),
+    };
+    if owners.is_some() && !(name == "tree" && path.is_some()) {
+        return Err("--owners FILE goes with --root tree=DIR".into());
+    }
+    match (name, path) {
+        ("bare", None) => Ok(Root::Bare),
+        ("init", None) => default_init(root, arch),
+        ("init", Some(file)) => Ok(Root::Init(file)),
+        ("tree", None) => Ok(default_tree(root, arch)),
+        ("tree", Some(dir)) => match owners {
+            Some(o) => Ok(Root::Tree {
+                dir,
+                owners: PathBuf::from(o),
+            }),
+            None => Err(
+                format!("--root {spec}: needs --owners FILE, the tree's ownership table").into(),
+            ),
+        },
+        _ => Err(format!("--root {spec}: expected bare, init[=FILE] or tree[=DIR]").into()),
+    }
+}
+
+/// The DUID as `disklabel(8)` and fstab(5) write it: 16 lowercase hexadecimal digits.
+pub(crate) fn duid_hex(duid: [u8; 8]) -> String {
+    duid.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// The bytes of the regular files under `dir` (symbolic links not followed).
 fn tree_bytes(dir: &Path) -> Result<u64> {
     let mut total = 0;
@@ -176,37 +324,73 @@ fn tree_bytes(dir: &Path) -> Result<u64> {
     Ok(total)
 }
 
-/// The ramdisk's fstab with its root line (`/dev/rd0a /`) naming `/dev/<dev>` instead.
-fn root_fstab(fstab: &str, dev: &str) -> Result<String> {
-    if dev.is_empty() || !dev.chars().all(|c| c.is_ascii_alphanumeric()) {
-        return Err(format!("--root-dev {dev}: expected a device name such as sd1a").into());
-    }
+/// What the root's fstab line names.
+#[derive(Clone, Copy, Debug)]
+enum FstabRoot<'a> {
+    /// `<duid>.a`, as the installer writes it.
+    Duid([u8; 8]),
+    /// `/dev/<dev>` (`efiboot-disk --root-dev`).
+    Dev(&'a str),
+}
+
+/// The staged tree's fstab with its root line (`/dev/rd0a /`) naming `to` instead.
+fn root_fstab(fstab: &str, to: FstabRoot<'_>) -> Result<String> {
+    let spec = match to {
+        FstabRoot::Duid(duid) => format!("{}.a", duid_hex(duid)),
+        FstabRoot::Dev(dev) => {
+            if dev.is_empty() || !dev.chars().all(|c| c.is_ascii_alphanumeric()) {
+                return Err(
+                    format!("--root-dev {dev}: expected a device name such as sd1a").into(),
+                );
+            }
+            format!("/dev/{dev}")
+        }
+    };
     let mut seen = false;
     let lines: Vec<String> = fstab
         .lines()
         .map(|l| match l.strip_prefix("/dev/rd0a / ") {
             Some(rest) => {
                 seen = true;
-                format!("/dev/{dev} / {rest}")
+                format!("{spec} / {rest}")
             }
             None => l.to_string(),
         })
         .collect();
     if !seen {
-        return Err("the ramdisk's fstab has no `/dev/rd0a /` root line".into());
+        return Err("the staged tree's fstab has no `/dev/rd0a /` root line".into());
     }
     Ok(lines.join("\n") + "\n")
 }
 
-/// Writes the FFS of partition `a`: `/bsd`, `/etc/boot.conf`, `/etc/random.seed`, and with
-/// `root_dev` the whole ramdisk tree with an fstab whose root is `/dev/<root_dev>`.
-fn make_ffs(
-    root: &Path,
-    arch: Arch,
-    kernel: &Path,
-    work: &Path,
-    root_dev: Option<&str>,
-) -> Result<Vec<u8>> {
+/// Copies the kernel to `to`, without its debug sections when `strip`.
+fn stage_kernel(kernel: &Path, to: &Path, strip: bool) -> Result<()> {
+    if !strip {
+        fs::copy(kernel, to).map_err(|e| format!("{}: {e}", kernel.display()))?;
+        return Ok(());
+    }
+    let objcopy = llvm_objcopy()?;
+    let st = Command::new(&objcopy)
+        .arg("--strip-debug")
+        .arg(kernel)
+        .arg(to)
+        .status()
+        .map_err(|e| format!("{}: {e}", objcopy.display()))?;
+    if !st.success() {
+        return Err(format!(
+            "{} --strip-debug {} failed",
+            objcopy.display(),
+            kernel.display()
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// Writes the FFS of partition `a` in `work` and returns it: `/bsd`, `/etc/boot.conf`,
+/// `/etc/random.seed` and what [`ImageSpec::root`] adds.
+fn make_ffs(root: &Path, spec: &ImageSpec<'_>, work: &Path) -> Result<Vec<u8>> {
+    let arch = spec.arch;
     let makefs = root.join(format!("target/userland/{}/host/bin/makefs", arch.name()));
     if !makefs.is_file() {
         return Err(format!(
@@ -215,44 +399,58 @@ fn make_ffs(
         )
         .into());
     }
-    let staging = work.join("efiboot-root");
+    let staging = work.join("root");
     let _ = fs::remove_dir_all(&staging);
     let mut owners_text = String::new();
-    if let Some(dev) = root_dev {
-        let tree = root.join(format!("target/userland/{}/ramdisk-root", arch.name()));
-        if !tree.join("etc/fstab").is_file() {
-            return Err(format!(
-                "{}: no staged root; run `just userland` first",
-                tree.display()
-            )
-            .into());
+    match &spec.root {
+        Root::Bare => {}
+        Root::Init(file) => {
+            fs::create_dir_all(staging.join("sbin"))
+                .map_err(|e| format!("{}: {e}", staging.display()))?;
+            fs::copy(file, staging.join("sbin/init"))
+                .map_err(|e| format!("{}: {e}", file.display()))?;
+            owners_text.push_str("0755 0 0 /sbin\n0555 0 0 /sbin/init\n");
         }
-        // cp -pR copies symbolic links as links and keeps the modes.
-        let status = Command::new("cp")
-            .arg("-pR")
-            .arg(&tree)
-            .arg(&staging)
-            .status()
-            .map_err(|e| format!("cp: {e}"))?;
-        if !status.success() {
-            return Err(format!("cp -pR {} failed", tree.display()).into());
+        Root::Tree { dir, owners } => {
+            if !dir.join("etc/fstab").is_file() {
+                return Err(format!(
+                    "{}: no staged root; run `just userland` first",
+                    dir.display()
+                )
+                .into());
+            }
+            // cp -pR copies symbolic links as links and keeps the modes.
+            let status = Command::new("cp")
+                .arg("-pR")
+                .arg(dir)
+                .arg(&staging)
+                .status()
+                .map_err(|e| format!("cp: {e}"))?;
+            if !status.success() {
+                return Err(format!("cp -pR {} failed", dir.display()).into());
+            }
+            let fstab = staging.join("etc/fstab");
+            let text =
+                fs::read_to_string(&fstab).map_err(|e| format!("{}: {e}", fstab.display()))?;
+            let to = match spec.fstab_dev {
+                Some(dev) => FstabRoot::Dev(dev),
+                None => FstabRoot::Duid(spec.duid),
+            };
+            fs::write(&fstab, root_fstab(&text, to)?)?;
+            owners_text =
+                fs::read_to_string(owners).map_err(|e| format!("{}: {e}", owners.display()))?;
         }
-        let fstab = staging.join("etc/fstab");
-        let text = fs::read_to_string(&fstab).map_err(|e| format!("{}: {e}", fstab.display()))?;
-        fs::write(&fstab, root_fstab(&text, dev)?)?;
-        let table = root.join(format!("target/userland/{}/host/owners.txt", arch.name()));
-        owners_text =
-            fs::read_to_string(&table).map_err(|e| format!("{}: {e}", table.display()))?;
     }
     fs::create_dir_all(staging.join("etc")).map_err(|e| format!("{}: {e}", staging.display()))?;
-    fs::copy(kernel, staging.join("bsd")).map_err(|e| format!("{}: {e}", kernel.display()))?;
+    let bsd = staging.join("bsd");
+    stage_kernel(spec.kernel, &bsd, spec.strip_debug)?;
     fs::write(staging.join("etc/boot.conf"), BOOT_CONF)?;
     // A seed boot(8) can read (and marks used, sticky bit, as on a real install).
     let seed: Vec<u8> = (0..256u32)
         .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8)
         .collect();
     fs::write(staging.join("etc/random.seed"), seed)?;
-    let owners = work.join("efiboot-owners.txt");
+    let owners = work.join("owners.txt");
     owners_text.push_str(
         "0755 0 0 /etc\n0555 0 0 /bsd\n0644 0 0 /etc/boot.conf\n0600 0 0 /etc/random.seed\n",
     );
@@ -260,14 +458,13 @@ fn make_ffs(
     // makefs's own estimate leaves no room for the indirect blocks of a big kernel: a tenth
     // more and 4 MiB, in whole MiB; a root gets room to write besides (twice its size).
     const MIB: u64 = 1 << 20;
-    let kernel_len = fs::metadata(kernel).map(|m| m.len()).unwrap_or(0);
-    let tree_len = if root_dev.is_some() {
-        tree_bytes(&staging)? - kernel_len
-    } else {
-        0
+    let kernel_len = fs::metadata(&bsd).map(|m| m.len()).unwrap_or(0);
+    let tree_len = match spec.root {
+        Root::Bare => 0,
+        Root::Init(_) | Root::Tree { .. } => tree_bytes(&staging)? - kernel_len,
     };
     let size = (kernel_len + kernel_len / 10 + 2 * tree_len + 4 * MIB).div_ceil(MIB) * MIB;
-    let image = work.join("efiboot-root.ffs");
+    let image = work.join("a.ffs");
     let _ = fs::remove_file(&image);
     let out = Command::new(&makefs)
         .args([
@@ -293,9 +490,7 @@ fn make_ffs(
         )
         .into());
     }
-    let fs_bytes = fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
-    let _ = fs::remove_dir_all(&staging);
-    Ok(fs_bytes)
+    fs::read(&image).map_err(|e| format!("{}: {e}", image.display()).into())
 }
 
 /// The FAT system partition holding `EFI/BOOT/<efi_name>`.
@@ -316,23 +511,9 @@ fn make_esp(arch: Arch, efi: &[u8]) -> Result<Vec<u8>> {
     Ok(part.into_inner())
 }
 
-/// `cargo xtask efiboot-disk`: the boot image of `smoke-efiboot` (module docs).
-pub(crate) fn efiboot_disk(
-    root: &Path,
-    arch: Arch,
-    efi: &Path,
-    kernel: &Path,
-    root_dev: Option<&str>,
-) -> Result<()> {
-    let efi_bytes = fs::read(efi).map_err(|e| format!("{}: {e}", efi.display()))?;
-    let path = boot::image_path(root, arch, None);
-    let work = path
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| root.join("target"));
-    fs::create_dir_all(&work).map_err(|e| format!("{}: {e}", work.display()))?;
-
-    let ffs = make_ffs(root, arch, kernel, &work, root_dev)?;
+/// The disk of `ffs` (partition `a`) and `esp`: the MBR, the label with `duid`, the two
+/// partitions.
+fn assemble(ffs: &[u8], esp: &[u8], duid: [u8; 8]) -> Vec<u8> {
     let fs_sectors = (ffs.len() as u64).div_ceil(SECTOR);
     let esp_start = (OPENBSD_START + fs_sectors).div_ceil(ALIGN) * ALIGN;
     let total = esp_start + ESP_SECTORS;
@@ -350,30 +531,148 @@ pub(crate) fn efiboot_disk(
     disk[..512].copy_from_slice(&mbr);
 
     let fs_at = (OPENBSD_START * SECTOR) as usize;
-    disk[fs_at..fs_at + ffs.len()].copy_from_slice(&ffs);
+    disk[fs_at..fs_at + ffs.len()].copy_from_slice(ffs);
     // The label goes in the file system's boot area, which ffs leaves free (`LABELSECTOR`).
     let label_at = ((OPENBSD_START + 1) * SECTOR) as usize;
     disk[label_at..label_at + 512]
-        .copy_from_slice(&crate::hwopts::disklabel(total, fs_sectors, DUID));
+        .copy_from_slice(&crate::hwopts::disklabel(total, fs_sectors, duid));
 
-    let esp = make_esp(arch, &efi_bytes)?;
     let esp_at = (esp_start * SECTOR) as usize;
-    disk[esp_at..esp_at + esp.len()].copy_from_slice(&esp);
+    disk[esp_at..esp_at + esp.len()].copy_from_slice(esp);
+    disk
+}
 
-    fs::write(&path, &disk).map_err(|e| format!("{}: {e}", path.display()))?;
+/// Writes the efiboot image `spec` describes to `out` (module docs): staged in
+/// `<out>.work/`, written whole to `<out>.tmp`, then renamed.
+pub(crate) fn image(root: &Path, spec: &ImageSpec<'_>, out: &Path) -> Result<()> {
+    let started = Instant::now();
+    let efi_bytes = fs::read(spec.efi).map_err(|e| {
+        format!(
+            "{}: {e} (run `just efiboot-{}` first)",
+            spec.efi.display(),
+            spec.arch.name()
+        )
+    })?;
+    let dir = out
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| root.join("target"));
+    fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let name = out
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .ok_or_else(|| format!("{}: not a file path", out.display()))?;
+    let work = dir.join(format!("{name}.work"));
+    let _ = fs::remove_dir_all(&work);
+    fs::create_dir_all(&work).map_err(|e| format!("{}: {e}", work.display()))?;
+
+    let ffs = make_ffs(root, spec, &work)?;
+    let kernel_kib = fs::metadata(work.join("root/bsd")).map_or(0, |m| m.len() / 1024);
+    let _ = fs::remove_dir_all(work.join("root"));
+    let esp = make_esp(spec.arch, &efi_bytes)?;
+    let disk = assemble(&ffs, &esp, spec.duid);
+    let tmp = dir.join(format!("{name}.tmp"));
+    fs::write(&tmp, &disk).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    fs::rename(&tmp, out).map_err(|e| format!("{} -> {}: {e}", tmp.display(), out.display()))?;
+    let _ = fs::remove_dir_all(&work);
+    let what = match &spec.root {
+        Root::Bare => String::new(),
+        Root::Init(file) => format!(", /sbin/init from {}", file.display()),
+        Root::Tree { dir, .. } => format!(
+            ", the tree {} with fstab root {}",
+            dir.display(),
+            match spec.fstab_dev {
+                Some(d) => format!("/dev/{d}"),
+                None => format!("{}.a", duid_hex(spec.duid)),
+            }
+        ),
+    };
     println!(
-        "efiboot-disk: {} ({total} sectors; OpenBSD partition at {OPENBSD_START}: a = ffs of \
-         {fs_sectors} sectors with /bsd ({} KiB), /etc/boot.conf, /etc/random.seed{}; ESP at \
-         {esp_start}: EFI/BOOT/{} ({} KiB))",
-        path.display(),
-        fs::metadata(kernel).map(|m| m.len() / 1024).unwrap_or(0),
-        root_dev.map_or(String::new(), |d| format!(
-            " and the ramdisk's root, fstab root /dev/{d}"
-        )),
-        efi_name(arch),
-        efi_bytes.len() / 1024
+        "efiboot-image: {} ({} sectors, DUID {}; a = ffs of {} sectors with /bsd ({kernel_kib} \
+         KiB{}){what}, /etc/boot.conf, /etc/random.seed; ESP with EFI/BOOT/{} ({} KiB); \
+         made in {:.1}s)",
+        out.display(),
+        disk.len() as u64 / SECTOR,
+        duid_hex(spec.duid),
+        (ffs.len() as u64).div_ceil(SECTOR),
+        if spec.strip_debug {
+            ", debug sections stripped"
+        } else {
+            ""
+        },
+        efi_name(spec.arch),
+        efi_bytes.len() / 1024,
+        started.elapsed().as_secs_f32()
     );
     Ok(())
+}
+
+/// `cargo xtask efiboot-image` (module docs).
+pub(crate) fn image_command(root: &Path, args: &[&str]) -> Result<()> {
+    let arch = Arch::parse(flag(args, "--arch")?)?;
+    if boot::skip_disabled("efiboot-image", arch)? {
+        return Ok(());
+    }
+    let kernel = PathBuf::from(flag(args, "--kernel")?);
+    let root_spec = flag(args, "--root")?;
+    let spec_root = parse_root(root, arch, root_spec, optional_flag(args, "--owners"))?;
+    let duid = optional_flag(args, "--duid")
+        .map(crate::hwopts::parse_duid)
+        .transpose()?;
+    let efi = optional_flag(args, "--efi").map_or_else(|| default_efi(root, arch), PathBuf::from);
+    let out = match (args.contains(&"--shared"), optional_flag(args, "--out")) {
+        (true, None) => {
+            // The shared images are the standard ones: the default tree or stand-in, the
+            // default DUID (what `--image` and `--expect-root` assume).
+            let which = Shared::parse(root_spec)?;
+            if duid.is_some() {
+                return Err("--shared images carry the default DUID: no --duid".into());
+            }
+            shared_path(root, arch, which)
+        }
+        (false, Some(o)) => boot::run_dir(root).join(o),
+        _ => return Err("efiboot-image: exactly one of --shared and --out FILE".into()),
+    };
+    image(
+        root,
+        &ImageSpec {
+            arch,
+            efi: &efi,
+            kernel: &kernel,
+            root: spec_root,
+            duid: duid.unwrap_or(DUID),
+            fstab_dev: None,
+            strip_debug: args.contains(&"--strip-debug"),
+        },
+        &out,
+    )
+}
+
+/// `cargo xtask efiboot-disk`: the boot image of `smoke-efiboot` (module docs).
+pub(crate) fn efiboot_disk(
+    root: &Path,
+    arch: Arch,
+    efi: &Path,
+    kernel: &Path,
+    root_dev: Option<&str>,
+) -> Result<()> {
+    let spec_root = match root_dev {
+        Some(_) => default_tree(root, arch),
+        None => Root::Bare,
+    };
+    image(
+        root,
+        &ImageSpec {
+            arch,
+            efi,
+            kernel,
+            root: spec_root,
+            duid: DUID,
+            fstab_dev: root_dev,
+            strip_debug: false,
+        },
+        &boot::image_path(root, arch, None),
+    )
 }
 /* </CODE> */
 
@@ -386,11 +685,73 @@ mod tests {
     fn root_fstab_renames_the_root_line_only() {
         let fstab = "/dev/rd0a / ffs rw 1 1\n/dev/sd0a /mnt ffs rw,userquota,noauto 1 2\n";
         assert_eq!(
-            root_fstab(fstab, "sd1a").unwrap(),
+            root_fstab(fstab, FstabRoot::Dev("sd1a")).unwrap(),
             "/dev/sd1a / ffs rw 1 1\n/dev/sd0a /mnt ffs rw,userquota,noauto 1 2\n"
         );
-        assert!(root_fstab("/dev/sd0a /mnt ffs rw 1 2\n", "sd1a").is_err());
-        assert!(root_fstab(fstab, "sd1a /x").is_err());
+        assert!(root_fstab("/dev/sd0a /mnt ffs rw 1 2\n", FstabRoot::Dev("sd1a")).is_err());
+        assert!(root_fstab(fstab, FstabRoot::Dev("sd1a /x")).is_err());
+    }
+
+    #[test]
+    fn root_fstab_names_the_duid_as_the_installer_writes_it() {
+        let fstab = "/dev/rd0a / ffs rw 1 1\n/dev/sd0a /mnt ffs rw,userquota,noauto 1 2\n";
+        assert_eq!(
+            root_fstab(fstab, FstabRoot::Duid(DUID)).unwrap(),
+            "454649424f4f5430.a / ffs rw 1 1\n/dev/sd0a /mnt ffs rw,userquota,noauto 1 2\n"
+        );
+        assert_eq!(duid_hex(*b"NVMEROOT"), "4e564d45524f4f54");
+        assert!(root_fstab("/dev/sd0a / ffs rw 1 1\n", FstabRoot::Duid(DUID)).is_err());
+    }
+
+    #[test]
+    fn root_spec_names_bare_init_and_tree() {
+        let r = Path::new("/w");
+        let a = Arch::Arm64;
+        assert_eq!(parse_root(r, a, "bare", None).unwrap(), Root::Bare);
+        assert_eq!(
+            parse_root(r, a, "init=/x/init", None).unwrap(),
+            Root::Init(PathBuf::from("/x/init"))
+        );
+        assert_eq!(
+            parse_root(r, a, "tree", None).unwrap(),
+            Root::Tree {
+                dir: PathBuf::from("/w/target/userland/arm64/ramdisk-root"),
+                owners: PathBuf::from("/w/target/userland/arm64/host/owners.txt"),
+            }
+        );
+        assert_eq!(
+            parse_root(r, a, "tree=/t", Some("/t.owners")).unwrap(),
+            Root::Tree {
+                dir: PathBuf::from("/t"),
+                owners: PathBuf::from("/t.owners"),
+            }
+        );
+        assert!(parse_root(r, a, "tree=/t", None).is_err());
+        assert!(parse_root(r, a, "tree", Some("/o")).is_err());
+        assert!(parse_root(r, a, "bare=/x", None).is_err());
+        assert!(parse_root(r, a, "init=", None).is_err());
+        assert!(parse_root(r, a, "ramdisk", None).is_err());
+        assert_eq!(Shared::parse("tree").unwrap(), Shared::Tree);
+        assert!(Shared::parse("bare").is_err());
+        assert_eq!(
+            shared_path(r, a, Shared::Init),
+            PathBuf::from("/w/target/efiboot/arm64/emibsd-init.img")
+        );
+    }
+
+    #[test]
+    fn the_disk_holds_the_label_with_its_duid_and_both_partitions() {
+        let ffs = vec![0xa5u8; 3 * SECTOR as usize];
+        let esp = vec![0x5au8; (ESP_SECTORS * SECTOR) as usize];
+        let disk = assemble(&ffs, &esp, DUID);
+        assert_eq!(disk.len() as u64, (ALIGN + ESP_SECTORS) * SECTOR);
+        assert_eq!(&disk[510..512], &[0x55, 0xaa]);
+        assert_eq!(disk[462 + 4], 0xef);
+        let fs_at = (OPENBSD_START * SECTOR) as usize;
+        assert_eq!(disk[fs_at], 0xa5);
+        let label = (OPENBSD_START + 1) as usize * SECTOR as usize;
+        assert_eq!(&disk[label + 64..label + 72], &DUID);
+        assert_eq!(disk[(ALIGN * SECTOR) as usize], 0x5a);
     }
 
     #[test]

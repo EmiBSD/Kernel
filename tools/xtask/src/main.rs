@@ -156,6 +156,13 @@
 //! cargo xtask comp --arch A [--jobs N]     M14: OpenBSD's compiler (clang, lld, libc++) from
 //!                                          gnu/llvm by its build glue, into target/comp/A
 //!                                          (userland/comp.rs); N jobs, default half the CPUs
+//! cargo xtask efiboot-image --arch A --kernel K --root bare|init[=FILE]|tree[=DIR]
+//!                     [--owners FILE] [--duid HEX16] [--efi FILE] [--strip-debug]
+//!                     (--shared | --out FILE)
+//!                                          an efiboot disk (MBR, label, FFS a with /bsd,
+//!                                          ESP): --shared writes target/efiboot/A/
+//!                                          emibsd-{tree,init}.img, --out a per-run image
+//!                                          in the run directory (efiboot.rs)
 //! cargo xtask install-img --arch A         M16g: install80.img, the install media with the
 //!                                          sets on one disk image (distrib.rs)
 //! cargo xtask cd-iso --arch amd64          M16g: cd80.iso, bsd.rd on an El Torito CD
@@ -240,7 +247,8 @@ const USAGE: &str = "usage: cargo xtask <lz check | lz status [--write] | lz dri
                      symbolize --arch A [--kernel K] | userland --arch A | devtools-hello --arch A --llvm DIR --rust DIR | devtools-native --arch A --llvm TAR --llvm-sha256 HEX --rust TAR --rust-sha256 HEX | comp --arch A [--jobs N] | ntfs-image OUT [--check] | \
                      e2fsck --arch A [--disk-set NAME] [--cat PATH=TEXT]... | fsck-msdos --arch A | \
                      manual --arch arm64 --boot-log LOG --out FILE | include --arch arm64 --out DIR | \
-                     nvme-root --arch A [--duid HEX] [--out FILE] [--root-dev DEV]>";
+                     nvme-root --arch A [--duid HEX] [--out FILE] [--root-dev DEV] | \
+                     efiboot-image --arch A --kernel K --root bare|init[=FILE]|tree[=DIR] [--owners FILE] [--duid HEX16] [--efi FILE] [--strip-debug] (--shared | --out FILE)>";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -495,6 +503,8 @@ fn run(args: &[String]) -> Result<()> {
                 optional_flag(rest, "--root-dev"),
             )
         }
+        // The removal of Limine (2026-11-26): the one efiboot image builder (efiboot.rs).
+        ["efiboot-image", rest @ ..] => efiboot::image_command(&root, rest),
         ["nvme-root", rest @ ..] => {
             let arch = boot::Arch::parse(flag(rest, "--arch")?)?;
             hwopts::nvme_root(
