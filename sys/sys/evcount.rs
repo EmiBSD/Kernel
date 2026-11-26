@@ -66,9 +66,9 @@ mod tests {
     #[test]
     fn a_zeroed_counter_attaches_counts_and_detaches() {
         kernel::testutil::install();
-        // SAFETY: `Evcount` is valid all zero (its members are atomics, hal's `StrSlot`,
-        // `ReadMostly` of an `Option<MArc>` and `PinEntry`, each 0 when empty), as the zeroed
-        // interrupt records that embed one rely on.
+        // SAFETY: `Evcount` is valid all zero (its members are atomics, the per-CPU slot
+        // number 0 for none among them, hal's `StrSlot` and `PinEntry`, each 0 when empty), as
+        // the zeroed interrupt records that embed one rely on.
         let ec: &'static Evcount = unsafe { zeroed_static() };
         assert_eq!(ec.count(), 0);
         assert!(!ec.is_attached());

@@ -20562,7 +20562,7 @@ rust = "sys/kernel/evcount.rs"
 crate = "kernel"
 lz = ["sys/kern/subr_evcount.rs", "sys/sys/evcount.rs"]
 status = "redesigned"
-notes = "N7.1b: event counters in the kernel, 0 unsafe: struct evcount valid all zero (atomics, a StrSlot name, the vector read at attach instead of ec_data's pointer, a ReadMostly slot of the per-CPU counts), evcount_list and evcount_percpu_init_list PinLists under one IPL_HIGH Mutexed; the per-CPU counts one padded word per CPU in a counted M_COUNTERS block; kern.intrcnt (IntrcntNode, no new value) and kern.evcount (EvcountNode) over one evcount_sysctl, the copy out after the lock"
+notes = "N7.1b: event counters in the kernel, 0 unsafe: struct evcount valid all zero (atomics, a StrSlot name, the vector read at attach instead of ec_data's pointer, the per-CPU counts' slot number), evcount_list and evcount_percpu_init_list PinLists under one IPL_HIGH Mutexed; the per-CPU counts one padded word per CPU in a block of a static table of NPERCPU slots (made once, never freed, recycled zeroed at detach), reached by evcount_inc with one load and one relaxed add; kern.intrcnt (IntrcntNode, no new value) and kern.evcount (EvcountNode) over one evcount_sysctl, the copy out after the lock"
 [[module.fn]]
 lz = "sys/kern/subr_evcount.rs::evcount_sysctl"
 native = ["evcount_sysctl", "IntrcntNode", "EvcountNode"]

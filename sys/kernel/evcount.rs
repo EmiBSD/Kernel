@@ -80,13 +80,18 @@
 //!   address of an interrupt number fixed when the handler is established (`ih_irq`), so the
 //!   value read once is the value the C reads at each sysctl; the stored pointer and its
 //!   `unsafe` deref go.
-//! - The per-CPU counts (`ec_percpu`, `counters_alloc(1)`) are a counted block of one
-//!   cache-line word per CPU (`M_COUNTERS`), indexed by `cpu_number()`, in a `ReadMostly`
-//!   slot that is `None` all zero; a single counter needs no generation number (one word
-//!   cannot tear), so it is not a `hal::percpu::Counters<1>`, which holds `MAXCPUS` slots by
-//!   value (16 KiB) and would be built on the stack of the record's constructor. The slot is
-//!   replaced only under the list's `IPL_HIGH` mutex, so no interrupt on that CPU can read it
-//!   while it is claimed. Its only users are amd64's clock and IPI counters (N10).
+//! - The per-CPU counts (`ec_percpu`, `counters_alloc(1)`): one padded word per CPU
+//!   (`M_COUNTERS`), indexed by `cpu_number()`, in a block of a static table of
+//!   [`NPERCPU`] slots ([`PERCPU`]); the counter holds its slot's number (`ec_percpu`, 0 for
+//!   none, so all zero is none), set under the list's `IPL_HIGH` mutex at attach (or by
+//!   `evcount_init_percpu`) and cleared under it at detach. A slot's block is made once and
+//!   never freed: a detached slot is recycled, zeroed, for the next per-CPU counter. So the
+//!   interrupt path ([`evcount_inc`]) takes no lock and no count: one load of the number, the
+//!   block reached through the table, one relaxed add on its own CPU's line, as the C's
+//!   `counters_inc` writes only the CPU's own memory. A single counter needs no generation
+//!   number (one word cannot tear), so it is not a `hal::percpu::Counters<1>`, which holds
+//!   `MAXCPUS` slots by value (16 KiB) and would be built on the stack of the record's
+//!   constructor. Its only users are amd64's clock and IPI counters (N10).
 //! - `evcount_detach` takes the counter off the list it is on (a counter that asked to be
 //!   per-CPU before `evcount_init_percpu` waits on the second list; the C always names
 //!   `evcount_list`).
@@ -94,15 +99,15 @@
 //!   `sysctl_intrcnt`, which passes no new value) and [`EvcountNode`] (`kern.evcount`), over
 //!   one function; the copy out happens after the list's lock is released.
 
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 
 use hal::intr::IPL_HIGH;
-use hal::malloc::{M_WAITOK, MArc, MArray};
+use hal::malloc::{M_WAITOK, MArray};
 use hal::mutex::Mutexed;
+use hal::once::OnceStatic;
 use hal::pin::pin_static;
 use hal::pinlist::{PinEntry, PinList};
 use hal::seqlock::StrSlot;
-use hal::slot::ReadMostly;
 use hal::sys::errno::Errno;
 use hal::sys::sysctl::{
     KERN_INTRCNT_CNT, KERN_INTRCNT_NAME, KERN_INTRCNT_NUM, KERN_INTRCNT_VECTOR,
@@ -132,8 +137,9 @@ impl PcpuCount {
     };
 }
 
-/// `ec_percpu`: one count per CPU, `ncpusfound` of them.
-type Percpu = MArc<MArray<PcpuCount>>;
+/// How many counters may be per-CPU at once (a slot each in [`PERCPU`]); one more counts
+/// on its shared `ec_count` (the same values, without the per-CPU lines).
+pub const NPERCPU: usize = 32;
 
 /// `struct evcount`. Valid all zero (a detached counter at 0); its owner calls
 /// [`evcount_detach`] before the memory that holds it goes.
@@ -151,8 +157,9 @@ pub struct Evcount {
     has_vector: AtomicBool,
     /// Whether the counter waits on `evcount_percpu_init_list` instead of `evcount_list`.
     on_init_list: AtomicBool,
-    /// `ec_percpu`: per-cpu counter (`None`: `NULL`). Replaced only under [`EVCOUNT_LOCK`].
-    ec_percpu: ReadMostly<Option<Percpu>>,
+    /// `ec_percpu`: the per-CPU counts' slot in [`PERCPU`] plus one (0: `NULL`). Set and
+    /// cleared only under [`EVCOUNT_LOCK`]; read without it by [`evcount_inc`].
+    ec_percpu: AtomicU32,
     /// `next`: the link on `evcount_list` (or `evcount_percpu_init_list`).
     next: PinEntry<Evcount>,
 }
@@ -167,7 +174,7 @@ impl Evcount {
             ec_vector: AtomicI32::new(0),
             has_vector: AtomicBool::new(false),
             on_init_list: AtomicBool::new(false),
-            ec_percpu: ReadMostly::new(None),
+            ec_percpu: AtomicU32::new(0),
             next: PinEntry::new(),
         }
     }
@@ -191,7 +198,7 @@ impl Evcount {
 
     /// The count: the per-CPU counts' sum (`counters_read`) or `ec_count`.
     pub fn count(&self) -> u64 {
-        match &*self.ec_percpu.read() {
+        match percpu_words(self.ec_percpu.load(Ordering::Acquire)) {
             Some(pc) => pc
                 .iter()
                 .fold(0u64, |s, c| s.wrapping_add(c.count.load(Ordering::Relaxed))),
@@ -228,11 +235,76 @@ static EVCOUNT_LOCK: Mutexed<()> = Mutexed::new(IPL_HIGH, ());
 static EVCOUNT_PERCPU_DONE: AtomicBool = AtomicBool::new(false);
 /// `evcount_attach`'s `nextid`.
 static NEXTID: AtomicI32 = AtomicI32::new(0);
+/// The per-CPU counts' blocks (`counters_alloc(1)`'s `cpumem`), one per slot, each made the
+/// first time its slot is taken and never freed.
+static PERCPU: [OnceStatic<MArray<PcpuCount>>; NPERCPU] = [const { OnceStatic::new() }; NPERCPU];
+/// The slots of [`PERCPU`] a counter holds, a bit each; changed under [`EVCOUNT_LOCK`].
+static PERCPU_USED: AtomicU32 = AtomicU32::new(0);
 
-/// `counters_alloc(1)`: a zero count for each of the `ncpusfound` CPUs.
-fn percpu_alloc() -> Option<Percpu> {
-    let words = MArray::new(M_COUNTERS, M_WAITOK, hal::cpu::ncpus(), |_| PcpuCount::ZERO)?;
-    MArc::new(M_COUNTERS, M_WAITOK, words)
+// Soundness of the per-CPU path, which takes no lock (no `unsafe` is involved: this is why no
+// reference it makes can dangle and why a count is never lost to the table's changes).
+// - A slot's block lives in a `static` `OnceStatic`, set once by the one claimant of a slot
+//   that has none and never freed or replaced: any slot number, read at any time, names a
+//   live block, so `evcount_inc` may hold a reference to it across a concurrent detach.
+// - `ec_percpu` is stored (Release) under `EVCOUNT_LOCK` only after the slot's block is made
+//   and its words zeroed, and read with Acquire: a reader that sees the number sees the
+//   block and the zeros, so no add of its is ordered before the zeroing.
+// - Detach clears the number under the lock and frees the slot for reuse, never the block.
+//   The owner's order is the C's (`ampintc_intr_disestablish`, `intr_disestablish`): the
+//   handler leaves its interrupt's queue, then the counter is detached, then the record is
+//   freed; a handler still running on another CPU in that window adds either to `ec_count`
+//   or to the slot it read, alive. Only if the slot is taken again meanwhile does that add
+//   land in the new owner's count: a miscount of the C's own race, never a stray write.
+
+/// The block of the slot whose number plus one is `n` (`None` for 0, or a slot not made).
+fn percpu_words(n: u32) -> Option<&'static MArray<PcpuCount>> {
+    let i = usize::try_from(n.checked_sub(1)?).ok()?;
+    PERCPU.get(i)?.get()
+}
+
+/// `counters_alloc(1)`: takes a free slot of [`PERCPU`] and gives back its number plus one,
+/// the block made (`M_WAITOK`, outside the lock) or a recycled one zeroed; `None` when all
+/// [`NPERCPU`] are held.
+fn percpu_claim() -> Option<u32> {
+    let i = {
+        let _w = EVCOUNT_LOCK.lock();
+        let used = PERCPU_USED.load(Ordering::Relaxed);
+        let i = (!used).trailing_zeros();
+        if i as usize >= NPERCPU {
+            return None;
+        }
+        PERCPU_USED.store(used | 1 << i, Ordering::Relaxed);
+        i
+    };
+    let slot = &PERCPU[i as usize];
+    match slot.get() {
+        Some(words) => {
+            for w in words.iter() {
+                w.count.store(0, Ordering::Relaxed);
+            }
+        }
+        None => {
+            let Some(words) =
+                MArray::new(M_COUNTERS, M_WAITOK, hal::cpu::ncpus(), |_| PcpuCount::ZERO)
+            else {
+                percpu_release(i + 1);
+                return None;
+            };
+            // This caller claimed the slot, which had no block: its `set` is the only one.
+            let _ = slot.set(words);
+        }
+    }
+    Some(i + 1)
+}
+
+/// `counters_free(cm, 1)`: the slot numbered `n` (plus one) free again; its block stays.
+fn percpu_release(n: u32) {
+    if let Some(i) = n.checked_sub(1)
+        && (i as usize) < NPERCPU
+    {
+        let _w = EVCOUNT_LOCK.lock();
+        PERCPU_USED.fetch_and(!(1 << i), Ordering::Relaxed);
+    }
 }
 
 /// `evcount_attach`: registers `ec` as `name`, with `vector` (the interrupt number the C
@@ -250,11 +322,10 @@ pub fn evcount_attach(ec: &'static Evcount, name: &'static str, vector: Option<i
     ec.on_init_list.store(false, Ordering::Relaxed);
     let old = {
         let mut w = EVCOUNT_LOCK.lock();
-        let old = ec.ec_percpu.replace(None);
         EVCOUNT_LIST.insert_tail(&mut w, pin_static(ec));
-        old
+        ec.ec_percpu.swap(0, Ordering::Release)
     };
-    drop(old);
+    percpu_release(old);
 }
 
 /// `evcount_percpu`: asks for a per-CPU counter for `ec`, attached.
@@ -264,12 +335,12 @@ pub fn evcount_percpu(ec: &'static Evcount) {
         EVCOUNT_LIST.remove(&mut w, ec);
         EVCOUNT_PERCPU_INIT_LIST.insert_tail(&mut w, pin_static(ec));
         ec.on_init_list.store(true, Ordering::Relaxed);
-    } else if let Some(pc) = percpu_alloc() {
+    } else if let Some(n) = percpu_claim() {
         let old = {
             let _w = EVCOUNT_LOCK.lock();
-            ec.ec_percpu.replace(Some(pc))
+            ec.ec_percpu.swap(n, Ordering::Release)
         };
-        drop(old);
+        percpu_release(old);
     }
 }
 
@@ -278,33 +349,38 @@ pub fn evcount_percpu(ec: &'static Evcount) {
 pub fn evcount_init_percpu() {
     kassert!(!EVCOUNT_PERCPU_DONE.load(Ordering::Relaxed));
 
-    // The blocks are allocated before the lock (`M_WAITOK` may sleep): one per waiting
-    // counter, which only the boot CPU adds, at attach time.
+    // The slots are taken before the walk (a new block's `M_WAITOK` may sleep): one per
+    // waiting counter, which only the boot CPU adds, at attach time.
     let n = EVCOUNT_PERCPU_INIT_LIST.iter(&EVCOUNT_LOCK.lock()).count();
-    let mut blocks = MArray::new(M_COUNTERS, M_WAITOK, n, |_| percpu_alloc());
+    let mut slots = [0u32; NPERCPU];
+    for s in slots.iter_mut().take(n) {
+        *s = percpu_claim().unwrap_or(0);
+    }
+    let mut unused = slots.into_iter().filter(|&s| s != 0);
     {
         let mut w = EVCOUNT_LOCK.lock();
-        let mut fresh = blocks.iter_mut().flat_map(|b| b.iter_mut());
         for ec in EVCOUNT_PERCPU_INIT_LIST.iter(&w) {
-            if let Some(pc) = fresh.next().and_then(Option::take) {
-                if let Some(c) = pc.first() {
-                    c.count
-                        .store(ec.ec_count.load(Ordering::Relaxed), Ordering::Relaxed);
+            if let Some(s) = unused.next() {
+                ec.ec_percpu.store(s, Ordering::Release);
+                // What it counted so far, taken after the switch so that no add is lost
+                // (the C reads and zeroes `ec_count` as two steps).
+                let early = ec.ec_count.swap(0, Ordering::Relaxed);
+                if let Some(c) = percpu_words(s).and_then(|pc| pc.first()) {
+                    c.count.fetch_add(early, Ordering::Relaxed);
                 }
-                // The slot was `None`: nothing to free under the lock.
-                let _none = ec.ec_percpu.replace(Some(pc));
-                ec.ec_count.store(0, Ordering::Relaxed);
             }
             ec.on_init_list.store(false, Ordering::Relaxed);
         }
-        drop(fresh);
         EVCOUNT_LIST.concat(&mut w, &EVCOUNT_PERCPU_INIT_LIST);
     }
+    // Slots no waiting counter took (the list cannot grow meanwhile on the boot CPU).
+    unused.for_each(percpu_release);
     EVCOUNT_PERCPU_DONE.store(true, Ordering::Relaxed);
-    drop(blocks);
 }
 
-/// `evcount_detach`: unregisters `ec`, freeing its per-CPU counts.
+/// `evcount_detach`: unregisters `ec`, its per-CPU slot free again (the block is kept for
+/// the next per-CPU counter: see the soundness note above [`percpu_words`]). The owner calls
+/// it after its handler has left the interrupt's queue and before it frees the record.
 pub fn evcount_detach(ec: &'static Evcount) {
     let old = {
         let mut w = EVCOUNT_LOCK.lock();
@@ -313,18 +389,19 @@ pub fn evcount_detach(ec: &'static Evcount) {
         } else {
             EVCOUNT_LIST.remove(&mut w, ec);
         }
-        ec.ec_percpu.replace(None)
+        ec.ec_percpu.swap(0, Ordering::Release)
     };
-    drop(old);
+    percpu_release(old);
 }
 
-/// `evcount_inc`: counts one event, on this CPU's count when `ec` is per-CPU.
+/// `evcount_inc`: counts one event, on this CPU's line when `ec` is per-CPU: one load of the
+/// slot number and one relaxed add, no lock and no count taken (from interrupt context).
 pub fn evcount_inc(ec: &Evcount) {
-    if let Some(pc) = &*ec.ec_percpu.read() {
-        if let Some(c) = pc.get(hal::cpu::cpu_number()) {
-            c.count.fetch_add(1, Ordering::Relaxed);
-            return;
-        }
+    if let Some(c) = percpu_words(ec.ec_percpu.load(Ordering::Acquire))
+        .and_then(|pc| pc.get(hal::cpu::cpu_number()))
+    {
+        c.count.fetch_add(1, Ordering::Relaxed);
+        return;
     }
     ec.ec_count.fetch_add(1, Ordering::Relaxed);
 }
@@ -428,6 +505,8 @@ pub fn evcount_test_reset() {
     while EVCOUNT_LIST.remove_first(&mut w) {}
     while EVCOUNT_PERCPU_INIT_LIST.remove_first(&mut w) {}
     EVCOUNT_PERCPU_DONE.store(false, Ordering::Relaxed);
+    // The slots' blocks are statics' and stay; which slots are held is forgotten.
+    PERCPU_USED.store(0, Ordering::Relaxed);
 }
 /* </CODE> */
 
@@ -631,6 +710,44 @@ mod tests {
         evcount_detach(&IPI);
         evcount_detach(&LATE);
         assert_eq!(CLK.count(), 0);
+    }
+
+    #[test]
+    fn a_detached_slot_is_recycled_zeroed_and_a_full_table_counts_on_the_word() {
+        let _g = setup();
+        // After the boot step: a per-CPU counter gets its slot at once.
+        EVCOUNT_PERCPU_DONE.store(true, Ordering::Relaxed);
+        static C: [Evcount; NPERCPU + 1] = [const { Evcount::new() }; NPERCPU + 1];
+        for c in &C {
+            evcount_attach(c, "pc", None);
+            evcount_percpu(c);
+        }
+        // The table is full: the last one counts on its shared word, the same values.
+        assert_eq!(C[NPERCPU].ec_percpu.load(Ordering::Relaxed), 0);
+        evcount_inc(&C[NPERCPU]);
+        assert_eq!(C[NPERCPU].count(), 1);
+        assert_eq!(C[NPERCPU].ec_count.load(Ordering::Relaxed), 1);
+        let s0 = C[0].ec_percpu.load(Ordering::Relaxed);
+        assert_ne!(s0, 0);
+        evcount_inc(&C[0]);
+        evcount_inc(&C[0]);
+        assert_eq!(C[0].count(), 2);
+        assert_eq!(C[0].ec_count.load(Ordering::Relaxed), 0);
+        // Detached, its slot goes to the next per-CPU counter, zeroed.
+        evcount_detach(&C[0]);
+        assert_eq!(C[0].ec_percpu.load(Ordering::Relaxed), 0);
+        static D: Evcount = Evcount::new();
+        evcount_attach(&D, "next", None);
+        evcount_percpu(&D);
+        assert_eq!(D.ec_percpu.load(Ordering::Relaxed), s0);
+        assert_eq!(D.count(), 0);
+        evcount_inc(&D);
+        assert_eq!(D.count(), 1);
+        evcount_detach(&D);
+        for c in &C[1..] {
+            evcount_detach(c);
+        }
+        assert_eq!(PERCPU_USED.load(Ordering::Relaxed), 0);
     }
 
     #[test]
