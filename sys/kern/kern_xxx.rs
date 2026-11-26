@@ -96,17 +96,6 @@ pub fn sys_reboot(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<
     }
 }
 
-/// `KernelApi::time.reboot`: [`sys_reboot`]'s row through the system call prologue
-/// (`mi_syscall`: pledge, the pinned syscalls, the kernel-lock rule).
-pub fn native_reboot(nr: Register, opt: i32, rval: &mut [Register; 2]) -> hal::syscall::SysResult {
-    crate::kern::kern_descrip::native(
-        nr,
-        crate::sys::syscall::SYS_reboot,
-        [opt as Register, 0, 0, 0, 0, 0],
-        rval,
-    )
-}
-
 /// `sysarch(2)`'s `sysent[]` row: the kernel's ([`kernel::proc::sysarch::sys_sysarch`]: a pledged
 /// process through `pledge_fail`, else `EINVAL` for every op on arm64).
 pub fn sys_sysarch(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {

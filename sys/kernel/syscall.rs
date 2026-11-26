@@ -97,15 +97,22 @@
 //!   b1): the fault on the map `hal` chose (`pmap_fault_fixup`, `uvm_fault`, `uvm_grow`, the
 //!   `MAP_STACK` check of a user fault), `trapsignal`, `sigexit`, `refreshcreds`, `userret`,
 //!   [`mi_syscall_return`], [`mi_ast`] and [`mi_child_return`], on the running thread.
+//! - Decision 52 (N7): the `sysent[]` rows still `bsd`'s are reached through one bridge,
+//!   [`LegacySyscalls`] (`bridges.toml`, paid by N9), which `kernel::api` calls for every
+//!   system call, `Native` or `Legacy`: `mi_syscall` on the row for the thread on this CPU,
+//!   as both machines' traps did in the C. It replaces the `KernelApi` table's
+//!   `syscall_legacy` member and the `native_*` glue `bsd` filled that table with.
 
 use core::marker::PhantomData;
 use core::pin::Pin;
 use core::sync::atomic::Ordering;
 
+use hal::bridges::AlreadyRegistered;
 use hal::cpu::trap::{FaultSource, TrapHandler};
+use hal::sync::once::OnceStatic;
 use hal::sys::errno::Errno;
 use hal::sys::syscall::{SYS_MAXSYSCALL, SYS_sigreturn};
-use hal::syscall::{Register, Rval, SysArgs, SysResult};
+use hal::syscall::{ENOSYS, Register, Rval, SysArgs, SysResult};
 
 use crate::assert::kpanic;
 use crate::proc::acct::APINSYS;
@@ -160,6 +167,37 @@ impl<G: ProcGlue> KernelTrap<G> {
 impl<G: ProcGlue> Default for KernelTrap<G> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// The `sysent[]` rows still `bsd`'s, registered once at boot.
+static LEGACY_SYSCALLS: OnceStatic<&'static dyn LegacySyscalls> = OnceStatic::new();
+
+/// The `sysent[]` rows still `bsd`'s (LZ's `init_sysent.c` table and the row functions over
+/// the kernel's): `bsd`'s boot glue registers its implementation before the ABI registers
+/// its handler, so before the first system call. Paid by N9, when the rows leave `bsd`.
+pub trait LegacySyscalls: Sync {
+    /// `mi_syscall` on row `code` of `sysent[]` for the thread on this CPU, with `args` and
+    /// the trap's return registers; `ENOSYS` for a number outside the table (the C's traps'
+    /// `sys_nosys` choice).
+    fn syscall(&self, code: Register, args: &SysArgs, rval: &mut Rval) -> SysResult;
+}
+
+/// Registers the `sysent[]` rows, once; a second call keeps the first and names it.
+pub fn install_legacy_syscalls(imp: &'static dyn LegacySyscalls) -> Result<(), AlreadyRegistered> {
+    LEGACY_SYSCALLS
+        .set(imp)
+        .map_err(|_| AlreadyRegistered("LegacySyscalls"))
+}
+
+/// System call `code` on its `sysent[]` row ([`LegacySyscalls::syscall`]); `ENOSYS` while
+/// no row is registered (host tests that register none), as `hal`'s dispatch point answers
+/// with no handler.
+#[inline]
+pub fn legacy_syscall(code: Register, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    match LEGACY_SYSCALLS.get() {
+        Some(rows) => rows.syscall(code, args, rval),
+        None => Err(ENOSYS),
     }
 }
 

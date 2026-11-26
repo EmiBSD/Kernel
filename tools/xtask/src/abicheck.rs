@@ -27,26 +27,33 @@
 //!   whose every arm pattern is `Ok(..)`, `Err(..)`, `Some(..)` or `None` (alternatives with
 //!   `|` allowed, no guard, no `_`) is allowed; `if let Ok|Err|Some|None(..) = ..` is allowed.
 //!   Anything else is a finding.
-//! * **R3** at most one call per function into `kernel::` (a path starting with `kernel::`) or
-//!   through a parameter of type `&KernelApi`.
+//! * **R3** at most one call per function into `kernel::` (a path whose first segment is
+//!   the crate, read as R6 reads it: `::kernel` and `r#kernel` too): one kernel function per
+//!   system call. And no `use` of `kernel` outside test code, in any form (a path, a group,
+//!   a rename): a call through an imported name would not be counted.
 //! * **R4** at most 40 lines per function body (the line of `{` to the line of `}`).
 //! * **R5** no `static` whose type names `Cell`, `RefCell`, `Atomic*`, `OnceStatic`,
 //!   `Mutexed`, `Rwlocked` or `UnsafeCell`: no state in `abi`; plain tables are fine.
-//! * **R6** `hal` named only through `hal::api` and `hal::sys::*` (whole) and the types of
-//!   `hal::syscall` (`HandlerInfo`, `Register`, `Rval`, `SysArgs`, `SysResult`, `SyscallFn`,
-//!   `ENOSYS`; not its functions `dispatch`, `set_handler`, `handler_info`, and not the module
-//!   itself, whose alias would reach them), decision 47, the user's answers of 2026-11-06: in a
-//!   path, a `use` or a `{..}` group, never a glob of `hal`'s root or of `hal::syscall` nor
-//!   `hal` alone (`use hal as h`, `extern crate hal`), which would carry the crate past the
-//!   list. A `hal` starts a path unless a field's `.` (not a range's `..`) or another module's
-//!   `x::` stands before it, `x` an identifier other than a keyword (`self`, `super`, `crate`
-//!   and `Self` name modules); `r#hal` is `hal`. Linked into the kernel image, `abi` shares
-//!   `hal`'s statics, and the rest of `hal`'s public API acts on the kernel's own state
-//!   (`hal::cpu::set_panicking`, the kcopy tokens, the system call's one registration); the
-//!   loadable module's private copy of `hal` gave that isolation for free. The rule is
-//!   textual: it trusts what the allowed modules export (a `pub use` added there widens it
-//!   without a change under `sys/abi/`), and like R1-R5 it reads only the files under
-//!   `sys/abi/` (no `#[path]` module or `include!`d file elsewhere exists).
+//! * **R6** (decision 52, the user, 2026-11-26) `kernel` named only through `kernel::api`
+//!   (whole: its group modules and their functions, `kernel::api::syscall_legacy`), the
+//!   door of one function per system call; `hal` named only through `hal::sys::*` (whole)
+//!   and, of `hal::syscall`, its types (`HandlerInfo`, `Register`, `Rval`, `SysArgs`,
+//!   `SysResult`, `SyscallFn`, `ENOSYS`) and `set_handler`, the registration of the ABI's
+//!   handler (not `dispatch` or `handler_info`, which re-enter or read the system call
+//!   path, and not the module itself, whose alias would reach them). In a path, a `use` or
+//!   a `{..}` group; never a glob of either crate's root or of `hal::syscall`, nor the crate
+//!   alone (`use kernel as k`, `extern crate hal`), which would carry it past the list. A
+//!   crate's name starts a path unless a field's `.` (not a range's `..`) or another
+//!   module's `x::` stands before it, `x` an identifier other than a keyword (`self`,
+//!   `super`, `crate` and `Self` name modules); `r#hal` is `hal`, `r#kernel` is `kernel`.
+//!   Linked into the kernel image, `abi` shares `hal`'s statics, and the rest of `hal`'s and
+//!   `kernel`'s public API acts on the kernel's own state (`hal::cpu::set_panicking`, the
+//!   kcopy tokens, the kernel's tables). The rule is textual: it trusts what the allowed
+//!   modules export (a `pub` item added to `kernel::api`, or a `pub use` added to
+//!   `hal::sys`, widens it without a change under `sys/abi/`), and like R1-R5 it reads only
+//!   the files under `sys/abi/` (no `#[path]` module or `include!`d file elsewhere exists).
+//!   Before decision 52 the door was `hal::api`'s `KernelApi` table and R3 also counted the
+//!   calls through a `&KernelApi` parameter.
 //!
 //! A nested `fn` is judged on its own and its tokens are not the outer function's. Each
 //! finding prints as `path:line: message`; the command exits non-zero when there is one.
@@ -60,12 +67,12 @@ use crate::halcheck::Finding;
 use crate::unsafereport::{Tok, lex_pos, matching, scan};
 
 const ABI_DIR: &str = "sys/abi";
-/// The modules of `hal` that `abi` may name whole (R6): the table it calls the kernel through
-/// and the constant headers of the ABI edge.
-const HAL_MODULES: [&str; 2] = ["api", "sys"];
-/// The items of `hal::syscall` that `abi` may name (R6): the system call's types; its
-/// functions act on the one registration and re-enter the system call path.
-const HAL_SYSCALL_ITEMS: [&str; 7] = [
+/// The modules of `hal` that `abi` may name whole (R6): the constant headers of the ABI edge.
+const HAL_MODULES: [&str; 1] = ["sys"];
+/// The items of `hal::syscall` that `abi` may name (R6): the system call's types and the
+/// registration of the ABI's handler; its other functions re-enter or read the system call
+/// path.
+const HAL_SYSCALL_ITEMS: [&str; 8] = [
     "HandlerInfo",
     "Register",
     "Rval",
@@ -73,7 +80,11 @@ const HAL_SYSCALL_ITEMS: [&str; 7] = [
     "SysResult",
     "SyscallFn",
     "ENOSYS",
+    "set_handler",
 ];
+/// The one module of `kernel` that `abi` may name (R6, decision 52): one function per system
+/// call.
+const KERNEL_MODULE: &str = "api";
 /// Rust's keywords (strict, reserved and weak), which the lexer keeps as identifiers: one
 /// before `::hal` makes that `hal` the first segment of a path (R6), where an identifier would
 /// make it another module's.
@@ -168,7 +179,7 @@ pub(crate) fn abi_check(root: &Path) -> Result<()> {
         return Err(format!("abi-check: {} finding(s)", findings.len()).into());
     }
     println!(
-        "abi-check: {} files; no loop, branches only on nr or Ok/Err/Some/None, at most one kernel call and {MAX_BODY_LINES} lines per fn, no state, hal only through hal::api, hal::sys and hal::syscall's types",
+        "abi-check: {} files; no loop, branches only on nr or Ok/Err/Some/None, at most one kernel call and {MAX_BODY_LINES} lines per fn, no state, kernel only through kernel::api, hal only through hal::sys and hal::syscall's types and set_handler",
         files.len()
     );
     Ok(())
@@ -193,7 +204,6 @@ fn is_const_name(w: &str) -> bool {
 struct Func {
     kw: usize,
     name: String,
-    params: (usize, usize),
     open: usize,
     close: usize,
 }
@@ -234,7 +244,6 @@ fn functions(toks: &[Tok], mask: &[bool]) -> Vec<Func> {
         let Some(pe) = matching(toks, j) else {
             continue;
         };
-        let params = (j + 1, pe);
         let mut k = pe + 1;
         let mut open = None;
         while k < toks.len() {
@@ -259,48 +268,11 @@ fn functions(toks: &[Tok], mask: &[bool]) -> Vec<Func> {
         out.push(Func {
             kw: i,
             name: name.clone(),
-            params,
             open,
             close,
         });
     }
     out
-}
-
-/// The names of the parameters whose type is a reference to `KernelApi`.
-fn api_params(toks: &[Tok], (from, to): (usize, usize)) -> Vec<String> {
-    let mut names = Vec::new();
-    let (mut start, mut depth) = (from, 0i32);
-    let mut parts: Vec<(usize, usize)> = Vec::new();
-    for k in from..to {
-        match toks[k] {
-            Tok::Punct('(' | '[' | '{' | '<') => depth += 1,
-            Tok::Punct(')' | ']' | '}') => depth -= 1,
-            Tok::Punct('>') if k > 0 && toks[k - 1] != Tok::Punct('-') => depth -= 1,
-            Tok::Punct(',') if depth == 0 => {
-                parts.push((start, k));
-                start = k + 1;
-            }
-            _ => {}
-        }
-    }
-    parts.push((start, to));
-    for (a, b) in parts {
-        let colon = (a..b).find(|&k| {
-            toks[k] == Tok::Punct(':')
-                && toks.get(k + 1) != Some(&Tok::Punct(':'))
-                && (k == 0 || toks[k - 1] != Tok::Punct(':'))
-        });
-        let Some(c) = colon else { continue };
-        let ty = &toks[c + 1..b];
-        if ty.first() == Some(&Tok::Punct('&'))
-            && ty.iter().any(|t| id(t, "KernelApi"))
-            && let Some(Tok::Ident(n)) = toks.get(c.wrapping_sub(1))
-        {
-            names.push(n.clone());
-        }
-    }
-    names
 }
 
 /// The token index just past the `{ .. }` block or the expression of a match arm starting at
@@ -442,7 +414,6 @@ pub(crate) fn check_source(rel: &str, src: &str) -> Vec<Finding> {
         let own: Vec<usize> = (f.open + 1..f.close)
             .filter(|&i| !nested.iter().any(|&(a, b)| i >= a && i <= b))
             .collect();
-        let api = api_params(toks, f.params);
         let (mut calls, mut guards) = (0usize, BTreeSet::new());
         for &i in &own {
             match &toks[i] {
@@ -468,13 +439,9 @@ pub(crate) fn check_source(rel: &str, src: &str) -> Vec<Finding> {
                         }
                     }
                 }
-                // R3, a path call into the kernel.
-                Tok::Ident(w)
-                    if w == "kernel"
-                        && toks.get(i + 1) == Some(&Tok::Punct(':'))
-                        && toks.get(i + 2) == Some(&Tok::Punct(':'))
-                        && (i == 0 || !matches!(toks[i - 1], Tok::Punct(':' | '.'))) =>
-                {
+                // R3, a path call into the kernel: the path as R6 reads it (`::kernel` and
+                // `r#kernel` are `kernel`, `x::kernel` is not).
+                t if is_kernel(t) && is_sep(toks, i + 1) && starts_path(toks, i) => {
                     let mut k = i;
                     while matches!(toks.get(k), Some(Tok::Ident(_)))
                         && toks.get(k + 1) == Some(&Tok::Punct(':'))
@@ -486,27 +453,6 @@ pub(crate) fn check_source(rel: &str, src: &str) -> Vec<Finding> {
                         && toks.get(k + 1) == Some(&Tok::Punct('('))
                     {
                         calls += 1;
-                    }
-                }
-                // R3, a method call on a `&KernelApi` parameter.
-                Tok::Ident(w)
-                    if api.contains(w)
-                        && (i == 0 || toks[i - 1] != Tok::Punct('.'))
-                        && toks.get(i + 1) == Some(&Tok::Punct('.')) =>
-                {
-                    // `name.a.b(..)`: walk the field chain to the call.
-                    let mut k = i + 1;
-                    while toks.get(k) == Some(&Tok::Punct('.'))
-                        && matches!(toks.get(k + 1), Some(Tok::Ident(_)))
-                    {
-                        match toks.get(k + 2) {
-                            Some(Tok::Punct('(')) => {
-                                calls += 1;
-                                break;
-                            }
-                            Some(Tok::Punct('.')) => k += 2,
-                            _ => break,
-                        }
                     }
                 }
                 _ => {}
@@ -589,7 +535,34 @@ pub(crate) fn check_source(rel: &str, src: &str) -> Vec<Finding> {
             }
         }
     }
-    // R6.
+    // R6, kernel (and R3's `use`: an imported name would call the kernel uncounted).
+    for i in 0..toks.len() {
+        if !is_kernel(&toks[i]) || mask[i] || !starts_path(toks, i) {
+            continue;
+        }
+        if in_use(toks, i) {
+            add(
+                i,
+                "R3: a `use` of kernel (each call names its whole kernel::api path, so R3 counts it)"
+                    .to_string(),
+            );
+            continue;
+        }
+        let mut found = Vec::new();
+        if is_sep(toks, i + 1) {
+            kernel_tree(toks, i + 3, &mut found);
+        } else {
+            found.push((
+                i,
+                "R6: `kernel` named alone (a rename or a re-export carries it past kernel::api)"
+                    .to_string(),
+            ));
+        }
+        for (at, m) in found {
+            add(at, m);
+        }
+    }
+    // R6, hal.
     for i in 0..toks.len() {
         if !is_hal(&toks[i]) || mask[i] || !starts_path(toks, i) {
             continue;
@@ -615,6 +588,53 @@ pub(crate) fn check_source(rel: &str, src: &str) -> Vec<Finding> {
 /// `hal`, or `r#hal`, which is the same name.
 fn is_hal(t: &Tok) -> bool {
     matches!(t, Tok::Ident(w) if w == "hal" || w == "r#hal")
+}
+
+/// `kernel`, or `r#kernel`, which is the same name.
+fn is_kernel(t: &Tok) -> bool {
+    matches!(t, Tok::Ident(w) if w == "kernel" || w == "r#kernel")
+}
+
+/// R6 over the path or use-tree after `kernel::`, starting at `k`: `api` and what is under it.
+fn kernel_tree(toks: &[Tok], k: usize, out: &mut Vec<(usize, String)>) {
+    match toks.get(k) {
+        Some(Tok::Punct('{')) => {
+            for j in group_items(toks, k) {
+                kernel_tree(toks, j, out);
+            }
+        }
+        Some(Tok::Ident(m)) if m == KERNEL_MODULE => {}
+        Some(Tok::Ident(m)) => out.push((
+            k,
+            format!("R6: `kernel::{m}` is outside kernel::api, the one kernel path abi may name"),
+        )),
+        _ => out.push((
+            k,
+            "R6: a glob of kernel's root (abi names only kernel::api)".to_string(),
+        )),
+    }
+}
+
+/// Whether the path that starts at `i` is (part of) a `use` declaration: walking back over
+/// the path, a `use` group's braces and its separators reaches `use` before anything that
+/// ends or opens another statement or expression.
+fn in_use(toks: &[Tok], i: usize) -> bool {
+    let mut k = i;
+    while k > 0 {
+        k -= 1;
+        match &toks[k] {
+            Tok::Ident(w) if w == "use" => return true,
+            Tok::Punct('{') => {
+                let group = k >= 1 && (id(&toks[k - 1], "use") || (k >= 2 && is_sep(toks, k - 2)));
+                if !group {
+                    return false;
+                }
+            }
+            Tok::Punct(';' | '}' | '(' | ')' | '[' | ']' | '=') => return false,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Whether `::` stands at `k`.
@@ -651,7 +671,7 @@ fn hal_tree(toks: &[Tok], k: usize, out: &mut Vec<(usize, String)>) {
             if !is_sep(toks, k + 1) {
                 out.push((
                     k,
-                    "R6: `hal::syscall` named as a module (abi may name only its types: HandlerInfo, Register, Rval, SysArgs, SysResult, SyscallFn, ENOSYS)"
+                    "R6: `hal::syscall` named as a module (abi may name only its types, HandlerInfo, Register, Rval, SysArgs, SysResult, SyscallFn, ENOSYS, and set_handler)"
                         .to_string(),
                 ));
             } else if toks.get(k + 3) == Some(&Tok::Punct('{')) {
@@ -665,12 +685,12 @@ fn hal_tree(toks: &[Tok], k: usize, out: &mut Vec<(usize, String)>) {
         Some(Tok::Ident(m)) => out.push((
             k,
             format!(
-                "R6: `hal::{m}` is outside the hal paths abi may name (hal::api, hal::sys, hal::syscall's types)"
+                "R6: `hal::{m}` is outside the hal paths abi may name (hal::sys, hal::syscall's types and set_handler)"
             ),
         )),
         _ => out.push((
             k,
-            "R6: a glob of hal's root (abi names only hal::api, hal::sys and hal::syscall's types)"
+            "R6: a glob of hal's root (abi names only hal::sys and hal::syscall's types and set_handler)"
                 .to_string(),
         )),
     }
@@ -683,12 +703,12 @@ fn syscall_item(t: Option<&Tok>, at: usize, out: &mut Vec<(usize, String)>) {
         Some(Tok::Ident(m)) => out.push((
             at,
             format!(
-                "R6: `hal::syscall::{m}` is not one of the types abi may name (HandlerInfo, Register, Rval, SysArgs, SysResult, SyscallFn, ENOSYS)"
+                "R6: `hal::syscall::{m}` is not one of the items abi may name (HandlerInfo, Register, Rval, SysArgs, SysResult, SyscallFn, ENOSYS, set_handler)"
             ),
         )),
         _ => out.push((
             at,
-            "R6: a glob or a nested group of hal::syscall (abi names only its types)".to_string(),
+            "R6: a glob or a nested group of hal::syscall (abi names only its types and set_handler)".to_string(),
         )),
     }
 }
@@ -795,24 +815,39 @@ mod tests {
 
     #[test]
     fn r3_at_most_one_kernel_call() {
-        clean("fn f(a: &KernelApi) { a.pipe(1); }\n");
-        clean("fn f() { kernel::file::pipe::new(1); }\n");
-        clean("fn f() { let x = Wrap(1); kernel::open(x); }\n");
-        one("fn f() { kernel::a(1); kernel::b(2); }\n", "R3");
-        one("fn f(api: &KernelApi) { api.a(1); api.b(2); }\n", "R3");
-        one(
-            "fn f(api: &KernelApi) { api.a(1); kernel::b(api.x); }\n",
-            "R3",
-        );
-        one(
-            "fn f(api: &KernelApi) { api.sub.a(1); api.sub.b(2); }\n",
-            "R3",
-        );
-        // A by-value parameter, a field read and another crate's path are not calls into it.
-        clean("fn f(api: KernelApi) { api.a(1); api.b(2); }\n");
-        clean("fn f(a: &KernelApi) { let _ = a.n; other::kernel(); kernel::K; }\n");
+        clean("fn f() { kernel::api::file::pipe2(1); }\n");
+        clean("fn f() { let x = Wrap(1); kernel::api::open(x); }\n");
+        one("fn f() { kernel::api::a(1); kernel::api::b(2); }\n", "R3");
+        // The registration in hal, a field read and another crate's path are not calls into
+        // the kernel.
+        clean("fn f() { let _ = hal::syscall::set_handler(g, I); kernel::api::a(1); }\n");
+        clean("fn f(a: &A) { let _ = a.n; other::kernel(); kernel::api::K; }\n");
         // Nested functions are judged on their own.
-        clean("fn f() { kernel::a(1); fn g() { kernel::b(2); } }\n");
+        clean("fn f() { kernel::api::a(1); fn g() { kernel::api::b(2); } }\n");
+        // `::kernel` and `r#kernel` are the crate, as R6 reads them; `x::kernel` is not.
+        one(
+            "fn f() { ::kernel::api::a(1); ::kernel::api::b(2); }\n",
+            "R3",
+        );
+        one("fn f() { r#kernel::api::a(1); kernel::api::b(2); }\n", "R3");
+        one(
+            "fn f() -> R { g(); ::kernel::api::a(1); return ::kernel::api::b(2); }\n",
+            "R3",
+        );
+        clean("fn f() { x::kernel::api::a(1); kernel::api::b(2); }\n");
+        // A `use` of the kernel would let bare names call it uncounted: refused in every form.
+        one(
+            "use kernel::api::file::{read, write};\nfn f() { read(1); write(2); }\n",
+            "R3",
+        );
+        one("use kernel::api::file::read;\n", "R3");
+        one("use kernel::api::file;\n", "R3");
+        one("use kernel::api;\n", "R3");
+        one("pub use ::kernel::api::fs::open;\n", "R3");
+        one("use r#kernel::api::net as n;\n", "R3");
+        one("use {kernel::api::vm::mmap};\n", "R3");
+        // Test code may import what it likes.
+        clean("#[cfg(test)]\nmod tests {\n    use kernel::api::file::read;\n}\n");
     }
 
     #[test]
@@ -842,15 +877,15 @@ mod tests {
     }
 
     #[test]
-    fn r6_hal_only_through_api_sys_and_syscall_types() {
+    fn r6_hal_only_through_sys_and_syscall_types() {
         // What the crate names today, and the forms of the same paths.
-        clean("use hal::api::KernelApi;\nuse hal::syscall::{HandlerInfo, Register};\n");
+        clean("use hal::syscall::{HandlerInfo, Register};\n");
         clean("use hal::sys::syscall::{SYS_exit, SYS_read};\nuse hal::sys::errno::*;\n");
-        clean("use hal::{api::KernelApi, syscall::SysArgs, sys::syscall::{SYS_exit, SYS_read}};\n");
-        clean("fn f(a: &hal::api::KernelApi) -> i32 { hal::sys::errno::Errno::ENOSYS.as_i32() }\n");
-        clean("use hal::api;\nuse hal::sys as headers;\n");
+        clean("use hal::{syscall::SysArgs, sys::syscall::{SYS_exit, SYS_read}};\n");
+        clean("fn f() -> i32 { hal::sys::errno::Errno::ENOSYS.as_i32() }\n");
+        clean("use hal::sys as headers;\n");
         // `::hal` is the crate: clean here because the path is allowed.
-        clean("use ::hal::api::KernelApi;\npub use ::hal::sys::syscall::SYS_exit;\n");
+        clean("pub use ::hal::sys::syscall::SYS_exit;\n");
         // Another crate's or this crate's module, a field and a comment are not the crate.
         clean("use other::hal::cpu;\nuse crate::hal::x;\nuse self::hal::y;\nuse super::hal::z;\n");
         clean("fn f(s: S) { s.hal.cpu(); }\n");
@@ -862,20 +897,48 @@ mod tests {
             "fn f() { let t = ::hal::user::KcopyToken::take(); }\n",
             "R6",
         );
-        one("use hal::{api::KernelApi, user::KcopyToken};\n", "R6");
-        one(
-            "use hal::{api::KernelApi, sys::{errno::Errno}, bridges};\n",
-            "R6",
-        );
+        one("use hal::{sys::errno, user::KcopyToken};\n", "R6");
+        one("use hal::{sys::{errno::Errno}, bridges};\n", "R6");
+        // Decision 52: the KernelApi table is gone, and hal::api with it.
+        one("use hal::api::KernelApi;\n", "R6");
+        one("fn f(a: &hal::api::KernelApi) {}\n", "R6");
         // A glob of the root, `self` in a group, `hal` alone.
         one("use hal::*;\n", "R6");
-        one("use hal::{api::KernelApi, *};\n", "R6");
-        one("use hal::{self, api::KernelApi};\n", "R6");
+        one("use hal::{sys::errno, *};\n", "R6");
+        one("use hal::{self, sys::errno};\n", "R6");
         one("use hal as h;\n", "R6");
         one("extern crate hal;\n", "R6");
         assert_eq!(msgs("use hal::{cpu, user::X};\n"), ["1:R6", "1:R6"]);
         // Test code is not checked.
         clean("#[cfg(test)]\nmod tests {\n    use hal::cpu::x;\n}\n");
+    }
+
+    #[test]
+    fn r6_kernel_only_through_api() {
+        // Decision 52: the door, its groups and functions, by their whole path.
+        clean("fn f() -> R { kernel::api::file::read(1, 2) }\n");
+        clean("fn f() { let g = kernel::api::fs::open; }\n");
+        clean("fn f() { ::kernel::api::syscall_legacy(1, &A, &mut R); }\n");
+        clean("fn f() { r#kernel::api::vm::mmap(1); }\n");
+        // Another crate's module, a field, a comment and test code are not the crate.
+        clean("use other::kernel::proc;\nuse crate::kernel::x;\nfn f(s: S) { s.kernel.proc(); }\n");
+        clean("//! `kernel::proc::fork`.\nfn f() {}\n");
+        clean("#[cfg(test)]\nmod tests {\n    use kernel::syscall::install_legacy_syscalls;\n}\n");
+        // Any other module of the kernel, a glob, the crate alone (in a `use`, R3 refuses it
+        // first, whatever it names).
+        one(
+            "fn f() { kernel::syscall::install_legacy_syscalls(&R); }\n",
+            "R6",
+        );
+        one("fn f() { ::kernel::file::descrip::fdalloc(); }\n", "R6");
+        one("fn f() { let x = kernel::proc::P; }\n", "R6");
+        one("fn f() { kernel; }\n", "R6");
+        one("extern crate kernel;\n", "R6");
+        one("fn f() -> u32 { return ::kernel::proc::x(); }\n", "R6");
+        one("fn f() { let r = 0..kernel::vm::N; }\n", "R6");
+        one("use kernel::proc::fork;\n", "R3");
+        one("use kernel::*;\n", "R3");
+        one("use kernel as k;\n", "R3");
     }
 
     #[test]
@@ -895,9 +958,9 @@ mod tests {
     }
 
     #[test]
-    fn r6_hal_syscall_only_its_types() {
-        // The user's answer of 2026-11-06: each type of hal::syscall, alone, in a group, in a
-        // root group.
+    fn r6_hal_syscall_only_its_types_and_the_registration() {
+        // The user's answer of 2026-11-06 and decision 52: each type of hal::syscall and
+        // set_handler, alone, in a group, in a root group.
         for t in HAL_SYSCALL_ITEMS {
             clean(&format!("use hal::syscall::{t};\n"));
         }
@@ -905,22 +968,19 @@ mod tests {
             "use hal::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult, SyscallFn, ENOSYS};\n",
         );
         clean("fn f(r: hal::syscall::Rval) -> i32 { hal::syscall::ENOSYS }\n");
-        clean("use hal::{api::KernelApi, syscall::{SysArgs, SysResult}};\n");
-        // Its functions, a glob, the module itself or an alias of it.
+        clean("use hal::{sys::errno, syscall::{SysArgs, SysResult}};\n");
+        clean("fn f() { let _ = hal::syscall::set_handler(g, I); }\n");
+        clean("use ::hal::syscall::set_handler;\n");
+        // Its other functions, a glob, the module itself or an alias of it.
         one("fn f() { hal::syscall::dispatch(1, &A, &mut R); }\n", "R6");
-        one("use hal::syscall::set_handler;\n", "R6");
         one("fn f() { let i = hal::syscall::handler_info(); }\n", "R6");
         one("use hal::syscall::{SysArgs, dispatch};\n", "R6");
         one("use hal::syscall::*;\n", "R6");
         one("use hal::syscall;\n", "R6");
         one("use hal::syscall as s;\n", "R6");
         one("use hal::syscall::{self, SysArgs};\n", "R6");
-        one("use hal::{syscall, api::KernelApi};\n", "R6");
-        one(
-            "use hal::{api::KernelApi, syscall::{handler_info}};\n",
-            "R6",
-        );
-        one("use ::hal::syscall::set_handler;\n", "R6");
+        one("use hal::{syscall, sys::errno};\n", "R6");
+        one("use hal::{sys::errno, syscall::{handler_info}};\n", "R6");
     }
 
     #[test]

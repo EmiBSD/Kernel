@@ -21,8 +21,9 @@
 //! name nothing of `bsd` and the 18 constant headers of `sys/`, moved in at N2.2; the rest of
 //! the hardware arrives with its owner, the pmap at N3, cpu and traps at N4, the buses at N7)
 //! and the runtime written new (locks that own their data, typed pools, owned memory, the
-//! typed user copy, the bridge registry, the system call dispatch point and the table the
-//! ABI reaches the kernel through). The only crate of the system where `unsafe` may appear;
+//! typed user copy, the bridge registry, and the system call dispatch point with the
+//! registration of the ABI's handler; since decision 52 the ABI calls the kernel through
+//! `kernel::api`, no table of `hal`'s). The only crate of the system where `unsafe` may appear;
 //! every site carries a soundness proof and `cargo xtask hal-check` refuses a
 //! `pub unsafe fn`: the API is safe (docs/ZERO_UNSAFE.md, section 0).
 #![no_std]
@@ -67,8 +68,6 @@
     reason = "typed one by one, 1,348 sites: abi's 235 (sysent.rs, the syscall arguments) in a slice of their own at the N5 close or the N6 start, the user's decision of 2026-10-29; kernel's 1,061 and hal's 52 at N11"
 )]
 
-#[forbid(unsafe_code)]
-pub mod api;
 pub mod arch;
 pub mod machine;
 pub mod sys;

@@ -114,8 +114,8 @@
 //! - `BsdDiskExport` is the `DiskExport` bridge (`bridges.toml`): the disk list walked
 //!   under its lock, each disk's name, DUID and `struct diskstats` handed to the kernel's
 //!   `sysctl_diskinit` as bytes.
-//! - `native_sysctl` is `sysctl(2)`'s entry in the `KernelApi` table (the ABI's):
-//!   the kernel's `sys_sysctl` over `bsd`'s glue.
+//! - `sysctl(2)`'s `Native` entry (`native_sysctl` in the `KernelApi` table until decision
+//!   52) is `kernel::api::base::sysctl`, which runs [`sys_sysctl`]'s row.
 //! - `sysctl_vslock` returns the kernel's `VsLock` guard (its drop is `sysctl_vsunlock`);
 //!   `sysctl_lock` is the kernel's `SYSCTL_LOCK`, the one lock of both halves.
 use core::ops::ControlFlow;
@@ -238,33 +238,6 @@ pub fn sysctl_vslock(addr: usize, len: usize) -> Result<kernel::base::sysctl::Vs
         panic(format_args!("sysctl_vslock: no curproc"));
     };
     kernel::base::sysctl::sysctl_vslock(p, addr, len)
-}
-
-/// `KernelApi::sysctl`: [`sys_sysctl`]'s row through the system call prologue (`mi_syscall`:
-/// pledge, the pinned syscalls, the kernel-lock rule; the row is `SY_NOLOCK`, as the C's).
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the entry's shape: the number, six arguments, the return registers"
-)]
-pub fn native_sysctl(
-    nr: Register,
-    name: usize,
-    namelen: u32,
-    old: usize,
-    oldlenp: usize,
-    new: usize,
-    newlen: usize,
-    rval: &mut [Register; 2],
-) -> hal::syscall::SysResult {
-    let args = [
-        name as Register,
-        namelen as Register,
-        old as Register,
-        oldlenp as Register,
-        new as Register,
-        newlen as Register,
-    ];
-    crate::kern::kern_descrip::native(nr, crate::sys::syscall::SYS_sysctl, args, rval)
 }
 
 /// `sysctl(2)`'s `sysent[]` row: the kernel's [`kernel::base::sysctl::sys_sysctl`] with the

@@ -63,9 +63,9 @@
 //! socket file of a descriptor, [`copyaddrout`] copies an address back out. `setrtable(2)`
 //! and `getrtable(2)`, the C file's other two, are `kernel::proc::prot`'s (N4.6a).
 //!
-//! The ABI reaches these through `KernelApi::socket` (`hal::api::SocketEntries`): `bsd`'s
-//! `native_*` wrappers run the system call prologue still in `bsd` (pledge, the pinned
-//! system calls; every row is `NOLOCK`) on their `sysent[]` row, whose function is a one-line
+//! The ABI reaches these through `kernel::api::net` (decision 52; `KernelApi::socket` before
+//! it), whose functions run the system call prologue (pledge, the pinned system calls; every
+//! row is `NOLOCK`) on their `sysent[]` row, still `bsd`'s, whose function is a one-line
 //! adapter to the function here (`sys/kern/socket_glue.rs`, until N9).
 //!
 //! ## Deviations

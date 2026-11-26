@@ -7,6 +7,7 @@ name = "abi"
 version = "0.0.1"
 dependencies = [
  "hal",
+ "kernel",
 ]
 
 [[package]]

@@ -4,14 +4,16 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "EmiBSD ABI: OpenBSD's userland interface, linked into the kernel image, zero unsafe, no logic (docs/ZERO_UNSAFE.md, section 0, decision 47)"
+description = "EmiBSD ABI: OpenBSD's userland interface, linked into the kernel image, zero unsafe, no logic, calls the kernel through kernel::api (docs/ZERO_UNSAFE.md, section 0, decisions 47 and 52)"
 publish = false
 
 [lib]
 path = "lib.rs"
 
 [dependencies]
+# Decision 52: `abi` calls the kernel through `kernel::api` (abi-check R6: no other path).
 hal = { path = "../hal" }
+kernel = { path = "../kernel" }
 
 [lints]
 workspace = true

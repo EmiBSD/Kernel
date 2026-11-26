@@ -452,10 +452,10 @@
 //!   `kernel::base::sysctl`.
 //! - The fifteen `sysent[]` entries of the vm system calls (`sys_mmap`, ..., `sys_obreak`):
 //!   the `sysargs` unpacked and handed to `kernel::vm::mmap`/`unix` with the process's
-//!   address space; and their `Native` entries for the ABI (`native_mmap`, ...,
-//!   [`VM_ENTRIES`], `KernelApi::vm`), which run `mi_syscall` on the same row (pipe's
-//!   precedent, `pipe_glue.rs`), so the prologue (`refreshcreds`, the pinned syscalls,
-//!   pledge, the kernel lock rule) is the `Legacy` path's.
+//!   address space; their `Native` entries for the ABI (`native_mmap`, ..., `VM_ENTRIES`
+//!   until decision 52) are `kernel::api::vm`'s, which run `mi_syscall` on the same row, so
+//!   the prologue (`refreshcreds`, the pinned syscalls, pledge, the kernel lock rule) is the
+//!   `Legacy` path's.
 //! - `uvm_init` in the C's order around the kernel's two steps, `uvm_purge`, `uvm_exit`,
 //!   `uvm_init_limits`, `uvmspace_exec`'s install of a new vmspace and `fork1`'s
 //!   share-or-copy (operations on `struct proc`, `struct process` and `struct plimit`), the
@@ -510,11 +510,9 @@ use core::fmt;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use hal::syscall::SysResult;
 use hal::user::UserPtr;
 use hal::vm::param::{round_page, trunc_page};
 use hal::vm::uvmexp::UVMEXP;
-use kernel::api::VmEntries;
 use kernel::file::pipe::UioMove;
 use kernel::vm::anon::Anon;
 use kernel::vm::init::VmMachine;
@@ -529,7 +527,6 @@ use kernel::vm::page::{
 
 use kernel::vm::types::{VmProt, Voff};
 
-use crate::kern::init_sysent::SYSENT;
 use crate::kern::kern_subr::uiomove;
 use crate::kern::subr_prf::panic;
 use crate::machine::cpu::curproc;
@@ -544,12 +541,6 @@ use crate::sys::proc::{Proc, Process};
 use crate::sys::resource::{RLIMIT_DATA, RLIMIT_RSS, RLIMIT_STACK};
 use crate::sys::resourcevar::Plimit;
 use crate::sys::smr::smr_flush;
-use crate::sys::syscall::{
-    SYS_break, SYS_kbind, SYS_madvise, SYS_mimmutable, SYS_minherit, SYS_mlock, SYS_mlockall,
-    SYS_mmap, SYS_mprotect, SYS_mquery, SYS_msync, SYS_munlock, SYS_munlockall, SYS_munmap,
-    SYS_pinsyscalls,
-};
-use crate::sys::syscall_mi::mi_syscall;
 use crate::sys::syscallargs::{
     SysKbindArgs, SysMadviseArgs, SysMimmutableArgs, SysMinheritArgs, SysMlockArgs,
     SysMlockallArgs, SysMmapArgs, SysMprotectArgs, SysMqueryArgs, SysMsyncArgs, SysMunlockArgs,
@@ -570,25 +561,6 @@ pub static VM_MACHINE: VmMachine = VmMachine {
     uspace_align: USPACE_ALIGN,
     have_uspace_guard: <Machine as MachineParam>::HAVE_USPACE_GUARD,
     dma_constraint: <Machine as Pmap>::DMA_CONSTRAINT,
-};
-
-/// `KernelApi::vm`: the `Native` entries of the vm system calls.
-pub const VM_ENTRIES: VmEntries = VmEntries {
-    obreak: native_obreak,
-    mmap: native_mmap,
-    munmap: native_munmap,
-    mprotect: native_mprotect,
-    madvise: native_madvise,
-    mquery: native_mquery,
-    kbind: native_kbind,
-    pinsyscalls: native_pinsyscalls,
-    mimmutable: native_mimmutable,
-    mlock: native_mlock,
-    munlock: native_munlock,
-    minherit: native_minherit,
-    msync: native_msync,
-    mlockall: native_mlockall,
-    munlockall: native_munlockall,
 };
 
 /// The thread on this CPU; a system call or a fault always has one.
@@ -774,159 +746,6 @@ pub fn sys_kbind(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(
 pub fn sys_obreak(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysObreakArgs = sysargs(v);
     kernel::vm::unix::sys_obreak(p, vmspace_of(p), uap.nsize.get() as usize)
-}
-
-/// A `Native` vm entry: the thread on this CPU runs `mi_syscall` on row `nr` of `sysent[]`
-/// (which must be `want`'s, else `ENOSYS`) with `args`: the prologue and the row's adapter
-/// above, as on the `Legacy` path. `rval[0]` back in the `Ok`.
-fn native(nr: Register, want: i32, args: SysArgs) -> Result<Register, i32> {
-    let p = curp("native vm syscall");
-    if nr != want as Register {
-        return Err(Errno::ENOSYS.as_i32());
-    }
-    let mut rval: [Register; 2] = [0, 0];
-    mi_syscall(p, nr, &SYSENT[nr as usize], &args, &mut rval).map_err(Errno::as_i32)?;
-    Ok(rval[0])
-}
-
-/// `KernelApi::vm.obreak`.
-pub fn native_obreak(nr: Register, nsize: usize) -> SysResult {
-    native(nr, SYS_break, [nsize as Register, 0, 0, 0, 0, 0]).map(|_| ())
-}
-
-/// `KernelApi::vm.mmap`.
-pub fn native_mmap(
-    nr: Register,
-    addr: usize,
-    len: usize,
-    prot: i32,
-    flags: i32,
-    fd: i32,
-    pos: i64,
-) -> Result<usize, i32> {
-    let args = [
-        addr as Register,
-        len as Register,
-        prot as Register,
-        flags as Register,
-        fd as Register,
-        pos as Register,
-    ];
-    native(nr, SYS_mmap, args).map(|a| a as usize)
-}
-
-/// `KernelApi::vm.mquery`.
-pub fn native_mquery(
-    nr: Register,
-    addr: usize,
-    len: usize,
-    prot: i32,
-    flags: i32,
-    fd: i32,
-    pos: i64,
-) -> Result<usize, i32> {
-    let args = [
-        addr as Register,
-        len as Register,
-        prot as Register,
-        flags as Register,
-        fd as Register,
-        pos as Register,
-    ];
-    native(nr, SYS_mquery, args).map(|a| a as usize)
-}
-
-/// A range system call's `Native` entry: `(addr, len)` on row `want`.
-fn native_range(nr: Register, want: i32, addr: usize, len: usize) -> SysResult {
-    native(nr, want, [addr as Register, len as Register, 0, 0, 0, 0]).map(|_| ())
-}
-
-/// A range system call's `Native` entry with an `int`: `(addr, len, v)` on row `want`.
-fn native_range_int(nr: Register, want: i32, addr: usize, len: usize, v: i32) -> SysResult {
-    let args = [addr as Register, len as Register, v as Register, 0, 0, 0];
-    native(nr, want, args).map(|_| ())
-}
-
-/// `KernelApi::vm.munmap`.
-pub fn native_munmap(nr: Register, addr: usize, len: usize) -> SysResult {
-    native_range(nr, SYS_munmap, addr, len)
-}
-
-/// `KernelApi::vm.mprotect`.
-pub fn native_mprotect(nr: Register, addr: usize, len: usize, prot: i32) -> SysResult {
-    native_range_int(nr, SYS_mprotect, addr, len, prot)
-}
-
-/// `KernelApi::vm.madvise`.
-pub fn native_madvise(nr: Register, addr: usize, len: usize, behav: i32) -> SysResult {
-    native_range_int(nr, SYS_madvise, addr, len, behav)
-}
-
-/// `KernelApi::vm.kbind`.
-pub fn native_kbind(nr: Register, param: usize, psize: usize, cookie: u64) -> SysResult {
-    let args = [
-        param as Register,
-        psize as Register,
-        cookie as Register,
-        0,
-        0,
-        0,
-    ];
-    native(nr, SYS_kbind, args).map(|_| ())
-}
-
-/// `KernelApi::vm.pinsyscalls`.
-pub fn native_pinsyscalls(
-    nr: Register,
-    base: usize,
-    len: usize,
-    pins: usize,
-    npins: i32,
-) -> SysResult {
-    let args = [
-        base as Register,
-        len as Register,
-        pins as Register,
-        npins as Register,
-        0,
-        0,
-    ];
-    native(nr, SYS_pinsyscalls, args).map(|_| ())
-}
-
-/// `KernelApi::vm.mimmutable`.
-pub fn native_mimmutable(nr: Register, addr: usize, len: usize) -> SysResult {
-    native_range(nr, SYS_mimmutable, addr, len)
-}
-
-/// `KernelApi::vm.mlock`.
-pub fn native_mlock(nr: Register, addr: usize, len: usize) -> SysResult {
-    native_range(nr, SYS_mlock, addr, len)
-}
-
-/// `KernelApi::vm.munlock`.
-pub fn native_munlock(nr: Register, addr: usize, len: usize) -> SysResult {
-    native_range(nr, SYS_munlock, addr, len)
-}
-
-/// `KernelApi::vm.minherit`.
-pub fn native_minherit(nr: Register, addr: usize, len: usize, inherit: i32) -> SysResult {
-    native_range_int(nr, SYS_minherit, addr, len, inherit)
-}
-
-/// `KernelApi::vm.msync`.
-pub fn native_msync(nr: Register, addr: usize, len: usize, flags: i32) -> SysResult {
-    native_range_int(nr, SYS_msync, addr, len, flags)
-}
-
-/// `KernelApi::vm.mlockall`.
-pub fn native_mlockall(nr: Register, flags: i32) -> SysResult {
-    native(nr, SYS_mlockall, [flags as Register, 0, 0, 0, 0, 0]).map(|_| ())
-}
-
-/// `KernelApi::vm.munlockall`.
-pub fn native_munlockall(nr: Register) -> SysResult {
-    native(nr, SYS_munlockall, [0; 6]).map(|_| ())
 }
 
 /// `uvm_init`: init the VM system. Called from `kern/init_main.c`: the bridges and the

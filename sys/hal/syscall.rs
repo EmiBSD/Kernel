@@ -111,12 +111,12 @@
 //! this crate sits below every crate that names `Errno`.
 //!
 //! One answer is registered, once, at boot (docs/ZERO_UNSAFE.md 0.1, the sequence diagram):
-//! the ABI's handler, which `abi::abi_init` registers through `KernelApi` when the image's
-//! boot glue calls it, before `main()` and so before the first system call. [`dispatch`]
-//! calls it; with nothing registered it answers `ENOSYS`, which only a kernel that skipped
-//! its own registration can see (the boot glue panics first). The ABI's table reaches the LZ
-//! path (`sysent[]` and `mi_syscall`) for its `Legacy` entries through
-//! `KernelApi::syscall_legacy`, not through this registry.
+//! the ABI's handler, which `abi::abi_init` registers here with [`set_handler`] when the
+//! image's boot glue calls it, before `main()` and so before the first system call: the one
+//! upward call of `hal`, like the panic handler (decision 52). [`dispatch`] calls it; with
+//! nothing registered it answers `ENOSYS`, which only a kernel that skipped its own
+//! registration can see (the boot glue panics first). The ABI reaches the kernel, its
+//! `Legacy` entries included, through `kernel::api`, not through this registry.
 //!
 //! ## Redesign
 //! - LZ's two traps each chose the `sysent[]` entry and called `mi_syscall` (amd64
