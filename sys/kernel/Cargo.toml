@@ -27,6 +27,7 @@ fuse = []                       # `option FUSE` -> fs::fuse, FUSE and /dev/fuse0
 nfsclient = []                  # `option NFSCLIENT` -> netinet::if_ether's reverse ARP client (revarpwhoami, nfs_boot's; N6.4b)
 nfsserver = []                  # `option NFSSERVER` -> fs::export, the file systems' export lists (vfs_export, vfs_export_lookup; N6.7b0; without it ENOTSUP and no grant), and the nfs server (fs::nfs's nfssvc, nfs_srvsubs, nfs_srvsocket, nfs_srvcache; N6.7b2)
 tcp_sack_debug = []             # `option TCP_SACK_DEBUG` -> netinet::tcp_output::tcp_print_holes (not in GENERIC; N6.6a3)
+boot_config = []                # `option BOOT_CONFIG` -> dev::userconf, `boot -c`'s UKC> prompt (N7.1c; both GENERICs have it)
 # No `multiprocessor`: the kernel crate is MULTIPROCESSOR code only (decision 40,
 # 2026-10-17): vm::pmemrange always has its per-CPU page caches.
 # Host tests only, never a kernel image: `kernel::testutil`, the safe doubles of hal's bridges,

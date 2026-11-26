@@ -20760,3 +20760,14 @@ kind = "merged"
 lz = "sys/sys/sensors.rs::KsensorsHead"
 native = ["Ksensordev"]
 kind = "merged"
+
+[[module]]
+rust = "sys/kernel/dev/userconf.rs"
+crate = "kernel"
+lz = ["sys/kern/subr_userconf.rs"]
+status = "redesigned"
+notes = "N7.1c: subr_userconf.c's UKC editor in the kernel, 0 unsafe, behind the kernel feature boot_config: the same commands, strings and history as LZ's, over a UkcTables trait of ioconf.c's members (bsd's IoconfTables implements it until N9.1, bridges.toml) and a UkcCons (hal::cons, printf(9), ddb's entry given by the caller); add's shift is the C's loop over slot_copy, the parents renumbered first by the owner (parents_shift); change's copy an M_TEMP MArray; the locnamp runs walked by index, no Vec"
+[[module.fn]]
+lz = "sys/kern/subr_userconf.rs::Userconf::locator_names"
+native = ["Userconf::locnamp_at", "Userconf::nlocs"]
+kind = "split"

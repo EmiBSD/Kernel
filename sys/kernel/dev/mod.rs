@@ -25,5 +25,7 @@ pub mod clock_subr;
 pub mod device;
 pub mod evcount;
 pub mod sensors;
+#[cfg(feature = "boot_config")]
+pub mod userconf;
 pub mod watchdog;
 /* </CODE> */

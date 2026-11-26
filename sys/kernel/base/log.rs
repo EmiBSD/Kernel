@@ -705,8 +705,9 @@ impl fmt::Write for Snprintf<'_> {
     }
 }
 
-/// `snprintf(buf, sizeof(buf), fmt, ...)`.
-fn snprintf(buf: &mut [u8], args: fmt::Arguments<'_>) -> usize {
+/// `snprintf(buf, sizeof(buf), fmt, ...)`: the bytes that fit before the last (never
+/// terminated), the length the whole format makes returned.
+pub(crate) fn snprintf(buf: &mut [u8], args: fmt::Arguments<'_>) -> usize {
     let mut w = Snprintf { buf, len: 0 };
     let _ = w.write_fmt(args);
     w.len
