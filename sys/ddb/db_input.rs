@@ -67,7 +67,7 @@
 //!   buffers of the same size).
 //! - `db_check_interrupt`, which older ddb had here, is not in the pinned file.
 
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 use crate::ddb::db_output::{db_force_whitespace, db_putchar};
 use crate::ddb::db_var::DB_HISTORY_SIZE;

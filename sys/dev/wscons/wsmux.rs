@@ -86,7 +86,7 @@
 
 use core::ptr::{self, NonNull};
 
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 use crate::dev::wscons::wsconsio::{
     WSKBDIO_SETMODE, WSMUX_KBD, WSMUX_MAXDEV, WSMUX_MOUSE, WSMUX_MUX, WSMUXIO_ADD_DEVICE,

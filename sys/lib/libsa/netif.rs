@@ -82,7 +82,7 @@
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 
-use libkern::staticcell::StaticCell;
+use crate::staticcell::StaticCell;
 
 use crate::dev::set_errno;
 use crate::hdr::types::Time;

@@ -73,8 +73,8 @@
 use core::ffi::c_void;
 use core::ptr;
 
+use crate::sys::staticcell::StaticCell;
 use alloc::boxed::Box;
-use libkern::StaticCell;
 
 use crate::dev::wscons::ascii::*;
 #[cfg(test)]

@@ -79,7 +79,7 @@ use core::cell::Cell;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicI64, AtomicPtr, AtomicUsize, Ordering};
 
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 use crate::dev::rnd::arc4random_buf;
 use crate::kern::kern_lock::{mtx_enter, mtx_leave};

@@ -1088,8 +1088,8 @@ impl Intr for Machine {
 }
 
 /// The host's `ioconf`: empty until a test installs one with `Machine::set_ioconf`.
-static HOST_IOCONF: libkern::StaticCell<(&'static [Cfdata], &'static [i16])> =
-    libkern::StaticCell::new((&[], &[]));
+static HOST_IOCONF: crate::sys::staticcell::StaticCell<(&'static [Cfdata], &'static [i16])> =
+    crate::sys::staticcell::StaticCell::new((&[], &[]));
 
 /// The host's `mainbus_cd`, for tests that attach a root named "mainbus".
 static HOST_MAINBUS_CD: Cfdriver = Cfdriver::new(b"mainbus", DV_DULL, 0);

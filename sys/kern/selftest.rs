@@ -41,7 +41,7 @@ use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 use crate::conf::param::HZ;
 use crate::dev::cons::cn_tab;

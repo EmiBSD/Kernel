@@ -59,7 +59,7 @@
 //!   made: the machine's bus space tags have no equality (`BusSpace::Tag` is only `Copy`).
 //!   Its one caller, `cy693_chip_map`, always passes its PCI bus's I/O tag.
 
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 use crate::dev::pci::cy82c693reg::CYHC_CONFIG_ADDR;
 use crate::dev::pci::cy82c693var::Cy82c693Handle;

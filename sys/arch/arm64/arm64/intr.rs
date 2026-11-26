@@ -74,7 +74,7 @@ use core::cell::Cell;
 use core::ffi::c_void;
 use core::ptr::{self, NonNull};
 
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 use crate::arch::arm64::include::cpu::{CpuInfo, curcpu};
 use crate::arch::arm64::include::frame::Trapframe;

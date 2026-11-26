@@ -60,7 +60,7 @@
 //!   beside its type, because libsa's `loadfile` reads it and libsa cannot see the boot
 //!   program's crate. boot(8) keys it.
 
-use libkern::staticcell::StaticCell;
+use crate::staticcell::StaticCell;
 
 /// `RC4STATE`.
 pub const RC4STATE: usize = 256;

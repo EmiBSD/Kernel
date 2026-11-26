@@ -80,7 +80,7 @@ use core::sync::atomic::Ordering;
 #[cfg(feature = "multiprocessor")]
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32};
 
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 #[cfg(feature = "multiprocessor")]
 use crate::arch::arm64::arm64::intr::arm_send_ipi;

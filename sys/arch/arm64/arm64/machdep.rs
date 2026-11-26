@@ -122,7 +122,7 @@ use core::ffi::CStr;
 use core::ptr::{self, NonNull, addr_of, addr_of_mut};
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 use crate::arch::arm64::arm64::autoconf::BOOTMAC;
 use crate::arch::arm64::arm64::bus_space::ARM64_BS_TAG;

@@ -68,12 +68,12 @@ use core::ptr;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
 use efi::include::efi::*;
-use libkern::staticcell::StaticCell;
 use libsa::dev::set_errno;
 use libsa::hdr::stat::Stat;
 use libsa::hdr::types::{Daddr, Off};
 use libsa::saerrno::Errno;
 use libsa::stand::{OpenFile, SEEK_CUR, SEEK_END, SEEK_SET};
+use libsa::staticcell::StaticCell;
 
 use crate::diskprobe::BOOTDEV_DIP;
 use crate::efiboot::{

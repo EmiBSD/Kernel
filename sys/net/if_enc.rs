@@ -93,9 +93,9 @@ use crate::sys::malloc::{M_DEVBUF, M_NOWAIT, M_ZERO};
 use crate::sys::mbuf::{Mbuf, park};
 use crate::sys::socket::{RT_TABLEID_MAX, Sockaddr};
 use crate::sys::sockio::{SIOCSIFADDR, SIOCSIFDSTADDR, SIOCSIFFLAGS, SIOCSIFRDOMAIN};
+use crate::sys::staticcell::StaticCell;
 use crate::sys::systm::{net_assert_locked, net_lock, net_unlock};
 use kernel::net::ipsec_hooks::{SpdError, TdbKey, TdbRef};
-use libkern::staticcell::StaticCell;
 
 /// `ENCMTU`: XXX should be bigger, maybe `LOMTU`.
 pub const ENCMTU: u32 = 1536;

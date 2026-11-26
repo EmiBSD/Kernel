@@ -129,7 +129,6 @@ use core::sync::atomic::{
 
 use boot::cmd::{BOOTDEVLEN, CMDT_CMD, CmdState, CmdTable, cstr};
 use efi::include::efi::*;
-use libkern::staticcell::StaticCell;
 use libsa::cons::{cn_tab, cnset};
 use libsa::cread::{lseek, open, read};
 use libsa::fstat::fstat;
@@ -144,6 +143,7 @@ use libsa::sa_alloc::{alloc, free};
 use libsa::saerrno::Errno;
 use libsa::snprintf;
 use libsa::stand::{O_RDONLY, OpenFile, SEEK_SET, isalpha, isdigit, sa_conf};
+use libsa::staticcell::StaticCell;
 
 use crate::disk::{DISKINFO_FLAG_GOODLABEL, DiskInfo};
 use crate::efiacpi::efi_acpi;

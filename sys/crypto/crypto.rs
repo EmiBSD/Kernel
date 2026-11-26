@@ -70,7 +70,7 @@
 
 use alloc::vec::Vec;
 
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 use super::cryptodev::{
     CRYPTO_ALGORITHM_MAX, CRYPTO_DRIVERS_INITIAL, CRYPTO_DRIVERS_MAX, CRYPTOCAP_F_CLEANUP,

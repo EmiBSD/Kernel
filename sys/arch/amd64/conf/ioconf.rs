@@ -91,7 +91,7 @@
 //! layout: attachment, driver, unit, state, locators, flags, parents (indices into
 //! `CFDATA`), the start of its locator names and the first unit a starred entry may take.
 
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 use crate::arch::amd64::amd64::acpi_machdep::ACPI_CA;
 use crate::arch::amd64::amd64::bios::{BIOS_CA, BIOS_CD};

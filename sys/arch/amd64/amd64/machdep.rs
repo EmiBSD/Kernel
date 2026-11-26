@@ -203,7 +203,7 @@ use core::mem::offset_of;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering};
 
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 use crate::arch::amd64::amd64::autoconf::COLD;
 use crate::arch::amd64::amd64::consinit::consinit;

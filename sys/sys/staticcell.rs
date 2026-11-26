@@ -19,11 +19,18 @@
 /* <CODE> */
 //! `StaticCell<T>`: a `static` whose contents the kernel mutates in place.
 //!
+//! LZ: sys/lib/libkern/staticcell.rs@e8249449d905
+//!
 //! Not an OpenBSD file. C spells these `static struct foo bar;` and mutates them under a lock or
 //! during single-threaded boot; Rust would spell that `static mut`, which this workspace forbids
 //! (`.claude/rules/rust-kernel.md`). Every access is `unsafe` so that each site states which
 //! lock or boot phase excludes other references. Atomics and the ported `Mutex<T>` are preferred
 //! whenever the value fits them; this is for the rest: hardware handles, buffers, function tables.
+//!
+//! ## Redesign
+//! - Decision 55 (the user, 2026-11-26): moved from `libkern`, which now holds no `unsafe`, into
+//!   `bsd`, the legacy crate its users are in; it dies with the last of them at N9. The boot
+//!   loaders use their own copy, `libsa::staticcell` (libsa is the excepted crate).
 
 use core::cell::UnsafeCell;
 

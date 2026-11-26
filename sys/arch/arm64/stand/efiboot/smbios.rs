@@ -57,7 +57,7 @@
 use alloc::vec::Vec;
 use core::ptr;
 
-use libkern::staticcell::StaticCell;
+use libsa::staticcell::StaticCell;
 
 /// `SMBIOS_TYPE_BIOS`.
 pub const SMBIOS_TYPE_BIOS: u8 = 0;

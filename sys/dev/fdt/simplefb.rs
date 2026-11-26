@@ -68,7 +68,7 @@ use core::cell::Cell;
 use core::ffi::c_void;
 use core::ptr;
 
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 use crate::dev::ofw::fdt::{FdtReg, OF_getprop, OF_getpropint, OF_is_compatible, fdt_get_reg};
 use crate::dev::rasops::rasops::{

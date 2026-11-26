@@ -121,6 +121,7 @@ pub use sysdefs::softintr;
 #[forbid(unsafe_code)]
 pub mod specdev;
 pub use sysdefs::stat;
+pub mod staticcell;
 #[forbid(unsafe_code)]
 pub mod swap;
 pub use sysdefs::syscall;

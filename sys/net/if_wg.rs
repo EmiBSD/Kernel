@@ -228,6 +228,7 @@ use crate::sys::socket::{
 };
 use crate::sys::socketvar::Socket;
 use crate::sys::sockio::{SIOCADDMULTI, SIOCDELMULTI, SIOCSIFADDR, SIOCSIFFLAGS, SIOCSIFMTU};
+use crate::sys::staticcell::StaticCell;
 use crate::sys::syslog::{LOG_DEBUG, LOG_INFO, LOG_WARNING};
 use crate::sys::systm::{kernel_assert_locked, net_assert_locked, net_lock, net_unlock};
 use crate::sys::task::{TASKQ_MPSAFE, Task, Taskq, TaskqRef};
@@ -236,7 +237,6 @@ use crate::sys::timeout::{Timeout, timeout_pending};
 use crate::sys::types::{InPort, SaFamily};
 use hal::cpu::intr::IPL_NONE;
 use hal::sync::mutex::Mutexed;
-use libkern::StaticCell;
 use libkern::siphash::AtomicSiphashKey;
 
 /// `WG_KEY_LEN`.

@@ -71,7 +71,7 @@
 use core::ptr;
 use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 use crate::arch::amd64::amd64::lapic::LAPIC_PER_SECOND;
 use crate::arch::amd64::amd64::machdep::{delay, delay_init};

@@ -81,7 +81,7 @@ compression parts stripped from zlib:gzio.c
 use alloc::boxed::Box;
 use alloc::vec;
 
-use libkern::staticcell::StaticCell;
+use crate::staticcell::StaticCell;
 use libz::{
     Flush, Z_DATA_ERROR, Z_DEFLATED, Z_ERRNO, Z_OK, Z_STREAM_END, ZCode, ZStream, crc32, inflate,
     inflateEnd, inflateInit2, inflateReset,

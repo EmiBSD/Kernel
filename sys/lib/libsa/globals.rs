@@ -42,7 +42,7 @@
 
 use core::sync::atomic::{AtomicI32, AtomicU32};
 
-use libkern::staticcell::StaticCell;
+use crate::staticcell::StaticCell;
 
 use crate::net::{BA, FNAME_SIZE, IFNAME_SIZE};
 

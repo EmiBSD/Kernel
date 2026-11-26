@@ -54,10 +54,10 @@
 use core::sync::atomic::Ordering;
 
 use efi::include::efi::ACPI_20_TABLE_GUID;
-use libkern::staticcell::StaticCell;
 use libsa::cons::cnset;
 use libsa::printf;
 use libsa::snprintf;
+use libsa::staticcell::StaticCell;
 
 use crate::dt_blob::dt_blob_start;
 use crate::efiboot::{DMA_CONSTRAINT, st, ttydev};

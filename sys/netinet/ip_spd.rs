@@ -116,11 +116,11 @@ use crate::sys::queue::TailqHead;
 #[cfg(feature = "inet6")]
 use crate::sys::socket::AF_INET6;
 use crate::sys::socket::{AF_INET, PF_KEY};
+use crate::sys::staticcell::StaticCell;
 use crate::sys::systm::{net_assert_locked, net_assert_locked_exclusive};
 use crate::sys::timeout::Timeout;
 use hal::mem::malloc::MBox;
 use kernel::net::radix::RadixTree;
-use libkern::staticcell::StaticCell;
 
 /// What `ipsp_spd_lookup` answers instead of "no IPsec" or "do IPsec".
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

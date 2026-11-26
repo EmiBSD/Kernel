@@ -64,10 +64,13 @@
 //! `Ord::max`, `Ord::min` and `i32::abs`; `KASSERT`/`KDASSERT` are `kassert!`/`kdassert!` in
 //! `sys/kern/subr_prf.rs`, next to the `__assert` they call (this crate cannot call into `bsd`).
 //!
-//! [`StaticCell`] is the one project helper here: the `static`-with-interior-mutability every
-//! ported global that is neither an atomic nor behind a lock needs (`ports.toml`, `[[extra]]`).
+//! Decision 55 (the user, 2026-11-26): this crate holds no `unsafe` and says so (`forbid` below).
+//! `explicit_bzero` is `hal::mem::explicit_bzero`, and `StaticCell`, the one project helper
+//! that was here, is `bsd`'s (`sys/sys/staticcell.rs`, until N9) and `libsa`'s (the boot
+//! loaders').
 
 #![no_std]
+#![forbid(unsafe_code)]
 
 #[cfg(test)]
 extern crate std;
@@ -84,7 +87,6 @@ pub mod scanc;
 pub mod siphash;
 #[forbid(unsafe_code)]
 pub mod skpc;
-pub mod staticcell;
 #[forbid(unsafe_code)]
 pub mod strlcat;
 #[forbid(unsafe_code)]
@@ -101,7 +103,6 @@ pub use getsn::{GetsnCons, getsn};
 pub use random::random;
 pub use scanc::scanc;
 pub use skpc::skpc;
-pub use staticcell::StaticCell;
 pub use strlcat::strlcat;
 pub use strlcpy::strlcpy;
 pub use strncasecmp::strncasecmp;

@@ -122,7 +122,7 @@ use core::ffi::c_void;
 use core::ptr;
 use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 use crate::arch::arm64::arm64::cpufunc::{cpu_tlb_flush, cpu_wfi};
 use crate::arch::arm64::arm64::machdep::cpu_info_list;

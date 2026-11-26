@@ -66,7 +66,7 @@
 use core::ptr;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 use crate::sys::errno::Errno;
 

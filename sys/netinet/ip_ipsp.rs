@@ -205,13 +205,13 @@ use crate::sys::refcnt::{DT_REFCNT_IDX_TDB, Refcnt};
 #[cfg(feature = "inet6")]
 use crate::sys::socket::AF_INET6;
 use crate::sys::socket::{AF_INET, Sockaddr};
+use crate::sys::staticcell::StaticCell;
 use crate::sys::systm::{net_assert_locked, net_assert_locked_exclusive, net_lock, net_unlock};
 use crate::sys::timeout::{KCLOCK_NONE, TIMEOUT_MPSAFE, TIMEOUT_PROC, Timeout};
 use crate::sys::tree::{RbtEntry, RbtHead};
 use crate::sys::types::SaFamily;
 use crate::{kassert, queue_adapter, tree_adapter};
 use libkern::siphash::{SipHash24Ctx, SiphashKey};
-use libkern::staticcell::StaticCell;
 
 /// `DPRINTF(fmt, args...)` of the IPsec files: `printf("%s: " fmt "\n", __func__, args)`
 /// when the kernel has `option ENCDEBUG` (feature `encdebug`) and `net.inet.ip.encdebug` is

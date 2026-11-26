@@ -57,7 +57,7 @@
 
 use core::ffi::c_void;
 
-use libkern::StaticCell;
+use crate::sys::staticcell::StaticCell;
 
 use crate::dev::wscons::wsconsio::{WSDISPLAY_FONTENC_ISO, WSDISPLAY_FONTORDER_L2R, WsdisplayFont};
 

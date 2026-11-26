@@ -100,7 +100,7 @@
 //!   `dt_blob.S`. The labels `dt_header`, `gic`, `uart0`... which nothing reads, are not
 //!   defined.
 
-use libkern::staticcell::StaticCell;
+use libsa::staticcell::StaticCell;
 
 use crate::fdt::{FDT_END, FDT_MAGIC, FDT_NODE_BEGIN, FDT_NODE_END, FDT_PROPERTY};
 

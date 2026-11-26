@@ -37,7 +37,7 @@ paths = [
     "sys/arch/host/**",
     # Runtime: the primitives every subsystem builds on.
     # Statics.
-    "sys/lib/libkern/staticcell.rs",
+    "sys/sys/staticcell.rs",
     # Locks and reference counts.
     "sys/sys/mutex.rs",
     "sys/kern/kern_lock.rs",
