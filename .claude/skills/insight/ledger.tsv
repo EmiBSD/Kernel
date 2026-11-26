@@ -43,3 +43,5 @@ date	brief	model	in_tokens	out_tokens	cost_usd	seconds	finish	file
 20261108	n6.2-peek4k/BRIEF.md	~openai/gpt-sol-latest	8301	1324	0.0340	25	stop	20261108-164353-openai_gpt-sol-latest.md
 20261115	insight/BRIEF.md	google/gemini-4-argon	5531	4168	0.0527	72	stop	20261115-114938-google_gemini-4-argon.md
 20261115	insight/BRIEF.md	~openai/gpt-sol-latest	4735	1730	0.0291	33	stop	20261115-114938-openai_gpt-sol-latest.md
+20261126	insight/BRIEF.md	google/gemini-4-argon	3026	2317	0.0292	54	stop	20261126-013854-google_gemini-4-argon.md
+20261126	insight/BRIEF.md	~openai/gpt-sol-latest	2654	674	0.0134	12	stop	20261126-013854-openai_gpt-sol-latest.md

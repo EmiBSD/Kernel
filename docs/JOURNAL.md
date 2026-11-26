@@ -836,3 +836,78 @@ below are events inside the milestone.
   moved); became work: one fair pair on the same recycling pool double, which put the rise at
   +13.8 %, accepted with its reason in the a1 merge (vtoi's counted handle; N12). $0.08.
 
+
+## N6 Network stack
+
+Met 2026-11-26 (N6.0 merged 2026-11-07). Boundary: from `docs: close N5` (eaade76b,
+2026-11-07) to the `docs: close N6` commit. `git rev-list --count --no-merges eaade76b..0b9df630`:
+637 commits; `git log --oneline --merges --first-parent eaade76b..0b9df630 | wc -l`: 53 merges
+into `main`, one per slice, fix or LZ sync.
+
+- What moved (merge subjects). `kernel::net`: `hal`'s preconditions (N6.0); the mbuf, `bsd`'s
+  three files as adapters (N6.1); the socket layer and unix domain sockets (N6.2a), the socket
+  system calls (N6.2b); the interface core (N6.3a1) and its ioctls and media (a2); the routing
+  table, routes and timers (b1) and the routing socket (b2); bpf (c1); loopback and Ethernet
+  (c2). `kernel::netinet`: IPv4 addresses, IGMP and output (N6.4a), ARP with the route's typed
+  link-level record (b), the pcb and IP socket options (c1), input, reassembly, ICMP and the
+  inet protocol table (c2). `kernel::netinet6`: addresses, multicast, MLD and source selection
+  (N6.5a), ND and DAD (b), output and the pcb's IPv6 half (c), input, forwarding, reassembly,
+  ICMPv6 and the inet6 table (d); then the net lock's cells opened from `NetHeld` (e0), counted
+  interface addresses (e1) and multicast records (e2). TCP in six steps, the switch at N6.6a5;
+  UDP (N6.6b0); raw IP, raw IPv6 and divert (b1). `kernel::fs::nfs`: the wire format (N6.7a0),
+  types and RPC engine (a1), node table, attribute cache and kq (a2), vnode operations (a3),
+  the diskless boot (a4), the client the kernel's (a5); a radix tree that owns its nodes and the
+  export list (b0), the server's core (b2) and procedures (b3), pf's tables and the SPD on that
+  tree (b1), the server the kernel's with `nfssvc(2)` native (b4). Beside them two LZ syncs
+  (937d22ef0eb4's 7 records; `__thrsleep`/`__thrwakeup` and `sysarch(2)`), the pin bumped to
+  e8249449d905 (59 of 59 triaged), and `MANUAL.toml` in the release tarball. Native calls
+  170 -> 190 of 331; `hal` 196 -> 227 (`hal_ceiling` stays 600); `bsd` 8832 -> 7017.
+- Went well. The user lifted the serial rule on 2026-11-23 ("paraleliza todo lo que se pueda"),
+  and N6.6b and N6.7 ran in parallel without a cross-slice conflict beyond the shared files.
+  The close's runs found three real faults and fixed them at the root, not in the expectation:
+  re(4)'s attach walks the multicast list before `ether_ifattach`, as the C does (0d323661: an
+  empty list, not a panic); smoke-viogpu's marker raced viogpu's 10 ms refresh (37681228);
+  diff-openbsd's tcp step ran before `lo0` had an address (0c319d76). netstat(1) is built by
+  `just userland` for smoke-net (9967b6d8), one line in xtask's program list.
+- Failed, and what fixed it. A first attempt to try Userland's published sets built an install
+  medium and pulled netstat from a set (6272dff1); the user stopped it ("compila el binario que
+  falta nomas") and it was reverted (a3f29c62). The net bench panicked at `arp.resolve.miss`:
+  the fixture called `arpresolve` without the net lock (1e3fd1ec). `just test` failed twice in
+  about 18 runs on `fs::bio`'s books: a `should_panic` test in `fs::buf` released a buffer into
+  another test's cache while unwinding (f1cd956c, the token kept in `ManuallyDrop`).
+- Decision 43 at the close: nine host bench rows rose more than 10 % (bench-table of N6.8);
+  bisected over N6's 49 merges with 20 probes, AC power, 3 runs each: `prim.vn-read-offset`
+  (release +19 %, at 6a26766e) and `prim.mutexed` (dev +19 %, at e2560d47) are codegen steps
+  with no source change in the path; `lf.setlk.unlck` (dev +10-11 %) creeps over `hal`'s pool
+  changes; `sig.sigactsinit` (dev +48 %) appears only with the nfs features, from 0ee33194,
+  layout; the futex rows are bimodal in dev, the `__thrsleep` sync adding +5-7 %;
+  `fault.lower-read`, `fault.upper-cow` (release) and `fuse.roundtrip` (dev) did not reproduce.
+  Accepted with these reasons (the user's recommended decisions); the codegen and layout items
+  are N12's row.
+- The exit criterion was restated at the close (docs/ROADMAP.md N6 row): `bsd` keeps 45
+  adapted network files over `kernel::net`, deleted at N9, as N4 and N5 kept theirs.
+- Open: the QEMU `just bench` was not run at this close; `nfs.timer.16q` has no bench row (the
+  test glues are thread-local); the counted-address scope question of N6.5's D-3 stays the
+  user's; the "use Userland sets" slice is dropped until the user starts it.
+- Numbers at the close, arm64 (decision 44): `just check` rc=0 at 477b7486 (414 s; 5849 tests
+  passed, 0 failed, 376 ignored); `just ci` rc=0 at 0d323661 (715 s; smoke-all 67 of 87
+  passed, 20 skipped by decision 44, 108 boots skipped, 7 m 01 s; `lz drift --strict` 0 open);
+  `just comp` rc=0 (994 s); `just ci-full` rc=0 at 37681228 (1286 s: smoke-all on four CPUs 67
+  of 87, 7 m 30 s, then install arm64 235 s, install-boot, install arm64-acpi 215 s,
+  install-boot acpi, install80 arm64 153 s); `just diff-openbsd` rc=0 at 0c319d76 (79 s; 156
+  steps, 153 equal, 3 expected: fifofs unported, `kern.ostype` branding, coredump stub; 0
+  unexpected; the nfs set on both sides); `cargo xtask lz drift --security`: 0 open; post-merge
+  on 0b9df630 rc=0 (6153 host tests passed, 0 failed); `lz check` 1307 modules (601
+  inherited, 238 adapted, 468 redesigned), 2428 fn rows, 98 extras, 32 bridges open (N7 15,
+  N8 9, N9 5, N10 3), 0 errors. Crates: kernel 0, abi 0, hal 227, bsd 7017, boot 621; forbid
+  664 of 1385, legacy 5452.
+- Effort / Time: left for the user.
+
+### /insight calls of N6 (ledger.tsv)
+
+- 2026-11-07, the N6 heads-up, Gemini 4 Argon + GPT Sol, $0.05.
+- 2026-11-08, design fork of N6.2 (the socket lock), $0.11; hot-path measurement of N6.2a
+  (`soreceive.peek.4k` +23.5 %), $0.08.
+- 2026-11-15, N6.5's question, $0.08.
+- Their claims and verdicts are in each slice's handoff and merge message; not restated here.
+  The call of 2026-11-26 is N7's heads-up (7 of 7 claims held, $0.04).
