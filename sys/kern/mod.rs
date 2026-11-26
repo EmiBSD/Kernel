@@ -26,8 +26,10 @@
 
 #[forbid(unsafe_code)]
 pub mod abi_module;
-#[forbid(unsafe_code)]
-pub mod clock_subr;
+// `kern/clock_subr.c` is `kernel::clock_subr` since N7.1b; the time-of-day chips still in
+// `bsd` (amd64's `isa/clock.rs`, frozen until N10) keep LZ's path through this alias
+// (docs/SCAFFOLDING.md).
+pub use kernel::clock_subr;
 #[forbid(unsafe_code)]
 pub mod dma_alloc;
 pub mod exec_elf;

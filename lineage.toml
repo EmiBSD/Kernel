@@ -5011,11 +5011,6 @@ lz = ["sys/dev/wsfont/wsfont.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/kern/clock_subr.rs"
-lz = ["sys/kern/clock_subr.rs"]
-status = "inherited"
-
-[[module]]
 rust = "sys/kern/dma_alloc.rs"
 lz = ["sys/kern/dma_alloc.rs"]
 status = "adapted"
@@ -13615,6 +13610,14 @@ rust = "sys/sys/time.rs"
 lz = ["sys/sys/time.rs"]
 status = "redesigned"
 notes = "M5: timeval/timespec/bintime/timezone/itimerval/clockinfo, the timer*/timespec*/bintime* operations (cmp is the derived Ord), every conversion and *_TO_NSEC helper, FROMBCD/TOBCD, SECDAY/SECYR; M8: struct clock_ymdhms (ClockYmdhms); its conversions are kern/clock_subr.c; the function prototypes live with kern_tc.c/kern_time.c; kern_sig.c: struct timespec is AbiPod (copyin_obj); M8: struct timeval (TIOCGTSTAMP), struct timezone and struct itimerval are #[repr(C)] AbiPod (copied in and out by tty.c and kern_time.c); N4.8a (decision 8): struct timeval, timespec, bintime are kernel::clock's and timezone, itimerval, clockinfo kernel::time's, re-exported; the free functions of the macros stay over them; the four unsafe impl AbiPod go (hal::abi_pod! beside the kernel's types, machine::copy's AbiPod covers every hal AbiPod type), 0 unsafe, forbid"
+[[module.fn]]
+lz = "sys/sys/time.rs::ClockYmdhms"
+native = ["sys/kernel/clock_subr.rs::ClockYmdhms"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/sys/time.rs::POSIX_BASE_YEAR"
+native = ["sys/kernel/clock_subr.rs::POSIX_BASE_YEAR"]
+kind = "moved"
 
 [[module]]
 rust = "sys/sys/timeout.rs"
@@ -20551,3 +20554,10 @@ lz = "sys/uvm/uvm_vnode.rs::_"
 native = []
 kind = "dropped"
 reason = "the offset assertion of UvmVnode's #[repr(C)] first member: no cast, no layout to check"
+
+[[module]]
+rust = "sys/kernel/clock_subr.rs"
+crate = "kernel"
+lz = ["sys/kern/clock_subr.rs"]
+status = "redesigned"
+notes = "N7.1b: clock_ymdhms_to_secs and clock_secs_to_ymdhms in the kernel with struct clock_ymdhms and POSIX_BASE_YEAR (bsd's sys/sys/time.rs re-exports them, crate::kern::clock_subr is an alias for the chips still in bsd); LZ's arithmetic kept, 0 unsafe before and after"

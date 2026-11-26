@@ -81,6 +81,7 @@ pub mod api;
 pub(crate) mod assert;
 pub mod clist;
 pub mod clock;
+pub mod clock_subr;
 pub mod clockintr;
 pub mod cred;
 pub mod crypto;

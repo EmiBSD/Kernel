@@ -218,6 +218,12 @@ Locations are on `main` at the commit that last edited this file.
 | The image's call `abi::abi_init(&KERNEL_API)` and the `KernelApi` table it hands over, filled with `bsd`'s `Legacy` path and `native_*` wrappers, printed as `abi: N syscalls, M native` | `sys/kern/abi_module.rs:97` (`abi_boot`; the table at `:58`), called by `sys/stand/mod.rs:254` (`start_kernel`) | The ABI is linked into the image (decision 47) and `bsd` is the image crate until N9: the one crate that may name `abi` and the `bsd` wrappers the table's entries point at; `kernel` never names `abi`, `abi` names nothing but `hal` | N9: the `kernel` + `abi` + `hal` binary makes the call and fills the table |
 | A `Legacy` row over a kernel function with no `Native` entry: `abi` -> `KernelApi::syscall_legacy` -> `mi_syscall` on `bsd`'s `SYSENT[nr]` -> the row's forward -> the kernel's function (`sched_yield`, `__thrsigdivert`, and since LZ 9fd12af2c575's sync `__thrsleep` and `__thrwakeup`, since LZ 0925b8a94390's `sysarch`) | `sys/kern/kern_synch.rs:328` (`sys_sched_yield`), `:342` (`sys___thrsleep`), `:358` (`sys___thrwakeup`); `sys/kern/kern_sig.rs:292` (`sys___thrsigdivert`); `sys/kern/kern_xxx.rs:112` (`sys_sysarch`) | The table of rows is `bsd`'s; a `Native` flip would add a `KernelApi` member and a `native_*` wrapper for no safety gained (DECISIONS-thrsleep D1) | N9: the kernel's own table |
 
+## The device services' scaffolding (N7.1b)
+
+| What | Where | Why | Removed by |
+|---|---|---|---|
+| `pub use kernel::clock_subr` (LZ's path `crate::kern::clock_subr`) and `sys/sys/time.rs`'s re-export of `ClockYmdhms` and `POSIX_BASE_YEAR` | `sys/kern/mod.rs`, `sys/sys/time.rs` | The time-of-day chips still in `bsd` import the date arithmetic by LZ's paths (`efi_machdep.rs`; amd64's `isa/clock.rs`, frozen, decision 44) | N7.2b (`efi_machdep`, `plrtc` implement `Todr`), N10 (amd64's) |
+
 ## Arriving
 
 Nothing announced.
