@@ -3687,7 +3687,7 @@ cc_script := disk_login + " " + \
 # features forward to it (QUOTA, UFS_DIRHASH, FFS2, MFS), so the modules they gate are tested
 test:
     cargo test -p libkern -p libz -p bsd -p xtask
-    cargo test -p hal -p kernel -p abi --features kernel/quota,kernel/ufs_dirhash,kernel/ffs2,kernel/mfs,kernel/ext2fs,kernel/msdosfs,kernel/cd9660,kernel/udf,kernel/tmpfs,kernel/fuse,kernel/nfsclient,kernel/nfsserver
+    cargo test -p hal -p kernel -p abi --features kernel/quota,kernel/ufs_dirhash,kernel/ffs2,kernel/mfs,kernel/ext2fs,kernel/msdosfs,kernel/cd9660,kernel/udf,kernel/tmpfs,kernel/fuse,kernel/nfsclient,kernel/nfsserver,kernel/boot_config
     cargo test -p hal --features diagnostic
     cargo test -p libsa -p boot -p efi
     cargo test -p efiboot-arm64

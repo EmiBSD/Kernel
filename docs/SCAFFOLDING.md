@@ -241,6 +241,14 @@ Locations are on `main` at the commit that last edited this file.
 | `sys/sys/sensors.rs`: a re-export of `hal::sys::sensors` and `kernel::dev::sensors`'s records (`Ksensor`, `Ksensordev`, `SensorTask`, `SensorTaskRef`, the cells) | `sys/sys/sensors.rs` | The sensor drivers still in `bsd` embed `struct ksensor`/`ksensordev` by LZ's path (viomb, ipmi, nvme, mpi, softraid, gpiokeys; amd64's CPU and ACPI sensors, frozen) | N7 (the drivers), N10 (amd64's) |
 | amd64's event counters on LZ's path and shape: `crate::kern::subr_evcount` imported at `sys/arch/amd64/amd64/lapic.rs:133`, `intr.rs:112` and `ipi.rs:77`, and `evcount_attach` given the vector's address as a pointer (`lapic.rs:401,405`, `intr.rs:582`; `evcount_inc` at `lapic.rs:484`, `ipi.rs:145`) | `sys/arch/amd64/amd64/{lapic,intr,ipi}.rs` | decision 44: nothing of amd64 is touched before N10; they do not compile against `kernel::dev::evcount` until then. N10 imports `kernel::dev::evcount` and passes the vector's value (`Some(CLK_IRQ)`, `Some(IPI_IRQ)`); `intr_establish` must pass `is_idtvec` once it is set (`intr.rs:595` sets it after the attach at `:582`, and a re-establish of the source can change it), so N10 attaches after that assignment and gives the source's other handlers' counters the new vector (a setter in `kernel::dev::evcount`, the C reading `*ec_data` at each sysctl) | N10 |
 
+## UKC's legacy edge (N7.1c)
+
+| What | Where | Why | Removed by |
+|---|---|---|---|
+| `UkcIoconf` (the tables with `change`'s working copy) and its `impl UkcTables` (the `UkcTables` row of `bridges.toml`), and the shell `machine::autoconf::user_config`, which takes the tables with `Autoconf::ioconf_mut` (the one `unsafe`) and hands them to `kernel::dev::userconf::user_config` | `sys/machine/autoconf.rs:153`, `:171`, `:328` | `ioconf.c`'s tables are still `bsd`'s hand-written `ioconf.rs` in `StaticCell`s, rows of `Cfdata`; `loc_copy_end` and `parents_shift` leak the copies of the constant vectors they keep (the C's `mallocarray`, never freed) | N9.1 (the registry owns the tables, decision 45 (3)) |
+| `user_config`'s `db_enter: fn()` argument (the `ddb` command's entry) | `sys/kernel/dev/userconf.rs:1363` | ddb is `bsd`'s (`machine::db_machdep::db_enter`) | N9, with ddb (then a direct call) |
+| amd64's `cpu_startup` still calls the deleted `crate::kern::subr_userconf::user_config` | `sys/arch/amd64/amd64/machdep.rs:1431` | decision 44: amd64 is not touched before N10; one line, `crate::machine::autoconf::user_config()` | N10 |
+
 ## Arriving
 
 Nothing announced.

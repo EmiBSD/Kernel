@@ -47,6 +47,7 @@
 //! autoconfiguration runs (`boot_config(8)`).
 //!
 //! Upstream: sys/kern/subr_userconf.c @ 3ce1f3f79392
+//! LZ: sys/kern/subr_userconf.rs@e8249449d905
 //!
 //! With `RB_CONFIG` in `boothowto`, the machine's `cpu_startup` calls [`user_config`], which
 //! prints `User Kernel Config` and reads commands at the `UKC>` prompt until `quit` (or
@@ -60,41 +61,76 @@
 //! `autoconf_verbose`; `ddb` enters the debugger. A disabled entry is in state
 //! `FSTATE_DNOTFOUND`/`FSTATE_DSTAR`, which `config_search` skips, so its device does not
 //! attach; a disabled pseudo-device has a negative count, which `main` does not attach.
-//! Every change is also recorded in `userconf_history`, as the C does.
+//! Every change is also recorded in the session's history, as the C's `userconf_history`.
 //!
-//! The editor is a [`Userconf`] over the tables (`machine::autoconf::IoconfTables`) and a
-//! console ([`UkcCons`]); the kernel's is the real console, the host tests' a script.
+//! The editor is a [`Userconf`] over the tables ([`UkcTables`], implemented by their owner)
+//! and a console ([`UkcCons`]); the kernel's is the real console, the host tests' a script.
 //!
 //! ## Deviations
 //! - The C's globals (`userconf_base`, `userconf_maxdev`, the history, ...) are the fields of
 //!   [`Userconf`], made by each `user_config` call; the kernel calls it once per boot, so
-//!   nothing the C kept across calls is lost.
-//! - `ioconf.c`'s arrays are not mutable statics: the machine hands them over once
-//!   (`machine::autoconf::ioconf_mut`), before anything else reads them. `cf_loc` and
-//!   `cf_parents` point at constant arrays, so `change` always edits a `malloc`ed copy of the
-//!   locators (the C does only when another entry shares them, and frees it when nothing
-//!   changed, as here), and `add` renumbers the parents (the C's `pv[]`) in copies, one per
-//!   shared vector. If those copies cannot be allocated, `add` prints `out of memory.` and
-//!   changes nothing (the C's `pv[]` edit cannot fail).
+//!   nothing the C kept across calls is lost; `userconf_history` is not a kernel symbol, so
+//!   `config -u` cannot read it through `/dev/kmem` (LZ's).
+//! - `ioconf.c`'s locator and parent vectors are constant in their owner: `change` always
+//!   edits a copy of the locators (the C does only when another entry shares them), made
+//!   before its questions and kept only if something changed, and `add` renumbers the
+//!   parents (the C's `pv[]` loop) in copies, one per shared vector, all made before any
+//!   entry changes. If that memory cannot be had, `change` prints `out of memory.` before its
+//!   questions (as the C's shared case does) and `add` prints it and changes nothing (the
+//!   C's `pv[]` edit cannot fail) (LZ's).
 //! - A negative device number (`find -1`) is answered `Unknown devno`, where the C indexes
-//!   `cfdata[]` before its start; so is one too large for `int`.
+//!   `cfdata[]` before its start; so is one too large for `int` (LZ's).
 //! - The locator names come from per-attribute runs in `locnamp[]` (the compression
 //!   `mkioconf.c`'s XXX asks for); an entry prints as many locators as both its run and its
-//!   `cf_loc` have.
+//!   `cf_loc` have (LZ's).
 //! - `userconf_number` keeps the C's digit check (`cc > base`), so a digit equal to the base
-//!   (`08`, `0x` is fine) is taken; and its overflow test, which only a negative number gets.
+//!   (`08`, `0x` is fine) is taken; and its overflow test, which only a negative number gets
+//!   (LZ's).
+//! - `ddb` calls the debugger's entry unconditionally (the C's is under `#if defined(DDB)`;
+//!   the kernel always has ddb) (LZ's).
+//! - `add`'s unit arithmetic is 16-bit: a unit of 32767 (`add vio32767`) overflows
+//!   `max_unit + 1`, a panic in a debug kernel where the C's `int` goes on (LZ's).
+//! - A pseudo-device's count prints as its magnitude, so a count of `INT_MIN` (which
+//!   `change` can set) prints `2147483648` where the C's `abs()` gives `-2147483648` (LZ's).
+//!
+//! ## Redesign
+//! - LZ's `Userconf` over `machine::autoconf::IoconfTables` (`bsd`'s slices of `Cfdata`,
+//!   taken by an `unsafe fn` inside `user_config`) -> a `Userconf` over
+//!   `&mut dyn UkcTables`, a trait of the tables' members as UKC reads and writes them
+//!   (`docs/IDIOMS.md`, "tables an editor changes before anyone reads them"). Their owner is
+//!   `bsd` until N9.1's registry (`bridges.toml`'s `UkcTables`), whose shell takes them with
+//!   the one `unsafe` and hands them here; the exclusive borrow is the C's "before
+//!   autoconfiguration": nobody else reads them while the session runs. No lock and no spl,
+//!   as the C (one CPU, before autoconfiguration).
+//! - The table is read member by member through the trait, by index, as the C's
+//!   `cfdata[i].cf_x`: the walks of `cfdata[]` and of a `locnamp[]` run are the C's loops,
+//!   O(1) a step (an indirect call each), with no `Vec` of the locator names (LZ collected
+//!   one per printed entry).
+//! - `add`: LZ's clone of the entry and `rotate_right` -> the C's loop, the entries from
+//!   `val` up moved one slot ([`UkcTables::slot_copy`]), the clone copied into `val` from
+//!   where it now is and given its unit and state; the parents are renumbered first, by the
+//!   owner, so a failure changes nothing (the clone then copies the renumbered vector, as the
+//!   C's `new` shares the `pv[]` it fixes).
+//! - `change`'s working copy is the owner's, as the C's `mallocarray` + `bcopy` made before
+//!   the questions ([`UkcTables::loc_copy_begin`]), edited by index and, at the end, kept
+//!   as the entry's locators if anything changed or freed ([`UkcTables::loc_copy_end`], the
+//!   C's `memcmp`, which cannot fail); the kernel allocates nothing (LZ's working `Vec` was
+//!   the editor's, leaked when kept).
+//! - The console and the debugger are [`UkcCons`]'s (`cnpollc`, `db_enter`), so `run` no
+//!   longer takes `pollc`; the kernel's console is `hal::cons` and `printf(9)`, and ddb's
+//!   entry is the function `user_config` is given (`bsd`'s until N9).
+//! - `cnpollc`, `printf` and `kassert!` are the kernel's; `pdev_count`'s sign flip wraps (a
+//!   count of `INT_MIN`, which `change` can set, flips to itself instead of overflowing).
 
 use core::fmt;
 use core::sync::atomic::Ordering;
 
-use alloc::vec::Vec;
 use libkern::{GetsnCons, getsn, strncasecmp};
 
-use crate::dev::cons::{cngetc, cnpollc};
-use crate::kern::subr_autoconf::AUTOCONF_VERBOSE;
-use crate::kern::subr_prf::{Str, printf};
-use crate::machine::autoconf::{IoconfTables, ioconf_mut};
-use crate::sys::device::{
+use crate::base::log::snprintf;
+use crate::base::prf::{Str, printf};
+use crate::dev::autoconf::AUTOCONF_VERBOSE;
+use crate::dev::device::{
     FSTATE_DNOTFOUND, FSTATE_DSTAR, FSTATE_FOUND, FSTATE_NOTFOUND, FSTATE_STAR,
 };
 
@@ -140,12 +176,6 @@ const INT_MAX: i64 = i32::MAX as i64;
 /// `LONG_MAX`, the limit of a locator.
 const LONG_MAX: i64 = i64::MAX;
 
-/// What UKC reads from and prints on: `cngetc`, `printf`.
-pub trait UkcCons: GetsnCons {
-    /// `printf`.
-    fn printf(&mut self, args: fmt::Arguments<'_>);
-}
-
 /// `printf(...)` on the editor's console.
 macro_rules! uc_printf {
     ($uc:expr, $($arg:tt)*) => {
@@ -156,7 +186,7 @@ macro_rules! uc_printf {
 /// The state of one UKC session: the C's `userconf_*` globals and the tables they edit.
 pub struct Userconf<'a, C: UkcCons> {
     /// The `ioconf.c` tables.
-    t: IoconfTables<'a>,
+    t: &'a mut dyn UkcTables,
     /// The console.
     cons: C,
     /// `userconf_base`: base for "large" numbers.
@@ -179,23 +209,88 @@ pub struct Userconf<'a, C: UkcCons> {
     history: [u8; USERCONF_HISTSZ],
 }
 
-/// The kernel's console, for [`user_config`].
-struct Cons;
-
-impl GetsnCons for Cons {
-    fn cngetc(&mut self) -> i32 {
-        cngetc()
-    }
-
-    fn cnputs(&mut self, s: &[u8]) {
-        printf(format_args!("{}", Str(s)));
-    }
+/// The kernel's console, for [`user_config`]: `hal::cons` and `printf(9)`, and ddb's entry.
+struct Cons {
+    /// `db_enter()`.
+    db_enter: fn(),
 }
 
-impl UkcCons for Cons {
-    fn printf(&mut self, args: fmt::Arguments<'_>) {
-        printf(args);
-    }
+/// `ioconf.c`'s tables as UKC reads and edits them: `cfdata[]` with its free slots (by
+/// index, `dev`), `cfroots[]`, `pdevinit[]` and the names `config(8)` writes beside them.
+/// Implemented by the tables' owner (`bsd`'s `machine::autoconf` until N9.1); every method is
+/// an accessor of one member, except [`loc_copy_begin`](Self::loc_copy_begin) and
+/// [`parents_shift`](Self::parents_shift), which may need memory, and the copy's others.
+pub trait UkcTables {
+    /// `cfdata[]`'s length, free slots included.
+    fn slots(&self) -> usize;
+    /// `cfdata[dev].cf_attach == NULL`: a free slot.
+    fn is_free(&self, dev: usize) -> bool;
+    /// `cfdata[dev].cf_driver->cd_name`.
+    fn name(&self, dev: usize) -> &'static [u8];
+    /// `cfdata[dev].cf_unit`.
+    fn unit(&self, dev: usize) -> i16;
+    /// `cfdata[dev].cf_unit = unit`.
+    fn set_unit(&mut self, dev: usize, unit: i16);
+    /// `cfdata[dev].cf_fstate`.
+    fn fstate(&self, dev: usize) -> i16;
+    /// `cfdata[dev].cf_fstate = fstate`: the state `config_search` reads.
+    fn set_fstate(&mut self, dev: usize, fstate: i16);
+    /// `cfdata[dev].cf_starunit1`.
+    fn starunit1(&self, dev: usize) -> i16;
+    /// `cfdata[dev].cf_starunit1 = unit`.
+    fn set_starunit1(&mut self, dev: usize, unit: i16);
+    /// `cfdata[dev].cf_flags`.
+    fn flags(&self, dev: usize) -> i32;
+    /// `cfdata[dev].cf_flags = flags`.
+    fn set_flags(&mut self, dev: usize, flags: i32);
+    /// `cfdata[dev].cf_loc`.
+    fn loc(&self, dev: usize) -> &[i64];
+    /// `change`'s `mallocarray` + `bcopy`: a working copy of `cfdata[dev].cf_loc`, made
+    /// before the questions; `false` when it cannot be had, nothing changed.
+    fn loc_copy_begin(&mut self, dev: usize) -> bool;
+    /// The working copy's locator `k`.
+    fn loc_copy_at(&self, k: usize) -> i64;
+    /// The working copy's locator `k` = `val`.
+    fn set_loc_copy_at(&mut self, k: usize, val: i64);
+    /// The end of `change`: the working copy becomes `cfdata[dev].cf_loc` (kept for ever, the
+    /// C's block never freed) if it differs from it, and is freed otherwise; cannot fail.
+    fn loc_copy_end(&mut self, dev: usize);
+    /// `cfdata[dev].cf_parents`, as indices into `cfdata[]`.
+    fn parents(&self, dev: usize) -> &[i16];
+    /// `cfdata[dev].cf_locnames`: the start of its run in [`locnamp`](Self::locnamp).
+    fn locnames_at(&self, dev: usize) -> i32;
+    /// `cfdata[to] = cfdata[from]`: every member.
+    fn slot_copy(&mut self, to: usize, from: usize);
+    /// The C's `pv[]` loop for `add`: every parent index at or above `from`, in the vectors of
+    /// `cfdata[0..=last]`, one more (each shared vector once); `false` when the owner cannot
+    /// get the memory it needs for that, nothing changed.
+    fn parents_shift(&mut self, last: usize, from: i16) -> bool;
+    /// `cfroots[]` (no terminating `-1`).
+    fn roots(&self) -> &[i16];
+    /// `cfroots[i] = dev`.
+    fn set_root(&mut self, i: usize, dev: i16);
+    /// `pdevinit[]`'s length (no terminating entry).
+    fn pdevs(&self) -> usize;
+    /// `pdevnames[p]`.
+    fn pdev_name(&self, p: usize) -> &'static [u8];
+    /// `pdevinit[p].pdev_count`.
+    fn pdev_count(&self, p: usize) -> i32;
+    /// `pdevinit[p].pdev_count = n`: a negative count is a disabled pseudo-device.
+    fn set_pdev_count(&mut self, p: usize, n: i32);
+    /// `locnames[i]`, `None` past its end.
+    fn locname(&self, i: usize) -> Option<&'static [u8]>;
+    /// `locnamp[]`: runs of indices into `locnames[]`, each ended by `-1`.
+    fn locnamp(&self) -> &[i16];
+}
+
+/// What UKC reads from and prints on, and the debugger it enters.
+pub trait UkcCons: GetsnCons {
+    /// `printf`.
+    fn printf(&mut self, args: fmt::Arguments<'_>);
+    /// `cnpollc(on)`: the console polled for the session (on, then off, once each).
+    fn cnpollc(&mut self, on: bool);
+    /// `db_enter()`: the `ddb` command.
+    fn db_enter(&mut self);
 }
 
 /// The byte at `i` of a command line, NUL past its end.
@@ -306,7 +401,7 @@ fn userconf_device(cmd: &[u8]) -> Option<(usize, i16, i16)> {
 
 impl<'a, C: UkcCons> Userconf<'a, C> {
     /// A session over `t`, talking on `cons`, with the C's initial values.
-    pub fn new(t: IoconfTables<'a>, cons: C) -> Self {
+    pub fn new(t: &'a mut dyn UkcTables, cons: C) -> Self {
         Self {
             t,
             cons,
@@ -334,45 +429,62 @@ impl<'a, C: UkcCons> Userconf<'a, C> {
 
     /// `pdevnames_size`.
     fn pdevnames_size(&self) -> i64 {
-        self.t.pdevinit.len() as i64
+        self.t.pdevs() as i64
     }
 
-    /// `locnames[i]`.
-    fn locname(&self, i: i16) -> &'a [u8] {
+    /// `cfdata[dev]` is configured: not a free slot, and not past the table's end (where the
+    /// C's walks would read the terminating free slot).
+    fn configured(&self, dev: usize) -> bool {
+        dev < self.t.slots() && !self.t.is_free(dev)
+    }
+
+    /// `locnames[i]`, `?` for an index outside it.
+    fn locname(&self, i: i16) -> &'static [u8] {
         usize::try_from(i)
             .ok()
-            .and_then(|i| self.t.locnames.get(i))
-            .copied()
+            .and_then(|i| self.t.locname(i))
             .unwrap_or(b"?")
     }
 
-    /// The locator names of `cfdata[dev]`, as indices into `locnames[]`.
-    fn locator_names(&self, dev: usize) -> impl Iterator<Item = i16> + '_ {
-        let start = self.t.cfdata[dev].cf_locnames as usize;
-        self.t
-            .locnamp
-            .get(start..)
-            .unwrap_or(&[])
-            .iter()
+    /// `locnamp[cfdata[dev].cf_locnames + k]`, the `k`th locator name of `cfdata[dev]` as an
+    /// index into `locnames[]`; `-1` at the end of its run (or of `locnamp[]`).
+    fn locnamp_at(&self, dev: usize, k: usize) -> i16 {
+        usize::try_from(self.t.locnames_at(dev))
+            .ok()
+            .and_then(|start| self.t.locnamp().get(start + k))
             .copied()
-            .take_while(|&n| n != -1)
+            .unwrap_or(-1)
+    }
+
+    /// The number of locators `cfdata[dev]` prints and edits: as many as both its run in
+    /// `locnamp[]` and its `cf_loc` have.
+    fn nlocs(&self, dev: usize) -> usize {
+        let n = self.t.loc(dev).len();
+        (0..n).find(|&k| self.locnamp_at(dev, k) == -1).unwrap_or(n)
     }
 
     /// `userconf_init()`: counts the used and free device slots and the locator names.
     fn userconf_init(&mut self) {
         let mut i = 0usize;
-        while i < self.t.cfdata.len() && !self.t.cfdata[i].is_free() {
+        while self.configured(i) {
             self.maxdev = i as i64;
             self.totdev = i as i64;
-            let ln = self.locator_names(i).max().map_or(-1, i64::from);
-            if ln > self.maxlocnames {
-                self.maxlocnames = ln;
+            let mut k = 0;
+            loop {
+                let ln = self.locnamp_at(i, k);
+                if ln == -1 {
+                    break;
+                }
+                if i64::from(ln) > self.maxlocnames {
+                    self.maxlocnames = i64::from(ln);
+                }
+                k += 1;
             }
-            crate::kassert!(self.locator_names(i).count() == self.t.cfdata[i].cf_loc.len());
+            crate::assert::kassert!(k == self.t.loc(i).len());
             i += 1;
         }
 
-        while i < self.t.cfdata.len() && self.t.cfdata[i].is_free() {
+        while i < self.t.slots() && self.t.is_free(i) {
             self.totdev = i as i64;
             i += 1;
         }
@@ -412,7 +524,7 @@ impl<'a, C: UkcCons> Userconf<'a, C> {
     /// `userconf_hist_int(val)`: appends ` <val>` to the record, if it fits.
     fn userconf_hist_int(&mut self, val: i64) {
         let mut buf = [0u8; USERCONF_BUFSZ];
-        let n = crate::kern::subr_prf::snprintf(&mut buf, format_args!(" {val}"));
+        let n = snprintf(&mut buf, format_args!(" {val}"));
         let n = n.min(buf.len() - 1);
         if self.histcur + n < USERCONF_HISTSZ {
             self.history[self.histcur..self.histcur + n].copy_from_slice(&buf[..n]);
@@ -444,8 +556,7 @@ impl<'a, C: UkcCons> Userconf<'a, C> {
 
     /// `userconf_pdevnam(dev)`: the entry's name with its unit, `*` or `*FOUND*`.
     fn userconf_pdevnam(&mut self, dev: usize) {
-        let cd = &self.t.cfdata[dev];
-        let (name, fstate, unit) = (cd.cf_driver.cd_name, cd.cf_fstate.get(), cd.cf_unit.get());
+        let (name, fstate, unit) = (self.t.name(dev), self.t.fstate(dev), self.t.unit(dev));
         uc_printf!(self, "{}", Str(name));
         match fstate {
             FSTATE_NOTFOUND | FSTATE_DNOTFOUND => uc_printf!(self, "{unit}"),
@@ -464,7 +575,7 @@ impl<'a, C: UkcCons> Userconf<'a, C> {
 
         if devno > self.totdev && devno <= self.totdev + self.pdevnames_size() {
             let p = (devno - self.totdev - 1) as usize;
-            let (name, count) = (self.t.pdevnames[p], self.t.pdevinit[p].pdev_count);
+            let (name, count) = (self.t.pdev_name(p), self.t.pdev_count(p));
             uc_printf!(
                 self,
                 "{devno:3} {} count {}",
@@ -487,28 +598,29 @@ impl<'a, C: UkcCons> Userconf<'a, C> {
         uc_printf!(self, "{devno:3} ");
         self.userconf_pdevnam(dev);
         uc_printf!(self, " at");
-        let parents = self.t.cfdata[dev].cf_parents;
-        if parents.is_empty() {
+        let nparents = self.t.parents(dev).len();
+        if nparents == 0 {
             uc_printf!(self, " root");
         }
         let mut c = b' ';
-        for &p in parents {
+        for k in 0..nparents {
+            let p = self.t.parents(dev)[k];
             uc_printf!(self, "{}", char::from(c));
             self.userconf_pdevnam(p as usize);
             c = b'|';
         }
-        match self.t.cfdata[dev].cf_fstate.get() {
+        match self.t.fstate(dev) {
             FSTATE_NOTFOUND | FSTATE_FOUND | FSTATE_STAR => {}
             FSTATE_DNOTFOUND | FSTATE_DSTAR => uc_printf!(self, " disable"),
             _ => uc_printf!(self, " ???"),
         }
-        let loc = self.t.cfdata[dev].cf_loc;
-        let names: Vec<i16> = self.locator_names(dev).collect();
-        for (&n, &l) in names.iter().zip(loc) {
-            uc_printf!(self, " {} ", Str(self.locname(n)));
+        for k in 0..self.nlocs(dev) {
+            let name = self.locname(self.locnamp_at(dev, k));
+            uc_printf!(self, " {} ", Str(name));
+            let l = self.t.loc(dev)[k];
             self.userconf_pnum(l);
         }
-        uc_printf!(self, " flags 0x{:x}\n", self.t.cfdata[dev].cf_flags as u32);
+        uc_printf!(self, " flags 0x{:x}\n", self.t.flags(dev) as u32);
     }
 
     /// `userconf_attr(cmd, &val)`: the index of the locator name the line starts with.
@@ -575,29 +687,27 @@ impl<'a, C: UkcCons> Userconf<'a, C> {
                 self.userconf_hist_cmd(b'c');
                 self.userconf_hist_int(devno);
 
-                // The locators are constant: edit a copy, kept if anything changed.
-                let old = self.t.cfdata[dev].cf_loc;
-                let mut lk: Vec<i64> = Vec::new();
-                if lk.try_reserve_exact(old.len()).is_err() {
+                // The locators are constant: edit the owner's copy, made before the
+                // questions and kept if anything changed.
+                if !self.t.loc_copy_begin(dev) {
                     uc_printf!(self, "out of memory.\n");
                     return;
                 }
-                lk.extend_from_slice(old);
 
-                let names: Vec<i16> = self.locator_names(dev).collect();
-                for (&n, l) in names.iter().zip(lk.iter_mut()) {
-                    self.userconf_modify(self.locname(n), l, LONG_MAX);
+                for k in 0..self.nlocs(dev) {
+                    let item = self.locname(self.locnamp_at(dev, k));
+                    let mut l = self.t.loc_copy_at(k);
+                    self.userconf_modify(item, &mut l, LONG_MAX);
+                    self.t.set_loc_copy_at(k, l);
                     // XXX add *l
-                    self.userconf_hist_int(*l);
+                    self.userconf_hist_int(l);
                 }
-                let mut tmp = i64::from(self.t.cfdata[dev].cf_flags);
+                let mut tmp = i64::from(self.t.flags(dev));
                 self.userconf_modify(b"flags", &mut tmp, INT_MAX);
                 self.userconf_hist_int(tmp);
-                self.t.cfdata[dev].cf_flags = tmp as i32;
+                self.t.set_flags(dev, tmp as i32);
 
-                if lk[..] != *old {
-                    self.t.cfdata[dev].cf_loc = lk.leak();
-                }
+                self.t.loc_copy_end(dev);
 
                 uc_printf!(self, "{devno:3} ");
                 self.userconf_pdevnam(dev);
@@ -620,12 +730,12 @@ impl<'a, C: UkcCons> Userconf<'a, C> {
                 self.userconf_hist_cmd(b'c');
                 self.userconf_hist_int(devno);
 
-                let mut tmp = i64::from(self.t.pdevinit[p].pdev_count);
+                let mut tmp = i64::from(self.t.pdev_count(p));
                 self.userconf_modify(b"count", &mut tmp, INT_MAX);
                 self.userconf_hist_int(tmp);
-                self.t.pdevinit[p].pdev_count = tmp as i32;
+                self.t.set_pdev_count(p, tmp as i32);
 
-                uc_printf!(self, "{devno:3} {} changed\n", Str(self.t.pdevnames[p]));
+                uc_printf!(self, "{devno:3} {} changed\n", Str(self.t.pdev_name(p)));
                 self.userconf_pdev(devno);
 
                 // XXX add eoc
@@ -645,11 +755,10 @@ impl<'a, C: UkcCons> Userconf<'a, C> {
     fn userconf_disable(&mut self, devno: i64) {
         if (0..=self.maxdev).contains(&devno) {
             let dev = devno as usize;
-            let fstate = &self.t.cfdata[dev].cf_fstate;
             let mut done = false;
-            match fstate.get() {
-                FSTATE_NOTFOUND => fstate.set(FSTATE_DNOTFOUND),
-                FSTATE_STAR => fstate.set(FSTATE_DSTAR),
+            match self.t.fstate(dev) {
+                FSTATE_NOTFOUND => self.t.set_fstate(dev, FSTATE_DNOTFOUND),
+                FSTATE_STAR => self.t.set_fstate(dev, FSTATE_DSTAR),
                 FSTATE_DNOTFOUND | FSTATE_DSTAR => done = true,
                 _ => uc_printf!(self, "Error unknown state\n"),
             }
@@ -675,11 +784,12 @@ impl<'a, C: UkcCons> Userconf<'a, C> {
 
         if devno > self.totdev && devno <= self.totdev + self.pdevnames_size() {
             let p = (devno - self.totdev - 1) as usize;
-            uc_printf!(self, "{devno:3} {}", Str(self.t.pdevnames[p]));
-            if self.t.pdevinit[p].pdev_count < 1 {
+            uc_printf!(self, "{devno:3} {}", Str(self.t.pdev_name(p)));
+            let count = self.t.pdev_count(p);
+            if count < 1 {
                 uc_printf!(self, " already ");
             } else {
-                self.t.pdevinit[p].pdev_count *= -1;
+                self.t.set_pdev_count(p, count.wrapping_neg());
                 // XXX add cmd 'd' <devno> eoc
                 self.userconf_hist_cmd(b'd');
                 self.userconf_hist_int(devno);
@@ -700,11 +810,10 @@ impl<'a, C: UkcCons> Userconf<'a, C> {
     fn userconf_enable(&mut self, devno: i64) {
         if (0..=self.maxdev).contains(&devno) {
             let dev = devno as usize;
-            let fstate = &self.t.cfdata[dev].cf_fstate;
             let mut done = false;
-            match fstate.get() {
-                FSTATE_DNOTFOUND => fstate.set(FSTATE_NOTFOUND),
-                FSTATE_DSTAR => fstate.set(FSTATE_STAR),
+            match self.t.fstate(dev) {
+                FSTATE_DNOTFOUND => self.t.set_fstate(dev, FSTATE_NOTFOUND),
+                FSTATE_DSTAR => self.t.set_fstate(dev, FSTATE_STAR),
                 FSTATE_NOTFOUND | FSTATE_STAR => done = true,
                 _ => uc_printf!(self, "Error unknown state\n"),
             }
@@ -730,11 +839,12 @@ impl<'a, C: UkcCons> Userconf<'a, C> {
 
         if devno > self.totdev && devno <= self.totdev + self.pdevnames_size() {
             let p = (devno - self.totdev - 1) as usize;
-            uc_printf!(self, "{devno:3} {}", Str(self.t.pdevnames[p]));
-            if self.t.pdevinit[p].pdev_count > 0 {
+            uc_printf!(self, "{devno:3} {}", Str(self.t.pdev_name(p)));
+            let count = self.t.pdev_count(p);
+            if count > 0 {
                 uc_printf!(self, " already");
             } else {
-                self.t.pdevinit[p].pdev_count *= -1;
+                self.t.set_pdev_count(p, count.wrapping_neg());
                 // XXX add cmd 'e' <devno> eoc
                 self.userconf_hist_cmd(b'e');
                 self.userconf_hist_int(devno);
@@ -801,7 +911,8 @@ impl<'a, C: UkcCons> Userconf<'a, C> {
             if self.userconf_more() {
                 break;
             }
-            uc_printf!(self, "{}\n", Str(self.locname(i as i16)));
+            let name = self.locname(i as i16);
+            uc_printf!(self, "{}\n", Str(name));
             i += 1;
         }
         self.cnt = -1;
@@ -815,16 +926,14 @@ impl<'a, C: UkcCons> Userconf<'a, C> {
         let mut i = 0;
         while i <= self.maxdev {
             let dev = i as usize;
-            let names: Vec<i16> = self.locator_names(dev).collect();
-            let loc = self.t.cfdata[dev].cf_loc;
-            for (&n, &l) in names.iter().zip(loc) {
-                if i64::from(n) == attr {
+            for k in 0..self.nlocs(dev) {
+                if i64::from(self.locnamp_at(dev, k)) == attr {
                     match val {
                         None => {
                             quit = self.userconf_more();
                             self.userconf_pdev(i);
                         }
-                        Some(v) if v == l => {
+                        Some(v) if v == self.t.loc(dev)[k] => {
                             quit = self.userconf_more();
                             match routine {
                                 UC_ENABLE => self.userconf_enable(i),
@@ -879,14 +988,13 @@ impl<'a, C: UkcCons> Userconf<'a, C> {
         }
 
         let mut i = 0usize;
-        while i < self.t.cfdata.len() && !self.t.cfdata[i].is_free() {
-            let cf = &self.t.cfdata[i];
-            let fstate = cf.cf_fstate.get();
-            if name_is(cf.cf_driver.cd_name, dev, len)
+        while self.configured(i) {
+            let fstate = self.t.fstate(i);
+            if name_is(self.t.name(i), dev, len)
                 && (state == FSTATE_FOUND
                     || (state == FSTATE_STAR && (fstate == FSTATE_STAR || fstate == FSTATE_DSTAR))
                     || (state == FSTATE_NOTFOUND
-                        && cf.cf_unit.get() == unit
+                        && self.t.unit(i) == unit
                         && (fstate == FSTATE_NOTFOUND || fstate == FSTATE_DNOTFOUND)))
             {
                 if self.userconf_more() {
@@ -903,8 +1011,8 @@ impl<'a, C: UkcCons> Userconf<'a, C> {
             i += 1;
         }
 
-        for i in 0..self.t.pdevinit.len() {
-            if strncasecmp(dev, self.t.pdevnames[i], len) == 0 && state == FSTATE_FOUND {
+        for i in 0..self.t.pdevs() {
+            if strncasecmp(dev, self.t.pdev_name(i), len) == 0 && state == FSTATE_FOUND {
                 let devno = self.totdev + 1 + i as i64;
                 match routine {
                     UC_CHANGE => self.userconf_change(devno),
@@ -960,9 +1068,7 @@ impl<'a, C: UkcCons> Userconf<'a, C> {
             if let Ok(a) = userconf_number(from(arg, c), INT_MAX) {
                 if a > self.maxdev || a < 0 {
                     uc_printf!(self, "Unknown devno (max is {})\n", self.maxdev);
-                } else if strncasecmp(dev, self.t.cfdata[a as usize].cf_driver.cd_name, len) != 0
-                    && field == b'a'
-                {
+                } else if strncasecmp(dev, self.t.name(a as usize), len) != 0 && field == b'a' {
                     uc_printf!(self, "Not same device type\n");
                 } else {
                     return Some(a);
@@ -990,11 +1096,14 @@ impl<'a, C: UkcCons> Userconf<'a, C> {
             return;
         }
 
-        let configured = self.t.cfdata.iter().take_while(|cf| !cf.is_free());
-        let found = configured
-            .filter(|cf| name_is(cf.cf_driver.cd_name, dev, len))
-            .count()
-            > 0;
+        let mut found = false;
+        let mut i = 0;
+        while self.configured(i) {
+            if name_is(self.t.name(i), dev, len) {
+                found = true;
+            }
+            i += 1;
+        }
         if !found {
             uc_printf!(self, "No device of this type exists.\n");
             return;
@@ -1004,37 +1113,20 @@ impl<'a, C: UkcCons> Userconf<'a, C> {
         else {
             return;
         };
-        let new = self.t.cfdata[orig as usize].clone();
-        new.cf_unit.set(unit);
-        new.cf_fstate.set(state);
         let Some(val) =
             self.userconf_add_read("Insert before Device (DevNo, 'q' or '?')", b'i', dev, len)
         else {
             return;
         };
 
-        // The parent vectors are constant: renumber copies, one per vector, before anything
-        // moves, so running out of memory changes nothing.
+        // Fix indexes in pv, first: the owner renumbers copies of the constant vectors, so
+        // running out of memory changes nothing. The clone, copied below from `orig`, gets
+        // the renumbered vector, as the C's `new` shares the `pv[]` it fixes.
         let maxdev = self.maxdev as usize;
         let val_ = val as usize;
-        let mut fixed: Vec<(&[i16], &'static [i16])> = Vec::new();
-        for cf in &self.t.cfdata[..=maxdev] {
-            let pv = cf.cf_parents;
-            if !pv.iter().any(|&p| i64::from(p) >= val)
-                || fixed.iter().any(|(old, _)| core::ptr::eq(*old, pv))
-            {
-                continue;
-            }
-            let mut copy: Vec<i16> = Vec::new();
-            if fixed.try_reserve(1).is_err() || copy.try_reserve_exact(pv.len()).is_err() {
-                uc_printf!(self, "out of memory.\n");
-                return;
-            }
-            copy.extend(
-                pv.iter()
-                    .map(|&p| if i64::from(p) >= val { p + 1 } else { p }),
-            );
-            fixed.push((pv, copy.leak()));
+        if !self.t.parents_shift(maxdev, val as i16) {
+            uc_printf!(self, "out of memory.\n");
+            return;
         }
 
         // XXX add cmd 'a' <orig> <val> eoc
@@ -1045,24 +1137,21 @@ impl<'a, C: UkcCons> Userconf<'a, C> {
         self.userconf_hist_int(val);
         self.userconf_hist_eoc();
 
-        // Insert the new record: the free slot after the last entry moves to `val`.
-        self.t.cfdata[val_..=maxdev + 1].rotate_right(1);
-        self.t.cfdata[val_] = new;
-
-        // Fix indexes in pv
-        for cf in &mut self.t.cfdata[..=maxdev + 1] {
-            if let Some((_, copy)) = fixed
-                .iter()
-                .find(|(old, _)| core::ptr::eq(*old, cf.cf_parents))
-            {
-                cf.cf_parents = copy;
-            }
+        // Insert the new record: every entry from `val` on one slot up, over the free slot
+        // after the last; then the clone of `orig` (moved up if it was among them) in `val`.
+        for i in (val_..=maxdev).rev() {
+            self.t.slot_copy(i + 1, i);
         }
+        let orig_ = (if orig >= val { orig + 1 } else { orig }) as usize;
+        self.t.slot_copy(val_, orig_);
+        self.t.set_unit(val_, unit);
+        self.t.set_fstate(val_, state);
 
         // Fix indexes in cfroots
-        for r in self.t.cfroots.iter_mut() {
-            if *r != -1 && i64::from(*r) >= val {
-                *r += 1;
+        for r in 0..self.t.roots().len() {
+            let root = self.t.roots()[r];
+            if root != -1 && i64::from(root) >= val {
+                self.t.set_root(r, root + 1);
             }
         }
 
@@ -1070,28 +1159,31 @@ impl<'a, C: UkcCons> Userconf<'a, C> {
 
         // Find max unit number of the device type
         let mut max_unit: i16 = -1;
-        let mut star_unit: i16 = -1;
-        for cf in self.t.cfdata.iter().take_while(|cf| !cf.is_free()) {
-            if name_is(cf.cf_driver.cd_name, dev, len)
-                && matches!(cf.cf_fstate.get(), FSTATE_NOTFOUND | FSTATE_DNOTFOUND)
+        let mut i = 0;
+        while self.configured(i) {
+            if name_is(self.t.name(i), dev, len)
+                && matches!(self.t.fstate(i), FSTATE_NOTFOUND | FSTATE_DNOTFOUND)
             {
-                max_unit = max_unit.max(cf.cf_unit.get());
-                star_unit = star_unit.max(cf.cf_unit.get());
+                max_unit = max_unit.max(self.t.unit(i));
             }
+            i += 1;
         }
 
         // For all * entries set unit number to max+1, and update cf_starunit1 if necessary.
+        // (The C counts `star_unit` in a second walk, the same as `max_unit`.)
         max_unit += 1;
-        star_unit += 1;
-        for cf in self.t.cfdata.iter_mut().take_while(|cf| !cf.is_free()) {
-            if name_is(cf.cf_driver.cd_name, dev, len)
-                && matches!(cf.cf_fstate.get(), FSTATE_STAR | FSTATE_DSTAR)
+        let star_unit = max_unit;
+        let mut i = 0;
+        while self.configured(i) {
+            if name_is(self.t.name(i), dev, len)
+                && matches!(self.t.fstate(i), FSTATE_STAR | FSTATE_DSTAR)
             {
-                cf.cf_unit.set(max_unit);
-                if cf.cf_starunit1 < star_unit {
-                    cf.cf_starunit1 = star_unit;
+                self.t.set_unit(i, max_unit);
+                if self.t.starunit1(i) < star_unit {
+                    self.t.set_starunit1(i, star_unit);
                 }
             }
+            i += 1;
         }
         self.userconf_pdev(val);
     }
@@ -1161,7 +1253,7 @@ impl<'a, C: UkcCons> Userconf<'a, C> {
                     uc_printf!(self, "Unknown argument\n");
                 }
             }
-            b'D' => crate::machine::db_machdep::db_enter(),
+            b'D' => self.cons.db_enter(),
             b'd' | b'e' => {
                 let (routine, one): (u8, fn(&mut Self, i64)) = if k == b'd' {
                     (UC_DISABLE, Self::userconf_disable)
@@ -1226,12 +1318,12 @@ impl<'a, C: UkcCons> Userconf<'a, C> {
         false
     }
 
-    /// `user_config()`'s body: the `UKC>` loop until `quit`, with `pollc` as `cnpollc`.
-    pub fn run(&mut self, pollc: fn(bool)) {
+    /// `user_config()`'s body: the `UKC>` loop until `quit`, the console polled meanwhile.
+    pub fn run(&mut self) {
         self.userconf_init();
         uc_printf!(self, "User Kernel Config\n");
 
-        pollc(true);
+        self.cons.cnpollc(true);
         loop {
             uc_printf!(self, "UKC> ");
             let mut cmdbuf = [0u8; USERCONF_BUFSZ];
@@ -1240,89 +1332,253 @@ impl<'a, C: UkcCons> Userconf<'a, C> {
                 break;
             }
         }
-        pollc(false);
+        self.cons.cnpollc(false);
 
         uc_printf!(self, "Continuing...\n");
     }
 }
 
+impl GetsnCons for Cons {
+    fn cngetc(&mut self) -> i32 {
+        hal::cons::cngetc()
+    }
+
+    fn cnputs(&mut self, s: &[u8]) {
+        printf(format_args!("{}", Str(s)));
+    }
+}
+
+impl UkcCons for Cons {
+    fn printf(&mut self, args: fmt::Arguments<'_>) {
+        printf(args);
+    }
+
+    fn cnpollc(&mut self, on: bool) {
+        hal::cons::cnpollc(on);
+    }
+
+    fn db_enter(&mut self) {
+        (self.db_enter)();
+    }
+}
+
 /// `user_config()`: the `UKC>` prompt on the console, from `cpu_startup` when the kernel was
-/// booted with `-c`.
-pub fn user_config() {
-    // SAFETY: called once, from `cpu_startup` on the boot CPU, before autoconfiguration (or
-    // anything else) reads the tables; the session, and with it the tables, ends here.
-    let t = unsafe { ioconf_mut() };
-    Userconf::new(t, Cons).run(cnpollc);
+/// booted with `-c`, over the tables `t`; `db_enter` is ddb's entry, for the `ddb` command.
+pub fn user_config(t: &mut dyn UkcTables, db_enter: fn()) {
+    Userconf::new(t, Cons { db_enter }).run();
 }
 /* </CODE> */
 
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::sys::device::{Cfattach, Cfdata, Cfdriver, DV_DULL, Pdevinit};
+    // LZ's eleven tests over a fake `ioconf.c` (the expectations as LZ's), and the shape's
+    // own: the console's polling and ddb, `add`'s renumbering, `change`'s copy, no memory.
+
     use std::string::String;
     use std::vec::Vec;
 
-    static T_CA: Cfattach = Cfattach {
-        ca_devsize: 0,
-        ca_match: None,
-        ca_attach: |_, _, _| {},
-        ca_detach: None,
-        ca_activate: None,
-    };
-    static MAINBUS_CD: Cfdriver = Cfdriver::new(b"mainbus", DV_DULL, 0);
-    static PCI_CD: Cfdriver = Cfdriver::new(b"pci", DV_DULL, 0);
-    static COM_CD: Cfdriver = Cfdriver::new(b"com", DV_DULL, 0);
-    static VIO_CD: Cfdriver = Cfdriver::new(b"vio", DV_DULL, 0);
+    use super::*;
 
-    const LOC_COM0: &[i64] = &[0x3f8, 4];
+    /// One `cfdata[]` entry of the fake tables.
+    #[derive(Clone, Debug, PartialEq)]
+    struct Row {
+        name: &'static [u8],
+        free: bool,
+        unit: i16,
+        fstate: i16,
+        loc: Vec<i64>,
+        flags: i32,
+        parents: Vec<i16>,
+        locnames: i32,
+        starunit1: i16,
+    }
+
+    fn row(
+        name: &'static [u8],
+        unit: i16,
+        fstate: i16,
+        loc: &[i64],
+        parents: &[i16],
+        locnames: i32,
+    ) -> Row {
+        Row {
+            name,
+            free: false,
+            unit,
+            fstate,
+            loc: loc.to_vec(),
+            flags: 0,
+            parents: parents.to_vec(),
+            locnames,
+            starunit1: 0,
+        }
+    }
+
+    fn free() -> Row {
+        Row {
+            name: b"",
+            free: true,
+            unit: 0,
+            fstate: 0,
+            loc: Vec::new(),
+            flags: 0,
+            parents: Vec::new(),
+            locnames: 0,
+            starunit1: 0,
+        }
+    }
+
     static LOCNAMES: [&[u8]; 5] = [b"bus", b"port", b"irq", b"dev", b"function"];
     static LOCNAMP: [i16; 9] = [-1, 0, -1, 1, 2, -1, 3, 4, -1];
     static PDEVNAMES: [&[u8]; 2] = [b"pty", b"loop"];
 
+    /// The fake tables, with `change`'s working copy, a count of the copies kept as an
+    /// entry's locators and a switch that makes `loc_copy_begin` and `parents_shift` fail.
+    #[derive(Clone, Debug, PartialEq)]
+    struct Fake {
+        cf: Vec<Row>,
+        roots: Vec<i16>,
+        pdev: Vec<i32>,
+        lk: Option<Vec<i64>>,
+        kept: usize,
+        no_memory: bool,
+    }
+
+    impl UkcTables for Fake {
+        fn slots(&self) -> usize {
+            self.cf.len()
+        }
+        fn is_free(&self, dev: usize) -> bool {
+            self.cf[dev].free
+        }
+        fn name(&self, dev: usize) -> &'static [u8] {
+            self.cf[dev].name
+        }
+        fn unit(&self, dev: usize) -> i16 {
+            self.cf[dev].unit
+        }
+        fn set_unit(&mut self, dev: usize, unit: i16) {
+            self.cf[dev].unit = unit;
+        }
+        fn fstate(&self, dev: usize) -> i16 {
+            self.cf[dev].fstate
+        }
+        fn set_fstate(&mut self, dev: usize, fstate: i16) {
+            self.cf[dev].fstate = fstate;
+        }
+        fn starunit1(&self, dev: usize) -> i16 {
+            self.cf[dev].starunit1
+        }
+        fn set_starunit1(&mut self, dev: usize, unit: i16) {
+            self.cf[dev].starunit1 = unit;
+        }
+        fn flags(&self, dev: usize) -> i32 {
+            self.cf[dev].flags
+        }
+        fn set_flags(&mut self, dev: usize, flags: i32) {
+            self.cf[dev].flags = flags;
+        }
+        fn loc(&self, dev: usize) -> &[i64] {
+            &self.cf[dev].loc
+        }
+        fn loc_copy_begin(&mut self, dev: usize) -> bool {
+            assert!(self.lk.is_none(), "one copy at a time");
+            if self.no_memory {
+                return false;
+            }
+            self.lk = Some(self.cf[dev].loc.clone());
+            true
+        }
+        fn loc_copy_at(&self, k: usize) -> i64 {
+            self.lk.as_ref().unwrap()[k]
+        }
+        fn set_loc_copy_at(&mut self, k: usize, val: i64) {
+            self.lk.as_mut().unwrap()[k] = val;
+        }
+        fn loc_copy_end(&mut self, dev: usize) {
+            let lk = self.lk.take().unwrap();
+            if lk != self.cf[dev].loc {
+                self.cf[dev].loc = lk;
+                self.kept += 1;
+            }
+        }
+        fn parents(&self, dev: usize) -> &[i16] {
+            &self.cf[dev].parents
+        }
+        fn locnames_at(&self, dev: usize) -> i32 {
+            self.cf[dev].locnames
+        }
+        fn slot_copy(&mut self, to: usize, from: usize) {
+            self.cf[to] = self.cf[from].clone();
+        }
+        fn parents_shift(&mut self, last: usize, from: i16) -> bool {
+            if self.no_memory {
+                return false;
+            }
+            for r in &mut self.cf[..=last] {
+                for p in &mut r.parents {
+                    if *p >= from {
+                        *p += 1;
+                    }
+                }
+            }
+            true
+        }
+        fn roots(&self) -> &[i16] {
+            &self.roots
+        }
+        fn set_root(&mut self, i: usize, dev: i16) {
+            self.roots[i] = dev;
+        }
+        fn pdevs(&self) -> usize {
+            self.pdev.len()
+        }
+        fn pdev_name(&self, p: usize) -> &'static [u8] {
+            PDEVNAMES[p]
+        }
+        fn pdev_count(&self, p: usize) -> i32 {
+            self.pdev[p]
+        }
+        fn set_pdev_count(&mut self, p: usize, n: i32) {
+            self.pdev[p] = n;
+        }
+        fn locname(&self, i: usize) -> Option<&'static [u8]> {
+            LOCNAMES.get(i).copied()
+        }
+        fn locnamp(&self) -> &[i16] {
+            &LOCNAMP
+        }
+    }
+
     /// mainbus0 at root; pci* at mainbus0; com0 and com1 (disabled) at mainbus0 with `port`
-    /// and `irq`; vio* at pci*; eight free slots.
-    fn table() -> Vec<Cfdata> {
-        let mut t = std::vec![
-            Cfdata::new(&T_CA, &MAINBUS_CD, 0, FSTATE_NOTFOUND, &[], 0, &[], 0, 0),
-            Cfdata::new(&T_CA, &PCI_CD, 0, FSTATE_STAR, &[-1], 0, &[0], 1, 0),
-            Cfdata::new(&T_CA, &COM_CD, 0, FSTATE_NOTFOUND, LOC_COM0, 0, &[0], 3, 0),
-            Cfdata::new(
-                &T_CA,
-                &COM_CD,
-                1,
-                FSTATE_DNOTFOUND,
-                &[0x2f8, 3],
-                0,
-                &[0],
-                3,
-                0
-            ),
-            Cfdata::new(&T_CA, &VIO_CD, 0, FSTATE_STAR, &[-1, -1], 0, &[1], 6, 0),
+    /// and `irq`; vio* at pci*; eight free slots; pty and loop.
+    fn table() -> Fake {
+        let mut cf = std::vec![
+            row(b"mainbus", 0, FSTATE_NOTFOUND, &[], &[], 0),
+            row(b"pci", 0, FSTATE_STAR, &[-1], &[0], 1),
+            row(b"com", 0, FSTATE_NOTFOUND, &[0x3f8, 4], &[0], 3),
+            row(b"com", 1, FSTATE_DNOTFOUND, &[0x2f8, 3], &[0], 3),
+            row(b"vio", 0, FSTATE_STAR, &[-1, -1], &[1], 6),
         ];
-        t.extend((0..8).map(|_| Cfdata::free()));
-        t
+        cf.extend((0..8).map(|_| free()));
+        Fake {
+            cf,
+            roots: std::vec![0],
+            pdev: std::vec![16, 1],
+            lk: None,
+            kept: 0,
+            no_memory: false,
+        }
     }
 
-    fn pdevinit() -> Vec<Pdevinit> {
-        std::vec![
-            Pdevinit {
-                pdev_attach: |_| {},
-                pdev_count: 16,
-            },
-            Pdevinit {
-                pdev_attach: |_| {},
-                pdev_count: 1,
-            },
-        ]
-    }
-
-    /// The keys typed and what was printed.
+    /// The keys typed, what was printed, and the console's polling and ddb calls.
     struct Script {
         keys: Vec<u8>,
         next: usize,
         out: String,
+        polls: Vec<bool>,
+        ddb: usize,
     }
 
     impl GetsnCons for Script {
@@ -1342,50 +1598,48 @@ mod tests {
             use core::fmt::Write;
             self.out.write_fmt(args).unwrap();
         }
+
+        fn cnpollc(&mut self, on: bool) {
+            self.polls.push(on);
+        }
+
+        fn db_enter(&mut self) {
+            self.ddb += 1;
+        }
     }
 
-    /// Runs a session on `keys` over the tables; returns what it printed and the history.
-    fn session(
-        keys: &str,
-        cfdata: &mut [Cfdata],
-        cfroots: &mut [i16],
-        pdev: &mut [Pdevinit],
-    ) -> (String, Vec<u8>) {
-        let t = IoconfTables {
-            cfdata,
-            cfroots,
-            pdevinit: pdev,
-            pdevnames: &PDEVNAMES,
-            locnames: &LOCNAMES,
-            locnamp: &LOCNAMP,
-        };
+    /// Runs a session on `keys` over `t`; returns what it printed, the history and the
+    /// console.
+    fn session(keys: &str, t: &mut Fake) -> (String, Vec<u8>, Script) {
         let cons = Script {
             keys: keys.as_bytes().to_vec(),
             next: 0,
             out: String::new(),
+            polls: Vec::new(),
+            ddb: 0,
         };
         let mut uc = Userconf::new(t, cons);
-        uc.run(|_| {});
+        uc.run();
         let hist = uc.history().to_vec();
         let cons = uc.into_cons();
         assert_eq!(cons.next, cons.keys.len(), "every key read");
-        (cons.out, hist)
+        (cons.out.clone(), hist, cons)
     }
 
-    fn run(keys: &str) -> (String, Vec<Cfdata>, Vec<i16>, Vec<Pdevinit>, Vec<u8>) {
-        let (mut cf, mut roots, mut pdev) = (table(), std::vec![0i16], pdevinit());
-        let (out, hist) = session(keys, &mut cf, &mut roots, &mut pdev);
-        (out, cf, roots, pdev, hist)
+    fn run(keys: &str) -> (String, Fake, Vec<u8>) {
+        let mut t = table();
+        let (out, hist, _) = session(keys, &mut t);
+        (out, t, hist)
     }
 
     #[test]
     fn find_and_disable_a_device_by_name() {
-        let (out, cf, _, _, hist) = run("find vio\rdisable vio\rquit\r");
+        let (out, t, hist) = run("find vio\rdisable vio\rquit\r");
         assert!(out.starts_with("User Kernel Config\nUKC> find vio\n"));
         assert!(out.contains("  4 vio* at pci* dev -1 function -1 flags 0x0\n"));
         assert!(out.contains("UKC> disable vio\n  4 vio* disabled\n"));
         assert!(out.ends_with("UKC> quit\nContinuing...\n"));
-        assert_eq!(cf[4].cf_fstate.get(), FSTATE_DSTAR);
+        assert_eq!(t.cf[4].fstate, FSTATE_DSTAR);
         assert_eq!(hist, b"d 4\nq\n");
     }
 
@@ -1408,93 +1662,137 @@ mod tests {
 
     #[test]
     fn enable_and_disable_by_locator_and_number() {
-        let (out, cf, ..) = run("disable irq 4\renable port 0x2f8\rdisable 2\renable 7\rquit\r");
+        let (out, t, _) = run("disable irq 4\renable port 0x2f8\rdisable 2\renable 7\rquit\r");
         assert!(out.contains("UKC> disable irq 4\n  2 com0 disabled\n"));
         assert!(out.contains("UKC> enable port 0x2f8\n  3 com1 enabled\n"));
         assert!(out.contains("UKC> disable 2\n  2 com0 already disabled\n"));
         assert!(out.contains("UKC> enable 7\n  7 can't enable free slot\n"));
-        assert_eq!(cf[2].cf_fstate.get(), FSTATE_DNOTFOUND);
-        assert_eq!(cf[3].cf_fstate.get(), FSTATE_NOTFOUND);
+        assert_eq!(t.cf[2].fstate, FSTATE_DNOTFOUND);
+        assert_eq!(t.cf[3].fstate, FSTATE_NOTFOUND);
     }
 
     #[test]
     fn units_and_stars_select_entries() {
-        let (out, cf, ..) = run("disable com1\rdisable com0\rfind com\rfind 99\rquit\r");
+        let (out, t, _) = run("disable com1\rdisable com0\rfind com\rfind 99\rquit\r");
         assert!(out.contains("UKC> disable com1\n  3 com1 already disabled\n"));
         assert!(out.contains("UKC> disable com0\n  2 com0 disabled\n"));
         assert!(out.contains("  2 com0 at mainbus0 disable port 0x3f8 irq 4 flags 0x0\n"));
         assert!(out.contains("UKC> find 99\nUnknown devno (max is 4)\n"));
-        assert_eq!(cf[2].cf_fstate.get(), FSTATE_DNOTFOUND);
+        assert_eq!(t.cf[2].fstate, FSTATE_DNOTFOUND);
     }
 
     #[test]
     fn pseudo_devices_are_disabled_by_a_negative_count() {
-        let (out, _, _, pdev, hist) = run("disable pty\rfind pty\renable 12\rdisable loop\rquit\r");
+        let (out, t, hist) = run("disable pty\rfind pty\renable 12\rdisable loop\rquit\r");
         assert!(out.contains("UKC> disable pty\n 12 pty disabled\n"));
         assert!(out.contains(" 12 pty count 16 disable (pseudo device)\n"));
         assert!(out.contains("UKC> enable 12\n 12 pty enabled\n"));
         assert!(out.contains("UKC> disable loop\n 13 loop disabled\n"));
-        assert_eq!(pdev[0].pdev_count, 16);
-        assert_eq!(pdev[1].pdev_count, -1);
+        assert_eq!(t.pdev, [16, -1]);
         assert_eq!(hist, b"d 12\ne 12\nd 13\nq\n");
     }
 
     #[test]
     fn change_edits_a_copy_of_the_locators_and_the_flags() {
-        let (out, cf, ..) = run("change 2\rxy0x3e8\r\r1\rchange com0\rn quit\r");
+        let (out, t, _) = run("change 2\rxy0x3e8\r\r1\rchange com0\rn quit\r");
         assert!(out.contains("change (y/n) ?\n"));
         assert!(out.contains("port [0x3f8] ? 0x3e8\nirq [4] ? \nflags [0] ? 1\n"));
         assert!(
             out.contains("  2 com0 changed\n  2 com0 at mainbus0 port 0x3e8 irq 4 flags 0x1\n")
         );
-        assert_eq!(cf[2].cf_loc, &[0x3e8, 4]);
-        assert_eq!(cf[2].cf_flags, 1);
-        assert_eq!(LOC_COM0, &[0x3f8, 4]);
+        assert_eq!(t.cf[2].loc, [0x3e8, 4]);
+        assert_eq!(t.cf[2].flags, 1);
+        assert_eq!((t.kept, t.lk.as_ref()), (1, None));
     }
 
     #[test]
     fn change_keeps_the_locators_when_nothing_changed() {
-        let (_, cf, ..) = run("change 2\ry\r\r\rquit\r");
-        assert!(core::ptr::eq(cf[2].cf_loc, LOC_COM0));
+        // No locator edited: the copy is freed, not kept; the flags are stored.
+        let (_, t, _) = run("change 2\ry\r\r5\rquit\r");
+        assert_eq!((t.kept, t.lk.as_ref()), (0, None));
+        assert_eq!(t.cf[2].loc, [0x3f8, 4]);
+        assert_eq!(t.cf[2].flags, 5);
+    }
+
+    #[test]
+    fn change_without_memory_for_the_copy_asks_nothing_and_changes_nothing() {
+        let mut t = table();
+        t.no_memory = true;
+        let before = t.clone();
+        let (out, hist, _) = session("change 2\ryquit\r", &mut t);
+        assert!(out.contains("change (y/n) ?\nout of memory.\nUKC> "));
+        assert!(!out.contains("port ["));
+        assert_eq!(t, before);
+        // A device's `change` record is never ended (the C's): `quit`'s takes its place.
+        assert_eq!(hist, b"q\n");
     }
 
     #[test]
     fn add_inserts_a_clone_and_renumbers_parents_and_roots() {
-        let (mut cf, mut roots, mut pdev) = (table(), std::vec![0i16, 3], pdevinit());
-        let (out, hist) = session(
-            "add vio1\r?\r4\r1\rfind vio\rquit\r",
-            &mut cf,
-            &mut roots,
-            &mut pdev,
-        );
+        let mut t = table();
+        t.roots = std::vec![0, 3];
+        let before = t.clone();
+        let (out, hist, _) = session("add vio1\r?\r4\r1\rfind vio\rquit\r", &mut t);
         // `?` lists the candidates.
         assert!(out.contains("Clone Device (DevNo, 'q' or '?') ? ?\n  4 vio* at pci* dev -1"));
         assert!(out.contains("Insert before Device (DevNo, 'q' or '?') ? 1\n"));
         assert!(out.contains("  1 vio1 at pci* dev -1 function -1 flags 0x0\n"));
         assert!(out.contains("  5 vio* at pci* dev -1 function -1 flags 0x0\n"));
-        assert_eq!(cf[1].cf_driver.cd_name, b"vio");
-        assert_eq!(cf[2].cf_driver.cd_name, b"pci");
-        assert_eq!(cf[1].cf_parents, &[2]);
-        assert_eq!(cf[5].cf_parents, &[2]);
-        assert_eq!(cf[3].cf_parents, &[0]);
-        assert_eq!(roots, [0, 4]);
-        assert_eq!((cf[5].cf_unit.get(), cf[5].cf_starunit1), (2, 2));
-        assert!(!cf[5].is_free() && cf[6].is_free());
+        assert_eq!(t.cf[1].name, b"vio");
+        assert_eq!(t.cf[2].name, b"pci");
+        assert_eq!(t.cf[1].parents, [2]);
+        assert_eq!(t.cf[5].parents, [2]);
+        assert_eq!(t.cf[3].parents, [0]);
+        assert_eq!(t.roots, [0, 4]);
+        assert_eq!((t.cf[5].unit, t.cf[5].starunit1), (2, 2));
+        assert!(!t.cf[5].free && t.cf[6].free);
         assert_eq!(hist, b"a 4 1 0 1\nq\n");
+
+        // Every other entry is the one it was, one slot up from 1 on, with only its parents
+        // at or above 1 bumped; the clone is vio*'s entry with the unit and state asked for;
+        // the starred vio's unit and `cf_starunit1` move past it.
+        let mut want = before.cf.clone();
+        let mut clone = want[4].clone();
+        clone.unit = 1;
+        clone.fstate = FSTATE_NOTFOUND;
+        want.insert(1, clone);
+        want.pop();
+        for r in &mut want {
+            for p in &mut r.parents {
+                if *p >= 1 {
+                    *p += 1;
+                }
+            }
+        }
+        want[5].unit = 2;
+        want[5].starunit1 = 2;
+        assert_eq!(t.cf, want);
+        assert_eq!(t.pdev, before.pdev);
+    }
+
+    #[test]
+    fn add_without_memory_for_the_parents_changes_nothing() {
+        let mut t = table();
+        t.no_memory = true;
+        let before = t.clone();
+        let (out, hist, _) = session("add vio1\r4\r1\rquit\r", &mut t);
+        assert!(out.contains("Insert before Device (DevNo, 'q' or '?') ? 1\nout of memory.\n"));
+        assert_eq!(t, before);
+        assert_eq!(hist, b"q\n");
     }
 
     #[test]
     fn add_refuses_what_it_cannot_do() {
-        let (out, cf, ..) = run("add vio\radd foo0\radd vio1\rq\rquit\r");
+        let (out, t, _) = run("add vio\radd foo0\radd vio1\rq\rquit\r");
         assert!(out.contains("UKC> add vio\nDevice not complete number or * is missing\n"));
         assert!(out.contains("UKC> add foo0\nNo device of this type exists.\n"));
-        assert!(cf[5].is_free());
+        assert!(t.cf[5].free);
 
         // Seven adds fill the seven usable slots.
         let keys = "add vio1\r4\r4\r".repeat(7) + "add vio1\rquit\r";
-        let (out, cf, ..) = run(&keys);
+        let (out, t, _) = run(&keys);
         assert!(out.contains("No more space for new devices.\n"));
-        assert!(!cf[11].is_free() && cf[12].is_free());
+        assert!(!t.cf[11].free && t.cf[12].free);
     }
 
     #[test]
@@ -1515,6 +1813,15 @@ mod tests {
         assert!(out.contains("command   args                description\n"));
         assert!(out.contains("disable   attr val|devno|dev  disable devices\n"));
         assert!(out.contains(&std::format!("?{}this message\n", " ".repeat(29))));
+    }
+
+    #[test]
+    fn ddb_enters_the_debugger_and_the_console_is_polled_for_the_session() {
+        let mut t = table();
+        let (out, _, cons) = session("ddb\rquit\r", &mut t);
+        assert_eq!(cons.ddb, 1);
+        assert_eq!(cons.polls, [true, false]);
+        assert!(out.starts_with("User Kernel Config\nUKC> ddb\nUKC> quit\n"));
     }
 
     #[test]

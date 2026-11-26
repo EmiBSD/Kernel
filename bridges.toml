@@ -635,7 +635,7 @@ paid_by = "N7"
 # bsd: the machine's cfdata[]/cfroots[]/mainbus_cd, its device_register, boothowto and rootvp
 # for the kernel's autoconfiguration (N7.1a), implemented by sys/kern/subr_autoconf.rs's
 # BsdConfigGlue over machine::autoconf and registered by bsd's config_init. Paid when the
-# tables become the registry (decision 45 (3), N9.1; boot -c's UKC edits them at N7.1c).
+# tables become the registry (decision 45 (3), N9.1).
 # kernel::dev::autoconf::ConfigGlue
 [[bridge]]
 trait = "ConfigGlue"
@@ -652,3 +652,13 @@ paid_by = "N9"
 trait = "DriverOps"
 for = ["sys/kernel/dev/autoconf.rs"]
 paid_by = "N7"
+
+# bsd: `impl UkcTables for UkcIoconf` in sys/machine/autoconf.rs, handed to user_config by
+# cpu_startup under `boot -c` (N7.1c): ioconf.c's cfdata[]/cfroots[]/pdevinit[] and names as
+# the kernel's UKC editor reads and edits them. A trait received as a value; the row goes when
+# the tables become the registry (decision 45 (3), N9.1).
+# kernel::dev::userconf::UkcTables
+[[bridge]]
+trait = "UkcTables"
+for = ["sys/kernel/dev/userconf.rs"]
+paid_by = "N9"

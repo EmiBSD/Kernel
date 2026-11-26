@@ -111,8 +111,6 @@ pub mod subr_pool;
 pub mod subr_prf;
 pub mod subr_prof;
 pub mod subr_tree;
-#[cfg(feature = "boot_config")]
-pub mod subr_userconf;
 #[forbid(unsafe_code)]
 pub mod subr_xxx;
 #[forbid(unsafe_code)]

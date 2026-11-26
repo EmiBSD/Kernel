@@ -1520,9 +1520,10 @@ The same arm64 kernel ELF boots from Limine and from arm64's efiboot.
 - UKC, `boot -c` (M16e): `kern/subr_userconf.c` edits `ioconf.c`'s tables before
   autoconfiguration, so they cannot be immutable statics. Each `ioconf.rs` keeps `CFDATA`,
   `CFROOTS` and `PDEVINIT` in `StaticCell`s: `cpu_startup` (both archs, as the C's machdep.c)
-  calls `user_config` when `boothowto` has `RB_CONFIG`, which takes them once through
-  `machine::autoconf::ioconf_mut` before anything reads them; afterwards `cfdata()` hands out
-  shared slices as before. `cfdata[]` ends in `config(8)`'s eight free slots
+  calls `machine::autoconf::user_config` when `boothowto` has `RB_CONFIG`, which takes them
+  once through `Autoconf::ioconf_mut` before anything reads them and lends them to the
+  kernel's editor (`kernel::dev::userconf`, N7.1c) as a `UkcTables`; afterwards `cfdata()`
+  hands out shared slices as before. `cfdata[]` ends in `config(8)`'s eight free slots
   (`Cfdata::free()`, whose `cf_attach` is `CFATTACH_NULL`, the C's NULL) for UKC's `add`, and
   `machine::autoconf::ioconf_cfdata` cuts them off as the C's loops stop at a NULL
   `cf_attach`. The tables also carry `LOCNAMES`, `LOCNAMP` (one run per locator attribute,
