@@ -127,7 +127,7 @@ use hal::mem::malloc::MArc;
 use hal::sync::mutex::{Mutexed, MutexedGuard};
 use hal::sync::once::OnceStatic;
 use hal::sync::sleep::{INFSLP, PWAIT, wakeup};
-use sysdefs::reboot::{RB_COCOVM, RB_UNHIBERNATE};
+use sysdefs::proc::reboot::{RB_COCOVM, RB_UNHIBERNATE};
 
 use crate::assert::{kassert, kpanic};
 use crate::base::prf::unported;
@@ -139,7 +139,7 @@ use crate::dev::device::{
     FSTATE_DSTAR, FSTATE_FOUND, FSTATE_NOTFOUND, FSTATE_STAR, Ident, Match, MountrootLink,
     UnitTable,
 };
-use sysdefs::errno::Errno;
+use sysdefs::base::errno::Errno;
 
 /// `msgs[]`: what `config_found` prints after a `cfprint_t` returns `QUIET`, `UNCONF` or
 /// `UNSUPP`.

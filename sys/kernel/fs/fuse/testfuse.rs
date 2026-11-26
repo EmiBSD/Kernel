@@ -37,12 +37,12 @@ use std::vec::Vec;
 
 use hal::mem::malloc::{M_WAITOK, MArc};
 use hal::user::{bytes_of, bytes_of_mut, pod_from_bytes};
-use sysdefs::dirent::Dirent;
-use sysdefs::errno::Errno;
-use sysdefs::fcntl::{FREAD, FWRITE};
-use sysdefs::mount::{FusefsArgs, MOUNT_FUSEFS};
-use sysdefs::pod::AbiPod;
-use sysdefs::types::{Dev, Ino, Off, makedev};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::pod::AbiPod;
+use sysdefs::base::types::{Dev, Ino, Off, makedev};
+use sysdefs::file::dirent::Dirent;
+use sysdefs::file::fcntl::{FREAD, FWRITE};
+use sysdefs::fs::mount::{FusefsArgs, MOUNT_FUSEFS};
 
 use crate::file::descrip::{falloc, fdinsert, fdplock, fdpunlock};
 use crate::file::uio::{Iovec, Uio, UioRw, UioSeg};

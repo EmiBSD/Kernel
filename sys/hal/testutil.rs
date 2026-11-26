@@ -67,8 +67,8 @@ use crate::prf::Printf;
 use crate::sync::sleep::{INFSLP, Sleep};
 use crate::vm::pmap::{BootstrapParams, Bootstrapped, PageMd, PhysPages};
 
-use sysdefs::errno::Errno;
-use sysdefs::types::{Paddr, Vaddr};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Paddr, Vaddr};
 
 std::thread_local! {
     static PROC: u8 = const { 0 };

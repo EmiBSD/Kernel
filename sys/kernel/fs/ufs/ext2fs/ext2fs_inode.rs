@@ -128,9 +128,9 @@
 
 use hal::mem::malloc::{M_WAITOK, MArray};
 use hal::sync::sleep::INFSLP;
-use sysdefs::errno::Errno;
-use sysdefs::mount::MNT_RDONLY;
-use sysdefs::types::{Daddr, Mode, Off};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Daddr, Mode, Off};
+use sysdefs::fs::mount::MNT_RDONLY;
 
 use super::ext2fs::{
     E2FS_REV0, EXT2F_ROCOMPAT_LARGE_FILE, blkoff, fsbtodb, ino_to_fsba, ino_to_fsbo, lblkno, nindir,

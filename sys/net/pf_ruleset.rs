@@ -107,7 +107,8 @@ use crate::sys::pool::{PR_LIMITFAIL, PR_WAITOK, PR_ZERO, Pool};
 use crate::sys::syslimits::PATH_MAX;
 use crate::sys::syslog::LOG_NOTICE;
 use crate::sys::tree::RbHead;
-use libkern::{strlcat, strlcpy};
+use libkern::string::strlcat::strlcat;
+use libkern::string::strlcpy::strlcpy;
 
 /// A buffer from `rs_malloc`, zeroed, given back by `rs_free` (or when dropped).
 pub struct RsBuf {

@@ -33,8 +33,8 @@
 use std::sync::MutexGuard;
 use std::vec::Vec;
 
-use sysdefs::errno::Errno;
-use sysdefs::mount::{
+use sysdefs::base::errno::Errno;
+use sysdefs::fs::mount::{
     MNT_LOCAL, MNT_RDONLY, MNT_SWAPPABLE, MNT_WAIT, MOUNT_MSDOS, MSDOSFSMNT_LONGNAME, MsdosfsArgs,
 };
 

@@ -102,8 +102,8 @@
 //!   threads through is whatever the closure captures. The two `fn` types went with `bsd`'s
 //!   copy of the walk at the flip (S2).
 
-use sysdefs::mman::{PROT_EXEC, PROT_READ, PROT_WRITE};
-use sysdefs::types::{Off, Paddr};
+use sysdefs::base::types::{Off, Paddr};
+use sysdefs::vm::mman::{PROT_EXEC, PROT_READ, PROT_WRITE};
 
 /// `vm_fault_t`.
 pub type VmFault = i32;
@@ -259,7 +259,7 @@ pub struct CoredumpSeg {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sysdefs::mman::{MADV_RANDOM, MAP_INHERIT_NONE};
+    use sysdefs::vm::mman::{MADV_RANDOM, MAP_INHERIT_NONE};
 
     #[test]
     fn map_flags_round_trip() {

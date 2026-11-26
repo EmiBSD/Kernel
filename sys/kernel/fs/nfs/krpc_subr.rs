@@ -120,13 +120,13 @@
 use hal::cpu::intr::IPL_NONE;
 use hal::sync::mutex::Mutexed;
 use hal::user::bytes_of;
-use sysdefs::mbuf::{MT_DATA, MT_SONAME, MT_SOOPTS};
-use sysdefs::netinet_in::{
+use sysdefs::base::pod::AbiPod;
+use sysdefs::net::mbuf::{MT_DATA, MT_SONAME, MT_SOOPTS};
+use sysdefs::net::socket::{AF_INET, SO_BROADCAST, SO_RCVTIMEO, SOCK_DGRAM, SOL_SOCKET};
+use sysdefs::netinet::in_::{
     INADDR_ANY, IP_PORTRANGE, IP_PORTRANGE_DEFAULT, IP_PORTRANGE_LOW, IPPROTO_IP, IPPROTO_UDP,
     InAddr, SockaddrIn,
 };
-use sysdefs::pod::AbiPod;
-use sysdefs::socket::{AF_INET, SO_BROADCAST, SO_RCVTIMEO, SOCK_DGRAM, SOL_SOCKET};
 
 use super::nfsm_subs::{XdrReader, XdrWriter, nfsm_rndup};
 use super::rpcv2::{RPC_REPLY, RPCAUTH_MAXSIZ, RPCAUTH_UNIX};
@@ -144,7 +144,7 @@ use crate::net::socket::{
 use crate::netinet::if_ether::InAddrFmt;
 use crate::proc::{ProcGlue, Thread};
 use crate::time::clock::Timeval;
-use sysdefs::errno::Errno;
+use sysdefs::base::errno::Errno;
 
 /// `PMAPPORT`: RPC definitions for the portmapper.
 pub const PMAPPORT: u16 = 111;
@@ -679,10 +679,10 @@ pub(crate) mod testkrpc {
     use std::vec;
     use std::vec::Vec;
 
-    use sysdefs::netinet_in::{IPPROTO_UDP, InAddr, SockaddrIn};
-    use sysdefs::netinet_ip::Ip;
-    use sysdefs::netinet_udp::Udphdr;
-    use sysdefs::socket::AF_INET;
+    use sysdefs::net::socket::AF_INET;
+    use sysdefs::netinet::in_::{IPPROTO_UDP, InAddr, SockaddrIn};
+    use sysdefs::netinet::ip::Ip;
+    use sysdefs::netinet::udp::Udphdr;
 
     use super::RPC_REPLY;
     use crate::fs::nfs::nfsm_subs::nfsm_rndup;
@@ -694,7 +694,7 @@ pub(crate) mod testkrpc {
     use crate::netinet::in_pcb::testinet;
     use crate::netinet::udp_usrreq::testudp::{self, G};
     use crate::proc::{ProcGlue, Thread};
-    use sysdefs::errno::Errno;
+    use sysdefs::base::errno::Errno;
 
     /// The segments `segs` as one chain, its first mbuf a packet header's (the total length
     /// in it), the others plain mbufs.
@@ -759,9 +759,9 @@ pub(crate) mod testkrpc {
 
     impl NetDriver for Wire {
         fn ioctl(&self, ifp: &'static Ifnet, cmd: u64, _data: &mut [u8]) -> Result<(), Errno> {
-            if cmd == sysdefs::sockio::SIOCSIFADDR {
+            if cmd == sysdefs::net::sockio::SIOCSIFADDR {
                 ifp.if_flags
-                    .set(ifp.if_flags.get() | sysdefs::net_if::IFF_UP);
+                    .set(ifp.if_flags.get() | sysdefs::net::if_::IFF_UP);
             }
             Ok(())
         }

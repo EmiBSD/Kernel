@@ -115,22 +115,22 @@ use core::ptr;
 
 use hal::random::arc4random;
 use hal::sync::netlock::NetHeld;
-use sysdefs::endian::{htonl, htons};
-use sysdefs::errno::Errno;
-use sysdefs::net_if::{
+use sysdefs::base::endian::{htonl, htons};
+use sysdefs::base::errno::Errno;
+use sysdefs::net::if_::{
     IFF_LOOPBACK, IFF_MULTICAST, IFF_POINTOPOINT, IFT_BRIDGE, IFT_CARP, IFT_ENC, IFT_ETHER,
     IFT_GIF, IFT_IEEE1394, IFT_IEEE80211, IFT_PFLOG, IFT_PFSYNC, IFT_WIREGUARD, IFXF_AUTOCONF6,
     IFXF_AUTOCONF6TEMP,
 };
-use sysdefs::net_route::{RTF_CLONING, RTF_CONNECTED, RTF_MPATH};
-use sysdefs::netinet_ip6::IPV6_MMTU;
-use sysdefs::netinet6_in6::{
+use sysdefs::net::route::{RTF_CLONING, RTF_CONNECTED, RTF_MPATH};
+use sysdefs::net::socket::AF_INET6;
+use sysdefs::netinet::ip6::IPV6_MMTU;
+use sysdefs::netinet6::in6::{
     IN6ADDR_INTFACELOCAL_ALLNODES, IN6ADDR_LINKLOCAL_ALLNODES, IN6ADDR_LOOPBACK, IN6MASK64,
     IN6MASK128, In6Addr, SockaddrIn6,
 };
-use sysdefs::netinet6_in6_var::{IN6_IFF_TENTATIVE, In6Aliasreq};
-use sysdefs::netinet6_nd6::ND6_INFINITE_LIFETIME;
-use sysdefs::socket::AF_INET6;
+use sysdefs::netinet6::in6_var::{IN6_IFF_TENTATIVE, In6Aliasreq};
+use sysdefs::netinet6::nd6::ND6_INFINITE_LIFETIME;
 
 use crate::assert::{kassert, kpanic};
 use crate::net::if_::{IFNETLIST, if_addrhooks_run};
@@ -533,7 +533,7 @@ mod tests {
 
     use hal::mem::malloc::{M_WAITOK, MBox};
     use hal::sync::netlock::NETLOCK;
-    use sysdefs::net_if::{IFT_PPP, SockaddrDl};
+    use sysdefs::net::if_::{IFT_PPP, SockaddrDl};
 
     use super::*;
     use crate::net::if_::{M_IFADDR, test_ifnet};

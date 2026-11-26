@@ -55,7 +55,7 @@
 //! Internet Group Management Protocol (IGMP), implementation-specific definitions, the
 //! kernel's half of `<netinet/igmp_var.h>`: the counters' indices, the report a membership
 //! change asks for and the random delay. The userland half (`struct igmpstat`, the sysctl
-//! names) is `sysdefs::netinet_igmp_var`. Written by Steve Deering, Stanford, May 1988.
+//! names) is `sysdefs::netinet::igmp_var`. Written by Steve Deering, Stanford, May 1988.
 //! Modified by Rosen Sharma, Stanford, Aug 1994. Modified by Bill Fenner, Xerox PARC, Feb
 //! 1995. MULTICAST 1.3.
 //!
@@ -70,7 +70,7 @@
 //!   stack.
 
 use hal::random::arc4random_uniform;
-use sysdefs::netinet_in::InAddr;
+use sysdefs::netinet::in_::InAddr;
 
 use crate::netinet::igmp::IGMPCOUNTERS;
 
@@ -133,5 +133,5 @@ pub fn igmp_random_delay(x: u32) -> u32 {
 
 // The counters are the structure's words (`CTASSERT` in `igmp_sysctl_igmpstat`).
 const _: () =
-    assert!(size_of::<sysdefs::netinet_igmp_var::Igmpstat>() == IGPS_NCOUNTERS * size_of::<u64>());
+    assert!(size_of::<sysdefs::netinet::igmp_var::Igmpstat>() == IGPS_NCOUNTERS * size_of::<u64>());
 /* </CODE> */

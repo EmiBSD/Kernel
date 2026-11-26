@@ -150,9 +150,9 @@
 use core::marker::PhantomData;
 use core::sync::atomic::Ordering;
 
-use sysdefs::mount::MNAMELEN;
-use sysdefs::syslimits::NAME_MAX;
-use sysdefs::types::{Daddr, Dev, Off, major, makedev, minor};
+use sysdefs::base::syslimits::NAME_MAX;
+use sysdefs::base::types::{Daddr, Dev, Off, major, makedev, minor};
+use sysdefs::fs::mount::MNAMELEN;
 
 use crate::assert::kpanic;
 use crate::base::prf::printf;
@@ -1292,7 +1292,7 @@ mod tests {
     use crate::fs::isofs::cd9660::cd9660_extern::{ISO_FTYPE_RRIP, IsoMntRef};
     use crate::fs::isofs::cd9660::testcd9660::{attach_image, image, rec, test_mnt, test_node};
     use crate::fs::testfs::TestGlue;
-    use sysdefs::stat::{S_IFCHR, S_IFDIR, S_IFLNK, S_IFREG};
+    use sysdefs::file::stat::{S_IFCHR, S_IFDIR, S_IFLNK, S_IFREG};
 
     /// A 733 field: the value little-endian, then big-endian.
     fn both32(v: u32) -> [u8; 8] {

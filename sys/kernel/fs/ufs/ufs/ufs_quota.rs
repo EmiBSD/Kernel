@@ -120,11 +120,11 @@ use hal::random::arc4random;
 use hal::sync::sleep::INFSLP;
 use hal::sync::slot::ReadMostly;
 use hal::user::{UserPtr, bytes_of, pod_from_bytes};
-use libkern::siphash::{SipHash24Ctx, SiphashKey};
-use sysdefs::errno::Errno;
-use sysdefs::fcntl::{FREAD, FWRITE};
-use sysdefs::mount::{MNT_QUOTA, VB_NOWAIT, VB_READ};
-use sysdefs::types::{Daddr, Off, Uid};
+use libkern::hash::siphash::{SipHash24Ctx, SiphashKey};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Daddr, Off, Uid};
+use sysdefs::file::fcntl::{FREAD, FWRITE};
+use sysdefs::fs::mount::{MNT_QUOTA, VB_NOWAIT, VB_READ};
 
 use super::inode::{DinWords, Inode, vtoi};
 use super::quota::{

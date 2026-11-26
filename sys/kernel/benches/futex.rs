@@ -48,8 +48,8 @@ use hal::arch::current::vmparam::{VM_MAXUSER_ADDRESS, VM_MIN_ADDRESS};
 use hal::user::UserPtr;
 use kernel::proc::{self, ProcGlue, ProcTables, Process, Session, Thread};
 use kernel::testutil;
-use sysdefs::errno::Errno;
-use sysdefs::futex::{FUTEX_WAIT_PRIVATE, FUTEX_WAKE, FUTEX_WAKE_PRIVATE};
+use sysdefs::base::errno::Errno;
+use sysdefs::proc::futex::{FUTEX_WAIT_PRIVATE, FUTEX_WAKE, FUTEX_WAKE_PRIVATE};
 
 // ---------------------------------------------------------------------------------------
 // The harness (vm.rs's).

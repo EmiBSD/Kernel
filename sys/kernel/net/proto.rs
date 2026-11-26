@@ -88,8 +88,8 @@
 //!   `bridges.toml`) until each
 //!   moves: inet at N6.4-N6.6, route at N6.3b, pfkey with IPsec at N8.
 
-use sysdefs::errno::Errno;
-use sysdefs::stat::Stat;
+use sysdefs::base::errno::Errno;
+use sysdefs::file::stat::Stat;
 
 use hal::sync::netlock::NetHeld;
 

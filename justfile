@@ -3741,7 +3741,7 @@ check-hal:
 check-abi:
     {{xtask}} abi-check
 
-# Regenerate the system call tables from reference/.../syscalls.master (sys/lib/sysdefs/syscall.rs,
+# Regenerate the system call tables from reference/.../syscalls.master (sys/lib/sysdefs/proc/syscall.rs,
 # sys/sys/syscallargs.rs, kern/init_sysent.rs, kern/syscalls.rs). Rerun after porting a sys_*
 # function.
 gen-syscalls:

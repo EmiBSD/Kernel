@@ -71,8 +71,8 @@ use core::sync::atomic::Ordering;
 
 use hal::sync::sleep::{INFSLP, PRIBIO, curproc_word, wakeup};
 use hal::vm::param::{atop, ptoa, round_page};
-use sysdefs::param::PAGE_SIZE;
-use sysdefs::types::Paddr;
+use sysdefs::base::param::PAGE_SIZE;
+use sysdefs::base::types::Paddr;
 
 use super::bio::{BCSTATS, Cache, bufbackoff_locked, cleaner_word, syncer_word};
 use super::buf::{B_BUSY, B_RELEASED, Buf, BufRef, Kva, MAXPHYS, Pages, RESERVE_SLOTS};

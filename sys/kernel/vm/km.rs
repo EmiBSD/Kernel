@@ -437,9 +437,11 @@ use hal::vm::pmap::{
     HAVE_PMAP_DIRECT, KernelMapper, PMAP_NOCACHE, PMAP_NOMMU, PMAP_WIRED, Pmap, PmapRef,
 };
 use hal::vm::uvmexp::UVMEXP;
-use sysdefs::errno::Errno;
-use sysdefs::mman::{MADV_NORMAL, MADV_RANDOM, MAP_INHERIT_NONE, PROT_NONE, PROT_READ, PROT_WRITE};
-use sysdefs::types::{Paddr, Vaddr, Vsize};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Paddr, Vaddr, Vsize};
+use sysdefs::vm::mman::{
+    MADV_NORMAL, MADV_RANDOM, MAP_INHERIT_NONE, PROT_NONE, PROT_READ, PROT_WRITE,
+};
 
 use super::amap::AMAP_REFALL;
 use super::aobj::{Aobj, UAO_FLAG_KERNOBJ, uao_create, uao_dropswap, uao_init};
@@ -1088,7 +1090,7 @@ pub(super) fn mapper() -> VmMapper {
 /// `kernel::time::tc::timekeep_object`, which made `va` the kernel map's wired, never-unmapped
 /// mapping of the timekeep object; `hal` checks the page is managed and wired, claims its
 /// frame for good and makes the view once per boot (`None` otherwise).
-pub(crate) fn timekeep_view(va: Vaddr) -> Option<&'static sysdefs::timetc::TimekeepAtomic> {
+pub(crate) fn timekeep_view(va: Vaddr) -> Option<&'static sysdefs::time::timetc::TimekeepAtomic> {
     token().timekeep_view(va)
 }
 

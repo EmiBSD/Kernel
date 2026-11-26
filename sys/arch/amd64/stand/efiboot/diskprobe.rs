@@ -285,7 +285,7 @@ fn disksum(blk: u32) -> bool {
             bdi.flags |= BDI_INVALID;
             continue;
         }
-        bdi.checksum = libz::adler32(bdi.checksum, Some(&buf));
+        bdi.checksum = libz::check::adler32::adler32(bdi.checksum, Some(&buf));
 
         for dip2 in before.iter() {
             let bd = &dip2.bios_info;

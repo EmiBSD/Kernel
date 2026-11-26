@@ -111,7 +111,7 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use sysdefs::dirent::Dirent;
+use sysdefs::file::dirent::Dirent;
 
 use crate::base::prf::printf;
 use crate::fs::msdosfs::denode::WIN_MAXLEN;
@@ -783,7 +783,7 @@ mod tests {
     // with their quirks, the long name entries, and the tables against the C file.
 
     use super::*;
-    use sysdefs::dirent::MAXNAMLEN;
+    use sysdefs::file::dirent::MAXNAMLEN;
 
     fn ts(tv_sec: i64, tv_nsec: i64) -> Timespec {
         Timespec { tv_sec, tv_nsec }

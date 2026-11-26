@@ -205,10 +205,10 @@ use hal::sync::rwlock::Guarded;
 use hal::sync::sleep::{INFSLP, PRIBIO, curproc_word, sched_pause, wakeup};
 use hal::vm::param::{atop, round_page};
 use hal::vm::uvmexp::UVMEXP;
-use sysdefs::errno::Errno;
-use sysdefs::mount::Bcachestats;
-use sysdefs::param::PAGE_SIZE;
-use sysdefs::types::{Daddr, Dev};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::param::PAGE_SIZE;
+use sysdefs::base::types::{Daddr, Dev};
+use sysdefs::fs::mount::Bcachestats;
 
 #[cfg(any(test, feature = "doubles"))]
 use super::biomem::BUF_NEEDVA;

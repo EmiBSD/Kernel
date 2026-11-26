@@ -221,16 +221,16 @@ use hal::mem::pool::{PR_NOWAIT, PR_WAITOK, PoolArc, PoolHome, TypedPool};
 use hal::sync::mutex::{Mutexed, MutexedGuard};
 use hal::sync::rwlock::{Guarded, RawRwlock, WriteWitness};
 use hal::user::{bytes_of, pod_from_bytes};
-use sysdefs::errno::Errno;
-use sysdefs::pledge::PLEDGE_UNIX;
-use sysdefs::socket::{
+use sysdefs::base::errno::Errno;
+use sysdefs::file::stat::{ACCESSPERMS, Stat};
+use sysdefs::net::socket::{
     AF_UNIX, Cmsghdr, MSG_CMSG_CLOEXEC, MSG_CMSG_CLOFORK, NET_UNIX_DEFERRED, NET_UNIX_INFLIGHT,
     PF_UNIX, SCM_RIGHTS, SO_ACCEPTCONN, SOCK_DGRAM, SOCK_SEQPACKET, SOCK_STREAM, SOL_SOCKET,
     Sockpeercred, UNPCTL_RECVSPACE, UNPCTL_SENDSPACE, cmsg_align, cmsg_len, cmsg_space,
 };
-use sysdefs::stat::{ACCESSPERMS, Stat};
-use sysdefs::sysctl::SysctlBoundedArgs;
-use sysdefs::un::SockaddrUn;
+use sysdefs::net::un::SockaddrUn;
+use sysdefs::proc::pledge::PLEDGE_UNIX;
+use sysdefs::proc::sysctl::SysctlBoundedArgs;
 
 use crate::assert::{kassert, kpanic};
 use crate::base::sysctl::{SysctlReq, bounded_arr, rdint};
@@ -989,7 +989,7 @@ fn uipc_bind<G: ProcGlue>(
     let mut addr = SockaddrUn {
         sun_len: size_of::<SockaddrUn>() as u8,
         sun_family: AF_UNIX,
-        sun_path: [0; sysdefs::un::SUN_PATH_LEN],
+        sun_path: [0; sysdefs::net::un::SUN_PATH_LEN],
     };
     addr.sun_path[..pathlen].copy_from_slice(&path[..pathlen]);
 
@@ -1319,7 +1319,7 @@ fn uipc_sense<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>, sb: &mut Stat) 
     if s.ino == 0 {
         s.ino = unp_ino_next(tables::<G>());
     }
-    let t: sysdefs::stat::Timespec = unp.ctime;
+    let t: sysdefs::file::stat::Timespec = unp.ctime;
     sb.st_atim = t;
     sb.st_mtim = t;
     sb.st_ctim = t;
@@ -2591,7 +2591,7 @@ fn unp_discard<G: ProcGlue>(cm: &mut Mbuf, nfds: usize) {
 /// (in the returned buffer) and its length: `EINVAL` for a short address, a length that is not
 /// the mbuf's or past `struct sockaddr_un`, or a path that fills `sun_path` or the address
 /// with no room left for its NUL; `EAFNOSUPPORT` for another family.
-pub fn unp_nam2sun(nam: &Mbuf) -> Result<([u8; sysdefs::un::SUN_PATH_LEN + 1], usize), Errno> {
+pub fn unp_nam2sun(nam: &Mbuf) -> Result<([u8; sysdefs::net::un::SUN_PATH_LEN + 1], usize), Errno> {
     let d = nam.data();
     let m_len = d.len();
 
@@ -2613,13 +2613,13 @@ pub fn unp_nam2sun(nam: &Mbuf) -> Result<([u8; sysdefs::un::SUN_PATH_LEN + 1], u
     let path = &d[SockaddrUn::PATH_OFFSET..sa_len];
     let size = path.len();
     let len = path.iter().position(|&c| c == 0).unwrap_or(size);
-    if len == sysdefs::un::SUN_PATH_LEN {
+    if len == sysdefs::net::un::SUN_PATH_LEN {
         return Err(Errno::EINVAL);
     }
     if len == size && m_trailingspace(nam) == 0 {
         return Err(Errno::EINVAL);
     }
-    let mut buf = [0u8; sysdefs::un::SUN_PATH_LEN + 1];
+    let mut buf = [0u8; sysdefs::net::un::SUN_PATH_LEN + 1];
     buf[..len].copy_from_slice(&path[..len]);
     Ok((buf, len))
 }
@@ -2808,7 +2808,9 @@ pub(crate) mod tests {
     use std::{assert, assert_eq, vec};
 
     use hal::user::UserPtr;
-    use sysdefs::socket::{MSG_DONTWAIT, MSG_NOSIGNAL, MSG_TRUNC, SHUT_WR, SO_PEERCRED, SO_TYPE};
+    use sysdefs::net::socket::{
+        MSG_DONTWAIT, MSG_NOSIGNAL, MSG_TRUNC, SHUT_WR, SO_PEERCRED, SO_TYPE,
+    };
 
     use super::*;
     use crate::file::descrip::{falloc, fd_getfile, fdinsert, sys_close};
@@ -2894,7 +2896,7 @@ pub(crate) mod tests {
             None => fp.install(ty, &SOCKET_OPS, TestFileData::default()),
         }
         fp.f_flag.store(
-            (sysdefs::fcntl::FREAD | sysdefs::fcntl::FWRITE) as u32,
+            (sysdefs::file::fcntl::FREAD | sysdefs::file::fcntl::FWRITE) as u32,
             Ordering::Relaxed,
         );
         fdinsert(&mut g, fd, 0, &fp);
@@ -3122,7 +3124,7 @@ pub(crate) mod tests {
 
     #[test]
     fn msg_peek_reads_without_taking() {
-        use sysdefs::socket::MSG_PEEK;
+        use sysdefs::net::socket::MSG_PEEK;
         let (_g, p) = setup();
         // A stream of several mbufs (clusters): a peek walks them all, a second peek sees
         // the same bytes, the read takes them.

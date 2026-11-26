@@ -96,7 +96,7 @@
 //!   the walk and is returned once the references taken are dropped (the C's `break` only
 //!   left the macro's `do { } while (0)`, so its walk went on and a later `copyout` could
 //!   overwrite the error). `kinfo_file` is copied out as bytes, its two C padding holes
-//!   being members (`sysdefs::sysctl`).
+//!   being members (`sysdefs::proc::sysctl`).
 //! - The morally-const values `sysctl_bounded_arr` reports (`openbsd`, `maxpartitions`,
 //!   `raw_part`) are `AtomicI32` statics like the C's `static int`s.
 //! - `KERN_CPTIME` with no CPU online (which only the host double can produce) leaves the
@@ -121,7 +121,9 @@ use core::ops::ControlFlow;
 use core::sync::atomic::{AtomicI32, Ordering};
 use kernel::fs::vops::Cred;
 
-use libkern::{strlcpy, strnlen};
+use libkern::string::strlcpy::strlcpy;
+
+use libkern::string::strnlen::strnlen;
 
 use crate::conf::param::{FSCALE, MAXFILES, MAXPROCESS, MAXTHREAD, UTC_OFFSET};
 use crate::conf::vers::{OSRELEASE, OSTYPE, OSVERSION, VERSION};
@@ -2307,8 +2309,8 @@ mod tests {
         let flags = kernel::vm::types::uvm_mapflag(
             rw,
             rw,
-            sysdefs::mman::MAP_INHERIT_COPY,
-            sysdefs::mman::MADV_NORMAL,
+            sysdefs::vm::mman::MAP_INHERIT_COPY,
+            sysdefs::vm::mman::MADV_NORMAL,
             kernel::vm::types::UVM_FLAG_FIXED | kernel::vm::types::UVM_FLAG_COPYONW,
         );
         let mut at = 0x10_0000;

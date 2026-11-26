@@ -110,7 +110,7 @@ use hal::sync::rwlock::Guarded;
 
 use crate::assert::kpanic;
 use crate::dev::autoconf::TREE;
-use sysdefs::errno::Errno;
+use sysdefs::base::errno::Errno;
 
 /// `DVACT_DEACTIVATE`: deactivate the device.
 pub const DVACT_DEACTIVATE: i32 = 1;

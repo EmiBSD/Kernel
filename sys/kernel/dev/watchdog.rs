@@ -78,8 +78,8 @@ use core::sync::atomic::{AtomicI32, Ordering};
 use hal::cpu::intr::IPL_SOFTCLOCK;
 use hal::ds::pin::pin_static;
 use hal::sync::mutex::Mutexed;
-use sysdefs::errno::Errno;
-use sysdefs::sysctl::{KERN_WATCHDOG_AUTO, KERN_WATCHDOG_PERIOD};
+use sysdefs::base::errno::Errno;
+use sysdefs::proc::sysctl::{KERN_WATCHDOG_AUTO, KERN_WATCHDOG_PERIOD};
 
 use crate::base::sysctl::{SysctlNode, SysctlReq, int_bounded};
 use crate::time::timeout::Timeout;

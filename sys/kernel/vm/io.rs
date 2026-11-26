@@ -84,7 +84,7 @@ use hal::arch::current::vmparam::VM_MAXUSER_ADDRESS;
 use hal::mem::kmbuf::KmBuf;
 use hal::user::ForeignWindow;
 use hal::vm::param::{round_page, trunc_page};
-use sysdefs::errno::Errno;
+use sysdefs::base::errno::Errno;
 
 use super::km::{page_memory, uvm_map_extract_window};
 use super::map::{UVM_EXTRACT_FIXPROT, VmMap};
@@ -268,7 +268,7 @@ mod tests {
         testutil::install();
         let _ = testutil::pmap_boot();
         super::super::km::test_window(
-            sysdefs::types::Vaddr::new(testutil::FOREIGN_BASE),
+            sysdefs::base::types::Vaddr::new(testutil::FOREIGN_BASE),
             testutil::FOREIGN_LEN,
         )
     }
@@ -343,7 +343,7 @@ mod tests {
         let _ = testutil::pmap_boot();
         // A window past the double's foreign memory: every copy faults.
         let w = super::super::km::test_window(
-            sysdefs::types::Vaddr::new(testutil::FOREIGN_BASE + testutil::FOREIGN_LEN),
+            sysdefs::base::types::Vaddr::new(testutil::FOREIGN_BASE + testutil::FOREIGN_LEN),
             PAGE_SIZE,
         );
         let mut uio = Buf {
@@ -366,7 +366,8 @@ mod tests {
         testutil::install();
         let _ = testutil::pmap_boot();
         let base = testutil::FOREIGN_BASE + testutil::FOREIGN_LEN - PAGE_SIZE;
-        let w = super::super::km::test_window(sysdefs::types::Vaddr::new(base), 2 * PAGE_SIZE);
+        let w =
+            super::super::km::test_window(sysdefs::base::types::Vaddr::new(base), 2 * PAGE_SIZE);
         let mut uio = Buf {
             data: vec![0; 2 * PAGE_SIZE],
             pos: 0,

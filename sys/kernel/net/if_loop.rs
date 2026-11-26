@@ -160,15 +160,15 @@
 
 use hal::mem::malloc::{M_WAITOK, MBox};
 use hal::sync::netlock::NETLOCK;
-use sysdefs::errno::Errno;
-use sysdefs::net_bpf::DLT_LOOP;
-use sysdefs::net_if::{
+use sysdefs::base::errno::Errno;
+use sysdefs::net::bpf::DLT_LOOP;
+use sysdefs::net::if_::{
     IFCAP_CSUM_IPv4, IFCAP_CSUM_TCPv4, IFCAP_CSUM_TCPv6, IFCAP_CSUM_UDPv4, IFCAP_CSUM_UDPv6,
     IFCAP_LRO, IFCAP_TSOv4, IFCAP_TSOv6, IFF_LOOPBACK, IFF_MULTICAST, IFF_RUNNING, IFT_LOOP,
     IFXF_CLONED, IFXF_LRO, Ifreq,
 };
-use sysdefs::net_route::{RTF_BLACKHOLE, RTF_HOST, RTF_REJECT};
-use sysdefs::sockio::{SIOCADDMULTI, SIOCDELMULTI, SIOCSIFADDR, SIOCSIFFLAGS, SIOCSIFMTU};
+use sysdefs::net::route::{RTF_BLACKHOLE, RTF_HOST, RTF_REJECT};
+use sysdefs::net::sockio::{SIOCADDMULTI, SIOCDELMULTI, SIOCSIFADDR, SIOCSIFFLAGS, SIOCSIFMTU};
 
 use crate::assert::kpanic;
 use crate::net::bpf::{BpfTap, bpfattach};
@@ -456,8 +456,8 @@ mod tests {
 
     use core::sync::atomic::Ordering;
 
-    use sysdefs::net_route::RTP_DEFAULT;
-    use sysdefs::socket::AF_INET;
+    use sysdefs::net::route::RTP_DEFAULT;
+    use sysdefs::net::socket::AF_INET;
 
     use super::*;
     use crate::net::if_::{
@@ -647,7 +647,7 @@ mod tests {
         assert_eq!(loioctl(ifp, SIOCADDMULTI, &mut req), Ok(()));
         assert_eq!(loioctl(ifp, SIOCDELMULTI, &mut req), Ok(()));
         assert_eq!(
-            loioctl(ifp, sysdefs::sockio::SIOCGIFMEDIA, &mut req),
+            loioctl(ifp, sysdefs::net::sockio::SIOCGIFMEDIA, &mut req),
             Err(Errno::ENOTTY)
         );
         // SIOCSIFADDR: running and up, under the caller's net lock.
@@ -658,7 +658,7 @@ mod tests {
         );
         hal::sync::netlock::unlock();
         assert_ne!(ifp.if_flags.get() & IFF_RUNNING, 0);
-        assert_ne!(ifp.if_flags.get() & sysdefs::net_if::IFF_UP, 0);
+        assert_ne!(ifp.if_flags.get() & sysdefs::net::if_::IFF_UP, 0);
     }
 }
 /* </TESTS> */

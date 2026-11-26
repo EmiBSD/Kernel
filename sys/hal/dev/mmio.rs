@@ -130,8 +130,8 @@ use core::ptr;
 use crate::arch::current::param::PAGE_SIZE;
 use crate::assert::hal_panic;
 use crate::vm::pmap::{self, KernelMapper, PMAP_NOMMU};
-use sysdefs::errno::Errno;
-use sysdefs::types::{Paddr, Vaddr, Vsize};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Paddr, Vaddr, Vsize};
 
 /// The alignment of a typed block's first byte: the widest register's (`u64`).
 const BLOCK_ALIGN: usize = align_of::<u64>();

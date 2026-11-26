@@ -147,7 +147,7 @@ use crate::sys::malloc::{M_NOWAIT, M_TEMP, M_USB, M_WAITOK, M_ZERO};
 use crate::sys::param::PRIBIO;
 use crate::sys::systm::COLD;
 use crate::sys::time::msec_to_nsec;
-use libkern::strlcpy;
+use libkern::string::strlcpy::strlcpy;
 
 /// `usbd_error_strs[]`.
 pub const USBD_ERROR_STRS: [&str; 20] = [

@@ -176,18 +176,18 @@ use core::mem::size_of;
 use hal::mem::pod;
 use hal::mem::pool::PoolArc;
 use hal::sync::netlock::NetHeld;
-use sysdefs::endian::htonl;
-use sysdefs::errno::Errno;
-use sysdefs::net_route::RTF_HOST;
-use sysdefs::netinet_ip6::{IPV6_FLOWLABEL_MASK, Ip6Hdr};
-use sysdefs::netinet6_in6::{
+use sysdefs::base::endian::htonl;
+use sysdefs::base::errno::Errno;
+use sysdefs::net::route::RTF_HOST;
+use sysdefs::net::socket::{SO_BINDANY, SO_REUSEADDR, SO_REUSEPORT};
+use sysdefs::netinet::ip6::{IPV6_FLOWLABEL_MASK, Ip6Hdr};
+use sysdefs::netinet6::in6::{
     IN6ADDR_ANY, In6Addr, SA6_ANY, SockaddrIn6, in6_are_addr_equal, in6_is_addr_multicast,
     in6_is_addr_unspecified, in6_is_addr_v4mapped,
 };
-use sysdefs::netinet6_in6_var::{
+use sysdefs::netinet6::in6_var::{
     IN6_IFF_ANYCAST, IN6_IFF_DETACHED, IN6_IFF_DUPLICATED, IN6_IFF_TENTATIVE,
 };
-use sysdefs::socket::{SO_BINDANY, SO_REUSEADDR, SO_REUSEPORT};
 
 use crate::assert::kassert;
 use crate::assert::kpanic;
@@ -873,7 +873,7 @@ mod tests {
     use std::vec::Vec;
 
     use hal::sync::netlock::NETLOCK;
-    use sysdefs::endian::htons;
+    use sysdefs::base::endian::htons;
 
     use super::*;
     use crate::net::mbuf::{M_DONTWAIT, MT_SONAME, MbufBox, m_get};

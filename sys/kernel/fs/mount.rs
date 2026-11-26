@@ -95,7 +95,7 @@
 //! LZ: sys/kern/vfs_subr.rs@3c62ede68802
 //!
 //! The structures userland sees (`struct statfs`, `fsid_t`, `struct fid`, `fhandle_t`) and
-//! the `MNT_*`, `VB_*`, `VFS_*` constants are `sysdefs::mount`'s, shared with `bsd`; the
+//! the `MNT_*`, `VB_*`, `VFS_*` constants are `sysdefs::fs::mount`'s, shared with `bsd`; the
 //! operations a file system type provides (`struct vfsops`) are [`super::vops::Vfs`].
 //!
 //! ## Deviations
@@ -155,8 +155,8 @@ use hal::sync::mutex::Mutexed;
 use hal::sync::refcnt::Refcnt;
 use hal::sync::rwlock::{RW_NOSLEEP, RW_READ, RW_WRITE, SplitRwlock};
 use hal::sync::slot::ReadMostly;
-use sysdefs::errno::Errno;
-use sysdefs::mount::{
+use sysdefs::base::errno::Errno;
+use sysdefs::fs::mount::{
     Fsid, MFSNAMELEN, MNAMELEN, MNT_UNMOUNT, Statfs, VB_NOWAIT, VB_READ, VB_WAIT, VB_WRITE,
 };
 
@@ -506,7 +506,7 @@ impl<G: ProcGlue> Mount<G> {
 
     /// `mp->mnt_stat.f_owner`, read with no lock (as the C reads it: fusefs's access checks).
     #[inline]
-    pub fn owner(&self) -> sysdefs::types::Uid {
+    pub fn owner(&self) -> sysdefs::base::types::Uid {
         self.words[5].load(Ordering::Relaxed)
     }
 
@@ -910,7 +910,7 @@ mod tests {
     use std::boxed::Box;
     use std::vec::Vec;
 
-    use sysdefs::mount::MNT_STALLED;
+    use sysdefs::fs::mount::MNT_STALLED;
 
     use super::*;
     use crate::fs::testfs::TestGlue;

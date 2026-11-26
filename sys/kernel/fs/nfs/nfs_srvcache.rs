@@ -149,7 +149,7 @@ use hal::sync::klock;
 use hal::sync::rwlock::Guarded;
 use hal::sync::sleep::{INFSLP, tsleep_nsec, wakeup};
 use hal::sync::slot::LoanSlot;
-use libkern::siphash::{SipHash24, SiphashKey};
+use libkern::hash::siphash::{SipHash24, SiphashKey};
 
 use super::nfs_srvsocket::nfs_rephead;
 use super::nfs_srvsubs::{netaddr_match, sockaddr_in_of};
@@ -161,8 +161,8 @@ use crate::fs::subr::{siphash_key, vfs};
 use crate::net::mbuf::{M_COPYALL, M_WAIT, Mbuf, MbufBox, m_copym};
 use crate::proc::ProcGlue;
 use crate::sched::PZERO;
-use sysdefs::socket::{AF_INET, AF_UNSPEC};
-use sysdefs::types::SaFamily;
+use sysdefs::base::types::SaFamily;
+use sysdefs::net::socket::{AF_INET, AF_UNSPEC};
 
 /// `NFSRVCACHESIZ`: the entries the cache holds at most (`desirednfsrvcache`'s default).
 pub const NFSRVCACHESIZ: usize = 2048;
@@ -726,7 +726,7 @@ mod tests {
     };
     use crate::fs::testfs::TestGlue;
     use crate::net::mbuf::{MT_SONAME, m_devget};
-    use sysdefs::errno::Errno;
+    use sysdefs::base::errno::Errno;
 
     type G = TestGlue;
 

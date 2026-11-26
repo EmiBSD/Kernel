@@ -40,8 +40,8 @@ use hal::bridges::AlreadyRegistered;
 use hal::mem::pool::AnyArc;
 use hal::sync::once::OnceStatic;
 
-use sysdefs::errno::Errno;
-use sysdefs::types::SaFamily;
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::SaFamily;
 
 use crate::assert::kpanic;
 use crate::net::if_var::{IfgGroup, Ifnet};

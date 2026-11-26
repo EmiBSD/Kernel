@@ -119,15 +119,15 @@ use hal::mem::pod;
 use hal::mem::pool::{BoxPool, PR_NOWAIT, PoolBox};
 use hal::sync::mutex::Mutexed;
 use hal::sync::netlock::{NETLOCK, NetHeld};
-use sysdefs::netinet_icmp6::{
+use sysdefs::netinet::icmp6::{
     ICMP6_PARAM_PROB, ICMP6_PARAMPROB_HEADER, ICMP6_TIME_EXCEED_REASSEMBLY, ICMP6_TIME_EXCEEDED,
 };
-use sysdefs::netinet_in::IPPROTO_DONE;
-use sysdefs::netinet_ip::{IPTOS_ECN_CE, IPTOS_ECN_MASK, IPTOS_ECN_NOTECT};
-use sysdefs::netinet_ip6::{
+use sysdefs::netinet::in_::IPPROTO_DONE;
+use sysdefs::netinet::ip::{IPTOS_ECN_CE, IPTOS_ECN_MASK, IPTOS_ECN_NOTECT};
+use sysdefs::netinet::ip6::{
     IP6F_MORE_FRAG, IP6F_OFF_MASK, IPV6_FRAGTTL, IPV6_MAXPACKET, Ip6Frag, Ip6Hdr,
 };
-use sysdefs::netinet6_ip6_var::Ip6statCounters;
+use sysdefs::netinet6::ip6_var::Ip6statCounters;
 
 use crate::assert::kpanic;
 use crate::net::if_var::Netstack;
@@ -747,7 +747,7 @@ fn flushfrags(q6: &PoolBox<Ip6q>, ip6af: PoolBox<Ip6asfrag>) -> (Out, bool) {
 
 /// `frag6_deletefraghdr(m, offset)`: delete fragment header after the unfragmentable header
 /// portions (`offset` bytes). `ENOBUFS` when the split finds no mbuf.
-pub fn frag6_deletefraghdr(m: &mut Mbuf, offset: i32) -> Result<(), sysdefs::errno::Errno> {
+pub fn frag6_deletefraghdr(m: &mut Mbuf, offset: i32) -> Result<(), sysdefs::base::errno::Errno> {
     let len = m.m_len().get() as usize;
     let off = offset as usize;
     let frag = IP6_FRAG_LEN as usize;
@@ -762,7 +762,7 @@ pub fn frag6_deletefraghdr(m: &mut Mbuf, offset: i32) -> Result<(), sysdefs::err
     }
     // this comes with no copy if the boundary is on cluster
     let Some(t) = m_split(m, offset, M_DONTWAIT) else {
-        return Err(sysdefs::errno::Errno::ENOBUFS);
+        return Err(sysdefs::base::errno::Errno::ENOBUFS);
     };
     m_adj(&t, IP6_FRAG_LEN);
     m_cat(m, Some(t));
@@ -778,8 +778,8 @@ pub fn frag6_deletefraghdr(m: &mut Mbuf, offset: i32) -> Result<(), sysdefs::err
 )]
 fn frag6_error(
     m: MbufBox,
-    src: sysdefs::netinet6_in6::In6Addr,
-    dst: sysdefs::netinet6_in6::In6Addr,
+    src: sysdefs::netinet6::in6::In6Addr,
+    dst: sysdefs::netinet6::in6::In6Addr,
     type_: u8,
     code: u8,
     param: i32,
@@ -966,13 +966,13 @@ mod tests {
     use std::vec::Vec;
 
     use hal::sync::netlock::NETLOCK;
-    use sysdefs::netinet_icmp6::{
+    use sysdefs::net::socket::AF_INET6;
+    use sysdefs::netinet::icmp6::{
         ICMP6_PARAM_PROB, ICMP6_PARAMPROB_HEADER, ICMP6_TIME_EXCEED_REASSEMBLY, ICMP6_TIME_EXCEEDED,
     };
-    use sysdefs::netinet_in::{IPPROTO_DSTOPTS, IPPROTO_FRAGMENT, IPPROTO_UDP};
-    use sysdefs::netinet_ip6::IPV6_VERSION;
-    use sysdefs::netinet6_in6::In6Addr;
-    use sysdefs::socket::AF_INET6;
+    use sysdefs::netinet::in_::{IPPROTO_DSTOPTS, IPPROTO_FRAGMENT, IPPROTO_UDP};
+    use sysdefs::netinet::ip6::IPV6_VERSION;
+    use sysdefs::netinet6::in6::In6Addr;
 
     use super::*;
     use crate::net::mbuf::{m_copydata, m_devget};

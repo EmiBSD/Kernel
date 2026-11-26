@@ -46,12 +46,12 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! `<sys/dkio.h>` as `bsd` names it: `sysdefs::dkio` (N7.1d) re-exported, and `DIOCGPART`,
+//! `<sys/dkio.h>` as `bsd` names it: `sysdefs::dev::dkio` (N7.1d) re-exported, and `DIOCGPART`,
 //! whose `struct partinfo` stays `bsd`'s until N7.3c.
 //!
 //! Upstream: sys/sys/dkio.h @ 3ce1f3f79392
 
-pub use sysdefs::dkio::*;
+pub use sysdefs::dev::dkio::*;
 
 use crate::sys::disklabel::Partinfo;
 use crate::sys::ioccom::_iow;

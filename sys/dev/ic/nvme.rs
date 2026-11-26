@@ -90,7 +90,9 @@ use core::mem::{offset_of, size_of};
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{Ordering, fence};
 
-use libkern::{strlcat, strlcpy};
+use libkern::string::strlcat::strlcat;
+
+use libkern::string::strlcpy::strlcpy;
 
 use kernel::dev::sensors::{sensor_attach, sensor_task_register, sensordev_install};
 

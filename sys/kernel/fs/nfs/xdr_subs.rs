@@ -79,11 +79,11 @@
 use core::slice;
 
 use hal::user::{bytes_of, bytes_of_mut, zeroed};
-use sysdefs::pod::AbiPod;
+use sysdefs::base::pod::AbiPod;
 
 use crate::time::clock::Timespec;
-use sysdefs::nfs_nfsproto::{Nfsv2Time, Nfsv3Time};
-use sysdefs::types::Time;
+use sysdefs::base::types::Time;
+use sysdefs::fs::nfs::nfsproto::{Nfsv2Time, Nfsv3Time};
 
 pub use super::nfs_subs::txdr_nfsv2time;
 

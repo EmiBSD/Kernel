@@ -115,8 +115,8 @@
 //!   where LZ lent them through a cast. 0 `unsafe` (LZ: 8).
 
 use hal::user::{pod_to_bytes, zeroed};
-use sysdefs::endian::letoh32;
-use sysdefs::pod::AbiPod;
+use sysdefs::base::endian::letoh32;
+use sysdefs::base::pod::AbiPod;
 
 use crate::fs::pod::pod_view;
 

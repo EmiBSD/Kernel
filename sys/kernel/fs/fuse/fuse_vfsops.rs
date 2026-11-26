@@ -96,10 +96,10 @@ use core::sync::atomic::AtomicI32;
 use hal::cpu::intr::IPL_NONE;
 use hal::mem::malloc::{M_WAITOK, MArc};
 use hal::mem::pool::PR_WAITOK;
-use sysdefs::errno::Errno;
-use sysdefs::mount::{Fid, FusefsArgs, MNT_FORCE, MNT_UPDATE, Statfs};
-use sysdefs::sysctl::{SYSCTL_INT_READONLY, SysctlBoundedArgs};
-use sysdefs::types::{Ino, Uid};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Ino, Uid};
+use sysdefs::fs::mount::{Fid, FusefsArgs, MNT_FORCE, MNT_UPDATE, Statfs};
+use sysdefs::proc::sysctl::{SYSCTL_INT_READONLY, SysctlBoundedArgs};
 
 use crate::assert::kpanic;
 use crate::base::sysctl::{SysctlReq, bounded_arr, int_bounded};
@@ -217,11 +217,11 @@ pub fn fusefs_mount<G: ProcGlue>(
 
         mp.with_stat(|sp| {
             sp.f_mntonname.fill(0);
-            libkern::strlcpy(&mut sp.f_mntonname, path);
+            libkern::string::strlcpy::strlcpy(&mut sp.f_mntonname, path);
             sp.f_mntfromname.fill(0);
-            libkern::strlcpy(&mut sp.f_mntfromname, b"fusefs");
+            libkern::string::strlcpy::strlcpy(&mut sp.f_mntfromname, b"fusefs");
             sp.f_mntfromspec.fill(0);
-            libkern::strlcpy(&mut sp.f_mntfromspec, b"fusefs");
+            libkern::string::strlcpy::strlcpy(&mut sp.f_mntfromspec, b"fusefs");
         });
 
         // fuse_device_set_fmp(fmp, 1), after U1's test made again.
@@ -634,8 +634,8 @@ mod tests {
     use std::{assert, assert_eq};
 
     use hal::user::bytes_of;
-    use sysdefs::mount::MNAMELEN;
-    use sysdefs::types::{Dev, makedev};
+    use sysdefs::base::types::{Dev, makedev};
+    use sysdefs::fs::mount::MNAMELEN;
 
     use super::*;
     use crate::fs::fuse::fuse_device::fuseclose;
@@ -655,9 +655,9 @@ mod tests {
     use crate::fs::vops::{VFS_ROOT, vop_getattr, vop_lookup, vop_open, vop_setattr, vop_unlock};
     use crate::proc::cred::{CredRef, Ucred};
     use hal::user::UserPtr;
-    use sysdefs::dirent::{DT_DIR, DT_REG};
-    use sysdefs::fcntl::{FREAD, FWRITE, O_RDONLY, O_WRONLY};
-    use sysdefs::types::Off;
+    use sysdefs::base::types::Off;
+    use sysdefs::file::dirent::{DT_DIR, DT_REG};
+    use sysdefs::file::fcntl::{FREAD, FWRITE, O_RDONLY, O_WRONLY};
 
     type P = &'static Thread<TestGlue>;
     type M = &'static Mount<TestGlue>;

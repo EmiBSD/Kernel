@@ -76,14 +76,14 @@
 //! - LZ's `unsafe impl AbiPod for Dqblk` (the machine's copy trait) -> `sysdefs::abi_pod!`, which
 //!   proves the 32 bytes tile with no padding at compile time.
 
-use sysdefs::errno::Errno;
-use sysdefs::types::Daddr;
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::Daddr;
 
 use super::inode::Inode;
 use crate::fs::vops::Cred;
 use crate::proc::ProcGlue;
 #[cfg(not(feature = "quota"))]
-use {crate::fs::mount::Mount, crate::proc::Thread, sysdefs::types::Uid};
+use {crate::fs::mount::Mount, crate::proc::Thread, sysdefs::base::types::Uid};
 
 #[cfg(feature = "quota")]
 pub use super::ufs_quota::{

@@ -97,7 +97,7 @@
 //!   directory format is the C's bytes, read and written at their offsets, bounds-checked.
 
 use crate::fs::bio::DEV_BSHIFT;
-pub use sysdefs::dirent::{
+pub use sysdefs::file::dirent::{
     DT_BLK, DT_CHR, DT_DIR, DT_FIFO, DT_LNK, DT_REG, DT_SOCK, DT_UNKNOWN, dttoif, iftodt,
 };
 

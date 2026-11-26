@@ -48,8 +48,8 @@
 //!   context (`signal.rs`); LZ's `unsafe impl AbiPod` is `sysdefs::abi_pod!`.
 
 use super::signal::Sigcontext;
-use sysdefs::siginfo::Siginfo;
-use sysdefs::types::Register;
+use sysdefs::base::types::Register;
+use sysdefs::sig::siginfo::Siginfo;
 
 /// `struct callframe`: one link of the frame-pointer chain.
 #[repr(C)]

@@ -127,12 +127,12 @@
 use core::marker::PhantomData;
 
 use hal::mem::malloc::{M_WAITOK, MArray, MBox};
-use sysdefs::dirent::{DT_UNKNOWN, Dirent, MAXNAMLEN, dirent_size};
-use sysdefs::errno::Errno;
-use sysdefs::stat::ALLPERMS;
-use sysdefs::syslimits::NAME_MAX;
-use sysdefs::types::{Daddr, Gid, Mode, Nlink, Off, Register, Uid};
-use sysdefs::unistd::{
+use sysdefs::base::errno::Errno;
+use sysdefs::base::syslimits::NAME_MAX;
+use sysdefs::base::types::{Daddr, Gid, Mode, Nlink, Off, Register, Uid};
+use sysdefs::file::dirent::{DT_UNKNOWN, Dirent, MAXNAMLEN, dirent_size};
+use sysdefs::file::stat::ALLPERMS;
+use sysdefs::proc::unistd::{
     _PC_CHOWN_RESTRICTED, _PC_LINK_MAX, _PC_NAME_MAX, _PC_NO_TRUNC, _PC_TIMESTAMP_RESOLUTION,
 };
 
@@ -1285,10 +1285,10 @@ mod tests {
     use std::{assert, assert_eq, assert_ne, vec};
 
     use hal::user::UserPtr;
-    use sysdefs::fcntl::{FREAD, O_RDONLY};
-    use sysdefs::mount::ISOFSMNT_NORRIP;
-    use sysdefs::stat::{S_IFBLK, S_IFCHR, S_IFDIR, S_IFLNK};
-    use sysdefs::types::makedev;
+    use sysdefs::base::types::makedev;
+    use sysdefs::file::fcntl::{FREAD, O_RDONLY};
+    use sysdefs::file::stat::{S_IFBLK, S_IFCHR, S_IFDIR, S_IFLNK};
+    use sysdefs::fs::mount::ISOFSMNT_NORRIP;
 
     use super::*;
     use crate::file::descrip::{sys_close, sys_read};
@@ -1354,7 +1354,7 @@ mod tests {
             assert_eq!(ask(_PC_CHOWN_RESTRICTED), Ok(1));
             assert_eq!(ask(_PC_NO_TRUNC), Ok(1));
             assert_eq!(ask(_PC_TIMESTAMP_RESOLUTION), Ok(1_000_000_000));
-            assert_eq!(ask(sysdefs::unistd::_PC_PIPE_BUF), Err(Errno::EINVAL));
+            assert_eq!(ask(sysdefs::proc::unistd::_PC_PIPE_BUF), Err(Errno::EINVAL));
         }
     }
 
@@ -1702,7 +1702,7 @@ mod tests {
             s.extend(nm(name));
             s
         };
-        let dev = |d: sysdefs::types::Dev| pn(0, d.cast_unsigned());
+        let dev = |d: sysdefs::base::types::Dev| pn(0, d.cast_unsigned());
         iso.dir(
             18,
             &[
@@ -1986,7 +1986,7 @@ mod tests {
         let mut iov = [Iovec::new()];
         let mut uio = Uio::kernel_write(&mut iov, b"x", None);
         assert_eq!(ops.write(vp, &mut uio, 0, cred), Err(Errno::EOPNOTSUPP));
-        let mut fl = sysdefs::fcntl::Flock::default();
+        let mut fl = sysdefs::file::fcntl::Flock::default();
         assert_eq!(
             ops.advlock(vp, crate::file::LockOwner::File(0), 0, &mut fl, 0),
             Err(Errno::EOPNOTSUPP)

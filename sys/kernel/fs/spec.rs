@@ -151,12 +151,12 @@ use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU8, Ordering};
 use hal::ds::link::Link;
 use hal::ds::list::ListEntry;
 use hal::mem::pool::PoolArc;
-use sysdefs::errno::Errno;
-use sysdefs::fcntl::{FWRITE, Flock};
-use sysdefs::mount::{MNT_NODEV, MNT_WAIT};
-use sysdefs::syslimits::{LINK_MAX, MAX_CANON, MAX_INPUT};
-use sysdefs::types::{Daddr, Dev, Register, major, makedev, minor};
-use sysdefs::unistd::{
+use sysdefs::base::errno::Errno;
+use sysdefs::base::syslimits::{LINK_MAX, MAX_CANON, MAX_INPUT};
+use sysdefs::base::types::{Daddr, Dev, Register, major, makedev, minor};
+use sysdefs::file::fcntl::{FWRITE, Flock};
+use sysdefs::fs::mount::{MNT_NODEV, MNT_WAIT};
+use sysdefs::proc::unistd::{
     _PC_CHOWN_RESTRICTED, _PC_LINK_MAX, _PC_MAX_CANON, _PC_MAX_INPUT, _PC_TIMESTAMP_RESOLUTION,
     _PC_VDISABLE, _POSIX_VDISABLE,
 };
@@ -195,7 +195,7 @@ pub const D_TTY: u32 = 2;
 pub const D_CLONE: u32 = 0x0001;
 
 /// `BLKDEV_IOSIZE`: I/O size for block devices (`<sys/param.h>`, `PAGE_SIZE`).
-pub(crate) const BLKDEV_IOSIZE: i32 = sysdefs::param::PAGE_SIZE as i32;
+pub(crate) const BLKDEV_IOSIZE: i32 = sysdefs::base::param::PAGE_SIZE as i32;
 /// `DEV_BSHIFT`: log2(DEV_BSIZE).
 const DEV_BSHIFT: u32 = 9;
 
@@ -419,7 +419,7 @@ macro_rules! spec_shared_slots {
             _dvp: &'static crate::fs::vnode::Vnode<G>,
             vpp: &mut Option<&'static crate::fs::vnode::Vnode<G>>,
             _cnp: &mut crate::fs::vops::Cn<'_, G>,
-        ) -> Result<(), sysdefs::errno::Errno> {
+        ) -> Result<(), sysdefs::base::errno::Errno> {
             crate::fs::default::vop_generic_lookup(vpp)
         }
         fn create(
@@ -428,7 +428,7 @@ macro_rules! spec_shared_slots {
             _: &mut Option<&'static crate::fs::vnode::Vnode<G>>,
             _: &mut crate::fs::vops::Cn<'_, G>,
             _: &mut crate::fs::vnode::Vattr,
-        ) -> Result<(), sysdefs::errno::Errno> {
+        ) -> Result<(), sysdefs::base::errno::Errno> {
             crate::fs::default::vop_generic_badop()
         }
         fn mknod(
@@ -437,7 +437,7 @@ macro_rules! spec_shared_slots {
             _: &mut Option<&'static crate::fs::vnode::Vnode<G>>,
             _: &mut crate::fs::vops::Cn<'_, G>,
             _: &mut crate::fs::vnode::Vattr,
-        ) -> Result<(), sysdefs::errno::Errno> {
+        ) -> Result<(), sysdefs::base::errno::Errno> {
             crate::fs::default::vop_generic_badop()
         }
         fn open(
@@ -446,7 +446,7 @@ macro_rules! spec_shared_slots {
             mode: i32,
             cred: crate::fs::vops::Cred<'_>,
             p: &crate::proc::Thread<G>,
-        ) -> Result<(), sysdefs::errno::Errno> {
+        ) -> Result<(), sysdefs::base::errno::Errno> {
             crate::fs::spec::spec_open(vp, mode, cred, p)
         }
         fn ioctl(
@@ -457,7 +457,7 @@ macro_rules! spec_shared_slots {
             fflag: i32,
             _cred: crate::fs::vops::Cred<'_>,
             p: &crate::proc::Thread<G>,
-        ) -> Result<(), sysdefs::errno::Errno> {
+        ) -> Result<(), sysdefs::base::errno::Errno> {
             crate::fs::spec::spec_ioctl(vp, command, data, fflag, p)
         }
         fn kqfilter(
@@ -465,7 +465,7 @@ macro_rules! spec_shared_slots {
             vp: &'static crate::fs::vnode::Vnode<G>,
             _fflag: i32,
             kn: &crate::file::event::Knote<G>,
-        ) -> Result<(), sysdefs::errno::Errno> {
+        ) -> Result<(), sysdefs::base::errno::Errno> {
             crate::fs::spec::spec_kqfilter(vp, kn)
         }
         fn remove(
@@ -473,7 +473,7 @@ macro_rules! spec_shared_slots {
             _: &'static crate::fs::vnode::Vnode<G>,
             _: &'static crate::fs::vnode::Vnode<G>,
             _: &mut crate::fs::vops::Cn<'_, G>,
-        ) -> Result<(), sysdefs::errno::Errno> {
+        ) -> Result<(), sysdefs::base::errno::Errno> {
             crate::fs::default::vop_generic_badop()
         }
         fn link(
@@ -481,7 +481,7 @@ macro_rules! spec_shared_slots {
             _: &'static crate::fs::vnode::Vnode<G>,
             _: &'static crate::fs::vnode::Vnode<G>,
             _: &mut crate::fs::vops::Cn<'_, G>,
-        ) -> Result<(), sysdefs::errno::Errno> {
+        ) -> Result<(), sysdefs::base::errno::Errno> {
             crate::fs::default::vop_generic_badop()
         }
         fn rename(
@@ -492,7 +492,7 @@ macro_rules! spec_shared_slots {
             _: &'static crate::fs::vnode::Vnode<G>,
             _: Option<&'static crate::fs::vnode::Vnode<G>>,
             _: &mut crate::fs::vops::Cn<'_, G>,
-        ) -> Result<(), sysdefs::errno::Errno> {
+        ) -> Result<(), sysdefs::base::errno::Errno> {
             crate::fs::default::vop_generic_badop()
         }
         fn mkdir(
@@ -501,7 +501,7 @@ macro_rules! spec_shared_slots {
             _: &mut Option<&'static crate::fs::vnode::Vnode<G>>,
             _: &mut crate::fs::vops::Cn<'_, G>,
             _: &mut crate::fs::vnode::Vattr,
-        ) -> Result<(), sysdefs::errno::Errno> {
+        ) -> Result<(), sysdefs::base::errno::Errno> {
             crate::fs::default::vop_generic_badop()
         }
         fn rmdir(
@@ -509,7 +509,7 @@ macro_rules! spec_shared_slots {
             _: &'static crate::fs::vnode::Vnode<G>,
             _: &'static crate::fs::vnode::Vnode<G>,
             _: &mut crate::fs::vops::Cn<'_, G>,
-        ) -> Result<(), sysdefs::errno::Errno> {
+        ) -> Result<(), sysdefs::base::errno::Errno> {
             crate::fs::default::vop_generic_badop()
         }
         fn symlink(
@@ -519,7 +519,7 @@ macro_rules! spec_shared_slots {
             _: &mut crate::fs::vops::Cn<'_, G>,
             _: &mut crate::fs::vnode::Vattr,
             _: &[u8],
-        ) -> Result<(), sysdefs::errno::Errno> {
+        ) -> Result<(), sysdefs::base::errno::Errno> {
             crate::fs::default::vop_generic_badop()
         }
         fn readdir(
@@ -528,7 +528,7 @@ macro_rules! spec_shared_slots {
             _: &mut crate::file::uio::Uio<'_, G>,
             _: crate::fs::vops::Cred<'_>,
             _: &mut i32,
-        ) -> Result<(), sysdefs::errno::Errno> {
+        ) -> Result<(), sysdefs::base::errno::Errno> {
             crate::fs::default::vop_generic_badop()
         }
         fn readlink(
@@ -536,39 +536,39 @@ macro_rules! spec_shared_slots {
             _: &'static crate::fs::vnode::Vnode<G>,
             _: &mut crate::file::uio::Uio<'_, G>,
             _: crate::fs::vops::Cred<'_>,
-        ) -> Result<(), sysdefs::errno::Errno> {
+        ) -> Result<(), sysdefs::base::errno::Errno> {
             crate::fs::default::vop_generic_badop()
         }
         fn abortop(
             &self,
             _: &'static crate::fs::vnode::Vnode<G>,
             _: &mut crate::fs::vops::Cn<'_, G>,
-        ) -> Result<(), sysdefs::errno::Errno> {
+        ) -> Result<(), sysdefs::base::errno::Errno> {
             crate::fs::default::vop_generic_badop()
         }
         fn bmap(
             &self,
             vp: &'static crate::fs::vnode::Vnode<G>,
-            bn: sysdefs::types::Daddr,
+            bn: sysdefs::base::types::Daddr,
             vpp: Option<&mut Option<&'static crate::fs::vnode::Vnode<G>>>,
-            bnp: Option<&mut sysdefs::types::Daddr>,
+            bnp: Option<&mut sysdefs::base::types::Daddr>,
             runp: Option<&mut i32>,
-        ) -> Result<(), sysdefs::errno::Errno> {
+        ) -> Result<(), sysdefs::base::errno::Errno> {
             crate::fs::default::vop_generic_bmap(vp, bn, vpp, bnp, runp)
         }
         fn strategy(
             &self,
             _vp: &'static crate::fs::vnode::Vnode<G>,
             bp: crate::fs::vops::IoBuf,
-        ) -> Result<(), sysdefs::errno::Errno> {
+        ) -> Result<(), sysdefs::base::errno::Errno> {
             crate::fs::spec::spec_strategy::<G>(bp)
         }
         fn pathconf(
             &self,
             _vp: &'static crate::fs::vnode::Vnode<G>,
             name: i32,
-            retval: &mut sysdefs::types::Register,
-        ) -> Result<(), sysdefs::errno::Errno> {
+            retval: &mut sysdefs::base::types::Register,
+        ) -> Result<(), sysdefs::base::errno::Errno> {
             crate::fs::spec::spec_pathconf(name, retval)
         }
         fn advlock(
@@ -576,9 +576,9 @@ macro_rules! spec_shared_slots {
             vp: &'static crate::fs::vnode::Vnode<G>,
             id: crate::file::LockOwner,
             op: i32,
-            fl: &mut sysdefs::fcntl::Flock,
+            fl: &mut sysdefs::file::fcntl::Flock,
             flags: i32,
-        ) -> Result<(), sysdefs::errno::Errno> {
+        ) -> Result<(), sysdefs::base::errno::Errno> {
             crate::fs::spec::spec_advlock(vp, id, op, fl, flags)
         }
     };

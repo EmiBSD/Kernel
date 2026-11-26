@@ -145,10 +145,10 @@ use hal::sync::once::OnceStatic;
 use hal::sync::rwlock::RecursiveRwlock;
 use hal::sync::slot::ReadMostly;
 use hal::user::zeroed;
-use libkern::siphash::{SipHash24Ctx, SiphashKey};
-use sysdefs::endian::letoh32;
-use sysdefs::errno::Errno;
-use sysdefs::types::{Daddr, Dev};
+use libkern::hash::siphash::{SipHash24Ctx, SiphashKey};
+use sysdefs::base::endian::letoh32;
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Daddr, Dev};
 
 use crate::assert::kpanic;
 use crate::fs::bio::{DEV_BSHIFT, bread, brelse};
@@ -695,7 +695,7 @@ mod tests {
 
     use std::vec;
 
-    use sysdefs::endian::{letoh16, letoh64};
+    use sysdefs::base::endian::{letoh16, letoh64};
 
     use super::*;
     use crate::fs::bio::BCSTATS;

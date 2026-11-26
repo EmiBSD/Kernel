@@ -171,8 +171,8 @@ use hal::sync::rwlock::Guarded;
 use hal::sync::sleep::{INFSLP, PCATCH, tsleep_nsec, wakeup};
 use hal::sync::slot::LoanSlot;
 use hal::user::UserPtr;
-use sysdefs::errno::Errno;
-use sysdefs::types::Pid;
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::Pid;
 
 use super::nfs::{NFSSVC_ADDSOCK, NFSSVC_NFSD, NfsdArgs, NfsdSrvargs};
 use super::nfs_socket::{nfs_send, nfs_sndlock, nfs_sndunlock};
@@ -198,10 +198,10 @@ use crate::net::syscalls::{getsock, sockargs};
 use crate::netinet::in_::in_nam2sin;
 use crate::proc::cred::UcredCell;
 use crate::proc::{ProcGlue, Thread, suser};
-use sysdefs::mbuf::{MT_SONAME, MT_SOOPTS};
-use sysdefs::netinet_in::{IPPORT_RESERVED, IPPROTO_TCP, IPPROTO_UDP};
-use sysdefs::netinet_tcp::TCP_NODELAY;
-use sysdefs::socket::{AF_INET, SHUT_RDWR, SO_KEEPALIVE, SOCK_DGRAM, SOCK_STREAM, SOL_SOCKET};
+use sysdefs::net::mbuf::{MT_SONAME, MT_SOOPTS};
+use sysdefs::net::socket::{AF_INET, SHUT_RDWR, SO_KEEPALIVE, SOCK_DGRAM, SOCK_STREAM, SOL_SOCKET};
+use sysdefs::netinet::in_::{IPPORT_RESERVED, IPPROTO_TCP, IPPROTO_UDP};
+use sysdefs::netinet::tcp::TCP_NODELAY;
 
 /// `M_NFSSVC`: NFS server structures (`<sys/malloc.h>`'s 50, "NFS srvsock").
 pub const M_NFSSVC: i32 = 50;
@@ -1249,8 +1249,8 @@ mod tests {
         use core::cell::Cell;
         use std::vec::Vec;
 
-        use sysdefs::netinet_in::SockaddrIn;
-        use sysdefs::socket::{AF_INET, MSG_DONTWAIT, SO_LINGER, SOCK_DGRAM, SOCK_STREAM};
+        use sysdefs::net::socket::{AF_INET, MSG_DONTWAIT, SO_LINGER, SOCK_DGRAM, SOCK_STREAM};
+        use sysdefs::netinet::in_::SockaddrIn;
 
         use super::super::*;
         use crate::file::descrip::{fdinit, sys_close};
@@ -1585,14 +1585,14 @@ mod tests {
             s.extend(&r2[10..]);
             // No Nagle on the client: both segments leave at once.
             let mut opt =
-                crate::net::mbuf::m_get(M_WAIT, sysdefs::mbuf::MT_SOOPTS).expect("an mbuf");
+                crate::net::mbuf::m_get(M_WAIT, sysdefs::net::mbuf::MT_SOOPTS).expect("an mbuf");
             set_mtod_one(&mut opt);
             assert_eq!(
                 sosetopt(
                     &c,
                     fx.user,
-                    sysdefs::netinet_in::IPPROTO_TCP,
-                    sysdefs::netinet_tcp::TCP_NODELAY,
+                    sysdefs::netinet::in_::IPPROTO_TCP,
+                    sysdefs::netinet::tcp::TCP_NODELAY,
                     Some(&mut opt)
                 ),
                 Ok(())
@@ -1690,8 +1690,13 @@ mod tests {
             );
             assert_eq!(sys_close(fx.user, fd), Ok(()));
             // A socket that is neither a stream nor a datagram one (raw IP): EINVAL.
-            let raw = sys_socket(fx.user, i32::from(AF_INET), sysdefs::socket::SOCK_RAW, 255)
-                .expect("a raw socket");
+            let raw = sys_socket(
+                fx.user,
+                i32::from(AF_INET),
+                sysdefs::net::socket::SOCK_RAW,
+                255,
+            )
+            .expect("a raw socket");
             assert_eq!(addsock(&fx, raw, None), Err(Errno::EINVAL));
             assert_eq!(sys_close(fx.user, raw), Ok(()));
         }

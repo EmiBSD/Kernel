@@ -104,7 +104,7 @@ use crate::sys::socket::AF_INET;
 use crate::sys::socket::AF_INET6;
 use crate::sys::syslog::{LOG_DEBUG, LOG_ERR, LOG_INFO, LOG_NOTICE};
 use crate::sys::types::SaFamily;
-use libkern::siphash::{SipHash24, SiphashKey};
+use libkern::hash::siphash::{SipHash24, SiphashKey};
 
 /// `pf_hash`: the keyed hash of `inaddr` under `key`, stored in `hash` and returned.
 pub fn pf_hash(inaddr: &PfAddr, hash: &mut PfAddr, key: &PfPoolhashkey, af: SaFamily) -> u64 {

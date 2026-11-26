@@ -174,7 +174,9 @@ use crate::sys::protosw::PRC_MSGSIZE;
 use crate::sys::socket::{AF_INET, AF_INET6, Sockaddr};
 use crate::sys::sysctl::SysctlBoundedArgs;
 use crate::sys::systm::{kernel_lock, kernel_unlock, net_assert_locked};
-use libkern::{strlcpy, strncasecmp, strnlen};
+use libkern::string::strlcpy::strlcpy;
+use libkern::string::strncasecmp::strncasecmp;
+use libkern::string::strnlen::strnlen;
 
 /// `sizeof(struct tcphdr)` (`<netinet/tcp.h>` is not ported).
 const SIZEOF_TCPHDR: usize = 20;

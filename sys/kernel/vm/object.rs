@@ -112,7 +112,7 @@ use hal::sync::rwlock::{
     LockId, RW_READ, RW_WRITE, RawRwlock, SharedRwlock, Witness, WriteWitness,
 };
 use hal::sync::sleep::PVM;
-use sysdefs::mman::{MADV_SEQUENTIAL, PROT_READ, PROT_WRITE};
+use sysdefs::vm::mman::{MADV_SEQUENTIAL, PROT_READ, PROT_WRITE};
 
 use super::aobj::{
     Aobj, uao_detach, uao_dropswap, uao_flush, uao_get_locked, uao_get_sync, uao_reference,

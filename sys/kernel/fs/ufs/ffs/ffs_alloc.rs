@@ -105,8 +105,8 @@ use hal::cpu::intr::IPL_NONE;
 use hal::random::arc4random;
 use hal::random::arc4random_uniform;
 use hal::sync::mutex::Mutexed;
-use sysdefs::errno::Errno;
-use sysdefs::types::{Daddr, Ino, Mode, Uid};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Daddr, Ino, Mode, Uid};
 
 use super::ffs_subr::{ffs_clrblock, ffs_fragacct, ffs_isblock, ffs_isfreeblock, ffs_setblock};
 use super::fs::{
@@ -133,7 +133,8 @@ use crate::proc::ProcGlue;
 use crate::proc::fork::ratecheck;
 use crate::time::clock::Timespec;
 use crate::vm::vnode::uvm_vnp_uncache;
-use libkern::{scanc, skpc};
+use libkern::mem::scanc::scanc;
+use libkern::mem::skpc::skpc;
 
 /// `fserr_interval`: at most one "file system full" message every 2 seconds.
 const FSERR_INTERVAL: Timespec = Timespec::new(2, 0);

@@ -500,13 +500,13 @@ use hal::sync::sleep::{INFSLP, PVM, cold, curproc_word, sched_pause, wakeup};
 use hal::vm::param::{atop, ptoa, round_page, trunc_page};
 use hal::vm::pmap::PmapRef;
 use hal::vm::uvmexp::UVMEXP;
-use sysdefs::errno::Errno;
-use sysdefs::mman::{
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::Vaddr;
+use sysdefs::vm::mman::{
     MADV_NORMAL, MADV_RANDOM, MADV_SEQUENTIAL, MAP_INHERIT_COPY, MAP_INHERIT_NONE,
     MAP_INHERIT_SHARE, MAP_INHERIT_ZERO, MCL_CURRENT, MCL_FUTURE, PROT_EXEC, PROT_NONE, PROT_READ,
     PROT_WRITE,
 };
-use sysdefs::types::Vaddr;
 
 use super::addr::{
     Selector, uaddr_kbootstrap, uaddr_rnd_create, uaddr_stack_brk_create, uvm_addr_destroy,
@@ -3922,12 +3922,12 @@ pub fn uvm_map_inentry<G: ProcGlue>(
             pr.ps_acflag
                 .set(pr.ps_acflag.get() | crate::proc::acct::AMAP);
             // sv.sival_ptr = (void *)PROC_PC(p)
-            let sv = sysdefs::siginfo::Sigval::from_ptr(hal::cpu::trap::proc_pc());
+            let sv = sysdefs::sig::siginfo::Sigval::from_ptr(hal::cpu::trap::proc_pc());
             crate::sig::trapsignal(
                 p,
-                sysdefs::signal::SIGSEGV,
+                sysdefs::sig::signal::SIGSEGV,
                 0,
-                sysdefs::siginfo::SEGV_ACCERR,
+                sysdefs::sig::siginfo::SEGV_ACCERR,
                 sv,
             );
             hal::sync::klock::kernel_unlock();
@@ -7568,7 +7568,7 @@ pub(crate) mod tests {
 
     use hal::arch::current::vmparam::{MAXSSIZ, USRSTACK, VM_MAXUSER_ADDRESS};
     use hal::vm::uvmexp::{UvmExpCounters, counters_read};
-    use sysdefs::types::Vsize;
+    use sysdefs::base::types::Vsize;
 
     use super::*;
     use crate::testutil;
@@ -7912,7 +7912,7 @@ pub(crate) mod tests {
     #[test]
     fn inentry_reports_a_stack_outside_map_stack_on_the_terminal() {
         use crate::file::event::tests::Kg;
-        use sysdefs::signal::{SA_SIGINFO, SIGSEGV, Sigaction};
+        use sysdefs::sig::signal::{SA_SIGINFO, SIGSEGV, Sigaction};
         let _g = setup();
         let p = thread(205);
         let pr = p.process();
@@ -7987,7 +7987,7 @@ pub(crate) mod tests {
         assert_eq!(sent.len(), 1, "SIGSEGV");
         assert_eq!(sent[0].sig, SIGSEGV);
         let si = sent[0].info.expect("SA_SIGINFO");
-        assert_eq!(si.si_code, sysdefs::siginfo::SEGV_ACCERR);
+        assert_eq!(si.si_code, sysdefs::sig::siginfo::SEGV_ACCERR);
         assert_eq!(si.si_addr(), 0x1234, "the trap's pc");
 
         // The line uvm_map_inentry printed (the process has no terminal, so uprintf drops it):
@@ -8900,7 +8900,7 @@ pub(crate) mod tests {
         core::ptr::eq(&**a, &**b)
     }
 
-    fn extract(map: &VmMap, va: usize) -> Option<sysdefs::types::Paddr> {
+    fn extract(map: &VmMap, va: usize) -> Option<sysdefs::base::types::Paddr> {
         map.pmap().extract(Vaddr::new(va))
     }
 

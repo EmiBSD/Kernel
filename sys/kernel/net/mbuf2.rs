@@ -107,7 +107,7 @@ use core::ptr;
 use hal::ds::owned::SlistLink;
 use hal::mem::malloc::M_WAITOK;
 use hal::mem::pool::{PR_NOWAIT, PR_WAITOK, PoolBox};
-use sysdefs::errno::Errno;
+use sysdefs::base::errno::Errno;
 
 use crate::assert::{kassert, kpanic};
 use crate::net::mbuf::{

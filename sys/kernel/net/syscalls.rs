@@ -101,7 +101,7 @@
 //!   call's reference of the file lives; the file is let go once, after an inner function that
 //!   returns early with `?` (the C's `goto bad`/`out` labels: [`sendit`], [`recvit`], the
 //!   option and name calls).
-//! - `struct msghdr` and `struct mmsghdr` are copied as `sysdefs::socket`'s images
+//! - `struct msghdr` and `struct mmsghdr` are copied as `sysdefs::net::socket`'s images
 //!   (`UserPtr<Msghdr>::copyin`, `copyout`), their holes with them: `recvmsg(2)` and the
 //!   `mmsg` calls copy the structure back out whole, the user's padding bytes kept, as the
 //!   C's `copyout(&msg)` of the structure it copied in (LZ copied field by field and zeroed
@@ -140,17 +140,17 @@ use core::sync::atomic::Ordering;
 
 use hal::sync::sleep::{INFSLP, PCATCH};
 use hal::user::UserPtr;
-use sysdefs::errno::Errno;
-use sysdefs::fcntl::{F_GETLK, F_POSIX, F_UNLCK, F_WRLCK, FNONBLOCK, FREAD, FWRITE, Flock};
-use sysdefs::limits::UCHAR_MAX;
-use sysdefs::pledge::{PLEDGE_DNS, PLEDGE_RPATH};
-use sysdefs::socket::{
+use sysdefs::base::errno::Errno;
+use sysdefs::base::limits::UCHAR_MAX;
+use sysdefs::base::syslimits::IOV_MAX;
+use sysdefs::file::fcntl::{F_GETLK, F_POSIX, F_UNLCK, F_WRLCK, FNONBLOCK, FREAD, FWRITE, Flock};
+use sysdefs::net::socket::{
     AF_INET, AF_INET6, Cmsghdr, MSG_CTRUNC, MSG_DONTWAIT, MSG_NOSIGNAL, MSG_OOB, MSG_WAITFORONE,
     Mmsghdr, Msghdr, SO_ACCEPTCONN, SOCK_CLOEXEC, SOCK_CLOFORK, SOCK_DGRAM, SOCK_DNS,
     SOCK_NONBLOCK, SOCK_NONBLOCK_INHERIT, SOCK_STREAM, SOCK_TYPE_MASK, cmsg_align,
 };
-use sysdefs::syslimits::IOV_MAX;
-use sysdefs::unistd::SEEK_SET;
+use sysdefs::proc::pledge::{PLEDGE_DNS, PLEDGE_RPATH};
+use sysdefs::proc::unistd::SEEK_SET;
 
 use crate::assert::kpanic;
 use crate::base::sysctl::{MAXHOSTNAMELEN, with_domainname};
@@ -1589,8 +1589,8 @@ mod tests {
     use std::{assert, assert_eq, format, vec};
 
     use hal::user::{bytes_of, pod_from_bytes};
-    use sysdefs::pod::AbiPod;
-    use sysdefs::socket::{
+    use sysdefs::base::pod::AbiPod;
+    use sysdefs::net::socket::{
         AF_UNIX, MSG_PEEK, SCM_RIGHTS, SHUT_RDWR, SHUT_WR, SO_SNDBUF, SO_TYPE, SOCK_SEQPACKET,
         SOL_SOCKET, cmsg_len, cmsg_space,
     };
@@ -2553,7 +2553,7 @@ mod tests {
         assert_eq!(MMSG_MAX, 1024);
         assert_eq!(
             SA_DATA_OFFSET,
-            core::mem::offset_of!(sysdefs::socket::Sockaddr, sa_data)
+            core::mem::offset_of!(sysdefs::net::socket::Sockaddr, sa_data)
         );
     }
 }

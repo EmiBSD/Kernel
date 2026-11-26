@@ -140,7 +140,7 @@
 //! The IPv6 addresses of the interfaces, `netinet6/in6.c`: the address `ioctl`s, the
 //! connected, local and multicast routes an address brings, the multicast records and the
 //! RFC 6724 source-address rules. The constants and structures of `<netinet6/in6.h>` are
-//! `sysdefs::netinet6_in6`; the records are `kernel::netinet6::in6_var`'s.
+//! `sysdefs::netinet6::in6`; the records are `kernel::netinet6::in6_var`'s.
 //!
 //! Upstream: sys/netinet6/in6.h @ 3ce1f3f79392
 //! Upstream: sys/netinet6/in6.c @ 3ce1f3f79392
@@ -223,34 +223,34 @@ use hal::mem::malloc::MArc;
 use hal::mem::pod;
 use hal::sync::netlock::{NETLOCK, NetHeld, NetReader};
 use hal::sync::rwlock::{RW_READ, RW_WRITE, Witness};
-use sysdefs::endian::{htonl, htons};
-use sysdefs::errno::Errno;
-use sysdefs::ioccom::iocparm_len;
-use sysdefs::net_if::{
+use sysdefs::base::endian::{htonl, htons};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::ioccom::iocparm_len;
+use sysdefs::base::types::Time;
+use sysdefs::net::if_::{
     IFF_LOOPBACK, IFF_MULTICAST, IFF_POINTOPOINT, IFF_RUNNING, IFF_UP, IFNAMSIZ, IFT_CARP,
 };
-use sysdefs::net_route::{
+use sysdefs::net::route::{
     RTAX_DST, RTAX_GATEWAY, RTAX_IFA, RTAX_NETMASK, RTF_CLONING, RTF_CONNECTED, RTF_HOST,
     RTF_MPATH, RTF_MULTICAST, RTM_ADD, RTM_CHGADDRATTR, RTP_CONNECTED,
 };
-use sysdefs::netinet6_in6::{
+use sysdefs::net::socket::{AF_INET6, AF_UNSPEC};
+use sysdefs::net::sockio::{
+    SIOCADDMULTI, SIOCDELMULTI, SIOCSIFADDR, SIOCSIFBRDADDR, SIOCSIFDSTADDR, SIOCSIFNETMASK,
+};
+use sysdefs::netinet6::in6::{
     __IPV6_ADDR_SCOPE_GLOBAL, __IPV6_ADDR_SCOPE_INTFACELOCAL, __IPV6_ADDR_SCOPE_LINKLOCAL,
     __IPV6_ADDR_SCOPE_SITELOCAL, IN6ADDR_INTFACELOCAL_ALLNODES, IN6ADDR_LINKLOCAL_ALLNODES,
     IN6ADDR_LOOPBACK, IN6MASK32, In6Addr, SockaddrIn6, in6_are_addr_equal, in6_is_addr_linklocal,
 };
-use sysdefs::netinet6_in6_var::{
+use sysdefs::netinet6::in6_var::{
     IN6_IFF_ANYCAST, IN6_IFF_AUTOCONF, IN6_IFF_DEPRECATED, IN6_IFF_DETACHED, IN6_IFF_DUPLICATED,
     IN6_IFF_TEMPORARY, IN6_IFF_TENTATIVE, In6Aliasreq, In6Ifreq, SIOCAIFADDR_IN6, SIOCDIFADDR_IN6,
     SIOCGIFAFLAG_IN6, SIOCGIFALIFETIME_IN6, SIOCGIFDSTADDR_IN6, SIOCGIFINFO_IN6,
     SIOCGIFNETMASK_IN6, SIOCGNBRINFO_IN6,
 };
-use sysdefs::netinet6_ip6_var::Ip6statCounters;
-use sysdefs::netinet6_nd6::ND6_INFINITE_LIFETIME;
-use sysdefs::socket::{AF_INET6, AF_UNSPEC};
-use sysdefs::sockio::{
-    SIOCADDMULTI, SIOCDELMULTI, SIOCSIFADDR, SIOCSIFBRDADDR, SIOCSIFDSTADDR, SIOCSIFNETMASK,
-};
-use sysdefs::types::Time;
+use sysdefs::netinet6::ip6_var::Ip6statCounters;
+use sysdefs::netinet6::nd6::ND6_INFINITE_LIFETIME;
 
 use crate::assert::{kassert, kpanic};
 use crate::net::if_::{IFNETLIST, IfRef, if_addrhooks_run, if_ioctl, ifa_add, ifa_del};
@@ -1730,11 +1730,11 @@ pub(crate) mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::vec::Vec;
 
-    use sysdefs::net_if::IFT_ETHER;
-    use sysdefs::net_route::RTF_LOCAL;
-    use sysdefs::netinet6_in6::{IN6ADDR_ANY, IN6MASK0, IN6MASK64, IN6MASK96, IN6MASK128};
-    use sysdefs::netinet6_in6_var::In6Addrlifetime;
-    use sysdefs::socket::AF_INET;
+    use sysdefs::net::if_::IFT_ETHER;
+    use sysdefs::net::route::RTF_LOCAL;
+    use sysdefs::net::socket::AF_INET;
+    use sysdefs::netinet6::in6::{IN6ADDR_ANY, IN6MASK0, IN6MASK64, IN6MASK96, IN6MASK128};
+    use sysdefs::netinet6::in6_var::In6Addrlifetime;
 
     use super::*;
     use crate::net::if_::M_IFADDR;

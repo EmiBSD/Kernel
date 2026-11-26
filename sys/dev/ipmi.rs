@@ -1898,7 +1898,7 @@ pub fn add_child_sensors<S: IpmiBmc>(
                 format_args!("{} - {}", Str(name), sensor_base + idx),
             );
         } else {
-            libkern::strlcpy(&mut desc, name);
+            libkern::string::strlcpy::strlcpy(&mut desc, name);
         }
         psensor.i_sensor.desc.set(desc);
 
@@ -2014,7 +2014,7 @@ pub fn ipmi_poll_thread(arg: *mut c_void) {
         .set(Some(unsafe { &*ptr::from_ref(first) }));
 
     let mut xname = [0u8; 16];
-    libkern::strlcpy(&mut xname, sc.devname().as_bytes());
+    libkern::string::strlcpy::strlcpy(&mut xname, sc.devname().as_bytes());
     sc.sc_sensordev.xname.set(xname);
     // SAFETY: the softc is the device's, never detached.
     sensordev_install(unsafe { &*ptr::from_ref(&sc.sc_sensordev) });
@@ -2454,7 +2454,7 @@ pub fn ipmi_match(_parent: Option<&Device>, match_: &CfMatch, aux: *mut c_void) 
     // SAFETY: a zeroed allocation of an `IpmiSoftc`, a valid value (`Softc`'s contract).
     let sc = unsafe { mem.cast::<IpmiSoftc>().as_ref() };
     let mut xname = [0u8; 16];
-    libkern::strlcpy(&mut xname, b"ipmi0");
+    libkern::string::strlcpy::strlcpy(&mut xname, b"ipmi0");
     sc.sc_dev.dv_xname.set(xname);
 
     // Map registers

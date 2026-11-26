@@ -136,7 +136,7 @@
 //! - The messages are byte buffers: `rtm_msg1` writes into its one mbuf or cluster,
 //!   `rtm_msg2` into a slice or the walk buffer; `route_output` and `rtm_report` keep their
 //!   message in an `MArray` of `M_RTABLE` and edit a copy of its `struct rt_msghdr` (the
-//!   `AbiPod` image of `sysdefs::net_route`), written back before the message goes out.
+//!   `AbiPod` image of `sysdefs::net::route`), written back before the message goes out.
 //!   `struct rt_addrinfo`'s addresses are `SockaddrView`s, so no function here reads past an
 //!   address: a gateway is copied out of its route whole (`sa_len` up to 255 bytes) before a
 //!   message is built from it, the interface addresses are copies read under the net lock
@@ -189,12 +189,15 @@ use hal::sync::netlock::{NETLOCK, NetHeld, NetReader};
 use hal::sync::once::OnceStatic;
 use hal::sync::rwlock::{Guarded, RawRwlock};
 use hal::user::UserPtr;
-use sysdefs::errno::Errno;
-use sysdefs::net_if::{
+use sysdefs::base::errno::Errno;
+use sysdefs::base::param::PAGE_SIZE;
+use sysdefs::base::pod::AbiPod;
+use sysdefs::base::types::{Pid, SaFamily};
+use sysdefs::net::if_::{
     IFF_POINTOPOINT, IfAnnouncemsghdr, IfData, IfIeee80211Data, IfIeee80211Msghdr, IfMsghdr,
     IfNameindexMsg, IfaMsghdr,
 };
-use sysdefs::net_route::{
+use sysdefs::net::route::{
     ROUTE_FLAGFILTER, ROUTE_MSGFILTER, ROUTE_PRIOFILTER, ROUTE_TABLEFILTER, RTA_DNS, RTA_IFA,
     RTA_NETMASK, RTA_SEARCH, RTA_STATIC, RTABLE_ANY, RTAX_BRD, RTAX_DNS, RTAX_DST, RTAX_GATEWAY,
     RTAX_GENMASK, RTAX_IFA, RTAX_IFP, RTAX_LABEL, RTAX_MAX, RTAX_NETMASK, RTAX_SEARCH, RTAX_SRC,
@@ -207,14 +210,11 @@ use sysdefs::net_route::{
     RtMsghdr, RtTableinfo, Rtstat, SockaddrRtdns, SockaddrRtlabel, SockaddrRtsearch,
     SockaddrRtstatic,
 };
-use sysdefs::param::PAGE_SIZE;
-use sysdefs::pod::AbiPod;
-use sysdefs::socket::{
+use sysdefs::net::socket::{
     AF_INET, AF_INET6, AF_LINK, AF_MAX, AF_ROUTE, AF_UNSPEC, NET_RT_DUMP, NET_RT_FLAGS,
     NET_RT_IFLIST, NET_RT_IFNAMES, NET_RT_SOURCE, NET_RT_STATS, NET_RT_TABLE, PF_KEY, PF_ROUTE,
     SO_USELOOPBACK, SOCK_RAW,
 };
-use sysdefs::types::{Pid, SaFamily};
 
 use crate::assert::kpanic;
 use crate::base::sysctl::{SysctlReq, rdstruct};
@@ -272,7 +272,7 @@ const SIN_LEN: usize = 16;
 /// `sizeof(struct sockaddr_in6)`.
 const SIN6_LEN: usize = 28;
 /// `sizeof(struct sockaddr_dl)`.
-const SDL_LEN: usize = size_of::<sysdefs::net_if::SockaddrDl>();
+const SDL_LEN: usize = size_of::<sysdefs::net::if_::SockaddrDl>();
 /// The longest socket address (`sa_len` is a byte).
 const SA_MAXLEN: usize = 256;
 
@@ -2200,7 +2200,7 @@ pub fn rtm_ifannounce(ifp: &Ifnet, what: u16) {
     let Some(mut m) = rtm_msg1(RTM_IFANNOUNCE, None) else {
         return;
     };
-    let mut name = [0u8; sysdefs::net_if::IFNAMSIZ];
+    let mut name = [0u8; sysdefs::net::if_::IFNAMSIZ];
     ifp.if_xname.with_str(|n| {
         let k = n.len().min(name.len() - 1);
         name[..k].copy_from_slice(&n[..k]);
@@ -2873,8 +2873,8 @@ mod tests {
     use std::vec;
     use std::vec::Vec;
 
-    use sysdefs::net_if::IFAN_ARRIVAL;
-    use sysdefs::net_route::{
+    use sysdefs::net::if_::IFAN_ARRIVAL;
+    use sysdefs::net::route::{
         RTA_BRD, RTA_DST, RTA_GATEWAY, RTA_IFP, RTA_LABEL, RTF_CONNECTED, RTP_STATIC,
     };
 
@@ -3046,7 +3046,7 @@ mod tests {
         search[1] = AF_INET;
         bytes[72..88].copy_from_slice(&search);
         let mut info = RtAddrinfo::new();
-        info.rti_addrs = RTA_LABEL | sysdefs::net_route::RTA_SEARCH;
+        info.rti_addrs = RTA_LABEL | sysdefs::net::route::RTA_SEARCH;
         assert_eq!(rtm_xaddrs(&bytes[32..88], &mut info), Ok(()));
     }
 
@@ -3109,7 +3109,7 @@ mod tests {
         // A search list no longer than its header.
         let search = [2u8, AF_UNSPEC];
         let mut info = RtAddrinfo::new();
-        info.rti_addrs = sysdefs::net_route::RTA_SEARCH;
+        info.rti_addrs = sysdefs::net::route::RTA_SEARCH;
         info.rti_info[RTAX_SEARCH] = Some(v(&search));
         assert_eq!(rtm_validate_proposal(&info), Err(Errno::EINVAL));
     }
@@ -3131,7 +3131,7 @@ mod tests {
         let dst = sin([8, 8, 8, 8]);
         info.rti_info[RTAX_DST] = Some(v(&dst));
         rtm_miss(
-            sysdefs::net_route::RTM_MISS,
+            sysdefs::net::route::RTM_MISS,
             &info,
             0,
             3,
@@ -3171,7 +3171,7 @@ mod tests {
         );
 
         let h = hdr_at(&ms[3], 0);
-        assert_eq!(h.rtm_type, sysdefs::net_route::RTM_MISS);
+        assert_eq!(h.rtm_type, sysdefs::net::route::RTM_MISS);
         assert_eq!((h.rtm_priority, h.rtm_index), (3, 7));
         assert_eq!(h.rtm_errno, Errno::EHOSTUNREACH as i32);
         assert_eq!(h.rtm_flags as u32 & RTF_DONE, RTF_DONE);

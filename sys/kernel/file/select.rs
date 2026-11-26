@@ -147,7 +147,7 @@ use hal::mem::malloc::{M_CANFAIL, M_WAITOK, MArray};
 use hal::sync::mutex::Mutexed;
 use hal::sync::sleep::{INFSLP, PCATCH};
 use hal::user::UserPtr;
-use sysdefs::errno::Errno;
+use sysdefs::base::errno::Errno;
 
 use crate::assert::{kassert, kpanic};
 use crate::file::FileGlue;

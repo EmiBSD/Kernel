@@ -158,14 +158,14 @@ use hal::cpu::intr::{IPL_BIO, splraise};
 use hal::mem::malloc::{M_WAITOK, MArc};
 use hal::sync::sleep::INFSLP;
 use hal::user::UserPtr;
-use sysdefs::errno::Errno;
-use sysdefs::fcntl::{FREAD, FWRITE};
-use sysdefs::mount::{
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Ino, Uid, major};
+use sysdefs::file::fcntl::{FREAD, FWRITE};
+use sysdefs::fs::mount::{
     Fid, MNAMELEN, MNT_FORCE, MNT_LAZY, MNT_LOCAL, MNT_RDONLY, MNT_RELOAD, MNT_SYNCHRONOUS,
     MNT_UPDATE, MNT_WAIT, MNT_WANTRDWR, MSDOSFSMNT_LONGNAME, MSDOSFSMNT_NOWIN95,
     MSDOSFSMNT_SHORTNAME, MsdosfsArgs, Statfs,
 };
-use sysdefs::types::{Ino, Uid, major};
 
 use crate::assert::kpanic;
 use crate::base::prf::printf;
@@ -210,7 +210,7 @@ use crate::fs::word::U32Word;
 use crate::net::mbuf::Mbuf;
 use crate::proc::{ProcGlue, Thread};
 use crate::vm::io::MAXBSIZE;
-use sysdefs::disk::DM_OPENBLCK;
+use sysdefs::dev::disk::DM_OPENBLCK;
 
 /// `DEV_BSIZE`: the size of a disk block, the unit of the geometry's block numbers.
 const DEV_BSIZE: u32 = 512;
@@ -219,7 +219,7 @@ const DEV_BSIZE: u32 = 512;
 /// which `msdosfs_mount` asks of the device when it goes read-only (the device may not
 /// support it). A private copy until N7 brings `<sys/dkio.h>`'s constants to the kernel (or
 /// hal's ABI constants hold them), which replace it.
-const DIOCCACHESYNC: u64 = sysdefs::ioccom::_iow::<i32>(b'd', 120);
+const DIOCCACHESYNC: u64 = sysdefs::base::ioccom::_iow::<i32>(b'd', 120);
 
 /// The msdos file system of the glue `G`: `msdosfs_vfsops` ([`MsdosfsVfs::VFS`]). Its vnode
 /// table is the glue's `MsdosfsTables::vops` (`msdosfs_vnops.rs`).
@@ -1014,8 +1014,8 @@ mod tests {
     use std::vec::Vec;
     use std::{assert, assert_eq, assert_ne, vec};
 
-    use sysdefs::mount::{MNT_EXPORTED, MSDOSFSMNT_LONGNAME, MSDOSFSMNT_NOWIN95};
-    use sysdefs::types::{Daddr, makedev};
+    use sysdefs::base::types::{Daddr, makedev};
+    use sysdefs::fs::mount::{MNT_EXPORTED, MSDOSFSMNT_LONGNAME, MSDOSFSMNT_NOWIN95};
 
     use super::super::fat::{fat12, fat16, fat32};
     use super::super::msdosfsmount::MsdosfsmountRef;
@@ -1466,7 +1466,7 @@ mod tests {
             (5, 6, 0o750)
         );
         // NOWIN95 implies short names.
-        let names = (MSDOSFSMNT_NOWIN95 | sysdefs::mount::MSDOSFSMNT_SHORTNAME) as u32;
+        let names = (MSDOSFSMNT_NOWIN95 | sysdefs::fs::mount::MSDOSFSMNT_SHORTNAME) as u32;
         assert_eq!(pmp.pm_flags.get() & MSDOSFSMNT_MNTOPT, names);
         assert_eq!(pmp.pm_dev, makedev(2, 20));
         let st = mp.stat();
@@ -1552,7 +1552,7 @@ mod tests {
             let lookup = || crate::fs::export::vfs_export_lookup(mp, mp.export(), None);
             assert_eq!(lookup().map(|g| g.uid), Some(32767));
             // MNT_DELEXPORT: no client then.
-            args.export_info.ex_flags = sysdefs::mount::MNT_DELEXPORT;
+            args.export_info.ex_flags = sysdefs::fs::mount::MNT_DELEXPORT;
             v.mount(mp, b"/msdos", &mut data_of(&args), &mut nd(p), p)
                 .unwrap();
             assert_eq!(lookup(), None);

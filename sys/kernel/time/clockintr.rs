@@ -121,7 +121,7 @@ use crate::time::clock::{
     PROFCLOCK_PERIOD, STATCLOCK_AVG, STATCLOCK_IS_RANDOMIZED, hardclock_period,
 };
 use crate::time::tc::nsecuptime;
-use sysdefs::errno::Errno;
+use sysdefs::base::errno::Errno;
 
 /// `CQ_INIT`: `clockintr_cpu_init()` done.
 pub const CQ_INIT: u32 = 0x0000_0001;
@@ -826,7 +826,7 @@ pub fn clockrequest_advance_random(cr: &Clockrequest, min: u64, mask: u32) -> u6
     let mut expiration = cr.expiration.load(Ordering::Relaxed);
     while expiration <= uptime {
         let off = loop {
-            let off = libkern::random(&seed) & mask;
+            let off = libkern::rand::random::random(&seed) & mask;
             if off != 0 {
                 break off;
             }

@@ -182,7 +182,7 @@ fn parse_attached(log: &str) -> BTreeSet<String> {
     out
 }
 
-/// `pub const SYS_name: i32 = N;` of `sys/lib/sysdefs/syscall.rs`, and `SYS_MAXSYSCALL`.
+/// `pub const SYS_name: i32 = N;` of `sys/lib/sysdefs/proc/syscall.rs`, and `SYS_MAXSYSCALL`.
 fn parse_syscall_consts(src: &str) -> Result<(BTreeMap<String, usize>, usize)> {
     let mut map = BTreeMap::new();
     let mut max = None;
@@ -484,7 +484,8 @@ pub fn manual(root: &Path, args: &[&str]) -> Result<()> {
     if attached.is_empty() {
         return Err("the boot log shows no attach line of a configured driver".into());
     }
-    let (consts, max) = parse_syscall_consts(&read(&root.join("sys/lib/sysdefs/syscall.rs"))?)?;
+    let (consts, max) =
+        parse_syscall_consts(&read(&root.join("sys/lib/sysdefs/proc/syscall.rs"))?)?;
     let native = parse_native(&read(&root.join("sys/abi/sysent.rs"))?);
     let rows = parse_init_sysent(&read(&root.join("sys/kern/init_sysent.rs"))?)?;
     let mut syscalls = classify(&rows, &native, &consts, max)?;

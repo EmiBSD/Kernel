@@ -131,7 +131,8 @@ use core::slice;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
 use hal::mem::explicit_bzero;
-use libkern::{strlcpy, timingsafe_bcmp};
+use libkern::mem::timingsafe_bcmp::timingsafe_bcmp;
+use libkern::string::strlcpy::strlcpy;
 
 use crate::crypto::curve25519::curve25519_generate_public;
 use crate::dev::rnd::{arc4random, arc4random_buf, arc4random_uniform};
@@ -237,7 +238,7 @@ use crate::sys::timeout::{Timeout, timeout_pending};
 use crate::sys::types::{InPort, SaFamily};
 use hal::cpu::intr::IPL_NONE;
 use hal::sync::mutex::Mutexed;
-use libkern::siphash::AtomicSiphashKey;
+use libkern::hash::siphash::AtomicSiphashKey;
 
 /// `WG_KEY_LEN`.
 pub const WG_KEY_LEN: usize = 32;
@@ -3189,8 +3190,8 @@ fn wg_input(
     arg: usize,
     m: kernel::net::mbuf::MbufBox,
     ip: Option<&Ip>,
-    ip6: Option<&sysdefs::netinet_ip6::Ip6Hdr>,
-    uh: &sysdefs::netinet_udp::Udphdr,
+    ip6: Option<&sysdefs::netinet::ip6::Ip6Hdr>,
+    uh: &sysdefs::netinet::udp::Udphdr,
     hlen: i32,
     _ns: Option<&mut Netstack>,
 ) -> Option<kernel::net::mbuf::MbufBox> {
@@ -3283,8 +3284,8 @@ fn wg_input(
 #[cfg(feature = "inet6")]
 fn wg_input_ip6(
     t: &WgTag,
-    ip6: Option<&sysdefs::netinet_ip6::Ip6Hdr>,
-    uh: &sysdefs::netinet_udp::Udphdr,
+    ip6: Option<&sysdefs::netinet::ip6::Ip6Hdr>,
+    uh: &sysdefs::netinet::udp::Udphdr,
 ) -> bool {
     let Some(ip6) = ip6 else {
         return false;
@@ -3307,8 +3308,8 @@ fn wg_input_ip6(
 #[cfg(not(feature = "inet6"))]
 fn wg_input_ip6(
     _t: &WgTag,
-    _ip6: Option<&sysdefs::netinet_ip6::Ip6Hdr>,
-    _uh: &sysdefs::netinet_udp::Udphdr,
+    _ip6: Option<&sysdefs::netinet::ip6::Ip6Hdr>,
+    _uh: &sysdefs::netinet::udp::Udphdr,
 ) -> bool {
     false
 }
@@ -4949,7 +4950,7 @@ mod tests {
         let m = packet(&d);
         // The kernel's UDP hands the upcall copies of the headers it read.
         let ip: Ip = hal::mem::pod::at(&d, 0).expect("an IP header");
-        let uh: sysdefs::netinet_udp::Udphdr = hal::mem::pod::at(&d, 20).expect("a UDP header");
+        let uh: sysdefs::netinet::udp::Udphdr = hal::mem::pod::at(&d, 20).expect("a UDP header");
         let r = wg_input(
             ptr::from_ref(sc).addr(),
             crate::sys::mbuf::unpark(m),
@@ -5187,8 +5188,8 @@ mod tests {
         d.extend_from_slice(payload);
         let m = packet(&d);
         // The kernel's UDP hands the upcall copies of the headers it read.
-        let ip6: sysdefs::netinet_ip6::Ip6Hdr = hal::mem::pod::at(&d, 0).expect("an IPv6 header");
-        let uh: sysdefs::netinet_udp::Udphdr = hal::mem::pod::at(&d, 40).expect("a UDP header");
+        let ip6: sysdefs::netinet::ip6::Ip6Hdr = hal::mem::pod::at(&d, 0).expect("an IPv6 header");
+        let uh: sysdefs::netinet::udp::Udphdr = hal::mem::pod::at(&d, 40).expect("a UDP header");
         let r = wg_input(
             ptr::from_ref(sc).addr(),
             crate::sys::mbuf::unpark(m),

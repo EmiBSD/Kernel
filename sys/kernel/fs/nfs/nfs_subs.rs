@@ -176,13 +176,13 @@ use crate::time::clock::Timespec;
 use crate::time::tc::gettime;
 use crate::vm::io::MAXBSIZE;
 use crate::vm::vnode::uvm_vnp_setsize;
-use sysdefs::errno::Errno;
-use sysdefs::mount::NFSMNT_NFSV3;
-use sysdefs::nfs_rpcv2::{
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Dev, Gid, Mode, Off, Uid, makedev};
+use sysdefs::fs::mount::NFSMNT_NFSV3;
+use sysdefs::fs::nfs::rpcv2::{
     RPC_AUTHERR, RPC_CALL, RPC_MISMATCH, RPC_MSGACCEPTED, RPC_MSGDENIED, RPC_REPLY, RPC_VER2,
     RPCAUTH_NULL, RPCAUTH_UNIX,
 };
-use sysdefs::types::{Dev, Gid, Mode, Off, Uid, makedev};
 
 /// `nfs_xdrneg1`: the XDR word of -1. Data items converted to xdr at startup, since they are
 /// constant. This is kinda hokey, but may save a little time doing byte swaps.

@@ -52,7 +52,7 @@
 
 /* <CODE> */
 //! Definitions for the `sysctl(2)` call: `<sys/sysctl.h>`. The ids, the name tables and the
-//! structures are `hal`'s header (`sysdefs::sysctl`), re-exported here; what stays is what
+//! structures are `hal`'s header (`sysdefs::proc::sysctl`), re-exported here; what stays is what
 //! names `bsd`: the `sysctlfn` prototype of the nodes still in `bsd`, and the byte view of
 //! the structures they copy out.
 //!
@@ -68,21 +68,21 @@
 //!
 //! ## Redesign
 //! - N4.6b: the header (ids, names, `kinfo_proc`, `kinfo_file`, `kinfo_vmentry`,
-//!   `sysctl_bounded_args`) is `sysdefs::sysctl`, shared with `kernel::base::sysctl`.
-//! - [`SysctlPlain`] is a safe trait implemented for every `sysdefs::pod::AbiPod` type (a
+//!   `sysctl_bounded_args`) is `sysdefs::proc::sysctl`, shared with `kernel::base::sysctl`.
+//! - [`SysctlPlain`] is a safe trait implemented for every `sysdefs::base::pod::AbiPod` type (a
 //!   blanket impl), its byte views `hal::user::bytes_of` and `bytes_of_mut`: the `unsafe
 //!   trait`, its two `unsafe` byte views and its 12 `unsafe impl`s (LZ) are gone, and the
 //!   structures this side copies out (`struct timeval`, `struct clockinfo`, `struct
 //!   diskstats`, `struct cpustats`) are `AbiPod` through `sysdefs::abi_pod!` here, which checks
 //!   at compile time that their members tile them (the C's padding holes are members,
-//!   `ds_pad0`); `struct mbstat` is `AbiPod` in `sysdefs::mbuf` since N6.1.
+//!   `ds_pad0`); `struct mbstat` is `AbiPod` in `sysdefs::net::mbuf` since N6.1.
 
 use crate::sys::errno::Errno;
 use crate::sys::proc::Proc;
 use crate::sys::sched::Cpustats;
 use crate::sys::time::{Clockinfo, Timeval};
 
-pub use sysdefs::sysctl::*;
+pub use sysdefs::proc::sysctl::*;
 
 /// `sysctlfn`: the internal sysctl function calling convention,
 /// `(*sysctlfn)(name, oldp, oldlenp, newp, newlen, p)`. `name` is the rest of the name from
@@ -91,9 +91,9 @@ pub use sysdefs::sysctl::*;
 pub type Sysctlfn = fn(&[i32], usize, &mut usize, usize, usize, &Proc) -> Result<(), Errno>;
 
 /// A structure that `sysctl_rdstruct` and `sysctl_struct` copy as bytes (not OpenBSD's: C
-/// passes a `void *` and a size): every `sysdefs::pod::AbiPod` type, whose bytes are all
+/// passes a `void *` and a size): every `sysdefs::base::pod::AbiPod` type, whose bytes are all
 /// initialised and any of whose bit patterns is a value.
-pub trait SysctlPlain: sysdefs::pod::AbiPod {
+pub trait SysctlPlain: sysdefs::base::pod::AbiPod {
     /// The structure's bytes, as `copyout` reads them.
     fn as_bytes(&self) -> &[u8] {
         hal::user::bytes_of(core::slice::from_ref(self))
@@ -105,12 +105,12 @@ pub trait SysctlPlain: sysdefs::pod::AbiPod {
     }
 }
 
-impl<T: sysdefs::pod::AbiPod> SysctlPlain for T {}
+impl<T: sysdefs::base::pod::AbiPod> SysctlPlain for T {}
 
 // `struct timeval` and `struct clockinfo` are the kernel's (`kernel::time::clock::Timeval`,
 // `kernel::time::Clockinfo`, N4.8a), `AbiPod` where they are defined.
 
-// `struct diskstats`: `AbiPod` in `sysdefs::disk` (N7.1d), where it moved with the disk.
+// `struct diskstats`: `AbiPod` in `sysdefs::dev::disk` (N7.1d), where it moved with the disk.
 
 // `struct cpustats`: seven `uint64_t`.
 sysdefs::abi_pod!(Cpustats {
@@ -118,7 +118,7 @@ sysdefs::abi_pod!(Cpustats {
     cs_flags: u64,
 });
 
-// `struct mbstat`: `AbiPod` in `sysdefs::mbuf` (N6.1), where it moved with the mbuf.
+// `struct mbstat`: `AbiPod` in `sysdefs::net::mbuf` (N6.1), where it moved with the mbuf.
 
 const _: () = {
     use core::mem::size_of;

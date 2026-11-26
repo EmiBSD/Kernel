@@ -81,7 +81,7 @@
 //!   ([`bpb_shorthand!`]); `msdosfs_mountfs` assigns the members of `pm_bpb` before the
 //!   structure is published.
 //! - The flags are `u32`, the type of `pm_flags`; `MSDOSFSMNT_SHORTNAME`, `_LONGNAME` and
-//!   `_NOWIN95` are the `<sys/mount.h>` ones (`sysdefs::mount`), as the C's `#if 0` says.
+//!   `_NOWIN95` are the `<sys/mount.h>` ones (`sysdefs::fs::mount`), as the C's `#if 0` says.
 //! - The arithmetic macros (`de_cluster`, `cntobn`, ...) are generic functions over the
 //!   [`DeArith`] integers, so each computes in the type of its argument as the macro does
 //!   (an `off_t` offset stays 64-bit, a cluster number wraps at 32 bits); the macros' unsigned
@@ -137,9 +137,9 @@ use core::ops::{Shl, Shr};
 use core::sync::atomic::AtomicU32;
 
 use hal::mem::malloc::{M_CANFAIL, M_WAITOK, MArc, MArray};
-use sysdefs::errno::Errno;
-use sysdefs::mount::{MSDOSFSMNT_LONGNAME, MSDOSFSMNT_NOWIN95, MSDOSFSMNT_SHORTNAME};
-use sysdefs::types::Dev;
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::Dev;
+use sysdefs::fs::mount::{MSDOSFSMNT_LONGNAME, MSDOSFSMNT_NOWIN95, MSDOSFSMNT_SHORTNAME};
 
 use crate::assert::kpanic;
 use crate::fs::mount::Mount;

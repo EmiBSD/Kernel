@@ -33,9 +33,9 @@ use std::boxed::Box;
 use std::sync::MutexGuard;
 
 use hal::mem::pool::PR_WAITOK;
-use sysdefs::errno::Errno;
-use sysdefs::mount::{MNT_LOCAL, MNT_SWAPPABLE, MOUNT_EXT2FS, UfsArgs};
-use sysdefs::types::Daddr;
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::Daddr;
+use sysdefs::fs::mount::{MNT_LOCAL, MNT_SWAPPABLE, MOUNT_EXT2FS, UfsArgs};
 
 use super::ext2fs::{Ext2Superblock, SBLOCK, SBSIZE, e2fs_sbload, nindir};
 use super::ext2fs_dinode::{EXT2_ROOTINO, Ext2Inode};

@@ -195,12 +195,12 @@ use crate::time::clock::Timespec;
 use crate::time::tc::microboottime;
 use crate::vm::vnode::uvm_vnp_uncache;
 use hal::mem::malloc::{M_WAITOK, MArray};
-use sysdefs::dirent::Dirent;
-use sysdefs::errno::Errno;
-use sysdefs::mount::{Fhandle, Fid, MNT_RDONLY, MNT_WAIT, Statfs};
-use sysdefs::socket::SOCK_DGRAM;
-use sysdefs::types::{Dev, Mode, Off, Register, makedev};
-use sysdefs::unistd::{_PC_CHOWN_RESTRICTED, _PC_LINK_MAX, _PC_NAME_MAX, _PC_NO_TRUNC};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Dev, Mode, Off, Register, makedev};
+use sysdefs::file::dirent::Dirent;
+use sysdefs::fs::mount::{Fhandle, Fid, MNT_RDONLY, MNT_WAIT, Statfs};
+use sysdefs::net::socket::SOCK_DGRAM;
+use sysdefs::proc::unistd::{_PC_CHOWN_RESTRICTED, _PC_LINK_MAX, _PC_NAME_MAX, _PC_NO_TRUNC};
 
 /// `malloc(9)`'s `M_TEMP`: the read and write iovec arrays, the readdir buffer, the symlink
 /// target.
@@ -3284,10 +3284,10 @@ mod tests {
     use std::vec;
     use std::vec::Vec;
 
-    use sysdefs::mount::{
+    use sysdefs::base::syslimits::NGROUPS_MAX as XNGROUPS;
+    use sysdefs::fs::mount::{
         ExportArgs, MNT_DELEXPORT, MNT_EXPORTANON, MNT_EXPORTED, MNT_EXRDONLY, Xucred,
     };
-    use sysdefs::syslimits::NGROUPS_MAX as XNGROUPS;
 
     use super::*;
     use crate::fs::export::vfs_export;
@@ -3309,7 +3309,7 @@ mod tests {
     use crate::fs::vops::VFS_ROOT;
     use crate::net::mbuf::{m_devget, mbinit, nmbclust_update};
     use hal::sysbytes::NfsfhGeneric;
-    use sysdefs::socket::{AF_INET, SOCK_STREAM};
+    use sysdefs::net::socket::{AF_INET, SOCK_STREAM};
 
     type G = TestGlue;
 
@@ -3505,7 +3505,7 @@ mod tests {
         vput(vp);
         let slp = NfssvcSock::new(None);
         slp.ns_sotype.store(
-            sysdefs::socket::SOCK_DGRAM,
+            sysdefs::net::socket::SOCK_DGRAM,
             core::sync::atomic::Ordering::Relaxed,
         );
         let s = Srv {

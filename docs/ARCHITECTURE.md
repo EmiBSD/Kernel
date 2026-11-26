@@ -83,6 +83,16 @@ must not cover `thread.rs`, and a group's own name as a module trips `clippy::mo
 The paths `hal::cpu::cpu_number` and the others did not change. `cargo xtask hal-check` keeps
 drivers and devices apart (rules D1 and D2, `.claude/rules/xtask.md`).
 
+### The leaf crates' groups (2026-11-26)
+
+`sys/lib/sysdefs/`, `libkern/` and `libz/` are grouped by purpose too, and their roots hold
+`lib.rs` only (`hal-check` rule L1). `sysdefs`: `base`, `proc`, `sig`, `time`, `vm`, `file`, `fs`
+(with `nfs/`), `dev`, `net`, `netinet`, `netinet6` (`net_if` is `net::if_`, `netinet_in` is
+`netinet::in_`); `libkern`: `string`, `mem`, `hash`, `rand`; `libz`: `base`, `deflate`,
+`inflate`, `check`. No flat re-export: callers name `sysdefs::base::errno`,
+`libkern::string::strlcpy::strlcpy`. The few root aliases that remain serve inherited files
+that must stay byte-identical to LZ's, and say so where they are.
+
 ### The kernel's groups (2026-11-26)
 
 `sys/kernel/` is grouped the same way (the user approved it on 2026-11-26). A group whose name
@@ -319,7 +329,7 @@ window beside the image (decision 37), with the `Legacy` fallback of decision 29
 missing; decision 47 records what went with it. The pieces now:
 
 - **The table.** `sys/abi/sysent.rs`: one `Native(fn) | Legacy` entry per number of
-  `<sys/syscall.h>` (`sysdefs::syscall`), 170 of 331 `Native` (`NATIVE`; pipe and pipe2 the
+  `<sys/syscall.h>` (`sysdefs::proc::syscall`), 170 of 331 `Native` (`NATIVE`; pipe and pipe2 the
   first, at N2.6). The translations are one file per group of the kernel (`proc.rs`, `vm.rs`,
   `file.rs`, `event.rs`, `time.rs`, `base.rs`, `fs.rs`, `net.rs`, N7). A `Native` entry calls
   its `kernel::api` function, which runs the same `sysent[]` row through `mi_syscall` (the

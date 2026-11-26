@@ -206,10 +206,10 @@ use core::ptr;
 use hal::mem::malloc::{M_WAITOK, MArray};
 use hal::sync::once::OnceStatic;
 use hal::user::{ForeignWindow, UserPtr, WindowKcopyToken};
-use sysdefs::errno::Errno;
-use sysdefs::limits::SSIZE_MAX;
-use sysdefs::syslimits::IOV_MAX;
-use sysdefs::types::Off;
+use sysdefs::base::errno::Errno;
+use sysdefs::base::limits::SSIZE_MAX;
+use sysdefs::base::syslimits::IOV_MAX;
+use sysdefs::base::types::Off;
 
 use crate::proc::{ProcGlue, Thread};
 
@@ -719,7 +719,7 @@ mod tests {
     use crate::vm::km::{ObjectWindow, uvm_map_object_window};
     use crate::vm::object::ObjRef;
     use hal::arch::current::param::PAGE_SIZE;
-    use sysdefs::types::Vsize;
+    use sysdefs::base::types::Vsize;
 
     /// Where each test keeps its user iovec arrays (the double's user memory is one space,
     /// shared by the tests running in parallel: each test has its own range).
@@ -1073,7 +1073,7 @@ mod tests {
         assert_eq!((bad.uio_resid, bad.uio_iov[0].iov_len), (7, 7));
         // A window onto kernel-map space nothing maps: the page faults, EFAULT.
         let gone = crate::vm::km::test_window(
-            sysdefs::types::Vaddr::new(testutil::KM_VA_BASE + (1 << 38)),
+            sysdefs::base::types::Vaddr::new(testutil::KM_VA_BASE + (1 << 38)),
             PAGE_SIZE,
         );
         let mut k = [0u8; 16];

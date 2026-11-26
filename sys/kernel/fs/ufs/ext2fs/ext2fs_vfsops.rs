@@ -147,13 +147,13 @@ use hal::mem::malloc::MArc;
 use hal::mem::pool::{PR_WAITOK, PoolArc};
 use hal::sync::sleep::INFSLP;
 use hal::user::UserPtr;
-use sysdefs::errno::Errno;
-use sysdefs::fcntl::{FREAD, FWRITE};
-use sysdefs::mount::{
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Daddr, Dev, Ino, Off, Uid, major};
+use sysdefs::file::fcntl::{FREAD, FWRITE};
+use sysdefs::fs::mount::{
     Fid, MNAMELEN, MNT_FORCE, MNT_LAZY, MNT_LOCAL, MNT_RDONLY, MNT_RELOAD, MNT_UPDATE, MNT_WAIT,
     MNT_WANTRDWR, Statfs, UfsArgs,
 };
-use sysdefs::types::{Daddr, Dev, Ino, Off, Uid, major};
 
 use super::ext2fs::{
     E2FS_ERRORS, E2FS_ISCLEAN, E2FS_MAGIC, E2FS_REV0, E2FS_REV1, EXT2_GD_SIZE,
@@ -201,7 +201,7 @@ use crate::net::mbuf::Mbuf;
 use crate::proc::{ProcGlue, Thread};
 use crate::time::inittodr;
 use crate::time::tc::gettime;
-use sysdefs::disk::DM_OPENBLCK;
+use sysdefs::dev::disk::DM_OPENBLCK;
 
 /// `DEV_BSIZE`.
 const DEV_BSIZE: Off = 1 << DEV_BSHIFT;
@@ -251,7 +251,7 @@ pub fn ext2fs_init<G: ProcGlue>(_vfsp: &'static Vfsconf<G>) -> Result<(), Errno>
 /// `memset(fs->e2fs_fsmnt, 0, sizeof(fs->e2fs_fsmnt)); strlcpy(fs->e2fs_fsmnt, name, ..)`.
 fn e2fs_set_fsmnt(fs: &Ext2Superblock, name: &[u8]) {
     let mut m = [0u8; MAXMNTLEN];
-    libkern::strlcpy(&mut m, name);
+    libkern::string::strlcpy::strlcpy(&mut m, name);
     fs.set_fsmnt(&m);
 }
 
@@ -259,7 +259,7 @@ fn e2fs_set_fsmnt(fs: &Ext2Superblock, name: &[u8]) {
 /// mounted on" name in the super block, kept by revision 1 file systems.
 fn e2fs_set_sb_fsmnt(fs: &Ext2Superblock, name: &[u8]) {
     let mut m = [0u8; 64];
-    libkern::strlcpy(&mut m, name);
+    libkern::string::strlcpy::strlcpy(&mut m, name);
     fs.write_bytes(offset_of!(Ext2fs, e2fs_fsmnt), &m);
 }
 
@@ -1350,7 +1350,7 @@ mod tests {
     use std::vec::Vec;
     use std::{assert, assert_eq, assert_ne, vec};
 
-    use sysdefs::mount::MNT_RDONLY;
+    use sysdefs::fs::mount::MNT_RDONLY;
 
     use super::super::ext2fs_dinode::{EXT4_EXTENTS, Ext2fsDinode};
     use super::super::ext2fs_inode::{ext2fs_size, ext2fs_truncate};

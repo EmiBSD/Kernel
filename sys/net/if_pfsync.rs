@@ -1471,7 +1471,7 @@ fn pfsync_get_parent(sc: &PfsyncSoftc, p: &mut IfParent) -> Result<(), Errno> {
     let error = match ifp0 {
         None => Err(Errno::EADDRNOTAVAIL),
         Some(ifp0) => {
-            libkern::strlcpy(&mut p.ifp_parent, &ifp0.if_xname.get());
+            libkern::string::strlcpy::strlcpy(&mut p.ifp_parent, &ifp0.if_xname.get());
             Ok(())
         }
     };
@@ -1500,7 +1500,7 @@ fn pfsync_get_ioc(sc: &PfsyncSoftc, ifr: &Ifreq) -> Result<(), Errno> {
 
     let ifp0 = if_get(sc.sc_sync_ifidx.get());
     if let Some(ifp0) = ifp0 {
-        libkern::strlcpy(&mut pfsyncr.pfsyncr_syncdev, &ifp0.if_xname.get());
+        libkern::string::strlcpy::strlcpy(&mut pfsyncr.pfsyncr_syncdev, &ifp0.if_xname.get());
     }
     if_put(ifp0);
 
@@ -2660,7 +2660,7 @@ pub fn pfsync_clear_states(creatorid: u32, ifname: &[u8]) {
             ..PfsyncSubhClr::default()
         };
         let mut name = [0u8; IFNAMSIZ];
-        libkern::strlcpy(&mut name, ifname);
+        libkern::string::strlcpy::strlcpy(&mut name, ifname);
         h.clr.ifname = name;
         h.clr.creatorid = creatorid;
         // SAFETY: `m_align` placed `H` bytes of `m`'s data area at `mtod(m)`.

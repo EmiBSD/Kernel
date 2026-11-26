@@ -92,7 +92,7 @@
 //!   `net.bpf.maxbufsize` (`kernel::net::bpf`): the module holds no state, and a program is
 //!   checked against one value of the bound, not against two if a `sysctl` writes it midway.
 
-use sysdefs::net_bpf::{
+use sysdefs::net::bpf::{
     BPF_A, BPF_ABS, BPF_ADD, BPF_ALU, BPF_AND, BPF_B, BPF_DIV, BPF_H, BPF_IMM, BPF_IND, BPF_JA,
     BPF_JEQ, BPF_JGE, BPF_JGT, BPF_JMP, BPF_JSET, BPF_K, BPF_LD, BPF_LDX, BPF_LEN, BPF_LSH,
     BPF_MAXINSNS, BPF_MEM, BPF_MEMWORDS, BPF_MISC, BPF_MOD, BPF_MSH, BPF_MUL, BPF_NEG, BPF_OR,
@@ -448,8 +448,8 @@ mod tests {
     use std::vec;
     use std::vec::Vec;
 
-    use sysdefs::mbuf::MT_DATA;
-    use sysdefs::net_bpf::{BPF_MAXBUFSIZE, bpf_jump, bpf_stmt};
+    use sysdefs::net::bpf::{BPF_MAXBUFSIZE, bpf_jump, bpf_stmt};
+    use sysdefs::net::mbuf::MT_DATA;
 
     use super::*;
     use crate::net::bpf::BpfPkt;

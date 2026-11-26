@@ -20,7 +20,7 @@
 //! `cargo xtask gen-syscalls [--check]`: what `sys/kern/makesyscalls.sh` does for the C tree,
 //! for the Rust tree. Reads `reference/openbsd-src/sys/kern/syscalls.master` and writes
 //!
-//! - `sys/lib/sysdefs/syscall.rs` (the `SYS_*` numbers, `syscall.h`; in `hal` since N2.2),
+//! - `sys/lib/sysdefs/proc/syscall.rs` (the `SYS_*` numbers, `syscall.h`; in `hal` since N2.2),
 //! - `sys/sys/syscallargs.rs` (the argument structs, `syscallargs.h`),
 //! - `sys/kern/init_sysent.rs` (the switch table, `init_sysent.c`),
 //! - `sys/kern/syscalls.rs` (the names, `syscalls.c`).
@@ -463,7 +463,7 @@ pub fn generate(root: &Path) -> Result<Vec<(&'static str, String)>> {
         )
     };
 
-    // --- sys/lib/sysdefs/syscall.rs -----------------------------------------------------------
+    // --- sys/lib/sysdefs/proc/syscall.rs -----------------------------------------------------------
     let mut numbers = String::new();
     numbers.push_str("//! `<sys/syscall.h>`: system call numbers.\n//!\n");
     numbers.push_str(&banner("sys/sys/syscall.h"));
@@ -699,7 +699,7 @@ pub fn generate(root: &Path) -> Result<Vec<(&'static str, String)>> {
 
     Ok(vec![
         (
-            "sys/lib/sysdefs/syscall.rs",
+            "sys/lib/sysdefs/proc/syscall.rs",
             rustfmt(root, &zoned(&numbers))?,
         ),
         ("sys/sys/syscallargs.rs", rustfmt(root, &zoned(&args))?),

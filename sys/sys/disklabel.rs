@@ -48,12 +48,12 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! `<sys/disklabel.h>` as `bsd` names it: `sysdefs::disklabel` (N7.1d) re-exported, and
+//! `<sys/disklabel.h>` as `bsd` names it: `sysdefs::dev::disklabel` (N7.1d) re-exported, and
 //! `struct partinfo`, which stays here until N7.3c.
 //!
 //! Upstream: sys/sys/disklabel.h @ 3ce1f3f79392
 //!
-//! The header is `hal`'s since N7.1d (`sysdefs::disklabel`, with its machine constants);
+//! The header is `hal`'s since N7.1d (`sysdefs::dev::disklabel`, with its machine constants);
 //! the functions it declares are the kernel's (`kernel::dev::disk`, `kernel::dev::disksubr`),
 //! which `bsd`'s drivers reach through `sys/sys/disk.rs`.
 //!
@@ -62,7 +62,7 @@
 //!   partition to a file system (`ffs_mountfs`); [`Partinfo::store`] and [`Partinfo::load`]
 //!   move it through an `ioctl` data buffer. N7.3c's block device replaces it.
 
-pub use sysdefs::disklabel::*;
+pub use sysdefs::dev::disklabel::*;
 
 /// `struct partinfo`: structure used internally to retrieve information about a partition
 /// on a disk (`DIOCGPART`).

@@ -350,7 +350,7 @@ fn pf_default_rule_copy(dst: &PfRule, src: &PfRule) {
 
 /// `strnlen(s, sizeof(s)) >= sizeof(s)`: the array holds no NUL.
 fn pf_name_too_long(s: &[u8]) -> bool {
-    libkern::strnlen(s, s.len()) >= s.len()
+    libkern::string::strnlen::strnlen(s, s.len()) >= s.len()
 }
 
 /// `pfattach`: sets pf up at boot (`pseudo-device pf`): the pools, the tables, the
@@ -3679,7 +3679,7 @@ fn pfioc_trans_e_in(io: &PfiocTrans, i: i32, ioe: &mut PfiocTransE) -> Result<()
     if pod_copyin(uaddr, ioe).is_err() {
         return Err(Errno::EFAULT);
     }
-    if libkern::strnlen(&ioe.anchor, ioe.anchor.len()) == ioe.anchor.len() {
+    if libkern::string::strnlen::strnlen(&ioe.anchor, ioe.anchor.len()) == ioe.anchor.len() {
         return Err(Errno::ENAMETOOLONG);
     }
     Ok(())

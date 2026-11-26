@@ -167,11 +167,11 @@ use hal::sync::klock;
 use hal::sync::rwlock::{RawRwlock, Rwlocked};
 use hal::user::UserPtr;
 use hal::vm::param::{round_page, trunc_page};
-use sysdefs::errno::Errno;
-use sysdefs::mman::{PROT_NONE, PROT_READ, PROT_WRITE};
-use sysdefs::pclock::PcLock;
-use sysdefs::syslimits::NZERO;
-use sysdefs::types::{Id, Pid, Rlim};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::syslimits::NZERO;
+use sysdefs::base::types::{Id, Pid, Rlim};
+use sysdefs::time::pclock::PcLock;
+use sysdefs::vm::mman::{PROT_NONE, PROT_READ, PROT_WRITE};
 
 use crate::assert::{kassert, kpanic};
 use crate::proc::{ProcGlue, Process, ProcessRef, PsMtx, Thread};

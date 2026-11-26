@@ -111,7 +111,7 @@ use core::fmt;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use libkern::strlcpy;
+use libkern::string::strlcpy::strlcpy;
 
 use crate::kern::kern_lock::{mtx_enter, mtx_init, mtx_leave};
 use crate::kern::kern_synch::{msleep_nsec, nowake, tsleep_nsec, wakeup_one};

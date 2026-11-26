@@ -197,13 +197,13 @@ use hal::sync::klock;
 use hal::sync::rwlock::Guarded;
 #[cfg(feature = "nfsserver")]
 use hal::user::UserPtr;
-use sysdefs::errno::Errno;
-use sysdefs::mount::ExportArgs;
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Gid, Uid};
+use sysdefs::fs::mount::ExportArgs;
 #[cfg(feature = "nfsserver")]
-use sysdefs::mount::{MNT_DEFEXPORTED, MNT_DELEXPORT, MNT_EXPORTED};
+use sysdefs::fs::mount::{MNT_DEFEXPORTED, MNT_DELEXPORT, MNT_EXPORTED};
 #[cfg(feature = "nfsserver")]
-use sysdefs::socket::AF_INET;
-use sysdefs::types::{Gid, Uid};
+use sysdefs::net::socket::AF_INET;
 
 use super::mount::Mount;
 #[cfg(feature = "nfsserver")]
@@ -510,8 +510,8 @@ mod tests {
 
     use std::boxed::Box;
 
-    use sysdefs::mount::{MNT_EXPORTANON, MNT_EXRDONLY, Xucred};
-    use sysdefs::syslimits::NGROUPS_MAX as XNGROUPS;
+    use sysdefs::base::syslimits::NGROUPS_MAX as XNGROUPS;
+    use sysdefs::fs::mount::{MNT_EXPORTANON, MNT_EXRDONLY, Xucred};
 
     use super::*;
     use crate::fs::testfs::TestGlue;

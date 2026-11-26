@@ -165,19 +165,19 @@ use core::sync::atomic::Ordering;
 
 use hal::ds::owned::SlistLink;
 use hal::mem::pod;
-use sysdefs::endian::{htonl, htons};
-use sysdefs::errno::Errno;
-use sysdefs::mbuf::MT_HEADER;
-use sysdefs::netinet_in::IPPROTO_TCP;
-use sysdefs::netinet_ip::{IP_MAXPACKET, IPTOS_ECN_ECT0, Ip};
-use sysdefs::netinet_ip6::Ip6Hdr;
-use sysdefs::netinet_tcp::{
+use sysdefs::base::endian::{htonl, htons};
+use sysdefs::base::errno::Errno;
+use sysdefs::net::mbuf::MT_HEADER;
+use sysdefs::net::socket::{AF_INET, AF_INET6, SO_DEBUG};
+use sysdefs::netinet::in_::IPPROTO_TCP;
+use sysdefs::netinet::ip::{IP_MAXPACKET, IPTOS_ECN_ECT0, Ip};
+use sysdefs::netinet::ip6::Ip6Hdr;
+use sysdefs::netinet::tcp::{
     MAX_TCPOPTLEN, TCP_MAX_SACK, TCP_MAXWIN, TCPOLEN_SACK, TCPOLEN_SIGLEN, TCPOLEN_SIGNATURE,
     TCPOLEN_TSTAMP_APPA, TCPOLEN_WINDOW, TCPOPT_MAXSEG, TCPOPT_NOP, TCPOPT_SACK_HDR,
     TCPOPT_SACK_PERMIT_HDR, TCPOPT_SIGNATURE, TCPOPT_TSTAMP_HDR, TCPOPT_WINDOW, TH_ACK, TH_CWR,
     TH_ECE, TH_FIN, TH_PUSH, TH_RST, TH_SYN, TH_URG, Tcphdr,
 };
-use sysdefs::socket::{AF_INET, AF_INET6, SO_DEBUG};
 
 use crate::assert::{kassert, kpanic};
 use crate::crypto::md5::MD5_DIGEST_LENGTH;
@@ -1774,7 +1774,7 @@ mod tests {
         let (so, inp, d) = estab(b"tout7", 27);
         queue(&so, &data);
         testtcp::with_lock(&inp, |inp, _il| {
-            *inp.options() = crate::net::mbuf::m_get(M_DONTWAIT, sysdefs::mbuf::MT_SOOPTS);
+            *inp.options() = crate::net::mbuf::m_get(M_DONTWAIT, sysdefs::net::mbuf::MT_SOOPTS);
         });
         let pack = stat(C::TcpsSndpack);
         let before = sent(d);

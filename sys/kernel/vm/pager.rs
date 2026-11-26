@@ -136,9 +136,9 @@ use hal::sync::mutex::{Mutexed, MutexedGuard};
 use hal::sync::rwlock::WriteWitness;
 use hal::sync::sleep::{INFSLP, PVM, wakeup};
 use hal::vm::pmap::HAVE_PMAP_DIRECT;
-use sysdefs::errno::Errno;
-use sysdefs::mman::{PROT_READ, PROT_WRITE};
-use sysdefs::types::{Paddr, Vaddr};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Paddr, Vaddr};
+use sysdefs::vm::mman::{PROT_READ, PROT_WRITE};
 
 use super::km::{KD_TRYLOCK, KP_NONE, KV_ANY, km_alloc, km_free, mapper};
 use super::object::{ObjRef, slot_page};
@@ -843,7 +843,7 @@ mod tests {
     use super::super::types::UVM_PLA_NOWAIT;
     use super::*;
     use crate::testutil;
-    use sysdefs::types::Vsize;
+    use sysdefs::base::types::Vsize;
 
     /// The address the tests give the first two psegs: the host's `km_alloc` has no kernel
     /// virtual space without pages (`PMAP_NOMMU`), so those two, which a booted kernel makes
@@ -947,7 +947,7 @@ mod tests {
         let kernel = hal::vm::pmap::kernel();
         assert_eq!(kernel.extract(va), Some(p0.phys_addr()));
         assert_eq!(
-            kernel.extract(va + sysdefs::types::Vsize::new(PAGE_SIZE)),
+            kernel.extract(va + sysdefs::base::types::Vsize::new(PAGE_SIZE)),
             Some(p1.phys_addr())
         );
         assert_eq!(win.as_slice().len(), 2 * PAGE_SIZE);
@@ -960,7 +960,7 @@ mod tests {
         assert!(kernel.extract(va).is_none());
         assert!(
             kernel
-                .extract(va + sysdefs::types::Vsize::new(PAGE_SIZE))
+                .extract(va + sysdefs::base::types::Vsize::new(PAGE_SIZE))
                 .is_none()
         );
         let again = uvm_pseg_get(0).expect("the segment back");

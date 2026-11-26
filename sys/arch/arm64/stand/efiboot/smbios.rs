@@ -273,7 +273,7 @@ pub unsafe fn smbios_init(smbios: *const u8) {
         ) && let Some(sminfop) = fixstring(&mut scratch)
         {
             // SAFETY: single-threaded; the only reference.
-            libkern::strlcpy::strlcpy(unsafe { SMBIOS_BIOS_DATE.get_mut() }, sminfop);
+            libkern::string::strlcpy::strlcpy(unsafe { SMBIOS_BIOS_DATE.get_mut() }, sminfop);
         }
 
         smbios_info(&entry);
@@ -415,13 +415,13 @@ pub fn smbios_info(entry: &SmbiosEntry) {
     unsafe {
         if havebb {
             if let Some(s) = get_fixed(entry, &btbl, field(entry, board + SYS_VENDOR)) {
-                libkern::strlcpy::strlcpy(SMBIOS_BOARD_VENDOR.get_mut(), &s);
+                libkern::string::strlcpy::strlcpy(SMBIOS_BOARD_VENDOR.get_mut(), &s);
             }
             if let Some(s) = get_fixed(entry, &btbl, field(entry, board + SYS_PRODUCT)) {
-                libkern::strlcpy::strlcpy(SMBIOS_BOARD_PROD.get_mut(), &s);
+                libkern::string::strlcpy::strlcpy(SMBIOS_BOARD_PROD.get_mut(), &s);
             }
             if let Some(s) = get_fixed(entry, &btbl, field(entry, board + SYS_SERIAL)) {
-                libkern::strlcpy::strlcpy(SMBIOS_BOARD_SERIAL.get_mut(), &s);
+                libkern::string::strlcpy::strlcpy(SMBIOS_BOARD_SERIAL.get_mut(), &s);
             }
         }
 

@@ -82,9 +82,9 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use sysdefs::errno::Errno;
-use sysdefs::select::{NBBY, howmany};
-use sysdefs::types::{Daddr, Ino, Mode, Uid};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Daddr, Ino, Mode, Uid};
+use sysdefs::file::select::{NBBY, howmany};
 
 use super::ext2fs::{Ext2Superblock, dtog, dtogd, freespace, fsbtodb, ino_to_cg};
 use super::ext2fs_dinode::EXT2_FIRSTINO;
@@ -99,7 +99,7 @@ use crate::fs::vnode::Vnode;
 use crate::fs::vops::{Cred, VFS_VGET};
 use crate::proc::ProcGlue;
 use crate::time::tc::gettime;
-use libkern::skpc;
+use libkern::mem::skpc::skpc;
 
 /// The allocator `ext2fs_hashalloc` runs in each cylinder group (`ext2fs_alloccg` or
 /// `ext2fs_nodealloccg`).

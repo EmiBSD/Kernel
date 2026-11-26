@@ -81,7 +81,7 @@
 /* <CODE> */
 //! The Ethernet address resolution protocol, `netinet/if_ether.c`, and the kernel half of
 //! `<netinet/if_ether.h>` it uses (the userland half, `struct ether_arp` and `struct
-//! sockaddr_inarp` among it, is `sysdefs::netinet_if_ether`; `struct arpcom` and the
+//! sockaddr_inarp` among it, is `sysdefs::netinet::if_ether`; `struct arpcom` and the
 //! Ethernet layer are `kernel::net::if_ethersubr`).
 //!
 //! Upstream: sys/netinet/if_ether.h @ 3ce1f3f79392
@@ -198,25 +198,25 @@ use hal::sync::mutex::Mutexed;
 use hal::sync::netlock::{NETLOCK, NetHeld};
 use hal::sync::once::OnceStatic;
 use hal::sync::rwlock::RW_WRITE;
-use sysdefs::errno::Errno;
+use sysdefs::base::errno::Errno;
 #[cfg(feature = "nfsclient")]
-use sysdefs::net_ethertypes::ETHERTYPE_REVARP;
-use sysdefs::net_ethertypes::{ETHERTYPE_ARP, ETHERTYPE_IP};
-use sysdefs::net_if::{IFF_NOARP, IFF_STATICARP, SDL_DATA_OFFSET, SockaddrDl};
+use sysdefs::net::ethertypes::ETHERTYPE_REVARP;
+use sysdefs::net::ethertypes::{ETHERTYPE_ARP, ETHERTYPE_IP};
+use sysdefs::net::if_::{IFF_NOARP, IFF_STATICARP, SDL_DATA_OFFSET, SockaddrDl};
 #[cfg(feature = "nfsclient")]
-use sysdefs::net_if_arp::ARPOP_REVREQUEST;
-use sysdefs::net_if_arp::{ARPHRD_ETHER, ARPOP_REPLY, ARPOP_REQUEST, ARPOP_REVREPLY, Arphdr};
-use sysdefs::net_route::{
+use sysdefs::net::if_arp::ARPOP_REVREQUEST;
+use sysdefs::net::if_arp::{ARPHRD_ETHER, ARPOP_REPLY, ARPOP_REQUEST, ARPOP_REVREPLY, Arphdr};
+use sysdefs::net::route::{
     RTF_ANNOUNCE, RTF_BROADCAST, RTF_CACHED, RTF_CLONING, RTF_GATEWAY, RTF_LLINFO, RTF_LOCAL,
     RTF_MPLS, RTF_MULTICAST, RTF_REJECT, RTF_STATIC, RTM_ADD, RTM_DELETE, RTM_INVALIDATE,
     RTM_RESOLVE,
 };
-use sysdefs::netinet_if_ether::{
+use sysdefs::net::socket::{AF_INET, AF_LINK, pseudo_AF_HDRCMPLT};
+use sysdefs::netinet::if_ether::{
     ETHER_ADDR_LEN, EtherArp, EtherHeader, RTF_PERMANENT_ARP, SIN_PROXY, SockaddrInarp,
     ether_is_broadcast, ether_is_multicast,
 };
-use sysdefs::netinet_in::{INADDR_ANY, InAddr, SockaddrIn};
-use sysdefs::socket::{AF_INET, AF_LINK, pseudo_AF_HDRCMPLT};
+use sysdefs::netinet::in_::{INADDR_ANY, InAddr, SockaddrIn};
 
 use crate::assert::kassert;
 use crate::base::log::{LOG_DEBUG, LOG_ERR, LOG_INFO, LOG_WARNING};
@@ -1092,7 +1092,7 @@ pub fn in_arpinput(ifp: &'static Ifnet, m: MbufBox, net: &NetHeld<'_>) {
 
 /// The bytes of a 16-byte socket address image (`sockaddr_in`, `sockaddr_inarp`), for the
 /// route lookups.
-fn sa16<T: sysdefs::pod::AbiPod>(sa: &T) -> [u8; 16] {
+fn sa16<T: sysdefs::base::pod::AbiPod>(sa: &T) -> [u8; 16] {
     let mut b = [0u8; 16];
     let _ = pod::put(&mut b, 0, sa);
     b
@@ -1524,11 +1524,11 @@ mod tests {
     use std::sync::MutexGuard;
     use std::vec::Vec;
 
-    use sysdefs::net_if::{
+    use sysdefs::net::if_::{
         IFF_BROADCAST, IFF_MULTICAST, IFF_RUNNING, IFF_SIMPLEX, IFF_UP, IFNAMSIZ, IFXF_MPSAFE,
     };
-    use sysdefs::net_route::{RTAX_DST, RTAX_GATEWAY, RTF_HOST, RTF_UP, RTP_STATIC};
-    use sysdefs::sockio::SIOCAIFADDR;
+    use sysdefs::net::route::{RTAX_DST, RTAX_GATEWAY, RTF_HOST, RTF_UP, RTP_STATIC};
+    use sysdefs::net::sockio::SIOCAIFADDR;
 
     use super::*;
     use crate::fs::testfs::TestGlue;

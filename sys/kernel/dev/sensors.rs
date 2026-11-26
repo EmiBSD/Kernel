@@ -164,8 +164,8 @@ use hal::sync::once::OnceStatic;
 use hal::sync::rwlock::Rwlocked;
 use hal::sync::sleep::{INFSLP, cold, sleep_finish, sleep_setup, wakeup};
 use hal::user::bytes_of;
-use sysdefs::errno::Errno;
-pub use sysdefs::sensors::*;
+use sysdefs::base::errno::Errno;
+pub use sysdefs::dev::sensors::*;
 
 use crate::assert::kpanic;
 use crate::base::prf::unported;
@@ -745,7 +745,7 @@ fn sysctl_sensors(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
                 let w = SENSORS_LOCK.lock();
                 let ksd = sensordev_get(&w, dev)?;
                 let mut xname = [0u8; 16];
-                libkern::strlcpy(&mut xname, &ksd.xname.get());
+                libkern::string::strlcpy::strlcpy(&mut xname, &ksd.xname.get());
                 Sensordev {
                     num: ksd.num.get(),
                     xname,
@@ -769,7 +769,7 @@ fn sysctl_sensors(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
                 let tv = ks.tv.get();
                 Sensor {
                     desc: ks.desc.get(),
-                    tv: sysdefs::net_if::IfTimeval {
+                    tv: sysdefs::net::if_::IfTimeval {
                         tv_sec: tv.tv_sec,
                         tv_usec: tv.tv_usec,
                     },

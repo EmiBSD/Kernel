@@ -258,9 +258,9 @@ use crate::vm::pmap::{
     BootstrapParams, KernelMapper, PG_PMAP_MOD, PG_PMAP_REF, PMAP_CANFAIL, PMAP_WIRED, PageMd,
     PhysPages, Pmap, PmapBackend, PmapRef, PmapStatistics, VmProt,
 };
-use sysdefs::errno::Errno;
-use sysdefs::mman::{PROT_EXEC, PROT_NONE, PROT_READ, PROT_WRITE};
-use sysdefs::types::{Paddr, Vaddr, Vsize};
+use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Paddr, Vaddr, Vsize};
+use sysdefs::vm::mman::{PROT_EXEC, PROT_NONE, PROT_READ, PROT_WRITE};
 
 /// `PMAP_REMOVE_ALL`: `pmap_do_remove` removes every mapping.
 const PMAP_REMOVE_ALL: i32 = 0;

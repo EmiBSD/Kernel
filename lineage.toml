@@ -86,7 +86,7 @@ notes = "M2: db_stack_trace_print from a given frame (db_stack_dump); M4: the tr
 rust = "sys/arch/amd64/amd64/disksubr.rs"
 lz = ["sys/arch/amd64/amd64/disksubr.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/sysdefs/disklabel.rs"]
+adapted_by = ["sys/lib/sysdefs/dev/disklabel.rs"]
 
 [[module]]
 rust = "sys/arch/amd64/amd64/efifb.rs"
@@ -2771,7 +2771,7 @@ native = ["Sha384Ctx::finalize", "Sha512Core::digest"]
 kind = "split"
 
 [[module]]
-rust = "sys/lib/libkern/siphash.rs"
+rust = "sys/lib/libkern/hash/siphash.rs"
 lz = ["sys/crypto/siphash.rs"]
 status = "redesigned"
 
@@ -2872,7 +2872,7 @@ rust = "sys/kernel/crypto/xform_ipcomp.rs"
 crate = "kernel"
 lz = ["sys/crypto/xform_ipcomp.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libz/zlib.rs", "sys/lib/libz/inflate.rs", "sys/lib/libz/deflate.rs"]
+adapted_by = ["sys/lib/libz/base/zlib.rs", "sys/lib/libz/inflate/inflate.rs", "sys/lib/libz/deflate/deflate.rs"]
 
 [[module]]
 rust = "sys/ddb/db_command.rs"
@@ -3250,7 +3250,8 @@ status = "inherited"
 [[module]]
 rust = "sys/dev/ic/ac97.rs"
 lz = ["sys/dev/ic/ac97.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/lib/libkern/string/strlcpy.rs"]
 
 [[module]]
 rust = "sys/dev/ic/ahci.rs"
@@ -3901,12 +3902,14 @@ status = "inherited"
 [[module]]
 rust = "sys/dev/pci/azalia.rs"
 lz = ["sys/dev/pci/azalia.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/lib/libkern/string/strlcpy.rs"]
 
 [[module]]
 rust = "sys/dev/pci/azalia_codec.rs"
 lz = ["sys/dev/pci/azalia_codec.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/lib/libkern/string/strlcpy.rs"]
 
 [[module]]
 rust = "sys/dev/pci/cy82c693.rs"
@@ -3930,7 +3933,8 @@ notes = "M16a: struct cy82c693_handle (Cy82c693Handle, Copy); the prototypes are
 [[module]]
 rust = "sys/dev/pci/eap.rs"
 lz = ["sys/dev/pci/eap.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/lib/libkern/string/strlcpy.rs"]
 notes = "M16d: the whole file (NMIDI > 0): eap_match (eap_devices[]), eap_attach (ES1370: AK4531 reset and mixer defaults through its set_port; ES1371/ES1373/CT5880: SRC programmed for 48 kHz, ac97(4) host), eap_resume/eap_activate, the AK4531 and ES1371 codec access with their timeouts, eap_intr (ADC, DAC2, UART), DMA list (eap_malloc adds M_ZERO to its node), set_params (ULINEAR returns EINVAL at once: the C's case falls through to default), trigger/halt, the ES1370 mixer (set_port, get_port, query_devinfo) and the ES1371 ones through the codec, the MIDI UART (open, close, output, getinfo); sc_prun/sc_rrun checked under the diagnostic feature; eap* at pci?, audio* at eap? and midi* at eap? in amd64's ioconf (amd64 GENERIC only); host tests (mixer bits, devinfo, blocksize, midi info); smoke-eap: ES1370 plays the tone"
 
 [[module]]
@@ -3942,7 +3946,8 @@ notes = "M16d: every define, typed by use (register offsets usize, 32-bit regist
 [[module]]
 rust = "sys/dev/pci/ehci_pci.rs"
 lz = ["sys/dev/pci/ehci_pci.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/lib/libkern/string/strlcpy.rs"]
 
 [[module]]
 rust = "sys/dev/pci/gcu_reg.rs"
@@ -4040,7 +4045,8 @@ status = "inherited"
 [[module]]
 rust = "sys/dev/pci/ohci_pci.rs"
 lz = ["sys/dev/pci/ohci_pci.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/lib/libkern/string/strlcpy.rs"]
 
 [[module]]
 rust = "sys/dev/pci/pci.rs"
@@ -4262,7 +4268,8 @@ status = "inherited"
 [[module]]
 rust = "sys/dev/pci/uhci_pci.rs"
 lz = ["sys/dev/pci/uhci_pci.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/lib/libkern/string/strlcpy.rs"]
 
 [[module]]
 rust = "sys/dev/pci/vga_pci.rs"
@@ -4295,7 +4302,8 @@ notes = "M16a: vmwpvs(4), whole file, amd64 GENERIC only; QEMU's pvscsi has no V
 [[module]]
 rust = "sys/dev/pci/xhci_pci.rs"
 lz = ["sys/dev/pci/xhci_pci.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/lib/libkern/string/strlcpy.rs"]
 license = "NetBSD Foundation BSD-2 notice"
 
 [[module]]
@@ -4644,7 +4652,8 @@ status = "inherited"
 [[module]]
 rust = "sys/dev/usb/uaudio.rs"
 lz = ["sys/dev/usb/uaudio.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/lib/libkern/string/strlcpy.rs"]
 
 [[module]]
 rust = "sys/dev/usb/ucom.rs"
@@ -4774,7 +4783,8 @@ license = "NetBSD Foundation BSD-2 notice"
 [[module]]
 rust = "sys/dev/usb/usb_subr.rs"
 lz = ["sys/dev/usb/usb_subr.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/lib/libkern/string/strlcpy.rs"]
 license = "NetBSD Foundation BSD-2 notice"
 
 [[module]]
@@ -5569,7 +5579,7 @@ kind = "moved"
 rust = "sys/kern/kern_sysctl.rs"
 lz = ["sys/kern/kern_sysctl.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/file/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc/mod.rs", "sys/kern/proc_glue.rs", "sys/kernel/proc/cred.rs", "sys/kernel/proc/resource.rs", "sys/kernel/file/mod.rs", "sys/kernel/file/descrip.rs", "sys/kernel/file/event.rs", "sys/kernel/sig/mod.rs", "sys/kernel/base/log.rs", "sys/kernel/tty/mod.rs", "sys/kernel/base/sysctl.rs", "sys/kernel/time/clockintr.rs", "sys/kernel/time/tc.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/unix.rs", "sys/kernel/net/syscalls.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/tcp_var.rs", "sys/kernel/netinet/tcp_usrreq.rs", "sys/kernel/netinet/udp_usrreq.rs", "sys/kernel/netinet/raw_ip.rs", "sys/kernel/netinet6/raw_ip6.rs", "sys/kernel/netinet/ip_divert.rs", "sys/kernel/netinet6/ip6_divert.rs", "sys/kernel/dev/evcount.rs", "sys/kernel/dev/watchdog.rs", "sys/kernel/dev/sensors.rs", "sys/lib/sysdefs/disk.rs", "sys/kernel/dev/disk.rs"]
+adapted_by = ["sys/kernel/file/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc/mod.rs", "sys/kern/proc_glue.rs", "sys/kernel/proc/cred.rs", "sys/kernel/proc/resource.rs", "sys/kernel/file/mod.rs", "sys/kernel/file/descrip.rs", "sys/kernel/file/event.rs", "sys/kernel/sig/mod.rs", "sys/kernel/base/log.rs", "sys/kernel/tty/mod.rs", "sys/kernel/base/sysctl.rs", "sys/kernel/time/clockintr.rs", "sys/kernel/time/tc.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/unix.rs", "sys/kernel/net/syscalls.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/tcp_var.rs", "sys/kernel/netinet/tcp_usrreq.rs", "sys/kernel/netinet/udp_usrreq.rs", "sys/kernel/netinet/raw_ip.rs", "sys/kernel/netinet6/raw_ip6.rs", "sys/kernel/netinet/ip_divert.rs", "sys/kernel/netinet6/ip6_divert.rs", "sys/kernel/dev/evcount.rs", "sys/kernel/dev/watchdog.rs", "sys/kernel/dev/sensors.rs", "sys/lib/sysdefs/dev/disk.rs", "sys/kernel/dev/disk.rs"]
 notes = "N4.6b: the bsd half of sysctl(2): kern.file, the helpers over bsd copyin/copyout for the nodes still in bsd, and sysctl_register_legacy (Node/ProcNode adapters, the CTL_* trees, the kern/hw leaves, directories and kern_vars/hw_vars entries whose state is bsd's, hw.machine, physmem), BsdDiskExport (the DiskExport bridge), native_sysctl (the KernelApi entry); the dispatcher, the vslock and kern.proc moved into sys/kernel/base/sysctl.rs; adapted, not redesigned, until kern.file moves (N5/N6): its unsafe blocks (three at N4.6b: the bound address mbuf viewed as a slice, in_pcb_iterator and its abort; two since N6.4c1, DISKLIST's insert and remove, the pcb's gone with the kernel's pcb) keep the file from the forbid a redesigned bsd module needs (lz check, ZERO_UNSAFE section 5); N4.8a: kern.clockintr and kern.timecounter are the kernel's ClockintrNode and TcNode in KERN_NODES (LZ's kern.clockintr unported! closed)"
 
 [[module]]
@@ -5851,7 +5861,7 @@ adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/init.rs", "sys/kernel/fs/
 rust = "sys/kern/vfs_subr.rs"
 lz = ["sys/kern/vfs_subr.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc/mod.rs", "sys/kern/proc_glue.rs", "sys/kernel/proc/cred.rs", "sys/kernel/file/mod.rs", "sys/kernel/file/descrip.rs", "sys/kernel/file/event.rs", "sys/sys/sysctl.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs", "sys/lib/sysdefs/mount.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/fs/ufs/ufs/ufs_vfsops.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/export.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc/mod.rs", "sys/kern/proc_glue.rs", "sys/kernel/proc/cred.rs", "sys/kernel/file/mod.rs", "sys/kernel/file/descrip.rs", "sys/kernel/file/event.rs", "sys/sys/sysctl.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs", "sys/lib/sysdefs/fs/mount.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/fs/ufs/ufs/ufs_vfsops.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/export.rs"]
 notes = "N5.2: what stays bsd's of vfs_subr.c: the NFS server's export lists (vfs_hang_addrlist, vfs_free_netcred, vfs_free_addrlist, vfs_export, vfs_export_lookup, export_lookup: 12 unsafe, N6) and the shutdown trio (vfs_unmountall, vfs_shutdown, vfs_syncwait: sys_sync, dounmount and sr_quiesce are bsd's until N5.4/N7); its tests: setup, testfs, the vnode table's tests over the kernel with bsd's glue, the export list's; N6.7b0: the export lists are kernel::fs::export's (the 12 unsafe gone), the tests keep exports' helpers (sin, args over the user memory double, check_export over the table's checkexp) for the ffs, msdosfs, cd9660, udf and nfs tests"
 
 [[module]]
@@ -5869,7 +5879,7 @@ adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vno
 notes = "N5.2: the VOP_* names as thin adapters over kernel::fs::vops's vop_* (the C pointer as Cred, a lent buffer as IoBuf::Lent), impl Vnops for Vops and impl Vfs for Vfsops (the bridges Vnops and Vfs), the vop_generic_* operations of vfs_default.c the file systems' tables hold over kernel::fs::default, abortop_putname (the FileGlue abortop leg)"
 
 [[module]]
-rust = "sys/lib/libkern/crc32c.rs"
+rust = "sys/lib/libkern/hash/crc32c.rs"
 lz = ["sys/lib/libkern/crc32c.rs"]
 status = "redesigned"
 
@@ -5880,7 +5890,7 @@ lz =["sys/lib/libkern/explicit_bzero.rs"]
 status = "redesigned"
 
 [[module]]
-rust = "sys/lib/libkern/getsn.rs"
+rust = "sys/lib/libkern/string/getsn.rs"
 lz = ["sys/lib/libkern/getsn.rs"]
 status = "inherited"
 
@@ -5888,45 +5898,45 @@ status = "inherited"
 rust = "sys/lib/libkern/lib.rs"
 lz = ["sys/lib/libkern/lib.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs"]
+adapted_by = ["sys/lib/libkern/hash/siphash.rs"]
 
 [[module]]
-rust = "sys/lib/libkern/random.rs"
+rust = "sys/lib/libkern/rand/random.rs"
 lz = ["sys/lib/libkern/random.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libkern/scanc.rs"
+rust = "sys/lib/libkern/mem/scanc.rs"
 lz = ["sys/lib/libkern/scanc.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libkern/skpc.rs"
+rust = "sys/lib/libkern/mem/skpc.rs"
 lz = ["sys/lib/libkern/skpc.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libkern/strlcat.rs"
+rust = "sys/lib/libkern/string/strlcat.rs"
 lz = ["sys/lib/libkern/strlcat.rs"]
 status = "redesigned"
 
 [[module]]
-rust = "sys/lib/libkern/strlcpy.rs"
+rust = "sys/lib/libkern/string/strlcpy.rs"
 lz = ["sys/lib/libkern/strlcpy.rs"]
 status = "redesigned"
 
 [[module]]
-rust = "sys/lib/libkern/strncasecmp.rs"
+rust = "sys/lib/libkern/string/strncasecmp.rs"
 lz = ["sys/lib/libkern/strncasecmp.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libkern/strnlen.rs"
+rust = "sys/lib/libkern/string/strnlen.rs"
 lz = ["sys/lib/libkern/strnlen.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libkern/timingsafe_bcmp.rs"
+rust = "sys/lib/libkern/mem/timingsafe_bcmp.rs"
 lz = ["sys/lib/libkern/timingsafe_bcmp.rs"]
 status = "redesigned"
 
@@ -5972,7 +5982,7 @@ status = "inherited"
 rust = "sys/lib/libsa/cread.rs"
 lz = ["sys/lib/libsa/cread.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libz/zlib.rs", "sys/lib/libz/inflate.rs"]
+adapted_by = ["sys/lib/libz/base/zlib.rs", "sys/lib/libz/inflate/inflate.rs"]
 
 [[module]]
 rust = "sys/lib/libsa/ctime.rs"
@@ -6148,25 +6158,25 @@ lz = ["sys/lib/libsa/ufs2.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/libz/adler32.rs"
+rust = "sys/lib/libz/check/adler32.rs"
 lz = ["sys/lib/libz/adler32.rs"]
 status = "redesigned"
 license = "zlib"
 
 [[module]]
-rust = "sys/lib/libz/compress.rs"
+rust = "sys/lib/libz/deflate/compress.rs"
 lz = ["sys/lib/libz/compress.rs"]
 status = "redesigned"
 license = "zlib"
 
 [[module]]
-rust = "sys/lib/libz/crc32.rs"
+rust = "sys/lib/libz/check/crc32.rs"
 lz = ["sys/lib/libz/crc32.rs"]
 status = "redesigned"
 license = "zlib"
 
 [[module]]
-rust = "sys/lib/libz/deflate.rs"
+rust = "sys/lib/libz/deflate/deflate.rs"
 lz = ["sys/lib/libz/deflate.rs"]
 status = "redesigned"
 license = "zlib"
@@ -6216,62 +6226,62 @@ native = ["with_state", "state_ref", "state_mut"]
 kind = "merged"
 
 [[module]]
-rust = "sys/lib/libz/infback.rs"
+rust = "sys/lib/libz/inflate/infback.rs"
 lz = ["sys/lib/libz/infback.rs"]
 status = "redesigned"
 license = "zlib"
 
 [[module]]
-rust = "sys/lib/libz/inffast.rs"
+rust = "sys/lib/libz/inflate/inffast.rs"
 lz = ["sys/lib/libz/inffast.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libz/inflate.rs"]
+adapted_by = ["sys/lib/libz/inflate/inflate.rs"]
 license = "zlib"
 
 [[module]]
-rust = "sys/lib/libz/inffixed.rs"
+rust = "sys/lib/libz/inflate/inffixed.rs"
 lz = ["sys/lib/libz/inffixed.rs"]
 status = "inherited"
 license = "zlib"
 
 [[module]]
-rust = "sys/lib/libz/inflate.rs"
+rust = "sys/lib/libz/inflate/inflate.rs"
 lz = ["sys/lib/libz/inflate.rs"]
 status = "redesigned"
 license = "zlib"
 
 [[module]]
-rust = "sys/lib/libz/inftrees.rs"
+rust = "sys/lib/libz/inflate/inftrees.rs"
 lz = ["sys/lib/libz/inftrees.rs"]
 status = "redesigned"
 license = "zlib"
 
 [[module]]
-rust = "sys/lib/libz/trees.rs"
+rust = "sys/lib/libz/deflate/trees.rs"
 lz = ["sys/lib/libz/trees.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libz/deflate.rs"]
+adapted_by = ["sys/lib/libz/deflate/deflate.rs"]
 license = "zlib"
 
 [[module]]
-rust = "sys/lib/libz/zconf.rs"
+rust = "sys/lib/libz/base/zconf.rs"
 lz = ["sys/lib/libz/zconf.rs"]
 status = "inherited"
 license = "zlib"
 
 [[module]]
-rust = "sys/lib/libz/zlib.rs"
+rust = "sys/lib/libz/base/zlib.rs"
 lz = ["sys/lib/libz/zlib.rs"]
 status = "redesigned"
 license = "zlib"
 
 [[module]]
-rust = "sys/lib/libz/zopenbsd.rs"
+rust = "sys/lib/libz/base/zopenbsd.rs"
 lz = ["sys/lib/libz/zopenbsd.rs"]
 status = "redesigned"
 
 [[module]]
-rust = "sys/lib/libz/zutil.rs"
+rust = "sys/lib/libz/base/zutil.rs"
 lz = ["sys/lib/libz/zutil.rs"]
 status = "redesigned"
 license = "zlib"
@@ -6285,14 +6295,14 @@ status = "inherited"
 rust = "sys/net/bpf.rs"
 lz = ["sys/net/bpf.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/file/event.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/bpf.rs", "sys/lib/sysdefs/net_bpf.rs"]
+adapted_by = ["sys/kernel/file/event.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/bpf.rs", "sys/lib/sysdefs/net/bpf.rs"]
 notes = "N6.3c1: the adapter, of no logic, of bsd's callers over kernel::net::bpf and hal::sys::net_bpf: the ABI and the taps re-exported under LZ's names, the six cdev entry points as plain functions of bsd's glue (cdevsw 23 and pledge(2) compare d_open with bpfopen by address), bpfilterattach's scan of cdevsw for the major, bpf_sysctl over the kernel's SysctlReq"
 
 [[module]]
 rust = "sys/net/ethertypes.rs"
 lz = ["sys/net/ethertypes.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/sysdefs/net_ethertypes.rs"]
+adapted_by = ["sys/lib/sysdefs/net/ethertypes.rs"]
 notes = "N6.3c1: a re-export of hal::sys::net_ethertypes, where LZ's constants moved whole, for bsd's nine importers"
 
 [[module]]
@@ -6318,14 +6328,14 @@ notes = "M7b: module if_ (if is a Rust keyword); every constant, if_nameindex, i
 rust = "sys/net/if_arp.rs"
 lz = ["sys/net/if_arp.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/sysdefs/net_if_arp.rs"]
+adapted_by = ["sys/lib/sysdefs/net/if_arp.rs"]
 notes = "N6.4b: a re-export of hal::sys::net_if_arp, where LZ's net/if_arp.h constants and struct arphdr moved whole, for bsd's importers"
 
 [[module]]
 rust = "sys/net/if_dl.rs"
 lz = ["sys/net/if_dl.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/sysdefs/net_if.rs"]
+adapted_by = ["sys/lib/sysdefs/net/if_.rs"]
 
 [[module]]
 rust = "sys/net/if_enc.rs"
@@ -6376,7 +6386,7 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/n
 rust = "sys/net/if_types.rs"
 lz = ["sys/net/if_types.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/sysdefs/net_if.rs"]
+adapted_by = ["sys/lib/sysdefs/net/if_.rs"]
 
 [[module]]
 rust = "sys/net/if_var.rs"
@@ -6388,7 +6398,7 @@ adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/
 rust = "sys/net/if_wg.rs"
 lz = ["sys/net/if_wg.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/base/task.rs", "sys/kernel/proc/mod.rs", "sys/kern/proc_glue.rs", "sys/kernel/proc/cred.rs", "sys/hal/cpu/thread.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/bpf.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/udp_usrreq.rs"]
+adapted_by = ["sys/lib/libkern/hash/siphash.rs", "sys/kernel/base/task.rs", "sys/kernel/proc/mod.rs", "sys/kern/proc_glue.rs", "sys/kernel/proc/cred.rs", "sys/hal/cpu/thread.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/bpf.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/udp_usrreq.rs"]
 notes = "one change of its own besides the call sites: wg_tag's t_done is an AtomicBool stored Release after t_mbuf and loaded Acquire by wg_queue_dequeue, the C's unordered plain int closed on the user's decision of 2026-11-08 ahead of N8's redesign"
 
 [[module]]
@@ -6419,7 +6429,7 @@ adapted_by = ["sys/kernel/crypto/md5.rs", "sys/hal/vm/param.rs", "sys/kernel/pro
 rust = "sys/net/pf_lb.rs"
 lz = ["sys/net/pf_lb.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs"]
+adapted_by = ["sys/lib/libkern/hash/siphash.rs"]
 
 [[module]]
 rust = "sys/net/pf_norm.rs"
@@ -6435,7 +6445,8 @@ status = "inherited"
 [[module]]
 rust = "sys/net/pf_ruleset.rs"
 lz = ["sys/net/pf_ruleset.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/lib/libkern/string/strlcpy.rs", "sys/lib/libkern/string/strlcat.rs"]
 
 [[module]]
 rust = "sys/net/pf_syncookies.rs"
@@ -6502,7 +6513,7 @@ adapted_by = ["sys/kernel/proc/mod.rs", "sys/kern/proc_glue.rs", "sys/kernel/pro
 rust = "sys/net/wg_cookie.rs"
 lz = ["sys/net/wg_cookie.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/blake2s.rs", "sys/lib/libkern/siphash.rs"]
+adapted_by = ["sys/crypto/blake2s.rs", "sys/lib/libkern/hash/siphash.rs"]
 
 [[module]]
 rust = "sys/net/wg_noise.rs"
@@ -6514,19 +6525,19 @@ adapted_by = ["sys/crypto/blake2s.rs"]
 rust = "sys/netinet/icmp6.rs"
 lz = ["sys/netinet/icmp6.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/sysdefs/netinet_icmp6.rs", "sys/kernel/netinet6/ip6_var.rs"]
+adapted_by = ["sys/lib/sysdefs/netinet/icmp6.rs", "sys/kernel/netinet6/ip6_var.rs"]
 
 [[module]]
 rust = "sys/netinet/icmp_var.rs"
 lz = ["sys/netinet/icmp_var.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/sysdefs/netinet_icmp_var.rs", "sys/kernel/netinet/icmp_var.rs"]
+adapted_by = ["sys/lib/sysdefs/netinet/icmp_var.rs", "sys/kernel/netinet/icmp_var.rs"]
 
 [[module]]
 rust = "sys/netinet/if_ether.rs"
 lz = ["sys/netinet/if_ether.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/net/if_ethersubr.rs", "sys/lib/sysdefs/netinet_if_ether.rs", "sys/kernel/netinet/if_ether.rs", "sys/hal/sync/netlock.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/net/if_ethersubr.rs", "sys/lib/sysdefs/netinet/if_ether.rs", "sys/kernel/netinet/if_ether.rs", "sys/hal/sync/netlock.rs"]
 
 [[module]]
 rust = "sys/netinet/igmp.rs"
@@ -6544,14 +6555,14 @@ adapted_by = ["sys/kernel/netinet/igmp_var.rs"]
 rust = "sys/netinet/in_.rs"
 lz = ["sys/netinet/in_.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/lib/sysdefs/netinet_in.rs", "sys/kernel/netinet/in_.rs", "sys/kernel/netinet/in_var.rs", "sys/hal/sync/netlock.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/lib/sysdefs/netinet/in_.rs", "sys/kernel/netinet/in_.rs", "sys/kernel/netinet/in_var.rs", "sys/hal/sync/netlock.rs"]
 notes = "M7b: module in_ (in is a Rust keyword), with in.c; every constant, the kernel's __IPADDR as htonl so INADDR_*/IN_CLASS*_NET/HOST are network order; in_addr (s_addr u32), sockaddr_in, ip_opts, ip_mreq, ip_mreqn; IN_CLASSA..D, IN_MULTICAST, IN_RFC3021_SUBNET, IN_EXPERIMENTAL, IN_BADCLASS, IN_LOCAL_GROUP, IN_CLASSFULBROADCAST, in_hosteq, in_nullhost as const fns; satosin/satosin_const/sintosa pointer casts; inetctlerrmap and the ip_* globals are netinet/ip_input.rs; CTL_IPPROTO_NAMES/IPCTL_NAMES wait for sys/sysctl.h (so wip); INADDR_NONE and bindresvport are userland"
 
 [[module]]
 rust = "sys/netinet/in_pcb.rs"
 lz = ["sys/netinet/in_pcb.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/proc/mod.rs", "sys/kern/proc_glue.rs", "sys/kernel/proc/cred.rs", "sys/hal/cpu/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_proto.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/in6_pcb.rs", "sys/hal/sync/netlock.rs", "sys/kernel/netinet/tcp_var.rs", "sys/kernel/netinet/udp_usrreq.rs", "sys/kernel/netinet/raw_ip.rs", "sys/kernel/netinet/ip_divert.rs"]
+adapted_by = ["sys/lib/libkern/hash/siphash.rs", "sys/kernel/proc/mod.rs", "sys/kern/proc_glue.rs", "sys/kernel/proc/cred.rs", "sys/hal/cpu/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_proto.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/in6_pcb.rs", "sys/hal/sync/netlock.rs", "sys/kernel/netinet/tcp_var.rs", "sys/kernel/netinet/udp_usrreq.rs", "sys/kernel/netinet/raw_ip.rs", "sys/kernel/netinet/ip_divert.rs"]
 
 [[module]]
 rust = "sys/netinet/in_proto.rs"
@@ -6586,7 +6597,7 @@ adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/
 rust = "sys/netinet/ip_icmp.rs"
 lz = ["sys/netinet/ip_icmp.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/sysdefs/netinet_ip_icmp.rs", "sys/kernel/base/sysctl.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/netinet/ip_icmp.rs", "sys/kernel/netinet/in_proto.rs", "sys/hal/sync/netlock.rs"]
+adapted_by = ["sys/lib/sysdefs/netinet/ip_icmp.rs", "sys/kernel/base/sysctl.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/netinet/ip_icmp.rs", "sys/kernel/netinet/in_proto.rs", "sys/hal/sync/netlock.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_input.rs"
@@ -6610,7 +6621,7 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/n
 rust = "sys/netinet/ip_ipsp.rs"
 lz = ["sys/netinet/ip_ipsp.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet6/ip6_output.rs", "sys/kernel/net/radix.rs"]
+adapted_by = ["sys/lib/libkern/hash/siphash.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet6/ip6_output.rs", "sys/kernel/net/radix.rs"]
 notes = "N6.7b1: ipo_nodes went with the SPD's move onto the kernel's radix tree; ipo_addr_key and ipo_mask_key give the key's and the mask's bytes (copied into the tree) instead of pointers the tree kept"
 
 [[module]]
@@ -6630,7 +6641,7 @@ notes = "N6.7b1: the SPD on the kernel's radix tree (SpdTree, kernel::net::radix
 rust = "sys/netinet/ip_var.rs"
 lz = ["sys/netinet/ip_var.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/netinet/ip_var.rs", "sys/lib/sysdefs/netinet_ip_var.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet/raw_ip.rs"]
+adapted_by = ["sys/kernel/netinet/ip_var.rs", "sys/lib/sysdefs/netinet/ip_var.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet/raw_ip.rs"]
 notes = "N6.4a: the userland half re-exported from hal::sys::netinet_ip_var, the counters and ip_output flags from kernel::netinet::ip_var; ipqent, ipq, ipoffnxt and LZ's mtod_ip (safe now, over hal::mem::pod::at) and mtod_ip_store stay until their slices; N6.4c1: ip_moptions the kernel's, re-exported; N6.4c2: ipqent, ipq and ipoffnxt the kernel's (re-exported), mtod_ip and mtod_ip_store stay for bsd's own readers (pf, the transports)"
 
 [[module]]
@@ -6662,13 +6673,13 @@ adapted_by = ["sys/kernel/base/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel
 rust = "sys/netinet6/in6.rs"
 lz = ["sys/netinet6/in6.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/lib/sysdefs/netinet6_in6.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/in6.rs", "sys/kernel/netinet6/nd6.rs", "sys/kernel/netinet6/ip6_output.rs", "sys/hal/sync/netlock.rs", "sys/kernel/netinet6/in6_var.rs", "sys/kernel/netinet6/raw_ip6.rs", "sys/kernel/netinet6/ip6_divert.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/lib/sysdefs/netinet6/in6.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/in6.rs", "sys/kernel/netinet6/nd6.rs", "sys/kernel/netinet6/ip6_output.rs", "sys/hal/sync/netlock.rs", "sys/kernel/netinet6/in6_var.rs", "sys/kernel/netinet6/raw_ip6.rs", "sys/kernel/netinet6/ip6_divert.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6_pcb.rs"
 lz = ["sys/netinet6/in6_pcb.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet6/in6_pcb.rs", "sys/lib/sysdefs/netinet6_in6.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/icmp6.rs", "sys/kernel/netinet6/in6_proto.rs", "sys/hal/sync/netlock.rs", "sys/kernel/net/if_var.rs", "sys/kernel/netinet/udp_usrreq.rs", "sys/kernel/netinet6/raw_ip6.rs", "sys/kernel/netinet6/ip6_divert.rs"]
+adapted_by = ["sys/lib/libkern/hash/siphash.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet6/in6_pcb.rs", "sys/lib/sysdefs/netinet6/in6.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/icmp6.rs", "sys/kernel/netinet6/in6_proto.rs", "sys/hal/sync/netlock.rs", "sys/kernel/net/if_var.rs", "sys/kernel/netinet/udp_usrreq.rs", "sys/kernel/netinet6/raw_ip6.rs", "sys/kernel/netinet6/ip6_divert.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6_proto.rs"
@@ -6720,13 +6731,13 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/n
 notes = "N6.5b: a shim: hal::sys::netinet6_nd6 and kernel::netinet6::nd6 re-exported whole for bsd's importers; the neighbor fixtures bsd's IPv6 tests share (nd6_setup, fake_neighbor, the capture output) and the header check stay here; ND's tests are the kernel's"
 
 [[module]]
-rust = "sys/lib/sysdefs/nfs_nfs.rs"
+rust = "sys/lib/sysdefs/fs/nfs/nfs.rs"
 lz = ["sys/nfs/nfs.rs"]
 status = "redesigned"
 notes = "N6.7a0 (D-10): nfs.h's userland part: the tunables, the nfssvc(2) flags, the vfs.nfs ids and FS_NFS_NAMES, struct nfsstats as a plain abi_pod! image (78 u64, 624 bytes; LZ's atomics-as-words cast, two unsafe, gone: the counters are the kernel's NfsCounters); bsd's nfs.rs re-exports them. N6.7b2 (D-8): struct nfsd_args and struct nfsd_srvargs, nfssvc(2)'s arguments, as abi_pod! images (24 and 144 bytes, the LP64 holes named; LZ's hand-written unsafe AbiPod impl of NfsdArgs gone)"
 
 [[module]]
-rust = "sys/lib/sysdefs/nfs_nfsproto.rs"
+rust = "sys/lib/sysdefs/fs/nfs/nfsproto.rs"
 lz = ["sys/nfs/nfsproto.rs"]
 status = "redesigned"
 notes = "N6.7a0 (D-10): nfsproto.h's constants and wire structures, LZ's eleven unsafe impl AbiPod as abi_pod!, Nfsfh's fhandle_t member through hal::user's pod_from_bytes/pod_to_bytes; the conversions are kernel::fs::nfs::nfsproto's; bsd's nfs::nfsproto is the kernel's module, which re-exports this one"
@@ -6742,7 +6753,7 @@ native = ["sys/hal/sysbytes.rs::Nfsfh::set_fh_generic"]
 kind = "moved"
 
 [[module]]
-rust = "sys/lib/sysdefs/nfs_rpcv2.rs"
+rust = "sys/lib/sysdefs/fs/nfs/rpcv2.rs"
 lz = ["sys/nfs/rpcv2.rs"]
 status = "redesigned"
 notes = "N6.7a0 (D-10): rpcv2.h's constants, unchanged; bsd's nfs::rpcv2 re-exports this module"
@@ -7857,7 +7868,7 @@ status = "inherited"
 rust = "sys/ntfs/ntfs_ihash.rs"
 lz = ["sys/ntfs/ntfs_ihash.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs"]
+adapted_by = ["sys/lib/libkern/hash/siphash.rs"]
 
 [[module]]
 rust = "sys/ntfs/ntfs_inode.rs"
@@ -7901,7 +7912,8 @@ status = "inherited"
 [[module]]
 rust = "sys/scsi/scsi_base.rs"
 lz = ["sys/scsi/scsi_base.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/lib/libkern/string/strlcpy.rs"]
 
 [[module]]
 rust = "sys/scsi/scsi_debug.rs"
@@ -8111,7 +8123,7 @@ adapted_by = ["sys/kernel/dev/device.rs", "sys/kernel/dev/autoconf.rs", "sys/ker
 notes = "N7.1a: the legacy driver interface over kernel::dev::device: the constants and Devclass re-exported from the kernel, the legacy header written once from its node (dv_list and the alldevs types gone), Cfdriver::cd_units the kernel's unit table with cd_devs/cd_ndevs its mirror"
 
 [[module]]
-rust = "sys/lib/sysdefs/dirent.rs"
+rust = "sys/lib/sysdefs/file/dirent.rs"
 lz = ["sys/sys/dirent.rs"]
 status = "inherited"
 
@@ -8119,21 +8131,21 @@ status = "inherited"
 rust = "sys/sys/disk.rs"
 lz = ["sys/sys/disk.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/sysdefs/disk.rs", "sys/kernel/dev/disk.rs", "sys/kernel/dev/disksubr.rs"]
+adapted_by = ["sys/lib/sysdefs/dev/disk.rs", "sys/kernel/dev/disk.rs", "sys/kernel/dev/disksubr.rs"]
 notes = "N7.1d: the constants and struct diskstats are hal::sys::disk's, re-exported; N7.1d: the drivers' shim over the kernel's disk: DiskSlot (ReadMostly<Option<DiskRef>>, valid all zero) in the softcs, LZ's function names over the slot, readdisklabel/writedisklabel over a closure lending the token (label_io), disk_gone; 0 unsafe (LZ 7)"
 
 [[module]]
 rust = "sys/sys/disklabel.rs"
 lz = ["sys/sys/disklabel.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/sysdefs/disklabel.rs"]
+adapted_by = ["sys/lib/sysdefs/dev/disklabel.rs"]
 notes = "N7.1d: hal::sys::disklabel re-exported; keeps struct partinfo (DIOCGPART) and its 2 unsafe until N7.3c"
 
 [[module]]
 rust = "sys/sys/dkio.rs"
 lz = ["sys/sys/dkio.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/sysdefs/dkio.rs"]
+adapted_by = ["sys/lib/sysdefs/dev/dkio.rs"]
 notes = "N7.1d: hal::sys::dkio re-exported; keeps DIOCGPART (struct partinfo) until N7.3c"
 
 [[module]]
@@ -8142,12 +8154,12 @@ lz = ["sys/sys/domain.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/sysdefs/endian.rs"
+rust = "sys/lib/sysdefs/base/endian.rs"
 lz = ["sys/sys/endian.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/sysdefs/errno.rs"
+rust = "sys/lib/sysdefs/base/errno.rs"
 lz = ["sys/sys/errno.rs"]
 status = "inherited"
 
@@ -8177,7 +8189,7 @@ adapted_by = ["sys/kernel/vm/types.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs
 notes = "M8: ps_strings (to_bytes), exec_vmcmd (ev_proc an enum of the five vmcmds, ev_vp an ExecFile: a vnode or the boot module image), exec_vmcmd_set as a Vec (NEW_VMCMD2 = push with vref, kill_vmcmds = kill with vrele), exec_package with every member (ep_hdr an owned exec_maxhdrsz buffer, ep_interp a namei_pool NameiBuf, ep_pins, ep_execpath; ep_ndp is check_exec's argument, ep_image the module stand-in), execsw, exec_maxhdrsz as a const fn, EXEC_*, VMCMD_*, ELF_RANDOMIZE_LIMIT; the a.out struct exec and MID_* are not used; M14: exec_makecmds_fcn takes the nameidata (ep_ndp) as its third argument, exec_maxhdrsz is max(EXEC_SCRIPT_HDRSZ, sizeof(Elf_Ehdr)), ep_fa holds exec_script.c's fake args"
 
 [[module]]
-rust = "sys/lib/sysdefs/exec_elf.rs"
+rust = "sys/lib/sysdefs/proc/exec_elf.rs"
 lz = ["sys/sys/exec_elf.rs"]
 status = "inherited"
 notes = "M6-b: Elf64 Ehdr/Phdr/Note, EI_*, ELFMAG, ELFCLASS64/ELFDATA2LSB/EV_CURRENT/ELFOSABI_OPENBSD, ET_*, EM_AMD64/EM_AARCH64, PT_* (with the OpenBSD ones), PF_*, NT_OPENBSD_*, elfround, IS_ELF/ELF_TRUNC/ELF_ROUND, ELF_MAX_VALID_PHDR; sections, symbols, relocations, dynamic entries, AuxInfo and the 32-bit types are M7; M8: Elf64_Dyn, DT_NULL/DT_TEXTREL, Elf64_Shalf, Aux64Info (to_bytes; the hole after au_id is a named zero field), the AUX_* ids in aux_id, ELF_AUX_ENTRIES, ELF_AUX_WORDS"
@@ -8195,7 +8207,7 @@ license = "NetBSD Foundation BSD-2-clause notice"
 notes = "N4.1: the legacy extent(9) API over kernel::base::extent (sys/kernel/base/extent.rs), reached as crate::kern::subr_extent too: the types and constants re-exported, the C-named functions safe over the kernel's methods; extent_create leaks the kernel's MBox for the callers' &'static (extent_destroy frees the regions and unlinks, the block stays: a stated deviation, one arm64 destroy site, ppb_detach); a fixed extent's storage is an ExtentFixed<N> passed as a FixedRegions; a caller's descriptor is a Descr made in advance (extent_descr) and given to the extent"
 
 [[module]]
-rust = "sys/lib/sysdefs/fcntl.rs"
+rust = "sys/lib/sysdefs/file/fcntl.rs"
 lz = ["sys/sys/fcntl.rs"]
 status = "inherited"
 
@@ -8212,12 +8224,12 @@ status = "redesigned"
 notes = "N4.3: the adapter of kernel::file::descrip: Filedesc/FdRef/FdGuard over BsdFileGlue, the constants and the lock calls re-exported, OFILESIZE, the Send + Sync probe of the members"
 
 [[module]]
-rust = "sys/lib/sysdefs/filio.rs"
+rust = "sys/lib/sysdefs/file/filio.rs"
 lz = ["sys/sys/filio.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/sysdefs/futex.rs"
+rust = "sys/lib/sysdefs/proc/futex.rs"
 lz = ["sys/sys/futex.rs"]
 status = "inherited"
 
@@ -8227,12 +8239,12 @@ lz = ["sys/sys/gpio.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/sysdefs/intrmap.rs"
+rust = "sys/lib/sysdefs/dev/intrmap.rs"
 lz = ["sys/sys/intrmap.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/sysdefs/ioccom.rs"
+rust = "sys/lib/sysdefs/base/ioccom.rs"
 lz = ["sys/sys/ioccom.rs"]
 status = "inherited"
 
@@ -8243,13 +8255,13 @@ status = "adapted"
 adapted_by = ["sys/kernel/tty/termios.rs"]
 
 [[module]]
-rust = "sys/lib/sysdefs/kernel.rs"
+rust = "sys/lib/sysdefs/base/kernel.rs"
 lz = ["sys/sys/kernel.rs"]
 status = "inherited"
 notes = "M2: HZ only; hostname/hostnamelen/domainname/domainnamelen/hostid are defined in kern_sysctl.rs (where the C defines them), the extern ints live where they are defined (conf/param.c, kern_clock.c)"
 
 [[module]]
-rust = "sys/lib/sysdefs/limits.rs"
+rust = "sys/lib/sysdefs/base/limits.rs"
 lz = ["sys/sys/limits.rs"]
 status = "inherited"
 notes = "M6-b: the integer limits, SSIZE_MAX and SIZE_MAX (machine/limits.h of both targets, LP64, given here); the FLT_* legacy values are not kernel material"
@@ -8279,19 +8291,19 @@ status = "adapted"
 adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/netinet/in_pcb.rs"]
 
 [[module]]
-rust = "sys/lib/sysdefs/socket.rs"
+rust = "sys/lib/sysdefs/net/socket.rs"
 lz = ["sys/sys/socket.rs"]
 status = "redesigned"
 notes = "N6.2a: socket.h's shared part moved into hal so kernel::net and bsd name one copy: the 170 constants, struct linger, sockaddr, sockaddr_storage, sockproto, sockpeercred and cmsghdr AbiPod through hal::abi_pod!, CMSG_ALIGN/LEN/SPACE over sizeof(long) - 1; N6.2b: msghdr and mmsghdr as the system calls copy them (Msghdr, Mmsghdr: the user addresses as usize, the C's holes named _pad0/_pad1/_pad, so AbiPod and copied out whole as the C's copyout); the pointer CMSG_FIRSTHDR/NXTHDR/DATA stay in bsd's inherited sys/sys/socket.rs (bsd's internet protocols), struct splice is kernel::net::socket's (its timeval is kernel::time::clock's)"
 
 [[module]]
-rust = "sys/lib/sysdefs/sockio.rs"
+rust = "sys/lib/sysdefs/net/sockio.rs"
 lz = ["sys/sys/sockio.rs"]
 status = "redesigned"
 notes = "N6.2a: sockio.h's socket group (SIOCATMARK, SIOCSPGRP, SIOCGPGRP) moved into hal for kernel::net::file; N6.3a: the interface group ('i') followed, sized by hal::sys::net_if's images; bsd's sys/sys/sockio.rs re-exports it"
 
 [[module]]
-rust = "sys/lib/sysdefs/un.rs"
+rust = "sys/lib/sysdefs/net/un.rs"
 lz = ["sys/sys/un.rs"]
 status = "redesigned"
 notes = "N6.2a: un.h moved into hal with the UNIX domain's redesign; struct sockaddr_un AbiPod through hal::abi_pod!"
@@ -8630,17 +8642,17 @@ reason = "the frame's header copy is hal::mem::pod::at::<EtherHeader> at each ca
 
 [[module.fn]]
 lz = "sys/net/if_ethersubr.rs::TCPHDR_LEN"
-native = ["sys/lib/sysdefs/netinet_tcp.rs::Tcphdr"]
+native = ["sys/lib/sysdefs/netinet/tcp.rs::Tcphdr"]
 kind = "merged"
 
 [[module.fn]]
 lz = "sys/net/if_ethersubr.rs::TCPHDR_OFF_BYTE"
-native = ["sys/lib/sysdefs/netinet_tcp.rs::Tcphdr"]
+native = ["sys/lib/sysdefs/netinet/tcp.rs::Tcphdr"]
 kind = "merged"
 
 [[module.fn]]
 lz = "sys/net/if_ethersubr.rs::UDPHDR_LEN"
-native = ["sys/lib/sysdefs/netinet_udp.rs::Udphdr"]
+native = ["sys/lib/sysdefs/netinet/udp.rs::Udphdr"]
 kind = "merged"
 
 [[module.fn]]
@@ -9602,7 +9614,7 @@ status = "redesigned"
 notes = "N6.3a1: netisr.h's bits, the netisr word and if_netisr (the glue's task: its yield is the scheduler's) under the net lock's write witness"
 
 [[module]]
-rust = "sys/lib/sysdefs/net_if.rs"
+rust = "sys/lib/sysdefs/net/if_.rs"
 lz = ["sys/net/if_.rs", "sys/net/if_types.rs", "sys/net/if_dl.rs"]
 status = "redesigned"
 notes = "N6.3a: net/if.h's constants and request images (AbiPod, the unions as byte arrays, the pointers as u64 words), if_types.h's IFT_* and if_dl.h's sockaddr_dl moved into hal for kernel::net and bsd; bsd's if_types.rs and if_dl.rs re-export them, bsd's if_.rs keeps LZ's structures for its ifioctl until N6.3a2"
@@ -9659,43 +9671,43 @@ kind = "dropped"
 reason = "`struct if_nameindex` is if_nameindex(3)'s (libc builds it from the routing socket's messages); the kernel never makes one"
 
 [[module]]
-rust = "sys/lib/sysdefs/net_route.rs"
+rust = "sys/lib/sysdefs/net/route.rs"
 lz = ["sys/net/route.rs"]
 status = "redesigned"
 notes = "N6.3b: net/route.h's ABI moved into hal for kernel::net's routing and bsd's callers: the RTF_/RTP_/RTM_/RTV_/RTA_/RTAX_/ROUTE_ constants, RTM_VERSION, RTM_MAXSIZE, RTABLE_ANY, the RTLABEL/RTDNS/RTSTATIC/RTSEARCH lengths, route_filter (ROUTE_FILTER), and the AbiPod images rt_metrics (56), rtstat (20), rt_tableinfo (4), rt_msghdr (96), sockaddr_rtlabel (34) and sockaddr_rtdns/rtstatic/rtsearch (130), their LP64 sizes const-asserted; bsd's sys/net/route.rs keeps its own copies until N6.3b2 re-exports these"
 
 [[module]]
-rust = "sys/lib/sysdefs/net_bpf.rs"
+rust = "sys/lib/sysdefs/net/bpf.rs"
 lz = ["sys/net/bpf.rs"]
 status = "redesigned"
 notes = "N6.3c1: net/bpf.h's ABI moved into hal for kernel::net's bpf and bpf_filter and bsd's drivers: BPF_RELEASE, BPF_ALIGNMENT, BPF_MAXINSNS, BPF_MAXBUFSIZE, BPF_MINBUFSIZE, the version, the 29 BIOC* numbers (the timeouts sized by IfTimeval, GETIF/SETIF by Ifreq), BPF_DIRECTION_*, BPF_FILDROP_*, BPF_F_*, SIZEOF_BPF_HDR, the DLT_* values, the opcode constants, BPF_MEMWORDS, the field macros and BPF_STMT/BPF_JUMP as const fns, and the AbiPod images bpf_program (16), bpf_stat (8), bpf_version (4), bpf_timeval (8), bpf_hdr (28), bpf_insn (8), bpf_dltlist (16), sizes const-asserted; bsd's sys/net/bpf.rs keeps its own copies until its adapter re-exports these (commit 4)"
 
 [[module]]
-rust = "sys/lib/sysdefs/net_ethertypes.rs"
+rust = "sys/lib/sysdefs/net/ethertypes.rs"
 lz = ["sys/net/ethertypes.rs"]
 status = "redesigned"
 notes = "N6.3c1: LZ's net/ethertypes.h constants moved whole into hal (with the reference-backed test), for kernel::net and, through bsd's re-export, bsd's importers"
 
 [[module]]
-rust = "sys/lib/sysdefs/netinet_in.rs"
+rust = "sys/lib/sysdefs/netinet/in_.rs"
 lz = ["sys/netinet/in_.rs"]
 status = "redesigned"
 notes = "N6.3c2 (D-N6.3c-21): struct in_addr, struct sockaddr_in and four constants for the kernel's Ethernet layer. N6.4a: the whole userland part of netinet/in.h as abi_pod! images with const size asserts (in_addr 4, sockaddr_in 16, ip_opts 44, ip_mreq 8, ip_mreqn 12), every IPPROTO_*, IPPORT_*, IN_CLASS*, INADDR_*, IP_* option name and value, IPSEC_LEVEL_*, IPCTL_* and IPCTL_MAXID, the IN_* predicates as const fns, and LZ's two tests (the reference-backed one included); IPPROTO_* are i32 as the C's, IN_MULTICAST takes network order as the C's"
 
 [[module]]
-rust = "sys/lib/sysdefs/netinet_in_var.rs"
+rust = "sys/lib/sysdefs/netinet/in_var.rs"
 lz = ["sys/netinet/in_var.rs"]
 status = "redesigned"
 notes = "N6.4a: netinet/in_var.h's userland part, struct in_aliasreq (64) as an abi_pod! whose ifra_addr is the union's address member (the union's int only aligns it), with a layout test; the _KERNEL part is kernel::netinet::in_var's"
 
 [[module]]
-rust = "sys/lib/sysdefs/netinet6_in6.rs"
+rust = "sys/lib/sysdefs/netinet6/in6.rs"
 lz = ["sys/netinet6/in6.rs"]
 status = "redesigned"
 notes = "N6.3c2 (D-N6.3c-21, early for N6.4-N6.6): the image the kernel's Ethernet layer reads, as an abi_pod! with its const size assert: struct in6_addr (16), struct sockaddr_in6 (28), IN6_IS_ADDR_UNSPECIFIED. N6.5a: the whole userland half of netinet6/in6.h moved from bsd's in6.rs, which re-exports it (one In6Addr and SockaddrIn6): struct ipv6_mreq (20), in6_pktinfo (20), ip6_mtuinfo (32) as abi_pod! images, In6Addr's views, every IPV6_* option name and value, IPV6CTL_* with CTL_IPV6PROTO_NAMES and IPV6CTL_NAMES, IN6ADDR_*, IN6MASK*, SA6_ANY, the IN6_IS_ADDR_*/IN6_IS_SCOPE_* predicates as #[inline] const fns; LZ's five header tests (the reference-backed one included)"
 
 [[module]]
-rust = "sys/lib/sysdefs/netinet6_in6_var.rs"
+rust = "sys/lib/sysdefs/netinet6/in6_var.rs"
 lz = ["sys/netinet6/in6_var.rs"]
 status = "redesigned"
 notes = "N6.5a: netinet6/in6_var.h's userland part as abi_pod! images with const size asserts: in6_addrlifetime (24), in6_ifstat (160), icmp6_ifstat (272), in6_ifreq (288, its union the 272 bytes read by copy through LZ's accessor names), in6_aliasreq (128, ifra_addr the union's address member); the SIOC*_IN6 commands, IN6_IFF_*; LZ's reference test and two layout tests; the _KERNEL part is kernel::netinet6::in6_var's (bsd's until N6.5a's addresses commit)"
@@ -9716,37 +9728,37 @@ native = ["In6Aliasreq"]
 kind = "merged"
 
 [[module]]
-rust = "sys/lib/sysdefs/netinet6_ip6_var.rs"
+rust = "sys/lib/sysdefs/netinet6/ip6_var.rs"
 lz = ["sys/netinet6/ip6_var.rs"]
 status = "redesigned"
 notes = "N6.5a: netinet6/ip6_var.h's userland part: struct ip6stat (401 u64, net.inet6.ip6.stats) as an abi_pod! image and the indices of its words, enum ip6stat_counters (the C's _KERNEL part, beside the image); LZ's counters test"
 
 [[module]]
-rust = "sys/lib/sysdefs/netinet6_mld6.rs"
+rust = "sys/lib/sysdefs/netinet6/mld6.rs"
 lz = ["sys/netinet6/mld6.rs"]
 status = "redesigned"
 notes = "N6.5a: netinet6/mld6.h whole: mldv2_query (28), mldv2_report (8), mldv2_record (20) as abi_pod! images, the MLD_* constants, MLD_MINLEN, MLD_V2_QUERY_MINLEN, the MLD_MRC_*/MLD_QQIC_*/MLD_QRESV/MLD_SFLAG/MLD_QRV macros as const fns; a layout test"
 
 [[module]]
-rust = "sys/lib/sysdefs/netinet6_nd6.rs"
+rust = "sys/lib/sysdefs/netinet6/nd6.rs"
 lz = ["sys/netinet6/nd6.rs"]
 status = "redesigned"
 notes = "N6.5a: netinet6/nd6.h's userland part: ND6_LLINFO_*, ND6_INFINITE_LIFETIME, nd_ifinfo (8), in6_nbrinfo (56), in6_ndireq (24) as abi_pod! images (ndp(8)'s requests); bsd's nd6.rs keeps its copies until N6.5b"
 
 [[module]]
-rust = "sys/lib/sysdefs/netinet6_raw_ip6.rs"
+rust = "sys/lib/sysdefs/netinet6/raw_ip6.rs"
 lz = ["sys/netinet6/raw_ip6.rs"]
 status = "redesigned"
 notes = "N6.6b1: netinet6/raw_ip6.h's userland part: RIPV6CTL_STATS, RIPV6CTL_MAXID and struct rip6stat (7 u64, 56 bytes) as an abi_pod! with the C's CTASSERT, RIP6S_NCOUNTERS; a layout test and a reference-backed one; bsd's raw_ip6.rs keeps its copies until the switch (N6.6b1's second phase)"
 
 [[module]]
-rust = "sys/lib/sysdefs/netinet_icmp6.rs"
+rust = "sys/lib/sysdefs/netinet/icmp6.rs"
 lz = ["sys/netinet/icmp6.rs"]
 status = "redesigned"
 notes = "N6.5a: netinet/icmp6.h's userland part (bsd's icmp6.rs re-exports it): the ICMP6_*, MLD*, ND_*, NI_*, RPM_*, ICMPV6CTL_* constants with ICMPV6CTL_NAMES, RTF_PROBEMTU, and the 24 structures as abi_pod! images with LZ's size asserts (icmp6_hdr 8 with icmp6_dataun as its four bytes, no union and no unsafe; mld_hdr, the five nd_* messages, the seven nd_opt_*, the node-information and router-renumbering images, icmp6_filter 32, icmp6stat 541 u64), LZ's accessor names and enum icmp6stat_counters; LZ's four tests"
 
 [[module]]
-rust = "sys/lib/sysdefs/netinet_ip.rs"
+rust = "sys/lib/sysdefs/netinet/ip.rs"
 lz = ["sys/netinet/ip.rs"]
 status = "redesigned"
 notes = "N6.3c2 (D-N6.3c-21): struct ip and two constants for the kernel's Ethernet layer. N6.4a: the whole of netinet/ip.h (no _KERNEL part) as abi_pod! images with const size asserts (ip 20, ipt_ta 8, ip_timestamp 12 with its union as two words, ippseudo 12), every IP_*, IPTOS_*, IPOPT_* constant, MAXTTL, IPDEFTTL, IPFRAGTTL, IPTTLDEC, IP_MSS, IPQ_MAXLEN, the IPOPT_* macros as const fns, and LZ's two tests"
@@ -9757,19 +9769,19 @@ native = ["IpTimestamp::ipt_time", "IpTimestamp::ipt_ta"]
 kind = "merged"
 
 [[module]]
-rust = "sys/lib/sysdefs/netinet_ip6.rs"
+rust = "sys/lib/sysdefs/netinet/ip6.rs"
 lz = ["sys/netinet/ip6.rs"]
 status = "redesigned"
 notes = "N6.3c2 (D-N6.3c-21, early for N6.4-N6.6): the image the kernel's Ethernet layer reads, as an abi_pod! with its const size assert: struct ip6_hdr (40). N6.5a: netinet/ip6.h whole (N6.4a's R3): the twelve extension-header and option images (ip6_hdr_pseudo 40, ip6_ext, ip6_hbh, ip6_dest, ip6_opt 2, ip6_opt_jumbo 6, ip6_opt_nsap 4, ip6_opt_tunnel 3, ip6_opt_router 4, ip6_rthdr 4, ip6_rthdr0 8, ip6_frag 8) as abi_pod!s, IPV6_*, IP6TOS_*, IP6OPT_*, IP6_ALERT_*, IP6F_* and IP6OPT_TYPE; Ip6Hdr's vfc/hops accessors; LZ's four tests; ip6_exthdr_get stays with the mbufs (bsd's ip6.rs, which keeps its copy until N6.5c/d)"
 
 [[module]]
-rust = "sys/lib/sysdefs/netinet_ip_divert.rs"
+rust = "sys/lib/sysdefs/netinet/ip_divert.rs"
 lz = ["sys/netinet/ip_divert.rs"]
 status = "redesigned"
 notes = "N6.6b1: netinet/ip_divert.h's userland part: DIVERTCTL_* and struct divstat (5 u_long, 40 bytes) as an abi_pod! with the C's CTASSERT, DIVS_NCOUNTERS; a layout test and a reference-backed one; bsd's ip_divert.rs keeps its copies until the switch (N6.6b1's second phase)"
 
 [[module]]
-rust = "sys/lib/sysdefs/netinet_ip_icmp.rs"
+rust = "sys/lib/sysdefs/netinet/ip_icmp.rs"
 lz = ["sys/netinet/ip_icmp.rs"]
 status = "redesigned"
 notes = "N6.4c2: netinet/ip_icmp.h as hal's: the ICMP_* types, codes and lengths, the ICMP_ADVLEN/ICMP_V6ADVLEN/ICMP_INFOTYPE macros as const fns, and struct icmp (28) with its sub-structures as abi_pod! images, the two unions as their bytes (icmp_hun four bytes, icmp_dun the returned struct ip) with LZ's accessors by name and no unsafe; LZ's reference-backed test; ICMP itself (ip_icmp.c) is kernel::netinet::ip_icmp's"
@@ -9796,61 +9808,61 @@ kind = "dropped"
 reason = "the address of the data past struct icmp had no reader in LZ; ICMP reads a message through the mbuf's bytes (kernel::netinet::ip_icmp)"
 
 [[module]]
-rust = "sys/lib/sysdefs/netinet_ip_mroute.rs"
+rust = "sys/lib/sysdefs/netinet/ip_mroute.rs"
 lz = ["sys/netinet/raw_ip.rs"]
 status = "redesigned"
 notes = "N6.6b1: the ten MRT_* socket option names of netinet/ip_mroute.h, which LZ's raw_ip.rs defined (the header was not ported); MROUTING is not configured, so the structures are not here; a reference-backed test; bsd's raw_ip.rs keeps its copies until the switch (N6.6b1's second phase)"
 
 [[module]]
-rust = "sys/lib/sysdefs/netinet_ip_var.rs"
+rust = "sys/lib/sysdefs/netinet/ip_var.rs"
 lz = ["sys/netinet/ip_var.rs"]
 status = "redesigned"
 notes = "N6.4a: netinet/ip_var.h's userland part as abi_pod! images with const size asserts: MAX_IPOPTLEN, struct ipovly (20), struct ipstat (36 u64, net.inet.ip.stats), struct ipoption (44); LZ's overlay test and a reference-backed one; the _KERNEL part is kernel::netinet::ip_var's and bsd's until their slices"
 
 [[module]]
-rust = "sys/lib/sysdefs/netinet_tcp.rs"
+rust = "sys/lib/sysdefs/netinet/tcp.rs"
 lz = ["sys/netinet/tcp.rs"]
 status = "redesigned"
 notes = "N6.3c2 (D-N6.3c-21, early for N6.4-N6.6): the image the kernel's Ethernet layer reads, as an abi_pod! with its const size assert: struct tcphdr (20) with th_off; bsd keeps its copy until the protocol moves; N6.6a0: tcp.h whole (the flags, the options, TCP_* user options, TCPI_OPT_*, struct tcp_info as an abi_pod! of the C's 212 bytes, Tcphdr's LZ accessors), bsd's sys/netinet/tcp.rs deleted and re-exported from here by sys/netinet/mod.rs; its tests re-expressed over bytes_of (no transmute)"
 
 [[module]]
-rust = "sys/lib/sysdefs/netinet_tcp_fsm.rs"
+rust = "sys/lib/sysdefs/netinet/tcp_fsm.rs"
 lz = ["sys/netinet/tcp_fsm.rs"]
 status = "redesigned"
 notes = "N6.6a0: tcp_fsm.h's TCP_NSTATES and TCPS_* (what tcp_info's tcpi_state, kinfo_file's t_state and pf read), for the kernel's TCP; bsd's tcp_fsm.rs re-exports them and keeps the predicates and the two tables until the kernel's tcp_fsm (N6.6a1)"
 
 [[module]]
-rust = "sys/lib/sysdefs/netinet_tcp_var.rs"
+rust = "sys/lib/sysdefs/netinet/tcp_var.rs"
 lz = ["sys/netinet/tcp_var.rs"]
 status = "redesigned"
 notes = "N6.6a0: tcp_var.h's userland part: TCPCTL_* (net.inet.tcp's names), struct tcpstat (net.inet.tcp.stats, an abi_pod! with the C's five 4-byte holes named _pad0.._pad4, zero as the C's memset leaves them) and struct tcp_ident_mapping (ident and drop, an abi_pod! whose trailing hole is LZ's _pad; LZ's hand-written unsafe impl AbiPod goes); sizes and offsets pinned against the C (clang static asserts, aarch64-unknown-openbsd); bsd's tcp_var.rs re-exports them"
 
 [[module]]
-rust = "sys/lib/sysdefs/netinet_udp.rs"
+rust = "sys/lib/sysdefs/netinet/udp.rs"
 lz = ["sys/netinet/udp.rs"]
 status = "redesigned"
 notes = "N6.3c2 (D-N6.3c-21, early for N6.4-N6.6): the image the kernel's Ethernet layer reads, as an abi_pod! with its const size assert: struct udphdr (8); bsd keeps its copy until the protocol moves"
 
 [[module]]
-rust = "sys/lib/sysdefs/netinet_udp_var.rs"
+rust = "sys/lib/sysdefs/netinet/udp_var.rs"
 lz = ["sys/netinet/udp_var.rs"]
 status = "redesigned"
 notes = "N6.6b0: udp_var.h's userland part: UDPCTL_* (net.inet.udp's names), struct udpstat (net.inet.udp.stats, 13 u_long, an abi_pod!) and struct udpiphdr (ipovly + udphdr, 28 bytes, an abi_pod!); sizes and offsets pinned against the C; enum udpstat_counters and udpstat_inc are kernel::netinet::udp_var's"
 
 [[module]]
-rust = "sys/lib/sysdefs/net_if_arp.rs"
+rust = "sys/lib/sysdefs/net/if_arp.rs"
 lz = ["sys/net/if_arp.rs"]
 status = "redesigned"
 notes = "N6.4b: LZ's net/if_arp.h moved whole into hal (struct arphdr an abi_pod with its const size assert, the ARPHRD_*/ARPOP_* constants, the reference-backed test), for the kernel's ARP and, through bsd's re-export, bsd's importers"
 
 [[module]]
-rust = "sys/lib/sysdefs/netinet_if_ether.rs"
+rust = "sys/lib/sysdefs/netinet/if_ether.rs"
 lz = ["sys/netinet/if_ether.rs"]
 status = "redesigned"
 notes = "N6.3c1: netinet/if_ether.h's userland part moved into hal: the ETHER_* lengths, ETHER_ALIGN, ETHER_MAX_HARDMTU_LEN, EVL_*, ETH64_8021_RSVD_*, ETHERMTU, ETHERMIN, the CRC polynomials, the address tests (ETHER_IS_*, ETH64_IS_*, EVL_*OFTAG as fns), and the AbiPod images ether_addr (6), ether_header (14, align 2), ether_vlan_header (18); the ARP part and the _KERNEL part stay in bsd's sys/netinet/if_ether.rs (N6.3c2, N6.4), which keeps its own copies until then; N6.4b: the ARP part joins it (struct ether_arp 28 with its arp_hrd.. accessors, struct sockaddr_inarp 16, abi_pods; SIN_PROXY, RTF_USETRAILERS, RTF_PERMANENT_ARP), bsd's copies gone"
 
 [[module]]
-rust = "sys/lib/sysdefs/netinet_icmp_var.rs"
+rust = "sys/lib/sysdefs/netinet/icmp_var.rs"
 lz = ["sys/netinet/icmp_var.rs"]
 status = "redesigned"
 notes = "N6.4c2: netinet/icmp_var.h's userland part: struct icmpstat (10 + 2 x 41 u64, net.inet.icmp.stats) as an abi_pod!, ICMPCTL_* and ICMPCTL_MAXID, with LZ's reference-backed test; the _KERNEL part (the counters' enum, icmpstat_inc) is kernel::netinet::icmp_var's"
@@ -9862,31 +9874,31 @@ kind = "dropped"
 reason = "hal::user::zeroed::<Icmpstat>() makes the zero value of any abi_pod! image (net.inet.icmp.stats fills one)"
 
 [[module]]
-rust = "sys/lib/sysdefs/netinet_igmp.rs"
+rust = "sys/lib/sysdefs/netinet/igmp.rs"
 lz = ["sys/netinet/igmp.rs"]
 status = "redesigned"
 notes = "N6.4a: netinet/igmp.h as hal's: IGMP_* (message types, delays, member and router states, IGMP_AGE_THRESHOLD) and struct igmp (8) as an abi_pod!, with LZ's reference-backed test; the protocol (igmp.c) is kernel::netinet::igmp's"
 
 [[module]]
-rust = "sys/lib/sysdefs/netinet_igmp_var.rs"
+rust = "sys/lib/sysdefs/netinet/igmp_var.rs"
 lz = ["sys/netinet/igmp_var.rs"]
 status = "redesigned"
 notes = "N6.4a: netinet/igmp_var.h's userland part: struct igmpstat (9 u64, net.inet.igmp.stats) as an abi_pod!, IGMPCTL_STATS, IGMPCTL_MAXID, with a reference-backed test; the _KERNEL part is kernel::netinet::igmp_var's"
 
 [[module]]
-rust = "sys/lib/sysdefs/net_if_media.rs"
+rust = "sys/lib/sysdefs/net/if_media.rs"
 lz = ["sys/net/if_media.rs"]
 status = "redesigned"
 notes = "N6.3a: net/if_media.h's IFM_* words, the media word macros and IFM_BAUDRATE_DESCRIPTIONS moved into hal; struct ifmedia and if_media.c stay in bsd's sys/net/if_media.rs until N6.3a2"
 
 [[module]]
-rust = "sys/lib/sysdefs/mbuf.rs"
+rust = "sys/lib/sysdefs/net/mbuf.rs"
 lz = ["sys/sys/mbuf.rs"]
 status = "redesigned"
 notes = "N6.1: mbuf.h's userland part moved into hal so kernel::net::mbuf, kernel::base::sysctl and bsd share one copy: MT_* and MT_NTYPES, struct mbstat AbiPod through hal::abi_pod! (kern.mbstat's bytes)"
 
 [[module]]
-rust = "sys/lib/sysdefs/mman.rs"
+rust = "sys/lib/sysdefs/vm/mman.rs"
 lz = ["sys/sys/mman.rs"]
 status = "inherited"
 notes = "PROT_*, MAP_PRIVATE/MAP_ANON, MADV_*, MAP_INHERIT_* and MCL_CURRENT/MCL_FUTURE only; the mmap(2) family prototypes and the remaining MAP_* flags come with uvm_mmap.c (M7a-3); M7a-3b: MAP_SHARED/FIXED/__MAP_NOREPLACE/__MAP_NOFAULT/STACK/CONCEAL, MAP_FLAGMASK, the deprecated MAP_* aliases, MS_*"
@@ -9895,7 +9907,7 @@ notes = "PROT_*, MAP_PRIVATE/MAP_ANON, MADV_*, MAP_INHERIT_* and MCL_CURRENT/MCL
 rust = "sys/sys/mount.rs"
 lz = ["sys/sys/mount.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc/cred.rs", "sys/lib/sysdefs/mount.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/vops.rs", "sys/kernel/file/mod.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/ufs/mfs/mfs_vfsops.rs", "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs", "sys/kernel/fs/msdosfs/msdosfs_vfsops.rs", "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs", "sys/kernel/fs/isofs/udf/udf_vfsops.rs", "sys/kernel/fs/tmpfs/tmpfs_vfsops.rs", "sys/kernel/fs/fuse/fuse_vfsops.rs", "sys/kernel/fs/export.rs"]
+adapted_by = ["sys/kernel/proc/cred.rs", "sys/lib/sysdefs/fs/mount.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/vops.rs", "sys/kernel/file/mod.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/ufs/mfs/mfs_vfsops.rs", "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs", "sys/kernel/fs/msdosfs/msdosfs_vfsops.rs", "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs", "sys/kernel/fs/isofs/udf/udf_vfsops.rs", "sys/kernel/fs/tmpfs/tmpfs_vfsops.rs", "sys/kernel/fs/fuse/fuse_vfsops.rs", "sys/kernel/fs/export.rs"]
 notes = "N5.2: Mount and Vfsconf the aliases of the kernel's, the VFS_* names over kernel::fs::vops, VFS_CHECKEXP through the table as bsd knows it (as_any), struct vfsops of fn members (kern/vfs_vops.rs implements the kernel's Vfs on it); keeps struct netcred/netexport with their 2 Sync impls (the export list's, kern/vfs_subr.rs, N6; N6.7b0: gone to kernel::fs::export with VFS_CHECKEXP and BsdMountG, vfs_checkexp answering the kernel's ExportGrant); N5.4: the ten *_args and export_args are hal's (sys/lib/sysdefs/mount.rs, D-N5.4-3), re-exported here for the file systems' from_bytes sites, and their 3 read_unaligned went with them"
 
 [[module]]
@@ -9928,7 +9940,7 @@ lz = ["sys/sys/param.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/sysdefs/pclock.rs"
+rust = "sys/lib/sysdefs/time/pclock.rs"
 lz = ["sys/sys/pclock.rs"]
 status = "inherited"
 
@@ -9938,7 +9950,7 @@ lz = ["sys/sys/percpu.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/sysdefs/pledge.rs"
+rust = "sys/lib/sysdefs/proc/pledge.rs"
 lz = ["sys/sys/pledge.rs"]
 status = "inherited"
 
@@ -9973,7 +9985,7 @@ lz = ["sys/sys/queue.rs"]
 status = "redesigned"
 
 [[module]]
-rust = "sys/lib/sysdefs/reboot.rs"
+rust = "sys/lib/sysdefs/proc/reboot.rs"
 lz = ["sys/sys/reboot.rs"]
 status = "inherited"
 
@@ -10015,7 +10027,7 @@ status = "inherited"
 license = "none"
 
 [[module]]
-rust = "sys/lib/sysdefs/select.rs"
+rust = "sys/lib/sysdefs/file/select.rs"
 lz = ["sys/sys/select.rs"]
 status = "inherited"
 
@@ -10029,16 +10041,16 @@ notes = "N4.4: struct selinfo is sys/kernel/file/select.rs's Selinfo<G> (a kerne
 rust = "sys/sys/sensors.rs"
 lz = ["sys/sys/sensors.rs"]
 status = "adapted"
-adapted_by = ["sys/sys/sysctl.rs", "sys/kernel/dev/sensors.rs", "sys/lib/sysdefs/sensors.rs"]
+adapted_by = ["sys/sys/sysctl.rs", "sys/kernel/dev/sensors.rs", "sys/lib/sysdefs/dev/sensors.rs"]
 
 [[module]]
-rust = "sys/lib/sysdefs/timetc.rs"
+rust = "sys/lib/sysdefs/time/timetc.rs"
 lz = ["sys/sys/timetc.rs"]
 status = "redesigned"
 notes = "N4.8a: struct timekeep (the ABI's record, Timekeep with TkBintime) and TimekeepAtomic, the same 88 bytes as atomics (offsets asserted), the view kernel::time::tc writes the page shared with userland through, with the C's generation protocol; TK_VERSION. struct timecounter is kernel::time::tc's (the Timecounter trait and TcEntry)"
 
 [[module]]
-rust = "sys/lib/sysdefs/siginfo.rs"
+rust = "sys/lib/sysdefs/sig/siginfo.rs"
 lz = ["sys/sys/siginfo.rs"]
 status = "redesigned"
 notes = "N4.5b: moved into hal so kernel::sig and bsd share siginfo_t; the AbiPod impl is hal::abi_pod!'s (LZ 1 unsafe impl); bsd's crate::sys::siginfo is a pub use"
@@ -10050,7 +10062,7 @@ status = "redesigned"
 notes = "N4.5b: sigio.h is sys/kernel/sig/sigio.rs's (SigioRef one atomic word; struct sigio and the owners' lists the registry under sigio_lock); this path re-exports SigioRef and sigio_init, 0 unsafe (LZ 2), forbid on its mod line"
 
 [[module]]
-rust = "sys/lib/sysdefs/signal.rs"
+rust = "sys/lib/sysdefs/sig/signal.rs"
 lz = ["sys/sys/signal.rs"]
 status = "redesigned"
 notes = "N4.5b: moved into hal so kernel::sig and bsd share the signal numbers, sigset_t and struct sigaction; the two AbiPod impls are hal::abi_pod!'s (LZ 2 unsafe impl); MINSIGSTKSZ from MAX_PAGE_SHIFT (12); bsd's crate::sys::signal is a pub use"
@@ -10077,7 +10089,7 @@ notes = "M11a: struct smr_entry, smr_entry_list, smr_init, smr_call, smr_barrier
 rust = "sys/sys/socket.rs"
 lz = ["sys/sys/socket.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/sysdefs/socket.rs"]
+adapted_by = ["sys/lib/sysdefs/net/socket.rs"]
 notes = "M7b: every constant (AF_*/PF_* as sa_family_t, the rest i32), linger, splice, sockaddr, sockaddr_storage, sockproto, sockpeercred, msghdr (msg_iov a *mut c_void until sys/uio.h), mmsghdr, cmsghdr, CMSG_ALIGN/LEN/SPACE as const fns, CMSG_DATA/FIRSTHDR (address only) and CMSG_NXTHDR (unsafe, reads cmsg_len) over raw pointers, sstosa a pointer cast; the CTL_NET_*_NAMES sysctl tables wait for sys/sysctl.h"
 
 [[module]]
@@ -10090,11 +10102,11 @@ adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/
 rust = "sys/sys/sockio.rs"
 lz = ["sys/sys/sockio.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/sysdefs/sockio.rs"]
+adapted_by = ["sys/lib/sysdefs/net/sockio.rs"]
 notes = "M7b: the 106 socket and interface ioctls whose argument structures are ported (ifreq, ifconf, ifaliasreq, ifmediareq, if_sffpage, if_laddrreq, if_clonereq, ifgroupreq, ifkalivereq, if_afreq, if_parent, int); SIOCBRDG* wait for net/if_bridge.h, SIOCGETVIFCNT/SIOCGETSGCNT for netinet/ip_mroute.h"
 
 [[module]]
-rust = "sys/lib/sysdefs/softintr.rs"
+rust = "sys/lib/sysdefs/dev/softintr.rs"
 lz = ["sys/sys/softintr.rs"]
 status = "inherited"
 
@@ -10106,7 +10118,7 @@ adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/spec.rs", "sys/kernel/fs/
 notes = "N5.2: Specinfo the alias of the kernel's, the spec_* operations the file systems' special-file tables hold over kernel::fs::spec, and BsdDevsw, the device switch (machine::conf's cdevsw/bdevsw) as the kernel's Devsw bridge"
 
 [[module]]
-rust = "sys/lib/sysdefs/stat.rs"
+rust = "sys/lib/sysdefs/file/stat.rs"
 lz = ["sys/sys/stat.rs"]
 status = "redesigned"
 notes = "N5.3 (D-N5.3-3, the user's decision): stat.h moved from bsd into hal so kernel::fs::vnops fills the one struct stat; its times are hal's ABI Timespec (kernel::time::clock::Timespec converts into it with From); bsd's sys/sys/mod.rs re-exports it"
@@ -10117,7 +10129,7 @@ lz = ["sys/sys/swap.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/sysdefs/syscall.rs"
+rust = "sys/lib/sysdefs/proc/syscall.rs"
 lz = ["sys/sys/syscall.rs"]
 status = "inherited"
 license = "none"
@@ -10141,7 +10153,7 @@ status = "redesigned"
 notes = "N4.6b: an adapter over hal::sys::sysctl (the header re-exported), the sysctlfn prototype of the nodes still in bsd, and SysctlPlain as a safe blanket over hal::user::AbiPod (LZ: an unsafe trait, two unsafe byte views and 12 unsafe impls); struct timeval, clockinfo, diskstats and cpustats AbiPod through hal::abi_pod! here (mbstat in hal::sys::mbuf since N6.1); 0 unsafe (LZ 17), forbid on its mod line; N7.1d: struct diskstats AbiPod in hal::sys::disk, where it moved"
 
 [[module]]
-rust = "sys/lib/sysdefs/sysctl.rs"
+rust = "sys/lib/sysdefs/proc/sysctl.rs"
 lz = ["sys/sys/sysctl.rs"]
 status = "redesigned"
 notes = "N4.6b: sysctl.h's ids, name tables and structures moved into hal so kernel::base::sysctl and bsd share one copy; kinfo_proc and kinfo_file AbiPod through hal::abi_pod! (LZ: two MaybeUninit::zeroed and bsd's SysctlPlain impls); bsd's sys/sys/sysctl.rs re-exports it"
@@ -10157,7 +10169,7 @@ native = ["sys/hal/user.rs::zeroed"]
 kind = "merged"
 
 [[module]]
-rust = "sys/lib/sysdefs/mount.rs"
+rust = "sys/lib/sysdefs/fs/mount.rs"
 lz = ["sys/sys/mount.rs", "sys/kern/vfs_subr.rs"]
 status = "redesigned"
 notes = "N5.1: struct bcachestats moved into hal so kernel::fs::bio (bcstats' owner) and bsd (vfs.generic.bcachestat) share one copy, AbiPod through hal::abi_pod! (LZ declared it in vfs_bio.rs); bsd's sys/sys/mount.rs re-exports it; N5.2: the ABI half of mount.h (struct statfs, fsid_t, struct fid, fhandle_t, MountInfo, the MOUNT_*, MNT_*, VB_*, VFS_* constants) and vfs.generic.conf's VfsconfAbi (LZ's private struct of vfs_subr.rs) moved here, Statfs, Fhandle, Fsid, Fid and MountInfo AbiPod through abi_pod! (LZ's two unsafe impl AbiPod go); N5.4 (D-N5.4-3): the mount arguments moved here, ExportArgs, UfsArgs, MfsArgs, IsoArgs, NfsArgs, MsdosfsArgs, NtfsArgs, UdfArgs, TmpfsArgs and FusefsArgs with their constants, and <sys/ucred.h>'s struct xucred (Xucred, which export_args embeds; ucred.h's licence block and Upstream/LZ lines with it), each AbiPod through abi_pod! with its holes named and from_bytes over hal::user::pod_from_bytes; bsd's sys/sys/mount.rs and sys/sys/ucred.rs re-export them"
@@ -10178,13 +10190,13 @@ native = ["mount_args_size"]
 kind = "renamed"
 
 [[module]]
-rust = "sys/lib/sysdefs/disk.rs"
+rust = "sys/lib/sysdefs/dev/disk.rs"
 lz = ["sys/sys/disk.rs"]
 status = "redesigned"
 notes = "N7.1d: <sys/disk.h>'s constants (DS_DISKNAMELEN, DKF_*, DK_*, DM_*) and struct diskstats, AbiPod through abi_pod! here (it was in bsd's sys/sys/sysctl.rs), its timevals hal's IfTimeval; struct disk is the kernel's (kernel::dev::disk)"
 
 [[module]]
-rust = "sys/lib/sysdefs/disklabel.rs"
+rust = "sys/lib/sysdefs/dev/disklabel.rs"
 lz = ["sys/sys/disklabel.rs"]
 status = "redesigned"
 notes = "N7.1d: <sys/disklabel.h> whole but struct partinfo (bsd's until N7.3c); Disklabel and Partition AbiPod through abi_pod!, as_bytes/as_bytes_mut over hal::user::bytes_of (LZ's two unsafe casts go, slices for arrays); LABELSECTOR, LABELOFFSET, MAXPARTITIONS from hal's arm64 include (the host's values amd64's and arm64's) instead of bsd's MachineDisklabel"
@@ -10210,7 +10222,7 @@ native = ["sys/hal/sysbytes.rs::Disklabel::cksum_words"]
 kind = "moved"
 
 [[module]]
-rust = "sys/lib/sysdefs/dkio.rs"
+rust = "sys/lib/sysdefs/dev/dkio.rs"
 lz = ["sys/sys/dkio.rs"]
 status = "redesigned"
 notes = "N7.1d: <sys/dkio.h> but DIOCGPART (struct partinfo is bsd's until N7.3c); dk_inquiry, dk_cache and dk_diskmap AbiPod through abi_pod!, dk_diskmap's device a usize (a user address)"
@@ -12611,7 +12623,7 @@ notes = "N5.9f1; wired at N5.9f2 (bsd's sys/sys/fusebuf.rs deleted): <sys/fusebu
 
 [[module.fn]]
 lz = "sys/sys/fusebuf.rs::fuse_abi"
-native = ["sys/lib/sysdefs/pod.rs::abi_pod"]
+native = ["sys/lib/sysdefs/base/pod.rs::abi_pod"]
 kind = "merged"
 
 [[module.fn]]
@@ -13645,7 +13657,7 @@ native = ["utimens_times"]
 kind = "merged"
 
 [[module]]
-rust = "sys/lib/sysdefs/syslimits.rs"
+rust = "sys/lib/sysdefs/base/syslimits.rs"
 lz = ["sys/sys/syslimits.rs"]
 status = "inherited"
 
@@ -13726,7 +13738,7 @@ status = "redesigned"
 notes = "N4.7b: an adapter of kernel::tty::termios (0 unsafe, forbid): every item re-exported"
 
 [[module]]
-rust = "sys/lib/sysdefs/types.rs"
+rust = "sys/lib/sysdefs/base/types.rs"
 lz = ["sys/sys/types.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/time/clock.rs"]
@@ -13739,7 +13751,7 @@ status = "redesigned"
 
 [[module.fn]]
 lz = "sys/sys/ucred.rs::Xucred"
-native = ["sys/lib/sysdefs/mount.rs::Xucred"]
+native = ["sys/lib/sysdefs/fs/mount.rs::Xucred"]
 kind = "moved"
 
 [[module]]
@@ -13749,7 +13761,7 @@ status = "redesigned"
 notes = "N4.3: the adapter of kernel::file::uio: re-exports Iovec, UioRw, UioSeg, UIO_SMALLIOV, UIO_MAXIOV and names Uio<'a> = kernel::file::uio::Uio<'a, BsdProcGlue>, so its users (the 5 frozen amd64 files among them) compile unchanged"
 
 [[module]]
-rust = "sys/lib/sysdefs/unistd.rs"
+rust = "sys/lib/sysdefs/proc/unistd.rs"
 lz = ["sys/sys/unistd.rs"]
 status = "inherited"
 
@@ -13759,12 +13771,12 @@ lz = ["sys/sys/user.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/sysdefs/uuid.rs"
+rust = "sys/lib/sysdefs/base/uuid.rs"
 lz = ["sys/sys/uuid.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/lib/sysdefs/vmmeter.rs"
+rust = "sys/lib/sysdefs/vm/vmmeter.rs"
 lz = ["sys/sys/vmmeter.rs"]
 status = "inherited"
 
@@ -13776,7 +13788,7 @@ adapted_by = ["sys/kernel/vm/vnode.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/v
 notes = "N5.2: the face of kernel::fs::vnode for the bsd file systems: Vnode the alias of the kernel's Vnode<BsdProcGlue>, VnodeG (v_nc_tree, v_cache_dst, v_socket, si_lockf: bsd's members, LZ's unsafe impl Sync moved onto it from struct vnode, decision 2), the struct vop_*_args and struct vops of Option<fn> slots (kern/vfs_vops.rs implements the kernel's Vnops on it), cred_ref (2 unsafe, LZ's; gone at N5.5a2c: a_cred is the kernel's Cred, read through Cred::ucred), vfs_subr.c's names over kernel::fs::subr (wrappers where the glue cannot be inferred), set_vops; Vnode::data_as (LZ's unsafe data<T>, no callers) deleted; N5.3: VnodeG narrowed to v_socket (the name cache's heads and the device's record locks are the kernel vnode's); the vn_* functions and vfs_getcwd_common the kernel's, VNOPS bsd's table of the kernel's vnode file operations, vn_fsizechk's adapter (the uio's thread pinned)"
 
 [[module]]
-rust = "sys/lib/sysdefs/wait.rs"
+rust = "sys/lib/sysdefs/proc/wait.rs"
 lz = ["sys/sys/wait.rs"]
 status = "inherited"
 
@@ -13834,7 +13846,7 @@ adapted_by = ["sys/kernel/vm/page.rs", "sys/kernel/proc/mod.rs", "sys/kern/proc_
 rust = "sys/ufs/ufs/ufs_quota.rs"
 lz = ["sys/ufs/ufs/ufs_quota.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/proc/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs", "sys/kernel/fs/ufs/ufs/ufs_quota.rs"]
+adapted_by = ["sys/lib/libkern/hash/siphash.rs", "sys/kernel/proc/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs", "sys/kernel/fs/ufs/ufs/ufs_quota.rs"]
 
 [[module]]
 rust = "sys/hal/vm/param.rs"
@@ -13845,42 +13857,42 @@ notes = "N3.1: the page arithmetic of uvm_param.h and its inherent impls on the 
 
 [[module.fn]]
 lz = "sys/uvm/uvm_param.rs::Paddr::atop"
-native = ["sys/lib/sysdefs/types.rs::Paddr::atop"]
+native = ["sys/lib/sysdefs/base/types.rs::Paddr::atop"]
 kind = "moved"
 
 [[module.fn]]
 lz = "sys/uvm/uvm_param.rs::Paddr::ptoa"
-native = ["sys/lib/sysdefs/types.rs::Paddr::ptoa"]
+native = ["sys/lib/sysdefs/base/types.rs::Paddr::ptoa"]
 kind = "moved"
 
 [[module.fn]]
 lz = "sys/uvm/uvm_param.rs::Paddr::round_page"
-native = ["sys/lib/sysdefs/types.rs::Paddr::round_page"]
+native = ["sys/lib/sysdefs/base/types.rs::Paddr::round_page"]
 kind = "moved"
 
 [[module.fn]]
 lz = "sys/uvm/uvm_param.rs::Paddr::trunc_page"
-native = ["sys/lib/sysdefs/types.rs::Paddr::trunc_page"]
+native = ["sys/lib/sysdefs/base/types.rs::Paddr::trunc_page"]
 kind = "moved"
 
 [[module.fn]]
 lz = "sys/uvm/uvm_param.rs::Vaddr::round_page"
-native = ["sys/lib/sysdefs/types.rs::Vaddr::round_page"]
+native = ["sys/lib/sysdefs/base/types.rs::Vaddr::round_page"]
 kind = "moved"
 
 [[module.fn]]
 lz = "sys/uvm/uvm_param.rs::Vaddr::trunc_page"
-native = ["sys/lib/sysdefs/types.rs::Vaddr::trunc_page"]
+native = ["sys/lib/sysdefs/base/types.rs::Vaddr::trunc_page"]
 kind = "moved"
 
 [[module.fn]]
 lz = "sys/uvm/uvm_param.rs::Vsize::round_page"
-native = ["sys/lib/sysdefs/types.rs::Vsize::round_page"]
+native = ["sys/lib/sysdefs/base/types.rs::Vsize::round_page"]
 kind = "moved"
 
 [[module.fn]]
 lz = "sys/uvm/uvm_param.rs::Vsize::atop"
-native = ["sys/lib/sysdefs/types.rs::Vsize::atop"]
+native = ["sys/lib/sysdefs/base/types.rs::Vsize::atop"]
 kind = "moved"
 
 [[module.fn]]
@@ -14890,12 +14902,12 @@ notes = "N4.1: ticks (TICKS, ticks()) moved from kern_clock.c's port, which re-e
 
 [[module.fn]]
 lz = "sys/sys/time.rs::Timespec"
-native = ["sys/lib/sysdefs/stat.rs::Timespec"]
+native = ["sys/lib/sysdefs/file/stat.rs::Timespec"]
 kind = "moved"
 
 [[module.fn]]
 lz = "sys/sys/time.rs::Timespec::new"
-native = ["sys/lib/sysdefs/stat.rs::Timespec::new"]
+native = ["sys/lib/sysdefs/file/stat.rs::Timespec::new"]
 kind = "moved"
 
 [[module.fn]]
@@ -15714,7 +15726,7 @@ status = "redesigned"
 notes = "N4.5b: signals over kernel::proc and kernel::sched: struct sigacts (its [m] members a Guarded cell of the process's ps_mtx, a BoxPool sigapl item or process 0's static, held by Process), the generation (cansignal, killpg1, pgsignal, prsignal, psignal, ptsignal, ptsignal_locked over pinned threads, trapsignal), the delivery (setsigctx, cursig, postsig, postsig_done, sigexit, userret), job control and the debugger (process_stop, process_continue, proc_stop_setup/finish, process_suspend_signal, proc_trap), single-threading (proc_suspend_check[_locked], single_thread_set/clear), sigaltstack's words, and the system calls' bodies (sigaction, sigprocmask, sigsuspend, sigaltstack, kill, thrkill, thrsigdivert, nosys); exit1, coredump, sendsig, signotify, PROC_STACK, TCB_GET and initprocess through ProcGlue. bsd's kern_sig.rs keeps the sysent rows, coredump and (until b2) the sigio registrations; N4.8b: sendsig (the SigDelivery of the running thread for hal::cpu::sig::sendsig), signotify (aston on the thread's machine slot and the glue's cpu_unidle of its CPU) and sys_sigreturn (the PROC_PC check, hal::cpu::sig::sigreturn, sigexit for a bad cookie, the mask less sigcantmask, EJUSTRETURN): ProcGlue::sendsig, signotify and proc_stack are gone"
 [[module.fn]]
 lz = "sys/kern/kern_sig.rs::WCOREFLAG"
-native = ["sys/lib/sysdefs/wait.rs::WCOREFLAG"]
+native = ["sys/lib/sysdefs/proc/wait.rs::WCOREFLAG"]
 kind = "moved"
 [[module.fn]]
 lz = "sys/kern/kern_sig.rs::pgrp"
@@ -16686,7 +16698,7 @@ notes = "N4.6b: sysctl's core (N4.7b's SysctlNode/SysctlReq/rdquad/rdstruct kept
 
 [[module.fn]]
 lz = "sys/kern/kern_sysctl.rs::PLEDGE_UNVEIL"
-native = ["sys/lib/sysdefs/pledge.rs::PLEDGE_UNVEIL"]
+native = ["sys/lib/sysdefs/proc/pledge.rs::PLEDGE_UNVEIL"]
 kind = "moved"
 
 [[module.fn]]
@@ -18282,7 +18294,7 @@ notes = "N6.4c2: icmp_var.h's _KERNEL part: enum icmpstat_counters and icmpcount
 
 [[module.fn]]
 lz = "sys/netinet/icmp_var.rs::NHIST"
-native = ["sys/lib/sysdefs/netinet_icmp_var.rs::ICMP_NHIST"]
+native = ["sys/lib/sysdefs/netinet/icmp_var.rs::ICMP_NHIST"]
 kind = "renamed"
 
 [[module]]
@@ -19108,12 +19120,12 @@ kind = "moved"
 
 [[module.fn]]
 lz = "sys/netinet/ip_icmp.rs::icmp_advlen_of"
-native = ["sys/lib/sysdefs/netinet_ip_icmp.rs::icmp_advlen"]
+native = ["sys/lib/sysdefs/netinet/ip_icmp.rs::icmp_advlen"]
 kind = "merged"
 
 [[module.fn]]
 lz = "sys/netinet/ip_icmp.rs::icmp_v6advlen_of"
-native = ["sys/lib/sysdefs/netinet_ip_icmp.rs::icmp_v6advlen"]
+native = ["sys/lib/sysdefs/netinet/ip_icmp.rs::icmp_v6advlen"]
 kind = "merged"
 
 [[module]]
@@ -19245,22 +19257,22 @@ notes = "N6.4a: in_var.h's kernel half: struct in_ifaddr and struct in_multi rea
 
 [[module.fn]]
 lz = "sys/netinet/in_var.rs::InAliasreqIfrau"
-native = ["sys/lib/sysdefs/netinet_in_var.rs::InAliasreq"]
+native = ["sys/lib/sysdefs/netinet/in_var.rs::InAliasreq"]
 kind = "merged"
 
 [[module.fn]]
 lz = "sys/netinet/in_var.rs::InAliasreq::zeroed"
-native = ["sys/lib/sysdefs/netinet_in_var.rs::InAliasreq"]
+native = ["sys/lib/sysdefs/netinet/in_var.rs::InAliasreq"]
 kind = "merged"
 
 [[module.fn]]
 lz = "sys/netinet/in_var.rs::InAliasreq::ifra_addr"
-native = ["sys/lib/sysdefs/netinet_in_var.rs::InAliasreq"]
+native = ["sys/lib/sysdefs/netinet/in_var.rs::InAliasreq"]
 kind = "merged"
 
 [[module.fn]]
 lz = "sys/netinet/in_var.rs::InAliasreq::ifra_addr_mut"
-native = ["sys/lib/sysdefs/netinet_in_var.rs::InAliasreq"]
+native = ["sys/lib/sysdefs/netinet/in_var.rs::InAliasreq"]
 kind = "merged"
 
 [[module]]
@@ -21067,7 +21079,7 @@ native = ["WDOG_CTL"]
 kind = "merged"
 
 [[module]]
-rust = "sys/lib/sysdefs/sensors.rs"
+rust = "sys/lib/sysdefs/dev/sensors.rs"
 lz = ["sys/sys/sensors.rs"]
 status = "redesigned"
 notes = "N7.1b: <sys/sensors.h>'s ABI half: enum sensor_type and sensor_status (with from_i32), the SENSOR_DRIVE_* values and flags, struct sensor and struct sensordev by abi_pod! (tv is struct timeval's image IfTimeval), their layout checks; 0 unsafe"
@@ -21135,9 +21147,9 @@ crate = "hal"
 reason = "decision 54: the byte views of sysdefs' data shapes (Disklabel's from_bytes and cksum_words, Icmp's icmp_dun words, the ifreq address members viewed in place, Nfsfh's fh_generic) as extension traits over hal::user's bytes_of and hal::mem::pod, and the tests of those views, which cannot live in a crate that forbids unsafe"
 
 [[extra]]
-rust = "sys/lib/sysdefs/pod.rs"
+rust = "sys/lib/sysdefs/base/pod.rs"
 reason = "decision 54: the AbiPod marker and the abi_pod! macro of hal::user (N3.5, decision 17), moved unchanged beside the types they mark: a safe trait whose impls only the macro writes, with its compile-time layout checks; the byte reinterpretations that trust it stay in hal::user"
 
 [[extra]]
-rust = "sys/lib/sysdefs/reftest.rs"
+rust = "sys/lib/sysdefs/base/reftest.rs"
 reason = "copy of sys/hal/reftest.rs (itself a copy of sys/reftest.rs) so the headers moved out of hal keep their #[ignore] reference-backed tests byte-identical (crate::reftest resolves inside sysdefs); the copies merge when bsd's last reference test moves"
