@@ -8,12 +8,14 @@ loadable module, decision 22) goes. The CPU's trap still enters in `hal` (the ve
 assembly and registers); `hal` saves the registers and hands them, uninterpreted, to the
 dispatcher `abi` registers: the only upward call, like the panic handler.
 
-- `abi` depends on `kernel` and `hal` in Cargo; never on `bsd`. `kernel` and `hal`
+- `abi` depends on `kernel`, `hal` and `sysdefs` in Cargo; never on `bsd`. `kernel` and `hal`
   never name `abi`.
 - Its only door to the kernel is `kernel::api`: one function per system call (R3).
   From `kernel` it names nothing else.
+- Decision 54 (2026-11-26, the user): the ABI edge's constants and `#[repr(C)]` structures
+  are the leaf crate `sysdefs` (`sys/lib/sysdefs/`, data only: no `unsafe`, no state, no
+  logic), which `abi` names freely and R6 does not read; `hal::sys` no longer exists.
 - From `hal` it names only passive items (abi-check R6):
-  - `hal::sys::*` (the ABI edge's constants and `#[repr(C)]` structures);
   - from `hal::syscall`, only the types `HandlerInfo`, `Register`, `Rval`, `SysArgs`,
     `SysResult`, `SyscallFn` and `ENOSYS`, and the registration of its dispatcher;
   - decision 53 (2026-11-26, the user, with N7.abi2): also `hal::syscall`'s `UserRegs`

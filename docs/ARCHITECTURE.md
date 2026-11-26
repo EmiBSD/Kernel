@@ -41,16 +41,19 @@ decision of the operating system, `#![forbid(unsafe_code)]` at its root; `sys/ab
 userland interface, linked into the kernel image (decision 47), `forbid`, translation only; and
 `bsd` at `sys/` itself (OpenBSD's kernel image is `/bsd`), the LZ tree with its subsystems as
 modules (`kern`, `uvm`, `dev`, `ddb`, `sys`, `machine`, `arch`), replaced subsystem by subsystem
-and deleted at N9. Dependencies go one way: `bsd -> abi -> kernel -> hal` and `bsd -> kernel`
-(only the image crate names `abi`, which calls the kernel through `kernel::api` alone, decision
-52); `hal` depends on nothing of ours but `libkern`.
+and deleted at N9. Under all four, the leaf crate `sys/lib/sysdefs/` (decision 54, 2026-11-26)
+holds OpenBSD's basic types, constants and `#[repr(C)]` ABI structures (what `hal::sys` was),
+`#![forbid(unsafe_code)]`, data only. Dependencies go one way: `bsd -> abi -> kernel -> hal`
+and `bsd -> kernel` (only the image crate names `abi`, which calls the kernel through
+`kernel::api` alone, decision 52), and every one of them `-> sysdefs`; `hal` depends on nothing
+of ours but `libkern` and `sysdefs`.
 
 The cycles OpenBSD resolves at link time (`trap → uvm_fault → pmap → tsleep → sched`) were the
 reason `bsd` was one crate until 2026-10-16 (v1: a module could become a crate only if it used
 nothing from `crate::{kern, uvm, arch, machine}`). Under v2 an upward call is never a
 dependency: it is a trait `kernel` or `hal` declares and `bsd` implements and registers in
 `hal`'s registry at boot, one row of `bridges.toml` each (section 0.3). `sys/lib/libkern` and
-`sys/lib/libz` stay leaves (OpenBSD builds both as libraries too; libz holds what the kernel
+`sys/lib/libz` stay leaves, as `sysdefs` is (OpenBSD builds both as libraries too; libz holds what the kernel
 compiles of zlib: crc32, adler32, deflate, inflate; zlib licence).
 
 No `src/` directory (`[lib] path = "lib.rs"`), so C and Rust paths differ only by extension.
@@ -59,7 +62,8 @@ No `src/` directory (`[lib] path = "lib.rs"`), so C and Rust paths differ only b
 
 `sys/hal/` is grouped by purpose, one directory per group, so a driver or a subsystem names only
 the groups it needs (the user approved the layout on 2026-11-26). The root keeps what other
-rules name by path (`syscall`, `sys`, `user`, `machine`, `arch`) and the small leaves. `api`,
+rules name by path (`syscall`, `sysbytes`, `user`, `machine`, `arch`) and the small leaves
+(`sys` is the leaf crate `sysdefs` since decision 54). `api`,
 the `KernelApi` table, is no longer there: decision 52 deleted it (`abi` calls `kernel::api`).
 
 | Group | Holds | Used by |
@@ -313,7 +317,7 @@ window beside the image (decision 37), with the `Legacy` fallback of decision 29
 missing; decision 47 records what went with it. The pieces now:
 
 - **The table.** `sys/abi/sysent.rs`: one `Native(fn) | Legacy` entry per number of
-  `<sys/syscall.h>` (`hal::sys::syscall`), 170 of 331 `Native` (`NATIVE`; pipe and pipe2 the
+  `<sys/syscall.h>` (`sysdefs::syscall`), 170 of 331 `Native` (`NATIVE`; pipe and pipe2 the
   first, at N2.6). The translations are one file per group of the kernel (`proc.rs`, `vm.rs`,
   `file.rs`, `event.rs`, `time.rs`, `base.rs`, `fs.rs`, `net.rs`, N7). A `Native` entry calls
   its `kernel::api` function, which runs the same `sysent[]` row through `mi_syscall` (the
@@ -323,7 +327,7 @@ missing; decision 47 records what went with it. The pieces now:
 - **The kernel's door.** `kernel::api` (decision 52, 2026-11-26): one plain function per
   `Native` system call, grouped as the kernel is (`kernel::api::{proc, vm, file, event, time,
   base, fs, net}`), and `syscall_legacy`. `abi` depends on `kernel` and calls them directly;
-  `abi-check` R6 confines it to `kernel::api` and, of `hal`, to `hal::sys::*`, `hal::syscall`'s
+  `abi-check` R6 confines it to `kernel::api` and, of `hal`, to `hal::syscall`'s
   types and `set_handler`, since the rest of both crates' public API acts on the kernel's own
   state. Each function still reaches its row, which `bsd` holds, through one bridge,
   `kernel::syscall::LegacySyscalls` (`bridges.toml`, paid by N9). Until decision 52 the door
@@ -418,6 +422,7 @@ headers (`fdreg.h`, `nec765reg.h`) compile everywhere with their host tests.
 | `bitflags` | `sys/` | typed flag sets for `#define` groups; a macro, no runtime |
 | (none for lists and trees) | `sys/sys/queue.rs`, `sys/sys/tree.rs` | `intrusive-collections` was dropped at M1: the OpenBSD macros are short, their semantics are the project's to keep, and a crate's policy changes would bind us as the `limine` crate's did |
 | `libsa`, `boot`, `efi` | `sys/lib/libsa`, `sys/stand/boot`, `sys/stand/efi` | not crates.io crates: OpenBSD code ported here (M14), split into crates as OpenBSD builds libsa as a library and compiles `sys/stand/boot` into every boot program; the boot loaders (`sys/arch/amd64/stand/efiboot`, package `efiboot-amd64`) depend on them, the kernel does not. `libsa` dev-depends on `bsd` for the host tests that pin its header layouts to the kernel's |
+| `sysdefs` | `sys/lib/sysdefs` | not a crates.io crate: our own leaf crate (decision 54), OpenBSD's basic types, constants and `#[repr(C)]` ABI structures, `forbid(unsafe_code)`, no dependencies |
 | `proptest` | dev-only | property tests for libkern |
 | `serde`, `toml` | `tools/xtask` | tracker parsing |
 | `fatfs` | `tools/xtask` | writes the FAT boot image; a host tool, not kernel code |

@@ -66,6 +66,7 @@ sys/                         package `bsd`: the LZ tree, legacy, replaced subsys
   abi/                       crate `abi`: OpenBSD's userland interface, linked into the kernel image, forbid, no logic
   stand/                     the boot loaders (separate binaries, outside the four crates)
   lib/libkern/ lib/libz/     leaf crates
+  lib/sysdefs/               crate `sysdefs`: OpenBSD's basic types, constants and #[repr(C)] ABI structures, the data under every layer (decision 54); forbid, no logic
 tools/xtask/                 host tooling: `cargo xtask {image,qemu,smoke,lz,unsafe-report,diff-openbsd,...}`
 docs/                        PHASE2 (the process), ARCHITECTURE, IDIOMS, ROADMAP (N0..), SYNC, JOURNAL, STATUS, SETUP, C_TO_RUST (frozen)
 ```
@@ -94,7 +95,7 @@ Two provenance rules:
 | `just check-drift` | `cargo xtask lz drift --strict`: no LZ commit after the pin without a record |
 | `just check-unsafe` | `cargo xtask unsafe-report --check`: no subsystem over its budget |
 | `just check-hal` | `cargo xtask hal-check`: no `pub unsafe fn`, a `// SAFETY:` on every block, no `static mut`, `hal` under `hal_ceiling` |
-| `just check-abi` | `cargo xtask abi-check`: `sys/abi/` holds no logic (decision 25) and names `kernel` only through `kernel::api`, `hal` only through `hal::sys`, `hal::syscall`'s types and `set_handler` (R6, decisions 47 and 52) |
+| `just check-abi` | `cargo xtask abi-check`: `sys/abi/` holds no logic (decision 25) and names `kernel` only through `kernel::api`, `hal` only through `hal::syscall`'s types and `set_handler`, `sysdefs` freely (R6, decisions 47, 52 and 54) |
 | `just check` | build (arm64), clippy, fmt, `lz check`, `unsafe-report --check`, `just test`: no QEMU; runs at the milestone close, not per commit (the user's decision of 2026-10-16: develop first, compile later) |
 | `just ci` | all of the above plus the smokes, drift and `diff-openbsd`; run at the milestone close, not per slice (the user's decision of 2026-10-16) |
 | `just ci-full` | `ci` with every smoke on `-smp 4` (not 2), then the installer end to end on the archs of `EMIBSD_ARCHS` (`smoke-install-*`, needs `just comp`; amd64's recipes at N10); green before a milestone is met, except N2, whose close runs without it; N3's close runs it for both (decision 24) |
