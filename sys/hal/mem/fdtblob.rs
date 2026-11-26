@@ -189,7 +189,7 @@ impl Blob {
         // later one (after an unwinding test, or from another CPU) is refused too.
         if self
             .state
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |s| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |s| {
                 (s != LENT).then_some(ADOPTED)
             })
             .is_err()
