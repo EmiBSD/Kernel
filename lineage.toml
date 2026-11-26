@@ -16774,6 +16774,12 @@ kind = "dropped"
 reason = "an identity test of two optional mbufs over the raw links: the records are owned by SbData, whose last record and tail are fields, not pointers to compare"
 
 [[module.fn]]
+lz = "sys/kern/uipc_socket2.rs::sounlock_shared"
+native = []
+kind = "dropped"
+reason = "its only caller, bsd's nfs, moved to kernel::fs::nfs, which unlocks through the guard solock_shared answers"
+
+[[module.fn]]
 lz = "sys/kern/uipc_socket2.rs::sblastrecordchk"
 native = []
 kind = "dropped"

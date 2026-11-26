@@ -118,8 +118,8 @@
 //!
 //! ## Deviations
 //! - `satosin`, `satosin_const` and `sintosa` are pointer casts (`docs/C_TO_RUST.md`) for
-//!   `bsd`'s raw socket addresses; `in_nam2sin` checks through the kernel's and answers the
-//!   pointer into the caller's mbuf, as LZ's callers use it.
+//!   `bsd`'s raw socket addresses. `in_nam2sin` went with its last `bsd` caller (the raw
+//!   and TCP sockets use the kernel's).
 //! - `in_control` has the `pru_control` signature (`sys/protosw.rs`): the socket's `SS_PRIV`
 //!   and the kernel copy of the request, handed to the kernel's `in_control`; `in_ioctl` is
 //!   the raw request of the kernel's own callers and tests.
@@ -129,7 +129,6 @@
 //!   back), where LZ's answered and took a `&'static`.
 
 use crate::sys::errno::Errno;
-use crate::sys::mbuf::{Mbuf, mtod};
 use crate::sys::socket::Sockaddr;
 use crate::sys::socketvar::{SS_PRIV, Socket};
 
@@ -152,12 +151,6 @@ pub const fn satosin_const(sa: *const Sockaddr) -> *const SockaddrIn {
 /// `sintosa(sin)`: a `sockaddr_in` seen as a generic `sockaddr`.
 pub const fn sintosa(sin: *mut SockaddrIn) -> *mut Sockaddr {
     sin.cast()
-}
-
-/// `in_nam2sin(nam, &sin)`: the `sockaddr_in` in mbuf `nam`, checked by the kernel's.
-pub fn in_nam2sin(nam: &Mbuf) -> Result<*mut SockaddrIn, Errno> {
-    kernel::netinet::in_::in_nam2sin(nam)?;
-    Ok(satosin(mtod::<Sockaddr>(nam)))
 }
 
 /// `in_control(so, cmd, data, ifp)`: the `pru_control` of the Internet protocols: the

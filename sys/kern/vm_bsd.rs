@@ -480,7 +480,7 @@
 //! - `uvn_attach` of a block device needs the device switch (`bdevsw[].d_type`, `DIOCGPART`
 //!   through `d_ioctl`, `conf.c`): reported by the kernel's pager, and the attach fails (NULL)
 //!   as for a device that is not a disk (LZ's). `uvm_vnp_sync(NULL)` is `uvm_vnp_sync(None)`;
-//!   `uvm_vnp_uncache` returns `bool` (LZ's). `UVM_PAGE_OWN` is not configured; the `DEBUG`
+//!   `UVM_PAGE_OWN` is not configured; the `DEBUG`
 //!   printfs are compiled out as in C (LZ's).
 //! - `sysctl_proc_args` (`kern_sysctl.rs`) answers `EINVAL` when the victim's vmspace is gone
 //!   between its `PS_EXITING` check and the reference (`Process::vmspace_share` is `None`),
@@ -1268,16 +1268,6 @@ pub fn uvn_attach(vp: &'static Vnode, accessprot: VmProt) -> Option<ObjRef> {
 /// => the caller must XLOCK and VOP_LOCK the vnode before calling us
 pub fn uvm_vnp_terminate(vp: &'static Vnode) {
     kernel::vm::vnode::uvm_vnp_terminate(vp);
-}
-
-/// uvm_vnp_uncache: disable "persisting" in a vnode... when last reference is gone we will
-/// kill the object (flushing dirty pages back to the vnode if needed).
-///
-/// => returns TRUE if there was no uvm_object attached or if there was one and we killed it
-///    [i.e. if there is no active uvn]
-/// => called with the vnode VOP_LOCK'd [we will unlock it for I/O, if needed]
-pub fn uvm_vnp_uncache(vp: &'static Vnode) -> bool {
-    kernel::vm::vnode::uvm_vnp_uncache(vp)
 }
 
 /// uvm_vnp_setsize: grow or shrink a vnode uvn

@@ -151,14 +151,6 @@ pub fn solock(so: &Socket) {
     }
 }
 
-/// `solock_shared(so)`: the shared net lock (internet domains) and the socket's lock.
-pub fn solock_shared(so: &Socket) {
-    if is_inet(so) {
-        net_lock_shared();
-    }
-    so.so_lock_legacy().enter_write_detached();
-}
-
 /// `solock_nonet(so)`: the socket's lock; an internet socket's caller holds the net lock.
 pub fn solock_nonet(so: &Socket) {
     if is_inet(so) {
@@ -197,14 +189,6 @@ pub fn sounlock(so: &Socket) {
     } else {
         so.so_lock_legacy().exit_write_detached();
     }
-}
-
-/// `sounlock_shared(so)`: undoes `solock_shared`.
-pub fn sounlock_shared(so: &Socket) {
-    if is_inet(so) {
-        net_unlock_shared();
-    }
-    so.so_lock_legacy().exit_write_detached();
 }
 
 /// `sounlock_nonet(so)`: undoes `solock_nonet` (and ends the holding of a socket
