@@ -93,8 +93,8 @@
 //!   reference) and gives the saved name back. One more of the kind (N6.7b3): an exclusive
 //!   create whose `VOP_SETATTR` of the verifier fails leaves the new file locked and
 //!   referenced in the C (and in LZ); here it is `vput`.
-//! - `nfsrv_symlink` hands `VOP_SYMLINK` the target up to its first NUL, the C's `strlen`
-//!   of its NUL-terminated copy (LZ passed all `len2` bytes).
+//! - The C's second `pool_put` of the name buffer after a failed `VOP_MKNOD` (a double free;
+//!   LZ's note) is closed: the buffer is owned, and given back once.
 //! - The device path of `nfsrv_create` is version 2's only (version 3 creates a `VREG`); where
 //!   it ends a call with its status, the directory the lookup kept (none in version 2) is
 //!   released first, as `nfsmout:` would.
@@ -107,6 +107,8 @@
 //!   ends the walk (the C would loop or read past the buffer; LZ's).
 //!
 //! ## Redesign
+//! - LZ slip fixed: `nfsrv_symlink` hands `VOP_SYMLINK` the target up to its first NUL, the
+//!   C's `strlen` of its NUL-terminated copy (LZ passed all `len2` bytes).
 //! - LZ's procedures took the descriptor's raw cursor (`nd_md`, `nd_dpos`), parked
 //!   `&'static Mbuf` replies built through `nfsm_build` views and filled in later through an
 //!   `unsafe` view (`nfsm_rebuild`, the read's attributes), and `Vec<Iovec>`s of `mtod`
@@ -3290,12 +3292,13 @@ mod tests {
     use crate::fs::nfs::nfsm_subs::{test_bytes, test_chain};
     use crate::fs::nfs::nfsproto::{
         NFSERR_ACCES, NFSERR_EXIST, NFSERR_INVAL, NFSERR_IO, NFSERR_ISDIR, NFSERR_NOENT,
-        NFSERR_NOTDIR, NFSERR_NOTEMPTY, NFSERR_ROFS, NFSERR_STALE, NFSPROC_ACCESS, NFSPROC_COMMIT,
-        NFSPROC_CREATE, NFSPROC_FSINFO, NFSPROC_FSSTAT, NFSPROC_GETATTR, NFSPROC_LINK,
-        NFSPROC_LOOKUP, NFSPROC_MKDIR, NFSPROC_MKNOD, NFSPROC_NOOP, NFSPROC_NULL, NFSPROC_PATHCONF,
-        NFSPROC_READ, NFSPROC_READDIR, NFSPROC_READDIRPLUS, NFSPROC_READLINK, NFSPROC_REMOVE,
-        NFSPROC_RENAME, NFSPROC_RMDIR, NFSPROC_SETATTR, NFSPROC_SYMLINK, NFSPROC_WRITE,
-        NFSV3CREATE_EXCLUSIVE, NFSV3SATTRTIME_DONTCHANGE, NFSV3WRITE_DATASYNC, Nfstype,
+        NFSERR_NOTDIR, NFSERR_NOTEMPTY, NFSERR_NXIO, NFSERR_ROFS, NFSERR_STALE, NFSPROC_ACCESS,
+        NFSPROC_COMMIT, NFSPROC_CREATE, NFSPROC_FSINFO, NFSPROC_FSSTAT, NFSPROC_GETATTR,
+        NFSPROC_LINK, NFSPROC_LOOKUP, NFSPROC_MKDIR, NFSPROC_MKNOD, NFSPROC_NOOP, NFSPROC_NULL,
+        NFSPROC_PATHCONF, NFSPROC_READ, NFSPROC_READDIR, NFSPROC_READDIRPLUS, NFSPROC_READLINK,
+        NFSPROC_REMOVE, NFSPROC_RENAME, NFSPROC_RMDIR, NFSPROC_SETATTR, NFSPROC_SYMLINK,
+        NFSPROC_WRITE, NFSV3CREATE_EXCLUSIVE, NFSV3SATTRTIME_DONTCHANGE, NFSV3WRITE_DATASYNC,
+        Nfstype,
     };
     use crate::fs::nfs::rpcv2::{AUTH_TOOWEAK, RPC_GARBAGE, RPC_PROCUNAVAIL};
     use crate::fs::nfs::xdr_subs::xdr_get;
@@ -4197,6 +4200,82 @@ mod tests {
         r.n(4);
         r.done();
 
+        // GETATTR: the file's attributes after the status.
+        let w = reply(&s, NFSPROC_GETATTR, &Req::default().fh(&f2, false), false);
+        let mut r = Rd::status(w, 0);
+        let fa = r.n(17);
+        r.done();
+        assert_eq!((fa[0], fa[1] & 0o7777, fa[5]), (1, 0o600, 3));
+        // SETATTR with the Sun client's 0xffff mode ("don't set") and a size: the mode is
+        // kept, the size is set; the reply carries the attributes.
+        let sattr = |mode: u32, size: u32| {
+            Req::default()
+                .fh(&f2, false)
+                .u(mode)
+                .u(u32::MAX)
+                .u(u32::MAX)
+                .u(size)
+                .raw(&[0xff; 16])
+        };
+        let w = reply(&s, NFSPROC_SETATTR, &sattr(0xffff, 2), false);
+        let mut r = Rd::status(w, 0);
+        let fa = r.n(17);
+        r.done();
+        assert_eq!((fa[1] & 0o7777, fa[5]), (0o600, 2), "mode kept, size set");
+        // A real mode is set.
+        let w = reply(&s, NFSPROC_SETATTR, &sattr(0o100_640, u32::MAX), false);
+        let mut r = Rd::status(w, 0);
+        let fa = r.n(17);
+        r.done();
+        assert_eq!((fa[1] & 0o7777, fa[5]), (0o640, 2));
+
+        // SYMLINK: file handle, name, the target, then the sattr (status alone back);
+        // READLINK of it gives the target, of a regular file ENXIO (EINVAL in version 3).
+        let w = reply(
+            &s,
+            NFSPROC_SYMLINK,
+            &Req::default()
+                .fh(&root, false)
+                .name(b"sl")
+                .name(b"motd")
+                .sattr2(0o120_777),
+            false,
+        );
+        Rd::status(w, 0).done();
+        let (sl, fa) = lookup2(b"sl");
+        assert_eq!(fa[0], 5, "a symbolic link");
+        let w = reply(&s, NFSPROC_READLINK, &Req::default().fh(&sl, false), false);
+        let mut r = Rd::status(w, 0);
+        assert_eq!(r.opaque(), b"motd");
+        r.done();
+        let w = reply(
+            &s,
+            NFSPROC_READLINK,
+            &Req::default().fh(&motd, false),
+            false,
+        );
+        Rd::status(w, NFSERR_NXIO).done();
+
+        // LINK: the file's handle, the directory's, the name; status alone.
+        let w = reply(
+            &s,
+            NFSPROC_LINK,
+            &Req::default().fh(&motd, false).fh(&root, false).name(b"lk"),
+            false,
+        );
+        Rd::status(w, 0).done();
+        let (lk, fa) = lookup2(b"lk");
+        assert_eq!((lk, fa[2]), (motd, 2), "the same file, two links");
+        for name in [&b"lk"[..], b"sl"] {
+            let w = reply(
+                &s,
+                NFSPROC_REMOVE,
+                &Req::default().fh(&root, false).name(name),
+                false,
+            );
+            Rd::status(w, 0).done();
+        }
+
         // A rename of a directory over a file: ISDIR in version 2 (EEXIST in version 3).
         let ren = Req::default()
             .fh(&root, false)
@@ -4360,6 +4439,107 @@ mod tests {
         // EPERM is not one of REMOVE's version 3 errors either: IO; the directory stays.
         assert_eq!(status3(&s, NFSPROC_REMOVE, &rm), NFSERR_IO);
         assert!(lookup(&s, &public, b"sub").is_ok());
+        testffs::unmount_root(s.p, s.mp);
+    }
+
+    /// Version 3 CREATE of `name` under the root and WRITE of `data` at `off` (one request).
+    fn put(s: &Srv, name: &[u8], off: u64, data: &[u8], create: bool) -> Fhandle {
+        let root = s.root;
+        let fh = if create {
+            let rq = Req::default()
+                .fh(&root, true)
+                .name(name)
+                .u(0)
+                .sattr3(Some(0o644), None);
+            Rd::status(reply(s, NFSPROC_CREATE, &rq, true), 0)
+                .postop_fh()
+                .expect("a handle")
+        } else {
+            lookup(s, &root, name).expect("the file")
+        };
+        let rq = Req::default()
+            .fh(&fh, true)
+            .hyper(off)
+            .u(data.len() as u32)
+            .u(NFSV3WRITE_FILESYNC)
+            .name(data);
+        let mut r = Rd::status(reply(s, NFSPROC_WRITE, &rq, true), 0);
+        r.wcc();
+        assert_eq!(r.u() as usize, data.len(), "written");
+        fh
+    }
+
+    /// A known pattern with no zero byte.
+    fn pattern(n: usize) -> Vec<u8> {
+        (0..n).map(|i| (i % 251) as u8 + 1).collect()
+    }
+
+    #[test]
+    fn a_read_of_several_clusters_ends_at_the_end_of_file_with_zero_padding() {
+        let (_g, s) = served(MNT_EXPORTED, 0);
+        let data = pattern(9003);
+        let big = put(&s, b"big", 0, &data, true);
+        // 8192 bytes asked from 1000: 8003 are left, so eof; 8003 is padded by one byte.
+        let rq = Req::default().fh(&big, true).hyper(1000).u(8192);
+        let w = reply(&s, NFSPROC_READ, &rq, true);
+        let mut r = Rd::status(w, 0);
+        assert!(r.postop().is_some());
+        assert_eq!(r.u(), 8003, "count");
+        assert_eq!(r.u(), 1, "eof");
+        assert_eq!(r.u(), 8003, "the opaque's length");
+        let ws = r.n(8003usize.div_ceil(4));
+        r.done();
+        let bytes: Vec<u8> = ws.iter().flat_map(|w| w.to_be_bytes()).collect();
+        assert_eq!(&bytes[..8003], &data[1000..], "the data");
+        assert_eq!(&bytes[8003..], &[0], "the XDR padding is zero");
+        // The same asked short of the end: no eof, no padding.
+        let rq = Req::default().fh(&big, true).hyper(0).u(8192);
+        let mut r = Rd::status(reply(&s, NFSPROC_READ, &rq, true), 0);
+        r.postop();
+        assert_eq!((r.u(), r.u()), (8192, 0));
+        assert_eq!(r.opaque(), &data[..8192]);
+        r.done();
+        // Version 2: attributes, then the data.
+        let rq = Req::default().fh(&big, false).u(1000).u(8192).u(0);
+        let mut r = Rd::status(reply(&s, NFSPROC_READ, &rq, false), 0);
+        assert_eq!(r.n(17)[5], 9003);
+        assert_eq!(r.opaque(), &data[1000..]);
+        r.done();
+        testffs::unmount_root(s.p, s.mp);
+    }
+
+    #[test]
+    fn a_write_cut_over_many_small_mbufs_lands_whole() {
+        let (_g, s) = served(MNT_EXPORTED, 0);
+        // The request is cut in 50-byte mbufs (`descript`): 3001 bytes are ~60 pieces, the
+        // first not aligned to the arguments.
+        let data = pattern(3001);
+        let f = put(&s, b"w", 13, &data, true);
+        let w = reply(&s, NFSPROC_GETATTR, &Req::default().fh(&f, true), true);
+        let mut r = Rd::status(w, 0);
+        assert_eq!(r.n(21)[6], 3014, "size");
+        r.done();
+        let rq = Req::default().fh(&f, true).hyper(0).u(4096);
+        let mut r = Rd::status(reply(&s, NFSPROC_READ, &rq, true), 0);
+        r.postop();
+        assert_eq!((r.u(), r.u()), (3014, 1));
+        let got = r.opaque();
+        r.done();
+        assert_eq!(&got[..13], &[0; 13], "the hole before the write");
+        assert_eq!(&got[13..], &data[..], "the data");
+        // A second write over the middle, again through the pieces.
+        let patch = [0xeeu8; 700];
+        put(&s, b"w", 1000, &patch, false);
+        let rq = Req::default().fh(&f, true).hyper(0).u(4096);
+        let mut r = Rd::status(reply(&s, NFSPROC_READ, &rq, true), 0);
+        r.postop();
+        r.u();
+        r.u();
+        let got = r.opaque();
+        assert_eq!(&got[1000..1700], &patch[..]);
+        assert_eq!(&got[1700..], &data[1687..]);
+        assert_eq!(&got[13..1000], &data[..987]);
+        testffs::unmount_root(s.p, s.mp);
     }
 
     #[test]
@@ -4533,8 +4713,12 @@ mod tests {
         assert_eq!(ren(b"d", &root, b"e", true), 0);
         assert_eq!(lookup(&s, &root, b"d"), Err(NFSERR_NOENT));
 
-        // CREATE: GUARDED refuses an existing name, UNCHECKED truncates it, EXCLUSIVE keeps
-        // its verifier and answers a retransmission with the same one.
+        // CREATE: GUARDED refuses an existing name, UNCHECKED truncates it, EXCLUSIVE with
+        // the same verifier again (a retransmission) is refused with EEXIST. On 64-bit the
+        // C's 8-byte verifier `bcopy` fills only `tv_sec`, so `tv_nsec` stays VNOVAL and
+        // `ufs_setattr` sets no time (nfs_serv.c:1119, ufs_vnops.c:408-410): the verifier is
+        // never stored, the retransmission fails the `bcmp` and answers EEXIST, in the C and
+        // here.
         let create = |name: &[u8], how: u32, tail: Req| {
             let rq = Req::default()
                 .fh(&root, true)
@@ -4563,9 +4747,9 @@ mod tests {
         let w = create(b"x", NFSV3CREATE_EXCLUSIVE, verf.clone());
         Rd::status(w, 0);
         let w = create(b"x", NFSV3CREATE_EXCLUSIVE, verf.clone());
-        let r = Rd::accepted(w, 0);
-        let st = r.w[6];
-        assert!(st == 0 || st == NFSERR_EXIST as u32, "{st}");
+        let mut r = Rd::status(w, NFSERR_EXIST);
+        r.wcc();
+        r.done();
         let w = create(b"x", NFSV3CREATE_EXCLUSIVE, Req::default().raw(b"another!"));
         let mut r = Rd::status(w, NFSERR_EXIST);
         r.wcc();
