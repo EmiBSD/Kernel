@@ -15,7 +15,20 @@ dispatcher `abi` registers: the only upward call, like the panic handler.
 - From `hal` it names only passive items (abi-check R6):
   - `hal::sys::*` (the ABI edge's constants and `#[repr(C)]` structures);
   - from `hal::syscall`, only the types `HandlerInfo`, `Register`, `Rval`, `SysArgs`,
-    `SysResult`, `SyscallFn` and `ENOSYS`, and the registration of its dispatcher.
+    `SysResult`, `SyscallFn` and `ENOSYS`, and the registration of its dispatcher;
+  - decision 53 (2026-11-26, the user, with N7.abi2): also `hal::syscall`'s `UserRegs`
+    (a view of the user trap frame, valid for the handler's call only, with exactly three
+    methods: read a set of registers, set the return register with the error flag, and
+    `restart()`), `Gpr` (the machine's registers as a per-arch enum with their names: the
+    convention reads as the domain, `Gpr::X8`, and a wrong register does not compile) and
+    `ChildFn` (a forked child's first return), with `SyscallFn` and `set_handler` taking
+    their new signatures. abi owns OpenBSD's per-arch system call convention
+    (`sys/abi/arch/<arch>.rs`: the number register, the argument registers, the return
+    register, the carry bit, when to restart, the child's first return) and calls
+    `kernel::api::syscall_return` (`mi_syscall_return`) after writing the result; `hal`
+    keeps only machine mechanics (the vector, the frame, the counters, the interrupt
+    enable, the barrier skip and the pc arithmetic inside `restart()`) and interprets
+    nothing userland sends. abi never writes a pc.
   It never names a `hal` function with side effects (`dispatch`, `hal::cpu::*`,
   `hal::user::*`, the kcopy tokens, ...).
 - No logic, no state, no loops (R1, R2, R4, R5), as before.
