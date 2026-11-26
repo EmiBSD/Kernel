@@ -27,6 +27,7 @@ pub mod disk;
 pub mod diskmap;
 pub mod disksubr;
 pub mod evcount;
+pub mod ofw;
 pub mod sensors;
 #[cfg(feature = "boot_config")]
 pub mod userconf;

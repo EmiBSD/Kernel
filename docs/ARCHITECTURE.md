@@ -100,7 +100,7 @@ as they were. `netinet` and `netinet6` keep their names. The root keeps `lib.rs`
 | `kernel::file` | file (mod.rs), descrip, event, select, pipe, uio | sync, mem, ds |
 | `kernel::tty` | tty (mod.rs), pty, clist, termios | sync, mem, ds |
 | `kernel::base` | task, smr, extent, log, sysctl, reboot, prf | sync, mem, ds |
-| `kernel::dev` | autoconf, device, evcount, sensors, watchdog, clock_subr | dev, sync, mem, ds, cpu's spl and interrupts, cons (rule D2) |
+| `kernel::dev` | autoconf, device, evcount, sensors, watchdog, clock_subr, ofw (the device tree reader over `hal::mem::fdtblob`'s bytes, N7.2b0) | dev, sync, mem, ds, cpu's spl and interrupts, cons (rule D2) |
 | `kernel::vm` | the page system | vm, mem |
 | `kernel::fs`, `net`, `netinet`, `netinet6`, `crypto` | VFS and file systems, the network stack, crypto | sync, mem, ds |
 

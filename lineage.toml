@@ -21069,6 +21069,33 @@ status = "redesigned"
 notes = "N7.1b: <sys/sensors.h>'s ABI half: enum sensor_type and sensor_status (with from_i32), the SENSOR_DRIVE_* values and flags, struct sensor and struct sensordev by abi_pod! (tv is struct timeval's image IfTimeval), their layout checks; 0 unsafe"
 
 [[module]]
+rust = "sys/kernel/dev/ofw/fdt.rs"
+crate = "kernel"
+lz = ["sys/dev/ofw/fdt.rs"]
+status = "redesigned"
+notes = "N7.2b0: the flattened device tree reader in the kernel, 0 unsafe: a read-only parser over the blob as &'static [u8] (hal::mem::fdtblob's), every word, name and value read with its length test (word, cstr), out of range read as the function's own nothing; struct fdt a Copy value of the slice and its offsets in a ReadMostly<Option<Fdt>> (tree_inited the None), copied out once per public call; a node the byte offset of its FDT_NODE_BEGIN (FdtNode(NonZeroU32), the OF handle's number), Option where the C has NULL; skip_node with a depth count for the C's recursion; fdt_get_reg returns the FdtReg; the sixteen OF_* with LZ's signatures; testfdt (any(test, doubles)): LZ's blob builder, virt_like, install/empty guards over a process-wide test lock; the write side, fdt_next_property/OF_nextprop, OF_getpropstr, OF_translate and the DEBUG printers stay unported (LZ's gap)"
+[[module.fn]]
+lz = "sys/dev/ofw/fdt.rs::be32"
+native = ["word"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/dev/ofw/fdt.rs::TREE_INITED"
+native = ["TREE"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/dev/ofw/fdt.rs::Fdt::empty"
+native = []
+kind = "dropped"
+reason = "the empty tree is TREE's None (the C's tree_inited == 0), so no zeroed struct fdt is built"
+
+[[module]]
+rust = "sys/kernel/dev/ofw/openfirm.rs"
+crate = "kernel"
+lz = ["sys/dev/ofw/openfirm.rs"]
+status = "redesigned"
+notes = "N7.2b0: <dev/ofw/openfirm.h>'s re-export of the OF_* functions and OFMAXPARAM over the kernel's reader (kernel::dev::ofw::fdt); bsd's openfirm.rs stays LZ's, over bsd's adapter"
+
+[[module]]
 rust = "sys/kernel/dev/sensors.rs"
 crate = "kernel"
 lz = ["sys/kern/kern_sensors.rs", "sys/sys/sensors.rs", "sys/kern/kern_sysctl.rs"]
