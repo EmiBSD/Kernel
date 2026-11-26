@@ -47,71 +47,39 @@
 //!
 //! Upstream: sys/sys/evcount.h @ 3ce1f3f79392
 //!
-//! Status: `ported`. Milestone M4 ports `struct evcount`; M11e gives `ec_percpu` its type,
-//! the `struct cpumem *` of the per-CPU counters (`subr_percpu.c`). The functions are
-//! `kern/subr_evcount.rs`.
-//!
-//! ## Deviations
-//! - `ec_count` is the first field and an `AtomicU64`: the amd64 interrupt stubs increment it
-//!   in assembly through the handler's `ih_count`, and `evcount_inc` from Rust.
-//! - `ec_name` is a `&'static str` (the C's `const char *` is always a driver name).
-//! - `ec_percpu` is an `Option<CpumemPtr>` (`NULL` is `None`).
+//! Status: `ported`. `struct evcount` and its functions are `kernel::evcount`'s since N7.1b,
+//! re-exported here for the drivers still in `bsd` (`docs/SCAFFOLDING.md`).
 
-use core::cell::Cell;
-use core::sync::atomic::AtomicU64;
-
-use crate::queue_adapter;
-use crate::sys::percpu::CpumemPtr;
-use crate::sys::queue::TailqEntry;
-
-/// `struct evcount`.
-#[repr(C)]
-pub struct Evcount {
-    /// `ec_count`: main counter.
-    pub ec_count: AtomicU64,
-    /// `ec_id`: counter ID.
-    pub ec_id: Cell<i32>,
-    /// `ec_name`: counter name.
-    pub ec_name: Cell<&'static str>,
-    /// `ec_data`: user data (the interrupt vector, for `KERN_INTRCNT_VECTOR`).
-    pub ec_data: Cell<*const ()>,
-    /// `ec_percpu`: per-cpu counter.
-    pub ec_percpu: Cell<Option<CpumemPtr>>,
-    /// `next`: the `evcount_list` link.
-    pub next: TailqEntry<Evcount>,
-}
-
-// SAFETY: written by `evcount_attach`/`evcount_detach`/`evcount_percpu` at attach time and by
-// `evcount_init_percpu`, all on the boot CPU before the other CPUs run, and counted from
-// interrupt context; the counts are atomic and the rest is only read afterwards.
-unsafe impl Sync for Evcount {}
-
-impl Evcount {
-    /// A detached, zero counter.
-    pub const fn new() -> Self {
-        Self {
-            ec_count: AtomicU64::new(0),
-            ec_id: Cell::new(0),
-            ec_name: Cell::new(""),
-            ec_data: Cell::new(core::ptr::null()),
-            ec_percpu: Cell::new(None),
-            next: TailqEntry::new(),
-        }
-    }
-}
-
-impl Default for Evcount {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-queue_adapter!(
-    /// `TAILQ_HEAD(, evcount)`: the list of counters, through `next`.
-    pub EvcountList: Evcount, next => TailqEntry<Evcount>
-);
-
-const _: () = {
-    assert!(core::mem::offset_of!(Evcount, ec_count) == 0);
-};
+pub use kernel::evcount::Evcount;
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    use core::sync::atomic::Ordering;
+
+    use kernel::evcount::{evcount_attach, evcount_detach, evcount_inc};
+
+    use super::*;
+    use crate::net::if_::tests::zeroed_static;
+
+    #[test]
+    fn a_zeroed_counter_attaches_counts_and_detaches() {
+        kernel::testutil::install();
+        // SAFETY: `Evcount` is valid all zero (its members are atomics, hal's `StrSlot`,
+        // `ReadMostly` of an `Option<MArc>` and `PinEntry`, each 0 when empty), as the zeroed
+        // interrupt records that embed one rely on.
+        let ec: &'static Evcount = unsafe { zeroed_static() };
+        assert_eq!(ec.count(), 0);
+        assert!(!ec.is_attached());
+        evcount_attach(ec, "zeroed0", Some(7));
+        evcount_inc(ec);
+        ec.ec_count.fetch_add(1, Ordering::Relaxed);
+        assert_eq!(ec.count(), 2);
+        assert_eq!(ec.vector(), Some(7));
+        assert_eq!(ec.name(), "zeroed0");
+        evcount_detach(ec);
+        assert!(!ec.is_attached());
+    }
+}
+/* </TESTS> */

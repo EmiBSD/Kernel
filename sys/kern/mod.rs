@@ -103,7 +103,6 @@ pub mod selftest;
 pub mod socket_glue;
 pub mod subr_autoconf;
 pub mod subr_disk;
-pub mod subr_evcount;
 // extent(9) moved into the kernel crate (N4.1): its legacy API is `sys/sys/extent.rs`, still
 // reached at this path by its callers.
 pub use crate::sys::extent as subr_extent;

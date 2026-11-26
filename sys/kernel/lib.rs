@@ -86,6 +86,7 @@ pub mod clockintr;
 pub mod cred;
 pub mod crypto;
 pub mod descrip;
+pub mod evcount;
 pub mod event;
 pub mod exit;
 pub mod extent;

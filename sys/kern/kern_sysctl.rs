@@ -148,7 +148,6 @@ use crate::kern::proc_glue::{BsdProcGlue, proc_tables, process_ref};
 use crate::kern::socket_glue::fp_socket;
 use crate::kern::subr_autoconf::AUTOCONF_SERIAL;
 use crate::kern::subr_disk::{DISK_CHANGE, DISK_COUNT, DISKLIST, duid_format, duid_iszero};
-use crate::kern::subr_evcount::evcount_sysctl;
 use crate::kern::subr_pool::{POOL_DEBUG, pool_reclaim_all, sysctl_dopool};
 use crate::kern::subr_prf::{SPLASSERT_CTL, panic};
 use crate::kern::uipc_socket2::soassertlocked;
@@ -1434,19 +1433,9 @@ fn kern_audio(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
     sysctl_audio(name, req.oldp, req.oldlenp, req.newp, req.newlen)
 }
 
-/// `kern.intrcnt`.
-fn kern_intrcnt(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
-    sysctl_intrcnt(name, req.oldp, req.oldlenp)
-}
-
 /// `kern.watchdog`.
 fn kern_watchdog(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
     sysctl_wdog(name, req.oldp, req.oldlenp, req.newp, req.newlen)
-}
-
-/// `kern.evcount`.
-fn kern_evcount(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
-    evcount_sysctl(name, req.oldp, req.oldlenp, req.newp, req.newlen)
 }
 
 /// `hw.sensors`.
@@ -1508,20 +1497,16 @@ static KERN_NODES: [(i32, &dyn SysctlNode); 27] = [
     (KERN_POOL, &Node(kern_pool)),
     (KERN_CPUSTATS, &Node(kern_cpustats)),
     (KERN_AUDIO, &Node(kern_audio)),
-    (KERN_INTRCNT, &Node(kern_intrcnt)),
+    // `kern.intrcnt` and `kern.evcount`: the kernel's nodes (N7.1b).
+    (KERN_INTRCNT, &kernel::evcount::IntrcntNode),
     (KERN_WATCHDOG, &Node(kern_watchdog)),
-    (KERN_EVCOUNT, &Node(kern_evcount)),
+    (KERN_EVCOUNT, &kernel::evcount::EvcountNode),
     // `kern.clockintr` and `kern.timecounter`: the kernel's nodes (N4.8a).
     (KERN_CLOCKINTR, &kernel::clockintr::ClockintrNode),
     // `kern.tty`: the kernel's node (N4.7b), over this glue's terminals.
     (KERN_TTY, &kernel::tty::TtyNode::<BsdProcGlue>::NODE),
     (KERN_TIMECOUNTER, &kernel::tc::TcNode),
 ];
-
-/// `sysctl_intrcnt`: `kern.intrcnt`, served by `evcount_sysctl`.
-pub fn sysctl_intrcnt(name: &[i32], oldp: usize, oldlenp: &mut usize) -> Result<(), Errno> {
-    evcount_sysctl(name, oldp, oldlenp, 0, 0)
-}
 
 /// `sysctl_sensors`: `hw.sensors.<dev>` (a `struct sensordev`) and
 /// `hw.sensors.<dev>.<type>.<numt>` (a `struct sensor`), copies without the kernel pointers.

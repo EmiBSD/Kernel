@@ -223,6 +223,7 @@ Locations are on `main` at the commit that last edited this file.
 | What | Where | Why | Removed by |
 |---|---|---|---|
 | `pub use kernel::clock_subr` (LZ's path `crate::kern::clock_subr`) and `sys/sys/time.rs`'s re-export of `ClockYmdhms` and `POSIX_BASE_YEAR` | `sys/kern/mod.rs`, `sys/sys/time.rs` | The time-of-day chips still in `bsd` import the date arithmetic by LZ's paths (`efi_machdep.rs`; amd64's `isa/clock.rs`, frozen, decision 44) | N7.2b (`efi_machdep`, `plrtc` implement `Todr`), N10 (amd64's) |
+| `sys/sys/evcount.rs`: a re-export of `kernel::evcount::Evcount` | `sys/sys/evcount.rs` | The interrupt controllers still in `bsd` embed `struct evcount` by LZ's path (`ampintc`, `agintc`; amd64's `intr.rs`, frozen) | N7.2a (the GIC drivers), N10 (amd64's) |
 
 ## Arriving
 
