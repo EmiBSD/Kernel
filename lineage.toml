@@ -20551,3 +20551,17 @@ lz = "sys/uvm/uvm_vnode.rs::_"
 native = []
 kind = "dropped"
 reason = "the offset assertion of UvmVnode's #[repr(C)] first member: no cast, no layout to check"
+
+[[module]]
+rust = "sys/kernel/dev/device.rs"
+crate = "kernel"
+lz = ["sys/sys/device.rs"]
+status = "redesigned"
+notes = "N7.1a: struct device as the kernel's counted node (DevRef = MArc<Device>), written once when made, dv_flags an atomic, linked on alldevs and the deferred queues through PinEntrys keyed to the tree's lock; the driver's softc an erased handle (AnyArc) only the driver names; cd_devs/cd_ndevs a UnitTable (an MArray of handles in a Guarded keyed to TREE, grown as the C's array); void *aux -> Aux, the void *match of cfmatch_t -> Match (owned: an indirect bus's losing softc is dropped); struct cfattach+cfdriver -> trait DriverOps, struct cfdata -> trait ConfigRow; the constants and Devclass moved here and re-exported by bsd's sys/sys/device.rs, which keeps the legacy header, Cfdata/Cfattach/Cfdriver and the suspend/firmware prototypes"
+
+[[module]]
+rust = "sys/kernel/dev/autoconf.rs"
+crate = "kernel"
+lz = ["sys/kern/subr_autoconf.rs"]
+status = "redesigned"
+notes = "N7.1a: autoconfiguration in the kernel crate: config_search/scan/rootsearch/found_sm/rootfound/attach/make_softc/detach/deactivate/defer/mountroot, the deferred queues, config_pending, config_detach_children, config_suspend[_all], config_activate_children, device_lookup, device_mainbus over DevRef nodes; alldevs and the two deferred queues hal::pinlist::PinLists under TREE (a Mutexed<()> at IPL_NONE, never held across a driver's function), autoconf_attdet a Mutexed<i32> at IPL_HIGH slept on with sleep_nsec; a walk carries the next node's handle (unit table or the node's parked slot), the deferred record is the node's slot (no malloc); the machine's table, device_register, boothowto and rootvp through the ConfigGlue bridge; config_mountroot asks root_mounted (LZ's rootvp stub went); config_attach_by_hand for rdattach; hotplug and NMPATH gaps kept"

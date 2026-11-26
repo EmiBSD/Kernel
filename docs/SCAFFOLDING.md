@@ -218,6 +218,14 @@ Locations are on `main` at the commit that last edited this file.
 | The image's call `abi::abi_init(&KERNEL_API)` and the `KernelApi` table it hands over, filled with `bsd`'s `Legacy` path and `native_*` wrappers, printed as `abi: N syscalls, M native` | `sys/kern/abi_module.rs:97` (`abi_boot`; the table at `:58`), called by `sys/stand/mod.rs:254` (`start_kernel`) | The ABI is linked into the image (decision 47) and `bsd` is the image crate until N9: the one crate that may name `abi` and the `bsd` wrappers the table's entries point at; `kernel` never names `abi`, `abi` names nothing but `hal` | N9: the `kernel` + `abi` + `hal` binary makes the call and fills the table |
 | A `Legacy` row over a kernel function with no `Native` entry: `abi` -> `KernelApi::syscall_legacy` -> `mi_syscall` on `bsd`'s `SYSENT[nr]` -> the row's forward -> the kernel's function (`sched_yield`, `__thrsigdivert`, and since LZ 9fd12af2c575's sync `__thrsleep` and `__thrwakeup`, since LZ 0925b8a94390's `sysarch`) | `sys/kern/kern_synch.rs:328` (`sys_sched_yield`), `:342` (`sys___thrsleep`), `:358` (`sys___thrwakeup`); `sys/kern/kern_sig.rs:292` (`sys___thrsigdivert`); `sys/kern/kern_xxx.rs:112` (`sys_sysarch`) | The table of rows is `bsd`'s; a `Native` flip would add a `KernelApi` member and a `native_*` wrapper for no safety gained (DECISIONS-thrsleep D1) | N9: the kernel's own table |
 
+## The device tree's legacy edge (N7.1a)
+
+| What | Where | Why | Removed by |
+|---|---|---|---|
+| `Aux::Legacy`, a legacy bus's `void *` as an exposed address | `sys/kernel/dev/device.rs:203` | `bsd`'s drivers read their attach arguments by casting `void *aux` | N7.14, with the last legacy bus (N10 for amd64's if U3 is taken) |
+| `DriverOps::flags_set`, `unit_set`, `units_resized` | `sys/kernel/dev/device.rs:545-549` | `bsd`'s drivers read `dv_flags`, `cd_devs` and `cd_ndevs` from the legacy header and `Cfdriver` (11 and 14 drivers; `sd`'s per-buffer `device_lookup` on the `cd_devs` mirror, decision 43's cost) | N7.14 (N10 with U3) |
+| `device_adopt`: a node around a softc made outside `config_make_softc` | `sys/kernel/dev/autoconf.rs:683` | a legacy indirect bus (isa) owns its preallocated softc between the search and the attach (the C's `free` of a loser), and `bsd`'s tests make parents by hand | N7.14 (isa at N10) |
+
 ## Arriving
 
 Nothing announced.
