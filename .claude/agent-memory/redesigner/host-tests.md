@@ -304,3 +304,4 @@ metadata:
 - The host pmap's `zero_page` models nothing, so `UVM_PLA_ZERO`/`BUS_DMA_ZERO` is not testable on the host: say so in the test and let the boot selftest check it (N7.0).
 - A kernel `Timeout` armed by a host test can fire in any other test's `tick_once` (one wheel per process): assert a callback's calls as "these, then any number of the timeout's own" or delete the timeout first (N7.1b watchdog).
 - A kernel `Task` has no unlinking `Drop`: a test that frees the block holding a task still queued on a host queue aborts at the `PinEntry` drop; `task_del` it (or wait for the run) before the last handle goes (N7.1b sensor_task).
+- A system call path through several crates is tested end to end with a test `LegacySyscalls` whose answer encodes the number and the six arguments as decimal digits (`Err(nr * 1e6 + digits)`); bsd's test then checks every Native entry hands its row exactly `sysent[nr].sy_narg` arguments in order (decision 52's slice).
