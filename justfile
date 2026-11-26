@@ -1352,7 +1352,7 @@ nfs_a := "--a-send-after '# ' --a-send 'ifconfig vio1 inet 192.168.77.1/24 up\\n
     "--a-send-after '# ' --a-send 'until [ -f b-wait.txt ]; do sleep 1; done\\n' " + \
     "--a-send-after '# ' --a-send 'ps -axo pid= -o comm= >/tmp/p\\n' " + \
     "--a-send-after '# ' --a-send 'while read p c; do [ $c = nfsd ] && kill $p; done </tmp/p\\n' " + \
-    "--a-send-after '# ' --a-send 'sleep 3; ps -axo comm= | grep -c nfsd\\n' " + \
+    "--a-send-after '# ' --a-send 'sleep 3; echo nfsd-left-$(ps -axo comm= | grep -c nfsd)\\n' " + \
     "--a-send-after '# ' --a-send 'nfsd -tu -n 4; sleep 1; echo r >r.txt; echo nfs-restart-$((9+9))\\n'"
 nfs_b := "--b-send-after '# ' --b-send 'ifconfig vio1 inet 192.168.77.2/24 up\\n' " + \
     "--b-send-after '# ' --b-send 'until showmount -e 192.168.77.1; do sleep 2; done\\n' " + \
@@ -1382,7 +1382,7 @@ nfs_b := "--b-send-after '# ' --b-send 'ifconfig vio1 inet 192.168.77.2/24 up\\n
     "--b-send-after '# ' --b-send 'until m /export && [ -f /mnt/r.txt ]; do umount /mnt; sleep 2; done\\n' " + \
     "--b-send-after '# ' --b-send 'cat /mnt/a.txt; umount /mnt && echo nfs-again-$((8+9))\\n'"
 nfs_expect := "--a-expect 'nfs-fat-6' --a-expect 'nfs-up-5' --a-expect 'nfs-udp-8' --a-expect 'nfs-tcp-9' " + \
-    "--a-expect 'nfs-restart-18' " + \
+    "--a-expect 'nfsd-left-0' --a-expect 'nfs-restart-18' " + \
     "--b-expect 'Exports list on 192.168.77.1:' --b-expect '/export                            192.168.77.2' " + \
     "--b-expect '/export2                           192.168.77.0' " + \
     "--b-expect 'nfs-a-7' --b-expect '192.168.77.1:/export on /mnt type nfs (v3, udp' " + \
