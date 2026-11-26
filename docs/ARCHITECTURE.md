@@ -2208,6 +2208,11 @@ reaches the machine (bios0's attach, its mappings, `bios_efiinfo`) is `#[cfg(tar
 `hal` does the same since N3.1: `sys/hal/arch/host/mod.rs` compiles, for their tests, each
 arch's `include/param.rs`, `include/pte.rs`, `include/vmparam.rs` and the pure constants of
 its pmap (`pmap/layout.rs`) in their own layout (`#[path = "../amd64"]`, `"../arm64"`).
+One arm64 file is compiled into every host build, not for its tests alone: `gpr.rs`
+(N7.abi2, decision 53), the names of the general registers, `hal::arch::host::gpr` by
+`#[path = "../arm64/gpr.rs"]`: `abi::arch::arm64`'s convention runs in `abi`'s host tests
+over the host double's `UserRegs`, which must name the same registers; it holds an enum and
+its index, no logic. amd64's names join at N10.
 
 ### Parallel smokes
 
