@@ -945,7 +945,10 @@ pub fn bus_dma_check(t: BusDmaTag) {
 
     // The kernel's own DMA memory (N7.0): two pages of `hal::dma::DmaBuf` from the plain tag's
     // provider, zeroed, the first and last words and a copy across the page boundary written
-    // and read back, each sync, then the drop's unmap and free.
+    // and read back, each sync, then the drop's unmap and free; once on a coherent tag (each
+    // sync a barrier) and once on one that is not, whose syncs run the cache operations
+    // (PREREAD|PREWRITE writes back and invalidates, POSTREAD invalidates, PREWRITE writes
+    // back), the data kept through them.
     let req = DmaReq {
         size: 2 * PAGE_SIZE,
         align: PAGE_SIZE,
@@ -953,33 +956,35 @@ pub fn bus_dma_check(t: BusDmaTag) {
         zero: true,
         ..DmaReq::default()
     };
-    match DmaBuf::alloc(bus_dma_memory(true), &req) {
-        Ok(mut b) => {
-            let last = b.len() - size_of::<u64>();
-            let zeroed = b.read::<u64>(8) == 0;
-            b.write::<u64>(0, 0x0123_4567_89ab_cdef);
-            b.write::<u64>(last, !0x0123_4567_89ab_cdef);
-            let pattern: [u8; 64] = core::array::from_fn(|i| i as u8 ^ 0xa5);
-            b.copy_in(PAGE_SIZE - 32, &pattern);
-            for ops in [
-                DmaSync::PREREAD | DmaSync::PREWRITE,
-                DmaSync::POSTREAD,
-                DmaSync::PREWRITE,
-                DmaSync::POSTWRITE,
-            ] {
-                b.sync(0, b.len(), ops);
-            }
-            let mut back = [0u8; 64];
-            b.copy_out(PAGE_SIZE - 32, &mut back);
-            if !zeroed
-                || b.read::<u64>(0) != 0x0123_4567_89ab_cdef
-                || b.read::<u64>(last) != !0x0123_4567_89ab_cdef
-                || back != pattern
-            {
-                fail("DmaBuf");
-            }
+    for (coherent, what) in [(true, "DmaBuf"), (false, "DmaBuf (not coherent)")] {
+        let Ok(mut b) = DmaBuf::alloc(bus_dma_memory(coherent), &req) else {
+            fail(what);
+            continue;
+        };
+        let last = b.len() - size_of::<u64>();
+        let zeroed = b.read::<u64>(8) == 0;
+        b.write::<u64>(0, 0x0123_4567_89ab_cdef);
+        b.write::<u64>(last, !0x0123_4567_89ab_cdef);
+        let pattern: [u8; 64] = core::array::from_fn(|i| i as u8 ^ 0xa5);
+        b.copy_in(PAGE_SIZE - 32, &pattern);
+        for ops in [
+            DmaSync::PREREAD | DmaSync::PREWRITE,
+            DmaSync::POSTREAD,
+            DmaSync::PREWRITE,
+            DmaSync::POSTWRITE,
+        ] {
+            b.sync(0, b.len(), ops);
         }
-        Err(_) => fail("DmaBuf"),
+        let mut back = [0u8; 64];
+        b.copy_out(PAGE_SIZE - 32, &mut back);
+        if b.is_coherent() != coherent
+            || !zeroed
+            || b.read::<u64>(0) != 0x0123_4567_89ab_cdef
+            || b.read::<u64>(last) != !0x0123_4567_89ab_cdef
+            || back != pattern
+        {
+            fail(what);
+        }
     }
 
     match failed {
