@@ -74,8 +74,16 @@
 #[cfg(test)]
 extern crate std;
 
+pub mod base;
+pub mod event;
+pub mod file;
+pub mod fs;
+pub mod net;
+pub mod proc;
 pub mod scarg;
 pub mod sysent;
+pub mod time;
+pub mod vm;
 
 use hal::api::KernelApi;
 
