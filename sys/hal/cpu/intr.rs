@@ -82,6 +82,9 @@
 //!   `disable_irq_daif_ret`/`restore_daif` pair is `hal::cpu`'s interrupt guard.
 //! - N4.5c: the `IntrLevel` bridge (`bsd`'s `splraise`/`splx` behind every `hal` lock) is
 //!   gone: the level is `hal`'s own, read and written here.
+//! - N7.2a1: `IPL_AUDIO`, `IPL_STATCLOCK`, `IPL_IPI`, `IPL_WAKEUP` and arm64's `IPL_IRQMASK`
+//!   and `IPL_FLAGMASK` join the levels, for the interrupt core in the kernel
+//!   (`kernel::dev::arm64::intr`) and the controllers after it.
 
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -110,14 +113,23 @@ mod levels {
     pub const IPL_TTY: i32 = 0x9;
     /// `IPL_VM`.
     pub const IPL_VM: i32 = 0xa;
+    /// `IPL_AUDIO`.
+    pub const IPL_AUDIO: i32 = 0xb;
     /// `IPL_SCHED` (`IPL_CLOCK`).
     pub const IPL_SCHED: i32 = 0xc;
     /// `IPL_HIGH`.
     pub const IPL_HIGH: i32 = 0xd;
+    /// `IPL_IPI`: inter-processor interrupts.
+    pub const IPL_IPI: i32 = 0xe;
     /// `IPL_MPFLOOR`: `IPL_TTY`.
     pub const IPL_MPFLOOR: i32 = 0x9;
     /// `NIPL`: the levels' count.
     pub const NIPL: usize = 16;
+    /// `IPL_IRQMASK`: the level part of a level and its flags (arm64's name; the host
+    /// compiles arm64's interrupt core for its tests).
+    pub const IPL_IRQMASK: i32 = 0xf;
+    /// `IPL_FLAGMASK`: the flags part (arm64's name, as `IPL_IRQMASK`).
+    pub const IPL_FLAGMASK: i32 = 0xf00;
 }
 
 /// The levels of arm64 (`<machine/intr.h>`).
@@ -137,14 +149,22 @@ mod levels {
     pub const IPL_TTY: i32 = 7;
     /// `IPL_VM`.
     pub const IPL_VM: i32 = 8;
+    /// `IPL_AUDIO`.
+    pub const IPL_AUDIO: i32 = 9;
     /// `IPL_SCHED` (`IPL_CLOCK`).
     pub const IPL_SCHED: i32 = 10;
     /// `IPL_HIGH`.
     pub const IPL_HIGH: i32 = 11;
+    /// `IPL_IPI`: inter-processor interrupts.
+    pub const IPL_IPI: i32 = 12;
     /// `IPL_MPFLOOR`: `IPL_TTY`.
     pub const IPL_MPFLOOR: i32 = 7;
     /// `NIPL`: the levels' count.
     pub const NIPL: usize = 13;
+    /// `IPL_IRQMASK`: the level part of a level and its flags.
+    pub const IPL_IRQMASK: i32 = 0xf;
+    /// `IPL_FLAGMASK`: the flags part.
+    pub const IPL_FLAGMASK: i32 = 0xf00;
 }
 
 /// The levels of amd64 (`<machine/intrdefs.h>`): its `spl(9)` is N10's.
@@ -164,10 +184,14 @@ mod levels {
     pub const IPL_TTY: i32 = 0x9;
     /// `IPL_VM`.
     pub const IPL_VM: i32 = 0xa;
+    /// `IPL_AUDIO`.
+    pub const IPL_AUDIO: i32 = 0xb;
     /// `IPL_SCHED` (`IPL_CLOCK`).
     pub const IPL_SCHED: i32 = 0xc;
     /// `IPL_HIGH`.
     pub const IPL_HIGH: i32 = 0xd;
+    /// `IPL_IPI`: inter-processor interrupts.
+    pub const IPL_IPI: i32 = 0xe;
     /// `IPL_MPFLOOR`: `IPL_TTY`.
     pub const IPL_MPFLOOR: i32 = 0x9;
     /// `NIPL`: the levels' count.
@@ -175,16 +199,27 @@ mod levels {
 }
 
 pub use levels::{
-    IPL_BIO, IPL_HIGH, IPL_MPFLOOR, IPL_NET, IPL_SCHED, IPL_SOFTCLOCK, IPL_SOFTNET, IPL_SOFTTTY,
-    IPL_TTY, IPL_VM, NIPL,
+    IPL_AUDIO, IPL_BIO, IPL_HIGH, IPL_IPI, IPL_MPFLOOR, IPL_NET, IPL_SCHED, IPL_SOFTCLOCK,
+    IPL_SOFTNET, IPL_SOFTTTY, IPL_TTY, IPL_VM, NIPL,
 };
+// `<machine/intrdefs.h>` (amd64) has no `IPL_IRQMASK` or `IPL_FLAGMASK`: they are arm64's
+// (`<machine/intr.h>`), and the host's for the tests of arm64's interrupt core.
+#[cfg(not(all(target_os = "none", target_arch = "x86_64")))]
+pub use levels::{IPL_FLAGMASK, IPL_IRQMASK};
 
 /// `IPL_CLOCK`: the clock interrupt's level, `IPL_SCHED` on both machines (`<machine/intr.h>`).
 pub const IPL_CLOCK: i32 = IPL_SCHED;
 
+/// `IPL_STATCLOCK`: the statistics clock's level, `IPL_CLOCK` on both machines.
+pub const IPL_STATCLOCK: i32 = IPL_CLOCK;
+
 /// `IPL_MPSAFE`: an "mpsafe" interrupt or soft interrupt, run without the kernel lock (a flag
 /// beside the level, both machines).
 pub const IPL_MPSAFE: i32 = 0x100;
+
+/// `IPL_WAKEUP`: an interrupt that may wake the machine from suspend (a flag beside the level,
+/// both machines).
+pub const IPL_WAKEUP: i32 = 0x200;
 
 /// `SI_TO_IRQBIT(si)`: the `ci_ipending` bit of soft interrupt `si`.
 const fn si_to_irqbit(si: usize) -> u64 {

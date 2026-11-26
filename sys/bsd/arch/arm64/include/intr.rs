@@ -54,87 +54,30 @@
 //! The functions it declares are `arm64/intr.rs`; the `spl*()` helpers are the
 //! `machine::intr` contract.
 //!
+//! N7.2a1: the levels are `hal::cpu::intr`'s (the owner of `spl(9)`'s numbers), the trigger
+//! types, `SOFTINTR_XCALL`, the IPI numbers and the handler type the kernel's
+//! (`kernel::dev::arm64::intr`, `kernel::dev::intr`), re-exported here under their names;
+//! `struct machine_intr_handle`, `struct arm_intr_func` and `struct interrupt_controller`
+//! stay for the drivers still in `bsd`, which the kernel reaches through `arm64/intr.rs`'s
+//! adapter.
+//!
 //! ## Deviations
 //! - `ic_establish`'s `char *name` is a `&'static str`; the controller's `ic_cookie` is the
 //!   controller itself in every driver, so it is a `*const ()`. `ic_establish_msi`'s
 //!   `uint64_t *addr, *data` are `&mut u64`.
 //! - The C's `void *` cell arrays (`int *cell`) are `&[u32]`.
 
-/// `IPL_NONE`: nothing.
-pub const IPL_NONE: i32 = 0;
-/// `IPL_SOFTCLOCK`: soft clock interrupts.
-pub const IPL_SOFTCLOCK: i32 = 2;
-/// `IPL_SOFTNET`: soft network interrupts.
-pub const IPL_SOFTNET: i32 = 3;
-/// `IPL_SOFTTTY`: soft terminal interrupts.
-pub const IPL_SOFTTTY: i32 = 4;
-/// `IPL_BIO`: block I/O.
-pub const IPL_BIO: i32 = 5;
-/// `IPL_NET`: network.
-pub const IPL_NET: i32 = 6;
-/// `IPL_TTY`: terminal.
-pub const IPL_TTY: i32 = 7;
-/// `IPL_VM`: memory allocation.
-pub const IPL_VM: i32 = 8;
-/// `IPL_AUDIO`: audio.
-pub const IPL_AUDIO: i32 = 9;
-/// `IPL_CLOCK`: clock.
-pub const IPL_CLOCK: i32 = 10;
-/// `IPL_SCHED`.
-pub const IPL_SCHED: i32 = IPL_CLOCK;
-/// `IPL_STATCLOCK`.
-pub const IPL_STATCLOCK: i32 = IPL_CLOCK;
-/// `IPL_HIGH`: everything.
-pub const IPL_HIGH: i32 = 11;
-/// `NIPL`: number of levels.
-pub const NIPL: usize = 13;
-/// `IPL_IPI`: interprocessor interrupt.
-pub const IPL_IPI: i32 = 12;
-
-/// `IPL_MPFLOOR`.
-pub const IPL_MPFLOOR: i32 = IPL_TTY;
-/// `IPL_IRQMASK`: priority only.
-pub const IPL_IRQMASK: i32 = 0xf;
-/// `IPL_FLAGMASK`: flags only.
-pub const IPL_FLAGMASK: i32 = 0xf00;
-/// `IPL_MPSAFE`: 'mpsafe' interrupt, no kernel lock.
-pub const IPL_MPSAFE: i32 = 0x100;
-/// `IPL_WAKEUP`: 'wakeup' interrupt.
-pub const IPL_WAKEUP: i32 = 0x200;
-
-/// `IST_NONE`: none.
-pub const IST_NONE: i32 = 0;
-/// `IST_PULSE`: pulsed.
-pub const IST_PULSE: i32 = 1;
-/// `IST_EDGE`: edge-triggered.
-pub const IST_EDGE: i32 = 2;
-/// `IST_LEVEL`: level-triggered.
-pub const IST_LEVEL: i32 = 3;
-/// `IST_LEVEL_LOW`.
-pub const IST_LEVEL_LOW: i32 = IST_LEVEL;
-/// `IST_LEVEL_HIGH`.
-pub const IST_LEVEL_HIGH: i32 = 4;
-/// `IST_EDGE_FALLING`.
-pub const IST_EDGE_FALLING: i32 = IST_EDGE;
-/// `IST_EDGE_RISING`.
-pub const IST_EDGE_RISING: i32 = 5;
-/// `IST_EDGE_BOTH`.
-pub const IST_EDGE_BOTH: i32 = 6;
-
-/// `SOFTINTR_XCALL`: the cross-call soft interrupt, after the MI ones.
-pub const SOFTINTR_XCALL: i32 = crate::sys::softintr::NSOFTINTR as i32;
-
-/// `ARM_IPI_NOP` (`MULTIPROCESSOR`): only wakes the CPU up.
-pub const ARM_IPI_NOP: i32 = 0;
-/// `ARM_IPI_DDB`: enter ddb.
-pub const ARM_IPI_DDB: i32 = 1;
-/// `ARM_IPI_HALT`: halt the CPU (`cpu_halt`).
-pub const ARM_IPI_HALT: i32 = 2;
-/// `ARM_IPI_XCALL`: run the cross calls (`NXCALL`).
-pub const ARM_IPI_XCALL: i32 = 3;
-
-/// An interrupt handler: `int (*)(void *)`.
-pub type IntrFn = fn(*mut core::ffi::c_void) -> i32;
+pub use hal::cpu::intr::{
+    IPL_AUDIO, IPL_BIO, IPL_CLOCK, IPL_FLAGMASK, IPL_HIGH, IPL_IPI, IPL_IRQMASK, IPL_MPFLOOR,
+    IPL_MPSAFE, IPL_NET, IPL_NONE, IPL_SCHED, IPL_SOFTCLOCK, IPL_SOFTNET, IPL_SOFTTTY,
+    IPL_STATCLOCK, IPL_TTY, IPL_VM, IPL_WAKEUP, NIPL,
+};
+pub use kernel::dev::arm64::intr::{
+    ARM_IPI_DDB, ARM_IPI_HALT, ARM_IPI_NOP, ARM_IPI_XCALL, IST_EDGE, IST_EDGE_BOTH,
+    IST_EDGE_FALLING, IST_EDGE_RISING, IST_LEVEL, IST_LEVEL_HIGH, IST_LEVEL_LOW, IST_NONE,
+    IST_PULSE, SOFTINTR_XCALL,
+};
+pub use kernel::dev::intr::IntrFn;
 
 /// `struct machine_intr_handle`: what `arm_intr_establish_fdt` returns.
 pub struct MachineIntrHandle {

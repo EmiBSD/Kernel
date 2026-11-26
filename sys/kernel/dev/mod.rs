@@ -18,8 +18,11 @@
 
 /* <CODE> */
 //! Devices (N7, docs/ROADMAP.md): the device tree, autoconfiguration and the driver
-//! interface (`subr_autoconf.c`, `<sys/device.h>`, N7.1a); the drivers follow from N7.2.
+//! interface (`subr_autoconf.c`, `<sys/device.h>`, N7.1a); the interrupt handler and arm64's
+//! interrupt core (N7.2a1); the drivers follow from N7.2.
 
+#[cfg(target_arch = "aarch64")]
+pub mod arm64;
 pub mod autoconf;
 pub mod clock_subr;
 pub mod device;
@@ -27,6 +30,7 @@ pub mod disk;
 pub mod diskmap;
 pub mod disksubr;
 pub mod evcount;
+pub mod intr;
 pub mod ofw;
 pub mod sensors;
 #[cfg(feature = "boot_config")]

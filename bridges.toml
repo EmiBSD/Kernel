@@ -41,6 +41,20 @@ trait = "IntrHardware"
 for = ["sys/hal/cpu/intr.rs"]
 paid_by = "N7"
 
+# bsd: the interrupt controllers still in bsd (struct interrupt_controller: ic_establish,
+# ic_establish_msi, ic_disestablish, ic_enable, ic_disable, ic_route, ic_cpu_enable,
+# ic_barrier, ic_set_wakeup), implemented by sys/bsd/arch/arm64/arm64/intr.rs (LegacyIc, one
+# per legacy struct that arm_intr_register_fdt registers) and received by the kernel as a value
+# (IcDesc::ops, N7.2a1). The kernel's own pre-registration (PreregIc) implements it too; the
+# trait stays as API. Paid when the last legacy table goes: the GICs (N7.2a2 ampintc, N7.2a3
+# agintc), pciecam's barrier-only table (N7.5), acpipci's (N7.11): the row goes at N7.11, with
+# the last one.
+# kernel::dev::arm64::intr::InterruptController
+[[bridge]]
+trait = "InterruptController"
+for = ["sys/kernel/dev/arm64/intr.rs"]
+paid_by = "N7"
+
 # bsd: pool_init/pool_get/pool_put, pr_nout, pr_npages (RawPool::npages, N5.9f2: vfs.fuse's
 # fusefs_pool_pages), pool_sethiwat and pool_cache_init (RawPool's
 # set_hiwat/cache_init, N3.4a: uvm_anon_init, amap_init) of sys/kern/subr_pool.rs, one pool per
