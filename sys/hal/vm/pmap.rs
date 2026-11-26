@@ -867,6 +867,10 @@ impl KernelMapper {
     /// [`KernelMapper::map_device`]'s entry of one page: `pa` at `va`, `PROT_READ |
     /// PROT_WRITE` and never executable, with the memory type `cache` (`pmap_kenter_cache`).
     #[cfg(target_arch = "aarch64")]
+    #[allow(
+        clippy::unused_self,
+        reason = "the entry goes through the kernel mapper so that only its holder enters device pages"
+    )]
     pub(crate) fn kenter_device(&self, va: Vaddr, pa: Paddr, cache: DevCache) {
         Backend::kenter_device(va, pa, cache);
     }
@@ -874,6 +878,10 @@ impl KernelMapper {
     /// Whether the frame `pa` holds part of the kernel image (its text, data and BSS), which
     /// [`KernelMapper::map_device`] refuses as it refuses managed frames.
     #[cfg(target_arch = "aarch64")]
+    #[allow(
+        clippy::unused_self,
+        reason = "asked through the kernel mapper, beside the device mapping it guards"
+    )]
     pub(crate) fn in_kernel_image(&self, pa: Paddr) -> bool {
         Backend::in_kernel_image(pa)
     }

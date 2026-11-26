@@ -189,7 +189,7 @@ pub(crate) fn cpu_dcache_inv_dma(buf: &DmaBuf, off: usize, len: usize) {
             line = out(reg) _,
             lo = out(reg) _,
             options(nostack),
-        )
+        );
     }
 }
 /* </CODE> */

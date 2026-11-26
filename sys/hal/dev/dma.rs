@@ -180,6 +180,10 @@ pub struct DmaSeg {
 
 /// What `bus_dmamem_alloc_range` and `bus_dmamem_map` are asked for one segment.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "the flags mirror the C's BUS_DMA_* bits, one field each, as bus_dmamem_alloc_range takes them"
+)]
 pub struct DmaReq {
     /// The bytes wanted (rounded up to pages by the provider).
     pub size: usize,
@@ -366,12 +370,12 @@ impl DmaBuf {
             *b = self.load(a);
             a += 1;
         }
-        let mut words = rest.chunks_exact_mut(size_of::<Word>());
-        for w in &mut words {
-            w.copy_from_slice(&self.load::<Word>(a).to_ne_bytes());
+        let (words, tail) = rest.as_chunks_mut::<{ size_of::<Word>() }>();
+        for w in words {
+            *w = self.load::<Word>(a).to_ne_bytes();
             a += size_of::<Word>();
         }
-        for b in words.into_remainder() {
+        for b in tail {
             *b = self.load(a);
             a += 1;
         }
@@ -385,14 +389,12 @@ impl DmaBuf {
             self.store(a, b);
             a += 1;
         }
-        let mut words = rest.chunks_exact(size_of::<Word>());
-        for w in &mut words {
-            let mut bytes = [0; size_of::<Word>()];
-            bytes.copy_from_slice(w);
-            self.store(a, Word::from_ne_bytes(bytes));
+        let (words, tail) = rest.as_chunks::<{ size_of::<Word>() }>();
+        for w in words {
+            self.store(a, Word::from_ne_bytes(*w));
             a += size_of::<Word>();
         }
-        for &b in words.remainder() {
+        for &b in tail {
             self.store(a, b);
             a += 1;
         }
@@ -469,6 +471,10 @@ impl DmaBuf {
     /// The one load: a `T` at address `a`, which the caller took from [`DmaBuf::range`] for at
     /// least `size_of::<T>()` bytes and checked aligned for `T`.
     #[inline(always)]
+    #[allow(
+        clippy::unused_self,
+        reason = "the load is read through the buffer so that it runs only while the buffer, and so its mapping, is alive"
+    )]
     fn load<T: AbiPod>(&self, a: usize) -> T {
         let p = ptr::with_exposed_provenance::<T>(a);
         // SAFETY: the invariant: `[va, va + mapped)` is the block the provider granted this
@@ -487,6 +493,10 @@ impl DmaBuf {
     /// The one store: `v` at address `a`, proved as for [`DmaBuf::load`]; `&mut self`, so no
     /// other access through this value runs beside it.
     #[inline(always)]
+    #[allow(
+        clippy::unused_self,
+        reason = "`&mut self` makes the store exclusive with every other access through this buffer while its mapping is alive"
+    )]
     fn store<T: AbiPod>(&mut self, a: usize, v: T) {
         let p = ptr::with_exposed_provenance_mut::<T>(a);
         // SAFETY: as for `load`: the `T` at `a` lies inside the block, aligned, in memory no

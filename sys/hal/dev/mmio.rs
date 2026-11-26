@@ -469,6 +469,10 @@ impl KernelMapper {
     /// `bus_space_unmap`'s `pmap_kremove`: the mapping `m` stands for removed, and its first
     /// page and length (whole pages) handed back for the caller to give the space back
     /// (`km_free`, or nothing for the device window).
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "the mapping is taken by value so that no register access through it can follow its removal"
+    )]
     pub fn unmap_device<R: RegBlock>(&self, m: Mmio<R>) -> (Vaddr, usize) {
         self.kremove(m.va, Vsize::new(m.size));
         (m.va, m.size)
