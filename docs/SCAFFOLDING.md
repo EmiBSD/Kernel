@@ -259,6 +259,15 @@ Locations are on `main` at the commit that last edited this file.
 | `disk_attach_unit` | `sys/kernel/dev/disk.rs` | vnd(4)'s `struct device` is made by hand in `bsd` (no `cfdata`, no node in the kernel's tree): its disk attaches by name and unit | N7.7 (vnd) |
 | diskmap(4)'s five `cdevsw` entry points as concrete functions over `BsdProcGlue` | `sys/dev/diskmap.rs` | `cdevsw[90].d_ioctl` and `kern_pledge.rs`'s `DIOCMAP` arm compare one function's address; a generic's instances may differ between codegen units | N7.3c (the device switch) |
 
+## The device tree reader's legacy edge (N7.2b0)
+
+| What | Where | Why | Removed by |
+|---|---|---|---|
+| The adapter: `sys/dev/ofw/fdt.rs` under LZ's names over `kernel::dev::ofw::fdt`, the re-exports of its constants, `FdtHead`, `FdtReg` and the sixteen `OF_*` (`dev/ofw/openfirm.rs` re-exports them from there), and thirteen one-line wrappers (`fdt_node_property` .. `of_fdt_node`; `fdt_get_reg` with LZ's `&mut FdtReg`) | `sys/dev/ofw/fdt.rs:64`, `:124-189` | `bsd`'s 21 `OF_*` files and 8 raw `fdt_*` files import the reader by LZ's path and signatures (U4's terms: no caller edited); each wrapper reads the tree once more for the conversion (`fdt_blob`), boot and attach only | N7.2b1 (`ofw_misc`, `ofw_gpio`, `ofw_pinctrl`), N7.2b2, N7.3c, N7.14 (the drivers and buses), with their callers |
+| `FdtNode = *const u32`, the blob's address plus the kernel's offset (`node`, `to_ptr`: address arithmetic, never dereferenced) | `sys/dev/ofw/fdt.rs:81`, `:85`, `:94` | The 8 raw callers (`arm64/machdep.rs`, `mainbus`, `simplebus`, `efi_machdep`, `include/fdt.rs`, `machine/fdt.rs`, `pluart_fdt`, `simplefb`) and amd64's frozen `mod.rs:1261` (`ptr::null()` as an `FdtNode`, decision 44) hold nodes as pointers (P19) | with the callers above; `machdep.rs` at N9; amd64's at N10 |
+| The boot trio over `hal::mem::fdtblob` (`fdt_get_size` = `probe`, `fdt_init` = `probe`, `adopt`, the kernel's `fdt_init`; `fdt_check_head`) | `sys/dev/ofw/fdt.rs:102`, `:111`, `:119` | arm64's `getbootinfo` and `initarm` name the blob by its address | N9, with `initarm`'s memory bootstrap (which may relocate the blob, P16) |
+| `kernel::dev::ofw::fdt::fdt_blob` (the installed blob) | `sys/kernel/dev/ofw/fdt.rs:277` | Its only user is the adapter's pointer conversion | with the adapter's `FdtNode` |
+
 ## Arriving
 
 Nothing announced.

@@ -683,8 +683,10 @@ pub unsafe fn getbootinfo(arg: usize) -> Result<BootInfo, &'static str> {
     if size == 0 || !unsafe { bootarg_direct_map(config, config + size as u64) } {
         return Err("getbootinfo: no FDT");
     }
+    // A blob `fdt_get_size` took by its magic and the kernel's reader refuses is still one
+    // the boot cannot read: LZ's message (`fdt_get_size` checked the whole header there).
     if fdt_init(fdt) == 0 {
-        return Err("getbootinfo: corrupt FDT");
+        return Err("getbootinfo: no FDT");
     }
 
     let mut howto = 0;

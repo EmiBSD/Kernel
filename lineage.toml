@@ -3852,8 +3852,8 @@ status = "inherited"
 rust = "sys/dev/ofw/fdt.rs"
 lz = ["sys/dev/ofw/fdt.rs"]
 status = "adapted"
-adapted_by = ["sys/sys/staticcell.rs"]
-notes = "M4: the read side (fdt_check_head, fdt_init, fdt_get_size, fdt_get_str, skip_*, fdt_node_property(_ints/_int), fdt_next_node, fdt_child_node, fdt_node_name, fdt_find_node, fdt_parent_node, fdt_find_phandle, fdt_get_cells, fdt_translate_reg, fdt_get_reg, fdt_is_compatible) and OF_peer/child/parent/finddevice/getnodebyname/getnodebyphandle/getproplen/getprop/getpropbool/getpropint/getpropintarray/getpropint64(array)/is_compatible/is_enabled/getindex; nodes are pointers into the blob, OF handles offsets as in C, property values slices (None for -1); the write side, fdt_next_property/OF_nextprop, OF_getpropstr, OF_translate and the DEBUG printers come with their users (M5)"
+adapted_by = ["sys/kernel/dev/ofw/fdt.rs"]
+notes = "N7.2b0: an adapter with LZ's names and signatures over the kernel's reader (kernel::dev::ofw::fdt) and hal::mem::fdtblob, 0 unsafe, forbid on its mod line: the constants, FdtHead, FdtReg and the sixteen OF_* re-exported; FdtNode kept a *const u32 (the installed blob's address plus the kernel's offset, never dereferenced) and thirteen one-line wrappers that convert it (fdt_get_reg keeps its &mut FdtReg, written on success only); the boot trio over hal: fdt_get_size = probe (the magic only), fdt_init = probe, adopt, the kernel's fdt_init, fdt_check_head = probe then the kernel's check of the adopted bytes; its callers unchanged; the write side and the DEBUG printers stay unported (LZ's gap)"
 
 [[module]]
 rust = "sys/hal/mem/fdtblob.rs"
