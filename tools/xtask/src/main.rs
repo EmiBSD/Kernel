@@ -629,8 +629,44 @@ fn short(hash: &str) -> &str {
     hash.get(..12).unwrap_or(hash)
 }
 
-/// Files that are structure, not ports: never need a `ports.toml` entry.
+/// The boot loaders' directories of `sys/boot/` and the LZ path of each (the user's layout of
+/// 2026-11-26); the per-arch ones (`sys/boot/<arch>/<dir>/`, LZ's `sys/arch/<arch>/stand/<dir>/`)
+/// follow one rule in [`lz_flat`].
+const BOOT_HOMES: [(&str, &str); 3] = [
+    ("sys/boot/libsa/", "sys/lib/libsa/"),
+    ("sys/boot/efi/", "sys/stand/efi/"),
+    ("sys/boot/boot/", "sys/stand/boot/"),
+];
+
+/// A native path as LZ's tree lays it out (LZ's `sys/` is one flat tree): `sys/bsd/<x>`, the
+/// legacy package `bsd`, is LZ's `sys/<x>`; `sys/boot/libsa/`, `efi/` and `boot/` are LZ's
+/// `sys/lib/libsa/`, `sys/stand/efi/` and `sys/stand/boot/`; `sys/boot/<arch>/<dir>/` is LZ's
+/// `sys/arch/<arch>/stand/<dir>/`. Every other path is returned as it is. Each rule replaces a
+/// prefix and keeps the rest, so the file's path below its directory is the same in both trees.
+/// The tools that name a file by LZ's layout (the lineage's homes, the unsafe report's rows and
+/// crates, the structure that is not ported) read a native path through it.
+pub(crate) fn lz_flat(rel: &str) -> String {
+    if let Some(rest) = rel.strip_prefix("sys/bsd/") {
+        return format!("sys/{rest}");
+    }
+    for (native, lz) in BOOT_HOMES {
+        if let Some(rest) = rel.strip_prefix(native) {
+            return format!("{lz}{rest}");
+        }
+    }
+    if let Some(rest) = rel.strip_prefix("sys/boot/")
+        && let Some((arch, tail)) = rest.split_once('/')
+    {
+        return format!("sys/arch/{arch}/stand/{tail}");
+    }
+    rel.to_string()
+}
+
+/// Files that are structure, not ports: never need a `ports.toml` entry. `rel` is a native or
+/// an LZ path: a native one is read through [`lz_flat`].
 fn is_structural(rel: &str) -> bool {
+    let rel = lz_flat(rel);
+    let rel = rel.as_str();
     let name = rel.rsplit('/').next().unwrap_or(rel);
     matches!(name, "mod.rs" | "lib.rs" | "main.rs" | "build.rs")
         || rel.starts_with("sys/machine/")
@@ -675,6 +711,61 @@ fn git(repo: &Path, args: &[&str]) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lz_flat_reads_the_bsd_and_boot_directories_as_lz_lays_them_out() {
+        for (native, lz) in [
+            ("sys/bsd/kern/kern_exec.rs", "sys/kern/kern_exec.rs"),
+            ("sys/bsd/lib.rs", "sys/lib.rs"),
+            ("sys/bsd/stand/limine.rs", "sys/stand/limine.rs"),
+            (
+                "sys/bsd/arch/arm64/arm64/machdep.rs",
+                "sys/arch/arm64/arm64/machdep.rs",
+            ),
+            ("sys/boot/libsa/open.rs", "sys/lib/libsa/open.rs"),
+            ("sys/boot/efi/lib.rs", "sys/stand/efi/lib.rs"),
+            ("sys/boot/boot/cmd.rs", "sys/stand/boot/cmd.rs"),
+            (
+                "sys/boot/arm64/efiboot/efiboot.rs",
+                "sys/arch/arm64/stand/efiboot/efiboot.rs",
+            ),
+            (
+                "sys/boot/amd64/libsa/disk.rs",
+                "sys/arch/amd64/stand/libsa/disk.rs",
+            ),
+            // Unchanged: the new crates, LZ's own paths, init.
+            ("sys/hal/arch/arm64/trap.rs", "sys/hal/arch/arm64/trap.rs"),
+            ("sys/kernel/proc/fork.rs", "sys/kernel/proc/fork.rs"),
+            ("sys/lib/libkern/lib.rs", "sys/lib/libkern/lib.rs"),
+            ("sys/kern/kern_exec.rs", "sys/kern/kern_exec.rs"),
+            ("init/src/main.rs", "init/src/main.rs"),
+        ] {
+            assert_eq!(lz_flat(native), lz, "{native}");
+        }
+    }
+
+    #[test]
+    fn structure_is_read_in_lz_layout() {
+        for rel in [
+            "sys/bsd/machine/mod.rs",
+            "sys/bsd/machine/cpu.rs",
+            "sys/bsd/arch/host/alloc.rs",
+            "sys/bsd/stand/limine.rs",
+            "sys/boot/boot/cmd.rs",
+            "sys/boot/efi/include/efiapi.rs",
+            "sys/machine/cpu.rs",
+            "sys/stand/limine.rs",
+        ] {
+            assert!(is_structural(rel), "{rel}");
+        }
+        for rel in [
+            "sys/bsd/kern/kern_exec.rs",
+            "sys/boot/libsa/open.rs",
+            "sys/boot/arm64/efiboot/efiboot.rs",
+        ] {
+            assert!(!is_structural(rel), "{rel}");
+        }
+    }
 
     #[test]
     fn smp_is_optional_and_bounded() {

@@ -320,7 +320,10 @@ impl Lz {
 /// The LZ commit each module is synced to (`lz-sync.md`): the newest `applied` record of
 /// `lz-sync.toml` that names it in `modules`, by LZ history order (`Lz::history`); a module
 /// no applied record names stays at the pin. `lz check` compares a module with its own
-/// commit, so a sync is green before the pin catches up.
+/// commit, so a sync is green before the pin catches up. A record names a module of the legacy
+/// tree or a boot loader by LZ's path (the records before 2026-11-26 do) or by its native one
+/// under `sys/bsd/` or `sys/boot/`: both are read as LZ's (`crate::lz_flat`), the key
+/// `lz_home` looks up.
 fn synced_commits(records: &[Record], history: &[String]) -> HashMap<String, String> {
     let mut newest: HashMap<String, (usize, String)> = HashMap::new();
     for r in records
@@ -332,7 +335,7 @@ fn synced_commits(records: &[Record], history: &[String]) -> HashMap<String, Str
         };
         for m in &r.modules {
             let e = newest
-                .entry(m.clone())
+                .entry(crate::lz_flat(m))
                 .or_insert_with(|| (i, history[i].clone()));
             if i > e.0 {
                 *e = (i, history[i].clone());
@@ -447,7 +450,13 @@ fn rel_of(root: &Path, f: &Path) -> String {
 /// every other module has the same path in both trees. `sysdefs` is grouped by purpose
 /// (`sys/lib/sysdefs/<group>/<header>.rs`), and a header's LZ file is `sys/sys/<header>.rs`;
 /// `libkern` and `libz` are grouped the same way, their LZ files `sys/lib/<crate>/<file>.rs`.
-fn lz_home(rust: &str) -> String {
+/// The legacy tree (`sys/bsd/`) and the boot loaders (`sys/boot/`) are LZ's paths under
+/// directories of their own (`crate::lz_flat`).
+pub(crate) fn lz_home(rust: &str) -> String {
+    let flat = crate::lz_flat(rust);
+    if flat != rust {
+        return flat;
+    }
     if let Some(rest) = rust.strip_prefix("sys/lib/sysdefs/")
         && let Some((_group, file)) = rest.split_once('/')
     {
@@ -1267,7 +1276,8 @@ fn redesigned_not_forbid(
 }
 
 /// The files where the adapter macros are defined, with the macros whose bodies may write
-/// `impl Adapter`.
+/// `impl Adapter`; by LZ's path, which a native file is read as (`crate::lz_flat`: the
+/// legacy tree's `sys/bsd/sys/queue.rs` is `sys/sys/queue.rs`).
 const ADAPTER_MACROS: [(&str, &str); 2] = [
     ("sys/sys/queue.rs", "queue_adapter"),
     ("sys/sys/tree.rs", "tree_adapter"),
@@ -1286,7 +1296,7 @@ pub(crate) fn adapter_impls(rel: &str, toks: &[Tok]) -> usize {
     let ident = |i: usize, s: &str| matches!(toks.get(i), Some(Tok::Ident(x)) if unraw(x) == s);
     let mut allowed = vec![false; toks.len()];
     for (file, mac) in ADAPTER_MACROS {
-        if rel != file {
+        if crate::lz_flat(rel) != file {
             continue;
         }
         for i in 0..toks.len() {
@@ -1372,6 +1382,7 @@ pub(crate) fn abi_pod_impls(rel: &str, toks: &[Tok]) -> usize {
 /// `hal`'s). `SlistAdapter` (N6.0): `OwnedSlist`'s raw tail rests on `link` and `link_mut`
 /// naming the same field of the element, which `slist_adapter!` alone guarantees;
 /// `sys/sys/queue.rs` has a `SlistAdapter` of its own (the `SLIST` adapters' blanket impl).
+/// The legacy file is named by LZ's path (`crate::lz_flat`), the other by its native one.
 const HAL_MACRO_TRAITS: [(&str, &str, &str, &str); 1] = [(
     "SlistAdapter",
     "sys/hal/ds/owned.rs",
@@ -1389,7 +1400,7 @@ pub(crate) fn hal_macro_trait_impls(rel: &str, toks: &[Tok]) -> Vec<(&'static st
     for (name, file, mac, legacy) in HAL_MACRO_TRAITS {
         // In the legacy file an unqualified name is its own trait; a path through `hal` or
         // `owned` is still hal's.
-        let in_legacy = rel == legacy;
+        let in_legacy = crate::lz_flat(rel) == legacy;
         let mut allowed = vec![false; toks.len()];
         if rel == file {
             for i in 0..toks.len() {
@@ -1647,11 +1658,10 @@ fn frozen_problems(r: &Record) -> Vec<String> {
             r.status
         ));
     }
-    if !r
-        .modules
-        .iter()
-        .any(|m| FROZEN_PREFIXES.iter().any(|p| m.starts_with(p)))
-    {
+    if !r.modules.iter().any(|m| {
+        let m = crate::lz_flat(m);
+        FROZEN_PREFIXES.iter().any(|p| m.starts_with(p))
+    }) {
         problems.push("`frozen` names no module of the frozen amd64 tree".to_string());
     }
     problems
@@ -1688,7 +1698,13 @@ pub(crate) fn drift(
         }
     }
     let dropped: HashSet<&str> = lineage.dropped.iter().map(|d| d.lz.as_str()).collect();
-    let known: HashSet<&str> = lineage.modules.iter().map(|m| m.rust.as_str()).collect();
+    // A record names a module by its native path or, for the legacy tree and the boot loaders
+    // (`sys/bsd/`, `sys/boot/`), by LZ's (`crate::lz_flat`).
+    let known: HashSet<String> = lineage
+        .modules
+        .iter()
+        .flat_map(|m| [m.rust.clone(), crate::lz_flat(&m.rust)])
+        .collect();
     let mut errors = 0usize;
     for r in &sync.commits {
         if !is_hex12(&r.lz) {
@@ -1949,9 +1965,17 @@ pub(crate) fn trace(root: &Path, args: &[&str]) -> Result<()> {
     match args {
         ["--rust", spec] => {
             let (file, item) = split(spec)?;
-            let Some(m) = lineage.modules.iter().find(|m| m.rust == file) else {
+            // The native path, or LZ's for a module of the legacy tree or a boot loader
+            // (`sys/kern/x.rs` for `sys/bsd/kern/x.rs`, `crate::lz_flat`).
+            let Some(m) = lineage.modules.iter().find(|m| m.rust == file).or_else(|| {
+                lineage.modules.iter().find(|m| {
+                    let flat = crate::lz_flat(&m.rust);
+                    flat != m.rust && flat == file
+                })
+            }) else {
                 return Err(format!("{file}: not a module of {LINEAGE_FILE}").into());
             };
+            let file = m.rust.clone();
             let mut found = false;
             for row in m.fns.iter().filter(|r| {
                 r.native.iter().any(|t| *t == item || t.ends_with(&format!("::{item}")))
@@ -2094,6 +2118,16 @@ mod tests {
         assert_eq!(lz_home("sys/hal/machine/mod.rs"), "sys/machine/mod.rs");
         assert_eq!(lz_home("sys/lib/sysdefs/base/types.rs"), "sys/sys/types.rs");
         assert_eq!(lz_home("sys/kern/kern_sched.rs"), "sys/kern/kern_sched.rs");
+        assert_eq!(
+            lz_home("sys/bsd/kern/kern_sched.rs"),
+            "sys/kern/kern_sched.rs"
+        );
+        assert_eq!(lz_home("sys/bsd/stand/limine.rs"), "sys/stand/limine.rs");
+        assert_eq!(lz_home("sys/boot/libsa/open.rs"), "sys/lib/libsa/open.rs");
+        assert_eq!(
+            lz_home("sys/boot/arm64/efiboot/fdt.rs"),
+            "sys/arch/arm64/stand/efiboot/fdt.rs"
+        );
     }
 
     #[test]

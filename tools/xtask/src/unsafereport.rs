@@ -339,13 +339,17 @@ pub(crate) const CRATE_NAMES: [&str; 6] = ["kernel", "abi", "hal", "lib", "bsd",
 /// The crate a file belongs to (`rel` relative to the root): `kernel`, `abi`, `hal`, `lib`
 /// (`sys/lib/sysdefs/`, `sys/lib/libkern/`, `sys/lib/libz/`), `boot` (`sys/stand/`,
 /// `sys/lib/libsa/`, `sys/arch/*/stand/`), or `bsd` for every other file under `sys/` and
-/// `init/`; `None` for anything else.
+/// `init/`; `None` for anything else. The legacy tree and the loaders are read in LZ's layout
+/// (`crate::lz_flat`): `sys/bsd/<x>` is `sys/<x>` and `sys/boot/` is `boot`. So the kernel
+/// binary's boot entry, `sys/bsd/stand/` (`bsd`'s `mod stand`, LZ's `sys/stand/*.rs`), stays
+/// in `boot` with the loaders, where it was counted before the move of 2026-11-26.
 pub(crate) fn crate_of_file(rel: &str) -> Option<&'static str> {
     if rel.starts_with("init/") {
         // The binary that links the crates: part of the legacy `bsd` (STATUS counts it there).
         return Some("bsd");
     }
-    let r = rel.strip_prefix("sys/")?;
+    let flat = crate::lz_flat(rel);
+    let r = flat.strip_prefix("sys/")?;
     let parts: Vec<&str> = r.split('/').collect();
     Some(match parts.as_slice() {
         ["stand", ..] | ["lib", "libsa", ..] | ["arch", _, "stand", ..] => "boot",
@@ -363,7 +367,8 @@ pub(crate) fn crate_of_file(rel: &str) -> Option<&'static str> {
 pub(crate) fn moves_to_hal(rel: &str) -> bool {
     crate_of_file(rel) == Some("bsd")
         && matches!(
-            rel.strip_prefix("sys/")
+            crate::lz_flat(rel)
+                .strip_prefix("sys/")
                 .map(|r| r.split('/').collect::<Vec<_>>())
                 .as_deref(),
             Some(
@@ -1127,15 +1132,24 @@ fn child_module_paths(parent: &Path, name: &str) -> [PathBuf; 2] {
 ///   → `dev`;
 /// - any other `sys/<x>/..` → `x` (`kern`, `uvm`, `net`, `netinet`, `ufs`, `isofs`, ...);
 /// - `sys/<file>.rs` → `(crate root)`, `init/..` → `init`.
+///
+/// The legacy tree and the loaders are read in LZ's layout (`crate::lz_flat`), so their rows
+/// keep LZ's names: `sys/bsd/kern/..` is `kern`, `sys/boot/libsa/..` is `lib/libsa`,
+/// `sys/boot/boot/..` and `sys/boot/efi/..` are `stand`, `sys/boot/<a>/..` is `arch/<a>`.
 pub(crate) fn subsystem(root: &Path, rel: &str) -> String {
     if rel.starts_with("init/") {
         return "init".to_string();
     }
-    let parts: Vec<&str> = rel.strip_prefix("sys/").unwrap_or(rel).split('/').collect();
+    let flat = crate::lz_flat(rel);
+    let rest = flat.strip_prefix("sys/").unwrap_or(&flat);
+    // The native directory LZ's `sys/` stands for (`sys/bsd/` for the legacy tree): each rule
+    // of `lz_flat` replaces a prefix and keeps the rest.
+    let base = &rel[..rel.len().saturating_sub(rest.len())];
+    let parts: Vec<&str> = rest.split('/').collect();
     match parts.as_slice() {
         [_] => "(crate root)".to_string(),
         ["arch" | "lib", second, _, ..] => format!("{}/{second}", parts[0]),
-        ["dev", d, _, ..] if root.join("sys/dev").join(d).join("mod.rs").is_file() => {
+        ["dev", d, _, ..] if root.join(base).join("dev").join(d).join("mod.rs").is_file() => {
             format!("dev/{d}")
         }
         [first, ..] => (*first).to_string(),
@@ -2105,6 +2119,36 @@ mod tests {
         assert_eq!(subsystem(root, "sys/dev/softraid.rs"), "dev");
         assert_eq!(subsystem(root, "sys/lib.rs"), "(crate root)");
         assert_eq!(subsystem(root, "init/src/main.rs"), "init");
+        // The legacy tree and the loaders keep LZ's row names.
+        assert_eq!(subsystem(root, "sys/bsd/kern/tty.rs"), "kern");
+        assert_eq!(subsystem(root, "sys/bsd/lib.rs"), "(crate root)");
+        assert_eq!(subsystem(root, "sys/bsd/dev/softraid.rs"), "dev");
+        assert_eq!(
+            subsystem(root, "sys/bsd/arch/arm64/arm64/machdep.rs"),
+            "arch/arm64"
+        );
+        assert_eq!(subsystem(root, "sys/bsd/stand/limine.rs"), "stand");
+        assert_eq!(subsystem(root, "sys/boot/libsa/open.rs"), "lib/libsa");
+        assert_eq!(subsystem(root, "sys/boot/boot/cmd.rs"), "stand");
+        assert_eq!(subsystem(root, "sys/boot/efi/lib.rs"), "stand");
+        assert_eq!(
+            subsystem(root, "sys/boot/arm64/efiboot/fdt.rs"),
+            "arch/arm64"
+        );
+        assert_eq!(subsystem(root, "sys/hal/arch/arm64/trap.rs"), "hal");
+    }
+
+    #[test]
+    fn bus_rows_are_read_from_the_native_directory() {
+        let dir = std::env::temp_dir().join(format!("xtask-subsys-{}", std::process::id()));
+        for d in ["sys/bsd/dev/pci", "sys/dev/ic"] {
+            fs::create_dir_all(dir.join(d)).unwrap();
+            fs::write(dir.join(d).join("mod.rs"), "").unwrap();
+        }
+        assert_eq!(subsystem(&dir, "sys/bsd/dev/pci/virtio_pci.rs"), "dev/pci");
+        assert_eq!(subsystem(&dir, "sys/bsd/dev/ic/com.rs"), "dev");
+        assert_eq!(subsystem(&dir, "sys/dev/ic/com.rs"), "dev/ic");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -2750,6 +2794,16 @@ mod tests {
             ("sys/lib/libsa/staticcell.rs", Some("boot")),
             ("init/src/main.rs", Some("bsd")),
             ("tools/xtask/src/main.rs", None),
+            // The layout of 2026-11-26, read as LZ's.
+            ("sys/bsd/kern/kern_sig.rs", Some("bsd")),
+            ("sys/bsd/arch/arm64/arm64/machdep.rs", Some("bsd")),
+            ("sys/bsd/lib.rs", Some("bsd")),
+            ("sys/bsd/stand/limine.rs", Some("boot")),
+            ("sys/boot/libsa/open.rs", Some("boot")),
+            ("sys/boot/boot/cmd.rs", Some("boot")),
+            ("sys/boot/efi/lib.rs", Some("boot")),
+            ("sys/boot/arm64/efiboot/fdt.rs", Some("boot")),
+            ("sys/boot/amd64/libsa/disk.rs", Some("boot")),
         ] {
             assert_eq!(crate_of_file(rel), want, "{rel}");
         }
@@ -2777,6 +2831,10 @@ mod tests {
             ("sys/kern/kern_sig.rs", false),
             ("sys/hal/lock.rs", false),
             ("init/src/main.rs", false),
+            ("sys/bsd/arch/arm64/arm64/machdep.rs", true),
+            ("sys/bsd/sys/queue.rs", true),
+            ("sys/bsd/kern/kern_sig.rs", false),
+            ("sys/boot/arm64/efiboot/fdt.rs", false),
         ] {
             assert_eq!(moves_to_hal(rel), want, "{rel}");
         }

@@ -28,7 +28,7 @@ Sources, all read live (nothing is typed in by hand):
     unsafe-report is the one parser of the Rust sources: this script reads none.
     The crate of a file (docs/ZERO_UNSAFE.md section 0) is derived here from its
     path: sys/hal/, sys/kernel/, sys/abi/, lib (the leaf crates sys/lib/sysdefs/, libkern/,
-    libz/), the boot loaders (sys/stand/, sys/lib/libsa/, sys/arch/*/stand/), and bsd (the LZ
+    libz/), the boot loaders (sys/boot/, with bsd's boot entry sys/bsd/stand/), and bsd (the LZ
     tree, legacy) for the rest of sys/;
   - docs/ROADMAP.md: the milestone table (id, title, scope, exit criterion). A
     file belongs to the N row whose scope cell names its path in backticks: a
@@ -280,8 +280,28 @@ def fmt(n) -> str:
     return "—" if n is None else f"{n:,}"
 
 
+BOOT_HOMES = (("sys/boot/libsa/", "sys/lib/libsa/"), ("sys/boot/efi/", "sys/stand/efi/"),
+              ("sys/boot/boot/", "sys/stand/boot/"))
+
+
+def lz_layout(path: str) -> str:
+    """A native path as LZ's flat tree lays it out, as xtask's `lz_flat` reads it: sys/bsd/<x>
+    (the legacy package bsd) is sys/<x>; sys/boot/libsa/, efi/ and boot/ are sys/lib/libsa/,
+    sys/stand/efi/ and sys/stand/boot/; sys/boot/<arch>/<dir>/ is sys/arch/<arch>/stand/<dir>/.
+    ROADMAP's scope cells and the crate rules name files that way; every other path is kept."""
+    if path.startswith("sys/bsd/"):
+        return "sys/" + path[len("sys/bsd/"):]
+    for native, lz in BOOT_HOMES:
+        if path.startswith(native):
+            return lz + path[len(native):]
+    m = re.match(r"sys/boot/([^/]+)/(.*)", path)
+    if m:
+        return f"sys/arch/{m.group(1)}/stand/{m.group(2)}"
+    return path
+
+
 def subsystem(path: str) -> str:
-    parts = path.split("/")
+    parts = lz_layout(path).split("/")
     if len(parts) > 3 and parts[1] in ("arch", "dev", "lib"):
         return parts[1] + "/" + parts[2]
     return parts[1] if len(parts) > 2 else parts[0]
@@ -322,7 +342,9 @@ class Plan:
         self.wip = under_way(root)
 
     def owner(self, path: str) -> str:
-        """The row whose scope names the path, the most specific pattern winning."""
+        """The row whose scope names the path, the most specific pattern winning. A native
+        path of the legacy tree or a loader is matched as LZ lays it out (`lz_layout`)."""
+        path = lz_layout(path)
         best = None
         for spec, negi, p, rid in self.pats:
             if pattern_matches(p, path) and (best is None or (spec, negi) > best[:2]):
@@ -390,7 +412,10 @@ CRATES = (("hal", "sys/hal/"), ("kernel", "sys/kernel/"), ("abi", "sys/abi/"),
 def crate_of(path: str) -> str:
     """The crate a file belongs to under docs/ZERO_UNSAFE.md section 0, by its path: hal,
     kernel, abi, lib (the leaf crates sysdefs, libkern, libz: forbid, decisions 54 and 55), boot
-    (the loaders, outside the four crates) or bsd (the LZ tree, legacy)."""
+    (the loaders, outside the four crates) or bsd (the LZ tree, legacy). The legacy tree and
+    the loaders are read as LZ lays them out (`lz_layout`), as xtask's crate_of_file does: so
+    sys/bsd/stand/ (bsd's boot entry) is counted with the loaders, as before the move."""
+    path = lz_layout(path)
     for name, prefix in CRATES:
         if path.startswith(prefix):
             return name
@@ -532,7 +557,7 @@ def unsafe_report(root: Path, want: str | None, doc: dict, plan: Plan, modules: 
                 srcs = by_path.get(f["path"], {}).get("lz", [])
                 vals = [lz_len.get(p) for p in srcs]
                 lz_n = sum(vals) if vals and all(v is not None for v in vals) else None
-                src_txt = "same path" if srcs == [f["path"]] else (", ".join(srcs) or "—")
+                src_txt = "same path" if srcs == [lz_layout(f["path"])] else (", ".join(srcs) or "—")
                 print(f"| {f['path']} | {f['status'] or '—'} | {f['crate']} | {f['unsafe']:,} | "
                       f"{fmt(lz_n)} | {fmt(count_lines(root / f['path'], cache))} | {src_txt} |")
             print()
@@ -561,7 +586,7 @@ def unsafe_report(root: Path, want: str | None, doc: dict, plan: Plan, modules: 
     print()
     print("Method: one source, `cargo xtask unsafe-report --json`; this script reads no Rust. "
           "A file's crate comes from its path (docs/ZERO_UNSAFE.md section 0): sys/hal/, "
-          "sys/kernel/, sys/abi/, lib (the leaf crates sys/lib/sysdefs/, libkern/, libz/, forbid), the boot loaders (sys/stand/, sys/lib/libsa/, sys/arch/*/stand/, outside the "
+          "sys/kernel/, sys/abi/, lib (the leaf crates sys/lib/sysdefs/, libkern/, libz/, forbid), the boot loaders (sys/boot/ and bsd's boot entry sys/bsd/stand/, outside the "
           "plan), and bsd for everything else under sys/ (the LZ tree, legacy). A file belongs "
           "to the N row whose scope cell names its path in backticks (a directory, a file or a "
           "glob), the most specific pattern winning; a row whose scope is prose resolves "
@@ -714,7 +739,7 @@ def lineage_report(root: Path, want: str | None, plan: Plan, modules: list[dict]
             order = {"inherited": 0, "adapted": 1, "redesigned": 2}
             for m in sorted(sel, key=lambda m: (order[m["_key"]], m.get("rust", ""))):
                 srcs = m.get("lz", [])
-                src_txt = "same path" if srcs == [m.get("rust")] else ", ".join(srcs)
+                src_txt = "same path" if srcs == [lz_layout(m.get("rust", ""))] else ", ".join(srcs)
                 print(f"| {m.get('rust', '')} | {m['_key']} | {fmt(m['_lz'])} | "
                       f"{fmt(m['_rust'])} | {src_txt} |")
             print()
