@@ -83,13 +83,17 @@ pub fn legacy_syscall(code: Register, args: &SysArgs, rval: &mut [Register; 2]) 
 /// The boot step, from the boot glue after `hal_bridges_register` and before `main()`:
 /// registers the `sysent[]` rows as the kernel's `LegacySyscalls`, has the ABI register its
 /// system call handler, and prints the one line that says what the handler's table holds.
-/// Panics when either registration is missing after it, which no system call may find out
-/// later.
+/// Panics when either registration is missing after it, or when a handler other than the
+/// ABI's was registered before it, which no system call may find out later.
 pub fn abi_boot() {
     if install_legacy_syscalls(&LEGACY_SYSCALLS).is_err() {
         panic(format_args!("abi: the sysent[] rows were registered twice"));
     }
-    abi::abi_init();
+    if abi::abi_init().is_err() {
+        panic(format_args!(
+            "abi: a system call handler was registered before abi_init"
+        ));
+    }
     let Some(info) = hal::syscall::handler_info() else {
         panic(format_args!(
             "abi: abi_init registered no system call handler"

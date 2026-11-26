@@ -552,7 +552,7 @@ adds an operation the C's switch lacks.
 | `struct pool_allocator` | `sys/pool.h` | `PoolBackend`, `RawPool`; N6.0: `PageSource`, the `pa_alloc`/`pa_free`/`pa_pagesz` half a pool of the kernel's takes (`PoolBackend::create_with`) | N2 | done, `hal` |
 | `struct uvm_pagerops` | `uvm/uvm_pager.h` | `PageObject`, `FaultObject`; the vnode pager behind `VnodeOps` until N5 | N3 | done |
 | `struct consdev` | `dev/cons.h` | `Console` | N2 | done, `hal` |
-| `struct sysent`, `KernelApi` | `sys/systm.h` | the `Native`/`Legacy` table, the table `abi` calls the kernel through | N2 | done, `abi` |
+| `struct sysent`, `KernelApi` | `sys/systm.h` | the `Native`/`Legacy` table (`abi`'s); `abi` calls the kernel through `KernelApi` until decision 52, through `kernel::api` since (N7), the rows still `bsd`'s behind the `LegacySyscalls` bridge | N2 | done, `abi` |
 | `struct filterops` | `sys/event.h:234` | `Filter<G>`; `Filterops<G>` stays as the erased table for `bsd`'s 41 statics (44 at N4.4b; the pipe's three are `kernel::file::pipe`'s impls since N5.0) | N4.4b | **corrective slice** (below) |
 | `struct arm_intr_func` (`raise`, `lower`, `x`, `setipl`, the wakeup hooks) | `arch/arm64/include/intr.h` | `hal::cpu::intr::IntrHardware` (default methods: the `arm_dflt_*`); `bsd`'s `ArmIntrHardware` over the table the GIC drivers fill, registered by `initarm` | N4.5c | done, `hal` (the bridge is paid N7) |
 | `struct interrupt_controller` (`ic_establish`, `ic_disestablish`, `ic_route`, `ic_barrier`, ...) | `arch/arm64/include/intr.h` | none yet: the GIC drivers' own table, kept in `bsd` until they move | N7.2 | kept, reason: its implementers (agintc, ampintc) and every caller are drivers that move together at N7 |

@@ -27,8 +27,10 @@
 //!   whose every arm pattern is `Ok(..)`, `Err(..)`, `Some(..)` or `None` (alternatives with
 //!   `|` allowed, no guard, no `_`) is allowed; `if let Ok|Err|Some|None(..) = ..` is allowed.
 //!   Anything else is a finding.
-//! * **R3** at most one call per function into `kernel::` (a path starting with `kernel::`):
-//!   one kernel function per system call.
+//! * **R3** at most one call per function into `kernel::` (a path whose first segment is
+//!   the crate, read as R6 reads it: `::kernel` and `r#kernel` too): one kernel function per
+//!   system call. And no `use` of `kernel` outside test code, in any form (a path, a group,
+//!   a rename): a call through an imported name would not be counted.
 //! * **R4** at most 40 lines per function body (the line of `{` to the line of `}`).
 //! * **R5** no `static` whose type names `Cell`, `RefCell`, `Atomic*`, `OnceStatic`,
 //!   `Mutexed`, `Rwlocked` or `UnsafeCell`: no state in `abi`; plain tables are fine.
@@ -437,13 +439,9 @@ pub(crate) fn check_source(rel: &str, src: &str) -> Vec<Finding> {
                         }
                     }
                 }
-                // R3, a path call into the kernel.
-                Tok::Ident(w)
-                    if w == "kernel"
-                        && toks.get(i + 1) == Some(&Tok::Punct(':'))
-                        && toks.get(i + 2) == Some(&Tok::Punct(':'))
-                        && (i == 0 || !matches!(toks[i - 1], Tok::Punct(':' | '.'))) =>
-                {
+                // R3, a path call into the kernel: the path as R6 reads it (`::kernel` and
+                // `r#kernel` are `kernel`, `x::kernel` is not).
+                t if is_kernel(t) && is_sep(toks, i + 1) && starts_path(toks, i) => {
                     let mut k = i;
                     while matches!(toks.get(k), Some(Tok::Ident(_)))
                         && toks.get(k + 1) == Some(&Tok::Punct(':'))
@@ -537,9 +535,17 @@ pub(crate) fn check_source(rel: &str, src: &str) -> Vec<Finding> {
             }
         }
     }
-    // R6, kernel.
+    // R6, kernel (and R3's `use`: an imported name would call the kernel uncounted).
     for i in 0..toks.len() {
         if !is_kernel(&toks[i]) || mask[i] || !starts_path(toks, i) {
+            continue;
+        }
+        if in_use(toks, i) {
+            add(
+                i,
+                "R3: a `use` of kernel (each call names its whole kernel::api path, so R3 counts it)"
+                    .to_string(),
+            );
             continue;
         }
         let mut found = Vec::new();
@@ -607,6 +613,28 @@ fn kernel_tree(toks: &[Tok], k: usize, out: &mut Vec<(usize, String)>) {
             "R6: a glob of kernel's root (abi names only kernel::api)".to_string(),
         )),
     }
+}
+
+/// Whether the path that starts at `i` is (part of) a `use` declaration: walking back over
+/// the path, a `use` group's braces and its separators reaches `use` before anything that
+/// ends or opens another statement or expression.
+fn in_use(toks: &[Tok], i: usize) -> bool {
+    let mut k = i;
+    while k > 0 {
+        k -= 1;
+        match &toks[k] {
+            Tok::Ident(w) if w == "use" => return true,
+            Tok::Punct('{') => {
+                let group = k >= 1 && (id(&toks[k - 1], "use") || (k >= 2 && is_sep(toks, k - 2)));
+                if !group {
+                    return false;
+                }
+            }
+            Tok::Punct(';' | '}' | '(' | ')' | '[' | ']' | '=') => return false,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Whether `::` stands at `k`.
@@ -796,6 +824,30 @@ mod tests {
         clean("fn f(a: &A) { let _ = a.n; other::kernel(); kernel::api::K; }\n");
         // Nested functions are judged on their own.
         clean("fn f() { kernel::api::a(1); fn g() { kernel::api::b(2); } }\n");
+        // `::kernel` and `r#kernel` are the crate, as R6 reads them; `x::kernel` is not.
+        one(
+            "fn f() { ::kernel::api::a(1); ::kernel::api::b(2); }\n",
+            "R3",
+        );
+        one("fn f() { r#kernel::api::a(1); kernel::api::b(2); }\n", "R3");
+        one(
+            "fn f() -> R { g(); ::kernel::api::a(1); return ::kernel::api::b(2); }\n",
+            "R3",
+        );
+        clean("fn f() { x::kernel::api::a(1); kernel::api::b(2); }\n");
+        // A `use` of the kernel would let bare names call it uncounted: refused in every form.
+        one(
+            "use kernel::api::file::{read, write};\nfn f() { read(1); write(2); }\n",
+            "R3",
+        );
+        one("use kernel::api::file::read;\n", "R3");
+        one("use kernel::api::file;\n", "R3");
+        one("use kernel::api;\n", "R3");
+        one("pub use ::kernel::api::fs::open;\n", "R3");
+        one("use r#kernel::api::net as n;\n", "R3");
+        one("use {kernel::api::vm::mmap};\n", "R3");
+        // Test code may import what it likes.
+        clean("#[cfg(test)]\nmod tests {\n    use kernel::api::file::read;\n}\n");
     }
 
     #[test]
@@ -863,30 +915,30 @@ mod tests {
 
     #[test]
     fn r6_kernel_only_through_api() {
-        // Decision 52: the door, its groups and functions, in a path, a use, a group.
+        // Decision 52: the door, its groups and functions, by their whole path.
         clean("fn f() -> R { kernel::api::file::read(1, 2) }\n");
-        clean("use kernel::api;\nuse kernel::api::fs::{open, close};\n");
-        clean("use kernel::{api::net, api::proc::fork};\n");
+        clean("fn f() { let g = kernel::api::fs::open; }\n");
         clean("fn f() { ::kernel::api::syscall_legacy(1, &A, &mut R); }\n");
         clean("fn f() { r#kernel::api::vm::mmap(1); }\n");
         // Another crate's module, a field, a comment and test code are not the crate.
         clean("use other::kernel::proc;\nuse crate::kernel::x;\nfn f(s: S) { s.kernel.proc(); }\n");
         clean("//! `kernel::proc::fork`.\nfn f() {}\n");
         clean("#[cfg(test)]\nmod tests {\n    use kernel::syscall::install_legacy_syscalls;\n}\n");
-        // Any other module of the kernel, a glob, the crate alone.
-        one("use kernel::proc::fork;\n", "R6");
+        // Any other module of the kernel, a glob, the crate alone (in a `use`, R3 refuses it
+        // first, whatever it names).
         one(
             "fn f() { kernel::syscall::install_legacy_syscalls(&R); }\n",
             "R6",
         );
         one("fn f() { ::kernel::file::descrip::fdalloc(); }\n", "R6");
-        one("use kernel::{api::file, vm::map};\n", "R6");
-        one("use kernel::*;\n", "R6");
-        one("use kernel::{api, *};\n", "R6");
-        one("use kernel as k;\n", "R6");
+        one("fn f() { let x = kernel::proc::P; }\n", "R6");
+        one("fn f() { kernel; }\n", "R6");
         one("extern crate kernel;\n", "R6");
         one("fn f() -> u32 { return ::kernel::proc::x(); }\n", "R6");
         one("fn f() { let r = 0..kernel::vm::N; }\n", "R6");
+        one("use kernel::proc::fork;\n", "R3");
+        one("use kernel::*;\n", "R3");
+        one("use kernel as k;\n", "R3");
     }
 
     #[test]

@@ -92,10 +92,13 @@ pub mod sysent;
 pub mod time;
 pub mod vm;
 
+use hal::syscall::SyscallFn;
+
 /// The ABI's entry point, which the image's boot glue calls once, before `main()` and so
-/// before any system call: registers the system call handler and what its table holds. A
-/// second call is refused by `hal` and changes nothing.
-pub fn abi_init() {
-    let _ = hal::syscall::set_handler(sysent::syscall, sysent::INFO);
+/// before any system call: registers the system call handler and what its table holds.
+/// `hal` keeps the first handler registered: when one was already there, the `Err` hands it
+/// back and the boot glue must not go on with it.
+pub fn abi_init() -> Result<(), SyscallFn> {
+    hal::syscall::set_handler(sysent::syscall, sysent::INFO)
 }
 /* </CODE> */

@@ -59,8 +59,8 @@ No `src/` directory (`[lib] path = "lib.rs"`), so C and Rust paths differ only b
 
 `sys/hal/` is grouped by purpose, one directory per group, so a driver or a subsystem names only
 the groups it needs (the user approved the layout on 2026-11-26). The root keeps what other
-rules name by path (`syscall`, `sys`, `user`, `machine`, `arch`) and the small leaves (`api`,
-the `KernelApi` table, left the root with decision 52).
+rules name by path (`syscall`, `sys`, `user`, `machine`, `arch`) and the small leaves. `api`,
+the `KernelApi` table, is no longer there: decision 52 deleted it (`abi` calls `kernel::api`).
 
 | Group | Holds | Used by |
 |---|---|---|
