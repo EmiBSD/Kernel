@@ -217,6 +217,11 @@ pub trait ConfigGlue: Sync {
     fn boothowto(&self) -> i32;
     /// `rootvp != NULL`: the root file system is mounted.
     fn root_mounted(&self) -> bool;
+    /// `nam2blk[]`: the disk drivers' names and block majors (`findblkmajor`,
+    /// `findblkname`); none for a machine without disks.
+    fn nam2blk(&self) -> &'static [crate::dev::disk::Nam2blk] {
+        &[]
+    }
 }
 
 /// `cfdata[]` as one walk sees it: its rows in use, each found in O(1).
@@ -249,6 +254,11 @@ fn with_rows<R>(f: impl FnOnce(&dyn RowTable) -> R) -> R {
 /// A C string argument up to its first NUL.
 fn cstr(s: &[u8]) -> &[u8] {
     &s[..s.iter().position(|&c| c == 0).unwrap_or(s.len())]
+}
+
+/// The machine's `nam2blk[]` (`ConfigGlue::nam2blk`); none before the glue is registered.
+pub fn config_nam2blk() -> &'static [crate::dev::disk::Nam2blk] {
+    GLUE.get().map_or(&[], |g| g.nam2blk())
 }
 
 /// The registered glue.

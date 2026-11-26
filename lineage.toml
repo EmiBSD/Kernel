@@ -20668,6 +20668,13 @@ native = ["sys/kernel/dev/autoconf.rs::ALLDEVS", "Device"]
 kind = "merged"
 
 [[module]]
+rust = "sys/kernel/dev/disk.rs"
+crate = "kernel"
+lz = ["sys/kern/subr_disk.rs", "sys/sys/disk.rs"]
+status = "redesigned"
+notes = "N7.1d: struct disk a counted block (MArc, Disk::new for disk_construct), its lock a RawRwlock (Disk::lock/lock_nointr, the guard's drop disk_unlock), dk_mtx a Mutexed of the metrics at IPL_BIO, the in-core label 147 relaxed words (label_store, label, geom's LabelGeom on the I/O path), disklist a PinList under DISKS with each disk's list handle parked on it (disk_next walks), the label task a set_shared task; the label code over a LabelBuf (the geteblk token and a Strat closure: strat + biowait); softraid's two callbacks registered (softraid_hooks); LZ's 22 + 7 unsafe gone"
+
+[[module]]
 rust = "sys/kernel/dev/autoconf.rs"
 crate = "kernel"
 lz = ["sys/kern/subr_autoconf.rs"]
