@@ -2033,7 +2033,8 @@ impl kernel::net::if_::Inet for BenchInet {
         1
     }
     fn with_net_held(&self, f: &mut dyn FnMut(&hal::netlock::NetHeld<'_>)) {
-        // The rows that reach it (ND's solicitation) hold the net lock detached.
+        // The rows that reach it (ND's solicitation, ARP's request) hold the net lock
+        // detached.
         hal::netlock::lend_detached(|n| f(n));
     }
 }
@@ -3183,6 +3184,11 @@ fn arp_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
         )
     };
 
+    // `arpresolve`'s callers hold the net lock (`ether_output` under `ip_output`'s
+    // `NET_LOCK`): a miss's request reads the route's `rt_ifa` (a net cell since N6.5e)
+    // under the proof `BenchInet::with_net_held` lends from it. Taken detached for both rows,
+    // outside the timing.
+    hal::netlock::lock();
     if wanted(ARP_ROWS[0]) {
         let dst = sav(&gw);
         let mut desten = [0u8; 6];
@@ -3223,6 +3229,7 @@ fn arp_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
         });
         report(ARP_ROWS[1], r);
     }
+    hal::netlock::unlock();
 }
 const INPCB_ROWS: [&str; 3] = ["inpcb.lookup.hash", "inpcb.ref.unref", "inpcb.sotoinpcb"];
 
