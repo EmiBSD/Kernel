@@ -48,7 +48,7 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! `<sys/uio.h>` for `bsd`: the kernel's scatter/gather types (`kernel::uio`), with `Uio`
+//! `<sys/uio.h>` for `bsd`: the kernel's scatter/gather types (`kernel::file::uio`), with `Uio`
 //! bound to `bsd`'s threads.
 //!
 //! Upstream: sys/sys/uio.h @ 3ce1f3f79392
@@ -56,18 +56,18 @@
 //!
 //! ## Redesign
 //! - N4.3: `struct iovec`, `enum uio_rw`, `enum uio_seg` and `struct uio` moved into
-//!   `kernel::uio` with the descriptor code that reads them; this module re-exports them and
-//!   names the one `Uio` that `bsd` builds (`kernel::uio::Uio<'a, BsdProcGlue>`, whose
+//!   `kernel::file::uio` with the descriptor code that reads them; this module re-exports them and
+//!   names the one `Uio` that `bsd` builds (`kernel::file::uio::Uio<'a, BsdProcGlue>`, whose
 //!   `uio_procp` is `bsd`'s `Proc`), so its 98 users (the 5 frozen amd64 files among them,
 //!   decision 44) keep their paths, struct literals and fields. LZ's deviations went with the
-//!   types (`kernel::uio`).
+//!   types (`kernel::file::uio`).
 
-pub use kernel::uio::{Iovec, UIO_MAXIOV, UIO_SMALLIOV, UioRw, UioSeg};
+pub use kernel::file::uio::{Iovec, UIO_MAXIOV, UIO_SMALLIOV, UioRw, UioSeg};
 
 use crate::kern::proc_glue::BsdProcGlue;
 
 /// `struct uio` of `bsd`'s threads: a scatter/gather transfer in progress.
-pub type Uio<'a> = kernel::uio::Uio<'a, BsdProcGlue>;
+pub type Uio<'a> = kernel::file::uio::Uio<'a, BsdProcGlue>;
 /* </CODE> */
 
 /* <TESTS> */

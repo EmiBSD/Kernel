@@ -158,7 +158,7 @@ use super::types::{
     UVM_PLA_ZERO, UvmConstraintRange,
 };
 use crate::assert::{kassert, kdassert, kpanic};
-use crate::prf::{printf, unported};
+use crate::base::prf::{printf, unported};
 use hal::{cpu::intr::IPL_BIO, ds::link::Link, sync::percpu::PerCpu, sync::percpu::PerCpuInit};
 
 /// Dirty memory.

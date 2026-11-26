@@ -256,7 +256,7 @@ use hal::mem::malloc::{M_NOWAIT, MArray};
 use hal::prf::log;
 
 use crate::assert::{kassert, kpanic};
-use crate::log::LOG_ERR;
+use crate::base::log::LOG_ERR;
 
 /// `RNF_NORMAL`: the leaf holds a normal route.
 pub const RNF_NORMAL: u8 = 1;

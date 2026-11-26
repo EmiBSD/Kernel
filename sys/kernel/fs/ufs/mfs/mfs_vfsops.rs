@@ -387,7 +387,7 @@ pub(super) mod fixture {
     use hal::user::UserPtr;
 
     use super::{Mfs, mfs_init, mfs_mount};
-    use crate::descrip::{sys_close, sys_read, sys_write};
+    use crate::file::descrip::{sys_close, sys_read, sys_write};
     use crate::fs::init::{rootvnode, set_rootvnode};
     use crate::fs::lookup::ndinit;
     use crate::fs::mount::{

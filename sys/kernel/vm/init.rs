@@ -93,7 +93,7 @@ use super::map::{UVM_MAXKADDR, UaddrSlot, uvm_map_init, uvm_map_set_uaddr};
 use super::pager::uvm_pager_init;
 use super::types::UvmConstraintRange;
 use crate::assert::kpanic;
-use crate::prf::unported;
+use crate::base::prf::unported;
 
 /// The machine's constants of the virtual memory system, handed down once by `bsd`'s
 /// `uvm_init` ([`uvm_machine_init`]).

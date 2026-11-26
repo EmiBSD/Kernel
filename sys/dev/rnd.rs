@@ -169,7 +169,7 @@ use crate::sys::timeout::{Timeout, timeout_pending};
 use crate::sys::types::{Dev, Register, Vaddr, Vsize};
 use crate::sys::uio::Uio;
 use hal::vm::param::trunc_page;
-use kernel::log::{msgbuf_header, msgbuf_read};
+use kernel::base::log::{msgbuf_header, msgbuf_read};
 use kernel::vm::km::KmemDynMode;
 use kernel::vm::km::{KP_NONE, KV_ANY};
 use kernel::vm::types::Voff;

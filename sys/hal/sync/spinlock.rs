@@ -35,7 +35,7 @@
 /* <CODE> */
 //! `<machine/spinlock.h>`: the word userland's spinlocks are made of (`_atomic_lock_t`),
 //! which `__thrsleep(2)` frees for its caller by copying [`_ATOMIC_LOCK_UNLOCKED`] out over
-//! it (`kernel::thrsleep`).
+//! it (`kernel::sched::thrsleep`).
 //!
 //! Upstream: sys/arch/amd64/include/spinlock.h @ 3ce1f3f79392
 //! Upstream: sys/arch/arm64/include/spinlock.h @ 3ce1f3f79392

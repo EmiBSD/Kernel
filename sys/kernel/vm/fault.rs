@@ -257,8 +257,8 @@ use super::pager::{
 use super::pmemrange::uvm_wait;
 use super::types::{MADV_MASK, PROT_MASK, UVM_PGA_ZERO, VmFault, VmProt, Voff};
 use crate::assert::{kassert, kpanic};
-use crate::prf::unported;
-use crate::resource::Rusage;
+use crate::base::prf::unported;
+use crate::proc::resource::Rusage;
 
 /// `VM_FAULT_INVALID`: invalid mapping.
 pub const VM_FAULT_INVALID: VmFault = 0x0;

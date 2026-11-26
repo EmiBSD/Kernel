@@ -134,8 +134,8 @@ use super::quota::{
 };
 use super::ufsmount::{QTF_CLOSING, QTF_OPENING, Ufsmount, vfstoufs};
 use crate::assert::kpanic;
-use crate::cred::{CredRef, Ucred};
 use crate::file::FileGlue;
+use crate::file::uio::{Iovec, Uio, UioRw};
 use crate::fs::lookup::ndinit;
 use crate::fs::mount::{Mount, vfs_busy, vfs_unbusy};
 use crate::fs::namei::NiDirp;
@@ -143,10 +143,10 @@ use crate::fs::subr::{vfs, vfs_mount_foreach_vnode, vget, vput};
 use crate::fs::vnode::{LK_EXCLUSIVE, LK_NOWAIT, LK_RETRY, PINOD, VSYSTEM, Vnode, Vtype, vn_lock};
 use crate::fs::vnops::{vn_close, vn_open};
 use crate::fs::vops::{Cred, vop_read, vop_unlock, vop_write};
+use crate::proc::cred::{CredRef, Ucred};
 use crate::proc::{ProcGlue, Thread, suser};
 use crate::sched::{tsleep_nsec, wakeup_all};
-use crate::tc::gettime;
-use crate::uio::{Iovec, Uio, UioRw};
+use crate::time::tc::gettime;
 
 /// `M_DQUOT`: the malloc type of the dquots and their hash table (`<sys/malloc.h>`;
 /// `vmstat -m`'s "UFS quota").

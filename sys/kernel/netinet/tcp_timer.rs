@@ -175,7 +175,7 @@ use crate::netinet::tcp_var::{
     Tcpcb, TcpstatCounters, Tp, intotcpcb, tcp_now, tcp_rexmtval, tcp_time, tcpstat_inc,
 };
 use crate::proc::ProcGlue;
-use crate::timeout::{KCLOCK_NONE, SharedFn, TIMEOUT_MPSAFE, TIMEOUT_PROC};
+use crate::time::timeout::{KCLOCK_NONE, SharedFn, TIMEOUT_MPSAFE, TIMEOUT_PROC};
 
 /// `AF_INET` as the `int` of `tp->pf`.
 const AF_INET_I32: i32 = AF_INET as i32;
@@ -1297,14 +1297,14 @@ mod tests {
 
         // The wheel is the process's: the tests that tick it serialise on timeout's lock and
         // kevent's, both taken before the net tests' memory, as theirs are.
-        let _t = crate::timeout::tests::LOCK
+        let _t = crate::time::timeout::tests::LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let _e = crate::event::tests::WHEEL
+        let _e = crate::file::event::tests::WHEEL
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        crate::timeout::startup(100, 10_000, 10_000_000);
-        crate::timeout::start_mp_thread_for_tests();
+        crate::time::timeout::startup(100, 10_000, 10_000_000);
+        crate::time::timeout::start_mp_thread_for_tests();
         let (_g, _p) = testtcp::setup();
         let (so, inp, d) = testtcp::estab(b"ttmr9", 39);
         // Hardclock by hand until `done` (the softclockmp thread runs TCP's callouts, which
@@ -1312,7 +1312,7 @@ mod tests {
         let tick_until = |done: &dyn Fn() -> bool| {
             let deadline = Instant::now() + Duration::from_secs(10);
             while !done() && Instant::now() < deadline {
-                crate::timeout::tick_once();
+                crate::time::timeout::tick_once();
                 std::thread::sleep(Duration::from_millis(1));
             }
             done()

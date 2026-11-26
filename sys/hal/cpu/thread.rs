@@ -557,7 +557,7 @@ impl Next {
 
 /// The start a new thread's trampoline calls with the scheduler's hold it adopted and the
 /// two words its maker gave [`thread_setup`] (the C's `proc_trampoline_mi` and `func(arg)`):
-/// registered once, by `kernel::fork::init` (N4.6a; `bsd`'s `fork1` registered it before).
+/// registered once, by `kernel::proc::fork::init` (N4.6a; `bsd`'s `fork1` registered it before).
 static START: OnceStatic<fn(SchedHold, usize, usize)> = OnceStatic::new();
 
 /// Registers the start of new threads, once; a second registration keeps the first.

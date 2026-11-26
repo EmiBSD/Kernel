@@ -225,7 +225,7 @@ pub fn syncer_thread<G: ProcGlue>() -> ! {
     let t = vfs::<G>();
 
     loop {
-        let start = crate::tc::getnsecuptime();
+        let start = crate::time::tc::getnsecuptime();
 
         // Push files whose dirty time has expired.
         let slot = {
@@ -264,7 +264,7 @@ pub fn syncer_thread<G: ProcGlue>() -> ! {
                     super::subr::vprint(Some("fsync failed"), vp);
                     if let Some(mp) = vp.mount() {
                         let (name, len) = mp.mntonname();
-                        crate::prf::printf(format_args!(
+                        crate::base::prf::printf(format_args!(
                             "mounted on: {}\n",
                             core::str::from_utf8(&name[..len]).unwrap_or("?")
                         ));
@@ -284,7 +284,7 @@ pub fn syncer_thread<G: ProcGlue>() -> ! {
         // Otherwise start right over again. We can still lose time if any single round takes
         // more than two seconds, but it does not really matter as we are just trying to
         // generally pace the filesystem activity.
-        let elapsed = crate::tc::getnsecuptime().saturating_sub(start);
+        let elapsed = crate::time::tc::getnsecuptime().saturating_sub(start);
         if elapsed < SEC {
             let _ = hal::sync::sleep::tsleep_nsec(
                 ptr::from_ref(&SYNCER_CHAN),
@@ -442,7 +442,7 @@ pub fn sync_inactive<G: ProcGlue>(vp: &'static Vnode<G>) -> Result<(), Errno> {
 /// Print out a syncer vnode.
 pub fn sync_print() -> Result<(), Errno> {
     if cfg!(any(feature = "debug", feature = "diagnostic")) {
-        crate::prf::printf(format_args!("syncer vnode\n"));
+        crate::base::prf::printf(format_args!("syncer vnode\n"));
     }
     Ok(())
 }

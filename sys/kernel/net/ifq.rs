@@ -79,7 +79,7 @@
 //!   `ifq_oactive` atomics beside it for the unlocked readers, the serializer's list a
 //!   `PinList` of tasks under `ifq_task_mtx`. A queue's own tasks (`ifq_start`, `ifq_restart`,
 //!   `ifq_bundle`, `ifiq_task`) take the queue as a `&'static` argument
-//!   (`kernel::task::Task::set_ref`) where the C passes its address.
+//!   (`kernel::base::task::Task::set_ref`) where the C passes its address.
 //! - `struct ifq_ops` and `void *ifq_q` -> [`Discipline`]: priq native (its `struct priq` an
 //!   `MBox` of `M_DEVBUF`, as the C's `malloc`), or a [`QueueDiscipline`] table over the
 //!   conditioner's word (`bsd`'s `hfsc` and `fq_codel`, N8; bridges.toml's
@@ -116,12 +116,12 @@ use hal::sys::net_bpf::BPF_DIRECTION_IN;
 use hal::sys::net_if::{IFF_RUNNING, IFQ_MAXPRIO, IFQ_NQUEUES, IFXF_MONITOR, IfData};
 
 use crate::assert::{kassert, kpanic};
+use crate::base::task::{Task, TaskChain, Taskq, task_add, task_del, taskq_del_barrier};
 use crate::net::if_var::{AtomicCell, Ifnet};
 use crate::net::mbuf::{
     M_FLOWID, M_MCAST, Mbuf, MbufBox, MbufList, ml_dequeue, ml_empty, ml_enlist, ml_enqueue,
     ml_len, ml_purge,
 };
-use crate::task::{Task, TaskChain, Taskq, task_add, task_del, taskq_del_barrier};
 
 /// `IFQ_MAXLEN`: the default length of a send queue.
 pub const IFQ_MAXLEN: u32 = 256;
@@ -1311,9 +1311,9 @@ mod tests {
     use hal::sync::once::OnceStatic;
 
     use super::*;
+    use crate::base::task::TaskWork;
     use crate::net::if_::tests::setup;
     use crate::net::if_::{test_ifnet, test_packet};
-    use crate::task::TaskWork;
 
     #[test]
     fn priq_keeps_priorities_and_drops_the_lowest_when_full() {

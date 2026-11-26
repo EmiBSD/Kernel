@@ -165,7 +165,7 @@ pub fn constty() -> Option<TtyRef> {
 }
 
 /// `cn_devvp != NULL`: the real console's vnode is held (`cnopen` ran), so `cnwrite` reaches
-/// its tty (the test of `subr_log.c`'s `dosendsyslog`, for `kernel::log`).
+/// its tty (the test of `subr_log.c`'s `dosendsyslog`, for `kernel::base::log`).
 pub fn cn_devvp_set() -> bool {
     !CN_DEVVP.load(Ordering::Relaxed).is_null()
 }

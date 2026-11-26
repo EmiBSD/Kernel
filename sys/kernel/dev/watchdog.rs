@@ -81,8 +81,8 @@ use hal::sync::mutex::Mutexed;
 use hal::sys::errno::Errno;
 use hal::sys::sysctl::{KERN_WATCHDOG_AUTO, KERN_WATCHDOG_PERIOD};
 
-use crate::sysctl::{SysctlNode, SysctlReq, int_bounded};
-use crate::timeout::Timeout;
+use crate::base::sysctl::{SysctlNode, SysctlReq, int_bounded};
+use crate::time::timeout::Timeout;
 
 /// `int (*)(void *, int)`: a watchdog driver's control callback. It sets the period (in
 /// seconds, 0 disarms) and returns the period it really set.

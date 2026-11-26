@@ -191,6 +191,7 @@ use hal::sys::netinet_in::{
 use hal::sys::netinet_ip::{IPOPT_RA, Ip};
 
 use crate::assert::{kassert, kpanic};
+use crate::base::sysctl::{SysctlReq, rdstruct};
 use crate::net::if_::{IFNETLIST, IfRef};
 use crate::net::if_var::Ifnet;
 use crate::net::mbuf::{
@@ -206,7 +207,6 @@ use crate::netinet::in_cksum::in_cksum;
 use crate::netinet::in_var::{InMulti, ifatoia};
 use crate::netinet::ip_output::{ip_load, ip_output, ip_store};
 use crate::netinet::ip_var::IpMoptions;
-use crate::sysctl::{SysctlReq, rdstruct};
 
 /// `ip_output`'s flags for a report: none (`IP_MULTICASTOPTS`).
 const IP_MULTICASTOPTS: i32 = 0;

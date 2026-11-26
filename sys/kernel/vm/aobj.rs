@@ -139,7 +139,7 @@ use super::pager::{
 use super::pmemrange::uvm_wait;
 use super::types::{VmProt, Voff};
 use crate::assert::{kassert, kpanic};
-use crate::prf::{printf, unported};
+use crate::base::prf::{printf, unported};
 
 /// `M_UVMAOBJ` (`<sys/malloc.h>`): the malloc type of the swap slot arrays and hash tables.
 pub const M_UVMAOBJ: i32 = 99;
@@ -156,7 +156,7 @@ pub const UAO_FLAG_CANFAIL: i32 = 0x4;
 /// `UAO_FLAG_NOSWAP`: internal: aobj can't swap (kernel obj only!).
 pub const UAO_FLAG_NOSWAP: i32 = 0x8;
 /// `UAO_FLAG_HALVIEW` (not the C's, N5.9t1): internal: `hal` views the object's page as a
-/// Rust object (`kernel::tc::timekeep_object`'s page, `hal::mem::mapped`'s `TimekeepAtomic`), so
+/// Rust object (`kernel::time::tc::timekeep_object`'s page, `hal::mem::mapped`'s `TimekeepAtomic`), so
 /// no kernel window may map it (`vm::km::uvm_map_object_window` refuses it). Set once,
 /// before the view is made, never cleared.
 pub const UAO_FLAG_HALVIEW: i32 = 0x4000_0000;

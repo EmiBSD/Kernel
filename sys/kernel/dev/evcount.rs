@@ -116,7 +116,7 @@ use hal::sys::sysctl::{
 };
 
 use crate::assert::kassert;
-use crate::sysctl::{SysctlNode, SysctlReq, rdint, rdquad, rdstring};
+use crate::base::sysctl::{SysctlNode, SysctlReq, rdint, rdquad, rdstring};
 
 /// `M_COUNTERS`: per-CPU counters via counters_alloc(9) (`<sys/malloc.h>`).
 pub const M_COUNTERS: i32 = 12;

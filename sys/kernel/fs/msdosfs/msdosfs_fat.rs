@@ -149,6 +149,7 @@ use hal::sys::errno::Errno;
 use hal::sys::types::Daddr;
 
 use crate::assert::{kassert, kpanic};
+use crate::base::prf::printf;
 use crate::fs::bio::{DEV_BSHIFT, bdwrite, bread, bread_or_release, brelse, bwrite, getblk_wait};
 use crate::fs::buf::BufRef;
 use crate::fs::msdosfs::bpb::{Fsinfo, getulong, getushort, putulong, putushort};
@@ -164,9 +165,8 @@ use crate::fs::msdosfs::msdosfsmount::{
     MSDOSFS_FATMIRROR, MSDOSFSMNT_WAITONFAT, Msdosfsmount, N_INUSEBITS, cntobn, de_bn2cn, de_cn2bn,
     de_cn2off, fatofs, fsi_size,
 };
-use crate::prf::printf;
 use crate::proc::ProcGlue;
-use crate::tc::microtime;
+use crate::time::tc::microtime;
 
 /// `DEV_BSIZE`: the size of a disk block (`<sys/param.h>`).
 const DEV_BSIZE: u32 = 1 << DEV_BSHIFT;

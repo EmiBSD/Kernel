@@ -107,8 +107,8 @@ use hal::sys::errno::Errno;
 use hal::sys::syscall::{SYS_MAXSYSCALL, SYS_sigreturn};
 use hal::syscall::{Register, Rval, SysArgs, SysResult};
 
-use crate::acct::APINSYS;
 use crate::assert::kpanic;
+use crate::proc::acct::APINSYS;
 use crate::proc::{P_OWEUPC, PS_PLEDGE, PinTable, ProcGlue, SINGLE_DEEP, SINGLE_UNWIND, Thread};
 use crate::vm::map::{Vmspace, uvm_map_inentry, uvm_map_inentry_sp};
 
@@ -119,7 +119,7 @@ pub const SY_NOLOCK: i32 = 0x01;
 /// `MULTIPROCESSOR`: [`mi_syscall`]'s callers keep the kernel lock for them although
 /// `sysent` marks them `SY_NOLOCK` (see the module's deviations). LZ's M11e audit left only
 /// the unported `__thrsleep(2)` and `__thrwakeup(2)`; their port (LZ 9fd12af2c575,
-/// `kernel::thrsleep`) takes the C's locks (the buckets' mutexes and `SCHED_LOCK`, as
+/// `kernel::sched::thrsleep`) takes the C's locks (the buckets' mutexes and `SCHED_LOCK`, as
 /// `futex(2)`), so the table is empty and stays as the place for the next unaudited one.
 pub const SY_NOLOCK_DEFERRED: &[i32] = &[];
 
@@ -311,7 +311,7 @@ fn pin_check_at<G: ProcGlue>(p: Pin<&Thread<G>>, code: Register, pc: usize) -> R
 #[inline]
 fn refreshcreds<G: ProcGlue>(p: &Thread<G>) {
     if p.cred_stale() {
-        crate::prot::dorefreshcreds(p);
+        crate::proc::prot::dorefreshcreds(p);
     }
 }
 
@@ -436,7 +436,7 @@ pub fn mi_child_return<G: ProcGlue>(p: Pin<&Thread<G>>) {
 pub fn mi_ast<G: ProcGlue>(p: Pin<&Thread<G>>, resched: bool) {
     if p.p_flag.load(Ordering::Relaxed) & P_OWEUPC != 0 {
         // KERNEL_LOCK(); ADDUPROF(p); KERNEL_UNLOCK(): the profiling clock (subr_prof.c).
-        let _ = crate::prf::unported!("mi_ast: ADDUPROF (subr_prof.c)");
+        let _ = crate::base::prf::unported!("mi_ast: ADDUPROF (subr_prof.c)");
     }
     if resched {
         crate::sched::preempt::<G>();
@@ -462,7 +462,7 @@ impl<G: ProcGlue> TrapHandler for KernelTrap<G> {
     ) -> Result<(), Errno> {
         // The fault counts on curproc->p_ru: the thread on this CPU's, when there is one
         // (a kernel fault taken with no thread counts nowhere; the C has always one).
-        let kernel_fault = |va, ru: Option<&crate::resource::Rusage>| {
+        let kernel_fault = |va, ru: Option<&crate::proc::resource::Rusage>| {
             let map = crate::vm::km::kernel_map();
             #[cfg(target_arch = "aarch64")]
             if map
@@ -547,7 +547,7 @@ impl<G: ProcGlue> TrapHandler for KernelTrap<G> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cred::{CredRef, Ucred};
+    use crate::proc::cred::{CredRef, Ucred};
     use crate::proc::{process_alloc, procinit, thread_alloc};
     use crate::testutil;
     use hal::ds::pin::pin_static;

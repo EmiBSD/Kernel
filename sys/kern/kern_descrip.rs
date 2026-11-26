@@ -84,7 +84,7 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! `bsd`'s descriptors over the kernel's (`kernel::file`, `kernel::descrip`): the glue the
+//! `bsd`'s descriptors over the kernel's (`kernel::file`, `kernel::file::descrip`): the glue the
 //! kernel's open files and tables are instantiated with ([`BsdFileGlue`]: the objects a
 //! file holds, the hooks into the vnode layer, the sockets, kqueue, signals and pledge), the
 //! `sysent[]` rows of the descriptor system calls, and the `/dev/fd` driver.
@@ -95,7 +95,7 @@
 //! LZ: sys/sys/file.rs@3c62ede68802
 //!
 //! ## Redesign
-//! - N4.3: `kern_descrip.c`'s descriptor management moved into `kernel::descrip` and
+//! - N4.3: `kern_descrip.c`'s descriptor management moved into `kernel::file::descrip` and
 //!   `struct file` into `kernel::file`; this module is what stays `bsd`'s until the
 //!   subsystems a file points at move: [`BsdFileData`] (`f_data` by kind: a vnode link, a
 //!   socket's address word, a pipe's end, a counted kqueue), the hooks of
@@ -112,7 +112,7 @@ use hal::ds::link::Link;
 use kernel::api::{FdEntries, SysResult};
 use kernel::file::{FileGlue, FileTables};
 
-pub use kernel::descrip::{
+pub use kernel::file::descrip::{
     dupfdopen, fd_checkclosed, fd_getfile, fd_getfile_flags, fd_iterfile, fdalloc, fdcopy,
     fdexpand, fdfree, fdinit, fdinsert, fdprepforexec, fdrelease, fdremove, fdshare, finishdup,
 };
@@ -155,7 +155,7 @@ pub enum BsdFileData {
     /// `DTYPE_SOCKET`: the socket, counted (its last reference goes with the file's).
     Socket(crate::sys::socketvar::SocketRef),
     /// `DTYPE_PIPE`: the pipe this file reads (and whose peer it writes).
-    Pipe(kernel::pipe::PipeEnd<crate::kern::proc_glue::BsdProcGlue>),
+    Pipe(kernel::file::pipe::PipeEnd<crate::kern::proc_glue::BsdProcGlue>),
     /// `DTYPE_KQUEUE`: the kqueue, a counted reference the file drops with its last
     /// reference (`kqueue_close` terminates the queue first).
     Kqueue(KqRef),
@@ -170,7 +170,7 @@ impl BsdFileData {
     }
 }
 
-/// `bsd`'s instantiation of `kernel::file` and `kernel::descrip` (a `bridges.toml` row while
+/// `bsd`'s instantiation of `kernel::file` and `kernel::file::descrip` (a `bridges.toml` row while
 /// `bsd` implements it).
 pub struct BsdFileGlue;
 
@@ -246,7 +246,7 @@ impl FileGlue for BsdFileGlue {
     }
 
     fn pipe_file(
-        end: kernel::pipe::PipeEnd<crate::kern::proc_glue::BsdProcGlue>,
+        end: kernel::file::pipe::PipeEnd<crate::kern::proc_glue::BsdProcGlue>,
     ) -> (&'static Fileops, BsdFileData) {
         (&crate::kern::pipe_glue::PIPEOPS, BsdFileData::Pipe(end))
     }
@@ -260,7 +260,7 @@ impl FileGlue for BsdFileGlue {
 
     fn pipe_of(
         d: &BsdFileData,
-    ) -> Option<&kernel::pipe::PipeEnd<crate::kern::proc_glue::BsdProcGlue>> {
+    ) -> Option<&kernel::file::pipe::PipeEnd<crate::kern::proc_glue::BsdProcGlue>> {
         match d {
             BsdFileData::Pipe(end) => Some(end),
             _ => None,
@@ -357,7 +357,7 @@ pub fn filedesc_init() {
             FileTables::new(0, &NUMFILES),
         )))
     });
-    if kernel::descrip::filedesc_init::<BsdFileGlue>().is_err() {
+    if kernel::file::descrip::filedesc_init::<BsdFileGlue>().is_err() {
         crate::kern::subr_prf::panic(format_args!("filedesc_init: cannot make the pools"));
     }
 }
@@ -372,7 +372,7 @@ pub fn file_count(fp: &File) -> u32 {
 
 /// `falloc(p)` with the table locked: a new file (the caller's reference) and its descriptor.
 pub fn falloc(p: &Proc, g: &mut FdGuard<'_>) -> Result<(FileRef, i32), Errno> {
-    kernel::descrip::falloc(p, g)
+    kernel::file::descrip::falloc(p, g)
 }
 
 /// `fnew(p)`: a new open file with one reference and the thread's credentials.
@@ -383,66 +383,67 @@ pub fn fnew(p: &Proc) -> Option<FileRef> {
 /// `closef(fp, p)`: the reference a slot or a message held, given back after the table's
 /// POSIX locks are released (a thread's close).
 pub fn closef<'a>(fp: FileRef, p: impl Into<Option<&'a Proc>>) -> Result<(), Errno> {
-    kernel::descrip::closef(fp, p.into())
+    kernel::file::descrip::closef(fp, p.into())
 }
 
 /// `fd_getfile_mode(fdp, fd, mode)` of `p`'s table.
 pub fn fd_getfile_mode(p: &Proc, fd: i32, mode: i32) -> Option<FileRef> {
-    kernel::descrip::fd_getfile_mode(p, fd, mode)
+    kernel::file::descrip::fd_getfile_mode(p, fd, mode)
 }
 
 /// Duplicate a file descriptor.
 pub fn sys_dup(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysDupArgs = sysargs(v);
-    retval[0] = kernel::descrip::sys_dup(p, uap.fd.get())? as Register;
+    retval[0] = kernel::file::descrip::sys_dup(p, uap.fd.get())? as Register;
     Ok(())
 }
 
 /// Duplicate a file descriptor to a particular value.
 pub fn sys_dup2(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysDup2Args = sysargs(v);
-    retval[0] = kernel::descrip::sys_dup2(p, uap.from.get(), uap.to.get())? as Register;
+    retval[0] = kernel::file::descrip::sys_dup2(p, uap.from.get(), uap.to.get())? as Register;
     Ok(())
 }
 
 /// `dup3(2)`: `dup2` with `O_CLOEXEC`/`O_CLOFORK`, refusing `from == to`.
 pub fn sys_dup3(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysDup3Args = sysargs(v);
-    retval[0] =
-        kernel::descrip::sys_dup3(p, uap.from.get(), uap.to.get(), uap.flags.get())? as Register;
+    retval[0] = kernel::file::descrip::sys_dup3(p, uap.from.get(), uap.to.get(), uap.flags.get())?
+        as Register;
     Ok(())
 }
 
 /// The file control system call.
 pub fn sys_fcntl(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysFcntlArgs = sysargs(v);
-    retval[0] = kernel::descrip::sys_fcntl(p, uap.fd.get(), uap.cmd.get(), uap.arg.get() as usize)?;
+    retval[0] =
+        kernel::file::descrip::sys_fcntl(p, uap.fd.get(), uap.cmd.get(), uap.arg.get() as usize)?;
     Ok(())
 }
 
 /// Close a file descriptor.
 pub fn sys_close(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysCloseArgs = sysargs(v);
-    kernel::descrip::sys_close(p, uap.fd.get())
+    kernel::file::descrip::sys_close(p, uap.fd.get())
 }
 
 /// Return status information about a file descriptor.
 pub fn sys_fstat(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysFstatArgs = sysargs(v);
-    kernel::descrip::sys_fstat(p, uap.fd.get(), uap.sb.get() as usize)
+    kernel::file::descrip::sys_fstat(p, uap.fd.get(), uap.sb.get() as usize)
 }
 
 /// Return pathconf information about a file descriptor.
 pub fn sys_fpathconf(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysFpathconfArgs = sysargs(v);
-    retval[0] = kernel::descrip::sys_fpathconf(p, uap.fd.get(), uap.name.get())?;
+    retval[0] = kernel::file::descrip::sys_fpathconf(p, uap.fd.get(), uap.name.get())?;
     Ok(())
 }
 
 /// Apply an advisory lock on a file descriptor.
 pub fn sys_flock(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysFlockArgs = sysargs(v);
-    kernel::descrip::sys_flock(p, uap.fd.get(), uap.how.get())
+    kernel::file::descrip::sys_flock(p, uap.fd.get(), uap.how.get())
 }
 
 /// File Descriptor pseudo-device driver (`/dev/fd/`).
@@ -462,12 +463,12 @@ pub fn filedescopen(dev: Dev, _mode: i32, _type: i32, p: &Proc) -> Result<(), Er
 /// `closefrom(2)`: closes every descriptor from `fd` on.
 pub fn sys_closefrom(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysClosefromArgs = sysargs(v);
-    kernel::descrip::sys_closefrom(p, uap.fd.get())
+    kernel::file::descrip::sys_closefrom(p, uap.fd.get())
 }
 
 /// `getdtablecount(2)`: the number of descriptors open.
 pub fn sys_getdtablecount(p: &Proc, _v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
-    retval[0] = kernel::descrip::sys_getdtablecount(p) as Register;
+    retval[0] = kernel::file::descrip::sys_getdtablecount(p) as Register;
     Ok(())
 }
 

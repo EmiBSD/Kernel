@@ -166,6 +166,7 @@ use hal::sys::types::{Daddr, Ino, Uid, major};
 use hal::user::{UserPtr, zeroed};
 
 use crate::assert::kpanic;
+use crate::base::prf::printf;
 use crate::file::FileGlue;
 use crate::fs::bio::{DEV_BSHIFT, bread, brelse};
 use crate::fs::buf::BufRef;
@@ -200,7 +201,6 @@ use crate::fs::vnode::{
 };
 use crate::fs::vops::{Cred, Nd, VFS_VGET, Vfs, vop_close, vop_open, vop_unlock};
 use crate::net::mbuf::Mbuf;
-use crate::prf::printf;
 use crate::proc::{ProcGlue, Thread};
 
 /// The block size the mount reads the anchor and the volume descriptor sequence in
@@ -1147,7 +1147,8 @@ mod tests {
     use hal::sys::unistd::{_PC_LINK_MAX, _PC_NAME_MAX};
 
     use super::*;
-    use crate::descrip::{sys_close, sys_read};
+    use crate::file::descrip::{sys_close, sys_read};
+    use crate::file::uio::{Iovec, Uio};
     use crate::fs::bio::biodone;
     use crate::fs::buf::{B_ERROR, BufRef};
     use crate::fs::isofs::udf::ecma167_udf::UDF_FILE_CHAR_PAR;
@@ -1169,7 +1170,6 @@ mod tests {
     use crate::fs::vnode::{VWRITE, Vattr};
     use crate::fs::vops::{Vnops, vop_access, vop_bmap, vop_getattr, vop_read, vop_readdir};
     use crate::testutil::{malloc_out, malloc_requests, pool_requests, printf_count, watch_pool};
-    use crate::uio::{Iovec, Uio};
 
     /// The whole file `path`, read through `open(2)` and `read(2)` in small pieces.
     fn read_file(p: &Thread<TestGlue>, path: &[u8]) -> Result<Vec<u8>, Errno> {

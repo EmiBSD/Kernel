@@ -2565,15 +2565,15 @@ pub(crate) mod tests {
         crate::kern::subr_autoconf::autoconf_test_reset();
         // And pf's OS fingerprints, whose entries came from pools other tests initialise again.
         crate::net::pf_osfp::pf_osfp_test_reset();
-        // And the sigio registrations (kernel::sigio's chain), malloc(9)'d from the memory
+        // And the sigio registrations (kernel::sig::sigio's chain), malloc(9)'d from the memory
         // just replaced.
-        kernel::sigio::sigio_test_reset();
-        // And the log stash's messages and syslogf's file (kernel::log, in bsd's glue's
+        kernel::sig::sigio::sigio_test_reset();
+        // And the log stash's messages and syslogf's file (kernel::base::log, in bsd's glue's
         // tables), malloc(9)'d and pooled from the memory just replaced.
-        kernel::log::log_test_reset::<crate::kern::proc_glue::BsdProcGlue>();
-        // And sysctl's disk exports (kernel::sysctl's disknames and diskstats), malloc(9)'d
+        kernel::base::log::log_test_reset::<crate::kern::proc_glue::BsdProcGlue>();
+        // And sysctl's disk exports (kernel::base::sysctl's disknames and diskstats), malloc(9)'d
         // from the memory just replaced.
-        kernel::sysctl::sysctl_test_reset();
+        kernel::base::sysctl::sysctl_test_reset();
         // And the buffer cache (kernel::fs::bio: bufhead, the queues, the kva arena) and the
         // disk queues' list, whose buffers and pages came from the memory just replaced.
         kernel::fs::bio::bio_test_reset();

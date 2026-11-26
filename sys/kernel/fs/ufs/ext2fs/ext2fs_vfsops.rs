@@ -170,6 +170,7 @@ use super::ext2fs_dinode::{
 use super::ext2fs_inode::ext2fs_setsize;
 use super::ext2fs_subr::ext2fs_vinit;
 use crate::assert::kpanic;
+use crate::base::prf::{Str, printf};
 use crate::file::{DM_OPENBLCK, FileGlue};
 use crate::fs::bio::{DEV_BSHIFT, bawrite, bread, brelse, bwrite, getblk_wait};
 use crate::fs::export::{ExportGrant, check, vfs_export};
@@ -197,10 +198,9 @@ use crate::fs::vnode::{
 };
 use crate::fs::vops::{Cred, Nd, VFS_VGET, Vfs, vop_close, vop_fsync, vop_open, vop_unlock};
 use crate::net::mbuf::Mbuf;
-use crate::prf::{Str, printf};
 use crate::proc::{ProcGlue, Thread};
-use crate::tc::gettime;
 use crate::time::inittodr;
+use crate::time::tc::gettime;
 
 /// `DEV_BSIZE`.
 const DEV_BSIZE: Off = 1 << DEV_BSHIFT;
@@ -1360,6 +1360,7 @@ mod tests {
     };
     use super::super::testext2fs::{attach, fail_block, new_file, try_mount};
     use super::*;
+    use crate::file::uio::{Iovec, Uio};
     use crate::fs::testfs::TestGlue;
     use crate::fs::testfs::{UBUF, up};
     use crate::fs::ufs::ffs::testffs::{devvp, disk, set_disk};
@@ -1367,7 +1368,6 @@ mod tests {
     use crate::fs::vnode::{VDIR, VREG, VROOT};
     use crate::fs::vops::{VFS_ROOT, vop_bmap, vop_read, vop_write};
     use crate::testutil::printf_count;
-    use crate::uio::{Iovec, Uio};
 
     /// A `Nameidata` for `ext2fs_mount`'s `ndp` (an update reads its credential).
     fn nd(p: &Thread<TestGlue>) -> Nd<'_, TestGlue> {

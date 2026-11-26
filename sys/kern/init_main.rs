@@ -71,7 +71,7 @@
 //! `soinit` and the UNIX domain. M11a: the kernel lock (`KERNEL_LOCK_INIT`, `KERNEL_LOCK`
 //! on behalf of proc0, `start_init`'s `KERNEL_UNLOCK` before init's first return to user
 //! mode), `cpu_boot_secondary_processors`, `smr_startup` and `smr_startup_thread` (since
-//! N6.0 `kernel::smr::start`; `smr_startup` has nothing left to do).
+//! N6.0 `kernel::base::smr::start`; `smr_startup` has nothing left to do).
 //!
 //! ## Deviations
 //! - With `MULTIPROCESSOR` and `qemu`, `selftest=kthread` starts the secondary processors
@@ -166,7 +166,7 @@ use crate::unported;
 use hal::ds::pin::pin_static;
 use hal::sync::klock;
 use hal::vm::param::{round_page, trunc_page};
-use kernel::fork::Start;
+use kernel::proc::fork::Start;
 use kernel::sig::SigactsRef;
 use kernel::vm::map::{uvm_map, uvmspace_alloc_kernel};
 use kernel::vm::types::{
@@ -346,7 +346,7 @@ pub fn main() -> ! {
 
     // Initialize futexes.
     crate::kern::sys_futex::futex_init();
-    // tslp_init: `kernel::thrsleep`'s buckets are const initialisers; nothing to run.
+    // tslp_init: `kernel::sched::thrsleep`'s buckets are const initialisers; nothing to run.
 
     // Create credentials.
     let mut cr = Ucred::new();
@@ -355,7 +355,7 @@ pub fn main() -> ! {
 
     // Create process 0 (the swapper).
     let pr: &'static Process = &PROCESS0;
-    kernel::fork::process_initialize(pr, pin_static(p));
+    kernel::proc::fork::process_initialize(pr, pin_static(p));
     pr.set_main_static(pin_static(p));
     proc_tables().set_process0(pr, pin_static(p));
 
@@ -426,7 +426,7 @@ pub fn main() -> ! {
     sched_init_cpu(ci);
     Machine::ci_randseed(ci).set((arc4random() & 0x7fff_ffff) + 1);
     // The randomized statclock's seed, the queue's own (N4.8a).
-    kernel::clockintr::set_randseed(
+    kernel::time::clockintr::set_randseed(
         crate::kern::kern_sched::cpu_number_of(ci),
         Machine::ci_randseed(ci).get(),
     );
@@ -520,7 +520,7 @@ pub fn main() -> ! {
 
     // Create process 1 (init(8)). We do this now, as Unix has historically had init be
     // process 1, and changing this would probably upset a lot of people.
-    let Ok(initproc) = kernel::fork::fork1(pin_static(&PROC0), FORK_FORK, Start::Init) else {
+    let Ok(initproc) = kernel::proc::fork::fork1(pin_static(&PROC0), FORK_FORK, Start::Init) else {
         panic(format_args!("fork init"));
     };
     if proc_tables()
@@ -606,7 +606,7 @@ pub fn main() -> ! {
     let _ = unported!("kthread_create (pagedaemon, M7)");
     // The daemon's first act (uvm_pageout): tune the paging parameters.
     kernel::vm::pdaemon::uvmpd_tune();
-    if kernel::exit::start_reaper::<BsdProcGlue>().is_err() {
+    if kernel::proc::exit::start_reaper::<BsdProcGlue>().is_err() {
         panic(format_args!("fork reaper"));
     }
     // Create the cleaner daemon kernel thread (`cleanerproc`: the thread names itself to the
@@ -687,7 +687,7 @@ pub fn main() -> ! {
     crate::kern::selftest::ping_gateway();
 
     // Now that all CPUs partake in scheduling, start SMR thread.
-    kernel::smr::start::<crate::kern::proc_glue::BsdProcGlue>();
+    kernel::base::smr::start::<crate::kern::proc_glue::BsdProcGlue>();
 
     config_process_deferred_mountroot();
 

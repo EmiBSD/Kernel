@@ -465,7 +465,11 @@ impl Protocol<G> for Protosw {
     fn has_sysctl(&self) -> bool {
         self.pr_sysctl.is_some()
     }
-    fn sysctl(&self, name: &[i32], req: &mut kernel::sysctl::SysctlReq<'_>) -> Result<(), Errno> {
+    fn sysctl(
+        &self,
+        name: &[i32],
+        req: &mut kernel::base::sysctl::SysctlReq<'_>,
+    ) -> Result<(), Errno> {
         match self.pr_sysctl {
             Some(sysctl) => sysctl(name, req.oldp, req.oldlenp, req.newp, req.newlen),
             None => Err(Errno::EOPNOTSUPP),
@@ -676,7 +680,7 @@ pub fn net_sysctl(
         return net_link_sysctl(&name[1..], oldp, oldlenp, newp, newlen);
     }
     if family == i32::from(PF_UNIX) {
-        let mut req = kernel::sysctl::SysctlReq {
+        let mut req = kernel::base::sysctl::SysctlReq {
             oldp,
             oldlenp,
             newp,
@@ -711,7 +715,7 @@ pub fn net_sysctl(
             } else {
                 None
             };
-            let mut req = kernel::sysctl::SysctlReq {
+            let mut req = kernel::base::sysctl::SysctlReq {
                 oldp,
                 oldlenp,
                 newp,

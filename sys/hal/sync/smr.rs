@@ -88,7 +88,7 @@
 //! the read sections ([`read`], [`read_enter`]/[`read_leave`]), the per-CPU queues and the
 //! system's ([`defer_link`], `smr_dispatch`), the grace period (`grace_wait`, which only
 //! [`Batch::run`] calls, before it runs anything), the barrier ([`barrier`]); the SMR thread
-//! that drives it is `kernel::smr`'s (it needs the kernel's clock, `ratecheck` and
+//! that drives it is `kernel::base::smr`'s (it needs the kernel's clock, `ratecheck` and
 //! `kthread_create`), and the CPU walk it waits over is the kernel's scheduler, handed to
 //! [`Batch::run`] as a [`CpuWalk`].
 //!
@@ -177,7 +177,7 @@
 //!   `spc_smrexpedite`, `spc_smrgp`) -> this module's `PerCpu<SmrCpu>`, with the CPU's idle
 //!   thread's address beside them for `smr_cpu_is_idle` ([`set_idle_thread`]).
 //! - `smr_thread`'s two sleeps and its queue concatenation -> [`wait`] and [`collect`] (a
-//!   [`Batch`] that [`Batch::run`] runs); the thread itself is `kernel::smr::thread`.
+//!   [`Batch`] that [`Batch::run`] runs); the thread itself is `kernel::base::smr::thread`.
 //!   `smr_wakeup` and `smr_wakeup_tmo` are gone: a dispatch that finds the system's queue
 //!   empty wakes the thread at once, and the thread pauses `SMR_PAUSE` before collecting
 //!   unless the work is expedited, so a first call still waits about 100 ms, as the C's

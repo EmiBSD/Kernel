@@ -216,6 +216,7 @@ use hal::sys::types::{Pid, SaFamily};
 use hal::user::{AbiPod, UserPtr};
 
 use crate::assert::kpanic;
+use crate::base::sysctl::{SysctlReq, rdstruct};
 use crate::net::domain::{Domain, net};
 use crate::net::if_::{
     IF_TMPLIST_LOCK, IFNETLIST, if_get, if_getdata, if_group_routechange, if_put, if_ref,
@@ -245,8 +246,7 @@ use crate::net::socket::{
     soreserve, sorwakeup,
 };
 use crate::proc::{ProcGlue, suser};
-use crate::sysctl::{SysctlReq, rdstruct};
-use crate::timeout::{KCLOCK_NONE, TIMEOUT_MPSAFE, TIMEOUT_PROC, Timeout};
+use crate::time::timeout::{KCLOCK_NONE, TIMEOUT_MPSAFE, TIMEOUT_PROC, Timeout};
 use hal::ds::list::List;
 
 /// `ROUTESNDQ`: a routing socket's send buffer.
@@ -1763,8 +1763,8 @@ pub fn rtm_setmetrics(which: u32, in_: &RtMetrics, out: &RtKmetrics) {
     if which & RTV_EXPIRE != 0 {
         let mut expire = in_.rmx_expire;
         if expire != 0 {
-            expire -= crate::tc::gettime();
-            expire += crate::tc::getuptime();
+            expire -= crate::time::tc::gettime();
+            expire += crate::time::tc::getuptime();
         }
 
         out.rmx_expire.set(expire);
@@ -1781,8 +1781,8 @@ pub fn rtm_getmetrics(rt: &Rtentry, out: &mut RtMetrics) {
         expire = rt_timer_get_expire(rt);
     }
     if expire != 0 {
-        expire -= crate::tc::getuptime();
-        expire += crate::tc::gettime();
+        expire -= crate::time::tc::getuptime();
+        expire += crate::time::tc::gettime();
     }
 
     *out = RtMetrics::default();

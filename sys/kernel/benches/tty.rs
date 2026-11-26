@@ -17,7 +17,7 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! Host microbenchmarks of N4.7b's hot paths (decision 43): the clists (`kernel::clist`)
+//! Host microbenchmarks of N4.7b's hot paths (decision 43): the clists (`kernel::tty::clist`)
 //! and, from the tty's commit on, the line discipline's per-character input, its output
 //! processing and the tty's lock, over the kernel's host doubles (`kernel::testutil`,
 //! feature `doubles`). Never part of a kernel image; it measures and changes nothing.
@@ -49,12 +49,12 @@ use std::time::{Duration, Instant};
 use std::vec::Vec;
 
 use hal::sys::errno::Errno;
-use kernel::clist::Clist;
+use kernel::file::uio::UioMove;
 use kernel::proc::{self, ProcGlue, ProcTables, Process, Session, Thread};
-use kernel::termios::{ECHO, ICANON, TTYDEF_CFLAG, TTYDEF_IFLAG, TTYDEF_LFLAG, TTYDEF_OFLAG};
 use kernel::testutil;
+use kernel::tty::clist::Clist;
+use kernel::tty::termios::{ECHO, ICANON, TTYDEF_CFLAG, TTYDEF_IFLAG, TTYDEF_LFLAG, TTYDEF_OFLAG};
 use kernel::tty::{TS_CARR_ON, TS_ISOPEN, Tty, TtyRef, ttsetwater, ttychars, ttyinput, ttymalloc};
-use kernel::uio::UioMove;
 
 // ---------------------------------------------------------------------------------------
 // The harness (vm.rs's).
@@ -182,8 +182,8 @@ impl ProcGlue for BenchGlue {
     ) {
     }
     /// No per-CPU slice start: the uptime itself (no running part).
-    fn spc_runtime() -> kernel::clock::Timespec {
-        kernel::tc::nanouptime()
+    fn spc_runtime() -> kernel::time::clock::Timespec {
+        kernel::time::tc::nanouptime()
     }
     fn process_ref(pr: &Process<Self>) -> proc::ProcessRef<Self> {
         match hal::mem::pool::PoolArc::from_ref(pr) {

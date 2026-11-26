@@ -189,6 +189,7 @@ use hal::sys::socket::AF_INET6;
 use hal::user::bytes_of;
 
 use crate::assert::{kassert, kpanic};
+use crate::base::sysctl::{SysctlReq, rdstruct};
 use crate::net::domain::net;
 use crate::net::if_var::{Ifnet, Netstack};
 use crate::net::mbuf::{
@@ -228,7 +229,6 @@ use crate::netinet6::ip6_output::{
 };
 use crate::netinet6::ip6_var::{IPV6_MINMTU, Ip6Pktopts, icmp6stat_inc_hist, ip6stat_dec};
 use crate::proc::{ProcGlue, Thread};
-use crate::sysctl::{SysctlReq, rdstruct};
 
 /// `RIPV6SNDQ` (`in6_proto.c`).
 const RIPV6SNDQ: u64 = 8192;

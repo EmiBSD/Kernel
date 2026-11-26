@@ -311,7 +311,7 @@ use crate::net::rtable::{
 use crate::net::rtsock;
 use crate::netinet::if_ether::LlinfoArp;
 use crate::netinet6::nd6::LlinfoNd6;
-use crate::timeout::{KCLOCK_NONE, TIMEOUT_PROC, Timeout};
+use crate::time::timeout::{KCLOCK_NONE, TIMEOUT_PROC, Timeout};
 
 /// `RT_RESOLVE`: `rtalloc`'s flag to add and resolve the link-layer route of a cloning one.
 pub const RT_RESOLVE: i32 = 1;
@@ -2537,7 +2537,7 @@ pub fn rt_timer_add(
             rtt_timeout: Timeout::unset(),
             rtt_queue: queue,
             rtt_rt: Guarded::new_static_mutexed(&RTTIMER_MTX, None),
-            rtt_expire: crate::tc::getuptime()
+            rtt_expire: crate::time::tc::getuptime()
                 + i64::from(queue.rtq_timeout.load(Ordering::Relaxed)),
             rtt_tableid: rtableid,
         })

@@ -32,7 +32,7 @@
 //! compile-time proof, and it goes with the bridges (N9) and, for the pages, when the kernel
 //! map's record is typed (N3.5). Since the page provider is a value and not a slot, the
 //! boundary is chosen at each call: every caller of `KmBuf::alloc_pageable`/`alloc_wired` and
-//! of `kernel::pipe::Pipes::new` names its provider, and in a kernel image the one production
+//! of `kernel::file::pipe::Pipes::new` names its provider, and in a kernel image the one production
 //! choice is `sys/kern/pipe_glue.rs`'s `PIPES`, which passes the kernel's
 //! `kernel::vm::km::page_memory()` (the test doubles are `cfg(test)` code).
 //!
@@ -67,7 +67,7 @@
 //! `pcb_onfault`, an `EFAULT`. A window's raw legs (`copyout_at`, `copyin_at`, `kcopy_to`,
 //! `kcopy_from`, over the machine's `copy_raw`) copy between its pages and a user address the
 //! routine checks, or a kernel buffer named by the one holder of `hal::user::WindowKcopyToken`
-//! (taken once at boot by `kernel::uio`, which the two kernel legs require): only a
+//! (taken once at boot by `kernel::file::uio`, which the two kernel legs require): only a
 //! `UIO_SYSSPACE` iovec's, which its builder vouches for (`struct uio`'s contract, the
 //! `KcopyToken`'s trust), so holding a window gives no copy onto a kernel address.
 //!
@@ -99,7 +99,7 @@
 //! the kernel's (N6.1's mbuf pages over `km_alloc`).
 //!
 //! The SMR CPU walk (`hal::sync::smr::CpuWalk`, N6.0) is a value the SMR thread passes to
-//! `hal::sync::smr::Batch::run`: the kernel's scheduler (`kernel::smr::SchedCpus`), the one
+//! `hal::sync::smr::Batch::run`: the kernel's scheduler (`kernel::base::smr::SchedCpus`), the one
 //! production walk. Its contract: `running(n)` answers `true` for every CPU that may run a
 //! thread, since a CPU it skips is not waited for and a read section open there could still
 //! see an object the batch then frees. `hal` checks what it can see: a skipped CPU found inside

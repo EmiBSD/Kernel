@@ -168,13 +168,13 @@ pub use hal::sys::sensors::*;
 use hal::user::bytes_of;
 
 use crate::assert::kpanic;
-use crate::clock::Timeval;
+use crate::base::prf::unported;
+use crate::base::sysctl::{SysctlNode, SysctlReq, rdstruct};
+use crate::base::task::{SYSTQ, Task, Taskq, TaskqRef, task_add, taskq_create};
 use crate::net::if_var::{AtomicBytes, AtomicCell};
-use crate::prf::unported;
 use crate::sched::PZERO;
-use crate::sysctl::{SysctlNode, SysctlReq, rdstruct};
-use crate::task::{SYSTQ, Task, Taskq, TaskqRef, task_add, taskq_create};
-use crate::timeout::{KCLOCK_NONE, Timeout};
+use crate::time::clock::Timeval;
+use crate::time::timeout::{KCLOCK_NONE, Timeout};
 
 /// `M_DEVBUF`: device driver memory (`<sys/malloc.h>`).
 const M_DEVBUF: i32 = 2;
@@ -1090,7 +1090,7 @@ mod tests {
             std::thread::yield_now();
         }
         if st.task.pending() {
-            let _ = crate::task::task_del(sensors_taskq(), &st.task);
+            let _ = crate::base::task::task_del(sensors_taskq(), &st.task);
         }
         // The task, the timeout and this handle (a runner's own given back).
         while MArc::count(&st) > 3 {

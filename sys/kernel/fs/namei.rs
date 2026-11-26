@@ -91,8 +91,8 @@ use super::vnode::Vnode;
 use super::vops::Cred;
 use crate::assert::{kassert, kpanic};
 use crate::file::FileGlue;
+use crate::file::uio::UioSeg;
 use crate::proc::{ProcGlue, Thread};
-use crate::uio::UioSeg;
 
 pub use hal::sys::fcntl::AT_FDCWD;
 

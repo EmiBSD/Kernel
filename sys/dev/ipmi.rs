@@ -1359,11 +1359,11 @@ pub fn ipmi_cmd_wait(sc: &IpmiSoftc, c: &mut IpmiCmd<'_>) {
     // Pinned on this frame (the kernel crate's task(9)): the worker takes it off the queue
     // before it runs it, and this function waits until it ran (`done`, set under `w.mtx`
     // after its last use of `w`), so it is off the queue before the frame goes.
-    let t = core::pin::pin!(kernel::task::Task::new(
+    let t = core::pin::pin!(kernel::base::task::Task::new(
         ipmi_cmd_wait_cb,
         ptr::from_ref(&w).cast_mut().cast()
     ));
-    let res = kernel::task::task_add(tq, t.as_ref());
+    let res = kernel::base::task::task_add(tq, t.as_ref());
     kassert!(res);
 
     mtx_enter(&w.mtx);
@@ -1372,7 +1372,7 @@ pub fn ipmi_cmd_wait(sc: &IpmiSoftc, c: &mut IpmiCmd<'_>) {
     }
     mtx_leave(&w.mtx);
 
-    let res = kernel::task::task_del(tq, &t);
+    let res = kernel::base::task::task_del(tq, &t);
     kassert!(!res);
 }
 

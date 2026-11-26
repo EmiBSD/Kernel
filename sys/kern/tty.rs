@@ -82,8 +82,8 @@
 
 use core::ffi::c_void;
 
+use kernel::file::uio::UioMove;
 use kernel::tty::TtyDevsw;
-use kernel::uio::UioMove;
 
 use crate::dev::cons::{cn_devvp_set, cn_tab, cnwrite, constty};
 use crate::kern::kern_subr::uiomove;
@@ -346,7 +346,7 @@ pub fn sysctl_tty(
     newp: usize,
     newlen: usize,
 ) -> Result<(), Errno> {
-    let mut req = kernel::sysctl::SysctlReq {
+    let mut req = kernel::base::sysctl::SysctlReq {
         oldp,
         oldlenp,
         newp,

@@ -146,7 +146,7 @@ use super::page::{
 };
 use super::pmemrange::uvm_wait;
 use crate::assert::{kassert, kpanic};
-use crate::prf::unported;
+use crate::base::prf::unported;
 
 /// `AMAP_SHARED`: amap is shared.
 pub const AMAP_SHARED: i32 = 0x1;

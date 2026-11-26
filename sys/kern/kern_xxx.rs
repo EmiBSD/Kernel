@@ -58,7 +58,7 @@
 //! subsystem. M11a: `sys_reboot` stops the secondary CPUs (`MULTIPROCESSOR`). M13:
 //! `do_powerdown`, `powerdown_task` and `powerbutton_event`, the power button's path from
 //! acpi(4) to init. `sys_sysarch`, the `sysent[]` row of `sysarch(2)` (the C's
-//! `sys_machdep.c`, LZ 0925b8a94390), is a forward to the kernel's `kernel::sysarch`.
+//! `sys_machdep.c`, LZ 0925b8a94390), is a forward to the kernel's `kernel::proc::sysarch`.
 //!
 //! ## Deviations
 //! - `KASSERT((howto & RB_NOSYNC) || curproc != NULL)`: `curproc` arrives with M5; the
@@ -83,14 +83,14 @@ use crate::sys::systm::{SysArgs, sysargs};
 use crate::sys::task::Task;
 use crate::sys::types::Register;
 
-/// `rebooting`: the kernel's (`kernel::reboot`, N4.8a).
-pub use kernel::reboot::REBOOTING;
+/// `rebooting`: the kernel's (`kernel::base::reboot`, N4.8a).
+pub use kernel::base::reboot::REBOOTING;
 
-/// `reboot(2)`'s `sysent[]` row: the kernel's ([`kernel::reboot::sys_reboot`]: `suser`, the
+/// `reboot(2)`'s `sysent[]` row: the kernel's ([`kernel::base::reboot::sys_reboot`]: `suser`, the
 /// secondary CPUs stopped, then `reboot`); it returns only `suser`'s error.
 pub fn sys_reboot(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysRebootArgs = sysargs(v);
-    match kernel::reboot::sys_reboot(p, uap.opt.get()) {
+    match kernel::base::reboot::sys_reboot(p, uap.opt.get()) {
         Err(e) => Err(e),
         Ok(never) => match never {},
     }
@@ -107,17 +107,17 @@ pub fn native_reboot(nr: Register, opt: i32, rval: &mut [Register; 2]) -> hal::s
     )
 }
 
-/// `sysarch(2)`'s `sysent[]` row: the kernel's ([`kernel::sysarch::sys_sysarch`]: a pledged
+/// `sysarch(2)`'s `sysent[]` row: the kernel's ([`kernel::proc::sysarch::sys_sysarch`]: a pledged
 /// process through `pledge_fail`, else `EINVAL` for every op on arm64).
 pub fn sys_sysarch(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysSysarchArgs = sysargs(v);
-    kernel::sysarch::sys_sysarch(p, uap.op.get(), uap.parms.get().addr())
+    kernel::proc::sysarch::sys_sysarch(p, uap.op.get(), uap.parms.get().addr())
 }
 
-/// `reboot`: the kernel's (`kernel::reboot::reboot`: the clock bookkeeping stopped,
+/// `reboot`: the kernel's (`kernel::base::reboot::reboot`: the clock bookkeeping stopped,
 /// `rebooting` set, the machine's `boot(9)`).
 pub fn reboot(howto: i32) -> ! {
-    kernel::reboot::reboot(howto)
+    kernel::base::reboot::reboot(howto)
 }
 
 /// `powerdown_task`: runs `do_powerdown` on the system task queue.

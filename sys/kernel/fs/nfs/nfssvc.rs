@@ -187,8 +187,7 @@ use super::nfsproto::{
     NFS_MAXDATA, NFS_MAXDGRAMDATA, NFS_MAXPACKET, NFS_NPROCS, NFS_V2MAXDATA, NFSX_UNSIGNED,
 };
 use crate::assert::kpanic;
-use crate::cred::UcredCell;
-use crate::descrip::closef;
+use crate::file::descrip::closef;
 use crate::file::{File, FileGlue, FileRef, FileSlot};
 use crate::fs::subr::vfs;
 use crate::net::mbuf::{M_WAIT, MNext, Mbuf, MbufBox, MbufList, m_get, m_prepend};
@@ -197,6 +196,7 @@ use crate::net::sockbuf::{PSOCK, SB_NOINTR};
 use crate::net::socket::{Socket, SocketRef, solock_shared, soreserve, sosetopt, soshutdown};
 use crate::net::syscalls::{getsock, sockargs};
 use crate::netinet::in_::in_nam2sin;
+use crate::proc::cred::UcredCell;
 use crate::proc::{ProcGlue, Thread, suser};
 use crate::sys::mbuf::{MT_SONAME, MT_SOOPTS};
 use crate::sys::netinet_in::{IPPORT_RESERVED, IPPROTO_TCP, IPPROTO_UDP};
@@ -1253,7 +1253,7 @@ mod tests {
         use hal::sys::socket::{AF_INET, MSG_DONTWAIT, SO_LINGER, SOCK_DGRAM, SOCK_STREAM};
 
         use super::super::*;
-        use crate::descrip::{fdinit, sys_close};
+        use crate::file::descrip::{fdinit, sys_close};
         use crate::fs::nfs::nfs_srvsocket::nfs_rephead;
         use crate::fs::nfs::nfsm_subs::test_bytes;
         use crate::fs::nfs::testnfs::{self, Fixture, G, lo_sin, name, pump};
@@ -1262,7 +1262,7 @@ mod tests {
             sobind, soclose, soconnect, socreate, solisten, solock, soreceive, sosend,
         };
         use crate::net::syscalls::{sys_bind, sys_socket};
-        use crate::resource::{Plimit, PlimitRef, RLIM_INFINITY, RLIMIT_NOFILE};
+        use crate::proc::resource::{Plimit, PlimitRef, RLIM_INFINITY, RLIMIT_NOFILE};
         use crate::testutil::USER_BASE;
 
         /// The server's port.
@@ -1647,9 +1647,9 @@ mod tests {
             let fx = server();
             // Not the super user: EPERM, before anything else.
             let user = fx.user;
-            let mut c = crate::cred::Ucred::new();
+            let mut c = crate::proc::cred::Ucred::new();
             c.cr_uid.set(1000);
-            let root = user.set_cred(crate::cred::CredRef::new(c));
+            let root = user.set_cred(crate::proc::cred::CredRef::new(c));
             assert_eq!(
                 sys_nfssvc(user, NFSSVC_ADDSOCK, UARGS, &PROCS),
                 Err(Errno::EPERM)

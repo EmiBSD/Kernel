@@ -120,8 +120,8 @@ use super::init::machine;
 use super::km::{KD_WAITOK, KP_ZERO, KmemVaMode, KvMap, PhysWindow, dma_memory, km_alloc, km_free};
 use super::map::{VmMap, uvm_map_pageable};
 use super::types::VmProt;
-use crate::prf::unported;
-use crate::resource::Rusage;
+use crate::base::prf::unported;
+use crate::proc::resource::Rusage;
 
 /// The u-area mode (`kv_uarea`): `kernel_map`, `USPACE_ALIGN`ed.
 pub fn kv_uarea() -> KmemVaMode {

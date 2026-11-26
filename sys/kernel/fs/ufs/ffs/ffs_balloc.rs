@@ -718,9 +718,9 @@ mod tests {
     use super::super::testffs::newfs::{FFS1_1G, FFS2_1G, Image, Params, check_with, super_block};
     use super::super::testffs::{disk, new_file, setup, sync};
     use super::*;
-    use crate::cred::Ucred;
     use crate::fs::subr::vput;
     use crate::fs::ufs::ufs::inode::vtoi;
+    use crate::proc::cred::Ucred;
 
     /// The formats the tests build: FFS2's only with `option FFS2`.
     const FORMATS: &[Params] = if cfg!(feature = "ffs2") {

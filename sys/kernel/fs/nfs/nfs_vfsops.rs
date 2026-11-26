@@ -153,8 +153,7 @@ use super::nfsproto::{
 };
 use super::xdr_subs::{fxdr_hyper, fxdr_unsigned};
 use crate::assert::kpanic;
-use crate::clock::sec_to_nsec;
-use crate::cred::{Ucred, crget};
+use crate::base::sysctl::{SysctlReq, int};
 use crate::fs::export::ExportGrant;
 use crate::fs::mount::{Mount, Vfsconf};
 use crate::fs::subr::{copy_statfs_info, vflush, vfs_getnewfsid, vget, vgone, vput, vref, vrele};
@@ -165,11 +164,12 @@ use crate::fs::vops::{Cred, Nd, Vfs, vop_fsync, vop_getattr, vop_islocked, vop_u
 use crate::net::mbuf::{MT_SONAME, Mbuf};
 use crate::net::sockbuf::PSOCK;
 use crate::net::syscalls::sockargs;
+use crate::proc::cred::{Ucred, crget};
 use crate::proc::{ProcGlue, Thread};
 use crate::sched::NOWAKE;
 use crate::sys::socket::SOCK_DGRAM;
-use crate::sysctl::{SysctlReq, int};
-use crate::timeout::{KCLOCK_NONE, TIMEOUT_PROC, Timeout};
+use crate::time::clock::sec_to_nsec;
+use crate::time::timeout::{KCLOCK_NONE, TIMEOUT_PROC, Timeout};
 use crate::vm::io::MAXBSIZE;
 
 /// The NFS client of the glue `G`: `nfs_vfsops` ([`NfsVfs::VFS`]).
@@ -388,11 +388,11 @@ const NODEV: i32 = -1;
 pub fn nfs_mountroot<G: ProcGlue>(swdev0: &AtomicI32, swapdev: i32) -> Result<(), Errno> {
     use super::nfs_boot::{nfs_boot_getfh, nfs_boot_init};
     use super::nfsdiskless::NfsDiskless;
+    use crate::base::prf::{Str, printf};
     use crate::file::FileGlue;
     use crate::fs::mount::{mountlist_insert_tail, vfs_unbusy};
     use crate::fs::subr::bdevvp;
     use crate::fs::vnode::VREG;
-    use crate::prf::{Str, printf};
 
     G::with_curproc(|procp| {
         let Some(procp) = procp else {
@@ -496,8 +496,8 @@ pub fn nfs_mount_diskless<G: ProcGlue>(
     mntflag: i32,
     p: &Thread<G>,
 ) -> (&'static Mount<G>, &'static Vnode<G>) {
+    use crate::base::prf::Str;
     use crate::fs::subr::vfs_rootmountalloc;
-    use crate::prf::Str;
 
     let Ok(mp) = vfs_rootmountalloc::<G>(b"nfs", mntname) else {
         kpanic(format_args!(
@@ -680,7 +680,7 @@ pub fn nfs_decode_args<G: ProcGlue>(nmp: &NfsMount<G>, argp: &NfsArgs, nargp: &m
         nfs_disconnect(nmp);
         if ld(&nmp.nm_sotype) == SOCK_DGRAM {
             while nfs_connect(nmp, None).is_err() {
-                crate::prf::printf(format_args!("nfs_args: retrying connect\n"));
+                crate::base::prf::printf(format_args!("nfs_args: retrying connect\n"));
                 let _ = tsleep_nsec(&raw const NOWAKE, PSOCK, "nfscon", sec_to_nsec(1));
             }
         }
@@ -1522,8 +1522,8 @@ mod tests {
     #[test]
     fn mount_statfs_unmount_and_the_reaper() {
         let fx = tn::setup(0);
-        if crate::tc::gettime() == 0 {
-            crate::tc::TIME_SECOND.store(1_000_000, Ordering::Relaxed);
+        if crate::time::tc::gettime() == 0 {
+            crate::time::tc::TIME_SECOND.store(1_000_000, Ordering::Relaxed);
         }
         let mbufs = MBUFPL.nout();
         nfs_vfs_init::<tn::G>(fx.mp.vfc()).expect("nfs_vfs_init");

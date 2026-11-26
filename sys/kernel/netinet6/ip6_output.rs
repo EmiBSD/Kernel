@@ -2566,7 +2566,6 @@ mod tests {
     use hal::sys::sockio::SIOCSIFADDR;
 
     use super::*;
-    use crate::cred::{CredRef, Ucred};
     use crate::net::domain::Domain;
     use crate::net::if_::{IFNETLIST, test_ifnet_with};
     use crate::net::if_var::NetDriver;
@@ -2578,6 +2577,7 @@ mod tests {
     use crate::netinet6::in6::tests::{a6, add, iface};
     use crate::netinet6::ip6_var::IP6COUNTERS;
     use crate::netinet6::mld6::MLD6_HBH;
+    use crate::proc::cred::{CredRef, Ucred};
 
     type Tg = testinet::G;
 

@@ -4881,7 +4881,7 @@ mod tests {
     fn handshake_workers_by_hand<R>(f: impl FnOnce() -> R) -> R {
         use std::sync::atomic::AtomicBool;
         let tq = wg_handshake_taskq();
-        kernel::task::run_by_hand(tq);
+        kernel::base::task::run_by_hand(tq);
         let done = AtomicBool::new(false);
         std::thread::scope(|sc| {
             for _ in 0..2 {
@@ -4892,10 +4892,10 @@ mod tests {
                             std::time::Instant::now() < deadline,
                             "the barrier never came"
                         );
-                        if kernel::task::worklist_is_empty(tq) {
+                        if kernel::base::task::worklist_is_empty(tq) {
                             std::thread::sleep(std::time::Duration::from_millis(1));
                         } else {
-                            kernel::task::run_next_by_hand(tq);
+                            kernel::base::task::run_next_by_hand(tq);
                         }
                     }
                 });

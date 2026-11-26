@@ -50,18 +50,18 @@
 /* <CODE> */
 //! `<sys/selinfo.h>`: used to maintain information about processes that wish to be notified
 //! when I/O becomes possible (`select(2)`, `poll(2)` or `kevent(2)` on one of a driver's
-//! objects), as `bsd` names it: the kernel crate's (`kernel::select`), instantiated with
+//! objects), as `bsd` names it: the kernel crate's (`kernel::file::select`), instantiated with
 //! `bsd`'s process glue.
 //!
 //! Upstream: sys/sys/selinfo.h @ 3ce1f3f79392
 //! LZ: sys/sys/selinfo.rs@3c62ede68802
 //!
 //! ## Redesign
-//! - N4.4: `struct selinfo` is `kernel::select::Selinfo`, whose `si_note` is a kernel-lock
-//!   `kernel::event::Klist`; `selwakeup` is `kernel::select::selwakeup`.
+//! - N4.4: `struct selinfo` is `kernel::file::select::Selinfo`, whose `si_note` is a kernel-lock
+//!   `kernel::file::event::Klist`; `selwakeup` is `kernel::file::select::selwakeup`.
 
 use crate::kern::proc_glue::BsdProcGlue;
 
 /// `struct selinfo` of `bsd`'s processes.
-pub type Selinfo = kernel::select::Selinfo<BsdProcGlue>;
+pub type Selinfo = kernel::file::select::Selinfo<BsdProcGlue>;
 /* </CODE> */

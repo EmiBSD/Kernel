@@ -105,7 +105,7 @@ use crate::fs::vnode::Vnode;
 use crate::net::mbuf::{MLEN, MT_SONAME, Mbuf, MbufBox, m_get};
 use crate::net::socket::SocketRef;
 use crate::proc::ProcGlue;
-use crate::timeout::Timeout;
+use crate::time::timeout::Timeout;
 
 /// `M_NFSMNT`: the NFS mount structures (`<sys/malloc.h>`'s 23, "NFS mount").
 pub const M_NFSMNT: i32 = 23;

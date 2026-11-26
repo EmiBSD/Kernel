@@ -705,7 +705,7 @@ pub static nfs_niothreads: AtomicI32 = AtomicI32::new(-1);
 
 /// `NFS_HZ`: ticks per second of the NFS timer (`hz / nfs_ticks`).
 pub fn nfs_hz() -> i32 {
-    crate::timeout::hz() / super::nfs_subs::NFS_TICKS.load(Ordering::Relaxed).max(1)
+    crate::time::timeout::hz() / super::nfs_subs::NFS_TICKS.load(Ordering::Relaxed).max(1)
 }
 
 /// `NFS_TIMEO`: default timeout = 1 second.

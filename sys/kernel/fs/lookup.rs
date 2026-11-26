@@ -112,10 +112,10 @@ use super::subr::{vput, vref, vrele};
 use super::vnode::{LK_EXCLUSIVE, LK_RETRY, VDIR, VLNK, VREG, VROOT, Vnode, vn_lock};
 use super::vops::{Cred, VFS_ROOT, vop_lookup, vop_readlink, vop_unlock};
 use crate::assert::kpanic;
-use crate::descrip::fd_getfile;
+use crate::file::descrip::fd_getfile;
+use crate::file::uio::{Iovec, Uio, UioSeg};
 use crate::file::{DTYPE_VNODE, FileGlue};
 use crate::proc::{ProcGlue, Thread};
-use crate::uio::{Iovec, Uio, UioSeg};
 
 /// The pathname buffer of a componentname being walked (`namei` gave it one): `panic(9)`
 /// without one.
@@ -1483,8 +1483,8 @@ mod tests {
         let _ = vop_unlock(avp);
         let bvp = testfs::vget_node(mp, B).unwrap();
         let _ = vop_unlock(bvp);
-        let mut g = crate::descrip::fdplock(p.fd());
-        let (fp, fd) = crate::descrip::falloc(p, &mut g).unwrap();
+        let mut g = crate::file::descrip::fdplock(p.fd());
+        let (fp, fd) = crate::file::descrip::falloc(p, &mut g).unwrap();
         fp.install(
             crate::file::DTYPE_VNODE,
             &crate::fs::vnops::VnodeFileOps,
@@ -1493,11 +1493,11 @@ mod tests {
                 ..Default::default()
             },
         );
-        crate::descrip::fdinsert(&mut g, fd, 0, &fp);
+        crate::file::descrip::fdinsert(&mut g, fd, 0, &fp);
         drop(g);
         let (fp2, fd2) = {
-            let mut g = crate::descrip::fdplock(p.fd());
-            let (fp2, fd2) = crate::descrip::falloc(p, &mut g).unwrap();
+            let mut g = crate::file::descrip::fdplock(p.fd());
+            let (fp2, fd2) = crate::file::descrip::falloc(p, &mut g).unwrap();
             fp2.install(
                 crate::file::DTYPE_VNODE,
                 &crate::fs::vnops::VnodeFileOps,
@@ -1506,7 +1506,7 @@ mod tests {
                     ..Default::default()
                 },
             );
-            crate::descrip::fdinsert(&mut g, fd2, 0, &fp2);
+            crate::file::descrip::fdinsert(&mut g, fd2, 0, &fp2);
             (fp2, fd2)
         };
         let path: &'static [u8] = b"c";

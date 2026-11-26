@@ -130,7 +130,6 @@ use super::rpcv2::{
 };
 use super::xdr_subs::txdr_unsigned;
 use crate::assert::{kassert, kpanic};
-use crate::cred::UcredCell;
 use crate::fs::subr::vfs;
 use crate::net::mbuf::{
     M_DONTWAIT, M_WAIT, MAX_HDR, MHLEN, MNext, MT_DATA, MT_SONAME, MbufBox, MbufList, m_copym,
@@ -139,6 +138,7 @@ use crate::net::mbuf::{
 use crate::net::proto::PR_CONNREQUIRED;
 use crate::net::socket::{Socket, soreceive};
 use crate::proc::ProcGlue;
+use crate::proc::cred::UcredCell;
 use crate::sys::socket::SOCK_STREAM;
 use crate::sys::syslimits::NGROUPS_MAX;
 

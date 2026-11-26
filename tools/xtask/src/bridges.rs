@@ -183,7 +183,10 @@ mod tests {
     fn crate_key_agrees_with_the_path() {
         let ok = |rust, key| check_crate_key("[[module]]", rust, key);
         assert_eq!(ok("sys/hal/lock.rs", Some("hal")), (vec![], vec![]));
-        assert_eq!(ok("sys/kernel/pipe.rs", Some("kernel")), (vec![], vec![]));
+        assert_eq!(
+            ok("sys/kernel/file/pipe.rs", Some("kernel")),
+            (vec![], vec![])
+        );
         assert_eq!(ok("sys/abi/sys/errno.rs", Some("abi")), (vec![], vec![]));
         assert_eq!(ok("sys/kern/kern_sig.rs", None), (vec![], vec![]));
     }
@@ -203,12 +206,12 @@ mod tests {
     const GOOD: &str = r#"
 [[bridge]]
 trait = "UvmKm"
-for = ["sys/kernel/pipe.rs"]
+for = ["sys/kernel/file/pipe.rs"]
 paid_by = "N3"
 
 [[bridge]]
 trait = "VnodeOps"
-for = ["sys/kernel/pipe.rs", "sys/kern/a.rs"]
+for = ["sys/kernel/file/pipe.rs", "sys/kern/a.rs"]
 paid_by = "N3"
 
 [[bridge]]
@@ -218,7 +221,7 @@ paid_by = "N2"
 "#;
 
     fn exists(p: &str) -> bool {
-        matches!(p, "sys/kernel/pipe.rs" | "sys/kern/a.rs")
+        matches!(p, "sys/kernel/file/pipe.rs" | "sys/kern/a.rs")
     }
 
     #[test]

@@ -1418,7 +1418,9 @@ mod tests {
     fn other_thread(pid: i32) -> &'static Thread<G> {
         crate::proc::procinit::<G>(64, 64);
         let pr = crate::proc::process_alloc::<G>(pid, ());
-        drop(pr.set_ucred(crate::cred::CredRef::new(crate::cred::Ucred::new())));
+        drop(pr.set_ucred(crate::proc::cred::CredRef::new(
+            crate::proc::cred::Ucred::new(),
+        )));
         let t = crate::proc::thread_alloc::<G>(&pr, ());
         drop(t.set_cred(pr.ucred()));
         let p: &'static Thread<G> = hal::mem::pool::PoolBox::leak(t);

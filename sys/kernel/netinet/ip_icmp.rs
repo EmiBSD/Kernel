@@ -224,7 +224,7 @@ use hal::sys::net_route::{
     RTF_HOST, RTF_LLINFO, RTF_LOCAL, RTF_REJECT, RTM_ADD, RTV_MTU, SockaddrRtlabel,
 };
 
-use crate::clock::Timeval;
+use crate::base::sysctl::{SysctlReq, bounded_arr, int_bounded, rdstruct, sysctl_vslock};
 use crate::net::route::{
     RT_RESOLVE, RtAddrinfo, Rtentry, RttimerQueue, rt_timer_add, rt_timer_queue_change,
     rt_timer_queue_init, rtalloc, rtdeletemsg, rtisvalid, rtlabel_id2sa, rtredirect, rtrequest,
@@ -247,7 +247,7 @@ use crate::netinet::ip_output::{ip_insertoptions, ip_load, ip_store};
 use crate::netinet::ip_var::{IpstatCounters, ipstat_inc};
 use crate::netinet::raw_ip::rip_input;
 use crate::proc::ProcGlue;
-use crate::sysctl::{SysctlReq, bounded_arr, int_bounded, rdstruct, sysctl_vslock};
+use crate::time::clock::Timeval;
 use crate::time::{PPSRATECHECK_MTX, ppsratecheck_held, ppsratecheck_locked};
 
 /// `sizeof(struct ip)`.
@@ -1077,7 +1077,7 @@ pub fn icmp_send(m: MbufBox, opts: Option<&[u8]>) {
 /// `iptime()`: the time since midnight UTC in milliseconds, network order (a timestamp of
 /// the timestamp messages and option).
 pub fn iptime() -> u32 {
-    let atv = crate::tc::microtime();
+    let atv = crate::time::tc::microtime();
     let t = (atv.tv_sec % (24 * 60 * 60)) * 1000 + atv.tv_usec / 1000;
     (t as u32).to_be()
 }

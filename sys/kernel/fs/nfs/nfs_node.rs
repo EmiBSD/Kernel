@@ -465,7 +465,7 @@ pub(crate) fn test_mount(flag: i32) -> TestMount {
     let to = MBox::new(
         M_NFSMNT,
         M_WAITOK,
-        crate::timeout::Timeout::new(nop, core::ptr::null_mut()),
+        crate::time::timeout::Timeout::new(nop, core::ptr::null_mut()),
     )
     .expect("a timeout");
     let nam = super::nfsmount::NfsNam::new(&sin).expect("an address");
@@ -567,9 +567,9 @@ mod tests {
     // removal, the rehash) and of nfs_reclaim.
 
     use super::*;
-    use crate::cred::{CredRef, Ucred};
     use crate::fs::testfs::TestGlue;
     use crate::fs::vnode::{VDIR, VREG};
+    use crate::proc::cred::{CredRef, Ucred};
 
     /// A node is found by its mount and its handle, by nothing shorter, longer or different,
     /// nor on another mount; a second node of the pair is refused (the race `nfs_nget`

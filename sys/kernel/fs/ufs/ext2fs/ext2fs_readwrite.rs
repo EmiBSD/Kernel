@@ -96,8 +96,9 @@ use super::ext2fs_extents::{
 };
 use super::ext2fs_inode::{ext2fs_setsize, ext2fs_size, ext2fs_truncate, ext2fs_update};
 use crate::assert::kpanic;
-use crate::event::{NOTE_EXTEND, NOTE_WRITE};
 use crate::file::FileGlue;
+use crate::file::event::{NOTE_EXTEND, NOTE_WRITE};
+use crate::file::uio::Uio;
 use crate::fs::bio::{bawrite, bdwrite, bread, breadn, brelse, bwrite};
 use crate::fs::buf::{B_CLRBUF, B_NOCACHE, B_SYNC};
 use crate::fs::ufs::ufs::dinode::{ISGID, ISUID};
@@ -107,7 +108,6 @@ use crate::fs::vnode::{IO_APPEND, IO_NOCACHE, IO_SYNC, IO_UNIT, VDIR, VLNK, VN_K
 use crate::fs::vnops::vn_fsizechk;
 use crate::fs::vops::Cred;
 use crate::proc::ProcGlue;
-use crate::uio::Uio;
 use crate::vm::vnode::{uvm_vnp_setsize, uvm_vnp_uncache};
 
 /// `ext2fs_read` (`vop_read`): vnode op for reading.
@@ -136,7 +136,7 @@ fn ext2_ind_read<G: ProcGlue>(
 ) -> Result<(), Errno> {
     #[cfg(feature = "diagnostic")]
     {
-        if uio.uio_rw != crate::uio::UioRw::UIO_READ {
+        if uio.uio_rw != crate::file::uio::UioRw::UIO_READ {
             kpanic(format_args!("ext2fs_read: mode"));
         }
 
@@ -302,7 +302,7 @@ pub fn ext2fs_write<G: ProcGlue>(
     let ip = vtoi(vp);
 
     #[cfg(feature = "diagnostic")]
-    if uio.uio_rw != crate::uio::UioRw::UIO_WRITE {
+    if uio.uio_rw != crate::file::uio::UioRw::UIO_WRITE {
         kpanic(format_args!("ext2fs_write: mode"));
     }
 
@@ -461,11 +461,11 @@ mod tests {
     use super::super::testext2fs::newfs::{self, BIG_SIZE, EXT_SIZE, HELLO_DATA};
     use super::super::testext2fs::{attach, mount, new_file, vget};
     use super::*;
-    use crate::cred::Ucred;
+    use crate::file::uio::Iovec;
     use crate::fs::subr::vput;
     use crate::fs::testfs::TestGlue;
     use crate::proc::Thread;
-    use crate::uio::Iovec;
+    use crate::proc::cred::Ucred;
 
     /// The first `len` bytes of `vp` from `offset`, read with `ext2fs_read`, and the result.
     fn read(
@@ -601,8 +601,8 @@ mod tests {
                 uio_iov: &mut iovs,
                 uio_offset: 0,
                 uio_resid: newfs::B + 10,
-                uio_segflg: crate::uio::UioSeg::UIO_SYSSPACE,
-                uio_rw: crate::uio::UioRw::UIO_WRITE,
+                uio_segflg: crate::file::uio::UioSeg::UIO_SYSSPACE,
+                uio_rw: crate::file::uio::UioRw::UIO_WRITE,
                 uio_procp: None,
             };
             let r = ext2fs_write(vp, &mut uio, ioflag, cred);

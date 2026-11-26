@@ -133,11 +133,12 @@ use hal::sys::types::{Daddr, Dev, Gid, Mode, Nlink, Register, Uid};
 use hal::user::pod_from_bytes;
 
 use crate::assert::kpanic;
-use crate::event::{
+use crate::file::event::{
     __EV_POLL, __EV_SELECT, EV_EOF, EV_ONESHOT, EVFILT_READ, EVFILT_VNODE, EVFILT_WRITE,
     FILTEROP_ISFD, Filter, Filterops, Knote, NOTE_ATTRIB, NOTE_DELETE, NOTE_EOF, NOTE_LINK,
     NOTE_RENAME, NOTE_REVOKE, NOTE_WRITE,
 };
+use crate::file::uio::Uio;
 use crate::file::{LockOwner, foffset};
 use crate::fs::default;
 use crate::fs::fuse::fuse_device::{fuse_device_queue_fbuf, uiomove};
@@ -171,7 +172,6 @@ use crate::fs::vnode::{
 };
 use crate::fs::vops::{Cn, Cred, IoBuf, VFS_VGET, Vnops, vop_abortop, vop_getattr, vop_unlock};
 use crate::proc::{ProcGlue, Thread};
-use crate::uio::Uio;
 use crate::vm::vnode::{uvm_vnp_setsize, uvm_vnp_uncache};
 use hal::sys::dirent::{Dirent, MAXNAMLEN, dirent_recsize};
 
@@ -1121,8 +1121,8 @@ pub fn fusefs_print<G: ProcGlue>(vp: &'static Vnode<G>) -> Result<(), Errno> {
         let ip = vtoi(vp);
 
         // Complete the information given by vprint().
-        crate::prf::printf(format_args!("tag VT_FUSE, hash id {} ", ip.i_number));
-        crate::prf::printf(format_args!("\n"));
+        crate::base::prf::printf(format_args!("tag VT_FUSE, hash id {} ", ip.i_number));
+        crate::base::prf::printf(format_args!("\n"));
     }
     #[cfg(not(any(feature = "debug", feature = "diagnostic")))]
     let _ = vp;
@@ -2080,7 +2080,8 @@ mod tests {
     use hal::sys::types::{Dev, Off};
 
     use super::*;
-    use crate::event::{EVFILT_USER, kqueue_alloc, kqueue_init, test_knote, test_knote_drop};
+    use crate::file::event::{EVFILT_USER, kqueue_alloc, kqueue_init, test_knote, test_knote_drop};
+    use crate::file::uio::{Iovec, UioRw, UioSeg};
     use crate::fs::fuse::fuse_device::fuseclose;
     use crate::fs::fuse::fuse_vfsops::fusefs_unmount;
     use crate::fs::fuse::fusebuf_h::{
@@ -2102,7 +2103,6 @@ mod tests {
         vop_mknod, vop_open, vop_pathconf, vop_readlink, vop_remove, vop_rename, vop_rmdir,
         vop_symlink,
     };
-    use crate::uio::{Iovec, UioRw, UioSeg};
     use hal::sys::unistd::_PC_LINK_MAX;
 
     type P = &'static Thread<TestGlue>;

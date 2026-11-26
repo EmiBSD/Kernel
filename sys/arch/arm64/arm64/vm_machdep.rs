@@ -70,9 +70,9 @@
 //! ## Deviations
 //! - The pointer authentication keys (`pm_ap*key`) the C copies from the parent's pmap wait
 //!   for user pmaps (M6): kernel threads share the kernel pmap.
-//! - The switch frame's `sf_x19` holds the start word of `kernel::fork::Start` (for a `bsd`
+//! - The switch frame's `sf_x19` holds the start word of `kernel::proc::fork::Start` (for a `bsd`
 //!   function, its slot in the kernel's table), which the trampoline hands back to
-//!   `kernel::fork`'s registered start: no code address crosses into `hal`, whose
+//!   `kernel::proc::fork`'s registered start: no code address crosses into `hal`, whose
 //!   `thread_setup` builds the frames (N4.5a). Since N4.6a the kernel's `fork1` calls
 //!   `thread_setup` itself; `cpu_fork` stays for the machine contract (amd64's, N10).
 
@@ -101,9 +101,9 @@ pub fn cpu_fork(
     pmap_activate(p2);
 
     // Both words of the start: a NULL `arg` is the new thread itself (`words` puts `p2`'s
-    // address in the second), as `kernel::fork`'s own `cpu_fork` passes them.
-    let (start, arg) =
-        kernel::fork::Start::Legacy(func, arg.expose_provenance()).words(ptr::from_ref(p2).addr());
+    // address in the second), as `kernel::proc::fork`'s own `cpu_fork` passes them.
+    let (start, arg) = kernel::proc::fork::Start::Legacy(func, arg.expose_provenance())
+        .words(ptr::from_ref(p2).addr());
     let h = hal::cpu::thread::sched_lock();
     hal::cpu::thread::thread_setup(
         &h,

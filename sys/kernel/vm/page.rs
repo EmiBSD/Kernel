@@ -221,7 +221,7 @@ use super::types::{
     UVM_PLA_ZERO, UvmConstraintRange, Voff,
 };
 use crate::assert::{kassert, kpanic};
-use crate::prf::printf;
+use crate::base::prf::printf;
 
 // pg_flags: object flags
 

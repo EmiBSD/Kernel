@@ -255,7 +255,7 @@ use hal::sys::socket::{AF_INET6, AF_LINK};
 use hal::sys::sysctl::SysctlBoundedArgs;
 
 use crate::assert::kpanic;
-use crate::clock::Timeval;
+use crate::base::sysctl::{SYSCTL_LOCK, SysctlReq, bounded_arr, int_bounded, rdint, rdstruct};
 use crate::net::domain::pfctlinput;
 use crate::net::if_::{if_get, if_put, ifa_ifwithaddr};
 use crate::net::if_var::Netstack;
@@ -300,7 +300,7 @@ use crate::netinet6::nd6_nbr::{nd6_na_input, nd6_ns_input};
 use crate::netinet6::nd6_rtr::nd6_rtr_cache;
 use crate::netinet6::raw_ip6::rip6_input;
 use crate::proc::ProcGlue;
-use crate::sysctl::{SYSCTL_LOCK, SysctlReq, bounded_arr, int_bounded, rdint, rdstruct};
+use crate::time::clock::Timeval;
 use crate::time::{PPSRATECHECK_MTX, ppsratecheck_held, ppsratecheck_locked};
 
 /// `sizeof(struct ip6_hdr)`.

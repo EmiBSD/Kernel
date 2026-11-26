@@ -536,8 +536,8 @@ use super::types::{
 };
 use super::vnode::ratecheck;
 use crate::assert::{kassert, kdassert, kpanic};
+use crate::proc::resource::Rusage;
 use crate::proc::{ProcGlue, Thread};
-use crate::resource::Rusage;
 
 /// `VM_MAP_PAGEABLE`: ro: entries are pageable.
 pub const VM_MAP_PAGEABLE: i32 = 0x01;
@@ -3919,7 +3919,8 @@ pub fn uvm_map_inentry<G: ProcGlue>(
             let pr = p.process();
             let report = InentryReport::of(&p, what, addr, ie, reason);
             crate::tty::uprintf(pr, format_args!("{report}"));
-            pr.ps_acflag.set(pr.ps_acflag.get() | crate::acct::AMAP);
+            pr.ps_acflag
+                .set(pr.ps_acflag.get() | crate::proc::acct::AMAP);
             // sv.sival_ptr = (void *)PROC_PC(p)
             let sv = hal::sys::siginfo::Sigval::from_ptr(hal::cpu::trap::proc_pc());
             crate::sig::trapsignal(
@@ -7597,12 +7598,15 @@ pub(crate) mod tests {
         guard
     }
 
-    pub(crate) fn thread(pid: i32) -> crate::event::tests::T {
+    pub(crate) fn thread(pid: i32) -> crate::file::event::tests::T {
         // A thread of a new process as exec leaves one: lim_startup's limits (the data and
         // stack sizes unlimited), on the kernel's process lists.
-        let p = crate::event::tests::setup(pid);
-        let lim = crate::resource::lim_startup(4096, 1 << 30, PAGE_SIZE);
-        drop(p.process().set_limit(crate::resource::PlimitRef::new(lim)));
+        let p = crate::file::event::tests::setup(pid);
+        let lim = crate::proc::resource::lim_startup(4096, 1 << 30, PAGE_SIZE);
+        drop(
+            p.process()
+                .set_limit(crate::proc::resource::PlimitRef::new(lim)),
+        );
         p
     }
 
@@ -7889,10 +7893,13 @@ pub(crate) mod tests {
     }
 
     /// `p`'s `RLIMIT_DATA` soft limit set to `cur`, as `setrlimit(2)` leaves it.
-    fn data_limit(p: &Thread<crate::event::tests::Kg>, cur: u64) {
-        let mut l = crate::resource::Plimit::new();
+    fn data_limit(p: &Thread<crate::file::event::tests::Kg>, cur: u64) {
+        let mut l = crate::proc::resource::Plimit::new();
         l.pl_rlimit[RLIMIT_DATA as usize].rlim_cur = cur;
-        drop(p.process().set_limit(crate::resource::PlimitRef::new(l)));
+        drop(
+            p.process()
+                .set_limit(crate::proc::resource::PlimitRef::new(l)),
+        );
     }
 
     /// `uvm_map_inentry` with `uvm_map_inentry_sp`: a stack pointer in a `MAP_STACK` entry
@@ -7904,7 +7911,7 @@ pub(crate) mod tests {
     /// nothing.
     #[test]
     fn inentry_reports_a_stack_outside_map_stack_on_the_terminal() {
-        use crate::event::tests::Kg;
+        use crate::file::event::tests::Kg;
         use hal::sys::signal::{SA_SIGINFO, SIGSEGV, Sigaction};
         let _g = setup();
         let p = thread(205);
@@ -7957,7 +7964,7 @@ pub(crate) mod tests {
         ));
         assert_eq!((ie.start, ie.end), (stk, stk + len));
         assert!(hal::cpu::sig::take_sent().is_empty());
-        assert_eq!(pr.ps_acflag.get() & crate::acct::AMAP, 0);
+        assert_eq!(pr.ps_acflag.get() & crate::proc::acct::AMAP, 0);
 
         let bad = plain + PAGE_SIZE + 0x20;
         assert!(!uvm_map_inentry(
@@ -7975,7 +7982,7 @@ pub(crate) mod tests {
             (stk, stk + len),
             "a failure leaves the cache"
         );
-        assert_ne!(pr.ps_acflag.get() & crate::acct::AMAP, 0, "AMAP");
+        assert_ne!(pr.ps_acflag.get() & crate::proc::acct::AMAP, 0, "AMAP");
         let sent = hal::cpu::sig::take_sent();
         assert_eq!(sent.len(), 1, "SIGSEGV");
         assert_eq!(sent[0].sig, SIGSEGV);
@@ -9147,7 +9154,7 @@ pub(crate) mod tests {
         let vm = vmspace_with_anon(va, PAGE_SIZE);
         // The counters the caller names (the faulting thread's p_ru): a zero fill is a minor
         // fault, and maxrss follows the pmap's resident pages, in kilobytes.
-        let ru = crate::resource::Rusage::new();
+        let ru = crate::proc::resource::Rusage::new();
         uvm_fault(&vm.vm_map, va, VM_FAULT_INVALID, PROT_WRITE, Some(&ru)).expect("fault");
         assert_eq!(ru.ru_minflt.get(), 1, "ru_minflt");
         assert_eq!(ru.ru_majflt.get(), 0, "ru_majflt");
@@ -9356,14 +9363,14 @@ pub(crate) mod tests {
     /// as `uvm_fault_lower` does, clearing `PG_BUSY` on the resident page it found unbusy,
     /// which the view's claim (for good, not on `PG_BUSY`) lets pass; the arm64 boot of
     /// 12e57ed2 panicked there on every process's first clock read. It must stay the only
-    /// caller of `timekeep_object` in the kernel's tests: that object (`kernel::tc`'s
+    /// caller of `timekeep_object` in the kernel's tests: that object (`kernel::time::tc`'s
     /// `OBJECT`) and `hal`'s one timekeep view are made once per process, with no
     /// `*_test_reset`.
     #[test]
     fn the_timekeep_page_maps_wires_and_forks_under_its_view() {
         let _g = setup();
         let _ = the_kernel_map();
-        let obj = crate::tc::timekeep_object(None).expect("the timekeep object");
+        let obj = crate::time::tc::timekeep_object(None).expect("the timekeep object");
         // N5.9t1 (the closing review's F1): hal views this aobj's page, so it is marked and
         // no kernel window may map it.
         let ObjRef::Aobj(a) = &obj else {

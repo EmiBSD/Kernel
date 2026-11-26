@@ -157,7 +157,7 @@
 //!
 //! What stays a convention: an element is linked or unlinked by the owner of its memory
 //! before that memory goes, and a type whose values unlink themselves does it in its own
-//! `Drop` (which runs before its fields' drops) under the lock, as `kernel::timeout::Timeout`
+//! `Drop` (which runs before its fields' drops) under the lock, as `kernel::time::timeout::Timeout`
 //! does; the panic of a forgotten unlink is the last line, not the protocol. A thread that
 //! exits while a value pinned on its stack is linked breaks `Pin`'s guarantee in the exit
 //! primitive, not here: kernel code unlinks its stack nodes before calling it.

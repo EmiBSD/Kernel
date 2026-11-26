@@ -46,21 +46,21 @@
 
 /* <CODE> */
 //! The character lists of the terminals, `kern/tty_subr.c`, for `bsd`: the kernel's
-//! (`kernel::clist`, N4.7b) under the free functions' names the drivers call
+//! (`kernel::tty::clist`, N4.7b) under the free functions' names the drivers call
 //! (`getc(&tp->t_outq)`, `q_to_b(&sc->sc_q, buf)`, ...).
 //!
 //! Upstream: sys/kern/tty_subr.c @ 3ce1f3f79392
 //! LZ: sys/kern/tty_subr.rs@3c62ede68802
 //!
 //! ## Redesign
-//! - N4.7b: a queue owns its ring inside its lock (`kernel::clist::Clist`, whose documentation
+//! - N4.7b: a queue owns its ring inside its lock (`kernel::tty::clist::Clist`, whose documentation
 //!   has the shape); each function here is one call of the queue's method. LZ's four `unsafe`
 //!   (the ring and the bitmap as raw slices, `clfree`'s two volatile scrubs) are gone with
 //!   the raw pointers.
 
 use crate::sys::tty::Clist;
 
-pub use kernel::clist::qmem;
+pub use kernel::tty::clist::qmem;
 
 /// `clalloc`: initialize a particular clist (a ring of `size` characters, with or without
 /// quoting).
@@ -101,7 +101,7 @@ pub fn putc(c: i32, clp: &Clist) -> i32 {
 
 /// `clrbits`: optimized version of `for (i = 0; i < len; i++) clrbit(cp, off + i);`.
 pub fn clrbits(cp: &mut [u8], off: usize, len: usize) {
-    kernel::clist::clrbits(cp, off, len);
+    kernel::tty::clist::clrbits(cp, off, len);
 }
 
 /// `b_to_q`: copy buffer to clist. Return number of bytes not transferred.

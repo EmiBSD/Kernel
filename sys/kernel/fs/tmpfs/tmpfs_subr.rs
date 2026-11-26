@@ -167,9 +167,9 @@ use hal::sys::types::{Dev, Gid, Mode, Off, Uid, Vsize};
 use hal::vm::param::{round_page, trunc_page};
 
 use crate::assert::{kassert, kpanic};
-use crate::clock::Timespec;
-use crate::cred::{Ucred, groupmember, suser_ucred};
-use crate::event::{NOTE_ATTRIB, NOTE_DELETE, NOTE_EXTEND, NOTE_LINK, NOTE_WRITE};
+use crate::base::sysctl::SECURELEVEL;
+use crate::file::event::{NOTE_ATTRIB, NOTE_DELETE, NOTE_EXTEND, NOTE_LINK, NOTE_WRITE};
+use crate::file::uio::{Uio, uiomove_window};
 use crate::fs::mount::Mount;
 use crate::fs::namei::{Componentname, MAXPATHLEN, SAVESTART};
 use crate::fs::subr::{checkalias, dirent_uiomove, vfs, vget, vgone, vops_id, vrele};
@@ -191,10 +191,10 @@ use crate::fs::vnode::{
     Vtype, vn_lock,
 };
 use crate::fs::vops::{Cred, vop_access, vop_islocked};
+use crate::proc::cred::{Ucred, groupmember, suser_ucred};
 use crate::proc::{ProcGlue, Thread};
-use crate::sysctl::SECURELEVEL;
-use crate::tc::{getnanotime, nanotime};
-use crate::uio::{Uio, uiomove_window};
+use crate::time::clock::Timespec;
+use crate::time::tc::{getnanotime, nanotime};
 use crate::vm::aobj::{
     UAO_FLAG_CANFAIL, uao_create, uao_detach, uao_grow, uao_reference, uao_shrink,
 };
@@ -1475,11 +1475,11 @@ mod tests {
     use std::vec::Vec;
 
     use super::*;
+    use crate::file::uio::{Iovec, UioRw, UioSeg};
     use crate::fs::subr::vput;
     use crate::fs::testfs::{TestGlue, UBUF};
     use crate::fs::tmpfs::testtmpfs;
     use crate::fs::tmpfs::tmpfs_vfsops::{tmpfs_root, tmpfs_unmount};
-    use crate::uio::{Iovec, UioRw, UioSeg};
     use crate::vm::km::kernel_map;
     use hal::user::UserPtr;
 

@@ -66,7 +66,7 @@ pub mod kern_rwlock;
 pub mod kern_sched;
 #[forbid(unsafe_code)]
 pub mod kern_sig;
-// `kern_smr.c` is `hal::sync::smr` and `kernel::smr` since N6.0; the read sections' callers keep
+// `kern_smr.c` is `hal::sync::smr` and `kernel::base::smr` since N6.0; the read sections' callers keep
 // LZ's path (`crate::kern::kern_smr::{smr_read_enter, smr_read_leave}`) through this alias of
 // `sys/sys/smr.rs`'s adapters (docs/SCAFFOLDING.md).
 pub use crate::sys::smr as kern_smr;

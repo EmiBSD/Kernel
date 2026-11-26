@@ -177,8 +177,8 @@ impl ProcGlue for BenchGlue {
     ) {
     }
     /// No per-CPU slice start: the uptime itself (no running part).
-    fn spc_runtime() -> kernel::clock::Timespec {
-        kernel::tc::nanouptime()
+    fn spc_runtime() -> kernel::time::clock::Timespec {
+        kernel::time::tc::nanouptime()
     }
     fn process_ref(pr: &Process<Self>) -> proc::ProcessRef<Self> {
         match hal::mem::pool::PoolArc::from_ref(pr) {
@@ -208,7 +208,7 @@ fn main() {
     testutil::init_shared_once();
     hal::vm::pmap::init();
     kernel::vm::map::uvm_map_init();
-    kernel::futex::futex_init();
+    kernel::sched::futex::futex_init();
 
     let t: &'static Thread<BenchGlue> = Box::leak(Box::new(Thread::new_static(&PR, ())));
     let vm = kernel::vm::map::uvmspace_alloc(VM_MIN_ADDRESS, VM_MAXUSER_ADDRESS, true, false);
@@ -219,17 +219,17 @@ fn main() {
     }
 
     let wait = || {
-        let r = kernel::futex::sys_futex::<BenchGlue>(t, WORD, FUTEX_WAIT_PRIVATE, 2, 0, 0);
+        let r = kernel::sched::futex::sys_futex::<BenchGlue>(t, WORD, FUTEX_WAIT_PRIVATE, 2, 0, 0);
         debug_assert_eq!(r, Err(Errno::EAGAIN));
         let _ = black_box(r);
     };
     let wake = || {
-        let r = kernel::futex::sys_futex::<BenchGlue>(t, WORD, FUTEX_WAKE_PRIVATE, 1, 0, 0);
+        let r = kernel::sched::futex::sys_futex::<BenchGlue>(t, WORD, FUTEX_WAKE_PRIVATE, 1, 0, 0);
         debug_assert_eq!(r, Ok(0));
         let _ = black_box(r);
     };
     let wake_shared = || {
-        let r = kernel::futex::sys_futex::<BenchGlue>(t, UNMAPPED, FUTEX_WAKE, 1, 0, 0);
+        let r = kernel::sched::futex::sys_futex::<BenchGlue>(t, UNMAPPED, FUTEX_WAKE, 1, 0, 0);
         debug_assert_eq!(r, Ok(0));
         let _ = black_box(r);
     };

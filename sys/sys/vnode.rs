@@ -832,14 +832,14 @@ mod tests {
             .store(0, core::sync::atomic::Ordering::Relaxed);
         let tmpfs_conf = || vfs_byname(b"tmpfs").expect("tmpfs in vfsconflist[]");
         // Unlimited resources (vn_fsizechk reads RLIMIT_FSIZE).
-        let mut limits = kernel::resource::Plimit::new();
+        let mut limits = kernel::proc::resource::Plimit::new();
         for l in &mut limits.pl_rlimit {
-            l.rlim_cur = kernel::resource::RLIM_INFINITY;
-            l.rlim_max = kernel::resource::RLIM_INFINITY;
+            l.rlim_cur = kernel::proc::resource::RLIM_INFINITY;
+            l.rlim_max = kernel::proc::resource::RLIM_INFINITY;
         }
         drop(
             p.process()
-                .set_limit(kernel::resource::PlimitRef::new(limits)),
+                .set_limit(kernel::proc::resource::PlimitRef::new(limits)),
         );
         // The record locks' pools (init_main's lf_init).
         crate::sys::lockf::lf_init();

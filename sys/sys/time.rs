@@ -70,7 +70,7 @@
 //!
 //! ## Redesign
 //! - N4.8a (decision 8): the structures are the kernel's, re-exported: `struct timeval`,
-//!   `struct timespec` and `struct bintime` from `kernel::clock`, `struct timezone`, `struct
+//!   `struct timespec` and `struct bintime` from `kernel::time::clock`, `struct timezone`, `struct
 //!   itimerval` and `struct clockinfo` from `kernel::time`, with the C's field names and
 //!   types (`suseconds_t` is `i64`), `AbiPod` through `hal::abi_pod!` (LZ's four `unsafe impl
 //!   AbiPod` gone: `machine::copy`'s legacy trait covers every `hal` `AbiPod` type). The free
@@ -110,11 +110,11 @@ pub const SECDAY: i64 = 86400;
 /// `SECYR`: seconds in a (non-leap) year.
 pub const SECYR: i64 = SECDAY * 365;
 
-// The kernel's one `struct timeval`, `struct timespec`, `struct bintime` (`kernel::clock`) and
+// The kernel's one `struct timeval`, `struct timespec`, `struct bintime` (`kernel::time::clock`) and
 // `struct timezone`, `struct itimerval`, `struct clockinfo` (`kernel::time`), N4.8a (decision
 // 8): the same layouts and field names, `AbiPod` through `hal::abi_pod!`.
-pub use kernel::clock::{Bintime, Timespec, Timeval};
 pub use kernel::dev::clock_subr::{ClockYmdhms, POSIX_BASE_YEAR};
+pub use kernel::time::clock::{Bintime, Timespec, Timeval};
 pub use kernel::time::{Clockinfo, Itimerval, Timezone};
 
 /// A `Timespec` behind a `Cell`, for the statics the clock code updates in place.

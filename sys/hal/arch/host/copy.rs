@@ -37,7 +37,7 @@
 //!     bpf(4)'s tests' (`kernel::net::bpf`: a program, a read or write buffer, a word), which
 //!     hold the memory lock as the fixture does, so the two never run at once.
 //!   - `0x3_0000..0x4_0000`: the end of the memory, for the copies that must fault past it:
-//!     `kern.msgbuf`'s copy (`kernel::log`'s tests: the 40-byte header and 256-byte chunks
+//!     `kern.msgbuf`'s copy (`kernel::base::log`'s tests: the 40-byte header and 256-byte chunks
 //!     from `0x3_0000`, so its last whole chunk ends 216 bytes before the end and the next
 //!     faults) and, in those last 216 bytes, which that copy never writes, `uio`'s nine
 //!     iovecs at `USER_LEN - 144` and `pipe`'s word at `USER_LEN - 4`.

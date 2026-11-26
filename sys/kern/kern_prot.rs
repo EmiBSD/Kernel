@@ -54,14 +54,14 @@
 
 /* <CODE> */
 //! System calls related to processes and protection: `bsd`'s `sysent[]` rows and names over
-//! `kernel::prot` and `kernel::cred`.
+//! `kernel::proc::prot` and `kernel::proc::cred`.
 //!
 //! Upstream: sys/kern/kern_prot.c @ 3ce1f3f79392
 //! LZ: sys/kern/kern_prot.rs@3c62ede68802
 //!
-//! An adapter (N4.6a): every function of the C file is `kernel::prot`'s (the system calls,
+//! An adapter (N4.6a): every function of the C file is `kernel::proc::prot`'s (the system calls,
 //! with typed arguments, `sugid_change`, `proc_cansugid`, `dorefreshcreds`) or
-//! `kernel::cred`'s (`crget`, `crhold`, `crfree`, `crset`, `crcopy`, `crdup`,
+//! `kernel::proc::cred`'s (`crget`, `crhold`, `crfree`, `crset`, `crcopy`, `crdup`,
 //! `crfromxucred`, `groupmember`, `suser_ucred`); this file decodes `sys_*`'s arguments for
 //! `bsd`'s `sysent[]` rows (and the ABI's `Native` entries, which run those rows),
 //! and keeps the names its callers import.
@@ -69,8 +69,8 @@
 //! ## Redesign
 //! - LZ's credentials were `*const Ucred` with a manual `cr_refcnt`, written in place by the
 //!   set*id calls after `crget` (N4.2): they are the kernel crate's `CredRef`s, never written
-//!   once shared (`kernel::prot`'s `sugid_change`).
-//! - N4.6a: the system calls' bodies moved to `kernel::prot`, which takes typed arguments
+//!   once shared (`kernel::proc::prot`'s `sugid_change`).
+//! - N4.6a: the system calls' bodies moved to `kernel::proc::prot`, which takes typed arguments
 //!   (`UserPtr<T>` for a user pointer) and returns what the C puts in `retval[0]`.
 
 use hal::user::UserPtr;
@@ -87,82 +87,82 @@ use crate::sys::syscallargs::{
 use crate::sys::systm::{SysArgs, sysargs};
 use crate::sys::types::Register;
 
-pub use kernel::cred::{
+pub use kernel::proc::cred::{
     crcopy, crdup, crfree, crfromxucred, crget, crhold, crset, groupmember, suser_ucred,
 };
 
 /// `getpid(2)`.
 pub fn sys_getpid(p: &Proc, _v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
-    retval[0] = kernel::prot::sys_getpid(p) as Register;
+    retval[0] = kernel::proc::prot::sys_getpid(p) as Register;
     Ok(())
 }
 
 /// `getthrid(2)`.
 pub fn sys_getthrid(p: &Proc, _v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
-    retval[0] = kernel::prot::sys_getthrid(p) as Register;
+    retval[0] = kernel::proc::prot::sys_getthrid(p) as Register;
     Ok(())
 }
 
 /// `getppid(2)`.
 pub fn sys_getppid(p: &Proc, _v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
-    retval[0] = kernel::prot::sys_getppid(p) as Register;
+    retval[0] = kernel::proc::prot::sys_getppid(p) as Register;
     Ok(())
 }
 
 /// `getpgrp(2)`.
 pub fn sys_getpgrp(p: &Proc, _v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
-    retval[0] = kernel::prot::sys_getpgrp(p) as Register;
+    retval[0] = kernel::proc::prot::sys_getpgrp(p) as Register;
     Ok(())
 }
 
 /// `getpgid(2)`.
 pub fn sys_getpgid(curp: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysGetpgidArgs = sysargs(v);
-    retval[0] = kernel::prot::sys_getpgid(curp, uap.pid.get())? as Register;
+    retval[0] = kernel::proc::prot::sys_getpgid(curp, uap.pid.get())? as Register;
     Ok(())
 }
 
 /// `getsid(2)`.
 pub fn sys_getsid(curp: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysGetsidArgs = sysargs(v);
-    retval[0] = kernel::prot::sys_getsid(curp, uap.pid.get())? as Register;
+    retval[0] = kernel::proc::prot::sys_getsid(curp, uap.pid.get())? as Register;
     Ok(())
 }
 
 /// `getuid(2)`.
 pub fn sys_getuid(p: &Proc, _v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
-    retval[0] = kernel::prot::sys_getuid(p) as Register;
+    retval[0] = kernel::proc::prot::sys_getuid(p) as Register;
     Ok(())
 }
 
 /// `geteuid(2)`.
 pub fn sys_geteuid(p: &Proc, _v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
-    retval[0] = kernel::prot::sys_geteuid(p) as Register;
+    retval[0] = kernel::proc::prot::sys_geteuid(p) as Register;
     Ok(())
 }
 
 /// `issetugid(2)`.
 pub fn sys_issetugid(p: &Proc, _v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
-    retval[0] = kernel::prot::sys_issetugid(p) as Register;
+    retval[0] = kernel::proc::prot::sys_issetugid(p) as Register;
     Ok(())
 }
 
 /// `getgid(2)`.
 pub fn sys_getgid(p: &Proc, _v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
-    retval[0] = kernel::prot::sys_getgid(p) as Register;
+    retval[0] = kernel::proc::prot::sys_getgid(p) as Register;
     Ok(())
 }
 
 /// `getegid(2)`.
 pub fn sys_getegid(p: &Proc, _v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
-    retval[0] = kernel::prot::sys_getegid(p) as Register;
+    retval[0] = kernel::proc::prot::sys_getegid(p) as Register;
     Ok(())
 }
 
 /// `getgroups(2)`.
 pub fn sys_getgroups(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysGetgroupsArgs = sysargs(v);
-    retval[0] = kernel::prot::sys_getgroups(
+    retval[0] = kernel::proc::prot::sys_getgroups(
         p,
         uap.gidsetsize.get(),
         UserPtr::new(uap.gidset.get() as usize),
@@ -172,20 +172,20 @@ pub fn sys_getgroups(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Resul
 
 /// `setsid(2)`.
 pub fn sys_setsid(p: &Proc, _v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
-    retval[0] = kernel::prot::sys_setsid(p)? as Register;
+    retval[0] = kernel::proc::prot::sys_setsid(p)? as Register;
     Ok(())
 }
 
 /// `setpgid(2)`.
 pub fn sys_setpgid(curp: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysSetpgidArgs = sysargs(v);
-    kernel::prot::sys_setpgid(curp, uap.pid.get(), uap.pgid.get())
+    kernel::proc::prot::sys_setpgid(curp, uap.pid.get(), uap.pgid.get())
 }
 
 /// `getresuid(2)`.
 pub fn sys_getresuid(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysGetresuidArgs = sysargs(v);
-    kernel::prot::sys_getresuid(
+    kernel::proc::prot::sys_getresuid(
         p,
         UserPtr::new(uap.ruid.get() as usize),
         UserPtr::new(uap.euid.get() as usize),
@@ -196,13 +196,13 @@ pub fn sys_getresuid(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Resu
 /// `setresuid(2)`.
 pub fn sys_setresuid(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysSetresuidArgs = sysargs(v);
-    kernel::prot::sys_setresuid(p, uap.ruid.get(), uap.euid.get(), uap.suid.get())
+    kernel::proc::prot::sys_setresuid(p, uap.ruid.get(), uap.euid.get(), uap.suid.get())
 }
 
 /// `getresgid(2)`.
 pub fn sys_getresgid(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysGetresgidArgs = sysargs(v);
-    kernel::prot::sys_getresgid(
+    kernel::proc::prot::sys_getresgid(
         p,
         UserPtr::new(uap.rgid.get() as usize),
         UserPtr::new(uap.egid.get() as usize),
@@ -213,49 +213,49 @@ pub fn sys_getresgid(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Resu
 /// `setresgid(2)`.
 pub fn sys_setresgid(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysSetresgidArgs = sysargs(v);
-    kernel::prot::sys_setresgid(p, uap.rgid.get(), uap.egid.get(), uap.sgid.get())
+    kernel::proc::prot::sys_setresgid(p, uap.rgid.get(), uap.egid.get(), uap.sgid.get())
 }
 
 /// `setregid(2)`.
 pub fn sys_setregid(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysSetregidArgs = sysargs(v);
-    kernel::prot::sys_setregid(p, uap.rgid.get(), uap.egid.get())
+    kernel::proc::prot::sys_setregid(p, uap.rgid.get(), uap.egid.get())
 }
 
 /// `setreuid(2)`.
 pub fn sys_setreuid(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysSetreuidArgs = sysargs(v);
-    kernel::prot::sys_setreuid(p, uap.ruid.get(), uap.euid.get())
+    kernel::proc::prot::sys_setreuid(p, uap.ruid.get(), uap.euid.get())
 }
 
 /// `setuid(2)`.
 pub fn sys_setuid(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysSetuidArgs = sysargs(v);
-    kernel::prot::sys_setuid(p, uap.uid.get())
+    kernel::proc::prot::sys_setuid(p, uap.uid.get())
 }
 
 /// `seteuid(2)`.
 pub fn sys_seteuid(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysSeteuidArgs = sysargs(v);
-    kernel::prot::sys_seteuid(p, uap.euid.get())
+    kernel::proc::prot::sys_seteuid(p, uap.euid.get())
 }
 
 /// `setgid(2)`.
 pub fn sys_setgid(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysSetgidArgs = sysargs(v);
-    kernel::prot::sys_setgid(p, uap.gid.get())
+    kernel::proc::prot::sys_setgid(p, uap.gid.get())
 }
 
 /// `setegid(2)`.
 pub fn sys_setegid(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysSetegidArgs = sysargs(v);
-    kernel::prot::sys_setegid(p, uap.egid.get())
+    kernel::proc::prot::sys_setegid(p, uap.egid.get())
 }
 
 /// `setgroups(2)`.
 pub fn sys_setgroups(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysSetgroupsArgs = sysargs(v);
-    kernel::prot::sys_setgroups(
+    kernel::proc::prot::sys_setgroups(
         p,
         uap.gidsetsize.get(),
         UserPtr::new(uap.gidset.get() as usize),
@@ -264,13 +264,13 @@ pub fn sys_setgroups(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Resu
 
 /// `suser`: test whether this process has special user powers.
 pub fn suser(p: &Proc) -> Result<(), Errno> {
-    kernel::prot::suser(p)
+    kernel::proc::prot::suser(p)
 }
 
 /// `getlogin_r(2)`. The error is the return value, as in C.
 pub fn sys_getlogin_r(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysGetloginRArgs = sysargs(v);
-    retval[0] = kernel::prot::sys_getlogin_r(
+    retval[0] = kernel::proc::prot::sys_getlogin_r(
         p,
         UserPtr::new(uap.namebuf.get() as usize),
         uap.namelen.get(),
@@ -281,32 +281,32 @@ pub fn sys_getlogin_r(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Resu
 /// `setlogin(2)`.
 pub fn sys_setlogin(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysSetloginArgs = sysargs(v);
-    kernel::prot::sys_setlogin(p, UserPtr::new(uap.namebuf.get() as usize))
+    kernel::proc::prot::sys_setlogin(p, UserPtr::new(uap.namebuf.get() as usize))
 }
 
 /// `proc_cansugid`: check if a process is allowed to raise its privileges.
 pub fn proc_cansugid(p: &Proc) -> bool {
-    kernel::prot::proc_cansugid(p)
+    kernel::proc::prot::proc_cansugid(p)
 }
 
 /// `__set_tcb(2)`.
 #[allow(non_snake_case)] // the C name, verbatim: the syscall table finds it by name
 pub fn sys___set_tcb(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysSetTcbArgs = sysargs(v);
-    kernel::prot::sys___set_tcb(p, uap.tcb.get() as usize)
+    kernel::proc::prot::sys___set_tcb(p, uap.tcb.get() as usize)
 }
 
 /// `__get_tcb(2)`.
 #[allow(non_snake_case)] // the C name, verbatim: the syscall table finds it by name
 pub fn sys___get_tcb(p: &Proc, _v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
-    retval[0] = kernel::prot::sys___get_tcb(p) as Register;
+    retval[0] = kernel::proc::prot::sys___get_tcb(p) as Register;
     Ok(())
 }
 
 /// `getthrname(2)`. The error is the return value, as in C.
 pub fn sys_getthrname(curp: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysGetthrnameArgs = sysargs(v);
-    retval[0] = kernel::prot::sys_getthrname(
+    retval[0] = kernel::proc::prot::sys_getthrname(
         curp,
         uap.tid.get(),
         UserPtr::new(uap.name.get() as usize),
@@ -318,15 +318,17 @@ pub fn sys_getthrname(curp: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> R
 /// `setthrname(2)`. The error is the return value, as in C; a name too long is truncated.
 pub fn sys_setthrname(curp: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysSetthrnameArgs = sysargs(v);
-    retval[0] =
-        kernel::prot::sys_setthrname(curp, uap.tid.get(), UserPtr::new(uap.name.get() as usize))?
-            as Register;
+    retval[0] = kernel::proc::prot::sys_setthrname(
+        curp,
+        uap.tid.get(),
+        UserPtr::new(uap.name.get() as usize),
+    )? as Register;
     Ok(())
 }
 
 /// `dorefreshcreds`: refresh the thread's copy of the process's credentials.
 pub fn dorefreshcreds(_pr: &Process, p: &Proc) {
-    kernel::prot::dorefreshcreds::<BsdProcGlue>(p);
+    kernel::proc::prot::dorefreshcreds::<BsdProcGlue>(p);
 }
 /* </CODE> */
 
@@ -411,22 +413,22 @@ mod tests {
     #[test]
     fn crget_crhold_crfree_count_references() {
         let _g = setup();
-        let nout = kernel::cred::ucred_nout();
+        let nout = kernel::proc::cred::ucred_nout();
 
         let cr = crget();
         assert_eq!(CredRef::count(&cr), 1);
         assert_eq!(uids(&cr), (0, 0, 0));
         assert_eq!(cr.cr_ngroups.get(), 0);
-        assert_eq!(kernel::cred::ucred_nout(), nout + 1);
+        assert_eq!(kernel::proc::cred::ucred_nout(), nout + 1);
 
         let held = crhold(&cr);
         assert!(CredRef::ptr_eq(&held, &cr));
         assert_eq!(CredRef::count(&cr), 2);
         crfree(held);
         assert_eq!(CredRef::count(&cr), 1);
-        assert_eq!(kernel::cred::ucred_nout(), nout + 1);
+        assert_eq!(kernel::proc::cred::ucred_nout(), nout + 1);
         crfree(cr);
-        assert_eq!(kernel::cred::ucred_nout(), nout);
+        assert_eq!(kernel::proc::cred::ucred_nout(), nout);
     }
 
     #[test]

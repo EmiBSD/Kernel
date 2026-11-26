@@ -793,10 +793,14 @@ pub fn bufinit(physmem: usize) {
 /// [`BufcachepercentNode`] in its `kern` table, as `kern.nchstats`'s node.
 pub struct BufcachepercentNode;
 
-impl crate::sysctl::SysctlNode for BufcachepercentNode {
-    fn sysctl(&self, _name: &[i32], req: &mut crate::sysctl::SysctlReq<'_>) -> Result<(), Errno> {
+impl crate::base::sysctl::SysctlNode for BufcachepercentNode {
+    fn sysctl(
+        &self,
+        _name: &[i32],
+        req: &mut crate::base::sysctl::SysctlReq<'_>,
+    ) -> Result<(), Errno> {
         let opct = BUFCACHEPERCENT.load(Mem::Relaxed);
-        crate::sysctl::int(req, &BUFCACHEPERCENT)?;
+        crate::base::sysctl::int(req, &BUFCACHEPERCENT)?;
         let pct = BUFCACHEPERCENT.load(Mem::Relaxed);
         if !(5..=90).contains(&pct) {
             BUFCACHEPERCENT.store(opct, Mem::Relaxed);
@@ -3342,7 +3346,7 @@ mod tests {
     /// it the high water mark; the same share again resizes nothing.
     #[test]
     fn bufcachepercent_is_bounded_and_resizes_the_cache() {
-        use crate::sysctl::{SysctlNode, SysctlReq};
+        use crate::base::sysctl::{SysctlNode, SysctlReq};
         use hal::user::UserPtr;
         let _g = bufcache_install(BYTES, 64);
         let old = crate::testutil::USER_BASE + 0x1f00;

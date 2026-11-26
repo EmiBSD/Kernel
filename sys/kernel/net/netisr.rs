@@ -76,10 +76,10 @@ use core::sync::atomic::{AtomicI32, Ordering};
 
 use hal::sync::netlock::{NETLOCK, NetHeld};
 
+use crate::base::task::task_add;
 use crate::net::domain::net;
 use crate::net::if_::net_tq;
 use crate::proc::ProcGlue;
-use crate::task::task_add;
 
 /// Same as `AF_INET`.
 pub const NETISR_IP: i32 = 2;

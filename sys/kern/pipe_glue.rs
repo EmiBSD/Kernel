@@ -36,8 +36,8 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! The pipe's glue to what is still `bsd`'s: the call-site adapter of `kernel::pipe`
-//! (`sys/kernel/pipe.rs`), with 0 `unsafe`, while the file's operations (`struct fileops`,
+//! The pipe's glue to what is still `bsd`'s: the call-site adapter of `kernel::file::pipe`
+//! (`sys/kernel/file/pipe.rs`), with 0 `unsafe`, while the file's operations (`struct fileops`,
 //! `FileGlue::Ops`) and object (`FileGlue::Data`) are `bsd`'s (N8).
 //!
 //! Upstream: sys/kern/sys_pipe.c @ 3ce1f3f79392
@@ -48,8 +48,8 @@
 //! into the kernel's types; the system call entries `bsd`'s `sysent[]` keeps (the `Legacy`
 //! path, which calls the same kernel function as the module's `Native` entry); and
 //! `pipe_init`. N5.0: the clock and the three `struct filterops` are the kernel's
-//! (`kernel::pipe::PipeRead`, `PipeWrite`, `PipeExcept`, which find the pair through
-//! `BsdFileGlue::pipe_of`), and so is `dopipe` (`kernel::pipe::Pipes::dopipe` over the
+//! (`kernel::file::pipe::PipeRead`, `PipeWrite`, `PipeExcept`, which find the pair through
+//! `BsdFileGlue::pipe_of`), and so is `dopipe` (`kernel::file::pipe::Pipes::dopipe` over the
 //! kernel's descriptor table, a file set up by `BsdFileGlue::pipe_file` with [`PIPEOPS`]);
 //! the `PipeGlue` and `PipeFiles` bridges are gone.
 //!
@@ -59,8 +59,8 @@
 //! only then drops the end, whose drop is `pipe_destroy` (it sleeps on `PIPE_WANTD`, which a
 //! spinning mutex must not be held across).
 //!
-//! A pipe's klist is the kernel's, by value in the pair (`kernel::pipe`, N4.4), and so is its
-//! sigio registration (`kernel::sigio::SigioRef`, N4.5b: one atomic word, `Send` and `Sync`).
+//! A pipe's klist is the kernel's, by value in the pair (`kernel::file::pipe`, N4.4), and so is its
+//! sigio registration (`kernel::sig::sigio::SigioRef`, N4.5b: one atomic word, `Send` and `Sync`).
 //!
 //! ## Deviations
 //! - `fo_ioctl`'s `data` is the kernel copy of the argument (`sys_ioctl`), at least an `int`
@@ -69,10 +69,10 @@
 //!
 //! ## Redesign
 //! - A call-site adapter, listed as such (docs/ROADMAP.md N2): LZ's `sys_pipe.rs` minus every
-//!   decision, which moved to `sys/kernel/pipe.rs`. The `fileops` keep their names and
+//!   decision, which moved to `sys/kernel/file/pipe.rs`. The `fileops` keep their names and
 //!   signatures; each finds the pair through [`pipe_of`] (LZ's `fp_pipe`, a cast of `f_data`)
 //!   and calls one kernel method. The `filterops` and their functions are the kernel's since
-//!   N5.0 (`kernel::pipe`, the same names).
+//!   N5.0 (`kernel::file::pipe`, the same names).
 //! - A knote's `kn_hook` holds the index of the pipe whose klist it is on (`Dir::index`, as
 //!   an address without provenance, set by the kernel's `kqfilter`), not a pointer (LZ's
 //!   `kn_pipe` cast it back; the kernel's `filt_pipedetach` reads it).
@@ -81,7 +81,9 @@
 
 use hal::mem::pool::PoolArc;
 use hal::user::UserPtr;
-use kernel::pipe::{Dir, PipeEnd, PipeFilter, PipeIoctl, PipeKinfo, PipePair, Pipes, UioMove};
+use kernel::file::pipe::{
+    Dir, PipeEnd, PipeFilter, PipeIoctl, PipeKinfo, PipePair, Pipes, UioMove,
+};
 
 use crate::kern::init_sysent::SYSENT;
 use crate::kern::kern_descrip::BsdFileData;
@@ -326,7 +328,7 @@ mod tests {
     use std::vec::Vec;
     use std::{assert, assert_eq, vec};
 
-    use kernel::pipe::{PIPE_EOF, PIPE_SIZE};
+    use kernel::file::pipe::{PIPE_EOF, PIPE_SIZE};
 
     use super::*;
     use crate::kern::kern_descrip::fnew;

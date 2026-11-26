@@ -130,8 +130,8 @@
 //!   the VOP, the unlocks) is composed here from those one-call methods, the kernel lock
 //!   (`hal::sync::klock`, `hal`'s own since N4.5c) and the net lock (`hal::sync::netlock`, `hal`'s own
 //!   static since N6.0: the `NetLock` bridge is gone).
-//!   `ratecheck`'s clock is `kernel::tc`'s `getmicrouptime`, and `rebooting` and its wait
-//!   channel `&rebooting` are `kernel::reboot`'s (N5.0: the `SysInfo` bridge that read them
+//!   `ratecheck`'s clock is `kernel::time::tc`'s `getmicrouptime`, and `rebooting` and its wait
+//!   channel `&rebooting` are `kernel::base::reboot`'s (N5.0: the `SysInfo` bridge that read them
 //!   through `bsd` is gone; the channel is the same static's address it gave).
 //! - `ratecheck(9)` (`kern_time.c`): the pager keeps its own copy for [`uvn_flush`]'s
 //!   rate-limited error message, over `getmicrouptime`. The C's
@@ -191,7 +191,7 @@ use super::pager::{
 use super::pmemrange::uvm_wait;
 use super::types::{VmProt, Voff};
 use crate::assert::{kassert, kpanic};
-use crate::prf::{printf, unported};
+use crate::base::prf::{printf, unported};
 
 // u_flags values
 
@@ -415,7 +415,7 @@ pub trait VnodeOps: Sync {
 
 /// `getmicrouptime()` as `(tv_sec, tv_usec)`.
 fn uptime() -> (i64, i64) {
-    let tv = crate::tc::getmicrouptime();
+    let tv = crate::time::tc::getmicrouptime();
     (tv.tv_sec, tv.tv_usec)
 }
 
@@ -1380,11 +1380,11 @@ fn uvn_io(uvn: &Uvn, w: &mut WriteWitness<'_>, pps: &[PageSlot], flags: i32, rw:
             VM_PAGER_AGAIN
         }
         Err(_) => {
-            if crate::reboot::rebooting() {
+            if crate::base::reboot::rebooting() {
                 kernel_lock();
-                while crate::reboot::rebooting() {
+                while crate::base::reboot::rebooting() {
                     // tsleep_nsec(&rebooting, ...): the address of the flag itself.
-                    let chan: *const () = ptr::from_ref(&crate::reboot::REBOOTING).cast();
+                    let chan: *const () = ptr::from_ref(&crate::base::reboot::REBOOTING).cast();
                     let _ = tsleep_nsec(chan, PVM, "uvndead", INFSLP);
                 }
                 kernel_unlock();
@@ -1784,7 +1784,7 @@ mod tests {
         testutil::install();
         // The coarse uptime moves only when the timehands are wound up: one windup, so the
         // clock no longer reads (0, 0), the C's "never checked" mark.
-        crate::tc::tc_ticktock();
+        crate::time::tc::tc_ticktock();
         static LAST: Mutexed<(i64, i64)> = Mutexed::new(IPL_HIGH, (0, 0));
         // (0, 0) passes at once, whatever the clock says.
         assert!(ratecheck(&LAST, (5, 0)));

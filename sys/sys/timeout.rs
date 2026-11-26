@@ -70,7 +70,7 @@
 /* <CODE> */
 //! `<sys/timeout.h>`: `timeout(9)`, functions run once after a number of clock ticks or at an
 //! absolute uptime. The wheel, its soft interrupt and its threads are the kernel crate's
-//! (`kernel::timeout`, N4.1); this is the legacy API the callers in `bsd` keep, over it.
+//! (`kernel::time::timeout`, N4.1); this is the legacy API the callers in `bsd` keep, over it.
 //!
 //! Upstream: sys/sys/timeout.h @ 3ce1f3f79392
 //! Upstream: sys/kern/kern_timeout.c @ 3ce1f3f79392
@@ -81,7 +81,7 @@
 //!
 //! ## Deviations
 //! - Each legacy [`Timeout`] is served by a node of the pool `timeoutpl` (a
-//!   `kernel::timeout::Timeout`, which the wheel links), found by the wrapper's address in a
+//!   `kernel::time::timeout::Timeout`, which the wheel links), found by the wrapper's address in a
 //!   registry and never given back: LZ frees the structures that embed timeouts without
 //!   dropping them (`pool_put` of a `struct proc`, a `tcpcb`, a SYN cache entry; a softc's
 //!   `free`), so no wrapper can be trusted to say when its node is free. A wrapper made again
@@ -93,10 +93,10 @@
 //!   `pool(9)` and `malloc(9)` reuse their items' addresses (a pool page given back and carved
 //!   again for another pool can bring new ones). The C embeds the timeout and allocates
 //!   nothing. A node that cannot be had (`PR_NOWAIT`) is `panic(9)`, where the C cannot fail;
-//!   both go when the callers own their timeouts (`kernel::timeout::Timeout`, pinned in place),
+//!   both go when the callers own their timeouts (`kernel::time::timeout::Timeout`, pinned in place),
 //!   subsystem by subsystem.
 //! - `timeout_set` writes a timeout's fields under the wheel's lock (the C writes them bare),
-//!   the kernel's change (`kernel::timeout`).
+//!   the kernel's change (`kernel::time::timeout`).
 //! - A wrapper's link is trusted only when it names a node of the wrapper's own address
 //!   (`served`), which holds because every structure that embeds a wrapper is written whole
 //!   when it is made (a `const` constructor) or comes zeroed (`PR_ZERO`, `M_ZERO`, a zeroed
@@ -109,7 +109,7 @@
 //! - LZ's `struct timeout` was the C's `#[repr(C)]` record of `Cell`s, linked by its `to_list`
 //!   `struct circq` (raw pointers, `unsafe impl Sync`) into the wheel's queues, and its fields
 //!   were read and written by `kern_timeout.rs` and by three callers. Now the wheel links a
-//!   pinned `kernel::timeout::Timeout`, and [`Timeout`] is what a legacy structure embeds: the
+//!   pinned `kernel::time::timeout::Timeout`, and [`Timeout`] is what a legacy structure embeds: the
 //!   values of `TIMEOUT_INITIALIZER` (written only by the `const` constructors) and a link to
 //!   its node (`hal::ds::link::Link`). It stays valid all zero (`Timeout::zeroed`, a zeroed softc's
 //!   timeouts: the `unsafe impl Softc` proofs cite it), `Sync` without `unsafe`, and its
@@ -141,7 +141,7 @@ use core::pin::Pin;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
-pub use kernel::timeout::TimeoutFn;
+pub use kernel::time::timeout::TimeoutFn;
 
 use hal::cpu::intr::IPL_HIGH;
 use hal::ds::link::Link;
@@ -249,7 +249,7 @@ impl Timeout {
     }
 
     /// `timeout_set_flags` through the wrapper: its node's fields set (its queued state
-    /// stays, `kernel::timeout::Timeout::set`), or, for a wrapper with no node, the node
+    /// stays, `kernel::time::timeout::Timeout::set`), or, for a wrapper with no node, the node
     /// at its address claimed and set fresh ([`Timeout::claim`]).
     fn set_node(&self, func: Option<TimeoutFn>, arg: *mut c_void, kclock: i32, flags: u32) {
         match self.served() {
@@ -286,7 +286,7 @@ impl Timeout {
     /// inside the registry's (the one nesting: the kernel never takes the registry's). A new
     /// node is made with the registry's lock released, and one not needed goes back to the
     /// pool after it is released (the pool's lock is not nested in it).
-    fn claim(&self, fresh: impl FnOnce(&kernel::timeout::Timeout)) -> &'static Node {
+    fn claim(&self, fresh: impl FnOnce(&kernel::time::timeout::Timeout)) -> &'static Node {
         test_bridges();
         let owner = self.addr();
         let find = |t: &Tree<ByOwner>| t.find_by(|n| owner.cmp(&n.owner));
@@ -313,7 +313,7 @@ impl Timeout {
                     let Some(made) = timeout_pool().get_shared(PR_NOWAIT, || Node {
                         owner,
                         entry: TreeEntry::new(),
-                        to: kernel::timeout::Timeout::unset(),
+                        to: kernel::time::timeout::Timeout::unset(),
                     }) else {
                         panic(format_args!("timeout_set: no node for a legacy timeout"));
                     };
@@ -331,7 +331,7 @@ impl Timeout {
 
     /// The node, pinned: a pool item never given back (the module's deviations).
     #[inline]
-    fn pinned_for_add(&self) -> Pin<&'static kernel::timeout::Timeout> {
+    fn pinned_for_add(&self) -> Pin<&'static kernel::time::timeout::Timeout> {
         pin_static(&self.node_for_add().to)
     }
 }
@@ -343,7 +343,7 @@ struct Node {
     /// The registry's link.
     entry: TreeEntry<Node>,
     /// What the wheel links.
-    to: kernel::timeout::Timeout,
+    to: kernel::time::timeout::Timeout,
 }
 
 hal::tree_adapter!(
@@ -362,7 +362,7 @@ static POOL_INIT: Rwlocked<()> = Rwlocked::new("timeoutpl", ());
 static REGISTRY: Mutexed<Tree<ByOwner>> = Mutexed::new(IPL_HIGH, Tree::new());
 /// The idle node answering for a wrapper with none: never added, so never queued, never
 /// running.
-static IDLE: kernel::timeout::Timeout = kernel::timeout::Timeout::unset();
+static IDLE: kernel::time::timeout::Timeout = kernel::time::timeout::Timeout::unset();
 
 /// The kernel's flags for the legacy `int` ones.
 const fn flags_of(flags: i32) -> u32 {
@@ -370,8 +370,8 @@ const fn flags_of(flags: i32) -> u32 {
 }
 
 /// The legacy uptime as the kernel's.
-const fn kernel_ts(ts: &Timespec) -> kernel::clock::Timespec {
-    kernel::clock::Timespec {
+const fn kernel_ts(ts: &Timespec) -> kernel::time::clock::Timespec {
+    kernel::time::clock::Timespec {
         tv_sec: ts.tv_sec,
         tv_nsec: ts.tv_nsec,
     }
@@ -433,9 +433,9 @@ pub fn timeout_startup() {
     #[cfg(test)]
     {
         test_bridges();
-        kernel::timeout::timeout_test_reset();
+        kernel::time::timeout::timeout_test_reset();
     }
-    kernel::timeout::startup(
+    kernel::time::timeout::startup(
         HZ.load(Ordering::Relaxed),
         TICK.load(Ordering::Relaxed),
         TICK_NSEC.load(Ordering::Relaxed),
@@ -444,7 +444,7 @@ pub fn timeout_startup() {
 
 /// `timeout_proc_init()`: the `softclock` soft interrupt and threads.
 pub fn timeout_proc_init() {
-    kernel::timeout::proc_init();
+    kernel::time::timeout::proc_init();
 }
 
 /// `timeout_set(new, fn, arg)`.
@@ -513,23 +513,23 @@ pub fn timeout_barrier(to: &Timeout) {
 
 /// `timeout_maskwheel(level, abstime)`: the bucket of `abstime` on a clock wheel's level.
 pub fn timeout_maskwheel(level: u32, abstime: &Timespec) -> u32 {
-    kernel::timeout::timeout_maskwheel(level, &kernel_ts(abstime))
+    kernel::time::timeout::timeout_maskwheel(level, &kernel_ts(abstime))
 }
 
 /// `timeout_hardclock_update()`: called by `hardclock` on the primary CPU every tick.
 pub fn timeout_hardclock_update() {
-    kernel::timeout::hardclock_update();
+    kernel::time::timeout::hardclock_update();
 }
 
 /// `softclock(arg)`: the soft interrupt's work (the kernel establishes the interrupt; the
 /// legacy tests call it by hand).
 pub fn softclock(_arg: *mut c_void) {
-    kernel::timeout::softclock();
+    kernel::time::timeout::softclock();
 }
 
 /// `timeout_adjust_ticks(adj)` (`!SMALL_KERNEL`): `tc_setclock` stepped `ticks` forward.
 pub fn timeout_adjust_ticks(adj: i32) {
-    kernel::timeout::adjust_ticks(adj);
+    kernel::time::timeout::adjust_ticks(adj);
 }
 
 /// `timeout_sysctl` (`!SMALL_KERNEL`): `kern.timeout_stats`, `struct timeoutstat` (twelve
@@ -542,7 +542,7 @@ pub fn timeout_sysctl(
 ) -> Result<(), Errno> {
     let _ = newlen;
     let mut status = [[0u8; 8]; 12];
-    for (b, v) in status.iter_mut().zip(kernel::timeout::stats()) {
+    for (b, v) in status.iter_mut().zip(kernel::time::timeout::stats()) {
         *b = v.to_ne_bytes();
     }
     sysctl_rdstruct(oldp, oldlenp, newp, status.as_flattened())
@@ -611,9 +611,9 @@ pub(crate) mod tests {
         assert!(timeout_add(&TO, 2));
         assert!(timeout_pending(&TO));
         assert!(!timeout_add(&TO, 2), "already scheduled");
-        kernel::timeout::tick_once();
+        kernel::time::timeout::tick_once();
         assert_eq!(FIRED.load(Ordering::Relaxed), 0);
-        kernel::timeout::tick_once();
+        kernel::time::timeout::tick_once();
         assert_eq!(FIRED.load(Ordering::Relaxed), 1);
         assert!(timeout_triggered(&TO));
         assert!(!timeout_pending(&TO));
@@ -627,14 +627,14 @@ pub(crate) mod tests {
         static TO: Timeout = Timeout::zeroed();
         timeout_set(&TO, fire, ptr::null_mut());
         assert!(timeout_add(&TO, 5));
-        let pending = kernel::timeout::stats()[4];
+        let pending = kernel::time::timeout::stats()[4];
         // An earlier test's timeout, left pending: the next setup takes it off unrun.
         timeout_startup();
         assert!(!timeout_pending(&TO));
-        assert!(kernel::timeout::wheel_is_empty());
-        assert_eq!(kernel::timeout::stats()[4], pending - 1);
+        assert!(kernel::time::timeout::wheel_is_empty());
+        assert_eq!(kernel::time::timeout::stats()[4], pending - 1);
         for _ in 0..10 {
-            kernel::timeout::tick_once();
+            kernel::time::timeout::tick_once();
         }
         assert_eq!(FIRED.load(Ordering::Relaxed), 0);
     }
@@ -646,7 +646,7 @@ pub(crate) mod tests {
         assert!(timeout_initialized(&TO));
         assert!(timeout_add(&TO, 1));
         assert!(TO.served().is_some());
-        let now = kernel::clock::ticks();
+        let now = kernel::time::clock::ticks();
         assert_eq!(TO.to_time().wrapping_sub(now), 1);
         assert!(timeout_del(&TO));
         assert!(!timeout_pending(&TO));
@@ -675,13 +675,13 @@ pub(crate) mod tests {
         let _g = setup();
         static TO: Timeout = Timeout::zeroed();
         // The C's timeout_set touches no counter: kern.timeout_stats stays as it is.
-        let before = kernel::timeout::stats();
+        let before = kernel::time::timeout::stats();
         timeout_set(&TO, fire, ptr::null_mut());
-        assert_eq!(kernel::timeout::stats(), before);
+        assert_eq!(kernel::time::timeout::stats(), before);
         // Nor when the address's node is taken back idle (a structure made again).
         TO.node.set(None);
         timeout_set_proc(&TO, fire, ptr::null_mut());
-        assert_eq!(kernel::timeout::stats(), before);
+        assert_eq!(kernel::time::timeout::stats(), before);
     }
 
     static RACED: AtomicU32 = AtomicU32::new(0);
@@ -698,7 +698,7 @@ pub(crate) mod tests {
         for _ in 0..200 {
             let to: &'static Timeout =
                 std::boxed::Box::leak(std::boxed::Box::new(Timeout::new(raced, ptr::null_mut())));
-            let readded = kernel::timeout::stats()[5];
+            let readded = kernel::time::timeout::stats()[5];
             let start = std::sync::Barrier::new(2);
             let added: u32 = std::thread::scope(|s| {
                 let t = [(); 2].map(|()| {
@@ -711,7 +711,7 @@ pub(crate) mod tests {
             });
             assert_eq!(added, 1, "one add of two");
             assert!(timeout_pending(to));
-            assert_eq!(kernel::timeout::stats()[5], readded + 1);
+            assert_eq!(kernel::time::timeout::stats()[5], readded + 1);
             assert!(timeout_del(to));
         }
         assert_eq!(RACED.load(Ordering::Relaxed), 0);

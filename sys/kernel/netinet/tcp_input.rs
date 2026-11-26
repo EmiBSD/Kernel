@@ -218,7 +218,6 @@ use hal::sys::socket::{AF_INET, AF_INET6, SO_ACCEPTCONN, SO_DEBUG, SO_OOBINLINE}
 use libkern::timingsafe_bcmp;
 
 use crate::assert::{kassert, kpanic};
-use crate::clock::Timeval;
 use crate::crypto::md5::MD5_DIGEST_LENGTH;
 use crate::net::if_::{if_get, unhandled_af};
 use crate::net::if_var::Netstack;
@@ -277,8 +276,9 @@ use crate::netinet6::in6_pcb::{in6_pcblookup, in6_pcblookup_listen};
 use crate::netinet6::ip6_input::{ip6_exthdr_bytes, ip6_exthdr_get};
 use crate::netinet6::ip6_output::ip6_load;
 use crate::proc::ProcGlue;
+use crate::time::clock::Timeval;
+use crate::time::timeout::hz;
 use crate::time::{PPSRATECHECK_MTX, ppsratecheck_held, ppsratecheck_locked};
-use crate::timeout::hz;
 
 /// `sizeof(struct tcphdr)`.
 const TCP_HDR_LEN: usize = size_of::<Tcphdr>();

@@ -216,7 +216,7 @@
 //!   (N6.3a, decision 47's ABI edge; `bsd`'s `sys/net/if_.rs` keeps LZ's structures for its
 //!   `ifioctl` until N6.3a2).
 //! - `struct if_data`'s `ifi_lastchange` is an [`IfTimeval`]: `struct timeval`'s image, as
-//!   the kernel's `Timeval` is `kernel::clock`'s and `hal` names nothing of the kernel.
+//!   the kernel's `Timeval` is `kernel::time::clock`'s and `hal` names nothing of the kernel.
 //! - `if.c`'s functions are the kernel's (`kernel::net::if_`, N6.3a); only the header's part
 //!   of LZ's `sys/net/if_.rs` is here.
 //! - The three headers are one module: `if_types.h` and `if_dl.h` are the constants and the

@@ -49,7 +49,7 @@
 
 /* <CODE> */
 //! `bsd`'s side of the message buffer and `/dev/klog` (`kern/subr_log.c`), which are the
-//! kernel crate's (`kernel::log`): the names `bsd`'s callers and the frozen machine code use,
+//! kernel crate's (`kernel::base::log`): the names `bsd`'s callers and the frozen machine code use,
 //! the device switch's entry points of `/dev/klog` (character major 7), `sendsyslog(2)`'s
 //! `sysent[]` row, and the console's half of the device switch the kernel writes through
 //! (`kernel::tty::TtyDevsw`, implemented by `kern/tty.rs` since N4.7b).
@@ -58,7 +58,7 @@
 //! LZ: sys/kern/subr_log.rs@3c62ede68802
 //!
 //! ## Redesign
-//! - N4.7a: the buffers, `logsoftc`, the stash and `dosendsyslog` moved into `kernel::log`
+//! - N4.7a: the buffers, `logsoftc`, the stash and `dosendsyslog` moved into `kernel::base::log`
 //!   (its module documentation has the shape and the deviations); LZ's twelve `unsafe` (the
 //!   `Msgbuf` overlay, the `StaticCell`s, the stash's raw blocks, `syslogf`'s pointer) are
 //!   gone with them. This module keeps the names its callers know (`init_static_msgbuf`,
@@ -71,12 +71,12 @@
 //!   implementation `bsd`'s `kern/tty.rs`).
 //! - `log_open` is [`log_open`], a function (LZ: the `LOG_OPEN` static): the flag is the
 //!   kernel's, in the glue's tables.
-//! - `msgbufp()`/`consbufp()` and `msgbuf_putchar(mbp, c)` are `kernel::log`'s
+//! - `msgbufp()`/`consbufp()` and `msgbuf_putchar(mbp, c)` are `kernel::base::log`'s
 //!   `msgbuf_putchar(which, c)` and readers (`msgbuf_header`, `msgbuf_read`): no reference
 //!   to a buffer leaves `log_mtx`.
 
-pub use kernel::log::{Buf, msgbuf_putchar, msgbufmapped};
-use kernel::uio::UioMove;
+pub use kernel::base::log::{Buf, msgbuf_putchar, msgbufmapped};
+use kernel::file::uio::UioMove;
 
 use crate::kern::kern_subr::uiomove;
 use crate::kern::proc_glue::BsdProcGlue;
@@ -118,49 +118,49 @@ impl UioMove for LogUio<'_, '_> {
 
 /// Hands the machine's static buffer to `initmsgbuf` (both machines' early init).
 pub fn init_static_msgbuf() {
-    kernel::log::initmsgbuf();
+    kernel::base::log::initmsgbuf();
 }
 
 /// `initconsbuf`: sets up the buffer that collects `/dev/console` output (`main`), and
 /// registers the console the kernel's `sendsyslog(2)` writes through.
 pub fn initconsbuf() {
-    kernel::log::initconsbuf();
+    kernel::base::log::initconsbuf();
     crate::kern::tty::register_devsw();
 }
 
 /// `log_open`: whether `/dev/klog` is open (`log()` also prints to the console when not).
 pub fn log_open() -> bool {
-    kernel::log::log_open::<BsdProcGlue>()
+    kernel::base::log::log_open::<BsdProcGlue>()
 }
 
 /// `logwakeup`: asks for the `/dev/klog` readers to be woken at the next tick.
 pub fn logwakeup() {
-    kernel::log::logwakeup::<BsdProcGlue>();
+    kernel::base::log::logwakeup::<BsdProcGlue>();
 }
 
 /// `logopen` (`cdevsw[7].d_open`).
 pub fn logopen(_dev: Dev, _flags: i32, _mode: i32, _p: &Proc) -> Result<(), Errno> {
-    kernel::log::logopen::<BsdProcGlue>()
+    kernel::base::log::logopen::<BsdProcGlue>()
 }
 
 /// `logclose` (`cdevsw[7].d_close`).
 pub fn logclose(_dev: Dev, _flag: i32, _mode: i32, p: Option<&Proc>) -> Result<(), Errno> {
-    kernel::log::logclose::<BsdProcGlue>(p)
+    kernel::base::log::logclose::<BsdProcGlue>(p)
 }
 
 /// `logread` (`cdevsw[7].d_read`).
 pub fn logread(_dev: Dev, uio: &mut Uio<'_>, flag: i32) -> Result<(), Errno> {
-    kernel::log::logread::<BsdProcGlue>(&mut LogUio { uio }, flag)
+    kernel::base::log::logread::<BsdProcGlue>(&mut LogUio { uio }, flag)
 }
 
 /// `logioctl` (`cdevsw[7].d_ioctl`).
 pub fn logioctl(_dev: Dev, com: u64, data: &mut [u8], _flag: i32, p: &Proc) -> Result<(), Errno> {
-    kernel::log::logioctl::<BsdProcGlue>(com, data, p)
+    kernel::base::log::logioctl::<BsdProcGlue>(com, data, p)
 }
 
 /// `logkqfilter` (`cdevsw[7].d_kqfilter`).
 pub fn logkqfilter(_dev: Dev, kn: &Knote) -> Result<(), Errno> {
-    kernel::log::logkqfilter::<BsdProcGlue>(kn)
+    kernel::base::log::logkqfilter::<BsdProcGlue>(kn)
 }
 
 /// `KernelApi::sendsyslog`, the module's `Native` sendsyslog(2): the thread on this CPU runs
@@ -187,7 +187,7 @@ pub fn native_sendsyslog(
 /// `sendsyslog(2)` (`sysent[112]`, `NOLOCK`): the kernel's, for the calling thread.
 pub fn sys_sendsyslog(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysSendsyslogArgs = sysargs(v);
-    kernel::log::sys_sendsyslog::<BsdProcGlue>(
+    kernel::base::log::sys_sendsyslog::<BsdProcGlue>(
         p,
         uap.buf.get() as usize,
         uap.nbyte.get(),

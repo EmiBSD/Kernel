@@ -177,7 +177,6 @@ use hal::sys::types::{Dev, Gid, Uid};
 use libkern::siphash::{SipHash24Ctx, SiphashKey};
 
 use crate::assert::kpanic;
-use crate::clock::Timespec;
 use crate::fs::bio::brelse;
 use crate::fs::buf::BufRef;
 use crate::fs::cache::cache_purge;
@@ -192,6 +191,7 @@ use crate::fs::vnode::{LK_EXCLUSIVE, VT_ISOFS, Vnode};
 use crate::fs::vops::{vop_lock, vop_unlock};
 use crate::fs::word::{I64Word, U32Word, U64Word};
 use crate::proc::{ProcGlue, Thread};
+use crate::time::clock::Timespec;
 
 /// `M_ISOFSNODE`: ISOFS vnode private part (`<sys/malloc.h>`; `bsd`'s `sys/malloc.rs` until N7
 /// moves the header).

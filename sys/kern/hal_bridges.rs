@@ -369,7 +369,7 @@ static BSD_RANDOM: BsdRandom = BsdRandom;
 /// stays in `intr.rs` behind them until N7).
 struct BsdClockHardware;
 
-impl kernel::clock::ClockHardware for BsdClockHardware {
+impl kernel::time::clock::ClockHardware for BsdClockHardware {
     fn initclocks(&self) {
         crate::machine::cpu::cpu_initclocks();
     }
@@ -390,10 +390,10 @@ impl kernel::clock::ClockHardware for BsdClockHardware {
 static BSD_CLOCK_HARDWARE: BsdClockHardware = BsdClockHardware;
 
 /// The machine's `boot(9)` (`crate::machine::cpu::boot`: machdep's, which syncs the file
-/// systems and suspends the devices first), for `kernel::reboot::reboot`.
+/// systems and suspends the devices first), for `kernel::base::reboot::reboot`.
 struct BsdMachineBoot;
 
-impl kernel::reboot::MachineBoot for BsdMachineBoot {
+impl kernel::base::reboot::MachineBoot for BsdMachineBoot {
     fn boot(&self, howto: i32) -> ! {
         crate::machine::cpu::boot(howto)
     }
@@ -419,8 +419,8 @@ pub fn hal_bridges_register() {
     // mutability that could keep one.
     crate::kern::kern_subr::kcopy_take();
     // And the kernel's window leg of uiomove its own token (hal::user::WindowKcopyToken,
-    // N5.9t1), taken by kernel::uio here for the same reason.
-    kernel::uio::window_kcopy_take();
+    // N5.9t1), taken by kernel::file::uio here for the same reason.
+    kernel::file::uio::window_kcopy_take();
     // And the publisher of the interface addresses' storage (hal::ds::link::SaToken, N6.3a): the
     // kernel's interface layer copies what a link names, so only bsd's internet protocols,
     // which own that storage, may make one name it; taken here for the same reason.
@@ -434,19 +434,19 @@ pub fn hal_bridges_register() {
     let _ = hal::bridges::register_console(&BSD_CONS);
     let _ = hal::bridges::register_printf(&BSD_PRINTF);
     let _ = hal::bridges::register_random(&BSD_RANDOM);
-    // The start of every new thread and the kernel's own threads: `kernel::fork` (N4.6a).
-    let _ = kernel::fork::init::<crate::kern::proc_glue::BsdProcGlue>();
+    // The start of every new thread and the kernel's own threads: `kernel::proc::fork` (N4.6a).
+    let _ = kernel::proc::fork::init::<crate::kern::proc_glue::BsdProcGlue>();
     // The kernel crate's own bridges (N4.1): slots only, used from `main()` on.
-    // N4.8a: the machine's clock hardware and boot(9), for kernel::clock and kernel::reboot.
-    let _ = kernel::clock::install_clock_hardware(&BSD_CLOCK_HARDWARE);
-    let _ = kernel::reboot::install_machine_boot(&BSD_MACHINE_BOOT);
+    // N4.8a: the machine's clock hardware and boot(9), for kernel::time::clock and kernel::base::reboot.
+    let _ = kernel::time::clock::install_clock_hardware(&BSD_CLOCK_HARDWARE);
+    let _ = kernel::base::reboot::install_machine_boot(&BSD_MACHINE_BOOT);
     // N5.2: the device switch (machine::conf's cdevsw[] and bdevsw[]) for the kernel's
     // special files, before the first device vnode (cdevvp of the console, the root's bdevvp).
     let _ = kernel::fs::spec::register_devsw::<crate::kern::proc_glue::BsdProcGlue>(
         &crate::sys::specdev::BSD_DEVSW,
     );
     // sysctl(2)'s nodes still in bsd, its bounded variables, the disk list's export and
-    // physmem, for kernel::sysctl's dispatcher (N4.6b).
+    // physmem, for kernel::base::sysctl's dispatcher (N4.6b).
     crate::kern::kern_sysctl::sysctl_register_legacy();
     // amd64's shootdowns; a machine that broadcasts its TLB invalidations (arm64) has none.
     #[cfg(all(machine_x86, feature = "multiprocessor"))]

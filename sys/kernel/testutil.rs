@@ -50,7 +50,7 @@
 //! - The kernel lock is `hal::sync::klock`'s own since N4.5c, a per-thread depth on the host (no
 //!   exclusion; the tests that take it hold [`MEMORY`]); [`kernel_lock_depth`] reads it.
 //! - The soft interrupts are `hal::cpu::softintr`'s own (no bridge since N4.5c).
-//! - The clocks are not a double since N5.0: `kernel::tc`'s readers on its dummy counter (a
+//! - The clocks are not a double since N5.0: `kernel::time::tc`'s readers on its dummy counter (a
 //!   microsecond more per read at its nominal 1 MHz), whose timehands nothing winds up but a
 //!   test that calls `tc::tc_ticktock` (the coarse clocks stay where they are).
 //! - `thread`'s operations: a host thread holding the kernel lock double from its start; a
@@ -589,7 +589,7 @@ pub fn kernel_lock_depth() -> u32 {
 /// The kernel thread double: a thread is a host thread that starts holding the kernel lock
 /// double (as a kernel thread starts under the kernel lock); a deferred creation runs at once
 /// in this crate's tests (the install runs `kthread_run_deferred_queue`) and waits, never run,
-/// in `kernel::thread`'s queue in `bsd`'s (a queue destroyed then is in `TQ_S_CREATED` and makes no
+/// in `kernel::proc::thread`'s queue in `bsd`'s (a queue destroyed then is in `TQ_S_CREATED` and makes no
 /// thread), and `kthread_exit` unwinds the host thread with [`KthreadExit`], which its
 /// spawner catches.
 struct TestKthread;
@@ -598,14 +598,14 @@ struct TestKthread;
 struct KthreadExit;
 
 impl TestKthread {
-    /// `kthread_create` of a ticket: a host thread running `kernel::thread::run`.
+    /// `kthread_create` of a ticket: a host thread running `kernel::proc::thread::run`.
     fn create(name: &'static [u8], ticket: usize) -> Result<(), Errno> {
         std::thread::Builder::new()
             .name(String::from_utf8_lossy(name).into_owned())
             .spawn(move || {
                 hal::sync::klock::kernel_lock();
                 let r = std::panic::catch_unwind(move || {
-                    crate::thread::run(ticket);
+                    crate::proc::thread::run(ticket);
                 });
                 if let Err(e) = r
                     && !e.is::<KthreadExit>()
@@ -884,9 +884,9 @@ pub fn memory_is_the_doubles() -> Option<bool> {
 /// over a copy.
 pub fn test_uiomove_out<G: crate::proc::ProcGlue>(
     buf: &[u8],
-    uio: &mut crate::uio::Uio<'_, G>,
+    uio: &mut crate::file::uio::Uio<'_, G>,
 ) -> Result<(), hal::sys::errno::Errno> {
-    use crate::uio::{UioRw, UioSeg};
+    use crate::file::uio::{UioRw, UioSeg};
     if uio.uio_rw != UioRw::UIO_READ {
         let mut copy = buf.to_vec();
         return test_uiomove(&mut copy, uio);
@@ -928,9 +928,9 @@ pub fn test_uiomove_out<G: crate::proc::ProcGlue>(
 /// the iovecs advance as `uiomove(9)`'s.
 pub fn test_uiomove<G: crate::proc::ProcGlue>(
     buf: &mut [u8],
-    uio: &mut crate::uio::Uio<'_, G>,
+    uio: &mut crate::file::uio::Uio<'_, G>,
 ) -> Result<(), hal::sys::errno::Errno> {
-    use crate::uio::{UioRw, UioSeg};
+    use crate::file::uio::{UioRw, UioSeg};
     let mut done = 0;
     while done < buf.len() && uio.uio_resid > 0 {
         let Some(iov) = uio.uio_iov.first_mut() else {
@@ -985,10 +985,10 @@ pub fn install() {
         let _ = bridges::register_printf(&TEST_PRINTF);
         let _ = bridges::register_random(&TEST_RANDOM);
 
-        // The clocks are kernel::tc's readers (N5.0): the dummy counter, a microsecond per
+        // The clocks are kernel::time::tc's readers (N5.0): the dummy counter, a microsecond per
         // read at its nominal 1 MHz, warmed up as initclocks does.
-        crate::tc::inittimecounter();
-        crate::thread::install_test_ops(crate::thread::Ops {
+        crate::time::tc::inittimecounter();
+        crate::proc::thread::install_test_ops(crate::proc::thread::Ops {
             create: TestKthread::create,
             exit: TestKthread::exit,
             peg: TestKthread::peg,
@@ -997,14 +997,14 @@ pub fn install() {
         // `bsd`'s host tests (this crate built with `doubles`, not `test`) drive their task
         // queues' workers by hand, as under LZ, where no deferred creation ever ran there.
         if cfg!(test) {
-            crate::thread::kthread_run_deferred_queue();
+            crate::proc::thread::kthread_run_deferred_queue();
         }
         crate::vm::init::uvm_machine_init(&TEST_VM_MACHINE);
         // The host's data abort for kernel-map addresses (N5.9t1): a kernel copy through a
         // window onto an object's pages faults them in, as kdata_abort does.
         hal::arch::host::copy::set_kernel_fault_hook(kernel_fault);
         // The window leg's token (N5.9t1, review 1's B2), as bsd's boot takes it.
-        crate::uio::window_kcopy_take();
+        crate::file::uio::window_kcopy_take();
     });
 }
 
@@ -1026,7 +1026,7 @@ pub fn printf_count(s: &str) -> usize {
     lock(&PRINTF_OUT).matches(s).count()
 }
 
-/// The kernel map double, for `KmBuf` and `kernel::pipe::Pipes::new` (a provider passed as a
+/// The kernel map double, for `KmBuf` and `kernel::file::pipe::Pipes::new` (a provider passed as a
 /// value, not a registered bridge; a `const fn` so a test's `static` can name it).
 pub const fn page_memory() -> &'static dyn PageMemory {
     &TEST_PAGES
@@ -1376,14 +1376,14 @@ pub struct TestFileData<P: crate::proc::ProcGlue> {
     /// `SS_DNS` of the socket.
     pub dns: bool,
     /// A kqueue file's kqueue.
-    pub kq: Option<crate::event::KqRef<P>>,
+    pub kq: Option<crate::file::event::KqRef<P>>,
     /// A vnode file's vnode (`vnode_ops`): a [`MemVnode`] or any other double.
     pub vnode: Option<&'static dyn VnodeOps>,
     /// A vnode file's vnode as the vnode layer sees it (`vnode_of`; [`test_vnode`] makes
     /// one).
     pub kvnode: Option<&'static crate::fs::vnode::Vnode<P>>,
     /// A pipe file's pipe (`pipe_of`), dropped with the file's item (`pipe_destroy`).
-    pub pipe: Option<crate::pipe::PipeEnd<P>>,
+    pub pipe: Option<crate::file::pipe::PipeEnd<P>>,
     /// A socket file's socket (`socket_of`), dropped with the file's item.
     pub socket: Option<crate::net::socket::SocketRef<P>>,
 }
@@ -1789,18 +1789,18 @@ macro_rules! test_file_glue {
             fn read(
                 &self,
                 _fp: &$crate::file::File<$name>,
-                _uio: &mut $crate::uio::Uio<'_, $proc>,
+                _uio: &mut $crate::file::uio::Uio<'_, $proc>,
                 _fflags: i32,
             ) -> Result<(), hal::sys::errno::Errno> {
-                $crate::event::kqueue_rw()
+                $crate::file::event::kqueue_rw()
             }
             fn write(
                 &self,
                 _fp: &$crate::file::File<$name>,
-                _uio: &mut $crate::uio::Uio<'_, $proc>,
+                _uio: &mut $crate::file::uio::Uio<'_, $proc>,
                 _fflags: i32,
             ) -> Result<(), hal::sys::errno::Errno> {
-                $crate::event::kqueue_rw()
+                $crate::file::event::kqueue_rw()
             }
             fn ioctl(
                 &self,
@@ -1809,14 +1809,14 @@ macro_rules! test_file_glue {
                 _data: &mut [u8],
                 _p: &$crate::proc::Thread<$proc>,
             ) -> Result<(), hal::sys::errno::Errno> {
-                $crate::event::kqueue_ioctl()
+                $crate::file::event::kqueue_ioctl()
             }
             fn kqfilter(
                 &self,
                 fp: &$crate::file::File<$name>,
-                kn: &$crate::event::Knote<$proc>,
+                kn: &$crate::file::event::Knote<$proc>,
             ) -> Result<(), hal::sys::errno::Errno> {
-                $crate::event::kqueue_kqfilter::<$proc>(fp, kn)
+                $crate::file::event::kqueue_kqfilter::<$proc>(fp, kn)
             }
             fn stat(
                 &self,
@@ -1824,7 +1824,7 @@ macro_rules! test_file_glue {
                 st: &mut hal::sys::stat::Stat,
                 _p: &$crate::proc::Thread<$proc>,
             ) -> Result<(), hal::sys::errno::Errno> {
-                let (size, _blksize) = $crate::event::kqueue_stat::<$proc>(fp);
+                let (size, _blksize) = $crate::file::event::kqueue_stat::<$proc>(fp);
                 *st = hal::sys::stat::Stat::default();
                 st.st_size = size as i64;
                 Ok(())
@@ -1834,7 +1834,7 @@ macro_rules! test_file_glue {
                 fp: &$crate::file::File<$name>,
                 p: Option<&$crate::proc::Thread<$proc>>,
             ) -> Result<(), hal::sys::errno::Errno> {
-                $crate::event::kqueue_close::<$proc>(fp, p)
+                $crate::file::event::kqueue_close::<$proc>(fp, p)
             }
         }
 
@@ -1849,7 +1849,7 @@ macro_rules! test_file_glue {
             fn read(
                 &self,
                 _fp: &$crate::file::File<$name>,
-                _uio: &mut $crate::uio::Uio<'_, $proc>,
+                _uio: &mut $crate::file::uio::Uio<'_, $proc>,
                 _fflags: i32,
             ) -> Result<(), hal::sys::errno::Errno> {
                 Err(hal::sys::errno::Errno::ENODEV)
@@ -1857,7 +1857,7 @@ macro_rules! test_file_glue {
             fn write(
                 &self,
                 _fp: &$crate::file::File<$name>,
-                _uio: &mut $crate::uio::Uio<'_, $proc>,
+                _uio: &mut $crate::file::uio::Uio<'_, $proc>,
                 _fflags: i32,
             ) -> Result<(), hal::sys::errno::Errno> {
                 Err(hal::sys::errno::Errno::ENODEV)
@@ -1874,22 +1874,26 @@ macro_rules! test_file_glue {
             fn kqfilter(
                 &self,
                 fp: &$crate::file::File<$name>,
-                kn: &$crate::event::Knote<$proc>,
+                kn: &$crate::file::event::Knote<$proc>,
             ) -> Result<(), hal::sys::errno::Errno> {
                 let Some(end) = fp.data().and_then(|d| d.pipe.as_ref()) else {
                     return Err(hal::sys::errno::Errno::EBADF);
                 };
                 let filter = match kn.kn_filter().get() {
-                    $crate::event::EVFILT_READ => Some($crate::pipe::PipeFilter::Read),
-                    $crate::event::EVFILT_WRITE => Some($crate::pipe::PipeFilter::Write),
-                    $crate::event::EVFILT_EXCEPT => Some($crate::pipe::PipeFilter::Except),
+                    $crate::file::event::EVFILT_READ => Some($crate::file::pipe::PipeFilter::Read),
+                    $crate::file::event::EVFILT_WRITE => {
+                        Some($crate::file::pipe::PipeFilter::Write)
+                    }
+                    $crate::file::event::EVFILT_EXCEPT => {
+                        Some($crate::file::pipe::PipeFilter::Except)
+                    }
                     _ => None,
                 };
                 end.pair().kqfilter(
                     end.dir(),
                     filter,
-                    kn.has_flags($crate::event::__EV_SELECT),
-                    kn.has_flags($crate::event::__EV_POLL),
+                    kn.has_flags($crate::file::event::__EV_SELECT),
+                    kn.has_flags($crate::file::event::__EV_POLL),
                     kn,
                 )
             }
@@ -1939,7 +1943,9 @@ macro_rules! test_file_glue {
             fn dns_socket(d: &Self::Data) -> bool {
                 d.dns
             }
-            fn kqueue_file(kq: $crate::event::KqRef<$proc>) -> (&'static Self::Ops, Self::Data) {
+            fn kqueue_file(
+                kq: $crate::file::event::KqRef<$proc>,
+            ) -> (&'static Self::Ops, Self::Data) {
                 (
                     &TEST_KQUEUE_OPS,
                     $crate::testutil::TestFileData {
@@ -1949,7 +1955,7 @@ macro_rules! test_file_glue {
                     },
                 )
             }
-            fn kqueue_of(d: &Self::Data) -> Option<&$crate::event::KqRef<$proc>> {
+            fn kqueue_of(d: &Self::Data) -> Option<&$crate::file::event::KqRef<$proc>> {
                 d.kq.as_ref()
             }
             fn vnode_of(d: &Self::Data) -> Option<&'static $crate::fs::vnode::Vnode<$proc>> {
@@ -1963,7 +1969,7 @@ macro_rules! test_file_glue {
                         .map(|vp| vp as &'static dyn $crate::vm::vnode::VnodeOps)
                 })
             }
-            fn pipe_of(d: &Self::Data) -> Option<&$crate::pipe::PipeEnd<$proc>> {
+            fn pipe_of(d: &Self::Data) -> Option<&$crate::file::pipe::PipeEnd<$proc>> {
                 d.pipe.as_ref()
             }
             fn vnode_file(
@@ -1978,7 +1984,9 @@ macro_rules! test_file_glue {
                     },
                 )
             }
-            fn pipe_file(end: $crate::pipe::PipeEnd<$proc>) -> (&'static Self::Ops, Self::Data) {
+            fn pipe_file(
+                end: $crate::file::pipe::PipeEnd<$proc>,
+            ) -> (&'static Self::Ops, Self::Data) {
                 (
                     &TEST_PIPE_OPS,
                     $crate::testutil::TestFileData {
@@ -2011,7 +2019,7 @@ macro_rules! test_file_glue {
             }
             fn uiomove(
                 buf: &mut [u8],
-                uio: &mut $crate::uio::Uio<'_, $proc>,
+                uio: &mut $crate::file::uio::Uio<'_, $proc>,
             ) -> Result<(), hal::sys::errno::Errno> {
                 $crate::testutil::test_uiomove(buf, uio)
             }
@@ -2042,7 +2050,7 @@ macro_rules! test_file_glue {
             }
             fn uiomove_out(
                 buf: &[u8],
-                uio: &mut $crate::uio::Uio<'_, $proc>,
+                uio: &mut $crate::file::uio::Uio<'_, $proc>,
             ) -> Result<(), hal::sys::errno::Errno> {
                 $crate::testutil::test_uiomove_out(buf, uio)
             }
@@ -2053,8 +2061,8 @@ macro_rules! test_file_glue {
 /// Declares `$name`, a `kernel::proc::ProcGlue` of the tests whose descriptors are the file
 /// glue `$files` ([`test_file_glue!`](crate::test_file_glue)): no member of `bsd`'s, per-thread
 /// tables, every hook a no-op. For the tests of the modules over the processes
-/// (`kernel::descrip`), which need threads with tables and credentials. A last argument
-/// `{ fn hook(..) { .. } ... }` adds or overrides members of the glue (`kernel::acct`'s
+/// (`kernel::file::descrip`), which need threads with tables and credentials. A last argument
+/// `{ fn hook(..) { .. } ... }` adds or overrides members of the glue (`kernel::proc::acct`'s
 /// `session_ttydev`).
 #[macro_export]
 macro_rules! test_proc_glue {
@@ -2246,8 +2254,8 @@ macro_rules! test_proc_glue {
             ) {
             }
             /// No per-CPU slice start: the uptime itself (no running part).
-            fn spc_runtime() -> $crate::clock::Timespec {
-                $crate::tc::nanouptime()
+            fn spc_runtime() -> $crate::time::clock::Timespec {
+                $crate::time::tc::nanouptime()
             }
             fn process_ref(pr: &$crate::proc::Process<Self>) -> $crate::proc::ProcessRef<Self> {
                 match hal::mem::pool::PoolArc::from_ref(pr) {

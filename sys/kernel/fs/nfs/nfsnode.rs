@@ -108,11 +108,11 @@ use hal::sync::slot::ReadMostly;
 
 use super::nfsproto::{NFS_MAXFHSIZE, Nfsfh, Nfsuint64};
 use crate::assert::kpanic;
-use crate::clock::Timespec;
-use crate::cred::CredRef;
 use crate::fs::lockf::LockfSlot;
 use crate::fs::vnode::{Vattr, Vnode};
 use crate::proc::ProcGlue;
+use crate::proc::cred::CredRef;
+use crate::time::clock::Timespec;
 
 /// `NFS_COMMIT_PUSH_VALID`: push range valid; values for `n_commitflags`.
 pub const NFS_COMMIT_PUSH_VALID: i32 = 0x0001;

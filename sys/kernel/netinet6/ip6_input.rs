@@ -169,7 +169,7 @@
 //!   where the region is (the chain back, the index of its mbuf and the offset there;
 //!   `m_pulldown` when the first mbuf does not hold it), and [`ip6_exthdr_bytes`] lends its
 //!   bytes; `nd6_nbr`'s `nd6_msg` of N6.5b is this shape.
-//! - `ip6_sysctl` takes the request as `kernel::sysctl`'s `SysctlReq`; `net.inet6.ip6.stats`
+//! - `ip6_sysctl` takes the request as `kernel::base::sysctl`'s `SysctlReq`; `net.inet6.ip6.stats`
 //!   is summed straight into the heap image `rdstruct` copies out (the C's `malloc(M_TEMP)`
 //!   and `counters_read`).
 //!
@@ -219,6 +219,8 @@ use hal::sys::netinet6_ip6_var::{IP6S_NCOUNTERS, Ip6stat, Ip6statCounters};
 use hal::sys::socket::{AF_INET6, AF_UNSPEC, SCM_TIMESTAMP, SO_TIMESTAMP, SOL_SOCKET};
 use hal::sys::sysctl::SysctlBoundedArgs;
 
+use crate::base::sysctl::{SYSCTL_LOCK, SysctlReq, bounded_arr, int_bounded, rdstruct};
+use crate::base::task::{Task, task_add};
 use crate::net::if_::{niq_enqueue, sysctl_niq};
 use crate::net::if_var::{Ifnet, Netstack, Niqueue, niq_dequeue};
 use crate::net::ipsec_hooks::ipsec;
@@ -255,8 +257,6 @@ use crate::netinet6::ip6_var::{
 };
 use crate::netinet6::nd6::nd6_init;
 use crate::proc::ProcGlue;
-use crate::sysctl::{SYSCTL_LOCK, SysctlReq, bounded_arr, int_bounded, rdstruct};
-use crate::task::{Task, task_add};
 
 /// `sizeof(struct ip6_hdr)`.
 const IP6_HDR_LEN: i32 = size_of::<Ip6Hdr>() as i32;

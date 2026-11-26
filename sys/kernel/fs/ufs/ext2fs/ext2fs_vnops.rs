@@ -142,9 +142,9 @@ use super::ext2fs_lookup::{
 };
 use super::ext2fs_readwrite::{ext2fs_read, ext2fs_write};
 use crate::assert::kpanic;
-use crate::clock::Timespec;
-use crate::cred::{groupmember, suser_ucred};
-use crate::event::Knote;
+use crate::base::sysctl::SECURELEVEL;
+use crate::file::event::Knote;
+use crate::file::uio::{Uio, UioRw};
 use crate::file::{FileGlue, LockOwner};
 use crate::fs::cache::cache_purge;
 use crate::fs::default;
@@ -169,9 +169,9 @@ use crate::fs::vnode::{
 use crate::fs::vnops::{RdwrBuf, vn_rdwr};
 use crate::fs::vops::vop_unlock;
 use crate::fs::vops::{Cn, Cred, IoBuf, Vnops, vop_abortop, vop_access, vop_read, vop_remove};
+use crate::proc::cred::{groupmember, suser_ucred};
 use crate::proc::{ProcGlue, Thread};
-use crate::sysctl::SECURELEVEL;
-use crate::uio::{Uio, UioRw};
+use crate::time::clock::Timespec;
 use crate::vm::vnode::uvm_vnp_uncache;
 
 /// `ext2fs_vops`: the operations of a file, directory or symbolic link on an ext2fs (the
@@ -1689,9 +1689,9 @@ mod tests {
     use super::super::testext2fs::newfs::{self, HELLO};
     use super::super::testext2fs::{attach, mount, new_file, root, vget};
     use super::*;
+    use crate::file::uio::Iovec;
     use crate::fs::subr::{vattr_null, vfs, vops_id};
     use crate::fs::testfs::TestGlue;
-    use crate::uio::Iovec;
 
     /// A `struct vattr` with every member `VNOVAL` (`vattr_null`).
     fn novals() -> Vattr {
@@ -1863,8 +1863,8 @@ mod tests {
             B, BBITMAP, GDT, IBITMAP, ITABLE, MKFS_IPG, MKFS_NBLK, itblocks, mkfs,
         };
         use super::*;
-        use crate::clock::Timespec;
-        use crate::descrip::{sys_close, sys_read, sys_write};
+        use crate::file::descrip::{sys_close, sys_read, sys_write};
+        use crate::file::uio::Uio;
         use crate::fs::lookup::{namei, ndinit};
         use crate::fs::mount::Mount;
         use crate::fs::namei::{FOLLOW, LOCKLEAF, LOOKUP, NOFOLLOW, NiDirp};
@@ -1879,7 +1879,7 @@ mod tests {
         use crate::fs::ufs::ufs::ufsmount::vfstoufs;
         use crate::fs::vnode::{LK_RETRY, VLNK, vn_lock};
         use crate::fs::vops::{VFS_VGET, vop_getattr, vop_pathconf, vop_readdir, vop_setattr};
-        use crate::uio::Uio;
+        use crate::time::clock::Timespec;
 
         /// Blocks in the file system (one group).
         const NBLK: usize = MKFS_NBLK;
@@ -2189,12 +2189,12 @@ mod tests {
         pub(super) fn setup_root(
             isz: usize,
         ) -> (Guards, &'static Thread<TestGlue>, &'static Mount<TestGlue>) {
-            let t = crate::tc::tests::LOCK
+            let t = crate::time::tc::tests::LOCK
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             let (g, p) = attach(mkfs(isz));
-            crate::tc::tc_setrealtimeclock(&Timespec::new(1_700_000_000, 0));
-            assert!(crate::tc::getnanotime().tv_sec >= 1_700_000_000);
+            crate::time::tc::tc_setrealtimeclock(&Timespec::new(1_700_000_000, 0));
+            assert!(crate::time::tc::getnanotime().tv_sec >= 1_700_000_000);
             let mp = mount_root(p, 0);
             ((t, g), p, mp)
         }
@@ -2773,13 +2773,13 @@ mod tests {
 
         #[test]
         fn a_read_filter_reports_the_bytes_past_the_offset() {
-            use crate::event::{EV_ADD, EVFILT_READ, Kevent, sys_kevent, sys_kqueue};
+            use crate::file::event::{EV_ADD, EVFILT_READ, Kevent, sys_kevent, sys_kqueue};
             let (_g, p, mp) = setup_root(128);
             write_file(p, "/k", &pattern(3000, 4)).unwrap();
             let fd = sys_open(p, c("/k"), O_RDONLY, 0).unwrap();
             assert_eq!(sys_read(p, fd, UBUF, 1000), Ok(1000));
             // The kqueue pools (a second init of the process answers EBUSY).
-            let _ = crate::event::kqueue_init::<TestGlue>();
+            let _ = crate::file::event::kqueue_init::<TestGlue>();
             let kfd = sys_kqueue(p).unwrap();
             let change = Kevent {
                 ident: fd as usize,

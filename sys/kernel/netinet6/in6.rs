@@ -271,7 +271,7 @@ use crate::netinet6::mld6::{mld6_sendpkt, mld6_start_listening, mld6_stop_listen
 use crate::netinet6::mld6_var::Mld6Pktinfo;
 use crate::netinet6::nd6::{nd6_expire_timer_update, nd6_ioctl};
 use crate::netinet6::nd6_nbr::{nd6_dad_start, nd6_dad_stop};
-use crate::tc::{gettime, getuptime};
+use crate::time::tc::{gettime, getuptime};
 
 /// The size of a `struct sockaddr_in6`.
 const SIN6_SIZE: usize = size_of::<SockaddrIn6>();
@@ -1456,8 +1456,8 @@ pub fn in6_prefixlen2mask(maskp: &mut In6Addr, len: i32) {
 
     // sanity check
     if !(0..=128).contains(&len) {
-        crate::prf::log(
-            crate::log::LOG_ERR,
+        crate::base::prf::log(
+            crate::base::log::LOG_ERR,
             format_args!("in6_prefixlen2mask: invalid prefix length({len})\n"),
         );
         return;

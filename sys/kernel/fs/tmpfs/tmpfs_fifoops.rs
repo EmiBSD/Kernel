@@ -75,17 +75,17 @@ use hal::sys::errno::Errno;
 use hal::sys::fcntl::Flock;
 use hal::sys::types::{Daddr, Register};
 
-use crate::event::Knote;
+use crate::base::prf::unported;
 use crate::file::LockOwner;
+use crate::file::event::Knote;
+use crate::file::uio::Uio;
 use crate::fs::default;
 use crate::fs::tmpfs::tmpfs::{TMPFS_NODE_ACCESSED, TMPFS_NODE_MODIFIED, vptonode};
 use crate::fs::tmpfs::tmpfs_subr::tmpfs_update;
 use crate::fs::tmpfs::tmpfs_vnops::{tmpfs_bwrite, tmpfs_common_slots};
 use crate::fs::vnode::{Vattr, Vnode};
 use crate::fs::vops::{Cn, Cred, IoBuf, Vnops};
-use crate::prf::unported;
 use crate::proc::{ProcGlue, Thread};
-use crate::uio::Uio;
 
 /// `tmpfs_fifovops`: vnode operations vector used for fifos stored in a tmpfs file system
 /// (the glue's `TmpfsTables::fifovops`, one address; installed by nothing until fifofs is

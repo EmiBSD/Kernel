@@ -233,8 +233,9 @@ use hal::sys::un::SockaddrUn;
 use hal::user::{bytes_of, pod_from_bytes};
 
 use crate::assert::{kassert, kpanic};
-use crate::clock::Timespec;
-use crate::descrip::{
+use crate::base::sysctl::{SysctlReq, bounded_arr, rdint};
+use crate::base::task::{Task, Taskq, task_add};
+use crate::file::descrip::{
     UF_EXCLOSE, UF_FORKCLOSE, UF_PLEDGED, UF_PLEDGEOPEN, closef, fd_getfile_flags, fdalloc,
     fdexpand, fdplock, fdremove,
 };
@@ -263,8 +264,7 @@ use crate::net::socket::{
     sounlock_detached, sowwakeup,
 };
 use crate::proc::{ProcGlue, Thread};
-use crate::sysctl::{SysctlReq, bounded_arr, rdint};
-use crate::task::{Task, Taskq, task_add};
+use crate::time::clock::Timespec;
 
 /// `M_TEMP` (`<sys/malloc.h>`): `unp_externalize`'s array and the in-flight table.
 const M_TEMP: i32 = 127;
@@ -388,7 +388,7 @@ impl<G: ProcGlue> Unpcb<G> {
         Self {
             home: PoolHome::new(),
             socket: soref(so),
-            ctime: crate::tc::getnanotime(),
+            ctime: crate::time::tc::getnanotime(),
             s: Guarded::new_keyed(
                 so.so_lock.lock(),
                 UnpState {
@@ -2337,12 +2337,12 @@ fn internalize_files<G: ProcGlue>(
 fn unp_gc_tq() -> &'static Taskq {
     #[cfg(test)]
     {
-        static TQ: Taskq = crate::task::taskq_unthreaded(b"unpgctq");
+        static TQ: Taskq = crate::base::task::taskq_unthreaded(b"unpgctq");
         &TQ
     }
     #[cfg(not(test))]
     {
-        &crate::task::SYSTQMP
+        &crate::base::task::SYSTQMP
     }
 }
 
@@ -2811,7 +2811,8 @@ pub(crate) mod tests {
     use hal::user::UserPtr;
 
     use super::*;
-    use crate::descrip::{falloc, fd_getfile, fdinsert, sys_close};
+    use crate::file::descrip::{falloc, fd_getfile, fdinsert, sys_close};
+    use crate::file::uio::{Iovec, Uio, UioRw, UioSeg};
     use crate::fs::testfs::{TestFiles, TestGlue, test_thread_cached};
     use crate::net::domain::{domaininit, soinit};
     use crate::net::mbuf::{MT_SONAME, MT_SOOPTS, m_get, mbinit, nmbclust_update};
@@ -2820,7 +2821,6 @@ pub(crate) mod tests {
         solock_shared, soreceive, sosend, soshutdown,
     };
     use crate::testutil::{self, TestFileData, USER_BASE, user_bytes};
-    use crate::uio::{Iovec, Uio, UioRw, UioSeg};
 
     pub(crate) type G = TestGlue;
     pub(crate) type So = SocketRef<G>;
@@ -2884,7 +2884,7 @@ pub(crate) mod tests {
     /// A file at a new descriptor of `p`: a socket file of `so` (the glue's `socket_file`),
     /// or, without one, a file of type `ty` holding nothing.
     pub(crate) fn file(p: &Thread<G>, ty: i32, so: Option<So>) -> i32 {
-        let mut g = crate::descrip::fdplock(p.fd());
+        let mut g = crate::file::descrip::fdplock(p.fd());
         let (fp, fd) = falloc(p, &mut g).expect("falloc");
         match so {
             Some(so) => {

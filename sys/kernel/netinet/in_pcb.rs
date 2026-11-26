@@ -366,6 +366,7 @@ use libkern::siphash::AtomicSiphashKey;
 
 use crate::assert::kassert;
 use crate::assert::kpanic;
+use crate::base::sysctl::{M_SYSCTL, SECURELEVEL, SysctlReq, structure};
 use crate::fs::subr::{hashinit, siphash_key};
 use crate::net::if_::{if_get, ifa_ifwithaddr};
 use crate::net::if_var::AtomicCell;
@@ -392,7 +393,6 @@ use crate::netinet6::in6_pcb::{
 use crate::netinet6::ip6_output::{ip6_freemoptions, ip6_freepcbopts};
 use crate::netinet6::ip6_var::{Ip6Moptions, Ip6Pktopts};
 use crate::proc::{ProcGlue, Thread, suser};
-use crate::sysctl::{M_SYSCTL, SECURELEVEL, SysctlReq, structure};
 
 // flags in inp_flags:
 

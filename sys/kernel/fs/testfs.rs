@@ -66,9 +66,9 @@ use super::vnode::{
 };
 use super::vops::vop_unlock;
 use super::vops::{Cred, IoBuf, Nd, Vfs, Vnops};
-use crate::event::Knote;
+use crate::file::event::Knote;
+use crate::file::uio::Uio;
 use crate::proc::Thread;
-use crate::uio::Uio;
 
 crate::test_file_glue!(TestFiles, TestGlue);
 crate::test_proc_glue!(TestGlue, TestFiles);
@@ -1436,20 +1436,22 @@ fn thread_on(g: MutexGuard<'static, ()>) -> (MutexGuard<'static, ()>, &'static T
     }
     if !MADE.with(|m| m.replace(true)) {
         crate::proc::procinit::<TestGlue>(64, 64);
-        let _ = crate::descrip::filedesc_init::<TestFiles>();
+        let _ = crate::file::descrip::filedesc_init::<TestFiles>();
     }
     crate::testutil::set_test_maxfiles(4096);
     let pr = crate::proc::process_alloc::<TestGlue>(1, ());
-    drop(pr.set_ucred(crate::cred::CredRef::new(crate::cred::Ucred::new())));
-    let mut limits = crate::resource::Plimit::new();
+    drop(pr.set_ucred(crate::proc::cred::CredRef::new(
+        crate::proc::cred::Ucred::new(),
+    )));
+    let mut limits = crate::proc::resource::Plimit::new();
     for l in &mut limits.pl_rlimit {
-        l.rlim_cur = crate::resource::RLIM_INFINITY;
-        l.rlim_max = crate::resource::RLIM_INFINITY;
+        l.rlim_cur = crate::proc::resource::RLIM_INFINITY;
+        l.rlim_max = crate::proc::resource::RLIM_INFINITY;
     }
-    limits.pl_rlimit[crate::resource::RLIMIT_NOFILE].rlim_cur = 512;
-    limits.pl_rlimit[crate::resource::RLIMIT_NOFILE].rlim_max = 512;
-    drop(pr.set_limit(crate::resource::PlimitRef::new(limits)));
-    pr.set_fd(crate::descrip::fdinit());
+    limits.pl_rlimit[crate::proc::resource::RLIMIT_NOFILE].rlim_cur = 512;
+    limits.pl_rlimit[crate::proc::resource::RLIMIT_NOFILE].rlim_max = 512;
+    drop(pr.set_limit(crate::proc::resource::PlimitRef::new(limits)));
+    pr.set_fd(crate::file::descrip::fdinit());
     let t = crate::proc::thread_alloc::<TestGlue>(&pr, ());
     drop(t.set_cred(pr.ucred()));
     let p: &'static Thread<TestGlue> = hal::mem::pool::PoolBox::leak(t);

@@ -159,7 +159,7 @@ use crate::sys::reboot::{
 use crate::sys::socket::{AF_INET, AF_INET6};
 use crate::sys::socketvar::Socket;
 use crate::unported;
-use kernel::log::{msgbuf_header, msgbuf_read};
+use kernel::base::log::{msgbuf_header, msgbuf_read};
 use kernel::vm::meter::uvmexp_print;
 
 /// `CS_OWN`: non-standard syntax.

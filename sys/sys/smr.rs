@@ -75,7 +75,7 @@
 //! `smr_barrier`, `smr_flush`, `SMR_ASSERT_CRITICAL`, `SMR_ASSERT_NONCRITICAL`,
 //! `SMR_PTR_GET`, `SMR_PTR_GET_LOCKED` and `SMR_PTR_SET_LOCKED` (as [`SmrPtr`]); M11e the
 //! singly-linked lists (`SMR_SLIST_*`, [`SmrSlistHead`]), for `bpf.c` and `if_pflow.c`. Since
-//! N6.0 the protocol is `hal::sync::smr`'s and the SMR thread `kernel::smr`'s (`kern/kern_smr.rs` is
+//! N6.0 the protocol is `hal::sync::smr`'s and the SMR thread `kernel::base::smr`'s (`kern/kern_smr.rs` is
 //! gone): `struct smr_entry` is `hal::sync::smr::SmrLink`, and `smr_init`, `smr_call`,
 //! `smr_barrier`, `smr_flush`, `smr_read_enter`, `smr_read_leave` and the two assertions are
 //! one-line adapters over `hal::sync::smr`, keeping their names for this tree's callers (the

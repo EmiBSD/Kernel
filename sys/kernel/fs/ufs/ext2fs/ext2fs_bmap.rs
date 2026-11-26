@@ -243,7 +243,7 @@ pub fn ext2fs_bmaparray<G: ProcGlue>(
 
     #[cfg(feature = "diagnostic")]
     if num > NIADDR as i32 + 1 || num < 1 {
-        crate::prf::printf(format_args!("ext2fs_bmaparray: num={num}\n"));
+        crate::base::prf::printf(format_args!("ext2fs_bmaparray: num={num}\n"));
         kpanic(format_args!("ext2fs_bmaparray: num"));
     }
 

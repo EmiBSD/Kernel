@@ -362,8 +362,8 @@ impl ProcGlue for BenchGlue {
     ) {
     }
     /// No per-CPU slice start: the uptime itself (no running part).
-    fn spc_runtime() -> kernel::clock::Timespec {
-        kernel::tc::nanouptime()
+    fn spc_runtime() -> kernel::time::clock::Timespec {
+        kernel::time::tc::nanouptime()
     }
     fn process_ref(pr: &Process<Self>) -> kernel::proc::ProcessRef<Self> {
         match hal::mem::pool::PoolArc::from_ref(pr) {
@@ -384,14 +384,14 @@ static THREAD: std::sync::OnceLock<&'static Thread<BenchGlue>> = std::sync::Once
 /// stack, as the doubles' answer before N5.0).
 fn thread() -> &'static Thread<BenchGlue> {
     THREAD.get_or_init(|| {
-        let lim = kernel::resource::lim_startup(7030, 1 << 30, PAGE);
-        drop(PR.set_limit(kernel::resource::PlimitRef::new(lim)));
+        let lim = kernel::proc::resource::lim_startup(7030, 1 << 30, PAGE);
+        drop(PR.set_limit(kernel::proc::resource::PlimitRef::new(lim)));
         Box::leak(Box::new(Thread::new_static(&PR, ())))
     })
 }
 
 /// The faulting thread's counters (`curproc->p_ru`).
-fn ru() -> Option<&'static kernel::resource::Rusage> {
+fn ru() -> Option<&'static kernel::proc::resource::Rusage> {
     Some(&thread().p_ru)
 }
 

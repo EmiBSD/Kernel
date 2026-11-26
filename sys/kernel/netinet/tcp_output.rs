@@ -247,15 +247,15 @@ pub fn tcp_print_holes(holes: &SlistLink<Sackhole>) {
     if p.is_none() {
         return;
     }
-    crate::prf::printf(format_args!("Hole report: start--end dups rxmit\n"));
+    crate::base::prf::printf(format_args!("Hole report: start--end dups rxmit\n"));
     while let Some(h) = p {
-        crate::prf::printf(format_args!(
+        crate::base::prf::printf(format_args!(
             "{:x}--{:x} d {} r {:x}\n",
             h.start, h.end, h.dups, h.rxmit
         ));
         p = h.next.get();
     }
-    crate::prf::printf(format_args!("\n"));
+    crate::base::prf::printf(format_args!("\n"));
 }
 
 /// `tcp_sack_output`: the first SACK hole with pending retransmissions (enough duplicate

@@ -89,7 +89,7 @@
 //!   `curproc`; every check stayed here, in the C's order.
 //! - `uvm_wxcheck`'s notice is `log(LOG_NOTICE, ...)`, `hal::prf::log`.
 //! - The file half of `sys_mmap` runs between `fd_getfile` and `FRELE` on the thread's
-//!   table (`kernel::descrip`), under the kernel lock taken here, as the C's; the vnode is
+//!   table (`kernel::file::descrip`), under the kernel lock taken here, as the C's; the vnode is
 //!   the pager's `VnodeOps` (`v_type`, `iszerodev(v_rdev)` and `VOP_GETATTR`'s `va_flags`
 //!   are its methods).
 //! - The faults a wiring takes (`mlock(2)`, `mlockall(2)`, `uvm_mmaplock`'s
@@ -150,11 +150,11 @@ use super::types::{
     uvm_mapflag,
 };
 use super::vnode::{VType, VnodeOps, uvm_vnp_uncache, uvn_attach};
-use crate::descrip::fd_getfile;
+use crate::base::prf::unported;
+use crate::file::descrip::fd_getfile;
 use crate::file::{DTYPE_VNODE, FileGlue, FileRef};
-use crate::prf::unported;
+use crate::proc::resource::Rusage;
 use crate::proc::{PSI_WXNEEDED, ProcGlue, Thread};
-use crate::resource::Rusage;
 
 /// `M_PINSYSCALL`: pinsyscall (`<sys/malloc.h>`).
 pub const M_PINSYSCALL: i32 = 100;
@@ -1392,7 +1392,7 @@ mod tests {
     /// its reference back (`FRELE`), so each file is held by its slot alone afterwards.
     #[test]
     fn mquery_takes_a_vnode_as_getvnode_does() {
-        use crate::event::tests::open_data;
+        use crate::file::event::tests::open_data;
         use crate::testutil::{self, TestFileData};
         let p = crate::vm::map::tests::thread(91);
         let good: &'static dyn VnodeOps = testutil::mem_vnode(std::vec![0; 16]);
@@ -1492,9 +1492,9 @@ mod tests {
         );
 
         // RLIMIT_DATA is the thread's: one page fits, then none does.
-        let mut l = crate::resource::Plimit::new();
+        let mut l = crate::proc::resource::Plimit::new();
         l.pl_rlimit[RLIMIT_DATA as usize].rlim_cur = PAGE_SIZE as u64;
-        drop(pr.set_limit(crate::resource::PlimitRef::new(l)));
+        drop(pr.set_limit(crate::proc::resource::PlimitRef::new(l)));
         assert_eq!(mmap(rw, anon), Err(Errno::ENOMEM), "past the data limit");
         let _ = super::super::map::uvmspace_free(vm);
     }
@@ -1515,7 +1515,7 @@ mod tests {
         assert_eq!(pr.ps_kbind_addr.get(), BOGO_PC);
         // A second process: its first non-NULL call records the pc and the cookie, and a
         // bad size is EINVAL after the check.
-        let q = crate::event::tests::thread_of(95);
+        let q = crate::file::event::tests::thread_of(95);
         let qr = q.process();
         assert_eq!(
             sys_kbind(q, &vm, UserPtr::new(testutil_user(0x40)), 1, 77),

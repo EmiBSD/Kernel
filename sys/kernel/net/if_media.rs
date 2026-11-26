@@ -226,9 +226,9 @@ use hal::sys::sockio::{SIOCGIFMEDIA, SIOCSIFMEDIA};
 use hal::user::UserPtr;
 
 use crate::assert::kpanic;
+use crate::base::prf::printf;
 use crate::net::if_::M_IFADDR;
 use crate::net::if_var::{AtomicCell, Ifnet};
-use crate::prf::printf;
 
 /// `M_TEMP` (`<sys/malloc.h>`, `bsd`'s): `SIOCGIFMEDIA`'s copy of the media words.
 const M_TEMP: i32 = 127;

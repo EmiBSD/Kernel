@@ -589,7 +589,11 @@ impl kernel::net::ipsec_hooks::Ipsec for BsdIpsec {
         crate::netinet::ipsec_input::ipsec_init();
     }
 
-    fn sysctl(&self, name: &[i32], req: &mut kernel::sysctl::SysctlReq<'_>) -> Result<(), Errno> {
+    fn sysctl(
+        &self,
+        name: &[i32],
+        req: &mut kernel::base::sysctl::SysctlReq<'_>,
+    ) -> Result<(), Errno> {
         crate::netinet::ipsec_input::ipsec_sysctl(name, req.oldp, req.oldlenp, req.newp, req.newlen)
     }
 }

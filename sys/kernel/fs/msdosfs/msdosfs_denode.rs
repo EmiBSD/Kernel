@@ -165,6 +165,7 @@ use hal::sys::types::{Daddr, Dev};
 use libkern::siphash::{SipHash24Ctx, SiphashKey};
 
 use crate::assert::kpanic;
+use crate::base::prf::printf;
 use crate::fs::bio::{bdwrite, bread, brelse, bwrite};
 use crate::fs::cache::cache_purge;
 use crate::fs::msdosfs::denode::{
@@ -189,9 +190,8 @@ use crate::fs::vnode::{
     vn_lock,
 };
 use crate::fs::vops::{Cred, vop_unlock};
-use crate::prf::printf;
 use crate::proc::{ProcGlue, Thread};
-use crate::tc::getnanotime;
+use crate::time::tc::getnanotime;
 use crate::vm::vnode::{uvm_vnp_setsize, uvm_vnp_uncache};
 
 hal::pin_adapter!(

@@ -18,7 +18,7 @@
 
 /* <CODE> */
 //! Host microbenchmarks of N4.8's clock hot paths (decision 43): the timecounter readers and
-//! the windup (`kernel::tc`), the clock interrupt's dispatch and hardclock as they land, over
+//! the windup (`kernel::time::tc`), the clock interrupt's dispatch and hardclock as they land, over
 //! the kernel's host doubles (`kernel::testutil`, feature `doubles`). Never part of a kernel
 //! image; it measures and changes nothing.
 //!
@@ -39,8 +39,8 @@ use std::hint::black_box;
 use std::time::{Duration, Instant};
 use std::vec::Vec;
 
-use kernel::tc;
 use kernel::testutil;
+use kernel::time::tc;
 
 /// The calls of a primitive per timed call.
 const PRIM: usize = 1000;

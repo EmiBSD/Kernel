@@ -89,16 +89,16 @@ use hal::sys::types::{Daddr, Ino, Mode, Uid};
 use super::ext2fs::{Ext2Superblock, dtog, dtogd, freespace, fsbtodb, ino_to_cg};
 use super::ext2fs_dinode::EXT2_FIRSTINO;
 use crate::assert::kpanic;
+use crate::base::log::LOG_ERR;
+use crate::base::prf::{log, printf};
 use crate::fs::bio::{bdwrite, bread, brelse, btodb};
 use crate::fs::ufs::ffs::fs::{clrbit, isclr, setbit};
 use crate::fs::ufs::ufs::dinode::{IFDIR, IFMT, Ufsino};
 use crate::fs::ufs::ufs::inode::{IN_CHANGE, IN_UPDATE, Inode, le32_at, vtoi};
 use crate::fs::vnode::Vnode;
 use crate::fs::vops::{Cred, VFS_VGET};
-use crate::log::LOG_ERR;
-use crate::prf::{log, printf};
 use crate::proc::ProcGlue;
-use crate::tc::gettime;
+use crate::time::tc::gettime;
 use libkern::skpc;
 
 /// The allocator `ext2fs_hashalloc` runs in each cylinder group (`ext2fs_alloccg` or
@@ -834,7 +834,7 @@ mod tests {
         assert_eq!(fs.e2fs_fbcount(), NFREE);
 
         // A user's allocation stops at the reserved blocks; root's goes on.
-        let mut user = crate::cred::Ucred::new();
+        let mut user = crate::proc::cred::Ucred::new();
         user.cr_uid.set(1000);
         fs.set_e2fs_rbcount(NFREE);
         assert_eq!(
@@ -859,7 +859,7 @@ mod tests {
         assert_eq!(fs.gd_nifree(0), (NIFREE - 1) as u16);
         assert!(disk_bit(IBITMAP, 14));
         let generation = ip.i_e2din().i_e2fs_gen();
-        assert!(generation != 0 && u64::from(generation) >= crate::tc::gettime() as u64);
+        assert!(generation != 0 && u64::from(generation) >= crate::time::tc::gettime() as u64);
         drop(ip);
         vput(vp);
 

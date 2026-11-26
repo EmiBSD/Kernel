@@ -142,7 +142,7 @@ use crate::fs::vnode::{VDIR, VNOVAL, VT_TMPFS, Vnode, Vtype};
 use crate::fs::vops::vop_islocked;
 use crate::fs::word::{I64Word, U16Word, U32Word, U64Word};
 use crate::proc::ProcGlue;
-use crate::resource::TimespecWord;
+use crate::proc::resource::TimespecWord;
 use crate::vm::aobj::Aobj;
 use crate::vm::km::ObjectWindow;
 use crate::vm::types::Voff;

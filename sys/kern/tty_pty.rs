@@ -49,7 +49,7 @@
 
 /* <CODE> */
 //! The pseudo-teletype driver's `bsd` side, `kern/tty_pty.c`: the device switch's entry
-//! points of `pts` (5) and `ptc` (6), bound to the kernel's ptys (`kernel::pty`, N4.7b), and
+//! points of `pts` (5) and `ptc` (6), bound to the kernel's ptys (`kernel::tty::pty`, N4.7b), and
 //! the `/dev/ptm` cloning device (81), whose `PTMGET` opens a free pair through the vnode
 //! layer and the descriptor table.
 //!
@@ -64,7 +64,7 @@
 //!
 //! ## Redesign
 //! - N4.7b: the softcs, the slave and master entry points, the filters and `ptyioctl`'s body
-//!   are the kernel's (`kernel::pty`'s documentation has the shape); LZ's eight `unsafe` (the
+//!   are the kernel's (`kernel::tty::pty`'s documentation has the shape); LZ's eight `unsafe` (the
 //!   softc array and its raw slots, the softcs' `Sync`, `kn_pti`, `ptm_vn_open`'s detached
 //!   `&Proc`) are gone: the array is the kernel's table, and `ptm_vn_open` takes the thread
 //!   as a parameter of its own instead of re-borrowing it out of the `Nameidata`.
@@ -103,7 +103,7 @@ use crate::sys::vnode::VNOPS;
 use crate::sys::vnode::{REVOKEALL, VA_UTIMES_NULL, VALIASED, VCHR, Vattr};
 use crate::sys::vnode::{vattr_null, vput, vrele};
 
-pub use kernel::pty::{
+pub use kernel::tty::pty::{
     NPTY, NPTY_MAX, NPTY_MIN, PF_NOSTOP, PF_PKT, PF_REMOTE, PF_STOPPED, PF_UCNTL,
 };
 
@@ -113,87 +113,87 @@ static TTY_GID_: u32 = TTY_GID;
 /// `check_pty`: check if the minor is correct and ensure necessary structures are properly
 /// allocated.
 pub fn check_pty(dev: Dev) -> Result<(), Errno> {
-    kernel::pty::check_pty::<BsdProcGlue>(dev)
+    kernel::tty::pty::check_pty::<BsdProcGlue>(dev)
 }
 
 /// `ptyattach`: establish `n` (or default if `n` is 1) ptys in the system; if we have pty,
 /// we need ptm too.
 pub fn ptyattach(n: i32) {
-    kernel::pty::ptyattach::<BsdProcGlue>(n);
+    kernel::tty::pty::ptyattach::<BsdProcGlue>(n);
     ptmattach(1);
 }
 
 /// `ptsopen`: open the slave side.
 pub fn ptsopen(dev: Dev, flag: i32, devtype: i32, p: &Proc) -> Result<(), Errno> {
-    kernel::pty::ptsopen::<BsdProcGlue>(dev, flag, devtype, p)
+    kernel::tty::pty::ptsopen::<BsdProcGlue>(dev, flag, devtype, p)
 }
 
 /// `ptsclose`: close the slave side.
 pub fn ptsclose(dev: Dev, flag: i32, mode: i32, p: Option<&Proc>) -> Result<(), Errno> {
-    kernel::pty::ptsclose::<BsdProcGlue>(dev, flag, mode, p)
+    kernel::tty::pty::ptsclose::<BsdProcGlue>(dev, flag, mode, p)
 }
 
 /// `ptsread`: read from the slave side.
 pub fn ptsread(dev: Dev, uio: &mut Uio<'_>, flag: i32) -> Result<(), Errno> {
-    kernel::pty::ptsread::<BsdProcGlue>(dev, &mut TtyUio { uio }, flag)
+    kernel::tty::pty::ptsread::<BsdProcGlue>(dev, &mut TtyUio { uio }, flag)
 }
 
 /// `ptswrite`: write to pseudo-tty.
 pub fn ptswrite(dev: Dev, uio: &mut Uio<'_>, flag: i32) -> Result<(), Errno> {
-    kernel::pty::ptswrite::<BsdProcGlue>(dev, &mut TtyUio { uio }, flag)
+    kernel::tty::pty::ptswrite::<BsdProcGlue>(dev, &mut TtyUio { uio }, flag)
 }
 
 /// `ptsstop`: stop output on the slave side (`cdevsw[5].d_stop`).
 pub fn ptsstop(tp: &Tty, flush: i32) -> Result<(), Errno> {
-    kernel::pty::ptsstop(tp, flush)
+    kernel::tty::pty::ptsstop(tp, flush)
 }
 
 /// `ptcopen`: open the master side (its address is what `kern_pledge` and `ptyioctl`
 /// compare).
 pub fn ptcopen(dev: Dev, flag: i32, devtype: i32, p: &Proc) -> Result<(), Errno> {
-    kernel::pty::ptcopen::<BsdProcGlue>(dev, flag, devtype, p)
+    kernel::tty::pty::ptcopen::<BsdProcGlue>(dev, flag, devtype, p)
 }
 
 /// `ptcclose`: close the master side.
 pub fn ptcclose(dev: Dev, flag: i32, devtype: i32, p: Option<&Proc>) -> Result<(), Errno> {
-    kernel::pty::ptcclose::<BsdProcGlue>(dev, flag, devtype, p)
+    kernel::tty::pty::ptcclose::<BsdProcGlue>(dev, flag, devtype, p)
 }
 
 /// `ptcread`: read the slave's output from the master side.
 pub fn ptcread(dev: Dev, uio: &mut Uio<'_>, flag: i32) -> Result<(), Errno> {
-    kernel::pty::ptcread::<BsdProcGlue>(dev, &mut TtyUio { uio }, flag)
+    kernel::tty::pty::ptcread::<BsdProcGlue>(dev, &mut TtyUio { uio }, flag)
 }
 
 /// `ptcwrite`: feed the slave's input from the master side.
 pub fn ptcwrite(dev: Dev, uio: &mut Uio<'_>, flag: i32) -> Result<(), Errno> {
-    kernel::pty::ptcwrite::<BsdProcGlue>(dev, &mut TtyUio { uio }, flag)
+    kernel::tty::pty::ptcwrite::<BsdProcGlue>(dev, &mut TtyUio { uio }, flag)
 }
 
 /// `ptckqfilter`: attaches a kqueue filter to the master side.
 pub fn ptckqfilter(dev: Dev, kn: &Knote) -> Result<(), Errno> {
-    kernel::pty::ptckqfilter::<BsdProcGlue>(dev, kn)
+    kernel::tty::pty::ptckqfilter::<BsdProcGlue>(dev, kn)
 }
 
 /// `ptytty` (also `ptstty` and `ptctty`): the tty of a pty.
 pub fn ptytty(dev: Dev) -> Option<&'static Tty> {
-    kernel::pty::ptytty::<BsdProcGlue>(dev)
+    kernel::tty::pty::ptytty::<BsdProcGlue>(dev)
 }
 
 /// `ptyioctl` (also `ptsioctl` and `ptcioctl`): the master is the device whose switch row
 /// opens with `ptcopen`.
 pub fn ptyioctl(dev: Dev, cmd: u64, data: &mut [u8], flag: i32, p: &Proc) -> Result<(), Errno> {
     let master = ptr::fn_addr_eq(cdevsw(major(dev)).d_open, ptcopen as DevTypeOpen);
-    kernel::pty::ptyioctl::<BsdProcGlue>(dev, master, cmd, data, flag, p)
+    kernel::tty::pty::ptyioctl::<BsdProcGlue>(dev, master, cmd, data, flag, p)
 }
 
 /// `pty_isfree`.
 fn pty_isfree(minor: u32) -> bool {
-    kernel::pty::pty_isfree::<BsdProcGlue>(minor)
+    kernel::tty::pty::pty_isfree::<BsdProcGlue>(minor)
 }
 
 /// `pty_getfree`: the first free pty, or the one past the array.
 pub fn pty_getfree() -> Dev {
-    kernel::pty::pty_getfree::<BsdProcGlue>()
+    kernel::tty::pty::pty_getfree::<BsdProcGlue>()
 }
 
 /// `ptm_vn_open`: hacked up version of `vn_open`. We _only_ handle ptys and only open them
@@ -249,7 +249,7 @@ pub fn ptmattach(_n: i32) {
         panic(format_args!("ptmattach: Can't find pty slave in cdevsw"));
     }
 
-    kernel::pty::set_pts_major::<BsdProcGlue>(i as i32);
+    kernel::tty::pty::set_pts_major::<BsdProcGlue>(i as i32);
 }
 
 /// `ptmopen`.
@@ -297,7 +297,7 @@ pub fn ptmioctl(_dev: Dev, cmd: u64, data: &mut [u8], _flag: i32, p: &Proc) -> R
         if let Err(e) = check_pty(newdev) {
             break 'bad Err(e);
         }
-        let Some(pti) = kernel::pty::pt_softc::<BsdProcGlue>(minor(newdev)) else {
+        let Some(pti) = kernel::tty::pty::pt_softc::<BsdProcGlue>(minor(newdev)) else {
             break 'bad Err(Errno::ENXIO);
         };
         let pn = pti.pty_pn;
@@ -427,7 +427,7 @@ pub fn ptmioctl(_dev: Dev, cmd: u64, data: &mut [u8], _flag: i32, p: &Proc) -> R
 #[cfg(test)]
 mod tests {
     // The glue's device switch work: ptmattach finds the slave's major, ptyioctl tells the
-    // master from the slave by the switch row's open (the pty itself is kernel::pty's, tested
+    // master from the slave by the switch row's open (the pty itself is kernel::tty::pty's, tested
     // there).
 
     use super::*;
@@ -436,7 +436,7 @@ mod tests {
     fn ptmattach_finds_the_slave_s_major_and_ptcopen_is_the_master_s_open() {
         // The host's switch has amd64's slots: pts at 5, ptc at 6, ptm at 81.
         ptyattach(1);
-        assert_eq!(kernel::pty::pts_major::<BsdProcGlue>(), 5);
+        assert_eq!(kernel::tty::pty::pts_major::<BsdProcGlue>(), 5);
         assert!(ptr::fn_addr_eq(cdevsw(6).d_open, ptcopen as DevTypeOpen));
         assert!(!ptr::fn_addr_eq(cdevsw(5).d_open, ptcopen as DevTypeOpen));
         assert!(ptr::fn_addr_eq(cdevsw(81).d_open, ptmopen as DevTypeOpen));

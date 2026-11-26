@@ -170,9 +170,9 @@ use super::mount::Mount;
 use super::spec::Specinfo;
 use super::vops::Vnops;
 use crate::assert::kpanic;
-use crate::clock::Timespec;
-use crate::event::Klist;
+use crate::file::event::Klist;
 use crate::proc::ProcGlue;
+use crate::time::clock::Timespec;
 use crate::vm::vnode::Uvn;
 
 /// `enum vtype`: vnode types. `VNON` means no type.

@@ -52,7 +52,7 @@
 
 /* <CODE> */
 //! The `sysctl(2)` system call's `bsd` half: `kern/kern_sysctl.c` minus what moved into the
-//! kernel crate (`kernel::sysctl`: the dispatcher of `sys_sysctl`, `kern_sysctl` and
+//! kernel crate (`kernel::base::sysctl`: the dispatcher of `sys_sysctl`, `kern_sysctl` and
 //! `hw_sysctl`, the vslock, the nodes whose state is the kernel's, `kern.proc` and its
 //! siblings, the disk exports, the hostname). What stays here is what reaches subsystems
 //! still in `bsd`: `kern.file` (`kinfo_file` over the descriptors, vnodes, sockets and
@@ -79,12 +79,12 @@
 //!   are the atomic's; a C local passed by address is an `AtomicI32` read back with
 //!   `into_inner`.
 //! - The helpers here copy through `bsd`'s `copyin`/`copyout` for the nodes still in `bsd`;
-//!   `kernel::sysctl` has the same helpers over `hal::user::UserPtr` for its own nodes (the
+//!   `kernel::base::sysctl` has the same helpers over `hal::user::UserPtr` for its own nodes (the
 //!   same machine routines through the `UserCopy` bridge). Each `bsd` node moves to the
 //!   kernel's with its subsystem.
 //! - `resettodr` after a new `kern.utc_offset` is reported and skipped. (`kern.clockintr`,
-//!   LZ's `unported!`, is the kernel's `kernel::clockintr::ClockintrNode` since N4.8a, and
-//!   `kern.timecounter` is `kernel::tc::TcNode`: both registered from [`KERN_NODES`].)
+//!   LZ's `unported!`, is the kernel's `kernel::time::clockintr::ClockintrNode` since N4.8a, and
+//!   `kern.timecounter` is `kernel::time::tc::TcNode`: both registered from [`KERN_NODES`].)
 //! - `kern.file`: `fill_file` fills the `AF_INET` and `AF_INET6` (feature `inet6`) control
 //!   blocks and the TCP members (`fill_file_tcpcb`, zero for a control block without a
 //!   `tcpcb`). `KERN_FILE_BYFILE` of sockets walks `tcbtable`, `udbtable`, `rawcbtable`,
@@ -105,7 +105,7 @@
 //! ## Redesign
 //! - N4.6b: the dispatch (`sys_sysctl`, `kern_sysctl`, `hw_sysctl`), `sysctl_vslock`, the
 //!   nodes whose state is the kernel's and `kern.proc` with `fill_kproc` moved into
-//!   `kernel::sysctl` (its `## Redesign` has the shape). What stays here registers `bsd`'s
+//!   `kernel::base::sysctl` (its `## Redesign` has the shape). What stays here registers `bsd`'s
 //!   nodes with that dispatcher ([`sysctl_register_legacy`], called from the bridges'
 //!   registration): the `CTL_*` trees, the `kern` and `hw` leaves and directories as
 //!   `SysctlNode`s (`Node`, a function over a name and a `SysctlReq`; `ProcNode`, one that
@@ -179,8 +179,8 @@ use crate::sys::vnode::{Vattr, Vnode, makeimode};
 use crate::unported;
 use hal::sync::klock;
 use hal::user::UserPtr;
+use kernel::base::sysctl::{RdString, SysctlNode, SysctlReq};
 use kernel::netinet::in_pcb::in_pcbsolock;
-use kernel::sysctl::{RdString, SysctlNode, SysctlReq};
 
 /// `MAXPARTITIONS` (`<machine/disklabel.h>`, 16 on amd64 and arm64): number of partitions.
 /// The disklabel headers are not ported.
@@ -188,7 +188,7 @@ const MAXPARTITIONS_C: i32 = 16;
 /// `RAW_PART` (`<sys/disklabel.h>`): the 'c' partition.
 const RAW_PART_C: i32 = 2;
 
-pub use kernel::sysctl::{
+pub use kernel::base::sysctl::{
     ALLOWKMEM, ALLOWPOWERDOWN, HOSTID, SECURELEVEL, SYSCTL_LOCK, hw_battery_chargemode,
     hw_battery_chargestart, hw_battery_chargestop, hw_power, hw_prod, hw_serial, hw_uuid,
     hw_vendor, hw_ver,
@@ -232,12 +232,12 @@ static HW_VARS: [SysctlBoundedArgs; 3] = [
 ];
 
 /// `sysctl_vslock(addr, len)` for `curproc` (the network's protocol handlers that are not
-/// `PR_MPSYSCTL`): the kernel's [`kernel::sysctl::VsLock`], whose drop is `sysctl_vsunlock`.
-pub fn sysctl_vslock(addr: usize, len: usize) -> Result<kernel::sysctl::VsLock, Errno> {
+/// `PR_MPSYSCTL`): the kernel's [`kernel::base::sysctl::VsLock`], whose drop is `sysctl_vsunlock`.
+pub fn sysctl_vslock(addr: usize, len: usize) -> Result<kernel::base::sysctl::VsLock, Errno> {
     let Some(p) = curproc() else {
         panic(format_args!("sysctl_vslock: no curproc"));
     };
-    kernel::sysctl::sysctl_vslock(p, addr, len)
+    kernel::base::sysctl::sysctl_vslock(p, addr, len)
 }
 
 /// `KernelApi::sysctl`: [`sys_sysctl`]'s row through the system call prologue (`mi_syscall`:
@@ -267,11 +267,11 @@ pub fn native_sysctl(
     crate::kern::kern_descrip::native(nr, crate::sys::syscall::SYS_sysctl, args, rval)
 }
 
-/// `sysctl(2)`'s `sysent[]` row: the kernel's [`kernel::sysctl::sys_sysctl`] with the
+/// `sysctl(2)`'s `sysent[]` row: the kernel's [`kernel::base::sysctl::sys_sysctl`] with the
 /// system call's arguments.
 pub fn sys_sysctl(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysSysctlArgs = sysargs(v);
-    kernel::sysctl::sys_sysctl::<BsdProcGlue>(
+    kernel::base::sysctl::sys_sysctl::<BsdProcGlue>(
         p,
         UserPtr::new(uap.name.get() as usize),
         uap.namelen.get(),
@@ -1256,10 +1256,10 @@ fn disk_stats_copy(sdk: &mut Diskstats, dk: &Disk) {
 }
 
 /// The disk list (`subr_disk.c`'s `disklist`, `disk_count`, `disk_change`) as the kernel's
-/// `sysctl_diskinit` reads it (`kernel::sysctl::DiskExport`).
+/// `sysctl_diskinit` reads it (`kernel::base::sysctl::DiskExport`).
 struct BsdDiskExport;
 
-impl kernel::sysctl::DiskExport for BsdDiskExport {
+impl kernel::base::sysctl::DiskExport for BsdDiskExport {
     fn take_change(&self) -> bool {
         DISK_CHANGE.swap(0, Ordering::Relaxed) != 0
     }
@@ -1268,7 +1268,7 @@ impl kernel::sysctl::DiskExport for BsdDiskExport {
         DISK_COUNT.load(Ordering::Relaxed).max(0) as usize
     }
 
-    fn for_each(&self, f: &mut kernel::sysctl::DiskVisit<'_>) {
+    fn for_each(&self, f: &mut kernel::base::sysctl::DiskVisit<'_>) {
         for dk in DISKLIST.0.iter() {
             let label_uid = dk.label().map(|lp| lp.d_uid).filter(|u| !duid_iszero(u));
             let duid = label_uid.map(|u| duid_format(&u));
@@ -1286,9 +1286,9 @@ impl kernel::sysctl::DiskExport for BsdDiskExport {
 
 static BSD_DISK_EXPORT: BsdDiskExport = BsdDiskExport;
 
-const _: () = assert!(size_of::<Diskstats>() == kernel::sysctl::DISKSTATS_SIZE);
+const _: () = assert!(size_of::<Diskstats>() == kernel::base::sysctl::DISKSTATS_SIZE);
 
-/// A node of a subsystem still in `bsd` (`kernel::sysctl::SysctlNode`): its function over
+/// A node of a subsystem still in `bsd` (`kernel::base::sysctl::SysctlNode`): its function over
 /// the name below it and the request.
 struct Node(fn(&[i32], &mut SysctlReq<'_>) -> Result<(), Errno>);
 
@@ -1487,10 +1487,10 @@ static KERN_NODES: [(i32, &dyn SysctlNode); 27] = [
     (KERN_WATCHDOG, &kernel::dev::watchdog::WatchdogNode),
     (KERN_EVCOUNT, &kernel::dev::evcount::EvcountNode),
     // `kern.clockintr` and `kern.timecounter`: the kernel's nodes (N4.8a).
-    (KERN_CLOCKINTR, &kernel::clockintr::ClockintrNode),
+    (KERN_CLOCKINTR, &kernel::time::clockintr::ClockintrNode),
     // `kern.tty`: the kernel's node (N4.7b), over this glue's terminals.
     (KERN_TTY, &kernel::tty::TtyNode::<BsdProcGlue>::NODE),
-    (KERN_TIMECOUNTER, &kernel::tc::TcNode),
+    (KERN_TIMECOUNTER, &kernel::time::tc::TcNode),
 ];
 
 /// `sysctl_cpustats`: `kern.cpustats.<cpu>`.
@@ -1655,22 +1655,22 @@ static TOP_NODES: [(i32, &dyn SysctlNode); 3] = [
 ];
 
 /// Registers `bsd`'s sysctl nodes, bounded variables, disk list and `physmem` with the
-/// kernel's dispatcher (`kernel::sysctl`), once, before the first `sysctl(2)` (`main`, with
+/// kernel's dispatcher (`kernel::base::sysctl`), once, before the first `sysctl(2)` (`main`, with
 /// the other bridges); a second call changes nothing.
 pub fn sysctl_register_legacy() {
     for &(ctl, n) in &TOP_NODES {
-        let _ = kernel::sysctl::register_top(ctl, n);
+        let _ = kernel::base::sysctl::register_top(ctl, n);
     }
     for &(id, n) in &KERN_NODES {
-        let _ = kernel::sysctl::register_kern(id, n);
+        let _ = kernel::base::sysctl::register_kern(id, n);
     }
     for &(id, n) in &HW_NODES {
-        let _ = kernel::sysctl::register_hw(id, n);
+        let _ = kernel::base::sysctl::register_hw(id, n);
     }
-    let _ = kernel::sysctl::register_kern_vars(&KERN_VARS);
-    let _ = kernel::sysctl::register_hw_vars(&HW_VARS);
-    let _ = kernel::sysctl::install_disk_export(&BSD_DISK_EXPORT);
-    let _ = kernel::sysctl::register_physmem(&crate::sys::systm::PHYSMEM);
+    let _ = kernel::base::sysctl::register_kern_vars(&KERN_VARS);
+    let _ = kernel::base::sysctl::register_hw_vars(&HW_VARS);
+    let _ = kernel::base::sysctl::install_disk_export(&BSD_DISK_EXPORT);
+    let _ = kernel::base::sysctl::register_physmem(&crate::sys::systm::PHYSMEM);
 }
 /* </CODE> */
 
@@ -2233,7 +2233,7 @@ mod tests {
             newlen: 0,
         };
         assert_eq!(
-            kernel::sysctl::kern_sysctl(p, &[KERN_OSTYPE], &mut req),
+            kernel::base::sysctl::kern_sysctl(p, &[KERN_OSTYPE], &mut req),
             Ok(())
         );
         assert_eq!(user(out, len), b"EmiBSD\0".to_vec());
@@ -2246,7 +2246,7 @@ mod tests {
             newlen: 0,
         };
         assert_eq!(
-            kernel::sysctl::kern_sysctl(p, &[KERN_OSRELEASE], &mut req),
+            kernel::base::sysctl::kern_sysctl(p, &[KERN_OSRELEASE], &mut req),
             Ok(())
         );
         assert_eq!(user(out, len), b"8.0\0".to_vec());
@@ -2259,7 +2259,7 @@ mod tests {
             newlen: 0,
         };
         assert_eq!(
-            kernel::sysctl::kern_sysctl(p, &[KERN_VERSION], &mut req),
+            kernel::base::sysctl::kern_sysctl(p, &[KERN_VERSION], &mut req),
             Ok(())
         );
         assert_eq!(len, VERSION.len() + 1);
@@ -2273,7 +2273,7 @@ mod tests {
             newlen: 8,
         };
         assert_eq!(
-            kernel::sysctl::kern_sysctl(p, &[KERN_OSTYPE], &mut req),
+            kernel::base::sysctl::kern_sysctl(p, &[KERN_OSTYPE], &mut req),
             Err(Errno::EPERM)
         );
         let mut len = 4;
@@ -2284,13 +2284,13 @@ mod tests {
             newlen: 0,
         };
         assert_eq!(
-            kernel::sysctl::kern_sysctl(p, &[KERN_OSREV], &mut req),
+            kernel::base::sysctl::kern_sysctl(p, &[KERN_OSREV], &mut req),
             Ok(())
         );
         assert_eq!(user(out, 4), (OpenBSD as i32).to_ne_bytes().to_vec());
         // PTRACE is not configured: kern.global_ptrace is nobody's.
         assert_eq!(
-            kernel::sysctl::kern_sysctl(p, &[KERN_GLOBAL_PTRACE], &mut req),
+            kernel::base::sysctl::kern_sysctl(p, &[KERN_GLOBAL_PTRACE], &mut req),
             Err(Errno::EOPNOTSUPP)
         );
         // hw.machine and hw.ncpu are bsd's.
@@ -2302,7 +2302,7 @@ mod tests {
             newlen: 0,
         };
         assert_eq!(
-            kernel::sysctl::hw_sysctl(p, &[HW_MACHINE], &mut req),
+            kernel::base::sysctl::hw_sysctl(p, &[HW_MACHINE], &mut req),
             Ok(())
         );
         assert_eq!(user(out, len), b"host\0".to_vec());
@@ -2313,7 +2313,10 @@ mod tests {
             newp: 0,
             newlen: 0,
         };
-        assert_eq!(kernel::sysctl::hw_sysctl(p, &[HW_NCPU], &mut req), Ok(()));
+        assert_eq!(
+            kernel::base::sysctl::hw_sysctl(p, &[HW_NCPU], &mut req),
+            Ok(())
+        );
         assert_eq!(
             user(out, 4),
             NCPUS.load(Ordering::Relaxed).to_ne_bytes().to_vec()
@@ -2363,7 +2366,7 @@ mod tests {
 
     #[test]
     fn the_disk_export_follows_the_disklist() {
-        use kernel::sysctl::DiskExport;
+        use kernel::base::sysctl::DiskExport;
 
         let _g = setup();
 
@@ -2408,7 +2411,7 @@ mod tests {
 
     #[test]
     fn kern_proc_readers_give_back_only_the_reference_they_took() {
-        // kernel::sysctl's fill_kproc and sysctl_proc_args read a live process's vmspace
+        // kernel::base::sysctl's fill_kproc and sysctl_proc_args read a live process's vmspace
         // under a reference of their own (the C's uvmspace_addref ... uvmspace_free,
         // kern_sysctl.c:2073-2074 and 2124, 2208-2209 and 2362): the process's vm_refcnt is
         // the same after the read, and its map keeps its entries. Without the addref the free
@@ -2416,7 +2419,7 @@ mod tests {
         // listed, its own first (smoke-diag's `uvm_map_pageable: ... has no entry`; main's
         // 2536a3e6 fixed bsd's copies, this is the kernel's).
         use crate::sys::param::PAGE_SIZE;
-        use kernel::sysctl::{SysctlReq, fill_kproc, sysctl_proc_args};
+        use kernel::base::sysctl::{SysctlReq, fill_kproc, sysctl_proc_args};
 
         let _g = setup();
         // The map pools (the pmap's are up: setup_real_memory's pmap_bootstrap_lazy).

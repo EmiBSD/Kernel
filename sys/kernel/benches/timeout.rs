@@ -64,9 +64,9 @@ use std::vec::Vec;
 use hal::ds::pin::pin_static;
 use hal::ds::pinlist::{PinEntry, PinRing};
 use hal::mem::pool::{PoolBackend, RawPool};
-use kernel::clock::TICKS;
 use kernel::testutil;
-use kernel::timeout::{self, KCLOCK_NONE, Timeout};
+use kernel::time::clock::TICKS;
+use kernel::time::timeout::{self, KCLOCK_NONE, Timeout};
 
 // ---------------------------------------------------------------------------------------
 // The harness (vm.rs's).
@@ -346,32 +346,32 @@ fn main() {
 
     // task(9): one task added and run by hand (`task_add` then the worker's
     // `taskq_next_work` and the call), on a queue with no thread.
-    static TQ: kernel::task::Taskq = kernel::task::taskq_unthreaded(b"benchtq");
-    static TASK: kernel::task::Task = kernel::task::Task::new(noop, ptr::null_mut());
-    kernel::task::run_by_hand(&TQ);
+    static TQ: kernel::base::task::Taskq = kernel::base::task::taskq_unthreaded(b"benchtq");
+    static TASK: kernel::base::task::Task = kernel::base::task::Task::new(noop, ptr::null_mut());
+    kernel::base::task::run_by_hand(&TQ);
     benches.push(Bench {
         name: "task.add-next",
         ops: PRIM,
         f: Box::new(prim(|| {
-            black_box(kernel::task::task_add(&TQ, pin_static(&TASK)));
-            kernel::task::run_next_by_hand(&TQ);
+            black_box(kernel::base::task::task_add(&TQ, pin_static(&TASK)));
+            kernel::base::task::run_next_by_hand(&TQ);
         })),
     });
     // extent(9): one page allocated and freed (a coalescing extent of 16 regions).
-    let Some(ex) = kernel::extent::Extent::create(
+    let Some(ex) = kernel::base::extent::Extent::create(
         b"bench",
         0,
         0xffff_ffff,
         2, // M_DEVBUF
-        kernel::extent::EX_WAITOK,
+        kernel::base::extent::EX_WAITOK,
     ) else {
         eprintln!("timeout bench: extent_create failed");
         std::process::exit(2);
     };
-    let ex: &'static kernel::extent::Extent = hal::mem::malloc::MBox::leak(ex);
+    let ex: &'static kernel::base::extent::Extent = hal::mem::malloc::MBox::leak(ex);
     for i in 0..16u64 {
         if ex
-            .alloc_region(i * 0x10_0000, 0x1000, kernel::extent::EX_NOWAIT)
+            .alloc_region(i * 0x10_0000, 0x1000, kernel::base::extent::EX_NOWAIT)
             .is_err()
         {
             eprintln!("timeout bench: extent_alloc_region failed");
@@ -382,11 +382,11 @@ fn main() {
         name: "extent.alloc-free",
         ops: PRIM,
         f: Box::new(prim(move || {
-            let Ok(a) = ex.alloc(0x1000, 0x1000, 0, 0, kernel::extent::EX_NOWAIT) else {
+            let Ok(a) = ex.alloc(0x1000, 0x1000, 0, 0, kernel::base::extent::EX_NOWAIT) else {
                 std::process::exit(3);
             };
             if ex
-                .free(black_box(a), 0x1000, kernel::extent::EX_NOWAIT)
+                .free(black_box(a), 0x1000, kernel::base::extent::EX_NOWAIT)
                 .is_err()
             {
                 std::process::exit(3);
@@ -452,14 +452,14 @@ fn main() {
         name: "prim.nanouptime",
         ops: PRIM,
         f: Box::new(prim(|| {
-            black_box(kernel::clock::nanouptime());
+            black_box(kernel::time::clock::nanouptime());
         })),
     });
     benches.push(Bench {
         name: "prim.ticks",
         ops: PRIM,
         f: Box::new(prim(|| {
-            black_box(kernel::clock::ticks());
+            black_box(kernel::time::clock::ticks());
         })),
     });
 

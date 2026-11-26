@@ -76,6 +76,27 @@ must not cover `thread.rs`, and a group's own name as a module trips `clippy::mo
 The paths `hal::cpu::cpu_number` and the others did not change. `cargo xtask hal-check` keeps
 drivers and devices apart (rules D1 and D2, `.claude/rules/xtask.md`).
 
+### The kernel's groups (2026-11-26)
+
+`sys/kernel/` is grouped the same way (the user approved it on 2026-11-26). A group whose name
+is also one of its modules keeps that module as the group's `mod.rs` (`kernel::proc::Proc`, not
+`kernel::proc::proc::Proc`; `sched`, `sig`, `time`, `file` and `tty` the same), so those paths are
+as they were. `netinet` and `netinet6` keep their names. The root keeps `lib.rs`, `api.rs`,
+`syscall.rs`, `assert.rs`, `testutil.rs`, `reftest.rs` and `benches/`.
+
+| Group | Holds | hal groups it uses |
+|---|---|---|
+| `kernel::proc` | proc (mod.rs), fork, exit, cred, prot, resource, acct, thread, sysarch | sync, mem, ds, cpu |
+| `kernel::sched` | sched (mod.rs), futex, thrsleep | sync, cpu |
+| `kernel::sig` | sig (mod.rs), sigio | sync, cpu |
+| `kernel::time` | time (mod.rs), clock, clockintr, tc, timeout | sync, cpu |
+| `kernel::file` | file (mod.rs), descrip, event, select, pipe, uio | sync, mem, ds |
+| `kernel::tty` | tty (mod.rs), pty, clist, termios | sync, mem, ds |
+| `kernel::base` | task, smr, extent, log, sysctl, reboot, prf | sync, mem, ds |
+| `kernel::dev` | autoconf, device, evcount, sensors, watchdog, clock_subr | dev, sync, mem, ds, cpu's spl and interrupts, cons (rule D2) |
+| `kernel::vm` | the page system | vm, mem |
+| `kernel::fs`, `net`, `netinet`, `netinet6`, `crypto` | VFS and file systems, the network stack, crypto | sync, mem, ds |
+
 ### The runtime API (N2.3)
 
 What `kernel` builds on, all safe to call, every `unsafe` inside `hal` with its proof
@@ -746,7 +767,7 @@ Makefile order, not shuffled (`sort -R`), and no relink kits (`/usr/share/relink
 `ld.so.a`) are made; `test-ld.so` is not built or run on the Mac (as in OpenBSD's cross
 builds), `smoke-cc` is that test. The kernel side is `uvm_mmap.c`'s file half
 (`uvm_mmapfile` over `uvn_attach`; device mappings other than `/dev/zero` report the
-unported `udv_attach`). `__thrsleep`/`__thrwakeup` (`kern_synch.c`) are `kernel::thrsleep`'s
+unported `udv_attach`). `__thrsleep`/`__thrwakeup` (`kern_synch.c`) are `kernel::sched::thrsleep`'s
 (LZ 9fd12af2c575, taken by `lz-sync`), reached through `bsd`'s `sysent` rows (`Legacy` in the
 ABI); the one compiled caller at the pin is the shared librthread's `_rthread_dl_lock`, when
 two threads contend for ld.so's lock (libc's `FILE` locks and the pthread mutexes are

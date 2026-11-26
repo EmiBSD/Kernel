@@ -2439,7 +2439,7 @@ fuse_steps := disk_login + " " + \
     "--expect 'on /fuse type fuse' --expect 'fuse-up-42' --expect 'm10d-fuse-42' --expect 'm10d-fuse-sub-42' " + \
     "--expect 'hello.txt' --expect 'deep.txt' --expect 'fuse-ro-42' --expect 'fuse-umount-42' --expect 'fuse-gone-42'"
 
-# LZ 7f3d210b570c (lz-sync): __thrsleep(2) and __thrwakeup(2), kernel::thrsleep. tools/thrtest, a
+# LZ 7f3d210b570c (lz-sync): __thrsleep(2) and __thrwakeup(2), kernel::sched::thrsleep. tools/thrtest, a
 # static program linked with libpthread, calls them directly and checks what they return: EINVAL
 # for ident 0 and a bad timespec, ESRCH, a time already passed (the lock still freed) and a real
 # timeout, the abort word, sleepers woken one at a time and the ident -1 broadcast. Its second

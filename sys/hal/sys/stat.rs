@@ -72,7 +72,7 @@
 //!   kernel's `vn_stat` (`kernel::fs::vnops`) fills the one `struct stat` `fstat(2)` copies
 //!   out; `bsd`'s `crate::sys::stat` re-exports it. The times are [`Timespec`], the C's
 //!   `struct timespec` as the structure embeds it (two `i64`, `#[repr(C)]`): `hal` cannot name
-//!   the kernel's `kernel::clock::Timespec`, which converts into it with `From`. The layout,
+//!   the kernel's `kernel::time::clock::Timespec`, which converts into it with `From`. The layout,
 //!   the offsets the `const` block asserts and `to_bytes` are LZ's.
 
 use core::mem::offset_of;
@@ -81,7 +81,7 @@ use crate::sys::types::{Blkcnt, Blksize, Dev, Gid, Ino, Mode, Nlink, Off, Uid};
 
 /// `struct timespec` as `struct stat` embeds it (`st_atim`, `st_mtim`, `st_ctim`,
 /// `__st_birthtim`): seconds and nanoseconds, the layout userland shares. The kernel's
-/// arithmetic type is `kernel::clock::Timespec`, of the same layout, which converts into this
+/// arithmetic type is `kernel::time::clock::Timespec`, of the same layout, which converts into this
 /// one.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

@@ -85,7 +85,7 @@
 
 /* <CODE> */
 //! The processes' glue to what is still `bsd`'s: the instantiation of `kernel::proc`
-//! (`sys/kernel/proc.rs`) that `bsd` runs, with 0 `unsafe`, until signals, descriptors,
+//! (`sys/kernel/proc/mod.rs`) that `bsd` runs, with 0 `unsafe`, until signals, descriptors,
 //! kqueue, the tty and the scheduler move into the kernel crate (N4.3-N4.8).
 //!
 //! Upstream: sys/sys/proc.h @ 3ce1f3f79392
@@ -311,7 +311,7 @@ impl Default for BsdThreadG {
 }
 
 /// The members of `struct pgrp` of `bsd`'s subsystems: none since N4.5b (`pg_sigiolst` is
-/// `kernel::sigio`'s registry).
+/// `kernel::sig::sigio`'s registry).
 pub struct BsdPgrpG;
 
 impl BsdPgrpG {
@@ -443,7 +443,7 @@ impl ProcGlue for BsdProcGlue {
 
     /// `clockintr_cancel` of the running CPU's `spc_itimer` and `spc_profclock`, as asked.
     fn clocks_stop(itimer: bool, profclock: bool) {
-        use kernel::clockintr::{Clockintr, Slot, clockintr_cancel};
+        use kernel::time::clockintr::{Clockintr, Slot, clockintr_cancel};
         let n = hal::cpu::cpu_number();
         if itimer {
             clockintr_cancel(Clockintr::of(n, Slot::Itimer));
@@ -456,7 +456,7 @@ impl ProcGlue for BsdProcGlue {
     /// `clockintr_advance` of the running CPU's `spc_itimer` and `spc_profclock`, as asked,
     /// and `spc_runtime = nanouptime()`.
     fn clocks_start(itimer: bool, profclock: bool) {
-        use kernel::clockintr::{Clockintr, Slot, clockintr_advance};
+        use kernel::time::clockintr::{Clockintr, Slot, clockintr_advance};
         let spc = Machine::ci_schedstate(curcpu());
         let n = hal::cpu::cpu_number();
         if itimer {
@@ -487,7 +487,7 @@ impl ProcGlue for BsdProcGlue {
     fn exit_account(p: &Proc) {
         let pr = p.process();
         let g = pr.ps_mtx.lock();
-        kernel::resource::tuagg_add_process(pr, p, &g);
+        kernel::proc::resource::tuagg_add_process(pr, p, &g);
         drop(g);
     }
 
@@ -827,7 +827,7 @@ impl ProcGlue for BsdProcGlue {
     }
 
     /// `curcpu()->ci_schedstate.spc_runtime`.
-    fn spc_runtime() -> kernel::clock::Timespec {
+    fn spc_runtime() -> kernel::time::clock::Timespec {
         Machine::ci_schedstate(curcpu()).spc_runtime.get()
     }
 
@@ -974,13 +974,13 @@ fn pinned(p: &Proc) -> Pin<&'static Proc> {
 
 /// `fork(2)`.
 pub fn sys_fork(p: &Proc, _v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
-    retval[0] = kernel::fork::sys_fork(pinned(p))? as Register;
+    retval[0] = kernel::proc::fork::sys_fork(pinned(p))? as Register;
     Ok(())
 }
 
 /// `vfork(2)`.
 pub fn sys_vfork(p: &Proc, _v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
-    retval[0] = kernel::fork::sys_vfork(pinned(p))? as Register;
+    retval[0] = kernel::proc::fork::sys_vfork(pinned(p))? as Register;
     Ok(())
 }
 
@@ -988,28 +988,28 @@ pub fn sys_vfork(p: &Proc, _v: &SysArgs, retval: &mut [Register; 2]) -> Result<(
 #[allow(non_snake_case)] // the C name, verbatim: the syscall table finds it by name
 pub fn sys___tfork(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysTforkArgs = sysargs(v);
-    retval[0] =
-        kernel::fork::sys___tfork(pinned(p), uap.param.get().addr(), uap.psize.get())? as Register;
+    retval[0] = kernel::proc::fork::sys___tfork(pinned(p), uap.param.get().addr(), uap.psize.get())?
+        as Register;
     Ok(())
 }
 
 /// `exit(2)`.
 pub fn sys_exit(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysExitArgs = sysargs(v);
-    kernel::exit::sys_exit(p, uap.rval.get())
+    kernel::proc::exit::sys_exit(p, uap.rval.get())
 }
 
 /// `__threxit(2)`.
 #[allow(non_snake_case)] // the C name, verbatim: the syscall table finds it by name
 pub fn sys___threxit(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysThrexitArgs = sysargs(v);
-    kernel::exit::sys___threxit(p, hal::user::UserPtr::new(uap.notdead.get().addr()))
+    kernel::proc::exit::sys___threxit(p, hal::user::UserPtr::new(uap.notdead.get().addr()))
 }
 
 /// `wait4(2)`.
 pub fn sys_wait4(q: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysWait4Args = sysargs(v);
-    retval[0] = kernel::exit::sys_wait4(
+    retval[0] = kernel::proc::exit::sys_wait4(
         q,
         uap.pid.get(),
         hal::user::UserPtr::new(uap.status.get().addr()),
@@ -1022,7 +1022,7 @@ pub fn sys_wait4(q: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<()
 /// `waitid(2)`.
 pub fn sys_waitid(q: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysWaitidArgs = sysargs(v);
-    kernel::exit::sys_waitid(
+    kernel::proc::exit::sys_waitid(
         q,
         uap.idtype.get(),
         i64::from(uap.id.get()),
@@ -1036,7 +1036,7 @@ pub fn sys_waitid(q: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(
 /// `acct(2)`.
 pub fn sys_acct(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysAcctArgs = sysargs(v);
-    kernel::acct::sys_acct(p, hal::user::UserPtr::new(uap.path.get().addr()))
+    kernel::proc::acct::sys_acct(p, hal::user::UserPtr::new(uap.path.get().addr()))
 }
 
 /// `KernelApi::proc`: the `Native` entries of the process system calls (N4.6a), each running
@@ -1606,7 +1606,7 @@ pub(crate) fn test_pooled_process(pid: Pid) -> &'static Process {
 /// A thread of a fresh test process with pid `pid` ([`test_pooled_process`]), its main one,
 /// both holding `cr` (as `fork1` leaves them). Needs [`procinit`].
 #[cfg(test)]
-pub(crate) fn test_proc(pid: Pid, cr: kernel::cred::CredRef) -> &'static Proc {
+pub(crate) fn test_proc(pid: Pid, cr: kernel::proc::cred::CredRef) -> &'static Proc {
     let pr = test_pooled_process(pid);
     let p = test_thread(pr);
     pr.set_main_static(hal::ds::pin::pin_static(p));
@@ -1633,7 +1633,7 @@ pub(crate) fn test_set_limits(p: &Proc, nofile: hal::sys::types::Rlim) {
     };
     drop(
         p.process()
-            .set_limit(kernel::resource::PlimitRef::new(limit)),
+            .set_limit(kernel::proc::resource::PlimitRef::new(limit)),
     );
     p.p_limit.clear();
 }
@@ -1743,14 +1743,14 @@ mod tests {
         // (p_runq a PinEntry and p_sleep_to the kernel's Timeout in kernel::proc's Thread,
         // where bsd's list entry and timeout were), then 1136 (p_cpuno +8, the CPU number
         // beside the slot), pending the user's word as N4.2's were. N4.4 (kqueue into
-        // kernel::event) gave processpl 1296 -> 1360 (ps_klist and its kqueue pools in
+        // kernel::file::event) gave processpl 1296 -> 1360 (ps_klist and its kqueue pools in
         // kernel::proc's Process) and fdescpl 520 -> 560; at the merge of N4.4 and N4.5a
         // procpl 1136 -> 1168: p_kq +8 (a set-once counted kqueue in the kernel's Thread where
         // bsd's word was) and p_sleep_to's ToState +24 (N4.4's kernel Timeout state). N4.5b (signals into kernel::sig): processpl 1360 -> 1376 (ps_sigacts a
         // set-once handle of process 0's static or a sigapl box in kernel::proc's Process,
         // where the glue's link was); procpl unchanged (p_sigstk and p_sigval moved from the
         // glue into the thread); sigapl 424 -> 448 (kernel::sig's test pins it). Then the
-        // sigio registrations moved into kernel::sigio's registry: processpl 1376 -> 1360 and
+        // sigio registrations moved into kernel::sig::sigio's registry: processpl 1376 -> 1360 and
         // pgrppl 152 -> 136 (ps_sigiolst and pg_sigiolst gone from the glue's members).
         // N4.7b (the terminal into kernel::tty): sessionpl 144 -> 160, s_ttyp a counted tty
         // handle under the kernel lock in kernel::proc's Session where the glue's link was.
@@ -1764,7 +1764,7 @@ mod tests {
         // `exited`). Accepted under the user's rule for N4's sizes (reported, pinned here).
         // N4.8b (5cfef26e): procpl 1168 -> 1176 here only, the host double's Mdproc now
         // holding the thread's TCB word (a machine keeps it in its pcb); arm64's is unchanged.
-        // N5.0 (dopipe into kernel::pipe): filepl 184 -> 176, bsd's BsdFileData::Pipe holds the
+        // N5.0 (dopipe into kernel::file::pipe): filepl 184 -> 176, bsd's BsdFileData::Pipe holds the
         // PipeEnd alone (the opener's uid and gid copies gone: pipe_stat reads f_cred), so the
         // object enum is 8 bytes smaller.
         let _g = setup();
@@ -1791,10 +1791,13 @@ mod tests {
                     "fdescpl",
                 ),
             ),
-            ("ucredpl", size(kernel::cred::ucred_item_size(), "ucredpl")),
+            (
+                "ucredpl",
+                size(kernel::proc::cred::ucred_item_size(), "ucredpl"),
+            ),
             (
                 "plimitpl",
-                size(kernel::resource::plimit_item_size(), "plimitpl"),
+                size(kernel::proc::resource::plimit_item_size(), "plimitpl"),
             ),
             (
                 "zombiepl",
@@ -1883,8 +1886,8 @@ mod tests {
         use crate::sys::siginfo::{CLD_CONTINUED, CLD_EXITED, CLD_STOPPED, Siginfo};
         use crate::sys::signal::{SIGCHLD, SIGCONT, SIGSTOP};
         use crate::sys::wait::{P_PID, WCONTINUED, WEXITED, WNOHANG, WNOWAIT, WUNTRACED};
-        use kernel::cred::CredRef;
-        use kernel::exit::dowait6;
+        use kernel::proc::cred::CredRef;
+        use kernel::proc::exit::dowait6;
 
         let _g = setup();
         let parent = test_pooled_process(500);
@@ -1963,8 +1966,8 @@ mod tests {
         let second = process_ref(test_pooled_process(603));
         {
             let mut w = hal::sync::klock::witness();
-            kernel::fork::fork_join_pgrp(&mut w, parent, &first);
-            kernel::fork::fork_join_pgrp(&mut w, parent, &second);
+            kernel::proc::fork::fork_join_pgrp(&mut w, parent, &first);
+            kernel::proc::fork::fork_join_pgrp(&mut w, parent, &second);
         }
         {
             let r = hal::sync::klock::reader();

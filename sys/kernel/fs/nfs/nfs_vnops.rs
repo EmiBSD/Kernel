@@ -205,8 +205,9 @@ use super::nfsproto::{
 };
 use super::xdr_subs::{fxdr_hyper, fxdr_unsigned, txdr_hyper, txdr_unsigned};
 use crate::assert::{kassert, kpanic};
-use crate::cred::{CredRef, Ucred, crdup};
-use crate::event::{NOTE_ATTRIB, NOTE_DELETE, NOTE_LINK, NOTE_TRUNCATE, NOTE_WRITE};
+use crate::base::prf::unported;
+use crate::file::event::{NOTE_ATTRIB, NOTE_DELETE, NOTE_LINK, NOTE_TRUNCATE, NOTE_WRITE};
+use crate::file::uio::{Uio, UioRw};
 use crate::file::{FileGlue, LockOwner};
 use crate::fs::bio::{
     BCSTATS, DirtyPick, DirtyScan, biodone, biowait, brelse, buf_undirty_done, buf_undirty_output,
@@ -236,13 +237,12 @@ use crate::fs::vops::{
     Cn, Cred, IoBuf, Vnops, vop_abortop, vop_bwrite, vop_fsync, vop_getattr, vop_islocked,
     vop_setattr, vop_unlock,
 };
-use crate::prf::unported;
+use crate::proc::cred::{CredRef, Ucred, crdup};
 use crate::proc::{ProcGlue, Thread};
 use crate::sys::mount::{
     NFSMNT_GOTFSINFO, NFSMNT_HASWRITEVERF, NFSMNT_INT, NFSMNT_NFSV3, NFSMNT_RDIRPLUS,
 };
-use crate::tc::{getnanotime, gettime};
-use crate::uio::{Uio, UioRw};
+use crate::time::tc::{getnanotime, gettime};
 use crate::vm::vnode::{uvm_vnp_setsize, uvm_vnp_uncache};
 
 /// `NFSV3_WCCRATTR`: `*flagp` of `nfsm_wcc_data`: answer the post-op attribute flag.
@@ -3596,7 +3596,7 @@ pub fn nfs_flush<G: ProcGlue>(
                             }
                             if slpflag == PCATCH {
                                 slpflag = 0;
-                                slptimeo = crate::clock::sec_to_nsec(2);
+                                slptimeo = crate::time::clock::sec_to_nsec(2);
                             }
                         }
                     }
@@ -3616,7 +3616,7 @@ pub fn nfs_flush<G: ProcGlue>(
                         }
                         if slpflag == PCATCH {
                             slpflag = 0;
-                            slptimeo = crate::clock::sec_to_nsec(2);
+                            slptimeo = crate::time::clock::sec_to_nsec(2);
                         }
                         continue;
                     }
@@ -4147,7 +4147,7 @@ impl<G: ProcGlue> Vnops<G> for NfsVnops<G> {
         &self,
         vp: &'static Vnode<G>,
         _fflag: i32,
-        kn: &crate::event::Knote<G>,
+        kn: &crate::file::event::Knote<G>,
     ) -> Result<(), Errno> {
         nfs_kqfilter(vp, kn)
     }
@@ -4420,7 +4420,7 @@ impl<G: ProcGlue> Vnops<G> for NfsFifoVnops<G> {
         &self,
         _vp: &'static Vnode<G>,
         _fflag: i32,
-        _kn: &crate::event::Knote<G>,
+        _kn: &crate::file::event::Knote<G>,
     ) -> Result<(), Errno> {
         Err(unported!("fifo_kqfilter (miscfs/fifofs)"))
     }
@@ -4543,13 +4543,13 @@ mod tests {
     use std::vec::Vec;
 
     use super::*;
+    use crate::file::uio::Iovec;
     use crate::fs::namei::Componentname;
     use crate::fs::nfs::nfs_subs::nfs_vfs_init;
     use crate::fs::nfs::nfsproto::{NFDIR, NFLNK, NFREG};
     use crate::fs::nfs::testnfs::{self as tn, Out};
     use crate::net::mbuf::MBUFPL;
     use crate::sys::socket::SOCK_DGRAM;
-    use crate::uio::Iovec;
 
     /// The silly name is `.nfs` and the two words in upper-case hex, 20 bytes.
     #[test]
@@ -4741,8 +4741,8 @@ mod tests {
         let fx = tn::setup(1000);
         // A wall clock past the servers' times (the attribute cache's stamps are seconds; 0 is
         // "no attributes").
-        if crate::tc::gettime() == 0 {
-            crate::tc::TIME_SECOND.store(1_000_000, Ordering::Relaxed);
+        if crate::time::tc::gettime() == 0 {
+            crate::time::tc::TIME_SECOND.store(1_000_000, Ordering::Relaxed);
         }
         let mbufs = MBUFPL.nout();
         nfs_vfs_init::<tn::G>(fx.mp.vfc()).expect("nfs_vfs_init");
@@ -4759,7 +4759,7 @@ mod tests {
         let dnp = nfs_nget(fx.mp, &ROOTFH).expect("the root");
         nfstov(&dnp).set_vtype(VDIR);
         // The modification time the servers' directory attributes carry.
-        let _ = dnp.n_mtime.replace(crate::clock::Timespec {
+        let _ = dnp.n_mtime.replace(crate::time::clock::Timespec {
             tv_sec: 1000,
             tv_nsec: 0,
         });
@@ -5278,7 +5278,7 @@ mod tests {
         let nt = setup(NFSMNT_NFSV3 | NFSMNT_GOTFSINFO);
         let np = file(&nt, 0);
         let vp = nfstov(&np);
-        let _ = np.n_mtime.replace(crate::clock::Timespec {
+        let _ = np.n_mtime.replace(crate::time::clock::Timespec {
             tv_sec: 1000,
             tv_nsec: 0,
         });

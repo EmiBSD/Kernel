@@ -162,7 +162,7 @@
 //! ## Deviations
 //! - Without `MULTIPROCESSOR` `NET_TASKQ` is 1; the kernel is always `MULTIPROCESSOR`
 //!   (decision 40): `softnet_init` makes eight softnet queues and `softnet_percpu` destroys
-//!   those past `softnet_count()`, one per CPU, whose memory stays (`kernel::task`'s
+//!   those past `softnet_count()`, one per CPU, whose memory stays (`kernel::base::task`'s
 //!   `taskq_destroy_leaked`, LZ's: six `taskqpl` items on two CPUs, four on four).
 //! - `malloc(M_WAITOK)` that fails panics where the C would sleep (the index map's arrays;
 //!   `malloc(9)` does not sleep yet; LZ's).
@@ -348,6 +348,12 @@ use hal::sys::types::SaFamily;
 use hal::user::UserPtr;
 
 use crate::assert::{kassert, kpanic};
+use crate::base::prf::{Str, printf};
+use crate::base::sysctl::SysctlReq;
+use crate::base::task::TaskChain;
+use crate::base::task::{
+    Task, Taskq, TaskqRef, task_add, task_del, taskq_create, taskq_destroy_leaked,
+};
 use crate::net::if_var::{
     AtomicCell, Cloner, DETACHED_IOCTL, DETACHED_QSTART, IF_TXMIT_DEFAULT, IFC_NCOUNTERS,
     IFNET_SLOWTIMO, IfCounterArray, IfCounters, IfRt, IfTmplist, IfaList, Ifaddr, IfaddrRef,
@@ -372,11 +378,7 @@ use crate::net::socket::Socket;
 use crate::net::{route, rtsock};
 use crate::netinet::tcp_input::tcp_input_mlist_softnet;
 use crate::netinet::tcp_var::{TcpstatCounters, tcpstat_inc};
-use crate::prf::{Str, printf};
 use crate::proc::{ProcGlue, Thread, suser};
-use crate::sysctl::SysctlReq;
-use crate::task::TaskChain;
-use crate::task::{Task, Taskq, TaskqRef, task_add, task_del, taskq_create, taskq_destroy_leaked};
 use hal::ds::pinlist::PinList;
 
 /// `NET_TASKQ`: the softnet task queues (`MULTIPROCESSOR`'s, the only kernel built).
@@ -536,7 +538,7 @@ pub fn ifinit() {
 /// `IPL_NET`, MP-safe).
 pub fn softnet_init() {
     for (i, sn) in SOFTNETS.iter().enumerate() {
-        let Some(tq) = taskq_create(sn.name, 1, IPL_NET, crate::task::TASKQ_MPSAFE) else {
+        let Some(tq) = taskq_create(sn.name, 1, IPL_NET, crate::base::task::TASKQ_MPSAFE) else {
             kpanic(format_args!("unable to create network taskq {i}"));
         };
         sn.taskq.set(Some(TaskqRef::leak(tq)));
@@ -1172,7 +1174,7 @@ pub fn if_attach_common(ifp: &'static Ifnet) {
         if_addrlist: IfaList::new(),
         if_maddrlock: RawRwlock::new("maddr"),
         if_maddrlist: OnceStatic::new(),
-        if_slowtimo: crate::timeout::Timeout::unset(),
+        if_slowtimo: crate::time::timeout::Timeout::unset(),
         if_watchdogtask: Task::unset(),
         if_linkstatetask: Task::unset(),
         hooks_mtx: Mutexed::new(hal::cpu::intr::IPL_NONE, ()),
@@ -1281,7 +1283,7 @@ pub fn if_idxmap_test_reset() {
     if_idxmap_init(8);
 }
 
-/// The host tests' softnets: task queues no thread serves (`kernel::task`'s
+/// The host tests' softnets: task queues no thread serves (`kernel::base::task`'s
 /// `taskq_unthreaded`), made once and run by hand, in place of `softnet_init`'s; at every
 /// call (a test's setup) the work an earlier test left on them is forgotten, not run
 /// (`taskq_test_forget`): an interface's input task queued there names a queue of that
@@ -1292,13 +1294,13 @@ pub fn softnet_test_install() {
     for sn in &SOFTNETS {
         match sn.taskq.get() {
             Some(tq) => {
-                let _ = crate::task::taskq_test_forget(tq);
+                let _ = crate::base::task::taskq_test_forget(tq);
             }
             None => {
                 let tq: &'static Taskq = std::boxed::Box::leak(std::boxed::Box::new(
-                    crate::task::taskq_unthreaded(sn.name),
+                    crate::base::task::taskq_unthreaded(sn.name),
                 ));
-                crate::task::run_by_hand(tq);
+                crate::base::task::run_by_hand(tq);
                 sn.taskq.set(Some(tq));
                 sn.bartask.set_ref(net_tq_barrier_task, sn);
             }
@@ -1479,8 +1481,12 @@ pub fn if_detached_ioctl(_ifp: &Ifnet, _cmd: u64, _data: &mut [u8]) -> Result<()
 pub fn if_attach_timers(ifp: &'static Ifnet) {
     let rt = ifp.rt();
     let ifidx = core::ptr::without_provenance_mut(ifp.if_index.get() as usize);
-    rt.if_slowtimo
-        .set(Some(if_slowtimo), ifidx, crate::timeout::KCLOCK_NONE, 0);
+    rt.if_slowtimo.set(
+        Some(if_slowtimo),
+        ifidx,
+        crate::time::timeout::KCLOCK_NONE,
+        0,
+    );
     rt.if_watchdogtask.set(if_watchdog_task, ifidx);
     rt.if_linkstatetask.set(if_linkstate_task, ifidx);
     if_slowtimo(ifidx);
@@ -2437,7 +2443,7 @@ pub static IFQ_CONGESTION: AtomicI32 = AtomicI32::new(0);
 
 /// `if_congestion()`: set queue congestion marker.
 pub fn if_congestion() {
-    IFQ_CONGESTION.store(crate::clock::ticks(), Ordering::Relaxed);
+    IFQ_CONGESTION.store(crate::time::clock::ticks(), Ordering::Relaxed);
 }
 
 /// `niq_enqueue(niq, m)`: `m` onto the input queue, its soft interrupt scheduled, or (the
@@ -2460,7 +2466,7 @@ pub fn sysctl_niq(name: &[i32], req: &mut SysctlReq<'_>, niq: &Niqueue) -> Resul
 
 /// `if_congested()`: a queue was congested in the last hundredth of a second.
 pub fn if_congested() -> bool {
-    let ticks = crate::clock::ticks();
+    let ticks = crate::time::clock::ticks();
     let diff = ticks.wrapping_sub(IFQ_CONGESTION.load(Ordering::Relaxed));
     if diff < 0 {
         IFQ_CONGESTION.store(ticks.wrapping_sub(HZ), Ordering::Relaxed);
@@ -2638,7 +2644,7 @@ pub fn if_down(ifp: &'static Ifnet, net: &NetHeld<'_>) {
     net_assert_locked();
 
     ifp.if_flags.set(ifp.if_flags.get() & !IFF_UP);
-    let now = crate::tc::getmicrotime();
+    let now = crate::time::tc::getmicrotime();
     ifp.if_lastchange.set(now.tv_sec, now.tv_usec);
     let _ = ifq_purge(ifp.if_snd());
 
@@ -2652,7 +2658,7 @@ pub fn if_up(ifp: &'static Ifnet, net: &NetHeld<'_>) {
     net_assert_locked();
 
     ifp.if_flags.set(ifp.if_flags.get() | IFF_UP);
-    let now = crate::tc::getmicrotime();
+    let now = crate::time::tc::getmicrotime();
     ifp.if_lastchange.set(now.tv_sec, now.tv_usec);
 
     // Userland expects the kernel to set ::1 on default lo(4).
@@ -2871,8 +2877,8 @@ fn with_request<R>(
     let buf: &mut [u64] = if words <= IFIOCTL_STACK_WORDS {
         &mut stack[..words]
     } else {
-        heap =
-            MArray::new(crate::descrip::M_IOCTLOPS, M_WAITOK, words, |_| 0).ok_or(Errno::ENOMEM)?;
+        heap = MArray::new(crate::file::descrip::M_IOCTLOPS, M_WAITOK, words, |_| 0)
+            .ok_or(Errno::ENOMEM)?;
         &mut heap[..]
     };
     let bytes = &mut hal::user::bytes_of_mut(buf)[..len];
@@ -3062,7 +3068,7 @@ fn ifioctl_req<G: ProcGlue>(
     }
 
     if (oif_flags ^ flags) & IFF_UP != 0 {
-        let now = crate::tc::getmicrotime();
+        let now = crate::time::tc::getmicrotime();
         ifp.if_lastchange.set(now.tv_sec, now.tv_usec);
     }
 
@@ -4349,7 +4355,7 @@ pub fn ifnewlladdr(ifp: &'static Ifnet) {
 pub fn if_rxr_init(rxr: &mut IfRxring, lwm: u32, hwm: u32) {
     *rxr = hal::user::zeroed();
 
-    rxr.rxr_adjusted = crate::clock::ticks();
+    rxr.rxr_adjusted = crate::time::clock::ticks();
     rxr.rxr_lwm = lwm;
     rxr.rxr_cwm = lwm;
     rxr.rxr_hwm = hwm;
@@ -4364,13 +4370,13 @@ fn if_rxr_adjust_cwm(rxr: &mut IfRxring) {
         rxr.rxr_cwm += 1;
     }
 
-    rxr.rxr_adjusted = crate::clock::ticks();
+    rxr.rxr_adjusted = crate::time::clock::ticks();
 }
 
 /// `if_rxr_livelocked(rxr)`: the system is too busy: the current watermark one lower, at
 /// most once a tick.
 pub fn if_rxr_livelocked(rxr: &mut IfRxring) {
-    let ticks = crate::clock::ticks();
+    let ticks = crate::time::clock::ticks();
     if ticks.wrapping_sub(rxr.rxr_adjusted) >= 1 {
         if rxr.rxr_cwm > rxr.rxr_lwm {
             rxr.rxr_cwm -= 1;
@@ -4382,7 +4388,7 @@ pub fn if_rxr_livelocked(rxr: &mut IfRxring) {
 
 /// `if_rxr_get(rxr, max)`: how many of `max` slots the driver may fill now.
 pub fn if_rxr_get(rxr: &mut IfRxring, max: u32) -> u32 {
-    if crate::clock::ticks().wrapping_sub(rxr.rxr_adjusted) >= 1 {
+    if crate::time::clock::ticks().wrapping_sub(rxr.rxr_adjusted) >= 1 {
         // we're free to try for an adjustment
         if_rxr_adjust_cwm(rxr);
     }
@@ -4723,8 +4729,8 @@ pub(crate) mod tests {
             while !STOP.load(Ordering::SeqCst) {
                 for sn in &SOFTNETS {
                     if let Some(tq) = sn.taskq.get() {
-                        while !crate::task::worklist_is_empty(tq) {
-                            crate::task::run_next_by_hand(tq);
+                        while !crate::base::task::worklist_is_empty(tq) {
+                            crate::base::task::run_next_by_hand(tq);
                         }
                     }
                 }
@@ -5387,10 +5393,10 @@ pub(crate) mod tests {
 
     /// `f` with `p` as a user that is not the superuser, then `p` root again.
     fn as_user<R>(p: &Thread<Tg>, f: impl FnOnce() -> R) -> R {
-        let mut ids = crate::cred::Ucred::new();
+        let mut ids = crate::proc::cred::Ucred::new();
         ids.cr_uid.set(1000);
         ids.cr_ruid.set(1000);
-        let root = p.set_cred(crate::cred::CredRef::new(ids));
+        let root = p.set_cred(crate::proc::cred::CredRef::new(ids));
         let r = f();
         if let Some(root) = root {
             drop(p.set_cred(root));

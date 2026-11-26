@@ -48,16 +48,16 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! `<sys/termios.h>` for `bsd`: the kernel's (`kernel::termios`, N4.7a) under the path the
+//! `<sys/termios.h>` for `bsd`: the kernel's (`kernel::tty::termios`, N4.7a) under the path the
 //! drivers and the userland-facing code name.
 //!
 //! Upstream: sys/sys/termios.h @ 3ce1f3f79392
 //! LZ: sys/sys/termios.rs@3c62ede68802
 //!
 //! ## Redesign
-//! - N4.7b: every item is `kernel::termios`'s (one module for termios.h, ttycom.h and
+//! - N4.7b: every item is `kernel::tty::termios`'s (one module for termios.h, ttycom.h and
 //!   ttydefaults.h, `struct termios` an `abi_pod!` type); LZ's `unsafe impl AbiPod for
 //!   Termios` is gone with the type.
 
-pub use kernel::termios::*;
+pub use kernel::tty::termios::*;
 /* </CODE> */

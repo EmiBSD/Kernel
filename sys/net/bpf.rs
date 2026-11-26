@@ -102,7 +102,7 @@
 
 use core::ptr;
 
-use kernel::sysctl::SysctlReq;
+use kernel::base::sysctl::SysctlReq;
 
 use crate::kern::proc_glue::BsdProcGlue;
 use crate::machine::conf::{cdevsw, nchrdev};

@@ -130,6 +130,7 @@ use hal::sys::types::{Daddr, Off};
 use hal::user::pod_from_bytes;
 
 use crate::assert::kpanic;
+use crate::file::select::howmany;
 use crate::fs::bio::DEV_BSHIFT;
 use crate::fs::ufs::ufs::dinode::{NDADDR, Ufsino};
 use crate::fs::ufs::ufs::inode::{
@@ -137,7 +138,6 @@ use crate::fs::ufs::ufs::inode::{
 };
 use crate::fs::ufs::ufs::ufsmount::M_UFSMNT;
 use crate::proc::ProcGlue;
-use crate::select::howmany;
 
 pub use super::ffs_tables::{AROUND, FRAGTBL, INSIDE};
 

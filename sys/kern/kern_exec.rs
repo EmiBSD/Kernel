@@ -71,7 +71,7 @@
 //! with the arguments `start_init` copied out to the user stack as for `sys_execve`.
 //!
 //! ## Deviations
-//! - N4.2 (`kernel::cred`): the set-id exec builds the new credentials as a value and places
+//! - N4.2 (`kernel::proc::cred`): the set-id exec builds the new credentials as a value and places
 //!   a copy (`CredRef::new`), given to the thread (`set_cred`) and the process, where the C
 //!   `crdup`s the shared credentials and edits them in place; the ids that result are the
 //!   C's.
@@ -164,8 +164,8 @@ use crate::sys::vnode::{vput, vref, vrele};
 use crate::unported;
 use hal::sync::once::OnceStatic;
 use hal::vm::param::{atop, round_page, trunc_page};
-use kernel::exit::exit1;
 use kernel::proc::PinTable;
+use kernel::proc::exit::exit1;
 use kernel::vm::aobj::uao_create;
 use kernel::vm::km::{KD_WAITOK, KP_PAGEABLE, kernel_map};
 use kernel::vm::km::{KmemVaMode, KvMap};
@@ -1226,11 +1226,11 @@ pub fn exec_timekeep_map(p: &Proc, pr: &Process) -> Result<(), Errno> {
     let timekeep_sz = round_page(size_of::<Timekeep>());
 
     // Similar to the sigcode object: made, mapped, wired and published once, by the kernel's
-    // timecounters (`kernel::tc::timekeep_object`, N4.8a).
+    // timecounters (`kernel::time::tc::timekeep_object`, N4.8a).
     let object: ObjRef = match TIMEKEEP_OBJECT.get() {
         Some(obj) => obj.clone(),
         None => {
-            let obj = kernel::tc::timekeep_object(Some(&p.p_ru))?;
+            let obj = kernel::time::tc::timekeep_object(Some(&p.p_ru))?;
             // Exec runs under the kernel lock: no other thread made one meanwhile.
             let _ = TIMEKEEP_OBJECT.set(obj.clone());
             obj

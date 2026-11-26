@@ -232,6 +232,7 @@ use hal::sys::sysctl::SysctlBoundedArgs;
 use hal::user::bytes_of;
 
 use crate::assert::{kassert, kpanic};
+use crate::base::sysctl::{SysctlReq, bounded_arr, rdstruct};
 use crate::net::domain::net;
 use crate::net::if_::unhandled_af;
 use crate::net::if_var::{Ifnet, Netstack};
@@ -280,7 +281,6 @@ use crate::netinet6::ip6_output::{ip6_ctloutput, ip6_load};
 use crate::netinet6::ip6_var::IP6_DEFHLIM;
 use crate::netinet6::udp6_output::udp6_output;
 use crate::proc::{ProcGlue, Thread};
-use crate::sysctl::{SysctlReq, bounded_arr, rdstruct};
 
 /// `UDB_INITIAL_HASH_SIZE`.
 const UDB_INITIAL_HASH_SIZE: i32 = 128;
@@ -2985,8 +2985,8 @@ mod tests {
 
     #[test]
     fn sysctl_names_bounds_stats_and_the_port_bitmaps() {
+        use crate::base::sysctl::SECURELEVEL;
         use crate::netinet::in_pcb::{BADDYNAMICPORTS, DP_MAPSIZE, ROOTONLYPORTS};
-        use crate::sysctl::SECURELEVEL;
 
         let (_g, _p) = testudp::setup();
         let u = crate::testutil::USER_BASE + 0x3_a000;

@@ -28,7 +28,7 @@ Four tiers. Every change lands with the tier it belongs to.
    the process's for every test, and no test frees what a later one's tasks run on; (N6.7a1)
    `softnet_test_install` (`kernel::net::if_`, called by every fixture below that has
    interfaces) also forgets the work an earlier test left on the softnets
-   (`kernel::task::taskq_test_forget`): the nfs tests' `lo0` left its input task and its
+   (`kernel::base::task::taskq_test_forget`): the nfs tests' `lo0` left its input task and its
    packets there, which the next `with_smr_thread` freed into another memory. What is not
    memory but is counted or registered for the whole process is left as found by the test
    itself: the nfs fixture's `Drop` drains `lo0`, takes its addresses and routes off

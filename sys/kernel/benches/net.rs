@@ -355,6 +355,7 @@ use hal::mem::pool::{BoxPool, PR_WAITOK, PageSource, PoolBackend, PoolBox, RawPo
 use hal::sync::netlock::{self, NETLOCK};
 use hal::sync::rwlock::RawRwlock;
 use hal::sync::smr::{self, CpuWalk, SmrLink, SmrLinked, SmrPtr};
+use kernel::file::uio::{Iovec, Uio, UioRw, UioSeg};
 use kernel::net::domain::Domain;
 use kernel::net::mbuf::{
     M_COPYALL, M_DONTWAIT, MT_DATA, MbufBox, PACKET_TAG_DLT, PACKET_TAG_GRE, m_adj, m_copydata,
@@ -363,7 +364,6 @@ use kernel::net::mbuf::{
 use kernel::net::mbuf2::{m_tag_find, m_tag_get, m_tag_prepend};
 use kernel::net::unix::Unix;
 use kernel::testutil;
-use kernel::uio::{Iovec, Uio, UioRw, UioSeg};
 
 /// Ops per repetition.
 const OPS: usize = 100_000;
@@ -1656,6 +1656,7 @@ fn placement<T>(what: &str, p: &T) {
 fn if_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
     use hal::sync::netlock::NetHeld;
     use hal::sys::net_if::{IFF_RUNNING, IFXF_CLONED};
+    use kernel::base::task::Task;
     use kernel::net::if_::{
         if_attach, if_attach_queues, if_counters_alloc, if_enqueue_ifq, if_get, if_get_smr,
         if_input_process, if_put, if_test_reset, ifa_add, ifa_del, ifa_ifwithaddr,
@@ -1664,7 +1665,6 @@ fn if_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))
     use kernel::net::if_var::{IfCounters, IfaddrRef, counters_pkt};
     use kernel::net::ifq::{ifiq_input, ifiq_test_take, ifq_dequeue, ifq_enqueue, ifq_serialize};
     use kernel::net::mbuf::{M_FLOWID, MbufList, ml_dequeue, ml_enqueue};
-    use kernel::task::Task;
 
     if !IF_ROWS.iter().any(|n| wanted(n)) {
         return;
@@ -3127,7 +3127,7 @@ fn arp_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
     kernel::netinet::if_ether::arp_test_reset();
     arpinit::<G>();
     // A route cloned at uptime 0 reads as a permanent entry.
-    kernel::tc::TIME_UPTIME.fetch_max(1000, Ordering::Relaxed);
+    kernel::time::tc::TIME_UPTIME.fetch_max(1000, Ordering::Relaxed);
 
     // An Ethernet interface with 10.0.2.15/24 (the ether rows' driver: frames stay queued).
     let ac: &'static Arpcom = Box::leak(Box::new(Arpcom::new()));
@@ -4323,7 +4323,7 @@ fn nd6_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
     dad_test_reset();
     nd6_init();
     // A route cloned at uptime 0 reads as a permanent entry.
-    kernel::tc::TIME_UPTIME.fetch_max(1000, Ordering::Relaxed);
+    kernel::time::tc::TIME_UPTIME.fetch_max(1000, Ordering::Relaxed);
 
     let addr = |b: [u8; 16]| In6Addr { s6_addr: b };
     let ours = addr([0xfd, 0, 0, 0x77, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);

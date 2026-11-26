@@ -130,7 +130,7 @@
 //!   releases before it, the root record and `joliet_level` copied into locals (D-N5.8-R1,
 //!   N5.8c2; userland sees nothing). A legitimate disc is read as the C reads it; a crafted
 //!   one gets default Rock Ridge fields where OpenBSD hangs.
-//! - `hostname` is read out of `kernel::sysctl`'s `hostname` (`hostnamelen` bytes) only for
+//! - `hostname` is read out of `kernel::base::sysctl`'s `hostname` (`hostnamelen` bytes) only for
 //!   a `HOST` component, as the C; the `VOLROOT` component copies `f_mntonname` out of the
 //!   mount.
 //!
@@ -155,7 +155,8 @@ use hal::sys::syslimits::NAME_MAX;
 use hal::sys::types::{Daddr, Dev, Off, major, makedev, minor};
 
 use crate::assert::kpanic;
-use crate::clock::Timespec;
+use crate::base::prf::printf;
+use crate::base::sysctl::{HOSTNAMELEN, MAXHOSTNAMELEN, with_hostname};
 use crate::fs::bio::{DEV_BSHIFT, bread, brelse};
 use crate::fs::buf::BufRef;
 use crate::fs::isofs::cd9660::cd9660_extern::IsoMnt;
@@ -173,9 +174,8 @@ use crate::fs::isofs::cd9660::iso_rrip::{
 };
 use crate::fs::namei::MAXPATHLEN;
 use crate::fs::pod::pod_view;
-use crate::prf::printf;
 use crate::proc::ProcGlue;
-use crate::sysctl::{HOSTNAMELEN, MAXHOSTNAMELEN, with_hostname};
+use crate::time::clock::Timespec;
 
 /// The longest chain of continuation areas a walk follows (the user's decision D-N5.8-U1:
 /// 64 areas of a logical block each for one record is beyond any writer; makefs, mkhybrid

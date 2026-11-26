@@ -122,7 +122,7 @@ use crate::sys::vnode::IO_NDELAY;
 use hal::dev::dma::{DmaBuf, DmaReq, DmaSync};
 use hal::vm::pmap::PMAP_WIRED;
 use hal::vm::uvmexp::UVMEXP;
-use kernel::fork::NTHREADS;
+use kernel::proc::fork::NTHREADS;
 use kernel::vm::fault::{VM_FAULT_INVALID, uvm_fault};
 use kernel::vm::km::{KD_NOWAIT, KD_WAITOK, KP_NONE, KP_PAGEABLE, KV_ANY, bus_dma_memory};
 use kernel::vm::map::Vmspace;

@@ -107,7 +107,7 @@ the image crate names `abi`; plus `libkern`/`libz` under `kernel`. `hal` depends
    use. Every bridge is a row of `bridges.toml` (`trait`, `for`, `paid_by` = the milestone whose
    subsystem removes it); `cargo xtask` counts them; N9 requires 0. A bridge carries no logic
    of its own (the same rule as `abi`). A trait a crate declares and receives as a value
-   (`hal::vm::pmap::PhysPages` passed to `bootstrap`, `kernel::pipe::PipeGlue` the pair's generic
+   (`hal::vm::pmap::PhysPages` passed to `bootstrap`, `kernel::file::pipe::PipeGlue` the pair's generic
    parameter) is API, not a slot: it is a row only while `bsd` implements it, and the row goes
    at the milestone whose `kernel` module implements it, the trait staying (decision 39).
 3. **The syscall table lives in `abi` from N2 on.** Each entry is `Native(fn)` (translation into
@@ -350,7 +350,7 @@ What 0.8's N2 plan became, measured on the merged tree with the tools.
   37).
 - **Crypto** (N2.5): 18 of the 28 files of `sys/crypto/` in `kernel`, 0 `unsafe`; the 10 that
   name `bsd` follow their unblockers, the framework at N8.
-- **pipe(2)** (N2.6), the first subsystem by the new path: `sys/kernel/pipe.rs` (0 `unsafe`),
+- **pipe(2)** (N2.6), the first subsystem by the new path: `sys/kernel/file/pipe.rs` (0 `unsafe`),
   generic over `bsd`'s glue through three bridges (`PipeGlue`, `UioMove`, `PipeFiles`, paid by
   N4; not the `Fd`/`Kq`/`Sigio`/`Uio` of 0.8's text); `sys/kern/sys_pipe.rs` and
   `sys/sys/pipe.rs` are gone from `bsd`; `sys/kern/pipe_glue.rs` is the 0-`unsafe` call-site
@@ -372,7 +372,7 @@ The glue's deviations, gone at N4 when `File`, `Klist` and `Sigio` are the kerne
 - Both pipe files are `FREAD | FWRITE` in the C, so a file's end travels with its handle
   (`Dir`), never from `f_flag`. The filters read four atomics (state, `peer_alive`, `cnt`,
   `size`) written only under the guard, because kqueue calls them back under the lock
-  without a guard (beside decision 12). `sys/kernel/pipe.rs` is one file of about 2,150
+  without a guard (beside decision 12). `sys/kernel/file/pipe.rs` is one file of about 2,150
   lines (code zone about 1,280), left unsplit.
 
 Open for N3 and N4 (the reviewers' notes; N3 closed the first four, section 0.10):
@@ -544,12 +544,12 @@ adds an operation the C's switch lacks.
 
 | C table | `reference/openbsd-src/sys/` | Trait | Milestone | State |
 |---|---|---|---|---|
-| `struct fileops` | `sys/file.h` | `FileOps<G>` | N4.3 | done, `sys/kernel/file.rs` |
+| `struct fileops` | `sys/file.h` | `FileOps<G>` | N4.3 | done, `sys/kernel/file/mod.rs` |
 | `struct pool_allocator` | `sys/pool.h` | `PoolBackend`, `RawPool`; N6.0: `PageSource`, the `pa_alloc`/`pa_free`/`pa_pagesz` half a pool of the kernel's takes (`PoolBackend::create_with`) | N2 | done, `hal` |
 | `struct uvm_pagerops` | `uvm/uvm_pager.h` | `PageObject`, `FaultObject`; the vnode pager behind `VnodeOps` until N5 | N3 | done |
 | `struct consdev` | `dev/cons.h` | `Console` | N2 | done, `hal` |
 | `struct sysent`, `KernelApi` | `sys/systm.h` | the `Native`/`Legacy` table, the table `abi` calls the kernel through | N2 | done, `abi` |
-| `struct filterops` | `sys/event.h:234` | `Filter<G>`; `Filterops<G>` stays as the erased table for `bsd`'s 41 statics (44 at N4.4b; the pipe's three are `kernel::pipe`'s impls since N5.0) | N4.4b | **corrective slice** (below) |
+| `struct filterops` | `sys/event.h:234` | `Filter<G>`; `Filterops<G>` stays as the erased table for `bsd`'s 41 statics (44 at N4.4b; the pipe's three are `kernel::file::pipe`'s impls since N5.0) | N4.4b | **corrective slice** (below) |
 | `struct arm_intr_func` (`raise`, `lower`, `x`, `setipl`, the wakeup hooks) | `arch/arm64/include/intr.h` | `hal::cpu::intr::IntrHardware` (default methods: the `arm_dflt_*`); `bsd`'s `ArmIntrHardware` over the table the GIC drivers fill, registered by `initarm` | N4.5c | done, `hal` (the bridge is paid N7) |
 | `struct interrupt_controller` (`ic_establish`, `ic_disestablish`, `ic_route`, `ic_barrier`, ...) | `arch/arm64/include/intr.h` | none yet: the GIC drivers' own table, kept in `bsd` until they move | N7.2 | kept, reason: its implementers (agintc, ampintc) and every caller are drivers that move together at N7 |
 | `struct softintr_hand` | `kern/kern_softintr.c` | not a trait: one function and its argument, a callback, not an operations table | N4.5c | kept as `fn(*mut c_void)` + argument |
@@ -712,7 +712,7 @@ pub trait CryptoDriver: Sync {
 
 **N4.4b, the corrective slice (the user, 2026-10-22: "para N4.4 tomemos una medida correctiva
 en un slice adicional").** N4.4 landed `Filterops<G>` as the C's struct of `Option<fn>`
-pointers (`sys/kernel/event.rs:509`), with the six kernel filters as `const` tables and 44
+pointers (`sys/kernel/file/event.rs:509`), with the six kernel filters as `const` tables and 44
 statics in 20 `bsd` files. N4.4b adds `Filter<G>` above it: the six kernel filters become
 impls, `Filterops::of::<F>()` builds the erased table from an impl at compile time, and
 `kn_fop: Link<Filterops<G>>` and every `bsd` static stay as they are; `bsd`'s owners move
@@ -936,7 +936,7 @@ day ("yap puedes seguir solo? hasta acabar?"):
     Revisited at N2.6, and the fallback stays: pipe and pipe2 are `Native`, but the module's
     entry (`KernelApi::pipe2`) runs `bsd`'s `mi_syscall` on the same `sysent[]` row as the
     `Legacy` path (the prologue: `refreshcreds`, `pin_check`, pledge, the kernel-lock rule),
-    and that row calls the same `kernel::pipe` function, so with the module or without it a
+    and that row calls the same `kernel::file::pipe` function, so with the module or without it a
     pipe(2) takes the same steps and a missing module still changes nothing userland sees.
     Since the reviews: boot(8)'s record is range-checked (`sys/stand/mod.rs`
     `abi_module_handover`: one `KernelAndModules` region must cover it) and dropped with one

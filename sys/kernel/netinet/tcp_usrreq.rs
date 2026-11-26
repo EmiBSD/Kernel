@@ -201,6 +201,7 @@ use hal::sys::sysctl::SysctlBoundedArgs;
 use hal::user::{AbiPod, UserPtr, bytes_of};
 
 use crate::assert::kpanic;
+use crate::base::sysctl::{SYSCTL_LOCK, SysctlReq, bounded_arr, int, int_bounded, rdstruct};
 use crate::net::domain::net;
 use crate::net::if_var::Ifnet;
 use crate::net::mbuf::{M_WAIT, MLEN, Mbuf, MbufBox, mclgetl};
@@ -256,7 +257,6 @@ use crate::netinet6::in6_pcb::{
 use crate::netinet6::in6_src::in6_embedscope;
 use crate::netinet6::ip6_output::ip6_ctloutput;
 use crate::proc::{ProcGlue, Thread, suser};
-use crate::sysctl::{SYSCTL_LOCK, SysctlReq, bounded_arr, int, int_bounded, rdstruct};
 
 /// `TCP_SENDSPACE`.
 const TCP_SENDSPACE: u32 = 1024 * 16;
@@ -1861,6 +1861,7 @@ mod tests {
     use hal::sys::netinet_tcp::{TH_ACK, TH_FIN, TH_SYN, Tcphdr};
 
     use super::*;
+    use crate::base::sysctl::SECURELEVEL;
     use crate::net::mbuf::{M_DONTWAIT, M_TCP_CSUM_IN_OK, MT_DATA, MT_SONAME, m_get, m_gethdr};
     use crate::net::sockbuf::SS_CANTRCVMORE;
     use crate::netinet::in_pcb::{BADDYNAMICPORTS, DP_MAPSIZE, sotoinpcb, testinet};
@@ -1868,7 +1869,6 @@ mod tests {
     use crate::netinet::tcp_input::tcp_input;
     use crate::netinet::tcp_subr::testtcp::{self, TcpProto, estab, last, stat};
     use crate::netinet::tcp_var::TcpstatCounters as C;
-    use crate::sysctl::SECURELEVEL;
 
     /// A `sockaddr_in` of `addr`:`port` in a name mbuf (`MT_SONAME`).
     fn nam4(addr: [u8; 4], port: u16) -> MbufBox {
@@ -2321,10 +2321,10 @@ mod tests {
         assert_eq!(root.tcpi_rcv_nxt, 1, "relative to irs");
         assert_eq!(root.tcpi_so_rcv_sb_hiwat, 16384);
         // Another user: the members from tcpi_snd_wnd on stay zero.
-        let mut cr = crate::cred::Ucred::new();
+        let mut cr = crate::proc::cred::Ucred::new();
         cr.cr_uid.set(1000);
         cr.cr_ruid.set(1000);
-        let old = p.set_cred(crate::cred::CredRef::new(cr));
+        let old = p.set_cred(crate::proc::cred::CredRef::new(cr));
         let user = info();
         drop(p.set_cred(old.expect("root's credentials")));
         assert_eq!(i32::from(user.tcpi_state), TCPS_ESTABLISHED);

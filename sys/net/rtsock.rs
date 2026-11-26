@@ -569,7 +569,7 @@ mod tests {
         let mut cr = crate::sys::ucred::Ucred::new();
         cr.cr_uid.set(1000);
         cr.cr_ruid.set(1000);
-        let user = crate::kern::proc_glue::test_proc(PID + 1, kernel::cred::CredRef::new(cr));
+        let user = crate::kern::proc_glue::test_proc(PID + 1, kernel::proc::cred::CredRef::new(cr));
         Machine::set_curproc(Machine::curcpu(), Some(user));
         assert_eq!(
             send(a, &request(RTM_ADD, 6, flags, &default)),

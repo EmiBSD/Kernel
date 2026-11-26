@@ -71,17 +71,17 @@
 //!   `struct kinfo_file` likewise has `kf_pad0` (before `so_splice`) and `kf_pad1` (its
 //!   tail padding).
 //! - `FILL_KPROC`, `_getcompatprio`, `PTRTOINT64` and `PR_LOCK`/`PR_UNLOCK` are expanded where
-//!   their one kernel user is, `fill_kproc` in `kernel::sysctl`: a macro over a dozen
+//!   their one kernel user is, `fill_kproc` in `kernel::base::sysctl`: a macro over a dozen
 //!   pointers is a function body in Rust.
 //! - `struct ctldebug` exists only under `DEBUG_SYSCTL`, which is not configured.
 //! - `int *var` of `struct sysctl_bounded_args` is `&'static AtomicI32`: the helpers read and
 //!   write it with the C's atomic operations. `SYSCTL_INT_READONLY` (the C's `1,0` pair) is a
 //!   tuple, and [`SysctlBoundedArgs::readonly`] builds an entry with it.
-//! - The prototypes are `kernel::sysctl`'s (`sysctlfn` is its `SysctlNode` trait) and their
+//! - The prototypes are `kernel::base::sysctl`'s (`sysctlfn` is its `SysctlNode` trait) and their
 //!   subsystems'.
 //!
 //! ## Redesign
-//! - N4.6b: the header is `hal`'s, so that `kernel::sysctl` (`kern.proc`'s `kinfo_proc`,
+//! - N4.6b: the header is `hal`'s, so that `kernel::base::sysctl` (`kern.proc`'s `kinfo_proc`,
 //!   the dispatcher's ids) and `bsd` (`kern.file`'s `kinfo_file`, the nodes still in `bsd`)
 //!   name one copy of each id and structure; `bsd`'s `sys/sys/sysctl.rs` re-exports it.
 //! - `struct kinfo_proc` and `struct kinfo_file` are `AbiPod` through [`crate::abi_pod!`],

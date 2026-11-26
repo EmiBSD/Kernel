@@ -158,7 +158,6 @@ use super::xdr_subs::{
     fxdr_nfsv3time, txdr_hyper, txdr_nfsv3time, txdr_unsigned, xdr_bytes, xdr_get,
 };
 use crate::assert::kpanic;
-use crate::cred::UcredCell;
 use crate::fs::lookup::vfs_lookup;
 use crate::fs::namei::{
     HASBUF, ISSYMLINK, LOCKPARENT, MAXPATHLEN, NOCROSSMOUNT, Nameidata, RDONLY, SAVENAME,
@@ -169,12 +168,13 @@ use crate::fs::vnode::{VA_UTIMES_CHANGE, VA_UTIMES_NULL, Vattr, Vnode, Vtype};
 use crate::fs::vops::Cred;
 use crate::fs::vops::vop_unlock;
 use crate::net::mbuf::Mbuf;
+use crate::proc::cred::UcredCell;
 use crate::proc::{ProcGlue, Thread};
 use crate::sys::mount::{Fhandle, MNT_EXPORTANON, MNT_EXRDONLY};
 use crate::sys::netinet_in::{IPPORT_RESERVED, SockaddrIn};
 use crate::sys::socket::{AF_INET, SOCK_STREAM};
 use crate::sys::syslimits::NGROUPS_MAX;
-use crate::tc::getnanotime;
+use crate::time::tc::getnanotime;
 
 /// `nfsrv_v2errmap`: maps errno values to NFS error numbers. Use `NFSERR_IO` as the catch
 /// all for ones not specifically defined in RFC 1094. Everything after the table maps to
@@ -1013,9 +1013,9 @@ mod tests {
     use std::vec::Vec;
 
     use super::*;
-    use crate::clock::Timespec;
     use crate::fs::nfs::nfsm_subs::{test_bytes, test_chain, test_lens};
     use crate::net::mbuf::{M_WAIT, MT_DATA, m_get};
+    use crate::time::clock::Timespec;
 
     fn writer() -> XdrWriter {
         let m = m_get(M_WAIT, MT_DATA).expect("an mbuf");

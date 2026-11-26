@@ -150,7 +150,7 @@ use crate::fs::ufs::ufs::inode::{IN_ACCESS, IN_CHANGE, IN_MODIFIED, IN_UPDATE, I
 use crate::fs::vnode::{IO_SYNC, V_SAVE, V_SAVEMETA, VDIR, VLNK, VREG, Vnode};
 use crate::fs::vops::{Cred, IoBuf, vop_strategy, vop_unlock};
 use crate::proc::{ProcGlue, Thread};
-use crate::tc::{getnanotime, gettime};
+use crate::time::tc::{getnanotime, gettime};
 use crate::vm::vnode::{uvm_vnp_setsize, uvm_vnp_uncache};
 
 /// `SINGLE`: index of single indirect block.

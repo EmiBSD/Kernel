@@ -396,7 +396,7 @@
 //!   kernel object, whose pages hold `KmBuf`'s Rust slices; the map entry owning the object
 //!   reference it was given) and unmapped by its drop; [`KernelWindow`]'s twin over the
 //!   C's other source of a kernel range. Its bytes move only by copies through the window
-//!   (`kernel::uio::uiomove_window` straight to the uio's iovecs), never through a slice.
+//!   (`kernel::file::uio::uiomove_window` straight to the uio's iovecs), never through a slice.
 //! - N7.0: `bus_space_map`'s and `bus_space_unmap`'s bodies (LZ: arm64's `generic_space_map`
 //!   and `generic_space_unmap` in `bsd`, the `vmmap` cursor bumped by hand and every page
 //!   entered through the legacy `pmap_kenter_cache` `unsafe fn`) are [`map_device`] and
@@ -460,8 +460,8 @@ use super::types::{
     uvm_mapflag,
 };
 use crate::assert::{kassert, kpanic};
+use crate::base::prf::unported;
 use crate::fs::buf::MAXPHYS;
-use crate::prf::unported;
 
 /// `VM_KERNEL_SPACE_SIZE` (`<uvm/uvm_param.h>`): the size of the kernel's virtual address
 /// space (the kernel object's).
@@ -1087,7 +1087,7 @@ pub(super) fn mapper() -> VmMapper {
 }
 
 /// The timekeep page's kernel view at `va` (`hal::vm::pmap::KernelMapper::timekeep_view`): for
-/// `kernel::tc::timekeep_object`, which made `va` the kernel map's wired, never-unmapped
+/// `kernel::time::tc::timekeep_object`, which made `va` the kernel map's wired, never-unmapped
 /// mapping of the timekeep object; `hal` checks the page is managed and wired, claims its
 /// frame for good and makes the view once per boot (`None` otherwise).
 pub(crate) fn timekeep_view(va: Vaddr) -> Option<&'static hal::sys::timetc::TimekeepAtomic> {

@@ -57,19 +57,19 @@ use hal::mem::pool::{PoolBackend, RawPool};
 use hal::sync::klock;
 use hal::sys::errno::Errno;
 use hal::sys::types::Off;
-use kernel::descrip::{falloc, fdinit, fdinsert, fdplock, filedesc_init};
-use kernel::event::{
+use kernel::file::descrip::{falloc, fdinit, fdinsert, fdplock, filedesc_init};
+use kernel::file::event::{
     EV_ADD, EV_DELETE, EVFILT_READ, EVFILT_USER, FILTEROP_ISFD, FILTEROP_MPSAFE, Filter, Filterops,
     Kevent, Klist, Knote, KqRef, Kqueue, ev_set, fd_kqlist_insert, knote_modify, knote_process,
     kqpoll_done, kqpoll_init, kqueue_alloc, kqueue_init, kqueue_register, kqueue_scan,
     kqueue_scan_setup, thread_kq,
 };
-use kernel::file::{DTYPE_PIPE, File, FileOps};
-use kernel::proc::{self, ProcGlue, ProcTables, Process, Session, Thread};
-use kernel::resource::{self, PlimitRef};
-use kernel::select::{
+use kernel::file::select::{
     FdMask, POLLIN, Pollfd, ppollcollect, ppollregister, pselcollect, pselregister,
 };
+use kernel::file::{DTYPE_PIPE, File, FileOps};
+use kernel::proc::resource::{self, PlimitRef};
+use kernel::proc::{self, ProcGlue, ProcTables, Process, Session, Thread};
 use kernel::testutil;
 
 // ---------------------------------------------------------------------------------------
@@ -323,8 +323,8 @@ impl ProcGlue for BenchGlue {
     ) {
     }
     /// No per-CPU slice start: the uptime itself (no running part).
-    fn spc_runtime() -> kernel::clock::Timespec {
-        kernel::tc::nanouptime()
+    fn spc_runtime() -> kernel::time::clock::Timespec {
+        kernel::time::tc::nanouptime()
     }
     fn process_ref(pr: &Process<Self>) -> proc::ProcessRef<Self> {
         match hal::mem::pool::PoolArc::from_ref(pr) {
@@ -372,7 +372,7 @@ impl FileOps<BenchFiles> for BenchOps {
     fn read(
         &self,
         _: &File<BenchFiles>,
-        _: &mut kernel::uio::Uio<'_, BenchGlue>,
+        _: &mut kernel::file::uio::Uio<'_, BenchGlue>,
         _: i32,
     ) -> Result<(), Errno> {
         Ok(())
@@ -380,7 +380,7 @@ impl FileOps<BenchFiles> for BenchOps {
     fn write(
         &self,
         _: &File<BenchFiles>,
-        _: &mut kernel::uio::Uio<'_, BenchGlue>,
+        _: &mut kernel::file::uio::Uio<'_, BenchGlue>,
         _: i32,
     ) -> Result<(), Errno> {
         Ok(())
@@ -431,7 +431,7 @@ fn scan(p: &Thread<BenchGlue>, kq: &KqRef<BenchGlue>, out: &mut [Kevent]) -> usi
     let start = core::pin::pin!(Knote::marker(kq));
     let end = core::pin::pin!(Knote::marker(kq));
     let s = kqueue_scan_setup(kq, start.as_ref(), end.as_ref());
-    let mut ts = kernel::clock::Timespec::ZERO;
+    let mut ts = kernel::time::clock::Timespec::ZERO;
     let n = out.len();
     kqueue_scan(&s, n, out, Some(&mut ts), p).0
 }
@@ -504,7 +504,9 @@ fn main() {
     testutil::set_file_log(false);
 
     let pr = proc::process_alloc::<BenchGlue>(42, ());
-    drop(pr.set_ucred(kernel::cred::CredRef::new(kernel::cred::Ucred::new())));
+    drop(pr.set_ucred(kernel::proc::cred::CredRef::new(
+        kernel::proc::cred::Ucred::new(),
+    )));
     let lim = resource::lim_startup(7030, 1 << 30, 4096);
     drop(pr.set_limit(PlimitRef::new(lim)));
     pr.set_fd(fdinit());
@@ -532,7 +534,7 @@ fn main() {
     let mut out = [Kevent::default(); 8];
     let own: &'static Klist<BenchGlue> = Box::leak(Box::new(Klist::new()));
     own.init_own();
-    let lone = kernel::event::test_knote(&kq, 999); // not the user rows' ident
+    let lone = kernel::file::event::test_knote(&kq, 999); // not the user rows' ident
 
     let mut benches: Vec<Bench<'_>> = Vec::new();
     // kn.deliver-1 and -8 are timed in main's order: one knote first, then eight.

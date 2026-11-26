@@ -118,13 +118,13 @@ use hal::sys::types::Daddr;
 use super::inode::{I32Word, U32Word, U64Word};
 use super::quota::MAXQUOTAS;
 use crate::assert::kpanic;
-use crate::cred::CredRef;
 use crate::fs::mount::Mount;
 #[cfg(feature = "ext2fs")]
 use crate::fs::ufs::ext2fs::ext2fs::Ext2Superblock;
 use crate::fs::ufs::ffs::fs::Superblock;
 use crate::fs::vnode::Vnode;
 use crate::proc::ProcGlue;
+use crate::proc::cred::CredRef;
 
 /// `ufsmount_u`: the in-core super-block of the file system the mount holds, FFS's or EXT2FS's
 /// (the C's union of the two pointers, told apart by `um_fstype`; here by the variant).

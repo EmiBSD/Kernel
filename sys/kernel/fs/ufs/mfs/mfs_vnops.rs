@@ -104,8 +104,9 @@ use hal::user::UserPtr;
 
 use super::mfsnode::{Mfsnode, vtomfs};
 use crate::assert::kpanic;
-use crate::event::Knote;
 use crate::file::LockOwner;
+use crate::file::event::Knote;
+use crate::file::uio::Uio;
 use crate::fs::bio::{DEV_BSHIFT, biodone};
 use crate::fs::buf::{B_ERROR, B_READ, BufRef};
 use crate::fs::default;
@@ -114,7 +115,6 @@ use crate::fs::subr::vinvalbuf;
 use crate::fs::vnode::{V_SAVE, VBLK, Vattr, Vnode};
 use crate::fs::vops::{Cn, Cred, IoBuf, Vnops, vop_unlock};
 use crate::proc::{ProcGlue, Thread};
-use crate::uio::Uio;
 
 /// `mfs_vops`: mfs vnode operations (the glue's `UfsTables::mfs_vops`, one address).
 pub struct MfsVnops<G: ProcGlue> {
@@ -233,7 +233,7 @@ pub fn mfs_close<G: ProcGlue>(
     // There should be no way to have any more buffers on this vnode.
     #[cfg(feature = "diagnostic")]
     if mfsp.queued() {
-        crate::prf::printf(format_args!("mfs_close: dirty buffers\n"));
+        crate::base::prf::printf(format_args!("mfs_close: dirty buffers\n"));
     }
 
     // Send a request to the filesystem server to exit.
@@ -274,7 +274,7 @@ pub fn mfs_print<G: ProcGlue>(vp: &'static Vnode<G>) -> Result<(), Errno> {
     {
         let mfsp = vtomfs(vp);
 
-        crate::prf::printf(format_args!(
+        crate::base::prf::printf(format_args!(
             "tag VT_MFS, tid {}, base {:#x}, size {}\n",
             mfsp.mfs_tid, mfsp.mfs_baseoff, mfsp.mfs_size
         ));

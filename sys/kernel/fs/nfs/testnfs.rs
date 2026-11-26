@@ -59,7 +59,6 @@ use super::nfs_socket::{nfs_connect, nfs_disconnect, nfs_timer};
 use super::nfs_subs::nfs_init;
 use super::nfsm_subs::test_bytes;
 use super::nfsmount::{M_NFSMNT, NfsMount, NfsMountRef, NfsNam};
-use crate::cred::{CredRef, Ucred};
 use crate::fs::mount::{Mount, Vfsconf, vfs_mount_alloc, vfs_unbusy};
 use crate::fs::subr::{getnewvnode, vfs_test_reset};
 use crate::fs::vnode::{VT_NFS, Vnode};
@@ -74,8 +73,9 @@ use crate::net::mbuf::{
 use crate::net::proto::Protocol;
 use crate::net::socket::{SocketRef, sobind, soclose, socreate, solock, soreceive, sosend};
 use crate::netinet::in_proto::{InetDomain, RipProtocol, TcpProtocol, UdpProtocol, inetsw_set};
+use crate::proc::cred::{CredRef, Ucred};
 use crate::proc::{ProcGlue, Thread, process_alloc, thread_alloc};
-use crate::timeout::Timeout;
+use crate::time::timeout::Timeout;
 
 crate::test_file_glue!(NfsFiles, NfsGlue);
 crate::test_proc_glue!(NfsGlue, NfsFiles);
@@ -200,7 +200,7 @@ impl crate::fs::spec::Devsw<G> for NfsDevsw {
     fn cdev_read(
         &self,
         _dev: i32,
-        _uio: &mut crate::uio::Uio<'_, G>,
+        _uio: &mut crate::file::uio::Uio<'_, G>,
         _i: i32,
     ) -> Result<(), Errno> {
         Err(Errno::ENXIO)
@@ -208,7 +208,7 @@ impl crate::fs::spec::Devsw<G> for NfsDevsw {
     fn cdev_write(
         &self,
         _dev: i32,
-        _uio: &mut crate::uio::Uio<'_, G>,
+        _uio: &mut crate::file::uio::Uio<'_, G>,
         _i: i32,
     ) -> Result<(), Errno> {
         Err(Errno::ENXIO)
@@ -223,7 +223,11 @@ impl crate::fs::spec::Devsw<G> for NfsDevsw {
     ) -> Result<(), Errno> {
         Err(Errno::ENXIO)
     }
-    fn cdev_kqfilter(&self, _dev: i32, _kn: &crate::event::Knote<G>) -> Option<Result<(), Errno>> {
+    fn cdev_kqfilter(
+        &self,
+        _dev: i32,
+        _kn: &crate::file::event::Knote<G>,
+    ) -> Option<Result<(), Errno>> {
         None
     }
     fn bdev_open(&self, _dev: i32, _o: i32, _t: i32, _p: &Thread<G>) -> Result<(), Errno> {
@@ -359,7 +363,7 @@ fn setup_with(g: MutexGuard<'static, ()>, uid: u32) -> Fixture {
     }
     if !MADE.with(|m| m.replace(true)) {
         crate::proc::procinit::<G>(64, 64);
-        let _ = crate::descrip::filedesc_init::<NfsFiles>();
+        let _ = crate::file::descrip::filedesc_init::<NfsFiles>();
         let (pr0, p0) = new_thread(0, 0);
         G::tables().set_process0(pr0, Pin::static_ref(p0));
     }

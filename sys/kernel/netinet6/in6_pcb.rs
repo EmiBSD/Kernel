@@ -561,7 +561,7 @@ pub fn in6_pcbnotify<G: ProcGlue>(
     }
     if in6_is_addr_v4mapped(&dst.sin6_addr) {
         #[cfg(feature = "diagnostic")]
-        crate::prf::printf(format_args!(
+        crate::base::prf::printf(format_args!(
             "in6_pcbnotify: Huh?  Thought we never got called with mapped!\n"
         ));
         return;

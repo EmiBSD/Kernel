@@ -130,6 +130,8 @@ use hal::sync::sleep::{INFSLP, PWAIT, wakeup};
 use hal::sys::reboot::{RB_COCOVM, RB_UNHIBERNATE};
 
 use crate::assert::{kassert, kpanic};
+use crate::base::prf::unported;
+use crate::base::prf::{Str, printf};
 use crate::dev::device::{
     AllLink, Aux, CD_COCOVM, CD_INDIRECT, CD_SKIPHIBERNATE, ConfigRow, DETACH_FORCE, DETACH_QUIET,
     DV_IFNET, DV_TAPE, DVACT_DEACTIVATE, DVACT_POWERDOWN, DVACT_QUIESCE, DVACT_RESUME,
@@ -137,8 +139,6 @@ use crate::dev::device::{
     FSTATE_DSTAR, FSTATE_FOUND, FSTATE_NOTFOUND, FSTATE_STAR, Ident, Match, MountrootLink,
     UnitTable,
 };
-use crate::prf::unported;
-use crate::prf::{Str, printf};
 use crate::sys::errno::Errno;
 
 /// `msgs[]`: what `config_found` prints after a `cfprint_t` returns `QUIET`, `UNCONF` or

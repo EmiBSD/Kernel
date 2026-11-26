@@ -162,7 +162,7 @@ pub struct SchedstatePercpu {
     pub spc_cp_time: [AtomicU64; CPUSTATES],
 
     // `spc_itimer`, `spc_profclock`, `spc_roundrobin`, `spc_statclock`: the CPU's slots of
-    // `kernel::clockintr`'s queue (`Clockintr::of(cpu, Slot::...)`, N4.8a).
+    // `kernel::time::clockintr`'s queue (`Clockintr::of(cpu, Slot::...)`, N4.8a).
     /// `spc_spinning` (volatile): this cpu is currently spinning.
     pub spc_spinning: AtomicU32,
     // `spc_deferred`, `spc_ndeferred`, `spc_smrdepth`, `spc_smrexpedite`, `spc_smrgp`: the

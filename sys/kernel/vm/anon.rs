@@ -110,7 +110,7 @@ use hal::vm::uvmexp::UVMEXP;
 use super::amap::Amap;
 use super::page::{Owner, OwnerTag, PG_BUSY, PG_RELEASED, PageAnon, VmPage, uvm_pagefree};
 use crate::assert::{kassert, kpanic};
-use crate::prf::unported;
+use crate::base::prf::unported;
 
 /// `SWSLOT_BAD` (`<uvm/uvm_swap.h>`): a swap slot the pager could not read; never freed,
 /// never used again.

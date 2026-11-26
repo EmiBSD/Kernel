@@ -847,15 +847,19 @@ pub fn cache_counts<G: ProcGlue>() -> (i64, i64) {
     (nc.numcache, nc.numneg)
 }
 
-impl<G: ProcGlue> crate::sysctl::SysctlNode for NchstatsNode<G> {
+impl<G: ProcGlue> crate::base::sysctl::SysctlNode for NchstatsNode<G> {
     /// `case KERN_NCHSTATS: return sysctl_rdstruct(oldp, oldlenp, newp, &nchstats, ...)`.
-    fn sysctl(&self, _name: &[i32], req: &mut crate::sysctl::SysctlReq<'_>) -> Result<(), Errno> {
+    fn sysctl(
+        &self,
+        _name: &[i32],
+        req: &mut crate::base::sysctl::SysctlReq<'_>,
+    ) -> Result<(), Errno> {
         let mut bytes = [0u8; 12 * size_of::<u64>()];
         let (words, _) = bytes.as_chunks_mut::<{ size_of::<u64>() }>();
         for (w, v) in words.iter_mut().zip(vfs::<G>().nchstats.snapshot()) {
             *w = v.to_ne_bytes();
         }
-        crate::sysctl::rdstruct(req, &bytes)
+        crate::base::sysctl::rdstruct(req, &bytes)
     }
 }
 
@@ -899,7 +903,7 @@ mod tests {
     /// new value), `ENOMEM` for a short room, the length always given back.
     #[test]
     fn kern_nchstats_reads_the_counters_in_the_c_s_order() {
-        use crate::sysctl::{SysctlNode, SysctlReq};
+        use crate::base::sysctl::{SysctlNode, SysctlReq};
         let (_g, _p) = test_thread();
         let st = &vfs::<G>().nchstats;
         st.ncs_goodhits.store(7, Mem::Relaxed);

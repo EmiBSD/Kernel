@@ -331,11 +331,11 @@ mod tests {
     use super::super::testext2fs::newfs::{self, B, NFREE};
     use super::super::testext2fs::{attach, mount, new_file, vget};
     use super::*;
-    use crate::cred::Ucred;
     use crate::fs::subr::vput;
     use crate::fs::ufs::ffs::testffs;
     use crate::fs::ufs::ufs::inode::vtoi;
     use crate::fs::vnode::Vnode;
+    use crate::proc::cred::Ucred;
 
     /// `ext2fs_bmaparray`'s disk address of logical block `lbn` of `vp`.
     fn bmap(vp: &'static Vnode<crate::fs::testfs::TestGlue>, lbn: Daddr) -> Daddr {

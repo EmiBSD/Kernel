@@ -57,7 +57,7 @@
 //! ## Redesign
 //! - N4.5b: `struct sigacts`, `SAS_*`, `SIG_CATCH`/`SIG_HOLD`, `SIGPENDING`, the `SA_*`
 //!   signal properties, `sigcantmask`, `enum signal_type` and `struct sigctx` are
-//!   `kernel::sig`'s (`sys/kernel/sig.rs`): `struct sigacts`'s `[m]` members are a cell of
+//!   `kernel::sig`'s (`sys/kernel/sig/mod.rs`): `struct sigacts`'s `[m]` members are a cell of
 //!   the process's `ps_mtx` there (LZ: `Cell`s under an `unsafe impl Sync`), opened with its
 //!   guard. This module re-exports them (0 `unsafe`, LZ 1).
 

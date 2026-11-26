@@ -102,6 +102,7 @@ use hal::sys::socket::AF_INET;
 use hal::sys::sysctl::SysctlBoundedArgs;
 
 use crate::assert::kpanic;
+use crate::base::sysctl::{SysctlReq, bounded_arr, rdstruct};
 use crate::net::domain::net;
 use crate::net::if_::{if_get, if_put};
 use crate::net::if_var::Ifnet;
@@ -127,7 +128,6 @@ use crate::netinet::ip_output::{in_hdr_cksum_out, in_proto_cksum_out, ip_load, i
 use crate::netinet::ip_var::{IP_ALLOWBROADCAST, IP_RAWOUTPUT};
 use crate::netinet::raw_ip::{rip_chkhdr, sa_bytes};
 use crate::proc::{ProcGlue, Thread};
-use crate::sysctl::{SysctlReq, bounded_arr, rdstruct};
 
 /// `DIVERT_SENDSPACE`.
 pub const DIVERT_SENDSPACE: i32 = 65536 + 100;

@@ -178,10 +178,10 @@ pub fn sched_kthreads_create(v: *mut c_void) {
 
     let n = idle_arg_cpu(v);
     let mut idle: Option<&'static Proc> = None;
-    let made = kernel::fork::fork1_with(
+    let made = kernel::proc::fork::fork1_with(
         hal::ds::pin::pin_static(&PROC0),
         FORK_SHAREVM | FORK_SHAREFILES | FORK_NOZOMBIE | FORK_SYSTEM | FORK_IDLE,
-        kernel::fork::Start::Idle(n),
+        kernel::proc::fork::Start::Idle(n),
         &mut |p| idle = Some(p.as_static()),
     );
     let (Ok(_), Some(p)) = (made, idle) else {

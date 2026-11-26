@@ -59,7 +59,7 @@
 //! Upstream: sys/kern/kern_sig.c @ 3ce1f3f79392
 //! LZ: sys/kern/kern_sig.rs@3c62ede68802
 //!
-//! N4.5b: the signals' logic is `kernel::sig` (`sys/kernel/sig.rs`): the actions, the
+//! N4.5b: the signals' logic is `kernel::sig` (`sys/kernel/sig/mod.rs`): the actions, the
 //! generation and delivery of signals, job control and the debugger's stops,
 //! single-threading and the system calls' bodies. What stays here is what `bsd` still owns:
 //! - the `sysent[]` rows (`sys_sigaction` ... `sys___thrsigdivert`, `sys_nosys`,
@@ -70,7 +70,7 @@
 //!   which pin a thread where the kernel makes it runnable;
 //! - `coredump` (the file systems), reached by the kernel through `BsdProcGlue`;
 //! - the `sigio` functions' LZ signatures (`sigio_setown(sir, cmd, &data)`, ...) over
-//!   `kernel::sigio`.
+//!   `kernel::sig::sigio`.
 //!
 //! ## Deviations
 //! - Calls into subsystems that are not ported are reported with `unported!`: in
@@ -89,7 +89,7 @@
 //! - `sigio_setown`/`sigio_getown` take the `int` that `data` points to as `&i32`/`&mut i32`.
 //!
 //! ## Redesign
-//! - N4.5b: the module is `bsd`'s edge of `kernel::sig` and `kernel::sigio` (LZ: the whole of
+//! - N4.5b: the module is `bsd`'s edge of `kernel::sig` and `kernel::sig::sigio` (LZ: the whole of
 //!   `kern_sig.c`, 17 `unsafe`: the `sigacts` pool item written in place, `initprocess`'s
 //!   pointer, the sigio links); what it keeps is listed above, with 0 `unsafe`.
 
@@ -130,6 +130,7 @@ use hal::vm::param::ptoa;
 use kernel::sig::UserTimespec;
 use kernel::vm::map::uvm_unmap;
 
+pub use kernel::sig::sigio::{sigio_copy, sigio_free, sigio_freelist_process};
 pub use kernel::sig::{
     SIGACTS_POOL, SIGPROP, cansignal, cursig, dosigsuspend, execsigs, initsiginfo, killpg1,
     postsig, postsig_done, proc_stop_finish, proc_stop_setup, proc_suspend_check,
@@ -137,7 +138,6 @@ pub use kernel::sig::{
     setsigctx, setsigvec, siginit, sigismasked, signal_init, sigstkinit, single_thread_clear,
     single_thread_set,
 };
-pub use kernel::sigio::{sigio_copy, sigio_free, sigio_freelist_process};
 
 /// `struct coredump_iostate`: what `coredump_write` and `coredump_unmap` work on.
 pub struct CoredumpIostate<'a> {
@@ -318,27 +318,27 @@ pub fn native_sigreturn(
 }
 
 /// `pgsigio`: send a SIGIO or SIGURG signal to a process or process group using stored
-/// credentials rather than those of the current process (`kernel::sigio`).
+/// credentials rather than those of the current process (`kernel::sig::sigio`).
 pub fn pgsigio(sir: &SigioRef, sig: i32, checkctty: bool) {
-    kernel::sigio::pgsigio::<BsdProcGlue>(sir, sig, checkctty);
+    kernel::sig::sigio::pgsigio::<BsdProcGlue>(sir, sig, checkctty);
 }
 
 /// `sigio_setown`: registers the process (`*data` > 0) or process group (< 0, or
 /// `TIOCSPGRP`) to receive `SIGIO`/`SIGURG` through `sir`; 0 unregisters.
 pub fn sigio_setown(sir: &SigioRef, cmd: u64, data: &i32) -> Result<(), Errno> {
-    kernel::sigio::sigio_setown::<BsdProcGlue>(sir, cmd, *data)
+    kernel::sig::sigio::sigio_setown::<BsdProcGlue>(sir, cmd, *data)
 }
 
 /// `sigio_getown`: the pgid registered through `sir` (negated for `TIOCGPGRP`).
 pub fn sigio_getown(sir: &SigioRef, cmd: u64, data: &mut i32) {
-    *data = kernel::sigio::sigio_getown(sir, cmd);
+    *data = kernel::sig::sigio::sigio_getown(sir, cmd);
 }
 
-// The ioctl numbers `kernel::sigio` compares are `<sys/ttycom.h>`'s.
+// The ioctl numbers `kernel::sig::sigio` compares are `<sys/ttycom.h>`'s.
 const _: () = {
-    assert!(kernel::sigio::TIOCSPGRP == TIOCSPGRP);
-    assert!(kernel::sigio::TIOCGPGRP == TIOCGPGRP);
-    assert!(kernel::sigio::M_SIGIO == M_SIGIO);
+    assert!(kernel::sig::sigio::TIOCSPGRP == TIOCSPGRP);
+    assert!(kernel::sig::sigio::TIOCGPGRP == TIOCGPGRP);
+    assert!(kernel::sig::sigio::M_SIGIO == M_SIGIO);
 };
 
 /// `coredump`: dump core, into a file named "progname.core", unless the process was

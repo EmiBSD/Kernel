@@ -274,7 +274,7 @@ pub struct CpuInfo {
     /// `CI_DDB_*` (volatile).
     pub ci_ddb_paused: AtomicI32,
     // ci_gmon, ci_gmonclock: GPROF.
-    // ci_queue: the CPU's clock interrupt queue is `kernel::clockintr::CPUS`' (N4.8a).
+    // ci_queue: the CPU's clock interrupt queue is `kernel::time::clockintr::CPUS`' (N4.8a).
     /// The first panic message of this CPU.
     pub ci_panicbuf: UnsafeCell<[u8; 512]>,
 }

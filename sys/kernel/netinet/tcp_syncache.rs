@@ -262,7 +262,7 @@ use crate::netinet6::in6_src::in6_selecthlim;
 use crate::netinet6::ip6_output::ip6_output;
 use crate::netinet6::ip6_var::IP6_DEFHLIM;
 use crate::proc::ProcGlue;
-use crate::timeout::{KCLOCK_NONE, TIMEOUT_MPSAFE, TIMEOUT_PROC};
+use crate::time::timeout::{KCLOCK_NONE, TIMEOUT_MPSAFE, TIMEOUT_PROC};
 
 /// `M_SYNCACHE`: the SYN cache's bucket arrays (`malloc.h`).
 const M_SYNCACHE: i32 = 139;

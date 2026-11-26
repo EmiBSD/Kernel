@@ -53,7 +53,7 @@
 //! Upstream: sys/sys/ucred.h @ 3ce1f3f79392
 //! LZ: sys/sys/ucred.rs@3c62ede68802
 //!
-//! `struct ucred` is the kernel crate's (`kernel::cred::Ucred`, whose members are atomic
+//! `struct ucred` is the kernel crate's (`kernel::proc::cred::Ucred`, whose members are atomic
 //! cells read with `get()`; a placed credential is shared through the counted `CredRef`,
 //! whose `Clone` is `crhold` and whose `Drop` is `crfree`); this header keeps `NOCRED`,
 //! `FSCRED`, `struct xucred`, and [`CredSlot`], a holder's reference. `kern/kern_prot.rs`
@@ -69,7 +69,7 @@
 //!
 //! ## Redesign
 //! - LZ's `struct ucred` (here, `Cell` members after `cr_refcnt`, filled in through the
-//!   shared pointer the processes held) moved to `kernel::cred` (N4.2), re-exported.
+//!   shared pointer the processes held) moved to `kernel::proc::cred` (N4.2), re-exported.
 //! - The holders of a `struct ucred *` that `crhold` and `crfree` it by hand (a file's
 //!   `f_cred`, a sigio's `sio_ucred`, an nfs node's, a quota's) hold a [`CredSlot`]: the
 //!   counted reference in a mutex-guarded cell, given back by dropping it, never by a raw
@@ -79,8 +79,8 @@
 use hal::cpu::intr::IPL_NONE;
 use hal::sync::mutex::Mutexed;
 
-pub use kernel::cred::{CountCell, CredRef, IdCell, Ucred, UcredCell};
 pub use kernel::fs::vops::Cred;
+pub use kernel::proc::cred::{CountCell, CredRef, IdCell, Ucred, UcredCell};
 
 /// `NOCRED`: no credential available.
 pub const NOCRED: Cred<'static> = Cred::NOCRED;

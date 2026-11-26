@@ -121,12 +121,12 @@ use super::vops::{
     vop_kqfilter, vop_open, vop_read, vop_setattr, vop_unlock, vop_write,
 };
 use crate::assert::{kassert, kpanic};
-use crate::event::Knote;
+use crate::file::event::Knote;
+use crate::file::uio::{Iovec, Uio, UioRw, UioSeg};
 use crate::file::{FIF_HASLOCK, FO_POSITION, File, FileGlue, FileOps};
+use crate::proc::resource::RLIMIT_FSIZE;
 use crate::proc::{ProcGlue, Thread};
-use crate::resource::RLIMIT_FSIZE;
-use crate::termios::TIOCSCTTY;
-use crate::uio::{Iovec, Uio, UioRw, UioSeg};
+use crate::tty::termios::TIOCSCTTY;
 
 /// `vnops`: the file operations of a `DTYPE_VNODE` file.
 pub struct VnodeFileOps;
@@ -325,7 +325,8 @@ pub fn vn_fsizechk<G: ProcGlue>(
         && let Some(p) = p
         && ioflag & IO_NOLIMIT == 0
     {
-        let limit = crate::resource::lim_cur_proc(&p, RLIMIT_FSIZE).min(Off::MAX as u64) as Off;
+        let limit =
+            crate::proc::resource::lim_cur_proc(&p, RLIMIT_FSIZE).min(Off::MAX as u64) as Off;
 
         // if already at or over the limit, send the signal and fail
         if uio.uio_offset >= limit {
@@ -782,7 +783,7 @@ mod tests {
     use core::sync::atomic::Ordering as Mem;
 
     use super::*;
-    use crate::descrip::{falloc, fdinsert, fdplock};
+    use crate::file::descrip::{falloc, fdinsert, fdplock};
     use crate::file::{DTYPE_VNODE, FileRef};
     use crate::fs::namei::NiDirp;
     use crate::fs::testfs::{
@@ -970,15 +971,15 @@ mod tests {
     #[test]
     fn fsizechk_clamps_a_write_at_the_limit() {
         let (_g, p) = test_thread();
-        let mut limits = crate::resource::Plimit::new();
+        let mut limits = crate::proc::resource::Plimit::new();
         for l in &mut limits.pl_rlimit {
-            l.rlim_cur = crate::resource::RLIM_INFINITY;
-            l.rlim_max = crate::resource::RLIM_INFINITY;
+            l.rlim_cur = crate::proc::resource::RLIM_INFINITY;
+            l.rlim_max = crate::proc::resource::RLIM_INFINITY;
         }
         limits.pl_rlimit[RLIMIT_FSIZE].rlim_cur = 1000;
         drop(
             p.process()
-                .set_limit(crate::resource::PlimitRef::new(limits)),
+                .set_limit(crate::proc::resource::PlimitRef::new(limits)),
         );
         let vp = open(p, b"/f", FREAD).unwrap();
         let pin = hal::ds::pin::pin_static(p);

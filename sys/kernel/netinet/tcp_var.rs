@@ -168,7 +168,7 @@ use crate::netinet::in_pcb::{Inpcb, InpcbRef, Inpcbtable};
 use crate::netinet::tcp_subr::{SACKHL_POOL, TCP_STARTTIME, TCPQE_POOL};
 use crate::netinet::tcp_timer::TCPT_NTIMERS;
 use crate::proc::ProcGlue;
-use crate::timeout::Timeout;
+use crate::time::timeout::Timeout;
 
 // t_flags.
 
@@ -1182,7 +1182,7 @@ pub fn tcpstat_pkt(pcounter: TcpstatCounters, bcounter: TcpstatCounters, v: u64)
 pub fn tcp_now() -> u64 {
     TCP_STARTTIME
         .load(core::sync::atomic::Ordering::Relaxed)
-        .wrapping_add(crate::tc::getnsecruntime() / 1_000_000)
+        .wrapping_add(crate::time::tc::getnsecruntime() / 1_000_000)
 }
 
 /// `TCP_TIME(sec)`: `tcp_now()` is in milliseconds.

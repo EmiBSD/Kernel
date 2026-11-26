@@ -294,12 +294,14 @@ use hal::sys::types::{Dev, minor};
 use hal::user::{AbiPod, UserPtr};
 
 use crate::assert::{kassert, kpanic};
-use crate::clock::{Timeval, sec_to_nsec};
-use crate::event::{
+use crate::base::sysctl::{SysctlReq, int_bounded};
+use crate::base::task::{SYSTQ, Task, task_add, task_del};
+use crate::file::FileGlue;
+use crate::file::event::{
     EVFILT_READ, FILTEROP_ISFD, FILTEROP_MPSAFE, Filter, Filterops, Kevent, Klist, Knote,
     knote_modify, knote_process,
 };
-use crate::file::FileGlue;
+use crate::file::uio::Uio;
 use crate::fs::spec::CLONE_SHIFT;
 use crate::fs::vnode::{IO_NDELAY, VCHR};
 use crate::net::bpf_filter::{_bpf_lfilter, BpfOps, bpf_validate};
@@ -312,14 +314,12 @@ use crate::net::mbuf::{
 use crate::net::mbuf2::{m_tag_get, m_tag_prepend};
 use crate::net::proto::SockaddrView;
 use crate::proc::{ProcGlue, Thread};
-use crate::sigio::{
+use crate::sig::sigio::{
     SigioRef, TIOCGPGRP, TIOCSPGRP, pgsigio, sigio_free, sigio_getown, sigio_setown,
 };
-use crate::sysctl::{SysctlReq, int_bounded};
-use crate::task::{SYSTQ, Task, task_add, task_del};
-use crate::tc::{microtime, nsecuptime};
-use crate::timeout::{KCLOCK_NONE, Timeout};
-use crate::uio::Uio;
+use crate::time::clock::{Timeval, sec_to_nsec};
+use crate::time::tc::{microtime, nsecuptime};
+use crate::time::timeout::{KCLOCK_NONE, Timeout};
 
 /// `M_DEVBUF` (`<sys/malloc.h>`, `bsd`'s: docs/SCAFFOLDING.md "copies"): the descriptors',
 /// taps', programs' and buffers' malloc type.
@@ -2315,12 +2315,12 @@ mod tests {
     use hal::sys::types::makedev;
 
     use super::*;
+    use crate::file::uio::{Iovec, UioRw, UioSeg};
     use crate::net::if_::{if_test_reset, test_ifnet, test_ifnet_with};
     use crate::net::if_var::NetDriver;
     use crate::net::mbuf::{M_DONTWAIT, m_cat, m_get};
     use crate::net::unix::tests::G;
     use crate::testutil::{USER_BASE, USER_LEN, user_bytes};
-    use crate::uio::{Iovec, UioRw, UioSeg};
 
     /// The tests' user memory (the user-copy double's map, `hal/arch/host/copy.rs`): a program
     /// at `UPROG`, a read or write buffer of up to 8 KiB at `UBUF`, words at `UWORD`.

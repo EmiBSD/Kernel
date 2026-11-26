@@ -50,19 +50,19 @@
 
 /* <CODE> */
 //! `<sys/sigio.h>`: the registration of a process or process group to receive `SIGIO`/
-//! `SIGURG` for a file: `kernel::sigio`'s since N4.5b, named here for `bsd`'s sockets, `bpf`,
+//! `SIGURG` for a file: `kernel::sig::sigio`'s since N4.5b, named here for `bsd`'s sockets, `bpf`,
 //! `wscons` and pipes.
 //!
 //! Upstream: sys/sys/sigio.h @ 3ce1f3f79392
 //! LZ: sys/sys/sigio.rs@3c62ede68802
 //!
 //! ## Redesign
-//! - N4.5b: `struct sigio_ref` is `kernel::sigio::SigioRef`, one atomic word valid all zero
+//! - N4.5b: `struct sigio_ref` is `kernel::sig::sigio::SigioRef`, one atomic word valid all zero
 //!   (the softcs and sockets that embed one are `M_ZERO`/`PR_ZERO`); `struct sigio` and the
 //!   lists of a process's and a group's registrations (`ps_sigiolst`, `pg_sigiolst`) are the
 //!   kernel's registry under `sigio_lock`, which owns every registration (LZ: raw `Cell`
 //!   links under two `unsafe impl Sync`). This module re-exports the names (0 `unsafe`,
 //!   LZ 2).
 
-pub use kernel::sigio::{SigioRef, sigio_init};
+pub use kernel::sig::sigio::{SigioRef, sigio_init};
 /* </CODE> */

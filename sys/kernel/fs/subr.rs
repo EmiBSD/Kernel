@@ -217,10 +217,10 @@ use super::vops::{
     vop_unlock, vop_write,
 };
 use crate::assert::{kassert, kpanic};
-use crate::cred::{Ucred, groupmember};
+use crate::file::uio::{Iovec, Uio};
 use crate::file::{FileGlue, VFS_STALLING};
+use crate::proc::cred::{Ucred, groupmember};
 use crate::proc::{ProcGlue, Thread};
-use crate::uio::{Iovec, Uio};
 use crate::vm::types::Voff;
 use crate::vm::vnode::{Uvn, VType, VnodeOps};
 
@@ -1229,18 +1229,18 @@ pub fn vclean<G: ProcGlue>(vp: &'static Vnode<G>, flags: i32, p: Option<&Thread<
     if flags & DOCLOSE != 0
         && let Err(error) = vinvalbuf(vp, V_SAVE, Cred::NOCRED, p, 0, INFSLP)
     {
-        crate::prf::printf(format_args!(
+        crate::base::prf::printf(format_args!(
             "vclean: failed to flush buffers, error {}; discarding dirty buffers",
             error as i32
         ));
         if let Some(mp) = vp.mount() {
             let (name, len) = mp.mntonname();
-            crate::prf::printf(format_args!(
+            crate::base::prf::printf(format_args!(
                 "; mounted on: {}",
                 core::str::from_utf8(&name[..len]).unwrap_or("?")
             ));
         }
-        crate::prf::printf(format_args!("\n"));
+        crate::base::prf::printf(format_args!("\n"));
         let _ = vinvalbuf(vp, 0, Cred::NOCRED, p, 0, INFSLP);
     }
     // If purging an active vnode, it must be closed and deactivated before being reclaimed.
@@ -1271,7 +1271,7 @@ pub fn vclean<G: ProcGlue>(vp: &'static Vnode<G>, flags: i32, p: Option<&Thread<
 
     // Done with purge, notify sleepers of the grim news.
     vp.set_ops_id(VopsId::DEAD);
-    VN_KNOTE(vp, crate::event::NOTE_REVOKE);
+    VN_KNOTE(vp, crate::file::event::NOTE_REVOKE);
     vp.set_tag(VT_NON);
     // VFSLCKDEBUG: not configured.
     {
@@ -1432,7 +1432,7 @@ pub fn vcount<G: ProcGlue>(vp: &'static Vnode<G>) -> i32 {
 #[cfg(any(feature = "debug", feature = "diagnostic"))]
 pub fn vprint<G: ProcGlue>(label: Option<&str>, vp: &'static Vnode<G>) {
     use super::vnode::{VBIOONSYNCLIST, VBIOWAIT, VTEXT, VTYPE_NAMES};
-    use crate::prf::printf;
+    use crate::base::prf::printf;
 
     if let Some(label) = label {
         printf(format_args!("{}: ", label));
@@ -1483,7 +1483,7 @@ pub fn vprint<G: ProcGlue>(label: Option<&str>, vp: &'static Vnode<G>) {
 #[cfg(feature = "debug")]
 pub fn printlockedvnodes<G: ProcGlue>() {
     use hal::sys::mount::{VB_NOWAIT, VB_READ};
-    crate::prf::printf(format_args!("Locked vnodes\n"));
+    crate::base::prf::printf(format_args!("Locked vnodes\n"));
 
     for mp in super::mount::mountlist::<G>(false) {
         if vfs_busy(mp, VB_READ | VB_NOWAIT).is_err() {
@@ -1509,9 +1509,13 @@ impl<G: ProcGlue> NumvnodesNode<G> {
     pub const NODE: NumvnodesNode<G> = NumvnodesNode(core::marker::PhantomData);
 }
 
-impl<G: ProcGlue> crate::sysctl::SysctlNode for NumvnodesNode<G> {
-    fn sysctl(&self, _name: &[i32], req: &mut crate::sysctl::SysctlReq<'_>) -> Result<(), Errno> {
-        crate::sysctl::rdint(req, vfs::<G>().numvnodes.load(Ordering::Relaxed) as i32)
+impl<G: ProcGlue> crate::base::sysctl::SysctlNode for NumvnodesNode<G> {
+    fn sysctl(
+        &self,
+        _name: &[i32],
+        req: &mut crate::base::sysctl::SysctlReq<'_>,
+    ) -> Result<(), Errno> {
+        crate::base::sysctl::rdint(req, vfs::<G>().numvnodes.load(Ordering::Relaxed) as i32)
     }
 }
 
@@ -1524,9 +1528,13 @@ impl<G: ProcGlue> VfsSysctl<G> {
     pub const NODE: VfsSysctl<G> = VfsSysctl(core::marker::PhantomData);
 }
 
-impl<G: ProcGlue> crate::sysctl::SysctlNode for VfsSysctl<G> {
-    fn sysctl(&self, name: &[i32], req: &mut crate::sysctl::SysctlReq<'_>) -> Result<(), Errno> {
-        use crate::sysctl::{rdint, rdstruct};
+impl<G: ProcGlue> crate::base::sysctl::SysctlNode for VfsSysctl<G> {
+    fn sysctl(
+        &self,
+        name: &[i32],
+        req: &mut crate::base::sysctl::SysctlReq<'_>,
+    ) -> Result<(), Errno> {
+        use crate::base::sysctl::{rdint, rdstruct};
         use hal::sys::mount::{VFS_BCACHESTAT, VFS_CONF, VFS_GENERIC, VFS_MAXTYPENUM, VfsconfAbi};
 
         // all sysctl names at this level are at least name and field
@@ -1718,13 +1726,13 @@ pub fn vfs_stall<G: ProcGlue>(p: &Thread<G>, stall: bool) -> Result<(), Errno> {
         let name = core::str::from_utf8(&name[..len]).unwrap_or("?");
         if stall {
             if let Err(error) = vfs_busy(mp, VB_WRITE | VB_WAIT | VB_DUPOK) {
-                crate::prf::printf(format_args!("{name}: busy\n"));
+                crate::base::prf::printf(format_args!("{name}: busy\n"));
                 allerror = Err(error);
                 continue;
             }
             crate::vm::vnode::uvm_vnp_sync(Some(mp.addr()));
             if let Err(error) = VFS_SYNC(mp, MNT_WAIT, 1, Cred::real(p.ucred()), p) {
-                crate::prf::printf(format_args!("{name}: failed to sync\n"));
+                crate::base::prf::printf(format_args!("{name}: failed to sync\n"));
                 vfs_unbusy(mp);
                 allerror = Err(error);
                 continue;
@@ -2296,7 +2304,7 @@ mod tests {
     /// `kern.numvnodes` (kern_sysctl.c:608-609): the table's count as an `int`, read-only.
     #[test]
     fn numvnodes_is_the_table_s_count_read_only() {
-        use crate::sysctl::{SysctlNode, SysctlReq};
+        use crate::base::sysctl::{SysctlNode, SysctlReq};
         let (_g, _mp) = setup_root();
         vfs::<TestGlue>().numvnodes.store(1234, Ordering::SeqCst);
         let old = crate::testutil::USER_BASE + 0x1f00;

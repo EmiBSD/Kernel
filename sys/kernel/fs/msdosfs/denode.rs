@@ -163,7 +163,6 @@ use hal::sys::mount::{Fid, MSDOSFSMNT_NOWIN95};
 use hal::sys::types::Dev;
 
 use crate::assert::kpanic;
-use crate::clock::Timespec;
 use crate::fs::lockf::LockfSlot;
 use crate::fs::msdosfs::bpb::{getulong, getushort, putulong, putushort};
 use crate::fs::msdosfs::direntry::{
@@ -175,6 +174,7 @@ use crate::fs::msdosfs::msdosfsmount::{Msdosfsmount, MsdosfsmountRef};
 use crate::fs::vnode::{VT_MSDOSFS, Vnode};
 use crate::fs::word::{I32Word, I64Word, U8Word, U16Word, U32Word, U64Word};
 use crate::proc::ProcGlue;
+use crate::time::clock::Timespec;
 
 /// `M_MSDOSFSNODE`: the malloc type of the denodes (`<sys/malloc.h>`; `vmstat -m`'s
 /// `MSDOSFS node`).

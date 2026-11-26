@@ -271,7 +271,7 @@ use hal::sys::socket::{PF_INET, PF_INET6, SO_ACCEPTCONN, SOMAXCONN};
 use hal::sys::types::Off;
 
 use crate::assert::{kassert, kpanic};
-use crate::clock::Timeval;
+use crate::base::task::Task;
 use crate::net::domain::net;
 use crate::net::mbuf::{Mbuf, MbufBox};
 use crate::net::proto::{PR_SPLICE, Protocol, Usrreqs};
@@ -280,9 +280,9 @@ use crate::net::sockbuf::{
     SS_ISDISCONNECTING, SS_NOFDREF, Sockbuf,
 };
 use crate::proc::{ProcGlue, Thread};
-use crate::sigio::{SigioRef, pgsigio, sigio_copy, sigio_free, sigio_init};
-use crate::task::Task;
-use crate::timeout::Timeout;
+use crate::sig::sigio::{SigioRef, pgsigio, sigio_copy, sigio_free, sigio_init};
+use crate::time::clock::Timeval;
+use crate::time::timeout::Timeout;
 
 /// `SOMINCONN`: the smallest backlog `listen(2)` grants.
 pub const SOMINCONN: i32 = 80;
@@ -373,7 +373,7 @@ pub struct Sosplice<G: ProcGlue> {
     /// `ssp_task`: task for somove.
     task: Task,
     /// \[I\] `ssp_queue`: softnet queue where we add (set by each `sosplice`).
-    queue: hal::ds::link::SyncLink<crate::task::Taskq>,
+    queue: hal::ds::link::SyncLink<crate::base::task::Taskq>,
 }
 
 /// `struct socket`: kernel structure per socket. Contains send and receive buffer queues,
@@ -1947,7 +1947,7 @@ fn solinger_nsec<G: ProcGlue>(so: &Socket<G>) -> u64 {
     if so.linger() == 0 {
         return INFSLP;
     }
-    crate::clock::sec_to_nsec(so.linger() as u64)
+    crate::time::clock::sec_to_nsec(so.linger() as u64)
 }
 
 /// `soclose(so, flags)`: close a socket on last file table reference removal. Initiate
@@ -2274,7 +2274,7 @@ fn cmsg_type_of(m: &Mbuf) -> i32 {
 pub fn sosend<G: ProcGlue>(
     so: &Socket<G>,
     addr: Option<&Mbuf>,
-    mut uio: Option<&mut crate::uio::Uio<'_, G>>,
+    mut uio: Option<&mut crate::file::uio::Uio<'_, G>>,
     mut top: Option<MbufBox>,
     mut control: Option<MbufBox>,
     flags: i32,
@@ -2437,7 +2437,7 @@ pub fn sosend<G: ProcGlue>(
 pub fn m_getuio<G: ProcGlue>(
     atomic: bool,
     space: i64,
-    uio: &mut crate::uio::Uio<'_, G>,
+    uio: &mut crate::file::uio::Uio<'_, G>,
 ) -> Result<MbufBox, Errno> {
     use crate::net::mbuf::{
         M_DONTWAIT, M_EXT, M_WAIT, MAX_HDR, MAXMCLBYTES, MCLBYTES, MHLEN, MINCLSIZE, MLEN, MT_DATA,
@@ -2601,7 +2601,7 @@ impl RcvRecord {
 pub fn soreceive<G: ProcGlue>(
     so: &Socket<G>,
     mut paddr: Option<&mut Option<MbufBox>>,
-    uio: &mut crate::uio::Uio<'_, G>,
+    uio: &mut crate::file::uio::Uio<'_, G>,
     mp0: Option<&mut Option<MbufBox>>,
     controlp: Option<&mut Option<MbufBox>>,
     mut flagsp: Option<&mut i32>,
@@ -3135,8 +3135,8 @@ fn sosplice_alloc<G: ProcGlue>(so: &Socket<G>) -> Option<&Sosplice<G>> {
     sp.idleto.set_shared(
         soidle::<G>,
         PoolArc::erase(soref(so)),
-        crate::timeout::KCLOCK_NONE,
-        crate::timeout::TIMEOUT_PROC | crate::timeout::TIMEOUT_MPSAFE,
+        crate::time::timeout::KCLOCK_NONE,
+        crate::time::timeout::TIMEOUT_PROC | crate::time::timeout::TIMEOUT_MPSAFE,
     );
     sp.task.set_shared(sotask::<G>, PoolArc::erase(soref(so)));
     // Two allocations racing for one socket cannot happen: the caller holds the socket's
@@ -3199,7 +3199,7 @@ pub fn sosplice<G: ProcGlue>(
     }
 
     // Find sosp, the drain socket where data will be spliced into.
-    let Some(fp) = crate::descrip::fd_getfile(p.fd(), fd) else {
+    let Some(fp) = crate::file::descrip::fd_getfile(p.fd(), fd) else {
         return Err(Errno::EBADF);
     };
     let Some(sosp) = fp
@@ -3287,10 +3287,10 @@ pub fn sosplice<G: ProcGlue>(
 
 /// `net_tq(flowid)`: the softnet task queue of a flow (`kernel::net::if_`'s); the system's
 /// own queue before `softnet_init` made them (the host tests' sockets).
-fn net_tq(flowid: u32) -> &'static crate::task::Taskq {
+fn net_tq(flowid: u32) -> &'static crate::base::task::Taskq {
     match crate::net::if_::net_tq(flowid) {
         Some(tq) => tq,
-        None => &crate::task::SYSTQMP,
+        None => &crate::base::task::SYSTQMP,
     }
 }
 
@@ -3308,7 +3308,7 @@ pub fn sounsplice<G: ProcGlue>(so: &Socket<G>, sosp: &Socket<G>, freeing: i32) {
         gs.clear_flags(SB_SPLICE);
         sp.idleto.del();
         if let Some(q) = sp.queue.get() {
-            crate::task::task_del(q, &sp.task);
+            crate::base::task::task_del(q, &sp.task);
         }
         let drain = sp.socket.get_mut(gr.witness()).take();
         let source = sosp_sp.soback.get_mut(gs.witness()).take();
@@ -3428,14 +3428,14 @@ fn soclose_unsplice<G: ProcGlue>(so: &Socket<G>, sp: &Sosplice<G>) {
     sp.idleto.barrier();
     let spq = sp.queue.get();
     if let Some(spq) = spq {
-        crate::task::taskq_barrier(spq);
+        crate::base::task::taskq_barrier(spq);
     }
     if let Some(soback) = soback {
         let spqback = soback.splice().and_then(|bsp| bsp.queue.get());
         if let Some(spqback) = spqback
             && !spq.is_some_and(|spq| core::ptr::eq(spq, spqback))
         {
-            crate::task::taskq_barrier(spqback);
+            crate::base::task::taskq_barrier(spqback);
         }
         drop(soback);
     }
@@ -3864,7 +3864,7 @@ pub fn sorwakeup<G: ProcGlue>(so: &Socket<G>) {
             && let Some(b) = so.sp.get()
             && let Some(q) = b.queue.get()
         {
-            crate::task::task_add(q, hal::ds::pin::project(b.as_pin(), |s| &s.task));
+            crate::base::task::task_add(q, hal::ds::pin::project(b.as_pin(), |s| &s.task));
         }
         let spliced = isspliced(so);
         drop(g);
@@ -3892,7 +3892,7 @@ pub fn sowwakeup<G: ProcGlue>(so: &Socket<G>) {
             && let Some(bsp) = back.sp.get()
             && let Some(q) = bsp.queue.get()
         {
-            crate::task::task_add(q, hal::ds::pin::project(bsp.as_pin(), |s| &s.task));
+            crate::base::task::task_add(q, hal::ds::pin::project(bsp.as_pin(), |s| &s.task));
         }
         let spliced = issplicedback(so);
         drop(g);
@@ -4719,7 +4719,7 @@ mod tests {
         // reads again from sb_mb, the buffer's start, so the read goes on with "AB" and waits
         // again; the receive side shut wakes it, it reads "AB" from the start once more and
         // stops: "AABAB", a short count (uipc_socket.c's sbwait under MSG_WAITALL).
-        use crate::uio::{Iovec, Uio, UioRw, UioSeg};
+        use crate::file::uio::{Iovec, Uio, UioRw, UioSeg};
         use hal::sys::socket::{MSG_PEEK, MSG_WAITALL};
         let _g = net_setup();
         let so = socket(0);

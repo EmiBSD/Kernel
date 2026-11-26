@@ -160,6 +160,7 @@ use hal::sys::netinet6_in6::SockaddrIn6;
 use hal::sys::socket::{AF_INET6, PF_INET6, SOCK_DGRAM, SOCK_RAW, SOCK_STREAM};
 
 use crate::assert::kpanic;
+use crate::base::sysctl::SysctlReq;
 use crate::net::domain::{Domain, net};
 use crate::net::if_var::Netstack;
 use crate::net::mbuf::{Mbuf, MbufBox};
@@ -177,7 +178,6 @@ use crate::netinet6::raw_ip6::{
     Rip6Usrreqs, rip6_ctlinput, rip6_ctloutput, rip6_init, rip6_input, rip6_sysctl,
 };
 use crate::proc::ProcGlue;
-use crate::sysctl::SysctlReq;
 
 /// `inet6sw[]` as the glue recorded it, with the index of its raw entry: one record, so no
 /// reader sees the table without its raw entry.

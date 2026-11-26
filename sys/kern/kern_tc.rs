@@ -39,7 +39,7 @@
 
 /* <CODE> */
 //! Timecounters: `kern/kern_tc.c`, at its LZ path for `bsd`'s callers, over the kernel
-//! crate's `kernel::tc`.
+//! crate's `kernel::time::tc`.
 //!
 //! Upstream: sys/kern/kern_tc.c @ 3ce1f3f79392
 //! LZ: sys/kern/kern_tc.rs@3c62ede68802
@@ -49,7 +49,7 @@
 //!   function in `sys/arch/amd64/amd64/tsc.rs`, run by `cpu_recalibrate_tsc`) writes the TSC's `tc_frequency` and
 //!   `tc_quality` after `tc_init`, which the C's timecounter code reads from the structure at
 //!   the next windup and the next `tc_choose`. Here `tc_init` copies both into the counter's
-//!   `kernel::tc::TcEntry` once, so on amd64 the recalibrated frequency and the invariant
+//!   `kernel::time::tc::TcEntry` once, so on amd64 the recalibrated frequency and the invariant
 //!   TSC's quality 2000 would not be seen. N10's way in, when amd64 is built again: the
 //!   calibration calls [`tc_set_frequency`] and [`tc_reset_quality`] (which reach the entry
 //!   through the counter's `tc_entry` link) instead of writing the cells. arm64 is not
@@ -64,25 +64,25 @@
 //!   with them (N7, N10).
 //!
 //! ## Redesign
-//! - N4.8a: the timecounters moved into `kernel::tc` (the `Timecounter` trait and `TcEntry`,
+//! - N4.8a: the timecounters moved into `kernel::time::tc` (the `Timecounter` trait and `TcEntry`,
 //!   the timehands as atomics behind the generation, `windup_mtx` a `Mutexed`, `tc_lock` a
 //!   `hal` rwlock, the timekeep page through `TimekeepAtomic`). This path keeps the names
 //!   `bsd`'s callers use, re-exported, and `sysctl_tc` with `kern_sysctl.c`'s arguments over
 //!   the kernel's node. 0 `unsafe` (LZ 7).
 //! - The drivers' `struct timecounter` (`sys/sys/timetc.rs`, the C's cells) stays theirs
 //!   until each moves (agtimer(4) implements the kernel's trait itself): [`tc_init`] gives
-//!   such a counter its `kernel::tc::TcEntry` from a fixed table ([`ENTRIES`], one per
+//!   such a counter its `kernel::time::tc::TcEntry` from a fixed table ([`ENTRIES`], one per
 //!   counter registered; a machine has at most five) and registers it, and
 //!   [`tc_reset_quality`] and [`tc_set_frequency`] reach the entry through the counter's
 //!   `tc_entry` link.
 
 use hal::sync::once::OnceStatic;
-use kernel::tc::TcEntry;
+use kernel::time::tc::TcEntry;
 
 use crate::sys::errno::Errno;
 use crate::sys::timetc::Timecounter;
 
-pub use kernel::tc::{
+pub use kernel::time::tc::{
     NAPTIME, TC_LOCK, TC_TICK, TIME_SECOND, TIME_UPTIME, TIMESTEPWARNINGS, binboottime, binruntime,
     bintime, binuptime, getbinruntime, getbinuptime, getmicrotime, getmicrouptime, getnanotime,
     getnanouptime, getnsecruntime, getnsecuptime, gettime, getuptime, inittimecounter,
@@ -95,13 +95,13 @@ pub use kernel::tc::{
 static ENTRIES: [OnceStatic<TcEntry>; 8] = [const { OnceStatic::new() }; 8];
 
 /// `tc_init`: registers a driver's counter with the kernel's timecounters (its quality,
-/// precision and the switch to it are `kernel::tc::tc_init`'s).
+/// precision and the switch to it are `kernel::time::tc::tc_init`'s).
 pub fn tc_init(tc: &'static Timecounter) {
     for slot in &ENTRIES {
         if slot.set(TcEntry::new(tc)).is_ok() {
             if let Some(e) = slot.get() {
                 tc.tc_entry.set(Some(e));
-                kernel::tc::tc_init(e);
+                kernel::time::tc::tc_init(e);
             }
             return;
         }
@@ -114,7 +114,7 @@ pub fn tc_init(tc: &'static Timecounter) {
 pub fn tc_reset_quality(tc: &'static Timecounter, quality: i32) {
     tc.tc_quality.set(quality);
     if let Some(e) = tc.tc_entry.get() {
-        kernel::tc::tc_reset_quality(e, quality);
+        kernel::time::tc::tc_reset_quality(e, quality);
     }
 }
 
@@ -127,7 +127,7 @@ pub fn tc_set_frequency(tc: &'static Timecounter, freq: u64) {
     }
 }
 
-/// `sysctl_tc`: `kern.timecounter`, with `kern_sysctl.c`'s arguments (`kernel::tc::sysctl_tc`).
+/// `sysctl_tc`: `kern.timecounter`, with `kern_sysctl.c`'s arguments (`kernel::time::tc::sysctl_tc`).
 pub fn sysctl_tc(
     name: &[i32],
     oldp: usize,
@@ -135,13 +135,13 @@ pub fn sysctl_tc(
     newp: usize,
     newlen: usize,
 ) -> Result<(), Errno> {
-    let mut req = kernel::sysctl::SysctlReq {
+    let mut req = kernel::base::sysctl::SysctlReq {
         oldp,
         oldlenp,
         newp,
         newlen,
     };
-    kernel::tc::sysctl_tc(name, &mut req)
+    kernel::time::tc::sysctl_tc(name, &mut req)
 }
 /* </CODE> */
 

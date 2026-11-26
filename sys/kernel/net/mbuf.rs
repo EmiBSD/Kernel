@@ -301,10 +301,10 @@ use hal::sys::types::Vaddr;
 use libkern::explicit_bzero;
 
 use crate::assert::{kassert, kdassert, kpanic};
-use crate::clock::Timeval;
+use crate::base::sysctl::{SysctlReq, int as sysctl_int, rdint as sysctl_rdint};
 use crate::net::mbuf2::m_tag_copy_chain;
 use crate::net::pf_hooks;
-use crate::sysctl::{SysctlReq, int as sysctl_int, rdint as sysctl_rdint};
+use crate::time::clock::Timeval;
 use crate::vm::km::{
     KMEM_DYN_INITIALIZER, KP_MBUF_CONTIG, KV_INTRSAFE, KmemDynMode, KmemPaMode, KmemVaMode,
     km_alloc, km_free, pa_mode,
@@ -2773,9 +2773,9 @@ pub fn m_microtime(m: &Mbuf) -> Timeval {
         // NSEC_TO_TIMEVAL(m->m_pkthdr.ph_timestamp, &utv)
         let ns = h.ph_timestamp.get();
         let utv = Timeval::new(ns / 1_000_000_000, (ns % 1_000_000_000) / 1000);
-        crate::tc::microboottime().add(utv)
+        crate::time::tc::microboottime().add(utv)
     } else {
-        crate::tc::microtime()
+        crate::time::tc::microtime()
     }
 }
 

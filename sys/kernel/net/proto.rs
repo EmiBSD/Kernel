@@ -357,7 +357,11 @@ pub trait Protocol<G: ProcGlue>: Sync + 'static {
     }
     /// `pr_sysctl(name, namelen, oldp, oldlenp, newp, newlen)`: the protocol's sysctl node
     /// (`net.<family>.<protocol>.*`), asked only of a protocol that has one.
-    fn sysctl(&self, _name: &[i32], _req: &mut crate::sysctl::SysctlReq<'_>) -> Result<(), Errno> {
+    fn sysctl(
+        &self,
+        _name: &[i32],
+        _req: &mut crate::base::sysctl::SysctlReq<'_>,
+    ) -> Result<(), Errno> {
         Err(Errno::EOPNOTSUPP)
     }
     /// `pr_init`: initialization hook.

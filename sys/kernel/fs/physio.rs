@@ -109,8 +109,8 @@ use super::buf::{
     B_BUSY, B_DONE, B_ERROR, B_PHYS, B_RAW, B_READ, B_WRITE, BUFPL, Buf, BufRef, ByBufhead, MAXPHYS,
 };
 use crate::assert::{kassert, kpanic};
+use crate::file::uio::Uio;
 use crate::proc::{ProcGlue, Thread};
-use crate::uio::Uio;
 use crate::vm::glue::{uvm_vslock_device, uvm_vsunlock_device};
 
 /// `DEV_BSIZE`: the block size `b_blkno` counts in.
@@ -338,10 +338,10 @@ mod tests {
     use hal::sys::param::PAGE_SIZE;
 
     use super::*;
-    use crate::event::tests::Kg;
+    use crate::file::event::tests::Kg;
+    use crate::file::uio::{Iovec, UioRw, UioSeg};
     use crate::fs::bio::biodone;
     use crate::fs::buf::B_ASYNC;
-    use crate::uio::{Iovec, UioRw, UioSeg};
     use crate::vm::map::tests::{setup, thread, user_vmspace};
     use crate::vm::map::uvm_mapanon;
     use crate::vm::types::{UVM_FLAG_COPYONW, UVM_FLAG_FIXED, uvm_mapflag};
@@ -422,7 +422,7 @@ mod tests {
 
     /// The user thread of `pid` with `len` bytes of anonymous memory mapped at `va` in a
     /// vmspace of its own, and bufpl ready.
-    fn user_thread(pid: i32, va: usize, len: usize) -> crate::event::tests::T {
+    fn user_thread(pid: i32, va: usize, len: usize) -> crate::file::event::tests::T {
         let p = thread(pid);
         let vm = user_vmspace();
         let mut a = va;

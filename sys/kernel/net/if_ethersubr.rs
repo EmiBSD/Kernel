@@ -278,6 +278,7 @@ use hal::sys::socket::{AF_INET, AF_INET6, AF_UNSPEC, pseudo_AF_HDRCMPLT};
 use hal::sys::sockio::{SIOCADDMULTI, SIOCDELMULTI, SIOCSIFADDR, SIOCSIFMTU};
 
 use crate::assert::{kassert, kpanic};
+use crate::base::prf::{Str, printf};
 use crate::net::bpf::bpfattach;
 use crate::net::if_::{
     ProtoFn, if_alloc_sadl, if_deactivate, if_enqueue, if_input_local, if_input_proto,
@@ -290,7 +291,6 @@ use crate::net::mbuf::{
 };
 use crate::net::proto::SockaddrView;
 use crate::net::route::Rtentry;
-use crate::prf::{Str, printf};
 
 /// `M_IFMADDR`: the `malloc(9)` type of the multicast records (`<sys/malloc.h>`, `bsd`'s; a
 /// copy).

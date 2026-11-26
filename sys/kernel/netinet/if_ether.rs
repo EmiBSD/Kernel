@@ -219,7 +219,8 @@ use hal::sys::netinet_in::{INADDR_ANY, InAddr, SockaddrIn};
 use hal::sys::socket::{AF_INET, AF_LINK, pseudo_AF_HDRCMPLT};
 
 use crate::assert::kassert;
-use crate::log::{LOG_DEBUG, LOG_ERR, LOG_INFO, LOG_WARNING};
+use crate::base::log::{LOG_DEBUG, LOG_ERR, LOG_INFO, LOG_WARNING};
+use crate::base::prf::{Str, log};
 use crate::net::if_::{IfRef, ProtoFn, if_isconnected, if_output_ml, niq_enqueue, with_net_held};
 use crate::net::if_ethersubr::{
     ETHERBROADCASTADDR, arpcom_of, ether_map_ip_multicast, ether_sprintf,
@@ -235,10 +236,9 @@ use crate::net::route::{RT_RESOLVE, Rtentry, rt_getll, rtalloc, rtdeletemsg, rti
 use crate::net::rtable::{rtable_iterate, rtable_l2};
 use crate::net::rtsock::rtm_send;
 use crate::netinet::in_var::ifatoia;
-use crate::prf::{Str, log};
 use crate::proc::ProcGlue;
-use crate::tc::getuptime;
-use crate::timeout::{KCLOCK_NONE, TIMEOUT_MPSAFE, TIMEOUT_PROC, Timeout};
+use crate::time::tc::getuptime;
+use crate::time::timeout::{KCLOCK_NONE, TIMEOUT_MPSAFE, TIMEOUT_PROC, Timeout};
 
 /// `LA_HOLD_QUEUE`: packets held per unresolved entry.
 pub const LA_HOLD_QUEUE: u32 = 10;
@@ -885,7 +885,7 @@ fn arpresolve_ll(
         #[cfg(feature = "diagnostic")]
         if rt.rt_expire().get() == 0 {
             // This should never happen. (Should it? -gwr)
-            crate::prf::printf(format_args!("arpresolve: unresolved and rt_expire == 0\n"));
+            crate::base::prf::printf(format_args!("arpresolve: unresolved and rt_expire == 0\n"));
             // Set expiration time to now (expired).
             rt.rt_expire().set(uptime);
         }
@@ -1538,7 +1538,7 @@ mod tests {
     use crate::net::mbuf::{M_DONTWAIT, m_copydata, m_devget};
     use crate::net::route::tests::{sin, testroutes_setup};
     use crate::net::route::{RtAddrinfo, rtrequest};
-    use crate::tc::TIME_UPTIME;
+    use crate::time::tc::TIME_UPTIME;
 
     const OURS: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
     const PEER: [u8; 6] = [0x52, 0x54, 0x00, 0xaa, 0xbb, 0xcc];

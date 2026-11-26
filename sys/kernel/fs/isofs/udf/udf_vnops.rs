@@ -159,8 +159,9 @@ use hal::sys::unistd::{
 use hal::user::bytes_of_mut;
 
 use crate::assert::kpanic;
-use crate::clock::Timespec;
+use crate::base::prf::printf;
 use crate::file::FileGlue;
+use crate::file::uio::Uio;
 use crate::fs::bio::{DEV_BSHIFT, biodone};
 use crate::fs::buf::{B_ERROR, BufRef};
 use crate::fs::cache::{cache_enter, cache_lookup};
@@ -187,9 +188,8 @@ use crate::fs::vnode::{
     vn_lock,
 };
 use crate::fs::vops::{Cn, Cred, IoBuf, Vnops, vop_access, vop_bmap, vop_strategy, vop_unlock};
-use crate::prf::printf;
 use crate::proc::{ProcGlue, Thread};
-use crate::uio::Uio;
+use crate::time::clock::Timespec;
 
 /// `UDF_INVALID_BMAP`: the C's -1, `ERESTART`'s value (the module's deviations).
 pub const UDF_INVALID_BMAP: Errno = Errno::ERESTART;

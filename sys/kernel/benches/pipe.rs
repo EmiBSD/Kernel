@@ -29,8 +29,8 @@
 //!
 //! The glue is this file's, as `bsd`'s is for the kernel: a process glue with no member of
 //! `bsd`'s and a file glue whose object holds a pipe's end (`bsd`'s `BsdFileData::Pipe`,
-//! `FileGlue::pipe_of`). Since N5.0 the clock (`kernel::tc`'s `getnanotime`) and the three
-//! filters (`kernel::pipe::PipeRead`, ...) are the kernel's; before, this file's pipe glue
+//! `FileGlue::pipe_of`). Since N5.0 the clock (`kernel::time::tc`'s `getnanotime`) and the three
+//! filters (`kernel::file::pipe::PipeRead`, ...) are the kernel's; before, this file's pipe glue
 //! answered them as `bsd`'s did; since N5.0 `dopipe` is the kernel's too, over the kernel's
 //! descriptor calls and this glue's `pipe_file` (before, this file's copy of `bsd`'s). What an
 //! op is:
@@ -56,15 +56,17 @@ use hal::mem::kmbuf::{PageKind, PageMemory};
 use hal::mem::pool::{PoolBackend, RawPool};
 use hal::sys::errno::Errno;
 use hal::user::UserPtr;
-use kernel::descrip::{falloc, fd_getfile, fdinit, fdinsert, fdplock, fdrelease, filedesc_init};
-use kernel::event::{
+use kernel::file::descrip::{
+    falloc, fd_getfile, fdinit, fdinsert, fdplock, fdrelease, filedesc_init,
+};
+use kernel::file::event::{
     __EV_POLL, __EV_SELECT, EV_ADD, EVFILT_EXCEPT, EVFILT_READ, EVFILT_WRITE, Knote, KqRef, ev_set,
     kqueue_alloc, kqueue_init, kqueue_register,
 };
+use kernel::file::pipe::{Dir, PipeEnd, PipeFilter, Pipes, UioMove};
 use kernel::file::{File, FileGlue, FileOps, FileTables};
-use kernel::pipe::{Dir, PipeEnd, PipeFilter, Pipes, UioMove};
+use kernel::proc::resource::{self, PlimitRef};
 use kernel::proc::{self, ProcGlue, ProcTables, Process, Session, Thread};
-use kernel::resource::{self, PlimitRef};
 use kernel::testutil;
 
 // ---------------------------------------------------------------------------------------
@@ -276,8 +278,8 @@ impl PageMemory for BenchPages {
 }
 
 static BENCH_PAGES: BenchPages = BenchPages {
-    small: FreeList::new(kernel::pipe::PIPE_SIZE),
-    big: FreeList::new(kernel::pipe::BIG_PIPE_SIZE),
+    small: FreeList::new(kernel::file::pipe::PIPE_SIZE),
+    big: FreeList::new(kernel::file::pipe::BIG_PIPE_SIZE),
 };
 
 // ---------------------------------------------------------------------------------------
@@ -352,8 +354,8 @@ impl ProcGlue for BenchGlue {
     ) {
     }
     /// No per-CPU slice start: the uptime itself (no running part).
-    fn spc_runtime() -> kernel::clock::Timespec {
-        kernel::tc::nanouptime()
+    fn spc_runtime() -> kernel::time::clock::Timespec {
+        kernel::time::tc::nanouptime()
     }
     fn process_ref(pr: &Process<Self>) -> proc::ProcessRef<Self> {
         match hal::mem::pool::PoolArc::from_ref(pr) {
@@ -399,18 +401,18 @@ impl FileOps<BenchFiles> for BenchKqueueOps {
     fn read(
         &self,
         _fp: &File<BenchFiles>,
-        _uio: &mut kernel::uio::Uio<'_, BenchGlue>,
+        _uio: &mut kernel::file::uio::Uio<'_, BenchGlue>,
         _fflags: i32,
     ) -> Result<(), Errno> {
-        kernel::event::kqueue_rw()
+        kernel::file::event::kqueue_rw()
     }
     fn write(
         &self,
         _fp: &File<BenchFiles>,
-        _uio: &mut kernel::uio::Uio<'_, BenchGlue>,
+        _uio: &mut kernel::file::uio::Uio<'_, BenchGlue>,
         _fflags: i32,
     ) -> Result<(), Errno> {
-        kernel::event::kqueue_rw()
+        kernel::file::event::kqueue_rw()
     }
     fn ioctl(
         &self,
@@ -419,10 +421,10 @@ impl FileOps<BenchFiles> for BenchKqueueOps {
         _data: &mut [u8],
         _p: &Thread<BenchGlue>,
     ) -> Result<(), Errno> {
-        kernel::event::kqueue_ioctl()
+        kernel::file::event::kqueue_ioctl()
     }
     fn kqfilter(&self, fp: &File<BenchFiles>, kn: &Knote<BenchGlue>) -> Result<(), Errno> {
-        kernel::event::kqueue_kqfilter::<BenchGlue>(fp, kn)
+        kernel::file::event::kqueue_kqfilter::<BenchGlue>(fp, kn)
     }
     fn stat(
         &self,
@@ -430,13 +432,13 @@ impl FileOps<BenchFiles> for BenchKqueueOps {
         st: &mut hal::sys::stat::Stat,
         _p: &Thread<BenchGlue>,
     ) -> Result<(), Errno> {
-        let (size, _blksize) = kernel::event::kqueue_stat::<BenchGlue>(fp);
+        let (size, _blksize) = kernel::file::event::kqueue_stat::<BenchGlue>(fp);
         *st = hal::sys::stat::Stat::default();
         st.st_size = size as i64;
         Ok(())
     }
     fn close(&self, fp: &File<BenchFiles>, p: Option<&Thread<BenchGlue>>) -> Result<(), Errno> {
-        kernel::event::kqueue_close::<BenchGlue>(fp, p)
+        kernel::file::event::kqueue_close::<BenchGlue>(fp, p)
     }
 }
 
@@ -495,7 +497,10 @@ impl FileGlue for BenchFiles {
     fn pledge_ioctl(_p: &Thread<BenchGlue>, _com: u64, _fp: &File<Self>) -> Result<(), Errno> {
         Ok(())
     }
-    fn uiomove(buf: &mut [u8], uio: &mut kernel::uio::Uio<'_, BenchGlue>) -> Result<(), Errno> {
+    fn uiomove(
+        buf: &mut [u8],
+        uio: &mut kernel::file::uio::Uio<'_, BenchGlue>,
+    ) -> Result<(), Errno> {
         testutil::test_uiomove(buf, uio)
     }
     fn vfs() -> &'static kernel::fs::subr::VfsTables<BenchGlue> {
@@ -535,7 +540,7 @@ static PIPES: Pipes<BenchGlue> = Pipes::new(&BENCH_PAGES);
 fn pipe_of(
     fp: &File<BenchFiles>,
 ) -> (
-    hal::mem::pool::PoolArc<kernel::pipe::PipePair<BenchGlue>>,
+    hal::mem::pool::PoolArc<kernel::file::pipe::PipePair<BenchGlue>>,
     Dir,
 ) {
     match fp.data() {
@@ -551,7 +556,7 @@ impl FileOps<BenchFiles> for BenchPipeOps {
     fn read(
         &self,
         _fp: &File<BenchFiles>,
-        _uio: &mut kernel::uio::Uio<'_, BenchGlue>,
+        _uio: &mut kernel::file::uio::Uio<'_, BenchGlue>,
         _fflags: i32,
     ) -> Result<(), Errno> {
         Err(Errno::ENODEV)
@@ -559,7 +564,7 @@ impl FileOps<BenchFiles> for BenchPipeOps {
     fn write(
         &self,
         _fp: &File<BenchFiles>,
-        _uio: &mut kernel::uio::Uio<'_, BenchGlue>,
+        _uio: &mut kernel::file::uio::Uio<'_, BenchGlue>,
         _fflags: i32,
     ) -> Result<(), Errno> {
         Err(Errno::ENODEV)
@@ -663,7 +668,11 @@ impl UioMove for Buf<'_> {
 }
 
 /// One 512-byte write into `w`'s peer and one 512-byte read out of `r`'s pipe.
-fn write_read(pair: &kernel::pipe::PipePair<BenchGlue>, src: &mut [u8; 512], dst: &mut [u8; 512]) {
+fn write_read(
+    pair: &kernel::file::pipe::PipePair<BenchGlue>,
+    src: &mut [u8; 512],
+    dst: &mut [u8; 512],
+) {
     let mut wuio = Buf {
         data: src,
         pos: 0,
@@ -689,7 +698,7 @@ fn main() {
         .collect();
     let _ = hal::bridges::register_pool_backend(&BENCH_POOLS);
     testutil::install();
-    kernel::tc::inittimecounter();
+    kernel::time::tc::inittimecounter();
     hal::sync::klock::kernel_lock();
     proc::procinit::<BenchGlue>(1024, 1024);
     let _ = filedesc_init::<BenchFiles>();
@@ -700,7 +709,9 @@ fn main() {
     testutil::set_file_log(false);
 
     let pr = proc::process_alloc::<BenchGlue>(42, ());
-    drop(pr.set_ucred(kernel::cred::CredRef::new(kernel::cred::Ucred::new())));
+    drop(pr.set_ucred(kernel::proc::cred::CredRef::new(
+        kernel::proc::cred::Ucred::new(),
+    )));
     let lim = resource::lim_startup(7030, 1 << 30, 4096);
     drop(pr.set_limit(PlimitRef::new(lim)));
     pr.set_fd(fdinit());
@@ -742,7 +753,7 @@ fn main() {
     let Ok(kq) = kqueue_alloc::<BenchGlue>(pr.fd_ref()) else {
         std::process::exit(1);
     };
-    kernel::event::fd_kqlist_insert(&kq);
+    kernel::file::event::fd_kqlist_insert(&kq);
     let mut kev = ev_set(fds[0] as usize, EVFILT_READ, EV_ADD, 0, 0, 0);
     if kqueue_register(&kq, &mut kev, 0, Some(p)).is_err() || kqpair.klist_empty(Dir::Rd) {
         eprintln!("bench: the knote did not attach");

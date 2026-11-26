@@ -2241,10 +2241,10 @@ pub(crate) mod tests {
 
     use hal::sys::netinet_in::IPPROTO_TCP;
 
-    use crate::cred::{CredRef, Ucred};
     use crate::net::proto::{PRCO_GETOPT, PRCO_SETOPT};
     use crate::netinet::in_::in_hasmulti;
     use crate::netinet::in_pcb::{INP_RECVIF, testinet};
+    use crate::proc::cred::{CredRef, Ucred};
 
     type Tg = testinet::G;
 

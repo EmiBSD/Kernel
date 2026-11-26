@@ -47,23 +47,23 @@
 /* <CODE> */
 //! `<sys/eventvar.h>`: `struct kqueue`, the kernel side of a `kqueue(2)` descriptor (and of a
 //! thread's `select(2)`/`poll(2)` queue, `p_kq`), as `bsd` names it: the kernel crate's
-//! (`kernel::event`), instantiated with `bsd`'s process glue.
+//! (`kernel::file::event`), instantiated with `bsd`'s process glue.
 //!
 //! Upstream: sys/sys/eventvar.h @ 3ce1f3f79392
 //! LZ: sys/sys/eventvar.rs@3c62ede68802
 //!
 //! ## Redesign
-//! - N4.4: `struct kqueue` is `kernel::event::Kqueue`, a counted `kqueuepl` item held by
+//! - N4.4: `struct kqueue` is `kernel::file::event::Kqueue`, a counted `kqueuepl` item held by
 //!   `KqRef`s (LZ: a `&'static` pool item whose `kq_fdp`, `kq_knlist` and `kq_knhash` were
 //!   raw pointers read in `unsafe` accessors, `Sync` by an `unsafe impl`); the table's
-//!   `fd_kqlist` adapter (`KqList`) and `Proc::kq` went with it (`kernel::event::thread_kq`).
+//!   `fd_kqlist` adapter (`KqList`) and `Proc::kq` went with it (`kernel::file::event::thread_kq`).
 
 use crate::kern::proc_glue::BsdProcGlue;
 
-pub use kernel::event::{KQ_DYING, KQ_NEVENTS, KQ_SLEEP, KQ_TASK, KQEXTENT};
+pub use kernel::file::event::{KQ_DYING, KQ_NEVENTS, KQ_SLEEP, KQ_TASK, KQEXTENT};
 
 /// `struct kqueue` of `bsd`'s processes.
-pub type Kqueue = kernel::event::Kqueue<BsdProcGlue>;
+pub type Kqueue = kernel::file::event::Kqueue<BsdProcGlue>;
 /// A counted reference to a kqueue of `bsd`'s processes.
-pub type KqRef = kernel::event::KqRef<BsdProcGlue>;
+pub type KqRef = kernel::file::event::KqRef<BsdProcGlue>;
 /* </CODE> */

@@ -102,8 +102,8 @@ use hal::sys::sysctl::{SYSCTL_INT_READONLY, SysctlBoundedArgs};
 use hal::sys::types::{Ino, Uid};
 
 use crate::assert::kpanic;
-use crate::cred::suser_ucred;
-use crate::descrip::fd_getfile;
+use crate::base::sysctl::{SysctlReq, bounded_arr, int_bounded};
+use crate::file::descrip::fd_getfile;
 use crate::file::{DTYPE_VNODE, FileGlue};
 use crate::fs::export::ExportGrant;
 use crate::fs::fuse::fuse_device::{
@@ -128,8 +128,8 @@ use crate::fs::vnode::{FORCECLOSE, VCHR, VDIR, VROOT, VT_FUSEFS, Vattr, Vnode};
 use crate::fs::vops::{Cred, Nd, VFS_VGET, Vfs, vop_getattr};
 use crate::fs::word::{I32Word, U32Word};
 use crate::net::mbuf::Mbuf;
+use crate::proc::cred::suser_ucred;
 use crate::proc::{ProcGlue, Thread};
-use crate::sysctl::{SysctlReq, bounded_arr, int_bounded};
 
 /// `PENDING`: `FUSE_INIT` reply not yet received.
 pub const PENDING: i32 = 2;
@@ -638,7 +638,6 @@ mod tests {
     use hal::user::bytes_of;
 
     use super::*;
-    use crate::cred::{CredRef, Ucred};
     use crate::fs::fuse::fuse_device::fuseclose;
     use crate::fs::fuse::fusebuf_h::{
         FUSE_FORGET, FUSE_GETATTR, FUSE_LOOKUP, FUSE_OPENDIR, FUSE_READDIR, FUSE_RELEASE,
@@ -654,6 +653,7 @@ mod tests {
     use crate::fs::testfs::{TestGlue, UBUF};
     use crate::fs::vnode::VREG;
     use crate::fs::vops::{VFS_ROOT, vop_getattr, vop_lookup, vop_open, vop_setattr, vop_unlock};
+    use crate::proc::cred::{CredRef, Ucred};
     use hal::sys::dirent::{DT_DIR, DT_REG};
     use hal::sys::fcntl::{FREAD, FWRITE, O_RDONLY, O_WRONLY};
     use hal::sys::types::Off;

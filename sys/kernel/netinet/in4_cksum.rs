@@ -110,9 +110,9 @@ use hal::sys::netinet_ip::Ip;
 use hal::sys::netinet_ip_var::Ipovly;
 
 use crate::assert::kpanic;
+use crate::base::prf::printf;
 use crate::net::mbuf::Mbuf;
 use crate::netinet::in_cksum::{cksum_add, cksum_fold};
-use crate::prf::printf;
 
 /// `offsetof(struct ip, ip_src)`: the source, then the destination.
 const IP_SRC: usize = core::mem::offset_of!(Ip, ip_src);

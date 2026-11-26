@@ -126,11 +126,12 @@ use hal::sys::sockio::{SIOCATMARK, SIOCGPGRP, SIOCSPGRP};
 use hal::sys::stat::{S_IFSOCK, S_IRGRP, S_IROTH, S_IRUSR, S_IWGRP, S_IWOTH, S_IWUSR, Stat};
 
 use crate::assert::kpanic;
-use crate::event::{
+use crate::file::event::{
     __EV_HUP, __EV_POLL, __EV_SELECT, EV_EOF, EVFILT_EXCEPT, EVFILT_READ, EVFILT_WRITE,
     FILTEROP_ISFD, FILTEROP_MPSAFE, Filter, Filterops, Kevent, Knote, NOTE_LOWAT, NOTE_OOB,
     knote_modify, knote_process,
 };
+use crate::file::uio::Uio;
 use crate::file::{File, FileGlue, FileOps};
 use crate::net::proto::PR_WANTRCVD;
 use crate::net::sockbuf::{
@@ -141,8 +142,7 @@ use crate::net::socket::{
     Socket, SocketRef, isspliced, soclose, solock_shared, soreadable, soreceive, soref, sosend,
 };
 use crate::proc::{ProcGlue, Thread};
-use crate::sigio::{TIOCGPGRP, TIOCSPGRP, sigio_getown, sigio_setown};
-use crate::uio::Uio;
+use crate::sig::sigio::{TIOCGPGRP, TIOCSPGRP, sigio_getown, sigio_setown};
 
 /// `socketops`: the operations of a socket file (one value per glue).
 pub struct SocketFileOps<G>(PhantomData<fn() -> G>);
@@ -540,17 +540,17 @@ mod tests {
     use hal::user::UserPtr;
 
     use super::*;
-    use crate::clock::Timespec;
-    use crate::descrip::{fd_getfile, sys_close};
-    use crate::event::{
+    use crate::file::descrip::{fd_getfile, sys_close};
+    use crate::file::event::{
         EV_ADD, EV_ONESHOT, EVFILT_VNODE, KqRef, ev_set, kqueue_init, kqueue_register, kqueue_scan,
         kqueue_scan_setup, sys_kqueue,
     };
+    use crate::file::uio::{Iovec, UioRw, UioSeg};
     use crate::fs::testfs::TestFiles;
     use crate::net::socket::soshutdown;
     use crate::net::unix::tests::{G, So, pair, recv, send, setup, teardown};
     use crate::testutil::{USER_BASE, user_bytes};
-    use crate::uio::{Iovec, UioRw, UioSeg};
+    use crate::time::clock::Timespec;
 
     /// The file of descriptor `fd` of `p`.
     fn fp_of(p: &Thread<G>, fd: i32) -> crate::file::FileRef<TestFiles> {

@@ -449,7 +449,7 @@
 //!   N4.6b: `BsdVmSysctl`
 //!   (`kernel::vm::meter::VmSysctl`) is gone: the sysctl helpers, `averunnable` and `allproc`
 //!   are the kernel's, `nkmempages` the `Malloc` bridge's, and `CTL_VM` is dispatched by
-//!   `kernel::sysctl`.
+//!   `kernel::base::sysctl`.
 //! - The fifteen `sysent[]` entries of the vm system calls (`sys_mmap`, ..., `sys_obreak`):
 //!   the `sysargs` unpacked and handed to `kernel::vm::mmap`/`unix` with the process's
 //!   address space; and their `Native` entries for the ABI (`native_mmap`, ...,
@@ -467,7 +467,7 @@
 //!   `vm::page`'s, with the buffer cache),
 //!   `paddr_is_dma_reachable`, `uvm_page_physdump`, `uvm_pmr_print`); the vnode as the
 //!   kernel's pager reaches it (`uvm_vnode.c`: `impl VnodeOps for Vnode`; N5.0: `BsdSysInfo` is
-//!   gone, the pager reads `kernel::tc` and `kernel::reboot` itself) and the
+//!   gone, the pager reads `kernel::time::tc` and `kernel::base::reboot` itself) and the
 //!   file systems' `uvn_attach`/`uvm_vnp_*` with `bsd`'s signatures; and `uvm_km.c`'s `bsd`
 //!   shapes (`kp_dma*` over the machine's `dma_constraint`, `km_alloc`/`km_free` with the
 //!   legacy pointer, `vm_min_kernel_address`).
@@ -515,7 +515,7 @@ use hal::user::UserPtr;
 use hal::vm::param::{round_page, trunc_page};
 use hal::vm::uvmexp::UVMEXP;
 use kernel::api::VmEntries;
-use kernel::pipe::UioMove;
+use kernel::file::pipe::UioMove;
 use kernel::vm::anon::Anon;
 use kernel::vm::init::VmMachine;
 use kernel::vm::km::{KmemDynMode, KmemPaMode, KmemVaMode, pa_mode};
@@ -609,7 +609,7 @@ fn vmspace_take(pr: &Process) -> Option<VmspaceRef> {
     pr.set_vmspace(None)
 }
 
-/// A `struct uio` as `uvm_io` moves bytes through it (`kernel::pipe::UioMove`): `uiomove`
+/// A `struct uio` as `uvm_io` moves bytes through it (`kernel::file::pipe::UioMove`): `uiomove`
 /// in the uio's own direction; no file, so never non-blocking.
 pub struct VmUio<'a, 'b>(pub &'a mut Uio<'b>);
 

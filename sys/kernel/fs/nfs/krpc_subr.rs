@@ -130,8 +130,9 @@ use hal::user::{AbiPod, bytes_of};
 use super::nfsm_subs::{XdrReader, XdrWriter, nfsm_rndup};
 use super::rpcv2::{RPC_REPLY, RPCAUTH_MAXSIZ, RPCAUTH_UNIX};
 use super::xdr_subs::txdr_unsigned;
-use crate::clock::Timeval;
+use crate::base::prf::printf;
 use crate::crypto::idgen::Idgen32Ctx;
+use crate::file::uio::{Uio, UioRw, UioSeg};
 use crate::net::mbuf::{
     M_COPYALL, M_WAIT, MCLBYTES, Mbuf, MbufBox, m_adj, m_calchdrlen, m_cat, m_copym, m_get,
     m_gethdr,
@@ -140,10 +141,9 @@ use crate::net::socket::{
     Socket, sobind, soclose, socreate, solock_shared, soreceive, sosend, sosetopt,
 };
 use crate::netinet::if_ether::InAddrFmt;
-use crate::prf::printf;
 use crate::proc::{ProcGlue, Thread};
 use crate::sys::errno::Errno;
-use crate::uio::{Uio, UioRw, UioSeg};
+use crate::time::clock::Timeval;
 
 /// `PMAPPORT`: RPC definitions for the portmapper.
 pub const PMAPPORT: u16 = 111;
@@ -482,7 +482,7 @@ fn krpc_exchange<G: ProcGlue>(
         while secs > 0 {
             let mut from: Option<MbufBox> = None;
             let mut m: Option<MbufBox> = None;
-            let mut iov: [crate::uio::Iovec; 0] = [];
+            let mut iov: [crate::file::uio::Iovec; 0] = [];
             let mut auio = Uio::<G> {
                 uio_iov: &mut iov,
                 uio_offset: 0,
@@ -935,10 +935,10 @@ pub(crate) mod testkrpc {
     /// A thread of user `uid` (not the superuser), for the privilege tests.
     pub(crate) fn user_thread(uid: u32) -> &'static Thread<G> {
         let pr = crate::proc::process_alloc::<G>(4000 + uid as i32, ());
-        let mut ids = crate::cred::Ucred::new();
+        let mut ids = crate::proc::cred::Ucred::new();
         ids.cr_uid.set(uid);
         ids.cr_ruid.set(uid);
-        drop(pr.set_ucred(crate::cred::CredRef::new(ids)));
+        drop(pr.set_ucred(crate::proc::cred::CredRef::new(ids)));
         let t = crate::proc::thread_alloc::<G>(&pr, ());
         drop(t.set_cred(pr.ucred()));
         core::mem::forget(pr);

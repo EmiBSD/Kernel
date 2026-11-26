@@ -54,14 +54,14 @@
 
 /* <CODE> */
 //! System wide defaults for terminal state, `<sys/ttydefaults.h>`, for `bsd`: the kernel's
-//! (`kernel::termios`, N4.7a) under the path the drivers name.
+//! (`kernel::tty::termios`, N4.7a) under the path the drivers name.
 //!
 //! Upstream: sys/sys/ttydefaults.h @ 3ce1f3f79392
 //! LZ: sys/sys/ttydefaults.rs@3c62ede68802
 //!
 //! ## Redesign
-//! - N4.7b: every item is `kernel::termios`'s (one module for termios.h, ttycom.h and
+//! - N4.7b: every item is `kernel::tty::termios`'s (one module for termios.h, ttycom.h and
 //!   ttydefaults.h).
 
-pub use kernel::termios::*;
+pub use kernel::tty::termios::*;
 /* </CODE> */

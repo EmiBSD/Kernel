@@ -253,7 +253,9 @@ use hal::sys::netinet6_nd6::{
 use hal::sys::socket::AF_LINK;
 
 use crate::assert::{kassert, kpanic};
-use crate::log::{LOG_DEBUG, LOG_INFO};
+use crate::base::log::{LOG_DEBUG, LOG_INFO};
+use crate::base::prf::{Str, log, printf};
+use crate::base::task::{Task, task_add};
 use crate::net::if_::{IFNETLIST, IfRef, if_output_ml, ifaof_ifpforaddr, net_tq, with_net_held};
 use crate::net::if_ethersubr::{ether_map_ipv6_multicast, ether_sprintf};
 use crate::net::if_var::{AtomicCell, Ifnet};
@@ -278,10 +280,8 @@ use crate::netinet6::in6_var::{In6Ifaddr, in6_are_masked_addr_equal};
 use crate::netinet6::ip6_var::{IP6_FORWARDING, IP6_NEIGHBORGCTHRESH, icmp6stat_inc};
 use crate::netinet6::nd6_nbr::nd6_ns_output;
 use crate::netinet6::nd6_rtr::rt6_flush;
-use crate::prf::{Str, log, printf};
-use crate::task::{Task, task_add};
-use crate::tc::{gettime, getuptime};
-use crate::timeout::{KCLOCK_NONE, TIMEOUT_PROC, Timeout};
+use crate::time::tc::{gettime, getuptime};
+use crate::time::timeout::{KCLOCK_NONE, TIMEOUT_PROC, Timeout};
 
 /// `ND6_SLOWTIMER_INTERVAL`: 1 hour.
 const ND6_SLOWTIMER_INTERVAL: i32 = 60 * 60;
@@ -2068,7 +2068,7 @@ pub(crate) mod tests {
         Dadq, dad_counts, dad_fire, dad_free_counts, dad_reap, dad_tries, nd6_dad_start,
         nd6_dad_stop, nd6_ifptomac, nd6_na_input, nd6_ns_input,
     };
-    use crate::tc::TIME_UPTIME;
+    use crate::time::tc::TIME_UPTIME;
 
     const OURS: [u8; 6] = [0x52, 0x54, 0x00, 0xbb, 0x00, 0x01];
     pub(crate) const PEER: [u8; 6] = [0x52, 0x54, 0x00, 0xbb, 0x00, 0x02];
@@ -3593,7 +3593,7 @@ pub(crate) mod tests {
             !ND6_EXPIRE_TIMEOUT.pending(),
             "ether()'s lifetimes are infinite"
         );
-        let now = crate::clock::ticks();
+        let now = crate::time::clock::ticks();
         in6_ioctl(SIOCAIFADDR_IN6, &mut r, Some(ifp), true).expect("SIOCAIFADDR_IN6");
         assert!(ND6_EXPIRE_TIMEOUT.pending());
         let due = ND6_EXPIRE_TIMEOUT.time().wrapping_sub(now);

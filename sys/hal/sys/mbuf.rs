@@ -56,7 +56,7 @@
 //!
 //! ## Redesign
 //! - N6.1: moved from `bsd`'s `sys/sys/mbuf.rs` with the mbuf's redesign
-//!   (`kernel::net::mbuf`), so `kernel::sysctl` and `bsd` name one copy (the N4.6b
+//!   (`kernel::net::mbuf`), so `kernel::base::sysctl` and `bsd` name one copy (the N4.6b
 //!   `sysctl.h` precedent): `Mbstat` is `AbiPod` through [`crate::abi_pod!`] (its bytes are
 //!   `kern.mbstat`'s), no `unsafe`.
 

@@ -32,10 +32,10 @@
 //! sixty-five (`VfsEntries`, N5.4), the socket system calls' nineteen (`SocketEntries`,
 //! N6.2b: `kernel::net::syscalls`, `sys/kern/socket_glue.rs`) and nfssvc(2) (N6.7b4:
 //! `kernel::fs::nfs::nfssvc`, `sys/kern/vfs_syscalls.rs`), which run the system
-//! call prologue still in `bsd` (pledge, the pinned syscalls) before `kernel::pipe`,
-//! `kernel::vm`, `kernel::descrip`, `kernel::event`, `kernel::select`, `kernel::log`,
-//! `kernel::futex`, the process modules, `kernel::sysctl`, `kernel::time`,
-//! `kernel::reboot` and `kernel::sig` (`sys/kern/pipe_glue.rs`, `sys/kern/vm_bsd.rs`,
+//! call prologue still in `bsd` (pledge, the pinned syscalls) before `kernel::file::pipe`,
+//! `kernel::vm`, `kernel::file::descrip`, `kernel::file::event`, `kernel::file::select`, `kernel::base::log`,
+//! `kernel::sched::futex`, the process modules, `kernel::base::sysctl`, `kernel::time`,
+//! `kernel::base::reboot` and `kernel::sig` (`sys/kern/pipe_glue.rs`, `sys/kern/vm_bsd.rs`,
 //! `sys/kern/kern_descrip.rs`, `sys/kern/kern_event.rs`, `sys/kern/sys_generic.rs`,
 //! `sys/kern/subr_log.rs`, `sys/kern/sys_futex.rs`, `sys/kern/proc_glue.rs`,
 //! `sys/kern/kern_sysctl.rs`, `sys/kern/kern_time.rs`, `sys/kern/kern_sig.rs`); an entry

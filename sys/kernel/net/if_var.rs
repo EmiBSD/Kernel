@@ -250,15 +250,15 @@ use hal::sys::errno::Errno;
 use hal::sys::net_if::{IFDESCRSIZE, IFNAMSIZ, IfRxring, SockaddrDl};
 
 use crate::assert::kpanic;
+use crate::base::prf::Str;
+use crate::base::task::{Task, TaskChain};
 use crate::net::ifq::{Ifiqueue, Ifqueue};
 use crate::net::mbuf::{
     Mbuf, MbufBox, MbufList, MbufQueue, mq_delist, mq_dequeue, mq_drops, mq_len,
 };
 use crate::netinet::in_var::{InIfaddr, InMulti};
 use crate::netinet6::in6_var::{In6Ifaddr, In6Multi};
-use crate::prf::Str;
-use crate::task::{Task, TaskChain};
-use crate::timeout::Timeout;
+use crate::time::timeout::Timeout;
 
 /// `IFNET_SLOWTIMO`: granularity is 1 second.
 pub const IFNET_SLOWTIMO: i32 = 1;

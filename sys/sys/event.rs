@@ -47,14 +47,14 @@
 /* <CODE> */
 //! `<sys/event.h>`: `kqueue(2)`'s `struct kevent`, filters, flags and notes, and the kernel
 //! half (`struct klist`, `struct knote`, `struct filterops`, `struct kqueue_scan_state`, the
-//! inline helpers), as `bsd` names them: the kernel crate's (`kernel::event`), instantiated
+//! inline helpers), as `bsd` names them: the kernel crate's (`kernel::file::event`), instantiated
 //! with `bsd`'s process glue.
 //!
 //! Upstream: sys/sys/event.h @ 3ce1f3f79392
 //! LZ: sys/sys/event.rs@3c62ede68802
 //!
 //! ## Redesign
-//! - N4.4: the types and the helpers are `kernel::event`'s (`sys/kernel/event.rs`, which says
+//! - N4.4: the types and the helpers are `kernel::file::event`'s (`sys/kernel/file/event.rs`, which says
 //!   what changed shape: the knote owned by its kqueue's chain, the klist's three kinds, the
 //!   counted kqueue); this header keeps their names for the filters still in `bsd` (the 44
 //!   `struct filterops` of 18 files, their `kn_hook` derefs among them), with 0 `unsafe`:
@@ -67,7 +67,7 @@
 use crate::kern::proc_glue::BsdProcGlue;
 use crate::sys::errno::Errno;
 
-pub use kernel::event::{
+pub use kernel::file::event::{
     __EV_HUP, __EV_POLL, __EV_SELECT, EV_ADD, EV_CLEAR, EV_DELETE, EV_DISABLE, EV_DISPATCH,
     EV_ENABLE, EV_EOF, EV_ERROR, EV_FLAG1, EV_ONESHOT, EV_RECEIPT, EV_SYSFLAGS, EVFILT_AIO,
     EVFILT_DEVICE, EVFILT_EXCEPT, EVFILT_MARKER, EVFILT_PROC, EVFILT_READ, EVFILT_SIGNAL,
@@ -82,13 +82,13 @@ pub use kernel::event::{
 };
 
 /// `struct knote` of `bsd`'s processes.
-pub type Knote = kernel::event::Knote<BsdProcGlue>;
+pub type Knote = kernel::file::event::Knote<BsdProcGlue>;
 /// `struct klist` of `bsd`'s processes.
-pub type Klist = kernel::event::Klist<BsdProcGlue>;
+pub type Klist = kernel::file::event::Klist<BsdProcGlue>;
 /// `struct filterops` of `bsd`'s processes.
-pub type Filterops = kernel::event::Filterops<BsdProcGlue>;
+pub type Filterops = kernel::file::event::Filterops<BsdProcGlue>;
 /// `struct kqueue_scan_state`.
-pub type KqueueScanState<'m> = kernel::event::KqueueScanState<'m, BsdProcGlue>;
+pub type KqueueScanState<'m> = kernel::file::event::KqueueScanState<'m, BsdProcGlue>;
 
 /// The type of `f_attach`.
 pub type FAttach = fn(&Knote) -> Result<(), Errno>;
@@ -109,7 +109,7 @@ pub fn knote_modify_fn(kev: &Kevent, kn: &Knote, f_event: FEvent) -> bool {
 
 /// `knote_modify(kev, kn)`: assigns the user's parameters and re-runs the event function.
 pub fn knote_modify(kev: &Kevent, kn: &Knote) -> bool {
-    kernel::event::knote_modify(kev, kn)
+    kernel::file::event::knote_modify(kev, kn)
 }
 
 /// `knote_process_fn(kn, kev, f_event)`.
@@ -129,7 +129,7 @@ pub fn knote_process_fn(kn: &Knote, kev: Option<&mut Kevent>, f_event: FEvent) -
 
 /// `knote_process(kn, kev)`: whether the event is active, its state stored in `kev` if so.
 pub fn knote_process(kn: &Knote, kev: Option<&mut Kevent>) -> bool {
-    kernel::event::knote_process(kn, kev)
+    kernel::file::event::knote_process(kn, kev)
 }
 
 /// `klist_empty(klist)`.

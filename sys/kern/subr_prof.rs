@@ -76,8 +76,8 @@ use crate::sys::types::Register;
 use crate::unported;
 use hal::cpu::clock::ClockFrame;
 
-/// `profclock_period`: the kernel's (`kernel::clock`, N4.8a; `initclocks` sets it).
-pub use kernel::clock::PROFCLOCK_PERIOD;
+/// `profclock_period`: the kernel's (`kernel::time::clock`, N4.8a; `initclocks` sets it).
+pub use kernel::time::clock::PROFCLOCK_PERIOD;
 
 /// `profclock_period`.
 pub fn profclock_period() -> u64 {

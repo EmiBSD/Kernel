@@ -64,7 +64,7 @@
 //! `tsleep`, `msleep` and `rwsleep` with their interlocks, the `wakeup` family, the reference
 //! counts (`refcnt_*`), the condition variables (`cond_init`, `cond_wait`) and
 //! `sched_yield(2)`. `__thrsleep(2)` and `__thrwakeup(2)` (LZ's port, taken by `lz-sync`) are
-//! `kernel::thrsleep`'s; their `sysent` rows here only decode the arguments and put the
+//! `kernel::sched::thrsleep`'s; their `sysent` rows here only decode the arguments and put the
 //! call's value in `*retval`. `sleep_signal_check`, the signal half of a `PCATCH` sleep, is
 //! `kernel::sched`'s since N4.5b (over `kernel::sig`).
 //!
@@ -336,12 +336,12 @@ pub fn wakeup_one<T: ?Sized>(chan: *const T) {
     wakeup_n(chan, 1);
 }
 
-/// `__thrsleep(2)`: `kernel::thrsleep`'s, its error the call's value (`*retval`); the system
+/// `__thrsleep(2)`: `kernel::sched::thrsleep`'s, its error the call's value (`*retval`); the system
 /// call itself always succeeds.
 #[allow(non_snake_case)] // the generator finds the C's name, `sys___thrsleep`
 pub fn sys___thrsleep(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysThrsleepArgs = sysargs(v);
-    retval[0] = kernel::thrsleep::sys___thrsleep(
+    retval[0] = kernel::sched::thrsleep::sys___thrsleep(
         p,
         uap.ident.get().addr() as isize,
         uap.clock_id.get(),
@@ -352,13 +352,14 @@ pub fn sys___thrsleep(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Resu
     Ok(())
 }
 
-/// `__thrwakeup(2)`: `kernel::thrsleep`'s, its error the call's value (`*retval`); the system
+/// `__thrwakeup(2)`: `kernel::sched::thrsleep`'s, its error the call's value (`*retval`); the system
 /// call itself always succeeds.
 #[allow(non_snake_case)] // the generator finds the C's name, `sys___thrwakeup`
 pub fn sys___thrwakeup(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysThrwakeupArgs = sysargs(v);
-    retval[0] = kernel::thrsleep::sys___thrwakeup(p, uap.ident.get().addr() as isize, uap.n.get())
-        as Register;
+    retval[0] =
+        kernel::sched::thrsleep::sys___thrwakeup(p, uap.ident.get().addr() as isize, uap.n.get())
+            as Register;
     Ok(())
 }
 
@@ -443,12 +444,12 @@ pub fn cond_wait(c: &Cond, wmesg: &'static str) {
 #[cfg(test)]
 mod tests {
     // Host tests for the `__thrsleep(2)`/`__thrwakeup(2)` rows: each argument register
-    // reaches `kernel::thrsleep`, and its answer is `*retval` with the call itself `Ok`.
+    // reaches `kernel::sched::thrsleep`, and its answer is `*retval` with the call itself `Ok`.
 
     use std::sync::MutexGuard;
 
     use hal::user::UserPtr;
-    use kernel::clock::Timespec;
+    use kernel::time::clock::Timespec;
 
     use super::*;
     use crate::kern::proc_glue::{procinit, test_process, test_thread};
@@ -545,7 +546,7 @@ mod tests {
         );
         // n and the process: nobody of this process sleeps on the ident, whatever n (a
         // negative n read from its register); the broadcast is 0. A sleeper is beyond this
-        // fixture (no scheduler): how n counts the woken is kernel::thrsleep's wake-n test.
+        // fixture (no scheduler): how n counts the woken is kernel::sched::thrsleep's wake-n test.
         let q = thread(1101);
         for n in [1, 0, -1] {
             assert_eq!(

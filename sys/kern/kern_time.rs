@@ -293,7 +293,7 @@ pub fn sys_setitimer(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Resu
 
 /// `KernelApi::time`: the time system calls' rows and reboot(2)'s through the system call
 /// prologue (`mi_syscall` on each one's own `sysent[]` row: pledge, the pinned syscalls,
-/// the kernel-lock rule), which call `kernel::time` and `kernel::reboot`.
+/// the kernel-lock rule), which call `kernel::time` and `kernel::base::reboot`.
 pub const TIME_ENTRIES: hal::api::TimeEntries = hal::api::TimeEntries {
     clock_gettime: native_clock_gettime,
     clock_settime: native_clock_settime,

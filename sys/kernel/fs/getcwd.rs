@@ -97,8 +97,8 @@ use super::vnode::{
 };
 use super::vops::{Cred, vop_access, vop_getattr, vop_lookup, vop_readdir, vop_unlock};
 use crate::assert::kpanic;
+use crate::file::uio::{Iovec, Uio};
 use crate::proc::{ProcGlue, Thread};
-use crate::uio::{Iovec, Uio};
 
 /// `M_TEMP` (`<sys/malloc.h>`): misc temporary data buffers.
 pub(super) const M_TEMP: i32 = 127;

@@ -43,7 +43,7 @@
 
 /* <CODE> */
 //! `<sys/poll.h>`: `struct pollfd` and the `POLL*` event bits of `poll(2)`, as `bsd` names
-//! them: the kernel crate's (`kernel::select`).
+//! them: the kernel crate's (`kernel::file::select`).
 //!
 //! Upstream: sys/sys/poll.h @ 3ce1f3f79392
 //! LZ: sys/sys/poll.rs@3c62ede68802
@@ -52,10 +52,10 @@
 //! `sys/signal.rs`/`sys/time.rs`'s.
 //!
 //! ## Redesign
-//! - N4.4: `struct pollfd` is `kernel::select::Pollfd`, `hal::abi_pod!`'s (LZ: an `unsafe
+//! - N4.4: `struct pollfd` is `kernel::file::select::Pollfd`, `hal::abi_pod!`'s (LZ: an `unsafe
 //!   impl AbiPod`).
 
-pub use kernel::select::{
+pub use kernel::file::select::{
     INFTIM, Nfds, POLL_NOHUP, POLLERR, POLLHUP, POLLIN, POLLNORM, POLLNVAL, POLLOUT, POLLPRI,
     POLLRDBAND, POLLRDNORM, POLLWRBAND, POLLWRNORM, Pollfd,
 };

@@ -239,7 +239,7 @@ pub fn nfssvc_iod<G: ProcGlue>() -> ! {
     // Assign my position or return error if too many already running.
     let iod = match nfs_iod_attach::<G>(tid) {
         Ok(iod) => iod,
-        Err(e) => crate::thread::kthread_exit::<G>(e as i32),
+        Err(e) => crate::proc::thread::kthread_exit::<G>(e as i32),
     };
 
     // Just loop around doin our stuff until SIGKILL.
@@ -272,7 +272,7 @@ pub fn nfssvc_iod<G: ProcGlue>() -> ! {
         }
         if let Err(e) = error {
             nfs_iod_detach::<G>(iod);
-            crate::thread::kthread_exit::<G>(e as i32);
+            crate::proc::thread::kthread_exit::<G>(e as i32);
         }
     }
 }
@@ -298,7 +298,10 @@ pub fn nfs_getset_niothreads<G: ProcGlue>(set: bool) {
 
         let mut start = n - have;
         while start > 0 {
-            let _ = crate::thread::kthread_create::<G>(b"nfsio", crate::fork::Start::NfsIod);
+            let _ = crate::proc::thread::kthread_create::<G>(
+                b"nfsio",
+                crate::proc::fork::Start::NfsIod,
+            );
             start -= 1;
         }
 

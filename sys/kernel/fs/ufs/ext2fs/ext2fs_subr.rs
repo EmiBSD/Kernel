@@ -89,7 +89,7 @@ use crate::fs::vnode::{
     VBAD, VBLK, VCHR, VDIR, VFIFO, VLNK, VNON, VREG, VROOT, VSOCK, Vnode, VopsId, iftovt,
 };
 use crate::proc::ProcGlue;
-use crate::tc::getmicrouptime;
+use crate::time::tc::getmicrouptime;
 
 /// `ext2fs_bufatoff`: the buffer with the contents of block `offset` from the beginning of
 /// directory `ip`, and the offset in it of the remaining space in the directory (`*res`).

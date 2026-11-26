@@ -127,7 +127,7 @@ use hal::random::{arc4random, arc4random_uniform};
 use hal::sync::mutex::Mutexed;
 use hal::sys::types::Time;
 
-use crate::tc::getuptime;
+use crate::time::tc::getuptime;
 
 /// `struct randomtab`: the parameters and state of one identifier generator.
 pub struct Randomtab {

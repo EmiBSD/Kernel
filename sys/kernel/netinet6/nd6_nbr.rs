@@ -166,7 +166,8 @@ use hal::sys::netinet6_nd6::{ND6_LLINFO_INCOMPLETE, ND6_LLINFO_REACHABLE, ND6_LL
 use hal::sys::socket::AF_LINK;
 
 use crate::assert::{kassert, kpanic};
-use crate::log::{LOG_ERR, LOG_INFO};
+use crate::base::log::{LOG_ERR, LOG_INFO};
+use crate::base::prf::{Str, log};
 use crate::net::if_::{IfRef, if_isconnected};
 use crate::net::if_var::{AtomicCell, Ifaddr, IfaddrRef, Ifnet};
 use crate::net::mbuf::{
@@ -191,8 +192,7 @@ use crate::netinet6::nd6::{
     nd6_lookup, nd6_opt_lladdr, nd6_options, nd6_output_held,
 };
 use crate::netinet6::nd6_rtr::rt6_flush;
-use crate::prf::{Str, log};
-use crate::timeout::{KCLOCK_NONE, TIMEOUT_PROC, Timeout};
+use crate::time::timeout::{KCLOCK_NONE, TIMEOUT_PROC, Timeout};
 
 /// The interface name the C prints for an address without an interface.
 const UNKNOWN_IFNAME: [u8; IFNAMSIZ] = *b"???\0\0\0\0\0\0\0\0\0\0\0\0\0";
@@ -554,7 +554,7 @@ fn nd6_getpkt(ifp: &Ifnet, maxlen: usize, func: &str) -> Option<MbufBox> {
     let max_linkhdr = usize::try_from(MAX_LINKHDR.load(Ordering::Relaxed)).unwrap_or(0);
     #[cfg(feature = "diagnostic")]
     if max_linkhdr + maxlen >= crate::net::mbuf::MCLBYTES {
-        crate::prf::printf(format_args!(
+        crate::base::prf::printf(format_args!(
             "{}: max_linkhdr + maxlen >= MCLBYTES ({} + {} > {})\n",
             func,
             max_linkhdr,

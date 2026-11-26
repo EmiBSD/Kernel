@@ -2008,7 +2008,7 @@ mod tests {
         let _g = crate::kern::subr_pool::tests::setup_real_memory();
         crate::kern::kern_descrip::filedesc_init();
         let route = pledged(PLEDGE_STDIO | PLEDGE_ROUTE);
-        drop(route.set_cred(kernel::cred::crget()));
+        drop(route.set_cred(kernel::proc::cred::crget()));
         let fp = crate::kern::kern_descrip::fnew(route).unwrap();
         fp.install(
             DTYPE_SOCKET,
