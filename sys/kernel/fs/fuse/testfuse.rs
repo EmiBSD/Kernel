@@ -36,12 +36,13 @@ use std::sync::MutexGuard;
 use std::vec::Vec;
 
 use hal::mem::malloc::{M_WAITOK, MArc};
-use hal::sys::dirent::Dirent;
-use hal::sys::errno::Errno;
-use hal::sys::fcntl::{FREAD, FWRITE};
-use hal::sys::mount::{FusefsArgs, MOUNT_FUSEFS};
-use hal::sys::types::{Dev, Ino, Off, makedev};
-use hal::user::{AbiPod, bytes_of, bytes_of_mut, pod_from_bytes};
+use hal::user::{bytes_of, bytes_of_mut, pod_from_bytes};
+use sysdefs::dirent::Dirent;
+use sysdefs::errno::Errno;
+use sysdefs::fcntl::{FREAD, FWRITE};
+use sysdefs::mount::{FusefsArgs, MOUNT_FUSEFS};
+use sysdefs::pod::AbiPod;
+use sysdefs::types::{Dev, Ino, Off, makedev};
 
 use crate::file::descrip::{falloc, fdinsert, fdplock, fdpunlock};
 use crate::file::uio::{Iovec, Uio, UioRw, UioSeg};

@@ -125,7 +125,7 @@
 use hal::cpu::intr::IPL_SOFTNET;
 use hal::random::{arc4random, arc4random_uniform};
 use hal::sync::mutex::Mutexed;
-use hal::sys::types::Time;
+use sysdefs::types::Time;
 
 use crate::time::tc::getuptime;
 

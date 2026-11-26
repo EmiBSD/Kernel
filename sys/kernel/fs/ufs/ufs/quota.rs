@@ -73,17 +73,17 @@
 //!   passed the same way.
 //!
 //! ## Redesign
-//! - LZ's `unsafe impl AbiPod for Dqblk` (the machine's copy trait) -> `hal::abi_pod!`, which
+//! - LZ's `unsafe impl AbiPod for Dqblk` (the machine's copy trait) -> `sysdefs::abi_pod!`, which
 //!   proves the 32 bytes tile with no padding at compile time.
 
-use hal::sys::errno::Errno;
-use hal::sys::types::Daddr;
+use sysdefs::errno::Errno;
+use sysdefs::types::Daddr;
 
 use super::inode::Inode;
 use crate::fs::vops::Cred;
 use crate::proc::ProcGlue;
 #[cfg(not(feature = "quota"))]
-use {crate::fs::mount::Mount, crate::proc::Thread, hal::sys::types::Uid};
+use {crate::fs::mount::Mount, crate::proc::Thread, sysdefs::types::Uid};
 
 #[cfg(feature = "quota")]
 pub use super::ufs_quota::{
@@ -157,7 +157,7 @@ pub struct Dqblk {
     pub dqb_itime: u32,
 }
 
-hal::abi_pod!(Dqblk {
+sysdefs::abi_pod!(Dqblk {
     dqb_bhardlimit: u32,
     dqb_bsoftlimit: u32,
     dqb_curblocks: u32,

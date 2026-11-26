@@ -96,10 +96,10 @@ use core::sync::atomic::AtomicI32;
 use hal::cpu::intr::IPL_NONE;
 use hal::mem::malloc::{M_WAITOK, MArc};
 use hal::mem::pool::PR_WAITOK;
-use hal::sys::errno::Errno;
-use hal::sys::mount::{Fid, FusefsArgs, MNT_FORCE, MNT_UPDATE, Statfs};
-use hal::sys::sysctl::{SYSCTL_INT_READONLY, SysctlBoundedArgs};
-use hal::sys::types::{Ino, Uid};
+use sysdefs::errno::Errno;
+use sysdefs::mount::{Fid, FusefsArgs, MNT_FORCE, MNT_UPDATE, Statfs};
+use sysdefs::sysctl::{SYSCTL_INT_READONLY, SysctlBoundedArgs};
+use sysdefs::types::{Ino, Uid};
 
 use crate::assert::kpanic;
 use crate::base::sysctl::{SysctlReq, bounded_arr, int_bounded};
@@ -633,9 +633,9 @@ mod tests {
     use core::ptr;
     use std::{assert, assert_eq};
 
-    use hal::sys::mount::MNAMELEN;
-    use hal::sys::types::{Dev, makedev};
     use hal::user::bytes_of;
+    use sysdefs::mount::MNAMELEN;
+    use sysdefs::types::{Dev, makedev};
 
     use super::*;
     use crate::fs::fuse::fuse_device::fuseclose;
@@ -654,10 +654,10 @@ mod tests {
     use crate::fs::vnode::VREG;
     use crate::fs::vops::{VFS_ROOT, vop_getattr, vop_lookup, vop_open, vop_setattr, vop_unlock};
     use crate::proc::cred::{CredRef, Ucred};
-    use hal::sys::dirent::{DT_DIR, DT_REG};
-    use hal::sys::fcntl::{FREAD, FWRITE, O_RDONLY, O_WRONLY};
-    use hal::sys::types::Off;
     use hal::user::UserPtr;
+    use sysdefs::dirent::{DT_DIR, DT_REG};
+    use sysdefs::fcntl::{FREAD, FWRITE, O_RDONLY, O_WRONLY};
+    use sysdefs::types::Off;
 
     type P = &'static Thread<TestGlue>;
     type M = &'static Mount<TestGlue>;

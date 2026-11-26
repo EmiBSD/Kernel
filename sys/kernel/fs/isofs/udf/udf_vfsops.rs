@@ -155,15 +155,15 @@ use hal::cpu::intr::IPL_NONE;
 use hal::mem::malloc::{M_NOWAIT, M_WAITOK, MArc, MArray};
 use hal::mem::pool::{PR_WAITOK, PoolArc};
 use hal::sync::sleep::INFSLP;
-use hal::sys::endian::{letoh16, letoh32};
-use hal::sys::errno::Errno;
-use hal::sys::fcntl::FREAD;
-use hal::sys::mount::{
+use hal::user::{UserPtr, zeroed};
+use sysdefs::endian::{letoh16, letoh32};
+use sysdefs::errno::Errno;
+use sysdefs::fcntl::FREAD;
+use sysdefs::mount::{
     Fid, MNAMELEN, MNT_FORCE, MNT_LOCAL, MNT_RDONLY, MNT_ROOTFS, MNT_UPDATE, Statfs, UdfArgs,
 };
-use hal::sys::syslimits::NAME_MAX;
-use hal::sys::types::{Daddr, Ino, Uid, major};
-use hal::user::{UserPtr, zeroed};
+use sysdefs::syslimits::NAME_MAX;
+use sysdefs::types::{Daddr, Ino, Uid, major};
 
 use crate::assert::kpanic;
 use crate::base::prf::printf;
@@ -375,7 +375,7 @@ fn checktag_at(b: &[u8], id: u16) -> Result<(), Errno> {
 
 /// The `T` member at `off` of the descriptor `b` (zero when `b` ends first, which a block of
 /// `um_bsize` bytes holding one of these descriptors never does).
-fn member<T: hal::user::AbiPod>(b: &[u8], off: usize) -> T {
+fn member<T: sysdefs::pod::AbiPod>(b: &[u8], off: usize) -> T {
     hal::mem::pod::at(b, off).unwrap_or_else(zeroed)
 }
 
@@ -1141,10 +1141,10 @@ mod tests {
     use std::vec::Vec;
     use std::{assert, assert_eq, assert_ne, vec};
 
-    use hal::sys::dirent::{DT_DIR, DT_UNKNOWN, Dirent};
-    use hal::sys::fcntl::O_RDONLY;
-    use hal::sys::types::Register;
-    use hal::sys::unistd::{_PC_LINK_MAX, _PC_NAME_MAX};
+    use sysdefs::dirent::{DT_DIR, DT_UNKNOWN, Dirent};
+    use sysdefs::fcntl::O_RDONLY;
+    use sysdefs::types::Register;
+    use sysdefs::unistd::{_PC_LINK_MAX, _PC_NAME_MAX};
 
     use super::*;
     use crate::file::descrip::{sys_close, sys_read};

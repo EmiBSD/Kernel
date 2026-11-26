@@ -72,7 +72,7 @@
 //! - N4.8a (decision 8): the structures are the kernel's, re-exported: `struct timeval`,
 //!   `struct timespec` and `struct bintime` from `kernel::time::clock`, `struct timezone`, `struct
 //!   itimerval` and `struct clockinfo` from `kernel::time`, with the C's field names and
-//!   types (`suseconds_t` is `i64`), `AbiPod` through `hal::abi_pod!` (LZ's four `unsafe impl
+//!   types (`suseconds_t` is `i64`), `AbiPod` through `sysdefs::abi_pod!` (LZ's four `unsafe impl
 //!   AbiPod` gone: `machine::copy`'s legacy trait covers every `hal` `AbiPod` type). The free
 //!   functions of the macros (`timespecadd`, `bintime_to_timespec`, ...) stay here over them.
 //! - N7.1b: `struct clock_ymdhms` and `POSIX_BASE_YEAR` move to `kernel::dev::clock_subr` with the
@@ -112,7 +112,7 @@ pub const SECYR: i64 = SECDAY * 365;
 
 // The kernel's one `struct timeval`, `struct timespec`, `struct bintime` (`kernel::time::clock`) and
 // `struct timezone`, `struct itimerval`, `struct clockinfo` (`kernel::time`), N4.8a (decision
-// 8): the same layouts and field names, `AbiPod` through `hal::abi_pod!`.
+// 8): the same layouts and field names, `AbiPod` through `sysdefs::abi_pod!`.
 pub use kernel::dev::clock_subr::{ClockYmdhms, POSIX_BASE_YEAR};
 pub use kernel::time::clock::{Bintime, Timespec, Timeval};
 pub use kernel::time::{Clockinfo, Itimerval, Timezone};

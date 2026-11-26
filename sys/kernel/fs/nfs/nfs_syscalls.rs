@@ -94,8 +94,8 @@ use core::sync::atomic::Ordering;
 
 use hal::sync::klock;
 use hal::sync::sleep::{INFSLP, PCATCH, PWAIT, tsleep_nsec, wakeup, wakeup_one};
-use hal::sys::errno::Errno;
-use hal::sys::types::Pid;
+use sysdefs::errno::Errno;
+use sysdefs::types::Pid;
 
 use super::nfs::nfs_niothreads;
 use super::nfs_bio::nfs_doio;
@@ -108,8 +108,8 @@ use crate::fs::buf::{
 use crate::fs::bufq::{BufqDiscipline, bufq_unpark};
 use crate::fs::subr::vfs;
 use crate::proc::ProcGlue;
-use crate::sys::nfs_nfs::NFS_MAXASYNCDAEMON;
-use crate::sys::signal::SIGKILL;
+use sysdefs::nfs_nfs::NFS_MAXASYNCDAEMON;
+use sysdefs::signal::SIGKILL;
 
 /// The number of slots of `nfs_asyncdaemon[]`.
 pub const NFS_NASYNCDAEMON: usize = NFS_MAXASYNCDAEMON as usize;

@@ -119,9 +119,9 @@ use hal::ds::pinlist::{PinAdapter, PinEntry, PinList};
 use hal::mem::pool::{Last, PoolArc, PoolHome, TypedPool};
 use hal::sync::mutex::{Mutexed, MutexedGuard};
 use hal::sync::once::OnceStatic;
-use hal::sys::errno::Errno;
-use hal::sys::stat::Stat;
-use hal::sys::types::Off;
+use sysdefs::errno::Errno;
+use sysdefs::stat::Stat;
+use sysdefs::types::Off;
 
 use crate::assert::kpanic;
 use crate::file::descrip::Filedesc;
@@ -817,7 +817,7 @@ mod tests {
         fn stat(
             &self,
             _: &File<Files>,
-            _: &mut hal::sys::stat::Stat,
+            _: &mut sysdefs::stat::Stat,
             _: &Thread<Procs>,
         ) -> Result<(), Errno> {
             Ok(())

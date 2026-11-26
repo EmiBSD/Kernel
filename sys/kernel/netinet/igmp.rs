@@ -116,7 +116,7 @@
 
 /* <CODE> */
 //! The Internet Group Management Protocol (IGMP), `netinet/igmp.c`; `<netinet/igmp.h>`, the
-//! packet format and constants, is `hal::sys::netinet_igmp`. Written by Steve Deering,
+//! packet format and constants, is `sysdefs::netinet_igmp`. Written by Steve Deering,
 //! Stanford, May 1988. Modified by Rosen Sharma, Stanford, Aug 1994. Modified by Bill
 //! Fenner, Xerox PARC, Feb 1995. MULTICAST Revision: 1.3.
 //!
@@ -174,21 +174,21 @@ use hal::sync::mutex::Mutexed;
 use hal::sync::netlock::{NETLOCK, NetHeld};
 use hal::sync::percpu::Counters;
 use hal::sync::rwlock::{Witness, WriteWitness};
-use hal::sys::endian::{htons, ntohs};
-use hal::sys::errno::Errno;
-use hal::sys::net_if::IFF_LOOPBACK;
-use hal::sys::netinet_igmp::{
+use sysdefs::endian::{htons, ntohs};
+use sysdefs::errno::Errno;
+use sysdefs::net_if::IFF_LOOPBACK;
+use sysdefs::netinet_igmp::{
     IGMP_AGE_THRESHOLD, IGMP_AWAKENING_MEMBER, IGMP_DELAYING_MEMBER, IGMP_HOST_LEAVE_MESSAGE,
     IGMP_HOST_MEMBERSHIP_QUERY, IGMP_IDLE_MEMBER, IGMP_LAZY_MEMBER, IGMP_MAX_HOST_REPORT_DELAY,
     IGMP_MINLEN, IGMP_SLEEPING_MEMBER, IGMP_TIMER_SCALE, IGMP_v1_HOST_MEMBERSHIP_REPORT,
     IGMP_v1_ROUTER, IGMP_v2_HOST_MEMBERSHIP_REPORT, IGMP_v2_ROUTER, Igmp,
 };
-use hal::sys::netinet_igmp_var::IGMPCTL_STATS;
-use hal::sys::netinet_in::{
+use sysdefs::netinet_igmp_var::IGMPCTL_STATS;
+use sysdefs::netinet_in::{
     IN_CLASSA_NET, INADDR_ALLHOSTS_GROUP, INADDR_ALLROUTERS_GROUP, INADDR_ANY, IPPROTO_IGMP,
     InAddr, in_local_group, in_multicast,
 };
-use hal::sys::netinet_ip::{IPOPT_RA, Ip};
+use sysdefs::netinet_ip::{IPOPT_RA, Ip};
 
 use crate::assert::{kassert, kpanic};
 use crate::base::sysctl::{SysctlReq, rdstruct};
@@ -1008,7 +1008,7 @@ mod tests {
     fn the_stats_are_the_counters() {
         let _g = crate::net::if_::tests::setup();
         igmpstat_inc(IgmpstatCounters::IgpsRcvBadqueries);
-        let size = size_of::<hal::sys::netinet_igmp_var::Igmpstat>();
+        let size = size_of::<sysdefs::netinet_igmp_var::Igmpstat>();
         let mut oldlen = size;
         let mut req = SysctlReq {
             oldp: USTAT,

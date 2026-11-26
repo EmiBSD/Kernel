@@ -57,7 +57,7 @@
 //!
 //! ## Redesign
 //! - N4.8a: `struct itimerspec` is the kernel's (`kernel::time::Itimerspec`, `AbiPod` by
-//!   `hal::abi_pod!`), re-exported; the clock ids and the `__CLOCK_*` helpers stay here.
+//!   `sysdefs::abi_pod!`), re-exported; the clock ids and the `__CLOCK_*` helpers stay here.
 
 use crate::sys::types::Clockid;
 

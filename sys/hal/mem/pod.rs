@@ -32,7 +32,8 @@
 //!   back per change costs more than the C's pointer, and its fields are read and written in
 //!   place by the C (`ip_input`'s `ip->ip_ttl--`, `in_cksum` over the header).
 
-use crate::user::{AbiPod, pod_from_bytes, pod_to_bytes};
+use crate::user::{pod_from_bytes, pod_to_bytes};
+use sysdefs::pod::AbiPod;
 
 /// The `T` at byte `off` of `buf`, copied out; `None` when `buf` ends before it does.
 pub fn at<T: AbiPod>(buf: &[u8], off: usize) -> Option<T> {
@@ -98,7 +99,7 @@ mod tests {
         src: u32,
         dst: u32,
     }
-    crate::abi_pod!(Ip {
+    sysdefs::abi_pod!(Ip {
         vhl: u8,
         tos: u8,
         len: u16,

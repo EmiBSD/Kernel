@@ -45,11 +45,11 @@ use std::time::{Duration, Instant};
 use std::vec::Vec;
 
 use hal::arch::current::vmparam::{VM_MAXUSER_ADDRESS, VM_MIN_ADDRESS};
-use hal::sys::errno::Errno;
-use hal::sys::futex::{FUTEX_WAIT_PRIVATE, FUTEX_WAKE, FUTEX_WAKE_PRIVATE};
 use hal::user::UserPtr;
 use kernel::proc::{self, ProcGlue, ProcTables, Process, Session, Thread};
 use kernel::testutil;
+use sysdefs::errno::Errno;
+use sysdefs::futex::{FUTEX_WAIT_PRIVATE, FUTEX_WAKE, FUTEX_WAKE_PRIVATE};
 
 // ---------------------------------------------------------------------------------------
 // The harness (vm.rs's).

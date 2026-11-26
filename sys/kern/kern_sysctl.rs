@@ -96,7 +96,7 @@
 //!   the walk and is returned once the references taken are dropped (the C's `break` only
 //!   left the macro's `do { } while (0)`, so its walk went on and a later `copyout` could
 //!   overwrite the error). `kinfo_file` is copied out as bytes, its two C padding holes
-//!   being members (`hal::sys::sysctl`).
+//!   being members (`sysdefs::sysctl`).
 //! - The morally-const values `sysctl_bounded_arr` reports (`openbsd`, `maxpartitions`,
 //!   `raw_part`) are `AtomicI32` statics like the C's `static int`s.
 //! - `KERN_CPTIME` with no CPU online (which only the host double can produce) leaves the
@@ -2307,8 +2307,8 @@ mod tests {
         let flags = kernel::vm::types::uvm_mapflag(
             rw,
             rw,
-            hal::sys::mman::MAP_INHERIT_COPY,
-            hal::sys::mman::MADV_NORMAL,
+            sysdefs::mman::MAP_INHERIT_COPY,
+            sysdefs::mman::MADV_NORMAL,
             kernel::vm::types::UVM_FLAG_FIXED | kernel::vm::types::UVM_FLAG_COPYONW,
         );
         let mut at = 0x10_0000;

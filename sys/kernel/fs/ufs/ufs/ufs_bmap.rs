@@ -85,8 +85,8 @@
 //!   The same sections of the cache's lock as the C's `splbio` pairs: one per `getblk`, one
 //!   per `biowait`, one per `brelse`.
 
-use hal::sys::errno::Errno;
-use hal::sys::types::Daddr;
+use sysdefs::errno::Errno;
+use sysdefs::types::Daddr;
 
 use super::dinode::{NDADDR, NIADDR};
 use super::inode::{Indir, Inode, daddr32_at, daddr64_at, vtoi};

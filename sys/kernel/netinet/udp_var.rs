@@ -61,7 +61,7 @@
 //!
 //! ## Redesign
 //! - N6.6b0: LZ's `sys/netinet/udp_var.rs` is split by audience: the userland ABI
-//!   (`UDPCTL_*`, `struct udpstat`, `struct udpiphdr`) is `hal::sys::netinet_udp_var`; the
+//!   (`UDPCTL_*`, `struct udpstat`, `struct udpiphdr`) is `sysdefs::netinet_udp_var`; the
 //!   kernel part, `enum udpstat_counters` ([`UdpstatCounters`]), `udps_ncounters` and
 //!   `udpstat_inc`, is here. LZ's static array of atomics in `udp_usrreq.rs` is per-CPU
 //!   counters, summed by `udp_sysctl`. `udbtable`, the requests and the prototypes are
@@ -117,7 +117,7 @@ pub fn udpstat_inc(c: UdpstatCounters) {
 
 // The counters are the structure's words, in its order.
 const _: () = assert!(
-    core::mem::size_of::<hal::sys::netinet_udp_var::Udpstat>()
+    core::mem::size_of::<sysdefs::netinet_udp_var::Udpstat>()
         == UDPS_NCOUNTERS * core::mem::size_of::<u64>()
 );
 /* </CODE> */

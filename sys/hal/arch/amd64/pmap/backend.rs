@@ -253,14 +253,14 @@ use crate::assert::{hal_panic, kassert};
 use crate::cpu::intr::IPL_VM;
 use crate::mem::pool::{BoxPool, PR_NOWAIT, PoolArc, PoolBox};
 use crate::sync::mutex::{Mutexed, MutexedGuard};
-use crate::sys::errno::Errno;
-use crate::sys::mman::{PROT_EXEC, PROT_NONE, PROT_READ, PROT_WRITE};
-use crate::sys::types::{Paddr, Vaddr, Vsize};
 use crate::vm::param::{atop, round_page};
 use crate::vm::pmap::{
     BootstrapParams, KernelMapper, PG_PMAP_MOD, PG_PMAP_REF, PMAP_CANFAIL, PMAP_WIRED, PageMd,
     PhysPages, Pmap, PmapBackend, PmapRef, PmapStatistics, VmProt,
 };
+use sysdefs::errno::Errno;
+use sysdefs::mman::{PROT_EXEC, PROT_NONE, PROT_READ, PROT_WRITE};
+use sysdefs::types::{Paddr, Vaddr, Vsize};
 
 /// `PMAP_REMOVE_ALL`: `pmap_do_remove` removes every mapping.
 const PMAP_REMOVE_ALL: i32 = 0;

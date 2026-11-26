@@ -105,8 +105,8 @@ use hal::cpu::intr::IPL_NONE;
 use hal::random::arc4random;
 use hal::random::arc4random_uniform;
 use hal::sync::mutex::Mutexed;
-use hal::sys::errno::Errno;
-use hal::sys::types::{Daddr, Ino, Mode, Uid};
+use sysdefs::errno::Errno;
+use sysdefs::types::{Daddr, Ino, Mode, Uid};
 
 use super::ffs_subr::{ffs_clrblock, ffs_fragacct, ffs_isblock, ffs_isfreeblock, ffs_setblock};
 use super::fs::{

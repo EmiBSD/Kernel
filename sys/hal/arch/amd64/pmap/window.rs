@@ -144,9 +144,9 @@ use super::backend::Backend;
 use super::layout::{NPDPG, PMAP_PA_MASK};
 use super::tables::{frame, pg_crypt, pg_g_kern, pg_nx, table_from};
 use super::tlb::{invlpg, rcr3};
-use crate::sys::mman::{PROT_EXEC, PROT_WRITE};
-use crate::sys::types::{Paddr, Vaddr};
 use crate::vm::pmap::{PmapBackend, VmProt};
+use sysdefs::mman::{PROT_EXEC, PROT_WRITE};
+use sysdefs::types::{Paddr, Vaddr};
 
 /// The window's size: the largest image the module loader takes
 /// (`hal::module::elf::MAX_SPAN`), so the window never refuses a module the loader accepts.
@@ -308,8 +308,8 @@ const _: () = {
     assert!(MODULE_WINDOW_SIZE.is_multiple_of(NBPD_L2));
     assert!(MODULE_WINDOW_NPTP <= NPDPG);
     assert!(size_of::<Ptp>() == PAGE_SIZE);
-    assert!(w_xor_x(crate::sys::mman::PROT_READ | PROT_EXEC));
-    assert!(w_xor_x(crate::sys::mman::PROT_READ | PROT_WRITE));
+    assert!(w_xor_x(sysdefs::mman::PROT_READ | PROT_EXEC));
+    assert!(w_xor_x(sysdefs::mman::PROT_READ | PROT_WRITE));
     assert!(!w_xor_x(PROT_WRITE | PROT_EXEC));
 };
 /* </CODE> */

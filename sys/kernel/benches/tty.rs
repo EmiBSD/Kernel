@@ -48,13 +48,13 @@ use std::string::String;
 use std::time::{Duration, Instant};
 use std::vec::Vec;
 
-use hal::sys::errno::Errno;
 use kernel::file::uio::UioMove;
 use kernel::proc::{self, ProcGlue, ProcTables, Process, Session, Thread};
 use kernel::testutil;
 use kernel::tty::clist::Clist;
 use kernel::tty::termios::{ECHO, ICANON, TTYDEF_CFLAG, TTYDEF_IFLAG, TTYDEF_LFLAG, TTYDEF_OFLAG};
 use kernel::tty::{TS_CARR_ON, TS_ISOPEN, Tty, TtyRef, ttsetwater, ttychars, ttyinput, ttymalloc};
+use sysdefs::errno::Errno;
 
 // ---------------------------------------------------------------------------------------
 // The harness (vm.rs's).

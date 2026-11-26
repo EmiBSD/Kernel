@@ -71,9 +71,9 @@
 
 use core::marker::PhantomData;
 
-use hal::sys::errno::Errno;
-use hal::sys::fcntl::Flock;
-use hal::sys::types::{Daddr, Register};
+use sysdefs::errno::Errno;
+use sysdefs::fcntl::Flock;
+use sysdefs::types::{Daddr, Register};
 
 use crate::base::prf::unported;
 use crate::file::LockOwner;

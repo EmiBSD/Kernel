@@ -91,12 +91,12 @@
 use core::ptr::{self, NonNull};
 
 use hal::sync::slot::ReadMostly;
-pub use hal::sys::disk::*;
 pub use kernel::dev::disk::{
     DUID_SIZE, Disk, DiskLock, DiskRef, LabelGeom, bounds_check_with_label, checkdisklabel,
     diskerr, dkcksum, duid_equal, duid_format, duid_iszero, initdisklabel, set_bootduid,
     setdisklabel,
 };
+pub use sysdefs::disk::*;
 
 use crate::kern::proc_glue::BsdProcGlue;
 use crate::kern::subr_autoconf::{device_lookup, node_of};

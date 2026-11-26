@@ -268,14 +268,14 @@ use crate::cpu::intr::{IPL_NONE, IPL_VM, splraise};
 use crate::dev::mmio::DevCache;
 use crate::mem::pool::{BoxPool, PR_NOWAIT, PoolArc};
 use crate::sync::mutex::{Mutexed, MutexedGuard};
-use crate::sys::errno::Errno;
-use crate::sys::mman::{PROT_EXEC, PROT_NONE, PROT_READ, PROT_WRITE};
-use crate::sys::types::{Paddr, Vaddr, Vsize};
 use crate::vm::param::{atop, round_page, trunc_page};
 use crate::vm::pmap::{
     BootstrapParams, KernelImage, PG_PMAP_MOD, PG_PMAP_REF, PMAP_CANFAIL, PMAP_WIRED, PageMd,
     PhysPages, Pmap, PmapBackend, PmapCounter, PmapRef, PmapStatistics, VmProt,
 };
+use sysdefs::errno::Errno;
+use sysdefs::mman::{PROT_EXEC, PROT_NONE, PROT_READ, PROT_WRITE};
+use sysdefs::types::{Paddr, Vaddr, Vsize};
 
 /// The size of the `vmmap` window (see the deviations): large enough for the devices, wholly
 /// below `virtual_avail`, out of `kernel_map`'s way.

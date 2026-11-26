@@ -209,20 +209,20 @@ use hal::mem::pool::{AnyArc, PR_NOWAIT, PoolArc};
 use hal::sync::mutex::MutexedGuard;
 use hal::sync::netlock::{NETLOCK, NetHeld};
 use hal::sync::rwlock::WitnessPart;
-use hal::sys::endian::{htonl, htons, ntohl};
-use hal::sys::errno::Errno;
-use hal::sys::mbuf::MT_DATA;
-use hal::sys::netinet_in::{INADDR_ANY, IPPROTO_TCP, SockaddrIn};
-use hal::sys::netinet_ip::Ip;
-use hal::sys::netinet_ip6::{IPV6_VERSION, IPV6_VERSION_MASK, Ip6Hdr};
-use hal::sys::netinet_tcp::{
+use sysdefs::endian::{htonl, htons, ntohl};
+use sysdefs::errno::Errno;
+use sysdefs::mbuf::MT_DATA;
+use sysdefs::netinet_in::{INADDR_ANY, IPPROTO_TCP, SockaddrIn};
+use sysdefs::netinet_ip::Ip;
+use sysdefs::netinet_ip6::{IPV6_VERSION, IPV6_VERSION_MASK, Ip6Hdr};
+use sysdefs::netinet_tcp::{
     TCP_MAX_WINSHIFT, TCP_MAXWIN, TCPOLEN_SIGLEN, TCPOLEN_SIGNATURE, TCPOLEN_TSTAMP_APPA,
     TCPOLEN_WINDOW, TCPOPT_EOL, TCPOPT_MAXSEG, TCPOPT_NOP, TCPOPT_SACK_PERMIT_HDR,
     TCPOPT_SIGNATURE, TCPOPT_TSTAMP_HDR, TCPOPT_WINDOW, TH_ACK, TH_CWR, TH_ECE, TH_RST, TH_SYN,
     TcpSeq, Tcphdr,
 };
-use hal::sys::netinet6_in6::{In6Addr, SockaddrIn6, in6_is_addr_unspecified};
-use hal::sys::socket::{AF_INET, AF_INET6};
+use sysdefs::netinet6_in6::{In6Addr, SockaddrIn6, in6_is_addr_unspecified};
+use sysdefs::socket::{AF_INET, AF_INET6};
 
 use crate::assert::{kassert, kpanic};
 use crate::net::domain::net;
@@ -1688,7 +1688,7 @@ mod tests {
     use std::vec::Vec;
 
     use hal::mem::pod;
-    use hal::sys::netinet_tcp::TCPOPT_MAXSEG;
+    use sysdefs::netinet_tcp::TCPOPT_MAXSEG;
 
     use super::*;
     use crate::netinet::in_pcb::testinet;

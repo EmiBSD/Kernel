@@ -57,7 +57,7 @@
 //! block's slot as `inp_ppcb`), the reassembly queue entries, the SACK blocks and holes, the
 //! SYN cache, the statistics with their per-counter enumeration, and the constants of the
 //! header's kernel part. The header's userland part (`TCPCTL_*`, `struct tcpstat`, `struct
-//! tcp_ident_mapping`) is `hal::sys::netinet_tcp_var`'s.
+//! tcp_ident_mapping`) is `sysdefs::netinet_tcp_var`'s.
 //!
 //! Locks used to protect global data and struct members: \[I\] immutable after creation,
 //! \[N\] net lock, \[S\] `syn_cache_mtx`, \[s\] `so_lock` of the socket (of the listen socket
@@ -156,8 +156,8 @@ use hal::sync::mutex::Mutexed;
 use hal::sync::netlock::NetHeld;
 use hal::sync::percpu::Counters;
 use hal::sync::rwlock::{ExclGuarded, Guarded, LockId, WitnessPart};
-use hal::sys::errno::Errno;
-use hal::sys::netinet_tcp::{MAX_SACK_BLKS, TcpSeq, Tcphdr};
+use sysdefs::errno::Errno;
+use sysdefs::netinet_tcp::{MAX_SACK_BLKS, TcpSeq, Tcphdr};
 
 use crate::assert::kpanic;
 use crate::net::ipsec_hooks::SOCKADDR_UNION_LEN;

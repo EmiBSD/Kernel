@@ -52,7 +52,7 @@
 //! `sys/signal.rs`/`sys/time.rs`'s.
 //!
 //! ## Redesign
-//! - N4.4: `struct pollfd` is `kernel::file::select::Pollfd`, `hal::abi_pod!`'s (LZ: an `unsafe
+//! - N4.4: `struct pollfd` is `kernel::file::select::Pollfd`, `sysdefs::abi_pod!`'s (LZ: an `unsafe
 //!   impl AbiPod`).
 
 pub use kernel::file::select::{

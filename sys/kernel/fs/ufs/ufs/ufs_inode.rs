@@ -79,8 +79,8 @@
 //! [`InodeRef`]: super::inode::InodeRef
 //! [`InodeOps`]: super::inode::InodeOps
 
-use hal::sys::errno::Errno;
-use hal::sys::mount::MNT_RDONLY;
+use sysdefs::errno::Errno;
+use sysdefs::mount::MNT_RDONLY;
 
 use super::inode::{IN_ACCESS, IN_CHANGE, IN_LAZYMOD, IN_MODIFIED, IN_UPDATE, vtoi};
 use super::quota::{getinoquota, ufs_quota_delete, ufs_quota_free_inode};
@@ -187,7 +187,7 @@ mod tests {
 
     use hal::cpu::intr::IPL_NONE;
     use hal::mem::pool::{BoxPool, PR_WAITOK, PoolArc, TypedPool};
-    use hal::sys::types::{Mode, Off};
+    use sysdefs::types::{Mode, Off};
 
     use super::*;
     use crate::fs::subr::vref;

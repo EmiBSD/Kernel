@@ -83,9 +83,9 @@
 //! - Cost against the C: the same reads and writes of the same blocks, in the same order;
 //!   no lock, no spl.
 
-use hal::sys::errno::Errno;
-use hal::sys::mount::MNT_NOATIME;
-use hal::sys::types::{Daddr, Off};
+use sysdefs::errno::Errno;
+use sysdefs::mount::MNT_NOATIME;
+use sysdefs::types::{Daddr, Off};
 
 use super::ext2fs::{Ext2Superblock, blkoff, e2fs_overflow, fsbtodb, lblkno, lblktosize};
 use super::ext2fs_balloc::ext2fs_buf_alloc;
@@ -456,7 +456,7 @@ mod tests {
     use std::vec::Vec;
     use std::{assert_eq, vec};
 
-    use hal::sys::mount::MNT_RDONLY;
+    use sysdefs::mount::MNT_RDONLY;
 
     use super::super::testext2fs::newfs::{self, BIG_SIZE, EXT_SIZE, HELLO_DATA};
     use super::super::testext2fs::{attach, mount, new_file, vget};

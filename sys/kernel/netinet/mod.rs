@@ -20,7 +20,7 @@
 //! The Internet protocols (N6.4): OpenBSD's `sys/netinet/`, as its modules move from `bsd`
 //! (`docs/ROADMAP.md`'s N6 row). Headers become modules as in `bsd` (`ip_var.h` beside
 //! `ip_input.c`'s counters in `ip_var.rs`); the userland halves of the headers are
-//! `hal::sys::netinet_*`.
+//! `sysdefs::netinet_*`.
 
 pub mod icmp_var;
 pub mod if_ether;

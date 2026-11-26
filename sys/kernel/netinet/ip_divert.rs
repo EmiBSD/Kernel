@@ -33,7 +33,7 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! Divert sockets: `<netinet/ip_divert.h>` (its userland part is `hal::sys::
+//! Divert sockets: `<netinet/ip_divert.h>` (its userland part is `sysdefs::
 //! netinet_ip_divert`) and `netinet/ip_divert.c`. A pf rule with `divert-packet port N` hands
 //! the packets it matches to the `IPPROTO_DIVERT` raw socket bound to port N
 //! ([`divert_packet`]), with the address of the receiving interface (inbound) or the wildcard
@@ -88,18 +88,18 @@ use core::sync::atomic::{AtomicI32, Ordering};
 use hal::mem::pool::PoolArc;
 use hal::sync::netlock::NetHeld;
 use hal::sync::percpu::Counters;
-use hal::sys::errno::Errno;
-use hal::sys::net_route::RTF_LOCAL;
-use hal::sys::netinet_in::{INADDR_ANY, IPPROTO_ICMP, IPPROTO_TCP, IPPROTO_UDP, SockaddrIn};
-use hal::sys::netinet_ip::{IP_MAXPACKET, Ip};
-use hal::sys::netinet_ip_divert::{
+use sysdefs::errno::Errno;
+use sysdefs::net_route::RTF_LOCAL;
+use sysdefs::netinet_in::{INADDR_ANY, IPPROTO_ICMP, IPPROTO_TCP, IPPROTO_UDP, SockaddrIn};
+use sysdefs::netinet_ip::{IP_MAXPACKET, Ip};
+use sysdefs::netinet_ip_divert::{
     DIVERTCTL_RECVSPACE, DIVERTCTL_SENDSPACE, DIVERTCTL_STATS, DIVS_NCOUNTERS, Divstat,
 };
-use hal::sys::netinet_ip_icmp::ICMP_MINLEN;
-use hal::sys::netinet_tcp::Tcphdr;
-use hal::sys::netinet_udp::Udphdr;
-use hal::sys::socket::AF_INET;
-use hal::sys::sysctl::SysctlBoundedArgs;
+use sysdefs::netinet_ip_icmp::ICMP_MINLEN;
+use sysdefs::netinet_tcp::Tcphdr;
+use sysdefs::netinet_udp::Udphdr;
+use sysdefs::socket::AF_INET;
+use sysdefs::sysctl::SysctlBoundedArgs;
 
 use crate::assert::kpanic;
 use crate::base::sysctl::{SysctlReq, bounded_arr, rdstruct};
@@ -578,7 +578,7 @@ mod tests {
     use core::pin::pin;
     use core::sync::atomic::Ordering;
 
-    use hal::sys::netinet_in::IPPROTO_UDP;
+    use sysdefs::netinet_in::IPPROTO_UDP;
 
     use super::*;
     use crate::netinet::in_pcb::{in_pcb_iterator, in_pcb_iterator_abort, testinet};

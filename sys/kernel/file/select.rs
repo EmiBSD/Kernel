@@ -146,8 +146,8 @@ use core::ptr;
 use hal::mem::malloc::{M_CANFAIL, M_WAITOK, MArray};
 use hal::sync::mutex::Mutexed;
 use hal::sync::sleep::{INFSLP, PCATCH};
-use hal::sys::errno::Errno;
 use hal::user::UserPtr;
+use sysdefs::errno::Errno;
 
 use crate::assert::{kassert, kpanic};
 use crate::file::FileGlue;
@@ -213,7 +213,7 @@ pub struct Pollfd {
     pub revents: i16,
 }
 
-hal::abi_pod!(Pollfd {
+sysdefs::abi_pod!(Pollfd {
     fd: i32,
     events: i16,
     revents: i16

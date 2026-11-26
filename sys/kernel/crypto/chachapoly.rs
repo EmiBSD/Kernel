@@ -85,7 +85,7 @@ use libkern::{explicit_bzero, timingsafe_bcmp};
 use super::chacha_private::{ChachaCtx, hchacha20};
 use super::poly1305::{Poly1305State, poly1305_block_size};
 use super::wipe;
-use crate::sys::errno::Errno;
+use sysdefs::errno::Errno;
 
 /// `CHACHA20_KEYSIZE`.
 pub const CHACHA20_KEYSIZE: usize = 32;

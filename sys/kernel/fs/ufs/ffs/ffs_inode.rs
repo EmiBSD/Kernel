@@ -76,8 +76,8 @@
 
 use hal::mem::malloc::{M_WAITOK, MArray};
 use hal::sync::sleep::INFSLP;
-use hal::sys::errno::Errno;
-use hal::sys::types::{Daddr, Off};
+use sysdefs::errno::Errno;
+use sysdefs::types::{Daddr, Off};
 
 use super::ffs_alloc::ffs_blkfree;
 use super::fs::{

@@ -50,11 +50,11 @@
 /* <CODE> */
 //! Internet interface addresses and multicast records: `<netinet/in_var.h>`, the kernel's
 //! since N6.4a (`kernel::netinet::in_var`: `struct in_ifaddr`, `struct in_multi`, `ifatoia`,
-//! `ifmatoinm`; `hal::sys::netinet_in_var`: `struct in_aliasreq`), re-exported under LZ's
+//! `ifmatoinm`; `sysdefs::netinet_in_var`: `struct in_aliasreq`), re-exported under LZ's
 //! path for `bsd`'s readers.
 //!
 //! Upstream: sys/netinet/in_var.h @ 3ce1f3f79392
 
-pub use hal::sys::netinet_in_var::InAliasreq;
 pub use kernel::netinet::in_var::{InIfaddr, InMulti, SinWords, ifatoia, ifmatoinm};
+pub use sysdefs::netinet_in_var::InAliasreq;
 /* </CODE> */

@@ -81,7 +81,7 @@
 //! `<netinet6/in6_var.h>`: `struct in6_ifaddr`, `struct in6_multi`, their casts from the
 //! generic records, the kernel's memberships of an address and the `_KERNEL` macros. The
 //! userland half (`struct in6_ifreq`, `struct in6_aliasreq`, the lifetimes, the statistics,
-//! the commands) is `hal::sys::netinet6_in6_var`; the prototypes are `kernel::netinet6::in6`'s
+//! the commands) is `sysdefs::netinet6_in6_var`; the prototypes are `kernel::netinet6::in6`'s
 //! (`in6.c`).
 //!
 //! Upstream: sys/netinet6/in6_var.h @ 3ce1f3f79392
@@ -155,11 +155,11 @@ use hal::mem::malloc::{M_NOWAIT, M_WAITOK, MArc, MArray};
 use hal::sync::mutex::Mutexed;
 use hal::sync::refcnt::Refcnt;
 use hal::sync::rwlock::Guarded;
-use hal::sys::net_if::{IFF_LOOPBACK, IFF_POINTOPOINT};
-use hal::sys::netinet6_in6::{In6Addr, SockaddrIn6};
-use hal::sys::netinet6_in6_var::In6Addrlifetime;
-use hal::sys::socket::AF_INET6;
-use hal::sys::types::Time;
+use sysdefs::net_if::{IFF_LOOPBACK, IFF_POINTOPOINT};
+use sysdefs::netinet6_in6::{In6Addr, SockaddrIn6};
+use sysdefs::netinet6_in6_var::In6Addrlifetime;
+use sysdefs::socket::AF_INET6;
+use sysdefs::types::Time;
 
 use crate::assert::kpanic;
 use crate::net::if_::{IF_TMPLIST_LOCK, M_IFADDR};
@@ -333,7 +333,7 @@ impl In6Memberships {
     /// owner's mutex (malloc(9) allows `M_NOWAIT` there, and the old array is freed there
     /// once its handles moved); `Err(ENOBUFS)` when it cannot be had, before anything is
     /// joined (and nothing moved: `MArray::new` fills the array only once it has it).
-    pub fn reserve(&mut self) -> Result<(), hal::sys::errno::Errno> {
+    pub fn reserve(&mut self) -> Result<(), sysdefs::errno::Errno> {
         let cap = self.v.as_deref().map_or(0, <[_]>::len);
         if self.n < cap {
             return Ok(());
@@ -342,7 +342,7 @@ impl In6Memberships {
         let Some(nv) = MArray::new(M_IPMADDR, M_NOWAIT, (cap * 2).max(4), |i| {
             old.get_mut(i).and_then(Option::take)
         }) else {
-            return Err(hal::sys::errno::Errno::ENOBUFS);
+            return Err(sysdefs::errno::Errno::ENOBUFS);
         };
         // The old array, emptied, freed.
         self.v = Some(nv);
@@ -795,12 +795,12 @@ mod tests {
     fn the_masked_comparison_is_the_cs() {
         let a = In6Addr::new([0x20, 1, 0xd, 0xb8, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1]);
         let b = In6Addr::new([0x20, 1, 0xd, 0xb8, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 2]);
-        let m64 = hal::sys::netinet6_in6::IN6MASK64;
+        let m64 = sysdefs::netinet6_in6::IN6MASK64;
         assert!(in6_are_masked_addr_equal(&a, &b, &m64));
         assert!(!in6_are_masked_addr_equal(
             &a,
             &b,
-            &hal::sys::netinet6_in6::IN6MASK128
+            &sysdefs::netinet6_in6::IN6MASK128
         ));
         assert_eq!(in6_are_scope_cmp(2, 5), -3);
         assert!(in6_are_scope_equal(2, 2));

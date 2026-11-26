@@ -116,13 +116,14 @@
 use hal::cpu::intr::IPL_NONE;
 use hal::sync::mutex::Mutexed;
 use hal::sync::netlock::{NETLOCK, NetHeld};
-use hal::sys::mount::{MNAMELEN, NFSMNT_NFSV3, NfsArgs};
-use hal::sys::net_if::{IFF_UP, IFNAMSIZ, Ifreq};
-use hal::sys::netinet_in::{InAddr, SockaddrIn};
-use hal::sys::netinet_in_var::InAliasreq;
-use hal::sys::socket::{AF_INET, SOCK_DGRAM};
-use hal::sys::sockio::{SIOCAIFADDR, SIOCGIFFLAGS, SIOCSIFFLAGS};
-use hal::user::{AbiPod, bytes_of_mut, zeroed};
+use hal::user::{bytes_of_mut, zeroed};
+use sysdefs::mount::{MNAMELEN, NFSMNT_NFSV3, NfsArgs};
+use sysdefs::net_if::{IFF_UP, IFNAMSIZ, Ifreq};
+use sysdefs::netinet_in::{InAddr, SockaddrIn};
+use sysdefs::netinet_in_var::InAliasreq;
+use sysdefs::pod::AbiPod;
+use sysdefs::socket::{AF_INET, SOCK_DGRAM};
+use sysdefs::sockio::{SIOCAIFADDR, SIOCGIFFLAGS, SIOCSIFFLAGS};
 
 use super::krpc_subr::{
     BOOTPARAM_GETFILE, BOOTPARAM_PROG, BOOTPARAM_VERS, BOOTPARAM_WHOAMI, PMAPPORT, PMAPPROC_CALLIT,
@@ -147,7 +148,7 @@ use crate::net::socket::{soclose, socreate};
 use crate::netinet::if_ether::{InAddrFmt, revarpwhoami};
 use crate::netinet::in_var::InIfaddr;
 use crate::proc::{ProcGlue, Thread};
-use crate::sys::errno::Errno;
+use sysdefs::errno::Errno;
 
 /// `nfsbootdevname`: the name of the root device when booting from the network (a NUL-padded
 /// copy of `rootdv->dv_xname`), set by `setroot()` through [`set_nfsbootdevname`].

@@ -99,7 +99,7 @@ fn native_rval(nr: Register, want: i32, args: SysArgs) -> Result<Register, i32> 
 mod tests {
     use super::*;
     use crate::syscall::{LegacySyscalls, install_legacy_syscalls};
-    use hal::sys::syscall::{
+    use sysdefs::syscall::{
         SYS_clock_gettime, SYS_close, SYS_dup, SYS_fork, SYS_getdtablecount, SYS_kevent, SYS_mmap,
         SYS_munlockall, SYS_open, SYS_pipe, SYS_pipe2, SYS_pwritev, SYS_read, SYS_reboot,
         SYS_recvfrom, SYS_socket,

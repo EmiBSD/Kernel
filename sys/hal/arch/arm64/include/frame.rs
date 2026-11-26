@@ -45,11 +45,11 @@
 //!   `siginfo`, `bsd`'s until N4.5b) and re-exports these: the switch and `cpu_fork` are
 //!   `hal`'s and build the frames.
 //! - N4.8b: `struct sigframe` follows (`hal::cpu::sig`'s `sendsig` builds it), with the signal
-//!   context (`signal.rs`); LZ's `unsafe impl AbiPod` is `hal::abi_pod!`.
+//!   context (`signal.rs`); LZ's `unsafe impl AbiPod` is `sysdefs::abi_pod!`.
 
 use super::signal::Sigcontext;
-use crate::sys::siginfo::Siginfo;
-use crate::sys::types::Register;
+use sysdefs::siginfo::Siginfo;
+use sysdefs::types::Register;
 
 /// `struct callframe`: one link of the frame-pointer chain.
 #[repr(C)]
@@ -167,7 +167,7 @@ impl Sigframe {
     }
 }
 
-crate::abi_pod!(Sigframe {
+sysdefs::abi_pod!(Sigframe {
     sf_signum: i32,
     _pad: i32,
     sf_sc: Sigcontext,

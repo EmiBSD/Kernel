@@ -70,7 +70,6 @@
 
 pub mod arch;
 pub mod machine;
-pub mod sys;
 #[forbid(unsafe_code)]
 pub mod syscall;
 

@@ -150,10 +150,10 @@ use hal::sync::klock;
 use hal::sync::rwlock::{RW_WRITE, RawRwlock};
 use hal::sync::sleep::{INFSLP, PCATCH, PWAIT, wakeup, wakeup_one};
 use hal::sync::slot::ReadMostly;
-use hal::sys::errno::Errno;
-use hal::sys::fcntl::O_EXCL;
-use hal::sys::types::{Dev, minor};
 use hal::user::bytes_of_mut;
+use sysdefs::errno::Errno;
+use sysdefs::fcntl::O_EXCL;
+use sysdefs::types::{Dev, minor};
 
 use crate::assert::{kassert, kpanic};
 use crate::file::FileGlue;
@@ -827,8 +827,8 @@ mod tests {
     use std::vec::Vec;
     use std::{assert, assert_eq};
 
-    use hal::sys::fcntl::FREAD;
     use hal::user::bytes_of;
+    use sysdefs::fcntl::FREAD;
 
     use super::*;
     use crate::file::event::{
@@ -855,7 +855,7 @@ mod tests {
     }
 
     /// The bytes of a protocol structure.
-    fn b<T: hal::user::AbiPod>(v: &T) -> &[u8] {
+    fn b<T: sysdefs::pod::AbiPod>(v: &T) -> &[u8] {
         bytes_of(core::slice::from_ref(v))
     }
 

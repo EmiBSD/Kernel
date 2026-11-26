@@ -76,8 +76,8 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use hal::bridges::AlreadyRegistered;
 use hal::sync::once::OnceStatic;
-use hal::sys::errno::Errno;
-use hal::sys::reboot::RB_NOSYNC;
+use sysdefs::errno::Errno;
+use sysdefs::reboot::RB_NOSYNC;
 
 use crate::assert::{kassert, kpanic};
 use crate::proc::{ProcGlue, Thread, suser};

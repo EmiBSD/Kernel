@@ -190,7 +190,7 @@ use crate::cpu::intr::{self, IPL_MPFLOOR, IPL_NONE};
 use crate::ds::pinlist::{PinEntry, PinList};
 use crate::sync::rwlock::LockId;
 use crate::sync::sleep::{INFSLP, PCATCH, PRIMASK, chan};
-use crate::sys::errno::Errno;
+use sysdefs::errno::Errno;
 
 /// The flag bit every owner word carries, so an owner's word is never 0 (the free value).
 const MTX_OWNED: usize = 0x2;

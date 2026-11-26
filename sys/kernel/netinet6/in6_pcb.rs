@@ -176,18 +176,18 @@ use core::mem::size_of;
 use hal::mem::pod;
 use hal::mem::pool::PoolArc;
 use hal::sync::netlock::NetHeld;
-use hal::sys::endian::htonl;
-use hal::sys::errno::Errno;
-use hal::sys::net_route::RTF_HOST;
-use hal::sys::netinet_ip6::{IPV6_FLOWLABEL_MASK, Ip6Hdr};
-use hal::sys::netinet6_in6::{
+use sysdefs::endian::htonl;
+use sysdefs::errno::Errno;
+use sysdefs::net_route::RTF_HOST;
+use sysdefs::netinet_ip6::{IPV6_FLOWLABEL_MASK, Ip6Hdr};
+use sysdefs::netinet6_in6::{
     IN6ADDR_ANY, In6Addr, SA6_ANY, SockaddrIn6, in6_are_addr_equal, in6_is_addr_multicast,
     in6_is_addr_unspecified, in6_is_addr_v4mapped,
 };
-use hal::sys::netinet6_in6_var::{
+use sysdefs::netinet6_in6_var::{
     IN6_IFF_ANYCAST, IN6_IFF_DETACHED, IN6_IFF_DUPLICATED, IN6_IFF_TENTATIVE,
 };
-use hal::sys::socket::{SO_BINDANY, SO_REUSEADDR, SO_REUSEPORT};
+use sysdefs::socket::{SO_BINDANY, SO_REUSEADDR, SO_REUSEPORT};
 
 use crate::assert::kassert;
 use crate::assert::kpanic;
@@ -873,7 +873,7 @@ mod tests {
     use std::vec::Vec;
 
     use hal::sync::netlock::NETLOCK;
-    use hal::sys::endian::htons;
+    use sysdefs::endian::htons;
 
     use super::*;
     use crate::net::mbuf::{M_DONTWAIT, MT_SONAME, MbufBox, m_get};

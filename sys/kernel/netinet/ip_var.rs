@@ -51,7 +51,7 @@
 //! IP implementation variables, the kernel's half of `<netinet/ip_var.h>`: the `ip_output`
 //! flags, `IPMTUDISCTIMEOUT`, the per-CPU IP statistics (`ipcounters`, defined by
 //! `ip_input.c`) and their `ipstat_inc`/`ipstat_add`. The userland half (`struct ipstat`,
-//! `struct ipovly`, `struct ipoption`, `MAX_IPOPTLEN`) is `hal::sys::netinet_ip_var`.
+//! `struct ipovly`, `struct ipoption`, `MAX_IPOPTLEN`) is `sysdefs::netinet_ip_var`.
 //!
 //! Upstream: sys/netinet/ip_var.h @ 3ce1f3f79392
 //! LZ: sys/netinet/ip_var.rs@3c62ede68802
@@ -111,9 +111,9 @@ use hal::ds::owned::{OwnedSlist, SlistLink};
 use hal::mem::malloc::{MArc, MArray};
 use hal::mem::pool::{BoxPool, Pooled};
 use hal::sync::percpu::Counters;
-use hal::sys::netinet_in::InAddr;
-use hal::sys::netinet_ip::IPDEFTTL;
-use hal::sys::socket::SO_BROADCAST;
+use sysdefs::netinet_in::InAddr;
+use sysdefs::netinet_ip::IPDEFTTL;
+use sysdefs::socket::SO_BROADCAST;
 
 use crate::net::mbuf::MbufBox;
 use crate::netinet::in_var::InMulti;
@@ -381,7 +381,7 @@ pub struct Ipoffnxt {
     pub ion_nxt: i32,
 }
 
-hal::abi_pod!(Ipoffnxt {
+sysdefs::abi_pod!(Ipoffnxt {
     ion_off: i32,
     ion_nxt: i32,
 });
@@ -419,7 +419,7 @@ pub fn ipstat_dec(c: IpstatCounters) {
 
 // The counters are `struct ipstat`'s words (`CTASSERT` in `ip_sysctl_ipstat`).
 const _: () =
-    assert!(size_of::<hal::sys::netinet_ip_var::Ipstat>() == IPS_NCOUNTERS * size_of::<u64>());
+    assert!(size_of::<sysdefs::netinet_ip_var::Ipstat>() == IPS_NCOUNTERS * size_of::<u64>());
 /* </CODE> */
 
 /* <TESTS> */

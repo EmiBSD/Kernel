@@ -131,9 +131,9 @@
 //!   wrap at 32 bits (a cyclic cluster chain of a crafted image makes the scan run on, as the
 //!   C's).
 
-use hal::sys::errno::Errno;
-use hal::sys::mount::{MSDOSFSMNT_NOWIN95, MSDOSFSMNT_SHORTNAME};
-use hal::sys::types::Daddr;
+use sysdefs::errno::Errno;
+use sysdefs::mount::{MSDOSFSMNT_NOWIN95, MSDOSFSMNT_SHORTNAME};
+use sysdefs::types::Daddr;
 
 use crate::assert::kpanic;
 use crate::base::prf::printf;
@@ -1292,7 +1292,7 @@ mod tests {
         use crate::fs::testfs::TestGlue;
         use crate::fs::ufs::ffs::testffs::disk;
         use crate::proc::Thread;
-        use hal::sys::mount::{MNT_RDONLY, MNT_WAIT};
+        use sysdefs::mount::{MNT_RDONLY, MNT_WAIT};
 
         /// The name of a 2-part long name entry file in the sample image.
         const LONG2: &[u8] = b"a rather long name.txt";

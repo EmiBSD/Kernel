@@ -82,9 +82,9 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use hal::sys::errno::Errno;
-use hal::sys::select::{NBBY, howmany};
-use hal::sys::types::{Daddr, Ino, Mode, Uid};
+use sysdefs::errno::Errno;
+use sysdefs::select::{NBBY, howmany};
+use sysdefs::types::{Daddr, Ino, Mode, Uid};
 
 use super::ext2fs::{Ext2Superblock, dtog, dtogd, freespace, fsbtodb, ino_to_cg};
 use super::ext2fs_dinode::EXT2_FIRSTINO;

@@ -35,15 +35,15 @@ pub mod clockintr;
 #[forbid(unsafe_code)]
 pub mod conf;
 pub mod device;
-pub use hal::sys::dirent;
+pub use sysdefs::dirent;
 pub mod disk;
 pub mod disklabel;
 #[forbid(unsafe_code)]
 pub mod dkio;
 #[forbid(unsafe_code)]
 pub mod domain;
-pub use hal::sys::endian;
-pub use hal::sys::errno;
+pub use sysdefs::endian;
+pub use sysdefs::errno;
 pub mod evcount;
 #[forbid(unsafe_code)]
 pub mod event;
@@ -51,31 +51,31 @@ pub mod event;
 pub mod eventvar;
 #[forbid(unsafe_code)]
 pub mod exec;
-pub use hal::sys::exec_elf;
+pub use sysdefs::exec_elf;
 #[forbid(unsafe_code)]
 pub mod exec_script;
 #[forbid(unsafe_code)]
 pub mod extent;
-pub use hal::sys::fcntl;
+pub use sysdefs::fcntl;
 #[forbid(unsafe_code)]
 pub mod file;
 #[forbid(unsafe_code)]
 pub mod filedesc;
-pub use hal::sys::filio;
-pub use hal::sys::futex;
+pub use sysdefs::filio;
+pub use sysdefs::futex;
 pub mod gpio;
-pub use hal::sys::intrmap;
-pub use hal::sys::ioccom;
+pub use sysdefs::intrmap;
+pub use sysdefs::ioccom;
 pub mod ioctl;
-pub use hal::sys::kernel;
-pub use hal::sys::limits;
+pub use sysdefs::kernel;
+pub use sysdefs::limits;
 #[forbid(unsafe_code)]
 pub mod lock;
 #[forbid(unsafe_code)]
 pub mod lockf;
 pub mod malloc;
 pub mod mbuf;
-pub use hal::sys::mman;
+pub use sysdefs::mman;
 pub mod mount;
 #[forbid(unsafe_code)]
 pub mod mplock;
@@ -86,30 +86,30 @@ pub mod mutex;
 pub mod namei;
 #[forbid(unsafe_code)]
 pub mod param;
-pub use hal::sys::pclock;
+pub use sysdefs::pclock;
 pub mod percpu;
-pub use hal::sys::pledge;
+pub use sysdefs::pledge;
 #[forbid(unsafe_code)]
 pub mod poll;
 pub mod pool;
 pub mod proc;
 pub mod protosw;
 pub mod queue;
-pub use hal::sys::reboot;
+pub use sysdefs::reboot;
 pub mod refcnt;
 pub mod resource;
 pub mod resourcevar;
 pub mod rwlock;
 pub mod sched;
 pub mod scsiio;
-pub use hal::sys::select;
+pub use sysdefs::select;
 #[forbid(unsafe_code)]
 pub mod selinfo;
 pub mod sensors;
-pub use hal::sys::siginfo;
+pub use sysdefs::siginfo;
 #[forbid(unsafe_code)]
 pub mod sigio;
-pub use hal::sys::signal;
+pub use sysdefs::signal;
 #[forbid(unsafe_code)]
 pub mod signalvar;
 pub mod smr;
@@ -117,19 +117,19 @@ pub mod socket;
 pub mod socketvar;
 #[forbid(unsafe_code)]
 pub mod sockio;
-pub use hal::sys::softintr;
+pub use sysdefs::softintr;
 #[forbid(unsafe_code)]
 pub mod specdev;
-pub use hal::sys::stat;
+pub use sysdefs::stat;
 #[forbid(unsafe_code)]
 pub mod swap;
-pub use hal::sys::syscall;
+pub use sysdefs::syscall;
 #[forbid(unsafe_code)]
 pub mod syscall_mi;
 pub mod syscallargs;
 #[forbid(unsafe_code)]
 pub mod sysctl;
-pub use hal::sys::syslimits;
+pub use sysdefs::syslimits;
 #[forbid(unsafe_code)]
 pub mod syslog;
 pub mod systm;
@@ -148,18 +148,18 @@ pub mod tty;
 pub mod ttycom;
 #[forbid(unsafe_code)]
 pub mod ttydefaults;
-pub use hal::sys::types;
+pub use sysdefs::types;
 #[forbid(unsafe_code)]
 pub mod ucred;
 
 #[forbid(unsafe_code)]
 pub mod uio;
-pub use hal::sys::un;
-pub use hal::sys::unistd;
+pub use sysdefs::un;
+pub use sysdefs::unistd;
 #[forbid(unsafe_code)]
 pub mod user;
-pub use hal::sys::uuid;
-pub use hal::sys::vmmeter;
+pub use sysdefs::uuid;
+pub use sysdefs::vmmeter;
 pub mod vnode;
-pub use hal::sys::wait;
+pub use sysdefs::wait;
 /* </CODE> */

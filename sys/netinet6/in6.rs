@@ -138,7 +138,7 @@
 
 /* <CODE> */
 //! IPv6 addresses and socket addresses, the `IPV6_*` socket options and the `net.inet6`
-//! sysctl numbers: `<netinet6/in6.h>` (`hal::sys::netinet6_in6`, re-exported whole); and
+//! sysctl numbers: `<netinet6/in6.h>` (`sysdefs::netinet6_in6`, re-exported whole); and
 //! `netinet6/in6.c`, the IPv6 addresses of the interfaces, the kernel's since N6.5a
 //! (`kernel::netinet6::in6`), with LZ's shapes for `bsd`'s callers.
 //!
@@ -168,12 +168,12 @@ use crate::sys::socket::Sockaddr;
 use crate::sys::socketvar::{SS_PRIV, Socket};
 use hal::mem::malloc::MArc;
 
-pub use hal::sys::netinet6_in6::*;
 pub use kernel::netinet6::in6::{
     ifa6_is_deprecated, ifa6_is_invalid, in6_addr2scopeid, in6_hasmulti, in6_ifawithscope,
     in6_lookupmulti, in6_mask2len, in6_prefixlen2mask, in6ifa_ifpforlinklocal, in6ifa_ifpwithaddr,
 };
 pub use kernel::netinet6::in6_var::ifatoia6;
+pub use sysdefs::netinet6_in6::*;
 
 /// `satosin6(sa)`: a generic `sockaddr` seen as a `sockaddr_in6`.
 pub const fn satosin6(sa: *mut Sockaddr) -> *mut SockaddrIn6 {

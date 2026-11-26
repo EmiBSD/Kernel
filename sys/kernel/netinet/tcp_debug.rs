@@ -166,12 +166,12 @@ use core::mem::size_of;
 use hal::cpu::intr::IPL_SOFTNET;
 use hal::mem::pod;
 use hal::sync::mutex::Mutexed;
-use hal::sys::netinet_in::InAddr;
-use hal::sys::netinet_ip::IPVERSION;
-use hal::sys::netinet_ip_var::Ipovly;
-use hal::sys::netinet_ip6::{IPV6_VERSION, IPV6_VERSION_MASK, Ip6Hdr};
-use hal::sys::netinet_tcp::{TcpSeq, Tcphdr};
-use hal::sys::socket::{PF_INET, PF_INET6, PF_UNSPEC};
+use sysdefs::netinet_in::InAddr;
+use sysdefs::netinet_ip::IPVERSION;
+use sysdefs::netinet_ip_var::Ipovly;
+use sysdefs::netinet_ip6::{IPV6_VERSION, IPV6_VERSION_MASK, Ip6Hdr};
+use sysdefs::netinet_tcp::{TcpSeq, Tcphdr};
+use sysdefs::socket::{PF_INET, PF_INET6, PF_UNSPEC};
 
 use crate::netinet::ip_icmp::iptime;
 use crate::netinet::tcp_var::TcpState;
@@ -202,7 +202,7 @@ pub struct Tcpipv6hdr {
     pub ti6_t: Tcphdr,
 }
 
-hal::abi_pod!(Tcpipv6hdr {
+sysdefs::abi_pod!(Tcpipv6hdr {
     ti6_i: Ip6Hdr,
     ti6_t: Tcphdr,
 });
@@ -227,7 +227,7 @@ pub struct Tcpiphdr {
     pub ti_t: Tcphdr,
 }
 
-hal::abi_pod!(Tcpiphdr {
+sysdefs::abi_pod!(Tcpiphdr {
     ti_i: Ipovly,
     ti_t: Tcphdr,
 });

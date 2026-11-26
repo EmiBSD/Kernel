@@ -159,8 +159,8 @@ use hal::ds::link::Link;
 use hal::ds::pinlist::PinEntry;
 use hal::mem::malloc::{M_WAITOK, MArc};
 use hal::sync::rwlock::RecursiveRwlock;
-use hal::sys::mount::{Fid, MSDOSFSMNT_NOWIN95};
-use hal::sys::types::Dev;
+use sysdefs::mount::{Fid, MSDOSFSMNT_NOWIN95};
+use sysdefs::types::Dev;
 
 use crate::assert::kpanic;
 use crate::fs::lockf::LockfSlot;

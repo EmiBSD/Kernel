@@ -80,7 +80,7 @@
 //! - The few `<netinet/in.h>` and `<netinet6/in6.h>` items these calls read (the size of
 //!   `struct sockaddr_in` and `struct sockaddr_in6`, where their port is, `IPPORT_RESERVED`,
 //!   `IPPROTO_IP`, `IP_PORTRANGE`, `IP_PORTRANGE_LOW`) are constants here until N6.4 moves the
-//!   headers into `hal::sys` (`bsd`'s glue tests check them against `bsd`'s copies).
+//!   headers into `sysdefs` (`bsd`'s glue tests check them against `bsd`'s copies).
 //! - `ypconnect(2)` can fail where the C cannot, both times closed: the low port of a root
 //!   caller is set through the protocol's option (`ypconnect_lowport`, below), whose mbuf can
 //!   be refused (`ENOBUFS`, `mbuf_args`) and whose protocol answers an error of its own, where
@@ -101,7 +101,7 @@
 //!   call's reference of the file lives; the file is let go once, after an inner function that
 //!   returns early with `?` (the C's `goto bad`/`out` labels: [`sendit`], [`recvit`], the
 //!   option and name calls).
-//! - `struct msghdr` and `struct mmsghdr` are copied as `hal::sys::socket`'s images
+//! - `struct msghdr` and `struct mmsghdr` are copied as `sysdefs::socket`'s images
 //!   (`UserPtr<Msghdr>::copyin`, `copyout`), their holes with them: `recvmsg(2)` and the
 //!   `mmsg` calls copy the structure back out whole, the user's padding bytes kept, as the
 //!   C's `copyout(&msg)` of the structure it copied in (LZ copied field by field and zeroed
@@ -138,18 +138,18 @@ use core::ptr;
 use core::sync::atomic::Ordering;
 
 use hal::sync::sleep::{INFSLP, PCATCH};
-use hal::sys::errno::Errno;
-use hal::sys::fcntl::{F_GETLK, F_POSIX, F_UNLCK, F_WRLCK, FNONBLOCK, FREAD, FWRITE, Flock};
-use hal::sys::limits::UCHAR_MAX;
-use hal::sys::pledge::{PLEDGE_DNS, PLEDGE_RPATH};
-use hal::sys::socket::{
+use hal::user::UserPtr;
+use sysdefs::errno::Errno;
+use sysdefs::fcntl::{F_GETLK, F_POSIX, F_UNLCK, F_WRLCK, FNONBLOCK, FREAD, FWRITE, Flock};
+use sysdefs::limits::UCHAR_MAX;
+use sysdefs::pledge::{PLEDGE_DNS, PLEDGE_RPATH};
+use sysdefs::socket::{
     AF_INET, AF_INET6, Cmsghdr, MSG_CTRUNC, MSG_DONTWAIT, MSG_NOSIGNAL, MSG_OOB, MSG_WAITFORONE,
     Mmsghdr, Msghdr, SO_ACCEPTCONN, SOCK_CLOEXEC, SOCK_CLOFORK, SOCK_DGRAM, SOCK_DNS,
     SOCK_NONBLOCK, SOCK_NONBLOCK_INHERIT, SOCK_STREAM, SOCK_TYPE_MASK, cmsg_align,
 };
-use hal::sys::syslimits::IOV_MAX;
-use hal::sys::unistd::SEEK_SET;
-use hal::user::UserPtr;
+use sysdefs::syslimits::IOV_MAX;
+use sysdefs::unistd::SEEK_SET;
 
 use crate::assert::kpanic;
 use crate::base::sysctl::{MAXHOSTNAMELEN, with_domainname};
@@ -1587,11 +1587,12 @@ mod tests {
     use std::vec::Vec;
     use std::{assert, assert_eq, format, vec};
 
-    use hal::sys::socket::{
+    use hal::user::{bytes_of, pod_from_bytes};
+    use sysdefs::pod::AbiPod;
+    use sysdefs::socket::{
         AF_UNIX, MSG_PEEK, SCM_RIGHTS, SHUT_RDWR, SHUT_WR, SO_SNDBUF, SO_TYPE, SOCK_SEQPACKET,
         SOL_SOCKET, cmsg_len, cmsg_space,
     };
-    use hal::user::{AbiPod, bytes_of, pod_from_bytes};
 
     use super::*;
     use crate::file::DTYPE_VNODE;
@@ -2551,7 +2552,7 @@ mod tests {
         assert_eq!(MMSG_MAX, 1024);
         assert_eq!(
             SA_DATA_OFFSET,
-            core::mem::offset_of!(hal::sys::socket::Sockaddr, sa_data)
+            core::mem::offset_of!(sysdefs::socket::Sockaddr, sa_data)
         );
     }
 }

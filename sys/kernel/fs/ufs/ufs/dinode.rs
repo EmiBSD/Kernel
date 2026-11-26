@@ -74,12 +74,12 @@
 //!
 //! ## Redesign
 //! - N5.5a: LZ's module moved into the kernel crate unchanged in shape (the on-disk
-//!   structures are the C's bytes); both dinodes are `hal::abi_pod!` types, so the in-core
+//!   structures are the C's bytes); both dinodes are `sysdefs::abi_pod!` types, so the in-core
 //!   inode (`inode.rs`) and `ffs` copy them to and from a block's bytes with
 //!   `pod_from_bytes`/`pod_to_bytes`, where LZ read and wrote them through `unsafe`
 //!   unaligned pointer casts (`dinode1_at` and its three twins).
 
-use hal::sys::types::Mode;
+use sysdefs::types::Mode;
 
 /// `ufsino_t`: UFS directories use 32bit inode numbers internally, regardless of what the
 /// system on top of it uses.
@@ -159,7 +159,7 @@ impl Ufs1Dinode {
     }
 }
 
-hal::abi_pod!(Ufs1Dinode {
+sysdefs::abi_pod!(Ufs1Dinode {
     di_mode: u16,
     di_nlink: i16,
     di_u: [u16; 2],
@@ -232,7 +232,7 @@ pub struct Ufs2Dinode {
     pub di_spare: [i64; 3],
 }
 
-hal::abi_pod!(Ufs2Dinode {
+sysdefs::abi_pod!(Ufs2Dinode {
     di_mode: u16,
     di_nlink: i16,
     di_uid: u32,

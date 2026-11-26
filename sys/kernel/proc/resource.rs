@@ -164,13 +164,13 @@ use hal::arch::current::vmparam::{MAXDSIZ, MAXSSIZ};
 use hal::mem::pool::{PR_WAITOK, PoolArc, TypedPool};
 use hal::sync::klock;
 use hal::sync::rwlock::{RawRwlock, Rwlocked};
-use hal::sys::errno::Errno;
-use hal::sys::mman::{PROT_NONE, PROT_READ, PROT_WRITE};
-use hal::sys::pclock::PcLock;
-use hal::sys::syslimits::NZERO;
-use hal::sys::types::{Id, Pid, Rlim};
 use hal::user::UserPtr;
 use hal::vm::param::{round_page, trunc_page};
+use sysdefs::errno::Errno;
+use sysdefs::mman::{PROT_NONE, PROT_READ, PROT_WRITE};
+use sysdefs::pclock::PcLock;
+use sysdefs::syslimits::NZERO;
+use sysdefs::types::{Id, Pid, Rlim};
 
 use crate::assert::{kassert, kpanic};
 use crate::proc::{ProcGlue, Process, ProcessRef, PsMtx, Thread};

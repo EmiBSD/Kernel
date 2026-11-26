@@ -1,0 +1,17 @@
+[package]
+name = "sysdefs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OpenBSD's basic types, constants and #[repr(C)] ABI structures: the data shapes under every layer (decision 54)"
+publish = false
+
+[lib]
+path = "lib.rs"
+
+# Intentionally empty: sysdefs is a leaf, under hal, kernel, abi and bsd.
+[dependencies]
+
+[lints]
+workspace = true

@@ -27,7 +27,7 @@
 use crate::scarg::{int, ptr, size_t, u_int};
 use hal::syscall::{Register, Rval, SysArgs, SysResult};
 
-use hal::sys::syscall::{SYS_reboot, SYS_sendsyslog, SYS_sysctl};
+use sysdefs::syscall::{SYS_reboot, SYS_sendsyslog, SYS_sysctl};
 
 /// 112 = `sendsyslog(const char *buf, size_t nbyte, int flags)`.
 pub(crate) fn sys_sendsyslog(args: &SysArgs, rval: &mut Rval) -> SysResult {

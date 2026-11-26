@@ -107,7 +107,7 @@
 /* <CODE> */
 //! The Internet addresses of the interfaces, `netinet/in.c`: the address `ioctl`s, the
 //! interface and prefix routes, the broadcast test and the multicast records. The
-//! constants and structures of `<netinet/in.h>` are `hal::sys::netinet_in`; the records are
+//! constants and structures of `<netinet/in.h>` are `sysdefs::netinet_in`; the records are
 //! `kernel::netinet::in_var`'s.
 //!
 //! Upstream: sys/netinet/in.h @ 3ce1f3f79392
@@ -176,20 +176,20 @@ use hal::mem::malloc::MArc;
 use hal::mem::pod;
 use hal::sync::netlock::{NETLOCK, NetHeld, NetReader};
 use hal::sync::rwlock::{RW_READ, RW_WRITE, Witness};
-use hal::sys::endian::{htonl, ntohl};
-use hal::sys::errno::Errno;
-use hal::sys::ioccom::iocparm_len;
-use hal::sys::net_if::{
+use sysdefs::endian::{htonl, ntohl};
+use sysdefs::errno::Errno;
+use sysdefs::ioccom::iocparm_len;
+use sysdefs::net_if::{
     IFF_BROADCAST, IFF_LOOPBACK, IFF_MULTICAST, IFF_POINTOPOINT, IFNAMSIZ, IFXF_AUTOCONF4,
 };
-use hal::sys::net_route::{RTF_BROADCAST, RTF_CLONING, RTF_CONNECTED, RTF_HOST, RTF_MPATH};
-use hal::sys::netinet_in::{
+use sysdefs::net_route::{RTF_BROADCAST, RTF_CLONING, RTF_CONNECTED, RTF_HOST, RTF_MPATH};
+use sysdefs::netinet_in::{
     IN_CLASSA_NET, IN_CLASSA_NSHIFT, IN_CLASSB_NET, IN_CLASSC_NET, IN_LOOPBACKNET,
     INADDR_ALLHOSTS_GROUP, INADDR_ANY, InAddr, SockaddrIn, in_classa, in_classb, in_multicast,
     in_rfc3021_subnet,
 };
-use hal::sys::socket::AF_INET;
-use hal::sys::sockio::{
+use sysdefs::socket::AF_INET;
+use sysdefs::sockio::{
     SIOCADDMULTI, SIOCAIFADDR, SIOCDELMULTI, SIOCDIFADDR, SIOCGIFADDR, SIOCGIFBRDADDR,
     SIOCGIFDSTADDR, SIOCGIFNETMASK, SIOCSIFADDR, SIOCSIFBRDADDR, SIOCSIFDSTADDR, SIOCSIFNETMASK,
 };
@@ -214,11 +214,11 @@ const IFREQ_SIZE: usize = IFNAMSIZ + 16;
 /// `offsetof(struct ifreq, ifr_ifru)`: `ifr_addr`, `ifr_dstaddr`, `ifr_broadaddr`.
 const IFR_ADDR: usize = IFNAMSIZ;
 /// `offsetof(struct in_aliasreq, ifra_addr)`.
-const IFRA_ADDR: usize = offset_of!(hal::sys::netinet_in_var::InAliasreq, ifra_addr);
+const IFRA_ADDR: usize = offset_of!(sysdefs::netinet_in_var::InAliasreq, ifra_addr);
 /// `offsetof(struct in_aliasreq, ifra_dstaddr)` (`ifra_broadaddr`).
-const IFRA_DSTADDR: usize = offset_of!(hal::sys::netinet_in_var::InAliasreq, ifra_dstaddr);
+const IFRA_DSTADDR: usize = offset_of!(sysdefs::netinet_in_var::InAliasreq, ifra_dstaddr);
 /// `offsetof(struct in_aliasreq, ifra_mask)`.
-const IFRA_MASK: usize = offset_of!(hal::sys::netinet_in_var::InAliasreq, ifra_mask);
+const IFRA_MASK: usize = offset_of!(sysdefs::netinet_in_var::InAliasreq, ifra_mask);
 /// `offsetof(struct sockaddr, sa_data)`.
 const SA_DATA: usize = 2;
 
@@ -1193,9 +1193,9 @@ mod tests {
     use std::vec;
     use std::vec::Vec;
 
-    use hal::sys::net_if::IFF_UP;
-    use hal::sys::net_route::RTF_LOCAL;
-    use hal::sys::netinet_in::{INADDR_ALLROUTERS_GROUP, IPPROTO_IGMP};
+    use sysdefs::net_if::IFF_UP;
+    use sysdefs::net_route::RTF_LOCAL;
+    use sysdefs::netinet_in::{INADDR_ALLROUTERS_GROUP, IPPROTO_IGMP};
 
     use super::*;
     use crate::net::if_::M_IFADDR;
@@ -1492,7 +1492,7 @@ mod tests {
             igmp_sent(d),
             [(
                 [239, 1, 2, 3],
-                hal::sys::netinet_igmp::IGMP_v2_HOST_MEMBERSHIP_REPORT,
+                sysdefs::netinet_igmp::IGMP_v2_HOST_MEMBERSHIP_REPORT,
                 [239, 1, 2, 3]
             )],
             "the first report at once"
@@ -1521,7 +1521,7 @@ mod tests {
             igmp_sent(d),
             [(
                 all_routers,
-                hal::sys::netinet_igmp::IGMP_HOST_LEAVE_MESSAGE,
+                sysdefs::netinet_igmp::IGMP_HOST_LEAVE_MESSAGE,
                 all_routers
             )],
             "we may have reported last: a leave message"

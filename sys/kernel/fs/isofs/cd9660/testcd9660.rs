@@ -35,9 +35,9 @@ use std::collections::BTreeMap;
 use std::sync::MutexGuard;
 use std::vec::Vec;
 
-use hal::sys::errno::Errno;
-use hal::sys::mount::{IsoArgs, MNT_LOCAL, MNT_RDONLY, MOUNT_CD9660};
-use hal::sys::types::Daddr;
+use sysdefs::errno::Errno;
+use sysdefs::mount::{IsoArgs, MNT_LOCAL, MNT_RDONLY, MOUNT_CD9660};
+use sysdefs::types::Daddr;
 
 use crate::fs::bio::biodone;
 use crate::fs::buf::{B_READ, BufRef};

@@ -150,7 +150,7 @@
 //! - LZ's three modules (`sys/sys/termios.rs`, `ttycom.rs`, `ttydefaults.rs`) are one here:
 //!   the kernel's terminal (`kernel::tty`, N4.7b) and its users name one path, and
 //!   `ttydefaults.h` and `ttycom.h` exist only to complete `termios.h`'s types.
-//! - `struct termios`, `struct winsize` and `struct tstamps` are `hal::abi_pod!` types (LZ:
+//! - `struct termios`, `struct winsize` and `struct tstamps` are `sysdefs::abi_pod!` types (LZ:
 //!   an `unsafe impl AbiPod` each, three `unsafe`, over the legacy trait of
 //!   `sys/machine/copy.rs`): `TIOCGETA`/`TIOCSETA`, `TIOCGWINSZ` and `TIOCSTSTAMP` read and
 //!   write them with `hal::user::pod_from_bytes`/`pod_to_bytes`, no `unsafe` anywhere.
@@ -159,7 +159,7 @@
 //! - `bsd`'s three headers stay as they are until the terminal moves (N4.7b), when they
 //!   become aliases of these.
 
-use hal::sys::ioccom::{_io, _ior, _iow};
+use sysdefs::ioccom::{_io, _ior, _iow};
 
 use crate::proc::resource::Timeval;
 
@@ -382,7 +382,7 @@ impl Termios {
     }
 }
 
-hal::abi_pod!(Termios {
+sysdefs::abi_pod!(Termios {
     c_iflag: Tcflag,
     c_oflag: Tcflag,
     c_cflag: Tcflag,
@@ -497,7 +497,7 @@ pub struct Winsize {
     pub ws_ypixel: u16,
 }
 
-hal::abi_pod!(Winsize {
+sysdefs::abi_pod!(Winsize {
     ws_row: u16,
     ws_col: u16,
     ws_xpixel: u16,
@@ -514,7 +514,7 @@ pub struct Tstamps {
     pub ts_clr: i32,
 }
 
-hal::abi_pod!(Tstamps {
+sysdefs::abi_pod!(Tstamps {
     ts_set: i32,
     ts_clr: i32,
 });

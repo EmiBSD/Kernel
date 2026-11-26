@@ -13,6 +13,7 @@ path = "lib.rs"
 [dependencies]
 # Decision 52: `abi` calls the kernel through `kernel::api` (abi-check R6: no other path).
 hal = { path = "../hal" }
+sysdefs.workspace = true
 kernel = { path = "../kernel" }
 
 [lints]

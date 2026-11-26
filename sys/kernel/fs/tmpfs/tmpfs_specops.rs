@@ -65,7 +65,7 @@
 
 use core::marker::PhantomData;
 
-use hal::sys::errno::Errno;
+use sysdefs::errno::Errno;
 
 use crate::file::uio::Uio;
 use crate::fs::default;

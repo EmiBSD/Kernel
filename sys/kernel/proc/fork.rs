@@ -115,11 +115,11 @@ use hal::mem::pool::PoolBox;
 use hal::sync::klock;
 use hal::sync::mutex::Mutexed;
 use hal::sync::once::OnceStatic;
-use hal::sys::errno::Errno;
-use hal::sys::types::{Pid, Uid};
-use hal::sys::vmmeter::Forkstat;
 use hal::user::UserPtr;
 use hal::vm::uvmexp::UVMEXP;
+use sysdefs::errno::Errno;
+use sysdefs::types::{Pid, Uid};
+use sysdefs::vmmeter::Forkstat;
 
 use crate::assert::{kassert, kpanic};
 use crate::proc::resource::RLIMIT_NPROC;
@@ -303,7 +303,7 @@ pub struct Tfork {
     pub tf_stack: usize,
 }
 
-hal::abi_pod!(Tfork {
+sysdefs::abi_pod!(Tfork {
     tf_tcb: usize,
     tf_tid: usize,
     tf_stack: usize

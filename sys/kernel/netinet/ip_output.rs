@@ -162,14 +162,14 @@ use core::sync::atomic::Ordering;
 use hal::mem::malloc::{M_NOWAIT, M_WAITOK, MArray, MBox};
 use hal::mem::pod;
 use hal::sync::netlock::NetHeld;
-use hal::sys::endian::{htonl, htons, ntohl, ntohs};
-use hal::sys::errno::Errno;
-use hal::sys::net_if::{
+use sysdefs::endian::{htonl, htons, ntohl, ntohs};
+use sysdefs::errno::Errno;
+use sysdefs::net_if::{
     IFCAP_CSUM_IPv4, IFCAP_CSUM_TCPv4, IFCAP_CSUM_UDPv4, IFCAP_TSOv4, IFF_BROADCAST, IFF_LOOPBACK,
     IFF_MULTICAST, IFF_SIMPLEX,
 };
-use hal::sys::net_route::{RTF_BROADCAST, RTF_GATEWAY, RTF_HOST, RTF_LOCAL, RTV_MTU};
-use hal::sys::netinet_in::{
+use sysdefs::net_route::{RTF_BROADCAST, RTF_GATEWAY, RTF_HOST, RTF_LOCAL, RTV_MTU};
+use sysdefs::netinet_in::{
     IN_CLASSA_NSHIFT, INADDR_ANY, INADDR_BROADCAST, IP_ADD_MEMBERSHIP, IP_AUTH_LEVEL,
     IP_DEFAULT_MULTICAST_LOOP, IP_DEFAULT_MULTICAST_TTL, IP_DROP_MEMBERSHIP, IP_ESP_NETWORK_LEVEL,
     IP_ESP_TRANS_LEVEL, IP_IPCOMP_LEVEL, IP_IPDEFTTL, IP_IPSEC_LOCAL_ID, IP_IPSEC_REMOTE_ID,
@@ -181,14 +181,14 @@ use hal::sys::netinet_in::{
     IPSEC_ESP_NETWORK_LEVEL_DEFAULT, IPSEC_ESP_TRANS_LEVEL_DEFAULT, IPSEC_IPCOMP_LEVEL_DEFAULT,
     IPSEC_LEVEL_BYPASS, IPSEC_LEVEL_UNIQUE, InAddr, IpMreq, IpMreqn, in_multicast,
 };
-use hal::sys::netinet_ip::{
+use sysdefs::netinet_ip::{
     IP_DF, IP_MAXPACKET, IP_MF, IPOPT_EOL, IPOPT_LSRR, IPOPT_MINOFF, IPOPT_NOP, IPOPT_OFFSET,
     IPOPT_OLEN, IPOPT_OPTVAL, IPOPT_SSRR, IPVERSION, Ip, MAXTTL, ipopt_copied,
 };
-use hal::sys::netinet_ip_var::{Ipoption, MAX_IPOPTLEN};
-use hal::sys::netinet_tcp::Tcphdr;
-use hal::sys::netinet_udp::Udphdr;
-use hal::sys::socket::{AF_INET, SO_RTABLE};
+use sysdefs::netinet_ip_var::{Ipoption, MAX_IPOPTLEN};
+use sysdefs::netinet_tcp::Tcphdr;
+use sysdefs::netinet_udp::Udphdr;
+use sysdefs::socket::{AF_INET, SO_RTABLE};
 
 use crate::assert::kpanic;
 use crate::net::if_::{IfRef, if_input_local, if_output_ml, if_output_tso, ifa_ifwithaddr};
@@ -1782,10 +1782,10 @@ pub(crate) mod tests {
     use std::vec::Vec;
 
     use hal::sync::netlock::NETLOCK;
-    use hal::sys::net_if::IFF_UP;
-    use hal::sys::netinet_in::SockaddrIn;
-    use hal::sys::netinet_ip::{IP_OFFMASK, IPOPT_LSRR, IPOPT_RR};
-    use hal::sys::sockio::SIOCAIFADDR;
+    use sysdefs::net_if::IFF_UP;
+    use sysdefs::netinet_in::SockaddrIn;
+    use sysdefs::netinet_ip::{IP_OFFMASK, IPOPT_LSRR, IPOPT_RR};
+    use sysdefs::sockio::SIOCAIFADDR;
 
     use super::*;
     use crate::net::if_var::NetDriver;
@@ -2239,7 +2239,7 @@ pub(crate) mod tests {
     // kernel's Internet fixture (`kernel::netinet::in_pcb::testinet`): every option name set
     // and read back, each errno the C answers, the multicast options made, grown and freed.
 
-    use hal::sys::netinet_in::IPPROTO_TCP;
+    use sysdefs::netinet_in::IPPROTO_TCP;
 
     use crate::net::proto::{PRCO_GETOPT, PRCO_SETOPT};
     use crate::netinet::in_::in_hasmulti;

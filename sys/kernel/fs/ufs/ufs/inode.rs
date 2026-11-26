@@ -139,7 +139,7 @@
 //!   holds the kernel lock as every word's), and the whole dinode is copied in and out as
 //!   bytes (`ffs_vget`, `ffs_update`).
 //! - LZ's `dinode1_at`/`set_dinode1_at` and their UFS2 twins (`unsafe` unaligned reads and
-//!   writes) -> `pod_from_bytes`/`pod_to_bytes` of the `hal::abi_pod!` dinodes.
+//!   writes) -> `pod_from_bytes`/`pod_to_bytes` of the `sysdefs::abi_pod!` dinodes.
 //! - N5.5b1: [`DinWords`]'s member and byte accesses are [`words_get`], [`words_set`],
 //!   [`words_read_bytes`] and [`words_write_bytes`] over any slice of words, the one word core
 //!   FFS's in-core super-block shares (`ffs/fs.rs`'s `Superblock`, an array of the disk's
@@ -165,10 +165,11 @@ use hal::mem::pool::{PoolArc, PoolBox, PoolHome};
 use hal::sync::once::OnceStatic;
 use hal::sync::rwlock::RecursiveRwlock;
 use hal::sync::slot::ReadMostly;
-use hal::sys::errno::Errno;
-use hal::sys::mount::{Fid, MNT_ASYNC};
-use hal::sys::types::{Daddr, Dev, Mode, Off};
-use hal::user::{AbiPod, bytes_of, bytes_of_mut, pod_from_bytes, pod_to_bytes};
+use hal::user::{bytes_of, bytes_of_mut, pod_from_bytes, pod_to_bytes};
+use sysdefs::errno::Errno;
+use sysdefs::mount::{Fid, MNT_ASYNC};
+use sysdefs::pod::AbiPod;
+use sysdefs::types::{Daddr, Dev, Mode, Off};
 
 use super::dinode::{
     MAXSYMLINKLEN_UFS1, MAXSYMLINKLEN_UFS2, NDADDR, NIADDR, Ufs1Dinode, Ufs2Dinode, Ufsino,

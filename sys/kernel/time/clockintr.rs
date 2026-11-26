@@ -117,11 +117,11 @@ use hal::sync::sleep::{INFSLP, PWAIT};
 
 use crate::assert::{kassert, kpanic};
 use crate::base::sysctl::{self, SysctlNode, SysctlReq};
-use crate::sys::errno::Errno;
 use crate::time::clock::{
     PROFCLOCK_PERIOD, STATCLOCK_AVG, STATCLOCK_IS_RANDOMIZED, hardclock_period,
 };
 use crate::time::tc::nsecuptime;
+use sysdefs::errno::Errno;
 
 /// `CQ_INIT`: `clockintr_cpu_init()` done.
 pub const CQ_INIT: u32 = 0x0000_0001;
@@ -230,7 +230,7 @@ pub struct ClockintrStat {
     pub cs_spurious: u64,
 }
 
-hal::abi_pod!(ClockintrStat {
+sysdefs::abi_pod!(ClockintrStat {
     cs_dispatched: u64,
     cs_early: u64,
     cs_earliness: u64,

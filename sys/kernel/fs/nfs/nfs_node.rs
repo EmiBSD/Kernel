@@ -126,8 +126,8 @@ use hal::ds::pinlist::PinList;
 use hal::mem::pool::{PR_WAITOK, PoolArc};
 use hal::sync::klock;
 use hal::sync::once::OnceStatic;
-use hal::sys::errno::Errno;
 use libkern::siphash::{SipHash24Ctx, SiphashKey};
+use sysdefs::errno::Errno;
 
 use super::nfs_bio::nfs_vinvalbuf;
 use super::nfs_vnops::nfs_removeit;

@@ -50,16 +50,16 @@
 /* <CODE> */
 //! Variables related to this implementation of the internet control message protocol:
 //! `<netinet/icmp_var.h>`, the kernel's since N6.4c2 (`kernel::netinet::icmp_var`; the
-//! userland half, `struct icmpstat` and the `ICMPCTL_*` names, `hal::sys::netinet_icmp_var`),
+//! userland half, `struct icmpstat` and the `ICMPCTL_*` names, `sysdefs::netinet_icmp_var`),
 //! re-exported under LZ's path.
 //!
 //! Upstream: sys/netinet/icmp_var.h @ 3ce1f3f79392
 
-pub use hal::sys::netinet_icmp_var::{
-    ICMPCTL_BMCASTECHO, ICMPCTL_ERRPPSLIMIT, ICMPCTL_MASKREPL, ICMPCTL_MAXID, ICMPCTL_REDIRACCEPT,
-    ICMPCTL_REDIRTIMEOUT, ICMPCTL_STATS, ICMPCTL_TSTAMPREPL, Icmpstat,
-};
 pub use kernel::netinet::icmp_var::{
     ICPS_NCOUNTERS, IcmpstatCounters, icmpstat_inc, icmpstat_inc_hist,
+};
+pub use sysdefs::netinet_icmp_var::{
+    ICMPCTL_BMCASTECHO, ICMPCTL_ERRPPSLIMIT, ICMPCTL_MASKREPL, ICMPCTL_MAXID, ICMPCTL_REDIRACCEPT,
+    ICMPCTL_REDIRTIMEOUT, ICMPCTL_STATS, ICMPCTL_TSTAMPREPL, Icmpstat,
 };
 /* </CODE> */

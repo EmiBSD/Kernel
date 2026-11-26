@@ -118,20 +118,20 @@ use hal::arch::current::param::{PAGE_MASK, PAGE_SIZE};
 use hal::arch::current::vmparam::{VM_MAXUSER_ADDRESS, VM_MIN_ADDRESS};
 use hal::mem::malloc::{M_WAITOK, MArray};
 use hal::sync::klock::{kernel_lock, kernel_unlock};
-use hal::sys::errno::Errno;
-use hal::sys::mman::{
+use hal::user::UserPtr;
+use hal::vm::param::{atop, ptoa, round_page, trunc_page};
+use hal::vm::uvmexp::UVMEXP;
+use sysdefs::errno::Errno;
+use sysdefs::mman::{
     __MAP_NOFAULT, __MAP_NOREPLACE, MADV_DONTNEED, MADV_FREE, MADV_NORMAL, MADV_RANDOM,
     MADV_SEQUENTIAL, MADV_SPACEAVAIL, MADV_WILLNEED, MAP_ANON, MAP_CONCEAL, MAP_FIXED,
     MAP_FLAGMASK, MAP_INHERIT_COPY, MAP_INHERIT_SHARE, MAP_PRIVATE, MAP_SHARED, MAP_STACK,
     MCL_CURRENT, MCL_FUTURE, MS_ASYNC, MS_INVALIDATE, MS_SYNC, PROT_EXEC, PROT_NONE, PROT_READ,
     PROT_WRITE,
 };
-use hal::sys::mount::MNT_WXALLOWED;
-use hal::sys::syscall::SYS_MAXSYSCALL;
-use hal::sys::types::Off;
-use hal::user::UserPtr;
-use hal::vm::param::{atop, ptoa, round_page, trunc_page};
-use hal::vm::uvmexp::UVMEXP;
+use sysdefs::mount::MNT_WXALLOWED;
+use sysdefs::syscall::SYS_MAXSYSCALL;
+use sysdefs::types::Off;
 
 use super::init::machine;
 use super::km::uvm_map_extract_window;

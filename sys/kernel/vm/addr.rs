@@ -94,7 +94,7 @@ use hal::cpu::intr::IPL_VM;
 use hal::ds::owned::{OwnedTree, SecondaryRef, SecondaryTree};
 use hal::mem::pool::{BoxPool, PR_WAITOK, PoolBox};
 use hal::random::{arc4random, arc4random_uniform};
-use hal::sys::errno::Errno;
+use sysdefs::errno::Errno;
 
 use super::map::{
     ByAddr, Owners, Slot, UVM_MAXKADDR, VM_MAP_GUARDPAGES, VM_MAP_ISVMSPACE, VmMap, VmMapEntry,
@@ -1335,10 +1335,10 @@ mod tests {
     use hal::arch::current::vmparam::{
         BRKSIZ, MAXSSIZ, USRSTACK, VM_MAXUSER_ADDRESS, VM_MIN_ADDRESS, VM_MIN_KERNEL_ADDRESS,
     };
-    use hal::sys::mman::{
+    use hal::vm::pmap::PmapRef;
+    use sysdefs::mman::{
         MADV_NORMAL, MADV_RANDOM, MAP_INHERIT_COPY, MAP_INHERIT_NONE, PROT_READ, PROT_WRITE,
     };
-    use hal::vm::pmap::PmapRef;
 
     use super::*;
     use crate::testutil;

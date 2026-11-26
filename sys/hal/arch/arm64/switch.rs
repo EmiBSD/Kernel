@@ -132,7 +132,7 @@ use crate::arch::arm64::include::tcb::__aarch64_set_tcb;
 use crate::assert::hal_panic;
 use crate::cpu::thread::{MachineSlot, SONPROC};
 use crate::cpu::{CORE_CURPCB, CORE_CURPROC};
-use crate::sys::types::Register;
+use sysdefs::types::Register;
 
 /// `UPAGES`: the u-area's pages (arm64 `<machine/param.h>`; `bsd`'s `param.rs` asserts it).
 pub const UPAGES: usize = 6;

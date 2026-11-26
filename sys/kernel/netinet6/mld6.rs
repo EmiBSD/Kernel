@@ -112,7 +112,7 @@
 /* <CODE> */
 //! Multicast Listener Discovery, `netinet6/mld6.c`: the MLDv1 host side (joining and leaving
 //! groups, answering queries, the fast timeout's reports). The message formats are
-//! `hal::sys::netinet6_mld6` and `hal::sys::netinet_icmp6`'s `struct mld_hdr`.
+//! `sysdefs::netinet6_mld6` and `sysdefs::netinet_icmp6`'s `struct mld_hdr`.
 //!
 //! Upstream: sys/netinet6/mld6.h @ 3ce1f3f79392
 //! Upstream: sys/netinet6/mld6.c @ 3ce1f3f79392
@@ -153,23 +153,23 @@ use hal::mem::malloc::{M_NOWAIT, MBox};
 use hal::mem::pod;
 use hal::sync::netlock::{NETLOCK, NetHeld};
 use hal::sync::rwlock::{Witness, WriteWitness};
-use hal::sys::endian::{htons, ntohs};
-use hal::sys::net_if::IFF_LOOPBACK;
-use hal::sys::netinet_icmp6::{
+use sysdefs::endian::{htons, ntohs};
+use sysdefs::net_if::IFF_LOOPBACK;
+use sysdefs::netinet_icmp6::{
     Icmp6Hdr, Icmp6statCounters, MLD_LISTENER_DONE, MLD_LISTENER_QUERY, MLD_LISTENER_REPORT, MldHdr,
 };
-use hal::sys::netinet_in::IPPROTO_ICMPV6;
-use hal::sys::netinet_ip6::{
+use sysdefs::netinet_in::IPPROTO_ICMPV6;
+use sysdefs::netinet_ip6::{
     IP6OPT_PADN, IP6OPT_ROUTER_ALERT, IP6OPT_RTALERT_LEN, IP6OPT_RTALERT_MLD, IPV6_VERSION, Ip6Hdr,
 };
-use hal::sys::netinet6_in6::{
+use sysdefs::netinet6_in6::{
     __IPV6_ADDR_SCOPE_INTFACELOCAL, __IPV6_ADDR_SCOPE_LINKLOCAL, __ipv6_addr_mc_scope, IN6ADDR_ANY,
     IN6ADDR_LINKLOCAL_ALLNODES, IN6ADDR_LINKLOCAL_ALLROUTERS, In6Addr, in6_are_addr_equal,
     in6_is_addr_linklocal, in6_is_addr_mc_linklocal, in6_is_addr_multicast,
     in6_is_addr_unspecified,
 };
-use hal::sys::netinet6_in6_var::{IN6_IFF_ANYCAST, IN6_IFF_DUPLICATED, IN6_IFF_TENTATIVE};
-use hal::sys::netinet6_mld6::{MLD_TIMER_SCALE, MLD_V1_MAX_RI};
+use sysdefs::netinet6_in6_var::{IN6_IFF_ANYCAST, IN6_IFF_DUPLICATED, IN6_IFF_TENTATIVE};
+use sysdefs::netinet6_mld6::{MLD_TIMER_SCALE, MLD_V1_MAX_RI};
 
 use crate::assert::{kassert, kpanic};
 use crate::net::if_::{IFNETLIST, IfRef};

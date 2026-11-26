@@ -90,7 +90,7 @@
 
 /* <CODE> */
 //! The Berkeley packet filter, bpf(4), for `bsd`'s callers: `<net/bpf.h>`'s ABI is
-//! `hal::sys::net_bpf`'s and the device and the taps are the kernel's (`kernel::net::bpf`,
+//! `sysdefs::net_bpf`'s and the device and the taps are the kernel's (`kernel::net::bpf`,
 //! N6.3c1); this module is their adapter, of no logic: the taps and the attach functions
 //! under LZ's names for the drivers, and the device's entry points as plain functions of
 //! `bsd`'s glue for the character device switch (major 23) and `pledge(2)`'s check, which
@@ -113,11 +113,11 @@ use crate::sys::proc::Proc;
 use crate::sys::types::Dev;
 use crate::sys::uio::Uio;
 
-pub use hal::sys::net_bpf::*;
 pub use kernel::net::bpf::{
     BpfIf, BpfIfRef, BpfTap, NBPFILTER, bpf_mtap, bpf_mtap_af, bpf_mtap_ether, bpf_mtap_hdr,
     bpf_tap_hdr, bpfattach, bpfdetach, bpfsattach, bpfsdetach, bpfxattach,
 };
+pub use sysdefs::net_bpf::*;
 
 /// `bpfopen` (the device switch's and `pledge(2)`'s one address): the kernel's for `bsd`'s
 /// glue.

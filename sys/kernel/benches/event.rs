@@ -55,8 +55,6 @@ use std::vec::Vec;
 
 use hal::mem::pool::{PoolBackend, RawPool};
 use hal::sync::klock;
-use hal::sys::errno::Errno;
-use hal::sys::types::Off;
 use kernel::file::descrip::{falloc, fdinit, fdinsert, fdplock, filedesc_init};
 use kernel::file::event::{
     EV_ADD, EV_DELETE, EVFILT_READ, EVFILT_USER, FILTEROP_ISFD, FILTEROP_MPSAFE, Filter, Filterops,
@@ -71,6 +69,8 @@ use kernel::file::{DTYPE_PIPE, File, FileOps};
 use kernel::proc::resource::{self, PlimitRef};
 use kernel::proc::{self, ProcGlue, ProcTables, Process, Session, Thread};
 use kernel::testutil;
+use sysdefs::errno::Errno;
+use sysdefs::types::Off;
 
 // ---------------------------------------------------------------------------------------
 // The harness (vm.rs's).
@@ -405,7 +405,7 @@ impl FileOps<BenchFiles> for BenchOps {
     fn stat(
         &self,
         _: &File<BenchFiles>,
-        _: &mut hal::sys::stat::Stat,
+        _: &mut sysdefs::stat::Stat,
         _: &Thread<BenchGlue>,
     ) -> Result<(), Errno> {
         Ok(())

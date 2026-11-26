@@ -105,8 +105,8 @@ use hal::mem::pool::PR_WAITOK;
 use hal::sync::rwlock::Rwlocked;
 use hal::sync::sleep::{INFSLP, tsleep_nsec, wakeup};
 use hal::sync::slot::ReadMostly;
-use hal::sys::errno::Errno;
-use hal::sys::types::{Nlink, Pid};
+use sysdefs::errno::Errno;
+use sysdefs::types::{Nlink, Pid};
 
 use super::nfs_subs::nfs_getattrcache;
 use super::nfsmount::vfstonfs;
@@ -123,8 +123,8 @@ use crate::fs::vnode::{VN_KNOTE, Vattr, Vnode};
 use crate::fs::vops::{Cred, vop_getattr};
 use crate::net::sockbuf::PSOCK;
 use crate::proc::{ProcGlue, Thread};
-use crate::sys::nfs_nfs::NFS_MINATTRTIMO;
 use crate::time::clock::{Timespec, sec_to_nsec};
+use sysdefs::nfs_nfs::NFS_MINATTRTIMO;
 
 /// `KEVQ_BUSY`: currently being processed.
 const KEVQ_BUSY: u32 = 0x01;

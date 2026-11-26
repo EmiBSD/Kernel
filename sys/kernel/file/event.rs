@@ -233,12 +233,12 @@ use hal::sync::mutex::{Mutexed, MutexedGuard, SharedMutex};
 use hal::sync::once::OnceStatic;
 use hal::sync::rwlock::{Divisible, Guarded, RW_WRITE, RawRwlock, Witness};
 use hal::sync::sleep::{INFSLP, PCATCH};
-use hal::sys::errno::Errno;
-use hal::sys::fcntl::{FNONBLOCK, FREAD, FWRITE, O_CLOEXEC};
-use hal::sys::pledge::PLEDGE_PROC;
-use hal::sys::types::Pid;
-use hal::sys::wait::w_exitcode;
 use hal::user::UserPtr;
+use sysdefs::errno::Errno;
+use sysdefs::fcntl::{FNONBLOCK, FREAD, FWRITE, O_CLOEXEC};
+use sysdefs::pledge::PLEDGE_PROC;
+use sysdefs::types::Pid;
+use sysdefs::wait::w_exitcode;
 
 use crate::assert::{kassert, kpanic};
 use crate::base::task::{SYSTQMP, Task, task_add, taskq_del_barrier};
@@ -463,7 +463,7 @@ pub struct Kevent {
     pub udata: usize,
 }
 
-hal::abi_pod!(Kevent {
+sysdefs::abi_pod!(Kevent {
     ident: usize,
     filter: i16,
     flags: u16,
@@ -499,7 +499,7 @@ struct UserTimespec {
     tv_nsec: i64,
 }
 
-hal::abi_pod!(UserTimespec {
+sysdefs::abi_pod!(UserTimespec {
     tv_sec: i64,
     tv_nsec: i64
 });
@@ -3948,7 +3948,7 @@ pub(crate) mod tests {
     use crate::proc::resource::{Plimit, PlimitRef, RLIMIT_NOFILE};
     use crate::proc::{PS_PLEDGE, process_alloc, procinit, thread_alloc};
     use crate::testutil::{self, TestFileData};
-    use hal::sys::stat::Stat;
+    use sysdefs::stat::Stat;
 
     crate::test_file_glue!(Kf, Kg);
     crate::test_proc_glue!(Kg, Kf);

@@ -286,9 +286,9 @@ use hal::sync::percpu::Counters;
 use hal::sync::rwlock::{Exclusive, Guarded, Witness};
 use hal::sync::slot::ReadMostly;
 use hal::sync::smr::{SmrArcLink, SmrArcWord, SmrCounted};
-use hal::sys::errno::Errno;
-use hal::sys::net_if::{IFF_LOOPBACK, IFF_POINTOPOINT, IFF_UP, link_state_is_up};
-use hal::sys::net_route::{
+use sysdefs::errno::Errno;
+use sysdefs::net_if::{IFF_LOOPBACK, IFF_POINTOPOINT, IFF_UP, link_state_is_up};
+use sysdefs::net_route::{
     RTAX_AUTHOR, RTAX_DST, RTAX_GATEWAY, RTAX_IFA, RTAX_IFP, RTAX_LABEL, RTAX_MAX, RTAX_NETMASK,
     RTF_BROADCAST, RTF_CACHED, RTF_CLONED, RTF_CLONING, RTF_CONNECTED, RTF_DYNAMIC, RTF_GATEWAY,
     RTF_HOST, RTF_LLINFO, RTF_LOCAL, RTF_MODIFIED, RTF_MPATH, RTF_STATIC, RTF_UP, RTLABEL_LEN,
@@ -296,8 +296,8 @@ use hal::sys::net_route::{
     RTP_CONNECTED, RTP_DEFAULT, RTP_DOWN, RTP_LOCAL, RTP_MASK, RTP_NONE, RTP_STATIC, RTV_MTU,
     SockaddrRtlabel,
 };
-use hal::sys::socket::{AF_INET, AF_INET6, AF_LINK, AF_MAX, AF_UNSPEC};
-use hal::sys::types::SaFamily;
+use sysdefs::socket::{AF_INET, AF_INET6, AF_LINK, AF_MAX, AF_UNSPEC};
+use sysdefs::types::SaFamily;
 
 use crate::assert::{kassert, kpanic};
 use crate::net::if_::{self, if_get, if_group_routechange, if_put};
@@ -332,7 +332,7 @@ pub const RTS_WILDCARD: usize = 4;
 /// `rts_ncounters`.
 pub const RTS_NCOUNTERS: usize = 5;
 
-/// `struct sockaddr_in`'s size (netinet/in.h; N6.4 brings the type into `hal::sys`).
+/// `struct sockaddr_in`'s size (netinet/in.h; N6.4 brings the type into `sysdefs`).
 const SIN_LEN: usize = 16;
 /// Where `sin_addr` starts in a `struct sockaddr_in`.
 const SIN_ADDR: usize = 4;
@@ -342,7 +342,7 @@ const SIN6_LEN: usize = 28;
 const SIN6_ADDR: usize = 8;
 
 /// `struct sockaddr_dl`'s size, `{ sizeof(sa_dl), AF_LINK }`'s length.
-const SDL_LEN: usize = core::mem::size_of::<hal::sys::net_if::SockaddrDl>();
+const SDL_LEN: usize = core::mem::size_of::<sysdefs::net_if::SockaddrDl>();
 
 /// `ROUNDUP(a)`: `a` rounded up to a `long`'s size, `sizeof(long)` for 0.
 #[inline]
@@ -1036,7 +1036,7 @@ fn inet_rtcache(hit: bool) {
 #[inline]
 fn inet6_rtcache(hit: bool) {
     use crate::netinet6::ip6_var::ip6stat_inc;
-    use hal::sys::netinet6_ip6_var::Ip6statCounters;
+    use sysdefs::netinet6_ip6_var::Ip6statCounters;
     ip6stat_inc(if hit {
         Ip6statCounters::Ip6sRtcachehit
     } else {
@@ -1293,7 +1293,7 @@ fn rt_setgwroute(
             parent.dest_view(),
             mask,
             None,
-            hal::sys::net_route::RTP_ANY,
+            sysdefs::net_route::RTP_ANY,
         );
         drop(nhrt);
 
@@ -1422,7 +1422,7 @@ pub fn rtredirect(
             }
         };
 
-        let mut rt = rtable_lookup(rdomain, dst, None, None, hal::sys::net_route::RTP_ANY);
+        let mut rt = rtable_lookup(rdomain, dst, None, None, sysdefs::net_route::RTP_ANY);
         // A redirect is believed only from the router the route to `dst` uses now (anything
         // else is stale or forged), and never toward one of our own addresses or a broadcast
         // one, which would make a loop (an interface that just went down, say).
@@ -1437,7 +1437,7 @@ pub fn rtredirect(
                     .get(SIN_ADDR..SIN_ADDR + 4)
                     .is_some_and(|a| {
                         crate::netinet::in_::in_broadcast(
-                            hal::sys::netinet_in::InAddr {
+                            sysdefs::netinet_in::InAddr {
                                 s_addr: u32::from_ne_bytes([a[0], a[1], a[2], a[3]]),
                             },
                             rdomain,
@@ -2840,7 +2840,7 @@ pub fn rt_if_linkstate_change(rt: &Rtentry, ifp: &Ifnet, id: u32) -> Result<(), 
         // Remove redirected and cloned routes (mainly ARP) from down interfaces so we have a
         // chance to get new routes from a better source.
         if rt.rt_flags.isset(RTF_CLONED | RTF_DYNAMIC)
-            && !rt.rt_flags.isset(RTF_CACHED | hal::sys::net_route::RTF_BFD)
+            && !rt.rt_flags.isset(RTF_CACHED | sysdefs::net_route::RTF_BFD)
         {
             return Err(Errno::EEXIST);
         }
@@ -3038,8 +3038,8 @@ pub(crate) mod tests {
 
     use hal::sync::netlock::NETLOCK;
     use hal::sync::smr;
-    use hal::sys::net_if::IFF_BROADCAST;
-    use hal::sys::net_route::{RTM_ADD, RTP_ANY};
+    use sysdefs::net_if::IFF_BROADCAST;
+    use sysdefs::net_route::{RTM_ADD, RTP_ANY};
 
     use super::*;
     use crate::net::if_var::NetDriver;
@@ -3412,10 +3412,10 @@ pub(crate) mod tests {
         let mut a = [0u8; 16];
         a[0] = 0x20;
         a[15] = 1;
-        let ip6s = |c: hal::sys::netinet6_ip6_var::Ip6statCounters| {
+        let ip6s = |c: sysdefs::netinet6_ip6_var::Ip6statCounters| {
             crate::netinet6::ip6_var::IP6COUNTERS.read()[c as usize]
         };
-        use hal::sys::netinet6_ip6_var::Ip6statCounters::{Ip6sRtcachehit, Ip6sRtcachemiss};
+        use sysdefs::netinet6_ip6_var::Ip6statCounters::{Ip6sRtcachehit, Ip6sRtcachemiss};
         let misses6 = ip6s(Ip6sRtcachemiss);
         let hits6 = ip6s(Ip6sRtcachehit);
         assert_eq!(ro.cache6(&a, None, 0), Err(Errno::ESRCH));

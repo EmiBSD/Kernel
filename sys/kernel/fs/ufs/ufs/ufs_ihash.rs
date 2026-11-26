@@ -102,10 +102,10 @@ use core::pin::Pin;
 use hal::ds::pinlist::PinList;
 use hal::mem::malloc::{M_WAITOK, MArray};
 use hal::sync::klock;
-use hal::sys::errno::Errno;
-use hal::sys::mount::MNT_RDONLY;
-use hal::sys::types::Dev;
 use libkern::siphash::{SipHash24Ctx, SiphashKey};
+use sysdefs::errno::Errno;
+use sysdefs::mount::MNT_RDONLY;
+use sysdefs::types::Dev;
 
 use super::dinode::Ufsino;
 use super::inode::{IN_HASHED, Inode};

@@ -449,7 +449,7 @@ fn lz_home(rust: &str) -> String {
     const MOVED: [(&str, &str); 5] = [
         ("sys/hal/arch/", "sys/arch/"),
         ("sys/hal/machine/", "sys/machine/"),
-        ("sys/hal/sys/", "sys/sys/"),
+        ("sys/lib/sysdefs/", "sys/sys/"),
         ("sys/abi/sys/", "sys/sys/"),
         ("sys/kernel/crypto/", "sys/crypto/"),
     ];
@@ -1184,7 +1184,7 @@ pub(crate) fn check(root: &Path) -> Result<()> {
         let n = abi_pod_impls(&rel, toks);
         if n > 0 {
             errors.push(format!(
-                "{rel}: {n} hand-written `impl AbiPod`, rename `AbiPod as`, or `impl $t for` with the trait in a macro variable; only abi_pod! (and sys/hal/user.rs's primitives) implement hal's AbiPod, whose checks UserPtr's byte views trust (docs/ZERO_UNSAFE.md, decision 17)"
+                "{rel}: {n} hand-written `impl AbiPod`, rename `AbiPod as`, or `impl $t for` with the trait in a macro variable; only abi_pod! (and sys/lib/sysdefs/pod.rs's primitives) implement sysdefs' AbiPod, whose checks UserPtr's byte views trust (docs/ZERO_UNSAFE.md, decision 17)"
             ));
         }
         for (name, n) in hal_macro_trait_impls(&rel, toks) {
@@ -1315,7 +1315,7 @@ pub(crate) fn adapter_impls(rel: &str, toks: &[Tok]) -> usize {
 /// The file where `hal`'s safe `AbiPod` lives with the only code allowed to implement it:
 /// `abi_pod!` (which checks the type at compile time), `abi_pod_primitive!` and the impl for
 /// arrays (docs/ZERO_UNSAFE.md, decision 17).
-const ABI_POD_FILES: [&str; 1] = ["sys/hal/user.rs"];
+const ABI_POD_FILES: [&str; 1] = ["sys/lib/sysdefs/pod.rs"];
 
 /// How many hand-written impls of `hal`'s safe `AbiPod` the file `rel`, lexed as `toks`,
 /// writes: an `impl .. AbiPod for` not preceded by `unsafe`, an `impl $t for` with the trait
@@ -2079,7 +2079,7 @@ mod tests {
         assert_eq!(lz_home("sys/kernel/crypto/sha2.rs"), "sys/crypto/sha2.rs");
         assert_eq!(lz_home("sys/abi/sys/errno.rs"), "sys/sys/errno.rs");
         assert_eq!(lz_home("sys/hal/machine/mod.rs"), "sys/machine/mod.rs");
-        assert_eq!(lz_home("sys/hal/sys/types.rs"), "sys/sys/types.rs");
+        assert_eq!(lz_home("sys/lib/sysdefs/types.rs"), "sys/sys/types.rs");
         assert_eq!(lz_home("sys/kern/kern_sched.rs"), "sys/kern/kern_sched.rs");
     }
 
@@ -2223,7 +2223,7 @@ mod tests {
         );
     }
     #[test]
-    fn abi_pod_impls_only_in_hal_user() {
+    fn abi_pod_impls_only_in_sysdefs_pod() {
         use crate::unsafereport::lex;
         let user = r#"
         pub trait AbiPod: Copy + 'static {}
@@ -2231,15 +2231,15 @@ mod tests {
         impl<T: AbiPod, const N: usize> AbiPod for [T; N] {}
         macro_rules! abi_pod {
             ($ty:path { $($field:ident : $fty:ty),+ }) => {
-                impl $crate::user::AbiPod for $ty {}
+                impl $crate::pod::AbiPod for $ty {}
             };
         }
     "#;
-        assert_eq!(abi_pod_impls("sys/hal/user.rs", &lex(user)), 0);
+        assert_eq!(abi_pod_impls("sys/lib/sysdefs/pod.rs", &lex(user)), 0);
         // The same text anywhere else is a hand-written impl.
         assert_eq!(abi_pod_impls("sys/kernel/x.rs", &lex(user)), 3);
         let allowed = r#"
-        hal::abi_pod!(Kevent { ident: u64, filter: i16 });
+        sysdefs::abi_pod!(Kevent { ident: u64, filter: i16 });
         unsafe impl AbiPod for Sigaction {}
         unsafe impl<T: Copy> AbiPod for Wrap<T> {}
         use crate::machine::copy::AbiPod;

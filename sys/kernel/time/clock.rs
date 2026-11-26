@@ -123,7 +123,7 @@
 //!   implemented over those same readers through its `kern_tc.rs`, is gone with its slot and
 //!   the tests' double; the host tests read the timecounters, on the dummy counter).
 //! - N4.8a (decision 8): the kernel's one `struct timespec`, `struct timeval` and `struct
-//!   bintime` are here, `#[repr(C)]` and `AbiPod` (`hal::abi_pod!`), with the field names
+//!   bintime` are here, `#[repr(C)]` and `AbiPod` (`sysdefs::abi_pod!`), with the field names
 //!   and types of `<sys/time.h>` (`time_t` and `long` are `i64` on both machines), so
 //!   `bsd`'s `sys/sys/time.rs` names them instead of keeping its own and the system calls
 //!   copy them to and from user space as they are. `kernel::proc::resource::Timeval` and
@@ -142,8 +142,8 @@ pub use crate::time::tc::{getnanouptime, nanoboottime, nanotime, nanouptime};
 
 use crate::assert::{kassert, kpanic};
 use hal::sync::once::OnceStatic;
-use hal::sys::errno::Errno;
-use hal::sys::kernel::HZ;
+use sysdefs::errno::Errno;
+use sysdefs::kernel::HZ;
 
 /// One second in nanoseconds.
 const NSEC_PER_SEC: i64 = 1_000_000_000;
@@ -243,13 +243,13 @@ impl Timespec {
     }
 }
 
-hal::abi_pod!(Timespec {
+sysdefs::abi_pod!(Timespec {
     tv_sec: i64,
     tv_nsec: i64
 });
 
 /// A time as `struct stat` embeds it (`st_atim`, ...: `hal`'s copy of the layout, N5.3).
-impl From<Timespec> for hal::sys::stat::Timespec {
+impl From<Timespec> for sysdefs::stat::Timespec {
     fn from(t: Timespec) -> Self {
         Self::new(t.tv_sec, t.tv_nsec)
     }
@@ -358,7 +358,7 @@ pub const fn sec_to_nsec(seconds: u64) -> u64 {
     seconds * 1_000_000_000
 }
 
-hal::abi_pod!(Timeval {
+sysdefs::abi_pod!(Timeval {
     tv_sec: i64,
     tv_usec: i64
 });
@@ -461,7 +461,7 @@ impl Bintime {
     }
 }
 
-hal::abi_pod!(Bintime {
+sysdefs::abi_pod!(Bintime {
     sec: i64,
     frac: u64
 });

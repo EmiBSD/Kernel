@@ -508,7 +508,7 @@ pub struct Splice {
 
 /// `struct sockaddr`: structure used by kernel to store most addresses (`hal`'s image, the
 /// one the kernel's interface requests carry: N6.3a).
-pub use hal::sys::socket::Sockaddr;
+pub use sysdefs::socket::Sockaddr;
 
 /// `struct sockaddr_storage`: sockaddr type which can hold any sockaddr type available in the
 /// system. RFC 2553 calls the first field `__ss_len`; OpenBSD picked `ss_len`.

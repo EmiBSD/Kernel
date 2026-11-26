@@ -195,15 +195,15 @@ use hal::mem::malloc::M_WAITOK;
 use hal::mem::malloc::MBox;
 use hal::sync::klock;
 use hal::sync::rwlock::Guarded;
-use hal::sys::errno::Errno;
-use hal::sys::mount::ExportArgs;
-#[cfg(feature = "nfsserver")]
-use hal::sys::mount::{MNT_DEFEXPORTED, MNT_DELEXPORT, MNT_EXPORTED};
-#[cfg(feature = "nfsserver")]
-use hal::sys::socket::AF_INET;
-use hal::sys::types::{Gid, Uid};
 #[cfg(feature = "nfsserver")]
 use hal::user::UserPtr;
+use sysdefs::errno::Errno;
+use sysdefs::mount::ExportArgs;
+#[cfg(feature = "nfsserver")]
+use sysdefs::mount::{MNT_DEFEXPORTED, MNT_DELEXPORT, MNT_EXPORTED};
+#[cfg(feature = "nfsserver")]
+use sysdefs::socket::AF_INET;
+use sysdefs::types::{Gid, Uid};
 
 use super::mount::Mount;
 #[cfg(feature = "nfsserver")]
@@ -510,8 +510,8 @@ mod tests {
 
     use std::boxed::Box;
 
-    use hal::sys::mount::{MNT_EXPORTANON, MNT_EXRDONLY, Xucred};
-    use hal::sys::syslimits::NGROUPS_MAX as XNGROUPS;
+    use sysdefs::mount::{MNT_EXPORTANON, MNT_EXRDONLY, Xucred};
+    use sysdefs::syslimits::NGROUPS_MAX as XNGROUPS;
 
     use super::*;
     use crate::fs::testfs::TestGlue;

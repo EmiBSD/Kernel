@@ -136,9 +136,9 @@ use hal::arch::current::param::{PAGE_SHIFT, PAGE_SIZE};
 use hal::mem::malloc::{M_NOWAIT, M_WAITOK, MArray};
 use hal::mem::pool::{BoxPool, PR_NOWAIT, PR_WAITOK, PoolArc, PoolBox, TypedPool};
 use hal::sync::rwlock::{Guarded, RW_WRITE, SharedRwlock, Witness, WriteWitness};
-use hal::sys::errno::Errno;
-use hal::sys::limits::INT_MAX;
-use hal::sys::mman::PROT_NONE;
+use sysdefs::errno::Errno;
+use sysdefs::limits::INT_MAX;
+use sysdefs::mman::PROT_NONE;
 
 use super::anon::{AnonRef, uvm_analloc, uvm_anfree, uvm_anon_pagein};
 use super::page::{

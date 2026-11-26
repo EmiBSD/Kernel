@@ -175,7 +175,7 @@ struct SaImage([u8; size_of::<SockaddrIn6>()]);
 impl SaImage {
     /// The image of `sa`, a `sockaddr_in` or a `sockaddr_in6` (no larger: a bigger `T` is
     /// refused at compile time).
-    fn of<T: hal::user::AbiPod>(sa: &T) -> Self {
+    fn of<T: sysdefs::pod::AbiPod>(sa: &T) -> Self {
         const { assert!(size_of::<T>() <= size_of::<SockaddrIn6>()) };
         let mut b = [0u8; size_of::<SockaddrIn6>()];
         if !hal::mem::pod::put(&mut b, 0, sa) {

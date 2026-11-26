@@ -111,11 +111,11 @@ use core::mem::size_of;
 
 use hal::mem::pod;
 use hal::sync::netlock::NetHeld;
-use hal::sys::errno::Errno;
-use hal::sys::netinet_in::IPPROTO_UDP;
-use hal::sys::netinet_ip6::{IPV6_FLOWINFO_MASK, IPV6_VERSION, IPV6_VERSION_MASK, Ip6Hdr};
-use hal::sys::netinet_udp::Udphdr;
-use hal::sys::netinet6_in6::{
+use sysdefs::errno::Errno;
+use sysdefs::netinet_in::IPPROTO_UDP;
+use sysdefs::netinet_ip6::{IPV6_FLOWINFO_MASK, IPV6_VERSION, IPV6_VERSION_MASK, Ip6Hdr};
+use sysdefs::netinet_udp::Udphdr;
+use sysdefs::netinet6_in6::{
     In6Addr, SockaddrIn6, in6_are_addr_equal, in6_is_addr_unspecified, in6_is_addr_v4mapped,
 };
 

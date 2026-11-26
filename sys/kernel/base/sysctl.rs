@@ -156,11 +156,14 @@ use hal::sync::mutex::MutexedGuard;
 use hal::sync::once::OnceStatic;
 use hal::sync::rwlock::{RW_INTR, RawRwlock, Rwlocked, WriteWitness};
 use hal::sync::slot::ReadMostly;
-use hal::sys::errno::Errno;
-use hal::sys::limits::SHRT_MAX;
-use hal::sys::mman::{PROT_READ, PROT_WRITE};
-use hal::sys::pledge::PLEDGE_UNVEIL;
-use hal::sys::sysctl::{
+use hal::user::{UserPtr, bytes_of};
+use hal::vm::param::atop;
+use hal::vm::uvmexp::UVMEXP;
+use sysdefs::errno::Errno;
+use sysdefs::limits::SHRT_MAX;
+use sysdefs::mman::{PROT_READ, PROT_WRITE};
+use sysdefs::pledge::PLEDGE_UNVEIL;
+use sysdefs::sysctl::{
     CTL_DDB, CTL_HW, CTL_KERN, CTL_MACHDEP, CTL_MAXID, CTL_MAXNAME, CTL_NET, CTL_VFS, CTL_VM,
     EPROC_CTTY, EPROC_LKUNVEIL, EPROC_UNVEIL, HW_ALLOWPOWERDOWN, HW_BATTERY, HW_BATTERY_CHARGEMODE,
     HW_BATTERY_CHARGESTART, HW_BATTERY_CHARGESTOP, HW_BLOCKCPU, HW_BYTEORDER, HW_CPUSPEED,
@@ -185,12 +188,9 @@ use hal::sys::sysctl::{
     KERN_WATCHDOG, KERN_WXABORT, KI_NOCPU, KinfoProc, KinfoVmentry, SYSCTL_INT_READONLY,
     SysctlBoundedArgs,
 };
-use hal::sys::syslimits::{ARG_MAX, NGROUPS_MAX, PATH_MAX};
-use hal::sys::types::{Dev, Pid};
-use hal::sys::unistd::_POSIX_VERSION;
-use hal::user::{UserPtr, bytes_of};
-use hal::vm::param::atop;
-use hal::vm::uvmexp::UVMEXP;
+use sysdefs::syslimits::{ARG_MAX, NGROUPS_MAX, PATH_MAX};
+use sysdefs::types::{Dev, Pid};
+use sysdefs::unistd::_POSIX_VERSION;
 
 use crate::assert::kpanic;
 use crate::file::uio::UioMove;
@@ -1147,7 +1147,7 @@ const KERN_DIRS_LOCKED: [i32; 6] = [
 const HW_REGISTERED: [i32; 5] = [HW_MACHINE_ID, HW_SENSORS, HW_UCOMNAMES, HW_SMT, HW_BLOCKCPU];
 
 /// `HW_MACHINE`.
-const HW_MACHINE_ID: i32 = hal::sys::sysctl::HW_MACHINE;
+const HW_MACHINE_ID: i32 = sysdefs::sysctl::HW_MACHINE;
 
 /// Whether a subsystem may register the `kern` node `id`: the dispatcher consults only these.
 fn kern_registrable(id: i32) -> bool {
@@ -2580,10 +2580,10 @@ mod tests {
     use std::vec::Vec;
 
     use hal::mem::pool::PoolBox;
-    use hal::sys::sysctl::{
+    use sysdefs::sysctl::{
         CTL_DEBUG, HW_NCPU, KERN_PROC_SHOW_THREADS, KinfoFile, SYSCTL_INT_READONLY,
     };
-    use hal::sys::types::Uid;
+    use sysdefs::types::Uid;
 
     use super::*;
     use crate::proc::cred::{CredRef, Ucred};
@@ -3416,7 +3416,7 @@ mod tests {
         // kern.mbstat: struct mbstat; kern.maxclusters: nmbclust, both the mbuf's.
         assert_eq!(
             sysctl(&p, at, &[CTL_KERN, KERN_MBSTAT], 0, Some(0), 0, 0),
-            (Ok(()), Some(size_of::<hal::sys::mbuf::Mbstat>()))
+            (Ok(()), Some(size_of::<sysdefs::mbuf::Mbstat>()))
         );
         let (r, len) = sysctl(&p, at, &[CTL_KERN, KERN_MAXCLUSTERS], old, Some(4), 0, 0);
         assert_eq!((r, len), (Ok(()), Some(4)));
@@ -3551,7 +3551,7 @@ mod tests {
     /// too short `ENOTDIR`, an unknown type `EOPNOTSUPP` (vfs_subr.c's answers).
     #[test]
     fn vfs_is_the_kernel_s_own_tree() {
-        use hal::sys::mount::{VFS_GENERIC, VFS_MAXTYPENUM};
+        use sysdefs::mount::{VFS_GENERIC, VFS_MAXTYPENUM};
         let (_pr, p) = caller(4950, 0);
         let at = testutil::USER_BASE + 0x5d00;
         assert_eq!(
@@ -3630,7 +3630,7 @@ mod tests {
         use crate::dev::disk::{
             Disk, disk_attach, disk_busy, disk_detach, disk_stats, disk_unbusy,
         };
-        use hal::sys::disklabel::Disklabel;
+        use sysdefs::disklabel::Disklabel;
 
         let _g = testutil::bufcache_install(1 << 20, 64);
         crate::dev::disk::disk_test_reset();

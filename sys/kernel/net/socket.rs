@@ -266,9 +266,9 @@ use hal::sync::once::OnceStatic;
 use hal::sync::rwlock::{Divisible, Guarded, ReadWitness, WitnessPart, WriteWitness};
 use hal::sync::sleep::{INFSLP, PCATCH, wakeup, wakeup_one};
 use hal::sync::slot::ReadMostly;
-use hal::sys::errno::Errno;
-use hal::sys::socket::{PF_INET, PF_INET6, SO_ACCEPTCONN, SOMAXCONN};
-use hal::sys::types::Off;
+use sysdefs::errno::Errno;
+use sysdefs::socket::{PF_INET, PF_INET6, SO_ACCEPTCONN, SOMAXCONN};
+use sysdefs::types::Off;
 
 use crate::assert::{kassert, kpanic};
 use crate::base::task::Task;
@@ -313,7 +313,7 @@ pub struct Splice {
     pub sp_idle: Timeval,
 }
 
-hal::abi_pod!(Splice {
+sysdefs::abi_pod!(Splice {
     sp_fd: i32,
     sp_pad: i32,
     sp_max: Off,
@@ -1842,7 +1842,7 @@ pub fn solisten<G: ProcGlue>(
     let mut backlog = backlog;
 
     match so.so_type {
-        hal::sys::socket::SOCK_STREAM | hal::sys::socket::SOCK_SEQPACKET => {}
+        sysdefs::socket::SOCK_STREAM | sysdefs::socket::SOCK_SEQPACKET => {}
         _ => return Err(Errno::EOPNOTSUPP),
     }
 
@@ -1970,9 +1970,9 @@ pub fn soclose<G: ProcGlue>(so: &Socket<G>, flags: i32) -> Result<(), Errno> {
                     error = Err(e);
                     break 'drop;
                 }
-                if so.has_options(hal::sys::socket::SO_LINGER) {
+                if so.has_options(sysdefs::socket::SO_LINGER) {
                     if so.has_state(SS_ISDISCONNECTING)
-                        && flags & hal::sys::socket::MSG_DONTWAIT != 0
+                        && flags & sysdefs::socket::MSG_DONTWAIT != 0
                     {
                         break 'drop;
                     }
@@ -2206,7 +2206,7 @@ pub fn soaccept_take<'h, G: ProcGlue, R>(
 
 /// `SBLOCKWAIT(f)`.
 const fn sblockwait(f: i32) -> i32 {
-    if f & hal::sys::socket::MSG_DONTWAIT != 0 {
+    if f & sysdefs::socket::MSG_DONTWAIT != 0 {
         0
     } else {
         crate::net::sockbuf::SBL_WAIT
@@ -2258,7 +2258,7 @@ pub fn sowriteable<G: ProcGlue>(so: &Socket<G>) -> bool {
 
 /// The `cmsg_type` of the control message at the start of `m`, 0 if `m` is too short.
 fn cmsg_type_of(m: &Mbuf) -> i32 {
-    hal::user::pod_from_bytes::<hal::sys::socket::Cmsghdr>(m.data()).map_or(0, |c| c.cmsg_type)
+    hal::user::pod_from_bytes::<sysdefs::socket::Cmsghdr>(m.data()).map_or(0, |c| c.cmsg_type)
 }
 
 /// `sosend(so, addr, uio, top, control, flags)`: send on a socket. If send must go all at
@@ -2279,7 +2279,7 @@ pub fn sosend<G: ProcGlue>(
     mut control: Option<MbufBox>,
     flags: i32,
 ) -> Result<(), Errno> {
-    use hal::sys::socket::{AF_UNIX, MSG_DONTWAIT, MSG_EOR, MSG_OOB, SCM_RIGHTS, SO_ZEROIZE};
+    use sysdefs::socket::{AF_UNIX, MSG_DONTWAIT, MSG_EOR, MSG_OOB, SCM_RIGHTS, SO_ZEROIZE};
 
     let mut clen: i64 = 0;
     let atomic = sosendallatonce(so) || top.is_some();
@@ -2292,7 +2292,7 @@ pub fn sosend<G: ProcGlue>(
             .map_or(0, |h| h.len.get() as usize),
     };
     // MSG_EOR on a SOCK_STREAM socket is invalid.
-    if so.so_type == hal::sys::socket::SOCK_STREAM && flags & MSG_EOR != 0 {
+    if so.so_type == sysdefs::socket::SOCK_STREAM && flags & MSG_EOR != 0 {
         return Err(Errno::EINVAL);
     }
     if let Some(uio) = &uio
@@ -2306,9 +2306,9 @@ pub fn sosend<G: ProcGlue>(
         // signed comparison of space and clen.
         clen = i64::from(c.m_len().get());
         // reserve extra space for AF_UNIX's internalize
-        let hdr = hal::sys::socket::cmsg_align(size_of::<hal::sys::socket::Cmsghdr>()) as i64;
+        let hdr = sysdefs::socket::cmsg_align(size_of::<sysdefs::socket::Cmsghdr>()) as i64;
         if so.family == i32::from(AF_UNIX) && clen >= hdr && cmsg_type_of(c) == SCM_RIGHTS {
-            clen = hal::sys::socket::cmsg_space(
+            clen = sysdefs::socket::cmsg_space(
                 (clen - hdr) as usize * (FDPASS_SIZE / size_of::<i32>()),
             ) as i64;
         }
@@ -2609,7 +2609,7 @@ pub fn soreceive<G: ProcGlue>(
 ) -> Result<(), Errno> {
     use crate::net::mbuf::{M_BCAST, M_EOR, M_MCAST, M_WAIT, MT_CONTROL, MT_OOBDATA};
     use crate::net::proto::{PR_ADDR, PR_ATOMIC, PR_CONNREQUIRED, PR_WANTRCVD};
-    use hal::sys::socket::{
+    use sysdefs::socket::{
         MSG_BCAST, MSG_DONTWAIT, MSG_EOR, MSG_MCAST, MSG_OOB, MSG_PEEK, MSG_TRUNC, MSG_WAITALL,
         SCM_RIGHTS,
     };
@@ -3035,7 +3035,7 @@ fn rcv_copy_front(rec: &mut crate::net::sockbuf::SbRecord, len: i32, wait: i32) 
 /// `soshutdown(so, how)`: `SHUT_RD` flushes the receive side, `SHUT_WR` tells the protocol
 /// no more data will be sent, `SHUT_RDWR` both.
 pub fn soshutdown<G: ProcGlue>(so: &Socket<G>, how: i32) -> Result<(), Errno> {
-    use hal::sys::socket::{SHUT_RD, SHUT_RDWR, SHUT_WR};
+    use sysdefs::socket::{SHUT_RD, SHUT_RDWR, SHUT_WR};
 
     let shut_wr = |so: &Socket<G>| {
         let mut w = solock_shared(so);
@@ -3454,7 +3454,7 @@ pub fn somove<G: ProcGlue>(so: &Socket<G>, wait: i32) -> bool {
         m_resethdr, m_split,
     };
     use crate::net::proto::{PR_ADDR, PR_ATOMIC, PR_WANTRCVD};
-    use hal::sys::socket::SO_OOBINLINE;
+    use sysdefs::socket::SO_OOBINLINE;
 
     let Some(sp) = so.splice() else {
         kpanic(format_args!("somove: so {so:p} not spliced"));
@@ -3851,7 +3851,7 @@ pub fn sowakeup<G: ProcGlue>(so: &Socket<G>, sb: &Sockbuf<G>) {
         wakeup(sb.cc_chan());
     }
     if dopgsigio {
-        pgsigio::<G>(&so.sigio, hal::sys::signal::SIGIO, false);
+        pgsigio::<G>(&so.sigio, sysdefs::signal::SIGIO, false);
     }
 }
 
@@ -3905,7 +3905,7 @@ pub fn sowwakeup<G: ProcGlue>(so: &Socket<G>) {
 
 /// `sohasoutofband(so)`: out-of-band data arrived: `SIGURG` and the except knotes.
 pub fn sohasoutofband<G: ProcGlue>(so: &Socket<G>) {
-    pgsigio::<G>(&so.sigio, hal::sys::signal::SIGURG, false);
+    pgsigio::<G>(&so.sigio, sysdefs::signal::SIGURG, false);
     let mut g = so.so_rcv.lock();
     so.so_rcv.klist.knote_locked(g.witness(), 0);
 }
@@ -3939,7 +3939,7 @@ pub fn sosetopt<G: ProcGlue>(
     m: Option<&mut Mbuf>,
 ) -> Result<(), Errno> {
     use crate::net::proto::PRCO_SETOPT;
-    use hal::sys::socket::{
+    use sysdefs::socket::{
         SO_BINDANY, SO_BROADCAST, SO_DEBUG, SO_DONTROUTE, SO_KEEPALIVE, SO_LINGER, SO_OOBINLINE,
         SO_RCVBUF, SO_RCVLOWAT, SO_RCVTIMEO, SO_REUSEADDR, SO_REUSEPORT, SO_RTABLE, SO_SNDBUF,
         SO_SNDLOWAT, SO_SNDTIMEO, SO_SPLICE, SO_TIMESTAMP, SO_USELOOPBACK, SO_ZEROIZE, SOL_SOCKET,
@@ -3959,10 +3959,10 @@ pub fn sosetopt<G: ProcGlue>(
 
     match optname {
         SO_LINGER => {
-            let Some(m) = m.filter(|_| mlen == Some(size_of::<hal::sys::socket::Linger>())) else {
+            let Some(m) = m.filter(|_| mlen == Some(size_of::<sysdefs::socket::Linger>())) else {
                 return Err(Errno::EINVAL);
             };
-            let Some(l) = hal::user::pod_from_bytes::<hal::sys::socket::Linger>(m.data()) else {
+            let Some(l) = hal::user::pod_from_bytes::<sysdefs::socket::Linger>(m.data()) else {
                 return Err(Errno::EINVAL);
             };
             if l.l_linger < 0 || l.l_linger > i32::from(i16::MAX) {
@@ -4110,7 +4110,7 @@ pub fn sogetopt<G: ProcGlue>(
     m: &mut Mbuf,
 ) -> Result<(), Errno> {
     use crate::net::proto::PRCO_GETOPT;
-    use hal::sys::socket::{
+    use sysdefs::socket::{
         AF_UNIX, SO_BINDANY, SO_BROADCAST, SO_DEBUG, SO_DOMAIN, SO_DONTROUTE, SO_ERROR,
         SO_KEEPALIVE, SO_LINGER, SO_OOBINLINE, SO_PEERCRED, SO_PROTOCOL, SO_RCVBUF, SO_RCVLOWAT,
         SO_RCVTIMEO, SO_REUSEADDR, SO_REUSEPORT, SO_RTABLE, SO_SNDBUF, SO_SNDLOWAT, SO_SNDTIMEO,
@@ -4135,7 +4135,7 @@ pub fn sogetopt<G: ProcGlue>(
         SO_LINGER => {
             let l = {
                 let _w = solock_shared(so);
-                hal::sys::socket::Linger {
+                sysdefs::socket::Linger {
                     l_onoff: so.options() & SO_LINGER,
                     l_linger: i32::from(so.linger()),
                 }
@@ -4343,7 +4343,7 @@ mod tests {
             &TestDom
         }
         fn ty(&self) -> i16 {
-            hal::sys::socket::SOCK_STREAM as i16
+            sysdefs::socket::SOCK_STREAM as i16
         }
         fn protocol(&self) -> i16 {
             0
@@ -4432,7 +4432,7 @@ mod tests {
             &TestProto,
             crate::net::mbuf::M_WAIT,
             SoInit {
-                so_type: hal::sys::socket::SOCK_STREAM,
+                so_type: sysdefs::socket::SOCK_STREAM,
                 state,
                 options: 0,
                 linger: 0,
@@ -4720,7 +4720,7 @@ mod tests {
         // again; the receive side shut wakes it, it reads "AB" from the start once more and
         // stops: "AABAB", a short count (uipc_socket.c's sbwait under MSG_WAITALL).
         use crate::file::uio::{Iovec, Uio, UioRw, UioSeg};
-        use hal::sys::socket::{MSG_PEEK, MSG_WAITALL};
+        use sysdefs::socket::{MSG_PEEK, MSG_WAITALL};
         let _g = net_setup();
         let so = socket(0);
         so.st_set(SS_ISCONNECTED);
@@ -4856,7 +4856,7 @@ mod tests {
             &TestInetDom
         }
         fn ty(&self) -> i16 {
-            hal::sys::socket::SOCK_STREAM as i16
+            sysdefs::socket::SOCK_STREAM as i16
         }
         fn protocol(&self) -> i16 {
             6
@@ -4874,7 +4874,7 @@ mod tests {
             &TestInetDom
         }
         fn ty(&self) -> i16 {
-            hal::sys::socket::SOCK_STREAM as i16
+            sysdefs::socket::SOCK_STREAM as i16
         }
         fn protocol(&self) -> i16 {
             7
@@ -4896,7 +4896,7 @@ mod tests {
             prp,
             crate::net::mbuf::M_WAIT,
             SoInit {
-                so_type: hal::sys::socket::SOCK_STREAM,
+                so_type: sysdefs::socket::SOCK_STREAM,
                 state: 0,
                 options: 0,
                 linger: 0,
@@ -5121,16 +5121,16 @@ mod tests {
         let mut m = crate::net::mbuf::m_get(crate::net::mbuf::M_WAIT, 4).expect("an mbuf");
         sogetopt(
             &so,
-            hal::sys::socket::SOL_SOCKET,
-            hal::sys::socket::SO_TYPE,
+            sysdefs::socket::SOL_SOCKET,
+            sysdefs::socket::SO_TYPE,
             &mut m,
         )
         .expect("SO_TYPE");
-        assert_eq!(opt_int(&m), Some(hal::sys::socket::SOCK_STREAM));
+        assert_eq!(opt_int(&m), Some(sysdefs::socket::SOCK_STREAM));
         sogetopt(
             &so,
-            hal::sys::socket::SOL_SOCKET,
-            hal::sys::socket::SO_RCVBUF,
+            sysdefs::socket::SOL_SOCKET,
+            sysdefs::socket::SO_RCVBUF,
             &mut m,
         )
         .expect("SO_RCVBUF");

@@ -108,12 +108,12 @@
 use hal::arch::current::vmparam::{DFLDSIZ, DFLSSIZ, MAXDSIZ, MAXSSIZ};
 use hal::mem::kmbuf::KmBuf;
 use hal::sync::rwlock::RwMode;
-use hal::sys::errno::Errno;
-use hal::sys::types::{Paddr, Vaddr};
 use hal::user::UserPtr;
 use hal::vm::param::{atop, ptoa, round_page, trunc_page};
 use hal::vm::pmap::Pmap;
 use hal::vm::uvmexp::UVMEXP;
+use sysdefs::errno::Errno;
+use sysdefs::types::{Paddr, Vaddr};
 
 use super::fault::{FaultMap, FaultMapGuard, uvm_fault_unwire_locked, uvm_fault_wire};
 use super::init::machine;

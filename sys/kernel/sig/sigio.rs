@@ -136,9 +136,9 @@ use hal::cpu::intr::IPL_HIGH;
 use hal::mem::malloc::{M_WAITOK, MBox};
 use hal::sync::klock;
 use hal::sync::mutex::Mutexed;
-use hal::sys::errno::Errno;
-use hal::sys::ioccom::{_ior, _iow};
-use hal::sys::types::Pid;
+use sysdefs::errno::Errno;
+use sysdefs::ioccom::{_ior, _iow};
+use sysdefs::types::Pid;
 
 use crate::assert::kpanic;
 use crate::proc::cred::CredRef;
@@ -549,7 +549,7 @@ mod tests {
 
     use hal::ds::pin::pin_static;
     use hal::mem::pool::PoolBox;
-    use hal::sys::signal::{SIGIO, SIGURG, sigmask};
+    use sysdefs::signal::{SIGIO, SIGURG, sigmask};
 
     use super::*;
     use crate::proc::cred::Ucred;
@@ -616,7 +616,7 @@ mod tests {
         // SIGIO is ignored by default: siginit's process forgets it; SIGURG likewise. Catch
         // SIGIO to see it pending.
         assert_eq!(pr.ps_siglist.load(Ordering::Relaxed), 0);
-        let mut sa = hal::sys::signal::Sigaction {
+        let mut sa = sysdefs::signal::Sigaction {
             sa_handler: 0x4000,
             ..Default::default()
         };
@@ -682,7 +682,7 @@ mod tests {
         setup();
         let pr = process(207);
         enternewpgrp(&pr, pgrp_alloc::<Og>(()), Some(session_alloc::<Og>(())));
-        let mut sa = hal::sys::signal::Sigaction {
+        let mut sa = sysdefs::signal::Sigaction {
             sa_handler: 0x4000,
             ..Default::default()
         };

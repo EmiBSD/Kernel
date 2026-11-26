@@ -42,7 +42,7 @@
 //!
 //! The on-disk structures (`struct byte_bpb*`, `struct fsinfo`, and the boot sectors and
 //! directory entries of `bootsect.rs` and `direntry.rs`) are made of bytes only, so that the
-//! compiler adds no padding; each is a `hal::abi_pod!` image, read out of a buffer's bytes at
+//! compiler adds no padding; each is a `sysdefs::abi_pod!` image, read out of a buffer's bytes at
 //! its offset and written back there (`fs::pod`'s `pod_view!`, its `at` and `put`: the C's
 //! cast of a pointer into `b_data`).
 //!
@@ -63,7 +63,7 @@
 //! - LZ's `byte_view!` (an `unsafe` cast of the buffer's bytes to a `&` or `&mut` of the
 //!   structure, two sites, behind a compile-time alignment check) -> `fs::pod`'s `pod_view!`
 //!   (written here at N5.7c1, lifted into `fs/pod.rs` at N5.8c1 for cd9660 and udf): each
-//!   structure is a `hal::abi_pod!` (the layout checked by the macro: every field a byte or a
+//!   structure is a `sysdefs::abi_pod!` (the layout checked by the macro: every field a byte or a
 //!   byte array, no padding), `at(buf, off)` copies it out with `pod_from_bytes` and
 //!   `put(buf, off, &v)` back with `pod_to_bytes` (docs/IDIOMS.md, the `pod_from_bytes` row). Cost
 //!   against the C's in-place access: one copy of the structure (19 to 1,024 bytes) per view;
@@ -232,7 +232,7 @@ pub struct ByteBpb33 {
     pub bpbHiddenSecs: [u8; 2],
 }
 
-hal::abi_pod!(ByteBpb33 {
+sysdefs::abi_pod!(ByteBpb33 {
     bpbBytesPerSec: [u8; 2],
     bpbSecPerClust: u8,
     bpbResSectors: [u8; 2],
@@ -278,7 +278,7 @@ pub struct ByteBpb50 {
     pub bpbHugeSectors: [u8; 4],
 }
 
-hal::abi_pod!(ByteBpb50 {
+sysdefs::abi_pod!(ByteBpb50 {
     bpbBytesPerSec: [u8; 2],
     bpbSecPerClust: u8,
     bpbResSectors: [u8; 2],
@@ -338,7 +338,7 @@ pub struct ByteBpb710 {
     // There is a 12 byte filler here, but we ignore it.
 }
 
-hal::abi_pod!(ByteBpb710 {
+sysdefs::abi_pod!(ByteBpb710 {
     bpbBytesPerSec: [u8; 2],
     bpbSecPerClust: u8,
     bpbResSectors: [u8; 2],
@@ -384,7 +384,7 @@ pub struct Fsinfo {
     pub fsisig4: [u8; 4],
 }
 
-hal::abi_pod!(Fsinfo {
+sysdefs::abi_pod!(Fsinfo {
     fsisig1: [u8; 4],
     fsifill1: [u8; 480],
     fsisig2: [u8; 4],

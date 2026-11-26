@@ -85,9 +85,9 @@ use core::sync::atomic::Ordering;
 
 use hal::arch::current::param::PAGE_SHIFT;
 use hal::arch::current::vmparam::VM_MAXUSER_ADDRESS;
-use hal::sys::errno::Errno;
-use hal::sys::mman::{MADV_NORMAL, MAP_INHERIT_COPY, PROT_EXEC, PROT_READ, PROT_WRITE};
 use hal::vm::param::{atop, ptoa, round_page};
+use sysdefs::errno::Errno;
+use sysdefs::mman::{MADV_NORMAL, MAP_INHERIT_COPY, PROT_EXEC, PROT_READ, PROT_WRITE};
 
 use super::amap::{Amap, AmapRef, amap_lookups};
 use super::fault::{FaultEntry, FaultMapGuard};

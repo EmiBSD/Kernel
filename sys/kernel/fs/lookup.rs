@@ -93,12 +93,12 @@
 
 use core::ptr;
 
-use hal::sys::errno::Errno;
-use hal::sys::fcntl::AT_FDCWD;
-use hal::sys::mount::{VB_READ, VB_WAIT};
-use hal::sys::pledge::PLEDGE_UNVEIL;
-use hal::sys::syslimits::{NAME_MAX, SYMLOOP_MAX};
 use hal::user::UserPtr;
+use sysdefs::errno::Errno;
+use sysdefs::fcntl::AT_FDCWD;
+use sysdefs::mount::{VB_READ, VB_WAIT};
+use sysdefs::pledge::PLEDGE_UNVEIL;
+use sysdefs::syslimits::{NAME_MAX, SYMLOOP_MAX};
 
 use super::init::rootvnode;
 use super::mount::{Mount, vfs_busy, vfs_unbusy};
@@ -944,7 +944,7 @@ fn lookup_walk<G: ProcGlue>(
 /// Whether the vnode's file system is mounted read-only.
 fn mnt_rdonly<G: ProcGlue>(vp: Option<&'static Vnode<G>>) -> bool {
     vp.and_then(Vnode::mount)
-        .is_some_and(|mp| mp.flag() & hal::sys::mount::MNT_RDONLY != 0)
+        .is_some_and(|mp| mp.flag() & sysdefs::mount::MNT_RDONLY != 0)
 }
 
 /// Reacquire a path name component.

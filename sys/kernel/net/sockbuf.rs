@@ -188,9 +188,9 @@ use hal::ds::owned::{OwnedSlist, SlistIter};
 use hal::sync::mutex::{Mutexed, MutexedGuard};
 use hal::sync::rwlock::{RW_INTR, RW_NOSLEEP, RawRwlock, WriteWitness};
 use hal::sync::sleep::PCATCH;
-use hal::sys::errno::Errno;
-use hal::sys::socket::{Cmsghdr, cmsg_align, cmsg_len, cmsg_space};
 use hal::user::bytes_of;
+use sysdefs::errno::Errno;
+use sysdefs::socket::{Cmsghdr, cmsg_align, cmsg_len, cmsg_space};
 
 use crate::assert::{kassert, kpanic};
 use crate::file::event::Klist;

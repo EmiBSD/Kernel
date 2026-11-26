@@ -75,7 +75,7 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! IPv6 Neighbor Discovery: `<netinet6/nd6.h>` (`hal::sys::netinet6_nd6`) and `netinet6/nd6.c`,
+//! IPv6 Neighbor Discovery: `<netinet6/nd6.h>` (`sysdefs::netinet6_nd6`) and `netinet6/nd6.c`,
 //! the kernel's since N6.5b (`kernel::netinet6::nd6`), re-exported whole for `bsd`'s importers;
 //! the neighbor fixtures `bsd`'s tests share (`if_ethersubr`'s, ICMPv6's, the extension
 //! headers') stay here over `bsd`'s Ethernet fixture.
@@ -83,8 +83,8 @@
 //! Upstream: sys/netinet6/nd6.h @ 3ce1f3f79392
 //! Upstream: sys/netinet6/nd6.c @ 3ce1f3f79392
 
-pub use hal::sys::netinet6_nd6::*;
 pub use kernel::netinet6::nd6::*;
+pub use sysdefs::netinet6_nd6::*;
 /* </CODE> */
 
 /* <TESTS> */

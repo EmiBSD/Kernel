@@ -127,7 +127,7 @@ impl Default for CredSlot {
 
 /// `struct xucred`: userspace version, for use in syscalls arguments; `hal`'s since N5.4
 /// (with `export_args`, which embeds it), the hole after `cr_ngroups` named.
-pub use hal::sys::mount::Xucred;
+pub use sysdefs::mount::Xucred;
 
 // A `CredRef` is one non-null pointer, `#[repr(transparent)]` down to a `NonNull` (through
 // `PoolArc`): Rust guarantees `Option<CredRef>` its null niche, so an all-zero `CredSlot` (a

@@ -165,7 +165,7 @@ pub type SyscallFn = fn(&UserRegs);
 pub type ChildFn = fn(&UserRegs);
 
 /// `ENOSYS` (`<sys/errno.h>`): what an unanswered system call returns.
-pub const ENOSYS: i32 = crate::sys::errno::Errno::ENOSYS.as_i32();
+pub const ENOSYS: i32 = sysdefs::errno::Errno::ENOSYS.as_i32();
 
 /// What the registered handler says about itself, for the boot line the image's boot glue
 /// prints.

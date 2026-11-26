@@ -26,9 +26,9 @@
 use core::mem::offset_of;
 use std::sync::MutexGuard;
 
-use hal::sys::errno::Errno;
-use hal::sys::mount::{MNT_LOCAL, MOUNT_TMPFS, TMPFS_ARGS_VERSION, TmpfsArgs};
-use hal::sys::types::{Mode, Uid};
+use sysdefs::errno::Errno;
+use sysdefs::mount::{MNT_LOCAL, MOUNT_TMPFS, TMPFS_ARGS_VERSION, TmpfsArgs};
+use sysdefs::types::{Mode, Uid};
 
 use crate::fs::lookup::ndinit;
 use crate::fs::mount::{Mount, Vfsconf, vfs_mount_alloc, vfs_mount_free, vfs_unbusy};

@@ -88,7 +88,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::bridges;
 use crate::cpu::curcpu;
-use crate::sys::softintr::{NSOFTINTR, SOFTINTR_CLOCK, SOFTINTR_NET, SOFTINTR_TTY};
+use sysdefs::softintr::{NSOFTINTR, SOFTINTR_CLOCK, SOFTINTR_NET, SOFTINTR_TTY};
 
 /// `IPL_NONE`: no interrupt is blocked (0 on amd64 and arm64).
 pub const IPL_NONE: i32 = 0;

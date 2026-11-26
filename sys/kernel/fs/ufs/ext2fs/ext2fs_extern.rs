@@ -83,7 +83,7 @@ pub fn is_ext2_vnode<G: ProcGlue>(vp: &Vnode<G>) -> bool {
 mod tests {
     use std::assert;
 
-    use hal::sys::mount::MNT_RDONLY;
+    use sysdefs::mount::MNT_RDONLY;
 
     use super::super::testext2fs::{attach, mount, newfs, root};
     use super::*;

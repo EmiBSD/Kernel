@@ -100,9 +100,9 @@ use core::ptr;
 use hal::ds::owned::{OwnedList, SecondaryRef};
 use hal::mem::pool::PR_WAITOK;
 use hal::sync::sleep::{INFSLP, PRIBIO};
-use hal::sys::errno::Errno;
-use hal::sys::mman::{PROT_READ, PROT_WRITE};
-use hal::sys::types::{Daddr, Dev, Off};
+use sysdefs::errno::Errno;
+use sysdefs::mman::{PROT_READ, PROT_WRITE};
+use sysdefs::types::{Daddr, Dev, Off};
 
 use super::bio::{CACHE, DEV_BSHIFT, brelvp_buf};
 use super::buf::{
@@ -334,8 +334,8 @@ mod tests {
     use std::vec::Vec;
 
     use hal::cpu::intr::IPL_BIO;
-    use hal::sys::mman::{MADV_NORMAL, MAP_INHERIT_COPY};
-    use hal::sys::param::PAGE_SIZE;
+    use sysdefs::mman::{MADV_NORMAL, MAP_INHERIT_COPY};
+    use sysdefs::param::PAGE_SIZE;
 
     use super::*;
     use crate::file::event::tests::Kg;

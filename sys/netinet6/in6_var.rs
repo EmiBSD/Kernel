@@ -78,12 +78,12 @@
 
 /* <CODE> */
 //! IPv6 interface addresses, interface statistics, the address `ioctl` requests and the
-//! multicast records: `<netinet6/in6_var.h>`, its userland half (`hal::sys::netinet6_in6_var`)
+//! multicast records: `<netinet6/in6_var.h>`, its userland half (`sysdefs::netinet6_in6_var`)
 //! and the kernel's records (`kernel::netinet6::in6_var`) re-exported whole (N6.5a; the
 //! memberships' `struct in6_multi_mship` is the kernel's `In6Memberships` array since N6.5c).
 //!
 //! Upstream: sys/netinet6/in6_var.h @ 3ce1f3f79392
 
-pub use hal::sys::netinet6_in6_var::*;
 pub use kernel::netinet6::in6_var::*;
+pub use sysdefs::netinet6_in6_var::*;
 /* </CODE> */

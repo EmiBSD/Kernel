@@ -84,8 +84,8 @@
 //!   copy-in that follows is the C's.
 
 use hal::mem::pool::{PR_WAITOK, PoolBox};
-use hal::sys::errno::Errno;
-use hal::sys::syslimits::PATH_MAX;
+use sysdefs::errno::Errno;
+use sysdefs::syslimits::PATH_MAX;
 
 use super::vnode::Vnode;
 use super::vops::Cred;
@@ -94,7 +94,7 @@ use crate::file::FileGlue;
 use crate::file::uio::UioSeg;
 use crate::proc::{ProcGlue, Thread};
 
-pub use hal::sys::fcntl::AT_FDCWD;
+pub use sysdefs::fcntl::AT_FDCWD;
 
 /// `MAXPATHLEN` (`<sys/param.h>`): the longest pathname, its NUL included (`PATH_MAX`).
 pub const MAXPATHLEN: usize = PATH_MAX;

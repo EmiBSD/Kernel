@@ -196,13 +196,12 @@
 //!   the glue's `pgrp_destroy` is gone. The ttys' tables are `ProcTables::tty`, the ptys'
 //!   `ProcTables::pty`.
 
+pub mod acct;
 pub mod cred;
 pub mod exit;
 pub mod fork;
 pub mod prot;
 pub mod resource;
-pub use hal::sys;
-pub mod acct;
 pub mod sysarch;
 pub mod thread;
 
@@ -228,8 +227,8 @@ use hal::sync::refcnt::Refcnt;
 use hal::sync::rwlock::{Guarded, RawRwlock, Witness};
 use hal::sync::seqlock::StrSlot;
 use hal::sync::slot::ReadMostly;
-use hal::sys::errno::Errno;
-use hal::sys::types::{Pid, Uid};
+use sysdefs::errno::Errno;
+use sysdefs::types::{Pid, Uid};
 
 use crate::assert::kpanic;
 use crate::file::FileGlue;
@@ -896,9 +895,9 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     /// error the system call fails with (`kern_pledge`'s, N4.7).
     fn pledge_fail(
         p: &Thread<Self>,
-        error: hal::sys::errno::Errno,
+        error: sysdefs::errno::Errno,
         code: u64,
-    ) -> hal::sys::errno::Errno;
+    ) -> sysdefs::errno::Errno;
     /// `pledge_sysctl(p, namelen, name, new)` (`kern_pledge.c`, N8): whether a pledged `p`
     /// may read (or, `new` not NULL, write) the variable `mib` names, `sys_sysctl`'s check
     /// before any node is asked. Required: a glue cannot drop pledge by forgetting it.
@@ -984,7 +983,7 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     /// `sess->s_ttyp->t_dev` (accounting's `ac_tty`), `None` without a terminal: the
     /// session's own `s_ttyp` since N4.7b (`kernel::tty::session_tty`); a test glue may
     /// stand in for a terminal it does not make.
-    fn session_ttydev(sess: &Session<Self>) -> Option<hal::sys::types::Dev> {
+    fn session_ttydev(sess: &Session<Self>) -> Option<sysdefs::types::Dev> {
         crate::tty::session_tty(sess).map(|tp| tp.t_dev.get())
     }
     /// `pmap_activate(p)` of the machine (`cpu_fork`'s, for the child).
@@ -1106,8 +1105,8 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     /// is `panic(9)`, as `pledge_namei`'s: a glue cannot drop pledge by forgetting it.
     fn pledge_chown(
         _p: &Thread<Self>,
-        _uid: hal::sys::types::Uid,
-        _gid: hal::sys::types::Gid,
+        _uid: sysdefs::types::Uid,
+        _gid: sysdefs::types::Gid,
     ) -> Result<(), Errno> {
         kpanic(format_args!("pledge_chown: the glue has no pledge hooks"))
     }
@@ -1206,7 +1205,7 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SessionTty {
     /// `t_dev`.
-    pub dev: hal::sys::types::Dev,
+    pub dev: sysdefs::types::Dev,
     /// `t_pgrp->pg_id`, `None` without a foreground group.
     pub pgid: Option<Pid>,
     /// `t_session`'s address (`PTRTOINT64`, root's `kinfo_proc.p_tsess`).
@@ -2685,7 +2684,7 @@ impl<G: ProcGlue> Thread<G> {
 
     /// `lim_read_enter`'s refresh: the thread's copy follows its process's limits; the
     /// limit `which`'s `rlim_cur` (`lim_cur`).
-    pub fn lim_cur(&self, which: usize) -> hal::sys::types::Rlim {
+    pub fn lim_cur(&self, which: usize) -> sysdefs::types::Rlim {
         let pr = &self.p_p;
         if !self.p_limit.is_from(pr.limit_word()) {
             let g = pr.ps_mtx.lock();
@@ -2753,7 +2752,7 @@ pub fn thread_alloc<G: ProcGlue>(pr: &ProcessRef<G>, g: G::ThreadG) -> PoolBox<T
 }
 
 /// `suser(p)`: `Ok` for a thread with root's credentials, `EPERM` otherwise.
-pub fn suser<G: ProcGlue>(p: &Thread<G>) -> Result<(), hal::sys::errno::Errno> {
+pub fn suser<G: ProcGlue>(p: &Thread<G>) -> Result<(), sysdefs::errno::Errno> {
     crate::proc::cred::suser_ucred(p.ucred())
 }
 
@@ -3157,43 +3156,43 @@ mod tests {
         }
         fn pledge_fail(
             _p: &Thread<Self>,
-            error: hal::sys::errno::Errno,
+            error: sysdefs::errno::Errno,
             _code: u64,
-        ) -> hal::sys::errno::Errno {
+        ) -> sysdefs::errno::Errno {
             error
         }
         fn pledge_syscall(
             _p: &Thread<Self>,
             _code: i32,
-        ) -> Result<(), (hal::sys::errno::Errno, u64)> {
+        ) -> Result<(), (sysdefs::errno::Errno, u64)> {
             Ok(())
         }
         fn pledge_sysctl(
             _p: &Thread<Self>,
             _mib: &[i32],
             _new: usize,
-        ) -> Result<(), hal::sys::errno::Errno> {
+        ) -> Result<(), sysdefs::errno::Errno> {
             Ok(())
         }
-        fn pledge_adjtime(_p: &Thread<Self>, _delta: usize) -> Result<(), hal::sys::errno::Errno> {
+        fn pledge_adjtime(_p: &Thread<Self>, _delta: usize) -> Result<(), sysdefs::errno::Errno> {
             Ok(())
         }
         fn pledge_recvfd(
             _p: &Thread<Self>,
             _fp: &crate::file::File<Self::FileGlue>,
-        ) -> Result<(), hal::sys::errno::Errno> {
+        ) -> Result<(), sysdefs::errno::Errno> {
             Ok(())
         }
         fn pledge_sendfd(
             _p: &Thread<Self>,
             _fp: &crate::file::File<Self::FileGlue>,
-        ) -> Result<(), hal::sys::errno::Errno> {
+        ) -> Result<(), sysdefs::errno::Errno> {
             Ok(())
         }
         fn pledge_protexec(
             _p: &Thread<Self>,
             _prot: crate::vm::types::VmProt,
-        ) -> Result<(), hal::sys::errno::Errno> {
+        ) -> Result<(), sysdefs::errno::Errno> {
             Ok(())
         }
         /// The test glue keeps no interval timers: nothing is set, the old value stays zero.
@@ -3437,7 +3436,7 @@ mod tests {
         assert_eq!(g2.pg_jobc.get(), 0);
         assert_eq!(
             b.ps_siglist.load(Ordering::Relaxed),
-            hal::sys::signal::sigmask(SIGHUP) | hal::sys::signal::sigmask(SIGCONT)
+            sysdefs::signal::sigmask(SIGHUP) | sysdefs::signal::sigmask(SIGCONT)
         );
         let seq = {
             let g = b.ps_mtx.lock();

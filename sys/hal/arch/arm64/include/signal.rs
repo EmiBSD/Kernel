@@ -59,7 +59,7 @@
 //! ## Redesign
 //! - N4.8b: from `bsd`'s header (which re-exports these) into `hal`, beside `struct sigframe`
 //!   (`frame.rs`): `sendsig` and `sigreturn` are `hal`'s. LZ's `unsafe impl AbiPod` (`bsd`'s
-//!   copy trait) is `hal::abi_pod!`, which checks at compile time that the fields tile the
+//!   copy trait) is `sysdefs::abi_pod!`, which checks at compile time that the fields tile the
 //!   structure with no padding.
 
 /// `sig_atomic_t`.
@@ -92,7 +92,7 @@ pub struct Sigcontext {
     pub sc_cookie: i64,
 }
 
-crate::abi_pod!(Sigcontext {
+sysdefs::abi_pod!(Sigcontext {
     __sc_unused: i32,
     sc_mask: i32,
     sc_sp: u64,

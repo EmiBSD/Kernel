@@ -117,13 +117,13 @@
 use core::marker::PhantomData;
 
 use hal::mem::pool::PoolArc;
-use hal::sys::errno::Errno;
-use hal::sys::fcntl::FNONBLOCK;
-use hal::sys::filio::{FIOASYNC, FIOGETOWN, FIONREAD, FIOSETOWN};
-use hal::sys::ioccom::iocgroup;
-use hal::sys::socket::{MSG_DONTWAIT, SO_ACCEPTCONN};
-use hal::sys::sockio::{SIOCATMARK, SIOCGPGRP, SIOCSPGRP};
-use hal::sys::stat::{S_IFSOCK, S_IRGRP, S_IROTH, S_IRUSR, S_IWGRP, S_IWOTH, S_IWUSR, Stat};
+use sysdefs::errno::Errno;
+use sysdefs::fcntl::FNONBLOCK;
+use sysdefs::filio::{FIOASYNC, FIOGETOWN, FIONREAD, FIOSETOWN};
+use sysdefs::ioccom::iocgroup;
+use sysdefs::socket::{MSG_DONTWAIT, SO_ACCEPTCONN};
+use sysdefs::sockio::{SIOCATMARK, SIOCGPGRP, SIOCSPGRP};
+use sysdefs::stat::{S_IFSOCK, S_IRGRP, S_IROTH, S_IRUSR, S_IWGRP, S_IWOTH, S_IWUSR, Stat};
 
 use crate::assert::kpanic;
 use crate::file::event::{
@@ -536,8 +536,8 @@ mod tests {
     use core::sync::atomic::Ordering;
     use std::{assert, assert_eq};
 
-    use hal::sys::socket::SHUT_WR;
     use hal::user::UserPtr;
+    use sysdefs::socket::SHUT_WR;
 
     use super::*;
     use crate::file::descrip::{fd_getfile, sys_close};
@@ -612,7 +612,7 @@ mod tests {
     #[test]
     fn read_write_ioctl_and_stat_go_through_the_file() {
         let (_g, p) = setup();
-        let ((a, fa), (b, fb)) = pair(p, hal::sys::socket::SOCK_STREAM);
+        let ((a, fa), (b, fb)) = pair(p, sysdefs::socket::SOCK_STREAM);
         let at = USER_BASE + 0x2_0000;
 
         UserPtr::<u8>::new(at)
@@ -643,11 +643,11 @@ mod tests {
         assert_eq!(ioctl(p, fb, FIOSETOWN, 0), Ok(0));
         // The routing group, and a protocol request the UNIX domain does not have.
         assert_eq!(
-            ioctl(p, fb, hal::sys::ioccom::_iow::<i32>(b'r', 1), 0),
+            ioctl(p, fb, sysdefs::ioccom::_iow::<i32>(b'r', 1), 0),
             Err(Errno::EOPNOTSUPP)
         );
         assert_eq!(
-            ioctl(p, fb, hal::sys::ioccom::_iow::<i32>(b'z', 1), 0),
+            ioctl(p, fb, sysdefs::ioccom::_iow::<i32>(b'z', 1), 0),
             Err(Errno::EOPNOTSUPP)
         );
 
@@ -674,7 +674,7 @@ mod tests {
     fn kevent_on_a_socket_pair() {
         let (_g, p) = setup();
         let _ = kqueue_init::<G>();
-        let ((a, fa), (b, fb)) = pair(p, hal::sys::socket::SOCK_STREAM);
+        let ((a, fa), (b, fb)) = pair(p, sysdefs::socket::SOCK_STREAM);
         let kfd = sys_kqueue(p).expect("kqueue");
         let kq = {
             let fp = fp_of(p, kfd);
@@ -747,7 +747,7 @@ mod tests {
     #[test]
     fn the_read_write_and_except_filters() {
         let (_g, p) = setup();
-        let ((a, fa), (b, fb)) = pair(p, hal::sys::socket::SOCK_STREAM);
+        let ((a, fa), (b, fb)) = pair(p, sysdefs::socket::SOCK_STREAM);
 
         // NOTE_LOWAT: readable from the user's mark on, not the buffer's.
         let rd = knote_on(&a, EVFILT_READ, 0, NOTE_LOWAT);

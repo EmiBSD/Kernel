@@ -80,8 +80,8 @@
 use core::sync::atomic::Ordering;
 
 use hal::sync::once::OnceStatic;
-use hal::sys::types::{Vaddr, Vsize};
 use hal::vm::uvmexp::UVMEXP;
+use sysdefs::types::{Vaddr, Vsize};
 
 use super::addr::uaddr_bestfit_create;
 use super::amap::amap_init;

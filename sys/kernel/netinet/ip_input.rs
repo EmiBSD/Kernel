@@ -150,10 +150,10 @@ use hal::mem::pool::{BoxPool, PR_NOWAIT, PoolBox};
 use hal::sync::mutex::Mutexed;
 use hal::sync::netlock::{NETLOCK, NetHeld};
 use hal::sync::once::OnceStatic;
-use hal::sys::errno::Errno;
-use hal::sys::limits::INT_MAX;
-use hal::sys::net_if::{IFF_LOOPBACK, IFT_ENC};
-use hal::sys::netinet_in::{
+use sysdefs::errno::Errno;
+use sysdefs::limits::INT_MAX;
+use sysdefs::net_if::{IFF_LOOPBACK, IFT_ENC};
+use sysdefs::netinet_in::{
     IN_CLASSA_NSHIFT, IN_LOOPBACKNET, INADDR_ANY, INADDR_BROADCAST, IP_RECVDSTADDR, IP_RECVIF,
     IP_RECVRTABLE, IP_RECVTTL, IPCTL_ARPDOWN, IPCTL_ARPQUEUE, IPCTL_ARPQUEUED, IPCTL_ARPTIMEOUT,
     IPCTL_DEFTTL, IPCTL_DIRECTEDBCAST, IPCTL_ENCDEBUG, IPCTL_FORWARDING, IPCTL_IFQUEUE,
@@ -168,21 +168,21 @@ use hal::sys::netinet_in::{
     IPCTL_SOURCEROUTE, IPCTL_STATS, IPPROTO_DONE, IPPROTO_IP, IPPROTO_IPV4, IPPROTO_IPV6, InAddr,
     SockaddrIn, in_classfulbroadcast, in_local_group, in_multicast,
 };
-use hal::sys::netinet_ip::{
+use sysdefs::netinet_ip::{
     IP_MAXPACKET, IP_MF, IP_OFFMASK, IPFRAGTTL, IPOPT_EOL, IPOPT_LSRR, IPOPT_MINOFF, IPOPT_NOP,
     IPOPT_OFFSET, IPOPT_OLEN, IPOPT_OPTVAL, IPOPT_RR, IPOPT_SSRR, IPOPT_TS, IPOPT_TS_PRESPEC,
     IPOPT_TS_TSANDADDR, IPOPT_TS_TSONLY, IPQ_MAXLEN, IPTOS_ECN_CE, IPTOS_ECN_MASK,
     IPTOS_ECN_NOTECT, IPTTLDEC, IPVERSION, Ip, IpTimestamp,
 };
-use hal::sys::netinet_ip_icmp::{
+use sysdefs::netinet_ip_icmp::{
     ICMP_PARAMPROB, ICMP_REDIRECT, ICMP_REDIRECT_HOST, ICMP_TIMXCEED, ICMP_TIMXCEED_INTRANS,
     ICMP_UNREACH, ICMP_UNREACH_HOST, ICMP_UNREACH_NEEDFRAG, ICMP_UNREACH_SRCFAIL,
 };
-use hal::sys::netinet_ip_var::{Ipstat, MAX_IPOPTLEN};
-use hal::sys::socket::{
+use sysdefs::netinet_ip_var::{Ipstat, MAX_IPOPTLEN};
+use sysdefs::socket::{
     AF_INET, AF_INET6, AF_LINK, AF_UNSPEC, SCM_TIMESTAMP, SO_TIMESTAMP, SOL_SOCKET,
 };
-use hal::sys::sysctl::SysctlBoundedArgs;
+use sysdefs::sysctl::SysctlBoundedArgs;
 
 use crate::assert::{kassert, kpanic};
 use crate::net::if_::{
@@ -201,7 +201,7 @@ use crate::net::mbuf2::{m_tag_delete, m_tag_find, m_tag_get, m_tag_prepend};
 use crate::net::netisr::NETISR_IP;
 use crate::net::pf_hooks::{PF_IN, PF_PASS, pf};
 use crate::net::proto::{PR_MPINPUT, PRC_NCMDS};
-use hal::sys::net_route::{RTF_BROADCAST, RTF_DYNAMIC, RTF_GATEWAY, RTF_LOCAL, RTF_MODIFIED};
+use sysdefs::net_route::{RTF_BROADCAST, RTF_DYNAMIC, RTF_GATEWAY, RTF_LOCAL, RTF_MODIFIED};
 
 use crate::base::sysctl::{
     SYSCTL_LOCK, SysctlReq, bounded_arr, int_bounded, rdint, rdstruct, securelevel_int,
@@ -237,7 +237,7 @@ use crate::netinet6::in6_proto::inet6_protocol;
 use crate::netinet6::ip6_input::ip6_ours_enqueue;
 use crate::netinet6::ip6_var::{IP6_HDRNESTLIMIT, ip6stat_dec, ip6stat_inc};
 use crate::proc::ProcGlue;
-use hal::sys::netinet6_ip6_var::Ip6statCounters;
+use sysdefs::netinet6_ip6_var::Ip6statCounters;
 
 /// `sizeof(struct ip)`.
 const IP_HDR_LEN: usize = size_of::<Ip>();
@@ -264,7 +264,7 @@ pub struct IpSrcrt {
     pub isr_routes: [InAddr; MAX_IPOPTLEN / size_of::<InAddr>()],
 }
 
-hal::abi_pod!(IpSrcrt {
+sysdefs::abi_pod!(IpSrcrt {
     isr_nhops: i32,
     isr_dst: InAddr,
     isr_nop: u8,
@@ -2228,7 +2228,7 @@ pub fn ip_savecontrol<G: ProcGlue>(inp: &Inpcb<G>, ip: &Ip, m: &Mbuf) -> Option<
             let s = i.sadl();
             s.as_ref().map(|sdl| {
                 let b = hal::user::bytes_of(core::slice::from_ref(&**sdl));
-                let mut out = [0u8; size_of::<hal::sys::net_if::SockaddrDl>()];
+                let mut out = [0u8; size_of::<sysdefs::net_if::SockaddrDl>()];
                 let n = usize::from(sdl.sdl_len).min(out.len());
                 out[..n].copy_from_slice(&b[..n]);
                 (out, n)
@@ -2237,12 +2237,12 @@ pub fn ip_savecontrol<G: ProcGlue>(inp: &Inpcb<G>, ip: &Ip, m: &Mbuf) -> Option<
         parts[2] = if let Some((out, n)) = sadl {
             sbcreatecontrol(&out[..n], IP_RECVIF, IPPROTO_IP)
         } else {
-            let mut sdl = hal::sys::net_if::SockaddrDl {
+            let mut sdl = sysdefs::net_if::SockaddrDl {
                 sdl_family: AF_LINK,
                 sdl_index: ifp.map_or(0, |ifp| ifp.if_index.get() as u16),
                 ..Default::default()
             };
-            sdl.sdl_len = core::mem::offset_of!(hal::sys::net_if::SockaddrDl, sdl_data) as u8;
+            sdl.sdl_len = core::mem::offset_of!(sysdefs::net_if::SockaddrDl, sdl_data) as u8;
             let b = hal::user::bytes_of(core::slice::from_ref(&sdl));
             sbcreatecontrol(&b[..usize::from(sdl.sdl_len)], IP_RECVIF, IPPROTO_IP)
         };
@@ -2375,8 +2375,8 @@ pub(crate) mod tests {
     use std::vec::Vec;
 
     use hal::sync::netlock::NETLOCK;
-    use hal::sys::netinet_in::{IPPROTO_ICMP, IPPROTO_RAW, IPPROTO_TCP, IPPROTO_UDP};
-    use hal::sys::socket::{SOCK_DGRAM, SOCK_RAW, SOCK_STREAM};
+    use sysdefs::netinet_in::{IPPROTO_ICMP, IPPROTO_RAW, IPPROTO_TCP, IPPROTO_UDP};
+    use sysdefs::socket::{SOCK_DGRAM, SOCK_RAW, SOCK_STREAM};
 
     use super::*;
     use crate::fs::testfs::TestGlue;

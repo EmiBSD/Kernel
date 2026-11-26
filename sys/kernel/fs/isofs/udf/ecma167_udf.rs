@@ -69,7 +69,7 @@
 //!
 //! Every structure is `__packed` in the C and is read in place from a buffer, its integers
 //! little-endian. Here each is `#[repr(C, packed)]` with the C's members (alignment 1, the
-//! C's offsets) and a `hal::abi_pod!` image (no padding, any bit pattern valid), viewed out
+//! C's offsets) and a `sysdefs::abi_pod!` image (no padding, any bit pattern valid), viewed out
 //! of a buffer by `fs::pod`'s `pod_view!` (`at(buf, off)`: a copy, `None` when the buffer
 //! ends first); an integer member is read by value (`{ x.member }`, then `letoh*`).
 //!
@@ -98,7 +98,7 @@
 //! ## Redesign
 //! - LZ's `unsafe trait Packed` (`at(buf, off) -> Option<&Self>`, an `unsafe` cast of the
 //!   buffer's bytes to a reference) and its `packed!` macro (an `unsafe impl` per structure)
-//!   -> each structure a `hal::abi_pod!` image given `SIZE`, `at` and `put` by `fs::pod`'s
+//!   -> each structure a `sysdefs::abi_pod!` image given `SIZE`, `at` and `put` by `fs::pod`'s
 //!   `pod_view!` (D-N5.8-4; docs/IDIOMS.md, the row of the on-disk structures). The
 //!   structures stay `#[repr(C, packed)]` with the C's integer members, as the C declares
 //!   them (D-u1-1: `abi_pod!` proves the fields tile the structure, `pod_view!` that its
@@ -114,8 +114,9 @@
 //! - `DescTag::as_bytes` returns the tag's 16 bytes by value (`hal::user::pod_to_bytes`),
 //!   where LZ lent them through a cast. 0 `unsafe` (LZ: 8).
 
-use hal::sys::endian::letoh32;
-use hal::user::{AbiPod, pod_to_bytes, zeroed};
+use hal::user::{pod_to_bytes, zeroed};
+use sysdefs::endian::letoh32;
+use sysdefs::pod::AbiPod;
 
 use crate::fs::pod::pod_view;
 
@@ -132,7 +133,7 @@ pub struct VrsDesc {
     /// `data`.
     pub data: [u8; 2041],
 }
-hal::abi_pod!(VrsDesc {
+sysdefs::abi_pod!(VrsDesc {
     struct_type: u8,
     identifier: [u8; 5],
     version: u8,
@@ -244,7 +245,7 @@ pub struct DescTag {
     /// `tag_loc`.
     pub tag_loc: u32,
 }
-hal::abi_pod!(DescTag {
+sysdefs::abi_pod!(DescTag {
     id: u16,
     descriptor_ver: u16,
     cksum: u8,
@@ -279,7 +280,7 @@ pub struct LbAddr {
     /// `part_num`.
     pub part_num: u16,
 }
-hal::abi_pod!(LbAddr {
+sysdefs::abi_pod!(LbAddr {
     lb_num: u32,
     part_num: u16
 });
@@ -294,7 +295,7 @@ pub struct ExtentAd {
     /// `loc`.
     pub loc: u32,
 }
-hal::abi_pod!(ExtentAd { len: u32, loc: u32 });
+sysdefs::abi_pod!(ExtentAd { len: u32, loc: u32 });
 pod_view!(ExtentAd);
 
 /// `struct short_ad`: short allocation descriptor \[4/14.14.1\].
@@ -306,7 +307,7 @@ pub struct ShortAd {
     /// `lb_num`.
     pub lb_num: u32,
 }
-hal::abi_pod!(ShortAd {
+sysdefs::abi_pod!(ShortAd {
     len: u32,
     lb_num: u32
 });
@@ -322,7 +323,7 @@ pub struct UdfAdimpUse {
     /// `unique_id`.
     pub unique_id: u32,
 }
-hal::abi_pod!(UdfAdimpUse {
+sysdefs::abi_pod!(UdfAdimpUse {
     flags: u16,
     unique_id: u32
 });
@@ -342,7 +343,7 @@ pub struct LongAd {
     /// `impl`.
     pub impl_: [u8; 6],
 }
-hal::abi_pod!(LongAd {
+sysdefs::abi_pod!(LongAd {
     len: u32,
     loc: LbAddr,
     impl_: [u8; 6]
@@ -372,7 +373,7 @@ pub struct ExtAd {
     /// `reserved`.
     pub reserved: [u8; 2],
 }
-hal::abi_pod!(ExtAd {
+sysdefs::abi_pod!(ExtAd {
     ex_len: u32,
     rec_len: u32,
     inf_len: u32,
@@ -416,7 +417,7 @@ pub struct Charspec {
     /// `inf`.
     pub inf: [u8; 63],
 }
-hal::abi_pod!(Charspec {
+sysdefs::abi_pod!(Charspec {
     type_: u8,
     inf: [u8; 63]
 });
@@ -435,7 +436,7 @@ pub struct Pathcomp {
     /// `ident`.
     pub ident: [u8; 256],
 }
-hal::abi_pod!(Pathcomp {
+sysdefs::abi_pod!(Pathcomp {
     type_: u8,
     l_ci: u8,
     comp_filever: u16,
@@ -484,7 +485,7 @@ pub struct Timestamp {
     /// `usec`.
     pub usec: u8,
 }
-hal::abi_pod!(Timestamp {
+sysdefs::abi_pod!(Timestamp {
     type_tz: u16,
     year: u16,
     month: u8,
@@ -515,7 +516,7 @@ pub struct Regid {
     /// `id_suffix`.
     pub id_suffix: [u8; 8],
 }
-hal::abi_pod!(Regid {
+sysdefs::abi_pod!(Regid {
     flags: u8,
     id: [u8; UDF_REGID_ID_SIZE],
     id_suffix: [u8; 8]
@@ -543,7 +544,7 @@ pub struct IcbTag {
     /// `flags`: the `UDF_ICB_TAG_FLAGS_*`.
     pub flags: u16,
 }
-hal::abi_pod!(IcbTag {
+sysdefs::abi_pod!(IcbTag {
     prev_num_dirs: u32,
     strat_type: u16,
     strat_param: [u8; 2],
@@ -630,7 +631,7 @@ pub struct AnchorVdp {
     /// `reserve_vds_ex`: copy of main volume descriptor set; 16 sectors min.
     pub reserve_vds_ex: ExtentAd,
 }
-hal::abi_pod!(AnchorVdp {
+sysdefs::abi_pod!(AnchorVdp {
     tag: DescTag,
     main_vds_ex: ExtentAd,
     reserve_vds_ex: ExtentAd
@@ -648,7 +649,7 @@ pub struct VolDescPtr {
     /// `next_vds_ex`: points to the next block for volume descriptor space.
     pub next_vds_ex: ExtentAd,
 }
-hal::abi_pod!(VolDescPtr {
+sysdefs::abi_pod!(VolDescPtr {
     tag: DescTag,
     vds_number: u32,
     next_vds_ex: ExtentAd
@@ -704,7 +705,7 @@ pub struct PriVolDesc {
     /// `reserved`.
     pub reserved: [u8; 22],
 }
-hal::abi_pod!(PriVolDesc {
+sysdefs::abi_pod!(PriVolDesc {
     tag: DescTag,
     seq_num: u32,
     pvd_num: u32,
@@ -750,7 +751,7 @@ pub struct UdfLvInfo {
     /// `impl_use`.
     pub impl_use: [u8; 128],
 }
-hal::abi_pod!(UdfLvInfo {
+sysdefs::abi_pod!(UdfLvInfo {
     lvi_charset: Charspec,
     logvol_id: [u8; 128],
     lvinfo1: [u8; 36],
@@ -774,7 +775,7 @@ pub struct ImpvolDesc {
     /// `_impl_use`.
     pub _impl_use: [u8; 460],
 }
-hal::abi_pod!(ImpvolDesc {
+sysdefs::abi_pod!(ImpvolDesc {
     tag: DescTag,
     seq_num: u32,
     impl_id: Regid,
@@ -813,7 +814,7 @@ pub struct LogvolDesc {
     /// `maps`: the partition maps follow (the module's deviations).
     pub maps: [u8; 0],
 }
-hal::abi_pod!(LogvolDesc {
+sysdefs::abi_pod!(LogvolDesc {
     tag: DescTag,
     seq_num: u32,
     desc_charset: Charspec,
@@ -859,7 +860,7 @@ pub struct PartMap1 {
     /// `part_num`.
     pub part_num: u16,
 }
-hal::abi_pod!(PartMap1 {
+sysdefs::abi_pod!(PartMap1 {
     type_: u8,
     len: u8,
     vol_seq_num: u16,
@@ -886,7 +887,7 @@ pub struct PartMap2 {
     /// `reserved2`.
     pub reserved2: [u8; 24],
 }
-hal::abi_pod!(PartMap2 {
+sysdefs::abi_pod!(PartMap2 {
     type_: u8,
     len: u8,
     reserved: [u8; 2],
@@ -916,7 +917,7 @@ pub struct PartMapVirt {
     /// `reserved1`.
     pub reserved1: [u8; 24],
 }
-hal::abi_pod!(PartMapVirt {
+sysdefs::abi_pod!(PartMapVirt {
     type_: u8,
     len: u8,
     reserved: [u8; 2],
@@ -954,7 +955,7 @@ pub struct PartMapSpare {
     /// `st_loc`: locations of sparing tables (`u32`s follow, the module's deviations).
     pub st_loc: [u32; 0],
 }
-hal::abi_pod!(PartMapSpare {
+sysdefs::abi_pod!(PartMapSpare {
     type_: u8,
     len: u8,
     reserved: [u8; 2],
@@ -1000,7 +1001,7 @@ pub struct PartMapMeta {
     /// `reserved1`.
     pub reserved1: [u8; 5],
 }
-hal::abi_pod!(PartMapMeta {
+sysdefs::abi_pod!(PartMapMeta {
     type_: u8,
     len: u8,
     reserved: [u8; 2],
@@ -1029,7 +1030,7 @@ pub struct SpareMapEntry {
     /// `map`: absolute disc address (!) can be in partition, but doesn't have to be.
     pub map: u32,
 }
-hal::abi_pod!(SpareMapEntry { org: u32, map: u32 });
+sysdefs::abi_pod!(SpareMapEntry { org: u32, map: u32 });
 pod_view!(SpareMapEntry);
 
 /// `struct udf_sparing_table`: Sparing Table \[UDF 2.01/2.2.11\].
@@ -1049,7 +1050,7 @@ pub struct UdfSparingTable {
     /// `entries`: the `SpareMapEntry`s follow (the module's deviations).
     pub entries: [SpareMapEntry; 0],
 }
-hal::abi_pod!(UdfSparingTable {
+sysdefs::abi_pod!(UdfSparingTable {
     tag: DescTag,
     id: Regid,
     rt_l: u16,
@@ -1071,7 +1072,7 @@ pub struct UdfOldvatTail {
     /// `prev_vat`.
     pub prev_vat: u32,
 }
-hal::abi_pod!(UdfOldvatTail {
+sysdefs::abi_pod!(UdfOldvatTail {
     id: Regid,
     prev_vat: u32
 });
@@ -1104,7 +1105,7 @@ pub struct UdfVat {
     /// `data`: impl.use followed by VAT entries (`uint32_t`).
     pub data: [u8; 0],
 }
-hal::abi_pod!(UdfVat {
+sysdefs::abi_pod!(UdfVat {
     header_len: u16,
     impl_use_len: u16,
     logvol_id: [u8; 128],
@@ -1133,7 +1134,7 @@ pub struct SpaceBitmapDesc {
     /// `data`.
     pub data: [u8; 0],
 }
-hal::abi_pod!(SpaceBitmapDesc {
+sysdefs::abi_pod!(SpaceBitmapDesc {
     tag: DescTag,
     num_bits: u32,
     num_bytes: u32,
@@ -1155,7 +1156,7 @@ pub struct SpaceEntryDesc {
     /// `entry`.
     pub entry: [u8; 0],
 }
-hal::abi_pod!(SpaceEntryDesc {
+sysdefs::abi_pod!(SpaceEntryDesc {
     tag: DescTag,
     icbtag: IcbTag,
     l_ad: u32,
@@ -1180,7 +1181,7 @@ pub struct PartHdrDesc {
     /// `reserved`.
     pub reserved: [u8; 88],
 }
-hal::abi_pod!(PartHdrDesc {
+sysdefs::abi_pod!(PartHdrDesc {
     unalloc_space_table: ShortAd,
     unalloc_space_bitmap: ShortAd,
     part_integrity_table: ShortAd,
@@ -1219,7 +1220,7 @@ pub struct PartDesc {
     /// `reserved`.
     pub reserved: [u8; 156],
 }
-hal::abi_pod!(PartDesc {
+sysdefs::abi_pod!(PartDesc {
     tag: DescTag,
     seq_num: u32,
     flags: u16,
@@ -1259,7 +1260,7 @@ pub struct UnallocSpDesc {
     /// `alloc_desc`: the `ExtentAd`s follow (the module's deviations).
     pub alloc_desc: [ExtentAd; 0],
 }
-hal::abi_pod!(UnallocSpDesc {
+sysdefs::abi_pod!(UnallocSpDesc {
     tag: DescTag,
     seq_num: u32,
     alloc_desc_num: u32,
@@ -1274,7 +1275,7 @@ pub struct Logvolhdr {
     /// `next_unique_id` (rest reserved).
     pub next_unique_id: u64,
 }
-hal::abi_pod!(Logvolhdr {
+sysdefs::abi_pod!(Logvolhdr {
     next_unique_id: u64
 });
 pod_view!(Logvolhdr);
@@ -1296,7 +1297,7 @@ pub struct UdfLogvolInfo {
     /// `max_udf_writever`.
     pub max_udf_writever: u16,
 }
-hal::abi_pod!(UdfLogvolInfo {
+sysdefs::abi_pod!(UdfLogvolInfo {
     impl_id: Regid,
     num_files: u32,
     num_directories: u32,
@@ -1327,7 +1328,7 @@ pub struct LogvolIntDesc {
     /// `tables`: freespace table, sizetable, implementation use (the module's deviations).
     pub tables: [u32; 0],
 }
-hal::abi_pod!(LogvolIntDesc {
+sysdefs::abi_pod!(LogvolIntDesc {
     tag: DescTag,
     time: Timestamp,
     integrity_type: u32,
@@ -1390,7 +1391,7 @@ pub struct FilesetDesc {
     /// `reserved`.
     pub reserved: [u8; 32],
 }
-hal::abi_pod!(FilesetDesc {
+sysdefs::abi_pod!(FilesetDesc {
     tag: DescTag,
     time: Timestamp,
     ichg_lvl: u16,
@@ -1432,7 +1433,7 @@ pub struct FileidDesc {
     /// `data`: the implementation use area, then the file identifier.
     pub data: [u8; 0],
 }
-hal::abi_pod!(FileidDesc {
+sysdefs::abi_pod!(FileidDesc {
     tag: DescTag,
     file_version_num: u16,
     file_char: u8,
@@ -1467,7 +1468,7 @@ pub struct ExtattrhdrDesc {
     /// `appl_attr_loc`: ditto.
     pub appl_attr_loc: u32,
 }
-hal::abi_pod!(ExtattrhdrDesc {
+sysdefs::abi_pod!(ExtattrhdrDesc {
     tag: DescTag,
     impl_attr_loc: u32,
     appl_attr_loc: u32
@@ -1492,7 +1493,7 @@ pub struct ExtattrEntry {
     /// `a_l`.
     pub a_l: u32,
 }
-hal::abi_pod!(ExtattrEntry {
+sysdefs::abi_pod!(ExtattrEntry {
     type_: u32,
     subtype: u8,
     reserved: [u8; 3],
@@ -1513,7 +1514,7 @@ pub struct ImplExtattrEntry {
     /// `data`.
     pub data: [u8; 0],
 }
-hal::abi_pod!(ImplExtattrEntry {
+sysdefs::abi_pod!(ImplExtattrEntry {
     hdr: ExtattrEntry,
     iu_l: u32,
     imp_id: Regid,
@@ -1534,7 +1535,7 @@ pub struct ApplExtattrEntry {
     /// `data`.
     pub data: [u8; 0],
 }
-hal::abi_pod!(ApplExtattrEntry {
+sysdefs::abi_pod!(ApplExtattrEntry {
     hdr: ExtattrEntry,
     au_l: u32,
     appl_id: Regid,
@@ -1556,7 +1557,7 @@ pub struct FiletimesExtattrEntry {
     /// `times`: in order of ascending bits (the module's deviations).
     pub times: [Timestamp; 0],
 }
-hal::abi_pod!(FiletimesExtattrEntry {
+sysdefs::abi_pod!(FiletimesExtattrEntry {
     hdr: ExtattrEntry,
     d_l: u32,
     existence: u32,
@@ -1595,7 +1596,7 @@ pub struct DeviceExtattrEntry {
     /// `data`: UDF: if nonzero length, contain developer ID regid.
     pub data: [u8; 0],
 }
-hal::abi_pod!(DeviceExtattrEntry {
+sysdefs::abi_pod!(DeviceExtattrEntry {
     hdr: ExtattrEntry,
     iu_l: u32,
     major: u32,
@@ -1621,7 +1622,7 @@ pub struct VatlvextExtattrEntry {
     /// `logvol_id`: replaces logvol name.
     pub logvol_id: [u8; 128],
 }
-hal::abi_pod!(VatlvextExtattrEntry {
+sysdefs::abi_pod!(VatlvextExtattrEntry {
     unique_id_chk: u64,
     num_files: u32,
     num_directories: u32,
@@ -1676,7 +1677,7 @@ pub struct FileEntry {
     /// `data`: the extended attributes, then the allocation descriptors.
     pub data: [u8; 0],
 }
-hal::abi_pod!(FileEntry {
+sysdefs::abi_pod!(FileEntry {
     tag: DescTag,
     icbtag: IcbTag,
     uid: u32,
@@ -1765,7 +1766,7 @@ pub struct ExtfileEntry {
     /// `data`: the extended attributes, then the allocation descriptors.
     pub data: [u8; 0],
 }
-hal::abi_pod!(ExtfileEntry {
+sysdefs::abi_pod!(ExtfileEntry {
     tag: DescTag,
     icbtag: IcbTag,
     uid: u32,
@@ -1808,7 +1809,7 @@ pub struct IndirectEntry {
     /// `indirect_icb`.
     pub indirect_icb: LongAd,
 }
-hal::abi_pod!(IndirectEntry {
+sysdefs::abi_pod!(IndirectEntry {
     tag: DescTag,
     icbtag: IcbTag,
     indirect_icb: LongAd
@@ -1828,7 +1829,7 @@ pub struct AllocExtEntry {
     /// `data`.
     pub data: [u8; 0],
 }
-hal::abi_pod!(AllocExtEntry {
+sysdefs::abi_pod!(AllocExtEntry {
     tag: DescTag,
     prev_entry: u32,
     l_ad: u32,

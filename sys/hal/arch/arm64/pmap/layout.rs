@@ -101,8 +101,8 @@ use super::super::include::pte::{
     attr_sh,
 };
 use super::super::include::vmparam::{VM_MAX_KERNEL_ADDRESS, VM_MIN_KERNEL_ADDRESS};
-use crate::sys::mman::{PROT_EXEC, PROT_READ, PROT_WRITE};
 use crate::vm::pmap::{KernelImage, PG_PMAP2, PMAP_MD0, PMAP_MD1, PMAP_MD2, PMAP_MD3, VmProt};
+use sysdefs::mman::{PROT_EXEC, PROT_READ, PROT_WRITE};
 
 // V->P mapping data
 
@@ -452,7 +452,7 @@ const _: () = {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sys::mman::PROT_NONE;
+    use sysdefs::mman::PROT_NONE;
 
     #[test]
     fn the_indices_split_a_va_by_level() {
@@ -597,7 +597,7 @@ mod tests {
     /// An image as both boot paths lay it out (`kernel.ld`): the text from the gigabyte's
     /// start, the read-only data and the data on 64 KiB boundaries.
     fn image() -> KernelImage {
-        use crate::sys::types::Vaddr;
+        use sysdefs::types::Vaddr;
         KernelImage {
             start: Vaddr::new(0xffff_ffff_8000_0000),
             text_end: Vaddr::new(0xffff_ffff_80a1_2345),
@@ -642,7 +642,7 @@ mod tests {
 
     #[test]
     fn the_image_layout_is_checked() {
-        use crate::sys::types::Vaddr;
+        use sysdefs::types::Vaddr;
         let ok = image();
         let cases: [(&str, fn(&mut KernelImage)); 8] = [
             ("start off a page", |i| {

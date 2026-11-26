@@ -73,9 +73,9 @@
 
 use core::ptr;
 
-use hal::sys::errno::Errno;
-use hal::sys::mount::{MNT_DOOMED, MNT_FORCE, VB_WAIT, VB_WRITE};
-use hal::sys::types::Daddr;
+use sysdefs::errno::Errno;
+use sysdefs::mount::{MNT_DOOMED, MNT_FORCE, VB_WAIT, VB_WRITE};
+use sysdefs::types::Daddr;
 
 use super::bio;
 use super::mount::vfs_busy;

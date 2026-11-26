@@ -71,11 +71,11 @@
 
 use alloc::vec::Vec;
 
-use crate::sys::errno::Errno;
 use libz::{
     Flush, MAX_WBITS, Strategy, Z_DEFAULT_COMPRESSION, ZStatus, ZStream, deflate, deflateEnd,
     deflateInit2, inflate, inflateEnd, inflateInit2,
 };
+use sysdefs::errno::Errno;
 
 /// `Z_METHOD`: the deflate compression method.
 pub const Z_METHOD: i32 = 8;

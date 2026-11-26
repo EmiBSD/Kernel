@@ -90,8 +90,8 @@ use core::sync::atomic::{AtomicI32, Ordering};
 use hal::cpu::intr::{IPL_BIO, splraise};
 use hal::mem::malloc::{M_WAITOK, MArc};
 use hal::sync::mutex::Mutexed;
-use hal::sys::errno::Errno;
-use hal::sys::types::Pid;
+use sysdefs::errno::Errno;
+use sysdefs::types::Pid;
 
 use crate::assert::kpanic;
 use crate::fs::bio::biodone;

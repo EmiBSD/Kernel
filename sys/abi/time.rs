@@ -27,7 +27,7 @@
 use crate::scarg::{int, ptr};
 use hal::syscall::{Register, Rval, SysArgs, SysResult};
 
-use hal::sys::syscall::{
+use sysdefs::syscall::{
     SYS_adjfreq, SYS_adjtime, SYS_clock_getres, SYS_clock_gettime, SYS_clock_settime,
     SYS_getitimer, SYS_gettimeofday, SYS_nanosleep, SYS_setitimer, SYS_settimeofday,
 };

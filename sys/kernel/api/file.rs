@@ -31,7 +31,7 @@
 use hal::syscall::ENOSYS;
 use hal::syscall::{Register, Rval, SysResult};
 
-use hal::sys::syscall::{
+use sysdefs::syscall::{
     SYS_close, SYS_closefrom, SYS_dup, SYS_dup2, SYS_dup3, SYS_fcntl, SYS_flock, SYS_fpathconf,
     SYS_fstat, SYS_getdtablecount, SYS_ioctl, SYS_pipe, SYS_pipe2, SYS_pread, SYS_preadv,
     SYS_pwrite, SYS_pwritev, SYS_read, SYS_readv, SYS_utrace, SYS_write, SYS_writev,

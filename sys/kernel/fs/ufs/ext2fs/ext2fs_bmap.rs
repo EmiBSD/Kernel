@@ -93,8 +93,8 @@
 
 use core::sync::atomic::Ordering;
 
-use hal::sys::errno::Errno;
-use hal::sys::types::Daddr;
+use sysdefs::errno::Errno;
+use sysdefs::types::Daddr;
 
 use super::ext2fs::fsbtodb;
 use super::ext2fs_dinode::{EXT4_EXTENTS, NDADDR, NIADDR};
@@ -336,7 +336,7 @@ mod tests {
     use super::super::testext2fs::{attach, mount, vget};
     use super::*;
     use crate::fs::subr::vput;
-    use hal::sys::mount::MNT_RDONLY;
+    use sysdefs::mount::MNT_RDONLY;
 
     #[test]
     fn the_block_pointers_and_the_indirect_block_map_a_file() {

@@ -206,12 +206,12 @@ use hal::sync::mutex::{Mutexed, MutexedGuard};
 use hal::sync::once::OnceStatic;
 use hal::sync::rwlock::{ReadWitness, RwWitness, WriteWitness};
 use hal::sync::sleep::{PVM, wakeup};
-use hal::sys::errno::Errno;
-use hal::sys::mman::PROT_NONE;
-use hal::sys::types::Paddr;
 use hal::vm::param::{DEFAULT_PAGE_SIZE, atop, ptoa, round_page, trunc_page};
 use hal::vm::pmap::{PageMd, PhysPages};
 use hal::vm::uvmexp::UVMEXP;
+use sysdefs::errno::Errno;
+use sysdefs::mman::PROT_NONE;
+use sysdefs::types::Paddr;
 
 use super::km::NO_CONSTRAINT;
 use super::object::Object;

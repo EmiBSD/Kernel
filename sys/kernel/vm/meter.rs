@@ -90,13 +90,13 @@ use core::sync::atomic::{AtomicI32, Ordering};
 
 use hal::cpu::intr::IPL_NONE;
 use hal::sync::mutex::Mutexed;
-use hal::sys::errno::Errno;
-use hal::sys::vmmeter::Vmtotal;
 use hal::vm::uvmexp::{
     UVMEXP, UvmExpCounters, UvmexpCopy, VM_ANONMIN, VM_LOADAVG, VM_MALLOC_CONF, VM_MAXSLP,
     VM_METER, VM_NKMEMPAGES, VM_PSSTRINGS, VM_SWAPENCRYPT, VM_USPACE, VM_UVMEXP, VM_VNODEMIN,
     VM_VTEXTMIN, counters_read,
 };
+use sysdefs::errno::Errno;
+use sysdefs::vmmeter::Vmtotal;
 
 use super::init::machine;
 pub use crate::base::sysctl::SysctlReq;

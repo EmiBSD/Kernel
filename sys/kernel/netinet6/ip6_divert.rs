@@ -70,13 +70,13 @@ use core::sync::atomic::Ordering;
 use hal::mem::pool::PoolArc;
 use hal::sync::netlock::NetHeld;
 use hal::sync::percpu::Counters;
-use hal::sys::errno::Errno;
-use hal::sys::netinet_icmp6::Icmp6Hdr;
-use hal::sys::netinet_in::{IPPROTO_ICMPV6, IPPROTO_IPV6};
-use hal::sys::netinet_ip_divert::DIVS_NCOUNTERS;
-use hal::sys::netinet_ip6::{IPV6_VERSION, IPV6_VERSION_MASK, Ip6Hdr};
-use hal::sys::netinet6_in6::{SockaddrIn6, in6_is_addr_unspecified};
-use hal::sys::socket::AF_INET6;
+use sysdefs::errno::Errno;
+use sysdefs::netinet_icmp6::Icmp6Hdr;
+use sysdefs::netinet_in::{IPPROTO_ICMPV6, IPPROTO_IPV6};
+use sysdefs::netinet_ip_divert::DIVS_NCOUNTERS;
+use sysdefs::netinet_ip6::{IPV6_VERSION, IPV6_VERSION_MASK, Ip6Hdr};
+use sysdefs::netinet6_in6::{SockaddrIn6, in6_is_addr_unspecified};
+use sysdefs::socket::AF_INET6;
 
 use crate::assert::kpanic;
 use crate::net::domain::net;
@@ -401,7 +401,7 @@ impl<G: ProcGlue> Usrreqs<G> for Divert6Usrreqs<G> {
 #[cfg(test)]
 mod tests {
     use hal::mem::pod;
-    use hal::sys::netinet6_in6::In6Addr;
+    use sysdefs::netinet6_in6::In6Addr;
 
     use super::*;
     use crate::netinet::ip_divert::DIVCOUNTERS;
@@ -478,7 +478,7 @@ mod tests {
         // The first IPv6 address of the interface's list (the C's walk): the link-local one
         // in6_ifattach made before 2001:db8:84::1.
         assert!(
-            hal::sys::netinet6_in6::in6_is_addr_linklocal(&from.sin6_addr),
+            sysdefs::netinet6_in6::in6_is_addr_linklocal(&from.sin6_addr),
             "the interface's first IPv6 address"
         );
         with_net(|net| divert6_packet::<G>(pkt(&b), i32::from(PF_OUT), 7200u16.to_be(), net));

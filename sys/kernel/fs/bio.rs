@@ -203,12 +203,12 @@ use hal::sync::mutex::{Mutexed, MutexedGuard};
 use hal::sync::once::OnceStatic;
 use hal::sync::rwlock::Guarded;
 use hal::sync::sleep::{INFSLP, PRIBIO, curproc_word, sched_pause, wakeup};
-use hal::sys::errno::Errno;
-use hal::sys::mount::Bcachestats;
-use hal::sys::param::PAGE_SIZE;
-use hal::sys::types::{Daddr, Dev};
 use hal::vm::param::{atop, round_page};
 use hal::vm::uvmexp::UVMEXP;
+use sysdefs::errno::Errno;
+use sysdefs::mount::Bcachestats;
+use sysdefs::param::PAGE_SIZE;
+use sysdefs::types::{Daddr, Dev};
 
 #[cfg(any(test, feature = "doubles"))]
 use super::biomem::BUF_NEEDVA;

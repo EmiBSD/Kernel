@@ -151,13 +151,13 @@ use core::sync::atomic::{AtomicU8, Ordering};
 
 use hal::sync::netlock::NetHeld;
 use hal::sync::once::OnceStatic;
-use hal::sys::errno::Errno;
-use hal::sys::netinet_in::{
+use sysdefs::errno::Errno;
+use sysdefs::netinet_in::{
     IPPROTO_DIVERT, IPPROTO_DSTOPTS, IPPROTO_FRAGMENT, IPPROTO_ICMPV6, IPPROTO_IPV6, IPPROTO_MAX,
     IPPROTO_RAW, IPPROTO_ROUTING, IPPROTO_TCP, IPPROTO_UDP,
 };
-use hal::sys::netinet6_in6::SockaddrIn6;
-use hal::sys::socket::{AF_INET6, PF_INET6, SOCK_DGRAM, SOCK_RAW, SOCK_STREAM};
+use sysdefs::netinet6_in6::SockaddrIn6;
+use sysdefs::socket::{AF_INET6, PF_INET6, SOCK_DGRAM, SOCK_RAW, SOCK_STREAM};
 
 use crate::assert::kpanic;
 use crate::base::sysctl::SysctlReq;
@@ -835,8 +835,8 @@ impl<G: ProcGlue> Protocol<G> for Frag6Protocol<G> {
 pub(crate) mod testsw6 {
     use core::sync::atomic::{AtomicI32, AtomicU32};
 
-    use hal::sys::netinet_in::{IPPROTO_DONE, IPPROTO_TCP, IPPROTO_UDP};
-    use hal::sys::socket::{SOCK_DGRAM, SOCK_STREAM};
+    use sysdefs::netinet_in::{IPPROTO_DONE, IPPROTO_TCP, IPPROTO_UDP};
+    use sysdefs::socket::{SOCK_DGRAM, SOCK_STREAM};
 
     use super::*;
 
@@ -906,7 +906,7 @@ pub(crate) mod testsw6 {
     pub(crate) static IPIP6: Row6 = Row6::new(IPPROTO_IPV6, SOCK_RAW, PR_ATOMIC | PR_ADDR);
     /// Divert (`IPPROTO_DIVERT`, 258: past `ip6_protox[]`, as the C's table has it).
     pub(crate) static DIVERT6: Row6 = Row6::new(
-        hal::sys::netinet_in::IPPROTO_DIVERT,
+        sysdefs::netinet_in::IPPROTO_DIVERT,
         SOCK_RAW,
         PR_ATOMIC | PR_ADDR,
     );
@@ -915,7 +915,7 @@ pub(crate) mod testsw6 {
     /// An entry of another family's domain, of number 50 (no table of the C has one: it shows
     /// `ip6_init`'s check of the family).
     pub(crate) static FOREIGN6: Row6 = Row6::new(
-        hal::sys::netinet_in::IPPROTO_ESP,
+        sysdefs::netinet_in::IPPROTO_ESP,
         SOCK_RAW,
         PR_ATOMIC | PR_ADDR,
     )
@@ -926,7 +926,7 @@ pub(crate) mod testsw6 {
 
     impl Domain<G> for OtherDomain {
         fn family(&self) -> i32 {
-            i32::from(hal::sys::socket::AF_INET)
+            i32::from(sysdefs::socket::AF_INET)
         }
         fn name(&self) -> &'static str {
             "inet"
@@ -1002,7 +1002,7 @@ pub(crate) mod testsw6 {
                     .take();
                 if let Some(a) = rewrite {
                     p.finaldst
-                        .set(hal::sys::netinet6_in6::In6Addr { s6_addr: a });
+                        .set(sysdefs::netinet6_in6::In6Addr { s6_addr: a });
                 }
             }
         }
@@ -1047,8 +1047,8 @@ mod tests {
     use std::sync::MutexGuard;
 
     use hal::sync::netlock::NETLOCK;
-    use hal::sys::netinet_in::{IPPROTO_DONE, IPPROTO_ESP, IPPROTO_TCP, IPPROTO_UDP};
-    use hal::sys::netinet6_ip6_var::Ip6statCounters;
+    use sysdefs::netinet_in::{IPPROTO_DONE, IPPROTO_ESP, IPPROTO_TCP, IPPROTO_UDP};
+    use sysdefs::netinet6_ip6_var::Ip6statCounters;
 
     use super::testsw6::{FOREIGN6, G, IPIP6, RAW6, Row6, SW6, TCP6, UDP6, install};
     use super::*;
@@ -1173,7 +1173,7 @@ mod tests {
         assert!(is_row(inet6_protocol::<G>(IPPROTO_ESP), &RAW6));
         // Past the table's numbers: none.
         assert!(inet6_protocol::<G>(IPPROTO_MAX).is_none());
-        assert!(inet6_protocol::<G>(hal::sys::netinet_in::IPPROTO_DIVERT).is_none());
+        assert!(inet6_protocol::<G>(sysdefs::netinet_in::IPPROTO_DIVERT).is_none());
         assert!(inet6_protocol::<G>(-1).is_none());
     }
 
@@ -1278,7 +1278,7 @@ mod tests {
         // ICMPv6's entry is icmp6_input: a message shorter than its header is counted there.
         let short = || {
             crate::netinet6::ip6_var::ICMP6COUNTERS.read()
-                [hal::sys::netinet_icmp6::Icmp6statCounters::Icp6sTooshort as usize]
+                [sysdefs::netinet_icmp6::Icmp6statCounters::Icp6sTooshort as usize]
         };
         let s = short();
         let w = NETLOCK.write();

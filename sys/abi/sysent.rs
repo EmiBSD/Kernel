@@ -18,7 +18,7 @@
 
 /* <CODE> */
 //! The ABI's system call table: one entry per system call number of
-//! `<sys/syscall.h>` (`hal::sys::syscall`, the ABI edge), each `Native` (translated into a
+//! `<sys/syscall.h>` (`sysdefs::syscall`, the ABI edge), each `Native` (translated into a
 //! `kernel` entry point) or `Legacy` (handed to the LZ path `bsd` registered, through
 //! `kernel::api::syscall_legacy`), and the dispatcher the machine's handler
 //! ([`crate::arch`], which [`crate::abi_init`] registers in `hal`) runs.
@@ -113,7 +113,7 @@ use crate::vm::{
 };
 use hal::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult};
 
-use hal::sys::syscall::{
+use sysdefs::syscall::{
     SYS___get_tcb, SYS___set_tcb, SYS___tfork, SYS___threxit, SYS_MAXSYSCALL, SYS_acct, SYS_break,
     SYS_close, SYS_closefrom, SYS_dup, SYS_dup2, SYS_dup3, SYS_exit, SYS_fcntl, SYS_flock,
     SYS_fork, SYS_fpathconf, SYS_fstat, SYS_futex, SYS_getdtablecount, SYS_getegid, SYS_geteuid,
@@ -129,7 +129,7 @@ use hal::sys::syscall::{
     SYS_setrtable, SYS_setsid, SYS_setthrname, SYS_setuid, SYS_sigreturn, SYS_sysctl, SYS_utrace,
     SYS_vfork, SYS_wait4, SYS_waitid, SYS_write, SYS_writev,
 };
-use hal::sys::syscall::{
+use sysdefs::syscall::{
     SYS___getcwd, SYS___pledge_open, SYS___realpath, SYS_access, SYS_chdir, SYS_chflags,
     SYS_chflagsat, SYS_chmod, SYS_chown, SYS_chroot, SYS_faccessat, SYS_fchdir, SYS_fchflags,
     SYS_fchmod, SYS_fchmodat, SYS_fchown, SYS_fchownat, SYS_fhopen, SYS_fhstat, SYS_fhstatfs,
@@ -141,12 +141,12 @@ use hal::sys::syscall::{
     SYS_sync, SYS_truncate, SYS_umask, SYS_unlink, SYS_unlinkat, SYS_unmount, SYS_unveil,
     SYS_utimensat, SYS_utimes,
 };
-use hal::sys::syscall::{
+use sysdefs::syscall::{
     SYS_accept, SYS_accept4, SYS_bind, SYS_connect, SYS_getpeername, SYS_getsockname,
     SYS_getsockopt, SYS_listen, SYS_recvfrom, SYS_recvmmsg, SYS_recvmsg, SYS_sendmmsg, SYS_sendmsg,
     SYS_sendto, SYS_setsockopt, SYS_shutdown, SYS_socket, SYS_socketpair, SYS_ypconnect,
 };
-use hal::sys::syscall::{
+use sysdefs::syscall::{
     SYS_adjfreq, SYS_adjtime, SYS_clock_getres, SYS_clock_gettime, SYS_clock_settime,
     SYS_getitimer, SYS_gettimeofday, SYS_nanosleep, SYS_reboot, SYS_setitimer, SYS_settimeofday,
 };
@@ -409,7 +409,7 @@ mod tests {
     use kernel::syscall::{LegacySyscalls, install_legacy_syscalls};
 
     /// `ENOSYS`, the answer of a number outside the table.
-    const ENOSYS: i32 = hal::sys::errno::Errno::ENOSYS.as_i32();
+    const ENOSYS: i32 = sysdefs::errno::Errno::ENOSYS.as_i32();
 
     /// The `sysent[]` rows of this test process (the kernel's `LegacySyscalls` bridge, which
     /// `bsd` registers in the image): every call, `Native` through `kernel::api` or `Legacy`,
@@ -718,7 +718,7 @@ mod tests {
     /// entry of the table, and no two names share a number.
     #[test]
     fn the_numbers_are_sys_syscall_h() {
-        let src = include_str!("../hal/sys/syscall.rs");
+        let src = include_str!("../lib/sysdefs/syscall.rs");
         let mut seen = std::collections::BTreeMap::new();
         for line in src.lines() {
             let Some(rest) = line.strip_prefix("pub const SYS_") else {

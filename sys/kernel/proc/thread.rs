@@ -101,7 +101,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use hal::cpu::intr::IPL_NONE;
 use hal::sync::mutex::Mutexed;
 use hal::sync::once::OnceStatic;
-use hal::sys::errno::Errno;
+use sysdefs::errno::Errno;
 
 use crate::assert::kpanic;
 
@@ -320,7 +320,7 @@ fn peg_primary<G: crate::proc::ProcGlue>() {
 pub fn kthread_create<G: crate::proc::ProcGlue>(
     name: &[u8],
     start: crate::proc::fork::Start,
-) -> Result<hal::sys::types::Pid, Errno> {
+) -> Result<sysdefs::types::Pid, Errno> {
     kthread_create_with::<G>(name, start, &mut |_| {})
 }
 
@@ -330,7 +330,7 @@ pub fn kthread_create_with<G: crate::proc::ProcGlue>(
     name: &[u8],
     start: crate::proc::fork::Start,
     child: &mut dyn FnMut(core::pin::Pin<&crate::proc::Thread<G>>),
-) -> Result<hal::sys::types::Pid, Errno> {
+) -> Result<sysdefs::types::Pid, Errno> {
     use crate::proc::{FORK_NOZOMBIE, FORK_SHAREFILES, FORK_SHAREVM, FORK_SYSTEM};
 
     hal::sync::klock::kernel_lock(); // KERNEL_LOCK()

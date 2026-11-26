@@ -124,16 +124,16 @@ use hal::cpu::intr::{IPL_BIO, splraise};
 use hal::mem::malloc::{M_WAITOK, MArc, MBox};
 use hal::mem::pool::AnyArc;
 use hal::sync::sleep::tsleep_nsec;
-use hal::sys::dirent::MAXNAMLEN;
-use hal::sys::errno::Errno;
-use hal::sys::mount::{
+use hal::user::UserPtr;
+use sysdefs::dirent::MAXNAMLEN;
+use sysdefs::errno::Errno;
+use sysdefs::mount::{
     Fid, MNAMELEN, MNT_FORCE, MNT_LAZY, MNT_UPDATE, NFSMNT_ACDIRMAX, NFSMNT_ACDIRMIN,
     NFSMNT_ACREGMAX, NFSMNT_ACREGMIN, NFSMNT_GOTFSINFO, NFSMNT_INTERNAL, NFSMNT_MAXGRPS,
     NFSMNT_NFSV3, NFSMNT_NOCONN, NFSMNT_RDIRPLUS, NFSMNT_READAHEAD, NFSMNT_READDIRSIZE,
     NFSMNT_RETRANS, NFSMNT_RSIZE, NFSMNT_SOFT, NFSMNT_TIMEO, NFSMNT_WSIZE, NfsArgs, Statfs,
 };
-use hal::sys::types::{Ino, Uid};
-use hal::user::UserPtr;
+use sysdefs::types::{Ino, Uid};
 
 use super::nfs::{
     NFS_DEFRAHEAD, NFS_DIRBLKSIZ, NFS_MAXATTRTIMO, NFS_MAXGRPS, NFS_MAXRAHEAD, NFS_MAXREXMIT,
@@ -167,10 +167,10 @@ use crate::net::syscalls::sockargs;
 use crate::proc::cred::{Ucred, crget};
 use crate::proc::{ProcGlue, Thread};
 use crate::sched::NOWAKE;
-use crate::sys::socket::SOCK_DGRAM;
 use crate::time::clock::sec_to_nsec;
 use crate::time::timeout::{KCLOCK_NONE, TIMEOUT_PROC, Timeout};
 use crate::vm::io::MAXBSIZE;
+use sysdefs::socket::SOCK_DGRAM;
 
 /// The NFS client of the glue `G`: `nfs_vfsops` ([`NfsVfs::VFS`]).
 pub struct NfsVfs<G>(PhantomData<fn() -> G>);
@@ -1208,8 +1208,8 @@ mod tests {
     use crate::fs::nfs::testnfs::{self as tn, Out};
     use crate::fs::testfs::TestGlue as G;
     use crate::net::mbuf::MBUFPL;
-    use crate::sys::mount::{NFS_ARGSVERSION, NFSMNT_AUTHERR};
-    use crate::sys::socket::SOCK_STREAM;
+    use sysdefs::mount::{NFS_ARGSVERSION, NFSMNT_AUTHERR};
+    use sysdefs::socket::SOCK_STREAM;
 
     /// Mount arguments with every field zero but the version, the flags and the socket type.
     fn args(flags: i32, sotype: i32) -> NfsArgs {

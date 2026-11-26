@@ -169,7 +169,7 @@ use crate::sync::mutex::Mutexed;
 use crate::sync::once::OnceStatic;
 use crate::sync::smr::sealed::CountedSealed;
 use crate::sync::smr::{CountedArc, Seal, SmrCounted};
-use crate::sys::errno::Errno;
+use sysdefs::errno::Errno;
 
 /// `PR_WAITOK`: `pool_get` may sleep for an item.
 pub const PR_WAITOK: i32 = 0x0001;

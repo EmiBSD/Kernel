@@ -127,7 +127,7 @@
 //! protocol of the offending packet (`pr_ctlinput`) and redirects to the routing table, and
 //! passes every message on to the raw sockets (the raw entry's `pr_input`, `rip_input`).
 //! [`icmp_error`] answers a bad packet with an error message. The header (`struct icmp`, the
-//! types and codes) is `hal::sys::netinet_ip_icmp`'s.
+//! types and codes) is `sysdefs::netinet_ip_icmp`'s.
 //!
 //! Locks: \[a\] atomic operations.
 //!
@@ -144,7 +144,7 @@
 //! ## Redesign
 //! - LZ's `IcmpPkt` (a raw pointer and a length into the mbuf, read and written with
 //!   unaligned `unsafe` copies at the members' offsets) -> the message read out of the first
-//!   mbuf's bytes as a `hal::sys::netinet_ip_icmp::Icmp` image (`pod::at`, its 28 bytes or
+//!   mbuf's bytes as a `sysdefs::netinet_ip_icmp::Icmp` image (`pod::at`, its 28 bytes or
 //!   fewer, zero-filled past the message: every read is behind the C's length check of that
 //!   member) and the members it changes written back at their offsets ([`icmp_put`]: in
 //!   place, or through `m_copyback` for a read-only cluster). `bsd` keeps `IcmpPkt` for its
@@ -177,22 +177,22 @@ use hal::sysbytes::IcmpDun;
 use hal::mem::pod;
 use hal::sync::netlock::{NETLOCK, NetHeld};
 use hal::sync::rwlock::Guarded;
-use hal::sys::errno::Errno;
-use hal::sys::limits::INT_MAX;
-use hal::sys::net_if::{IFF_BROADCAST, IFF_POINTOPOINT, IFF_UP};
-use hal::sys::netinet_icmp_var::{
+use sysdefs::errno::Errno;
+use sysdefs::limits::INT_MAX;
+use sysdefs::net_if::{IFF_BROADCAST, IFF_POINTOPOINT, IFF_UP};
+use sysdefs::netinet_icmp_var::{
     ICMPCTL_BMCASTECHO, ICMPCTL_ERRPPSLIMIT, ICMPCTL_MASKREPL, ICMPCTL_REDIRACCEPT,
     ICMPCTL_REDIRTIMEOUT, ICMPCTL_STATS, ICMPCTL_TSTAMPREPL,
 };
-use hal::sys::netinet_in::{
+use sysdefs::netinet_in::{
     IN_CLASSA_NET, IN_CLASSA_NSHIFT, IN_LOOPBACKNET, INADDR_ANY, INADDR_BROADCAST, IPPROTO_DONE,
     IPPROTO_ICMP, IPPROTO_IPV6, IPPROTO_TCP, InAddr, SockaddrIn, in_multicast,
 };
-use hal::sys::netinet_ip::{
+use sysdefs::netinet_ip::{
     IP_DF, IP_OFFMASK, IPOPT_EOL, IPOPT_NOP, IPOPT_OLEN, IPOPT_OPTVAL, IPOPT_RR, IPOPT_SECURITY,
     IPOPT_TS, IPVERSION, Ip, MAXTTL,
 };
-use hal::sys::netinet_ip_icmp::{
+use sysdefs::netinet_ip_icmp::{
     ICMP_ADVLENMAX, ICMP_ADVLENMIN, ICMP_CKSUM_OFFSET, ICMP_ECHO, ICMP_ECHOREPLY,
     ICMP_EXT_HDR_VERSION, ICMP_EXT_OFFSET, ICMP_HUN_OFFSET, ICMP_IP_OFFSET, ICMP_MASKLEN,
     ICMP_MASKREPLY, ICMP_MASKREQ, ICMP_MAXTYPE, ICMP_MINLEN, ICMP_PARAMPROB, ICMP_REDIRECT,
@@ -204,8 +204,8 @@ use hal::sys::netinet_ip_icmp::{
     ICMP_UNREACH_TOSHOST, ICMP_UNREACH_TOSNET, ICMP_V6ADVLENMIN, Icmp, IcmpExtHdr, IcmpExtObjHdr,
     icmp_advlen, icmp_infotype, icmp_v6advlen,
 };
-use hal::sys::socket::AF_INET;
-use hal::sys::sysctl::SysctlBoundedArgs;
+use sysdefs::socket::AF_INET;
+use sysdefs::sysctl::SysctlBoundedArgs;
 
 use crate::assert::kpanic;
 use crate::net::domain::pfctlinput;
@@ -220,7 +220,7 @@ use crate::net::proto::{
     PRC_MSGSIZE, PRC_MTUINC, PRC_PARAMPROB, PRC_QUENCH, PRC_REDIRECT_HOST, PRC_TIMXCEED_INTRANS,
     PRC_UNREACH_HOST, PRC_UNREACH_NET, SockaddrView,
 };
-use hal::sys::net_route::{
+use sysdefs::net_route::{
     RTAX_DST, RTAX_GATEWAY, RTAX_LABEL, RTF_BLACKHOLE, RTF_BROADCAST, RTF_DYNAMIC, RTF_GATEWAY,
     RTF_HOST, RTF_LLINFO, RTF_LOCAL, RTF_REJECT, RTM_ADD, RTV_MTU, SockaddrRtlabel,
 };
@@ -1405,10 +1405,10 @@ mod tests {
 
     use std::vec::Vec;
 
-    use hal::sys::net_route::{RTF_DYNAMIC, RTF_GATEWAY, RTF_HOST, RTM_ADD, RTP_STATIC, RTV_MTU};
-    use hal::sys::netinet_in::IPPROTO_UDP;
-    use hal::sys::netinet_ip::IP_DF;
-    use hal::sys::netinet_ip_icmp::{ICMP_REDIRECT_HOST, ICMP_TIMXCEED_INTRANS};
+    use sysdefs::net_route::{RTF_DYNAMIC, RTF_GATEWAY, RTF_HOST, RTM_ADD, RTP_STATIC, RTV_MTU};
+    use sysdefs::netinet_in::IPPROTO_UDP;
+    use sysdefs::netinet_ip::IP_DF;
+    use sysdefs::netinet_ip_icmp::{ICMP_REDIRECT_HOST, ICMP_TIMXCEED_INTRANS};
 
     use super::*;
     use crate::net::mbuf::ml_dequeue;
@@ -1659,7 +1659,7 @@ mod tests {
     /// `route add default 10.0.2.2`.
     fn default_route() {
         use crate::net::route::{RtAddrinfo, rtrequest};
-        use hal::sys::net_route::{RTAX_DST, RTAX_GATEWAY, RTAX_NETMASK, RTF_STATIC, RTF_UP};
+        use sysdefs::net_route::{RTAX_DST, RTAX_GATEWAY, RTAX_NETMASK, RTF_STATIC, RTF_UP};
         let any = sin_bytes(InAddr { s_addr: 0 });
         let gw = sin_bytes(InAddr {
             s_addr: u32::from_ne_bytes([10, 0, 2, 2]),

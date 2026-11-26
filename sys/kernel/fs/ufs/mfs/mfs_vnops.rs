@@ -97,10 +97,10 @@ use core::sync::atomic::Ordering;
 
 use hal::cpu::intr::{IPL_BIO, splraise};
 use hal::sync::sleep::{INFSLP, wakeup};
-use hal::sys::errno::Errno;
-use hal::sys::fcntl::Flock;
-use hal::sys::types::{Daddr, Register};
 use hal::user::UserPtr;
+use sysdefs::errno::Errno;
+use sysdefs::fcntl::Flock;
+use sysdefs::types::{Daddr, Register};
 
 use super::mfsnode::{Mfsnode, vtomfs};
 use crate::assert::kpanic;
@@ -535,7 +535,7 @@ mod tests {
 
     use std::vec::Vec;
 
-    use hal::sys::types::makedev;
+    use sysdefs::types::makedev;
 
     use super::super::mfs_vfsops::fixture::{UIMAGE, attach, image};
     use super::super::mfsnode::{M_MFSNODE, MfsnodeRef};

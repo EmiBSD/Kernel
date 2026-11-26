@@ -75,7 +75,6 @@ pub(crate) mod reftest;
 
 extern crate alloc;
 
-pub use hal::sys;
 pub mod api;
 pub(crate) mod assert;
 pub mod base;

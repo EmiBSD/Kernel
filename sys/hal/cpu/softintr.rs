@@ -85,8 +85,8 @@ use crate::mem::malloc::{M_NOWAIT, MBox};
 use crate::sync::mutex::Mutexed;
 use crate::sync::once::OnceStatic;
 use crate::sync::rwlock::Guarded;
-use crate::sys::softintr::{NSOFTINTR, SOFTINTR_CLOCK, SOFTINTR_NET, SOFTINTR_TTY};
 use crate::vm::uvmexp::UVMEXP;
+use sysdefs::softintr::{NSOFTINTR, SOFTINTR_CLOCK, SOFTINTR_NET, SOFTINTR_TTY};
 
 /// `M_DEVBUF` (`<sys/malloc.h>`): device driver memory, where the C allocates a handler.
 const M_DEVBUF: i32 = 2;

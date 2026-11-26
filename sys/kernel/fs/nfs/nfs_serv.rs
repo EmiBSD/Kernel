@@ -191,16 +191,16 @@ use crate::net::mbuf::{
 };
 use crate::proc::cred::{Ucred, suser_ucred};
 use crate::proc::{ProcGlue, Thread};
-use crate::sys::dirent::Dirent;
-use crate::sys::errno::Errno;
-use crate::sys::mount::{Fhandle, Fid, MNT_RDONLY, MNT_WAIT, Statfs};
-use crate::sys::socket::SOCK_DGRAM;
-use crate::sys::types::{Dev, Mode, Off, Register, makedev};
-use crate::sys::unistd::{_PC_CHOWN_RESTRICTED, _PC_LINK_MAX, _PC_NAME_MAX, _PC_NO_TRUNC};
 use crate::time::clock::Timespec;
 use crate::time::tc::microboottime;
 use crate::vm::vnode::uvm_vnp_uncache;
 use hal::mem::malloc::{M_WAITOK, MArray};
+use sysdefs::dirent::Dirent;
+use sysdefs::errno::Errno;
+use sysdefs::mount::{Fhandle, Fid, MNT_RDONLY, MNT_WAIT, Statfs};
+use sysdefs::socket::SOCK_DGRAM;
+use sysdefs::types::{Dev, Mode, Off, Register, makedev};
+use sysdefs::unistd::{_PC_CHOWN_RESTRICTED, _PC_LINK_MAX, _PC_NAME_MAX, _PC_NO_TRUNC};
 
 /// `malloc(9)`'s `M_TEMP`: the read and write iovec arrays, the readdir buffer, the symlink
 /// target.
@@ -3284,10 +3284,10 @@ mod tests {
     use std::vec;
     use std::vec::Vec;
 
-    use hal::sys::mount::{
+    use sysdefs::mount::{
         ExportArgs, MNT_DELEXPORT, MNT_EXPORTANON, MNT_EXPORTED, MNT_EXRDONLY, Xucred,
     };
-    use hal::sys::syslimits::NGROUPS_MAX as XNGROUPS;
+    use sysdefs::syslimits::NGROUPS_MAX as XNGROUPS;
 
     use super::*;
     use crate::fs::export::vfs_export;
@@ -3308,8 +3308,8 @@ mod tests {
     use crate::fs::ufs::ffs::testffs::{self, newfs};
     use crate::fs::vops::VFS_ROOT;
     use crate::net::mbuf::{m_devget, mbinit, nmbclust_update};
-    use crate::sys::socket::{AF_INET, SOCK_STREAM};
     use hal::sysbytes::NfsfhGeneric;
+    use sysdefs::socket::{AF_INET, SOCK_STREAM};
 
     type G = TestGlue;
 
@@ -3505,7 +3505,7 @@ mod tests {
         vput(vp);
         let slp = NfssvcSock::new(None);
         slp.ns_sotype.store(
-            crate::sys::socket::SOCK_DGRAM,
+            sysdefs::socket::SOCK_DGRAM,
             core::sync::atomic::Ordering::Relaxed,
         );
         let s = Srv {

@@ -30,9 +30,9 @@ use core::cell::{Cell, RefCell};
 use std::vec::Vec;
 
 use crate::cpu::sig::{SigDelivery, SigreturnError};
-use crate::sys::errno::Errno;
-use crate::sys::siginfo::Siginfo;
-use crate::sys::signal::{Sig, Sigset};
+use sysdefs::errno::Errno;
+use sysdefs::siginfo::Siginfo;
+use sysdefs::signal::{Sig, Sigset};
 
 /// A `sendsig` the double was asked for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
