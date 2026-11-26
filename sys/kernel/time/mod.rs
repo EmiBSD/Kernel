@@ -134,6 +134,7 @@ pub mod clockintr;
 pub mod tc;
 pub mod timeout;
 
+use crate::time::clock::TimespecExt;
 use core::ffi::c_void;
 use core::pin::Pin;
 use core::ptr;
@@ -1044,6 +1045,7 @@ mod tests {
 
     use super::*;
     use crate::testutil;
+    use crate::time::clock::TimespecExt;
 
     /// The chip handle and the clock are global: the todr tests serialise.
     static LOCK: StdMutex<()> = StdMutex::new(());

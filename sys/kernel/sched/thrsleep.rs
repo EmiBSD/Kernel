@@ -117,6 +117,7 @@
 //! - `<machine/spinlock.h>`'s word and values are `hal::sync::spinlock`'s, one definition for both
 //!   machines (LZ's `MachineSpinlock` trait is not taken).
 
+use crate::time::clock::TimespecExt;
 use core::pin::{Pin, pin};
 use core::ptr;
 

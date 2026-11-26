@@ -104,6 +104,7 @@
 //! - `RLIMIT_NPROC` is enforced for users other than root (`EAGAIN`, as kern_fork.c:386-393;
 //!   LZ reported it unported; the user's decision 12 of N4.6).
 
+use crate::time::clock::TimespecExt;
 use core::ffi::c_void;
 use core::pin::Pin;
 use core::ptr;

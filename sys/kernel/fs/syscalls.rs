@@ -147,6 +147,7 @@
 //!   pinned syscalls, pledge and the row's `NOLOCK`) and `bsd`'s adapter; the kernel owns the
 //!   rows' flags at N9.1 (D-N5.4-1).
 
+use crate::time::clock::TimespecExt;
 use core::mem::{offset_of, size_of};
 use core::pin::Pin;
 use core::ptr;

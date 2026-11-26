@@ -72,19 +72,21 @@
 //!   kernel's `vn_stat` (`kernel::fs::vnops`) fills the one `struct stat` `fstat(2)` copies
 //!   out; `bsd`'s `crate::stat` re-exports it. The times are [`Timespec`], the C's
 //!   `struct timespec` as the structure embeds it (two `i64`, `#[repr(C)]`): `hal` cannot name
-//!   the kernel's `kernel::time::clock::Timespec`, which converts into it with `From`. The layout,
+//!   the kernel's `kernel::time::clock::Timespec`, which is this type (decision 54). The layout,
 //!   the offsets the `const` block asserts and `to_bytes` are LZ's.
 
 use core::mem::offset_of;
 
 use crate::types::{Blkcnt, Blksize, Dev, Gid, Ino, Mode, Nlink, Off, Uid};
 
-/// `struct timespec` as `struct stat` embeds it (`st_atim`, `st_mtim`, `st_ctim`,
-/// `__st_birthtim`): seconds and nanoseconds, the layout userland shares. The kernel's
-/// arithmetic type is `kernel::time::clock::Timespec`, of the same layout, which converts into this
-/// one.
+/// `struct timespec` (`<sys/_timespec.h>`): seconds and nanoseconds, the layout userland shares
+/// (`#[repr(C)]`, two `i64`: `time_t` and `long` on both machines). The one definition of the
+/// system: `struct stat` embeds it (`st_atim`, `st_mtim`, `st_ctim`, `__st_birthtim`) and the
+/// kernel's `kernel::time::clock::Timespec` is this type, whose arithmetic (`timespecadd`,
+/// `timespecsub`, `TIMESPEC_TO_NSEC`, ...) is `kernel::time::clock::TimespecExt`. Ordered as
+/// `timespeccmp` orders: seconds, then nanoseconds.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Timespec {
     /// `tv_sec`: seconds.
     pub tv_sec: i64,
@@ -92,7 +94,15 @@ pub struct Timespec {
     pub tv_nsec: i64,
 }
 
+crate::abi_pod!(Timespec {
+    tv_sec: i64,
+    tv_nsec: i64
+});
+
 impl Timespec {
+    /// Zero (`timespecclear`).
+    pub const ZERO: Timespec = Timespec::new(0, 0);
+
     /// `{ sec, nsec }`.
     pub const fn new(tv_sec: i64, tv_nsec: i64) -> Self {
         Self { tv_sec, tv_nsec }

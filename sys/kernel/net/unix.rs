@@ -1319,7 +1319,7 @@ fn uipc_sense<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>, sb: &mut Stat) 
     if s.ino == 0 {
         s.ino = unp_ino_next(tables::<G>());
     }
-    let t: sysdefs::stat::Timespec = unp.ctime.into();
+    let t: sysdefs::stat::Timespec = unp.ctime;
     sb.st_atim = t;
     sb.st_mtim = t;
     sb.st_ctim = t;

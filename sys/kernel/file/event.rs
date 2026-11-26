@@ -216,6 +216,7 @@
 //!   [`Knote::hook_vnode`]: N5.5a3's UFS filters, whose inode a count would keep past its
 //!   reclaim).
 
+use crate::time::clock::TimespecExt;
 use core::cell::Cell;
 use core::ffi::c_void;
 use core::pin::Pin;

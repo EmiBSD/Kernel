@@ -147,6 +147,7 @@
 //! - The `log(LOG_INFO, ...)` of a clock step and `enqueue_randomness` reach `bsd` through
 //!   the `Printf` and `Random` bridges (`hal::prf::log`, `hal::random::enqueue_randomness`).
 
+use crate::time::clock::TimespecExt;
 use core::sync::atomic::{
     AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering, fence,
 };

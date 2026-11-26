@@ -14829,6 +14829,16 @@ status = "redesigned"
 notes = "N4.1: ticks (TICKS, ticks()) moved from kern_clock.c's port, which re-exports them; the kernel's Timespec (timespecadd/sub/cmp, NSEC_TO_TIMESPEC as methods and Ord); nanouptime(9) over the Uptime bridge (bridges.toml, bsd's kern_tc until N4.8; N5.0: the bridge is gone, nanouptime, getnanouptime, nanotime and nanoboottime are kernel::time::tc's readers re-exported). N4.8a (decision 8): the kernel's one struct timespec, timeval and bintime, repr(C) and AbiPod (hal::abi_pod!), the time.h macros as methods (bintimeadd/sub/addfrac, TIMECOUNT_TO_BINTIME, BINTIME_TO_*, TIMESPEC_TO_*, *_TO_NSEC, timerisset/isvalid, ...); kernel::proc::resource::Timeval and kernel::file::pipe::Timespec re-export them"
 
 [[module.fn]]
+lz = "sys/sys/time.rs::Timespec"
+native = ["sys/lib/sysdefs/stat.rs::Timespec"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/sys/time.rs::Timespec::new"
+native = ["sys/lib/sysdefs/stat.rs::Timespec::new"]
+kind = "moved"
+
+[[module.fn]]
 lz = "sys/sys/time.rs::Timezone"
 native = ["sys/kernel/time/mod.rs::Timezone"]
 kind = "moved"

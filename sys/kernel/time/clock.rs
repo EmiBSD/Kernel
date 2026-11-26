@@ -148,41 +148,42 @@ use sysdefs::kernel::HZ;
 /// One second in nanoseconds.
 const NSEC_PER_SEC: i64 = 1_000_000_000;
 
-/// `struct timespec`: seconds and nanoseconds (`0..1e9` once normalised), the layout userland
-/// shares (`#[repr(C)]`, two `i64`). Ordered as `timespeccmp` orders: seconds, then
-/// nanoseconds.
-#[repr(C)]
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
-pub struct Timespec {
-    /// `tv_sec`.
-    pub tv_sec: i64,
-    /// `tv_nsec`.
-    pub tv_nsec: i64,
+pub use sysdefs::stat::Timespec;
+
+/// `struct timespec`'s arithmetic (`<sys/time.h>`'s macros): the type is `sysdefs`' (decision
+/// 54), `{ sec, nsec }` and `ZERO` are its own, the rest is here.
+pub trait TimespecExt: Sized {
+    /// `NSEC_TO_TIMESPEC(nsec, &ts)`.
+    fn from_nsec(nsec: u64) -> Self;
+    /// `timespecadd(self, b, &res)`: the sum, the nanoseconds carried.
+    #[must_use]
+    fn add(self, b: Self) -> Self;
+    /// `timespecsub(self, b, &res)`: the difference, the nanoseconds borrowed.
+    #[must_use]
+    fn sub(self, b: Self) -> Self;
+    /// `timespecclear(tsp)`.
+    fn clear(&mut self);
+    /// `timespecisset(tsp)`.
+    fn is_set(&self) -> bool;
+    /// `timespecisvalid(tsp)`.
+    fn is_valid(&self) -> bool;
+    /// `TIMESPEC_TO_NSEC(ts)`: saturates at `UINT64_MAX`.
+    fn to_nsec(&self) -> u64;
+    /// `TIMESPEC_TO_BINTIME(ts, bt)`.
+    fn to_bintime(&self) -> Bintime;
 }
 
-impl Timespec {
-    /// Zero (`timespecclear`).
-    pub const ZERO: Timespec = Timespec::new(0, 0);
-
-    /// `{ sec, nsec }`.
+impl TimespecExt for Timespec {
     #[inline]
-    pub const fn new(tv_sec: i64, tv_nsec: i64) -> Self {
-        Self { tv_sec, tv_nsec }
-    }
-
-    /// `NSEC_TO_TIMESPEC(nsec, &ts)`.
-    #[inline]
-    pub const fn from_nsec(nsec: u64) -> Self {
+    fn from_nsec(nsec: u64) -> Self {
         Self {
             tv_sec: (nsec / NSEC_PER_SEC as u64) as i64,
             tv_nsec: (nsec % NSEC_PER_SEC as u64) as i64,
         }
     }
 
-    /// `timespecadd(self, b, &res)`: the sum, the nanoseconds carried.
     #[inline]
-    #[must_use]
-    pub const fn add(self, b: Timespec) -> Timespec {
+    fn add(self, b: Timespec) -> Timespec {
         let mut sec = self.tv_sec.wrapping_add(b.tv_sec);
         let mut nsec = self.tv_nsec + b.tv_nsec;
         if nsec >= NSEC_PER_SEC {
@@ -192,10 +193,8 @@ impl Timespec {
         Timespec::new(sec, nsec)
     }
 
-    /// `timespecsub(self, b, &res)`: the difference, the nanoseconds borrowed.
     #[inline]
-    #[must_use]
-    pub const fn sub(self, b: Timespec) -> Timespec {
+    fn sub(self, b: Timespec) -> Timespec {
         let mut sec = self.tv_sec.wrapping_sub(b.tv_sec);
         let mut nsec = self.tv_nsec - b.tv_nsec;
         if nsec < 0 {
@@ -205,53 +204,36 @@ impl Timespec {
         Timespec::new(sec, nsec)
     }
 
-    /// `timespecclear(tsp)`.
     #[inline]
-    pub fn clear(&mut self) {
+    fn clear(&mut self) {
         *self = Timespec::ZERO;
     }
 
-    /// `timespecisset(tsp)`.
     #[inline]
-    pub const fn is_set(&self) -> bool {
+    fn is_set(&self) -> bool {
         self.tv_sec != 0 || self.tv_nsec != 0
     }
 
-    /// `timespecisvalid(tsp)`.
     #[inline]
-    pub const fn is_valid(&self) -> bool {
+    fn is_valid(&self) -> bool {
         self.tv_nsec >= 0 && self.tv_nsec < NSEC_PER_SEC
     }
 
-    /// `TIMESPEC_TO_NSEC(ts)`: saturates at `UINT64_MAX`.
     #[inline]
-    pub const fn to_nsec(&self) -> u64 {
+    fn to_nsec(&self) -> u64 {
         if self.tv_sec as u64 > (u64::MAX - self.tv_nsec as u64) / NSEC_PER_SEC as u64 {
             return u64::MAX;
         }
         (self.tv_sec as u64).wrapping_mul(NSEC_PER_SEC as u64) + self.tv_nsec as u64
     }
 
-    /// `TIMESPEC_TO_BINTIME(ts, bt)`.
     #[inline]
-    pub const fn to_bintime(&self) -> Bintime {
+    fn to_bintime(&self) -> Bintime {
         Bintime {
             sec: self.tv_sec,
             // 18446744073 = int(2^64 / 1000000000)
             frac: (self.tv_nsec as u64).wrapping_mul(18_446_744_073),
         }
-    }
-}
-
-sysdefs::abi_pod!(Timespec {
-    tv_sec: i64,
-    tv_nsec: i64
-});
-
-/// A time as `struct stat` embeds it (`st_atim`, ...: `hal`'s copy of the layout, N5.3).
-impl From<Timespec> for sysdefs::stat::Timespec {
-    fn from(t: Timespec) -> Self {
-        Self::new(t.tv_sec, t.tv_nsec)
     }
 }
 

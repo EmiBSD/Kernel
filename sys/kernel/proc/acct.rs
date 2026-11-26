@@ -134,6 +134,7 @@
 //!   thread shutting down), as the C's `vn_close(vp, FWRITE, NOCRED, p)` with
 //!   `p = curproc`.
 
+use crate::time::clock::TimespecExt;
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 

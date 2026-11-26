@@ -156,6 +156,7 @@
 //!   their calls. `tu_enter`/`tu_leave` and `tuagg_sumup`'s consumer loop keep the C's
 //!   `pc_lock` generation protocol over hal's `PcLock`.
 
+use crate::time::clock::TimespecExt;
 use core::ffi::c_void;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering, fence};

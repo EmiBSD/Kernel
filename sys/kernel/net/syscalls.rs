@@ -134,6 +134,7 @@
 //!   only the socket layer's own (`kernel::net::socket`'s table). Nothing is looked up twice:
 //!   the socket is the file's, borrowed.
 
+use crate::time::clock::TimespecExt;
 use core::ptr;
 use core::sync::atomic::Ordering;
 

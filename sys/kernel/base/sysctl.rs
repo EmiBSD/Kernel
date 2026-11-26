@@ -145,6 +145,7 @@
 //!   at zero instead of dividing by zero (`bsd`'s node); an empty name (never from
 //!   `sys_sysctl`, which wants two components) is `EINVAL`.
 
+use crate::time::clock::TimespecExt;
 use core::ptr;
 use core::sync::atomic::{AtomicI32, Ordering};
 use hal::user::AbiBytes;

@@ -146,7 +146,7 @@ pub use crate::arch::current::gpr::Gpr;
 pub use crate::arch::current::syscall::UserRegs;
 
 /// `register_t`: a machine register as a system call sees it (64 bits on both machines).
-pub type Register = isize;
+pub use sysdefs::types::Register;
 
 /// The six argument registers of a system call, in the C ABI's order.
 pub type SysArgs = [Register; 6];
