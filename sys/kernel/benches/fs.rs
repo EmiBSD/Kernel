@@ -177,6 +177,11 @@
 //!   cache (done once, in progress after: the hit path either way): the chain walked under
 //!   the kernel lock's reader, the entry locked and held, moved to the LRU's tail under its
 //!   witness, unlocked (the C's `nfsrv_lookupcache` and its LRU move).
+//! - `nfs.srv.getattr.udp`: one version 3 GETATTR request through the procedure table over an
+//!   exported ffs: the request chain and the client address made, the handle resolved, the
+//!   attributes read and the reply built and freed.
+//! - `nfs.srv.read.8k`: the same for a READ of 8 KiB of a file (the data read into mbuf
+//!   clusters, the reply joined).
 //!
 //! The doubles' pools recycle their items (`testutil::set_pool_recycle`, D-N5.5b-5; until
 //! N5.5b3 a copy of `proc.rs`'s recycling backend here): the doubles' pool otherwise hands out
@@ -755,6 +760,10 @@ fn main() {
         "nfs.srv.getreq",
         #[cfg(feature = "nfsserver")]
         "nfs.srv.cache.hit",
+        #[cfg(feature = "nfsserver")]
+        "nfs.srv.getattr.udp",
+        #[cfg(feature = "nfsserver")]
+        "nfs.srv.read.8k",
     ];
     if args.first().map(String::as_str) == Some("list") {
         for n in names {
@@ -1265,6 +1274,13 @@ fn main() {
     std::thread::scope(|s| {
         s.spawn(|| nfs_srv_rows(&wanted, &report));
     });
+
+    // N6.7b3's rows: two procedures of the nfs server over an exported ffs, on a thread of
+    // their own.
+    #[cfg(feature = "nfsserver")]
+    std::thread::scope(|s| {
+        s.spawn(|| nfs_srv_proc_rows(&wanted, &report));
+    });
 }
 
 /// N6.7b2's rows (the module's docs): the nfs server's RPC header and its reply cache.
@@ -1345,6 +1361,126 @@ fn nfs_srv_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, 
             }),
         );
     }
+    hal::klock::kernel_unlock();
+}
+
+/// N6.7b3's rows (the module's docs): the nfs server's GETATTR and READ over an exported ffs,
+/// one request each through the procedure table, request and reply chains included.
+#[cfg(feature = "nfsserver")]
+fn nfs_srv_proc_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
+    use hal::sys::mount::{ExportArgs, MNT_EXPORTED, Xucred};
+    use hal::sys::syslimits::NGROUPS_MAX;
+    use kernel::fs::export::vfs_export;
+    use kernel::fs::nfs::nfs_serv::nfsrv3_procs;
+    use kernel::fs::nfs::nfsproto::{NFSPROC_GETATTR, NFSPROC_LOOKUP, NFSPROC_READ};
+    use kernel::fs::nfs::nfssvc::{ND_NFSV3, NfsrvDescript, NfssvcSock};
+    use kernel::fs::nfs::xdr_subs::xdr_bytes;
+    use kernel::fs::ufs::ffs::testffs::{self, newfs};
+    use kernel::fs::vops::VFS_VPTOFH;
+    use kernel::net::mbuf::{m_devget, mbinit, nmbclust_update};
+    use kernel::sys::mount::{Fhandle, Fid};
+
+    const ROWS: [&str; 2] = ["nfs.srv.getattr.udp", "nfs.srv.read.8k"];
+    if !ROWS.iter().any(|n| wanted(n)) {
+        return;
+    }
+    static BENCH_NMBCLUST: core::sync::atomic::AtomicI64 =
+        core::sync::atomic::AtomicI64::new(256 * 1024);
+    let mut img = newfs::Image::new(newfs::FFS1_4M);
+    img.add_file(b"f8k", &std::vec![0x5au8; 8192]);
+    let (_g, p) = testffs::attach(img.finish());
+    kernel::testutil::kernel_maps_install();
+    mbinit(&BENCH_NMBCLUST);
+    let _ = nmbclust_update(256 * 1024);
+    hal::klock::kernel_lock();
+    let mp = testffs::mount_root(p, 0);
+    let args = ExportArgs {
+        ex_flags: MNT_EXPORTED,
+        ex_root: 0,
+        ex_anon: Xucred {
+            cr_uid: 0,
+            cr_gid: 0,
+            cr_ngroups: 0,
+            _pad0: 0,
+            cr_groups: [0; NGROUPS_MAX],
+        },
+        _pad0: 0,
+        ex_addr: 0,
+        ex_addrlen: 0,
+        _pad1: 0,
+        ex_mask: 0,
+        ex_masklen: 0,
+        _pad2: 0,
+    };
+    need(vfs_export(mp, mp.export(), &args), "export");
+    let rvp = need(VFS_ROOT(mp), "the root");
+    let mut root = Fhandle {
+        fh_fsid: mp.fsid(),
+        fh_fid: Fid::default(),
+    };
+    need(VFS_VPTOFH(rvp, &mut root.fh_fid), "the root's handle");
+    vput(rvp);
+    let slp = NfssvcSock::<TestGlue>::new(None);
+    slp.ns_sotype
+        .store(kernel::sys::socket::SOCK_DGRAM, Ordering::Relaxed);
+    let procs = nfsrv3_procs::<TestGlue>();
+    let client = [16u8, 2, 3, 32, 127, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0];
+    // One request through procedure `procnum`: the reply, if any, is dropped.
+    let call = |procnum: usize, body: &[u8]| {
+        let mut nd = NfsrvDescript {
+            nd_mrep: m_devget(body, 0),
+            nd_retxid: 7,
+            nd_procnum: procnum,
+            nd_flag: ND_NFSV3,
+            nd_nam2: m_devget(&client, 0),
+            ..NfsrvDescript::default()
+        };
+        black_box(procs[procnum](black_box(&mut nd), &slp, p).0)
+    };
+    let fh = |h: &Fhandle| {
+        let mut b = std::vec![0, 0, 0, 28];
+        b.extend_from_slice(xdr_bytes(h));
+        b
+    };
+    // The file's handle: LOOKUP "f8k", its reply read at the handle (6 header words, the
+    // status, the length).
+    let mut lk = fh(&root);
+    lk.extend_from_slice(&[0, 0, 0, 3, b'f', b'8', b'k', 0]);
+    let reply = need(call(NFSPROC_LOOKUP, &lk).ok_or(()), "a LOOKUP reply");
+    let mut bytes = Vec::new();
+    let mut n = Some(&*reply);
+    while let Some(m) = n {
+        bytes.extend_from_slice(m.data());
+        n = m.m_next().get();
+    }
+    let file = kernel::fs::nfs::xdr_subs::xdr_get::<Fhandle>(&bytes[32..60]);
+    drop(reply);
+
+    if wanted(ROWS[0]) {
+        let body = fh(&file);
+        report(
+            ROWS[0],
+            measure(|| {
+                rounds(|| {
+                    drop(call(NFSPROC_GETATTR, &body));
+                })
+            }),
+        );
+    }
+    if wanted(ROWS[1]) {
+        let mut body = fh(&file);
+        body.extend_from_slice(&[0; 8]);
+        body.extend_from_slice(&8192u32.to_be_bytes());
+        report(
+            ROWS[1],
+            measure(|| {
+                rounds(|| {
+                    drop(call(NFSPROC_READ, &body));
+                })
+            }),
+        );
+    }
+    testffs::unmount_root(p, mp);
     hal::klock::kernel_unlock();
 }
 

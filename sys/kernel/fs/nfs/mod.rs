@@ -30,7 +30,8 @@
 //! `nfs_syscalls` (the nfsiods), and the vnode operations and the functions of their call
 //! cycle (N6.7a3): `nfs_vnops`, `nfs_vfsops`'s FSINFO; the file system type and the ddb
 //! printers (N6.7a5): `nfs_vfsops`, `nfs_debug`; the server, beside `bsd`'s until N6.7b4
-//! (`option NFSSERVER`): `nfssvc`, `nfs_srvsubs`, `nfs_srvsocket`, `nfs_srvcache` (N6.7b2).
+//! (`option NFSSERVER`): `nfssvc`, `nfs_srvsubs`, `nfs_srvsocket`, `nfs_srvcache` (N6.7b2),
+//! `nfs_serv` (the procedures, N6.7b3).
 //! Userland's headers are `hal::sys`'s images (`nfs_nfs`,
 //! `nfs_nfsproto`, `nfs_rpcv2`), re-exported by the modules of the same name.
 
@@ -44,6 +45,8 @@ pub mod nfs_boot;
 pub mod nfs_debug;
 pub mod nfs_kq;
 pub mod nfs_node;
+#[cfg(feature = "nfsserver")]
+pub mod nfs_serv;
 pub mod nfs_socket;
 #[cfg(feature = "nfsserver")]
 pub mod nfs_srvcache;
