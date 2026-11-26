@@ -55,8 +55,8 @@
 //!
 //! Status: `wip`. Milestone M5 ports the three time structures, `timezone`, `itimerval`,
 //! `clockinfo`, the `timer*`/`timespec*`/`bintime*` operations, the conversions between the
-//! representations and the `*_TO_NSEC` helpers. `struct clock_ymdhms` is here; its conversions
-//! are `kern/clock_subr.c`'s (`kern/clock_subr.rs`); the prototypes of the time functions
+//! representations and the `*_TO_NSEC` helpers. `struct clock_ymdhms` and `POSIX_BASE_YEAR` are
+//! `kernel::clock_subr`'s, re-exported (N7.1b), beside its conversions; the prototypes of the time functions
 //! (`bintime()`, `nanouptime()`, ...) are in `kern/kern_tc.rs`, `clock_gettime` and
 //! `itimer_update` in `kern/kern_time.rs`, `ratecheck`/`ppsratecheck` with it.
 //!
@@ -75,6 +75,8 @@
 //!   types (`suseconds_t` is `i64`), `AbiPod` through `hal::abi_pod!` (LZ's four `unsafe impl
 //!   AbiPod` gone: `machine::copy`'s legacy trait covers every `hal` `AbiPod` type). The free
 //!   functions of the macros (`timespecadd`, `bintime_to_timespec`, ...) stay here over them.
+//! - N7.1b: `struct clock_ymdhms` and `POSIX_BASE_YEAR` move to `kernel::clock_subr` with the
+//!   conversions they serve, re-exported here for `bsd`'s time-of-day chips.
 
 use core::cell::Cell;
 
@@ -107,13 +109,12 @@ pub const ITIMER_PROF: i32 = 2;
 pub const SECDAY: i64 = 86400;
 /// `SECYR`: seconds in a (non-leap) year.
 pub const SECYR: i64 = SECDAY * 365;
-/// `POSIX_BASE_YEAR`: traditional POSIX base year.
-pub const POSIX_BASE_YEAR: i32 = 1970;
 
 // The kernel's one `struct timeval`, `struct timespec`, `struct bintime` (`kernel::clock`) and
 // `struct timezone`, `struct itimerval`, `struct clockinfo` (`kernel::time`), N4.8a (decision
 // 8): the same layouts and field names, `AbiPod` through `hal::abi_pod!`.
 pub use kernel::clock::{Bintime, Timespec, Timeval};
+pub use kernel::clock_subr::{ClockYmdhms, POSIX_BASE_YEAR};
 pub use kernel::time::{Clockinfo, Itimerval, Timezone};
 
 /// A `Timespec` behind a `Cell`, for the statics the clock code updates in place.
@@ -283,25 +284,6 @@ pub const fn timeval_to_bintime(tv: &Timeval) -> Bintime {
         // 18446744073709 = int(2^64 / 1000000)
         frac: (tv.tv_usec as u64).wrapping_mul(18_446_744_073_709),
     }
-}
-
-/// `struct clock_ymdhms`: "POSIX time" to/from "YY/MM/DD/hh/mm/ss".
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ClockYmdhms {
-    /// `dt_year`.
-    pub dt_year: u16,
-    /// `dt_mon`.
-    pub dt_mon: u8,
-    /// `dt_day`.
-    pub dt_day: u8,
-    /// `dt_wday`: day of week.
-    pub dt_wday: u8,
-    /// `dt_hour`.
-    pub dt_hour: u8,
-    /// `dt_min`.
-    pub dt_min: u8,
-    /// `dt_sec`.
-    pub dt_sec: u8,
 }
 
 /// `FROMBCD(x)`: BCD to decimal.

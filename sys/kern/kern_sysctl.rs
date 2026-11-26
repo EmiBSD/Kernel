@@ -61,7 +61,7 @@
 //! registration of `bsd`'s nodes with the kernel's dispatcher
 //! ([`sysctl_register_legacy`]): the `net`, `vfs`, `machdep` and `ddb` trees, the `kern` and
 //! `hw` leaves and directories whose state is `bsd`'s (`kern.ostype`, `kern.clockrate`,
-//! `kern.cp_time`, `kern.tty`, `kern.timecounter`, `hw.sensors`,
+//! `kern.cp_time`, `kern.tty`, `kern.timecounter`,
 //! `hw.machine`, ...), their bounded integers, the disk list's export and `physmem`.
 //!
 //! Upstream: sys/kern/kern_sysctl.c @ 3ce1f3f79392
@@ -101,8 +101,6 @@
 //!   `raw_part`) are `AtomicI32` statics like the C's `static int`s.
 //! - `KERN_CPTIME` with no CPU online (which only the host double can produce) leaves the
 //!   sums at zero instead of dividing by zero.
-//! - `hw.sensors.<dev>.<type>.<numt>` with a `type` outside `enum sensor_type` finds no
-//!   sensor (`ENOENT`, after the device lookup's own errors), as the C's comparison would.
 //!
 //! ## Redesign
 //! - N4.6b: the dispatch (`sys_sysctl`, `kern_sysctl`, `hw_sysctl`), `sysctl_vslock`, the
@@ -139,16 +137,13 @@ use crate::kern::kern_lock::{mtx_enter, mtx_leave, pc_cons_enter, pc_cons_leave}
 use crate::kern::kern_malloc::sysctl_malloc;
 use crate::kern::kern_prot::suser;
 use crate::kern::kern_sched::{cpu_is_online, sysctl_hwblockcpu, sysctl_hwsmt};
-use crate::kern::kern_sensors::{sensor_find, sensordev_get};
 use crate::kern::kern_sig::NOSUIDCOREDUMP;
 use crate::kern::kern_tc::{microboottime, nanotime, tc_setrealtimeclock};
-use crate::kern::kern_watchdog::sysctl_wdog;
 use crate::kern::pipe_glue::pipe_kinfo;
 use crate::kern::proc_glue::{BsdProcGlue, proc_tables, process_ref};
 use crate::kern::socket_glue::fp_socket;
 use crate::kern::subr_autoconf::AUTOCONF_SERIAL;
 use crate::kern::subr_disk::{DISK_CHANGE, DISK_COUNT, DISKLIST, duid_format, duid_iszero};
-use crate::kern::subr_evcount::evcount_sysctl;
 use crate::kern::subr_pool::{POOL_DEBUG, pool_reclaim_all, sysctl_dopool};
 use crate::kern::subr_prf::{SPLASSERT_CTL, panic};
 use crate::kern::uipc_socket2::soassertlocked;
@@ -171,7 +166,6 @@ use crate::sys::lockf::MAXLOCKSPERUID;
 use crate::sys::param::{NODEV, OpenBSD};
 use crate::sys::proc::{PS_EMBRYO, PS_EXITING, PS_SYSTEM, Proc, Process, ProcessRef};
 use crate::sys::sched::{CPUSTATES, CPUSTATS_ONLINE, Cpustats};
-use crate::sys::sensors::{Sensor, SensorType, Sensordev};
 use crate::sys::socket::{AF_INET, AF_INET6, AF_UNIX, SOCK_RAW};
 use crate::sys::socketvar::{Socket, isspliced, issplicedback};
 use crate::sys::syscallargs::SysSysctlArgs;
@@ -1434,26 +1428,6 @@ fn kern_audio(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
     sysctl_audio(name, req.oldp, req.oldlenp, req.newp, req.newlen)
 }
 
-/// `kern.intrcnt`.
-fn kern_intrcnt(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
-    sysctl_intrcnt(name, req.oldp, req.oldlenp)
-}
-
-/// `kern.watchdog`.
-fn kern_watchdog(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
-    sysctl_wdog(name, req.oldp, req.oldlenp, req.newp, req.newlen)
-}
-
-/// `kern.evcount`.
-fn kern_evcount(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
-    evcount_sysctl(name, req.oldp, req.oldlenp, req.newp, req.newlen)
-}
-
-/// `hw.sensors`.
-fn hw_sensors(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
-    sysctl_sensors(name, req.oldp, req.oldlenp, req.newp, req.newlen)
-}
-
 /// `hw.ucomnames` (`NUCOM > 0`).
 fn hw_ucomnames(_name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
     let names = sysctl_ucominit();
@@ -1508,91 +1482,16 @@ static KERN_NODES: [(i32, &dyn SysctlNode); 27] = [
     (KERN_POOL, &Node(kern_pool)),
     (KERN_CPUSTATS, &Node(kern_cpustats)),
     (KERN_AUDIO, &Node(kern_audio)),
-    (KERN_INTRCNT, &Node(kern_intrcnt)),
-    (KERN_WATCHDOG, &Node(kern_watchdog)),
-    (KERN_EVCOUNT, &Node(kern_evcount)),
+    // `kern.intrcnt`, `kern.watchdog` and `kern.evcount`: the kernel's nodes (N7.1b).
+    (KERN_INTRCNT, &kernel::evcount::IntrcntNode),
+    (KERN_WATCHDOG, &kernel::watchdog::WatchdogNode),
+    (KERN_EVCOUNT, &kernel::evcount::EvcountNode),
     // `kern.clockintr` and `kern.timecounter`: the kernel's nodes (N4.8a).
     (KERN_CLOCKINTR, &kernel::clockintr::ClockintrNode),
     // `kern.tty`: the kernel's node (N4.7b), over this glue's terminals.
     (KERN_TTY, &kernel::tty::TtyNode::<BsdProcGlue>::NODE),
     (KERN_TIMECOUNTER, &kernel::tc::TcNode),
 ];
-
-/// `sysctl_intrcnt`: `kern.intrcnt`, served by `evcount_sysctl`.
-pub fn sysctl_intrcnt(name: &[i32], oldp: usize, oldlenp: &mut usize) -> Result<(), Errno> {
-    evcount_sysctl(name, oldp, oldlenp, 0, 0)
-}
-
-/// `sysctl_sensors`: `hw.sensors.<dev>` (a `struct sensordev`) and
-/// `hw.sensors.<dev>.<type>.<numt>` (a `struct sensor`), copies without the kernel pointers.
-pub fn sysctl_sensors(
-    name: &[i32],
-    oldp: usize,
-    oldlenp: &mut usize,
-    newp: usize,
-    newlen: usize,
-) -> Result<(), Errno> {
-    let _ = newlen;
-
-    if name.len() != 1 && name.len() != 3 {
-        return Err(Errno::ENOTDIR);
-    }
-
-    let dev = name[0];
-    if name.len() == 1 {
-        kernel_lock();
-        let ksd = match sensordev_get(dev) {
-            Ok(ksd) => ksd,
-            Err(e) => {
-                kernel_unlock();
-                return Err(e);
-            }
-        };
-
-        // Grab a copy, to clear the kernel pointers
-        let mut usd = Sensordev {
-            num: ksd.num.get(),
-            maxnumt: ksd.maxnumt.get(),
-            sensors_count: ksd.sensors_count.get(),
-            ..Sensordev::default()
-        };
-        strlcpy(&mut usd.xname, &ksd.xname.get());
-        kernel_unlock();
-
-        return sysctl_rdstruct(oldp, oldlenp, newp, usd.as_bytes());
-    }
-
-    // `(enum sensor_type)name[1]`: a value outside the enum matches no sensor.
-    let r#type = SensorType::from_i32(name[1]);
-    let numt = name[2];
-
-    kernel_lock();
-    let ks = match r#type {
-        Some(t) => sensor_find(dev, t, numt),
-        None => sensordev_get(dev).and(Err(Errno::ENOENT)),
-    };
-    let ks = match ks {
-        Ok(ks) => ks,
-        Err(e) => {
-            kernel_unlock();
-            return Err(e);
-        }
-    };
-
-    // Grab a copy, to clear the kernel pointers
-    let us = Sensor {
-        desc: ks.desc.get(),
-        tv: ks.tv.get(),
-        value: ks.value.get(),
-        r#type: ks.r#type.get() as i32,
-        status: ks.status.get() as i32,
-        numt: ks.numt.get(),
-        flags: ks.flags.get(),
-    };
-    kernel_unlock();
-
-    sysctl_rdstruct(oldp, oldlenp, newp, us.as_bytes())
-}
 
 /// `sysctl_cpustats`: `kern.cpustats.<cpu>`.
 pub fn sysctl_cpustats(
@@ -1740,7 +1639,8 @@ fn sysctl_file_node(
 /// The `hw` nodes of `bsd`'s subsystems, by id.
 static HW_NODES: [(i32, &dyn SysctlNode); 5] = [
     (HW_MACHINE, &MACHINE_NODE),
-    (HW_SENSORS, &Node(hw_sensors)),
+    // `hw.sensors`: the kernel's node (N7.1b).
+    (HW_SENSORS, &kernel::sensors::SensorsNode),
     (HW_UCOMNAMES, &Node(hw_ucomnames)),
     (HW_SMT, &Node(hw_smt)),
     (HW_BLOCKCPU, &Node(hw_blockcpu)),

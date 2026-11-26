@@ -120,7 +120,6 @@ use crate::dev::ofw::openfirm::{
 use crate::kassert;
 use crate::kern::kern_malloc::{free, malloc, mallocarray};
 use crate::kern::subr_autoconf::config_activate_children;
-use crate::kern::subr_evcount::{evcount_attach, evcount_detach};
 use crate::kern::subr_prf::panic;
 use crate::kprintf;
 #[cfg(feature = "multiprocessor")]
@@ -140,6 +139,7 @@ use crate::sys::malloc::{M_DEVBUF, M_TEMP, M_WAITOK, M_ZERO};
 use crate::sys::param::PAGE_SIZE;
 use crate::sys::queue::{ListEntry, ListHead, TailqEntry, TailqHead};
 use crate::sys::systm::{kernel_lock, kernel_unlock};
+use kernel::evcount::{evcount_attach, evcount_detach};
 
 /// The CPU interface's system registers, by the C's names (`s3_0_c4_c6_0` is `ICC_PMR_EL1`,
 /// ...), as `mrs`/`msr` operands.
@@ -1272,7 +1272,7 @@ pub fn agintc_attach(parent: Option<&Device>, self_: &Device, aux: *mut c_void) 
         sc.sc_pmr_shift.get()
     );
 
-    evcount_attach(&sc.sc_spur, "irq1023/spur", ptr::null());
+    evcount_attach(&sc.sc_spur, "irq1023/spur", None);
 
     icc_write!(ICC_SRE_EL1, ICC_SRE_EL1_EN);
     isb();
@@ -2169,11 +2169,7 @@ pub fn agintc_intr_establish(
     }
 
     if let Some(name) = name {
-        evcount_attach(
-            &hand.ih_count,
-            name,
-            ptr::from_ref(&hand.ih_irq).cast::<()>(),
-        );
+        evcount_attach(&hand.ih_count, name, Some(hand.ih_irq));
     }
 
     #[cfg(feature = "debug")]

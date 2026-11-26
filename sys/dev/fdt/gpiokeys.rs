@@ -61,6 +61,8 @@ use core::cell::Cell;
 use core::ffi::c_void;
 use core::ptr::{self, NonNull};
 
+use kernel::sensors::{sensor_attach, sensor_task_register, sensordev_install};
+
 use crate::dev::fdt::simplefb::SIMPLEFB_BURN_HOOK;
 use crate::dev::ofw::fdt::{
     OF_child, OF_getprop, OF_getpropint, OF_getpropintarray, OF_getproplen, OF_is_compatible,
@@ -71,7 +73,6 @@ use crate::dev::ofw::ofw_gpio::{
     gpio_controller_intr_establish,
 };
 use crate::dev::ofw::ofw_pinctrl::pinctrl_byname;
-use crate::kern::kern_sensors::{sensor_attach, sensor_task_register, sensordev_install};
 use crate::kern::kern_xxx::powerbutton_event;
 use crate::kern::subr_prf::{Str, printf};
 use crate::machine::fdt::{FdtAttachArgs, lid_action};
@@ -277,7 +278,7 @@ pub fn gpiokeys_attach(_parent: Option<&Device>, self_: &Device, aux: *mut c_voi
             let _ = unported!("device_register_wakeup");
         }
         if key.key_ih.get().is_none() {
-            sensor_task_register(arg, gpiokeys_update_key, 1);
+            sensor_task_register(arg.expose_provenance(), gpiokeys_update_key, 1);
         } else {
             gpiokeys_update_key(arg);
         }

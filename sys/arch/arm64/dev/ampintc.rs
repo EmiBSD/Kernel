@@ -106,7 +106,6 @@ use crate::arch::arm64::include::simplebusvar::SimplebusSoftc;
 use crate::dev::ofw::openfirm::{OF_getpropint, OF_is_compatible, OF_parent};
 use crate::kassert;
 use crate::kern::kern_malloc::{free, malloc, mallocarray};
-use crate::kern::subr_evcount::{evcount_attach, evcount_detach};
 use crate::kern::subr_prf::panic;
 use crate::kprintf;
 use crate::machine::bus::{
@@ -121,6 +120,7 @@ use crate::sys::malloc::{M_DEVBUF, M_NOWAIT, M_WAITOK, M_ZERO};
 use crate::sys::queue::{ListEntry, TailqEntry, TailqHead};
 use crate::sys::systm::{kernel_lock, kernel_unlock};
 use crate::sys::types::Vaddr;
+use kernel::evcount::{evcount_attach, evcount_detach};
 
 // registers
 /// `ICD_DCR`: the distributor control register.
@@ -527,7 +527,7 @@ pub fn ampintc_attach(parent: Option<&Device>, self_: &Device, aux: *mut c_void)
     };
     sc.sc_p_ioh.set(Some(p_ioh));
 
-    evcount_attach(&sc.sc_spur, "irq1023/spur", ptr::null());
+    evcount_attach(&sc.sc_spur, "irq1023/spur", None);
 
     let (iot, d, _) = regs();
     let ictr = bus_space_read_4(iot, d, ICD_ICTR);
@@ -1048,11 +1048,7 @@ pub fn ampintc_intr_establish(
     iq.iq_ci.set(ptr::from_ref(ci));
 
     if let Some(name) = name {
-        evcount_attach(
-            &hand.ih_count,
-            name,
-            ptr::from_ref(&hand.ih_irq).cast::<()>(),
-        );
+        evcount_attach(&hand.ih_count, name, Some(hand.ih_irq.get()));
     }
 
     #[cfg(feature = "debug")]

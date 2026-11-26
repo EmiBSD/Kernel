@@ -110,7 +110,7 @@ use crate::sys::param::{DEV_BSIZE, MAXPHYS};
 use crate::sys::proc::Proc;
 use crate::sys::queue::{SlistEntry, SlistHead, TailqEntry, TailqHead};
 use crate::sys::rwlock::Rwlock;
-use crate::sys::sensors::{Ksensor, Ksensordev, SensorTask};
+use crate::sys::sensors::{Ksensor, Ksensordev, SensorTaskRef};
 use crate::sys::task::{Task, Taskq};
 use crate::sys::types::{Daddr, Dev};
 use crate::sys::vnode::Vnode;
@@ -1611,7 +1611,9 @@ pub struct SrDiscipline {
 
 // SAFETY: every member is a cell of an integer, a raw pointer, a byte array, an `Option` of
 // a reference, `NonNull` or `fn`, a sensor or a SCSI wire structure (all valid as zero), a
-// zeroed task, mutex or iopool, or a list head or entry; no `Drop`.
+// zeroed task, mutex or iopool, or a list head or entry; no `Drop` but the kernel sensor's
+// check that its link is off its device's list, which `sr_sensors_delete` makes true before
+// the discipline is freed.
 unsafe impl SrZeroed for SrDiscipline {}
 
 /// Calls a hook, panicking (as the C's call through NULL would fault) when it is not set.
@@ -1846,7 +1848,7 @@ pub struct SrSoftc {
     /// `sc_sensordev`.
     pub sc_sensordev: Ksensordev,
     /// `sc_sensor_task`.
-    pub sc_sensor_task: Cell<Option<NonNull<SensorTask>>>,
+    pub sc_sensor_task: Cell<Option<SensorTaskRef>>,
     /// `sc_scsibus`: the bus `sr_attach` found, or NULL.
     pub sc_scsibus: Cell<Option<NonNull<ScsibusSoftc>>>,
     /// `sc_targets`: the target lookup has to be cheap since it happens for each I/O.
@@ -1857,7 +1859,8 @@ pub struct SrSoftc {
 
 // SAFETY: `#[repr(C)]` with the device first; the rest are locks, a `BioStatus` of integers
 // and byte arrays, list heads, a sensor device, cells of integers and of `Option`s of
-// `NonNull` and references: all valid as zero bytes.
+// `NonNull`, references and a `SensorTaskRef` (`MArc`, `#[repr(transparent)]` over a
+// `NonNull`, so `None` is zero): all valid as zero bytes.
 unsafe impl Softc for SrSoftc {}
 
 impl SrSoftc {

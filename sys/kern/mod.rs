@@ -26,8 +26,10 @@
 
 #[forbid(unsafe_code)]
 pub mod abi_module;
-#[forbid(unsafe_code)]
-pub mod clock_subr;
+// `kern/clock_subr.c` is `kernel::clock_subr` since N7.1b; the time-of-day chips still in
+// `bsd` (amd64's `isa/clock.rs`, frozen until N10) keep LZ's path through this alias
+// (docs/SCAFFOLDING.md).
+pub use kernel::clock_subr;
 #[forbid(unsafe_code)]
 pub mod dma_alloc;
 pub mod exec_elf;
@@ -62,7 +64,6 @@ pub mod kern_resource;
 pub mod kern_rwlock;
 #[forbid(unsafe_code)]
 pub mod kern_sched;
-pub mod kern_sensors;
 #[forbid(unsafe_code)]
 pub mod kern_sig;
 // `kern_smr.c` is `hal::smr` and `kernel::smr` since N6.0; the read sections' callers keep
@@ -85,7 +86,6 @@ pub mod kern_time;
 // still reached at this path by its callers.
 pub use crate::sys::timeout as kern_timeout;
 pub mod kern_unveil;
-pub mod kern_watchdog;
 pub mod kern_xxx;
 #[forbid(unsafe_code)]
 pub mod pipe_glue;
@@ -101,7 +101,6 @@ pub mod selftest;
 pub mod socket_glue;
 pub mod subr_autoconf;
 pub mod subr_disk;
-pub mod subr_evcount;
 // extent(9) moved into the kernel crate (N4.1): its legacy API is `sys/sys/extent.rs`, still
 // reached at this path by its callers.
 pub use crate::sys::extent as subr_extent;

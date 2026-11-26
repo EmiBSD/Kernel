@@ -92,6 +92,8 @@ use core::sync::atomic::{Ordering, fence};
 
 use libkern::{strlcat, strlcpy};
 
+use kernel::sensors::{sensor_attach, sensor_task_register, sensordev_install};
+
 use crate::dev::bio::{bio_register, bio_status, bio_status_init};
 use crate::dev::biovar::{
     BIO_MSG_INFO, BIO_MSG_LEN, BIO_STATUS_SUCCESS, BIOC_SDOFFLINE, BIOC_SDONLINE, BIOC_SDUNUSED,
@@ -126,7 +128,6 @@ use crate::dev::ic::nvmevar::{
 use crate::kern::kern_lock::{mtx_enter, mtx_enter_try, mtx_init, mtx_leave};
 use crate::kern::kern_malloc::{free, malloc, mallocarray};
 use crate::kern::kern_rwlock::{rw_enter_write, rw_exit_write, rw_init};
-use crate::kern::kern_sensors::{sensor_attach, sensor_task_register, sensordev_install};
 use crate::kern::subr_autoconf::{config_activate_children, config_found};
 use crate::kern::subr_prf::{Bitmask, Str, panic, printf, snprintf};
 use crate::machine::bus::{
@@ -640,7 +641,13 @@ pub fn nvme_attach(sc: &'static NvmeSoftc) -> Result<(), Errno> {
         sc.sc_spare_sensor.desc.set(desc);
         sensor_attach(&sc.sc_sensordev, &sc.sc_spare_sensor);
 
-        if sensor_task_register(nvme_cookie(sc), nvme_refresh_sensors, 60).is_none() {
+        if sensor_task_register(
+            nvme_cookie(sc).expose_provenance(),
+            nvme_refresh_sensors,
+            60,
+        )
+        .is_none()
+        {
             break 'attach NvmeAttachUnwind::FreeQ;
         }
 

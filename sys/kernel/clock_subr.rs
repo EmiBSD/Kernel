@@ -56,13 +56,13 @@
 
 /* <CODE> */
 //! Generic routines to convert between a POSIX date (seconds since 1/1/1970) and
-//! yr/mo/day/hr/min/sec: `kern/clock_subr.c`.
+//! yr/mo/day/hr/min/sec: `kern/clock_subr.c`, with `struct clock_ymdhms` of `<sys/time.h>`.
 //!
 //! Upstream: sys/kern/clock_subr.c @ 3ce1f3f79392
+//! LZ: sys/kern/clock_subr.rs@e8249449d905
 //!
-//! Status: `ported`. `clock_ymdhms_to_secs` and `clock_secs_to_ymdhms`, with `leapyear` and the
-//! month table. `struct clock_ymdhms`, `FROMBCD`/`TOBCD`, `SECDAY` and `POSIX_BASE_YEAR` are
-//! `<sys/time.h>`'s (`sys/time.rs`).
+//! The time-of-day chips (`efi_machdep`'s EFI clock, amd64's `mc146818`) keep the date broken
+//! down; these two functions turn it into the kernel's seconds and back.
 //!
 //! ## Deviations
 //! - `clock_secs_to_ymdhms` returns the broken-down time instead of filling an out parameter.
@@ -72,9 +72,21 @@
 //!   C reads past the end of `month_days[]`.
 //! - The C copies `month_days[]` to a local so as to make February 29 days in a leap year;
 //!   here the leap day is added to the month's length when it is looked up.
+//!
+//! ## Redesign
+//! - N7.1b: the module moves from `bsd` (`sys/kern/clock_subr.rs`) into the kernel with
+//!   `struct clock_ymdhms` ([`ClockYmdhms`]) and `POSIX_BASE_YEAR`, which `bsd`'s
+//!   `sys/sys/time.rs` re-exports; the arithmetic is LZ's, already safe. `bsd`'s path
+//!   `crate::kern::clock_subr` stays a re-export of this module for the chips' drivers still
+//!   in `bsd` (`docs/SCAFFOLDING.md`).
 
-use crate::sys::time::{ClockYmdhms, POSIX_BASE_YEAR, SECDAY};
-use crate::sys::types::Time;
+use hal::sys::types::Time;
+
+/// `SECDAY`: seconds in a day (`<sys/time.h>`).
+const SECDAY: i64 = 86400;
+
+/// `POSIX_BASE_YEAR`: traditional POSIX base year (`<sys/time.h>`).
+pub const POSIX_BASE_YEAR: i32 = 1970;
 
 /// `FEBRUARY`.
 const FEBRUARY: i32 = 2;
@@ -82,21 +94,29 @@ const FEBRUARY: i32 = 2;
 /// `month_days`: days in each month of a non-leap year.
 const MONTH_DAYS: [i32; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
-/// `leapyear`: this avoids some unnecessary modulo operations as compared with the usual
-/// `(year % 4 == 0 && year % 100 != 0) || year % 400 == 0`; it is otherwise equivalent.
-fn leapyear(year: i32) -> bool {
-    let mut rv = false;
+/// `struct clock_ymdhms`: "POSIX time" to/from "YY/MM/DD/hh/mm/ss".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ClockYmdhms {
+    /// `dt_year`.
+    pub dt_year: u16,
+    /// `dt_mon`.
+    pub dt_mon: u8,
+    /// `dt_day`.
+    pub dt_day: u8,
+    /// `dt_wday`: day of week.
+    pub dt_wday: u8,
+    /// `dt_hour`.
+    pub dt_hour: u8,
+    /// `dt_min`.
+    pub dt_min: u8,
+    /// `dt_sec`.
+    pub dt_sec: u8,
+}
 
-    if (year & 3) == 0 {
-        rv = true;
-        if (year % 100) == 0 {
-            rv = false;
-            if (year % 400) == 0 {
-                rv = true;
-            }
-        }
-    }
-    rv
+/// `leapyear`: a year divisible by 4, except the centuries not divisible by 400. The cheap
+/// test (`year & 3`) comes first, as in the C, so most years take no division.
+fn leapyear(year: i32) -> bool {
+    year & 3 == 0 && (year % 100 != 0 || year % 400 == 0)
 }
 
 /// `days_in_year(a)`.
@@ -104,9 +124,13 @@ fn days_in_year(year: i32) -> i32 {
     if leapyear(year) { 366 } else { 365 }
 }
 
-/// `days_in_month(a)` on the plain table (`month` is 1-based).
+/// `days_in_month(a)` on the plain table (`month` is 1-based; 0 outside 1..=12).
 fn days_in_month(month: i32) -> i32 {
-    MONTH_DAYS.get((month - 1) as usize).copied().unwrap_or(0)
+    usize::try_from(month - 1)
+        .ok()
+        .and_then(|m| MONTH_DAYS.get(m))
+        .copied()
+        .unwrap_or(0)
 }
 
 /// `clock_ymdhms_to_secs`: the POSIX time (seconds since 1/1/1970) of a broken-down date.
@@ -114,19 +138,15 @@ pub fn clock_ymdhms_to_secs(dt: &ClockYmdhms) -> Time {
     let year = i32::from(dt.dt_year);
     let mon = i32::from(dt.dt_mon);
 
-    // Compute days since start of time. First from years, then from months.
-    let mut days: i64 = 0;
-    for i in POSIX_BASE_YEAR..year {
-        days += i64::from(days_in_year(i));
-    }
+    // The days since the epoch: the whole years, the leap day of this one once February is
+    // past, the whole months, then the days of this month.
+    let mut days: i64 = (POSIX_BASE_YEAR..year)
+        .map(|y| i64::from(days_in_year(y)))
+        .sum();
     if leapyear(year) && mon > FEBRUARY {
         days += 1;
     }
-
-    // Months
-    for i in 1..mon {
-        days += i64::from(days_in_month(i));
-    }
+    days += (1..mon).map(|m| i64::from(days_in_month(m))).sum::<i64>();
     days += i64::from(dt.dt_day) - 1;
 
     // Add hours, minutes, seconds.
@@ -233,6 +253,20 @@ mod tests {
             };
             assert_eq!(clock_secs_to_ymdhms(*secs), want, "{secs}");
         }
+    }
+
+    #[test]
+    fn months_outside_the_table_have_no_days() {
+        assert_eq!(days_in_month(0), 0);
+        assert_eq!(days_in_month(13), 0);
+        assert_eq!(days_in_month(-5), 0);
+        // A 13th month adds nothing past December (the C reads past `month_days[]`).
+        let dec = ymdhms(2001, 12, 1, 0, 0, 0);
+        let m13 = ymdhms(2001, 13, 1, 0, 0, 0);
+        assert_eq!(
+            clock_ymdhms_to_secs(&m13) - clock_ymdhms_to_secs(&dec),
+            31 * SECDAY
+        );
     }
 
     #[test]
