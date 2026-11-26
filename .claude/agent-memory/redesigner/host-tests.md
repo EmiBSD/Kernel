@@ -304,3 +304,4 @@ metadata:
 - The host pmap's `zero_page` models nothing, so `UVM_PLA_ZERO`/`BUS_DMA_ZERO` is not testable on the host: say so in the test and let the boot selftest check it (N7.0).
 - A kernel `Timeout` armed by a host test can fire in any other test's `tick_once` (one wheel per process): assert a callback's calls as "these, then any number of the timeout's own" or delete the timeout first (N7.1b watchdog).
 - A kernel `Task` has no unlinking `Drop`: a test that frees the block holding a task still queued on a host queue aborts at the `PinEntry` drop; `task_del` it (or wait for the run) before the last handle goes (N7.1b sensor_task).
+- Moving a legacy driver's label read to the kernel's `readdisklabel` makes host tests that expected the host's `ENODEV` stub really read: they need a buffer cache (`bio_test_reset`, `bufq_test_reset`, `bufinit`) or `geteblk` hangs the whole binary, and the driver's own preconditions (vnd's VNF_HAVELABEL before vndstrategy) (N7.1d).

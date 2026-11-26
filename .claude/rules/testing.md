@@ -20,7 +20,7 @@ Four tiers. Every change lands with the tier it belongs to.
    2026-10-08, after the M16e close found it). Known resets (`rn_test_reset` went with `bsd`'s radix at N6.7b1: the kernel's
    trees keep no global),
    `wsmux_test_reset` (the mux table), `autoconf_test_reset` (`autoconf_attdet`),
-   `pf_osfp_test_reset` (the fingerprint list), `kmemstats_test_reset`; (N7.1b) the kernel's
+   `pf_osfp_test_reset` (the fingerprint list), `kmemstats_test_reset`, (N7.1d) the kernel's `disk_test_reset` (`kernel::dev::disk`: the disk list emptied, its handles forgotten, the counters zeroed; called by the disk tests' setup and the kernel's `hw.disknames` test); (N7.1b) the kernel's
    `evcount_test_reset`, `sensors_test_reset` and `wdog_test_reset` (the counters' and
    devices' lists unlinked and the per-CPU slots freed, the watchdog's driver and timeout
    forgotten), called by their own modules' test setups; `sensors_test_reset` keeps the
