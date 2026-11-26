@@ -51,7 +51,7 @@ $ sysctl vfs.nfs.iothreads
 $ sysctl -n vfs.nfs.nfsstats >/dev/null && echo stats
 
 ## ro
-! umount /nfsmnt 2>/dev/null; echo "/mnt/nfs -ro 127.0.0.1" >/etc/exports
+! umount /nfsmnt 2>/dev/null; echo "/mnt/nfs -ro -maproot=root 127.0.0.1" >/etc/exports
 ! kill -HUP $(cat /var/run/mountd.pid); sleep 2
 $ showmount -e 127.0.0.1
 $ mount_nfs 127.0.0.1:/mnt/nfs /nfsmnt && cat /nfsmnt/a
