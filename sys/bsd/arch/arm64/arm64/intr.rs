@@ -447,12 +447,14 @@ pub struct LegacyIc(&'static InterruptController);
 // `Cell`, which the driver writes before it calls `arm_intr_register_fdt`, so before the kernel
 // publishes the registration holding this `LegacyIc` (`insert_head`, a release store that the
 // walkers' acquire loads pair with). Of the structure's other `Cell`s, `ic_node` and
-// `ic_gic_its_id` are only read, once, by `arm_intr_register_fdt` before that publication;
-// `ic_cells` and `ic_phandle` are written after it, by the registration's `linked` hook on the
-// registering CPU, but `LegacyIc` never reads them, and their readers (the walkers of
-// `interrupt_controllers`) reach the structure only through that list, which links it after
-// the writes, under `IcHead`'s autoconf protocol. No `Cell` that `LegacyIc` reads is written
-// once another CPU can reach it, so sharing `&LegacyIc` cannot race.
+// `ic_gic_its_id` are never written after the driver registers the controller: they are read
+// by the registration and by the walkers of `interrupt_controllers` (ampintc's MSI frames read
+// `ic_node`, acpipci `ic_gic_its_id`); `ic_cells` and `ic_phandle` are written after the
+// publication, by the registration's `linked` hook on the registering CPU, but `LegacyIc`
+// never reads them, and their readers (the walkers of `interrupt_controllers`) reach the
+// structure only through that list, which links it after the writes, under `IcHead`'s
+// autoconf protocol. No `Cell` that `LegacyIc` reads is written once another CPU can reach
+// it, so sharing `&LegacyIc` cannot race.
 unsafe impl Sync for LegacyIc {}
 
 /// `ci` as the kernel's CPU number.
@@ -561,7 +563,10 @@ impl core_intr::InterruptController for LegacyIc {
     }
 
     /// The driver's `ic_barrier` makes its own `sched_barrier`: nothing left to wait for.
+    /// Every registered legacy controller sets the entry (the C calls it unconditionally,
+    /// `intr.c:916-922`): `KASSERT`ed, and skipped without `DIAGNOSTIC` as LZ did.
     fn barrier(&self, ih: IcCookie) -> BarrierWait {
+        kassert!(self.0.ic_barrier.is_some());
         if let Some(barrier) = self.0.ic_barrier {
             barrier(legacy_cookie(ih));
         }
@@ -890,6 +895,7 @@ pub fn arm_intr_route(cookie: NonNull<MachineIntrHandle>, enable: bool, ci: &Cpu
 pub fn intr_barrier(cookie: NonNull<MachineIntrHandle>) {
     match handle(cookie) {
         Handle::Legacy(ic, ih) => {
+            kassert!(ic.ic_barrier.is_some());
             if let Some(barrier) = ic.ic_barrier {
                 barrier(ih);
             }

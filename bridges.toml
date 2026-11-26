@@ -47,7 +47,8 @@ paid_by = "N7"
 # per legacy struct that arm_intr_register_fdt registers) and received by the kernel as a value
 # (IcDesc::ops, N7.2a1). The kernel's own pre-registration (PreregIc) implements it too; the
 # trait stays as API. Paid when the last legacy table goes: the GICs (N7.2a2 ampintc, N7.2a3
-# agintc), pciecam's barrier-only table (N7.5), acpipci's (N7.11).
+# agintc), pciecam's barrier-only table (N7.5), acpipci's (N7.11): the row goes at N7.11, with
+# the last one.
 # kernel::dev::arm64::intr::InterruptController
 [[bridge]]
 trait = "InterruptController"

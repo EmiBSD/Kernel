@@ -734,7 +734,10 @@ pub fn arm_intr_map_msi(node: i32, data: &mut u64) -> u32 {
 
         // Some device trees (e.g. those for the Rockchip RK3399 boards) are missing a
         // #msi-cells property. Assume the msi-specifier uses a single cell in that case.
-        let mcells = OF_getpropint(ctrl, b"#msi-cells", 1) as usize;
+        // A negative count (a malformed tree) maps nothing, as a short entry does.
+        let Ok(mcells) = usize::try_from(OF_getpropint(ctrl, b"#msi-cells", 1) as i32) else {
+            break;
+        };
         if cell.len() < mcells + 3 {
             break;
         }
@@ -1146,7 +1149,7 @@ mod tests {
     /// `#msi-cells`, 3 without the property, 5 with none), a bus whose `interrupt-parent` is
     /// the GIC with devices of each kind, a one-cell controller under it, a PCI host with an
     /// `interrupt-map` and an `msi-map`, a second whose `msi-map` names the zero-cell frame,
-    /// and a device with an `msi-parent`.
+    /// a third whose frame's `#msi-cells` is negative, and a device with an `msi-parent`.
     fn tree() -> TreeGuard {
         testutil::install();
         let mut b = FdtBuilder::new();
@@ -1211,6 +1214,14 @@ mod tests {
         b.end();
         b.begin(b"pci0");
         b.prop_cells(b"msi-map", &[0x0, 5, 0x10]);
+        b.end();
+        b.begin(b"msi@4");
+        b.prop(b"msi-controller", b"");
+        b.prop_cells(b"#msi-cells", &[0xffff_ffff]);
+        b.prop_cells(b"phandle", &[6]);
+        b.end();
+        b.begin(b"pci1");
+        b.prop_cells(b"msi-map", &[0x0, 6, 0x10, 0x10]);
         b.end();
         b.begin(b"msidev");
         b.prop_cells(b"msi-parent", &[2]);
@@ -1504,6 +1515,10 @@ mod tests {
         let mut data = 5;
         assert_eq!(arm_intr_map_msi(node(b"/pci0"), &mut data), 5);
         assert_eq!(data, 0x15);
+        // A negative `#msi-cells` (a malformed tree): no mapping, `data` untouched.
+        let mut data = 5;
+        assert_eq!(arm_intr_map_msi(node(b"/pci1"), &mut data), 0);
+        assert_eq!(data, 5);
         let mut data = 9;
         assert_eq!(arm_intr_map_msi(node(b"/msidev/fn@0"), &mut data), 2);
         assert_eq!(data, 9);
