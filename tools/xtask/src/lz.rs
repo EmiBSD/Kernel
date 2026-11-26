@@ -1946,6 +1946,74 @@ fn resolve_lz_item(
 // --- lz trace ----------------------------------------------------------------------------
 
 /// `cargo xtask lz trace <lz path>:<item>` | `--rust <path>:<item>` | `--c <c path>:<item>`.
+/// `cargo xtask lz patch <commit>`: the LZ commit's `git format-patch` mail on stdout, with the
+/// paths of its file headers (`diff --git`, `---`, `+++`, `rename`/`copy from`/`to`) in this
+/// tree's layout (`crate::native_of_lz`: the legacy tree's `sys/bsd/`, the loaders'
+/// `sys/boot/`), so `cargo xtask lz patch <hash> | git am -3` applies it where the files are
+/// (docs/SYNC.md). The message and the hunks are LZ's, untouched.
+pub(crate) fn patch(root: &Path, commit: &str) -> Result<()> {
+    let lz = open_lz(root)?;
+    let mail = git_raw(&lz.repo, &["format-patch", "-1", "--stdout", commit])?;
+    print!("{}", native_patch(&mail));
+    Ok(())
+}
+
+/// [`patch`]'s rewrite: only the header lines of each file's diff (from its `diff --git` line
+/// to its first `@@` hunk or `GIT binary patch`) are touched, so a hunk line that happens to
+/// read `--- a/...` stays as it is.
+fn native_patch(mail: &str) -> String {
+    let mut out = String::with_capacity(mail.len() + mail.len() / 16);
+    let mut in_header = false;
+    for line in mail.split_inclusive('\n') {
+        let (body, nl) = match line.strip_suffix('\n') {
+            Some(b) => (b, "\n"),
+            None => (line, ""),
+        };
+        if let Some(paths) = body.strip_prefix("diff --git a/") {
+            in_header = true;
+            let rewritten = paths.split_once(" b/").map_or_else(
+                || body.to_string(),
+                |(a, b)| {
+                    format!(
+                        "diff --git a/{} b/{}",
+                        crate::native_of_lz(a),
+                        crate::native_of_lz(b)
+                    )
+                },
+            );
+            out.push_str(&rewritten);
+            out.push_str(nl);
+            continue;
+        }
+        if in_header && (body.starts_with("@@") || body.starts_with("GIT binary patch")) {
+            in_header = false;
+        }
+        let mut done = false;
+        if in_header {
+            for prefix in [
+                "--- a/",
+                "+++ b/",
+                "rename from ",
+                "rename to ",
+                "copy from ",
+                "copy to ",
+            ] {
+                if let Some(p) = body.strip_prefix(prefix) {
+                    out.push_str(prefix);
+                    out.push_str(&crate::native_of_lz(p));
+                    out.push_str(nl);
+                    done = true;
+                    break;
+                }
+            }
+        }
+        if !done {
+            out.push_str(line);
+        }
+    }
+    out
+}
+
 pub(crate) fn trace(root: &Path, args: &[&str]) -> Result<()> {
     let lineage = load_lineage(root)?;
     let lz = open_lz(root)?;
@@ -2105,6 +2173,55 @@ mod tests {
         assert!(frozen_problems(&r).is_empty());
         r.status = SyncStatus::DeferredToN10;
         assert_eq!(frozen_problems(&r).len(), 1);
+    }
+
+    #[test]
+    fn a_patch_takes_the_native_paths_in_its_headers_only() {
+        let mail = "From 0123 Mon Sep 17 00:00:00 2001\n\
+                    Subject: [PATCH] kern: x\n\
+                    \n\
+                    \x20sys/kern/a.rs | 2 +-\n\
+                    \n\
+                    diff --git a/sys/kern/a.rs b/sys/kern/a.rs\n\
+                    index 1..2 100644\n\
+                    --- a/sys/kern/a.rs\n\
+                    +++ b/sys/kern/a.rs\n\
+                    @@ -1,2 +1,2 @@\n\
+                    --- a/sys/kern/not_a_header.rs\n\
+                    +x\n\
+                    diff --git a/sys/lib/libsa/old.rs b/sys/arch/arm64/stand/efiboot/new.rs\n\
+                    similarity index 90%\n\
+                    rename from sys/lib/libsa/old.rs\n\
+                    rename to sys/arch/arm64/stand/efiboot/new.rs\n\
+                    diff --git a/justfile b/justfile\n\
+                    --- a/justfile\n\
+                    +++ b/justfile\n\
+                    @@ -1 +1 @@\n\
+                    -a\n\
+                    +b";
+        let want = "From 0123 Mon Sep 17 00:00:00 2001\n\
+                    Subject: [PATCH] kern: x\n\
+                    \n\
+                    \x20sys/kern/a.rs | 2 +-\n\
+                    \n\
+                    diff --git a/sys/bsd/kern/a.rs b/sys/bsd/kern/a.rs\n\
+                    index 1..2 100644\n\
+                    --- a/sys/bsd/kern/a.rs\n\
+                    +++ b/sys/bsd/kern/a.rs\n\
+                    @@ -1,2 +1,2 @@\n\
+                    --- a/sys/kern/not_a_header.rs\n\
+                    +x\n\
+                    diff --git a/sys/boot/libsa/old.rs b/sys/boot/arm64/efiboot/new.rs\n\
+                    similarity index 90%\n\
+                    rename from sys/boot/libsa/old.rs\n\
+                    rename to sys/boot/arm64/efiboot/new.rs\n\
+                    diff --git a/justfile b/justfile\n\
+                    --- a/justfile\n\
+                    +++ b/justfile\n\
+                    @@ -1 +1 @@\n\
+                    -a\n\
+                    +b";
+        assert_eq!(native_patch(mail), want);
     }
 
     #[test]
