@@ -162,7 +162,7 @@ use hal::pin::{pin_static, project};
 use hal::pinlist::{PinAdapter, PinEntry, PinList};
 use hal::pool::AnyArc;
 use hal::rwlock::Rwlocked;
-use hal::sleep::{INFSLP, cold, tsleep_nsec, wakeup};
+use hal::sleep::{INFSLP, cold, sleep_finish, sleep_setup, wakeup};
 use hal::sys::errno::Errno;
 pub use hal::sys::sensors::*;
 use hal::user::bytes_of;
@@ -677,16 +677,28 @@ fn sensor_task_tick_on(st: &SensorTaskRef) {
 }
 
 /// `sensor_quiesce`: stops the refresh functions and waits for the running ones.
+///
+/// The C checks `sensors_running` and sleeps under the kernel lock, which the runs' wakeup
+/// also holds. Here the interlock is the sleep queue's own: the thread is on the channel's
+/// queue (`sleep_setup`) before it reads the count, so a run that drops the count to 0 after
+/// the read finds it there and wakes it (its `wakeup` takes the same queue lock); and the
+/// flag and the count are `SeqCst` on both sides, so either the last run sees the flag (and
+/// wakes) or this read sees its decrement (and does not sleep).
 pub fn sensor_quiesce() {
-    SENSORS_QUIESCED.store(1, Ordering::Relaxed);
-    while SENSORS_RUNNING.load(Ordering::Relaxed) > 0 {
-        let _ = tsleep_nsec(&SENSORS_RUNNING, PZERO, "sensorpause", INFSLP);
+    SENSORS_QUIESCED.store(1, Ordering::SeqCst);
+    loop {
+        sleep_setup(&SENSORS_RUNNING, PZERO, "sensorpause");
+        let busy = SENSORS_RUNNING.load(Ordering::SeqCst) > 0;
+        let _ = sleep_finish(INFSLP, busy);
+        if !busy {
+            break;
+        }
     }
 }
 
 /// `sensor_restart`.
 pub fn sensor_restart() {
-    SENSORS_QUIESCED.store(0, Ordering::Relaxed);
+    SENSORS_QUIESCED.store(0, Ordering::SeqCst);
 }
 
 /// `sensor_task_work`: one run: calls the driver's function unless the task is dying or the
@@ -694,16 +706,16 @@ pub fn sensor_restart() {
 fn sensor_task_work(arg: &AnyArc) {
     let st = sensor_task_of(arg);
 
-    SENSORS_RUNNING.fetch_add(1, Ordering::Relaxed);
+    SENSORS_RUNNING.fetch_add(1, Ordering::SeqCst);
     let period = {
         let p = st.period.write();
-        if *p > 0 && SENSORS_QUIESCED.load(Ordering::Relaxed) == 0 {
+        if *p > 0 && SENSORS_QUIESCED.load(Ordering::SeqCst) == 0 {
             (st.func)(core::ptr::with_exposed_provenance_mut(st.arg));
         }
         *p
     };
-    if SENSORS_RUNNING.fetch_sub(1, Ordering::Relaxed) == 1
-        && SENSORS_QUIESCED.load(Ordering::Relaxed) != 0
+    if SENSORS_RUNNING.fetch_sub(1, Ordering::SeqCst) == 1
+        && SENSORS_QUIESCED.load(Ordering::SeqCst) != 0
     {
         wakeup(&SENSORS_RUNNING);
     }
