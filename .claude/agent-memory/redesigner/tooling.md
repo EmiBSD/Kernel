@@ -420,3 +420,6 @@ metadata:
 - Never decide an item is dead from `git grep ... | head`: the cut list hid bsd's callers of `solocked_legacy` and a cleanup was written and reverted; count with `git grep -l` (no head) before deleting (N6.7b4).
 - Deleting a `bsd` dir that `tools/xtask/src/syscalls.rs`'s `ported_syscalls` scans (`sys/nfs`) breaks `gen-syscalls`: drop its entry, move the `pub fn sys_*` row into a scanned dir (`sys/kern/`), rerun `just gen-syscalls` (init_sysent's `use` follows) (N6.7b4).
 - lz check after deleting `bsd`'s copy of an LZ file lists every item only the copy held (81 for sys/nfs/); an LZ file no kernel module lists (`nfs_var.rs`) joins a kernel module's `lz` list with its licence block, `Upstream:` and `LZ:` lines, never `[[dropped]]` (N6.7b4).
+- Rust 1.99 deprecates `AtomicUsize::fetch_update` (renamed `try_update`, same arguments): the tree spells `try_update` (N7.0).
+- A generic `const fn` with `assert!` (`hal::mmio::Reg::new` against `R::SIZE`) is evaluated at compile time in a `const` item on 1.99: prove such a claim with `compile_fail` doctests beside a passing one of the same shape (`cargo test -p hal --doc mmio`) (N7.0).
+- The worktree guard refuses a Bash call that `cd`s into the scratchpad or runs a heredoc script from there: edit scratch files with Edit/Write and run every command from the worktree root (N7.0).

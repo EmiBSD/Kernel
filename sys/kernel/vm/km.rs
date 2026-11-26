@@ -189,6 +189,87 @@
 /*
  *	Utah $Hdr: vm_machdep.c 1.16.1.1 89/06/23$
  */
+
+/*
+ * Copyright (c) 2001-2003 Opsycon AB  (www.opsycon.se / www.opsycon.com)
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS
+ * OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ */
+
+/*
+ * Copyright (c) 2003-2004 Opsycon AB  (www.opsycon.se / www.opsycon.com)
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS
+ * OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ */
+/*-
+ * Copyright (c) 1996, 1997, 1998 The NetBSD Foundation, Inc.
+ * All rights reserved.
+ *
+ * This code is derived from software contributed to The NetBSD Foundation
+ * by Jason R. Thorpe of the Numerical Aerospace Simulation Facility,
+ * NASA Ames Research Center.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE NETBSD FOUNDATION, INC. AND CONTRIBUTORS
+ * ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+ * TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE FOUNDATION OR CONTRIBUTORS
+ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
 /* </LICENSES> */
 
 /* <CODE> */
@@ -199,10 +280,14 @@
 //! Upstream: sys/uvm/uvm_extern.h @ 3ce1f3f79392
 //! Upstream: sys/kern/vfs_biomem.c @ 3ce1f3f79392
 //! Upstream: sys/arch/arm64/arm64/vm_machdep.c @ 3ce1f3f79392
+//! Upstream: sys/arch/arm64/arm64/bus_space.c @ 3ce1f3f79392
+//! Upstream: sys/arch/arm64/arm64/bus_dma.c @ 3ce1f3f79392
 //! LZ: sys/uvm/uvm_km.rs@3c62ede68802
 //! LZ: sys/uvm/uvm_extern.rs@3c62ede68802
 //! LZ: sys/kern/vfs_biomem.rs@3c62ede68802
 //! LZ: sys/arch/arm64/arm64/vm_machdep.rs@3c62ede68802
+//! LZ: sys/arch/arm64/arm64/bus_space.rs@e8249449d905
+//! LZ: sys/arch/arm64/arm64/bus_dma.rs@e8249449d905
 //!
 //! A request names three modes: where the virtual space comes from ([`KmemVaMode`]: which
 //! kernel map, its alignment, whether to wait for room, the single-page allocator), what backs
@@ -312,6 +397,24 @@
 //!   reference it was given) and unmapped by its drop; [`KernelWindow`]'s twin over the
 //!   C's other source of a kernel range. Its bytes move only by copies through the window
 //!   (`kernel::uio::uiomove_window` straight to the uio's iovecs), never through a slice.
+//! - N7.0: `bus_space_map`'s and `bus_space_unmap`'s bodies (LZ: arm64's `generic_space_map`
+//!   and `generic_space_unmap` in `bsd`, the `vmmap` cursor bumped by hand and every page
+//!   entered through the legacy `pmap_kenter_cache` `unsafe fn`) are [`map_device`] and
+//!   [`unmap_device`]: the space chosen here, as the token's holder (the device window by
+//!   `KernelMapper::device_va`, else `km_alloc(kv_any, kp_none, kd_nowait)`), the pages
+//!   entered and the block made by `hal` (`KernelMapper::map_device`, which refuses managed
+//!   frames: `sys/hal/mmio.rs`), and the reverse. `bsd`'s `generic_space_map` keeps its name
+//!   and signature over [`map_device`] for its drivers (`machine::bus`, 163 modules) and takes
+//!   the address out of the block; its `generic_space_unmap` stays its own until they move.
+//! - N7.0: `bus_dmamem_alloc_range` of one segment with `bus_dmamem_map`, and
+//!   `bus_dmamem_unmap` with `bus_dmamem_free` (LZ: arm64's `_dmamem_*` in `bsd`, a segment
+//!   array, a `NonNull<u8>` mapping entered through the legacy `pmap_kenter_cache`, and the two
+//!   handed back separately on every exit path) are the provider [`bus_dma_memory`] of
+//!   `hal::dma::DmaBuf` for a bus with no IOMMU, a value as [`page_memory`]: the C's order
+//!   (the pages within the range, then `kv_any`/`kp_none` space, `kd_trylock` under
+//!   `BUS_DMA_NOWAIT`, each page entered write-back or, for `BUS_DMA_COHERENT` on a
+//!   non-coherent tag or `BUS_DMA_NOCACHE`, uncached; the reverse on free), one segment, the
+//!   buffer owning both halves. `bsd`'s `_dmamem_*` stay for its drivers.
 
 use core::marker::PhantomData;
 use core::ptr::NonNull;
@@ -319,10 +422,15 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use hal::arch::current::param::{PAGE_SHIFT, PAGE_SIZE};
 
+use hal::dma::{DmaBlock, DmaMemory, DmaReq, DmaSeg};
 use hal::kmbuf::{PageKind, PageMemory};
 use hal::mapped::MappedBytes;
+#[cfg(target_arch = "aarch64")]
+use hal::mmio::{DevCache, Mmio, RegBlock};
 use hal::once::OnceStatic;
-use hal::pmap::{HAVE_PMAP_DIRECT, KernelMapper, PMAP_NOMMU, PMAP_WIRED, Pmap, PmapRef};
+use hal::pmap::{
+    HAVE_PMAP_DIRECT, KernelMapper, PMAP_NOCACHE, PMAP_NOMMU, PMAP_WIRED, Pmap, PmapRef,
+};
 use hal::pool::PoolArc;
 use hal::rwlock::{Witness, WriteWitness};
 use hal::sleep::{INFSLP, PVM, tsleep_nsec, wakeup};
@@ -1685,6 +1793,195 @@ fn dma_alloc_in(nommu: bool, sz: usize, kp: &KmemPaMode, wait: bool) -> Option<V
     Some(sva)
 }
 
+/// `bus_space_map`'s body (`generic_space_map`, after `pmap_init`): the whole pages that hold
+/// `[pa, pa + size)` entered as device memory of type `cache` at kernel virtual space of the
+/// token's own, and the block as a value. The space is the next of the device window
+/// (`KernelMapper::device_va`, LZ's `vmmap`), or when the window has no room
+/// `km_alloc(kv_any, kp_none, kd_nowait)`, the C's for every mapping: `ENOMEM` when there is
+/// none. `EINVAL` when the range wraps or is shorter than `R::SIZE` (refused before any space
+/// is taken), or when `hal` refuses the block (a typed one not aligned for a `u64`), the
+/// `km_alloc` space then given back. `pmap_update` is nothing on both machines (the module's
+/// redesign), so it is not called.
+#[cfg(target_arch = "aarch64")]
+pub fn map_device<R: RegBlock>(pa: Paddr, size: usize, cache: DevCache) -> Result<Mmio<R>, Errno> {
+    if size < R::SIZE {
+        return Err(Errno::EINVAL);
+    }
+    let startpa = pa.trunc_page();
+    // An empty block still takes the page it starts in (hal's `map_device`), so the space is
+    // whole pages, one at least.
+    let endpa = pa
+        .as_usize()
+        .checked_add(size.max(1))
+        .and_then(|end| end.checked_next_multiple_of(PAGE_SIZE))
+        .ok_or(Errno::EINVAL)?;
+    let len = endpa - startpa.as_usize();
+    let off = pa.as_usize() - startpa.as_usize();
+    let mapper = token();
+    let (va, window) = match mapper.device_va(len) {
+        Some(va) => (va, true),
+        None => (
+            km_alloc(len, &KV_ANY, &KP_NONE, &KD_NOWAIT).ok_or(Errno::ENOMEM)?,
+            false,
+        ),
+    };
+    mapper
+        .map_device::<R>(va, startpa, off, size, cache)
+        .inspect_err(|_| {
+            // The window's space is never given back (it is not an allocator's).
+            if !window {
+                km_free(va, len, &KV_ANY, &KP_NONE);
+            }
+        })
+}
+
+/// `bus_space_unmap`'s body (`generic_space_unmap`): the mapping removed (`pmap_kremove`) and
+/// its space given back (`km_free(kv_any, kp_none)`), unless it is the device window's,
+/// which is never reused.
+#[cfg(target_arch = "aarch64")]
+pub fn unmap_device<R: RegBlock>(m: Mmio<R>) {
+    let mapper = token();
+    let (va, len) = mapper.unmap_device(m);
+    if !mapper.in_device_window(va) {
+        km_free(va, len, &KV_ANY, &KP_NONE);
+    }
+}
+
+/// The DMA memory of a bus with no IOMMU, whose bus address is the physical address
+/// (`hal::dma::DmaMemory`; arm64's `_dmamem_*` of `bus_dma.c`), for a tag that keeps DMA
+/// coherent or not.
+struct KmBusDma {
+    /// The tag's `BUS_DMA_COHERENT`.
+    coherent: bool,
+}
+
+impl KmBusDma {
+    /// `_dmamem_alloc_range` of one segment, then `_dmamem_map`, on a machine with (`nommu`
+    /// false) or without an MMU: the pages within the request's range or `dma_constraint`
+    /// (`uvm_pglistalloc(round_page(size), low, high, align, boundary, 1, flags)`, waiting or
+    /// not, zeroed on `BUS_DMA_ZERO`), then `km_alloc(kv_any, kp_none)` space (`kd_trylock`
+    /// under `BUS_DMA_NOWAIT`, else `kd_waitok`) with each page entered read and write,
+    /// write-back or uncached as the C chooses (`BUS_DMA_COHERENT` on a tag that is not
+    /// coherent, or `BUS_DMA_NOCACHE`: `pmap_kenter_pa`'s `PMAP_NOCACHE`), the pages given back
+    /// when there is no space (`ENOMEM`). Without an MMU (the host double) the direct map
+    /// serves, as `km_alloc`'s.
+    fn alloc_in(&self, nommu: bool, req: &DmaReq) -> Result<DmaBlock, Errno> {
+        let size = round_page(req.size);
+        let (low, high) = match req.range {
+            Some((low, high)) => (Paddr::new(low as usize), Paddr::new(high as usize)),
+            None => {
+                let c = super::init::machine().dma_constraint;
+                (c.ucr_low, c.ucr_high)
+            }
+        };
+        let mut plaflag = if req.nowait {
+            UVM_PLA_NOWAIT
+        } else {
+            UVM_PLA_WAITOK
+        };
+        if req.zero {
+            plaflag |= UVM_PLA_ZERO;
+        }
+        let pgl = Pglist::new();
+        uvm_pglistalloc(
+            size,
+            low,
+            high,
+            Paddr::new(req.align),
+            Paddr::new(req.boundary),
+            &pgl,
+            1,
+            plaflag,
+        )?;
+        let Some(first) = pgl.first().map(|pg| pg.phys_addr()) else {
+            kpanic(format_args!("_dmamem_alloc_range: empty page list"));
+        };
+        let sva = if nommu {
+            hal::pmap::direct_map(first)
+        } else {
+            let kd = if req.nowait { &KD_TRYLOCK } else { &KD_WAITOK };
+            let Ok(sva) = map_va(size, &KV_ANY, &KP_NONE, kd) else {
+                uvm_pglistfree(&pgl);
+                return Err(Errno::ENOMEM);
+            };
+            sva
+        };
+        let nocache = (!self.coherent && req.coherent) || req.nocache;
+        let mut off = 0;
+        while let Some(pg) = pgl.pop_head() {
+            let pa = pg.phys_addr().as_usize();
+            // One segment: the pages are contiguous (`nsegs` 1).
+            kassert!(pa == first.as_usize() + off);
+            if !nommu {
+                let pa = if nocache { pa | PMAP_NOCACHE } else { pa };
+                token().kenter(
+                    Vaddr::new(sva.as_usize() + off),
+                    Paddr::new(pa),
+                    PROT_READ | PROT_WRITE,
+                );
+            }
+            off += PAGE_SIZE;
+        }
+        let Some(va) = NonNull::new(core::ptr::with_exposed_provenance_mut::<u8>(sva.as_usize()))
+        else {
+            kpanic(format_args!("_dmamem_map: no address"));
+        };
+        Ok(DmaBlock {
+            va,
+            len: size,
+            seg: DmaSeg {
+                addr: first.as_usize() as u64,
+                len: size,
+            },
+            coherent: self.coherent,
+            cookie: 0,
+        })
+    }
+
+    /// `_dmamem_unmap` (the mappings removed, `pmap_kremove`, then the space given back,
+    /// `km_free(kv_any, kp_none)`), then `_dmamem_free` (the segment's pages back to the page
+    /// system, `uvm_pglistfree`), on a machine with or without an MMU.
+    fn free_in(nommu: bool, block: &DmaBlock) {
+        if !nommu {
+            let va = Vaddr::new(block.va.as_ptr().addr());
+            token().kremove(va, Vsize::new(block.len));
+            km_free(va, block.len, &KV_ANY, &KP_NONE);
+        }
+        let start = block.seg.addr as usize;
+        let frames = (start..start + block.seg.len)
+            .step_by(PAGE_SIZE)
+            .map(Paddr::new);
+        free_frames("_dmamem_free", frames);
+    }
+}
+
+// The provider's contract (`hal::dma::DmaMemory`): a block is `len` bytes of fresh kernel
+// space `alloc_in` mapped onto the segment's frames alone (or their direct map), read and
+// write, pages of the page system's that nothing else holds until `free` hands them back.
+impl DmaMemory for KmBusDma {
+    fn alloc(&self, req: &DmaReq) -> Result<DmaBlock, Errno> {
+        self.alloc_in(PMAP_NOMMU, req)
+    }
+
+    fn free(&self, block: DmaBlock) {
+        Self::free_in(PMAP_NOMMU, &block);
+    }
+}
+
+static KM_BUS_DMA_COHERENT: KmBusDma = KmBusDma { coherent: true };
+static KM_BUS_DMA: KmBusDma = KmBusDma { coherent: false };
+
+/// The DMA memory of a bus with no IOMMU (the bus address is the physical address), for a tag
+/// that keeps DMA coherent (`BUS_DMA_COHERENT` in its `_flags`) or not: what
+/// `hal::dma::DmaBuf::alloc` takes, a provider passed as a value.
+pub const fn bus_dma_memory(coherent: bool) -> &'static dyn DmaMemory {
+    if coherent {
+        &KM_BUS_DMA_COHERENT
+    } else {
+        &KM_BUS_DMA
+    }
+}
+
 /// The kernel map's DMA-reachable wired pages as `KmBuf` takes them (`uvm_vslock_device`'s
 /// bounce), a provider passed as a value.
 pub const fn dma_memory() -> &'static dyn PageMemory {
@@ -1725,7 +2022,10 @@ mod tests {
     use super::*;
     use crate::testutil;
 
+    use hal::dma::DmaBuf;
     use hal::kmbuf::KmBuf;
+    #[cfg(target_arch = "aarch64")]
+    use hal::mmio::Untyped;
     use hal::vm::uvmexp::UVMEXP;
 
     /// 16 MiB of pages for each test.
@@ -2332,6 +2632,199 @@ mod tests {
     fn testutil_frame() -> Paddr {
         let va = alloc_in(true, PAGE_SIZE, &KV_ANY, &KP_ZERO, &KD_NOWAIT).expect("a page");
         hal::pmap::direct_unmap(va).expect("its frame")
+    }
+
+    /// Two pages of host memory standing for a device's registers: outside the page system,
+    /// their address exposed (the host's direct map is the identity), never freed.
+    #[cfg(target_arch = "aarch64")]
+    fn device_frame() -> Paddr {
+        #[repr(C, align(4096))]
+        struct DevPages([u8; 8192]);
+        let p = std::boxed::Box::into_raw(std::boxed::Box::new(DevPages([0; 8192])));
+        Paddr::new(p.expose_provenance())
+    }
+
+    /// A device layout of 0x20 bytes.
+    #[cfg(target_arch = "aarch64")]
+    struct DevRegs;
+
+    #[cfg(target_arch = "aarch64")]
+    impl RegBlock for DevRegs {
+        const SIZE: usize = 0x20;
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn a_device_is_mapped_in_the_window_and_unmapping_takes_the_mapping_away() {
+        let _g = setup();
+        let frame = device_frame();
+        // The window's next page, taken: the mapping lands on the page after it.
+        let va = Vaddr::new(window_page().as_usize() + PAGE_SIZE);
+        let m = map_device::<DevRegs>(
+            Paddr::new(frame.as_usize() + 0x40),
+            DevRegs::SIZE,
+            DevCache::Device,
+        )
+        .expect("mapped");
+        assert_eq!(m.len(), DevRegs::SIZE);
+        assert_eq!(
+            extract(va.as_usize()),
+            Some(frame),
+            "the whole page, at the window's"
+        );
+        m.write_at::<u32>(0x1c, 0x5aa5_0ff0);
+        assert_eq!(m.read_at::<u32>(0x1c), 0x5aa5_0ff0);
+        unmap_device(m);
+        assert_eq!(extract(va.as_usize()), None);
+        assert_eq!(
+            window_page(),
+            Vaddr::new(va.as_usize() + PAGE_SIZE),
+            "the window's space is never given back"
+        );
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn an_empty_device_block_takes_its_page() {
+        let _g = setup();
+        let frame = device_frame();
+        let va = Vaddr::new(window_page().as_usize() + PAGE_SIZE);
+        let m = map_device::<Untyped>(frame, 0, DevCache::Device).expect("mapped");
+        assert!(m.is_empty());
+        assert_eq!(extract(va.as_usize()), Some(frame));
+        unmap_device(m);
+        assert_eq!(extract(va.as_usize()), None);
+        assert_eq!(window_page(), Vaddr::new(va.as_usize() + PAGE_SIZE));
+    }
+
+    /// The device window's next page, taken (and never given back): the next device mapping
+    /// lands on the page after it.
+    #[cfg(target_arch = "aarch64")]
+    fn window_page() -> Vaddr {
+        token().device_va(PAGE_SIZE).expect("the device window")
+    }
+
+    #[test]
+    fn the_bus_dma_memory_keeps_the_alignment_and_range_and_gives_the_pages_back() {
+        // Without an MMU the direct map serves, so the buffer's bytes are its frames'. The
+        // host's `pmap_zero_page` models nothing: `BUS_DMA_ZERO` reaches the page system
+        // (`UVM_PLA_ZERO`) and the boot selftest checks it on the machine.
+        let _g = setup();
+        let mem = bus_dma_memory(true);
+        let before = avail();
+        let probe = DmaBuf::alloc(
+            mem,
+            &DmaReq {
+                size: PAGE_SIZE,
+                ..DmaReq::default()
+            },
+        )
+        .expect("a page");
+        let base = probe.seg().addr;
+        drop(probe);
+        assert_eq!(avail(), before);
+        // A range of managed pages beside the probe's, above it if there are some.
+        let up = PHYS_TO_VM_PAGE(Paddr::new(base as usize + 64 * PAGE_SIZE)).is_some();
+        let (low, high) = if up {
+            (
+                base + 16 * PAGE_SIZE as u64,
+                base + 64 * PAGE_SIZE as u64 - 1,
+            )
+        } else {
+            (
+                base - 64 * PAGE_SIZE as u64,
+                base - 16 * PAGE_SIZE as u64 - 1,
+            )
+        };
+        let req = DmaReq {
+            size: 2 * PAGE_SIZE - 100,
+            align: 4 * PAGE_SIZE,
+            range: Some((low, high)),
+            nowait: true,
+            zero: true,
+            ..DmaReq::default()
+        };
+        let mut b = DmaBuf::alloc(mem, &req).expect("two pages in range");
+        let seg = b.seg();
+        assert_eq!(seg.len, 2 * PAGE_SIZE, "rounded to pages");
+        assert_eq!(seg.addr % (4 * PAGE_SIZE) as u64, 0);
+        assert!(seg.addr >= low && seg.addr + seg.len as u64 - 1 <= high);
+        assert!(b.is_coherent());
+        assert_eq!(avail(), before - 2);
+        let pg = PHYS_TO_VM_PAGE(Paddr::new(seg.addr as usize)).expect("a managed page");
+        assert!(!pg.is_free());
+        b.write::<u64>(b.len() - 8, 0x0123_4567_89ab_cdef);
+        assert_eq!(b.read::<u64>(b.len() - 8), 0x0123_4567_89ab_cdef);
+        drop(b);
+        assert_eq!(avail(), before, "_dmamem_free gave both pages back");
+        assert_eq!(
+            DmaBuf::alloc(bus_dma_memory(false), &DmaReq::default()).err(),
+            Some(Errno::EINVAL),
+            "no byte"
+        );
+    }
+
+    #[test]
+    fn the_bus_dma_map_path_enters_each_page_and_free_takes_them_back() {
+        // The map path, which the host never takes: kernel_map space, the pages entered.
+        let _g = setup();
+        let before = avail();
+        let tag = KmBusDma { coherent: false };
+        let req = DmaReq {
+            size: 3 * PAGE_SIZE,
+            coherent: true,
+            ..DmaReq::default()
+        };
+        let block = tag.alloc_in(false, &req).expect("mapped");
+        let va = block.va.as_ptr().addr();
+        assert!(va >= testutil::KM_VA_BASE && va < testutil::KM_KMEM_BASE);
+        assert_eq!(entry_at(KvMap::Kernel, Vaddr::new(va)), Some(false));
+        assert_eq!(
+            (block.len, block.seg.len, block.coherent),
+            (3 * PAGE_SIZE, 3 * PAGE_SIZE, false)
+        );
+        for i in 0..3 {
+            assert_eq!(
+                extract(va + i * PAGE_SIZE),
+                Some(Paddr::new(block.seg.addr as usize + i * PAGE_SIZE))
+            );
+        }
+        assert_eq!(avail(), before - 3);
+        KmBusDma::free_in(false, &block);
+        assert!((0..3).all(|i| extract(va + i * PAGE_SIZE).is_none()));
+        assert_eq!(entry_at(KvMap::Kernel, Vaddr::new(va)), None);
+        assert_eq!(avail(), before);
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn a_device_range_too_short_or_wrapping_is_refused_before_any_space_is_taken() {
+        let _g = setup();
+        let before = window_page();
+        assert!(matches!(
+            map_device::<DevRegs>(device_frame(), DevRegs::SIZE - 1, DevCache::Device),
+            Err(Errno::EINVAL)
+        ));
+        assert!(matches!(
+            map_device::<Untyped>(Paddr::new(usize::MAX - 8), 16, DevCache::Device),
+            Err(Errno::EINVAL)
+        ));
+        let va = window_page();
+        assert_eq!(
+            va,
+            Vaddr::new(before.as_usize() + PAGE_SIZE),
+            "no space taken"
+        );
+        // A block spanning two pages takes both.
+        let frame = device_frame();
+        let m = map_device::<Untyped>(
+            Paddr::new(frame.as_usize() + PAGE_SIZE - 4),
+            8,
+            DevCache::Posted,
+        )
+        .expect("mapped");
+        assert_eq!(window_page(), Vaddr::new(va.as_usize() + 3 * PAGE_SIZE));
+        unmap_device(m);
     }
 }
 /* </TESTS> */

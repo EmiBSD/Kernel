@@ -87,7 +87,7 @@
 //! backend (`crate::arch::current::pmap`: amd64's and arm64's at N3.1 commits 4 and 5, the
 //! host double's `BTreeMap` in `sys/hal/arch/host/pmap.rs`). The backend implements the
 //! crate-private [`PmapBackend`] contract; what only one machine's own code uses (amd64's TLB
-//! shootdown words and `PG_NX_BIT`, arm64's `VMMAP`, ...) stays `pub` in its backend module
+//! shootdown words and `PG_NX_BIT`, arm64's `VMMAP_SIZE`, ...) stays `pub` in its backend module
 //! and is reached by path from that machine's code.
 //!
 //! The behaviour is the C's (`uvm_pmap.h`, `pmap(9)`, the two `pmap.c`): `pmap_enter` fails only
@@ -190,6 +190,12 @@
 //! - The bridges the backends need from code still in `bsd`: [`TlbCpus`] (amd64's shootdown:
 //!   the CPU list, `ci_proc_pmap`, the IPIs; N4) and [`Random`] (`arc4random` for arm64's ASID
 //!   pick; N7), registered in `sys/hal/bridges.rs`.
+//! - N7.0: device mappings go through the token too. arm64's `vmmap` window (a `pub` cursor
+//!   `bsd`'s `bus_space_map` bumped itself, `VMMAP`) is handed out by
+//!   [`KernelMapper::device_va`] alone, by a compare-and-swap, so no space of it is given
+//!   twice; a page is entered read and write, never executable, by the backend's
+//!   `kenter_device` with the memory type a [`DevCache`] names, for
+//!   `KernelMapper::map_device` (`sys/hal/mmio.rs`), which refuses managed frames.
 
 use core::ops::Deref;
 use core::sync::atomic::{AtomicI64, AtomicU32, AtomicUsize, Ordering};
@@ -197,6 +203,8 @@ use core::sync::atomic::{AtomicI64, AtomicU32, AtomicUsize, Ordering};
 use crate::arch::current::pmap::{Backend, PmapMd, PvHead};
 use crate::assert::hal_panic;
 use crate::intr::IPL_VM;
+#[cfg(target_arch = "aarch64")]
+use crate::mmio::DevCache;
 use crate::mutex::Mutexed;
 use crate::once::OnceStatic;
 use crate::pool::{PR_WAITOK, PoolArc, TypedPool};
@@ -833,6 +841,42 @@ impl KernelMapper {
     pub fn kenter_cache(&self, va: Vaddr, pa: Paddr, prot: VmProt, cacheable: i32) {
         Backend::kenter_cache(va, pa, prot, cacheable);
     }
+
+    /// The next `len` bytes of the device window (arm64's `vmmap`, LZ's deviation of
+    /// `bus_space_map`: kernel virtual space below `virtual_avail`, outside every allocation of
+    /// `kernel_map`, never given back), the holder's from here on; `None` when they do not fit
+    /// (the caller takes `km_alloc(kv_any, kp_none)` space instead, as the C does for every
+    /// mapping) or before `pmap_bootstrap` set the window up.
+    #[cfg(target_arch = "aarch64")]
+    pub fn device_va(&self, len: usize) -> Option<Vaddr> {
+        // Whole pages, one at least: two empty requests would share an address, and a ragged
+        // one would leave every later address off a page.
+        crate::assert::kassert!(
+            len != 0 && len.is_multiple_of(crate::arch::current::param::PAGE_SIZE)
+        );
+        Backend::device_va(len)
+    }
+
+    /// Whether `va` lies in the device window ([`KernelMapper::device_va`]'s space, which is
+    /// never given back to an allocator).
+    #[cfg(target_arch = "aarch64")]
+    pub fn in_device_window(&self, va: Vaddr) -> bool {
+        Backend::in_device_window(va)
+    }
+
+    /// [`KernelMapper::map_device`]'s entry of one page: `pa` at `va`, `PROT_READ |
+    /// PROT_WRITE` and never executable, with the memory type `cache` (`pmap_kenter_cache`).
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn kenter_device(&self, va: Vaddr, pa: Paddr, cache: DevCache) {
+        Backend::kenter_device(va, pa, cache);
+    }
+
+    /// Whether the frame `pa` holds part of the kernel image (its text, data and BSS), which
+    /// [`KernelMapper::map_device`] refuses as it refuses managed frames.
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn in_kernel_image(&self, pa: Paddr) -> bool {
+        Backend::in_kernel_image(pa)
+    }
 }
 
 /// What amd64's TLB shootdown sends through (`pmap_tlb_shootpage`, `_shootrange`,
@@ -988,6 +1032,19 @@ pub(crate) trait PmapBackend {
     /// [`KernelMapper::kenter_cache`].
     #[cfg(target_arch = "aarch64")]
     fn kenter_cache(va: Vaddr, pa: Paddr, prot: VmProt, cacheable: i32);
+    /// [`KernelMapper::kenter_device`]: `pmap_kenter_cache(va, pa, PROT_READ | PROT_WRITE,
+    /// cache)` with the machine's memory type of `cache`.
+    #[cfg(target_arch = "aarch64")]
+    fn kenter_device(va: Vaddr, pa: Paddr, cache: DevCache);
+    /// [`KernelMapper::device_va`].
+    #[cfg(target_arch = "aarch64")]
+    fn device_va(len: usize) -> Option<Vaddr>;
+    /// [`KernelMapper::in_device_window`].
+    #[cfg(target_arch = "aarch64")]
+    fn in_device_window(va: Vaddr) -> bool;
+    /// [`KernelMapper::in_kernel_image`].
+    #[cfg(target_arch = "aarch64")]
+    fn in_kernel_image(pa: Paddr) -> bool;
     /// [`Pmap::fault_fixup`].
     #[cfg(target_arch = "aarch64")]
     fn fault_fixup(pmap: &Pmap, va: Vaddr, ftype: VmProt) -> bool;

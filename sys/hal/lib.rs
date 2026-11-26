@@ -102,6 +102,8 @@ pub mod clock;
 pub mod cons;
 #[forbid(unsafe_code)]
 pub mod cpu;
+// Memory shared with a device (N7.0).
+pub mod dma;
 pub mod intr;
 #[forbid(unsafe_code)]
 pub mod klock;
@@ -117,6 +119,13 @@ pub mod malloc;
     target_arch = "aarch64"
 ))]
 pub mod mapped;
+// Device registers over the kernel map's token (N7.0): wherever the pmap is.
+#[cfg(any(
+    not(target_os = "none"),
+    target_arch = "x86_64",
+    target_arch = "aarch64"
+))]
+pub mod mmio;
 pub mod mutex;
 #[forbid(unsafe_code)]
 pub mod netlock;

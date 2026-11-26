@@ -659,7 +659,7 @@ rust = "sys/hal/arch/arm64/pmap/backend.rs"
 crate = "hal"
 lz = ["sys/arch/arm64/arm64/pmap.rs", "sys/arch/arm64/include/pmap.rs"]
 status = "redesigned"
-notes = "N3.1 commit 5: arm64's PmapBackend: PmapMd (pm_mtx as Mutexed<()> and the Locked witness, the root's two pages, have_4_level_pt/pm_privileged/pm_pt0pa/pm_asid/pm_active/pm_guarded as atomics, the limit, the EFI flag, the count of user slots), PvHead (a Link under pv_mtx), user pteds as SharedBox<PteDesc> of the pool pted owned by their vp3 slot (into_raw/from_raw), the kernel's carved from pages; pmap_enter/remove/remove_pted/kenter/kremove/page_protect (the C's reference via PoolArc::from_value)/protect/fault_fixup/clear_modify/clear_reference/unwire/extract, bootstrap from BootstrapParams (both boot paths: the boot loader's L0 and the kernel slot's L1 copied, MAIR 2-4, TTBR1 switched, the ASID probe), pmap_init's pools and init_lower_half (the TTBR0/TCR switch after pluartcn_remap), growkernel under its own lock, load (pmap_setttb's body), load_efi/leave_efi, purge, the EFI pmap; LZ's files stay in bsd until commit 6; commit 7b: the kernel pmap refuses PROT_EXEC (pmap_enter, pmap_kenter_pa, pmap_kenter_cache) and growkernel's table descriptors of the managed range carry Lx_PT_PXN, stricter than the C (a deviation); N4.8d: pmap_tramp (PMAP_TRAMP) built as the C's, its root stolen with the kernel's by pmap_steal_roots (the hardware pages TRAMP_ROOT_OFFSET apart), refused by load, filled by postinit (pmap_postinit's head, from cpu_startup), whose pmap_tramp_check walks the tables and panics unless they map the trampoline's pages and nothing else; the pmap_kvp_map tail stays unconfigured"
+notes = "N3.1 commit 5: arm64's PmapBackend: PmapMd (pm_mtx as Mutexed<()> and the Locked witness, the root's two pages, have_4_level_pt/pm_privileged/pm_pt0pa/pm_asid/pm_active/pm_guarded as atomics, the limit, the EFI flag, the count of user slots), PvHead (a Link under pv_mtx), user pteds as SharedBox<PteDesc> of the pool pted owned by their vp3 slot (into_raw/from_raw), the kernel's carved from pages; pmap_enter/remove/remove_pted/kenter/kremove/page_protect (the C's reference via PoolArc::from_value)/protect/fault_fixup/clear_modify/clear_reference/unwire/extract, bootstrap from BootstrapParams (both boot paths: the boot loader's L0 and the kernel slot's L1 copied, MAIR 2-4, TTBR1 switched, the ASID probe), pmap_init's pools and init_lower_half (the TTBR0/TCR switch after pluartcn_remap), growkernel under its own lock, load (pmap_setttb's body), load_efi/leave_efi, purge, the EFI pmap; LZ's files stay in bsd until commit 6; commit 7b: the kernel pmap refuses PROT_EXEC (pmap_enter, pmap_kenter_pa, pmap_kenter_cache) and growkernel's table descriptors of the managed range carry Lx_PT_PXN, stricter than the C (a deviation); N4.8d: pmap_tramp (PMAP_TRAMP) built as the C's, its root stolen with the kernel's by pmap_steal_roots (the hardware pages TRAMP_ROOT_OFFSET apart), refused by load, filled by postinit (pmap_postinit's head, from cpu_startup), whose pmap_tramp_check walks the tables and panics unless they map the trampoline's pages and nothing else; the pmap_kvp_map tail stays unconfigured; N7.0: kenter_device (generic_space_map's pmap_kenter_cache, PROT_READ | PROT_WRITE, the DevCache memory type), device_va (vmmap by a compare-and-swap, then pmap_growkernel; none before the bootstrap set the cursor) and in_device_window; in_kernel_image (IMAGE's range moved by its physical offset)"
 
 [[module.fn]]
 lz = "sys/arch/arm64/arm64/pmap.rs::TABLE_ENTRIES"
@@ -1640,8 +1640,8 @@ adapted_by = ["sys/hal/pmap.rs", "sys/hal/arch/arm64/pmap/layout.rs", "sys/kerne
 rust = "sys/arch/arm64/arm64/bus_space.rs"
 lz = ["sys/arch/arm64/arm64/bus_space.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/pmap.rs", "sys/hal/arch/arm64/pmap/backend.rs", "sys/hal/arch/arm64/pmap/layout.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs"]
-notes = "M2: arm64_bs_tag, fdt_cons_bs_tag, generic_space_read/write_1/2/4/8, generic_space_map (identity inside the 1 GiB bootstrap device map until pmap_init; M6-b2: afterwards kernel-half mappings from the vmmap range through pmap_growkernel + pmap_kenter_cache with the cache mode from the flags, the C's km_alloc(kv_any); unmap = pmap_kremove, the range is not reused), unmap, region, vaddr; raw-multi and mmap are M6; kern_sig.c: generic_space_map takes its range from the vmmap window (VMMAP_SIZE) and reports running out of it instead of overlapping kernel_map; ; M12: generic_space_mmap and arm64_bs_tag's bus_private (NULL) and _space_mmap; after pmap_init a mapping beyond the vmmap window (a 256 MiB PCIe ECAM region) takes km_alloc(kv_any, kp_none, kd_nowait) as the C does for every mapping, given back with km_free by generic_space_unmap; pmap_update after map and unmap, as in C"
+adapted_by = ["sys/hal/pmap.rs", "sys/hal/arch/arm64/pmap/backend.rs", "sys/hal/arch/arm64/pmap/layout.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/hal/mmio.rs"]
+notes = "M2: arm64_bs_tag, fdt_cons_bs_tag, generic_space_read/write_1/2/4/8, generic_space_map (identity inside the 1 GiB bootstrap device map until pmap_init; M6-b2: afterwards kernel-half mappings from the vmmap range through pmap_growkernel + pmap_kenter_cache with the cache mode from the flags, the C's km_alloc(kv_any); unmap = pmap_kremove, the range is not reused), unmap, region, vaddr; raw-multi and mmap are M6; kern_sig.c: generic_space_map takes its range from the vmmap window (VMMAP_SIZE) and reports running out of it instead of overlapping kernel_map; ; M12: generic_space_mmap and arm64_bs_tag's bus_private (NULL) and _space_mmap; after pmap_init a mapping beyond the vmmap window (a 256 MiB PCIe ECAM region) takes km_alloc(kv_any, kp_none, kd_nowait) as the C does for every mapping, given back with km_free by generic_space_unmap; pmap_update after map and unmap, as in C; N7.0: generic_space_map after pmap_init is kernel::vm::km::map_device::<Untyped> (the vmmap window by the token, else km_alloc; the pages entered by hal's KernelMapper::map_device, managed frames refused) and the handle Mmio::into_legacy_va; the flags' memory types as before (DevCache); generic_space_unmap, the reads and writes unchanged; review S3: LZ's flag translation (PREFETCHABLE to Device-nGnRE, POSTED ignored; the C: PREFETCHABLE to PMAP_CACHE_CI, POSTED to nGnRE) is this module's deviation now, closed by N7.2b (simplebus's map) and N7.5 (pciecam's)"
 
 [[module]]
 rust = "sys/arch/arm64/arm64/conf.rs"
@@ -1668,7 +1668,7 @@ rust = "sys/hal/arch/arm64/cpufunc.rs"
 crate = "hal"
 lz = ["sys/arch/arm64/arm64/cpufunc.rs"]
 status = "redesigned"
-notes = "N4.8b: the cache, TLB and idle instructions for the code outside the pmap, safe for any argument: cpu_wfi (its own asm), the four TLB flushes and cpu_dcache_wb_range, cpu_dcache_wbinv_range, cpu_icache_sync_range, cpu_idcache_wbinv_range over the pmap's copies (pmap/cpufunc.rs); bsd's duplicates deleted (its cpufunc.rs kept them until N4)"
+notes = "N4.8b: the cache, TLB and idle instructions for the code outside the pmap, safe for any argument: cpu_wfi (its own asm), the four TLB flushes and cpu_dcache_wb_range, cpu_dcache_wbinv_range, cpu_icache_sync_range, cpu_idcache_wbinv_range over the pmap's copies (pmap/cpufunc.rs); bsd's duplicates deleted (its cpufunc.rs kept them until N4); N7.0: cpu_dcache_inv_dma, dc ivac over a hal::dma::DmaBuf's own bytes (the range checked inside the buffer, whose mapping is page-aligned whole pages, so every line discarded is its own): 1 unsafe; bsd's cpu_dcache_inv_range stays for its bus_dma"
 
 [[module]]
 rust = "sys/arch/arm64/arm64/cpuswitch.rs"
@@ -13809,7 +13809,7 @@ rust = "sys/hal/pmap.rs"
 crate = "hal"
 lz = ["sys/uvm/uvm_pmap.rs"]
 status = "redesigned"
-notes = "N3.1: pmap(9)'s machine-independent API in hal over a cfg-selected backend (crate::arch::current::pmap, the PmapBackend contract): PmapRef (counted handle with a static kernel arm; clone = pmap_reference, last drop = pmap_destroy, panics with leaf mappings left), KernelMapper (the kernel map's token from bootstrap), PageMd (vm_page_md), PhysPages (the page provider passed down, D16), BootstrapParams/KernelImage/Bootstrapped, the TlbCpus and Random bridges; pmap_statistics and the PMAP_* flags as uvm_pmap.rs (bsd's copy stays until commit 6); the module exists where a backend does (host now, amd64/arm64 with commits 4/5); N6.6a0: Random::random_buf (arc4random_buf), the bridge's third member"
+notes = "N3.1: pmap(9)'s machine-independent API in hal over a cfg-selected backend (crate::arch::current::pmap, the PmapBackend contract): PmapRef (counted handle with a static kernel arm; clone = pmap_reference, last drop = pmap_destroy, panics with leaf mappings left), KernelMapper (the kernel map's token from bootstrap), PageMd (vm_page_md), PhysPages (the page provider passed down, D16), BootstrapParams/KernelImage/Bootstrapped, the TlbCpus and Random bridges; pmap_statistics and the PMAP_* flags as uvm_pmap.rs (bsd's copy stays until commit 6); the module exists where a backend does (host now, amd64/arm64 with commits 4/5); N6.6a0: Random::random_buf (arc4random_buf), the bridge's third member; N7.0: KernelMapper::device_va and in_device_window (arm64's vmmap window handed out by the token alone, a compare-and-swap of the cursor) and the crate's kenter_device (one page read and write, never executable, with a DevCache memory type) for hal::mmio's map_device; review N1: device_va kasserts a nonzero whole-page length; in_kernel_image (crate) for map_device"
 [[module.fn]]
 lz = "sys/uvm/uvm_pmap.rs::pmap_prefer_align"
 native = []
@@ -13881,7 +13881,7 @@ reason = "project helper: the Rust GlobalAlloc over malloc(9)/free(9), feature a
 
 [[extra]]
 rust = "sys/kern/selftest.rs"
-reason = "project helper: boot-time self-tests under feature qemu, one line per subsystem for xtask smoke; selftest=trap asks for the deliberate bad access, selftest=uart for the console echo (M4; since M8 it opens the console's tty through cdevsw and reads a line through the line discipline) and selftest=clock for hz clock interrupts plus a timeout (M5); mbuf_chains after mbinit (M7b); bus_dma_check, called by each cpu_configure after bus_dma_init with the machine's tag (M7b); selftest=vio: vio_check brings vio0 up through ifioctl, sends a hand-built ARP request and waits for a frame through the rx interrupt (M7b); the kernel ping to 10.0.2.2 (M7b); buffer_cache (mapped anonymous buffers after bufinit) and pager_map (a three-page cluster through uvm_pagermapin) after cpu_startup (vfs stage 2); M11b: clockintr_percpu (MULTIPROCESSOR: every running CPU checks 20 more uptimes in clockintr_dispatch, none behind); M13: selftest=fb (fb_attached records the first frame buffer's wsemuldisplaydev_attach_args where efifb/simplefb would config_found wsdisplay; fb_check, after the deferred mountroot hooks, draws EmiBSD M13 through alloc_screen/show_screen and the screen's emulops and prints the text box and its glyph pixel count for xtask's --screenshot-after); M13 (wsdisplay): selftest=wscons (wscons_grid, after selftest=fb) prints the character grid of the first frame buffer's wsdisplay screens (origin, cell and grid size) for xtask's --screen-text check of text written to /dev/ttyC0"
+reason = "project helper: boot-time self-tests under feature qemu, one line per subsystem for xtask smoke; selftest=trap asks for the deliberate bad access, selftest=uart for the console echo (M4; since M8 it opens the console's tty through cdevsw and reads a line through the line discipline) and selftest=clock for hz clock interrupts plus a timeout (M5); mbuf_chains after mbinit (M7b); bus_dma_check, called by each cpu_configure after bus_dma_init with the machine's tag (M7b); selftest=vio: vio_check brings vio0 up through ifioctl, sends a hand-built ARP request and waits for a frame through the rx interrupt (M7b); the kernel ping to 10.0.2.2 (M7b); buffer_cache (mapped anonymous buffers after bufinit) and pager_map (a three-page cluster through uvm_pagermapin) after cpu_startup (vfs stage 2); M11b: clockintr_percpu (MULTIPROCESSOR: every running CPU checks 20 more uptimes in clockintr_dispatch, none behind); M13: selftest=fb (fb_attached records the first frame buffer's wsemuldisplaydev_attach_args where efifb/simplefb would config_found wsdisplay; fb_check, after the deferred mountroot hooks, draws EmiBSD M13 through alloc_screen/show_screen and the screen's emulops and prints the text box and its glyph pixel count for xtask's --screenshot-after); M13 (wsdisplay): selftest=wscons (wscons_grid, after selftest=fb) prints the character grid of the first frame buffer's wsdisplay screens (origin, cell and grid size) for xtask's --screen-text check of text written to /dev/ttyC0; N7.0: bus_dma_check also allocates two pages of hal::dma::DmaBuf from kernel::vm::km::bus_dma_memory(true) (zeroed, the first and last words and a copy across the page boundary written and read back, each sync, the drop), then the same on bus_dma_memory(false), whose syncs run the cache operations (review S2), before its unchanged line selftest: bus_dma ok"
 
 [[extra]]
 rust = "sys/kern/unported.rs"
@@ -14549,6 +14549,68 @@ lz = ["sys/uvm/uvm_pager.rs", "sys/kern/vfs_biomem.rs"]
 status = "redesigned"
 notes = "N3.4a: the pmap half of uvm_pagermapin/uvm_pagermapout as a value: MappedBytes, KernelMapper::map_frames (the mapping loop) and map_direct (the one-page case), the drop the pmap_remove; each frame a busy managed page (PhysPages::is_busy, the C's KASSERT(PG_BUSY)) claimed for one view (PageMd's PG_HAL_VIEW, which zero_page/copy_page/page_protect/VmPage::clear_bits of PG_BUSY/uvm_pageclean/clear_attrs refuse), the window checked unmapped, prot with PROT_READ; outside pmap.rs, which forbids unsafe. uvm_pagermapin/out themselves (segments, UVMPAGER_*, uvm_wait) stay in bsd's uvm_pager.rs until N3.4c. The gap until N3.5 (the token holder's contract): no live window is overlaid, removed or write-protected through the kernel map's token but by its drop, and no frame is a busy page that backs kernel memory (the buffer cache's, busy for the buffer's life); the frames stay busy until the drop (unbusying, freeing or reallocating a viewed page panics). N5.1: vfs_biomem.c's buf_map loop as KernelMapper::kenter_frames, the same claimed view over an unmanaged (kenter) mapping, on no pv chain, removed by the drop (kremove); MappedBytes::truncate is buf_fix_mapping's kremove of the tail; the contract now names what stays the holder's: no overlay or removal but by the drop or truncate, and no frame of a busy page that backs kernel memory outside a view given to map_frames or map_direct"
 
+[[module]]
+rust = "sys/hal/mmio.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/arm64/bus_space.rs", "sys/arch/arm64/include/bus.rs"]
+status = "redesigned"
+notes = "N7.0: bus_space(9)'s memory space as a value: Mmio<R> (the mapping, made only by KernelMapper::map_device: whole pages read and write, never executable, managed frames refused, len >= R::SIZE and a typed block aligned for u64 checked once; consumed only by unmap_device, the pmap_kremove; no Drop), Reg<R, T> (a register's offset, aligned and inside RegBlock::SIZE by Reg::new's asserts, at compile time in a const), MmioWord (u8..u64, sealed), DevCache (the four memory types of the C's generic_space_map: Device-nGnRnE, Device-nGnRE, normal uncached, write-back; LZ's translation of the flags and its deviation stay in bsd's generic_space_map, review S3), Untyped (bsd's handles: computed offsets only, read_at/write_at checked); 2 unsafe (the one load and the one store); into_legacy_va is scaffolding for bsd's BusSpaceHandle (N7.14); bsd's arm64 bus_space.rs and include/bus.rs keep every LZ item for their drivers: the generic_space_read_N/write_N rows (merged into Mmio::read/write) and the generic_space_map/generic_space_unmap rows (split) name the native shape while bsd keeps its own copies until N7.14; review N1, N2, residual: map_device also refuses a frame of the kernel image (KernelMapper::in_kernel_image, the bootstrap's record), an empty block takes the page it starts in, and the load and store SAFETY name the host tests' one thread; the pages stolen at boot stay the caller's word (nothing records them)"
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/bus_space.rs::generic_space_read_1"
+native = ["Mmio::read"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/bus_space.rs::generic_space_read_2"
+native = ["Mmio::read"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/bus_space.rs::generic_space_read_4"
+native = ["Mmio::read"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/bus_space.rs::generic_space_read_8"
+native = ["Mmio::read"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/bus_space.rs::generic_space_write_1"
+native = ["Mmio::write"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/bus_space.rs::generic_space_write_2"
+native = ["Mmio::write"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/bus_space.rs::generic_space_write_4"
+native = ["Mmio::write"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/bus_space.rs::generic_space_write_8"
+native = ["Mmio::write"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/bus_space.rs::generic_space_map"
+native = ["KernelMapper::map_device", "sys/kernel/vm/km.rs::map_device"]
+kind = "split"
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/bus_space.rs::generic_space_unmap"
+native = ["KernelMapper::unmap_device", "sys/kernel/vm/km.rs::unmap_device"]
+kind = "split"
+
+[[module]]
+rust = "sys/hal/dma.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/arm64/bus_dma.rs", "sys/arch/arm64/include/bus.rs"]
+status = "redesigned"
+notes = "N7.0: bus_dmamem(9)'s owned memory as a value: DmaBuf (one segment and its mapping from a bus's DmaMemory, a trait the kernel implements and passes as a value; freed by the drop, unmap then free; read/write of AbiPod types, copy_in/copy_out/zero word-wide where aligned, every range checked, writes by &mut self, no reference or slice of the bytes ever made; sync = _dmamap_sync_segment's switch over its own bytes, a barrier on a coherent tag), DmaReq (size, align, boundary, range, the BUS_DMA_* flags as named fields: the machines' values differ), DmaBlock, DmaSeg (bus_dma_segment_t), DmaSync (BUS_DMASYNC_*, hal's own values); alloc checks the provider's answer (check_block, and the segment's length, alignment, range and boundary: panic(9)); 2 unsafe (the one volatile load and store); dc ivac is arch/arm64/cpufunc.rs's cpu_dcache_inv_dma; bsd's arm64 bus_dma.rs and include/bus.rs keep every LZ item for their drivers; one segment only (a deviation until a kernel driver asks more)"
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/bus_dma.rs::_dmamap_sync_segment"
+native = ["DmaBuf::sync"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/arch/arm64/include/bus.rs::BusDmaSegment"
+native = ["DmaSeg"]
+kind = "renamed"
+
 [[extra]]
 rust = "sys/hal/user.rs"
 crate = "hal"
@@ -14562,7 +14624,7 @@ reason = "hal runtime, written new: the console primitive (cnputc, cngetc, cnpol
 [[extra]]
 rust = "sys/hal/trust.rs"
 crate = "hal"
-reason = "hal runtime, written new: the trust boundary of the memory bridges (alignment and size checks, the diagnostic probe); docs/ZERO_UNSAFE.md decision 30; N6.3a: the premise of hal::link::SaLink (a socket address lent by an interface address: the SaToken holder's contract and the readers' shared holding, review 1's B2); N6.5e: the token holder's proofs are lent (SaToken::lend_net, N6.5e review 1), exact, so the contract's proof-by-check clause is gone; N6.5e (5e1): the internet records read their own words (counted handles), so the SaLink boundary is enc(4)'s address alone"
+reason = "hal runtime, written new: the trust boundary of the memory bridges (alignment and size checks, the diagnostic probe); docs/ZERO_UNSAFE.md decision 30; N6.3a: the premise of hal::link::SaLink (a socket address lent by an interface address: the SaToken holder's contract and the readers' shared holding, review 1's B2); N6.5e: the token holder's proofs are lent (SaToken::lend_net, N6.5e review 1), exact, so the contract's proof-by-check clause is gone; N6.5e (5e1): the internet records read their own words (counted handles), so the SaLink boundary is enc(4)'s address alone; N7.0: the device mappings (hal::mmio::Mmio): what map_device checks (no managed frame, never executable) and what stays the token holder's word (the virtual range its own, the physical range a device's registers, not RAM outside the managed pages); N7.0: the DMA memory provider's contract (hal::dma::DmaMemory: mapped kernel memory holding no Rust object, the segment's frames, the caller's alone until free) and what DmaBuf::alloc checks"
 
 [[extra]]
 rust = "sys/kern/hal_bridges.rs"
@@ -19531,9 +19593,25 @@ reason = "pmemranges are &'static by construction (hal::bootmem::steal_one, neve
 [[module]]
 rust = "sys/kernel/vm/km.rs"
 crate = "kernel"
-lz = ["sys/uvm/uvm_km.rs", "sys/uvm/uvm_extern.rs", "sys/kern/vfs_biomem.rs", "sys/arch/arm64/arm64/vm_machdep.rs"]
+lz = ["sys/uvm/uvm_km.rs", "sys/uvm/uvm_extern.rs", "sys/kern/vfs_biomem.rs", "sys/arch/arm64/arm64/vm_machdep.rs", "sys/arch/arm64/arm64/bus_space.rs", "sys/arch/arm64/arm64/bus_dma.rs"]
 status = "redesigned"
-notes = "N3.2: km_alloc/km_free, uvm_km_pgremove_intrsafe, the kv_*/kp_*/kd_* modes (kp_dma* stay in bsd's uvm_km.rs), no_constraint and the kmem_*_mode structs in the kernel crate, over the KmMaps bridge (the kernel maps, N3.5); N3.3: the page system is the kernel's (kernel::vm::page), so the KmPages bridge is gone and km_alloc/km_free work in the C's order over page lists (km_alloc: the pages, then the space, then the mappings; km_free: the range's pages on one list, the mappings removed, the list freed); kp_nomem/kp_pageable on the host double report LZ's unported line again (kernel::prf); holds the KernelMapper token (adopt_mapper from machine::pmap's pmap_bootstrap, lent to the legacy wrappers by legacy_mapper until N7); implements hal's PageMemory (KmBuf) and ModuleMemory (the module loader, gone with it at the N5 close, decision 47); N3.5 S1: the kernel maps' slots (kernel_map, kmem_map, exec_map, phys_map: OnceStatic<&'static VmMap>, install_submap, map_of, is_kernel_map) and uvm_km_pgremove (from bsd's uvm_km.rs, whose copy stays until the flip); uvm_km_init over a static kernel_map_store, uvm_km_suballoc, VM_KERNEL_SPACE_SIZE (from uvm_param.rs: a moved row at S2); Extracted, KernelWindow, uvm_map_extract_window and foreign_window (a window minted only from uvm_map_extract's result, unmapped by its drop); dma_memory (KmBuf's DMA-reachable provider); N3.5 S2: the KmMaps bridge is gone: a mode's virtual space is uvm_map/uvm_unmap of the kernel's own map in its slot (kernel_map from uvm_km_init, kmem_map from kmeminit, exec_map/phys_map from cpu_startup, install_submap), km_allocva sleeps on the map's address; kp_dma* are bsd's sys/kern/vm_bsd.rs; N5.1: the buffer cache's kva arena as BufArena (buf_mem_init's uvm_map of kernel_map, PROT_NONE; fake ranges no arena reuses without an MMU) handing out BufSlots of MAXPHYS, the only addresses BufSlot::map enters a buffer's pages at (KernelMapper::kenter_frames) and BufArena::unmap takes a view back to (buf_unmap); physio's window as PhysWindow (vm_machdep.c's vmapbuf/vunmapbuf: kv_physwait space, the user pmap's extract per wired page, the token's kenter; kremove and km_free on drop), made only by glue's DeviceLock::vmapbuf over the range it wired and borrowing it, the address only, no slice; KV_PHYSWAIT moved here (arm64's copy, vmapbuf and vunmapbuf left vm_machdep.rs and the machine contract with physio's switch); lz gains sys/kern/vfs_biomem.rs and sys/arch/arm64/arm64/vm_machdep.rs"
+notes = "N3.2: km_alloc/km_free, uvm_km_pgremove_intrsafe, the kv_*/kp_*/kd_* modes (kp_dma* stay in bsd's uvm_km.rs), no_constraint and the kmem_*_mode structs in the kernel crate, over the KmMaps bridge (the kernel maps, N3.5); N3.3: the page system is the kernel's (kernel::vm::page), so the KmPages bridge is gone and km_alloc/km_free work in the C's order over page lists (km_alloc: the pages, then the space, then the mappings; km_free: the range's pages on one list, the mappings removed, the list freed); kp_nomem/kp_pageable on the host double report LZ's unported line again (kernel::prf); holds the KernelMapper token (adopt_mapper from machine::pmap's pmap_bootstrap, lent to the legacy wrappers by legacy_mapper until N7); implements hal's PageMemory (KmBuf) and ModuleMemory (the module loader, gone with it at the N5 close, decision 47); N3.5 S1: the kernel maps' slots (kernel_map, kmem_map, exec_map, phys_map: OnceStatic<&'static VmMap>, install_submap, map_of, is_kernel_map) and uvm_km_pgremove (from bsd's uvm_km.rs, whose copy stays until the flip); uvm_km_init over a static kernel_map_store, uvm_km_suballoc, VM_KERNEL_SPACE_SIZE (from uvm_param.rs: a moved row at S2); Extracted, KernelWindow, uvm_map_extract_window and foreign_window (a window minted only from uvm_map_extract's result, unmapped by its drop); dma_memory (KmBuf's DMA-reachable provider); N3.5 S2: the KmMaps bridge is gone: a mode's virtual space is uvm_map/uvm_unmap of the kernel's own map in its slot (kernel_map from uvm_km_init, kmem_map from kmeminit, exec_map/phys_map from cpu_startup, install_submap), km_allocva sleeps on the map's address; kp_dma* are bsd's sys/kern/vm_bsd.rs; N5.1: the buffer cache's kva arena as BufArena (buf_mem_init's uvm_map of kernel_map, PROT_NONE; fake ranges no arena reuses without an MMU) handing out BufSlots of MAXPHYS, the only addresses BufSlot::map enters a buffer's pages at (KernelMapper::kenter_frames) and BufArena::unmap takes a view back to (buf_unmap); physio's window as PhysWindow (vm_machdep.c's vmapbuf/vunmapbuf: kv_physwait space, the user pmap's extract per wired page, the token's kenter; kremove and km_free on drop), made only by glue's DeviceLock::vmapbuf over the range it wired and borrowing it, the address only, no slice; KV_PHYSWAIT moved here (arm64's copy, vmapbuf and vunmapbuf left vm_machdep.rs and the machine contract with physio's switch); lz gains sys/kern/vfs_biomem.rs and sys/arch/arm64/arm64/vm_machdep.rs; N7.0: map_device and unmap_device (bus_space_map's and bus_space_unmap's bodies: the device window by KernelMapper::device_va, else km_alloc(kv_any, kp_none, kd_nowait); hal's map_device/unmap_device; km_free unless the space is the window's, never reused), cfg(aarch64) as the token's device entries; lz gains sys/arch/arm64/arm64/bus_space.rs; N7.0 (commit 4): bus_dma_memory(coherent), hal::dma::DmaMemory for a bus with no IOMMU (KmBusDma: _dmamem_alloc_range of one segment then _dmamem_map in the C's order and cache choice, _dmamem_unmap then _dmamem_free; the direct map without an MMU); lz gains sys/arch/arm64/arm64/bus_dma.rs; review N1: map_device takes one page at least (an empty block's page), so the device window is asked whole pages only"
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/bus_dma.rs::_dmamem_alloc_range"
+native = ["KmBusDma::alloc"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/bus_dma.rs::_dmamem_map"
+native = ["KmBusDma::alloc"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/bus_dma.rs::_dmamem_unmap"
+native = ["KmBusDma::free"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/bus_dma.rs::_dmamem_free"
+native = ["KmBusDma::free"]
+kind = "merged"
 [[module.fn]]
 lz = "sys/uvm/uvm_km.rs::kv_map_of"
 native = ["map_of"]

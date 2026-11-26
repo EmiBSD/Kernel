@@ -142,6 +142,36 @@
 //! handles that copy their own words by atomic loads (`SaWords::read`), and `bsd`'s legacy
 //! readers take that copy, so no premise is left on that side.
 //!
+//! A device mapping (`hal::mmio::Mmio`, N7.0) is a sixth: the kernel map's token maps a
+//! physical range as device registers (`KernelMapper::map_device`) at a virtual range its
+//! holder names, the space `KernelMapper::device_va` handed out or the holder's own
+//! `km_alloc(kv_any, kp_none)`. What `hal` checks: no frame of it is a managed page (the page
+//! provider's `md_of`) or holds the kernel image (the bootstrap's record of it), so RAM the
+//! page system hands out and the kernel's own text and data are never device memory; the mapping
+//! is read and write and never executable; it is made only there and removed only by
+//! `unmap_device`, which consumes the value. What it cannot check is the caller's word, as
+//! for `kenter`: that the virtual range is the holder's and unmapped, and that the physical
+//! range is a device's registers as the firmware describes them (a device tree's `reg`, a PCI
+//! BAR), not RAM outside the managed pages and the image (the pages stolen at boot, the boot
+//! page tables among them: the provider hands them out one by one and nothing records them),
+//! whose bytes Rust objects occupy. The `// SAFETY:` of `Mmio`'s load and store rests on both: the
+//! accesses touch memory outside every Rust allocation, and do not trap. The boundary narrows
+//! when the boot memory map is a type (N9).
+//!
+//! A bus's DMA memory provider (`hal::dma::DmaMemory`, N7.0) is a seventh, a value the kernel
+//! passes (`kernel::vm::km::bus_dma_memory`, the one production provider until the SMMU's at
+//! N7.11): a block it answers is `len` bytes at `va` of kernel memory mapped read and write
+//! for the CPU, holding no Rust object (pages of the page system no pool, `KmBuf` or `malloc`
+//! holds), whose frames are the bus addresses of its one segment, the caller's alone until
+//! `free` takes it back unchanged. `DmaBuf::alloc` checks what it can on every answer: the
+//! mapping page-aligned and covering the request ([`check_block`], probed under
+//! `diagnostic`), the segment as long as the request, aligned as asked, inside the range and
+//! not across the boundary. That the mapping's frames are the segment's, and that nothing else
+//! holds them, is the provider's word. The `// SAFETY:` of `DmaBuf`'s load and store and of
+//! arm64's `cpu_dcache_inv_dma` rest on it: the bytes are outside every Rust allocation, so a
+//! device's writes race nothing the language sees, and a discarded line loses nothing a
+//! reference observes.
+//!
 //! ## Redesign
 //! - Not a port: the C trusts `km_alloc`, `pool_get` and `malloc` silently. Here the trust is
 //!   one function every memory piece calls, so it is audited in one place.

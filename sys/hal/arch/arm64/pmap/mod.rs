@@ -27,7 +27,8 @@
 //! N5 close (decision 47).
 //!
 //! What arm64's own code (`bsd`'s `sys/arch/arm64/`, until it moves with its owners) names by
-//! path: [`VMMAP`] and [`VMMAP_SIZE`] (`bus_space`'s device window); the cache modes and the
+//! path: [`VMMAP_SIZE`] (`bus_space`'s device window, whose cursor only the kernel map's token
+//! hands out since N7.0); the cache modes and the
 //! vp geometry of [`layout`] (`bus_space`, `bus_dma`, `smmu`); [`init_lower_half`] (the boot
 //! glue's `pmap_init`, after `pluartcn_remap`); [`stolen_bounds`] (`pmap_steal_memory`'s
 //! out-parameters); [`kernel_pt0pa`] (`cpu_init` and the secondary processors' start);
@@ -44,8 +45,10 @@ mod vp;
 pub use asid::asid_width;
 pub use backend::postinit;
 pub(crate) use backend::{Backend, PmapMd};
+// `VMMAP`, the device window's cursor, is the backend's alone since N7.0: only the kernel map's
+// token hands its space out (`hal::pmap::KernelMapper::device_va`).
 pub use backend::{
-    VMMAP, VMMAP_SIZE, init_lower_half, kernel_pt0pa, stolen_bounds, switch_mmu_kernel_table,
+    VMMAP_SIZE, init_lower_half, kernel_pt0pa, stolen_bounds, switch_mmu_kernel_table,
 };
 pub(crate) use vp::PvHead;
 /* </CODE> */

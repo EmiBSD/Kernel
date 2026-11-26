@@ -30,22 +30,30 @@
 //! `pmap_enter`s fail with `ENOMEM`, as a machine's do under `PMAP_CANFAIL` without a pv entry
 //! or a page-table page. `resident_count` is the number of mappings. A pmap's limit is
 //! `VM_MAXUSER_ADDRESS`, an EFI pmap's (aarch64 hosts) `1 << EFI_SPACE_BITS` as arm64's.
+//! A device mapping (aarch64 hosts) has no memory type, and the device window is a cursor
+//! over addresses of its own, as arm64's `vmmap`.
 
 // The host double alone links std outside the tests (rust-kernel.md: the host doubles).
 extern crate std;
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
+#[cfg(target_arch = "aarch64")]
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::param::{
     PAGE_MASK, PAGE_SIZE, VM_MAX_KERNEL_ADDRESS, VM_MAXUSER_ADDRESS, VM_MIN_KERNEL_ADDRESS,
 };
 use crate::intr::IPL_VM;
+#[cfg(target_arch = "aarch64")]
+use crate::mmio::DevCache;
 use crate::pmap::{BootstrapParams, PageMd, PhysPages, Pmap, PmapBackend, PmapStatistics, VmProt};
 use crate::pool::PR_WAITOK;
 use crate::sys::errno::Errno;
 use crate::sys::mman::PROT_NONE;
+#[cfg(target_arch = "aarch64")]
+use crate::sys::mman::{PROT_READ, PROT_WRITE};
 use crate::sys::types::{Paddr, Vaddr, Vsize};
 use crate::vm::param::round_page;
 
@@ -112,6 +120,17 @@ static KERNEL_PMAP: Pmap = Pmap::kernel_with(PmapMd::new());
 
 /// `pmap_initialized`.
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+/// The host's device window: arm64's `vmmap` size, below the kernel crate's test maps
+/// (`0xffff_7000_0000_0000`) and its fake buffer arenas (`0xffff_6000_0000_0000`).
+#[cfg(target_arch = "aarch64")]
+const DEVICE_BASE: usize = 0xffff_5000_0000_0000;
+/// Its size.
+#[cfg(target_arch = "aarch64")]
+const DEVICE_SIZE: usize = 1024 * PAGE_SIZE;
+/// Its cursor.
+#[cfg(target_arch = "aarch64")]
+static DEVICE_NEXT: AtomicUsize = AtomicUsize::new(DEVICE_BASE);
 
 /// The host double's backend.
 pub(crate) struct Backend;
@@ -329,6 +348,35 @@ impl PmapBackend for Backend {
     #[cfg(target_arch = "aarch64")]
     fn kenter_cache(va: Vaddr, pa: Paddr, prot: VmProt, _cacheable: i32) {
         Self::kenter(va, pa, prot);
+    }
+
+    /// No memory types on the host.
+    #[cfg(target_arch = "aarch64")]
+    fn kenter_device(va: Vaddr, pa: Paddr, _cache: DevCache) {
+        Self::kenter(va, pa, PROT_READ | PROT_WRITE);
+    }
+
+    /// arm64's `vmmap` window at addresses no other test range uses (a cursor, as arm64's).
+    #[cfg(target_arch = "aarch64")]
+    fn device_va(len: usize) -> Option<Vaddr> {
+        DEVICE_NEXT
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |va| {
+                va.checked_add(len)
+                    .filter(|&e| e <= DEVICE_BASE + DEVICE_SIZE)
+            })
+            .ok()
+            .map(Vaddr::new)
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn in_device_window(va: Vaddr) -> bool {
+        (DEVICE_BASE..DEVICE_BASE + DEVICE_SIZE).contains(&va.as_usize())
+    }
+
+    /// The host double has no kernel image among its frames.
+    #[cfg(target_arch = "aarch64")]
+    fn in_kernel_image(_pa: Paddr) -> bool {
+        false
     }
 
     /// The host emulates nothing.
