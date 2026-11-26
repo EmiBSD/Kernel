@@ -20,6 +20,10 @@
 //! `cargo xtask hal-check`: the rules of the `hal` crate (`sys/hal/`), the only crate of the
 //! system where `unsafe` may live (docs/ZERO_UNSAFE.md, sections 0.1 and 0.2; decision 20).
 //!
+//! Rule L1 keeps the leaf crates grouped: under `sys/lib/sysdefs/`, `sys/lib/libkern/` and
+//! `sys/lib/libz/` no `.rs` file sits at the crate root but `lib.rs`; every module lives in a
+//! group directory (libsa, the boot loaders', is out of scope).
+//!
 //! Rules D1 and D2 keep drivers and devices apart (hal's groups, 2026-11-26): D1, no file under
 //! `sys/hal/dev/` names `kernel::`, `bsd::` or a driver word (agintc, ampintc, gic but `gicsys`,
 //! virtio, vio, pluart, psci, pci, nvme, ahci, usb); D2, a file under `sys/kernel/dev/` names
@@ -160,6 +164,7 @@ pub(crate) fn hal_check(root: &Path) -> Result<()> {
         };
         findings.extend(check_pin_premise(&rel, &src));
         findings.extend(check_dev_rules(&rel, &src));
+        findings.extend(check_leaf_layout(&rel));
     }
     let ceiling = crate::unsafereport::load_budget(root)?
         .1
@@ -186,7 +191,7 @@ pub(crate) fn hal_check(root: &Path) -> Result<()> {
         return Err(format!("hal-check: {} finding(s)", findings.len()).into());
     }
     println!(
-        "hal-check: {} files, {sites} unsafe sites <= hal_ceiling {}; no pub unsafe fn, every block proved, no static mut; {} files of sys/: PinAdapter only through pin_adapter!, no impl Unpin in kernel or abi; D1 and D2 hold",
+        "hal-check: {} files, {sites} unsafe sites <= hal_ceiling {}; no pub unsafe fn, every block proved, no static mut; {} files of sys/: PinAdapter only through pin_adapter!, no impl Unpin in kernel or abi; D1, D2 and L1 hold",
         files.len(),
         ceiling.unwrap_or(0),
         all.len()
@@ -279,6 +284,32 @@ pub(crate) fn check_pin_premise(rel: &str, src: &str) -> Vec<Finding> {
                 ),
                 _ => {}
             }
+        }
+    }
+    out
+}
+
+/// Rule L1: the leaf crates whose modules live in purpose groups, never at the crate root.
+const L1_LEAF_CRATES: [&str; 3] = ["sys/lib/sysdefs/", "sys/lib/libkern/", "sys/lib/libz/"];
+
+/// Rule L1 over one file's path (`rel` from the workspace root): a `.rs` file directly under a
+/// leaf crate's directory must be its `lib.rs`; anything else belongs to a group directory
+/// (`sysdefs/base/errno.rs`, `libkern/string/strlcpy.rs`, ...).
+pub(crate) fn check_leaf_layout(rel: &str) -> Vec<Finding> {
+    let mut out = Vec::new();
+    for dir in L1_LEAF_CRATES {
+        if let Some(rest) = rel.strip_prefix(dir)
+            && !rest.contains('/')
+            && rest.ends_with(".rs")
+            && rest != "lib.rs"
+        {
+            out.push(Finding {
+                path: rel.to_string(),
+                line: 1,
+                message: format!(
+                    "L1: `{rest}` sits at the root of {dir}: every module of a leaf crate lives in a group directory, the root holds lib.rs only"
+                ),
+            });
         }
     }
     out
@@ -563,6 +594,34 @@ mod tests {
             assert_eq!(dev_msgs(k, src), vec!["1:D2"], "{src}");
         }
         assert!(dev_msgs("sys/kernel/proc/x.rs", "use hal::vm::pmap::Pmap;\n").is_empty());
+    }
+
+    #[test]
+    fn l1_keeps_the_leaf_crates_grouped() {
+        for ok in [
+            "sys/lib/sysdefs/lib.rs",
+            "sys/lib/sysdefs/base/errno.rs",
+            "sys/lib/sysdefs/fs/nfs/nfs.rs",
+            "sys/lib/libkern/string/strlcpy.rs",
+            "sys/lib/libz/inflate/mod.rs",
+            "sys/lib/libz/testdata/x.rs",
+            "sys/lib/libsa/alloc.rs",
+            "sys/kernel/lib.rs",
+            "sys/lib/sysdefs/Cargo.toml",
+        ] {
+            assert!(check_leaf_layout(ok).is_empty(), "{ok}");
+        }
+        for bad in [
+            "sys/lib/sysdefs/errno.rs",
+            "sys/lib/sysdefs/net_if.rs",
+            "sys/lib/libkern/strlcpy.rs",
+            "sys/lib/libz/zlib.rs",
+            "sys/lib/libz/mod.rs",
+        ] {
+            let f = check_leaf_layout(bad);
+            assert_eq!(f.len(), 1, "{bad}");
+            assert!(f[0].message.starts_with("L1"), "{bad}");
+        }
     }
 
     fn lines_of(src: &str) -> Vec<usize> {
