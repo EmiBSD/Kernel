@@ -20,8 +20,8 @@
 //! The ABI's system call table: one entry per system call number of
 //! `<sys/syscall.h>` (`hal::sys::syscall`, the ABI edge), each `Native` (translated into a
 //! `kernel` entry point) or `Legacy` (handed to the LZ path `bsd` registered, through
-//! `kernel::api::syscall_legacy`), and the dispatcher `hal` reaches through the handler
-//! [`crate::abi_init`] registered.
+//! `kernel::api::syscall_legacy`), and the dispatcher the machine's handler
+//! ([`crate::arch`], which [`crate::abi_init`] registers in `hal`) runs.
 //!
 //! N2.4: every entry was `Legacy`, so every system call behaves exactly as LZ's: the number
 //! is not even read here but to pick the entry, and an out-of-range number goes to the
@@ -372,14 +372,10 @@ pub static SYSENT: [Sysent; SYS_MAXSYSCALL] = {
     table
 };
 
-/// The ABI's system call handler, which [`crate::abi_init`] registers in `hal`
-/// (`hal::syscall::SyscallFn`).
-pub fn syscall(nr: Register, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    dispatch(&SYSENT, nr, args, rval)
-}
-
 /// The dispatcher over a table: a `Native` entry is called, a `Legacy` one or a number with
-/// no entry goes to the kernel's `Legacy` path with the number unchanged.
+/// no entry goes to the kernel's `Legacy` path with the number unchanged. The machine's
+/// handler ([`crate::arch`]) runs it over [`SYSENT`] with the number and arguments it read
+/// from the trap's registers.
 pub fn dispatch(table: &[Sysent], nr: Register, args: &SysArgs, rval: &mut Rval) -> SysResult {
     match entry(table, nr) {
         Some(Sysent::Native(f)) => f(args, rval),
@@ -437,6 +433,11 @@ mod tests {
     }
 
     static ROWS: Rows = Rows;
+
+    /// [`dispatch`] over [`SYSENT`], what the machine's handler runs.
+    fn syscall(nr: Register, args: &SysArgs, rval: &mut Rval) -> SysResult {
+        dispatch(&SYSENT, nr, args, rval)
+    }
 
     /// Registers [`ROWS`] (once per process; a second call changes nothing).
     fn rows() {

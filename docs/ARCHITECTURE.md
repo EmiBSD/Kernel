@@ -338,10 +338,16 @@ missing; decision 47 records what went with it. The pieces now:
   panics when nothing registered. The kcopy tokens are taken before it (`hal_bridges_register`'s
   first steps), `abi-check` R6 keeps `abi` out of `hal::user`, and `abi` runs nothing before
   `abi_init`, so it can neither name nor hold one (decision 47).
-- **The dispatch.** arm64's trap calls `hal::syscall::dispatch` (amd64's, frozen,
-  `kern::abi_module::syscall`, which calls it), and the dispatch calls the registered handler;
-  with none it answers `ENOSYS`, which the boot glue's panic makes unreachable. Errnos cross
-  `hal` as `i32`.
+- **The dispatch** (decision 53, N7.abi2). arm64's trap keeps the machine's half of
+  `svc_handler` (the counter, the interrupts, the barrier skip) and calls the registered
+  handler with the trapping thread's registers as a `&hal::syscall::UserRegs` (three methods:
+  read registers named by the machine's `Gpr`, write one with the error flag, `restart()`);
+  the convention is `abi::arch::arm64`'s: the number `x8` read as an `int`, the arguments
+  `x0`..`x5`, the table, `x0` and the carry (or the restart, or nothing for `EJUSTRETURN`),
+  then `kernel::api::syscall_return` (`mi_syscall_return`). A forked child's `x0 = 0` is the
+  handler's `ChildFn`. With no handler the trap panics, which the boot glue's own panic makes
+  unreachable. amd64's frozen trap still names `kern::abi_module::syscall` and `dispatch`,
+  both gone, until N10 writes `abi::arch::amd64`. Errnos cross `hal` as `i32`.
 - **The boot line.** `abi: 331 syscalls, 190 native` (the module's line, which named its file,
   until the N5 close; the count has followed every `Native` flip: 2, 17, 37, 44, 94, 105,
   170, 189 with the socket calls at N6.2b, 190 with nfssvc(2) at N6.7b4). `just smoke-abi`, `smoke-efiboot` (both archs) and `dist-arm64`'s boot check expect it;

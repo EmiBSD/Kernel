@@ -25,7 +25,8 @@
 //! for every decision the C makes in machine-independent code through one registered
 //! [`TrapHandler`]: the page fault (`uvm_fault` on the right map, `uvm_grow`, the
 //! `MAP_STACK` check of a fault from user mode), the signal (`trapsignal`, `sigexit`),
-//! `refreshcreds`, `userret`, the system call's return (`mi_syscall_return`), the AST
+//! `refreshcreds`, `userret`, the system call's return (`mi_syscall_return`, which the
+//! kernel's `syscall_return` calls for the ABI once it wrote the registers, decision 53), the AST
 //! (`mi_ast`) and a forked child's first return (`mi_child_return`). The machine's hooks the
 //! C keeps in its `struct cpu_info` (`ci_flush_bp`, `ci_serror`, which the CPU and PSCI
 //! drivers still in `bsd` choose and rewrite) are [`CpuHooks`]; the kernel debugger
@@ -100,7 +101,8 @@ pub trait TrapHandler: Sync {
     fn refreshcreds(&self);
     /// `userret(p)`: the last thing before the thread returns to user mode.
     fn userret(&self);
-    /// `mi_syscall_return(p, code, error, rval)`, after the machine set the registers.
+    /// `mi_syscall_return(p, code, error, rval)`, after the ABI set the registers
+    /// (`kernel::api::syscall_return`, decision 53).
     fn syscall_return(&self, code: Register, error: SysResult, rval: &Rval);
     /// `mi_ast(p, resched)` (`ast()`'s machine-independent part, before its `userret`).
     fn ast(&self, resched: bool);
@@ -156,13 +158,11 @@ pub fn install_debugger(d: &'static dyn Debugger) -> Result<(), AlreadyRegistere
     DEBUGGER.set(d).map_err(|_| AlreadyRegistered("Debugger"))
 }
 
-/// The registered trap handler, `None` before registration.
-#[cfg_attr(
-    not(all(target_os = "none", target_arch = "aarch64")),
-    allow(dead_code, reason = "the machine's trap code alone calls it")
-)]
+/// The registered trap handler, `None` before registration. The machine's trap code calls
+/// it, and the kernel's `syscall_return` (`mi_syscall_return` for the ABI, which writes the
+/// registers first, decision 53), which is not generic over the glue the handler is.
 #[inline]
-pub(crate) fn handler() -> Option<&'static dyn TrapHandler> {
+pub fn handler() -> Option<&'static dyn TrapHandler> {
     HANDLER.get().copied()
 }
 

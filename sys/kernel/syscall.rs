@@ -462,6 +462,19 @@ pub fn mi_syscall_return<G: ProcGlue>(
     crate::sig::userret(p);
 }
 
+/// `mi_syscall_return(p, code, error, rval)` for the running thread, which the ABI calls
+/// (`kernel::api::syscall_return`) once it wrote the return registers or rewound the pc
+/// (decision 53): the end of the C's `svc_handler`. This function is not generic over the
+/// glue, so it reaches [`mi_syscall_return`] through the trap handler the boot glue
+/// registered (`KernelTrap<G>`, docs/SCAFFOLDING.md, until N9); `panic(9)` without one,
+/// which no system call can see (the handler is registered before the first process).
+pub fn syscall_return(code: Register, error: SysResult, rval: &Rval) {
+    match hal::cpu::trap::handler() {
+        Some(h) => h.syscall_return(code, error, rval),
+        None => kpanic(format_args!("syscall_return: no trap handler")),
+    }
+}
+
 /// `mi_child_return`: finish MI stuff for a new process/thread to return.
 #[inline]
 pub fn mi_child_return<G: ProcGlue>(p: Pin<&Thread<G>>) {

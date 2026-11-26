@@ -283,8 +283,12 @@ impl UserFrame {
         // `UserFrame` and every access in `hal` goes through this function; the kernel-mode
         // handlers' `&mut Trapframe` are their own frames, below it on the stack; `bsd`'s
         // `setregs` writes through the raw pointer between its own statements, outside any
-        // borrow (it runs inside a system call's dispatch, which `svc_handler` makes outside
-        // its borrows); the assembly reads it only after the handler returned. The frame
+        // borrow (it runs inside the ABI's system call handler, which `svc_handler` calls
+        // outside its borrows); the ABI's handler (another crate's code) never gets this
+        // function or a closure over the frame, only `syscall::UserRegs`, whose three
+        // methods each borrow the frame here for a closure of `hal`'s own that indexes,
+        // reads and writes the frame and calls nothing; the assembly reads it only after the
+        // handler returned. The frame
         // belongs to the thread running on this CPU, which no other CPU reads through
         // `pcb_tf` (`current` names this CPU's thread only), and the flag above refused a
         // second borrow on this CPU. The reference ends with `f`.
