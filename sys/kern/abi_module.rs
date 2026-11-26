@@ -18,23 +18,25 @@
 
 /* <CODE> */
 //! `bsd`'s side of the ABI (`abi`, linked into the image, decision 47) until the subsystems
-//! it stands for move: the `Legacy` system call path (LZ's `sysent[]` and `mi_syscall`, what
-//! both arch traps called themselves), the `KernelApi` table `bsd` fills, and the boot step
-//! that hands that table to `abi::abi_init` before `main()`, so the ABI's handler answers
-//! every system call from the first one on.
+//! it stands for move: the `sysent[]` rows (LZ's `init_sysent` table and `mi_syscall`, what
+//! both arch traps called themselves), which it registers as the kernel's `LegacySyscalls`
+//! bridge, and the boot step that registers that bridge and calls `abi::abi_init` before
+//! `main()`, so the ABI's handler answers every system call from the first one on.
 //!
 //! The arch traps reach `hal`'s dispatch point (arm64's directly, amd64's through
-//! [`syscall`]), which calls the ABI's handler: a `Native` entry goes to its `KernelApi`
-//! group, a `Legacy` one (and a number outside the table) back here, to [`legacy_syscall`].
-//! Either way a system call reaches `mi_syscall` with the same thread, number, arguments and
-//! return registers as LZ's, and comes back with the same `Result`; only the route changed.
+//! [`syscall`]), which calls the ABI's handler; every entry of its table, `Native` (through
+//! its `kernel::api` function) or `Legacy` (through `kernel::api::syscall_legacy`), comes
+//! back here, to [`BsdLegacySyscalls`], for its row. Either way a system call reaches
+//! `mi_syscall` with the same thread, number, arguments and return registers as LZ's, and
+//! comes back with the same `Result`; only the route changed (decision 52: `abi` calls
+//! `kernel::api` directly, the `KernelApi` table `bsd` filled is gone).
 //!
-//! The image crate (`bsd` until N9) is the one that names `abi`: `kernel` never does, and
-//! `abi` names nothing but `hal` (docs/SCAFFOLDING.md, the boot glue's call). No `unsafe`:
-//! every call here is a safe function of `abi`, `bsd`, `hal` or `kernel`. Deleted at N9 with
-//! `bsd`.
+//! The image crate (`bsd` until N9) is the one that names `abi`: `kernel` and `hal` never
+//! do, and `abi` names nothing of `kernel` but `kernel::api` (docs/SCAFFOLDING.md, the boot
+//! glue's call). No `unsafe`: every call here is a safe function of `abi`, `bsd`, `hal` or
+//! `kernel`. Deleted at N9 with `bsd`.
 
-use kernel::api::KernelApi;
+use kernel::syscall::{LegacySyscalls, install_legacy_syscalls};
 
 use crate::kern::init_sysent::SYSENT;
 use crate::kern::subr_prf::panic;
@@ -45,34 +47,17 @@ use crate::sys::syscall_mi::mi_syscall;
 use crate::sys::systm::SysArgs;
 use crate::sys::types::Register;
 
-/// The `KernelApi` `bsd` hands the ABI: the `Legacy` path is `bsd`'s; pipe(2), the vm system
-/// calls (`KernelApi::vm`, `sys/kern/vm_bsd.rs`), the descriptor system calls
-/// (`KernelApi::fd`, `sys/kern/kern_descrip.rs`), the event system calls (`KernelApi::event`,
-/// `sys/kern/kern_event.rs`), sendsyslog(2) (`KernelApi::sendsyslog`, `sys/kern/subr_log.rs`),
-/// futex(2) (`KernelApi::futex`, `sys/kern/sys_futex.rs`), the process system calls
-/// (`KernelApi::proc`, `sys/kern/proc_glue.rs`), sysctl(2) (`KernelApi::sysctl`,
-/// `sys/kern/kern_sysctl.rs`), the time system calls with reboot(2) (`KernelApi::time`,
-/// `sys/kern/kern_time.rs`), sigreturn(2) (`KernelApi::sigreturn`, `sys/kern/kern_sig.rs`), the
-/// VFS system calls (`KernelApi::vfs`, `sys/kern/vfs_syscalls.rs`), the socket system calls
-/// (`KernelApi::socket`, `sys/kern/socket_glue.rs`) and nfssvc(2) (`KernelApi::nfssvc`,
-/// `sys/kern/vfs_syscalls.rs`) are the kernel crate's, entered through `bsd`'s system call
-/// prologue.
-static KERNEL_API: KernelApi = kernel::api::table(
-    legacy_syscall,
-    crate::kern::pipe_glue::native_pipe2,
-    crate::kern::vm_bsd::VM_ENTRIES,
-    crate::kern::kern_descrip::FD_ENTRIES,
-    crate::kern::kern_event::EVENT_ENTRIES,
-    crate::kern::subr_log::native_sendsyslog,
-    crate::kern::sys_futex::native_futex,
-    crate::kern::proc_glue::PROC_ENTRIES,
-    crate::kern::kern_sysctl::native_sysctl,
-    crate::kern::kern_time::TIME_ENTRIES,
-    crate::kern::kern_sig::native_sigreturn,
-    crate::kern::vfs_syscalls::VFS_ENTRIES,
-    crate::kern::socket_glue::SOCKET_ENTRIES,
-    crate::kern::vfs_syscalls::native_nfssvc,
-);
+/// The `sysent[]` rows, the kernel's `LegacySyscalls` bridge (`bridges.toml`, paid by N9).
+struct BsdLegacySyscalls;
+
+impl LegacySyscalls for BsdLegacySyscalls {
+    fn syscall(&self, code: Register, args: &SysArgs, rval: &mut [Register; 2]) -> Result<(), i32> {
+        legacy_syscall(code, args, rval)
+    }
+}
+
+/// The one implementation the boot step registers.
+static LEGACY_SYSCALLS: BsdLegacySyscalls = BsdLegacySyscalls;
 
 /// The system call path amd64's trap calls where it chose the `sysent[]` entry: `hal`'s
 /// dispatch point, its errno value back as an [`Errno`].
@@ -80,8 +65,9 @@ pub fn syscall(code: Register, args: &SysArgs, rval: &mut [Register; 2]) -> Resu
     hal::syscall::dispatch(code, args, rval).map_err(errno_of)
 }
 
-/// The `Legacy` path, `KernelApi::syscall_legacy`: what the traps did before (`ENOSYS` for a
-/// number outside `sysent[]`, else `mi_syscall` on the entry), for the thread on this CPU.
+/// Row `code` of `sysent[]` ([`BsdLegacySyscalls`]): what the traps did before (`ENOSYS`
+/// for a number outside `sysent[]`, else `mi_syscall` on the entry), for the thread on this
+/// CPU.
 pub fn legacy_syscall(code: Register, args: &SysArgs, rval: &mut [Register; 2]) -> Result<(), i32> {
     let Some(p) = curproc() else {
         panic(format_args!("syscall: no curproc"));
@@ -94,12 +80,16 @@ pub fn legacy_syscall(code: Register, args: &SysArgs, rval: &mut [Register; 2]) 
     error.map_err(Errno::as_i32)
 }
 
-/// The boot step, from the boot glue after `hal_bridges_register` and before `main()`: hands
-/// the table to the ABI, which registers its system call handler, and prints the one line
-/// that says what the handler's table holds. Panics when no handler is registered after it,
-/// which no system call may find out later.
+/// The boot step, from the boot glue after `hal_bridges_register` and before `main()`:
+/// registers the `sysent[]` rows as the kernel's `LegacySyscalls`, has the ABI register its
+/// system call handler, and prints the one line that says what the handler's table holds.
+/// Panics when either registration is missing after it, which no system call may find out
+/// later.
 pub fn abi_boot() {
-    abi::abi_init(&KERNEL_API);
+    if install_legacy_syscalls(&LEGACY_SYSCALLS).is_err() {
+        panic(format_args!("abi: the sysent[] rows were registered twice"));
+    }
+    abi::abi_init();
     let Some(info) = hal::syscall::handler_info() else {
         panic(format_args!(
             "abi: abi_init registered no system call handler"
@@ -116,3 +106,64 @@ fn errno_of(raw: i32) -> Errno {
     }
 }
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the test rows fold the number and the arguments into one i32"
+)]
+mod tests {
+    use super::*;
+    use abi::sysent::Sysent as AbiSysent;
+
+    /// The rows of `bsd`'s test process (the image registers [`BsdLegacySyscalls`]): the
+    /// number times a million plus the six arguments as decimal digits (9 outside 0..=9).
+    struct Rows;
+
+    impl LegacySyscalls for Rows {
+        fn syscall(
+            &self,
+            code: Register,
+            args: &SysArgs,
+            rval: &mut [Register; 2],
+        ) -> Result<(), i32> {
+            rval[0] = code;
+            let digits = args.iter().fold(0, |acc, &a| {
+                acc * 10 + if (0..=9).contains(&a) { a as i32 } else { 9 }
+            });
+            Err(code as i32 * 1_000_000 + digits)
+        }
+    }
+
+    static ROWS: Rows = Rows;
+
+    /// Decision 52's path end to end: every `Native` entry of the ABI's table, through its
+    /// `kernel::api` function, hands its row exactly the arguments the row reads, in order,
+    /// as the `Legacy` path hands them: the first `sy_narg` of `sysent[]` (LZ's
+    /// `init_sysent.rs`, generated from `syscalls.master`) as the trap gave them, zeros
+    /// after. A translation that dropped, swapped or added an argument fails here.
+    #[test]
+    fn every_native_call_passes_the_arguments_its_row_reads() {
+        let _ = install_legacy_syscalls(&ROWS);
+        let args: SysArgs = [1, 2, 3, 4, 5, 6];
+        let mut native = 0;
+        for nr in 1..SYS_MAXSYSCALL {
+            if !matches!(abi::sysent::SYSENT[nr], AbiSysent::Native(_)) {
+                continue;
+            }
+            native += 1;
+            let k = SYSENT[nr].sy_narg as u32;
+            let digits = 123_456 / 10i32.pow(6 - k) * 10i32.pow(6 - k);
+            let mut rval = [-7; 2];
+            assert_eq!(
+                abi::sysent::syscall(nr as Register, &args, &mut rval),
+                Err(nr as i32 * 1_000_000 + digits),
+                "SYS {nr}: sy_narg {k}"
+            );
+        }
+        assert_eq!(native, abi::sysent::NATIVE);
+    }
+}
+/* </TESTS> */

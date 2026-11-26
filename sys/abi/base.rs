@@ -25,18 +25,13 @@
 //! is [`crate::sysent::SYSENT`].
 
 use crate::scarg::{int, ptr, size_t, u_int};
-use hal::api::KernelApi;
 use hal::syscall::{Register, Rval, SysArgs, SysResult};
 
 use hal::sys::syscall::{SYS_reboot, SYS_sendsyslog, SYS_sysctl};
 
 /// 112 = `sendsyslog(const char *buf, size_t nbyte, int flags)`.
-pub(crate) fn sys_sendsyslog(
-    api: &'static KernelApi,
-    args: &SysArgs,
-    rval: &mut Rval,
-) -> SysResult {
-    (api.sendsyslog)(
+pub(crate) fn sys_sendsyslog(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::base::sendsyslog(
         SYS_sendsyslog as Register,
         ptr(args[0]),
         size_t(args[1]),
@@ -47,8 +42,8 @@ pub(crate) fn sys_sendsyslog(
 
 /// 202 = `sysctl(const int *name, u_int namelen, void *old, size_t *oldlenp, void *new,
 /// size_t newlen)`.
-pub(crate) fn sys_sysctl(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.sysctl)(
+pub(crate) fn sys_sysctl(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::base::sysctl(
         SYS_sysctl as Register,
         ptr(args[0]),
         u_int(args[1]),
@@ -61,7 +56,7 @@ pub(crate) fn sys_sysctl(api: &'static KernelApi, args: &SysArgs, rval: &mut Rva
 }
 
 /// 55 = `reboot(int opt)`.
-pub(crate) fn sys_reboot(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.time.reboot)(SYS_reboot as Register, int(args[0]), rval)
+pub(crate) fn sys_reboot(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::base::reboot(SYS_reboot as Register, int(args[0]), rval)
 }
 /* </CODE> */

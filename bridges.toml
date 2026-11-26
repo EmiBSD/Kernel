@@ -652,3 +652,15 @@ paid_by = "N9"
 trait = "DriverOps"
 for = ["sys/kernel/dev/autoconf.rs"]
 paid_by = "N7"
+
+# bsd: the sysent[] rows (LZ's init_sysent.rs table and its row functions over the kernel's),
+# run under the kernel's mi_syscall for the thread on this CPU; implemented by
+# sys/kern/abi_module.rs (BsdLegacySyscalls) and registered by its abi_boot before
+# abi::abi_init. Decision 52 (N7): every system call kernel::api answers, Native or Legacy,
+# reaches its row through it (it replaces hal::api::KernelApi's syscall_legacy and the
+# native_* glue). Paid when the kernel owns the table of rows (N9.1).
+# kernel::syscall::LegacySyscalls
+[[bridge]]
+trait = "LegacySyscalls"
+for = ["sys/kernel/syscall.rs", "sys/kernel/api.rs"]
+paid_by = "N9"

@@ -25,7 +25,6 @@
 //! is [`crate::sysent::SYSENT`].
 
 use crate::scarg::{int, ptr, u_int};
-use hal::api::KernelApi;
 use hal::syscall::{Register, Rval, SysArgs, SysResult};
 
 use hal::sys::syscall::{
@@ -33,8 +32,8 @@ use hal::sys::syscall::{
 };
 
 /// 71 = `select(int nd, fd_set *in, fd_set *ou, fd_set *ex, struct timeval *tv)`.
-pub(crate) fn sys_select(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.event.select)(
+pub(crate) fn sys_select(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::event::select(
         SYS_select as Register,
         int(args[0]),
         [ptr(args[1]), ptr(args[2]), ptr(args[3])],
@@ -45,8 +44,8 @@ pub(crate) fn sys_select(api: &'static KernelApi, args: &SysArgs, rval: &mut Rva
 
 /// 72 = `kevent(int fd, const struct kevent *changelist, int nchanges, struct kevent
 /// *eventlist, int nevents, const struct timespec *timeout)`.
-pub(crate) fn sys_kevent(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.event.kevent)(
+pub(crate) fn sys_kevent(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::event::kevent(
         SYS_kevent as Register,
         int(args[0]),
         (ptr(args[1]), int(args[2])),
@@ -58,8 +57,8 @@ pub(crate) fn sys_kevent(api: &'static KernelApi, args: &SysArgs, rval: &mut Rva
 
 /// 109 = `ppoll(struct pollfd *fds, u_int nfds, const struct timespec *ts, const sigset_t
 /// *mask)`.
-pub(crate) fn sys_ppoll(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.event.ppoll)(
+pub(crate) fn sys_ppoll(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::event::ppoll(
         SYS_ppoll as Register,
         ptr(args[0]),
         u_int(args[1]),
@@ -71,8 +70,8 @@ pub(crate) fn sys_ppoll(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval
 
 /// 110 = `pselect(int nd, fd_set *in, fd_set *ou, fd_set *ex, const struct timespec *ts,
 /// const sigset_t *mask)`.
-pub(crate) fn sys_pselect(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.event.pselect)(
+pub(crate) fn sys_pselect(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::event::pselect(
         SYS_pselect as Register,
         int(args[0]),
         [ptr(args[1]), ptr(args[2]), ptr(args[3])],
@@ -83,8 +82,8 @@ pub(crate) fn sys_pselect(api: &'static KernelApi, args: &SysArgs, rval: &mut Rv
 }
 
 /// 252 = `poll(struct pollfd *fds, u_int nfds, int timeout)`.
-pub(crate) fn sys_poll(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.event.poll)(
+pub(crate) fn sys_poll(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::event::poll(
         SYS_poll as Register,
         ptr(args[0]),
         u_int(args[1]),
@@ -94,12 +93,12 @@ pub(crate) fn sys_poll(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval)
 }
 
 /// 269 = `kqueue(void)`.
-pub(crate) fn sys_kqueue(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.event.kqueue)(SYS_kqueue as Register, rval)
+pub(crate) fn sys_kqueue(_args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::event::kqueue(SYS_kqueue as Register, rval)
 }
 
 /// 270 = `kqueue1(int flags)`.
-pub(crate) fn sys_kqueue1(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.event.kqueue1)(SYS_kqueue1 as Register, int(args[0]), rval)
+pub(crate) fn sys_kqueue1(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::event::kqueue1(SYS_kqueue1 as Register, int(args[0]), rval)
 }
 /* </CODE> */

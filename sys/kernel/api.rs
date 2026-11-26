@@ -17,962 +17,221 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! The kernel's side of `KernelApi`, the table handed to the ABI (`abi::abi_init`, linked
-//! into the image, decision 47; docs/ZERO_UNSAFE.md 0.1): the ABI's registration, which the
-//! kernel owns, and the table's construction. The type itself is `hal::api`'s, so `abi`
-//! names it without depending on this crate, and this crate never names `abi`.
+//! `kernel::api`: the kernel's one door for the ABI (decision 52, the user, 2026-11-26): one
+//! plain function per system call, which `abi`'s translations call directly, and nothing of
+//! the kernel else is named by `abi` (`cargo xtask abi-check`, R6). The chain is userland ->
+//! `abi` -> `kernel` -> `hal`; this crate never names `abi`.
 //!
-//! Who fills it: `bsd` builds the table today with [`table`] (its boot glue owns the
-//! functions that answer: the LZ system call path, `pipe2` and the virtual memory
-//! system's fifteen (`VmEntries`, N3.5), the descriptors' twenty (`FdEntries`, N4.3) and
-//! the event system calls' seven (`EventEntries`, N4.4), `sendsyslog(2)` (N4.7a),
-//! futex(2) (`FutexEntry`, N4.6c), the process system calls' forty-six (`ProcEntries`,
-//! N4.6a), sysctl(2) (`SysctlEntry`, N4.6b), the time system calls with reboot(2)
-//! (`TimeEntries`, N4.8), sigreturn(2) (`SigreturnEntry`, N4.8b), the VFS system calls'
-//! sixty-five (`VfsEntries`, N5.4), the socket system calls' nineteen (`SocketEntries`,
-//! N6.2b: `kernel::net::syscalls`, `sys/kern/socket_glue.rs`) and nfssvc(2) (N6.7b4:
-//! `kernel::fs::nfs::nfssvc`, `sys/kern/vfs_syscalls.rs`), which run the system
-//! call prologue still in `bsd` (pledge, the pinned syscalls) before `kernel::file::pipe`,
-//! `kernel::vm`, `kernel::file::descrip`, `kernel::file::event`, `kernel::file::select`, `kernel::base::log`,
-//! `kernel::sched::futex`, the process modules, `kernel::base::sysctl`, `kernel::time`,
-//! `kernel::base::reboot` and `kernel::sig` (`sys/kern/pipe_glue.rs`, `sys/kern/vm_bsd.rs`,
-//! `sys/kern/kern_descrip.rs`, `sys/kern/kern_event.rs`, `sys/kern/sys_generic.rs`,
-//! `sys/kern/subr_log.rs`, `sys/kern/sys_futex.rs`, `sys/kern/proc_glue.rs`,
-//! `sys/kern/kern_sysctl.rs`, `sys/kern/kern_time.rs`, `sys/kern/kern_sig.rs`); an entry
-//! moves to a `kernel` function when its subsystem does, and at N9 the kernel builds the
-//! table alone.
+//! The functions are grouped as the kernel's modules are, and as `abi`'s files are:
+//! [`proc`] (the processes, futex(2), sigreturn(2)), [`vm`], [`file`] (pipe(2) and the
+//! descriptors), [`event`], [`time`], [`base`] (sysctl(2), sendsyslog(2), reboot(2)),
+//! [`fs`] (the VFS and nfssvc(2)) and [`net`] (the sockets), plus [`syscall_legacy`], the
+//! `Legacy` path of the system calls nothing translates yet.
+//!
+//! Every one of them still runs its call's `sysent[]` row, which `bsd` holds, through
+//! `mi_syscall` (the credentials, the `MAP_STACK` check, the pinned syscalls, pledge, the
+//! kernel lock): the same prologue and the same row as the `Legacy` path, so the two paths
+//! cannot diverge. The rows are reached through one bridge, [`crate::syscall::LegacySyscalls`]
+//! (`bridges.toml`, paid by N9, when the rows and `bsd` go); a function moves to call the
+//! kernel's own function directly when its row leaves `bsd`.
+//!
+//! ## Redesign
+//! - Decision 22 (N2.4) made this module the kernel's side of `hal::api::KernelApi`: a table
+//!   of function pointers the image's boot glue filled with `bsd`'s glue and handed to the
+//!   loadable ABI module, so that `abi` named no `kernel`. Decision 47 linked `abi` into the
+//!   image; decision 52 drops the table: `abi` depends on `kernel` in Cargo and calls these
+//!   functions, so a system call is a direct call where it was an indirect one through the
+//!   table, and `hal`'s dispatch point calls `abi`'s handler directly (the trampoline that
+//!   looked the table up, `abi_syscall`, is gone).
+//! - The 189 typed entries of `KernelApi` (`VmEntries`, `FdEntries`, ..., pipe2 serving two
+//!   numbers) were `bsd`'s glue (`native_*` and the `*_ENTRIES` tables of
+//!   `sys/kern/pipe_glue.rs`, `vm_bsd.rs`, `kern_descrip.rs`, `kern_event.rs`,
+//!   `sys_generic.rs`, `subr_log.rs`, `sys_futex.rs`, `proc_glue.rs`, `kern_sysctl.rs`,
+//!   `kern_time.rs`, `kern_sig.rs`, `vfs_syscalls.rs`, `socket_glue.rs`, `kern_xxx.rs`);
+//!   they move here as they were, named after their `KernelApi` member (`native_read` is
+//!   [`file::read`]), with `bsd`'s `kern_descrip::native` and `vm_bsd`'s `native` as
+//!   [`native`] and [`native_rval`] over the bridge. Same arguments, same number check, same
+//!   return registers (the vm calls and pipe(2) still run the row over registers of their
+//!   own), same errno.
 
-pub use hal::api::{
-    EventEntries, FdEntries, FutexEntry, KernelApi, ProcEntries, SigreturnEntry, SocketEntries,
-    SyscallHandler, SysctlEntry, TimeEntries, VfsEntries, VmEntries,
-};
-use hal::sync::once::OnceStatic;
-pub use hal::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult};
+pub mod base;
+pub mod event;
+pub mod file;
+pub mod fs;
+pub mod net;
+pub mod proc;
+pub mod time;
+pub mod vm;
 
-/// The registered handler: the table the ABI was given and its handler.
-struct Registered {
-    api: &'static KernelApi,
-    handler: SyscallHandler,
-}
+use hal::syscall::{ENOSYS, Register, Rval, SysArgs, SysResult};
 
-/// The ABI's registration, once `abi_init` made it.
-static ABI: OnceStatic<Registered> = OnceStatic::new();
+pub use crate::syscall::legacy_syscall as syscall_legacy;
 
-/// The table, with the kernel's registration and the functions the caller owns.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one argument per member of the table, as KernelApi::new"
-)]
-pub const fn table(
-    syscall_legacy: fn(Register, &SysArgs, &mut Rval) -> SysResult,
-    pipe2: fn(Register, usize, i32) -> SysResult,
-    vm: VmEntries,
-    fd: FdEntries,
-    event: EventEntries,
-    sendsyslog: fn(Register, usize, usize, i32, &mut Rval) -> SysResult,
-    futex: FutexEntry,
-    proc: ProcEntries,
-    sysctl: SysctlEntry,
-    time: TimeEntries,
-    sigreturn: SigreturnEntry,
-    vfs: VfsEntries,
-    socket: SocketEntries,
-    nfssvc: fn(Register, i32, usize, &mut Rval) -> SysResult,
-) -> KernelApi {
-    KernelApi::new(
-        register_syscall_handler,
-        syscall_legacy,
-        pipe2,
-        vm,
-        fd,
-        event,
-        sendsyslog,
-        futex,
-        proc,
-        sysctl,
-        time,
-        sigreturn,
-        vfs,
-        socket,
-        nfssvc,
-    )
-}
-
-/// `KernelApi::register_syscall_handler`: keeps the ABI's handler with the table it was
-/// given and registers in `hal` the trampoline that calls it. Once: a second registration
-/// is ignored, so the handler never changes under a running system call.
-pub fn register_syscall_handler(
-    api: &'static KernelApi,
-    handler: SyscallHandler,
-    info: HandlerInfo,
-) {
-    if ABI.set(Registered { api, handler }).is_ok() {
-        let _ = hal::syscall::set_handler(abi_syscall, info);
+/// A `Native` call: `ENOSYS` unless `nr` is `want`'s number, else row `nr` of `sysent[]`
+/// through `mi_syscall` with `args` and the trap's return registers, as on the `Legacy` path.
+fn native(nr: Register, want: i32, args: SysArgs, rval: &mut Rval) -> SysResult {
+    if nr != want as Register {
+        return Err(ENOSYS);
     }
+    syscall_legacy(nr, &args, rval)
 }
 
-/// What `hal`'s dispatch point calls once the ABI registered: its handler with its table.
-/// `hal` holds this trampoline only after [`ABI`] is set, so the `None` arm answers as
-/// `hal` does with nothing registered.
-fn abi_syscall(code: Register, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    match ABI.get() {
-        Some(r) => (r.handler)(r.api, code, args, rval),
-        None => Err(hal::syscall::ENOSYS),
-    }
+/// A `Native` call whose row writes return registers of its own (the vm calls): as
+/// [`native`], with `rval[0]` back in the `Ok`.
+fn native_rval(nr: Register, want: i32, args: SysArgs) -> Result<Register, i32> {
+    let mut rval: Rval = [0, 0];
+    native(nr, want, args, &mut rval)?;
+    Ok(rval[0])
 }
 /* </CODE> */
 
 /* <TESTS> */
 #[cfg(test)]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "the test rows fold the number and the arguments into one i32"
+)]
 mod tests {
     use super::*;
-
-    fn legacy(code: Register, _: &SysArgs, rval: &mut Rval) -> SysResult {
-        rval[0] = code;
-        Ok(())
-    }
-
-    fn pipe2(nr: Register, _: usize, _: i32) -> SysResult {
-        Err(nr as i32)
-    }
-
-    fn nr(nr: Register) -> SysResult {
-        Err(nr as i32)
-    }
-    fn nr_int(nr: Register, _: i32) -> SysResult {
-        Err(nr as i32)
-    }
-    fn obreak(nr: Register, _: usize) -> SysResult {
-        Err(nr as i32)
-    }
-    fn range(nr: Register, _: usize, _: usize) -> SysResult {
-        Err(nr as i32)
-    }
-    fn range_int(nr: Register, _: usize, _: usize, _: i32) -> SysResult {
-        Err(nr as i32)
-    }
-    fn mmap(
-        nr: Register,
-        _: usize,
-        _: usize,
-        _: i32,
-        _: i32,
-        _: i32,
-        _: i64,
-    ) -> Result<usize, i32> {
-        Err(nr as i32)
-    }
-    fn kbind(nr: Register, _: usize, _: usize, _: u64) -> SysResult {
-        Err(nr as i32)
-    }
-    fn pins(nr: Register, _: usize, _: usize, _: usize, _: i32) -> SysResult {
-        Err(nr as i32)
-    }
-
-    const VM: VmEntries = VmEntries {
-        obreak,
-        mmap,
-        munmap: range,
-        mprotect: range_int,
-        madvise: range_int,
-        mquery: mmap,
-        kbind,
-        pinsyscalls: pins,
-        mimmutable: range,
-        mlock: range,
-        munlock: range,
-        minherit: range_int,
-        msync: range_int,
-        mlockall: nr_int,
-        munlockall: nr,
+    use crate::syscall::{LegacySyscalls, install_legacy_syscalls};
+    use hal::sys::syscall::{
+        SYS_clock_gettime, SYS_close, SYS_dup, SYS_fork, SYS_getdtablecount, SYS_kevent, SYS_mmap,
+        SYS_munlockall, SYS_open, SYS_pipe, SYS_pipe2, SYS_pwritev, SYS_read, SYS_reboot,
+        SYS_recvfrom, SYS_socket,
     };
 
-    fn fd1(nr: Register, _: i32, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn fd2(nr: Register, _: i32, _: i32, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn io(nr: Register, _: i32, _: usize, _: usize, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn iov(nr: Register, _: i32, _: usize, _: i32, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn pio(nr: Register, _: i32, _: usize, _: usize, _: i64, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn piov(nr: Register, _: i32, _: usize, _: i32, _: i64, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn count(nr: Register, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn fstat(nr: Register, _: i32, _: usize, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn ioctl(nr: Register, _: i32, _: u64, _: usize, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn fcntl(nr: Register, _: i32, _: i32, _: usize, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn dup3(nr: Register, _: i32, _: i32, _: i32, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn utrace(nr: Register, _: usize, _: usize, _: usize, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
+    /// The `sysent[]` rows of the kernel's test process: the number into `rval[0]`, the
+    /// first argument into `rval[1]`; `Ok` when the first argument is 8, else the number
+    /// times a million plus the six arguments as decimal digits (9 outside 0..=9).
+    struct Rows;
+
+    impl LegacySyscalls for Rows {
+        fn syscall(&self, code: Register, args: &SysArgs, rval: &mut Rval) -> SysResult {
+            rval[0] = code;
+            rval[1] = args[0];
+            if args[0] == 8 {
+                return Ok(());
+            }
+            let digits = args.iter().fold(0, |acc, &a| {
+                acc * 10 + if (0..=9).contains(&a) { a as i32 } else { 9 }
+            });
+            Err(code as i32 * 1_000_000 + digits)
+        }
     }
 
-    const FD: FdEntries = FdEntries {
-        read: io,
-        write: io,
-        close: fd1,
-        getdtablecount: count,
-        dup: fd1,
-        fstat,
-        ioctl,
-        dup2: fd2,
-        fcntl,
-        dup3,
-        readv: iov,
-        writev: iov,
-        flock: fd2,
-        pread: pio,
-        pwrite: pio,
-        preadv: piov,
-        pwritev: piov,
-        fpathconf: fd2,
-        utrace,
-        closefrom: fd1,
-    };
+    static ROWS: Rows = Rows;
 
-    fn select(nr: Register, _: i32, _: [usize; 3], _: usize, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn kevent(
-        nr: Register,
-        _: i32,
-        _: (usize, i32),
-        _: (usize, i32),
-        _: usize,
-        _: &mut Rval,
-    ) -> SysResult {
-        Err(nr as i32)
-    }
-    fn ppoll(nr: Register, _: usize, _: u32, _: usize, _: usize, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn pselect(nr: Register, _: i32, _: [usize; 3], _: usize, _: usize, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn poll(nr: Register, _: usize, _: u32, _: i32, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
+    fn rows() {
+        let _ = install_legacy_syscalls(&ROWS);
     }
 
-    const EVENT: EventEntries = EventEntries {
-        select,
-        kevent,
-        ppoll,
-        pselect,
-        poll,
-        kqueue: count,
-        kqueue1: fd1,
-    };
-
-    fn p_fork(nr: Register, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_vfork(nr: Register, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_tfork(nr: Register, _: usize, _: usize, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_exit(nr: Register, _: i32, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_threxit(nr: Register, _: usize, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_wait4(nr: Register, _: i32, _: usize, _: i32, _: usize, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_waitid(nr: Register, _: i32, _: u32, _: usize, _: i32, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_getrusage(nr: Register, _: i32, _: usize, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_getrlimit(nr: Register, _: i32, _: usize, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_setrlimit(nr: Register, _: i32, _: usize, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_getpriority(nr: Register, _: i32, _: u32, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_setpriority(nr: Register, _: i32, _: u32, _: i32, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_acct(nr: Register, _: usize, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_getpid(nr: Register, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_getppid(nr: Register, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_getuid(nr: Register, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_geteuid(nr: Register, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_getgid(nr: Register, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_getegid(nr: Register, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_getgroups(nr: Register, _: i32, _: usize, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_setgroups(nr: Register, _: i32, _: usize, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_getpgrp(nr: Register, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_getpgid(nr: Register, _: i32, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_getsid(nr: Register, _: i32, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_setpgid(nr: Register, _: i32, _: i32, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_setsid(nr: Register, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_setuid(nr: Register, _: u32, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_seteuid(nr: Register, _: u32, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_setgid(nr: Register, _: u32, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_setegid(nr: Register, _: u32, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_setreuid(nr: Register, _: u32, _: u32, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_setregid(nr: Register, _: u32, _: u32, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_setresuid(nr: Register, _: u32, _: u32, _: u32, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_setresgid(nr: Register, _: u32, _: u32, _: u32, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_getresuid(nr: Register, _: usize, _: usize, _: usize, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_getresgid(nr: Register, _: usize, _: usize, _: usize, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_issetugid(nr: Register, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_getlogin_r(nr: Register, _: usize, _: usize, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_setlogin(nr: Register, _: usize, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_set_tcb(nr: Register, _: usize, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_get_tcb(nr: Register, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_getthrid(nr: Register, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_getthrname(nr: Register, _: i32, _: usize, _: usize, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_setthrname(nr: Register, _: i32, _: usize, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_getrtable(nr: Register, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn p_setrtable(nr: Register, _: i32, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-
-    const PROC: ProcEntries = ProcEntries {
-        fork: p_fork,
-        vfork: p_vfork,
-        tfork: p_tfork,
-        exit: p_exit,
-        threxit: p_threxit,
-        wait4: p_wait4,
-        waitid: p_waitid,
-        getrusage: p_getrusage,
-        getrlimit: p_getrlimit,
-        setrlimit: p_setrlimit,
-        getpriority: p_getpriority,
-        setpriority: p_setpriority,
-        acct: p_acct,
-        getpid: p_getpid,
-        getppid: p_getppid,
-        getuid: p_getuid,
-        geteuid: p_geteuid,
-        getgid: p_getgid,
-        getegid: p_getegid,
-        getgroups: p_getgroups,
-        setgroups: p_setgroups,
-        getpgrp: p_getpgrp,
-        getpgid: p_getpgid,
-        getsid: p_getsid,
-        setpgid: p_setpgid,
-        setsid: p_setsid,
-        setuid: p_setuid,
-        seteuid: p_seteuid,
-        setgid: p_setgid,
-        setegid: p_setegid,
-        setreuid: p_setreuid,
-        setregid: p_setregid,
-        setresuid: p_setresuid,
-        setresgid: p_setresgid,
-        getresuid: p_getresuid,
-        getresgid: p_getresgid,
-        issetugid: p_issetugid,
-        getlogin_r: p_getlogin_r,
-        setlogin: p_setlogin,
-        set_tcb: p_set_tcb,
-        get_tcb: p_get_tcb,
-        getthrid: p_getthrid,
-        getthrname: p_getthrname,
-        setthrname: p_setthrname,
-        getrtable: p_getrtable,
-        setrtable: p_setrtable,
-    };
-
-    fn sendsyslog(nr: Register, _: usize, _: usize, _: i32, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-
-    fn nfssvc(nr: Register, _: i32, _: usize, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-
-    fn futex(
-        nr: Register,
-        _: usize,
-        _: i32,
-        _: i32,
-        _: usize,
-        _: usize,
-        _: &mut Rval,
-    ) -> SysResult {
-        Err(nr as i32)
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the entry's shape: the number, six arguments, the return registers"
-    )]
-    fn sysctl(
-        nr: Register,
-        _: usize,
-        _: u32,
-        _: usize,
-        _: usize,
-        _: usize,
-        _: usize,
-        _: &mut Rval,
-    ) -> SysResult {
-        Err(nr as i32)
-    }
-
-    fn t_clock(nr: Register, _: i32, _: usize, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn t_pair(nr: Register, _: usize, _: usize, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn t_setitimer(nr: Register, _: i32, _: usize, _: usize, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-    fn t_reboot(nr: Register, _: i32, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-
-    const TIME: TimeEntries = TimeEntries {
-        clock_gettime: t_clock,
-        clock_settime: t_clock,
-        clock_getres: t_clock,
-        nanosleep: t_pair,
-        gettimeofday: t_pair,
-        settimeofday: t_pair,
-        adjfreq: t_pair,
-        adjtime: t_pair,
-        getitimer: t_clock,
-        setitimer: t_setitimer,
-        reboot: t_reboot,
-    };
-
-    fn sigreturn(nr: Register, _: usize, _: &mut Rval) -> SysResult {
-        Err(nr as i32)
-    }
-
-    // The VFS entries of the test table (version 12): the number in rval[0], the
-    // arguments as decimal digits in the error.
-    fn vfs_digits(a: &[i64]) -> i32 {
-        a.iter().fold(0, |d, &v| d * 10 + v as i32)
-    }
-    fn vfs0(nr: Register, a0: usize, a1: i32, a2: u32, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
-    }
-    fn vfs1(nr: Register, a0: usize, a1: usize, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64, a1 as i64]))
-    }
-    fn vfs2(nr: Register, a0: usize, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64]))
-    }
-    fn vfs3(nr: Register, a0: i32, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64]))
-    }
-    fn vfs4(nr: Register, a0: usize, a1: u32, a2: i32, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
-    }
-    fn vfs5(nr: Register, a0: usize, a1: u32, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64, a1 as i64]))
-    }
-    fn vfs6(nr: Register, a0: usize, a1: u32, a2: u32, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
-    }
-    fn vfs7(nr: Register, a0: usize, a1: usize, a2: i32, a3: usize, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64, a3 as i64]))
-    }
-    fn vfs8(nr: Register, a0: usize, a1: i32, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64, a1 as i64]))
-    }
-    fn vfs9(nr: Register, a0: i32, a1: u32, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64, a1 as i64]))
-    }
-    fn vfs10(nr: Register, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[]))
-    }
-    fn vfs11(nr: Register, a0: i32, a1: usize, a2: usize, a3: i32, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64, a3 as i64]))
-    }
-    fn vfs12(nr: Register, a0: usize, a1: usize, a2: usize, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
-    }
-    fn vfs13(nr: Register, a0: u32, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64]))
-    }
-    fn vfs14(nr: Register, a0: usize, a1: usize, a2: i32, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
-    }
-    fn vfs15(nr: Register, a0: i32, a1: usize, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64, a1 as i64]))
-    }
-    fn vfs16(nr: Register, a0: i32, a1: usize, a2: usize, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
-    }
-    fn vfs17(nr: Register, a0: i32, a1: usize, a2: u32, a3: i32, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64, a3 as i64]))
-    }
-    fn vfs18(nr: Register, a0: i32, a1: u32, a2: u32, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
-    }
-    fn vfs19(nr: Register, a0: usize, a1: i32, a2: i32, a3: usize, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64, a3 as i64]))
-    }
-    fn vfs20(nr: Register, a0: i32, a1: i64, a2: i32, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
-    }
-    fn vfs21(nr: Register, a0: usize, a1: i64, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64, a1 as i64]))
-    }
-    fn vfs22(nr: Register, a0: i32, a1: i64, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64, a1 as i64]))
-    }
-    fn vfs23(nr: Register, a0: i32, a1: usize, a2: i32, a3: i32, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64, a3 as i64]))
-    }
-    fn vfs24(
-        nr: Register,
-        a0: i32,
-        a1: usize,
-        a2: u32,
-        a3: u32,
-        a4: i32,
-        rval: &mut Rval,
-    ) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[
-            a0 as i64, a1 as i64, a2 as i64, a3 as i64, a4 as i64,
-        ]))
-    }
-    fn vfs25(
-        nr: Register,
-        a0: i32,
-        a1: usize,
-        a2: i32,
-        a3: usize,
-        a4: i32,
-        rval: &mut Rval,
-    ) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[
-            a0 as i64, a1 as i64, a2 as i64, a3 as i64, a4 as i64,
-        ]))
-    }
-    fn vfs26(nr: Register, a0: i32, a1: usize, a2: u32, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
-    }
-    fn vfs27(nr: Register, a0: i32, a1: usize, a2: i32, a3: u32, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64, a3 as i64]))
-    }
-    fn vfs28(nr: Register, a0: i32, a1: usize, a2: usize, a3: usize, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64, a3 as i64]))
-    }
-    fn vfs29(nr: Register, a0: i32, a1: usize, a2: i32, a3: usize, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64, a3 as i64]))
-    }
-    fn vfs30(nr: Register, a0: usize, a1: i32, a2: usize, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
-    }
-    fn vfs31(nr: Register, a0: i32, a1: usize, a2: i32, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
-    }
-    const VFS: VfsEntries = VfsEntries {
-        open: vfs0,
-        link: vfs1,
-        unlink: vfs2,
-        chdir: vfs2,
-        fchdir: vfs3,
-        mknod: vfs4,
-        chmod: vfs5,
-        chown: vfs6,
-        mount: vfs7,
-        unmount: vfs8,
-        access: vfs8,
-        chflags: vfs5,
-        fchflags: vfs9,
-        sync: vfs10,
-        stat: vfs1,
-        lstat: vfs1,
-        fstatat: vfs11,
-        revoke: vfs2,
-        symlink: vfs1,
-        readlink: vfs12,
-        umask: vfs13,
-        chroot: vfs2,
-        getfsstat: vfs14,
-        statfs: vfs1,
-        fstatfs: vfs15,
-        fhstatfs: vfs1,
-        utimes: vfs1,
-        futimes: vfs15,
-        utimensat: vfs11,
-        futimens: vfs15,
-        fsync: vfs3,
-        getdents: vfs16,
-        chflagsat: vfs17,
-        unveil: vfs1,
-        realpath: vfs1,
-        fchown: vfs18,
-        fchmod: vfs9,
-        pledge_open: vfs0,
-        rename: vfs1,
-        mkfifo: vfs5,
-        mkdir: vfs5,
-        rmdir: vfs2,
-        quotactl: vfs19,
-        getfh: vfs1,
-        lseek: vfs20,
-        truncate: vfs21,
-        ftruncate: vfs22,
-        pathconfat: vfs23,
-        pathconf: vfs8,
-        lchown: vfs6,
-        fhopen: vfs8,
-        fhstat: vfs1,
-        getcwd: vfs1,
-        faccessat: vfs23,
-        fchmodat: vfs17,
-        fchownat: vfs24,
-        linkat: vfs25,
-        mkdirat: vfs26,
-        mkfifoat: vfs26,
-        mknodat: vfs17,
-        openat: vfs27,
-        readlinkat: vfs28,
-        renameat: vfs29,
-        symlinkat: vfs30,
-        unlinkat: vfs31,
-    };
-
-    // The socket entries of the test table: the number in rval[0], the arguments as
-    // decimal digits in the error.
-    fn so0(nr: Register, a0: i32, a1: usize, a2: i32, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
-    }
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the entry's shape: the number, six arguments, the return registers"
-    )]
-    fn so1(
-        nr: Register,
-        a0: i32,
-        a1: usize,
-        a2: usize,
-        a3: i32,
-        a4: usize,
-        a5: usize,
-        rval: &mut Rval,
-    ) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[
-            a0 as i64, a1 as i64, a2 as i64, a3 as i64, a4 as i64, a5 as i64,
-        ]))
-    }
-    fn so2(nr: Register, a0: i32, a1: usize, a2: usize, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
-    }
-    fn so3(nr: Register, a0: i32, a1: usize, a2: usize, a3: i32, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64, a3 as i64]))
-    }
-    fn so4(nr: Register, a0: i32, a1: i32, a2: i32, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
-    }
-    fn so5(nr: Register, a0: i32, a1: usize, a2: u32, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
-    }
-    fn so6(
-        nr: Register,
-        a0: i32,
-        a1: i32,
-        a2: i32,
-        a3: usize,
-        a4: u32,
-        rval: &mut Rval,
-    ) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[
-            a0 as i64, a1 as i64, a2 as i64, a3 as i64, a4 as i64,
-        ]))
-    }
-    fn so7(nr: Register, a0: i32, a1: i32, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64, a1 as i64]))
-    }
-    fn so8(
-        nr: Register,
-        a0: i32,
-        a1: usize,
-        a2: u32,
-        a3: i32,
-        a4: usize,
-        rval: &mut Rval,
-    ) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[
-            a0 as i64, a1 as i64, a2 as i64, a3 as i64, a4 as i64,
-        ]))
-    }
-    fn so9(nr: Register, a0: i32, a1: usize, a2: u32, a3: i32, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64, a3 as i64]))
-    }
-    fn so10(
-        nr: Register,
-        a0: i32,
-        a1: i32,
-        a2: i32,
-        a3: usize,
-        a4: usize,
-        rval: &mut Rval,
-    ) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[
-            a0 as i64, a1 as i64, a2 as i64, a3 as i64, a4 as i64,
-        ]))
-    }
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the entry's shape: the number, six arguments, the return registers"
-    )]
-    fn so11(
-        nr: Register,
-        a0: i32,
-        a1: usize,
-        a2: usize,
-        a3: i32,
-        a4: usize,
-        a5: u32,
-        rval: &mut Rval,
-    ) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[
-            a0 as i64, a1 as i64, a2 as i64, a3 as i64, a4 as i64, a5 as i64,
-        ]))
-    }
-    fn so12(nr: Register, a0: i32, a1: i32, a2: i32, a3: usize, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64, a3 as i64]))
-    }
-    fn so13(nr: Register, a0: i32, rval: &mut Rval) -> SysResult {
-        rval[0] = nr;
-        Err(vfs_digits(&[a0 as i64]))
-    }
-    const SOCKET: SocketEntries = SocketEntries {
-        recvmsg: so0,
-        sendmsg: so0,
-        recvfrom: so1,
-        accept: so2,
-        getpeername: so2,
-        getsockname: so2,
-        accept4: so3,
-        socket: so4,
-        connect: so5,
-        bind: so5,
-        setsockopt: so6,
-        listen: so7,
-        recvmmsg: so8,
-        sendmmsg: so9,
-        getsockopt: so10,
-        sendto: so11,
-        shutdown: so7,
-        socketpair: so12,
-        ypconnect: so13,
-    };
-
-    static API: KernelApi = table(
-        legacy, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC, sysctl, TIME, sigreturn, VFS,
-        SOCKET, nfssvc,
-    );
-
+    /// Each group's functions run their own number's row with the arguments in
+    /// `<sys/syscallargs.h>`'s order and zeros after, over the trap's return registers.
     #[test]
-    fn the_table_holds_the_kernels_registration_and_the_callers_entries() {
-        let register: fn(&'static KernelApi, SyscallHandler, HandlerInfo) =
-            register_syscall_handler;
-        assert!(core::ptr::fn_addr_eq(
-            API.register_syscall_handler,
-            register
-        ));
-        let mut rval = [0; 2];
-        assert_eq!((API.syscall_legacy)(9, &[0; 6], &mut rval), Ok(()));
-        assert_eq!(rval[0], 9);
-        assert_eq!((API.pipe2)(263, 0, 0), Err(263));
-        assert_eq!((API.vm.mmap)(49, 0, 0, 0, 0, 0, 0), Err(49));
-        assert_eq!((API.vm.munlockall)(272), Err(272));
-        assert_eq!((API.fd.read)(3, 0, 0, 0, &mut rval), Err(3));
-        assert_eq!((API.fd.closefrom)(287, 0, &mut rval), Err(287));
+    fn each_call_runs_its_own_row_with_its_arguments_in_order() {
+        rows();
+        let mut rval = [-7; 2];
+        let n = |nr: i32| nr as Register;
+        let e = |nr: i32, digits: i32| Err(nr * 1_000_000 + digits);
         assert_eq!(
-            (API.event.kevent)(72, 0, (0, 0), (0, 0), 0, &mut rval),
-            Err(72)
+            file::read(n(SYS_read), 1, 2, 3, &mut rval),
+            e(SYS_read, 123_000)
         );
-        assert_eq!((API.event.kqueue)(269, &mut rval), Err(269));
-        assert_eq!((API.sendsyslog)(112, 0, 0, 0, &mut rval), Err(112));
-        assert_eq!((API.nfssvc)(155, 0, 0, &mut rval), Err(155));
-        assert_eq!((API.futex)(83, 0, 0, 0, 0, 0, &mut rval), Err(83));
-        assert_eq!((API.proc.fork)(2, &mut rval), Err(2));
-        assert_eq!((API.proc.setrtable)(310, 0, &mut rval), Err(310));
-        assert_eq!((API.sysctl)(202, 0, 0, 0, 0, 0, 0, &mut rval), Err(202));
-        assert_eq!((API.time.clock_gettime)(87, 0, 0, &mut rval), Err(87));
-        assert_eq!((API.time.setitimer)(69, 0, 0, 0, &mut rval), Err(69));
-        assert_eq!((API.time.reboot)(55, 0, &mut rval), Err(55));
-        assert_eq!((API.sigreturn)(103, 0, &mut rval), Err(103));
-        assert_eq!((API.vfs.open)(5, 1, 2, 3, &mut rval), Err(123));
-        assert_eq!((API.vfs.unlinkat)(325, 1, 2, 3, &mut rval), Err(123));
-        assert_eq!((API.socket.recvmsg)(27, 1, 2, 3, &mut rval), Err(123));
-        assert_eq!((API.socket.sendmsg)(28, 1, 2, 3, &mut rval), Err(123));
+        assert_eq!(rval, [n(SYS_read), 1]);
         assert_eq!(
-            (API.socket.recvfrom)(29, 1, 2, 3, 4, 5, 6, &mut rval),
-            Err(123456)
-        );
-        assert_eq!((API.socket.accept)(30, 1, 2, 3, &mut rval), Err(123));
-        assert_eq!((API.socket.getpeername)(31, 1, 2, 3, &mut rval), Err(123));
-        assert_eq!((API.socket.getsockname)(32, 1, 2, 3, &mut rval), Err(123));
-        assert_eq!((API.socket.accept4)(93, 1, 2, 3, 4, &mut rval), Err(1234));
-        assert_eq!((API.socket.socket)(97, 1, 2, 3, &mut rval), Err(123));
-        assert_eq!((API.socket.connect)(98, 1, 2, 3, &mut rval), Err(123));
-        assert_eq!((API.socket.bind)(104, 1, 2, 3, &mut rval), Err(123));
-        assert_eq!(
-            (API.socket.setsockopt)(105, 1, 2, 3, 4, 5, &mut rval),
-            Err(12345)
-        );
-        assert_eq!((API.socket.listen)(106, 1, 2, &mut rval), Err(12));
-        assert_eq!(
-            (API.socket.recvmmsg)(116, 1, 2, 3, 4, 5, &mut rval),
-            Err(12345)
-        );
-        assert_eq!((API.socket.sendmmsg)(117, 1, 2, 3, 4, &mut rval), Err(1234));
-        assert_eq!(
-            (API.socket.getsockopt)(118, 1, 2, 3, 4, 5, &mut rval),
-            Err(12345)
+            file::close(n(SYS_close), 1, &mut rval),
+            e(SYS_close, 100_000)
         );
         assert_eq!(
-            (API.socket.sendto)(133, 1, 2, 3, 4, 5, 6, &mut rval),
-            Err(123456)
+            file::pwritev(n(SYS_pwritev), 1, 2, 3, 4, &mut rval),
+            e(SYS_pwritev, 123_400)
         );
-        assert_eq!((API.socket.shutdown)(134, 1, 2, &mut rval), Err(12));
         assert_eq!(
-            (API.socket.socketpair)(135, 1, 2, 3, 4, &mut rval),
-            Err(1234)
+            event::kevent(n(SYS_kevent), 1, (2, 3), (4, 5), 6, &mut rval),
+            e(SYS_kevent, 123_456)
         );
-        assert_eq!((API.socket.ypconnect)(150, 1, &mut rval), Err(1));
-        assert_eq!(rval[0], 150);
+        assert_eq!(
+            fs::open(n(SYS_open), 1, 2, 3, &mut rval),
+            e(SYS_open, 123_000)
+        );
+        assert_eq!(
+            net::recvfrom(n(SYS_recvfrom), 1, 2, 3, 4, 5, 6, &mut rval),
+            e(SYS_recvfrom, 123_456)
+        );
+        assert_eq!(
+            net::socket(n(SYS_socket), 1, 2, 3, &mut rval),
+            e(SYS_socket, 123_000)
+        );
+        assert_eq!(proc::fork(n(SYS_fork), &mut rval), e(SYS_fork, 0));
+        assert_eq!(
+            time::clock_gettime(n(SYS_clock_gettime), 1, 2, &mut rval),
+            e(SYS_clock_gettime, 120_000)
+        );
+        assert_eq!(
+            base::reboot(n(SYS_reboot), 1, &mut rval),
+            e(SYS_reboot, 100_000)
+        );
+        assert_eq!(rval, [n(SYS_reboot), 1]);
+        let mut rval = [-7; 2];
+        assert_eq!(
+            syscall_legacy(9, &[1, 2, 3, 4, 5, 6], &mut rval),
+            e(9, 123_456)
+        );
+        assert_eq!(rval, [9, 1]);
+    }
+
+    /// The vm calls and pipe(2) run their row over registers of their own: the trap's are
+    /// not the row's, and `mmap(2)`'s address is the row's `rval[0]`, in the `Ok`.
+    #[test]
+    fn the_vm_calls_and_pipe_keep_their_own_return_registers() {
+        rows();
+        assert_eq!(
+            vm::mmap(SYS_mmap as Register, 8, 2, 3, 4, 5, 6),
+            Ok(SYS_mmap as usize)
+        );
+        assert_eq!(
+            vm::mmap(SYS_mmap as Register, 1, 2, 3, 4, 5, 6),
+            Err(SYS_mmap * 1_000_000 + 123_456)
+        );
+        assert_eq!(
+            vm::munlockall(SYS_munlockall as Register),
+            Err(SYS_munlockall * 1_000_000)
+        );
+        assert_eq!(
+            file::pipe2(SYS_pipe as Register, 1, 0),
+            Err(SYS_pipe * 1_000_000 + 100_000)
+        );
+        assert_eq!(
+            file::pipe2(SYS_pipe2 as Register, 1, 2),
+            Err(SYS_pipe2 * 1_000_000 + 120_000)
+        );
+    }
+
+    /// A function reached with another call's number answers `ENOSYS` before it reaches a
+    /// row, and leaves the return registers alone (`bsd`'s glue's check, kept).
+    #[test]
+    fn a_call_refuses_another_number() {
+        rows();
+        let enosys = Err(ENOSYS);
+        let mut rval: Rval = [-7, -7];
+        let nr = SYS_dup as Register;
+        assert_eq!(file::close(nr, 3, &mut rval), enosys);
+        assert_eq!(file::read(nr, 3, 0, 0, &mut rval), enosys);
+        assert_eq!(file::pwritev(nr, 3, 0, 0, 0, &mut rval), enosys);
+        assert_eq!(file::getdtablecount(nr, &mut rval), enosys);
+        assert_eq!(file::dup(SYS_close as Register, 3, &mut rval), enosys);
+        assert_eq!(
+            net::socket(SYS_getdtablecount as Register, 1, 1, 0, &mut rval),
+            enosys
+        );
+        assert_eq!(
+            net::recvfrom(SYS_socket as Register, 3, 0, 0, 0, 0, 0, &mut rval),
+            enosys
+        );
+        assert_eq!(net::ypconnect(SYS_socket as Register, 1, &mut rval), enosys);
+        assert_eq!(rval, [-7, -7]);
+        assert_eq!(file::pipe2(SYS_read as Register, 0, 0), enosys);
+        assert_eq!(vm::munlockall(SYS_read as Register), enosys);
     }
 }
 /* </TESTS> */

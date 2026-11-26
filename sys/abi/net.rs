@@ -25,7 +25,6 @@
 //! is [`crate::sysent::SYSENT`].
 
 use crate::scarg::{int, ptr, size_t, u_int};
-use hal::api::KernelApi;
 use hal::syscall::{Register, Rval, SysArgs, SysResult};
 
 use hal::sys::syscall::{
@@ -35,8 +34,8 @@ use hal::sys::syscall::{
 };
 
 /// 27 = `ssize_t recvmsg(int s, struct msghdr *msg, int flags)`.
-pub(crate) fn sys_recvmsg(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.socket.recvmsg)(
+pub(crate) fn sys_recvmsg(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::net::recvmsg(
         SYS_recvmsg as Register,
         int(args[0]),
         ptr(args[1]),
@@ -46,8 +45,8 @@ pub(crate) fn sys_recvmsg(api: &'static KernelApi, args: &SysArgs, rval: &mut Rv
 }
 
 /// 28 = `ssize_t sendmsg(int s, const struct msghdr *msg, int flags)`.
-pub(crate) fn sys_sendmsg(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.socket.sendmsg)(
+pub(crate) fn sys_sendmsg(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::net::sendmsg(
         SYS_sendmsg as Register,
         int(args[0]),
         ptr(args[1]),
@@ -57,8 +56,8 @@ pub(crate) fn sys_sendmsg(api: &'static KernelApi, args: &SysArgs, rval: &mut Rv
 }
 
 /// 29 = `ssize_t recvfrom(int s, void *buf, size_t len, int flags, struct sockaddr *from, socklen_t *fromlenaddr)`.
-pub(crate) fn sys_recvfrom(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.socket.recvfrom)(
+pub(crate) fn sys_recvfrom(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::net::recvfrom(
         SYS_recvfrom as Register,
         int(args[0]),
         ptr(args[1]),
@@ -71,8 +70,8 @@ pub(crate) fn sys_recvfrom(api: &'static KernelApi, args: &SysArgs, rval: &mut R
 }
 
 /// 30 = `int accept(int s, struct sockaddr *name, socklen_t *anamelen)`.
-pub(crate) fn sys_accept(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.socket.accept)(
+pub(crate) fn sys_accept(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::net::accept(
         SYS_accept as Register,
         int(args[0]),
         ptr(args[1]),
@@ -82,12 +81,8 @@ pub(crate) fn sys_accept(api: &'static KernelApi, args: &SysArgs, rval: &mut Rva
 }
 
 /// 31 = `int getpeername(int fdes, struct sockaddr *asa, socklen_t *alen)`.
-pub(crate) fn sys_getpeername(
-    api: &'static KernelApi,
-    args: &SysArgs,
-    rval: &mut Rval,
-) -> SysResult {
-    (api.socket.getpeername)(
+pub(crate) fn sys_getpeername(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::net::getpeername(
         SYS_getpeername as Register,
         int(args[0]),
         ptr(args[1]),
@@ -97,12 +92,8 @@ pub(crate) fn sys_getpeername(
 }
 
 /// 32 = `int getsockname(int fdes, struct sockaddr *asa, socklen_t *alen)`.
-pub(crate) fn sys_getsockname(
-    api: &'static KernelApi,
-    args: &SysArgs,
-    rval: &mut Rval,
-) -> SysResult {
-    (api.socket.getsockname)(
+pub(crate) fn sys_getsockname(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::net::getsockname(
         SYS_getsockname as Register,
         int(args[0]),
         ptr(args[1]),
@@ -112,8 +103,8 @@ pub(crate) fn sys_getsockname(
 }
 
 /// 93 = `int accept4(int s, struct sockaddr *name, socklen_t *anamelen, int flags)`.
-pub(crate) fn sys_accept4(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.socket.accept4)(
+pub(crate) fn sys_accept4(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::net::accept4(
         SYS_accept4 as Register,
         int(args[0]),
         ptr(args[1]),
@@ -124,8 +115,8 @@ pub(crate) fn sys_accept4(api: &'static KernelApi, args: &SysArgs, rval: &mut Rv
 }
 
 /// 97 = `int socket(int domain, int type, int protocol)`.
-pub(crate) fn sys_socket(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.socket.socket)(
+pub(crate) fn sys_socket(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::net::socket(
         SYS_socket as Register,
         int(args[0]),
         int(args[1]),
@@ -135,8 +126,8 @@ pub(crate) fn sys_socket(api: &'static KernelApi, args: &SysArgs, rval: &mut Rva
 }
 
 /// 98 = `int connect(int s, const struct sockaddr *name, socklen_t namelen)`.
-pub(crate) fn sys_connect(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.socket.connect)(
+pub(crate) fn sys_connect(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::net::connect(
         SYS_connect as Register,
         int(args[0]),
         ptr(args[1]),
@@ -146,8 +137,8 @@ pub(crate) fn sys_connect(api: &'static KernelApi, args: &SysArgs, rval: &mut Rv
 }
 
 /// 104 = `int bind(int s, const struct sockaddr *name, socklen_t namelen)`.
-pub(crate) fn sys_bind(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.socket.bind)(
+pub(crate) fn sys_bind(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::net::bind(
         SYS_bind as Register,
         int(args[0]),
         ptr(args[1]),
@@ -157,12 +148,8 @@ pub(crate) fn sys_bind(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval)
 }
 
 /// 105 = `int setsockopt(int s, int level, int name, const void *val, socklen_t valsize)`.
-pub(crate) fn sys_setsockopt(
-    api: &'static KernelApi,
-    args: &SysArgs,
-    rval: &mut Rval,
-) -> SysResult {
-    (api.socket.setsockopt)(
+pub(crate) fn sys_setsockopt(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::net::setsockopt(
         SYS_setsockopt as Register,
         int(args[0]),
         int(args[1]),
@@ -174,13 +161,13 @@ pub(crate) fn sys_setsockopt(
 }
 
 /// 106 = `int listen(int s, int backlog)`.
-pub(crate) fn sys_listen(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.socket.listen)(SYS_listen as Register, int(args[0]), int(args[1]), rval)
+pub(crate) fn sys_listen(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::net::listen(SYS_listen as Register, int(args[0]), int(args[1]), rval)
 }
 
 /// 116 = `int recvmmsg(int s, struct mmsghdr *mmsg, unsigned int vlen, int flags, struct timespec *timeout)`.
-pub(crate) fn sys_recvmmsg(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.socket.recvmmsg)(
+pub(crate) fn sys_recvmmsg(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::net::recvmmsg(
         SYS_recvmmsg as Register,
         int(args[0]),
         ptr(args[1]),
@@ -192,8 +179,8 @@ pub(crate) fn sys_recvmmsg(api: &'static KernelApi, args: &SysArgs, rval: &mut R
 }
 
 /// 117 = `int sendmmsg(int s, struct mmsghdr *mmsg, unsigned int vlen, int flags)`.
-pub(crate) fn sys_sendmmsg(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.socket.sendmmsg)(
+pub(crate) fn sys_sendmmsg(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::net::sendmmsg(
         SYS_sendmmsg as Register,
         int(args[0]),
         ptr(args[1]),
@@ -204,12 +191,8 @@ pub(crate) fn sys_sendmmsg(api: &'static KernelApi, args: &SysArgs, rval: &mut R
 }
 
 /// 118 = `int getsockopt(int s, int level, int name, void *val, socklen_t *avalsize)`.
-pub(crate) fn sys_getsockopt(
-    api: &'static KernelApi,
-    args: &SysArgs,
-    rval: &mut Rval,
-) -> SysResult {
-    (api.socket.getsockopt)(
+pub(crate) fn sys_getsockopt(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::net::getsockopt(
         SYS_getsockopt as Register,
         int(args[0]),
         int(args[1]),
@@ -221,8 +204,8 @@ pub(crate) fn sys_getsockopt(
 }
 
 /// 133 = `ssize_t sendto(int s, const void *buf, size_t len, int flags, const struct sockaddr *to, socklen_t tolen)`.
-pub(crate) fn sys_sendto(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.socket.sendto)(
+pub(crate) fn sys_sendto(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::net::sendto(
         SYS_sendto as Register,
         int(args[0]),
         ptr(args[1]),
@@ -235,17 +218,13 @@ pub(crate) fn sys_sendto(api: &'static KernelApi, args: &SysArgs, rval: &mut Rva
 }
 
 /// 134 = `int shutdown(int s, int how)`.
-pub(crate) fn sys_shutdown(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.socket.shutdown)(SYS_shutdown as Register, int(args[0]), int(args[1]), rval)
+pub(crate) fn sys_shutdown(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::net::shutdown(SYS_shutdown as Register, int(args[0]), int(args[1]), rval)
 }
 
 /// 135 = `int socketpair(int domain, int type, int protocol, int *rsv)`.
-pub(crate) fn sys_socketpair(
-    api: &'static KernelApi,
-    args: &SysArgs,
-    rval: &mut Rval,
-) -> SysResult {
-    (api.socket.socketpair)(
+pub(crate) fn sys_socketpair(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::net::socketpair(
         SYS_socketpair as Register,
         int(args[0]),
         int(args[1]),
@@ -256,7 +235,7 @@ pub(crate) fn sys_socketpair(
 }
 
 /// 150 = `int ypconnect(int type)`.
-pub(crate) fn sys_ypconnect(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.socket.ypconnect)(SYS_ypconnect as Register, int(args[0]), rval)
+pub(crate) fn sys_ypconnect(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::net::ypconnect(SYS_ypconnect as Register, int(args[0]), rval)
 }
 /* </CODE> */

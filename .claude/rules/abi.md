@@ -23,5 +23,3 @@ dispatcher `abi` registers: the only upward call, like the panic handler.
   in its own commit, with the reason.
 - A `pub` item added to `kernel::api` widens the door without touching `sys/abi/`: a
   review of such a change checks what it exposes to `abi`.
-- Until the slice that implements decision 52 lands, the tree still has `hal::api` and
-  abi-check enforces the 2026-11-06 text; that slice rewrites abi-check with this one.

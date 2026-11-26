@@ -26,7 +26,6 @@
 //! is [`crate::sysent::SYSENT`].
 
 use crate::scarg::{int, ptr, size_t, u_int};
-use hal::api::KernelApi;
 use hal::syscall::{Register, Rval, SysArgs, SysResult};
 
 use hal::sys::syscall::{
@@ -41,14 +40,14 @@ use hal::sys::syscall::{
 };
 
 /// 103 = `sigreturn(struct sigcontext *sigcntxp)`: `EJUSTRETURN` once the context is restored.
-pub(crate) fn sys_sigreturn(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.sigreturn)(SYS_sigreturn as Register, ptr(args[0]), rval)
+pub(crate) fn sys_sigreturn(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::sigreturn(SYS_sigreturn as Register, ptr(args[0]), rval)
 }
 
 /// 83 = `futex(uint32_t *f, int op, int val, const struct timespec *timeout, uint32_t *g)`:
 /// the number woken in `rval[0]`.
-pub(crate) fn sys_futex(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.futex)(
+pub(crate) fn sys_futex(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::futex(
         SYS_futex as Register,
         ptr(args[0]),
         int(args[1]),
@@ -60,33 +59,33 @@ pub(crate) fn sys_futex(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval
 }
 
 /// `fork(void)`.
-pub(crate) fn sys_fork(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.fork)(SYS_fork as Register, rval)
+pub(crate) fn sys_fork(_args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::fork(SYS_fork as Register, rval)
 }
 
 /// `vfork(void)`.
-pub(crate) fn sys_vfork(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.vfork)(SYS_vfork as Register, rval)
+pub(crate) fn sys_vfork(_args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::vfork(SYS_vfork as Register, rval)
 }
 
 /// `__tfork(const struct __tfork *param, size_t psize)`.
-pub(crate) fn sys_tfork(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.tfork)(SYS___tfork as Register, ptr(args[0]), size_t(args[1]), rval)
+pub(crate) fn sys_tfork(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::tfork(SYS___tfork as Register, ptr(args[0]), size_t(args[1]), rval)
 }
 
 /// `exit(int rval)`.
-pub(crate) fn sys_exit(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.exit)(SYS_exit as Register, int(args[0]), rval)
+pub(crate) fn sys_exit(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::exit(SYS_exit as Register, int(args[0]), rval)
 }
 
 /// `__threxit(pid_t *notdead)`.
-pub(crate) fn sys_threxit(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.threxit)(SYS___threxit as Register, ptr(args[0]), rval)
+pub(crate) fn sys_threxit(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::threxit(SYS___threxit as Register, ptr(args[0]), rval)
 }
 
 /// `wait4(pid_t pid, int *status, int options, struct rusage *rusage)`.
-pub(crate) fn sys_wait4(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.wait4)(
+pub(crate) fn sys_wait4(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::wait4(
         SYS_wait4 as Register,
         int(args[0]),
         ptr(args[1]),
@@ -97,8 +96,8 @@ pub(crate) fn sys_wait4(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval
 }
 
 /// `waitid(int idtype, id_t id, siginfo_t *info, int options)`.
-pub(crate) fn sys_waitid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.waitid)(
+pub(crate) fn sys_waitid(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::waitid(
         SYS_waitid as Register,
         int(args[0]),
         u_int(args[1]),
@@ -109,27 +108,23 @@ pub(crate) fn sys_waitid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rva
 }
 
 /// `getrusage(int who, struct rusage *rusage)`.
-pub(crate) fn sys_getrusage(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.getrusage)(SYS_getrusage as Register, int(args[0]), ptr(args[1]), rval)
+pub(crate) fn sys_getrusage(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::getrusage(SYS_getrusage as Register, int(args[0]), ptr(args[1]), rval)
 }
 
 /// `getrlimit(int which, struct rlimit *rlp)`.
-pub(crate) fn sys_getrlimit(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.getrlimit)(SYS_getrlimit as Register, int(args[0]), ptr(args[1]), rval)
+pub(crate) fn sys_getrlimit(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::getrlimit(SYS_getrlimit as Register, int(args[0]), ptr(args[1]), rval)
 }
 
 /// `setrlimit(int which, const struct rlimit *rlp)`.
-pub(crate) fn sys_setrlimit(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.setrlimit)(SYS_setrlimit as Register, int(args[0]), ptr(args[1]), rval)
+pub(crate) fn sys_setrlimit(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::setrlimit(SYS_setrlimit as Register, int(args[0]), ptr(args[1]), rval)
 }
 
 /// `getpriority(int which, id_t who)`.
-pub(crate) fn sys_getpriority(
-    api: &'static KernelApi,
-    args: &SysArgs,
-    rval: &mut Rval,
-) -> SysResult {
-    (api.proc.getpriority)(
+pub(crate) fn sys_getpriority(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::getpriority(
         SYS_getpriority as Register,
         int(args[0]),
         u_int(args[1]),
@@ -138,12 +133,8 @@ pub(crate) fn sys_getpriority(
 }
 
 /// `setpriority(int which, id_t who, int prio)`.
-pub(crate) fn sys_setpriority(
-    api: &'static KernelApi,
-    args: &SysArgs,
-    rval: &mut Rval,
-) -> SysResult {
-    (api.proc.setpriority)(
+pub(crate) fn sys_setpriority(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::setpriority(
         SYS_setpriority as Register,
         int(args[0]),
         u_int(args[1]),
@@ -153,98 +144,98 @@ pub(crate) fn sys_setpriority(
 }
 
 /// `acct(const char *path)`.
-pub(crate) fn sys_acct(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.acct)(SYS_acct as Register, ptr(args[0]), rval)
+pub(crate) fn sys_acct(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::acct(SYS_acct as Register, ptr(args[0]), rval)
 }
 
 /// `getpid(void)`.
-pub(crate) fn sys_getpid(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.getpid)(SYS_getpid as Register, rval)
+pub(crate) fn sys_getpid(_args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::getpid(SYS_getpid as Register, rval)
 }
 
 /// `getppid(void)`.
-pub(crate) fn sys_getppid(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.getppid)(SYS_getppid as Register, rval)
+pub(crate) fn sys_getppid(_args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::getppid(SYS_getppid as Register, rval)
 }
 
 /// `getuid(void)`.
-pub(crate) fn sys_getuid(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.getuid)(SYS_getuid as Register, rval)
+pub(crate) fn sys_getuid(_args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::getuid(SYS_getuid as Register, rval)
 }
 
 /// `geteuid(void)`.
-pub(crate) fn sys_geteuid(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.geteuid)(SYS_geteuid as Register, rval)
+pub(crate) fn sys_geteuid(_args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::geteuid(SYS_geteuid as Register, rval)
 }
 
 /// `getgid(void)`.
-pub(crate) fn sys_getgid(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.getgid)(SYS_getgid as Register, rval)
+pub(crate) fn sys_getgid(_args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::getgid(SYS_getgid as Register, rval)
 }
 
 /// `getegid(void)`.
-pub(crate) fn sys_getegid(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.getegid)(SYS_getegid as Register, rval)
+pub(crate) fn sys_getegid(_args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::getegid(SYS_getegid as Register, rval)
 }
 
 /// `getgroups(int gidsetsize, gid_t *gidset)`.
-pub(crate) fn sys_getgroups(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.getgroups)(SYS_getgroups as Register, int(args[0]), ptr(args[1]), rval)
+pub(crate) fn sys_getgroups(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::getgroups(SYS_getgroups as Register, int(args[0]), ptr(args[1]), rval)
 }
 
 /// `setgroups(int gidsetsize, const gid_t *gidset)`.
-pub(crate) fn sys_setgroups(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.setgroups)(SYS_setgroups as Register, int(args[0]), ptr(args[1]), rval)
+pub(crate) fn sys_setgroups(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::setgroups(SYS_setgroups as Register, int(args[0]), ptr(args[1]), rval)
 }
 
 /// `getpgrp(void)`.
-pub(crate) fn sys_getpgrp(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.getpgrp)(SYS_getpgrp as Register, rval)
+pub(crate) fn sys_getpgrp(_args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::getpgrp(SYS_getpgrp as Register, rval)
 }
 
 /// `getpgid(pid_t pid)`.
-pub(crate) fn sys_getpgid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.getpgid)(SYS_getpgid as Register, int(args[0]), rval)
+pub(crate) fn sys_getpgid(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::getpgid(SYS_getpgid as Register, int(args[0]), rval)
 }
 
 /// `getsid(pid_t pid)`.
-pub(crate) fn sys_getsid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.getsid)(SYS_getsid as Register, int(args[0]), rval)
+pub(crate) fn sys_getsid(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::getsid(SYS_getsid as Register, int(args[0]), rval)
 }
 
 /// `setpgid(pid_t pid, pid_t pgid)`.
-pub(crate) fn sys_setpgid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.setpgid)(SYS_setpgid as Register, int(args[0]), int(args[1]), rval)
+pub(crate) fn sys_setpgid(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::setpgid(SYS_setpgid as Register, int(args[0]), int(args[1]), rval)
 }
 
 /// `setsid(void)`.
-pub(crate) fn sys_setsid(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.setsid)(SYS_setsid as Register, rval)
+pub(crate) fn sys_setsid(_args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::setsid(SYS_setsid as Register, rval)
 }
 
 /// `setuid(uid_t uid)`.
-pub(crate) fn sys_setuid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.setuid)(SYS_setuid as Register, u_int(args[0]), rval)
+pub(crate) fn sys_setuid(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::setuid(SYS_setuid as Register, u_int(args[0]), rval)
 }
 
 /// `seteuid(uid_t euid)`.
-pub(crate) fn sys_seteuid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.seteuid)(SYS_seteuid as Register, u_int(args[0]), rval)
+pub(crate) fn sys_seteuid(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::seteuid(SYS_seteuid as Register, u_int(args[0]), rval)
 }
 
 /// `setgid(gid_t gid)`.
-pub(crate) fn sys_setgid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.setgid)(SYS_setgid as Register, u_int(args[0]), rval)
+pub(crate) fn sys_setgid(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::setgid(SYS_setgid as Register, u_int(args[0]), rval)
 }
 
 /// `setegid(gid_t egid)`.
-pub(crate) fn sys_setegid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.setegid)(SYS_setegid as Register, u_int(args[0]), rval)
+pub(crate) fn sys_setegid(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::setegid(SYS_setegid as Register, u_int(args[0]), rval)
 }
 
 /// `setreuid(uid_t ruid, uid_t euid)`.
-pub(crate) fn sys_setreuid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.setreuid)(
+pub(crate) fn sys_setreuid(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::setreuid(
         SYS_setreuid as Register,
         u_int(args[0]),
         u_int(args[1]),
@@ -253,8 +244,8 @@ pub(crate) fn sys_setreuid(api: &'static KernelApi, args: &SysArgs, rval: &mut R
 }
 
 /// `setregid(gid_t rgid, gid_t egid)`.
-pub(crate) fn sys_setregid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.setregid)(
+pub(crate) fn sys_setregid(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::setregid(
         SYS_setregid as Register,
         u_int(args[0]),
         u_int(args[1]),
@@ -263,8 +254,8 @@ pub(crate) fn sys_setregid(api: &'static KernelApi, args: &SysArgs, rval: &mut R
 }
 
 /// `setresuid(uid_t ruid, uid_t euid, uid_t suid)`.
-pub(crate) fn sys_setresuid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.setresuid)(
+pub(crate) fn sys_setresuid(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::setresuid(
         SYS_setresuid as Register,
         u_int(args[0]),
         u_int(args[1]),
@@ -274,8 +265,8 @@ pub(crate) fn sys_setresuid(api: &'static KernelApi, args: &SysArgs, rval: &mut 
 }
 
 /// `setresgid(gid_t rgid, gid_t egid, gid_t sgid)`.
-pub(crate) fn sys_setresgid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.setresgid)(
+pub(crate) fn sys_setresgid(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::setresgid(
         SYS_setresgid as Register,
         u_int(args[0]),
         u_int(args[1]),
@@ -285,8 +276,8 @@ pub(crate) fn sys_setresgid(api: &'static KernelApi, args: &SysArgs, rval: &mut 
 }
 
 /// `getresuid(uid_t *ruid, uid_t *euid, uid_t *suid)`.
-pub(crate) fn sys_getresuid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.getresuid)(
+pub(crate) fn sys_getresuid(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::getresuid(
         SYS_getresuid as Register,
         ptr(args[0]),
         ptr(args[1]),
@@ -296,8 +287,8 @@ pub(crate) fn sys_getresuid(api: &'static KernelApi, args: &SysArgs, rval: &mut 
 }
 
 /// `getresgid(gid_t *rgid, gid_t *egid, gid_t *sgid)`.
-pub(crate) fn sys_getresgid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.getresgid)(
+pub(crate) fn sys_getresgid(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::getresgid(
         SYS_getresgid as Register,
         ptr(args[0]),
         ptr(args[1]),
@@ -307,21 +298,13 @@ pub(crate) fn sys_getresgid(api: &'static KernelApi, args: &SysArgs, rval: &mut 
 }
 
 /// `issetugid(void)`.
-pub(crate) fn sys_issetugid(
-    api: &'static KernelApi,
-    _args: &SysArgs,
-    rval: &mut Rval,
-) -> SysResult {
-    (api.proc.issetugid)(SYS_issetugid as Register, rval)
+pub(crate) fn sys_issetugid(_args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::issetugid(SYS_issetugid as Register, rval)
 }
 
 /// `getlogin_r(char *namebuf, size_t namelen)`.
-pub(crate) fn sys_getlogin_r(
-    api: &'static KernelApi,
-    args: &SysArgs,
-    rval: &mut Rval,
-) -> SysResult {
-    (api.proc.getlogin_r)(
+pub(crate) fn sys_getlogin_r(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::getlogin_r(
         SYS_getlogin_r as Register,
         ptr(args[0]),
         size_t(args[1]),
@@ -330,32 +313,28 @@ pub(crate) fn sys_getlogin_r(
 }
 
 /// `setlogin(const char *namebuf)`.
-pub(crate) fn sys_setlogin(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.setlogin)(SYS_setlogin as Register, ptr(args[0]), rval)
+pub(crate) fn sys_setlogin(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::setlogin(SYS_setlogin as Register, ptr(args[0]), rval)
 }
 
 /// `__set_tcb(void *tcb)`.
-pub(crate) fn sys_set_tcb(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.set_tcb)(SYS___set_tcb as Register, ptr(args[0]), rval)
+pub(crate) fn sys_set_tcb(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::set_tcb(SYS___set_tcb as Register, ptr(args[0]), rval)
 }
 
 /// `__get_tcb(void)`.
-pub(crate) fn sys_get_tcb(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.get_tcb)(SYS___get_tcb as Register, rval)
+pub(crate) fn sys_get_tcb(_args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::get_tcb(SYS___get_tcb as Register, rval)
 }
 
 /// `getthrid(void)`.
-pub(crate) fn sys_getthrid(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.getthrid)(SYS_getthrid as Register, rval)
+pub(crate) fn sys_getthrid(_args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::getthrid(SYS_getthrid as Register, rval)
 }
 
 /// `getthrname(pid_t tid, char *name, size_t len)`.
-pub(crate) fn sys_getthrname(
-    api: &'static KernelApi,
-    args: &SysArgs,
-    rval: &mut Rval,
-) -> SysResult {
-    (api.proc.getthrname)(
+pub(crate) fn sys_getthrname(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::getthrname(
         SYS_getthrname as Register,
         int(args[0]),
         ptr(args[1]),
@@ -365,25 +344,17 @@ pub(crate) fn sys_getthrname(
 }
 
 /// `setthrname(pid_t tid, const char *name)`.
-pub(crate) fn sys_setthrname(
-    api: &'static KernelApi,
-    args: &SysArgs,
-    rval: &mut Rval,
-) -> SysResult {
-    (api.proc.setthrname)(SYS_setthrname as Register, int(args[0]), ptr(args[1]), rval)
+pub(crate) fn sys_setthrname(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::setthrname(SYS_setthrname as Register, int(args[0]), ptr(args[1]), rval)
 }
 
 /// `getrtable(void)`.
-pub(crate) fn sys_getrtable(
-    api: &'static KernelApi,
-    _args: &SysArgs,
-    rval: &mut Rval,
-) -> SysResult {
-    (api.proc.getrtable)(SYS_getrtable as Register, rval)
+pub(crate) fn sys_getrtable(_args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::getrtable(SYS_getrtable as Register, rval)
 }
 
 /// `setrtable(int rtableid)`.
-pub(crate) fn sys_setrtable(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.setrtable)(SYS_setrtable as Register, int(args[0]), rval)
+pub(crate) fn sys_setrtable(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::proc::setrtable(SYS_setrtable as Register, int(args[0]), rval)
 }
 /* </CODE> */

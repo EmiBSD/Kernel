@@ -25,7 +25,6 @@
 //! is [`crate::sysent::SYSENT`].
 
 use crate::scarg::{int, off_t, ptr, size_t, u_long};
-use hal::api::KernelApi;
 use hal::syscall::{Register, Rval, SysArgs, SysResult};
 
 use hal::sys::syscall::{
@@ -35,18 +34,18 @@ use hal::sys::syscall::{
 };
 
 /// 101 = `pipe2(int *fdp, int flags)`: the kernel's pipe(2) with the flags.
-pub(crate) fn sys_pipe2(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) -> SysResult {
-    (api.pipe2)(SYS_pipe2 as Register, ptr(args[0]), int(args[1]))
+pub(crate) fn sys_pipe2(args: &SysArgs, _rval: &mut Rval) -> SysResult {
+    kernel::api::file::pipe2(SYS_pipe2 as Register, ptr(args[0]), int(args[1]))
 }
 
 /// 263 = `pipe(int *fdp)`: the kernel's pipe(2), no flags.
-pub(crate) fn sys_pipe(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) -> SysResult {
-    (api.pipe2)(SYS_pipe as Register, ptr(args[0]), 0)
+pub(crate) fn sys_pipe(args: &SysArgs, _rval: &mut Rval) -> SysResult {
+    kernel::api::file::pipe2(SYS_pipe as Register, ptr(args[0]), 0)
 }
 
 /// 3 = `read(int fd, void *buf, size_t nbyte)`.
-pub(crate) fn sys_read(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.fd.read)(
+pub(crate) fn sys_read(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::file::read(
         SYS_read as Register,
         int(args[0]),
         ptr(args[1]),
@@ -56,8 +55,8 @@ pub(crate) fn sys_read(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval)
 }
 
 /// 4 = `write(int fd, const void *buf, size_t nbyte)`.
-pub(crate) fn sys_write(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.fd.write)(
+pub(crate) fn sys_write(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::file::write(
         SYS_write as Register,
         int(args[0]),
         ptr(args[1]),
@@ -67,32 +66,28 @@ pub(crate) fn sys_write(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval
 }
 
 /// 6 = `close(int fd)`.
-pub(crate) fn sys_close(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.fd.close)(SYS_close as Register, int(args[0]), rval)
+pub(crate) fn sys_close(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::file::close(SYS_close as Register, int(args[0]), rval)
 }
 
 /// 18 = `getdtablecount(void)`.
-pub(crate) fn sys_getdtablecount(
-    api: &'static KernelApi,
-    _args: &SysArgs,
-    rval: &mut Rval,
-) -> SysResult {
-    (api.fd.getdtablecount)(SYS_getdtablecount as Register, rval)
+pub(crate) fn sys_getdtablecount(_args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::file::getdtablecount(SYS_getdtablecount as Register, rval)
 }
 
 /// 41 = `dup(int fd)`.
-pub(crate) fn sys_dup(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.fd.dup)(SYS_dup as Register, int(args[0]), rval)
+pub(crate) fn sys_dup(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::file::dup(SYS_dup as Register, int(args[0]), rval)
 }
 
 /// 53 = `fstat(int fd, struct stat *sb)`.
-pub(crate) fn sys_fstat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.fd.fstat)(SYS_fstat as Register, int(args[0]), ptr(args[1]), rval)
+pub(crate) fn sys_fstat(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::file::fstat(SYS_fstat as Register, int(args[0]), ptr(args[1]), rval)
 }
 
 /// 54 = `ioctl(int fd, u_long com, void *data)`.
-pub(crate) fn sys_ioctl(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.fd.ioctl)(
+pub(crate) fn sys_ioctl(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::file::ioctl(
         SYS_ioctl as Register,
         int(args[0]),
         u_long(args[1]),
@@ -102,13 +97,13 @@ pub(crate) fn sys_ioctl(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval
 }
 
 /// 90 = `dup2(int from, int to)`.
-pub(crate) fn sys_dup2(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.fd.dup2)(SYS_dup2 as Register, int(args[0]), int(args[1]), rval)
+pub(crate) fn sys_dup2(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::file::dup2(SYS_dup2 as Register, int(args[0]), int(args[1]), rval)
 }
 
 /// 92 = `fcntl(int fd, int cmd, void *arg)`.
-pub(crate) fn sys_fcntl(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.fd.fcntl)(
+pub(crate) fn sys_fcntl(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::file::fcntl(
         SYS_fcntl as Register,
         int(args[0]),
         int(args[1]),
@@ -118,8 +113,8 @@ pub(crate) fn sys_fcntl(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval
 }
 
 /// 102 = `dup3(int from, int to, int flags)`.
-pub(crate) fn sys_dup3(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.fd.dup3)(
+pub(crate) fn sys_dup3(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::file::dup3(
         SYS_dup3 as Register,
         int(args[0]),
         int(args[1]),
@@ -129,8 +124,8 @@ pub(crate) fn sys_dup3(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval)
 }
 
 /// 120 = `readv(int fd, const struct iovec *iovp, int iovcnt)`.
-pub(crate) fn sys_readv(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.fd.readv)(
+pub(crate) fn sys_readv(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::file::readv(
         SYS_readv as Register,
         int(args[0]),
         ptr(args[1]),
@@ -140,8 +135,8 @@ pub(crate) fn sys_readv(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval
 }
 
 /// 121 = `writev(int fd, const struct iovec *iovp, int iovcnt)`.
-pub(crate) fn sys_writev(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.fd.writev)(
+pub(crate) fn sys_writev(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::file::writev(
         SYS_writev as Register,
         int(args[0]),
         ptr(args[1]),
@@ -151,13 +146,13 @@ pub(crate) fn sys_writev(api: &'static KernelApi, args: &SysArgs, rval: &mut Rva
 }
 
 /// 131 = `flock(int fd, int how)`.
-pub(crate) fn sys_flock(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.fd.flock)(SYS_flock as Register, int(args[0]), int(args[1]), rval)
+pub(crate) fn sys_flock(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::file::flock(SYS_flock as Register, int(args[0]), int(args[1]), rval)
 }
 
 /// 169 = `pread(int fd, void *buf, size_t nbyte, off_t offset)`.
-pub(crate) fn sys_pread(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.fd.pread)(
+pub(crate) fn sys_pread(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::file::pread(
         SYS_pread as Register,
         int(args[0]),
         ptr(args[1]),
@@ -168,8 +163,8 @@ pub(crate) fn sys_pread(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval
 }
 
 /// 170 = `pwrite(int fd, const void *buf, size_t nbyte, off_t offset)`.
-pub(crate) fn sys_pwrite(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.fd.pwrite)(
+pub(crate) fn sys_pwrite(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::file::pwrite(
         SYS_pwrite as Register,
         int(args[0]),
         ptr(args[1]),
@@ -180,8 +175,8 @@ pub(crate) fn sys_pwrite(api: &'static KernelApi, args: &SysArgs, rval: &mut Rva
 }
 
 /// 171 = `preadv(int fd, const struct iovec *iovp, int iovcnt, off_t offset)`.
-pub(crate) fn sys_preadv(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.fd.preadv)(
+pub(crate) fn sys_preadv(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::file::preadv(
         SYS_preadv as Register,
         int(args[0]),
         ptr(args[1]),
@@ -192,8 +187,8 @@ pub(crate) fn sys_preadv(api: &'static KernelApi, args: &SysArgs, rval: &mut Rva
 }
 
 /// 172 = `pwritev(int fd, const struct iovec *iovp, int iovcnt, off_t offset)`.
-pub(crate) fn sys_pwritev(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.fd.pwritev)(
+pub(crate) fn sys_pwritev(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::file::pwritev(
         SYS_pwritev as Register,
         int(args[0]),
         ptr(args[1]),
@@ -204,13 +199,13 @@ pub(crate) fn sys_pwritev(api: &'static KernelApi, args: &SysArgs, rval: &mut Rv
 }
 
 /// 192 = `fpathconf(int fd, int name)`.
-pub(crate) fn sys_fpathconf(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.fd.fpathconf)(SYS_fpathconf as Register, int(args[0]), int(args[1]), rval)
+pub(crate) fn sys_fpathconf(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::file::fpathconf(SYS_fpathconf as Register, int(args[0]), int(args[1]), rval)
 }
 
 /// 209 = `utrace(const char *label, const void *addr, size_t len)`.
-pub(crate) fn sys_utrace(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.fd.utrace)(
+pub(crate) fn sys_utrace(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::file::utrace(
         SYS_utrace as Register,
         ptr(args[0]),
         ptr(args[1]),
@@ -220,7 +215,7 @@ pub(crate) fn sys_utrace(api: &'static KernelApi, args: &SysArgs, rval: &mut Rva
 }
 
 /// 287 = `closefrom(int fd)`.
-pub(crate) fn sys_closefrom(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.fd.closefrom)(SYS_closefrom as Register, int(args[0]), rval)
+pub(crate) fn sys_closefrom(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::file::closefrom(SYS_closefrom as Register, int(args[0]), rval)
 }
 /* </CODE> */

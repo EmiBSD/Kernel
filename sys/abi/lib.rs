@@ -19,19 +19,26 @@
 /* <CODE> */
 //! The ABI: OpenBSD's userland interface, byte-identical, linked into the kernel image
 //! (decision 47; the loadable module of decision 22 until the N5 close).
-//! Translation only: userland bytes to the kernel's types and back, one `KernelApi` entry per
-//! syscall, an errno from its `Result`; no decision on what a value means (decision 21,
+//! Translation only: userland bytes to the kernel's types and back, one `kernel::api` call
+//! per syscall, an errno from its `Result`; no decision on what a value means (decision 21,
 //! `cargo xtask abi-check`). `forbid(unsafe_code)`: the copies from and to user memory are
-//! the kernel's, behind `KernelApi`.
+//! the kernel's, behind `kernel::api`.
 //!
-//! Cargo keeps the crate away from `kernel` and `bsd` (it depends on `hal` alone); `hal`'s
-//! public API acts on the kernel's own state, so `abi-check` R6 confines it to `hal::api`,
-//! `hal::sys::*` and `hal::syscall`'s types (decision 47). It reaches the kernel only
-//! through the `KernelApi` table the image's boot glue fills and hands to [`abi_init`]
-//! (`sys/kern/abi_module.rs` until N9), and nothing of `kernel` names it. The constant
-//! headers of the ABI edge (`<sys/syscall.h>`, `<sys/errno.h>`, ...) are `hal`'s, inherited from LZ
-//! (`sys/hal/sys/`, the user's decision of 2026-10-16): the numbers of the table are
-//! `hal::sys::syscall`'s, not a copy of them.
+//! The chain is userland -> `abi` -> `kernel` -> `hal` (decision 52, the user, 2026-11-26):
+//! the crate depends on `kernel` and `hal`, never on `bsd`, and `abi-check` R6 confines what
+//! it names: of `kernel`, only `kernel::api` (one function per system call); of `hal`, only
+//! the passive `hal::sys::*`, `hal::syscall`'s types and the registration of its handler
+//! ([`abi_init`]), since `hal`'s public API otherwise acts on the kernel's own state. Neither
+//! `kernel` nor `hal` names it: the image's boot glue calls [`abi_init`]
+//! (`sys/kern/abi_module.rs` until N9), and `hal`'s dispatch point calls the handler it
+//! registered, the one upward call. The constant headers of the ABI edge
+//! (`<sys/syscall.h>`, `<sys/errno.h>`, ...) are `hal`'s, inherited from LZ (`sys/hal/sys/`,
+//! the user's decision of 2026-10-16): the numbers of the table are `hal::sys::syscall`'s,
+//! not a copy of them.
+//!
+//! The translations sit in one file per group of the kernel ([`proc`], [`vm`], [`file`],
+//! [`event`], [`time`], [`base`], [`fs`], [`net`]), the table and the dispatcher in
+//! [`sysent`], the argument reads in [`scarg`].
 #![no_std]
 #![forbid(unsafe_code)]
 // `clippy::pedantic` is on in this crate (the user's decision of 2026-10-29, measured first:
@@ -85,11 +92,10 @@ pub mod sysent;
 pub mod time;
 pub mod vm;
 
-use hal::api::KernelApi;
-
 /// The ABI's entry point, which the image's boot glue calls once, before `main()` and so
-/// before any system call: registers the system call handler and what the table holds.
-pub fn abi_init(api: &'static KernelApi) {
-    (api.register_syscall_handler)(api, sysent::syscall, sysent::INFO);
+/// before any system call: registers the system call handler and what its table holds. A
+/// second call is refused by `hal` and changes nothing.
+pub fn abi_init() {
+    let _ = hal::syscall::set_handler(sysent::syscall, sysent::INFO);
 }
 /* </CODE> */

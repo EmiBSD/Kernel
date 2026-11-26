@@ -41,9 +41,9 @@ decision of the operating system, `#![forbid(unsafe_code)]` at its root; `sys/ab
 userland interface, linked into the kernel image (decision 47), `forbid`, translation only; and
 `bsd` at `sys/` itself (OpenBSD's kernel image is `/bsd`), the LZ tree with its subsystems as
 modules (`kern`, `uvm`, `dev`, `ddb`, `sys`, `machine`, `arch`), replaced subsystem by subsystem
-and deleted at N9. Dependencies go one way: `bsd -> kernel -> hal` and `bsd -> abi -> hal`
-(only the image crate names `abi`, which reaches the kernel through `KernelApi` alone); `hal`
-depends on nothing of ours but `libkern`.
+and deleted at N9. Dependencies go one way: `bsd -> abi -> kernel -> hal` and `bsd -> kernel`
+(only the image crate names `abi`, which calls the kernel through `kernel::api` alone, decision
+52); `hal` depends on nothing of ours but `libkern`.
 
 The cycles OpenBSD resolves at link time (`trap → uvm_fault → pmap → tsleep → sched`) were the
 reason `bsd` was one crate until 2026-10-16 (v1: a module could become a crate only if it used
@@ -59,7 +59,8 @@ No `src/` directory (`[lib] path = "lib.rs"`), so C and Rust paths differ only b
 
 `sys/hal/` is grouped by purpose, one directory per group, so a driver or a subsystem names only
 the groups it needs (the user approved the layout on 2026-11-26). The root keeps what other
-rules name by path (`api`, `syscall`, `sys`, `user`, `machine`, `arch`) and the small leaves.
+rules name by path (`syscall`, `sys`, `user`, `machine`, `arch`) and the small leaves (`api`,
+the `KernelApi` table, left the root with decision 52).
 
 | Group | Holds | Used by |
 |---|---|---|
@@ -69,7 +70,7 @@ rules name by path (`api`, `syscall`, `sys`, `user`, `machine`, `arch`) and the 
 | `hal::cpu` | the running CPU (`curcpu`), thread, trap, intr, softintr, clock, sig | proc, sched, signals; `kernel::dev` only for spl and interrupts |
 | `hal::vm` | the page arithmetic, uvmexp and the pmap | `kernel::vm` |
 | `hal::dev` | mmio, dma: the only driver-facing group (N7 adds the GIC system registers and the SMCCC call) | `kernel::dev` and the drivers |
-| root | api, syscall, sys, user, machine, arch, bridges, assert, prf, cons, random | as before |
+| root | syscall, sys, user, machine, arch, bridges, assert, prf, cons, random | as before |
 
 `cpu`'s own file is `cpu/curcpu.rs`, re-exported by `cpu/mod.rs`: its `#[forbid(unsafe_code)]`
 must not cover `thread.rs`, and a group's own name as a module trips `clippy::module_inception`.
@@ -313,22 +314,27 @@ missing; decision 47 records what went with it. The pieces now:
 
 - **The table.** `sys/abi/sysent.rs`: one `Native(fn) | Legacy` entry per number of
   `<sys/syscall.h>` (`hal::sys::syscall`), 170 of 331 `Native` (`NATIVE`; pipe and pipe2 the
-  first, at N2.6). A `Native` entry calls its `KernelApi` entry, whose `bsd` wrapper runs the
-  same `sysent[]` row through the system call prologue (the hop, docs/SCAFFOLDING.md), so the
-  `Legacy` path, `KernelApi::syscall_legacy` (`bsd`'s `sysent[]` and `mi_syscall`), gives the
-  same answer; a `Legacy` entry and a number outside the table take that path.
-- **The kernel's table.** `hal::api::KernelApi`: Rust `fn` pointers, the handler's
-  registration, the `Legacy` path and one typed entry per `Native` system call in groups
-  (`VmEntries`, `FdEntries`, `EventEntries`, `ProcEntries`, `TimeEntries`, `VfsEntries`, ...).
-  It lives in `hal`, below both sides, so `abi` names it with no dependency on `kernel`
-  (Cargo keeps `abi` away from `kernel` and `bsd`; `hal`'s public API acts on the kernel's
-  own state, so `abi-check` R6 confines `abi` to `hal::api`, `hal::sys::*` and `hal::syscall`'s types); `kernel::api::table`
-  fills it with the kernel's registration and `bsd` with the functions that answer (`sys/kern/abi_module.rs`); `abi`
-  receives it in `abi_init` and in every call, and keeps no state.
+  first, at N2.6). The translations are one file per group of the kernel (`proc.rs`, `vm.rs`,
+  `file.rs`, `event.rs`, `time.rs`, `base.rs`, `fs.rs`, `net.rs`, N7). A `Native` entry calls
+  its `kernel::api` function, which runs the same `sysent[]` row through `mi_syscall` (the
+  hop, docs/SCAFFOLDING.md), so the `Legacy` path, `kernel::api::syscall_legacy` (`bsd`'s
+  `sysent[]` and `mi_syscall`), gives the same answer; a `Legacy` entry and a number outside
+  the table take that path.
+- **The kernel's door.** `kernel::api` (decision 52, 2026-11-26): one plain function per
+  `Native` system call, grouped as the kernel is (`kernel::api::{proc, vm, file, event, time,
+  base, fs, net}`), and `syscall_legacy`. `abi` depends on `kernel` and calls them directly;
+  `abi-check` R6 confines it to `kernel::api` and, of `hal`, to `hal::sys::*`, `hal::syscall`'s
+  types and `set_handler`, since the rest of both crates' public API acts on the kernel's own
+  state. Each function still reaches its row, which `bsd` holds, through one bridge,
+  `kernel::syscall::LegacySyscalls` (`bridges.toml`, paid by N9). Until decision 52 the door
+  was `hal::api::KernelApi`, a table of `fn` pointers in `hal` (so the loadable module of
+  decision 22 named no `kernel`), filled by `bsd`'s glue and handed to `abi_init`: one
+  indirect call per system call that the direct calls remove, and the kernel's trampoline
+  (`abi_syscall`) with it.
 - **The registration.** `stand::start_kernel` calls `bsd`'s `abi_module::abi_boot` right after
-  `hal_bridges_register`, before `main()`: `abi::abi_init(&KERNEL_API)` registers the handler
-  (`kernel::api` keeps it with its table and registers its trampoline in `hal::syscall`, once),
-  and the glue prints one line from what the handler said about itself (`HandlerInfo`), or
+  `hal_bridges_register`, before `main()`: it registers the `sysent[]` rows as the kernel's
+  `LegacySyscalls`, then `abi::abi_init()` registers the handler in `hal::syscall` (once; the
+  trap's one upward call), and the glue prints one line from what the handler said about itself (`HandlerInfo`), or
   panics when nothing registered. The kcopy tokens are taken before it (`hal_bridges_register`'s
   first steps), `abi-check` R6 keeps `abi` out of `hal::user`, and `abi` runs nothing before
   `abi_init`, so it can neither name nor hold one (decision 47).

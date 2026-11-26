@@ -23,21 +23,22 @@ kernel at N9", 2026-10-21); it follows this section and 0.8, never the reverse.
 flowchart TB
     L0["0 · USERLAND of OpenBSD<br/>binaries unchanged · ABI byte-identical"]
     L1["1 · abi · sys/abi/ · linked into the kernel image (decision 47)<br/>#![forbid(unsafe_code)] · 0 unsafe · translation only, no logic<br/>syscall table (Native | Legacy) · bytes ⇄ the kernel's types · errno from Result"]
-    L2["2 · kernel · sys/kernel/<br/>#![forbid(unsafe_code)] at the root · 0 unsafe, the compiler refuses one<br/>every decision of the OS · exports KernelApi (the table abi calls)<br/>bridge traits for what has not moved yet (bridges.toml → 0 at N9)"]
-    L3["3 · hal · sys/hal/ · the ONLY unsafe · hal_ceiling lowered to the count at each close (35 at N2, 100 at N3), raised only by the user<br/>hardware moved from LZ by owner: the pmaps behind hal::Pmap (N3.1), then arch/amd64, arch/arm64, machine, arch/host<br/>runtime written new: Mutexed, Rwlocked, SharedRwlock + Guarded, TypedPool/PoolArc/PoolBox, MBox, MArray, KmBuf, MappedBytes, OnceStatic, List/Tree and their owned forms, UserPtr + abi_pod!, PerCpu, Refcnt, Smr, Mmio, DmaBuf<br/>the registry, the syscall trap"]
+    L2["2 · kernel · sys/kernel/<br/>#![forbid(unsafe_code)] at the root · 0 unsafe, the compiler refuses one<br/>every decision of the OS · kernel::api: one function per syscall, abi's only door (decision 52)<br/>bridge traits for what has not moved yet (bridges.toml → 0 at N9)"]
+    L3["3 · hal · sys/hal/ · the ONLY unsafe · hal_ceiling lowered to the count at each close (35 at N2, 100 at N3), raised only by the user<br/>hardware moved from LZ by owner: the pmaps behind hal::Pmap (N3.1), then arch/amd64, arch/arm64, machine, arch/host<br/>runtime written new: Mutexed, Rwlocked, SharedRwlock + Guarded, TypedPool/PoolArc/PoolBox, MBox, MArray, KmBuf, MappedBytes, OnceStatic, List/Tree and their owned forms, UserPtr + abi_pod!, PerCpu, Refcnt, Smr, Mmio, DmaBuf<br/>the registry, the syscall trap and the one registration of abi's handler"]
     L4["4 · hardware · QEMU amd64 / arm64, real machines"]
     L0 -->|"syscall"| L1
-    L1 -->|"KernelApi, one entry per syscall"| L2
+    L1 -->|"kernel::api, one function per syscall"| L2
+    L1 -->|"hal::sys, hal::syscall's types"| L3
     L2 -->|"safe API"| L3
     L3 --> L4
-    B["bsd · sys/ · the LZ tree, legacy · 10,196 unsafe at the N3 close → the crate is deleted at N9<br/>boots and passes every smoke throughout · calls kernel and hal, never the reverse<br/>registers in hal at boot: the bridge impls · hands KernelApi to abi_init (decision 47)"]
+    B["bsd · sys/ · the LZ tree, legacy · 10,196 unsafe at the N3 close → the crate is deleted at N9<br/>boots and passes every smoke throughout · calls kernel and hal, never the reverse<br/>registers at boot: the bridge impls, the sysent[] rows (LegacySyscalls) · calls abi_init (decision 47)"]
     B -->|"calls down"| L2
     B -->|"calls down"| L3
 ```
 
-The arrows go down only. What goes up (the ABI's syscall handler, `KernelApi`, the bridge
-implementations) is never a dependency: it is a registration in `hal`'s registry at boot, and
-this is the whole of it:
+The arrows go down only: userland -> `abi` -> `kernel` -> `hal` (decision 52). What goes up
+(the ABI's syscall handler, which the trap calls, and the bridge implementations) is never a
+dependency: it is a registration at boot, and this is the whole of it:
 
 ```mermaid
 sequenceDiagram
@@ -47,19 +48,21 @@ sequenceDiagram
     participant B as bsd (until N9)
     HAL->>HAL: init hardware
     B->>HAL: register the bridge impls (dyn Trait in OnceStatic)
-    B->>A: abi_init(KernelApi), before main()
-    A->>K: register the syscall handler (KernelApi)
-    K->>HAL: register its trampoline (hal::syscall::set_handler)
-    Note over HAL: from here every syscall trap → the handler → Native (KernelApi) or Legacy (bsd's sysent[], through KernelApi)
+    B->>K: register the sysent[] rows (kernel::syscall::LegacySyscalls)
+    B->>A: abi_init(), before main()
+    A->>HAL: register the syscall handler (hal::syscall::set_handler)
+    Note over HAL: from here every syscall trap → abi's handler → kernel::api (Native, or syscall_legacy) → bsd's sysent[] row through mi_syscall
 ```
 
 
-Dependencies, one direction: `bsd → kernel → hal` and `bsd → abi → hal`; `abi` reaches the
-kernel only through `KernelApi` (the table the image's boot glue hands `abi_init`, decision
-47). Only the image crate names `abi` (`bsd` until N9, then the `kernel` + `abi` + `hal`
-binary); `kernel` never names `abi`, and `kernel` and `abi` never name `bsd`. Arrows up (the
-syscall handler, `KernelApi`, the bridge implementations) exist only as registrations in
-`hal`'s registry, made by `bsd`'s boot glue before `main()`.
+Dependencies, one direction: `bsd → abi → kernel → hal` and `bsd → kernel`, `bsd → hal`;
+`abi` calls the kernel directly, and only through `kernel::api`, one function per system
+call (decision 52: the `KernelApi` table of `hal::api`, needed while `abi` was a loadable
+module, is gone, so a system call is a direct call where it was an indirect one). Only the
+image crate names `abi` (`bsd` until N9, then the `kernel` + `abi` + `hal` binary); `kernel`
+and `hal` never name `abi`, and `kernel` and `abi` never name `bsd`. Arrows up (the syscall
+handler `abi` registers in `hal::syscall`, the trap's one upward call, and the bridge
+implementations) exist only as registrations, made by `bsd`'s boot glue before `main()`.
 
 
 | Crate | Path | `unsafe` | Holds |
@@ -74,9 +77,9 @@ binaries that run before the kernel; they are outside the four crates and unchan
 and `libz` stay crates of their own, leaves below `hal`; `StaticCell` stays in `libkern` (`hal`
 depends on it, so it cannot move up) and `hal::OnceStatic` replaces its uses one by one.
 
-Dependencies, one direction: `bsd -> kernel -> hal`; `abi -> hal` (for `UserPtr` and the
-`KernelApi` type, which the image's boot glue fills and hands to `abi_init`, decision 47); only
-the image crate names `abi`; plus `libkern`/`libz` under `kernel`. `hal` depends on nothing of ours but `libkern`. No cycle: a kernel-to-legacy call is a bridge.
+Dependencies, one direction: `bsd -> kernel -> hal`; `abi -> kernel` (`kernel::api` alone)
+and `abi -> hal` (`hal::sys`, `hal::syscall`'s types and the handler's registration, decision
+52); only the image crate names `abi`; plus `libkern`/`libz` under `kernel`. `hal` depends on nothing of ours but `libkern`. No cycle: a kernel-to-legacy call is a bridge.
 
 ### 0.2 What the compiler guarantees
 
@@ -90,8 +93,9 @@ the image crate names `abi`; plus `libkern`/`libz` under `kernel`. `hal` depends
 - `abi` holds no logic: `cargo xtask abi-check` fails `just check` on a function of `abi` that
   branches on anything but the syscall number, its own conversion's `Ok`/`Err` and the byte
   layout, that calls more than one `kernel` entry point, or that exceeds the per-syscall line
-  limit (decision 21), and on a path into `hal` outside `hal::api`, `hal::sys::*` and `hal::syscall`'s types (R6, decision
-  47: linked into the image, `abi` shares `hal`'s statics).
+  limit (decision 21), and on a path into `kernel` outside `kernel::api` or into `hal`
+  outside `hal::sys::*`, `hal::syscall`'s types and `set_handler` (R6, decisions 47 and 52:
+  linked into the image, `abi` shares `hal`'s and `kernel`'s statics).
 
 ### 0.3 The migration mechanism
 

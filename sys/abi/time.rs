@@ -25,7 +25,6 @@
 //! is [`crate::sysent::SYSENT`].
 
 use crate::scarg::{int, ptr};
-use hal::api::KernelApi;
 use hal::syscall::{Register, Rval, SysArgs, SysResult};
 
 use hal::sys::syscall::{
@@ -34,12 +33,8 @@ use hal::sys::syscall::{
 };
 
 /// 87 = `clock_gettime(clockid_t clock_id, struct timespec *tp)`.
-pub(crate) fn sys_clock_gettime(
-    api: &'static KernelApi,
-    args: &SysArgs,
-    rval: &mut Rval,
-) -> SysResult {
-    (api.time.clock_gettime)(
+pub(crate) fn sys_clock_gettime(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::time::clock_gettime(
         SYS_clock_gettime as Register,
         int(args[0]),
         ptr(args[1]),
@@ -48,12 +43,8 @@ pub(crate) fn sys_clock_gettime(
 }
 
 /// 88 = `clock_settime(clockid_t clock_id, const struct timespec *tp)`.
-pub(crate) fn sys_clock_settime(
-    api: &'static KernelApi,
-    args: &SysArgs,
-    rval: &mut Rval,
-) -> SysResult {
-    (api.time.clock_settime)(
+pub(crate) fn sys_clock_settime(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::time::clock_settime(
         SYS_clock_settime as Register,
         int(args[0]),
         ptr(args[1]),
@@ -62,12 +53,8 @@ pub(crate) fn sys_clock_settime(
 }
 
 /// 89 = `clock_getres(clockid_t clock_id, struct timespec *tp)`.
-pub(crate) fn sys_clock_getres(
-    api: &'static KernelApi,
-    args: &SysArgs,
-    rval: &mut Rval,
-) -> SysResult {
-    (api.time.clock_getres)(
+pub(crate) fn sys_clock_getres(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::time::clock_getres(
         SYS_clock_getres as Register,
         int(args[0]),
         ptr(args[1]),
@@ -76,17 +63,13 @@ pub(crate) fn sys_clock_getres(
 }
 
 /// 91 = `nanosleep(const struct timespec *rqtp, struct timespec *rmtp)`.
-pub(crate) fn sys_nanosleep(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.time.nanosleep)(SYS_nanosleep as Register, ptr(args[0]), ptr(args[1]), rval)
+pub(crate) fn sys_nanosleep(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::time::nanosleep(SYS_nanosleep as Register, ptr(args[0]), ptr(args[1]), rval)
 }
 
 /// 67 = `gettimeofday(struct timeval *tp, struct timezone *tzp)`.
-pub(crate) fn sys_gettimeofday(
-    api: &'static KernelApi,
-    args: &SysArgs,
-    rval: &mut Rval,
-) -> SysResult {
-    (api.time.gettimeofday)(
+pub(crate) fn sys_gettimeofday(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::time::gettimeofday(
         SYS_gettimeofday as Register,
         ptr(args[0]),
         ptr(args[1]),
@@ -95,12 +78,8 @@ pub(crate) fn sys_gettimeofday(
 }
 
 /// 68 = `settimeofday(const struct timeval *tv, const struct timezone *tzp)`.
-pub(crate) fn sys_settimeofday(
-    api: &'static KernelApi,
-    args: &SysArgs,
-    rval: &mut Rval,
-) -> SysResult {
-    (api.time.settimeofday)(
+pub(crate) fn sys_settimeofday(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::time::settimeofday(
         SYS_settimeofday as Register,
         ptr(args[0]),
         ptr(args[1]),
@@ -109,23 +88,23 @@ pub(crate) fn sys_settimeofday(
 }
 
 /// 305 = `adjfreq(const int64_t *freq, int64_t *oldfreq)`.
-pub(crate) fn sys_adjfreq(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.time.adjfreq)(SYS_adjfreq as Register, ptr(args[0]), ptr(args[1]), rval)
+pub(crate) fn sys_adjfreq(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::time::adjfreq(SYS_adjfreq as Register, ptr(args[0]), ptr(args[1]), rval)
 }
 
 /// 140 = `adjtime(const struct timeval *delta, struct timeval *olddelta)`.
-pub(crate) fn sys_adjtime(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.time.adjtime)(SYS_adjtime as Register, ptr(args[0]), ptr(args[1]), rval)
+pub(crate) fn sys_adjtime(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::time::adjtime(SYS_adjtime as Register, ptr(args[0]), ptr(args[1]), rval)
 }
 
 /// 70 = `getitimer(int which, struct itimerval *itv)`.
-pub(crate) fn sys_getitimer(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.time.getitimer)(SYS_getitimer as Register, int(args[0]), ptr(args[1]), rval)
+pub(crate) fn sys_getitimer(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::time::getitimer(SYS_getitimer as Register, int(args[0]), ptr(args[1]), rval)
 }
 
 /// 69 = `setitimer(int which, const struct itimerval *itv, struct itimerval *oitv)`.
-pub(crate) fn sys_setitimer(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.time.setitimer)(
+pub(crate) fn sys_setitimer(args: &SysArgs, rval: &mut Rval) -> SysResult {
+    kernel::api::time::setitimer(
         SYS_setitimer as Register,
         int(args[0]),
         ptr(args[1]),

@@ -85,12 +85,10 @@ use kernel::file::pipe::{
     Dir, PipeEnd, PipeFilter, PipeIoctl, PipeKinfo, PipePair, Pipes, UioMove,
 };
 
-use crate::kern::init_sysent::SYSENT;
 use crate::kern::kern_descrip::BsdFileData;
 use crate::kern::kern_subr::uiomove;
 use crate::kern::proc_glue::BsdProcGlue;
 use crate::kern::subr_prf::panic;
-use crate::machine::cpu::curproc;
 use crate::machine::intr::IPL_MPFLOOR;
 use crate::sys::errno::Errno;
 use crate::sys::event::{__EV_POLL, __EV_SELECT, EVFILT_EXCEPT, EVFILT_READ, EVFILT_WRITE, Knote};
@@ -100,8 +98,6 @@ use crate::sys::filio::{FIOASYNC, FIOGETOWN, FIONREAD, FIOSETOWN};
 use crate::sys::proc::Proc;
 use crate::sys::sockio::{SIOCGPGRP, SIOCSPGRP};
 use crate::sys::stat::{S_IFIFO, Stat};
-use crate::sys::syscall::{SYS_pipe, SYS_pipe2};
-use crate::sys::syscall_mi::mi_syscall;
 use crate::sys::syscallargs::{SysPipe2Args, SysPipeArgs};
 use crate::sys::systm::{SysArgs, sysargs};
 use crate::sys::ttycom::{TIOCGPGRP, TIOCSPGRP};
@@ -208,23 +204,6 @@ pub fn sys_pipe2(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(
     let uap: &SysPipe2Args = sysargs(v);
 
     PIPES.sys_pipe2(p, UserPtr::new(uap.fdp.get() as usize), uap.flags.get())
-}
-
-/// `KernelApi::pipe2`, the module's `Native` pipe(2) and pipe2(2): the thread on this CPU
-/// runs `mi_syscall` on its own `sysent[]` row, so the system call prologue that is still
-/// `bsd`'s (`refreshcreds`, the pinned syscalls' check, pledge, the kernel lock rule) runs
-/// exactly as on the `Legacy` path, then the row's [`sys_pipe`] or [`sys_pipe2`], which call
-/// the kernel crate. The two paths cannot diverge. A number that is neither is `ENOSYS`.
-pub fn native_pipe2(nr: Register, fdp: usize, flags: i32) -> Result<(), i32> {
-    let Some(p) = curproc() else {
-        panic(format_args!("pipe2: no curproc"));
-    };
-    if nr != SYS_pipe as Register && nr != SYS_pipe2 as Register {
-        return Err(Errno::ENOSYS.as_i32());
-    }
-    let args: SysArgs = [fdp as Register, flags as Register, 0, 0, 0, 0];
-    let mut rval: [Register; 2] = [0, 0];
-    mi_syscall(p, nr, &SYSENT[nr as usize], &args, &mut rval).map_err(Errno::as_i32)
 }
 
 /// `fo_read` of a pipe.

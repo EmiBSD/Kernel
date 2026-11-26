@@ -132,7 +132,10 @@
 //!                                          no loop/while/for, if/match only on nr or on
 //!                                          Ok/Err/Some/None, at most one kernel call and 40
 //!                                          lines per fn, no static with interior
-//!                                          mutability (abicheck.rs)
+//!                                          mutability; R6 (decision 52): kernel only
+//!                                          through kernel::api, hal only through hal::sys
+//!                                          and hal::syscall's types and set_handler
+//!                                          (abicheck.rs)
 //! cargo xtask symbolize --arch A [--kernel K]
 //!                                          annotate the addresses of a stack trace on stdin
 //!                                          with K's symbols (default: the debug kernel)
