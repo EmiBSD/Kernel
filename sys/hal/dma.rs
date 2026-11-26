@@ -279,6 +279,14 @@ impl DmaBuf {
         }
         let block = mem.alloc(req)?;
         check_block("DmaMemory", block.va, block.len, req.size, PAGE_SIZE);
+        // Whole pages: a cache line `sync` discards never reaches past the mapping
+        // (`arch/arm64/cpufunc.rs`'s `cpu_dcache_inv_dma`).
+        if !block.len.is_multiple_of(PAGE_SIZE) {
+            hal_panic(format_args!(
+                "DmaMemory: block {:p} of {:#x} bytes is not whole pages",
+                block.va, block.len
+            ));
+        }
         let seg = block.seg;
         let last = seg.addr.checked_add(req.size as u64 - 1);
         let kept = seg.len >= req.size
@@ -435,10 +443,19 @@ impl DmaBuf {
         }
     }
 
+    /// The lines a cache operation over `[off, off + len)` may touch, as the address and length
+    /// of that range: `None` for no byte (no line), `panic(9)` past the end. Every line holding
+    /// a byte of it lies inside the mapping, whose start is page-aligned and whose length is
+    /// whole pages (`alloc` checked both) since a cache line never crosses a page. The
+    /// machine's `dc ivac` takes its range from here (`arch/arm64/cpufunc.rs`).
+    pub(crate) fn lines(&self, off: usize, len: usize) -> Option<(usize, usize)> {
+        let va = self.range("sync", off, len);
+        (len != 0).then_some((va, len))
+    }
+
     /// The address of byte `off`, once `[off, off + len)` is checked inside the buffer;
-    /// `panic(9)` naming `what` otherwise. The machine's `dc ivac` takes its range from here
-    /// (`arch/arm64/cpufunc.rs`).
-    pub(crate) fn range(&self, what: &str, off: usize, len: usize) -> usize {
+    /// `panic(9)` naming `what` otherwise.
+    fn range(&self, what: &str, off: usize, len: usize) -> usize {
         if off > self.len || self.len - off < len {
             hal_panic(format_args!(
                 "DmaBuf: {what} of {len:#x} bytes at {off:#x} past {:#x}",
@@ -555,9 +572,11 @@ mod cache {
         count();
     }
 
+    /// The machine's contract kept: no line for no byte.
     pub(super) fn inv(buf: &DmaBuf, off: usize, len: usize) {
-        let _ = buf.range("sync", off, len);
-        count();
+        if buf.lines(off, len).is_some() {
+            count();
+        }
     }
 }
 /* </CODE> */
@@ -585,6 +604,8 @@ mod tests {
         Short,
         /// A segment one page off the alignment asked for.
         Misaligned,
+        /// A mapping as long as asked but not whole pages.
+        Ragged,
     }
 
     /// A provider of leaked host pages (never reused, so no test sees another's), counting
@@ -612,10 +633,10 @@ mod tests {
             let start = all.expose_provenance().next_multiple_of(align) + extra * PAGE_SIZE;
             let off = start - all.addr();
             let va = NonNull::new(all.wrapping_add(off)).expect("leaked memory");
-            let len = if self.grant == Grant::Short {
-                (pages - 1) * PAGE_SIZE
-            } else {
-                pages * PAGE_SIZE
+            let len = match self.grant {
+                Grant::Short => (pages - 1) * PAGE_SIZE,
+                Grant::Ragged => req.size.next_multiple_of(8),
+                Grant::Honest | Grant::Misaligned => pages * PAGE_SIZE,
             };
             self.allocs.fetch_add(1, Ordering::Relaxed);
             Ok(DmaBlock {
@@ -706,6 +727,34 @@ mod tests {
     #[should_panic(expected = "DmaMemory: block")]
     fn an_undersized_grant_is_refused() {
         let _ = DmaBuf::alloc(double(Grant::Short, false), &req(2 * PAGE_SIZE));
+    }
+
+    #[test]
+    #[should_panic(expected = "is not whole pages")]
+    fn a_grant_that_is_not_whole_pages_is_refused() {
+        // As long as asked (100 bytes, 104 granted), page-aligned, but its last cache line
+        // could reach past the mapping.
+        let _ = DmaBuf::alloc(double(Grant::Ragged, false), &req(100));
+    }
+
+    #[test]
+    fn no_byte_is_no_cache_line() {
+        let b = buf(PAGE_SIZE);
+        assert_eq!(b.lines(PAGE_SIZE, 0), None, "at the end, nothing");
+        assert_eq!(b.lines(0, 0), None);
+        assert_eq!(b.lines(8, 16), Some((b.va.get() + 8, 16)));
+        let before = cache::ops();
+        cache::inv(&b, PAGE_SIZE, 0);
+        b.sync(PAGE_SIZE, 0, DmaSync::POSTREAD);
+        b.sync(0, 0, DmaSync::PREREAD);
+        assert_eq!(cache::ops(), before);
+    }
+
+    #[test]
+    #[should_panic(expected = "DmaBuf: sync")]
+    fn the_lines_past_the_end_panic() {
+        let b = buf(PAGE_SIZE);
+        let _ = b.lines(PAGE_SIZE, 1);
     }
 
     #[test]

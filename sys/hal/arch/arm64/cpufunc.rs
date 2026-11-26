@@ -147,20 +147,26 @@ pub fn cpu_idcache_wbinv_range(va: usize, len: usize) {
 /// then `dsb ish`): the cache lines a speculative load may have filled while the device wrote
 /// memory are dropped without being written back, so the next loads read what the device
 /// wrote (`_dmamap_sync_segment`'s `BUS_DMASYNC_POSTREAD`). The one discarding cache operation
-/// of `hal`, for this caller alone; `panic(9)` when the range is not inside the buffer.
+/// of `hal`, for this caller alone; nothing for no byte, `panic(9)` when the range is not
+/// inside the buffer.
 pub(crate) fn cpu_dcache_inv_dma(buf: &DmaBuf, off: usize, len: usize) {
-    let va = buf.range("sync", off, len);
-    // SAFETY: `[va, va + len)` lies inside `buf`'s mapping (checked by `range`), which is
-    // page-aligned and whole pages (`DmaBuf::alloc` checked it), and a data cache line
-    // (`CTR_EL0.DminLine`, at most 2 KiB) never crosses a page, so every line the loop rounds
-    // out to lies inside that mapping too: kernel memory the provider granted `buf` alone,
-    // holding no Rust object, reached only by `buf`'s volatile accesses (`DmaMemory`'s
-    // contract, `sys/hal/trust.rs`). Discarding a dirty line there can lose only bytes the CPU
-    // stored through `buf` and did not write back first (a missing `PREWRITE`, the caller's
-    // error as in the C); no reference observes them and any bit pattern is a value of the
-    // types `buf` reads, so nothing the language sees changes. The address is mapped, so the
-    // operation does not fault; the loop's registers are the block's own, memory is a clobber
-    // (not `nomem`), so it stays between the accesses it orders.
+    let Some((va, len)) = buf.lines(off, len) else {
+        return;
+    };
+    // SAFETY: `[va, va + len)` holds at least one byte (`lines` answers `None` for none, so the
+    // loop below, which handles one line at least, never runs for an empty range) and lies
+    // inside `buf`'s mapping (checked by `lines`). That mapping starts page-aligned and is whole
+    // pages long (`DmaBuf::alloc` checks both on the provider's answer: `check_block`'s
+    // alignment and its own page-multiple test), and a data cache line (`CTR_EL0.DminLine`, at
+    // most 2 KiB) never crosses a page, so every line the loop rounds out to holds only bytes
+    // of that mapping: kernel memory the provider granted `buf` alone, holding no Rust object,
+    // reached only by `buf`'s volatile accesses (`DmaMemory`'s contract, `sys/hal/trust.rs`).
+    // Discarding a dirty line there can lose only bytes the CPU stored through `buf` and did
+    // not write back first (a missing `PREWRITE`, the caller's error as in the C); no reference
+    // observes them and any bit pattern is a value of the types `buf` reads, so nothing the
+    // language sees changes. The address is mapped, so the operation does not fault; the
+    // loop's registers are the block's own, memory is a clobber (not `nomem`), so it stays
+    // between the accesses it orders.
     unsafe {
         asm!(
             "mrs {t}, ctr_el0",
