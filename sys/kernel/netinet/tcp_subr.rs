@@ -349,7 +349,7 @@ pub fn tcp_init<G: ProcGlue>() {
     // is wiped (the C draws the bytes into its global); `tcp_set_iss_tsm` hashes the one copy
     // the static holds (the C's `tcp_secret_ctx` is a context over it, made here).
     let _ = TCP_SECRET.set(secret);
-    libkern::explicit_bzero(&mut secret);
+    hal::mem::explicit_bzero(&mut secret);
 
     // Since sizeof(struct ip6_hdr) > sizeof(struct ip), we do max length checks/computations
     // only on the former.

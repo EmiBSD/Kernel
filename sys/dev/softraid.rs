@@ -115,7 +115,8 @@ use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicPtr, Ordering};
 use hal::user::AbiBytes;
 
-use libkern::{StaticCell, explicit_bzero, strlcpy};
+use hal::mem::explicit_bzero;
+use libkern::{StaticCell, strlcpy};
 
 use kernel::dev::sensors::{
     sensor_attach, sensor_detach, sensor_task_register, sensor_task_unregister,

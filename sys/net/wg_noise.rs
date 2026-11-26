@@ -97,7 +97,8 @@ use core::ffi::{c_ulong, c_void};
 use core::ptr;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use libkern::{explicit_bzero, timingsafe_bcmp};
+use hal::mem::explicit_bzero;
+use libkern::timingsafe_bcmp;
 
 use crate::crypto::blake2s::{BLAKE2S_HASH_SIZE, Blake2sState, blake2s, blake2s_hmac};
 use crate::crypto::chachapoly::{

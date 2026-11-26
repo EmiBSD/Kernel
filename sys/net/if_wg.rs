@@ -130,7 +130,8 @@ use core::ptr::{self, NonNull};
 use core::slice;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
-use libkern::{explicit_bzero, strlcpy, timingsafe_bcmp};
+use hal::mem::explicit_bzero;
+use libkern::{strlcpy, timingsafe_bcmp};
 
 use crate::crypto::curve25519::curve25519_generate_public;
 use crate::dev::rnd::{arc4random, arc4random_buf, arc4random_uniform};

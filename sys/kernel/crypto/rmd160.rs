@@ -70,7 +70,7 @@
 //!   context"), so a by-value pass or a context dropped before `finalize` leaves no copy of
 //!   the message state behind; `Clone` stays for a caller that forks a prefixed hash.
 
-use libkern::explicit_bzero;
+use hal::mem::explicit_bzero;
 
 use super::wipe;
 

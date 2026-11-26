@@ -514,7 +514,7 @@ pub fn syn_cache_insert<G: ProcGlue>(
             *w = u32::from_ne_bytes(*b);
         }
         // The seed's copy on the stack wiped: the set's words are its storage.
-        libkern::explicit_bzero(&mut seed);
+        hal::mem::explicit_bzero(&mut seed);
         tcpstat_inc(TcpstatCounters::TcpsScSeedrandom);
     }
 

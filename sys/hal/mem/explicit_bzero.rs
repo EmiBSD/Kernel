@@ -42,17 +42,23 @@
 //!   not used: it is documented as best effort, not a guarantee.
 //! - The SAFETY argument is spelled out (the only `unsafe` here is the volatile store).
 //! - New tests: every length 0..=64 at every alignment offset, and that neighbours are untouched.
+//! - Decision 55 (the user, 2026-11-26): moved from `libkern` into `hal::mem`, which is where the
+//!   crate's `unsafe` lives; every `sys/lib` crate of the kernel is `forbid(unsafe_code)`. The
+//!   function is safe to call, as before, and `libkern` re-exports nothing of it any more.
 
 /// Overwrites `buf` with zeros. The stores are volatile, so they survive even when the buffer is
 /// never read again (the usual case for a secret about to be freed).
 pub fn explicit_bzero(buf: &mut [u8]) {
     for b in buf.iter_mut() {
-        // SAFETY: `b` comes from `iter_mut` over a `&mut [u8]`, so it is a non-null, aligned,
-        // initialised and exclusively borrowed `u8` for this write (the invariant of `&mut u8`,
-        // established by the slice's owner and upheld by the borrow checker); `u8` has no drop
-        // glue and every bit pattern is valid, so overwriting it cannot violate any invariant.
-        // The store is volatile because the compiler may not elide or merge it, which is the
-        // property this function exists for.
+        // SAFETY: `b` is the `&mut u8` that `iter_mut` yields for one element of `buf`: it is
+        // non-null, aligned (`u8` has alignment 1), inside the slice (the iterator stops at its
+        // end, so no store leaves the `buf.len()` bytes the caller lent), initialised and
+        // exclusively borrowed for this write, which is what `write_volatile` requires of its
+        // pointer; `u8` has no drop glue and every bit pattern is a valid `u8`, so replacing the
+        // old value with 0 cannot violate an invariant. The store is volatile because the
+        // compiler may neither remove it (the buffer is usually never read again: a secret about
+        // to be freed) nor merge or reorder it with other volatile accesses; that is the property
+        // this function exists for (the C gets it from an opaque weak hook call after `memset`).
         unsafe { core::ptr::write_volatile(b, 0) };
     }
     // Keep later code (a free, a reuse of the memory) from moving above the stores.

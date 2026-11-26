@@ -102,7 +102,8 @@ use alloc::vec::Vec;
 use core::slice;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use libkern::{StaticCell, explicit_bzero};
+use hal::mem::explicit_bzero;
+use libkern::StaticCell;
 
 use super::criov::{cuio_apply, cuio_copyback, cuio_copydata, cuio_getptr, iov_run_mut};
 use super::crypto::{crypto_get_driverid, crypto_register};

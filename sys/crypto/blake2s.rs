@@ -100,7 +100,7 @@
 //!   and zeroes itself when dropped (`docs/IDIOMS.md`, "a hash context"): a by-value pass or
 //!   a state dropped before `finalize` leaves no copy of it.
 
-use libkern::explicit_bzero;
+use hal::mem::explicit_bzero;
 
 use super::wipe;
 use crate::kassert;

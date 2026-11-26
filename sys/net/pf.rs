@@ -91,7 +91,7 @@ use core::mem::size_of;
 use core::ptr;
 use core::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
-use libkern::explicit_bzero;
+use hal::mem::explicit_bzero;
 
 use crate::crypto::sha2::Sha512Ctx;
 use crate::dev::rnd::{arc4random, arc4random_buf, arc4random_uniform};

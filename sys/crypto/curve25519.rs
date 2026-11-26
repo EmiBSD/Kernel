@@ -101,7 +101,8 @@
 //!   bits and the ten limbs, whose positions are public, as in the C; the null-point checks
 //!   are `timingsafe_bcmp`.
 
-use libkern::{explicit_bzero, timingsafe_bcmp};
+use hal::mem::explicit_bzero;
+use libkern::timingsafe_bcmp;
 
 use super::wipe;
 use crate::dev::rnd::arc4random_buf;

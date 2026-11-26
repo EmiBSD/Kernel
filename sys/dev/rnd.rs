@@ -132,7 +132,8 @@ use core::mem::size_of;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
-use libkern::{StaticCell, explicit_bzero};
+use hal::mem::explicit_bzero;
+use libkern::StaticCell;
 
 use crate::crypto::chacha_private::ChachaCtx;
 use crate::crypto::sha2::{SHA512_BLOCK_LENGTH, SHA512_DIGEST_LENGTH, Sha512Ctx};

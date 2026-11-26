@@ -651,7 +651,7 @@ pub fn ptcread<G: ProcGlue>(dev: Dev, uio: &mut dyn UioMove, flag: i32) -> Resul
     }
     ttwakeupwr(tp);
     if bufcc != 0 {
-        libkern::explicit_bzero(&mut buf[..bufcc]);
+        hal::mem::explicit_bzero(&mut buf[..bufcc]);
     }
     error
 }
@@ -794,7 +794,7 @@ pub fn ptcwrite<G: ProcGlue>(dev: Dev, uio: &mut dyn UioMove, flag: i32) -> Resu
     };
     // done:
     if bufcc != 0 {
-        libkern::explicit_bzero(&mut buf[..bufcc]);
+        hal::mem::explicit_bzero(&mut buf[..bufcc]);
     }
     error
 }

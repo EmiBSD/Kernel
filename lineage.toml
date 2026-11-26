@@ -5831,8 +5831,9 @@ lz = ["sys/lib/libkern/crc32c.rs"]
 status = "redesigned"
 
 [[module]]
-rust = "sys/lib/libkern/explicit_bzero.rs"
-lz = ["sys/lib/libkern/explicit_bzero.rs"]
+rust = "sys/hal/mem/explicit_bzero.rs"
+crate = "hal"
+lz =["sys/lib/libkern/explicit_bzero.rs"]
 status = "redesigned"
 
 [[module]]

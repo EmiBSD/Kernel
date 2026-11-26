@@ -3511,7 +3511,7 @@ pub fn ttwrite<G: ProcGlue>(tp: &Tty<G>, uio: &mut dyn UioMove, flag: i32) -> Re
             drop(s);
             uio.set_resid(uio.resid() + cc);
             if obufcc != 0 {
-                libkern::explicit_bzero(&mut obuf[..obufcc]);
+                hal::mem::explicit_bzero(&mut obuf[..obufcc]);
             }
             return if uio.resid() == cnt {
                 Err(Errno::EWOULDBLOCK)
@@ -3545,7 +3545,7 @@ pub fn ttwrite<G: ProcGlue>(tp: &Tty<G>, uio: &mut dyn UioMove, flag: i32) -> Re
     };
     // done:
     if obufcc != 0 {
-        libkern::explicit_bzero(&mut obuf[..obufcc]);
+        hal::mem::explicit_bzero(&mut obuf[..obufcc]);
     }
     error
 }

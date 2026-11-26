@@ -72,7 +72,8 @@
 use core::cell::Cell;
 use core::ptr::{self, NonNull};
 
-use libkern::{explicit_bzero, timingsafe_bcmp};
+use hal::mem::explicit_bzero;
+use libkern::timingsafe_bcmp;
 
 use crate::crypto::blake2s::Blake2sState;
 use crate::crypto::chachapoly::{

@@ -281,6 +281,7 @@ use core::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64,
 
 use hal::cpu::intr::{IPL_NET, IPL_VM, splraise};
 use hal::ds::owned::{OwnedSlist, SlistLink};
+use hal::mem::explicit_bzero;
 use hal::mem::malloc::{M_NOWAIT, M_WAITOK};
 use hal::mem::overlay::{Body, Bytes};
 use hal::mem::pool::{
@@ -290,7 +291,6 @@ use hal::mem::pool::{
 use hal::sync::mutex::Mutexed;
 use hal::sync::once::OnceStatic;
 use hal::sync::percpu::Counters;
-use libkern::explicit_bzero;
 use sysdefs::errno::Errno;
 pub use sysdefs::mbuf::{
     MT_CONTROL, MT_DATA, MT_FREE, MT_FTABLE, MT_HEADER, MT_NTYPES, MT_OOBDATA, MT_SONAME,

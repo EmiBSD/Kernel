@@ -60,7 +60,7 @@
 //!   accident, and `init` wipes the old key as it replaces the context. The generators live
 //!   in `static`s, which are never dropped, as the C's never freed `static` contexts.
 
-use libkern::explicit_bzero;
+use hal::mem::explicit_bzero;
 
 use super::wipe;
 use crate::time::tc::getuptime;

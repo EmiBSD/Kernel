@@ -36,7 +36,10 @@ pub mod mapped;
     target_arch = "aarch64"
 ))]
 pub mod bootmem;
+pub mod explicit_bzero;
 pub mod overlay;
 pub mod pod;
 pub(crate) mod trust;
+
+pub use explicit_bzero::explicit_bzero;
 /* </CODE> */

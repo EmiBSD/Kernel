@@ -74,7 +74,6 @@ extern crate std;
 
 #[forbid(unsafe_code)]
 pub mod crc32c;
-pub mod explicit_bzero;
 #[forbid(unsafe_code)]
 pub mod getsn;
 #[forbid(unsafe_code)]
@@ -98,7 +97,6 @@ pub mod strnlen;
 pub mod timingsafe_bcmp;
 
 pub use crc32c::crc32c;
-pub use explicit_bzero::explicit_bzero;
 pub use getsn::{GetsnCons, getsn};
 pub use random::random;
 pub use scanc::scanc;

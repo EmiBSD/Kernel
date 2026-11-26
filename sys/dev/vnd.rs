@@ -107,7 +107,8 @@ use core::sync::atomic::{AtomicI32, AtomicPtr, Ordering};
 use hal::sysbytes::DisklabelBytes;
 use hal::user::AbiBytes;
 
-use libkern::{explicit_bzero, strlcpy};
+use hal::mem::explicit_bzero;
+use libkern::strlcpy;
 
 use crate::crypto::blf::{BLF_MAXUTILIZED, BlfCtx};
 use crate::dev::vndioctl::{VNDIOCCLR, VNDIOCGET, VNDIOCSET, VNDNLEN, VndIoctl, VndUser};
