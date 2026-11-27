@@ -109,8 +109,11 @@ pub fn cpu_fork(
         &h,
         hal::ds::pin::pin_static(p1.as_static()),
         hal::ds::pin::pin_static(p2.as_static()),
-        stack.addr(),
-        tcb.expose_provenance(),
+        hal::cpu::thread::UserStart {
+            stack: stack.addr(),
+            tcb: tcb.expose_provenance(),
+            ret: None,
+        },
         start,
         arg,
     );

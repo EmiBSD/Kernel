@@ -14210,6 +14210,11 @@ crate = "hal"
 reason = "hal runtime, written new (N4.8b): what the machine's trap code asks the kernel: the TrapHandler registration (the fault on the chosen map, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast, mi_child_return), the CpuHooks (ci_flush_bp, ci_serror, fault()'s ci_panicbuf) and the Debugger (db_ktrap); forbid, 0 unsafe; bridges.toml TrapHandler, CpuHooks, Debugger; N4.8b b3: proc_pc and proc_stack, PROC_PC/PROC_STACK of the running thread (arm64: its UserFrame; the host: a test's registers), replacing ProcGlue::proc_pc and proc_stack; N7.abi2 (decision 53): handler() pub, for kernel::syscall::syscall_return"
 
 [[extra]]
+rust = "sys/hal/cpu/usertrap.rs"
+crate = "hal"
+reason = "hal runtime, written new (decision 56, E1): the way back to user mode, machine-neutral: ExitGate (do_ast's test of the running thread's md_astpending with the interrupts masked, the state of the first pass kept as the C's x19), UserExit (the leave token it hands out, the interrupts left masked) and AstPending; the AST loop is the kernel's (kernel::trap); the host double reads the test thread's md_astpending as the machine does. No LZ source: LZ's do_ast is exception.S's assembly"
+
+[[extra]]
 rust = "sys/hal/cpu/sig.rs"
 crate = "hal"
 reason = "hal runtime, written new (N4.8b): the signal frame of the running thread, the machine's (arm64: sys/hal/arch/arm64/sig.rs, from LZ's sig_machdep.rs) behind sendsig(SigDelivery) and sigreturn(scp, cookie) -> mask or SigreturnError; the host's double (sys/hal/arch/host/sig.rs) records and answers; forbid, 0 unsafe; it replaces ProcGlue::sendsig"

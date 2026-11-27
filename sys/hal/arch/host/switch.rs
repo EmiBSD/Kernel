@@ -42,7 +42,8 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
 use crate::cpu::CpuCore;
-use crate::cpu::thread::{MachineSlot, SONPROC};
+use crate::cpu::thread::{MachineSlot, SONPROC, UserStart};
+use crate::syscall::ChildReturn;
 
 /// `proc0`'s u-area on the host: bytes enough for `bsd`'s host `struct user` (whose pcb is a
 /// word), page aligned; the host builds no frames in it.
@@ -71,6 +72,10 @@ struct Gate {
 
 /// The gates, by slot address.
 static GATES: Mutex<BTreeMap<usize, Arc<Gate>>> = Mutex::new(BTreeMap::new());
+
+/// The child's returns [`thread_setup`] was given, by the child's slot address (an address a
+/// later child reuses is overwritten): the host's record of the machine's trap frame writes.
+static CHILD_RETURNS: Mutex<BTreeMap<usize, ChildReturn>> = Mutex::new(BTreeMap::new());
 
 /// A mutex's guard, a panicking test's poison ignored.
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -137,20 +142,36 @@ pub(crate) fn switch(
 }
 
 /// `cpu_fork`'s host half: a host thread for the child, which waits for the first switch to
-/// it, then runs the trampoline with `start` and `arg`.
+/// it, then runs the trampoline with `start` and `arg`; the child's return `user` gives is
+/// recorded for [`child_return_of`] (there is no trap frame to write it into).
 pub(crate) fn thread_setup(
     parent: &MachineSlot,
     _parent_runs: bool,
     child: &MachineSlot,
-    _stack: usize,
-    tcb: usize,
+    user: UserStart,
     start: usize,
     arg: usize,
 ) {
     // The machine's `*pcb = p1->p_addr->u_pcb` copies the parent's TCB; a given one wins.
-    let tcb = if tcb != 0 { tcb } else { tcb_of(parent) };
+    let tcb = if user.tcb != 0 {
+        user.tcb
+    } else {
+        tcb_of(parent)
+    };
     set_tcb(child, tcb);
-    spawn(core::ptr::from_ref(child).addr(), start, arg);
+    let addr = core::ptr::from_ref(child).addr();
+    match user.ret {
+        Some(r) => lock(&CHILD_RETURNS).insert(addr, r),
+        None => lock(&CHILD_RETURNS).remove(&addr),
+    };
+    spawn(addr, start, arg);
+}
+
+/// The child's return the last [`thread_setup`] of `slot` was given.
+pub(crate) fn child_return_of(slot: &MachineSlot) -> Option<ChildReturn> {
+    lock(&CHILD_RETURNS)
+        .get(&core::ptr::from_ref(slot).addr())
+        .copied()
 }
 
 /// `TCB_GET(p)` of the thread whose slot is `slot`: its host `Mdproc`'s, 0 before one is set.

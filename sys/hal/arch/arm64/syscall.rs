@@ -110,14 +110,7 @@ impl UserRegs {
     /// `tf_spsr`, set for `error`, else cleared; no other bit), in one borrow of the frame.
     #[inline]
     pub fn set_return(&self, reg: Gpr, value: Register, error: bool) {
-        self.0.with(|tf| {
-            tf.tf_x[reg.index()] = value;
-            if error {
-                tf.tf_spsr |= PSR_C as Register; // carry bit
-            } else {
-                tf.tf_spsr &= !(PSR_C as Register); // carry bit
-            }
-        });
+        self.0.with(|tf| set_return(tf, reg, value, error));
     }
 
     /// Moves the saved pc back to the `svc`, over the barrier the entry skipped: the system
@@ -126,6 +119,20 @@ impl UserRegs {
     pub fn restart(&self) {
         // Reconstruct the pc to point at the svc.
         self.0.with(|tf| tf.tf_elr -= SVC_LEN + BARRIER_LEN);
+    }
+}
+
+/// Register `reg` of `tf` set to `value` and the error flag, the carry (`PSR_C` of the saved
+/// `tf_spsr`, set for `error`, else cleared; no other bit): a system call's return
+/// ([`UserRegs::set_return`]) and a forked child's (`switch.rs`'s `build_frames`, from
+/// `hal::syscall::ChildReturn`).
+#[inline]
+pub(super) fn set_return(tf: &mut Trapframe, reg: Gpr, value: Register, error: bool) {
+    tf.tf_x[reg.index()] = value;
+    if error {
+        tf.tf_spsr |= PSR_C as Register; // carry bit
+    } else {
+        tf.tf_spsr &= !(PSR_C as Register); // carry bit
     }
 }
 

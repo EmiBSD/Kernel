@@ -818,7 +818,12 @@ fn cpu_fork<G: ProcGlue>(
 ) {
     G::pmap_activate(&child);
     let h = hal::cpu::thread::sched_lock();
-    hal::cpu::thread::thread_setup(&h, parent, child, stack, tcb, start, arg);
+    let user = hal::cpu::thread::UserStart {
+        stack,
+        tcb,
+        ret: None,
+    };
+    hal::cpu::thread::thread_setup(&h, parent, child, user, start, arg);
     drop(h);
 }
 

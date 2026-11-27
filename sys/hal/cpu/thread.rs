@@ -61,6 +61,13 @@
 //!   an unlock is refused). [`ThreadLayout`] is what a thread type gives the switch: its
 //!   slot. One thread type per kernel: the first one named is the only one accepted (a
 //!   `TypeId` compared), so an address a switch stored is turned back into that type alone.
+//! - Decision 56 (E1, the way out): the exit gate (`hal::cpu::usertrap`) reads the running
+//!   thread's slot without the thread's type (`with_current_slot`, one `unsafe` resting on
+//!   `slot_of`'s check at every store of `ci_curproc`), as `do_ast` reads
+//!   `ci_curproc->p_md.md_astpending` by offset: a gate generic over the thread type would
+//!   cost an indirect call on every exit until N9. `cpu_fork`'s `stack`, `tcb` and the
+//!   child's return travel as a [`UserStart`]; the host's `Mdproc` keeps `md_astpending` so
+//!   the kernel's loop runs in its tests.
 //!
 //! ## Soundness of the switch's tokens
 //!
@@ -135,12 +142,15 @@ use crate::sync::once::OnceStatic;
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]
 pub use crate::arch::arm64::include::proc::Mdproc;
 
-/// `struct mdproc` of the host tests: nothing of a machine's but the thread's TCB, which a
-/// machine keeps in the thread's pcb (`pcb_tcb`) and the host's double keeps here, with the
-/// thread, so a new thread starts with none whatever address it reuses.
+/// `struct mdproc` of the host tests: the machine's `md_astpending`, which the exit gate
+/// reads as on the machine (`hal::cpu::usertrap`); the thread's TCB, which a machine keeps in
+/// the thread's pcb (`pcb_tcb`) and the host's double keeps here, with the thread, so a new
+/// thread starts with none whatever address it reuses.
 #[cfg(not(target_os = "none"))]
 #[derive(Debug, Default)]
 pub struct Mdproc {
+    /// `md_astpending` ([`MachineSlot::aston`], the exit gate).
+    pub(crate) md_astpending: core::sync::atomic::AtomicI32,
     /// The host's `pcb_tcb` ([`tcb_get`], [`tcb_set`]).
     pub(crate) tcb: core::sync::atomic::AtomicUsize,
 }
@@ -150,6 +160,7 @@ impl Mdproc {
     /// All zero.
     pub const fn new() -> Self {
         Self {
+            md_astpending: core::sync::atomic::AtomicI32::new(0),
             tcb: core::sync::atomic::AtomicUsize::new(0),
         }
     }
@@ -266,11 +277,11 @@ impl MachineSlot {
     }
 
     /// `aston(p)`: the thread takes an AST at its next return to user mode (arm64's
-    /// `md_astpending`, which `exception.S`'s `do_ast` reads and clears); from any CPU. The
-    /// host has no user mode: nothing.
+    /// `md_astpending`, which the exit gate, `hal::cpu::usertrap`, and `exception.S`'s
+    /// `do_ast` read and clear); from any CPU. The host's double keeps the flag for the
+    /// gate the kernel's tests pass.
     #[inline]
     pub fn aston(&self) {
-        #[cfg(all(target_os = "none", target_arch = "aarch64"))]
         self.md.md_astpending.store(1, AtomicOrdering::Relaxed);
     }
 }
@@ -387,6 +398,23 @@ pub const CTX_FRESH: u8 = 1;
 pub const CTX_LIVE: u8 = 2;
 /// It switched away for good (`exit_to_idle` from it): nothing of it runs or will run.
 pub const CTX_DEAD: u8 = 3;
+
+/// What a new thread's user context starts with besides the copy of its parent's trap frame
+/// (`cpu_fork`'s `stack` and `tcb`, and the child's return): what [`thread_setup`] writes
+/// into the copy.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UserStart {
+    /// The user stack pointer, when not 0 (`__tfork(2)`'s; else the parent's).
+    pub stack: usize,
+    /// The TCB, when not 0 (`__tfork(2)`'s; else the parent's).
+    pub tcb: usize,
+    /// For a child that returns to user mode from the system call that made it
+    /// (`child_return`), what that call returns in the child, written into the copied frame
+    /// (decision 56's U5: the C writes it when the child first runs, `syscall.c`'s
+    /// `child_return`; nothing that can read the frame sees it before, the child having
+    /// never run). `None` for a thread that starts elsewhere (a kernel thread).
+    pub ret: Option<crate::syscall::ChildReturn>,
+}
 
 /// What the context switch needs of a thread type: the slot the machine reaches, which the
 /// kernel's thread keeps first (`#[repr(C)]`; generic, so `kernel::proc`'s tests check the offset
@@ -658,6 +686,29 @@ pub fn current_addr() -> usize {
     crate::cpu::curcpu().curproc().addr()
 }
 
+/// The running thread's [`MachineSlot`] (`curproc`'s `p_md`, `md_astpending` among it), for
+/// `f`, without the thread's type; `None` when no thread runs here. For the exit gate
+/// (`hal::cpu::usertrap`), which the kernel's loop passes on every return to user mode and
+/// which is not generic over the thread type, as the C's `do_ast` reads `ci_curproc` by
+/// offset.
+#[inline]
+pub(crate) fn with_current_slot<R>(f: impl FnOnce(Option<&MachineSlot>) -> R) -> R {
+    let p = crate::cpu::curcpu().curproc().cast::<MachineSlot>();
+    // SAFETY: `ci_curproc` is this CPU's word, written by this CPU alone (E5): by the switch,
+    // with a `Next`'s thread, and by `set_current_static`, with a `Pin<&'static T>`, or null.
+    // Both took the thread's slot through `slot_of` before storing it (`Next::of`,
+    // `set_current_static`), which refused a thread whose `ThreadLayout::machine` is not at
+    // the thread's own address: so a non-null `ci_curproc` is the address of a live
+    // `MachineSlot`, the first member of the thread it names (a value at the address of
+    // another, not inside it, cannot overlap a non-empty thread). The thread is the one
+    // running here and is not freed while it runs (E2), and it runs `f` (the caller is that
+    // thread), so the slot outlives the reference, wherever the thread moves meanwhile.
+    // Slots are only ever shared (`&MachineSlot`: threads are shared, its members atomics),
+    // so the shared reference aliases no `&mut`; it ends with `f`.
+    let slot = unsafe { p.as_ref() };
+    f(slot)
+}
+
 /// `curproc = p` on this CPU for a thread that lives for ever (`main`'s `curproc = &proc0`),
 /// or none (`None`: a secondary CPU before its idle thread runs). On the machine only a CPU
 /// running no thread takes one (the C writes `curproc` in `main` and the switch alone, E5):
@@ -738,8 +789,8 @@ pub fn tcb_invalid(addr: usize) -> bool {
 }
 
 /// `cpu_fork(parent, child, stack, tcb, func, arg)`: the child's pcb and frames, so that its
-/// first switch runs the trampoline with `start` and `arg` (the registered start's words);
-/// `stack` and `tcb`, when not 0, its user stack pointer and TCB. The parent's FP state is
+/// first switch runs the trampoline with `start` and `arg` (the registered start's words),
+/// its trap frame a copy of the parent's with what `user` says. The parent's FP state is
 /// saved first when it is the running thread (the CPU holds it). Under the scheduler's hold
 /// `h` (E4: no u-area is given back meanwhile); panics for a child whose context lives or
 /// is dead (E6: the C's `cpu_fork` runs on an `SIDL` child alone, kern_fork.c:437, :583).
@@ -747,8 +798,7 @@ pub fn thread_setup<T: ThreadLayout>(
     h: &SchedHold,
     parent: Pin<&T>,
     child: Pin<&T>,
-    stack: usize,
-    tcb: usize,
+    user: UserStart,
     start: usize,
     arg: usize,
 ) {
@@ -760,11 +810,17 @@ pub fn thread_setup<T: ThreadLayout>(
         slot_of(parent.get_ref()),
         runs,
         slot_of(child.get_ref()),
-        stack,
-        tcb,
+        user,
         start,
         arg,
     );
+}
+
+/// The child's return [`thread_setup`] gave `t` (the host's record of what a machine writes
+/// into the child's trap frame), for the kernel's tests of `cpu_fork`.
+#[cfg(not(target_os = "none"))]
+pub fn child_return_of<T: ThreadLayout>(t: &T) -> Option<crate::syscall::ChildReturn> {
+    crate::arch::current::switch::child_return_of(slot_of(t))
 }
 
 /// The frames of a thread that has never run and starts with `start` and `arg` (a secondary
@@ -807,7 +863,7 @@ const _: () = {
 
 /* <TESTS> */
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use core::mem::offset_of;
     use core::sync::atomic::Ordering;
 

@@ -164,6 +164,22 @@ pub type SyscallFn = fn(&UserRegs);
 /// `mi_child_return`.
 pub type ChildFn = fn(&UserRegs);
 
+/// A forked child's first return from the system call that made it, as data: which register
+/// holds the value, the value, and the error flag (arm64: the carry). The convention's (the
+/// ABI's constant); `hal` writes it into the child's trap frame while `cpu_fork` builds it
+/// (`hal::cpu::thread::thread_setup`), the C's `child_return` writes done before the child
+/// runs (nothing another thread can read sees the frame in between: the child has not run,
+/// and its registers are read only once it stopped itself).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChildReturn {
+    /// The return register (arm64 `x0`).
+    pub reg: Gpr,
+    /// What `fork` returns in the child.
+    pub value: Register,
+    /// The error flag (arm64's carry, `PSR_C`): set for an error.
+    pub error: bool,
+}
+
 /// `ENOSYS` (`<sys/errno.h>`): what an unanswered system call returns.
 pub const ENOSYS: i32 = sysdefs::base::errno::Errno::ENOSYS.as_i32();
 
