@@ -249,11 +249,6 @@ impl Cpu for Machine {
         arm64::machdep::aston(p)
     }
 
-    /// `hal`'s (N4.8b), on the running thread, which `arg` names.
-    fn child_return(_arg: *mut c_void) {
-        hal::arch::arm64::syscall::child_return()
-    }
-
     fn proc_pc(p: &Proc) -> usize {
         // SAFETY: `pcb_tf` is the thread's trap frame at the top of its u-area (`cpu_fork`),
         // set before the thread first runs in user mode; read without a reference kept.

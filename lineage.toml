@@ -13954,7 +13954,7 @@ rust = "sys/hal/syscall.rs"
 lz = ["sys/arch/amd64/amd64/trap.rs", "sys/arch/arm64/arm64/syscall.rs"]
 status = "redesigned"
 crate = "hal"
-notes = "N2.4a: the system call dispatch point both traps call (the sysent[] choice of amd64 syscall and arm64 svc_handler) and its registry; Result<(), i32> at the edge; N5 close (decision 47): one registration, the ABI's handler (abi::abi_init through KernelApi, before main()); decision 29's Legacy fallback slot (set_legacy, legacy) is gone with the module, dispatch answers ENOSYS with nothing registered; N7.abi2 (decision 53): the handler is fn(&UserRegs) plus a ChildFn, registered by set_handler(call, child, info) and called by enter (and child for a forked child), the per-arch convention abi::arch's; UserRegs and Gpr re-exported from hal::arch::<m> (gpr.rs, syscall.rs; the host double's arm64 names); dispatch and route gone, no handler is panic(9)"
+notes = "N2.4a: the system call dispatch point both traps call (the sysent[] choice of amd64 syscall and arm64 svc_handler) and its registry; Result<(), i32> at the edge; N5 close (decision 47): one registration, the ABI's handler (abi::abi_init through KernelApi, before main()); decision 29's Legacy fallback slot (set_legacy, legacy) is gone with the module, dispatch answers ENOSYS with nothing registered; N7.abi2 (decision 53): the handler is fn(&UserRegs) plus a ChildFn, registered by set_handler(call, child, info) and called by enter (and child for a forked child), the per-arch convention abi::arch's; UserRegs and Gpr re-exported from hal::arch::<m> (gpr.rs, syscall.rs; the host double's arm64 names); dispatch and route gone, no handler is panic(9); decision 56 E1 (U5): ChildFn and child gone, set_handler(call, info), the forked child's return is ChildReturn (data, the ABI's constant)"
 
 [[module.fn]]
 lz = "sys/arch/amd64/amd64/trap.rs::syscall"
@@ -14321,18 +14321,18 @@ rust = "sys/hal/arch/arm64/syscall.rs"
 crate = "hal"
 lz = ["sys/arch/arm64/arm64/syscall.rs"]
 status = "redesigned"
-notes = "N4.8b: svc_handler (the frame's fix-ups around hal::syscall::dispatch, mi_syscall_return through hal::cpu::trap::TrapHandler) and child_return (the running thread's pcb_tf, the kernel lock released, mi_child_return through the handler); N4.8b b4: the number truncated to an int as the C's (syscall.c:46: gap 2, the user's decision 6 of N4.8), the doc comment of svc_handler the user asked for (BRIEF-N4.8 section 13); N7.abi2 (decision 53): the machine's half only (curproc, the counter, the interrupts, the barrier skip), the ABI's handler called with a UserRegs (three methods: gprs, set_return with the carry, restart's -12) and child_return's frame writes the ABI's ChildFn; the number, the arguments, x0 and the carry, ERESTART and EJUSTRETURN are sys/abi/arch/arm64.rs's, mi_syscall_return its call to kernel::api::syscall_return"
+notes = "N4.8b: svc_handler (the frame's fix-ups around hal::syscall::dispatch, mi_syscall_return through hal::cpu::trap::TrapHandler) and child_return (the running thread's pcb_tf, the kernel lock released, mi_child_return through the handler); N4.8b b4: the number truncated to an int as the C's (syscall.c:46: gap 2, the user's decision 6 of N4.8), the doc comment of svc_handler the user asked for (BRIEF-N4.8 section 13); N7.abi2 (decision 53): the machine's half only (curproc, the counter, the interrupts, the barrier skip), the ABI's handler called with a UserRegs (three methods: gprs, set_return with the carry, restart's -12) and child_return's frame writes the ABI's ChildFn (decision 56 E1: child_return gone, its writes are the ABI's CHILD_RETURN applied by switch.rs's build_frames through set_return, its KERNEL_UNLOCK and mi_child_return the kernel's start's); the number, the arguments, x0 and the carry, ERESTART and EJUSTRETURN are sys/abi/arch/arm64.rs's, mi_syscall_return its call to kernel::api::syscall_return"
 
 [[module]]
 rust = "sys/abi/arch/arm64.rs"
 crate = "abi"
 lz = ["sys/arch/arm64/arm64/syscall.rs"]
 status = "redesigned"
-notes = "N7.abi2 (decision 53, the user, 2026-11-26): arm64's system call convention, out of hal: svc reads x8 as an int (scarg::int) and x0..x5 through hal::syscall::UserRegs, runs sysent::dispatch, writes x0 and the carry (or restart, or nothing for EJUSTRETURN) as the C's switch, then kernel::api::syscall_return; child is the forked child's x0 = 0, carry clear; registered by abi_init with hal::syscall::set_handler"
+notes = "N7.abi2 (decision 53, the user, 2026-11-26): arm64's system call convention, out of hal: svc reads x8 as an int (scarg::int) and x0..x5 through hal::syscall::UserRegs, runs sysent::dispatch, writes x0 and the carry (or restart, or nothing for EJUSTRETURN) as the C's switch, then kernel::api::syscall_return; registered by abi_init with hal::syscall::set_handler; decision 56 E1 (U5): child (a registered ChildFn) became CHILD_RETURN, the forked child's x0 = 0, carry clear, as data the boot glue hands to kernel::proc::fork::init and hal writes into the child's frame in build_frames"
 
 [[module.fn]]
 lz = "sys/arch/arm64/arm64/syscall.rs::child_return"
-native = ["sys/hal/arch/arm64/syscall.rs::child_return", "child"]
+native = ["sys/abi/arch/arm64.rs::CHILD_RETURN", "sys/hal/arch/arm64/switch.rs::build_frames", "sys/kernel/proc/fork.rs::child_return"]
 kind = "split"
 lines = "L118-L121"
 

@@ -67,8 +67,9 @@ call (decision 52: the `KernelApi` table of `hal::api`, needed while `abi` was a
 module, is gone, so a system call is a direct call where it was an indirect one). Only the
 image crate names `abi` (`bsd` until N9, then the `kernel` + `abi` + `hal` binary); `kernel`
 and `hal` never name `abi`, and `kernel` and `abi` never name `bsd`. Arrows up exist only as
-registrations made by `bsd`'s boot glue before `main()`. On the trap path there are eight:
-`abi`'s `SyscallFn` and `ChildFn`, the eight methods of `TrapHandler` (the kernel's, installed
+registrations made by `bsd`'s boot glue before `main()`. On the trap path there are seven
+(`ChildFn` left with decision 56's E1: the child's return is data):
+`abi`'s `SyscallFn`, the seven methods of `TrapHandler` (the kernel's, installed
 by `bsd`), `CpuHooks`, `IntrHardware` and `Debugger` (`bsd`'s), the thread start (the
 kernel's) and the symbol `pmap_setttb` (`bsd`'s); plus the bridge implementations. Decision
 56 (2026-11-26, `docs/ENTRY.md`, not built yet) puts a crate `entry` above `abi`, deletes the
@@ -112,7 +113,7 @@ and `abi -> hal` (`hal::syscall`'s types and the handler's registration, decisio
   limit (decision 21), and on a path into `kernel` outside `kernel::api` or into `hal`
   outside `hal::syscall`'s types and `set_handler` (`sysdefs` is free, decision 54; R6, decisions 47 and 52:
   linked into the image, `abi` shares `hal`'s and `kernel`'s statics; decision 53 adds
-  `UserRegs`, `Gpr` and `ChildFn`, with which `abi::arch::<arch>` owns the system call
+  `UserRegs`, `Gpr` and `ChildFn` (`ChildReturn` since decision 56's E1), with which `abi::arch::<arch>` owns the system call
   convention and `hal`'s trap interprets nothing userland sends).
 
 ### 0.3 The migration mechanism

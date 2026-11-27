@@ -40,8 +40,9 @@
 //!   `SysResult`, `SyscallFn`, `ENOSYS`) and `set_handler`, the registration of the ABI's
 //!   handler; decision 53 (the user, 2026-11-26, N7.abi2) adds `UserRegs` (the view of the
 //!   trapping thread's user registers, valid for the handler's call), `Gpr` (the machine's
-//!   registers by name) and `ChildFn` (a forked child's first return), with which `abi`
-//!   owns the per-arch system call convention (not `enter`, `child` or `handler_info`,
+//!   registers by name) and (decision 56's E1, U5) `ChildReturn` (a forked child's first
+//!   return as data, the constant `abi` defines and never applies itself; `ChildFn` before),
+//!   with which `abi` owns the per-arch system call convention (not `enter` or `handler_info`,
 //!   which re-enter or read the system call path, and not the module itself, whose alias
 //!   would reach them; `UserRegs`' methods are not paths and need no entry). In a path, a `use` or
 //!   a `{..}` group; never a glob of either crate's root or of `hal::syscall`, nor the crate
@@ -77,7 +78,8 @@ const ABI_DIR: &str = "sys/abi";
 // `sysdefs`, a leaf crate of data that `abi` names freely (R6 has nothing to say of it).
 /// The items of `hal::syscall` that `abi` may name (R6): the system call's types, the
 /// registration of the ABI's handler and (decision 53) the trap's user registers, `UserRegs`
-/// and `Gpr`, with `ChildFn`; its other functions re-enter or read the system call path.
+/// and `Gpr`, with `ChildReturn` (decision 56's E1: a forked child's return as data); its
+/// other functions re-enter or read the system call path.
 const HAL_SYSCALL_ITEMS: [&str; 11] = [
     "HandlerInfo",
     "Register",
@@ -85,7 +87,7 @@ const HAL_SYSCALL_ITEMS: [&str; 11] = [
     "SysArgs",
     "SysResult",
     "SyscallFn",
-    "ChildFn",
+    "ChildReturn",
     "UserRegs",
     "Gpr",
     "ENOSYS",
@@ -679,7 +681,7 @@ fn hal_tree(toks: &[Tok], k: usize, out: &mut Vec<(usize, String)>) {
             if !is_sep(toks, k + 1) {
                 out.push((
                     k,
-                    "R6: `hal::syscall` named as a module (abi may name only its types, HandlerInfo, Register, Rval, SysArgs, SysResult, SyscallFn, ChildFn, UserRegs, Gpr, ENOSYS, and set_handler)"
+                    "R6: `hal::syscall` named as a module (abi may name only its types, HandlerInfo, Register, Rval, SysArgs, SysResult, SyscallFn, ChildReturn, UserRegs, Gpr, ENOSYS, and set_handler)"
                         .to_string(),
                 ));
             } else if toks.get(k + 3) == Some(&Tok::Punct('{')) {
@@ -711,7 +713,7 @@ fn syscall_item(t: Option<&Tok>, at: usize, out: &mut Vec<(usize, String)>) {
         Some(Tok::Ident(m)) => out.push((
             at,
             format!(
-                "R6: `hal::syscall::{m}` is not one of the items abi may name (HandlerInfo, Register, Rval, SysArgs, SysResult, SyscallFn, ChildFn, UserRegs, Gpr, ENOSYS, set_handler)"
+                "R6: `hal::syscall::{m}` is not one of the items abi may name (HandlerInfo, Register, Rval, SysArgs, SysResult, SyscallFn, ChildReturn, UserRegs, Gpr, ENOSYS, set_handler)"
             ),
         )),
         _ => out.push((
@@ -889,10 +891,10 @@ mod tests {
         // What the crate names today, and the forms of the same paths.
         clean("use hal::syscall::{HandlerInfo, Register};\n");
         // Decision 53: the trap's user registers, their names and a forked child's return.
-        clean("use hal::syscall::{ChildFn, Gpr, UserRegs};\n");
+        clean("use hal::syscall::{ChildReturn, Gpr, UserRegs};\n");
         clean("fn f(regs: &hal::syscall::UserRegs) { regs.restart(); }\n");
         clean("const X8: hal::syscall::Gpr = hal::syscall::Gpr::X8;\n");
-        clean("fn f() { let _ = hal::syscall::set_handler(a, b, I); }\n");
+        clean("fn f() { let _ = hal::syscall::set_handler(a, I); }\n");
         // What hal's trap calls, and what reads the registration, stay refused.
         one("use hal::syscall::enter;\n", "R6");
         one("fn f(r: &R) { hal::syscall::child(r); }\n", "R6");

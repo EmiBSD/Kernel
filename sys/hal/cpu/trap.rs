@@ -27,7 +27,9 @@
 //! `MAP_STACK` check of a fault from user mode), the signal (`trapsignal`, `sigexit`),
 //! `refreshcreds`, `userret`, the system call's return (`mi_syscall_return`, which the
 //! kernel's `syscall_return` calls for the ABI once it wrote the registers, decision 53), the AST
-//! (`ast()`'s work, `kernel::trap::ast`) and a forked child's first return (`mi_child_return`). The machine's hooks the
+//! (`ast()`'s work, `kernel::trap::ast`). A forked child's first return asks nothing here
+//! since decision 56's E1: its registers are written while its frame is built, and the
+//! kernel's start runs `mi_child_return` itself. The machine's hooks the
 //! C keeps in its `struct cpu_info` (`ci_flush_bp`, `ci_serror`, which the CPU and PSCI
 //! drivers still in `bsd` choose and rewrite) are [`CpuHooks`]; the kernel debugger
 //! (`db_ktrap`) is [`Debugger`]; `fault()`'s claim of the CPU's panic buffer is the hooks'
@@ -107,9 +109,6 @@ pub trait TrapHandler: Sync {
     /// `ast()`'s machine-independent work on the running thread (`kernel::trap::ast`):
     /// `refreshcreds`, `uvmexp.softs`, `mi_ast(p, ci_want_resched)`, `userret`.
     fn ast(&self);
-    /// `mi_child_return(p)`: a forked child's first return, after the machine set its
-    /// return registers and released the kernel lock its trampoline held.
-    fn child_return(&self);
 }
 
 /// The machine's per-CPU hooks a trap calls (`struct cpu_info`'s `ci_flush_bp` and

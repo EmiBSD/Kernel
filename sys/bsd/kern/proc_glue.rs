@@ -774,11 +774,6 @@ impl ProcGlue for BsdProcGlue {
         crate::machine::pmap::pmap_purge(p);
     }
 
-    /// The machine's `child_return`, which takes the thread as the C's `void *`.
-    fn child_return(p: &Proc) {
-        crate::machine::cpu::child_return(ptr::from_ref(p).cast_mut().cast::<c_void>());
-    }
-
     fn start_init(p: &Proc) {
         crate::kern::init_main::start_init(p);
     }

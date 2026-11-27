@@ -25,9 +25,11 @@ trap path (`docs/ZERO_UNSAFE.md` 0.1 lists them). Decision 56 (the user, 2026-11
     (a view of the user trap frame, valid for the handler's call only, with exactly three
     methods: read a set of registers, set the return register with the error flag, and
     `restart()`), `Gpr` (the machine's registers as a per-arch enum with their names: the
-    convention reads as the domain, `Gpr::X8`, and a wrong register does not compile) and
-    `ChildFn` (a forked child's first return), with `SyscallFn` and `set_handler` taking
-    their new signatures. abi owns OpenBSD's per-arch system call convention
+    convention reads as the domain, `Gpr::X8`, and a wrong register does not compile) and,
+    since decision 56's E1, `ChildReturn` (the forked child's first return as data: which
+    register, which value, the error flag; a constant `abi` defines and never applies
+    itself, `ChildFn` before it), with `SyscallFn` and `set_handler` taking their new
+    signatures. abi owns OpenBSD's per-arch system call convention
     (`sys/abi/arch/<arch>.rs`: the number register, the argument registers, the return
     register, the carry bit, when to restart, the child's first return) and calls
     `kernel::api::syscall_return` (`mi_syscall_return`) after writing the result; `hal`

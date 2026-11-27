@@ -65,7 +65,7 @@
 //!
 //! What is still `bsd`'s is reached through the process glue ([`ProcGlue`]): the text vnode
 //! and the unveils of a new process (`process_forked`, N5/N8), the interval timer's timeout
-//! (`process_initialized`, N4.8a), the machine's pmap and `child_return` (N4.8, N10), the
+//! (`process_initialized`, N4.8a), the machine's pmap (N10), the
 //! session's terminal vnode (`session_has_tty_vnode`, N4.7b), `init`'s start (N9.1), the
 //! limits `maxprocess`/`maxthread` (`conf/param.rs`), `log(9)`.
 //!
@@ -117,6 +117,7 @@ use hal::mem::pool::PoolBox;
 use hal::sync::klock;
 use hal::sync::mutex::Mutexed;
 use hal::sync::once::OnceStatic;
+use hal::syscall::ChildReturn;
 use hal::user::UserPtr;
 use hal::vm::uvmexp::UVMEXP;
 use sysdefs::base::errno::Errno;
@@ -312,12 +313,30 @@ sysdefs::abi_pod!(Tfork {
 });
 
 /// `kernel::proc::fork`'s registration: [`thread_start`] is the start of every new thread
-/// (`hal::cpu::thread::register_start`), and this glue makes the kernel's own threads
-/// (`kernel::proc::thread`'s timeout and task threads), once, before the first fork (`main`, before
-/// `procinit`).
-pub fn init<G: ProcGlue>() -> Result<(), hal::bridges::AlreadyRegistered> {
+/// (`hal::cpu::thread::register_start`), this glue makes the kernel's own threads
+/// (`kernel::proc::thread`'s timeout and task threads), and `child` is what `fork` returns in
+/// a child (the ABI's constant, `abi::arch::current::CHILD_RETURN`, which the image's boot
+/// glue hands over), once, before the first fork (`main`, before `procinit`).
+pub fn init<G: ProcGlue>(child: ChildReturn) -> Result<(), hal::bridges::AlreadyRegistered> {
     crate::proc::thread::install_ops::<G>();
+    let _ = CHILD_RETURN.set(child);
     hal::cpu::thread::register_start(thread_start::<G>)
+}
+
+/// What `fork` returns in a forked child, the ABI's ([`init`]).
+static CHILD_RETURN: OnceStatic<ChildReturn> = OnceStatic::new();
+
+/// The child's return [`cpu_fork`] writes into the frame of a child that starts with `start`:
+/// the ABI's for a child that returns from `fork` (`child_return`, `fork_return`), none
+/// for a thread that starts elsewhere. `panic(9)` before [`init`].
+fn child_return_for(start: Start) -> Option<ChildReturn> {
+    match start {
+        Start::ChildReturn | Start::ForkReturn => match CHILD_RETURN.get() {
+            Some(r) => Some(*r),
+            None => kpanic(format_args!("cpu_fork: no child return (fork::init)")),
+        },
+        _ => None,
+    }
 }
 
 /// The start `hal::cpu::thread` calls on a new thread with the scheduler's hold its switch kept
@@ -333,10 +352,7 @@ fn thread_start<G: ProcGlue>(hold: SchedHold, start: usize, arg: usize) -> UserE
         kpanic(format_args!("proc_trampoline: no thread start {start:#x}"));
     };
     match s {
-        Start::ChildReturn => G::with_curproc(|p| match p {
-            Some(p) => G::child_return(p),
-            None => kpanic(format_args!("child_return: no curproc")),
-        }),
+        Start::ChildReturn => child_return::<G>(),
         Start::ForkReturn => fork_return::<G>(),
         Start::Idle(n) => crate::sched::sched_idle::<G>(n),
         Start::Kernel(t) => crate::proc::thread::run(t),
@@ -354,6 +370,15 @@ fn thread_start<G: ProcGlue>(hold: SchedHold, start: usize, arg: usize) -> UserE
     crate::trap::user_exit::<G>()
 }
 
+/// `child_return(p)`: the first thing a forked child runs, on itself: the kernel lock its
+/// trampoline took (`proc_trampoline_mi`) released, then `mi_child_return`. Its return
+/// registers (`fork` returns 0 with the error flag clear) were written while `cpu_fork` built
+/// its frame (the ABI's [`ChildReturn`], decision 56's U5), where the C writes them here.
+fn child_return<G: ProcGlue>() {
+    klock::kernel_unlock();
+    hal::cpu::thread::with_current::<Thread<G>, _>(crate::syscall::mi_child_return);
+}
+
 /// `fork_return`: the first thing a forked child runs when the parent asked `ptrace(2)` to
 /// report forks: stop for the tracer, then return to user mode as `child_return` does.
 fn fork_return<G: ProcGlue>() {
@@ -361,8 +386,8 @@ fn fork_return<G: ProcGlue>() {
         if p.process().ps_flags.load(Ordering::Relaxed) & PS_TRACED != 0 {
             crate::sig::psignal(p, SIGTRAP);
         }
-        G::child_return(&p);
     });
+    child_return::<G>();
 }
 
 /// `fork(2)`: a new process; its pid.
@@ -721,8 +746,7 @@ pub fn fork1_with<G: ProcGlue>(
     // Finish creating the child thread: cpu_fork copies and updates the pcb and makes the
     // child ready to run. A user fork exits to user mode via child_return on its first time
     // slice; a kernel thread runs its entry point.
-    let me = ptr::from_ref::<Thread<G>>(&p).expose_provenance();
-    cpu_fork(curp, p, 0, 0, start.words(me));
+    cpu_fork(curp, p, 0, 0, start);
 
     let vmsize = pr.vmspace_share().map_or(0, |vm| {
         (i64::from(vm.vm_dsize.load(Ordering::Relaxed))
@@ -811,22 +835,24 @@ pub fn fork1_with<G: ProcGlue>(
 
 /// `cpu_fork(parent, child, stack, tcb, func, arg)`: the child's address space activated
 /// (the machine's `pmap_activate`) and its frames built by `hal` (the parent's pcb and trap
-/// frame copied, the user stack and TCB when not 0, the trampoline with the start's words).
-/// `cpu_exit` is empty on both machines (amd64 and arm64 vm_machdep.c:116-118) and has no
-/// counterpart.
+/// frame copied, the user stack and TCB when not 0, the return registers of a child that
+/// returns from `fork`, the trampoline with the start's words). `cpu_exit` is empty on both
+/// machines (amd64 and arm64 vm_machdep.c:116-118) and has no counterpart.
 fn cpu_fork<G: ProcGlue>(
     parent: Pin<&Thread<G>>,
     child: Pin<&Thread<G>>,
     stack: usize,
     tcb: usize,
-    (start, arg): (usize, usize),
+    s: Start,
 ) {
+    let me = ptr::from_ref::<Thread<G>>(&child).expose_provenance();
+    let (start, arg) = s.words(me);
     G::pmap_activate(&child);
     let h = hal::cpu::thread::sched_lock();
     let user = hal::cpu::thread::UserStart {
         stack,
         tcb,
-        ret: None,
+        ret: child_return_for(s),
     };
     hal::cpu::thread::thread_setup(&h, parent, child, user, start, arg);
     drop(h);
@@ -893,8 +919,7 @@ pub fn thread_fork<G: ProcGlue>(
 
     // Finish creating the child thread: it returns to user mode via child_return on its
     // first time slice.
-    let me = ptr::from_ref::<Thread<G>>(&p).expose_provenance();
-    cpu_fork(curp, p, stack, tcb, Start::ChildReturn.words(me));
+    cpu_fork(curp, p, stack, tcb, Start::ChildReturn);
 
     let tid = alloctid::<G>();
     p.p_tid.set(tid);
@@ -1019,6 +1044,51 @@ const _: () = {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sched::tests::{SchedGlue, VCPUS, run_as, setup, thread};
+    use hal::syscall::Gpr;
+
+    /// What the tests register as the ABI's child return (the ABI's own is `x0 = 0`, carry
+    /// clear: `abi::arch::arm64`'s tests).
+    const TEST_CHILD: ChildReturn = ChildReturn {
+        reg: Gpr::X0,
+        value: 0,
+        error: false,
+    };
+
+    /// `cpu_fork` gives `hal` the ABI's child return for a child that returns from `fork`
+    /// (`child_return`, `fork_return`) and none for a thread that starts elsewhere, with the
+    /// user stack and TCB beside it (U5: written while the frame is built).
+    #[test]
+    fn cpu_fork_writes_the_child_return_of_a_returning_child_only() {
+        let _g = setup();
+        let _ = CHILD_RETURN.set(TEST_CHILD);
+        let me = thread(60, 50);
+        run_as(VCPUS[0], me);
+        for (tid, s, want) in [
+            (61, Start::ChildReturn, Some(TEST_CHILD)),
+            (62, Start::ForkReturn, Some(TEST_CHILD)),
+            (63, Start::Reaper, None),
+            (64, Start::Kernel(3), None),
+        ] {
+            let child = thread(tid, 50);
+            cpu_fork::<SchedGlue>(me, child, 0, 0, s);
+            assert_eq!(hal::cpu::thread::child_return_of(child.get_ref()), want);
+        }
+        hal::cpu::thread::set_current_static::<Thread<SchedGlue>>(None);
+    }
+
+    /// A forked child's first run releases the kernel lock its trampoline took and runs
+    /// `mi_child_return` (`userret`) on itself; its registers are not touched here.
+    #[test]
+    fn child_return_releases_the_kernel_lock() {
+        let _g = setup();
+        let me = thread(65, 50);
+        run_as(VCPUS[0], me);
+        klock::kernel_lock();
+        child_return::<SchedGlue>();
+        assert!(!klock::kernel_lock_held());
+        hal::cpu::thread::set_current_static::<Thread<SchedGlue>>(None);
+    }
 
     fn legacy_a(_arg: *mut c_void) {}
     fn legacy_b(_arg: *mut c_void) {}

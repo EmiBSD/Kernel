@@ -439,8 +439,11 @@ pub fn hal_bridges_register() {
     let _ = hal::bridges::register_console(&BSD_CONS);
     let _ = hal::bridges::register_printf(&BSD_PRINTF);
     let _ = hal::bridges::register_random(&BSD_RANDOM);
-    // The start of every new thread and the kernel's own threads: `kernel::proc::fork` (N4.6a).
-    let _ = kernel::proc::fork::init::<crate::kern::proc_glue::BsdProcGlue>();
+    // The start of every new thread and the kernel's own threads: `kernel::proc::fork` (N4.6a),
+    // with what `fork` returns in a child, the ABI's constant (decision 56, E1).
+    let _ = kernel::proc::fork::init::<crate::kern::proc_glue::BsdProcGlue>(
+        abi::arch::current::CHILD_RETURN,
+    );
     // The kernel crate's own bridges (N4.1): slots only, used from `main()` on.
     // N4.8a: the machine's clock hardware and boot(9), for kernel::time::clock and kernel::base::reboot.
     let _ = kernel::time::clock::install_clock_hardware(&BSD_CLOCK_HARDWARE);

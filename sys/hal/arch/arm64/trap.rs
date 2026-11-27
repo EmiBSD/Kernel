@@ -226,8 +226,8 @@ static USER_FRAME_BORROWED: [AtomicBool; MAXCPUS] = [const { AtomicBool::new(fal
 /// from then on (`cpu_fork` points a new thread's at the frame it built in the same place).
 ///
 /// The handler that got it and the code its calls out reach through `pcb_tf` (the signal
-/// frame's `sendsig` and `sigreturn`, `child_return`, `PROC_PC`/`PROC_STACK`, `bsd`'s
-/// `setregs`) all touch it, so no reference to it is kept: each access borrows it for one
+/// frame's `sendsig` and `sigreturn`, `PROC_PC`/`PROC_STACK`, `bsd`'s `setregs`) all touch
+/// it, so no reference to it is kept: each access borrows it for one
 /// closure ([`Self::with`]) that calls nothing which reaches it again, and a second borrow on
 /// the CPU while one is in progress is `panic(9)` rather than a second `&mut`.
 #[derive(Clone, Copy)]

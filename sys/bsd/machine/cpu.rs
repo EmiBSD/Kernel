@@ -269,11 +269,6 @@ pub trait Cpu {
     /// `PROC_STACK(p)`: the user stack pointer of `p` (its trap frame's).
     fn proc_stack(p: &Proc) -> usize;
 
-    /// `child_return(arg)` (`trap.c`/`syscall.c`): the first thing a forked user thread runs
-    /// (`arg` is the thread): a system call return of 0 to user mode. `fork1` and
-    /// `thread_fork` hand it to `cpu_fork`.
-    fn child_return(arg: *mut c_void);
-
     /// `cpu_initclocks()`: the machine-dependent part of `initclocks`: picks the clock
     /// hardware, sets `stathz`/`profhz`, registers the timecounter.
     fn cpu_initclocks();
@@ -402,11 +397,6 @@ pub fn etext() -> usize {
 /// `kbd_reset` on the selected machine (`None` but on amd64).
 pub fn kbd_reset() -> Option<&'static AtomicI32> {
     Machine::kbd_reset()
-}
-
-/// `child_return` on the selected machine.
-pub fn child_return(arg: *mut c_void) {
-    Machine::child_return(arg)
 }
 
 /// `curproc`: the thread running on this CPU, `None` before `proc0` is set up.

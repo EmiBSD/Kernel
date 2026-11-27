@@ -34,7 +34,7 @@
 
 /* <CODE> */
 //! arm64's system call convention: the ABI's half of `syscall.c`, `svc_handler` from the
-//! number on and `child_return`'s two frame writes.
+//! number on and what `child_return`'s two frame writes write.
 //!
 //! Upstream: sys/arch/arm64/arm64/syscall.c @ 3ce1f3f79392
 //! LZ: sys/arch/arm64/arm64/syscall.rs@e8249449d905
@@ -47,7 +47,7 @@
 //! carry clear; an errno in `x0` and the carry set; the pc back to the `svc` for `ERESTART`;
 //! nothing for `EJUSTRETURN`, whose call rewrote the frame itself) and only then calls
 //! `mi_syscall_return` (`kernel::api::syscall_return`), whose `userret` may save the frame
-//! for a signal. [`child`] is a forked child's `fork` return of 0, carry clear.
+//! for a signal. [`CHILD_RETURN`] is a forked child's `fork` return of 0, carry clear.
 //!
 //! The system call number is an identifier, not a count: the index into `sysent[]`,
 //! assigned by OpenBSD in `sys/kern/syscalls.master` (from which libc's `syscall.h` is
@@ -74,8 +74,13 @@
 //!   `default:` writes it.
 //! - `mi_syscall_return` is a call to `kernel::api::syscall_return` after the writes, where
 //!   LZ's handler called it by name (and `hal` through its trap handler, N4.8b..N7.abi2).
+//! - Decision 56 (E1, U5): `child_return`'s writes were a registered function (`child`) that
+//!   `hal` called on the child's registers at its first run; they are the constant
+//!   [`CHILD_RETURN`], which the image's boot glue hands to the kernel once and `hal` writes
+//!   into each returning child's frame while `cpu_fork` builds it. This crate applies it
+//!   nowhere itself.
 
-use hal::syscall::{Gpr, Register, Rval, SysResult, UserRegs};
+use hal::syscall::{ChildReturn, Gpr, Register, Rval, SysResult, UserRegs};
 use sysdefs::base::errno::Errno;
 
 use crate::scarg::int;
@@ -122,11 +127,13 @@ pub fn call(table: &[Sysent], regs: &UserRegs) -> (Register, SysResult, Rval) {
     (nr, error, rval)
 }
 
-/// `child_return`'s frame writes: a forked child's `fork` returns 0, carry clear.
-/// Registered in `hal` by [`crate::abi_init`] (`hal::syscall::ChildFn`).
-pub fn child(regs: &UserRegs) {
-    regs.set_return(Gpr::X0, 0, false);
-}
+/// `child_return`'s frame writes: a forked child's `fork` returns 0 in `x0`, carry clear
+/// (`tf_x[0] = 0`, `tf_spsr &= ~PSR_C`).
+pub const CHILD_RETURN: ChildReturn = ChildReturn {
+    reg: Gpr::X0,
+    value: 0,
+    error: false,
+};
 /* </CODE> */
 
 /* <TESTS> */
@@ -234,8 +241,13 @@ mod tests {
 
     #[test]
     fn a_forked_child_returns_zero_with_the_carry_clear() {
+        assert_eq!(CHILD_RETURN.reg, Gpr::X0);
+        assert_eq!(CHILD_RETURN.value, 0);
+        assert!(!CHILD_RETURN.error);
+        // Written as `hal` writes it (`set_return`), the frame is the C's `child_return`'s.
         let (regs, mut before) = trap(2, [55, 66, 0, 0, 0, 0], true);
-        child(&regs);
+        let c = CHILD_RETURN;
+        regs.set_return(c.reg, c.value, c.error);
         before[0] = 0;
         assert_eq!(regs.fake_regs(), before);
         assert!(!regs.fake_carry());
