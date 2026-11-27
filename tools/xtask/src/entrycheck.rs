@@ -86,6 +86,40 @@ const ABI_PATH: &str = "abi::arch::current::svc";
 const ROOTS: [&str; 10] = [
     "abi", "kernel", "hal", "sysdefs", "core", "crate", "super", "self", "Self", "clippy",
 ];
+/// The lock's table (L2): every exception class the class match names, with the one call its
+/// arm makes (and an argument its body must hold, `true` or `false` for an abort's `exe`).
+const CLASSES: [(&str, &str, &str); 14] = [
+    ("EXCP_UNKNOWN", "kernel::trap::undefined", ""),
+    ("EXCP_SVE", "kernel::trap::sve", ""),
+    ("EXCP_FP_SIMD", "kernel::trap::fpu", ""),
+    ("EXCP_TRAP_FP", "kernel::trap::fpu", ""),
+    ("EXCP_BRANCH_TGT", "kernel::trap::bti", ""),
+    ("EXCP_MSR", "kernel::trap::msr", ""),
+    ("EXCP_FPAC", "kernel::trap::fpac", ""),
+    ("EXCP_SVC", "abi::arch::current::svc", "svc"),
+    ("EXCP_INSN_ABORT_L", "kernel::trap::udata_abort", "true"),
+    ("EXCP_PC_ALIGN", "kernel::trap::pc_align", ""),
+    ("EXCP_SP_ALIGN", "kernel::trap::sp_align", ""),
+    ("EXCP_DATA_ABORT_L", "kernel::trap::udata_abort", "false"),
+    ("EXCP_BRK", "kernel::trap::breakpoint", ""),
+    ("EXCP_SOFTSTP_EL0", "kernel::trap::single_step", ""),
+];
+/// The vector match's arms: each `UserVector` and the call its arm makes.
+const VECTORS: [(&str, &str); 4] = [
+    ("Sync", "do_el0_sync"),
+    ("Irq", "irq"),
+    ("Fiq", "fiq"),
+    ("SError", "serror"),
+];
+/// The macros `entry` may invoke: none.
+const MACROS: [&str; 0] = [];
+/// The paths with a type's name first `entry` may write (a), the vector's variants.
+const TYPE_PATHS: [&str; 4] = [
+    "UserVector::Sync",
+    "UserVector::Irq",
+    "UserVector::Fiq",
+    "UserVector::SError",
+];
 /// The trap tokens only `entry` and the kernel's door may name outside `hal` (H7).
 const TOKENS: [&str; 3] = ["Arrival", "SyncTrap", "IdRead"];
 /// The registration's names, gone (H7, R2).
@@ -177,6 +211,7 @@ fn finding(path: &str, line: usize, message: impl Into<String>) -> Finding {
 /// E1 to E5 and L1 to L3 over `tree`.
 pub(crate) fn check_entry(tree: &Tree) -> Vec<Finding> {
     let mut out = Vec::new();
+    let door = door_fns(tree, &mut out);
     let allows: usize = tree
         .iter()
         .filter(|(k, _)| k.starts_with(ENTRY_DIR) && k.ends_with(".rs"))
@@ -232,7 +267,7 @@ pub(crate) fn check_entry(tree: &Tree) -> Vec<Finding> {
             check_manifest(path, text, &mut out);
         } else if path.ends_with(".rs") {
             if in_entry {
-                check_entry_rs(path, text, &mut out);
+                check_entry_rs(path, text, &door, &mut out);
             } else {
                 check_other_rs(path, text, &mut out);
             }
@@ -307,7 +342,34 @@ fn check_other_rs(path: &str, text: &str, out: &mut Vec<Finding>) {
 }
 
 /// E1 to E5 and the lock on one of `entry`'s `.rs` files.
-fn check_entry_rs(path: &str, text: &str, out: &mut Vec<Finding>) {
+/// The `pub fn`s of `kernel::trap` (`sys/kernel/trap.rs`), the only kernel functions `entry`
+/// may name (b); a `pub use` there, which would widen the door, is a finding.
+fn door_fns(tree: &Tree, out: &mut Vec<Finding>) -> BTreeSet<String> {
+    let path = "sys/kernel/trap.rs";
+    let mut fns = BTreeSet::new();
+    let Some(text) = tree.get(path) else {
+        return fns;
+    };
+    let lx = lex_pos(text);
+    for (k, w) in lx.toks.windows(3).enumerate() {
+        if id(&w[0], "pub")
+            && id(&w[1], "fn")
+            && let Tok::Ident(name) = &w[2]
+        {
+            fns.insert(name.clone());
+        }
+        if id(&w[0], "pub") && id(&w[1], "use") {
+            out.push(finding(
+                path,
+                lx.lines.get(k).copied().unwrap_or(0),
+                "E5: a `pub use` in kernel::trap would widen entry's door",
+            ));
+        }
+    }
+    fns
+}
+
+fn check_entry_rs(path: &str, text: &str, door: &BTreeSet<String>, out: &mut Vec<Finding>) {
     let lx = lex_pos(text);
     let toks = &lx.toks;
     let line = |k: usize| lx.lines.get(k).copied().unwrap_or(0);
@@ -364,6 +426,16 @@ fn check_entry_rs(path: &str, text: &str, out: &mut Vec<Finding>) {
                         .to_string()
                 })
             }
+            "as" => Some("E5: `as` in entry (no alias of a token, no cast)".to_string()),
+            "macro_use" | "macro_rules" => Some(format!("E5: `{w}` in entry (no macro)")),
+            m if p(k + 1, '!')
+                && matches!(toks.get(k + 2), Some(Tok::Punct('(' | '[' | '{')))
+                && !MACROS.contains(&m)
+                && m != "global_asm"
+                && m != "asm" =>
+            {
+                Some(format!("E5: the macro `{w}!` in entry (no macro)"))
+            }
             "static" => Some("E4/L3: a `static` in entry (no state)".to_string()),
             "loop" | "while" | "for" => Some(format!("E4: `{w}` in entry (no loop)")),
             "Cell" | "RefCell" | "UnsafeCell" | "OnceStatic" | "Mutexed" | "Rwlocked" => {
@@ -395,7 +467,7 @@ fn check_entry_rs(path: &str, text: &str, out: &mut Vec<Finding>) {
         }
     }
     for (k, full) in paths(toks) {
-        check_path(path, line(k), &full, out);
+        check_path(path, line(k), &full, door, out);
     }
     if path.ends_with("/trap.rs") {
         check_matches(path, toks, &lx.lines, out);
@@ -506,10 +578,22 @@ fn use_tree(toks: &[Tok], from: usize, end: usize, prefix: &str, out: &mut Vec<(
 }
 
 /// E5/L1: a path `entry` names.
-fn check_path(path: &str, line: usize, full: &str, out: &mut Vec<Finding>) {
+fn check_path(
+    path: &str,
+    line: usize,
+    full: &str,
+    door: &BTreeSet<String>,
+    out: &mut Vec<Finding>,
+) {
     let root = full.split("::").next().unwrap_or("");
     if !ROOTS.contains(&root) {
-        if root.chars().next().is_some_and(char::is_lowercase) {
+        if root.chars().next().is_some_and(char::is_uppercase) && !TYPE_PATHS.contains(&full) {
+            out.push(finding(
+                path,
+                line,
+                format!("E5/L1: `{full}`: a call through a type's path; entry calls only kernel::trap's functions, abi's svc and the Arrival's irq, fiq and serror"),
+            ));
+        } else if root.chars().next().is_some_and(char::is_lowercase) {
             out.push(finding(
                 path,
                 line,
@@ -520,7 +604,9 @@ fn check_path(path: &str, line: usize, full: &str, out: &mut Vec<Finding>) {
     }
     let ok = match root {
         "abi" => full == ABI_PATH,
-        "kernel" => full.starts_with("kernel::trap::") && full.matches("::").count() == 2,
+        "kernel" => full
+            .strip_prefix("kernel::trap::")
+            .is_some_and(|f| door.contains(f)),
         "hal" => {
             HAL_PATHS.iter().any(|p| {
                 if p.ends_with('_') {
@@ -543,6 +629,8 @@ fn check_path(path: &str, line: usize, full: &str, out: &mut Vec<Finding>) {
 fn check_matches(path: &str, toks: &[Tok], lines: &[usize], out: &mut Vec<Finding>) {
     let line = |k: usize| lines.get(k).copied().unwrap_or(0);
     let mut seen = 0;
+    let mut classes_seen: Vec<&str> = Vec::new();
+    let mut vectors_seen: Vec<&str> = Vec::new();
     for m in (0..toks.len()).filter(|&k| id(&toks[k], "match")) {
         seen += 1;
         let Some(open) = (m..toks.len()).find(|&k| toks[k] == Tok::Punct('{')) else {
@@ -561,30 +649,30 @@ fn check_matches(path: &str, toks: &[Tok], lines: &[usize], out: &mut Vec<Findin
             let pat = &toks[start..k];
             k += 2;
             let body_start = k;
+            let body_end;
             if toks.get(k) == Some(&Tok::Punct('{'))
                 && let Some(end) = matching(toks, k)
             {
+                body_end = end + 1;
                 k = end + 1;
                 if toks.get(k) == Some(&Tok::Punct(',')) {
                     k += 1;
                 }
-                if catch_all_pat(pat) {
-                    out.push(finding(path, line(start), if class { "L2: the class match's catch-all goes elsewhere than kernel::trap::unknown (trap.c's default)" } else { "L2: the vector match has a catch-all arm (four vectors, four arms)" }));
+            } else {
+                let mut depth = 0i32;
+                while k < close {
+                    match toks[k] {
+                        Tok::Punct('(' | '[' | '{') => depth += 1,
+                        Tok::Punct(')' | ']' | '}') => depth -= 1,
+                        Tok::Punct(',') if depth == 0 => break,
+                        _ => {}
+                    }
+                    k += 1;
                 }
-                continue;
-            }
-            let mut depth = 0i32;
-            while k < close {
-                match toks[k] {
-                    Tok::Punct('(' | '[' | '{') => depth += 1,
-                    Tok::Punct(')' | ']' | '}') => depth -= 1,
-                    Tok::Punct(',') if depth == 0 => break,
-                    _ => {}
-                }
+                body_end = k.min(close);
                 k += 1;
             }
-            let body = &toks[body_start..k.min(close)];
-            k += 1;
+            let body = &toks[body_start..body_end];
             if pat.is_empty() {
                 continue;
             }
@@ -599,9 +687,28 @@ fn check_matches(path: &str, toks: &[Tok], lines: &[usize], out: &mut Vec<Findin
                     if !unknown || !id(&pat[0], "_") {
                         out.push(finding(path, line(start), "L2: the class match's catch-all goes elsewhere than kernel::trap::unknown (trap.c's default)"));
                     }
-                } else if !pat.iter().all(|t| {
+                } else if pat.iter().all(|t| {
                     matches!(t, Tok::Ident(w) if w.starts_with("EXCP_")) || *t == Tok::Punct('|')
                 }) {
+                    let callee = first_path(body);
+                    for t in pat {
+                        let Tok::Ident(c) = t else { continue };
+                        match CLASSES.iter().find(|(name, _, _)| name == c) {
+                            Some((name, dest, arg)) => {
+                                classes_seen.push(name);
+                                let arg_ok = arg.is_empty() || body.iter().any(|t| id(t, arg));
+                                if callee != *dest || !arg_ok {
+                                    out.push(finding(path, line(start), format!("L2: `{c}` goes to `{callee}`; the lock sends it to `{dest}`{}", if arg.is_empty() { String::new() } else { format!(" with `{arg}`") })));
+                                }
+                            }
+                            None => out.push(finding(
+                                path,
+                                line(start),
+                                format!("L2: `{c}` is not a class of the lock's table"),
+                            )),
+                        }
+                    }
+                } else {
                     out.push(finding(
                         path,
                         line(start),
@@ -614,12 +721,79 @@ fn check_matches(path: &str, toks: &[Tok], lines: &[usize], out: &mut Vec<Findin
                     line(start),
                     "L2: the vector match has a catch-all arm (four vectors, four arms)",
                 ));
+            } else if let [Tok::Ident(ty), _, _, Tok::Ident(v)] = pat
+                && ty == "UserVector"
+            {
+                match VECTORS.iter().find(|(name, _)| name == v) {
+                    Some((name, call)) => {
+                        vectors_seen.push(name);
+                        if !body.iter().any(|t| id(t, call)) {
+                            out.push(finding(
+                                path,
+                                line(start),
+                                format!("L2: `UserVector::{v}` does not call `{call}`"),
+                            ));
+                        }
+                    }
+                    None => out.push(finding(
+                        path,
+                        line(start),
+                        format!("L2: `UserVector::{v}` is not a vector"),
+                    )),
+                }
             }
         }
     }
     if seen == 0 {
         out.push(finding(path, 1, "L2: no class match in trap.rs"));
     }
+    for (name, _, _) in CLASSES {
+        let n = classes_seen.iter().filter(|c| **c == name).count();
+        if n != 1 {
+            out.push(finding(
+                path,
+                1,
+                format!(
+                    "L2: `{name}` has {n} arms in the class match; exactly one (the lock's table)"
+                ),
+            ));
+        }
+    }
+    for (name, _) in VECTORS {
+        let n = vectors_seen.iter().filter(|c| **c == name).count();
+        if n != 1 {
+            out.push(finding(
+                path,
+                1,
+                format!("L2: `UserVector::{name}` has {n} arms in the vector match; exactly one"),
+            ));
+        }
+    }
+}
+
+/// The first path of `body` (`kernel::trap::msr` of `kernel::trap::msr(t, s)`), or its first
+/// word.
+fn first_path(body: &[Tok]) -> String {
+    let mut out = String::new();
+    let mut k = 0;
+    while k < body.len() {
+        match &body[k] {
+            Tok::Ident(w) => {
+                out.push_str(w);
+                if body.get(k + 1) == Some(&Tok::Punct(':'))
+                    && body.get(k + 2) == Some(&Tok::Punct(':'))
+                {
+                    out.push_str("::");
+                    k += 3;
+                    continue;
+                }
+                return out;
+            }
+            _ if out.is_empty() => k += 1,
+            _ => return out,
+        }
+    }
+    out
 }
 
 /// A catch-all pattern: `_` or a binding.
@@ -805,6 +979,13 @@ fn check_hal_s(path: &str, text: &str, hal_labels: &BTreeSet<String>, out: &mut 
                 format!("H8: `{SYMBOL}` is not a `bl` operand here (never adr, adrp, ldr or data)"),
             ));
         }
+        if handler.is_some() && (op == "blr" || op == "bl" && ws.get(1) != Some(&SYMBOL)) {
+            out.push(finding(
+                path,
+                n,
+                format!("H8: a `{t}` in an EL0 handler: it calls {SYMBOL} and nothing else"),
+            ));
+        }
         if op == "bl"
             && ws.get(1) == Some(&SYMBOL)
             && let Some(h) = handler.as_mut()
@@ -861,21 +1042,25 @@ mod tests {
         );
         t.insert(
             "sys/entry/arch/arm64/trap.rs".into(),
-            "use hal::arch::arm64::include::armreg::{EXCP_SVC, EXCP_BRK};\n\
+            "use hal::arch::arm64::include::armreg::{EXCP_BRANCH_TGT, EXCP_BRK, EXCP_DATA_ABORT_L, EXCP_FP_SIMD, EXCP_FPAC, EXCP_INSN_ABORT_L, EXCP_MSR, EXCP_PC_ALIGN, EXCP_SOFTSTP_EL0, EXCP_SP_ALIGN, EXCP_SVC, EXCP_SVE, EXCP_TRAP_FP, EXCP_UNKNOWN};\n\
              use hal::arch::arm64::usertrap::{Arrival, UserTrapFn, UserVector};\n\
              use hal::cpu::usertrap::UserExit;\n\
              #[allow(unsafe_code)]\n#[unsafe(no_mangle)]\n\
              extern \"C\" fn entry_user_trap(a: Arrival, v: UserVector) -> UserExit {\n\
-             match v { UserVector::Sync => sync(a), UserVector::Irq => { a.irq(); kernel::trap::exit() } UserVector::Fiq => { a.fiq(); kernel::trap::exit() } UserVector::SError => a.serror(), }\n}\n\
+             match v { UserVector::Sync => do_el0_sync(a), UserVector::Irq => { a.irq(); kernel::trap::exit() } UserVector::Fiq => { a.fiq(); kernel::trap::exit() } UserVector::SError => a.serror(), }\n}\n\
              const _: UserTrapFn = entry_user_trap;\n\
-             fn sync(a: Arrival) -> UserExit {\n let (t, s) = kernel::trap::begin(a);\n\
-             match s.class { EXCP_SVC => abi::arch::current::svc(&kernel::trap::svc(t)), EXCP_BRK => kernel::trap::breakpoint(t, s), _ => kernel::trap::unknown(t, s), }\n\
+             fn do_el0_sync(a: Arrival) -> UserExit {\n let (t, s) = kernel::trap::begin(a);\n\
+             match s.class { EXCP_UNKNOWN => kernel::trap::undefined(t, s), EXCP_SVE => kernel::trap::sve(t), EXCP_FP_SIMD | EXCP_TRAP_FP => kernel::trap::fpu(t), EXCP_BRANCH_TGT => kernel::trap::bti(t, s), EXCP_MSR => kernel::trap::msr(t, s), EXCP_FPAC => kernel::trap::fpac(t, s), EXCP_SVC => abi::arch::current::svc(&kernel::trap::svc(t)), EXCP_INSN_ABORT_L => kernel::trap::udata_abort(t, s, true), EXCP_PC_ALIGN => kernel::trap::pc_align(t, s), EXCP_SP_ALIGN => kernel::trap::sp_align(t, s), EXCP_DATA_ABORT_L => kernel::trap::udata_abort(t, s, false), EXCP_BRK => kernel::trap::breakpoint(t, s), EXCP_SOFTSTP_EL0 => kernel::trap::single_step(t, s), _ => kernel::trap::unknown(t, s), }\n\
              kernel::trap::leave()\n}\n"
                 .into(),
         );
         t.insert(
             "sys/bsd/Cargo.toml".into(),
             "[dependencies]\nentry = { path = \"../entry\" }\n".into(),
+        );
+        t.insert(
+            "sys/kernel/trap.rs".into(),
+            "pub fn begin() {}\npub fn undefined() {}\npub fn sve() {}\npub fn fpu() {}\npub fn bti() {}\npub fn msr() {}\npub fn fpac() {}\npub fn svc() {}\npub fn udata_abort() {}\npub fn pc_align() {}\npub fn sp_align() {}\npub fn breakpoint() {}\npub fn single_step() {}\npub fn unknown() {}\npub fn leave() {}\npub fn exit() {}\nfn hidden() {}\n".into(),
         );
         t.insert(
             "sys/bsd/main.rs".into(),
@@ -921,13 +1106,19 @@ mod tests {
             t.insert("sys/entry/arch/arm64/vectors.S".into(), "nop\n".into());
         });
         fails("E1", |t| {
-            edit_trap(t, "fn sync", "core::arch::global_asm!(\"nop\");\nfn sync")
+            edit_trap(
+                t,
+                "fn do_el0_sync",
+                "core::arch::global_asm!(\"nop\");\nfn do_el0_sync",
+            )
         });
     }
 
     #[test]
     fn e2_nothing_names_entry() {
-        fails("E2", |t| edit_trap(t, "fn sync(a", "pub fn sync(a"));
+        fails("E2", |t| {
+            edit_trap(t, "fn do_el0_sync(a", "pub fn do_el0_sync(a")
+        });
         fails("E2", |t| {
             t.insert("sys/kernel/x.rs".into(), "fn f() { entry::x(); }\n".into());
         });
@@ -953,16 +1144,22 @@ mod tests {
             edit_trap(t, "const _: UserTrapFn = entry_user_trap;\n", "")
         });
         fails("E3", |t| {
-            edit_trap(t, "fn sync(a", "#[allow(unsafe_code)]\nfn sync(a")
+            edit_trap(
+                t,
+                "fn do_el0_sync(a",
+                "#[allow(unsafe_code)]\nfn do_el0_sync(a",
+            )
         });
         fails("E3", |t| {
             edit_trap(
                 t,
-                "fn sync(a: Arrival) -> UserExit {\n",
-                "fn sync(a: Arrival) -> UserExit {\n unsafe { x() };\n",
+                "fn do_el0_sync(a: Arrival) -> UserExit {\n",
+                "fn do_el0_sync(a: Arrival) -> UserExit {\n unsafe { x() };\n",
             )
         });
-        fails("E3", |t| edit_trap(t, "fn sync(a", "#[used]\nfn sync(a"));
+        fails("E3", |t| {
+            edit_trap(t, "fn do_el0_sync(a", "#[used]\nfn do_el0_sync(a")
+        });
     }
 
     #[test]
@@ -970,12 +1167,16 @@ mod tests {
         fails("E4", |t| {
             edit_trap(
                 t,
-                "fn sync(a: Arrival) -> UserExit {\n",
-                "fn sync(a: Arrival) -> UserExit {\n loop {}\n",
+                "fn do_el0_sync(a: Arrival) -> UserExit {\n",
+                "fn do_el0_sync(a: Arrival) -> UserExit {\n loop {}\n",
             )
         });
         fails("E4", |t| {
-            edit_trap(t, "fn sync(a", "fn g(c: AtomicU8) {}\nfn sync(a")
+            edit_trap(
+                t,
+                "fn do_el0_sync(a",
+                "fn g(c: AtomicU8) {}\nfn do_el0_sync(a",
+            )
         });
     }
 
@@ -990,12 +1191,16 @@ mod tests {
         fails("E5/L1", |t| {
             edit_trap(
                 t,
-                "fn sync(a",
-                "fn h() { hal::cpu::intr::intr_disable(); }\nfn sync(a",
+                "fn do_el0_sync(a",
+                "fn h() { hal::cpu::intr::intr_disable(); }\nfn do_el0_sync(a",
             )
         });
         fails("E5", |t| {
-            edit_trap(t, "fn sync(a", "fn h() { libkern::x(); }\nfn sync(a")
+            edit_trap(
+                t,
+                "fn do_el0_sync(a",
+                "fn h() { libkern::x(); }\nfn do_el0_sync(a",
+            )
         });
     }
 
@@ -1014,10 +1219,18 @@ mod tests {
         });
         fails("L2", |t| edit_trap(t, "EXCP_BRK => kernel", "x => kernel"));
         fails("L3", |t| {
-            edit_trap(t, "fn sync(a", "fn h(f: fn(u8)) {}\nfn sync(a")
+            edit_trap(
+                t,
+                "fn do_el0_sync(a",
+                "fn h(f: fn(u8)) {}\nfn do_el0_sync(a",
+            )
         });
         fails("L3", |t| {
-            edit_trap(t, "fn sync(a", "fn h(f: &dyn Fn()) {}\nfn sync(a")
+            edit_trap(
+                t,
+                "fn do_el0_sync(a",
+                "fn h(f: &dyn Fn()) {}\nfn do_el0_sync(a",
+            )
         });
         fails("L3", |t| {
             edit_trap(
@@ -1025,6 +1238,81 @@ mod tests {
                 "kernel::trap::leave()",
                 "{ kernel::trap::install(x); kernel::trap::leave() }",
             )
+        });
+    }
+
+    /// The review's holes: a call through a type's path or an alias, a function of
+    /// kernel::trap that is not its own, a macro, the lock's destinations and completeness, an
+    /// extra call in an EL0 handler.
+    #[test]
+    fn the_reviews_holes() {
+        // (a)
+        fails("E5/L1", |t| {
+            edit_trap(t, "kernel::trap::begin(a)", "Arrival::begin(a)")
+        });
+        fails("E5", |t| {
+            edit_trap(
+                t,
+                "use hal::cpu::usertrap::UserExit;",
+                "use hal::cpu::usertrap::UserExit;\nuse hal::arch::arm64::usertrap::Arrival as A;",
+            )
+        });
+        // (b)
+        fails("E5/L1", |t| {
+            edit_trap(t, "kernel::trap::leave()", "kernel::trap::hidden()")
+        });
+        fails("E5", |t| {
+            let s = t.get_mut("sys/kernel/trap.rs").unwrap();
+            s.push_str("pub use crate::sig::sigexit;\n");
+        });
+        // (c)
+        fails("E5", |t| {
+            edit_trap(
+                t,
+                "kernel::trap::leave()",
+                "{ boom!(); kernel::trap::leave() }",
+            )
+        });
+        fails("E5", |t| {
+            edit_trap(
+                t,
+                "const _:",
+                "#[macro_use]\nextern crate kernel;\nconst _:",
+            )
+        });
+        // (d)
+        fails("L2", |t| {
+            edit_trap(t, "EXCP_BRK => kernel::trap::breakpoint(t, s), ", "")
+        });
+        fails("L2", |t| {
+            edit_trap(
+                t,
+                "EXCP_SVC => abi::arch::current::svc(&kernel::trap::svc(t))",
+                "EXCP_SVC => kernel::trap::undefined(t, s)",
+            )
+        });
+        fails("L2", |t| {
+            edit_trap(
+                t,
+                "kernel::trap::udata_abort(t, s, true)",
+                "kernel::trap::udata_abort(t, s, false)",
+            )
+        });
+        fails("L2", |t| {
+            edit_trap(
+                t,
+                "UserVector::Fiq => { a.fiq(); kernel::trap::exit() } ",
+                "",
+            )
+        });
+        // (e)
+        fails("H8", |t| {
+            let s = t.get_mut("sys/hal/arch/arm64/exception.S").unwrap();
+            *s = s.replacen(
+                "\tbl\tentry_user_trap\n",
+                "\tbl\tentry_user_trap\n\tbl\t{AST}\n",
+                1,
+            );
         });
     }
 
