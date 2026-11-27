@@ -1606,10 +1606,19 @@ smoke-nvme: (build-amd64 "--features qemu") build-init-amd64 (build-arm64 "--fea
 # ich9-ahci as the first device on its PCI bus (pciecam, device tree; pci0 dev 1) with the
 # disk on port 0; it interrupts by MSI through the GICv2m frame (ampintcmsi). The virtio-mmio
 # disks attach before the PCI bus, so the persistent disk is sd0, the boot image sd1 and the
-# root sd2 (`nvme-root --root-dev sd2a`). Part of `smoke`.
+# root sd2 (`nvme-root --root-dev sd2a`). Since the removal of Limine (2026-11-26, the user's
+# choice for this recipe) arm64's AHCI disk is a DATA disk: the boot is efiboot's from the
+# shared tree image on virtio (`--image tree`, sd1, the root by its DUID, `--expect-root`),
+# because EDK2 maps no disk on ich9-ahci and the kernel has no `root device:` prompt for
+# `boot -a` (setroot's RB_ASKNAME dialogue is LZ's gap, `unported: setroot: RB_ASKNAME
+# prompts (getsn)`, sys/kernel/dev/disk.rs). The session mounts the AHCI disk's `a` (still
+# sd2 on port 0, its own DUID) on /mnt and does there what it did on the root: the file
+# written and read back, the 8 MiB file through the buffer cache, the raw I/O, `vmstat -i`.
+# A root on AHCI is no longer tested on arm64; the recipe returns to one through `boot -a`
+# and `root device: sd2a` when LZ ports the prompt. Part of `smoke`.
 ahci_duid := "41484349524f4f54"
 
-smoke-ahci: (build-amd64 "--features qemu") build-init-amd64 (build-arm64 "--features qemu") build-init-arm64
+smoke-ahci: (build-amd64 "--features qemu") build-init-amd64 (build-arm64 "--features qemu") build-init-arm64 efiboot-images-arm64
     @test {{ramdisks}} || \
         { echo "smoke-ahci: no ramdisk image; run just userland first"; exit 1; }
     {{no_amd64}}{{xtask}} nvme-root --arch amd64 --duid {{ahci_duid}} --out ahci-amd64.img --root-dev sd2a
@@ -1635,12 +1644,12 @@ smoke-ahci: (build-amd64 "--features qemu") build-init-amd64 (build-arm64 "--fea
         --expect "524288 bytes transferred" --expect "4194304 bytes transferred" \
         --expect "m13-ahci-raw-42" --expect "/ahci0" --reject "mount -uw / failed"
     {{xtask}} nvme-root --arch arm64 --duid {{ahci_duid}} --out ahci-arm64.img --root-dev sd2a
-    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --ramdisk none --expect-ramdisk \
-        --ahci ahci-arm64.img --cmdline "bootduid={{ahci_duid}}" --until-seen \
+    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --image tree --expect-root \
+        --ahci ahci-arm64.img --until-seen \
         {{disk_login}} \
-        --send-after '# ' --send 'mount\n' \
-        --send-after '# ' --send 'echo m13-ahci-$((40+2)) >/m13ahci.txt && cat /m13ahci.txt\n' \
-        --send-after '# ' --send 'dd if=/dev/zero of=/big bs=64k count=128 && dd if=/big of=/dev/null bs=64k && rm /big\n' \
+        --send-after '# ' --send 'mount /dev/sd2a /mnt && mount\n' \
+        --send-after '# ' --send 'echo m13-ahci-$((40+2)) >/mnt/m13ahci.txt && cat /mnt/m13ahci.txt\n' \
+        --send-after '# ' --send 'dd if=/dev/zero of=/mnt/big bs=64k count=128 && dd if=/mnt/big of=/dev/null bs=64k && rm /mnt/big\n' \
         --send-after '# ' --send 'dd if=/dev/zero of=/dev/rsd2c bs=64k seek=1010 count=8 && dd if=/dev/rsd2c of=/dev/null bs=64k count=64\n' \
         --send-after '# ' --send 'echo m13-ahci-raw-$((40+2)) | dd of=/dev/rsd2c bs=512 seek=130000 conv=sync 2>/dev/null; dd if=/dev/rsd2c bs=512 skip=130000 count=1 2>/dev/null\n' \
         --send-after '# ' --send 'vmstat -i\n' \
@@ -1648,8 +1657,7 @@ smoke-ahci: (build-amd64 "--features qemu") build-init-amd64 (build-arm64 "--fea
         --expect ", AHCI 1.0" --expect "ahci0: port 0: 1.5Gb/s" \
         --expect "scsibus2 at ahci0: 32 targets" \
         --expect "sd2 at scsibus2 targ 0 lun 0: <ATA, QEMU HARDDISK, 2.5+> t10.ATA_QEMU_HARDDISK_QM00001_" \
-        --expect "root on sd2a ({{ahci_duid}}.a) swap on sd2b dump on sd2b" \
-        --expect "rc: multi-user" --expect "/dev/sd2a on / type ffs (local)" \
+        --expect "rc: multi-user" --expect "/dev/sd2a on /mnt type ffs (local)" \
         --expect "m13-ahci-42" --expect "8388608 bytes transferred" \
         --expect "524288 bytes transferred" --expect "4194304 bytes transferred" \
         --expect "m13-ahci-raw-42" --expect "/ahci0" --reject "mount -uw / failed"
