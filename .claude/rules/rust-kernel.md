@@ -62,8 +62,7 @@ paths:
 - Dependencies allowed in `sys/`: `libkern`, `libz`, `sysdefs` (our own leaf crate, decision 54), `bitflags`; dev-only `proptest`. The boot
   loaders' crates (M14) may also use `libsa`, `boot` and `efi` (ours, OpenBSD code); the kernel
   does not depend on them. Lists and trees
-  are our own (`sys/bsd/sys/queue.rs`, `sys/bsd/sys/tree.rs`), not `intrusive-collections`. Not allowed: `limine` (0.6+ is nightly-only, 0.5 is frozen at base revision 3; the
-  protocol structs are written in `sys/bsd/stand/limine.rs` from the spec), `x86_64`, `aarch64-cpu`,
+  are our own (`sys/bsd/sys/queue.rs`, `sys/bsd/sys/tree.rs`), not `intrusive-collections`. Not allowed: `limine` (Limine itself is gone, decision 57), `x86_64`, `aarch64-cpu`,
   `spin`, `uart_16550`, `fdt`, `linked_list_allocator`, `buddy_system_allocator`, or any crate that
   replaces code OpenBSD has. Porting that code is the project.
 - Every `pub` item has a doc comment (`missing_docs` is warn; `just clippy` uses `-D warnings`).

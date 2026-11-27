@@ -3,7 +3,7 @@
 **Status: decided, not implemented.** Written on 2026-11-26 at the user's request. After the
 survey and the plan, the user took decision 56 and the plan's ten points as recommended the
 same day (section 10). It amends decision 20 ("`hal` is the only crate with `unsafe`"). No
-code is written yet: the work runs after the removal of Limine, in the slices of section 11,
+code is written yet: the work runs after the removal of Limine (decision 57, done), in the slices of section 11,
 and until it lands the tree is as section 1 describes (`main` at `c4bb056d`, arm64, decision
 44). Nothing here changes what userland sees.
 
@@ -546,7 +546,7 @@ does not reach `bsd`'s table (it does, until N9).
 ## 11. Steps
 
 1. Survey: done. 2. Plan: done. 3. The user's decisions: taken (section 10).
-4. Implementation, after the removal of Limine and never beside the interrupt controller
+4. Implementation, after the removal of Limine (done, decision 57) and never beside the interrupt controller
    slices (N7.2a2/a3), in four slices: the coverage and the bench row; the way out (the exit
    gate, `kernel::trap`, the child's value, `exec`'s registers); the crate (the vectors, the
    classification, `abi` registering nothing, `entry-check`); the documents and the rules.

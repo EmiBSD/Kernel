@@ -12,7 +12,8 @@ always before an `N` milestone is marked met. LZ is read, never written.
      adapted module: conflicts expected at its call sites, resolved by hand) or `reimplemented`
      (a redesigned module: the change re-expressed in its new shape);
    - `not-applicable`, with the reason (nothing native derives from it, or the path does not
-     exist here);
+     exist here; since decision 57 (Limine removed) an LZ commit on `sys/stand/{mod,limine,fdtfb}.rs`
+     or `limine.conf` is `not-applicable`, while one on `sys/stand/bootarg.rs` still applies);
    - `covered-by-redesign`, with the test or the type that proves it;
    - `deferred-to-N10` (decision 44), for a commit that touches only frozen amd64 files and does
      not cherry-pick cleanly; one that does is `applied` by `cherry-pick` without compiling,

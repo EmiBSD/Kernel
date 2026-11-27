@@ -2,7 +2,7 @@
 
 An operating system in Rust, derived from LandingZone (LZ, formerly EmiBSD.LZ; `lz/PINNED.md`),
 the faithful file-by-file port of the OpenBSD kernel: a standalone `#![no_std]` kernel for amd64 and arm64, booted by its
-own boot(8)/efiboot or by Limine, running in QEMU, with OpenBSD's own userland unmodified.
+own boot(8)/efiboot (decision 57: Limine is gone; amd64 boots again at N10), running in QEMU, with OpenBSD's own userland unmodified.
 OpenBSD's behaviour is the specification; LZ's shape is the starting point. What userland sees
 never changes; the inside may: this repository, `EmiBSD/Kernel`, redesigns; LZ ports. `docs/PHASE2.md` is the
 process.
@@ -67,7 +67,7 @@ sys/                         six purpose directories (the user's layout of 2026-
   lib/sysdefs/               crate `sysdefs`: OpenBSD's basic types, constants and #[repr(C)] ABI structures, the data under every layer (decision 54); forbid, no logic
                              the three leaf crates are grouped by purpose, root = lib.rs only (hal-check L1): sysdefs base/proc/sig/time/vm/file/fs/dev/net/netinet/netinet6, libkern string/mem/hash/rand, libz base/deflate/inflate/check
   bsd/                       package `bsd`: the LZ tree, legacy, replaced subsystem by subsystem, deleted at N9; LZ's sys/<x> is sys/bsd/<x>
-    kern/ uvm/ dev/ net/ ... LZ's subsystems, still the kernel that boots while they move out; stand/ is the kernel binary's boot entry (Limine, boot(8))
+    kern/ uvm/ dev/ net/ ... LZ's subsystems, still the kernel that boots while they move out; stand/ is the kernel binary's boot entry (boot(8)'s bootarg)
   boot/                      the boot loaders, separate binaries outside the zero-unsafe plan: libsa/ efi/ loader/ (boot(8)) arm64/ amd64/ (efiboot, with amd64's libsa files)
                              (LZ's sys/lib/libsa, sys/stand/{efi,boot}, sys/arch/<arch>/stand/*; libsa is the exception to decision 55)
 tools/xtask/                 host tooling: `cargo xtask {image,qemu,smoke,lz,unsafe-report,diff-openbsd,...}`

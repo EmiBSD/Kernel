@@ -50,7 +50,7 @@
 //! **The view.** [`view`] is the only place a frame becomes a Rust reference: atomics at the
 //! frame's direct-map address, after `trust::check_frame` placed the whole page inside the
 //! direct map the boot glue described (`BootstrapParams`). OpenBSD's arm64 has no direct map;
-//! LZ's (Limine's HHDM, or `locore0.S`'s `DIRECT_BASE`) stands in for it (the backend's
+//! LZ's (`locore0.S`'s `DIRECT_BASE`, since Limine's HHDM went) stands in for it (the backend's
 //! deviations), so this check is the one amd64's view makes. The frames viewed are vp table
 //! pages, the kernel's pages of `pte_desc`s, and the frames the pmap is asked to zero, copy or
 //! sync (the trust of `PhysPages` and of the caller's `Paddr`). A table is viewed only while

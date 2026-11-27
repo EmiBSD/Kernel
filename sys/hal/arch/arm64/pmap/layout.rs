@@ -251,8 +251,8 @@ pub enum AsidWidth {
     Bits16,
     /// 8 bits: what the CPU implements.
     Bits8,
-    /// 8 bits: the CPU has 16, but the boot loader left `TCR_EL1.AS` clear (Limine does not
-    /// promise it; the C's `locore.S` sets it, as boot(8)'s path does here), so the TLB tags
+    /// 8 bits: the CPU has 16, but the boot loader left `TCR_EL1.AS` clear (a loader need not
+    /// promise it; the C's `locore.S` sets it, as the kernel's entry code does here), so the TLB tags
     /// with 8 and a 16-bit ASID would alias.
     Bits8TcrAs,
 }

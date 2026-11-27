@@ -1,6 +1,6 @@
 # Setup (macOS, Apple Silicon)
 
-Verified 2026-10-02 on Darwin 25.6 with Homebrew. Linux users: `rustup`, `qemu`, `limine`, `just`
+Verified 2026-10-02 on Darwin 25.6 with Homebrew. Linux users: `rustup`, `qemu`, `just`
 from your distribution; the rest is identical.
 
 ## The compiler is EmiBSD's own (decision 49)
@@ -22,7 +22,7 @@ Steps 1 to 4 below are from before the switch and are no longer needed for the k
    ```
 2. Install the tools:
    ```sh
-   brew install rustup qemu limine just
+   brew install rustup qemu just
    brew install x86_64-elf-gdb aarch64-elf-gdb   # optional, for `just gdb-*` later
    ```
 3. Put rustup and cargo on `PATH`. Add to `~/.zshrc`, then open a new shell:
@@ -43,7 +43,6 @@ Steps 1 to 4 below are from before the switch and are no longer needed for the k
 just rust-bin                      # ~/devel/emibsd/toolchains/rust-<pin>-aarch64-apple-darwin-arm64/bin
 just cargo --version               # cargo <version> (EmiBSD DevTools)
 ls "$(brew --prefix qemu)/share/qemu/"edk2-{x86_64,aarch64}-code.fd
-ls "$(brew --prefix limine)/share/limine/"BOOT{X64,AA64}.EFI
 just cargo check && just test      # host build of bsd + libkern
 just cargo check -p bsd --target aarch64-emibsd-none-softfloat --features qemu
 just smoke                         # after milestone M0
@@ -70,8 +69,9 @@ over the whole workspace (33 crates): the index in 6 s, the inference of every b
 ## What `just` expects
 
 - `qemu-system-x86_64`, `qemu-system-aarch64` on `PATH`.
-- EDK2 firmware and Limine binaries located via `brew --prefix qemu` / `brew --prefix limine`
-  at runtime by `xtask` (no hardcoded paths).
+- EDK2 firmware located via `brew --prefix qemu` at runtime by `xtask` (no hardcoded paths).
+  The `limine` formula is no longer needed (decision 57); `brew uninstall limine` is yours
+  to run whenever you like, nothing looks for it.
 - `EMIBSD_ARCHS` (decision 44): the archs built and booted, `arm64` by default; an amd64 boot
   is logged `SKIPPED (decision 44)`, never counted as a pass.
 - From N10, `EMIBSD_ARCHS=amd64,arm64 just <recipe>` (or `just archs=amd64,arm64 <recipe>`)

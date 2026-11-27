@@ -5,7 +5,7 @@ Why the tree looks the way it does. Read when changing structure, not every sess
 ## Goal
 
 Re-implement the OpenBSD kernel in Rust, file by file, preserving OpenBSD's structure, names and
-semantics, as a standalone `#![no_std]` kernel for amd64 and arm64, booted by Limine, run in QEMU.
+semantics, as a standalone `#![no_std]` kernel for amd64 and arm64, booted by boot(8)'s efiboot, run in QEMU.
 The C tree under `reference/openbsd-src/sys` is the specification.
 
 ## Vocabulary
@@ -69,9 +69,9 @@ whole LZ tree, legacy, deleted at N9; and `boot/`, the boot loaders, separate bi
 the zero-unsafe plan: `libsa/`, `efi/`, `loader/` (boot(8)), `arm64/` and `amd64/` (the efiboot crates, amd64's with
 its three libsa files; frozen, decision 44). Package names did not change but `boot`, now `loader`
 (`bsd`, `libsa`, `efi`, `efiboot-arm64`, `efiboot-amd64`), nor did any module path. `bsd/stand/` is not
-a loader: it is the kernel binary's own boot entry (`bsd`'s `mod stand`: Limine's `_start` and
-boot(8)'s `bootarg_main`), and stays counted with the loaders by `unsafe-report`, as before the
-move. `init/` stays at the root.
+a loader: it is the kernel binary's own boot entry (`bsd`'s `mod stand`: boot(8)'s `bootarg_main` and `start_kernel`; `mod.rs` and `bootarg.rs`
+are all that is left), and `unsafe-report` counts it with `bsd` since decision 57, because it is
+compiled into the kernel image. `init/` stays at the root.
 
 LZ's tree is flat (`sys/kern/`, `sys/lib/libsa/`, `sys/stand/`, `sys/arch/<arch>/stand/`), and
 every LZ path in this repository is LZ's: `lineage.toml`'s `lz` lists and fn rows, the
@@ -173,7 +173,7 @@ implement them. Each is a row of `bridges.toml`; `lz check` counts them.
 | `sys/arch/amd64/include/pte.h` | `sys/bsd/arch/amd64/include/pte.rs` |
 | `sys/lib/libkern/strlcpy.c` | `sys/lib/libkern/strlcpy.rs` |
 | `sys/net/if.h`, `sys/netinet/in.h` (Rust keywords) | `sys/bsd/net/if_.rs`, `sys/bsd/netinet/in_.rs` (`docs/C_TO_RUST.md`) |
-| `sys/arch/*/stand/`, `boot(8)`, `efiboot` | `sys/bsd/stand/` (Limine glue) until M14, when the user decided (2026-10-03) to port `boot(8)`/`efiboot` and `sys/lib/libsa/` (all of them in `sys/boot/` since 2026-11-26); Limine is scaffolding until `boot(8)` boots the same kernel in QEMU |
+| `sys/arch/*/stand/`, `boot(8)`, `efiboot` | `sys/boot/` (the loaders, ported at M14 by the user's decision of 2026-10-03; all of them in `sys/boot/` since 2026-11-26) and `sys/bsd/stand/` (the kernel's own entry from them: `bootarg.rs`). Limine, the stand-in used until M14, was removed (decision 57) |
 | `sys/conf/`, `config(8)`, Makefiles, `newvers.sh` | Cargo features and `tools/xtask`; `ioconf.c` is `sys/bsd/arch/<arch>/conf/ioconf.rs`, by hand (M7b); the `vers.c` that `newvers.sh` generates is `sys/bsd/conf/vers.rs`, fed by `sys/bsd/build.rs` ("The system's identity", below); not ported |
 
 Types live where the **header** is; functions live where the **`.c`** is. Rust allows inherent
@@ -264,22 +264,29 @@ Three implementors:
 
 ## Boot flow
 
-Limine (UEFI, both archs) → `_start` in `sys/stand/mod.rs` (protocol structs in
-`sys/stand/limine.rs`) → `machine::BootInfo` (bootloader-neutral: memory map, HHDM offset, kernel
-load addresses, DTB/RSDP pointers, the UEFI system table and memory map (efiboot's
-`openbsd,uefi-*` properties), command line; it lives in `sys/machine/bootinfo.rs` so the
-machine traits can name it) → `boothowto` from the command line (`BootInfo::boothowto`, the
-`boot(8)` letters `-a -c -d -s` as arm64's `initarm` parses them) →
+OpenBSD's `boot(8)` on every medium; on arm64 (the only arch built until N10, decision 44)
+QEMU -> EDK2 -> `BOOTAA64.EFI` (`sys/boot/arm64/efiboot`, OpenBSD's efiboot) -> `/bsd` read
+from the FFS root of the boot disk -> `locore0.S`'s `_start` (MMU on, an identity map, `x0` the
+end of the symbols, `x2` the device tree) -> `bootarg_main` in `sys/bsd/stand/bootarg.rs` ->
+`machine::BootInfo` (memory map, direct map offset, kernel load addresses, DTB/RSDP pointers,
+the UEFI system table and memory map (efiboot's `openbsd,uefi-*` properties), command line; it
+lives in `sys/bsd/machine/bootinfo.rs` so the machine traits can name it), filled by
+`Cpu::getbootinfo` -> `stand::start_kernel` -> `boothowto` and the boot DUID (`BootInfo::boothowto`,
+the `boot(8)` letters `-a -c -d -s` as `initarm` parses them) ->
 `machine::Machine::early_init(&BootInfo)` (OpenBSD's `init_x86_64` / `initarm` as far as they are
-ported: the message buffer, `consinit()`, and `db_enter()` for `boot -d`) → the `bsd: booted on`
-banner → `kern::init_main::main` (OpenBSD's `main()` in the C's order; every step whose subsystem
+ported: the message buffer, `consinit()`, and `db_enter()` for `boot -d`) -> the `bsd: booted on`
+banner -> `kern::init_main::main` (OpenBSD's `main()` in the C's order; every step whose subsystem
 is not here yet reports itself with `unported!`). Under feature `qemu`, `main` ends with the success
-exit where proc0 would go to sleep.
+exit where proc0 would go to sleep. The root is the boot disk's, found by the DUID efiboot
+passes (`setroot`); init is `/sbin/init` on it, exec'd through `check_exec` as in OpenBSD
+(decision 57: no boot module, no ramdisk module). amd64's `_start` is the same chain through
+`BOOTX64.EFI` and `locore0.S`'s 32-bit `start` (sections "The kernel's boot(8) entry"); it
+cannot be booted until N10's first step.
 
 A panic anywhere (`panic!` is `kern::subr_prf::panic` through the crate's panic handler) prints
-`panic: <message>` through `db_printf`, a frame-pointer stack trace (`db_stack_dump` →
+`panic: <message>` through `db_printf`, a frame-pointer stack trace (`db_stack_dump` ->
 `machine::DbMachdep::db_stack_trace_print`, addresses only; `cargo xtask symbolize --arch A` names
-them offline from the ELF symbol table) and reaches `reboot` → `machine::Cpu::boot`, which, cold,
+them offline from the ELF symbol table) and reaches `reboot` -> `machine::Cpu::boot`, which, cold,
 halts; under feature `qemu` the "press any key" wait is the failure exit (status 35).
 
 Leaving the machine goes through `machine::Exit`: under feature `qemu`, amd64 uses the
@@ -287,20 +294,29 @@ Leaving the machine goes through `machine::Exit`: under feature `qemu`, amd64 us
 status 33 for success and 35 for failure, which `xtask smoke` checks. Without the feature the CPU
 halts.
 
-At entry Limine (protocol base revision 6) guarantees: 64-bit mode, MMU on, kernel mapped at
-`0xffffffff80000000`, a higher-half direct map of physical memory (HHDM), a memory map, a stack of
-at least 64 KiB, interrupts masked, secondary CPUs parked. Limine's page tables live in
-bootloader-reclaimable memory, so the kernel owns its own `pmap` and trap vectors before reclaiming
-(M3/M4).
+What efiboot guarantees at entry is the C's contract (`reference/openbsd-src/sys/arch/arm64/stand/efiboot/exec_arm64.c`):
+the kernel loaded into a 64 MB block, the MMU on with an identity map, interrupts masked, the
+device tree and the EFI memory map in loader data. The kernel builds its own direct map and
+trap vectors (`locore0.S`, then `hal`'s pmap bootstrap) before reclaiming loader memory.
 
-Why Limine: it is the only option with an identical boot contract on amd64 and aarch64, which keeps
-the arch split focused on real kernel work (traps, pmap, interrupts). OpenBSD also keeps the
-bootloader separate from the kernel, so this is faithful in spirit. `bootloader` (crate) is
-x86_64-only; QEMU `-kernel` raw loading on `virt` would mean two unrelated early-boot paths.
+### Why Limine, and why it went (history)
 
-The protocol is specified in https://github.com/limine-bootloader/limine-protocol (`PROTOCOL.md`,
-`include/limine.h`); `sys/stand/limine.rs` implements the subset the kernel asks for, at base
-revision 6, with no crate in between (see "Dependencies").
+Limine (UEFI, both archs, protocol base revision 6) booted the kernel from M1 to the N7 removal
+(decision 57, the user, 2026-11-26). It was chosen because it was the only option with an
+identical boot contract on amd64 and aarch64 (64-bit mode, MMU on, a higher-half kernel and a
+direct map, a memory map, secondary CPUs parked), so the arch split could focus on real kernel
+work (traps, pmap, interrupts) before `boot(8)` was ported. `bootloader` (crate) is x86_64-only
+and QEMU `-kernel` raw loading on `virt` would have meant two unrelated early-boot paths. The
+`limine` crate was never used (0.6+ needs nightly, 0.5 is frozen at base revision 3); the
+protocol was about twenty `#[repr(C)]` structs written from its `PROTOCOL.md`.
+
+It went because every smoke and `dist-arm64` booted a path that OpenBSD never runs: its own
+modules (`init`, the ramdisk), its command line words, its MP request and its frame buffer
+response, none of them in the C, and a second loader to keep correct. Since M14 efiboot boots
+the same kernel, so keeping both would have meant two boot contracts for nothing. Rejected:
+keeping Limine for amd64 until N10 (a second builder kept alive for a frozen arch) and keeping
+both on arm64. Consequence: amd64 has no way to boot until N10's first step (decision 44);
+`docs/ROADMAP.md` lists what that step converts.
 
 ## Toolchain and targets
 
@@ -331,12 +347,11 @@ and `#[unsafe(link_section)]` are stable; `core` and `alloc` ship precompiled fo
 `sys/arch/<arch>/conf/kernel.ld` (arm64: base `0xffffffff80000000` with physical addresses
 from 0 and the entry at `_start`'s offset, from M14; amd64: OpenBSD's layout from
 M14, `KERNTEXTOFF` with physical addresses from `0x1000000`, "Boot loaders"),
-`PHDRS` text/rodata/data, Limine request sections kept, `.eh_frame`/`.note` discarded.
+`PHDRS` text/rodata/data, `.eh_frame`/`.note` discarded.
 M16d: both scripts add OpenBSD's `openbsd_randomize` header (`PT_OPENBSD_RANDOMIZE`) over
 `.openbsd.randomdata`, page-aligned inside the rodata segment, which boot(8)'s loadfile fills
-with its seed (`dev/rnd.c`'s `entropy_pool0`/`rs_buf0`, `__guard_local`); Limine fills nothing
-there, so a Limine boot starts the generator from a zero seed and says so (`random_start`'s
-"warning: no entropy supplied by boot loader", the boot glue's `unported:` line). arm64's
+with its seed (`dev/rnd.c`'s `entropy_pool0`/`rs_buf0`, `__guard_local`); under Limine, which
+filled nothing there, the generator started from a zero seed (history, decision 57). arm64's
 script provides `etext` too.
 `sys/build.rs` passes it with `cargo:rustc-link-arg-bins` only when `target_os = "none"`.
 
@@ -351,7 +366,7 @@ until N9), linked into the kernel (decision 47).
 
 The ABI crate is linked into the kernel image (decision 47, docs/ZERO_UNSAFE.md 0.1). From N2.4
 to the N5 close it was the loadable module of decision 22: a separate ELF on every boot medium,
-read by boot(8) or handed over by Limine, placed, relocated and mapped by `hal`'s loader in a
+read by boot(8) or handed over by Limine (history), placed, relocated and mapped by `hal`'s loader in a
 window beside the image (decision 37), with the `Legacy` fallback of decision 29 when it was
 missing; decision 47 records what went with it. The pieces now:
 
@@ -457,7 +472,7 @@ headers (`fdreg.h`, `nec765reg.h`) compile everywhere with their host tests.
 
 | Crate | Where | Why it is not OpenBSD code |
 |---|---|---|
-| (none for Limine) | `sys/stand/limine.rs` | the `limine` crate was dropped: 0.6+ needs nightly (`ptr_metadata`), 0.5 is stable but frozen at base revision 3, which Limine has already tried to drop once. The protocol is about twenty `#[repr(C)]` structs; they are written from `PROTOCOL.md` |
+| (none for Limine) | (history: `sys/stand/limine.rs`, deleted by decision 57) | the `limine` crate was dropped: 0.6+ needs nightly (`ptr_metadata`), 0.5 is stable but frozen at base revision 3. The protocol was about twenty `#[repr(C)]` structs written from `PROTOCOL.md` |
 | `bitflags` | `sys/` | typed flag sets for `#define` groups; a macro, no runtime |
 | (none for lists and trees) | `sys/sys/queue.rs`, `sys/sys/tree.rs` | `intrusive-collections` was dropped at M1: the OpenBSD macros are short, their semantics are the project's to keep, and a crate's policy changes would bind us as the `limine` crate's did |
 | `libsa`, `loader` (was `boot`), `efi` | `sys/lib/libsa`, `sys/stand/boot`, `sys/stand/efi` | not crates.io crates: OpenBSD code ported here (M14), split into crates as OpenBSD builds libsa as a library and compiles `sys/stand/boot` into every boot program; the boot loaders (`sys/arch/amd64/stand/efiboot`, package `efiboot-amd64`) depend on them, the kernel does not. `libsa` dev-depends on `bsd` for the host tests that pin its header layouts to the kernel's |
@@ -851,7 +866,7 @@ are compiled in under the C names, `ROOTBYTES` is `$EMIBSD_MINIROOTSIZE` sectors
 justfile's `miniroot_sectors`, 65536 = 32 MiB, the miniroot is padded to it so one kernel
 serves every run), and `rdattach` roots on `rd0a` itself. `cargo xtask rdsetroot`
 (`rdsetroot.rs`) is `usr.sbin/rdsetroot` over our ELF; `bsd.rd` is that kernel with its debug
-information stripped. Deviation: the Limine module `ramdisk.ffs` path stays and wins. The
+information stripped. (The Limine module `ramdisk.ffs` path that used to win went with decision 57.) The
 kernel is built in `target/bsdrd` (in `smoke-build` only).
 
 **The miniroot** (`userland/miniroot.rs`) is built from the arch's list
@@ -896,7 +911,7 @@ firmware, httpd/nsd/unbound files, the BIOS boot programs and the programs and l
 **The install run** (`install.rs`): a fresh 3 GiB disk is `sd0` (the install media's own disk
 is `sd1`; on arm64 `virt` the virtio-mmio slots are probed top-down, so the disk QEMU is
 given last is `sd0` there too). `bsd.rd` is booted by our efiboot (`BOOTX64.EFI`,
-`BOOTAA64.EFI`) from a disk laid out as OpenBSD's `miniroot80.img` (`efiboot-disk`: the
+`BOOTAA64.EFI`) from a disk laid out as OpenBSD's `miniroot80.img` (`cargo xtask efiboot-image`: the
 OpenBSD partition's FFS holding `/bsd`, which is `bsd.rd`, and the EFI system partition; the
 run answers `boot> `). Its ramdisk holds
 `/auto_install.conf` (autoinstall(8): `.profile` starts the install after five seconds when
@@ -1077,7 +1092,7 @@ reason:
   flags never rebuilds the kernel. `build.rs` passes the script, `-Bsymbolic`,
   `--pack-dyn-relocs=none` (efiboot's `LDFLAGS`) and `-z norelro` (one `.data`).
 - `just smoke-efiboot` boots it under OVMF from a disk laid out as OpenBSD installs one
-  (`cargo xtask efiboot-disk`: an MBR with the OpenBSD partition, its disklabel and an FFS
+  (`cargo xtask efiboot-image`: an MBR with the OpenBSD partition, its disklabel and an FFS
   holding `/bsd`, made by OpenBSD's makefs; and the EFI system partition holding
   `EFI/BOOT/BOOTX64.EFI`), types at `boot>` and stops once efiboot has loaded the kernel
   and boots the kernel to `login:` (next section).
@@ -1106,29 +1121,28 @@ output `target/efiboot/arm64/BOOTAA64.EFI`, which `installboot` copies from `/us
 
 ### The kernel's boot(8) entry (amd64, M14 track A2)
 
-The same kernel ELF boots from Limine and from efiboot (the user's decision: Limine retires
-only once boot(8) boots the kernel in QEMU).
+The kernel ELF boots from efiboot (Limine, which booted it too until decision 57, is gone;
+amd64 is not booted before N10).
 
 - Link: amd64's `kernel.ld` is OpenBSD's layout (`conf/ld.script`): linked at
   `KERNTEXTOFF` (`0xffffffff81000000`), physical addresses from `0x1000000` (`AT()`), so
   efiboot's `paddr & 0xfffffff` move puts the image where `locore0.S` expects it; the ELF
-  entry is `locore0.S`'s 32-bit `start`. Limine ignores the physical addresses and enters
-  `_start` through its entry point request (`sys/stand/mod.rs`). `.got` is kept in `.data`:
+  entry is `locore0.S`'s 32-bit `start`. `.got` is kept in `.data`:
   nothing may follow `end`, where `locore0.S` puts its tables. arm64's `kernel.ld` has its
   own layout (next section).
 - `sys/arch/amd64/amd64/locore0.S` (`global_asm!`, AT&T, `const`/`sym` placeholders for
   `assym.h`): saves boot(8)'s arguments, copies the `bootarg` list into `bootinfo[]`, probes
   the CPU, builds the bootstrap page tables (the kernel at `KERNBASE`, the first 4 GB of the
   direct map at `PDIR_SLOT_DIRECT`, the recursive slot), enters long mode and calls
-  `bootarg_main` in `sys/stand/bootarg.rs` on a 64 KiB `.bss` boot stack, where the C calls
+  `bootarg_main` in `sys/bsd/stand/bootarg.rs` on a 64 KiB `.bss` boot stack, where the C calls
   `init_x86_64` and `main`.
-- The glue: `sys/stand/bootarg.rs` beside `limine.rs`, both ending in `stand::start_kernel`
+- The glue: `sys/bsd/stand/bootarg.rs`, ending in `stand::start_kernel`
   (boothowto, DUID, `early_init`, the banner, `main`). The facts come from a machine trait
   method, `Cpu::getbootinfo` (amd64's `machdep.c` `getbootinfo` with the boot(8) half of
   `init_x86_64`; arm64 and host return an error until track A3), so `stand` names no arch
   module. `BootInfo` gained `howto` and `duid`, boot(8)'s own `boothowto` and
   `BOOTARG_BOOTDUID`.
-- Processors: under Limine its MP request; after boot(8) the MADT's enabled LAPIC entries
+- Processors: the MADT's enabled LAPIC entries
   (`cpu.rs` `mp_madt_cpus`, standing for acpimadt0, which is not ported) and the C's start:
   `map_tramps` copies `mptramp.S` to `MP_TRAMPOLINE`, `pmap_prealloc_lowmem_ptps` maps the
   low 2 MB in the kernel pmap, `mp_cpu_start` sends INIT and two STARTUP IPIs.
@@ -1138,24 +1152,22 @@ only once boot(8) boots the kernel in QEMU).
 
 ### The kernel's boot(8) entry (arm64, M14 track A3)
 
-The same arm64 kernel ELF boots from Limine and from arm64's efiboot.
+The arm64 kernel ELF boots from arm64's efiboot (and, until decision 57, from Limine).
 
-- Link: `conf/kernel.ld` keeps the image at `0xffffffff80000000` (Limine's higher half,
-  which `arm64/pmap.rs` adopts) and gives it physical addresses from 0 (`AT()`): efiboot's
+- Link: `conf/kernel.ld` keeps the image at `0xffffffff80000000` (the higher half
+  `hal`'s pmap adopts) and gives it physical addresses from 0 (`AT()`): efiboot's
   `LOADADDR` keeps the low 39 bits of an address and adds its 64 MB block's
   (`efi_loadaddr`), which puts the image at the block's start. The ELF entry is
   `__start_phys`, the offset of `locore0.S`'s `_start` in the image, because `e_entry` goes
   through `LOADADDR` too; `_start` is first in `.text` (`.text.locore0`), so efiboot's
   cache clean from the entry to the end of the symbols covers the whole image. `locore0.S`
-  zeroes `__bss_start`..`_end`, and `locore.S`'s `esym` starts at `end`. Limine ignores the
-  physical addresses and enters the boot glue's `_start` through its entry point request
-  (that function is not `#[no_mangle]`: the symbol `_start` is OpenBSD's).
+  zeroes `__bss_start`..`_end`, and `locore.S`'s `esym` starts at `end`.
 - `sys/arch/arm64/arm64/locore0.S` (with the boot half of `locore.S`: `drop_to_el1`,
   `get_virt_delta`, `start_mmu`, the page tables, `initstack`): efiboot enters with the MMU
   on and an identity map, `x0` its end of the symbols, `x2` the device tree. `_start` drops
-  to EL1, turns the MMU off and builds what the kernel otherwise gets from Limine: a
+  to EL1, turns the MMU off and builds the kernel's own tables: a
   four-level `TTBR1_EL1` (`T1SZ` 16) with the 64 MB block at the link address by 2 MB
-  blocks and a direct map at `0xffff000000000000` (Limine's offset) by 1 GB blocks, and an
+  blocks and a direct map at `0xffff000000000000` by 1 GB blocks, and an
   identity map of the block in `TTBR0_EL1`; `MAIR_EL1` in this kernel's layout
   (`include/pte.rs`); then it jumps high, zeroes the BSS and calls `bootarg_main` on a
   64 KiB stack with the `arm64_bootparams` (`include/bootconfig.rs`).
@@ -1167,7 +1179,7 @@ The same arm64 kernel ELF boots from Limine and from arm64's efiboot.
   whose part after the symbols is usable). It maps those gigabytes in the direct map before
   handing them over; the device tree and the EFI map are read in place (loader data, never
   given to uvm).
-- Processors: under Limine its MP request; after boot(8) the `/cpus` nodes and psci(4)'s
+- Processors: the `/cpus` nodes and psci(4)'s
   `psci_cpu_on` (`dev/fdt/psci.rs`, `hvc` on QEMU) at `locore.S`'s `cpu_hatch_secondary` with the
   `cpu_info` as context: it brings the MMU up on the identity map and the kernel's
   `TTBR1_EL1` (`cpu.rs`'s `AP_TTBR1`, cleaned to memory first) and enters
@@ -1194,57 +1206,33 @@ The same arm64 kernel ELF boots from Limine and from arm64's efiboot.
 - One kernel is both `bsd` and `bsd.rd` (M8). OpenBSD builds GENERIC (`config bsd swap
   generic`, `swapgeneric.c`) and RAMDISK (`config bsd root on rd0a swap on rd0b`, with
   `rd(4)` and its image) and boot(8) loads one. Here `sys/conf/swapgeneric.rs` holds the
-  generic values, and when Limine hands over `ramdisk.ffs` the boot glue (`sys/stand`)
-  installs it in `rd(4)` and switches the root configuration to RAMDISK's
-  (`swapconf_rdroot`) before `main`: `diskconf` (each machine's, no boot device under
-  Limine) then runs `setroot`, which prints `root on rd0a swap on rd0b dump on rd0b`, and
-  `dk_mountroot` mounts ffs from `rd0a`; `start_init` execs `/sbin/init` from it. Without a
-  ramdisk the kernel stays generic and, having no boot device to ask about (`setroot`'s
-  `RB_ASKNAME` prompt is not ported), says it cannot mount root and runs its init boot
-  module (the Rust self-test).
+  generic values and the kernel stays generic: since decision 57 the smokes boot it from a
+  disk root (an FFS `a` partition on the efiboot disk, found by the DUID efiboot passes), as an
+  installed OpenBSD does, and `start_init` execs `/sbin/init` from it through `check_exec`.
+  `bsd.rd` is the same kernel with a miniroot written by `rdsetroot` (above). A kernel with no
+  root file system still says `cannot mount root` (`setroot`'s `RB_ASKNAME` prompt is not
+  ported, an LZ gap); no boot runs that mode any more.
 - boot(8)'s `BOOTARG_BOOTDUID` (efiboot's `openbsd,bootduid` on arm64), the DUID of the disk
-  the kernel came from, is a `bootduid=<16 hex digits>` word of the Limine command line
-  (M13a): `BootInfo::bootduid` parses it and `sys/stand` writes the kernel's `bootduid`
-  before `main`. `setroot` then finds the boot disk by its label's DUID, as in OpenBSD, and a
-  kernel without a ramdisk mounts its root from that disk's `a` partition (`root on sd0a
-  (<duid>.a)`). The kernel itself sits on the boot image's FAT partition, not on that disk,
-  so the DUID is the only boot device there is: `just smoke-nvme` boots from an NVMe disk
-  `cargo xtask nvme-root` lays out as OpenBSD's installer does (MBR, OpenBSD partition at 64,
-  disklabel, the userland's ffs in `a` with its fstab naming `/dev/sd0a`;
-  `tools/xtask/src/hwopts.rs`). Flags go after it on the command line (`boothowto` reads
-  every letter from the first `-` on).
+  the kernel came from, is the kernel's `bootduid`, written by `sys/bsd/stand` before `main`
+  from `BootInfo`. `setroot` finds the boot disk by its label's DUID, as in OpenBSD, and
+  mounts its `a` partition (`root on sd1a (454649424f4f5430.a)`); the fstab names it by the
+  same DUID, as the installer writes it. History: under Limine the DUID was a `bootduid=` word
+  of its command line and the kernel sat on a FAT image, not on that disk.
 - amd64's FPU state uses `fxsave64`/`fxrstor64` only (`amd64/fpu.rs`): the XSAVE family and
   its codepatches are not ported, so there is no AVX state; the switch is eager as in C
   (`CPUPF_USERXSTATE`, saved in `cpu_switchto`, reloaded on the way back to user mode).
-- Limine instead of `boot(8)`/`efiboot`, until `boot(8)` boots the same kernel (M14): efiboot
-  is ported (amd64's BOOTX64.EFI, "Boot loaders" above) and boots to the kernel's load; the
-  kernel's own entry from it is M14 track A2.
-- The application processors are started by Limine (M11a), not by the kernel's own
-  trampoline: amd64's `mptramp.S` (real mode, INIT/SIPI/SIPI from `cpu_start_secondary`)
-  and arm64's PSCI `CPU_ON` into `locore.S`'s `cpu_hatch` are replaced. The
-  `MULTIPROCESSOR` kernel, the only one built since decision 40, puts the MP request in
-  `.requests` (a kernel without it, as before decision 40, left the other processors halted); Limine brings each processor to
-  long mode or EL1 with the boot page tables and parks it on its `goto_address`.
-  `sys/stand` turns the response into `machine::BootMp` (the processors' hardware IDs and a
-  `start(i, arg)`), and the machine's `cpu_start_secondary` calls `start` with the
-  processor's `struct cpu_info`; the AP runs `stand::ap_start` on the bootloader's 64 KiB
-  stack, which calls `Cpu::cpu_hatch(arg)`, the machine's `cpu_hatch`. Why: Limine already
-  owns the boot path (above), and a real-mode or MMU-off trampoline would need identity
-  mappings the kernel otherwise never makes. With no ACPI MADT (M13) the processor list
-  comes from the same response on amd64; arm64 still enumerates `/cpus` from the device
-  tree and matches each `reg` to a response entry by MPIDR. On amd64, `cpu_hatch_entry`
-  does `mptramp.S`'s `cpu_spinup_finish` (x2APIC if the boot processor runs it, `EFER.NXE`,
-  the CPU's GDT, the kernel's `%cr3`, `CR0`, the idle thread's stack) and loads the IDT
-  first, which the C does later in `cpu_hatch`. On arm64 it loads the boot processor's
-  `MAIR`, `TCR`, `TTBR0`/`TTBR1` and `SCTLR` (copied into statics: the `cpu_info` itself is
-  `malloc`ed kernel memory the bootloader's tables do not map), sets `TPIDR_EL1`,
-  `VBAR_EL1` and `CPACR`, moves to the CPU's own stack and runs `cpu_init_secondary`.
+- (Closed by decision 57.) Limine instead of `boot(8)`/`efiboot`, and the application
+  processors started by Limine (M11a) instead of by the kernel's own trampoline: both are
+  gone. arm64's PSCI `CPU_ON` into `locore.S`'s `cpu_hatch` is the C's, and amd64's
+  `mptramp.S` starts them again when amd64 boots (N10). The `MULTIPROCESSOR` kernel is the
+  only one built (decision 40); on arm64 `cpu_hatch_entry` loads the boot processor's `MAIR`,
+  `TCR`, `TTBR0`/`TTBR1` and `SCTLR` (copied into statics: the `cpu_info` itself is
+  `malloc`ed kernel memory the loader's tables do not map), sets `TPIDR_EL1`, `VBAR_EL1`
+  and `CPACR`, moves to the CPU's own stack and runs `cpu_init_secondary`.
 - amd64 processor enumeration: since M13 `acpimadt0` attaches the processors from the MADT
   at mainbus, as OpenBSD does (`CPU_ROLE_BP` for the one whose local APIC is running, the
   others `CPU_ROLE_AP`, `mp_cpu_funcs` with `MULTIPROCESSOR`; with one processor
-  (`smoke-up`'s `-smp 1`) `cpu0` is `apid 0 (boot processor)`, as `bsd.sp` prints it). The bootloader still
-  starts the application processors (`mp_cpu_start` finds the MADT's APIC ID in Limine's
-  list). Without a MADT (a kernel without ACPI, until `mpbios.c` is ported) the M11a
+  (`smoke-up`'s `-smp 1`) `cpu0` is `apid 0 (boot processor)`, as `bsd.sp` prints it). `mp_cpu_start` starts the application processors (amd64, N10). Without a MADT (a kernel without ACPI, until `mpbios.c` is ported) the M11a
   stand-in remains: mainbus maps the local APIC at `LAPIC_BASE` and the `MULTIPROCESSOR`
   kernel attaches one `cpu` per processor the bootloader found (`BootInfo::mp`), the boot
   processor first as `CPU_ROLE_BP`, the others as `CPU_ROLE_AP` in the bootloader's order;
@@ -1330,7 +1318,7 @@ The same arm64 kernel ELF boots from Limine and from arm64's efiboot.
   console's tty is the one autoconfiguration attaches later (`com0 at isa0`, `pluart0 at
   mainbus0`), which recognises the console's registers and takes it over as OpenBSD's drivers
   do. On arm64, `initarm` installs a one-block identity map of the first GiB in
-  `TTBR0_EL1` with Device-nGnRnE attributes, because the Limine protocol maps RAM but not devices;
+  `TTBR0_EL1` with Device-nGnRnE attributes, because the loader maps RAM but not devices;
   `bus_space_map` is the identity inside it until `pmap` maps devices (M3, page tables).
 - `delay(9)` before the clocks: amd64 polls the i8254 (`isa/clock.rs`) through `delay_func`,
   which `delay_init` hands to `tsc_delay` when the TSC frequency is known from CPUID or an MSR,
@@ -1349,7 +1337,7 @@ The same arm64 kernel ELF boots from Limine and from arm64's efiboot.
   `init_x86_64` (the IDT is a static page; `cpu_init_msrs` runs first thing because there is no
   `locore0.S`), NMI and double fault take `alltraps` on their IST stacks (the `calltrap_specstk`
   path exists for user-mode GS/CR3, M6), and `alltraps_kern` does not re-enable interrupts until
-  the interrupt stubs exist. arm64's `initarm` switches to `SP_EL1` (Limine enters with
+  the interrupt stubs exist. arm64's `initarm` switches to `SP_EL1` (the loader enters with
   `SPSel = 0`, whose vectors are empty, as in C), sets `tpidr_el1` and `VBAR_EL1` itself; `x18`
   is a general register here, so the EL1 paths of `exception.S` save and restore it instead of
   keeping `curcpu()` in it, and `do_el1h_sync` keeps interrupts masked. Without processes every
@@ -1370,7 +1358,7 @@ The same arm64 kernel ELF boots from Limine and from arm64's efiboot.
   (`Console::cn_rx_intr_establish`) for the `selftest=uart` boot, which types a line on the
   serial console and expects it echoed; since M8 `com_isa`'s attach establishes it and the
   boot reads the line through the console's tty (`comintr`, `comsoft`, `ttyinput`, `ttread`).
-- Interrupts (M4, part b2, arm64): the device tree is the one Limine hands over (`fdt.c`
+- Interrupts (M4, part b2, arm64): the device tree is the one efiboot hands over (`fdt.c`
   parses it in place); QEMU `virt` boots with `acpi=off`, because EDK2 installs the device
   tree only when it does not publish ACPI tables, and OpenBSD arm64 needs the tree. The
   console is found through `/chosen` (`pluart_init_cons`), which retires the fixed PL011
@@ -1406,7 +1394,7 @@ The same arm64 kernel ELF boots from Limine and from arm64's efiboot.
   come through `machine::proc` (associated types with associated-constant initialisers, so
   `proc0` is a `static`). `proc0paddr` is a static u-area per arch (`Uarea`, `USPACE` bytes,
   page aligned, as `locore` reserves it in C): proc0's kernel stack stays the boot stack
-  Limine gave us, its pcb and the trap frame `cpu_fork` copies live in the static. `main`
+  the loader gave us, its pcb and the trap frame `cpu_fork` copies live in the static. `main`
   sets `curproc` first and builds process 0 as `init_main.c` does.
 - Processes (M5-b, part 2, the scheduler): the sleep queues, `mi_switch`, the run queues,
   `fork1` and the kernel threads are OpenBSD's, single-CPU (`MULTIPROCESSOR` paths such as
@@ -1441,10 +1429,7 @@ The same arm64 kernel ELF boots from Limine and from arm64's efiboot.
   `copy.S` behind the `machine::copy` contract, with `pcb_onfault` recovery in both page fault
   handlers (amd64 validates it against the `.nofault` table the linker script collects);
   amd64 runs without SMAP's `stac`/`clac` (no `codepatch`, `CR4.SMAP` not set).
-- The first user program (M6-b): there is no filesystem, so `init` is a Limine module
-  (`module_path: boot():/init` in `limine.conf`, which `cargo xtask image` adds when the
-  `init` binary exists) that the boot glue hands over as `BootInfo::modules` and `start_init`
-  will exec from memory. `init/` is a freestanding Rust crate (`#![no_std]`, static ELF at
+- The first user program (M6-b): `init/` is a freestanding Rust crate (`#![no_std]`, static ELF at
   `0x400000`, raw `syscall`/`svc` with OpenBSD's carry-flag convention) built for the two
   bare targets by `just build-init-*`; it is not OpenBSD code and lives outside `sys/`.
   Since `pin_check` is real (M8) it carries a `PT_OPENBSD_SYSCALLS` table like any OpenBSD
@@ -1589,11 +1574,10 @@ The same arm64 kernel ELF boots from Limine and from arm64's efiboot.
   constants: UKC's `change` and `add` replace them with `malloc`ed copies instead of writing
   into them. The option is the default cargo feature `boot_config` (`option BOOT_CONFIG`).
 - ACPI (M13, amd64): `acpi0 at bios0 at mainbus0`, as in GENERIC. bios0 (`bios.c`) gets the
-  RSDP from Limine's RSDP request (`BootInfo::rsdp`, kept by `init_x86_64` as
+  RSDP from boot(8)'s (`BootInfo::rsdp`, kept by `init_x86_64` as
   `BIOS_EFIINFO_CONFIG_ACPI`, the C's `bios_efiinfo->config_acpi`), so `acpi_probe` finds it
-  as on an EFI boot. Its SMBIOS half (M16e) takes the SMBIOS 2 entry point from Limine's
-  SMBIOS request (`BootInfo::smbios`, `bios_efiinfo->config_smbios`; after a boot by boot(8)
-  efiboot's `SMBIOS_TABLE_GUID` table), maps the structure table and sets `hw.vendor`,
+  as on an EFI boot. Its SMBIOS half (M16e) takes the SMBIOS 2 entry point from
+  efiboot's `SMBIOS_TABLE_GUID` table (`BootInfo::smbios`, `bios_efiinfo->config_smbios`), maps the structure table and sets `hw.vendor`,
   `hw.product`, `hw.version` (`QEMU`, `Standard PC (Q35 + ICH9, 2009)`, `pc-q35-11.1` on
   q35, as on OpenBSD 8.0 there); ipmi(4)'s mainbus probe reads its IPMI record (type 38)
   with `smbios_find_table`. acpi0 copies the tables, loads
@@ -2036,7 +2020,7 @@ The same arm64 kernel ELF boots from Limine and from arm64's efiboot.
   nothing to do. Both pmaps use the bootloader's higher-half direct map (`BootInfo::hhdm_offset`)
   as `__HAVE_PMAP_DIRECT` until the kernel owns its page tables: `pmap_direct_base` is that
   offset, `pmap_bootstrap` does not build the direct map's tables, and `virtual_avail` on amd64
-  starts above the direct map when Limine places it at `VM_MIN_KERNEL_ADDRESS`. OpenBSD arm64 has
+  starts above the direct map when the loader places it at `VM_MIN_KERNEL_ADDRESS`. OpenBSD arm64 has
   no direct map and no `PMAP_STEAL_MEMORY` (it uses `pmap_steal_avail` and maps page by page);
   here it has both, so `uvm_pageboot_alloc` works before any `pmap_kenter_pa` exists. The
   `vm_physmem[]` half of amd64's `pmap_steal_memory` is `uvm_page_physsteal` (`uvm/uvm_page.rs`),
@@ -2091,15 +2075,11 @@ The same arm64 kernel ELF boots from Limine and from arm64's efiboot.
 Every file-level deviation is in that file's `//! ## Deviations` list and in `ports.toml` `notes`.
 
 - rd(4)'s image (M8): OpenBSD links a RAMDISK kernel with an `rd_root_image[]` array that
-  `rdsetroot(8)` fills with a file system image. Here the image is a Limine module,
-  `/ramdisk.ffs` on the ESP (`target/userland/<arch>/ramdisk.ffs`, made by `makefs(8)` in
-  `just userland`; `cargo xtask image` adds it when it exists, `--ramdisk none` leaves it out),
-  which `sys/stand` hands to `rd_root_image_set` before `main`. The bootloader maps modules
-  read-write in its direct map and never reclaims them, so rd(4) reads and writes the image in
-  place, as the C does with its array. Why: the kernel stays one ELF whatever the userland,
-  and no tool has to patch it. `pseudo-device rd 1` (from RAMDISK, not GENERIC) is in each
-  `ioconf.rs`; without a module rd0 attaches with an empty image and the boot says
-  `rd: no ramdisk module`.
+  `rdsetroot(8)` fills with a file system image. Here the image is not in the kernel: the smokes boot a disk root (decision 57), and
+  `bsd.rd` carries its miniroot as `rdsetroot` writes it. `pseudo-device rd 1` (from RAMDISK,
+  not GENERIC) is in each `ioconf.rs`; without an image rd0 attaches empty. History: until
+  decision 57 the image was a Limine module, `/ramdisk.ffs`, which `sys/stand` handed to
+  `rd_root_image_set` before `main`.
 
 - pf(4) (M9d): `pseudo-device pf` and `pflog` are configured as in GENERIC (`/dev/pf` is
   character major 73 on both archs, `pfattach` and `pflogattach` run from `pdevinit[]`), and
@@ -2150,31 +2130,25 @@ Every file-level deviation is in that file's `//! ## Deviations` list and in `po
   (`tsc_report_verdict`). `smoke-mp` then expects one `tsc: cpu0/cpuN: sync test` line
   per AP, whatever the verdict. Under TCG the test passes: every vCPU reads its TSC from one
   host clock that QEMU keeps monotonic across vCPUs.
-- softraid's boot keys (`sr_bootuuid`, `sr_bootkey`) have no source under Limine (M10f).
+- softraid's boot keys (`sr_bootuuid`, `sr_bootkey`) had no source under Limine (M10f, history).
   OpenBSD's own loaders set them: amd64 boot(8) through `bios_bootsr`, arm64 efiboot through
   the `openbsd,sr-bootuuid` and `openbsd,sr-bootkey` properties. Here they stay zero
-  (`replaced-by-limine`; comments mark both `machdep.rs` sites), so no crypto volume is
-  unlocked at boot. It is unlocked afterwards with `bioctl -c C -p <passfile> -l <chunk>`.
-- Frame buffer under Limine (M13, the video console's first step). OpenBSD's loaders hand
+  (comments mark both `machdep.rs` sites; efiboot's softraid feature is not ported), so no
+  crypto volume is unlocked at boot. It is unlocked afterwards with `bioctl -c C -p <passfile> -l <chunk>`.
+- Frame buffer (M13, the video console's first step). OpenBSD's loaders hand
   the kernel the UEFI GOP frame buffer: amd64 boot(8)/efiboot in `bios_efiinfo`'s `fb_*`
   fields (`BOOTARG_EFIINFO`), arm64 efiboot as a `simple-framebuffer` node `framebuffer`
-  under `/chosen` (`efi_framebuffer()`). Under Limine the kernel asks for Limine's
-  framebuffer response, which the boot glue turns into `BootInfo::framebuffer` (physical
-  address, geometry, channel sizes and shifts). On amd64 `init_x86_64` fills
-  `machdep.rs`'s `bios_efiinfo()` from it as efiboot fills `bios_efiinfo` from the GOP mode
-  (the reserved mask is the rest of the pixel), so `efifb(4)` is ported unchanged; its
-  early map is the bootloader's direct map, which covers the frame buffer
-  (`pmap_set_pml4_early` is not needed). On arm64 the glue builds a copy of the device tree
-  with the node efiboot would add (`sys/stand/fdtfb.rs`: same properties, same skip rules,
-  in a static buffer instead of efiboot's in-place edit), so `simplefb` and
-  `mainbus_attach_framebuffer` are ported unchanged; QEMU's `virt` tree, as EDK2 passes it
-  on, has no frame buffer node of its own (`ramfb` is set up through fw_cfg). The display
+  under `/chosen` (`efi_framebuffer()`). The kernel reads what efiboot writes, so `simplefb`
+  and `mainbus_attach_framebuffer` are ported unchanged; QEMU's `virt` tree, as EDK2 passes
+  it on, has no frame buffer node of its own (`ramfb` is set up through fw_cfg). The display
   QEMU gives the GOP: q35's standard VGA on amd64 (present even with `-display none`;
-  1280x800 under OVMF), `-device ramfb` on arm64 (800x600 under ArmVirtQemu; a
-  `virtio-gpu` GOP is blit-only and Limine needs a linear frame buffer). `xtask`'s `--fb`
+  1280x800 under OVMF), `-device ramfb` on arm64 (800x600 under ArmVirtQemu). `xtask`'s `--fb`
   adds it, `--screenshot-after` checks a QEMU `screendump` against the kernel's
   `selftest=fb` (`smoke-fb`). Under feature `qemu` the drivers also hand their
-  `wsdisplay` attach arguments to that self-test.
+  `wsdisplay` attach arguments to that self-test. History: under Limine the boot glue turned
+  Limine's framebuffer response into `BootInfo::framebuffer` and `sys/stand/fdtfb.rs` built
+  the node efiboot adds (decision 57 deleted both, and the `bsd: framebuffer 800x600, 32 bpp`
+  line only that entry printed).
 - The frame buffer is a plain display, the serial line the console (M13, wsdisplay). OpenBSD
   picks the console in `cninit` (amd64: `constab[]` with `wscnprobe` at `CN_MIDPRI` and
   `comcnprobe` at `CN_HIGHPRI` when boot(8) says `set tty com0`) or in arm64's `consinit`
@@ -2198,7 +2172,7 @@ Every file-level deviation is in that file's `//! ## Deviations` list and in `po
   an OpenBSD 8.0 snapshot prints on the same machine (`just diff-openbsd`'s VM: `"Bochs VGA"
   rev 0x02 at pci0 dev 1 function 0 not configured`, no vga line, `efifb0` takes the
   display); `smoke-vga` checks it. Text mode would need a BIOS boot (SeaBIOS), which EmiBSD
-  does not have. The probe maps the ISA hole: Limine's direct map (base revision 3) covers
+  does not have. The probe maps the ISA hole: a loader's direct map covers
   only its memory map's regions and leaves the VGA window out, so amd64's `bus_space_map`
   takes the hole shortcut (`atdevbase`, which `locore0.S` maps after a boot by boot(8)) only
   for pages that are mapped there and maps the others like any device memory. Without the
@@ -2229,7 +2203,7 @@ on arm64 the link NIC is added to QEMU's command line before the user-mode one, 
 `vio0` is still the user-mode NIC. `just smoke-link` is the first user and is not part of
 `smoke`.
 
-QEMU's command line makes EDK2 boot Limine at once: the boot image's device has
+QEMU's command line makes EDK2 boot the boot image at once: the boot image's device has
 `bootindex=0` (QEMU's `bootorder` fw_cfg file puts it first in the firmware's `BootOrder`, so
 the blank persistent disk is no longer tried first: `BdsDxe: failed to load Boot0001 "UEFI
 Misc Device"`), and `-boot menu=on,splash-time=0` sets the boot manager's timeout to 0 through
@@ -2423,7 +2397,7 @@ trailers (`git-commits.md`), printed by `cargo xtask bench compare BEFORE AFTER`
   host's cores from the other, and the order alternates from run to run, so a drift of the
   host's speed falls on both. Ten runs each.
 - **What is measured.** `boot`: QEMU's start to the first `login:` (firmware and boot loader
-  included: OpenBSD's efiboot waits at `boot>`, Limine does not). `tools/bench` (ISC, ours,
+  included: OpenBSD's efiboot waits at `boot>`; the EmiBSD side boots the same way since decision 57). `tools/bench` (ISC, ours,
   one static binary for both, in the ramdisk as `difftest` is and fetched by OpenBSD over
   `diff-openbsd`'s HTTP server) prints ns per op of `pagefault` (the first touch of a page of
   a fresh anonymous mapping), `forkexit`, `forkexec` (the program executes itself as a

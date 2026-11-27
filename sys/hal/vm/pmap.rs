@@ -761,7 +761,7 @@ pub struct KernelImage {
 /// pmap's statics before calling it.
 #[derive(Clone, Copy, Debug)]
 pub struct BootstrapParams {
-    /// The direct map's first address (`PMAP_DIRECT_BASE`: Limine's HHDM, or `locore0`'s).
+    /// The direct map's first address (`PMAP_DIRECT_BASE`: `locore0`'s `DIRECT_BASE`).
     pub direct_base: Vaddr,
     /// Its end (`PMAP_DIRECT_END`).
     pub direct_end: Vaddr,
