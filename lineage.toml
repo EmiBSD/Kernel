@@ -5641,7 +5641,7 @@ rust = "sys/bsd/kern/subr_autoconf.rs"
 lz = ["sys/kern/subr_autoconf.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/dev/autoconf.rs", "sys/kernel/dev/device.rs", "sys/kernel/dev/disk.rs"]
-notes = "N7.1a: the shim over kernel::dev::autoconf, every LZ name and signature kept for bsd's drivers (U4) and no logic of its own: impl ConfigRow and DriverOps for Cfdata (the DriverOps bridge), BsdConfigGlue (the ConfigGlue bridge, cfdata[] lent once per walk), LegacySoftc holding the node's dv_ref, node_of (a shadow node for a device made by hand), the cd_devs/cd_ndevs mirror kept by the kernel's hooks, device_hold for parsedisk, and the re-exports of AUTOCONF_SERIAL/CONFIG_PENDING/AUTOCONF_VERBOSE; docs/SCAFFOLDING.md; goes with the last legacy driver (N7.14)"
+notes = "N7.1a: the shim over kernel::dev::autoconf, every LZ name and signature kept for bsd's drivers (U4) and no logic of its own: impl ConfigRow and DriverOps for Cfdata (the DriverOps bridge), BsdConfigGlue (the ConfigGlue bridge, cfdata[] lent once per walk), LegacySoftc holding the node's dv_ref, node_of (a shadow node for a device made by hand), the cd_devs/cd_ndevs mirror kept by the kernel's hooks, device_hold for parsedisk, and the re-exports of AUTOCONF_SERIAL/CONFIG_PENDING/AUTOCONF_VERBOSE; docs/SCAFFOLDING.md; goes with the last legacy driver (N7.14); N7.2b1a: a native row's ConfigRow::driver is its cf_native, ConfigRow::loc is cf_loc"
 
 [[module]]
 rust = "sys/bsd/kern/subr_log.rs"
@@ -8121,7 +8121,7 @@ rust = "sys/bsd/sys/device.rs"
 lz = ["sys/sys/device.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/dev/device.rs", "sys/kernel/dev/autoconf.rs", "sys/kernel/dev/disk.rs"]
-notes = "N7.1a: the legacy driver interface over kernel::dev::device: the constants and Devclass re-exported from the kernel, the legacy header written once from its node (dv_list and the alldevs types gone), Cfdriver::cd_units the kernel's unit table with cd_devs/cd_ndevs its mirror"
+notes = "N7.1a: the legacy driver interface over kernel::dev::device: the constants and Devclass re-exported from the kernel, the legacy header written once from its node (dv_list and the alldevs types gone), Cfdriver::cd_units the kernel's unit table with cd_devs/cd_ndevs its mirror; N7.2b1a: a row may name a native driver (Cfdata::cf_native, the const fn Cfdata::native over a row new() wrote, CFATTACH_NATIVE: not free, ca_match 0, ca_attach panics), UKC's Clone keeps it (docs/SCAFFOLDING.md)"
 
 [[module]]
 rust = "sys/lib/sysdefs/file/dirent.rs"
@@ -20917,7 +20917,7 @@ rust = "sys/kernel/dev/device.rs"
 crate = "kernel"
 lz = ["sys/sys/device.rs"]
 status = "redesigned"
-notes = "N7.1a: struct device as the kernel's counted node (DevRef = MArc<Device>), written once when made, dv_flags an atomic, linked on alldevs and the deferred queues through PinEntrys keyed to the tree's lock; the driver's softc an erased handle (AnyArc) only the driver names; cd_devs/cd_ndevs a UnitTable (an MArray of handles in a Guarded keyed to TREE, grown as the C's array); void *aux -> Aux, the void *match of cfmatch_t -> Match (owned: an indirect bus's losing softc is dropped); struct cfattach+cfdriver -> trait DriverOps, struct cfdata -> trait ConfigRow; the constants and Devclass moved here and re-exported by bsd's sys/sys/device.rs, which keeps the legacy header, Cfdata/Cfattach/Cfdriver and the suspend/firmware prototypes"
+notes = "N7.1a: struct device as the kernel's counted node (DevRef = MArc<Device>), written once when made, dv_flags an atomic, linked on alldevs and the deferred queues through PinEntrys keyed to the tree's lock; the driver's softc an erased handle (AnyArc) only the driver names; cd_devs/cd_ndevs a UnitTable (an MArray of handles in a Guarded keyed to TREE, grown as the C's array); void *aux -> Aux, the void *match of cfmatch_t -> Match (owned: an indirect bus's losing softc is dropped); struct cfattach+cfdriver -> trait DriverOps, struct cfdata -> trait ConfigRow; the constants and Devclass moved here and re-exported by bsd's sys/sys/device.rs, which keeps the legacy header, Cfdata/Cfattach/Cfdriver and the suspend/firmware prototypes; N7.2b1a: ConfigRow::loc (cf_loc[i], default none)"
 
 [[module.fn]]
 lz = "sys/sys/device.rs::Devicelist"

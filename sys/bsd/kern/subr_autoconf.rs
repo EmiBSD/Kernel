@@ -672,9 +672,14 @@ pub(crate) fn autoconf_test_reset() {
     kac::autoconf_test_reset();
 }
 
+/// A row of `cfdata[]`: a legacy row is its own driver, a native row's driver is the
+/// kernel's it names (`Cfdata::native`).
 impl ConfigRow for Cfdata {
     fn driver(&'static self) -> &'static dyn DriverOps {
-        self
+        match self.cf_native {
+            Some(drv) => drv,
+            None => self,
+        }
     }
     fn parents(&self) -> &'static [i16] {
         self.cf_parents
@@ -693,6 +698,9 @@ impl ConfigRow for Cfdata {
     }
     fn set_fstate(&self, fstate: i16) {
         self.cf_fstate.set(fstate);
+    }
+    fn loc(&self, i: usize) -> Option<i64> {
+        self.cf_loc.get(i).copied()
     }
 }
 
@@ -857,8 +865,8 @@ mod tests {
     use crate::kern::subr_pool::tests::setup_real_memory;
     use crate::machine::Machine;
     use crate::sys::device::{
-        CD_INDIRECT, Cfattach, DETACH_QUIET, DV_DULL, DVACT_RESUME, DVACT_SUSPEND, FSTATE_FOUND,
-        FSTATE_NOTFOUND, FSTATE_STAR, QUIET, UNCONF,
+        CD_INDIRECT, CFATTACH_NATIVE, Cfattach, DETACH_QUIET, DV_DULL, DVACT_RESUME, DVACT_SUSPEND,
+        FSTATE_FOUND, FSTATE_NOTFOUND, FSTATE_STAR, QUIET, UNCONF,
     };
 
     /// A C string up to its first NUL.
@@ -1001,6 +1009,113 @@ mod tests {
             d = kac::alldevs_next(Some(&n));
         }
         v
+    }
+
+    /// A native driver (a kernel `DriverOps`, as `Cfdata::native` names one) with its own
+    /// unit table: a root, which matches only without a parent.
+    struct TestNative {
+        name: &'static [u8],
+        units: &'static UnitTable,
+    }
+
+    /// The native driver's softc: nothing the tests read.
+    struct NativeSoftc;
+
+    static NATIVE_ATTACHED: AtomicUsize = AtomicUsize::new(0);
+
+    impl DriverOps for TestNative {
+        fn name(&self) -> &'static [u8] {
+            self.name
+        }
+        fn class(&self) -> Devclass {
+            DV_DULL
+        }
+        fn mode(&self) -> i32 {
+            0
+        }
+        fn units(&self) -> &'static UnitTable {
+            self.units
+        }
+        fn make_softc(&self, _id: &Ident<'_>) -> AnyArc {
+            let sc = MArc::new(M_DEVBUF, hal::mem::malloc::M_NOWAIT, NativeSoftc);
+            MArc::erase(sc.expect("a native softc"))
+        }
+        fn probe(&self, parent: Option<&DevRef>, _m: &Match, _aux: &Aux<'_>) -> i32 {
+            i32::from(parent.is_none())
+        }
+        fn attach(&self, parent: Option<&DevRef>, _dev: &DevRef, _aux: &Aux<'_>) {
+            assert!(parent.is_none());
+            NATIVE_ATTACHED.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// A fresh native driver named `name`.
+    fn native_driver(name: &'static [u8]) -> &'static TestNative {
+        Box::leak(Box::new(TestNative {
+            name,
+            units: Box::leak(Box::new(UnitTable::new())),
+        }))
+    }
+
+    #[test]
+    fn a_row_gives_its_locators_and_a_native_row_its_driver() {
+        let (table, _, child_cd) = ioconf(0);
+        let drv = native_driver(b"tnat");
+        let nat_cd: &'static Cfdriver = Box::leak(Box::new(Cfdriver::new(b"tnat", DV_DULL, 0)));
+        let rows: &'static [Cfdata] = Box::leak(Box::new([
+            Cfdata::new(
+                &CFATTACH_NATIVE,
+                nat_cd,
+                0,
+                FSTATE_STAR,
+                &[1, -1],
+                0,
+                &[],
+                0,
+                0,
+            )
+            .native(drv),
+            Cfdata::new(
+                table[1].cf_attach,
+                child_cd,
+                0,
+                FSTATE_STAR,
+                &[7],
+                0,
+                &[0],
+                0,
+                0,
+            ),
+        ]));
+
+        // cf_loc[i], and nothing past the row's locators.
+        assert_eq!(rows[0].loc(0), Some(1));
+        assert_eq!(rows[0].loc(1), Some(-1));
+        assert_eq!(rows[0].loc(2), None);
+        assert_eq!(rows[1].loc(0), Some(7));
+        assert_eq!(table[1].loc(0), None, "a row without locators");
+
+        // A native row's driver is the kernel's it names; a legacy row is its own.
+        let native: &dyn DriverOps = drv;
+        assert!(ptr::addr_eq(ConfigRow::driver(&rows[0]), native));
+        assert_eq!(ConfigRow::driver(&rows[0]).name(), b"tnat");
+        let legacy: &dyn DriverOps = &rows[1];
+        assert!(ptr::addr_eq(ConfigRow::driver(&rows[1]), legacy));
+
+        // Still a row of cfdata[]: not a free slot, and UKC's copy keeps its driver.
+        assert!(!rows[0].is_free());
+        assert!(ptr::eq(rows[0].cf_attach, &CFATTACH_NATIVE));
+        assert!(rows[1].cf_native.is_none());
+        let copy = rows[0].clone();
+        assert!(copy.cf_native.is_some_and(|d| ptr::addr_eq(d, native)));
+        assert_eq!(copy.cf_loc, rows[0].cf_loc);
+
+        // A legacy bus's submatch that calls ca_match by hand gets no match from it.
+        let ca_match = CFATTACH_NATIVE.ca_match.expect("a match function");
+        assert_eq!(
+            ca_match(None, &CfMatch::Cfdata(&rows[0]), ptr::null_mut()),
+            0
+        );
     }
 
     #[test]

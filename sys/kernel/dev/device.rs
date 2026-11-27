@@ -579,6 +579,11 @@ pub trait ConfigRow: Any + Sync {
     fn fstate(&self) -> i16;
     /// `cf_fstate = fstate`.
     fn set_fstate(&self, fstate: i16);
+    /// `cf_loc[i]`: the row's `i`-th locator (machine dependent: an FDT bus's `early` pass is
+    /// locator 0), `None` past the row's locators; a row without locators has none.
+    fn loc(&self, _i: usize) -> Option<i64> {
+        None
+    }
 }
 /* </CODE> */
 

@@ -285,6 +285,12 @@ Locations are on `main` at the commit that last edited this file.
 | `InterruptController::barrier` answering what to wait for (`BarrierWait`: nothing, the primary CPU, a CPU) and `intr_barrier::<G>` calling `sched_barrier` | `sys/kernel/dev/arm64/intr.rs:206`, `:996` | The scheduler is generic over `ProcGlue`, which a trait object's method cannot be | N8 (the glue generic) |
 | The pre-registration's records never freed (the C frees one at its disestablish): a 136-byte `Prereg` (a 256-byte `M_DEVBUF` block) per disestablish of a handler established before its controller attached | `sys/kernel/dev/arm64/intr.rs:301` | A record is reached through the driver's cookie and the registration walk as a `&'static`; the controllers' handler records follow the same rule (P12, N7.2a2) | Not scaffolding: the cost of P12, revisited only with an SMR chain (P12's alternative) |
 
+## The FDT root's legacy edge (N7.2b1)
+
+| What | Where | Why | Removed by |
+|---|---|---|---|
+| `Cfdata::native`, `Cfdata::cf_native`, `CFATTACH_NATIVE` (a native row's attachment: `ca_match` answers 0, `ca_attach` panics, `ca_devsize` the shadow header's) and `impl ConfigRow for Cfdata`'s `driver` following `cf_native`; the stub `Cfdriver` a native row names for UKC (N7.2b1b's `MAINBUS_CD`, `SIMPLEBUS_CD`) | `sys/bsd/sys/device.rs:233`, `:268`, `:484`; `sys/bsd/kern/subr_autoconf.rs:678` | The machine's `cfdata[]` is still `bsd`'s hand-written `ioconf.rs` of `Cfdata` rows, which UKC edits and whose parents' indices `parent_hits` compares by row identity: a native driver's row has to be one of them | N9.1 (the registry owns the tables, decision 45 (3)) |
+
 ## Arriving
 
 Nothing announced.
