@@ -96,9 +96,9 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! The system call entry point: where both architectures' traps hand a system call to the
-//! ABI's handler, the registration of that handler, and a forked child's first return as the
-//! ABI's data ([`ChildReturn`]).
+//! The types of the system call's edge between the trap and the ABI's handler: the trapping
+//! thread's registers ([`UserRegs`], named by [`Gpr`]), the argument and return registers,
+//! the result, and a forked child's first return as the ABI's data ([`ChildReturn`]).
 //!
 //! Upstream: sys/arch/amd64/amd64/trap.c @ 3ce1f3f79392
 //! Upstream: sys/arch/arm64/arm64/syscall.c @ 3ce1f3f79392
@@ -115,13 +115,10 @@
 //! hands to `hal::cpu::thread::thread_setup` with each fork of a returning child (decision
 //! 56, E1). Nothing userland sends is interpreted here.
 //!
-//! One answer is registered, once, at boot (docs/ZERO_UNSAFE.md 0.1, the sequence diagram):
-//! the ABI's, which `abi::abi_init` registers with [`set_handler`] when the image's boot glue
-//! calls it, before `main()` and so before the first system call: the one upward call of
-//! `hal`, like the panic handler (decision 52). With nothing registered a system call is
-//! `panic(9)`: answering `ENOSYS` would be the convention's, and only a kernel that skipped
-//! its own registration can get there (the boot glue panics first).
-//!
+//! Nothing is registered here (decision 56): the trap's classification (`entry`) calls the
+//! ABI's handler (`abi::arch::current::svc`) itself, with the [`UserRegs`]
+//! `kernel::trap::svc` hands out, so no call goes upward from `hal` for a system call.
+
 //! ## Redesign
 //! - LZ's two traps each chose the `sysent[]` entry and called `mi_syscall` (amd64
 //!   `syscall`, arm64 `svc_handler`); that choice is the registered handler's, so the system
@@ -136,15 +133,15 @@
 //!   carry themselves; now it is `fn(&UserRegs)` called by [`enter`], and the per-arch
 //!   convention is the ABI's (`abi::arch::<arch>`). `dispatch` and its `ENOSYS` without a
 //!   handler are gone.
-//! - Decision 56 (E2): `enter` is gone: the trap's classification (`entry`) calls the ABI's
-//!   handler itself, with the registers `SyncTrap::svc` hands out; the registration is left
-//!   only for what the handler says about itself, until the ABI registers nothing.
-//! - Decision 56 (E1, U5): the forked child's first return was a second registered function
-//!   (`ChildFn`), which `hal` called on the child's registers at its first run; now it is
+//! - Decision 56 (E2, U2): the registration goes (the handler's type, the setter, what the
+//!   handler said about itself, and `enter`, which called it): the trap's classification
+//!   (`entry`) calls the ABI's handler itself, and what the ABI says about its table is its
+//!   own constant (`abi::sysent::INFO`), which the image's boot glue prints. Decision 47's,
+//!   52's and 53's registration of the ABI's handler is amended: the ABI registers nothing.
+//! - Decision 56 (E1, U5): the forked child's first return was a second registered function,
+//!   which `hal` called on the child's registers at its first run; now it is
 //!   data, [`ChildReturn`], written while `cpu_fork` builds the child's frame: no call goes
 //!   upward for it.
-
-use crate::sync::once::OnceStatic;
 
 /// A general register of the machine, by its name (arm64: `Gpr::X0` .. `Gpr::X29`; the host
 /// double has arm64's; amd64's at N10).
@@ -165,9 +162,6 @@ pub type Rval = [Register; 2];
 /// A system call's result as the trap sees it: `Ok(())` or an errno value.
 pub type SysResult = Result<(), i32>;
 
-/// The ABI's system call handler: the trapping thread's user registers, for the call.
-pub type SyscallFn = fn(&UserRegs);
-
 /// A forked child's first return from the system call that made it, as data: which register
 /// holds the value, the value, and the error flag (arm64: the carry). The convention's (the
 /// ABI's constant); `hal` writes it into the child's trap frame while `cpu_fork` builds it
@@ -187,69 +181,12 @@ pub struct ChildReturn {
 /// `ENOSYS` (`<sys/errno.h>`): what an unanswered system call returns.
 pub const ENOSYS: i32 = sysdefs::base::errno::Errno::ENOSYS.as_i32();
 
-/// What the registered handler says about itself, for the boot line the image's boot glue
-/// prints.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct HandlerInfo {
-    /// Entries in its system call table (`SYS_MAXSYSCALL`).
-    pub syscalls: u32,
-    /// How many of them answer in the kernel crate (`Native`); the others go to `Legacy`.
-    pub native: u32,
-}
-
-/// The registered handler and what it said about itself.
-#[derive(Clone, Copy)]
-struct Handler {
-    call: SyscallFn,
-    info: HandlerInfo,
-}
-
-/// The ABI's handler, once `abi_init` registered it.
-static HANDLER: OnceStatic<Handler> = OnceStatic::new();
-
-/// Registers the ABI's system call handler and what it says about itself. Once; a second
-/// registration is refused and its `call` returned.
-pub fn set_handler(call: SyscallFn, info: HandlerInfo) -> Result<(), SyscallFn> {
-    HANDLER.set(Handler { call, info }).map_err(|h| h.call)
-}
-
-/// What the registered handler said about itself; `None` before it registered.
-pub fn handler_info() -> Option<HandlerInfo> {
-    HANDLER.get().map(|h| h.info)
-}
-
 /* </CODE> */
 
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A handler that writes `x8 * 10 + x0` into `x0`, the carry clear.
-    fn call(regs: &UserRegs) {
-        let [x0, x8] = regs.gprs([Gpr::X0, Gpr::X8]);
-        regs.set_return(Gpr::X0, x8 * 10 + x0, false);
-    }
-
-    fn other(_regs: &UserRegs) {}
-
-    const INFO: HandlerInfo = HandlerInfo {
-        syscalls: 3,
-        native: 1,
-    };
-
-    /// One test for the registration: `HANDLER` is the process's, set once. Since decision
-    /// 56's E2 nothing calls the registered handler (the trap's classification calls the ABI);
-    /// what it says about itself is still read for the boot line.
-    #[test]
-    fn the_registered_handler_cannot_be_replaced() {
-        assert_eq!(handler_info(), None);
-        assert!(set_handler(call, INFO).is_ok());
-        assert_eq!(handler_info(), Some(INFO));
-        // A second registration is refused and handed back, the first one kept.
-        assert!(set_handler(other, INFO).is_err());
-        assert_eq!(handler_info(), Some(INFO));
-    }
 
     #[test]
     fn enosys_is_the_c_value() {

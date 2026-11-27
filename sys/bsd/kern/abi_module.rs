@@ -20,8 +20,9 @@
 //! `bsd`'s side of the ABI (`abi`, linked into the image, decision 47) until the subsystems
 //! it stands for move: the `sysent[]` rows (LZ's `init_sysent` table and `mi_syscall`, what
 //! both arch traps called themselves), which it registers as the kernel's `LegacySyscalls`
-//! bridge, and the boot step that registers that bridge and calls `abi::abi_init` before
-//! `main()`, so the ABI's handler answers every system call from the first one on.
+//! bridge, and the boot step that registers that bridge before `main()` and prints what the
+//! ABI's table holds, so every system call finds its row from the first one on. The ABI
+//! registers nothing since decision 56: `entry` calls its handler.
 //!
 //! arm64's trap in `hal` hands the ABI's handler the trap's registers (decision 53: the
 //! per-arch system call convention is `abi::arch`'s); amd64's frozen trap still names the
@@ -77,24 +78,14 @@ pub fn legacy_syscall(code: Register, args: &SysArgs, rval: &mut [Register; 2]) 
 }
 
 /// The boot step, from the boot glue after `hal_bridges_register` and before `main()`:
-/// registers the `sysent[]` rows as the kernel's `LegacySyscalls`, has the ABI register its
-/// system call handler, and prints the one line that says what the handler's table holds.
-/// Panics when either registration is missing after it, or when a handler other than the
-/// ABI's was registered before it, which no system call may find out later.
+/// registers the `sysent[]` rows as the kernel's `LegacySyscalls` and prints the one line that
+/// says what the ABI's table holds (`abi::sysent::INFO`). Panics when the rows were registered
+/// before it, which no system call may find out later.
 pub fn abi_boot() {
     if install_legacy_syscalls(&LEGACY_SYSCALLS).is_err() {
         panic(format_args!("abi: the sysent[] rows were registered twice"));
     }
-    if abi::abi_init().is_err() {
-        panic(format_args!(
-            "abi: a system call handler was registered before abi_init"
-        ));
-    }
-    let Some(info) = hal::syscall::handler_info() else {
-        panic(format_args!(
-            "abi: abi_init registered no system call handler"
-        ));
-    };
+    let info = abi::sysent::INFO;
     crate::kprintf!("abi: {} syscalls, {} native\n", info.syscalls, info.native);
 }
 /* </CODE> */

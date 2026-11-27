@@ -85,7 +85,7 @@ viocon = []       # amd64 GENERIC's commented-out `#viocon* at virtio?`, uncomme
 
 [dependencies]
 # The crates of docs/ZERO_UNSAFE.md section 0: bsd calls down into them, never the reverse.
-# `abi` is linked into the image (decision 47): bsd's boot glue calls `abi::abi_init`
+# `abi` is linked into the image (decision 47): bsd's boot glue reads its constants
 # (sys/bsd/kern/abi_module.rs), until N9's image is kernel + abi + hal; `abi` calls the kernel
 # through `kernel::api` (decision 52).
 abi = { path = "../abi" }

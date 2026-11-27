@@ -21,7 +21,7 @@
 //! `<sys/syscall.h>` (`sysdefs::proc::syscall`, the ABI edge), each `Native` (translated into a
 //! `kernel` entry point) or `Legacy` (handed to the LZ path `bsd` registered, through
 //! `kernel::api::syscall_legacy`), and the dispatcher the machine's handler
-//! ([`crate::arch`], which [`crate::abi_init`] registers in `hal`) runs.
+//! ([`crate::arch`], which the crate `entry` calls on a system call's trap) runs.
 //!
 //! N2.4: every entry was `Legacy`, so every system call behaves exactly as LZ's: the number
 //! is not even read here but to pick the entry, and an out-of-range number goes to the
@@ -55,9 +55,9 @@
 //! (`int`, `u_int`, `ptr`, `size_t`, `off_t`, `u_long`; N5 close, the abi casts).
 //!
 //! Decision 52 (N7): the `kernel::api` functions named above were the members of
-//! `hal::api::KernelApi`, a table the boot glue filled and handed to [`crate::abi_init`];
-//! `abi` now depends on `kernel` and calls them directly, and its handler is registered in
-//! `hal` with no table beside it.
+//! `hal::api::KernelApi`, a table the boot glue filled and handed to the ABI's
+//! registration; `abi` now depends on `kernel` and calls them directly, and since decision 56
+//! registers nothing (`entry` calls its handler).
 //!
 //! N7 (decision 52's slice): the translations left this file for one file per group of the
 //! kernel they reach, so each file mirrors the kernel's modules: [`crate::proc`] (the
@@ -111,7 +111,7 @@ use crate::vm::{
     sys_mprotect, sys_mquery, sys_msync, sys_munlock, sys_munlockall, sys_munmap, sys_obreak,
     sys_pinsyscalls,
 };
-use hal::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult};
+use hal::syscall::{Register, Rval, SysArgs, SysResult};
 
 use sysdefs::proc::syscall::{
     SYS___get_tcb, SYS___set_tcb, SYS___tfork, SYS___threxit, SYS_MAXSYSCALL, SYS_acct, SYS_break,
@@ -166,12 +166,22 @@ pub enum Sysent {
 /// How many entries of [`SYSENT`] are `Native` (a test counts them).
 pub const NATIVE: u32 = 190;
 
-/// What the ABI says about itself when it registers ([`crate::abi_init`]).
+/// What the ABI's table holds, for the boot line the image's boot glue prints
+/// (`abi: N syscalls, M native`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Info {
+    /// Entries in the system call table (`SYS_MAXSYSCALL`).
+    pub syscalls: u32,
+    /// How many of them answer in the kernel crate (`Native`); the others go to `Legacy`.
+    pub native: u32,
+}
+
+/// What the ABI's table holds ([`Info`]).
 #[expect(
     clippy::cast_possible_truncation,
     reason = "SYS_MAXSYSCALL is 331; the compile-time check at the end of the code holds it within u32"
 )]
-pub const INFO: HandlerInfo = HandlerInfo {
+pub const INFO: Info = Info {
     syscalls: SYS_MAXSYSCALL as u32,
     native: NATIVE,
 };
@@ -391,7 +401,7 @@ fn entry(table: &[Sysent], nr: Register) -> Option<&Sysent> {
     }
 }
 
-// `INFO` narrows the table's size to `HandlerInfo::syscalls`'s `u32`: it fits.
+// `INFO` narrows the table's size to `Info::syscalls`'s `u32`: it fits.
 const _: () = assert!(SYS_MAXSYSCALL <= u32::MAX as usize);
 /* </CODE> */
 

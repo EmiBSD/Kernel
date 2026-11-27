@@ -420,9 +420,10 @@ pub fn hal_bridges_register() {
     // earlier take by anyone panics the boot here, so no forbid crate can hold it. The ABI is
     // linked into the image (decision 47) but can neither take nor hold the token:
     // `abi-check` R6 refuses `abi` any path into `hal::user`; no function of `abi` runs
-    // before `abi_init`, which the boot glue calls after this function returns (both takes
-    // done); any later take gets `None`; and R5 refuses `abi` a static of interior
-    // mutability that could keep one.
+    // before the first system call (the ABI registers nothing: `entry` calls its handler on
+    // a trap from user mode, long after this function returns with both takes done); any
+    // later take gets `None`; and R5 refuses `abi` a static of interior mutability that
+    // could keep one.
     crate::kern::kern_subr::kcopy_take();
     // And the kernel's window leg of uiomove its own token (hal::user::WindowKcopyToken,
     // N5.9t1), taken by kernel::file::uio here for the same reason.

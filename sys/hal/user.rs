@@ -512,12 +512,12 @@ impl UserPtr<u32> {
 
 /// The right to `kcopy` onto kernel addresses its holder names itself (`bsd`'s `uiomove`'s
 /// `UIO_SYSSPACE` leg, the user's decision 13 of N4.8): one per kernel, taken once, by
-/// `bsd`'s boot (`hal_bridges_register`'s first step, before the boot glue calls
-/// `abi::abi_init`; an earlier take by anyone panics the boot there), so no `forbid` crate
-/// can hold it: their later takes get `None`. The ABI, linked into the image (decision 47),
-/// cannot name it (`abi-check` R6 keeps `abi` to `kernel::api`, `sysdefs` and
-/// `hal::syscall`'s types and registration), runs no function before `abi_init`, and R5 refuses it a static that could
-/// keep a token.
+/// `bsd`'s boot (`hal_bridges_register`'s first step, before any user process runs; an
+/// earlier take by anyone panics the boot there), so no `forbid` crate can hold it: their
+/// later takes get `None`. The ABI, linked into the image (decision 47), cannot name it
+/// (`abi-check` R6 keeps `abi` to `kernel::api`, `sysdefs` and `hal::syscall`'s types), runs
+/// no function before the first system call (`entry` calls it; decision 56), and R5 refuses
+/// it a static that could keep a token.
 ///
 /// The holder's contract (decision 30's documented trust, `sys/hal/mem/trust.rs`): every address
 /// it passes is a kernel buffer of at least the length copied that its builder owns for the
@@ -579,7 +579,7 @@ impl KcopyToken {
 /// [`ForeignWindow::kcopy_from`]), the [`KcopyToken`]'s shape for the kernel's window leg
 /// of `uiomove` (`kernel::file::uio::uiomove_window`, N5.9t1, the main session's decision on
 /// review 1): one per kernel, taken once, by `kernel::file::uio` at `bsd`'s boot right after the
-/// `KcopyToken` (`hal_bridges_register`, before the boot glue calls `abi::abi_init`, the
+/// `KcopyToken` (`hal_bridges_register`, before any user process runs, the
 /// [`KcopyToken`]'s argument) and by the host tests' doubles' install; later takes get
 /// `None`, so no other module of any crate can hold it, and `kernel::file::uio` keeps it private
 /// (never `Clone`, never lent).
