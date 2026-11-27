@@ -282,6 +282,10 @@ unsafe fn boot_init(boot: &BootInfo) -> Result<(), BootError> {
     }
     #[cfg(feature = "qemu")]
     bsd::kern::selftest::parse_bootargs(boot.cmdline.to_bytes());
+    // boot(8) passes only its flags: a self-test word is the preset the image builder wrote
+    // into this kernel file (`xtask efiboot-image --selftest`); empty under Limine.
+    #[cfg(feature = "qemu")]
+    bsd::kern::selftest::preset_apply();
     // SAFETY: forwarded from the entry; `boot` describes the image just loaded.
     unsafe { Machine::early_init(boot) }.map_err(|_unprintable| BootError::EarlyInit)
 }

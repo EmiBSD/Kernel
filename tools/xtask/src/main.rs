@@ -75,6 +75,22 @@
 //!                                          boot TWO VMs of A at once, each with vio1 on a
 //!                                          private link, each running its own script; pass
 //!                                          when both saw all they expect (twovm.rs)
+//! cargo xtask smoke|smoke2|qemu ... --image tree|init
+//! cargo xtask smoke|smoke2|qemu ... --kernel K --root bare|init[=FILE]|tree[=DIR]
+//!                   [--owners FILE] [--duid HEX16] [--selftest WORD]
+//!                   [--boot-flags -FLAGS | --boot-manual] [--expect-root] [--boot-on nvme]
+//!                                          boot through efiboot (efiboot.rs): a shared
+//!                                          image of `just efiboot-images-A`, or a per-run
+//!                                          one made first (efiboot-image's options), both
+//!                                          attached with snapshot=on; smoke and smoke2
+//!                                          type `boot [-FLAGS]` at every `boot> ` unless
+//!                                          --boot-manual (the recipe types); --expect-root
+//!                                          expects `(<duid>.a) swap on`; --boot-on puts the
+//!                                          image on an NVMe namespace (EDK2 AArch64 boots
+//!                                          no AHCI disk); every per-run image's /bsd is
+//!                                          stripped of its debug sections; --cmdline,
+//!                                          --init, --ramdisk and --expect-ramdisk are
+//!                                          Limine's and refused with it; arm64 only
 //! cargo xtask smoke-all [-j N] [--just PATH] RECIPE...
 //!                                          run the justfile's smoke RECIPEs with
 //!                                          `just --no-deps`, N (default 4) at a time, each
@@ -156,6 +172,13 @@
 //! cargo xtask comp --arch A [--jobs N]     M14: OpenBSD's compiler (clang, lld, libc++) from
 //!                                          gnu/llvm by its build glue, into target/comp/A
 //!                                          (userland/comp.rs); N jobs, default half the CPUs
+//! cargo xtask efiboot-image --arch A --kernel K --root bare|init[=FILE]|tree[=DIR]
+//!                     [--owners FILE] [--duid HEX16] [--efi FILE] [--selftest WORD]
+//!                     (--shared | --out FILE)
+//!                                          an efiboot disk (MBR, label, FFS a with /bsd,
+//!                                          ESP): --shared writes target/efiboot/A/
+//!                                          emibsd-{tree,init}.img, --out a per-run image
+//!                                          in the run directory (efiboot.rs)
 //! cargo xtask install-img --arch A         M16g: install80.img, the install media with the
 //!                                          sets on one disk image (distrib.rs)
 //! cargo xtask cd-iso --arch amd64          M16g: cd80.iso, bsd.rd on an El Torito CD
@@ -240,7 +263,8 @@ const USAGE: &str = "usage: cargo xtask <lz check | lz status [--write] | lz dri
                      symbolize --arch A [--kernel K] | userland --arch A | devtools-hello --arch A --llvm DIR --rust DIR | devtools-native --arch A --llvm TAR --llvm-sha256 HEX --rust TAR --rust-sha256 HEX | comp --arch A [--jobs N] | ntfs-image OUT [--check] | \
                      e2fsck --arch A [--disk-set NAME] [--cat PATH=TEXT]... | fsck-msdos --arch A | \
                      manual --arch arm64 --boot-log LOG --out FILE | include --arch arm64 --out DIR | \
-                     nvme-root --arch A [--duid HEX] [--out FILE] [--root-dev DEV]>";
+                     nvme-root --arch A [--duid HEX] [--out FILE] [--root-dev DEV] | \
+                     efiboot-image --arch A --kernel K --root bare|init[=FILE]|tree[=DIR] [--owners FILE] [--duid HEX16] [--efi FILE] [--selftest WORD] (--shared | --out FILE)>";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -295,6 +319,7 @@ fn run(args: &[String]) -> Result<()> {
             let kernel = optional_flag(rest, "--kernel").map(PathBuf::from);
             let init = init_flag(&root, arch, rest);
             let ramdisk = ramdisk_flag(&root, arch, rest);
+            let efiboot = efiboot::boot_args(&root, arch, rest)?;
             boot::qemu(
                 &root,
                 arch,
@@ -306,6 +331,7 @@ fn run(args: &[String]) -> Result<()> {
                     count: disks_flag(rest)?,
                     set: optional_flag(rest, "--disk-set"),
                 },
+                efiboot.as_ref(),
             )
         }
         ["smoke", rest @ ..] => {
@@ -336,6 +362,9 @@ fn run(args: &[String]) -> Result<()> {
                 .collect();
             let init = init_flag(&root, arch, rest);
             let ramdisk = ramdisk_flag(&root, arch, rest);
+            // `--image` or `--kernel K --root ...`: an efiboot boot (efiboot.rs), whose
+            // per-run image is made here, once, before any boot.
+            let efiboot = efiboot::boot_args(&root, arch, rest)?;
             // Killed when dropped, after the run.
             let _servers = https::start(&root, &flags(rest, "--https-server"))?;
             boot::smoke(
@@ -367,6 +396,7 @@ fn run(args: &[String]) -> Result<()> {
                         )),
                         None => None,
                     },
+                    efiboot: efiboot.as_ref(),
                 },
             )
         }
@@ -379,14 +409,18 @@ fn run(args: &[String]) -> Result<()> {
             let init = init_flag(&root, arch, rest);
             let ramdisk = ramdisk_flag(&root, arch, rest);
             let plan = twovm::parse_plan(rest)?;
+            let efiboot = efiboot::boot_args(&root, arch, rest)?;
             let _servers = https::start(&root, &flags(rest, "--https-server"))?;
             twovm::smoke2(
-                &root,
-                arch,
-                kernel.as_deref(),
-                optional_flag(rest, "--cmdline"),
-                init.as_deref(),
-                ramdisk.as_deref(),
+                &twovm::Boot {
+                    root: &root,
+                    arch,
+                    kernel: kernel.as_deref(),
+                    cmdline: optional_flag(rest, "--cmdline"),
+                    init: init.as_deref(),
+                    ramdisk: ramdisk.as_deref(),
+                    efiboot: efiboot.as_ref(),
+                },
                 plan,
             )
         }
@@ -495,6 +529,8 @@ fn run(args: &[String]) -> Result<()> {
                 optional_flag(rest, "--root-dev"),
             )
         }
+        // The removal of Limine (2026-11-26): the one efiboot image builder (efiboot.rs).
+        ["efiboot-image", rest @ ..] => efiboot::image_command(&root, rest),
         ["nvme-root", rest @ ..] => {
             let arch = boot::Arch::parse(flag(rest, "--arch")?)?;
             hwopts::nvme_root(

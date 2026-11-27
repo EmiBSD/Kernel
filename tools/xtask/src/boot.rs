@@ -333,6 +333,10 @@ pub(crate) enum BootMedium {
     /// A CD-ROM (`ide-cd`, read-only) on AHCI's first port, as `cd80.iso` is used (M16g,
     /// amd64 only).
     Cdrom,
+    /// An NVMe namespace on `virt`'s PCI bus (`--boot-on nvme`, an efiboot image, arm64):
+    /// EDK2 hands efiboot that disk, and the kernel's root is on it (smoke-nvme's case).
+    /// No medium is AHCI: EDK2 AArch64 maps no `ich9-ahci` disk (S0's probe 4).
+    Nvme,
 }
 
 /// The boot medium of the next VM [`qemu_command`] makes ([`BootMedium::Disk`] unless an
@@ -349,6 +353,25 @@ pub(crate) fn set_boot_medium(m: BootMedium) {
 /// The boot medium of the next VM.
 pub(crate) fn boot_medium() -> BootMedium {
     BOOT_MEDIUM.lock().map(|b| *b).unwrap_or(BootMedium::Disk)
+}
+
+/// Whether the boot image is attached with `snapshot=on` (an efiboot image: `--image` or
+/// `--root`, `efiboot.rs`): QEMU's writes go to a temporary overlay, so a shared image serves
+/// every recipe and both VMs of a two-VM run, and each QEMU start sees it as made.
+static BOOT_SNAPSHOT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Sets [`BOOT_SNAPSHOT`] for the VMs this run starts.
+pub(crate) fn set_boot_snapshot(on: bool) {
+    BOOT_SNAPSHOT.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The `-drive` suffix [`BOOT_SNAPSHOT`] asks for.
+fn snapshot_suffix() -> &'static str {
+    if BOOT_SNAPSHOT.load(std::sync::atomic::Ordering::Relaxed) {
+        ",snapshot=on"
+    } else {
+        ""
+    }
 }
 
 /// The QEMU id of the boot stick's own `qemu-xhci` ([`BootMedium::UsbStick`]).
@@ -378,6 +401,17 @@ fn removable_boot_args(medium: BootMedium, image: &Path) -> Option<Vec<String>> 
             ),
             "-device".to_string(),
             "ide-cd,drive=hd0,bus=ide.0,bootindex=0".to_string(),
+        ]),
+        // The serial is `--nvme`'s, which this medium replaces for the boot disk.
+        BootMedium::Nvme => Some(vec![
+            "-drive".to_string(),
+            format!(
+                "if=none,format=raw,file={},id=hd0{}",
+                image.display(),
+                snapshot_suffix()
+            ),
+            "-device".to_string(),
+            "nvme,drive=hd0,serial=EMIBSD0001,bootindex=0".to_string(),
         ]),
     }
 }
@@ -888,6 +922,8 @@ pub(crate) fn qemu_command(
                 cmd.args(["-M", &machine, "-cpu", &cpu]);
             }
             // M16g: the boot image as a USB stick (`distrib.rs`); no CD on arm64.
+            // An efiboot image on NVMe or AHCI (`--boot-on`) is a PCI device of `virt`'s,
+            // added here, before every other one.
             match removable_boot_args(boot_medium(), image) {
                 Some(_) if boot_medium() == BootMedium::Cdrom => {
                     return Err("the CD boot medium is amd64's (cd80.iso)".into());
@@ -897,8 +933,9 @@ pub(crate) fn qemu_command(
                 }
                 None => {
                     cmd.arg("-drive").arg(format!(
-                        "if=none,format=raw,file={},id=hd0",
-                        image.display()
+                        "if=none,format=raw,file={},id=hd0{}",
+                        image.display(),
+                        snapshot_suffix()
                     ));
                     cmd.args(["-device", &format!("{blk},drive=hd0,bootindex=0")]);
                 }
@@ -980,10 +1017,13 @@ pub fn qemu(
     init: Option<&Path>,
     ramdisk: Option<&Path>,
     disks: &Disks<'_>,
+    efiboot: Option<&crate::efiboot::EfiBoot>,
 ) -> Result<()> {
-    let image = match kernel {
-        Some(k) => image(root, arch, k, None, init, ramdisk)?,
-        None => {
+    let image = match (efiboot, kernel) {
+        // `--image` or `--root` (efiboot.rs): you type at `boot> ` yourself.
+        (Some(e), _) => e.image.clone(),
+        (None, Some(k)) => image(root, arch, k, None, init, ramdisk)?,
+        (None, None) => {
             let p = image_path(root, arch, None);
             if !p.is_file() {
                 return Err(format!(
@@ -1047,6 +1087,10 @@ pub struct SmokeOptions<'a> {
     /// `--timeout SECS`: the boot's time limit in place of [`SMOKE_TIMEOUT`], for a session
     /// that runs for longer than any boot (a build inside the guest); scaled as that one is.
     pub timeout: Option<Duration>,
+    /// `--image` or `--kernel K --root ...` (`efiboot.rs`): the efiboot image to boot in
+    /// place of `kernel`'s Limine image, the line typed at every `boot> ` and
+    /// `--expect-root`'s line.
+    pub efiboot: Option<&'a crate::efiboot::EfiBoot>,
 }
 
 /// Firmware failures that end a boot before the kernel runs and are not ours: each is the two
@@ -1118,10 +1162,12 @@ fn smoke_once(
         expect_ramdisk,
         disks,
         timeout,
+        efiboot,
     } = *opts;
-    let image = match kernel {
-        Some(k) => image(root, arch, k, cmdline, init, ramdisk)?,
-        None => {
+    let image = match (efiboot, kernel) {
+        (Some(e), _) => e.image.clone(),
+        (None, Some(k)) => image(root, arch, k, cmdline, init, ramdisk)?,
+        (None, None) => {
             let p = image_path(root, arch, None);
             if !p.is_file() {
                 return Err(format!(
@@ -1138,8 +1184,11 @@ fn smoke_once(
     let limit = time_limit(timeout.unwrap_or(SMOKE_TIMEOUT));
     // M16e (hwopts.rs): `--tpm`'s swtpm, stopped when this returns, after QEMU.
     let _swtpm = crate::hwopts::start_swtpm()?;
+    let mut typist = efiboot
+        .and_then(|e| e.boot_line.as_deref())
+        .map(crate::efiboot::BootTypist::new);
     let mut cmd = qemu_command(root, arch, &image, "stdio", None, &disks)?;
-    cmd.stdin(if !sends.is_empty() {
+    cmd.stdin(if !sends.is_empty() || typist.is_some() {
         Stdio::piped()
     } else {
         Stdio::null()
@@ -1162,10 +1211,12 @@ fn smoke_once(
     let err_reader = thread::spawn(move || slurp(stderr));
 
     let rd_expect = expect_ramdisk.then(|| ramdisk_expectation(ramdisk));
+    let root_expect = efiboot.and_then(|e| e.expect_root.as_deref());
     let all_expects: Vec<&str> = expects
         .iter()
         .copied()
         .chain(rd_expect.as_deref())
+        .chain(root_expect)
         .collect();
     let mut timed_out = false;
     let mut stopped_when_seen = false;
@@ -1175,6 +1226,20 @@ fn smoke_once(
     let mut heartbeat = Heartbeat::new();
     let exit = loop {
         heartbeat.tick(arch.name(), transcript.lock().map(|t| t.len()).unwrap_or(0));
+        // An efiboot boot: the boot line at each new `boot> ` (efiboot.rs); the typist
+        // looks only at the bytes that arrived since its last poll.
+        if let Some(typist) = typist.as_mut() {
+            let due = transcript.lock().is_ok_and(|t| typist.poll(&t));
+            if let (true, Some(stdin)) = (due, stdin.as_mut()) {
+                send_paced(stdin, typist.line())?;
+                println!(
+                    "xtask: typed {:?} at {:?} after {:.1}s",
+                    typist.line(),
+                    crate::efiboot::BOOT_PROMPT,
+                    started.elapsed().as_secs_f32()
+                );
+            }
+        }
         if let Some((after, text)) = sends.get(next_send).copied() {
             let found = transcript.lock().ok().and_then(|t| {
                 let s = String::from_utf8_lossy(&t[search_from.min(t.len())..]).into_owned();
@@ -1383,6 +1448,16 @@ pub(crate) fn slurp_into(mut r: impl Read, into: &Mutex<Vec<u8>>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_efiboot_image_boots_from_nvme() {
+        let img = Path::new("/x/emibsd-tree.img");
+        assert_eq!(removable_boot_args(BootMedium::Disk, img), None);
+        let nvme = removable_boot_args(BootMedium::Nvme, img).unwrap();
+        assert_eq!(nvme[0], "-drive");
+        assert!(nvme[1].starts_with("if=none,format=raw,file=/x/emibsd-tree.img,id=hd0"));
+        assert_eq!(nvme[3], "nvme,drive=hd0,serial=EMIBSD0001,bootindex=0");
+    }
 
     #[test]
     fn archs_list_parses_as_decision_44_says() {
