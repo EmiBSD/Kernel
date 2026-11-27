@@ -1542,10 +1542,14 @@ ext2_host := "--cat /m10d-ext2.txt=m10d-ext2-42 --cat /d/sub.txt=m10d-ext2-sub-4
 # (M13): the controller is the first device on `virt`'s PCI bus (pciecam, device tree; pci0
 # dev 1) and interrupts by MSI-X through the GICv2m frame (ampintcmsi); the virtio-mmio disks
 # attach before the PCI bus, so the persistent disk is sd0, the boot image sd1 and the
-# namespace sd2 (`nvme-root --root-dev sd2a`). Part of `smoke`.
+# namespace sd2 (`nvme-root --root-dev sd2a`). Since the removal of Limine (2026-11-26) the
+# arm64 namespace IS the boot disk: a per-run efiboot image of the staged tree with
+# `nvme_duid` in its label (`--root tree --duid`, fstab root by that DUID), attached as the
+# namespace (`--boot-on nvme`), so efiboot loads /bsd from it and passes its DUID; with no
+# virtio boot disk the namespace is sd1 (scsibus1). Part of `smoke`.
 nvme_duid := "4e564d45524f4f54"
 
-smoke-nvme: (build-amd64 "--features qemu") build-init-amd64 (build-arm64 "--features qemu") build-init-arm64
+smoke-nvme: (build-amd64 "--features qemu") build-init-amd64 (build-arm64 "--features qemu") build-init-arm64 efiboot-images-arm64
     @test {{ramdisks}} || \
         { echo "smoke-nvme: no ramdisk image; run just userland first"; exit 1; }
     {{no_amd64}}{{xtask}} nvme-root --arch amd64 --duid {{nvme_duid}}
@@ -1567,22 +1571,21 @@ smoke-nvme: (build-amd64 "--features qemu") build-init-amd64 (build-arm64 "--fea
         --expect "nvme0: NVMe 1.4, NVM I/O command set, Enabled, Ready" --expect "nvme0 0 Online" \
         --expect "Namespace 1" --expect "m13a-nvme-42" --expect "524288 bytes transferred" \
         --expect "4194304 bytes transferred" --expect "m13a-raw-42" --reject "mount -uw / failed"
-    {{xtask}} nvme-root --arch arm64 --duid {{nvme_duid}} --root-dev sd2a
-    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --ramdisk none --expect-ramdisk \
-        --nvme nvme-arm64.img --cmdline "bootduid={{nvme_duid}}" --until-seen \
+    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --root tree --duid {{nvme_duid}} --expect-root \
+        --boot-on nvme --until-seen \
         {{disk_login}} \
         --send-after '# ' --send 'mount\n' \
         --send-after '# ' --send 'bioctl nvme0\n' \
         --send-after '# ' --send 'echo m13a-nvme-$((40+2)) >/m13a.txt && cat /m13a.txt\n' \
-        --send-after '# ' --send 'dd if=/dev/zero of=/dev/rsd2c bs=64k seek=1010 count=8 && dd if=/dev/rsd2c of=/dev/null bs=64k count=64\n' \
-        --send-after '# ' --send 'echo m13a-raw-$((40+2)) | dd of=/dev/rsd2c bs=512 seek=130000 conv=sync 2>/dev/null; dd if=/dev/rsd2c bs=512 skip=130000 count=1 2>/dev/null\n' \
+        --send-after '# ' --send 'dd if=/dev/zero of=/dev/rsd1c bs=64k seek=1010 count=8 && dd if=/dev/rsd1c of=/dev/null bs=64k count=64\n' \
+        --send-after '# ' --send 'echo m13a-raw-$((40+2)) | dd of=/dev/rsd1c bs=512 seek=130000 conv=sync 2>/dev/null; dd if=/dev/rsd1c bs=512 skip=130000 count=1 2>/dev/null\n' \
         --send-after '# ' --send 'vmstat -i\n' \
         --expect "nvme0 at pci0 dev 1 function 0 vendor 0x1b36 product 0x0010 rev 0x02: msix, NVMe 1.4" \
         --expect "nvme0: QEMU NVMe Ctrl, firmware " --expect "serial EMIBSD0001" \
-        --expect "scsibus2 at nvme0: 257 targets, initiator 0" \
-        --expect "sd2 at scsibus2 targ 1 lun 0: <NVMe, QEMU NVMe Ctrl, " \
-        --expect "root on sd2a ({{nvme_duid}}.a) swap on sd2b dump on sd2b" \
-        --expect "rc: multi-user" --expect "/dev/sd2a on / type ffs (local)" \
+        --expect "scsibus1 at nvme0: 257 targets, initiator 0" \
+        --expect "sd1 at scsibus1 targ 1 lun 0: <NVMe, QEMU NVMe Ctrl, " \
+        --expect "root on sd1a ({{nvme_duid}}.a) swap on sd1b dump on sd1b" \
+        --expect "rc: multi-user" --expect "/dev/sd1a on / type ffs (local)" \
         --expect "nvme0: NVMe 1.4, NVM I/O command set, Enabled, Ready" --expect "nvme0 0 Online" \
         --expect "Namespace 1" --expect "m13a-nvme-42" --expect "524288 bytes transferred" \
         --expect "4194304 bytes transferred" --expect "m13a-raw-42" --expect "/nvme0" \
@@ -1654,7 +1657,8 @@ smoke-ahci: (build-amd64 "--features qemu") build-init-amd64 (build-arm64 "--fea
 # M16f: smmu(4). arm64 only. `virt,iommu=smmuv3` (`--iommu smmuv3`, hwopts.rs) puts QEMU's
 # SMMUv3 in front of the PCIe bus; its device-tree node attaches smmu0 at mainbus0 before
 # pciecam, and pciecam's `iommu-map` hands every PCI function the DMA tag of its stream's
-# domain. The NVMe root disk of `smoke-nvme` (its own image, `smmu-arm64.img`) is mounted
+# domain. The NVMe root disk of `smoke-nvme` (its own per-run efiboot image with `smmu_duid`,
+# booted from the namespace, `--boot-on nvme`, sd1) is mounted
 # through it: with the SMMU enabled, DMA that bypasses the stream's domain aborts (checked
 # once by handing the PCI functions their untranslated tags: nvme0 could not even identify
 # and smmu0 printed `smmu0: event 0x800000010 ...` for stream 8), so a root mounted
@@ -1666,24 +1670,23 @@ smoke-ahci: (build-amd64 "--features qemu") build-init-amd64 (build-arm64 "--fea
 # disabled (bypass) and the virtio PCI disk must still work. Part of `smoke`.
 smmu_duid := "534d4d55524f4f54"
 
-smoke-smmu: (build-arm64 "--features qemu") build-init-arm64 efiboot-arm64
+smoke-smmu: (build-arm64 "--features qemu") build-init-arm64 efiboot-arm64 efiboot-images-arm64
     @test -f target/userland/arm64/ramdisk.ffs -a -x target/userland/arm64/host/bin/makefs || \
         { echo "smoke-smmu: no ramdisk image or makefs; run just userland first"; exit 1; }
-    {{xtask}} nvme-root --arch arm64 --duid {{smmu_duid}} --out smmu-arm64.img --root-dev sd2a
-    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --ramdisk none --expect-ramdisk \
-        --iommu smmuv3 --nvme smmu-arm64.img --cmdline "bootduid={{smmu_duid}}" --until-seen \
+    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --root tree --duid {{smmu_duid}} --expect-root \
+        --iommu smmuv3 --boot-on nvme --until-seen \
         {{disk_login}} \
         --send-after '# ' --send 'mount\n' \
         --send-after '# ' --send 'echo m16f-smmu-$((40+2)) >/m16f.txt && cat /m16f.txt\n' \
-        --send-after '# ' --send 'dd if=/dev/zero of=/dev/rsd2c bs=64k seek=1010 count=8 && dd if=/dev/rsd2c of=/dev/null bs=64k count=64\n' \
-        --send-after '# ' --send 'echo m16f-raw-$((40+2)) | dd of=/dev/rsd2c bs=512 seek=130000 conv=sync 2>/dev/null; dd if=/dev/rsd2c bs=512 skip=130000 count=1 2>/dev/null\n' \
+        --send-after '# ' --send 'dd if=/dev/zero of=/dev/rsd1c bs=64k seek=1010 count=8 && dd if=/dev/rsd1c of=/dev/null bs=64k count=64\n' \
+        --send-after '# ' --send 'echo m16f-raw-$((40+2)) | dd of=/dev/rsd1c bs=512 seek=130000 conv=sync 2>/dev/null; dd if=/dev/rsd1c bs=512 skip=130000 count=1 2>/dev/null\n' \
         --send-after '# ' --send 'vmstat -i\n' \
         --expect "smmu0 at mainbus0" \
         --expect "nvme0 at pci0 dev 1 function 0 vendor 0x1b36 product 0x0010 rev 0x02: msix, NVMe 1.4" \
-        --expect "scsibus2 at nvme0: 257 targets, initiator 0" \
-        --expect "sd2 at scsibus2 targ 1 lun 0: <NVMe, QEMU NVMe Ctrl, " \
-        --expect "root on sd2a ({{smmu_duid}}.a) swap on sd2b dump on sd2b" \
-        --expect "rc: multi-user" --expect "/dev/sd2a on / type ffs (local)" \
+        --expect "scsibus1 at nvme0: 257 targets, initiator 0" \
+        --expect "sd1 at scsibus1 targ 1 lun 0: <NVMe, QEMU NVMe Ctrl, " \
+        --expect "root on sd1a ({{smmu_duid}}.a) swap on sd1b dump on sd1b" \
+        --expect "rc: multi-user" --expect "/dev/sd1a on / type ffs (local)" \
         --expect "m16f-smmu-42" --expect "524288 bytes transferred" \
         --expect "4194304 bytes transferred" --expect "m16f-raw-42" --expect "/nvme0" \
         --reject "smmu0: " --reject "mount -uw / failed"
@@ -2296,7 +2299,7 @@ smoke-gicv3: (build-arm64 "--features qemu") build-init-arm64 efiboot-arm64 efib
 # arm64 does the same through psci(4) (dev/fdt/psci.c, `psci0 at mainbus0`): `halt -p` is
 # PSCI SYSTEM_OFF (powerdownfn = psci_powerdown) and `reboot` is SYSTEM_RESET
 # (cpuresetfn = psci_reset). Part of `smoke`.
-smoke-power: (build-amd64 "--features qemu") (build-arm64 "--features qemu") build-init-amd64 build-init-arm64
+smoke-power: (build-amd64 "--features qemu") (build-arm64 "--features qemu") build-init-amd64 build-init-arm64 efiboot-images-arm64
     @test {{ramdisks}} || \
         { echo "smoke-power: no ramdisk image; run just userland first"; exit 1; }
     {{xtask}} smoke {{reject}} {{smp}} --arch amd64 --kernel target/{{amd64}}/debug/bsd --expect-ramdisk --status 0 \
@@ -2313,12 +2316,12 @@ smoke-power: (build-amd64 "--features qemu") (build-arm64 "--features qemu") bui
         --send-after '# ' --send 'echo m13-power-$((40+2))\n' \
         --expect "acpi0 at bios0: ACPI 3.0" --expect "rebooting..." --expect "m13-power-42" \
         --reject "The operating system has halted"
-    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --expect-ramdisk --status 0 \
+    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --image tree --expect-root --status 0 \
         {{disk_login}} --send-after '# ' --send 'halt -p\n' \
         --expect "psci0 at mainbus0: PSCI 1." --expect "rc: multi-user" --expect "halt -p" \
         --expect "Attempting to power down..." \
         --reject "rebooting..." --reject "The operating system has halted"
-    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --expect-ramdisk --reboot --until-seen \
+    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --image tree --expect-root --reboot --until-seen \
         {{disk_login}} --send-after '# ' --send 'reboot\n' \
         --send-after 'login:' --send 'root\n' --send-after 'Password:' --send 'emibsd\n' \
         --send-after '# ' --send 'echo m13-power-$((40+2))\n' \
@@ -3164,12 +3167,12 @@ ukc_check := "--cmdline '-c' --expect-ramdisk --until-seen " + \
     "--expect 'User Kernel Config' --expect 'vio* disabled' --expect 'Continuing...' " + \
     "--expect 'rc: multi-user' --expect 'ukc-42' --reject 'vio0 at virtio'"
 
-smoke-ukc: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
+smoke-ukc: (build-amd64 "--features qemu") (build-arm64 "--features qemu") efiboot-images-arm64
     @test {{ramdisks}} || \
         { echo "smoke-ukc: no ramdisk image; run just userland first"; exit 1; }
     {{xtask}} smoke {{reject}} {{smp}} --arch amd64 --kernel target/{{amd64}}/debug/bsd {{ukc_check}} \
         --expect '  4 vio* at virtio* flags 0x0'
-    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd {{ukc_check}} \
+    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --image tree {{replace(replace(ukc_check, "--cmdline '-c'", "--boot-flags -c"), "--expect-ramdisk", "--expect-root")}} \
         --expect '  4 vio* at virtio*|virtio* flags 0x0'
 
 # M16e: ppb(4), both archs. `--pci-bridges` (hwopts.rs) puts a virtio-blk disk behind a PCI
