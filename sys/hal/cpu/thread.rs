@@ -135,6 +135,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::assert::hal_panic;
 use crate::cpu::intr::IPL_SCHED;
+use crate::cpu::usertrap::UserExit;
 use crate::sync::mutex::{Mutexed, MutexedGuard, SharedMutex};
 use crate::sync::once::OnceStatic;
 
@@ -586,11 +587,13 @@ impl Next {
 /// The start a new thread's trampoline calls with the scheduler's hold it adopted and the
 /// two words its maker gave [`thread_setup`] (the C's `proc_trampoline_mi` and `func(arg)`):
 /// registered once, by `kernel::proc::fork::init` (N4.6a; `bsd`'s `fork1` registered it before).
-static START: OnceStatic<fn(SchedHold, usize, usize)> = OnceStatic::new();
+/// A start that returns leaves for user mode, and returns the exit gate's token
+/// (`hal::cpu::usertrap::UserExit`): it ran the AST loop (decision 56).
+static START: OnceStatic<fn(SchedHold, usize, usize) -> UserExit> = OnceStatic::new();
 
 /// Registers the start of new threads, once; a second registration keeps the first.
 pub fn register_start(
-    f: fn(SchedHold, usize, usize),
+    f: fn(SchedHold, usize, usize) -> UserExit,
 ) -> Result<(), crate::bridges::AlreadyRegistered> {
     START
         .set(f)
@@ -847,8 +850,8 @@ fn fresh(slot: &MachineSlot, what: &str) {
 
 /// The trampoline's machine-independent part (`proc_trampoline_mi`'s first step): the hold of
 /// the lock the switch to this new thread kept, adopted, and the registered start called
-/// with it and the two words.
-pub(crate) fn trampoline(start: usize, arg: usize) {
+/// with it and the two words; its token when it returns, for the first return to user mode.
+pub(crate) fn trampoline(start: usize, arg: usize) -> UserExit {
     let hold = SchedHold::adopt();
     match START.get() {
         Some(f) => f(hold, start, arg),

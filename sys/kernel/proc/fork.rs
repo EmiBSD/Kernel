@@ -112,6 +112,7 @@ use core::sync::atomic::{AtomicI32, AtomicU32, Ordering, fence};
 
 use hal::cpu::intr::IPL_NONE;
 use hal::cpu::thread::{SchedHold, UArea};
+use hal::cpu::usertrap::UserExit;
 use hal::mem::pool::PoolBox;
 use hal::sync::klock;
 use hal::sync::mutex::Mutexed;
@@ -321,9 +322,12 @@ pub fn init<G: ProcGlue>() -> Result<(), hal::bridges::AlreadyRegistered> {
 
 /// The start `hal::cpu::thread` calls on a new thread with the scheduler's hold its switch kept
 /// and the two words `fork1` gave: `proc_trampoline_mi` (`kernel::sched::trampoline_mi`,
-/// which releases the hold), then what [`Start`] names. Returns to the trampoline when the
-/// thread is to return to user mode (`child_return`).
-fn thread_start<G: ProcGlue>(hold: SchedHold, start: usize, arg: usize) {
+/// which releases the hold), then what [`Start`] names. When that returns the thread goes to
+/// user mode (`child_return`, `start_init` after its `execve`; the C's `proc_trampoline`
+/// takes `syscall_return` after any function that returns): the AST loop
+/// (`kernel::trap::user_exit`, the C's `do_ast`) runs here, and its token goes back to the
+/// trampoline for the return.
+fn thread_start<G: ProcGlue>(hold: SchedHold, start: usize, arg: usize) -> UserExit {
     crate::sched::trampoline_mi::<G>(hold);
     let Some(s) = Start::from_words(start, arg) else {
         kpanic(format_args!("proc_trampoline: no thread start {start:#x}"));
@@ -347,6 +351,7 @@ fn thread_start<G: ProcGlue>(hold: SchedHold, start: usize, arg: usize) {
         Start::NfsIod => crate::fs::nfs::nfs_syscalls::nfssvc_iod::<G>(),
         Start::Legacy(f, arg) => f(ptr::with_exposed_provenance_mut(arg)),
     }
+    crate::trap::user_exit::<G>()
 }
 
 /// `fork_return`: the first thing a forked child runs when the parent asked `ptrace(2)` to

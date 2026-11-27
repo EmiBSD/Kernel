@@ -132,6 +132,10 @@
 //! - `cpu_id_aa64pfr0`, `pfr1`, `isar0`, `isar1`, `isar2` (`cpu.c`'s userland view of the ID
 //!   registers, `emulate_msr`'s answers) are this module's statics, which `bsd`'s CPU code
 //!   writes (`cpu_identify_cleanup`).
+//! - Decision 56 (E1): `ast()`'s machine-independent work (`refreshcreds`, `uvmexp.softs`,
+//!   `mi_ast` with `ci_want_resched`, `userret`) is the kernel's `kernel::trap::ast`, asked
+//!   in one call (`TrapHandler::ast`) where it took three; the frame stays recorded here
+//!   until the trap moves to `entry` (E2).
 //! - N4.8d: `do_el0_sync` reads the frame's `elr` or `sp` in the arm that uses it, not once
 //!   for every exception, and `udata_abort` hands `PROC_STACK(p)`, read from the frame it
 //!   holds, to the kernel's `MAP_STACK` check in `hal::cpu::trap::FaultSource::User { sp }`: a user
@@ -682,7 +686,10 @@ pub fn dumpregs(frame: &Trapframe) {
 }
 
 /// `ast(tf)`: the asynchronous system trap on the way back to user mode (`do_ast` in
-/// `exception.S`), with the frame of the thread returning there, its [`UserFrame`].
+/// `exception.S`, after a trap from user mode), with the frame of the thread returning
+/// there, its [`UserFrame`]: the frame recorded, then the kernel's `ast()` (`refreshcreds`,
+/// the counter, `mi_ast`, `userret`) in one call. A new thread's first return runs the
+/// kernel's own loop instead (`hal::cpu::usertrap`).
 pub(crate) extern "C" fn ast(tf: *mut Trapframe) {
     let tf = UserFrame::from_entry(tf);
     if !have_curproc() {
@@ -692,10 +699,7 @@ pub(crate) extern "C" fn ast(tf: *mut Trapframe) {
 
     tf.make_current();
 
-    h.refreshcreds();
-    UVMEXP.softs.fetch_add(1, Ordering::Relaxed);
-    h.ast(curcpu().want_resched() != 0);
-    h.userret();
+    h.ast();
 }
 
 /// `arm_cpu_irq`: `ci_idepth` around the controller's dispatch (`arm_irq_dispatch`).

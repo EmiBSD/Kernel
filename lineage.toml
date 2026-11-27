@@ -14207,7 +14207,7 @@ reason = "hal runtime, written new (N3.3 fix-up): printf(9) for the crates above
 [[extra]]
 rust = "sys/hal/cpu/trap.rs"
 crate = "hal"
-reason = "hal runtime, written new (N4.8b): what the machine's trap code asks the kernel: the TrapHandler registration (the fault on the chosen map, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast, mi_child_return), the CpuHooks (ci_flush_bp, ci_serror, fault()'s ci_panicbuf) and the Debugger (db_ktrap); forbid, 0 unsafe; bridges.toml TrapHandler, CpuHooks, Debugger; N4.8b b3: proc_pc and proc_stack, PROC_PC/PROC_STACK of the running thread (arm64: its UserFrame; the host: a test's registers), replacing ProcGlue::proc_pc and proc_stack; N7.abi2 (decision 53): handler() pub, for kernel::syscall::syscall_return"
+reason = "hal runtime, written new (N4.8b): what the machine's trap code asks the kernel: the TrapHandler registration (the fault on the chosen map, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast (since decision 56 E1 the whole of ast(): kernel::trap::ast), mi_child_return), the CpuHooks (ci_flush_bp, ci_serror, fault()'s ci_panicbuf) and the Debugger (db_ktrap); forbid, 0 unsafe; bridges.toml TrapHandler, CpuHooks, Debugger; N4.8b b3: proc_pc and proc_stack, PROC_PC/PROC_STACK of the running thread (arm64: its UserFrame; the host: a test's registers), replacing ProcGlue::proc_pc and proc_stack; N7.abi2 (decision 53): handler() pub, for kernel::syscall::syscall_return"
 
 [[extra]]
 rust = "sys/hal/cpu/usertrap.rs"
@@ -16787,6 +16787,13 @@ kind = "moved"
 lz = "sys/kern/kern_sysctl.rs::disk_stats_copy"
 native = ["sys/kernel/dev/disk.rs::disk_stats"]
 kind = "moved"
+
+[[module]]
+rust = "sys/kernel/trap.rs"
+crate = "kernel"
+lz = ["sys/arch/arm64/arm64/ast.rs"]
+status = "redesigned"
+notes = "Decision 56, E1 (the way out): ast.c's ast() as the kernel's, generic over ProcGlue (refreshcreds, uvmexp.softs, mi_ast with ci_want_resched, userret; the pcb_tf store dropped, P5: the frame is always at one place), and do_ast's loop (user_exit) over hal::cpu::usertrap::ExitGate, which hands out the UserExit token; a new thread's first return runs it from kernel::proc::fork's thread_start, a trap's return still through exception.S's do_ast and TrapHandler::ast (one call) until E2. LZ's ast.rs is also listed by sys/hal/arch/arm64/trap.rs, which keeps the frame's half (ast's curproc check and pcb_tf) until E2"
 
 [[module]]
 rust = "sys/kernel/syscall.rs"

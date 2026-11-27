@@ -96,7 +96,7 @@
 //! **One symbol of `bsd`'s** the assembly calls, as the C's `cpuswitch.S` does, until its
 //! owner moves (the pmap's switch record): `pmap_setttb` (`sys/arch/arm64/arm64/cpuswitch.rs`,
 //! the new thread's address space, called with the thread `ci_curproc` now names). A new
-//! user thread's way out, `syscall_return` (`exception.S`), is `hal`'s own since N4.8b.
+//! user thread's way out, `hal_user_first_return` (`exception.S`), is `hal`'s own.
 //!
 //! ## Deviations
 //! - No retguard: the cookie load/calc/check around the stack pivot has no counterpart in
@@ -127,6 +127,11 @@
 //!   the two, and the first run calls nothing upward for it. The ports of ptrace and core
 //!   dumps keep that invariant: another thread's registers are read only once it stopped,
 //!   never from a `CTX_FRESH` slot.
+//! - Decision 56 (E1): a new thread's start returns the exit gate's token
+//!   (`hal::cpu::usertrap::UserExit`) once the kernel ran its AST loop, and
+//!   `hal_proc_trampoline` branches to `hal_user_first_return` (`exception.S`: the restore and
+//!   the return), the C's `syscall_return` without its `do_ast`: `hal` no longer calls up
+//!   for the AST of a first return.
 
 use core::arch::global_asm;
 use core::mem::offset_of;
@@ -141,6 +146,7 @@ use crate::arch::arm64::include::tcb::__aarch64_set_tcb;
 use crate::arch::arm64::syscall::set_return;
 use crate::assert::hal_panic;
 use crate::cpu::thread::{MachineSlot, SONPROC, UserStart};
+use crate::cpu::usertrap::UserExit;
 use crate::cpu::{CORE_CURPCB, CORE_CURPROC};
 use sysdefs::base::types::Register;
 
@@ -416,10 +422,12 @@ fn build_frames(
 }
 
 /// What `hal_proc_trampoline` calls with the switch frame's `sf_x19` and `sf_x20`: the
-/// machine-independent start (`hal::cpu::thread`'s trampoline, then the registered start). When
-/// it returns the assembly takes `syscall_return` to user mode.
-extern "C" fn trampoline_run(start: usize, arg: usize) {
-    crate::cpu::thread::trampoline(start, arg);
+/// machine-independent start (`hal::cpu::thread`'s trampoline, then the registered start).
+/// It returns only with the exit gate's token (the kernel's AST loop ran, the interrupts are
+/// masked), and the assembly then takes `hal_user_first_return` to user mode; the token's
+/// word in `x0` is not read.
+extern "C" fn trampoline_run(start: usize, arg: usize) -> UserExit {
+    crate::cpu::thread::trampoline(start, arg)
 }
 
 /* </CODE> */

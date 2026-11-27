@@ -92,6 +92,7 @@ pub mod syscall;
 #[cfg(any(test, feature = "doubles"))]
 pub mod testutil;
 pub mod time;
+pub mod trap;
 pub mod tty;
 pub mod vm;
 /* </CODE> */

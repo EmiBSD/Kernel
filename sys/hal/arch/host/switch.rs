@@ -201,7 +201,7 @@ fn spawn(addr: usize, start: usize, arg: usize) {
     let g = gate(addr);
     std::thread::spawn(move || {
         wait(&g);
-        crate::cpu::thread::trampoline(start, arg);
+        let _exit = crate::cpu::thread::trampoline(start, arg);
         // A thread whose start returns leaves for user mode on a machine; the host has none.
         loop {
             std::thread::park();

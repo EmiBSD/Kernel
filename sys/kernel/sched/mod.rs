@@ -2658,7 +2658,7 @@ pub(crate) mod tests {
     }
 
     /// The registered start: `proc_trampoline_mi`, then the idle loop or a body.
-    fn test_start(hold: SchedHold, start: usize, arg: usize) {
+    fn test_start(hold: SchedHold, start: usize, arg: usize) -> hal::cpu::usertrap::UserExit {
         trampoline_mi::<SchedGlue>(hold);
         match start {
             START_IDLE => sched_idle::<SchedGlue>(arg),
@@ -2666,7 +2666,7 @@ pub(crate) mod tests {
                 let f = lock(&BODIES)[arg];
                 f();
                 // A body ends as a dead thread does (its host thread parks once switched away).
-                with_curproc::<SchedGlue, _>(|p| sched_exit(p));
+                with_curproc::<SchedGlue, _>(|p| sched_exit(p))
             }
         }
     }
