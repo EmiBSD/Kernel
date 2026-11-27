@@ -28,14 +28,17 @@
 //! Per arch, both systems boot one after the other, never side by side, on the machine
 //! `diff-openbsd` gives them (`--smp 4` by default, the same CPU model, virtio disks and NICs)
 //! and with the same memory (`boot::VM_MEMORY`; `diff-openbsd` itself gives OpenBSD 1 GiB):
-//! EmiBSD is the smokes' MP kernel with the ramdisk, OpenBSD the installed snapshot of
-//! `diff-openbsd` (`target/openbsd/<arch>/disk.img` under `-snapshot`; never downloaded or
+//! EmiBSD is the smokes' MP kernel on an efiboot image of the smokes' staged tree (the root on
+//! its partition `a`, attached with `snapshot=on`, `efiboot::tree_image`), OpenBSD the
+//! installed snapshot of `diff-openbsd` (`target/openbsd/<arch>/disk.img` under `-snapshot`;
+//! never downloaded or
 //! installed here: a missing `installed` marker stops the run). Each of `--reps` runs (10)
 //! boots EmiBSD, then OpenBSD (the order alternates from run to run), and measures:
 //!
 //! - `boot`: seconds from QEMU's start (the firmware's) to the first `login:` on the serial
-//!   console, firmware and boot loader included (OpenBSD's efiboot waits at its `boot>`
-//!   prompt; EmiBSD's Limine does not);
+//!   console, firmware and boot loader included (OpenBSD's efiboot waits out its `boot>`
+//!   prompt's timeout; EmiBSD's has none, and `boot` is typed at it at once; until the
+//!   removal of Limine, 2026-11-26, EmiBSD booted through Limine with the ramdisk);
 //! - `tools/bench` (ISC, ours, `bench.c`), the same static binary on both: ns per op of
 //!   `pagefault` (first touch of a page of a fresh anonymous mapping), `forkexit`, `forkexec`
 //!   (fork and exec of the program itself as a trivial `true`), `pipe` (a one-byte round trip
@@ -43,7 +46,7 @@
 //!   scratch disk, a fresh 384 MiB virtio disk, FFS, mounted again after the file is written)
 //!   and `filecreate` (open(2) with `O_CREAT`, close(2) and unlink(2) of a file beside it,
 //!   N5.5a2: the UFS create and remove path; after `fileread`, which stays cold);
-//!   EmiBSD runs it from the ramdisk, OpenBSD fetches it from `diff-openbsd`'s HTTP server.
+//!   EmiBSD runs it from its root, OpenBSD fetches it from `diff-openbsd`'s HTTP server.
 //!   Each boot runs it twice: a warm-up pass, checked and discarded, then, with the scratch
 //!   disk mounted again (the file cold once more), the pass that is recorded;
 //! - unless `--no-tcpbench`: tcpbench(1), `smoke-tcpbench`'s two VMs on `smoke2`'s private
@@ -72,7 +75,7 @@
 //! `--profile release` (decision 42, a diagnostic beside the baseline, never in its place)
 //! boots the kernel of the release profile, `target/<triple>/release/bsd` (Cargo.toml's
 //! `[profile.release]`: LTO, one codegen unit, symbols kept), instead of the debug one;
-//! init and the ramdisk are the same files as with `debug`, so only the kernel (the ABI
+//! the staged tree is the same as with `debug`, so only the kernel (the ABI
 //! linked in) changes profile. The report records it (`profile = "release"`; a report without
 //! the key is a debug one) and the table's first line says it; `just bench-release` builds
 //! that kernel and sets `EMIBSD_RUN_DIR` to `target/bench-release`.
@@ -458,17 +461,10 @@ fn run_arch(root: &Path, arch: Arch, reps: usize, tcpbench: bool, profile: &str)
     fs::copy(&prog, www.join("bench")).map_err(|e| format!("{}: {e}", prog.display()))?;
     let server = http::Server::start(&www)?;
     let kernel = kernel_path(root, arch, profile);
-    let init = boot::default_init(root, arch);
-    let ramdisk = boot::default_ramdisk(root, arch);
-    let image = boot::image_tagged(
-        root,
-        arch,
-        Some("bench"),
-        &kernel,
-        None,
-        init.as_deref(),
-        ramdisk.as_deref(),
-    )?;
+    // One efiboot image of the staged tree with this run's kernel, which every EmiBSD VM of
+    // the run (the runs and both tcpbench VMs) attaches with `snapshot=on`.
+    let image = boot::image_path(root, arch, Some("bench"));
+    crate::efiboot::tree_image(root, arch, &kernel, &image)?;
 
     let mut emi: Vec<One> = Vec::new();
     let mut obsd: Vec<One> = Vec::new();
@@ -525,20 +521,12 @@ fn run_arch(root: &Path, arch: Arch, reps: usize, tcpbench: bool, profile: &str)
             &work,
             reps,
             &mut host,
+            Some(crate::efiboot::BOOT_LINE),
             &|l: &VmLink| {
-                let img = boot::image_tagged(
-                    root,
-                    arch,
-                    Some(l.tag),
-                    &kernel,
-                    None,
-                    init.as_deref(),
-                    ramdisk.as_deref(),
-                )?;
                 boot::qemu_command(
                     root,
                     arch,
-                    &img,
+                    &image,
                     "stdio",
                     Some(l),
                     &Disks {
@@ -555,6 +543,7 @@ fn run_arch(root: &Path, arch: Arch, reps: usize, tcpbench: bool, profile: &str)
             &work,
             reps,
             &mut host,
+            None,
             &|l: &VmLink| diffopenbsd::openbsd_qemu(root, arch, &Boot::Link(l)),
         )?;
         (tcp_emi, qemu.emibsd_link) = e;
@@ -672,7 +661,8 @@ fn host_line(h: &HostRun) -> String {
     )
 }
 
-/// One boot of EmiBSD: the smokes' MP kernel and ramdisk, a fresh scratch disk as `sd0`.
+/// One boot of EmiBSD: the smokes' MP kernel on the efiboot image of the staged tree
+/// (`boot` typed at efiboot's `boot> `), a fresh scratch disk as `sd0`.
 fn emibsd_run(root: &Path, arch: Arch, image: &Path, work: &Path, rep: usize) -> Result<One> {
     let disk = boot::disk_path_n(root, arch, Some("bench"), 0);
     let make = || -> Result<Command> {
@@ -693,6 +683,7 @@ fn emibsd_run(root: &Path, arch: Arch, image: &Path, work: &Path, rep: usize) ->
     let (mut vm, boot_s, qemu) = boot_login(
         &format!("emibsd-{}", arch.name()),
         &work.join(format!("emibsd-{rep}.log")),
+        Some(crate::efiboot::BOOT_LINE),
         &make,
         boot::time_limit(Duration::from_secs(600)),
     )?;
@@ -721,6 +712,7 @@ fn openbsd_run(
     let (mut vm, boot_s, qemu) = boot_login(
         &format!("openbsd-{}", arch.name()),
         &work.join(format!("openbsd-{rep}.log")),
+        None,
         &make,
         boot::time_limit(Duration::from_secs(900)),
     )?;
@@ -798,12 +790,15 @@ fn run_program(vm: &mut Vm, disk: &str, prog: &str) -> Result<BTreeMap<String, f
 }
 
 /// Boots the VM `make` describes and logs in as root; the VM, the seconds from QEMU's start
-/// to `login:`, and the QEMU command line. A boot that ends in one of
+/// to `login:`, and the QEMU command line. With `boot_line` (EmiBSD's efiboot image, whose
+/// `boot.conf` turns the prompt's timeout off) that line is typed at efiboot's `boot> `
+/// first; OpenBSD's installed efiboot boots by itself. A boot that ends in one of
 /// `boot::FIRMWARE_FLAKES` before the kernel ran is booted once more, as a smoke's is (its
 /// log is `<log>.retry`).
 fn boot_login(
     name: &str,
     log: &Path,
+    boot_line: Option<&str>,
     make: &dyn Fn() -> Result<Command>,
     limit: Duration,
 ) -> Result<(Vm, f64, String)> {
@@ -814,7 +809,13 @@ fn boot_login(
         let line = boot::command_line(&cmd);
         let started = Instant::now();
         let mut vm = Vm::spawn(name, cmd, log.clone())?;
-        match vm.wait_for("login:", limit) {
+        let booted = match boot_line {
+            Some(line) => vm
+                .wait_for(crate::efiboot::BOOT_PROMPT, limit)
+                .and_then(|()| vm.send(line)),
+            None => Ok(()),
+        };
+        match booted.and_then(|()| vm.wait_for("login:", limit)) {
             Ok(()) => {
                 let secs = started.elapsed().as_secs_f64();
                 vm.send("root\n")?;
@@ -853,13 +854,15 @@ fn sh(vm: &mut Vm, cmd: &str, limit: Duration) -> Result<String> {
 }
 
 /// Two VMs on the private link: A serves, B runs the warm-up and `reps` runs of tcpbench(1)
-/// against it; B's Mbps per run and the two QEMU command lines.
+/// against it; B's Mbps per run and the two QEMU command lines. `boot_line` as
+/// [`boot_login`]'s.
 fn pair_tcpbench(
     name: &str,
     system: &str,
     work: &Path,
     reps: usize,
     host: &mut Vec<HostRun>,
+    boot_line: Option<&str>,
     make: &dyn Fn(&VmLink) -> Result<Command>,
 ) -> Result<(Vec<f64>, Vec<String>)> {
     let ports = crate::twovm::free_udp_ports()?;
@@ -879,6 +882,13 @@ fn pair_tcpbench(
         )?);
     }
     for vm in &mut vms {
+        if let Some(line) = boot_line {
+            vm.wait_for(
+                crate::efiboot::BOOT_PROMPT,
+                boot::time_limit(Duration::from_secs(900)),
+            )?;
+            vm.send(line)?;
+        }
         vm.wait_for("login:", boot::time_limit(Duration::from_secs(900)))?;
         vm.send("root\n")?;
         vm.wait_for("Password:", Duration::from_secs(120))?;

@@ -761,7 +761,7 @@ mod tests {
         // Under smoke-all the recipes run the private copy, by its quoted path.
         let copy = "'/k/target/smoke/bin/xtask' smoke --arch arm64\n\
             /k/target/smoke/bin/xtask smoke2 --arch arm64 --timeout 400\n\
-            '/k/target/smoke/bin/xtask' efiboot-disk --arch arm64\n";
+            '/k/target/smoke/bin/xtask' efiboot-image --arch arm64\n";
         assert_eq!(boot_limits(copy), Some(Duration::from_secs(580)));
         assert_eq!(boot_limits("'/k/bin/notxtask' smoke --arch arm64\n"), None);
         assert_eq!(boot_limits("echo nothing\n"), None);

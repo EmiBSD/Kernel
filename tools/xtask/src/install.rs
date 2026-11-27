@@ -271,36 +271,36 @@ fn need(path: &Path, what: &str, recipe: &str) -> Result<()> {
     }
 }
 
-/// The efiboot that boots the install media: amd64's `BOOTX64.EFI` (`just efiboot-amd64`),
-/// arm64's `BOOTAA64.EFI` (`just efiboot-arm64`). Without it the media boot through Limine.
-fn media_efiboot(root: &Path, arch: Arch) -> Option<PathBuf> {
-    let efi = match arch {
-        Arch::Amd64 => root.join("target/efiboot/amd64/BOOTX64.EFI"),
-        Arch::Arm64 => root.join("target/efiboot/arm64/BOOTAA64.EFI"),
-    };
-    efi.is_file().then_some(efi)
-}
-
 /// `boot> ` answered: efiboot's prompt waits (the media's `boot.conf` turns its timeout off),
 /// and a bare `boot` loads `/bsd`, which is the `bsd.rd` given.
 const EFIBOOT_PROMPTS: &[(&str, &str)] = &[("boot> ", "boot\n")];
 
 /// The boot image of the install media for `bsd_rd`, and the prompts to answer on the way to
-/// the kernel: laid out as OpenBSD's `miniroot<rev>.img` (`efiboot-disk`: an OpenBSD
-/// partition with an FFS holding `/bsd` and the EFI system partition with efiboot) where
-/// efiboot is available, else the Limine image.
+/// the kernel: laid out as OpenBSD's `miniroot<rev>.img` (an efiboot image of
+/// [`Root::Bare`](crate::efiboot::Root::Bare): an OpenBSD partition with an FFS holding
+/// `/bsd`, its debug sections stripped as every efiboot image's, and the EFI system partition
+/// with efiboot), at the run directory's `emibsd-<arch>.img`.
 fn boot_media(
     root: &Path,
     arch: Arch,
     bsd_rd: &Path,
 ) -> Result<(PathBuf, &'static [(&'static str, &'static str)])> {
-    match media_efiboot(root, arch) {
-        Some(efi) => {
-            crate::efiboot::efiboot_disk(root, arch, &efi, bsd_rd, None)?;
-            Ok((boot::image_path(root, arch, None), EFIBOOT_PROMPTS))
-        }
-        None => Ok((boot::image(root, arch, bsd_rd, None, None, None)?, &[])),
-    }
+    let out = boot::image_path(root, arch, None);
+    crate::efiboot::image(
+        root,
+        &crate::efiboot::ImageSpec {
+            arch,
+            // The efiboot that boots the media: `just efiboot-<arch>`'s; `image` names that
+            // recipe when the file is missing (there is no other boot loader since Limine went).
+            efi: crate::efiboot::default_efi(root, arch),
+            kernel: bsd_rd.to_path_buf(),
+            root: crate::efiboot::Root::Bare,
+            duid: crate::efiboot::DUID,
+            selftest: None,
+        },
+        &out,
+    )?;
+    Ok((out, EFIBOOT_PROMPTS))
 }
 
 /// `cargo xtask install --arch A --rd-kernel K [--check-only]`: the install run and its
