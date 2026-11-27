@@ -25,7 +25,7 @@ flowchart TB
     LE["1' · entry · sys/entry/ · linked into the kernel image (decisions 56 and 58)<br/>#![deny(unsafe_code)] · one #[allow(unsafe_code)] item, the exported symbol (unsafe 1, asm 0)<br/>classifies every trap from userland: the vector slot, then a closed match on the exception class · no state, nothing registered"]
     L1["1 · abi · sys/abi/ · linked into the kernel image (decision 47)<br/>#![forbid(unsafe_code)] · 0 unsafe · translation only, no logic<br/>syscall table (Native | Legacy) · bytes ⇄ the kernel's types · errno from Result"]
     L2["2 · kernel · sys/kernel/<br/>#![forbid(unsafe_code)] at the root · 0 unsafe, the compiler refuses one<br/>every decision of the OS · kernel::api: one function per syscall, abi's only door (decision 52)<br/>bridge traits for what has not moved yet (bridges.toml → 0 at N9)"]
-    L3["3 · hal · sys/hal/ · the ONLY unsafe · hal_ceiling lowered to the count at each close (35 at N2, 100 at N3), raised only by the user<br/>hardware moved from LZ by owner: the pmaps behind hal::Pmap (N3.1), then arch/amd64, arch/arm64, machine, arch/host<br/>runtime written new: Mutexed, Rwlocked, SharedRwlock + Guarded, TypedPool/PoolArc/PoolBox, MBox, MArray, KmBuf, MappedBytes, OnceStatic, List/Tree and their owned forms, UserPtr + abi_pod!, PerCpu, Refcnt, Smr, Mmio, DmaBuf<br/>the registry, the vectors, the register save and restore, the exit gate: all the assembly"]
+    L3["3 · hal · sys/hal/ · the ONLY unsafe blocks and assembly · hal_ceiling lowered to the count at each close (35 at N2, 100 at N3), raised only by the user<br/>hardware moved from LZ by owner: the pmaps behind hal::Pmap (N3.1), then arch/amd64, arch/arm64, machine, arch/host<br/>runtime written new: Mutexed, Rwlocked, SharedRwlock + Guarded, TypedPool/PoolArc/PoolBox, MBox, MArray, KmBuf, MappedBytes, OnceStatic, List/Tree and their owned forms, UserPtr + abi_pod!, PerCpu, Refcnt, Smr, Mmio, DmaBuf<br/>the registry, the vectors, the register save and restore, the exit gate: all the assembly"]
     L4["4 · hardware · QEMU amd64 / arm64, real machines"]
     L0 -->|"trap: svc, fault, interrupt"| L3
     L3 -->|"one link-time symbol, from hal's assembly"| LE
@@ -37,7 +37,6 @@ flowchart TB
     L2 -->|"safe API"| L3
     L3 --> L4
     S["S · sysdefs · sys/lib/sysdefs/ · a leaf crate under every layer (decision 54)<br/>#![forbid(unsafe_code)] · 0 unsafe · data only: OpenBSD's basic types, constants and #[repr(C)] ABI structures, AbiPod and abi_pod!<br/>depends on nothing · no state, no logic, no byte reinterpretation (that is hal::user and hal::sysbytes)"]
-    LE -->|"data"| S
     L1 -->|"data"| S
     L2 -->|"data"| S
     L3 -->|"data"| S
@@ -111,7 +110,7 @@ last user at N9) and `libsa`'s (the boot loaders' own copy; `libsa`, `sys/lib/li
 `StaticCell`'s uses one by one.
 
 Dependencies, one direction: `bsd -> kernel -> hal`; `abi -> kernel` (`kernel::api` alone)
-and `abi -> hal` (`hal::syscall`'s passive types, decisions 52 and 56); `entry -> abi, kernel, hal`; only the image crate names `abi` and `entry`; plus `libkern`/`libz` under `kernel`; and all of them `-> sysdefs`. `hal` depends on nothing of ours but `libkern` and `sysdefs`. No cycle: a kernel-to-legacy call is a bridge.
+and `abi -> hal` (`hal::syscall`'s passive types, decisions 52 and 56); `entry -> abi, kernel, hal`; only the image crate names `abi` and `entry`; plus `libkern`/`libz` under `kernel`; and `abi`, `kernel` and `hal` `-> sysdefs` (`entry` names no data of its own). `hal` depends on nothing of ours but `libkern` and `sysdefs`. No cycle: a kernel-to-legacy call is a bridge.
 
 ### 0.2 What the compiler guarantees
 

@@ -30,7 +30,8 @@
   checks the three against each other.
 - The inside changes, subsystem by subsystem. The goal is zero `unsafe` in the kernel: the
   crates `sys/kernel/` and `sys/abi/` carry `#![forbid(unsafe_code)]` at their roots, `sys/hal/`
-  is the only crate with `unsafe` (the hardware and the runtime, every site proved), and the LZ
+  is the only crate with `unsafe` blocks and assembly (the hardware and the runtime, every site
+  proved; `sys/entry/` carries one `unsafe` attribute, on the symbol it exports), and the LZ
   tree is replaced and deleted ([docs/ZERO_UNSAFE.md](docs/ZERO_UNSAFE.md) section 0, the
   plan since 2026-10-16), with idiomatic ownership and measured performance. N1 settled
   the type idioms on leaves that were already almost free of `unsafe` (libkern 10 -> 10, libz
@@ -86,7 +87,7 @@ flowchart TB
         A3["bytes ⇄ the kernel's types · errno from Result"]
     end
 
-    subgraph ENTRY["sys/entry · entry · safe Rust · one exported symbol · classification only, no state, nothing registered"]
+    subgraph ENTRY["sys/entry · entry · safe Rust, deny(unsafe) · one exported symbol, its attribute the one allowed unsafe · classification only, no state, nothing registered"]
         direction LR
         E1["entry_user_trap: the vector slot, then the closed match on the exception class"]
     end
@@ -106,7 +107,7 @@ flowchart TB
         end
     end
 
-    subgraph HAL["sys/hal · hal · the ONLY unsafe · a SAFETY proof per site · ceiling raised only by the user"]
+    subgraph HAL["sys/hal · hal · the ONLY unsafe blocks and assembly · a SAFETY proof per site · ceiling raised only by the user"]
         direction LR
         H1["cpu: the vectors · register save and restore · Arrival · the exit gate · intr · clock"]
         H2["vm: pmap · mem: pool · malloc · fdtblob"]
