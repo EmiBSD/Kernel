@@ -172,8 +172,10 @@ efiboot-images-arm64: (build-arm64 "--features qemu") build-init-arm64 efiboot-a
 run-amd64: image-amd64
     {{xtask}} qemu --arch amd64
 
-run-arm64: image-arm64
-    {{xtask}} qemu --arch arm64
+# arm64 boots the shared efiboot image of the staged tree (`snapshot=on`: the session's writes
+# go when QEMU stops); type `boot` at efiboot's `boot> ` (boot(8)'s flags too: `boot -s`).
+run-arm64: efiboot-images-arm64
+    {{xtask}} qemu --arch arm64 --image tree
 
 # `just smoke`: every recipe of `smokes`, `jobs` at a time (`cargo xtask smoke-all`,
 # tools/xtask/src/smokeall.rs). `smoke-build` first builds all they boot, once and in order;
@@ -487,11 +489,11 @@ https_check := "--https-server target/https-www:8443:trusted --https-server targ
 # M9+, outside `smoke` and `ci` (it needs the Internet): ftp(1) fetches a small file from
 # https://www.openbsd.org, resolving the name through QEMU's DNS (10.0.2.3, `/etc/resolv.conf`)
 # and verifying the server with LibreSSL's default bundle, `/etc/ssl/cert.pem`. Needs TCP.
-smoke-internet: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
+smoke-internet: (build-amd64 "--features qemu") (build-arm64 "--features qemu") efiboot-images-arm64
     @test {{ramdisks}} || \
         { echo "smoke-internet: no ramdisk image; run just userland first"; exit 1; }
     {{xtask}} smoke {{reject}} {{smp}} --arch amd64 --kernel target/{{amd64}}/debug/bsd --expect-ramdisk --until-seen {{internet_check}}
-    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --expect-ramdisk --until-seen {{internet_check}}
+    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --image tree --expect-root --until-seen {{internet_check}}
 
 internet_check := "--send-after login: --send 'root\\n' --send-after Password: --send 'emibsd\\n' " + \
     "--send-after '# ' --send 'ftp -o - https://www.openbsd.org/robots.txt\\n' " + \
@@ -2739,12 +2741,12 @@ audio_play := disk_login + " " + \
 # backend (`--speakers`, devices.rs) instead of being recorded: azalia(4) on amd64 and arm64,
 # then auich(4) on amd64. Checked by ear, so not part of `smoke`. Each boot waits a second
 # after aucat(1) so the host's buffer drains before the run stops.
-play-audio: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
+play-audio: (build-amd64 "--features qemu") (build-arm64 "--features qemu") efiboot-images-arm64
     @test {{ramdisks}} || \
         { echo "play-audio: no ramdisk image; run just userland first"; exit 1; }
     {{xtask}} smoke {{smp}} --arch amd64 --kernel target/{{amd64}}/debug/bsd --expect-ramdisk --until-seen \
         --audio hda --speakers {{audio_live}} --expect 'audio0 at azalia0'
-    {{xtask}} smoke {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --expect-ramdisk --until-seen \
+    {{xtask}} smoke {{smp}} --arch arm64 --image tree --expect-root --until-seen \
         --audio hda --speakers {{audio_live}} --expect 'audio0 at azalia0'
     {{xtask}} smoke {{smp}} --arch amd64 --kernel target/{{amd64}}/debug/bsd --expect-ramdisk --until-seen \
         --audio ac97 --speakers {{audio_live}} --expect 'audio0 at auich0'
@@ -3487,10 +3489,11 @@ toolchain:
 # tools/xtask/src/devtools.rs), and run from ksh(1) in a single-user boot of the MP kernel;
 # each prints one line the session expects, and its exit status must be 0. Not in `smokes`:
 # it needs `just toolchain` (a download, the user's) and builds the programs and their
-# ramdisk in its body. Without the toolchain it prints `smoke-devtools: <arch> SKIPPED (no
+# ramdisk in its body (arm64 boots that ramdisk's tree, `ramdisk-root` beside it, as the root
+# of a per-run efiboot image, `--root tree=DIR`, single user by `boot -s`). Without the toolchain it prints `smoke-devtools: <arch> SKIPPED (no
 # DevTools toolchain ...)` and passes; amd64 is `SKIPPED (decision 44)` until N10. Needs
 # `just userland`.
-smoke-devtools: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
+smoke-devtools: (build-amd64 "--features qemu") (build-arm64 "--features qemu") efiboot-arm64
     #!/bin/zsh
     set -eu
     hello() {
@@ -3502,6 +3505,14 @@ smoke-devtools: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
             return 0
         fi
         {{xtask}} devtools-hello --arch $arch --llvm "$llvm" --rust "$rust"
+        if [ $arch = arm64 ]; then
+            # The tree devtools-hello staged, the root of a per-run efiboot image.
+            local tree="${EMIBSD_RUN_DIR:-target}/devtools/$arch"
+            {{xtask}} smoke {{reject}} {{smp}} --arch $arch --kernel $kernel \
+                --root "tree=$tree/ramdisk-root" --owners "$tree/owners.txt" --boot-flags -s --expect-root --until-seen \
+                {{devtools_steps}}
+            return 0
+        fi
         {{xtask}} smoke {{reject}} {{smp}} --arch $arch --kernel $kernel \
             --ramdisk "${EMIBSD_RUN_DIR:-target}/devtools/$arch/ramdisk.ffs" --cmdline "-s" --expect-ramdisk --until-seen \
             {{devtools_steps}}
@@ -3547,7 +3558,7 @@ devtools_native_llvm_sha256 := "54f8012f532fe30a71b7a2e5e52a6277b0ea4ee12023d365
 devtools_native_rust := "rust-1.99.1+emibsd.6-aarch64-emibsd-emibsd-arm64.tar.zst"
 devtools_native_rust_sha256 := "ee363bada622e5020ebe79ace6ca7f42d9d97d6108618068df14e71a10e3cafe"
 
-smoke-devtools-native: (build-arm64 "--features qemu")
+smoke-devtools-native: (build-arm64 "--features qemu") efiboot-images-arm64
     @test {{ramdisks}} || \
         { echo "smoke-devtools-native: no ramdisk image; run just userland first"; exit 1; }
     @test -d target/comp/arm64/root/usr/lib || \
@@ -3557,8 +3568,8 @@ smoke-devtools-native: (build-arm64 "--features qemu")
         --rust "{{devtools_native_dist}}/{{devtools_native_rust}}" --rust-sha256 {{devtools_native_rust_sha256}}
     mkdir -p "${EMIBSD_RUN_DIR:-target}" && rm -f "${EMIBSD_RUN_DIR:-target}/disk-arm64-native.img" && \
         cp -c target/devtools-native/arm64/native.ffs "${EMIBSD_RUN_DIR:-target}/disk-arm64-native.img"
-    EMIBSD_TIMEOUT_SCALE=10 {{xtask}} smoke {{reject}} {{smp}} --memory 2G --arch arm64 --kernel target/{{arm64}}/debug/bsd \
-        --expect-ramdisk --until-seen --disk-set native {{native_script}}
+    EMIBSD_TIMEOUT_SCALE=10 {{xtask}} smoke {{reject}} {{smp}} --memory 2G --arch arm64 --image tree \
+        --expect-root --until-seen --disk-set native {{native_script}}
 
 # `smoke-devtools-native`'s session: each step's marker is printed by the guest (`$?`,
 # `$((40+2))`, `$x`), never typed, so an echoed command line cannot satisfy an expectation.
@@ -3672,7 +3683,8 @@ comp:
     {{ if has_amd64 == "true" { "" } else { "echo 'comp: amd64 SKIPPED (decision 44)' # " } }}{{xtask}} comp --arch amd64 --jobs {{comp_jobs}}
     {{xtask}} comp --arch arm64 --jobs {{comp_jobs}}
 
-# M14: the compiler inside EmiBSD, without the installer. Boots the ramdisk kernel with the
+# M14: the compiler inside EmiBSD, without the installer. Boots the smokes' kernel (arm64: the
+# shared efiboot image of the staged tree, `--image tree`) with the
 # comp set's disk (`target/comp/<arch>/comp.ffs`, copied to the persistent disk set `comp`,
 # so sd0), mounts it on /mnt and runs `/mnt/usr/bin/clang --version`, then compiles a hello
 # world with `cc --sysroot=/mnt -static` (clang, lld, crt0, libc.a and the headers all from
@@ -3683,7 +3695,7 @@ comp:
 # (the string is a char array) to keep the shell quoting simple; every line stays under
 # arm64's 128-byte console limit. Not in `smokes`: it needs `just comp`, which is not part of
 # `ci`. Time limits are five times the usual (`EMIBSD_TIMEOUT_SCALE`): clang runs under TCG.
-smoke-cc: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
+smoke-cc: (build-amd64 "--features qemu") (build-arm64 "--features qemu") efiboot-images-arm64
     @test {{ramdisks}} || \
         { echo "smoke-cc: no ramdisk image; run just userland first"; exit 1; }
     @test {{ if has_amd64 == "true" { "-f target/comp/amd64/comp.ffs" } else { "" } }}{{both_archs_a}}{{ if has_arm64 == "true" { "-f target/comp/arm64/comp.ffs" } else { "" } }} || \
@@ -3692,7 +3704,7 @@ smoke-cc: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
     EMIBSD_TIMEOUT_SCALE=5 {{xtask}} smoke {{reject}} {{smp}} --arch amd64 --kernel target/{{amd64}}/debug/bsd --expect-ramdisk --until-seen \
         --disk-set comp {{cc_script}} --expect 'Target: amd64-unknown-openbsd8.0'
     cp target/comp/arm64/comp.ffs target/disk-arm64-comp.img
-    EMIBSD_TIMEOUT_SCALE=5 {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --expect-ramdisk --until-seen \
+    EMIBSD_TIMEOUT_SCALE=5 {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --image tree --expect-root --until-seen \
         --disk-set comp {{cc_script}} --expect 'Target: aarch64-unknown-openbsd8.0'
 
 # `smoke-cc`'s session.
@@ -3962,7 +3974,10 @@ ci-full:
 #   sys/ (`cargo xtask include`: the pin's text, `arm64/` with `machine` linked to it);
 # - `BUILDINFO`: the commit, the OpenBSD pin, the dates, the toolchain, the profiles, the
 #   ramdisk's size, and what MANUAL.toml and include/ are.
-# Built from a commit, never a working tree (`dist-clean-tree`); the release kernel boots once
+# Built from a commit, never a working tree (`dist-clean-tree`); the release kernel boots once,
+# from a per-run efiboot image with the init stand-in as /sbin/init (`--root init`, so the
+# check needs `just userland`'s makefs; until the removal of Limine, 2026-11-26, a Limine
+# module),
 # before anything is packed (the user-mode lines of `smoke-boot` up to init's last check,
 # then init's death panic, which is what a kernel without `qemu` answers to the test init's
 # exit: QEMU is stopped once it is seen; the exit status is not read, since init's inet check
@@ -3984,7 +3999,7 @@ _dist-arm64: dist-clean-tree build-release-arm64 build-init-arm64 efiboot-arm64
     EMIBSD_MINIROOTSIZE={{miniroot_sectors}} cargo build -p bsd --release --target {{arm64}} --features miniroot --target-dir target/bsdrd
     rm -rf target/smoke/dist
     mkdir -p target/smoke/dist
-    EMIBSD_RUN_DIR=target/smoke/dist {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/release/bsd --ramdisk none --expect-ramdisk --until-seen \
+    EMIBSD_RUN_DIR=target/smoke/dist {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/release/bsd --root init --expect-root --until-seen \
         --expect "bsd: booted on arm64" --expect "abi: 331 syscalls, 190 native" --expect "EmiBSD 8.0 (GENERIC) #" \
         --expect "Arica" --expect "init: hello from user mode" --expect "init: EmiBSD 8.0" --expect "init: processes ok" \
         --expect "init: unveil ok" --expect "panic: init died (signal 0, exit " | tee target/smoke/dist/boot.log
