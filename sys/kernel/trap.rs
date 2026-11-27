@@ -155,68 +155,6 @@ pub struct UserFault {
     pub addr: usize,
 }
 
-/// The identification registers a user program may read with `mrs` (arm64's `emulate_msr`
-/// cases, `trap.c`): each is answered with the value [`id_value`] gives, never the CPU's own
-/// but for `MIDR_EL1`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum IdReg {
-    /// `MIDR_EL1`: the CPU's model, read live.
-    Midr,
-    /// `MPIDR_EL1`: a fixed value, the topology not revealed.
-    Mpidr,
-    /// `REVIDR_EL1`.
-    Revidr,
-    /// `ID_AA64PFR0_EL1`.
-    Pfr0,
-    /// `ID_AA64PFR1_EL1`.
-    Pfr1,
-    /// `ID_AA64PFR2_EL1`.
-    Pfr2,
-    /// `ID_AA64ZFR0_EL1`.
-    Zfr0,
-    /// `ID_AA64SMFR0_EL1`.
-    Smfr0,
-    /// `ID_AA64ISAR0_EL1`.
-    Isar0,
-    /// `ID_AA64ISAR1_EL1`.
-    Isar1,
-    /// `ID_AA64ISAR2_EL1`.
-    Isar2,
-    /// `ID_AA64MMFR0_EL1`.
-    Mmfr0,
-    /// `ID_AA64MMFR1_EL1`.
-    Mmfr1,
-    /// `ID_AA64MMFR2_EL1`.
-    Mmfr2,
-    /// `ID_AA64MMFR3_EL1`.
-    Mmfr3,
-    /// `ID_AA64MMFR4_EL1`.
-    Mmfr4,
-}
-
-/// The reads answered, by CRm and op2 of `S3_0_C0_<CRm>_<op2>` (op0 3, op1 0, CRn 0, which
-/// the trap checked): `emulate_msr`'s `switch`, as data. Any other is `SIGILL`.
-pub const ID_READS: [[Option<IdReg>; 8]; 16] = {
-    let mut t = [[None; 8]; 16];
-    t[0][0] = Some(IdReg::Midr);
-    t[0][5] = Some(IdReg::Mpidr);
-    t[0][6] = Some(IdReg::Revidr);
-    t[4][0] = Some(IdReg::Pfr0);
-    t[4][1] = Some(IdReg::Pfr1);
-    t[4][2] = Some(IdReg::Pfr2);
-    t[4][4] = Some(IdReg::Zfr0);
-    t[4][5] = Some(IdReg::Smfr0);
-    t[6][0] = Some(IdReg::Isar0);
-    t[6][1] = Some(IdReg::Isar1);
-    t[6][2] = Some(IdReg::Isar2);
-    t[7][0] = Some(IdReg::Mmfr0);
-    t[7][1] = Some(IdReg::Mmfr1);
-    t[7][2] = Some(IdReg::Mmfr2);
-    t[7][3] = Some(IdReg::Mmfr3);
-    t[7][4] = Some(IdReg::Mmfr4);
-    t
-};
-
 /// What the kernel answers a trap from user mode with, on the running thread, for the glue its
 /// process code is generic over. The kernel's [`KernelTrap`] is the one implementation; the
 /// image's boot glue installs it ([`install`]) before the first thread runs in user mode.
@@ -343,16 +281,6 @@ pub fn udata_abort_signal(error: Errno) -> (i32, i32) {
     }
 }
 
-/// The register a read of `S3_0_C0_<crm>_<op2>` names when the kernel answers it
-/// ([`ID_READS`]), `None` when it does not.
-pub fn id_reg(crm: u8, op2: u8) -> Option<IdReg> {
-    ID_READS
-        .get(usize::from(crm))
-        .and_then(|row| row.get(usize::from(op2)))
-        .copied()
-        .flatten()
-}
-
 /// `cpu_id_aa64pfr0`: the userland view of `ID_AA64PFR0_EL1`, which `bsd`'s CPU code fills
 /// from the boot CPU and masks (`cpu_identify_cleanup`), [`id_value`]'s answer and
 /// `sysctl machdep.id_aa64pfr0`'s.
@@ -366,28 +294,40 @@ pub static CPU_ID_AA64ISAR1: AtomicU64 = AtomicU64::new(0);
 /// `cpu_id_aa64isar2`.
 pub static CPU_ID_AA64ISAR2: AtomicU64 = AtomicU64::new(0);
 
-/// What a program reading `r` is told: the kernel's computed views of the feature registers
-/// (`cpu_id_aa64*`), `MPIDR_EL1`'s fixed value (bit 31 is RES1; the topology is not revealed),
-/// 0 for the others; `None` for `MIDR_EL1`, the CPU's own, which the trap reads live.
-pub fn id_value(r: IdReg) -> Option<u64> {
+/// `emulate_msr`'s answer to a program's read of `S3_0_C0_<crm>_<op2>` (op0 3, op1 0, CRn 0,
+/// which the trap checked): the value it is told, `None` for a read the kernel does not answer
+/// (then `SIGILL`). The kernel's computed views of the feature registers (`cpu_id_aa64*`),
+/// `MPIDR_EL1`'s fixed value (bit 31 is RES1; the topology is not revealed), 0 for the others;
+/// `MIDR_EL1` is the CPU's own, read live by `midr`.
+pub fn id_value(crm: u8, op2: u8, midr: impl FnOnce() -> u64) -> Option<u64> {
     let id = |a: &AtomicU64| a.load(Ordering::Relaxed);
     #[allow(
         clippy::match_same_arms,
         reason = "the C keeps the cases apart: one switch case per register"
     )]
-    Some(match r {
-        IdReg::Midr => return None,
+    Some(match (crm, op2) {
+        // MIDR_EL1
+        (0, 0) => midr(),
         // MPIDR_EL1: don't reveal the topology to userland. But return a valid value; Bit
         // 31 is RES1.
-        IdReg::Mpidr => 0x8000_0000,
-        IdReg::Revidr => 0,
-        IdReg::Pfr0 => id(&CPU_ID_AA64PFR0),
-        IdReg::Pfr1 => id(&CPU_ID_AA64PFR1),
-        IdReg::Pfr2 | IdReg::Zfr0 | IdReg::Smfr0 => 0,
-        IdReg::Isar0 => id(&CPU_ID_AA64ISAR0),
-        IdReg::Isar1 => id(&CPU_ID_AA64ISAR1),
-        IdReg::Isar2 => id(&CPU_ID_AA64ISAR2),
-        IdReg::Mmfr0 | IdReg::Mmfr1 | IdReg::Mmfr2 | IdReg::Mmfr3 | IdReg::Mmfr4 => 0,
+        (0, 5) => 0x8000_0000,
+        // REVIDR_EL1
+        (0, 6) => 0,
+        // ID_AA64PFR0_EL1
+        (4, 0) => id(&CPU_ID_AA64PFR0),
+        // ID_AA64PFR1_EL1
+        (4, 1) => id(&CPU_ID_AA64PFR1),
+        // ID_AA64PFR2_EL1, ID_AA64ZFR0_EL1, ID_AA64SMFR0_EL1
+        (4, 2 | 4 | 5) => 0,
+        // ID_AA64ISAR0_EL1
+        (6, 0) => id(&CPU_ID_AA64ISAR0),
+        // ID_AA64ISAR1_EL1
+        (6, 1) => id(&CPU_ID_AA64ISAR1),
+        // ID_AA64ISAR2_EL1
+        (6, 2) => id(&CPU_ID_AA64ISAR2),
+        // ID_AA64MMFR0_EL1 .. ID_AA64MMFR4_EL1
+        (7, 0..=4) => 0,
+        _ => return None,
     })
 }
 
@@ -432,7 +372,7 @@ pub fn bti(t: SyncTrap, s: Syndrome) {
 }
 
 /// `EXCP_MSR`: `emulate_msr`, a read of an identification register answered with the value
-/// the kernel announces ([`id_reg`], [`id_value`]) and the instruction skipped, the decode and
+/// the kernel announces ([`id_value`]) and the instruction skipped, the decode and
 /// the register's write `hal`'s on the trap's token (decision 56's U7, amended by the user's
 /// lock: the list is the kernel's); any other access falls through to `EXCP_FPAC`'s `SIGILL`
 /// (`ILL_ILLOPC`) at the pc, the branch predictor flushed.
@@ -440,12 +380,9 @@ pub fn bti(t: SyncTrap, s: Syndrome) {
 pub fn msr(t: SyncTrap, s: Syndrome) {
     let answered = t
         .id_read(s.esr)
-        .and_then(|r| id_reg(r.crm, r.op2).map(|id| (r, id)));
+        .and_then(|r| id_value(r.crm, r.op2, midr).map(|v| (r, v)));
     match answered {
-        Some((r, id)) => {
-            let value = id_value(id).unwrap_or_else(midr);
-            t.id_answer(r, value);
-        }
+        Some((r, v)) => t.id_answer(r, v),
         None => fpac(t, s),
     }
 }
@@ -709,27 +646,34 @@ mod tests {
         hal::cpu::thread::set_current_static::<Thread<SchedGlue>>(None);
     }
 
-    /// `emulate_msr`'s sixteen reads (`trap.c:233-299`), by CRm and op2: exactly these are
-    /// answered, every other read of the identification space is `SIGILL`.
+    /// `emulate_msr`'s sixteen reads (`trap.c:233-299`), by CRm and op2, and what each is told:
+    /// the kernel's views, MPIDR's fixed value, zeros, MIDR live; every other read of the
+    /// identification space is not answered (`SIGILL`).
     #[test]
     fn the_id_reads_answered_are_the_cs_sixteen() {
-        let want = [
-            (0, 0, IdReg::Midr),
-            (0, 5, IdReg::Mpidr),
-            (0, 6, IdReg::Revidr),
-            (4, 0, IdReg::Pfr0),
-            (4, 1, IdReg::Pfr1),
-            (4, 2, IdReg::Pfr2),
-            (4, 4, IdReg::Zfr0),
-            (4, 5, IdReg::Smfr0),
-            (6, 0, IdReg::Isar0),
-            (6, 1, IdReg::Isar1),
-            (6, 2, IdReg::Isar2),
-            (7, 0, IdReg::Mmfr0),
-            (7, 1, IdReg::Mmfr1),
-            (7, 2, IdReg::Mmfr2),
-            (7, 3, IdReg::Mmfr3),
-            (7, 4, IdReg::Mmfr4),
+        CPU_ID_AA64PFR0.store(0x1100_0000_0011_1112, Ordering::Relaxed);
+        CPU_ID_AA64PFR1.store(0x20, Ordering::Relaxed);
+        CPU_ID_AA64ISAR0.store(0x0221_1000_1021_1120, Ordering::Relaxed);
+        CPU_ID_AA64ISAR1.store(0x10_0001, Ordering::Relaxed);
+        CPU_ID_AA64ISAR2.store(0x3, Ordering::Relaxed);
+        const MIDR: u64 = 0x410f_d083;
+        let want: [(u8, u8, u64); 16] = [
+            (0, 0, MIDR),
+            (0, 5, 0x8000_0000),
+            (0, 6, 0),
+            (4, 0, 0x1100_0000_0011_1112),
+            (4, 1, 0x20),
+            (4, 2, 0),
+            (4, 4, 0),
+            (4, 5, 0),
+            (6, 0, 0x0221_1000_1021_1120),
+            (6, 1, 0x10_0001),
+            (6, 2, 0x3),
+            (7, 0, 0),
+            (7, 1, 0),
+            (7, 2, 0),
+            (7, 3, 0),
+            (7, 4, 0),
         ];
         let mut answered = 0;
         for crm in 0..=15u8 {
@@ -737,45 +681,20 @@ mod tests {
                 let w = want
                     .iter()
                     .find(|(c, o, _)| (*c, *o) == (crm, op2))
-                    .map(|(_, _, r)| *r);
-                assert_eq!(id_reg(crm, op2), w, "CRm {crm} op2 {op2}");
+                    .map(|(_, _, v)| *v);
+                assert_eq!(id_value(crm, op2, || MIDR), w, "CRm {crm} op2 {op2}");
                 answered += usize::from(w.is_some());
             }
         }
         assert_eq!(answered, 16);
-        // Out of the table (the decode never gives these): not answered.
-        assert_eq!(id_reg(16, 0), None);
-        assert_eq!(id_reg(0, 8), None);
-    }
-
-    /// What a program is told: the kernel's views, MPIDR's fixed value, zeros; MIDR live.
-    #[test]
-    fn the_id_values_are_the_kernels() {
-        CPU_ID_AA64PFR0.store(0x1100_0000_0011_1112, Ordering::Relaxed);
-        CPU_ID_AA64PFR1.store(0x20, Ordering::Relaxed);
-        CPU_ID_AA64ISAR0.store(0x0221_1000_1021_1120, Ordering::Relaxed);
-        CPU_ID_AA64ISAR1.store(0x10_0001, Ordering::Relaxed);
-        CPU_ID_AA64ISAR2.store(0x3, Ordering::Relaxed);
-        assert_eq!(id_value(IdReg::Midr), None);
-        assert_eq!(id_value(IdReg::Mpidr), Some(0x8000_0000));
-        assert_eq!(id_value(IdReg::Pfr0), Some(0x1100_0000_0011_1112));
-        assert_eq!(id_value(IdReg::Pfr1), Some(0x20));
-        assert_eq!(id_value(IdReg::Isar0), Some(0x0221_1000_1021_1120));
-        assert_eq!(id_value(IdReg::Isar1), Some(0x10_0001));
-        assert_eq!(id_value(IdReg::Isar2), Some(0x3));
-        for r in [
-            IdReg::Revidr,
-            IdReg::Pfr2,
-            IdReg::Zfr0,
-            IdReg::Smfr0,
-            IdReg::Mmfr0,
-            IdReg::Mmfr1,
-            IdReg::Mmfr2,
-            IdReg::Mmfr3,
-            IdReg::Mmfr4,
-        ] {
-            assert_eq!(id_value(r), Some(0), "{r:?}");
-        }
+        // MIDR is read only for MIDR's own read.
+        assert_eq!(
+            id_value(4, 0, || unreachable!()),
+            Some(0x1100_0000_0011_1112)
+        );
+        // Out of the fields' range (the decode never gives these): not answered.
+        assert_eq!(id_value(16, 0, || MIDR), None);
+        assert_eq!(id_value(0, 8, || MIDR), None);
     }
 
     /// `udata_abort`'s table of errno to signal, the C's (`trap.c:143-155`).

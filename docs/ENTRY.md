@@ -579,15 +579,15 @@ the kernel computed, and zeros. Anything else, and every write, is SIGILL.
 
 As built on the E2 branch, under the lock (which sends the class to `kernel::trap` and so
 amended decision 56's U7, where `abi` held the list): `entry`'s match has one arm,
-`EXCP_MSR => kernel::trap::msr`. `kernel` holds what is announced: the list, as a constant
-table (`ID_READS`, `400c1071:sys/kernel/trap.rs:199`; `id_reg`, `:348`), and the values
-(`id_value`, `:372`; the five computed ones are the kernel's statics, which `bsd`'s CPU code
-fills until its slice). `hal` holds the instruction: the decode of the trapped `mrs`
-(`SyncTrap::id_read`, `400c1071:sys/hal/arch/arm64/usertrap.rs:234`), the write of its
-destination register and the pc's advance (`id_answer`, `:261`, which consumes the trap's
-token), and the live read of the CPU's model. A read that is not on the list falls to the
-FPAC arm's SIGILL, as the C's fall-through does. `abi` takes no part: a new identification
-register changes the kernel's table, never `entry` and never `abi`.
+`EXCP_MSR => kernel::trap::msr`. `kernel` holds what is announced, the list and the values
+in one `match (crm, op2)`, as `trap.c`'s `switch` (`kernel::trap::id_value`, `None` for a read
+not answered; the five computed values are the kernel's statics, which `bsd`'s CPU code fills
+until its slice; `MIDR_EL1` is read live through the closure `msr` passes). `hal` holds the
+instruction: the decode of the trapped `mrs` (`SyncTrap::id_read`), the write of its
+destination register and the pc's advance (`id_answer`, which consumes the trap's token), and
+the live read of the CPU's model (`midr`). A read that is not on the list falls to the FPAC
+arm's SIGILL, as the C's fall-through does. `abi` takes no part: a new identification
+register changes the kernel's match, never `entry` and never `abi`.
 
 Proof that userland sees the same: E0's step reads each of the sixteen registers and two that
 are refused, against OpenBSD. On the branch's tip it was equal on both CPU models (158 steps,
