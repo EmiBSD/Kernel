@@ -3785,10 +3785,16 @@ check-hal:
 
 # sys/abi/ holds no logic: no loop, branches only on nr or Ok/Err/Some/None, at most one kernel
 # call and 40 lines per fn, no state (decision 25), and names kernel only through kernel::api
-# and hal only through hal::syscall's types and set_handler, sysdefs freely (R6, decisions 47 and
-# 52; cargo xtask abi-check)
+# and hal only through hal::syscall's types, sysdefs freely (R6, decisions 47, 52 and 56;
+# cargo xtask abi-check)
 check-abi:
     {{xtask}} abi-check
+
+# the crate entry (decisions 56 and 58, the user's lock): no assembly, nothing names it but the
+# image, one exported function and no other unsafe, no state, the class match closed, abi,
+# kernel and hal only through their doors (cargo xtask entry-check, docs/ENTRY.md section 5)
+check-entry:
+    {{xtask}} entry-check
 
 # Regenerate the system call tables from reference/.../syscalls.master (sys/lib/sysdefs/proc/syscall.rs,
 # sys/bsd/sys/syscallargs.rs, sys/bsd/kern/init_sysent.rs, sys/bsd/kern/syscalls.rs). Rerun after porting a sys_*
@@ -3936,9 +3942,9 @@ smoke-cd80:
 # The gate of every commit and every slice merge: no QEMU, minutes. The smokes, `check-drift`
 # and `diff-openbsd` run in `ci` at the milestone close (the user's decision of 2026-10-16:
 # tests at the end of the milestone, not of each slice; .claude/rules/testing.md).
-check: fmt clippy test build check-lineage check-unsafe check-hal check-abi check-syscalls
+check: fmt clippy test build check-lineage check-unsafe check-hal check-abi check-entry check-syscalls
 
-ci: fmt clippy test build smoke check-lineage check-drift check-unsafe check-hal check-abi check-syscalls
+ci: fmt clippy test build smoke check-lineage check-drift check-unsafe check-hal check-abi check-entry check-syscalls
 
 # `ci` with every `{{smp}}` recipe on four processors (`EMIBSD_NCPU=4`), not only the `smp4`
 # group: four CPUs make the MP races likelier. Then the installer end to end on both archs, also

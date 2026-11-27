@@ -184,6 +184,8 @@ pub(crate) fn hal_check(root: &Path) -> Result<()> {
             message: "no hal_ceiling in [ratchet]".to_string(),
         }),
     }
+    // H7 and H8 (decision 58): the tokens of a trap and the one symbol above hal.
+    findings.extend(crate::entrycheck::hal_upward(root)?);
     for f in &findings {
         println!("error: {f}");
     }
@@ -191,7 +193,7 @@ pub(crate) fn hal_check(root: &Path) -> Result<()> {
         return Err(format!("hal-check: {} finding(s)", findings.len()).into());
     }
     println!(
-        "hal-check: {} files, {sites} unsafe sites <= hal_ceiling {}; no pub unsafe fn, every block proved, no static mut; {} files of sys/: PinAdapter only through pin_adapter!, no impl Unpin in kernel or abi; D1, D2 and L1 hold",
+        "hal-check: {} files, {sites} unsafe sites <= hal_ceiling {}; no pub unsafe fn, every block proved, no static mut; {} files of sys/: PinAdapter only through pin_adapter!, no impl Unpin in kernel or abi; D1, D2, L1, H7 and H8 hold (hal's assembly names entry_user_trap and pmap_setttb above it, nothing else)",
         files.len(),
         ceiling.unwrap_or(0),
         all.len()

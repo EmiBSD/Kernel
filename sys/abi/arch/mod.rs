@@ -22,7 +22,7 @@
 //! registers, the return register and the error flag, when the call restarts, and a forked
 //! child's first return. `hal`'s trap hands the trapping thread's registers over as a
 //! `hal::syscall::UserRegs` and interprets none of them; the file of the machine the kernel
-//! is built for is `current`, whose handlers [`crate::abi_init`] registers.
+//! is built for is `current`, whose handler the crate `entry` calls (decision 56).
 //!
 //! The host build (the tests) has arm64's: `hal`'s host double has arm64's registers.
 //! amd64's file (`rax` whole, the arguments in `rdi`, `rsi`, `rdx`, `r10`, `r8`, `r9`, the

@@ -92,8 +92,8 @@ const ERESTART: i32 = Errno::ERESTART.as_i32();
 const EJUSTRETURN: i32 = Errno::EJUSTRETURN.as_i32();
 
 /// `svc_handler` from the number on: the system call the registers name, over `sysent[]`,
-/// its result written, then `mi_syscall_return`. Registered in `hal` by
-/// [`crate::abi_init`] (`hal::syscall::SyscallFn`).
+/// its result written, then `mi_syscall_return`. The ABI's one entry function: the crate
+/// `entry` calls it on a system call's trap (decision 56), nothing registers it.
 pub fn svc(regs: &UserRegs) {
     let (nr, error, rval) = call(&SYSENT, regs);
     kernel::api::syscall_return(nr, error, &rval);

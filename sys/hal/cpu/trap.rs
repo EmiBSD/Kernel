@@ -18,18 +18,14 @@
 
 /* <CODE> */
 //! What the machine's trap code asks the rest of the kernel: the registrations behind the
-//! exception entry (`arch/<machine>/trap.rs`, `syscall.rs`).
+//! exception entry for kernel mode (`arch/<machine>/trap.rs`).
 //!
 //! The machine keeps the decode (the syndrome and fault address, which map a fault belongs
-//! to, the frame's fix-ups, `pcb_onfault`, the FPU traps, the instruction emulation) and asks
-//! for every decision the C makes in machine-independent code through one registered
-//! [`TrapHandler`]: the page fault (`uvm_fault` on the right map, `uvm_grow`, the
-//! `MAP_STACK` check of a fault from user mode), the signal (`trapsignal`, `sigexit`),
-//! `refreshcreds`, `userret`, the system call's return (`mi_syscall_return`, which the
-//! kernel's `syscall_return` calls for the ABI once it wrote the registers, decision 53), the AST
-//! (`ast()`'s work, `kernel::trap::ast`). A forked child's first return asks nothing here
-//! since decision 56's E1: its registers are written while its frame is built, and the
-//! kernel's start runs `mi_child_return` itself. The machine's hooks the
+//! to, the frame's fix-ups, `pcb_onfault`) and asks the kernel for a page fault taken in
+//! kernel mode through one registered [`KernelFault`] (`uvm_fault` on the right map,
+//! `uvm_grow`). A trap from user mode asks nothing here since decision 56's E2: `entry`
+//! classifies it and calls the kernel (`kernel::trap`) itself, downward; a forked child's
+//! first return asks nothing since E1. The machine's hooks the
 //! C keeps in its `struct cpu_info` (`ci_flush_bp`, `ci_serror`, which the CPU and PSCI
 //! drivers still in `bsd` choose and rewrite) are [`CpuHooks`]; the kernel debugger
 //! (`db_ktrap`) is [`Debugger`]; `fault()`'s claim of the CPU's panic buffer is the hooks'
@@ -37,14 +33,18 @@
 //!
 //! **Before registration** (early boot): a kernel page fault is a failed fault (the
 //! `pcb_onfault` recovery, else `panic(9)`, as an unserved `uvm_fault`); the hooks do nothing
-//! and no debugger answers (`db_ktrap` returns 0, as the C without `DDB`). No user trap can
-//! come before `bsd` registers, since no user process runs yet.
+//! and no debugger answers (`db_ktrap` returns 0, as the C without `DDB`).
 //!
 //! ## Redesign
 //! - Not a port: the C's `trap.c` calls `uvm_fault`, `trapsignal`, `userret`, ... by name.
 //!   Here the machine code is `hal`'s and those are the kernel's, so they are reached through
-//!   one trait registered once, as the system call dispatch point is (`crate::syscall`): the
-//!   arrows go down, and what goes up is one audited registration.
+//!   one trait registered once: the arrows go down, and what goes up is one audited
+//!   registration.
+//! - Decision 56 (E2): the trait was the kernel's whole answer to a trap (eight methods,
+//!   seven of them for a trap from user mode); it is [`KernelFault`], the page fault of a
+//!   kernel-mode trap alone. The rest is `kernel::trap`'s door, which `entry` calls downward,
+//!   so on a trap from user mode `hal` calls the kernel for nothing (docs/ENTRY.md, R5);
+//!   `FaultSource` lost its `User` arm (the user fault is `kernel::trap::fault`'s).
 //! - `ci_flush_bp`, `ci_serror` (`struct cpu_info`'s function pointers) are [`CpuHooks`],
 //!   whose methods act on the running CPU's choice: the PSCI driver rewrites the choice on
 //!   its first call (`psci_flush_bp`), which a set-once slot per CPU could not hold. So is
@@ -53,7 +53,6 @@
 
 use crate::bridges::AlreadyRegistered;
 use crate::sync::once::OnceStatic;
-use crate::syscall::{Register, Rval, SysResult};
 use crate::vm::pmap::VmProt;
 use sysdefs::base::errno::Errno;
 
@@ -66,17 +65,10 @@ pub use crate::arch::arm64::include::frame::Trapframe;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Trapframe;
 
-/// Which map serves a page fault, as the machine decided from the fault (the C's choice of
-/// `map` in `udata_abort` and `kdata_abort`).
+/// Which map serves a page fault taken in kernel mode, as the machine decided from the fault
+/// (the C's choice of `map` in `kdata_abort`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FaultSource {
-    /// A fault from user mode (`udata_abort`): the running process's map, after the
-    /// `MAP_STACK` check of its stack pointer `sp` (`uvm_map_inentry`, `PROC_STACK(p)`, which
-    /// the machine's trap code read from the frame it holds), and `uvm_grow` when served.
-    User {
-        /// The user stack pointer at the fault (`PROC_STACK(p)`).
-        sp: usize,
-    },
     /// A kernel access to a user address by an unprivileged load or store
     /// (`kdata_abort`'s `&p->p_vmspace->vm_map`: the copy routines): the running process's
     /// map, `uvm_grow` when served.
@@ -85,30 +77,14 @@ pub enum FaultSource {
     Kernel,
 }
 
-/// What the machine's trap code asks the kernel (the machine-independent calls of `trap.c`,
-/// `syscall.c` and `ast.c`), registered once by the kernel's boot path ([`install`]).
-/// Every method acts on the running thread (`curproc`).
-pub trait TrapHandler: Sync {
+/// What the machine's trap code asks the kernel for a page fault taken in kernel mode (the
+/// machine-independent call of `trap.c`'s `kdata_abort`), registered once by the kernel's boot
+/// path ([`install`]).
+pub trait KernelFault: Sync {
     /// `pmap_fault_fixup(map->pmap, va, access)`, then `uvm_fault(map, va, 0, access)` and,
-    /// for a process's map, `uvm_grow(p, va)` when it was served, on the map `source` names;
-    /// for [`FaultSource::User`] the `MAP_STACK` check comes first, and when it fails (the
-    /// check signalled the thread) the fault is `Ok` with nothing more to do. `va` is the
-    /// faulting page (`trunc_page(far)`); the error is `uvm_fault`'s.
+    /// for a process's map, `uvm_grow(p, va)` when it was served, on the map `source` names.
+    /// `va` is the faulting page (`trunc_page(far)`); the error is `uvm_fault`'s.
     fn page_fault(&self, source: FaultSource, va: usize, access: VmProt) -> Result<(), Errno>;
-    /// `trapsignal(p, sig, trapno, code, sv)` with `sv.sival_ptr = addr`.
-    fn trapsignal(&self, sig: i32, trapno: u64, code: i32, addr: usize);
-    /// `sigexit(p, sig)`, the kernel lock held by the caller; never returns.
-    fn sigexit(&self, sig: i32) -> !;
-    /// `refreshcreds(p)`.
-    fn refreshcreds(&self);
-    /// `userret(p)`: the last thing before the thread returns to user mode.
-    fn userret(&self);
-    /// `mi_syscall_return(p, code, error, rval)`, after the ABI set the registers
-    /// (`kernel::api::syscall_return`, decision 53).
-    fn syscall_return(&self, code: Register, error: SysResult, rval: &Rval);
-    /// `ast()`'s machine-independent work on the running thread (`kernel::trap::ast`):
-    /// `refreshcreds`, `uvmexp.softs`, `mi_ast(p, ci_want_resched)`, `userret`.
-    fn ast(&self);
 }
 
 /// The machine's per-CPU hooks a trap calls (`struct cpu_info`'s `ci_flush_bp` and
@@ -136,16 +112,16 @@ pub trait Debugger: Sync {
     fn ktrap(&self, kind: i32, frame: &mut Trapframe) -> bool;
 }
 
-/// The registered trap handler.
-static HANDLER: OnceStatic<&'static dyn TrapHandler> = OnceStatic::new();
+/// The registered kernel-mode fault handler.
+static HANDLER: OnceStatic<&'static dyn KernelFault> = OnceStatic::new();
 /// The registered CPU hooks.
 static HOOKS: OnceStatic<&'static dyn CpuHooks> = OnceStatic::new();
 /// The registered debugger.
 static DEBUGGER: OnceStatic<&'static dyn Debugger> = OnceStatic::new();
 
-/// Registers the trap handler, once (a second registration keeps the first).
-pub fn install(h: &'static dyn TrapHandler) -> Result<(), AlreadyRegistered> {
-    HANDLER.set(h).map_err(|_| AlreadyRegistered("TrapHandler"))
+/// Registers the kernel-mode fault handler, once (a second registration keeps the first).
+pub fn install(h: &'static dyn KernelFault) -> Result<(), AlreadyRegistered> {
+    HANDLER.set(h).map_err(|_| AlreadyRegistered("KernelFault"))
 }
 
 /// Registers the CPU hooks, once.
@@ -158,11 +134,14 @@ pub fn install_debugger(d: &'static dyn Debugger) -> Result<(), AlreadyRegistere
     DEBUGGER.set(d).map_err(|_| AlreadyRegistered("Debugger"))
 }
 
-/// The registered trap handler, `None` before registration. The machine's trap code calls
-/// it, and the kernel's `syscall_return` (`mi_syscall_return` for the ABI, which writes the
-/// registers first, decision 53), which is not generic over the glue the handler is.
+/// The registered kernel-mode fault handler, `None` before registration: the machine's trap
+/// code alone asks it.
+#[cfg_attr(
+    not(all(target_os = "none", target_arch = "aarch64")),
+    allow(dead_code, reason = "the machine's trap code alone calls it")
+)]
 #[inline]
-pub fn handler() -> Option<&'static dyn TrapHandler> {
+pub(crate) fn handler() -> Option<&'static dyn KernelFault> {
     HANDLER.get().copied()
 }
 

@@ -41,6 +41,8 @@ pub mod syscall;
 // The generic timer's registers and the clock frame (N4.8a).
 pub mod timer;
 pub mod trap;
+// A trap from user mode, behind the token the EL0 entry passes (decision 56).
+pub mod usertrap;
 
 /// `<machine/param.h>` and `<machine/vmparam.h>` as `hal::arch::current` names them.
 pub use self::include::{param, vmparam};

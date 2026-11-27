@@ -27,12 +27,15 @@
 //! Upstream: sys/arch/arm64/arm64/trampoline.S @ 3ce1f3f79392
 //! LZ: sys/arch/arm64/arm64/exception.rs@3c62ede68802
 //!
-//! **What the assembly reaches.** `ci_curproc`, `ci_curpcb` and `ci_trampoline_vectors` at
-//! the offsets of the [`CpuCore`] that `TPIDR_EL1` names (`hal::cpu`); the running thread's
-//! `md_astpending` in its `MachineSlot`, first in the thread (`hal::cpu::thread`), through
-//! `ci_curproc`; its pcb's `pcb_flags` (`PCB_SINGLESTEP`); the trap frame it builds on the
-//! kernel stack. It calls [`do_el1h_sync`](super::trap), `do_el0_sync`, the two error
-//! entries, `ast` and the IRQ/FIQ entries of `trap.rs` with the frame in `x0`.
+//! **What the assembly reaches.** `ci_curpcb` and `ci_trampoline_vectors` at the offsets of
+//! the [`CpuCore`] that `TPIDR_EL1` names (`hal::cpu`); the running thread's pcb's
+//! `pcb_flags` (`PCB_SINGLESTEP`); the trap frame it builds on the kernel stack. It calls
+//! [`do_el1h_sync`](super::trap), `do_el1h_error` and the kernel-mode IRQ/FIQ entries of
+//! `trap.rs` with the frame in `x0`; and from the four EL0 handlers, one symbol of a crate
+//! above `hal`: `entry_user_trap` (decision 58), with the frame in `x0` (`usertrap.rs`'s
+//! `Arrival`) and the vector in `x1` (a `UserVector`), whose signature is
+//! `usertrap::UserTrapFn` (its definer pins it); a `bl` the linker resolves, never a stored
+//! address.
 //!
 //! **The vector premise.** `VBAR_EL1` holds [`exception_vectors_addr`] while the CPU runs
 //! kernel code and one of the trampoline tables while it runs user code: the boot paths
@@ -70,6 +73,12 @@
 //! - `ci_trampoline_vectors` (`bsd`'s `cpu_info` held a table number) is the core's word
 //!   ([`CpuCore::trampoline_vectors`]), an address only this module writes: a CPU's code
 //!   chooses a [`BhbMitigation`], never an address.
+//! - Decision 56 under decision 58 (E2): the EL0 handlers call `entry`'s `entry_user_trap` in
+//!   place of four handlers of `trap.rs`, and return through `hal_user_return` (the single
+//!   step, the restore, `return`, once; IRQ and FIQ masked first, so the exit's proof is
+//!   local); `do_ast` and its `ast` call leave the assembly (the kernel's loop over
+//!   `hal::cpu::usertrap::ExitGate`, inside the call), and with them the `ci_curproc` and
+//!   `md_astpending` offsets. The tables, the save and the restore stay here, unchanged.
 
 use core::arch::{asm, global_asm};
 use core::mem::offset_of;
@@ -78,10 +87,9 @@ use core::ptr;
 use super::include::armreg::DBG_MDSCR_SS;
 use super::include::frame::{TF_SIZE, Trapframe};
 use super::include::pcb::Pcb;
-use super::include::proc::Mdproc;
 use super::pmap::layout::TRAMP_ROOT_OFFSET;
-use crate::cpu::thread::MachineSlot;
-use crate::cpu::{CORE_CURPCB, CORE_CURPROC, CORE_TRAMPOLINE_VECTORS, CpuCore};
+use super::usertrap::UserVector;
+use crate::cpu::{CORE_CURPCB, CORE_TRAMPOLINE_VECTORS, CpuCore};
 
 /// The bytes of one trampoline table (`.align 11`).
 const TRAMPOLINE_TABLE: usize = 2048;
@@ -128,22 +136,19 @@ global_asm!(
     TF_X = const offset_of!(Trapframe, tf_x),
     TF_ELR = const offset_of!(Trapframe, tf_elr),
     TF_SP = const offset_of!(Trapframe, tf_sp),
-    CI_CURPROC = const CORE_CURPROC,
     CI_CURPCB = const CORE_CURPCB,
     CI_TRAMPOLINE_VECTORS = const CORE_TRAMPOLINE_VECTORS,
-    P_ASTPENDING = const offset_of!(MachineSlot, md) + offset_of!(Mdproc, md_astpending),
     PCB_FLAGS = const offset_of!(Pcb, pcb_flags),
     TRAMP_ROOT_OFFSET = const TRAMP_ROOT_OFFSET,
     DBG_MDSCR_SS = const DBG_MDSCR_SS,
     DO_EL1H_SYNC = sym super::trap::do_el1h_sync,
     DO_EL1H_ERROR = sym super::trap::do_el1h_error,
-    DO_EL0_SYNC = sym super::trap::do_el0_sync,
-    DO_EL0_ERROR = sym super::trap::do_el0_error,
-    AST = sym super::trap::ast,
     ARM_CPU_IRQ = sym super::trap::arm_cpu_irq,
     ARM_CPU_FIQ = sym super::trap::arm_cpu_fiq,
-    ARM_CPU_IRQ_EL0 = sym super::trap::arm_cpu_irq_el0,
-    ARM_CPU_FIQ_EL0 = sym super::trap::arm_cpu_fiq_el0,
+    USER_VECTOR_SYNC = const UserVector::Sync as u64,
+    USER_VECTOR_IRQ = const UserVector::Irq as u64,
+    USER_VECTOR_FIQ = const UserVector::Fiq as u64,
+    USER_VECTOR_SERROR = const UserVector::SError as u64,
 );
 
 // SAFETY: the two items name tables defined above in this crate by their symbols, as their

@@ -89,7 +89,7 @@ paid_by = "N9"
 # hal::cpu::trap::CpuHooks
 [[bridge]]
 trait = "CpuHooks"
-for = ["sys/hal/cpu/trap.rs", "sys/hal/arch/arm64/trap.rs"]
+for = ["sys/hal/cpu/trap.rs", "sys/hal/arch/arm64/trap.rs", "sys/hal/arch/arm64/usertrap.rs"]
 paid_by = "N7"
 
 # bsd: ddb's db_ktrap (sys/arch/arm64/arm64/db_interface.rs, DdbDebugger), the kernel
@@ -363,7 +363,8 @@ paid_by = "N7"
 # prologue's calls out joined it (kernel::syscall): proc_pc and sigcode_svc_offset (the
 # machine, N4.8b's b3 or N10), user_vmspace (the thread's word, until its [o] members are
 # typed), pledge_syscall (kern_pledge, N8) and scdebug_call/scdebug_ret (SYSCALL_DEBUG,
-# kern_xxx); hal::cpu::trap::TrapHandler is kernel::syscall's own (KernelTrap), no row. N4.8b b3:
+# kern_xxx); hal's trap handler, kernel::syscall's own (KernelTrap), had no row (since decision 56's
+# E2 it is KernelFault, a row of its own below). N4.8b b3:
 # sendsig, signotify, proc_stack and proc_pc left the trait (hal::cpu::sig's frame, kernel::sig's
 # signotify over hal::cpu::thread's aston and cpu_unidle, hal::cpu::trap::proc_pc/proc_stack); b3c:
 # tcb_get, tcb_set and tcb_invalid left it (hal::cpu::thread). Re-dated N8 (the user's
@@ -680,4 +681,31 @@ paid_by = "N9"
 [[bridge]]
 trait = "LegacySyscalls"
 for = ["sys/kernel/syscall.rs", "sys/kernel/api.rs"]
+paid_by = "N9"
+
+# kernel's own: the kernel's door for a trap from user mode (decision 56, E2): what the code
+# that classifies the trap asks the kernel (refreshcreds, a user fault and its signal,
+# trapsignal, sigexit, userret and the AST loop, ast(), mi_syscall_return), a table because
+# that code cannot name the glue the kernel's process code is generic over. Implemented by the
+# kernel's own KernelTrap<G>, installed over bsd's glue (KernelTrap<BsdProcGlue>) by
+# hal_bridges_register (sys/kern/hal_bridges.rs). Paid when the glue's generic goes (N9): the
+# door's functions then call the kernel's code directly.
+# kernel::trap::UserTraps
+[[bridge]]
+trait = "UserTraps"
+for = ["sys/kernel/trap.rs", "sys/kernel/api.rs"]
+paid_by = "N9"
+
+# kernel's own: the page fault of a kernel-mode trap (kdata_abort's uvm_fault on the map the
+# machine chose, pmap_fault_fixup, uvm_grow), what is left of hal's trap handler since decision
+# 56's E2 (a trap from user mode asks hal nothing: entry calls kernel::trap). Implemented by the
+# kernel's KernelTrap<G>, installed over bsd's glue by hal_bridges_register
+# (sys/kern/hal_bridges.rs). The row is the bsd-installed half, paid when the glue's generic
+# goes (N9): the kernel then installs its own KernelTrap. The registration itself stays for
+# ever (hal cannot name the kernel; a kernel-mode page fault is asked upward, as docs/ENTRY.md
+# section 9, Gap 6, lists it with the thread start and the interrupt handlers).
+# hal::cpu::trap::KernelFault
+[[bridge]]
+trait = "KernelFault"
+for = ["sys/hal/arch/arm64/trap.rs"]
 paid_by = "N9"

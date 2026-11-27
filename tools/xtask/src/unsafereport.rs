@@ -323,20 +323,30 @@ pub(crate) struct Groups {
     pub(crate) to_hal: CrateCount,
 }
 
-/// Files (test-only files apart) and kernel-code `unsafe` of one crate.
+/// Files (test-only files apart), kernel-code `unsafe` and `global_asm!` blocks of one crate.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CrateCount {
     pub(crate) files: usize,
     pub(crate) unsafe_n: usize,
+    /// `global_asm!` blocks in kernel code: assembly is not an `unsafe` keyword, so it is
+    /// counted apart (decision 56's U3: `entry` holds one and no `unsafe`; `hal`'s are printed
+    /// and gate nothing).
+    pub(crate) asm: usize,
 }
 
 /// The crates `unsafe-report` prints, in order (docs/ZERO_UNSAFE.md 0.4). A file that has not
 /// moved is in `bsd`, whatever its destination. `lib` is the kernel's leaf crates under
 /// `sys/lib/` (`sysdefs`, `libkern`, `libz`; decisions 54 and 55): `#![forbid(unsafe_code)]`,
-/// under every layer, not part of the LZ tree that N9 deletes.
-pub(crate) const CRATE_NAMES: [&str; 6] = ["kernel", "abi", "hal", "lib", "bsd", "boot"];
+/// under every layer, not part of the LZ tree that N9 deletes. `entry` (decisions 56 and 58) is the
+/// crate that classifies a trap from userland: safe Rust but the one attribute that exports its
+/// symbol (`#[unsafe(no_mangle)]`, counted as `unsafe`), no assembly.
+pub(crate) const CRATE_NAMES: [&str; 7] = ["kernel", "abi", "entry", "hal", "lib", "bsd", "boot"];
 
-/// The crate a file belongs to (`rel` relative to the root): `kernel`, `abi`, `hal`, `lib`
+/// The `unsafe` `entry` may hold (decision 58): the `#[unsafe(no_mangle)]` of the one function
+/// `hal`'s assembly calls; `--check` fails above it, and on any `global_asm!` in `entry`.
+pub(crate) const ENTRY_UNSAFE_MAX: usize = 1;
+
+/// The crate a file belongs to (`rel` relative to the root): `kernel`, `abi`, `entry`, `hal`, `lib`
 /// (`sys/lib/sysdefs/`, `sys/lib/libkern/`, `sys/lib/libz/`), `boot` (`sys/boot/`, LZ's
 /// `sys/stand/`, `sys/lib/libsa/`, `sys/arch/*/stand/`), or `bsd` for every other file under
 /// `sys/` and `init/`; `None` for anything else. The legacy tree and the loaders are read in LZ's layout
@@ -359,6 +369,7 @@ pub(crate) fn crate_of_file(rel: &str) -> Option<&'static str> {
         ["stand", ..] | ["lib", "libsa", ..] | ["arch", _, "stand", ..] => "boot",
         ["kernel", ..] => "kernel",
         ["abi", ..] => "abi",
+        ["entry", ..] => "entry",
         ["hal", ..] => "hal",
         ["lib", "sysdefs" | "libkern" | "libz", ..] => "lib",
         _ => "bsd",
@@ -385,14 +396,16 @@ pub(crate) fn moves_to_hal(rel: &str) -> bool {
         )
 }
 
-/// A row that is a v2 crate (`kernel`, `abi`, `hal`): no per-row budget, `crate_errors` and
-/// `hal_ceiling` bound it instead.
+/// A row that is a v2 crate (`kernel`, `abi`, `entry`, `hal`): no per-row budget,
+/// `crate_errors` and `hal_ceiling` bound it instead.
 pub(crate) fn is_crate_row(name: &str) -> bool {
-    matches!(name, "kernel" | "abi" | "hal" | "lib/sysdefs")
+    matches!(name, "kernel" | "abi" | "entry" | "hal" | "lib/sysdefs")
 }
 
 /// What `--check` says of the crates: `kernel`, `abi` and `lib` must be 0 (the compiler already
-/// refuses it), `hal` at or under `hal_ceiling` when the key is there, and the `bsd` files
+/// refuses it), `entry` at most [`ENTRY_UNSAFE_MAX`] with no `global_asm!` (its root denies
+/// `unsafe_code` and one item allows it for the export, decision 58), `hal` at or under
+/// `hal_ceiling` when the key is there, and the `bsd` files
 /// outside the core at or under `legacy_ceiling`. The hardware that moves into `hal` is in
 /// `unsafe-core.toml`, so it is already outside that count; the 159 `unsafe` of the old runtime
 /// files, in `bsd` and in the core, are outside it too.
@@ -410,6 +423,18 @@ pub(crate) fn crate_errors(
                 n(c)
             ));
         }
+    }
+    if n("entry") > ENTRY_UNSAFE_MAX {
+        out.push(format!(
+            "entry: {} unsafe, above {ENTRY_UNSAFE_MAX}: its only unsafe is the attribute that exports its one symbol (decision 58)",
+            n("entry")
+        ));
+    }
+    let entry_asm = crates.get("entry").map_or(0, |x| x.asm);
+    if entry_asm > 0 {
+        out.push(format!(
+            "entry: {entry_asm} global_asm! blocks; entry has no assembly (decision 58: the vectors are hal's)"
+        ));
     }
     if let Some(r) = r {
         if let Some(h) = r.hal_ceiling
@@ -430,8 +455,8 @@ pub(crate) fn crate_errors(
     out
 }
 
-/// `crates: kernel 0, abi 0, hal 0, lib 0, bsd 10604 (1698 to move into hal), boot 621` without the
-/// `crates: ` (the `unsafe` of each).
+/// `crates: kernel 0, abi 0, entry 0, hal 0, lib 0, bsd 10604 (1698 to move into hal), boot 621`
+/// without the `crates: ` (the `unsafe` of each).
 pub(crate) fn crates_summary(
     crates: &BTreeMap<&'static str, CrateCount>,
     to_hal: CrateCount,
@@ -635,6 +660,9 @@ fn measure_lexed(
             let cc = m.groups.crates.entry(c).or_default();
             cc.files += usize::from(!is_test);
             cc.unsafe_n += n;
+            if !is_test {
+                cc.asm += global_asm_blocks(toks);
+            }
             if moves_to_hal(&rel) {
                 m.groups.to_hal.files += usize::from(!is_test);
                 m.groups.to_hal.unsafe_n += n;
@@ -787,10 +815,15 @@ pub(crate) fn unsafe_report(
         groups.legacy_files,
         shown(|r| r.legacy_ceiling)
     );
-    println!("\ncrates (docs/ZERO_UNSAFE.md 0.4; files, unsafe in kernel code):");
+    println!(
+        "\ncrates (docs/ZERO_UNSAFE.md 0.4; files, unsafe and global_asm! blocks in kernel code):"
+    );
     for c in CRATE_NAMES {
         let cc = groups.crates.get(c).copied().unwrap_or_default();
-        println!("  {c:<12} {:>5} files {:>6} unsafe", cc.files, cc.unsafe_n);
+        println!(
+            "  {c:<12} {:>5} files {:>6} unsafe {:>3} asm",
+            cc.files, cc.unsafe_n, cc.asm
+        );
         if c == "bsd" {
             println!(
                 "    of which {} unsafe in {} files are the hardware (sys/arch/amd64, sys/arch/arm64 without stand/, sys/machine, sys/arch/host) and the lists and trees (sys/sys/queue.rs, sys/sys/tree.rs, sys/kern/subr_tree.rs) that N2 moves into hal: a move, not a reduction",
@@ -990,8 +1023,8 @@ pub(crate) fn json(m: &Measure, statuses: &BTreeMap<String, &'static str>, pace:
                 String::new()
             };
             format!(
-                "\"{c}\": {{\"files\": {}, \"unsafe\": {}{to_hal}}}",
-                cc.files, cc.unsafe_n
+                "\"{c}\": {{\"files\": {}, \"unsafe\": {}, \"asm\": {}{to_hal}}}",
+                cc.files, cc.unsafe_n, cc.asm
             )
         })
         .collect();
@@ -1751,6 +1784,14 @@ fn split_args(toks: &[Tok]) -> Vec<&[Tok]> {
 }
 
 /// Tokenize Rust source, dropping comments, literals, lifetimes and whitespace.
+/// The `global_asm!` invocations in a file's tokens (`global_asm` then `!`, also through a
+/// path such as `core::arch::global_asm!`).
+pub(crate) fn global_asm_blocks(toks: &[Tok]) -> usize {
+    toks.windows(2)
+        .filter(|w| matches!(&w[0], Tok::Ident(i) if i == "global_asm") && w[1] == Tok::Punct('!'))
+        .count()
+}
+
 pub(crate) fn lex(src: &str) -> Vec<Tok> {
     lex_pos(src).toks
 }
@@ -2521,7 +2562,7 @@ mod tests {
         };
         assert_eq!(
             totals_line(&k, &Counts::default(), &g),
-            "Unsafe (`cargo xtask unsafe-report`): kernel 5 blocks, 4 fn, 3 impl, 2 trait, 1 other; tests 0 more; core 10, legacy 5, forbid 400 of 1165 modules; crates: kernel 0, abi 0, hal 0, lib 0, bsd 0 (0 to move into hal), boot 0."
+            "Unsafe (`cargo xtask unsafe-report`): kernel 5 blocks, 4 fn, 3 impl, 2 trait, 1 other; tests 0 more; core 10, legacy 5, forbid 400 of 1165 modules; crates: kernel 0, abi 0, entry 0, hal 0, lib 0, bsd 0 (0 to move into hal), boot 0."
         );
     }
 
@@ -2749,9 +2790,10 @@ mod tests {
              \"totals\": {{\"kernel_unsafe\": 5, \"test_unsafe\": 1, \"core_unsafe\": 2, \
              \"core_unsafe_files\": 1, \"legacy_unsafe\": 3, \"legacy_unsafe_files\": 3, \
              \"modules\": 5, \"forbid_modules\": 2, \"core_budget\": 8}},\n  \
-             \"crates\": {{\"kernel\": {{\"files\": 0, \"unsafe\": 0}}, \"abi\": {{\"files\": 0, \"unsafe\": 0}}, \
-             \"hal\": {{\"files\": 0, \"unsafe\": 0}}, \"lib\": {{\"files\": 0, \"unsafe\": 0}}, \"bsd\": {{\"files\": 8, \"unsafe\": 5, \"to_hal\": {{\"files\": 0, \"unsafe\": 0}}}}, \
-             \"boot\": {{\"files\": 0, \"unsafe\": 0}}}},\n  \
+             \"crates\": {{\"kernel\": {{\"files\": 0, \"unsafe\": 0, \"asm\": 0}}, \"abi\": {{\"files\": 0, \"unsafe\": 0, \"asm\": 0}}, \
+             \"entry\": {{\"files\": 0, \"unsafe\": 0, \"asm\": 0}}, \
+             \"hal\": {{\"files\": 0, \"unsafe\": 0, \"asm\": 0}}, \"lib\": {{\"files\": 0, \"unsafe\": 0, \"asm\": 0}}, \"bsd\": {{\"files\": 8, \"unsafe\": 5, \"asm\": 0, \"to_hal\": {{\"files\": 0, \"unsafe\": 0}}}}, \
+             \"boot\": {{\"files\": 0, \"unsafe\": 0, \"asm\": 0}}}},\n  \
              \"ratchet\": {{\"forbid_floor\": 2, \"legacy_ceiling\": 3, \"legacy_baseline\": 9, \
              \"hal_ceiling\": null, \"baseline_date\": \"2026-10-10\"}},\n  \
              \"rate\": {{\"active_days\": 2, \"removed\": 6, \"per_day\": 3.00}},\n  \
@@ -2781,6 +2823,8 @@ mod tests {
         for (rel, want) in [
             ("sys/kernel/file/pipe.rs", Some("kernel")),
             ("sys/abi/lib.rs", Some("abi")),
+            ("sys/entry/lib.rs", Some("entry")),
+            ("sys/entry/arch/arm64/vectors.rs", Some("entry")),
             ("sys/hal/lock.rs", Some("hal")),
             ("sys/stand/boot/main.rs", Some("boot")),
             ("sys/lib/libsa/open.rs", Some("boot")),
@@ -2822,7 +2866,7 @@ mod tests {
         assert_eq!(m.groups.bsd_noncore, 3);
         assert_eq!(
             crates_summary(&m.groups.crates, m.groups.to_hal),
-            "kernel 0, abi 0, hal 0, lib 0, bsd 5 (0 to move into hal), boot 0"
+            "kernel 0, abi 0, entry 0, hal 0, lib 0, bsd 5 (0 to move into hal), boot 0"
         );
         for (rel, want) in [
             ("sys/arch/amd64/amd64/pmap.rs", true),
@@ -2849,6 +2893,7 @@ mod tests {
                     CrateCount {
                         files: 1,
                         unsafe_n: k,
+                        asm: 0,
                     },
                 ),
                 (
@@ -2856,6 +2901,7 @@ mod tests {
                     CrateCount {
                         files: 1,
                         unsafe_n: h,
+                        asm: 0,
                     },
                 ),
                 (
@@ -2863,6 +2909,7 @@ mod tests {
                     CrateCount {
                         files: 1,
                         unsafe_n: b,
+                        asm: 0,
                     },
                 ),
             ]
@@ -2885,6 +2932,7 @@ mod tests {
             CrateCount {
                 files: 1,
                 unsafe_n: 2,
+                asm: 0,
             },
         );
         assert_eq!(crate_errors(Some(&r), &abi, 0).len(), 1);
@@ -2894,16 +2942,53 @@ mod tests {
             CrateCount {
                 files: 1,
                 unsafe_n: 1,
+                asm: 0,
             },
         );
         assert_eq!(crate_errors(Some(&r), &lib, 0).len(), 1);
+        // entry: one unsafe (the export), no global_asm! (decision 58).
+        let entry = |u, asm| {
+            let mut m = c(0, 0, 0);
+            m.insert(
+                "entry",
+                CrateCount {
+                    files: 3,
+                    unsafe_n: u,
+                    asm,
+                },
+            );
+            m
+        };
+        assert!(crate_errors(Some(&r), &entry(1, 0), 0).is_empty());
+        assert!(crate_errors(Some(&r), &entry(0, 0), 0).is_empty());
+        assert_eq!(crate_errors(Some(&r), &entry(2, 0), 0).len(), 1);
+        assert_eq!(crate_errors(Some(&r), &entry(1, 1), 0).len(), 1);
+        assert_eq!(crate_errors(None, &entry(2, 1), 0).len(), 2);
         // No ratchet or no hal_ceiling: only the compiler's two rules apply here.
         assert!(crate_errors(None, &c(0, 99, 99), 99).is_empty());
     }
 
     #[test]
+    fn global_asm_blocks_are_counted() {
+        assert_eq!(global_asm_blocks(&lex("global_asm!(\"nop\");\n")), 1);
+        assert_eq!(
+            global_asm_blocks(&lex(
+                "core::arch::global_asm!(\"a\");\nglobal_asm!(include_str!(\"x.S\"), A = const 1);\n"
+            )),
+            2
+        );
+        // A name, a use or an asm! is not a block.
+        assert_eq!(
+            global_asm_blocks(&lex(
+                "use core::arch::global_asm;\nfn f() { asm!(\"nop\") }\n// global_asm!(\"x\")\n"
+            )),
+            0
+        );
+    }
+
+    #[test]
     fn crate_rows_have_no_row_budget() {
-        for n in ["kernel", "abi", "hal"] {
+        for n in ["kernel", "abi", "entry", "hal"] {
             assert!(is_crate_row(n));
         }
         for n in ["kern", "arch/amd64", "halo", "(crate root)"] {

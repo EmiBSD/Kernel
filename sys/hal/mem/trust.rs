@@ -46,8 +46,8 @@
 //! The machine's `kcopy` (`kcopy_in`/`kcopy_out` of `arch/<machine>/copy.rs`, `hal`'s own since
 //! N4.8b; the `UserCopy` bridge's before) writes and reads kernel memory named by an address.
 //! `hal` calls it for two holders only. One is the `hal::user::KcopyToken`, taken once by
-//! `bsd`'s boot (`hal_bridges_register`'s first step, before the boot glue calls
-//! `abi::abi_init`; an earlier take panics the boot, so no `forbid` crate can hold it) for
+//! `bsd`'s boot (`hal_bridges_register`'s first step, before any user process runs; an
+//! earlier take panics the boot, so no `forbid` crate can hold it) for
 //! `uiomove`'s `UIO_SYSSPACE` leg and
 //! `/dev/mem`: its holder vouches that every address it
 //! passes is a kernel buffer of the length copied that its builder owns for the copy

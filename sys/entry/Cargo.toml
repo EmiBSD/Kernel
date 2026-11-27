@@ -1,0 +1,22 @@
+[package]
+name = "entry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "EmiBSD entry: the classification of a trap from userland behind the one symbol hal's EL0 handlers call, calling abi, kernel::trap and hal downward; safe Rust with no assembly, one #[unsafe(no_mangle)] its only unsafe, no pub item, no state, no registration (decisions 56 and 58, docs/ENTRY.md)"
+publish = false
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+# Decisions 56 and 58: entry calls down into abi (a system call), kernel (kernel::trap) and hal
+# (the Arrival's interrupt, FIQ and SError, the exit token); only the image crate names entry
+# (`cargo xtask entry-check` E2).
+abi = { path = "../abi" }
+hal = { path = "../hal" }
+kernel = { path = "../kernel" }
+
+[lints]
+workspace = true

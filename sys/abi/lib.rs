@@ -27,16 +27,16 @@
 //! The chain is userland -> `abi` -> `kernel` -> `hal` (decision 52, the user, 2026-11-26):
 //! the crate depends on `kernel` and `hal`, never on `bsd`, and `abi-check` R6 confines what
 //! it names: of `kernel`, only `kernel::api` (one function per system call); of `hal`, only
-//! the passive `sysdefs::*`, `hal::syscall`'s types and the registration of its handler
-//! ([`abi_init`]), and (decision 53) `hal::syscall::UserRegs`, the trapping thread's user
-//! registers, since `hal`'s public API otherwise acts on the kernel's own state. Neither
-//! `kernel` nor `hal` names it: the image's boot glue calls [`abi_init`]
-//! (`sys/kern/abi_module.rs` until N9), and `hal`'s system call trap calls the handler it
-//! registered, the one upward call, with the trap's registers uninterpreted: the per-arch
-//! system call convention is this crate's ([`arch`], decision 53). The constant headers of the ABI edge
-//! (`<sys/syscall.h>`, `<sys/errno.h>`, ...) are `hal`'s, inherited from LZ (`sys/lib/sysdefs/`,
-//! the user's decision of 2026-10-16): the numbers of the table are `sysdefs::proc::syscall`'s,
-//! not a copy of them.
+//! `hal::syscall`'s passive types (decision 53: `UserRegs`, the trapping thread's user
+//! registers, and `Gpr`; decision 56: `ChildReturn`), since `hal`'s public API otherwise acts on
+//! the kernel's own state; `sysdefs` freely. It registers nothing (decision 56): neither
+//! `kernel` nor `hal` names it, the crate that classifies a trap from userland (`entry`, which
+//! `hal`'s vectors call) calls its handler (`arch::current::svc`) with the trap's registers
+//! uninterpreted, and the image's
+//! boot glue reads its constants (`sysent::INFO`, `arch::current::CHILD_RETURN`); the per-arch
+//! system call convention is this crate's ([`arch`], decision 53). The constant headers of
+//! the ABI edge (`<sys/syscall.h>`, `<sys/errno.h>`, ...) are the leaf crate `sysdefs`'
+//! (decision 54): the numbers of the table are `sysdefs::proc::syscall`'s, not a copy of them.
 //!
 //! The translations sit in one file per group of the kernel ([`proc`], [`vm`], [`file`],
 //! [`event`], [`time`], [`base`], [`fs`], [`net`]), the table and the dispatcher in
@@ -96,15 +96,4 @@ pub mod sysent;
 pub mod time;
 pub mod vm;
 
-use hal::syscall::SyscallFn;
-
-/// The ABI's entry point, which the image's boot glue calls once, before `main()` and so
-/// before any system call: registers the machine's system call handler ([`arch`]) and what
-/// the table holds. `hal` keeps the first handler registered: when one was already there,
-/// the `Err` hands it back and the boot glue must not go on with it. A forked child's first
-/// return is not registered: it is data, `arch::current::CHILD_RETURN`, which the boot glue
-/// hands to the kernel (decision 56, E1).
-pub fn abi_init() -> Result<(), SyscallFn> {
-    hal::syscall::set_handler(arch::current::svc, sysent::INFO)
-}
 /* </CODE> */

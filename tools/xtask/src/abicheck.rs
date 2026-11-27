@@ -36,9 +36,9 @@
 //!   `Mutexed`, `Rwlocked` or `UnsafeCell`: no state in `abi`; plain tables are fine.
 //! * **R6** (decision 52, the user, 2026-11-26) `kernel` named only through `kernel::api`
 //!   (whole: its group modules and their functions, `kernel::api::syscall_legacy`), the
-//!   door of one function per system call; `hal` named only through, of `hal::syscall`, its types (`HandlerInfo`, `Register`, `Rval`, `SysArgs`,
-//!   `SysResult`, `SyscallFn`, `ENOSYS`) and `set_handler`, the registration of the ABI's
-//!   handler; decision 53 (the user, 2026-11-26, N7.abi2) adds `UserRegs` (the view of the
+//!   door of one function per system call; `hal` named only through, of `hal::syscall`, its types (`Register`, `Rval`, `SysArgs`,
+//!   `SysResult`, `ENOSYS`; the registration of the ABI's handler went with decision 56's
+//!   E2: `entry` calls it); decision 53 (the user, 2026-11-26, N7.abi2) adds `UserRegs` (the view of the
 //!   trapping thread's user registers, valid for the handler's call), `Gpr` (the machine's
 //!   registers by name) and (decision 56's E1, U5) `ChildReturn` (a forked child's first
 //!   return as data, the constant `abi` defines and never applies itself; `ChildFn` before),
@@ -80,18 +80,15 @@ const ABI_DIR: &str = "sys/abi";
 /// registration of the ABI's handler and (decision 53) the trap's user registers, `UserRegs`
 /// and `Gpr`, with `ChildReturn` (decision 56's E1: a forked child's return as data); its
 /// other functions re-enter or read the system call path.
-const HAL_SYSCALL_ITEMS: [&str; 11] = [
-    "HandlerInfo",
+const HAL_SYSCALL_ITEMS: [&str; 8] = [
     "Register",
     "Rval",
     "SysArgs",
     "SysResult",
-    "SyscallFn",
     "ChildReturn",
     "UserRegs",
     "Gpr",
     "ENOSYS",
-    "set_handler",
 ];
 /// The one module of `kernel` that `abi` may name (R6, decision 52): one function per system
 /// call.
@@ -190,7 +187,7 @@ pub(crate) fn abi_check(root: &Path) -> Result<()> {
         return Err(format!("abi-check: {} finding(s)", findings.len()).into());
     }
     println!(
-        "abi-check: {} files; no loop, branches only on nr or Ok/Err/Some/None, at most one kernel call and {MAX_BODY_LINES} lines per fn, no state, kernel only through kernel::api, hal only through hal::syscall's types and set_handler (sysdefs freely)",
+        "abi-check: {} files; no loop, branches only on nr or Ok/Err/Some/None, at most one kernel call and {MAX_BODY_LINES} lines per fn, no state, kernel only through kernel::api, hal only through hal::syscall's types (sysdefs freely)",
         files.len()
     );
     Ok(())
@@ -681,7 +678,7 @@ fn hal_tree(toks: &[Tok], k: usize, out: &mut Vec<(usize, String)>) {
             if !is_sep(toks, k + 1) {
                 out.push((
                     k,
-                    "R6: `hal::syscall` named as a module (abi may name only its types, HandlerInfo, Register, Rval, SysArgs, SysResult, SyscallFn, ChildReturn, UserRegs, Gpr, ENOSYS, and set_handler)"
+                    "R6: `hal::syscall` named as a module (abi may name only its types, Register, Rval, SysArgs, SysResult, ChildReturn, UserRegs, Gpr, ENOSYS)"
                         .to_string(),
                 ));
             } else if toks.get(k + 3) == Some(&Tok::Punct('{')) {
@@ -695,12 +692,12 @@ fn hal_tree(toks: &[Tok], k: usize, out: &mut Vec<(usize, String)>) {
         Some(Tok::Ident(m)) => out.push((
             k,
             format!(
-                "R6: `hal::{m}` is outside the hal paths abi may name (hal::syscall's types and set_handler; the headers are sysdefs')"
+                "R6: `hal::{m}` is outside the hal paths abi may name (hal::syscall's types; the headers are sysdefs')"
             ),
         )),
         _ => out.push((
             k,
-            "R6: a glob of hal's root (abi names only hal::syscall's types and set_handler)"
+            "R6: a glob of hal's root (abi names only hal::syscall's types)"
                 .to_string(),
         )),
     }
@@ -713,12 +710,12 @@ fn syscall_item(t: Option<&Tok>, at: usize, out: &mut Vec<(usize, String)>) {
         Some(Tok::Ident(m)) => out.push((
             at,
             format!(
-                "R6: `hal::syscall::{m}` is not one of the items abi may name (HandlerInfo, Register, Rval, SysArgs, SysResult, SyscallFn, ChildReturn, UserRegs, Gpr, ENOSYS, set_handler)"
+                "R6: `hal::syscall::{m}` is not one of the items abi may name (Register, Rval, SysArgs, SysResult, ChildReturn, UserRegs, Gpr, ENOSYS)"
             ),
         )),
         _ => out.push((
             at,
-            "R6: a glob or a nested group of hal::syscall (abi names only its types and set_handler)".to_string(),
+            "R6: a glob or a nested group of hal::syscall (abi names only its types)".to_string(),
         )),
     }
 }
@@ -830,7 +827,7 @@ mod tests {
         one("fn f() { kernel::api::a(1); kernel::api::b(2); }\n", "R3");
         // The registration in hal, a field read and another crate's path are not calls into
         // the kernel.
-        clean("fn f() { let _ = hal::syscall::set_handler(g, I); kernel::api::a(1); }\n");
+        clean("fn f() { let _ = hal::syscall::ENOSYS; kernel::api::a(1); }\n");
         clean("fn f(a: &A) { let _ = a.n; other::kernel(); kernel::api::K; }\n");
         // Nested functions are judged on their own.
         clean("fn f() { kernel::api::a(1); fn g() { kernel::api::b(2); } }\n");
@@ -889,13 +886,16 @@ mod tests {
     #[test]
     fn r6_hal_only_through_syscall_types() {
         // What the crate names today, and the forms of the same paths.
-        clean("use hal::syscall::{HandlerInfo, Register};\n");
+        clean("use hal::syscall::{Rval, Register};\n");
         // Decision 53: the trap's user registers, their names and a forked child's return.
         clean("use hal::syscall::{ChildReturn, Gpr, UserRegs};\n");
         clean("fn f(regs: &hal::syscall::UserRegs) { regs.restart(); }\n");
         clean("const X8: hal::syscall::Gpr = hal::syscall::Gpr::X8;\n");
-        clean("fn f() { let _ = hal::syscall::set_handler(a, I); }\n");
-        // What hal's trap calls, and what reads the registration, stay refused.
+        one(
+            "fn f() { let _ = hal::syscall::set_handler(a, I); }\n",
+            "R6",
+        );
+        // What hal's trap called, and what read the registration, stay refused.
         one("use hal::syscall::enter;\n", "R6");
         one("fn f(r: &R) { hal::syscall::child(r); }\n", "R6");
         one("use hal::syscall::{Gpr, handler_info};\n", "R6");
@@ -990,13 +990,15 @@ mod tests {
         for t in HAL_SYSCALL_ITEMS {
             clean(&format!("use hal::syscall::{t};\n"));
         }
-        clean(
-            "use hal::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult, SyscallFn, ENOSYS};\n",
-        );
+        clean("use hal::syscall::{Register, Rval, SysArgs, SysResult, ENOSYS};\n");
         clean("fn f(r: hal::syscall::Rval) -> i32 { hal::syscall::ENOSYS }\n");
         clean("use hal::{syscall::{SysArgs, SysResult}};\n");
-        clean("fn f() { let _ = hal::syscall::set_handler(g, I); }\n");
-        clean("use ::hal::syscall::set_handler;\n");
+        // The registration is gone (decision 56's E2): refused like any other function.
+        one(
+            "fn f() { let _ = hal::syscall::set_handler(g, I); }\n",
+            "R6",
+        );
+        one("use hal::syscall::{HandlerInfo, SyscallFn};\n", "R6");
         // Its other functions, a glob, the module itself or an alias of it.
         one("fn f() { hal::syscall::dispatch(1, &A, &mut R); }\n", "R6");
         one("fn f() { let i = hal::syscall::handler_info(); }\n", "R6");

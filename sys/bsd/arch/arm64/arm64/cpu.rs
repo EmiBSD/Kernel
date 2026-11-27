@@ -835,8 +835,9 @@ pub static CPU_MODEL: StaticCell<[u8; 64]> = StaticCell::new([0; 64]);
 pub static CPU_NODE: AtomicI32 = AtomicI32::new(0);
 
 /// `cpu_id_aa64isar0`, `isar1`, `isar2`, `pfr0` and `pfr1`: the userland view of the ID
-/// registers (`cpu_identify_cleanup`), which `hal`'s `emulate_msr` answers with (N4.8b).
-pub use hal::arch::arm64::trap::{
+/// registers (`cpu_identify_cleanup`), which the kernel answers a program's `mrs` with
+/// (`kernel::trap::id_value`; `hal`'s `emulate_msr` from N4.8b until decision 56's E2).
+pub use kernel::trap::{
     CPU_ID_AA64ISAR0, CPU_ID_AA64ISAR1, CPU_ID_AA64ISAR2, CPU_ID_AA64PFR0, CPU_ID_AA64PFR1,
 };
 /// `cpu_id_aa64mmfr0`.

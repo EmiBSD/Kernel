@@ -126,9 +126,10 @@
 //!                                          when a subsystem exceeds its budget, the forbid
 //!                                          modules fall below the floor or legacy rises
 //!                                          above the ceiling; --shapes lists the shapes per
-//!                                          module; a `crates` block (kernel, abi, hal,
-//!                                          bsd with the part that moves into hal, boot: files and `unsafe`) and
-//!                                          --check's rules for it (kernel and abi 0, hal
+//!                                          module; a `crates` block (kernel, abi, entry, hal,
+//!                                          bsd with the part that moves into hal, boot: files, `unsafe`
+//!                                          and `global_asm!` blocks) and --check's rules for it
+//!                                          (kernel and abi 0, entry at most 1 (the export) and no global_asm!, hal
 //!                                          under hal_ceiling, bsd outside the core under
 //!                                          legacy_ceiling: the hardware is in unsafe-core.toml,
 //!                                          so it is already outside) (unsafereport.rs)
@@ -148,9 +149,15 @@
 //!                                          lines per fn, no static with interior
 //!                                          mutability; R6 (decision 52): kernel only
 //!                                          through kernel::api, hal only through
-//!                                          hal::syscall's types and set_handler
+//!                                          hal::syscall's types
 //!                                          (sysdefs freely)
 //!                                          (abicheck.rs)
+//! cargo xtask entry-check                  the rules of the crate entry (sys/entry/), decisions
+//!                                          56 and 58 and the user's lock: no assembly, nothing
+//!                                          names it but the image, one exported function and
+//!                                          no other unsafe, no state, the matches closed, abi,
+//!                                          kernel and hal only through their doors
+//!                                          (entrycheck.rs; hal-check's H7 and H8 there too)
 //! cargo xtask symbolize --arch A [--kernel K]
 //!                                          annotate the addresses of a stack trace on stdin
 //!                                          with K's symbols (default: the debug kernel)
@@ -223,6 +230,7 @@ mod diffopenbsd;
 mod distrib;
 mod e2fs;
 mod efiboot;
+mod entrycheck;
 mod halcheck;
 mod https;
 mod hwopts;
@@ -401,6 +409,7 @@ fn run(args: &[String]) -> Result<()> {
         ["include", rest @ ..] => manual::include(&root, rest),
         ["hal-check"] => halcheck::hal_check(&root),
         ["abi-check"] => abicheck::abi_check(&root),
+        ["entry-check"] => entrycheck::entry_check(&root),
         ["unsafe-report", flags @ ..] => unsafereport::unsafe_report(
             &root,
             flags.contains(&"--write"),

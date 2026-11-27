@@ -276,8 +276,8 @@ branches to `hal_user_first_return` (`sys/hal/arch/arm64/exception.S:279-281`).
 
 ## 5. The rules, and what enforces them
 
-`entry_user_trap`, `UserVector` and `UserTrapFn` are this document's proposed names; E2 fixes
-them.
+`entry_user_trap`, `UserVector` and `UserTrapFn` are the names E2 built (`sys/entry/arch/arm64/trap.rs`,
+`sys/hal/arch/arm64/usertrap.rs`).
 
 | Rule | Enforced by |
 |---|---|
@@ -387,7 +387,7 @@ still finds it.
 | Indirect calls besides the row (translated / legacy) | 0 | 6 / 5 | 5 / 4 |
 | Borrows of the trap frame | - | 4 | 4 |
 | Tests of the vector slot | 0 (four handlers) | 0 | 1 (`mov x1` in assembly, one `match` in `entry`) |
-| `daif` writes | 3 | 3 | 3 |
+| `daif` writes | 3 | 3 | 4: the exit's own `msr daifset, #3` (`sys/hal/arch/arm64/exception.S`, first instruction of `hal_user_return` and `hal_user_first_return`), which decision 58 keeps so `hal`'s exit proof is local (the gate's token no longer has to mean "masked"); measured by `nullsys` at the close |
 | Exit of an interrupt from userland, no work pending | inline | inline | one direct call, the gate inlined |
 | One AST | 3 direct calls | 1 indirect | 1 indirect |
 | A child's first exit | 2 direct calls | 0 indirect | 0 indirect |
@@ -579,15 +579,15 @@ the kernel computed, and zeros. Anything else, and every write, is SIGILL.
 
 As built on the E2 branch, under the lock (which sends the class to `kernel::trap` and so
 amended decision 56's U7, where `abi` held the list): `entry`'s match has one arm,
-`EXCP_MSR => kernel::trap::msr`. `kernel` holds what is announced: the list, as a constant
-table (`ID_READS`, `400c1071:sys/kernel/trap.rs:199`; `id_reg`, `:348`), and the values
-(`id_value`, `:372`; the five computed ones are the kernel's statics, which `bsd`'s CPU code
-fills until its slice). `hal` holds the instruction: the decode of the trapped `mrs`
-(`SyncTrap::id_read`, `400c1071:sys/hal/arch/arm64/usertrap.rs:234`), the write of its
-destination register and the pc's advance (`id_answer`, `:261`, which consumes the trap's
-token), and the live read of the CPU's model. A read that is not on the list falls to the
-FPAC arm's SIGILL, as the C's fall-through does. `abi` takes no part: a new identification
-register changes the kernel's table, never `entry` and never `abi`.
+`EXCP_MSR => kernel::trap::msr`. `kernel` holds what is announced, the list and the values
+in one `match (crm, op2)`, as `trap.c`'s `switch` (`kernel::trap::id_value`, `None` for a read
+not answered; the five computed values are the kernel's statics, which `bsd`'s CPU code fills
+until its slice; `MIDR_EL1` is read live through the closure `msr` passes). `hal` holds the
+instruction: the decode of the trapped `mrs` (`SyncTrap::id_read`), the write of its
+destination register and the pc's advance (`id_answer`, which consumes the trap's token), and
+the live read of the CPU's model (`midr`). A read that is not on the list falls to the FPAC
+arm's SIGILL, as the C's fall-through does. `abi` takes no part: a new identification
+register changes the kernel's match, never `entry` and never `abi`.
 
 Proof that userland sees the same: E0's step reads each of the sixteen registers and two that
 are refused, against OpenBSD. On the branch's tip it was equal on both CPU models (158 steps,
@@ -628,14 +628,15 @@ assembly names one more symbol above it, `pmap_setttb`, until `bsd`'s arm64 glue
 - The image keeps `entry` without help: `hal`'s object holds an undefined reference to the
   symbol, and the image crate names the crate (`extern crate entry as _;`, a row of
   `docs/SCAFFOLDING.md` until N9's image). No `EXTERN` and no `KEEP` in the linker script.
-  Not built in this form: checked at the rework's first build, dev and release (LTO).
+  Built so at E2: `llvm-nm` of the dev kernel shows `entry_user_trap` defined once (`T`).
 - `entry` has no host form (there is no trap on the host): off the machine the crate is
   empty, and `hal`'s reference exists only in arm64 assembly, so the host builds see no
   undefined symbol. The kernel's half is tested on the host; the classification is tested on
   the machine by `diff-openbsd`.
 - Checked with DevTools' rustc on the branch: `extern "C" fn(Arrival) -> UserExit` compiles
-  under `deny(warnings)` with `hal`'s `UserFrame` `#[repr(transparent)]`. The second
-  parameter, a `#[repr(u64)]` enum, is not built yet.
+  under `deny(warnings)` with `hal`'s `UserFrame` `#[repr(transparent)]`; built at E2 with the
+  second parameter, `#[repr(u64)]` `UserVector`, and the item-level `#[allow(unsafe_code)]` over
+  `#[unsafe(no_mangle)]` under the root's `deny(unsafe_code)`: no warning, no other allow.
 
 ## 10. What the user decided
 
