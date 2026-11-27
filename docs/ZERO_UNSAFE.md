@@ -12,21 +12,26 @@ Decisions 20 and 21 (section 10) replace the shape of sections 4, 6 and 7: the k
 root**, and the LZ tree is what that crate replaces. Everything below here is the plan in force;
 v1 and its measurements are docs/ZERO_UNSAFE_V1.md.
 
-### 0.1 The four crates
+### 0.1 The crates
 
 The one diagram of the architecture. Every other drawing (a chat, a slide, a session's notes)
 is a copy of this one or wrong.
-The module view of it, the three crates at N9 box by box, is in `README.md` ("The target: the
+The module view of it, the crates at N9 box by box, is in `README.md` ("The target: the
 kernel at N9", 2026-10-21); it follows this section and 0.8, never the reverse.
 
 ```mermaid
 flowchart TB
     L0["0 · USERLAND of OpenBSD<br/>binaries unchanged · ABI byte-identical"]
+    LE["1' · entry · sys/entry/ · linked into the kernel image (decisions 56 and 58)<br/>#![deny(unsafe_code)] · one #[allow(unsafe_code)] item, the exported symbol (unsafe 1, asm 0)<br/>classifies every trap from userland: the vector slot, then a closed match on the exception class · no state, nothing registered"]
     L1["1 · abi · sys/abi/ · linked into the kernel image (decision 47)<br/>#![forbid(unsafe_code)] · 0 unsafe · translation only, no logic<br/>syscall table (Native | Legacy) · bytes ⇄ the kernel's types · errno from Result"]
     L2["2 · kernel · sys/kernel/<br/>#![forbid(unsafe_code)] at the root · 0 unsafe, the compiler refuses one<br/>every decision of the OS · kernel::api: one function per syscall, abi's only door (decision 52)<br/>bridge traits for what has not moved yet (bridges.toml → 0 at N9)"]
-    L3["3 · hal · sys/hal/ · the ONLY unsafe · hal_ceiling lowered to the count at each close (35 at N2, 100 at N3), raised only by the user<br/>hardware moved from LZ by owner: the pmaps behind hal::Pmap (N3.1), then arch/amd64, arch/arm64, machine, arch/host<br/>runtime written new: Mutexed, Rwlocked, SharedRwlock + Guarded, TypedPool/PoolArc/PoolBox, MBox, MArray, KmBuf, MappedBytes, OnceStatic, List/Tree and their owned forms, UserPtr + abi_pod!, PerCpu, Refcnt, Smr, Mmio, DmaBuf<br/>the registry, the syscall trap and the one registration of abi's handler"]
+    L3["3 · hal · sys/hal/ · the ONLY unsafe blocks and assembly · hal_ceiling lowered to the count at each close (35 at N2, 100 at N3), raised only by the user<br/>hardware moved from LZ by owner: the pmaps behind hal::Pmap (N3.1), then arch/amd64, arch/arm64, machine, arch/host<br/>runtime written new: Mutexed, Rwlocked, SharedRwlock + Guarded, TypedPool/PoolArc/PoolBox, MBox, MArray, KmBuf, MappedBytes, OnceStatic, List/Tree and their owned forms, UserPtr + abi_pod!, PerCpu, Refcnt, Smr, Mmio, DmaBuf<br/>the registry, the vectors, the register save and restore, the exit gate: all the assembly"]
     L4["4 · hardware · QEMU amd64 / arm64, real machines"]
-    L0 -->|"syscall"| L1
+    L0 -->|"trap: svc, fault, interrupt"| L3
+    L3 -->|"one link-time symbol, from hal's assembly"| LE
+    LE -->|"a system call"| L1
+    LE -->|"kernel::trap: fault, signal, the work before the return"| L2
+    LE -->|"interrupt · the exit token"| L3
     L1 -->|"kernel::api, one function per syscall"| L2
     L1 -->|"hal::syscall's types"| L3
     L2 -->|"safe API"| L3
@@ -35,46 +40,55 @@ flowchart TB
     L1 -->|"data"| S
     L2 -->|"data"| S
     L3 -->|"data"| S
-    B["bsd · sys/bsd/ · the LZ tree, legacy · 10,196 unsafe at the N3 close → the crate is deleted at N9<br/>boots and passes every smoke throughout · calls kernel and hal, never the reverse<br/>registers at boot: the bridge impls, the sysent[] rows (LegacySyscalls) · calls abi_init (decision 47)"]
+    B["bsd · sys/bsd/ · the LZ tree, legacy · 10,196 unsafe at the N3 close → the crate is deleted at N9<br/>boots and passes every smoke throughout · calls kernel and hal, never the reverse<br/>registers at boot: the bridge impls, the sysent[] rows (LegacySyscalls) · names entry in the image (extern crate)"]
     B -->|"calls down"| L2
     B -->|"calls down"| L3
 ```
 
-The arrows go down only: userland -> `abi` -> `kernel` -> `hal` (decision 52). What goes up
-(the ABI's syscall handler, which the trap calls, and the bridge implementations) is never a
-dependency: it is a registration at boot, and this is the whole of it:
+The arrows go down only, but for the first: a trap from userland enters `hal`'s vectors
+(assembly) and `hal`'s four EL0 handlers `bl` one symbol of `entry`, resolved when the image
+is linked, which `hal` never stores (decision 56 as amended by decision 58, `docs/ENTRY.md`).
+From there `entry` -> `abi` -> `kernel` -> `hal` (decision 52). `entry` classifies and calls
+down: `abi` for a system call, `kernel::trap` for a fault, a signal and the work before the
+return, `hal` for an interrupt, and it returns the exit token `hal`'s gate gave the kernel.
+`abi` registers nothing (`abi_init`, `set_handler`, `SyscallFn` and `HandlerInfo` are gone;
+`ChildFn` went with decision 56's E1); `SyscallFn` and the user half of `TrapHandler` are
+gone with them. What still goes up below `entry` is a registration made by `bsd`'s boot glue
+before `main()`, each with its date: the kernel's table of `bsd`'s trap glue
+(`kernel::trap::UserTraps`, N9), `bsd`'s `CpuHooks` and interrupt dispatch (N7), the
+registered interrupt handlers, the debugger, the thread start and the symbol `pmap_setttb`
+(`bsd`'s, N7-N9), plus the bridge implementations. This is the whole of it:
 
 ```mermaid
 sequenceDiagram
     participant HAL as hal
     participant K as kernel
+    participant E as entry
     participant A as abi (linked in)
     participant B as bsd (until N9)
     HAL->>HAL: init hardware
     B->>HAL: register the bridge impls (dyn Trait in OnceStatic)
-    B->>K: register the sysent[] rows (kernel::syscall::LegacySyscalls)
-    B->>A: abi_init(), before main()
-    A->>HAL: register the syscall handler (hal::syscall::set_handler)
-    Note over HAL: from here every syscall trap → abi's handler (the registers as UserRegs, decision 53) → kernel::api (a Native function or syscall_legacy, and both reach bsd's sysent[] row through the LegacySyscalls bridge and mi_syscall); then abi writes x0 and the carry and calls kernel::api::syscall_return
+    B->>K: register the sysent[] rows (kernel::syscall::LegacySyscalls) and the trap glue (kernel::trap::UserTraps)
+    Note over HAL: abi registers nothing. From here every trap from userland: hal's vectors save the registers and bl entry_user_trap (no pointer)
+    HAL->>E: the Arrival and the vector slot
+    E->>A: a system call: abi's svc (the registers as UserRegs, decision 53)
+    A->>K: kernel::api (a Native function or syscall_legacy, reaching bsd's sysent[] row through LegacySyscalls and mi_syscall); then abi writes x0 and the carry and calls kernel::api::syscall_return
+    E->>K: any other class: kernel::trap's function of it, then the work before the return
+    E-->>HAL: the exit token; hal restores the registers and returns
 ```
 
 
 Dependencies, one direction: `bsd → abi → kernel → hal` and `bsd → kernel`, `bsd → hal`, and every one of
 these crates `→ sysdefs` (decision 54, the user, 2026-11-26: the basic types in one leaf crate under every
 layer, instead of each layer inventing its own; `abi` names it freely, and `hal` holds only mechanism);
+`entry → abi, kernel, hal` (calls down only; nothing depends on `entry` but the image crate, and `hal`
+reaches it by the one link-time symbol, never by a dependency);
 `abi` calls the kernel directly, and only through `kernel::api`, one function per system
 call (decision 52: the `KernelApi` table of `hal::api`, needed while `abi` was a loadable
 module, is gone, so a system call is a direct call where it was an indirect one). Only the
-image crate names `abi` (`bsd` until N9, then the `kernel` + `abi` + `hal` binary); `kernel`
-and `hal` never name `abi`, and `kernel` and `abi` never name `bsd`. Arrows up exist only as
-registrations made by `bsd`'s boot glue before `main()`. On the trap path there are seven
-(`ChildFn` left with decision 56's E1: the child's return is data):
-`abi`'s `SyscallFn`, the seven methods of `TrapHandler` (the kernel's, installed
-by `bsd`), `CpuHooks`, `IntrHardware` and `Debugger` (`bsd`'s), the thread start (the
-kernel's) and the symbol `pmap_setttb` (`bsd`'s); plus the bridge implementations. Decision
-56 (2026-11-26, `docs/ENTRY.md`, not built yet) puts a crate `entry` above `abi`, deletes the
-registrations that reach `abi` and moves the kernel's behind `kernel::trap`; this section and
-its diagram are rewritten when it lands.
+image crate names `abi` and `entry` (`bsd` until N9, then the `kernel` + `abi` + `entry` + `hal` binary); `kernel`
+and `hal` never name `abi` or `entry`, and `kernel`, `abi` and `entry` never name `bsd`. Arrows up exist only as
+registrations made by `bsd`'s boot glue before `main()` (listed above) and the one link-time call.
 
 
 | Crate | Path | `unsafe` | Holds |
@@ -82,11 +96,12 @@ its diagram are rewritten when it lands.
 | `hal` | `sys/hal/` | the only `unsafe` of the system, every site with a soundness proof, Miri on its host tests | the hardware primitives (page tables, traps, context switch, the interrupt level, ports and MMIO, caches, `bus_dma`'s hardware side, early boot: moved in from `sys/arch` and `sys/machine` with the kernel owner of each boundary, decision 26; the drivers of `sys/arch` go to `kernel::dev`, decision 28), the host test double (`sys/arch/host`), the constant headers of `sys/sys/` (decision 27: 18 at N2, `types.rs` at N3.1), the pmaps behind `hal::Pmap` (N3.1), and the runtime written new: `Mutexed<T>`, `Rwlocked<T>`, `SharedRwlock` with `Guarded` cells and witnesses (locks that own their data), `TypedPool<T>`/`PoolArc<T>`/`PoolBox<T>`, `MBox<T>`, `MArray<T>`, `KmBuf` (owned memory), `MappedBytes` (a byte view of busy frames, N3.4), `OnceStatic<T>` (the init-once static that replaces `StaticCell`), `List`/`Tree` over `'static` elements (N3.3) and the owned intrusive trees and lists (N3.5), written new for `kernel::vm` (`queue.rs`, `tree.rs`, `subr_tree.rs` stay in `bsd` for their legacy users), `PerCpu<T>`, `Smr`, `Refcnt`, `UserPtr<T>` with `abi_pod!` (typed copyin/copyout), `Mmio<Regs>`, `DmaBuf`, the interrupt-level guard, the console primitive, the bridge registry |
 | `kernel` | `sys/kernel/` | **0**, `#![forbid(unsafe_code)]` at the root: the compiler refuses any | every decision the operating system makes: memory (vm), processes, scheduler, signals, descriptors, kqueue, pipes, VFS and the file systems, the network stack, the drivers' logic, crypto, pf, pledge, unveil, exec. Its own types, ownership first, no C shape |
 | `sysdefs` | `sys/lib/sysdefs/` | **0**, `#![forbid(unsafe_code)]` at the root; depends on nothing | OpenBSD's basic types, constants and `#[repr(C)]` ABI structures (what was `hal::sys`, 72 modules), `AbiPod` and `abi_pod!` (`pod`), the page geometry (`param`): data shapes only, no logic, no state; the byte views of them (`bytes_of`, `pod_from_bytes`, `AbiBytes`, `hal::sysbytes`) are `hal`'s, because a reinterpretation of bytes is `unsafe` |
+| `entry` | `sys/entry/`, linked into the kernel image (decisions 56 and 58, 2026-11-27) | **1**, `asm` **0**: `#![deny(unsafe_code)]` at the root and one `#[allow(unsafe_code)]` item, the `#[unsafe(no_mangle)]` function `entry_user_trap(Arrival, UserVector) -> UserExit` that `hal`'s assembly calls; held by `unsafe-report --check` and `entry-check` | the door of userland: the classification of every trap from a user program, nothing else. A match on the vector slot and a closed match on the exception class, fixed when the kernel is built (the user's lock); it calls `abi` for a system call, `kernel::trap` for the rest of what a program can cause, `hal` for an interrupt. No assembly (the vectors and the register save and restore stay in `hal`), no state, no registration, no loop; the `unsafe` budget is `entry`'s own number, the one `unsafe` that is not in `hal` |
 | `abi` | `sys/abi/`, linked into the kernel image (decision 47; the loadable module of decision 22 until the N5 close) | **0**, `#![forbid(unsafe_code)]` (the user allowed `unsafe` here; none is needed: `UserPtr` is safe) | OpenBSD's userland interface, byte-identical: the syscall table, the `#[repr(C)]` structs (`stat`, `kevent`, `sockaddr`, `kinfo_*`, ...), ioctl and sysctl encodings, errno (the constant headers through `hal`, decision 27). Translation only (decision 21): bytes to the kernel's types, one kernel entry point per syscall, the `Result` to an errno; no check on what a value means, no state |
-| `bsd` | `sys/bsd/` (the LZ tree, today's crate; `sys/` until 2026-11-26) | 10,196 in 1,069 files at the N3 close (`unsafe-report`, 2026-10-18; 10,583 in 1,103 at the N2 close, 10,604 in 1,161 before N2): 1,538 of them the hardware, the host double and the lists and trees that have not moved yet, the other 8,658 legacy (8,501 outside `unsafe-core.toml`) (a file counts as `hal` only once it compiles there), **0 files at N9** | what gets replaced. It keeps booting, running every smoke and `diff-openbsd` throughout; it links the three crates and calls down into them; the kernel crate never calls it except through a registered bridge (0.3) |
+| `bsd` | `sys/bsd/` (the LZ tree, today's crate; `sys/` until 2026-11-26) | 10,196 in 1,069 files at the N3 close (`unsafe-report`, 2026-10-18; 10,583 in 1,103 at the N2 close, 10,604 in 1,161 before N2): 1,538 of them the hardware, the host double and the lists and trees that have not moved yet, the other 8,658 legacy (8,501 outside `unsafe-core.toml`) (a file counts as `hal` only once it compiles there), **0 files at N9** | what gets replaced. It keeps booting, running every smoke and `diff-openbsd` throughout; it links the crates and calls down into them; the kernel crate never calls it except through a registered bridge (0.3) |
 
 The boot loaders (`sys/boot/`, LZ's `sys/stand`, `sys/lib/libsa` and `sys/arch/*/stand`, with `sys/bsd/stand/`, the kernel's own boot entry, counted with `bsd` since decision 57: 574 `unsafe` in the crates block) are separate
-binaries that run before the kernel; they are outside the four crates and unchanged. `libkern`,
+binaries that run before the kernel; they are outside the crates of the design and unchanged. `libkern`,
 `libz` and `sysdefs` stay crates of their own, leaves below `hal`, and since decision 55 (the
 user, 2026-11-26) each is `#![forbid(unsafe_code)]` at its root: `explicit_bzero` is
 `hal::mem::explicit_bzero`, and `StaticCell` is `bsd`'s (`sys/bsd/sys/staticcell.rs`, dying with its
@@ -95,8 +110,7 @@ last user at N9) and `libsa`'s (the boot loaders' own copy; `libsa`, `sys/lib/li
 `StaticCell`'s uses one by one.
 
 Dependencies, one direction: `bsd -> kernel -> hal`; `abi -> kernel` (`kernel::api` alone)
-and `abi -> hal` (`hal::syscall`'s types and the handler's registration, decision
-52); only the image crate names `abi`; plus `libkern`/`libz` under `kernel`; and all of them `-> sysdefs`. `hal` depends on nothing of ours but `libkern` and `sysdefs`. No cycle: a kernel-to-legacy call is a bridge.
+and `abi -> hal` (`hal::syscall`'s passive types, decisions 52 and 56); `entry -> abi, kernel, hal`; only the image crate names `abi` and `entry`; plus `libkern`/`libz` under `kernel`; and `abi`, `kernel` and `hal` `-> sysdefs` (`entry` names no data of its own). `hal` depends on nothing of ours but `libkern` and `sysdefs`. No cycle: a kernel-to-legacy call is a bridge.
 
 ### 0.2 What the compiler guarantees
 
@@ -111,10 +125,17 @@ and `abi -> hal` (`hal::syscall`'s types and the handler's registration, decisio
   branches on anything but the syscall number, its own conversion's `Ok`/`Err` and the byte
   layout, that calls more than one `kernel` entry point, or that exceeds the per-syscall line
   limit (decision 21), and on a path into `kernel` outside `kernel::api` or into `hal`
-  outside `hal::syscall`'s types and `set_handler` (`sysdefs` is free, decision 54; R6, decisions 47 and 52:
+  outside `hal::syscall`'s passive types (`set_handler` is gone; `sysdefs` is free, decision 54; R6, decisions 47 and 52:
   linked into the image, `abi` shares `hal`'s and `kernel`'s statics; decision 53 adds
   `UserRegs`, `Gpr` and `ChildFn` (`ChildReturn` since decision 56's E1), with which `abi::arch::<arch>` owns the system call
   convention and `hal`'s trap interprets nothing userland sends).
+- `entry` holds only the door: `cargo xtask entry-check` fails `just check` on assembly, a
+  `static`, a lock, a loop, a function pointer or a registration under `sys/entry/`, on a
+  second `unsafe` item or a signature other than `hal`'s `UserTrapFn`, on a name of `abi`,
+  `kernel` or `hal` outside its list, and on a catch-all arm that is not `trap.c`'s `default:`;
+  `hal-check` H7 and H8 hold the other end: `Arrival` is named outside `hal` only in `entry` and
+  `kernel::trap`, and `hal`'s assembly names two symbols above it, `entry_user_trap` and `bsd`'s
+  `pmap_setttb` (until N7-N9). `unsafe-report --check` holds `entry` at `unsafe` 1 and `asm` 0.
 
 ### 0.3 The migration mechanism
 
