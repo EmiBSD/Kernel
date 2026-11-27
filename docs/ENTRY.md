@@ -3,8 +3,8 @@
 **Status: decision 56 as amended by decision 58, which the user signed on 2026-11-27. E0
 (coverage, the bench row) and E1 (the way out) are built and on `main` (`8b030374`,
 `c46ea94e`); the register round trip is too (`15fc387b`, syscalls/entry#4); E2 (the crate) is
-built and merged (`52d5216b`). E3 (the documents) is this commit; the close is pending (the
-bench pair, `nullsys` first).** E2 was built once under decision 56's first shape, on a branch
+built and merged (`52d5216b`), E3 (the documents) too (`e2adb8d4`), and the close is done
+(the bench pair of section 8: no row over +10 %).** E2 was built once under decision 56's first shape, on a branch
 that was never merged (tip `400c1071`); on 2026-11-27 the user changed its design (section
 10) and it was built again on a fresh branch. Decision 20 is not amended. Sections 1 and 6
 describe the tree before E2 (`c46ea94e`), the problem and what moved; the rest describes the
@@ -408,6 +408,48 @@ still finds it.
   `pipe`, `pagefault`, `forkexit`, `forkexec`. Before is `main` when the rework starts. A row
   over +10 % without a measured cause stops the work (decision 43).
 
+The bench pair as measured (2026-11-27, AC power, under the machine lock, `-smp 4`,
+`cortex-a72`): before is `2d3f7a10` (`main` before E1), after is `e2adb8d4`; three debug pairs
+(`just bench`) and three release pairs (`just bench-release --no-tcpbench`), before and after
+interleaved, 10 boots each. A cell is the median of the three runs' EmiBSD medians; "pairs"
+is each run's own change.
+
+| Row | Debug | pairs | Release | pairs |
+|---|---|---|---|---|
+| `nullsys` (ns) | 14060 -> 14767 (+5.0 %) | +3.3, +12.0, +5.1 | 11686 -> 12589 (+7.7 %) | +8.5, -1.3, +7.7 |
+| `pipe` (ns) | 248932 -> 242692 (-2.5 %) | -1.8, -2.5, -1.0 | 208647 -> 213598 (+2.4 %) | +4.0, +2.0, +0.5 |
+| `pagefault` (ns) | 133559 -> 131954 (-1.2 %) | -1.1, -1.0, -1.2 | 118926 -> 117980 (-0.8 %) | -1.3, -0.2, -0.2 |
+| `forkexit` (ns) | 4592398 -> 4620769 (+0.6 %) | +0.6, +2.6, -1.3 | 2737608 -> 2712095 (-0.9 %) | -0.0, -2.5, -1.0 |
+| `forkexec` (ns) | 12230798 -> 12364187 (+1.1 %) | +1.1, +2.8, -0.7 | 8129843 -> 8144145 (+0.2 %) | +0.2, -3.6, +0.2 |
+| `fileread` (ns) | 1126256 -> 1123880 (-0.2 %) | -0.1, +0.4, -1.4 | 968478 -> 958582 (-1.0 %) | -1.0, -0.9, -1.0 |
+| `filecreate` (ns) | 1404264 -> 1393129 (-0.8 %) | -1.0, +1.9, -2.9 | 1211406 -> 1208993 (-0.2 %) | -0.1, -0.1, -0.2 |
+| `boot` (s) | 9.01 -> 9.00 (-0.2 %) | -0.3, +0.6, -0.2 | 8.69 -> 8.68 (-0.1 %) | -0.0, -0.1, -0.1 |
+| `tcpbench` (Mbps) | 88.8 -> 87.5 (-1.5 %) | -1.9, -0.1, -2.3 | not run | |
+
+No row is over +10 %. `bench compare` reported two rows outside their run's spread: `nullsys`
+in debug pair 2 (14060 -> 15743 ns) and `tcpbench` in debug pair 3 (89.6 -> 87.5 Mbps).
+OpenBSD's own `nullsys` on the same boots did not move (10581 -> 10577 ns debug, 10612 ->
+10614 release), so the machine was the same on both sides.
+
+What `nullsys` shows, read from the raw samples (30 boots a side per profile):
+
+- EmiBSD's `nullsys` has two values a boot lands on, about 1200 ns apart, before and after
+  (their medians before: 14011 and 15156 in debug, 11686 and 12925 in release). OpenBSD's has
+  one. The cause of the two values is not known; it is older than `entry`.
+- Debug: both values rose by about 640 ns (14011 -> 14652, +4.6 %; 15156 -> 15794, +4.2 %),
+  and the boots split the same way (17 of 30 on the low value before, 16 of 30 after). So the
+  debug kernel pays about +4.4 % per system call, a real cost. Its cause was not measured: the
+  fourth `daif` write of the exit and the call from `hal`'s assembly into `entry` are the
+  candidates, neither verified.
+- Release: neither value rose (11686 -> 11464, -1.9 %; 12925 -> 12652, -2.1 %; the mean of
+  the 30 boots 12155 -> 12290, +1.1 %). The median moved
+  because fewer boots landed on the low value (19 of 30 before, 10 of 30 after). Whether that
+  split is chance or the kernel's is not established by 30 boots a side. Debug pair 2's
+  +12.0 % is the same effect (5 of 10 low before, 3 of 10 after).
+
+The reports are not in the tree (twelve files); N7's close keeps its own in `docs/bench/`.
+Open for N12: what makes a boot land on the slow value, and the debug kernel's 640 ns.
+
 Coverage of what moves:
 
 | What | Covered by | State |
@@ -721,9 +763,11 @@ user's reason in section 1. Three of its commits are reused as they are (section
    `docs/ARCHITECTURE.md`, `docs/IDIOMS.md`, `docs/SCAFFOLDING.md` and N9's, N10's and N12's
    rows of `docs/ROADMAP.md` (this commit). `docs/PHASE2.md`'s rows 56 and 58 keep what was
    decided on their dates. `.claude/rules/` (`abi.md`, `xtask.md`) is the main session's.
-9. The close, pending: every smoke, `diff-openbsd` on both CPU models, the bench pair
-   (`nullsys`, `pipe`, `pagefault`, `forkexit`, `forkexec`; debug and release, three runs on
-   AC; the fourth `daif` write is measured here), one release build with `llvm-nm`.
+9. The close, done on 2026-11-27: every smoke (67 of 87, 20 skipped by decision 44) and
+   `diff-openbsd` on both CPU models (159 steps, 156 equal, 3 expected, 0 unexpected) at
+   `52d5216b`, the last commit that changed code; the bench pair (section 8: no row over
+   +10 %; the fourth `daif` write was not measured apart); the release kernel of `e2adb8d4`
+   with `llvm-nm`: `entry_user_trap` defined once (`T`).
 
 ## Words
 
