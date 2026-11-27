@@ -20,9 +20,10 @@
 //! The v2 bookkeeping `cargo xtask lz check` validates besides the modules (docs/ZERO_UNSAFE.md
 //! section 0): the optional `crate` key of `[[module]]` and `[[extra]]`, and `bridges.toml`.
 //!
-//! * `crate = "hal" | "kernel" | "abi"` names the crate a native file lives in and must agree
-//!   with the path prefix (`sys/hal/` is `hal`, `sys/kernel/` is `kernel`, `sys/abi/` is
-//!   `abi`). A wrong or unknown value is an error; a file under one of those prefixes without
+//! * `crate = "hal" | "kernel" | "abi" | "entry"` names the crate a native file lives in and
+//!   must agree with the path prefix (`sys/hal/` is `hal`, `sys/kernel/` is `kernel`,
+//!   `sys/abi/` is `abi`, `sys/entry/` is `entry`, decision 56). A wrong or unknown value is an
+//!   error; a file under one of those prefixes without
 //!   the key is only a warning, so the redesigners' commits stay green until they add it.
 //! * `bridges.toml` at the root is optional. Each `[[bridge]]` row has `trait` (an identifier),
 //!   `for` (the `.rs` files under `sys/` that call through it, which must exist) and `paid_by`
@@ -45,6 +46,7 @@ pub(crate) fn crate_of_path(rust: &str) -> Option<&'static str> {
         ("sys/hal/", "hal"),
         ("sys/kernel/", "kernel"),
         ("sys/abi/", "abi"),
+        ("sys/entry/", "entry"),
     ]
     .into_iter()
     .find(|(p, _)| rust.starts_with(p))
@@ -60,14 +62,14 @@ pub(crate) fn check_crate_key(
     let (mut errors, mut warnings) = (Vec::new(), Vec::new());
     let want = crate_of_path(rust);
     match (key, want) {
-        (Some(k), _) if !matches!(k, "hal" | "kernel" | "abi") => errors.push(format!(
-            "{what} rust = \"{rust}\": crate = \"{k}\" is not one of hal, kernel, abi"
+        (Some(k), _) if !matches!(k, "hal" | "kernel" | "abi" | "entry") => errors.push(format!(
+            "{what} rust = \"{rust}\": crate = \"{k}\" is not one of hal, kernel, abi, entry"
         )),
         (Some(k), Some(w)) if k != w => errors.push(format!(
             "{what} rust = \"{rust}\": crate = \"{k}\" but the path is in `{w}`"
         )),
         (Some(k), None) => errors.push(format!(
-            "{what} rust = \"{rust}\": crate = \"{k}\" but the path is in none of sys/hal/, sys/kernel/, sys/abi/"
+            "{what} rust = \"{rust}\": crate = \"{k}\" but the path is in none of sys/hal/, sys/kernel/, sys/abi/, sys/entry/"
         )),
         (None, Some(w)) => warnings.push(format!(
             "{what} rust = \"{rust}\": no `crate = \"{w}\"` key"
@@ -188,6 +190,10 @@ mod tests {
             (vec![], vec![])
         );
         assert_eq!(ok("sys/abi/sys/errno.rs", Some("abi")), (vec![], vec![]));
+        assert_eq!(
+            ok("sys/entry/arch/arm64/trap.rs", Some("entry")),
+            (vec![], vec![])
+        );
         assert_eq!(ok("sys/kern/kern_sig.rs", None), (vec![], vec![]));
     }
 

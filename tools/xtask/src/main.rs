@@ -126,9 +126,10 @@
 //!                                          when a subsystem exceeds its budget, the forbid
 //!                                          modules fall below the floor or legacy rises
 //!                                          above the ceiling; --shapes lists the shapes per
-//!                                          module; a `crates` block (kernel, abi, hal,
-//!                                          bsd with the part that moves into hal, boot: files and `unsafe`) and
-//!                                          --check's rules for it (kernel and abi 0, hal
+//!                                          module; a `crates` block (kernel, abi, entry, hal,
+//!                                          bsd with the part that moves into hal, boot: files, `unsafe`
+//!                                          and `global_asm!` blocks) and --check's rules for it
+//!                                          (kernel and abi 0, entry at most 1 (the export) and no global_asm!, hal
 //!                                          under hal_ceiling, bsd outside the core under
 //!                                          legacy_ceiling: the hardware is in unsafe-core.toml,
 //!                                          so it is already outside) (unsafereport.rs)
