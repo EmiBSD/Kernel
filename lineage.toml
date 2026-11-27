@@ -14207,7 +14207,7 @@ reason = "hal runtime, written new (N3.3 fix-up): printf(9) for the crates above
 [[extra]]
 rust = "sys/hal/cpu/trap.rs"
 crate = "hal"
-reason = "hal runtime, written new (N4.8b): what the machine's trap code asks the kernel: the TrapHandler registration (the fault on the chosen map, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast (since decision 56 E1 the whole of ast(): kernel::trap::ast), mi_child_return), the CpuHooks (ci_flush_bp, ci_serror, fault()'s ci_panicbuf) and the Debugger (db_ktrap); forbid, 0 unsafe; bridges.toml TrapHandler, CpuHooks, Debugger; N4.8b b3: proc_pc and proc_stack, PROC_PC/PROC_STACK of the running thread (arm64: its UserFrame; the host: a test's registers), replacing ProcGlue::proc_pc and proc_stack; N7.abi2 (decision 53): handler() pub, for kernel::syscall::syscall_return"
+reason = "hal runtime, written new (N4.8b): what the machine's trap code asks the kernel (decision 56 E2: KernelFault, the page fault of a kernel-mode trap alone, FaultSource without User; the seven methods for a trap from user mode are kernel::trap's door, called by entry): the trap handler registration (the fault on the chosen map, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast (since decision 56 E1 the whole of ast(): kernel::trap::ast), mi_child_return), the CpuHooks (ci_flush_bp, ci_serror, fault()'s ci_panicbuf) and the Debugger (db_ktrap); forbid, 0 unsafe; bridges.toml TrapHandler, CpuHooks, Debugger; N4.8b b3: proc_pc and proc_stack, PROC_PC/PROC_STACK of the running thread (arm64: its UserFrame; the host: a test's registers), replacing ProcGlue::proc_pc and proc_stack; N7.abi2 (decision 53): handler() pub, for kernel::syscall::syscall_return"
 
 [[extra]]
 rust = "sys/hal/cpu/usertrap.rs"

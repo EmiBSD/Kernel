@@ -91,7 +91,7 @@
 //! - E1 (decision 56, the way out): a new thread's first return to user mode runs [`user_exit`]
 //!   from its start (`kernel::proc::fork`'s `thread_start`), generic over the glue: no
 //!   indirect call, where `hal`'s `syscall_return` ran `do_ast` and `hal`'s `ast()` called the
-//!   kernel three times through `hal::cpu::trap::TrapHandler` (`refreshcreds`, `mi_ast`,
+//!   kernel three times through `hal`'s trap handler (`refreshcreds`, `mi_ast`,
 //!   `userret`).
 //! - `ast()`'s `p->p_addr->u_pcb.pcb_tf = tf` is not here: the frame of a thread's user
 //!   context is always at the top of its kernel stack, where `cpu_fork` built it and every
@@ -99,13 +99,14 @@
 //! - E2 (decision 56, the door): `trap.c`'s machine-independent calls (`refreshcreds`,
 //!   `udata_abort`'s fault on the process's map and its choice of signal, `trapsignal`,
 //!   `KERNEL_LOCK(); sigexit()`, `userret`), `ast.c`'s `ast()` and `syscall.c`'s
-//!   `mi_syscall_return` were asked by `hal`'s trap code through the `TrapHandler` `bsd`
+//!   `mi_syscall_return` were asked by `hal`'s trap code through the trap handler `bsd`
 //!   registered in `hal`; they are the kernel's door, called downward by `entry`, and the
 //!   table behind it is the kernel's own ([`install`]). `udata_abort` is split: the decode
 //!   (the alignment fault, the branch predictor flush for a kernel address) is the trap's,
 //!   the fault and the errno's signal ([`udata_abort_signal`]) are here. The system call's
 //!   return (`kernel::api::syscall_return`) reaches the kernel through this table, where it
-//!   went through `hal`'s registry and back.
+//!   went through `hal`'s registry and back. What is left of `hal`'s trait is the kernel-mode
+//!   page fault (`hal::cpu::trap::KernelFault`), which [`KernelTrap`] implements too.
 
 use core::pin::Pin;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -117,6 +118,7 @@ use hal::arch::current::usertrap::{Arrival, SyncTrap, Syndrome, midr};
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]
 use hal::arch::current::vmparam::VM_MAXUSER_ADDRESS;
 use hal::bridges::AlreadyRegistered;
+use hal::cpu::trap::FaultSource;
 use hal::cpu::usertrap::{AstPending, ExitGate, UserExit};
 use hal::sync::once::OnceStatic;
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]
@@ -237,8 +239,9 @@ pub trait UserTraps: Sync {
     fn syscall_return(&self, code: Register, error: SysResult, rval: &Rval);
 }
 
-/// The kernel's answers to a trap from user mode ([`UserTraps`]), over the threads of glue `G`:
-/// installed once by the image's boot glue (`bsd`'s `hal_bridges_register`, until N9).
+/// The kernel's answers to a trap from user mode ([`UserTraps`]) and to a page fault taken in
+/// kernel mode (`hal::cpu::trap::KernelFault`), over the threads of glue `G`: installed once by
+/// the image's boot glue (`bsd`'s `hal_bridges_register`, until N9).
 pub struct KernelTrap<G: ProcGlue>(core::marker::PhantomData<fn() -> G>);
 
 impl<G: ProcGlue> KernelTrap<G> {
@@ -606,6 +609,37 @@ impl<G: ProcGlue> UserTraps for KernelTrap<G> {
     fn syscall_return(&self, code: Register, error: SysResult, rval: &Rval) {
         let error = error.map_err(|e| Errno::from_raw(e).unwrap_or(Errno::EINVAL));
         with_trapped::<G, _>(|p| crate::syscall::mi_syscall_return(p, code, error, rval));
+    }
+}
+impl<G: ProcGlue> hal::cpu::trap::KernelFault for KernelTrap<G> {
+    /// `kdata_abort`'s `pmap_fault_fixup`, `uvm_fault` and `uvm_grow` on the map the trap
+    /// chose.
+    fn page_fault(&self, source: FaultSource, va: usize, access: VmProt) -> Result<(), Errno> {
+        // The fault counts on curproc->p_ru: the thread on this CPU's, when there is one
+        // (a kernel fault taken with no thread counts nowhere; the C has always one).
+        let kernel_fault = |va, ru: Option<&crate::proc::resource::Rusage>| {
+            let map = crate::vm::km::kernel_map();
+            #[cfg(target_arch = "aarch64")]
+            if map
+                .pmap()
+                .fault_fixup(sysdefs::base::types::Vaddr::new(va), access)
+            {
+                return Ok(());
+            }
+            crate::vm::fault::uvm_fault(map, va, 0, access, ru)
+        };
+        match source {
+            FaultSource::Kernel => G::with_curproc(|p| kernel_fault(va, p.map(|p| &p.p_ru))),
+            // map = &p->p_vmspace->vm_map; with no thread (or no address space) the kernel
+            // map, where the C dereferences p (hal's trap.rs's deviations).
+            FaultSource::KernelUser => G::with_curproc(|p| match p {
+                Some(p) => match G::user_vmspace(p) {
+                    Some(vm) => crate::syscall::uvm_user_fault(p, vm, va, access),
+                    None => kernel_fault(va, Some(&p.p_ru)),
+                },
+                None => kernel_fault(va, None),
+            }),
+        }
     }
 }
 /* </CODE> */

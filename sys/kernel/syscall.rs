@@ -49,8 +49,8 @@
 
 /* <CODE> */
 //! `<sys/syscall_mi.h>`: the machine-independent part of a system call, around the
-//! machine's entry (`hal::arch::arm64::syscall::svc_handler`), and the machine-independent
-//! calls of the machine's trap code (`hal::cpu::trap::TrapHandler`).
+//! trap's classification (`entry`, through `kernel::trap`), and the fault on a process's map
+//! the trap code serves.
 //!
 //! Upstream: sys/sys/syscall_mi.h @ 3ce1f3f79392
 //! LZ: sys/sys/syscall_mi.rs@3c62ede68802
@@ -61,9 +61,8 @@
 //! the kernel lock around the body unless the call is `SY_NOLOCK`. Every path into a system
 //! call's body comes through it: `bsd`'s `Legacy` path (`sysent[]`) and each `Native`
 //! entry of the ABI's table (`bsd`'s wrappers over the kernel's functions), the body
-//! a closure over the row. `kernel::trap::KernelTrap` is what `hal`'s trap code asks
-//! (`hal::cpu::trap::TrapHandler`): the page fault on the map the trap chose, the signals,
-//! `refreshcreds`, `userret`, the system call's return and the AST.
+//! a closure over the row. The fault on a process's map is [`uvm_user_fault`], which
+//! `kernel::trap` serves a trap from user mode and a kernel access to a user address with.
 //!
 //! ## Deviations
 //! - `KTRACE` and dt(4) are not configured; `SYSCALL_DEBUG` is `bsd`'s feature
@@ -93,7 +92,7 @@
 //!   `kernel::tty::uprintf`, as the C's `uprintf` (LZ printed it on the console: it had no
 //!   `uprintf`); a process without one, as diff-openbsd's `syscalls/entry` children, prints
 //!   nothing.
-//! - `KernelTrap<G>` implements `hal::cpu::trap::TrapHandler` (`bsd`'s `BsdTrap` before, N4.8b
+//! - `KernelTrap<G>` implemented `hal`'s trap handler trait (`bsd`'s `BsdTrap` before, N4.8b
 //!   b1): the fault on the map `hal` chose (`pmap_fault_fixup`, `uvm_fault`, `uvm_grow`, the
 //!   `MAP_STACK` check of a user fault), `trapsignal`, `sigexit`, `refreshcreds`, `userret`,
 //!   [`mi_syscall_return`] and [`mi_ast`], on the running thread; since decision 56's E1
@@ -102,7 +101,8 @@
 //!   Decision 56 (E2): `KernelTrap` is `kernel::trap`'s, the kernel's door for a trap from
 //!   user mode, and `syscall_return` went with it (the kernel's own table, not `hal`'s
 //!   registry); the fault on a process's map is [`uvm_user_fault`], which the door's fault and
-//!   the `TrapHandler`'s kernel access to a user address share.
+//!   the kernel access to a user address (`hal::cpu::trap::KernelFault`, `kernel::trap`'s
+//!   impl) share.
 //! - Decision 52 (N7): the `sysent[]` rows still `bsd`'s are reached through one bridge,
 //!   [`LegacySyscalls`] (`bridges.toml`, paid by N9), which `kernel::api` calls for every
 //!   system call, `Native` or `Legacy`: `mi_syscall` on the row for the thread on this CPU,
@@ -113,7 +113,6 @@ use core::pin::Pin;
 use core::sync::atomic::Ordering;
 
 use hal::bridges::AlreadyRegistered;
-use hal::cpu::trap::{FaultSource, TrapHandler};
 use hal::sync::once::OnceStatic;
 use hal::syscall::{ENOSYS, Register, Rval, SysArgs, SysResult};
 use sysdefs::base::errno::Errno;
@@ -495,84 +494,6 @@ pub fn mi_ast<G: ProcGlue>(p: Pin<&Thread<G>>, resched: bool) {
     // calls it after userret()
 }
 
-/// The running thread, for `f`; a trap without one is `panic(9)` (the machine checked it).
-fn with_trapped<G: ProcGlue, R>(f: impl FnOnce(Pin<&Thread<G>>) -> R) -> R {
-    hal::cpu::thread::with_current::<Thread<G>, R>(f)
-}
-
-impl<G: ProcGlue> TrapHandler for crate::trap::KernelTrap<G> {
-    /// `udata_abort`'s and `kdata_abort`'s `pmap_fault_fixup`, `uvm_fault` and `uvm_grow` on
-    /// the map the trap chose (`udata_abort`'s `MAP_STACK` check first).
-    fn page_fault(
-        &self,
-        source: FaultSource,
-        va: usize,
-        access: hal::vm::pmap::VmProt,
-    ) -> Result<(), Errno> {
-        // The fault counts on curproc->p_ru: the thread on this CPU's, when there is one
-        // (a kernel fault taken with no thread counts nowhere; the C has always one).
-        let kernel_fault = |va, ru: Option<&crate::proc::resource::Rusage>| {
-            let map = crate::vm::km::kernel_map();
-            #[cfg(target_arch = "aarch64")]
-            if map
-                .pmap()
-                .fault_fixup(sysdefs::base::types::Vaddr::new(va), access)
-            {
-                return Ok(());
-            }
-            crate::vm::fault::uvm_fault(map, va, 0, access, ru)
-        };
-        let user_fault = |p: &Thread<G>, vm: &Vmspace| uvm_user_fault(p, vm, va, access);
-        match source {
-            FaultSource::Kernel => G::with_curproc(|p| kernel_fault(va, p.map(|p| &p.p_ru))),
-            // map = &p->p_vmspace->vm_map; with no thread (or no address space) the kernel
-            // map, where the C dereferences p (trap.rs's deviations).
-            FaultSource::KernelUser => G::with_curproc(|p| match p {
-                Some(p) => match G::user_vmspace(p) {
-                    Some(vm) => user_fault(p, vm),
-                    None => kernel_fault(va, Some(&p.p_ru)),
-                },
-                None => kernel_fault(va, None),
-            }),
-            FaultSource::User { sp } => {
-                with_trapped::<G, _>(|p| user_page_fault(p, sp, |vm| user_fault(&p, vm)))
-            }
-        }
-    }
-
-    fn trapsignal(&self, sig: i32, trapno: u64, code: i32, addr: usize) {
-        with_trapped::<G, _>(|p| {
-            crate::sig::trapsignal(
-                p,
-                sig,
-                trapno,
-                code,
-                sysdefs::sig::siginfo::Sigval::from_ptr(addr),
-            );
-        });
-    }
-
-    fn sigexit(&self, sig: i32) -> ! {
-        with_trapped::<G, _>(|p| crate::sig::sigexit(&p, sig))
-    }
-
-    fn refreshcreds(&self) {
-        with_trapped::<G, _>(|p| refreshcreds(&p));
-    }
-
-    fn userret(&self) {
-        with_trapped::<G, _>(crate::sig::userret);
-    }
-
-    fn syscall_return(&self, code: Register, error: SysResult, rval: &Rval) {
-        let error = error.map_err(|e| Errno::from_raw(e).unwrap_or(Errno::EINVAL));
-        with_trapped::<G, _>(|p| mi_syscall_return(p, code, error, rval));
-    }
-
-    fn ast(&self) {
-        with_trapped::<G, _>(crate::trap::ast::<G>);
-    }
-}
 /* </CODE> */
 
 /* <TESTS> */

@@ -93,7 +93,7 @@
 //! belongs to (the top bit of the address, an unprivileged load or store, `pcb_onfault`), the
 //! `pcb_onfault` recovery and its `ci_idepth == 0` rule, the instruction emulation of the ID
 //! registers, the frame's fix-ups. A kernel-mode fault is asked of the registered
-//! `hal::cpu::trap::TrapHandler` (the kernel's); a trap from user mode is classified by
+//! `hal::cpu::trap::KernelFault` (the kernel's); a trap from user mode is classified by
 //! `entry`, which calls the kernel's `kernel::trap` itself, downward; the branch predictor
 //! flush and the SError report of the CPU code still in `bsd` are `hal::cpu::trap::CpuHooks`;
 //! the kernel debugger is `hal::cpu::trap::Debugger`; the interrupt controller's dispatch is
@@ -126,7 +126,8 @@
 //! ## Redesign
 //! - N4.8b: from `bsd` into `hal`. LZ called `uvm_fault`, `trapsignal`, `userret`, ... by
 //!   name and read `ci_curproc`/`ci_curpcb` through raw pointers; here the machine-independent
-//!   calls go through `hal::cpu::trap::TrapHandler` (one registration), the running thread's pcb
+//!   calls went through one registered trait of `hal::cpu::trap` (`KernelFault` since decision
+//!   56's E2, the kernel-mode fault alone), the running thread's pcb
 //!   through `hal::cpu::thread`'s `with_curpcb` (its premise E5), and the handlers are entered by
 //!   `sym` (no `#[no_mangle]`). `fault()`'s `panicstr` claim and `ci_panicbuf` are the
 //!   CPU hooks' (`hal::cpu::trap::CpuHooks::fault`), `db_ktrap` the `Debugger` registration (absent:
@@ -143,8 +144,8 @@
 //!   list is not the ABI's).
 //! - Decision 56 (E1): `ast()`'s machine-independent work (`refreshcreds`, `uvmexp.softs`,
 //!   `mi_ast` with `ci_want_resched`, `userret`) is the kernel's `kernel::trap::ast`, asked
-//!   in one call (`TrapHandler::ast`) where it took three; the frame stays recorded here
-//!   until the trap moves to `entry` (E2).
+//!   in one call where it took three; the frame stays recorded here until the trap moves
+//!   to `entry` (E2).
 //! - Decision 56's U8 (E1): `exec`'s `setregs` wrote the running thread's frame through the
 //!   raw `pcb_tf` (`bsd`'s arm64 `machdep.rs`, five writes outside any borrow, which the
 //!   frame's uniqueness rested on as a fact of `bsd`'s call graph); its frame writes are

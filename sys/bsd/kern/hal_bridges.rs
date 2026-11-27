@@ -353,7 +353,7 @@ static KERNEL_SLEEP: kernel::sched::KernelSleep<crate::kern::proc_glue::BsdProcG
     kernel::sched::KernelSleep::new();
 static BSD_POOLS: BsdPools = BsdPools;
 static BSD_MALLOC: BsdMalloc = BsdMalloc;
-/// What `hal`'s trap code asks (`hal::cpu::trap::TrapHandler`, N4.8b) and what a trap from
+/// What `hal`'s trap code asks for a kernel-mode fault (`hal::cpu::trap::KernelFault`, N4.8b) and what a trap from
 /// user mode asks the kernel through its door (`kernel::trap::UserTraps`, decision 56): the
 /// kernel's, over `bsd`'s threads.
 #[cfg(not(machine_x86))]
