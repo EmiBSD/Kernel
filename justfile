@@ -199,8 +199,9 @@ smoke: smoke-build
     cargo xtask smoke-all -j {{jobs}} --just {{quote(just_executable())}} {{smokes}}
 
 # What the smoke recipes boot: the MULTIPROCESSOR kernels with `--features qemu` (`smoke-up`
-# boots them too, on one processor), the init stand-ins and `smoke-cd80`'s cd80.iso (M16g).
-smoke-build: (build-amd64 "--features qemu") (build-arm64 "--features qemu") build-init-amd64 build-init-arm64 efiboot-amd64 efiboot-arm64 build-bsdrd cd-iso-amd64
+# boots them too, on one processor), the init stand-ins, `smoke-cd80`'s cd80.iso (M16g) and
+# the two efiboot images the converted arm64 recipes boot (`efiboot-images-arm64`).
+smoke-build: (build-amd64 "--features qemu") (build-arm64 "--features qemu") build-init-amd64 build-init-arm64 efiboot-amd64 efiboot-arm64 build-bsdrd cd-iso-amd64 efiboot-images-arm64
 
 # `smoke-boot`, the first of `smokes` (it was `smoke`'s own body until the smokes ran in
 # parallel). Boots per arch, every one with a virtio network card on QEMU's user network: a
@@ -230,7 +231,12 @@ smoke-build: (build-amd64 "--features qemu") (build-arm64 "--features qemu") bui
 # (`init: tcp ok`: lo0 configured, connect/accept on 127.0.0.1, a line each way, FIN, close).
 # All of those boot without a ramdisk (`--ramdisk none`, so the kernel says
 # `rd: no ramdisk module`, `--expect-ramdisk`) and run the Rust stand-in init, the kernel's
-# self-test. Next in `smokes`, `smoke-shell` (M8's exit criterion) boots the ffs ramdisk `just userland`
+# self-test. Since the removal of Limine (2026-11-26) arm64's boot efiboot: the stand-in is
+# /sbin/init on `emibsd-init.img` (`--image init`, `just efiboot-images-arm64`), the root
+# found by the loader's DUID (`--expect-root`), so its vfs checks run against that root
+# (`init: vfs ok`) and `main` mounts it; `boot -d` is typed at `boot> ` (`--boot-flags -d`)
+# and the self-tests are a preset in a per-run image's kernel (`--root init --selftest
+# WORD`); amd64's text is Limine's until N10's first step. Next in `smokes`, `smoke-shell` (M8's exit criterion) boots the ffs ramdisk `just userland`
 # makes, booted `-s` (RB_SINGLE; a plain boot goes multi-user, see `smoke-login`): rd(4) reads
 # its superblock, the root is mounted from rd0a, OpenBSD's init(8) runs from it and goes single
 # user, and ksh(1) answers `uname -a`, `uname -sr`, `cat /etc/motd` and `ls /` on the serial
@@ -249,7 +255,7 @@ smoke-build: (build-amd64 "--features qemu") (build-arm64 "--features qemu") bui
 # SIGABRT) with uprintf, as the C does: init has no controlling terminal, so the arm64 boot
 # rejects the console line LZ printed there ("pinsyscalls addr"); amd64's expectation of that
 # line waits for N10 (decision 44).
-smoke-boot: (build-amd64 "--features qemu") (build-arm64 "--features qemu") build-init-amd64 build-init-arm64
+smoke-boot: (build-amd64 "--features qemu") (build-arm64 "--features qemu") build-init-amd64 build-init-arm64 efiboot-images-arm64
     {{xtask}} smoke {{reject}} {{smp}} --arch amd64 --kernel target/{{amd64}}/debug/bsd --ramdisk none --expect-ramdisk \
         --expect "bsd: booted on amd64" --expect "The Regents of the University of California" \
         --expect "EmiBSD 8.0 (GENERIC) #" \
@@ -306,7 +312,7 @@ smoke-boot: (build-amd64 "--features qemu") (build-arm64 "--features qemu") buil
         --expect "selftest: taskq ok"
     {{xtask}} smoke {{reject}} {{smp}} --arch amd64 --kernel target/{{amd64}}/debug/bsd --ramdisk none --cmdline "selftest=vio" \
         --expect "selftest: vio up ok" --expect "selftest: vio rx ok"
-    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --ramdisk none --expect-ramdisk \
+    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --image init --expect-root \
         --expect "bsd: booted on arm64" --expect "The Regents of the University of California" \
         --expect "EmiBSD 8.0 (GENERIC) #" --expect "Arica" \
         --expect "real mem  = " --expect "avail mem = " --expect "selftest: pmap kernel mapping ok" \
@@ -323,35 +329,34 @@ smoke-boot: (build-amd64 "--features qemu") (build-arm64 "--features qemu") buil
         --expect "sd1 at scsibus1 targ 0 lun 0: <VirtIO, Block Device, >" \
         --expect "vio0 at virtio30: 1 queue, address 52:54:00:12:34:56" \
         --expect ": rev 1, 16 byte fifo" --expect "pluart0: console" \
-        --expect "module: /init (" --expect "init: hello from user mode" --expect "init: argv and auxv ok" \
+        --expect "init: hello from user mode" --expect "init: argv and auxv ok" \
         --expect "init: demand-zero bss ok" --expect "init: ids and tcb ok" \
         --expect "init: fds ok" --expect "init: signals ok" --expect "init: EmiBSD 8.0" \
-        --expect "cannot mount root: no root file system" \
-        --expect "warning: /dev/console does not exist" --expect "init: vfs ok (no root file system)" \
+        --expect "warning: /dev/console does not exist" --expect "init: vfs ok" \
         --expect "init: pipes ok" --expect "init: sockets ok" --expect "init: wg ok" --expect "init: kqueue ok" --expect "init: inet sockets ok" --expect "init: pfkey ok" --expect "init: tcp ok" --expect "init: processes ok" --expect "init: pledge ok" --expect "init: time ok" --expect "init: uptime monotonic ok" --expect "init: unveil ok" --expect "init: sendsyslog ok" --reject "pinsyscalls addr" \
         --expect "selftest: pmap reuse ok" --expect "selftest: ping 10.0.2.2: echo reply received" \
         --expect "init: tty ok" \
         --expect "init exited with status 0 (signal 0)"
-    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --ramdisk none --cmdline "-d" \
+    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --image init --boot-flags -d \
         --send-after "ddb{0}> " --send '\n' --send-after "ddb{0}> " --send 'help\n' \
         --send-after "ddb{0}> " --send 'machine\n' --send-after "ddb{0}> " --send 'set $lines = 0\n' \
         --send-after "ddb{0}> " --send 'show registers\n' --send-after "ddb{0}> " --send 'trace\n' \
         --send-after "ddb{0}> " --send 'continue\n' \
         --expect "Stopped at" --expect "hangman" --expect " at 0x" --expect "spsr" \
         --expect "selftest: malloc/pool stress ok"
-    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --ramdisk none --cmdline "selftest=trap" --status 35 \
+    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --root init --selftest trap --status 35 \
         --expect "panic: uvm_fault failed:" --expect "Starting stack trace..." \
         --expect "End of stack trace." --expect "The operating system has halted."
-    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --ramdisk none --cmdline "selftest=uart" \
+    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --root init --selftest uart \
         --send-after "selftest: uart rx interrupt armed" --send 'hello\n' \
         --expect "selftest: uart rx interrupt armed" --expect "selftest: uart echo: hello"
-    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --ramdisk none --cmdline "selftest=clock" \
+    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --root init --selftest clock \
         --expect "selftest: clock ok"
-    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --ramdisk none --cmdline "selftest=kthread" \
+    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --root init --selftest kthread \
         --expect "selftest: kthread ping-pong ok"
-    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --ramdisk none --cmdline "selftest=taskq" \
+    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --root init --selftest taskq \
         --expect "selftest: taskq ok"
-    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --ramdisk none --cmdline "selftest=vio" \
+    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --root init --selftest vio \
         --expect "selftest: vio up ok" --expect "selftest: vio rx ok"
 
 # M8: OpenBSD's init(8) and ksh(1) from the ffs ramdisk, driven over the serial console. Needs
@@ -2236,10 +2241,10 @@ smoke-acpi: (build-arm64 "--features qemu") efiboot-arm64
 # and the ITS from the MADT): the disk and the NIC are virtio-pci functions with one MSI-X
 # vector per queue through the ITS (the IORT names it by its `openbsd,gic-its-id`), the
 # root on the PCI disk logs in and pings the host. Part of `smoke`.
-smoke-gicv3: (build-arm64 "--features qemu") build-init-arm64 efiboot-arm64
+smoke-gicv3: (build-arm64 "--features qemu") build-init-arm64 efiboot-arm64 efiboot-images-arm64
     @test -x target/userland/arm64/host/bin/makefs -a -f target/userland/arm64/ramdisk.ffs || \
         { echo "smoke-gicv3: no arm64 userland; run just userland first"; exit 1; }
-    {{xtask}} smoke {{reject}} {{smp}} --gic 3 --arch arm64 --kernel target/{{arm64}}/debug/bsd --ramdisk none \
+    {{xtask}} smoke {{reject}} {{smp}} --gic 3 --arch arm64 --image init \
         --expect "bsd: {{ncpu}} processors" \
         --expect "agintc0 at mainbus0 shift 4:4 nirq 288 nredist {{ncpu}} ipi 0" \
         --expect "agintcmsi0 at agintc0" --expect "cpu{{aps}} at mainbus0 mpidr {{aps}}: ARM Cortex-A72" \
@@ -2248,18 +2253,17 @@ smoke-gicv3: (build-arm64 "--features qemu") build-init-arm64 efiboot-arm64
         --expect "selftest: clockintr on {{ncpu}} cpus ok, uptime monotonic on each" \
         --expect "selftest: ping 10.0.2.2: echo reply received" \
         --expect "init exited with status 0 (signal 0)" --reject "ampintc0" --reject "unported: cpu_idcache"
-    {{xtask}} nvme-root --arch arm64 --duid {{nvme_duid}} --root-dev sd2a
-    {{xtask}} smoke {{reject}} {{smp}} --gic 3 --arch arm64 --kernel target/{{arm64}}/debug/bsd --ramdisk none --expect-ramdisk \
-        --nvme nvme-arm64.img --cmdline "bootduid={{nvme_duid}}" --until-seen \
+    {{xtask}} smoke {{reject}} {{smp}} --gic 3 --arch arm64 --kernel target/{{arm64}}/debug/bsd --root tree --duid {{nvme_duid}} --expect-root \
+        --boot-on nvme --until-seen \
         {{disk_login}} \
         --send-after '# ' --send 'sysctl hw.ncpu\n' \
         --send-after 'hw.ncpu=' --send 'echo m16f-its-$((40+2)) >/m16f.txt && cat /m16f.txt\n' \
-        --send-after '# ' --send 'dd if=/dev/rsd2c of=/dev/null bs=64k count=64\n' \
+        --send-after '# ' --send 'dd if=/dev/rsd1c of=/dev/null bs=64k count=64\n' \
         --send-after '# ' --send 'vmstat -i\n' \
         --expect "agintc0 at mainbus0 shift 4:4 nirq 288 nredist {{ncpu}} ipi 0" \
         --expect "agintcmsi0 at agintc0" \
         --expect "nvme0 at pci0 dev 1 function 0 vendor 0x1b36 product 0x0010 rev 0x02: msix, NVMe 1.4" \
-        --expect "root on sd2a ({{nvme_duid}}.a) swap on sd2b dump on sd2b" \
+        --expect "root on sd1a ({{nvme_duid}}.a) swap on sd1b dump on sd1b" \
         --expect "rc: multi-user" --expect "login:" --expect "hw.ncpu={{ncpu}}" --expect "m16f-its-42" \
         --expect "4194304 bytes transferred" --expect "irq8192/nvme0" \
         --reject "mount -uw / failed" --reject "command queue timeout"
@@ -2516,7 +2520,7 @@ ntfs_steps := disk_login + " " + \
 # path: the configuration, control and queue-pair interrupts on their own MSI-X vectors,
 # which the driver establishes itself (`virtio0: msix`, not virtio_pci's `msix per-VQ`),
 # and the frame still comes back through the queue's interrupt. Part of `smoke`.
-smoke-mp: (build-amd64 "--features qemu") (build-arm64 "--features qemu") build-init-amd64 build-init-arm64
+smoke-mp: (build-amd64 "--features qemu") (build-arm64 "--features qemu") build-init-amd64 build-init-arm64 efiboot-images-arm64
     {{xtask}} smoke {{reject}} {{smp4}} --arch amd64 --kernel target/{{amd64}}/debug/bsd --ramdisk none \
         --expect "bsd: 4 processors" --expect "acpimadt0 at acpi0 addr 0xfee00000: PC-AT compat" \
         --expect "cpu0 at mainbus0: apid 0 (boot processor)" \
@@ -2538,7 +2542,7 @@ smoke-mp: (build-amd64 "--features qemu") (build-arm64 "--features qemu") build-
         --vio-mq --cmdline "selftest=vio" --reject "virtio0: msix per-VQ" \
         --expect "vio0 at virtio0: 1 queue, address 52:54:00:12:34:56" --expect "virtio0: msix" \
         --expect "selftest: vio up ok" --expect "selftest: vio rx ok"
-    {{xtask}} smoke {{reject}} {{smp4}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --ramdisk none \
+    {{xtask}} smoke {{reject}} {{smp4}} --arch arm64 --image init \
         --expect "bsd: 4 processors" --expect "cpu0 at mainbus0 mpidr 0: ARM Cortex-A72" \
         --expect "cpu3 at mainbus0 mpidr 3: ARM Cortex-A72" \
         --expect "cpu: 3 of 3 application processors running, tlb shootdown seen by 3, ipi nop seen by 3" \
@@ -2546,10 +2550,10 @@ smoke-mp: (build-amd64 "--features qemu") (build-arm64 "--features qemu") build-
         --expect "selftest: clockintr on 4 cpus ok, uptime monotonic on each" \
         --expect "init: time ok" --expect "init: uptime monotonic ok" \
         --expect "init exited with status 0 (signal 0)"
-    {{xtask}} smoke {{reject}} {{smp4}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --ramdisk none \
-        --cmdline "selftest=kthread" --expect "selftest: kthread ping-pong ok" --expect ", across cpu"
-    {{xtask}} smoke {{reject}} {{smp4}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --ramdisk none \
-        --cmdline "selftest=mpstress" --expect "selftest: mpstress pool ok (4 cpus" \
+    {{xtask}} smoke {{reject}} {{smp4}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --root init --selftest kthread \
+        --expect "selftest: kthread ping-pong ok" --expect ", across cpu"
+    {{xtask}} smoke {{reject}} {{smp4}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --root init --selftest mpstress \
+        --expect "selftest: mpstress pool ok (4 cpus" \
         --expect "selftest: mpstress pmemrange ok (4 cpus" --expect "selftest: mpstress uvm ok (4 cpus"
 
 # M11c: ddb(4) on the MULTIPROCESSOR kernel with `ncpu` processors (`{{smp}}`), per arch, from
@@ -2622,7 +2626,7 @@ ddbmp_others := if ncpu == "4" { "--expect '    2: stopped' --expect '    3: sto
 # maintained. Since M13 amd64's processor comes from the MADT as the boot processor (`apid 0
 # (boot processor)`, as OpenBSD's `bsd.sp` prints it), no longer as the `(uniprocessor)`
 # mainbus attached without tables. Part of `smoke`.
-smoke-up: (build-amd64 "--features qemu") (build-arm64 "--features qemu") build-init-amd64 build-init-arm64
+smoke-up: (build-amd64 "--features qemu") (build-arm64 "--features qemu") build-init-amd64 build-init-arm64 efiboot-images-arm64
     {{xtask}} smoke {{reject}} --arch amd64 --kernel target/{{amd64}}/debug/bsd --smp 1 --ramdisk none \
         --expect "bsd: booted on amd64" --expect "acpimadt0 at acpi0 addr 0xfee00000: PC-AT compat" \
         --expect "cpu0 at mainbus0: apid 0 (boot processor)" \
@@ -2630,7 +2634,7 @@ smoke-up: (build-amd64 "--features qemu") (build-arm64 "--features qemu") build-
         --expect "selftest: malloc/pool stress ok" --expect "init: processes ok" \
         --expect "init: tcp ok" --expect "init: uptime monotonic ok" \
         --expect "init exited with status 0 (signal 0)"
-    {{xtask}} smoke {{reject}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --smp 1 --ramdisk none \
+    {{xtask}} smoke {{reject}} --arch arm64 --image init --smp 1 \
         --expect "bsd: booted on arm64" --expect "cpu0 at mainbus0 mpidr 0: ARM Cortex-A72" \
         --expect "selftest: malloc/pool stress ok" --expect "init: processes ok" \
         --expect "init: tcp ok" --expect "init: uptime monotonic ok" \
@@ -2793,7 +2797,7 @@ usb_check := "--expect 'usb0 at xhci0: USB revision 3.0' --expect 'uhub0 at usb0
 #   "panic: uvm_fault failed: ... esr 96000050 far ...028" right after the ehci0 attach line,
 #   as OpenBSD 8.0 does ("generic_space_write_2() at ehci_pci_attach+0x104"). The smoke
 #   asserts that panic as `smoke-diag`'s trap selftest does (`--status 35`).
-smoke-ehci: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
+smoke-ehci: (build-amd64 "--features qemu") (build-arm64 "--features qemu") efiboot-images-arm64
     @test {{ramdisks}} || \
         { echo "smoke-ehci: no ramdisk image; run just userland first"; exit 1; }
     {{xtask}} smoke {{reject}} {{smp}} --arch amd64 --kernel target/{{amd64}}/debug/bsd --expect-ramdisk --until-seen \
@@ -2804,7 +2808,7 @@ smoke-ehci: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
         --expect 'uhub0 at usb0 configuration 1 interface 0 "vendor 0x8086 EHCI root hub" rev 2.00/1.00 addr 1' \
         --expect 'uhub0: device problem, disabling port 1' \
         --expect 'mount_msdos: /dev/sd2i on /mnt: Device not configured' --expect 'no-stick-42'
-    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --ramdisk none --status 35 \
+    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --image init --status 35 \
         --usb-hc ehci \
         --expect 'ehci0 at pci0 dev 1 function 0 vendor 0x8086 product 0x24cd rev 0x10panic: uvm_fault failed:' \
         --expect 'esr 96000050 far ' --expect 'Starting stack trace...' \
