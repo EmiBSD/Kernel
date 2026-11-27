@@ -1805,6 +1805,300 @@ t_entry(void)
 }
 
 /*
+ * The trap classes of the user-mode entry (decision 56, slice E0), each in
+ * a child with no controlling terminal: what the CPU's exceptions become
+ * for userland. A SA_SIGINFO handler on a MAP_STACK alternate stack prints
+ * `name: sig N code C` and ends the child; a case that returns without a
+ * signal prints `name: no signal`. Nothing printed depends on the machine.
+ * arm64 only (amd64's at N10): elsewhere the steps print one fixed line.
+ */
+#ifdef __aarch64__
+static const char *trap_name;
+
+static void
+trap_handler(int sig, siginfo_t *si, void *uc)
+{
+	char b[96];
+	int n;
+
+	n = snprintf(b, sizeof(b), "%s: sig %d code %d\n", trap_name, sig,
+	    si->si_code);
+	write(STDOUT_FILENO, b, n);
+	_exit(0);
+}
+
+static void
+trap_case(const char *name, void (*probe)(void))
+{
+	struct sigaction sa;
+	stack_t ss;
+	pid_t pid;
+	int status;
+
+	fflush(stdout);
+	if ((pid = fork()) == 0) {
+		setsid();
+		trap_name = name;
+		ss.ss_size = 65536;
+		ss.ss_flags = 0;
+		ss.ss_sp = mmap(NULL, ss.ss_size, PROT_READ | PROT_WRITE,
+		    MAP_ANON | MAP_PRIVATE | MAP_STACK, -1, 0);
+		if (ss.ss_sp == MAP_FAILED || sigaltstack(&ss, NULL) == -1)
+			_exit(2);
+		memset(&sa, 0, sizeof(sa));
+		sa.sa_sigaction = trap_handler;
+		sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+		sigemptyset(&sa.sa_mask);
+		if (sigaction(SIGILL, &sa, NULL) == -1 ||
+		    sigaction(SIGTRAP, &sa, NULL) == -1 ||
+		    sigaction(SIGBUS, &sa, NULL) == -1 ||
+		    sigaction(SIGSEGV, &sa, NULL) == -1 ||
+		    sigaction(SIGFPE, &sa, NULL) == -1)
+			_exit(2);
+		probe();
+		printf("%s: no signal\n", name);
+		fflush(stdout);
+		_exit(0);
+	}
+	if (pid == -1 || waitpid(pid, &status, 0) != pid)
+		printf("%s: -1 %s\n", name, ename(errno));
+	else if (WIFSIGNALED(status))
+		printf("%s: killed %d\n", name, WTERMSIG(status));
+	else if (WEXITSTATUS(status) != 0)
+		printf("%s: exit %d\n", name, WEXITSTATUS(status));
+}
+
+static void
+udf_probe(void)
+{
+	__asm volatile("udf #0" : : : "memory");
+}
+
+static void
+brk_probe(void)
+{
+	__asm volatile("brk #1" : : : "memory");
+}
+
+/* A load through a stack pointer that is not 16-byte aligned (SP alignment fault). */
+static void
+align_probe(void)
+{
+	char *stk;
+
+	stk = mmap(NULL, 65536, PROT_READ | PROT_WRITE,
+	    MAP_ANON | MAP_PRIVATE | MAP_STACK, -1, 0);
+	if (stk == MAP_FAILED)
+		_exit(2);
+	__asm volatile(
+	    "mov x19, sp\n"
+	    "mov sp, %0\n"
+	    "ldr x0, [sp]\n"
+	    "mov sp, x19\n"
+	    : : "r"(stk + 32768 + 8)
+	    : "x0", "x19", "memory");
+}
+
+/* A floating-point instruction: the unit is on for userland. */
+static void
+fmov_probe(void)
+{
+	__asm volatile("fmov d0, x0" : : : "d0");
+}
+#endif
+
+static void
+t_entry_traps(void)
+{
+	section("traps");
+#ifdef __aarch64__
+	trap_case("udf #0", udf_probe);
+	trap_case("brk #1", brk_probe);
+	trap_case("misaligned sp", align_probe);
+	trap_case("fmov d0, x0", fmov_probe);
+#else
+	printf("skipped: arm64 only\n");
+#endif
+}
+
+/*
+ * The identification registers a user program may read (OpenBSD's
+ * emulate_msr, arch/arm64/arm64/trap.c): sixteen reads, written as
+ * S3_0_C0_Cm_op2 so the assembler needs no feature flag, each of them
+ * answered without a signal. Printed per read: its name and whether the
+ * value is what userland is told (MPIDR the constant 0x80000000, REVIDR
+ * and the registers of features the kernel hides zero, PFR0, PFR1 and
+ * ISAR0-2 the values of machdep.id_aa64*, MIDR not zero), never a value.
+ */
+#ifdef __aarch64__
+#define ID_NONZERO	0
+#define ID_CONST	1
+#define ID_SYSCTL	2
+
+static int
+id_sysctl(int idx, uint64_t *v)
+{
+	int mib[2] = { CTL_MACHDEP, idx };
+	size_t len = sizeof(*v);
+
+	return sysctl(mib, 2, v, &len, NULL, 0);
+}
+
+static void
+id_report(const char *name, uint64_t v, int kind, uint64_t arg)
+{
+	uint64_t want;
+	int match = 0;
+
+	switch (kind) {
+	case ID_NONZERO:
+		match = v != 0;
+		break;
+	case ID_CONST:
+		match = v == arg;
+		break;
+	case ID_SYSCTL:
+		match = id_sysctl((int)arg, &want) == 0 && v == want;
+		break;
+	}
+	printf("%s: no signal match %s\n", name, match ? "yes" : "no");
+	fflush(stdout);
+	_exit(0);
+}
+
+#define IDREAD(fn, name, crm, op2, kind, arg)				\
+static void								\
+fn(void)								\
+{									\
+	uint64_t v;							\
+									\
+	__asm volatile("mrs %0, S3_0_C0_C" #crm "_" #op2		\
+	    : "=r"(v) : : "memory");					\
+	id_report(name, v, kind, arg);					\
+}
+
+/* The sysctl numbers are machine/cpu.h's CPU_ID_AA64*. */
+IDREAD(id_midr, "MIDR_EL1", 0, 0, ID_NONZERO, 0)
+IDREAD(id_mpidr, "MPIDR_EL1", 0, 5, ID_CONST, 0x80000000)
+IDREAD(id_revidr, "REVIDR_EL1", 0, 6, ID_CONST, 0)
+IDREAD(id_pfr0, "ID_AA64PFR0_EL1", 4, 0, ID_SYSCTL, 8)
+IDREAD(id_pfr1, "ID_AA64PFR1_EL1", 4, 1, ID_SYSCTL, 9)
+IDREAD(id_pfr2, "ID_AA64PFR2_EL1", 4, 2, ID_CONST, 0)
+IDREAD(id_zfr0, "ID_AA64ZFR0_EL1", 4, 4, ID_CONST, 0)
+IDREAD(id_smfr0, "ID_AA64SMFR0_EL1", 4, 5, ID_CONST, 0)
+IDREAD(id_isar0, "ID_AA64ISAR0_EL1", 6, 0, ID_SYSCTL, 2)
+IDREAD(id_isar1, "ID_AA64ISAR1_EL1", 6, 1, ID_SYSCTL, 3)
+IDREAD(id_isar2, "ID_AA64ISAR2_EL1", 6, 2, ID_SYSCTL, 4)
+IDREAD(id_mmfr0, "ID_AA64MMFR0_EL1", 7, 0, ID_CONST, 0)
+IDREAD(id_mmfr1, "ID_AA64MMFR1_EL1", 7, 1, ID_CONST, 0)
+IDREAD(id_mmfr2, "ID_AA64MMFR2_EL1", 7, 2, ID_CONST, 0)
+IDREAD(id_mmfr3, "ID_AA64MMFR3_EL1", 7, 3, ID_CONST, 0)
+IDREAD(id_mmfr4, "ID_AA64MMFR4_EL1", 7, 4, ID_CONST, 0)
+
+/* rt = x30: the value lands in lr. */
+static void
+id_rt30(void)
+{
+	uint64_t v;
+
+	__asm volatile(
+	    "mrs x30, S3_0_C0_C0_5\n"
+	    "mov %0, x30\n"
+	    : "=r"(v) : : "x30", "memory");
+	id_report("rt x30 (lr)", v, ID_CONST, 0x80000000);
+}
+
+/* rt = xzr: nothing is written and the next instruction runs. */
+static void
+id_rtzr(void)
+{
+	uint64_t v;
+
+	__asm volatile(
+	    "mov %0, #0\n"
+	    "mrs xzr, S3_0_C0_C0_5\n"
+	    "mov %0, #1\n"
+	    : "=r"(v) : : "memory");
+	id_report("rt xzr", v, ID_CONST, 1);
+}
+
+/* The carry flag, set or clear before an emulated read, is as it was after it. */
+static void
+id_carry_set(void)
+{
+	uint64_t v;
+
+	__asm volatile(
+	    "cmp x2, #0\n"		/* C = 1 */
+	    "mrs x1, S3_0_C0_C0_5\n"
+	    "cset %w0, cs\n"
+	    : "=r"(v) : : "x1", "x2", "cc", "memory");
+	id_report("carry set kept", v, ID_CONST, 1);
+}
+
+static void
+id_carry_clear(void)
+{
+	uint64_t v;
+
+	__asm volatile(
+	    "cmn xzr, xzr\n"		/* C = 0 */
+	    "mrs x1, S3_0_C0_C0_5\n"
+	    "cset %w0, cs\n"
+	    : "=r"(v) : : "x1", "cc", "memory");
+	id_report("carry clear kept", v, ID_CONST, 0);
+}
+
+/* ID_AA64DFR0_EL1 (CRm 5) is not answered: SIGILL, ILL_ILLOPC. */
+static void
+id_dfr0(void)
+{
+	uint64_t v;
+
+	__asm volatile("mrs %0, S3_0_C0_C5_0" : "=r"(v) : : "memory");
+}
+
+/* A write to an ID register is never emulated: SIGILL, ILL_ILLOPC. */
+static void
+id_write(void)
+{
+	__asm volatile("msr S3_0_C0_C0_5, x0" : : : "memory");
+}
+#endif
+
+static void
+t_entry_idregs(void)
+{
+	section("idregs");
+#ifdef __aarch64__
+	trap_case("MIDR_EL1", id_midr);
+	trap_case("MPIDR_EL1", id_mpidr);
+	trap_case("REVIDR_EL1", id_revidr);
+	trap_case("ID_AA64PFR0_EL1", id_pfr0);
+	trap_case("ID_AA64PFR1_EL1", id_pfr1);
+	trap_case("ID_AA64PFR2_EL1", id_pfr2);
+	trap_case("ID_AA64ZFR0_EL1", id_zfr0);
+	trap_case("ID_AA64SMFR0_EL1", id_smfr0);
+	trap_case("ID_AA64ISAR0_EL1", id_isar0);
+	trap_case("ID_AA64ISAR1_EL1", id_isar1);
+	trap_case("ID_AA64ISAR2_EL1", id_isar2);
+	trap_case("ID_AA64MMFR0_EL1", id_mmfr0);
+	trap_case("ID_AA64MMFR1_EL1", id_mmfr1);
+	trap_case("ID_AA64MMFR2_EL1", id_mmfr2);
+	trap_case("ID_AA64MMFR3_EL1", id_mmfr3);
+	trap_case("ID_AA64MMFR4_EL1", id_mmfr4);
+	trap_case("rt x30", id_rt30);
+	trap_case("rt xzr", id_rtzr);
+	trap_case("carry set", id_carry_set);
+	trap_case("carry clear", id_carry_clear);
+	trap_case("mrs ID_AA64DFR0_EL1", id_dfr0);
+	trap_case("msr MPIDR_EL1", id_write);
+#else
+	printf("skipped: arm64 only\n");
+#endif
+}
+
+/*
  * TCP over the loopback (N6.6a5, D-5): a connection on 127.0.0.1 and one on ::1 walked
  * through listen, a non-blocking connect, accept, a line each way, a half close and EOF;
  * the errnos of a closed port, a bound port, a second connect, an unconnected send and a
@@ -2394,6 +2688,8 @@ static const struct {
 	{ "udp", t_udp },
 	{ "raw", t_raw },
 	{ "entry", t_entry },
+	{ "traps", t_entry_traps },
+	{ "idregs", t_entry_idregs },
 };
 
 /*

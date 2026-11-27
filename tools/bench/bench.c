@@ -49,6 +49,8 @@
  *	filecreate	open(2) with O_CREAT of a new file in FILE's directory,
  *			close(2) and unlink(2) of it (after `fileread`, so the
  *			read stays cold)
+ *	nullsys		getpid(2): a system call that does nothing, the cost
+ *			of the way in and the way out alone (decision 56)
  *
  * `cargo xtask bench` runs `bench all` twice per boot: a warm-up pass it
  * discards, then, with the file system mounted again, the pass it records.
@@ -75,6 +77,7 @@
 #define PIPE_OPS	5000
 #define READ_CHUNK	(64 * 1024)
 #define CREATE_OPS	2000
+#define NULLSYS_OPS	200000
 
 static const char *self;
 
@@ -269,12 +272,27 @@ bench_filecreate(const char *path)
 	report("filecreate", now_ns() - t0, CREATE_OPS);
 }
 
+static void
+bench_nullsys(void)
+{
+	unsigned long long t0;
+	int i;
+
+	for (i = 0; i < NULLSYS_OPS / 10; i++)	/* warm-up */
+		getpid();
+	t0 = now_ns();
+	for (i = 0; i < NULLSYS_OPS; i++)
+		getpid();
+	report("nullsys", now_ns() - t0, NULLSYS_OPS);
+}
+
 static void __dead
 usage(void)
 {
 	fprintf(stderr, "usage: bench all FILE | bench pagefault | "
 	    "bench forkexit | bench forkexec | bench pipe | "
-	    "bench fileread FILE | bench filecreate FILE | bench true\n");
+	    "bench fileread FILE | bench filecreate FILE | bench nullsys | "
+	    "bench true\n");
 	exit(2);
 }
 
@@ -300,6 +318,7 @@ main(int argc, char *argv[])
 		bench_pipe();
 		bench_fileread(argv[2]);
 		bench_filecreate(argv[2]);
+		bench_nullsys();
 	} else if (strcmp(what, "pagefault") == 0)
 		bench_pagefault();
 	else if (strcmp(what, "forkexit") == 0)
@@ -312,6 +331,8 @@ main(int argc, char *argv[])
 		bench_fileread(argv[2]);
 	else if (strcmp(what, "filecreate") == 0 && argc == 3)
 		bench_filecreate(argv[2]);
+	else if (strcmp(what, "nullsys") == 0)
+		bench_nullsys();
 	else
 		usage();
 	return 0;

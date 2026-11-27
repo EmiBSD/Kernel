@@ -60,3 +60,12 @@ $ sh -c 'ulimit -c unlimited; kill -SEGV $$'; echo status $?; ls -1
 # (amd64's at N10); it writes no file, so it runs where it is. A set of its own after
 # coredump, so no step id of expected.toml moves; this one is syscalls/entry#1.
 $ difftest syscalls entry
+
+# The trap classes and the identification registers of the user-mode entry (decision 56, E0),
+# recorded before the entry moves: each case in a child, its signal and si_code printed by a
+# SA_SIGINFO handler (traps: udf, brk, a misaligned sp, an FP instruction), then the sixteen ID
+# register reads OpenBSD's emulate_msr answers, rt = x30 and xzr, the carry flag kept, and the
+# DFR0 read and an msr that raise SIGILL (idregs; match flags, never a value). arm64 only. Sets
+# of their own after entry: syscalls/entry#2 and #3.
+$ difftest syscalls traps
+$ difftest syscalls idregs

@@ -45,7 +45,8 @@
 //!   between two processes), `fileread` (64 KiB read(2)s of a cold 256 MiB file on the
 //!   scratch disk, a fresh 384 MiB virtio disk, FFS, mounted again after the file is written)
 //!   and `filecreate` (open(2) with `O_CREAT`, close(2) and unlink(2) of a file beside it,
-//!   N5.5a2: the UFS create and remove path; after `fileread`, which stays cold);
+//!   N5.5a2: the UFS create and remove path; after `fileread`, which stays cold) and
+//!   `nullsys` (getpid(2) in a loop, decision 56's U9: the way in and the way out alone);
 //!   EmiBSD runs it from its root, OpenBSD fetches it from `diff-openbsd`'s HTTP server.
 //!   Each boot runs it twice: a warm-up pass, checked and discarded, then, with the scratch
 //!   disk mounted again (the file cold once more), the pass that is recorded;
@@ -174,6 +175,11 @@ const KINDS: &[Kind] = &[
         unit: "ns/op",
         better: "lower",
     },
+    Kind {
+        name: "nullsys",
+        unit: "ns/op",
+        better: "lower",
+    },
 ];
 
 /// The measurements of `bench all`, in its order.
@@ -184,6 +190,7 @@ const MICRO: &[&str] = &[
     "pipe",
     "fileread",
     "filecreate",
+    "nullsys",
 ];
 
 /// Median, minimum, maximum and spread of one system's samples.
@@ -1287,7 +1294,8 @@ mod tests {
     const BENCH_OUT: &str = "# /usr/bin/bench all /mnt/bench.dat; echo \"@@R\"\"C $?\"\r\n\
         @@BENCH pagefault 5120 32768\r\n@@BENCH forkexit 812345 500\r\n\
         @@BENCH forkexec 2345678 200\r\n@@BENCH pipe 45678 5000\r\n\
-        @@BENCH fileread 345678 1024\r\n@@BENCH filecreate 98765 2000\r\n@@RC 0\r\n";
+        @@BENCH fileread 345678 1024\r\n@@BENCH filecreate 98765 2000\r\n\
+        @@BENCH nullsys 321 200000\r\n@@RC 0\r\n";
 
     #[test]
     fn rc_marker_is_read_and_the_echo_is_not() {
@@ -1302,10 +1310,11 @@ mod tests {
     #[test]
     fn bench_lines_parse() {
         let m = parse_bench(BENCH_OUT).unwrap();
-        assert_eq!(m.len(), 6);
+        assert_eq!(m.len(), 7);
         assert_eq!(m["pagefault"], 5120.0);
         assert_eq!(m["fileread"], 345678.0);
         assert_eq!(m["filecreate"], 98765.0);
+        assert_eq!(m["nullsys"], 321.0);
         // A missing measurement, a malformed line and no operations are errors.
         assert!(parse_bench("@@BENCH pagefault 1 1\n").is_err());
         assert!(parse_bench(&BENCH_OUT.replace("pipe 45678 5000", "pipe x 5000")).is_err());
