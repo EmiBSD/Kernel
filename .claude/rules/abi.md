@@ -7,7 +7,9 @@ through `kernel::api`, and the `KernelApi` table in `hal::api` (needed while `ab
 loadable module, decision 22) goes. A trap from userland enters `hal`'s vectors, which save
 the registers and call `entry` (decisions 56 and 58: one symbol, resolved at link time);
 `entry` calls `abi`'s per-arch handler directly with the trapping thread's registers as a
-`hal::syscall::UserRegs`; nothing is registered, and no call goes upward for a system call.
+`hal::syscall::UserRegs`; the ABI registers nothing, and no call goes upward for a system
+call (its return, `kernel::api::syscall_return`, still reaches the kernel's code through the
+`UserTraps` table `bsd` installs, and every call's row through `LegacySyscalls`, until N9).
 The handler (`abi::arch::current::svc`) is `abi`'s one entry function: `entry`'s closed
 `match` names it and nothing else of `abi` (the user's lock of 2026-11-27,
 `cargo xtask entry-check`).

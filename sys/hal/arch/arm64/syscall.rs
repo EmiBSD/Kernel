@@ -58,8 +58,9 @@
 //!   thread is checked in `hal::cpu`'s core.
 //! - Decision 53 (N7.abi2, the user, 2026-11-26): `svc_handler` read the number and the
 //!   arguments, called `hal::syscall::dispatch`, wrote `x0` and the carry or rewound the pc,
-//!   and called `mi_syscall_return` through the trap handler; now it hands the ABI's handler
-//!   (`hal::syscall::enter`) a [`UserRegs`] and the convention is the ABI's. `child_return`'s
+//!   and called `mi_syscall_return` through the trap handler; then it handed the ABI's handler
+//!   a [`UserRegs`] through `hal::syscall`'s registration (gone with decision 56's E2: `entry`
+//!   calls the handler with what `SyncTrap::svc` hands out), and the convention is the ABI's. `child_return`'s
 //!   two frame writes went the same way (`hal::syscall::child`, until E1). What the ABI can do to the
 //!   frame is [`UserRegs`]' three methods: read general registers, write one with the error
 //!   flag (the carry, no other bit of `tf_spsr`), and move the pc back over the `svc` and its

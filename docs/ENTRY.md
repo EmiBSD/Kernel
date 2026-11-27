@@ -387,7 +387,7 @@ still finds it.
 | Indirect calls besides the row (translated / legacy) | 0 | 6 / 5 | 5 / 4 |
 | Borrows of the trap frame | - | 4 | 4 |
 | Tests of the vector slot | 0 (four handlers) | 0 | 1 (`mov x1` in assembly, one `match` in `entry`) |
-| `daif` writes | 3 | 3 | 3 |
+| `daif` writes | 3 | 3 | 4: the exit's own `msr daifset, #3` (`sys/hal/arch/arm64/exception.S`, first instruction of `hal_user_return` and `hal_user_first_return`), which decision 58 keeps so `hal`'s exit proof is local (the gate's token no longer has to mean "masked"); measured by `nullsys` at the close |
 | Exit of an interrupt from userland, no work pending | inline | inline | one direct call, the gate inlined |
 | One AST | 3 direct calls | 1 indirect | 1 indirect |
 | A child's first exit | 2 direct calls | 0 indirect | 0 indirect |

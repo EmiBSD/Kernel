@@ -130,7 +130,8 @@
 //!   when the module was not loaded, went with the module at the N5 close (decision 47).
 //! - Decision 53 (N7.abi2): the handler was `fn(number, &args, &mut rval) -> error`, called
 //!   by `dispatch`, and the traps read the number and arguments and wrote the result and the
-//!   carry themselves; now it is `fn(&UserRegs)` called by [`enter`], and the per-arch
+//!   carry themselves; then it was `fn(&UserRegs)` called by `enter` (gone with decision 56's
+//!   E2), and the per-arch
 //!   convention is the ABI's (`abi::arch::<arch>`). `dispatch` and its `ENOSYS` without a
 //!   handler are gone.
 //! - Decision 56 (E2, U2): the registration goes (the handler's type, the setter, what the

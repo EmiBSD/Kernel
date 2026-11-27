@@ -700,8 +700,10 @@ paid_by = "N9"
 # machine chose, pmap_fault_fixup, uvm_grow), what is left of hal's trap handler since decision
 # 56's E2 (a trap from user mode asks hal nothing: entry calls kernel::trap). Implemented by the
 # kernel's KernelTrap<G>, installed over bsd's glue by hal_bridges_register
-# (sys/kern/hal_bridges.rs). Paid when the glue's generic goes (N9); the registration itself
-# stays (hal cannot name the kernel).
+# (sys/kern/hal_bridges.rs). The row is the bsd-installed half, paid when the glue's generic
+# goes (N9): the kernel then installs its own KernelTrap. The registration itself stays for
+# ever (hal cannot name the kernel; a kernel-mode page fault is asked upward, as docs/ENTRY.md
+# section 9, Gap 6, lists it with the thread start and the interrupt handlers).
 # hal::cpu::trap::KernelFault
 [[bridge]]
 trait = "KernelFault"
