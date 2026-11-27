@@ -81,7 +81,8 @@ impl Cpu for Machine {
     const CPU_ID_AA64ISAR1: Option<i32> = Some(include::cpu::CPU_ID_AA64ISAR1);
 
     unsafe fn early_init(boot: &BootInfo) -> Result<(), &'static str> {
-        // SAFETY: forwarded; `_start` calls this once with the machine as Limine left it.
+        // SAFETY: forwarded; `bootarg_main` calls this once with the machine as `locore0.S`
+        // left it.
         unsafe { arm64::machdep::initarm(boot) }
     }
 

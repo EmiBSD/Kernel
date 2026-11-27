@@ -1,11 +1,11 @@
 /*
- * EmiBSD arm64 linker script. The same ELF boots from Limine and from OpenBSD's efiboot
- * (M14, track A3). The kernel is linked at 0xffffffff80000000 (Limine's higher half, which
- * arm64/pmap.rs adopts) with physical addresses from 0 (AT()): efiboot's LOADADDR keeps
- * the low 39 bits of p_paddr and adds its 64 MB block's address (efi_loadaddr), so the
- * image lands at the block's start. The ELF entry is the physical offset of locore0.S's
- * `_start` for the same reason (e_entry goes through LOADADDR too); Limine enters the
- * boot glue's `_start` (sys/stand/mod.rs) through its entry point request.
+ * EmiBSD arm64 linker script. OpenBSD's efiboot loads it (M14, track A3; the only loader
+ * since the removal of Limine, 2026-11-26). The kernel is linked at 0xffffffff80000000
+ * (chosen as Limine's higher half, kept; arm64/pmap.rs adopts it) with physical addresses
+ * from 0 (AT()): efiboot's LOADADDR keeps the low 39 bits of p_paddr and adds its 64 MB
+ * block's address (efi_loadaddr), so the image lands at the block's start. The ELF entry is
+ * the physical offset of locore0.S's `_start` for the same reason (e_entry goes through
+ * LOADADDR too).
  *
  * The section bounds `__text_start`, `__rodata_start`, `_erodata` and `__data_start` are
  * OpenBSD's (kern.ldscript): hal's pmap_bootstrap maps the image by section with them
@@ -28,7 +28,7 @@ __kernel_base = 0xffffffff80000000;
 
 SECTIONS
 {
-    /* Higher half, where Limine loads non-relocatable kernels; physical = virtual - base. */
+    /* The higher half (Limine's, kept); physical = virtual - base. */
     . = __kernel_base;
     PROVIDE(__text_start = .);
 
@@ -62,11 +62,6 @@ SECTIONS
 
     .data : AT(ADDR(.data) - __kernel_base) {
         *(.data .data.*)
-
-        /* Limine requests: kept even though nothing references them by symbol. */
-        KEEP(*(.requests_start_marker))
-        KEEP(*(.requests))
-        KEEP(*(.requests_end_marker))
     } :data
 
     .bss : AT(ADDR(.bss) - __kernel_base) {

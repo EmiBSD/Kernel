@@ -262,8 +262,9 @@ fn preset_words(slot: &[u8]) -> &[u8] {
 /// Applies the self-test preset ([`PRESET`]): takes its words, each byte swapped with 0 (the
 /// slot reads empty afterwards), and sets the requests [`parse_bootargs`] sets for the same
 /// words on a command line. Called once by the boot glue (`boot_init`), on the boot
-/// processor, before the other processors start; under a loader that passes words (Limine)
-/// it finds the slot empty and changes nothing.
+/// processor, before the other processors start. boot(8) passes no words, so since the
+/// removal of Limine (2026-11-26) this is the only way a self-test is asked for;
+/// [`parse_bootargs`] reads the slot's words as it read Limine's command line.
 pub fn preset_apply() {
     let mut slot = [0u8; PRESET_SLOT];
     for (b, cell) in slot.iter_mut().zip(&PRESET[PRESET_MAGIC.len()..]) {

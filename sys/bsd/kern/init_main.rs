@@ -82,10 +82,12 @@
 //!   pmemrange stress on every CPU (M11a's exit test). The network self-test of every
 //!   `qemu` boot (`selftest::ping_gateway`) runs after the secondary processors boot (M13).
 //! - `main()` takes no `framep` (unused in C) and never returns, as the C's loop never does.
-//! - `start_init` execs the `init` Limine module (`stand` hands it over through
-//!   `set_init_module`) instead of trying the `initpaths` on a filesystem; `check_console`
-//!   looks `/dev/console` up with `namei`, which fails (`ENOENT`) while there is no root
-//!   file system, so it warns as the C does. Before the exec it installs the console stand-in
+//! - `start_init` tries the `initpaths` on the root as the C does (the `init` boot module it
+//!   exec'd from memory without a root, `set_init_module` and `exec_image`, went with Limine
+//!   on 2026-11-26: the init stand-in is `/sbin/init` on a root, so a boot without one ends in
+//!   `panic: no init`); `check_console` looks `/dev/console` up with `namei`, which fails
+//!   (`ENOENT`) on a root without `/dev` (the stand-in's image), so it warns as the C does.
+//!   Before the exec it installs the console stand-in
 //!   (`dev/consfile.rs`) at descriptors 0, 1 and 2, which `init(8)` would get by opening
 //!   `/dev/console`. Under feature `qemu` the run ends when init exits (`exit1`), with
 //!   the status `xtask smoke` checks; proc0 goes back to sleep as in C.
@@ -102,14 +104,12 @@
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, Ordering};
 
-use crate::sys::staticcell::StaticCell;
-
 use crate::dev::consfile::consfile_attach;
 use crate::dev::rnd::{arc4random, random_start};
 use crate::kern::kern_clock::initclocks;
 use crate::kern::kern_clockintr::clockqueue_init;
 use crate::kern::kern_descrip::{fdinit, filedesc_init};
-use crate::kern::kern_exec::{exec_image, sys_execve};
+use crate::kern::kern_exec::sys_execve;
 use crate::kern::kern_kthread::{kthread_create, kthread_run_deferred_queue};
 use crate::kern::kern_resource::lim_startup;
 use crate::kern::kern_sched::{sched_init, sched_init_cpu};
@@ -144,7 +144,7 @@ use kernel::dev::disk::disk_init;
 
 use crate::kern::vm_bsd::uvm_init;
 use crate::kern::vm_bsd::uvm_init_limits;
-use crate::machine::{BootModule, Machine, VmParam};
+use crate::machine::{Machine, VmParam};
 use crate::net::if_::{ifinit, softnet_init, softnet_percpu};
 use crate::net::rtable::rtable_init;
 use crate::sys::errno::Errno;
@@ -249,8 +249,7 @@ pub fn set_swapdev_vp(vp: Option<&'static crate::sys::vnode::Vnode>) {
 pub const LIMIT0: Plimit = Plimit::new();
 /// `start_init_exec`: semaphore for `start_init()`.
 pub static START_INIT_EXEC: AtomicI32 = AtomicI32::new(0);
-/// The `init` module the bootloader loaded, if any (see the module's deviations).
-static INIT_MODULE: StaticCell<Option<BootModule>> = StaticCell::new(None);
+
 /// `process0`: process slot for kernel threads (a `static`, P4).
 pub static PROCESS0: Process = Process::new(0, BsdProcessG::new());
 
@@ -557,9 +556,8 @@ pub fn main() -> ! {
     // (*mountroot)(): the kernel's root choice (`kernel::dev::disk`).
     let mounted = match kernel::dev::disk::mountroot::<crate::kern::proc_glue::BsdProcGlue>() {
         None => {
-            // The C panics "cannot mount root" here; this kernel has no disk driver or file
-            // system yet (stage 2), so it says so and goes on: init is exec'd from its boot
-            // module (see the module's deviations).
+            // The C panics "cannot mount root" here; this kernel says so and goes on (see
+            // the module's deviations): with no root, `start_init` finds no init and panics.
             kprintf!("cannot mount root: no root file system\n");
             false
         }
@@ -722,14 +720,6 @@ pub fn main() -> ! {
     }
 }
 
-/// Records the `init` module the bootloader loaded, for `start_init`. Called once by
-/// `stand`, on the boot CPU, before `main`.
-pub fn set_init_module(module: Option<BootModule>) {
-    // SAFETY: the single writer, before any thread but the boot CPU's exists; every reader
-    // (`start_init`) runs after `main` started.
-    unsafe { *INIT_MODULE.get_mut() = module };
-}
-
 /// `initpaths[]`: list of paths to try when searching for "init".
 const INITPATHS: [&[u8]; 3] = [b"/sbin/init\0", b"/sbin/oinit\0", b"/sbin/init.bak\0"];
 
@@ -803,9 +793,6 @@ fn start_init_args(addr: usize, path: &[u8]) -> (usize, usize) {
 
 /// Start the initial user process; try exec'ing each pathname in "initpaths". The program
 /// is invoked with one argument containing the boot flags.
-///
-/// Without a root file system every path fails with `ENOENT`; then the `init` boot module
-/// is exec'd from memory with the same arguments (`exec_image`, `kern_exec.rs`).
 pub fn start_init(p: &Proc) {
     // Now in process 1.
 
@@ -880,23 +867,6 @@ pub fn start_init(p: &Proc) {
         }
     }
 
-    // No root file system yet: the boot module stands in for the file (see above).
-    // SAFETY: written once by `set_init_module` before `main`; only read afterwards.
-    let module = unsafe { INIT_MODULE.get() };
-    if let Some(module) = module {
-        let path = module.path.to_bytes_with_nul();
-        let (arg0, uap) = start_init_args(addr, path);
-        match exec_image(p, arg0, uap, 0, module.data) {
-            Err(Errno::EJUSTRETURN) => {
-                kernel_unlock(); // KERNEL_UNLOCK(), as for an exec from the root
-                return;
-            }
-            Err(e) if e != Errno::ENOENT => {
-                kprintf!("exec {}: error {}\n", Str(module.path.to_bytes()), e as i32);
-            }
-            _ => {}
-        }
-    }
     kprintf!("init: not found\n");
     panic(format_args!("no init"));
 }

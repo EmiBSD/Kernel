@@ -20,9 +20,11 @@
 //! What the boot glue hands to the machine and the kernel: a bootloader-neutral view of the
 //! loaded image and of physical memory.
 //!
-//! `sys/stand/` fills it from the Limine responses, and the machine's `getbootinfo` from
-//! OpenBSD boot(8)'s hand-over (M14, `sys/stand/bootarg.rs`); nothing here names either. Grows with the milestones (M3 adds
-//! what `uvm_page` needs; M11a the processors and the way to start them, [`BootMp`]).
+//! The machine's `getbootinfo` fills it from OpenBSD boot(8)'s hand-over (M14,
+//! `sys/stand/bootarg.rs`), the one boot loader since the removal of Limine (2026-11-26), whose
+//! boot modules and frame buffer response went with it; nothing here names the loader. Grows
+//! with the milestones (M3 adds what `uvm_page` needs; M11a the processors and the way to start
+//! them, [`BootMp`]).
 
 use core::ffi::CStr;
 use core::ptr::NonNull;
@@ -32,32 +34,6 @@ use crate::sys::types::{Paddr, Psize, Vaddr};
 
 /// Upper bound on memory map regions kept in [`MemMap`]; boot fails loudly beyond it.
 pub const MAX_REGIONS: usize = 256;
-
-/// The most boot modules the glue keeps (`init` and the ramdisk image so far).
-pub const MAX_MODULES: usize = 4;
-
-/// A file the bootloader loaded next to the kernel (`module_path:` in `limine.conf`): the
-/// `init` the kernel execs until there is a filesystem (M6) and the root file system image
-/// of rd(4) (`ramdisk.ffs`, M8).
-#[derive(Clone, Copy, Debug)]
-pub struct BootModule {
-    /// The path it was loaded from (`/init`).
-    pub path: &'static CStr,
-    /// The string given with it (`module_string:` in `limine.conf`), possibly empty.
-    pub string: &'static CStr,
-    /// Its contents, mapped for the kernel's lifetime.
-    pub data: &'static [u8],
-    /// The same bytes, writable: the bootloader maps modules read-write in its direct map.
-    /// rd(4) takes its image through this pointer and writes to it, so a module handed to
-    /// rd(4) is not read through `data` afterwards.
-    pub base: *mut u8,
-}
-
-// SAFETY: a module is memory the bootloader handed over for the kernel's lifetime; `base` is
-// only an address of it, and whoever writes through it (rd(4)) owns those bytes alone.
-unsafe impl Send for BootModule {}
-// SAFETY: as for `Send`: shared views read the path, string and length, never `base`'s bytes.
-unsafe impl Sync for BootModule {}
 
 /// What a region of physical memory holds, as the bootloader reports it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -171,51 +147,6 @@ pub struct EfiMemmap {
     pub desc_ver: u32,
 }
 
-/// The linear frame buffer the firmware set up (the UEFI GOP mode the bootloader left
-/// active): what OpenBSD's efiboot passes in `bios_efiinfo` (`fb_*`) on amd64 and as a
-/// `simple-framebuffer` node of `/chosen` on arm64.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BootFramebuffer {
-    /// Physical address of the first pixel.
-    pub paddr: Paddr,
-    /// Width in pixels.
-    pub width: u32,
-    /// Height in pixels.
-    pub height: u32,
-    /// Bytes per scan line.
-    pub pitch: u32,
-    /// Bits per pixel.
-    pub bpp: u16,
-    /// Bits of red.
-    pub red_size: u8,
-    /// The lowest bit of red.
-    pub red_shift: u8,
-    /// Bits of green.
-    pub green_size: u8,
-    /// The lowest bit of green.
-    pub green_shift: u8,
-    /// Bits of blue.
-    pub blue_size: u8,
-    /// The lowest bit of blue.
-    pub blue_shift: u8,
-}
-
-impl BootFramebuffer {
-    /// The mask of a channel of `size` bits from bit `shift` (`fb_red_mask` and friends).
-    pub const fn mask(size: u8, shift: u8) -> u32 {
-        if size == 0 {
-            0
-        } else {
-            (u32::MAX >> (32 - size as u32)) << shift
-        }
-    }
-
-    /// Size in bytes: `height` lines of `pitch` bytes.
-    pub const fn size(&self) -> usize {
-        self.height as usize * self.pitch as usize
-    }
-}
-
 /// One processor the bootloader found, the boot processor included.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BootCpu {
@@ -301,34 +232,17 @@ pub struct BootInfo {
     pub smbios: Option<Paddr>,
     /// The UEFI memory map, when the machine booted through UEFI.
     pub efi_memmap: Option<EfiMemmap>,
-    /// The firmware's linear frame buffer, when there is a display.
-    pub framebuffer: Option<BootFramebuffer>,
-    /// The boot modules, in load order (`None` past the last).
-    pub modules: [Option<BootModule>; MAX_MODULES],
     /// The processors, when the kernel is built `MULTIPROCESSOR` and the bootloader found them.
     pub mp: Option<BootMp>,
-    /// `boothowto` as the boot loader passed it (boot(8)'s `howto` argument on amd64); 0
-    /// under Limine, whose flags come from the command line.
+    /// `boothowto` as the boot loader passed it (boot(8)'s `howto` argument on amd64; 0 on
+    /// arm64, whose flags come from `/chosen`'s `bootargs`, the command line).
     pub howto: i32,
-    /// The boot disk's label DUID as the boot loader passed it (`BOOTARG_BOOTDUID`); `None`
-    /// under Limine, which names it on the command line (`bootduid=`).
+    /// The boot disk's label DUID as the boot loader passed it (`BOOTARG_BOOTDUID`, arm64's
+    /// `openbsd,bootduid`), `None` without one.
     pub duid: Option<[u8; 8]>,
 }
 
 impl BootInfo {
-    /// The boot modules.
-    pub fn modules(&self) -> impl Iterator<Item = &BootModule> + '_ {
-        self.modules.iter().flatten()
-    }
-
-    /// The module whose path's last component is `name` (`b"init"` for `/init`).
-    pub fn module(&self, name: &[u8]) -> Option<&BootModule> {
-        self.modules().find(|m| {
-            let path = m.path.to_bytes();
-            path.rsplit(|&c| c == b'/').next() == Some(name)
-        })
-    }
-
     /// Physical address of a virtual address inside the kernel image.
     pub fn kernel_virt_to_phys(&self, va: Vaddr) -> Paddr {
         Paddr::new(va.as_usize() - self.kernel_virt.as_usize() + self.kernel_phys.as_usize())
@@ -364,29 +278,11 @@ impl BootInfo {
     }
 
     /// The boot disk's DUID that boot(8) hands over (`BOOTARG_BOOTDUID` on amd64, the
-    /// `openbsd,bootduid` property efiboot puts in the device tree on arm64): under Limine,
-    /// a `bootduid=` word of the command line with the 16 hexadecimal digits of the
-    /// label's `d_uid`, as `duid_format` prints them. `None` without one or with a malformed
-    /// one. Flags go after it: everything from the first `-` on is read as flag letters
-    /// ([`BootInfo::boothowto`]), the `d` of a `bootduid=` word included.
+    /// `openbsd,bootduid` property efiboot puts in the device tree on arm64), the loader's
+    /// alone: the command line names no disk (Limine's `bootduid=` word went with it,
+    /// 2026-11-26). `None` without one.
     pub fn bootduid(&self) -> Option<[u8; 8]> {
-        if self.duid.is_some() {
-            return self.duid;
-        }
-        let word = self
-            .cmdline
-            .to_bytes()
-            .split(|c| c.is_ascii_whitespace())
-            .find_map(|w| w.strip_prefix(b"bootduid="))?;
-        if word.len() != 16 {
-            return None;
-        }
-        let digit = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
-        let mut duid = [0u8; 8];
-        for (i, pair) in word.chunks(2).enumerate() {
-            duid[i] = digit(pair[0])? << 4 | digit(pair[1])?;
-        }
-        Some(duid)
+        self.duid
     }
 }
 /* </CODE> */
@@ -437,8 +333,6 @@ mod tests {
             efi_system_table: None,
             smbios: None,
             efi_memmap: None,
-            framebuffer: None,
-            modules: [None; MAX_MODULES],
             mp: None,
             howto: 0,
             duid: None,
@@ -447,9 +341,6 @@ mod tests {
             boot.kernel_virt_to_phys(Vaddr::new(0xffff_ffff_8001_2345)),
             Paddr::new(0x21_2345)
         );
-        assert_eq!(BootFramebuffer::mask(8, 16), 0x00ff_0000);
-        assert_eq!(BootFramebuffer::mask(5, 11), 0xf800);
-        assert_eq!(BootFramebuffer::mask(0, 3), 0);
         assert_eq!(
             boot.hhdm(Paddr::new(0x1000)),
             Vaddr::new(0xffff_8000_0000_1000)
@@ -492,8 +383,6 @@ mod tests {
             efi_system_table: None,
             smbios: None,
             efi_memmap: None,
-            framebuffer: None,
-            modules: [None; MAX_MODULES],
             mp: None,
             howto: 0,
             duid: None,
@@ -505,16 +394,15 @@ mod tests {
         assert_eq!(boot.boothowto(), RB_SINGLE | RB_CONFIG);
         boot.cmdline = c"-a -x";
         assert_eq!(boot.boothowto(), RB_ASKNAME);
+        // The DUID is the loader's alone: a `bootduid=` word (Limine's, gone) names nothing.
         assert_eq!(boot.bootduid(), None);
         boot.cmdline = c"bootduid=4e564d45524f4f54";
-        assert_eq!(boot.bootduid(), Some(*b"NVMEROOT"));
-        assert_eq!(boot.boothowto(), 0);
-        boot.cmdline = c"bootduid=4e564d45524f4f54 -s";
-        assert_eq!(boot.bootduid(), Some(*b"NVMEROOT"));
-        assert_eq!(boot.boothowto(), RB_SINGLE);
-        boot.cmdline = c"bootduid=4e564d45524f4f5 bootduid=4e564d45524f4fxx";
         assert_eq!(boot.bootduid(), None);
-        // boot(8)'s own: its howto is or'ed with the command line's, its DUID wins.
+        boot.cmdline = c"bootduid=4e564d45524f4f54 -s";
+        assert_eq!(boot.bootduid(), None);
+        assert_eq!(boot.boothowto(), RB_SINGLE);
+        // boot(8)'s own: its howto is or'ed with the command line's, its DUID is the one.
+        boot.cmdline = c"";
         boot.howto = RB_KDB;
         boot.duid = Some(*b"EFIBOOT0");
         assert_eq!(boot.boothowto(), RB_KDB);

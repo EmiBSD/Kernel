@@ -64,21 +64,22 @@
 //! `exec_conf.c`'s `execsw[]` is here as [`EXECSW`]: shell scripts (`exec_script.rs`),
 //! then ELF.
 //!
-//! Two callers reach the body. `sys_execve` finds the executable with `namei`, as the C
-//! does. `start_init` tries `initpaths[]` through `sys_execve` and, while there is no root
-//! file system (every `namei` is `ENOENT`), execs the `init` boot module with
-//! [`exec_image`]: the same body over an executable in kernel memory (`ExecFile::Image`),
-//! with the arguments `start_init` copied out to the user stack as for `sys_execve`.
+//! One caller reaches the body: `sys_execve`, which finds the executable with `namei`, as
+//! the C does (`start_init` tries `initpaths[]` through it). LZ's second, `exec_image` (the
+//! `init` boot module exec'd from kernel memory while there was no root file system), went
+//! with Limine's boot modules on 2026-11-26: init is exec'd from the root.
 //!
 //! ## Deviations
 //! - N4.2 (`kernel::proc::cred`): the set-id exec builds the new credentials as a value and places
 //!   a copy (`CredRef::new`), given to the thread (`set_cred`) and the process, where the C
 //!   `crdup`s the shared credentials and edits them in place; the ids that result are the
 //!   C's.
-//! - [`exec_image`] is this port's name for "`sys_execve` of a memory image": `check_exec`
-//!   skips `namei` and the attribute, mount, access and open checks (an image has no vnode,
-//!   no set[ug]id bits, no realpath), `ep_hdr` is the image's first `exec_maxhdrsz` bytes
-//!   and the vmcmds read the image (`exec_subr.rs`). It goes away when `init` is a file.
+//! - A memory image (`ExecPackage::ep_image`, `ExecFile::Image`) is no longer exec'd: the
+//!   body always runs `check_exec` with the `namei` data, so every check the C makes (the
+//!   attribute, mount, access and open checks, set[ug]id) applies to every exec.
+//!   `check_exec`'s branch without `namei` data and `exec_comm`'s path fallback have no
+//!   caller left (they go with this file's redesign); the image reads of `exec_subr.rs` and
+//!   `exec_elf.rs` stay for the ELF loader's host tests, which hand it images.
 //! - The set[ug]id stdin/stdout/stderr fix-up opens `/dev/null` with `cdevvp(getnulldev())`:
 //!   the device switch (`<sys/conf.h>`) is not ported, so a set[ug]id exec with one of the
 //!   three descriptors closed reports it and fails (the C would succeed).
@@ -461,21 +462,7 @@ pub fn sys_execve(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<
         uap.path.get() as usize,
         uap.argp.get() as usize,
         uap.envp.get() as usize,
-        None,
     )
-}
-
-/// `sys_execve` of the executable `image` held in kernel memory (see the module's
-/// deviations): `path`, `argp` and `envp` are user addresses as for `execve(2)`.
-/// `Err(EJUSTRETURN)` is success.
-pub fn exec_image(
-    p: &Proc,
-    path: usize,
-    argp: usize,
-    envp: usize,
-    image: &[u8],
-) -> Result<(), Errno> {
-    execve_common(p, path, argp, envp, Some(image))
 }
 
 /// Copies a NULL-terminated vector of user strings (`argv` or `envp`) at `cpp` into
@@ -503,14 +490,8 @@ fn copy_strings(cpp: usize, argbuf: &mut [u8], dp: &mut usize) -> Result<usize, 
     Ok(n)
 }
 
-/// The body of `sys_execve`, for a path (`image` `None`) or a memory image.
-fn execve_common(
-    p: &Proc,
-    path: usize,
-    uargp: usize,
-    uenvp: usize,
-    image: Option<&[u8]>,
-) -> Result<(), Errno> {
+/// The body of `sys_execve`: `path`, `uargp` and `uenvp` are its user addresses.
+fn execve_common(p: &Proc, path: usize, uargp: usize, uenvp: usize) -> Result<(), Errno> {
     // The thread's credentials (its own copy): `cred` follows the changes below, as the C's
     // `cred` follows `p->p_ucred`.
     let cred = p.ucred();
@@ -542,7 +523,6 @@ fn execve_common(
 
     // initialize the fields of the exec package.
     let mut pack = ExecPackage::new(pathname);
-    pack.ep_image = image;
 
     // freehdr: the header, the pathname and the realpath buffers are dropped by the
     // caller's scope.
@@ -553,12 +533,7 @@ fn execve_common(
     };
 
     // see if we can run it.
-    let ndp = if image.is_none() {
-        Some(&mut nid)
-    } else {
-        None
-    };
-    if let Err(error) = check_exec(p, &mut pack, ndp) {
+    if let Err(error) = check_exec(p, &mut pack, Some(&mut nid)) {
         return freehdr(error);
     }
 

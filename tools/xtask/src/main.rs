@@ -739,7 +739,7 @@ mod tests {
         for (native, lz) in [
             ("sys/bsd/kern/kern_exec.rs", "sys/kern/kern_exec.rs"),
             ("sys/bsd/lib.rs", "sys/lib.rs"),
-            ("sys/bsd/stand/limine.rs", "sys/stand/limine.rs"),
+            ("sys/bsd/stand/bootarg.rs", "sys/stand/bootarg.rs"),
             (
                 "sys/bsd/arch/arm64/arm64/machdep.rs",
                 "sys/arch/arm64/arm64/machdep.rs",
@@ -775,7 +775,7 @@ mod tests {
         for (lz, native) in [
             ("sys/kern/kern_exec.rs", "sys/bsd/kern/kern_exec.rs"),
             ("sys/Cargo.toml", "sys/bsd/Cargo.toml"),
-            ("sys/stand/limine.rs", "sys/bsd/stand/limine.rs"),
+            ("sys/stand/bootarg.rs", "sys/bsd/stand/bootarg.rs"),
             (
                 "sys/arch/arm64/arm64/machdep.rs",
                 "sys/bsd/arch/arm64/arm64/machdep.rs",
@@ -818,10 +818,11 @@ mod tests {
             "sys/bsd/machine/mod.rs",
             "sys/bsd/machine/cpu.rs",
             "sys/bsd/arch/host/alloc.rs",
-            "sys/bsd/stand/limine.rs",
+            "sys/bsd/stand/bootarg.rs",
             "sys/boot/loader/cmd.rs",
             "sys/boot/efi/include/efiapi.rs",
             "sys/machine/cpu.rs",
+            // LZ's own Limine entry, at the pin: no native module lists it (2026-11-26).
             "sys/stand/limine.rs",
         ] {
             assert!(is_structural(rel), "{rel}");
