@@ -435,12 +435,12 @@ pub(crate) fn openbsd_qemu(root: &Path, arch: Arch, mode: &Boot<'_>) -> Result<C
             ("virtio-blk-pci", "virtio-net-pci")
         }
         Arch::Arm64 => {
-            // `probe` follows `EMIBSD_CPU` (hwopts), to see what OpenBSD itself does on
-            // another CPU model; the scenarios keep the smokes' `cortex-a72`.
-            let cpu = match mode {
-                Boot::Probe(_) => crate::hwopts::arm64_cpu()?,
-                _ => String::from("cortex-a72"),
-            };
+            // Every boot follows `EMIBSD_CPU` (hwopts; `cortex-a72` without it), as EmiBSD's
+            // side does (`boot.rs`), so a one-off run compares both systems on the same CPU
+            // model: `probe` to see what OpenBSD itself does there, the scenarios to reach
+            // what `cortex-a72` cannot (decision 56's E0: the EL0 ID register reads trap as
+            // exception class 0x18 only on a CPU with FEAT_IDST).
+            let cpu = crate::hwopts::arm64_cpu()?;
             cmd.args(["-M", "virt,acpi=off", "-cpu", &cpu]);
             ("virtio-blk-device", "virtio-net-device")
         }
