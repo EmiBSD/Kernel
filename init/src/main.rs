@@ -14,10 +14,14 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-//! `init`: the first user process of EmiBSD, standing in for `init(8)` until there is a
-//! filesystem to load one from. Freestanding and static: no libc, the system calls are the
-//! raw instructions with OpenBSD's convention (the number in `rax`/`x8`, the error in the
-//! carry flag). The kernel loads it as a Limine module and execs it at `start_init`.
+//! `init`: the first user process of EmiBSD, the kernel's self-test standing in for
+//! `init(8)`. Freestanding and static: no libc, the system calls are the raw instructions
+//! with OpenBSD's convention (the number in `rax`/`x8`, the error in the carry flag). Since
+//! the removal of Limine (2026-11-26) it is `/sbin/init` on a small root (`cargo xtask
+//! efiboot-image --root init`: `/bsd`, `/sbin/init` and boot(8)'s files in `/etc`), and
+//! `start_init` execs it from there by its `initpaths[]`, as it would OpenBSD's init(8);
+//! the arm64 boots load it so (amd64's recipes, which load it as Limine's module `/init`
+//! with no root, are converted by N10's first step, decision 44).
 //!
 //! What it does is the M6 exit criterion: writes one line through `write(2)` and leaves
 //! through `exit(2)`. Since M7a it also writes to bss pages that nothing but the fault
@@ -36,8 +40,8 @@
 //! reads back `kern.hostname`, and prints `init: EmiBSD 8.0` when the system identifies itself
 //! as the user decided.
 //! With the vfs core (`vfs_syscalls.c`) it checks that the path system calls reach `namei`
-//! and fail as they must without a root file system (`ENOENT`), that `umask(2)` swaps the
-//! creation mask and that the console stand-in is not a vnode (`lseek`, `fchdir`).
+//! (a missing file is `ENOENT`, `/` a directory it can enter and name), that `umask(2)` swaps
+//! the creation mask and that the console stand-in is not a vnode (`lseek`, `fchdir`).
 //! With `sys_pipe.c` it makes pipes with `pipe2(2)` and `pipe(2)`, moves bytes through them
 //! (a short write, and one large enough to grow the buffer to `BIG_PIPE_SIZE`), reads EOF
 //! after the writer closes, sees `EAGAIN` on an empty non-blocking pipe, and gets `EPIPE`
@@ -47,12 +51,13 @@
 //! `TIOCSCTTY`, reads the terminal's modes with `TIOCGETA` (what `isatty(3)` asks) and
 //! finds itself the terminal's foreground process group (`TIOCGPGRP`).
 //! With the real `execve` (M8) it checks the stack `start_init` and `execve` gave it (`argc`
-//! 1, `argv[0]` `/init`, no environment, the auxiliary vector with the page size, the entry
-//! point, base 0 and the timekeep page), that `execve(2)` of a path reaches `namei`
-//! (`ENOENT`), and every system call it makes passes `pin_check`: the one `syscall`/`svc`
+//! 1, `argv[0]` `/sbin/init`, no environment, the auxiliary vector with the page size, the
+//! entry point, base 0 and the timekeep page), that `execve(2)` of a missing path reaches
+//! `namei` (`ENOENT`), and every system call it makes passes `pin_check`: the one `syscall`/`svc`
 //! instruction is pinned for every number in its `PT_OPENBSD_SYSCALLS` table.
 //! With `kern_unveil.c` it checks `unveil(2)`'s arguments (an empty path, a permission string
-//! too long for its buffer), that a path reaches `namei` (`ENOENT` without a root), and that
+//! too long for its buffer), that `/` and a missing file under `/etc` can be unveiled and a
+//! path under a missing directory reaches `namei`'s `ENOENT`, and that
 //! `unveil(NULL, NULL)` locks the table so that a later call fails with `EPERM`.
 //! With the socket layer (`uipc_socket.c`, `uipc_usrreq.c`, `uipc_syscalls.c`) it makes
 //! `AF_UNIX` socket pairs with `socketpair(2)`: bytes go both ways on a stream pair, which
@@ -361,9 +366,10 @@ const TIOCGETA: usize = 0x402c_7413;
 const TIOCGPGRP: usize = 0x4004_7477;
 /// `ICANON`, in `c_lflag`.
 const ICANON: u32 = 0x0000_0100;
-/// `S_IFMT`, `S_IFCHR`.
+/// `S_IFMT`, `S_IFCHR`, `S_IFDIR`.
 const S_IFMT: u32 = 0o170000;
 const S_IFCHR: u32 = 0o020000;
+const S_IFDIR: u32 = 0o040000;
 /// `SIGUSR1`.
 const SIGUSR1: usize = 30;
 /// `SIG_BLOCK`.
@@ -622,7 +628,7 @@ core::arch::global_asm!(
     main = sym init_main,
 );
 
-/// The new stack as `execve` lays it out: `argc` 1, `argv[0]` the boot module's path,
+/// The new stack as `execve` lays it out: `argc` 1, `argv[0]` the path `start_init` found,
 /// no environment, and an auxiliary vector that names the page size, the entry point,
 /// the program headers, base 0 (not a PIE) and the timekeep page.
 fn args_and_auxv(sp: *const usize) -> bool {
@@ -636,7 +642,7 @@ fn args_and_auxv(sp: *const usize) -> bool {
     }
     // SAFETY: argv[0] points at the NUL-terminated path `start_init` copied out.
     let arg0 = unsafe { core::ffi::CStr::from_ptr(word(1) as *const core::ffi::c_char) };
-    if arg0.to_bytes() != b"/init" {
+    if arg0.to_bytes() != b"/sbin/init" {
         return false;
     }
     let (mut pagesz, mut entry, mut phdr, mut base, mut timekeep) = (0, 0, 0, usize::MAX, 0);
@@ -962,7 +968,7 @@ extern "C" fn init_main(sp: *const usize) -> ! {
         status = 6;
     }
     if vfs() {
-        if write(1, b"init: vfs ok (no root file system)\n").is_err() {
+        if write(1, b"init: vfs ok\n").is_err() {
             status = 1;
         }
     } else {
@@ -1093,10 +1099,12 @@ fn uptime_monotonic() -> bool {
     true
 }
 
-/// `unveil(2)` (`vfs_syscalls.c`'s `sys_unveil`, `kern_unveil.c`) before a root file system
-/// exists: the argument checks come first (`EINVAL` for an empty path, `ENAMETOOLONG` for
-/// permissions longer than four characters, `EFAULT` for a NULL path), a real path reaches
-/// `namei` (`ENOENT`), and `unveil(NULL, NULL)` locks the table: the next call is `EPERM`.
+/// `unveil(2)` (`vfs_syscalls.c`'s `sys_unveil`, `kern_unveil.c`) on the root that holds
+/// `/sbin/init`: the argument checks come first (`EINVAL` for an empty path, `ENAMETOOLONG`
+/// for permissions longer than four characters, `EFAULT` for a NULL path), `/` is unveiled,
+/// so is `/etc/rc`, which does not exist (a `CREATE` lookup, which a read-only root does not
+/// refuse to `unveil`), a path whose directory does not exist ends in `namei`'s `ENOENT`,
+/// and `unveil(NULL, NULL)` locks the table: the next call is `EPERM`.
 fn unveil() -> bool {
     let call = |n, a, b, c| syscall3(n, a, b, c);
     let unveil = |path: usize, perms: usize| call(SYS_UNVEIL, path, perms, 0);
@@ -1104,15 +1112,19 @@ fn unveil() -> bool {
     let mut ok = unveil(c"".as_ptr() as usize, r) == (EINVAL, true);
     ok &= unveil(c"/".as_ptr() as usize, c"rwxcr".as_ptr() as usize) == (ENAMETOOLONG, true);
     ok &= unveil(0, r) == (EFAULT, true);
-    ok &= unveil(c"/".as_ptr() as usize, r) == (ENOENT, true);
-    ok &= unveil(c"/etc/rc".as_ptr() as usize, c"rw".as_ptr() as usize) == (ENOENT, true);
+    ok &= unveil(c"/".as_ptr() as usize, r) == (0, false);
+    ok &= unveil(c"/etc/rc".as_ptr() as usize, c"rw".as_ptr() as usize) == (0, false);
+    ok &= unveil(c"/nonexistent/rc".as_ptr() as usize, r) == (ENOENT, true);
     ok &= unveil(0, 0) == (0, false);
     ok && unveil(c"/".as_ptr() as usize, r) == (EPERM, true)
 }
 
-/// `vfs_syscalls.c` seen from user mode before a root file system exists: every path ends in
-/// `namei`'s `ENOENT`, no descriptor is left behind by a failed `open`, the creation mask is
-/// the one `fdinit` set (022), and the console stand-in cannot seek nor be a directory.
+/// `vfs_syscalls.c` seen from user mode on the root that holds `/sbin/init` and of `/etc`
+/// only the boot loader's files: a missing file ends in `namei`'s `ENOENT` and leaves no
+/// descriptor behind, `/` is a directory that `chdir(2)` enters and `__getcwd(2)` names, an
+/// `execve(2)` of a missing path fails with `ENOENT` (`/sbin/oinit`, initpaths' second), the
+/// creation mask is the one `fdinit` set (022), and the console stand-in cannot seek nor be
+/// a directory.
 fn vfs() -> bool {
     let call = |n, a, b, c| syscall3(n, a, b, c);
     let mut st = [0u64; 16];
@@ -1123,13 +1135,15 @@ fn vfs() -> bool {
         c"/".as_ptr() as usize,
         st.as_mut_ptr() as usize,
         0,
-    ) == (ENOENT, true);
-    ok &= call(SYS_CHDIR, c"/".as_ptr() as usize, 0, 0) == (ENOENT, true);
-    ok &= call(SYS___GETCWD, cwd.as_mut_ptr() as usize, cwd.len(), 0) == (ENOENT, true);
+    ) == (0, false);
+    ok &= (st[0] as u32) & S_IFMT == S_IFDIR;
+    ok &= call(SYS_CHDIR, c"/".as_ptr() as usize, 0, 0) == (0, false);
+    ok &= call(SYS___GETCWD, cwd.as_mut_ptr() as usize, cwd.len(), 0) == (0, false);
+    ok &= cwd[..2] == *b"/\0";
     let argv = [c"init".as_ptr() as usize, 0];
     ok &= call(
         SYS_EXECVE,
-        c"/sbin/init".as_ptr() as usize,
+        c"/sbin/oinit".as_ptr() as usize,
         argv.as_ptr() as usize,
         0,
     ) == (ENOENT, true);

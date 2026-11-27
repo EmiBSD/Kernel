@@ -807,8 +807,10 @@ fn boot_line(flags: Option<&str>) -> Result<String> {
 }
 
 /// `--boot-on nvme`: the disk the image is on ([`boot::BootMedium`]); the virtio disk
-/// without it. EDK2 AArch64 has no AHCI driver, so no image boots from AHCI (smoke-ahci
-/// boots the virtio image with `boot -a` and names its AHCI root at `root device:`).
+/// without it. EDK2 AArch64 has no AHCI driver, so no image boots from AHCI: smoke-ahci
+/// boots the virtio image (`--image tree`) and its AHCI disk is a data disk, since the
+/// kernel's `boot -a` has no `root device:` prompt to name an AHCI root at (setroot's
+/// RB_ASKNAME dialogue is unported, LZ's gap, sys/kernel/dev/disk.rs).
 fn boot_medium(args: &[&str]) -> Result<boot::BootMedium> {
     match optional_flag(args, "--boot-on") {
         None => Ok(boot::BootMedium::Disk),

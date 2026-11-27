@@ -356,12 +356,14 @@ pub(crate) fn usb_net() -> bool {
     devices().usb_net
 }
 
-/// The USB stick of the boot image `image`: `<image>.usb`.
+/// The USB stick of the run whose image path is `image`: `<image>.usb`. Since 1ac239d0
+/// `image` is the run's own `boot::image_path` in the run directory, whatever the VM boots
+/// (a shared efiboot image lives elsewhere and is never written).
 pub(crate) fn stick_path(image: &Path) -> PathBuf {
     image.with_extension("usb")
 }
 
-/// The WAV file of the boot image `image`: `<image>.wav`.
+/// The WAV file of the run whose image path is `image` (see [`stick_path`]): `<image>.wav`.
 pub(crate) fn wav_path(image: &Path) -> PathBuf {
     image.with_extension("wav")
 }

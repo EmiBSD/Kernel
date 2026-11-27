@@ -968,8 +968,14 @@ pub(crate) fn qemu_command(
     // M16a (storage.rs): the storage controllers, after the devices above.
     crate::storage::add_devices(&mut cmd, arch)?;
     // M12: `--usb`, `--audio` (`devices.rs`), after every other device so the PCI slots
-    // the older smokes expect do not move.
-    cmd.args(crate::devices::qemu_args(image)?);
+    // the older smokes expect do not move. Their files (the stick, the WAV) are named after
+    // this run's own image path, in the run directory: a shared efiboot image
+    // (`--image tree|init`) lives in target/efiboot/, which every recipe reads.
+    cmd.args(crate::devices::qemu_args(&image_path(
+        root,
+        arch,
+        vm.map(|v| v.tag),
+    ))?);
     Ok(cmd)
 }
 
@@ -1263,7 +1269,7 @@ fn smoke_once(
                 .lock()
                 .map(|t| String::from_utf8_lossy(&t).into_owned())
                 .unwrap_or_default();
-            crate::devices::poll_usb_serial(&text, &image)?;
+            crate::devices::poll_usb_serial(&text, &image_path(root, arch, None))?;
         }
         if crate::hwopts::monitor_pending() {
             let text = transcript
@@ -1344,7 +1350,8 @@ fn smoke_once(
             }
         );
         crate::hwopts::after_smoke()?;
-        return crate::devices::after_smoke(&image);
+        // The devices' files are the run's, as `qemu_command` named them.
+        return crate::devices::after_smoke(&image_path(root, arch, None));
     }
     *flake = firmware_flake(&serial);
     println!("----- serial transcript ({}) -----", arch.name());
