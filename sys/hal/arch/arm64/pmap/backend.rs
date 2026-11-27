@@ -73,7 +73,7 @@
 //! - OpenBSD arm64 has no direct map and no `PMAP_STEAL_MEMORY`: boot allocations go through
 //!   `pmap_steal_avail` (a bump allocator over `pmap_avail[]`, mapped by `pmap_map_stolen`)
 //!   and `uvm_pageboot_alloc` maps page by page with `pmap_kenter_pa`. As in LZ, the boot
-//!   loader's higher-half direct map (Limine's HHDM, or `locore0.S`'s `DIRECT_BASE` after
+//!   loader's higher-half direct map (`locore0.S`'s `DIRECT_BASE`, built after
 //!   boot(8)) serves as `__HAVE_PMAP_DIRECT`, boot memory is stolen through the page
 //!   provider (`PhysPages::steal`, `uvm_page_physsteal`), and vp tables, descriptor pages and
 //!   `pmap_zero_page`/`pmap_copy_page`/the I-cache syncs reach their frames through it,
@@ -102,10 +102,10 @@
 //! - The direct map (another level-0 slot, the boot loader's tables below hal's copy of its
 //!   level-0 entries) gets `ATTR_nG` on its leaves (see the redesign: the boot loaders make
 //!   them global) and `Lx_PT_PXN` and `Lx_PT_XN` on those entries, so nothing below them
-//!   executes whatever the boot loader's leaves say (Limine's were never checked; `locore0.S`'s
+//!   executes whatever the boot loader's leaves say (a loader's are never checked; `locore0.S`'s
 //!   blocks are `ATTR_XN`), and `pmap_init` clears `TCR_EL1.HPD0`/`HPD1` so those table bits
-//!   count (both are clear under both boot loaders today: `locore.rs`'s `tcr` word, and the
-//!   `TCR_EL1` Limine 12.9.3 writes, `0xb5003500` with the sizes, `IPS` and `DS`); the C's
+//!   count (both are clear in `locore.rs`'s `tcr` word, which the kernel's entry code builds; the
+//!   `TCR_EL1` Limine 12.9.3 wrote, `0xb5003500`, was clear too); the C's
 //!   `locore.S` never sets them. The direct map still maps every physical page read-write,
 //!   the image's included: the kernel text has a writable alias there, as on amd64, whose
 //!   OpenBSD direct map maps the kernel's physical pages too; the C's arm64 has no direct map.
@@ -165,7 +165,7 @@
 //!   kernel cached would survive the switch to `pmap_tramp` and stay within reach of a
 //!   speculative load from EL0. The C has no direct map and builds every kernel leaf itself;
 //!   here the boot loader's direct map and kernel-half leaves are global (`locore0.S`'s and
-//!   `bootarg_direct_map`'s blocks, Limine's HHDM), so the bootstrap sets `ATTR_nG` on every
+//!   `bootarg_direct_map`'s blocks), so the bootstrap sets `ATTR_nG` on every
 //!   block and page its root reaches ([`pmap_kernel_nonglobal`], before the switch's
 //!   `tlbi vmalle1is`), the leaves the pmap makes carry it already (`pmap_pte_update`,
 //!   `kernel_leaf`), and `postinit` walks the kernel's tables again and panics on a global
@@ -212,17 +212,17 @@
 //!   (`__data_start` to `_end`) read-write, every leaf `ATTR_UXN` and the last two
 //!   `ATTR_PXN`, nothing after the image (`layout.rs`'s `image_page_prot`, the bounds checked
 //!   by `image_layout_ok`); their level-2 table replaces the boot loader's entry for the
-//!   image's gigabyte in the level-1 copy, whatever the boot loader built there (Limine's
-//!   mapping or `locore0.S`'s blocks). [`switch_mmu_kernel_table`] then loads the copy into
+//!   image's gigabyte in the level-1 copy, whatever the boot loader built there
+//!   (`locore0.S`'s blocks). [`switch_mmu_kernel_table`] then loads the copy into
 //!   `TTBR1_EL1` as the C's `switch_mmu_kernel_table(pt1pa)` does: at the switch routine's
 //!   physical address, through a four-page identity table in `TTBR0_EL1` that maps that page
 //!   alone, so no instruction runs through `TTBR1_EL1` while the kernel's live entries change
 //!   size and attributes (break-before-make); `TTBR0_EL1` and its `TCR_EL1` fields go back
-//!   as they were after it. The identity table stays (Limine's application processors switch
+//!   as they were after it. The identity table stays (the application processors switch
 //!   through it too, `cpu.rs`'s `cpu_hatch_entry`), as do the boot loader's tables, which
 //!   nothing walks any more: under boot(8) `locore.S`'s `pagetable` pages in the kernel's
-//!   `.data` (the direct map's level-1 table among them, still in use), under Limine its
-//!   bootloader-reclaimable pages (the application processors start on them). N3.1 8b: the
+//!   `.data` (the direct map's level-1 table among them, still in use; with Limine, removed
+//!   by decision 57, they had been bootloader-reclaimable pages). N3.1 8b: the
 //!   switch builds its `TTBR1_EL1` value itself (the kernel root, ASID 0, `CnP` clear) and
 //!   refuses a CPU already on the kernel's tables with another value, so no caller can load
 //!   the kernel's tables under a user pmap's ASID.
@@ -595,7 +595,7 @@ fn walk_kernel_leaves(table: Paddr, level: usize, leaf: &mut impl FnMut(&'static
 /// `pmap_bootstrap`'s half of the C's rule that every mapping is non-global (`pmap_pte_update`'s
 /// `ATTR_nG`, see the redesign): `ATTR_nG` set on every block and page the kernel's root
 /// reaches, the boot loader's direct map and kernel-half leaves included (`locore0.S`'s and
-/// `bootarg_direct_map`'s blocks, Limine's HHDM), before `switch_mmu_kernel_table`, whose
+/// `bootarg_direct_map`'s blocks), before `switch_mmu_kernel_table`, whose
 /// `tlbi vmalle1is` drops the global entries cached so far. Only the TLB tagging changes
 /// (nG is one of the bits a live entry may change without break-before-make), so the
 /// mappings the kernel runs on stay as they were. That holds only with the contiguous hint
@@ -606,8 +606,8 @@ fn walk_kernel_leaves(table: Paddr, level: usize, leaf: &mut impl FnMut(&'static
 ///
 /// The same pass sets `ATTR_UXN` on every one of them (LZ's df8508cf1682, the C's rule:
 /// `ap_bits_kern` and `locore0.S` give every kernel mapping `ATTR_UXN`): no kernel mapping is
-/// executable at EL0. A boot loader's leaf without it (Limine's direct map blocks are AP 00
-/// with UXN clear) is execute-only at EL0, and on a processor with FEAT_PAN3
+/// executable at EL0. A boot loader's leaf without it (AP 00 with UXN clear, as Limine's
+/// direct map blocks were) is execute-only at EL0, and on a processor with FEAT_PAN3
 /// (`SCTLR_EL1.EPAN`, set by `cpu_init` as the C does) every privileged read of such a page
 /// faults. The direct map's table entries already take execution away below them (see the
 /// deviations); the leaf's own bit makes the rule hold whatever a table says, and it is a
@@ -741,8 +741,8 @@ fn pmap_identity_table(pages: &dyn PhysPages, pa: usize) -> Paddr {
 /// drops every TLB entry (the C's `switch_mmu_kernel`), running the switch routine at its
 /// physical address through the bootstrap's identity table (see the redesign), then puts
 /// `TTBR0_EL1` and its `TCR_EL1` fields back as they were. For a CPU that is not on the
-/// kernel's tables yet (the boot CPU in the bootstrap, an application processor Limine started
-/// on its own), or one on exactly that value already (a boot(8) application processor, which
+/// kernel's tables yet (the boot CPU in the bootstrap, an application processor not yet on them),
+/// or one on exactly that value already (an application processor, which
 /// `locore.S`'s `start_mmu` put there: a TLB flush); panics on a CPU on the kernel's tables
 /// with another ASID or `CnP` (a user pmap's ASID loaded: its translations would be cached
 /// under the kernel's ASID, out of `pmap_free_asid`'s reach), or before the bootstrap built
@@ -773,7 +773,7 @@ pub fn switch_mmu_kernel_table() {
     //   (`daifset`, restored at the end) no handler runs inside it. The old `TTBR0_EL1` and
     //   `TCR_EL1` are put back before the block ends, and `tlbi vmalle1` drops what this CPU
     //   cached through the identity table, so the lower half translates afterwards as before
-    //   (the boot glue's device map, the kernel's empty table, or Limine's).
+    //   (the boot glue's device map or the kernel's empty table).
     // - `TTBR1_EL1`: this function runs at EL1, where the base is the kernel's root (with a
     //   pair's even ASID): at EL0 `tramp_return` has put the trampoline's root and the odd
     //   ASID in it, and every EL0 vector restores the kernel's before any memory access, so no
@@ -787,15 +787,14 @@ pub fn switch_mmu_kernel_table() {
     //   pmap's ASID is replaced while its table sits in `TTBR0_EL1` (whose translations would
     //   otherwise be cached under ASID 0, beyond `pmap_free_asid`'s `tlbi aside1is` of the
     //   user's ASID), and no TLB is shared (`CnP`). Its tables map, at the physical addresses
-    //   every table a CPU of this kernel runs on maps them (the boot loader's on both paths,
-    //   Limine's on an application processor), the image, the direct map (the copied level-0
-    //   slots, Limine's stacks there included) and the kernel map (the copied level-1 slots),
+    //   every table a CPU of this kernel runs on maps them (the boot loader's), the image, the direct map (the copied level-0
+    //   slots, the boot stacks there included) and the kernel map (the copied level-1 slots),
     //   with `Lx_PT_PXN`/`Lx_PT_XN` on the direct map's slots removing only execution, which
     //   nothing does there (the code after the block is the image's text), and `ATTR_nG` and
     //   `ATTR_UXN` (execution at EL0 taken away, which nothing does from a kernel mapping) on
     //   every leaf (`pmap_kernel_nonglobal`, before the boot CPU's switch, which refuses a
     //   leaf with the contiguous hint, the one case where nG may not change on a live entry;
-    //   an application processor finds it set on the kernel's tables, and the Limine tables
+    //   an application processor finds it set on the kernel's tables, and the tables
     //   it parked on are dropped from its TLB by its own `tlbi vmalle1` before any EL0 entry)
     //   changing only how their TLB entries are tagged, the
     //   `tlbi vmalle1is` dropping the global entries cached before it. So the return address, the
@@ -1700,8 +1699,8 @@ impl PmapBackend for Backend {
 
         let kslot = vp_idx(0, VM_MIN_KERNEL_ADDRESS);
         // The direct map's level-0 slots (the boot loader's tables below them, see the
-        // deviations): never executable, at EL1 or EL0, whatever its leaves say (Limine's
-        // were never checked; locore0.S's blocks are ATTR_XN already). Nothing executes from
+        // deviations): never executable, at EL1 or EL0, whatever its leaves say (a loader's
+        // are never checked; locore0.S's blocks are ATTR_XN already). Nothing executes from
         // the direct map: the image and kernel_map are slot 511's, the switch's identity page
         // is the lower half's.
         let (first, last) = (

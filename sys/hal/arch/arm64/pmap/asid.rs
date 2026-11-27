@@ -56,8 +56,9 @@
 //! ## Redesign
 //! - LZ caps the ASIDs at 256 (`PMAP_NASID`, an 8-word bitmap): the C's probe of
 //!   `ID_AA64MMFR0_EL1` for 16 bits is done here ([`probe`]), with the 2,048-word bitmap of
-//!   the C, and it also reads `TCR_EL1.AS`, since under Limine the boot loader's `TCR_EL1` is
-//!   the kernel's ([`AsidWidth`] says which way it went).
+//!   the C, and it also reads `TCR_EL1.AS`, since a boot loader's `TCR_EL1` is
+//!   not the kernel's to assume (efiboot's path sets it, as the C's `locore.S` does;
+//!   [`AsidWidth`] says which way it went).
 //! - `pmap_asid[]` lives inside `pmap_asid_mtx` (`Mutexed<AsidMap>`), so the bitmap cannot be
 //!   touched without the lock; `PMAP_ASID_GEN` stays an atomic beside it.
 //! - `arc4random()` comes through the `Random` bridge (`sys/dev/rnd.rs`, N7); before it is

@@ -45,8 +45,8 @@
 //! names the core. On the boot CPU [`set_current`] writes it (`initarm`'s first statement);
 //! on a secondary CPU the entry code writes it before the CPU runs any code that reaches
 //! `hal::cpu` (`bsd`'s `locore.S` `cpu_hatch_secondary` with the `cpu_info` that
-//! `cpu_start_secondary` passed, `cpu.rs`'s `cpu_hatch_entry` likewise under Limine, right
-//! after it switched to the kernel's tables, where that `cpu_info` is mapped). Every
+//! `cpu_start_secondary` passed, right after `cpu_hatch_entry` switched to the kernel's
+//! tables, where that `cpu_info` is mapped). Every
 //! `cpu_info` is a `static` (`cpu_info_primary`) or a leaked allocation (`cpu_info_alloc`):
 //! it lives for ever. That is the boot contract this module's read rests on, as the bridges'
 //! registration is (`sys/hal/bridges.rs`); before [`set_current`] ran on the boot CPU the
