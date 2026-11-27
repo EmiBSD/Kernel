@@ -725,12 +725,30 @@ pub(crate) const BOOT_PROMPT: &str = "boot> ";
 /// What a boot without `--boot-flags` types at [`BOOT_PROMPT`].
 pub(crate) const BOOT_LINE: &str = "boot\n";
 
-/// The options of `smoke`, `smoke2` and `qemu` that are only an efiboot boot's, and the
-/// Limine ones an efiboot boot refuses (no command line, no modules).
-const EFIBOOT_ONLY: &[&str] = &["--boot-flags", "--boot-on", "--selftest", "--owners"];
-const EFIBOOT_ONLY_SWITCHES: &[&str] = &["--boot-manual", "--expect-root"];
-const LIMINE_ONLY: &[&str] = &["--cmdline", "--init", "--ramdisk"];
-const LIMINE_ONLY_SWITCHES: &[&str] = &["--expect-ramdisk"];
+/// The options of `smoke`, `smoke2` and `qemu` retired with Limine's image builder (the
+/// removal of Limine, 2026-11-26): boot(8) passes no command line and loads no modules.
+/// amd64's recipes still name them; `smoke` and `smoke2` skip an amd64 boot before reading
+/// its options (decision 44), and N10's first step converts that text.
+const RETIRED: &[&str] = &["--cmdline", "--init", "--ramdisk"];
+const RETIRED_SWITCHES: &[&str] = &["--expect-ramdisk"];
+
+/// The refusal of [`RETIRED`] and [`RETIRED_SWITCHES`] in `args`, if any is there.
+fn retired_options(args: &[&str]) -> Option<String> {
+    let named: Vec<&str> = RETIRED
+        .iter()
+        .filter(|o| optional_flag(args, o).is_some())
+        .chain(RETIRED_SWITCHES.iter().filter(|o| args.contains(o)))
+        .copied()
+        .collect();
+    (!named.is_empty()).then(|| {
+        format!(
+            "{}: retired with Limine (2026-11-26); boot(8) passes only its flags \
+             (--boot-flags), init is /sbin/init on the root (--root init), the root is the \
+             image's partition a (--expect-root); N10's first step converts amd64's recipes",
+            named.join(", ")
+        )
+    })
+}
 
 /// How a boot goes through efiboot: `--image tree|init` (a [`Shared`] image) or `--kernel K
 /// --root ...` (a per-run image, [`image`], in the run directory).
@@ -782,43 +800,17 @@ fn boot_medium(args: &[&str]) -> Result<boot::BootMedium> {
     }
 }
 
-/// The efiboot boot `args` ask for (`--image` or `--root`), or `None` for a Limine boot or
-/// an existing image; with `--root` the per-run image is made here, at the run directory's
-/// `emibsd-<arch>.img`, once every other option has been checked. Sets the boot medium
-/// (`--boot-on nvme`) and `snapshot=on` for the VMs this run starts.
-pub(crate) fn boot_args(root: &Path, arch: Arch, args: &[&str]) -> Result<Option<EfiBoot>> {
+/// The efiboot boot `args` ask for: `--image tree|init` or `--kernel K --root ...`, every
+/// boot's since the removal of Limine (2026-11-26); with `--root` the per-run image is made
+/// here, at the run directory's `emibsd-<arch>.img`, once every other option has been
+/// checked. Sets the boot medium (`--boot-on nvme`) and `snapshot=on` for the VMs this run
+/// starts.
+pub(crate) fn boot_args(root: &Path, arch: Arch, args: &[&str]) -> Result<EfiBoot> {
+    if let Some(refusal) = retired_options(args) {
+        return Err(refusal.into());
+    }
     let shared = optional_flag(args, "--image");
     let root_spec = optional_flag(args, "--root");
-    if shared.is_none() && root_spec.is_none() {
-        let stray: Vec<&str> = EFIBOOT_ONLY
-            .iter()
-            .filter(|o| optional_flag(args, o).is_some())
-            .chain(EFIBOOT_ONLY_SWITCHES.iter().filter(|o| args.contains(o)))
-            .copied()
-            .collect();
-        if !stray.is_empty() {
-            return Err(format!(
-                "{}: an efiboot boot's, with --image tree|init or --kernel K --root ...",
-                stray.join(", ")
-            )
-            .into());
-        }
-        return Ok(None);
-    }
-    let limine: Vec<&str> = LIMINE_ONLY
-        .iter()
-        .filter(|o| optional_flag(args, o).is_some())
-        .chain(LIMINE_ONLY_SWITCHES.iter().filter(|o| args.contains(o)))
-        .copied()
-        .collect();
-    if !limine.is_empty() {
-        return Err(format!(
-            "{}: a Limine boot's; boot(8) passes only its flags (--boot-flags), init is \
-             /sbin/init on the root, the root is the image's partition a",
-            limine.join(", ")
-        )
-        .into());
-    }
     if arch != Arch::Arm64 {
         return Err("an efiboot boot is arm64's until N10's first step enables amd64's".into());
     }
@@ -866,18 +858,24 @@ pub(crate) fn boot_args(root: &Path, arch: Arch, args: &[&str]) -> Result<Option
             image(root, &spec, &out)?;
             (out, spec.duid)
         }
-        // Returned above.
-        (None, None) => return Ok(None),
+        (None, None) => {
+            return Err(format!(
+                "a boot is an efiboot image's: --image tree|init (`just efiboot-images-{}`) \
+                 or --kernel K --root bare|init|tree (Limine's image went on 2026-11-26)",
+                arch.name()
+            )
+            .into());
+        }
     };
     boot::set_boot_medium(medium);
     boot::set_boot_snapshot(true);
-    Ok(Some(EfiBoot {
+    Ok(EfiBoot {
         image: image_path,
         boot_line,
         expect_root: args
             .contains(&"--expect-root")
             .then(|| format!("({}.a) swap on", duid_hex(duid))),
-    }))
+    })
 }
 
 /// Types the boot line once at each `boot> ` that appears on a serial transcript (the
@@ -1028,20 +1026,42 @@ mod tests {
     }
 
     #[test]
-    fn boot_args_keep_efiboot_and_limine_options_apart() {
+    fn boot_args_want_an_efiboot_image() {
         let r = Path::new("/nonexistent-root");
         let a = Arch::Arm64;
         let err = |args: &[&str]| boot_args(r, a, args).unwrap_err().to_string();
-        assert_eq!(boot_args(r, a, &["--arch", "arm64"]).unwrap(), None);
-        assert_eq!(
-            boot_args(r, a, &["--kernel", "k", "--cmdline", "-s"]).unwrap(),
-            None
-        );
-        assert!(err(&["--boot-flags", "-s"]).contains("--boot-flags"));
-        assert!(err(&["--expect-root"]).contains("--expect-root"));
-        assert!(err(&["--image", "tree", "--cmdline", "-s"]).contains("--cmdline"));
+        // No image named: every boot is an efiboot image's since the removal of Limine.
+        assert!(err(&["--arch", "arm64"]).contains("--image tree|init"));
+        assert!(err(&["--kernel", "k"]).contains("--root bare|init|tree"));
+        assert!(err(&["--boot-flags", "-s"]).contains("--image tree|init"));
+        assert!(err(&["--expect-root"]).contains("--image tree|init"));
+        // The options retired with Limine, alone or beside an efiboot boot's, are refused
+        // first, naming each of them and N10's first step.
+        for args in [
+            &["--kernel", "k", "--cmdline", "-s"][..],
+            &["--image", "tree", "--cmdline", "-s"],
+            &[
+                "--root",
+                "tree",
+                "--kernel",
+                "k",
+                "--cmdline",
+                "selftest=clock",
+            ],
+        ] {
+            let e = err(args);
+            assert!(e.contains("--cmdline: retired with Limine"), "{e}");
+            assert!(e.contains("N10's first step"), "{e}");
+        }
         assert!(err(&["--image", "tree", "--expect-ramdisk"]).contains("--expect-ramdisk"));
         assert!(err(&["--root", "tree", "--init", "none"]).contains("--init"));
+        assert!(err(&["--kernel", "k", "--ramdisk", "none"]).contains("--ramdisk"));
+        assert!(
+            err(&["--init", "i", "--ramdisk", "r", "--expect-ramdisk"])
+                .contains("--init, --ramdisk, --expect-ramdisk: retired")
+        );
+        // amd64 is refused too (`smoke` and `smoke2` skip it before they get here).
+        assert!(boot_args(r, Arch::Amd64, &["--kernel", "k", "--ramdisk", "none"]).is_err());
         assert!(err(&["--image", "tree", "--root", "tree"]).contains("one or the other"));
         assert!(err(&["--image", "tree", "--kernel", "k"]).contains("--kernel"));
         assert!(err(&["--image", "bare"]).contains("shared images"));

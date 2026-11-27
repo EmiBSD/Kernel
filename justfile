@@ -60,12 +60,15 @@ xtask := if env("EMIBSD_XTASK", "") == "" { "cargo xtask" } else { quote(env("EM
 both_archs_a := if has_amd64 == "true" { if has_arm64 == "true" { " -a " } else { "" } } else { "" }
 
 # What a recipe needs before it boots, checked only for the architectures `archs` names
-# (decision 44): a recipe that boots both tests `{{ramdisks}}` (with both enabled, exactly
-# the `-f .../amd64/ramdisk.ffs -a -f .../arm64/ramdisk.ffs` of before), and an amd64-only
+# (decision 44): a recipe that boots both tests `{{ramdisks}}`, and an amd64-only
 # precondition or file-making step carries `{{no_amd64}}`; the amd64 boots themselves skip in
 # xtask (`boot::skip_disabled`), which prints the `SKIPPED` line `smoke-all` counts. So a tree
 # whose userland has no amd64 build (a fresh worktree) runs the arm64 half of every smoke.
-ramdisks := (if has_amd64 == "true" { "-f target/userland/amd64/ramdisk.ffs" } else { "" }) + both_archs_a + (if has_arm64 == "true" { "-f target/userland/arm64/ramdisk.ffs" } else { "" })
+# amd64's half is its Limine ramdisk until N10's first step converts its recipes; arm64's,
+# since the removal of Limine (2026-11-26), is what its efiboot images are made from: `just
+# userland`'s makefs and staged root (`efiboot-images-arm64` checks the same), not the
+# ramdisk image no arm64 boot loads.
+ramdisks := (if has_amd64 == "true" { "-f target/userland/amd64/ramdisk.ffs" } else { "" }) + both_archs_a + (if has_arm64 == "true" { "-x target/userland/arm64/host/bin/makefs -a -f target/userland/arm64/ramdisk-root/etc/fstab" } else { "" })
 
 # Every smoke and smoke2 run fails if a VM prints this (kern_clockintr's check under feature
 # `qemu`: an uptime reading behind the previous one).
@@ -121,8 +124,8 @@ build-amd64 features="":
 build-arm64 features="":
     cargo build -p bsd --target {{arm64}} {{features}}
 
-# The freestanding init(8) stand-in (init/), a static user ELF the image carries as a Limine
-# module (M6).
+# The freestanding init(8) stand-in (init/), a static user ELF (M6): `/sbin/init` on the
+# efiboot images of `--root init` (`emibsd-init.img`, efiboot.rs).
 build-init-amd64:
     {{ if has_amd64 == "true" { "" } else { "echo 'build-init-amd64: amd64 SKIPPED (decision 44)' # " } }}cargo build -p init --target {{amd64}}
 
@@ -149,12 +152,6 @@ efiboot-arm64:
 
 # --- boot images and QEMU ---------------------------------------------------
 
-image-amd64: (build-amd64 "--features qemu") build-init-amd64
-    {{xtask}} image --arch amd64 --kernel target/{{amd64}}/debug/bsd
-
-image-arm64: (build-arm64 "--features qemu") build-init-arm64
-    {{xtask}} image --arch arm64 --kernel target/{{arm64}}/debug/bsd
-
 # The removal of Limine (2026-11-26): the two efiboot images every converted recipe boots
 # (cargo xtask efiboot-image, tools/xtask/src/efiboot.rs): target/efiboot/arm64/emibsd-tree.img,
 # the staged tree of `just userland` as the root on partition `a` (fstab root by the label's
@@ -169,8 +166,10 @@ efiboot-images-arm64: (build-arm64 "--features qemu") build-init-arm64 efiboot-a
     {{xtask}} efiboot-image --arch arm64 --kernel target/{{arm64}}/debug/bsd --root tree --shared
     {{xtask}} efiboot-image --arch arm64 --kernel target/{{arm64}}/debug/bsd --root init --shared
 
-run-amd64: image-amd64
-    {{xtask}} qemu --arch amd64
+# amd64 has no boot image until N10's first step (decision 44): Limine's, which this recipe
+# booted, went on 2026-11-26, and amd64's efiboot images come with that step.
+run-amd64:
+    @echo "run-amd64: no amd64 boot image until N10's first step (Limine's went on 2026-11-26)" >&2; exit 1
 
 # OpenBSD's makefs for the host, which `just userland` builds and every efiboot image needs:
 # listed first among a recipe's dependencies, so the recipe stops before any build without it.
@@ -1627,8 +1626,8 @@ smoke-nvme: (build-amd64 "--features qemu") build-init-amd64 (build-arm64 "--fea
 ahci_duid := "41484349524f4f54"
 
 smoke-ahci: (build-amd64 "--features qemu") build-init-amd64 (build-arm64 "--features qemu") build-init-arm64 efiboot-images-arm64
-    @test {{ramdisks}} || \
-        { echo "smoke-ahci: no ramdisk image; run just userland first"; exit 1; }
+    @test {{ramdisks}}{{ if has_arm64 == "true" { " -a -f target/userland/arm64/ramdisk.ffs" } else { "" } }} || \
+        { echo "smoke-ahci: no userland (ramdisk.ffs, which nvme-root copies onto the AHCI disk, or the staged root and makefs); run just userland first"; exit 1; }
     {{no_amd64}}{{xtask}} nvme-root --arch amd64 --duid {{ahci_duid}} --out ahci-amd64.img --root-dev sd2a
     {{xtask}} smoke {{reject}} {{smp}} --arch amd64 --kernel target/{{amd64}}/debug/bsd --ramdisk none --expect-ramdisk \
         --ahci ahci-amd64.img --cmdline "bootduid={{ahci_duid}}" --until-seen \
@@ -1687,8 +1686,8 @@ smoke-ahci: (build-amd64 "--features qemu") build-init-amd64 (build-arm64 "--fea
 smmu_duid := "534d4d55524f4f54"
 
 smoke-smmu: (build-arm64 "--features qemu") build-init-arm64 efiboot-arm64 efiboot-images-arm64
-    @test -f target/userland/arm64/ramdisk.ffs -a -x target/userland/arm64/host/bin/makefs || \
-        { echo "smoke-smmu: no ramdisk image or makefs; run just userland first"; exit 1; }
+    @test -x target/userland/arm64/host/bin/makefs -a -f target/userland/arm64/ramdisk-root/etc/fstab || \
+        { echo "smoke-smmu: no staged root or makefs; run just userland first"; exit 1; }
     {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --root tree --duid {{smmu_duid}} --expect-root \
         --iommu smmuv3 --boot-on nvme --until-seen \
         {{disk_login}} \
@@ -2261,7 +2260,7 @@ smoke-acpi: (build-arm64 "--features qemu") efiboot-arm64 efiboot-images-arm64
 # vector per queue through the ITS (the IORT names it by its `openbsd,gic-its-id`), the
 # root on the PCI disk logs in and pings the host. Part of `smoke`.
 smoke-gicv3: (build-arm64 "--features qemu") build-init-arm64 efiboot-arm64 efiboot-images-arm64
-    @test -x target/userland/arm64/host/bin/makefs -a -f target/userland/arm64/ramdisk.ffs || \
+    @test -x target/userland/arm64/host/bin/makefs -a -f target/userland/arm64/ramdisk-root/etc/fstab || \
         { echo "smoke-gicv3: no arm64 userland; run just userland first"; exit 1; }
     {{xtask}} smoke {{reject}} {{smp}} --gic 3 --arch arm64 --image init \
         --expect "bsd: {{ncpu}} processors" \
@@ -2353,8 +2352,8 @@ smoke-power: (build-amd64 "--features qemu") (build-arm64 "--features qemu") bui
 # and the VM still runs a minute later), so the port keeps it (the user's option A of
 # 2026-10-08). arm64 only (amd64's power button is ACPI's). Part of `smoke`.
 smoke-powerbtn: (build-arm64 "--features qemu") build-init-arm64 efiboot-images-arm64
-    @test -f target/userland/arm64/ramdisk.ffs || \
-        { echo "smoke-powerbtn: no ramdisk image; run just userland first"; exit 1; }
+    @test -x target/userland/arm64/host/bin/makefs -a -f target/userland/arm64/ramdisk-root/etc/fstab || \
+        { echo "smoke-powerbtn: no staged root; run just userland first"; exit 1; }
     {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --image tree --expect-root --until-seen \
         {{disk_login}} --send-after '# ' --send 'echo m16f-armed-$((40+1))\n' \
         --monitor-after 'm16f-armed-41' --monitor 'system_powerdown' \
@@ -2917,9 +2916,9 @@ smoke-puc: (build-amd64 "--features qemu")
         --expect 'com4 at puc0 port 0 apic 0 int 20: ns16550a, 16 byte fifo' --expect 'puc-sent-42'
 
 # M13: the frame buffer, both archs. The firmware's GOP (amd64: q35's standard VGA; arm64:
-# `-device ramfb`, `--fb`, hwopts.rs) reaches the kernel through Limine's framebuffer
-# request: efifb0 attaches at mainbus0 on amd64, simplefb0 on arm64 (at the
-# `/chosen/framebuffer` node the boot glue adds, as efiboot does, sys/bsd/stand/fdtfb.rs), each
+# `-device ramfb`, `--fb`, hwopts.rs) reaches the kernel through the boot loader: efifb0
+# attaches at mainbus0 on amd64 (Limine's framebuffer request, until N10's first step),
+# simplefb0 on arm64 (at the `/chosen/framebuffer` node efiboot's efi_framebuffer writes), each
 # with rasops on top and wsdisplay0 on it (a plain display: the serial line stays the
 # console, as in OpenBSD with a serial console). `selftest=fb` draws "EmiBSD M13" through a
 # screen's emulops, as wsdisplay does, and prints the text's box; `--screenshot-after` takes a
@@ -3401,8 +3400,8 @@ smoke-virtio: (build-amd64 "--features qemu") (build-arm64 "--features qemu") ef
 # line drawn up to its tenth cell). Part of `smoke`.
 viogpu_line := 'dmesg | grep -e viogpu -e wsdisplay0 -e selftest..wscons; x=wrote; print "\033[2J\033[HVIOGPU-TEXT-42" > /dev/ttyC0 && sleep 1 && echo viogpu-$x\n'
 smoke-viogpu: (build-arm64 "--features qemu") efiboot-images-arm64
-    @test -f target/userland/arm64/ramdisk.ffs || \
-        { echo "smoke-viogpu: no ramdisk image; run just userland first"; exit 1; }
+    @test -x target/userland/arm64/host/bin/makefs -a -f target/userland/arm64/ramdisk-root/etc/fstab || \
+        { echo "smoke-viogpu: no staged root; run just userland first"; exit 1; }
     {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --root tree --selftest wscons --virtio-gpu \
         --screenshot-after 'viogpu-wrote' --screen-text '0:0:VIOGPU-TEXT-42' --until-seen --expect 'rc: multi-user' \
         {{disk_login}} --send-after "# " --send '{{viogpu_line}}' \

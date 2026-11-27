@@ -72,8 +72,10 @@
 //!   keeps the script's path, which nothing reads after the lookup.
 //! - The fake argument list is `ep_fa`, a `Vec` of byte strings without their NULs; it is
 //!   freed by being dropped, where the C frees each string and the array.
-//! - A memory image (`ep_image`, the `init` boot module) has neither vnode nor nameidata: a
-//!   `#!` header there is `ENOEXEC`, without destroying anything.
+//! - A memory image (`ep_image`; the `init` boot module until the removal of Limine,
+//!   2026-11-26, now only the ELF loader's host tests) has neither vnode nor nameidata: a
+//!   `#!` header there is `ENOEXEC`, without destroying anything. No exec of the kernel
+//!   hands one in: `check_exec` always has its nameidata (`kern_exec.rs`).
 //! - The 4-clause licence (advertising clause) is kept whole; the user accepted every
 //!   licence of the pinned tree (2026-10-04).
 
@@ -236,7 +238,7 @@ pub fn exec_script_makecmds(
     shnd.ni_cnd.cn_rpbuf = ndp.ni_cnd.cn_rpbuf.take();
     epp.ep_flags |= EXEC_INDIR;
 
-    let error = match check_exec(p, epp, Some(&mut shnd)) {
+    let error = match check_exec(p, epp, &mut shnd) {
         Ok(()) => {
             // note that we've clobbered the header
             epp.ep_flags |= EXEC_DESTR;

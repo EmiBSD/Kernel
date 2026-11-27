@@ -56,17 +56,17 @@
 //!   call `blink_led_timeout` when it turns on: with no `blink_led` registered (the LED
 //!   drivers and `blink_led_register` are not ported) the C returns from it at once.
 //!   `lid_action` is a static here that nothing reads until `aplsmc` is ported.
-//! - Limine has set up EL1, the MMU and the direct map before `initarm` runs, so the C's
-//!   page-table and memory-map work is replaced by the boot protocol (`docs/ARCHITECTURE.md`).
-//!   What Limine does not map is device memory: `initarm` installs one 1 GiB identity block of
-//!   Device-nGnRnE memory in `TTBR0_EL1` (the lower half, which the protocol leaves to the
-//!   kernel), through `MAIR_EL1` attribute 2, so `bus_space` can reach the PL011. `pmap` (M3)
-//!   replaces it.
-//! - The physical memory handed to `uvm` is the boot protocol's usable regions, which already
-//!   exclude the kernel, the device tree, the initrd and the bootloader's own data: the
-//!   `memreg_add`/`memreg_remove` bookkeeping, the EFI memory map walk, `pmap_avail_fixup`
-//!   and `pmap_physload_avail` have nothing left to do, and the direct map `pmap` uses is the
-//!   bootloader's (`hal::vm::pmap`'s arm64 backend, deviations). The memory is loaded before
+//! - `locore0.S` (boot(8)'s entry; Limine did it until its removal, 2026-11-26) has set up
+//!   EL1, the MMU and the direct map before `initarm` runs, so the C's page-table work is done
+//!   there (`docs/ARCHITECTURE.md`). What it does not map is device memory: `initarm`
+//!   installs one 1 GiB identity block of Device-nGnRnE memory in `TTBR0_EL1` (the lower
+//!   half, left to the kernel), through `MAIR_EL1` attribute 2, so `bus_space` can reach the
+//!   PL011. `pmap` (M3) replaces it.
+//! - The physical memory handed to `uvm` is `BootInfo`'s usable regions (`getbootinfo`,
+//!   below), which already exclude the kernel, the device tree and the boot loader's own
+//!   data: `initarm`'s `pmap_avail_fixup` and `pmap_physload_avail` have nothing left to do,
+//!   and the direct map `pmap` uses is `locore0.S`'s (`hal::vm::pmap`'s arm64 backend,
+//!   deviations). The memory is loaded before
 //!   `pmap_bootstrap` (after it in the C) because `pmap_bootstrap` steals its tables from
 //!   `vm_physmem[]`.
 //! - The message buffer is a static area (`kern/subr_log.rs`, `init_static_msgbuf`) instead of
@@ -85,12 +85,13 @@
 //!   `resettodr`, `if_downall`, `uvm_shutdown`, `dumpsys` and `config_suspend_all` are
 //!   reported as unported when reached (`vfs_shutdown` is real since M14; with no thread on
 //!   the CPU, which the C cannot have there, it is skipped).
-//! - The UEFI system table and memory map come from the boot protocol (`BootInfo`) instead
-//!   of efiboot's `openbsd,uefi-*` properties in `/chosen`; the system table's address is
+//! - The UEFI system table and memory map reach `initarm` through `BootInfo` (`getbootinfo`
+//!   reads efiboot's `openbsd,uefi-*` properties in `/chosen`); the system table's address is
 //!   kept in `SYSTEM_TABLE` (a local in C) for `mainbus` and `efi_attach`, and the memory
 //!   map is relocated into a static buffer (`MMAP`) instead of stolen pages.
 //! - The bootargs parsing (`-a -c -d -s`) is `BootInfo::boothowto` in `sys/machine/bootinfo.rs`,
-//!   because the Limine command line serves both architectures.
+//!   shared with amd64 (Limine's command line served both architectures; arm64's is
+//!   `/chosen`'s `bootargs` since its removal).
 //! - boot(8)'s entry (M14, `locore0.rs`): `getbootinfo` is the half of `initarm` that reads
 //!   efiboot's `/chosen` and the memory (`collect_kernel_args`, `process_kernel_args`,
 //!   `memreg_add`, `memreg_remove`, the EFI memory map walk, `/reserved-memory`, the 64 MB
@@ -190,7 +191,7 @@ use crate::kern::vm_bsd::uvm_page_physload;
 use crate::kprintf;
 use crate::machine::bootinfo::BootCpu;
 use crate::machine::bootinfo::BootMp;
-use crate::machine::bootinfo::{BootInfo, EfiMemmap, MAX_MODULES, MemKind, MemMap, MemRegion};
+use crate::machine::bootinfo::{BootInfo, EfiMemmap, MemKind, MemMap, MemRegion};
 use crate::machine::db_machdep::{db_enter, db_machine_init};
 use crate::machine::{Cpu, Machine};
 use crate::netinet::if_ether::ETHER_ADDR_LEN;
@@ -346,9 +347,9 @@ static TABLES: BootstrapTables =
 ///
 /// # Safety
 ///
-/// Call once, on the boot CPU, in the state the Limine protocol specifies at entry (MMU on,
-/// `TTBR0_EL1` unused, `TCR_EL1` as guaranteed for base revision 6), with `boot` describing the
-/// loaded image, so the tables' physical addresses can be computed.
+/// Call once, on the boot CPU, in the state `locore0.S` leaves at `bootarg_main` (MMU on,
+/// `TTBR0_EL1` free for the kernel, `TCR_EL1`'s lower half checked below), with `boot`
+/// describing the loaded image, so the tables' physical addresses can be computed.
 unsafe fn bootstrap_device_map(boot: &BootInfo) -> Result<(), &'static str> {
     let tcr: u64;
     // SAFETY: reading a system register has no side effects.
@@ -457,7 +458,7 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
     // SAFETY: forwarded from the caller.
     unsafe { bootstrap_device_map(boot)? };
 
-    // The device tree Limine hands over (the C's `config` from the bootloader).
+    // The device tree efiboot hands over through `locore0.S` (the C's `config`).
     if fdt_init(boot.dtb.map_or(ptr::null(), |p| p.as_ptr())) == 0 {
         return Err("fdt_init: no device tree");
     }
@@ -467,8 +468,8 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
 
     // `openbsd,sr-bootuuid` and `openbsd,sr-bootkey` (efiboot's softraid boot volume and
     // key, copied into `sr_bootuuid`/`sr_bootkey` under NSOFTRAID): boot(8)'s entry copies
-    // them (`getbootinfo`); under Limine no loader sets them and `dev/softraid.rs`'s
-    // `SR_BOOTUUID`/`SR_BOOTKEY` stay zero.
+    // them (`getbootinfo`); without them `dev/softraid.rs`'s `SR_BOOTUUID`/`SR_BOOTKEY`
+    // stay zero.
     // `openbsd,dma-constraint`: `dma_constraint` is a constant here (every address, what
     // efiboot passes on QEMU); a narrower one is reported (see the module's deviations).
     // SAFETY: written by `getbootinfo` before `initarm`, on this CPU.
@@ -538,8 +539,8 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
 
     // The device tree is read in place for the kernel's whole run (`hal::mem::fdtblob`, where
     // the C copies it into stolen memory): none of its frames may be memory uvm is given.
-    // Limine's tree is in the direct map, or in the kernel image when `stand` rewrote it for
-    // the frame buffer; boot(8)'s is in the direct map.
+    // boot(8)'s tree is in the direct map; one in the kernel image (Limine's, which `stand`
+    // rewrote for the frame buffer until 2026-11-26) is still checked below.
     if let Some(dtb) = boot.dtb {
         let va = dtb.as_ptr() as usize;
         let len = fdt_get_size(dtb.as_ptr());
@@ -622,11 +623,10 @@ struct Memreg {
     n: usize,
 }
 
-/// `bootargs`: the kernel's copy of `/chosen`'s `bootargs` (boot(8)'s entry; Limine's
-/// command line is its own).
+/// `bootargs`: the kernel's copy of `/chosen`'s `bootargs` (boot(8)'s entry).
 static BOOTARGS: StaticCell<[u8; 256]> = StaticCell::new([0; 256]);
 /// boot(8)'s entry: the kernel image's physical minus virtual address (`kern_delta`), for
-/// the physical address of `cpu_hatch_secondary`; 0 under Limine.
+/// the physical address of `cpu_hatch_secondary`.
 pub static KERN_DELTA: AtomicU64 = AtomicU64::new(0);
 /// `openbsd,dma-constraint` as boot(8) passed it, `(low, high)`; `initarm` reports a
 /// narrower one (see the module's deviations).
@@ -977,14 +977,11 @@ pub unsafe fn getbootinfo(arg: usize) -> Result<BootInfo, &'static str> {
         // ported): nothing reads it from here.
         smbios: None,
         efi_memmap,
-        modules: [None; MAX_MODULES],
+        // efiboot's efi_framebuffer() puts the GOP frame buffer in the tree as
+        // /chosen/framebuffer, where simplefb finds it, as in C: `BootInfo` carries none.
         mp: bootarg_mp(),
         howto,
         duid,
-        // efiboot's efi_framebuffer() already put the GOP frame buffer in the tree as
-        // /chosen/framebuffer, where simplefb finds it, as in C; the Limine entry's copy of
-        // that node (stand/fdtfb.rs) is not needed here.
-        framebuffer: None,
     })
 }
 

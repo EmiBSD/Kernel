@@ -17,7 +17,7 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! The kernel image. The boot path lives in `stand/` (Limine protocol hand-off).
+//! The kernel image. The boot path lives in `stand/` (boot(8)'s `bootarg` hand-off).
 
 #![cfg_attr(target_os = "none", no_std)]
 #![cfg_attr(target_os = "none", no_main)]

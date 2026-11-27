@@ -282,9 +282,7 @@ use crate::kern::subr_xxx::chrtoblk;
 use crate::kern::vfs_bio::bufinit;
 use crate::kern::vm_bsd::uvm_page_physload;
 use crate::kprintf;
-use crate::machine::bootinfo::{
-    BootFramebuffer, BootInfo, EfiMemmap, MAX_MODULES, MemKind, MemMap, MemRegion,
-};
+use crate::machine::bootinfo::{BootInfo, EfiMemmap, MemKind, MemMap, MemRegion};
 use crate::machine::copy::{copyin, copyin_obj, copyout, copyout_obj};
 use crate::machine::cpu::curproc;
 use crate::machine::db_machdep::{db_enter, db_machine_init};
@@ -493,8 +491,8 @@ pub unsafe fn init_x86_64(boot: &BootInfo) -> Result<(), &'static str> {
     // SAFETY: the boot CPU, once, before anything reads curcpu().
     unsafe { cpu_init_msrs(ci) };
 
-    // bios_efiinfo->config_acpi: the RSDP Limine found, as a physical address (the protocol
-    // hands it over as an address in the higher-half direct map, or as a physical one).
+    // bios_efiinfo->config_acpi: the RSDP boot(8) hands over in BOOTARG_EFIINFO, as a
+    // physical address (`getbootinfo` passes it as its address in locore0's direct map).
     if let Some(rsdp) = boot.rsdp {
         let va = rsdp.as_usize();
         let pa = if va >= boot.hhdm_offset {
@@ -503,40 +501,6 @@ pub unsafe fn init_x86_64(boot: &BootInfo) -> Result<(), &'static str> {
             va
         };
         BIOS_EFIINFO_CONFIG_ACPI.store(pa as u64, Ordering::Relaxed);
-    }
-
-    // bios_efiinfo: the EFI tables and the GOP frame buffer, when the machine booted
-    // through UEFI; under Limine only, as getbootinfo already set it from boot(8)'s
-    // BOOTARG_EFIINFO.
-    let from_boot8 = bios_efiinfo().is_some();
-    if let Some(st) = boot.efi_system_table.filter(|_| !from_boot8) {
-        let mut ei = BiosEfiinfo {
-            config_acpi: BIOS_EFIINFO_CONFIG_ACPI.load(Ordering::Relaxed),
-            config_smbios: boot.smbios.map_or(0, |pa| pa.as_usize() as u64),
-            system_table: st.as_usize() as u64,
-            ..BiosEfiinfo::default()
-        };
-        if let Some(fb) = boot.framebuffer {
-            let red = BootFramebuffer::mask(fb.red_size, fb.red_shift);
-            let green = BootFramebuffer::mask(fb.green_size, fb.green_shift);
-            let blue = BootFramebuffer::mask(fb.blue_size, fb.blue_shift);
-            let all = if fb.bpp >= 32 {
-                u32::MAX
-            } else {
-                (1u32 << fb.bpp) - 1
-            };
-            ei.fb_addr = fb.paddr.as_usize() as u64;
-            ei.fb_size = fb.size() as u64;
-            ei.fb_height = fb.height;
-            ei.fb_width = fb.width;
-            ei.fb_pixpsl = fb.pitch / u32::from(fb.bpp / 8).max(1);
-            ei.fb_red_mask = red;
-            ei.fb_green_mask = green;
-            ei.fb_blue_mask = blue;
-            ei.fb_reserved_mask = all & !(red | green | blue);
-        }
-        // SAFETY: the boot CPU, once, before anything reads it.
-        unsafe { BIOS_EFIINFO.write(Some(ei)) };
     }
 
     // MULTIPROCESSOR: the processors the bootloader found, for mainbus_attach (the C's
@@ -1075,13 +1039,11 @@ pub unsafe fn getbootinfo(first_avail: usize) -> Result<BootInfo, &'static str> 
             .filter(|&pa| pa != 0)
             .map(Paddr::new),
         efi_memmap,
-        modules: [None; MAX_MODULES],
+        // No frame buffer: boot(8)'s reaches efifb(4) through bios_efiinfo, as in C.
         mp,
         howto: BOOTHOWTO.load(Ordering::Relaxed),
         duid,
         abi_module,
-        // boot(8)'s frame buffer reaches efifb(4) through bios_efiinfo, as in C.
-        framebuffer: None,
     })
 }
 
@@ -1281,10 +1243,6 @@ pub fn map_tramps() {
     use crate::machine::pmap::{pmap_kenter_pa, pmap_kernel, pmap_kremove};
     use crate::sys::mman::{PROT_READ, PROT_WRITE};
 
-    if AVAIL_START.load(Ordering::Relaxed) == 0 {
-        // Booted by Limine: its MP request starts the processors (BootMp::start).
-        return;
-    }
     let kmp = pmap_kernel();
 
     // The initial PML4 pointer must be below 4G, so if the current one isn't, use a

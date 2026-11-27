@@ -111,8 +111,9 @@ pub trait Cpu {
     ///
     /// # Safety
     ///
-    /// Call exactly once, on the boot CPU, with the machine in the state the Limine protocol
-    /// specifies at entry, and `boot` describing the image that was just loaded.
+    /// Call exactly once, on the boot CPU, with the machine in the state the machine's
+    /// boot(8) entry code (`locore0.S`) leaves at `bootarg_main`, and `boot` describing the
+    /// image that was just loaded.
     unsafe fn early_init(boot: &BootInfo) -> Result<(), &'static str>;
 
     /// `getbootinfo` (amd64's `machdep.c`): the boot facts from the machine's own boot

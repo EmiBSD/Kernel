@@ -67,11 +67,6 @@ SECTIONS
         *(.data .data.*)
         /* Not an orphan after `end`: locore0.S puts its tables right after the image. */
         *(.got .got.*)
-
-        /* Limine requests: kept even though nothing references them by symbol. */
-        KEEP(*(.requests_start_marker))
-        KEEP(*(.requests))
-        KEEP(*(.requests_end_marker))
     } :data
 
     . = ALIGN(0x1000);

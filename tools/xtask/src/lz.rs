@@ -2239,7 +2239,7 @@ mod tests {
             lz_home("sys/bsd/kern/kern_sched.rs"),
             "sys/kern/kern_sched.rs"
         );
-        assert_eq!(lz_home("sys/bsd/stand/limine.rs"), "sys/stand/limine.rs");
+        assert_eq!(lz_home("sys/bsd/stand/bootarg.rs"), "sys/stand/bootarg.rs");
         assert_eq!(lz_home("sys/boot/libsa/open.rs"), "sys/lib/libsa/open.rs");
         assert_eq!(
             lz_home("sys/boot/arm64/fdt.rs"),

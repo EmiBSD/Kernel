@@ -31,13 +31,9 @@
 //!                                          where an item's code is now, or came from (lz.rs)
 //! cargo xtask lz patch <commit>            an LZ commit's patch with its paths in this tree's
 //!                                          layout (sys/bsd/, sys/boot/), for `git am -3`
-//! cargo xtask image --arch A --kernel K [--cmdline C] [--init I] [--ramdisk R]
-//!                                          build target/emibsd-A.img (Limine + /bsd),
-//!                                          C as the kernel command line (boot(8) flags);
-//!                                          the init and ramdisk modules default to the
-//!                                          built ones (`none` leaves one out)
-//! cargo xtask qemu --arch A [--kernel K] [--disk-fresh] [--disks N]
-//!                                          boot the image, serial and monitor on stdio;
+//! cargo xtask qemu --arch A (--image tree|init | --kernel K --root ...) [--disk-fresh] [--disks N]
+//!                                          boot an efiboot image (below), serial and
+//!                                          monitor on stdio;
 //!                                          (also smoke and smoke2) the persistent disk
 //!                                          target/disk-A[-a|-b].img, 64 MiB, is kept
 //!                                          across boots unless --disk-fresh recreates it;
@@ -59,18 +55,16 @@
 //!                                          a tone (devices.rs); --usb-hc ehci|uhci|ohci (M16b) puts
 //!                                          the stick on a usb-ehci (alone) or a
 //!                                          piix3-usb-uhci instead
-//! cargo xtask smoke --arch A [--kernel K] [--cmdline C] [--status N] [--send-after L --send T]... [--until-seen]
-//!                   [--expect-ramdisk] [--timeout SECS] --expect L...
-//!                                          boot headless; pass if every L appears and QEMU
-//!                                          exits with status N (default: the kernel's success
-//!                                          status); with K the image is rebuilt first;
-//!                                          --expect-ramdisk adds rd(4)'s line for the
-//!                                          ramdisk on the image (or its absence)
+//! cargo xtask smoke --arch A (--image tree|init | --kernel K --root ...) [--status N]
+//!                   [--send-after L --send T]... [--until-seen] [--timeout SECS] --expect L...
+//!                                          boot an efiboot image headless; pass if every L
+//!                                          appears and QEMU exits with status N (default:
+//!                                          the kernel's success status)
 //!                   [--https-server DIR:PORT:trusted|untrusted|echo]...
 //!                                          (smoke and smoke2) TLS test servers on this
 //!                                          machine during the run, the guest's
 //!                                          emibsd-host:PORT (https.rs)
-//! cargo xtask smoke2 --arch A [--kernel K] [--cmdline C] [--timeout SECS] [--show-transcripts]
+//! cargo xtask smoke2 --arch A (--image tree|init | --kernel K --root ...) [--timeout SECS] [--show-transcripts]
 //!                   [--both-|--a-|--b-send-after L --send T]... [--both-|--a-|--b-expect L]...
 //!                                          boot TWO VMs of A at once, each with vio1 on a
 //!                                          private link, each running its own script; pass
@@ -88,9 +82,11 @@
 //!                                          expects `(<duid>.a) swap on`; --boot-on puts the
 //!                                          image on an NVMe namespace (EDK2 AArch64 boots
 //!                                          no AHCI disk); every per-run image's /bsd is
-//!                                          stripped of its debug sections; --cmdline,
-//!                                          --init, --ramdisk and --expect-ramdisk are
-//!                                          Limine's and refused with it; arm64 only
+//!                                          stripped of its debug sections; arm64 only;
+//!                                          image, --cmdline, --init, --ramdisk and
+//!                                          --expect-ramdisk went with Limine's image
+//!                                          builder (2026-11-26) and are refused, naming
+//!                                          N10's first step, which converts amd64's recipes
 //! cargo xtask smoke-all [-j N] [--just PATH] RECIPE...
 //!                                          run the justfile's smoke RECIPEs with
 //!                                          `just --no-deps`, N (default 4) at a time, each
@@ -251,10 +247,10 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 const REFERENCE_DIR: &str = "reference/openbsd-src";
 
 const USAGE: &str = "usage: cargo xtask <lz check | lz status [--write] | lz drift [--fetch] [--security] [--functions] [--strict] | \
-                     lz trace <lz path>:<item> | lz trace --rust <path>:<item> | lz trace --c <c path>:<item> | lz patch <commit> | image --arch A --kernel K [--cmdline C] [--init I] [--ramdisk R] | \
-                     qemu --arch A [--kernel K] [--init I] [--ramdisk R] [--disk-fresh] [--disks N] [--disk-set NAME] [--nvme FILE] [--ahci FILE] [--scsi-cd ISO] [--lsi FILE [--lsi-cd ISO]] [--pci-serial FILE] [--pci-bridges] [--machine pc] [--ide|--megasas|--megasas-gen2|--mptsas|--pvscsi|--am53c974|--dc390|--ufs|--sdhci|--floppy FILE]... [--ipmi] [--reboot] [--vio-mq] [--fb] | gen-syscalls [--check] | \
-                     smoke --arch A [--kernel K] [--cmdline C] [--init I] [--ramdisk R] [--expect-ramdisk] [--disk-fresh] [--disks N] [--disk-set NAME] [--nvme FILE] [--ahci FILE] [--scsi-cd ISO] [--lsi FILE [--lsi-cd ISO]] [--pci-serial FILE] [--pci-bridges] [--machine pc] [--ide|--megasas|--megasas-gen2|--mptsas|--pvscsi|--am53c974|--dc390|--ufs|--sdhci|--floppy FILE]... [--ipmi] [--reboot] [--vio-mq] [--expect-pci-serial T]... [--fb] [--screenshot-after L [--screen-text ROW:COL:TEXT]] [--sendkey-after L --sendkeys K] [--usb] [--usb-hc xhci|ehci|uhci|ohci] [--usb-mouse] [--usb-tablet] [--usb-wacom-tablet] [--usb-ccid] [--usb-net] [--usb-serial FILE [--usb-serial-send-after L --usb-serial-send T]... [--expect-usb-serial T]...] [--audio hda|ac97|usb] [--expect-tone] [--status N] [--send-after L --send T]... [--until-seen] [--timeout S] [--https-server DIR:PORT:MODE]... [--reject L]... --expect L... | \
-                     smoke2 --arch A [--kernel K] [--cmdline C] [--timeout S] [--show-transcripts] [--disk-fresh] [--disks N] [--both-|--a-|--b-send-after L --send T]... [--both-|--a-|--b-expect L]... [--reject L]... [--https-server DIR:PORT:MODE]... | \
+                     lz trace <lz path>:<item> | lz trace --rust <path>:<item> | lz trace --c <c path>:<item> | lz patch <commit> | \
+                     qemu --arch A (--image tree|init | --kernel K --root bare|init|tree) [--disk-fresh] [--disks N] [--disk-set NAME] [--nvme FILE] [--ahci FILE] [--scsi-cd ISO] [--lsi FILE [--lsi-cd ISO]] [--pci-serial FILE] [--pci-bridges] [--machine pc] [--ide|--megasas|--megasas-gen2|--mptsas|--pvscsi|--am53c974|--dc390|--ufs|--sdhci|--floppy FILE]... [--ipmi] [--reboot] [--vio-mq] [--fb] | gen-syscalls [--check] | \
+                     smoke --arch A (--image tree|init | --kernel K --root bare|init|tree) [--disk-fresh] [--disks N] [--disk-set NAME] [--nvme FILE] [--ahci FILE] [--scsi-cd ISO] [--lsi FILE [--lsi-cd ISO]] [--pci-serial FILE] [--pci-bridges] [--machine pc] [--ide|--megasas|--megasas-gen2|--mptsas|--pvscsi|--am53c974|--dc390|--ufs|--sdhci|--floppy FILE]... [--ipmi] [--reboot] [--vio-mq] [--expect-pci-serial T]... [--fb] [--screenshot-after L [--screen-text ROW:COL:TEXT]] [--sendkey-after L --sendkeys K] [--usb] [--usb-hc xhci|ehci|uhci|ohci] [--usb-mouse] [--usb-tablet] [--usb-wacom-tablet] [--usb-ccid] [--usb-net] [--usb-serial FILE [--usb-serial-send-after L --usb-serial-send T]... [--expect-usb-serial T]...] [--audio hda|ac97|usb] [--expect-tone] [--status N] [--send-after L --send T]... [--until-seen] [--timeout S] [--https-server DIR:PORT:MODE]... [--reject L]... --expect L... | \
+                     smoke2 --arch A (--image tree|init | --kernel K --root bare|init|tree) [--timeout S] [--show-transcripts] [--disk-fresh] [--disks N] [--both-|--a-|--b-send-after L --send T]... [--both-|--a-|--b-expect L]... [--reject L]... [--https-server DIR:PORT:MODE]... | \
                      smoke-all [-j N] [--just PATH] RECIPE... | \
                      unsafe-report [--write] [--check] [--shapes] | unsafe-report --json | \
                      diff-openbsd [--arch A]... [--smp N] [--kernel-dir D] [fetch | install | run | powerbtn] | \
@@ -299,39 +295,25 @@ fn run(args: &[String]) -> Result<()> {
         ),
         ["lz", "trace", rest @ ..] => lz::trace(&root, rest),
         ["lz", "patch", commit] => lz::patch(&root, commit),
-        ["image", rest @ ..] => {
-            let arch = boot::Arch::parse(flag(rest, "--arch")?)?;
-            let kernel = PathBuf::from(flag(rest, "--kernel")?);
-            let init = init_flag(&root, arch, rest);
-            let ramdisk = ramdisk_flag(&root, arch, rest);
-            boot::image(
-                &root,
-                arch,
-                &kernel,
-                optional_flag(rest, "--cmdline"),
-                init.as_deref(),
-                ramdisk.as_deref(),
-            )
-            .map(|_| ())
-        }
+        // Limine's image builder, retired with the removal of Limine (2026-11-26).
+        ["image", ..] => Err(
+            "image: retired with Limine (2026-11-26); `efiboot-image --root \
+             bare|init|tree (--shared | --out FILE)` makes the boot images, and N10's first \
+             step converts amd64's recipes to them"
+                .into(),
+        ),
         ["qemu", rest @ ..] => {
             let arch = boot::Arch::parse(flag(rest, "--arch")?)?;
-            let kernel = optional_flag(rest, "--kernel").map(PathBuf::from);
-            let init = init_flag(&root, arch, rest);
-            let ramdisk = ramdisk_flag(&root, arch, rest);
             let efiboot = efiboot::boot_args(&root, arch, rest)?;
             boot::qemu(
                 &root,
                 arch,
-                kernel.as_deref(),
-                init.as_deref(),
-                ramdisk.as_deref(),
                 &boot::Disks {
                     fresh: rest.contains(&"--disk-fresh"),
                     count: disks_flag(rest)?,
                     set: optional_flag(rest, "--disk-set"),
                 },
-                efiboot.as_ref(),
+                &efiboot,
             )
         }
         ["smoke", rest @ ..] => {
@@ -339,7 +321,6 @@ fn run(args: &[String]) -> Result<()> {
             if boot::skip_disabled("smoke", arch)? {
                 return Ok(());
             }
-            let kernel = optional_flag(rest, "--kernel").map(PathBuf::from);
             let expects = flags(rest, "--expect");
             if expects.is_empty() {
                 return Err(format!("missing `--expect <line>`\n{USAGE}").into());
@@ -360,8 +341,6 @@ fn run(args: &[String]) -> Result<()> {
                 .zip(&texts)
                 .map(|(a, t)| (*a, t.replace("\\n", "\n")))
                 .collect();
-            let init = init_flag(&root, arch, rest);
-            let ramdisk = ramdisk_flag(&root, arch, rest);
             // `--image` or `--kernel K --root ...`: an efiboot boot (efiboot.rs), whose
             // per-run image is made here, once, before any boot.
             let efiboot = efiboot::boot_args(&root, arch, rest)?;
@@ -371,8 +350,6 @@ fn run(args: &[String]) -> Result<()> {
                 &root,
                 arch,
                 &boot::SmokeOptions {
-                    kernel: kernel.as_deref(),
-                    cmdline: optional_flag(rest, "--cmdline"),
                     expects: &expects,
                     rejects: &flags(rest, "--reject"),
                     status,
@@ -381,9 +358,6 @@ fn run(args: &[String]) -> Result<()> {
                         .map(|(a, t)| (*a, t.as_str()))
                         .collect::<Vec<_>>(),
                     until_seen: rest.contains(&"--until-seen"),
-                    init: init.as_deref(),
-                    ramdisk: ramdisk.as_deref(),
-                    expect_ramdisk: rest.contains(&"--expect-ramdisk"),
                     disks: boot::Disks {
                         fresh: rest.contains(&"--disk-fresh"),
                         count: disks_flag(rest)?,
@@ -396,7 +370,7 @@ fn run(args: &[String]) -> Result<()> {
                         )),
                         None => None,
                     },
-                    efiboot: efiboot.as_ref(),
+                    efiboot: &efiboot,
                 },
             )
         }
@@ -405,9 +379,6 @@ fn run(args: &[String]) -> Result<()> {
             if boot::skip_disabled("smoke2", arch)? {
                 return Ok(());
             }
-            let kernel = optional_flag(rest, "--kernel").map(PathBuf::from);
-            let init = init_flag(&root, arch, rest);
-            let ramdisk = ramdisk_flag(&root, arch, rest);
             let plan = twovm::parse_plan(rest)?;
             let efiboot = efiboot::boot_args(&root, arch, rest)?;
             let _servers = https::start(&root, &flags(rest, "--https-server"))?;
@@ -415,11 +386,7 @@ fn run(args: &[String]) -> Result<()> {
                 &twovm::Boot {
                     root: &root,
                     arch,
-                    kernel: kernel.as_deref(),
-                    cmdline: optional_flag(rest, "--cmdline"),
-                    init: init.as_deref(),
-                    ramdisk: ramdisk.as_deref(),
-                    efiboot: efiboot.as_ref(),
+                    efiboot: &efiboot,
                 },
                 plan,
             )
@@ -551,26 +518,6 @@ fn run(args: &[String]) -> Result<()> {
             devices::fsck_msdos(&root, arch)
         }
         _ => Err(USAGE.into()),
-    }
-}
-
-/// `--init <path>`: the init module to put on the image; `--init none` leaves it out; absent,
-/// the one `just build-init-*` built, if any.
-fn init_flag(root: &Path, arch: boot::Arch, args: &[&str]) -> Option<PathBuf> {
-    match optional_flag(args, "--init") {
-        Some("none") => None,
-        Some(p) => Some(PathBuf::from(p)),
-        None => boot::default_init(root, arch),
-    }
-}
-
-/// `--ramdisk <path>`: the ramdisk module to put on the image; `--ramdisk none` leaves it
-/// out; absent, the one `just userland` built, if any.
-fn ramdisk_flag(root: &Path, arch: boot::Arch, args: &[&str]) -> Option<PathBuf> {
-    match optional_flag(args, "--ramdisk") {
-        Some("none") => None,
-        Some(p) => Some(PathBuf::from(p)),
-        None => boot::default_ramdisk(root, arch),
     }
 }
 
@@ -788,11 +735,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_limine_image_subcommand_is_refused() {
+        // Before any file is read: the arm names the replacement and N10's first step.
+        for args in [
+            &["image"][..],
+            &["image", "--arch", "amd64", "--kernel", "k"],
+        ] {
+            let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            let e = run(&args).unwrap_err().to_string();
+            assert!(e.starts_with("image: retired with Limine"), "{e}");
+            assert!(
+                e.contains("efiboot-image") && e.contains("N10's first step"),
+                "{e}"
+            );
+        }
+    }
+
+    #[test]
     fn lz_flat_reads_the_bsd_and_boot_directories_as_lz_lays_them_out() {
         for (native, lz) in [
             ("sys/bsd/kern/kern_exec.rs", "sys/kern/kern_exec.rs"),
             ("sys/bsd/lib.rs", "sys/lib.rs"),
-            ("sys/bsd/stand/limine.rs", "sys/stand/limine.rs"),
+            ("sys/bsd/stand/bootarg.rs", "sys/stand/bootarg.rs"),
             (
                 "sys/bsd/arch/arm64/arm64/machdep.rs",
                 "sys/arch/arm64/arm64/machdep.rs",
@@ -828,7 +792,7 @@ mod tests {
         for (lz, native) in [
             ("sys/kern/kern_exec.rs", "sys/bsd/kern/kern_exec.rs"),
             ("sys/Cargo.toml", "sys/bsd/Cargo.toml"),
-            ("sys/stand/limine.rs", "sys/bsd/stand/limine.rs"),
+            ("sys/stand/bootarg.rs", "sys/bsd/stand/bootarg.rs"),
             (
                 "sys/arch/arm64/arm64/machdep.rs",
                 "sys/bsd/arch/arm64/arm64/machdep.rs",
@@ -871,10 +835,11 @@ mod tests {
             "sys/bsd/machine/mod.rs",
             "sys/bsd/machine/cpu.rs",
             "sys/bsd/arch/host/alloc.rs",
-            "sys/bsd/stand/limine.rs",
+            "sys/bsd/stand/bootarg.rs",
             "sys/boot/loader/cmd.rs",
             "sys/boot/efi/include/efiapi.rs",
             "sys/machine/cpu.rs",
+            // LZ's own Limine entry, at the pin: no native module lists it (2026-11-26).
             "sys/stand/limine.rs",
         ] {
             assert!(is_structural(rel), "{rel}");

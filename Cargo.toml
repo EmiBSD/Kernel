@@ -25,8 +25,8 @@ sysdefs = { path = "sys/lib/sysdefs" }
 libsa = { path = "sys/boot/libsa" }
 efi = { path = "sys/boot/efi" }
 loader = { path = "sys/boot/loader" }
-# No `limine` crate: 0.6+ needs nightly (`ptr_metadata`), 0.5 is frozen at base revision 3.
-# The protocol structs live in sys/bsd/stand/limine.rs (docs/ARCHITECTURE.md, "Dependencies").
+# No `limine` crate: the kernel boots only through OpenBSD's efiboot since 2026-11-26
+# (docs/ARCHITECTURE.md, "Dependencies").
 bitflags = { version = "2", default-features = false }                  # typed flag sets for #define groups
 # No `intrusive-collections`: queue.h and tree.h are ported as our own intrusive structures
 # (sys/bsd/sys/queue.rs, sys/bsd/sys/tree.rs); see docs/ARCHITECTURE.md, "Dependencies".

@@ -70,7 +70,7 @@
 //!   `q35`, so piixpm(4) has hardware to attach to. The boot image is on an `ich9-ahci`
 //!   controller added after every other device ([`pc_boot_disk_args`]: q35 has one built in,
 //!   and the firmware reads `pc`'s PIIX3 IDE channel with programmed I/O, which is minutes for
-//!   the 170 MB Limine loads), so the kernel sees it as on q35 (`ahci0`, `sd1`); the PIIX3 IDE
+//!   the kernel and root a boot loader reads), so the kernel sees it as on q35 (`ahci0`, `sd1`); the PIIX3 IDE
 //!   controller is left free. The NICs, the NVMe controller and the virtio-blk disks are plain
 //!   PCI devices on the root bus, and `q35` stays the default. amd64 only (arm64 has only `virt`); `pc` has no
 //!   built-in AHCI controller and its PCI bus is not PCI Express, so `--ahci` and
@@ -88,7 +88,7 @@
 //!   `_MAX`, 0xca3, and every command fails (`smoke-ipmi`). ISA devices take no PCI slot, so
 //!   nothing on the bus moves.
 //! - `--reboot` (`qemu`, `smoke`, M13): QEMU runs without `-no-reboot`, so a guest reset
-//!   restarts the machine (EDK2, Limine and the kernel again; the EDK2 variable store is the
+//!   restarts the machine (EDK2, efiboot and the kernel again; the EDK2 variable store is the
 //!   run's copy) instead of ending QEMU with status 0. `smoke-power` boots, runs `reboot`
 //!   and expects a second boot's login. Without it, an ACPI power-off (`halt -p`, S5) and a
 //!   reset both end QEMU with status 0, so a smoke that checks a power-off passes
@@ -108,7 +108,9 @@
 //!   standard VGA (`-display none` only hides the window; OVMF's QemuVideoDxe drives it), so
 //!   nothing is added there; arm64's `virt` has no display, so `-device ramfb` is added
 //!   (ArmVirtQemu's QemuRamfbDxe gives a linear GOP frame buffer in guest RAM; a
-//!   `virtio-gpu` GOP is blit-only, which Limine cannot use). `ramfb` is not a PCI device,
+//!   `virtio-gpu` GOP is blit-only, which Limine, the boot loader until 2026-11-26, could not
+//!   use; efiboot hands the kernel ramfb's frame buffer through the device tree's
+//!   `simplefb` node). `ramfb` is not a PCI device,
 //!   so nothing on the buses moves.
 //! - `--screenshot-after LINE` (`smoke`, M13, implies `--fb` unless `--virtio-gpu` is given,
 //!   M16d: then the GPU is the display and the picture is its scanout): QEMU gets a human monitor on a
@@ -200,9 +202,11 @@
 //!   `--root-dev sdNa` names another unit, for a disk that is not the first: `smoke-ahci`'s
 //!   is `sd2a`, as diskmap(4) and DUIDs in fstab are not ported). The two lines have the
 //!   same length, so the file is rewritten in place in the copy. The
-//!   label's DUID is `--duid` (16 hexadecimal digits, [`NVME_ROOT_DUID`] by default): the
-//!   kernel's command line names it with `bootduid=` (boot(8)'s `BOOTARG_BOOTDUID`), and
-//!   `setroot` mounts the root from the disk whose label has it.
+//!   label's DUID is `--duid` (16 hexadecimal digits, [`NVME_ROOT_DUID`] by default). Since
+//!   the removal of Limine (2026-11-26) no arm64 boot takes its root from it: arm64's
+//!   `smoke-ahci` mounts it as a data disk (EDK2 AArch64 boots no AHCI disk, and `boot -a`'s
+//!   `root device:` prompt is LZ's gap), and amd64's `smoke-nvme` and `smoke-ahci`, which
+//!   named it with Limine's `bootduid=` word, are converted by N10's first step.
 
 use std::fs;
 use std::io::{Read, Write};
@@ -949,14 +953,17 @@ pub(crate) fn nvme_root(
     root_dev: Option<&str>,
 ) -> Result<()> {
     let duid = parse_duid(duid.unwrap_or(NVME_ROOT_DUID))?;
-    let Some(src) = boot::default_ramdisk(root, arch) else {
+    let src = root
+        .join("target/userland")
+        .join(arch.name())
+        .join("ramdisk.ffs");
+    if !src.is_file() {
         return Err(format!(
-            "no target/userland/{}/{}: run `just userland` first",
-            arch.name(),
-            boot::RAMDISK_MODULE
+            "no target/userland/{}/ramdisk.ffs: run `just userland` first",
+            arch.name()
         )
         .into());
-    };
+    }
     let mut fs = fs::read(&src).map_err(|e| format!("{}: {e}", src.display()))?;
     if !(fs.len() as u64).is_multiple_of(SECTOR) || fs.is_empty() {
         return Err(format!("{}: not a whole number of sectors", src.display()).into());
@@ -1150,7 +1157,7 @@ fn ipmi_args(sdr: &Path) -> Vec<String> {
 /// The QEMU arguments of `--machine pc`'s boot disk (the image the `-drive` with id `hd0`
 /// names): an `ich9-ahci` controller with it on port 0. `q35` has the AHCI controller built in
 /// (`ide.0`); `pc`'s PIIX3 IDE channel is read by the firmware with programmed I/O, which makes
-/// the boot of the 170 MB of kernel and ramdisk Limine loads from it take minutes. The
+/// the boot of the kernel and root a boot loader reads from it take minutes. The
 /// controller goes last, so no other PCI slot moves.
 fn pc_boot_disk_args() -> Vec<String> {
     vec![

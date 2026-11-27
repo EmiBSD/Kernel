@@ -56,8 +56,9 @@
 //! `exec_process_vmcmds`, the five vmcmds and `exec_setup_stack`.
 //!
 //! ## Deviations
-//! - A vmcmd's file is a vnode, as in C, or the `init` boot module's memory image
-//!   (`ExecFile::Image`, until a root file system exists). For a vnode `vmcmd_map_pagedvn`
+//! - A vmcmd's file is a vnode, as in C, or a memory image (`ExecFile::Image`: the `init`
+//!   boot module's until the removal of Limine, 2026-11-26; since, only the ELF loader's
+//!   host tests hand one in, as no exec of the kernel has one). For a vnode `vmcmd_map_pagedvn`
 //!   maps the file copy-on-write through `uvn_attach` and `vmcmd_map_readvn` reads it with
 //!   `vn_rdwr(UIO_USERSPACE)`, as the C does. For an image there is no object to map:
 //!   `pagedvn` maps anonymous memory, copies the bytes in with `copyout` (a segment that
