@@ -22,16 +22,16 @@
 //! M9b (WireGuard) and M9c (IPsec ESP) need a tunnel between two machines. Each VM keeps its
 //! `vio0` on QEMU's user-mode network and gets a second virtio-net NIC, `vio1`, on a link that
 //! only the two of them share (`boot::VmLink`: a pair of localhost UDP sockets, QEMU's `dgram`
-//! netdev). Every VM has its own Limine image and its own EDK2 variable store (`-a` / `-b`
-//! file suffixes), so the two QEMUs never write to the same file; an efiboot boot (`--image`
-//! or `--kernel K --root ...`, `efiboot.rs`) has both VMs attach one image with
-//! `snapshot=on`, which neither writes, and each types its boot line at its `boot> `.
+//! netdev). Both VMs boot one efiboot image (`--image` or `--kernel K --root ...`,
+//! `efiboot.rs`), which each attaches with `snapshot=on` and neither writes, and each has its
+//! own EDK2 variable store and persistent disks (`-a` / `-b` file suffixes), so the two QEMUs
+//! never write to the same file; each types its boot line at its `boot> `.
 //!
 //! Each VM runs its own script, the same `send-after`/`send`/`expect` machinery as `smoke
 //! --until-seen`:
 //!
 //! ```text
-//! cargo xtask smoke2 --arch A [--kernel K] [--cmdline C] [--timeout SECS] [--show-transcripts]
+//! cargo xtask smoke2 --arch A (--image tree|init | --kernel K --root ...) [--timeout SECS] [--show-transcripts]
 //!     [--both-send-after L --both-send T]... [--both-expect L]...
 //!     [--a-send-after L --a-send T]... [--a-expect L]...
 //!     [--b-send-after L --b-send T]... [--b-expect L]... [--reject L]...
@@ -247,11 +247,10 @@ impl Vm {
     }
 }
 
-/// Boots two VMs of `arch` from `kernel` (or the images already built when `None`) and
-/// runs `plan` on them.
+/// Boots two VMs of `arch` from `boot`'s efiboot image and runs `plan` on them.
 pub(crate) fn smoke2(boot: &Boot<'_>, mut plan: Plan) -> Result<()> {
     // `--expect-root`: both VMs find their root by the image's DUID.
-    if let Some(line) = boot.efiboot.and_then(|e| e.expect_root.as_ref()) {
+    if let Some(line) = boot.efiboot.expect_root.as_ref() {
         plan.a.expects.push(line.clone());
         plan.b.expects.push(line.clone());
     }
@@ -288,14 +287,9 @@ const PORT_TAKEN: &str = "Address already in use";
 pub(crate) struct Boot<'a> {
     pub root: &'a Path,
     pub arch: Arch,
-    /// The kernel of both VMs' Limine images (or the images already built when `None`).
-    pub kernel: Option<&'a Path>,
-    pub cmdline: Option<&'a str>,
-    pub init: Option<&'a Path>,
-    pub ramdisk: Option<&'a Path>,
     /// `--image` or `--kernel K --root ...` (`efiboot.rs`): one efiboot image both VMs
     /// attach with `snapshot=on`, and the line each types at its `boot> `.
-    pub efiboot: Option<&'a crate::efiboot::EfiBoot>,
+    pub efiboot: &'a crate::efiboot::EfiBoot,
 }
 
 /// How one attempt of [`smoke2`] ended, when it did not fail.
@@ -312,10 +306,6 @@ fn run(boot: &Boot<'_>, plan: &Plan, ports: (u16, u16), last: bool) -> Result<Ou
     let Boot {
         root,
         arch,
-        kernel,
-        cmdline,
-        init,
-        ramdisk,
         efiboot,
     } = *boot;
     let started = Instant::now();
@@ -323,24 +313,10 @@ fn run(boot: &Boot<'_>, plan: &Plan, ports: (u16, u16), last: bool) -> Result<Ou
     let mut vms: Vec<Vm> = Vec::new();
     for (index, script) in [plan.a.clone(), plan.b.clone()].into_iter().enumerate() {
         let link = vm_link(index, ports);
-        let image = match (efiboot, kernel) {
-            (Some(e), _) => e.image.clone(),
-            (None, Some(k)) => {
-                boot::image_tagged(root, arch, Some(link.tag), k, cmdline, init, ramdisk)?
-            }
-            (None, None) => {
-                let p = boot::image_path(root, arch, Some(link.tag));
-                if !p.is_file() {
-                    kill_all(&mut vms);
-                    return Err(format!("{} does not exist; pass --kernel", p.display()).into());
-                }
-                p
-            }
-        };
         let mut cmd = boot::qemu_command(
             root,
             arch,
-            &image,
+            &efiboot.image,
             "stdio",
             Some(&link),
             &boot::Disks {
@@ -379,7 +355,8 @@ fn run(boot: &Boot<'_>, plan: &Plan, ports: (u16, u16), last: bool) -> Result<Ou
             done_at: None,
             exited: None,
             typist: efiboot
-                .and_then(|e| e.boot_line.as_deref())
+                .boot_line
+                .as_deref()
                 .map(crate::efiboot::BootTypist::new),
         });
     }

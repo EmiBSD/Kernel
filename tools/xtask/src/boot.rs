@@ -17,17 +17,17 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! Boot images and QEMU: `xtask image`, `xtask qemu`, `xtask smoke`.
+//! QEMU: `xtask qemu`, `xtask smoke`.
 //!
-//! The image is a raw disk with one MBR partition holding a FAT file system: Limine's UEFI
-//! binary at `EFI/BOOT/BOOT{X64,AA64}.EFI`, `limine.conf` at the root, the kernel at `/bsd`
-//! and the boot modules: `/init` (the freestanding init of `init/`) and `/ramdisk.ffs` (the
-//! root file system image `just userland` makes, rd(4)'s image), each when it exists.
-//! QEMU boots it with EDK2 firmware; the kernel's serial console is on stdio and, under feature
-//! `qemu`, the kernel ends the emulator with a status `smoke` checks.
+//! The boot image is an efiboot disk (`efiboot.rs`: an OpenBSD partition with `/bsd` and the
+//! root, an EFI system partition with `BOOT{X64,AA64}.EFI`): a shared image of `just
+//! efiboot-images-<arch>` or one made for the run. QEMU boots it with EDK2 firmware, efiboot
+//! loads `/bsd` (the removal of Limine, 2026-11-26: there is no other boot loader); the
+//! kernel's serial console is on stdio and, under feature `qemu`, the kernel ends the emulator
+//! with a status `smoke` checks.
 
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::fs::{self, File};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -89,13 +89,6 @@ impl Arch {
             Arch::Arm64 => "edk2-arm-vars.fd",
         }
     }
-
-    fn limine_efi(self) -> &'static str {
-        match self {
-            Arch::Amd64 => "BOOTX64.EFI",
-            Arch::Arm64 => "BOOTAA64.EFI",
-        }
-    }
 }
 
 /// The environment variable that names the architectures built, booted and measured
@@ -154,7 +147,7 @@ pub fn skip_disabled(who: &str, arch: Arch) -> Result<bool> {
 /// Exit status QEMU reports when the kernel leaves with `ExitStatus::Success`
 /// (`sys/bsd/machine/cpu.rs`).
 pub const QEMU_SUCCESS_STATUS: i32 = 33;
-/// Longest a smoke boot may take, EDK2 and Limine included, under TCG.
+/// Longest a smoke boot may take, EDK2 and efiboot included, under TCG.
 pub(crate) const SMOKE_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// The environment variable that multiplies every smoke and smoke2 time limit (see
@@ -219,21 +212,6 @@ fn timeout_scale(value: Option<&str>) -> u32 {
         .filter(|n| (1..=10).contains(n))
         .unwrap_or(1)
 }
-
-const SECTOR: u64 = 512;
-/// 256 MiB: room for FAT32 if the formatter picks it, and for the modules: the debug kernel
-/// and the ramdisk (23 MiB since M9+ added LibreSSL, ftp and nc) outgrew 64 MiB, the 65 MiB
-/// debug kernel with the 63 MiB ramdisk of M11e (tcpbench) outgrew 128 MiB, and the 106-109
-/// MiB debug kernels of the M16 sync with the 89-93 MiB ramdisks left under 6 MB of 192 MiB
-/// (N2's queue(3) redesign, whose inlined mutators add 5 MB of debug info, outgrew it). The
-/// file is sparse, so the unused part costs no disk.
-const IMAGE_SECTORS: u64 = 256 * 1024 * 1024 / SECTOR;
-/// First partition sector: 1 MiB, the conventional alignment.
-const PART_START: u64 = 2048;
-
-/// The ramdisk module's name on the ESP and in `limine.conf`; `sys/bsd/stand` looks it up by
-/// this name and hands it to rd(4).
-pub const RAMDISK_MODULE: &str = "ramdisk.ffs";
 
 /// The environment variable naming a run's directory (see [`run_dir`]).
 pub(crate) const RUN_DIR_ENV: &str = "EMIBSD_RUN_DIR";
@@ -498,16 +476,6 @@ fn locate(env: &str, formula: &str, rel: &str, extra: &[&str], file: &str) -> Re
         })
 }
 
-fn limine_file(file: &str) -> Result<PathBuf> {
-    locate(
-        "EMIBSD_LIMINE_DIR",
-        "limine",
-        "share/limine",
-        &["/usr/share/limine", "/usr/local/share/limine"],
-        file,
-    )
-}
-
 pub(crate) fn edk2_file(file: &str) -> Result<PathBuf> {
     locate(
         "EMIBSD_EDK2_DIR",
@@ -516,207 +484,6 @@ pub(crate) fn edk2_file(file: &str) -> Result<PathBuf> {
         &["/usr/share/qemu", "/usr/local/share/qemu"],
         file,
     )
-}
-
-fn read(path: &Path) -> Result<Vec<u8>> {
-    fs::read(path).map_err(|e| format!("{}: {e}", path.display()).into())
-}
-
-/// Builds the boot image for `arch` from `kernel`, with `cmdline` (if any) as the kernel
-/// command line; returns its path.
-pub fn image(
-    root: &Path,
-    arch: Arch,
-    kernel: &Path,
-    cmdline: Option<&str>,
-    init: Option<&Path>,
-    ramdisk: Option<&Path>,
-) -> Result<PathBuf> {
-    image_tagged(root, arch, None, kernel, cmdline, init, ramdisk)
-}
-
-/// [`image`] for the VM `tag` of a two-VM run: the image lands in its own file.
-pub fn image_tagged(
-    root: &Path,
-    arch: Arch,
-    tag: Option<&str>,
-    kernel: &Path,
-    cmdline: Option<&str>,
-    init: Option<&Path>,
-    ramdisk: Option<&Path>,
-) -> Result<PathBuf> {
-    let kernel_bytes = read(kernel)?;
-    let init_bytes = init.map(read).transpose()?;
-    if let Some(r) = ramdisk {
-        crate::userland::check_ramdisk_devices(r)?;
-    }
-    let ramdisk_bytes = ramdisk.map(read).transpose()?;
-    let efi_path = limine_file(arch.limine_efi())?;
-    let efi = read(&efi_path)?;
-    let mut conf = read(&root.join("sys/bsd/stand/limine.conf"))?;
-    // The entry is the last block of the file; `cmdline:` and `module_path:` are more keys
-    // of it.
-    if !conf.ends_with(b"\n") {
-        conf.push(b'\n');
-    }
-    if let Some(cmdline) = cmdline {
-        conf.extend_from_slice(format!("    cmdline: {cmdline}\n").as_bytes());
-    }
-    if init_bytes.is_some() {
-        conf.extend_from_slice(b"    module_path: boot():/init\n");
-    }
-    if ramdisk_bytes.is_some() {
-        conf.extend_from_slice(format!("    module_path: boot():/{RAMDISK_MODULE}\n").as_bytes());
-    }
-
-    let path = image_path(root, arch, tag);
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    }
-    let mut file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(&path)
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    file.set_len(IMAGE_SECTORS * SECTOR)?;
-    let part_sectors = IMAGE_SECTORS - PART_START;
-    file.seek(SeekFrom::Start(0))?;
-    file.write_all(&mbr(PART_START as u32, part_sectors as u32))?;
-
-    let mut part = Partition::new(file, PART_START * SECTOR, part_sectors * SECTOR);
-    fatfs::format_volume(
-        &mut part,
-        fatfs::FormatVolumeOptions::new().volume_label(*b"EMIBSD     "),
-    )?;
-    let fs = fatfs::FileSystem::new(part, fatfs::FsOptions::new())?;
-    {
-        let root_dir = fs.root_dir();
-        let boot_dir = root_dir.create_dir("EFI")?.create_dir("BOOT")?;
-        boot_dir.create_file(arch.limine_efi())?.write_all(&efi)?;
-        root_dir.create_file("limine.conf")?.write_all(&conf)?;
-        root_dir.create_file("bsd")?.write_all(&kernel_bytes)?;
-        if let Some(init_bytes) = &init_bytes {
-            root_dir.create_file("init")?.write_all(init_bytes)?;
-        }
-        if let Some(ramdisk_bytes) = &ramdisk_bytes {
-            root_dir
-                .create_file(RAMDISK_MODULE)?
-                .write_all(ramdisk_bytes)?;
-        }
-    }
-    fs.unmount()?;
-
-    println!(
-        "xtask: {} ({} KiB kernel, {} from {}{}{})",
-        path.display(),
-        kernel_bytes.len() / 1024,
-        arch.limine_efi(),
-        efi_path.display(),
-        cmdline
-            .map(|c| format!(", cmdline `{c}`"))
-            .unwrap_or_default(),
-        match (ramdisk, &ramdisk_bytes) {
-            (Some(p), Some(b)) => format!(
-                ", {RAMDISK_MODULE} ({} KiB) from {}",
-                b.len() / 1024,
-                p.display()
-            ),
-            _ => format!(", no {RAMDISK_MODULE} (run `just userland`)"),
-        },
-    );
-    Ok(path)
-}
-
-/// A master boot record with one bootable partition of type 0xEF (EFI system partition).
-/// Firmware boots by LBA; the CHS fields are the conventional placeholders.
-fn mbr(part_start: u32, part_sectors: u32) -> [u8; 512] {
-    let mut sector = [0u8; 512];
-    let entry = &mut sector[446..462];
-    entry[0] = 0x80;
-    entry[1..4].copy_from_slice(&[0x00, 0x02, 0x00]);
-    entry[4] = 0xef;
-    entry[5..8].copy_from_slice(&[0xfe, 0xff, 0xff]);
-    entry[8..12].copy_from_slice(&part_start.to_le_bytes());
-    entry[12..16].copy_from_slice(&part_sectors.to_le_bytes());
-    sector[510] = 0x55;
-    sector[511] = 0xaa;
-    sector
-}
-
-/// A byte range of a file presented as a whole device, for the FAT formatter and driver.
-struct Partition {
-    file: File,
-    start: u64,
-    len: u64,
-    pos: u64,
-}
-
-impl Partition {
-    fn new(file: File, start: u64, len: u64) -> Self {
-        Self {
-            file,
-            start,
-            len,
-            pos: 0,
-        }
-    }
-
-    fn remaining(&self) -> u64 {
-        self.len.saturating_sub(self.pos)
-    }
-}
-
-impl Read for Partition {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let n = (buf.len() as u64).min(self.remaining()) as usize;
-        if n == 0 {
-            return Ok(0);
-        }
-        self.file.seek(SeekFrom::Start(self.start + self.pos))?;
-        let got = self.file.read(&mut buf[..n])?;
-        self.pos += got as u64;
-        Ok(got)
-    }
-}
-
-impl Write for Partition {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let n = (buf.len() as u64).min(self.remaining()) as usize;
-        if n == 0 && !buf.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::WriteZero,
-                "write past the end of the partition",
-            ));
-        }
-        self.file.seek(SeekFrom::Start(self.start + self.pos))?;
-        let put = self.file.write(&buf[..n])?;
-        self.pos += put as u64;
-        Ok(put)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.file.flush()
-    }
-}
-
-impl Seek for Partition {
-    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        let target = match pos {
-            SeekFrom::Start(n) => i128::from(n),
-            SeekFrom::End(off) => i128::from(self.len) + i128::from(off),
-            SeekFrom::Current(off) => i128::from(self.pos) + i128::from(off),
-        };
-        if target < 0 || target > i128::from(self.len) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "seek outside the partition",
-            ));
-        }
-        self.pos = target as u64;
-        Ok(self.pos)
-    }
 }
 
 /// The private link of one VM in a two-VM run (`smoke2`): a second virtio-net NIC (`vio1`)
@@ -823,7 +590,7 @@ pub(crate) fn qemu_command(
         cmd.arg("-no-reboot");
     }
     cmd.args(["-serial", serial]);
-    // EDK2 boots Limine at once: `bootindex=0` on the boot image's device (below) puts it
+    // EDK2 boots efiboot at once: `bootindex=0` on the boot image's device (below) puts it
     // first in the firmware's BootOrder (QEMU's `bootorder` fw_cfg file, which OVMF and
     // ArmVirtQemu both honour), so the blank persistent disk is no longer tried first
     // (`BdsDxe: failed to load Boot0001 "UEFI Misc Device"`); and `menu=on,splash-time=0`
@@ -992,10 +759,8 @@ pub(crate) fn spawn_error(arch: Arch, e: &io::Error) -> String {
     format!("{}: {e}; install `qemu` as in docs/SETUP.md", arch.qemu())
 }
 
-/// Boots `arch` interactively: serial and the QEMU monitor on stdio (`Ctrl-A X` quits). With
-/// `kernel`, the image is rebuilt first.
-/// The `init` the image carries unless `--init` says otherwise: the one `just build-init-*`
-/// left in `target/`, if it exists.
+/// The stand-in init of `init/` that `just build-init-*` left in `target/`, if it exists:
+/// what an efiboot image's `--root init` puts at `/sbin/init` (`efiboot.rs`).
 pub fn default_init(root: &Path, arch: Arch) -> Option<PathBuf> {
     let p = root
         .join("target")
@@ -1005,46 +770,18 @@ pub fn default_init(root: &Path, arch: Arch) -> Option<PathBuf> {
     p.is_file().then_some(p)
 }
 
-/// The ramdisk the image carries unless `--ramdisk` says otherwise: the one `just userland`
-/// left in `target/userland/<arch>/`, if it exists.
-pub fn default_ramdisk(root: &Path, arch: Arch) -> Option<PathBuf> {
-    let p = root
-        .join("target")
-        .join("userland")
-        .join(arch.name())
-        .join(RAMDISK_MODULE);
-    p.is_file().then_some(p)
-}
-
+/// Boots `arch` interactively from `efiboot`'s image (`--image` or `--kernel K --root ...`,
+/// `efiboot.rs`): serial and the QEMU monitor on stdio (`Ctrl-A X` quits); you type at
+/// `boot> ` yourself.
 pub fn qemu(
     root: &Path,
     arch: Arch,
-    kernel: Option<&Path>,
-    init: Option<&Path>,
-    ramdisk: Option<&Path>,
     disks: &Disks<'_>,
-    efiboot: Option<&crate::efiboot::EfiBoot>,
+    efiboot: &crate::efiboot::EfiBoot,
 ) -> Result<()> {
-    let image = match (efiboot, kernel) {
-        // `--image` or `--root` (efiboot.rs): you type at `boot> ` yourself.
-        (Some(e), _) => e.image.clone(),
-        (None, Some(k)) => image(root, arch, k, None, init, ramdisk)?,
-        (None, None) => {
-            let p = image_path(root, arch, None);
-            if !p.is_file() {
-                return Err(format!(
-                    "{} does not exist; run `just image-{}`",
-                    p.display(),
-                    arch.name()
-                )
-                .into());
-            }
-            p
-        }
-    };
     // M16e (hwopts.rs): `--tpm`'s swtpm, stopped when this returns, after QEMU.
     let _swtpm = crate::hwopts::start_swtpm()?;
-    let mut cmd = qemu_command(root, arch, &image, "mon:stdio", None, disks)?;
+    let mut cmd = qemu_command(root, arch, &efiboot.image, "mon:stdio", None, disks)?;
     println!("xtask: {}", command_line(&cmd));
     let status = cmd.status().map_err(|e| spawn_error(arch, &e))?;
     match status.code() {
@@ -1058,17 +795,12 @@ pub fn qemu(
     }
 }
 
-/// Boots `arch` headless, captures the serial transcript, and passes when every line of
-/// `expects` appears and QEMU exits with `status` before the timeout. With `kernel`, the image
-/// is rebuilt first, with `cmdline` as the kernel command line. With `send`, the text is
-/// written to QEMU's stdin (the serial console) once the trigger line has appeared.
-/// What a smoke boot runs and expects.
+/// What a smoke boot runs and expects: [`smoke`] boots `arch` headless, captures the serial
+/// transcript, and passes when every line of `expects` appears and QEMU exits with `status`
+/// before the timeout; each `sends` text is written to QEMU's stdin (the serial console) once
+/// its trigger line has appeared.
 #[derive(Clone, Copy)]
 pub struct SmokeOptions<'a> {
-    /// The kernel to image, or the existing image when `None`.
-    pub kernel: Option<&'a Path>,
-    /// The kernel command line.
-    pub cmdline: Option<&'a str>,
     /// Serial lines that must appear.
     pub expects: &'a [&'a str],
     /// `--reject`: serial lines that must not appear; any of them fails the run.
@@ -1081,22 +813,14 @@ pub struct SmokeOptions<'a> {
     /// `--until-seen`: succeed as soon as every expected line is seen, and stop QEMU (a
     /// shell session has no way to end the emulator).
     pub until_seen: bool,
-    /// The init module to put on the image.
-    pub init: Option<&'a Path>,
-    /// The ramdisk module to put on the image.
-    pub ramdisk: Option<&'a Path>,
-    /// `--expect-ramdisk`: also expect rd(4)'s line for the ramdisk the image carries
-    /// (`rd0: <N> bytes, ffs magic ok`), or the kernel's `rd: no ramdisk module` without one.
-    pub expect_ramdisk: bool,
     /// The persistent disks: `--disk-fresh`, `--disks N`, `--disk-set NAME`.
     pub disks: Disks<'a>,
     /// `--timeout SECS`: the boot's time limit in place of [`SMOKE_TIMEOUT`], for a session
     /// that runs for longer than any boot (a build inside the guest); scaled as that one is.
     pub timeout: Option<Duration>,
-    /// `--image` or `--kernel K --root ...` (`efiboot.rs`): the efiboot image to boot in
-    /// place of `kernel`'s Limine image, the line typed at every `boot> ` and
-    /// `--expect-root`'s line.
-    pub efiboot: Option<&'a crate::efiboot::EfiBoot>,
+    /// `--image` or `--kernel K --root ...` (`efiboot.rs`): the efiboot image to boot, the
+    /// line typed at every `boot> ` and `--expect-root`'s line.
+    pub efiboot: &'a crate::efiboot::EfiBoot,
 }
 
 /// Firmware failures that end a boot before the kernel runs and are not ours: each is the two
@@ -1156,44 +880,25 @@ fn smoke_once(
     flake: &mut Option<&'static str>,
 ) -> Result<()> {
     let SmokeOptions {
-        kernel,
-        cmdline,
         expects,
         rejects,
         status,
         sends,
         until_seen,
-        init,
-        ramdisk,
-        expect_ramdisk,
         disks,
         timeout,
         efiboot,
     } = *opts;
-    let image = match (efiboot, kernel) {
-        (Some(e), _) => e.image.clone(),
-        (None, Some(k)) => image(root, arch, k, cmdline, init, ramdisk)?,
-        (None, None) => {
-            let p = image_path(root, arch, None);
-            if !p.is_file() {
-                return Err(format!(
-                    "{} does not exist; run `just image-{}`",
-                    p.display(),
-                    arch.name()
-                )
-                .into());
-            }
-            p
-        }
-    };
+    let image = &efiboot.image;
     let expected_status = status;
     let limit = time_limit(timeout.unwrap_or(SMOKE_TIMEOUT));
     // M16e (hwopts.rs): `--tpm`'s swtpm, stopped when this returns, after QEMU.
     let _swtpm = crate::hwopts::start_swtpm()?;
     let mut typist = efiboot
-        .and_then(|e| e.boot_line.as_deref())
+        .boot_line
+        .as_deref()
         .map(crate::efiboot::BootTypist::new);
-    let mut cmd = qemu_command(root, arch, &image, "stdio", None, &disks)?;
+    let mut cmd = qemu_command(root, arch, image, "stdio", None, &disks)?;
     cmd.stdin(if !sends.is_empty() || typist.is_some() {
         Stdio::piped()
     } else {
@@ -1216,13 +921,10 @@ fn smoke_once(
     };
     let err_reader = thread::spawn(move || slurp(stderr));
 
-    let rd_expect = expect_ramdisk.then(|| ramdisk_expectation(ramdisk));
-    let root_expect = efiboot.and_then(|e| e.expect_root.as_deref());
     let all_expects: Vec<&str> = expects
         .iter()
         .copied()
-        .chain(rd_expect.as_deref())
-        .chain(root_expect)
+        .chain(efiboot.expect_root.as_deref())
         .collect();
     let mut timed_out = false;
     let mut stopped_when_seen = false;
@@ -1394,15 +1096,6 @@ pub(crate) fn rejected<'a>(serial: &str, rejects: &[&'a str]) -> Vec<&'a str> {
         .copied()
         .filter(|r| serial.contains(r))
         .collect()
-}
-
-/// The line rd(4)'s self-test prints for `ramdisk` (its size is the module's), or the line
-/// the boot glue prints without a ramdisk module.
-fn ramdisk_expectation(ramdisk: Option<&Path>) -> String {
-    match ramdisk.and_then(|p| fs::metadata(p).ok()) {
-        Some(m) => format!("rd0: {} bytes, ffs magic ok", m.len()),
-        None => "rd: no ramdisk module".to_string(),
-    }
 }
 
 pub(crate) fn slurp(mut r: impl Read) -> Vec<u8> {
@@ -1593,30 +1286,6 @@ mod tests {
         );
         assert!(rejected(serial, &[]).is_empty());
         assert!(rejected("boot\nok\n", &["uptime went backwards"]).is_empty());
-    }
-
-    #[test]
-    fn ramdisk_expectation_names_the_size_or_its_absence() {
-        assert_eq!(ramdisk_expectation(None), "rd: no ramdisk module");
-        let missing = Path::new("/nonexistent/ramdisk.ffs");
-        assert_eq!(ramdisk_expectation(Some(missing)), "rd: no ramdisk module");
-        let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-        let len = fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
-        assert_eq!(
-            ramdisk_expectation(Some(&file)),
-            format!("rd0: {len} bytes, ffs magic ok")
-        );
-    }
-
-    #[test]
-    fn mbr_layout() {
-        let s = mbr(2048, 1000);
-        assert_eq!(&s[510..], &[0x55, 0xaa]);
-        assert_eq!(s[446], 0x80);
-        assert_eq!(s[450], 0xef);
-        assert_eq!(u32::from_le_bytes([s[454], s[455], s[456], s[457]]), 2048);
-        assert_eq!(u32::from_le_bytes([s[458], s[459], s[460], s[461]]), 1000);
-        assert!(s[..446].iter().all(|&b| b == 0));
     }
 }
 /* </TESTS> */
