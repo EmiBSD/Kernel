@@ -66,8 +66,8 @@
 //!   `slot_of`'s check at every store of `ci_curproc`), as `do_ast` reads
 //!   `ci_curproc->p_md.md_astpending` by offset: a gate generic over the thread type would
 //!   cost an indirect call on every exit until N9. `cpu_fork`'s `stack`, `tcb` and the
-//!   child's return travel as a [`UserStart`]; the host's `Mdproc` keeps `md_astpending` so
-//!   the kernel's loop runs in its tests.
+//!   child's return travel as a [`UserStart`]; the host's slot keeps an `md_astpending` (in
+//!   its padding) so the kernel's loop runs in its tests.
 //!
 //! ## Soundness of the switch's tokens
 //!
@@ -143,15 +143,14 @@ use crate::sync::once::OnceStatic;
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]
 pub use crate::arch::arm64::include::proc::Mdproc;
 
-/// `struct mdproc` of the host tests: the machine's `md_astpending`, which the exit gate
-/// reads as on the machine (`hal::cpu::usertrap`); the thread's TCB, which a machine keeps in
-/// the thread's pcb (`pcb_tcb`) and the host's double keeps here, with the thread, so a new
-/// thread starts with none whatever address it reuses.
+/// `struct mdproc` of the host tests: nothing of a machine's but the thread's TCB, which a
+/// machine keeps in the thread's pcb (`pcb_tcb`) and the host's double keeps here, with the
+/// thread, so a new thread starts with none whatever address it reuses. (The host's
+/// `md_astpending` is the slot's `astpending`, in its padding: the host thread keeps its
+/// size.)
 #[cfg(not(target_os = "none"))]
 #[derive(Debug, Default)]
 pub struct Mdproc {
-    /// `md_astpending` ([`MachineSlot::aston`], the exit gate).
-    pub(crate) md_astpending: core::sync::atomic::AtomicI32,
     /// The host's `pcb_tcb` ([`tcb_get`], [`tcb_set`]).
     pub(crate) tcb: core::sync::atomic::AtomicUsize,
 }
@@ -161,7 +160,6 @@ impl Mdproc {
     /// All zero.
     pub const fn new() -> Self {
         Self {
-            md_astpending: core::sync::atomic::AtomicI32::new(0),
             tcb: core::sync::atomic::AtomicUsize::new(0),
         }
     }
@@ -181,6 +179,10 @@ pub struct MachineSlot {
     /// once it switched away for good (`exit_to_idle`). Not the C's (a member of `hal`'s, in the
     /// padding after `p_stat`).
     pub(crate) ctx: AtomicU8,
+    /// The host double's `md_astpending` ([`MachineSlot::aston`], the exit gate), in the
+    /// padding before `p_cpu` (the machine's is `p_md`'s, where its assembly reads it).
+    #[cfg(not(target_os = "none"))]
+    pub(crate) astpending: core::sync::atomic::AtomicI32,
     /// `p_cpu`: the `cpu_info` word of the CPU the thread runs or last ran on, 0 before it
     /// first runs.
     pub(crate) cpu: AtomicUsize,
@@ -198,6 +200,8 @@ impl MachineSlot {
         Self {
             stat: AtomicU8::new(0),
             ctx: AtomicU8::new(CTX_NONE),
+            #[cfg(not(target_os = "none"))]
+            astpending: core::sync::atomic::AtomicI32::new(0),
             cpu: AtomicUsize::new(0),
             addr: AtomicUsize::new(0),
             md: Mdproc::new(),
@@ -283,7 +287,18 @@ impl MachineSlot {
     /// gate the kernel's tests pass.
     #[inline]
     pub fn aston(&self) {
-        self.md.md_astpending.store(1, AtomicOrdering::Relaxed);
+        self.astpending().store(1, AtomicOrdering::Relaxed);
+    }
+
+    /// `md_astpending`: the machine's (`p_md`'s, which `exception.S` reads by offset), or
+    /// the host double's.
+    #[inline]
+    pub(crate) fn astpending(&self) -> &core::sync::atomic::AtomicI32 {
+        #[cfg(all(target_os = "none", target_arch = "aarch64"))]
+        let a = &self.md.md_astpending;
+        #[cfg(not(target_os = "none"))]
+        let a = &self.astpending;
+        a
     }
 }
 
@@ -861,6 +876,16 @@ pub(crate) fn trampoline(start: usize, arg: usize) -> UserExit {
 
 const _: () = {
     assert!(core::mem::offset_of!(MachineSlot, stat) == 0);
+};
+
+// The host's `astpending` sits in the padding after `ctx`: the host's thread (and the pools'
+// measured item sizes) keep their size.
+#[cfg(not(target_os = "none"))]
+const _: () = {
+    assert!(
+        core::mem::offset_of!(MachineSlot, astpending) < core::mem::offset_of!(MachineSlot, cpu)
+    );
+    assert!(size_of::<MachineSlot>() == 4 * size_of::<usize>());
 };
 /* </CODE> */
 

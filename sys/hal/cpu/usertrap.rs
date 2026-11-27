@@ -77,7 +77,7 @@ impl ExitGate {
         // only when it was set, as the C (another CPU's `aston` meanwhile sets the same 1).
         let pending = crate::cpu::thread::with_current_slot(|slot| {
             slot.is_some_and(|slot| {
-                let ast = &slot.md.md_astpending;
+                let ast = slot.astpending();
                 let set = ast.load(Ordering::Relaxed) != 0;
                 if set {
                     ast.store(0, Ordering::Relaxed);
@@ -124,7 +124,7 @@ mod tests {
         assert!(g.pass().is_ok());
         t.machine.aston();
         assert_eq!(g.pass().map(|_| ()), Err(AstPending));
-        assert_eq!(t.machine.md.md_astpending.load(Ordering::Relaxed), 0);
+        assert_eq!(t.machine.astpending().load(Ordering::Relaxed), 0);
         let exit = g.pass();
         assert!(exit.is_ok());
         assert_eq!(
