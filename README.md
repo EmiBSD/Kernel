@@ -70,8 +70,8 @@ whole picture, and every decision that crosses repositories, is in
 ## The target: the kernel at N9
 
 The module view of the one architecture diagram ([docs/ZERO_UNSAFE.md](docs/ZERO_UNSAFE.md)
-section 0.1, which stays the source), as the tree is laid out since 2026-11-26: `sys/` holds six
-directories, each one purpose. The dependencies point down only; `bsd` (the LZ tree) is deleted
+section 0.1, which stays the source), as the tree is laid out since 2026-11-26 (`entry/` added by
+decisions 56 and 58): `sys/` holds seven directories, each one purpose. The dependencies point down only; `bsd` (the LZ tree) is deleted
 at N9 and the bridges reach zero. Each `kernel` group names the milestone that moves its code
 (section 0.8); `arch/amd64` is frozen from N4 and homologated at N10.
 
@@ -84,6 +84,11 @@ flowchart TB
         A1["sysent: the syscall table"]
         A2["arch/arm64: OpenBSD's convention, named registers (Gpr::X8), the return and the carry, restart"]
         A3["bytes ⇄ the kernel's types · errno from Result"]
+    end
+
+    subgraph ENTRY["sys/entry · entry · safe Rust · one exported symbol · classification only, no state, nothing registered"]
+        direction LR
+        E1["entry_user_trap: the vector slot, then the closed match on the exception class"]
     end
 
     subgraph K["sys/kernel · kernel · forbid(unsafe) · every decision of the OS"]
@@ -103,7 +108,7 @@ flowchart TB
 
     subgraph HAL["sys/hal · hal · the ONLY unsafe · a SAFETY proof per site · ceiling raised only by the user"]
         direction LR
-        H1["cpu: trap · syscall entry (UserRegs) · intr · clock"]
+        H1["cpu: the vectors · register save and restore · Arrival · the exit gate · intr · clock"]
         H2["vm: pmap · mem: pool · malloc · fdtblob"]
         H3["sync: locks · ds: lists, trees · dev: Mmio · DmaBuf"]
         H4["user: UserPtr · machine · arch/arm64 · arch/amd64 (N10)"]
@@ -120,8 +125,11 @@ flowchart TB
     BSD["sys/bsd · the LZ tree, legacy · emptied slice by slice · deleted at N9"]
     M["hardware · QEMU arm64 / amd64, real machines"]
 
-    U -->|"svc: the trap"| HAL
-    HAL -.->|"the registers, to the handler abi registered"| ABI
+    U -->|"svc, fault, interrupt: the trap"| HAL
+    HAL -->|"one link-time symbol, from its assembly"| ENTRY
+    ENTRY -->|"a system call"| ABI
+    ENTRY -->|"kernel::trap: fault, signal, the work before the return"| K
+    ENTRY -->|"interrupt · the exit token"| HAL
     ABI -->|"kernel::api"| K
     K -->|"safe API"| HAL
     HAL --> M
@@ -131,11 +139,16 @@ flowchart TB
     BOOT -.->|"loads the kernel"| HAL
 ```
 
-The trap enters in `hal`, because the vector is assembly and registers; `hal` interprets
-nothing userland sends and hands the saved registers to the dispatcher `abi` registered at
-boot (decision 53). That is the one upward call, a registration and never a dependency, like
-the panic handler. `abi` reads OpenBSD's convention and calls `kernel::api`, and the kernel
-reaches the hardware only through `hal`'s safe API. Today's numbers are under
+The trap enters in `hal`'s vectors, because they are assembly: `hal` saves the program's
+registers, interprets nothing userland sends, and its four EL0 handlers call one symbol of
+`entry`, resolved when the image is linked; `hal` stores no pointer to it (decisions 56 and
+58). `entry` classifies the trap and calls down: `abi` for a system call, `kernel::trap` for a
+fault, a signal and the work before the return, `hal` for an interrupt, and it returns the exit
+token `hal` gave the kernel, with which `hal` restores the registers. Nothing on that path is
+registered by `abi`. `abi` reads OpenBSD's convention and calls `kernel::api`, and the kernel
+reaches the hardware only through `hal`'s safe API. What is still registered below `entry`
+has its date: the kernel's table of `bsd`'s trap glue (N9), `bsd`'s CPU hooks and interrupt
+dispatch (N7). Today's numbers are under
 [Status](#status); the exit criterion per milestone is in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Status
@@ -572,10 +585,11 @@ lineage.toml            native module -> LZ files and items (the source of truth
 lz-sync.toml            one triage record per LZ commit after the pin
 bridges.toml            each trait the kernel reaches bsd through, and the milestone that removes it
 unsafe-budget.toml      the unsafe ceilings that `just ci` enforces (hal's, bsd's legacy)
-sys/                    six directories, one purpose each
+sys/                    seven directories, one purpose each
   kernel/               crate `kernel`: every decision of the OS, #![forbid(unsafe_code)]
                         proc/ sched/ sig/ time/ file/ tty/ base/ dev/ vm/ fs/ net/ netinet/ netinet6/ crypto/
   abi/                  crate `abi`: OpenBSD's system call interface, translation only, forbid
+  entry/                crate `entry`: classifies every trap from userland and calls down; one exported symbol, no assembly
   hal/                  crate `hal`: the hardware and the runtime, the only `unsafe`
                         sync/ mem/ ds/ cpu/ vm/ dev/ arch/ machine/
   lib/                  leaf crates, forbid: sysdefs/ (OpenBSD's types, constants and

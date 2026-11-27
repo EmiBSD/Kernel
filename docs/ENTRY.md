@@ -1,15 +1,19 @@
 # The userland door: `sys/entry` (decision 56 as amended by decision 58)
 
 **Status: decision 56 as amended by decision 58, which the user signed on 2026-11-27. E0
-(coverage, the bench row) and E1 (the way out) are built and on `main` (`c46ea94e`). E2 (the
-crate) is redesigned here and is not on `main`.** E2 was built once under decision 56's first
-shape, on a branch that was never merged (tip `400c1071`); on 2026-11-27 the user changed its
-design (section 10), and the work resumes with the register round trip (section 11). Decision 20 is not amended. Until E2 lands the tree is as section 1 describes.
+(coverage, the bench row) and E1 (the way out) are built and on `main` (`8b030374`,
+`c46ea94e`); the register round trip is too (`15fc387b`, syscalls/entry#4); E2 (the crate) is
+built and merged (`52d5216b`). E3 (the documents) is this commit; the close is pending (the
+bench pair, `nullsys` first).** E2 was built once under decision 56's first shape, on a branch
+that was never merged (tip `400c1071`); on 2026-11-27 the user changed its design (section
+10) and it was built again on a fresh branch. Decision 20 is not amended. Sections 1 and 6
+describe the tree before E2 (`c46ea94e`), the problem and what moved; the rest describes the
+tree as built.
 Nothing here changes what userland sees. arm64 only (decision 44).
 
 ## 1. The problem
 
-Today a user program enters the kernel image through `hal`, and `hal` calls upward through
+Before E2 a user program entered the kernel image through `hal`, and `hal` called upward through
 pointers registered at boot:
 
 ```mermaid
@@ -23,10 +27,10 @@ flowchart LR
     K -->|"hardware services"| HAL
 ```
 
-`hal` is meant to be the bottom layer. On `main` (`c46ea94e`, E0 and E1 built) the first
-instruction a user program's trap runs is `hal`'s (`sys/hal/arch/arm64/trampoline.S:134`),
-`hal` decides what the trap means (`sys/hal/arch/arm64/trap.rs:620`, `do_el0_sync`), and from
-there it calls upward:
+`hal` is meant to be the bottom layer. On `main` at `c46ea94e` (E0 and E1 built, before E2) the
+first instruction a user program's trap ran was `hal`'s (`sys/hal/arch/arm64/trampoline.S:134`),
+`hal` decided what the trap meant (`do_el0_sync`, `trap.rs:620` at that commit), and from
+there it called upward:
 
 - `abi`'s system call handler, a pointer in a `hal` static (`sys/hal/syscall.rs:206-210`,
   called from `enter`, `:234`), which `abi` registers at boot (`sys/abi/lib.rs:107-108`);
@@ -37,11 +41,12 @@ there it calls upward:
   `pmap_setttb` of `bsd` (`sys/hal/arch/arm64/cpuswitch.S:74`).
 
 E1 removed two of the plan's fifteen upward entry points (the child's `ChildFn` and
-`TrapHandler::child_return`). `bsd` is in the path in one more way until N9: every system
+`TrapHandler::child_return`); E2 removed the registrations that reach `abi` and the kernel's
+seven trap methods (Gap 6). `bsd` is in the path in one more way until N9: every system
 call, translated or not, ends in a row of `bsd`'s table (`sys/kernel/api.rs:77-81`).
 
-What is wrong is the registered pointers and the dispatch going up. Which crate holds the
-first instruction is not.
+What was wrong was the registered pointers and the dispatch going up. Which crate held the
+first instruction was not.
 
 The user's two rules (2026-11-27; they replace the two of 2026-11-26):
 
@@ -186,9 +191,9 @@ Three at run time and one at link time; none of them is an address of `abi`, and
 At link time `hal`'s assembly names one symbol of `entry`, the function it calls after the
 save. The linker writes the call's offset into the `bl` instruction. `entry` names `abi`,
 `kernel` and `hal` the way any Rust function names another: direct calls the linker resolves.
-No pointer to `abi`, `kernel` or `entry` is stored anywhere. That is the change: today `hal`
-keeps `abi`'s dispatcher in a static that `abi` fills at boot (`set_handler`), and the
-kernel's trap functions in another that `bsd` fills.
+No pointer to `abi`, `kernel` or `entry` is stored anywhere. That is the change: `hal` used to
+keep `abi`'s dispatcher in a static that `abi` filled at boot (`set_handler`), and the
+kernel's trap functions in another that `bsd` filled.
 
 ## 4. The flows
 
@@ -296,9 +301,9 @@ there is nothing for them to read.
 
 ## 6. What moves
 
-No assembly changes crate. Against `main` (`c46ea94e`):
+No assembly changes crate. Against `main` before E2 (`c46ea94e`), what E2 did:
 
-| Today (`sys/hal/arch/arm64/`) | After |
+| Before (`sys/hal/arch/arm64/`) | As built |
 |---|---|
 | `trampoline.S` whole: the Spectre-BHB sequences, the nine tables, `tramp_return`, the arrival stubs (`:47-236`) | stays in `hal`, unchanged |
 | `exception.S`: `save_registers`, `restore_registers`, `disable_ss`, `allow_ss`, `return`, the kernel's own table and `handle_el1h_*` (`:41-120`, `:148-224`, `:296-315`) | stays in `hal`, unchanged |
@@ -370,12 +375,12 @@ still finds it.
 ## 8. Cost, risk and how it is measured
 
 - `unsafe`: `entry` `unsafe 1` (the `no_mangle` attribute, counted as kind Other,
-  `tools/xtask/src/unsafereport.rs:94-95`) and `asm 0`. `hal`: 236 on `main` and 236 on the
-  branch's tip; 236 expected (an estimate), under its ceiling of 600. The export adds nothing
-  to `hal`.
+  `tools/xtask/src/unsafereport.rs:94-95`) and `asm 0`, held by `unsafe-report --check`;
+  `kernel` 0, `abi` 0. `hal` 236, the same before and after E2, under its ceiling of 600:
+  the export adds nothing to `hal`. Bridges open: 38.
 - Rules: `.claude/rules/abi.md` (the registration goes), a new `entry-check`, two new rules of
   `hal-check` (H7, H8), `unsafe-report`'s line for `entry`. No amendment of decision 20.
-- Size of what is left (an estimate, from `docs/ZERO_UNSAFE.md` 0.5's measured pace): the
+- Size of what was left at decision 58 (an estimate, from `docs/ZERO_UNSAFE.md` 0.5's measured pace): the
   round trip 1.5 to 2.5 h and 0.4 to 0.6 M subagent tokens; the E2 rework, with the same
   redesigner resumed and one review, 2 to 4 h and 0.9 to 1.5 M; the documents 1 h and 0.3 to
   0.4 M; the close 1.5 to 2.5 h and 0.2 M. In all 6 to 10 h and 1.8 to 2.7 M.
@@ -413,7 +418,7 @@ Coverage of what moves:
 | SIGBUS for a file-backed fault | `diff-openbsd` (mmapfile) | covered |
 | SIGILL (`udf`), SIGTRAP (`brk`), SIGBUS for a misaligned `sp`, an FP instruction | `diff-openbsd` syscalls/entry#2 (E0) | covered |
 | The sixteen identification register reads, two refused ones, the carry kept | `diff-openbsd` syscalls/entry#3 (E0), on `neoverse-n2,sve=off` | covered |
-| The registers a program gets back after a trap | the register round trip, syscalls/entry#4 | new, first step of the rework |
+| The registers a program gets back after a trap | the register round trip, syscalls/entry#4 | built (`15fc387b`), the first step of the rework |
 | Single step, BTI, pointer authentication, SError from userland; the two firmware Spectre-BHB tables | none | gap, kept and named |
 
 ### The register round trip
@@ -442,8 +447,9 @@ Three things hold for every case, on OpenBSD as here:
 - FPCR and FPSR take a pattern of bits a program can write (the rounding mode, FZ and DN; the
   cumulative flags and QC).
 
-It runs first, on `main`, before the rework's branch exists. A difference it finds on `main`
-is a bug that exists today (E1's way out is in it) and is fixed first, in its own commit.
+It ran first, on `main`, before the rework's branch existed. A difference it found on `main`
+would have been a bug that existed then (E1's way out was in it) and fixed first, in its own
+commit; it found none: equal to OpenBSD on both CPU models.
 
 ## 9. The seven gaps the user asked to close
 
@@ -453,7 +459,7 @@ is a bug that exists today (E1's way out is in it) and is fixed first, in its ow
 | 2. The exit | resolved (E1, built) | `entry`'s function returns to `hal`'s assembly; the kernel runs the loop over `hal`'s gate | kept; no stack frame is abandoned |
 | 3. The child's return value | resolved (E1, built) | `abi`'s constant, written while the child's registers are built | kept |
 | 4. amd64 | simpler; two events left to N10 | every stub stays in `hal`; the user arm calls `entry` | kept as written; the first design's caveat is gone |
-| 5. The identification registers | resolved (built on the branch, under the lock) | `entry` classifies, `kernel` holds the list and the values, `hal` decodes and writes | kept |
+| 5. The identification registers | resolved (E2, built, under the lock) | `entry` classifies, `kernel` holds the list and the values, `hal` decodes and writes | kept |
 | 6. `bsd` in the path | resolved for `entry`, not for `bsd` | `kernel::trap`, a door that is not generic | rule 1 holds for `entry`'s own calls; three registrations remain below it, each with its date |
 | 7. Measurement | resolved, with the coverage gaps named | section 8 | not applicable |
 
@@ -496,7 +502,7 @@ the check and before the `eret`) is closed by `hal`'s exit gate
 (`sys/hal/cpu/usertrap.rs:72-95`): interrupts off, the pending-work flag tested, and off
 until the `eret`. The loop around the gate is the kernel's, for a trap and for a new thread
 alike: one mechanism, and `hal` calls nobody for it. Verified by reading the path from the
-gate to the `eret` on the branch (four function returns, then `hal`'s `allow_ss`, restore,
+gate to the `eret` as built (four function returns, then `hal`'s `allow_ss`, restore,
 `return` and `tramp_return`): no instruction unmasks IRQ or FIQ.
 
 Stated plainly: that is a reading, not a type. The token is a value; it does not hold the
@@ -577,7 +583,7 @@ Today `emulate_msr` (`sys/hal/arch/arm64/trap.rs:472`; the C's
 sixteen reads: the CPU's model, a fixed value that hides the topology, the feature registers
 the kernel computed, and zeros. Anything else, and every write, is SIGILL.
 
-As built on the E2 branch, under the lock (which sends the class to `kernel::trap` and so
+As built in E2, under the lock (which sends the class to `kernel::trap` and so
 amended decision 56's U7, where `abi` held the list): `entry`'s match has one arm,
 `EXCP_MSR => kernel::trap::msr`. `kernel` holds what is announced, the list and the values
 in one `match (crm, op2)`, as `trap.c`'s `switch` (`kernel::trap::id_value`, `None` for a read
@@ -590,8 +596,8 @@ arm's SIGILL, as the C's fall-through does. `abi` takes no part: a new identific
 register changes the kernel's match, never `entry` and never `abi`.
 
 Proof that userland sees the same: E0's step reads each of the sixteen registers and two that
-are refused, against OpenBSD. On the branch's tip it was equal on both CPU models (158 steps,
-155 equal, 3 expected, 0 unexpected).
+are refused, against OpenBSD. As built, `diff-openbsd` is equal on both CPU models (159 steps,
+156 equal, 3 expected, 0 unexpected).
 
 ### Gap 6: `bsd` in the path
 
@@ -611,7 +617,7 @@ functions over a table the kernel owns and `bsd` fills until N9 (`UserTraps`, a 
 | `pmap_setttb` (a symbol of `bsd` that `hal`'s context switch calls, `sys/hal/arch/arm64/cpuswitch.S:74`) | unchanged: the switch, not the door. It is the second external symbol on `hal-check` H8's list | with `bsd`'s arm64 glue, N7 to N9 |
 | new: `entry`'s one symbol | a link-time call from `hal`'s assembly; no registration | permanent |
 
-Stated plainly, after E2 and while `bsd` exists. Rule 1's "nothing is registered at run
+Stated plainly, as built and while `bsd` exists. Rule 1's "nothing is registered at run
 time" holds for what `entry` calls: three direct calls. Below them three registrations
 remain. `kernel::trap`'s functions reach the kernel's own code through the table `bsd`
 installs, until N9. On a trap from userland `hal` still calls up to `bsd` (the branch
@@ -633,7 +639,7 @@ assembly names one more symbol above it, `pmap_setttb`, until `bsd`'s arm64 glue
   empty, and `hal`'s reference exists only in arm64 assembly, so the host builds see no
   undefined symbol. The kernel's half is tested on the host; the classification is tested on
   the machine by `diff-openbsd`.
-- Checked with DevTools' rustc on the branch: `extern "C" fn(Arrival) -> UserExit` compiles
+- Checked with DevTools' rustc while building E2: `extern "C" fn(Arrival) -> UserExit` compiles
   under `deny(warnings)` with `hal`'s `UserFrame` `#[repr(transparent)]`; built at E2 with the
   second parameter, `#[repr(u64)]` `UserVector`, and the item-level `#[allow(unsafe_code)]` over
   `#[unsafe(no_mangle)]` under the root's `deny(unsafe_code)`: no warning, no other allow.
@@ -690,33 +696,34 @@ user's reason in section 1. Three of its commits are reused as they are (section
    dates, `UserTrapFn`, the exit's own mask, the round trip as OpenBSD's rules allow it, row 56 appended).
 6. The register round trip, before anything moves: built (`ea6469cb`, syscalls/entry#4).
    Equal to OpenBSD on both CPU models: 159 steps, 156 equal, 3 expected, 0 unexpected.
-7. The E2 rework, on a fresh branch from `main`; the first branch is its source and is not
-   merged. In order, each commit building:
+7. The E2 rework, on a fresh branch from `main`; the first branch was its source and is not
+   merged. Built and merged as `52d5216b` (one redesigner, one review with nothing blocking,
+   its fixes by the same redesigner). In order, each commit building:
 
-| Commit | From the first branch | What changes |
-|---|---|---|
-| `hal: the user trap behind Arrival` | `e7c4507f`, reworked | keeps `Arrival`, `SyncTrap`, `Syndrome`, `UserFrame` `repr(transparent)`; adds `UserVector`; drops the linker section, its bounds, `EXTERN` and the `ASSERT` |
-| `kern: kernel::trap, the door a trap from user mode calls down` | `52226b0f`, as it is | nothing |
-| `xtask: the crate entry in unsafe-report and lz check` | `38fb9a6d`, small rework | `entry`: `unsafe` at most 1 where it was 0, `asm` 0 where it was at most 1 |
-| `entry: the classification behind one exported symbol` | `8bd07641`, reworked | no `vectors.S`, no `vectors.rs`; the four handlers become one exported function with the slot match; `hal`'s EL0 handlers call it; `hal`'s `do_ast`, `ast` and the EL0 handlers' Rust go. Kept as built: the closed class match, `kernel::trap`'s per-class functions, the identification registers |
-| `hal: KernelFault, the trap handler of kernel mode alone` | `5ad8213f`, as it is | nothing |
-| `abi: nothing is registered` | `400c1071`, as it is | `abi.md`'s first paragraph reworded |
-| `xtask: entry-check and hal-check's upward symbol` | new | E1-E5 and L1-L3 with a failing fixture each; H7, H8; `abi-check`'s list loses the three registration items |
+| Commit | What it did |
+|---|---|
+| `1e563570` `hal: the user trap behind Arrival` | `Arrival`, `SyncTrap`, `Syndrome`, `UserFrame` `repr(transparent)`; `UserVector`, `UserTrapFn`; the tables stay `hal`'s |
+| `01c27fb5` `kern: kernel::trap` | the door a trap from user mode calls down: one function per exception class; `UserTraps` for what is still `bsd`'s (`bridges.toml`, N9) |
+| `15bdc036` `xtask: the crate entry in unsafe-report and lz check` | `entry`: `unsafe` at most 1, `asm` 0 |
+| `4ee00401` `entry: the classification behind one exported symbol` | `entry_user_trap` under a `deny(unsafe_code)` root, the slot match and the closed class match; `hal`'s four EL0 handlers `bl` it and leave through `hal_user_return`; `do_ast`, `ast()` and `hal`'s EL0 Rust handlers gone |
+| `4f2665ca` `hal: KernelFault` | the trap handler of kernel mode alone |
+| `c18ade59` `abi: nothing is registered` | `set_handler`, `SyscallFn`, `HandlerInfo`, `abi_init` gone |
+| `2f9ebd80` `xtask: entry-check and hal-check` | `entry-check` E1-E5 and L1-L3; `hal-check` H7, H8 |
+| `5414ec69`, `09f1e561`, `df1a1507` | the review's fixes: the identification registers as one match in the kernel, `entry-check` closes five holes, stale texts |
 
-   One review, with its `Security-Review:` text (the system call entry is a
-   `security-review.md` area). The work stops and asks if: the symbol is missing from the
-   image, dev or release, without help from the linker script; the `allow` on the item does
-   not lift the lint, or the function's signature warns; a smoke or `diff-openbsd` line
-   changes; `hal`'s count rises; a file under an `amd64` directory would be touched.
-8. E3, the documents and the rules: this file as built, `docs/PHASE2.md`'s row 58 and the
-   sentence on row 56, `docs/ZERO_UNSAFE.md` 0.1 and `README.md`'s diagrams, `abi.md`,
-   `xtask.md`, the rows of `docs/IDIOMS.md` (the token `hal`'s assembly passes; the closed
-   match; a link-time call from the hardware crate's assembly in place of a registration),
-   `docs/GLOSSARY.md` and `docs/SCAFFOLDING.md` (`UserTraps`' `dyn` and the image's
-   `extern crate entry`, both N9), N10's and N12's rows of `docs/ROADMAP.md`.
-9. The close: every smoke, `diff-openbsd` on both CPU models, the bench pair, one release
-   build with `llvm-nm` (the symbol defined once, by `entry`'s object; the tables and the
-   handlers `hal`'s).
+   Checked at the merge: `just build` and `cargo check -p bsd --tests`; a release (LTO) build
+   with `llvm-nm` shows `entry_user_trap` defined once, by `entry`'s object; `smoke-boot`,
+   `smoke-abi`, `smoke-thrsleep`, `smoke-mp`, `smoke-up`; `diff-openbsd` on `cortex-a72` and
+   on `neoverse-n2,sve=off`: 159 steps, 156 equal, 3 expected, 0 unexpected. `entry`'s
+   `trap.rs` is listed in `unsafe-core.toml`, because `lz check` refuses a redesigned module
+   that is neither `forbid` nor core and this one holds the one allowed item; no ratchet moves.
+8. E3, the documents: this file as built, `docs/ZERO_UNSAFE.md` 0.1, `README.md`'s diagram,
+   `docs/ARCHITECTURE.md`, `docs/IDIOMS.md`, `docs/SCAFFOLDING.md` and N9's, N10's and N12's
+   rows of `docs/ROADMAP.md` (this commit). `docs/PHASE2.md`'s rows 56 and 58 keep what was
+   decided on their dates. `.claude/rules/` (`abi.md`, `xtask.md`) is the main session's.
+9. The close, pending: every smoke, `diff-openbsd` on both CPU models, the bench pair
+   (`nullsys`, `pipe`, `pagefault`, `forkexit`, `forkexec`; debug and release, three runs on
+   AC; the fourth `daif` write is measured here), one release build with `llvm-nm`.
 
 ## Words
 

@@ -20,6 +20,7 @@ draws them.
 | Layer | Name | Expansion | Path | `unsafe` | What it is |
 |---|---|---|---|---|---|
 | 0 | userland | | outside this repository | | OpenBSD's own programs, binaries unchanged; what they see never changes |
+| 0' | `entry` | | `sys/entry/`, linked into the kernel image (decisions 56 and 58) | 1 (the `no_mangle` attribute that exports its one symbol), 0 assembly, `#![deny(unsafe_code)]` at the root | the door of userland: classifies every trap from a user program (the vector slot, then the exception class) and calls down, `abi` for a system call, `kernel::trap` for the rest, `hal` for an interrupt; no state, nothing registered (`docs/ENTRY.md`) |
 | 1 | `abi` | Application Binary Interface | `sys/abi/`, linked into the kernel image (decision 47) | 0, `#![forbid(unsafe_code)]` | the contract in bytes between the kernel and the binaries of userland: the syscall numbers, the `#[repr(C)]` structs (`stat`, `kevent`, `sockaddr`, `kinfo_*`), the ioctl and sysctl encodings, errno. Translation only, no logic (decision 21): bytes to the kernel's types, one `KernelApi` entry per syscall, an errno from its `Result`. Byte-identical to OpenBSD's, so its userland runs unchanged |
 | 2 | `kernel` | | `sys/kernel/` | 0, `#![forbid(unsafe_code)]` at the root; the compiler refuses one | every decision the operating system makes: memory, processes, the scheduler, signals, descriptors, kqueue, VFS and the file systems, the network stack, the drivers' logic, crypto, pf, pledge, unveil, exec. Its own types, ownership first. Reaches what has not moved out of `bsd` only through a bridge trait registered in `hal` (`bridges.toml`, 0 rows at N9) |
 | 3 | `hal` | Hardware Abstraction Layer | `sys/hal/` | the only `unsafe` of the system, under `hal_ceiling`, every site with a soundness proof, Miri on its host tests | the hardware (page tables and the pmaps, traps, the syscall entry, the context switch, the interrupt level, MMIO, caches, early boot) and the runtime written new (locks that own their data, typed pools, owned memory, `OnceStatic`, the typed user copy, per-CPU data, the bridge registry, the system call trap's registration and `UserRegs`, the view of the trap frame it hands `abi`, decision 53). Its API towards `kernel` is safe: `cargo xtask hal-check` refuses a `pub unsafe fn` |
@@ -27,18 +28,20 @@ draws them.
 | legacy | `bsd` | | `sys/bsd/` (`sys/` itself until 2026-11-26), named after OpenBSD's kernel image `/bsd` | 9,490 at the N4 close, 0 files at N9 | the LandingZone tree: OpenBSD's kernel ported file by file, the kernel that boots and passes every smoke while its subsystems move into `kernel` and `hal`. Calls down into the three crates, never the reverse; registers the bridge implementations in `hal` at boot and hands `KernelApi` to `abi::abi_init` |
 | 4 | hardware | | | | QEMU amd64 and arm64, real machines |
 
-Beside the layers, outside the four crates and unchanged: the boot loaders (`sys/boot/`: LZ's `sys/stand/`,
+Beside the layers, outside the crates of the design and unchanged: the boot loaders (`sys/boot/`: LZ's `sys/stand/`,
 `sys/lib/libsa/`, `sys/arch/*/stand/`), separate binaries that run before the kernel.
 
 Every other term and acronym of these documents (LZ, MP, KPTI, MMIO, DMA, pmap, UVM, VFS, EFI,
 ACPI, bridge, slice, ratchet, zones, ...) is one row of `docs/GLOSSARY.md`.
 
-## Four crates: `hal`, `kernel`, `abi` and the LZ tree `bsd` (decision 20, 2026-10-16)
+## Five crates: `hal`, `kernel`, `abi`, `entry` and the LZ tree `bsd` (decisions 20 and 56, 2026-11-27)
 
-`sys/` holds four Cargo packages (docs/ZERO_UNSAFE.md section 0, the one diagram): `sys/hal/`,
+`sys/` holds five Cargo packages of the design (docs/ZERO_UNSAFE.md section 0, the one diagram) beside the leaves: `sys/hal/`,
 the hardware and the runtime, the only crate where `unsafe` may live; `sys/kernel/`, every
 decision of the operating system, `#![forbid(unsafe_code)]` at its root; `sys/abi/`, OpenBSD's
-userland interface, linked into the kernel image (decision 47), `forbid`, translation only; and
+userland interface, linked into the kernel image (decision 47), `forbid`, translation only; `sys/entry/`, the door of
+userland, linked into the image, `deny(unsafe_code)` with one allowed attribute and no assembly
+(decisions 56 and 58, "The user door" below); and
 `bsd` at `sys/bsd/` (OpenBSD's kernel image is `/bsd`; `sys/` itself until 2026-11-26), the LZ tree with its subsystems as
 modules (`kern`, `uvm`, `dev`, `ddb`, `sys`, `machine`, `arch`), replaced subsystem by subsystem
 and deleted at N9. Under all four, the leaf crate `sys/lib/sysdefs/` (decision 54, 2026-11-26)
@@ -63,7 +66,7 @@ No `src/` directory (`[lib] path = "lib.rs"`), so C and Rust paths differ only b
 
 ### Repository layout (2026-11-26)
 
-`sys/` holds six purpose directories (the user's decision of 2026-11-26): `abi/`, `hal/`,
+`sys/` holds seven purpose directories (the user's decision of 2026-11-26, `entry/` added by decisions 56 and 58): `abi/`, `entry/`, `hal/`,
 `kernel/` and `lib/` (`sysdefs`, `libkern`, `libz`), the crates of the design; `bsd/`, the
 whole LZ tree, legacy, deleted at N9; and `boot/`, the boot loaders, separate binaries outside
 the zero-unsafe plan: `libsa/`, `efi/`, `loader/` (boot(8)), `arm64/` and `amd64/` (the efiboot crates, amd64's with
@@ -382,31 +385,33 @@ missing; decision 47 records what went with it. The pieces now:
   `Native` system call, grouped as the kernel is (`kernel::api::{proc, vm, file, event, time,
   base, fs, net}`), and `syscall_legacy`. `abi` depends on `kernel` and calls them directly;
   `abi-check` R6 confines it to `kernel::api` and, of `hal`, to `hal::syscall`'s
-  types and `set_handler`, since the rest of both crates' public API acts on the kernel's own
+  passive types (`set_handler` is gone), since the rest of both crates' public API acts on the kernel's own
   state. Each function still reaches its row, which `bsd` holds, through one bridge,
   `kernel::syscall::LegacySyscalls` (`bridges.toml`, paid by N9). Until decision 52 the door
   was `hal::api::KernelApi`, a table of `fn` pointers in `hal` (so the loadable module of
   decision 22 named no `kernel`), filled by `bsd`'s glue and handed to `abi_init`: one
   indirect call per system call that the direct calls remove, and the kernel's trampoline
   (`abi_syscall`) with it.
-- **The registration.** `stand::start_kernel` calls `bsd`'s `abi_module::abi_boot` right after
-  `hal_bridges_register`, before `main()`: it registers the `sysent[]` rows as the kernel's
-  `LegacySyscalls`, then `abi::abi_init()` registers the handler in `hal::syscall` (once; the
-  trap's one upward call), and the glue prints one line from what the handler said about itself (`HandlerInfo`), or
-  panics when nothing registered. The kcopy tokens are taken before it (`hal_bridges_register`'s
-  first steps), `abi-check` R6 keeps `abi` out of `hal::user`, and `abi` runs nothing before
-  `abi_init`, so it can neither name nor hold one (decision 47).
-- **The dispatch** (decision 53, N7.abi2). arm64's trap keeps the machine's half of
-  `svc_handler` (the counter, the interrupts, the barrier skip) and calls the registered
-  handler with the trapping thread's registers as a `&hal::syscall::UserRegs` (three methods:
-  read registers named by the machine's `Gpr`, write one with the error flag, `restart()`);
-  the convention is `abi::arch::arm64`'s: the number `x8` read as an `int`, the arguments
-  `x0`..`x5`, the table, `x0` and the carry (or the restart, or nothing for `EJUSTRETURN`),
-  then `kernel::api::syscall_return` (`mi_syscall_return`). A forked child's `x0 = 0` is the
-  ABI's constant `CHILD_RETURN` (a `hal::syscall::ChildReturn`), which `hal` writes while
-  `cpu_fork` builds the child's frame (decision 56's E1; `ChildFn` before). With no handler the trap panics, which the boot glue's own panic makes
-  unreachable. amd64's frozen trap still names `kern::abi_module::syscall` and `dispatch`,
-  both gone, until N10 writes `abi::arch::amd64`. Errnos cross `hal` as `i32`.
+- **No registration** (decision 56's E2, as amended by decision 58). `stand::start_kernel` calls
+  `bsd`'s `abi_module::abi_boot` right after `hal_bridges_register`, before `main()`: it
+  registers the `sysent[]` rows as the kernel's `LegacySyscalls` and prints the boot line from
+  the constant `abi::sysent::INFO`; `hal_bridges_register` hands `abi`'s `CHILD_RETURN` to
+  `kernel::proc::fork::init`.
+  `abi` registers nothing: `abi_init`, `set_handler`, `SyscallFn` and `HandlerInfo` are gone,
+  and `entry` calls `abi`'s one function for `svc` directly. The kcopy tokens are taken before
+  it (`hal_bridges_register`'s first steps), and `abi-check` R6 keeps `abi` out of `hal::user`.
+- **The dispatch** (decision 53, N7.abi2; the caller changed in decision 56's E2). `entry`
+  calls `abi::arch::current::svc` with the trapping thread's registers as a
+  `&hal::syscall::UserRegs` (three methods: read registers named by the machine's `Gpr`, write
+  one with the error flag, `restart()`); `hal` keeps the machine's half (the counter, the
+  interrupts, the barrier skip) behind the trap's token. The convention is
+  `abi::arch::arm64`'s: the number `x8` read as an `int`, the arguments `x0`..`x5`, the table,
+  `x0` and the carry (or the restart, or nothing for `EJUSTRETURN`), then
+  `kernel::api::syscall_return` (`mi_syscall_return`). A forked child's `x0 = 0` is the ABI's
+  constant `CHILD_RETURN` (a `hal::syscall::ChildReturn`), which `hal` writes while `cpu_fork`
+  builds the child's frame (decision 56's E1). amd64's frozen trap still names
+  `kern::abi_module::syscall` and `dispatch`, both gone, until N10 writes `abi::arch::amd64`.
+  Errnos cross `hal` as `i32`.
 - **The boot line.** `abi: 331 syscalls, 190 native` (the module's line, which named its file,
   until the N5 close; the count has followed every `Native` flip: 2, 17, 37, 44, 94, 105,
   170, 189 with the socket calls at N6.2b, 190 with nfssvc(2) at N6.7b4). `just smoke-abi`, `smoke-efiboot` (both archs) and `dist-arm64`'s boot check expect it;
@@ -414,6 +419,33 @@ missing; decision 47 records what went with it. The pieces now:
 - **The media.** Nothing but the kernel: the boot loaders, the images, install80, cd80, the
   base set and the release tarball carry no ABI file (decision 47).
 - **The release tarball's interface files.** Besides the kernels and the loader, `dist-arm64` packs `MANUAL.toml` (`cargo xtask manual`: drivers, system calls native, legacy and absent, and the pages not true here, generated from the tree and from the release kernel's own boot log) and `include/` (`cargo xtask include`: the C headers OpenBSD's `include/Makefile` installs from `sys/`, the pin's text until N9.0 generates them); both are covered by the tarball's `SHA256`.
+
+## The user door (`entry`)
+
+A trap from a user program (a system call, a fault, an interrupt) enters `hal`'s vectors,
+because they are assembly: the vector tables, the arrival stubs, the EL0 register save, the
+restore and `tramp_return` stay in `hal`, both halves of the save in one file as in the C.
+`hal`'s four EL0 handlers then `bl` one symbol, `entry_user_trap(Arrival, UserVector) ->
+UserExit`, which the linker resolves; `hal` stores no pointer to it. That symbol is the only
+item of the crate `sys/entry/` (safe Rust, `#![deny(unsafe_code)]` with one allowed
+`no_mangle` attribute, no assembly, no state): it matches the vector slot, then, for a
+synchronous trap, a closed match on the exception class fixed when the kernel is built, and
+calls down. `abi` takes a system call (and calls `kernel::api`), `kernel::trap` takes a
+fault, `udf`, `brk`, an alignment fault, an identification register, the FPU and SVE traps,
+BTI, FPAC and the class nobody lists (`trap.c`'s `default:`), `hal`'s `Arrival` takes an
+interrupt and an SError. It returns the exit token `hal`'s gate gave the kernel after its
+loop over pending signals and rescheduling; `hal` masks IRQ and FIQ itself, restores the
+registers and returns to the program.
+
+Why: decision 56 wanted nothing registered at run time and the dispatch going down; decision
+58 (the user, 2026-11-27) kept that and withdrew moving the vectors into `entry`, which would
+have split the save from the restore across crates and amended decision 20. The one call up
+is therefore a link-time call. What is still registered below `entry`, with its date:
+`kernel::trap`'s `UserTraps` table that `bsd` installs (N9), `bsd`'s `CpuHooks` and interrupt
+dispatch (N7), the registered interrupt handlers and the thread start (for ever). Enforced by
+`cargo xtask entry-check` and `hal-check` H7 and H8; measured by `diff-openbsd`
+syscalls/entry#1-#4. The design, the flows, the rules and the coverage are in
+`docs/ENTRY.md`; this section only places the crate.
 
 ## Cargo features ↔ `option(4)`
 
@@ -1419,8 +1451,8 @@ The arm64 kernel ELF boots from arm64's efiboot (and, until decision 57, from Li
   is `sys_nosys` in `init_sysent.rs`, and the generator's `--check` keeps the four files
   current in `just ci`. The entry paths are OpenBSD's: amd64 `Xsyscall` (`syscall`
   instruction, `MSR_LSTAR`) building the trap frame on `ci_kern_rsp`, `syscall()`,
-  `mi_syscall` and the AST loop before `sysretq`; arm64 `handle_el0_sync` → `do_el0_sync` →
-  `svc_handler`, `do_ast` and `eret`. Not here: the Meltdown U-K page and `Xsyscall_meltdown`,
+  `mi_syscall` and the AST loop before `sysretq`; arm64 `handle_el0_sync` → `entry_user_trap`
+  (`entry`, which replaced `do_el0_sync`, `svc_handler` and `do_ast`; "The user door" below), the kernel's AST loop over `hal`'s exit gate and `eret`. Not here: the Meltdown U-K page and `Xsyscall_meltdown`,
   the xstate/FS.base restores and the Spectre code patches on amd64; the trampoline vectors
   (`trampoline.S`) on arm64, so `VBAR_EL1` keeps the kernel vectors. `pin_check` is the C's
   since M8: a system call must come from the site the executable's `PT_OPENBSD_SYSCALLS`
