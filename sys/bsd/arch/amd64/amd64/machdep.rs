@@ -282,9 +282,7 @@ use crate::kern::subr_xxx::chrtoblk;
 use crate::kern::vfs_bio::bufinit;
 use crate::kern::vm_bsd::uvm_page_physload;
 use crate::kprintf;
-use crate::machine::bootinfo::{
-    BootFramebuffer, BootInfo, EfiMemmap, MAX_MODULES, MemKind, MemMap, MemRegion,
-};
+use crate::machine::bootinfo::{BootInfo, EfiMemmap, MemKind, MemMap, MemRegion};
 use crate::machine::copy::{copyin, copyin_obj, copyout, copyout_obj};
 use crate::machine::cpu::curproc;
 use crate::machine::db_machdep::{db_enter, db_machine_init};
@@ -493,8 +491,8 @@ pub unsafe fn init_x86_64(boot: &BootInfo) -> Result<(), &'static str> {
     // SAFETY: the boot CPU, once, before anything reads curcpu().
     unsafe { cpu_init_msrs(ci) };
 
-    // bios_efiinfo->config_acpi: the RSDP Limine found, as a physical address (the protocol
-    // hands it over as an address in the higher-half direct map, or as a physical one).
+    // bios_efiinfo->config_acpi: the RSDP boot(8) hands over in BOOTARG_EFIINFO, as a
+    // physical address (`getbootinfo` passes it as its address in locore0's direct map).
     if let Some(rsdp) = boot.rsdp {
         let va = rsdp.as_usize();
         let pa = if va >= boot.hhdm_offset {
@@ -1041,11 +1039,11 @@ pub unsafe fn getbootinfo(first_avail: usize) -> Result<BootInfo, &'static str> 
             .filter(|&pa| pa != 0)
             .map(Paddr::new),
         efi_memmap,
+        // No frame buffer: boot(8)'s reaches efifb(4) through bios_efiinfo, as in C.
         mp,
         howto: BOOTHOWTO.load(Ordering::Relaxed),
         duid,
         abi_module,
-        // boot(8)'s frame buffer reaches efifb(4) through bios_efiinfo, as in C.
     })
 }
 
