@@ -39,8 +39,8 @@
   `hal`. Every module says what it derives
   from ([lineage.toml](lineage.toml)), and every LZ commit after the pin is triaged
   ([lz-sync.toml](lz-sync.toml)).
-- A standalone `#![no_std]` kernel for amd64 and arm64, booted by its own boot(8)/efiboot or by
-  Limine, run in QEMU.
+- A standalone `#![no_std]` kernel for amd64 and arm64, booted by its own boot(8)/efiboot, run in QEMU
+  (since decision 57 every boot goes through efiboot; amd64 boots again at N10).
 - The layers, top to bottom (the detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), "Vocabulary"; every term: [docs/GLOSSARY.md](docs/GLOSSARY.md)):
 
   | Layer | What it is | `unsafe` |
@@ -246,7 +246,7 @@ On one VM, with OpenBSD's own binaries from the ramdisk:
   OVMF, attaches nowhere (`smoke-vga`).
 
 - Our efiboot, OpenBSD's boot(8) for UEFI (BOOTX64.EFI, BOOTAA64.EFI), boots the MP kernel
-  from an OpenBSD disk to `login:` beside Limine (`smoke-efiboot`); on arm64 `virt,acpi=on`
+  from an OpenBSD disk to `login:` (`smoke-efiboot`); on arm64 `virt,acpi=on`
   it builds the device tree from the ACPI tables and the kernel attaches acpi0, acpipci(4)
   and pluart(4) at acpi, its root on a PCI disk (`smoke-acpi`).
 - arm64 on QEMU's GICv3 (`virt,gic-version=3`): agintc(4) with its redistributors, IPIs on
@@ -302,23 +302,8 @@ Between two VMs on a private link (`cargo xtask smoke2`):
   `wg0`, loopback interfaces created and destroyed (`smoke-net-mp`).
 - tcpbench(1) both ways at once, four connections each, for 15 seconds (`smoke-tcpbench`).
 
-An excerpt of the serial console, from `smoke-login` on amd64 (trimmed):
-
-```
-bsd: booted on amd64 by Limine 12.9.1
-EmiBSD 8.0 (GENERIC) #221: Sun Oct  4 07:56:52 UTC 2026
-root on rd0a swap on rd0b dump on rd0b
-rc: multi-user
-EmiBSD/amd64 (Amnesiac) (tty00)
-
-login: root
-Password:
-Welcome to EmiBSD 8.0: OpenBSD's init(8) and ksh(1) on an ffs ramdisk root.
-# uname -a
-EmiBSD  8.0 GENERIC#221 amd64
-```
-
-And from `smoke-install-boot-amd64`, the system `install.sub` installed, booted by its own
+An excerpt of the serial console, from `smoke-install-boot-amd64` (logged before decision 57; amd64
+boots again at N10), the system `install.sub` installed, booted by its own
 efiboot (trimmed; the smoke types the source with ksh's `print -r`, then `cc hello.c && ./a.out`):
 ```
 >> EmiBSD/amd64 BOOTX64 3.71
@@ -444,7 +429,7 @@ The real console also prints `unported: <name>` lines. Each one is a known gap, 
 
 You need:
 
-- Homebrew `qemu`, `limine` and `just`, and DevTools' toolchains (`just toolchain`: EmiBSD's own
+- Homebrew `qemu` and `just`, and DevTools' toolchains (`just toolchain`: EmiBSD's own
   Rust and LLVM, pinned in the justfile; no rustup).
 - For the userland: the same DevTools LLVM (its clang and lld), and the macOS SDK for the build
   tools that run on the Mac.
@@ -681,6 +666,5 @@ The ramdisk's userland keeps the licenses of its sources. See [LICENSE](LICENSE)
 
 - The OpenBSD project and its authors, whose code is the specification. EmiBSD is not affiliated
   with or endorsed by OpenBSD; their names are not used to promote it (BSD-3-Clause, clause 3).
-- [Limine](https://github.com/limine-bootloader/limine), the boot loader.
 - [QEMU](https://www.qemu.org/), where every test runs.
 - The Rust project and its ecosystem: the compiler, cargo, clippy, rustfmt and rust-analyzer.
