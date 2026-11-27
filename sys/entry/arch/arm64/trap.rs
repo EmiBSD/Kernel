@@ -95,7 +95,7 @@
 //! single step, an alignment fault, an identification register's read, the FPU and SVE traps,
 //! a BTI or pointer authentication failure go to `kernel::trap`'s function of that class; any
 //! other class is `kernel::trap::unknown`, the C's `default:` (the registers printed, the
-//! process killed with `SIGILL`). An IRQ, an FIQ and an SError go to `hal` (the `Arrival`'s
+//! process killed with `SIGILL`). An IRQ, an FIQ and an `SError` go to `hal` (the `Arrival`'s
 //! `irq`, `fiq`, `serror`). No table, no function pointer, no registration: a new system call
 //! or identification register changes the ABI or the kernel, never this file.
 //!
@@ -107,7 +107,7 @@
 //! one the assembly assumes, `hal`'s `UserTrapFn`. It returns the token of `hal`'s exit gate
 //! (`hal::cpu::usertrap::UserExit`), which only the kernel's AST loop hands out
 //! (`kernel::trap::leave` after a synchronous trap, `kernel::trap::exit` after an interrupt);
-//! an SError does not return.
+//! an `SError` does not return.
 //!
 //! ## Redesign
 //! - Decision 56 (E2) under decision 58: LZ's `do_el0_sync` (and `hal`'s from N4.8b) read the

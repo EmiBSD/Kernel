@@ -345,6 +345,10 @@ pub fn begin(a: Arrival) -> (SyncTrap, Syndrome) {
 /// `EXCP_UNKNOWN` (an undefined instruction, `udf`): the branch predictor flushed, `SIGILL`
 /// (`ILL_ILLOPC`) at the pc.
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the SyncTrap is one trap's token: its class's handler spends it, so one trap cannot be handed to two handlers"
+)]
 pub fn undefined(t: SyncTrap, s: Syndrome) {
     t.flush_bp();
     signal(SIGILL, s.esr, ILL_ILLOPC, t.pc());
@@ -352,6 +356,10 @@ pub fn undefined(t: SyncTrap, s: Syndrome) {
 
 /// `EXCP_SVE`: `sve_load(p)` (`hal`).
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the SyncTrap is one trap's token: its class's handler spends it, so one trap cannot be handed to two handlers"
+)]
 pub fn sve(t: SyncTrap) {
     t.sve_load();
 }
@@ -359,6 +367,10 @@ pub fn sve(t: SyncTrap) {
 /// `EXCP_FP_SIMD`, `EXCP_TRAP_FP`: `fpu_load(p)` (`hal`), the thread's FP state loaded at its
 /// first FP instruction since its last switch.
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the SyncTrap is one trap's token: its class's handler spends it, so one trap cannot be handed to two handlers"
+)]
 pub fn fpu(t: SyncTrap) {
     t.fp_load();
 }
@@ -366,6 +378,10 @@ pub fn fpu(t: SyncTrap) {
 /// `EXCP_BRANCH_TGT` (a BTI fault): the branch predictor flushed, `SIGILL` (`ILL_BTCFI`) at
 /// the pc.
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the SyncTrap is one trap's token: its class's handler spends it, so one trap cannot be handed to two handlers"
+)]
 pub fn bti(t: SyncTrap, s: Syndrome) {
     t.flush_bp();
     signal(SIGILL, s.esr, ILL_BTCFI, t.pc());
@@ -390,6 +406,10 @@ pub fn msr(t: SyncTrap, s: Syndrome) {
 /// `EXCP_FPAC` (a pointer authentication failure): the branch predictor flushed, `SIGILL`
 /// (`ILL_ILLOPC`) at the pc.
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the SyncTrap is one trap's token: its class's handler spends it, so one trap cannot be handed to two handlers"
+)]
 pub fn fpac(t: SyncTrap, s: Syndrome) {
     t.flush_bp();
     signal(SIGILL, s.esr, ILL_ILLOPC, t.pc());
@@ -411,6 +431,10 @@ pub fn svc(t: SyncTrap) -> UserRegs {
 #[allow(
     clippy::cast_possible_truncation,
     reason = "far is an address: 64 bits on the only machine this function is built for"
+)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the SyncTrap is one trap's token: its class's handler spends it, so one trap cannot be handed to two handlers"
 )]
 pub fn udata_abort(t: SyncTrap, s: Syndrome, exe: bool) {
     let access = accesstype(s.esr, exe);
@@ -437,6 +461,10 @@ pub fn udata_abort(t: SyncTrap, s: Syndrome, exe: bool) {
 
 /// `EXCP_PC_ALIGN`: the branch predictor flushed, `SIGBUS` (`BUS_ADRALN`) at the pc.
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the SyncTrap is one trap's token: its class's handler spends it, so one trap cannot be handed to two handlers"
+)]
 pub fn pc_align(t: SyncTrap, s: Syndrome) {
     t.flush_bp();
     signal(SIGBUS, s.esr, BUS_ADRALN, t.pc());
@@ -445,6 +473,10 @@ pub fn pc_align(t: SyncTrap, s: Syndrome) {
 /// `EXCP_SP_ALIGN`: the branch predictor flushed, `SIGBUS` (`BUS_ADRALN`) at the stack
 /// pointer.
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the SyncTrap is one trap's token: its class's handler spends it, so one trap cannot be handed to two handlers"
+)]
 pub fn sp_align(t: SyncTrap, s: Syndrome) {
     t.flush_bp();
     signal(SIGBUS, s.esr, BUS_ADRALN, t.sp());
@@ -452,12 +484,20 @@ pub fn sp_align(t: SyncTrap, s: Syndrome) {
 
 /// `EXCP_BRK` (`brk`): `SIGTRAP` (`TRAP_BRKPT`) at the pc.
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the SyncTrap is one trap's token: its class's handler spends it, so one trap cannot be handed to two handlers"
+)]
 pub fn breakpoint(t: SyncTrap, s: Syndrome) {
     signal(SIGTRAP, s.esr, TRAP_BRKPT, t.pc());
 }
 
 /// `EXCP_SOFTSTP_EL0` (a single step): `SIGTRAP` (`TRAP_TRACE`) at the pc.
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the SyncTrap is one trap's token: its class's handler spends it, so one trap cannot be handed to two handlers"
+)]
 pub fn single_step(t: SyncTrap, s: Syndrome) {
     signal(SIGTRAP, s.esr, TRAP_TRACE, t.pc());
 }
@@ -466,6 +506,10 @@ pub fn single_step(t: SyncTrap, s: Syndrome) {
 /// the syndrome and the registers printed, the branch predictor flushed, then the process
 /// killed with `SIGILL` under the kernel lock ([`kill`]). Never returns.
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the SyncTrap is one trap's token: its class's handler spends it, so one trap cannot be handed to two handlers"
+)]
 pub fn unknown(t: SyncTrap, s: Syndrome) -> ! {
     // panic("Unknown userland exception %x esr_el1 %lx", exception, esr);
     // only here to debug !?!?

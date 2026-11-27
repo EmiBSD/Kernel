@@ -27,7 +27,7 @@
 //! one exported function (`arch::<machine>::trap`) with the frame, as `hal`'s `Arrival`, and
 //! the vector the CPU took; it classifies the event in a closed `match` and hands it down:
 //! `abi` for a system call, `kernel` (`kernel::trap`) for everything else a program can cause,
-//! `hal` for an interrupt and an SError; then it returns the exit token the kernel's AST loop
+//! `hal` for an interrupt and an `SError`; then it returns the exit token the kernel's AST loop
 //! got from `hal`'s gate, and `hal`'s assembly restores the registers.
 //!
 //! The rules (docs/ENTRY.md, section 5; `cargo xtask entry-check`): no `pub` item, no state,
