@@ -71,6 +71,7 @@
 #include <poll.h>
 #include <sched.h>
 #include <signal.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -2099,6 +2100,432 @@ t_entry_idregs(void)
 }
 
 /*
+ * The register round trip of the user-mode entry (decision 56, E2's first
+ * step): every register userland owns is loaded with a pattern, an event
+ * happens, every register is stored back and compared. One case per
+ * event, each in a child: a system call, a resolved page fault, a counted
+ * loop that timer interrupts cross, and a signal handler left through
+ * sigreturn. A case prints `name: ok` or the first register that differs
+ * (`name: x9`), never a value; a fixed header names what each event is
+ * allowed to change, the same text on every system.
+ *
+ * The registers: x0-x30, sp, nzcv, tpidr_el0, v0-v31 (all 128 bits), fpcr
+ * and fpsr. One asm block per case, so the compiler cannot touch a
+ * register between the load and the store: it saves the C state (x0-x30,
+ * sp, nzcv, fpcr, fpsr, q0-q31) in a context that also holds the pattern
+ * and the dump, moves sp onto that context (a MAP_STACK mapping: OpenBSD
+ * checks sp on every trap and system call, arm64/trap.c:127 and
+ * sys/syscall_mi.h:159), loads the pattern, runs the event, stores every
+ * register sp-relative, and puts the C state back. tpidr_el0 is set
+ * through __set_tcb(2), not with msr: cpu_switchto never saves the
+ * register, it reloads it from pcb_tcb (arm64/cpuswitch.S:61-62), so a
+ * value written by msr alone would be lost at the next switch.
+ *
+ * What an event may change, from the C:
+ * - syscall: getppid(2) (no argument, so the patterned x0-x7 are not read)
+ *   from an svc pinned in this binary's own .openbsd.syscalls table, the
+ *   way libc pins its stubs (lib/libc/arch/DEFS.h:73): an svc nothing
+ *   pins is killed (sys/syscall_mi.h, pin_check), and getpid is pinned
+ *   in libc already, where a second entry would let it be called from
+ *   anywhere (kern/exec_elf.c:322) and change syscalls/entry#1's
+ *   unpinned-svc. On success svc_handler writes x0 = rval[0] and clears
+ *   the carry (arm64/syscall.c:60-61) and skips the dsb/isb after the svc
+ *   (:44); x1 is not written and x8 keeps the number.
+ * - fault: nothing; x10 holds the two untouched pages' address.
+ * - interrupt: nothing; x9 is the loop counter, 0 when the loop ends.
+ * - signal: brk #2, a SIGTRAP whose SA_SIGINFO handler (on a MAP_STACK
+ *   alternate stack) moves sc_elr past the brk and clobbers x0-x18,
+ *   v0-v31, nzcv, fpsr and fpcr. sigreturn restores x0-x30, sp, the pc
+ *   and nzcv from the sigcontext (arm64/sig_machdep.c:216-221; sendsig
+ *   saves no floating-point context, :138); the trampoline restores
+ *   q0-q31 (arm64/locore.S:374-389) but reads fpsr and fpcr back with mrs
+ *   instead of writing them (locore.S:390-392), so after sigreturn they
+ *   hold the handler's values.
+ * arm64 only (amd64's at N10); elsewhere one fixed line.
+ */
+#ifdef __aarch64__
+void	__set_tcb(void *);
+
+#define RG_NX		31
+
+struct rg_gset {
+	uint64_t	x[RG_NX];
+	uint64_t	sp, nzcv, tpidr, fpcr, fpsr;
+};
+
+struct rg_ctx {
+	uint64_t	vsave[64];	/* q0-q31 of the C code */
+	uint64_t	vpat[64];	/* q0-q31 loaded */
+	uint64_t	vout[64];	/* q0-q31 after the event */
+	struct rg_gset	save;		/* the C code's */
+	struct rg_gset	pat;		/* loaded (tpidr by __set_tcb) */
+	struct rg_gset	out;		/* after the event */
+};
+
+/* The offsets the asm below writes as literals. */
+#define RG_S(x)		#x
+#define RG_XS(x)	RG_S(x)
+#define RG_VSAVE	0
+#define RG_VPAT		512
+#define RG_VOUT		1024
+#define RG_SAVE		1536
+#define RG_PAT		1824
+#define RG_OUT		2112
+#define RG_SP		248
+#define RG_NZCV		256
+#define RG_TPIDR	264
+#define RG_FPCR		272
+#define RG_FPSR		280
+
+_Static_assert(offsetof(struct rg_ctx, vpat) == RG_VPAT, "vpat");
+_Static_assert(offsetof(struct rg_ctx, vout) == RG_VOUT, "vout");
+_Static_assert(offsetof(struct rg_ctx, save) == RG_SAVE, "save");
+_Static_assert(offsetof(struct rg_ctx, pat) == RG_PAT, "pat");
+_Static_assert(offsetof(struct rg_ctx, out) == RG_OUT, "out");
+_Static_assert(offsetof(struct rg_gset, sp) == RG_SP, "sp");
+_Static_assert(offsetof(struct rg_gset, nzcv) == RG_NZCV, "nzcv");
+_Static_assert(offsetof(struct rg_gset, tpidr) == RG_TPIDR, "tpidr");
+_Static_assert(offsetof(struct rg_gset, fpcr) == RG_FPCR, "fpcr");
+_Static_assert(offsetof(struct rg_gset, fpsr) == RG_FPSR, "fpsr");
+
+/* One load or store of xN, qN or a field at a set's offset from a base register. */
+#define RG_X(op, n, b, set)						\
+	op " x" #n ", [" b ", #(" RG_XS(set) " + " #n " * 8)]\n"
+#define RG_Q(op, n, b, set)						\
+	op " q" #n ", [" b ", #(" RG_XS(set) " + " #n " * 16)]\n"
+#define RG_F(op, r, b, set, f)						\
+	op " " r ", [" b ", #(" RG_XS(set) " + " RG_XS(f) ")]\n"
+
+#define RG_X8(op, b, s, n0, n1, n2, n3, n4, n5, n6, n7)		\
+	RG_X(op, n0, b, s) RG_X(op, n1, b, s) RG_X(op, n2, b, s)	\
+	RG_X(op, n3, b, s) RG_X(op, n4, b, s) RG_X(op, n5, b, s)	\
+	RG_X(op, n6, b, s) RG_X(op, n7, b, s)
+#define RG_X0_29(op, b, s)						\
+	RG_X8(op, b, s, 0, 1, 2, 3, 4, 5, 6, 7)				\
+	RG_X8(op, b, s, 8, 9, 10, 11, 12, 13, 14, 15)			\
+	RG_X8(op, b, s, 16, 17, 18, 19, 20, 21, 22, 23)			\
+	RG_X(op, 24, b, s) RG_X(op, 25, b, s) RG_X(op, 26, b, s)	\
+	RG_X(op, 27, b, s) RG_X(op, 28, b, s) RG_X(op, 29, b, s)
+#define RG_X0_30(op, b, s)	RG_X0_29(op, b, s) RG_X(op, 30, b, s)
+
+#define RG_Q8(op, b, s, n0, n1, n2, n3, n4, n5, n6, n7)		\
+	RG_Q(op, n0, b, s) RG_Q(op, n1, b, s) RG_Q(op, n2, b, s)	\
+	RG_Q(op, n3, b, s) RG_Q(op, n4, b, s) RG_Q(op, n5, b, s)	\
+	RG_Q(op, n6, b, s) RG_Q(op, n7, b, s)
+#define RG_Q0_31(op, b, s)						\
+	RG_Q8(op, b, s, 0, 1, 2, 3, 4, 5, 6, 7)				\
+	RG_Q8(op, b, s, 8, 9, 10, 11, 12, 13, 14, 15)			\
+	RG_Q8(op, b, s, 16, 17, 18, 19, 20, 21, 22, 23)			\
+	RG_Q8(op, b, s, 24, 25, 26, 27, 28, 29, 30, 31)
+
+/*
+ * The round trip around `event`, `c` the context, which becomes sp. Once
+ * x0-x30 are saved, x1 takes the context's address (the compiler may have
+ * put `c` in x0) and x0 is the scratch. The C state is put back whole, so
+ * the block clobbers only memory and the flags (restored too). sp is the
+ * dump's base: a wrong sp after the event makes the child fault, which
+ * its parent prints.
+ */
+#define RG_ROUND_TRIP(c, event)						\
+	__asm volatile(							\
+	    /* the C state */						\
+	    RG_X0_30("str", "%[c]", RG_SAVE)				\
+	    "mov x1, %[c]\n"						\
+	    "mov x0, sp\n"						\
+	    RG_F("str", "x0", "x1", RG_SAVE, RG_SP)			\
+	    "mrs x0, nzcv\n"						\
+	    RG_F("str", "x0", "x1", RG_SAVE, RG_NZCV)			\
+	    "mrs x0, fpcr\n"						\
+	    RG_F("str", "x0", "x1", RG_SAVE, RG_FPCR)			\
+	    "mrs x0, fpsr\n"						\
+	    RG_F("str", "x0", "x1", RG_SAVE, RG_FPSR)			\
+	    "mov sp, x1\n"						\
+	    RG_Q0_31("str", "sp", RG_VSAVE)				\
+	    /* the pattern */						\
+	    RG_F("ldr", "x0", "sp", RG_PAT, RG_NZCV)			\
+	    "msr nzcv, x0\n"						\
+	    RG_F("ldr", "x0", "sp", RG_PAT, RG_FPCR)			\
+	    "msr fpcr, x0\n"						\
+	    RG_F("ldr", "x0", "sp", RG_PAT, RG_FPSR)			\
+	    "msr fpsr, x0\n"						\
+	    RG_Q0_31("ldr", "sp", RG_VPAT)				\
+	    RG_X0_30("ldr", "sp", RG_PAT)				\
+	    event							\
+	    /* the dump */						\
+	    RG_X0_30("str", "sp", RG_OUT)				\
+	    "mov x0, sp\n"						\
+	    RG_F("str", "x0", "sp", RG_OUT, RG_SP)			\
+	    "mrs x0, nzcv\n"						\
+	    RG_F("str", "x0", "sp", RG_OUT, RG_NZCV)			\
+	    "mrs x0, tpidr_el0\n"					\
+	    RG_F("str", "x0", "sp", RG_OUT, RG_TPIDR)			\
+	    "mrs x0, fpcr\n"						\
+	    RG_F("str", "x0", "sp", RG_OUT, RG_FPCR)			\
+	    "mrs x0, fpsr\n"						\
+	    RG_F("str", "x0", "sp", RG_OUT, RG_FPSR)			\
+	    RG_Q0_31("str", "sp", RG_VOUT)				\
+	    /* the C state back */					\
+	    RG_F("ldr", "x0", "sp", RG_SAVE, RG_FPSR)			\
+	    "msr fpsr, x0\n"						\
+	    RG_F("ldr", "x0", "sp", RG_SAVE, RG_FPCR)			\
+	    "msr fpcr, x0\n"						\
+	    RG_F("ldr", "x0", "sp", RG_SAVE, RG_NZCV)			\
+	    "msr nzcv, x0\n"						\
+	    RG_Q0_31("ldr", "sp", RG_VSAVE)				\
+	    "mov x30, sp\n"						\
+	    RG_F("ldr", "x0", "x30", RG_SAVE, RG_SP)			\
+	    "mov sp, x0\n"						\
+	    RG_X0_29("ldr", "x30", RG_SAVE)				\
+	    RG_X("ldr", 30, "x30", RG_SAVE)				\
+	    : : [c] "r"(c) : "memory", "cc")
+
+#define RG_NZCV_C	(1ULL << 29)
+#define RG_NZCV_PAT	0xb0000000ULL	/* N, C, V */
+#define RG_FPCR_PAT	0x07c00000ULL	/* AHP, DN, FZ, RMode toward zero */
+#define RG_FPSR_PAT	0x0800009fULL	/* QC, IDC, IXC, UFC, OFC, DZC, IOC */
+#define RG_TPIDR_PAT	0x7470696472303030ULL
+#define RG_FPCR_SIG	0x00400000ULL	/* RMode toward plus infinity */
+#define RG_FPSR_SIG	0x00000010ULL	/* IXC */
+#define RG_LOOPS	(1ULL << 27)
+
+static uint64_t
+rg_xpat(int n)
+{
+	return 0xa500000000000000ULL ^ (0x0101010101010101ULL * (n + 1));
+}
+
+static uint64_t
+rg_vpat(int half)
+{
+	return 0x3c00000000000000ULL ^ (0x0001000100010001ULL * (half + 1));
+}
+
+/* The handler's own values for q0-q31, written to clobber them. */
+static uint64_t rg_vsig[64];
+
+static void
+rg_syscall(struct rg_ctx *c)
+{
+	RG_ROUND_TRIP(c,
+	    "1: svc #0\n"
+	    "dsb nsh\n"
+	    "isb\n"
+	    ".pushsection .openbsd.syscalls,\"\",%%progbits\n"
+	    ".p2align 2\n"
+	    ".long 1b\n"
+	    ".long 39\n"		/* SYS_getppid */
+	    ".popsection\n");
+}
+
+static void
+rg_fault(struct rg_ctx *c)
+{
+	RG_ROUND_TRIP(c,
+	    "ldr xzr, [x10]\n"
+	    "str x0, [x10, #4096]\n");
+}
+
+static void
+rg_interrupt(struct rg_ctx *c)
+{
+	RG_ROUND_TRIP(c,
+	    "1: sub x9, x9, #1\n"
+	    "cbnz x9, 1b\n");
+}
+
+static void
+rg_signal(struct rg_ctx *c)
+{
+	RG_ROUND_TRIP(c, "brk #2\n");
+}
+
+/*
+ * Moves the pc past the brk and clobbers what a handler may: x0-x18, the
+ * flags, q0-q31, fpsr and fpcr. It reads no thread state: tpidr_el0 holds
+ * the pattern.
+ */
+static void
+rg_handler(int sig, siginfo_t *si, void *ctx)
+{
+	struct sigcontext *sc = ctx;
+
+	sc->sc_elr += 4;
+	__asm volatile(
+	    "mov x9, %[v]\n"
+	    "ldp q0, q1, [x9], #32\n"
+	    "ldp q2, q3, [x9], #32\n"
+	    "ldp q4, q5, [x9], #32\n"
+	    "ldp q6, q7, [x9], #32\n"
+	    "ldp q8, q9, [x9], #32\n"
+	    "ldp q10, q11, [x9], #32\n"
+	    "ldp q12, q13, [x9], #32\n"
+	    "ldp q14, q15, [x9], #32\n"
+	    "ldp q16, q17, [x9], #32\n"
+	    "ldp q18, q19, [x9], #32\n"
+	    "ldp q20, q21, [x9], #32\n"
+	    "ldp q22, q23, [x9], #32\n"
+	    "ldp q24, q25, [x9], #32\n"
+	    "ldp q26, q27, [x9], #32\n"
+	    "ldp q28, q29, [x9], #32\n"
+	    "ldp q30, q31, [x9], #32\n"
+	    "msr fpsr, %[s]\n"
+	    "msr fpcr, %[r]\n"
+	    "mov x0, #0x5100\n" "mov x1, #0x5101\n" "mov x2, #0x5102\n"
+	    "mov x3, #0x5103\n" "mov x4, #0x5104\n" "mov x5, #0x5105\n"
+	    "mov x6, #0x5106\n" "mov x7, #0x5107\n" "mov x8, #0x5108\n"
+	    "mov x9, #0x5109\n" "mov x10, #0x510a\n" "mov x11, #0x510b\n"
+	    "mov x12, #0x510c\n" "mov x13, #0x510d\n" "mov x14, #0x510e\n"
+	    "mov x15, #0x510f\n" "mov x16, #0x5110\n" "mov x17, #0x5111\n"
+	    "mov x18, #0x5112\n"
+	    "cmp x0, x1\n"
+	    : : [v] "r"(rg_vsig), [s] "r"(RG_FPSR_SIG), [r] "r"(RG_FPCR_SIG)
+	    : "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9",
+	      "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "x18",
+	      "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9",
+	      "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18",
+	      "v19", "v20", "v21", "v22", "v23", "v24", "v25", "v26", "v27",
+	      "v28", "v29", "v30", "v31", "cc", "memory");
+}
+
+/* The first register of the dump that is not the expected value, or NULL. */
+static const char *
+rg_diff(const struct rg_ctx *c, const struct rg_gset *want)
+{
+	static char name[8];
+	int i;
+
+	for (i = 0; i < RG_NX; i++)
+		if (c->out.x[i] != want->x[i]) {
+			snprintf(name, sizeof(name), "x%d", i);
+			return name;
+		}
+	if (c->out.sp != want->sp)
+		return "sp";
+	if (c->out.nzcv != want->nzcv)
+		return "nzcv";
+	if (c->out.tpidr != want->tpidr)
+		return "tpidr_el0";
+	for (i = 0; i < 64; i++)
+		if (c->vout[i] != c->vpat[i]) {
+			snprintf(name, sizeof(name), "v%d", i / 2);
+			return name;
+		}
+	if (c->out.fpcr != want->fpcr)
+		return "fpcr";
+	if (c->out.fpsr != want->fpsr)
+		return "fpsr";
+	return NULL;
+}
+
+static void
+rg_case(const char *name, void (*run)(struct rg_ctx *))
+{
+	struct rg_gset want;
+	struct sigaction sa;
+	struct rg_ctx *c;
+	stack_t ss;
+	pid_t pid, ppid;
+	const char *bad;
+	uint64_t tcb;
+	char *stk, *pages;
+	int i, status;
+
+	fflush(stdout);
+	ppid = getpid();
+	if ((pid = fork()) == 0) {
+		setsid();
+		ss.ss_size = 65536;
+		ss.ss_flags = 0;
+		ss.ss_sp = mmap(NULL, ss.ss_size, PROT_READ | PROT_WRITE,
+		    MAP_ANON | MAP_PRIVATE | MAP_STACK, -1, 0);
+		stk = mmap(NULL, 65536, PROT_READ | PROT_WRITE,
+		    MAP_ANON | MAP_PRIVATE | MAP_STACK, -1, 0);
+		pages = mmap(NULL, 8192, PROT_READ | PROT_WRITE,
+		    MAP_ANON | MAP_PRIVATE, -1, 0);
+		if (ss.ss_sp == MAP_FAILED || stk == MAP_FAILED ||
+		    pages == MAP_FAILED || sigaltstack(&ss, NULL) == -1)
+			_exit(2);
+		memset(&sa, 0, sizeof(sa));
+		sa.sa_sigaction = rg_handler;
+		sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+		sigemptyset(&sa.sa_mask);
+		if (sigaction(SIGTRAP, &sa, NULL) == -1)
+			_exit(2);
+		for (i = 0; i < 64; i++)
+			rg_vsig[i] = ~rg_vpat(i);
+
+		c = (struct rg_ctx *)(stk + 32768);
+		memset(c, 0, sizeof(*c));
+		for (i = 0; i < RG_NX; i++)
+			c->pat.x[i] = rg_xpat(i);
+		c->pat.x[8] = 39;		/* SYS_getppid */
+		c->pat.x[9] = RG_LOOPS;
+		c->pat.x[10] = (uint64_t)pages;
+		c->pat.sp = (uint64_t)c;
+		c->pat.nzcv = RG_NZCV_PAT;
+		c->pat.tpidr = RG_TPIDR_PAT;
+		c->pat.fpcr = RG_FPCR_PAT;
+		c->pat.fpsr = RG_FPSR_PAT;
+		for (i = 0; i < 64; i++)
+			c->vpat[i] = rg_vpat(i);
+		want = c->pat;
+
+		/* Nothing between the two __set_tcb calls reads the TCB. */
+		__asm volatile("mrs %0, tpidr_el0" : "=r"(tcb));
+		__set_tcb((void *)RG_TPIDR_PAT);
+		run(c);
+		__set_tcb((void *)tcb);
+
+		if (run == rg_syscall) {
+			want.x[0] = ppid;
+			want.nzcv &= ~RG_NZCV_C;
+		} else if (run == rg_interrupt)
+			want.x[9] = 0;
+		else if (run == rg_signal) {
+			want.fpcr = RG_FPCR_SIG;
+			want.fpsr = RG_FPSR_SIG;
+		}
+		bad = rg_diff(c, &want);
+		if (bad == NULL && run == rg_fault &&
+		    *(uint64_t *)(pages + 4096) != c->pat.x[0])
+			bad = "memory";
+		printf("%s: %s\n", name, bad == NULL ? "ok" : bad);
+		fflush(stdout);
+		_exit(0);
+	}
+	if (pid == -1 || waitpid(pid, &status, 0) != pid)
+		printf("%s: -1 %s\n", name, ename(errno));
+	else if (WIFSIGNALED(status))
+		printf("%s: killed %d\n", name, WTERMSIG(status));
+	else if (WEXITSTATUS(status) != 0)
+		printf("%s: exit %d\n", name, WEXITSTATUS(status));
+}
+#endif
+
+static void
+t_entry_regs(void)
+{
+	section("regs");
+#ifdef __aarch64__
+	printf("pattern: x0-x30 sp nzcv tpidr_el0 v0-v31 fpcr fpsr, "
+	    "tpidr_el0 set by __set_tcb\n");
+	printf("syscall: getppid from a pinned svc; x0 its result, "
+	    "nzcv C clear, x8 the number\n");
+	printf("fault: a load and a store on two untouched pages; "
+	    "x10 their address\n");
+	printf("interrupt: a loop of 2^27; x9 the counter, 0 at the end\n");
+	printf("signal: brk, a handler that clobbers x0-x18 nzcv v0-v31 "
+	    "fpsr fpcr; fpsr fpcr the handler's (not written back)\n");
+	rg_case("syscall", rg_syscall);
+	rg_case("fault", rg_fault);
+	rg_case("interrupt", rg_interrupt);
+	rg_case("signal", rg_signal);
+#else
+	printf("skipped: arm64 only\n");
+#endif
+}
+
+/*
  * TCP over the loopback (N6.6a5, D-5): a connection on 127.0.0.1 and one on ::1 walked
  * through listen, a non-blocking connect, accept, a line each way, a half close and EOF;
  * the errnos of a closed port, a bound port, a second connect, an unconnected send and a
@@ -2690,6 +3117,7 @@ static const struct {
 	{ "entry", t_entry },
 	{ "traps", t_entry_traps },
 	{ "idregs", t_entry_idregs },
+	{ "regs", t_entry_regs },
 };
 
 /*

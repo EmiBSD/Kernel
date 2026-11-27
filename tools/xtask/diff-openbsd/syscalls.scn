@@ -69,3 +69,12 @@ $ difftest syscalls entry
 # of their own after entry: syscalls/entry#2 and #3.
 $ difftest syscalls traps
 $ difftest syscalls idregs
+
+# The register round trip of the user-mode entry (decision 56, E2's first step), recorded
+# before the entry moves: x0-x30, sp, nzcv, tpidr_el0 (set by __set_tcb), v0-v31, fpcr and
+# fpsr loaded with a pattern in one asm block and compared after a system call (getppid from
+# an svc the binary pins itself), a resolved page fault, a counted loop that timer interrupts
+# cross, and a brk whose handler clobbers what it may and returns through sigreturn. A fixed
+# header names what each event may change (difftest.c cites the C lines); per case `ok` or the
+# first register that differs, never a value. arm64 only. After idregs: syscalls/entry#4.
+$ difftest syscalls regs
