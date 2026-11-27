@@ -762,8 +762,40 @@ pub(crate) fn efiboot_disk(
     )
 }
 
+/// The image `bench` and `diff-openbsd` boot EmiBSD from: the default staged tree with
+/// `kernel` at `/bsd` (stripped of its debug sections), the default DUID, no preset, at
+/// `out`; attached with `snapshot=on` (set here for the VMs this run starts) by every VM of
+/// the run, so each boot sees it as made. `kernel` is their own (`--profile release`,
+/// `diff-openbsd --kernel-dir`), so the shared image of `just efiboot-images-<arch>` is not
+/// theirs.
+pub(crate) fn tree_image(root: &Path, arch: Arch, kernel: &Path, out: &Path) -> Result<()> {
+    if arch != Arch::Arm64 {
+        return Err("an efiboot boot is arm64's until N10's first step enables amd64's".into());
+    }
+    image(
+        root,
+        &ImageSpec {
+            arch,
+            efi: default_efi(root, arch),
+            kernel: kernel.to_path_buf(),
+            root: default_tree(root, arch),
+            duid: DUID,
+            fstab_dev: None,
+            strip_debug: true,
+            selftest: None,
+        },
+        out,
+    )?;
+    boot::set_boot_medium(boot::BootMedium::Disk);
+    boot::set_boot_snapshot(true);
+    Ok(())
+}
+
 /// The prompt boot(8) prints when `boot.conf` set no `boot` command (`BOOT_CONF`).
 pub(crate) const BOOT_PROMPT: &str = "boot> ";
+
+/// What a boot without `--boot-flags` types at [`BOOT_PROMPT`].
+pub(crate) const BOOT_LINE: &str = "boot\n";
 
 /// The options of `smoke`, `smoke2` and `qemu` that are only an efiboot boot's, and the
 /// Limine ones an efiboot boot refuses (no command line, no modules).
@@ -790,7 +822,7 @@ pub(crate) struct EfiBoot {
 /// `-s`: `boot -s`); plain `boot` without them.
 fn boot_line(flags: Option<&str>) -> Result<String> {
     match flags {
-        None => Ok("boot\n".to_string()),
+        None => Ok(BOOT_LINE.to_string()),
         Some(f) => {
             let ok = f
                 .strip_prefix('-')

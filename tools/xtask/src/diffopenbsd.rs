@@ -40,8 +40,9 @@
 //!   `library_aslr=NO` and drops the kernel relink kit, so later boots spend no time
 //!   relinking, and halts. The installed disk is kept and reused (`installed` marker).
 //! - `run` (the default; fetches and installs first when needed): boots EmiBSD (the
-//!   multiprocessor kernel and the ramdisk, as the smokes do) and the installed OpenBSD
-//!   (with `-snapshot`, so the disk is never changed) side by side, each with a blank 64 MiB
+//!   multiprocessor kernel on an efiboot image of the staged tree, as the smokes do, `boot`
+//!   typed at its `boot> `) and the installed OpenBSD (with `-snapshot`, so the disk is
+//!   never changed) side by side, each with a blank 64 MiB
 //!   scratch disk, logs in on both, and runs every scenario set (`tools/xtask/diff-openbsd/
 //!   <set>.scn`, `scenario.rs`) as a shell script both fetch with ftp(1) from the HTTP
 //!   server. The two transcripts are cut into steps, normalized, compared, and checked
@@ -103,7 +104,7 @@ const DATA_DIR: &str = "tools/xtask/diff-openbsd";
 const EXPECTED_FILE: &str = "tools/xtask/diff-openbsd/expected.toml";
 /// The scenario sets, in the order they run (`setup` formats and mounts the scratch disk).
 const SETS: &[&str] = &["setup", "syscalls", "fs", "pipe", "nfs"];
-/// The installed system's root password (`install.conf`), the same as the ramdisk's.
+/// The installed system's root password (`install.conf`), the same as the smokes' staged tree's.
 pub(crate) const ROOT_PASSWORD: &str = "emibsd";
 /// Size of the OpenBSD VM's disk (sparse).
 const OPENBSD_DISK_SIZE: u64 = 8 << 30;
@@ -815,7 +816,8 @@ fn run(root: &Path, arch: Arch, kernel_dir: Option<&str>) -> Result<bool> {
     let obsd_scripts = scripts_for("openbsd", "sd1")?;
     let emi_scripts = scripts_for("emibsd", "sd0")?;
 
-    // EmiBSD: the smokes' MP kernel and ramdisk; its sd0 is a fresh blank 64 MiB disk.
+    // EmiBSD: the smokes' MP kernel on an efiboot image of the smokes' staged tree (the root on
+    // its partition `a`, sd1, attached with snapshot=on); its sd0 is a fresh blank 64 MiB disk.
     let kernel = match kernel_dir {
         Some(d) => root.join(d).join("bsd"),
         None => root
@@ -824,15 +826,8 @@ fn run(root: &Path, arch: Arch, kernel_dir: Option<&str>) -> Result<bool> {
             .join("debug")
             .join("bsd"),
     };
-    let image = boot::image_tagged(
-        root,
-        arch,
-        Some("diff"),
-        &kernel,
-        None,
-        boot::default_init(root, arch).as_deref(),
-        boot::default_ramdisk(root, arch).as_deref(),
-    )?;
+    let image = boot::image_path(root, arch, Some("diff"));
+    crate::efiboot::tree_image(root, arch, &kernel, &image)?;
     let ecmd = boot::qemu_command(
         root,
         arch,
@@ -856,6 +851,14 @@ fn run(root: &Path, arch: Arch, kernel_dir: Option<&str>) -> Result<bool> {
         server.url("difftest")
     );
     let emi = thread::spawn(move || {
+        // efiboot's `boot> ` waits (the image's boot.conf turns its timeout off): `boot`.
+        let mut evm = evm;
+        evm.wait_for(
+            crate::efiboot::BOOT_PROMPT,
+            boot::time_limit(Duration::from_secs(600)),
+        )
+        .and_then(|()| evm.send(crate::efiboot::BOOT_LINE))
+        .map_err(|e| e.to_string())?;
         session(
             evm,
             boot::time_limit(Duration::from_secs(600)),
