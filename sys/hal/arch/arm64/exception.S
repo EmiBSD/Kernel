@@ -231,9 +231,7 @@ handle_el0_sync:
 	mov	x0, sp
 	bl	{DO_EL0_SYNC}
 	do_ast
-	allow_ss
-	restore_registers 0
-	return
+	b	hal_user_return
 
 	.globl handle_el0_irq
 	.type handle_el0_irq,@function
@@ -243,9 +241,7 @@ handle_el0_irq:
 	mov	x0, sp
 	bl	{ARM_CPU_IRQ_EL0}
 	do_ast
-	allow_ss
-	restore_registers 0
-	return
+	b	hal_user_return
 
 	.globl handle_el0_fiq
 	.type handle_el0_fiq,@function
@@ -255,9 +251,7 @@ handle_el0_fiq:
 	mov	x0, sp
 	bl	{ARM_CPU_FIQ_EL0}
 	do_ast
-	allow_ss
-	restore_registers 0
-	return
+	b	hal_user_return
 
 	.globl handle_el0_error
 	.type handle_el0_error,@function
@@ -268,6 +262,21 @@ handle_el0_error:
 	bl	{DO_EL0_ERROR}
 	brk	0xf23
 	1: b 1b
+
+/*
+ * The return to user mode after a trap from it (the last three steps of the
+ * C's handle_el0_sync, _irq and _fiq): the single step armed again when the
+ * thread asked for it, the user's registers restored from the frame at sp,
+ * the trampoline. Entered by a branch, once the AST loop found nothing
+ * pending with IRQ and FIQ masked (they stay masked to the eret) and with sp
+ * the trap frame the arrival saved.
+ */
+	.globl hal_user_return
+	.type hal_user_return,@function
+hal_user_return:
+	allow_ss
+	restore_registers 0
+	return
 
 /*
  * A new thread's first return to user mode (the C's syscall_return without

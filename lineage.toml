@@ -13964,7 +13964,7 @@ lines = "L352-L357"
 
 [[module.fn]]
 lz = "sys/arch/arm64/arm64/syscall.rs::svc_handler"
-native = ["sys/hal/arch/arm64/syscall.rs::svc_handler", "enter", "sys/abi/arch/arm64.rs::svc", "sys/abi/arch/arm64.rs::call", "sys/abi/sysent.rs::dispatch", "sys/bsd/kern/abi_module.rs::legacy_syscall"]
+native = ["sys/hal/arch/arm64/usertrap.rs::SyncTrap::svc", "enter", "sys/abi/arch/arm64.rs::svc", "sys/abi/arch/arm64.rs::call", "sys/abi/sysent.rs::dispatch", "sys/bsd/kern/abi_module.rs::legacy_syscall"]
 kind = "split"
 lines = "L77-L107"
 
@@ -14302,14 +14302,14 @@ crate = "hal"
 lz = ["sys/arch/arm64/arm64/exception.rs"]
 status = "redesigned"
 license = "none"
-notes = "N4.8b: exception.S (Andrew Turner's licence in the .S) and trampoline.S (Mark Kettenis's ISC notice in the .S, a C source LZ had not ported: gap 3, the user's decision 7) pulled in by one global_asm; the handlers reached by sym operands; ci_trampoline_vectors is the CpuCore's word (CORE_TRAMPOLINE_VECTORS), set by set_bhb_mitigation (cpu_mitigate_spectre_bhb's table) or attached (none); N4.8d: the switch is the C's (tramp_return to pmap_tramp's root and the odd ASID, every EL0 vector back to the kernel's), pmap_tramp in pmap/backend.rs, the offset a const operand from pmap/layout.rs (TRAMP_ROOT_OFFSET)"
+notes = "N4.8b: exception.S (Andrew Turner's licence in the .S) and trampoline.S (Mark Kettenis's ISC notice in the .S, a C source LZ had not ported: gap 3, the user's decision 7) pulled in by one global_asm; the handlers reached by sym operands; ci_trampoline_vectors is the CpuCore's word (CORE_TRAMPOLINE_VECTORS), set by set_bhb_mitigation (cpu_mitigate_spectre_bhb's table) or attached (none); N4.8d: the switch is the C's (tramp_return to pmap_tramp's root and the odd ASID, every EL0 vector back to the kernel's), pmap_tramp in pmap/backend.rs, the offset a const operand from pmap/layout.rs (TRAMP_ROOT_OFFSET); decision 56 E2 (decision 58): hal_user_return is the one copy of the EL0 exit (allow_ss, restore_registers 0, return); the tables stay hal's own labels"
 
 [[module]]
 rust = "sys/hal/arch/arm64/trap.rs"
 crate = "hal"
 lz = ["sys/arch/arm64/arm64/trap.rs", "sys/arch/arm64/arm64/ast.rs", "sys/arch/arm64/arm64/intr.rs"]
 status = "redesigned"
-notes = "N4.8b: trap.c (do_el1h_sync, kdata_abort with pcb_onfault and the ci_idepth == 0 rule, do_el0_sync, udata_abort, emulate_msr with cpu.c's cpu_id_aa64* statics, serror, the error entries, dumpregs), ast.c's ast and intr.c's arm_cpu_irq/arm_cpu_fiq, entered by sym from exception.S; the MI calls through hal::cpu::trap::TrapHandler, ci_flush_bp/ci_serror/fault()'s ci_panicbuf through hal::cpu::trap::CpuHooks, db_ktrap through hal::cpu::trap::Debugger, the IRQ dispatch through hal::cpu::intr::IntrHardware; N4.8b b3a: the EL0 handlers hold the user frame as a UserFrame (a pointer borrowed per closure, a per-CPU flag against a second borrow; the frame's one unsafe), never across a call out; b3: proc_pc and proc_stack over it"
+notes = "N4.8b: trap.c (do_el1h_sync, kdata_abort with pcb_onfault and the ci_idepth == 0 rule, do_el0_sync, udata_abort, emulate_msr with cpu.c's cpu_id_aa64* statics, serror, the error entries, dumpregs), ast.c's ast and intr.c's arm_cpu_irq/arm_cpu_fiq, entered by sym from exception.S; the MI calls through hal::cpu::trap::TrapHandler, ci_flush_bp/ci_serror/fault()'s ci_panicbuf through hal::cpu::trap::CpuHooks, db_ktrap through hal::cpu::trap::Debugger, the IRQ dispatch through hal::cpu::intr::IntrHardware; N4.8b b3a: the EL0 handlers hold the user frame as a UserFrame (a pointer borrowed per closure, a per-CPU flag against a second borrow; the frame's one unsafe), never across a call out; b3: proc_pc and proc_stack over it; decision 56 E2: the EL0 handlers take usertrap.rs's Arrival (UserFrame repr(transparent)); the prologue, svc_handler's half, the FPU traps, the EL0 IRQ/FIQ/SError are its methods"
 
 [[module.fn]]
 lz = "sys/arch/arm64/arm64/trap.rs::accesstype"
@@ -14321,7 +14321,14 @@ rust = "sys/hal/arch/arm64/syscall.rs"
 crate = "hal"
 lz = ["sys/arch/arm64/arm64/syscall.rs"]
 status = "redesigned"
-notes = "N4.8b: svc_handler (the frame's fix-ups around hal::syscall::dispatch, mi_syscall_return through hal::cpu::trap::TrapHandler) and child_return (the running thread's pcb_tf, the kernel lock released, mi_child_return through the handler); N4.8b b4: the number truncated to an int as the C's (syscall.c:46: gap 2, the user's decision 6 of N4.8), the doc comment of svc_handler the user asked for (BRIEF-N4.8 section 13); N7.abi2 (decision 53): the machine's half only (curproc, the counter, the interrupts, the barrier skip), the ABI's handler called with a UserRegs (three methods: gprs, set_return with the carry, restart's -12) and child_return's frame writes the ABI's ChildFn (decision 56 E1: child_return gone, its writes are the ABI's CHILD_RETURN applied by switch.rs's build_frames through set_return, its KERNEL_UNLOCK and mi_child_return the kernel's start's); the number, the arguments, x0 and the carry, ERESTART and EJUSTRETURN are sys/abi/arch/arm64.rs's, mi_syscall_return its call to kernel::api::syscall_return"
+notes = "N4.8b: svc_handler (the frame's fix-ups around hal::syscall::dispatch, mi_syscall_return through hal::cpu::trap::TrapHandler) and child_return (the running thread's pcb_tf, the kernel lock released, mi_child_return through the handler); N4.8b b4: the number truncated to an int as the C's (syscall.c:46: gap 2, the user's decision 6 of N4.8), the doc comment of svc_handler the user asked for (BRIEF-N4.8 section 13); N7.abi2 (decision 53): the machine's half only (curproc, the counter, the interrupts, the barrier skip), the ABI's handler called with a UserRegs (three methods: gprs, set_return with the carry, restart's -12) and child_return's frame writes the ABI's ChildFn (decision 56 E1: child_return gone, its writes are the ABI's CHILD_RETURN applied by switch.rs's build_frames through set_return, its KERNEL_UNLOCK and mi_child_return the kernel's start's); the number, the arguments, x0 and the carry, ERESTART and EJUSTRETURN are sys/abi/arch/arm64.rs's, mi_syscall_return its call to kernel::api::syscall_return; decision 56 E2: svc_handler is usertrap.rs's SyncTrap::svc (returns the UserRegs), UserRegs' field pub(super) for it"
+
+[[module]]
+rust = "sys/hal/arch/arm64/usertrap.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/arm64/trap.rs", "sys/arch/arm64/arm64/syscall.rs"]
+status = "redesigned"
+notes = "Decision 56 (E2): a trap from user mode, the machine's half behind Arrival, the token the EL0 entry's assembly passes in x0 (repr(transparent) over the UserFrame; no constructor): begin (do_el0_sync's prologue: curproc, esr/far, intr_enable, uvmexp.traps, pcb_tf) -> (SyncTrap, Syndrome), irq, fiq, serror; SyncTrap (pc, sp, dump, flush_bp, fp_load, sve_load, emulate_msr, svc: svc_handler's machine half, handing out the ABI's UserRegs). Every method consumes or borrows the token, so the mechanics are reachable only by a handler the assembly entered"
 
 [[module]]
 rust = "sys/abi/arch/arm64.rs"

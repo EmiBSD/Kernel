@@ -104,8 +104,10 @@
 //! `arm_cpu_irq_el0` and `arm_cpu_fiq_el0`) is the thread's user context, which `pcb_tf`
 //! names (an entry from user mode starts on an empty kernel stack, so its frame is always at
 //! the same place) and which the code those handlers call out to reads and writes
-//! (`sendsig`, `sigreturn`, `PROC_PC`, `bsd`'s `setregs`): they hold it as a [`UserFrame`],
-//! borrowed one closure at a time, never across such a call; an interrupt's dispatch runs
+//! (`sendsig`, `sigreturn`, `PROC_PC`, `bsd`'s `setregs`): they hold it as a [`UserFrame`]
+//! (the EL0 entries but the AST's get it as an [`Arrival`], a token only the assembly makes:
+//! `usertrap.rs`'s arrival premise), borrowed one closure at a time, never across such a
+//! call; an interrupt's dispatch runs
 //! inside its borrow, so a handler that reached the frame again would be `panic(9)`, never a
 //! second `&mut`. The kernel-mode handlers take `&mut Trapframe`: their frame lies below the
 //! user frame on the kernel stack, and nothing names it but the handler.
@@ -141,6 +143,11 @@
 //!   frame's uniqueness rested on as a fact of `bsd`'s call graph); its frame writes are
 //!   [`set_exec_regs`], one borrow of the [`UserFrame`] (`hal::cpu::trap::set_exec_regs`), so
 //!   every write of a user frame goes through [`UserFrame::with`].
+//! - Decision 56 (E2): the EL0 entries' handlers take an [`Arrival`] (`usertrap.rs`), the
+//!   token of the frame the assembly saved, in place of the raw pointer, and reach the
+//!   frame's mechanics (the prologue, the FPU traps, `svc_handler`'s half, the dispatch of an
+//!   interrupt, the SError) only through it: the classification left here (`do_el0_sync`'s
+//!   `switch`) is the part `entry` takes over.
 //! - N4.8d: `do_el0_sync` reads the frame's `elr` or `sp` in the arm that uses it, not once
 //!   for every exception, and `udata_abort` hands `PROC_STACK(p)`, read from the frame it
 //!   holds, to the kernel's `MAP_STACK` check in `hal::cpu::trap::FaultSource::User { sp }`: a user
@@ -151,7 +158,6 @@ use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering, compiler_fence};
 
 use super::cpu::intr_enable;
-use super::fpu;
 use super::include::armreg::{
     EXCP_BRANCH_TGT, EXCP_BRK, EXCP_DATA_ABORT, EXCP_DATA_ABORT_L, EXCP_FP_SIMD, EXCP_FPAC,
     EXCP_INSN_ABORT, EXCP_INSN_ABORT_L, EXCP_MSR, EXCP_PC_ALIGN, EXCP_SOFTSTP_EL0,
@@ -165,6 +171,7 @@ use super::include::armreg::{
 use super::include::frame::Trapframe;
 use super::include::vmparam::VM_MAXUSER_ADDRESS;
 use super::switch::with_curpcb;
+use super::usertrap::{Arrival, Syndrome};
 use crate::assert::hal_panic;
 use crate::cpu::trap::{FaultSource, TrapHandler};
 use crate::cpu::{MAXCPUS, cpu_number, curcpu};
@@ -192,7 +199,7 @@ pub static CPU_ID_AA64ISAR2: AtomicU64 = AtomicU64::new(0);
 /// `READ_SPECIALREG(esr_el1)` and `READ_SPECIALREG(far_el1)`: the syndrome and the fault
 /// address of the exception this CPU is handling.
 #[inline]
-fn esr_far() -> (u64, u64) {
+pub(super) fn esr_far() -> (u64, u64) {
     let (esr, far): (u64, u64);
     // SAFETY: `mrs` of `ESR_EL1` and `FAR_EL1` reads two system registers of this CPU: no
     // memory, no stack, no flags; reading them changes nothing.
@@ -236,6 +243,7 @@ static USER_FRAME_BORROWED: [AtomicBool; MAXCPUS] = [const { AtomicBool::new(fal
 /// closure ([`Self::with`]) that calls nothing which reaches it again, and a second borrow on
 /// the CPU while one is in progress is `panic(9)` rather than a second `&mut`.
 #[derive(Clone, Copy)]
+#[repr(transparent)]
 pub(crate) struct UserFrame(NonNull<Trapframe>);
 
 impl UserFrame {
@@ -255,7 +263,7 @@ impl UserFrame {
 
     /// `p->p_addr->u_pcb.pcb_tf = frame`: this frame is the running thread's user context
     /// from here on.
-    fn make_current(self) {
+    pub(super) fn make_current(self) {
         with_curpcb(|pcb| {
             if let Some(pcb) = pcb {
                 pcb.pcb_tf.set(self.0.as_ptr());
@@ -278,8 +286,9 @@ impl UserFrame {
         }
         compiler_fence(Ordering::Acquire);
         // SAFETY: valid: the pointer is the frame `exception.S` saved for this EL0 entry (`x0`
-        // of `handle_el0_sync`, `handle_el0_irq`, `handle_el0_fiq`, `handle_el0_error` or
-        // `do_ast`: a whole, aligned `struct trapframe` it wrote at the top of the running
+        // of `handle_el0_sync`, `handle_el0_irq`, `handle_el0_fiq` and `handle_el0_error`,
+        // the `Arrival` their handlers get and only that assembly makes, `usertrap.rs`; or
+        // `do_ast`'s: a whole, aligned `struct trapframe` it wrote at the top of the running
         // thread's kernel stack, alive until the handler returns and the assembly restores
         // from it), or the running thread's `pcb_tf`, which only ever names that same place:
         // `make_current` stores an EL0 entry's frame (an entry from user mode starts on an
@@ -469,7 +478,7 @@ fn kdata_abort(frame: &mut Trapframe, esr: u64, far: u64, exe: bool) {
 /// `emulate_msr`: a read of an ID register from EL0 answered with the values userland may
 /// see (`cpu_identify_cleanup`'s): `true` when the access was emulated and the instruction
 /// skipped.
-fn emulate_msr(frame: &mut Trapframe, esr: u64) -> bool {
+pub(super) fn emulate_msr(frame: &mut Trapframe, esr: u64) -> bool {
     let field = |mask, shift| iss_msr_field(esr, mask, shift);
     let rt = field(ISS_MSR_RT_MASK, ISS_MSR_RT_SHIFT) as usize;
     let id = |a: &AtomicU64| a.load(Ordering::Relaxed);
@@ -600,7 +609,7 @@ pub(crate) extern "C" fn do_el1h_sync(frame: &mut Trapframe) {
 
 /// `serror`: reports a system error interrupt taken at `elr` (the frame's) and calls the
 /// CPU's handler, if any.
-fn serror(elr: Register) {
+pub(super) fn serror(elr: Register) {
     let (esr, far) = esr_far();
 
     crate::prf::printf(format_args!("SError: {elr:x} esr {esr:x} far {far:0x}\n"));
@@ -615,69 +624,56 @@ pub(crate) extern "C" fn do_el1h_error(frame: &mut Trapframe) {
 }
 
 /// `do_el0_sync`: the synchronous exception handler for EL0, called from `handle_el0_sync`
-/// (`exception.S`) with the saved registers, the running thread's [`UserFrame`] (the
-/// module's frame premise).
-pub(crate) extern "C" fn do_el0_sync(frame: *mut Trapframe) {
-    let frame = UserFrame::from_entry(frame);
-    if !have_curproc() {
-        hal_panic(format_args!("do_el0_sync: no curproc"));
-    }
+/// (`exception.S`) with the [`Arrival`] of the frame it saved (the module's frame premise):
+/// its prologue ([`Arrival::begin`]), `refreshcreds`, the class's handling, `userret`.
+pub(crate) extern "C" fn do_el0_sync(a: Arrival) {
     let h = handler("do_el0_sync");
-
-    let (esr, far) = esr_far();
+    let (t, Syndrome { esr, far }) = a.begin();
     let exception = esr_elx_exception(esr);
 
-    intr_enable();
-    UVMEXP.traps.fetch_add(1, Ordering::Relaxed);
-
-    frame.make_current();
     h.refreshcreds();
 
-    // The frame's `elr` and `sp`, read in the arms that use them (one borrow each, none on
+    // The frame's `elr` and `sp` are read in the arms that use them (one borrow each, none on
     // the system call's and the FP traps' paths).
-    let elr = || frame.with(|tf| tf.tf_elr as usize);
-    let sp = || frame.with(|tf| tf.tf_sp as usize);
-
     #[allow(
         clippy::match_same_arms,
         reason = "the C keeps the cases apart: one switch case per exception class"
     )]
     match exception {
         EXCP_UNKNOWN => {
-            crate::cpu::trap::flush_bp();
-            h.trapsignal(SIGILL, esr, ILL_ILLOPC, elr());
+            t.flush_bp();
+            h.trapsignal(SIGILL, esr, ILL_ILLOPC, t.pc());
         }
-        EXCP_SVE => fpu::sve_load_current(),
-        EXCP_FP_SIMD | EXCP_TRAP_FP => fpu::load_current(),
+        EXCP_SVE => t.sve_load(),
+        EXCP_FP_SIMD | EXCP_TRAP_FP => t.fp_load(),
         EXCP_BRANCH_TGT => {
-            crate::cpu::trap::flush_bp();
-            h.trapsignal(SIGILL, esr, ILL_BTCFI, elr());
+            t.flush_bp();
+            h.trapsignal(SIGILL, esr, ILL_BTCFI, t.pc());
         }
-        EXCP_MSR if frame.with(|tf| emulate_msr(tf, esr)) => {}
+        EXCP_MSR if t.emulate_msr(esr) => {}
         EXCP_MSR | EXCP_FPAC => {
-            crate::cpu::trap::flush_bp();
-            h.trapsignal(SIGILL, esr, ILL_ILLOPC, elr());
+            t.flush_bp();
+            h.trapsignal(SIGILL, esr, ILL_ILLOPC, t.pc());
         }
-        EXCP_SVC => super::syscall::svc_handler(frame),
-        EXCP_INSN_ABORT_L => udata_abort(esr, far, true, sp()),
+        EXCP_SVC => crate::syscall::enter(&t.svc()),
+        EXCP_INSN_ABORT_L => udata_abort(esr, far, true, t.sp()),
         EXCP_PC_ALIGN => {
-            crate::cpu::trap::flush_bp();
-            h.trapsignal(SIGBUS, esr, BUS_ADRALN, elr());
+            t.flush_bp();
+            h.trapsignal(SIGBUS, esr, BUS_ADRALN, t.pc());
         }
         EXCP_SP_ALIGN => {
-            crate::cpu::trap::flush_bp();
-            h.trapsignal(SIGBUS, esr, BUS_ADRALN, sp());
+            t.flush_bp();
+            h.trapsignal(SIGBUS, esr, BUS_ADRALN, t.sp());
         }
-        EXCP_DATA_ABORT_L => udata_abort(esr, far, false, sp()),
-        EXCP_BRK => h.trapsignal(SIGTRAP, esr, TRAP_BRKPT, elr()),
-        EXCP_SOFTSTP_EL0 => h.trapsignal(SIGTRAP, esr, TRAP_TRACE, elr()),
+        EXCP_DATA_ABORT_L => udata_abort(esr, far, false, t.sp()),
+        EXCP_BRK => h.trapsignal(SIGTRAP, esr, TRAP_BRKPT, t.pc()),
+        EXCP_SOFTSTP_EL0 => h.trapsignal(SIGTRAP, esr, TRAP_TRACE, t.pc()),
         _ => {
             // panic("Unknown userland exception %x esr_el1 %lx", exception, esr);
             // USERLAND MUST NOT PANIC MACHINE
             // only here to debug !?!?
-            crate::prf::printf(format_args!("exception {exception:x} esr_el1 {esr:x}\n"));
-            frame.with(|tf| dumpregs(tf));
-            crate::cpu::trap::flush_bp();
+            t.dump(exception, esr);
+            t.flush_bp();
             crate::sync::klock::kernel_lock();
             h.sigexit(SIGILL);
             // KERNEL_UNLOCK(): sigexit does not return.
@@ -688,10 +684,8 @@ pub(crate) extern "C" fn do_el0_sync(frame: *mut Trapframe) {
 }
 
 /// `do_el0_error`: an SError taken at EL0, called from `handle_el0_error` (`exception.S`).
-pub(crate) extern "C" fn do_el0_error(frame: *mut Trapframe) {
-    let elr = UserFrame::from_entry(frame).with(|tf| tf.tf_elr);
-    serror(elr);
-    hal_panic(format_args!("do_el0_error"));
+pub(crate) extern "C" fn do_el0_error(a: Arrival) {
+    a.serror();
 }
 
 /// `dumpregs`: prints a trap frame.
@@ -728,7 +722,7 @@ pub(crate) extern "C" fn ast(tf: *mut Trapframe) {
 }
 
 /// `arm_cpu_irq`: `ci_idepth` around the controller's dispatch (`arm_irq_dispatch`).
-fn irq(frame: &mut Trapframe) {
+pub(super) fn irq(frame: &mut Trapframe) {
     let ci = curcpu();
 
     UVMEXP.intrs.fetch_add(1, Ordering::Relaxed);
@@ -738,7 +732,7 @@ fn irq(frame: &mut Trapframe) {
 }
 
 /// `arm_cpu_fiq`: as [`irq`] (`arm_fiq_dispatch`).
-fn fiq(frame: &mut Trapframe) {
+pub(super) fn fiq(frame: &mut Trapframe) {
     let ci = curcpu();
 
     UVMEXP.intrs.fetch_add(1, Ordering::Relaxed);
@@ -759,13 +753,14 @@ pub(crate) extern "C" fn arm_cpu_fiq(frame: &mut Trapframe) {
 }
 
 /// `arm_cpu_irq` from `handle_el0_irq`: an interrupt taken in user mode, whose frame is the
-/// running thread's [`UserFrame`]; the dispatch runs inside its borrow (the frame premise).
-pub(crate) extern "C" fn arm_cpu_irq_el0(frame: *mut Trapframe) {
-    UserFrame::from_entry(frame).with(irq);
+/// running thread's [`UserFrame`], passed as its [`Arrival`]; the dispatch runs inside its
+/// borrow (the frame premise).
+pub(crate) extern "C" fn arm_cpu_irq_el0(a: Arrival) {
+    a.irq();
 }
 
 /// `arm_cpu_fiq` from `handle_el0_fiq`, as [`arm_cpu_irq_el0`].
-pub(crate) extern "C" fn arm_cpu_fiq_el0(frame: *mut Trapframe) {
-    UserFrame::from_entry(frame).with(fiq);
+pub(crate) extern "C" fn arm_cpu_fiq_el0(a: Arrival) {
+    a.fiq();
 }
 /* </CODE> */

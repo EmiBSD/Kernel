@@ -33,15 +33,15 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! arm64's `syscall.c`, its machine half: the `svc` trap's mechanics around the ABI's
-//! handler; [`UserRegs`], the view of the trapping thread's user registers that handler gets;
-//! and the write of a return register with the carry, which a forked child's frame also
-//! takes (`switch.rs`'s `build_frames`).
+//! arm64's `syscall.c`, its machine half: [`UserRegs`], the view of the trapping thread's
+//! user registers the ABI's handler gets, and the write of a return register with the carry,
+//! which a forked child's frame also takes (`switch.rs`'s `build_frames`). The `svc` trap's
+//! mechanics around the handler are `usertrap.rs`'s (`SyncTrap::svc`).
 //!
 //! Upstream: sys/arch/arm64/arm64/syscall.c @ 3ce1f3f79392
 //! LZ: sys/arch/arm64/arm64/syscall.rs@3c62ede68802
 //!
-//! The entry keeps what is the machine's: the running thread checked, the counter, the
+//! The trap keeps what is the machine's: the running thread checked, the counter, the
 //! interrupts the user had, the speculation barrier after the `svc` skipped. Everything that
 //! is OpenBSD's system call convention (which register holds the number, the six argument
 //! registers, `x0` and the carry for the result, when to rewind to the `svc`, `EJUSTRETURN`,
@@ -72,25 +72,24 @@
 //! - The frame is the running thread's `UserFrame` (`trap.rs`'s frame premise), borrowed for
 //!   one closure at a time and never across the ABI's call: the call reaches the same frame
 //!   through `pcb_tf` (`sigreturn`, `execve`'s `setregs`, `pin_check`'s `PROC_PC`). A system
-//!   call borrows it three times (the entry, the ABI's read, its write or rewind) where it
-//!   was twice before decision 53, accepted until the N7 close measures it.
+//!   call borrows it four times (the entry, the ABI's read, `mi_syscall`'s `PROC_PC` and
+//!   `PROC_STACK`, the ABI's write or rewind) where it was three before decision 53, accepted
+//!   until the N7 close measures it.
+//! - Decision 56 (E2): `svc_handler`'s machine half is `usertrap.rs`'s `SyncTrap::svc`, which
+//!   returns the [`UserRegs`] for the ABI's handler instead of calling it: the handler is
+//!   called by the classification of the trap (`entry`), not through a registration.
 
-use core::sync::atomic::Ordering;
-
-use super::cpu::intr_enable;
 use super::gpr::{Gpr, NGPR};
-use super::include::armreg::{PSR_C, PSR_I};
+use super::include::armreg::PSR_C;
 use super::include::frame::Trapframe;
 use super::trap::UserFrame;
-use crate::assert::hal_panic;
 use crate::syscall::Register;
-use crate::vm::uvmexp::UVMEXP;
 
 /// The `svc` instruction's length.
 const SVC_LEN: Register = 4;
 /// The speculation barrier every `svc` of OpenBSD's libc (and `sigcode`) is followed by
 /// (`dsb nsh; isb`), which the entry skips: the user resumes after it.
-const BARRIER_LEN: Register = 8;
+pub(super) const BARRIER_LEN: Register = 8;
 
 /// The user registers of the thread whose system call (or first return from `fork`) is
 /// being answered: its trap frame, valid for the handler's call alone.
@@ -99,7 +98,7 @@ const BARRIER_LEN: Register = 8;
 /// `NonNull`): the handler gets a `&UserRegs` that cannot outlive its call or reach another
 /// thread. Each method is one borrow of the frame for a closure of `hal`'s own that calls
 /// nothing (`UserFrame::with`'s premise).
-pub struct UserRegs(UserFrame);
+pub struct UserRegs(pub(super) UserFrame);
 
 impl UserRegs {
     /// The registers `which`, read in one borrow of the frame.
@@ -136,40 +135,6 @@ pub(super) fn set_return(tf: &mut Trapframe, reg: Gpr, value: Register, error: b
     } else {
         tf.tf_spsr &= !(PSR_C as Register); // carry bit
     }
-}
-
-/// `svc_handler`: a system call from EL0 (`do_el0_sync`, `EXCP_SVC`), on the trap frame of
-/// the running thread.
-///
-/// The machine's part of the C's handler; the convention (the number in `x8` truncated to
-/// an `int`, the arguments in `x0`..`x5`, the result in `x0` with the carry, the restart,
-/// `EJUSTRETURN`, `mi_syscall_return`) is the ABI's handler's, called with the frame as a
-/// [`UserRegs`] after the barrier is skipped, so `pin_check` reads the pc past it
-/// (`PROC_PC`, `syscall_mi.h`) as on OpenBSD.
-pub(crate) fn svc_handler(frame: UserFrame) {
-    if crate::cpu::curcpu().curproc().is_null() {
-        hal_panic(format_args!("svc_handler: no curproc"));
-    }
-
-    UVMEXP.syscalls.fetch_add(1, Ordering::Relaxed);
-
-    // One borrow of the frame before the call: whether the user had interrupts enabled, and
-    // the barrier skipped.
-    let user_irqs = frame.with(|tf| {
-        // Skip over speculation-blocking barrier.
-        tf.tf_elr += BARRIER_LEN;
-        tf.tf_spsr as u64 & PSR_I == 0
-    });
-
-    // Re-enable interrupts if they were enabled previously
-    if user_irqs {
-        intr_enable();
-    }
-
-    // The frame is not borrowed across the call: the handler borrows it for each of
-    // `UserRegs`' methods, and what it calls may read or rewrite it through `pcb_tf`
-    // (`sigreturn`, `execve`'s `setregs`, `pin_check`'s `PROC_PC`).
-    crate::syscall::enter(&UserRegs(frame));
 }
 
 // `Gpr` indexes `tf_x` whole: `tf_x` is exactly `[Register; NGPR]`.
