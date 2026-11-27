@@ -30,10 +30,13 @@ Everything in this repository (code, comments, docs, commits) is in English.
 - Every commit carries its numbers: `LZ:` per source file, `Unsafe:` when a count moved
   (`.claude/rules/git-commits.md`). `cargo xtask unsafe-report --check` stays green.
 - **Zero `unsafe` in the kernel** (`docs/ZERO_UNSAFE.md` section 0, the plan in force since
-  2026-10-16, decisions 20-24): four crates, `sys/kernel/` and `sys/abi/` with
-  `#![forbid(unsafe_code)]` at their roots (the compiler refuses one `unsafe`), `sys/hal/` the
-  only crate with `unsafe` (the hardware and the runtime, every site with a `// SAFETY:` proof,
-  a ceiling that only the user raises), and `sys/` (`bsd`, the LZ tree) the legacy that is
+  2026-10-16, decisions 20-24): five crates, `sys/kernel/` and `sys/abi/` with
+  `#![forbid(unsafe_code)]` at their roots (the compiler refuses one `unsafe`), `sys/entry/`
+  (decisions 56 and 58, `docs/ENTRY.md`) safe Rust under `#![deny(unsafe_code)]` with exactly
+  one allowed item, the `#[unsafe(no_mangle)]` symbol `hal`'s trap assembly calls (`unsafe` 1,
+  `asm` 0, held by `unsafe-report --check` and `entry-check`), `sys/hal/` the only crate with
+  `unsafe` blocks and assembly (the hardware and the runtime, every site with a `// SAFETY:`
+  proof, a ceiling that only the user raises), and `sys/` (`bsd`, the LZ tree) the legacy that is
   replaced subsystem by subsystem and deleted at N9. `abi` is linked into the kernel image
   (decision 47) and holds no logic (`.claude/rules/abi.md`). Section 0 of that document and its one diagram are the
   only description of the architecture; `unsafe-core.toml` and the per-module `forbid` of v1
@@ -57,12 +60,13 @@ lz/PINNED.md                 the LZ commit this tree is synced to (machine-read 
 lineage.toml                 native module -> LZ files and items, the source of truth for provenance
 lz-sync.toml                 one triage record per LZ commit after the pin
 unsafe-budget.toml           per-subsystem unsafe totals that `just ci` enforces
-sys/                         six purpose directories (the user's layout of 2026-11-26)
+sys/                         seven purpose directories (the user's layout of 2026-11-26, and entry)
   hal/                       crate `hal`: the hardware (arch/amd64, arch/arm64, machine, moved here at N2) and the runtime; the ONLY unsafe
                              groups: sync/ mem/ ds/ cpu/ vm/ dev/ (docs/ARCHITECTURE.md)
   kernel/                    crate `kernel`: every decision of the OS, #![forbid(unsafe_code)] at the root
                              groups: proc/ sched/ sig/ time/ file/ tty/ base/ dev/ vm/ fs/ net/ crypto/
   abi/                       crate `abi`: OpenBSD's userland interface, linked into the kernel image, forbid, no logic
+  entry/                     crate `entry`: classifies every trap from userland and calls down (abi, kernel::trap, hal); safe Rust, one exported symbol, no state, nothing registered (decisions 56, 58)
   lib/libkern/ lib/libz/     leaf crates, forbid(unsafe_code) at their roots (decision 55)
   lib/sysdefs/               crate `sysdefs`: OpenBSD's basic types, constants and #[repr(C)] ABI structures, the data under every layer (decision 54); forbid, no logic
                              the three leaf crates are grouped by purpose, root = lib.rs only (hal-check L1): sysdefs base/proc/sig/time/vm/file/fs/dev/net/netinet/netinet6, libkern string/mem/hash/rand, libz base/deflate/inflate/check
@@ -98,7 +102,8 @@ Two provenance rules:
 | `just check-drift` | `cargo xtask lz drift --strict`: no LZ commit after the pin without a record |
 | `just check-unsafe` | `cargo xtask unsafe-report --check`: no subsystem over its budget |
 | `just check-hal` | `cargo xtask hal-check`: no `pub unsafe fn`, a `// SAFETY:` on every block, no `static mut`, `hal` under `hal_ceiling` |
-| `just check-abi` | `cargo xtask abi-check`: `sys/abi/` holds no logic (decision 25) and names `kernel` only through `kernel::api`, `hal` only through `hal::syscall`'s types and `set_handler`, `sysdefs` freely (R6, decisions 47, 52 and 54) |
+| `just check-abi` | `cargo xtask abi-check`: `sys/abi/` holds no logic (decision 25) and names `kernel` only through `kernel::api`, `hal` only through `hal::syscall`'s passive types (it registers nothing, decision 56), `sysdefs` freely (R6, decisions 47, 52 and 54) |
+| `just check-entry` | `cargo xtask entry-check`: `sys/entry/` holds no assembly, state, macro or registration, one allowed item (the export, pinned to `hal`'s `UserTrapFn`), the closed class list with each class's callee, and names only `abi`'s svc function, `kernel::trap`'s functions and `hal`'s trap tokens (decisions 56 and 58, `docs/ENTRY.md` section 5) |
 | `just check` | build (arm64), clippy, fmt, `lz check`, `unsafe-report --check`, `just test`: no QEMU; runs at the milestone close, not per commit (the user's decision of 2026-10-16: develop first, compile later) |
 | `just ci` | all of the above plus the smokes, drift and `diff-openbsd`; run at the milestone close, not per slice (the user's decision of 2026-10-16) |
 | `just ci-full` | `ci` with every smoke on `-smp 4` (not 2), then the installer end to end on the archs of `EMIBSD_ARCHS` (`smoke-install-*`, needs `just comp`; amd64's recipes at N10); green before a milestone is met, except N2, whose close runs without it; N3's close runs it for both (decision 24) |
@@ -153,7 +158,9 @@ the session.
 - `unsafe` without a `// SAFETY:` comment; `unsafe fn` without a `# Safety` section.
 - `static mut`. Use atomics, `hal`'s `Mutexed<T>`/`Rwlocked<T>` or `OnceStatic<T>` (in `bsd`
   legacy code, the inherited `Mutex` and `StaticCell` stay until their file is replaced).
-- `unsafe` in `sys/kernel/` or `sys/abi/` (the build refuses it); a path added to `hal`'s
+- `unsafe` in `sys/kernel/` or `sys/abi/` (the build refuses it), or in `sys/entry/` beyond its
+  one exported symbol's attribute; a symbol of `entry` named or stored anywhere but the `bl` of
+  `hal`'s EL0 handlers; a path added to `hal`'s
   ceiling or a new bridge without a `bridges.toml` row.
 - Raise a subsystem's unsafe budget, bump `lz/PINNED.md` or drop an LZ file without the user.
 - Touch amd64 before N10 (decision 44): build, boot, fix or redesign `sys/bsd/arch/amd64/`, `sys/boot/amd64/`,
