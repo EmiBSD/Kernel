@@ -1626,8 +1626,8 @@ smoke-nvme: (build-amd64 "--features qemu") build-init-amd64 (build-arm64 "--fea
 ahci_duid := "41484349524f4f54"
 
 smoke-ahci: (build-amd64 "--features qemu") build-init-amd64 (build-arm64 "--features qemu") build-init-arm64 efiboot-images-arm64
-    @test {{ramdisks}} || \
-        { echo "smoke-ahci: no ramdisk image; run just userland first"; exit 1; }
+    @test {{ramdisks}}{{ if has_arm64 == "true" { " -a -f target/userland/arm64/ramdisk.ffs" } else { "" } }} || \
+        { echo "smoke-ahci: no userland (ramdisk.ffs, which nvme-root copies onto the AHCI disk, or the staged root and makefs); run just userland first"; exit 1; }
     {{no_amd64}}{{xtask}} nvme-root --arch amd64 --duid {{ahci_duid}} --out ahci-amd64.img --root-dev sd2a
     {{xtask}} smoke {{reject}} {{smp}} --arch amd64 --kernel target/{{amd64}}/debug/bsd --ramdisk none --expect-ramdisk \
         --ahci ahci-amd64.img --cmdline "bootduid={{ahci_duid}}" --until-seen \

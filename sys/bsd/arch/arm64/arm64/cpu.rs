@@ -86,7 +86,9 @@
 //!   `trampoline.S`) and a no-op `ci_flush_bp`; `psci_features` (`cpu_psci_init`, only with
 //!   `cpu-idle-states`) and
 //!   `psci_cpu_suspend` (`cpu_psci_idle_cycle`) stay reported: no idle state is ever picked.
-//!   `cpu_start_secondary` still starts the APs through Limine, never `psci_cpu_on`.
+//!   `cpu_start_secondary` starts the APs through the boot entry's `BootMp::start`, which
+//!   is psci(4)'s `psci_cpu_on` (`bootarg_mp_start`, `machdep.rs`; Limine's MP request
+//!   until its removal, 2026-11-26).
 //! - `ci_trampoline_vectors` records which `trampoline_vectors_*` table the C picks, as a
 //!   `TRAMPOLINE_VECTORS_*` number; `cpu_mitigate_spectre_bhb` hands the choice to `hal`
 //!   (`hal::arch::arm64::exception::set_bhb_mitigation`, N4.8b), whose `trampoline.S` the

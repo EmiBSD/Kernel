@@ -234,8 +234,9 @@ pub struct BootInfo {
     pub efi_memmap: Option<EfiMemmap>,
     /// The processors, when the kernel is built `MULTIPROCESSOR` and the bootloader found them.
     pub mp: Option<BootMp>,
-    /// `boothowto` as the boot loader passed it (boot(8)'s `howto` argument on amd64; 0 on
-    /// arm64, whose flags come from `/chosen`'s `bootargs`, the command line).
+    /// `boothowto` as the boot loader passed it (boot(8)'s `howto` argument on amd64,
+    /// efiboot's `/chosen/openbsd,boothowto` on arm64); [`BootInfo::boothowto`] ors in the
+    /// flags of the command line (arm64's `/chosen/bootargs`).
     pub howto: i32,
     /// The boot disk's label DUID as the boot loader passed it (`BOOTARG_BOOTDUID`, arm64's
     /// `openbsd,bootduid`), `None` without one.

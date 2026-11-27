@@ -735,6 +735,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_limine_image_subcommand_is_refused() {
+        // Before any file is read: the arm names the replacement and N10's first step.
+        for args in [
+            &["image"][..],
+            &["image", "--arch", "amd64", "--kernel", "k"],
+        ] {
+            let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            let e = run(&args).unwrap_err().to_string();
+            assert!(e.starts_with("image: retired with Limine"), "{e}");
+            assert!(
+                e.contains("efiboot-image") && e.contains("N10's first step"),
+                "{e}"
+            );
+        }
+    }
+
+    #[test]
     fn lz_flat_reads_the_bsd_and_boot_directories_as_lz_lays_them_out() {
         for (native, lz) in [
             ("sys/bsd/kern/kern_exec.rs", "sys/kern/kern_exec.rs"),

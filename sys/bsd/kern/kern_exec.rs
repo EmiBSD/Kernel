@@ -74,12 +74,13 @@
 //!   a copy (`CredRef::new`), given to the thread (`set_cred`) and the process, where the C
 //!   `crdup`s the shared credentials and edits them in place; the ids that result are the
 //!   C's.
-//! - A memory image (`ExecPackage::ep_image`, `ExecFile::Image`) is no longer exec'd: the
-//!   body always runs `check_exec` with the `namei` data, so every check the C makes (the
-//!   attribute, mount, access and open checks, set[ug]id) applies to every exec.
-//!   `check_exec`'s branch without `namei` data and `exec_comm`'s path fallback have no
-//!   caller left (they go with this file's redesign); the image reads of `exec_subr.rs` and
-//!   `exec_elf.rs` stay for the ELF loader's host tests, which hand it images.
+//! - A memory image (`ExecPackage::ep_image`, `ExecFile::Image`) is no longer exec'd (the
+//!   removal of Limine, 2026-11-26): `check_exec` takes the `namei` data as `&mut Nameidata`,
+//!   not an `Option`, so every exec runs every check the C makes (VREG, MNT_NOEXEC, the
+//!   execpromises refusal, MNT_NOSUID, VOP_ACCESS(VEXEC) and the x bits), as the C has no
+//!   other path. `exec_comm`'s path fallback has no caller left (it goes with this file's
+//!   redesign); the image reads of `exec_subr.rs` and `exec_elf.rs` stay for the ELF
+//!   loader's host tests, which hand it images.
 //! - The set[ug]id stdin/stdout/stderr fix-up opens `/dev/null` with `cdevvp(getnulldev())`:
 //!   the device switch (`<sys/conf.h>`) is not ported, so a set[ug]id exec with one of the
 //!   three descriptors closed reports it and fails (the C would succeed).
@@ -231,8 +232,9 @@ pub(crate) fn namei_pnbuf_put(ndp: &mut Nameidata<'_>) {
 /// check exec: given an "executable" described in the exec package's namei info, see what
 /// we can do with it.
 ///
-/// ON ENTRY: exec package with appropriate namei info (`ndp`; `None` for a memory image),
-/// proc pointer of exec'ing proc, NO SELF-LOCKED VNODES.
+/// ON ENTRY: exec package with appropriate namei info (`ndp`, always there: every exec
+/// looks its file up, so no caller can skip the checks below), proc pointer of exec'ing
+/// proc, NO SELF-LOCKED VNODES.
 ///
 /// ON EXIT: error: nothing held, etc. exec header still allocated. ok: filled exec package,
 /// one locked vnode.
@@ -245,18 +247,8 @@ pub(crate) fn namei_pnbuf_put(ndp: &mut Nameidata<'_>) {
 pub fn check_exec(
     p: &Proc,
     epp: &mut ExecPackage<'_>,
-    ndp: Option<&mut Nameidata<'_>>,
+    ndp: &mut Nameidata<'_>,
 ) -> Result<(), Errno> {
-    let Some(ndp) = ndp else {
-        // A memory image (see the module's deviations): no lookup, no vnode checks; the
-        // header is the image's first bytes.
-        let image = epp.ep_image.ok_or(Errno::ENOEXEC)?;
-        let n = image.len().min(epp.ep_hdr.len());
-        epp.ep_hdr[..n].copy_from_slice(&image[..n]);
-        epp.ep_hdrvalid = n;
-        return check_exec_switch(p, epp, None);
-    };
-
     ndp.ni_cnd.cn_nameiop = LOOKUP;
     ndp.ni_cnd.cn_flags = FOLLOW | LOCKLEAF | SAVENAME | EXECPATH;
     if epp.ep_flags & EXEC_INDIR != 0 {
@@ -533,7 +525,7 @@ fn execve_common(p: &Proc, path: usize, uargp: usize, uenvp: usize) -> Result<()
     };
 
     // see if we can run it.
-    if let Err(error) = check_exec(p, &mut pack, Some(&mut nid)) {
+    if let Err(error) = check_exec(p, &mut pack, &mut nid) {
         return freehdr(error);
     }
 

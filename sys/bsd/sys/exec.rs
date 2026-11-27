@@ -66,8 +66,9 @@
 //! a.out `struct exec` are not used by any configured format.
 //!
 //! ## Deviations
-//! - The executable is a vnode (`ep_vp`, M8) or, for the `init` boot module until a root
-//!   file system exists, a memory image (`ep_image`). A vmcmd that reads the file names it
+//! - The executable is a vnode (`ep_vp`, M8) or a memory image (`ep_image`: the `init`
+//!   boot module's until the removal of Limine, 2026-11-26; since, only the ELF loader's
+//!   host tests set it, as `check_exec` always looks the file up). A vmcmd that reads the file names it
 //!   with an [`ExecFile`]: the vnode (referenced as `new_vmcmd` does) or the image, read at
 //!   `ev_offset`.
 //! - `exec_vmcmd_set` is a `Vec` instead of the growable array with
