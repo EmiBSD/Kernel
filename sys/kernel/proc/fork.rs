@@ -103,6 +103,16 @@
 //!   threads only).
 //! - `RLIMIT_NPROC` is enforced for users other than root (`EAGAIN`, as kern_fork.c:386-393;
 //!   LZ reported it unported; the user's decision 12 of N4.6).
+//! - Decision 56, E1 (the way out): [`thread_start`] returns the exit gate's token
+//!   (`hal::cpu::usertrap::UserExit`): after every start that returns it runs the AST loop
+//!   (`kernel::trap::user_exit`, the C's `do_ast` after `proc_trampoline`'s `func(arg)`), and
+//!   `hal`'s trampoline goes straight to the restore. A forked child's `child_return` is the
+//!   kernel's own (`KERNEL_UNLOCK`, then `mi_child_return`), where it went through `bsd`'s
+//!   glue and `hal` (`ProcGlue::child_return`, gone); its return registers are the ABI's
+//!   `hal::syscall::ChildReturn`, handed over once by [`init`] and given by `cpu_fork` to
+//!   `hal::cpu::thread::thread_setup` (a `UserStart` with the user stack and TCB) for a
+//!   child started `ChildReturn` or `ForkReturn`, which writes them while it builds the
+//!   frame (U5).
 
 use crate::time::clock::TimespecExt;
 use core::ffi::c_void;

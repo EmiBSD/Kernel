@@ -1237,7 +1237,9 @@ pub fn setregs(p: &Proc, pack: &ExecPackage<'_>, stack: Vaddr, _arginfo: &PsStri
     fpu_drop();
 
     // The frame cleared, sp, lr and elr the entry point, EL0 with DIT: `hal`'s, on the
-    // running thread's frame, in one borrow (decision 56's U8).
+    // running thread's frame, in one borrow (decision 56's U8), which is `p`'s: every caller
+    // execs the running thread (`kern_exec`'s `sys_execve`).
+    crate::kassert!(ptr::from_ref(p).addr() == hal::cpu::thread::current_addr());
     hal::cpu::trap::set_exec_regs(stack.as_usize(), pack.ep_entry);
 }
 
