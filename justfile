@@ -172,9 +172,15 @@ efiboot-images-arm64: (build-arm64 "--features qemu") build-init-arm64 efiboot-a
 run-amd64: image-amd64
     {{xtask}} qemu --arch amd64
 
+# OpenBSD's makefs for the host, which `just userland` builds and every efiboot image needs:
+# listed first among a recipe's dependencies, so the recipe stops before any build without it.
+_makefs-arm64:
+    @test -x target/userland/arm64/host/bin/makefs || \
+        { echo "no arm64 makefs (target/userland/arm64/host/bin/makefs); run just userland first" >&2; exit 1; }
+
 # arm64 boots the shared efiboot image of the staged tree (`snapshot=on`: the session's writes
 # go when QEMU stops); type `boot` at efiboot's `boot> ` (boot(8)'s flags too: `boot -s`).
-run-arm64: efiboot-images-arm64
+run-arm64: _makefs-arm64 efiboot-images-arm64
     {{xtask}} qemu --arch arm64 --image tree
 
 # `just smoke`: every recipe of `smokes`, `jobs` at a time (`cargo xtask smoke-all`,
@@ -3991,7 +3997,7 @@ ci-full:
 dist-arm64:
     USER=build EMIBSD_BUILD_HOST=emibsd EMIBSD_BUILD_DIR=/usr/src/sys {{ just_executable() }} --justfile {{ justfile() }} _dist-arm64
 
-_dist-arm64: dist-clean-tree build-release-arm64 build-init-arm64 efiboot-arm64
+_dist-arm64: dist-clean-tree _makefs-arm64 build-release-arm64 build-init-arm64 efiboot-arm64
     #!/usr/bin/env zsh
     set -eu
     setopt pipefail

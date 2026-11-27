@@ -271,23 +271,6 @@ fn need(path: &Path, what: &str, recipe: &str) -> Result<()> {
     }
 }
 
-/// The efiboot that boots the install media: amd64's `BOOTX64.EFI` (`just efiboot-amd64`),
-/// arm64's `BOOTAA64.EFI` (`just efiboot-arm64`). The media need it: since the removal of
-/// Limine (2026-11-26) there is no other boot loader.
-fn media_efiboot(root: &Path, arch: Arch) -> Result<PathBuf> {
-    let efi = crate::efiboot::default_efi(root, arch);
-    if efi.is_file() {
-        Ok(efi)
-    } else {
-        Err(format!(
-            "{}: no efiboot for the install media; run `just efiboot-{}` first",
-            efi.display(),
-            arch.name()
-        )
-        .into())
-    }
-}
-
 /// `boot> ` answered: efiboot's prompt waits (the media's `boot.conf` turns its timeout off),
 /// and a bare `boot` loads `/bsd`, which is the `bsd.rd` given.
 const EFIBOOT_PROMPTS: &[(&str, &str)] = &[("boot> ", "boot\n")];
@@ -307,7 +290,9 @@ fn boot_media(
         root,
         &crate::efiboot::ImageSpec {
             arch,
-            efi: media_efiboot(root, arch)?,
+            // The efiboot that boots the media: `just efiboot-<arch>`'s; `image` names that
+            // recipe when the file is missing (there is no other boot loader since Limine went).
+            efi: crate::efiboot::default_efi(root, arch),
             kernel: bsd_rd.to_path_buf(),
             root: crate::efiboot::Root::Bare,
             duid: crate::efiboot::DUID,
