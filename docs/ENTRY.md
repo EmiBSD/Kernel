@@ -421,16 +421,15 @@ Coverage of what moves:
 One more step of `difftest`'s `entry` scenario, `difftest syscalls regs`, a set of its own
 after `idregs` so no step id moves. Four cases, each in a child. An assembly routine fills
 the registers with a pattern, lets the event happen, stores every register and compares.
-Printed per case: its name and `match yes`, or the names of the registers that differ; never
-a value. It runs on EmiBSD and on OpenBSD, on both CPU models E0 uses (`cortex-a72`, whose
+Printed per case: its name and `ok`, or the first register that differs; never a value. It runs on EmiBSD and on OpenBSD, on both CPU models E0 uses (`cortex-a72`, whose
 table is `loop_8`, and `neoverse-n2,sve=off`, whose table is `loop_32`).
 
 | Case | The event | Left out of the pattern, and why |
 |---|---|---|
-| (a) a system call | `getpid` through libc's stub | `x0` is the result; `x8` is the number and `x30` the return address, both the stub's; the carry is the error flag and is asserted clear, N, Z and V are compared. A bare `svc` cannot be used: an unpinned site is SIGABRT (`difftest`'s `unpinned-svc` case, `tools/difftest/difftest.c:1776-1788`) |
-| (b) a resolved page fault | a load from a fresh anonymous page | the load's base register holds the address and its destination receives 0: both are compared with those values |
-| (c) an interrupt during a loop | a loop of at least five clock ticks | the loop's own counter. That an interrupt landed cannot be seen in the registers: the loop's length makes it certain |
-| (d) a signal handler with `sigreturn` | an interval timer's SIGALRM during the same loop; the handler overwrites `x0`-`x18` and `V0`-`V31` before it returns | the loop's counter. Equality then proves the restore from the signal's frame |
+| (a) a system call | `getppid` from an `svc` the test pins in its own `.openbsd.syscalls` table, as libc pins its stubs (an unpinned site is SIGABRT, `sys/sys/syscall_mi.h:55`; `getpid` is libc's and a second entry would unpin it) | nothing: `x0` is compared with the parent's pid and the carry is expected clear (`reference/openbsd-src/sys/arch/arm64/arm64/syscall.c:60-61`); `x1`, `x8` and every other register must be unchanged |
+| (b) a resolved page fault | a load from one untouched anonymous page and a store to another | nothing: the base register holds their address and the stored word is checked |
+| (c) an interrupt during a loop | a loop of 2^27 steps that leaves the flags alone | nothing: the loop's counter is expected to be 0. That an interrupt landed cannot be seen in the registers: the loop's length makes it certain |
+| (d) a signal handler with `sigreturn` | `brk #2`, caught on an alternate `MAP_STACK` stack; the handler steps over the `brk` and overwrites `x0`-`x18`, NZCV, `V0`-`V31`, FPSR and FPCR | nothing: `sigreturn` restores `x0`-`x30`, `sp`, the pc and NZCV, and the signal trampoline `V0`-`V31`; FPSR and FPCR are expected to hold the handler's values, because OpenBSD's trampoline reads them back with `mrs` where `msr` was meant (`reference/openbsd-src/sys/arch/arm64/arm64/locore.S:390-392`). The step pins that behaviour, which is OpenBSD's |
 
 Three things hold for every case, on OpenBSD as here:
 
@@ -687,10 +686,9 @@ user's reason in section 1. Three of its commits are reused as they are (section
    through `hal::cpu::trap::set_exec_regs`.
 5. Decision 58: signed on 2026-11-27, with the planner's points taken as recommended
    (the count, the two symbols of `hal-check`, the registrations that stay with their
-   dates, `UserTrapFn`, the exit's own mask, the round trip's exclusions, row 56 appended).
-6. The register round trip, before anything moves: one commit on `main`,
-   `xtask: the register round trip in difftest's entry scenario`. Equal to OpenBSD on both
-   CPU models, or the difference is fixed first.
+   dates, `UserTrapFn`, the exit's own mask, the round trip as OpenBSD's rules allow it, row 56 appended).
+6. The register round trip, before anything moves: built (`ea6469cb`, syscalls/entry#4).
+   Equal to OpenBSD on both CPU models: 159 steps, 156 equal, 3 expected, 0 unexpected.
 7. The E2 rework, on a fresh branch from `main`; the first branch is its source and is not
    merged. In order, each commit building:
 
