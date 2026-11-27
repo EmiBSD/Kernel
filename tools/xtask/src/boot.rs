@@ -335,10 +335,8 @@ pub(crate) enum BootMedium {
     Cdrom,
     /// An NVMe namespace on `virt`'s PCI bus (`--boot-on nvme`, an efiboot image, arm64):
     /// EDK2 hands efiboot that disk, and the kernel's root is on it (smoke-nvme's case).
+    /// No medium is AHCI: EDK2 AArch64 maps no `ich9-ahci` disk (S0's probe 4).
     Nvme,
-    /// A disk on an `ich9-ahci` controller of its own on `virt`'s PCI bus (`--boot-on ahci`,
-    /// an efiboot image, arm64).
-    Ahci,
 }
 
 /// The boot medium of the next VM [`qemu_command`] makes ([`BootMedium::Disk`] unless an
@@ -379,9 +377,6 @@ fn snapshot_suffix() -> &'static str {
 /// The QEMU id of the boot stick's own `qemu-xhci` ([`BootMedium::UsbStick`]).
 const BOOT_XHCI_ID: &str = "bootxhci";
 
-/// The QEMU id of the boot disk's own `ich9-ahci` ([`BootMedium::Ahci`]).
-const BOOT_AHCI_ID: &str = "bootahci";
-
 /// The `-drive` and `-device` arguments of the boot image `image` (id `hd0`) when the
 /// medium is not a hard disk ([`BootMedium::Disk`], which `qemu_command` sets up itself).
 fn removable_boot_args(medium: BootMedium, image: &Path) -> Option<Vec<String>> {
@@ -417,18 +412,6 @@ fn removable_boot_args(medium: BootMedium, image: &Path) -> Option<Vec<String>> 
             ),
             "-device".to_string(),
             "nvme,drive=hd0,serial=EMIBSD0001,bootindex=0".to_string(),
-        ]),
-        BootMedium::Ahci => Some(vec![
-            "-device".to_string(),
-            format!("ich9-ahci,id={BOOT_AHCI_ID}"),
-            "-drive".to_string(),
-            format!(
-                "if=none,format=raw,file={},id=hd0{}",
-                image.display(),
-                snapshot_suffix()
-            ),
-            "-device".to_string(),
-            format!("ide-hd,drive=hd0,bus={BOOT_AHCI_ID}.0,bootindex=0"),
         ]),
     }
 }
@@ -1243,16 +1226,15 @@ fn smoke_once(
     let mut heartbeat = Heartbeat::new();
     let exit = loop {
         heartbeat.tick(arch.name(), transcript.lock().map(|t| t.len()).unwrap_or(0));
-        // An efiboot boot: the boot line at each new `boot> ` (efiboot.rs).
+        // An efiboot boot: the boot line at each new `boot> ` (efiboot.rs); the typist
+        // looks only at the bytes that arrived since its last poll.
         if let Some(typist) = typist.as_mut() {
-            let text = transcript
-                .lock()
-                .map(|t| String::from_utf8_lossy(&t).into_owned())
-                .unwrap_or_default();
-            if let (Some(line), Some(stdin)) = (typist.poll(&text), stdin.as_mut()) {
-                send_paced(stdin, line)?;
+            let due = transcript.lock().is_ok_and(|t| typist.poll(&t));
+            if let (true, Some(stdin)) = (due, stdin.as_mut()) {
+                send_paced(stdin, typist.line())?;
                 println!(
-                    "xtask: typed {line:?} at {:?} after {:.1}s",
+                    "xtask: typed {:?} at {:?} after {:.1}s",
+                    typist.line(),
                     crate::efiboot::BOOT_PROMPT,
                     started.elapsed().as_secs_f32()
                 );
@@ -1468,17 +1450,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_efiboot_image_boots_from_nvme_or_its_own_ahci() {
+    fn an_efiboot_image_boots_from_nvme() {
         let img = Path::new("/x/emibsd-tree.img");
         assert_eq!(removable_boot_args(BootMedium::Disk, img), None);
         let nvme = removable_boot_args(BootMedium::Nvme, img).unwrap();
         assert_eq!(nvme[0], "-drive");
         assert!(nvme[1].starts_with("if=none,format=raw,file=/x/emibsd-tree.img,id=hd0"));
         assert_eq!(nvme[3], "nvme,drive=hd0,serial=EMIBSD0001,bootindex=0");
-        let ahci = removable_boot_args(BootMedium::Ahci, img).unwrap();
-        assert_eq!(ahci[1], "ich9-ahci,id=bootahci");
-        assert!(ahci[3].starts_with("if=none,format=raw,file=/x/emibsd-tree.img,id=hd0"));
-        assert_eq!(ahci[5], "ide-hd,drive=hd0,bus=bootahci.0,bootindex=0");
     }
 
     #[test]

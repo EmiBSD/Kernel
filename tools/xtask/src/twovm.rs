@@ -399,17 +399,21 @@ fn run(boot: &Boot<'_>, plan: &Plan, ports: (u16, u16), last: bool) -> Result<Ou
             }
             let t = vm.snapshot();
             if let (Some(typist), Some(stdin)) = (vm.typist.as_mut(), vm.stdin.as_mut())
-                && let Some(line) = typist.poll(&String::from_utf8_lossy(&t))
+                && typist.poll(&t)
             {
-                if let Err(e) = boot::send_paced(stdin, line) {
-                    failure = Some(format!("vm {}: writing to the serial console: {e}", vm.tag));
+                match boot::send_paced(stdin, typist.line()) {
+                    Ok(()) => println!(
+                        "xtask: vm {}: typed {:?} at {:?} after {:.1}s",
+                        vm.tag,
+                        typist.line(),
+                        crate::efiboot::BOOT_PROMPT,
+                        started.elapsed().as_secs_f32()
+                    ),
+                    Err(e) => {
+                        failure =
+                            Some(format!("vm {}: writing to the serial console: {e}", vm.tag));
+                    }
                 }
-                println!(
-                    "xtask: vm {}: typed {line:?} at {:?} after {:.1}s",
-                    vm.tag,
-                    crate::efiboot::BOOT_PROMPT,
-                    started.elapsed().as_secs_f32()
-                );
             }
             if let (Some(text), Some(stdin)) = (vm.script.step(&t), vm.stdin.as_mut()) {
                 let sent = boot::send_paced(stdin, &text);

@@ -159,15 +159,15 @@ image-arm64: (build-arm64 "--features qemu") build-init-arm64
 # (cargo xtask efiboot-image, tools/xtask/src/efiboot.rs): target/efiboot/arm64/emibsd-tree.img,
 # the staged tree of `just userland` as the root on partition `a` (fstab root by the label's
 # DUID, 454649424f4f5430.a), and emibsd-init.img, /sbin/init the stand-in of init/; both with
-# the smokes' kernel at /bsd, its debug sections stripped (.symtab stays, so ddb names symbols),
+# the smokes' kernel at /bsd, its debug sections stripped (.symtab stays; ddb prints addresses),
 # boot.conf, random.seed and BOOTAA64.EFI. Always rebuilt; a VM attaches them with
 # `snapshot=on`, so they are never written while recipes run (`smoke-all` runs recipes
 # `--no-deps`).
 efiboot-images-arm64: (build-arm64 "--features qemu") build-init-arm64 efiboot-arm64
     @test -x target/userland/arm64/host/bin/makefs -a -f target/userland/arm64/ramdisk-root/etc/fstab || \
         { echo "efiboot-images-arm64: no arm64 makefs or staged root; run just userland first"; exit 1; }
-    {{xtask}} efiboot-image --arch arm64 --kernel target/{{arm64}}/debug/bsd --root tree --strip-debug --shared
-    {{xtask}} efiboot-image --arch arm64 --kernel target/{{arm64}}/debug/bsd --root init --strip-debug --shared
+    {{xtask}} efiboot-image --arch arm64 --kernel target/{{arm64}}/debug/bsd --root tree --shared
+    {{xtask}} efiboot-image --arch arm64 --kernel target/{{arm64}}/debug/bsd --root init --shared
 
 run-amd64: image-amd64
     {{xtask}} qemu --arch amd64
@@ -3703,6 +3703,8 @@ test:
     cargo test -p libkern -p libz -p bsd -p xtask
     cargo test -p hal -p kernel -p abi --features kernel/quota,kernel/ufs_dirhash,kernel/ffs2,kernel/mfs,kernel/ext2fs,kernel/msdosfs,kernel/cd9660,kernel/udf,kernel/tmpfs,kernel/fuse,kernel/nfsclient,kernel/nfsserver,kernel/boot_config
     cargo test -p hal --features diagnostic
+    # The boot self-tests' own tests (the selftest preset): `selftest` is feature `qemu`'s.
+    cargo test -p bsd --features qemu --lib kern::selftest
     cargo test -p libsa -p loader -p efi
     cargo test -p efiboot-arm64
 
