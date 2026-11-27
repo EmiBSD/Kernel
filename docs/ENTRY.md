@@ -1,10 +1,11 @@
-# The userland door: `sys/entry` (proposal)
+# The userland door: `sys/entry` (decision 56, not built yet)
 
-**Status: a proposal, not implemented and not decided.** Written on 2026-11-26 at the user's
-request. The survey and the plan are done (2026-11-26); what is still the user's to decide is
-in section 10. It amends decision 20 ("`hal` is the only crate with `unsafe`"), so nothing is
-written before the user signs. Today's code is described from `main` at `c4bb056d`, arm64
-(decision 44). Nothing here changes what userland sees.
+**Status: decided, not implemented.** Written on 2026-11-26 at the user's request. After the
+survey and the plan, the user took decision 56 and the plan's ten points as recommended the
+same day (section 10). It amends decision 20 ("`hal` is the only crate with `unsafe`"). No
+code is written yet: the work runs after the removal of Limine, in the slices of section 11,
+and until it lands the tree is as section 1 describes (`main` at `c4bb056d`, arm64, decision
+44). Nothing here changes what userland sees.
 
 ## 1. The problem
 
@@ -243,7 +244,7 @@ then the same loop as every exit.
 |---|---|
 | R1. Userland enters only `entry`: every vector a user program can reach is `entry`'s | `entry-check` E1 (new, xtask): the tables for traps from userland are defined only under `sys/entry/`, `hal`'s table has no live slot for userland, and the linker script asserts the section's size |
 | R2. No code of `kernel` or `hal` calls, branches to or stores a symbol of `entry` | Cargo (nothing depends on `entry` but the image); `entry-check` E2: no `pub` item, no label of `entry` named outside it; `hal` reads the section's bounds from the linker script |
-| R3. The only `unsafe` in `entry` is its one block of assembly | The compiler: `#![deny(unsafe_code)]` at the root, allowed in the one module that holds the `global_asm!` (checked with DevTools' rustc: a `forbid` crate refuses `global_asm!` and `no_mangle`). `entry-check` E3; `unsafe-report`: `entry` `unsafe 0, asm 1` (proposed, U3) |
+| R3. The only `unsafe` in `entry` is its one block of assembly | The compiler: `#![deny(unsafe_code)]` at the root, allowed in the one module that holds the `global_asm!` (checked with DevTools' rustc: a `forbid` crate refuses `global_asm!` and `no_mangle`). `entry-check` E3; `unsafe-report`: `entry` `unsafe 0, asm 1` (U3) |
 | R4. `entry` decides nothing and remembers nothing | `entry-check` E4: no `static`, no lock, no loop; E5: it names `abi`, `kernel` and `hal` only through their doors |
 | R5. On a trap from userland `hal` calls neither `abi` nor `entry`, and calls upward only what is listed | `set_handler`, `SyscallFn`, `ChildFn` and seven of `TrapHandler`'s eight methods are deleted, and `hal-check` refuses their return. Left, each with its date: `bsd`'s branch predictor hook and interrupt dispatch (N7); the registered interrupt handlers, the kernel-mode fault handler and the thread start (permanent) |
 
@@ -295,7 +296,7 @@ sys/entry/
 ## 8. Cost, risk and how it is measured
 
 - `unsafe`: `entry` has no `unsafe` keyword and one block of assembly (counted as `asm 1`,
-  proposed, U3). `hal`: 235 today, 236 or 237 expected (one new site in the exit gate),
+  U3). `hal`: 235 today, 236 or 237 expected (one new site in the exit gate),
   under its ceiling of 600.
 - Rules: decision 20's sentence (decision 56), `.claude/rules/abi.md` (the registration
   goes, the door narrows), a new `entry-check`, a line in `unsafe-budget.toml`.
@@ -333,7 +334,7 @@ Coverage of what moves, as it is today:
 | Single step, BTI, pointer authentication, SError from userland | none | gap, kept and named |
 
   The new steps go into `diff-openbsd` before anything moves, and run on OpenBSD too
-  (proposed, U4).
+  (U4).
 
 ## 9. The seven gaps the user asked to close
 
@@ -491,11 +492,12 @@ function.
   `deny(warnings)` once `hal`'s `UserFrame` is `#[repr(transparent)]` (it has no `repr`
   today, `sys/hal/arch/arm64/trap.rs:230`).
 
-## 10. What the user decides
+## 10. What the user decided
 
-Each with the recommendation first; none is taken.
+The user took all ten as recommended (2026-11-26: "dale con las recomendaciones para u1 a
+u10"). U10 leaves amd64's choice to N10.
 
-| | Decision | Recommended |
+| | Decision | Taken |
 |---|---|---|
 | U1 | Decision 56: the crate `entry`, amending decision 20 | Sign the text below. With it: `entry`'s root is `deny`, not `forbid`; `hal`'s proof for the user frame cites `entry`'s assembly; `hal` writes the address of `entry`'s tables to `VBAR_EL1`. No design keeps rule 1 without the last two |
 | U2 | `abi` registers nothing (`abi.md`, `abi-check`) | `set_handler`, `SyscallFn`, `ChildFn`, `HandlerInfo`, `abi_init` go; `ChildReturn` joins the passive types `abi` may name |
@@ -508,7 +510,7 @@ Each with the recommendation first; none is taken.
 | U9 | When the benches run | At this work's own close (an exception to decision 50), with the new null system call row |
 | U10 | amd64 | Leave the choice to N10, with option A recorded and the caveat on rule 2 to be signed then |
 
-The text of decision 56, as proposed:
+The text of decision 56:
 
 > **Decision 56: `entry` is the crate userland traps into; `hal` stays the only crate with
 > `unsafe` Rust** (the user, 2026-11-26: "mi objetivo [es] evitar a toda costa que userland
@@ -543,8 +545,7 @@ does not reach `bsd`'s table (it does, until N9).
 
 ## 11. Steps
 
-1. Survey: done. 2. Plan: done.
-3. The user's decisions (section 10).
+1. Survey: done. 2. Plan: done. 3. The user's decisions: taken (section 10).
 4. Implementation, after the removal of Limine and never beside the interrupt controller
    slices (N7.2a2/a3), in four slices: the coverage and the bench row; the way out (the exit
    gate, `kernel::trap`, the child's value, `exec`'s registers); the crate (the vectors, the

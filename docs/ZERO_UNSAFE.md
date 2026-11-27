@@ -55,7 +55,7 @@ sequenceDiagram
     B->>K: register the sysent[] rows (kernel::syscall::LegacySyscalls)
     B->>A: abi_init(), before main()
     A->>HAL: register the syscall handler (hal::syscall::set_handler)
-    Note over HAL: from here every syscall trap → abi's handler (the registers as UserRegs, decision 53) → kernel::api (Native, or syscall_legacy) → bsd's sysent[] row through mi_syscall; then abi writes x0 and the carry and calls kernel::api::syscall_return
+    Note over HAL: from here every syscall trap → abi's handler (the registers as UserRegs, decision 53) → kernel::api (a Native function or syscall_legacy, and both reach bsd's sysent[] row through the LegacySyscalls bridge and mi_syscall); then abi writes x0 and the carry and calls kernel::api::syscall_return
 ```
 
 
@@ -66,9 +66,14 @@ layer, instead of each layer inventing its own; `abi` names it freely, and `hal`
 call (decision 52: the `KernelApi` table of `hal::api`, needed while `abi` was a loadable
 module, is gone, so a system call is a direct call where it was an indirect one). Only the
 image crate names `abi` (`bsd` until N9, then the `kernel` + `abi` + `hal` binary); `kernel`
-and `hal` never name `abi`, and `kernel` and `abi` never name `bsd`. Arrows up (the syscall
-handler `abi` registers in `hal::syscall`, the trap's one upward call, and the bridge
-implementations) exist only as registrations, made by `bsd`'s boot glue before `main()`.
+and `hal` never name `abi`, and `kernel` and `abi` never name `bsd`. Arrows up exist only as
+registrations made by `bsd`'s boot glue before `main()`. On the trap path there are eight:
+`abi`'s `SyscallFn` and `ChildFn`, the eight methods of `TrapHandler` (the kernel's, installed
+by `bsd`), `CpuHooks`, `IntrHardware` and `Debugger` (`bsd`'s), the thread start (the
+kernel's) and the symbol `pmap_setttb` (`bsd`'s); plus the bridge implementations. Decision
+56 (2026-11-26, `docs/ENTRY.md`, not built yet) puts a crate `entry` above `abi`, deletes the
+registrations that reach `abi` and moves the kernel's behind `kernel::trap`; this section and
+its diagram are rewritten when it lands.
 
 
 | Crate | Path | `unsafe` | Holds |

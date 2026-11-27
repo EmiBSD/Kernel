@@ -6,7 +6,10 @@ chain is userland -> `abi` -> `kernel` -> `hal`; `abi` calls the kernel directly
 through `kernel::api`, and the `KernelApi` table in `hal::api` (needed while `abi` was a
 loadable module, decision 22) goes. The CPU's trap still enters in `hal` (the vector is
 assembly and registers); `hal` saves the registers and hands them, uninterpreted, to the
-dispatcher `abi` registers: the only upward call, like the panic handler.
+dispatcher `abi` registers: an upward call through a registration, one of several on the
+trap path (`docs/ZERO_UNSAFE.md` 0.1 lists them). Decision 56 (the user, 2026-11-26,
+`docs/ENTRY.md`; not built yet) replaces it with a direct call from the crate `entry`:
+`abi` will register nothing, and this file is rewritten when that lands.
 
 - `abi` depends on `kernel`, `hal` and `sysdefs` in Cargo; never on `bsd`. `kernel` and `hal`
   never name `abi`.
