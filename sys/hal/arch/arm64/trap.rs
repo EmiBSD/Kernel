@@ -132,6 +132,15 @@
 //! - `cpu_id_aa64pfr0`, `pfr1`, `isar0`, `isar1`, `isar2` (`cpu.c`'s userland view of the ID
 //!   registers, `emulate_msr`'s answers) are this module's statics, which `bsd`'s CPU code
 //!   writes (`cpu_identify_cleanup`).
+//! - Decision 56 (E1): `ast()`'s machine-independent work (`refreshcreds`, `uvmexp.softs`,
+//!   `mi_ast` with `ci_want_resched`, `userret`) is the kernel's `kernel::trap::ast`, asked
+//!   in one call (`TrapHandler::ast`) where it took three; the frame stays recorded here
+//!   until the trap moves to `entry` (E2).
+//! - Decision 56's U8 (E1): `exec`'s `setregs` wrote the running thread's frame through the
+//!   raw `pcb_tf` (`bsd`'s arm64 `machdep.rs`, five writes outside any borrow, which the
+//!   frame's uniqueness rested on as a fact of `bsd`'s call graph); its frame writes are
+//!   [`set_exec_regs`], one borrow of the [`UserFrame`] (`hal::cpu::trap::set_exec_regs`), so
+//!   every write of a user frame goes through [`UserFrame::with`].
 //! - N4.8d: `do_el0_sync` reads the frame's `elr` or `sp` in the arm that uses it, not once
 //!   for every exception, and `udata_abort` hands `PROC_STACK(p)`, read from the frame it
 //!   holds, to the kernel's `MAP_STACK` check in `hal::cpu::trap::FaultSource::User { sp }`: a user
@@ -150,8 +159,8 @@ use super::include::armreg::{
     EXCP_WATCHPT_EL1, INSN_SIZE, ISS_BRK_COMMENT_MASK, ISS_DATA_DFSC_ALIGN, ISS_DATA_DFSC_MASK,
     ISS_MSR_CRM_MASK, ISS_MSR_CRM_SHIFT, ISS_MSR_CRN_MASK, ISS_MSR_CRN_SHIFT, ISS_MSR_DIR,
     ISS_MSR_OP0_MASK, ISS_MSR_OP0_SHIFT, ISS_MSR_OP1_MASK, ISS_MSR_OP1_SHIFT, ISS_MSR_OP2_MASK,
-    ISS_MSR_OP2_SHIFT, ISS_MSR_RT_MASK, ISS_MSR_RT_SHIFT, accesstype, esr_elx_exception,
-    iss_msr_field,
+    ISS_MSR_OP2_SHIFT, ISS_MSR_RT_MASK, ISS_MSR_RT_SHIFT, PSR_DIT, PSR_M_EL0t, accesstype,
+    esr_elx_exception, iss_msr_field,
 };
 use super::include::frame::Trapframe;
 use super::include::vmparam::VM_MAXUSER_ADDRESS;
@@ -222,8 +231,8 @@ static USER_FRAME_BORROWED: [AtomicBool; MAXCPUS] = [const { AtomicBool::new(fal
 /// from then on (`cpu_fork` points a new thread's at the frame it built in the same place).
 ///
 /// The handler that got it and the code its calls out reach through `pcb_tf` (the signal
-/// frame's `sendsig` and `sigreturn`, `child_return`, `PROC_PC`/`PROC_STACK`, `bsd`'s
-/// `setregs`) all touch it, so no reference to it is kept: each access borrows it for one
+/// frame's `sendsig` and `sigreturn`, `PROC_PC`/`PROC_STACK`, `bsd`'s `setregs`) all touch
+/// it, so no reference to it is kept: each access borrows it for one
 /// closure ([`Self::with`]) that calls nothing which reaches it again, and a second borrow on
 /// the CPU while one is in progress is `panic(9)` rather than a second `&mut`.
 #[derive(Clone, Copy)]
@@ -281,10 +290,11 @@ impl UserFrame {
         // Unique: no reference to that storage is kept anywhere else: every EL0 entry (the
         // synchronous one, the IRQ and FIQ ones, the error and the AST) holds it as a
         // `UserFrame` and every access in `hal` goes through this function; the kernel-mode
-        // handlers' `&mut Trapframe` are their own frames, below it on the stack; `bsd`'s
-        // `setregs` writes through the raw pointer between its own statements, outside any
-        // borrow (it runs inside the ABI's system call handler, which `svc_handler` calls
-        // outside its borrows); the ABI's handler (another crate's code) never gets this
+        // handlers' `&mut Trapframe` are their own frames, below it on the stack; `exec`'s
+        // `setregs` writes it through `set_exec_regs`, here (decision 56's U8: `bsd` wrote
+        // through the raw pointer before); `bsd`'s arm64 `Machine::proc_pc` and `proc_stack`
+        // still read another thread's `pcb_tf` raw (`sys/bsd/arch/arm64/mod.rs`), but only
+        // amd64's files call them (N10), so on arm64 no such read happens; the ABI's handler (another crate's code) never gets this
         // function or a closure over the frame, only `syscall::UserRegs`, whose three
         // methods each borrow the frame here for a closure of `hal`'s own that indexes,
         // reads and writes the frame and calls nothing; the assembly reads it only after the
@@ -309,6 +319,25 @@ pub(crate) fn proc_pc() -> usize {
 /// `tf_sp`, 0 without one.
 pub(crate) fn proc_stack() -> usize {
     UserFrame::current().map_or(0, |f| f.with(|tf| tf.tf_sp as usize))
+}
+
+/// `setregs`' frame writes for the running thread, which is exec'ing (`hal::cpu::trap::
+/// set_exec_regs`): its user frame cleared whole, the stack pointer `sp`, the link register
+/// and the pc the entry point `entry`, EL0 with data independent timing; in one borrow.
+/// `panic(9)` for a thread with no frame (no exec runs before the first thread).
+pub(crate) fn set_exec_regs(sp: usize, entry: usize) {
+    let Some(f) = UserFrame::current() else {
+        hal_panic(format_args!("setregs: no trap frame"));
+    };
+    f.with(|tf| {
+        *tf = Trapframe::default();
+        tf.tf_sp = sp as Register;
+        tf.tf_lr = entry as Register;
+        // The pc a program starts at; the link register gets the same value, which no
+        // program returns through (OpenBSD marks this choice as unsettled).
+        tf.tf_elr = entry as Register;
+        tf.tf_spsr = (PSR_M_EL0t | PSR_DIT) as Register;
+    });
 }
 
 /// `PROC_PC(p)` and `PROC_STACK(p)` of the running thread in one borrow
@@ -682,7 +711,10 @@ pub fn dumpregs(frame: &Trapframe) {
 }
 
 /// `ast(tf)`: the asynchronous system trap on the way back to user mode (`do_ast` in
-/// `exception.S`), with the frame of the thread returning there, its [`UserFrame`].
+/// `exception.S`, after a trap from user mode), with the frame of the thread returning
+/// there, its [`UserFrame`]: the frame recorded, then the kernel's `ast()` (`refreshcreds`,
+/// the counter, `mi_ast`, `userret`) in one call. A new thread's first return runs the
+/// kernel's own loop instead (`hal::cpu::usertrap`).
 pub(crate) extern "C" fn ast(tf: *mut Trapframe) {
     let tf = UserFrame::from_entry(tf);
     if !have_curproc() {
@@ -692,10 +724,7 @@ pub(crate) extern "C" fn ast(tf: *mut Trapframe) {
 
     tf.make_current();
 
-    h.refreshcreds();
-    UVMEXP.softs.fetch_add(1, Ordering::Relaxed);
-    h.ast(curcpu().want_resched() != 0);
-    h.userret();
+    h.ast();
 }
 
 /// `arm_cpu_irq`: `ci_idepth` around the controller's dispatch (`arm_irq_dispatch`).

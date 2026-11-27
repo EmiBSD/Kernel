@@ -33,9 +33,10 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! arm64's `syscall.c`, its machine half: the `svc` trap's mechanics and a forked child's
-//! first return, around the ABI's handler; and [`UserRegs`], the view of the trapping
-//! thread's user registers that handler gets.
+//! arm64's `syscall.c`, its machine half: the `svc` trap's mechanics around the ABI's
+//! handler; [`UserRegs`], the view of the trapping thread's user registers that handler gets;
+//! and the write of a return register with the carry, which a forked child's frame also
+//! takes (`switch.rs`'s `build_frames`).
 //!
 //! Upstream: sys/arch/arm64/arm64/syscall.c @ 3ce1f3f79392
 //! LZ: sys/arch/arm64/arm64/syscall.rs@3c62ede68802
@@ -59,14 +60,15 @@
 //!   arguments, called `hal::syscall::dispatch`, wrote `x0` and the carry or rewound the pc,
 //!   and called `mi_syscall_return` through the trap handler; now it hands the ABI's handler
 //!   (`hal::syscall::enter`) a [`UserRegs`] and the convention is the ABI's. `child_return`'s
-//!   two frame writes went the same way (`hal::syscall::child`). What the ABI can do to the
+//!   two frame writes went the same way (`hal::syscall::child`, until E1). What the ABI can do to the
 //!   frame is [`UserRegs`]' three methods: read general registers, write one with the error
 //!   flag (the carry, no other bit of `tf_spsr`), and move the pc back over the `svc` and its
 //!   barrier; it never writes a pc of its own choice, the stack pointer or the mode.
-//! - `child_return(void *arg)` cast its argument back to the thread; here it takes nothing:
-//!   the child is the running thread, whose trap frame is its pcb's `pcb_tf`
-//!   (`hal::cpu::thread`'s `thread_setup` built it), and its machine-independent half is the trap
-//!   handler's `child_return` (`mi_child_return`).
+//! - Decision 56 (E1, U5): `child_return` is gone from here. Its two frame writes (`x0 = 0`,
+//!   the carry cleared: the ABI's `hal::syscall::ChildReturn`) are made by [`set_return`]
+//!   while `cpu_fork` builds the child's frame (`switch.rs`'s `build_frames`), before the
+//!   child runs, and its `KERNEL_UNLOCK` and `mi_child_return` are the kernel's start's
+//!   (`kernel::proc::fork`'s `child_return`): a child's first run calls nothing upward.
 //! - The frame is the running thread's `UserFrame` (`trap.rs`'s frame premise), borrowed for
 //!   one closure at a time and never across the ABI's call: the call reaches the same frame
 //!   through `pcb_tf` (`sigreturn`, `execve`'s `setregs`, `pin_check`'s `PROC_PC`). A system
@@ -110,14 +112,7 @@ impl UserRegs {
     /// `tf_spsr`, set for `error`, else cleared; no other bit), in one borrow of the frame.
     #[inline]
     pub fn set_return(&self, reg: Gpr, value: Register, error: bool) {
-        self.0.with(|tf| {
-            tf.tf_x[reg.index()] = value;
-            if error {
-                tf.tf_spsr |= PSR_C as Register; // carry bit
-            } else {
-                tf.tf_spsr &= !(PSR_C as Register); // carry bit
-            }
-        });
+        self.0.with(|tf| set_return(tf, reg, value, error));
     }
 
     /// Moves the saved pc back to the `svc`, over the barrier the entry skipped: the system
@@ -126,6 +121,20 @@ impl UserRegs {
     pub fn restart(&self) {
         // Reconstruct the pc to point at the svc.
         self.0.with(|tf| tf.tf_elr -= SVC_LEN + BARRIER_LEN);
+    }
+}
+
+/// Register `reg` of `tf` set to `value` and the error flag, the carry (`PSR_C` of the saved
+/// `tf_spsr`, set for `error`, else cleared; no other bit): a system call's return
+/// ([`UserRegs::set_return`]) and a forked child's (`switch.rs`'s `build_frames`, from
+/// `hal::syscall::ChildReturn`).
+#[inline]
+pub(super) fn set_return(tf: &mut Trapframe, reg: Gpr, value: Register, error: bool) {
+    tf.tf_x[reg.index()] = value;
+    if error {
+        tf.tf_spsr |= PSR_C as Register; // carry bit
+    } else {
+        tf.tf_spsr &= !(PSR_C as Register); // carry bit
     }
 }
 
@@ -161,26 +170,6 @@ pub(crate) fn svc_handler(frame: UserFrame) {
     // `UserRegs`' methods, and what it calls may read or rewrite it through `pcb_tf`
     // (`sigreturn`, `execve`'s `setregs`, `pin_check`'s `PROC_PC`).
     crate::syscall::enter(&UserRegs(frame));
-}
-
-/// `child_return`: the first thing a forked user thread runs, on itself: the ABI's first
-/// return of `fork` in its trap frame, the kernel lock its trampoline took released, then
-/// `mi_child_return`.
-pub fn child_return() {
-    // The running thread's `pcb_tf`, which `thread_setup` set to the trap frame it wrote at
-    // the top of this thread's u-area before the thread ever ran (`cpu_fork`'s).
-    let Some(frame) = UserFrame::current() else {
-        hal_panic(format_args!("child_return: no trap frame"));
-    };
-    crate::syscall::child(&UserRegs(frame));
-
-    // The kernel lock `proc_trampoline_mi` took for the new thread.
-    crate::sync::klock::kernel_unlock();
-
-    match crate::cpu::trap::handler() {
-        Some(h) => h.child_return(),
-        None => hal_panic(format_args!("child_return: no trap handler")),
-    }
 }
 
 // `Gpr` indexes `tf_x` whole: `tf_x` is exactly `[Register; NGPR]`.

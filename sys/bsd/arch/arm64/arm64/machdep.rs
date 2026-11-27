@@ -127,6 +127,11 @@
 //!   (`fdtblob::with_boot_mut`) first (LZ's `bootarg_bzero` is gone). The kernel's
 //!   `fdt_take_property` parses the borrowed blob with `fdt_init`'s own `check_head`, so the
 //!   wipe and the install accept the same blobs; every other `/chosen` read stays after.
+//! - Decision 56's U8 (E1): `setregs`' five writes of the running thread's trap frame through
+//!   the raw `pcb_tf` (an `unsafe` block outside every borrow of the frame) are
+//!   `hal::cpu::trap::set_exec_regs`, one borrow of `hal`'s `UserFrame`: the frame's
+//!   uniqueness no longer rests on `bsd`'s call graph. The pmap's guard bit and the FPU reset
+//!   stay here.
 
 use core::arch::asm;
 use core::cell::UnsafeCell;
@@ -148,7 +153,6 @@ use crate::arch::arm64::arm64::fpu::fpu_drop;
 use crate::arch::arm64::arm64::intr::delay;
 use crate::arch::arm64::arm64::locore0::DIRECT_BASE;
 use crate::arch::arm64::include::armreg::{MPIDR_AFF, read_specialreg};
-use crate::arch::arm64::include::armreg::{PSR_DIT, PSR_M_EL0t};
 use crate::arch::arm64::include::bootconfig::Arm64Bootparams;
 use crate::arch::arm64::include::cpu::{
     CPU_COMPATIBLE, CPU_ID_AA64ISAR0, CPU_ID_AA64ISAR1, CPU_ID_AA64ISAR2, CPU_ID_AA64MMFR0,
@@ -206,7 +210,7 @@ use crate::sys::reboot::{
 };
 use crate::sys::sysctl::SysctlBoundedArgs;
 use crate::sys::systm::PHYSMEM;
-use crate::sys::types::{Paddr, Psize, Register, Vaddr};
+use crate::sys::types::{Paddr, Psize, Vaddr};
 use crate::unported;
 use hal::mem::fdtblob;
 use hal::vm::param::{atop, ptoa, round_page, trunc_page};
@@ -1218,7 +1222,6 @@ fn memreg_remove(m: &mut Memreg, reg: &FdtReg) {
 pub fn setregs(p: &Proc, pack: &ExecPackage<'_>, stack: Vaddr, _arginfo: &PsStrings) {
     let pm = p.vmspace().vm_map.pmap();
     let pcb = p.pcb();
-    let tf = pcb.pcb_tf.get();
 
     // `pm_guarded`: ATTR_GP on the process's executable mappings unless the binary opted out.
     pm.set_guarded(pack.ep_flags & EXEC_NOBTCFI == 0);
@@ -1233,15 +1236,11 @@ pub fn setregs(p: &Proc, pack: &ExecPackage<'_>, stack: Vaddr, _arginfo: &PsStri
         .set(pcb.pcb_flags.get() & !(PCB_FPU | PCB_SVE));
     fpu_drop();
 
-    // SAFETY: `pcb_tf` is the thread's trap frame at the top of its u-area (`cpu_fork`),
-    // which only this thread writes, with no reference to it alive here.
-    unsafe {
-        tf.write(Trapframe::default());
-        (*tf).tf_sp = stack.as_usize() as Register;
-        (*tf).tf_lr = pack.ep_entry as Register;
-        (*tf).tf_elr = pack.ep_entry as Register; // ???
-        (*tf).tf_spsr = (PSR_M_EL0t | PSR_DIT) as Register;
-    }
+    // The frame cleared, sp, lr and elr the entry point, EL0 with DIT: `hal`'s, on the
+    // running thread's frame, in one borrow (decision 56's U8), which is `p`'s: every caller
+    // execs the running thread (`kern_exec`'s `sys_execve`).
+    crate::kassert!(ptr::from_ref(p).addr() == hal::cpu::thread::current_addr());
+    hal::cpu::trap::set_exec_regs(stack.as_usize(), pack.ep_entry);
 }
 
 /// `cpu_startup`: machine-dependent startup code (see the module's deviations).

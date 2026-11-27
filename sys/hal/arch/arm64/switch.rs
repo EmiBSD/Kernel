@@ -93,11 +93,10 @@
 //! offset); its pcb at `p_addr` (`struct user`'s first member, `u_pcb`, as `bsd`'s
 //! `sys/sys/user.rs` lays it out); the pcb's `pcb_sp` and `pcb_tcb`.
 //!
-//! **Two symbols of `bsd`'s** the assembly calls, as the C's `cpuswitch.S` and `locore.S`
-//! do, until their owners move (N4.8, the trap entry; the pmap's switch record): `pmap_setttb`
-//! (`sys/arch/arm64/arm64/cpuswitch.rs`, the new thread's address space, called with the
-//! thread `ci_curproc` now names) and `syscall_return` (`exception.S`, a new user thread's way
-//! out).
+//! **One symbol of `bsd`'s** the assembly calls, as the C's `cpuswitch.S` does, until its
+//! owner moves (the pmap's switch record): `pmap_setttb` (`sys/arch/arm64/arm64/cpuswitch.rs`,
+//! the new thread's address space, called with the thread `ci_curproc` now names). A new
+//! user thread's way out, `hal_user_first_return` (`exception.S`), is `hal`'s own.
 //!
 //! ## Deviations
 //! - No retguard: the cookie load/calc/check around the stack pivot has no counterpart in
@@ -118,6 +117,21 @@
 //!   [`thread_setup`], and `cpu_init_secondary`'s rebuild of the idle thread's switch frame
 //!   is [`thread_restart`]; `proc_trampoline_run` is [`trampoline_run`], reached from the
 //!   assembly by a `sym` operand (no unmangled symbol).
+//! - Decision 56 (E1, the way out): `cpu_fork`'s `stack` and `tcb` come with the child's return
+//!   (`hal::syscall::ChildReturn`, the ABI's constant: `x0 = 0`, carry clear) as a
+//!   `hal::cpu::thread::UserStart`, and `build_frames` writes the return registers into the
+//!   copied frame (with `syscall.rs`'s `set_return`, the one place the carry is written) where
+//!   the C's `child_return` writes them when the child first runs: nothing reads a thread's
+//!   frame before it stopped itself (ptrace's `PT_GETREGS` needs `SSTOP`, a core dump waits
+//!   for each thread to suspend itself, `kern.proc` names no frame), so userland cannot tell
+//!   the two, and the first run calls nothing upward for it. The ports of ptrace and core
+//!   dumps keep that invariant: another thread's registers are read only once it stopped,
+//!   never from a `CTX_FRESH` slot.
+//! - Decision 56 (E1): a new thread's start returns the exit gate's token
+//!   (`hal::cpu::usertrap::UserExit`) once the kernel ran its AST loop, and
+//!   `hal_proc_trampoline` branches to `hal_user_first_return` (`exception.S`: the restore and
+//!   the return), the C's `syscall_return` without its `do_ast`: `hal` no longer calls up
+//!   for the AST of a first return.
 
 use core::arch::global_asm;
 use core::mem::offset_of;
@@ -129,8 +143,10 @@ use crate::arch::arm64::include::frame::{SWITCHFRAME_SZ, Switchframe, Trapframe}
 use crate::arch::arm64::include::param::PAGE_SIZE;
 use crate::arch::arm64::include::pcb::{PCB_FPU, Pcb};
 use crate::arch::arm64::include::tcb::__aarch64_set_tcb;
+use crate::arch::arm64::syscall::set_return;
 use crate::assert::hal_panic;
-use crate::cpu::thread::{MachineSlot, SONPROC};
+use crate::cpu::thread::{MachineSlot, SONPROC, UserStart};
+use crate::cpu::usertrap::UserExit;
 use crate::cpu::{CORE_CURPCB, CORE_CURPROC};
 use sysdefs::base::types::Register;
 
@@ -306,15 +322,14 @@ pub(crate) fn switch(
 
 /// `cpu_fork(p1, p2, stack, tcb, func, arg)`'s machine work: the parent's FP state saved
 /// (when the parent runs here and used the FPU), its pcb copied to the child's, the child's
-/// trap frame a copy of the parent's at the top of its u-area (its user stack pointer
-/// `stack` and TCB `tcb` when not 0), and below it a switch frame that returns into the
-/// trampoline with `start` and `arg`.
+/// trap frame a copy of the parent's at the top of its u-area (its user stack pointer and
+/// TCB when `user` gives them, its return registers when `user` gives the child's return),
+/// and below it a switch frame that returns into the trampoline with `start` and `arg`.
 pub(crate) fn thread_setup(
     parent: &MachineSlot,
     parent_runs: bool,
     child: &MachineSlot,
-    stack: usize,
-    tcb: usize,
+    user: UserStart,
     start: usize,
     arg: usize,
 ) {
@@ -333,7 +348,7 @@ pub(crate) fn thread_setup(
             // Copy the pcb.
             pcb.copy_from(pcb1);
             let parent_tf = pcb1.pcb_tf.get();
-            build_frames(child, pcb, Some((parent_tf, stack)), tcb, start, arg);
+            build_frames(child, pcb, Some((parent_tf, user)), start, arg);
         });
     });
 }
@@ -348,18 +363,18 @@ pub(crate) fn thread_restart(t: &MachineSlot, start: usize, arg: usize) {
                 "cpu_init_secondary: the idle thread has no u-area"
             ));
         };
-        build_frames(t, pcb, None, 0, start, arg);
+        build_frames(t, pcb, None, start, arg);
     });
 }
 
 /// The frames of a thread about to start: its trap frame's place at the top of the u-area
-/// (`pcb_tf`), filled from `copy`'s trap frame with the user stack pointer when given, the
-/// TCB when not 0, and the switch frame below it (`pcb_sp`).
+/// (`pcb_tf`), filled from `copy`'s trap frame with what its [`UserStart`] gives (the user
+/// stack pointer and the TCB when not 0, the child's return registers), and the switch frame
+/// below it (`pcb_sp`).
 fn build_frames(
     slot: &MachineSlot,
     pcb: &Pcb,
-    copy: Option<(*mut Trapframe, usize)>,
-    tcb: usize,
+    copy: Option<(*mut Trapframe, UserStart)>,
     start: usize,
     arg: usize,
 ) {
@@ -369,6 +384,7 @@ fn build_frames(
     let sf = tf.cast::<Switchframe>().wrapping_sub(1);
     pcb.pcb_tf.set(tf);
     let trampoline = hal_proc_trampoline as *const () as usize;
+    let tcb = copy.map_or(0, |(_, user)| user.tcb);
     // SAFETY: `tf` and `sf` lie inside the thread's u-area (`p_addr`, `USPACE` bytes, the
     // `struct user` at its bottom far below: the trap frame is at its top, the switch frame
     // right under it), which is alive (as in `with_pcb_of`) and which nothing runs on: the
@@ -379,10 +395,14 @@ fn build_frames(
     // kernel stack while it runs `fork1`, or `proc0`'s static one) and is only read here.
     unsafe {
         match copy {
-            Some((from, stack)) => {
+            Some((from, user)) => {
                 let mut frame = from.read();
-                if stack != 0 {
-                    frame.tf_sp = stackalign(stack) as Register;
+                if user.stack != 0 {
+                    frame.tf_sp = stackalign(user.stack) as Register;
+                }
+                // `child_return`'s writes, made before the child ever runs (`UserStart::ret`).
+                if let Some(r) = user.ret {
+                    set_return(&mut frame, r.reg, r.value, r.error);
                 }
                 tf.write(frame);
             }
@@ -402,10 +422,12 @@ fn build_frames(
 }
 
 /// What `hal_proc_trampoline` calls with the switch frame's `sf_x19` and `sf_x20`: the
-/// machine-independent start (`hal::cpu::thread`'s trampoline, then the registered start). When
-/// it returns the assembly takes `syscall_return` to user mode.
-extern "C" fn trampoline_run(start: usize, arg: usize) {
-    crate::cpu::thread::trampoline(start, arg);
+/// machine-independent start (`hal::cpu::thread`'s trampoline, then the registered start).
+/// It returns only with the exit gate's token (the kernel's AST loop ran, the interrupts are
+/// masked), and the assembly then takes `hal_user_first_return` to user mode; the token's
+/// word in `x0` is not read.
+extern "C" fn trampoline_run(start: usize, arg: usize) -> UserExit {
+    crate::cpu::thread::trampoline(start, arg)
 }
 
 /* </CODE> */

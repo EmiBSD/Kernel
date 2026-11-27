@@ -403,7 +403,8 @@ missing; decision 47 records what went with it. The pieces now:
   the convention is `abi::arch::arm64`'s: the number `x8` read as an `int`, the arguments
   `x0`..`x5`, the table, `x0` and the carry (or the restart, or nothing for `EJUSTRETURN`),
   then `kernel::api::syscall_return` (`mi_syscall_return`). A forked child's `x0 = 0` is the
-  handler's `ChildFn`. With no handler the trap panics, which the boot glue's own panic makes
+  ABI's constant `CHILD_RETURN` (a `hal::syscall::ChildReturn`), which `hal` writes while
+  `cpu_fork` builds the child's frame (decision 56's E1; `ChildFn` before). With no handler the trap panics, which the boot glue's own panic makes
   unreachable. amd64's frozen trap still names `kern::abi_module::syscall` and `dispatch`,
   both gone, until N10 writes `abi::arch::amd64`. Errnos cross `hal` as `i32`.
 - **The boot line.** `abi: 331 syscalls, 190 native` (the module's line, which named its file,
@@ -1480,7 +1481,7 @@ The arm64 kernel ELF boots from arm64's efiboot (and, until decision 57, from Li
   `NOTE_EXEC` knote and the `/dev/null` fix-up of a set[ug]id exec with a closed standard
   descriptor (the device switch).
 - Process system calls (M8): `fork`, `vfork`, `__tfork` (`kern_fork.c`, the child returning
-  through the machine's `child_return`), `wait4`, `waitid`, `__threxit` (`kern_exit.c`),
+  with the return registers `hal` wrote while `cpu_fork` built its frame, decision 56), `wait4`, `waitid`, `__threxit` (`kern_exit.c`),
   `futex` (`sys_futex.c`), `sched_yield`, `getentropy` (`dev/rnd.c`; the syscall generator
   also scans `sys/dev`), `reboot`, `utrace` (no `KTRACE`: it succeeds and records nothing),
   `setrtable`/`getrtable` and `sendsyslog` are OpenBSD's. `option ACCOUNTING` is configured,

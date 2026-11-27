@@ -31,6 +31,11 @@ pub mod softintr;
 #[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
 #[forbid(unsafe_code)]
 pub mod trap;
+// The way back to user mode (decision 56): the exit gate the kernel's AST loop passes,
+// wherever a machine's trap code is (arm64; amd64's is N10's) and on the host.
+#[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
+#[forbid(unsafe_code)]
+pub mod usertrap;
 // The clock frame (N4.8a): wherever a machine's frame is (arm64 and the host; amd64's
 // `struct intrframe` at N10).
 #[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]

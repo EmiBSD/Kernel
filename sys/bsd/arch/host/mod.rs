@@ -467,9 +467,6 @@ impl Cpu for Machine {
 
     fn need_proftick(_p: &Proc) {}
 
-    /// The host double has no user mode to return to.
-    fn child_return(_arg: *mut c_void) {}
-
     /// The host double has no user mode: no program counter to report.
     fn proc_pc(_p: &Proc) -> usize {
         0

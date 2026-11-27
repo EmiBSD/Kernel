@@ -356,8 +356,9 @@ paid_by = "N7"
 # it: maxprocess and maxthread (conf/param), log(9), thread_placed (bsd's &'static of a new
 # thread, N4.8), process_initialized (ps_realit_to, N4.8a), process_forked and textvp_release
 # (the text vnode, N5; the unveils, N8), session_has_tty_vnode and session_ttydev (N4.7b),
-# pmap_activate, pmap_deactivate, pmap_purge, child_return, tcb_invalid and tcb_set (the
-# machine, N4.8/N10), start_init (N9.1), init_exited (the QEMU exit), cancel_all_itimers
+# pmap_activate, pmap_deactivate, pmap_purge, tcb_invalid and tcb_set (the machine,
+# N4.8/N10; child_return left with decision 56's E1: the child's registers are written by
+# hal at cpu_fork, its first run is the kernel's own), start_init (N9.1), init_exited (the QEMU exit), cancel_all_itimers
 # (N4.8a), unveil_destroy (N8), rtable_exists (N6) and pgrp_ref. N4.8b: the system call
 # prologue's calls out joined it (kernel::syscall): proc_pc and sigcode_svc_offset (the
 # machine, N4.8b's b3 or N10), user_vmspace (the thread's word, until its [o] members are

@@ -99,11 +99,12 @@ pub mod vm;
 use hal::syscall::SyscallFn;
 
 /// The ABI's entry point, which the image's boot glue calls once, before `main()` and so
-/// before any system call: registers the machine's system call handler, its forked child's
-/// first return ([`arch`]) and what the table holds. `hal` keeps the first handler
-/// registered: when one was already there, the `Err` hands it back and the boot glue must
-/// not go on with it.
+/// before any system call: registers the machine's system call handler ([`arch`]) and what
+/// the table holds. `hal` keeps the first handler registered: when one was already there,
+/// the `Err` hands it back and the boot glue must not go on with it. A forked child's first
+/// return is not registered: it is data, `arch::current::CHILD_RETURN`, which the boot glue
+/// hands to the kernel (decision 56, E1).
 pub fn abi_init() -> Result<(), SyscallFn> {
-    hal::syscall::set_handler(arch::current::svc, arch::current::child, sysent::INFO)
+    hal::syscall::set_handler(arch::current::svc, sysent::INFO)
 }
 /* </CODE> */

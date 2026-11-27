@@ -87,11 +87,13 @@ hal_cpu_switchto:
 	.size	hal_cpu_switchto, . - hal_cpu_switchto
 
 /*
- * hal_proc_trampoline: where a thread built by hal::thread::thread_setup
+ * hal_proc_trampoline: where a thread built by hal::cpu::thread::thread_setup
  * starts, with the switch frame's sf_x19 (its start word) and sf_x20 (its
  * argument) restored. The Rust side (switch.rs's trampoline_run) adopts the
  * scheduler lock the switch kept and calls the registered start; when that
- * returns the thread leaves for user mode through syscall_return.
+ * returns (with the exit gate's token: the kernel's AST loop ran and the
+ * interrupts are masked) the thread leaves for user mode through
+ * hal_user_first_return.
  */
 	.globl	hal_proc_trampoline
 	.type	hal_proc_trampoline, %function
@@ -100,5 +102,5 @@ hal_proc_trampoline:
 	mov	x0, x19
 	mov	x1, x20
 	bl	{TRAMPOLINE_RUN}
-	b	syscall_return
+	b	hal_user_first_return
 	.size	hal_proc_trampoline, . - hal_proc_trampoline

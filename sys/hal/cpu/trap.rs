@@ -27,7 +27,9 @@
 //! `MAP_STACK` check of a fault from user mode), the signal (`trapsignal`, `sigexit`),
 //! `refreshcreds`, `userret`, the system call's return (`mi_syscall_return`, which the
 //! kernel's `syscall_return` calls for the ABI once it wrote the registers, decision 53), the AST
-//! (`mi_ast`) and a forked child's first return (`mi_child_return`). The machine's hooks the
+//! (`ast()`'s work, `kernel::trap::ast`). A forked child's first return asks nothing here
+//! since decision 56's E1: its registers are written while its frame is built, and the
+//! kernel's start runs `mi_child_return` itself. The machine's hooks the
 //! C keeps in its `struct cpu_info` (`ci_flush_bp`, `ci_serror`, which the CPU and PSCI
 //! drivers still in `bsd` choose and rewrite) are [`CpuHooks`]; the kernel debugger
 //! (`db_ktrap`) is [`Debugger`]; `fault()`'s claim of the CPU's panic buffer is the hooks'
@@ -104,11 +106,9 @@ pub trait TrapHandler: Sync {
     /// `mi_syscall_return(p, code, error, rval)`, after the ABI set the registers
     /// (`kernel::api::syscall_return`, decision 53).
     fn syscall_return(&self, code: Register, error: SysResult, rval: &Rval);
-    /// `mi_ast(p, resched)` (`ast()`'s machine-independent part, before its `userret`).
-    fn ast(&self, resched: bool);
-    /// `mi_child_return(p)`: a forked child's first return, after the machine set its
-    /// return registers and released the kernel lock its trampoline held.
-    fn child_return(&self);
+    /// `ast()`'s machine-independent work on the running thread (`kernel::trap::ast`):
+    /// `refreshcreds`, `uvmexp.softs`, `mi_ast(p, ci_want_resched)`, `userret`.
+    fn ast(&self);
 }
 
 /// The machine's per-CPU hooks a trap calls (`struct cpu_info`'s `ci_flush_bp` and
@@ -244,6 +244,16 @@ pub fn proc_regs() -> (usize, usize) {
     user_regs::proc_regs()
 }
 
+/// `setregs`' frame writes for the running thread, which is exec'ing a new program: its user
+/// registers cleared, the stack pointer `sp`, the pc (and the link register) the program's
+/// entry point `entry`, the user mode (arm64: EL0 with data independent timing), in one
+/// borrow of the frame (decision 56's U8). Called outside any borrow of the frame (`exec`
+/// runs inside the system call's body); a nested borrow is `panic(9)`.
+#[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
+pub fn set_exec_regs(sp: usize, entry: usize) {
+    user_regs::set_exec_regs(sp, entry);
+}
+
 /// The machine's user frame (arm64's `UserFrame`).
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]
 use crate::arch::arm64::trap as user_regs;
@@ -275,6 +285,15 @@ mod tests {
         assert_eq!(install_cpu_hooks(&H), Err(AlreadyRegistered("CpuHooks")));
         flush_bp();
         serror();
+    }
+
+    /// `setregs`' writes land in the running thread's frame (the host double's registers).
+    #[test]
+    fn exec_registers_are_the_running_thread_s() {
+        set_user_regs(1, 2);
+        set_exec_regs(0x7f00_0000, 0x1_0000);
+        assert_eq!(proc_regs(), (0x1_0000, 0x7f00_0000));
+        assert_eq!((proc_pc(), proc_stack()), (0x1_0000, 0x7f00_0000));
     }
 
     /// Without a debugger, a trap is not the debugger's.

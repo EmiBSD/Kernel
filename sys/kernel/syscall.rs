@@ -62,8 +62,8 @@
 //! call's body comes through it: `bsd`'s `Legacy` path (`sysent[]`) and each `Native`
 //! entry of the ABI's table (`bsd`'s wrappers over the kernel's functions), the body
 //! a closure over the row. [`KernelTrap`] is what `hal`'s trap code asks: the page fault on
-//! the map the trap chose, the signals, `refreshcreds`, `userret`, the system call's return,
-//! the AST and a forked child's first return.
+//! the map the trap chose, the signals, `refreshcreds`, `userret`, the system call's return
+//! and the AST.
 //!
 //! ## Deviations
 //! - `KTRACE` and dt(4) are not configured; `SYSCALL_DEBUG` is `bsd`'s feature
@@ -96,7 +96,9 @@
 //! - `KernelTrap<G>` implements `hal::cpu::trap::TrapHandler` (`bsd`'s `BsdTrap` before, N4.8b
 //!   b1): the fault on the map `hal` chose (`pmap_fault_fixup`, `uvm_fault`, `uvm_grow`, the
 //!   `MAP_STACK` check of a user fault), `trapsignal`, `sigexit`, `refreshcreds`, `userret`,
-//!   [`mi_syscall_return`], [`mi_ast`] and [`mi_child_return`], on the running thread.
+//!   [`mi_syscall_return`] and [`mi_ast`], on the running thread; since decision 56's E1
+//!   its `ast` is `ast()`'s whole work (`kernel::trap::ast`), and [`mi_child_return`] is
+//!   called by the kernel's own `child_return` (`kernel::proc::fork`), not through `hal`.
 //! - Decision 52 (N7): the `sysent[]` rows still `bsd`'s are reached through one bridge,
 //!   [`LegacySyscalls`] (`bridges.toml`, paid by N9), which `kernel::api` calls for every
 //!   system call, `Native` or `Legacy`: `mi_syscall` on the row for the thread on this CPU,
@@ -347,7 +349,7 @@ fn pin_check_at<G: ProcGlue>(p: Pin<&Thread<G>>, code: Register, pc: usize) -> R
 /// `refreshcreds(p)`: refresh the thread's cache of the process's creds. This is an unlocked
 /// access to `ps_ucred`, but the result is benign.
 #[inline]
-fn refreshcreds<G: ProcGlue>(p: &Thread<G>) {
+pub(crate) fn refreshcreds<G: ProcGlue>(p: &Thread<G>) {
     if p.cred_stale() {
         crate::proc::prot::dorefreshcreds(p);
     }
@@ -585,12 +587,8 @@ impl<G: ProcGlue> TrapHandler for KernelTrap<G> {
         with_trapped::<G, _>(|p| mi_syscall_return(p, code, error, rval));
     }
 
-    fn ast(&self, resched: bool) {
-        with_trapped::<G, _>(|p| mi_ast(p, resched));
-    }
-
-    fn child_return(&self) {
-        with_trapped::<G, _>(mi_child_return);
+    fn ast(&self) {
+        with_trapped::<G, _>(crate::trap::ast::<G>);
     }
 }
 /* </CODE> */

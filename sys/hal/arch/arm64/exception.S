@@ -26,8 +26,8 @@
 
 /*
  * The exception entry of exception.S (see exception.rs): the register save
- * and restore macros, the EL1h and EL0 handlers, syscall_return and the kernel
- * vector table. The symbols written as NAME between braces are filled in by
+ * and restore macros, the EL1h and EL0 handlers, hal_user_first_return and the
+ * kernel vector table. The symbols written as NAME between braces are filled in by
  * exception.rs from the Rust definitions (assym.h in C); the handlers it
  * calls are Rust functions passed as sym operands. x18 is a general register
  * in this kernel (the C builds with -ffixed-x18 and keeps curcpu() in it), so
@@ -269,10 +269,14 @@ handle_el0_error:
 	brk	0xf23
 	1: b 1b
 
-	.globl syscall_return
-	.type syscall_return,@function
-syscall_return:
-	do_ast
+/*
+ * A new thread's first return to user mode (the C's syscall_return without
+ * its do_ast): the kernel ran the AST loop over hal's exit gate before
+ * hal_proc_trampoline branched here, and the gate left IRQ and FIQ masked.
+ */
+	.globl hal_user_first_return
+	.type hal_user_first_return,@function
+hal_user_first_return:
 	restore_registers 0
 	return
 

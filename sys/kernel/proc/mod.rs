@@ -992,9 +992,6 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     fn pmap_deactivate(_p: &Thread<Self>) {}
     /// `pmap_purge(p)` of the machine (`uvm_purge`'s, `__HAVE_PMAP_PURGE`).
     fn pmap_purge(_p: &Thread<Self>) {}
-    /// `child_return(p)` of the machine (N4.8): the forked child's return values set, the
-    /// kernel lock its trampoline took released, `mi_child_return`.
-    fn child_return(_p: &Thread<Self>) {}
     /// `start_init(p)` (`init_main.c`, N9.1): process 1 execs init.
     fn start_init(_p: &Thread<Self>) {}
     /// init's `exit1` (pid 1, `EXIT_NORMAL`): the C panics ("init died"); under QEMU `bsd`
