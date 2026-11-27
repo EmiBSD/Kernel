@@ -244,6 +244,16 @@ pub fn proc_regs() -> (usize, usize) {
     user_regs::proc_regs()
 }
 
+/// `setregs`' frame writes for the running thread, which is exec'ing a new program: its user
+/// registers cleared, the stack pointer `sp`, the pc (and the link register) the program's
+/// entry point `entry`, the user mode (arm64: EL0 with data independent timing), in one
+/// borrow of the frame (decision 56's U8). Called outside any borrow of the frame (`exec`
+/// runs inside the system call's body); a nested borrow is `panic(9)`.
+#[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
+pub fn set_exec_regs(sp: usize, entry: usize) {
+    user_regs::set_exec_regs(sp, entry);
+}
+
 /// The machine's user frame (arm64's `UserFrame`).
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]
 use crate::arch::arm64::trap as user_regs;
@@ -275,6 +285,15 @@ mod tests {
         assert_eq!(install_cpu_hooks(&H), Err(AlreadyRegistered("CpuHooks")));
         flush_bp();
         serror();
+    }
+
+    /// `setregs`' writes land in the running thread's frame (the host double's registers).
+    #[test]
+    fn exec_registers_are_the_running_thread_s() {
+        set_user_regs(1, 2);
+        set_exec_regs(0x7f00_0000, 0x1_0000);
+        assert_eq!(proc_regs(), (0x1_0000, 0x7f00_0000));
+        assert_eq!((proc_pc(), proc_stack()), (0x1_0000, 0x7f00_0000));
     }
 
     /// Without a debugger, a trap is not the debugger's.

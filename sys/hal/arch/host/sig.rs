@@ -116,6 +116,12 @@ pub(crate) fn proc_regs() -> (usize, usize) {
     USER_REGS.with(Cell::get)
 }
 
+/// `setregs`' frame writes: this test thread's "trap frame" holds the entry point and the
+/// stack pointer (what [`proc_pc`] and [`proc_stack`] read back).
+pub(crate) fn set_exec_regs(sp: usize, entry: usize) {
+    USER_REGS.with(|c| c.set((entry, sp)));
+}
+
 /// The user program counter and stack pointer this test thread's "trap frame" holds
 /// (`hal::cpu::trap::proc_pc`, `proc_stack`).
 pub fn set_user_regs(pc: usize, sp: usize) {

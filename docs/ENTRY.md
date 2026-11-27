@@ -1,6 +1,7 @@
 # The userland door: `sys/entry` (decision 56, not built yet)
 
-**Status: decided, not implemented.** Written on 2026-11-26 at the user's request. After the
+**Status: decided; the way out (E1) built on 2026-11-27, the crate (E2) not yet.** Written on
+2026-11-26 at the user's request. After the
 survey and the plan, the user took decision 56 and the plan's ten points as recommended the
 same day (section 10). It amends decision 20 ("`hal` is the only crate with `unsafe`"). No
 code is written yet: the work runs after the removal of Limine (decision 57, done), in the slices of section 11,
@@ -234,9 +235,14 @@ The child's return value (0, error flag clear) is OpenBSD's convention, so `abi`
 a constant (`CHILD_RETURN`: which register, which value, the flag). The image's boot glue
 hands it to the kernel once; at each fork of a child that returns to userland the kernel
 passes it to `hal`, which writes it into the child's saved registers while it builds them.
-No call goes upward (today `hal` calls `abi` back when the child first runs, `ChildFn`). The
-start function also releases the kernel lock and runs the kernel's own first-return work,
-then the same loop as every exit.
+No call goes upward (before E1 `hal` called `abi` back when the child first ran, `ChildFn`).
+The start function also releases the kernel lock and runs the kernel's own first-return work,
+then the same loop as every exit. Built so in E1: `abi::arch::arm64::CHILD_RETURN`, handed to
+`kernel::proc::fork::init`; `cpu_fork` passes it in a `hal::cpu::thread::UserStart` (with the
+user stack and TCB) to `thread_setup`, whose `build_frames` writes it; the kernel's
+`child_return` unlocks and calls `mi_child_return`; `thread_start` runs
+`kernel::trap::user_exit` and returns its `UserExit` to `hal_proc_trampoline`, which branches to
+`hal_user_first_return` (the restore and the return, no `do_ast`).
 
 ## 5. The rules, and what enforces them
 
@@ -550,6 +556,14 @@ does not reach `bsd`'s table (it does, until N9).
    slices (N7.2a2/a3), in four slices: the coverage and the bench row; the way out (the exit
    gate, `kernel::trap`, the child's value, `exec`'s registers); the crate (the vectors, the
    classification, `abi` registering nothing, `entry-check`); the documents and the rules.
+   E0 (coverage, the `nullsys` row) and E1 (the way out) are built. E1 as built: `hal::cpu::
+   usertrap::{ExitGate, UserExit, AstPending}` (the gate reads the running thread's slot with
+   one `unsafe`, `hal::cpu::thread::with_current_slot`); `kernel::trap::{ast, user_exit}`,
+   generic over the glue (the `UserTraps` trait and its `dyn`, which `entry` needs because it
+   cannot name the glue, come with E2); a trap's return still runs `exception.S`'s `do_ast`,
+   whose `ast()` now asks the kernel once (`TrapHandler::ast` is `kernel::trap::ast`);
+   `ChildFn` is gone (`set_handler(call, info)`), `SyscallFn`, `HandlerInfo` and `abi_init`
+   stay until E2; `setregs` writes the frame through `hal::cpu::trap::set_exec_regs`.
 5. The close: every smoke, `diff-openbsd`, the bench pair.
 
 ## Words

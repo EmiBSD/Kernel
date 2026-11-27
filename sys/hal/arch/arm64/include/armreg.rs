@@ -188,6 +188,8 @@ pub const PSR_F: u64 = 0x0000_0040;
 pub const PSR_I: u64 = 0x0000_0080;
 /// `PSR_BTYPE`: the branch type of the last indirect branch (BTI).
 pub const PSR_BTYPE: u64 = 0x0000_0c00;
+/// `PSR_DIT`: data independent timing (a new program's, `setregs`).
+pub const PSR_DIT: u64 = 0x0100_0000;
 /// `PSR_C`: the carry flag, the system call's error flag.
 pub const PSR_C: u64 = 0x2000_0000;
 /* </CODE> */
