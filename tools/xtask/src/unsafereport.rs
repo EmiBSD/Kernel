@@ -340,12 +340,16 @@ pub(crate) const CRATE_NAMES: [&str; 6] = ["kernel", "abi", "hal", "lib", "bsd",
 /// (`sys/lib/sysdefs/`, `sys/lib/libkern/`, `sys/lib/libz/`), `boot` (`sys/boot/`, LZ's
 /// `sys/stand/`, `sys/lib/libsa/`, `sys/arch/*/stand/`), or `bsd` for every other file under
 /// `sys/` and `init/`; `None` for anything else. The legacy tree and the loaders are read in LZ's layout
-/// (`crate::lz_flat`): `sys/bsd/<x>` is `sys/<x>` and `sys/boot/` is `boot`. So the kernel
-/// binary's boot entry, `sys/bsd/stand/` (`bsd`'s `mod stand`, LZ's `sys/stand/*.rs`), stays
-/// in `boot` with the loaders, where it was counted before the move of 2026-11-26.
+/// (`crate::lz_flat`): `sys/bsd/<x>` is `sys/<x>` and `sys/boot/` is `boot`. The kernel
+/// binary's boot entry, `sys/bsd/stand/` (`bsd`'s `mod stand`, LZ's `sys/stand/*.rs`), is
+/// `bsd` (U5 of the removal of Limine, 2026-11-26): what is left there, boot(8)'s
+/// `bootarg_main` and `start_kernel`, is compiled into the kernel image, not into a loader,
+/// and goes with `bsd` at N9. It was counted in `boot` until then.
 pub(crate) fn crate_of_file(rel: &str) -> Option<&'static str> {
-    if rel.starts_with("init/") {
-        // The binary that links the crates: part of the legacy `bsd` (STATUS counts it there).
+    if rel.starts_with("init/") || rel.starts_with("sys/bsd/stand/") {
+        // `init/`: the binary that links the crates, part of the legacy `bsd` (STATUS counts
+        // it there); `sys/bsd/stand/`: the kernel image's boot entry, read before LZ's
+        // layout, where it is `sys/stand/` with the loaders.
         return Some("bsd");
     }
     let flat = crate::lz_flat(rel);
@@ -2129,7 +2133,7 @@ mod tests {
             subsystem(root, "sys/bsd/arch/arm64/arm64/machdep.rs"),
             "arch/arm64"
         );
-        assert_eq!(subsystem(root, "sys/bsd/stand/limine.rs"), "stand");
+        assert_eq!(subsystem(root, "sys/bsd/stand/bootarg.rs"), "stand");
         assert_eq!(subsystem(root, "sys/boot/libsa/open.rs"), "lib/libsa");
         assert_eq!(subsystem(root, "sys/boot/loader/cmd.rs"), "stand");
         assert_eq!(subsystem(root, "sys/boot/efi/lib.rs"), "stand");
@@ -2797,7 +2801,8 @@ mod tests {
             ("sys/bsd/kern/kern_sig.rs", Some("bsd")),
             ("sys/bsd/arch/arm64/arm64/machdep.rs", Some("bsd")),
             ("sys/bsd/lib.rs", Some("bsd")),
-            ("sys/bsd/stand/limine.rs", Some("boot")),
+            ("sys/bsd/stand/mod.rs", Some("bsd")),
+            ("sys/bsd/stand/bootarg.rs", Some("bsd")),
             ("sys/boot/libsa/open.rs", Some("boot")),
             ("sys/boot/loader/cmd.rs", Some("boot")),
             ("sys/boot/efi/lib.rs", Some("boot")),
