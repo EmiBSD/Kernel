@@ -681,3 +681,16 @@ paid_by = "N9"
 trait = "LegacySyscalls"
 for = ["sys/kernel/syscall.rs", "sys/kernel/api.rs"]
 paid_by = "N9"
+
+# kernel's own: the kernel's door for a trap from user mode (decision 56, E2): what the code
+# that classifies the trap asks the kernel (refreshcreds, a user fault and its signal,
+# trapsignal, sigexit, userret and the AST loop, ast(), mi_syscall_return), a table because
+# that code cannot name the glue the kernel's process code is generic over. Implemented by the
+# kernel's own KernelTrap<G>, installed over bsd's glue (KernelTrap<BsdProcGlue>) by
+# hal_bridges_register (sys/kern/hal_bridges.rs). Paid when the glue's generic goes (N9): the
+# door's functions then call the kernel's code directly.
+# kernel::trap::UserTraps
+[[bridge]]
+trait = "UserTraps"
+for = ["sys/kernel/trap.rs", "sys/kernel/api.rs"]
+paid_by = "N9"

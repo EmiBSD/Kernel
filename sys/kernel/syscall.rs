@@ -61,9 +61,9 @@
 //! the kernel lock around the body unless the call is `SY_NOLOCK`. Every path into a system
 //! call's body comes through it: `bsd`'s `Legacy` path (`sysent[]`) and each `Native`
 //! entry of the ABI's table (`bsd`'s wrappers over the kernel's functions), the body
-//! a closure over the row. [`KernelTrap`] is what `hal`'s trap code asks: the page fault on
-//! the map the trap chose, the signals, `refreshcreds`, `userret`, the system call's return
-//! and the AST.
+//! a closure over the row. `kernel::trap::KernelTrap` is what `hal`'s trap code asks
+//! (`hal::cpu::trap::TrapHandler`): the page fault on the map the trap chose, the signals,
+//! `refreshcreds`, `userret`, the system call's return and the AST.
 //!
 //! ## Deviations
 //! - `KTRACE` and dt(4) are not configured; `SYSCALL_DEBUG` is `bsd`'s feature
@@ -99,13 +99,16 @@
 //!   [`mi_syscall_return`] and [`mi_ast`], on the running thread; since decision 56's E1
 //!   its `ast` is `ast()`'s whole work (`kernel::trap::ast`), and [`mi_child_return`] is
 //!   called by the kernel's own `child_return` (`kernel::proc::fork`), not through `hal`.
+//!   Decision 56 (E2): `KernelTrap` is `kernel::trap`'s, the kernel's door for a trap from
+//!   user mode, and `syscall_return` went with it (the kernel's own table, not `hal`'s
+//!   registry); the fault on a process's map is [`uvm_user_fault`], which the door's fault and
+//!   the `TrapHandler`'s kernel access to a user address share.
 //! - Decision 52 (N7): the `sysent[]` rows still `bsd`'s are reached through one bridge,
 //!   [`LegacySyscalls`] (`bridges.toml`, paid by N9), which `kernel::api` calls for every
 //!   system call, `Native` or `Legacy`: `mi_syscall` on the row for the thread on this CPU,
 //!   as both machines' traps did in the C. It replaces the `KernelApi` table's
 //!   `syscall_legacy` member and the `native_*` glue `bsd` filled that table with.
 
-use core::marker::PhantomData;
 use core::pin::Pin;
 use core::sync::atomic::Ordering;
 
@@ -152,23 +155,6 @@ impl core::fmt::Display for Comm<'_> {
             core::fmt::Write::write_char(f, char::from(b))?;
         }
         Ok(())
-    }
-}
-
-/// What `hal`'s trap code asks the kernel (`hal::cpu::trap::TrapHandler`), for the threads of
-/// glue `G`: registered once by the kernel's boot path (`bsd`'s `hal_bridges_register`).
-pub struct KernelTrap<G: ProcGlue>(PhantomData<fn() -> G>);
-
-impl<G: ProcGlue> KernelTrap<G> {
-    /// The handler (a `static` of the glue's).
-    pub const fn new() -> Self {
-        Self(PhantomData)
-    }
-}
-
-impl<G: ProcGlue> Default for KernelTrap<G> {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -389,7 +375,7 @@ fn stack_in_map_stack<G: ProcGlue>(p: Pin<&Thread<G>>, sp: usize) -> bool {
 /// `p`'s address space. A fault from user mode on a thread with no address space cannot be:
 /// `panic(9)`, as the C's `p->p_vmspace` dereference would, rather than a fault answered
 /// `Ok` that the thread takes again for ever.
-fn user_page_fault<G: ProcGlue>(
+pub(crate) fn user_page_fault<G: ProcGlue>(
     p: Pin<&Thread<G>>,
     sp: usize,
     fault: impl FnOnce(&Vmspace) -> Result<(), Errno>,
@@ -402,6 +388,29 @@ fn user_page_fault<G: ProcGlue>(
         return Ok(());
     }
     fault(vm)
+}
+
+/// `udata_abort`'s and `kdata_abort`'s fault on a process's map for `p`, in its address space
+/// `vm`: `pmap_fault_fixup` (the referenced/modified emulation), then `uvm_fault` and, when it
+/// served the fault, `uvm_grow`.
+pub(crate) fn uvm_user_fault<G: ProcGlue>(
+    p: &Thread<G>,
+    vm: &Vmspace,
+    va: usize,
+    access: hal::vm::pmap::VmProt,
+) -> Result<(), Errno> {
+    let map = &vm.vm_map;
+    // Handle referenced/modified emulation
+    #[cfg(target_arch = "aarch64")]
+    if map
+        .pmap()
+        .fault_fixup(sysdefs::base::types::Vaddr::new(va), access)
+    {
+        return Ok(());
+    }
+    crate::vm::fault::uvm_fault(map, va, 0, access, Some(&p.p_ru))?;
+    crate::vm::unix::uvm_grow(p, vm, va);
+    Ok(())
 }
 
 /// `mi_syscall`: the MD setup for a system call has been done; here's the MI part. `lock`
@@ -464,20 +473,6 @@ pub fn mi_syscall_return<G: ProcGlue>(
     crate::sig::userret(p);
 }
 
-/// `mi_syscall_return(p, code, error, rval)` for the running thread, which the ABI calls
-/// (`kernel::api::syscall_return`) once it wrote the return registers or rewound the pc
-/// (decision 53): the end of the C's `svc_handler`. This function is not generic over the
-/// glue, so it reaches [`mi_syscall_return`] through the trap handler the boot glue
-/// registered (`KernelTrap<G>`, docs/SCAFFOLDING.md, until N9); `panic(9)` without one,
-/// which no system call can see (the handler is registered before the first process).
-#[inline]
-pub fn syscall_return(code: Register, error: SysResult, rval: &Rval) {
-    match hal::cpu::trap::handler() {
-        Some(h) => h.syscall_return(code, error, rval),
-        None => kpanic(format_args!("syscall_return: no trap handler")),
-    }
-}
-
 /// `mi_child_return`: finish MI stuff for a new process/thread to return.
 #[inline]
 pub fn mi_child_return<G: ProcGlue>(p: Pin<&Thread<G>>) {
@@ -505,7 +500,7 @@ fn with_trapped<G: ProcGlue, R>(f: impl FnOnce(Pin<&Thread<G>>) -> R) -> R {
     hal::cpu::thread::with_current::<Thread<G>, R>(f)
 }
 
-impl<G: ProcGlue> TrapHandler for KernelTrap<G> {
+impl<G: ProcGlue> TrapHandler for crate::trap::KernelTrap<G> {
     /// `udata_abort`'s and `kdata_abort`'s `pmap_fault_fixup`, `uvm_fault` and `uvm_grow` on
     /// the map the trap chose (`udata_abort`'s `MAP_STACK` check first).
     fn page_fault(
@@ -527,20 +522,7 @@ impl<G: ProcGlue> TrapHandler for KernelTrap<G> {
             }
             crate::vm::fault::uvm_fault(map, va, 0, access, ru)
         };
-        let user_fault = |p: &Thread<G>, vm: &crate::vm::map::Vmspace| {
-            let map = &vm.vm_map;
-            // Handle referenced/modified emulation
-            #[cfg(target_arch = "aarch64")]
-            if map
-                .pmap()
-                .fault_fixup(sysdefs::base::types::Vaddr::new(va), access)
-            {
-                return Ok(());
-            }
-            crate::vm::fault::uvm_fault(map, va, 0, access, Some(&p.p_ru))?;
-            crate::vm::unix::uvm_grow(p, vm, va);
-            Ok(())
-        };
+        let user_fault = |p: &Thread<G>, vm: &Vmspace| uvm_user_fault(p, vm, va, access);
         match source {
             FaultSource::Kernel => G::with_curproc(|p| kernel_fault(va, p.map(|p| &p.p_ru))),
             // map = &p->p_vmspace->vm_map; with no thread (or no address space) the kernel

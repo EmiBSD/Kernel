@@ -69,8 +69,8 @@ use hal::syscall::{ENOSYS, Register, Rval, SysArgs, SysResult};
 
 pub use crate::syscall::legacy_syscall as syscall_legacy;
 /// `mi_syscall_return`, which the ABI's per-arch handler calls after it wrote the return
-/// registers (decision 53).
-pub use crate::syscall::syscall_return;
+/// registers (decision 53), through the kernel's own trap table (`kernel::trap`, decision 56).
+pub use crate::trap::syscall_return;
 
 /// A `Native` call: `ENOSYS` unless `nr` is `want`'s number, else row `nr` of `sysent[]`
 /// through `mi_syscall` with `args` and the trap's return registers, as on the `Legacy` path.

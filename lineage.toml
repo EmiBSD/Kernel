@@ -16798,9 +16798,9 @@ kind = "moved"
 [[module]]
 rust = "sys/kernel/trap.rs"
 crate = "kernel"
-lz = ["sys/arch/arm64/arm64/ast.rs"]
+lz = ["sys/arch/arm64/arm64/trap.rs", "sys/arch/arm64/arm64/ast.rs"]
 status = "redesigned"
-notes = "Decision 56, E1 (the way out): ast.c's ast() as the kernel's, generic over ProcGlue (refreshcreds, uvmexp.softs, mi_ast with ci_want_resched, userret; the pcb_tf store dropped, P5: the frame is always at one place), and do_ast's loop (user_exit) over hal::cpu::usertrap::ExitGate, which hands out the UserExit token; a new thread's first return runs it from kernel::proc::fork's thread_start, a trap's return still through exception.S's do_ast and TrapHandler::ast (one call) until E2. LZ's ast.rs is also listed by sys/hal/arch/arm64/trap.rs, which keeps the frame's half (ast's curproc check and pcb_tf) until E2"
+notes = "Decision 56, E2 (the door): the kernel's door for a trap from user mode, as kernel::api is the ABI's: enter (refreshcreds), fault (udata_abort's kernel half: MAP_STACK, pmap_fault_fixup, uvm_fault, uvm_grow; the errno's signal, udata_abort_signal), signal (trapsignal), kill (KERNEL_LOCK, sigexit), leave (userret, then user_exit), exit (an interrupt's AST loop, through the table only for a pending AST), syscall_return (mi_syscall_return, kernel::api's, the kernel's own static now, not hal's registry); plain functions over the kernel's OnceStatic<&dyn UserTraps> (bridges.toml UserTraps, N9), filled by bsd with KernelTrap<BsdProcGlue> (KernelTrap moved here from kernel::syscall). Decision 56, E1 (the way out): ast.c's ast() as the kernel's, generic over ProcGlue (refreshcreds, uvmexp.softs, mi_ast with ci_want_resched, userret; the pcb_tf store dropped, P5: the frame is always at one place), and do_ast's loop (user_exit) over hal::cpu::usertrap::ExitGate, which hands out the UserExit token; a new thread's first return runs it from kernel::proc::fork's thread_start, a trap's return still through exception.S's do_ast and TrapHandler::ast (one call) until E2. LZ's ast.rs is also listed by sys/hal/arch/arm64/trap.rs, which keeps the frame's half (ast's curproc check and pcb_tf) until E2"
 
 [[module]]
 rust = "sys/kernel/syscall.rs"

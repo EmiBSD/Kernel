@@ -15,6 +15,32 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+/*-
+ * Copyright (c) 2014 Andrew Turner
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+
 /*
  * Copyright (c) 2015 Dale Rahn <drahn@dalerahn.com>
  *
@@ -33,19 +59,32 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! The kernel's side of the way back to user mode (decision 56): `ast.c`'s `ast()`, the work
-//! done for a pending AST, and the loop that runs it until `hal`'s exit gate finds nothing
-//! pending.
+//! The kernel's door for a trap from user mode (decision 56), as `kernel::api` is the ABI's:
+//! what the code that classifies the trap (`entry`, which no crate names) asks the kernel
+//! (the credentials refreshed, a fault from user mode served or signalled, a signal sent,
+//! the process killed, the work before the return), and the kernel's side of the way back
+//! to user mode: `ast.c`'s `ast()` and the loop that runs it until `hal`'s exit gate finds
+//! nothing pending.
 //!
+//! Upstream: sys/arch/arm64/arm64/trap.c @ 3ce1f3f79392
 //! Upstream: sys/arch/arm64/arm64/ast.c @ 3ce1f3f79392
+//! LZ: sys/arch/arm64/arm64/trap.rs@e8249449d905
 //! LZ: sys/arch/arm64/arm64/ast.rs@3c62ede68802
+//!
+//! The door is plain functions ([`enter`], [`fault`], [`signal`], [`kill`], [`leave`],
+//! [`exit`], [`syscall_return`]): the code that calls them cannot name the glue the kernel's
+//! process code is generic over (`bsd`'s, until N9), so they reach it through one table the
+//! image's boot glue installs once, [`UserTraps`], whose one implementation is the kernel's
+//! own [`KernelTrap`] over that glue (docs/SCAFFOLDING.md: the `dyn` goes when the glue's
+//! generic does, N9). [`exit`], an interrupt's way back, calls through it only for a pending
+//! AST.
 //!
 //! The C's `do_ast` (`exception.S`) is the loop, in assembly, around `ast()`: the interrupts
 //! masked, `md_astpending` tested and cleared, the interrupts restored and `ast()` called
 //! while it was set, the return to user mode taken only once it was clear and with the
 //! interrupts still masked. Here `hal` keeps the test with the interrupts masked
-//! (`hal::cpu::usertrap::ExitGate`) and the kernel runs the loop ([`user_exit`]): `hal` calls
-//! nobody on the way out, and a return to user mode needs the gate's token
+//! (`hal::cpu::usertrap::ExitGate`) and the kernel runs the loop ([`user_exit`], [`exit`]):
+//! `hal` calls nobody on the way out, and a return to user mode needs the gate's token
 //! (`hal::cpu::usertrap::UserExit`), which only a pass that found nothing pending hands out.
 //!
 //! ## Redesign
@@ -53,21 +92,177 @@
 //!   from its start (`kernel::proc::fork`'s `thread_start`), generic over the glue: no
 //!   indirect call, where `hal`'s `syscall_return` ran `do_ast` and `hal`'s `ast()` called the
 //!   kernel three times through `hal::cpu::trap::TrapHandler` (`refreshcreds`, `mi_ast`,
-//!   `userret`). A return after a trap from user mode still runs `exception.S`'s `do_ast`
-//!   until the trap moves to `entry` (E2), and its `ast()` asks the kernel once
-//!   (`TrapHandler::ast`, which is [`ast`]).
+//!   `userret`).
 //! - `ast()`'s `p->p_addr->u_pcb.pcb_tf = tf` is not here: the frame of a thread's user
 //!   context is always at the top of its kernel stack, where `cpu_fork` built it and every
-//!   entry from user mode saves it, and `pcb_tf` names that place already (`hal`'s trap code
-//!   records it until E2; decision 56's P5).
+//!   entry from user mode saves it, and `pcb_tf` names that place already (decision 56's P5).
+//! - E2 (decision 56, the door): `trap.c`'s machine-independent calls (`refreshcreds`,
+//!   `udata_abort`'s fault on the process's map and its choice of signal, `trapsignal`,
+//!   `KERNEL_LOCK(); sigexit()`, `userret`), `ast.c`'s `ast()` and `syscall.c`'s
+//!   `mi_syscall_return` were asked by `hal`'s trap code through the `TrapHandler` `bsd`
+//!   registered in `hal`; they are the kernel's door, called downward by `entry`, and the
+//!   table behind it is the kernel's own ([`install`]). `udata_abort` is split: the decode
+//!   (the alignment fault, the branch predictor flush for a kernel address) is the trap's,
+//!   the fault and the errno's signal ([`udata_abort_signal`]) are here. The system call's
+//!   return (`kernel::api::syscall_return`) reaches the kernel through this table, where it
+//!   went through `hal`'s registry and back.
 
 use core::pin::Pin;
 use core::sync::atomic::Ordering;
 
+use hal::bridges::AlreadyRegistered;
 use hal::cpu::usertrap::{AstPending, ExitGate, UserExit};
+use hal::sync::once::OnceStatic;
+use hal::syscall::{Register, Rval, SysResult};
+use hal::vm::pmap::VmProt;
 use hal::vm::uvmexp::UVMEXP;
+use sysdefs::base::errno::Errno;
+use sysdefs::sig::siginfo::{BUS_OBJERR, SEGV_ACCERR, SEGV_MAPERR, Sigval};
+use sysdefs::sig::signal::{SIGBUS, SIGKILL, SIGSEGV};
 
+use crate::assert::kpanic;
 use crate::proc::{ProcGlue, Thread};
+
+/// A fault from user mode as the trap decoded it (`udata_abort`'s arguments): the faulting
+/// page, the access, and what the signal of a fault the kernel cannot serve carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UserFault {
+    /// The user stack pointer at the fault (`PROC_STACK(p)`), for the `MAP_STACK` check.
+    pub sp: usize,
+    /// The faulting page (`trunc_page(far)`).
+    pub va: usize,
+    /// The access (`accesstype(esr, exe)`).
+    pub access: VmProt,
+    /// The trap number a signal carries (`esr`).
+    pub trapno: u64,
+    /// The faulting address a signal carries (`far`, its `sival_ptr`).
+    pub addr: usize,
+}
+
+/// What the kernel answers a trap from user mode with, on the running thread, for the glue its
+/// process code is generic over. The kernel's [`KernelTrap`] is the one implementation; the
+/// image's boot glue installs it ([`install`]) before the first thread runs in user mode.
+pub trait UserTraps: Sync {
+    /// `refreshcreds(p)`, the first thing a synchronous trap does once the frame is recorded.
+    fn enter(&self);
+    /// `udata_abort`'s kernel half: the `MAP_STACK` check of `f.sp`, then
+    /// `pmap_fault_fixup`, `uvm_fault` and `uvm_grow` on the process's map; a fault it cannot
+    /// serve is the signal its errno names ([`udata_abort_signal`]).
+    fn fault(&self, f: UserFault);
+    /// `trapsignal(p, sig, trapno, code, sv)` with `sv.sival_ptr = addr`.
+    fn signal(&self, sig: i32, trapno: u64, code: i32, addr: usize);
+    /// `KERNEL_LOCK(); sigexit(p, sig)`: the process killed; never returns.
+    fn kill(&self, sig: i32) -> !;
+    /// `userret(p)`, then the AST loop ([`user_exit`]): the end of a synchronous trap.
+    fn leave(&self) -> UserExit;
+    /// `ast()`'s work on the running thread ([`ast`]).
+    fn ast(&self);
+    /// `mi_syscall_return(p, code, error, rval)`, after the ABI wrote the return registers.
+    fn syscall_return(&self, code: Register, error: SysResult, rval: &Rval);
+}
+
+/// The kernel's answers to a trap from user mode ([`UserTraps`]), over the threads of glue `G`:
+/// installed once by the image's boot glue (`bsd`'s `hal_bridges_register`, until N9).
+pub struct KernelTrap<G: ProcGlue>(core::marker::PhantomData<fn() -> G>);
+
+impl<G: ProcGlue> KernelTrap<G> {
+    /// The table (a `static` of the glue's).
+    pub const fn new() -> Self {
+        Self(core::marker::PhantomData)
+    }
+}
+
+impl<G: ProcGlue> Default for KernelTrap<G> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The installed table.
+static TRAPS: OnceStatic<&'static dyn UserTraps> = OnceStatic::new();
+
+/// Installs the table, once; a second call keeps the first and names it.
+pub fn install(t: &'static dyn UserTraps) -> Result<(), AlreadyRegistered> {
+    TRAPS.set(t).map_err(|_| AlreadyRegistered("UserTraps"))
+}
+
+/// The installed table; `panic(9)` for `what` before it is installed, which no trap from user
+/// mode can see (the boot glue installs it before the first thread leaves for user mode).
+#[inline]
+fn traps(what: &str) -> &'static dyn UserTraps {
+    match TRAPS.get() {
+        Some(t) => *t,
+        None => kpanic(format_args!("{what}: no user trap table")),
+    }
+}
+
+/// `refreshcreds(p)` for the thread that trapped ([`UserTraps::enter`]).
+#[inline]
+pub fn enter() {
+    traps("enter").enter();
+}
+
+/// A fault from user mode ([`UserTraps::fault`]).
+#[inline]
+pub fn fault(f: UserFault) {
+    traps("fault").fault(f);
+}
+
+/// `trapsignal` for the thread that trapped ([`UserTraps::signal`]).
+#[inline]
+pub fn signal(sig: i32, trapno: u64, code: i32, addr: usize) {
+    traps("signal").signal(sig, trapno, code, addr);
+}
+
+/// The thread that trapped killed by `sig` ([`UserTraps::kill`]).
+pub fn kill(sig: i32) -> ! {
+    traps("kill").kill(sig)
+}
+
+/// The end of a synchronous trap: `userret` and the AST loop ([`UserTraps::leave`]), the
+/// gate's token for the return to user mode.
+#[inline]
+pub fn leave() -> UserExit {
+    traps("leave").leave()
+}
+
+/// The end of an interrupt taken in user mode (the C's `do_ast` after `arm_cpu_irq`): the AST
+/// loop alone, which calls through the table only for a pending AST.
+#[inline]
+pub fn exit() -> UserExit {
+    let mut gate = ExitGate::new();
+    loop {
+        match gate.pass() {
+            Ok(exit) => return exit,
+            // handle the ast
+            Err(AstPending) => traps("ast").ast(),
+        }
+    }
+}
+
+/// `mi_syscall_return(p, code, error, rval)` for the running thread, which the ABI calls
+/// (`kernel::api::syscall_return`) once it wrote the return registers or rewound the pc
+/// (decision 53): the end of the C's `svc_handler`, through the table, since this function is
+/// not generic over the glue.
+#[inline]
+pub fn syscall_return(code: Register, error: SysResult, rval: &Rval) {
+    traps("syscall_return").syscall_return(code, error, rval);
+}
+
+/// `udata_abort`'s choice of signal for a fault `uvm_fault` could not serve: no memory kills
+/// (`SIGKILL`), an I/O error is `SIGBUS` (`BUS_OBJERR`), a protection error `SIGSEGV`
+/// (`SEGV_ACCERR`), anything else `SIGSEGV` (`SEGV_MAPERR`).
+pub fn udata_abort_signal(error: Errno) -> (i32, i32) {
+    if error == Errno::ENOMEM {
+        (SIGKILL, 0)
+    } else if error == Errno::EIO {
+        (SIGBUS, BUS_OBJERR)
+    } else if error == Errno::EACCES {
+        (SIGSEGV, SEGV_ACCERR)
+    } else {
+        (SIGSEGV, SEGV_MAPERR)
+    }
+}
 
 /// `ast(tf)`: the asynchronous system trap's work for the thread `p` returning to user mode:
 /// its credentials refreshed, the counter, `mi_ast` (profiling, the preemption
@@ -93,6 +288,56 @@ pub fn user_exit<G: ProcGlue>() -> UserExit {
         }
     }
 }
+
+/// The running thread, for `f`; a trap without one is `panic(9)` (the trap checked it).
+fn with_trapped<G: ProcGlue, R>(f: impl FnOnce(Pin<&Thread<G>>) -> R) -> R {
+    hal::cpu::thread::with_current::<Thread<G>, R>(f)
+}
+
+impl<G: ProcGlue> UserTraps for KernelTrap<G> {
+    fn enter(&self) {
+        // refresh the thread's cache of the process's creds
+        with_trapped::<G, _>(|p| crate::syscall::refreshcreds(&p));
+    }
+
+    fn fault(&self, f: UserFault) {
+        with_trapped::<G, _>(|p| {
+            let served = crate::syscall::user_page_fault(p, f.sp, |vm| {
+                crate::syscall::uvm_user_fault(&p, vm, f.va, f.access)
+            });
+            if let Err(error) = served {
+                let (sig, code) = udata_abort_signal(error);
+                crate::sig::trapsignal(p, sig, f.trapno, code, Sigval::from_ptr(f.addr));
+            }
+        });
+    }
+
+    fn signal(&self, sig: i32, trapno: u64, code: i32, addr: usize) {
+        with_trapped::<G, _>(|p| {
+            crate::sig::trapsignal(p, sig, trapno, code, Sigval::from_ptr(addr));
+        });
+    }
+
+    fn kill(&self, sig: i32) -> ! {
+        hal::sync::klock::kernel_lock(); // KERNEL_LOCK()
+        with_trapped::<G, _>(|p| crate::sig::sigexit(&p, sig))
+        // KERNEL_UNLOCK(): sigexit does not return.
+    }
+
+    fn leave(&self) -> UserExit {
+        with_trapped::<G, _>(crate::sig::userret);
+        user_exit::<G>()
+    }
+
+    fn ast(&self) {
+        with_trapped::<G, _>(ast::<G>);
+    }
+
+    fn syscall_return(&self, code: Register, error: SysResult, rval: &Rval) {
+        let error = error.map_err(|e| Errno::from_raw(e).unwrap_or(Errno::EINVAL));
+        with_trapped::<G, _>(|p| crate::syscall::mi_syscall_return(p, code, error, rval));
+    }
+}
 /* </CODE> */
 
 /* <TESTS> */
@@ -105,6 +350,9 @@ mod tests {
     fn softs() -> i64 {
         i64::from(UVMEXP.softs.load(Ordering::Relaxed))
     }
+
+    /// The table the tests install: the kernel's own, over the scheduler tests' glue.
+    static KT: KernelTrap<SchedGlue> = KernelTrap::new();
 
     /// Nothing pending: the gate opens at once and no AST runs.
     #[test]
@@ -132,6 +380,43 @@ mod tests {
         let _exit = user_exit::<SchedGlue>();
         assert_eq!(softs(), before + 1, "the AST was cleared by the first pass");
         hal::cpu::thread::set_current_static::<Thread<SchedGlue>>(None);
+    }
+
+    /// An interrupt's way back ([`exit`]): through the installed table only for a pending AST,
+    /// once, then the gate opens.
+    #[test]
+    fn an_interrupts_exit_runs_a_pending_ast_through_the_table() {
+        let _g = setup();
+        let first = install(&KT);
+        assert!(first.is_ok() || first == Err(AlreadyRegistered("UserTraps")));
+        assert_eq!(install(&KT), Err(AlreadyRegistered("UserTraps")));
+        let me = thread(42, 50);
+        run_as(VCPUS[0], me);
+        let before = softs();
+        let _exit = exit();
+        assert_eq!(
+            softs(),
+            before,
+            "nothing pending: no call through the table"
+        );
+        me.machine.aston();
+        let _exit = exit();
+        assert_eq!(softs(), before + 1);
+        hal::cpu::thread::set_current_static::<Thread<SchedGlue>>(None);
+    }
+
+    /// `udata_abort`'s table of errno to signal, the C's (`trap.c:143-155`).
+    #[test]
+    fn a_fault_not_served_is_the_cs_signal() {
+        for (error, want) in [
+            (Errno::ENOMEM, (SIGKILL, 0)),
+            (Errno::EIO, (SIGBUS, BUS_OBJERR)),
+            (Errno::EACCES, (SIGSEGV, SEGV_ACCERR)),
+            (Errno::EFAULT, (SIGSEGV, SEGV_MAPERR)),
+            (Errno::EINVAL, (SIGSEGV, SEGV_MAPERR)),
+        ] {
+            assert_eq!(udata_abort_signal(error), want, "{error:?}");
+        }
     }
 }
 /* </TESTS> */

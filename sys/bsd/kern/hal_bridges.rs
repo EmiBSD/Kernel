@@ -353,11 +353,12 @@ static KERNEL_SLEEP: kernel::sched::KernelSleep<crate::kern::proc_glue::BsdProcG
     kernel::sched::KernelSleep::new();
 static BSD_POOLS: BsdPools = BsdPools;
 static BSD_MALLOC: BsdMalloc = BsdMalloc;
-/// What `hal`'s trap code asks (`hal::cpu::trap::TrapHandler`): the kernel's, over `bsd`'s threads
-/// (N4.8b).
+/// What `hal`'s trap code asks (`hal::cpu::trap::TrapHandler`, N4.8b) and what a trap from
+/// user mode asks the kernel through its door (`kernel::trap::UserTraps`, decision 56): the
+/// kernel's, over `bsd`'s threads.
 #[cfg(not(machine_x86))]
-static KERNEL_TRAP: kernel::syscall::KernelTrap<crate::kern::proc_glue::BsdProcGlue> =
-    kernel::syscall::KernelTrap::new();
+static KERNEL_TRAP: kernel::trap::KernelTrap<crate::kern::proc_glue::BsdProcGlue> =
+    kernel::trap::KernelTrap::new();
 static BSD_CONS: BsdCons = BsdCons;
 static BSD_PRINTF: BsdPrintf = BsdPrintf;
 #[cfg(all(machine_x86, feature = "multiprocessor"))]
@@ -433,9 +434,13 @@ pub fn hal_bridges_register() {
     let _ = hal::bridges::register_sleep(&KERNEL_SLEEP);
     let _ = hal::bridges::register_pool_backend(&BSD_POOLS);
     let _ = hal::bridges::register_malloc(&BSD_MALLOC);
-    // What the machine's trap code asks (N4.8b): before the first thread runs.
+    // What the machine's trap code asks (N4.8b), and the kernel's door for a trap from user
+    // mode (decision 56: the kernel's own table, which the kernel cannot fill itself while its
+    // process code is generic over bsd's glue): before the first thread runs.
     #[cfg(not(machine_x86))]
     let _ = hal::cpu::trap::install(&KERNEL_TRAP);
+    #[cfg(not(machine_x86))]
+    let _ = kernel::trap::install(&KERNEL_TRAP);
     let _ = hal::bridges::register_console(&BSD_CONS);
     let _ = hal::bridges::register_printf(&BSD_PRINTF);
     let _ = hal::bridges::register_random(&BSD_RANDOM);
