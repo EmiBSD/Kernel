@@ -509,7 +509,7 @@ fn run(args: &[String]) -> Result<()> {
         ["cd80", rest @ ..] => distrib::cd80(&root, rest),
         ["ntfs-image", out] => ntfsgen::ntfs_image(&root.join(out), false),
         ["ntfs-image", out, "--check"] => ntfsgen::ntfs_image(&root.join(out), true),
-        // M14: efiboot's PE image and the disk smoke-efiboot boots (efiboot.rs).
+        // M14: efiboot's PE image (efiboot.rs).
         ["efiboot", rest @ ..] => {
             let arch = boot::Arch::parse(flag(rest, "--arch")?)?;
             efiboot::efiboot(
@@ -519,16 +519,12 @@ fn run(args: &[String]) -> Result<()> {
                 optional_flag(rest, "--out"),
             )
         }
-        ["efiboot-disk", rest @ ..] => {
-            let arch = boot::Arch::parse(flag(rest, "--arch")?)?;
-            efiboot::efiboot_disk(
-                &root,
-                arch,
-                Path::new(flag(rest, "--efi")?),
-                Path::new(flag(rest, "--kernel")?),
-                optional_flag(rest, "--root-dev"),
-            )
-        }
+        // Retired with the removal of Limine's S2 (2026-11-26); amd64's smoke-efiboot still
+        // names it (decision 44: its text stays until N10's first step converts it).
+        ["efiboot-disk", ..] => Err("efiboot-disk: retired; `efiboot-image --root bare|tree \
+             (--shared | --out FILE)` makes the efiboot images, and N10's first step converts \
+             amd64's smoke-efiboot to them"
+            .into()),
         // The removal of Limine (2026-11-26): the one efiboot image builder (efiboot.rs).
         ["efiboot-image", rest @ ..] => efiboot::image_command(&root, rest),
         ["nvme-root", rest @ ..] => {

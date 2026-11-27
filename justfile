@@ -1700,8 +1700,7 @@ smoke-smmu: (build-arm64 "--features qemu") build-init-arm64 efiboot-arm64 efibo
         --expect "m16f-smmu-42" --expect "524288 bytes transferred" \
         --expect "4194304 bytes transferred" --expect "m16f-raw-42" --expect "/nvme0" \
         --reject "smmu0: " --reject "mount -uw / failed"
-    {{xtask}} efiboot-disk --arch arm64 --efi target/efiboot/arm64/BOOTAA64.EFI --kernel target/{{arm64}}/debug/bsd --root-dev sd0a
-    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --acpi --iommu smmuv3 --until-seen \
+    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --image tree --boot-manual --acpi --iommu smmuv3 --until-seen \
         --send-after 'boot> ' --send 'boot\n' \
         {{disk_login}} \
         --send-after '# ' --send 'mount\n' \
@@ -2145,12 +2144,15 @@ re_session := "--send-after 'login:' --send 'root\\n' --send-after 'Password:' -
 # loads /bsd into its 64 MB block and enters locore0.S's _start with the tree (x2): the kernel
 # builds its bootstrap tables, takes /chosen's bootargs, DUID, UEFI memory map and system table
 # (getbootinfo), starts the other processors by PSCI CPU_ON (cpu_hatch_secondary) and finds its
-# root by the DUID (sd1a: the boot image is the virtio disk after the blank one). M16d: boot(8)
+# root by the DUID (sd1a: the boot image is the virtio disk after the blank one). Since the
+# removal of Limine's S2 (2026-11-26) arm64 boots the shared tree image (`--image tree
+# --boot-manual`: the session types at `boot> `; its fstab root is the DUID, `454649424f4f5430.a`,
+# and its /bsd has no debug sections); amd64's `efiboot-disk` line waits for N10. M16d: boot(8)
 # fills the kernel's PT_OPENBSD_RANDOMIZE segment from /etc/random.seed (RB_GOODRANDOM), so
 # random_start says "random: good seed from bootblocks" and not the Limine boot's no-entropy
 # warning. `machine dtb` is arm64's machine command (it has no `machine memory`). Part of
 # `smoke`.
-smoke-efiboot: (build-amd64 "--features qemu") (build-arm64 "--features qemu") efiboot-amd64 efiboot-arm64
+smoke-efiboot: (build-amd64 "--features qemu") (build-arm64 "--features qemu") efiboot-amd64 efiboot-arm64 efiboot-images-arm64
     @{{no_amd64}}test -x target/userland/amd64/host/bin/makefs -a -f target/userland/amd64/ramdisk-root/etc/fstab || \
         { echo "smoke-efiboot: no makefs or staged root; run just userland first"; exit 1; }
     {{no_amd64}}{{xtask}} efiboot-disk --arch amd64 --efi target/efiboot/amd64/BOOTX64.EFI --kernel target/{{amd64}}/debug/bsd --root-dev sd1a
@@ -2182,8 +2184,7 @@ smoke-efiboot: (build-amd64 "--features qemu") (build-arm64 "--features qemu") e
         --expect "/dev/sd1a on / type ffs (local)"
     @test -x target/userland/arm64/host/bin/makefs -a -f target/userland/arm64/ramdisk-root/etc/fstab || \
         { echo "smoke-efiboot: no arm64 makefs or staged root; run just userland first"; exit 1; }
-    {{xtask}} efiboot-disk --arch arm64 --efi target/efiboot/arm64/BOOTAA64.EFI --kernel target/{{arm64}}/debug/bsd --root-dev sd1a
-    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --until-seen \
+    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --image tree --boot-manual --until-seen \
         --send-after 'boot> ' --send 'ls /\n' \
         --send-after 'boot> ' --send 'machine dtb\n' \
         --send-after 'boot> ' --send 'boot\n' \
@@ -2212,11 +2213,10 @@ smoke-efiboot: (build-amd64 "--features qemu") (build-arm64 "--features qemu") e
 # found on the PCI disk by its DUID. The root login sees `ncpu` CPUs and pings the host through
 # vio0 (virtio-net-pci, MSI-X). arm64 only: amd64 boots on ACPI in every smoke already. Part of
 # `smoke`.
-smoke-acpi: (build-arm64 "--features qemu") efiboot-arm64
+smoke-acpi: (build-arm64 "--features qemu") efiboot-arm64 efiboot-images-arm64
     @test -x target/userland/arm64/host/bin/makefs -a -f target/userland/arm64/ramdisk-root/etc/fstab || \
         { echo "smoke-acpi: no arm64 makefs or staged root; run just userland first"; exit 1; }
-    {{xtask}} efiboot-disk --arch arm64 --efi target/efiboot/arm64/BOOTAA64.EFI --kernel target/{{arm64}}/debug/bsd --root-dev sd0a
-    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --acpi --until-seen \
+    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --image tree --boot-manual --acpi --until-seen \
         --send-after 'boot> ' --send 'boot\n' \
         {{disk_login}} \
         --send-after '# ' --send 'sysctl hw.ncpu\n' \
@@ -2280,8 +2280,7 @@ smoke-gicv3: (build-arm64 "--features qemu") build-init-arm64 efiboot-arm64 efib
         --expect "rc: multi-user" --expect "login:" --expect "hw.ncpu={{ncpu}}" --expect "m16f-its-42" \
         --expect "4194304 bytes transferred" --expect "irq8192/nvme0" \
         --reject "mount -uw / failed" --reject "command queue timeout"
-    {{xtask}} efiboot-disk --arch arm64 --efi target/efiboot/arm64/BOOTAA64.EFI --kernel target/{{arm64}}/debug/bsd --root-dev sd0a
-    {{xtask}} smoke {{reject}} {{smp}} --gic 3 --arch arm64 --acpi --until-seen \
+    {{xtask}} smoke {{reject}} {{smp}} --gic 3 --arch arm64 --image tree --boot-manual --acpi --until-seen \
         --send-after 'boot> ' --send 'boot\n' \
         {{disk_login}} \
         --send-after '# ' --send 'sysctl hw.ncpu\n' \
