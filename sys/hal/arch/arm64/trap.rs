@@ -292,7 +292,9 @@ impl UserFrame {
         // `UserFrame` and every access in `hal` goes through this function; the kernel-mode
         // handlers' `&mut Trapframe` are their own frames, below it on the stack; `exec`'s
         // `setregs` writes it through `set_exec_regs`, here (decision 56's U8: `bsd` wrote
-        // through the raw pointer before); the ABI's handler (another crate's code) never gets this
+        // through the raw pointer before); `bsd`'s arm64 `Machine::proc_pc` and `proc_stack`
+        // still read another thread's `pcb_tf` raw (`sys/bsd/arch/arm64/mod.rs`), but only
+        // amd64's files call them (N10), so on arm64 no such read happens; the ABI's handler (another crate's code) never gets this
         // function or a closure over the frame, only `syscall::UserRegs`, whose three
         // methods each borrow the frame here for a closure of `hal`'s own that indexes,
         // reads and writes the frame and calls nothing; the assembly reads it only after the
@@ -331,7 +333,9 @@ pub(crate) fn set_exec_regs(sp: usize, entry: usize) {
         *tf = Trapframe::default();
         tf.tf_sp = sp as Register;
         tf.tf_lr = entry as Register;
-        tf.tf_elr = entry as Register; // ???
+        // The pc a program starts at; the link register gets the same value, which no
+        // program returns through (OpenBSD marks this choice as unsettled).
+        tf.tf_elr = entry as Register;
         tf.tf_spsr = (PSR_M_EL0t | PSR_DIT) as Register;
     });
 }

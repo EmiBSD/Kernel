@@ -64,8 +64,11 @@
 //! - Decision 56 (E1, the way out): the exit gate (`hal::cpu::usertrap`) reads the running
 //!   thread's slot without the thread's type (`with_current_slot`, one `unsafe` resting on
 //!   `slot_of`'s check at every store of `ci_curproc`), as `do_ast` reads
-//!   `ci_curproc->p_md.md_astpending` by offset: a gate generic over the thread type would
-//!   cost an indirect call on every exit until N9. `cpu_fork`'s `stack`, `tcb` and the
+//!   `ci_curproc->p_md.md_astpending` by offset. The non-generic shape, and so the one
+//!   `unsafe`, is for E2: there the loop runs behind the kernel's `dyn` door that `entry`
+//!   calls (it cannot name the glue), and a gate generic over the thread type would cost an
+//!   indirect call on every exit of a user interrupt until N9; in E1 the gate's only caller
+//!   (`kernel::trap::user_exit`, a thread's first exit) is generic. `cpu_fork`'s `stack`, `tcb` and the
 //!   child's return travel as a [`UserStart`]; the host's slot keeps an `md_astpending` (in
 //!   its padding) so the kernel's loop runs in its tests.
 //!
@@ -706,9 +709,10 @@ pub fn current_addr() -> usize {
 
 /// The running thread's [`MachineSlot`] (`curproc`'s `p_md`, `md_astpending` among it), for
 /// `f`, without the thread's type; `None` when no thread runs here. For the exit gate
-/// (`hal::cpu::usertrap`), which the kernel's loop passes on every return to user mode and
-/// which is not generic over the thread type, as the C's `do_ast` reads `ci_curproc` by
-/// offset.
+/// (`hal::cpu::usertrap`), which is not generic over the thread type, as the C's `do_ast`
+/// reads `ci_curproc` by offset: from E2 the kernel's loop passes it behind the `dyn` door
+/// `entry` calls, on every return to user mode; in E1 its one caller (a first exit) is
+/// generic.
 #[inline]
 pub(crate) fn with_current_slot<R>(f: impl FnOnce(Option<&MachineSlot>) -> R) -> R {
     let p = crate::cpu::curcpu().curproc().cast::<MachineSlot>();
