@@ -108,17 +108,31 @@
 //!   went through `hal`'s registry and back.
 
 use core::pin::Pin;
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+use hal::arch::current::include::armreg::{ISS_DATA_DFSC_ALIGN, ISS_DATA_DFSC_MASK, accesstype};
+#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+use hal::arch::current::usertrap::{Arrival, SyncTrap, Syndrome, midr};
+#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+use hal::arch::current::vmparam::VM_MAXUSER_ADDRESS;
 use hal::bridges::AlreadyRegistered;
 use hal::cpu::usertrap::{AstPending, ExitGate, UserExit};
 use hal::sync::once::OnceStatic;
+#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+use hal::syscall::UserRegs;
 use hal::syscall::{Register, Rval, SysResult};
+#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+use hal::vm::param::trunc_page;
 use hal::vm::pmap::VmProt;
 use hal::vm::uvmexp::UVMEXP;
 use sysdefs::base::errno::Errno;
+#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+use sysdefs::sig::siginfo::{BUS_ADRALN, ILL_BTCFI, ILL_ILLOPC, TRAP_BRKPT, TRAP_TRACE};
 use sysdefs::sig::siginfo::{BUS_OBJERR, SEGV_ACCERR, SEGV_MAPERR, Sigval};
 use sysdefs::sig::signal::{SIGBUS, SIGKILL, SIGSEGV};
+#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+use sysdefs::sig::signal::{SIGILL, SIGTRAP};
 
 use crate::assert::kpanic;
 use crate::proc::{ProcGlue, Thread};
@@ -138,6 +152,68 @@ pub struct UserFault {
     /// The faulting address a signal carries (`far`, its `sival_ptr`).
     pub addr: usize,
 }
+
+/// The identification registers a user program may read with `mrs` (arm64's `emulate_msr`
+/// cases, `trap.c`): each is answered with the value [`id_value`] gives, never the CPU's own
+/// but for `MIDR_EL1`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IdReg {
+    /// `MIDR_EL1`: the CPU's model, read live.
+    Midr,
+    /// `MPIDR_EL1`: a fixed value, the topology not revealed.
+    Mpidr,
+    /// `REVIDR_EL1`.
+    Revidr,
+    /// `ID_AA64PFR0_EL1`.
+    Pfr0,
+    /// `ID_AA64PFR1_EL1`.
+    Pfr1,
+    /// `ID_AA64PFR2_EL1`.
+    Pfr2,
+    /// `ID_AA64ZFR0_EL1`.
+    Zfr0,
+    /// `ID_AA64SMFR0_EL1`.
+    Smfr0,
+    /// `ID_AA64ISAR0_EL1`.
+    Isar0,
+    /// `ID_AA64ISAR1_EL1`.
+    Isar1,
+    /// `ID_AA64ISAR2_EL1`.
+    Isar2,
+    /// `ID_AA64MMFR0_EL1`.
+    Mmfr0,
+    /// `ID_AA64MMFR1_EL1`.
+    Mmfr1,
+    /// `ID_AA64MMFR2_EL1`.
+    Mmfr2,
+    /// `ID_AA64MMFR3_EL1`.
+    Mmfr3,
+    /// `ID_AA64MMFR4_EL1`.
+    Mmfr4,
+}
+
+/// The reads answered, by CRm and op2 of `S3_0_C0_<CRm>_<op2>` (op0 3, op1 0, CRn 0, which
+/// the trap checked): `emulate_msr`'s `switch`, as data. Any other is `SIGILL`.
+pub const ID_READS: [[Option<IdReg>; 8]; 16] = {
+    let mut t = [[None; 8]; 16];
+    t[0][0] = Some(IdReg::Midr);
+    t[0][5] = Some(IdReg::Mpidr);
+    t[0][6] = Some(IdReg::Revidr);
+    t[4][0] = Some(IdReg::Pfr0);
+    t[4][1] = Some(IdReg::Pfr1);
+    t[4][2] = Some(IdReg::Pfr2);
+    t[4][4] = Some(IdReg::Zfr0);
+    t[4][5] = Some(IdReg::Smfr0);
+    t[6][0] = Some(IdReg::Isar0);
+    t[6][1] = Some(IdReg::Isar1);
+    t[6][2] = Some(IdReg::Isar2);
+    t[7][0] = Some(IdReg::Mmfr0);
+    t[7][1] = Some(IdReg::Mmfr1);
+    t[7][2] = Some(IdReg::Mmfr2);
+    t[7][3] = Some(IdReg::Mmfr3);
+    t[7][4] = Some(IdReg::Mmfr4);
+    t
+};
 
 /// What the kernel answers a trap from user mode with, on the running thread, for the glue its
 /// process code is generic over. The kernel's [`KernelTrap`] is the one implementation; the
@@ -262,6 +338,200 @@ pub fn udata_abort_signal(error: Errno) -> (i32, i32) {
     } else {
         (SIGSEGV, SEGV_MAPERR)
     }
+}
+
+/// The register a read of `S3_0_C0_<crm>_<op2>` names when the kernel answers it
+/// ([`ID_READS`]), `None` when it does not.
+pub fn id_reg(crm: u8, op2: u8) -> Option<IdReg> {
+    ID_READS
+        .get(usize::from(crm))
+        .and_then(|row| row.get(usize::from(op2)))
+        .copied()
+        .flatten()
+}
+
+/// `cpu_id_aa64pfr0`: the userland view of `ID_AA64PFR0_EL1`, which `bsd`'s CPU code fills
+/// from the boot CPU and masks (`cpu_identify_cleanup`), [`id_value`]'s answer and
+/// `sysctl machdep.id_aa64pfr0`'s.
+pub static CPU_ID_AA64PFR0: AtomicU64 = AtomicU64::new(0);
+/// `cpu_id_aa64pfr1`.
+pub static CPU_ID_AA64PFR1: AtomicU64 = AtomicU64::new(0);
+/// `cpu_id_aa64isar0`.
+pub static CPU_ID_AA64ISAR0: AtomicU64 = AtomicU64::new(0);
+/// `cpu_id_aa64isar1`.
+pub static CPU_ID_AA64ISAR1: AtomicU64 = AtomicU64::new(0);
+/// `cpu_id_aa64isar2`.
+pub static CPU_ID_AA64ISAR2: AtomicU64 = AtomicU64::new(0);
+
+/// What a program reading `r` is told: the kernel's computed views of the feature registers
+/// (`cpu_id_aa64*`), `MPIDR_EL1`'s fixed value (bit 31 is RES1; the topology is not revealed),
+/// 0 for the others; `None` for `MIDR_EL1`, the CPU's own, which the trap reads live.
+pub fn id_value(r: IdReg) -> Option<u64> {
+    let id = |a: &AtomicU64| a.load(Ordering::Relaxed);
+    #[allow(
+        clippy::match_same_arms,
+        reason = "the C keeps the cases apart: one switch case per register"
+    )]
+    Some(match r {
+        IdReg::Midr => return None,
+        // MPIDR_EL1: don't reveal the topology to userland. But return a valid value; Bit
+        // 31 is RES1.
+        IdReg::Mpidr => 0x8000_0000,
+        IdReg::Revidr => 0,
+        IdReg::Pfr0 => id(&CPU_ID_AA64PFR0),
+        IdReg::Pfr1 => id(&CPU_ID_AA64PFR1),
+        IdReg::Pfr2 | IdReg::Zfr0 | IdReg::Smfr0 => 0,
+        IdReg::Isar0 => id(&CPU_ID_AA64ISAR0),
+        IdReg::Isar1 => id(&CPU_ID_AA64ISAR1),
+        IdReg::Isar2 => id(&CPU_ID_AA64ISAR2),
+        IdReg::Mmfr0 | IdReg::Mmfr1 | IdReg::Mmfr2 | IdReg::Mmfr3 | IdReg::Mmfr4 => 0,
+    })
+}
+
+/// `do_el0_sync`'s prologue for the trap `entry` classifies: `hal`'s half (the syndrome, the
+/// interrupts, the counter, the frame recorded) on the token the assembly passed, then
+/// `refreshcreds` ([`enter`]). The trap and its syndrome go back to `entry`, which matches on
+/// the class and hands both to that class's function here.
+#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+pub fn begin(a: Arrival) -> (SyncTrap, Syndrome) {
+    let r = a.begin();
+    enter();
+    r
+}
+
+/// `EXCP_UNKNOWN` (an undefined instruction, `udf`): the branch predictor flushed, `SIGILL`
+/// (`ILL_ILLOPC`) at the pc.
+#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+pub fn undefined(t: SyncTrap, s: Syndrome) {
+    t.flush_bp();
+    signal(SIGILL, s.esr, ILL_ILLOPC, t.pc());
+}
+
+/// `EXCP_SVE`: `sve_load(p)` (`hal`).
+#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+pub fn sve(t: SyncTrap) {
+    t.sve_load();
+}
+
+/// `EXCP_FP_SIMD`, `EXCP_TRAP_FP`: `fpu_load(p)` (`hal`), the thread's FP state loaded at its
+/// first FP instruction since its last switch.
+#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+pub fn fpu(t: SyncTrap) {
+    t.fp_load();
+}
+
+/// `EXCP_BRANCH_TGT` (a BTI fault): the branch predictor flushed, `SIGILL` (`ILL_BTCFI`) at
+/// the pc.
+#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+pub fn bti(t: SyncTrap, s: Syndrome) {
+    t.flush_bp();
+    signal(SIGILL, s.esr, ILL_BTCFI, t.pc());
+}
+
+/// `EXCP_MSR`: `emulate_msr`, a read of an identification register answered with the value
+/// the kernel announces ([`id_reg`], [`id_value`]) and the instruction skipped, the decode and
+/// the register's write `hal`'s on the trap's token (decision 56's U7, amended by the user's
+/// lock: the list is the kernel's); any other access falls through to `EXCP_FPAC`'s `SIGILL`
+/// (`ILL_ILLOPC`) at the pc, the branch predictor flushed.
+#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+pub fn msr(t: SyncTrap, s: Syndrome) {
+    let answered = t
+        .id_read(s.esr)
+        .and_then(|r| id_reg(r.crm, r.op2).map(|id| (r, id)));
+    match answered {
+        Some((r, id)) => {
+            let value = id_value(id).unwrap_or_else(midr);
+            t.id_answer(r, value);
+        }
+        None => fpac(t, s),
+    }
+}
+
+/// `EXCP_FPAC` (a pointer authentication failure): the branch predictor flushed, `SIGILL`
+/// (`ILL_ILLOPC`) at the pc.
+#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+pub fn fpac(t: SyncTrap, s: Syndrome) {
+    t.flush_bp();
+    signal(SIGILL, s.esr, ILL_ILLOPC, t.pc());
+}
+
+/// `EXCP_SVC`: `svc_handler`'s machine half (`hal`: the counter, the barrier skipped, the
+/// user's interrupts), handing out the trapping thread's registers, which `entry` gives the
+/// ABI's handler (`abi::arch::current::svc`): the convention is the ABI's, decision 53.
+#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+pub fn svc(t: SyncTrap) -> UserRegs {
+    t.svc()
+}
+
+/// `EXCP_INSN_ABORT_L`, `EXCP_DATA_ABORT_L` (`exe`: an instruction abort): `udata_abort`, the
+/// decode of the syndrome (the branch predictor flushed for a kernel address, an alignment
+/// fault's `SIGBUS` at the address), then the fault on the process's map ([`fault`]: the
+/// `MAP_STACK` check of the frame's stack pointer first, a fault it cannot serve signalled).
+#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "far is an address: 64 bits on the only machine this function is built for"
+)]
+pub fn udata_abort(t: SyncTrap, s: Syndrome, exe: bool) {
+    let access = accesstype(s.esr, exe);
+    let addr = s.far as usize;
+
+    let va = trunc_page(addr);
+    if va >= VM_MAXUSER_ADDRESS {
+        t.flush_bp();
+    }
+
+    if s.esr & ISS_DATA_DFSC_MASK == ISS_DATA_DFSC_ALIGN {
+        signal(SIGBUS, s.esr, BUS_ADRALN, addr);
+        return;
+    }
+
+    fault(UserFault {
+        sp: t.sp(),
+        va,
+        access,
+        trapno: s.esr,
+        addr,
+    });
+}
+
+/// `EXCP_PC_ALIGN`: the branch predictor flushed, `SIGBUS` (`BUS_ADRALN`) at the pc.
+#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+pub fn pc_align(t: SyncTrap, s: Syndrome) {
+    t.flush_bp();
+    signal(SIGBUS, s.esr, BUS_ADRALN, t.pc());
+}
+
+/// `EXCP_SP_ALIGN`: the branch predictor flushed, `SIGBUS` (`BUS_ADRALN`) at the stack
+/// pointer.
+#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+pub fn sp_align(t: SyncTrap, s: Syndrome) {
+    t.flush_bp();
+    signal(SIGBUS, s.esr, BUS_ADRALN, t.sp());
+}
+
+/// `EXCP_BRK` (`brk`): `SIGTRAP` (`TRAP_BRKPT`) at the pc.
+#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+pub fn breakpoint(t: SyncTrap, s: Syndrome) {
+    signal(SIGTRAP, s.esr, TRAP_BRKPT, t.pc());
+}
+
+/// `EXCP_SOFTSTP_EL0` (a single step): `SIGTRAP` (`TRAP_TRACE`) at the pc.
+#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+pub fn single_step(t: SyncTrap, s: Syndrome) {
+    signal(SIGTRAP, s.esr, TRAP_TRACE, t.pc());
+}
+
+/// Any other class (`do_el0_sync`'s `default:`, "USERLAND MUST NOT PANIC MACHINE"): the class,
+/// the syndrome and the registers printed, the branch predictor flushed, then the process
+/// killed with `SIGILL` under the kernel lock ([`kill`]). Never returns.
+#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+pub fn unknown(t: SyncTrap, s: Syndrome) -> ! {
+    // panic("Unknown userland exception %x esr_el1 %lx", exception, esr);
+    // only here to debug !?!?
+    t.dump(s.class, s.esr);
+    t.flush_bp();
+    kill(SIGILL)
 }
 
 /// `ast(tf)`: the asynchronous system trap's work for the thread `p` returning to user mode:
@@ -403,6 +673,75 @@ mod tests {
         let _exit = exit();
         assert_eq!(softs(), before + 1);
         hal::cpu::thread::set_current_static::<Thread<SchedGlue>>(None);
+    }
+
+    /// `emulate_msr`'s sixteen reads (`trap.c:233-299`), by CRm and op2: exactly these are
+    /// answered, every other read of the identification space is `SIGILL`.
+    #[test]
+    fn the_id_reads_answered_are_the_cs_sixteen() {
+        let want = [
+            (0, 0, IdReg::Midr),
+            (0, 5, IdReg::Mpidr),
+            (0, 6, IdReg::Revidr),
+            (4, 0, IdReg::Pfr0),
+            (4, 1, IdReg::Pfr1),
+            (4, 2, IdReg::Pfr2),
+            (4, 4, IdReg::Zfr0),
+            (4, 5, IdReg::Smfr0),
+            (6, 0, IdReg::Isar0),
+            (6, 1, IdReg::Isar1),
+            (6, 2, IdReg::Isar2),
+            (7, 0, IdReg::Mmfr0),
+            (7, 1, IdReg::Mmfr1),
+            (7, 2, IdReg::Mmfr2),
+            (7, 3, IdReg::Mmfr3),
+            (7, 4, IdReg::Mmfr4),
+        ];
+        let mut answered = 0;
+        for crm in 0..=15u8 {
+            for op2 in 0..=7u8 {
+                let w = want
+                    .iter()
+                    .find(|(c, o, _)| (*c, *o) == (crm, op2))
+                    .map(|(_, _, r)| *r);
+                assert_eq!(id_reg(crm, op2), w, "CRm {crm} op2 {op2}");
+                answered += usize::from(w.is_some());
+            }
+        }
+        assert_eq!(answered, 16);
+        // Out of the table (the decode never gives these): not answered.
+        assert_eq!(id_reg(16, 0), None);
+        assert_eq!(id_reg(0, 8), None);
+    }
+
+    /// What a program is told: the kernel's views, MPIDR's fixed value, zeros; MIDR live.
+    #[test]
+    fn the_id_values_are_the_kernels() {
+        CPU_ID_AA64PFR0.store(0x1100_0000_0011_1112, Ordering::Relaxed);
+        CPU_ID_AA64PFR1.store(0x20, Ordering::Relaxed);
+        CPU_ID_AA64ISAR0.store(0x0221_1000_1021_1120, Ordering::Relaxed);
+        CPU_ID_AA64ISAR1.store(0x10_0001, Ordering::Relaxed);
+        CPU_ID_AA64ISAR2.store(0x3, Ordering::Relaxed);
+        assert_eq!(id_value(IdReg::Midr), None);
+        assert_eq!(id_value(IdReg::Mpidr), Some(0x8000_0000));
+        assert_eq!(id_value(IdReg::Pfr0), Some(0x1100_0000_0011_1112));
+        assert_eq!(id_value(IdReg::Pfr1), Some(0x20));
+        assert_eq!(id_value(IdReg::Isar0), Some(0x0221_1000_1021_1120));
+        assert_eq!(id_value(IdReg::Isar1), Some(0x10_0001));
+        assert_eq!(id_value(IdReg::Isar2), Some(0x3));
+        for r in [
+            IdReg::Revidr,
+            IdReg::Pfr2,
+            IdReg::Zfr0,
+            IdReg::Smfr0,
+            IdReg::Mmfr0,
+            IdReg::Mmfr1,
+            IdReg::Mmfr2,
+            IdReg::Mmfr3,
+            IdReg::Mmfr4,
+        ] {
+            assert_eq!(id_value(r), Some(0), "{r:?}");
+        }
     }
 
     /// `udata_abort`'s table of errno to signal, the C's (`trap.c:143-155`).

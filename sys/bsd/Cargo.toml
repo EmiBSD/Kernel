@@ -89,6 +89,10 @@ viocon = []       # amd64 GENERIC's commented-out `#viocon* at virtio?`, uncomme
 # (sys/bsd/kern/abi_module.rs), until N9's image is kernel + abi + hal; `abi` calls the kernel
 # through `kernel::api` (decision 52).
 abi = { path = "../abi" }
+# `entry` (decisions 56 and 58): the classification of a trap from userland, whose one symbol
+# hal's assembly calls; the kernel binary names it (main.rs, `extern crate entry as _`) so the
+# crate is linked, and nothing else does.
+entry = { path = "../entry" }
 hal = { path = "../hal" }
 kernel = { path = "../kernel" }
 libkern.workspace = true

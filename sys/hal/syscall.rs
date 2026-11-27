@@ -136,12 +136,14 @@
 //!   carry themselves; now it is `fn(&UserRegs)` called by [`enter`], and the per-arch
 //!   convention is the ABI's (`abi::arch::<arch>`). `dispatch` and its `ENOSYS` without a
 //!   handler are gone.
+//! - Decision 56 (E2): `enter` is gone: the trap's classification (`entry`) calls the ABI's
+//!   handler itself, with the registers `SyncTrap::svc` hands out; the registration is left
+//!   only for what the handler says about itself, until the ABI registers nothing.
 //! - Decision 56 (E1, U5): the forked child's first return was a second registered function
 //!   (`ChildFn`), which `hal` called on the child's registers at its first run; now it is
 //!   data, [`ChildReturn`], written while `cpu_fork` builds the child's frame: no call goes
 //!   upward for it.
 
-use crate::assert::hal_panic;
 use crate::sync::once::OnceStatic;
 
 /// A general register of the machine, by its name (arm64: `Gpr::X0` .. `Gpr::X29`; the host
@@ -216,24 +218,6 @@ pub fn handler_info() -> Option<HandlerInfo> {
     HANDLER.get().map(|h| h.info)
 }
 
-/// The registered handler, `panic(9)` for `what` without one.
-fn handler(what: &str) -> &'static Handler {
-    match HANDLER.get() {
-        Some(h) => h,
-        None => hal_panic(format_args!("{what}: no system call handler")),
-    }
-}
-
-/// A system call: the trap's registers handed to the ABI's handler, where the C chose the
-/// `sysent[]` entry and called `mi_syscall`.
-#[cfg_attr(
-    not(all(target_os = "none", target_arch = "aarch64")),
-    allow(dead_code, reason = "the machine's trap code alone calls it")
-)]
-#[inline]
-pub(crate) fn enter(regs: &UserRegs) {
-    (handler("svc").call)(regs);
-}
 /* </CODE> */
 
 /* <TESTS> */
@@ -254,23 +238,17 @@ mod tests {
         native: 1,
     };
 
-    /// One test for the registration: `HANDLER` is the process's, set once.
+    /// One test for the registration: `HANDLER` is the process's, set once. Since decision
+    /// 56's E2 nothing calls the registered handler (the trap's classification calls the ABI);
+    /// what it says about itself is still read for the boot line.
     #[test]
-    fn the_registered_handler_answers_and_cannot_be_replaced() {
+    fn the_registered_handler_cannot_be_replaced() {
         assert_eq!(handler_info(), None);
         assert!(set_handler(call, INFO).is_ok());
         assert_eq!(handler_info(), Some(INFO));
         // A second registration is refused and handed back, the first one kept.
         assert!(set_handler(other, INFO).is_err());
         assert_eq!(handler_info(), Some(INFO));
-
-        let mut x = [0; 30];
-        x[0] = 2;
-        x[8] = 4;
-        let regs = UserRegs::fake(x);
-        enter(&regs);
-        assert_eq!(regs.fake_regs()[0], 42);
-        assert_eq!((regs.fake_writes(), regs.fake_restarts()), (1, 0));
     }
 
     #[test]

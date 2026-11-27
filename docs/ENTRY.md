@@ -276,8 +276,8 @@ branches to `hal_user_first_return` (`sys/hal/arch/arm64/exception.S:279-281`).
 
 ## 5. The rules, and what enforces them
 
-`entry_user_trap`, `UserVector` and `UserTrapFn` are this document's proposed names; E2 fixes
-them.
+`entry_user_trap`, `UserVector` and `UserTrapFn` are the names E2 built (`sys/entry/arch/arm64/trap.rs`,
+`sys/hal/arch/arm64/usertrap.rs`).
 
 | Rule | Enforced by |
 |---|---|
@@ -628,14 +628,15 @@ assembly names one more symbol above it, `pmap_setttb`, until `bsd`'s arm64 glue
 - The image keeps `entry` without help: `hal`'s object holds an undefined reference to the
   symbol, and the image crate names the crate (`extern crate entry as _;`, a row of
   `docs/SCAFFOLDING.md` until N9's image). No `EXTERN` and no `KEEP` in the linker script.
-  Not built in this form: checked at the rework's first build, dev and release (LTO).
+  Built so at E2: `llvm-nm` of the dev kernel shows `entry_user_trap` defined once (`T`).
 - `entry` has no host form (there is no trap on the host): off the machine the crate is
   empty, and `hal`'s reference exists only in arm64 assembly, so the host builds see no
   undefined symbol. The kernel's half is tested on the host; the classification is tested on
   the machine by `diff-openbsd`.
 - Checked with DevTools' rustc on the branch: `extern "C" fn(Arrival) -> UserExit` compiles
-  under `deny(warnings)` with `hal`'s `UserFrame` `#[repr(transparent)]`. The second
-  parameter, a `#[repr(u64)]` enum, is not built yet.
+  under `deny(warnings)` with `hal`'s `UserFrame` `#[repr(transparent)]`; built at E2 with the
+  second parameter, `#[repr(u64)]` `UserVector`, and the item-level `#[allow(unsafe_code)]` over
+  `#[unsafe(no_mangle)]` under the root's `deny(unsafe_code)`: no warning, no other allow.
 
 ## 10. What the user decided
 

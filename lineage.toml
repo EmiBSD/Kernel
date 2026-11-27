@@ -1663,7 +1663,7 @@ adapted_by = ["sys/kernel/base/log.rs", "sys/kernel/fs/fuse/fuse_device.rs"]
 rust = "sys/bsd/arch/arm64/arm64/cpu.rs"
 lz = ["sys/arch/arm64/arm64/cpu.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/arch/arm64/pmap/backend.rs", "sys/bsd/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc/mod.rs", "sys/bsd/kern/proc_glue.rs", "sys/hal/cpu/curcpu.rs", "sys/hal/cpu/thread.rs", "sys/kernel/sched/mod.rs", "sys/hal/cpu/intr.rs", "sys/kernel/base/sysctl.rs", "sys/kernel/time/clockintr.rs", "sys/hal/arch/arm64/trap.rs", "sys/hal/arch/arm64/exception.rs"]
+adapted_by = ["sys/hal/arch/arm64/pmap/backend.rs", "sys/bsd/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc/mod.rs", "sys/bsd/kern/proc_glue.rs", "sys/hal/cpu/curcpu.rs", "sys/hal/cpu/thread.rs", "sys/kernel/sched/mod.rs", "sys/hal/cpu/intr.rs", "sys/kernel/base/sysctl.rs", "sys/kernel/time/clockintr.rs", "sys/hal/arch/arm64/trap.rs", "sys/hal/arch/arm64/exception.rs", "sys/kernel/trap.rs"]
 notes = "ahead of LZ since 94d0c9ed: cpu_init's SVE setup opens FP with SVE around its write of ZCR_EL1 (the fault is OpenBSD's own, cpu.c:1844-1856); LZ adopts the same change (its 6e1e27de, not on its main yet): the sync that brings it records it as already here"
 
 [[module]]
@@ -13964,7 +13964,7 @@ lines = "L352-L357"
 
 [[module.fn]]
 lz = "sys/arch/arm64/arm64/syscall.rs::svc_handler"
-native = ["sys/hal/arch/arm64/usertrap.rs::SyncTrap::svc", "enter", "sys/abi/arch/arm64.rs::svc", "sys/abi/arch/arm64.rs::call", "sys/abi/sysent.rs::dispatch", "sys/bsd/kern/abi_module.rs::legacy_syscall"]
+native = ["sys/hal/arch/arm64/usertrap.rs::SyncTrap::svc", "sys/kernel/trap.rs::svc", "sys/entry/arch/arm64/trap.rs::do_el0_sync", "sys/abi/arch/arm64.rs::svc", "sys/abi/arch/arm64.rs::call", "sys/abi/sysent.rs::dispatch", "sys/bsd/kern/abi_module.rs::legacy_syscall"]
 kind = "split"
 lines = "L77-L107"
 
@@ -14309,7 +14309,7 @@ rust = "sys/hal/arch/arm64/trap.rs"
 crate = "hal"
 lz = ["sys/arch/arm64/arm64/trap.rs", "sys/arch/arm64/arm64/ast.rs", "sys/arch/arm64/arm64/intr.rs"]
 status = "redesigned"
-notes = "N4.8b: trap.c (do_el1h_sync, kdata_abort with pcb_onfault and the ci_idepth == 0 rule, do_el0_sync, udata_abort, emulate_msr with cpu.c's cpu_id_aa64* statics, serror, the error entries, dumpregs), ast.c's ast and intr.c's arm_cpu_irq/arm_cpu_fiq, entered by sym from exception.S; the MI calls through hal::cpu::trap::TrapHandler, ci_flush_bp/ci_serror/fault()'s ci_panicbuf through hal::cpu::trap::CpuHooks, db_ktrap through hal::cpu::trap::Debugger, the IRQ dispatch through hal::cpu::intr::IntrHardware; N4.8b b3a: the EL0 handlers hold the user frame as a UserFrame (a pointer borrowed per closure, a per-CPU flag against a second borrow; the frame's one unsafe), never across a call out; b3: proc_pc and proc_stack over it; decision 56 E2: the EL0 handlers take usertrap.rs's Arrival (UserFrame repr(transparent)); the prologue, svc_handler's half, the FPU traps, the EL0 IRQ/FIQ/SError are its methods"
+notes = "N4.8b: trap.c (do_el1h_sync, kdata_abort with pcb_onfault and the ci_idepth == 0 rule, do_el0_sync, udata_abort, emulate_msr with cpu.c's cpu_id_aa64* statics, serror, the error entries, dumpregs), ast.c's ast and intr.c's arm_cpu_irq/arm_cpu_fiq, entered by sym from exception.S; the MI calls through hal::cpu::trap::TrapHandler, ci_flush_bp/ci_serror/fault()'s ci_panicbuf through hal::cpu::trap::CpuHooks, db_ktrap through hal::cpu::trap::Debugger, the IRQ dispatch through hal::cpu::intr::IntrHardware; N4.8b b3a: the EL0 handlers hold the user frame as a UserFrame (a pointer borrowed per closure, a per-CPU flag against a second borrow; the frame's one unsafe), never across a call out; b3: proc_pc and proc_stack over it; decision 56 E2: the EL0 handlers take usertrap.rs's Arrival (UserFrame repr(transparent)); the prologue, svc_handler's half, the FPU traps, the EL0 IRQ/FIQ/SError are its methods; then the crate's step: do_el0_sync's classification, do_el0_error and the EL0 IRQ/FIQ entries are entry's (sys/entry/arch/arm64/trap.rs), udata_abort and the signals kernel::trap's, ast() the kernel's loop (its pcb_tf store dropped, P5), emulate_msr split (hal usertrap.rs id_read/id_answer/midr, kernel::trap msr/id_reg/id_value), the cpu_id_aa64* statics the kernel's; hal keeps the frame, the mechanics and the kernel-mode handlers"
 
 [[module.fn]]
 lz = "sys/arch/arm64/arm64/trap.rs::accesstype"
@@ -14328,7 +14328,7 @@ rust = "sys/hal/arch/arm64/usertrap.rs"
 crate = "hal"
 lz = ["sys/arch/arm64/arm64/trap.rs", "sys/arch/arm64/arm64/syscall.rs"]
 status = "redesigned"
-notes = "Decision 56 (E2): a trap from user mode, the machine's half behind Arrival, the token the EL0 entry's assembly passes in x0 (repr(transparent) over the UserFrame; no constructor): begin (do_el0_sync's prologue: curproc, esr/far, intr_enable, uvmexp.traps, pcb_tf) -> (SyncTrap, Syndrome), irq, fiq, serror; SyncTrap (pc, sp, dump, flush_bp, fp_load, sve_load, emulate_msr, svc: svc_handler's machine half, handing out the ABI's UserRegs). Every method consumes or borrows the token, so the mechanics are reachable only by a handler the assembly entered"
+notes = "Decision 56 (E2): a trap from user mode, the machine's half behind Arrival, the token the EL0 entry's assembly passes in x0 (repr(transparent) over the UserFrame; no constructor): begin (do_el0_sync's prologue: curproc, esr/far, intr_enable, uvmexp.traps, pcb_tf) -> (SyncTrap, Syndrome), irq, fiq, serror; SyncTrap (pc, sp, dump, flush_bp, fp_load, sve_load, emulate_msr, svc: svc_handler's machine half, handing out the ABI's UserRegs). Every method consumes or borrows the token, so the mechanics are reachable only by a handler the assembly entered; E2 the crate (the user's lock, U7 amended): Syndrome carries the class; SyncTrap::id_read (emulate_msr's decode: a read with op0 3, op1 0, CRn 0, as IdRead {crm, op2, rt}) and id_answer (x[rt], lr for 30, nothing for 31, elr += 4, no flag), midr (moved from trap.rs); emulate_msr's list and values are the kernel's (kernel::trap ID_READS, id_value); the tokens are named outside hal only by entry and kernel::trap"
 
 [[module]]
 rust = "sys/abi/arch/arm64.rs"
@@ -16800,7 +16800,29 @@ rust = "sys/kernel/trap.rs"
 crate = "kernel"
 lz = ["sys/arch/arm64/arm64/trap.rs", "sys/arch/arm64/arm64/ast.rs"]
 status = "redesigned"
-notes = "Decision 56, E2 (the door): the kernel's door for a trap from user mode, as kernel::api is the ABI's: enter (refreshcreds), fault (udata_abort's kernel half: MAP_STACK, pmap_fault_fixup, uvm_fault, uvm_grow; the errno's signal, udata_abort_signal), signal (trapsignal), kill (KERNEL_LOCK, sigexit), leave (userret, then user_exit), exit (an interrupt's AST loop, through the table only for a pending AST), syscall_return (mi_syscall_return, kernel::api's, the kernel's own static now, not hal's registry); plain functions over the kernel's OnceStatic<&dyn UserTraps> (bridges.toml UserTraps, N9), filled by bsd with KernelTrap<BsdProcGlue> (KernelTrap moved here from kernel::syscall). Decision 56, E1 (the way out): ast.c's ast() as the kernel's, generic over ProcGlue (refreshcreds, uvmexp.softs, mi_ast with ci_want_resched, userret; the pcb_tf store dropped, P5: the frame is always at one place), and do_ast's loop (user_exit) over hal::cpu::usertrap::ExitGate, which hands out the UserExit token; a new thread's first return runs it from kernel::proc::fork's thread_start, a trap's return still through exception.S's do_ast and TrapHandler::ast (one call) until E2. LZ's ast.rs is also listed by sys/hal/arch/arm64/trap.rs, which keeps the frame's half (ast's curproc check and pcb_tf) until E2"
+notes = "Decision 56, E2 (the crate, the user's lock of 2026-11-27): each class of a trap from user mode has one function here, called by entry's closed match with the trap's token (hal's SyncTrap) and its Syndrome: begin (hal's prologue on the Arrival, then refreshcreds), undefined, sve, fpu, bti, msr (emulate_msr: hal decodes and answers on the token, the kernel's ID_READS lists the sixteen reads answered and id_value gives the values, MIDR read live; U7 amended: the list is not abi's), fpac, svc (svc_handler's machine half, handing out the ABI's UserRegs), udata_abort (the decode, then fault), pc_align, sp_align, breakpoint, single_step, unknown (the C's default: dump, flush_bp, KERNEL_LOCK, sigexit(SIGILL)); arm64 only (cfg), over hal::arch::current; the cpu_id_aa64* statics moved here from hal (bsd's cpu.rs fills them). Decision 56, E2 (the door): the kernel's door for a trap from user mode, as kernel::api is the ABI's: enter (refreshcreds), fault (udata_abort's kernel half: MAP_STACK, pmap_fault_fixup, uvm_fault, uvm_grow; the errno's signal, udata_abort_signal), signal (trapsignal), kill (KERNEL_LOCK, sigexit), leave (userret, then user_exit), exit (an interrupt's AST loop, through the table only for a pending AST), syscall_return (mi_syscall_return, kernel::api's, the kernel's own static now, not hal's registry); plain functions over the kernel's OnceStatic<&dyn UserTraps> (bridges.toml UserTraps, N9), filled by bsd with KernelTrap<BsdProcGlue> (KernelTrap moved here from kernel::syscall). Decision 56, E1 (the way out): ast.c's ast() as the kernel's, generic over ProcGlue (refreshcreds, uvmexp.softs, mi_ast with ci_want_resched, userret; the pcb_tf store dropped, P5: the frame is always at one place), and do_ast's loop (user_exit) over hal::cpu::usertrap::ExitGate, which hands out the UserExit token; a new thread's first return runs it from kernel::proc::fork's thread_start, a trap's return still through exception.S's do_ast and TrapHandler::ast (one call) until E2. LZ's ast.rs is also listed by sys/hal/arch/arm64/trap.rs, which keeps the frame's half (ast's curproc check and pcb_tf) until E2"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/trap.rs::emulate_msr"
+native = ["sys/hal/arch/arm64/usertrap.rs::SyncTrap::id_read", "sys/hal/arch/arm64/usertrap.rs::SyncTrap::id_answer", "msr", "id_reg", "id_value"]
+kind = "split"
+
+[[module]]
+rust = "sys/entry/arch/arm64/trap.rs"
+crate = "entry"
+lz = ["sys/arch/arm64/arm64/trap.rs", "sys/arch/arm64/arm64/syscall.rs", "sys/arch/arm64/arm64/intr.rs"]
+status = "redesigned"
+notes = "Decision 56 under decision 58 (E2): the classification of a trap from userland behind entry_user_trap, the one function hal's four EL0 handlers call (bl, resolved at link time): #[allow(unsafe_code)] #[unsafe(no_mangle)] extern \"C\" fn(Arrival, UserVector) -> UserExit, not pub, pinned to hal's UserTrapFn by const _; the vector match (Sync -> do_el0_sync, Irq/Fiq -> Arrival::irq/fiq then kernel::trap::exit, SError -> Arrival::serror) and do_el0_sync's closed match on the exception class (the user's lock of 2026-11-27: abi::arch::current::svc for svc, kernel::trap's function of the class otherwise, the C's default kernel::trap::unknown), then kernel::trap::leave's UserExit; no pub item, no state, no registration, no assembly"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/trap.rs::do_el0_error"
+native = ["entry_user_trap", "sys/hal/arch/arm64/usertrap.rs::Arrival::serror"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/trap.rs::do_el0_sync"
+native = ["do_el0_sync", "sys/hal/arch/arm64/usertrap.rs::Arrival::begin", "sys/kernel/trap.rs::begin"]
+kind = "split"
 
 [[module]]
 rust = "sys/kernel/syscall.rs"

@@ -25,6 +25,11 @@
 #[cfg(target_os = "none")]
 mod stand;
 
+// The crate that classifies a trap from userland (decisions 56 and 58): named here, by the image
+// alone, so the crate is linked; hal's assembly's `bl entry_user_trap` pulls its object in.
+#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+extern crate entry as _;
+
 /// Host build of the kernel image: there is nothing to run on macOS or Linux.
 #[cfg(not(target_os = "none"))]
 fn main() {

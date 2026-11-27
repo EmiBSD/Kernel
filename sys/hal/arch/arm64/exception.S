@@ -26,10 +26,12 @@
 
 /*
  * The exception entry of exception.S (see exception.rs): the register save
- * and restore macros, the EL1h and EL0 handlers, hal_user_first_return and the
- * kernel vector table. The symbols written as NAME between braces are filled in by
- * exception.rs from the Rust definitions (assym.h in C); the handlers it
- * calls are Rust functions passed as sym operands. x18 is a general register
+ * and restore macros, the EL1h and EL0 handlers, the way back to user mode
+ * (hal_user_return, hal_user_first_return) and the kernel vector table. The
+ * symbols written as NAME between braces are filled in by exception.rs from
+ * the Rust definitions (assym.h in C); the kernel-mode handlers it calls are
+ * Rust functions passed as sym operands, the EL0 handlers call entry's one
+ * symbol, entry_user_trap (decision 58). x18 is a general register
  * in this kernel (the C builds with -ffixed-x18 and keeps curcpu() in it), so
  * the EL1 paths save and restore it like any other register instead of
  * reloading it from tpidr_el1. A return to user mode goes through the
@@ -77,7 +79,7 @@
 	msr	daifset, #3
 	/*
 	 * Disable interrupts, x18 may change in the interrupt exception
-	 * handler.  For EL0 exceptions, do_ast already did this.
+	 * handler.  For EL0 exceptions, the exit below does this first.
 	 */
 .endif
 	ldp	x18,  lr, [sp, #({TF_SP})]
@@ -117,32 +119,6 @@
 	/* the frame's size is known, so the sp comes back without a register */
 	add	sp, sp, #({TF_SIZE} + 16 + 128)
 .endif
-.endm
-
-.macro	do_ast
-	/* Disable interrupts */
-	mrs	x19, daif
-1:
-	msr	daifset, #3
-
-	/* Check for astpending */
-	mrs	x18, tpidr_el1
-	ldr	x1, [x18, #{CI_CURPROC}]
-	cbz	x1, 2f
-	ldr	w2, [x1, #{P_ASTPENDING}]
-	cbz	w2, 2f
-
-	// clear astpending before enabling interrupts.
-	str	wzr, [x1, #{P_ASTPENDING}]
-
-	/* Restore interrupts */
-	msr	daif, x19
-
-	/* handle the ast */
-	mov	x0, sp
-	bl	{AST}
-	b	1b
-2:
 .endm
 
 .macro disable_ss
@@ -223,14 +199,22 @@ handle_el1h_error:
 	b	tramp_return
 .endm
 
+/*
+ * The EL0 handlers (decision 58): the save, then one call to entry's
+ * entry_user_trap, the one symbol of a crate above hal that hal's assembly
+ * names, resolved when the image is linked (no pointer is stored), with x0
+ * the frame just saved (the Arrival) and x1 the vector the CPU took (a
+ * UserVector); it classifies the trap, calls down and returns the exit gate's
+ * token, which nothing here reads. Then the way back, hal_user_return.
+ */
 	.globl handle_el0_sync
 	.type handle_el0_sync,@function
 handle_el0_sync:
 	save_registers 0
 	disable_ss
 	mov	x0, sp
-	bl	{DO_EL0_SYNC}
-	do_ast
+	mov	x1, #{USER_VECTOR_SYNC}
+	bl	entry_user_trap
 	b	hal_user_return
 
 	.globl handle_el0_irq
@@ -239,8 +223,8 @@ handle_el0_irq:
 	save_registers 0
 	disable_ss
 	mov	x0, sp
-	bl	{ARM_CPU_IRQ_EL0}
-	do_ast
+	mov	x1, #{USER_VECTOR_IRQ}
+	bl	entry_user_trap
 	b	hal_user_return
 
 	.globl handle_el0_fiq
@@ -249,8 +233,8 @@ handle_el0_fiq:
 	save_registers 0
 	disable_ss
 	mov	x0, sp
-	bl	{ARM_CPU_FIQ_EL0}
-	do_ast
+	mov	x1, #{USER_VECTOR_FIQ}
+	bl	entry_user_trap
 	b	hal_user_return
 
 	.globl handle_el0_error
@@ -259,21 +243,25 @@ handle_el0_error:
 	save_registers 0
 	disable_ss
 	mov	x0, sp
-	bl	{DO_EL0_ERROR}
+	mov	x1, #{USER_VECTOR_SERROR}
+	bl	entry_user_trap
 	brk	0xf23
 	1: b 1b
 
 /*
  * The return to user mode after a trap from it (the last three steps of the
- * C's handle_el0_sync, _irq and _fiq): the single step armed again when the
+ * C's handle_el0_sync, _irq and _fiq): IRQ and FIQ masked here, whatever the
+ * caller left (decision 58: the exit's proof is local; the kernel's AST loop
+ * left them masked when its gate passed, so this is the fourth daif write of
+ * a return where the C has three), the single step armed again when the
  * thread asked for it, the user's registers restored from the frame at sp,
- * the trampoline. Entered by a branch, once the AST loop found nothing
- * pending with IRQ and FIQ masked (they stay masked to the eret) and with sp
- * the trap frame the arrival saved.
+ * the trampoline. Entered by a branch from the EL0 handlers above, with sp
+ * the trap frame they saved.
  */
 	.globl hal_user_return
 	.type hal_user_return,@function
 hal_user_return:
+	msr	daifset, #3
 	allow_ss
 	restore_registers 0
 	return
@@ -281,11 +269,13 @@ hal_user_return:
 /*
  * A new thread's first return to user mode (the C's syscall_return without
  * its do_ast): the kernel ran the AST loop over hal's exit gate before
- * hal_proc_trampoline branched here, and the gate left IRQ and FIQ masked.
+ * hal_proc_trampoline branched here; IRQ and FIQ masked here all the same
+ * (decision 58, as hal_user_return).
  */
 	.globl hal_user_first_return
 	.type hal_user_first_return,@function
 hal_user_first_return:
+	msr	daifset, #3
 	restore_registers 0
 	return
 

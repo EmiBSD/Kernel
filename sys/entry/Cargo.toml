@@ -1,0 +1,23 @@
+[package]
+name = "entry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "EmiBSD entry: the vectors a trap from userland runs first, the save of its registers and the classification of the event, calling abi, kernel and hal downward; one global_asm!, no other unsafe, no pub item, no state, no registration (decision 56, docs/ENTRY.md)"
+publish = false
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+# Decision 56: entry calls down into abi (a system call), kernel (kernel::trap) and hal (the
+# frame, the FPU, an interrupt, the exit); only the image crate names entry
+# (`cargo xtask entry-check` E2).
+abi = { path = "../abi" }
+hal = { path = "../hal" }
+kernel = { path = "../kernel" }
+sysdefs.workspace = true
+
+[lints]
+workspace = true

@@ -26,6 +26,9 @@ paths = [
     # `unsafe` may live under v2; listed here so the v1 tool counts it as core until the
     # crate groups of unsafe-report v2 (N2.4) replace this file.
     "sys/hal/**",
+    # The crate that classifies a trap from userland (decisions 56 and 58): the module whose one
+    # item exports the symbol hal's assembly calls, #[unsafe(no_mangle)], its only `unsafe`.
+    "sys/entry/arch/arm64/trap.rs",
     # Hardware: MMIO, page tables, traps, context switch, copyin/copyout, atomics.
     "sys/bsd/arch/amd64/**",
     "sys/bsd/arch/arm64/**",

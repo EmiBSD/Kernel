@@ -28,6 +28,7 @@ name = "bsd"
 version = "0.0.1"
 dependencies = [
  "abi",
+ "entry",
  "hal",
  "kernel",
  "libkern",
@@ -65,6 +66,16 @@ dependencies = [
  "libsa",
  "libz",
  "loader",
+]
+
+[[package]]
+name = "entry"
+version = "0.0.1"
+dependencies = [
+ "abi",
+ "hal",
+ "kernel",
+ "sysdefs",
 ]
 
 [[package]]

@@ -60,7 +60,8 @@
 
 /* <CODE> */
 //! A trap from user mode, the machine's half (decision 56): the token the EL0 entry's assembly
-//! passes with the trap frame it saved ([`Arrival`]), and what may be done with the frame of a
+//! (`exception.S`'s `handle_el0_*`) passes with the trap frame it saved ([`Arrival`]) to the
+//! one function it calls (`entry`'s, decision 58), and what may be done with the frame of a
 //! synchronous trap once its prologue ran ([`SyncTrap`]): the C's `do_el0_sync` up to its
 //! `switch`, `svc_handler`'s mechanics, the FPU traps, the reads of the frame a signal needs,
 //! the branch predictor flush; the IRQ and FIQ entries from user mode and the SError.
@@ -86,6 +87,9 @@
 //! out of `hal`.
 //!
 //! ## Redesign
+//! - Decision 56 (E2): `entry` (`sys/entry/arch/arm64/trap.rs`) is the one crate that names
+//!   these types (`cargo xtask hal-check` H7): its handlers get the `Arrival`, classify the
+//!   trap and call the methods; `hal` calls nothing back.
 //! - Decision 56 (E2): the prologue of LZ's `do_el0_sync` (the syndrome and the fault
 //!   address read, the interrupts enabled, `uvmexp.traps`, `pcb_tf = frame`), `svc_handler`'s
 //!   machine half and the EL0 IRQ, FIQ and SError entries were `hal`'s handlers' bodies,
@@ -98,12 +102,17 @@ use core::sync::atomic::Ordering;
 
 use super::cpu::intr_enable;
 use super::fpu;
-use super::include::armreg::PSR_I;
+use super::include::armreg::{
+    ISS_MSR_CRM_MASK, ISS_MSR_CRM_SHIFT, ISS_MSR_CRN_MASK, ISS_MSR_CRN_SHIFT, ISS_MSR_DIR,
+    ISS_MSR_OP0_MASK, ISS_MSR_OP0_SHIFT, ISS_MSR_OP1_MASK, ISS_MSR_OP1_SHIFT, ISS_MSR_OP2_MASK,
+    ISS_MSR_OP2_SHIFT, ISS_MSR_RT_MASK, ISS_MSR_RT_SHIFT, PSR_I, esr_elx_exception, iss_msr_field,
+};
 use super::syscall::{BARRIER_LEN, UserRegs};
-use super::trap::{UserFrame, dumpregs, emulate_msr, esr_far, fiq, irq, serror};
+use super::trap::{UserFrame, dumpregs, esr_far, fiq, irq, serror};
 use crate::assert::hal_panic;
 use crate::cpu::curcpu;
 use crate::cpu::usertrap::UserExit;
+use crate::syscall::Register;
 use crate::vm::uvmexp::UVMEXP;
 
 /// A trap from user mode, as the EL0 entry's assembly hands it to its handler: the trap frame
@@ -149,7 +158,8 @@ impl Arrival {
         UVMEXP.traps.fetch_add(1, Ordering::Relaxed);
 
         self.0.make_current();
-        (SyncTrap(self.0), Syndrome { esr, far })
+        let class = esr_elx_exception(esr);
+        (SyncTrap(self.0), Syndrome { class, esr, far })
     }
 
     /// `arm_cpu_irq` from user mode: the interrupt controller's dispatch, inside the frame's
@@ -172,9 +182,13 @@ impl Arrival {
     }
 }
 
-/// `ESR_EL1` and `FAR_EL1` of a synchronous trap, as its prologue read them.
+/// `ESR_EL1` and `FAR_EL1` of a synchronous trap, as its prologue read them, with the
+/// exception class.
 #[derive(Clone, Copy, Debug)]
 pub struct Syndrome {
+    /// The exception class (`ESR_ELx_EXCEPTION(esr)`): what the trap's classification
+    /// matches on.
+    pub class: u32,
     /// The exception syndrome (`esr`): the class (`ESR_ELx_EXCEPTION`) and its details.
     pub esr: u64,
     /// The fault address (`far`), meaningful for an abort.
@@ -232,10 +246,51 @@ impl SyncTrap {
         fpu::sve_load_current();
     }
 
-    /// `emulate_msr(frame, esr)`: a read of an identification register answered and the
-    /// instruction skipped; `false` when it is not one the kernel answers.
-    pub fn emulate_msr(&self, esr: u64) -> bool {
-        self.0.with(|tf| emulate_msr(tf, esr))
+    /// `emulate_msr`'s decode of a trapped `msr`/`mrs` (`EXCP_MSR`) with syndrome `esr`: a
+    /// read (`ISS_MSR_DIR`) of the non-debug identification space (op0 3, op1 0, CRn 0), as the
+    /// register's CRm and op2 and the destination; `None` for any other access (a write, a
+    /// debug or another system register), which the kernel answers with `SIGILL`.
+    #[allow(
+        clippy::unused_self,
+        reason = "asked through the trap so that only the handler a trap from user mode entered can ask"
+    )]
+    pub fn id_read(&self, esr: u64) -> Option<IdRead> {
+        let field = |mask, shift| iss_msr_field(esr, mask, shift);
+
+        // Only emulate reads.
+        if esr & ISS_MSR_DIR == 0 {
+            return None;
+        }
+
+        // Only emulate non-debug System register access.
+        if field(ISS_MSR_OP0_MASK, ISS_MSR_OP0_SHIFT) != 3
+            || field(ISS_MSR_OP1_MASK, ISS_MSR_OP1_SHIFT) != 0
+            || field(ISS_MSR_CRN_MASK, ISS_MSR_CRN_SHIFT) != 0
+        {
+            return None;
+        }
+
+        // The fields are 4, 3 and 5 bits wide: they fit.
+        Some(IdRead {
+            crm: field(ISS_MSR_CRM_MASK, ISS_MSR_CRM_SHIFT) as u8,
+            op2: field(ISS_MSR_OP2_MASK, ISS_MSR_OP2_SHIFT) as u8,
+            rt: field(ISS_MSR_RT_MASK, ISS_MSR_RT_SHIFT) as u8,
+        })
+    }
+
+    /// `emulate_msr`'s answer to the read `r`: `value` in its destination register (`x0` to
+    /// `x29`; `lr` for 30; nothing for 31, the zero register) and the pc past the `mrs`; no
+    /// flag of `tf_spsr` changes. Consumes the trap: a read is answered once.
+    pub fn id_answer(self, r: IdRead, value: u64) {
+        let rt = usize::from(r.rt);
+        self.0.with(|tf| {
+            if rt < 30 {
+                tf.tf_x[rt] = value as Register;
+            } else if rt == 30 {
+                tf.tf_lr = value as Register;
+            }
+            tf.tf_elr += 4;
+        });
     }
 
     /// `svc_handler`'s machine half: `uvmexp.syscalls` counted, the speculation barrier after
@@ -263,5 +318,29 @@ impl SyncTrap {
         // (`sigreturn`, `execve`'s `setregs`, `pin_check`'s `PROC_PC`).
         UserRegs(self.0)
     }
+}
+
+/// A trapped read of an identification register (`mrs xN, S3_0_C0_<CRm>_<op2>`), decoded by
+/// [`SyncTrap::id_read`]: which register (`crm`, `op2`), for the kernel's list of the reads it
+/// answers, and the destination, which only [`SyncTrap::id_answer`] writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IdRead {
+    /// CRm (0..=15).
+    pub crm: u8,
+    /// op2 (0..=7).
+    pub op2: u8,
+    /// The destination register (Rt, 0..=31).
+    rt: u8,
+}
+
+/// `READ_SPECIALREG(midr_el1)`: this CPU's model, which a program reading `MIDR_EL1` is told.
+pub fn midr() -> u64 {
+    let v: u64;
+    // SAFETY: `mrs` of `MIDR_EL1`, a read-only identification register: no memory, no
+    // stack, no flags.
+    unsafe {
+        core::arch::asm!("mrs {}, midr_el1", out(reg) v, options(nomem, nostack, preserves_flags));
+    };
+    v
 }
 /* </CODE> */
