@@ -367,7 +367,8 @@ static BSD_RANDOM: BsdRandom = BsdRandom;
 
 /// The machine's clock hardware (`crate::machine::cpu`'s `cpu_initclocks`, `cpu_startclock`,
 /// `setstatclockrate` and `delay`: arm64's `arm_clock_func`, whose first registration wins,
-/// stays in `intr.rs` behind them until N7).
+/// stays in `intr.rs` behind them until N7), and the root bus's early start (`early_init`,
+/// arm64's `agtimer_init` for the kernel's mainbus, N7.2b1b; scaffolding until N7.2b2).
 struct BsdClockHardware;
 
 impl kernel::time::clock::ClockHardware for BsdClockHardware {
@@ -385,6 +386,10 @@ impl kernel::time::clock::ClockHardware for BsdClockHardware {
 
     fn delay(&self, usecs: u32) {
         crate::machine::cpu::delay(usecs);
+    }
+
+    fn early_init(&self) {
+        crate::machine::cpu::clock_early_init();
     }
 }
 

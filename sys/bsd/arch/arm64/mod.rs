@@ -272,6 +272,10 @@ impl Cpu for Machine {
         arm64::intr::setstatclockrate(newhz)
     }
 
+    fn clock_early_init() {
+        dev::agtimer::agtimer_init()
+    }
+
     fn cpu_configure() {
         arm64::autoconf::cpu_configure()
     }
@@ -1285,11 +1289,15 @@ impl crate::machine::autoconf::Autoconf for Machine {
     }
 
     fn mainbus_cd() -> &'static crate::sys::device::Cfdriver {
-        &dev::mainbus::MAINBUS_CD
+        &conf::ioconf::MAINBUS_CD
     }
 
     fn device_register(dev: &crate::sys::device::Device, aux: *mut c_void) {
         arm64::autoconf::device_register(dev, aux)
+    }
+
+    fn present_aux(aux: &(dyn core::any::Any + Send + Sync), f: &mut dyn FnMut(*mut c_void)) {
+        include::fdt::present_aux(aux, f)
     }
 
     fn pdevinit() -> &'static [crate::sys::device::Pdevinit] {

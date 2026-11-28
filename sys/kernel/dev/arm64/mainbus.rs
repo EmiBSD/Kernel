@@ -97,7 +97,7 @@ use crate::base::prf::{Str, printf, unported};
 use crate::base::sysctl::{NCPUSFOUND, hw_prod, hw_serial};
 use crate::dev::arm64::fdt::{EarlyNodes, FdtArgs, FdtBus, FdtBusRef};
 use crate::dev::arm64::intr::arm_intr_init_fdt;
-use crate::dev::autoconf::{config_found, config_found_sm, config_mountroot};
+use crate::dev::autoconf::{Print, config_found, config_found_sm, config_mountroot};
 use crate::dev::device::{
     Aux, DV_DULL, Deferred, DevRef, Devclass, DriverOps, Ident, M_DEVBUF, Match, QUIET, UNCONF,
     UnitTable,
@@ -376,7 +376,7 @@ pub fn mainbus_attach_node(dev: &DevRef, st: &mut Attach, node: i32, cpus: Optio
             0
         }
     };
-    let print: Option<&dyn Fn(&Aux<'_>, Option<&[u8]>) -> i32> = if cpus.is_none() && early == 0 {
+    let print: Option<Print<'_>> = if cpus.is_none() && early == 0 {
         Some(&print)
     } else {
         None

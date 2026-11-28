@@ -188,8 +188,9 @@ pub static BOOTHOWTO: AtomicI32 = AtomicI32::new(0);
 pub static DB_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// `ncpus`: number of CPUs running the kernel.
 pub static NCPUS: AtomicI32 = AtomicI32::new(1);
-/// `ncpusfound`: number of CPUs we find.
-pub static NCPUSFOUND: AtomicI32 = AtomicI32::new(1);
+/// `ncpusfound`: number of CPUs we find: the kernel's (arm64's mainbus counts it there since
+/// N7.2b1b), under its `bsd` path for `bsd`'s readers (scaffolding until N9).
+pub use kernel::base::sysctl::NCPUSFOUND;
 /// `__guard_local`: the stack protector's guard word, in `.openbsd.randomdata` so boot(8)
 /// fills it; `random_start` reads it (volatile: the loader, not the program, wrote it) to see
 /// whether the boot loader supplied entropy. Rust code has no stack protector of its own.

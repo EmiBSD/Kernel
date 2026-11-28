@@ -143,7 +143,7 @@ pub fn cpu_configure() {
     softintr_init();
     bus_dma_init();
     #[cfg(feature = "qemu")]
-    crate::kern::selftest::bus_dma_check(&crate::arch::arm64::dev::mainbus::MAINBUS_DMA_TAG);
+    crate::kern::selftest::bus_dma_check(&crate::arch::arm64::include::fdt::MAINBUS_DMA_TAG);
 
     let _ = config_rootfound(b"mainbus", ptr::null_mut());
 
