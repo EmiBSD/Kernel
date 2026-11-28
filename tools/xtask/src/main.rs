@@ -261,7 +261,7 @@ const USAGE: &str = "usage: cargo xtask <lz check | lz status [--write] | lz dri
                      smoke2 --arch A (--image tree|init | --kernel K --root bare|init|tree) [--timeout S] [--show-transcripts] [--disk-fresh] [--disks N] [--both-|--a-|--b-send-after L --send T]... [--both-|--a-|--b-expect L]... [--reject L]... [--https-server DIR:PORT:MODE]... | \
                      smoke-all [-j N] [--just PATH] RECIPE... | \
                      unsafe-report [--write] [--check] [--shapes] | unsafe-report --json | \
-                     diff-openbsd [--arch A]... [--smp N] [--kernel-dir D] [fetch | install | run | powerbtn] | \
+                     diff-openbsd [--arch A]... [--smp N] [--kernel-dir D] [fetch | install | run | powerbtn | probe [--sh CMD] [--send-after L --send T]... [--expect L]... [--repeat N] [--step-timeout S]] | \
                      diff-openbsd --arch A [--ipmi] [--nic MODEL] [--usb] [--usb-hc xhci|ehci|uhci|ohci] [--ukc CMD]... [--sh CMD] probe | \
                      bench [--arch A]... [--smp N] [--reps N] [--no-tcpbench] [--profile debug|release] | bench compare BEFORE AFTER | \
                      symbolize --arch A [--kernel K] | userland --arch A | devtools-hello --arch A --llvm DIR --rust DIR | devtools-native --arch A --llvm TAR --llvm-sha256 HEX --rust TAR --rust-sha256 HEX | comp --arch A [--jobs N] | ntfs-image OUT [--check] | \
@@ -276,6 +276,10 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("xtask: {e}");
+            // A probe step that hung has a status of its own (diffopenbsd.rs).
+            if e.downcast_ref::<diffopenbsd::ProbeHang>().is_some() {
+                return ExitCode::from(diffopenbsd::PROBE_HANG_STATUS);
+            }
             ExitCode::FAILURE
         }
     }

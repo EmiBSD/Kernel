@@ -2630,6 +2630,33 @@ smoke-ddbmp: (build-amd64 "--features qemu") (build-arm64 "--features qemu") bui
 
 # `smoke-ddbmp`'s CPU-count dependent parts: the CPU the first trigger goes through on its way
 # to CPU 1, and the lines CPU 1's `machine cpuinfo` shows for CPUs 2 and 3 on four processors.
+# `probe-ddbmp-openbsd` (not in `smokes`, not in ci): smoke-ddbmp's ddb sequence on the
+# diff-openbsd snapshot (real OpenBSD 8.0 arm64, cortex-a72, device tree, `-smp 2`), to see
+# whether OpenBSD itself hangs at `machine ddbcpu 0` as EmiBSD's smoke-ddbmp did. ddb polls the
+# serial console, so each text is typed at its prompt (`probe --send-after`). `sysctl
+# ddb.console=1` runs once (`--sh`), then `ddbmp_rounds` rounds of: trigger, `ddbcpu 0` then
+# `ddbcpu 1` (the smoke's two hops), `cpuinfo`, `continue`, trigger, `ddbcpu 1` then `ddbcpu 0`
+# (the step that hung), `cpuinfo`, `continue`. A step over `step` seconds is a hang: the prompt
+# and the console tail are printed and xtask exits 3. Each run boots its own clone of the
+# snapshot's disk, so several can run at once under their own `EMIBSD_RUN_DIR`.
+# `just probe-ddbmp-openbsd [rounds] [step]`.
+probe-ddbmp-openbsd rounds="3" step="120":
+    {{xtask}} diff-openbsd --arch arm64 --smp 2 probe \
+        --sh 'sysctl ddb.console=1; uname -a' --repeat {{rounds}} --step-timeout {{step}} \
+        --send-after "# " --send 'sysctl ddb.trigger=1\n' \
+        --send-after "ddb{" --send 'machine ddbcpu 0\n' \
+        --send-after "ddb{0}> " --send 'machine ddbcpu 1\n' \
+        --send-after "ddb{1}> " --send 'machine cpuinfo\n' \
+        --send-after "ddb{1}> " --send 'continue\n' \
+        --send-after "# " --send 'sysctl ddb.trigger=1\n' \
+        --send-after "ddb{" --send 'machine ddbcpu 1\n' \
+        --send-after "ddb{1}> " --send 'machine ddbcpu 0\n' \
+        --send-after "ddb{0}> " --send 'machine cpuinfo\n' \
+        --send-after "ddb{0}> " --send 'continue\n' \
+        --expect "ddb.console: 0 -> 1" --expect "Stopped at" \
+        --expect "    0: stopped" --expect "*   1: ddb" \
+        --expect "*   0: ddb" --expect "    1: stopped"
+
 ddbmp_via1 := if ncpu == "4" { "2" } else { "0" }
 ddbmp_via1_prompt := "ddb{" + ddbmp_via1 + "}> "
 ddbmp_last_prompt := "ddb{" + aps + "}> "

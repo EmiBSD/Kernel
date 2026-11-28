@@ -75,6 +75,14 @@
 //!   `hwopts::poll_monitor`); afterwards the probe prints what the `--parallel` file holds
 //!   and what the WAV file of `--audio`/`--pcspk` measures (`openbsd-probe.wav`), without
 //!   requiring anything.
+//!   The probe boots a per-run APFS clone of the snapshot's disk (`cp -c`, removed at the end),
+//!   so probes can run in parallel. After `--sh` it can run the smokes' script: repeatable
+//!   `--send-after PROMPT --send TEXT` pairs (the text typed once the prompt appears, for a
+//!   prompt that is only there later, as ddb(4)'s, which polls the console), `--expect LINE`
+//!   (must be on the console at the end) and `--repeat N` (the pairs N times in one boot),
+//!   each wait limited by `--step-timeout SECS` (120). A wait that times out with QEMU still
+//!   running is a hang: the step, the prompt and the console tail go to the log and stderr and
+//!   `xtask` exits 3 (1 is any other failure).
 //!
 //! The OpenBSD binaries are test fixtures under `target/` only: never committed, never
 //! redistributed. Per-run files (logs, scripts, reports, the OpenBSD VM's variable store) go
@@ -148,6 +156,10 @@ pub(crate) fn diff_openbsd(root: &Path, args: &[&str]) -> Result<()> {
             "--kernel-dir" => kernel_dir = Some(*it.next().ok_or("--kernel-dir needs a value")?),
             "--ukc" => ukc.push(*it.next().ok_or("--ukc needs a value")?),
             "--sh" => sh = Some(*it.next().ok_or("--sh needs a value")?),
+            // `probe`'s script after the login (`ProbeScript`): read from `args` below.
+            "--send-after" | "--send" | "--expect" | "--repeat" | "--step-timeout" => {
+                it.next().ok_or_else(|| format!("{a} needs a value"))?;
+            }
             // A device option: `hwopts::set` or `devices::set_from_args` (main) has recorded
             // it; `probe` adds the device.
             "--ipmi" | "--usb" | "--virtio-rng" | "--balloon" | "--virtio-gpu" | "--pcspk"
@@ -179,6 +191,7 @@ pub(crate) fn diff_openbsd(root: &Path, args: &[&str]) -> Result<()> {
         }
         arches = enabled;
     }
+    let script = ProbeScript::parse(args)?;
     let snap = load_snapshot(root)?;
     let mut failed = Vec::new();
     for arch in arches {
@@ -199,7 +212,7 @@ pub(crate) fn diff_openbsd(root: &Path, args: &[&str]) -> Result<()> {
             continue;
         }
         if what == "probe" {
-            probe(root, arch, &ukc, sh)?;
+            probe(root, arch, &ukc, sh, &script)?;
             continue;
         }
         let started = Instant::now();
@@ -375,7 +388,13 @@ pub(crate) enum Boot<'a> {
 /// disk is `sd0` in every mode, the install image or the scratch disk `sd1`. The link NIC of
 /// [`Boot::Link`] is `vio1`, placed as `boot::qemu_command` places EmiBSD's.
 pub(crate) fn openbsd_qemu(root: &Path, arch: Arch, mode: &Boot<'_>) -> Result<Command> {
-    let disk = cache_dir(root, arch).join("disk.img");
+    // `probe` boots its own clone of the snapshot's disk ([`DiskClone`]); every other mode
+    // boots the installed one in place (always with `-snapshot` or as its installer).
+    let cloned = match mode {
+        Boot::Probe(_) => PROBE_DISK.lock().ok().and_then(|d| d.clone()),
+        _ => None,
+    };
+    let disk = cloned.unwrap_or_else(|| cache_dir(root, arch).join("disk.img"));
     let code = boot::edk2_file(arch.edk2_code())?;
     let vars_src = boot::edk2_file(arch.edk2_vars())?;
     let link = match mode {
@@ -676,9 +695,171 @@ fn powerbtn(root: &Path, arch: Arch) -> Result<()> {
     Ok(())
 }
 
+/// The disk `probe` boots in place of the snapshot's own (set by [`DiskClone`]).
+static PROBE_DISK: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+/// A per-run working copy of the snapshot's disk, an APFS clone (`cp -c`: instant, no space
+/// until written), so probes of one machine can run in parallel without sharing a writable
+/// disk. `target/openbsd`'s original is only read. Removed when dropped.
+struct DiskClone(PathBuf);
+
+impl DiskClone {
+    fn make(root: &Path, arch: Arch, work: &Path) -> Result<DiskClone> {
+        let src = cache_dir(root, arch).join("disk.img");
+        let dst = work.join(format!("openbsd-probe-{}-disk.img", std::process::id()));
+        let _ = fs::remove_file(&dst);
+        let out = Command::new("cp")
+            .arg("-c")
+            .arg(&src)
+            .arg(&dst)
+            .output()
+            .map_err(|e| format!("cp -c: {e}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "cp -c {} {}: {}",
+                src.display(),
+                dst.display(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            )
+            .into());
+        }
+        if let Ok(mut d) = PROBE_DISK.lock() {
+            *d = Some(dst.clone());
+        }
+        Ok(DiskClone(dst))
+    }
+}
+
+impl Drop for DiskClone {
+    fn drop(&mut self) {
+        if let Ok(mut d) = PROBE_DISK.lock() {
+            *d = None;
+        }
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+/// The error of a probe step that waited for its prompt and got none (QEMU still running):
+/// `main` exits with [`PROBE_HANG_STATUS`] for it, so a loop can tell a hang from a failure.
+#[derive(Debug)]
+pub(crate) struct ProbeHang(pub(crate) String);
+
+impl std::fmt::Display for ProbeHang {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ProbeHang {}
+
+/// The exit status of `xtask` when a probe step hung ([`ProbeHang`]).
+pub(crate) const PROBE_HANG_STATUS: u8 = 3;
+
+/// What `probe` does after the login, the smoke engine's `--send-after`/`--send`/`--expect`:
+/// each text is typed once its prompt has appeared, in order, the whole list `repeat` times in
+/// one boot; every wait has `step` as its limit (`--step-timeout`, scaled by
+/// `$EMIBSD_TIMEOUT_SCALE`), and the expected lines must be on the console at the end.
+#[derive(Debug, PartialEq)]
+pub(crate) struct ProbeScript {
+    /// `(after this prompt, type this)`.
+    pub(crate) sends: Vec<(String, String)>,
+    pub(crate) expects: Vec<String>,
+    pub(crate) repeat: u32,
+    pub(crate) step: Duration,
+}
+
+impl ProbeScript {
+    /// The default `--step-timeout`, in seconds.
+    const STEP_SECS: u64 = 120;
+
+    pub(crate) fn parse(args: &[&str]) -> Result<ProbeScript> {
+        let sends = crate::hwopts::parse_pairs(args, "--send-after", "--send")?
+            .into_iter()
+            .map(|(a, t)| (a, t.replace("\\n", "\n")))
+            .collect();
+        let number = |name: &str, default: u64| -> Result<u64> {
+            match crate::optional_flag(args, name) {
+                None => Ok(default),
+                Some(v) => match v.parse::<u64>() {
+                    Ok(n) if n >= 1 => Ok(n),
+                    _ => Err(format!("{name} {v}: expected a number of at least 1").into()),
+                },
+            }
+        };
+        Ok(ProbeScript {
+            sends,
+            expects: crate::flags(args, "--expect")
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            repeat: u32::try_from(number("--repeat", 1)?)
+                .map_err(|_| "--repeat: too large".to_string())?,
+            step: Duration::from_secs(number("--step-timeout", Self::STEP_SECS)?),
+        })
+    }
+
+    fn is_empty(&self) -> bool {
+        self.sends.is_empty() && self.expects.is_empty()
+    }
+}
+
+/// The last `n` lines of `text`, for a hang's report.
+fn console_tail(text: &str, n: usize) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(n)..].join("\n")
+}
+
+/// Waits for `prompt` for `limit`. A timeout with QEMU still running is a [`ProbeHang`]
+/// naming the step, the prompt and the console tail (also appended to `log`); QEMU exiting
+/// is an ordinary error.
+fn step_wait(vm: &mut Vm, prompt: &str, what: &str, limit: Duration, log: &Path) -> Result<()> {
+    if let Err(e) = vm.wait_for(prompt, limit) {
+        let tail = console_tail(&vm.text(), 25);
+        let report = format!(
+            "probe {what}: waiting for {prompt:?} for {}s: {e}\n----- console tail -----\n{tail}\n-----",
+            limit.as_secs()
+        );
+        let _ = fs::write(log, format!("{}\n{report}\n", vm.text()));
+        return if vm.exited() {
+            Err(report.into())
+        } else {
+            Err(Box::new(ProbeHang(format!("HANG: {report}"))))
+        };
+    }
+    Ok(())
+}
+
+/// Runs the script's pairs `repeat` times on `vm`, whose cursor sits before the prompt the
+/// first pair waits for.
+fn run_script(vm: &mut Vm, script: &ProbeScript, log: &Path) -> Result<()> {
+    let limit = boot::time_limit(script.step);
+    let total = script.sends.len();
+    for round in 1..=script.repeat {
+        for (i, (prompt, text)) in script.sends.iter().enumerate() {
+            let what = format!("round {round}/{} step {}/{total}", script.repeat, i + 1);
+            step_wait(vm, prompt, &what, limit, log)?;
+            let text = crate::hwopts::expand_send(text);
+            vm.send(&text)?;
+            println!("xtask: probe round {round}: sent {text:?} (saw {prompt:?})");
+        }
+    }
+    if !script.sends.is_empty() {
+        // The last text's own effect: the shell comes back.
+        step_wait(vm, "# ", "after the last step", limit, log)?;
+    }
+    println!("xtask: probe: {} round(s) done", script.repeat);
+    Ok(())
+}
+
 /// `probe`: the installed OpenBSD's `dmesg` and the output of `sh`, with the device options
-/// `hwopts` recorded, after the UKC commands `ukc` (none: a plain boot).
-fn probe(root: &Path, arch: Arch, ukc: &[&str], sh: Option<&str>) -> Result<()> {
+/// `hwopts` recorded, after the UKC commands `ukc` (none: a plain boot), then `script`.
+fn probe(
+    root: &Path,
+    arch: Arch,
+    ukc: &[&str],
+    sh: Option<&str>,
+    script: &ProbeScript,
+) -> Result<()> {
     let work = work_dir(root, arch)?;
     // With `--monitor-after`/`--sendkey-after` (M16d) the monitor is the smokes' socket, so
     // `hwopts::poll_monitor` drives it while `sh` runs.
@@ -686,6 +867,7 @@ fn probe(root: &Path, arch: Arch, ukc: &[&str], sh: Option<&str>) -> Result<()> 
         std::env::temp_dir().join(format!("emibsd-obsd-{}.sock", std::process::id()))
     });
     let _ = fs::remove_file(&sock);
+    let _clone = DiskClone::make(root, arch, &work)?;
     let mut cmd = openbsd_qemu(root, arch, &Boot::Probe(&sock))?;
     crate::hwopts::add_devices(&mut cmd, root, arch)?;
     // M16a: the storage controllers of `storage.rs`, with their disks in the run directory.
@@ -726,10 +908,43 @@ fn probe(root: &Path, arch: Arch, ukc: &[&str], sh: Option<&str>) -> Result<()> 
         }
         crate::hwopts::poll_monitor(&vm.since(mark))?;
     }
+    // The prompt after `sh` stays unread when a script follows: its first pair may wait for it.
+    let prompt_at = vm.mark();
     vm.wait_for("# ", Duration::from_secs(60))?;
     let out = vm.since(mark);
-    let _ = fs::write(&log, vm.text());
+    let mut outcome = Ok(());
+    if !script.is_empty() {
+        vm.rewind(prompt_at);
+        let script_mark = vm.mark();
+        outcome = run_script(&mut vm, script, &log);
+        let console = vm.since(script_mark);
+        if outcome.is_ok() {
+            let all = vm.text();
+            let missing: Vec<&str> = script
+                .expects
+                .iter()
+                .map(String::as_str)
+                .filter(|e| !all.contains(e))
+                .collect();
+            if !missing.is_empty() {
+                outcome = Err(
+                    format!("probe: expected line(s) NOT seen: {}", missing.join(" | ")).into(),
+                );
+            }
+        }
+        println!(
+            "----- probe console after the login ({}) -----",
+            log.display()
+        );
+        println!("{}", console.trim());
+        println!("-----");
+    }
+    let hung = matches!(&outcome, Err(e) if e.downcast_ref::<ProbeHang>().is_some());
+    if !hung {
+        let _ = fs::write(&log, vm.text());
+    }
     let _ = fs::remove_file(&sock);
+    outcome?;
     // What the parallel port printed and the tone in the WAV file (M16d), reported, not
     // required: a probe records what OpenBSD does.
     crate::hwopts::probe_report();
@@ -947,6 +1162,53 @@ fn run(root: &Path, arch: Arch, kernel_dir: Option<&str>) -> Result<bool> {
 mod tests {
     use super::scenario::*;
     use super::*;
+
+    #[test]
+    fn probe_script_parses_pairs_expects_repeat_and_step() {
+        let s = ProbeScript::parse(&[
+            "--arch",
+            "arm64",
+            "--send-after",
+            "# ",
+            "--send",
+            "a\\n",
+            "--send-after",
+            "ddb{",
+            "--send",
+            "b",
+            "--expect",
+            "x",
+            "--repeat",
+            "3",
+            "--step-timeout",
+            "9",
+        ])
+        .unwrap();
+        assert_eq!(
+            s.sends,
+            vec![("# ".into(), "a\n".into()), ("ddb{".into(), "b".into())]
+        );
+        assert_eq!(s.expects, vec!["x".to_string()]);
+        assert_eq!((s.repeat, s.step), (3, Duration::from_secs(9)));
+        assert!(!s.is_empty());
+    }
+
+    #[test]
+    fn probe_script_defaults_and_refusals() {
+        let s = ProbeScript::parse(&["probe"]).unwrap();
+        assert!(s.is_empty());
+        assert_eq!((s.repeat, s.step), (1, Duration::from_secs(120)));
+        assert!(ProbeScript::parse(&["--send", "x"]).is_err());
+        assert!(ProbeScript::parse(&["--send-after", "x"]).is_err());
+        assert!(ProbeScript::parse(&["--repeat", "0"]).is_err());
+        assert!(ProbeScript::parse(&["--step-timeout", "z"]).is_err());
+    }
+
+    #[test]
+    fn console_tail_keeps_the_last_lines() {
+        assert_eq!(console_tail("a\nb\nc\nd", 2), "c\nd");
+        assert_eq!(console_tail("a", 5), "a");
+    }
 
     #[test]
     fn diff_lines_aligns_an_inserted_line() {
