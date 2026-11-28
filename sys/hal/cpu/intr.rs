@@ -91,8 +91,8 @@
 //!   for the legacy GICv3) instead of by `initarm` over `bsd`'s table: before one attaches, the
 //!   defaults run, as the C's table starts. The dispatch takes the clock frame (`ClockFrame`, the machine's trap frame on
 //!   arm64), which the kernel's handlers read; [`unmasked`] is the dispatch's
-//!   `intr_enable()`/`intr_disable()` pair around its handlers, its premise a type
-//!   ([`InIrq`], the dispatch's token). `arm_splassert_check` is this module's
+//!   `intr_enable()`/`intr_disable()` pair around its handlers, callable inside a dispatch
+//!   alone ([`InIrq`], the dispatch's token). `arm_splassert_check` is this module's
 //!   ([`splassert_check`], the trait's default and the check before a controller attaches;
 //!   the report through `hal::prf::splassert_fail`), so every controller checks the same.
 //! - N7.2a3: the table's last two entries, `enable_wakeup` and `disable_wakeup`, are the
@@ -325,13 +325,17 @@ pub trait IntrHardware: Sync {
     }
 }
 
-/// The IRQ dispatch under way on this CPU, with its interrupts masked by the exception entry:
-/// made only by `hal`'s IRQ entry ([`dispatch_irq`]) and lent to the controller's
-/// [`IntrHardware::dispatch_irq`] for the call, so [`unmasked`]'s premise (entered masked, in
-/// a dispatch) is a type; the GICv3's acknowledge and end of interrupt
-/// (`crate::cpu::icc::iar1`, `eoir1`) ask for it too, so neither is made outside a dispatch. Not `Send`, not `Clone`, and a `'static` one cannot be had (it
-/// lives on the entry's frame). The host double has no interrupts: its constructor is public
-/// there ([`InIrq::host`]), for the tests of a controller's dispatch.
+/// The IRQ dispatch under way on this CPU: made only by `hal`'s IRQ entry ([`dispatch_irq`])
+/// and lent to the controller's [`IntrHardware::dispatch_irq`] for the call (and, by the
+/// kernel's `IntrHandler::call`, to a shared handler the dispatch runs), so what asks for it
+/// ([`unmasked`], the GICv3's acknowledge and end of interrupt, `crate::cpu::icc::iar1` and
+/// `eoir1`) is called inside a dispatch. That is all the type proves. That the interrupts
+/// are masked when the dispatch calls [`unmasked`] is the dispatch's own protocol (the
+/// exception entry masks them, and the dispatch unmasks once, around its handlers): a
+/// handler that called [`unmasked`] itself would leave the rest of its list masked, which
+/// costs liveness, never memory safety. Not `Send`, not `Clone`, and a `'static` one cannot
+/// be had (it lives on the entry's frame). The host double has no interrupts: its
+/// constructor is public there ([`InIrq::host`]), for the tests of a controller's dispatch.
 pub struct InIrq {
     _not_send: PhantomData<*const ()>,
 }
@@ -373,11 +377,12 @@ pub fn hardware() -> Option<&'static dyn IntrHardware> {
 }
 
 /// `intr_enable(); f(); intr_disable();`: the IRQ dispatch's pair around its handlers
-/// (`ampintc_irq_handler`, `agintc_irq_handler`), inside a dispatch (`irq`), entered with
-/// this CPU's interrupts masked (the exception entry's state): unmasked while `f` runs (a
-/// higher-priority interrupt may nest), masked again after it, as the dispatch found them.
-/// Not a guard: a guard's drop would restore the state it saved, and the dispatch must
-/// return masked.
+/// (`ampintc_irq_handler`, `agintc_irq_handler`), inside a dispatch (`irq`): this CPU's
+/// interrupts unmasked while `f` runs (a higher-priority interrupt may nest), masked after
+/// it. The dispatch calls it once, with the interrupts masked as the exception entry left
+/// them (its own protocol, which the token does not prove), so it returns as the dispatch
+/// found them. Not a guard: a guard's drop would restore the state it saved, and the
+/// dispatch must return masked.
 #[inline]
 pub fn unmasked<R>(irq: &InIrq, f: impl FnOnce() -> R) -> R {
     let _ = irq;

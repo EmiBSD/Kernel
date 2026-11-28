@@ -341,8 +341,8 @@ enum Handle {
 
 /// What `cookie` names.
 fn handle(cookie: NonNull<MachineIntrHandle>) -> Handle {
-    // SAFETY: an established handle (`arm_intr_establish_fdt*`, `arm_intr_parent_establish_fdt`
-    // or one a driver made by hand, LZ's contract for every caller) is a live
+    // SAFETY: an established handle (one `arm_intr_establish_fdt*` or `new_handle` made, or
+    // one `pciecam` made by hand around its static; LZ's contract for every caller) is a live
     // `MachineIntrHandle` until its disestablish frees it.
     let mih = unsafe { cookie.as_ref() };
     if mih.ih_ic.is_null() {
@@ -356,8 +356,8 @@ fn handle(cookie: NonNull<MachineIntrHandle>) -> Handle {
         Handle::Native(native.ih)
     } else {
         // SAFETY: a non-null `ih_ic` names a `struct interrupt_controller` that is never
-        // freed: a registered one (a driver's static or softc member) or a static that is not
-        // registered (`pciecam`'s `PCIECAM_IC`, whose handles it makes by hand).
+        // freed: only `pciecam` makes such a handle, by hand, around its static `PCIECAM_IC`
+        // (the handles `arm_intr_establish_fdt*` and `new_handle` make have a null `ih_ic`).
         Handle::Legacy(unsafe { &*mih.ih_ic }, mih.ih_ih)
     }
 }
