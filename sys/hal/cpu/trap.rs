@@ -164,7 +164,12 @@ pub fn cpu_halt() {
 }
 
 /// Per CPU, 1 while the debugger IPI's entry ([`db_enter`]) runs on it: its trap is the
-/// IPI's, which [`take_ipi_entry`] reads (and clears).
+/// IPI's, which [`take_ipi_entry`] reads (and clears). Its invariant: no other trap on that
+/// CPU comes between the store and `db_ktrap`'s take. `do_el1h_sync` turns the interrupts on
+/// before the debugger (`arch/arm64/trap.rs`), so it holds only because nothing outranks an
+/// active IPI: no interrupt nests there whose own trap could take the mark. Once
+/// `db_write_bytes` is ported, a breakpoint set on `DdbDebugger::enter` or `db_enter` would
+/// be that other trap and take the mark (it would then be seen as the IPI's).
 static IPI_ENTRY: PerCpu<AtomicU32> = PerCpu::new();
 
 /// `db_enter()` of the debugger IPI (`ARM_IPI_DDB`, the interrupt controllers in the

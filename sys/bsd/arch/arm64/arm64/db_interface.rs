@@ -79,7 +79,8 @@
 //! - With `MULTIPROCESSOR`, a trap raised by the debugger IPI (`ARM_IPI_DDB`'s `db_enter()`,
 //!   marked by `hal::cpu::trap::db_enter`) is dropped when it finds its CPU running
 //!   (`ci_ddb_paused == CI_DDB_RUNNING`, read under `ddb_mp_mutex` at `db_ktrap`'s start,
-//!   `db_ipi_entry_stale`; counted nowhere) and the kernel goes on. The C enters from every
+//!   `db_ipi_entry_stale`; counted nowhere), that is once the exit path of `db_enter_ddb`
+//!   has run, and the kernel goes on. The C enters from every
 //!   DDB IPI: `db_stopcpu` sends a second IPI to a CPU still on its way in from the first
 //!   (`reference/openbsd-src/sys/arch/arm64/arm64/db_interface.c:507`, amd64's the same),
 //!   whose handler already took the reasons, and after `continue` that second IPI opens a new
@@ -93,6 +94,13 @@
 //!   end between the check and the state it reads; `CI_DDB_SHOULDSTOP` is written outside
 //!   it (the first CPU in, after `db_mtx_leave`, db_interface.c:432-436), but only ever marks
 //!   a CPU asked, before the IPI that asks it is sent, which can only make an entry enter.
+//!   `CpuInfo` also starts at 0, which is `CI_DDB_RUNNING` (`arch/arm64/include/cpu.rs`'s
+//!   `ci_ddb_paused: AtomicI32::new(0)` and `CI_DDB_RUNNING`), outside the mutex and before
+//!   any IPI: harmless. One window stays, the C's own: a CPU still `CI_DDB_SHOULDSTOP` with
+//!   the first CPU in's IPI pending when `continue` runs, and that wins the mutex after
+//!   `db_ktrap`'s `DDB_STATE_EXITING` store (made outside it) and before the exit path's
+//!   `db_mtx_enter` in `db_enter_ddb`, reads `CI_DDB_SHOULDSTOP` and opens a new session, as
+//!   the C would. The rule is not widened to it (the user's call).
 //!
 //! ## Redesign
 //! - The stale debugger IPI is dropped (the deviation above, U17, the user's decision of
