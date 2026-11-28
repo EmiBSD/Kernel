@@ -406,6 +406,7 @@ mod tests {
 
     #[test]
     fn a_scheduled_handler_runs_once_at_its_level() {
+        let _q = testutil::softintr_lock();
         testutil::install();
         let si = establish(
             IPL_SOFTCLOCK | IPL_MPSAFE,
@@ -437,6 +438,7 @@ mod tests {
 
     #[test]
     fn a_handler_scheduled_at_ipl_none_runs_when_the_lock_is_left() {
+        let _q = testutil::softintr_lock();
         testutil::install();
         let si = establish(
             IPL_SOFTNET | IPL_MPSAFE,
@@ -457,6 +459,7 @@ mod tests {
 
     #[test]
     fn a_disestablished_pending_handler_leaves_its_queue_and_its_entry_is_reused() {
+        let _q = testutil::softintr_lock();
         testutil::install();
         let si = establish(IPL_TTY, bump, ptr::null_mut()).unwrap();
         let s = crate::cpu::intr::splhigh();
@@ -486,6 +489,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "used after softintr_disestablish")]
     fn a_handle_used_after_its_release_is_refused() {
+        let _q = testutil::softintr_lock();
         testutil::install();
         let si = establish(IPL_SOFTNET | IPL_MPSAFE, bump, ptr::null_mut()).unwrap();
         assert_eq!(si.disestablish(), None);

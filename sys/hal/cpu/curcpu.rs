@@ -78,8 +78,10 @@
 //!   dispatch's pair through [`crate::cpu::intr::unmasked`]). No `// SAFETY:` of `hal` rests
 //!   on the mask staying up across a call out of `hal`: the lock sections that hold an
 //!   [`IntrGuard`] (the kernel lock's depth and ticket, the mutexes' parking lots) call
-//!   nothing outside `hal` under it, the soft interrupts' pass calls only the controller's
-//!   `setipl` (as the C's `arm_do_pending_intr`) and rests nothing on its guard, and a lifted
+//!   nothing outside `hal` under it, the soft interrupts' pass rests nothing on its guard
+//!   (it calls the controller's `setipl` under it, as the C's `arm_do_pending_intr`, and at
+//!   the end of an IRQ dispatch keeps it alive across `softintr::dispatch` with the
+//!   interrupts on, its saved word only the dispatch's masked state to restore), and a lifted
 //!   mask in any of them would cost a nested interrupt's deadlock, never memory safety.
 //! - N7.2a3: `ci_mpidr` and `ci_midr` are the core's too ([`CpuCore::hwid`],
 //!   [`CpuCore::midr`]), recorded by `bsd`'s `cpu_attach` and `cpu_identify` beside their own
@@ -540,6 +542,14 @@ impl Drop for IntrGuard {
 #[inline]
 pub fn intr_enable() {
     machine::intr_enable();
+}
+
+/// Whether this CPU's interrupts are masked, on the host double (each test thread's own
+/// mask, which `intr_disable`, `intr_enable` and the guards move): for the tests of the
+/// interrupt paths, `hal`'s and the kernel's controllers'. No machine build has it.
+#[cfg(not(target_os = "none"))]
+pub fn intr_masked() -> bool {
+    machine::intr_masked()
 }
 
 /// `s = intr_disable()` for a holder that keeps the state beyond one scope: the debugger's

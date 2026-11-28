@@ -71,6 +71,15 @@
 //!   `bsd`'s adapter on this controller gets a 40-byte native handle (bucket 64) where LZ's
 //!   was 16 bytes, and a GICv2m frame keeps the parent's handle by value in its slot (no
 //!   `malloc` per MSI).
+//! - The dispatch's closing `ampintc_splx(s)` runs the pending soft interrupts with the
+//!   machine's interrupts on (`ampintc_splx_in_irq`, `hal::cpu::intr::do_pending_intr_in_irq`);
+//!   the C runs them masked (`intr_disable(); ampintc_eoi(); ampintc_splx(s)`), where a
+//!   non-`MPSAFE` one waiting for the kernel lock that a CPU in ddb holds never takes
+//!   `ARM_IPI_DDB` (`machine ddbcpu` then hangs). As arm64's thread-context `splx` and amd64's
+//!   `Xsoftclock` (`reference/openbsd-src/sys/arch/amd64/amd64/vector.S:1444-1450`, `sti`
+//!   after the level) run them. The level is still restored masked, so the dispatch returns
+//!   as the C's; at most three tail passes nest (CLOCK, NET, TTY) beside the hardware chain
+//!   (`hal::cpu::intr`'s deviations give the bound).
 //!
 //! ## Redesign
 //! - `struct ampintc_softc` (the simplebus softc first, the bus tag and two handles, the
@@ -934,7 +943,17 @@ pub fn ampintc_irq_handler(sc: &AmpintcSoftc, frame: &ClockFrame, irq_: &InIrq) 
     });
     sc.p.write(EOIR, iack_val);
 
-    sc.splx(s);
+    ampintc_splx_in_irq(sc, irq_, s);
+}
+
+/// The dispatch's `ampintc_splx(s)`: the soft interrupts pending below the interrupt's level
+/// run with the machine's interrupts on (`hal::cpu::intr::do_pending_intr_in_irq`, the
+/// module's deviations), then the level is restored, masked.
+fn ampintc_splx_in_irq(sc: &AmpintcSoftc, irq: &InIrq, s: i32) {
+    if hal::cpu::curcpu().ipending() & hal::cpu::intr::smask(s) != 0 {
+        hal::cpu::intr::do_pending_intr_in_irq(irq, s);
+    }
+    sc.setipl(s);
 }
 
 /// `ampintc_intr_establish_fdt`'s reading of the specifier: 1st cell contains type: 0 SPI

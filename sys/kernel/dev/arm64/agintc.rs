@@ -101,6 +101,17 @@
 //! - `ffs`/`fls` (libkern) are local helpers until libkern ports them, as LZ.
 //! - `agintc_ipi_count` (the `qemu` self-check of `cpu_boot_secondary_processors`) is not in
 //!   the C.
+//! - The dispatch's closing `agintc_splx(s)`, on the LPI path and the normal one, runs the
+//!   pending soft interrupts with the machine's interrupts on (`agintc_splx_in_irq`,
+//!   `hal::cpu::intr::do_pending_intr_in_irq`); the C runs them masked (`intr_disable();
+//!   agintc_eoi(); agintc_splx(s)`, `reference/openbsd-src/sys/arch/arm64/dev/agintc.c:1166-1185`),
+//!   where a non-`MPSAFE` one waiting for the kernel lock that a CPU in ddb holds never takes
+//!   `ARM_IPI_DDB` (`machine ddbcpu` then hangs). As arm64's thread-context `splx` and amd64's
+//!   `Xsoftclock` (`reference/openbsd-src/sys/arch/amd64/amd64/vector.S:1444-1450`, `sti`
+//!   after the level) run them. The level is still restored masked, so the dispatch returns
+//!   as the C's; at most three tail passes nest (CLOCK, NET, TTY) beside the hardware chain
+//!   (`hal::cpu::intr`'s deviations give the bound). The controller's own `splx` keeps the
+//!   C's rule (`do_pending_intr`). As `ampintc`'s.
 //!
 //! ## Redesign
 //! - `struct agintc_softc` (the simplebus softc first, the tag and handles, `mallocarray`ed
@@ -1888,7 +1899,7 @@ pub fn agintc_irq_handler(sc: &AgintcSoftc, frame: &ClockFrame, irq_: &InIrq) {
         hal::cpu::intr::unmasked(irq_, || agintc_run_handler(ih, frame, s, irq_));
         icc::eoir1(irq_, irq as u64);
 
-        sc.splx(s);
+        agintc_splx_in_irq(sc, irq_, s);
         return;
     }
 
@@ -1902,7 +1913,18 @@ pub fn agintc_irq_handler(sc: &AgintcSoftc, frame: &ClockFrame, irq_: &InIrq) {
     });
     icc::eoir1(irq_, irq as u64);
 
-    sc.splx(s);
+    agintc_splx_in_irq(sc, irq_, s);
+}
+
+/// The dispatch's `agintc_splx(s)` (both paths): the soft interrupts pending below the
+/// interrupt's level run with the machine's interrupts on
+/// (`hal::cpu::intr::do_pending_intr_in_irq`, the module's deviations), then the level is
+/// restored, masked.
+fn agintc_splx_in_irq(sc: &AgintcSoftc, irq: &InIrq, s: i32) {
+    if hal::cpu::curcpu().ipending() & hal::cpu::intr::smask(s) != 0 {
+        hal::cpu::intr::do_pending_intr_in_irq(irq, s);
+    }
+    sc.setipl(s);
 }
 
 /// `agintc_intr_establish_fdt`'s reading of the specifier: 1st cell contains type: 0 SPI
@@ -3375,6 +3397,87 @@ mod tests {
         assert!(again.is_err(), "a dead record is refused");
     }
 
+    /// How many times the soft handler ran, and how many of them with the machine's
+    /// interrupts masked.
+    static SOFT_RAN: AtomicU32 = AtomicU32::new(0);
+    static SOFT_MASKED: AtomicU32 = AtomicU32::new(0);
+
+    fn soft_count(_arg: *mut core::ffi::c_void) {
+        SOFT_RAN.fetch_add(1, Ordering::Relaxed);
+        if hal::cpu::intr_masked() {
+            SOFT_MASKED.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// The dispatch's end runs a soft interrupt pending below the interrupted level with the
+    /// machine's interrupts on, and returns masked at that level (the module's deviations;
+    /// the host double keeps each thread's mask). Run on the dispatch test's softc: the
+    /// host's device window (1024 pages for the whole test process) has no room for one more.
+    fn the_dispatch_end_runs_a_pending_soft_interrupt_unmasked_and_returns_masked(
+        sc: &'static AgintcSoftc,
+    ) {
+        SEEN.lock().unwrap().clear();
+        let _ih = establish(
+            sc,
+            41,
+            IST_LEVEL_HIGH,
+            IPL_BIO,
+            None,
+            IntrHandler::Raw(record, 0),
+        )
+        .unwrap();
+        hal::cpu::intr::init_smask();
+        let si = hal::cpu::softintr::establish(
+            hal::cpu::intr::IPL_SOFTNET | hal::cpu::intr::IPL_MPSAFE,
+            soft_count,
+            core::ptr::null_mut(),
+        )
+        .unwrap();
+        let before = hal::cpu::curcpu().cpl();
+        let (ran, masked) = (
+            SOFT_RAN.load(Ordering::Relaxed),
+            SOFT_MASKED.load(Ordering::Relaxed),
+        );
+        // Pending, scheduled above its level; then the interrupted level IPL_NONE and the
+        // exception entry's state: masked.
+        sc.setipl(hal::cpu::intr::IPL_HIGH);
+        si.schedule();
+        sc.setipl(hal::cpu::intr::IPL_NONE);
+        core::mem::forget(hal::cpu::intr_disable());
+        assert_eq!(SOFT_RAN.load(Ordering::Relaxed), ran);
+
+        let frame = ClockFrame::default();
+        icc_set(|r| {
+            r.iar1 = 41;
+            r.eoir1 = 0;
+        });
+        agintc_irq_handler(sc, &frame, &InIrq::host());
+        assert_eq!(SEEN.lock().unwrap().len(), 1, "the handler ran");
+        assert_eq!(icc::regs().eoir1, 41, "ended");
+        assert_eq!(
+            SOFT_RAN.load(Ordering::Relaxed),
+            ran + 1,
+            "then the soft one"
+        );
+        assert_eq!(
+            SOFT_MASKED.load(Ordering::Relaxed),
+            masked,
+            "with the machine's interrupts on"
+        );
+        assert!(hal::cpu::intr_masked(), "the dispatch returns masked");
+        assert_eq!(hal::cpu::curcpu().cpl(), hal::cpu::intr::IPL_NONE);
+        assert_eq!(
+            icc::pmr(),
+            u64::from(agintc_prival(hal::cpu::intr::IPL_NONE, 4))
+        );
+
+        hal::cpu::intr_enable();
+        sc.setipl(before);
+        assert_eq!(si.disestablish(), None);
+        si.release();
+        SEEN.lock().unwrap().clear();
+    }
+
     #[test]
     fn the_dispatch_raises_runs_the_handlers_unmasked_then_ends_and_restores() {
         let _g = setup();
@@ -3437,6 +3540,7 @@ mod tests {
         icc_set(|r| r.iar1 = 300);
         agintc_irq_handler(sc, &frame, &InIrq::host());
         assert_eq!(icc::regs().eoir1, 0);
+        the_dispatch_end_runs_a_pending_soft_interrupt_unmasked_and_returns_masked(sc);
     }
 
     #[test]

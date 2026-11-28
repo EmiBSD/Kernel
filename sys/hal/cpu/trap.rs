@@ -35,6 +35,14 @@
 //! `pcb_onfault` recovery, else `panic(9)`, as an unserved `uvm_fault`); the hooks do nothing
 //! and no debugger answers (`db_ktrap` returns 0, as the C without `DDB`).
 //!
+//! ## Deviations
+//! - The debugger IPI's entry (`ARM_IPI_DDB`'s `db_enter()`, [`db_enter`]) is marked on its
+//!   CPU while it runs, and the debugger's trap entry takes the mark ([`take_ipi_entry`]):
+//!   `bsd`'s `db_ktrap` drops an IPI entry that finds its CPU running (its own rule and
+//!   deviation, `arch/arm64/arm64/db_interface.rs`, U17). The C cannot tell the IPI's trap
+//!   from any other breakpoint. The mark is a fact about the trap, not a policy: `hal`
+//!   decides nothing with it.
+//!
 //! ## Redesign
 //! - Not a port: the C's `trap.c` calls `uvm_fault`, `trapsignal`, `userret`, ... by name.
 //!   Here the machine code is `hal`'s and those are the kernel's, so they are reached through
@@ -51,8 +59,11 @@
 //!   `fault()`'s `ci_panicbuf`, a member of the machine's `cpu_info` that only its owner
 //!   names.
 
+use core::sync::atomic::{AtomicU32, Ordering};
+
 use crate::bridges::AlreadyRegistered;
 use crate::sync::once::OnceStatic;
+use crate::sync::percpu::PerCpu;
 use crate::vm::pmap::VmProt;
 use sysdefs::base::errno::Errno;
 
@@ -152,11 +163,36 @@ pub fn cpu_halt() {
     }
 }
 
-/// `db_enter()`: into the registered debugger; nothing without one (the C without `DDB`).
+/// Per CPU, 1 while the debugger IPI's entry ([`db_enter`]) runs on it: its trap is the
+/// IPI's, which [`take_ipi_entry`] reads (and clears). Its invariant: no other trap on that
+/// CPU comes between the store and `db_ktrap`'s take. `do_el1h_sync` turns the interrupts on
+/// before the debugger (`arch/arm64/trap.rs`), so it holds only because nothing outranks an
+/// active IPI: no interrupt nests there whose own trap could take the mark. Once
+/// `db_write_bytes` is ported, a breakpoint set on `DdbDebugger::enter` or `db_enter` would
+/// be that other trap and take the mark (it would then be seen as the IPI's).
+static IPI_ENTRY: PerCpu<AtomicU32> = PerCpu::new();
+
+/// `db_enter()` of the debugger IPI (`ARM_IPI_DDB`, the interrupt controllers in the
+/// kernel): into the registered debugger, the entry marked on this CPU meanwhile (the
+/// module's deviations); nothing without one (the C without `DDB`).
 pub fn db_enter() {
     if let Some(d) = DEBUGGER.get() {
-        d.enter();
+        ipi_entry(|| d.enter());
     }
+}
+
+/// `enter` with this CPU's IPI entry marked: the trap it raises is the debugger IPI's.
+fn ipi_entry(enter: impl FnOnce()) {
+    IPI_ENTRY.get().store(1, Ordering::Relaxed);
+    enter();
+    IPI_ENTRY.get().store(0, Ordering::Relaxed);
+}
+
+/// Whether the trap being entered is the debugger IPI's ([`db_enter`]), the mark taken, so
+/// it answers once: the debugger's trap entry asks it (`bsd`'s `db_ktrap`, which decides
+/// what a stale one is; the module's deviations).
+pub fn take_ipi_entry() -> bool {
+    IPI_ENTRY.get().swap(0, Ordering::Relaxed) != 0
 }
 
 /// The registered kernel-mode fault handler, `None` before registration: the machine's trap
@@ -289,6 +325,22 @@ mod tests {
         assert_eq!(install_cpu_hooks(&H), Err(AlreadyRegistered("CpuHooks")));
         flush_bp();
         serror();
+    }
+
+    /// The IPI's mark is seen by its trap, once, and by no other trap (U17: the debugger tells
+    /// the IPI's entry from a breakpoint by it).
+    #[test]
+    fn the_debugger_ipi_entry_is_seen_once_by_its_own_trap() {
+        // Not the IPI's (a breakpoint, `db_enter` of a panic).
+        assert!(!take_ipi_entry());
+        // The IPI's: seen, once.
+        ipi_entry(|| {
+            assert!(take_ipi_entry(), "the IPI's trap sees its mark");
+            assert!(!take_ipi_entry(), "the mark answers once");
+        });
+        // The mark does not outlive the entry.
+        ipi_entry(|| {});
+        assert!(!take_ipi_entry());
     }
 
     /// `setregs`' writes land in the running thread's frame (the host double's registers).
