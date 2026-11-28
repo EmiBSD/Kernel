@@ -144,4 +144,21 @@ pub(crate) fn intr_restore(_s: u64) {}
 pub(crate) fn ncpus(_attached: usize) -> usize {
     MAXCPUS
 }
+
+std::thread_local! {
+    /// The hardware id the calling thread's CPU answers ([`hwid`]), 0 until a test sets it.
+    static HWID: Cell<u64> = const { Cell::new(0) };
+}
+
+/// `MPIDR_EL1` of the host double: the value the calling thread's test set ([`set_hwid`]).
+#[inline]
+pub(crate) fn hwid() -> u64 {
+    HWID.with(Cell::get)
+}
+
+/// The hardware id the calling thread reads from now on (the tests of a bus that tells the
+/// boot CPU's node from the others).
+pub(crate) fn set_hwid(id: u64) {
+    HWID.with(|h| h.set(id));
+}
 /* </CODE> */

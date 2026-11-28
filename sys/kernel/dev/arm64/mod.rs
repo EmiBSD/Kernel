@@ -18,7 +18,11 @@
 
 /* <CODE> */
 //! arm64's devices in the kernel: the interrupt core (`arch/arm64/arm64/intr.c`, N7.2a1); the
-//! interrupt controllers follow (N7.2a2, N7.2a3).
+//! device tree's attach arguments and its buses, `mainbus(4)` and `simplebus(4)` (N7.2b1b);
+//! the interrupt controllers follow (N7.2a2, N7.2a3).
 
+pub mod fdt;
 pub mod intr;
+pub mod mainbus;
+pub mod simplebus;
 /* </CODE> */

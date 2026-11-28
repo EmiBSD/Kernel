@@ -197,7 +197,8 @@ paid_by = "N7"
 # bsd: the machine's clock hardware (crate::machine::cpu's cpu_initclocks, cpu_startclock,
 # setstatclockrate, delay; arm64's arm_clock_func in intr.rs, first registration winning),
 # implemented by sys/kern/hal_bridges.rs (BsdClockHardware), for kernel::time::clock's initclocks.
-# N7, with the clock drivers.
+# N7.2b1b: early_init (default nothing), arm64's agtimer_init for the kernel's mainbus, until
+# N7.2b2's agtimer calls it itself. N7, with the clock drivers.
 # kernel::time::clock::ClockHardware
 [[bridge]]
 trait = "ClockHardware"
@@ -650,11 +651,24 @@ trait = "ConfigGlue"
 for = ["sys/kernel/dev/autoconf.rs"]
 paid_by = "N9"
 
+# bsd: the look at every node the kernel's FDT buses offer (mainbus, simplebus; N7.2b1b),
+# implemented by sys/arch/arm64/include/fdt.rs (BsdFdtOffer: the node's legacy tags, its
+# dma-coherent copy and iommu_device_map, once per offer as mainbus.c:273 and simplebus.c:258)
+# and registered by arm64's cpu_configure before config_rootfound("mainbus"). Paid by N7.11,
+# when the IOMMU registry and the kernel's DMA tag move (P25), or N7.14 with the last legacy
+# FDT child.
+# kernel::dev::arm64::fdt::FdtOffer
+[[bridge]]
+trait = "FdtOffer"
+for = ["sys/kernel/dev/arm64/fdt.rs"]
+paid_by = "N7"
+
 # bsd: every legacy driver's attachment, `impl DriverOps for Cfdata` in
 # sys/kern/subr_autoconf.rs (the shim: ca_match/ca_attach/ca_detach/ca_activate over the
 # legacy header, the zeroed softc of ca_devsize, the dv_flags and cd_devs mirrors). The trait
 # is API and stays; the row goes when the last legacy driver implements it natively (N7.14;
-# N10 for amd64's if U3 is taken).
+# N10 for amd64's if U3 is taken). N7.2b1b: the first native implementers, the kernel's
+# mainbus and simplebus (kernel::dev::arm64), named by cfdata[] rows 0 and 12 (Cfdata::native).
 # kernel::dev::device::DriverOps
 [[bridge]]
 trait = "DriverOps"

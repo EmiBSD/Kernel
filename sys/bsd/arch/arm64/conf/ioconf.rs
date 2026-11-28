@@ -80,8 +80,7 @@ use crate::arch::arm64::dev::agintc::{AGINTC_CA, AGINTC_CD, AGINTCMSI_CA, AGINTC
 use crate::arch::arm64::dev::agtimer::{AGTIMER_CA, AGTIMER_CD};
 use crate::arch::arm64::dev::ampintc::{AMPINTC_CA, AMPINTC_CD, AMPINTCMSI_CA, AMPINTCMSI_CD};
 use crate::arch::arm64::dev::efi_machdep::{EFI_CA, EFI_CD};
-use crate::arch::arm64::dev::mainbus::{MAINBUS_CA, MAINBUS_CD};
-use crate::arch::arm64::dev::simplebus::{SIMPLEBUS_CA, SIMPLEBUS_CD};
+use crate::arch::arm64::dev::simplebus::SIMPLEBUS_CD;
 use crate::arch::arm64::dev::smmu::SMMU_CD;
 use crate::arch::arm64::dev::smmu_acpi::SMMU_ACPI_CA;
 use crate::arch::arm64::dev::smmu_fdt::SMMU_FDT_CA;
@@ -171,9 +170,19 @@ use crate::net::pf_ioctl::pfattach;
 use crate::scsi::cd::{CD_CA, CD_CD};
 use crate::scsi::scsiconf::{SCSIBUS_CA, SCSIBUS_CD};
 use crate::scsi::sd::{SD_CA, SD_CD};
-use crate::sys::device::{Cfdata, FSTATE_NOTFOUND, FSTATE_STAR, Pdevinit};
+use crate::sys::device::{
+    CFATTACH_NATIVE, Cfdata, Cfdriver, DV_DULL, FSTATE_NOTFOUND, FSTATE_STAR, Pdevinit,
+};
+use kernel::dev::arm64::mainbus::MAINBUS;
+use kernel::dev::arm64::simplebus::SIMPLEBUS;
 #[cfg(feature = "fuse")]
 use kernel::fs::fuse::fuse_device::{NFUSE, fuseattach};
+
+/// `mainbus_cd`: the name `cfdata[0]` prints in UKC's listings and the driver
+/// `machine::autoconf::mainbus_cd` names; the driver itself is the kernel's
+/// (`kernel::dev::arm64::mainbus::MAINBUS`, the row's `Cfdata::native`). Scaffolding
+/// (docs/SCAFFOLDING.md) until the machine's table is the kernel's (N9.1).
+pub static MAINBUS_CD: Cfdriver = Cfdriver::new(b"mainbus", DV_DULL, 0);
 
 /// `pv[]` for children of the `fdt` attribute: `mainbus0` (`cfdata[0]`), `ampintc*`
 /// (`cfdata[1]`), `simplebus*` (`cfdata[12]`) and `agintc*` (`cfdata[51]`).
@@ -343,9 +352,9 @@ const NCFDATA: usize = if cfg!(feature = "multiprocessor") {
 /// `cfdata[]`, edited by UKC (`boot -c`) before autoconfiguration reads it
 /// (`machine::autoconf::ioconf_mut`).
 pub static CFDATA: StaticCell<[Cfdata; NCFDATA + NFREE]> = StaticCell::new([
-    // 0: mainbus0 at root
+    // 0: mainbus0 at root (the kernel's driver, N7.2b1b)
     Cfdata::new(
-        &MAINBUS_CA,
+        &CFATTACH_NATIVE,
         &MAINBUS_CD,
         0,
         FSTATE_NOTFOUND,
@@ -354,7 +363,8 @@ pub static CFDATA: StaticCell<[Cfdata; NCFDATA + NFREE]> = StaticCell::new([
         &[],
         0,
         0,
-    ),
+    )
+    .native(&MAINBUS),
     // 1: ampintc* at fdt? early 1
     Cfdata::new(
         &AMPINTC_CA,
@@ -478,9 +488,10 @@ pub static CFDATA: StaticCell<[Cfdata; NCFDATA + NFREE]> = StaticCell::new([
         0,
         0,
     ),
-    // 12: simplebus* at fdt?
+    // 12: simplebus* at fdt? (the kernel's driver, N7.2b1b; `SIMPLEBUS_CD` is `bsd`'s
+    // simplebus's, kept for the legacy GICs until N7.2a3)
     Cfdata::new(
-        &SIMPLEBUS_CA,
+        &CFATTACH_NATIVE,
         &SIMPLEBUS_CD,
         0,
         FSTATE_STAR,
@@ -489,7 +500,8 @@ pub static CFDATA: StaticCell<[Cfdata; NCFDATA + NFREE]> = StaticCell::new([
         PV_FDT,
         LN_FDT,
         0,
-    ),
+    )
+    .native(&SIMPLEBUS),
     // 13: ampintcmsi* at fdt? early 1
     Cfdata::new(
         &AMPINTCMSI_CA,

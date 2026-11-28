@@ -42,8 +42,28 @@
 //! `fdt_cons_bs_tag` and `fdt_find_cons` are `arm64/machdep.rs` (and the `machine::fdt`
 //! contract). M12 adds the `imap`/`msi` aliases, with PCI.
 //!
+//! Since N7.2b1b the root bus and the `simplebus*` row are the kernel's
+//! (`kernel::dev::arm64::{mainbus, simplebus}`), which hand their children a typed
+//! `kernel::dev::arm64::fdt::FdtArgs`; this file is also the legacy edge of those buses, for
+//! the legacy children below them: the machine's presenter ([`present_aux`]: the typed
+//! argument lent as a `struct fdt_attach_args` on the stack), the legacy tags of a native bus
+//! (the root's `&arm64_bs_tag` and [`MAINBUS_DMA_TAG`], moved here from LZ's `mainbus.rs`; a
+//! native simplebus's, its node's own tag (its parent's, with the `dma-coherent` copy)
+//! copied with the four entries `simplebus_attach` replaces, calling the kernel's
+//! translation), and a node's `dma-coherent` copy and `iommu_device_map`, made for every
+//! offered node through the kernel's `FdtOffer` bridge ([`BSD_FDT_OFFER`], once per offer as
+//! the C's buses map them, `mainbus.c:273`, `simplebus.c:258`). Scaffolding
+//! (docs/SCAFFOLDING.md, "The FDT root's legacy edge"), gone with the last legacy FDT child
+//! (N7.14).
+//!
 //! ## Deviations
 //! - `fa_reg`/`fa_nreg` and `fa_intr`/`fa_nintr` are slices; `fa_name` is a byte string.
+//! - A native `simple-bus` node's own `iommus` is not applied to the DMA tag its legacy
+//!   children's tags are copied from, where the C copies the bus node's mapped tag
+//!   (`simplebus.c:82,110`): an SMMU domain's tag keeps the outer bus's
+//!   `_dmamap_load_buffer` with the domain as its `_cookie` (`smmu.rs:669-679`), so an inner
+//!   bus forwarding to that tag would hand [`tag_cookie`] an `SmmuDomain` (the C has the same
+//!   latent confusion). The bus node's `dma-coherent` copy is applied, as the C's.
 
 pub use crate::arch::arm64::arm64::intr::{
     arm_intr_disable as fdt_intr_disable, arm_intr_disestablish_fdt as fdt_intr_disestablish,
@@ -60,8 +80,29 @@ pub use crate::arch::arm64::arm64::intr::{
     arm_intr_parent_establish_fdt as fdt_intr_parent_establish,
     arm_intr_register_fdt as fdt_intr_register,
 };
+use core::any::Any;
+use core::ffi::c_void;
+use core::ops::Range;
+use core::ptr;
+
+use alloc::boxed::Box;
+use hal::mem::malloc::{M_WAITOK, MArc};
+use hal::mem::pool::AnyArc;
+use kernel::dev::arm64::fdt::{FdtArgs, FdtBus, FdtBusRef, FdtOffer, install_fdt_offer};
+
+use crate::arch::arm64::arm64::bus_dma::{
+    _dmamap_create, _dmamap_destroy, _dmamap_load, _dmamap_load_buffer, _dmamap_load_mbuf,
+    _dmamap_load_raw, _dmamap_load_uio, _dmamap_sync, _dmamap_unload, _dmamem_alloc,
+    _dmamem_alloc_range, _dmamem_free, _dmamem_map, _dmamem_mmap, _dmamem_unmap,
+};
+use crate::arch::arm64::arm64::bus_space::ARM64_BS_TAG;
+use crate::arch::arm64::include::bus::{self, BUS_DMA_COHERENT, BusDmamap, BusSpace};
 use crate::dev::ofw::fdt::FdtReg;
-use crate::machine::bus::{BusDmaTag, BusSpaceTag};
+use crate::dev::ofw::ofw_misc::iommu_device_map;
+use crate::dev::ofw::openfirm::OF_getproplen;
+use crate::kern::subr_prf::panic;
+use crate::machine::bus::{BusAddr, BusDmaTag, BusSpaceTag};
+use crate::sys::malloc::M_DEVBUF;
 
 /// `struct fdt_attach_args`: what a device-tree node's driver is attached with.
 pub struct FdtAttachArgs<'a> {
@@ -81,5 +122,305 @@ pub struct FdtAttachArgs<'a> {
     pub fa_acells: i32,
     /// `fa_scells`.
     pub fa_scells: i32,
+}
+/// `mainbus_dma_tag`: the generic `bus_dma` functions, not cache-coherent; the root's DMA tag
+/// a legacy child of the kernel's mainbus gets (`fa_dmat`), and the self-test's. Moved from
+/// LZ's `mainbus.rs` with the root bus (N7.2b1b); a Rust `static` without interior mutability
+/// is read-only, as the C puts it in `.rodata` by hand. Scaffolding until the last legacy FDT
+/// child moves (docs/SCAFFOLDING.md, N7.14).
+pub static MAINBUS_DMA_TAG: bus::BusDmaTag = bus::BusDmaTag {
+    _cookie: ptr::null_mut(),
+    _flags: 0,
+    _dmamap_create,
+    _dmamap_destroy,
+    _dmamap_load,
+    _dmamap_load_mbuf,
+    _dmamap_load_uio,
+    _dmamap_load_raw,
+    _dmamap_load_buffer,
+    _dmamap_unload,
+    _dmamap_sync,
+    _dmamem_alloc,
+    _dmamem_alloc_range,
+    _dmamem_free,
+    _dmamem_map,
+    _dmamem_unmap,
+    _dmamem_mmap,
+    _dma_mask: 0,
+};
+
+/// The legacy tags of one bus: what its legacy children get as `fa_iot` and `fa_dmat`.
+struct BusTags {
+    /// `fa_iot`.
+    iot: &'static BusSpace,
+    /// `fa_dmat`.
+    dmat: &'static bus::BusDmaTag,
+}
+
+/// What a native simplebus's legacy tags reach through `bus_private` and `_cookie`: the
+/// kernel's translation of the bus (one handle, leaked with the tags, so the bus lives for
+/// ever as the C's softc) and the parent bus's tags the entries call after it (the C's
+/// `sc_iot`, `sc_dmat`).
+struct TagCookie {
+    /// The bus's translation.
+    bus: FdtBusRef,
+    /// The parent's tags.
+    parent: BusTags,
+}
+
+/// The cookie the tags of [`legacy_bus_tags`] point at: the `bus_private` of their bus space
+/// and the `_cookie` of their DMA tag.
+fn tag_cookie(p: *mut c_void) -> &'static TagCookie {
+    // SAFETY: only `legacy_bus_tags` writes the entries that call this (`_space_map`,
+    // `_space_mmap`, `_dmamap_load_buffer`, `_dmamap_load_raw` of its two leaked tables),
+    // and it writes their `bus_private` and `_cookie` in the same initialiser, pointing at a
+    // `TagCookie` it leaked: so the address is a live `TagCookie` for the rest of the kernel's
+    // life, and only shared references to it are made (it holds a counted handle and two
+    // `&'static` tables, all read-only). Every copier of an FDT tag in this tree, checked:
+    // a child bus's copy (LZ's `simplebus_attach`, `simplebus.rs:177-200`, and this file's
+    // own) replaces all four entries with its own cookie; `pciecam`'s bus space
+    // (`pciecam.rs:474-477`) replaces `bus_private` with `_space_map` and `_space_mmap`, the
+    // only entries of the space that reach here; `acpi_machdep`'s and the `dma-coherent`
+    // copies (`acpi_machdep.rs:121-126`, `node_tags`) change `_flags` alone and keep this
+    // cookie; smmu's domain tag (`smmu.rs:669-679`) replaces `_cookie` and keeps
+    // `_dmamap_load_buffer`, but replaces `_dmamap_load_raw` and every entry that calls
+    // `_dmamap_load_buffer` through its own tag (`_dmamap_load`, `_mbuf`, `_uio`, the
+    // generic ones of `bus_dma.rs:374-495`) with ones that load through the SMMU device's own
+    // tag (`smmu.rs:1656`, `sc.dmat()`), whose cookie, if it is one of these tables', is this
+    // file's; and no driver calls `_dmamap_load_buffer` itself. A native bus node's `iommus`
+    // is not applied (the module's deviations), so no table of this file is copied from an
+    // smmu domain's. The same premise LZ's `simplebus.rs` rests on (its `private_softc`).
+    unsafe { &*p.cast_const().cast::<TagCookie>() }
+}
+
+/// The legacy tags of `bus`: the root's are `&arm64_bs_tag` and `&mainbus_dma_tag`; a native
+/// simplebus's are its parent's copied with the four entries `simplebus_attach` replaces,
+/// each calling the kernel's translation of one level ([`FdtBus::step`], `mmap_step`,
+/// `dma_step`) and then the parent's entry, made at the first legacy child's look and kept
+/// in [`FdtBus::legacy`] (leaked: the children keep them for ever, as the C's `sc_bus`).
+fn legacy_bus_tags(bus: &FdtBusRef) -> BusTags {
+    let Some(parent) = bus.parent() else {
+        return BusTags {
+            iot: &ARM64_BS_TAG,
+            dmat: &MAINBUS_DMA_TAG,
+        };
+    };
+    if let Some(t) = bus
+        .legacy()
+        .get()
+        .and_then(|t| t.downcast_ref::<LeakedTags>())
+    {
+        return BusTags {
+            iot: t.0,
+            dmat: t.1,
+        };
+    }
+    let up = legacy_bus_tags(parent);
+    // The bus node's own tag, the C's `sc_dmat` (`simplebus.c:82`): its parent's, or the
+    // `dma-coherent` copy of it (`mainbus.c:266-271`, `simplebus.c:251-256`), which every
+    // child's copy then inherits.
+    let mut own = up.dmat;
+    if OF_getproplen(bus.node(), b"dma-coherent") >= 0 {
+        own = Box::leak(Box::new(bus::BusDmaTag {
+            _flags: own._flags | BUS_DMA_COHERENT,
+            ..*own
+        }));
+    }
+    let up = BusTags {
+        iot: up.iot,
+        dmat: own,
+    };
+    let cookie: &'static TagCookie = Box::leak(Box::new(TagCookie {
+        bus: bus.clone(),
+        parent: BusTags {
+            iot: up.iot,
+            dmat: up.dmat,
+        },
+    }));
+    let private = ptr::from_ref(cookie).cast_mut().cast::<c_void>();
+    let iot: &'static BusSpace = Box::leak(Box::new(BusSpace {
+        bus_private: private,
+        _space_map: |t, bpa, size, flag| {
+            let c = tag_cookie(t.bus_private);
+            let addr = c.bus.step(bpa as u64, size as u64)?;
+            // SAFETY: this entry's caller made `bus_space_map`'s promise for the region (the
+            // field's `unsafe fn` type); the parent's entry is handed the same region at the
+            // address its bus gives it, the C's `bus_space_map(sc->sc_iot, ..)`.
+            unsafe { (c.parent.iot._space_map)(c.parent.iot, addr as BusAddr, size, flag) }
+        },
+        _space_mmap: |t, bpa, off, prot, flags| {
+            let c = tag_cookie(t.bus_private);
+            let addr = c.bus.mmap_step(bpa as u64)?;
+            (c.parent.iot._space_mmap)(c.parent.iot, addr as BusAddr, off, prot, flags)
+        },
+        ..*up.iot
+    }));
+    let dmat: &'static bus::BusDmaTag = Box::leak(Box::new(bus::BusDmaTag {
+        _cookie: private,
+        _dmamap_load_buffer: |t,
+                              map,
+                              buf,
+                              buflen,
+                              p,
+                              flags,
+                              lastaddrp,
+                              segp,
+                              usedp,
+                              lastbouncep,
+                              first| {
+            let c = tag_cookie(t._cookie);
+            let lastaddr = *lastaddrp;
+            let mut firstseg = *segp as usize;
+            let lastlen = map.seg(firstseg).get().ds_len;
+            let up = c.parent.dmat;
+            // SAFETY: this entry's caller made the parent's `_dmamap_load_buffer` promise (the
+            // field's `unsafe fn` type), forwarded as it is, the C's
+            // `sc->sc_dmat->_dmamap_load_buffer(sc->sc_dmat, ..)`.
+            unsafe {
+                (up._dmamap_load_buffer)(
+                    up,
+                    map,
+                    buf,
+                    buflen,
+                    p,
+                    flags,
+                    lastaddrp,
+                    segp,
+                    usedp,
+                    lastbouncep,
+                    first,
+                )
+            }?;
+            let Some(mut rlen) = c.bus.dma_cells() else {
+                return Ok(());
+            };
+            // If we already translated the first segment, don't do it again!
+            if !first && lastaddr == map.seg(firstseg).get()._ds_paddr + lastlen {
+                firstseg += 1;
+            }
+            dma_translate(&c.bus, map, firstseg..*segp as usize + 1, &mut rlen);
+            Ok(())
+        },
+        _dmamap_load_raw: |t, map, segs, size, flags| {
+            let c = tag_cookie(t._cookie);
+            let up = c.parent.dmat;
+            // SAFETY: as for `_dmamap_load_buffer`: the caller's promise, forwarded.
+            unsafe { (up._dmamap_load_raw)(up, map, segs, size, flags) }?;
+            let Some(mut rlen) = c.bus.dma_cells() else {
+                return Ok(());
+            };
+            dma_translate(&c.bus, map, 0..map.dm_nsegs.get() as usize, &mut rlen);
+            Ok(())
+        },
+        ..*up.dmat
+    }));
+    let _ = bus.legacy().set(counted(LeakedTags(iot, dmat)));
+    BusTags { iot, dmat }
+}
+
+/// [`FdtBus::legacy`]'s value: a bus's leaked legacy tags.
+struct LeakedTags(&'static BusSpace, &'static bus::BusDmaTag);
+
+/// The segments `segs` of `map` translated through the bus's `dma-ranges`, one `rlen` for
+/// them all (the C's, not reset between segments).
+fn dma_translate(bus: &FdtBus, map: &BusDmamap, segs: Range<usize>, rlen: &mut usize) {
+    // For each segment.
+    for seg in segs {
+        let mut s = map.seg(seg).get();
+        s.ds_addr = bus.dma_step(s.ds_addr as u64, s.ds_len as u64, rlen) as BusAddr;
+        map.seg(seg).set(s);
+    }
+}
+
+/// A value for a kernel set-once slot of `AnyArc`.
+fn counted<T: Send + Sync + 'static>(v: T) -> AnyArc {
+    match MArc::new(M_DEVBUF, M_WAITOK, v) {
+        Some(a) => MArc::erase(a),
+        None => panic(format_args!("fdt: out of memory for legacy tags")),
+    }
+}
+
+/// The legacy tags of one offered node (`FdtArgs::legacy`'s value): its bus's, or the
+/// `dma-coherent` copy of the DMA tag, after `iommu_device_map`.
+struct NodeTags(BusTags);
+
+/// The node's legacy tags, made once per offer by [`BSD_FDT_OFFER`] (the kernel calls it in
+/// `FdtArgs::of_node`): its bus's tags, the `dma-coherent` copy (leaked, as the C's: the
+/// child keeps it) and `iommu_device_map`, as in `mainbus_attach_node` and
+/// `simplebus_attach_node`; kept in `FdtArgs::legacy` for the legacy looks of the call.
+fn make_node_tags(fa: &FdtArgs) {
+    let bus = legacy_bus_tags(&fa.bus);
+    let mut dmat = bus.dmat;
+    if fa.node_coherent() {
+        dmat = Box::leak(Box::new(bus::BusDmaTag {
+            _flags: dmat._flags | BUS_DMA_COHERENT,
+            ..*dmat
+        }));
+    }
+    let dmat = iommu_device_map(fa.node, dmat);
+    let _ = fa
+        .legacy()
+        .set(counted(NodeTags(BusTags { iot: bus.iot, dmat })));
+}
+
+/// The legacy tags a legacy driver gets for `fa`: the ones its offer made; the
+/// pseudo-children (`efi`, `apm`: node 0, never offered as nodes) get their bus's as they
+/// are, as LZ's.
+fn node_tags(fa: &FdtArgs) -> BusTags {
+    if fa.node == 0 {
+        return legacy_bus_tags(&fa.bus);
+    }
+    match fa.legacy().get().and_then(|t| t.downcast_ref::<NodeTags>()) {
+        Some(t) => BusTags {
+            iot: t.0.iot,
+            dmat: t.0.dmat,
+        },
+        None => panic(format_args!(
+            "fdt: node {} offered without its FdtOffer look",
+            fa.node
+        )),
+    }
+}
+
+/// `bsd`'s look at every node the kernel's FDT buses offer (the kernel's `FdtOffer` bridge,
+/// `bridges.toml`): the node's legacy tags made once per offer, so `iommu_device_map` runs as
+/// often as the C's buses call it. Scaffolding until the IOMMU registry moves (N7.11).
+struct BsdFdtOffer;
+
+impl FdtOffer for BsdFdtOffer {
+    fn offered(&self, fa: &FdtArgs) {
+        make_node_tags(fa);
+    }
+}
+
+/// The implementation [`register_fdt_offer`] registers.
+static BSD_FDT_OFFER: BsdFdtOffer = BsdFdtOffer;
+
+/// Registers [`BSD_FDT_OFFER`] with the kernel, once, before `config_rootfound("mainbus")`
+/// (arm64's `cpu_configure`).
+pub fn register_fdt_offer() {
+    let _ = install_fdt_offer(&BSD_FDT_OFFER);
+}
+
+/// The machine's presenter (`machine::autoconf::present_aux`, arm64's): a native FDT bus's
+/// [`FdtArgs`] lent to a legacy driver as LZ's `struct fdt_attach_args`, on the stack for the
+/// call, with the node's legacy tags; nothing for an argument of another type. Scaffolding
+/// (docs/SCAFFOLDING.md) until the last legacy FDT child moves (N7.14).
+pub fn present_aux(aux: &(dyn Any + Send + Sync), f: &mut dyn FnMut(*mut c_void)) {
+    let Some(fa) = aux.downcast_ref::<FdtArgs>() else {
+        return;
+    };
+    let tags = node_tags(fa);
+    let mut faa = FdtAttachArgs {
+        fa_name: fa.name,
+        fa_node: fa.node,
+        fa_iot: tags.iot,
+        fa_dmat: tags.dmat,
+        fa_reg: fa.reg(),
+        fa_intr: fa.intr(),
+        fa_acells: fa.acells,
+        fa_scells: fa.scells,
+    };
+    f(ptr::from_mut(&mut faa).cast());
 }
 /* </CODE> */

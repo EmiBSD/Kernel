@@ -1201,11 +1201,13 @@ pub fn autoconf_test_reset() {
 
 /* <TESTS> */
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     // Host tests for autoconfiguration over a fake machine: a table of fake rows (a root bus
     // `troot0` and children below it), fake drivers that count what they are asked, and a
     // fake glue. Every test gets its own drivers and rows (the state lives in them), under the
-    // page system's lock (the tree is a global).
+    // page system's lock (the tree is a global). The machine is the process's one glue
+    // (`config_init` keeps the first), so the buses' tests reach it too: `setup_root` and
+    // `add_row` (`kernel::dev::arm64::mainbus`'s, over its native rows).
 
     use std::boxed::Box;
     use std::string::String;
@@ -1349,9 +1351,12 @@ mod tests {
         }
     }
 
-    struct Row {
-        drv: &'static Driver,
+    /// A fake `cfdata[]` row: any driver (a test's, or a native bus under test).
+    pub(crate) struct Row {
+        drv: &'static dyn DriverOps,
         parents: &'static [i16],
+        /// `cf_loc`.
+        locs: &'static [i64],
         starunit1: i16,
         unit: AtomicI16,
         fstate: AtomicI16,
@@ -1379,11 +1384,26 @@ mod tests {
         fn set_fstate(&self, fstate: i16) {
             self.fstate.store(fstate, Ordering::Relaxed);
         }
+        fn loc(&self, i: usize) -> Option<i64> {
+            self.locs.get(i).copied()
+        }
     }
 
     fn row(
-        drv: &'static Driver,
+        drv: &'static dyn DriverOps,
         parents: &'static [i16],
+        unit: i16,
+        fstate: i16,
+        starunit1: i16,
+    ) -> &'static Row {
+        row_loc(drv, parents, &[], unit, fstate, starunit1)
+    }
+
+    /// A row with locators, leaked with the test.
+    pub(crate) fn row_loc(
+        drv: &'static dyn DriverOps,
+        parents: &'static [i16],
+        locs: &'static [i64],
         unit: i16,
         fstate: i16,
         starunit1: i16,
@@ -1391,6 +1411,7 @@ mod tests {
         Box::leak(Box::new(Row {
             drv,
             parents,
+            locs,
             starunit1,
             unit: AtomicI16::new(unit),
             fstate: AtomicI16::new(fstate),
@@ -1492,11 +1513,36 @@ mod tests {
         Setup { _mem: mem, root }
     }
 
+    /// A machine whose `cfdata[0]` is `root at root` (a native bus under test), its units
+    /// `mainbus_cd`'s: the page system's lock, the tree empty, the rows `add_row` adds below.
+    pub(crate) fn setup_root(root: &'static dyn DriverOps) -> MutexGuard<'static, ()> {
+        let mem = testutil::MEMORY
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        testutil::install();
+        autoconf_test_reset();
+        config_init(&GLUE_DOUBLE);
+        *GLUE_DOUBLE
+            .rows
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) =
+            vec_of(&[row(root, &[], 0, FSTATE_NOTFOUND, 0)]);
+        *GLUE_DOUBLE
+            .mainbus
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(root.units());
+        GLUE_DOUBLE.root_mounted.store(false, Ordering::Relaxed);
+        GLUE_DOUBLE.boothowto.store(0, Ordering::Relaxed);
+        let _ = take_log();
+        mem
+    }
+
     fn vec_of(rows: &[&'static Row]) -> Vec<&'static Row> {
         rows.to_vec()
     }
 
-    fn add_row(r: &'static Row) {
+    /// `cfdata[]` gains `r`, at the next index.
+    pub(crate) fn add_row(r: &'static Row) {
         GLUE_DOUBLE
             .rows
             .lock()

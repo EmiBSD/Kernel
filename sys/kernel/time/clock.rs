@@ -511,6 +511,10 @@ pub trait ClockHardware: Sync {
     fn setstatclockrate(&self, newhz: i32);
     /// `delay(usecs)`: busy-waits.
     fn delay(&self, usecs: u32);
+    /// What the machine's root bus starts before its children attach: arm64's
+    /// `agtimer_init()` (the counter's frequency and its `delay(9)`, `mainbus.c:107`), until
+    /// the kernel's agtimer calls it itself (N7.2b2); nothing elsewhere (the default).
+    fn early_init(&self) {}
 }
 
 /// Registers the machine's clock hardware, once; a second call keeps the first and names it.
@@ -518,6 +522,19 @@ pub fn install_clock_hardware(imp: &'static dyn ClockHardware) -> Result<(), Alr
     CLOCK_HW
         .set(imp)
         .map_err(|_| AlreadyRegistered("ClockHardware"))
+}
+
+/// The clock hardware's early start, before the root bus's children attach (arm64's
+/// `mainbus_attach` calls `agtimer_init()` there): [`ClockHardware::early_init`]; `panic(9)`
+/// before the hardware is registered, as its neighbours (the C calls `agtimer_init` by name,
+/// so it cannot be missing; `bsd` registers the bridge before `main()`).
+pub fn clock_early_init() {
+    match CLOCK_HW.get() {
+        Some(h) => h.early_init(),
+        None => kpanic(format_args!(
+            "clock_early_init: no ClockHardware registered"
+        )),
+    }
 }
 
 /// `cpu_initclocks()`: `panic(9)` before the hardware is registered, as the C's.
@@ -667,7 +684,7 @@ pub fn tstohz(ts: &Timespec) -> i32 {
 
 /* <TESTS> */
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -694,8 +711,20 @@ mod tests {
         assert!(Timespec::new(2, 0) > Timespec::new(1, 999_999_999));
     }
 
-    struct TestHw {
+    /// The process's clock hardware in the tests (the bridge is set once): every test that
+    /// needs one installs this one (`install_test_hw`), so `initclocks`' count is its own.
+    pub(crate) struct TestHw {
         started: core::sync::atomic::AtomicU32,
+    }
+
+    static HW: TestHw = TestHw {
+        started: core::sync::atomic::AtomicU32::new(0),
+    };
+
+    /// The tests' clock hardware registered (a second call changes nothing): what a bus's
+    /// tests need for `clock_early_init`.
+    pub(crate) fn install_test_hw() {
+        let _ = install_clock_hardware(&HW);
     }
 
     impl ClockHardware for TestHw {
@@ -715,10 +744,7 @@ mod tests {
     #[test]
     fn initclocks_computes_the_periods_as_the_c() {
         crate::testutil::install();
-        static HW: TestHw = TestHw {
-            started: core::sync::atomic::AtomicU32::new(0),
-        };
-        let _ = install_clock_hardware(&HW);
+        install_test_hw();
         let started = HW.started.load(Ordering::Relaxed);
         initclocks();
         // hz 100: a 10 ms hardclock, a 100 ms round robin, stathz 100: statclock_avg 10 ms,
