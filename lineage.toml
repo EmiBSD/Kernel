@@ -10221,6 +10221,12 @@ native = ["sys/hal/sysbytes.rs::Disklabel::cksum_words"]
 kind = "moved"
 
 [[module]]
+rust = "sys/lib/sysdefs/dev/efi.rs"
+lz = ["sys/dev/efi/efi.rs"]
+status = "redesigned"
+notes = "N7.2b2a: <dev/efi/efi.h> as data: every pointer of the firmware's tables a u64 word, EFI_RUNTIME_SERVICES' entries u64 slots called by offset through hal::cpu::efi (LZ's seven unsafe extern \"efiapi\" function types go), EfiGuid, EfiMemoryDescriptor, EfiTime and EfiConfigurationTable AbiPod through abi_pod! (read_at's read_unaligned goes: pod_from_bytes), UINTN 64 bits, efi_guidcmp the derived =="
+
+[[module]]
 rust = "sys/lib/sysdefs/dev/dkio.rs"
 lz = ["sys/sys/dkio.rs"]
 status = "redesigned"

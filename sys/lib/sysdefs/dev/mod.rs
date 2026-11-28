@@ -17,7 +17,8 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! Group `dev` of `sysdefs`: devices: disks, sensors, interrupt maps and soft interrupts.
+//! Group `dev` of `sysdefs`: devices: disks, sensors, interrupt maps, soft interrupts and the
+//! UEFI tables (`efi`).
 
 #[forbid(unsafe_code)]
 pub mod disk;
@@ -25,6 +26,8 @@ pub mod disk;
 pub mod disklabel;
 #[forbid(unsafe_code)]
 pub mod dkio;
+#[forbid(unsafe_code)]
+pub mod efi;
 #[forbid(unsafe_code)]
 pub mod intrmap;
 #[forbid(unsafe_code)]

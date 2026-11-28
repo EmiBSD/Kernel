@@ -178,11 +178,6 @@ use crate::arch::arm64::include::pte::{
 use crate::arch::arm64::include::reg::Fpreg;
 use crate::arch::arm64::include::vmparam::{VM_MIN_KERNEL_ADDRESS, VM_PHYS_SIZE, VM_PHYSSEG_MAX};
 use crate::conf::vers::{CODENAME, VERSION};
-use crate::dev::efi::efi::{
-    EFI_MEMORY_DESCRIPTOR_VERSION, EfiACPIMemoryNVS, EfiACPIReclaimMemory, EfiBootServicesCode,
-    EfiBootServicesData, EfiConventionalMemory, EfiLoaderCode, EfiLoaderData, EfiMemoryDescriptor,
-    EfiRuntimeServicesCode, EfiRuntimeServicesData, EfiUnusableMemory,
-};
 use crate::dev::fdt::pluart_fdt::pluart_init_cons;
 use crate::dev::fdt::simplefb::simplefb_init_cons;
 use crate::dev::ofw::fdt::fdt_node_property_int;
@@ -230,6 +225,11 @@ use kernel::vm::km::{kernel_map, kernel_map_min, uvm_km_suballoc};
 use kernel::vm::map::VM_MAP_PAGEABLE;
 use kernel::vm::page::{VmPage, uvm_setpagesize};
 use kernel::vm::types::UvmConstraintRange;
+use sysdefs::dev::efi::{
+    EFI_MEMORY_DESCRIPTOR_VERSION, EfiACPIMemoryNVS, EfiACPIReclaimMemory, EfiBootServicesCode,
+    EfiBootServicesData, EfiConventionalMemory, EfiLoaderCode, EfiLoaderData, EfiMemoryDescriptor,
+    EfiRuntimeServicesCode, EfiRuntimeServicesData, EfiUnusableMemory,
+};
 
 #[cfg(feature = "qemu")]
 use crate::arch::arm64::arm64::qemu;
