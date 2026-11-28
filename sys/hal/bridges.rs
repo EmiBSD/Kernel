@@ -20,7 +20,7 @@
 //! The bridge registry: what the runtime needs from code that has not moved into `hal` yet.
 //!
 //! Dependencies go one way, `bsd -> kernel -> hal` (docs/ZERO_UNSAFE.md section 0.1): `hal`
-//! cannot call the machine code still in `bsd` (the interrupt controller, the CPU hooks), nor the
+//! cannot call the machine code still in `bsd` (the CPU hooks, the debugger), nor the
 //! sleep queues, `uvm_km`, `malloc(9)` or `pool(9)`. Each of those is a trait declared beside
 //! the primitive that uses it, and `bsd`'s `main()` registers one `&'static dyn Trait`
 //! implementation here, once, before first use. A bridge carries no logic (section 0.3.2):
@@ -55,7 +55,6 @@
 //!   (`register_*` refuses a second implementation), and a reader gets an `Option`.
 
 use crate::cons::Console;
-use crate::cpu::intr::IntrHardware;
 use crate::mem::malloc::Malloc;
 use crate::mem::pool::PoolBackend;
 use crate::prf::Printf;
@@ -91,15 +90,6 @@ macro_rules! bridge {
             $slot.get().copied()
         }
     };
-}
-
-/// Registers the machine's interrupt controller (`struct arm_intr_func`: what the
-/// controller's attach gave `arm_set_intr_handler`, `sys/arch/arm64/arm64/intr.rs`):
-/// [`crate::cpu::intr::install`], where the registration lives since N7.2a2 (a native
-/// controller installs itself there). Paid by N7.2a3 (the last legacy GIC); the host doubles
-/// register through it until then.
-pub fn register_intr_hardware(imp: &'static dyn IntrHardware) -> Result<(), AlreadyRegistered> {
-    crate::cpu::intr::install(imp)
 }
 
 bridge!(
@@ -188,18 +178,21 @@ mod tests {
 
     struct Other;
 
-    impl IntrHardware for Other {}
+    impl Random for Other {
+        fn random_u32(&self) -> u32 {
+            0
+        }
+        fn random_buf(&self, _buf: &mut [u8]) {}
+        fn enqueue_randomness(&self, _val: u32) {}
+    }
 
     static OTHER: Other = Other;
 
     #[test]
     fn a_bridge_is_registered_once() {
         testutil::install();
-        assert!(crate::cpu::intr::hardware().is_some());
-        assert_eq!(
-            register_intr_hardware(&OTHER),
-            Err(AlreadyRegistered("IntrHardware"))
-        );
+        assert!(random().is_some());
+        assert_eq!(register_random(&OTHER), Err(AlreadyRegistered("Random")));
     }
 }
 /* </TESTS> */

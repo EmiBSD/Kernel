@@ -27,8 +27,9 @@
 //! words, the pending sleep) lets two test threads contend for a lock and sleep and wake each
 //! other as two processes do.
 //!
-//! - `IntrHardware`: `hal::cpu::intr`'s default levels (each test thread's core), whose
-//!   `splassert` fails the test.
+//! - `IntrHardware` (installed as a controller is, `hal::cpu::intr::install`; no bridge since
+//!   N7.2a3): `hal::cpu::intr`'s default levels (each test thread's core), whose `splassert`
+//!   fails the test.
 //! - `Sleep`: each test thread a process; a wait channel has a generation that every wakeup
 //!   bumps, `sleep_setup` records it and `sleep_finish` waits on one condition variable until
 //!   it moves (a wakeup between the two is never lost); no signals, so `PCATCH` changes
@@ -977,7 +978,7 @@ pub fn test_uiomove<G: crate::proc::ProcGlue>(
 pub fn install() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
-        let _ = bridges::register_intr_hardware(&TEST_INTR);
+        let _ = hal::cpu::intr::install(&TEST_INTR);
         let _ = bridges::register_sleep(&TEST_SLEEP);
         let pools = bridges::register_pool_backend(&TEST_POOLS).is_ok();
         let malloc = bridges::register_malloc(&TEST_MALLOC).is_ok();

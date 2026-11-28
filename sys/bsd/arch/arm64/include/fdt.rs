@@ -76,9 +76,6 @@ pub use crate::arch::arm64::arm64::intr::{
     arm_intr_establish_fdt_msi as fdt_intr_establish_msi,
     arm_intr_establish_fdt_msi_cpu as fdt_intr_establish_msi_cpu,
     arm_intr_get_parent as fdt_intr_get_parent,
-    arm_intr_parent_disestablish_fdt as fdt_intr_parent_disestablish,
-    arm_intr_parent_establish_fdt as fdt_intr_parent_establish,
-    arm_intr_register_fdt as fdt_intr_register,
 };
 use core::any::Any;
 use core::ffi::c_void;
