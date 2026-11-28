@@ -22,7 +22,10 @@
 //! written, and what a test says the hardware answers: the control register, the priority
 //! mask's implemented bits and the interrupt the next acknowledge returns.
 
-use std::cell::Cell;
+// The host double alone links std outside the tests (rust-kernel.md: the host doubles).
+extern crate std;
+
+use core::cell::Cell;
 
 /// The registers of the calling thread's CPU interface.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

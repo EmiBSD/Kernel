@@ -21371,6 +21371,13 @@ kind = "dropped"
 reason = "(*cf->cf_attach->ca_match)(...) by hand: the submatch closures call the row driver's DriverOps::probe"
 
 [[module]]
+rust = "sys/kernel/dev/arm64/agintc.rs"
+crate = "kernel"
+lz = ["sys/arch/arm64/dev/agintc.rs"]
+status = "redesigned"
+notes = "N7.2a3: agintc(4) and agintcmsi as kernel DriverOps (AGINTC_CA, AGINTCMSI_CA; probe over the bus's FdtArgs). struct agintc_softc built whole at attach as AgintcSoftc (Mmio<Gicd>, the regions kept, one Mmio<Gicr> per redistributor mapped through the bus, the queues an MArray of Intrq with atomics, the LPI slots one hal List head each, the LPI tables AgintcDmamem: a DmaBuf and its DMA address through FdtBus::dma_addr, every CPU's MPIDR read once from CpuCore::hwid, a Mutexed<()> for establish, a Rwlocked<()> for the MSI paths), kept in AGINTC (OnceStatic<MArc>); it implements hal's IntrHardware (installed itself, the wakeup hooks included) and the core's InterruptController (the MBI establish as establish_msi, has_msi when there are MBI ranges). The CPU interface through hal::cpu::icc. struct intrhand (Intrhand, flags an atomic for set_wakeup) and struct agintc_lpi_info (AgintcLpiInfo) MBox::leak'ed, never freed (P12), walked and read by the dispatch with no lock. The ITS (AgintcMsiSoftc, leaked, its own handle in a set-once cell): the command queue and its index under a mutex with CWRITER and the CREADR wait, the device table under a mutex, the indirect second levels leaked as the C, the devices a hal List of leaked records. agintc_activate/agintc_restore and the wakeup hooks kept (LZ had them)"
+
+[[module]]
 rust = "sys/kernel/dev/arm64/ampintc.rs"
 crate = "kernel"
 lz = ["sys/arch/arm64/dev/ampintc.rs"]

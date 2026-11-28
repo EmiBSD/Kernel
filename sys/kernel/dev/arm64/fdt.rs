@@ -630,6 +630,23 @@ impl FdtBus {
         addr
     }
 
+    /// The address a device on this bus is told for the memory `[addr, addr + size)` (a
+    /// segment's `ds_addr` after `bus_dmamap_load_raw` through the bus's tag): every bus's
+    /// [`FdtBus::dma_step`] from the root down to this one (`simplebus_dmamap_load_raw` after
+    /// its parent's load), each starting with its own `dma-ranges`; the address itself where
+    /// no bus has any. What a native driver writes into a device's table register
+    /// (`agintc(4)`'s `AGINTC_DMA_DVA`, N7.2a3).
+    pub fn dma_addr(&self, addr: u64, size: u64) -> u64 {
+        let a = match &self.parent {
+            Some(p) => p.dma_addr(addr, size),
+            None => addr,
+        };
+        match self.dma_cells() {
+            Some(mut rlen) => self.dma_step(a, size, &mut rlen),
+            None => a,
+        }
+    }
+
     /// `bus_space_map(fa_iot, addr, size, flags, &ioh)`: the block `[addr, addr + size)` of
     /// this bus mapped as `R` with `cache`: [`FdtBus::translate`], then `km::map_device` of
     /// the physical address. Made once, at attach.
@@ -955,6 +972,39 @@ mod tests {
         let root = FdtBus::root();
         assert_eq!(root.dma_cells(), None);
         assert_eq!(root.dma_step(0x1234, 4, &mut 0), 0x1234);
+    }
+
+    #[test]
+    fn a_dma_address_is_every_bus_s_translation_from_the_root_down() {
+        // bus@0 maps parent 0x4000_0000 to its children's 0x8000_0000; sub@0, below it, has
+        // dma-ranges of its own (its children's 0x1000_0000 <- its 0x8000_0000).
+        let (_g, bus) = buses(
+            &[
+                (b"#address-cells", &[1]),
+                (b"#size-cells", &[1]),
+                (b"dma-ranges", &[0x8000_0000, 0, 0x4000_0000, 0x10_0000]),
+            ],
+            &[
+                (b"#address-cells", &[1]),
+                (b"#size-cells", &[1]),
+                (b"dma-ranges", &[0x1000_0000, 0x8000_0000, 0x10_0000]),
+            ],
+        );
+        let root = FdtBus::root();
+        assert_eq!(
+            root.dma_addr(0x4000_2000, 0x1000),
+            0x4000_2000,
+            "the root: as is"
+        );
+        assert_eq!(bus.dma_addr(0x4000_2000, 0x1000), 0x8000_2000);
+        let sub = FdtBus::child(&bus, OF_finddevice(b"/bus@0/sub@0"), 1, 1);
+        assert_eq!(
+            sub.dma_addr(0x4000_2000, 0x1000),
+            0x1000_2000,
+            "both levels"
+        );
+        // Outside a level's window, that level leaves the address as it got it.
+        assert_eq!(sub.dma_addr(0x5000_0000, 0x1000), 0x5000_0000);
     }
 
     #[test]
