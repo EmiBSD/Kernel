@@ -35,6 +35,19 @@
 //! `pcb_onfault` recovery, else `panic(9)`, as an unserved `uvm_fault`); the hooks do nothing
 //! and no debugger answers (`db_ktrap` returns 0, as the C without `DDB`).
 //!
+//! ## Deviations
+//! - The debugger IPI's entry (`ARM_IPI_DDB`'s `db_enter()`, [`db_enter`]) is marked on its
+//!   CPU while it runs, and the debugger drops it when that CPU is no longer asked to stop
+//!   ([`stale_ipi_entry`], which `bsd`'s `db_ktrap` asks under `ddb_mp_mutex` with
+//!   `ci_ddb_paused == CI_DDB_SHOULDSTOP`). The C enters ddb from every DDB IPI: `db_stopcpu`
+//!   sends a second one to a CPU still on its way in from the first
+//!   (`reference/openbsd-src/sys/arch/arm64/arm64/db_interface.c:500`, amd64's the same), the
+//!   second's reason is posted after the first's handler took the reasons, and once
+//!   `continue` resumes every CPU that IPI runs: the CPU opens a new ddb session by itself
+//!   (smoke-ddbmp's "Stopped at ...Debugger::enter" after `continue`). As `db_enter_ddb`
+//!   itself treats a CPU that is not `SHOULDSTOP` (it waits only when asked), the stale entry
+//!   returns at once; it is counted nowhere.
+//!
 //! ## Redesign
 //! - Not a port: the C's `trap.c` calls `uvm_fault`, `trapsignal`, `userret`, ... by name.
 //!   Here the machine code is `hal`'s and those are the kernel's, so they are reached through
@@ -51,8 +64,11 @@
 //!   `fault()`'s `ci_panicbuf`, a member of the machine's `cpu_info` that only its owner
 //!   names.
 
+use core::sync::atomic::{AtomicU32, Ordering};
+
 use crate::bridges::AlreadyRegistered;
 use crate::sync::once::OnceStatic;
+use crate::sync::percpu::PerCpu;
 use crate::vm::pmap::VmProt;
 use sysdefs::base::errno::Errno;
 
@@ -152,11 +168,32 @@ pub fn cpu_halt() {
     }
 }
 
-/// `db_enter()`: into the registered debugger; nothing without one (the C without `DDB`).
+/// Per CPU, 1 while the debugger IPI's entry ([`db_enter`]) runs on it: its trap is the
+/// IPI's, which [`stale_ipi_entry`] reads (and clears) under the debugger's own mutex.
+static IPI_ENTRY: PerCpu<AtomicU32> = PerCpu::new();
+
+/// `db_enter()` of the debugger IPI (`ARM_IPI_DDB`, the interrupt controllers in the
+/// kernel): into the registered debugger, the entry marked on this CPU meanwhile (the
+/// module's deviations); nothing without one (the C without `DDB`).
 pub fn db_enter() {
     if let Some(d) = DEBUGGER.get() {
-        d.enter();
+        ipi_entry(|| d.enter());
     }
+}
+
+/// `enter` with this CPU's IPI entry marked: the trap it raises is the debugger IPI's.
+fn ipi_entry(enter: impl FnOnce()) {
+    IPI_ENTRY.get().store(1, Ordering::Relaxed);
+    enter();
+    IPI_ENTRY.get().store(0, Ordering::Relaxed);
+}
+
+/// The debugger's question at its trap entry, under its MP mutex: whether this trap is the
+/// debugger IPI's ([`db_enter`]; the mark is taken, so it answers once) and this CPU is not
+/// asked to stop any more (`asked_to_stop`: `ci_ddb_paused == CI_DDB_SHOULDSTOP`). Such a
+/// stale entry is dropped (the module's deviations); every other trap enters as the C's.
+pub fn stale_ipi_entry(asked_to_stop: bool) -> bool {
+    IPI_ENTRY.get().swap(0, Ordering::Relaxed) != 0 && !asked_to_stop
 }
 
 /// The registered kernel-mode fault handler, `None` before registration: the machine's trap
@@ -289,6 +326,26 @@ mod tests {
         assert_eq!(install_cpu_hooks(&H), Err(AlreadyRegistered("CpuHooks")));
         flush_bp();
         serror();
+    }
+
+    /// A trap raised by the debugger IPI's entry is dropped when its CPU is no longer asked
+    /// to stop, entered when it is, and answered once; any other trap is never dropped
+    /// (U17: the stale second `ARM_IPI_DDB` after `continue`).
+    #[test]
+    fn a_stale_debugger_ipi_entry_is_dropped_and_only_it() {
+        // Not the IPI's: entered whatever the state (a breakpoint, `db_enter` of a panic).
+        assert!(!stale_ipi_entry(false));
+        assert!(!stale_ipi_entry(true));
+        // The IPI's while this CPU is asked to stop: entered.
+        ipi_entry(|| assert!(!stale_ipi_entry(true)));
+        // The IPI's after `continue` set every CPU running: dropped, once.
+        ipi_entry(|| {
+            assert!(stale_ipi_entry(false), "a stale IPI entry is dropped");
+            assert!(!stale_ipi_entry(false), "the mark answers once");
+        });
+        // The mark does not outlive the entry.
+        ipi_entry(|| {});
+        assert!(!stale_ipi_entry(false));
     }
 
     /// `setregs`' writes land in the running thread's frame (the host double's registers).

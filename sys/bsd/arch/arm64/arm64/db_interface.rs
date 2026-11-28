@@ -50,6 +50,7 @@
 //! Interface to new debugger: `arch/arm64/arm64/db_interface.c`.
 //!
 //! Upstream: sys/arch/arm64/arm64/db_interface.c @ 3ce1f3f79392
+//! LZ: sys/arch/arm64/arm64/db_interface.rs@e8249449d905
 //!
 //! Status: `wip`. Milestone M4 ports `ddb_regs`, `db_ktrap` and `db_enter` (ddb-lite: the
 //! trap frame is saved and `db_trap` prints where the kernel stopped). M11c adds the register
@@ -75,6 +76,20 @@
 //!   once without the loop.
 //! - `db_switch_cpu` is an `AtomicBool`, `ddb_active_cpu`/`db_switch_to_cpu` `AtomicU32`s (the
 //!   C's `volatile` ints and longs); `cpu_info[]` is walked through `cpu_infos()`.
+//! - With `MULTIPROCESSOR`, a trap raised by the debugger IPI (`ARM_IPI_DDB`'s `db_enter()`,
+//!   marked by `hal::cpu::trap::db_enter`) enters ddb only while this CPU is asked to stop
+//!   (`ci_ddb_paused == CI_DDB_SHOULDSTOP`, read under `ddb_mp_mutex` at `db_ktrap`'s start,
+//!   `hal::cpu::trap::stale_ipi_entry`); otherwise it is dropped (counted nowhere) and the
+//!   kernel goes on. The C enters from every DDB IPI: `db_stopcpu`
+//!   (`reference/openbsd-src/sys/arch/arm64/arm64/db_interface.c:500`, amd64's the same)
+//!   sends a second IPI to a CPU still on its way in from the first, whose handler already
+//!   took the reasons, and after `continue` that second IPI opens a new ddb session on its
+//!   CPU by itself (smoke-ddbmp: "Stopped at ...Debugger::enter" after `continue`). The
+//!   precedent is `db_enter_ddb`'s own rule, which waits on a CPU only when asked to stop.
+//!
+//! ## Redesign
+//! - The stale debugger IPI is dropped (the deviation above, U17, the user's decision of
+//!   2026-11-28); everything else is LZ's.
 
 use core::sync::atomic::Ordering;
 #[cfg(feature = "multiprocessor")]
@@ -216,13 +231,17 @@ pub fn db_ktrap(type_: i32, regs: &mut DbRegs) -> bool {
     #[cfg(feature = "multiprocessor")]
     {
         db_mtx_enter(&DDB_MP_MUTEX);
-        if DDB_STATE.load(Ordering::Relaxed) == DDB_STATE_EXITING {
+        // A debugger IPI that finds this CPU no longer asked to stop is stale: dropped (see
+        // the module's deviations).
+        let asked = curcpu().ci_ddb_paused.load(Ordering::Relaxed) == CI_DDB_SHOULDSTOP;
+        let stale = hal::cpu::trap::stale_ipi_entry(asked);
+        if !stale && DDB_STATE.load(Ordering::Relaxed) == DDB_STATE_EXITING {
             DDB_STATE.store(DDB_STATE_NOT_RUNNING, Ordering::Relaxed);
         }
         db_mtx_leave(&DDB_MP_MUTEX);
         // Held across the loop, not only around db_trap (see the module's deviations).
         let s = splhigh();
-        while db_enter_ddb() {
+        while !stale && db_enter_ddb() {
             db_ktrap_inddb(type_, regs);
             if !DB_SWITCH_CPU.load(Ordering::Relaxed) {
                 DDB_STATE.store(DDB_STATE_EXITING, Ordering::Relaxed);
