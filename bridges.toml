@@ -193,7 +193,8 @@ paid_by = "N7"
 # amd64's machine::cpu and the host double keep BsdClockHardware; arm64: paid at N7.2b2b (the
 # kernel's agtimer is its ClockHardware, installed by agtimer_init and its attach; bsd's
 # arm_clock_func and early_init went), and since U14a (N7) arm64 compiles no implementer:
-# BsdClockHardware and its registration are cfg'd to amd64 and the host.
+# BsdClockHardware and its registration are under sys/bsd/build.rs's bsd_machine_clock (amd64
+# and the host).
 # kernel::time::clock::ClockHardware
 [[bridge]]
 trait = "ClockHardware"
@@ -215,8 +216,9 @@ paid_by = "N9"
 # kernel::time::tc::tc_init through their TcEntry. N10 (U14): amd64's tsc and i8254, and
 # acpitimer and acpihpet; arm64: paid at N7.2b2b (the kernel's agtimer implements Timecounter
 # natively), and since U14a (N7) arm64 compiles no implementer: acpitimer and acpihpet are
-# built for amd64 and the host only, as OpenBSD's GENERICs configure them, and so are
-# timetc.rs's impl, its tc_entry link and kern_tc.rs's tc_init path (ENTRIES).
+# under sys/bsd/build.rs's acpi_x86_timers, as OpenBSD's GENERICs configure them, and
+# timetc.rs's impl, its tc_entry link and kern_tc.rs's tc_init path (ENTRIES) under its
+# bsd_machine_clock (amd64 and the host, both).
 # kernel::time::tc::Timecounter
 [[bridge]]
 trait = "Timecounter"

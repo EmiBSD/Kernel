@@ -373,12 +373,12 @@ static BSD_RANDOM: BsdRandom = BsdRandom;
 /// (`crate::machine::cpu`'s `cpu_initclocks`, `cpu_startclock`, `setstatclockrate` and
 /// `delay`: amd64's, the host double's); registered only where `Cpu::KERNEL_CLOCK` is false
 /// (arm64's clock is the kernel's agtimer, which installs itself, N7.2b2b), and compiled for
-/// amd64 and the host only (N7, U14: the arm64 image holds no `bsd` side of the
-/// `ClockHardware` bridge).
-#[cfg(not(all(target_os = "none", target_arch = "aarch64")))]
+/// amd64 and the host only (`bsd_machine_clock`, `build.rs`'s `ARCH_OPTIONS`; N7, U14: the
+/// arm64 image holds no `bsd` side of the `ClockHardware` bridge).
+#[cfg(bsd_machine_clock)]
 struct BsdClockHardware;
 
-#[cfg(not(all(target_os = "none", target_arch = "aarch64")))]
+#[cfg(bsd_machine_clock)]
 impl kernel::time::clock::ClockHardware for BsdClockHardware {
     fn initclocks(&self) {
         crate::machine::cpu::cpu_initclocks();
@@ -397,7 +397,7 @@ impl kernel::time::clock::ClockHardware for BsdClockHardware {
     }
 }
 
-#[cfg(not(all(target_os = "none", target_arch = "aarch64")))]
+#[cfg(bsd_machine_clock)]
 static BSD_CLOCK_HARDWARE: BsdClockHardware = BsdClockHardware;
 
 /// The machine's `boot(9)` (`crate::machine::cpu::boot`: machdep's, which syncs the file
@@ -465,7 +465,7 @@ pub fn hal_bridges_register() {
     // N7.2b2b: not on arm64, whose clock is the kernel's agtimer (installed by its
     // agtimer_init and attach); the machine's clock functions forward there. N7 (U14): not
     // compiled there either.
-    #[cfg(not(all(target_os = "none", target_arch = "aarch64")))]
+    #[cfg(bsd_machine_clock)]
     if !<crate::machine::Machine as crate::machine::Cpu>::KERNEL_CLOCK {
         let _ = kernel::time::clock::install_clock_hardware(&BSD_CLOCK_HARDWARE);
     }

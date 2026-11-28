@@ -35,8 +35,7 @@
 //! The timer drivers (`acpitimer.c`, `acpihpet.c`, configured on amd64 and i386 only) also
 //! call `delay_init`/`delay_fini` (amd64's `<machine/cpu.h>`) and, under
 //! `#if defined(__amd64__)`, `tsc.c`'s `cpu_recalibrate_tsc`; they are here because those
-//! drivers are their only generic callers, and are compiled where the drivers are: amd64 and
-//! the host (N7, U14), not arm64.
+//! drivers are their only generic callers.
 
 use core::ffi::c_void;
 use core::ptr::NonNull;
@@ -48,7 +47,6 @@ use crate::machine::Machine;
 use crate::machine::bus::{BusAddr, BusDmaTag, BusSize, BusSpaceHandle, BusSpaceTag};
 use crate::machine::cpu::CpuInfo;
 use crate::sys::errno::Errno;
-#[cfg(not(all(target_os = "none", target_arch = "aarch64")))]
 use crate::sys::timetc::Timecounter;
 use crate::sys::types::Paddr;
 
@@ -140,17 +138,14 @@ pub trait AcpiMachdep {
 
     /// `delay_init(fn, fn_quality)` (amd64's `<machine/cpu.h>`): makes `f` the `delay(9)`
     /// implementation if `fn_quality` beats the current one's.
-    #[cfg(not(all(target_os = "none", target_arch = "aarch64")))]
     fn delay_init(f: fn(i32), fn_quality: i32);
 
     /// `delay_fini(fn)`: if `f` is the `delay(9)` implementation, goes back to the default.
-    #[cfg(not(all(target_os = "none", target_arch = "aarch64")))]
     fn delay_fini(f: fn(i32));
 
     /// `cpu_recalibrate_tsc(tc)` (amd64's `tsc.c`): offers `tc` as the TSC's reference
     /// timecounter. The drivers call it only `#if defined(__amd64__)`; elsewhere it does
     /// nothing, as that code is not compiled.
-    #[cfg(not(all(target_os = "none", target_arch = "aarch64")))]
     fn cpu_recalibrate_tsc(tc: &'static Timecounter);
 }
 
@@ -257,19 +252,16 @@ pub fn cpu_suspended() -> &'static AtomicI32 {
 }
 
 /// `delay_init(fn, fn_quality)` on the selected machine.
-#[cfg(not(all(target_os = "none", target_arch = "aarch64")))]
 pub fn delay_init(f: fn(i32), fn_quality: i32) {
     Machine::delay_init(f, fn_quality)
 }
 
 /// `delay_fini(fn)` on the selected machine.
-#[cfg(not(all(target_os = "none", target_arch = "aarch64")))]
 pub fn delay_fini(f: fn(i32)) {
     Machine::delay_fini(f)
 }
 
 /// `cpu_recalibrate_tsc(tc)` on the selected machine (amd64 only; nothing elsewhere).
-#[cfg(not(all(target_os = "none", target_arch = "aarch64")))]
 pub fn cpu_recalibrate_tsc(tc: &'static Timecounter) {
     Machine::cpu_recalibrate_tsc(tc)
 }
