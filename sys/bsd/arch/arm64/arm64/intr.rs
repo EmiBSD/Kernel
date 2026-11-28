@@ -72,22 +72,21 @@
 //!   attach (`arm_set_intr_handler`) on the boot CPU before interrupts are enabled; `hal`
 //!   reaches `arm_intr_func` as `hal::cpu::intr::IntrHardware` ([`ArmIntrHardware`], N4.5c), and
 //!   `arm_smask`, `ci_cpl`, `ci_ipending` and the `arm_dflt_*` bodies are `hal::cpu::intr`'s.
-//! - `interrupt_controllers` (which `ampintc.c`, `acpipci.c` and `acpi_machdep.c` walk) is the
-//!   list of the legacy structures registered through [`arm_intr_register_fdt`], linked as
-//!   the kernel links their registrations, the latest first; the pre-registration's dummy
-//!   controllers are the kernel's and not on it. Every walk of it looks for a real controller
-//!   (by node, by phandle, with `ic_establish_msi`, by ITS), which a real controller's
-//!   registration puts ahead of its node's dummy in the C, so no walk finds another one.
-//!   That holds once the real controller has registered: before it, a walk by phandle
-//!   (`acpi_intr_establish`'s) would find the node's dummy in the C and pre-register, where
-//!   this list has nothing and the establish fails. Unreachable on the boots there are: an
-//!   ACPI boot attaches the GIC at mainbus before `acpi0` and its devices.
+//! - `interrupt_controllers` (which `ampintc.c` walks for its GICv2m frames; `acpipci` and
+//!   `acpi_machdep` walk the kernel's registry since N7.2a2) is the list of the legacy
+//!   structures registered through [`arm_intr_register_fdt`], linked as the kernel links
+//!   their registrations, the latest first; the pre-registration's dummy controllers are the
+//!   kernel's and not on it. Its one walk looks for a real controller by node, which a real
+//!   controller's registration puts ahead of its node's dummy in the C, so it finds no other.
 //! - A handle on a legacy controller is LZ's `MachineIntrHandle` (`ih_ic`, `ih_ih`, the size
-//!   `free` checks, as the handles `acpi_machdep`, `ampintc`'s MSI frames and `pciecam` make
-//!   by hand); a handle on a native controller (a pre-registration until N7.2a2) has a null
-//!   `ih_ic` and carries the kernel's `IntrHandle` after it (`NativeIntrHandle`); every
-//!   handle function takes the path its `ih_ic` says. No `bsd` reader of `ih_ic` meets a
-//!   native handle: the readers read only the handles they made.
+//!   `free` checks, as the handles `ampintc`'s MSI frames and `pciecam` make by hand); a
+//!   handle on a native controller has a null `ih_ic` and carries the kernel's `IntrHandle`
+//!   after it (`NativeIntrHandle`); every handle function takes the path its `ih_ic` says.
+//!   `acpi_intr_establish` and `acpipci`'s MSIs establish on the controller they found with
+//!   the kernel's `IcReg::establish`/`establish_msi` and take their handle from the adapter
+//!   ([`new_handle`]; `acpipci` embeds a [`NativeIntrHandle`] first in its own and tells it
+//!   back with [`native_intr_handle`]). No `bsd` reader of `ih_ic` meets a native handle: the
+//!   readers read only the handles they made.
 //! - `arm_intr_establish_fdt_imap*` take the child's four `reg` cells as a slice (the C's
 //!   `int *reg, int nreg`, `nreg` in bytes); `arm_intr_map_msi`'s `data` is a `&mut u64`.
 
@@ -530,6 +529,10 @@ impl core_intr::InterruptController for LegacyIc {
         ))
     }
 
+    fn has_msi(&self) -> bool {
+        self.0.ic_establish_msi.is_some()
+    }
+
     fn disestablish(&self, ih: IcCookie) {
         if let Some(dis) = self.0.ic_disestablish {
             dis(legacy_cookie(ih));
@@ -605,13 +608,29 @@ pub fn arm_intr_register_fdt(ic: &'static InterruptController) {
     });
 }
 
-/// A handle on a native controller: `ih_ic` null, the kernel's handle after it.
+/// A handle on a native controller: `ih_ic` null, the kernel's handle after it. A caller
+/// that makes its own handle around one embeds it first, by value (`acpipci`'s MSI handle,
+/// `#[repr(C)]` with this first), so every handle function reads it as this one.
 #[repr(C)]
-struct NativeIntrHandle {
+pub(crate) struct NativeIntrHandle {
     /// `ih_ic` and `ih_ih` both null: what tells this kind from LZ's.
     mih: MachineIntrHandle,
     /// The kernel's handle.
     ih: IntrHandle,
+}
+
+impl NativeIntrHandle {
+    /// The handle for the kernel's `ih` (scaffolding, docs/SCAFFOLDING.md: the constructor
+    /// `acpipci` embeds in its own MSI handle; N7.11).
+    pub(crate) fn new(ih: IntrHandle) -> Self {
+        NativeIntrHandle {
+            mih: MachineIntrHandle {
+                ih_ic: ptr::null(),
+                ih_ih: ptr::null_mut(),
+            },
+            ih,
+        }
+    }
 }
 
 /// What a handle names: a legacy controller and its `void *`, or the kernel's handle.
@@ -629,9 +648,12 @@ fn handle(cookie: NonNull<MachineIntrHandle>) -> Handle {
     // `MachineIntrHandle` until its disestablish frees it.
     let mih = unsafe { cookie.as_ref() };
     if mih.ih_ic.is_null() {
-        // SAFETY: only `new_handle` writes a null `ih_ic`, and only as the first member of a
-        // `#[repr(C)]` `NativeIntrHandle` it allocated whole, so the block is one; it lives
-        // as long as the `MachineIntrHandle` above.
+        // SAFETY: only `NativeIntrHandle::new` makes a null `ih_ic`, as the first member of a
+        // `#[repr(C)]` `NativeIntrHandle`; one reaches here as the block `new_handle`
+        // allocated whole, or as the first member of a `#[repr(C)]` block that embeds it first
+        // (`acpipci`'s MSI handle, through `native_intr_handle`, whose caller guarantees it),
+        // and `cookie` is that block's own pointer, so the bytes at it are a
+        // `NativeIntrHandle`; it lives as long as the `MachineIntrHandle` above.
         let native = unsafe { cookie.cast::<NativeIntrHandle>().as_ref() };
         Handle::Native(native.ih)
     } else {
@@ -653,21 +675,32 @@ fn alloc<T>(v: T) -> Option<NonNull<T>> {
 }
 
 /// The handle a driver gets for the kernel's `ih`: LZ's pair for a legacy controller, a
-/// [`NativeIntrHandle`] for a native one.
-fn new_handle(ih: IntrHandle) -> Option<NonNull<MachineIntrHandle>> {
+/// [`NativeIntrHandle`] for a native one. What `acpi_intr_establish` hands back for the
+/// handle it made by hand (`malloc`, then `ih_ic` and `ih_ih` filled; scaffolding, N7.11).
+pub(crate) fn new_handle(ih: IntrHandle) -> Option<NonNull<MachineIntrHandle>> {
     match ih.controller().ops().legacy() {
         Some(ic) => alloc(MachineIntrHandle {
             ih_ic: ptr::with_exposed_provenance(ic),
             ih_ih: legacy_cookie(ih.cookie()),
         }),
-        None => alloc(NativeIntrHandle {
-            mih: MachineIntrHandle {
-                ih_ic: ptr::null(),
-                ih_ih: ptr::null_mut(),
-            },
-            ih,
-        })
-        .map(NonNull::cast),
+        None => alloc(NativeIntrHandle::new(ih)).map(NonNull::cast),
+    }
+}
+
+/// The kernel's handle behind `cookie` when it is a native one (`ih_ic` null), `None` for
+/// LZ's pair: how `acpipci_intr_disestablish` tells its own MSI handle (which embeds a
+/// [`NativeIntrHandle`] first) from an INTx one, by the controller's `has_msi` where the C
+/// reads `ih_ic->ic_establish_msi` (scaffolding, N7.11).
+///
+/// # Safety
+///
+/// `cookie` must be a live handle: one `arm_intr_establish_fdt*`, [`new_handle`] or
+/// `arm_intr_parent_establish_fdt` made, a `MachineIntrHandle` a driver made by hand, or a
+/// `#[repr(C)]` block whose first member is a [`NativeIntrHandle`].
+pub(crate) unsafe fn native_intr_handle(cookie: NonNull<MachineIntrHandle>) -> Option<IntrHandle> {
+    match handle(cookie) {
+        Handle::Native(ih) => Some(ih),
+        Handle::Legacy(..) => None,
     }
 }
 
