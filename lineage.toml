@@ -1719,7 +1719,7 @@ rust = "sys/hal/arch/arm64/smccc.rs"
 crate = "hal"
 lz = ["sys/arch/arm64/arm64/cpufunc.rs"]
 status = "redesigned"
-notes = "N7.2b2a: support.S's smc_call and hvc_call (LZ's cpufunc.rs) as one trap over a Conduit held by value, x0-x3 in and x0 out with clobber_abi(\"C\") (LZ declared x0-x3 only), reached only through hal::cpu::smccc::call, which refuses the entry-point functions (CPU_SUSPEND, CPU_ON, CPU_DEFAULT_SUSPEND, SYSTEM_SUSPEND, both widths); bsd's cpufunc.rs keeps its two copies for CPU_ON until N7.2c"
+notes = "N7.2b2a: support.S's smc_call and hvc_call (LZ's cpufunc.rs) as one trap over a Conduit held by value, x0-x3 in and x0 out with clobber_abi(\"C\") (LZ declared x0-x3 only), reached only through hal::cpu::smccc::call, which admits the Arm architecture's and PSCI's fast calls minus the entry-point functions (CPU_SUSPEND, CPU_ON, CPU_DEFAULT_SUSPEND, SYSTEM_SUSPEND, both widths) and a PSCI 0.1 node's recorded value ids; bsd's cpufunc.rs keeps its two copies for CPU_ON until N7.2c"
 
 [[module]]
 rust = "sys/bsd/arch/arm64/arm64/cpuswitch.rs"
@@ -14254,7 +14254,7 @@ reason = "hal runtime, written new (N4.8a): the clock frame as the kernel's cloc
 [[extra]]
 rust = "sys/hal/cpu/smccc.rs"
 crate = "hal"
-reason = "hal runtime, written new (N7.2b2a): the SMC Calling Convention's value class, call(conduit, fid, a1, a2, a3) refusing the PSCI functions that take an entry point (PSCI_NOT_SUPPORTED without trapping) before the machine's trap (hal::arch::arm64::smccc; the host's per-thread fake firmware)"
+reason = "hal runtime, written new (N7.2b2a): the SMC Calling Convention's value class, call(conduit, fid, a1, a2, a3) admitting only fast calls of OEN 0 (the Arm architecture) and 4 (PSCI) that take no address, and a PSCI 0.1 firmware's recorded system_off/system_reset/cpu_off (record_psci_0_1, once), answering PSCI_NOT_SUPPORTED without trapping for every other id (SiP, OEM, trusted OS, vendor hypervisor, yielding, the entry-point functions) before the machine's trap (hal::arch::arm64::smccc; the host's per-thread fake firmware)"
 
 [[extra]]
 rust = "sys/hal/cpu/icc.rs"
@@ -21981,7 +21981,7 @@ rust = "sys/kernel/dev/fdt/psci.rs"
 crate = "kernel"
 lz = ["sys/dev/fdt/psci.rs"]
 status = "redesigned"
-notes = "N7.2b2a: psci(4) as a kernel DriverOps (PSCI; probe = psci_match over the bus's FdtArgs); struct psci_softc as Psci, built whole from the node (Psci::of_node) and set once in PSCI_SC (OnceStatic; a second attach panics), sc_smccc_version and sc_system_suspend atomics; sc_callfn a hal::cpu::smccc::Conduit and every call hal::cpu::smccc::call (the value class, P44); the hooks are kernel::base::reboot's slots; psci_cpu_on is psci_cpu_on_call (the conduit and the id for bsd's bootarg_mp_start, which makes the CPU_ON call with bsd's smc_call/hvc_call until N7.2c); psci_cpu_suspend and psci_system_suspend are visible stubs (unported!, no caller); the C's decisions are Psci methods, tested on softcs of the tests' own"
+notes = "N7.2b2a: psci(4) as a kernel DriverOps (PSCI; probe = psci_match over the bus's FdtArgs); struct psci_softc as Psci, built whole from the node (Psci::of_node), leaked once per attach and published in PSCI_SC (a ReadMostly: the last attach wins, as the C's assignment), sc_smccc_version and sc_system_suspend atomics; sc_callfn a hal::cpu::smccc::Conduit and every call hal::cpu::smccc::call (the value class, P44; a PSCI 0.1 node's ids recorded there once by the attach); the hooks are kernel::base::reboot's slots; psci_cpu_on is psci_cpu_on_call (the conduit and the id for bsd's bootarg_mp_start, which makes the CPU_ON call with bsd's smc_call/hvc_call until N7.2c); psci_cpu_suspend and psci_system_suspend are visible stubs (unported!, no caller); the C's decisions are Psci methods, tested on softcs of the tests' own"
 [[module.fn]]
 lz = "sys/dev/fdt/psci.rs::PsciSoftc"
 native = ["Psci", "PsciDev"]

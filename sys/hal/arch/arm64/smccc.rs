@@ -61,8 +61,9 @@
 //! ## Redesign
 //! - LZ's `smc_call(a0, a1, a2, a3)`/`hvc_call` (two functions any caller could reach with any
 //!   id, psci(4)'s `sc_callfn` choosing between them) -> [`trap`] over a [`Conduit`] held by
-//!   value, behind `hal::cpu::smccc::call`, which refuses the entry-point functions before
-//!   the trap.
+//!   value, behind `hal::cpu::smccc::call`, which admits only the Arm architecture's and
+//!   PSCI's fast calls that take no address (and a PSCI 0.1 firmware's recorded value ids)
+//!   before the trap.
 //! - LZ's `asm!` declared `x0`..`x3` alone; the C's routine is a function call, across which
 //!   `x4`..`x17` are dead. Both blocks here say so (`clobber_abi("C")`), so no value the
 //!   compiler keeps in a caller-saved register is assumed to survive the firmware.
@@ -79,7 +80,7 @@ pub enum Conduit {
 }
 
 /// `hvc_call(fid, a1, a2, a3)` or `smc_call(..)`: the firmware's `x0`. Only
-/// `hal::cpu::smccc::call` reaches it, after its refusal of the entry-point functions.
+/// `hal::cpu::smccc::call` reaches it, for the ids it admits.
 pub(crate) fn trap(conduit: Conduit, fid: u32, a1: u64, a2: u64, a3: u64) -> u64 {
     let mut x0 = u64::from(fid);
     match conduit {
@@ -88,10 +89,14 @@ pub(crate) fn trap(conduit: Conduit, fid: u32, a1: u64, a2: u64, a3: u64) -> u64
             // the next instruction (SMCCC: a call returns, or never does for SYSTEM_OFF and
             // SYSTEM_RESET). The firmware may change `x0`..`x17` (`x0`..`x3` are the operands
             // here, the rest `clobber_abi("C")` declares dead, as across the C's call) and
-            // preserves `x18`..`x30` and `sp`; it touches no memory the kernel owns because
-            // `fid` is not one of the functions that take an address (`call` refused those),
-            // so every argument is a value the firmware reads as a number, never a pointer it
-            // follows or an entry it runs. No stack is used here.
+            // preserves `x18`..`x30` and `sp`. It touches no memory the kernel owns: `call`
+            // reaches this trap only for an id it admits (`hal::cpu::smccc::admits`), a fast
+            // call of the Arm architecture or of PSCI that takes no address, or a PSCI 0.1
+            // firmware's `system_off`, `system_reset` or `cpu_off` as its device tree names
+            // them (trusted as the C trusts the firmware), so every argument is a value the
+            // firmware reads as a number, never a pointer it follows or an entry it runs; the
+            // silicon provider's, OEM's, trusted OS's and hypervisor vendors' ids, which could
+            // take addresses, never get here. No stack is used here.
             unsafe {
                 asm!(
                     "hvc #0",
