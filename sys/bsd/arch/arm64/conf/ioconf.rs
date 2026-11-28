@@ -78,7 +78,6 @@ use crate::arch::arm64::dev::acpiiort::{ACPIIORT_CA, ACPIIORT_CD};
 use crate::arch::arm64::dev::acpipci::{ACPIPCI_CA, ACPIPCI_CD};
 use crate::arch::arm64::dev::agintc::{AGINTC_CA, AGINTC_CD, AGINTCMSI_CA, AGINTCMSI_CD};
 use crate::arch::arm64::dev::agtimer::{AGTIMER_CA, AGTIMER_CD};
-use crate::arch::arm64::dev::efi_machdep::{EFI_CA, EFI_CD};
 use crate::arch::arm64::dev::simplebus::SIMPLEBUS_CD;
 use crate::arch::arm64::dev::smmu::SMMU_CD;
 use crate::arch::arm64::dev::smmu_acpi::SMMU_ACPI_CA;
@@ -172,6 +171,7 @@ use crate::sys::device::{
     CFATTACH_NATIVE, Cfdata, Cfdriver, DV_DULL, FSTATE_NOTFOUND, FSTATE_STAR, Pdevinit,
 };
 use kernel::dev::arm64::ampintc::{AMPINTC_CA, AMPINTCMSI_CA};
+use kernel::dev::arm64::efi_machdep::EFI;
 use kernel::dev::arm64::mainbus::MAINBUS;
 use kernel::dev::arm64::simplebus::SIMPLEBUS;
 use kernel::dev::fdt::psci::PSCI;
@@ -192,6 +192,11 @@ pub static AMPINTC_CD: Cfdriver = Cfdriver::new(b"ampintc", DV_DULL, 0);
 
 /// `ampintcmsi_cd`, as [`AMPINTC_CD`].
 pub static AMPINTCMSI_CD: Cfdriver = Cfdriver::new(b"ampintcmsi", DV_DULL, 0);
+
+/// `efi_cd`: the name `cfdata[8]` prints in UKC's listings; the driver is the kernel's
+/// (`kernel::dev::arm64::efi_machdep::EFI`, the row's `Cfdata::native`, N7.2b2a). Scaffolding
+/// (docs/SCAFFOLDING.md) until the machine's table is the kernel's (N9.1).
+pub static EFI_CD: Cfdriver = Cfdriver::new(b"efi", DV_DULL, 0);
 
 /// `psci_cd`: the name `cfdata[29]` prints in UKC's listings; the driver is the kernel's
 /// (`kernel::dev::fdt::psci::PSCI`, the row's `Cfdata::native`, N7.2b2a). Scaffolding
@@ -454,9 +459,9 @@ pub static CFDATA: StaticCell<[Cfdata; NCFDATA + NFREE]> = StaticCell::new([
         LN_FDT,
         0,
     ),
-    // 8: efi0 at mainbus?
+    // 8: efi0 at mainbus? (the kernel's driver, N7.2b2a)
     Cfdata::new(
-        &EFI_CA,
+        &CFATTACH_NATIVE,
         &EFI_CD,
         0,
         FSTATE_NOTFOUND,
@@ -465,7 +470,8 @@ pub static CFDATA: StaticCell<[Cfdata; NCFDATA + NFREE]> = StaticCell::new([
         PV_MAINBUS,
         0,
         0,
-    ),
+    )
+    .native(&EFI),
     // 9: scsibus* at scsi? (vioblk, umass, vioscsi, ahci, nvme, mpi, sdmmc), and at softraid? (GENERIC's `scsibus* at
     // softraid?`)
     Cfdata::new(

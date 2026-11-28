@@ -42,7 +42,6 @@ pub mod cons;
 pub mod consfile;
 #[forbid(unsafe_code)]
 pub mod diskmap;
-pub mod efi;
 pub mod fdt;
 pub mod firmload;
 pub mod gpio;

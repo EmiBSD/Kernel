@@ -1687,6 +1687,25 @@ crate = "hal"
 lz = ["sys/arch/arm64/dev/efi_machdep.rs"]
 status = "redesigned"
 notes = "N7.2b2a: efi_enter, efi_leave, efi_enter_check and efi_fault as one transaction under hal::cpu::efi's lock: IntrGuard, the EFI pmap (backend::efi_enter), the FPU, the body with an Inside (kcopy reads, the service call), then the FPU, the CPU's own pmap from asid.rs's record (efi_leave_current) and the interrupt state; the trampoline hal_efi_rs_call saves x19-x30 and sp in its own .bss checkpoint before it arms pcb_onfault (the C arms first), takes the service's address (read through kcopy in the same transaction) and the caller's EfiTime; every address below the EFI pmap's limit; 3 unsafe (the extern block, the call, kcopy_in) + 1 in asid.rs (the curpm record)"
+[[module.fn]]
+lz = "sys/arch/arm64/dev/efi_machdep.rs::EFI_SPACE_BITS"
+native = ["sys/hal/arch/arm64/pmap/layout.rs::EFI_SPACE_BITS"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/arch/arm64/dev/efi_machdep.rs::EfiJmpbuf"
+native = []
+kind = "dropped"
+reason = "label_t efi_jmpbuf's type: the checkpoint is 104 bytes of the trampoline's own .bss (.Lhal_efi_jmpbuf, hal_efi_rs_call), which no Rust code names; hal::cpu::efi's lock makes one call at a time"
+[[module.fn]]
+lz = "sys/arch/arm64/dev/efi_machdep.rs::EFI_JMPBUF"
+native = []
+kind = "dropped"
+reason = "efi_jmpbuf: the trampoline's own .bss checkpoint (see EfiJmpbuf), written before pcb_onfault is armed"
+[[module.fn]]
+lz = "sys/arch/arm64/dev/efi_machdep.rs::efi_call"
+native = ["Inside::time_call", "transaction", "sys/hal/cpu/efi.rs::EfiRuntime::get_time", "sys/hal/cpu/efi.rs::EfiRuntime::set_time"]
+kind = "split"
+lines = "L489-L501"
 
 [[module]]
 rust = "sys/hal/arch/arm64/smccc.rs"
@@ -1801,17 +1820,6 @@ adapted_by = ["sys/hal/arch/arm64/timer.rs", "sys/kernel/time/tc.rs", "sys/kerne
 notes = "N4.8a: the counter is AgtimerTc (kernel::time::tc::Timecounter) with its TcEntry, the interrupt clock AgtimerIntrclock (kernel::time::clockintr::Intrclock), the dispatch over the typed frame"
 
 [[module]]
-rust = "sys/bsd/arch/arm64/dev/efi_machdep.rs"
-lz = ["sys/arch/arm64/dev/efi_machdep.rs"]
-status = "redesigned"
-notes = "N3.1 commit 6 (redesigned at 6d): the runtime services' pmap is hal's EFI pmap (hal::vm::pmap::create_efi), held as a counted PmapRef in EFI_PMAP (OnceStatic); efi_enter/efi_leave's TTBR0/TCR sequences are hal's (pmap_efi_enter, pmap_efi_leave); EFI_SPACE_BITS moved to hal's arm64 layout"
-
-[[module.fn]]
-lz = "sys/arch/arm64/dev/efi_machdep.rs::EFI_SPACE_BITS"
-native = ["sys/hal/arch/arm64/pmap/layout.rs::EFI_SPACE_BITS"]
-kind = "moved"
-
-[[module]]
 rust = "sys/bsd/arch/arm64/dev/pci_machdep.rs"
 lz = ["sys/arch/arm64/dev/pci_machdep.rs"]
 status = "inherited"
@@ -1889,12 +1897,6 @@ rust = "sys/hal/arch/arm64/include/disklabel.rs"
 crate = "hal"
 lz = ["sys/arch/arm64/include/disklabel.rs"]
 status = "inherited"
-
-[[module]]
-rust = "sys/bsd/arch/arm64/include/efivar.rs"
-lz = ["sys/arch/arm64/include/efivar.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/vm/pmap.rs"]
 
 [[module]]
 rust = "sys/hal/arch/arm64/include/elf.rs"
@@ -3133,11 +3135,6 @@ lz = ["sys/dev/cons.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/base/log.rs", "sys/kernel/tty/mod.rs", "sys/kernel/fs/vnode.rs"]
 notes = "struct consdev with fn pointers and Cell fields, CN_*; cninit/constab are not used (the consoles are attached directly); M8: CONSMAJOR, the cnopen..cnkqfilter prototypes are cons.rs's functions; cons_decl/cons_init macros are the Consdev literal; M2: cngetc/cnputc/cnpollc/cnbell/nullcnpollc on an atomic cn_tab; M8: cnopen, cnclose, cnread, cnwrite, cnstop, cnioctl, cnkqfilter through the device switch, constty and cn_devvp as atomic pointers (constty()/set_constty()); cninit and constab[] are not used: each architecture attaches its console directly (docs/ARCHITECTURE.md)"
-
-[[module]]
-rust = "sys/bsd/dev/efi/efi.rs"
-lz = ["sys/dev/efi/efi.rs"]
-status = "inherited"
 
 [[module]]
 rust = "sys/bsd/dev/diskmap.rs"
@@ -10232,6 +10229,76 @@ rust = "sys/lib/sysdefs/dev/efi.rs"
 lz = ["sys/dev/efi/efi.rs"]
 status = "redesigned"
 notes = "N7.2b2a: <dev/efi/efi.h> as data: every pointer of the firmware's tables a u64 word, EFI_RUNTIME_SERVICES' entries u64 slots called by offset through hal::cpu::efi (LZ's seven unsafe extern \"efiapi\" function types go), EfiGuid, EfiMemoryDescriptor, EfiTime and EfiConfigurationTable AbiPod through abi_pod! (read_at's read_unaligned goes: pod_from_bytes), UINTN 64 bits, efi_guidcmp the derived =="
+[[module.fn]]
+lz = "sys/dev/efi/efi.rs::EfiHandle"
+native = []
+kind = "dropped"
+reason = "EFI_HANDLE: the system table's handles are the u64 words they are in memory (EfiSystemTable's members)"
+[[module.fn]]
+lz = "sys/dev/efi/efi.rs::EfiSimpleTextInputProtocol"
+native = []
+kind = "dropped"
+reason = "opaque here: EfiSystemTable::ConIn is the u64 word it is in memory"
+[[module.fn]]
+lz = "sys/dev/efi/efi.rs::EfiSimpleTextOutputProtocol"
+native = []
+kind = "dropped"
+reason = "opaque here: EfiSystemTable::ConOut and StdErr are u64 words"
+[[module.fn]]
+lz = "sys/dev/efi/efi.rs::EfiBootServices"
+native = []
+kind = "dropped"
+reason = "opaque here (gone once the kernel runs): EfiSystemTable::BootServices is a u64 word"
+[[module.fn]]
+lz = "sys/dev/efi/efi.rs::EfiTimeCapabilities"
+native = []
+kind = "dropped"
+reason = "GetTime's second argument, always NULL here (hal::cpu::efi passes 0)"
+[[module.fn]]
+lz = "sys/dev/efi/efi.rs::EfiGetTime"
+native = []
+kind = "dropped"
+reason = "the firmware's function type: services are u64 slots called through hal::cpu::efi::EfiRuntime::get_time"
+[[module.fn]]
+lz = "sys/dev/efi/efi.rs::EfiSetTime"
+native = []
+kind = "dropped"
+reason = "the firmware's function type: called through hal::cpu::efi::EfiRuntime::set_time"
+[[module.fn]]
+lz = "sys/dev/efi/efi.rs::EfiSetVirtualAddressMap"
+native = []
+kind = "dropped"
+reason = "the firmware's function type: a u64 slot of EfiRuntimeServices, never called (as the C's kernel)"
+[[module.fn]]
+lz = "sys/dev/efi/efi.rs::EfiGetVariable"
+native = []
+kind = "dropped"
+reason = "the firmware's function type: a u64 slot; dev/efi/efi.c, its caller, is not ported (LZ's gap)"
+[[module.fn]]
+lz = "sys/dev/efi/efi.rs::EfiGetNextVariableName"
+native = []
+kind = "dropped"
+reason = "the firmware's function type: a u64 slot; efi.c is not ported (LZ's gap)"
+[[module.fn]]
+lz = "sys/dev/efi/efi.rs::EfiSetVariable"
+native = []
+kind = "dropped"
+reason = "the firmware's function type: a u64 slot; efi.c is not ported (LZ's gap)"
+[[module.fn]]
+lz = "sys/dev/efi/efi.rs::EfiResetSystem"
+native = []
+kind = "dropped"
+reason = "the firmware's function type: a u64 slot, never called (psci(4) resets the machine)"
+[[module.fn]]
+lz = "sys/dev/efi/efi.rs::EfiMemoryDescriptor::read_at"
+native = []
+kind = "dropped"
+reason = "NextMemoryDescriptor's read: hal::user::pod_from_bytes of the descriptor's bytes (sys/kernel/dev/arm64/efi_machdep.rs::descriptors)"
+[[module.fn]]
+lz = "sys/dev/efi/efi.rs::efi_guidcmp"
+native = []
+kind = "dropped"
+reason = "the GUIDs' derived ==, which is what the C's callers test (efi_guidcmp(..) == 0)"
 
 [[module]]
 rust = "sys/lib/sysdefs/dev/dkio.rs"
@@ -21493,6 +21560,36 @@ crate = "kernel"
 lz = ["sys/arch/arm64/dev/simplebus.rs", "sys/arch/arm64/include/simplebusvar.rs"]
 status = "redesigned"
 notes = "N7.2b1b: simplebus(4) as a kernel DriverOps (SIMPLEBUS; probe = simplebus_match over the bus's FdtArgs, 0 for any other argument); struct simplebus_softc as the bus's FdtBus held by the softc Simplebus, the pass and the early nodes locals of simplebus_attach (also what a native GIC calls on its own node, N7.2a2/a3); simplebus_submatch and simplebus_print closures of simplebus_attach_node; the four tag entries are FdtBus's methods. bsd's simplebus.rs and simplebusvar.rs stay whole (inherited) for the two legacy GICs until N7.2a3 (P24), which writes their [[module.fn]] rows"
+
+[[module]]
+rust = "sys/kernel/dev/arm64/efi_machdep.rs"
+crate = "kernel"
+lz = ["sys/arch/arm64/dev/efi_machdep.rs", "sys/arch/arm64/include/efivar.rs"]
+status = "redesigned"
+notes = "N7.2b2a: efi(4) as a kernel DriverOps (EFI; probe fa.name == efi); the system table read from /chosen as the C's and mapped through mainbus's bus (FdtBus::map of an Untyped block, Cacheable), read by offsets; efi_map_runtime over hal::cpu::efi::EfiRuntime::install(rs) and enter() of each page runtime_mapping() decides (identity for a zero VirtualStart, device without WB, code executable, RP/XP/RO), the memory map handed down once by bsd's initarm (efi_set_memory_map); the vendor string and the configuration table through EfiRuntime::read (pod_from_bytes); the smbios offer through config_found with FdtArgs::named_reg (no driver); GetTime then todr_attach(&EFI_TODR), a static implementing kernel::time::Todr (quality -1000; efi_gettime/efi_settime over EfiRuntime with the C's range checks); struct efi_softc is EfiDev (empty) and EfiRuntime"
+[[module.fn]]
+lz = "sys/arch/arm64/dev/efi_machdep.rs::EFI_CA"
+native = ["EFI", "EfiDriver"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/arch/arm64/dev/efi_machdep.rs::EFI_CD"
+native = ["sys/bsd/arch/arm64/conf/ioconf.rs::EFI_CD", "EFI_UNITS"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/arch/arm64/dev/efi_machdep.rs::softc"
+native = []
+kind = "dropped"
+reason = "(struct efi_softc *)self: the device's softc is empty (EfiDev); the state is hal::cpu::efi::EfiRuntime's, found by EfiRuntime::get"
+[[module.fn]]
+lz = "sys/arch/arm64/dev/efi_machdep.rs::handle_softc"
+native = []
+kind = "dropped"
+reason = "the todr cookie cast back to the softc: EFI_TODR is a static implementing kernel::time::Todr, whose methods reach EfiRuntime::get"
+[[module.fn]]
+lz = "sys/arch/arm64/include/efivar.rs::EfiSoftc"
+native = ["EfiDev", "sys/hal/cpu/efi.rs::EfiRuntime", "EfiTodr"]
+kind = "split"
+lines = "L58-L78"
 
 [[module]]
 rust = "sys/kernel/dev/fdt/psci.rs"

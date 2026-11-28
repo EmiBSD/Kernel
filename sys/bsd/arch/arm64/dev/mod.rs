@@ -34,7 +34,6 @@ pub mod acpiiort;
 pub mod acpipci;
 pub mod agintc;
 pub mod agtimer;
-pub mod efi_machdep;
 pub mod pci_machdep;
 pub mod simplebus;
 pub mod smmu;

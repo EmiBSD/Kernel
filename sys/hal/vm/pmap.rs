@@ -139,9 +139,12 @@
 //!   (under boot(8)/efiboot its whole 64 MB block, read-write, an inherited deviation of the
 //!   backend).
 //! - Switching the running CPU to a pmap's root (`lcr3` in `pmap_activate`, arm64's
-//!   `pmap_setttb`, `efi_enter`/`efi_leave`) takes a second token, [`Switcher`], from the
+//!   `pmap_setttb`) takes a second token, [`Switcher`], from the
 //!   same `bootstrap`: a safe `load` would let any caller run on a root whose pmap it then
-//!   drops (freeing the tables under it) or leave a CPU out of the shootdowns.
+//!   drops (freeing the tables under it) or leave a CPU out of the shootdowns. arm64's
+//!   `efi_enter`/`efi_leave` switch to the EFI pmap and back inside `hal::cpu::efi`'s
+//!   transaction alone (N7.2b2a: the backend's `efi_enter` and `efi_leave_current`), whose
+//!   object owns that pmap.
 //! - A user [`Pmap`]'s `enter`, `remove` and `protect` refuse the kernel half (`va` at or above
 //!   the pmap's limit, `VM_MAXUSER_ADDRESS`; on amd64 the recursive mapping's slot starts right
 //!   above it) and the kernel pmap (which needs the token): both panic, as uvm never asks
@@ -449,15 +452,6 @@ impl Pmap {
     /// another running CPU's record still names it, so a loaded root is never freed.
     pub fn load(&self, _switch: &Switcher) {
         Backend::load(self);
-    }
-
-    /// `efi_enter`'s pmap half (arm64): this EFI pmap's tables in `TTBR0_EL1` with the
-    /// address-space width of the EFI pmap (`TCR_EL1.T0SZ = 64 - EFI_SPACE_BITS`), the empty
-    /// table first; interrupts are the caller's to disable around the call into the runtime.
-    /// The [`Switcher`] as for [`Pmap::load`]; a pmap [`create_efi`] did not make panics.
-    #[cfg(target_arch = "aarch64")]
-    pub fn load_efi(&self, _switch: &Switcher) {
-        Backend::load_efi(self);
     }
 
     /// The pmap's half of `pmap_activate(p)`: one more thread uses it (arm64 `pm_active`;
@@ -789,8 +783,7 @@ pub struct Bootstrapped {
     pub switcher: Switcher,
 }
 
-/// The authority to switch the running CPU's address space ([`Pmap::load`], arm64's
-/// [`Pmap::load_efi`] and [`leave_efi`]): zero-sized, not `Clone`, without a public
+/// The authority to switch the running CPU's address space ([`Pmap::load`]): zero-sized, not `Clone`, without a public
 /// constructor; [`bootstrap`] returns the only one, which the boot path gives to the
 /// scheduler's context switch. Possession is the proof that the caller records the switch
 /// where the shootdowns look (`ci_proc_pmap`) and keeps the pmap referenced while it runs.
@@ -994,12 +987,6 @@ pub(crate) trait PmapBackend {
     /// `1 << EFI_SPACE_BITS`.
     #[cfg(target_arch = "aarch64")]
     fn create_efi(stats: &PmapStatistics, pages: &'static dyn PhysPages) -> Option<PmapMd>;
-    /// [`Pmap::load_efi`].
-    #[cfg(target_arch = "aarch64")]
-    fn load_efi(pmap: &Pmap);
-    /// [`leave_efi`].
-    #[cfg(target_arch = "aarch64")]
-    fn leave_efi(to: &Pmap);
     /// [`Pmap::activate`].
     fn activate(pmap: &Pmap);
     /// [`Pmap::deactivate`].
@@ -1115,18 +1102,11 @@ pub fn create() -> Option<PmapRef> {
 
 /// `efi_map_runtime`'s `pmap_create` (arm64): a privileged pmap with four-level tables whose
 /// limit is `1 << EFI_SPACE_BITS` instead of `VM_MAXUSER_ADDRESS`, for the identity mappings of
-/// the EFI runtime services; loaded by [`Pmap::load_efi`], left by [`leave_efi`]. `None` as
+/// the EFI runtime services; loaded and left by `hal::cpu::efi`'s transaction. `None` as
 /// for [`create`].
 #[cfg(target_arch = "aarch64")]
 pub fn create_efi() -> Option<PmapRef> {
     create_with(Backend::create_efi)
-}
-
-/// `efi_leave`'s pmap half (arm64): the user address-space width back in `TCR_EL1` and `to`
-/// (the pmap the CPU ran on before `efi_enter`, `ci_curpm`) loaded again.
-#[cfg(target_arch = "aarch64")]
-pub fn leave_efi(to: &Pmap, _switch: &Switcher) {
-    Backend::leave_efi(to);
 }
 
 /// A user pmap whose machine part `make` builds, in the pool of user pmaps.
@@ -1305,12 +1285,6 @@ mod tests {
         &boot().mapper
     }
 
-    /// The context switch's token of this test process.
-    #[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
-    fn switcher() -> &'static Switcher {
-        &boot().switcher
-    }
-
     /// The bridges' doubles, the bootstrap and `pmap_init`, once per test process (shared
     /// with every test module of the crate, `testutil::pmap_boot`).
     fn boot() -> &'static Bootstrapped {
@@ -1468,8 +1442,6 @@ mod tests {
         let top = Vaddr::new(crate::arch::current::vmparam::VM_MAXUSER_ADDRESS);
         assert!(pm.va_limit() > top);
         pm.enter(top, Paddr::new(0xb000), PROT_READ, 0).unwrap();
-        pm.load_efi(switcher());
-        leave_efi(kernel(), switcher());
 
         pm.remove(top, top + Vsize::new(PAGE_SIZE));
         assert_eq!(pm.extract(top), None);

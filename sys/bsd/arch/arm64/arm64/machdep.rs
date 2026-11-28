@@ -87,8 +87,9 @@
 //!   the CPU, which the C cannot have there, it is skipped).
 //! - The UEFI system table and memory map reach `initarm` through `BootInfo` (`getbootinfo`
 //!   reads efiboot's `openbsd,uefi-*` properties in `/chosen`); the system table's address is
-//!   kept in `SYSTEM_TABLE` (a local in C) for `mainbus` and `efi_attach`, and the memory
-//!   map is relocated into a static buffer (`MMAP`) instead of stolen pages.
+//!   kept in `SYSTEM_TABLE` (a local in C; efi(4) reads `/chosen` itself, as the C's), and the
+//!   memory map is relocated into a static buffer (`MMAP`) instead of stolen pages, handed down
+//!   to the kernel's efi(4) once (`efi_set_memory_map`, N7.2b2a).
 //! - The bootargs parsing (`-a -c -d -s`) is `BootInfo::boothowto` in `sys/machine/bootinfo.rs`,
 //!   shared with amd64 (Limine's command line served both architectures; arm64's is
 //!   `/chosen`'s `bootargs` since its removal).
@@ -505,6 +506,8 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
             MMAP_DESC_SIZE.store(m.desc_size, Ordering::Relaxed);
             MMAP_DESC_VER.store(m.desc_ver, Ordering::Relaxed);
             MMAP_SIZE.store(len as u32, Ordering::Release);
+            // efi(4)'s `mmap`, `mmap_size` and `mmap_desc_size` (the kernel's, N7.2b2a).
+            kernel::dev::arm64::efi_machdep::efi_set_memory_map(efi_mmap(), m.desc_size);
         } else {
             kprintf!("initarm: EFI memory map of {} bytes not relocated\n", len);
         }
