@@ -195,7 +195,8 @@ pub trait Timecounter: Sync + 'static {
 /// registered by [`tc_init`].
 ///
 /// - `[I]` (copied from the hardware by `tc_init`): `mask`, `frequency` (the driver may set
-///   it again, [`TcEntry::set_frequency`]: agtimer's clock-rate change), `user`.
+///   it again, [`TcEntry::set_frequency`]: agtimer's clock-rate change and second node),
+///   `user` (also, [`TcEntry::set_user`]: agtimer's second node with the A64 erratum).
 /// - `[T]`: `quality` (`tc_init`, `tc_reset_quality`), `precision` (`tc_init`).
 /// - `[T,W]`: `freq_adj`.
 pub struct TcEntry {
@@ -243,6 +244,12 @@ impl TcEntry {
     /// windup scales with it.
     pub fn set_frequency(&self, f: u64) {
         self.frequency.store(f, Ordering::Relaxed);
+    }
+
+    /// `tc_user = u`: the driver's new way for userland to read the counter (agtimer's
+    /// second node naming the A64 erratum); the next windup's timekeep page carries it.
+    pub fn set_user(&self, u: i32) {
+        self.user.store(u, Ordering::Relaxed);
     }
 
     /// `tc_precision`.

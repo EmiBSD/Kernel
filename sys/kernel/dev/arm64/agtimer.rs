@@ -53,13 +53,18 @@
 //! ## Deviations
 //! - One static softc (`AGTIMER_SC`, the C's `agtimer_cd.cd_devs[0]`) holds what
 //!   `struct agtimer_softc` adds to the device, as LZ; the device's own softc is empty.
-//! - A second timer node prints its line and changes nothing. The C's second attach
-//!   (`agtimer.c:184-217`) sets `agtimer_frequency` again from `CNTFRQ_EL0` and the node's
-//!   `clock-frequency`, may switch the counter to the sun50i reader, registers the clock
-//!   functions again (ignored: the first registration wins) and calls `tc_init` on the same
-//!   `agtimer_timecounter` once more. The kernel refuses that last step: a second `tc_init` of
-//!   the same entry would insert it twice into the timecounter list (its one link). Machines
-//!   have one timer node.
+//! - A second timer node's attach does what the C's does (`agtimer.c:177-217`: the frequency
+//!   from `CNTFRQ_EL0` and its `clock-frequency`, its line, the sun50i reader when it names
+//!   the erratum, the clock functions registered again and ignored, `tc_frequency` and
+//!   `tc_user` set again) but for `tc_init`, which it does not call a second time: the C's
+//!   `SLIST_INSERT_HEAD` (`kern_tc.c:464`) of the entry already at the list's head points it
+//!   at itself, and `kern.timecounter.choice` then walks that loop for ever. The counter's
+//!   one entry stays on the list once, with the new frequency and user value
+//!   (`TcEntry::set_frequency`, `TcEntry::set_user`), and keeps its precision, its quality
+//!   and its place as the active counter, which the C's second `tc_init` leaves as they were
+//!   too: the mask does not change, the `hz` check only lowers the quality of a counter of
+//!   some 400 GHz or more, and arm64 has no other counter to prefer. Machines have one timer
+//!   node.
 //! - Not in the C: [`agtimer_evtstrm_enable`] turns on the timer's event stream
 //!   (`CNTKCTL_EL1.EVNTEN`, counter bit 12 at QEMU's 62.5 MHz: a `wfe` wake-up every
 //!   131 µs). Each application processor calls it first thing (`cpu_hatch_entry`), and
@@ -102,7 +107,16 @@
 //!   `agtimer_set_clockrate` updates the entry of the softc it is given (a test gives its
 //!   softc an entry of its own, never registered).
 //! - `agtimer_cpu_initclocks`' PPI choice is [`agtimer_ppi_index`], and the attach's
-//!   frequency arithmetic `Agtimer::configure`, both tested on the host.
+//!   frequency arithmetic `Agtimer::configure` (`Agtimer::attach_node` for every node, the
+//!   second's included), both tested on the host.
+//! - The C's second node has a softc of its own, which becomes `tc_priv` and `ic_cookie`
+//!   while `agtimer_cd.cd_devs[0]` stays the first's; here the one static plays both, so the
+//!   second attach leaves what `cd_devs[0]` keeps (the node whose PPI `initclocks`
+//!   establishes, and the rate the clock runs at) and writes what the C's writes globally
+//!   (`agtimer_frequency`, the reader, `tc_frequency`, `tc_user`): `initclocks` then finds
+//!   the rate behind `agtimer_frequency` and adjusts it (`agtimer_set_clockrate`, its
+//!   `agtimer0: adjusting clock` line), as the C's does, before the first `rearm` runs on the
+//!   last node's ratio and longest delay.
 //! - The dispatch's backward-uptime check under the smokes (`set_uptime_check`, not in LZ:
 //!   `bsd`'s N4.8a copy of this driver called it from `agtimer_startclock` with `bsd`'s
 //!   feature `qemu`) is switched on by `bsd`'s `cpu_configure`, before the first clock starts.
@@ -225,18 +239,56 @@ impl Agtimer {
         self.nsec_max.store(u64::MAX / ratio, Ordering::Relaxed);
     }
 
-    /// `agtimer_attach`'s arithmetic for `node`: `agtimer_frequency` from a nonzero `cntfrq`
-    /// (`CNTFRQ_EL0`), then the node's `clock-frequency` over it; the softc's rate. Returns
-    /// `sc_ticks_per_second`.
-    fn configure(&self, node: i32, cntfrq: u64) -> u32 {
-        self.node.store(node, Ordering::Relaxed);
+    /// `agtimer_frequency` from a nonzero `cntfrq` (`CNTFRQ_EL0`), then `node`'s
+    /// `clock-frequency` over it: what every attach computes. Returns it (the node's
+    /// `sc_ticks_per_second`).
+    fn read_frequency(&self, node: i32, cntfrq: u64) -> u32 {
         if cntfrq != 0 {
             self.frequency.store(cntfrq as i32, Ordering::Relaxed);
         }
         let freq = OF_getpropint(node, b"clock-frequency", self.frequency() as u32);
         self.frequency.store(freq as i32, Ordering::Relaxed);
+        freq
+    }
+
+    /// `agtimer_attach`'s arithmetic for the first `node`: [`Agtimer::read_frequency`], the
+    /// node and the softc's rate. Returns `sc_ticks_per_second`.
+    fn configure(&self, node: i32, cntfrq: u64) -> u32 {
+        self.node.store(node, Ordering::Relaxed);
+        self.read_frequency(node, cntfrq);
         self.set_ticks();
         self.ticks_per_second()
+    }
+
+    /// `agtimer_attach` for `node`, but the clock's registration and the timecounter's first
+    /// `tc_init`: the first node configures the softc ([`Agtimer::configure`]); a later one
+    /// sets `agtimer_frequency` again and, the entry being registered, its `tc_frequency`,
+    /// leaving the node and the rate to the first (the module's redesign). Either switches to
+    /// the sun50i reader when the node names the A64's erratum, and a later one gives the
+    /// entry the user value that follows. Returns the node's `sc_ticks_per_second`, for its
+    /// line.
+    fn attach_node(&self, node: i32, cntfrq: u64) -> u32 {
+        let again = self.attached();
+        let ticks = if again {
+            self.read_frequency(node, cntfrq)
+        } else {
+            self.configure(node, cntfrq)
+        };
+
+        // The Allwinner A64 has an erratum where the bottom 9 bits of the counter register
+        // cannot be trusted while any of the higher bits roll over.
+        if OF_getpropbool(node, b"allwinner,erratum-unknown1") {
+            timer::set_readcnt64_sun50i();
+            self.sun50i.store(true, Ordering::Relaxed);
+        }
+
+        if again && let Some(tc) = self.tc.get() {
+            // agtimer_timecounter.tc_frequency = sc->sc_ticks_per_second, and its tc_user,
+            // without the C's second tc_init (the module's deviations).
+            tc.set_frequency(u64::from(ticks));
+            tc.set_user(Timecounter::user(self));
+        }
+        ticks
     }
 
     /// `agtimer_rearm`'s scaling: `nsecs` (at most `sc_nsec_max`) as counter cycles, at most
@@ -347,39 +399,26 @@ impl DriverOps for AgtimerDriver {
     }
 }
 
-/// `agtimer_attach`: the rate, the A64 erratum, the clock functions and the timecounter.
+/// `agtimer_attach`: the rate, the A64 erratum, the clock functions and the timecounter (a
+/// second node's: the module's deviations and redesign).
 pub fn agtimer_attach(fa: &FdtArgs) {
     let sc = &AGTIMER_SC;
-    if sc.attached() {
-        // A second timer node: its line, nothing else (the module's deviations).
-        let mut freq = agtimer_get_freq();
-        if freq == 0 {
-            freq = sc.frequency() as u64;
-        }
-        let ticks = OF_getpropint(fa.node, b"clock-frequency", freq as u32);
-        printf(format_args!(": {} kHz\n", ticks / 1000));
-        return;
-    }
-
-    let ticks = sc.configure(fa.node, agtimer_get_freq());
+    let first = !sc.attached();
+    let ticks = sc.attach_node(fa.node, agtimer_get_freq());
     printf(format_args!(": {} kHz\n", ticks / 1000));
-
-    // The Allwinner A64 has an erratum where the bottom 9 bits of the counter register
-    // cannot be trusted while any of the higher bits roll over.
-    if OF_getpropbool(fa.node, b"allwinner,erratum-unknown1") {
-        timer::set_readcnt64_sun50i();
-        sc.sun50i.store(true, Ordering::Relaxed);
-    }
 
     // The private timer and its interrupts wait for the clock's start (initclocks).
     sc.attached.store(true, Ordering::Relaxed);
     // arm_clock_register(agtimer_cpu_initclocks, agtimer_delay, agtimer_setstatclockrate,
-    // agtimer_startclock): the first installation wins, and it is this same softc.
+    // agtimer_startclock): the first installation wins, and it is this same softc (a second
+    // node's is ignored, as the C's second registration).
     let _ = install_clock_hardware(sc);
 
-    // tc_frequency is the softc's rate (`Timecounter::frequency`), tc_priv the softc.
-    let _ = sc.tc.set(&AGTIMER_TIMECOUNTER);
-    tc_init(&AGTIMER_TIMECOUNTER);
+    if first {
+        // tc_frequency is the softc's rate (`Timecounter::frequency`), tc_priv the softc.
+        let _ = sc.tc.set(&AGTIMER_TIMECOUNTER);
+        tc_init(&AGTIMER_TIMECOUNTER);
+    }
     // agtimer_intrclock.ic_cookie = sc: the softc is the interrupt clock.
 }
 
@@ -747,6 +786,59 @@ mod tests {
         assert_eq!(sc.configure(freq, 62_500_000), 19_200_000);
         assert_eq!(sc.frequency(), 19_200_000);
         assert_eq!(sc.node.load(Ordering::Relaxed), freq);
+    }
+
+    #[test]
+    fn a_second_node_retunes_the_counter_without_a_second_tc_init() {
+        testutil::install();
+        set_regs(TimerRegs::INIT);
+        let mut b = FdtBuilder::new();
+        b.begin(b"");
+        b.begin(b"timer@0");
+        b.prop(b"compatible", b"arm,armv8-timer\0");
+        b.end();
+        b.begin(b"timer@1");
+        b.prop(b"compatible", b"arm,armv8-timer\0");
+        b.prop_cells(b"clock-frequency", &[19_200_000]);
+        b.prop(b"allwinner,erratum-unknown1", b"");
+        b.end();
+        b.end();
+        let _t = install(b.finish());
+        let first = OF_finddevice(b"/timer@0");
+        let second = OF_finddevice(b"/timer@1");
+
+        // The first node, as the attach leaves it: its rate from CNTFRQ_EL0, its entry
+        // (one of the test's own, never registered) carrying that rate, as tc_init copies it.
+        let sc: &'static Agtimer = Box::leak(Box::new(Agtimer::new()));
+        let tc: &'static TcEntry = Box::leak(Box::new(TcEntry::new(sc)));
+        assert_eq!(sc.attach_node(first, 62_500_000), 62_500_000);
+        sc.attached.store(true, Ordering::Relaxed);
+        assert!(sc.tc.set(tc).is_ok());
+        tc.set_frequency(u64::from(Timecounter::frequency(sc)));
+        tc.set_user(Timecounter::user(sc));
+        assert!(!sc.sun50i.load(Ordering::Relaxed));
+
+        // The second: agtimer_frequency, the reader, tc_frequency and tc_user are its; the
+        // node and the running rate stay the first's (agtimer_cd.cd_devs[0]'s).
+        assert_eq!(sc.attach_node(second, 62_500_000), 19_200_000);
+        assert_eq!(sc.frequency(), 19_200_000);
+        assert!(sc.sun50i.load(Ordering::Relaxed));
+        assert_eq!(Timecounter::user(sc), timer::TC_AGTIMER_SUN50I);
+        assert_eq!(tc.frequency(), 19_200_000);
+        assert_eq!(tc.user(), timer::TC_AGTIMER_SUN50I);
+        assert_eq!(sc.node.load(Ordering::Relaxed), first);
+        assert_eq!(sc.ticks_per_second(), 62_500_000);
+
+        // initclocks finds the rate behind agtimer_frequency and adjusts it, as the C's:
+        // the ratio and the longest delay are the last node's from then on.
+        assert_ne!(sc.ticks_per_second(), sc.frequency() as u32);
+        agtimer_set_clockrate(sc, sc.frequency());
+        assert_eq!(sc.ticks_per_second(), 19_200_000);
+        let ratio = 19_200_000u64 * (1 << 32) / 1_000_000_000;
+        assert_eq!(sc.nsec_cycle_ratio.load(Ordering::Relaxed), ratio);
+        assert_eq!(sc.nsec_max.load(Ordering::Relaxed), u64::MAX / ratio);
+        assert_eq!(tc.frequency(), 19_200_000);
+        assert!(testutil::printf_count("agtimer0: adjusting clock: new tick rate 19200 kHz") >= 1);
     }
 
     #[test]
