@@ -493,7 +493,11 @@ impl core_intr::InterruptController for LegacyIc {
         h: IntrHandler,
         name: &'static str,
     ) -> Option<IcCookie> {
-        let IntrHandler::Raw(func, _) = h;
+        let IntrHandler::Raw(func, arg) = h else {
+            panic(format_args!(
+                "a legacy interrupt controller takes bsd's handlers only"
+            ));
+        };
         let establish = self.0.ic_establish?;
         word(establish(
             self.0.ic_cookie.get(),
@@ -501,7 +505,7 @@ impl core_intr::InterruptController for LegacyIc {
             level,
             ci_of(cpu),
             func,
-            h.raw_arg(),
+            ptr::with_exposed_provenance_mut(arg),
             name,
         ))
     }
@@ -515,7 +519,11 @@ impl core_intr::InterruptController for LegacyIc {
         h: IntrHandler,
         name: &'static str,
     ) -> Option<IcCookie> {
-        let IntrHandler::Raw(func, _) = h;
+        let IntrHandler::Raw(func, arg) = h else {
+            panic(format_args!(
+                "a legacy interrupt controller takes bsd's handlers only"
+            ));
+        };
         let establish_msi = self.0.ic_establish_msi?;
         word(establish_msi(
             self.0.ic_cookie.get(),
@@ -524,7 +532,7 @@ impl core_intr::InterruptController for LegacyIc {
             level,
             ci_of(cpu),
             func,
-            h.raw_arg(),
+            ptr::with_exposed_provenance_mut(arg),
             name,
         ))
     }

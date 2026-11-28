@@ -94,7 +94,7 @@ paid_by = "N9"
 # hal::cpu::trap::CpuHooks
 [[bridge]]
 trait = "CpuHooks"
-for = ["sys/hal/cpu/trap.rs", "sys/hal/arch/arm64/trap.rs", "sys/hal/arch/arm64/usertrap.rs"]
+for = ["sys/hal/cpu/trap.rs", "sys/hal/arch/arm64/trap.rs", "sys/hal/arch/arm64/usertrap.rs", "sys/kernel/dev/arm64/ampintc.rs"]
 paid_by = "N7"
 
 # bsd: ddb's db_ktrap (sys/arch/arm64/arm64/db_interface.rs, DdbDebugger), the kernel
@@ -104,7 +104,7 @@ paid_by = "N7"
 # hal::cpu::trap::Debugger
 [[bridge]]
 trait = "Debugger"
-for = ["sys/hal/cpu/trap.rs", "sys/hal/arch/arm64/trap.rs"]
+for = ["sys/hal/cpu/trap.rs", "sys/hal/arch/arm64/trap.rs", "sys/kernel/dev/arm64/ampintc.rs"]
 paid_by = "N9"
 
 # bsd: cnputc, cngetc, cnpollc of sys/dev/cons.rs, registered once consinit() has run.

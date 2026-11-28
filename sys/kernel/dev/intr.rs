@@ -62,8 +62,12 @@
 //!   `ih_arg`, `ip_func`, `ip_arg`) -> one [`IntrHandler`] value. Its first arm is
 //!   [`IntrHandler::Raw`], a handler of `bsd`'s, with its argument as an exposed address
 //!   (scaffolding, `docs/SCAFFOLDING.md`: a `bsd` driver's softc is a raw pointer until the
-//!   driver moves); the arms for a handler that takes the frame and for a native softc's
-//!   counted handle (P11) arrive with their first users (N7.2a2).
+//!   driver moves). N7.2a2 adds the other two arms of P11: [`IntrHandler::Frame`], a native
+//!   handler of the C's `NULL` argument, which reads the frame (its first user is the
+//!   generic timer, N7.2b2), and [`IntrHandler::Shared`], a native handler and its softc's
+//!   counted handle (first user: `ampintc`'s IPI handler), which the handler names back by
+//!   its type (`AnyArc::downcast_ref`). `raw_arg` went: a legacy controller takes the `Raw`
+//!   arm's two members itself and refuses the others.
 //! - LZ's `IntrFn` (`sys/arch/arm64/include/intr.rs`, the same as `<machine/intr.h>`'s of
 //!   `sys/machine/intr.rs`) is this module's; `bsd`'s header re-exports it.
 
@@ -71,6 +75,7 @@ use core::ffi::c_void;
 use core::ptr;
 
 use hal::cpu::clock::ClockFrame;
+use hal::mem::pool::AnyArc;
 
 /// An interrupt handler, `int (*)(void *)`: nonzero when the interrupt was the device's.
 pub type IntrFn = fn(*mut c_void) -> i32;
@@ -81,6 +86,10 @@ pub enum IntrHandler {
     /// A handler of `bsd`'s and its `void *` argument as an exposed address (`0` is `NULL`,
     /// which gets the frame's address, the C's rule).
     Raw(IntrFn, usize),
+    /// A native handler established with a `NULL` argument: it reads the frame.
+    Frame(fn(&ClockFrame) -> i32),
+    /// A native handler and its softc's counted handle, named back by its type.
+    Shared(fn(&AnyArc) -> i32, AnyArc),
 }
 
 impl IntrHandler {
@@ -88,17 +97,11 @@ impl IntrHandler {
     /// frame)`. Returns what the handler returned (nonzero: it was the device's).
     #[inline]
     pub fn call(&self, frame: &ClockFrame) -> i32 {
-        match *self {
+        match self {
             IntrHandler::Raw(func, 0) => func(ptr::from_ref(frame).cast_mut().cast::<c_void>()),
-            IntrHandler::Raw(func, arg) => func(ptr::with_exposed_provenance_mut::<c_void>(arg)),
-        }
-    }
-
-    /// The handler's argument as the C's `void *` (`ih_arg`), the frame not substituted: what a
-    /// legacy controller is given.
-    pub fn raw_arg(&self) -> *mut c_void {
-        match *self {
-            IntrHandler::Raw(_, arg) => ptr::with_exposed_provenance_mut::<c_void>(arg),
+            IntrHandler::Raw(func, arg) => func(ptr::with_exposed_provenance_mut::<c_void>(*arg)),
+            IntrHandler::Frame(func) => func(frame),
+            IntrHandler::Shared(func, arg) => func(arg),
         }
     }
 }
@@ -132,8 +135,32 @@ mod tests {
         let arg = ptr::from_ref(&softc).expose_provenance();
         assert_eq!(IntrHandler::Raw(record, arg).call(&frame), 1);
         assert_eq!(SEEN.load(Ordering::Relaxed), arg);
-        assert_eq!(IntrHandler::Raw(record, arg).raw_arg().addr(), arg);
-        assert!(IntrHandler::Raw(record, 0).raw_arg().is_null());
+    }
+
+    fn by_frame(frame: &ClockFrame) -> i32 {
+        SEEN.store(ptr::from_ref(frame).addr(), Ordering::Relaxed);
+        2
+    }
+
+    fn by_softc(arg: &AnyArc) -> i32 {
+        match arg.downcast_ref::<u64>() {
+            Some(v) => *v as i32,
+            None => -1,
+        }
+    }
+
+    #[test]
+    fn a_native_handler_gets_the_frame_or_its_softc() {
+        use hal::mem::malloc::{M_WAITOK, MArc};
+
+        crate::testutil::install();
+        let frame = ClockFrame::default();
+        assert_eq!(IntrHandler::Frame(by_frame).call(&frame), 2);
+        let softc = MArc::erase(MArc::new(127, M_WAITOK, 7u64).unwrap());
+        let h = IntrHandler::Shared(by_softc, softc);
+        assert_eq!(h.clone().call(&frame), 7);
+        let other = MArc::erase(MArc::new(127, M_WAITOK, 7u32).unwrap());
+        assert_eq!(IntrHandler::Shared(by_softc, other).call(&frame), -1);
     }
 }
 /* </TESTS> */

@@ -76,10 +76,11 @@
 //! - N7.2a2: [`intr_disable`] and [`intr_enable`] are public, for the interrupt controllers in
 //!   the kernel (`ampintc_setipl`'s section, `ampintc_attach`'s `intr_enable()`, and the IRQ
 //!   dispatch's pair through [`crate::cpu::intr::unmasked`]). No `// SAFETY:` of `hal` rests
-//!   on the mask staying up across a call out of `hal`: the sections that hold an
-//!   [`IntrGuard`] (the kernel lock's depth and ticket, the mutexes' parking lots, the soft
-//!   interrupts' pass) call nothing outside `hal` under it, and a lifted mask there would cost
-//!   a nested interrupt's deadlock, never memory safety.
+//!   on the mask staying up across a call out of `hal`: the lock sections that hold an
+//!   [`IntrGuard`] (the kernel lock's depth and ticket, the mutexes' parking lots) call
+//!   nothing outside `hal` under it, the soft interrupts' pass calls only the controller's
+//!   `setipl` (as the C's `arm_do_pending_intr`) and rests nothing on its guard, and a lifted
+//!   mask in any of them would cost a nested interrupt's deadlock, never memory safety.
 
 use core::marker::PhantomData;
 use core::sync::atomic::{

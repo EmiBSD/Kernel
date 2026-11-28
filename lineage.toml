@@ -1711,7 +1711,7 @@ notes = "M5-b2: enodev, enxio, eopnotsupp, nullop, assertwaitok (SMR_ASSERT_NONC
 rust = "sys/bsd/arch/arm64/arm64/intr.rs"
 lz = ["sys/arch/arm64/arm64/intr.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/hal/cpu/intr.rs", "sys/hal/arch/arm64/trap.rs", "sys/kernel/dev/arm64/intr.rs"]
+adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/hal/cpu/intr.rs", "sys/hal/arch/arm64/trap.rs", "sys/kernel/dev/arm64/intr.rs", "sys/kernel/dev/intr.rs"]
 notes = "N7.2a2 (U12): LegacyIc::has_msi (ic_establish_msi != NULL); new_handle, NativeIntrHandle::new and native_intr_handle lent (pub(crate)) to acpi_machdep and acpipci, whose walks are the kernel's registry. N7.2a1: the adapter over kernel::dev::arm64::intr under LZ's names and signatures: LegacyIc (a driver's struct interrupt_controller as the kernel's trait), arm_intr_register_fdt registering it and linking the mirror list interrupt_controllers() serves (legacy structures only), handles as LZ's MachineIntrHandle on a legacy controller and a NativeIntrHandle (null ih_ic) on a native one, the pre-registration, cell parsing and lists gone; the clock table, the spl table and the IPI slot stay (N7.2b2, N7.2a3, N7.2a2). M2: arm_clock_func, arm_clock_register, arm_dflt_delay, delay, cpu_initclocks, cpu_startclock, setstatclockrate; M4: arm_dflt_irq/fiq, arm_irq/fiq_dispatch, arm_cpu_irq/fiq, arm_smask, arm_intr_func with the arm_dflt_* spl, arm_do_pending_intr, arm_set_intr_handler, arm_init_smask, splraise/spllower/splx/softintr, arm_splassert_check, intr_enable/disable_wakeup, arm_intr_get_parent, the pre-registration (arm_intr_prereg_*, arm_intr_init_fdt), arm_intr_register_fdt, arm_intr_establish_fdt/_cpu/_idx/_idx_cpu, arm_intr_disestablish_fdt, arm_intr_enable/disable, arm_intr_parent_establish/disestablish_fdt, arm_intr_route, arm_intr_cpu_enable, intr_barrier, intr_set_wakeup (lists behind a Sync wrapper, NonNull handles); the imap/msi variants and arm_intr_map_msi come with PCI (M5), the IPIs with MULTIPROCESSOR; M11a: the MULTIPROCESSOR IPI implementation: intr_send_ipi_func (a StaticCell set by the controller's attach), arm_send_ipi, arm_no_send_ipi; SOFTINTR_XCALL stays out (NXCALL 0 on arm64); ; M12: arm_intr_map_msi (msi-map with msi-map-mask and #msi-cells, else the first msi-parent up the tree), arm_intr_establish_fdt_imap/_imap_cpu (interrupt-map with interrupt-map-mask, the parent's #address-cells; reg as a 4-cell slice), arm_intr_establish_fdt_msi/_msi_cpu (through ic_establish_msi); interrupt_controllers() for ampintc.c's extern use of the list; N4.5c: gains ArmIntrHardware (hal::cpu::intr::IntrHardware over ARM_INTR_FUNC, registered by initarm); arm_smask, arm_init_smask, the arm_dflt_* bodies, arm_do_pending_intr and softintr forward to hal::cpu::intr (the table and ci_cpl/ci_ipending/ci_idepth are hal's)"
 
 [[module]]
@@ -21348,6 +21348,13 @@ lz = "sys/arch/arm64/dev/mainbus.rs::ca_match"
 native = []
 kind = "dropped"
 reason = "(*cf->cf_attach->ca_match)(...) by hand: the submatch closures call the row driver's DriverOps::probe"
+
+[[module]]
+rust = "sys/kernel/dev/arm64/ampintc.rs"
+crate = "kernel"
+lz = ["sys/arch/arm64/dev/ampintc.rs"]
+status = "redesigned"
+notes = "N7.2a2: ampintc(4) and ampintcmsi as kernel DriverOps (AMPINTC_CA, AMPINTCMSI_CA; probe over the bus's FdtArgs). struct ampintc_softc built whole at attach as AmpintcSoftc (Mmio<Gicd>, Mmio<Gicc>, the queues an MArray of Intrq with atomics, masks and IPI reasons atomics, a Mutexed<()> serialising establish), kept in AMPINTC (OnceStatic<MArc>); it implements hal's IntrHardware (installed itself, the C's arm_set_intr_handler) and the core's InterruptController. struct intrhand (Intrhand) immutable, MBox::leak'ed at establish, linked on a hal List, never freed (P12: unlinked, counter detached, marked dead), walked by the dispatch with no lock; the handler an IntrHandler (the IPI's Shared over the softc's MArc). The GICv2m frame AmpintcMsiSoftc: a mutexed MArray of slots holding the parent's IntrHandle by value, the cookie the slot index, the parent found in the core's registry, the doorbell's address the bus's translation. ampintc_activate (DVACT_RESUME) not ported, as in LZ"
 
 [[module]]
 rust = "sys/kernel/dev/arm64/simplebus.rs"

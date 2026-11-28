@@ -81,10 +81,9 @@
 //! ([`arm_intr_init_fdt`], from mainbus's attach): a handler established before its
 //! controller attaches is recorded, and established for real when the controller registers.
 //!
-//! `spl(9)` and the controller's `spl` table are `hal::cpu::intr`'s (N4.5c, the
-//! `IntrHardware` bridge until N7.2a3), the clock table and `delay(9)` are still `bsd`'s
-//! (`arch/arm64/arm64/intr.rs`, N7.2b2), and the IPIs follow with the first native controller
-//! (N7.2a2).
+//! `spl(9)` and the controller's `spl` table are `hal::cpu::intr`'s (N4.5c; the controller
+//! installs itself since N7.2a2), the clock table and `delay(9)` are still `bsd`'s
+//! (`arch/arm64/arm64/intr.rs`, N7.2b2), and the IPI sender is a slot here (N7.2a2).
 //!
 //! ## Deviations
 //! - A pre-registration's record is never freed: the C frees it when its handler is
@@ -130,6 +129,9 @@
 //! - LZ's empty-phandle step of the `interrupts-extended` walk did not count the empty entry
 //!   as an interrupt (a `while` whose `continue` skipped `i += 1`); the C's `for` counts it:
 //!   the C's is kept here.
+//! - N7.2a2: `intr_send_ipi_func`, a `StaticCell` of `bsd`'s written by the controller's
+//!   attach, -> a set-once slot here ([`intr_set_send_ipi`], one function, not a table, so
+//!   no trait), read by [`arm_send_ipi`] by CPU number.
 //! - N7.2a2: the callers that find a controller themselves and call its entry by hand
 //!   (`acpi_intr_establish`, `acpipci`'s MSIs, a GICv2m frame on its GIC: `ic->ic_establish`
 //!   then a `malloc`ed `machine_intr_handle` filled with `ic` and the answer) call
@@ -633,6 +635,10 @@ impl Default for IntrRegistry {
 /// The kernel's registry.
 static INTR: IntrRegistry = IntrRegistry::new();
 
+/// `intr_send_ipi_func`: how the interrupt controller sends an IPI, set once by its attach
+/// (`ampintc_attach`) on the boot CPU before any application processor starts.
+static INTR_SEND_IPI_FUNC: OnceStatic<fn(usize, i32)> = OnceStatic::new();
+
 /// `struct interrupt_controller`'s entry points. A default method is the C's `NULL` entry:
 /// what the C's caller does when it finds one (nothing, or the `KASSERT` it makes).
 pub trait InterruptController: Sync + 'static {
@@ -1044,6 +1050,29 @@ pub fn intr_set_wakeup(ih: IntrHandle) {
 pub fn controllers() -> impl Iterator<Item = IcRef> {
     INTR.controllers.iter()
 }
+
+/// `intr_send_ipi_func = f`: the attaching controller's IPI sender (`f(cpu, id)`), once; a
+/// second is `panic(9)` (one controller sends the machine's IPIs).
+pub fn intr_set_send_ipi(f: fn(usize, i32)) {
+    if INTR_SEND_IPI_FUNC.set(f).is_err() {
+        kpanic(format_args!("intr_send_ipi_func: set twice"));
+    }
+}
+
+/// The controller's IPI sender, `None` before a native controller set one (`bsd`'s legacy
+/// GICv3 keeps its own slot until N7.2a3).
+pub fn intr_send_ipi_func() -> Option<fn(usize, i32)> {
+    INTR_SEND_IPI_FUNC.get().copied()
+}
+
+/// `arm_send_ipi(ci, id)`: IPI `id` (`ARM_IPI_*`) to CPU `cpu`; `arm_no_send_ipi`'s
+/// `panic(9)` before a controller set its sender.
+pub fn arm_send_ipi(cpu: usize, id: i32) {
+    match intr_send_ipi_func() {
+        Some(f) => f(cpu, id),
+        None => kpanic(format_args!("arm_send_ipi() called: no ipi function")),
+    }
+}
 /* </CODE> */
 
 /* <TESTS> */
@@ -1126,13 +1155,11 @@ mod tests {
             h: IntrHandler,
             name: &'static str,
         ) -> Option<IcCookie> {
-            self.push(Call::Establish(
-                cell.to_vec(),
-                level,
-                cpu,
-                h.raw_arg().addr(),
-                name,
-            ));
+            let arg = match h {
+                IntrHandler::Raw(_, arg) => arg,
+                _ => usize::MAX,
+            };
+            self.push(Call::Establish(cell.to_vec(), level, cpu, arg, name));
             self.answer()
         }
 
