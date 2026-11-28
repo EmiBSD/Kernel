@@ -39,12 +39,12 @@
 //!   attach records here ([`record_psci_0_1`]): its `system_off`, `system_reset` and `cpu_off`
 //!   are admitted, its `cpu_on` and `cpu_suspend` refused like their 1.x forms. Each attach
 //!   replaces the record (`None` for a 1.x node), so the last node wins as the C's `psci_sc =
-//!   sc` makes it, until mainbus seals it ([`seal_psci_0_1`]) after its early passes, whether
-//!   or not a psci node attached; a [`call`] before the seal reads the record as it is then
-//!   and leaves it open (psci(4)'s attach asks the firmware's version right after its
-//!   record). Once sealed the record never changes and a record fails, so once
-//!   autoconfiguration passes the early devices no code can name an id of its choosing as one
-//!   of these, nor widen what [`call`] admits. Before the seal the trust is the boot path's
+//!   sc` makes it, until mainbus seals it ([`seal_psci_0_1`]) at the end of its attach, once
+//!   every device under it is attached, whether or not a psci node attached; a [`call`]
+//!   before the seal reads the record as it is then and leaves it open (psci(4)'s attach asks
+//!   the firmware's version right after its record). Once sealed the record never changes and
+//!   a record fails, so once autoconfiguration has attached mainbus's devices no code can
+//!   name an id of its choosing as one of these, nor widen what [`call`] admits. Before the seal the trust is the boot path's
 //!   (decision 30's kind): nothing but psci(4)'s attach records, which no check here can
 //!   enforce.
 //!
@@ -58,9 +58,10 @@
 //! The instruction is the machine's (`hal::arch::arm64::smccc`); the host double answers from
 //! a per-thread fake firmware a test installs ([`set_firmware`]).
 //!
-//! The record is a seqlock of words (the idiom of `hal::sync::seqlock::StrSlot`): psci(4)'s
-//! attach and mainbus's seal are its writers, one at a time (autoconfiguration's thread; a
-//! second writer at once waits, so a record is never torn), and every call reads it
+//! The record is a seqlock of atomic words, the protocol of `docs/IDIOMS.md`'s timehands
+//! row (`kernel::time::tc`'s `Timehands`) with writers that claim the generation by a
+//! compare-and-swap and a seal: psci(4)'s attach and mainbus's seal are its writers, one at a
+//! time (a second writer at once waits, so a record is never torn), and every call reads it
 //! without a lock or a level change, as the C reads `psci_sc`, before the seal and after it
 //! alike (after it the words never change).
 //!
@@ -153,8 +154,13 @@ impl Psci01Record {
     }
 
     /// `f` as the one writer: `seq` made odd for its stores and even after; a writer that
-    /// finds another under way waits for it (writers run in thread context, never in an
-    /// interrupt handler, so the one it waits for is on another CPU and finishes).
+    /// finds another under way waits for it.
+    ///
+    /// Neither a waiting writer nor a reader ([`Psci01Record::current`]) can spin for ever:
+    /// the only writers, psci(4)'s attach and mainbus's seal, run inside `cpu_configure` at
+    /// `splhigh` (arm64's `autoconf.c`: `mainbus` and every device under it attach there),
+    /// so nothing interrupts a writer on its own CPU, and one on another CPU finishes its
+    /// few stores. The host tests' threads are such other CPUs.
     fn write<R>(&self, f: impl FnOnce(&Self) -> R) -> R {
         let mut g = self.seq.load(Ordering::Relaxed);
         loop {
@@ -244,8 +250,8 @@ pub fn record_psci_0_1(ids: Option<Psci01Ids>) -> bool {
 }
 
 /// Seals the 0.1 record as the attaches left it (none if nothing was recorded): mainbus's
-/// call once its early passes are done, so a machine without a `/psci` node, or with one
-/// that attaches later, leaves no record open to later code.
+/// call at the end of its attach, so a machine without a psci node leaves no record open to
+/// later code.
 pub fn seal_psci_0_1() {
     PSCI_0_1.seal();
 }
@@ -498,6 +504,94 @@ mod tests {
         seal_psci_0_1();
         assert!(!record_psci_0_1(Some(ids)));
         assert!(!admits(0x95c1_ba5e));
+    }
+
+    /// A record whose five ids are all `v`.
+    fn all(v: u32) -> Psci01Ids {
+        Psci01Ids {
+            system_off: v,
+            system_reset: v,
+            cpu_off: v,
+            cpu_on: v,
+            cpu_suspend: v,
+        }
+    }
+
+    /// A reader's snapshot: none, or one record's five equal ids.
+    fn one_record(ids: Option<Psci01Ids>) {
+        if let Some(ids) = ids {
+            let w = [
+                ids.system_off,
+                ids.system_reset,
+                ids.cpu_off,
+                ids.cpu_on,
+                ids.cpu_suspend,
+            ];
+            assert!(w.iter().all(|&x| x == w[0]), "a torn record: {ids:?}");
+            assert!(w[0] == 0xa || w[0] == 0xb, "{ids:?}");
+        }
+    }
+
+    #[test]
+    fn readers_never_mix_two_records_before_or_after_the_seal() {
+        use std::sync::atomic::AtomicU64;
+        let r = &Psci01Record::new();
+        let stop = &AtomicBool::new(false);
+        let reads = &AtomicU64::new(0);
+        std::thread::scope(|s| {
+            let readers: Vec<_> = (0..2)
+                .map(|_| {
+                    s.spawn(move || {
+                        while !stop.load(Ordering::Acquire) {
+                            one_record(r.current());
+                            reads.fetch_add(1, Ordering::Relaxed);
+                        }
+                    })
+                })
+                .collect();
+            // Two writers alternate A..A and B..B while the record is open.
+            let writers: Vec<_> = [0xa, 0xb]
+                .map(|v| {
+                    s.spawn(move || {
+                        for _ in 0..20_000 {
+                            assert!(r.record(Some(all(v))));
+                        }
+                    })
+                })
+                .into_iter()
+                .collect();
+            for w in writers {
+                w.join().unwrap();
+            }
+            let before = reads.load(Ordering::Relaxed);
+            r.seal();
+            let sealed = r.current();
+            one_record(sealed);
+            assert!(sealed.is_some());
+            // After the seal the writers fail, and the readers see the sealed record only.
+            let late: Vec<_> = [0xa, 0xb]
+                .map(|v| {
+                    s.spawn(move || {
+                        for _ in 0..5_000 {
+                            assert!(!r.record(Some(all(v))));
+                            assert_eq!(r.current(), sealed);
+                        }
+                    })
+                })
+                .into_iter()
+                .collect();
+            for w in late {
+                w.join().unwrap();
+            }
+            while reads.load(Ordering::Relaxed) < before + 1000 {
+                std::thread::yield_now();
+            }
+            stop.store(true, Ordering::Release);
+            for h in readers {
+                h.join().unwrap();
+            }
+            assert_eq!(r.current(), sealed);
+        });
     }
 
     #[test]

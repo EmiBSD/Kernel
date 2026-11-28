@@ -61,13 +61,6 @@
 //!   `system_off`, `system_reset` and `cpu_off`, recorded at its attach; every other call is
 //!   a fast call of the Arm architecture or of PSCI (stricter than the C's `smccc()`, which
 //!   passes any id; no caller at the pin passes another).
-//! - A node that attaches after mainbus has sealed the SMCCC call's 0.1 record (after its
-//!   early passes) cannot change that record, so it does not replace an earlier node's softc
-//!   either, where the C's `psci_sc` would name it: it prints its line and the earlier node
-//!   stays the one every call uses (the first such node, when none attached before, becomes
-//!   the softc, and a 0.1 one says its ids were not admitted). No tree reaches this: a psci
-//!   node is `fdt? early 1`, so `/psci` (mainbus's own pass) and any other node the root's
-//!   walk offers attach before the seal, where the last one wins as in the C.
 //!
 //! ## Redesign
 //! - `psci_ca`/`psci_cd` -> [`PSCI`], a [`DriverOps`] (decision 46) whose probe reads the bus's
@@ -80,7 +73,16 @@
 //!   the seal points it at its own softc, so the last node wins, and a call holds the
 //!   `&'static` it read (`psci_install`); the two members attach writes after
 //!   (`sc_smccc_version`, `sc_system_suspend`) are atomics. The device's softc is empty
-//!   ([`PsciDev`]).
+//!   ([`PsciDev`]), so each attach makes two `M_DEVBUF` allocations where the C makes one
+//!   (the device's and the kept `Psci`, once per node at boot).
+//! - mainbus seals the SMCCC call's 0.1 record at the end of its attach, once every device
+//!   under it is attached (a psci node at any depth: a simple-bus's early passes run inside
+//!   its own attach), so the record and the softc are always the last node's, as the C's
+//!   `psci_sc`. Only a node attached after that could find the record sealed; none is
+//!   (autoconfiguration attaches every device-tree node under mainbus, and
+//!   `config_mountroot` defers only the framebuffer), and `psci_install` keeps such a node
+//!   fail-closed: it does not replace an earlier softc, and a 0.1 one alone says its ids were
+//!   not admitted.
 //! - `sc_callfn` (a pointer to `hvc_call` or `smc_call`, which LZ reached through
 //!   `machine::fdt`'s `Fdt` trait) -> a `hal::cpu::smccc::Conduit` held by value; every call is
 //!   `hal::cpu::smccc::call`, the SMCCC value class (P44).
@@ -385,7 +387,7 @@ pub static PSCI: PsciDriver = PsciDriver;
 static PSCI_UNITS: UnitTable = UnitTable::new();
 
 /// `psci_sc`: the softc of the last attach before the SMCCC record's seal (see the module's
-/// deviations for one after it).
+/// redesign for one after it).
 static PSCI_SC: SyncLink<Psci> = SyncLink::new();
 
 /// `psci_sc`, if `psci_attach` has run.
@@ -437,8 +439,8 @@ impl DriverOps for PsciDriver {
 /// `psci_sc = sc` into `slot`: `new`, kept for ever, becomes the softc the calls use when the
 /// SMCCC call's 0.1 record took its ids (`recorded`: the record was open, so it replaces any
 /// earlier attach's, the last node winning as in the C) or when no softc is there yet; else
-/// (a node after the seal while another's softc and record are in force: the module's
-/// deviations) `Err(new)`, and the slot keeps the earlier one.
+/// (a node after the seal while another's softc and record are in force: none, the module's
+/// redesign) `Err(new)`, and the slot keeps the earlier one.
 fn psci_install(slot: &SyncLink<Psci>, new: Psci, recorded: bool) -> Result<&'static Psci, Psci> {
     if !recorded && !slot.is_none() {
         return Err(new);
@@ -463,7 +465,7 @@ pub fn psci_attach(dev: &DevRef, fa: &FdtArgs) {
         Ok(sc) => sc,
         Err(late) => {
             // A node after the seal: its line, as the C prints it; the earlier node stays the
-            // one the calls use (the module's deviations).
+            // one the calls use (none reaches this: the module's redesign).
             printf(format_args!("{}", late.probe_versions()));
             return;
         }

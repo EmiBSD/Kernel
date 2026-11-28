@@ -94,7 +94,7 @@ pub(crate) fn trap(conduit: Conduit, fid: u32, a1: u64, a2: u64, a3: u64) -> u64
             // call of the Arm architecture, or one of PSCI's function numbers (0x00-0x15 of
             // the standard secure services, PSCI 1.3's) that takes no entry point, or a PSCI
             // 0.1 firmware's `system_off`, `system_reset` or `cpu_off` as its device tree
-            // names them. That record is sealed by mainbus after its early passes, and never
+            // names them. That record is sealed by mainbus at the end of its attach, and never
             // changes after; before the seal, only psci(4)'s attaches record it, the boot
             // path's trust (decision 30's kind), which no check here enforces (and the
             // firmware is trusted as the C trusts it). So every argument is a value the firmware reads as a
