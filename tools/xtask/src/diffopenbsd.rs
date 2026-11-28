@@ -909,7 +909,7 @@ fn probe(
         crate::hwopts::poll_monitor(&vm.since(mark))?;
     }
     // The prompt after `sh` stays unread when a script follows: its first pair may wait for it.
-    let prompt_at = vm.mark();
+    let prompt_at = vm.cursor();
     vm.wait_for("# ", Duration::from_secs(60))?;
     let out = vm.since(mark);
     let mut outcome = Ok(());
