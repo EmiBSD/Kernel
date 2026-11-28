@@ -132,7 +132,13 @@
 //!   address the device is told (`AGINTC_DMA_DVA`: the segment after every bus's
 //!   `dma-ranges`, `FdtBus::dma_addr`). A write is a checked volatile store, then
 //!   `DmaBuf::sync` (`cpu_dcache_wb_range`) and `hal::cpu::icc::dsb_sy`, the C's "make
-//!   globally visible". The indirect device table's second level, which the C leaks
+//!   globally visible". The buffer is always made by the non-coherent provider
+//!   (`bus_dma_memory(false)`), whatever the bus's tag says: the C writes the lines back
+//!   unconditionally (`agintc_dmamem_alloc`, the table writes), because the GIC and the ITS
+//!   read the tables non-cacheable while the page system zeroed them through the cached
+//!   direct map; on a coherent tag `DmaBuf::sync` would be a barrier alone and leave those
+//!   dirty lines to be evicted over the ITS's commands later. The mapping stays uncached
+//!   (`BUS_DMA_NOCACHE`). The indirect device table's second level, which the C leaks
 //!   (`FIXME: leaks`), is a leaked `MBox` of its buffer: the ITS reads it for ever.
 //! - `struct gits_cmd`, `memcpy`ed into the queue -> [`GitsCmd::words`], four little-endian
 //!   double words, the same bytes; the queue and its index in one mutex with the ITS's
@@ -934,8 +940,6 @@ pub struct AgintcMsiSoftc {
     m: Mmio<Gits>,
     /// `sc_dmat`'s bus: the DMA addresses of the tables.
     bus: FdtBusRef,
-    /// `sc_dmat`'s coherence.
-    coherent: bool,
     /// `sc_msi_addr`.
     msi_addr: u64,
     /// `sc_msi_delta`.
@@ -1217,15 +1221,13 @@ pub fn agintc_attach(dev: &DevRef, fa: &FdtArgs) {
     let mut nlpi = 0;
     if typer & GICD_TYPER_LPIS != 0 {
         // Allocate redistributor tables
-        let Some(p) = agintc_dmamem_alloc(&fa.bus, fa.dma_coherent, GICR_PROP_SIZE, GICR_PROP_SIZE)
-        else {
+        let Some(p) = agintc_dmamem_alloc(&fa.bus, GICR_PROP_SIZE, GICR_PROP_SIZE) else {
             printf(format_args!(": can't alloc LPI config table\n"));
             agintc_attach_unmap(d, rbase, psw);
             return;
         };
         prop = Some(p);
-        let Some(p) = agintc_dmamem_alloc(&fa.bus, fa.dma_coherent, GICR_PEND_SIZE, GICR_PEND_SIZE)
-        else {
+        let Some(p) = agintc_dmamem_alloc(&fa.bus, GICR_PEND_SIZE, GICR_PEND_SIZE) else {
             printf(format_args!(": can't alloc LPI pending table\n"));
             agintc_attach_unmap(d, rbase, psw);
             return;
@@ -2408,7 +2410,6 @@ fn agintc_msi_baser_pgsz(m: &Mmio<Gits>, i: usize) -> u64 {
 struct ItsInit<'a> {
     m: Mmio<Gits>,
     bus: &'a FdtBusRef,
-    coherent: bool,
     msi_addr: u64,
     msi_delta: u64,
     xname: [u8; 16],
@@ -2449,7 +2450,6 @@ pub fn agintc_msi_attach(dev: &DevRef, fa: &FdtArgs) {
     let init = ItsInit {
         m,
         bus: &fa.bus,
-        coherent: fa.dma_coherent,
         msi_addr,
         msi_delta,
         xname,
@@ -2478,7 +2478,6 @@ fn agintc_msi_init(
     let ItsInit {
         m,
         bus,
-        coherent,
         msi_addr,
         msi_delta,
         xname,
@@ -2499,7 +2498,7 @@ fn agintc_msi_init(
     };
 
     // Set up command queue.
-    let Some(cmdq) = agintc_dmamem_alloc(bus, coherent, GITS_CMDQ_SIZE, GITS_CMDQ_SIZE) else {
+    let Some(cmdq) = agintc_dmamem_alloc(bus, GITS_CMDQ_SIZE, GITS_CMDQ_SIZE) else {
         printf(format_args!(": can't alloc command queue\n"));
         crate::vm::km::unmap_device(m);
         return None;
@@ -2543,7 +2542,7 @@ fn agintc_msi_init(
         deviceid_max = max;
 
         // Allocate table.
-        let Some(table) = agintc_dmamem_alloc(bus, coherent, size, dtt_pgsz) else {
+        let Some(table) = agintc_dmamem_alloc(bus, size, dtt_pgsz) else {
             printf(format_args!(": can't alloc translation table\n"));
             crate::vm::km::unmap_device(m);
             return None;
@@ -2582,7 +2581,7 @@ fn agintc_msi_init(
         let size = roundup((1usize << cidbits) * cte_sz, ctt_pgsz);
 
         // Allocate table.
-        let Some(table) = agintc_dmamem_alloc(bus, coherent, size, ctt_pgsz) else {
+        let Some(table) = agintc_dmamem_alloc(bus, size, ctt_pgsz) else {
             printf(format_args!(": can't alloc translation table\n"));
             crate::vm::km::unmap_device(m);
             return None;
@@ -2613,7 +2612,6 @@ fn agintc_msi_init(
         AgintcMsiSoftc {
             m,
             bus: bus.clone(),
-            coherent,
             msi_addr,
             msi_delta,
             cmdq: Mutexed::new(IPL_NONE, ItsCmdq { q: cmdq, idx: 0 }),
@@ -2716,7 +2714,7 @@ pub fn agintc_msi_create_device_table(sc: &AgintcMsiSoftc, deviceid: u32) -> Res
     }
 
     // FIXME: leaks
-    let Some(l2) = agintc_dmamem_alloc(&sc.bus, sc.coherent, sc.dtt_pgsz, sc.dtt_pgsz) else {
+    let Some(l2) = agintc_dmamem_alloc(&sc.bus, sc.dtt_pgsz, sc.dtt_pgsz) else {
         return Err(Errno::ENOMEM);
     };
 
@@ -2742,7 +2740,7 @@ pub fn agintc_msi_create_device(
         return None;
     }
 
-    let itt = agintc_dmamem_alloc(&sc.bus, sc.coherent, 32 * sc.ite_sz, PAGE_SIZE)?;
+    let itt = agintc_dmamem_alloc(&sc.bus, 32 * sc.ite_sz, PAGE_SIZE)?;
     let itt_dva = itt.dva;
     let Some(md) = MBox::new(
         M_DEVBUF,
@@ -2964,14 +2962,12 @@ impl InterruptController for AgintcMsiSoftc {
 }
 
 /// `agintc_dmamem_alloc`: `size` bytes of zeroed, physically contiguous memory aligned to
-/// `align`, mapped uncached, through the bus's DMA tag (its coherence and its `dma-ranges`),
-/// made globally visible; `None` when there is none.
-fn agintc_dmamem_alloc(
-    bus: &FdtBusRef,
-    coherent: bool,
-    size: usize,
-    align: usize,
-) -> Option<AgintcDmamem> {
+/// `align`, mapped uncached, at the address the bus's `dma-ranges` give it, made globally
+/// visible; `None` when there is none. The provider is the non-coherent one whatever the
+/// bus's tag: every write-back of the C (`cpu_dcache_wb_range`, here and at each table write)
+/// is unconditional, and on a coherent tag `DmaBuf::sync` would not write back (see the
+/// module's Redesign).
+fn agintc_dmamem_alloc(bus: &FdtBusRef, size: usize, align: usize) -> Option<AgintcDmamem> {
     let req = DmaReq {
         size,
         align,
@@ -2979,7 +2975,7 @@ fn agintc_dmamem_alloc(
         nocache: true,
         ..DmaReq::default()
     };
-    let buf = DmaBuf::alloc(crate::vm::km::bus_dma_memory(coherent), &req).ok()?;
+    let buf = DmaBuf::alloc(crate::vm::km::bus_dma_memory(false), &req).ok()?;
     let dva = bus.dma_addr(buf.seg().addr, size as u64);
     let adm = AgintcDmamem { buf, dva };
 
@@ -3067,7 +3063,7 @@ mod tests {
             let root = FdtBus::root();
             Mutexed::new(
                 IPL_NONE,
-                agintc_dmamem_alloc(&root, false, GICR_PROP_SIZE, GICR_PROP_SIZE).unwrap(),
+                agintc_dmamem_alloc(&root, GICR_PROP_SIZE, GICR_PROP_SIZE).unwrap(),
             )
         });
         let mbi = MArray::new(M_DEVBUF, M_WAITOK, mbi.len(), |i| AgintcMbiRange {
@@ -3620,7 +3616,6 @@ mod tests {
         let init = ItsInit {
             m,
             bus: &root,
-            coherent: false,
             msi_addr: 0x0808_0000 + GITS_TRANSLATER,
             msi_delta: 0,
             xname,
@@ -3669,7 +3664,6 @@ mod tests {
         let init = ItsInit {
             m,
             bus: &root,
-            coherent: false,
             msi_addr: 0,
             msi_delta: 0,
             xname: [0; 16],
@@ -3757,6 +3751,33 @@ mod tests {
             InterruptController::disestablish(its, c);
         }));
         assert!(again.is_err(), "a dead MSI is refused");
+    }
+
+    #[test]
+    fn a_table_is_written_back_even_on_a_coherent_bus() {
+        // A `dma-coherent` bus (its tag keeps DMA coherent): the table's buffer is still the
+        // non-coherent provider's, so each `publish` is the C's write-back (`DmaBuf::sync`
+        // of a non-coherent buffer: hal's `a_coherent_sync_touches_no_cache_line_and_the_
+        // others_do_the_cs`), and the address is the bus's.
+        use crate::dev::ofw::fdt::OF_finddevice;
+        use crate::dev::ofw::fdt::testfdt::{FdtBuilder, install};
+
+        let _g = setup();
+        let mut b = FdtBuilder::new();
+        b.begin(b"");
+        b.begin(b"soc");
+        b.prop(b"dma-coherent", b"");
+        b.end();
+        b.end();
+        let _t = install(b.finish());
+        let root = FdtBus::root();
+        let soc = FdtBus::child(&root, OF_finddevice(b"/soc"), 2, 2);
+        assert!(soc.dma_coherent(), "the double: a coherent tag");
+        let mut t = agintc_dmamem_alloc(&soc, GITS_CMDQ_SIZE, GITS_CMDQ_SIZE).unwrap();
+        assert!(!t.buf.is_coherent(), "written back whatever the tag");
+        assert_eq!(t.dva, t.buf.seg().addr, "no dma-ranges: the address itself");
+        t.set_u64(3, 0x1234);
+        assert_eq!(t.get_u64(3), 0x1234);
     }
 
     #[test]
