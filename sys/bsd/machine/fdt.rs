@@ -134,13 +134,6 @@ pub trait Fdt {
     /// `hvc_call(a0, a1, a2, a3)`: as `smc_call`, to the hypervisor.
     fn hvc_call(a0: u64, a1: u64, a2: u64, a3: u64) -> u64;
 
-    /// `cpuresetfn = f` (`extern void (*cpuresetfn)(void)` in `machdep.c`): the function
-    /// `boot(9)` calls to reset the machine. Only a driver that attaches registers one.
-    fn set_cpuresetfn(f: fn());
-
-    /// `powerdownfn = f`: the function `boot(9)` calls to power the machine off.
-    fn set_powerdownfn(f: fn());
-
     /// `lid_action` (`extern int lid_action`, `machdep.c`): what closing the lid does
     /// (`machdep.lidaction`), which `gpiokeys` reads for a lid switch.
     fn lid_action() -> i32;
@@ -156,14 +149,15 @@ pub fn hvc_call(a0: u64, a1: u64, a2: u64, a3: u64) -> u64 {
     Machine::hvc_call(a0, a1, a2, a3)
 }
 
-/// `cpuresetfn = f` on the selected machine.
+/// `cpuresetfn = f`: the kernel's slot (`kernel::base::reboot`, N7.2b2a), which `boot(9)`
+/// reads. Scaffolding (docs/SCAFFOLDING.md) for `bsd`'s psci(4) until it moves.
 pub fn set_cpuresetfn(f: fn()) {
-    Machine::set_cpuresetfn(f)
+    kernel::base::reboot::set_cpuresetfn(f);
 }
 
-/// `powerdownfn = f` on the selected machine.
+/// `powerdownfn = f`: the kernel's slot, as [`set_cpuresetfn`].
 pub fn set_powerdownfn(f: fn()) {
-    Machine::set_powerdownfn(f)
+    kernel::base::reboot::set_powerdownfn(f);
 }
 
 /// `lid_action` on the selected machine.

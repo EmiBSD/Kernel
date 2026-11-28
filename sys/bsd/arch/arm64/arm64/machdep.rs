@@ -132,6 +132,10 @@
 //!   `hal::cpu::trap::set_exec_regs`, one borrow of `hal`'s `UserFrame`: the frame's
 //!   uniqueness no longer rests on `bsd`'s call graph. The pmap's guard bit and the FPU reset
 //!   stay here.
+//! - N7.2b2a: `cpuresetfn` and `powerdownfn` (two `StaticCell`s written through
+//!   `machine::fdt`'s `Fdt::set_cpuresetfn`/`set_powerdownfn`, read here with an `unsafe` each)
+//!   are the kernel's slots (`kernel::base::reboot::{cpuresetfn, powerdownfn}`), which psci(4)
+//!   fills; `boot()` reads them through the getters.
 
 use core::arch::asm;
 use core::cell::UnsafeCell;
@@ -317,10 +321,6 @@ pub static LID_ACTION: AtomicI32 = AtomicI32::new(1);
 /// `led_blink`: blink the LEDs (`machdep.led_blink`).
 pub static LED_BLINK: AtomicI32 = AtomicI32::new(1);
 static WAITTIME: AtomicI32 = AtomicI32::new(-1);
-/// `cpuresetfn`: the platform's reset hook, registered by its driver.
-pub static CPURESETFN: StaticCell<Option<fn()>> = StaticCell::new(None);
-/// `powerdownfn`: the platform's power-off hook, registered by its driver.
-pub static POWERDOWNFN: StaticCell<Option<fn()>> = StaticCell::new(None);
 /// Room for the relocated UEFI memory map (QEMU's has about 60 descriptors of 48 bytes).
 const MMAP_MAX: usize = 16 * 1024;
 /// `mmap`: the UEFI memory map, relocated by `initarm` (see the module's deviations).
@@ -1519,9 +1519,7 @@ pub fn boot(howto: i32) -> ! {
             if howto & RB_POWERDOWN != 0 {
                 kprintf!("\nAttempting to power down...\n");
                 delay(500_000);
-                // SAFETY: registered by a driver on the boot CPU during autoconfiguration; only
-                // read here.
-                if let Some(powerdown) = unsafe { POWERDOWNFN.read() } {
+                if let Some(powerdown) = kernel::base::reboot::powerdownfn() {
                     powerdown();
                 }
             }
@@ -1543,8 +1541,7 @@ pub fn boot(howto: i32) -> ! {
     // doreset:
     kprintf!("rebooting...\n");
     delay(500_000);
-    // SAFETY: as for `POWERDOWNFN`.
-    if let Some(cpureset) = unsafe { CPURESETFN.read() } {
+    if let Some(cpureset) = kernel::base::reboot::cpuresetfn() {
         cpureset();
     }
     kprintf!("reboot failed; spinning\n");

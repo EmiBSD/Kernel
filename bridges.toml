@@ -214,12 +214,14 @@ for = ["sys/kernel/time/clock.rs"]
 paid_by = "N7"
 
 # bsd: the machine's boot(9) (machdep's: vfs_shutdown, config_suspend_all, the halt or reset),
-# implemented by sys/kern/hal_bridges.rs (BsdMachineBoot), for kernel::base::reboot::reboot. N7.
+# implemented by sys/kern/hal_bridges.rs (BsdMachineBoot), for kernel::base::reboot::reboot.
+# N9 (U14, N7.2b2): arm64's boot() is machdep.rs's, N9's file; psci(4) only fills the reset and
+# power-off slots, the kernel's since N7.2b2a (kernel::base::reboot::set_cpuresetfn).
 # kernel::base::reboot::MachineBoot
 [[bridge]]
 trait = "MachineBoot"
 for = ["sys/kernel/base/reboot.rs"]
-paid_by = "N7"
+paid_by = "N9"
 
 # bsd: the time-of-day chips (struct todr_chip_handle of efi_machdep.rs and plrtc.rs on arm64),
 # implemented by sys/dev/clock_subr.rs (TodrChipHandle), received by kernel::time::todr_attach.
