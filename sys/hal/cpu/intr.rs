@@ -512,14 +512,13 @@ fn run_pending(pcpl: i32, irq: Option<&InIrq>) {
         for (si, ipl) in pass(ipending) {
             c.clear_pending(si_to_irqbit(si));
             setipl(ipl);
-            match irq {
+            if let Some(irq) = irq {
                 // The guard keeps the dispatch's (masked) state for the end.
-                Some(irq) => unmasked(irq, || crate::cpu::softintr::dispatch(si)),
-                None => {
-                    drop(masked.take());
-                    crate::cpu::softintr::dispatch(si);
-                    masked = Some(crate::cpu::intr_disable());
-                }
+                unmasked(irq, || crate::cpu::softintr::dispatch(si));
+            } else {
+                drop(masked.take());
+                crate::cpu::softintr::dispatch(si);
+                masked = Some(crate::cpu::intr_disable());
             }
         }
         // NXCALL > 0: SOFTINTR_XCALL; NXCALL is 0 on arm64 (no xcall(4) in GENERIC).
