@@ -36,6 +36,7 @@
 //! [`UkcIoconf`] (the tables and `change`'s working copy) implements here until N9.1's
 //! registry owns the tables (`bridges.toml`'s `UkcTables`, `docs/SCAFFOLDING.md`).
 
+use core::any::Any;
 use core::ffi::c_void;
 
 #[cfg(feature = "boot_config")]
@@ -46,6 +47,10 @@ use kernel::dev::userconf::UkcTables;
 
 use crate::machine::Machine;
 use crate::sys::device::{Cfdata, Cfdriver, Device, Nam2blk, Pdevinit};
+
+/// The host's presenter's typed argument and the legacy one it lends, for the shim's tests.
+#[cfg(test)]
+pub use crate::arch::current::{HostLegacyArgs, HostTypedArgs};
 
 /// The `ioconf.c` tables as UKC (`user_config`) edits them: the whole of `cfdata[]` with its
 /// free slots, `cfroots[]`, `pdevinit[]`, and the names `config(8)` writes beside them.
@@ -89,6 +94,15 @@ pub trait Autoconf {
     /// `device_register(dev, aux)`: the machine's look at every device before it attaches
     /// (to find the boot device).
     fn device_register(dev: &Device, aux: *mut c_void);
+
+    /// Scaffolding (docs/SCAFFOLDING.md): a native bus's typed attach argument lent to a
+    /// legacy driver as the machine's legacy one (arm64's `FdtArgs` as LZ's
+    /// `FdtAttachArgs`): `f` is called once with its `void *`, valid for the call. `false`,
+    /// with `f` not called, for an argument the machine does not know (the default: a
+    /// machine with no native bus).
+    fn present_aux(_aux: &(dyn Any + Send + Sync), _f: &mut dyn FnMut(*mut c_void)) -> bool {
+        false
+    }
 
     /// `pdevinit[]`: the pseudo-devices `main` attaches, in `ioconf.c`'s order (no
     /// terminating entry).
@@ -135,6 +149,11 @@ pub fn pdevinit() -> &'static [Pdevinit] {
 /// `device_register` on the selected machine.
 pub fn device_register(dev: &Device, aux: *mut c_void) {
     Machine::device_register(dev, aux)
+}
+
+/// `present_aux` on the selected machine.
+pub fn present_aux(aux: &(dyn Any + Send + Sync), f: &mut dyn FnMut(*mut c_void)) -> bool {
+    Machine::present_aux(aux, f)
 }
 
 /// `diskconf` on the selected machine.

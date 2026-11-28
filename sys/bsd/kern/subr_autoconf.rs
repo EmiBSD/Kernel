@@ -75,6 +75,17 @@
 //! table, `device_register`, `boothowto` and `rootvp` are the kernel's [`ConfigGlue`]
 //! (`bridges.toml`).
 //!
+//! Since N7.2b1a the tree may mix both kinds of driver. A `cfdata[]` row may name a native
+//! driver (`Cfdata::native`): the row's [`ConfigRow::driver`] is then the kernel's. A native
+//! node that legacy code names (the parent of a legacy child, a native root) lends it a
+//! shadow header: a legacy header written from the node, made the first time, held by the
+//! node ([`Node::legacy_shadow`]) as an owning `LegacySoftc`, so a legacy child's
+//! `dv_parent` and `node_of` work as for a legacy parent. A native bus's typed argument
+//! ([`Aux::Typed`]) reaches a legacy driver's match, attach and the machine's
+//! `device_register` through the machine's presenter (`machine::autoconf::present_aux`):
+//! a type no presenter knows matches no legacy row. All of it is scaffolding
+//! (docs/SCAFFOLDING.md), gone with the last legacy driver.
+//!
 //! ## Deviations
 //! - `cfdata[]`, `cfroots[]` and `mainbus_cd` come from the machine
 //!   (`machine::autoconf`, written by hand in `sys/arch/<arch>/conf/ioconf.rs` instead of by
@@ -114,7 +125,7 @@ use crate::kassert;
 use crate::kern::init_main::{BOOTHOWTO, rootvp};
 use crate::kern::kern_malloc::{free, malloc, mallocarray};
 use crate::kern::subr_prf::{Str, panic};
-use crate::machine::autoconf::{cfdata, cfroots, device_register, mainbus_cd};
+use crate::machine::autoconf::{cfdata, cfroots, device_register, mainbus_cd, present_aux};
 use crate::sys::device::{
     CfMatch, Cfdata, Cfdriver, CfmatchT, CfprintT, CfscanT, DVF_ACTIVE, Devclass, Device,
     SoftcMatch,
@@ -124,7 +135,9 @@ use crate::sys::malloc::{M_DEVBUF, M_NOWAIT, M_ZERO};
 
 /// The softc a legacy driver's node holds: the `struct device` heading the block LZ's
 /// `config_make_softc` allocates, and one `dv_ref` on it (`owns`), given back by the drop.
-/// A shadow (`owns == false`) names a device made by hand and holds nothing.
+/// A native node's shadow header (`Node::legacy_shadow`) is an owning one too, over a block
+/// of the header alone. A shadow node (`owns == false`) names a device made by hand and
+/// holds nothing.
 struct LegacySoftc {
     /// The header.
     dev: NonNull<Device>,
@@ -163,26 +176,63 @@ struct CfTable(&'static [Cfdata]);
 
 static BSD_GLUE: BsdConfigGlue = BsdConfigGlue;
 
-/// The legacy header of a legacy driver's node.
+/// The legacy header of a node: a legacy driver's own (its softc), or, for a native node
+/// that legacy code names (the parent of a legacy driver below a native bus, a native root
+/// `config_rootfound` returns), its shadow header, made on first use and held by the node.
 pub fn legacy_device(n: &Node) -> &Device {
-    let Some(ls) = n.softc().downcast_ref::<LegacySoftc>() else {
-        panic(format_args!(
-            "autoconf: {} is not a legacy device",
-            n.xname()
-        ));
-    };
+    if let Some(ls) = n.softc().downcast_ref::<LegacySoftc>() {
+        return header(ls);
+    }
+    let dev = header(shadow(n));
+    // The node's flags are the truth (`config_deactivate`); the shadow's are a copy.
+    dev.dv_flags.set(n.flags());
+    dev
+}
+
+/// The header a `LegacySoftc` names, borrowed for as long as the `LegacySoftc`.
+fn header(ls: &LegacySoftc) -> &Device {
     // SAFETY: `ls.dev` heads a live block for as long as `ls` lives, and the reference
-    // borrows `n`, whose softc handle keeps `ls` alive. An owning `LegacySoftc` holds a
-    // `dv_ref`, and `device_unref`, the only place a softc block is freed, frees only at 0.
-    // A shadow (`owns == false`, a device made by hand, `node_of`) is held by two kinds of
-    // handle only: the shim call that made it from the caller's `&Device`, which keeps the
-    // device alive for the call, and the nodes of the children attached below it in such a
-    // call (their `dv_parent`). Those children are `bsd`'s, whose nodes `bsd` holds only in
-    // the unit table and for the length of a shim call, so a child's node goes with its
-    // detach; and a parent is not freed while it has attached children, the premise LZ's
-    // `Device::parent` already rests on (its owner detaches them first). Only shared
-    // references to the header are made (its members are `Cell`s and an atomic).
+    // borrows `ls`. An owning `LegacySoftc` (a legacy driver's softc, or a native node's
+    // shadow header, which lives in the node's `legacy_shadow` slot) holds a `dv_ref`, and
+    // `device_unref`, the only place a softc block is freed, frees only at 0. A shadow node
+    // (`owns == false`, a device made by hand, `node_of`) is held by two kinds of handle
+    // only: the shim call that made it from the caller's `&Device`, which keeps the device
+    // alive for the call, and the nodes of the children attached below it in such a call
+    // (their `dv_parent`). Those children are `bsd`'s, whose nodes `bsd` holds only in the
+    // unit table and for the length of a shim call, so a child's node goes with its detach;
+    // and a parent is not freed while it has attached children, the premise LZ's
+    // `Device::parent` already rests on (its owner detaches them first; a native child holds
+    // its parent's node, and with it the parent's shadow header). Only shared references to
+    // the header are made (its members are `Cell`s and an atomic).
     unsafe { ls.dev.as_ref() }
+}
+
+/// A native node's shadow header: the legacy header written from the node, in a block of
+/// the header alone (`CFATTACH_NATIVE`'s `ca_devsize`), held by the node (`legacy_shadow`).
+/// Its row is the node's (`cfdata_of`: a native row is a `Cfdata`), its parent the parent's
+/// legacy header. The shim's callers run under the kernel lock, as every legacy driver's
+/// code: no second caller meets a header being made.
+fn shadow(n: &Node) -> &LegacySoftc {
+    let slot = n.legacy_shadow();
+    if !slot.is_set() {
+        let id = Ident {
+            class: n.class(),
+            unit: n.unit(),
+            xname: n.xname_bytes(),
+            row: n.row(),
+            parent: n.parent(),
+        };
+        let ls = LegacySoftc {
+            dev: new_header(&id, n.flags()),
+            owns: true,
+        };
+        // A header made beside another's would be dropped here, its block freed with it.
+        let _ = slot.set(new_softc(ls));
+    }
+    match slot.get().and_then(|s| s.downcast_ref::<LegacySoftc>()) {
+        Some(ls) => ls,
+        None => panic(format_args!("autoconf: {} has no legacy header", n.xname())),
+    }
 }
 
 /// `parsedisk`'s device, kept for ever: one `dv_ref` taken and never given back, so the
@@ -205,19 +255,73 @@ fn cfdata_of(row: &'static dyn ConfigRow) -> &'static Cfdata {
     }
 }
 
+/// LZ's `config_make_softc`'s block for the device `id` describes: its row's `ca_devsize`
+/// zeroed bytes (a legacy softc, or a native node's shadow header: `CFATTACH_NATIVE`'s, the
+/// header alone), the header written from the identity with `flags`, `dv_ref` 1 (the
+/// caller's `LegacySoftc`'s), freed by `device_unref` with the same size.
+fn new_header(id: &Ident<'_>, flags: i32) -> NonNull<Device> {
+    let cf = cfdata_of(id.row);
+    let ca = cf.cf_attach;
+    if ca.ca_devsize < size_of::<Device>() {
+        panic(format_args!("config_make_softc"));
+    }
+
+    // get memory for all device vars
+    let Some(mem) = malloc(ca.ca_devsize, M_DEVBUF, M_NOWAIT | M_ZERO) else {
+        panic(format_args!(
+            "config_make_softc: allocation for device softc failed"
+        ));
+    };
+    let devp = mem.cast::<Device>();
+    kassert!(devp.as_ptr().is_aligned());
+    // SAFETY: `ca_devsize` zeroed bytes, at least a `Device`, suitably aligned (malloc's
+    // chunks are aligned to their power-of-two size); all-zero is a valid `Device`.
+    let dev = unsafe { devp.as_ref() };
+
+    dev.dv_class.set(id.class);
+    dev.dv_cfdata.set(Some(cf));
+    dev.dv_flags.set(flags);
+    dev.dv_unit.set(id.unit);
+    dev.dv_xname.set(*id.xname);
+    dev.dv_parent
+        .set(id.parent.map(|p| NonNull::from(legacy_device(p))));
+    dev.dv_ref.store(1, Ordering::Relaxed);
+    devp
+}
+
 /// `void *aux` for the kernel.
 fn aux_of(aux: *mut c_void) -> Aux<'static> {
     Aux::Legacy(aux.expose_provenance())
 }
 
-/// The kernel's `aux` back as the legacy driver's `void *`.
-fn aux_ptr(aux: &Aux<'_>) -> *mut c_void {
+/// The kernel's `aux` lent to a legacy driver's function as its `void *`: a legacy bus's
+/// as it is, a native bus's typed argument through the machine's presenter
+/// (`machine::autoconf::present_aux`), valid for the call. `None` when no presenter knows
+/// the typed argument (the legacy row cannot be that bus's child).
+fn with_aux<R>(aux: &Aux<'_>, f: impl FnOnce(*mut c_void) -> R) -> Option<R> {
     match aux {
-        Aux::Legacy(a) => ptr::with_exposed_provenance_mut(*a),
-        Aux::Typed(_) => panic(format_args!(
-            "autoconf: a native bus's arguments for a legacy driver"
-        )),
+        Aux::Legacy(a) => Some(f(ptr::with_exposed_provenance_mut(*a))),
+        Aux::Typed(t) => {
+            let mut f = Some(f);
+            let mut out = None;
+            let known = present_aux(*t, &mut |a| {
+                if let Some(f) = f.take() {
+                    out = Some(f(a));
+                }
+            });
+            if known { out } else { None }
+        }
     }
+}
+
+/// A native bus's argument that no presenter knows, at a legacy driver's attach: chosen by
+/// the bus's own submatch (its probe answers 0 for such an argument), the driver cannot read
+/// it.
+fn unpresented(what: &str, name: &[u8]) -> ! {
+    panic(format_args!(
+        "autoconf: {what} of '{}': a native bus's arguments no presenter knows",
+        Str(name)
+    ))
 }
 
 /// The erased softc of a legacy node.
@@ -234,7 +338,7 @@ fn new_softc(ls: LegacySoftc) -> AnyArc {
 /// hand, a shadow for the call (the module's deviations).
 pub(crate) fn node_of(dev: &Device) -> DevRef {
     let cf = dev.cfdata();
-    if let Some(n) = cf.cf_driver.cd_units.get(dev.dv_unit.get())
+    if let Some(n) = ConfigRow::driver(cf).units().get(dev.dv_unit.get())
         && ptr::eq(legacy_device(&n), dev)
     {
         return n;
@@ -275,6 +379,14 @@ fn view(m: &Match) -> CfMatch {
 /// A preallocated softc handed to a legacy caller, who owns it from now on (it attaches it
 /// or `free`s it, as the C's): one `dv_ref` taken for the claim before the node's goes.
 fn release_softc(d: DevRef) -> SoftcMatch {
+    // A native driver's softc is the node's own, which a legacy caller cannot hold (only a
+    // legacy indirect bus makes one here: isa, amd64's).
+    if d.softc().downcast_ref::<LegacySoftc>().is_none() {
+        panic(format_args!(
+            "autoconf: {}'s native softc for a legacy indirect bus",
+            d.xname()
+        ));
+    }
     let dv = legacy_device(&d);
     device_ref(dv);
     let p = NonNull::from(dv);
@@ -657,7 +769,8 @@ pub unsafe fn device_unref(dv: NonNull<Device>) {
 /// raised, and every later `config_detach` would sleep on it for ever. The `cd_devs` mirror
 /// of every attached legacy device's driver is forgotten first, not freed, as the kernel
 /// forgets its unit table: a `static` driver's array would otherwise be freed into the next
-/// test's memory when it grows.
+/// test's memory when it grows. A native node has no mirror (its shadow header, if any, is
+/// forgotten with the node).
 #[cfg(test)]
 pub(crate) fn autoconf_test_reset() {
     let mut d = kac::alldevs_next(None);
@@ -723,34 +836,8 @@ impl DriverOps for Cfdata {
     /// LZ's `config_make_softc`'s allocation: `ca_devsize` zeroed bytes, the header written
     /// from the kernel's identity, `dv_ref` 1 (the node's).
     fn make_softc(&self, id: &Ident<'_>) -> AnyArc {
-        let ca = self.cf_attach;
-        if ca.ca_devsize < size_of::<Device>() {
-            panic(format_args!("config_make_softc"));
-        }
-
-        // get memory for all device vars
-        let Some(mem) = malloc(ca.ca_devsize, M_DEVBUF, M_NOWAIT | M_ZERO) else {
-            panic(format_args!(
-                "config_make_softc: allocation for device softc failed"
-            ));
-        };
-        let devp = mem.cast::<Device>();
-        kassert!(devp.as_ptr().is_aligned());
-        // SAFETY: `ca_devsize` zeroed bytes, at least a `Device`, suitably aligned (malloc's
-        // chunks are aligned to their power-of-two size); all-zero is a valid `Device`.
-        let dev = unsafe { devp.as_ref() };
-
-        dev.dv_class.set(id.class);
-        dev.dv_cfdata.set(Some(cfdata_of(id.row)));
-        dev.dv_flags.set(DVF_ACTIVE); // always initially active
-        dev.dv_unit.set(id.unit);
-        dev.dv_xname.set(*id.xname);
-        dev.dv_parent
-            .set(id.parent.map(|p| NonNull::from(legacy_device(p))));
-        dev.dv_ref.store(1, Ordering::Relaxed);
-
         new_softc(LegacySoftc {
-            dev: devp,
+            dev: new_header(id, DVF_ACTIVE), // always initially active
             owns: true,
         })
     }
@@ -762,15 +849,21 @@ impl DriverOps for Cfdata {
                 Str(self.cf_driver.cd_name)
             ));
         };
-        ca_match(parent.map(|p| legacy_device(p)), &view(m), aux_ptr(aux))
+        // A typed argument no presenter knows is another bus's: no match, as the C's
+        // ca_match of a driver that does not attach there.
+        with_aux(aux, |a| {
+            ca_match(parent.map(|p| legacy_device(p)), &view(m), a)
+        })
+        .unwrap_or(0)
     }
 
     fn attach(&self, parent: Option<&DevRef>, dev: &DevRef, aux: &Aux<'_>) {
-        (self.cf_attach.ca_attach)(
-            parent.map(|p| legacy_device(p)),
-            legacy_device(dev),
-            aux_ptr(aux),
-        );
+        let attached = with_aux(aux, |a| {
+            (self.cf_attach.ca_attach)(parent.map(|p| legacy_device(p)), legacy_device(dev), a);
+        });
+        if attached.is_none() {
+            unpresented("the attach", self.cf_driver.cd_name);
+        }
     }
 
     fn detach(&self, dev: &DevRef, flags: i32) -> Result<(), Errno> {
@@ -823,11 +916,26 @@ impl ConfigGlue for BsdConfigGlue {
     fn roots(&self) -> &'static [i16] {
         cfroots()
     }
+    /// The units of `mainbus_cd`'s row: a legacy row's `cd_units`, a native row's driver's
+    /// table (`Cfdata::native`). A walk of the rows, for `config_suspend_all` only (suspend,
+    /// powerdown), where the C reads `mainbus_cd.cd_devs[0]`.
     fn mainbus(&self) -> &'static UnitTable {
-        &mainbus_cd().cd_units
+        let cd = mainbus_cd();
+        match cfdata().iter().find(|cf| ptr::eq(cf.cf_driver, cd)) {
+            Some(cf) => ConfigRow::driver(cf).units(),
+            None => &cd.cd_units,
+        }
     }
+    /// The machine's `device_register` for a legacy device; a native device's is not called
+    /// (arm64's does nothing, as its C; amd64's is N10's, which gives it a typed form).
     fn device_register(&self, dev: &DevRef, aux: &Aux<'_>) {
-        device_register(legacy_device(dev), aux_ptr(aux));
+        if dev.softc().downcast_ref::<LegacySoftc>().is_none() {
+            return;
+        }
+        let d = legacy_device(dev);
+        if with_aux(aux, |a| device_register(d, a)).is_none() {
+            unpresented("device_register", d.cfdata().cf_driver.cd_name);
+        }
     }
     fn boothowto(&self) -> i32 {
         BOOTHOWTO.load(Ordering::Relaxed)
@@ -864,6 +972,10 @@ mod tests {
     use crate::kern::init_main::set_rootvp;
     use crate::kern::subr_pool::tests::setup_real_memory;
     use crate::machine::Machine;
+    // What the child's attach arguments say (whether to match, and at which level): the
+    // host presenter's legacy argument, so a native bus's typed one reaches the child as the
+    // same struct.
+    use crate::machine::autoconf::{HostLegacyArgs as ChildArgs, HostTypedArgs};
     use crate::sys::device::{
         CD_INDIRECT, CFATTACH_NATIVE, Cfattach, DETACH_QUIET, DV_DULL, DVACT_RESUME, DVACT_SUSPEND,
         FSTATE_FOUND, FSTATE_NOTFOUND, FSTATE_STAR, QUIET, UNCONF,
@@ -874,17 +986,14 @@ mod tests {
         &s[..s.iter().position(|&c| c == 0).unwrap_or(s.len())]
     }
 
-    /// What the child's attach arguments say: whether to match, and at which level.
-    struct ChildArgs {
-        pri: i32,
-    }
-
     static ROOT_ATTACHED: AtomicUsize = AtomicUsize::new(0);
     static CHILD_ATTACHED: AtomicUsize = AtomicUsize::new(0);
     static PRINTED: AtomicUsize = AtomicUsize::new(0);
     static DEFERRED_RAN: AtomicUsize = AtomicUsize::new(0);
     static ACTIVATE_FAIL_UNIT: AtomicI32 = AtomicI32::new(-1);
     static RESUMED: AtomicUsize = AtomicUsize::new(0);
+    /// The `pri` the last child's attach read from its arguments.
+    static ATTACHED_PRI: AtomicI32 = AtomicI32::new(0);
 
     fn root_match(parent: Option<&Device>, _m: &CfMatch, _aux: *mut c_void) -> i32 {
         assert!(parent.is_none());
@@ -903,12 +1012,14 @@ mod tests {
         unsafe { (*aux.cast::<ChildArgs>()).pri }
     }
 
-    fn child_attach(parent: Option<&Device>, self_: &Device, _aux: *mut c_void) {
+    fn child_attach(parent: Option<&Device>, self_: &Device, aux: *mut c_void) {
         assert!(parent.is_some());
         assert!(ptr::eq(
             self_.parent().expect("a parent"),
             parent.expect("a parent")
         ));
+        // SAFETY: the tests always pass a `ChildArgs` as the child's aux.
+        ATTACHED_PRI.store(unsafe { (*aux.cast::<ChildArgs>()).pri }, Ordering::Relaxed);
         CHILD_ATTACHED.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -972,8 +1083,14 @@ mod tests {
         &'static Cfdriver,
         &'static Cfdriver,
     ) {
-        let guard = setup_real_memory();
         let (table, root_cd, child_cd) = ioconf(root_mode);
+        (setup_with(table), table, root_cd, child_cd)
+    }
+
+    /// Real memory for malloc(9), `table` installed as `cfdata[]` (row 0 the root), the
+    /// counters reset.
+    fn setup_with(table: &'static [Cfdata]) -> MutexGuard<'static, ()> {
+        let guard = setup_real_memory();
         // SAFETY: `setup_real_memory`'s lock serialises the tests.
         unsafe { Machine::set_ioconf(table, &[0]) };
         config_init();
@@ -983,11 +1100,38 @@ mod tests {
             &PRINTED,
             &DEFERRED_RAN,
             &RESUMED,
+            &NATIVE_ATTACHED,
         ] {
             c.store(0, Ordering::Relaxed);
         }
         ACTIVATE_FAIL_UNIT.store(-1, Ordering::Relaxed);
-        (guard, table, root_cd, child_cd)
+        ATTACHED_PRI.store(0, Ordering::Relaxed);
+        guard
+    }
+
+    /// A test `ioconf` with a native root (`Cfdata::native` over a fresh `TestNative` named
+    /// as `root_cd`, its stub `Cfdriver`) and the legacy `tchild* at` it.
+    fn native_ioconf(
+        root_cd: &'static Cfdriver,
+    ) -> (&'static [Cfdata], &'static TestNative, &'static Cfdriver) {
+        let (legacy, _, child_cd) = ioconf(0);
+        let drv = native_driver(root_cd.cd_name);
+        let table: &'static [Cfdata] = Box::leak(Box::new([
+            Cfdata::new(
+                &CFATTACH_NATIVE,
+                root_cd,
+                0,
+                FSTATE_NOTFOUND,
+                &[],
+                0,
+                &[],
+                0,
+                0,
+            )
+            .native(drv),
+            legacy[1].clone(),
+        ]));
+        (table, drv, child_cd)
     }
 
     fn name(dev: NonNull<Device>) -> Vec<u8> {
@@ -1345,6 +1489,140 @@ mod tests {
         );
         ACTIVATE_FAIL_UNIT.store(-1, Ordering::Relaxed);
         assert_eq!(config_suspend(r, DVACT_SUSPEND), Ok(()));
+    }
+
+    #[test]
+    fn a_native_root_lends_its_legacy_children_a_shadow_header() {
+        let root_cd: &'static Cfdriver = Box::leak(Box::new(Cfdriver::new(b"troot", DV_DULL, 0)));
+        let (table, drv, child_cd) = native_ioconf(root_cd);
+        let _g = setup_with(table);
+
+        // config_rootfound attaches the native root and returns its shadow header.
+        let root = config_rootfound(b"troot", ptr::null_mut()).expect("troot0");
+        assert_eq!(NATIVE_ATTACHED.load(Ordering::Relaxed), 1);
+        assert_eq!(table[0].cf_fstate.get(), FSTATE_FOUND);
+        let node = drv.units.get(0).expect("troot0's node");
+        assert!(
+            node.softc().downcast_ref::<LegacySoftc>().is_none(),
+            "the node's softc is the native driver's"
+        );
+        // SAFETY: the node holds its shadow header.
+        let r = unsafe { root.as_ref() };
+        assert!(ptr::eq(legacy_device(&node), r));
+        assert!(
+            ptr::eq(legacy_device(&node), legacy_device(&node)),
+            "one shadow header per node"
+        );
+        // The header is the node's identity.
+        assert_eq!(cstr(&r.dv_xname.get()), b"troot0");
+        assert_eq!(r.dv_unit.get(), node.unit());
+        assert_eq!(r.dv_class.get(), node.class());
+        assert!(ptr::eq(r.cfdata(), &table[0]));
+        assert!(r.parent().is_none());
+        assert_eq!(r.dv_ref.load(Ordering::Relaxed), 1, "the node's");
+        assert!(r.dv_flags.get() & DVF_ACTIVE != 0);
+        // ... named back to its node, through the native driver's unit table.
+        assert!(MArc::ptr_eq(&node_of(r), &node));
+        assert!(
+            root_cd.cd_dev(0).is_none(),
+            "a native driver keeps no mirror"
+        );
+
+        // A legacy child below it, through the legacy names.
+        let mut yes = ChildArgs { pri: 1 };
+        let child = config_found(r, aux(&mut yes), None).expect("tchild0");
+        assert_eq!(name(child), b"tchild0");
+        assert_eq!(CHILD_ATTACHED.load(Ordering::Relaxed), 1);
+        // SAFETY: attached above.
+        let c = unsafe { child.as_ref() };
+        assert!(ptr::eq(c.parent().expect("a parent"), r));
+        let cnode = child_cd.cd_units.get(0).expect("tchild0's node");
+        assert!(cnode.is_child_of(&node));
+        assert_eq!(alldevs(), [b"troot0".to_vec(), b"tchild0".to_vec()]);
+
+        // The header's flags follow the node's.
+        assert_eq!(kac::config_deactivate(&node), Ok(()));
+        assert!(legacy_device(&node).dv_flags.get() & DVF_ACTIVE == 0);
+    }
+
+    #[test]
+    fn a_native_bus_s_typed_argument_is_presented_to_a_legacy_driver() {
+        let root_cd: &'static Cfdriver = Box::leak(Box::new(Cfdriver::new(b"troot", DV_DULL, 0)));
+        let (table, drv, child_cd) = native_ioconf(root_cd);
+        let _g = setup_with(table);
+        config_rootfound(b"troot", ptr::null_mut()).expect("troot0");
+        let node = drv.units.get(0).expect("troot0's node");
+
+        // The host's presenter lends HostTypedArgs as the legacy struct the child reads in
+        // its ca_match (the level) and its ca_attach.
+        let typed = HostTypedArgs { pri: 2 };
+        let found = kac::config_found(&node, &Aux::Typed(&typed), None).expect("tchild0");
+        assert_eq!(found.xname(), "tchild0");
+        assert_eq!(CHILD_ATTACHED.load(Ordering::Relaxed), 1);
+        assert_eq!(ATTACHED_PRI.load(Ordering::Relaxed), 2);
+        assert!(found.is_child_of(&node));
+        assert!(child_cd.cd_dev(0).is_some(), "the legacy child's mirror");
+        assert!(ptr::eq(
+            legacy_device(&found).parent().expect("a parent"),
+            legacy_device(&node)
+        ));
+        // A typed argument at level 0 matches nothing, as the legacy one would.
+        let nomatch = HostTypedArgs { pri: 0 };
+        assert!(kac::config_found(&node, &Aux::Typed(&nomatch), None).is_none());
+        assert_eq!(CHILD_ATTACHED.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn a_typed_argument_nobody_presents_matches_no_legacy_row() {
+        /// A native bus's argument no presenter knows.
+        struct Unknown;
+
+        let root_cd: &'static Cfdriver = Box::leak(Box::new(Cfdriver::new(b"troot", DV_DULL, 0)));
+        let (table, drv, _) = native_ioconf(root_cd);
+        let _g = setup_with(table);
+        config_rootfound(b"troot", ptr::null_mut()).expect("troot0");
+        let node = drv.units.get(0).expect("troot0's node");
+
+        assert!(kac::config_found(&node, &Aux::Typed(&Unknown), None).is_none());
+        assert_eq!(CHILD_ATTACHED.load(Ordering::Relaxed), 0);
+        assert!(with_aux(&Aux::Typed(&Unknown), |_| ()).is_none());
+        let known = HostTypedArgs { pri: 5 };
+        // SAFETY: the host's presenter lends a `HostLegacyArgs` for a `HostTypedArgs`.
+        let pri = with_aux(&Aux::Typed(&known), |a| unsafe {
+            (*a.cast::<ChildArgs>()).pri
+        });
+        assert_eq!(pri, Some(5));
+    }
+
+    #[test]
+    fn the_glue_s_mainbus_follows_the_row_of_mainbus_cd() {
+        let cd = mainbus_cd();
+        let (table, drv, _) = native_ioconf(cd);
+        let _g = setup_with(table);
+        config_rootfound(b"mainbus", ptr::null_mut()).expect("mainbus0");
+        let units = BSD_GLUE.mainbus();
+        assert!(ptr::eq(units, drv.units), "a native root's units");
+        assert_eq!(units.get(0).expect("mainbus0").xname(), "mainbus0");
+
+        // A legacy mainbus row's are its cd_units, as without any row.
+        let (legacy, _, _) = ioconf(0);
+        let rows: &'static [Cfdata] = Box::leak(Box::new([Cfdata::new(
+            legacy[0].cf_attach,
+            cd,
+            0,
+            FSTATE_NOTFOUND,
+            &[],
+            0,
+            &[],
+            0,
+            0,
+        )]));
+        // SAFETY: `setup_real_memory`'s lock (held in `_g`) serialises the tests.
+        unsafe { Machine::set_ioconf(rows, &[0]) };
+        assert!(ptr::eq(BSD_GLUE.mainbus(), &cd.cd_units));
+        // SAFETY: as above.
+        unsafe { Machine::set_ioconf(&[], &[]) };
+        assert!(ptr::eq(BSD_GLUE.mainbus(), &cd.cd_units));
     }
 }
 /* </TESTS> */

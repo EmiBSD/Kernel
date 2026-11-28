@@ -97,7 +97,12 @@
 //!   which owns the softc made for an indirect bus's probe, so a losing one is dropped, not
 //!   freed by hand.
 //! - `struct cfattach`/`struct cfdriver` -> the trait [`DriverOps`]; `struct cfdata` -> the
-//!   trait [`ConfigRow`] (the machine's table stays `bsd`'s until N7.1c).
+//!   trait [`ConfigRow`] (the machine's table stays `bsd`'s until N7.1c), whose locators are
+//!   [`ConfigRow::loc`] (N7.2b1a).
+//! - N7.2b1a: a native node that legacy code names (the parent of a legacy driver below a
+//!   native bus) carries `bsd`'s legacy header in a set-once slot,
+//!   [`Device::legacy_shadow`], so the header lives exactly as long as the node; nothing in
+//!   the kernel reads it (scaffolding, docs/SCAFFOLDING.md).
 
 use core::any::Any;
 use core::sync::atomic::{AtomicI32, Ordering};
@@ -106,6 +111,7 @@ use hal::ds::pinlist::PinEntry;
 use hal::mem::malloc::{M_NOWAIT, MArc, MArray};
 use hal::mem::pool::AnyArc;
 use hal::sync::mutex::MutexedGuard;
+use hal::sync::once::OnceStatic;
 use hal::sync::rwlock::Guarded;
 
 use crate::assert::kpanic;
@@ -265,6 +271,10 @@ pub struct Device {
     flags: AtomicI32,
     /// The driver's softc, typed by the driver alone.
     softc: AnyArc,
+    /// Scaffolding (docs/SCAFFOLDING.md): `bsd`'s legacy header of a native node, made by
+    /// `bsd`'s shim the first time legacy code names the node (a legacy child's parent), and
+    /// owned by the node.
+    legacy: OnceStatic<AnyArc>,
     /// \[TREE\] `dv_list`: `alldevs`.
     pub(crate) all: PinEntry<Device>,
     /// \[TREE\] the `deferred_config_queue` link (`dc_queue`).
@@ -305,6 +315,7 @@ impl Device {
             parent: id.parent.cloned(),
             flags: AtomicI32::new(flags),
             softc,
+            legacy: OnceStatic::new(),
             all: PinEntry::new(),
             deferred: PinEntry::new(),
             mountroot: PinEntry::new(),
@@ -369,6 +380,13 @@ impl Device {
     /// The driver's softc, which the driver names by its type (`(struct foo_softc *)self`).
     pub fn softc(&self) -> &AnyArc {
         &self.softc
+    }
+
+    /// Scaffolding (docs/SCAFFOLDING.md): the slot of `bsd`'s legacy header for a native
+    /// node, which `bsd`'s shim fills once and only it names (a legacy driver's node needs
+    /// none: its softc is that header). Freed with the node.
+    pub fn legacy_shadow(&self) -> &OnceStatic<AnyArc> {
+        &self.legacy
     }
 
     /// `dv_parent == parent`.
