@@ -309,6 +309,16 @@ impl Vm {
         Ok(())
     }
 
+    /// Where the next `wait_for` starts looking: just past the last text waited for.
+    pub(crate) fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    /// Moves the cursor back to a [`Vm::mark`] or [`Vm::cursor`], so the text after it can be waited for again.
+    pub(crate) fn rewind(&mut self, mark: usize) {
+        self.cursor = mark.min(self.cursor);
+    }
+
     /// The transcript bytes written since the last `mark`.
     pub(crate) fn mark(&self) -> usize {
         self.len()
