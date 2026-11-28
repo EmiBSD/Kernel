@@ -27,13 +27,19 @@
 //! admits only what this module can classify, and answers every other id
 //! `PSCI_NOT_SUPPORTED` (-1) without trapping ([`admits`]):
 //! - fast calls of owning entity 0 (the Arm architecture: `SMCCC_VERSION`,
-//!   `SMCCC_ARCH_FEATURES`, the three Spectre workarounds) and 4 (standard secure services:
-//!   PSCI), bits 23:16 zero as the convention requires, minus the PSCI functions that take an
-//!   entry point (`CPU_SUSPEND`, `CPU_ON`, `CPU_DEFAULT_SUSPEND`, `SYSTEM_SUSPEND`, in both
-//!   their SMC32 and SMC64 forms);
+//!   `SMCCC_ARCH_FEATURES`, the three Spectre workarounds), and of owning entity 4 (the
+//!   standard secure services) only PSCI's function numbers, 0x00 to 0x1F: the rest of entity
+//!   4 holds SDEI (0x20-0x3F: `SDEI_EVENT_REGISTER` enters EL1 at an address it is given) and
+//!   FF-A (0x60-0xEF: `FFA_RXTX_MAP` maps buffers at addresses it is given), among others; bits
+//!   23:16 zero as the convention requires; minus the PSCI functions that take an entry point
+//!   (`CPU_SUSPEND`, `CPU_ON`, `CPU_DEFAULT_SUSPEND`, `SYSTEM_SUSPEND`, in both their SMC32 and
+//!   SMC64 forms), which are refused before anything else;
 //! - a PSCI 0.1 firmware's own ids, which its device tree names (`arm,psci`) and psci(4)'s
-//!   attach records here once ([`record_psci_0_1`]): its `system_off`, `system_reset` and
-//!   `cpu_off` are admitted, its `cpu_on` and `cpu_suspend` refused like their 1.x forms.
+//!   attach records here ([`record_psci_0_1`]): its `system_off`, `system_reset` and `cpu_off`
+//!   are admitted, its `cpu_on` and `cpu_suspend` refused like their 1.x forms. The record is
+//!   sealed by the first record or by the first [`call`], whichever comes first: psci(4)'s
+//!   attach always records (`None` for a 1.x node) before its first call, so no later code can
+//!   name an id of its choosing as one of these.
 //!
 //! Every other id (silicon provider, OEM, trusted OS, vendor hypervisor, a yielding call) is
 //! refused: the C's `smccc()` hands any id to the firmware, but its only other user, scmi(4),
@@ -74,8 +80,11 @@ const fn oen(fid: u32) -> u32 {
 /// The Arm architecture's owning entity.
 const OEN_ARCH: u32 = 0;
 
-/// The standard secure services' owning entity (PSCI).
+/// The standard secure services' owning entity (PSCI, SDEI, TRNG, FF-A, ...).
 const OEN_STD_SECURE: u32 = 4;
+
+/// PSCI's last function number in the standard secure services (0x00 to 0x1F).
+const PSCI_LAST: u32 = 0x1f;
 
 /// The PSCI functions whose arguments include an address the firmware runs at, by their
 /// SMC32 ids (PSCI 1.1, section 5.1): `CPU_SUSPEND`, `CPU_ON`, `CPU_DEFAULT_SUSPEND` and
@@ -97,13 +106,28 @@ pub struct Psci01Ids {
     pub cpu_suspend: u32,
 }
 
-/// The recorded PSCI 0.1 ids, set once by psci(4)'s attach.
-static PSCI_0_1: OnceStatic<Psci01Ids> = OnceStatic::new();
+/// The recorded PSCI 0.1 ids (`None`: a 1.x firmware, or no record before the first call),
+/// sealed by the first record or the first call.
+static PSCI_0_1: OnceStatic<Option<Psci01Ids>> = OnceStatic::new();
 
-/// Records a PSCI 0.1 firmware's ids, once (psci(4)'s attach of an `arm,psci` node, before
-/// its first call); a second record keeps the first and answers `false`.
-pub fn record_psci_0_1(ids: Psci01Ids) -> bool {
-    PSCI_0_1.set(ids).is_ok()
+/// Records a PSCI 0.1 firmware's ids into `cell`, unless it is sealed already.
+fn record_into(cell: &OnceStatic<Option<Psci01Ids>>, ids: Option<Psci01Ids>) -> bool {
+    cell.set(ids).is_ok()
+}
+
+/// The ids `cell` records, sealing it (with none) if nothing was recorded yet.
+fn recorded_from(cell: &OnceStatic<Option<Psci01Ids>>) -> Option<&Psci01Ids> {
+    if cell.get().is_none() {
+        let _ = cell.set(None);
+    }
+    cell.get().and_then(Option::as_ref)
+}
+
+/// Records the PSCI firmware's 0.1 ids (`None` for a 1.x node), psci(4)'s attach before its
+/// first call; `false` (nothing recorded) once the record is sealed: by an earlier record or
+/// by a [`call`] made before it.
+pub fn record_psci_0_1(ids: Option<Psci01Ids>) -> bool {
+    record_into(&PSCI_0_1, ids)
 }
 
 /// Whether `fid` is one of the standard entry-point functions, in either width.
@@ -114,6 +138,9 @@ pub fn takes_entry_point(fid: u32) -> bool {
 /// Whether [`call`] hands `fid` to the firmware, given the PSCI 0.1 ids `old` recorded (see
 /// the module's documentation).
 fn admits_with(fid: u32, old: Option<&Psci01Ids>) -> bool {
+    if takes_entry_point(fid) {
+        return false;
+    }
     if let Some(ids) = old
         && fid != 0
     {
@@ -126,13 +153,16 @@ fn admits_with(fid: u32, old: Option<&Psci01Ids>) -> bool {
     }
     fid & FAST != 0
         && fid & 0x00ff_0000 == 0
-        && matches!(oen(fid), OEN_ARCH | OEN_STD_SECURE)
-        && !takes_entry_point(fid)
+        && match oen(fid) {
+            OEN_ARCH => true,
+            OEN_STD_SECURE => fid & 0xffff <= PSCI_LAST,
+            _ => false,
+        }
 }
 
-/// Whether [`call`] hands `fid` to the firmware.
+/// Whether [`call`] hands `fid` to the firmware (sealing the 0.1 record).
 pub fn admits(fid: u32) -> bool {
-    admits_with(fid, PSCI_0_1.get())
+    admits_with(fid, recorded_from(&PSCI_0_1))
 }
 
 /// An SMCCC call through `conduit` of the function `fid` with the value arguments `a1`..`a3`:
@@ -238,6 +268,12 @@ mod tests {
             0xb200_0001,
             0x0400_0000,
             0x8401_0000,
+            // SDEI_EVENT_REGISTER, SDEI_EVENT_COMPLETE_AND_RESUME and FFA_RXTX_MAP, of the
+            // standard secure services past PSCI's numbers; TRNG_VERSION beside them.
+            0xc400_0021,
+            0xc400_0026,
+            0xc400_0066,
+            0x8400_0050,
         ] {
             assert!(!admits_with(fid, None), "{fid:#x}");
         }
@@ -264,6 +300,34 @@ mod tests {
         let none = Psci01Ids::default();
         assert!(!admits_with(0, Some(&none)));
         assert!(admits_with(0x8400_0000, Some(&none)));
+        // A recorded system_off that is a standard entry point is still refused.
+        let lying = Psci01Ids {
+            system_off: 0xc400_0003,
+            ..none
+        };
+        assert!(!admits_with(0xc400_0003, Some(&lying)));
+    }
+
+    #[test]
+    fn the_record_is_sealed_by_the_first_record_or_the_first_call() {
+        let ids = Psci01Ids {
+            system_off: 0x95c1_ba5e,
+            ..Psci01Ids::default()
+        };
+        // A second record fails, and the first stays.
+        let cell = OnceStatic::new();
+        assert!(record_into(&cell, Some(ids)));
+        assert!(!record_into(&cell, None));
+        assert_eq!(recorded_from(&cell), Some(&ids));
+        // A call (which reads the record) before any record seals it with none.
+        let cell = OnceStatic::new();
+        assert_eq!(recorded_from(&cell), None);
+        assert!(!record_into(&cell, Some(ids)));
+        assert_eq!(recorded_from(&cell), None);
+        // The process's own record: once a call ran, a record fails.
+        let _ = call(Conduit::Hvc, 0x8400_0000, 0, 0, 0);
+        assert!(!record_psci_0_1(Some(ids)));
+        assert!(!admits(0x95c1_ba5e));
     }
 
     #[test]

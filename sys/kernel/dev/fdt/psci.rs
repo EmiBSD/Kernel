@@ -61,6 +61,11 @@
 //!   `system_off`, `system_reset` and `cpu_off`, recorded at the first attach; every other
 //!   call is a fast call of the Arm architecture or of PSCI (stricter than the C's `smccc()`,
 //!   which passes any id; no caller at the pin passes another).
+//! - A second node that attaches prints its line, but the first node's softc and ids stay the
+//!   ones every call uses, where the C's `psci_sc` would name the last: the SMCCC call's record
+//!   of a 0.1 firmware's ids is sealed by the first call, which the first attach makes, so the
+//!   last node's could not be recorded. The machine's tree has one `/psci`, which mainbus
+//!   attaches in its own pass and the root's passes skip.
 //!
 //! ## Redesign
 //! - `psci_ca`/`psci_cd` -> [`PSCI`], a [`DriverOps`] (decision 46) whose probe reads the bus's
@@ -68,12 +73,9 @@
 //!   with a stub `Cfdriver` of the name (`bsd`'s `conf/ioconf.rs`).
 //! - `struct psci_softc` (LZ: a `#[repr(C)]` softc of `Cell`s behind an `unsafe impl Softc`, and
 //!   `psci_sc` an `AtomicPtr` read back with an `unsafe` block) -> [`Psci`], built whole from
-//!   the node, leaked once per attach (the C's softc is never freed) and published in
-//!   `PSCI_SC` (a `ReadMostly`, the last attach replacing an earlier one's as the C's
-//!   assignment) where the C assigns `psci_sc`; the two members attach writes after
-//!   (`sc_smccc_version`, `sc_system_suspend`) are atomics. The device's softc is empty
-//!   ([`PsciDev`]). A call reads the cell with a reader count (two atomic operations) where
-//!   the C loads one pointer.
+//!   the node and set once in `PSCI_SC` (a `OnceStatic`) where the C assigns `psci_sc`; the
+//!   two members attach writes after (`sc_smccc_version`, `sc_system_suspend`) are atomics.
+//!   The device's softc is empty ([`PsciDev`]).
 //! - `sc_callfn` (a pointer to `hvc_call` or `smc_call`, which LZ reached through
 //!   `machine::fdt`'s `Fdt` trait) -> a `hal::cpu::smccc::Conduit` held by value; every call is
 //!   `hal::cpu::smccc::call`, the SMCCC value class (P44).
@@ -88,9 +90,9 @@ use core::fmt;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use hal::cpu::smccc::{self, Conduit, Psci01Ids};
-use hal::mem::malloc::{M_NOWAIT, M_WAITOK, MArc, MBox};
+use hal::mem::malloc::{M_NOWAIT, MArc};
 use hal::mem::pool::AnyArc;
-use hal::sync::slot::ReadMostly;
+use hal::sync::once::OnceStatic;
 
 use crate::assert::{kassert, kpanic};
 use crate::base::prf::{printf, unported};
@@ -377,14 +379,12 @@ pub static PSCI: PsciDriver = PsciDriver;
 /// `psci_cd`'s `cd_devs`.
 static PSCI_UNITS: UnitTable = UnitTable::new();
 
-/// `psci_sc`: the softc of the last attach, which replaces an earlier one's as the C's
-/// assignment does. Read by every call with no lock (a reader count, `ReadMostly`), written
-/// only by the attach on the boot CPU during autoconfiguration.
-static PSCI_SC: ReadMostly<Option<&'static Psci>> = ReadMostly::new(None);
+/// `psci_sc`: the softc of the first attach (see the module's deviations), set once.
+static PSCI_SC: OnceStatic<Psci> = OnceStatic::new();
 
 /// `psci_sc`, if `psci_attach` has run.
 fn psci_sc() -> Option<&'static Psci> {
-    *PSCI_SC.read()
+    PSCI_SC.get()
 }
 
 /// `psci_match`: `arm,psci`, `arm,psci-0.2` or `arm,psci-1.0`.
@@ -431,18 +431,22 @@ impl DriverOps for PsciDriver {
 /// `psci_attach`: pick the conduit and the function ids, report the versions, and hook
 /// `boot(9)`'s power-off and reset.
 pub fn psci_attach(fa: &FdtArgs) {
-    let Some(sc) = MBox::new(M_DEVBUF, M_WAITOK, Psci::of_node(fa.node)) else {
-        kpanic(format_args!("psci_attach: no memory for the softc"));
+    let new = Psci::of_node(fa.node);
+    // The firmware's 0.1 ids, or none for the new specification: recorded before the first
+    // call, which seals the record (`hal::cpu::smccc`).
+    let _ = smccc::record_psci_0_1(new.psci_0_1_ids());
+    let sc = match PSCI_SC.set(new) {
+        Ok(()) => match psci_sc() {
+            Some(sc) => sc,
+            None => kpanic(format_args!("psci_attach: the softc went")),
+        },
+        Err(second) => {
+            // A second node: its line, as the C prints it; the first node stays the one the
+            // calls use (the module's deviations).
+            printf(format_args!("{}", second.probe_versions()));
+            return;
+        }
     };
-    // The softc lives as long as the device, which is never detached (the C's softc is
-    // config_attach's and is never freed either).
-    let sc: &'static Psci = MBox::leak(sc);
-    // The old specification's ids are the device tree's word: recorded once, before the
-    // first call, for the SMCCC call to classify (the first node's, if a second one comes).
-    if let Some(ids) = sc.psci_0_1_ids() {
-        let _ = smccc::record_psci_0_1(ids);
-    }
-    PSCI_SC.replace(Some(sc));
 
     printf(format_args!("{}", sc.probe_versions()));
 
