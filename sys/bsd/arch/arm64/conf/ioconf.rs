@@ -92,7 +92,6 @@ use crate::dev::fdt::gpiokeys::{GPIOKEYS_CA, GPIOKEYS_CD};
 use crate::dev::fdt::ipmi_fdt::IPMI_FDT_CA;
 use crate::dev::fdt::pciecam::{PCIECAM_CA, PCIECAM_CD};
 use crate::dev::fdt::plgpio::{PLGPIO_CA, PLGPIO_CD};
-use crate::dev::fdt::plrtc::{PLRTC_CA, PLRTC_CD};
 use crate::dev::fdt::pluart_fdt::PLUART_FDT_CA;
 use crate::dev::fdt::simplefb::{SIMPLEFB_CA, SIMPLEFB_CD};
 use crate::dev::fdt::virtio_mmio::VIRTIO_MMIO_CA;
@@ -174,6 +173,7 @@ use kernel::dev::arm64::ampintc::{AMPINTC_CA, AMPINTCMSI_CA};
 use kernel::dev::arm64::efi_machdep::EFI;
 use kernel::dev::arm64::mainbus::MAINBUS;
 use kernel::dev::arm64::simplebus::SIMPLEBUS;
+use kernel::dev::fdt::plrtc::PLRTC;
 use kernel::dev::fdt::psci::PSCI;
 #[cfg(feature = "fuse")]
 use kernel::fs::fuse::fuse_device::{NFUSE, fuseattach};
@@ -197,6 +197,11 @@ pub static AMPINTCMSI_CD: Cfdriver = Cfdriver::new(b"ampintcmsi", DV_DULL, 0);
 /// (`kernel::dev::arm64::efi_machdep::EFI`, the row's `Cfdata::native`, N7.2b2a). Scaffolding
 /// (docs/SCAFFOLDING.md) until the machine's table is the kernel's (N9.1).
 pub static EFI_CD: Cfdriver = Cfdriver::new(b"efi", DV_DULL, 0);
+
+/// `plrtc_cd`: the name `cfdata[7]` prints in UKC's listings; the driver is the kernel's
+/// (`kernel::dev::fdt::plrtc::PLRTC`, the row's `Cfdata::native`, N7.2b2a). Scaffolding
+/// (docs/SCAFFOLDING.md) until the machine's table is the kernel's (N9.1).
+pub static PLRTC_CD: Cfdriver = Cfdriver::new(b"plrtc", DV_DULL, 0);
 
 /// `psci_cd`: the name `cfdata[29]` prints in UKC's listings; the driver is the kernel's
 /// (`kernel::dev::fdt::psci::PSCI`, the row's `Cfdata::native`, N7.2b2a). Scaffolding
@@ -447,9 +452,9 @@ pub static CFDATA: StaticCell<[Cfdata; NCFDATA + NFREE]> = StaticCell::new([
         LN_FDT,
         0,
     ),
-    // 7: plrtc* at fdt?
+    // 7: plrtc* at fdt? (the kernel's driver, N7.2b2a)
     Cfdata::new(
-        &PLRTC_CA,
+        &CFATTACH_NATIVE,
         &PLRTC_CD,
         0,
         FSTATE_STAR,
@@ -458,7 +463,8 @@ pub static CFDATA: StaticCell<[Cfdata; NCFDATA + NFREE]> = StaticCell::new([
         PV_FDT,
         LN_FDT,
         0,
-    ),
+    )
+    .native(&PLRTC),
     // 8: efi0 at mainbus? (the kernel's driver, N7.2b2a)
     Cfdata::new(
         &CFATTACH_NATIVE,

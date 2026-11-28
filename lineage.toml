@@ -3123,13 +3123,6 @@ lz = ["sys/dev/biovar.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/bsd/dev/clock_subr.rs"
-lz = ["sys/dev/clock_subr.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/time/mod.rs"]
-notes = "N4.8a: struct todr_chip_handle implements kernel::time::Todr (quality, gettime, settime over the handle's functions)"
-
-[[module]]
 rust = "sys/bsd/dev/cons.rs"
 lz = ["sys/dev/cons.rs"]
 status = "adapted"
@@ -3162,11 +3155,6 @@ status = "inherited"
 [[module]]
 rust = "sys/bsd/dev/fdt/plgpio.rs"
 lz = ["sys/dev/fdt/plgpio.rs"]
-status = "inherited"
-
-[[module]]
-rust = "sys/bsd/dev/fdt/plrtc.rs"
-lz = ["sys/dev/fdt/plrtc.rs"]
 status = "inherited"
 
 [[module]]
@@ -15713,6 +15701,33 @@ crate = "kernel"
 lz = ["sys/kern/kern_time.rs", "sys/dev/clock_subr.rs"]
 status = "redesigned"
 notes = "N4.8a: kern_time.c's parts no process owns, 0 unsafe: settime (securelevel from the caller), clock_getres's timecounter resolution (tc_resolution, under tc_lock read), itimerfix, itimerdecr, ratecheck(9), ppsratecheck(9) with ppsratecheck_locked/ppsratecheck_held (a counter shared between CPUs reached only with ppsratecheck_mtx held, the guard the proof, instead of LZ's ppsratecheck_shared raw pointers), the time-of-day chip: struct todr_chip_handle as the Todr trait (quality, gettime, settime; todr_setwen omitted: no implementer sets it and todr_wenable has no caller), todr_attach keeping the better quality in a Mutexed (LZ: an AtomicPtr deref), inittodr, resettodr and the periodic resettodr (a kernel Timeout and Task on systq); struct itimerspec, itimerval, timezone and clockinfo with abi_pod!.; N4.8 a6: the ten system calls (clock_gettime, clock_settime, clock_getres, nanosleep, gettimeofday, settimeofday, adjfreq, adjtime, getitimer, setitimer) with clock_gettime, generic over ProcGlue (setitimer, spc_runtime and pledge_adjtime are glue members: the interval timers are still bsd's BsdProcessG members), securelevel read from kernel::base::sysctl::SECURELEVEL right before settime. setitimer, realitexpire and itimer_update stay bsd's kern_time.rs until the timers move into kernel::proc::Process"
+[[module.fn]]
+lz = "sys/dev/clock_subr.rs::TodrChipHandle"
+native = ["Todr"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/dev/clock_subr.rs::TodrTimeFn"
+native = []
+kind = "dropped"
+reason = "todr_gettime/todr_settime's function type: Todr::gettime and Todr::settime are the trait's methods (each chip implements them: efi(4)'s EfiTodr, plrtc(4)'s Plrtc)"
+[[module.fn]]
+lz = "sys/dev/clock_subr.rs::TodrSetwenFn"
+native = []
+kind = "dropped"
+reason = "todr_setwen's type: no chip at the pin sets it and todr_wenable has no caller; Todr has no such method"
+[[module.fn]]
+lz = "sys/dev/clock_subr.rs::todr_gettime"
+native = ["Todr"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/dev/clock_subr.rs::todr_settime"
+native = ["Todr"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/dev/clock_subr.rs::todr_wenable"
+native = []
+kind = "dropped"
+reason = "no caller at the pin (todr_setwen is NULL in every chip); a default method of Todr if one ever comes"
 
 [[module]]
 rust = "sys/kernel/base/reboot.rs"
@@ -21590,6 +21605,39 @@ lz = "sys/arch/arm64/include/efivar.rs::EfiSoftc"
 native = ["EfiDev", "sys/hal/cpu/efi.rs::EfiRuntime", "EfiTodr"]
 kind = "split"
 lines = "L58-L78"
+
+[[module]]
+rust = "sys/kernel/dev/fdt/plrtc.rs"
+crate = "kernel"
+lz = ["sys/dev/fdt/plrtc.rs"]
+status = "redesigned"
+notes = "N7.2b2a: plrtc(4) as a kernel DriverOps (PLRTC; probe = plrtc_match over the bus's FdtArgs); struct plrtc_softc and the malloc'ed todr_chip_handle as Plrtc, the Mmio<Pl031> mapping itself (FdtBus::map of reg[0], Device), leaked once (MBox::leak, the C's malloc never freed) and handed to kernel::time::todr_attach as the kernel's Todr (quality 0); RTCDR read, RTCLR written, RTCCR_START after the attach; both failure lines and the trailing newline kept; the device's softc PlrtcDev (empty)"
+[[module.fn]]
+lz = "sys/dev/fdt/plrtc.rs::PlrtcSoftc"
+native = ["Plrtc", "PlrtcDev"]
+kind = "split"
+lines = "L76-L88"
+[[module.fn]]
+lz = "sys/dev/fdt/plrtc.rs::PLRTC_CA"
+native = ["PLRTC", "PlrtcDriver"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/dev/fdt/plrtc.rs::PLRTC_CD"
+native = ["sys/bsd/arch/arm64/conf/ioconf.rs::PLRTC_CD", "PLRTC_UNITS"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/dev/fdt/plrtc.rs::handle_softc"
+native = []
+kind = "dropped"
+reason = "the todr cookie cast back to the softc: the chip is Plrtc itself, implementing kernel::time::Todr"
+[[module.fn]]
+lz = "sys/dev/fdt/plrtc.rs::plrtc_gettime"
+native = ["Plrtc::plrtc_gettime", "Plrtc::gettime"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/dev/fdt/plrtc.rs::plrtc_settime"
+native = ["Plrtc::plrtc_settime", "Plrtc::settime"]
+kind = "renamed"
 
 [[module]]
 rust = "sys/kernel/dev/fdt/psci.rs"

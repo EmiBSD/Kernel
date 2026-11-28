@@ -18,9 +18,10 @@
 
 /* <CODE> */
 //! The machine-independent device-tree drivers in the kernel: OpenBSD's `sys/dev/fdt/`. psci(4)
-//! (`psci`, with `pscivar`) since N7.2b2a; plrtc(4) follows. Built where the device tree's attach
-//! arguments are (`dev::arm64::fdt::FdtArgs`, arm64).
+//! (`psci`, with `pscivar`) and plrtc(4) (`plrtc`) since N7.2b2a. Built where the device tree's
+//! attach arguments are (`dev::arm64::fdt::FdtArgs`, arm64).
 
+pub mod plrtc;
 pub mod psci;
 pub mod pscivar;
 /* </CODE> */

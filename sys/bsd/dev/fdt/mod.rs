@@ -33,7 +33,6 @@ pub mod ipmi_fdt;
 #[cfg(machine_pci_chipset)]
 pub mod pciecam;
 pub mod plgpio;
-pub mod plrtc;
 pub mod pluart_fdt;
 pub mod simplefb;
 pub mod virtio_mmio;

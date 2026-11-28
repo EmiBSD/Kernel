@@ -36,7 +36,6 @@ pub mod audio_if;
 pub mod bio;
 #[forbid(unsafe_code)]
 pub mod biovar;
-pub mod clock_subr;
 pub mod cons;
 #[forbid(unsafe_code)]
 pub mod consfile;
