@@ -86,9 +86,10 @@
 //!   reported as unported when reached (`vfs_shutdown` is real since M14; with no thread on
 //!   the CPU, which the C cannot have there, it is skipped).
 //! - The UEFI system table and memory map reach `initarm` through `BootInfo` (`getbootinfo`
-//!   reads efiboot's `openbsd,uefi-*` properties in `/chosen`); the system table's address is
-//!   kept in `SYSTEM_TABLE` (a local in C) for `mainbus` and `efi_attach`, and the memory
-//!   map is relocated into a static buffer (`MMAP`) instead of stolen pages.
+//!   reads efiboot's `openbsd,uefi-*` properties in `/chosen`); the system table's address,
+//!   a local in C, is not kept (efi(4) reads `/chosen` itself, as the C's), and the
+//!   memory map is relocated into a static buffer (`MMAP`) instead of stolen pages, handed down
+//!   to `hal` once as a boot record (`hal::cpu::efi::set_boot_memory_map`, N7.2b2a).
 //! - The bootargs parsing (`-a -c -d -s`) is `BootInfo::boothowto` in `sys/machine/bootinfo.rs`,
 //!   shared with amd64 (Limine's command line served both architectures; arm64's is
 //!   `/chosen`'s `bootargs` since its removal).
@@ -132,6 +133,14 @@
 //!   `hal::cpu::trap::set_exec_regs`, one borrow of `hal`'s `UserFrame`: the frame's
 //!   uniqueness no longer rests on `bsd`'s call graph. The pmap's guard bit and the FPU reset
 //!   stay here.
+//! - N7.2b2a: `bootarg_mp_start` asks the kernel's psci(4) for the conduit and the `CPU_ON` id
+//!   (`psci_cpu_on_call`) and makes that one call itself with `cpufunc.rs`'s `hvc_call` or
+//!   `smc_call`, which hand the firmware this entry point and context: `hal`'s SMCCC call
+//!   refuses the entry-point functions (scaffolding until N7.2c types the secondary start).
+//! - N7.2b2a: `cpuresetfn` and `powerdownfn` (two `StaticCell`s written through
+//!   `machine::fdt`'s `Fdt::set_cpuresetfn`/`set_powerdownfn`, read here with an `unsafe` each)
+//!   are the kernel's slots (`kernel::base::reboot::{cpuresetfn, powerdownfn}`), which psci(4)
+//!   fills; `boot()` reads them through the getters.
 
 use core::arch::asm;
 use core::cell::UnsafeCell;
@@ -170,14 +179,7 @@ use crate::arch::arm64::include::pte::{
 use crate::arch::arm64::include::reg::Fpreg;
 use crate::arch::arm64::include::vmparam::{VM_MIN_KERNEL_ADDRESS, VM_PHYS_SIZE, VM_PHYSSEG_MAX};
 use crate::conf::vers::{CODENAME, VERSION};
-use crate::dev::efi::efi::{
-    EFI_MEMORY_DESCRIPTOR_VERSION, EfiACPIMemoryNVS, EfiACPIReclaimMemory, EfiBootServicesCode,
-    EfiBootServicesData, EfiConventionalMemory, EfiLoaderCode, EfiLoaderData, EfiMemoryDescriptor,
-    EfiRuntimeServicesCode, EfiRuntimeServicesData, EfiUnusableMemory,
-};
 use crate::dev::fdt::pluart_fdt::pluart_init_cons;
-use crate::dev::fdt::psci::psci_cpu_on;
-use crate::dev::fdt::pscivar::PSCI_SUCCESS;
 use crate::dev::fdt::simplefb::simplefb_init_cons;
 use crate::dev::ofw::fdt::fdt_node_property_int;
 use crate::dev::ofw::fdt::{
@@ -216,12 +218,19 @@ use hal::mem::fdtblob;
 use hal::vm::param::{atop, ptoa, round_page, trunc_page};
 use hal::vm::pmap::{BootstrapParams, KernelImage};
 use hal::vm::uvmexp::UVMEXP;
+use kernel::dev::fdt::psci::psci_cpu_on_call;
+use kernel::dev::fdt::pscivar::{PSCI_NOT_SUPPORTED, PSCI_SUCCESS};
 use kernel::dev::ofw::fdt::fdt_take_property;
 use kernel::vm::km::{KvMap, install_submap};
 use kernel::vm::km::{kernel_map, kernel_map_min, uvm_km_suballoc};
 use kernel::vm::map::VM_MAP_PAGEABLE;
 use kernel::vm::page::{VmPage, uvm_setpagesize};
 use kernel::vm::types::UvmConstraintRange;
+use sysdefs::dev::efi::{
+    EFI_MEMORY_DESCRIPTOR_VERSION, EfiACPIMemoryNVS, EfiACPIReclaimMemory, EfiBootServicesCode,
+    EfiBootServicesData, EfiConventionalMemory, EfiLoaderCode, EfiLoaderData, EfiMemoryDescriptor,
+    EfiRuntimeServicesCode, EfiRuntimeServicesData, EfiUnusableMemory,
+};
 
 #[cfg(feature = "qemu")]
 use crate::arch::arm64::arm64::qemu;
@@ -317,10 +326,6 @@ pub static LID_ACTION: AtomicI32 = AtomicI32::new(1);
 /// `led_blink`: blink the LEDs (`machdep.led_blink`).
 pub static LED_BLINK: AtomicI32 = AtomicI32::new(1);
 static WAITTIME: AtomicI32 = AtomicI32::new(-1);
-/// `cpuresetfn`: the platform's reset hook, registered by its driver.
-pub static CPURESETFN: StaticCell<Option<fn()>> = StaticCell::new(None);
-/// `powerdownfn`: the platform's power-off hook, registered by its driver.
-pub static POWERDOWNFN: StaticCell<Option<fn()>> = StaticCell::new(None);
 /// Room for the relocated UEFI memory map (QEMU's has about 60 descriptors of 48 bytes).
 const MMAP_MAX: usize = 16 * 1024;
 /// `mmap`: the UEFI memory map, relocated by `initarm` (see the module's deviations).
@@ -331,9 +336,6 @@ pub static MMAP_SIZE: AtomicU32 = AtomicU32::new(0);
 pub static MMAP_DESC_SIZE: AtomicU32 = AtomicU32::new(0);
 /// `mmap_desc_ver`: the descriptors' version.
 pub static MMAP_DESC_VER: AtomicU32 = AtomicU32::new(0);
-/// `system_table`: the UEFI system table's physical address, 0 without UEFI (a local of
-/// `initarm` in C, read again from `/chosen` by `mainbus` and `efi_attach`).
-pub static SYSTEM_TABLE: AtomicU64 = AtomicU64::new(0);
 
 /// `mmap`, `mmap_size` bytes long: the relocated UEFI memory map (empty without UEFI).
 pub fn efi_mmap() -> &'static [u8] {
@@ -485,12 +487,9 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
         );
         let _ = unported!("dma_constraint from openbsd,dma-constraint");
     }
-    // The UEFI system table and memory map efiboot puts in /chosen (see the module's
-    // deviations).
-    if let Some(st) = boot.efi_system_table {
-        SYSTEM_TABLE.store(st.as_usize() as u64, Ordering::Relaxed);
-    }
-
+    // The memory map efiboot puts in /chosen (see the module's deviations); the system table's
+    // address, a local of `initarm` in C, is read again from `/chosen` by `mainbus` and
+    // `efi_attach`.
     // Relocate the EFI memory map too.
     if let Some(m) = boot.efi_memmap {
         let len = m.map.len();
@@ -501,9 +500,17 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
             MMAP_DESC_SIZE.store(m.desc_size, Ordering::Relaxed);
             MMAP_DESC_VER.store(m.desc_ver, Ordering::Relaxed);
             MMAP_SIZE.store(len as u32, Ordering::Release);
+            // efi(4)'s `mmap`, `mmap_size` and `mmap_desc_size`: `hal`'s boot record, which the
+            // runtime services' install reads (N7.2b2a).
+            let _ = hal::cpu::efi::set_boot_memory_map(efi_mmap(), m.desc_size);
         } else {
             kprintf!("initarm: EFI memory map of {} bytes not relocated\n", len);
+            // No map for efi(4): the boot record closes empty.
+            let _ = hal::cpu::efi::set_boot_memory_map(&[], 0);
         }
+    } else {
+        // No UEFI memory map (a non-UEFI boot): the boot record closes empty.
+        let _ = hal::cpu::efi::set_boot_memory_map(&[], 0);
     }
 
     // The direct map is the bootloader's (see `hal::vm::pmap`'s arm64 backend).
@@ -1045,7 +1052,7 @@ fn bootarg_mp() -> Option<BootMp> {
     if psci.is_null() {
         return None;
     }
-    // psci(4) (`dev/fdt/psci.rs`) attaches before the processors (`mainbus_attach_psci`)
+    // psci(4) (`kernel::dev::fdt::psci`) attaches before the processors (`mainbus_attach_psci`)
     // and makes the CPU_ON call; without a `/psci` node there is no way to start them.
 
     let cpus = fdt_find_node(b"/cpus");
@@ -1115,8 +1122,19 @@ unsafe fn bootarg_mp_start(i: usize, arg: usize) {
     let entry = (cpu_hatch_secondary as *const () as usize as u64)
         .wrapping_add(KERN_DELTA.load(Ordering::Relaxed));
     // `cpu_start_secondary`'s call: psci(4)'s `psci_cpu_on`, through the conduit its attach
-    // read from `/psci`.
-    let ret = psci_cpu_on(mpidr, entry, arg as u64);
+    // read from `/psci`. The kernel's psci(4) names the conduit and the id; the call that hands
+    // the firmware this entry point and context is this caller's (N7.2c types it).
+    let ret = match psci_cpu_on_call() {
+        Some((hal::cpu::smccc::Conduit::Hvc, id)) => {
+            crate::arch::arm64::arm64::cpufunc::hvc_call(u64::from(id), mpidr, entry, arg as u64)
+                as i32
+        }
+        Some((hal::cpu::smccc::Conduit::Smc, id)) => {
+            crate::arch::arm64::arm64::cpufunc::smc_call(u64::from(id), mpidr, entry, arg as u64)
+                as i32
+        }
+        None => PSCI_NOT_SUPPORTED,
+    };
     if ret != PSCI_SUCCESS {
         kprintf!(" psci: CPU_ON {:#x} failed: {}", mpidr, ret);
     }
@@ -1519,9 +1537,7 @@ pub fn boot(howto: i32) -> ! {
             if howto & RB_POWERDOWN != 0 {
                 kprintf!("\nAttempting to power down...\n");
                 delay(500_000);
-                // SAFETY: registered by a driver on the boot CPU during autoconfiguration; only
-                // read here.
-                if let Some(powerdown) = unsafe { POWERDOWNFN.read() } {
+                if let Some(powerdown) = kernel::base::reboot::powerdownfn() {
                     powerdown();
                 }
             }
@@ -1543,8 +1559,7 @@ pub fn boot(howto: i32) -> ! {
     // doreset:
     kprintf!("rebooting...\n");
     delay(500_000);
-    // SAFETY: as for `POWERDOWNFN`.
-    if let Some(cpureset) = unsafe { CPURESETFN.read() } {
+    if let Some(cpureset) = kernel::base::reboot::cpuresetfn() {
         cpureset();
     }
     kprintf!("reboot failed; spinning\n");

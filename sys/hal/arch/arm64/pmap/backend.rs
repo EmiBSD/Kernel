@@ -194,8 +194,8 @@
 //! - `pmap_setttb`'s body is `Backend::load` (the ASID generation check, the empty table,
 //!   `cpu_setttb`); its unmangled symbol, `ci_curpm`, `ci_flush_bp` stay in `bsd`'s
 //!   `cpuswitch.rs` (the caller). `pmap_activate`'s and `pmap_deactivate`'s process halves are
-//!   the caller's too; `efi_enter`'s and `efi_leave`'s register switches are
-//!   `Backend::load_efi`/`leave_efi`.
+//!   the caller's too; `efi_enter`'s and `efi_leave`'s register switches are `efi_enter` and
+//!   `efi_leave_current`, for `hal::cpu::efi`'s transaction (N7.2b2a).
 //! - `pmap_destroy` + `pmap_release` are the last handle's drop: the ASIDs freed (their TLB
 //!   entries dropped on every CPU) before the tables go back to the provider, where the C
 //!   frees the tables to its pool first.
@@ -264,6 +264,7 @@ use super::vp::{
     direct_unmap, pted_page, pv_insert, pv_unlink, set_direct_map, words, zero_frame,
 };
 use crate::assert::{hal_panic, kassert};
+use crate::cpu::IntrGuard;
 use crate::cpu::intr::{IPL_NONE, IPL_VM, splraise};
 use crate::dev::mmio::DevCache;
 use crate::mem::pool::{BoxPool, PR_NOWAIT, PoolArc};
@@ -319,7 +320,7 @@ pub(crate) struct PmapMd {
     four_level: AtomicBool,
     /// `pm_privileged`: the kernel's access bits (`ap_bits_kern`).
     privileged: AtomicBool,
-    /// Made by `create_efi`: the EFI runtime pmap, loaded only by `load_efi`.
+    /// Made by `create_efi`: the EFI runtime pmap, loaded only by `efi_enter`.
     efi: bool,
     /// `pm_pt0pa`: the table `TTBR0_EL1` gets.
     pt0pa: AtomicU64,
@@ -1524,6 +1525,26 @@ fn refuse_kernel_exec(what: &str, va: Vaddr, prot: VmProt) {
     }
 }
 
+/// `efi_enter`'s pmap half for `hal::cpu::efi`'s transaction (N7.2b2a): the EFI pmap `pm`
+/// (a panic for any other) with `T0SZ` for `EFI_SPACE_BITS`; interrupts are masked (`_off`).
+pub(crate) fn efi_enter(_off: &IntrGuard, pm: &Pmap) {
+    if !pm.md.efi {
+        hal_panic(format_args!("efi_enter: not the EFI pmap"));
+    }
+    switch_space(pm, EFI_SPACE_BITS);
+}
+
+/// `efi_leave`'s pmap half for `hal::cpu::efi`'s transaction (N7.2b2a): the pmap this CPU
+/// ran on before ([`asid::with_curpm`], `ci_curpm`) with `T0SZ` for `USER_SPACE_BITS`.
+pub(crate) fn efi_leave_current(off: &IntrGuard) {
+    asid::with_curpm(off, &KERNEL_PMAP, |to| {
+        if to.md.efi {
+            hal_panic(format_args!("efi_leave: back to the EFI pmap"));
+        }
+        switch_space(to, USER_SPACE_BITS);
+    });
+}
+
 /// The EFI pmap's and the user's half of `efi_enter`/`efi_leave`: the empty table, `T0SZ`
 /// for `bits`, then `pm`'s ASID and table (`cpu_setttb`).
 fn switch_space(pm: &Pmap, bits: u32) {
@@ -1540,7 +1561,8 @@ fn switch_space(pm: &Pmap, bits: u32) {
     // where this runs, the kernel's root: only `trampoline.S` puts the trampoline's there, for
     // EL0, and takes it away on every entry). Nothing of
     // the kernel lives in the lower half (no Rust reference points there; the EFI runtime is
-    // called through it by `bsd`'s `efi_call` with interrupts disabled, its own trust), and
+    // called through it by `hal::cpu::efi`'s transaction with interrupts masked, its own
+    // trust), and
     // the kernel's translations through `TTBR1_EL1` stay; the `isb`s order the switches before
     // the next fetch. Memory is a clobber.
     unsafe {
@@ -2010,22 +2032,6 @@ impl PmapBackend for Backend {
         ttbr0_empty();
         cpu_setttb(pmap);
         asid::set_curpm(pmap);
-    }
-
-    /// `efi_enter`'s switch: the EFI pmap's tables with `T0SZ` for `EFI_SPACE_BITS`.
-    fn load_efi(pmap: &Pmap) {
-        if !pmap.md.efi {
-            hal_panic(format_args!("efi_enter: not the EFI pmap"));
-        }
-        switch_space(pmap, EFI_SPACE_BITS);
-    }
-
-    /// `efi_leave`'s switch: `to` (the CPU's `ci_curpm`) with `T0SZ` for `USER_SPACE_BITS`.
-    fn leave_efi(to: &Pmap) {
-        if to.md.efi {
-            hal_panic(format_args!("efi_leave: back to the EFI pmap"));
-        }
-        switch_space(to, USER_SPACE_BITS);
     }
 
     /// `pmap_activate`'s count: one more thread uses it.

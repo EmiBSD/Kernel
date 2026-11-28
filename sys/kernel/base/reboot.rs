@@ -70,11 +70,20 @@
 //!   `Result<Infallible, Errno>`: the only way back is `suser`'s error (`/* NOTREACHED */`
 //!   as a type). The secondary CPUs' stop is unconditional: the kernel is MP code only
 //!   (decision 40), where LZ had it under `#[cfg(feature = "multiprocessor")]`.
+//! - N7.2b2a: the machine's `cpuresetfn` and `powerdownfn` (`extern void (*cpuresetfn)(void)`
+//!   of arm64's and amd64's `machdep.c`, plain variables a driver's attach assigns and
+//!   `boot(9)` tests and calls) -> two replaceable slots here, [`set_cpuresetfn`] and
+//!   [`set_powerdownfn`] with their getters, each a `Mutexed<Option<fn()>>`: psci(4) fills
+//!   them from the kernel and `bsd`'s arm64 `boot()` reads them (LZ's two `StaticCell`s of
+//!   `machdep.rs`, written through `machine::fdt`'s `Fdt::set_cpuresetfn`/`set_powerdownfn`,
+//!   and their four `unsafe`). The last assignment wins, as the C's.
 
 use core::convert::Infallible;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use hal::bridges::AlreadyRegistered;
+use hal::cpu::intr::IPL_HIGH;
+use hal::sync::mutex::Mutexed;
 use hal::sync::once::OnceStatic;
 use sysdefs::base::errno::Errno;
 use sysdefs::proc::reboot::RB_NOSYNC;
@@ -91,8 +100,16 @@ pub static REBOOTING: AtomicBool = AtomicBool::new(false);
 /// The machine's `boot(9)`, registered once.
 static MACHINE_BOOT: OnceStatic<&'static dyn MachineBoot> = OnceStatic::new();
 
+/// `cpuresetfn`: the function `boot(9)` calls to reset the machine, `None` until a driver
+/// (psci(4)'s `SYSTEM_RESET`) assigns one.
+static CPURESETFN: Mutexed<Option<fn()>> = Mutexed::new(IPL_HIGH, None);
+
+/// `powerdownfn`: the function `boot(9)` calls to power the machine off, `None` until a
+/// driver (psci(4)'s `SYSTEM_OFF`) assigns one.
+static POWERDOWNFN: Mutexed<Option<fn()>> = Mutexed::new(IPL_HIGH, None);
+
 /// The machine's `boot(9)`: `bsd`'s machdep (`vfs_shutdown`, `config_suspend_all`, the
-/// halt, power-down or reset `howto` asks for). Paid by N7.
+/// halt, power-down or reset `howto` asks for). Paid by N9 (arm64's `boot()` is `machdep.rs`'s).
 pub trait MachineBoot: Sync {
     /// `boot(howto)`: never returns.
     fn boot(&self, howto: i32) -> !;
@@ -114,6 +131,26 @@ pub fn sys_reboot<G: ProcGlue>(p: &Thread<G>, opt: i32) -> Result<Infallible, Er
     kassert!(G::cpu_is_primary(hal::cpu::cpu_number()));
     reboot(opt)
     // NOTREACHED
+}
+
+/// `cpuresetfn`: the reset function a driver assigned, if any.
+pub fn cpuresetfn() -> Option<fn()> {
+    *CPURESETFN.lock()
+}
+
+/// `cpuresetfn = f`: `f` resets the machine from now on.
+pub fn set_cpuresetfn(f: fn()) {
+    *CPURESETFN.lock() = Some(f);
+}
+
+/// `powerdownfn`: the power-off function a driver assigned, if any.
+pub fn powerdownfn() -> Option<fn()> {
+    *POWERDOWNFN.lock()
+}
+
+/// `powerdownfn = f`: `f` powers the machine off from now on.
+pub fn set_powerdownfn(f: fn()) {
+    *POWERDOWNFN.lock() = Some(f);
 }
 
 /// `rebooting`.
@@ -168,6 +205,18 @@ mod tests {
         // The test's own flag: the process-wide one stays false for the other tests.
         static FLAG: AtomicBool = AtomicBool::new(false);
         reboot_flagging(0, &FLAG);
+    }
+
+    fn hook() {}
+
+    #[test]
+    fn a_driver_fills_the_reset_and_power_off_slots() {
+        // Other tests (psci(4)'s attach) may assign the same process-wide slots meanwhile:
+        // only "some function once assigned" is this test's to check.
+        set_cpuresetfn(hook);
+        set_powerdownfn(hook);
+        assert!(cpuresetfn().is_some());
+        assert!(powerdownfn().is_some());
     }
 }
 /* </TESTS> */

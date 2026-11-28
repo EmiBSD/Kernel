@@ -1664,7 +1664,7 @@ adapted_by = ["sys/kernel/base/log.rs", "sys/kernel/fs/fuse/fuse_device.rs"]
 rust = "sys/bsd/arch/arm64/arm64/cpu.rs"
 lz = ["sys/arch/arm64/arm64/cpu.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/arch/arm64/pmap/backend.rs", "sys/bsd/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc/mod.rs", "sys/bsd/kern/proc_glue.rs", "sys/hal/cpu/curcpu.rs", "sys/hal/cpu/thread.rs", "sys/kernel/sched/mod.rs", "sys/hal/cpu/intr.rs", "sys/kernel/base/sysctl.rs", "sys/kernel/time/clockintr.rs", "sys/hal/arch/arm64/trap.rs", "sys/hal/arch/arm64/exception.rs", "sys/kernel/trap.rs", "sys/kernel/dev/arm64/ampintc.rs", "sys/kernel/dev/arm64/agintc.rs"]
+adapted_by = ["sys/hal/arch/arm64/pmap/backend.rs", "sys/bsd/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc/mod.rs", "sys/bsd/kern/proc_glue.rs", "sys/hal/cpu/curcpu.rs", "sys/hal/cpu/thread.rs", "sys/kernel/sched/mod.rs", "sys/hal/cpu/intr.rs", "sys/kernel/base/sysctl.rs", "sys/kernel/time/clockintr.rs", "sys/hal/arch/arm64/trap.rs", "sys/hal/arch/arm64/exception.rs", "sys/kernel/trap.rs", "sys/kernel/dev/arm64/ampintc.rs", "sys/kernel/dev/arm64/agintc.rs", "sys/kernel/dev/fdt/psci.rs"]
 notes = "N7.2a3: cpu_attach and cpu_identify record ci_mpidr and ci_midr in the core too (CpuCore::set_hwid, set_midr) for the kernel's agintc; the qemu self-check counts the kernel's agintc_ipi_count beside ampintc's. Ahead of LZ since 94d0c9ed: cpu_init's SVE setup opens FP with SVE around its write of ZCR_EL1 (the fault is OpenBSD's own, cpu.c:1844-1856); LZ adopts the same change (its 6e1e27de, not on its main yet): the sync that brings it records it as already here"
 
 [[module]]
@@ -1680,6 +1680,46 @@ crate = "hal"
 lz = ["sys/arch/arm64/arm64/cpufunc.rs"]
 status = "redesigned"
 notes = "N4.8b: the cache, TLB and idle instructions for the code outside the pmap, safe for any argument: cpu_wfi (its own asm), the four TLB flushes and cpu_dcache_wb_range, cpu_dcache_wbinv_range, cpu_icache_sync_range, cpu_idcache_wbinv_range over the pmap's copies (pmap/cpufunc.rs); bsd's duplicates deleted (its cpufunc.rs kept them until N4); N7.0: cpu_dcache_inv_dma, dc ivac over a hal::dev::dma::DmaBuf's own bytes (the range checked inside the buffer, whose mapping is page-aligned whole pages, so every line discarded is its own): 1 unsafe; bsd's cpu_dcache_inv_range stays for its bus_dma"
+
+[[module]]
+rust = "sys/hal/arch/arm64/efi.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/dev/efi_machdep.rs"]
+status = "redesigned"
+notes = "N7.2b2a: efi_enter, efi_leave, efi_enter_check and efi_fault as one transaction under hal::cpu::efi's lock: IntrGuard, the EFI pmap (backend::efi_enter), the FPU, the body with an Inside (kcopy reads, the service call), then the FPU, the CPU's own pmap from asid.rs's record (efi_leave_current) and the interrupt state; the trampoline hal_efi_rs_call saves x19-x30 and sp in its own .bss checkpoint before it arms pcb_onfault (LZ armed first; the C checkpoints first too), takes the service's address (read through kcopy in the same transaction) and the caller's EfiTime; every address below the EFI pmap's limit; 3 unsafe (the extern block, the call, kcopy_in) + 1 in asid.rs (the curpm record)"
+[[module.fn]]
+lz = "sys/arch/arm64/dev/efi_machdep.rs::EFI_SPACE_BITS"
+native = ["sys/hal/arch/arm64/pmap/layout.rs::EFI_SPACE_BITS"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/arch/arm64/dev/efi_machdep.rs::EfiJmpbuf"
+native = []
+kind = "dropped"
+reason = "label_t efi_jmpbuf's type: the checkpoint is 104 bytes of the trampoline's own .bss (.Lhal_efi_jmpbuf, hal_efi_rs_call), which no Rust code names; hal::cpu::efi's lock makes one call at a time"
+[[module.fn]]
+lz = "sys/arch/arm64/dev/efi_machdep.rs::EFI_JMPBUF"
+native = []
+kind = "dropped"
+reason = "efi_jmpbuf: the trampoline's own .bss checkpoint (see EfiJmpbuf), written before pcb_onfault is armed"
+[[module.fn]]
+lz = "sys/arch/arm64/dev/efi_machdep.rs::efi_call"
+native = ["Inside::time_call", "transaction", "sys/hal/cpu/efi.rs::EfiRuntime::get_time", "sys/hal/cpu/efi.rs::EfiRuntime::set_time"]
+kind = "split"
+lines = "L489-L501"
+
+[[module]]
+rust = "sys/hal/cpu/efi.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/dev/efi_machdep.rs", "sys/arch/arm64/include/efivar.rs"]
+status = "redesigned"
+notes = "N7.2b2a: the UEFI runtime services as one object, EfiRuntime: install(rs) once per machine (the first call closes the door) is efi_map_runtime over the boot record of the firmware's memory map (set_boot_memory_map, decision 30's kind) (the EFI pmap, the C's policy over the firmware's runtime descriptors: EFI_MEMORY_RUNTIME only, identity for a zero VirtualStart, device without WB, executable only EfiRuntimeServicesCode, RP/XP/RO; EINVAL, nothing mapped, for a page of kernel memory (loaded RAM as uvm_page_physload took it, managed, the image), unaligned, or at or past the limit) and nothing enters a page after it; reads(|r| ..), get_time, set_time, each one transaction under a Mutexed at IPL_HIGH (P50), EfiLocked the proof the machine's transaction takes; sc_pm, sc_rs and sc_psw of struct efi_softc are its pmap, table address and the transaction's IntrGuard; every read and call below the EFI pmap's limit; the host's per-thread fake firmware"
+
+[[module]]
+rust = "sys/hal/arch/arm64/smccc.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/arm64/cpufunc.rs"]
+status = "redesigned"
+notes = "N7.2b2a: support.S's smc_call and hvc_call (LZ's cpufunc.rs) as one trap over a Conduit held by value, x0-x3 in and x0 out with clobber_abi(\"C\") (LZ declared x0-x3 only), reached only through hal::cpu::smccc::call, which admits the Arm architecture's and PSCI's fast calls minus the entry-point functions (CPU_SUSPEND, CPU_ON, CPU_DEFAULT_SUSPEND, SYSTEM_SUSPEND, both widths) and a PSCI 0.1 node's recorded value ids; bsd's cpufunc.rs keeps its two copies for CPU_ON until N7.2c"
 
 [[module]]
 rust = "sys/bsd/arch/arm64/arm64/cpuswitch.rs"
@@ -1733,6 +1773,21 @@ lz = ["sys/arch/arm64/arm64/machdep.rs"]
 status = "redesigned"
 notes = "M2: initarm (the 1 GiB TTBR0 Device-nGnRnE identity block for devices until pmap, message buffer, consinit, boot -d -> db_enter), boot (cold path; under feature qemu the key wait is the failure exit; vfs_shutdown/resettodr/if_downall/uvm_shutdown/dumpsys/config_suspend_all reported unported), cold, waittime, cpuresetfn, powerdownfn; the bootargs parsing is BootInfo::boothowto; M3: the memory setup and pmap_bootstrap; M4: cpu_info_primary, SP_EL1/tpidr_el1/VBAR_EL1 first thing, fdt_init of the bootloader DTB, consinit = pluart_init_cons (the other *_init_cons are deferred drivers), stdout_node/stdout_speed, fdt_find_cons, (M8: cn_rx_intr_establish is gone; pluart_fdt_attach establishes the console's interrupt); cpu_info[], dumpsys, sendsig/setregs, sysctl are M5 to M6; cpu_startup prints version (conf/vers.rs) since kern_sysctl.c; M5: need_resched (aston reported, M5-b); M5-b1: proc0paddr and proc0tf statics, cpu_startup sets proc0.p_addr and curpcb (pcb_flags, pcb_tf); M5-b2: proc0 gets a full u-area (PROC0_UAREA, proc0paddr), cpu_idle_enter/cycle/leave (cpu_wfi), cpu_switchto (fpu_drop then cpuswitch.S), aston, clear_resched, cpu_unidle (UP); cold moved to sys/systm.rs; M6-b2: setregs (pm_guarded from EXEC_NOBTCFI, the FPU state dropped, the EL0 trap frame with PSR_M_EL0t|PSR_DIT; pmap_setpauthkeys M7); vfs stage 2: cpu_startup calls bufinit before avail mem, as the C does; M4: cpu_info_primary, SP_EL1/tpidr_el1/VBAR_EL1 first thing, fdt_init of the bootloader DTB, consinit = pluart_init_cons (the other *_init_cons are deferred drivers), stdout_node/stdout_speed, fdt_find_cons, cn_rx_intr_establish (the console receive interrupt pluart_fdt_attach would establish, until autoconf M5); cpu_info[], dumpsys, sendsig/setregs, sysctl are M5 to M6; cpu_startup prints version (conf/vers.rs) since kern_sysctl.c; M5: need_resched (aston reported, M5-b); M5-b1: proc0paddr and proc0tf statics, cpu_startup sets proc0.p_addr and curpcb (pcb_flags, pcb_tf); M5-b2: proc0 gets a full u-area (PROC0_UAREA, proc0paddr), cpu_idle_enter/cycle/leave (cpu_wfi), cpu_switchto (fpu_drop then cpuswitch.S), aston, clear_resched, cpu_unidle (UP); cold moved to sys/systm.rs; M6-b2: setregs (pm_guarded from EXEC_NOBTCFI, the FPU state dropped, the EL0 trap frame with PSR_M_EL0t|PSR_DIT; pmap_setpauthkeys M7); vfs stage 2: cpu_startup calls bufinit before avail mem, as the C does; M8: cpu_startup makes exec_map (uvm_km_suballoc of 16 * NCARGS, VM_MAP_PAGEABLE); efi(4): mmap/mmap_size/mmap_desc_size/mmap_desc_ver (the UEFI memory map from the boot protocol, relocated into a static buffer, efi_mmap) and system_table (SYSTEM_TABLE, an initarm local in C) instead of efiboot's openbsd,uefi-* properties; M10a: cpu_startup makes phys_map (uvm_km_suballoc of VM_PHYS_SIZE, flags 0) and stores it in uvm_extern's PHYS_MAP, as it does exec_map; M11a: cpu_info[MAXCPUS] (CiPtr, cpu_info_primary first), cpu_info_list() (cpu.c's), cpu_idle_cycle_fcn (StaticCell, cpu_wfi), need_resched's cpu_kick, the MULTIPROCESSOR signotify (aston + cpu_unidle(p->p_cpu)), ci_want_resched atomic; initarm keeps BootInfo.mp in BOOT_MP for cpu_start_secondary; cpu_unidle moved to cpu.rs; M13: cpu_sysctl (through machine::cpu::cpu_sysctl, called by sys_sysctl for CTL_MACHDEP) is ported: compatible (the root node's property through OF_getprop), the id_aa64* quads (smfr0 is 0 as in C), led_blink (the C then calls blink_led_timeout, which returns at once with no blink_led registered: blink_led_register and the LED drivers are not ported) and the sysctl_bounded_arr table (lidaction, lid_action is a static in machdep.rs, nothing reads it until aplsmc); the CPU_* names and CTL_MACHDEP_NAMES are in include/cpu.rs; M13: cpuresetfn/powerdownfn are set by psci(4) (dev/fdt/psci.c) through machine::fdt::set_cpuresetfn/set_powerdownfn, so boot() powers off (halt -p: SYSTEM_OFF) and resets (reboot: SYSTEM_RESET) through PSCI; cpu_reset is boot()'s doreset path; M14 (A3): boot(8)'s entry: getbootinfo (the /chosen half of initarm: bootargs via collect_kernel_args/process_kernel_args, openbsd,boothowto/bootduid/bootmac/sr-bootuuid/sr-bootkey (explicit_bzero of the props)/uefi-mmap-*/uefi-system-table/dma-constraint), the memory (EFI map Conventional/BootServices, /memory fallback, /reserved-memory no-map, the 64 MB block, its part after esym usable; memreg_add/memreg_remove), FDT and EFI map read in place through locore0.S's direct map (bootarg_direct_map, not in the C, maps the RAM gigabytes); dma_constraint stays constant, a narrower one is reported by initarm; BootMp from /cpus with PSCI CPU_ON through dev/fdt/psci.rs's psci_cpu_on (psci attaches before the processors); M14: boot() calls vfs_shutdown(curproc) (skipped with no thread on the CPU), so a halt or reboot syncs the disks; M13 (wsdisplay): consinit calls simplefb_init_cons(&arm64_bs_tag) after pluart_init_cons, as the C does (the frame buffer is the console only when stdout-path names it); M16d: etext() (kernel.ld now provides etext), machine::Cpu::etext; initarm records the kernel image's range and physical offset for pmap_extract"
 [[module.fn]]
+lz = "sys/arch/arm64/arm64/machdep.rs::SYSTEM_TABLE"
+native = []
+kind = "dropped"
+reason = "system_table is a local of initarm in the C; efi(4) (sys/kernel/dev/arm64/efi_machdep.rs) and mainbus read the address from /chosen's openbsd,uefi-system-table, so nothing read the static"
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/machdep.rs::CPURESETFN"
+native = ["sys/kernel/base/reboot.rs::CPURESETFN"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/machdep.rs::POWERDOWNFN"
+native = ["sys/kernel/base/reboot.rs::POWERDOWNFN"]
+kind = "moved"
+
+[[module.fn]]
 lz = "sys/arch/arm64/arm64/machdep.rs::bootarg_bzero"
 native = ["sys/kernel/dev/ofw/fdt.rs::fdt_take_property"]
 kind = "merged"
@@ -1769,17 +1824,6 @@ lz = ["sys/arch/arm64/dev/agtimer.rs"]
 status = "adapted"
 adapted_by = ["sys/hal/arch/arm64/timer.rs", "sys/kernel/time/tc.rs", "sys/kernel/time/clockintr.rs", "sys/kernel/time/clock.rs"]
 notes = "N4.8a: the counter is AgtimerTc (kernel::time::tc::Timecounter) with its TcEntry, the interrupt clock AgtimerIntrclock (kernel::time::clockintr::Intrclock), the dispatch over the typed frame"
-
-[[module]]
-rust = "sys/bsd/arch/arm64/dev/efi_machdep.rs"
-lz = ["sys/arch/arm64/dev/efi_machdep.rs"]
-status = "redesigned"
-notes = "N3.1 commit 6 (redesigned at 6d): the runtime services' pmap is hal's EFI pmap (hal::vm::pmap::create_efi), held as a counted PmapRef in EFI_PMAP (OnceStatic); efi_enter/efi_leave's TTBR0/TCR sequences are hal's (pmap_efi_enter, pmap_efi_leave); EFI_SPACE_BITS moved to hal's arm64 layout"
-
-[[module.fn]]
-lz = "sys/arch/arm64/dev/efi_machdep.rs::EFI_SPACE_BITS"
-native = ["sys/hal/arch/arm64/pmap/layout.rs::EFI_SPACE_BITS"]
-kind = "moved"
 
 [[module]]
 rust = "sys/bsd/arch/arm64/dev/pci_machdep.rs"
@@ -1854,12 +1898,6 @@ rust = "sys/hal/arch/arm64/include/disklabel.rs"
 crate = "hal"
 lz = ["sys/arch/arm64/include/disklabel.rs"]
 status = "inherited"
-
-[[module]]
-rust = "sys/bsd/arch/arm64/include/efivar.rs"
-lz = ["sys/arch/arm64/include/efivar.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/vm/pmap.rs"]
 
 [[module]]
 rust = "sys/hal/arch/arm64/include/elf.rs"
@@ -3081,23 +3119,11 @@ lz = ["sys/dev/biovar.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/bsd/dev/clock_subr.rs"
-lz = ["sys/dev/clock_subr.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/time/mod.rs"]
-notes = "N4.8a: struct todr_chip_handle implements kernel::time::Todr (quality, gettime, settime over the handle's functions)"
-
-[[module]]
 rust = "sys/bsd/dev/cons.rs"
 lz = ["sys/dev/cons.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/base/log.rs", "sys/kernel/tty/mod.rs", "sys/kernel/fs/vnode.rs"]
 notes = "struct consdev with fn pointers and Cell fields, CN_*; cninit/constab are not used (the consoles are attached directly); M8: CONSMAJOR, the cnopen..cnkqfilter prototypes are cons.rs's functions; cons_decl/cons_init macros are the Consdev literal; M2: cngetc/cnputc/cnpollc/cnbell/nullcnpollc on an atomic cn_tab; M8: cnopen, cnclose, cnread, cnwrite, cnstop, cnioctl, cnkqfilter through the device switch, constty and cn_devvp as atomic pointers (constty()/set_constty()); cninit and constab[] are not used: each architecture attaches its console directly (docs/ARCHITECTURE.md)"
-
-[[module]]
-rust = "sys/bsd/dev/efi/efi.rs"
-lz = ["sys/dev/efi/efi.rs"]
-status = "inherited"
 
 [[module]]
 rust = "sys/bsd/dev/diskmap.rs"
@@ -3128,25 +3154,10 @@ lz = ["sys/dev/fdt/plgpio.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/bsd/dev/fdt/plrtc.rs"
-lz = ["sys/dev/fdt/plrtc.rs"]
-status = "inherited"
-
-[[module]]
 rust = "sys/bsd/dev/fdt/pluart_fdt.rs"
 lz = ["sys/dev/fdt/pluart_fdt.rs"]
 status = "inherited"
 notes = "M4: pluart_init_cons (fdt_find_cons + fdt_get_reg + pluartcnattach); M8: pluart_fdt_ca, pluart_fdt_match, pluart_fdt_attach (pluart* at fdt? in ioconf.rs; the machine's fdt_attach_args, fdt_intr_establish through machine::fdt); clock_enable_all/clock_get_frequency (ofw_clock.c) are reported, sc_clkfreq stays 0 so pluart_param keeps the firmware's baud rate; M16f: pinctrl_byname is ofw_pinctrl.c's"
-
-[[module]]
-rust = "sys/bsd/dev/fdt/psci.rs"
-lz = ["sys/dev/fdt/psci.rs"]
-status = "inherited"
-
-[[module]]
-rust = "sys/bsd/dev/fdt/pscivar.rs"
-lz = ["sys/dev/fdt/pscivar.rs"]
-status = "inherited"
 
 [[module]]
 rust = "sys/bsd/dev/fdt/simplefb.rs"
@@ -10198,6 +10209,82 @@ native = ["sys/hal/sysbytes.rs::Disklabel::cksum_words"]
 kind = "moved"
 
 [[module]]
+rust = "sys/lib/sysdefs/dev/efi.rs"
+lz = ["sys/dev/efi/efi.rs"]
+status = "redesigned"
+notes = "N7.2b2a: <dev/efi/efi.h> as data: every pointer of the firmware's tables a u64 word, EFI_RUNTIME_SERVICES' entries u64 slots called by offset through hal::cpu::efi (LZ's seven unsafe extern \"efiapi\" function types go), EfiGuid, EfiMemoryDescriptor, EfiTime and EfiConfigurationTable AbiPod through abi_pod! (read_at's read_unaligned goes: pod_from_bytes), UINTN 64 bits, efi_guidcmp the derived =="
+[[module.fn]]
+lz = "sys/dev/efi/efi.rs::EfiHandle"
+native = []
+kind = "dropped"
+reason = "EFI_HANDLE: the system table's handles are the u64 words they are in memory (EfiSystemTable's members)"
+[[module.fn]]
+lz = "sys/dev/efi/efi.rs::EfiSimpleTextInputProtocol"
+native = []
+kind = "dropped"
+reason = "opaque here: EfiSystemTable::ConIn is the u64 word it is in memory"
+[[module.fn]]
+lz = "sys/dev/efi/efi.rs::EfiSimpleTextOutputProtocol"
+native = []
+kind = "dropped"
+reason = "opaque here: EfiSystemTable::ConOut and StdErr are u64 words"
+[[module.fn]]
+lz = "sys/dev/efi/efi.rs::EfiBootServices"
+native = []
+kind = "dropped"
+reason = "opaque here (gone once the kernel runs): EfiSystemTable::BootServices is a u64 word"
+[[module.fn]]
+lz = "sys/dev/efi/efi.rs::EfiTimeCapabilities"
+native = []
+kind = "dropped"
+reason = "GetTime's second argument, always NULL here (hal::cpu::efi passes 0)"
+[[module.fn]]
+lz = "sys/dev/efi/efi.rs::EfiGetTime"
+native = []
+kind = "dropped"
+reason = "the firmware's function type: services are u64 slots called through hal::cpu::efi::EfiRuntime::get_time"
+[[module.fn]]
+lz = "sys/dev/efi/efi.rs::EfiSetTime"
+native = []
+kind = "dropped"
+reason = "the firmware's function type: called through hal::cpu::efi::EfiRuntime::set_time"
+[[module.fn]]
+lz = "sys/dev/efi/efi.rs::EfiSetVirtualAddressMap"
+native = []
+kind = "dropped"
+reason = "the firmware's function type: a u64 slot of EfiRuntimeServices, never called (as the C's kernel)"
+[[module.fn]]
+lz = "sys/dev/efi/efi.rs::EfiGetVariable"
+native = []
+kind = "dropped"
+reason = "the firmware's function type: a u64 slot; dev/efi/efi.c, its caller, is not ported (LZ's gap)"
+[[module.fn]]
+lz = "sys/dev/efi/efi.rs::EfiGetNextVariableName"
+native = []
+kind = "dropped"
+reason = "the firmware's function type: a u64 slot; efi.c is not ported (LZ's gap)"
+[[module.fn]]
+lz = "sys/dev/efi/efi.rs::EfiSetVariable"
+native = []
+kind = "dropped"
+reason = "the firmware's function type: a u64 slot; efi.c is not ported (LZ's gap)"
+[[module.fn]]
+lz = "sys/dev/efi/efi.rs::EfiResetSystem"
+native = []
+kind = "dropped"
+reason = "the firmware's function type: a u64 slot, never called (psci(4) resets the machine)"
+[[module.fn]]
+lz = "sys/dev/efi/efi.rs::EfiMemoryDescriptor::read_at"
+native = []
+kind = "dropped"
+reason = "NextMemoryDescriptor's read: hal::user::pod_from_bytes of the descriptor's bytes (sys/kernel/dev/arm64/efi_machdep.rs::descriptors)"
+[[module.fn]]
+lz = "sys/dev/efi/efi.rs::efi_guidcmp"
+native = []
+kind = "dropped"
+reason = "the GUIDs' derived ==, which is what the C's callers test (efi_guidcmp(..) == 0)"
+
+[[module]]
 rust = "sys/lib/sysdefs/dev/dkio.rs"
 lz = ["sys/sys/dkio.rs"]
 status = "redesigned"
@@ -14170,6 +14257,11 @@ crate = "hal"
 reason = "hal runtime, written new (N4.8a): the clock frame as the kernel's clock callbacks read it (struct clockframe, CLKF_USERMODE, CLKF_PC, CLKF_INTR over the core's interrupt depth); the machine's frame type comes from arch/<machine>/timer.rs; bsd's include/cpu.rs keeps its CLKF_* for its own callers"
 
 [[extra]]
+rust = "sys/hal/cpu/smccc.rs"
+crate = "hal"
+reason = "hal runtime, written new (N7.2b2a): the SMC Calling Convention's value class, call(conduit, fid, a1, a2, a3) admitting only fast calls of OEN 0 (the Arm architecture) and of OEN 4 PSCI's function numbers 0x00-0x15 that take no address, and a PSCI 0.1 firmware's recorded system_off/system_reset/cpu_off (record_psci_0_1, sealed by the first record, the first call or mainbus after its early passes), answering PSCI_NOT_SUPPORTED without trapping for every other id (SiP, OEM, trusted OS, vendor hypervisor, yielding, the entry-point functions) before the machine's trap (hal::arch::arm64::smccc; the host's per-thread fake firmware)"
+
+[[extra]]
 rust = "sys/hal/cpu/icc.rs"
 crate = "hal"
 reason = "hal runtime, written new (N7.2a3): the GICv3 CPU interface of the executing CPU for the kernel's agintc(4), the arm64 accessors of arch/arm64/icc.rs (agintc.c's ICC_*_EL1 accesses) re-exported, and on the host the per-thread register file of arch/host/icc.rs that the tests read and set"
@@ -15612,6 +15704,33 @@ crate = "kernel"
 lz = ["sys/kern/kern_time.rs", "sys/dev/clock_subr.rs"]
 status = "redesigned"
 notes = "N4.8a: kern_time.c's parts no process owns, 0 unsafe: settime (securelevel from the caller), clock_getres's timecounter resolution (tc_resolution, under tc_lock read), itimerfix, itimerdecr, ratecheck(9), ppsratecheck(9) with ppsratecheck_locked/ppsratecheck_held (a counter shared between CPUs reached only with ppsratecheck_mtx held, the guard the proof, instead of LZ's ppsratecheck_shared raw pointers), the time-of-day chip: struct todr_chip_handle as the Todr trait (quality, gettime, settime; todr_setwen omitted: no implementer sets it and todr_wenable has no caller), todr_attach keeping the better quality in a Mutexed (LZ: an AtomicPtr deref), inittodr, resettodr and the periodic resettodr (a kernel Timeout and Task on systq); struct itimerspec, itimerval, timezone and clockinfo with abi_pod!.; N4.8 a6: the ten system calls (clock_gettime, clock_settime, clock_getres, nanosleep, gettimeofday, settimeofday, adjfreq, adjtime, getitimer, setitimer) with clock_gettime, generic over ProcGlue (setitimer, spc_runtime and pledge_adjtime are glue members: the interval timers are still bsd's BsdProcessG members), securelevel read from kernel::base::sysctl::SECURELEVEL right before settime. setitimer, realitexpire and itimer_update stay bsd's kern_time.rs until the timers move into kernel::proc::Process"
+[[module.fn]]
+lz = "sys/dev/clock_subr.rs::TodrChipHandle"
+native = ["Todr"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/dev/clock_subr.rs::TodrTimeFn"
+native = []
+kind = "dropped"
+reason = "todr_gettime/todr_settime's function type: Todr::gettime and Todr::settime are the trait's methods (each chip implements them: efi(4)'s EfiTodr, plrtc(4)'s Plrtc)"
+[[module.fn]]
+lz = "sys/dev/clock_subr.rs::TodrSetwenFn"
+native = []
+kind = "dropped"
+reason = "todr_setwen's type: no chip at the pin sets it and todr_wenable has no caller; Todr has no such method"
+[[module.fn]]
+lz = "sys/dev/clock_subr.rs::todr_gettime"
+native = ["Todr"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/dev/clock_subr.rs::todr_settime"
+native = ["Todr"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/dev/clock_subr.rs::todr_wenable"
+native = []
+kind = "dropped"
+reason = "no caller at the pin (todr_setwen is NULL in every chip); a default method of Todr if one ever comes"
 
 [[module]]
 rust = "sys/kernel/base/reboot.rs"
@@ -21798,6 +21917,112 @@ lz = "sys/arch/arm64/include/simplebusvar.rs::SimplebusSoftc::dma"
 native = []
 kind = "dropped"
 reason = "an unsafe accessor of sc_dma once simplebus_attach wrote it: the children's DMA translation is the same FdtBus (dma_step, dma_addr)"
+
+[[module]]
+rust = "sys/kernel/dev/arm64/efi_machdep.rs"
+crate = "kernel"
+lz = ["sys/arch/arm64/dev/efi_machdep.rs", "sys/arch/arm64/include/efivar.rs"]
+status = "redesigned"
+notes = "N7.2b2a: efi(4) as a kernel DriverOps (EFI; probe fa.name == efi); the system table read from /chosen as the C's and mapped through mainbus's bus (FdtBus::map of an Untyped block, Cacheable), read by offsets; efi_map_runtime over hal::cpu::efi::EfiRuntime::install(rs), which applies the C's policy to the boot record of the memory map initarm hands hal (hal::cpu::efi::set_boot_memory_map) and refuses kernel memory; the vendor string and the configuration table in one EfiRuntime::reads transaction (pod_from_bytes); the smbios offer through config_found with FdtArgs::named_reg (no driver); GetTime then todr_attach(&EFI_TODR), a static implementing kernel::time::Todr (quality -1000; efi_gettime/efi_settime over EfiRuntime with the C's range checks); struct efi_softc is EfiDev (empty) and EfiRuntime"
+[[module.fn]]
+lz = "sys/arch/arm64/dev/efi_machdep.rs::EFI_CA"
+native = ["EFI", "EfiDriver"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/arch/arm64/dev/efi_machdep.rs::EFI_CD"
+native = ["sys/bsd/arch/arm64/conf/ioconf.rs::EFI_CD", "EFI_UNITS"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/arch/arm64/dev/efi_machdep.rs::softc"
+native = []
+kind = "dropped"
+reason = "(struct efi_softc *)self: the device's softc is empty (EfiDev); the state is hal::cpu::efi::EfiRuntime's, found by EfiRuntime::get"
+[[module.fn]]
+lz = "sys/arch/arm64/dev/efi_machdep.rs::handle_softc"
+native = []
+kind = "dropped"
+reason = "the todr cookie cast back to the softc: EFI_TODR is a static implementing kernel::time::Todr, whose methods reach EfiRuntime::get"
+[[module.fn]]
+lz = "sys/arch/arm64/include/efivar.rs::EfiSoftc"
+native = ["EfiDev", "sys/hal/cpu/efi.rs::EfiRuntime", "EfiTodr"]
+kind = "split"
+lines = "L58-L78"
+
+[[module]]
+rust = "sys/kernel/dev/fdt/plrtc.rs"
+crate = "kernel"
+lz = ["sys/dev/fdt/plrtc.rs"]
+status = "redesigned"
+notes = "N7.2b2a: plrtc(4) as a kernel DriverOps (PLRTC; probe = plrtc_match over the bus's FdtArgs); struct plrtc_softc and the malloc'ed todr_chip_handle as Plrtc, the Mmio<Pl031> mapping itself (FdtBus::map of reg[0], Device), leaked once (MBox::leak, the C's malloc never freed) and handed to kernel::time::todr_attach as the kernel's Todr (quality 0); RTCDR read, RTCLR written, RTCCR_START after the attach; both failure lines and the trailing newline kept; the device's softc PlrtcDev (empty)"
+[[module.fn]]
+lz = "sys/dev/fdt/plrtc.rs::PlrtcSoftc"
+native = ["Plrtc", "PlrtcDev"]
+kind = "split"
+lines = "L76-L88"
+[[module.fn]]
+lz = "sys/dev/fdt/plrtc.rs::PLRTC_CA"
+native = ["PLRTC", "PlrtcDriver"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/dev/fdt/plrtc.rs::PLRTC_CD"
+native = ["sys/bsd/arch/arm64/conf/ioconf.rs::PLRTC_CD", "PLRTC_UNITS"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/dev/fdt/plrtc.rs::handle_softc"
+native = []
+kind = "dropped"
+reason = "the todr cookie cast back to the softc: the chip is Plrtc itself, implementing kernel::time::Todr"
+[[module.fn]]
+lz = "sys/dev/fdt/plrtc.rs::plrtc_gettime"
+native = ["Plrtc::plrtc_gettime", "Plrtc::gettime"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/dev/fdt/plrtc.rs::plrtc_settime"
+native = ["Plrtc::plrtc_settime", "Plrtc::settime"]
+kind = "renamed"
+
+[[module]]
+rust = "sys/kernel/dev/fdt/psci.rs"
+crate = "kernel"
+lz = ["sys/dev/fdt/psci.rs"]
+status = "redesigned"
+notes = "N7.2b2a: psci(4) as a kernel DriverOps (PSCI; probe = psci_match over the bus's FdtArgs); struct psci_softc as Psci, built whole from the node (Psci::of_node), set once in PSCI_SC (OnceStatic: a second node prints its line, the first stays, since the SMCCC call's 0.1 record is sealed by the first call), sc_smccc_version and sc_system_suspend atomics; sc_callfn a hal::cpu::smccc::Conduit and every call hal::cpu::smccc::call (the value class, P44; the attach records the node's 0.1 ids there, None for 1.x, before its first call seals the record); the hooks are kernel::base::reboot's slots; psci_cpu_on is psci_cpu_on_call (the conduit and the id for bsd's bootarg_mp_start, which makes the CPU_ON call with bsd's smc_call/hvc_call until N7.2c); psci_cpu_suspend and psci_system_suspend are visible stubs (unported!, no caller); the C's decisions are Psci methods, tested on softcs of the tests' own"
+[[module.fn]]
+lz = "sys/dev/fdt/psci.rs::PsciSoftc"
+native = ["Psci", "PsciDev"]
+kind = "split"
+[[module.fn]]
+lz = "sys/dev/fdt/psci.rs::PSCI_CA"
+native = ["PSCI", "PsciDriver"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/dev/fdt/psci.rs::PSCI_CD"
+native = ["sys/bsd/arch/arm64/conf/ioconf.rs::PSCI_CD", "PSCI_UNITS"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/dev/fdt/psci.rs::CallFn"
+native = []
+kind = "dropped"
+reason = "sc_callfn's type: the conduit is hal::cpu::smccc::Conduit, an enum held by value (Psci::conduit)"
+[[module.fn]]
+lz = "sys/dev/fdt/psci.rs::callfn_asserted"
+native = ["Psci::smccc_version_call", "Psci::arch_features"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/dev/fdt/psci.rs::psci_call"
+native = ["Psci::call_id"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/dev/fdt/psci.rs::psci_cpu_on"
+native = ["psci_cpu_on_call"]
+kind = "renamed"
+
+[[module]]
+rust = "sys/kernel/dev/fdt/pscivar.rs"
+crate = "kernel"
+lz = ["sys/dev/fdt/pscivar.rs"]
+status = "redesigned"
+notes = "N7.2b2a: pscivar.h's ids and return values, moved from bsd with psci(4) unchanged"
 
 [[module]]
 rust = "sys/kernel/dev/sensors.rs"

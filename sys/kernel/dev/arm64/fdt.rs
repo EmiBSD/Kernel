@@ -217,6 +217,14 @@ impl FdtArgs {
         }
     }
 
+    /// A pseudo-child's arguments with one register (`efi_attach`'s `smbios` offer:
+    /// `fa.fa_reg = &reg; fa.fa_nreg = 1`), as [`FdtArgs::named`] otherwise.
+    pub fn named_reg(name: &'static [u8], bus: &FdtBusRef, reg: FdtReg) -> FdtArgs {
+        let mut fa = FdtArgs::named(name, bus);
+        fa.reg = MArray::new(M_DEVBUF, M_WAITOK, 1, |_| reg);
+        fa
+    }
+
     /// The `FdtArgs` a bus handed as `aux`, `None` for another bus's (or a legacy) argument:
     /// how an FDT child's probe tells its bus.
     pub fn of_aux<'a>(aux: &'a Aux<'_>) -> Option<&'a FdtArgs> {

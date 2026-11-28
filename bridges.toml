@@ -191,46 +191,43 @@ paid_by = "N7"
 # setstatclockrate, delay; arm64's arm_clock_func in intr.rs, first registration winning),
 # implemented by sys/kern/hal_bridges.rs (BsdClockHardware), for kernel::time::clock's initclocks.
 # N7.2b1b: early_init (default nothing), arm64's agtimer_init for the kernel's mainbus, until
-# N7.2b2's agtimer calls it itself. N7, with the clock drivers.
+# N7.2b2's agtimer calls it itself. N10 (U14): amd64's machine::cpu and the host double keep
+# BsdClockHardware; arm64: N7.2b2 (the kernel's agtimer is its ClockHardware, N7.2b2b).
 # kernel::time::clock::ClockHardware
 [[bridge]]
 trait = "ClockHardware"
 for = ["sys/kernel/time/clock.rs"]
-paid_by = "N7"
+paid_by = "N10"
 
 # bsd: the machine's boot(9) (machdep's: vfs_shutdown, config_suspend_all, the halt or reset),
-# implemented by sys/kern/hal_bridges.rs (BsdMachineBoot), for kernel::base::reboot::reboot. N7.
+# implemented by sys/kern/hal_bridges.rs (BsdMachineBoot), for kernel::base::reboot::reboot.
+# N9 (U14, N7.2b2): arm64's boot() is machdep.rs's, N9's file; psci(4) only fills the reset and
+# power-off slots, the kernel's since N7.2b2a (kernel::base::reboot::set_cpuresetfn).
 # kernel::base::reboot::MachineBoot
 [[bridge]]
 trait = "MachineBoot"
 for = ["sys/kernel/base/reboot.rs"]
-paid_by = "N7"
-
-# bsd: the time-of-day chips (struct todr_chip_handle of efi_machdep.rs and plrtc.rs on arm64),
-# implemented by sys/dev/clock_subr.rs (TodrChipHandle), received by kernel::time::todr_attach.
-# N7, with the drivers.
-# kernel::time::Todr
-[[bridge]]
-trait = "Todr"
-for = ["sys/kernel/time/mod.rs"]
-paid_by = "N7"
+paid_by = "N9"
 
 # bsd: the hardware timecounters: agtimer(4)'s AgtimerTc (sys/arch/arm64/dev/agtimer.rs) and
 # the drivers' struct timecounter (sys/sys/timetc.rs: acpitimer, acpihpet), received by
-# kernel::time::tc::tc_init through their TcEntry. N7, with the drivers.
+# kernel::time::tc::tc_init through their TcEntry. N10 (U14): amd64's tsc and i8254, and
+# acpitimer and acpihpet (compiled on arm64, attached nowhere there); arm64: N7.2b2 (agtimer,
+# N7.2b2b).
 # kernel::time::tc::Timecounter
 [[bridge]]
 trait = "Timecounter"
 for = ["sys/kernel/time/tc.rs"]
-paid_by = "N7"
+paid_by = "N10"
 
 # bsd: each CPU's interrupt clock, agtimer(4)'s AgtimerIntrclock (sys/arch/arm64/dev/agtimer.rs),
-# received by kernel::time::clockintr::clockintr_cpu_init. N7, with the driver.
+# received by kernel::time::clockintr::clockintr_cpu_init. N10 (U14): amd64's lapic
+# (LAPIC_TIMER_INTRCLOCK); arm64: N7.2b2 (agtimer, N7.2b2b).
 # kernel::time::clockintr::Intrclock
 [[bridge]]
 trait = "Intrclock"
 for = ["sys/kernel/time/clockintr.rs"]
-paid_by = "N7"
+paid_by = "N10"
 
 # bsd: struct vops, the operations table of each bsd file system (ntfs
 # and its special-file table: statics of
@@ -663,6 +660,8 @@ paid_by = "N7"
 # is API and stays; the row goes when the last legacy driver implements it natively (N7.14;
 # N10 for amd64's if U3 is taken). N7.2b1b: the first native implementers, the kernel's
 # mainbus and simplebus (kernel::dev::arm64), named by cfdata[] rows 0 and 12 (Cfdata::native).
+# N7.2b2a: psci(4) (kernel::dev::fdt::psci, row 29), efi(4) (kernel::dev::arm64::efi_machdep,
+# row 8).
 # kernel::dev::device::DriverOps
 [[bridge]]
 trait = "DriverOps"

@@ -113,6 +113,9 @@
 //!   it `NULL` and `todr_wenable` has no caller (a default no-op method if one ever comes).
 //!   The handle LZ kept as an `AtomicPtr` dereferenced in `unsafe` is a
 //!   `Mutexed<Option<&'static dyn Todr>>`; `todr_attach` keeps the better quality.
+//! - N7.2b2a: the chips implement [`Todr`] themselves (arm64's efi(4), `EfiTodr`, and plrtc(4),
+//!   `Plrtc`, the kernel's); `bsd`'s `TodrChipHandle` and the `Todr` bridge went with their last
+//!   arm64 users (U14); amd64's mc146818 implements it at N10.
 //! - `ratecheck_mtx`/`ppsratecheck_mtx` own nothing in the C; here [`ppsratecheck_locked`]
 //!   runs a caller's closure under the mutex, so a counter shared between CPUs (the
 //!   network's limiters, LZ's `ppsratecheck_shared` raw pointers) is only reached with it

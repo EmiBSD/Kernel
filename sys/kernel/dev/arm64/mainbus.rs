@@ -273,6 +273,11 @@ pub fn mainbus_attach(dev: &DevRef) {
             mainbus_attach_node(dev, &mut st, node, None);
             node = OF_peer(node);
         }
+        if early == 1 {
+            // The early devices are attached (psci(4) in its own pass, or here): the SMCCC
+            // call's record of a PSCI 0.1 firmware's ids closes, whether or not one attached.
+            hal::cpu::smccc::seal_psci_0_1();
+        }
     }
     st.early = 0;
 

@@ -399,20 +399,6 @@ pub fn pmap_purge(p: &Proc) {
     Machine::pmap_purge_md(p, p.vmspace().vm_map.pmap());
 }
 
-/// `efi_enter`'s pmap half (arm64): the EFI runtime pmap's tables on this CPU (interrupts
-/// are the caller's to disable around the call into the runtime).
-#[cfg(target_arch = "aarch64")]
-pub fn pmap_efi_enter(pm: &MachinePmap) {
-    pm.load_efi(switcher());
-}
-
-/// `efi_leave`'s pmap half (arm64): the user address-space width back and `to`, the pmap
-/// this CPU ran on before [`pmap_efi_enter`], loaded again.
-#[cfg(target_arch = "aarch64")]
-pub fn pmap_efi_leave(to: &MachinePmap) {
-    hal::vm::pmap::leave_efi(to, switcher());
-}
-
 /// `pmap_growkernel`: grows the kernel page tables to cover `maxkvaddr`; returns how far
 /// they now reach.
 pub fn pmap_growkernel(maxkvaddr: Vaddr) -> Vaddr {

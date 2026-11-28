@@ -17,10 +17,11 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! The machine-independent half of efi(4): OpenBSD `sys/dev/efi/`. `efi` is `efi.h`, the UEFI
-//! types the arch drivers (`arch/arm64/dev/efi_machdep.rs`) use; `efi.c`, the `/dev/efi`
-//! device, is not ported yet.
+//! The machine-independent device-tree drivers in the kernel: OpenBSD's `sys/dev/fdt/`. psci(4)
+//! (`psci`, with `pscivar`) and plrtc(4) (`plrtc`) since N7.2b2a. Built where the device tree's
+//! attach arguments are (`dev::arm64::fdt::FdtArgs`, arm64).
 
-#[allow(clippy::module_inception)] // OpenBSD's layout: sys/dev/efi/efi.h
-pub mod efi;
+pub mod plrtc;
+pub mod psci;
+pub mod pscivar;
 /* </CODE> */

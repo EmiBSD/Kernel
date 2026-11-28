@@ -28,7 +28,6 @@ pub mod bus;
 pub mod cpu;
 pub mod db_machdep;
 pub use hal::arch::arm64::include::disklabel;
-pub mod efivar;
 pub use hal::arch::arm64::include::elf;
 pub mod exec;
 pub mod fdt;
