@@ -45,6 +45,11 @@ pub mod icc;
 #[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
 #[forbid(unsafe_code)]
 pub mod clock;
+// The ARM generic timer's registers (N7.2b2b), for the kernel's agtimer(4): arm64's, and the
+// host's double.
+#[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
+#[forbid(unsafe_code)]
+pub mod timer;
 // The signal frame of the running thread (N4.8b): wherever a machine's trap code is (arm64;
 // amd64's is N10's) and on the host, where it is a double.
 #[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]

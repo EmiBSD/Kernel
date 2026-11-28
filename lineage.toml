@@ -14267,6 +14267,11 @@ crate = "hal"
 reason = "hal runtime, written new (N7.2a3): the GICv3 CPU interface of the executing CPU for the kernel's agintc(4), the arm64 accessors of arch/arm64/icc.rs (agintc.c's ICC_*_EL1 accesses) re-exported, and on the host the per-thread register file of arch/host/icc.rs that the tests read and set"
 
 [[extra]]
+rust = "sys/hal/cpu/timer.rs"
+crate = "hal"
+reason = "hal runtime, written new (N7.2b2b): the ARM generic timer of the executing CPU for the kernel's agtimer(4), the arm64 accessors of arch/arm64/timer.rs (agtimer.c's register reads and writes) and the tc_user values of <machine/timetc.h> re-exported, and on the host the per-thread register file of arch/host/timer.rs that the tests read and set"
+
+[[extra]]
 rust = "sys/hal/ds/pin.rs"
 crate = "hal"
 reason = "hal runtime, written new (N4.1 P3): pin_static, a &'static value pinned (core's Pin::static_ref since the review fix S5: the premise that a shared borrow that never ends excludes every move; the module is forbid, 0 unsafe); docs/ZERO_UNSAFE.md 0.1"
