@@ -85,6 +85,11 @@
 //! - `agintc_send_ipi` puts a `dsb ish` before the `ICC_SGI1R` write and an `isb` after it,
 //!   as LZ: the posted reason is visible to the target before the SGI is (a system register
 //!   write is not ordered by the atomic's `dmb`).
+//! - Every write of the priority mask takes an `isb` after it (`hal::cpu::icc::set_pmr`,
+//!   which `agintc_setipl` needs): the C writes `ICC_PMR` without one in the attach's probe
+//!   of the bits that stick and its restore (`agintc.c:402`, `:404`), the attach's reset to
+//!   `0xff` (`:602`) and every `agintc_cpuinit`'s (`:815`). A barrier more, at attach and at
+//!   each CPU's start, outside any hot path; nothing a program sees.
 //! - `agintc_attach`'s failure path (`unmap`) restores the interrupt state it disabled, as LZ;
 //!   the C returns with interrupts still disabled.
 //! - `agintc_msi_create_device` returns no device when its ITT cannot be allocated (the C

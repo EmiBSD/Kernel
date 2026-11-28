@@ -76,7 +76,6 @@ use crate::arch::arm64::arm64::acpi_machdep::ACPI_FDT_CA;
 use crate::arch::arm64::arm64::cpu::{CPU_CA, CPU_CD};
 use crate::arch::arm64::dev::acpiiort::{ACPIIORT_CA, ACPIIORT_CD};
 use crate::arch::arm64::dev::acpipci::{ACPIPCI_CA, ACPIPCI_CD};
-
 use crate::arch::arm64::dev::agtimer::{AGTIMER_CA, AGTIMER_CD};
 use crate::arch::arm64::dev::efi_machdep::{EFI_CA, EFI_CD};
 use crate::arch::arm64::dev::smmu::SMMU_CD;
