@@ -71,12 +71,14 @@
 //!   same transaction, through `kcopy` (`hal::cpu::efi`), so a fault there is `EFAULT` too.
 //! - LZ's order corrected: LZ armed `pcb_onfault` in `efi_enter`, before its trampoline saved
 //!   the registers, so a fault between the two would have resumed with a stale `efi_jmpbuf`.
-//!   The C checkpoints first (`efivar.h`'s `efi_enter_check`, a `setjmp` before the call; the
-//!   arming in `efi_enter` precedes it, but nothing between them can fault), and here the
-//!   trampoline writes the checkpoint before it arms its fault target, both in one routine.
+//!   The C checkpoints first (`efivar.h`'s `efi_enter_check`: the `setjmp`, then `efi_enter`,
+//!   which arms the fault target, then the call), and here the trampoline writes the
+//!   checkpoint before it arms its fault target, both in one routine.
 //! - What the EFI pmap maps is `hal::cpu::efi::EfiRuntime::install`'s alone (the C's policy
-//!   over the firmware's runtime descriptors, refusing kernel memory, once): the SAFETY
-//!   arguments below rest on it, and on the firmware's memory map, trusted as the C trusts it.
+//!   over the runtime descriptors of the boot record of the firmware's memory map, refusing
+//!   RAM the page system was loaded with, managed pages and the kernel image, once): the
+//!   SAFETY arguments below rest on it, and on the firmware's memory map, trusted as the C
+//!   trusts it.
 
 use core::arch::global_asm;
 use core::marker::PhantomData;
@@ -204,9 +206,10 @@ impl Inside {
         // puts the CPU's pmap back only after its body returns; `self` cannot outlive the
         // body). What the EFI pmap maps there is the firmware's runtime memory, which no Rust
         // object of the kernel lives in: `EfiRuntime::install` is the only code that enters
-        // pages into it, once, from the firmware's runtime descriptors (trusted as the C trusts
-        // the firmware's memory map), and it refuses every frame the VM manages or the kernel
-        // image holds: memory foreign to the kernel as a user pmap's pages
+        // pages into it, once (its first call closes the door), from the runtime descriptors of
+        // the boot record of the firmware's memory map (trusted as the C trusts that map), and
+        // it refuses every frame of the RAM the page system was loaded with (stolen frames
+        // included), every managed page and the kernel image: memory foreign to the kernel as a user pmap's pages
         // are to `copyin`, read here as bytes. A page it does not map faults inside `kcopy`,
         // which recovers through its own `pcb_onfault` into `EFAULT`; `buf` is the caller's,
         // borrowed exclusively for the copy.
@@ -227,10 +230,11 @@ impl Inside {
             // held across it (`EfiLocked`), so this is the only call the trampoline runs on any
             // CPU: its checkpoint is this call's alone. `fn_va` lies below the EFI pmap's
             // limit (just checked), so the code it names is what the EFI pmap maps executable
-            // there: only `EfiRuntime::install` enters pages into that pmap, once, executable
-            // only for `EfiRuntimeServicesCode` descriptors of the firmware's memory map and
-            // never a frame the VM manages or the kernel image holds, so it is the firmware's
-            // runtime code (the map trusted as the C trusts it), never the kernel's. The
+            // there: only `EfiRuntime::install` enters pages into that pmap, once (its first call
+            // closes the door), executable only for `EfiRuntimeServicesCode` descriptors of the
+            // boot record of the firmware's memory map and never a frame of the RAM the page
+            // system was loaded with, a managed page or the kernel image, so it is the
+            // firmware's runtime code (the map trusted as the C trusts it), never the kernel's. The
             // trampoline saves the callee-saved registers and `sp` before it arms `onfault`
             // (the running thread's own `pcb_onfault`, alive while it runs, or null for none),
             // so a fault anywhere in the call resumes at its fault target with this frame's

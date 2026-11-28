@@ -58,9 +58,11 @@
 //! LZ: sys/arch/arm64/dev/efi_machdep.rs@e8249449d905
 //! LZ: sys/arch/arm64/include/efivar.rs@e8249449d905
 //!
-//! [`EfiRuntime::install`] runs once per machine: it makes the runtime services' pmap (the EFI
-//! pmap of `hal::vm::pmap::create_efi`), fills it from the firmware's memory map with the C's
-//! policy (`efi_map_runtime`: only the `EFI_MEMORY_RUNTIME` descriptors, identity-mapped when
+//! The firmware's memory map is a boot record ([`set_boot_memory_map`], decision 30's kind):
+//! `initarm` hands its relocated copy over once, as it found it in `/chosen`. Then
+//! [`EfiRuntime::install`] runs once per machine (its first call closes the door whatever its
+//! result): it makes the runtime services' pmap (the EFI pmap of
+//! `hal::vm::pmap::create_efi`), fills it from that map with the C's policy (`efi_map_runtime`: only the `EFI_MEMORY_RUNTIME` descriptors, identity-mapped when
 //! `VirtualStart` is 0, device memory unless write-back, executable only
 //! `EfiRuntimeServicesCode`, then `EFI_MEMORY_RP`, `XP` and `RO` taking their right away), and
 //! keeps the address of `EFI_RUNTIME_SERVICES`. Nothing maps a page into it after that: no
@@ -75,12 +77,15 @@
 //!   `SetTime(&time)`, the service's address read from its slot and called in the same
 //!   transaction, a fault in either being `EFAULT` (`efi_enter_check`'s `setjmp`).
 //!
-//! What stays trusted, as the C trusts it: the firmware's memory map (that its runtime
-//! descriptors name the firmware's own memory and code) and the runtime services table it
-//! names. Two bounds the C does not write hold the rest: the map may not name a frame the
-//! VM manages or one of the kernel image (`install` refuses it with `EINVAL` before it maps
-//! anything, as `km::map_device` refuses such frames), and what is read, and the service
-//! called, lie below the EFI pmap's limit (`1 << EFI_SPACE_BITS`), so in the lower half, which
+//! What stays trusted, as the C trusts it: the firmware's memory map as the boot path handed
+//! it over (that its runtime descriptors name the firmware's own memory and code) and the
+//! runtime services table it names. Bounds the C does not write hold the rest: a runtime page
+//! may not be RAM the page system was loaded with (the segments as `uvm_page_physload` took
+//! them, before any steal moved their start: the root page tables and the page array
+//! included), a page the VM manages or one of the kernel image (`install` refuses the map
+//! with `EINVAL` before it maps anything, as `km::map_device` refuses such frames), nor start
+//! off a page boundary; and what is read, and the service called, lie below the EFI pmap's
+//! limit (`1 << EFI_SPACE_BITS`), so in the lower half, which
 //! only the EFI pmap translates during a transaction: an address of the kernel's half is
 //! `EFAULT`, never a read of kernel memory or a call into kernel code.
 //!
@@ -89,9 +94,11 @@
 //! firmware per test thread.
 //!
 //! ## Deviations
-//! - A memory map whose runtime descriptors name managed memory or the kernel image, or reach
-//!   at or past the EFI pmap's limit, maps nothing and installs no runtime (`EINVAL`); the C
-//!   would map them.
+//! - A memory map whose runtime descriptors name RAM the page system was loaded with, managed
+//!   memory or the kernel image, reach at or past the EFI pmap's limit, or start off a page
+//!   boundary (whose low bits would mix with `PMAP_DEVICE`'s flag), maps nothing and installs
+//!   no runtime (`EINVAL`); the C would map them. A second `install` is `EBUSY` even after a
+//!   refused first.
 //! - A memory map without a descriptor size maps nothing (the C would divide by zero), as LZ.
 //!
 //! ## Redesign
@@ -168,11 +175,32 @@ pub struct RuntimeMapping {
     pub npages: u64,
 }
 
+/// The boot record of the firmware's memory map: `mmap` and `mmap_desc_size` as `initarm`
+/// handed them over.
+static BOOT_MAP: OnceStatic<(&'static [u8], u32)> = OnceStatic::new();
+
+/// Set by the first [`EfiRuntime::install`], whatever its result: the door closes there.
+static INSTALL_TRIED: OnceStatic<()> = OnceStatic::new();
+
 /// The installed runtime services. Installed once per process: on the host its pmap belongs
 /// to the first test's memory, which is leaked and never freed or grown from again (nothing
 /// enters a page after `install`), so no `*_test_reset` is needed; every test reads the
 /// thread's own fake firmware through it.
 static RUNTIME: OnceStatic<EfiRuntime> = OnceStatic::new();
+
+/// The firmware's memory map as the boot path found it (`mmap`, `mmap_size` bytes, entries
+/// `mmap_desc_size` apart), recorded once by `initarm` for [`EfiRuntime::install`]; a second
+/// call keeps the first and answers `false`. The boot record's trust is the boot path's
+/// (decision 30): what it hands over is the firmware's, untouched.
+pub fn set_boot_memory_map(map: &'static [u8], desc_size: u32) -> bool {
+    BOOT_MAP.set((map, desc_size)).is_ok()
+}
+
+/// The frames a runtime region may not hold: RAM the page system was loaded with, a page it
+/// manages, the kernel image (`hal::vm::pmap::frame_is_kernel_memory`).
+fn kernel_memory(pa: u64) -> bool {
+    crate::vm::pmap::frame_is_kernel_memory(Paddr::new(pa as usize))
+}
 
 /// Whether `[va, va + len)` lies below `limit`: the bound every read and call is held to.
 pub(crate) fn below(va: u64, len: usize, limit: u64) -> bool {
@@ -245,9 +273,9 @@ fn pages(m: &RuntimeMapping) -> impl Iterator<Item = Option<(u64, u64)>> + '_ {
     })
 }
 
-/// Every page the runtime descriptors of `map` would enter is below `limit` and none of its
-/// frames is kernel memory (`kernel_memory`: a page the VM manages or one of the kernel
-/// image): `EINVAL` otherwise.
+/// Every page the runtime descriptors of `map` would enter is page-aligned and below `limit`,
+/// and none of its frames is kernel memory (`kernel_memory`: loaded RAM, a managed page, the
+/// kernel image): `EINVAL` otherwise.
 fn check_map(
     map: &[u8],
     desc_size: u32,
@@ -255,6 +283,9 @@ fn check_map(
     kernel_memory: impl Fn(u64) -> bool,
 ) -> Result<(), Errno> {
     for m in descriptors(map, desc_size).filter_map(|d| runtime_mapping(&d)) {
+        if m.va % EFI_PAGE_SIZE != 0 || m.pa % EFI_PAGE_SIZE != 0 {
+            return Err(Errno::EINVAL);
+        }
         for p in pages(&m) {
             let (va, pa) = p.ok_or(Errno::EINVAL)?;
             if !below(va, EFI_PAGE_SIZE as usize, limit) || kernel_memory(pa) {
@@ -268,20 +299,20 @@ fn check_map(
 impl EfiRuntime {
     /// `efi_map_runtime` and the table's address, once per machine: the EFI pmap
     /// (`pmap_create` with `pm_privileged` and `have_4_level_pt`), every page of the runtime
-    /// descriptors of the firmware's memory map `map` (`desc_size` bytes apart) entered in it
-    /// with the C's policy ([`runtime_mapping`]), wired, and `rs`, the address of
-    /// `EFI_RUNTIME_SERVICES` under it. `EBUSY` when they are installed already, `ENOMEM` when
-    /// no pmap could be had, `EINVAL` (nothing mapped) when a page would be kernel memory or
-    /// lie at or above the pmap's limit.
-    pub fn install(rs: u64, map: &[u8], desc_size: u32) -> Result<&'static EfiRuntime, Errno> {
-        if RUNTIME.get().is_some() {
+    /// descriptors of the boot record's memory map ([`set_boot_memory_map`]; none without one)
+    /// entered in it with the C's policy ([`runtime_mapping`]), wired, and `rs`, the address
+    /// of `EFI_RUNTIME_SERVICES` under it. The first call closes the door whatever its result:
+    /// a later one is `EBUSY`. `ENOMEM` when no pmap could be had, `EINVAL` (nothing mapped)
+    /// when a page would be kernel memory, lie at or above the pmap's limit, or start off a
+    /// page boundary.
+    pub fn install(rs: u64) -> Result<&'static EfiRuntime, Errno> {
+        if INSTALL_TRIED.set(()).is_err() {
             return Err(Errno::EBUSY);
         }
+        let (map, desc_size) = BOOT_MAP.get().copied().unwrap_or((&[], 0));
         let pm = crate::vm::pmap::create_efi().ok_or(Errno::ENOMEM)?;
         let limit = pm.va_limit().as_usize() as u64;
-        check_map(map, desc_size, limit, |pa| {
-            crate::vm::pmap::frame_is_kernel_memory(Paddr::new(pa as usize))
-        })?;
+        check_map(map, desc_size, limit, kernel_memory)?;
         for m in descriptors(map, desc_size).filter_map(|d| runtime_mapping(&d)) {
             let flag = if m.device { machine::PMAP_DEVICE } else { 0 };
             for (va, pa) in pages(&m).flatten() {
@@ -325,7 +356,9 @@ impl EfiRuntime {
 
     /// `f` with reads of the firmware's tables, in one transaction (the C's `efi_enter` around
     /// the vendor string and the configuration table): each [`EfiReads::read`] is `EFAULT`
-    /// alone when its bytes are not all mapped or not all below the limit.
+    /// alone when its bytes are not all mapped or not all below the limit. `f` runs with the
+    /// runtime's lock held at `IPL_HIGH`, interrupts masked and the EFI pmap in the lower half:
+    /// it must not sleep (nor take a lock that may).
     pub fn reads<R>(&self, f: impl FnOnce(&EfiReads<'_>) -> R) -> R {
         let held = self.locked();
         machine::transaction(&held, &self.pm, |tx| f(&EfiReads { tx }))
@@ -520,6 +553,39 @@ mod tests {
         // A page count that overflows the address space is refused.
         let m = map(&[desc(EfiRuntimeServicesData, 0x1000, 0, u64::MAX, rt)]);
         assert_eq!(check_map(&m, 48, LIMIT, kernel_memory), Err(Errno::EINVAL));
+        // A region that does not start on a page boundary is refused (its low bits would mix
+        // with PMAP_DEVICE's).
+        let m = map(&[desc(EfiRuntimeServicesData, CODE_PA + 2, 0, 1, rt)]);
+        assert_eq!(check_map(&m, 48, LIMIT, kernel_memory), Err(Errno::EINVAL));
+        let m = map(&[desc(EfiRuntimeServicesData, CODE_PA, 0x3002, 1, rt)]);
+        assert_eq!(check_map(&m, 48, LIMIT, kernel_memory), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn the_real_predicate_refuses_loaded_ram_and_managed_pages() {
+        let _ = testutil::pmap_boot();
+        let rt = EFI_MEMORY_RUNTIME | EFI_MEMORY_WB;
+        // RAM the page system was loaded with, even where nothing manages it now (a stolen
+        // frame's): a segment of its own for this test.
+        crate::vm::pmap::note_loaded_ram(Paddr::new(0x60_0000_0000), Paddr::new(0x60_0001_0000));
+        let m = map(&[desc(EfiRuntimeServicesData, 0x60_0000_8000, 0, 1, rt)]);
+        assert_eq!(
+            check_map(&m, 48, LIMIT, super::kernel_memory),
+            Err(Errno::EINVAL)
+        );
+        // A page the VM manages (the test provider's memory frames).
+        let managed = testutil::memory_frames(1)[0].as_usize() as u64;
+        let m = map(&[desc(EfiRuntimeServicesData, managed, 0, 1, rt)]);
+        assert_eq!(
+            check_map(&m, 48, LIMIT, super::kernel_memory),
+            Err(Errno::EINVAL)
+        );
+        // The same frames named by a descriptor that is not runtime memory: never mapped.
+        let m = map(&[desc(EfiConventionalMemory, managed, 0, 1, EFI_MEMORY_WB)]);
+        assert_eq!(check_map(&m, 48, LIMIT, super::kernel_memory), Ok(()));
+        // Firmware memory the page system never had.
+        let m = map(&[desc(EfiRuntimeServicesCode, CODE_PA, 0, 1, rt)]);
+        assert_eq!(check_map(&m, 48, LIMIT, super::kernel_memory), Ok(()));
     }
 
     /// The process's runtime (installed once), over the host's EFI pmap: one runtime code page
@@ -528,7 +594,7 @@ mod tests {
         static ONCE: std::sync::Once = std::sync::Once::new();
         ONCE.call_once(|| {
             let _ = testutil::pmap_boot();
-            let m = map(&[
+            let m: &'static [u8] = map(&[
                 desc(
                     EfiRuntimeServicesCode,
                     CODE_PA,
@@ -537,8 +603,10 @@ mod tests {
                     EFI_MEMORY_RUNTIME | EFI_MEMORY_WB,
                 ),
                 desc(EfiConventionalMemory, CODE_PA + 0x1000, 0, 1, EFI_MEMORY_WB),
-            ]);
-            assert!(EfiRuntime::install(RS, &m, 48).is_ok());
+            ])
+            .leak();
+            assert!(set_boot_memory_map(m, 48));
+            assert!(EfiRuntime::install(RS).is_ok());
         });
         EfiRuntime::get().expect("installed")
     }
@@ -560,15 +628,18 @@ mod tests {
         let rt = runtime();
         assert_eq!(rt.extract(CODE_PA), Some(CODE_PA));
         assert_eq!(rt.extract(CODE_PA + 0x1000), None, "not runtime memory");
-        // A second install maps nothing: the pmap stays as the first left it.
-        let more = map(&[desc(
+        // The boot record is set once, and a second install maps nothing: the pmap stays as
+        // the first left it.
+        let more: &'static [u8] = map(&[desc(
             EfiRuntimeServicesCode,
             0x7e00_0000,
             0,
             1,
             EFI_MEMORY_RUNTIME | EFI_MEMORY_WB,
-        )]);
-        assert_eq!(EfiRuntime::install(RS, &more, 48).err(), Some(Errno::EBUSY));
+        )])
+        .leak();
+        assert!(!set_boot_memory_map(more, 48));
+        assert_eq!(EfiRuntime::install(RS).err(), Some(Errno::EBUSY));
         assert_eq!(rt.extract(0x7e00_0000), None);
         assert!(core::ptr::eq(rt, runtime()));
     }

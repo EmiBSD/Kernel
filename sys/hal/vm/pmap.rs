@@ -1109,12 +1109,51 @@ pub(crate) fn create_efi() -> Option<PmapRef> {
     create_with(Backend::create_efi)
 }
 
-/// Whether the frame of `pa` is kernel memory: a page the VM manages, or one of the kernel
-/// image (`map_device`'s refusal, for `hal::cpu::efi::EfiRuntime::install`'s map).
+/// How many loaded RAM segments [`note_loaded_ram`] keeps (the page system's `MAX_SEGS`).
+const LOADED_MAX: usize = 32;
+
+/// The RAM the boot path loaded into the page system, each segment as `uvm_page_physload`
+/// took it (before any `uvm_page_physsteal` moved its start): `[start, end)` physical
+/// addresses, a slot published by its `end` (0 for an empty slot).
+static LOADED: [(AtomicUsize, AtomicUsize); LOADED_MAX] =
+    [const { (AtomicUsize::new(0), AtomicUsize::new(0)) }; LOADED_MAX];
+/// The slots claimed so far; past [`LOADED_MAX`], every frame counts as loaded RAM.
+static LOADED_N: AtomicUsize = AtomicUsize::new(0);
+
+/// `uvm_page_physload(start, end, ..)`'s record for [`frame_is_kernel_memory`]: the physical
+/// range `[start, end)` is RAM the page system was given, whatever it later steals from it
+/// (the root page tables, the page array) or hands out. Called by the page system's
+/// `uvm_page_physload`; a record only ever widens what is refused.
+pub fn note_loaded_ram(start: Paddr, end: Paddr) {
+    let i = LOADED_N.fetch_add(1, Ordering::AcqRel);
+    if let Some((s, e)) = LOADED.get(i) {
+        s.store(start.as_usize(), Ordering::Relaxed);
+        e.store(end.as_usize(), Ordering::Release);
+    }
+}
+
+/// Whether `pa` lies in a segment [`note_loaded_ram`] recorded (every frame when more were
+/// loaded than it keeps).
+fn in_loaded_ram(pa: usize) -> bool {
+    if LOADED_N.load(Ordering::Acquire) > LOADED_MAX {
+        return true;
+    }
+    LOADED.iter().any(|(s, e)| {
+        let end = e.load(Ordering::Acquire);
+        end != 0 && (s.load(Ordering::Relaxed)..end).contains(&pa)
+    })
+}
+
+/// Whether the frame of `pa` is kernel memory: RAM the page system was loaded with (a page it
+/// manages, or one stolen from it at boot: the root tables, the page array), a page it
+/// manages, or one of the kernel image (`map_device`'s refusal and the boot segments, for
+/// `hal::cpu::efi::EfiRuntime::install`'s runtime regions).
 #[cfg(target_arch = "aarch64")]
 pub(crate) fn frame_is_kernel_memory(pa: Paddr) -> bool {
     let pa = Paddr::new(pa.as_usize() & !crate::arch::current::param::PAGE_MASK);
-    kernel().pages().md_of(pa).is_some() || Backend::in_kernel_image(pa)
+    in_loaded_ram(pa.as_usize())
+        || kernel().pages().md_of(pa).is_some()
+        || Backend::in_kernel_image(pa)
 }
 
 /// A user pmap whose machine part `make` builds, in the pool of user pmaps.

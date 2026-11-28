@@ -61,7 +61,8 @@
 //!
 //! ## Deviations
 //! - The memory map is `machdep.c`'s (`mmap`, `mmap_size`, `mmap_desc_size`, externs in the
-//!   C too): `bsd`'s `initarm` hands its relocated copy down once ([`efi_set_memory_map`]).
+//!   C too): `bsd`'s `initarm` hands its relocated copy to `hal` once, as a boot record
+//!   (`hal::cpu::efi::set_boot_memory_map`), which `EfiRuntime::install` reads.
 //!   The system table's address is read from `/chosen`, as the C's.
 //! - Runtime calls are serialised (`hal::cpu::efi`'s lock) where the C shares one `efi_jmpbuf`
 //!   between CPUs; a fault while reading the vendor string or a configuration entry ends that
@@ -74,7 +75,8 @@
 //! - The vendor string's characters reach `printf` as `char`s, so a `CHAR16` whose low byte is
 //!   0x80 or above prints two bytes (its UTF-8) where the C's `%c` prints one: the kernel's
 //!   `printf(9)` path takes formatted text, and a byte path is `bsd`'s `subr_prf` to give
-//!   (EDK II's vendor string is ASCII).
+//!   (EDK II's vendor string is ASCII). Inherited: LZ prints the same way
+//!   (`efi_machdep.rs`'s `char::from(c as u8)`).
 //! - `efi.c` (`/dev/efi`, the variable services, the ESRT) and `smbios0 at efi?` are not
 //!   ported (LZ's gaps): the `smbios` offer finds no driver, `sc_esrt` has no member.
 //!
@@ -108,7 +110,6 @@ use hal::cpu::efi::{EfiReads, EfiRuntime};
 use hal::dev::mmio::{DevCache, Mmio, Untyped};
 use hal::mem::malloc::{M_NOWAIT, MArc};
 use hal::mem::pool::AnyArc;
-use hal::sync::once::OnceStatic;
 use hal::user::pod_from_bytes;
 use sysdefs::base::errno::Errno;
 use sysdefs::dev::efi::{
@@ -147,9 +148,6 @@ pub static EFI_ACPI_TABLE: AtomicU64 = AtomicU64::new(0);
 /// `efi_smbios_table`: the SMBIOS (or SMBIOS 3) table's address, 0 if none.
 pub static EFI_SMBIOS_TABLE: AtomicU64 = AtomicU64::new(0);
 
-/// `mmap` and `mmap_desc_size` (`machdep.c`'s): the UEFI memory map `initarm` relocated.
-static MEMORY_MAP: OnceStatic<(&'static [u8], u32)> = OnceStatic::new();
-
 /// The time-of-day chip of the runtime services: `sc_todr`.
 pub struct EfiTodr;
 
@@ -178,13 +176,6 @@ impl core::fmt::Display for UefiVersion {
         }
         f.write_str("\n")
     }
-}
-
-/// `mmap = ...; mmap_size = ...; mmap_desc_size = ...` for efi(4): `initarm`'s relocated
-/// memory map, handed down once (a second call keeps the first). Scaffolding
-/// (docs/SCAFFOLDING.md) until `machdep.rs` is the kernel's (N9).
-pub fn efi_set_memory_map(map: &'static [u8], desc_size: u32) {
-    let _ = MEMORY_MAP.set((map, desc_size));
 }
 
 /// `efi_match`: the `efi` pseudo-node mainbus offers when booted through UEFI.
@@ -355,11 +346,11 @@ fn note_table(e: &EfiConfigurationTable) {
 /// `efi_map_runtime`: we don't really want some random executable non-OpenBSD code lying
 /// around in kernel space. So create a separate pmap and only activate it when we call
 /// runtime services. `hal::cpu::efi::EfiRuntime::install` makes the pmap and enters the
-/// runtime regions of the memory map `initarm` handed down, with the C's policy, and keeps the
-/// table at `rs`; `None` (the line printed) when the map names kernel memory.
+/// runtime regions of the boot record's memory map (`initarm` hands it to `hal`), with the
+/// C's policy, and keeps the table at `rs`; `None` (the line printed) when the map names
+/// kernel memory.
 pub fn efi_map_runtime(dev: &DevRef, rs: u64) -> Option<&'static EfiRuntime> {
-    let (map, desc_size) = MEMORY_MAP.get().copied().unwrap_or((&[], 0));
-    match EfiRuntime::install(rs, map, desc_size) {
+    match EfiRuntime::install(rs) {
         Ok(rt) => Some(rt),
         Err(Errno::EBUSY) => kpanic(format_args!(
             "efi_map_runtime: the runtime services are mapped already"
@@ -550,7 +541,7 @@ mod tests {
         let rt = {
             let _g = crate::testutil::pages_install(4 << 20);
             crate::testutil::kernel_maps_install();
-            match EfiRuntime::install(0x4000_0000, &[], 0) {
+            match EfiRuntime::install(0x4000_0000) {
                 Ok(rt) => rt,
                 Err(_) => EfiRuntime::get().expect("installed"),
             }
