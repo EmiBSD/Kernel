@@ -87,6 +87,9 @@ use crate::cpu::efi::{EfiLocked, below};
 use crate::cpu::{IntrGuard, intr_disable};
 use crate::vm::pmap::Pmap;
 
+/// `PMAP_DEVICE` (`machine/pmap.h`) as the physical address's flag bit: device memory.
+pub(crate) const PMAP_DEVICE: usize = super::pmap::layout::PMAP_DEVICE as usize;
+
 /// What the trampoline returns: the service's status, and whether its fault target cut it
 /// short.
 #[repr(C)]

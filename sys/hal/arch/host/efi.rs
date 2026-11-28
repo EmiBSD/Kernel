@@ -32,6 +32,9 @@ use sysdefs::dev::efi::{EfiStatus, EfiTime};
 use crate::cpu::efi::{EfiLocked, below};
 use crate::vm::pmap::Pmap;
 
+/// arm64's `PMAP_DEVICE`, which the host's pmap keeps no record of.
+pub(crate) const PMAP_DEVICE: usize = 0x2;
+
 /// What a transaction may do, made only by [`transaction`] (arm64's `Inside`).
 pub(crate) struct Inside {
     /// The EFI pmap's limit.

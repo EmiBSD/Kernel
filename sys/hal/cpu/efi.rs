@@ -20,9 +20,9 @@
 //! The UEFI runtime services as one object with typed methods: what efi(4) calls between
 //! `efi_enter` and `efi_leave` (`arch/arm64/dev/efi_machdep.c`, `machine/efivar.h`).
 //!
-//! [`EfiRuntime::install`] takes, once per machine, the runtime services' pmap (the EFI pmap
-//! `hal::vm::pmap::create_efi` made and efi(4) filled from the memory map) and the address of
-//! `EFI_RUNTIME_SERVICES`. Each method is one transaction: this object's lock, then the
+//! [`EfiRuntime::install`] makes, once per machine, the runtime services' pmap (the EFI pmap
+//! of `hal::vm::pmap::create_efi`, which efi(4) fills from the memory map through
+//! [`EfiRuntime::enter`]) and keeps the address of `EFI_RUNTIME_SERVICES`. Each method is one transaction: this object's lock, then the
 //! machine's `efi_enter` (interrupts masked, the EFI pmap in the lower half, the FPU usable),
 //! the work, and `efi_leave` (the FPU trapped again, the CPU's own pmap back, the interrupt
 //! state restored) on every path:
@@ -44,13 +44,14 @@
 use core::mem::offset_of;
 
 use sysdefs::base::errno::Errno;
+use sysdefs::base::types::{Paddr, Vaddr};
 use sysdefs::dev::efi::{EfiRuntimeServices, EfiStatus, EfiTime};
 
 use crate::arch::current::efi as machine;
 use crate::cpu::intr::IPL_HIGH;
 use crate::sync::mutex::{Mutexed, MutexedGuard};
 use crate::sync::once::OnceStatic;
-use crate::vm::pmap::PmapRef;
+use crate::vm::pmap::{PMAP_WIRED, PmapRef};
 
 #[cfg(not(target_os = "none"))]
 pub use crate::arch::current::efi::fake;
@@ -86,18 +87,44 @@ pub(crate) fn below(va: u64, len: usize, limit: u64) -> bool {
 }
 
 impl EfiRuntime {
-    /// Installs the runtime services, once per machine: `pm` is the EFI pmap (a pmap
-    /// `create_efi` did not make panics at the first transaction, as `Pmap::load_efi` does)
-    /// and `rs` the address of `EFI_RUNTIME_SERVICES` under it. `None` when they are installed
-    /// already.
-    pub fn install(pm: PmapRef, rs: u64) -> Option<&'static EfiRuntime> {
+    /// Installs the runtime services, once per machine: their pmap, made here (`efi_map_runtime`'s
+    /// `pmap_create` with `pm_privileged` and `have_4_level_pt`: `hal::vm::pmap::create_efi`),
+    /// empty until the caller enters the runtime regions of the memory map
+    /// ([`EfiRuntime::enter`]), and `rs`, the address of `EFI_RUNTIME_SERVICES` under it.
+    /// `EBUSY` when they are installed already, `ENOMEM` when no pmap could be had.
+    pub fn install(rs: u64) -> Result<&'static EfiRuntime, Errno> {
+        if RUNTIME.get().is_some() {
+            return Err(Errno::EBUSY);
+        }
+        let pm = crate::vm::pmap::create_efi().ok_or(Errno::ENOMEM)?;
         let rt = EfiRuntime {
             pm,
             rs,
             lock: Mutexed::new(IPL_HIGH, ()),
         };
-        RUNTIME.set(rt).ok()?;
-        RUNTIME.get()
+        RUNTIME.set(rt).map_err(|_| Errno::EBUSY)?;
+        RUNTIME.get().ok_or(Errno::EBUSY)
+    }
+
+    /// `pmap_enter(sc->sc_pm, va, pa, prot, prot | PMAP_WIRED)` of one page of the runtime
+    /// regions: `pa` with `PMAP_DEVICE` when `device` (memory that is not write-back
+    /// cacheable). A `va` at or above the EFI pmap's limit panics, as `Pmap::enter` does.
+    pub fn enter(&self, va: u64, pa: u64, prot: i32, device: bool) {
+        let flag = if device { machine::PMAP_DEVICE } else { 0 };
+        // A wired mapping without PMAP_CANFAIL: the pmap panics rather than fail.
+        let _ = self.pm.enter(
+            Vaddr::new(va as usize),
+            Paddr::new(pa as usize | flag),
+            prot,
+            prot | PMAP_WIRED,
+        );
+    }
+
+    /// The page mapped at `va` in the runtime's pmap (a test's view of [`EfiRuntime::enter`]).
+    pub fn extract(&self, va: u64) -> Option<u64> {
+        self.pm
+            .extract(Vaddr::new(va as usize))
+            .map(|pa| pa.as_usize() as u64)
     }
 
     /// The installed runtime services, if any.
@@ -171,8 +198,7 @@ mod tests {
         static ONCE: std::sync::Once = std::sync::Once::new();
         ONCE.call_once(|| {
             let _ = testutil::pmap_boot();
-            let pm = crate::vm::pmap::create_efi().expect("the host's EFI pmap");
-            assert!(EfiRuntime::install(pm, RS).is_some());
+            assert!(EfiRuntime::install(RS).is_ok());
         });
         EfiRuntime::get().expect("installed")
     }
@@ -192,9 +218,11 @@ mod tests {
     #[test]
     fn the_runtime_is_installed_once() {
         let rt = runtime();
-        let other = crate::vm::pmap::create_efi().expect("the host's EFI pmap");
-        assert!(EfiRuntime::install(other, RS).is_none());
+        assert_eq!(EfiRuntime::install(RS).err(), Some(Errno::EBUSY));
         assert!(core::ptr::eq(rt, runtime()));
+        // A runtime page entered is in the runtime's pmap (the host keeps no flags).
+        rt.enter(0x9000, 0x4_0000, 0x3, true);
+        assert_eq!(rt.extract(0x9000), Some(0x4_0000));
     }
 
     #[test]
