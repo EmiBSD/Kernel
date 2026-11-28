@@ -47,9 +47,15 @@
 //!   `sc_native` holds it, and nothing detaches a virtio child): its buffers are not freed
 //!   where the C frees viornd's (`dma_free`).
 //! - The tag's coherence is not visible to machine-independent code, so the memory answers
-//!   not coherent: a sync does a non-coherent tag's cache operations where a coherent tag's
-//!   C does a barrier (correct either way; slower on a coherent bus, never on the smokes'
-//!   paths that matter).
+//!   not coherent: every `DmaBuf::sync` runs the per-line `dc` loop of a non-coherent tag
+//!   (`dc civac`/`dc cvac`/`dc ivac` over the synced range) where the C's coherent tag issues
+//!   one `membar_sync` (`arch/arm64/arm64/bus_dma.c:578-591`), and QEMU virt marks its virtio
+//!   nodes `dma-coherent`. Correct either way; the cost is O(the synced bytes / the line size)
+//!   per sync: for viornd's 16 bytes and one ring of 8 slots nothing measurable, but vio and
+//!   vioblk would pay it over their rings at every commit and every interrupt. Before vio
+//!   moves (N7.3b) the user decides (U18) whether the machine reports the tag's
+//!   `BUS_DMA_COHERENT` (a trait method of the machine contract) or the cost stays until the
+//!   transports are the kernel's (N7.3d, N7.5).
 
 use core::any::Any;
 use core::ffi::c_void;
@@ -57,8 +63,10 @@ use core::mem::size_of;
 use core::ptr::{self, NonNull};
 
 use alloc::boxed::Box;
+use alloc::vec::Vec;
+use hal::cpu::intr::IPL_VM;
 use hal::dev::dma::{DmaBlock, DmaMemory, DmaReq, DmaSeg};
-use hal::mem::malloc::{M_NOWAIT as H_NOWAIT, MBox};
+use hal::sync::mutex::Mutexed;
 use kernel::dev::device::DevRef;
 use kernel::dev::pv::virtio::{
     ChildRef, Features, QueueSetup, VirtioArgs, VirtioFeatureName as NativeFeatureName,
@@ -111,13 +119,19 @@ impl LegacyTransport {
 pub struct LegacyDmaMemory {
     /// The transport's tag.
     tag: BusDmaTag,
+    /// \[`IPL_VM`\] the blocks handed out and not given back, each with what `free` needs: found
+    /// again by the block's address, on the cold path (an attach that fails, a queue freed).
+    blocks: Mutexed<Vec<DmaRecord>>,
 }
 
-/// What `free` needs back of a block: the map (its cookie's address) and the segment
-/// `bus_dmamem_alloc` gave, which a translating tag's loaded map does not show.
+/// What `free` needs back of a block: its mapping's address (the key), its map's and the
+/// segment `bus_dmamem_alloc` gave, which a translating tag's loaded map does not show.
+#[derive(Clone, Copy)]
 struct DmaRecord {
-    /// The loaded map.
-    map: &'static BusDmamap,
+    /// The mapping's first byte (`DmaBlock::va`), its address.
+    va: usize,
+    /// The loaded map (`bus_dmamap_create`'s), its address exposed.
+    map: usize,
     /// `bus_dmamem_alloc`'s segment.
     seg: BusDmaSegment,
 }
@@ -149,7 +163,10 @@ fn softc_of(dev: &DevRef) -> &VirtioSoftc {
 /// memory (leaked: one per child, as the C never frees a tag).
 pub fn legacy_transport(parent: &DevRef) -> Box<dyn VirtioTransport> {
     let tag = softc_of(parent).dmat();
-    let dma: &'static LegacyDmaMemory = Box::leak(Box::new(LegacyDmaMemory { tag }));
+    let dma: &'static LegacyDmaMemory = Box::leak(Box::new(LegacyDmaMemory {
+        tag,
+        blocks: Mutexed::new(IPL_VM, Vec::new()),
+    }));
     Box::new(LegacyTransport {
         dev: parent.clone(),
         dma,
@@ -346,18 +363,31 @@ fn shadow_fill(vq: &crate::dev::pv::virtiovar::Virtqueue, q: &QueueSetup) {
 }
 
 impl LegacyDmaMemory {
-    /// What [`DmaMemory::alloc`] made before a step failed, given back in reverse:
-    /// `bus_dmamap_destroy`, `bus_dmamem_unmap`, `bus_dmamem_free`.
+    /// What [`DmaMemory::alloc`] made, given back in reverse: the map (at its exposed address
+    /// `map.0`) unloaded when `map.1` says it is loaded, and destroyed, then
+    /// `bus_dmamem_unmap`, then `bus_dmamem_free`. For `free` and for `alloc`'s failures.
     fn release(
         &self,
         seg: BusDmaSegment,
         va: Option<(NonNull<u8>, usize)>,
-        map: Option<&'static BusDmamap>,
+        map: Option<(usize, bool)>,
     ) {
-        if let Some(map) = map {
-            // SAFETY: the map came from `bus_dmamap_create` of this tag and is unloaded; this
-            // is its last use (the caller gives it up: no record of it remains).
-            unsafe { bus_dmamap_destroy(self.tag, NonNull::from(map)) };
+        if let Some((addr, loaded)) = map {
+            let Some(map) = NonNull::new(ptr::with_exposed_provenance_mut::<BusDmamap>(addr))
+            else {
+                panic(format_args!("LegacyDmaMemory: a map at address 0"));
+            };
+            // SAFETY: `addr` is the address `alloc` exposed of the map `bus_dmamap_create` of
+            // this tag returned for this block (a `&'static BusDmamap`), held since only by
+            // `alloc`'s locals or this memory's private table, from which `free` took it out
+            // once (the block's `DmaBuf` never names the map). So the map is live, and nothing
+            // else uses it: it is unloaded when `alloc` loaded it, and destroyed, its last use.
+            unsafe {
+                if loaded {
+                    bus_dmamap_unload(self.tag, map.as_ref());
+                }
+                bus_dmamap_destroy(self.tag, map);
+            }
         }
         if let Some((kva, len)) = va {
             // SAFETY: `kva` is `bus_dmamem_map`'s mapping of `len` bytes of this tag's `seg`,
@@ -434,12 +464,13 @@ impl DmaMemory for LegacyDmaMemory {
                 return Err(e);
             }
         };
+        let map_addr = ptr::from_ref(map).expose_provenance();
         // SAFETY: `kva` maps `req.size` bytes of this tag's memory, which stay mapped until
         // `free` unloads the map before unmapping them.
         let load =
             unsafe { bus_dmamap_load(self.tag, map, kva.as_ptr(), req.size, None, BUS_DMA_NOWAIT) };
         if let Err(e) = load {
-            self.release(seg, mapped, Some(map));
+            self.release(seg, mapped, Some((map_addr, false)));
             return Err(e);
         }
         let loaded = map
@@ -447,12 +478,24 @@ impl DmaMemory for LegacyDmaMemory {
             .first()
             .map(core::cell::Cell::get)
             .unwrap_or_default();
-        let Some(record) = MBox::new(M_DEVBUF, H_NOWAIT, DmaRecord { map, seg }) else {
-            bus_dmamap_unload(self.tag, map);
-            self.release(seg, mapped, Some(map));
-            return Err(Errno::ENOMEM);
+        let record = DmaRecord {
+            va: kva.as_ptr().addr(),
+            map: map_addr,
+            seg,
         };
-        let record: &'static DmaRecord = MBox::leak(record);
+        // M_NOWAIT growth (the Rust allocator over malloc(9) never sleeps), so under the lock.
+        let kept = {
+            let mut blocks = self.blocks.lock();
+            let room = blocks.try_reserve(1).is_ok();
+            if room {
+                blocks.push(record);
+            }
+            room
+        };
+        if !kept {
+            self.release(seg, mapped, Some((map_addr, true)));
+            return Err(Errno::ENOMEM);
+        }
         Ok(DmaBlock {
             va: kva,
             len: seg.ds_len,
@@ -461,20 +504,32 @@ impl DmaMemory for LegacyDmaMemory {
                 len: loaded.ds_len,
             },
             coherent: false,
-            cookie: ptr::from_ref(record).expose_provenance(),
+            cookie: 0,
         })
     }
 
+    /// The block's record taken out of the table by its address, then the four steps in
+    /// reverse. The block is one `alloc` gave, handed back unchanged, once: `DmaMemory`'s
+    /// contract, the trust boundary of `sys/hal/mem/trust.rs` (lines 161-174); a block this
+    /// memory has no record of is `panic(9)`.
     fn free(&self, block: DmaBlock) {
-        // SAFETY: the cookie is the exposed address of the `DmaRecord` `alloc` leaked for this
-        // block (`MBox::leak`: never freed, so the reference is valid for ever), handed back
-        // unchanged by the block's `DmaBuf` and only once.
-        let record: &DmaRecord = unsafe { &*ptr::with_exposed_provenance(block.cookie) };
-        bus_dmamap_unload(self.tag, record.map);
+        let va = block.va.as_ptr().addr();
+        let record = {
+            let mut blocks = self.blocks.lock();
+            blocks
+                .iter()
+                .position(|r| r.va == va)
+                .map(|i| blocks.swap_remove(i))
+        };
+        let Some(record) = record else {
+            panic(format_args!(
+                "LegacyDmaMemory: free of {va:#x}, a block it did not give"
+            ));
+        };
         self.release(
             record.seg,
             Some((block.va, block.len.min(record.seg.ds_len))),
-            Some(record.map),
+            Some((record.map, true)),
         );
     }
 }
