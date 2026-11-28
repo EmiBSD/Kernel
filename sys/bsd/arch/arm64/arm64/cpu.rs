@@ -69,7 +69,7 @@
 //!   brings the MMU up on `locore0.S`'s identity map and the kernel's `TTBR1_EL1` and
 //!   enters `cpu_hatch_entry` on `ci_el1_stkend` (`locore.rs`, deviations).
 //! - Not in the C: `cpu_hatch_entry` turns on the processor's generic timer event stream
-//!   (`agtimer_evtstrm_enable`, a `wfe` wake-up every ~130 µs; `agtimer_startclock` keeps it
+//!   (the kernel's `agtimer_evtstrm_enable`, a `wfe` wake-up every ~130 µs; `agtimer_startclock` keeps it
 //!   on) before `cpu_init_secondary` waits in `wfe` for `CPUF_IDENTIFY` and `CPUF_GO`. Those
 //!   waits otherwise end only on the boot processor's `sev` (the `ARM_IPI_NOP` it adds cannot
 //!   wake a processor whose GIC CPU interface `arm_intr_cpu_enable` has not enabled yet),
@@ -171,11 +171,12 @@ use kernel::dev::fdt::psci::{
     psci_flush_bp, psci_method, smccc_enable_arch_workaround_2, smccc_needs_arch_workaround_3,
 };
 use kernel::dev::fdt::pscivar::{PSCI_METHOD_HVC, PSCI_METHOD_SMC};
+use kernel::time::clock::{cpu_startclock, delay};
 use kernel::vm::km::{KD_WAITOK, KP_ZERO, KV_ANY};
 
 #[cfg(feature = "multiprocessor")]
 #[cfg(feature = "multiprocessor")]
-use crate::arch::arm64::arm64::intr::{arm_intr_cpu_enable, arm_send_ipi, cpu_startclock, delay};
+use crate::arch::arm64::arm64::intr::{arm_intr_cpu_enable, arm_send_ipi};
 #[cfg(feature = "multiprocessor")]
 use crate::arch::arm64::arm64::machdep::{BOOT_MP, CPU_INFO};
 #[cfg(feature = "multiprocessor")]
@@ -2585,7 +2586,7 @@ pub unsafe fn cpu_hatch_entry(arg: usize) -> ! {
 
         // Not in the C: the event stream bounds the `wfe` waits of `cpu_init_secondary`
         // (see the module's deviations).
-        crate::arch::arm64::dev::agtimer::agtimer_evtstrm_enable();
+        kernel::dev::arm64::agtimer::agtimer_evtstrm_enable();
 
         // SAFETY: `cpu_start_secondary` passed a `cpu_info` that lives forever, mapped now.
         let stkend = unsafe { (*ci).ci_el1_stkend.get() };

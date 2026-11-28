@@ -106,7 +106,8 @@ impl Cpu for Machine {
     }
 
     fn delay(usec: u32) {
-        arm64::intr::delay(usec)
+        // The kernel's agtimer is the machine's clock (N7.2b2b; scaffolding until N9).
+        kernel::time::clock::delay(usec)
     }
 
     fn cpu_startup() {
@@ -260,20 +261,20 @@ impl Cpu for Machine {
         unsafe { (*p.pcb().pcb_tf.get()).tf_sp as usize }
     }
 
+    // The kernel's agtimer is the machine's clock hardware itself (N7.2b2b): these forward
+    // to the kernel's clock, and `bsd` registers no ClockHardware of its own (KERNEL_CLOCK).
+    const KERNEL_CLOCK: bool = true;
+
     fn cpu_initclocks() {
-        arm64::intr::cpu_initclocks()
+        kernel::time::clock::cpu_initclocks()
     }
 
     fn cpu_startclock() {
-        arm64::intr::cpu_startclock()
+        kernel::time::clock::cpu_startclock()
     }
 
     fn setstatclockrate(newhz: i32) {
-        arm64::intr::setstatclockrate(newhz)
-    }
-
-    fn clock_early_init() {
-        dev::agtimer::agtimer_init()
+        kernel::time::clock::setstatclockrate(newhz)
     }
 
     fn cpu_configure() {

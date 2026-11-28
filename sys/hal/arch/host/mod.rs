@@ -54,7 +54,13 @@ pub mod sig;
 pub(crate) mod smccc;
 pub(crate) mod switch;
 pub mod syscall;
-pub mod timer;
+/// The generic timer's double: a per-thread register file (`hal::cpu::timer`), and the clock
+/// frame.
+pub(crate) mod timer;
+/// arm64's `<machine/timetc.h>`, the `tc_user` values `hal::cpu::timer` names: the host
+/// double's counter is arm64's generic timer.
+#[path = "../arm64/include/timetc.rs"]
+pub(crate) mod timetc;
 
 pub use self::param as vmparam;
 /// The host pmap's test knob (its only one): a failing `pmap_enter`.

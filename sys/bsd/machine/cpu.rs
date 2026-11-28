@@ -280,12 +280,12 @@ pub trait Cpu {
     /// has a separate one.
     fn setstatclockrate(newhz: i32);
 
-    /// Scaffolding (docs/SCAFFOLDING.md): what the root bus starts before its children
-    /// attach, arm64's `agtimer_init()` (`mainbus.c:107`), which the kernel's mainbus reaches
-    /// through `kernel::time::clock::ClockHardware::early_init`; nothing on a machine whose
-    /// root bus is `bsd`'s own (the default, amd64's). Gone when the kernel's agtimer calls it
-    /// (N7.2b2).
-    fn clock_early_init() {}
+    /// Scaffolding (docs/SCAFFOLDING.md, N9 and N10): the machine's clock hardware is the
+    /// kernel's own driver (arm64's agtimer, N7.2b2b, the `ClockHardware` it installs itself),
+    /// so `bsd` registers none and the four clock functions of this trait forward to
+    /// `kernel::time::clock`; false (the default) where `bsd`'s machine code is the clock
+    /// (amd64's, the host double), and `hal_bridges_register` installs `BsdClockHardware`.
+    const KERNEL_CLOCK: bool = false;
 
     /// `cpu_configure()` (`autoconf.c`): the machine-dependent part of autoconfiguration;
     /// ends with `spl0()` and `cold = 0`.
@@ -430,11 +430,6 @@ pub fn cpu_initclocks() {
 /// `cpu_startclock` on the selected machine.
 pub fn cpu_startclock() {
     Machine::cpu_startclock()
-}
-
-/// `clock_early_init` on the selected machine.
-pub fn clock_early_init() {
-    Machine::clock_early_init()
 }
 
 /// `setstatclockrate` on the selected machine.

@@ -1638,8 +1638,8 @@ notes = "N7.2a2 (U12, the user's B): acpi_intr_establish finds the GIC (phandle 
 rust = "sys/bsd/arch/arm64/arm64/autoconf.rs"
 lz = ["sys/arch/arm64/arm64/autoconf.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/dev/arm64/mainbus.rs", "sys/kernel/dev/disk.rs"]
-notes = "M4/M5: cpu_configure as far as the interrupts go; M7b: cpu_configure in the C's order (splhigh, softintr_init, config_rootfound(\"mainbus\"), cold = 0, spl0; the GIC and the generic timer now attach through mainbus, attach_interrupt_controller and attach_timer are gone); unmap_startup (with codepatch_disable) and cpu_identify_cleanup reported; M7b: bus_dma_init runs (then selftest bus_dma_check on mainbus_dma_tag under feature qemu); device_register (empty, as in C) through machine::autoconf; nam2blk[]; diskconf waits for disks; cold lives in sys/systm.rs; M8: diskconf (setroot without a boot device; dumpconf reported); M10e: diskconf with NFSCLIENT: the interface whose MAC is bootmac (BOOTMAC, a StaticCell nothing fills under Limine) becomes the boot device through parsedisk; M11a: cpu_identify_cleanup runs (cpu.rs); cryptox_setup (CRYPTO with arm64_has_aes) still not called"
+adapted_by = ["sys/kernel/dev/arm64/mainbus.rs", "sys/kernel/dev/disk.rs", "sys/kernel/dev/arm64/agtimer.rs"]
+notes = "N7.2b2b: cpu_configure switches the kernel's backward-uptime check on under feature qemu (bsd's N4.8a copy of agtimer_startclock did; not in LZ). M4/M5: cpu_configure as far as the interrupts go; M7b: cpu_configure in the C's order (splhigh, softintr_init, config_rootfound(\"mainbus\"), cold = 0, spl0; the GIC and the generic timer now attach through mainbus, attach_interrupt_controller and attach_timer are gone); unmap_startup (with codepatch_disable) and cpu_identify_cleanup reported; M7b: bus_dma_init runs (then selftest bus_dma_check on mainbus_dma_tag under feature qemu); device_register (empty, as in C) through machine::autoconf; nam2blk[]; diskconf waits for disks; cold lives in sys/systm.rs; M8: diskconf (setroot without a boot device; dumpconf reported); M10e: diskconf with NFSCLIENT: the interface whose MAC is bootmac (BOOTMAC, a StaticCell nothing fills under Limine) becomes the boot device through parsedisk; M11a: cpu_identify_cleanup runs (cpu.rs); cryptox_setup (CRYPTO with arm64_has_aes) still not called"
 
 [[module]]
 rust = "sys/bsd/arch/arm64/arm64/bus_dma.rs"
@@ -1664,7 +1664,7 @@ adapted_by = ["sys/kernel/base/log.rs", "sys/kernel/fs/fuse/fuse_device.rs"]
 rust = "sys/bsd/arch/arm64/arm64/cpu.rs"
 lz = ["sys/arch/arm64/arm64/cpu.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/arch/arm64/pmap/backend.rs", "sys/bsd/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc/mod.rs", "sys/bsd/kern/proc_glue.rs", "sys/hal/cpu/curcpu.rs", "sys/hal/cpu/thread.rs", "sys/kernel/sched/mod.rs", "sys/hal/cpu/intr.rs", "sys/kernel/base/sysctl.rs", "sys/kernel/time/clockintr.rs", "sys/hal/arch/arm64/trap.rs", "sys/hal/arch/arm64/exception.rs", "sys/kernel/trap.rs", "sys/kernel/dev/arm64/ampintc.rs", "sys/kernel/dev/arm64/agintc.rs", "sys/kernel/dev/fdt/psci.rs"]
+adapted_by = ["sys/hal/arch/arm64/pmap/backend.rs", "sys/bsd/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc/mod.rs", "sys/bsd/kern/proc_glue.rs", "sys/hal/cpu/curcpu.rs", "sys/hal/cpu/thread.rs", "sys/kernel/sched/mod.rs", "sys/hal/cpu/intr.rs", "sys/kernel/base/sysctl.rs", "sys/kernel/time/clockintr.rs", "sys/hal/arch/arm64/trap.rs", "sys/hal/arch/arm64/exception.rs", "sys/kernel/trap.rs", "sys/kernel/dev/arm64/ampintc.rs", "sys/kernel/dev/arm64/agintc.rs", "sys/kernel/dev/fdt/psci.rs", "sys/kernel/dev/arm64/agtimer.rs"]
 notes = "N7.2a3: cpu_attach and cpu_identify record ci_mpidr and ci_midr in the core too (CpuCore::set_hwid, set_midr) for the kernel's agintc; the qemu self-check counts the kernel's agintc_ipi_count beside ampintc's. Ahead of LZ since 94d0c9ed: cpu_init's SVE setup opens FP with SVE around its write of ZCR_EL1 (the fault is OpenBSD's own, cpu.c:1844-1856); LZ adopts the same change (its 6e1e27de, not on its main yet): the sync that brings it records it as already here"
 
 [[module]]
@@ -1751,8 +1751,8 @@ notes = "M5-b2: enodev, enxio, eopnotsupp, nullop, assertwaitok (SMR_ASSERT_NONC
 rust = "sys/bsd/arch/arm64/arm64/intr.rs"
 lz = ["sys/arch/arm64/arm64/intr.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/hal/cpu/intr.rs", "sys/hal/arch/arm64/trap.rs", "sys/kernel/dev/arm64/intr.rs", "sys/kernel/dev/intr.rs", "sys/kernel/dev/arm64/ampintc.rs", "sys/kernel/dev/arm64/agintc.rs"]
-notes = "N7.2a3 (review S1): LegacyIc (and its unsafe impl Sync), legacy_cookie, word, ci_of, arm_intr_register_fdt and arm_intr_parent_establish_fdt/_disestablish_fdt go: no driver registers a legacy struct interrupt_controller any more (bsd's agintc was the last), so none could be found; new_handle makes the native kind alone; pciecam's hand-made handles keep the Handle::Legacy path. N7.2a3: the legacy GIC's slots go with bsd's agintc: arm_intr_func (ARM_INTR_FUNC, ArmIntrHardware, ARM_INTR_HARDWARE), arm_set_intr_handler, ARM_IRQ_DISPATCH/ARM_FIQ_DISPATCH with arm_dflt_irq/fiq, INTR_SEND_IPI_FUNC (arm_send_ipi reads the kernel's slot alone, arm_no_send_ipi before it); intr_enable_wakeup/intr_disable_wakeup re-exported from the kernel's core (the installed controller's hooks). N7.2a2 (U12): LegacyIc::has_msi (ic_establish_msi != NULL); new_handle, NativeIntrHandle::new and native_intr_handle lent (pub(crate)) to acpi_machdep and acpipci, whose walks are the kernel's registry. N7.2a1: the adapter over kernel::dev::arm64::intr under LZ's names and signatures: LegacyIc (a driver's struct interrupt_controller as the kernel's trait), arm_intr_register_fdt registering it and linking the mirror list interrupt_controllers() serves (legacy structures only), handles as LZ's MachineIntrHandle on a legacy controller and a NativeIntrHandle (null ih_ic) on a native one, the pre-registration, cell parsing and lists gone; the clock table, the spl table and the IPI slot stay (N7.2b2, N7.2a3, N7.2a2). M2: arm_clock_func, arm_clock_register, arm_dflt_delay, delay, cpu_initclocks, cpu_startclock, setstatclockrate; M4: arm_dflt_irq/fiq, arm_irq/fiq_dispatch, arm_cpu_irq/fiq, arm_smask, arm_intr_func with the arm_dflt_* spl, arm_do_pending_intr, arm_set_intr_handler, arm_init_smask, splraise/spllower/splx/softintr, arm_splassert_check, intr_enable/disable_wakeup, arm_intr_get_parent, the pre-registration (arm_intr_prereg_*, arm_intr_init_fdt), arm_intr_register_fdt, arm_intr_establish_fdt/_cpu/_idx/_idx_cpu, arm_intr_disestablish_fdt, arm_intr_enable/disable, arm_intr_parent_establish/disestablish_fdt, arm_intr_route, arm_intr_cpu_enable, intr_barrier, intr_set_wakeup (lists behind a Sync wrapper, NonNull handles); the imap/msi variants and arm_intr_map_msi come with PCI (M5), the IPIs with MULTIPROCESSOR; M11a: the MULTIPROCESSOR IPI implementation: intr_send_ipi_func (a StaticCell set by the controller's attach), arm_send_ipi, arm_no_send_ipi; SOFTINTR_XCALL stays out (NXCALL 0 on arm64); ; M12: arm_intr_map_msi (msi-map with msi-map-mask and #msi-cells, else the first msi-parent up the tree), arm_intr_establish_fdt_imap/_imap_cpu (interrupt-map with interrupt-map-mask, the parent's #address-cells; reg as a 4-cell slice), arm_intr_establish_fdt_msi/_msi_cpu (through ic_establish_msi); interrupt_controllers() for ampintc.c's extern use of the list; N4.5c: gains ArmIntrHardware (hal::cpu::intr::IntrHardware over ARM_INTR_FUNC, registered by initarm); arm_smask, arm_init_smask, the arm_dflt_* bodies, arm_do_pending_intr and softintr forward to hal::cpu::intr (the table and ci_cpl/ci_ipending/ci_idepth are hal's)"
+adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/hal/cpu/intr.rs", "sys/hal/arch/arm64/trap.rs", "sys/kernel/dev/arm64/intr.rs", "sys/kernel/dev/intr.rs", "sys/kernel/dev/arm64/ampintc.rs", "sys/kernel/dev/arm64/agintc.rs", "sys/kernel/dev/arm64/agtimer.rs"]
+notes = "N7.2b2b: the clock table goes with bsd's agtimer (ArmClockFunc, ARM_CLOCK_FUNC, arm_clock_func, arm_clock_register, arm_dflt_delay, delay, cpu_initclocks, cpu_startclock, setstatclockrate: kernel::time::clock's, the kernel's agtimer its ClockHardware; rows under sys/kernel/dev/arm64/intr.rs). N7.2a3 (review S1): LegacyIc (and its unsafe impl Sync), legacy_cookie, word, ci_of, arm_intr_register_fdt and arm_intr_parent_establish_fdt/_disestablish_fdt go: no driver registers a legacy struct interrupt_controller any more (bsd's agintc was the last), so none could be found; new_handle makes the native kind alone; pciecam's hand-made handles keep the Handle::Legacy path. N7.2a3: the legacy GIC's slots go with bsd's agintc: arm_intr_func (ARM_INTR_FUNC, ArmIntrHardware, ARM_INTR_HARDWARE), arm_set_intr_handler, ARM_IRQ_DISPATCH/ARM_FIQ_DISPATCH with arm_dflt_irq/fiq, INTR_SEND_IPI_FUNC (arm_send_ipi reads the kernel's slot alone, arm_no_send_ipi before it); intr_enable_wakeup/intr_disable_wakeup re-exported from the kernel's core (the installed controller's hooks). N7.2a2 (U12): LegacyIc::has_msi (ic_establish_msi != NULL); new_handle, NativeIntrHandle::new and native_intr_handle lent (pub(crate)) to acpi_machdep and acpipci, whose walks are the kernel's registry. N7.2a1: the adapter over kernel::dev::arm64::intr under LZ's names and signatures: LegacyIc (a driver's struct interrupt_controller as the kernel's trait), arm_intr_register_fdt registering it and linking the mirror list interrupt_controllers() serves (legacy structures only), handles as LZ's MachineIntrHandle on a legacy controller and a NativeIntrHandle (null ih_ic) on a native one, the pre-registration, cell parsing and lists gone; the clock table, the spl table and the IPI slot stay (N7.2b2, N7.2a3, N7.2a2). M2: arm_clock_func, arm_clock_register, arm_dflt_delay, delay, cpu_initclocks, cpu_startclock, setstatclockrate; M4: arm_dflt_irq/fiq, arm_irq/fiq_dispatch, arm_cpu_irq/fiq, arm_smask, arm_intr_func with the arm_dflt_* spl, arm_do_pending_intr, arm_set_intr_handler, arm_init_smask, splraise/spllower/splx/softintr, arm_splassert_check, intr_enable/disable_wakeup, arm_intr_get_parent, the pre-registration (arm_intr_prereg_*, arm_intr_init_fdt), arm_intr_register_fdt, arm_intr_establish_fdt/_cpu/_idx/_idx_cpu, arm_intr_disestablish_fdt, arm_intr_enable/disable, arm_intr_parent_establish/disestablish_fdt, arm_intr_route, arm_intr_cpu_enable, intr_barrier, intr_set_wakeup (lists behind a Sync wrapper, NonNull handles); the imap/msi variants and arm_intr_map_msi come with PCI (M5), the IPIs with MULTIPROCESSOR; M11a: the MULTIPROCESSOR IPI implementation: intr_send_ipi_func (a StaticCell set by the controller's attach), arm_send_ipi, arm_no_send_ipi; SOFTINTR_XCALL stays out (NXCALL 0 on arm64); ; M12: arm_intr_map_msi (msi-map with msi-map-mask and #msi-cells, else the first msi-parent up the tree), arm_intr_establish_fdt_imap/_imap_cpu (interrupt-map with interrupt-map-mask, the parent's #address-cells; reg as a 4-cell slice), arm_intr_establish_fdt_msi/_msi_cpu (through ic_establish_msi); interrupt_controllers() for ampintc.c's extern use of the list; N4.5c: gains ArmIntrHardware (hal::cpu::intr::IntrHardware over ARM_INTR_FUNC, registered by initarm); arm_smask, arm_init_smask, the arm_dflt_* bodies, arm_do_pending_intr and softintr forward to hal::cpu::intr (the table and ci_cpl/ci_ipending/ci_idepth are hal's)"
 
 [[module]]
 rust = "sys/bsd/arch/arm64/arm64/locore.rs"
@@ -1817,13 +1817,6 @@ lz = ["sys/arch/arm64/dev/acpipci.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/dev/arm64/intr.rs"]
 notes = "N7.2a2 (U12, the user's B): the three walks of interrupt_controllers are the kernel's registry (controllers(), InterruptController::has_msi, IcReg::gic_its_id); sc_msi_ic and the IORT walk's controller an IcRef; an MSI establishes through IcReg::establish_msi and its handle embeds the adapter's NativeIntrHandle first, told back by native_intr_handle at disestablish"
-
-[[module]]
-rust = "sys/bsd/arch/arm64/dev/agtimer.rs"
-lz = ["sys/arch/arm64/dev/agtimer.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/arch/arm64/timer.rs", "sys/kernel/time/tc.rs", "sys/kernel/time/clockintr.rs", "sys/kernel/time/clock.rs"]
-notes = "N4.8a: the counter is AgtimerTc (kernel::time::tc::Timecounter) with its TcEntry, the interrupt clock AgtimerIntrclock (kernel::time::clockintr::Intrclock), the dispatch over the typed frame"
 
 [[module]]
 rust = "sys/bsd/arch/arm64/dev/pci_machdep.rs"
@@ -14267,6 +14260,11 @@ crate = "hal"
 reason = "hal runtime, written new (N7.2a3): the GICv3 CPU interface of the executing CPU for the kernel's agintc(4), the arm64 accessors of arch/arm64/icc.rs (agintc.c's ICC_*_EL1 accesses) re-exported, and on the host the per-thread register file of arch/host/icc.rs that the tests read and set"
 
 [[extra]]
+rust = "sys/hal/cpu/timer.rs"
+crate = "hal"
+reason = "hal runtime, written new (N7.2b2b): the ARM generic timer of the executing CPU for the kernel's agtimer(4), the arm64 accessors of arch/arm64/timer.rs (agtimer.c's register reads and writes) and the tc_user values of <machine/timetc.h> re-exported, and on the host the per-thread register file of arch/host/timer.rs that the tests read and set"
+
+[[extra]]
 rust = "sys/hal/ds/pin.rs"
 crate = "hal"
 reason = "hal runtime, written new (N4.1 P3): pin_static, a &'static value pinned (core's Pin::static_ref since the review fix S5: the premise that a shared borrow that never ends excludes every move; the module is forbid, 0 unsafe); docs/ZERO_UNSAFE.md 0.1"
@@ -14344,6 +14342,11 @@ notes = "N4.8a: agtimer.c's register half: CNTVCT_EL0 read around the Cortex-A73
 [[module.fn]]
 lz = "sys/arch/arm64/dev/agtimer.rs::AGTIMER_READCNT64"
 native = ["SUN50I"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/agtimer.rs::agtimer_readcnt64_default"
+native = ["readcnt64_default"]
 kind = "renamed"
 
 [[module]]
@@ -21278,6 +21281,51 @@ crate = "kernel"
 lz = ["sys/arch/arm64/arm64/intr.rs", "sys/arch/arm64/include/intr.rs"]
 status = "redesigned"
 notes = "N7.2a1: arm64's interrupt core in the kernel, 0 unsafe: struct interrupt_controller as the trait InterruptController (default methods the C's NULL entries; barrier answers the CPU and intr_barrier::<G> calls sched_barrier) and the registration IcReg built whole from an IcDesc (phandle and #interrupt-cells read once, immutable, MBox::leak'ed); ic_establish's void * as IcCookie (Rec, a record downcast by its controller; Word); struct machine_intr_handle as IntrHandle by value; the two LIST_HEADs as hal::ds::list::Lists in IntrRegistry (a static; tests build their own), writers under one Mutexed<()> at IPL_NONE never held across a controller's method, lookups lock-free; struct intr_prereg as Prereg (leaked, never freed: the module's Deviations) and the dummy controller as PreregIc; the specifier walks (interrupts with the interrupt-parent walk, interrupts-extended with the C's counting of an empty phandle, which LZ skipped; interrupt-map; msi-map with the #msi-cells default; msi-parent) over MArray cell buffers; the C's names kept. bsd's arch/arm64/arm64/intr.rs is the adapter over it (LegacyIc, the mirror list, the handles); <machine/intr.h>'s levels are hal's (moved rows), its trigger types, IPI numbers and SOFTINTR_XCALL this module's, IntrFn kernel::dev::intr's"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/intr.rs::ArmClockFunc"
+native = ["sys/kernel/time/clock.rs::ClockHardware"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/intr.rs::ARM_CLOCK_FUNC"
+native = ["sys/kernel/time/clock.rs::CLOCK_HW"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/intr.rs::arm_clock_func"
+native = ["sys/kernel/time/clock.rs::CLOCK_HW"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/intr.rs::arm_clock_register"
+native = ["sys/kernel/time/clock.rs::install_clock_hardware"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/intr.rs::delay"
+native = ["sys/kernel/time/clock.rs::delay"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/intr.rs::arm_dflt_delay"
+native = ["sys/kernel/time/clock.rs::delay"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/intr.rs::cpu_initclocks"
+native = ["sys/kernel/time/clock.rs::cpu_initclocks"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/intr.rs::cpu_startclock"
+native = ["sys/kernel/time/clock.rs::cpu_startclock"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/intr.rs::setstatclockrate"
+native = ["sys/kernel/time/clock.rs::setstatclockrate"]
+kind = "moved"
 [[module.fn]]
 lz = "sys/arch/arm64/arm64/intr.rs::IntrPrereg"
 native = ["Prereg"]
@@ -21512,6 +21560,43 @@ lz = "sys/arch/arm64/dev/mainbus.rs::ca_match"
 native = []
 kind = "dropped"
 reason = "(*cf->cf_attach->ca_match)(...) by hand: the submatch closures call the row driver's DriverOps::probe"
+
+[[module]]
+rust = "sys/kernel/dev/arm64/agtimer.rs"
+crate = "kernel"
+lz = ["sys/arch/arm64/dev/agtimer.rs"]
+status = "redesigned"
+notes = "N7.2b2b: agtimer(4) as a kernel DriverOps (AGTIMER; probe over the bus's FdtArgs). struct agtimer_softc with agtimer_frequency and the A64 erratum's choice is Agtimer, atomics read Relaxed, one static (AGTIMER_SC, cd_devs[0]); it is the C's tc_priv and ic_cookie at once and arm_clock_register's four functions: it implements the kernel's Timecounter (AGTIMER_TIMECOUNTER its TcEntry), Intrclock and ClockHardware (P46), installed by agtimer_init (with a CNTFRQ) and by the attach, first wins; initclocks, startclock and setstatclockrate panic with intr.c's messages before the attach. sc_ih a set-once IntrHandle, the handler IntrHandler::Frame(agtimer_intr). The registers through hal::cpu::timer (arm64's arch/arm64/timer.rs, the host's per-thread double); the armreg.h bits private constants; CPU_IS_PRIMARY is clockintr::cpu_is_primary. The event stream (agtimer_evtstrm_enable, LZ's) kept"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/agtimer.rs::AGTIMER_FREQUENCY"
+native = ["Agtimer"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/agtimer.rs::AgtimerSoftc"
+native = ["Agtimer"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/agtimer.rs::AGTIMER"
+native = ["AGTIMER_SC"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/agtimer.rs::AGTIMER_CA"
+native = ["AGTIMER"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/agtimer.rs::AGTIMER_CD"
+native = ["sys/bsd/arch/arm64/conf/ioconf.rs::AGTIMER_CD"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/agtimer.rs::AGTIMER_INTRCLOCK"
+native = ["Agtimer"]
+kind = "merged"
 
 [[module]]
 rust = "sys/kernel/dev/arm64/agintc.rs"
