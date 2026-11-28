@@ -199,10 +199,8 @@ impl VirtioChild for ViorndCore {
         st.buf.sync(0, VIORND_BUFSIZE, DmaSync::POSTREAD);
         if len > VIORND_BUFSIZE as i32 {
             printf(format_args!(
-                "{}: inconsistent descriptor length {} > {}\n",
+                "{}: inconsistent descriptor length {len} > {VIORND_BUFSIZE}\n",
                 self.xname(),
-                len,
-                VIORND_BUFSIZE
             ));
         } else {
             if VIORND_DEBUG > 0 {

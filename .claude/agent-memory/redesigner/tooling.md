@@ -471,3 +471,5 @@ metadata:
 - The worktree guard refuses a heredoc that appends Rust to a file in the same call as `cargo`, and any heredoc run after a `cd` into `.claude/` ("too complex"): Write the text to the scratchpad and run a script by absolute path, cargo alone (N7.2a3).
 - clippy's too_many_arguments fires above 7 parameters (self counts): a 7-argument C signature needs no allow, so do not add one (N7.2a3 removed two).
 - lz check after deleting a bsd file lists every item only it held, including `const _` compile-time asserts (`path::_`): copy the assert into the native module rather than writing a dropped row (N7.2a3).
+- The worktree guard refuses a Bash call that mixes `cd` or a heredoc appended with `>>` and other commands ("too complex"): write the text with Write, then one plain `cat a b >> f` or `sed -i '' 'Nr file' f` (N7.3a).
+- lz check's item lexer sees neither items a macro defines (`queue_adapter!`'s `VqFreelist`: a row for it fails "defines no item") nor a trait's methods: map an LZ free function that became a trait method to the trait's name, kind `merged` (N7.3a).

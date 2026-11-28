@@ -436,9 +436,9 @@ impl DmaMemory for LegacyDmaMemory {
         };
         // SAFETY: `kva` maps `req.size` bytes of this tag's memory, which stay mapped until
         // `free` unloads the map before unmapping them.
-        if let Err(e) =
-            unsafe { bus_dmamap_load(self.tag, map, kva.as_ptr(), req.size, None, BUS_DMA_NOWAIT) }
-        {
+        let load =
+            unsafe { bus_dmamap_load(self.tag, map, kva.as_ptr(), req.size, None, BUS_DMA_NOWAIT) };
+        if let Err(e) = load {
             self.release(seg, mapped, Some(map));
             return Err(e);
         }

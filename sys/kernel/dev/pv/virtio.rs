@@ -1409,7 +1409,7 @@ pub fn virtio_reinit_start(
     t.set_status(VIRTIO_CONFIG_DEVICE_STATUS_DRIVER);
     let f = t.negotiate_features(driver, None).unwrap_or_default();
     t.setup_intrs();
-    for vq in vqs.iter_mut() {
+    for vq in vqs {
         let n = t.read_queue_size(vq.index);
         if n != vq.num {
             kpanic(format_args!(
