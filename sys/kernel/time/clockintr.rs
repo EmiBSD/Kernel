@@ -104,6 +104,9 @@
 //!   on the queue's own channel): LZ's `unported!` is closed.
 //! - `clockrequest_advance_random`'s `random(&ci->ci_randseed)` reads the queue's own seed
 //!   ([`set_randseed`], written where `bsd` writes `ci_randseed`).
+//! - N7.2b2b: `CPU_IS_PRIMARY(curcpu())` for the kernel's clock drivers (`agtimer(4)`'s
+//!   `agtimer_startclock`) is [`cpu_is_primary`], the running CPU's queue's record of it
+//!   (`clockqueue_init`'s `primary`, written before that CPU's clock starts).
 
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering, fence};
 
@@ -1020,6 +1023,12 @@ pub fn set_randseed(cpu: usize, seed: u32) {
     }
 }
 
+/// `CPU_IS_PRIMARY(curcpu())`: the running CPU is the one that runs the hardclock, as
+/// `clockqueue_init` recorded it for this CPU's queue (false before that call).
+pub fn cpu_is_primary() -> bool {
+    this().primary.load(Ordering::Relaxed)
+}
+
 /// Turns the dispatch's backward-uptime check on (`bsd`'s feature `qemu`, at boot).
 pub fn set_uptime_check(on: bool) {
     UPTIME_CHECK.store(on, Ordering::Relaxed);
@@ -1305,6 +1314,17 @@ mod tests {
         set_uptime_check(false);
         assert_eq!(uptime_check_counts(205), (3, 1));
         assert!(testutil::printf_count("uptime went backwards by 500 ns (2000 -> 1500)") >= 1);
+    }
+
+    #[test]
+    fn cpu_is_primary_reads_the_queue_clockqueue_init_made() {
+        // A secondary's queue (as_cpu), then a primary's: CPU_IS_PRIMARY(curcpu()).
+        as_cpu(207);
+        assert!(!cpu_is_primary());
+        testutil::install();
+        TEST_CPU.with(|c| c.set(Some(208)));
+        clockqueue_init(208, true);
+        assert!(cpu_is_primary());
     }
 }
 /* </TESTS> */

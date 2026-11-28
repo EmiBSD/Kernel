@@ -44,8 +44,9 @@ pub(crate) mod smccc;
 pub(crate) mod sig;
 pub mod switch;
 pub mod syscall;
-// The generic timer's registers and the clock frame (N4.8a).
-pub mod timer;
+// The generic timer's registers and the clock frame (N4.8a), `hal::cpu::timer`'s and
+// `hal::cpu::clock`'s (N7.2b2b).
+pub(crate) mod timer;
 pub mod trap;
 // A trap from user mode, behind the token the EL0 entry passes (decision 56).
 pub mod usertrap;

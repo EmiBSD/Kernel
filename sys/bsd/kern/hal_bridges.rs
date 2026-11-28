@@ -369,10 +369,10 @@ static BSD_PRINTF: BsdPrintf = BsdPrintf;
 static BSD_TLB_CPUS: BsdTlbCpus = BsdTlbCpus;
 static BSD_RANDOM: BsdRandom = BsdRandom;
 
-/// The machine's clock hardware (`crate::machine::cpu`'s `cpu_initclocks`, `cpu_startclock`,
-/// `setstatclockrate` and `delay`: arm64's `arm_clock_func`, whose first registration wins,
-/// stays in `intr.rs` behind them until N7), and the root bus's early start (`early_init`,
-/// arm64's `agtimer_init` for the kernel's mainbus, N7.2b1b; scaffolding until N7.2b2).
+/// The machine's clock hardware where `bsd`'s machine code is the clock
+/// (`crate::machine::cpu`'s `cpu_initclocks`, `cpu_startclock`, `setstatclockrate` and
+/// `delay`: amd64's, the host double's); registered only where `Cpu::KERNEL_CLOCK` is false
+/// (arm64's clock is the kernel's agtimer, which installs itself, N7.2b2b).
 struct BsdClockHardware;
 
 impl kernel::time::clock::ClockHardware for BsdClockHardware {
@@ -390,10 +390,6 @@ impl kernel::time::clock::ClockHardware for BsdClockHardware {
 
     fn delay(&self, usecs: u32) {
         crate::machine::cpu::delay(usecs);
-    }
-
-    fn early_init(&self) {
-        crate::machine::cpu::clock_early_init();
     }
 }
 
@@ -461,7 +457,11 @@ pub fn hal_bridges_register() {
     );
     // The kernel crate's own bridges (N4.1): slots only, used from `main()` on.
     // N4.8a: the machine's clock hardware and boot(9), for kernel::time::clock and kernel::base::reboot.
-    let _ = kernel::time::clock::install_clock_hardware(&BSD_CLOCK_HARDWARE);
+    // N7.2b2b: not on arm64, whose clock is the kernel's agtimer (installed by its
+    // agtimer_init and attach); the machine's clock functions forward there.
+    if !<crate::machine::Machine as crate::machine::Cpu>::KERNEL_CLOCK {
+        let _ = kernel::time::clock::install_clock_hardware(&BSD_CLOCK_HARDWARE);
+    }
     let _ = kernel::base::reboot::install_machine_boot(&BSD_MACHINE_BOOT);
     // N5.2: the device switch (machine::conf's cdevsw[] and bdevsw[]) for the kernel's
     // special files, before the first device vnode (cdevvp of the console, the root's bdevvp).

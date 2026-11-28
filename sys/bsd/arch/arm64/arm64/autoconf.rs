@@ -140,6 +140,12 @@ pub static NAM2BLK: [Nam2blk; 5] = [
 pub fn cpu_configure() {
     splhigh();
 
+    // Not in the C nor in LZ: under the smokes (feature `qemu`) the kernel's clock dispatch
+    // checks that the uptime never steps back; bsd's N4.8a copy of agtimer_startclock
+    // switched it on, the kernel's agtimer names no bsd feature (N7.2b2b; scaffolding until
+    // N9). Before the first clock.
+    kernel::time::clockintr::set_uptime_check(cfg!(feature = "qemu"));
+
     softintr_init();
     bus_dma_init();
     #[cfg(feature = "qemu")]
