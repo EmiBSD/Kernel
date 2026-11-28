@@ -31,6 +31,8 @@ pub mod exception;
 // The context switch and the FP state (N4.5a; the switch's assembly calls two symbols of
 // `bsd`'s, `switch.rs`).
 pub mod fpu;
+// The GICv3 CPU interface's system registers (N7.2a3), `hal::cpu::icc`'s.
+pub(crate) mod icc;
 // The general registers by name, which the ABI's system call convention reads (decision 53).
 pub mod gpr;
 pub mod include;

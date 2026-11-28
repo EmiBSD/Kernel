@@ -36,6 +36,10 @@ pub mod trap;
 #[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
 #[forbid(unsafe_code)]
 pub mod usertrap;
+// The GICv3 CPU interface's registers (N7.2a3): arm64's, and the host's double.
+#[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
+#[forbid(unsafe_code)]
+pub mod icc;
 // The clock frame (N4.8a): wherever a machine's frame is (arm64 and the host; amd64's
 // `struct intrframe` at N10).
 #[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]

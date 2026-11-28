@@ -38,8 +38,8 @@
 //! crate's subsystems are initialised from `main()`, after `uvm_init`, `kmeminit` and the
 //! pools). That is the boot contract `hal`'s soundness rests on (`sys/hal/bridges.rs`,
 //! `sys/hal/mem/trust.rs`): the memory bridges are the kernel's own allocators, registered once.
-//! The interrupt controller (`hal::cpu::intr::IntrHardware`, N4.5c) is the machine's to register,
-//! from its earliest setup (arm64's `initarm`): generic code cannot name it.
+//! The interrupt controller (`hal::cpu::intr::IntrHardware`) is no bridge since N7.2a3: the
+//! kernel's GIC driver installs itself at its attach (`hal::cpu::intr::install`).
 //! Registering does not call them; a bridge is used only by a piece whose subsystem is up.
 
 use core::ptr::NonNull;

@@ -1184,6 +1184,8 @@ pub fn cpu_identify(ci: &CpuInfo) {
     let impl_ = cpu_impl(midr);
     let part = cpu_part(midr);
     ci.ci_midr.set(midr);
+    // The core's copy, which the kernel's agintc(4) reads (its ITS's Oryon test, N7.2a3).
+    ci.core.set_midr(midr);
 
     let implementer = CPU_IMPLEMENTERS.iter().find(|i| i.id == impl_);
     let impl_name = implementer.map(|i| i.name);
@@ -2057,6 +2059,8 @@ pub fn cpu_attach(_parent: Option<&Device>, dev: &Device, aux: *mut c_void) {
     // The runtime's registry of the CPUs, with `ci_cpuid` as the core's number.
     hal::cpu::attach(&ci.core, dev.dv_unit.get() as usize);
     ci.ci_mpidr.set(faa.fa_reg[0].addr);
+    // The core's copy, which the kernel's agintc(4) reads (redistributors, routes, SGIs).
+    ci.core.set_hwid(faa.fa_reg[0].addr);
     ci.ci_node.set(faa.fa_node);
     ci.ci_self.set(ptr::from_ref(ci));
 
@@ -3159,11 +3163,11 @@ mod selfcheck {
     use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
     use super::*;
-    use crate::arch::arm64::dev::agintc::{agintc_attached, agintc_ipi_count};
     use crate::machine::pmap::{pmap_extract, pmap_kenter_pa, pmap_kernel, pmap_kremove};
     use crate::sys::mman::{PROT_READ, PROT_WRITE};
     use crate::sys::param::PAGE_SIZE;
     use crate::sys::types::{Paddr, Vaddr, Vsize};
+    use kernel::dev::arm64::agintc::agintc_ipi_count;
     use kernel::dev::arm64::ampintc::ampintc_ipi_count;
     use kernel::vm::km::KP_NONE;
 
@@ -3271,13 +3275,9 @@ mod selfcheck {
     }
 
     /// The IPI handler's count of whichever GIC attached: agintc(4) on a GICv3 (M16f),
-    /// ampintc(4) otherwise.
+    /// ampintc(4) otherwise (the other's is 0: it never attached).
     fn ipi_count() -> u64 {
-        if agintc_attached() {
-            agintc_ipi_count()
-        } else {
-            ampintc_ipi_count()
-        }
+        agintc_ipi_count() + ampintc_ipi_count()
     }
 
     /// [`ipis`] without the kernel lock.

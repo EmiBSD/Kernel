@@ -19,9 +19,10 @@
 /* <CODE> */
 //! arm64's devices in the kernel: the interrupt core (`arch/arm64/arm64/intr.c`, N7.2a1); the
 //! device tree's attach arguments and its buses, `mainbus(4)` and `simplebus(4)` (N7.2b1b);
-//! the GICv2, `ampintc(4)` and its GICv2m frames (N7.2a2); efi(4)'s runtime services and
-//! time-of-day chip (`efi_machdep`, N7.2b2a); the GICv3 follows (N7.2a3).
+//! the GICv2, `ampintc(4)` and its GICv2m frames (N7.2a2); the GICv3, `agintc(4)` and its
+//! ITS (N7.2a3); efi(4)'s runtime services and time-of-day chip (`efi_machdep`, N7.2b2a).
 
+pub mod agintc;
 pub mod ampintc;
 pub mod efi_machdep;
 pub mod fdt;

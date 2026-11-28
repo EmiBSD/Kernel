@@ -43,7 +43,6 @@ pub use hal::arch::arm64::include::proc;
 pub use hal::arch::arm64::include::pte;
 pub use hal::arch::arm64::include::reg;
 pub mod signal;
-pub mod simplebusvar;
 pub mod tcb;
 pub use hal::arch::arm64::include::timetc;
 pub mod vmparam;

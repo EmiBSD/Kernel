@@ -432,7 +432,7 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
     // tpidr_el1 names the boot CPU's cpu_info, whose head is its core (hal::cpu).
     hal::cpu::set_current(&CPU_INFO_PRIMARY.core);
     // `arm_intr_func`: `hal::cpu::intr`'s defaults until a controller attaches and installs
-    // itself (the kernel's ampintc, or `arm_set_intr_handler` for a legacy one; N7.2a2).
+    // itself (the kernel's ampintc or agintc; N7.2a2, N7.2a3).
     // SAFETY: a system register write that installs this kernel's stack selection on the boot
     // CPU, before any exception can be taken. The SPSel switch keeps the stack pointer's
     // value, so the compiler's view of the stack is unchanged.

@@ -8,3 +8,6 @@ stays short (its readers cut it at 24 KB): new lessons go in the topic files.
 - [hal-machine](hal-machine.md) — hal, unsafe and SAFETY, arm64/amd64 machine code, pmaps, boot, asm, the runtime primitives (63 lessons)
 - [host-tests](host-tests.md) — Host tests and doubles: kernel::testutil, setup_real_memory, flakes, parallel tests (285 lessons)
 - [design](design.md) — Rust and ownership idioms of the redesign: witnesses, guards, intrusive lists, cells, pools (347 lessons)
+- [hal-machine](hal-machine.md) — hal, unsafe and SAFETY, arm64/amd64 machine code, pmaps, boot, asm, the runtime primitives (69 lessons)
+- [host-tests](host-tests.md) — Host tests and doubles: kernel::testutil, setup_real_memory, flakes, parallel tests (313 lessons)
+- [design](design.md) — Rust and ownership idioms of the redesign: witnesses, guards, intrusive lists, cells, pools (379 lessons)
