@@ -58,7 +58,13 @@
 //! N7.2a1: the registry of interrupt controllers, the pre-registration and the device tree's
 //! interrupt specifiers are the kernel's (`kernel::dev::arm64::intr`); this file is the
 //! adapter `bsd`'s drivers keep calling under LZ's names and signatures, and the handles stay
-//! `NonNull<MachineIntrHandle>`. The clock table is still here (N7.2b2). N7.2a3: both GICs are
+//! `NonNull<MachineIntrHandle>`. N7.2b2b: the clock table went with `bsd`'s agtimer
+//! (`arm_clock_func`, `arm_clock_register`, `arm_dflt_delay`, `delay`, `cpu_initclocks`,
+//! `cpu_startclock`, `setstatclockrate`): the kernel's agtimer is the machine's
+//! `kernel::time::clock::ClockHardware`, `kernel::time::clock`'s functions are the C's
+//! (`delay` runs `arm_dflt_delay`'s loop until a clock is installed, the three others panic
+//! with `intr.c`'s messages, where LZ's `unported!` went on), and arm64's machine trait
+//! forwards to them. N7.2a3: both GICs are
 //! the kernel's (`kernel::dev::arm64::{ampintc, agintc}`), each installed as the machine's
 //! controller in `hal::cpu::intr` with the kernel's IPI slot set, so `arm_intr_func`,
 //! `arm_set_intr_handler`, the IRQ and FIQ dispatch slots and `bsd`'s own
@@ -70,10 +76,6 @@
 //! drivers'). The legacy table type stays for the handles `pciecam` makes by hand.
 //!
 //! ## Deviations
-//! - `arm_clock_func` is a [`StaticCell`], written by `arm_clock_register` during
-//!   autoconfiguration on the boot CPU.
-//! - `arm_dflt_delay`'s inner loop spins on `yield` so the compiler keeps it; the C's empty
-//!   loop body relies on the compiler not optimising it away.
 //! - `arm_intr_func` is `hal::cpu::intr::IntrHardware`, implemented by the controller in the
 //!   kernel and installed by its attach (N7.2a3); `intr_send_ipi_func` is the kernel's slot
 //!   (`kernel::dev::arm64::intr::intr_send_ipi_func`), which [`arm_send_ipi`] reads; `arm_smask`,
@@ -107,8 +109,6 @@
 use core::ffi::c_void;
 use core::ptr::{self, NonNull};
 
-use crate::sys::staticcell::StaticCell;
-
 use crate::arch::arm64::include::cpu::{CpuInfo, curcpu};
 use crate::arch::arm64::include::intr::{IPL_NONE, InterruptController, IntrFn, MachineIntrHandle};
 use crate::kassert;
@@ -117,7 +117,6 @@ use crate::kern::kern_sched::cpu_number_of;
 use crate::kern::proc_glue::BsdProcGlue;
 use crate::kern::subr_prf::{panic, splassert_fail};
 use crate::sys::malloc::{M_DEVBUF, M_WAITOK};
-use crate::unported;
 use kernel::dev::arm64::intr::{self as core_intr, IntrHandle};
 use kernel::dev::intr::IntrHandler;
 
@@ -130,100 +129,6 @@ pub use kernel::dev::arm64::intr::{
 #[inline]
 pub fn arm_smask(level: i32) -> u64 {
     hal::cpu::intr::smask(level)
-}
-
-/// `arm_clock_func`: the clock driver's entry points, registered by the driver that attaches.
-pub struct ArmClockFunc {
-    /// `delay`: busy-wait for a number of microseconds.
-    pub delay: fn(u32),
-    /// `initclocks`: start the clock interrupts.
-    pub initclocks: Option<fn()>,
-    /// `setstatclockrate`: change the statistics clock rate.
-    pub setstatclockrate: Option<fn(i32)>,
-    /// `mpstartclock`: start the clock on a secondary CPU.
-    pub mpstartclock: Option<fn()>,
-}
-
-/// `arm_clock_func`: starts with the calibration-free delay and no clock.
-static ARM_CLOCK_FUNC: StaticCell<ArmClockFunc> = StaticCell::new(ArmClockFunc {
-    delay: arm_dflt_delay,
-    initclocks: None,
-    setstatclockrate: None,
-    mpstartclock: None,
-});
-
-/// The registered clock functions.
-fn arm_clock_func() -> &'static ArmClockFunc {
-    // SAFETY: written only by `arm_clock_register` during autoconfiguration on the boot CPU,
-    // before interrupts exist; read afterwards.
-    unsafe { ARM_CLOCK_FUNC.get() }
-}
-
-/// `arm_clock_register`: installs the clock driver's functions; the first registration wins.
-pub fn arm_clock_register(
-    initclock: Option<fn()>,
-    delay: fn(u32),
-    statclock: Option<fn(i32)>,
-    mpstartclock: Option<fn()>,
-) {
-    if arm_clock_func().initclocks.is_some() {
-        return;
-    }
-    // SAFETY: the single writer, on the boot CPU during autoconfiguration; no reference from
-    // `arm_clock_func` is held across this call.
-    unsafe {
-        ARM_CLOCK_FUNC.write(ArmClockFunc {
-            delay,
-            initclocks: initclock,
-            setstatclockrate: statclock,
-            mpstartclock,
-        });
-    }
-}
-
-/// `delay(9)`: busy-waits `usec` microseconds through the registered clock.
-pub fn delay(usec: u32) {
-    (arm_clock_func().delay)(usec)
-}
-
-/// `cpu_initclocks`: starts the clock interrupts.
-pub fn cpu_initclocks() {
-    match arm_clock_func().initclocks {
-        Some(initclocks) => initclocks(),
-        None => {
-            let _ = unported!("initclocks function not initialized yet");
-        }
-    }
-}
-
-/// `cpu_startclock`: starts the clock on this (secondary) CPU.
-pub fn cpu_startclock() {
-    match arm_clock_func().mpstartclock {
-        Some(mpstartclock) => mpstartclock(),
-        None => {
-            let _ = unported!("startclock function not initialized yet");
-        }
-    }
-}
-
-/// `setstatclockrate`: changes the statistics clock rate.
-pub fn setstatclockrate(new: i32) {
-    match arm_clock_func().setstatclockrate {
-        Some(setstatclockrate) => setstatclockrate(new),
-        None => {
-            let _ = unported!("arm_clock_func.setstatclockrate not initialized");
-        }
-    }
-}
-
-/// `arm_dflt_delay`: BAH - there is no good way to make this close, but this isn't supposed to
-/// be used after the real clock attaches.
-pub fn arm_dflt_delay(usecs: u32) {
-    for _ in 0..usecs {
-        for _ in 0..100 {
-            core::hint::spin_loop();
-        }
-    }
 }
 
 /// `arm_dflt_splraise`: raise the level in `ci_cpl` (`hal::cpu::intr`'s).

@@ -76,7 +76,6 @@ use crate::arch::arm64::arm64::acpi_machdep::ACPI_FDT_CA;
 use crate::arch::arm64::arm64::cpu::{CPU_CA, CPU_CD};
 use crate::arch::arm64::dev::acpiiort::{ACPIIORT_CA, ACPIIORT_CD};
 use crate::arch::arm64::dev::acpipci::{ACPIPCI_CA, ACPIPCI_CD};
-use crate::arch::arm64::dev::agtimer::{AGTIMER_CA, AGTIMER_CD};
 use crate::arch::arm64::dev::smmu::SMMU_CD;
 use crate::arch::arm64::dev::smmu_acpi::SMMU_ACPI_CA;
 use crate::arch::arm64::dev::smmu_fdt::SMMU_FDT_CA;
@@ -168,6 +167,7 @@ use crate::sys::device::{
     CFATTACH_NATIVE, Cfdata, Cfdriver, DV_DULL, FSTATE_NOTFOUND, FSTATE_STAR, Pdevinit,
 };
 use kernel::dev::arm64::agintc::{AGINTC_CA, AGINTCMSI_CA};
+use kernel::dev::arm64::agtimer::AGTIMER;
 use kernel::dev::arm64::ampintc::{AMPINTC_CA, AMPINTCMSI_CA};
 use kernel::dev::arm64::efi_machdep::EFI;
 use kernel::dev::arm64::mainbus::MAINBUS;
@@ -201,6 +201,11 @@ pub static EFI_CD: Cfdriver = Cfdriver::new(b"efi", DV_DULL, 0);
 /// (`kernel::dev::fdt::plrtc::PLRTC`, the row's `Cfdata::native`, N7.2b2a). Scaffolding
 /// (docs/SCAFFOLDING.md) until the machine's table is the kernel's (N9.1).
 pub static PLRTC_CD: Cfdriver = Cfdriver::new(b"plrtc", DV_DULL, 0);
+
+/// `agtimer_cd`: the name `cfdata[2]` prints in UKC's listings; the driver is the kernel's
+/// (`kernel::dev::arm64::agtimer::AGTIMER`, the row's `Cfdata::native`, N7.2b2b). Scaffolding
+/// (docs/SCAFFOLDING.md) until the machine's table is the kernel's (N9.1).
+pub static AGTIMER_CD: Cfdriver = Cfdriver::new(b"agtimer", DV_DULL, 0);
 
 /// `psci_cd`: the name `cfdata[29]` prints in UKC's listings; the driver is the kernel's
 /// (`kernel::dev::fdt::psci::PSCI`, the row's `Cfdata::native`, N7.2b2a). Scaffolding
@@ -415,9 +420,9 @@ pub static CFDATA: StaticCell<[Cfdata; NCFDATA + NFREE]> = StaticCell::new([
         0,
     )
     .native(&AMPINTC_CA),
-    // 2: agtimer* at fdt?
+    // 2: agtimer* at fdt? (the kernel's driver, N7.2b2b)
     Cfdata::new(
-        &AGTIMER_CA,
+        &CFATTACH_NATIVE,
         &AGTIMER_CD,
         0,
         FSTATE_STAR,
@@ -426,7 +431,8 @@ pub static CFDATA: StaticCell<[Cfdata; NCFDATA + NFREE]> = StaticCell::new([
         PV_FDT,
         LN_FDT,
         0,
-    ),
+    )
+    .native(&AGTIMER),
     // 3: virtio* at fdt?
     Cfdata::new(
         &VIRTIO_MMIO_CA,
