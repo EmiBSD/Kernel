@@ -120,7 +120,6 @@ use crate::dev::pv::if_vio::{VIO_CA, VIO_CD};
 use crate::dev::pv::vioblk::{VIOBLK_CA, VIOBLK_CD};
 use crate::dev::pv::viogpu::{VIOGPU_CA, VIOGPU_CD};
 use crate::dev::pv::viomb::{VIOMB_CA, VIOMB_CD};
-use crate::dev::pv::viornd::{VIORND_CA, VIORND_CD};
 use crate::dev::pv::vioscsi::{VIOSCSI_CA, VIOSCSI_CD};
 use crate::dev::pv::virtio::VIRTIO_CD;
 use crate::dev::rd::rdattach;
@@ -164,7 +163,7 @@ use crate::scsi::cd::{CD_CA, CD_CD};
 use crate::scsi::scsiconf::{SCSIBUS_CA, SCSIBUS_CD};
 use crate::scsi::sd::{SD_CA, SD_CD};
 use crate::sys::device::{
-    CFATTACH_NATIVE, Cfdata, Cfdriver, DV_DULL, FSTATE_NOTFOUND, FSTATE_STAR, Pdevinit,
+    CD_COCOVM, CFATTACH_NATIVE, Cfdata, Cfdriver, DV_DULL, FSTATE_NOTFOUND, FSTATE_STAR, Pdevinit,
 };
 use kernel::dev::arm64::agintc::{AGINTC_CA, AGINTCMSI_CA};
 use kernel::dev::arm64::agtimer::AGTIMER;
@@ -174,6 +173,7 @@ use kernel::dev::arm64::mainbus::MAINBUS;
 use kernel::dev::arm64::simplebus::SIMPLEBUS;
 use kernel::dev::fdt::plrtc::PLRTC;
 use kernel::dev::fdt::psci::PSCI;
+use kernel::dev::pv::viornd::VIORND;
 #[cfg(feature = "fuse")]
 use kernel::fs::fuse::fuse_device::{NFUSE, fuseattach};
 
@@ -211,6 +211,11 @@ pub static AGTIMER_CD: Cfdriver = Cfdriver::new(b"agtimer", DV_DULL, 0);
 /// (`kernel::dev::fdt::psci::PSCI`, the row's `Cfdata::native`, N7.2b2a). Scaffolding
 /// (docs/SCAFFOLDING.md) until the machine's table is the kernel's (N9.1).
 pub static PSCI_CD: Cfdriver = Cfdriver::new(b"psci", DV_DULL, 0);
+
+/// `viornd_cd`: the name `cfdata[71]` prints in UKC's listings, `CD_COCOVM` as the C's; the
+/// driver is the kernel's (`kernel::dev::pv::viornd::VIORND`, the row's `Cfdata::native`,
+/// N7.3a). Scaffolding (docs/SCAFFOLDING.md) until the machine's table is the kernel's (N9.1).
+pub static VIORND_CD: Cfdriver = Cfdriver::new(b"viornd", DV_DULL, CD_COCOVM);
 /// `agintc_cd` and `agintcmsi_cd`: the names `cfdata[51]` and `cfdata[52]` print in UKC's
 /// listings; the drivers are the kernel's (`kernel::dev::arm64::agintc`, the rows'
 /// `Cfdata::native`, N7.2a3). Scaffolding (docs/SCAFFOLDING.md) until the machine's table is
@@ -1227,9 +1232,9 @@ pub static CFDATA: StaticCell<[Cfdata; NCFDATA + NFREE]> = StaticCell::new([
         0,
         0,
     ),
-    // 71: viornd* at virtio? (M16d)
+    // 71: viornd* at virtio? (M16d; the kernel's driver, N7.3a)
     Cfdata::new(
-        &VIORND_CA,
+        &CFATTACH_NATIVE,
         &VIORND_CD,
         0,
         FSTATE_STAR,
@@ -1238,7 +1243,8 @@ pub static CFDATA: StaticCell<[Cfdata; NCFDATA + NFREE]> = StaticCell::new([
         PV_VIRTIO,
         0,
         0,
-    ),
+    )
+    .native(&VIORND),
     // 72: viogpu* at virtio? (M16d)
     Cfdata::new(
         &VIOGPU_CA,

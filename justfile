@@ -3358,7 +3358,10 @@ smoke-tpm: (build-amd64 "--features qemu") build-init-amd64
 # 512 MB, then `balloon 512`; ten seconds after each,
 # hw.sensors.viomb0 shows what OpenBSD 8.0 shows on the same machine (the C's sensors lag the
 # last 1 MB request: 128 MB desired, 127 MB current; then 0 and 1 MB), and `vmstat -s`'s
-# pages free drop by at least the 32768 pages the balloon took and come back. Part of `smoke`.
+# pages free drop by at least the 32768 pages the balloon took and come back. N7.3a (P41): arm64
+# boots a second time with `--acpi`, where both devices are virtio-*-pci behind virtio_pci (its
+# MSI-X vectors named after the child, `irq89/viornd0:1`): the expectations of that boot are
+# a run of the base, b6fd024c. Part of `smoke`.
 virtio_check := "--virtio-rng --balloon --expect-ramdisk --until-seen " + disk_login + " " + \
     "--send-after '# ' --send 'pf() { vmstat -s | while read n a b; do [ $a$b = pagesfree ] && echo $n; done; }; " + \
     "f0=$(pf); echo m16d-inflate-$((40+1))\\n' " + \
@@ -3386,6 +3389,11 @@ smoke-virtio: (build-amd64 "--features qemu") (build-arm64 "--features qemu") ef
         --expect 'virtio27 at mainbus0: Virtio Memory Balloon Device' --expect 'viomb0 at virtio27' \
         --expect 'virtio28 at mainbus0: Virtio Entropy Device' --expect 'viornd0 at virtio28' \
         --expect 'intr irq76/virtio28 1'
+    {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --image tree --acpi {{replace(virtio_check, "--expect-ramdisk", "--expect-root")}} \
+        --expect 'virtio3 at pci0 dev 4 function 0 vendor 0x1af4 product 0x1005 rev 0x00' --expect 'viornd0 at virtio3' \
+        --expect 'virtio3: msix per-VQ' --expect 'intr irq89/viornd0:1 1' \
+        --expect 'virtio4 at pci0 dev 5 function 0 vendor 0x1af4 product 0x1002 rev 0x00' --expect 'viomb0 at virtio4' \
+        --expect 'virtio4: msix shared'
 
 # M16d: viogpu(4), arm64 only (amd64's GENERIC has it commented out). QEMU's virtio-gpu-pci
 # (`--virtio-gpu`; the virtio-mmio GPU is legacy, which viogpu refuses as OpenBSD 8.0 does) is

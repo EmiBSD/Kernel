@@ -20,7 +20,7 @@
 //! Devices (N7, docs/ROADMAP.md): the device tree, autoconfiguration and the driver
 //! interface (`subr_autoconf.c`, `<sys/device.h>`, N7.1a); the interrupt handler and arm64's
 //! interrupt core (N7.2a1); the drivers follow from N7.2 (the device tree's `dev/fdt`: psci(4) and
-//! plrtc(4), N7.2b2a).
+//! plrtc(4), N7.2b2a); the virtio core and its children (`dev/pv`, N7.3a).
 
 #[cfg(target_arch = "aarch64")]
 pub mod arm64;
@@ -35,6 +35,7 @@ pub mod evcount;
 pub mod fdt;
 pub mod intr;
 pub mod ofw;
+pub mod pv;
 pub mod sensors;
 #[cfg(feature = "boot_config")]
 pub mod userconf;

@@ -414,8 +414,12 @@ pub fn virtio_check_vqs(sc: &VirtioSoftc) -> i32 {
     r
 }
 
-/// `virtio_check_vq`: one queue of [`virtio_check_vqs`].
+/// `virtio_check_vq`: one queue of [`virtio_check_vqs`]. A kernel child's queue (a shadow,
+/// `dev/pv/virtio_native.rs`) is its state's to check (scaffolding, N7.3d).
 pub fn virtio_check_vq(sc: &VirtioSoftc, vq: &Virtqueue) -> i32 {
+    if let Some(child) = sc.sc_native.get() {
+        return child.check_vq(vq.vq_index.get() as usize);
+    }
     if vq.vq_queued.get() != 0 {
         vq.vq_queued.set(0);
         vq_sync_aring(sc, vq, BUS_DMASYNC_POSTWRITE);
