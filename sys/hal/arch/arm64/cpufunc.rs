@@ -56,8 +56,9 @@
 //! a cache operation by address writes back or drops clean copies (none discards a dirty
 //! line), an address that is not mapped faults as any kernel access does, and `wfi` waits.
 //! The operations that are not (`cpu_dcache_inv_range`'s `dc ivac`, which discards dirty
-//! lines; `cpu_setttb`; the firmware calls `smc`/`hvc`) stay `bsd`'s until their callers
-//! have typed ones. The first typed one (N7.0): `cpu_dcache_inv_dma`, `dc ivac` over the
+//! lines; `cpu_setttb`; the firmware calls `smc`/`hvc` that hand over an address) stay
+//! `bsd`'s until their callers have typed ones; the firmware calls of values alone are
+//! [`super::smccc`]'s (N7.2b2a). The first typed one (N7.0): `cpu_dcache_inv_dma`, `dc ivac` over the
 //! bytes of a `hal::dev::dma::DmaBuf`, which no reference observes.
 //!
 //! ## Deviations

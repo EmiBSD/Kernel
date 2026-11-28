@@ -46,6 +46,8 @@ pub(crate) mod klock;
 pub mod param;
 pub(crate) mod pmap;
 pub mod sig;
+/// The SMCCC conduit's double: a per-thread fake firmware (`hal::cpu::smccc`).
+pub(crate) mod smccc;
 pub(crate) mod switch;
 pub mod syscall;
 pub mod timer;

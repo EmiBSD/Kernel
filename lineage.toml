@@ -1682,6 +1682,13 @@ status = "redesigned"
 notes = "N4.8b: the cache, TLB and idle instructions for the code outside the pmap, safe for any argument: cpu_wfi (its own asm), the four TLB flushes and cpu_dcache_wb_range, cpu_dcache_wbinv_range, cpu_icache_sync_range, cpu_idcache_wbinv_range over the pmap's copies (pmap/cpufunc.rs); bsd's duplicates deleted (its cpufunc.rs kept them until N4); N7.0: cpu_dcache_inv_dma, dc ivac over a hal::dev::dma::DmaBuf's own bytes (the range checked inside the buffer, whose mapping is page-aligned whole pages, so every line discarded is its own): 1 unsafe; bsd's cpu_dcache_inv_range stays for its bus_dma"
 
 [[module]]
+rust = "sys/hal/arch/arm64/smccc.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/arm64/cpufunc.rs"]
+status = "redesigned"
+notes = "N7.2b2a: support.S's smc_call and hvc_call (LZ's cpufunc.rs) as one trap over a Conduit held by value, x0-x3 in and x0 out with clobber_abi(\"C\") (LZ declared x0-x3 only), reached only through hal::cpu::smccc::call, which refuses the entry-point functions (CPU_SUSPEND, CPU_ON, CPU_DEFAULT_SUSPEND, SYSTEM_SUSPEND, both widths); bsd's cpufunc.rs keeps its two copies for CPU_ON until N7.2c"
+
+[[module]]
 rust = "sys/bsd/arch/arm64/arm64/cpuswitch.rs"
 lz = ["sys/arch/arm64/arm64/cpuswitch.rs", "sys/arch/arm64/arm64/pmap.rs"]
 status = "redesigned"
@@ -14184,6 +14191,11 @@ kind = "renamed"
 rust = "sys/hal/cpu/clock.rs"
 crate = "hal"
 reason = "hal runtime, written new (N4.8a): the clock frame as the kernel's clock callbacks read it (struct clockframe, CLKF_USERMODE, CLKF_PC, CLKF_INTR over the core's interrupt depth); the machine's frame type comes from arch/<machine>/timer.rs; bsd's include/cpu.rs keeps its CLKF_* for its own callers"
+
+[[extra]]
+rust = "sys/hal/cpu/smccc.rs"
+crate = "hal"
+reason = "hal runtime, written new (N7.2b2a): the SMC Calling Convention's value class, call(conduit, fid, a1, a2, a3) refusing the PSCI functions that take an entry point (PSCI_NOT_SUPPORTED without trapping) before the machine's trap (hal::arch::arm64::smccc; the host's per-thread fake firmware)"
 
 [[extra]]
 rust = "sys/hal/ds/pin.rs"

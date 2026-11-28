@@ -46,4 +46,9 @@ pub mod clock;
 #[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
 #[forbid(unsafe_code)]
 pub mod sig;
+// The firmware call of the SMC Calling Convention, its value class (N7.2b2a): arm64's
+// conduit, and on the host a fake firmware.
+#[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
+#[forbid(unsafe_code)]
+pub mod smccc;
 /* </CODE> */

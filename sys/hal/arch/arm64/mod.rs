@@ -33,6 +33,8 @@ pub mod fpu;
 pub mod gpr;
 pub mod include;
 pub mod pmap;
+// The SMCCC conduit, `hal::cpu::smccc`'s instruction (N7.2b2a).
+pub(crate) mod smccc;
 // The signal frame (N4.8b): `hal::cpu::sig`'s, on the trap code's user frame.
 #[forbid(unsafe_code)]
 pub(crate) mod sig;
