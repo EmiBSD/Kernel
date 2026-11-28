@@ -101,8 +101,8 @@ pub(crate) fn trap(conduit: Conduit, fid: u32, a1: u64, a2: u64, a3: u64) -> u64
                     inout("x3") a3 => _,
                     clobber_abi("C"),
                     options(nostack),
-                )
-            };
+                );
+            }
         }
         Conduit::Smc => {
             // SAFETY: as for `hvc` above, with `smc #0` entering the secure monitor at EL3,
@@ -116,8 +116,8 @@ pub(crate) fn trap(conduit: Conduit, fid: u32, a1: u64, a2: u64, a3: u64) -> u64
                     inout("x3") a3 => _,
                     clobber_abi("C"),
                     options(nostack),
-                )
-            };
+                );
+            }
         }
     }
     x0

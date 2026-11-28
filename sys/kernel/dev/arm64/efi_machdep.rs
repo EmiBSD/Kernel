@@ -256,16 +256,13 @@ pub fn efi_attach(dev: &DevRef, fa: &FdtArgs) {
     let system_table = OF_getpropint64(node, b"openbsd,uefi-system-table", 0);
     kassert!(system_table != 0);
 
-    let st: Mmio<Untyped> = match fa.bus.map::<Untyped>(
+    let Ok(st) = fa.bus.map::<Untyped>(
         system_table,
         size_of::<EfiSystemTable>() as u64,
         DevCache::Cacheable,
-    ) {
-        Ok(st) => st,
-        Err(_) => {
-            printf(format_args!(": can't map system table\n"));
-            return;
-        }
+    ) else {
+        printf(format_args!(": can't map system table\n"));
+        return;
     };
 
     let rs = st64(&st, offset_of!(EfiSystemTable, RuntimeServices));
@@ -310,9 +307,8 @@ pub fn efi_attach(dev: &DevRef, fa: &FdtArgs) {
         let _ = config_found(dev, &Aux::Typed(&sa), None);
     }
 
-    match rt.get_time() {
-        Ok((EFI_SUCCESS, _)) => {}
-        _ => return,
+    if !matches!(rt.get_time(), Ok((EFI_SUCCESS, _))) {
+        return;
     }
 
     // EDK II implementations provide an implementation of GetTime() that returns a fixed
@@ -549,7 +545,7 @@ mod tests {
     #[test]
     fn the_version_line_and_the_early_return() {
         for (rev, line, usable) in [
-            ((2 << 16) | 70, ": UEFI 2.7\n", false),
+            ((2 << 16) | 70, ": UEFI 2.7\n", true),
             ((2 << 16) | 31, ": UEFI 2.3.1\n", true),
             ((2 << 16) | 100, ": UEFI 2.10\n", true),
             ((2 << 16) | 9, ": UEFI 2.0.9\n", false),

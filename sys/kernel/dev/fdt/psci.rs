@@ -120,8 +120,8 @@ pub struct Psci {
     conduit: Option<Conduit>,
     /// `sc_method`: `PSCI_METHOD_HVC`, `PSCI_METHOD_SMC` or `PSCI_METHOD_NONE`.
     method: i32,
-    /// `sc_psci_version`.
-    psci_version: u32,
+    /// `sc_psci_version`: `PSCI_VERSION`'s id, 0 for none.
+    version_id: u32,
     /// `sc_system_off`.
     system_off: u32,
     /// `sc_system_reset`.
@@ -167,7 +167,7 @@ impl Psci {
         let mut sc = Psci {
             conduit,
             method: m,
-            psci_version: 0,
+            version_id: 0,
             system_off: 0,
             system_reset: 0,
             cpu_on: 0,
@@ -180,7 +180,7 @@ impl Psci {
         // The function IDs are only to be parsed for the old specification (as in version
         // 0.1). All newer implementations are supposed to use the specified values.
         if OF_is_compatible(node, b"arm,psci-0.2") || OF_is_compatible(node, b"arm,psci-1.0") {
-            sc.psci_version = PSCI_VERSION;
+            sc.version_id = PSCI_VERSION;
             sc.system_off = SYSTEM_OFF;
             sc.system_reset = SYSTEM_RESET;
             sc.cpu_on = CPU_ON;
@@ -299,12 +299,11 @@ impl Psci {
 
     /// `psci_version`'s call: 0.0 without version support.
     fn version(&self) -> u32 {
-        if self.psci_version == 0 {
+        if self.version_id == 0 {
             // No version support; return 0.0.
             return 0;
         }
-        self.call(self.psci_version, 0, 0, 0)
-            .map_or(0, |r| r as u32)
+        self.call(self.version_id, 0, 0, 0).map_or(0, |r| r as u32)
     }
 
     /// `psci_features`'s call.
@@ -483,13 +482,9 @@ pub fn smccc_needs_arch_workaround_3() -> i32 {
 
 /// `smccc_version` (`KASSERT(sc && sc->sc_callfn)`).
 pub fn smccc_version() -> i32 {
-    match psci_sc() {
-        Some(sc) => sc.smccc_version_call(),
-        None => {
-            kassert!(false);
-            0x10000
-        }
-    }
+    let sc = psci_sc();
+    kassert!(sc.is_some());
+    sc.map_or(0x10000, Psci::smccc_version_call)
 }
 
 /// `smccc`: an SMCCC call of the value class, or `PSCI_NOT_SUPPORTED` without a conduit.
@@ -501,13 +496,9 @@ pub fn smccc(func_id: u32, arg0: u64, arg1: u64, arg2: u64) -> i32 {
 
 /// `smccc_arch_features` (`KASSERT(sc && sc->sc_callfn)`).
 pub fn smccc_arch_features(arch_func_id: u32) -> i32 {
-    match psci_sc() {
-        Some(sc) => sc.arch_features(arch_func_id),
-        None => {
-            kassert!(false);
-            PSCI_NOT_SUPPORTED
-        }
-    }
+    let sc = psci_sc();
+    kassert!(sc.is_some());
+    sc.map_or(PSCI_NOT_SUPPORTED, |sc| sc.arch_features(arch_func_id))
 }
 
 /// `psci_version`: the firmware's version, 0.0 without support.
@@ -643,7 +634,7 @@ mod tests {
             // The node's properties are ignored for the new specification.
             let sc = softc(compat, Some(b"smc\0"), true);
             assert_eq!(
-                (sc.psci_version, sc.system_off, sc.system_reset),
+                (sc.version_id, sc.system_off, sc.system_reset),
                 (PSCI_VERSION, SYSTEM_OFF, SYSTEM_RESET)
             );
             assert_eq!(
@@ -652,7 +643,7 @@ mod tests {
             );
         }
         let old = softc(b"arm,psci\0", Some(b"smc\0"), true);
-        assert_eq!(old.psci_version, 0, "PSCI 0.1 has no PSCI_VERSION");
+        assert_eq!(old.version_id, 0, "PSCI 0.1 has no PSCI_VERSION");
         assert_eq!(
             (
                 old.system_off,

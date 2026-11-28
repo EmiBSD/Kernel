@@ -69,7 +69,8 @@ std::thread_local! {
 
 /// The test thread's fake firmware.
 pub mod fake {
-    use super::*;
+    use super::{FIRMWARE, Firmware, Service};
+    use sysdefs::dev::efi::{EfiStatus, EfiTime};
 
     /// Forgets the thread's firmware.
     pub fn reset() {
