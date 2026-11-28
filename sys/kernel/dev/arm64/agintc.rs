@@ -1334,12 +1334,11 @@ pub fn agintc_attach(dev: &DevRef, fa: &FdtArgs) {
         }
 
         let base = fa.reg().get(1 + idx).map_or(0, |r| r.addr);
-        let frame = match fa
+        let Ok(frame) = fa
             .bus
             .map::<Gicr>(base + offset as u64, sz as u64, DevCache::Device)
-        {
-            Ok(m) => m,
-            Err(_) => kpanic(format_args!("agintc_attach: GICR bus_space_map failed")),
+        else {
+            kpanic(format_args!("agintc_attach: GICR bus_space_map failed"));
         };
 
         if let (Some(prop), Some(pend)) = (&prop, &pend) {
@@ -1870,7 +1869,7 @@ pub fn agintc_irq_handler(sc: &AgintcSoftc, frame: &ClockFrame, irq_: &InIrq) {
     }
 
     if irq >= LPI_BASE {
-        let Some(li) = sc.lpi.get(irq - LPI_BASE).and_then(|slot| slot.first()) else {
+        let Some(li) = sc.lpi.get(irq - LPI_BASE).and_then(List::first) else {
             return;
         };
         let ih = li.ih;
@@ -2055,7 +2054,6 @@ fn agintc_intr_disestablish(sc: &AgintcSoftc, ih: &'static Intrhand) {
 /// `agintc_intr_establish_mbi`: the GIC's `ic_establish_msi`: a free message based SPI
 /// claimed and established (edge-triggered), its doorbell and number handed back as the
 /// MSI's address and data. The cookie is the handler.
-#[allow(clippy::too_many_arguments)] // the C's signature, the softc first
 fn agintc_intr_establish_mbi(
     sc: &AgintcSoftc,
     addr: &mut u64,
@@ -2464,7 +2462,7 @@ pub fn agintc_msi_attach(dev: &DevRef, fa: &FdtArgs) {
 
     arm_intr_register_fdt(IcDesc {
         node: fa.node,
-        gic_its_id: OF_getpropint(fa.node, b"openbsd,gic-its-id", 0) as u32,
+        gic_its_id: OF_getpropint(fa.node, b"openbsd,gic-its-id", 0),
         ops: sc,
     });
 }
@@ -2828,7 +2826,6 @@ pub fn agintc_msi_inv(li: &AgintcLpiInfo) {
 impl AgintcMsiSoftc {
     /// [`AgintcMsiSoftc::establish_msi`] on `self` with the GIC's MSI lock held: an event ID
     /// of the device taken, a free LPI established and mapped (`MAPTI`, `SYNC`).
-    #[allow(clippy::too_many_arguments)] // the C's signature, the softc first
     fn establish_msi_locked(
         &'static self,
         addr: &mut u64,
