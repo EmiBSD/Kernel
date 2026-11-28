@@ -21286,6 +21286,20 @@ native = ["sys/hal/cpu/intr.rs::IPL_WAKEUP"]
 kind = "moved"
 
 [[module]]
+rust = "sys/kernel/dev/arm64/fdt.rs"
+crate = "kernel"
+lz = ["sys/arch/arm64/include/fdt.rs"]
+status = "redesigned"
+notes = "N7.2b1b: struct fdt_attach_args as FdtArgs, owned and 'static under Aux::Typed (reg and interrupts MArrays of M_DEVBUF, freed when the bus drops it after config_found_sm; dma_coherent for the coherent tag copy; a set-once legacy slot for bsd's presenter, scaffolding); fa_iot/fa_dmat as one immutable counted chain FdtBus/FdtBusRef (root(); child() reads a simplebus node's cells, ranges, dma-ranges and the bcm2709 fallback; step/mmap_step/dma_step are simplebus_bs_map's, _bs_mmap's and one segment of _dmamap_load_*'s walks, translate every level's step, map = translate then km::map_device; a set-once legacy slot for bsd's tags of a native simplebus); EarlyNodes (sc_early_nodes[64]); the fdt_intr_* aliases are kernel::dev::arm64::intr's. bsd's include/fdt.rs keeps LZ's FdtAttachArgs for the legacy children and is the legacy edge (adapted)"
+
+[[module]]
+rust = "sys/kernel/dev/arm64/simplebus.rs"
+crate = "kernel"
+lz = ["sys/arch/arm64/dev/simplebus.rs", "sys/arch/arm64/include/simplebusvar.rs"]
+status = "redesigned"
+notes = "N7.2b1b: simplebus(4) as a kernel DriverOps (SIMPLEBUS; probe = simplebus_match over the bus's FdtArgs, 0 for any other argument); struct simplebus_softc as the bus's FdtBus held by the softc Simplebus, the pass and the early nodes locals of simplebus_attach (also what a native GIC calls on its own node, N7.2a2/a3); simplebus_submatch and simplebus_print closures of simplebus_attach_node; the four tag entries are FdtBus's methods. bsd's simplebus.rs and simplebusvar.rs stay whole (inherited) for the two legacy GICs until N7.2a3 (P24), which writes their [[module.fn]] rows"
+
+[[module]]
 rust = "sys/kernel/dev/sensors.rs"
 crate = "kernel"
 lz = ["sys/kern/kern_sensors.rs", "sys/sys/sensors.rs", "sys/kern/kern_sysctl.rs"]
