@@ -1787,11 +1787,6 @@ lz = ["sys/arch/arm64/dev/pci_machdep.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/bsd/arch/arm64/dev/simplebus.rs"
-lz = ["sys/arch/arm64/dev/simplebus.rs"]
-status = "inherited"
-
-[[module]]
 rust = "sys/bsd/arch/arm64/dev/smmu.rs"
 lz = ["sys/arch/arm64/dev/smmu.rs"]
 status = "adapted"
@@ -2007,11 +2002,6 @@ crate = "hal"
 lz = ["sys/arch/arm64/include/signal.rs"]
 status = "redesigned"
 notes = "N4.8b: sig_atomic_t and struct sigcontext beside the signal frame hal::cpu::sig builds; LZ's unsafe impl AbiPod (bsd's copy trait) is hal::abi_pod!, which proves the fields tile it; bsd's header re-exports them"
-
-[[module]]
-rust = "sys/bsd/arch/arm64/include/simplebusvar.rs"
-lz = ["sys/arch/arm64/include/simplebusvar.rs"]
-status = "inherited"
 
 [[module]]
 rust = "sys/bsd/arch/arm64/include/tcb.rs"
@@ -21713,7 +21703,101 @@ rust = "sys/kernel/dev/arm64/simplebus.rs"
 crate = "kernel"
 lz = ["sys/arch/arm64/dev/simplebus.rs", "sys/arch/arm64/include/simplebusvar.rs"]
 status = "redesigned"
-notes = "N7.2b1b: simplebus(4) as a kernel DriverOps (SIMPLEBUS; probe = simplebus_match over the bus's FdtArgs, 0 for any other argument); struct simplebus_softc as the bus's FdtBus held by the softc Simplebus, the pass and the early nodes locals of simplebus_attach (also what a native GIC calls on its own node, N7.2a2/a3); simplebus_submatch and simplebus_print closures of simplebus_attach_node; the four tag entries are FdtBus's methods. bsd's simplebus.rs and simplebusvar.rs stay whole (inherited) for the two legacy GICs until N7.2a3 (P24), which writes their [[module.fn]] rows"
+notes = "N7.2b1b: simplebus(4) as a kernel DriverOps (SIMPLEBUS; probe = simplebus_match over the bus's FdtArgs, 0 for any other argument); struct simplebus_softc as the bus's FdtBus held by the softc Simplebus, the pass and the early nodes locals of simplebus_attach (also what a native GIC calls on its own node, N7.2a2/a3); simplebus_submatch and simplebus_print closures of simplebus_attach_node; the four tag entries are FdtBus's methods. N7.2a3: bsd's simplebus.rs and simplebusvar.rs, kept whole for the two legacy GICs (P24), are deleted with the last of them; their items are this module's or fdt.rs's (rows below), SIMPLEBUS_CD moved to ioconf.rs"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/simplebus.rs::SIMPLEBUS_CA"
+native = ["SIMPLEBUS"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/simplebus.rs::SIMPLEBUS_CD"
+native = ["sys/bsd/arch/arm64/conf/ioconf.rs::SIMPLEBUS_CD"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/simplebus.rs::softc"
+native = []
+kind = "dropped"
+reason = "(struct simplebus_softc *)self: the kernel's softc (Simplebus) holds nothing a child reads back; the children hold the bus itself (an FdtBusRef)"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/simplebus.rs::fdt_args"
+native = ["sys/kernel/dev/arm64/fdt.rs::FdtArgs::of_aux"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/simplebus.rs::private_softc"
+native = []
+kind = "dropped"
+reason = "the tag entries' bus_private cast back to the softc: the entries are the FdtBus's own methods (step, mmap_step, dma_step), which need no cookie"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/simplebus.rs::prop_cells"
+native = ["sys/kernel/dev/arm64/fdt.rs::read_cells"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/simplebus.rs::simplebus_submatch"
+native = ["simplebus_attach_node"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/simplebus.rs::ranges"
+native = ["sys/kernel/dev/arm64/fdt.rs::FdtBus"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/simplebus.rs::dmaranges"
+native = ["sys/kernel/dev/arm64/fdt.rs::FdtBus"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/simplebus.rs::simplebus_translate"
+native = ["sys/kernel/dev/arm64/fdt.rs::FdtBus::ranges_walk"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/simplebus.rs::simplebus_bs_map"
+native = ["sys/kernel/dev/arm64/fdt.rs::FdtBus::step", "sys/kernel/dev/arm64/fdt.rs::FdtBus::map"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/simplebus.rs::simplebus_bs_mmap"
+native = ["sys/kernel/dev/arm64/fdt.rs::FdtBus::mmap_step"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/simplebus.rs::simplebus_dma_translate"
+native = ["sys/kernel/dev/arm64/fdt.rs::FdtBus::dma_step"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/simplebus.rs::simplebus_dmamap_load_buffer"
+native = ["sys/kernel/dev/arm64/fdt.rs::FdtBus::dma_step"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/simplebus.rs::simplebus_dmamap_load_raw"
+native = ["sys/kernel/dev/arm64/fdt.rs::FdtBus::dma_step", "sys/kernel/dev/arm64/fdt.rs::FdtBus::dma_addr"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/simplebusvar.rs::SimplebusSoftc"
+native = ["Simplebus", "sys/kernel/dev/arm64/fdt.rs::FdtBus"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/simplebusvar.rs::SimplebusSoftc::bus"
+native = []
+kind = "dropped"
+reason = "an unsafe accessor of sc_bus once simplebus_attach wrote it: the children's bus space is the FdtBus they hold, built whole before it is shared"
+
+[[module.fn]]
+lz = "sys/arch/arm64/include/simplebusvar.rs::SimplebusSoftc::dma"
+native = []
+kind = "dropped"
+reason = "an unsafe accessor of sc_dma once simplebus_attach wrote it: the children's DMA translation is the same FdtBus (dma_step, dma_addr)"
 
 [[module]]
 rust = "sys/kernel/dev/sensors.rs"

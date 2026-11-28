@@ -79,7 +79,6 @@ use crate::arch::arm64::dev::acpipci::{ACPIPCI_CA, ACPIPCI_CD};
 
 use crate::arch::arm64::dev::agtimer::{AGTIMER_CA, AGTIMER_CD};
 use crate::arch::arm64::dev::efi_machdep::{EFI_CA, EFI_CD};
-use crate::arch::arm64::dev::simplebus::SIMPLEBUS_CD;
 use crate::arch::arm64::dev::smmu::SMMU_CD;
 use crate::arch::arm64::dev::smmu_acpi::SMMU_ACPI_CA;
 use crate::arch::arm64::dev::smmu_fdt::SMMU_FDT_CA;
@@ -202,6 +201,12 @@ pub static AGINTC_CD: Cfdriver = Cfdriver::new(b"agintc", DV_DULL, 0);
 
 /// `agintcmsi_cd`, as [`AGINTC_CD`].
 pub static AGINTCMSI_CD: Cfdriver = Cfdriver::new(b"agintcmsi", DV_DULL, 0);
+
+/// `simplebus_cd`: the name `cfdata[12]` prints in UKC's listings; the driver is the kernel's
+/// (`kernel::dev::arm64::simplebus::SIMPLEBUS`, the row's `Cfdata::native`, N7.2b1b; the stub
+/// moved here from `bsd`'s `simplebus.rs` with that file, N7.2a3). Scaffolding
+/// (docs/SCAFFOLDING.md) until the machine's table is the kernel's (N9.1).
+pub static SIMPLEBUS_CD: Cfdriver = Cfdriver::new(b"simplebus", DV_DULL, 0);
 
 /// `pv[]` for children of the `fdt` attribute: `mainbus0` (`cfdata[0]`), `ampintc*`
 /// (`cfdata[1]`), `simplebus*` (`cfdata[12]`) and `agintc*` (`cfdata[51]`).
@@ -508,8 +513,7 @@ pub static CFDATA: StaticCell<[Cfdata; NCFDATA + NFREE]> = StaticCell::new([
         0,
         0,
     ),
-    // 12: simplebus* at fdt? (the kernel's driver, N7.2b1b; `SIMPLEBUS_CD` is `bsd`'s
-    // simplebus's, kept for the legacy GICs until N7.2a3)
+    // 12: simplebus* at fdt? (the kernel's driver, N7.2b1b)
     Cfdata::new(
         &CFATTACH_NATIVE,
         &SIMPLEBUS_CD,

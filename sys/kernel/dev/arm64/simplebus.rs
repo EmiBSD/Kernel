@@ -63,16 +63,13 @@
 //!   (`sys/bsd/arch/arm64/include/fdt.rs`; scaffolding).
 //! - `simplebus_submatch` and `simplebus_print` -> closures of [`simplebus_attach_node`] over
 //!   the node and the pass under way.
-//! - N7.2b1b: `bsd`'s `simplebus.rs` and `simplebusvar.rs` stay whole beside this module for
-//!   the two legacy GICs, which call LZ's `simplebus_attach` on themselves (P24), until
-//!   N7.2a3; their `[[module.fn]]` rows go with them.
+//! - N7.2b1b: `bsd`'s `simplebus.rs` and `simplebusvar.rs` stayed whole beside this module
+//!   for the two legacy GICs, which called LZ's `simplebus_attach` on themselves (P24); both
+//!   GICs are the kernel's and call [`simplebus_attach`] (N7.2a2, N7.2a3), and the two files
+//!   are gone (N7.2a3; `lineage.toml` says where each item went).
 //!
 //! ## Deviations
 //! - A row without locators reads `early` 0, the locator's default, as LZ.
-//! - The native row is never matched below a legacy GIC: the legacy simplebus's submatch
-//!   calls `cf_attach->ca_match` by hand, which a native row's `CFATTACH_NATIVE` answers 0 for,
-//!   so a `simple-bus` node below an interrupt controller would not attach (none does on any
-//!   machine this kernel boots), until N7.2a3 makes the GICs native.
 //! - A `simple-bus` node's own `iommus` is not applied to the tags its legacy children get
 //!   (`bsd`'s legacy edge, `include/fdt.rs`): the C maps the bus node like any other and copies
 //!   the result (`simplebus.c:82,110`), but an SMMU domain's tag keeps the outer bus's
