@@ -56,8 +56,10 @@
 //! - `fa_iot = &arm64_bs_tag`, `fa_dmat = &mainbus_dma_tag` (or a `dma-coherent` copy, then
 //!   `iommu_device_map`) -> every child's [`FdtArgs`] names the root's [`FdtBus`]; the
 //!   coherent copy is [`FdtArgs::dma_coherent`]. The legacy tables and `iommu_device_map`
-//!   are `bsd`'s presenter's, for the legacy children (`sys/bsd/arch/arm64/include/fdt.rs`,
-//!   scaffolding); `mainbus_dma_tag` moved there.
+//!   are `bsd`'s, made for every offered node through the `FdtOffer` bridge that
+//!   [`FdtArgs::of_node`] calls, once per offer as the C's (`mainbus.c:273`), and lent to the
+//!   legacy children by its presenter (`sys/bsd/arch/arm64/include/fdt.rs`, scaffolding);
+//!   `mainbus_dma_tag` moved there.
 //! - `mainbus_match_status`, `mainbus_match_primary` and `mainbus_match_secondary` (submatch
 //!   functions that cast `aux` and the parent back) -> closures of [`mainbus_attach_node`]
 //!   and [`mainbus_attach_cpus`] over the node's arguments and the pass; the boot CPU's id is
@@ -75,11 +77,6 @@
 //!   by zero (`mainbus.c:229-230`), as LZ (`kernel::dev::arm64::fdt`).
 //! - The root's `ranges` is not copied (`sc_ranges`, `M_TEMP`, which nothing in the C reads
 //!   and never frees); `efi` and `apm` get the root's bus where the C gives `apm` none, as LZ.
-//! - `iommu_device_map` runs when a legacy driver first looks at a node's arguments (its
-//!   presenter's), not when the node is offered: at most once per offered node, as the C's,
-//!   and not at all for a node no legacy driver looks at (a disabled node, the `early 2`
-//!   pass). The IOMMU registers in the `early 0` pass, and the mapping of a stream is made
-//!   once and kept by the IOMMU, so a child sees the same tag either way.
 //! - `hw_prod` and `hw_serial` are a `malloc`ed block of the property's length inside a box
 //!   of its own (`MBox<MArray<u8>>`): one `M_DEVBUF` block more each than the C.
 //! - `hw.vendor` and `hw.uuid` stay unset: OpenBSD sets them from `smbios0 at efi?`, which LZ
@@ -551,6 +548,26 @@ pub(crate) mod tests {
     /// What the leaves attached, in order: `xname node`.
     static LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
+    /// The `FdtOffer` bridge of the tests: the nodes offered, in order (every test that
+    /// offers holds the tree's lock, so one test's offers are its own between two
+    /// `take_offers`).
+    struct Offers(Mutex<Vec<i32>>);
+
+    impl crate::dev::arm64::fdt::FdtOffer for Offers {
+        fn offered(&self, fa: &FdtArgs) {
+            self.0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(fa.node);
+        }
+    }
+
+    static OFFERS: Offers = Offers(Mutex::new(Vec::new()));
+
+    fn take_offers() -> Vec<i32> {
+        core::mem::take(&mut *OFFERS.0.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+
     fn take_log() -> Vec<String> {
         core::mem::take(&mut *LOG.lock().unwrap_or_else(PoisonError::into_inner))
     }
@@ -637,6 +654,8 @@ pub(crate) mod tests {
     /// leaf of its own (row 11).
     fn machine() -> std::sync::MutexGuard<'static, ()> {
         let mem = setup_root(&MAINBUS);
+        crate::time::clock::tests::install_test_hw();
+        let _ = crate::dev::arm64::fdt::install_fdt_offer(&OFFERS);
         let _ = take_log();
         leaf(b"cpu", Want::Cpu, &[0], &[]); // 1
         leaf(b"psci", Want::Compatible(b"arm,psci-1.0"), &[0], &[1]); // 2
@@ -788,6 +807,49 @@ pub(crate) mod tests {
             take_log(),
             [format!("fb0 {}", node(b"/chosen/framebuffer@0"))]
         );
+    }
+
+    #[test]
+    fn every_offer_is_looked_at_once_as_the_c_maps_it() {
+        // mainbus.c:273 and simplebus.c:258: `iommu_device_map` once per offered node, every
+        // pass, a disabled node included (its status is the submatch's test); simplebus skips
+        // a node without `compatible` and a disabled one before it; an early-attached node is
+        // not offered again; efi and apm are not nodes.
+        let _m = machine();
+        let _t = tree(true, true);
+        hal::cpu::set_hwid(1);
+        let _ = take_offers();
+        let _root = config_rootfound(b"mainbus", &Aux::Legacy(0)).expect("mainbus0");
+        config_process_deferred_mountroot();
+        let offers = take_offers();
+        let count = |path: &[u8]| offers.iter().filter(|&&n| n == node(path)).count();
+        let want: [(&[u8], usize); 20] = [
+            (b"/psci", 1),
+            (b"/chosen", 3),
+            (b"/chosen/framebuffer@0", 1),
+            (b"/cpus", 3),
+            (b"/cpus/cpu@0", 2),
+            (b"/cpus/cpu@1", 2),
+            (b"/cpus/cpu@100", 2),
+            (b"/firmware", 3),
+            (b"/firmware/fw", 1),
+            (b"/reserved-memory", 3),
+            (b"/reserved-memory/rsv@0", 1),
+            (b"/late@0", 3),
+            (b"/early@0", 2),
+            (b"/off@0", 3),
+            (b"/b1bnobody@0", 3),
+            (b"/memory@40000000", 3),
+            (b"/b1bsoc", 3),
+            (b"/b1bsoc/leaf@100", 3),
+            (b"/b1bsoc/b1bnocompat@0", 0),
+            (b"/b1bsoc/leaf@200", 0),
+        ];
+        for (path, n) in want {
+            assert_eq!(count(path), n, "{}", String::from_utf8_lossy(path));
+        }
+        assert_eq!(count(b"/b1bsoc/b1bsbnobody@300"), 3);
+        assert!(!offers.contains(&0), "efi and apm are not offered nodes");
     }
 
     #[test]

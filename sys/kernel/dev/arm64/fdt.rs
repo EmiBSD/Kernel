@@ -66,10 +66,16 @@
 //!   `simplebus` is the only tag overrider on the FDT side, so the chain is one concrete type.
 //! - The `dma-coherent` copy of the DMA tag (`BUS_DMA_COHERENT` in a `malloc`ed tag the child
 //!   keeps) -> [`FdtArgs::dma_coherent`], read by whoever makes the child's DMA memory
-//!   (`DmaReq::coherent`).
+//!   (`DmaReq::coherent`): the node's own property or an enclosing bus's, as the C's flag
+//!   reaches every tag copied below a coherent `simple-bus` ([`FdtBus::dma_coherent`]:
+//!   `simplebus.c:82,110` copies the bus node's own, already coherent, tag); the node's own
+//!   bit is [`FdtArgs::node_coherent`].
 //! - Scaffolding (docs/SCAFFOLDING.md, "The FDT root's legacy edge"): [`FdtArgs::legacy`] and
-//!   [`FdtBus::legacy`] are set-once slots `bsd`'s presenter fills with the legacy tags it
-//!   lends a legacy driver (`sys/bsd/arch/arm64/include/fdt.rs`); nothing here reads them.
+//!   [`FdtBus::legacy`] are set-once slots `bsd` fills with the legacy tags it lends a legacy
+//!   driver (`sys/bsd/arch/arm64/include/fdt.rs`); nothing here reads them. The node's are
+//!   made by the [`FdtOffer`] bridge, which [`FdtArgs::of_node`] calls once per offer, as the
+//!   C's buses call `iommu_device_map` once per offered node (`mainbus.c:273`,
+//!   `simplebus.c:258`), disabled nodes and every pass included.
 //!
 //! ## Deviations
 //! - A node whose `reg` lines would be zero cells long (`#address-cells` and `#size-cells`
@@ -80,7 +86,9 @@
 //!   [`FdtBus::step`] answers `ESRCH` where the C walks the NULL `sc_ranges`
 //!   (`simplebus.c:102-108`, `:299-303`), LZ's unlisted behaviour (P28); a cell read past the
 //!   property's end reads 0 (the C reads past the array), and an entry of zero cells is walked
-//!   one cell at a time (the C loops for ever), as LZ.
+//!   one cell at a time (the C loops for ever), as LZ; [`FdtBus::dma_step`] over entries of
+//!   zero cells walks none and returns the segment's address unchanged (the C's
+//!   `simplebus_dmamap_load_*` loop for ever there too), as LZ.
 //! - `simplebus_bs_mmap`'s `-1` and its `EINVAL` (an errno returned as a `paddr_t`) are both
 //!   `None` ([`FdtBus::mmap_step`]), as LZ.
 //! - `rlen`, the count of `dma-ranges` cells left, is not reset between the segments of one
@@ -98,6 +106,8 @@ use hal::mem::pool::AnyArc;
 use hal::sync::once::OnceStatic;
 use sysdefs::base::errno::Errno;
 use sysdefs::base::types::Paddr;
+
+use hal::bridges::AlreadyRegistered;
 
 use crate::assert::kpanic;
 use crate::dev::device::{Aux, M_DEVBUF};
@@ -127,8 +137,11 @@ pub struct FdtArgs {
     pub node: i32,
     /// `fa_iot` and `fa_dmat`: the translation of the bus the node sits on.
     pub bus: FdtBusRef,
-    /// The `BUS_DMA_COHERENT` of `fa_dmat`: the node has `dma-coherent`.
+    /// The `BUS_DMA_COHERENT` of `fa_dmat`: the node has `dma-coherent`, or a bus it sits
+    /// below has ([`FdtBus::dma_coherent`]).
     pub dma_coherent: bool,
+    /// The node's own `dma-coherent` (the C's condition for the tag copy).
+    own_coherent: bool,
     /// `fa_acells`: the `#address-cells` of the node's `reg`.
     pub acells: i32,
     /// `fa_scells`: its `#size-cells`.
@@ -137,27 +150,54 @@ pub struct FdtArgs {
     reg: Option<MArray<FdtReg>>,
     /// `fa_intr`/`fa_nintr` (`M_DEVBUF`): the `interrupts` cells, `None` for none.
     intr: Option<MArray<u32>>,
-    /// Scaffolding (docs/SCAFFOLDING.md): `bsd`'s legacy tags for this node, made at the
-    /// first legacy driver's look (its presenter's) and kept for the call's other looks.
+    /// Scaffolding (docs/SCAFFOLDING.md): `bsd`'s legacy tags for this node, made when the
+    /// node is offered ([`FdtOffer`]) and lent to every legacy look of the call.
     legacy: OnceStatic<AnyArc>,
+}
+
+/// Scaffolding (docs/SCAFFOLDING.md, `bridges.toml`'s `FdtOffer`): `bsd`'s look at every node
+/// a bus offers, before the candidates' probes: it makes the node's legacy tags, its
+/// `dma-coherent` copy and `iommu_device_map` (`mainbus.c:266-273`, `simplebus.c:251-258`)
+/// once per offer, as the C, and keeps them in [`FdtArgs::legacy`] for the legacy drivers'
+/// match and attach. Gone with the IOMMU registry's move (N7.11).
+pub trait FdtOffer: Sync {
+    /// `node` (the arguments [`FdtArgs::of_node`] made) is about to be offered.
+    fn offered(&self, fa: &FdtArgs);
+}
+
+/// The registered [`FdtOffer`].
+static OFFER: OnceStatic<&'static dyn FdtOffer> = OnceStatic::new();
+
+/// Registers `bsd`'s look at the offered nodes, once; a second call keeps the first and
+/// names it.
+pub fn install_fdt_offer(imp: &'static dyn FdtOffer) -> Result<(), AlreadyRegistered> {
+    OFFER.set(imp).map_err(|_| AlreadyRegistered("FdtOffer"))
 }
 
 impl FdtArgs {
     /// The arguments of `node` on `bus`, its `reg` read with `acells` and `scells` (the
     /// parent's), as `mainbus_attach_node` and `simplebus_attach_node` read them: `reg`
-    /// parsed from its cells, `interrupts` copied, `dma-coherent` noted.
+    /// parsed from its cells, `interrupts` copied, `dma-coherent` noted; then the
+    /// [`FdtOffer`] bridge's look (the C's `iommu_device_map`, once per offer). A bus calls
+    /// it once for each node it offers, right before `config_found_sm`.
     pub fn of_node(node: i32, bus: &FdtBusRef, acells: i32, scells: i32) -> FdtArgs {
-        FdtArgs {
+        let own_coherent = OF_getproplen(node, b"dma-coherent") >= 0;
+        let fa = FdtArgs {
             name: b"",
             node,
             bus: bus.clone(),
-            dma_coherent: OF_getproplen(node, b"dma-coherent") >= 0,
+            dma_coherent: own_coherent || bus.dma_coherent(),
+            own_coherent,
             acells,
             scells,
             reg: read_reg(node, acells, scells),
             intr: read_cells(node, b"interrupts", M_DEVBUF),
             legacy: OnceStatic::new(),
+        };
+        if let Some(h) = OFFER.get() {
+            h.offered(&fa);
         }
+        fa
     }
 
     /// A pseudo-child's arguments (`memset(&fa, 0, sizeof(fa)); fa.fa_name = name`): node 0,
@@ -168,6 +208,7 @@ impl FdtArgs {
             node: 0,
             bus: bus.clone(),
             dma_coherent: false,
+            own_coherent: false,
             acells: 0,
             scells: 0,
             reg: None,
@@ -196,6 +237,12 @@ impl FdtArgs {
     /// `fa_intr[0 .. fa_nintr]`.
     pub fn intr(&self) -> &[u32] {
         self.intr.as_deref().unwrap_or(&[])
+    }
+
+    /// The node's own `dma-coherent`: the condition of the C's tag copy (`mainbus.c:266`,
+    /// `simplebus.c:251`), which [`FdtArgs::dma_coherent`] widens with the buses'.
+    pub fn node_coherent(&self) -> bool {
+        self.own_coherent
     }
 
     /// Scaffolding: the slot of `bsd`'s legacy tags for this node (its presenter's alone).
@@ -333,6 +380,9 @@ pub struct FdtBus {
     ranges: Option<MArray<u32>>,
     /// `sc_dmaranges`: `dma-ranges`' cells (or the Raspberry Pi's); `None` for none.
     dmaranges: Option<MArray<u32>>,
+    /// `BUS_DMA_COHERENT` in `sc_dma`: the bus's node or an enclosing bus's is
+    /// `dma-coherent`.
+    coherent: bool,
     /// Scaffolding (docs/SCAFFOLDING.md): `bsd`'s legacy tags of this bus, made at the first
     /// legacy child's look and kept for ever.
     legacy: OnceStatic<AnyArc>,
@@ -365,6 +415,7 @@ impl FdtBus {
             rangeslen: 0,
             ranges: None,
             dmaranges: None,
+            coherent: false,
             legacy: OnceStatic::new(),
         })
     }
@@ -395,6 +446,7 @@ impl FdtBus {
             rangeslen,
             ranges: read_cells(node, b"ranges", M_TEMP),
             dmaranges,
+            coherent: parent.coherent || OF_getproplen(node, b"dma-coherent") >= 0,
             legacy: OnceStatic::new(),
         })
     }
@@ -407,6 +459,12 @@ impl FdtBus {
     /// `sc_node`: the bus's node (0 for the root).
     pub fn node(&self) -> i32 {
         self.node
+    }
+
+    /// The bus's DMA tag is cache-coherent (`sc_dma._flags & BUS_DMA_COHERENT`): its node
+    /// or an enclosing bus's node is `dma-coherent`, so every child's is.
+    pub fn dma_coherent(&self) -> bool {
+        self.coherent
     }
 
     /// `sc_acells`: the `#address-cells` of the children's `reg`.
@@ -676,6 +734,43 @@ mod tests {
         assert!(FdtArgs::of_aux(&Aux::Typed(&efi)).is_some_and(|a| a.name == b"efi"));
         assert!(FdtArgs::of_aux(&Aux::Typed(&7u32)).is_none());
         assert!(FdtArgs::of_aux(&Aux::Legacy(0)).is_none());
+    }
+
+    #[test]
+    fn a_coherent_bus_makes_every_child_coherent() {
+        testutil::install();
+        let mut b = FdtBuilder::new();
+        b.begin(b"");
+        b.begin(b"soc");
+        b.prop(b"dma-coherent", b"");
+        b.begin(b"sub");
+        b.begin(b"dev@0");
+        b.end();
+        b.end();
+        b.begin(b"own@0");
+        b.prop(b"dma-coherent", b"");
+        b.end();
+        b.end();
+        b.begin(b"plain");
+        b.begin(b"dev@0");
+        b.end();
+        b.end();
+        b.end();
+        let _g = install(b.finish());
+        let root = FdtBus::root();
+        assert!(!root.dma_coherent());
+        let soc = FdtBus::child(&root, OF_finddevice(b"/soc"), 2, 2);
+        let sub = FdtBus::child(&soc, OF_finddevice(b"/soc/sub"), 2, 2);
+        let plain = FdtBus::child(&root, OF_finddevice(b"/plain"), 2, 2);
+        assert!(soc.dma_coherent() && sub.dma_coherent());
+        assert!(!plain.dma_coherent());
+        // Below a coherent bus: coherent, without a property of its own.
+        let fa = FdtArgs::of_node(OF_finddevice(b"/soc/sub/dev@0"), &sub, 2, 2);
+        assert!(fa.dma_coherent && !fa.node_coherent());
+        let own = FdtArgs::of_node(OF_finddevice(b"/soc/own@0"), &soc, 2, 2);
+        assert!(own.dma_coherent && own.node_coherent());
+        let fa = FdtArgs::of_node(OF_finddevice(b"/plain/dev@0"), &plain, 2, 2);
+        assert!(!fa.dma_coherent && !fa.node_coherent());
     }
 
     #[test]

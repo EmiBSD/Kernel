@@ -54,8 +54,8 @@
 //!   cells, the tag copies, the range arrays, the pass under way and the early nodes, all
 //!   members of a zeroed softc LZ wrote through `Cell`s and two `MaybeUninit` tables) -> the
 //!   bus's [`FdtBus`] (the translation every child keeps, immutable once made), held by the
-//!   node's softc, [`Simplebus`]; the pass and the early nodes are locals of
-//!   [`simplebus_attach`], which nothing reads after it.
+//!   children (the softc, [`Simplebus`], holds nothing); the pass and the early nodes are
+//!   locals of [`simplebus_attach`], which nothing reads after it.
 //! - `simplebus_bs_map`, `simplebus_bs_mmap`, `simplebus_dmamap_load_buffer` and
 //!   `simplebus_dmamap_load_raw` (the tag entries that read `bus_private`/`_cookie` back as the
 //!   softc) -> [`FdtBus::step`], [`FdtBus::mmap_step`] and [`FdtBus::dma_step`]: no cookie, no
@@ -73,10 +73,15 @@
 //!   calls `cf_attach->ca_match` by hand, which a native row's `CFATTACH_NATIVE` answers 0 for,
 //!   so a `simple-bus` node below an interrupt controller would not attach (none does on any
 //!   machine this kernel boots), until N7.2a3 makes the GICs native.
+//! - A `simple-bus` node's own `iommus` is not applied to the tags its legacy children get
+//!   (`bsd`'s legacy edge, `include/fdt.rs`): the C maps the bus node like any other and copies
+//!   the result (`simplebus.c:82,110`), but an SMMU domain's tag keeps the outer bus's
+//!   `_dmamap_load_buffer` with the domain as its cookie (`smmu.rs:669-679`), so an inner bus
+//!   forwarding to it would hand that entry a cookie of another type (the C has the same
+//!   latent confusion). No device tree this kernel boots puts `iommus` on a `simple-bus`.
 
 use hal::mem::malloc::{M_NOWAIT, MArc};
 use hal::mem::pool::AnyArc;
-use hal::sync::once::OnceStatic;
 
 use crate::assert::kpanic;
 use crate::base::prf::{Str, printf};
@@ -89,19 +94,10 @@ use crate::dev::ofw::fdt::{
     OF_child, OF_getprop, OF_getproplen, OF_is_compatible, OF_is_enabled, OF_peer,
 };
 
-/// The softc of a `simplebus` node: the bus its children sit on (the C's `sc_bus` and
-/// `sc_dma`), set when it attaches.
-pub struct Simplebus {
-    /// The translation the children keep.
-    bus: OnceStatic<FdtBusRef>,
-}
-
-impl Simplebus {
-    /// The bus the children sit on, once attached.
-    pub fn bus(&self) -> Option<&FdtBusRef> {
-        self.bus.get()
-    }
-}
+/// The softc of a `simplebus` node: nothing outlives the attach but the bus, which every
+/// child holds (the C's `sc_bus` and `sc_dma` live in the softc because the children keep
+/// their addresses).
+pub struct Simplebus;
 
 /// `simplebus_ca` with `simplebus_cd`'s constants.
 pub struct SimplebusDriver;
@@ -149,10 +145,7 @@ impl DriverOps for SimplebusDriver {
         &SIMPLEBUS_UNITS
     }
     fn make_softc(&self, _id: &Ident<'_>) -> AnyArc {
-        let sc = Simplebus {
-            bus: OnceStatic::new(),
-        };
-        match MArc::new(M_DEVBUF, M_NOWAIT, sc) {
+        match MArc::new(M_DEVBUF, M_NOWAIT, Simplebus) {
             Some(sc) => MArc::erase(sc),
             None => kpanic(format_args!(
                 "config_make_softc: allocation for device softc failed"
@@ -166,10 +159,8 @@ impl DriverOps for SimplebusDriver {
         let Some(fa) = FdtArgs::of_aux(aux) else {
             kpanic(format_args!("{}: not a device-tree node", dev.xname()));
         };
-        let bus = simplebus_attach(dev, fa);
-        if let Some(sc) = dev.softc().downcast_ref::<Simplebus>() {
-            let _ = sc.bus.set(bus);
-        }
+        // The children hold the bus; nothing after the attach reads it (no detach).
+        let _ = simplebus_attach(dev, fa);
     }
 }
 

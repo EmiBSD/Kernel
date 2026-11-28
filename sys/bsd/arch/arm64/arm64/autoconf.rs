@@ -145,6 +145,9 @@ pub fn cpu_configure() {
     #[cfg(feature = "qemu")]
     crate::kern::selftest::bus_dma_check(&crate::arch::arm64::include::fdt::MAINBUS_DMA_TAG);
 
+    // The kernel's mainbus and simplebus hand every offered node to bsd's legacy edge first
+    // (the FdtOffer bridge, N7.2b1b): registered before the root attaches.
+    crate::arch::arm64::include::fdt::register_fdt_offer();
     let _ = config_rootfound(b"mainbus", ptr::null_mut());
 
     let _ = unported!("unmap_startup (M6)");
