@@ -21293,6 +21293,13 @@ status = "redesigned"
 notes = "N7.2b1b: struct fdt_attach_args as FdtArgs, owned and 'static under Aux::Typed (reg and interrupts MArrays of M_DEVBUF, freed when the bus drops it after config_found_sm; dma_coherent for the coherent tag copy; a set-once legacy slot for bsd's presenter, scaffolding); fa_iot/fa_dmat as one immutable counted chain FdtBus/FdtBusRef (root(); child() reads a simplebus node's cells, ranges, dma-ranges and the bcm2709 fallback; step/mmap_step/dma_step are simplebus_bs_map's, _bs_mmap's and one segment of _dmamap_load_*'s walks, translate every level's step, map = translate then km::map_device; a set-once legacy slot for bsd's tags of a native simplebus); EarlyNodes (sc_early_nodes[64]); the fdt_intr_* aliases are kernel::dev::arm64::intr's. bsd's include/fdt.rs keeps LZ's FdtAttachArgs for the legacy children and is the legacy edge (adapted)"
 
 [[module]]
+rust = "sys/kernel/dev/arm64/mainbus.rs"
+crate = "kernel"
+lz = ["sys/arch/arm64/dev/mainbus.rs"]
+status = "redesigned"
+notes = "N7.2b1b: mainbus(4) as a kernel DriverOps (MAINBUS; probe mainbus_match's 1, attach mainbus_attach in mainbus.c's order: arm_intr_init_fdt, the ClockHardware bridge's early_init (bsd's agtimer_init until N7.2b2), the model line with hw_prod and hw_serial (leaked malloc(len, M_DEVBUF, M_NOWAIT) copies), psci early 1, efi on the C's /chosen property test (LZ's SYSTEM_TABLE deviation closed, P28), the primary then the secondary CPUs by hal::cpu::hwid() & MPIDR_AFF counting kernel::base::sysctl::NCPUSFOUND, /firmware, /reserved-memory, apm, passes 2, 1, 0, config_mountroot of the framebuffer pass, the thermal_init unported!); struct mainbus_softc as attach locals (Attach, lent by &mut) and a softc Mainbus holding the root's FdtBus and, set once, the root's cells and the early nodes for the deferred pass; mainbus_match_status/_primary/_secondary as closures of mainbus_attach_node; the legacy tags, the dma-coherent copy and iommu_device_map are bsd's presenter's (include/fdt.rs, scaffolding)"
+
+[[module]]
 rust = "sys/kernel/dev/arm64/simplebus.rs"
 crate = "kernel"
 lz = ["sys/arch/arm64/dev/simplebus.rs", "sys/arch/arm64/include/simplebusvar.rs"]

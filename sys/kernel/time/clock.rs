@@ -511,6 +511,10 @@ pub trait ClockHardware: Sync {
     fn setstatclockrate(&self, newhz: i32);
     /// `delay(usecs)`: busy-waits.
     fn delay(&self, usecs: u32);
+    /// What the machine's root bus starts before its children attach: arm64's
+    /// `agtimer_init()` (the counter's frequency and its `delay(9)`, `mainbus.c:107`), until
+    /// the kernel's agtimer calls it itself (N7.2b2); nothing elsewhere (the default).
+    fn early_init(&self) {}
 }
 
 /// Registers the machine's clock hardware, once; a second call keeps the first and names it.
@@ -518,6 +522,15 @@ pub fn install_clock_hardware(imp: &'static dyn ClockHardware) -> Result<(), Alr
     CLOCK_HW
         .set(imp)
         .map_err(|_| AlreadyRegistered("ClockHardware"))
+}
+
+/// The clock hardware's early start, before the root bus's children attach (arm64's
+/// `mainbus_attach` calls `agtimer_init()` there): [`ClockHardware::early_init`], nothing
+/// before the hardware is registered.
+pub fn clock_early_init() {
+    if let Some(h) = CLOCK_HW.get() {
+        h.early_init();
+    }
 }
 
 /// `cpu_initclocks()`: `panic(9)` before the hardware is registered, as the C's.

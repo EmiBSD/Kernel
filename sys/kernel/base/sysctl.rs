@@ -646,6 +646,10 @@ pub static hw_serial: HwString = HwString::new();
 #[allow(non_upper_case_globals)] // the C's name, kept beside `hw_vendor`
 pub static hw_ver: HwString = HwString::new();
 
+/// `ncpusfound`: number of CPUs we find (`hw.ncpufound`), counted by the machine's root bus
+/// as it walks its CPUs (arm64's `mainbus_attach_cpus`, amd64's `bsd` mainbus); 1 until then.
+pub static NCPUSFOUND: AtomicI32 = AtomicI32::new(1);
+
 /// `hw_battery_chargemode`.
 #[allow(non_upper_case_globals)] // the C's name; `HW_BATTERY_CHARGEMODE` is the sysctl id
 pub static hw_battery_chargemode: AtomicI32 = AtomicI32::new(0);
