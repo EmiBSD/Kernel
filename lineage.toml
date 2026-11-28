@@ -5568,7 +5568,7 @@ notes = "N4.6b: the bsd half of sysctl(2): kern.file, the helpers over bsd copyi
 rust = "sys/bsd/kern/kern_tc.rs"
 lz = ["sys/kern/kern_tc.rs"]
 status = "redesigned"
-notes = "N4.8a: the timecounters are kernel::time::tc's; this path re-exports the readers and setters, keeps tc_init/tc_reset_quality/tc_set_frequency for the drivers' struct timecounter (a fixed table of TcEntry records) and sysctl_tc with kern_sysctl.c's arguments, 0 unsafe (LZ 7), forbid on its mod line"
+notes = "N4.8a: the timecounters are kernel::time::tc's; this path re-exports the readers and setters, keeps tc_init/tc_reset_quality/tc_set_frequency for the drivers' struct timecounter (a fixed table of TcEntry records) and sysctl_tc with kern_sysctl.c's arguments, 0 unsafe (LZ 7), forbid on its mod line; N7 (U14a): the drivers' path (ENTRIES, tc_init, tc_reset_quality, tc_set_frequency) compiled for amd64 and the host only, as its drivers"
 
 [[module]]
 rust = "sys/bsd/kern/kern_time.rs"
@@ -13769,8 +13769,8 @@ notes = "N4.1: the legacy timeout(9) API over kernel::time::timeout (sys/kernel/
 rust = "sys/bsd/sys/timetc.rs"
 lz = ["sys/sys/timetc.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/time/tc.rs"]
-notes = "M5: struct timecounter (driver-written fields are Cells; M13: tc_name too, set to dv_xname by acpitimer/acpihpet), struct timekeep, TK_VERSION; tc_lock (rwlock) and timekeep_object (M6) are not here; N4.8a: the drivers' struct timecounter implements kernel::time::tc::Timecounter and links its TcEntry (tc_entry), made by kern_tc's tc_init"
+adapted_by = ["sys/kernel/time/tc.rs", "sys/kernel/dev/arm64/agtimer.rs"]
+notes = "M5: struct timecounter (driver-written fields are Cells; M13: tc_name too, set to dv_xname by acpitimer/acpihpet), struct timekeep, TK_VERSION; tc_lock (rwlock) and timekeep_object (M6) are not here; N4.8a: the drivers' struct timecounter implements kernel::time::tc::Timecounter and links its TcEntry (tc_entry), made by kern_tc's tc_init; N7 (U14a, adapted by the kernel's agtimer, arm64's one timecounter): the trait impl and tc_entry compiled for amd64 and the host only"
 
 [[module]]
 rust = "sys/bsd/sys/tree.rs"

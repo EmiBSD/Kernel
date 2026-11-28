@@ -192,7 +192,8 @@ paid_by = "N7"
 # kernel::time::clock's initclocks; registered only where Cpu::KERNEL_CLOCK is false. N10 (U14):
 # amd64's machine::cpu and the host double keep BsdClockHardware; arm64: paid at N7.2b2b (the
 # kernel's agtimer is its ClockHardware, installed by agtimer_init and its attach; bsd's
-# arm_clock_func and early_init went).
+# arm_clock_func and early_init went), and since U14a (N7) arm64 compiles no implementer:
+# BsdClockHardware and its registration are cfg'd to amd64 and the host.
 # kernel::time::clock::ClockHardware
 [[bridge]]
 trait = "ClockHardware"
@@ -212,8 +213,10 @@ paid_by = "N9"
 # bsd: the hardware timecounters: the drivers' struct timecounter (sys/sys/timetc.rs:
 # acpitimer, acpihpet; agtimer(4)'s AgtimerTc until N7.2b2b), received by
 # kernel::time::tc::tc_init through their TcEntry. N10 (U14): amd64's tsc and i8254, and
-# acpitimer and acpihpet (compiled on arm64, attached nowhere there); arm64: paid at N7.2b2b
-# (the kernel's agtimer implements Timecounter natively).
+# acpitimer and acpihpet; arm64: paid at N7.2b2b (the kernel's agtimer implements Timecounter
+# natively), and since U14a (N7) arm64 compiles no implementer: acpitimer and acpihpet are
+# built for amd64 and the host only, as OpenBSD's GENERICs configure them, and so are
+# timetc.rs's impl, its tc_entry link and kern_tc.rs's tc_init path (ENTRIES).
 # kernel::time::tc::Timecounter
 [[bridge]]
 trait = "Timecounter"
@@ -222,7 +225,8 @@ paid_by = "N10"
 
 # bsd: each CPU's interrupt clock, received by kernel::time::clockintr::clockintr_cpu_init.
 # N10 (U14): amd64's lapic (LAPIC_TIMER_INTRCLOCK); arm64: paid at N7.2b2b (the kernel's
-# agtimer implements Intrclock natively; bsd's AgtimerIntrclock went with its agtimer.rs).
+# agtimer implements Intrclock natively; bsd's AgtimerIntrclock went with its agtimer.rs), and
+# arm64 compiles no implementer since then (checked again at U14a, N7: the lapic is amd64's).
 # kernel::time::clockintr::Intrclock
 [[bridge]]
 trait = "Intrclock"

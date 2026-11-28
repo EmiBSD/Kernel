@@ -60,8 +60,7 @@
 //!   (a `TcEntry` is any `&'static`, the `hal::ds::link::Link` row of `docs/IDIOMS.md`, which
 //!   rejects a capped table for that reason); the cap is only this adapter's, for the
 //!   drivers that have not moved (i8254, the TSC, acpitimer(4), acpihpet(4): four at most
-//!   on one machine, none on arm64, whose agtimer(4) brings its own entry), and it goes
-//!   with them (N7, N10).
+//!   on one machine), and it goes with them (N10).
 //!
 //! ## Redesign
 //! - N4.8a: the timecounters moved into `kernel::time::tc` (the `Timecounter` trait and `TcEntry`,
@@ -75,11 +74,19 @@
 //!   counter registered; a machine has at most five) and registers it, and
 //!   [`tc_reset_quality`] and [`tc_set_frequency`] reach the entry through the counter's
 //!   `tc_entry` link.
+//! - N7 (U14): those three and [`ENTRIES`] are compiled for amd64 and the host only, as the
+//!   drivers they serve (i8254, the TSC, acpitimer(4) and acpihpet(4), which OpenBSD's arm64
+//!   GENERIC does not configure): arm64's only timecounter is the kernel's agtimer(4), which
+//!   brings its own `TcEntry`, so the arm64 image holds none of the `Timecounter` bridge's
+//!   `bsd` side (bridges.toml).
 
+#[cfg(not(all(target_os = "none", target_arch = "aarch64")))]
 use hal::sync::once::OnceStatic;
+#[cfg(not(all(target_os = "none", target_arch = "aarch64")))]
 use kernel::time::tc::TcEntry;
 
 use crate::sys::errno::Errno;
+#[cfg(not(all(target_os = "none", target_arch = "aarch64")))]
 use crate::sys::timetc::Timecounter;
 
 pub use kernel::time::tc::{
@@ -92,10 +99,12 @@ pub use kernel::time::tc::{
 };
 
 /// The kernel's records of the drivers' counters, one per `tc_init`.
+#[cfg(not(all(target_os = "none", target_arch = "aarch64")))]
 static ENTRIES: [OnceStatic<TcEntry>; 8] = [const { OnceStatic::new() }; 8];
 
 /// `tc_init`: registers a driver's counter with the kernel's timecounters (its quality,
 /// precision and the switch to it are `kernel::time::tc::tc_init`'s).
+#[cfg(not(all(target_os = "none", target_arch = "aarch64")))]
 pub fn tc_init(tc: &'static Timecounter) {
     for slot in &ENTRIES {
         if slot.set(TcEntry::new(tc)).is_ok() {
@@ -111,6 +120,7 @@ pub fn tc_init(tc: &'static Timecounter) {
 
 /// `tc_reset_quality`: the kernel's, on the counter's record (a counter never registered
 /// has none: nothing more to change).
+#[cfg(not(all(target_os = "none", target_arch = "aarch64")))]
 pub fn tc_reset_quality(tc: &'static Timecounter, quality: i32) {
     tc.tc_quality.set(quality);
     if let Some(e) = tc.tc_entry.get() {
@@ -120,6 +130,7 @@ pub fn tc_reset_quality(tc: &'static Timecounter, quality: i32) {
 
 /// `tc->tc_frequency = freq` after `tc_init` (a driver's clock-rate change): the counter's
 /// cell and the kernel's record, which the next windup scales with.
+#[cfg(not(all(target_os = "none", target_arch = "aarch64")))]
 pub fn tc_set_frequency(tc: &'static Timecounter, freq: u64) {
     tc.tc_frequency.set(freq);
     if let Some(e) = tc.tc_entry.get() {

@@ -22,6 +22,11 @@
 //! `acpihpet`), the MADT (`acpimadt`) and the PCI interrupt routing (`acpiprt`). M14 adds
 //! the MCFG (`acpimcfg`) and arm64's console UART (`pluart_acpi`). M16e adds the DMA remapping
 //! units (`acpidmar`, with `amd_iommu`) the TPM (`tpm`) and the x86 processor power management (`acpicpu_x86`).
+//!
+//! The timers are compiled for amd64 and the host only (N7, U14): OpenBSD configures
+//! `acpitimer* at acpi?` and `acpihpet* at acpi?` in amd64's GENERIC (and i386's), not in
+//! arm64's, whose autoconf table has no row for them; acpi0 still offers `acpitimer` by name
+//! (`acpi.c`), and on arm64 nothing matches it, as in the C.
 
 #[allow(clippy::module_inception)] // OpenBSD's layout: sys/dev/acpi/acpi.c
 pub mod acpi;
@@ -29,12 +34,14 @@ pub mod acpicpu_x86;
 #[forbid(unsafe_code)]
 pub mod acpidev;
 pub mod acpidmar;
+#[cfg(not(all(target_os = "none", target_arch = "aarch64")))]
 pub mod acpihpet;
 pub mod acpimadt;
 pub mod acpimcfg;
 pub mod acpiprt;
 #[forbid(unsafe_code)]
 pub mod acpireg;
+#[cfg(not(all(target_os = "none", target_arch = "aarch64")))]
 pub mod acpitimer;
 #[forbid(unsafe_code)]
 pub mod acpiutil;

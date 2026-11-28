@@ -100,7 +100,9 @@ pub struct Timecounter {
     /// \[I\] `tc_precision`: precision of the counter. Computed in `tc_init()`.
     pub tc_precision: Cell<u64>,
     /// The kernel's record of this counter (`kernel::time::tc::TcEntry`), made by `kern_tc`'s
-    /// `tc_init` (N4.8a): the kernel's timehands read the counter through it.
+    /// `tc_init` (N4.8a): the kernel's timehands read the counter through it. amd64 and the
+    /// host only, as `kern_tc`'s `tc_init` (N7, U14: arm64 configures no `bsd` timecounter).
+    #[cfg(not(all(target_os = "none", target_arch = "aarch64")))]
     pub tc_entry: hal::ds::link::Link<kernel::time::tc::TcEntry>,
 }
 
@@ -129,6 +131,7 @@ impl Timecounter {
             tc_next: SlistEntry::new(),
             tc_freq_adj: Cell::new(0),
             tc_precision: Cell::new(0),
+            #[cfg(not(all(target_os = "none", target_arch = "aarch64")))]
             tc_entry: hal::ds::link::Link::new(),
         }
     }
@@ -140,7 +143,10 @@ impl Timecounter {
 }
 
 /// A driver's `struct timecounter` as the kernel's timecounters read it (N4.8a): the
-/// hardware's half of `kernel::time::tc`'s split, over the driver-written cells.
+/// hardware's half of `kernel::time::tc`'s split, over the driver-written cells: the
+/// `Timecounter` bridge's `bsd` side, compiled for amd64 and the host only (N7, U14: arm64's
+/// one timecounter is the kernel's agtimer(4); acpitimer(4) and acpihpet(4) are x86 drivers).
+#[cfg(not(all(target_os = "none", target_arch = "aarch64")))]
 impl kernel::time::tc::Timecounter for Timecounter {
     fn get_timecount(&self) -> u32 {
         (self.tc_get_timecount.get())(self)

@@ -1074,19 +1074,10 @@ impl crate::machine::acpi_machdep::AcpiMachdep for Machine {
         &CPU_SUSPENDED
     }
 
-    fn delay_init(_f: fn(i32), _fn_quality: i32) {
-        // arm64 has no delay_init: its delay(9) is agtimer's, and acpitimer/acpihpet, the
-        // callers, are amd64/i386 drivers that arm64 GENERIC does not configure.
-        let _ = crate::unported!("delay_init (not on arm64: acpitimer/acpihpet are x86 drivers)");
-    }
-
-    fn delay_fini(_f: fn(i32)) {
-        let _ = crate::unported!("delay_fini (not on arm64: acpitimer/acpihpet are x86 drivers)");
-    }
-
-    fn cpu_recalibrate_tsc(_tc: &'static crate::sys::timetc::Timecounter) {
-        // #if defined(__amd64__) in the drivers: nothing to recalibrate on arm64.
-    }
+    // No delay_init, delay_fini or cpu_recalibrate_tsc (N7, U14): their only callers,
+    // acpitimer(4) and acpihpet(4), are amd64/i386 drivers that arm64's GENERIC does not
+    // configure, so they are not compiled here (machine::acpi_machdep); arm64's delay(9) is
+    // agtimer's.
 }
 
 /// No I/O APIC and no MP configuration tables: the x86 ACPI drivers (`acpimadt`,
