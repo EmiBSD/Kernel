@@ -77,15 +77,22 @@
 //! - `db_switch_cpu` is an `AtomicBool`, `ddb_active_cpu`/`db_switch_to_cpu` `AtomicU32`s (the
 //!   C's `volatile` ints and longs); `cpu_info[]` is walked through `cpu_infos()`.
 //! - With `MULTIPROCESSOR`, a trap raised by the debugger IPI (`ARM_IPI_DDB`'s `db_enter()`,
-//!   marked by `hal::cpu::trap::db_enter`) enters ddb only while this CPU is asked to stop
-//!   (`ci_ddb_paused == CI_DDB_SHOULDSTOP`, read under `ddb_mp_mutex` at `db_ktrap`'s start,
-//!   `hal::cpu::trap::stale_ipi_entry`); otherwise it is dropped (counted nowhere) and the
-//!   kernel goes on. The C enters from every DDB IPI: `db_stopcpu`
-//!   (`reference/openbsd-src/sys/arch/arm64/arm64/db_interface.c:500`, amd64's the same)
-//!   sends a second IPI to a CPU still on its way in from the first, whose handler already
-//!   took the reasons, and after `continue` that second IPI opens a new ddb session on its
-//!   CPU by itself (smoke-ddbmp: "Stopped at ...Debugger::enter" after `continue`). The
-//!   precedent is `db_enter_ddb`'s own rule, which waits on a CPU only when asked to stop.
+//!   marked by `hal::cpu::trap::db_enter`) is dropped when it finds its CPU running
+//!   (`ci_ddb_paused == CI_DDB_RUNNING`, read under `ddb_mp_mutex` at `db_ktrap`'s start,
+//!   `db_ipi_entry_stale`; counted nowhere) and the kernel goes on. The C enters from every
+//!   DDB IPI: `db_stopcpu` sends a second IPI to a CPU still on its way in from the first
+//!   (`reference/openbsd-src/sys/arch/arm64/arm64/db_interface.c:507`, amd64's the same),
+//!   whose handler already took the reasons, and after `continue` that second IPI opens a new
+//!   ddb session on its CPU by itself (smoke-ddbmp: "Stopped at ...Debugger::enter" after
+//!   `continue`). The rule is the C's own wait condition (`db_enter_ddb` holds a CPU while
+//!   its `ci_ddb_paused != CI_DDB_RUNNING`, db_interface.c:463-465): `CI_DDB_SHOULDSTOP`,
+//!   `CI_DDB_STOPPED`, `CI_DDB_ENTERDDB` (a `machine ddbcpu` hand-off, which writes it after
+//!   `db_stopcpu`'s IPI, db_interface.c:455-460) and `CI_DDB_INDDB` all enter. It rests on
+//!   `CI_DDB_RUNNING` being written only under `ddb_mp_mutex` once ddb runs (the exit of
+//!   `db_enter_ddb`, `db_startcpu`; `db_machine_init` before any IPI), so a session cannot
+//!   end between the check and the state it reads; `CI_DDB_SHOULDSTOP` is written outside
+//!   it (the first CPU in, after `db_mtx_leave`, db_interface.c:432-436), but only ever marks
+//!   a CPU asked, before the IPI that asks it is sent, which can only make an entry enter.
 //!
 //! ## Redesign
 //! - The stale debugger IPI is dropped (the deviation above, U17, the user's decision of
@@ -233,8 +240,10 @@ pub fn db_ktrap(type_: i32, regs: &mut DbRegs) -> bool {
         db_mtx_enter(&DDB_MP_MUTEX);
         // A debugger IPI that finds this CPU no longer asked to stop is stale: dropped (see
         // the module's deviations).
-        let asked = curcpu().ci_ddb_paused.load(Ordering::Relaxed) == CI_DDB_SHOULDSTOP;
-        let stale = hal::cpu::trap::stale_ipi_entry(asked);
+        let stale = db_ipi_entry_stale(
+            hal::cpu::trap::take_ipi_entry(),
+            curcpu().ci_ddb_paused.load(Ordering::Relaxed),
+        );
         if !stale && DDB_STATE.load(Ordering::Relaxed) == DDB_STATE_EXITING {
             DDB_STATE.store(DDB_STATE_NOT_RUNNING, Ordering::Relaxed);
         }
@@ -302,6 +311,14 @@ fn db_ktrap_inddb(type_: i32, regs: &mut DbRegs) {
 
     // SAFETY: as above; db_trap has returned and no other CPU is in the debugger yet.
     *regs = unsafe { DDB_REGS.read() };
+}
+
+/// Whether a trap is a stale debugger IPI, dropped by `db_ktrap` (the module's deviations):
+/// the IPI's entry (`ipi_entry`, `hal::cpu::trap::take_ipi_entry`) on a CPU whose
+/// `ci_ddb_paused` is `paused` = `CI_DDB_RUNNING`, which no CPU in or asked into ddb has.
+#[cfg(feature = "multiprocessor")]
+const fn db_ipi_entry_stale(ipi_entry: bool, paused: i32) -> bool {
+    ipi_entry && paused == CI_DDB_RUNNING
 }
 
 /// `db_enter`: enters the debugger with `brk #0xf000`, which `do_el1h_sync` hands to
@@ -572,4 +589,22 @@ impl hal::cpu::trap::Debugger for DdbDebugger {
 
 /// The debugger `initarm` registers.
 pub static DDB_DEBUGGER: DdbDebugger = DdbDebugger;
+
+// U17's rule as a table over the five states, checked by every build (this file is built for
+// the machine only, where no host test runs): only an IPI entry that finds its CPU running is
+// stale; a `machine ddbcpu` hand-off (`CI_DDB_ENTERDDB`) and every other asked state enter,
+// and a trap not the IPI's never is.
+#[cfg(feature = "multiprocessor")]
+const _: () = {
+    assert!(db_ipi_entry_stale(true, CI_DDB_RUNNING));
+    assert!(!db_ipi_entry_stale(true, CI_DDB_SHOULDSTOP));
+    assert!(!db_ipi_entry_stale(true, CI_DDB_STOPPED));
+    assert!(!db_ipi_entry_stale(true, CI_DDB_ENTERDDB));
+    assert!(!db_ipi_entry_stale(true, CI_DDB_INDDB));
+    assert!(!db_ipi_entry_stale(false, CI_DDB_RUNNING));
+    assert!(!db_ipi_entry_stale(false, CI_DDB_SHOULDSTOP));
+    assert!(!db_ipi_entry_stale(false, CI_DDB_STOPPED));
+    assert!(!db_ipi_entry_stale(false, CI_DDB_ENTERDDB));
+    assert!(!db_ipi_entry_stale(false, CI_DDB_INDDB));
+};
 /* </CODE> */

@@ -37,16 +37,11 @@
 //!
 //! ## Deviations
 //! - The debugger IPI's entry (`ARM_IPI_DDB`'s `db_enter()`, [`db_enter`]) is marked on its
-//!   CPU while it runs, and the debugger drops it when that CPU is no longer asked to stop
-//!   ([`stale_ipi_entry`], which `bsd`'s `db_ktrap` asks under `ddb_mp_mutex` with
-//!   `ci_ddb_paused == CI_DDB_SHOULDSTOP`). The C enters ddb from every DDB IPI: `db_stopcpu`
-//!   sends a second one to a CPU still on its way in from the first
-//!   (`reference/openbsd-src/sys/arch/arm64/arm64/db_interface.c:500`, amd64's the same), the
-//!   second's reason is posted after the first's handler took the reasons, and once
-//!   `continue` resumes every CPU that IPI runs: the CPU opens a new ddb session by itself
-//!   (smoke-ddbmp's "Stopped at ...Debugger::enter" after `continue`). As `db_enter_ddb`
-//!   itself treats a CPU that is not `SHOULDSTOP` (it waits only when asked), the stale entry
-//!   returns at once; it is counted nowhere.
+//!   CPU while it runs, and the debugger's trap entry takes the mark ([`take_ipi_entry`]):
+//!   `bsd`'s `db_ktrap` drops an IPI entry that finds its CPU running (its own rule and
+//!   deviation, `arch/arm64/arm64/db_interface.rs`, U17). The C cannot tell the IPI's trap
+//!   from any other breakpoint. The mark is a fact about the trap, not a policy: `hal`
+//!   decides nothing with it.
 //!
 //! ## Redesign
 //! - Not a port: the C's `trap.c` calls `uvm_fault`, `trapsignal`, `userret`, ... by name.
@@ -169,7 +164,7 @@ pub fn cpu_halt() {
 }
 
 /// Per CPU, 1 while the debugger IPI's entry ([`db_enter`]) runs on it: its trap is the
-/// IPI's, which [`stale_ipi_entry`] reads (and clears) under the debugger's own mutex.
+/// IPI's, which [`take_ipi_entry`] reads (and clears).
 static IPI_ENTRY: PerCpu<AtomicU32> = PerCpu::new();
 
 /// `db_enter()` of the debugger IPI (`ARM_IPI_DDB`, the interrupt controllers in the
@@ -188,12 +183,11 @@ fn ipi_entry(enter: impl FnOnce()) {
     IPI_ENTRY.get().store(0, Ordering::Relaxed);
 }
 
-/// The debugger's question at its trap entry, under its MP mutex: whether this trap is the
-/// debugger IPI's ([`db_enter`]; the mark is taken, so it answers once) and this CPU is not
-/// asked to stop any more (`asked_to_stop`: `ci_ddb_paused == CI_DDB_SHOULDSTOP`). Such a
-/// stale entry is dropped (the module's deviations); every other trap enters as the C's.
-pub fn stale_ipi_entry(asked_to_stop: bool) -> bool {
-    IPI_ENTRY.get().swap(0, Ordering::Relaxed) != 0 && !asked_to_stop
+/// Whether the trap being entered is the debugger IPI's ([`db_enter`]), the mark taken, so
+/// it answers once: the debugger's trap entry asks it (`bsd`'s `db_ktrap`, which decides
+/// what a stale one is; the module's deviations).
+pub fn take_ipi_entry() -> bool {
+    IPI_ENTRY.get().swap(0, Ordering::Relaxed) != 0
 }
 
 /// The registered kernel-mode fault handler, `None` before registration: the machine's trap
@@ -328,24 +322,20 @@ mod tests {
         serror();
     }
 
-    /// A trap raised by the debugger IPI's entry is dropped when its CPU is no longer asked
-    /// to stop, entered when it is, and answered once; any other trap is never dropped
-    /// (U17: the stale second `ARM_IPI_DDB` after `continue`).
+    /// The IPI's mark is seen by its trap, once, and by no other trap (U17: the debugger tells
+    /// the IPI's entry from a breakpoint by it).
     #[test]
-    fn a_stale_debugger_ipi_entry_is_dropped_and_only_it() {
-        // Not the IPI's: entered whatever the state (a breakpoint, `db_enter` of a panic).
-        assert!(!stale_ipi_entry(false));
-        assert!(!stale_ipi_entry(true));
-        // The IPI's while this CPU is asked to stop: entered.
-        ipi_entry(|| assert!(!stale_ipi_entry(true)));
-        // The IPI's after `continue` set every CPU running: dropped, once.
+    fn the_debugger_ipi_entry_is_seen_once_by_its_own_trap() {
+        // Not the IPI's (a breakpoint, `db_enter` of a panic).
+        assert!(!take_ipi_entry());
+        // The IPI's: seen, once.
         ipi_entry(|| {
-            assert!(stale_ipi_entry(false), "a stale IPI entry is dropped");
-            assert!(!stale_ipi_entry(false), "the mark answers once");
+            assert!(take_ipi_entry(), "the IPI's trap sees its mark");
+            assert!(!take_ipi_entry(), "the mark answers once");
         });
         // The mark does not outlive the entry.
         ipi_entry(|| {});
-        assert!(!stale_ipi_entry(false));
+        assert!(!take_ipi_entry());
     }
 
     /// `setregs`' writes land in the running thread's frame (the host double's registers).
