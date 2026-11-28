@@ -104,7 +104,7 @@
 //!   bridges, `bsd`'s ddb and `cpu.c` until they move).
 //! - The softc's `splassert` is `IntrHardware`'s default, `hal::cpu::intr::splassert_check`
 //!   (the C's generic `arm_splassert_check`, the report through `hal::prf::splassert_fail`
-//!   and `bsd`'s `splassert_ctl`): the GICv2 checks what the legacy GICv3's table does.
+//!   and `bsd`'s `splassert_ctl`): the GICv2 checks what the GICv3 (`agintc`) does.
 //! - The dispatch's unmask pair is `hal::cpu::intr::unmasked`, given the dispatch's token
 //!   (`InIrq`), which only `hal`'s IRQ entry makes.
 //! - `ampintc_intr_barrier`'s `sched_barrier(ih->ih_ci)` -> the CPU to wait for

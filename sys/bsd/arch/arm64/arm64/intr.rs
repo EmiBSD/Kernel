@@ -42,8 +42,8 @@
 //! `cpu_startclock`, `setstatclockrate`); M4 adds the IRQ/FIQ entry from `exception.S`
 //! (`arm_dflt_irq`, `arm_dflt_fiq`, `arm_irq_dispatch`, `arm_fiq_dispatch`; `arm_cpu_irq`
 //! and `arm_cpu_fiq` are `hal`'s since N4.8b, `sys/hal/arch/arm64/trap.rs`, which dispatch
-//! through [`ArmIntrHardware`]), the `spl` machinery (`arm_smask`, `arm_intr_func` with the `arm_dflt_*`
-//! functions, `arm_do_pending_intr`, `arm_set_intr_handler`, `arm_init_smask`, `splraise`,
+//! through the controller installed in `hal::cpu::intr`), the `spl` machinery (`arm_smask`,
+//! the `arm_dflt_*` functions, `arm_do_pending_intr`, `arm_init_smask`, `splraise`,
 //! `spllower`, `splx`, `softintr`, `arm_splassert_check`), the wakeup hooks and the device
 //! tree registration (`arm_intr_get_parent`, the pre-registration `arm_intr_prereg_*` and
 //! `arm_intr_init_fdt`, `arm_intr_register_fdt`, `arm_intr_establish_fdt`/`_cpu`/`_idx`/
@@ -60,28 +60,27 @@
 //! adapter `bsd`'s drivers keep calling under LZ's names and signatures: [`LegacyIc`] makes a
 //! driver's `struct interrupt_controller` the kernel's `InterruptController`,
 //! [`arm_intr_register_fdt`] registers it, and the handles stay `NonNull<MachineIntrHandle>`. The
-//! clock table is still here (N7.2b2), and the `spl` table and the IPI slot for the legacy
-//! GICv3 (N7.2a3; the kernel's GICv2 installs itself and sets the kernel's IPI slot, N7.2a2).
+//! clock table is still here (N7.2b2). N7.2a3: both GICs are the kernel's
+//! (`kernel::dev::arm64::{ampintc, agintc}`), each installed as the machine's controller in
+//! `hal::cpu::intr` with the kernel's IPI slot set, so `arm_intr_func`, `arm_set_intr_handler`,
+//! the IRQ and FIQ dispatch slots and `bsd`'s own `intr_send_ipi_func` are gone.
 //!
 //! ## Deviations
 //! - `arm_clock_func` is a [`StaticCell`], written by `arm_clock_register` during
 //!   autoconfiguration on the boot CPU.
 //! - `arm_dflt_delay`'s inner loop spins on `yield` so the compiler keeps it; the C's empty
 //!   loop body relies on the compiler not optimising it away.
-//! - `arm_intr_func` and `intr_send_ipi_func` are `StaticCell`s written by the controller's
-//!   attach (`arm_set_intr_handler`) on the boot CPU before interrupts are enabled; `hal`
-//!   reaches `arm_intr_func` as `hal::cpu::intr::IntrHardware` ([`ArmIntrHardware`], N4.5c), and
-//!   `arm_smask`, `ci_cpl`, `ci_ipending` and the `arm_dflt_*` bodies are `hal::cpu::intr`'s.
+//! - `arm_intr_func` is `hal::cpu::intr::IntrHardware`, implemented by the controller in the
+//!   kernel and installed by its attach (N7.2a3); `intr_send_ipi_func` is the kernel's slot
+//!   (`kernel::dev::arm64::intr::intr_send_ipi_func`), which [`arm_send_ipi`] reads; `arm_smask`,
+//!   `ci_cpl`, `ci_ipending` and the `arm_dflt_*` bodies are `hal::cpu::intr`'s.
 //! - `interrupt_controllers` is the kernel's registry (`controllers()`, every registered
 //!   controller, legacy or native, and the pre-registrations, in the C's order) since N7.2a2:
 //!   `acpipci` and `acpi_machdep` walk it there, and `ampintc`'s GICv2m frames, its last
 //!   walker here, are the kernel's. `bsd`'s mirror list of the legacy structures is gone.
 //! - The `spl` functions (`splraise`, `spllower`, `splx`) and `arm_splassert_check`'s
-//!   `setipl` go through the installed controller (`hal::cpu::intr`), no longer through
-//!   `arm_intr_func` directly: the kernel's GICv2 installs itself and fills no table. On a
-//!   legacy GIC (`agintc`, until N7.2a3) that is one indirect call more than LZ
-//!   ([`ArmIntrHardware`] then `arm_intr_func`); on the GICv2 the same count (the controller's
-//!   method directly).
+//!   `setipl` go through the installed controller (`hal::cpu::intr`): the controller's method,
+//!   one indirect call, as LZ's `arm_intr_func`.
 //! - A handle on a legacy controller is LZ's `MachineIntrHandle` (`ih_ic`, `ih_ih`, the size
 //!   `free` checks, as the handles `ampintc`'s MSI frames and `pciecam` make by hand); a
 //!   handle on a native controller has a null `ih_ic` and carries the kernel's `IntrHandle`
@@ -93,9 +92,7 @@
 //!   readers read only the handles they made.
 //! - `arm_intr_establish_fdt_imap*` take the child's four `reg` cells as a slice (the C's
 //!   `int *reg, int nreg`, `nreg` in bytes); `arm_intr_map_msi`'s `data` is a `&mut u64`.
-//! - [`arm_set_intr_handler`] installs the table as the machine's controller once: a second
-//!   call (or one after the kernel's GICv2 installed itself) is `panic(9)`, where the C's
-//!   overwrites the first table (no machine has two GICs).
+
 //! - `splassert` before a controller attaches: LZ's table was registered by `initarm`, so
 //!   the kernel's callers reached `arm_splassert_check` from the first `spl` on; since N7.2a2
 //!   `hal::cpu::intr::splassert` runs the same check itself until a controller installs
@@ -108,10 +105,7 @@ use core::ptr::{self, NonNull};
 use crate::sys::staticcell::StaticCell;
 
 use crate::arch::arm64::include::cpu::{CpuInfo, curcpu};
-use crate::arch::arm64::include::frame::Trapframe;
-use crate::arch::arm64::include::intr::{
-    ArmIntrFunc, IPL_NONE, InterruptController, IntrFn, MachineIntrHandle,
-};
+use crate::arch::arm64::include::intr::{IPL_NONE, InterruptController, IntrFn, MachineIntrHandle};
 use crate::kassert;
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_sched::{cpu_info_by_number, cpu_number_of};
@@ -124,76 +118,14 @@ use kernel::dev::intr::IntrHandler;
 
 pub use kernel::dev::arm64::intr::{
     MAX_INTERRUPT_CELLS, arm_intr_cpu_enable, arm_intr_get_parent, arm_intr_init_fdt,
-    arm_intr_map_msi,
+    arm_intr_map_msi, intr_disable_wakeup, intr_enable_wakeup,
 };
-
-/// `arm_intr_func`: the controller's `spl` functions, the defaults until one attaches; `hal`
-/// reaches them through [`ArmIntrHardware`].
-static ARM_INTR_FUNC: StaticCell<ArmIntrFunc> = StaticCell::new(ArmIntrFunc {
-    raise: arm_dflt_splraise,
-    lower: arm_dflt_spllower,
-    x: arm_dflt_splx,
-    setipl: arm_dflt_setipl,
-    enable_wakeup: None,
-    disable_wakeup: None,
-});
-
-/// The registered `spl` functions.
-fn arm_intr_func() -> &'static ArmIntrFunc {
-    // SAFETY: written only by `arm_set_intr_handler` during autoconfiguration on the boot
-    // CPU, before interrupts are enabled; read afterwards.
-    unsafe { ARM_INTR_FUNC.get() }
-}
 
 /// `arm_smask[level]` (`hal::cpu::intr::smask`, the table's owner since N4.5c).
 #[inline]
 pub fn arm_smask(level: i32) -> u64 {
     hal::cpu::intr::smask(level)
 }
-
-/// `struct arm_intr_func` as `hal` calls it (decision 46: the C's function table is the
-/// trait `hal::cpu::intr::IntrHardware`): the table [`arm_set_intr_handler`] filled, the C's
-/// defaults before.
-pub struct ArmIntrHardware;
-
-impl hal::cpu::intr::IntrHardware for ArmIntrHardware {
-    fn splraise(&self, ipl: i32) -> i32 {
-        (arm_intr_func().raise)(ipl)
-    }
-
-    fn spllower(&self, ipl: i32) -> i32 {
-        (arm_intr_func().lower)(ipl)
-    }
-
-    fn splx(&self, ipl: i32) {
-        (arm_intr_func().x)(ipl);
-    }
-
-    fn setipl(&self, ipl: i32) {
-        (arm_intr_func().setipl)(ipl);
-    }
-
-    fn splassert(&self, wantipl: i32, func: &str) {
-        arm_splassert_check(wantipl, func);
-    }
-
-    /// `(*arm_irq_dispatch)(frame)`: what the controller gave `arm_set_intr_handler`.
-    fn dispatch_irq(&self, frame: &mut Trapframe, _irq: &hal::cpu::intr::InIrq) {
-        // SAFETY: written once during autoconfiguration, read on every interrupt afterwards.
-        let dispatch = unsafe { ARM_IRQ_DISPATCH.read() };
-        dispatch(frame);
-    }
-
-    /// `(*arm_fiq_dispatch)(frame)`.
-    fn dispatch_fiq(&self, frame: &mut Trapframe) {
-        // SAFETY: as for `dispatch_irq`.
-        let dispatch = unsafe { ARM_FIQ_DISPATCH.read() };
-        dispatch(frame);
-    }
-}
-
-/// The controller `hal` reaches (`sys/kern/hal_bridges.rs` registers it).
-pub static ARM_INTR_HARDWARE: ArmIntrHardware = ArmIntrHardware;
 
 /// `arm_clock_func`: the clock driver's entry points, registered by the driver that attaches.
 pub struct ArmClockFunc {
@@ -289,23 +221,6 @@ pub fn arm_dflt_delay(usecs: u32) {
     }
 }
 
-/// `arm_dflt_irq`: the IRQ dispatcher before an interrupt controller registers one.
-pub fn arm_dflt_irq(_frame: &mut Trapframe) {
-    panic(format_args!("arm_dflt_irq"));
-}
-
-/// `arm_dflt_fiq`: the FIQ dispatcher before an interrupt controller registers one.
-pub fn arm_dflt_fiq(_frame: &mut Trapframe) {
-    panic(format_args!("arm_dflt_fiq"));
-}
-
-/// `arm_irq_dispatch`: where `arm_cpu_irq` sends an IRQ; set by `arm_intr_register_fdt`
-/// (M4-b) during autoconfiguration on the boot CPU.
-pub static ARM_IRQ_DISPATCH: StaticCell<fn(&mut Trapframe)> = StaticCell::new(arm_dflt_irq);
-
-/// `arm_fiq_dispatch`: as `arm_irq_dispatch`, for FIQs.
-pub static ARM_FIQ_DISPATCH: StaticCell<fn(&mut Trapframe)> = StaticCell::new(arm_dflt_fiq);
-
 /// `arm_dflt_splraise`: raise the level in `ci_cpl` (`hal::cpu::intr`'s).
 pub fn arm_dflt_splraise(newcpl: i32) -> i32 {
     hal::cpu::intr::dflt_splraise(newcpl)
@@ -331,45 +246,6 @@ pub fn arm_dflt_setipl(newcpl: i32) {
 /// (`hal::cpu::intr::do_pending_intr`).
 pub fn arm_do_pending_intr(pcpl: i32) {
     hal::cpu::intr::do_pending_intr(pcpl);
-}
-
-/// `arm_set_intr_handler`: the interrupt controller registers its `spl` functions and
-/// dispatchers, and the table becomes the machine's (`hal::cpu::intr::install` of
-/// [`ArmIntrHardware`], N7.2a2: what `initarm` did before; a native controller installs
-/// itself instead). A legacy controller calls it once, on the boot CPU, at its attach.
-#[allow(clippy::too_many_arguments)] // the C's signature
-pub fn arm_set_intr_handler(
-    raise: fn(i32) -> i32,
-    lower: fn(i32) -> i32,
-    x: fn(i32),
-    setipl: fn(i32),
-    irq_dispatch: Option<fn(&mut Trapframe)>,
-    fiq_dispatch: Option<fn(&mut Trapframe)>,
-    enable_wakeup: Option<fn()>,
-    disable_wakeup: Option<fn()>,
-) {
-    // SAFETY: the controller attaches once, on the boot CPU, before interrupts are enabled.
-    unsafe {
-        ARM_INTR_FUNC.write(ArmIntrFunc {
-            raise,
-            lower,
-            x,
-            setipl,
-            enable_wakeup,
-            disable_wakeup,
-        });
-        if let Some(irq) = irq_dispatch {
-            ARM_IRQ_DISPATCH.write(irq);
-        }
-        if let Some(fiq) = fiq_dispatch {
-            ARM_FIQ_DISPATCH.write(fiq);
-        }
-    }
-    if hal::cpu::intr::install(&ARM_INTR_HARDWARE).is_err() {
-        panic(format_args!(
-            "arm_set_intr_handler: another interrupt controller attached"
-        ));
-    }
 }
 
 /// `arm_init_smask`: which soft interrupts each level leaves unmasked, once
@@ -413,20 +289,6 @@ pub fn arm_splassert_check(wantipl: i32, func: &str) {
 
     if wantipl == IPL_NONE && curcpu().core.idepth() != 0 {
         splassert_fail(-1, curcpu().core.idepth() as i32, func);
-    }
-}
-
-/// `intr_enable_wakeup`.
-pub fn intr_enable_wakeup() {
-    if let Some(f) = arm_intr_func().enable_wakeup {
-        f();
-    }
-}
-
-/// `intr_disable_wakeup`.
-pub fn intr_disable_wakeup() {
-    if let Some(f) = arm_intr_func().disable_wakeup {
-        f();
     }
 }
 
@@ -950,23 +812,14 @@ pub fn intr_set_wakeup(cookie: NonNull<MachineIntrHandle>) {
 
 // IPI implementation (MULTIPROCESSOR)
 
-/// `intr_send_ipi_func` of a legacy controller (`agintc_attach` installs its own, on the boot
-/// CPU before any application processor starts; scaffolding until N7.2a3): a native one sets
-/// the kernel's slot instead (`kernel::dev::arm64::intr::intr_set_send_ipi`).
-#[cfg(feature = "multiprocessor")]
-pub static INTR_SEND_IPI_FUNC: StaticCell<fn(&CpuInfo, i32)> = StaticCell::new(arm_no_send_ipi);
-
-/// `arm_send_ipi`: sends IPI `id` (`ARM_IPI_*`) to `ci`: through the kernel's slot when a
-/// native controller set it, through the legacy one's otherwise.
+/// `arm_send_ipi`: sends IPI `id` (`ARM_IPI_*`) to `ci` through `intr_send_ipi_func`, the
+/// kernel's slot that the attaching controller sets (`arm_no_send_ipi` before it).
 #[cfg(feature = "multiprocessor")]
 pub fn arm_send_ipi(ci: &CpuInfo, id: i32) {
-    if let Some(f) = core_intr::intr_send_ipi_func() {
-        return f(cpu_number_of(ci), id);
+    match core_intr::intr_send_ipi_func() {
+        Some(f) => f(cpu_number_of(ci), id),
+        None => arm_no_send_ipi(ci, id),
     }
-    // SAFETY: written once by the controller's attach, before any CPU but the boot one runs
-    // (see `INTR_SEND_IPI_FUNC`); read-only afterwards.
-    let f = unsafe { INTR_SEND_IPI_FUNC.read() };
-    f(ci, id)
 }
 
 /// `arm_no_send_ipi`: the controller sends no IPIs.

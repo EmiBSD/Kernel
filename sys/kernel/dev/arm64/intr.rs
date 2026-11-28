@@ -138,6 +138,9 @@
 //!   then a `malloc`ed `machine_intr_handle` filled with `ic` and the answer) call
 //!   [`IcReg::establish`] and [`IcReg::establish_msi`], which make the handle; `ic_establish_msi
 //!   != NULL`, their test for an MSI controller, is [`InterruptController::has_msi`].
+//! - N7.2a3: `intr_enable_wakeup` and `intr_disable_wakeup` (`arm_intr_func`'s wakeup entries,
+//!   `bsd`'s until its table went with the last legacy GIC) call the installed controller's
+//!   `hal::cpu::intr::IntrHardware` hooks ([`intr_enable_wakeup`], [`intr_disable_wakeup`]).
 
 use core::any::Any;
 use core::sync::atomic::{AtomicI32, Ordering};
@@ -1046,6 +1049,22 @@ pub fn intr_set_wakeup(ih: IntrHandle) {
     ih.ic.ops.set_wakeup(ih.ih);
 }
 
+/// `intr_enable_wakeup`: before the machine sleeps, the installed controller masks what may
+/// not wake it (`arm_intr_func.enable_wakeup`; nothing before a controller attached, the C's
+/// NULL hook).
+pub fn intr_enable_wakeup() {
+    if let Some(hw) = hal::cpu::intr::hardware() {
+        hw.enable_wakeup();
+    }
+}
+
+/// `intr_disable_wakeup`: after the resume (`arm_intr_func.disable_wakeup`).
+pub fn intr_disable_wakeup() {
+    if let Some(hw) = hal::cpu::intr::hardware() {
+        hw.disable_wakeup();
+    }
+}
+
 /// `LIST_FOREACH(ic, &interrupt_controllers, ic_list)`: the registered controllers, the
 /// latest first.
 pub fn controllers() -> impl Iterator<Item = IcRef> {
@@ -1060,8 +1079,7 @@ pub fn intr_set_send_ipi(f: fn(usize, i32)) {
     }
 }
 
-/// The controller's IPI sender, `None` before a native controller set one (`bsd`'s legacy
-/// GICv3 keeps its own slot until N7.2a3).
+/// The controller's IPI sender, `None` before the controller's attach set it.
 pub fn intr_send_ipi_func() -> Option<fn(usize, i32)> {
     INTR_SEND_IPI_FUNC.get().copied()
 }

@@ -25,8 +25,9 @@
 //! asserts on it (the interrupt level, the spin count), so tests running in parallel do not
 //! see each other's.
 //!
-//! - `IntrHardware`: the default levels (`hal::cpu::intr`'s, each test thread's core), whose
-//!   `splassert` fails the test.
+//! - `IntrHardware` (no bridge since N7.2a3: the double is installed as the controller is,
+//!   `hal::cpu::intr::install`): the default levels (`hal::cpu::intr`'s, each test thread's
+//!   core), whose `splassert` fails the test.
 //! - The running CPU is no bridge (N4.5a): `hal::cpu`'s host backend makes every test thread
 //!   a CPU of its own, so two test threads contend for a lock and update per-CPU counters as
 //!   two CPUs do.
@@ -472,7 +473,7 @@ static TEST_RANDOM: TestRandom = TestRandom;
 pub(crate) fn install() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
-        let _ = bridges::register_intr_hardware(&TEST_INTR);
+        let _ = crate::cpu::intr::install(&TEST_INTR);
         let _ = bridges::register_sleep(&TEST_SLEEP);
         let _ = bridges::register_pool_backend(&TEST_POOLS);
         let _ = bridges::register_malloc(&TEST_MALLOC);

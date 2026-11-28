@@ -3006,6 +3006,11 @@ pub fn agintc_ipi_count() -> u64 {
             .sum()
     })
 }
+
+const _: () = {
+    assert!(GITS_CMDQ_NENTRIES == 2048);
+    assert!(size_of::<[u64; 4]>() == GITS_CMD_SIZE);
+};
 /* </CODE> */
 
 /* <TESTS> */

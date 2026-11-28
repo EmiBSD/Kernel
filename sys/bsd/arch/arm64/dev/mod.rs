@@ -26,13 +26,13 @@
 //! `simplebus` stays here for the legacy GICv3 until N7.2a3. `ampintc` and its GICv2m frames
 //! are the kernel's since N7.2a2 (`kernel::dev::arm64::ampintc`).
 //! M14 adds arm64 ACPI's `acpiiort` (the IORT) and `acpipci` (the ACPI PCI host bridges).
-//! M16f adds `agintc`, the GICv3 interrupt controller with its ITS (`agintcmsi`), and `smmu`
-//! (the ARM System MMU, `smmureg`/`smmuvar` its headers) with its device-tree and IORT
-//! attachments `smmu_fdt` and `smmu_acpi`. The rest attach with their milestones.
+//! M16f adds `agintc`, the GICv3 interrupt controller with its ITS (`agintcmsi`), the kernel's
+//! since N7.2a3 (`kernel::dev::arm64::agintc`), and `smmu` (the ARM System MMU,
+//! `smmureg`/`smmuvar` its headers) with its device-tree and IORT attachments `smmu_fdt` and
+//! `smmu_acpi`. The rest attach with their milestones.
 
 pub mod acpiiort;
 pub mod acpipci;
-pub mod agintc;
 pub mod agtimer;
 pub mod efi_machdep;
 pub mod pci_machdep;

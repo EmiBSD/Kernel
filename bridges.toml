@@ -29,30 +29,14 @@
 #             pays it, when one is meant, goes in the comment above the row
 # The comment above each row says what implements it today.
 
-# bsd: the interrupt controller's part of spl(9) (struct arm_intr_func: raise, lower, x, setipl,
-# and arm_splassert_check), implemented by sys/arch/arm64/arm64/intr.rs (ArmIntrHardware, over
-# the table the GIC drivers give arm_set_intr_handler) and registered by arm64's initarm (N4.5c,
-# replacing IntrLevel: the level itself is hal's). Decision 46: the C's function table as a
-# trait. N4.8b: dispatch_irq and dispatch_fiq (arm_irq_dispatch, arm_fiq_dispatch), which
-# hal's arm_cpu_irq/arm_cpu_fiq call. Paid when the GIC drivers move (N7). N7.2a2: the slot is
-# hal::cpu::intr's own (install, hardware; bridges::register_intr_hardware forwards to it) and
-# the kernel's ampintc(4) implements the trait itself; this row is what is left of the bridge:
-# bsd's ArmIntrHardware for the legacy agintc(4), installed by bsd's arm_set_intr_handler (no
-# longer by initarm), and the dispatch takes the ClockFrame. Removed by N7.2a3.
-# hal::cpu::intr::IntrHardware
-[[bridge]]
-trait = "IntrHardware"
-for = ["sys/hal/cpu/intr.rs"]
-paid_by = "N7"
-
 # bsd: the interrupt controllers still in bsd (struct interrupt_controller: ic_establish,
 # ic_establish_msi, ic_disestablish, ic_enable, ic_disable, ic_route, ic_cpu_enable,
 # ic_barrier, ic_set_wakeup), implemented by sys/bsd/arch/arm64/arm64/intr.rs (LegacyIc, one
 # per legacy struct that arm_intr_register_fdt registers) and received by the kernel as a value
 # (IcDesc::ops, N7.2a1). The kernel's own pre-registration (PreregIc) implements it too; the
 # trait stays as API. Paid when the last legacy table goes: the GICs (N7.2a2 ampintc, N7.2a3
-# agintc), pciecam's barrier-only table (N7.5), acpipci's (N7.11): the row goes at N7.11, with
-# the last one.
+# agintc, both done), pciecam's barrier-only table (N7.5), acpipci's (N7.11): the row goes at
+# N7.11, with the last one.
 # kernel::dev::arm64::intr::InterruptController
 [[bridge]]
 trait = "InterruptController"
