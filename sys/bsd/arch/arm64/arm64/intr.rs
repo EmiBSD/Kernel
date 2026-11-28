@@ -33,13 +33,14 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! arm64 interrupt dispatch and the clock hooks: `arch/arm64/arm64/intr.c`.
+//! arm64 interrupt dispatch: `arch/arm64/arm64/intr.c` (its clock hooks are the kernel's
+//! since N7.2b2b).
 //!
 //! Upstream: sys/arch/arm64/arm64/intr.c @ 3ce1f3f79392
 //!
-//! Status: `wip`. Milestone M2 ports the clock function table and `delay(9)`
+//! Status: `wip`. Milestone M2 ported the clock function table and `delay(9)`
 //! (`arm_clock_func`, `arm_clock_register`, `arm_dflt_delay`, `delay`, `cpu_initclocks`,
-//! `cpu_startclock`, `setstatclockrate`); M4 adds the IRQ/FIQ entry from `exception.S`
+//! `cpu_startclock`, `setstatclockrate`; `kernel::time::clock`'s since N7.2b2b, below); M4 adds the IRQ/FIQ entry from `exception.S`
 //! (`arm_dflt_irq`, `arm_dflt_fiq`, `arm_irq_dispatch`, `arm_fiq_dispatch`; `arm_cpu_irq`
 //! and `arm_cpu_fiq` are `hal`'s since N4.8b, `sys/hal/arch/arm64/trap.rs`, which dispatch
 //! through the controller installed in `hal::cpu::intr`), the `spl` machinery (`arm_smask`,
@@ -53,7 +54,8 @@
 //! `imap` and `msi` variants (`arm_intr_establish_fdt_imap`/`_imap_cpu`/`_msi`/`_msi_cpu`)
 //! and `arm_intr_map_msi`; M11a adds the `MULTIPROCESSOR` IPIs
 //! (`intr_send_ipi_func`, `arm_send_ipi`, `arm_no_send_ipi`); the generic
-//! timer (`agtimer.c`) that replaces `arm_dflt_delay` attaches from `mainbus` (M5).
+//! timer (`agtimer.c`, the kernel's `kernel::dev::arm64::agtimer` since N7.2b2b), which
+//! replaces `arm_dflt_delay`, attaches from `mainbus` (M5).
 //!
 //! N7.2a1: the registry of interrupt controllers, the pre-registration and the device tree's
 //! interrupt specifiers are the kernel's (`kernel::dev::arm64::intr`); this file is the

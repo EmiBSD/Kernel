@@ -143,9 +143,13 @@ pub fn set_readcnt64_sun50i() {
     set_regs(r);
 }
 
-/// The timecounter's reading: the counter's low 32 bits, through the chosen reader.
+/// `agtimer_get_timecount_default` (or `_sun50i` once the attach chose it), as arm64's: the
+/// counter's low 32 bits, one plain read unless the sun50i reader is chosen.
 pub fn timecount() -> u32 {
-    readcnt64() as u32
+    if regs().sun50i {
+        return readcnt64_sun50i() as u32;
+    }
+    read_cntvct() as u32
 }
 
 /// `CNTFRQ_EL0`.

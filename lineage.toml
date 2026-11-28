@@ -1639,7 +1639,7 @@ rust = "sys/bsd/arch/arm64/arm64/autoconf.rs"
 lz = ["sys/arch/arm64/arm64/autoconf.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/dev/arm64/mainbus.rs", "sys/kernel/dev/disk.rs", "sys/kernel/dev/arm64/agtimer.rs"]
-notes = "N7.2b2b: cpu_configure switches the kernel's backward-uptime check on under feature qemu (LZ's agtimer_startclock did). M4/M5: cpu_configure as far as the interrupts go; M7b: cpu_configure in the C's order (splhigh, softintr_init, config_rootfound(\"mainbus\"), cold = 0, spl0; the GIC and the generic timer now attach through mainbus, attach_interrupt_controller and attach_timer are gone); unmap_startup (with codepatch_disable) and cpu_identify_cleanup reported; M7b: bus_dma_init runs (then selftest bus_dma_check on mainbus_dma_tag under feature qemu); device_register (empty, as in C) through machine::autoconf; nam2blk[]; diskconf waits for disks; cold lives in sys/systm.rs; M8: diskconf (setroot without a boot device; dumpconf reported); M10e: diskconf with NFSCLIENT: the interface whose MAC is bootmac (BOOTMAC, a StaticCell nothing fills under Limine) becomes the boot device through parsedisk; M11a: cpu_identify_cleanup runs (cpu.rs); cryptox_setup (CRYPTO with arm64_has_aes) still not called"
+notes = "N7.2b2b: cpu_configure switches the kernel's backward-uptime check on under feature qemu (bsd's N4.8a copy of agtimer_startclock did; not in LZ). M4/M5: cpu_configure as far as the interrupts go; M7b: cpu_configure in the C's order (splhigh, softintr_init, config_rootfound(\"mainbus\"), cold = 0, spl0; the GIC and the generic timer now attach through mainbus, attach_interrupt_controller and attach_timer are gone); unmap_startup (with codepatch_disable) and cpu_identify_cleanup reported; M7b: bus_dma_init runs (then selftest bus_dma_check on mainbus_dma_tag under feature qemu); device_register (empty, as in C) through machine::autoconf; nam2blk[]; diskconf waits for disks; cold lives in sys/systm.rs; M8: diskconf (setroot without a boot device; dumpconf reported); M10e: diskconf with NFSCLIENT: the interface whose MAC is bootmac (BOOTMAC, a StaticCell nothing fills under Limine) becomes the boot device through parsedisk; M11a: cpu_identify_cleanup runs (cpu.rs); cryptox_setup (CRYPTO with arm64_has_aes) still not called"
 
 [[module]]
 rust = "sys/bsd/arch/arm64/arm64/bus_dma.rs"
@@ -14342,6 +14342,11 @@ notes = "N4.8a: agtimer.c's register half: CNTVCT_EL0 read around the Cortex-A73
 [[module.fn]]
 lz = "sys/arch/arm64/dev/agtimer.rs::AGTIMER_READCNT64"
 native = ["SUN50I"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/agtimer.rs::agtimer_readcnt64_default"
+native = ["readcnt64_default"]
 kind = "renamed"
 
 [[module]]

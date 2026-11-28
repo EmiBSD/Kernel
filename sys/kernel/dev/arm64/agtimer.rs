@@ -52,9 +52,14 @@
 //!
 //! ## Deviations
 //! - One static softc (`AGTIMER_SC`, the C's `agtimer_cd.cd_devs[0]`) holds what
-//!   `struct agtimer_softc` adds to the device, as LZ; the device's own softc is empty. A
-//!   second timer node prints its line and changes nothing (the C would register the same
-//!   timecounter twice): machines have one.
+//!   `struct agtimer_softc` adds to the device, as LZ; the device's own softc is empty.
+//! - A second timer node prints its line and changes nothing. The C's second attach
+//!   (`agtimer.c:184-217`) sets `agtimer_frequency` again from `CNTFRQ_EL0` and the node's
+//!   `clock-frequency`, may switch the counter to the sun50i reader, registers the clock
+//!   functions again (ignored: the first registration wins) and calls `tc_init` on the same
+//!   `agtimer_timecounter` once more. The kernel refuses that last step: a second `tc_init` of
+//!   the same entry would insert it twice into the timecounter list (its one link). Machines
+//!   have one timer node.
 //! - Not in the C: [`agtimer_evtstrm_enable`] turns on the timer's event stream
 //!   (`CNTKCTL_EL1.EVNTEN`, counter bit 12 at QEMU's 62.5 MHz: a `wfe` wake-up every
 //!   131 µs). Each application processor calls it first thing (`cpu_hatch_entry`), and
@@ -88,12 +93,19 @@
 //!   `IntrHandler::Frame(agtimer_intr)`, the C's `NULL` argument that hands it the frame.
 //! - The `rearm`, `trigger`, `initclocks`, `startclock`, `setstatclockrate` and `delay`
 //!   functions take the softc they act on (the C's cookie or `cd_devs[0]`), so the host tests
-//!   run them on a softc of their own; the kernel's callers pass [`AGTIMER_SC`].
+//!   run them on a softc of their own; the kernel's callers pass [`AGTIMER_SC`]. Two places
+//!   name the static all the same: `ClockHardware::startclock` hands `&AGTIMER_SC` to
+//!   `agtimer_startclock`, since the interrupt clock `clockintr_cpu_init` installs must be
+//!   `'static` and the trait's `&self` is not (only that softc is ever installed); and the
+//!   timecounter's entry is the softc's set-once `tc`, which the attach fills with
+//!   `AGTIMER_TIMECOUNTER` before `tc_init` (the C's `tc_priv = sc`), so
+//!   `agtimer_set_clockrate` updates the entry of the softc it is given (a test gives its
+//!   softc an entry of its own, never registered).
 //! - `agtimer_cpu_initclocks`' PPI choice is [`agtimer_ppi_index`], and the attach's
 //!   frequency arithmetic `Agtimer::configure`, both tested on the host.
-//! - The dispatch's backward-uptime check under the smokes (`set_uptime_check`, LZ's
-//!   `agtimer_startclock` read `bsd`'s feature `qemu`) is switched on by `bsd`'s
-//!   `cpu_configure`, before the first clock starts.
+//! - The dispatch's backward-uptime check under the smokes (`set_uptime_check`, not in LZ:
+//!   `bsd`'s N4.8a copy of this driver called it from `agtimer_startclock` with `bsd`'s
+//!   feature `qemu`) is switched on by `bsd`'s `cpu_configure`, before the first clock starts.
 //! - The `armreg.h` bits the driver writes are private constants of this module (the kernel
 //!   names no machine header; `mainbus`'s `MPIDR_AFF` is the precedent).
 
@@ -167,6 +179,9 @@ pub struct Agtimer {
     sun50i: AtomicBool,
     /// `agtimer_cd.cd_devs[0] != NULL`: the attach ran.
     attached: AtomicBool,
+    /// The timecounter's entry whose `tc_priv` this softc is (`agtimer_timecounter`), set by
+    /// the attach before `tc_init`.
+    tc: OnceStatic<&'static TcEntry>,
 }
 
 impl Agtimer {
@@ -181,6 +196,7 @@ impl Agtimer {
             ih: OnceStatic::new(),
             sun50i: AtomicBool::new(false),
             attached: AtomicBool::new(false),
+            tc: OnceStatic::new(),
         }
     }
 
@@ -256,11 +272,6 @@ pub static AGTIMER_SC: Agtimer = Agtimer::new();
 
 /// `agtimer_timecounter`: the kernel's record of the counter.
 static AGTIMER_TIMECOUNTER: TcEntry = TcEntry::new(&AGTIMER_SC);
-
-/// `agtimer_readcnt64_default`: `CNTVCT_EL0`, around the Cortex-A73 erratum 858921.
-pub fn agtimer_readcnt64_default() -> u64 {
-    timer::readcnt64_default()
-}
 
 /// `agtimer_readcnt64_sun50i`: the counter around the Allwinner A64 erratum.
 pub fn agtimer_readcnt64_sun50i() -> u64 {
@@ -367,6 +378,7 @@ pub fn agtimer_attach(fa: &FdtArgs) {
     let _ = install_clock_hardware(sc);
 
     // tc_frequency is the softc's rate (`Timecounter::frequency`), tc_priv the softc.
+    let _ = sc.tc.set(&AGTIMER_TIMECOUNTER);
     tc_init(&AGTIMER_TIMECOUNTER);
     // agtimer_intrclock.ic_cookie = sc: the softc is the interrupt clock.
 }
@@ -408,7 +420,9 @@ pub fn agtimer_set_clockrate(sc: &Agtimer, new_frequency: i32) {
     }
 
     sc.set_ticks();
-    AGTIMER_TIMECOUNTER.set_frequency(u64::from(sc.ticks_per_second()));
+    if let Some(tc) = sc.tc.get() {
+        tc.set_frequency(u64::from(sc.ticks_per_second()));
+    }
 
     printf(format_args!(
         "agtimer0: adjusting clock: new tick rate {} kHz\n",
@@ -699,19 +713,25 @@ mod tests {
     #[test]
     fn set_clockrate_waits_for_the_attach() {
         testutil::install();
-        let sc = at(24_000_000);
-        agtimer_set_clockrate(&sc, 62_500_000);
+        // The softc with an entry of its own, never registered (the attach sets the
+        // kernel's `AGTIMER_TIMECOUNTER` here).
+        let sc: &'static Agtimer = Box::leak(Box::new(at(24_000_000)));
+        let tc: &'static TcEntry = Box::leak(Box::new(TcEntry::new(sc)));
+        assert!(sc.tc.set(tc).is_ok());
+        agtimer_set_clockrate(sc, 62_500_000);
         assert_eq!(sc.frequency(), 62_500_000);
         assert_eq!(
             sc.ticks_per_second(),
             24_000_000,
             "not attached: the rate stays"
         );
+        assert_ne!(tc.frequency(), 62_500_000, "nor the timecounter's");
         sc.attached.store(true, Ordering::Relaxed);
-        agtimer_set_clockrate(&sc, 62_500_000);
+        agtimer_set_clockrate(sc, 62_500_000);
         assert_eq!(sc.ticks_per_second(), 62_500_000);
         assert_eq!(sc.nsec_cycle_ratio.load(Ordering::Relaxed), 1 << 28);
-        assert_eq!(Timecounter::frequency(&sc), 62_500_000);
+        assert_eq!(Timecounter::frequency(sc), 62_500_000);
+        assert_eq!(tc.frequency(), 62_500_000, "tc_frequency follows");
         assert!(testutil::printf_count("agtimer0: adjusting clock: new tick rate 62500 kHz") >= 1);
     }
 
@@ -800,8 +820,10 @@ mod tests {
     }
 
     #[test]
-    fn agtimer_init_without_a_frequency_installs_nothing() {
-        // CNTFRQ_EL0 is 0 on a fresh test thread: the C registers nothing, and so here.
+    fn agtimer_init_without_a_frequency_keeps_the_rate() {
+        // CNTFRQ_EL0 is 0 on a fresh test thread: agtimer_frequency stays (the C registers
+        // nothing either; whether the slot stays empty is not checked here, the clock tests
+        // own it).
         set_regs(TimerRegs::INIT);
         let before = AGTIMER_SC.frequency();
         agtimer_init();
