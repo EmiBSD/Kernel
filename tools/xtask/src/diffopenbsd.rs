@@ -157,7 +157,8 @@ pub(crate) fn diff_openbsd(root: &Path, args: &[&str]) -> Result<()> {
             "--ukc" => ukc.push(*it.next().ok_or("--ukc needs a value")?),
             "--sh" => sh = Some(*it.next().ok_or("--sh needs a value")?),
             // `probe`'s script after the login (`ProbeScript`): read from `args` below.
-            "--send-after" | "--send" | "--expect" | "--repeat" | "--step-timeout" => {
+            "--send-after" | "--send" | "--expect" | "--repeat" | "--step-timeout"
+            | "--boot-flags" => {
                 it.next().ok_or_else(|| format!("{a} needs a value"))?;
             }
             // A device option: `hwopts::set` or `devices::set_from_args` (main) has recorded
@@ -766,6 +767,10 @@ pub(crate) struct ProbeScript {
     pub(crate) expects: Vec<String>,
     pub(crate) repeat: u32,
     pub(crate) step: Duration,
+    /// `--boot-flags F`: `boot F` is typed at efiboot's `boot>`. With `-s` the boot is
+    /// single user: no login, the shell is chosen at `RETURN for sh:` and securelevel stays
+    /// at -1, as `smoke-ddbmp`'s boot (ddb.console and ddb.trigger are writable).
+    pub(crate) boot_flags: Option<String>,
 }
 
 impl ProbeScript {
@@ -795,6 +800,7 @@ impl ProbeScript {
             repeat: u32::try_from(number("--repeat", 1)?)
                 .map_err(|_| "--repeat: too large".to_string())?,
             step: Duration::from_secs(number("--step-timeout", Self::STEP_SECS)?),
+            boot_flags: crate::optional_flag(args, "--boot-flags").map(String::from),
         })
     }
 
@@ -876,16 +882,36 @@ fn probe(
     cmd.args(crate::devices::qemu_args(&work.join("openbsd-probe.img"))?);
     let log = work.join("openbsd-probe.log");
     let mut vm = Vm::spawn(&format!("openbsd-{}-probe", arch.name()), cmd, log.clone())?;
-    if !ukc.is_empty() {
+    let single = script.boot_flags.as_deref().is_some_and(|f| {
+        f.split_whitespace()
+            .any(|w| w.starts_with('-') && w.contains('s'))
+    });
+    if !ukc.is_empty() || script.boot_flags.is_some() {
         // efiboot waits five seconds at its prompt (boot.conf sets the serial console).
         vm.wait_for("boot>", boot::time_limit(Duration::from_secs(300)))?;
-        vm.send("boot -c\n")?;
-        for c in ukc.iter().copied().chain(["quit"]) {
+        match (&script.boot_flags, ukc.is_empty()) {
+            (_, false) => vm.send("boot -c\n")?,
+            (Some(f), true) => vm.send(&format!("boot {f}\n"))?,
+            (None, true) => {}
+        }
+        for c in ukc
+            .iter()
+            .copied()
+            .chain(["quit"])
+            .filter(|_| !ukc.is_empty())
+        {
             vm.wait_for("UKC> ", boot::time_limit(Duration::from_secs(300)))?;
             vm.send(&format!("{c}\n"))?;
         }
     }
-    login(&mut vm, boot::time_limit(Duration::from_secs(900)))?;
+    if single {
+        // Single user: no login; the shell is asked for, then its prompt.
+        vm.wait_for("RETURN for sh:", boot::time_limit(Duration::from_secs(900)))?;
+        vm.send("\n")?;
+        vm.wait_for("# ", boot::time_limit(Duration::from_secs(300)))?;
+    } else {
+        login(&mut vm, boot::time_limit(Duration::from_secs(900)))?;
+    }
     let mark = vm.mark();
     vm.send(&format!(
         "dmesg; {} 2>&1; echo @@PROBED\n",
@@ -1182,6 +1208,8 @@ mod tests {
             "3",
             "--step-timeout",
             "9",
+            "--boot-flags",
+            "-s",
         ])
         .unwrap();
         assert_eq!(
@@ -1190,6 +1218,7 @@ mod tests {
         );
         assert_eq!(s.expects, vec!["x".to_string()]);
         assert_eq!((s.repeat, s.step), (3, Duration::from_secs(9)));
+        assert_eq!(s.boot_flags.as_deref(), Some("-s"));
         assert!(!s.is_empty());
     }
 

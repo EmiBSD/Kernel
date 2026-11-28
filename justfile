@@ -2631,7 +2631,8 @@ smoke-ddbmp: (build-amd64 "--features qemu") (build-arm64 "--features qemu") bui
 # `smoke-ddbmp`'s CPU-count dependent parts: the CPU the first trigger goes through on its way
 # to CPU 1, and the lines CPU 1's `machine cpuinfo` shows for CPUs 2 and 3 on four processors.
 # `probe-ddbmp-openbsd` (not in `smokes`, not in ci): smoke-ddbmp's ddb sequence on the
-# diff-openbsd snapshot (real OpenBSD 8.0 arm64, cortex-a72, device tree, `-smp 2`), to see
+# diff-openbsd snapshot booted single user (`-s`, as smoke-ddbmp does: securelevel is not above 0, so
+# ddb.* are writable; real OpenBSD 8.0 arm64, cortex-a72, device tree, `-smp 2`), to see
 # whether OpenBSD itself hangs at `machine ddbcpu 0` as EmiBSD's smoke-ddbmp did. ddb polls the
 # serial console, so each text is typed at its prompt (`probe --send-after`). `sysctl
 # ddb.console=1` runs once (`--sh`), then `ddbmp_rounds` rounds of: trigger, `ddbcpu 0` then
@@ -2642,7 +2643,7 @@ smoke-ddbmp: (build-amd64 "--features qemu") (build-arm64 "--features qemu") bui
 # `just probe-ddbmp-openbsd [rounds] [step]`.
 probe-ddbmp-openbsd rounds="3" step="120":
     {{xtask}} diff-openbsd --arch arm64 --smp 2 probe \
-        --sh 'sysctl ddb.console=1; uname -a' --repeat {{rounds}} --step-timeout {{step}} \
+        --boot-flags -s --sh 'sysctl kern.securelevel; sysctl ddb.console=1; uname -a' --repeat {{rounds}} --step-timeout {{step}} \
         --send-after "# " --send 'sysctl ddb.trigger=1\n' \
         --send-after "ddb{" --send 'machine ddbcpu 0\n' \
         --send-after "ddb{0}> " --send 'machine ddbcpu 1\n' \
