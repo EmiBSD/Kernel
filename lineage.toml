@@ -15471,6 +15471,10 @@ rust = "sys/bsd/benches/legacy_sched.rs"
 reason = "decision 43: host microbenchmarks of bsd's run and sleep queues (setrunqueue, remrunqueue, a sleep_setup and unsleep trip) over the host machine double and the kernel crate's doubles, a harness = false bench target of bsd, never a kernel image; no OpenBSD or LZ source"
 
 [[extra]]
+rust = "sys/bsd/benches/legacy_virtio.rs"
+reason = "decision 43, N7.3a: the before of the kernel benches/dev.rs, the same loops (virtq.cycle1, virtq.cycle3-indirect, virtio.intr-empty) over bsd legacy virtio.rs on a queue built by hand over leaked host memory with a test transport, a harness = false bench target of bsd, never a kernel image; no OpenBSD or LZ source"
+
+[[extra]]
 rust = "sys/bsd/benches/legacy_pf.rs"
 reason = "decision 43, D-13, N6.7b1: the host microbenchmark of pf's table lookup (pf.table.match: pfr_match_addr of an address inside one of a table's 1,000 /24s) over bsd's pool(9) and malloc(9) on host memory (setup_real_memory's bring-up) and the kernel crate's doubles, run before and after pf's tables moved onto the kernel's radix tree, a harness = false bench target of bsd, never a kernel image; no OpenBSD or LZ source"
 
@@ -15498,6 +15502,11 @@ reason = "decision 43: host microbenchmarks of N4.4's hot paths (a knote's deliv
 rust = "sys/kernel/benches/clock.rs"
 crate = "kernel"
 reason = "decision 43: host microbenchmarks of N4.8's clock hot paths (the timecounter readers binuptime, getnanotime, nanouptime and tc_windup; the clock interrupt's dispatch and hardclock as they land) over the doubles (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
+
+[[extra]]
+rust = "sys/kernel/benches/dev.rs"
+crate = "kernel"
+reason = "decision 43, N7.3a: host microbenchmarks of the virtio core (virtq.cycle1 and virtq.cycle3-indirect: a request through a Virtqueue and back; virtio.intr-empty: ChildRef::check_vq of an empty queue; virtio.state-lock: a driver state Mutexed at IPL_NET) over FakeTransport and FakeDma (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
 
 [[extra]]
 rust = "sys/kernel/benches/pipe.rs"
@@ -22023,6 +22032,427 @@ crate = "kernel"
 lz = ["sys/dev/fdt/pscivar.rs"]
 status = "redesigned"
 notes = "N7.2b2a: pscivar.h's ids and return values, moved from bsd with psci(4) unchanged"
+
+[[module]]
+rust = "sys/kernel/dev/pv/virtio.rs"
+crate = "kernel"
+lz = ["sys/dev/pv/virtio.rs", "sys/dev/pv/virtiovar.rs"]
+status = "redesigned"
+notes = "N7.3a: the virtio core in the kernel, 0 unsafe. struct virtqueue as Virtqueue, a plain value owned by its child's state: the rings one hal::dev::dma::DmaBuf of the C's size and layout (bus_dmamem_alloc_range below VIRTIO_PAGE_SIZE << 32, map, create, load in one, U13: the four failure messages are the first), reached at virtioreg.rs's offsets, every sync a DmaBuf::sync of the C's range; vq_entries an MArray of M_DEVBUF with the free list an index threaded through it (nfree counts it, virtio_free_vq's walk O(1)); every mutating method &mut self, the transport a parameter where the C follows vq_owner; event_idx copied at alloc and init; the barriers core::sync::atomic::fence (P35). struct virtio_ops and the softc members a child sets -> the trait VirtioTransport (Box<dyn> per child, P38), sc_active_features/sc_indirect/sc_version_1 -> Features; vq_done and sc_config_change -> the trait VirtioChild of the child's state, handed to the transport as a ChildRef (AnyArc + monomorphised fns); struct virtio_attach_args -> VirtioArgs ('static under Aux::Typed, the transport's constructor, the legacy transport's arguments as scaffolding). A queue the device was told about keeps its ring when dropped (P43). Stricter than the C: a used slot outside the queue, an unreserved enqueue, a direct trim past the queue panic. Host doubles (feature doubles): FakeTransport, FakeDma, DeviceView, test_node. bsd's virtio.rs, virtiovar.rs and virtioreg.rs stay for the five legacy children and the transports until N7.3d"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::virtio_init_vq"
+native = ["Virtqueue::init"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::virtio_alloc_vq"
+native = ["Virtqueue::alloc"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::virtio_free_vq"
+native = ["Virtqueue::free"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::vq_alloc_entry"
+native = ["Virtqueue::alloc_entry"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::vq_free_entry"
+native = ["Virtqueue::free_entry"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::virtio_enqueue_prep"
+native = ["Virtqueue::enqueue_prep"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::virtio_enqueue_reserve"
+native = ["Virtqueue::enqueue_reserve"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::virtio_enqueue"
+native = ["Virtqueue::enqueue"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::virtio_enqueue_p"
+native = ["Virtqueue::enqueue_p"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::publish_avail_idx"
+native = ["Virtqueue::publish_avail_idx"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::virtio_enqueue_commit"
+native = ["Virtqueue::enqueue_commit", "vring_need_event"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::virtio_notify"
+native = ["Virtqueue::notify"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::virtio_enqueue_abort"
+native = ["Virtqueue::enqueue_abort", "Virtqueue::free_chain"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::virtio_enqueue_trim"
+native = ["Virtqueue::enqueue_trim"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::virtio_dequeue"
+native = ["Virtqueue::dequeue"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::virtio_dequeue_commit"
+native = ["Virtqueue::dequeue_commit", "Virtqueue::free_chain"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::virtio_postpone_intr"
+native = ["Virtqueue::postpone_intr"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::virtio_postpone_intr_smart"
+native = ["Virtqueue::postpone_intr_smart"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::virtio_postpone_intr_far"
+native = ["Virtqueue::postpone_intr_far"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::virtio_stop_vq_intr"
+native = ["Virtqueue::stop_intr"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::virtio_start_vq_intr"
+native = ["Virtqueue::start_intr"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::virtio_nused"
+native = ["Virtqueue::nused"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::virtio_check_vq"
+native = ["Virtqueue::check", "ChildRef::check_vq"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::vq_sync_descs"
+native = ["Virtqueue::sync_descs"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::vq_sync_aring"
+native = ["Virtqueue::sync_aring"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::vq_sync_aring_used_event"
+native = ["Virtqueue::sync_aring_used_event"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::vq_sync_uring"
+native = ["Virtqueue::sync_uring"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::vq_sync_uring_avail_event"
+native = ["Virtqueue::sync_uring_avail_event"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::vq_sync_indirect"
+native = ["Virtqueue::sync_indirect"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::vq_ring_addr"
+native = ["Virtqueue::queue_setup"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::vd_at"
+native = ["Virtqueue::table"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::vd_flags"
+native = ["Virtqueue::d_flags"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::vd_set_flags"
+native = ["Virtqueue::set_d_flags"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::vd_next"
+native = ["Virtqueue::d_next"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::vd_set_next"
+native = ["Virtqueue::set_d_next"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::vd_set_buf"
+native = ["Virtqueue::set_d_buf"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtio.rs::vd_set_len"
+native = ["Virtqueue::set_d_len"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::VirtioAttachArgs"
+native = ["VirtioArgs"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::VqDoneFn"
+native = ["VirtioChild"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::Virtqueue::clear"
+native = []
+kind = "dropped"
+reason = "memset(vq, 0, sizeof(*vq)): a queue is a value made whole by Virtqueue::alloc and given back by its drop or Virtqueue::free"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::Virtqueue::owner"
+native = []
+kind = "dropped"
+reason = "vq->vq_owner: the transport is a parameter of the methods that call it (enqueue_commit, free), and the event index feature is copied into the queue"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::Virtqueue::dmamap"
+native = []
+kind = "dropped"
+reason = "vq->vq_dmamap: the ring is a DmaBuf, whose segment is what the device is told (Virtqueue::queue_setup) and whose sync is the map's"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::Virtqueue::avail_ring_slot"
+native = ["Virtqueue::enqueue_commit"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::Virtqueue::avail_idx"
+native = ["Virtqueue::avail_idx_published"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::Virtqueue::set_avail_idx"
+native = ["Virtqueue::publish_avail_idx"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::Virtqueue::avail_ring"
+native = ["DeviceView::avail_ring"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::Virtqueue::set_avail_ring"
+native = ["Virtqueue::enqueue_commit"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::Virtqueue::vq_used_event"
+native = ["DeviceView::used_event"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::Virtqueue::set_vq_used_event"
+native = ["Virtqueue::set_used_event"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::Virtqueue::used_flags"
+native = ["Virtqueue::enqueue_commit"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::Virtqueue::used_idx"
+native = ["Virtqueue::used_idx_device"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::Virtqueue::used_ring"
+native = ["Virtqueue::dequeue"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::Virtqueue::vq_avail_event"
+native = ["Virtqueue::avail_event"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::VirtioIntrEstablishFn"
+native = []
+kind = "dropped"
+reason = "virtio_intr_establish's function type comes with its first caller, vio's per-queue vectors (N7.3b); no native child establishes its own interrupt"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::VirtioOps"
+native = ["VirtioTransport"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::VIRTIO_CHILD_ERROR"
+native = ["VirtioTransport"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::VirtioSoftc"
+native = ["Features", "VirtioTransport", "ChildRef"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::VirtioSoftc::ops"
+native = ["VirtioTransport"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::VirtioSoftc::dmat"
+native = ["VirtioTransport"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::VirtioSoftc::vqs"
+native = []
+kind = "dropped"
+reason = "sc->sc_vqs: the child owns its queues and hands the transport their QueueSetups (virtio_attach_finish, VirtioTransport::attach_finish)"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::VirtioSoftc::vq"
+native = []
+kind = "dropped"
+reason = "&sc->sc_vqs[i]: the child names its own queue; the transport's interrupt calls ChildRef::check_vq(i)"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::VirtioSoftc::child"
+native = ["ChildRef::dev"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::virtio_read_device_config_1"
+native = ["VirtioTransport"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::virtio_read_device_config_2"
+native = ["VirtioTransport"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::virtio_read_device_config_4"
+native = ["VirtioTransport"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::virtio_read_device_config_8"
+native = ["VirtioTransport"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::virtio_write_device_config_1"
+native = ["VirtioTransport"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::virtio_write_device_config_2"
+native = ["VirtioTransport"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::virtio_write_device_config_4"
+native = ["VirtioTransport"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::virtio_write_device_config_8"
+native = ["VirtioTransport"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::virtio_read_queue_size"
+native = ["VirtioTransport"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::virtio_setup_queue"
+native = ["VirtioTransport"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::virtio_negotiate_features"
+native = ["VirtioTransport"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::virtio_poll_intr"
+native = ["VirtioTransport"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::virtio_get_status"
+native = ["VirtioTransport"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::virtio_set_status"
+native = ["VirtioTransport"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::virtio_intr_barrier"
+native = ["VirtioTransport"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::virtio_intr_establish"
+native = []
+kind = "dropped"
+reason = "comes with its first caller, vio's per-queue vectors (N7.3b); no native child establishes its own interrupt (bsd's legacy children keep the C's)"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::virtio_device_reset"
+native = ["virtio_reset"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/dev/pv/virtiovar.rs::virtio_has_feature"
+native = ["Features::has"]
+kind = "renamed"
+
+[[module]]
+rust = "sys/kernel/dev/pv/virtioreg.rs"
+crate = "kernel"
+lz = ["sys/dev/pv/virtioreg.rs"]
+status = "redesigned"
+notes = "N7.3a: virtioreg.h in the kernel: the ids, feature and status bits and the ring structures as LZ's, plus the ring layout as byte offsets taken with offset_of! (VRING_DESC_*, VRING_AVAIL_*, VRING_USED_*, VRING_USED_ELEM_*), checked against the C's numbers and a packed mirror; the kernel's copy beside bsd's until N7.3d"
 
 [[module]]
 rust = "sys/kernel/dev/sensors.rs"

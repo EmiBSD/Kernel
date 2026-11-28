@@ -302,6 +302,13 @@ Locations are on `main` at the commit that last edited this file.
 | `NCPUSFOUND`'s `bsd` path, a re-export of `kernel::base::sysctl::NCPUSFOUND` | `sys/bsd/kern/init_main.rs:192` | Six `bsd` files (and amd64's frozen `mainbus.rs`) read or write `ncpusfound` by LZ's path; the kernel's mainbus counts it | N9 (with `bsd`), amd64's at N10 |
 | `BsdConfigGlue::mainbus` finding `mainbus_cd`'s row in `cfdata[]` (O(rows), suspend and powerdown only; the C reads `mainbus_cd.cd_devs[0]`), and `BsdConfigGlue::device_register` not calling the machine's for a native node | `sys/bsd/kern/subr_autoconf.rs:958`, `:967` | The root may be a native row whose units are its driver's table, not `mainbus_cd`'s `cd_units`; arm64's `device_register` is empty (the C's too), amd64's finds the boot device and gets a typed form at N10 | N9.1 (the registry names the root); N10 (amd64's `device_register`) |
 
+## virtio's legacy edge (N7.3a)
+
+| What | Where | Why | Removed by |
+|---|---|---|---|
+| `VirtioArgs::legacy`: the legacy transport's own arguments (`struct virtio_mmio_attach_args`, `struct virtio_pci_attach_args`) as an exposed address, which `bsd`'s presenter lends a legacy child and the kernel never reads (0 from a native transport) | `sys/kernel/dev/pv/virtio.rs` (`VirtioArgs`) | The five legacy children (vio, vioblk, vioscsi, viocon, viogpu) cast `void *aux` to their transport's struct, which carries `va_devid` and `va_nintr` and, for `attach_finish` and `intr_establish`, the transport's own members (`vma_fa`, `vpa_pa`, `vpa_msix`) | N7.3d, with the native transports |
+| Two virtio cores and two copies of `virtioreg.h`'s constants: the kernel's `dev/pv/{virtio,virtioreg}.rs` and `bsd`'s `dev/pv/{virtio,virtiovar,virtioreg}.rs` | `sys/kernel/dev/pv/`, `sys/bsd/dev/pv/` | `bsd`'s core serves the legacy children and the transports (their interrupt's `virtio_check_vqs`) until they move; the kernel's serves the native children | N7.3d (the transports and `bsd`'s core), with N7.3b, N7.4c and N7.9c for the children |
+
 ## Arriving
 
 Nothing announced.
