@@ -680,6 +680,7 @@ paid_by = "N7"
 # is API and stays; the row goes when the last legacy driver implements it natively (N7.14;
 # N10 for amd64's if U3 is taken). N7.2b1b: the first native implementers, the kernel's
 # mainbus and simplebus (kernel::dev::arm64), named by cfdata[] rows 0 and 12 (Cfdata::native).
+# N7.2b2a: psci(4) (kernel::dev::fdt::psci, row 29).
 # kernel::dev::device::DriverOps
 [[bridge]]
 trait = "DriverOps"

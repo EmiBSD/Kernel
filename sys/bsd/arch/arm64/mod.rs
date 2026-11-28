@@ -1229,14 +1229,6 @@ impl crate::machine::fdt::Fdt for Machine {
             .map(NonNull::cast)
     }
 
-    fn smc_call(a0: u64, a1: u64, a2: u64, a3: u64) -> u64 {
-        arm64::cpufunc::smc_call(a0, a1, a2, a3)
-    }
-
-    fn hvc_call(a0: u64, a1: u64, a2: u64, a3: u64) -> u64 {
-        arm64::cpufunc::hvc_call(a0, a1, a2, a3)
-    }
-
     fn lid_action() -> i32 {
         arm64::machdep::LID_ACTION.load(core::sync::atomic::Ordering::Relaxed)
     }

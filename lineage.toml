@@ -1664,7 +1664,7 @@ adapted_by = ["sys/kernel/base/log.rs", "sys/kernel/fs/fuse/fuse_device.rs"]
 rust = "sys/bsd/arch/arm64/arm64/cpu.rs"
 lz = ["sys/arch/arm64/arm64/cpu.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/arch/arm64/pmap/backend.rs", "sys/bsd/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc/mod.rs", "sys/bsd/kern/proc_glue.rs", "sys/hal/cpu/curcpu.rs", "sys/hal/cpu/thread.rs", "sys/kernel/sched/mod.rs", "sys/hal/cpu/intr.rs", "sys/kernel/base/sysctl.rs", "sys/kernel/time/clockintr.rs", "sys/hal/arch/arm64/trap.rs", "sys/hal/arch/arm64/exception.rs", "sys/kernel/trap.rs", "sys/kernel/dev/arm64/ampintc.rs"]
+adapted_by = ["sys/hal/arch/arm64/pmap/backend.rs", "sys/bsd/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc/mod.rs", "sys/bsd/kern/proc_glue.rs", "sys/hal/cpu/curcpu.rs", "sys/hal/cpu/thread.rs", "sys/kernel/sched/mod.rs", "sys/hal/cpu/intr.rs", "sys/kernel/base/sysctl.rs", "sys/kernel/time/clockintr.rs", "sys/hal/arch/arm64/trap.rs", "sys/hal/arch/arm64/exception.rs", "sys/kernel/trap.rs", "sys/kernel/dev/arm64/ampintc.rs", "sys/kernel/dev/fdt/psci.rs"]
 notes = "ahead of LZ since 94d0c9ed: cpu_init's SVE setup opens FP with SVE around its write of ZCR_EL1 (the fault is OpenBSD's own, cpu.c:1844-1856); LZ adopts the same change (its 6e1e27de, not on its main yet): the sync that brings it records it as already here"
 
 [[module]]
@@ -3170,16 +3170,6 @@ rust = "sys/bsd/dev/fdt/pluart_fdt.rs"
 lz = ["sys/dev/fdt/pluart_fdt.rs"]
 status = "inherited"
 notes = "M4: pluart_init_cons (fdt_find_cons + fdt_get_reg + pluartcnattach); M8: pluart_fdt_ca, pluart_fdt_match, pluart_fdt_attach (pluart* at fdt? in ioconf.rs; the machine's fdt_attach_args, fdt_intr_establish through machine::fdt); clock_enable_all/clock_get_frequency (ofw_clock.c) are reported, sc_clkfreq stays 0 so pluart_param keeps the firmware's baud rate; M16f: pinctrl_byname is ofw_pinctrl.c's"
-
-[[module]]
-rust = "sys/bsd/dev/fdt/psci.rs"
-lz = ["sys/dev/fdt/psci.rs"]
-status = "inherited"
-
-[[module]]
-rust = "sys/bsd/dev/fdt/pscivar.rs"
-lz = ["sys/dev/fdt/pscivar.rs"]
-status = "inherited"
 
 [[module]]
 rust = "sys/bsd/dev/fdt/simplefb.rs"
@@ -21485,6 +21475,49 @@ crate = "kernel"
 lz = ["sys/arch/arm64/dev/simplebus.rs", "sys/arch/arm64/include/simplebusvar.rs"]
 status = "redesigned"
 notes = "N7.2b1b: simplebus(4) as a kernel DriverOps (SIMPLEBUS; probe = simplebus_match over the bus's FdtArgs, 0 for any other argument); struct simplebus_softc as the bus's FdtBus held by the softc Simplebus, the pass and the early nodes locals of simplebus_attach (also what a native GIC calls on its own node, N7.2a2/a3); simplebus_submatch and simplebus_print closures of simplebus_attach_node; the four tag entries are FdtBus's methods. bsd's simplebus.rs and simplebusvar.rs stay whole (inherited) for the two legacy GICs until N7.2a3 (P24), which writes their [[module.fn]] rows"
+
+[[module]]
+rust = "sys/kernel/dev/fdt/psci.rs"
+crate = "kernel"
+lz = ["sys/dev/fdt/psci.rs"]
+status = "redesigned"
+notes = "N7.2b2a: psci(4) as a kernel DriverOps (PSCI; probe = psci_match over the bus's FdtArgs); struct psci_softc as Psci, built whole from the node (Psci::of_node) and set once in PSCI_SC (OnceStatic; a second attach panics), sc_smccc_version and sc_system_suspend atomics; sc_callfn a hal::cpu::smccc::Conduit and every call hal::cpu::smccc::call (the value class, P44); the hooks are kernel::base::reboot's slots; psci_cpu_on is psci_cpu_on_call (the conduit and the id for bsd's bootarg_mp_start, which makes the CPU_ON call with bsd's smc_call/hvc_call until N7.2c); psci_cpu_suspend and psci_system_suspend are visible stubs (unported!, no caller); the C's decisions are Psci methods, tested on softcs of the tests' own"
+[[module.fn]]
+lz = "sys/dev/fdt/psci.rs::PsciSoftc"
+native = ["Psci", "PsciDev"]
+kind = "split"
+[[module.fn]]
+lz = "sys/dev/fdt/psci.rs::PSCI_CA"
+native = ["PSCI", "PsciDriver"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/dev/fdt/psci.rs::PSCI_CD"
+native = ["sys/bsd/arch/arm64/conf/ioconf.rs::PSCI_CD", "PSCI_UNITS"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/dev/fdt/psci.rs::CallFn"
+native = []
+kind = "dropped"
+reason = "sc_callfn's type: the conduit is hal::cpu::smccc::Conduit, an enum held by value (Psci::conduit)"
+[[module.fn]]
+lz = "sys/dev/fdt/psci.rs::callfn_asserted"
+native = ["Psci::smccc_version_call", "Psci::arch_features"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/dev/fdt/psci.rs::psci_call"
+native = ["Psci::call_id"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/dev/fdt/psci.rs::psci_cpu_on"
+native = ["psci_cpu_on_call"]
+kind = "renamed"
+
+[[module]]
+rust = "sys/kernel/dev/fdt/pscivar.rs"
+crate = "kernel"
+lz = ["sys/dev/fdt/pscivar.rs"]
+status = "redesigned"
+notes = "N7.2b2a: pscivar.h's ids and return values, moved from bsd with psci(4) unchanged"
 
 [[module]]
 rust = "sys/kernel/dev/sensors.rs"

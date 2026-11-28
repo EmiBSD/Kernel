@@ -1553,16 +1553,6 @@ impl crate::machine::fdt::Fdt for Machine {
         None
     }
 
-    /// No secure monitor: `PSCI_NOT_SUPPORTED` (-1); only `psci(4)` calls it.
-    fn smc_call(_a0: u64, _a1: u64, _a2: u64, _a3: u64) -> u64 {
-        u64::MAX
-    }
-
-    /// No hypervisor conduit: `PSCI_NOT_SUPPORTED` (-1).
-    fn hvc_call(_a0: u64, _a1: u64, _a2: u64, _a3: u64) -> u64 {
-        u64::MAX
-    }
-
     /// `lid_action`'s default in both `machdep.c`s: suspend.
     fn lid_action() -> i32 {
         1

@@ -95,7 +95,6 @@ use crate::dev::fdt::pciecam::{PCIECAM_CA, PCIECAM_CD};
 use crate::dev::fdt::plgpio::{PLGPIO_CA, PLGPIO_CD};
 use crate::dev::fdt::plrtc::{PLRTC_CA, PLRTC_CD};
 use crate::dev::fdt::pluart_fdt::PLUART_FDT_CA;
-use crate::dev::fdt::psci::{PSCI_CA, PSCI_CD};
 use crate::dev::fdt::simplefb::{SIMPLEFB_CA, SIMPLEFB_CD};
 use crate::dev::fdt::virtio_mmio::VIRTIO_MMIO_CA;
 use crate::dev::ic::ahci::AHCI_CD;
@@ -175,6 +174,7 @@ use crate::sys::device::{
 use kernel::dev::arm64::ampintc::{AMPINTC_CA, AMPINTCMSI_CA};
 use kernel::dev::arm64::mainbus::MAINBUS;
 use kernel::dev::arm64::simplebus::SIMPLEBUS;
+use kernel::dev::fdt::psci::PSCI;
 #[cfg(feature = "fuse")]
 use kernel::fs::fuse::fuse_device::{NFUSE, fuseattach};
 
@@ -192,6 +192,11 @@ pub static AMPINTC_CD: Cfdriver = Cfdriver::new(b"ampintc", DV_DULL, 0);
 
 /// `ampintcmsi_cd`, as [`AMPINTC_CD`].
 pub static AMPINTCMSI_CD: Cfdriver = Cfdriver::new(b"ampintcmsi", DV_DULL, 0);
+
+/// `psci_cd`: the name `cfdata[29]` prints in UKC's listings; the driver is the kernel's
+/// (`kernel::dev::fdt::psci::PSCI`, the row's `Cfdata::native`, N7.2b2a). Scaffolding
+/// (docs/SCAFFOLDING.md) until the machine's table is the kernel's (N9.1).
+pub static PSCI_CD: Cfdriver = Cfdriver::new(b"psci", DV_DULL, 0);
 
 /// `pv[]` for children of the `fdt` attribute: `mainbus0` (`cfdata[0]`), `ampintc*`
 /// (`cfdata[1]`), `simplebus*` (`cfdata[12]`) and `agintc*` (`cfdata[51]`).
@@ -685,9 +690,9 @@ pub static CFDATA: StaticCell<[Cfdata; NCFDATA + NFREE]> = StaticCell::new([
         LN_SCSIBUS,
         0,
     ),
-    // 29: psci* at fdt? early 1
+    // 29: psci* at fdt? early 1 (the kernel's driver, N7.2b2a)
     Cfdata::new(
-        &PSCI_CA,
+        &CFATTACH_NATIVE,
         &PSCI_CD,
         0,
         FSTATE_STAR,
@@ -696,7 +701,8 @@ pub static CFDATA: StaticCell<[Cfdata; NCFDATA + NFREE]> = StaticCell::new([
         PV_FDT,
         LN_FDT,
         0,
-    ),
+    )
+    .native(&PSCI),
     // 30: ahci* at pci? flags 0x0000
     Cfdata::new(
         &AHCI_PCI_CA,

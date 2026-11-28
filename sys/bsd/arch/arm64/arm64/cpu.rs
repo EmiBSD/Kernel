@@ -64,7 +64,7 @@
 //!   `ci_el1_stkend` as its stack) plus what `initarm` does
 //!   on the boot processor (`SPSel`, `VBAR_EL1`, the FPU trapped as `fpu_drop` leaves it),
 //!   then calls `cpu_init_secondary`. After a boot by boot(8) (M14) the `BootMp` is
-//!   `machdep.rs`'s: psci(4)'s `psci_cpu_on` (`dev/fdt/psci.rs`, attached before the
+//!   `machdep.rs`'s: psci(4)'s `CPU_ON` (`kernel::dev::fdt::psci`, attached before the
 //!   processors) at `locore.S`'s `cpu_hatch_secondary`, which
 //!   brings the MMU up on `locore0.S`'s identity map and the kernel's `TTBR1_EL1` and
 //!   enters `cpu_hatch_entry` on `ci_el1_stkend` (`locore.rs`, deviations).
@@ -138,12 +138,6 @@ use crate::arch::arm64::include::cpu::{CpuInfo, curcpu};
 use crate::arch::arm64::include::elf::*;
 use crate::arch::arm64::include::fdt::FdtAttachArgs;
 use crate::arch::arm64::include::vmparam::USER_SPACE_BITS;
-#[cfg(feature = "multiprocessor")]
-use crate::dev::fdt::psci::{psci_can_suspend, psci_cpu_off};
-use crate::dev::fdt::psci::{
-    psci_flush_bp, psci_method, smccc_enable_arch_workaround_2, smccc_needs_arch_workaround_3,
-};
-use crate::dev::fdt::pscivar::{PSCI_METHOD_HVC, PSCI_METHOD_SMC};
 use crate::dev::ofw::fdt::{
     OF_child, OF_getindex, OF_getnodebyphandle, OF_getprop, OF_getpropbool, OF_getpropint,
     OF_getpropint64, OF_getpropintarray, OF_getproplen, OF_is_compatible, OF_peer,
@@ -171,6 +165,12 @@ use crate::sys::timeout::Timeout;
 use crate::unported;
 use crate::{kassert, queue_adapter};
 use hal::arch::arm64::exception::BhbMitigation;
+#[cfg(feature = "multiprocessor")]
+use kernel::dev::fdt::psci::{psci_can_suspend, psci_cpu_off};
+use kernel::dev::fdt::psci::{
+    psci_flush_bp, psci_method, smccc_enable_arch_workaround_2, smccc_needs_arch_workaround_3,
+};
+use kernel::dev::fdt::pscivar::{PSCI_METHOD_HVC, PSCI_METHOD_SMC};
 use kernel::vm::km::{KD_WAITOK, KP_ZERO, KV_ANY};
 
 #[cfg(feature = "multiprocessor")]

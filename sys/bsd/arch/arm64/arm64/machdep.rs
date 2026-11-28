@@ -132,6 +132,10 @@
 //!   `hal::cpu::trap::set_exec_regs`, one borrow of `hal`'s `UserFrame`: the frame's
 //!   uniqueness no longer rests on `bsd`'s call graph. The pmap's guard bit and the FPU reset
 //!   stay here.
+//! - N7.2b2a: `bootarg_mp_start` asks the kernel's psci(4) for the conduit and the `CPU_ON` id
+//!   (`psci_cpu_on_call`) and makes that one call itself with `cpufunc.rs`'s `hvc_call` or
+//!   `smc_call`, which hand the firmware this entry point and context: `hal`'s SMCCC call
+//!   refuses the entry-point functions (scaffolding until N7.2c types the secondary start).
 //! - N7.2b2a: `cpuresetfn` and `powerdownfn` (two `StaticCell`s written through
 //!   `machine::fdt`'s `Fdt::set_cpuresetfn`/`set_powerdownfn`, read here with an `unsafe` each)
 //!   are the kernel's slots (`kernel::base::reboot::{cpuresetfn, powerdownfn}`), which psci(4)
@@ -180,8 +184,6 @@ use crate::dev::efi::efi::{
     EfiRuntimeServicesCode, EfiRuntimeServicesData, EfiUnusableMemory,
 };
 use crate::dev::fdt::pluart_fdt::pluart_init_cons;
-use crate::dev::fdt::psci::psci_cpu_on;
-use crate::dev::fdt::pscivar::PSCI_SUCCESS;
 use crate::dev::fdt::simplefb::simplefb_init_cons;
 use crate::dev::ofw::fdt::fdt_node_property_int;
 use crate::dev::ofw::fdt::{
@@ -220,6 +222,8 @@ use hal::mem::fdtblob;
 use hal::vm::param::{atop, ptoa, round_page, trunc_page};
 use hal::vm::pmap::{BootstrapParams, KernelImage};
 use hal::vm::uvmexp::UVMEXP;
+use kernel::dev::fdt::psci::psci_cpu_on_call;
+use kernel::dev::fdt::pscivar::{PSCI_NOT_SUPPORTED, PSCI_SUCCESS};
 use kernel::dev::ofw::fdt::fdt_take_property;
 use kernel::vm::km::{KvMap, install_submap};
 use kernel::vm::km::{kernel_map, kernel_map_min, uvm_km_suballoc};
@@ -1045,7 +1049,7 @@ fn bootarg_mp() -> Option<BootMp> {
     if psci.is_null() {
         return None;
     }
-    // psci(4) (`dev/fdt/psci.rs`) attaches before the processors (`mainbus_attach_psci`)
+    // psci(4) (`kernel::dev::fdt::psci`) attaches before the processors (`mainbus_attach_psci`)
     // and makes the CPU_ON call; without a `/psci` node there is no way to start them.
 
     let cpus = fdt_find_node(b"/cpus");
@@ -1115,8 +1119,19 @@ unsafe fn bootarg_mp_start(i: usize, arg: usize) {
     let entry = (cpu_hatch_secondary as *const () as usize as u64)
         .wrapping_add(KERN_DELTA.load(Ordering::Relaxed));
     // `cpu_start_secondary`'s call: psci(4)'s `psci_cpu_on`, through the conduit its attach
-    // read from `/psci`.
-    let ret = psci_cpu_on(mpidr, entry, arg as u64);
+    // read from `/psci`. The kernel's psci(4) names the conduit and the id; the call that hands
+    // the firmware this entry point and context is this caller's (N7.2c types it).
+    let ret = match psci_cpu_on_call() {
+        Some((hal::cpu::smccc::Conduit::Hvc, id)) => {
+            crate::arch::arm64::arm64::cpufunc::hvc_call(u64::from(id), mpidr, entry, arg as u64)
+                as i32
+        }
+        Some((hal::cpu::smccc::Conduit::Smc, id)) => {
+            crate::arch::arm64::arm64::cpufunc::smc_call(u64::from(id), mpidr, entry, arg as u64)
+                as i32
+        }
+        None => PSCI_NOT_SUPPORTED,
+    };
     if ret != PSCI_SUCCESS {
         kprintf!(" psci: CPU_ON {:#x} failed: {}", mpidr, ret);
     }
