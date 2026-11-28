@@ -795,7 +795,7 @@ fn ampintc_calc_irq(sc: &AmpintcSoftc, irq: usize) {
     let mut max = IPL_NONE;
     let mut min = IPL_HIGH;
 
-    for ih in iq.list.iter() {
+    for ih in &iq.list {
         max = max.max(ih.ipl);
         min = min.min(ih.ipl);
     }
@@ -813,16 +813,16 @@ fn ampintc_calc_irq(sc: &AmpintcSoftc, irq: usize) {
 
     // Enable interrupts at lower levels, clear -> enable
     // Set interrupt priority/enable
-    if min != IPL_NONE {
+    if min == IPL_NONE {
+        ampintc_intr_disable(sc, irq);
+        if let Some(cpu) = cpu {
+            ampintc_route(sc, irq, IRQ_DISABLE, cpu);
+        }
+    } else {
         ampintc_set_priority(sc, irq, min);
         ampintc_intr_enable(sc, irq);
         if let Some(cpu) = cpu {
             ampintc_route(sc, irq, IRQ_ENABLE, cpu);
-        }
-    } else {
-        ampintc_intr_disable(sc, irq);
-        if let Some(cpu) = cpu {
-            ampintc_route(sc, irq, IRQ_DISABLE, cpu);
         }
     }
 }
@@ -865,11 +865,9 @@ fn ampintc_cpuinit(sc: &AmpintcSoftc) {
         if iq.cpu() != Some(me) {
             continue;
         }
-        if iq.irq_min.load(Ordering::Relaxed) != IPL_NONE {
-            ampintc_route(sc, irq, IRQ_ENABLE, me);
-        } else {
-            ampintc_route(sc, irq, IRQ_DISABLE, me);
-        }
+        // IRQ_ENABLE when it has handlers, IRQ_DISABLE otherwise.
+        let enable = iq.irq_min.load(Ordering::Relaxed) != IPL_NONE;
+        ampintc_route(sc, irq, enable, me);
     }
 
     // If a secondary CPU is turned off from an IPI handler and the GIC did not go through a
@@ -927,7 +925,7 @@ pub fn ampintc_irq_handler(sc: &AmpintcSoftc, frame: &ClockFrame) {
     let pri = iq.irq_max.load(Ordering::Relaxed);
     let s = sc.splraise(pri);
     hal::cpu::intr::unmasked(|| {
-        for ih in iq.list.iter() {
+        for ih in &iq.list {
             ampintc_run_handler(ih, frame, s);
         }
     });
