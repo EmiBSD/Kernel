@@ -21155,7 +21155,7 @@ rust = "sys/kernel/dev/intr.rs"
 crate = "kernel"
 lz = ["sys/arch/arm64/include/intr.rs"]
 status = "redesigned"
-notes = "N7.2a1: the machine-independent interrupt handler: IntrFn (int (*)(void *)) and IntrHandler, the handler and its argument as one value (Raw: a bsd handler and its void * as an exposed address; the frame and counted-softc arms come with their first users, N7.2a2), IntrHandler::call applying the controllers' NULL-argument rule (the frame instead) once for both machines"
+notes = "N7.2a1: the machine-independent interrupt handler: IntrFn (int (*)(void *)) and IntrHandler, the handler and its argument as one value (Raw: a bsd handler and its void * as an exposed address; Frame for a native handler of the NULL argument and Shared for a native softc's counted handle since N7.2a2, raw_arg gone then), IntrHandler::call applying the controllers' NULL-argument rule (the frame instead) once for both machines"
 
 [[module]]
 rust = "sys/kernel/dev/arm64/intr.rs"
@@ -21291,6 +21291,7 @@ kind = "merged"
 lz = "sys/arch/arm64/arm64/intr.rs::interrupt_controllers"
 native = ["controllers"]
 kind = "renamed"
+
 [[module]]
 rust = "sys/kernel/dev/arm64/fdt.rs"
 crate = "kernel"
@@ -21455,6 +21456,7 @@ lz = "sys/arch/arm64/dev/ampintc.rs::ampintc_attached"
 native = []
 kind = "dropped"
 reason = "no caller: AMPINTC.get().is_some() answers it"
+
 [[module]]
 rust = "sys/kernel/dev/arm64/simplebus.rs"
 crate = "kernel"
