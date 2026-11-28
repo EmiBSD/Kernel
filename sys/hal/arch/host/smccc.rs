@@ -20,6 +20,8 @@
 //! The host double of the SMCCC conduit: the firmware is a function the running test thread
 //! installs ([`set_firmware`]); without one every call answers `PSCI_NOT_SUPPORTED`.
 
+extern crate std;
+
 use std::cell::Cell;
 
 /// psci(4)'s `sc_callfn`: which instruction reaches the firmware.
