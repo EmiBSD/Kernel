@@ -129,19 +129,37 @@ pub(crate) fn release_current() {
     CURRENT.with(|cur| cur.set(None));
 }
 
-/// `intr_disable()` of the host double: a host thread takes no interrupts; nothing to mask.
-#[inline]
-pub(crate) fn intr_disable() -> u64 {
-    0
+std::thread_local! {
+    /// The calling thread's interrupt mask (`PSTATE.I` of the CPU it stands for): a host
+    /// thread takes no interrupts, but the mask is kept so a test can see who masks and
+    /// unmasks ([`intr_masked`]). Clear when the thread starts.
+    static MASKED: Cell<bool> = const { Cell::new(false) };
 }
 
-/// `intr_restore(s)` of the host double: nothing was masked.
+/// `intr_disable()` of the host double: the thread's mask set; the state it had (1 masked,
+/// 0 not), what [`intr_restore`] takes back.
 #[inline]
-pub(crate) fn intr_restore(_s: u64) {}
+pub(crate) fn intr_disable() -> u64 {
+    u64::from(MASKED.with(|m| m.replace(true)))
+}
 
-/// `intr_enable()` of the host double: nothing to unmask.
+/// `intr_restore(s)` of the host double: the mask a [`intr_disable`] of this thread saved.
 #[inline]
-pub(crate) fn intr_enable() {}
+pub(crate) fn intr_restore(s: u64) {
+    MASKED.with(|m| m.set(s != 0));
+}
+
+/// `intr_enable()` of the host double: the thread's mask cleared.
+#[inline]
+pub(crate) fn intr_enable() {
+    MASKED.with(|m| m.set(false));
+}
+
+/// Whether the calling thread's interrupts are masked (the tests of the interrupt paths).
+#[cfg(test)]
+pub(crate) fn intr_masked() -> bool {
+    MASKED.with(Cell::get)
+}
 
 /// `ncpusfound` as the per-CPU readers walk it: every slot, as any thread may be a CPU.
 #[inline]

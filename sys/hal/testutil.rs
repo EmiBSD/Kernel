@@ -45,7 +45,9 @@
 //!   user memory starts at [`user_base`] and whose foreign memory at [`foreign_base`].
 //! - `Console`: the output kept in one buffer, the input a queue the tests feed.
 //! - The soft interrupts are no bridge (N4.5c): `hal::cpu::softintr`'s own queues; a test runs a
-//!   level's queue itself (`dispatch`), or lowers its level below it.
+//!   level's queue itself (`dispatch`), or lowers its level below it. The queues are the
+//!   process's, so a test that schedules or dispatches one holds [`softintr_lock`]: another
+//!   test's dispatch of the same queue would run its handler on another thread.
 
 use std::alloc::{Layout, alloc, alloc_zeroed, dealloc};
 use std::boxed::Box;
@@ -54,7 +56,7 @@ use std::collections::BTreeMap;
 use std::ptr::NonNull;
 use std::string::String;
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Condvar, Mutex, MutexGuard, Once, OnceLock};
+use std::sync::{Condvar, Mutex, MutexGuard, Once, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::bridges;
@@ -655,5 +657,14 @@ pub(crate) fn pmap_boot() -> &'static Bootstrapped {
         crate::vm::pmap::init();
         b
     })
+}
+
+/// The lock of the tests that schedule or dispatch a soft interrupt queue
+/// (`hal::cpu::softintr`'s queues are statics shared by every test thread): held for the
+/// whole test, so no other test's dispatch runs or takes this one's handler. A test that
+/// panics leaves it poisoned; the next one takes it all the same.
+pub(crate) fn softintr_lock() -> MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(PoisonError::into_inner)
 }
 /* </CODE> */

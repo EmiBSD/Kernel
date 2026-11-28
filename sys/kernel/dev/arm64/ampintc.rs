@@ -73,9 +73,13 @@
 //!   `malloc` per MSI).
 //! - The dispatch's closing `ampintc_splx(s)` runs the pending soft interrupts with the
 //!   machine's interrupts on (`ampintc_splx_in_irq`, `hal::cpu::intr::do_pending_intr_in_irq`);
-//!   the C runs them masked, where a non-`MPSAFE` one waiting for the kernel lock that a CPU
-//!   in ddb holds never takes `ARM_IPI_DDB` (`machine ddbcpu` then hangs: `hal::cpu::intr`'s
-//!   deviations). The level is still restored masked, so the dispatch returns as the C's.
+//!   the C runs them masked (`intr_disable(); ampintc_eoi(); ampintc_splx(s)`), where a
+//!   non-`MPSAFE` one waiting for the kernel lock that a CPU in ddb holds never takes
+//!   `ARM_IPI_DDB` (`machine ddbcpu` then hangs). As arm64's thread-context `splx` and amd64's
+//!   `Xsoftclock` (`reference/openbsd-src/sys/arch/amd64/amd64/vector.S:1444-1450`, `sti`
+//!   after the level) run them. The level is still restored masked, so the dispatch returns
+//!   as the C's; at most three tail passes nest (CLOCK, NET, TTY) beside the hardware chain
+//!   (`hal::cpu::intr`'s deviations give the bound).
 //!
 //! ## Redesign
 //! - `struct ampintc_softc` (the simplebus softc first, the bus tag and two handles, the
