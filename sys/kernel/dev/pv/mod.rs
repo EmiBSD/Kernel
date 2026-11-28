@@ -17,10 +17,11 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! The machine-independent half of efi(4): OpenBSD `sys/dev/efi/`. `efi` is `efi.h`, the UEFI
-//! types the arch drivers (`arch/arm64/dev/efi_machdep.rs`) use; `efi.c`, the `/dev/efi`
-//! device, is not ported yet.
+//! The paravirtual devices in the kernel: OpenBSD's `sys/dev/pv/`. The virtio core (the
+//! virtqueue and what a child asks of its transport, N7.3a) and its children as they move:
+//! viornd(4) (N7.3a).
 
-#[allow(clippy::module_inception)] // OpenBSD's layout: sys/dev/efi/efi.h
-pub mod efi;
+pub mod viornd;
+pub mod virtio;
+pub mod virtioreg;
 /* </CODE> */

@@ -23,9 +23,14 @@
 //! `dev/fdt/pscivar.h`. The functions it declares live in [`super::psci`].
 //!
 //! Upstream: sys/dev/fdt/pscivar.h @ 3ce1f3f79392
+//! LZ: sys/dev/fdt/pscivar.rs@e8249449d905
 //!
 //! ## Deviations
 //! - Only the LP64 values exist (`#ifdef __LP64__`): both ports are 64-bit.
+//!
+//! ## Redesign
+//! - N7.2b2a: moved from `bsd` into the kernel with psci(4), unchanged; `bsd`'s arm64
+//!   `cpu.rs` and `machdep.rs` name it here.
 
 /// `PSCI_SUCCESS`.
 pub const PSCI_SUCCESS: i32 = 0;

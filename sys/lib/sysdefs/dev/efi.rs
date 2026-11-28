@@ -19,58 +19,56 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! `<dev/efi/efi.h>`: the UEFI tables, memory map and runtime services the kernel uses.
+//! `<dev/efi/efi.h>` as data: the UEFI tables, memory map and runtime services the kernel
+//! reads, for efi(4) (`kernel::dev::arm64::efi_machdep`), its runtime call (`hal::cpu::efi`)
+//! and the boot-time memory map (`bsd`'s arm64 `machdep.rs`).
 //!
 //! Upstream: sys/dev/efi/efi.h @ 3ce1f3f79392
+//! LZ: sys/dev/efi/efi.rs@e8249449d905
 //!
 //! ## Deviations
-//! - `EFIAPI` (`ms_abi` on amd64, the platform's C convention elsewhere) is Rust's
-//!   `extern "efiapi"`, which makes the same choice.
-//! - The scalar typedefs (`UINT8`, ..., `CHAR16`, `VOID`) are the Rust integer types and
-//!   `c_void`; `UINTN`, `EFI_STATUS`, `EFI_HANDLE` and the address types keep a name.
+//! - The scalar typedefs (`UINT8`, ..., `CHAR16`) are the Rust integer types; `UINTN` (64 bits
+//!   on both machines), `EFI_STATUS` and the address types keep a name.
 //! - `EFI_MEMORY_TYPE` and `EFI_RESET_TYPE` are integer constants (the descriptor's `Type`
 //!   is a `UINT32`), named as the C enumerators.
-//! - The runtime services are `Option`s of function pointers: a firmware may leave one
-//!   null, which the C would call anyway.
-//! - `NextMemoryDescriptor` is `EfiMemoryDescriptor::read_at`, which reads the descriptor
-//!   at a byte offset of the map (the map's descriptor size may exceed the structure's).
-//! - `efi_guidcmp` compares the GUIDs and returns `bool` (equal), as its callers only test
-//!   `== 0`.
+//! - `NextMemoryDescriptor` has no item: a walk steps `mmap_desc_size` bytes and reads each
+//!   descriptor with `hal::user::pod_from_bytes` (the map's descriptor size may exceed the
+//!   structure's).
+//!
+//! ## Redesign
+//! - Every pointer of the firmware's tables (`FirmwareVendor`, `RuntimeServices`,
+//!   `ConfigurationTable`, `VendorTable`, the handles and the protocols) is the `u64` word it
+//!   is in memory: the tables are read from the firmware's mapping, never followed as Rust
+//!   pointers. LZ's `*mut` members (and its `c_void` handles) go.
+//! - `EFI_RUNTIME_SERVICES`' entries (LZ: `Option`s of seven `unsafe extern "efiapi"` function
+//!   types, 7 `unsafe`, called only through `bsd`'s assembly trampoline) are `u64` slots too:
+//!   a runtime service is called by its slot's offset (`offset_of!`) through `hal::cpu::efi`'s
+//!   typed methods, so no function type of the firmware is written here.
+//! - [`EfiGuid`], [`EfiMemoryDescriptor`], [`EfiTime`] and [`EfiConfigurationTable`] are
+//!   `AbiPod` (`crate::abi_pod!`): read whole from the bytes of a map or a table. LZ's
+//!   `EfiMemoryDescriptor::read_at` (one `unsafe` `read_unaligned`) goes.
+//! - `efi_guidcmp(a, b) == 0`, LZ's `bool` function, is the GUIDs' `==` (derived).
 
 #![allow(non_upper_case_globals)] // the C enumerators are CamelCase constants
+#![allow(non_snake_case)] // the C field names
 
-use core::ffi::c_void;
-use core::mem::size_of;
-use core::ptr;
-
-/// `UINTN`: the native unsigned integer.
-pub type Uintn = usize;
+/// `UINTN`: the native unsigned integer, 64 bits on amd64 and arm64.
+pub type Uintn = u64;
 /// `EFI_PHYSICAL_ADDRESS`.
 pub type EfiPhysicalAddress = u64;
 /// `EFI_VIRTUAL_ADDRESS`.
 pub type EfiVirtualAddress = u64;
 /// `EFI_STATUS`: 0 or an `EFIERR` code.
 pub type EfiStatus = Uintn;
-/// `EFI_HANDLE`.
-pub type EfiHandle = *mut c_void;
-
-/// `EFI_SIMPLE_TEXT_INPUT_PROTOCOL`: opaque here.
-pub type EfiSimpleTextInputProtocol = *mut c_void;
-/// `EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL`: opaque here.
-pub type EfiSimpleTextOutputProtocol = *mut c_void;
-/// `EFI_BOOT_SERVICES`: opaque here (gone once the kernel runs).
-pub type EfiBootServices = *mut c_void;
 
 /// `EFIERR(x)`: an error status, the top bit set.
-#[allow(non_snake_case)] // the C name
 pub const fn EFIERR(x: Uintn) -> EfiStatus {
     (1 << (Uintn::BITS - 1)) | x
 }
 
 /// `EFI_GUID`.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(non_snake_case)] // the C field names
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EfiGuid {
     /// `Data1`.
     pub Data1: u32,
@@ -81,6 +79,13 @@ pub struct EfiGuid {
     /// `Data4`.
     pub Data4: [u8; 8],
 }
+
+crate::abi_pod!(EfiGuid {
+    Data1: u32,
+    Data2: u16,
+    Data3: u16,
+    Data4: [u8; 8],
+});
 
 /// `EFI_ACPI_20_TABLE_GUID`.
 pub const EFI_ACPI_20_TABLE_GUID: EfiGuid = EfiGuid {
@@ -188,7 +193,6 @@ pub const EFI_MEMORY_DESCRIPTOR_VERSION: u32 = 1;
 /// `EFI_MEMORY_DESCRIPTOR`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[allow(non_snake_case)] // the C field names
 pub struct EfiMemoryDescriptor {
     /// `Type`: an `EFI_MEMORY_TYPE`.
     pub Type: u32,
@@ -204,17 +208,14 @@ pub struct EfiMemoryDescriptor {
     pub Attribute: u64,
 }
 
-impl EfiMemoryDescriptor {
-    /// `NextMemoryDescriptor`'s walk: the descriptor at byte `off` of the memory map `map`
-    /// (whose entries are the map's descriptor size apart); `None` past the end.
-    pub fn read_at(map: &[u8], off: usize) -> Option<Self> {
-        let end = off.checked_add(size_of::<Self>())?;
-        let bytes = map.get(off..end)?;
-        // SAFETY: `bytes` holds `size_of::<Self>()` bytes; every bit pattern is a valid
-        // descriptor (integers only) and the read does not assume alignment.
-        Some(unsafe { ptr::read_unaligned(bytes.as_ptr().cast::<Self>()) })
-    }
-}
+crate::abi_pod!(EfiMemoryDescriptor {
+    Type: u32,
+    Pad: u32,
+    PhysicalStart: u64,
+    VirtualStart: u64,
+    NumberOfPages: u64,
+    Attribute: u64,
+});
 
 // EFI_RESET_TYPE
 
@@ -230,7 +231,6 @@ pub const EfiResetPlatformSpecific: u32 = 3;
 /// `EFI_TABLE_HEADER`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
-#[allow(non_snake_case)] // the C field names
 pub struct EfiTableHeader {
     /// `Signature`.
     pub Signature: u64,
@@ -247,7 +247,6 @@ pub struct EfiTableHeader {
 /// `EFI_TIME`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[allow(non_snake_case)] // the C field names
 pub struct EfiTime {
     /// `Year`: 1900 to 9999.
     pub Year: u16,
@@ -273,114 +272,104 @@ pub struct EfiTime {
     pub Pad2: u8,
 }
 
-/// `EFI_TIME_CAPABILITIES`: opaque here.
-pub type EfiTimeCapabilities = *mut c_void;
+crate::abi_pod!(EfiTime {
+    Year: u16,
+    Month: u8,
+    Day: u8,
+    Hour: u8,
+    Minute: u8,
+    Second: u8,
+    Pad1: u8,
+    Nanosecond: u32,
+    TimeZone: i16,
+    Daylight: u8,
+    Pad2: u8,
+});
 
-/// `EFI_GET_TIME`.
-pub type EfiGetTime =
-    unsafe extern "efiapi" fn(*mut EfiTime, *mut EfiTimeCapabilities) -> EfiStatus;
-/// `EFI_SET_TIME`.
-pub type EfiSetTime = unsafe extern "efiapi" fn(*mut EfiTime) -> EfiStatus;
-/// `EFI_SET_VIRTUAL_ADDRESS_MAP`.
-pub type EfiSetVirtualAddressMap =
-    unsafe extern "efiapi" fn(Uintn, Uintn, u32, *mut EfiMemoryDescriptor) -> EfiStatus;
-/// `EFI_GET_VARIABLE`.
-pub type EfiGetVariable = unsafe extern "efiapi" fn(
-    *mut u16,
-    *mut EfiGuid,
-    *mut u32,
-    *mut Uintn,
-    *mut c_void,
-) -> EfiStatus;
-/// `EFI_GET_NEXT_VARIABLE_NAME`.
-pub type EfiGetNextVariableName =
-    unsafe extern "efiapi" fn(*mut Uintn, *mut u16, *mut EfiGuid) -> EfiStatus;
-/// `EFI_SET_VARIABLE`.
-pub type EfiSetVariable =
-    unsafe extern "efiapi" fn(*mut u16, *mut EfiGuid, u32, Uintn, *mut c_void) -> EfiStatus;
-/// `EFI_RESET_SYSTEM`.
-pub type EfiResetSystem = unsafe extern "efiapi" fn(u32, EfiStatus, Uintn, *mut c_void);
-
-/// `EFI_RUNTIME_SERVICES`.
+/// `EFI_RUNTIME_SERVICES`: the header and the entries' slots, each the address of the service
+/// (a word in the firmware's runtime data, read under the runtime pmap).
 #[repr(C)]
-#[allow(non_snake_case)] // the C field names
+#[derive(Clone, Copy, Debug, Default)]
 pub struct EfiRuntimeServices {
     /// `Hdr`.
     pub Hdr: EfiTableHeader,
     /// `GetTime`.
-    pub GetTime: Option<EfiGetTime>,
+    pub GetTime: u64,
     /// `SetTime`.
-    pub SetTime: Option<EfiSetTime>,
+    pub SetTime: u64,
     /// `GetWakeupTime`.
-    pub GetWakeupTime: *mut c_void,
+    pub GetWakeupTime: u64,
     /// `SetWakeupTime`.
-    pub SetWakeupTime: *mut c_void,
+    pub SetWakeupTime: u64,
 
     /// `SetVirtualAddressMap`.
-    pub SetVirtualAddressMap: Option<EfiSetVirtualAddressMap>,
+    pub SetVirtualAddressMap: u64,
     /// `ConvertPointer`.
-    pub ConvertPointer: *mut c_void,
+    pub ConvertPointer: u64,
 
     /// `GetVariable`.
-    pub GetVariable: Option<EfiGetVariable>,
+    pub GetVariable: u64,
     /// `GetNextVariableName`.
-    pub GetNextVariableName: Option<EfiGetNextVariableName>,
+    pub GetNextVariableName: u64,
     /// `SetVariable`.
-    pub SetVariable: Option<EfiSetVariable>,
+    pub SetVariable: u64,
 
     /// `GetNextHighMonotonicCount`.
-    pub GetNextHighMonotonicCount: *mut c_void,
+    pub GetNextHighMonotonicCount: u64,
     /// `ResetSystem`.
-    pub ResetSystem: Option<EfiResetSystem>,
+    pub ResetSystem: u64,
 }
 
 /// `EFI_CONFIGURATION_TABLE`.
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
-#[allow(non_snake_case)] // the C field names
+#[derive(Clone, Copy, Debug, Default)]
 pub struct EfiConfigurationTable {
     /// `VendorGuid`.
     pub VendorGuid: EfiGuid,
-    /// `VendorTable`.
-    pub VendorTable: *mut c_void,
+    /// `VendorTable`: the table's address.
+    pub VendorTable: u64,
 }
 
-/// `EFI_SYSTEM_TABLE`.
+crate::abi_pod!(EfiConfigurationTable {
+    VendorGuid: EfiGuid,
+    VendorTable: u64,
+});
+
+/// `EFI_SYSTEM_TABLE`: its members' offsets are what efi(4) reads (`offset_of!`).
 #[repr(C)]
-#[allow(non_snake_case)] // the C field names
+#[derive(Clone, Copy, Debug, Default)]
 pub struct EfiSystemTable {
     /// `Hdr`.
     pub Hdr: EfiTableHeader,
-    /// `FirmwareVendor`: a NUL-terminated UCS-2 string.
-    pub FirmwareVendor: *mut u16,
+    /// `FirmwareVendor`: the address of a NUL-terminated UCS-2 string.
+    pub FirmwareVendor: u64,
     /// `FirmwareRevision`.
     pub FirmwareRevision: u32,
     /// `ConsoleInHandle`.
-    pub ConsoleInHandle: EfiHandle,
+    pub ConsoleInHandle: u64,
     /// `ConIn`.
-    pub ConIn: *mut EfiSimpleTextInputProtocol,
+    pub ConIn: u64,
     /// `ConsoleOutHandle`.
-    pub ConsoleOutHandle: EfiHandle,
+    pub ConsoleOutHandle: u64,
     /// `ConOut`.
-    pub ConOut: *mut EfiSimpleTextOutputProtocol,
+    pub ConOut: u64,
     /// `StandardErrorHandle`.
-    pub StandardErrorHandle: EfiHandle,
+    pub StandardErrorHandle: u64,
     /// `StdErr`.
-    pub StdErr: *mut EfiSimpleTextOutputProtocol,
+    pub StdErr: u64,
     /// `RuntimeServices`.
-    pub RuntimeServices: *mut EfiRuntimeServices,
+    pub RuntimeServices: u64,
     /// `BootServices`.
-    pub BootServices: *mut EfiBootServices,
+    pub BootServices: u64,
     /// `NumberOfTableEntries`.
     pub NumberOfTableEntries: Uintn,
-    /// `ConfigurationTable`.
-    pub ConfigurationTable: *mut EfiConfigurationTable,
+    /// `ConfigurationTable`: the address of `NumberOfTableEntries` entries.
+    pub ConfigurationTable: u64,
 }
 
 /// `EFI_SYSTEM_RESOURCE_ENTRY`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-#[allow(non_snake_case)] // the C field names
 pub struct EfiSystemResourceEntry {
     /// `FwClass`.
     pub FwClass: EfiGuid,
@@ -401,7 +390,6 @@ pub struct EfiSystemResourceEntry {
 /// `EFI_SYSTEM_RESOURCE_TABLE`: the header; `FwResourceCount` entries follow it.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-#[allow(non_snake_case)] // the C field names
 pub struct EfiSystemResourceTable {
     /// `FwResourceCount`.
     pub FwResourceCount: u32,
@@ -432,17 +420,13 @@ pub const EFI_OUT_OF_RESOURCES: EfiStatus = EFIERR(9);
 pub const EFI_NOT_FOUND: EfiStatus = EFIERR(14);
 /// `EFI_SECURITY_VIOLATION`.
 pub const EFI_SECURITY_VIOLATION: EfiStatus = EFIERR(26);
-
-/// `efi_guidcmp(a, b) == 0`: the two GUIDs are the same bytes.
-pub fn efi_guidcmp(a: &EfiGuid, b: &EfiGuid) -> bool {
-    a == b
-}
 /* </CODE> */
 
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::mem::{offset_of, size_of};
 
     #[test]
     fn layouts() {
@@ -451,9 +435,15 @@ mod tests {
         assert_eq!(size_of::<EfiTableHeader>(), 24);
         assert_eq!(size_of::<EfiTime>(), 16);
         assert_eq!(size_of::<EfiRuntimeServices>(), 24 + 11 * 8);
+        assert_eq!(offset_of!(EfiRuntimeServices, GetTime), 24);
+        assert_eq!(offset_of!(EfiRuntimeServices, SetTime), 32);
         assert_eq!(size_of::<EfiConfigurationTable>(), 24);
         assert_eq!(size_of::<EfiSystemTable>(), 24 + 12 * 8);
-        assert_eq!(core::mem::offset_of!(EfiSystemTable, RuntimeServices), 88);
+        assert_eq!(offset_of!(EfiSystemTable, FirmwareVendor), 24);
+        assert_eq!(offset_of!(EfiSystemTable, FirmwareRevision), 32);
+        assert_eq!(offset_of!(EfiSystemTable, RuntimeServices), 88);
+        assert_eq!(offset_of!(EfiSystemTable, NumberOfTableEntries), 104);
+        assert_eq!(offset_of!(EfiSystemTable, ConfigurationTable), 112);
         assert_eq!(size_of::<EfiSystemResourceTable>(), 16);
     }
 
@@ -465,28 +455,20 @@ mod tests {
 
     #[test]
     fn walk_descriptors() {
-        // Two descriptors 48 bytes apart (a descriptor size larger than the structure).
-        let mut map = [0u8; 96];
-        map[0] = 5; // EfiRuntimeServicesCode
-        map[8..16].copy_from_slice(&0x4000_0000u64.to_le_bytes());
-        map[24] = 2;
-        map[32..40].copy_from_slice(&EFI_MEMORY_RUNTIME.to_le_bytes());
-        map[48] = 11; // EfiMemoryMappedIO
-        let a = EfiMemoryDescriptor::read_at(&map, 0).unwrap();
-        assert_eq!(a.Type, EfiRuntimeServicesCode);
-        assert_eq!(a.PhysicalStart, 0x4000_0000);
-        assert_eq!(a.NumberOfPages, 2);
-        assert_eq!(a.Attribute, EFI_MEMORY_RUNTIME);
-        let b = EfiMemoryDescriptor::read_at(&map, 48).unwrap();
-        assert_eq!(b.Type, EfiMemoryMappedIO);
-        assert!(EfiMemoryDescriptor::read_at(&map, 96).is_none());
-        assert!(EfiMemoryDescriptor::read_at(&map, 60).is_none());
+        // The fields' offsets a walk reads at each `mmap_desc_size` step (the walk itself,
+        // over `pod_from_bytes`, is efi(4)'s and is tested there).
+        assert_eq!(offset_of!(EfiMemoryDescriptor, Type), 0);
+        assert_eq!(offset_of!(EfiMemoryDescriptor, PhysicalStart), 8);
+        assert_eq!(offset_of!(EfiMemoryDescriptor, VirtualStart), 16);
+        assert_eq!(offset_of!(EfiMemoryDescriptor, NumberOfPages), 24);
+        assert_eq!(offset_of!(EfiMemoryDescriptor, Attribute), 32);
     }
 
     #[test]
     fn guids() {
-        assert!(efi_guidcmp(&SMBIOS3_TABLE_GUID, &SMBIOS3_TABLE_GUID));
-        assert!(!efi_guidcmp(&SMBIOS_TABLE_GUID, &SMBIOS3_TABLE_GUID));
+        assert_eq!(SMBIOS3_TABLE_GUID, SMBIOS3_TABLE_GUID);
+        assert_ne!(SMBIOS_TABLE_GUID, SMBIOS3_TABLE_GUID);
+        assert_ne!(EFI_ACPI_20_TABLE_GUID, SMBIOS_TABLE_GUID);
     }
 }
 /* </TESTS> */

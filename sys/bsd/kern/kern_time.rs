@@ -57,7 +57,7 @@
 //! `sys_gettimeofday`, `sys_settimeofday`, `sys_adjfreq`, `sys_adjtime`, `setitimer`,
 //! `cancel_all_itimers`, `sys_getitimer`, `sys_setitimer`, `realitexpire`, `itimerfix`,
 //! `itimerdecr`, `itimer_update`, `process_reset_itimer_flag`, `ratecheck`, `ppsratecheck`,
-//! `inittodr`, `resettodr`, `todr_attach` and the periodic `resettodr`.
+//! `inittodr`, `resettodr` and the periodic `resettodr`.
 //!
 //! Since N4.8's a6 the ten system calls, `settime`, `clock_gettime` and `itimerfix` are
 //! `kernel::time`'s: the `sys_*` here are the `sysent[]` rows that call them, and
@@ -69,8 +69,10 @@
 //! the interval timers when they expire.
 //!
 //! ## Deviations
-//! - No time-of-day chip driver is ported (`todr_attach` has no caller): `inittodr` sets the
-//!   clock from the file system's time and warns, `resettodr` has nothing to write.
+//! - `todr_attach` is the kernel's (`kernel::time::todr_attach`), which the time-of-day chips
+//!   call themselves (arm64's efi(4) and plrtc(4), the kernel's since N7.2b2a); without a chip
+//!   `inittodr` sets the clock from the file system's time and warns, `resettodr` has nothing
+//!   to write.
 //! - `itimerdecr` returns `bool` (`true` where the C returns 1: the timer is still
 //!   running).
 
@@ -78,7 +80,6 @@ use core::ffi::c_void;
 use core::sync::atomic::Ordering;
 use kernel::time::clock::TimespecExt;
 
-use crate::dev::clock_subr::TodrChipHandle;
 use crate::kern::kern_clock::hardclock_period;
 use crate::kern::kern_clockintr::clockrequest_advance;
 use crate::kern::kern_lock::{mtx_enter, mtx_leave};
@@ -429,12 +430,6 @@ pub fn inittodr(base: Time) {
 /// resettodr: the kernel's (`kernel::time::resettodr`).
 pub fn resettodr() {
     kernel::time::resettodr();
-}
-
-/// `todr_attach`: the chip of `bsd`'s drivers (efi(4), plrtc(4)) to the kernel's
-/// (`kernel::time::todr_attach`, the better quality winning).
-pub fn todr_attach(todr: &'static TodrChipHandle) {
-    kernel::time::todr_attach(todr);
 }
 
 /// `start_periodic_resettodr`: the kernel's.

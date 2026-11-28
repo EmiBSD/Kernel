@@ -113,7 +113,10 @@
 //!   the C's does (the timehands' tick, `ticks`, `jiffies`, the timeout wheel); `statclock`,
 //!   which charges the running thread, stays `bsd`'s until N4.6b. The machine's `cpu_initclocks`,
 //!   `cpu_startclock`, `setstatclockrate` and `delay(9)` are the [`ClockHardware`] bridge
-//!   (bridges.toml; `bsd`'s machine code until N7), which `initclocks` calls.
+//!   (bridges.toml; `bsd`'s machine code until N7), which `initclocks` calls. N7.2b2b:
+//!   arm64's implementation is the kernel's agtimer; the bridge's `early_init` (arm64's
+//!   `agtimer_init` for the kernel's mainbus, N7.2b1b) and `clock_early_init` went, the
+//!   kernel's mainbus calling `agtimer_init` by name as the C.
 //! - `struct timespec` with the `timespecadd`/`timespecsub`/`timespeccmp`/`NSEC_TO_TIMESPEC`
 //!   macros of `<sys/time.h>` is [`Timespec`] with methods and `Ord` (seconds, then
 //!   nanoseconds: `timespeccmp`'s order); the userland `struct timespec` stays `bsd`'s, at the
@@ -499,8 +502,9 @@ static CLOCK_HW: OnceStatic<&'static dyn ClockHardware> = OnceStatic::new();
 /// `setstatclockrate`, `mpstartclock`, the first driver's registration winning) and amd64's
 /// `initclock_func`, `startclock_func`, `delay_func` (replaced at attach) with its
 /// `setstatclockrate`. Each machine keeps its own registration policy behind its one
-/// implementation; `bsd` registers it at boot (bridges.toml `ClockHardware`, paid by N7 with
-/// the clock drivers).
+/// implementation: arm64's is the kernel's agtimer itself (`kernel::dev::arm64::agtimer`,
+/// N7.2b2b), installed by its `agtimer_init` and its attach; elsewhere `bsd` registers its
+/// machine code at boot (bridges.toml `ClockHardware`, N10 for amd64's).
 pub trait ClockHardware: Sync {
     /// `cpu_initclocks()`: the clock interrupts' hardware set up; `stathz`, `profhz` and
     /// `statclock_is_randomized` set.
@@ -511,10 +515,6 @@ pub trait ClockHardware: Sync {
     fn setstatclockrate(&self, newhz: i32);
     /// `delay(usecs)`: busy-waits.
     fn delay(&self, usecs: u32);
-    /// What the machine's root bus starts before its children attach: arm64's
-    /// `agtimer_init()` (the counter's frequency and its `delay(9)`, `mainbus.c:107`), until
-    /// the kernel's agtimer calls it itself (N7.2b2); nothing elsewhere (the default).
-    fn early_init(&self) {}
 }
 
 /// Registers the machine's clock hardware, once; a second call keeps the first and names it.
@@ -522,19 +522,6 @@ pub fn install_clock_hardware(imp: &'static dyn ClockHardware) -> Result<(), Alr
     CLOCK_HW
         .set(imp)
         .map_err(|_| AlreadyRegistered("ClockHardware"))
-}
-
-/// The clock hardware's early start, before the root bus's children attach (arm64's
-/// `mainbus_attach` calls `agtimer_init()` there): [`ClockHardware::early_init`]; `panic(9)`
-/// before the hardware is registered, as its neighbours (the C calls `agtimer_init` by name,
-/// so it cannot be missing; `bsd` registers the bridge before `main()`).
-pub fn clock_early_init() {
-    match CLOCK_HW.get() {
-        Some(h) => h.early_init(),
-        None => kpanic(format_args!(
-            "clock_early_init: no ClockHardware registered"
-        )),
-    }
 }
 
 /// `cpu_initclocks()`: `panic(9)` before the hardware is registered, as the C's.
@@ -721,8 +708,7 @@ pub(crate) mod tests {
         started: core::sync::atomic::AtomicU32::new(0),
     };
 
-    /// The tests' clock hardware registered (a second call changes nothing): what a bus's
-    /// tests need for `clock_early_init`.
+    /// The tests' clock hardware registered (a second call changes nothing).
     pub(crate) fn install_test_hw() {
         let _ = install_clock_hardware(&HW);
     }

@@ -21,7 +21,7 @@
 //!
 //! `pluart_fdt` finds the console PL011 (M4); the rest attach with autoconfiguration:
 //! `virtio_mmio` is the virtio transport of the `virtio,mmio` nodes (`virtio* at fdt?`);
-//! `psci` (with `pscivar`) is PSCI, `psci* at fdt? early 1` (M13); `simplefb` the
+//! psci(4) (`psci* at fdt? early 1`, M13) is the kernel's since N7.2b2a (`kernel::dev::fdt`); `simplefb` the
 //! firmware's frame buffer, `simplefb* at fdt?` (M13); `pciecam` is the generic ECAM PCIe host bridge (`pciecam* at fdt?`, M12), which
 //! `files.arm64` lists: it is compiled where cfg `machine_pci_chipset` is set (`sys/build.rs`);
 //! `plgpio` is the PL061 GPIO controller (`plgpio* at fdt? early 1`) and `gpiokeys` the keys
@@ -33,11 +33,7 @@ pub mod ipmi_fdt;
 #[cfg(machine_pci_chipset)]
 pub mod pciecam;
 pub mod plgpio;
-pub mod plrtc;
 pub mod pluart_fdt;
-pub mod psci;
-#[forbid(unsafe_code)]
-pub mod pscivar;
 pub mod simplefb;
 pub mod virtio_mmio;
 /* </CODE> */

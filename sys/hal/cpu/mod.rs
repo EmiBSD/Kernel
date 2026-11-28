@@ -45,9 +45,24 @@ pub mod icc;
 #[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
 #[forbid(unsafe_code)]
 pub mod clock;
+// The ARM generic timer's registers (N7.2b2b), for the kernel's agtimer(4): arm64's, and the
+// host's double.
+#[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
+#[forbid(unsafe_code)]
+pub mod timer;
 // The signal frame of the running thread (N4.8b): wherever a machine's trap code is (arm64;
 // amd64's is N10's) and on the host, where it is a double.
 #[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
 #[forbid(unsafe_code)]
 pub mod sig;
+// The UEFI runtime services as one object (N7.2b2a): arm64's transaction, and on the host
+// (an aarch64 one, as the EFI pmap) a fake firmware.
+#[cfg(target_arch = "aarch64")]
+#[forbid(unsafe_code)]
+pub mod efi;
+// The firmware call of the SMC Calling Convention, its value class (N7.2b2a): arm64's
+// conduit, and on the host a fake firmware.
+#[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
+#[forbid(unsafe_code)]
+pub mod smccc;
 /* </CODE> */

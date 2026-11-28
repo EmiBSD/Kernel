@@ -201,18 +201,6 @@ impl PmapBackend for Backend {
         })
     }
 
-    /// The host has no translation registers.
-    #[cfg(target_arch = "aarch64")]
-    fn load_efi(pmap: &Pmap) {
-        if pmap.md.limit == VM_MAXUSER_ADDRESS {
-            crate::assert::hal_panic(format_args!("efi_enter: not an EFI pmap"));
-        }
-    }
-
-    /// The host has no translation registers.
-    #[cfg(target_arch = "aarch64")]
-    fn leave_efi(_to: &Pmap) {}
-
     fn mappings(pmap: &Pmap) -> usize {
         pmap.md.map().len()
     }

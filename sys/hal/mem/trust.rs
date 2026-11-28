@@ -159,8 +159,9 @@
 //! when the boot memory map is a type (N9).
 //!
 //! A bus's DMA memory provider (`hal::dev::dma::DmaMemory`, N7.0) is a seventh, a value the kernel
-//! passes (`kernel::vm::km::bus_dma_memory`, the one production provider until the SMMU's at
-//! N7.11): a block it answers is `len` bytes at `va` of kernel memory mapped read and write
+//! passes (`kernel::vm::km::bus_dma_memory`; since N7.3a also `bsd`'s `LegacyDmaMemory`, a
+//! legacy virtio transport's tag for a kernel child, until N7.3d; the SMMU's at N7.11): a block
+//! it answers is `len` bytes at `va` of kernel memory mapped read and write
 //! for the CPU, holding no Rust object (pages of the page system no pool, `KmBuf` or `malloc`
 //! holds), whose frames are the bus addresses of its one segment, the caller's alone until
 //! `free` takes it back unchanged. `DmaBuf::alloc` checks what it can on every answer: the

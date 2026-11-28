@@ -44,7 +44,8 @@
 //!
 //! Every function reads or writes one system register of the calling CPU and touches no
 //! memory; the driver half (attach, the timecounter, the interrupt clock, the clock
-//! registration) stays `bsd`'s `agtimer.rs` until N7, over these.
+//! registration) is the kernel's `agtimer(4)` (`kernel::dev::arm64::agtimer`, N7.2b2b; `bsd`'s
+//! `agtimer.rs` until then), which reaches these through `hal::cpu::timer`.
 //!
 //! ## Redesign
 //! - LZ's `agtimer.rs` wrote its `asm!` and `write_specialreg!` sites in the driver (13

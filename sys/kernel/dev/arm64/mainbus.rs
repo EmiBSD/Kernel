@@ -64,8 +64,8 @@
 //!   functions that cast `aux` and the parent back) -> closures of [`mainbus_attach_node`]
 //!   and [`mainbus_attach_cpus`] over the node's arguments and the pass; the boot CPU's id is
 //!   `hal::cpu::hwid()` (`READ_SPECIALREG(mpidr_el1)`).
-//! - `agtimer_init()` -> `kernel::time::clock::clock_early_init()` (the `ClockHardware`
-//!   bridge's `early_init`, `bsd`'s agtimer until N7.2b2); `ncpusfound` is
+//! - `agtimer_init()` is the kernel's (`kernel::dev::arm64::agtimer`, N7.2b2b; N7.2b1b
+//!   reached `bsd`'s through the `ClockHardware` bridge's `early_init`); `ncpusfound` is
 //!   `kernel::base::sysctl::NCPUSFOUND`; `hw_prod` and `hw_serial` the kernel's sysctl
 //!   strings, each a leaked `malloc(len, M_DEVBUF, M_NOWAIT)` copy as the C's.
 //!
@@ -92,6 +92,7 @@ use libkern::string::strlcpy::strlcpy;
 use crate::assert::kpanic;
 use crate::base::prf::{Str, printf, unported};
 use crate::base::sysctl::{NCPUSFOUND, hw_prod, hw_serial};
+use crate::dev::arm64::agtimer::agtimer_init;
 use crate::dev::arm64::fdt::{EarlyNodes, FdtArgs, FdtBus, FdtBusRef};
 use crate::dev::arm64::intr::arm_intr_init_fdt;
 use crate::dev::autoconf::{Print, config_found, config_found_sm, config_mountroot};
@@ -103,7 +104,6 @@ use crate::dev::ofw::fdt::{
     OF_child, OF_finddevice, OF_getprop, OF_getpropint, OF_getproplen, OF_is_compatible,
     OF_is_enabled, OF_peer,
 };
-use crate::time::clock::clock_early_init;
 
 /// `MPIDR_AFF` (`<machine/armreg.h>`): the affinity fields of `MPIDR_EL1` (Aff3, Aff2, Aff1,
 /// Aff0), what a `/cpus` node's `reg` holds.
@@ -226,7 +226,7 @@ pub fn mainbus_attach(dev: &DevRef) {
     let mut prop = [0u8; 128];
 
     arm_intr_init_fdt();
-    clock_early_init();
+    agtimer_init();
 
     let root = OF_peer(0);
     let mut st = Attach {
@@ -272,6 +272,11 @@ pub fn mainbus_attach(dev: &DevRef) {
         while node != 0 {
             mainbus_attach_node(dev, &mut st, node, None);
             node = OF_peer(node);
+        }
+        if early == 1 {
+            // The early devices are attached (psci(4) in its own pass, or here): the SMCCC
+            // call's record of a PSCI 0.1 firmware's ids closes, whether or not one attached.
+            hal::cpu::smccc::seal_psci_0_1();
         }
     }
     st.early = 0;
@@ -654,7 +659,6 @@ pub(crate) mod tests {
     /// leaf of its own (row 11).
     fn machine() -> std::sync::MutexGuard<'static, ()> {
         let mem = setup_root(&MAINBUS);
-        crate::time::clock::tests::install_test_hw();
         let _ = crate::dev::arm64::fdt::install_fdt_offer(&OFFERS);
         let _ = take_log();
         leaf(b"cpu", Want::Cpu, &[0], &[]); // 1

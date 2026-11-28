@@ -192,6 +192,9 @@
 //!   ([`OwnerWitness`]: either kind, since the C asks `rw_lock_held`), consumed by the sleep,
 //!   so nothing the caller read under the lock can be used after it (`kernel::vm::amap`'s
 //!   `amap_cow_now`, the fault handler's anons).
+//! - N7.2b2a: [`uvm_page_physload`] also records each segment as loaded, before any steal moves
+//!   its start, in `hal::vm::pmap::note_loaded_ram`: the RAM a firmware runtime region may not
+//!   name (`hal::cpu::efi::EfiRuntime::install` refuses it), stolen frames included.
 
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicUsize, Ordering as Mem};
@@ -1111,6 +1114,12 @@ pub fn uvm_page_physload(
     };
     b.n = n + 1;
     b.policy = policy;
+    // The segment as loaded, before any steal moves its start: RAM a firmware table may not
+    // name (`hal::cpu::efi`'s runtime regions).
+    hal::vm::pmap::note_loaded_ram(
+        Paddr::new(start << PAGE_SHIFT),
+        Paddr::new(end << PAGE_SHIFT),
+    );
     Ok(())
 }
 

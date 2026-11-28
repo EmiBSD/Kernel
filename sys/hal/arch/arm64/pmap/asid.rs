@@ -74,7 +74,7 @@ use super::layout::{
 use crate::assert::kassert;
 use crate::bridges;
 use crate::cpu::intr::IPL_HIGH;
-use crate::cpu::{MAXCPUS, cpu_number};
+use crate::cpu::{IntrGuard, MAXCPUS, cpu_number};
 use crate::sync::mutex::{Mutexed, MutexedGuard};
 use crate::vm::pmap::Pmap;
 
@@ -155,6 +155,28 @@ pub(super) fn generation() -> u64 {
 /// Records `pm` as the pmap this CPU runs on (`ci->ci_curpm = pm`).
 pub(super) fn set_curpm(pm: &Pmap) {
     CURPM[cpu_number()].store(ptr::from_ref(pm).cast_mut(), Ordering::Release);
+}
+
+/// `curcpu()->ci_curpm` for `efi_leave` (N7.2b2a): runs `f` on the pmap this CPU's record
+/// names, the kernel's when it names none (a CPU that never loaded one). `_off` is the proof
+/// that this CPU's interrupts are masked, so nothing switches it meanwhile; `f` is the
+/// backend's switch back (`efi_leave_current`), which loads no other pmap.
+pub(super) fn with_curpm<R>(_off: &IntrGuard, kernel: &Pmap, f: impl FnOnce(&Pmap) -> R) -> R {
+    let p = CURPM[cpu_number()].load(Ordering::Acquire);
+    if p.is_null() {
+        return f(kernel);
+    }
+    // SAFETY: a record names a pmap only from `set_curpm`, which stores a live `&Pmap` (with its
+    // provenance) when this CPU loads it; this slot is written by this CPU alone (`set_curpm`
+    // indexes by `cpu_number()`, the rollover only reads), and this CPU loads no pmap while `f`
+    // runs: its interrupts are masked (`_off`), so no switch preempts it, and `f`, the EFI
+    // pmap's way back, loads none itself (it reloads `TTBR0_EL1` from the pmap it is given).
+    // While the record names the pmap, its last handle's drop panics before freeing anything
+    // (`destroy` refuses a pmap any record names, after Acquire loads that pair with
+    // `set_curpm`'s Release stores), so the pmap outlives `f`. The reference is shared and
+    // its machine part's fields are atomics.
+    let pm = unsafe { &*p };
+    f(pm)
 }
 
 /// Whether some CPU has `pm` loaded.
