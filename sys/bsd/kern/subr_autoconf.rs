@@ -851,6 +851,9 @@ impl ConfigRow for Cfdata {
     fn loc(&self, i: usize) -> Option<i64> {
         self.cf_loc.get(i).copied()
     }
+    fn flags(&self) -> i32 {
+        self.cf_flags
+    }
 }
 
 /// A legacy row is its own driver object: its `Cfattach`'s functions with its `Cfdriver`'s
@@ -1275,6 +1278,22 @@ mod tests {
                 0,
             ),
         ]));
+
+        // cf_flags, a native row's as a legacy row's (viornd's interval, N7.3a).
+        let flagged = Cfdata::new(
+            &CFATTACH_NATIVE,
+            nat_cd,
+            0,
+            FSTATE_STAR,
+            &[],
+            0x1000,
+            &[],
+            0,
+            0,
+        )
+        .native(drv);
+        assert_eq!(ConfigRow::flags(&flagged), 0x1000);
+        assert_eq!(ConfigRow::flags(&rows[1]), 0);
 
         // cf_loc[i], and nothing past the row's locators.
         assert_eq!(rows[0].loc(0), Some(1));

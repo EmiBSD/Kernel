@@ -103,6 +103,8 @@
 //!   native bus) carries `bsd`'s legacy header in a set-once slot,
 //!   [`Device::legacy_shadow`], so the header lives exactly as long as the node; nothing in
 //!   the kernel reads it (scaffolding, docs/SCAFFOLDING.md).
+//! - N7.3a: [`ConfigRow::flags`] (`cf_flags`, default 0), for a native driver whose attach
+//!   reads its row's flags (viornd(4)'s request interval).
 
 use core::any::Any;
 use core::sync::atomic::{AtomicI32, Ordering};
@@ -602,6 +604,11 @@ pub trait ConfigRow: Any + Sync {
     fn loc(&self, _i: usize) -> Option<i64> {
         None
     }
+    /// `cf_flags`: the flags `config(8)` gives the row (`viornd* at virtio? flags 0x1000`), read
+    /// by its driver's attach; a row that names none has 0.
+    fn flags(&self) -> i32 {
+        0
+    }
 }
 /* </CODE> */
 
@@ -620,6 +627,33 @@ mod tests {
         assert_eq!(DV_DULL as i32, 0);
         assert_eq!(DV_DISK as i32, 2);
         assert_eq!(DV_TTY as i32, 5);
+    }
+
+    #[test]
+    fn a_row_that_names_no_flags_has_none() {
+        /// A row of constants only: no locators, no flags.
+        struct Bare;
+        impl ConfigRow for Bare {
+            fn driver(&'static self) -> &'static dyn DriverOps {
+                panic!("never attached")
+            }
+            fn parents(&self) -> &'static [i16] {
+                &[]
+            }
+            fn starunit1(&self) -> i16 {
+                0
+            }
+            fn unit(&self) -> i16 {
+                0
+            }
+            fn set_unit(&self, _unit: i16) {}
+            fn fstate(&self) -> i16 {
+                FSTATE_NOTFOUND
+            }
+            fn set_fstate(&self, _fstate: i16) {}
+        }
+        assert_eq!(Bare.flags(), 0);
+        assert_eq!(Bare.loc(0), None);
     }
 
     #[test]
