@@ -93,14 +93,14 @@ macro_rules! bridge {
     };
 }
 
-bridge!(
-    /// Registers the machine's interrupt controller (`struct arm_intr_func`: what the
-    /// controller's attach gave `arm_set_intr_handler`, `sys/arch/arm64/arm64/intr.rs`).
-    /// Paid by N7 (the GIC drivers).
-    INTR_HARDWARE: IntrHardware,
-    register_intr_hardware,
-    intr_hardware
-);
+/// Registers the machine's interrupt controller (`struct arm_intr_func`: what the
+/// controller's attach gave `arm_set_intr_handler`, `sys/arch/arm64/arm64/intr.rs`):
+/// [`crate::cpu::intr::install`], where the registration lives since N7.2a2 (a native
+/// controller installs itself there). Paid by N7.2a3 (the last legacy GIC); the host doubles
+/// register through it until then.
+pub fn register_intr_hardware(imp: &'static dyn IntrHardware) -> Result<(), AlreadyRegistered> {
+    crate::cpu::intr::install(imp)
+}
 
 bridge!(
     /// Registers the sleep queues (`sys/kern/kern_synch.rs`). Paid by N4.
@@ -195,7 +195,7 @@ mod tests {
     #[test]
     fn a_bridge_is_registered_once() {
         testutil::install();
-        assert!(intr_hardware().is_some());
+        assert!(crate::cpu::intr::hardware().is_some());
         assert_eq!(
             register_intr_hardware(&OTHER),
             Err(AlreadyRegistered("IntrHardware"))

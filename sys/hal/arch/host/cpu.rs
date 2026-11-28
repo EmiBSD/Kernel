@@ -139,6 +139,10 @@ pub(crate) fn intr_disable() -> u64 {
 #[inline]
 pub(crate) fn intr_restore(_s: u64) {}
 
+/// `intr_enable()` of the host double: nothing to unmask.
+#[inline]
+pub(crate) fn intr_enable() {}
+
 /// `ncpusfound` as the per-CPU readers walk it: every slot, as any thread may be a CPU.
 #[inline]
 pub(crate) fn ncpus(_attached: usize) -> usize {

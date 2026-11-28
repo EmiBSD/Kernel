@@ -85,12 +85,21 @@
 //! - N7.2a1: `IPL_AUDIO`, `IPL_STATCLOCK`, `IPL_IPI`, `IPL_WAKEUP` and arm64's `IPL_IRQMASK`
 //!   and `IPL_FLAGMASK` join the levels, for the interrupt core in the kernel
 //!   (`kernel::dev::arm64::intr`) and the controllers after it.
+//! - N7.2a2: the controller's registration is this module's ([`install`], the C's
+//!   `arm_set_intr_handler`, the `cpu::trap::install` shape), made by the controller that
+//!   attaches (`kernel::dev::arm64::ampintc`, or `bsd`'s `arm_set_intr_handler` for a legacy
+//!   one) instead of by `initarm` over `bsd`'s table: before one attaches, the defaults run,
+//!   as the C's table starts. `hal::bridges::register_intr_hardware` forwards here until
+//!   N7.2a3. The dispatch takes the clock frame (`ClockFrame`, the machine's trap frame on
+//!   arm64), which the kernel's handlers read; [`unmasked`] is the dispatch's
+//!   `intr_enable()`/`intr_disable()` pair around its handlers.
 
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::bridges;
+use crate::bridges::AlreadyRegistered;
 use crate::cpu::curcpu;
+use crate::sync::once::OnceStatic;
 use sysdefs::dev::softintr::{NSOFTINTR, SOFTINTR_CLOCK, SOFTINTR_NET, SOFTINTR_TTY};
 
 /// `IPL_NONE`: no interrupt is blocked (0 on amd64 and arm64).
@@ -252,10 +261,13 @@ impl Drop for SplGuard {
 /// [`init_smask`]; all zero before (nothing pending ever runs).
 static SMASK: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
 
+/// `arm_intr_func`: the attached controller, set once by its attach ([`install`]).
+static HARDWARE: OnceStatic<&'static dyn IntrHardware> = OnceStatic::new();
+
 /// The machine's interrupt controller (`struct arm_intr_func` and `arm_set_intr_handler`'s
-/// table), as `bsd` registers it (`sys/kern/hal_bridges.rs`, over what a controller's attach
-/// gave `arm_set_intr_handler`; the GIC drivers are `bsd`'s until N7). Every method's
-/// default is the C's `arm_dflt_*`, what runs before a controller attaches.
+/// table), as the controller's attach installs it ([`install`]: the kernel's GICv2 driver
+/// itself, or `bsd`'s table for a legacy one, `sys/arch/arm64/arm64/intr.rs`). Every
+/// method's default is the C's `arm_dflt_*`, what runs before a controller attaches.
 pub trait IntrHardware: Sync {
     /// `splraise(ipl)`: raises this CPU's level to at least `ipl`; returns the old level.
     fn splraise(&self, ipl: i32) -> i32 {
@@ -284,16 +296,45 @@ pub trait IntrHardware: Sync {
     /// machine's trap code) calls with `ci_idepth` raised; the default is `arm_dflt_irq`,
     /// whose `panic(9)` is what an interrupt before a controller attached meets.
     #[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
-    fn dispatch_irq(&self, frame: &mut crate::cpu::trap::Trapframe) {
+    fn dispatch_irq(&self, frame: &mut crate::cpu::clock::ClockFrame) {
         let _ = frame;
         crate::assert::hal_panic(format_args!("arm_dflt_irq"));
     }
     /// `(*arm_fiq_dispatch)(frame)`, as [`IntrHardware::dispatch_irq`] (`arm_dflt_fiq`).
     #[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
-    fn dispatch_fiq(&self, frame: &mut crate::cpu::trap::Trapframe) {
+    fn dispatch_fiq(&self, frame: &mut crate::cpu::clock::ClockFrame) {
         let _ = frame;
         crate::assert::hal_panic(format_args!("arm_dflt_fiq"));
     }
+}
+
+/// `arm_set_intr_handler(...)`: the attaching controller becomes the machine's, once; a
+/// second call keeps the first and names it (one controller drives the machine's
+/// interrupts, as the C's single table).
+pub fn install(hw: &'static dyn IntrHardware) -> Result<(), AlreadyRegistered> {
+    HARDWARE
+        .set(hw)
+        .map_err(|_| AlreadyRegistered("IntrHardware"))
+}
+
+/// The installed controller, `None` before one attached (the C's table still holding the
+/// `arm_dflt_*` entries).
+#[inline]
+pub fn hardware() -> Option<&'static dyn IntrHardware> {
+    HARDWARE.get().copied()
+}
+
+/// `intr_enable(); f(); intr_disable();`: the IRQ dispatch's pair around its handlers
+/// (`ampintc_irq_handler`, `agintc_irq_handler`), entered with this CPU's interrupts masked
+/// (the exception entry's state): unmasked while `f` runs (a higher-priority interrupt may
+/// nest), masked again after it, as the dispatch found them. Not a guard: a guard's drop
+/// would restore the state it saved, and the dispatch must return masked.
+#[inline]
+pub fn unmasked<R>(f: impl FnOnce() -> R) -> R {
+    crate::cpu::intr_enable();
+    let r = f();
+    let _ = crate::cpu::intr_disable_raw();
+    r
 }
 
 /// `arm_cpu_irq`'s dispatch: through the registered controller, `arm_dflt_irq`'s `panic(9)`
@@ -303,8 +344,8 @@ pub trait IntrHardware: Sync {
     not(target_os = "none"),
     allow(dead_code, reason = "the machine's IRQ entry alone calls it")
 )]
-pub(crate) fn dispatch_irq(frame: &mut crate::cpu::trap::Trapframe) {
-    match bridges::intr_hardware() {
+pub(crate) fn dispatch_irq(frame: &mut crate::cpu::clock::ClockFrame) {
+    match hardware() {
         Some(hw) => hw.dispatch_irq(frame),
         None => crate::assert::hal_panic(format_args!("arm_dflt_irq")),
     }
@@ -316,8 +357,8 @@ pub(crate) fn dispatch_irq(frame: &mut crate::cpu::trap::Trapframe) {
     not(target_os = "none"),
     allow(dead_code, reason = "the machine's FIQ entry alone calls it")
 )]
-pub(crate) fn dispatch_fiq(frame: &mut crate::cpu::trap::Trapframe) {
-    match bridges::intr_hardware() {
+pub(crate) fn dispatch_fiq(frame: &mut crate::cpu::clock::ClockFrame) {
+    match hardware() {
         Some(hw) => hw.dispatch_fiq(frame),
         None => crate::assert::hal_panic(format_args!("arm_dflt_fiq")),
     }
@@ -386,7 +427,7 @@ pub fn smask(level: i32) -> u64 {
 /// before one.
 #[inline]
 pub fn setipl(ipl: i32) {
-    match bridges::intr_hardware() {
+    match hardware() {
         Some(hw) => hw.setipl(ipl),
         None => dflt_setipl(ipl),
     }
@@ -437,7 +478,7 @@ fn pass(ipending: u64) -> impl Iterator<Item = (usize, i32)> {
 /// `splraise`, through the controller as the C's `arm_intr_func.raise`).
 #[inline]
 pub fn splraise_raw(ipl: i32) -> i32 {
-    match bridges::intr_hardware() {
+    match hardware() {
         Some(hw) => hw.splraise(ipl),
         None => dflt_splraise(ipl),
     }
@@ -446,7 +487,7 @@ pub fn splraise_raw(ipl: i32) -> i32 {
 /// `spllower(ipl)`: through the controller.
 #[inline]
 pub fn spllower(ipl: i32) -> i32 {
-    match bridges::intr_hardware() {
+    match hardware() {
         Some(hw) => hw.spllower(ipl),
         None => dflt_spllower(ipl),
     }
@@ -455,7 +496,7 @@ pub fn spllower(ipl: i32) -> i32 {
 /// `splx(ipl)`: through the controller.
 #[inline]
 pub fn splx(ipl: i32) {
-    match bridges::intr_hardware() {
+    match hardware() {
         Some(hw) => hw.splx(ipl),
         None => dflt_splx(ipl),
     }
@@ -486,7 +527,7 @@ pub fn splhigh() -> SplGuard {
 /// `wantipl` or above (named `func` in the report), through the controller's registration
 /// (`bsd`'s `splassert_ctl` and `splassert_fail`); nothing before it.
 pub fn splassert(wantipl: i32, func: &str) {
-    if let Some(hw) = bridges::intr_hardware() {
+    if let Some(hw) = hardware() {
         hw.splassert(wantipl, func);
     }
 }
@@ -524,6 +565,28 @@ mod tests {
 
     use super::*;
     use crate::testutil;
+
+    struct Second;
+
+    impl IntrHardware for Second {}
+
+    static SECOND: Second = Second;
+
+    #[test]
+    fn one_controller_is_installed_and_the_dispatch_pair_returns_what_its_body_does() {
+        testutil::install();
+        assert!(hardware().is_some());
+        assert_eq!(install(&SECOND), Err(AlreadyRegistered("IntrHardware")));
+        let mut ran = false;
+        assert_eq!(
+            unmasked(|| {
+                ran = true;
+                7
+            }),
+            7
+        );
+        assert!(ran);
+    }
 
     fn level() -> i32 {
         curcpu().cpl()

@@ -256,8 +256,10 @@ impl<T> Mutexed<T> {
 
     /// The lock of a parking lot (`mtx_enter_park`): taken by spinning alone (a lot never
     /// parks), with the machine's interrupts off on this CPU (`_masked` is the proof, borrowed
-    /// for as long as the guard lives, so the mask cannot be lifted while the lot is held) and
-    /// no level change.
+    /// for as long as the guard lives, so the guard's drop cannot lift the mask while the lot
+    /// is held; the lots' sections call nothing outside `hal`, so `cpu::intr_enable` does not
+    /// run there either) and no level change. The mask keeps an interrupt on this CPU from
+    /// spinning on a lot its own thread holds: a deadlock it prevents, no memory access.
     fn lock_masked<'a>(&'a self, _masked: &'a cpu::IntrGuard) -> MutexedGuard<'a, T> {
         let me = self_word();
         loop {

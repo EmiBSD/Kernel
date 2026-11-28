@@ -152,7 +152,7 @@ pub(crate) fn intr_restore(daif: u64) {
 
 /// `intr_enable()`: unmasks IRQ and FIQ on this CPU (`msr daifclr, #3`,
 /// `enable_irq_daif`): the exception entry's, once the trap frame is saved (`trap.rs`,
-/// `syscall.rs`).
+/// `syscall.rs`), and `hal::cpu::intr_enable`'s (the interrupt controllers in the kernel).
 #[inline]
 pub(crate) fn intr_enable() {
     // SAFETY: `msr daifclr` clears this CPU's IRQ and FIQ mask bits: no memory operand, no

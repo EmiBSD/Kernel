@@ -104,12 +104,21 @@ pub trait CpuHooks: Sync {
     fn fault(&self, args: core::fmt::Arguments<'_>) {
         crate::prf::printf(format_args!("{args}\n"));
     }
+    /// `cpu_halt()`: the running CPU stops for good (an `ARM_IPI_HALT`, N7.2a2's interrupt
+    /// controllers in the kernel); the machine's CPU code (`bsd`'s `cpu.c`, N7.2c) parks it.
+    /// The default, with no CPU code registered, is `panic(9)`: nothing else can stop a CPU.
+    fn halt(&self) {
+        crate::assert::hal_panic(format_args!("cpu_halt: no CPU hooks"));
+    }
 }
 
 /// The kernel debugger's entry from a trap (`db_ktrap`), registered by `ddb` (`bsd`'s, N9).
 pub trait Debugger: Sync {
     /// `db_ktrap(type, frame)`: whether the debugger handled the trap.
     fn ktrap(&self, kind: i32, frame: &mut Trapframe) -> bool;
+    /// `db_enter()`: enter the debugger on this CPU (an `ARM_IPI_DDB`, N7.2a2's interrupt
+    /// controllers in the kernel). The default is the C without `DDB`: nothing.
+    fn enter(&self) {}
 }
 
 /// The registered kernel-mode fault handler.
@@ -132,6 +141,22 @@ pub fn install_cpu_hooks(h: &'static dyn CpuHooks) -> Result<(), AlreadyRegister
 /// Registers the kernel debugger, once.
 pub fn install_debugger(d: &'static dyn Debugger) -> Result<(), AlreadyRegistered> {
     DEBUGGER.set(d).map_err(|_| AlreadyRegistered("Debugger"))
+}
+
+/// `cpu_halt()`: the running CPU stops, through the registered CPU hooks (`panic(9)` before
+/// them: [`CpuHooks::halt`]'s default).
+pub fn cpu_halt() {
+    match HOOKS.get() {
+        Some(h) => h.halt(),
+        None => crate::assert::hal_panic(format_args!("cpu_halt: no CPU hooks")),
+    }
+}
+
+/// `db_enter()`: into the registered debugger; nothing without one (the C without `DDB`).
+pub fn db_enter() {
+    if let Some(d) = DEBUGGER.get() {
+        d.enter();
+    }
 }
 
 /// The registered kernel-mode fault handler, `None` before registration: the machine's trap

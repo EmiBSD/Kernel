@@ -34,7 +34,11 @@
 # the table the GIC drivers give arm_set_intr_handler) and registered by arm64's initarm (N4.5c,
 # replacing IntrLevel: the level itself is hal's). Decision 46: the C's function table as a
 # trait. N4.8b: dispatch_irq and dispatch_fiq (arm_irq_dispatch, arm_fiq_dispatch), which
-# hal's arm_cpu_irq/arm_cpu_fiq call. Paid when the GIC drivers move (N7).
+# hal's arm_cpu_irq/arm_cpu_fiq call. Paid when the GIC drivers move (N7). N7.2a2: the slot is
+# hal::cpu::intr's own (install, hardware; bridges::register_intr_hardware forwards to it) and
+# the kernel's ampintc(4) implements the trait itself; this row is what is left of the bridge:
+# bsd's ArmIntrHardware for the legacy agintc(4), installed by bsd's arm_set_intr_handler (no
+# longer by initarm), and the dispatch takes the ClockFrame. Removed by N7.2a3.
 # hal::cpu::intr::IntrHardware
 [[bridge]]
 trait = "IntrHardware"
@@ -85,7 +89,8 @@ paid_by = "N9"
 # PSCI's psci_flush_bp rewrites on its first call), ci_serror (Apple's report) and fault()'s
 # claim of ci_panicbuf, implemented by sys/arch/arm64/arm64/cpu.rs (ArmCpuHooks) over the
 # running CPU's cpu_info and registered by arm64's initarm. Paid when the CPU and PSCI drivers
-# move (N7).
+# move (N7). N7.2a2: halt (cpu_halt, the ARM_IPI_HALT of the kernel's ampintc), default
+# panic(9); paid with cpu.c (N7.2c).
 # hal::cpu::trap::CpuHooks
 [[bridge]]
 trait = "CpuHooks"
@@ -94,7 +99,8 @@ paid_by = "N7"
 
 # bsd: ddb's db_ktrap (sys/arch/arm64/arm64/db_interface.rs, DdbDebugger), the kernel
 # debugger's entry from a trap (N4.8b), registered by arm64's initarm; absent, a kernel
-# breakpoint panics as the C without DDB. Paid with ddb (N9).
+# breakpoint panics as the C without DDB. Paid with ddb (N9). N7.2a2: enter (db_enter, the
+# ARM_IPI_DDB of the kernel's ampintc), default nothing (the C without DDB).
 # hal::cpu::trap::Debugger
 [[bridge]]
 trait = "Debugger"
