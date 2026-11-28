@@ -63,8 +63,11 @@
 //!   (`TcEntry::set_frequency`, `TcEntry::set_user`), and keeps its precision, its quality
 //!   and its place as the active counter, which the C's second `tc_init` leaves as they were
 //!   too: the mask does not change, the `hz` check only lowers the quality of a counter of
-//!   some 400 GHz or more, and arm64 has no other counter to prefer. Machines have one timer
-//!   node.
+//!   some 400 GHz or more, and arm64 has no other counter to prefer. What the skipped
+//!   `tc_init` does that this does not: it reads the counter twice and hands the second
+//!   reading to `enqueue_randomness` (`kern_tc.c:478-479`), one more boot-time entropy sample
+//!   the second node does not add (the first node's `tc_init` adds its own). Machines have
+//!   one timer node.
 //! - Not in the C: [`agtimer_evtstrm_enable`] turns on the timer's event stream
 //!   (`CNTKCTL_EL1.EVNTEN`, counter bit 12 at QEMU's 62.5 MHz: a `wfe` wake-up every
 //!   131 µs). Each application processor calls it first thing (`cpu_hatch_entry`), and
