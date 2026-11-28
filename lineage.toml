@@ -14186,6 +14186,11 @@ crate = "hal"
 reason = "hal runtime, written new (N4.8a): the clock frame as the kernel's clock callbacks read it (struct clockframe, CLKF_USERMODE, CLKF_PC, CLKF_INTR over the core's interrupt depth); the machine's frame type comes from arch/<machine>/timer.rs; bsd's include/cpu.rs keeps its CLKF_* for its own callers"
 
 [[extra]]
+rust = "sys/hal/cpu/icc.rs"
+crate = "hal"
+reason = "hal runtime, written new (N7.2a3): the GICv3 CPU interface of the executing CPU for the kernel's agintc(4), the arm64 accessors of arch/arm64/icc.rs (agintc.c's ICC_*_EL1 accesses) re-exported, and on the host the per-thread register file of arch/host/icc.rs that the tests read and set"
+
+[[extra]]
 rust = "sys/hal/ds/pin.rs"
 crate = "hal"
 reason = "hal runtime, written new (N4.1 P3): pin_static, a &'static value pinned (core's Pin::static_ref since the review fix S5: the premise that a shared borrow that never ends excludes every move; the module is forbid, 0 unsafe); docs/ZERO_UNSAFE.md 0.1"
@@ -14264,6 +14269,13 @@ notes = "N4.8a: agtimer.c's register half: CNTVCT_EL0 read around the Cortex-A73
 lz = "sys/arch/arm64/dev/agtimer.rs::AGTIMER_READCNT64"
 native = ["SUN50I"]
 kind = "renamed"
+
+[[module]]
+rust = "sys/hal/arch/arm64/icc.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/dev/agintc.rs"]
+status = "redesigned"
+notes = "N7.2a3: agintc.c's CPU interface half: the ICC_*_EL1 system registers (icc_reg!'s names; icc_read! and icc_write! define one function per access: ctlr, pmr, set_pmr, set_sre, set_bpr1, set_igrpen1, iar1, eoir1, sgi1r, each with the C's barrier in its own asm sequence, the isb and the dsb sy of the C, LZ's dsb ish before an SGI) and dsb_sy, the C's make-globally-visible barrier; hal::cpu::icc's, for the kernel's agintc(4) (sys/kernel/dev/arm64/agintc.rs). Three asm sites: one per macro, one for dsb_sy"
 
 [[module]]
 rust = "sys/hal/arch/arm64/switch.rs"
