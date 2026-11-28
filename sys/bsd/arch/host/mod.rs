@@ -1091,6 +1091,23 @@ static HOST_IOCONF: crate::sys::staticcell::StaticCell<(&'static [Cfdata], &'sta
 /// The host's `mainbus_cd`, for tests that attach a root named "mainbus".
 static HOST_MAINBUS_CD: Cfdriver = Cfdriver::new(b"mainbus", DV_DULL, 0);
 
+/// A native bus's typed attach argument the host's presenter knows: the tests' stand-in
+/// for arm64's `FdtArgs`.
+#[cfg(test)]
+pub struct HostTypedArgs {
+    /// The match level the legacy child's probe answers.
+    pub pri: i32,
+}
+
+/// The legacy attach argument the host's presenter lends for a [`HostTypedArgs`]: the
+/// tests' stand-in for LZ's `FdtAttachArgs`.
+#[cfg(test)]
+#[repr(C)]
+pub struct HostLegacyArgs {
+    /// The match level the legacy child's probe answers.
+    pub pri: i32,
+}
+
 /// The host's autoconfiguration tables are whatever the test installed; `device_register`
 /// does nothing, as on amd64 and arm64.
 impl Autoconf for Machine {
@@ -1121,6 +1138,15 @@ impl Autoconf for Machine {
     }
 
     fn device_register(_dev: &Device, _aux: *mut c_void) {}
+
+    /// The tests' presenter: a [`HostTypedArgs`] lent as a [`HostLegacyArgs`] on the stack.
+    #[cfg(test)]
+    fn present_aux(aux: &(dyn core::any::Any + Send + Sync), f: &mut dyn FnMut(*mut c_void)) {
+        if let Some(t) = aux.downcast_ref::<HostTypedArgs>() {
+            let mut legacy = HostLegacyArgs { pri: t.pri };
+            f(core::ptr::from_mut(&mut legacy).cast());
+        }
+    }
 
     fn pdevinit() -> &'static [crate::sys::device::Pdevinit] {
         &[]

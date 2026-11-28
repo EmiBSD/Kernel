@@ -102,6 +102,11 @@
 //!   `Devicelist` went (the node's link). [`Cfdriver::cd_units`] is the kernel's unit table;
 //!   `cd_devs`/`cd_ndevs` are its mirror, kept by the kernel's hooks, for the drivers that
 //!   read them (`cd_dev`, `device_lookup`'s per-I/O path).
+//! - N7.2b1a: a row may name a native driver ([`Cfdata::native`], [`Cfdata::cf_native`]):
+//!   it stays a `Cfdata` inside the machine's `cfdata[]`, so UKC edits it and the parents'
+//!   indices name it as any other, its attachment is [`CFATTACH_NATIVE`] and its
+//!   `cf_driver` a stub of the driver's name for UKC's listings (scaffolding,
+//!   docs/SCAFFOLDING.md).
 
 use core::cell::Cell;
 use core::ffi::c_void;
@@ -109,13 +114,13 @@ use core::ptr::NonNull;
 use core::sync::atomic::AtomicI32;
 
 // The constants and the classes are the kernel's (N7.1a), under their names here.
-use kernel::dev::device::UnitTable;
 pub use kernel::dev::device::{
     CD_COCOVM, CD_INDIRECT, CD_SKIPHIBERNATE, DETACH_FORCE, DETACH_QUIET, DV_CPU, DV_DISK, DV_DULL,
     DV_IFNET, DV_TAPE, DV_TTY, DVACT_DEACTIVATE, DVACT_POWERDOWN, DVACT_QUIESCE, DVACT_RESUME,
     DVACT_SUSPEND, DVACT_WAKEUP, DVF_ACTIVE, Devclass, FSTATE_DNOTFOUND, FSTATE_DSTAR,
     FSTATE_FOUND, FSTATE_NOTFOUND, FSTATE_STAR, QUIET, UNCONF, UNSUPP,
 };
+use kernel::dev::device::{DriverOps, UnitTable};
 
 use crate::sys::errno::Errno;
 
@@ -170,13 +175,30 @@ impl Device {
 
     /// `(struct foo_softc *)self`: the softc this device is the head of.
     ///
+    /// A `T` larger than the block of the device's row (`ca_devsize`) is `panic(9)`, not a
+    /// read past it: a native node's shadow header (a block of the header alone,
+    /// [`CFATTACH_NATIVE`]) cast to a legacy parent's softc is the case it catches. A device
+    /// made by hand, without a row, is not checked (its maker made the block).
+    ///
     /// # Safety
     ///
     /// `self` was allocated by `config_make_softc` for a [`Cfattach`] whose `ca_devsize` is
-    /// at least `size_of::<T>()`, which is the case inside that attachment's own functions.
+    /// at least `size_of::<T>()`, which is the case inside that attachment's own functions,
+    /// or by hand as a `T`.
     pub unsafe fn softc<T: Softc>(&self) -> &T {
+        if let Some(cf) = self.dv_cfdata.get()
+            && size_of::<T>() > cf.cf_attach.ca_devsize
+        {
+            crate::kern::subr_prf::panic(format_args!(
+                "{}: a softc of {} bytes in a block of {}",
+                self.xname(),
+                size_of::<T>(),
+                cf.cf_attach.ca_devsize
+            ));
+        }
         // SAFETY: `T` is `#[repr(C)]` with the device first (the `Softc` contract), so the
-        // device's address is the softc's; the caller guarantees the allocation holds a `T`.
+        // device's address is the softc's; the caller guarantees the allocation holds a `T`,
+        // and for a device with a row the check above has made sure its block is that big.
         unsafe { &*core::ptr::from_ref(self).cast::<T>() }
     }
 
@@ -222,6 +244,10 @@ pub struct Cfdata {
     pub cf_locnames: i32,
     /// `cf_starunit1`: 1st usable unit number by STAR.
     pub cf_starunit1: i16,
+    /// The kernel's driver of a native row ([`Cfdata::native`]), `None` for a legacy one:
+    /// what the row's `ConfigRow::driver` answers in place of the row itself (scaffolding,
+    /// docs/SCAFFOLDING.md; no C member: `ioconf.c` names every driver by its `cfattach`).
+    pub cf_native: Option<&'static dyn DriverOps>,
 }
 
 impl Cfdata {
@@ -248,7 +274,19 @@ impl Cfdata {
             cf_parents,
             cf_locnames,
             cf_starunit1,
+            cf_native: None,
         }
+    }
+
+    /// The row `new` wrote, made a native driver's: `drv` is its driver, its attachment
+    /// [`CFATTACH_NATIVE`] (whatever `new` was given), and its `cf_driver` keeps naming the
+    /// driver for UKC. In `ioconf.rs`:
+    /// `Cfdata::new(&CFATTACH_NATIVE, &MAINBUS_CD, ..).native(&MAINBUS)`.
+    pub const fn native(self, drv: &'static dyn DriverOps) -> Self {
+        let mut cf = self;
+        cf.cf_attach = &CFATTACH_NATIVE;
+        cf.cf_native = Some(drv);
+        cf
     }
 
     /// `{0}`: a free slot, of the eight `config(8)` writes at the end of `cfdata[]` for UKC's
@@ -267,7 +305,7 @@ impl Cfdata {
 /// `cfdata[i+1] = cfdata[i]`: UKC's `add` moves and copies whole entries.
 impl Clone for Cfdata {
     fn clone(&self) -> Self {
-        Self::new(
+        let mut copy = Self::new(
             self.cf_attach,
             self.cf_driver,
             self.cf_unit.get(),
@@ -277,7 +315,9 @@ impl Clone for Cfdata {
             self.cf_parents,
             self.cf_locnames,
             self.cf_starunit1,
-        )
+        );
+        copy.cf_native = self.cf_native;
+        copy
     }
 }
 
@@ -450,6 +490,26 @@ pub static CFATTACH_NULL: Cfattach = Cfattach {
 
 /// The driver of a free `cfdata[]` slot: the C's NULL `cf_driver`, with an empty name.
 pub static CFDRIVER_NULL: Cfdriver = Cfdriver::new(b"", DV_DULL, 0);
+
+/// The attachment of a native row ([`Cfdata::native`]): not [`CFATTACH_NULL`], so the walks
+/// of `cfdata[]` go on past it. Autoconfiguration never calls it (the row's driver is
+/// `cf_native`); a legacy bus's submatch that calls `ca_match` by hand (mainbus's,
+/// simplebus's `early` passes) gets 0, which is what a native driver's probe answers for a
+/// legacy bus's arguments. `ca_devsize` is the legacy header alone: the size of the shadow
+/// header a native node lends to legacy code (`kern/subr_autoconf.rs`). Scaffolding
+/// (docs/SCAFFOLDING.md).
+pub static CFATTACH_NATIVE: Cfattach = Cfattach {
+    ca_devsize: size_of::<Device>(),
+    ca_match: Some(|_, _, _| 0),
+    ca_attach: |_, self_, _| {
+        crate::kern::subr_prf::panic(format_args!(
+            "autoconf: {} is a native device",
+            self_.xname()
+        ))
+    },
+    ca_detach: None,
+    ca_activate: None,
+};
 /* </CODE> */
 
 /* <TESTS> */
