@@ -29,10 +29,11 @@
 //!   `just dist-arm64` names a neutral `build@emibsd:/usr/src/sys`).
 //! - Bare-metal builds only: the per-architecture linker script. Host builds (tests,
 //!   `cargo check`, the `sys/arch/host` double) never link a kernel.
-//! - Every build: the per-architecture `option`s (`ARCH_OPTIONS`), what `config(8)` reads
-//!   from `arch/<arch>/conf/GENERIC` on top of the shared `conf/GENERIC`. Their cargo feature
-//!   says the code may be built; the `option_*` cfg emitted here says this target configures
-//!   it. Host builds get every one, so the host tests cover the code.
+//! - Every build: the per-architecture `option`s and device lines (`ARCH_OPTIONS`), what
+//!   `config(8)` reads from `arch/<arch>/conf/GENERIC` on top of the shared `conf/GENERIC`.
+//!   Their cargo feature (when they have one) says the code may be built; the cfg emitted
+//!   here says this target configures it. Host builds get every one, so the host tests cover
+//!   the code.
 //! - Every build: the per-architecture machine interfaces (`ARCH_MACHINE`), which the
 //!   machine-independent drivers that only some architectures' `files.<arch>` list are
 //!   written against. A bare-metal build of one of those architectures gets the cfg; host
@@ -82,9 +83,22 @@ fn date_string(epoch: i64) -> String {
     )
 }
 
-/// The `option`s only some architectures' GENERIC sets: (cargo feature, cfg emitted, the
-/// architectures whose GENERIC has it). `option NTFS` is in `arch/amd64/conf/GENERIC` alone.
-const ARCH_OPTIONS: &[(&str, &str, &[&str])] = &[("ntfs", "option_ntfs", &["amd64"])];
+/// The `option`s and device lines only some architectures' GENERIC sets: (cargo feature,
+/// `None` for a line no feature gates; cfg emitted; the architectures whose GENERIC has it).
+/// - `option NTFS` is in `arch/amd64/conf/GENERIC` alone.
+/// - `acpi_x86_timers`: `acpitimer* at acpi?` and `acpihpet* at acpi?` (amd64's GENERIC,
+///   lines 42-43, and i386's; not arm64's, whose `ioconf.rs` has no row for them): the two
+///   drivers (`dev/acpi/acpitimer.rs`, `acpihpet.rs`), N7's U14a.
+/// - `bsd_machine_clock`: the machine's clock and timecounters are `bsd`'s drivers
+///   (amd64's `isa/clock.c`, lapic and tsc, with the ACPI timers), not the kernel's
+///   (arm64's agtimer(4) since N7.2b2b): the `bsd` side of the `ClockHardware` and
+///   `Timecounter` bridges (`kern/hal_bridges.rs`'s `BsdClockHardware`, `kern/kern_tc.rs`'s
+///   drivers' path, `sys/timetc.rs`'s `TcEntry` link and trait implementation), N7's U14a.
+const ARCH_OPTIONS: &[(Option<&str>, &str, &[&str])] = &[
+    (Some("ntfs"), "option_ntfs", &["amd64"]),
+    (None, "acpi_x86_timers", &["amd64"]),
+    (None, "bsd_machine_clock", &["amd64"]),
+];
 
 /// The machine interfaces only some architectures have, and the drivers written against
 /// them (cfg emitted, the architectures that have it). `machine_pci_chipset`: the machine's
@@ -114,13 +128,15 @@ fn arch_machine(arch: Option<&str>) {
     }
 }
 
-/// Emits each `ARCH_OPTIONS` cfg whose feature is on and whose architecture list holds
-/// `arch` (`None`: a host build, which gets them all).
+/// Emits each `ARCH_OPTIONS` cfg whose feature (if any) is on and whose architecture list
+/// holds `arch` (`None`: a host build, which gets them all).
 fn arch_options(arch: Option<&str>) {
     for (feature, cfg, arches) in ARCH_OPTIONS {
         println!("cargo:rustc-check-cfg=cfg({cfg})");
-        let var = format!("CARGO_FEATURE_{}", feature.to_uppercase());
-        let on = env::var_os(&var).is_some();
+        let on = feature.is_none_or(|f| {
+            let var = format!("CARGO_FEATURE_{}", f.to_uppercase());
+            env::var_os(&var).is_some()
+        });
         if on && arch.is_none_or(|a| arches.contains(&a)) {
             println!("cargo:rustc-cfg={cfg}");
         }

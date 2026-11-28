@@ -273,11 +273,6 @@ pub fn mainbus_attach(dev: &DevRef) {
             mainbus_attach_node(dev, &mut st, node, None);
             node = OF_peer(node);
         }
-        if early == 1 {
-            // The early devices are attached (psci(4) in its own pass, or here): the SMCCC
-            // call's record of a PSCI 0.1 firmware's ids closes, whether or not one attached.
-            hal::cpu::smccc::seal_psci_0_1();
-        }
     }
     st.early = 0;
 
@@ -297,6 +292,14 @@ pub fn mainbus_attach(dev: &DevRef) {
     );
 
     let _ = unported!("thermal_init (ofw_thermal.c)");
+
+    // Not in the C: every device under mainbus is attached (psci(4) in its own early pass,
+    // or at any depth of the root's walk: a simple-bus's early passes run inside its own
+    // attach, in mainbus's pass 0), so the SMCCC call's record of a PSCI 0.1 firmware's ids
+    // closes, holding the last psci node's, as the C's `psci_sc` names it, or none. Still
+    // inside cpu_configure, before the secondary CPUs start and before any code after
+    // autoconfiguration (hal::cpu::smccc).
+    hal::cpu::smccc::seal_psci_0_1();
 }
 
 /// `mainbus_print`: names a node no driver took, unless it is one nobody expects a driver
