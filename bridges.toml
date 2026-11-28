@@ -118,6 +118,8 @@ paid_by = "N7"
 # and its log(9) (N4.7b: kernel::tty::pty's tablefull; N4.8a: kernel::time::tc's clock-step line),
 # implemented by sys/kern/hal_bridges.rs (BsdPrintf) and registered before main(); the kernel
 # crate's lines (kernel::base::prf: unported!, vm::page, vm::pmemrange, vm::km) go through it.
+# N7.2a2: splassert_fail (hal::cpu::intr::splassert_check's report, under bsd's
+# splassert_ctl), so the kernel's GICv2 checks splassert as the legacy GICv3's table does.
 # subr_prf goes with the bsd crate.
 # hal::prf::Printf
 [[bridge]]

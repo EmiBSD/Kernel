@@ -64,9 +64,6 @@
 //! - The machine's interrupt controller is the first that installs itself: a second GIC's
 //!   attach is `panic(9)` where the C's `arm_set_intr_handler` would replace the first's
 //!   table (no machine has two).
-//! - Before this controller attaches, and after it, `splassert(9)` from the kernel checks
-//!   nothing (`IntrHardware::splassert`'s default; the C's `arm_splassert_check` is
-//!   `DIAGNOSTIC` only, and `bsd`'s own `splassert` is unchanged); N7.2a3 moves the check.
 //! - The primary CPU (`cpu_info_primary`, an establish without a CPU) is the CPU that ran the
 //!   attach: mainbus attaches the controller during `cpu_configure` on the boot CPU, which is
 //!   the primary one.
@@ -105,6 +102,11 @@
 //!   (`kernel::dev::arm64::intr::intr_set_send_ipi`); `db_enter()` and `cpu_halt()` of the
 //!   IPI reasons -> `hal::cpu::trap::db_enter` and `cpu_halt` (the `Debugger` and `CpuHooks`
 //!   bridges, `bsd`'s ddb and `cpu.c` until they move).
+//! - The softc's `splassert` is `IntrHardware`'s default, `hal::cpu::intr::splassert_check`
+//!   (the C's generic `arm_splassert_check`, the report through `hal::prf::splassert_fail`
+//!   and `bsd`'s `splassert_ctl`): the GICv2 checks what the legacy GICv3's table does.
+//! - The dispatch's unmask pair is `hal::cpu::intr::unmasked`, given the dispatch's token
+//!   (`InIrq`), which only `hal`'s IRQ entry makes.
 //! - `ampintc_intr_barrier`'s `sched_barrier(ih->ih_ci)` -> the CPU to wait for
 //!   (`BarrierWait::Cpu`), which the core's `intr_barrier` waits for.
 //! - The GICv2m frame: `sc_spi`, a `mallocarray` of `void *` handles (NULL: free) whose
@@ -122,7 +124,8 @@ use core::sync::atomic::{
 
 use hal::cpu::clock::ClockFrame;
 use hal::cpu::intr::{
-    IPL_FLAGMASK, IPL_HIGH, IPL_IPI, IPL_IRQMASK, IPL_MPSAFE, IPL_NONE, IPL_SCHED, IntrHardware,
+    IPL_FLAGMASK, IPL_HIGH, IPL_IPI, IPL_IRQMASK, IPL_MPSAFE, IPL_NONE, IPL_SCHED, InIrq,
+    IntrHardware,
 };
 use hal::dev::mmio::{DevCache, Mmio, Reg, RegBlock};
 use hal::ds::list::{List, ListEntry};
@@ -136,8 +139,8 @@ use crate::base::prf::{Str, printf};
 use crate::dev::arm64::fdt::FdtArgs;
 use crate::dev::arm64::intr::{
     ARM_IPI_DDB, ARM_IPI_HALT, ARM_IPI_NOP, BarrierWait, IST_EDGE_RISING, IST_LEVEL_HIGH, IcCookie,
-    IcDesc, InterruptController, IntrHandle, arm_intr_disestablish_fdt, arm_intr_register_fdt,
-    controllers, intr_set_send_ipi,
+    IcDesc, IcRef, InterruptController, IntrHandle, arm_intr_disestablish_fdt,
+    arm_intr_register_fdt, controllers, intr_set_send_ipi,
 };
 use crate::dev::arm64::simplebus::simplebus_attach;
 use crate::dev::device::{
@@ -908,7 +911,7 @@ fn ampintc_run_handler(ih: &Intrhand, frame: &ClockFrame, s: i32) {
 
 /// `ampintc_irq_handler`: the IRQ dispatcher `arm_cpu_irq` calls: acknowledge, raise to the
 /// interrupt's level, run its handlers with the machine's interrupts on, end it, restore.
-pub fn ampintc_irq_handler(sc: &AmpintcSoftc, frame: &ClockFrame) {
+pub fn ampintc_irq_handler(sc: &AmpintcSoftc, frame: &ClockFrame, irq_: &InIrq) {
     let iack_val = sc.p.read(IAR);
     // DEBUG_INTC: not configured.
     let irq = (iack_val & ICPIAR_IRQ_M) as usize;
@@ -924,7 +927,7 @@ pub fn ampintc_irq_handler(sc: &AmpintcSoftc, frame: &ClockFrame) {
 
     let pri = iq.irq_max.load(Ordering::Relaxed);
     let s = sc.splraise(pri);
-    hal::cpu::intr::unmasked(|| {
+    hal::cpu::intr::unmasked(irq_, || {
         for ih in &iq.list {
             ampintc_run_handler(ih, frame, s);
         }
@@ -1116,8 +1119,8 @@ impl IntrHardware for AmpintcSoftc {
     }
 
     /// `ampintc_irq_handler`, as `arm_irq_dispatch`.
-    fn dispatch_irq(&self, frame: &mut ClockFrame) {
-        ampintc_irq_handler(self, frame);
+    fn dispatch_irq(&self, frame: &mut ClockFrame, irq: &InIrq) {
+        ampintc_irq_handler(self, frame, irq);
     }
 }
 
@@ -1257,22 +1260,7 @@ impl InterruptController for AmpintcMsiSoftc {
     ) -> Option<IcCookie> {
         let parent = OF_parent(self.node);
         let ic = controllers().find(|ic| ic.node() == parent)?;
-
-        let i = self.claim()?;
-        let cells = [
-            0,                                  // SPI
-            (self.bspi + i as i32 - 32) as u32, // the SPI's number
-            1,                                  // Edge-Rising
-        ];
-        let Some(ih) = ic.establish(&cells, level, cpu, h, name) else {
-            self.set(i, Spi::Free);
-            return None;
-        };
-
-        *addr = self.addr + GICV2M_SETSPI_NS as u64;
-        *data = (self.bspi + i as i32) as u64;
-        self.set(i, Spi::Taken(ih));
-        Some(IcCookie::Word(i))
+        self.establish_msi_on(ic, addr, data, level, cpu, h, name)
     }
 
     fn has_msi(&self) -> bool {
@@ -1295,6 +1283,38 @@ impl InterruptController for AmpintcMsiSoftc {
             Some(h) => h.controller().ops().barrier(h.cookie()),
             None => BarrierWait::Nothing,
         }
+    }
+}
+
+impl AmpintcMsiSoftc {
+    /// [`AmpintcMsiSoftc::establish_msi`] on the parent GIC `ic`: a free SPI claimed and
+    /// established there, the doorbell and the SPI number handed back.
+    #[allow(clippy::too_many_arguments)] // the C's signature, the parent beside it
+    fn establish_msi_on(
+        &self,
+        ic: IcRef,
+        addr: &mut u64,
+        data: &mut u64,
+        level: i32,
+        cpu: Option<usize>,
+        h: IntrHandler,
+        name: &'static str,
+    ) -> Option<IcCookie> {
+        let i = self.claim()?;
+        let cells = [
+            0,                                  // SPI
+            (self.bspi + i as i32 - 32) as u32, // the SPI's number
+            1,                                  // Edge-Rising
+        ];
+        let Some(ih) = ic.establish(&cells, level, cpu, h, name) else {
+            self.set(i, Spi::Free);
+            return None;
+        };
+
+        *addr = self.addr + GICV2M_SETSPI_NS as u64;
+        *data = (self.bspi + i as i32) as u64;
+        self.set(i, Spi::Taken(ih));
+        Some(IcCookie::Word(i))
     }
 }
 
@@ -1609,7 +1629,7 @@ mod tests {
         let before = hal::cpu::curcpu().cpl();
         sc.p.write(EOIR, 0xdead);
         sc.p.write(IAR, 40);
-        ampintc_irq_handler(sc, &frame);
+        ampintc_irq_handler(sc, &frame, &InIrq::host());
         let seen = core::mem::take(&mut *SEEN.lock().unwrap());
         *DISPATCHED.lock().unwrap() = None;
         assert_eq!(
@@ -1632,10 +1652,10 @@ mod tests {
         // The spurious interrupt is counted and not ended; one past the queues ignored.
         sc.p.write(EOIR, 0);
         sc.p.write(IAR, 1023);
-        ampintc_irq_handler(sc, &frame);
+        ampintc_irq_handler(sc, &frame, &InIrq::host());
         assert_eq!(sc.spur.ec_count.load(Ordering::Relaxed), 1);
         sc.p.write(IAR, 300);
-        ampintc_irq_handler(sc, &frame);
+        ampintc_irq_handler(sc, &frame, &InIrq::host());
         assert_eq!(sc.p.read(EOIR), 0);
     }
 
@@ -1745,6 +1765,169 @@ mod tests {
             InterruptController::barrier(sc, IcCookie::Word(1))
         }));
         assert!(word.is_err(), "a cookie this controller did not answer");
+    }
+
+    // The GICv2m frame over a fake parent GIC registered on a registry of its own
+    // (`intr::test_register`), so the frame's work is tested without the kernel's registry.
+
+    /// A parent GIC that records what it is asked and answers words `1, 2, ...` (or refuses).
+    struct FakeGic {
+        calls: Mutex<Vec<(&'static str, Vec<u32>, usize)>>,
+        refuse: core::sync::atomic::AtomicBool,
+        next: core::sync::atomic::AtomicUsize,
+    }
+
+    fn word_of(ih: IcCookie) -> usize {
+        match ih {
+            IcCookie::Word(w) => w,
+            IcCookie::Rec(_) => usize::MAX,
+        }
+    }
+
+    impl InterruptController for FakeGic {
+        fn establish(
+            &self,
+            cell: &[u32],
+            level: i32,
+            _cpu: Option<usize>,
+            _h: IntrHandler,
+            _name: &'static str,
+        ) -> Option<IcCookie> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(("establish", cell.to_vec(), level as usize));
+            if self.refuse.load(Ordering::Relaxed) {
+                return None;
+            }
+            Some(IcCookie::Word(self.next.fetch_add(1, Ordering::Relaxed)))
+        }
+
+        fn disestablish(&self, ih: IcCookie) {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(("disestablish", vec![], word_of(ih)));
+        }
+
+        fn barrier(&self, ih: IcCookie) -> BarrierWait {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(("barrier", vec![], word_of(ih)));
+            BarrierWait::Cpu(3)
+        }
+    }
+
+    /// The parent registered (over a one-node tree: its `#interrupt-cells` read at
+    /// registration) and a frame of two SPIs from 80 at 0x0802_0000.
+    fn frame_and_parent() -> (
+        crate::dev::ofw::fdt::testfdt::TreeGuard,
+        &'static FakeGic,
+        IcRef,
+        AmpintcMsiSoftc,
+    ) {
+        use crate::dev::ofw::fdt::testfdt::{FdtBuilder, install};
+
+        testutil::install();
+        let mut b = FdtBuilder::new();
+        b.begin(b"");
+        b.begin(b"intc@0");
+        b.prop(b"interrupt-controller", b"");
+        b.prop_cells(b"#interrupt-cells", &[3]);
+        b.prop_cells(b"phandle", &[1]);
+        b.end();
+        b.end();
+        let t = install(b.finish());
+        let gic: &'static FakeGic = Box::leak(Box::new(FakeGic {
+            calls: Mutex::new(Vec::new()),
+            refuse: core::sync::atomic::AtomicBool::new(false),
+            next: core::sync::atomic::AtomicUsize::new(1),
+        }));
+        let ic = crate::dev::arm64::intr::test_register(IcDesc {
+            node: crate::dev::ofw::fdt::OF_finddevice(b"/intc@0"),
+            gic_its_id: 0,
+            ops: gic,
+        });
+        let spi = MArray::new(M_DEVBUF, M_WAITOK, 2, |_| Spi::Free).unwrap();
+        let frame = AmpintcMsiSoftc {
+            node: 0,
+            addr: 0x0802_0000,
+            bspi: 80,
+            spi: Mutexed::new(IPL_HIGH, spi),
+        };
+        (t, gic, ic, frame)
+    }
+
+    fn msi(frame: &AmpintcMsiSoftc, ic: IcRef) -> Option<(IcCookie, u64, u64)> {
+        let (mut addr, mut data) = (0, 7);
+        let c = frame.establish_msi_on(
+            ic,
+            &mut addr,
+            &mut data,
+            IPL_BIO,
+            None,
+            IntrHandler::Raw(record, 0),
+            "msi",
+        )?;
+        Some((c, addr, data))
+    }
+
+    #[test]
+    fn a_frame_hands_out_its_spis_as_the_doorbell_and_the_spi_number() {
+        let (_t, gic, ic, frame) = frame_and_parent();
+        let (c0, addr, data) = msi(&frame, ic).unwrap();
+        assert_eq!((word_of(c0), addr, data), (0, 0x0802_0040, 80));
+        let (c1, addr, data) = msi(&frame, ic).unwrap();
+        assert_eq!((word_of(c1), addr, data), (1, 0x0802_0040, 81));
+        assert!(msi(&frame, ic).is_none(), "every SPI taken");
+        assert_eq!(
+            *gic.calls.lock().unwrap(),
+            vec![
+                ("establish", vec![0, 48, 1], IPL_BIO as usize),
+                ("establish", vec![0, 49, 1], IPL_BIO as usize),
+            ],
+            "an edge-rising SPI each, numbered from the frame's base"
+        );
+    }
+
+    #[test]
+    fn a_refused_spi_stays_free() {
+        let (_t, gic, ic, frame) = frame_and_parent();
+        gic.refuse.store(true, Ordering::Relaxed);
+        assert!(msi(&frame, ic).is_none());
+        gic.refuse.store(false, Ordering::Relaxed);
+        let (c, _, data) = msi(&frame, ic).unwrap();
+        assert_eq!(
+            (word_of(c), data),
+            (0, 80),
+            "the slot the refusal left is taken again"
+        );
+    }
+
+    #[test]
+    fn a_disestablished_spi_is_freed_after_its_parent_and_reclaimed() {
+        let (_t, gic, ic, frame) = frame_and_parent();
+        let (c0, _, _) = msi(&frame, ic).unwrap();
+        let (c1, _, _) = msi(&frame, ic).unwrap();
+        // The barrier forwards to the parent with its own cookie (words 1 and 2).
+        assert_eq!(
+            InterruptController::barrier(&frame, c1),
+            BarrierWait::Cpu(3)
+        );
+        InterruptController::disestablish(&frame, c0);
+        assert_eq!(
+            InterruptController::barrier(&frame, c0),
+            BarrierWait::Nothing,
+            "a free slot has nothing to wait for"
+        );
+        let (again, _, data) = msi(&frame, ic).unwrap();
+        assert_eq!((word_of(again), data), (0, 80));
+        let calls = gic.calls.lock().unwrap();
+        assert_eq!(calls[2], ("barrier", vec![], 2));
+        assert_eq!(calls[3], ("disestablish", vec![], 1));
+        assert_eq!(calls[4].0, "establish");
+        assert!(InterruptController::has_msi(&frame));
     }
 }
 /* </TESTS> */

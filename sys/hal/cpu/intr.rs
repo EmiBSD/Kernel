@@ -92,7 +92,10 @@
 //!   as the C's table starts. `hal::bridges::register_intr_hardware` forwards here until
 //!   N7.2a3. The dispatch takes the clock frame (`ClockFrame`, the machine's trap frame on
 //!   arm64), which the kernel's handlers read; [`unmasked`] is the dispatch's
-//!   `intr_enable()`/`intr_disable()` pair around its handlers.
+//!   `intr_enable()`/`intr_disable()` pair around its handlers, its premise a type
+//!   ([`InIrq`], the dispatch's token). `arm_splassert_check` is this module's
+//!   ([`splassert_check`], the trait's default and the check before a controller attaches;
+//!   the report through `hal::prf::splassert_fail`), so every controller checks the same.
 
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -287,17 +290,19 @@ pub trait IntrHardware: Sync {
     fn setipl(&self, ipl: i32) {
         dflt_setipl(ipl);
     }
-    /// `arm_splassert_check(wantipl, func)` behind `splassert` (`DIAGNOSTIC`, while
-    /// `splassert_ctl` is on): reports a caller of `func` running below `wantipl`.
+    /// `arm_splassert_check(wantipl, func)` behind `splassert`: reports a caller of `func`
+    /// running below `wantipl` ([`splassert_check`], the C's generic check, which every
+    /// controller shares).
     fn splassert(&self, wantipl: i32, func: &str) {
-        let _ = (wantipl, func);
+        splassert_check(wantipl, func);
     }
     /// `(*arm_irq_dispatch)(frame)`: the controller's IRQ dispatch, which `arm_cpu_irq` (the
-    /// machine's trap code) calls with `ci_idepth` raised; the default is `arm_dflt_irq`,
-    /// whose `panic(9)` is what an interrupt before a controller attached meets.
+    /// machine's trap code) calls with `ci_idepth` raised and this CPU's interrupts masked
+    /// (`irq`, the proof [`unmasked`] asks for); the default is `arm_dflt_irq`, whose
+    /// `panic(9)` is what an interrupt before a controller attached meets.
     #[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
-    fn dispatch_irq(&self, frame: &mut crate::cpu::clock::ClockFrame) {
-        let _ = frame;
+    fn dispatch_irq(&self, frame: &mut crate::cpu::clock::ClockFrame, irq: &InIrq) {
+        let _ = (frame, irq);
         crate::assert::hal_panic(format_args!("arm_dflt_irq"));
     }
     /// `(*arm_fiq_dispatch)(frame)`, as [`IntrHardware::dispatch_irq`] (`arm_dflt_fiq`).
@@ -305,6 +310,36 @@ pub trait IntrHardware: Sync {
     fn dispatch_fiq(&self, frame: &mut crate::cpu::clock::ClockFrame) {
         let _ = frame;
         crate::assert::hal_panic(format_args!("arm_dflt_fiq"));
+    }
+}
+
+/// The IRQ dispatch under way on this CPU, with its interrupts masked by the exception entry:
+/// made only by `hal`'s IRQ entry ([`dispatch_irq`]) and lent to the controller's
+/// [`IntrHardware::dispatch_irq`] for the call, so [`unmasked`]'s premise (entered masked, in
+/// a dispatch) is a type. Not `Send`, not `Clone`, and a `'static` one cannot be had (it
+/// lives on the entry's frame). The host double has no interrupts: its constructor is public
+/// there ([`InIrq::host`]), for the tests of a controller's dispatch.
+pub struct InIrq {
+    _not_send: PhantomData<*const ()>,
+}
+
+impl InIrq {
+    /// The token of a dispatch `hal`'s IRQ entry makes.
+    #[cfg_attr(
+        not(target_os = "none"),
+        allow(dead_code, reason = "the machine's IRQ entry alone makes one")
+    )]
+    fn entry() -> InIrq {
+        InIrq {
+            _not_send: PhantomData,
+        }
+    }
+
+    /// The host double's token (a host thread takes no interrupt, so nothing is masked or
+    /// unmasked): for a test that runs a controller's dispatch by hand.
+    #[cfg(not(target_os = "none"))]
+    pub fn host() -> InIrq {
+        InIrq::entry()
     }
 }
 
@@ -325,12 +360,14 @@ pub fn hardware() -> Option<&'static dyn IntrHardware> {
 }
 
 /// `intr_enable(); f(); intr_disable();`: the IRQ dispatch's pair around its handlers
-/// (`ampintc_irq_handler`, `agintc_irq_handler`), entered with this CPU's interrupts masked
-/// (the exception entry's state): unmasked while `f` runs (a higher-priority interrupt may
-/// nest), masked again after it, as the dispatch found them. Not a guard: a guard's drop
-/// would restore the state it saved, and the dispatch must return masked.
+/// (`ampintc_irq_handler`, `agintc_irq_handler`), inside a dispatch (`irq`), entered with
+/// this CPU's interrupts masked (the exception entry's state): unmasked while `f` runs (a
+/// higher-priority interrupt may nest), masked again after it, as the dispatch found them.
+/// Not a guard: a guard's drop would restore the state it saved, and the dispatch must
+/// return masked.
 #[inline]
-pub fn unmasked<R>(f: impl FnOnce() -> R) -> R {
+pub fn unmasked<R>(irq: &InIrq, f: impl FnOnce() -> R) -> R {
+    let _ = irq;
     crate::cpu::intr_enable();
     let r = f();
     let _ = crate::cpu::intr_disable_raw();
@@ -346,7 +383,7 @@ pub fn unmasked<R>(f: impl FnOnce() -> R) -> R {
 )]
 pub(crate) fn dispatch_irq(frame: &mut crate::cpu::clock::ClockFrame) {
     match hardware() {
-        Some(hw) => hw.dispatch_irq(frame),
+        Some(hw) => hw.dispatch_irq(frame, &InIrq::entry()),
         None => crate::assert::hal_panic(format_args!("arm_dflt_irq")),
     }
 }
@@ -523,12 +560,37 @@ pub fn splhigh() -> SplGuard {
     splraise(IPL_HIGH)
 }
 
-/// `splassert(wantipl)`: the machine's `DIAGNOSTIC` check that the running code is at
-/// `wantipl` or above (named `func` in the report), through the controller's registration
-/// (`bsd`'s `splassert_ctl` and `splassert_fail`); nothing before it.
+/// `splassert(wantipl)`: the machine's check that the running code is at `wantipl` or above
+/// (named `func` in the report), through the controller's registration; before one, the
+/// generic check on the machine ([`splassert_check`], with the default `setipl`, as LZ's
+/// table did from `initarm` on), nothing on the host double without one.
 pub fn splassert(wantipl: i32, func: &str) {
-    if let Some(hw) = hardware() {
-        hw.splassert(wantipl, func);
+    match hardware() {
+        Some(hw) => hw.splassert(wantipl, func),
+        #[cfg(target_os = "none")]
+        None => splassert_check(wantipl, func),
+        #[cfg(not(target_os = "none"))]
+        None => {}
+    }
+}
+
+/// `arm_splassert_check(wantipl, func)`: a level below `wantipl` reported
+/// (`splassert_fail`, `hal::prf`'s, the kernel's `splassert_ctl` policy behind it) and, if
+/// that returns, the level raised to `wantipl` in a feeble attempt to reduce damage; and
+/// `IPL_NONE` asked inside an interrupt reported (`-1` and the depth).
+pub fn splassert_check(wantipl: i32, func: &str) {
+    let c = curcpu();
+    let oldipl = c.cpl();
+
+    if oldipl < wantipl {
+        crate::prf::splassert_fail(wantipl, oldipl, func);
+        // If the splassert_ctl is set to not panic, raise the ipl in a feeble attempt to
+        // reduce damage.
+        setipl(wantipl);
+    }
+
+    if wantipl == IPL_NONE && c.idepth() != 0 {
+        crate::prf::splassert_fail(-1, c.idepth() as i32, func);
     }
 }
 
@@ -579,13 +641,30 @@ mod tests {
         assert_eq!(install(&SECOND), Err(AlreadyRegistered("IntrHardware")));
         let mut ran = false;
         assert_eq!(
-            unmasked(|| {
+            unmasked(&InIrq::host(), || {
                 ran = true;
                 7
             }),
             7
         );
         assert!(ran);
+    }
+
+    #[test]
+    fn the_generic_splassert_check_raises_a_level_found_below_its_want() {
+        testutil::install();
+        let c = curcpu();
+        let before = c.cpl();
+        c.set_cpl(IPL_NONE);
+        splassert_check(IPL_NONE, "fine");
+        assert_eq!(c.cpl(), IPL_NONE, "at the level wanted: nothing to do");
+        splassert_check(IPL_BIO, "low");
+        assert_eq!(
+            c.cpl(),
+            IPL_BIO,
+            "reported, then raised to the level wanted"
+        );
+        c.set_cpl(before);
     }
 
     fn level() -> i32 {

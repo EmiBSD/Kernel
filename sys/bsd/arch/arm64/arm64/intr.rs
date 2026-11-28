@@ -93,6 +93,14 @@
 //!   readers read only the handles they made.
 //! - `arm_intr_establish_fdt_imap*` take the child's four `reg` cells as a slice (the C's
 //!   `int *reg, int nreg`, `nreg` in bytes); `arm_intr_map_msi`'s `data` is a `&mut u64`.
+//! - [`arm_set_intr_handler`] installs the table as the machine's controller once: a second
+//!   call (or one after the kernel's GICv2 installed itself) is `panic(9)`, where the C's
+//!   overwrites the first table (no machine has two GICs).
+//! - `splassert` before a controller attaches: LZ's table was registered by `initarm`, so
+//!   the kernel's callers reached `arm_splassert_check` from the first `spl` on; since N7.2a2
+//!   `hal::cpu::intr::splassert` runs the same check itself until a controller installs
+//!   (`hal::cpu::intr::splassert_check`, the report through `bsd`'s `splassert_fail` by the
+//!   `Printf` bridge): main's behaviour kept, not a gap.
 
 use core::ffi::c_void;
 use core::ptr::{self, NonNull};
@@ -170,7 +178,7 @@ impl hal::cpu::intr::IntrHardware for ArmIntrHardware {
     }
 
     /// `(*arm_irq_dispatch)(frame)`: what the controller gave `arm_set_intr_handler`.
-    fn dispatch_irq(&self, frame: &mut Trapframe) {
+    fn dispatch_irq(&self, frame: &mut Trapframe, _irq: &hal::cpu::intr::InIrq) {
         // SAFETY: written once during autoconfiguration, read on every interrupt afterwards.
         let dispatch = unsafe { ARM_IRQ_DISPATCH.read() };
         dispatch(frame);

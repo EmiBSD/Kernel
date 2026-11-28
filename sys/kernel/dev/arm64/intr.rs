@@ -131,7 +131,8 @@
 //!   the C's is kept here.
 //! - N7.2a2: `intr_send_ipi_func`, a `StaticCell` of `bsd`'s written by the controller's
 //!   attach, -> a set-once slot here ([`intr_set_send_ipi`], one function, not a table, so
-//!   no trait), read by [`arm_send_ipi`] by CPU number.
+//!   no trait), read by number of CPU through [`intr_send_ipi_func`] (`bsd`'s `arm_send_ipi`,
+//!   whose callers, `cpu.c` and ddb, are `bsd`'s).
 //! - N7.2a2: the callers that find a controller themselves and call its entry by hand
 //!   (`acpi_intr_establish`, `acpipci`'s MSIs, a GICv2m frame on its GIC: `ic->ic_establish`
 //!   then a `malloc`ed `machine_intr_handle` filled with `ic` and the answer) call
@@ -1065,13 +1066,11 @@ pub fn intr_send_ipi_func() -> Option<fn(usize, i32)> {
     INTR_SEND_IPI_FUNC.get().copied()
 }
 
-/// `arm_send_ipi(ci, id)`: IPI `id` (`ARM_IPI_*`) to CPU `cpu`; `arm_no_send_ipi`'s
-/// `panic(9)` before a controller set its sender.
-pub fn arm_send_ipi(cpu: usize, id: i32) {
-    match intr_send_ipi_func() {
-        Some(f) => f(cpu, id),
-        None => kpanic(format_args!("arm_send_ipi() called: no ipi function")),
-    }
+/// Tests of another module (a controller's): `desc` registered on a registry of its own, not
+/// the kernel's, so the registration is the test's alone.
+#[cfg(test)]
+pub(crate) fn test_register(desc: IcDesc) -> IcRef {
+    leak(IntrRegistry::new()).register_fdt(desc, |_| {})
 }
 /* </CODE> */
 

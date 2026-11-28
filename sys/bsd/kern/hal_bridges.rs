@@ -346,6 +346,10 @@ impl Printf for BsdPrintf {
     fn log(&self, level: i32, args: core::fmt::Arguments<'_>) {
         crate::kern::subr_prf::log(level, args);
     }
+
+    fn splassert_fail(&self, wantipl: i32, haveipl: i32, func: &str) {
+        crate::kern::subr_prf::splassert_fail(wantipl, haveipl, func);
+    }
 }
 
 /// The kernel's scheduler as `hal::sync::sleep`'s sleeps (`kernel::sched::KernelSleep`).

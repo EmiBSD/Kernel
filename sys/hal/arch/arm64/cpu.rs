@@ -137,8 +137,11 @@ pub(crate) fn intr_disable() -> u64 {
 #[inline]
 pub(crate) fn intr_restore(daif: u64) {
     // SAFETY: `msr daif` writes this CPU's interrupt mask: no memory operand, no stack, no
-    // flags. The value is one `intr_disable` read: on this CPU for the guard (not `Send`,
-    // it holds the word) and for `DbMutex::leave` (which panics, in every build, unless the
+    // flags. The value is one `intr_disable` read: for the guard, the word its thread saved
+    // (the guard is not `Send`, but the public guard may be held across a sleep, so the
+    // word may be restored on another CPU than the one that read it: the mask that CPU then
+    // takes is the thread's own state at the section's start, which is sound whatever its
+    // value, as below), and for `DbMutex::leave` (which panics, in every build, unless the
     // running CPU owns the mutex, whose owner's `enter` stored the word on this CPU before
     // returning), so the mask returns to what it was before the section, as the C's
     // `intr_restore` does; for the exit gate, the state the running thread had when its
