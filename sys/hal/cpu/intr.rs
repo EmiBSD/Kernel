@@ -825,7 +825,7 @@ mod tests {
 
     fn count_in_irq(_arg: *mut core::ffi::c_void) {
         RAN_IN_IRQ.fetch_add(1, Ordering::Relaxed);
-        if crate::arch::current::cpu::intr_masked() {
+        if crate::cpu::intr_masked() {
             RAN_MASKED.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -858,7 +858,7 @@ mod tests {
         do_pending_intr_in_irq(&irq, IPL_SOFTCLOCK);
         assert_eq!(ran(), r0);
         assert_eq!(level(), IPL_SOFTCLOCK);
-        assert!(crate::arch::current::cpu::intr_masked());
+        assert!(crate::cpu::intr_masked());
 
         // Below it: run once, unmasked, gone; the level the one asked for, masked again.
         do_pending_intr_in_irq(&irq, IPL_NONE);
@@ -869,7 +869,7 @@ mod tests {
             0
         );
         assert_eq!(level(), IPL_NONE);
-        assert!(crate::arch::current::cpu::intr_masked());
+        assert!(crate::cpu::intr_masked());
 
         // The C's rule elsewhere: a masked caller's handler runs masked, and stays so.
         setipl(IPL_HIGH);
@@ -877,7 +877,7 @@ mod tests {
         do_pending_intr(IPL_NONE);
         assert_eq!(ran(), r0 + 2);
         assert_eq!(masked(), m0 + 1);
-        assert!(crate::arch::current::cpu::intr_masked());
+        assert!(crate::cpu::intr_masked());
 
         crate::cpu::intr_enable();
         splx(s);

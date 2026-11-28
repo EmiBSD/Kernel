@@ -544,6 +544,14 @@ pub fn intr_enable() {
     machine::intr_enable();
 }
 
+/// Whether this CPU's interrupts are masked, on the host double (each test thread's own
+/// mask, which `intr_disable`, `intr_enable` and the guards move): for the tests of the
+/// interrupt paths, `hal`'s and the kernel's controllers'. No machine build has it.
+#[cfg(not(target_os = "none"))]
+pub fn intr_masked() -> bool {
+    machine::intr_masked()
+}
+
 /// `s = intr_disable()` for a holder that keeps the state beyond one scope: the debugger's
 /// mutex (`crate::sync::mutex::DbMutex`), entered and left by separate calls on its owner, which
 /// alone stores and reads the state.

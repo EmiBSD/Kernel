@@ -155,8 +155,8 @@ pub(crate) fn intr_enable() {
     MASKED.with(|m| m.set(false));
 }
 
-/// Whether the calling thread's interrupts are masked (the tests of the interrupt paths).
-#[cfg(test)]
+/// Whether the calling thread's interrupts are masked (the tests of the interrupt paths,
+/// through `hal::cpu::intr_masked`).
 pub(crate) fn intr_masked() -> bool {
     MASKED.with(Cell::get)
 }
