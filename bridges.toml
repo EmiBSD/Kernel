@@ -284,12 +284,13 @@ paid_by = "N10"
 # bsd: the device switch as the special files call it (cdevsw[]/bdevsw[] of machine::conf,
 # nchrdev, nblkdev, chrtoblk, iskmemdev, iszerodev), implemented by sys/sys/specdev.rs
 # (BsdDevsw) and registered by hal_bridges_register (N5.2). Paid when the device switch moves
-# (N7.2, decision 45's CharDevice).
+# (decision 45's CharDevice), at N8: decision 51 put Devsw there, and the reorder of N7
+# (2026-11-28, U5) moves the device switch (sys/sys/conf.rs) with it.
 # kernel::fs::spec::Devsw
 [[bridge]]
 trait = "Devsw"
 for = ["sys/kernel/fs/spec.rs", "sys/kernel/fs/subr.rs"]
-paid_by = "N7"
+paid_by = "N8"
 
 # bsd: the sysctl(2) nodes of the subsystems still in bsd, registered by id with
 # kernel::base::sysctl's dispatcher by sys/kern/kern_sysctl.rs's sysctl_register_legacy (from
