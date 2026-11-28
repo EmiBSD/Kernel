@@ -111,6 +111,9 @@ use core::cell::Cell;
 use core::ffi::c_void;
 use core::ptr;
 
+use hal::sync::once::OnceStatic;
+use kernel::dev::pv::virtio::ChildRef;
+
 use crate::dev::pv::virtioreg::{
     VRING_AVAIL_RING, VRING_USED_RING, VringAvail, VringDesc, VringUsed, VringUsedElem,
 };
@@ -516,6 +519,10 @@ pub struct VirtioSoftc {
     pub sc_child: Cell<*const Device>,
     /// `sc_config_change`: set by child.
     pub sc_config_change: Cell<Option<ConfigChangeFn>>,
+    /// Scaffolding (docs/SCAFFOLDING.md, N7.3a): a kernel child's handle, set once by
+    /// `dev/pv/virtio_native.rs`'s `attach_finish`; [`crate::dev::pv::virtio::virtio_check_vq`]
+    /// hands its queues' interrupts to it. Empty for a legacy child.
+    pub sc_native: OnceStatic<ChildRef>,
 }
 
 impl VirtioSoftc {
@@ -568,7 +575,9 @@ impl VirtioSoftc {
 }
 
 // SAFETY: `#[repr(C)]` with the device first; every other member is a `Cell` of an integer,
-// a pointer or an `Option` of a reference or a `fn`, all valid as zero bits.
+// a pointer or an `Option` of a reference or a `fn`, all valid as zero bits, but `sc_native`,
+// a `hal::sync::once::OnceStatic`, whose all-zero bytes are an empty cell (its state word 0 is
+// EMPTY and its value a `MaybeUninit`; hal's `an_all_zero_cell_is_an_empty_one`).
 unsafe impl Softc for VirtioSoftc {}
 
 // The public interface: the macros of the header.

@@ -129,7 +129,7 @@ use crate::machine::autoconf::{
     cfdata, cfroots, device_register, mainbus_cd, present_aux as machine_present_aux,
 };
 use crate::sys::device::{
-    CfMatch, Cfdata, Cfdriver, CfmatchT, CfprintT, CfscanT, DVF_ACTIVE, Devclass, Device,
+    CfMatch, Cfdata, Cfdriver, CfmatchT, CfprintT, CfscanT, DVF_ACTIVE, Devclass, Device, QUIET,
     SoftcMatch,
 };
 use crate::sys::errno::Errno;
@@ -314,7 +314,8 @@ fn present_aux(aux: &(dyn Any + Send + Sync), f: &mut dyn FnMut(*mut c_void)) ->
             f(a);
         }
     });
-    ran
+    // virtio (N7.3a): a kernel `VirtioArgs` of a legacy transport, lent as its own arguments.
+    ran || crate::dev::pv::virtio_native::present(aux, f)
 }
 
 /// The kernel's `aux` lent to a legacy driver's function as its `void *`: a legacy bus's
@@ -602,6 +603,29 @@ pub fn config_found(
     print: Option<CfprintT>,
 ) -> Option<NonNull<Device>> {
     config_found_sm(parent, aux, print, None)
+}
+
+/// `config_found` of a legacy bus that offers a kernel bus's typed argument (`Aux::Typed`):
+/// a kernel child reads it back by its type, a legacy child gets the `void *` the shim's door
+/// lends for it ([`present_aux`]), and so does `print`. A legacy virtio transport's
+/// (`dev/pv/virtio_native.rs`'s `virtio_config_found`, N7.3a); scaffolding
+/// (docs/SCAFFOLDING.md) until the bus is the kernel's.
+pub fn config_found_typed(
+    parent: &Device,
+    aux: &(dyn Any + Send + Sync),
+    print: Option<CfprintT>,
+) -> Option<NonNull<Device>> {
+    let p = node_of(parent);
+    let pr = print.map(|f| {
+        move |a: &Aux<'_>, pnp: Option<&[u8]>| with_aux(a, |raw| f(raw, pnp)).unwrap_or(QUIET)
+    });
+    let d = kac::config_found_sm(
+        &p,
+        &Aux::Typed(aux),
+        pr.as_ref().map(|f| f as kac::Print<'_>),
+        None,
+    )?;
+    Some(NonNull::from(legacy_device(&d)))
 }
 
 /// `config_rootfound`: as `config_found_sm`, but for root devices.
@@ -1781,6 +1805,271 @@ mod tests {
         assert_eq!(cstr(&ch.dv_xname.get()), b"tnchild0");
         assert!(MArc::ptr_eq(&node_of(ch), &c));
         assert!(MArc::ptr_eq(&node_of(rh), &node));
+    }
+
+    // N7.3a: a legacy virtio transport's offer (`config_found_typed` of a kernel
+    // `VirtioArgs`) and the adapter a kernel child gets from it (`dev/pv/virtio_native.rs`).
+
+    #[test]
+    fn a_virtio_transport_s_typed_offer_reaches_a_legacy_child() {
+        let root_cd: &'static Cfdriver = Box::leak(Box::new(Cfdriver::new(b"troot", DV_DULL, 0)));
+        let (table, drv, _child_cd) = native_ioconf(root_cd);
+        let _g = setup_with(table);
+        config_rootfound(b"troot", ptr::null_mut()).expect("troot0");
+        let node = drv.units.get(0).expect("troot0's node");
+
+        // The transport's own arguments, which the legacy child reads as before.
+        let mut legacy = ChildArgs { pri: 3 };
+        let args = kernel::dev::pv::virtio::VirtioArgs {
+            devid: 4,
+            nintr: 1,
+            transport: kernel::dev::pv::virtio::fake_transport,
+            legacy: ptr::from_mut(&mut legacy).expose_provenance(),
+        };
+        let found = config_found_typed(legacy_device(&node), &args, None).expect("tchild0");
+        // SAFETY: the shim's result is a live legacy header.
+        assert_eq!(unsafe { found.as_ref() }.xname(), "tchild0");
+        assert_eq!(ATTACHED_PRI.load(Ordering::Relaxed), 3);
+        // A kernel transport's argument (no legacy arguments) matches no legacy row.
+        let native = kernel::dev::pv::virtio::VirtioArgs { legacy: 0, ..args };
+        assert!(config_found_typed(legacy_device(&node), &native, None).is_none());
+    }
+
+    /// What the test transport's table saw.
+    static VT_FINISH_ARG: AtomicUsize = AtomicUsize::new(0);
+    static VT_SETUP_ADDR: AtomicUsize = AtomicUsize::new(0);
+    static VT_KICKS: AtomicUsize = AtomicUsize::new(0);
+
+    mod vt {
+        // A legacy transport's `struct virtio_ops` that records what the adapter calls.
+
+        use core::ffi::c_void;
+        use core::sync::atomic::Ordering;
+        use std::{assert, assert_eq};
+
+        use super::{VT_FINISH_ARG, VT_KICKS, VT_SETUP_ADDR};
+        use crate::dev::pv::virtiovar::{
+            VirtioAttachArgs, VirtioFeatureName, VirtioOps, VirtioSoftc, Virtqueue,
+        };
+        use crate::machine::cpu::CpuInfo;
+        use crate::machine::intr::IntrFn;
+        use crate::sys::errno::Errno;
+
+        fn kick(_sc: &VirtioSoftc, _idx: u16) {
+            VT_KICKS.fetch_add(1, Ordering::Relaxed);
+        }
+        fn r1(_sc: &VirtioSoftc, o: i32) -> u8 {
+            o as u8
+        }
+        fn r2(_sc: &VirtioSoftc, o: i32) -> u16 {
+            o as u16
+        }
+        fn r4(_sc: &VirtioSoftc, o: i32) -> u32 {
+            o as u32
+        }
+        fn r8(_sc: &VirtioSoftc, o: i32) -> u64 {
+            o as u64
+        }
+        fn w1(_sc: &VirtioSoftc, _o: i32, _v: u8) {}
+        fn w2(_sc: &VirtioSoftc, _o: i32, _v: u16) {}
+        fn w4(_sc: &VirtioSoftc, _o: i32, _v: u32) {}
+        fn w8(_sc: &VirtioSoftc, _o: i32, _v: u64) {}
+        fn qsize(_sc: &VirtioSoftc, _i: u16) -> u16 {
+            8
+        }
+        fn setup_queue(_sc: &VirtioSoftc, vq: &Virtqueue, addr: u64) {
+            assert_eq!(vq.vq_num.get(), 8, "the shadow is filled first");
+            VT_SETUP_ADDR.store(addr as usize, Ordering::Relaxed);
+        }
+        fn setup_intrs(_sc: &VirtioSoftc) {}
+        fn get_status(_sc: &VirtioSoftc) -> i32 {
+            0
+        }
+        fn set_status(_sc: &VirtioSoftc, _s: i32) {}
+        /// As the transports: the driver's features with indirect descriptors.
+        fn neg(sc: &VirtioSoftc, n: Option<&[VirtioFeatureName]>) -> Result<(), Errno> {
+            assert!(
+                n.is_some_and(<[_]>::is_empty),
+                "names given: an empty table"
+            );
+            let f = sc.sc_driver_features.get() | (1 << 28);
+            sc.sc_active_features.set(f);
+            sc.sc_indirect.set(1);
+            Ok(())
+        }
+        fn finish(sc: &VirtioSoftc, va: *mut VirtioAttachArgs) -> Result<(), Errno> {
+            assert!(
+                sc.sc_native.get().is_some(),
+                "sc_native before the interrupts"
+            );
+            VT_FINISH_ARG.store(va.addr(), Ordering::Relaxed);
+            Ok(())
+        }
+        fn poll(_arg: *mut c_void) -> i32 {
+            0
+        }
+        fn barrier(_sc: &VirtioSoftc) {}
+        fn establish(
+            _sc: &VirtioSoftc,
+            _va: *mut VirtioAttachArgs,
+            _vec: i32,
+            _ci: Option<&'static CpuInfo>,
+            _f: IntrFn,
+            _a: *mut c_void,
+        ) -> Result<(), Errno> {
+            Err(Errno::ENXIO)
+        }
+
+        pub(super) static OPS: VirtioOps = VirtioOps {
+            kick,
+            read_dev_cfg_1: r1,
+            read_dev_cfg_2: r2,
+            read_dev_cfg_4: r4,
+            read_dev_cfg_8: r8,
+            write_dev_cfg_1: w1,
+            write_dev_cfg_2: w2,
+            write_dev_cfg_4: w4,
+            write_dev_cfg_8: w8,
+            read_queue_size: qsize,
+            setup_queue,
+            setup_intrs,
+            get_status,
+            set_status,
+            neg_features: neg,
+            attach_finish: finish,
+            poll_intr: poll,
+            intr_barrier: barrier,
+            intr_establish: establish,
+        };
+    }
+
+    /// A kernel child whose queue interrupts answer 3 and whose configuration handler 9.
+    struct VtChild;
+
+    impl kernel::dev::pv::virtio::VirtioChild for VtChild {
+        const CONFIG_CHANGE: bool = true;
+        fn vq_intr(&self, index: usize) -> i32 {
+            assert_eq!(index, 0);
+            3
+        }
+        fn config_change(&self) -> i32 {
+            9
+        }
+    }
+
+    #[test]
+    fn the_adapter_sets_what_a_legacy_child_sets() {
+        use crate::dev::fdt::virtio_mmio::VIRTIO_MMIO_CA;
+        use crate::dev::pv::virtio::{VIRTIO_CD, virtio_check_vqs};
+        use crate::dev::pv::virtio_native::legacy_transport;
+        use crate::dev::pv::virtiovar::{VIRTIO_CHILD_ERROR, VirtioSoftc};
+        use kernel::dev::pv::virtio::{ChildRef, QueueSetup, VirtioArgs, test_node};
+
+        let (table, _, _) = ioconf(0);
+        let _g = setup_with(table);
+        let row: &'static Cfdata = Box::leak(Box::new(Cfdata::new(
+            &VIRTIO_MMIO_CA,
+            &VIRTIO_CD,
+            0,
+            FSTATE_STAR,
+            &[],
+            0,
+            &[],
+            0,
+            0,
+        )));
+        let tnode = kac::config_make_softc(None, row);
+        // SAFETY: the node was made for `virtio_mmio_ca`, whose softc begins with a
+        // `struct virtio_softc`.
+        let vsc = unsafe { legacy_device(&tnode).softc::<VirtioSoftc>() };
+        vsc.sc_ops.set(Some(&vt::OPS));
+        vsc.sc_dmat
+            .set(Some(crate::machine::bus::BusDmaTag::default()));
+
+        let child_cd: &'static Cfdriver = Box::leak(Box::new(Cfdriver::new(b"tvn", DV_DULL, 0)));
+        let child_row: &'static Cfdata = Box::leak(Box::new(Cfdata::new(
+            &CFATTACH_NATIVE,
+            child_cd,
+            0,
+            FSTATE_STAR,
+            &[],
+            0x0300,
+            &[],
+            0,
+            0,
+        )));
+        let child = test_node(child_row, "tvn0");
+
+        let t = legacy_transport(&tnode);
+        assert_eq!(t.xname(), legacy_device(&tnode).xname());
+        assert!(t.claim(&child, 6));
+        assert!(
+            ptr::eq(vsc.sc_child.get(), legacy_device(&child)),
+            "the child's header"
+        );
+        assert_eq!(vsc.sc_ipl.get(), 6);
+        assert_eq!(
+            vsc.child().map(|c| c.cfdata().cf_flags),
+            Some(0x0300),
+            "the row's flags"
+        );
+        assert!(!t.claim(&child, 6), "already attached to something else");
+
+        let f = t
+            .negotiate_features(1 << 29, Some(&[]))
+            .expect("negotiated");
+        assert_eq!(vsc.sc_driver_features.get(), 1 << 29);
+        assert_eq!(f.active, (1 << 29) | (1 << 28));
+        assert!(f.indirect && !f.version_1);
+        assert_eq!(t.read_queue_size(0), 8);
+        assert_eq!(t.read_config_4(0x14), 0x14);
+        t.kick(0);
+        assert_eq!(VT_KICKS.load(Ordering::Relaxed), 1);
+
+        let mut marker = 0u64;
+        let va = VirtioArgs {
+            devid: 4,
+            nintr: 1,
+            transport: legacy_transport,
+            legacy: ptr::from_mut(&mut marker).expose_provenance(),
+        };
+        let q = QueueSetup {
+            index: 0,
+            num: 8,
+            addr: 0x10_0000,
+            avail_off: 128,
+            used_off: 4096,
+        };
+        let state = MArc::new(M_DEVBUF, hal::mem::malloc::M_NOWAIT, VtChild).unwrap();
+        t.attach_finish(&va, ChildRef::of(&state, &child), &[q])
+            .expect("finished");
+        assert_eq!(
+            VT_FINISH_ARG.load(Ordering::Relaxed),
+            va.legacy,
+            "va.legacy"
+        );
+        assert_eq!(vsc.sc_nvqs.get(), 1);
+        let shadow = vsc.vq(0);
+        assert_eq!(
+            (
+                shadow.vq_index.get(),
+                shadow.vq_num.get(),
+                shadow.vq_mask.get(),
+                shadow.vq_availoffset.get(),
+                shadow.vq_usedoffset.get()
+            ),
+            (0, 8, 7, 128, 4096)
+        );
+        assert!(ptr::eq(shadow.owner(), vsc));
+        let config = vsc.sc_config_change.get().expect("the child's handler");
+        assert_eq!(config(vsc), 9);
+        // The transport's interrupt reaches the kernel child, not the shadow's ring.
+        assert_eq!(virtio_check_vqs(vsc), 3);
+        t.setup_queue(&q);
+        assert_eq!(VT_SETUP_ADDR.load(Ordering::Relaxed), 0x10_0000);
+
+        t.child_failed();
+        assert_eq!(vsc.sc_child.get(), VIRTIO_CHILD_ERROR);
     }
 }
 /* </TESTS> */

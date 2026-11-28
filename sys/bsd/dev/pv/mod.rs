@@ -26,7 +26,9 @@
 //! `vioscsi(4)`, with `vioscsireg`; `viornd` the entropy source, `viornd(4)`, and `viomb`
 //! the memory balloon, `viomb(4)`; `viogpu` the GPU frame buffer, `viogpu(4)`, with its header;
 //! `viocon` the console, `viocon(4)`, compiled on every build but configured only with the
-//! cargo feature `viocon` (amd64 GENERIC's commented-out line).
+//! cargo feature `viocon` (amd64 GENERIC's commented-out line). `virtio_native` (N7.3a) is the
+//! legacy edge of the kernel's virtio core: a kernel child (`kernel::dev::pv`) under these
+//! transports.
 
 pub mod if_vio;
 pub mod vioblk;
@@ -40,6 +42,7 @@ pub mod vioscsi;
 #[forbid(unsafe_code)]
 pub mod vioscsireg;
 pub mod virtio;
+pub mod virtio_native;
 #[forbid(unsafe_code)]
 pub mod virtioreg;
 pub mod virtiovar;

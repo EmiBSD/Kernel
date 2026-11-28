@@ -58,6 +58,7 @@ use bsd::machine::intr::IntrFn;
 use bsd::sys::device::{DV_DULL, Device};
 use bsd::sys::errno::Errno;
 use bsd::sys::queue::{SlistEntry, SlistHead};
+use hal::sync::once::OnceStatic;
 
 /// The calls of a primitive per timed call.
 const PRIM: usize = 1000;
@@ -216,6 +217,7 @@ fn fixture(
         sc_vqs: Cell::new(ptr::null_mut()),
         sc_child: Cell::new(ptr::null()),
         sc_config_change: Cell::new(None),
+        sc_native: OnceStatic::new(),
     }));
 
     let a1 = (16 * QSIZE + 2 * (2 + QSIZE)).next_multiple_of(4096);

@@ -97,6 +97,7 @@ use crate::dev::pci::virtio_pcireg::{
     VIRTIO_PCI_CAP_NOTIFY_CFG, VirtioPciCap, VirtioPciCommonCfg,
 };
 use crate::dev::pv::virtio::{virtio_check_vq, virtio_check_vqs, virtio_intr_name};
+use crate::dev::pv::virtio_native::virtio_config_found;
 use crate::dev::pv::virtioreg::{
     VIRTIO_CONFIG_DEVICE_STATUS_ACK, VIRTIO_CONFIG_DEVICE_STATUS_DRIVER,
     VIRTIO_CONFIG_DEVICE_STATUS_FAILED, VIRTIO_CONFIG_DEVICE_STATUS_FEATURES_OK,
@@ -110,7 +111,7 @@ use crate::dev::pv::virtiovar::{
 };
 use crate::kassert;
 use crate::kern::kern_malloc::{free, mallocarray};
-use crate::kern::subr_autoconf::{config_detach, config_found};
+use crate::kern::subr_autoconf::config_detach;
 use crate::kern::subr_prf::{Str, panic, printf, snprintf};
 use crate::machine::bus::{
     BusSize, BusSpaceHandle, BusSpaceTag, bus_space_read_1, bus_space_read_2, bus_space_read_4,
@@ -856,7 +857,7 @@ pub fn virtio_pci_attach(_parent: Option<&Device>, self_: &Device, aux: *mut c_v
         printf(format_args!("\n"));
         vpa.vpa_va.va_devid = id as i32;
         vsc.sc_child.set(ptr::null());
-        config_found(self_, ptr::from_mut(&mut vpa).cast(), None);
+        virtio_config_found(self_, vpa.vpa_va, ptr::from_mut(&mut vpa).cast());
         if vsc.sc_child.get().is_null() {
             printf(format_args!(
                 "{}: no matching child driver; not configured\n",

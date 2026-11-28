@@ -70,6 +70,7 @@ use core::ptr::{self, NonNull};
 
 use crate::dev::ofw::openfirm::OF_is_compatible;
 use crate::dev::pv::virtio::{virtio_check_vqs, virtio_device_string, virtio_intr_name};
+use crate::dev::pv::virtio_native::virtio_config_found;
 use crate::dev::pv::virtioreg::{
     VIRTIO_CONFIG_DEVICE_STATUS_ACK, VIRTIO_CONFIG_DEVICE_STATUS_DRIVER,
     VIRTIO_CONFIG_DEVICE_STATUS_FAILED, VIRTIO_F_ANY_LAYOUT, VIRTIO_F_RING_EVENT_IDX,
@@ -81,7 +82,7 @@ use crate::dev::pv::virtiovar::{
     virtio_set_status,
 };
 use crate::kassert;
-use crate::kern::subr_autoconf::{config_detach, config_found};
+use crate::kern::subr_autoconf::config_detach;
 use crate::kern::subr_prf::{Str, panic, printf};
 use crate::machine::bus::{
     BusDmaTag, BusSize, BusSpaceHandle, BusSpaceTag, bus_space_map, bus_space_read_1,
@@ -409,7 +410,7 @@ pub fn virtio_mmio_attach(_parent: Option<&Device>, self_: &Device, aux: *mut c_
     vma.vma_va.va_devid = id as i32;
     vma.vma_va.va_nintr = 1;
     vsc.sc_child.set(ptr::null());
-    config_found(self_, ptr::from_mut(&mut vma).cast(), None);
+    virtio_config_found(self_, vma.vma_va, ptr::from_mut(&mut vma).cast());
     if vsc.sc_child.get().is_null() {
         printf(format_args!(
             "{}: no matching child driver; not configured\n",

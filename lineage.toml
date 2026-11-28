@@ -3168,7 +3168,9 @@ adapted_by = ["sys/bsd/sys/staticcell.rs"]
 [[module]]
 rust = "sys/bsd/dev/fdt/virtio_mmio.rs"
 lz = ["sys/dev/fdt/virtio_mmio.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/dev/pv/virtio.rs"]
+notes = "N7.3a: its child is found with a kernel VirtioArgs (virtio_native.rs's virtio_config_found, the one line of the attach that changed: U3)"
 
 [[module]]
 rust = "sys/bsd/dev/firmload.rs"
@@ -4273,7 +4275,9 @@ license = "Carnegie Mellon notice"
 [[module]]
 rust = "sys/bsd/dev/pci/virtio_pci.rs"
 lz = ["sys/dev/pci/virtio_pci.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/dev/pv/virtio.rs"]
+notes = "N7.3a: its child is found with a kernel VirtioArgs (virtio_native.rs's virtio_config_found, the one line of the attach that changed: U3)"
 
 [[module]]
 rust = "sys/bsd/dev/pci/virtio_pcireg.rs"
@@ -4393,7 +4397,9 @@ status = "inherited"
 [[module]]
 rust = "sys/bsd/dev/pv/virtio.rs"
 lz = ["sys/dev/pv/virtio.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/dev/pv/virtio.rs"]
+notes = "N7.3a: virtio_check_vq hands a kernel child's shadow queue to its ChildRef (sc_native) before touching a ring"
 
 [[module]]
 rust = "sys/bsd/dev/pv/virtioreg.rs"
@@ -4403,7 +4409,9 @@ status = "inherited"
 [[module]]
 rust = "sys/bsd/dev/pv/virtiovar.rs"
 lz = ["sys/dev/pv/virtiovar.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/dev/pv/virtio.rs"]
+notes = "N7.3a: VirtioSoftc::sc_native, a kernel child's ChildRef set once by virtio_native.rs (an empty OnceStatic for a legacy child; the Softc SAFETY note says why all zero is valid)"
 
 [[module]]
 rust = "sys/bsd/dev/rasops/rasops.rs"
@@ -5626,8 +5634,8 @@ kind = "renamed"
 rust = "sys/bsd/kern/subr_autoconf.rs"
 lz = ["sys/kern/subr_autoconf.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/dev/autoconf.rs", "sys/kernel/dev/device.rs", "sys/kernel/dev/disk.rs"]
-notes = "N7.1a: the shim over kernel::dev::autoconf, every LZ name and signature kept for bsd's drivers (U4) and no logic of its own: impl ConfigRow and DriverOps for Cfdata (the DriverOps bridge), BsdConfigGlue (the ConfigGlue bridge, cfdata[] lent once per walk), LegacySoftc holding the node's dv_ref, node_of (a shadow node for a device made by hand), the cd_devs/cd_ndevs mirror kept by the kernel's hooks, device_hold for parsedisk, and the re-exports of AUTOCONF_SERIAL/CONFIG_PENDING/AUTOCONF_VERBOSE; docs/SCAFFOLDING.md; goes with the last legacy driver (N7.14); N7.2b1a: a native row's ConfigRow::driver is its cf_native, ConfigRow::loc is cf_loc; legacy_device lends a native node a shadow header (a legacy header of the header alone, written from the node by new_header, the allocation make_softc uses, held in Device::legacy_shadow as an owning LegacySoftc), node_of names it back through ConfigRow::driver(cf).units(), with_aux replaces aux_ptr (Aux::Typed through the shim's one door present_aux, which tries the machine's presenter first and gets the machine-independent buses' presenters as they arrive: none lent = no match, at attach a panic), view and release_softc refuse a native node's softc (legacy_softc, claimed_softc), BsdConfigGlue::device_register skips native nodes and ::mainbus follows mainbus_cd's row"
+adapted_by = ["sys/kernel/dev/autoconf.rs", "sys/kernel/dev/device.rs", "sys/kernel/dev/disk.rs", "sys/kernel/dev/pv/virtio.rs"]
+notes = "N7.1a: the shim over kernel::dev::autoconf, every LZ name and signature kept for bsd's drivers (U4) and no logic of its own: impl ConfigRow and DriverOps for Cfdata (the DriverOps bridge), BsdConfigGlue (the ConfigGlue bridge, cfdata[] lent once per walk), LegacySoftc holding the node's dv_ref, node_of (a shadow node for a device made by hand), the cd_devs/cd_ndevs mirror kept by the kernel's hooks, device_hold for parsedisk, and the re-exports of AUTOCONF_SERIAL/CONFIG_PENDING/AUTOCONF_VERBOSE; docs/SCAFFOLDING.md; goes with the last legacy driver (N7.14); N7.2b1a: a native row's ConfigRow::driver is its cf_native, ConfigRow::loc is cf_loc; legacy_device lends a native node a shadow header (a legacy header of the header alone, written from the node by new_header, the allocation make_softc uses, held in Device::legacy_shadow as an owning LegacySoftc), node_of names it back through ConfigRow::driver(cf).units(), with_aux replaces aux_ptr (Aux::Typed through the shim's one door present_aux, which tries the machine's presenter first and gets the machine-independent buses' presenters as they arrive: none lent = no match, at attach a panic), view and release_softc refuse a native node's softc (legacy_softc, claimed_softc), BsdConfigGlue::device_register skips native nodes and ::mainbus follows mainbus_cd's row; N7.3a: config_found_typed (a legacy bus's Aux::Typed offer, a legacy virtio transport's kernel VirtioArgs), and the door tries virtio's presenter (dev/pv/virtio_native.rs) after the machine's"
 
 [[module]]
 rust = "sys/bsd/kern/subr_log.rs"
@@ -14057,6 +14065,10 @@ reason = "stand-in until /dev/console can be opened (a root file system with /de
 [[extra]]
 rust = "sys/bsd/dev/wscons/testutil.rs"
 reason = "host test helper: a fake display (emulops drawing into a character grid, logging calls, failing one on request) and the wsdisplay_emulbell/wsdisplay_emulinput test doubles for the terminal emulations' tests"
+
+[[extra]]
+rust = "sys/bsd/dev/pv/virtio_native.rs"
+reason = "N7.3a: scaffolding (docs/SCAFFOLDING.md, virtio's legacy edge): a kernel virtio child (kernel::dev::pv) under bsd's legacy transports: LegacyTransport (the VirtioTransport bridge over struct virtio_ops and the softc members, the shadow queues, sc_native), LegacyDmaMemory (the DmaMemory bridge over the transport's sc_dmat), legacy_transport, virtio_config_found (the transports' config_found with a kernel VirtioArgs) and the virtio presenter of the shim's door; no OpenBSD or LZ source; gone with the native transports (N7.3d)"
 
 [[extra]]
 rust = "sys/bsd/kern/rust_alloc.rs"

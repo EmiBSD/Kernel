@@ -668,6 +668,30 @@ trait = "DriverOps"
 for = ["sys/kernel/dev/autoconf.rs"]
 paid_by = "N7"
 
+# bsd: `impl VirtioTransport for LegacyTransport` in sys/dev/pv/virtio_native.rs (N7.3a): a
+# kernel virtio child's transport over bsd's two legacy transports (virtio_mmio, virtio_pci),
+# their `struct virtio_ops` entries and the softc members a child sets (sc_child, sc_ipl,
+# sc_driver_features, the shadow queues of sc_vqs/sc_nvqs, sc_config_change, sc_native). A
+# trait received as a value (VirtioArgs::transport, decision 39); the row goes when the
+# transports are the kernel's (N7.3d).
+# kernel::dev::pv::virtio::VirtioTransport
+[[bridge]]
+trait = "VirtioTransport"
+for = ["sys/kernel/dev/pv/virtio.rs"]
+paid_by = "N7"
+
+# bsd: `impl DmaMemory for LegacyDmaMemory` in sys/dev/pv/virtio_native.rs (N7.3a): a legacy
+# transport's sc_dmat as the kernel's DMA memory (bus_dmamem_alloc_range, bus_dmamem_map,
+# bus_dmamap_create and bus_dmamap_load of one segment, the device's address the loaded
+# map's), what a kernel virtio child's rings and buffers come from. The kernel implements the
+# trait itself (kernel::vm::km::bus_dma_memory); the row goes with the last legacy tag a kernel
+# driver takes (pci N7.5, the SMMU's N7.11b).
+# hal::dev::dma::DmaMemory
+[[bridge]]
+trait = "DmaMemory"
+for = ["sys/hal/dev/dma.rs"]
+paid_by = "N7"
+
 # bsd: `impl UkcTables for UkcIoconf` in sys/machine/autoconf.rs, handed to user_config by
 # cpu_startup under `boot -c` (N7.1c): ioconf.c's cfdata[]/cfroots[]/pdevinit[] and names as
 # the kernel's UKC editor reads and edits them. A trait received as a value; the row goes when
