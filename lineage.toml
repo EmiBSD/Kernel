@@ -4379,12 +4379,6 @@ adapted_by = ["sys/kernel/base/task.rs", "sys/kernel/vm/page.rs", "sys/kernel/vm
 notes = "M16d: license: BSD-2 (NetBSD, two notices kept whole); the whole file: viomb_ca/cd, match, attach (inflate and deflate queues, dma_alloc'ed frame number array and its map, taskq viomb, the desired/current sensors), viomb_config_change, viomb_worker, viomb_inflate (uvm_pglistalloc below dma_constraint), viomb_deflate, viomb_read_config, viomb_vq_dequeue (Result), viomb_inflate_intr, viomb_deflate_intr; the C's quirks kept: sensors lag the last request, a short deflate records i - 1 entries, request lengths are nvpages words; deviations: VIRTIO_PAGE_SIZE == PAGE_SIZE a const assertion (the C's #error), viomb_nvpages host-tested, VIOMBDEBUG behind VIRTIO_DEBUG; viomb* at virtio? on both archs; smoke-virtio: balloon 384 of 512 MB then 512 give raw0=134217728/raw1=133169152 then 0/1048576, as OpenBSD 8.0 does at the same scale"
 
 [[module]]
-rust = "sys/bsd/dev/pv/viornd.rs"
-lz = ["sys/dev/pv/viornd.rs"]
-status = "inherited"
-notes = "M16d: the whole file: viornd_ca/cd (CD_COCOVM), match, attach (dma_alloc'ed 16-byte buffer, its map, one queue, the first request a tick after attach), viornd_vq_done (the words to enqueue_randomness, the next request 15 << shift s later unless VIORND_ONESHOT), viornd_tick; deviations: the interval and word count are host-tested functions (viornd_interval, viornd_nwords), VIORND_DEBUG messages behind a const; M16d: enqueue_randomness is rnd.c's (the words land in the entropy input ring and reach the pool); viornd* at virtio? on both archs; smoke-virtio (amd64: viornd0 at virtio2, irq69/viornd0:1 1 as on OpenBSD 8.0; arm64: viornd0 at virtio28, one interrupt)"
-
-[[module]]
 rust = "sys/bsd/dev/pv/vioscsi.rs"
 lz = ["sys/dev/pv/vioscsi.rs"]
 status = "inherited"
@@ -22458,6 +22452,56 @@ kind = "merged"
 lz = "sys/dev/pv/virtiovar.rs::virtio_has_feature"
 native = ["Features::has"]
 kind = "renamed"
+
+[[module]]
+rust = "sys/kernel/dev/pv/viornd.rs"
+crate = "kernel"
+lz = ["sys/dev/pv/viornd.rs"]
+status = "redesigned"
+notes = "N7.3a: viornd(4) in the kernel, 0 unsafe (bsd's copy deleted, the standing OK of 2026-11-07): a DriverOps (VIORND; probe = viornd_match over the transport's VirtioArgs from Aux::Typed, 0 for any other argument); cfdata[] row 71 names it (Cfdata::native) with the stub VIORND_CD (CD_COCOVM) in ioconf.rs. struct viornd_softc as ViorndCore, a counted block built whole at attach (P37) that the request timeout (set_shared), the transport's ChildRef and the node's softc Viornd hold: the transport (Box<dyn VirtioTransport>, P38), the interval from the row's flags (ConfigRow::flags), the queue and the buffer (a DmaBuf, a page: P40) in a Mutexed at IPL_NET (P33), the tick an MBox<Timeout>; viornd_vq_done is VirtioChild::vq_intr, viornd_tick a shared timeout function; the words through viornd_words to hal::random::enqueue_randomness, as many as the C for the same answer. U13: the alloc and load messages are the first; a failed attach_finish deletes the timeout before marking the child failed (the C's slip); a negative int length reads no word (LZ's)"
+
+[[module.fn]]
+lz = "sys/dev/pv/viornd.rs::ViorndSoftc"
+native = ["Viornd", "ViorndCore", "ViorndState"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/dev/pv/viornd.rs::ViorndSoftc::virtio"
+native = []
+kind = "dropped"
+reason = "sc->sc_virtio: the core holds its transport (Box<dyn VirtioTransport>, made from the bus's VirtioArgs), no parent softc cast"
+
+[[module.fn]]
+lz = "sys/dev/pv/viornd.rs::ViorndSoftc::dmamap"
+native = []
+kind = "dropped"
+reason = "sc->sc_dmamap: the buffer is a DmaBuf, its segment the descriptor's address and its sync the map's"
+
+[[module.fn]]
+lz = "sys/dev/pv/viornd.rs::ViorndSoftc::buf_word"
+native = ["viornd_words"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/dev/pv/viornd.rs::VIORND_CA"
+native = ["VIORND"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/viornd.rs::VIORND_CD"
+native = ["sys/bsd/arch/arm64/conf/ioconf.rs::VIORND_CD"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/dev/pv/viornd.rs::viornd_vq_done"
+native = ["ViorndCore::vq_intr"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/dev/pv/viornd.rs::viornd_child"
+native = []
+kind = "dropped"
+reason = "(struct viornd_softc *)vsc->sc_child: the transport's interrupt calls the child's state through its ChildRef, no cast back"
 
 [[module]]
 rust = "sys/kernel/dev/pv/virtioreg.rs"

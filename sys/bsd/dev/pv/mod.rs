@@ -23,8 +23,8 @@
 //! (`dev/pci/virtio_pci.rs`, `dev/fdt/virtio_mmio.rs`) and the device drivers share;
 //! `if_vio` is the network driver, `vio(4)`; `vioblk` the block driver, `vioblk(4)` (a SCSI
 //! adapter), with its header `vioblkreg`, and `vioscsi` the SCSI host adapter driver,
-//! `vioscsi(4)`, with `vioscsireg`; `viornd` the entropy source, `viornd(4)`, and `viomb`
-//! the memory balloon, `viomb(4)`; `viogpu` the GPU frame buffer, `viogpu(4)`, with its header;
+//! `vioscsi(4)`, with `vioscsireg`; `viomb` the memory balloon, `viomb(4)` (the entropy
+//! source, `viornd(4)`, is the kernel's since N7.3a: `kernel::dev::pv::viornd`); `viogpu` the GPU frame buffer, `viogpu(4)`, with its header;
 //! `viocon` the console, `viocon(4)`, compiled on every build but configured only with the
 //! cargo feature `viocon` (amd64 GENERIC's commented-out line). `virtio_native` (N7.3a) is the
 //! legacy edge of the kernel's virtio core: a kernel child (`kernel::dev::pv`) under these
@@ -37,7 +37,6 @@ pub mod vioblkreg;
 pub mod viocon;
 pub mod viogpu;
 pub mod viomb;
-pub mod viornd;
 pub mod vioscsi;
 #[forbid(unsafe_code)]
 pub mod vioscsireg;

@@ -18,8 +18,10 @@
 
 /* <CODE> */
 //! The paravirtual devices in the kernel: OpenBSD's `sys/dev/pv/`. The virtio core (the
-//! virtqueue and what a child asks of its transport, N7.3a) and its children as they move.
+//! virtqueue and what a child asks of its transport, N7.3a) and its children as they move:
+//! viornd(4) (N7.3a).
 
+pub mod viornd;
 pub mod virtio;
 pub mod virtioreg;
 /* </CODE> */

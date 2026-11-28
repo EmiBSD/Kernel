@@ -661,7 +661,7 @@ paid_by = "N7"
 # N10 for amd64's if U3 is taken). N7.2b1b: the first native implementers, the kernel's
 # mainbus and simplebus (kernel::dev::arm64), named by cfdata[] rows 0 and 12 (Cfdata::native).
 # N7.2b2a: psci(4) (kernel::dev::fdt::psci, row 29), efi(4) (kernel::dev::arm64::efi_machdep,
-# row 8).
+# row 8). N7.3a: viornd(4) (kernel::dev::pv::viornd, row 71), the first child of a legacy bus.
 # kernel::dev::device::DriverOps
 [[bridge]]
 trait = "DriverOps"
@@ -677,7 +677,7 @@ paid_by = "N7"
 # kernel::dev::pv::virtio::VirtioTransport
 [[bridge]]
 trait = "VirtioTransport"
-for = ["sys/kernel/dev/pv/virtio.rs"]
+for = ["sys/kernel/dev/pv/virtio.rs", "sys/kernel/dev/pv/viornd.rs"]
 paid_by = "N7"
 
 # bsd: `impl DmaMemory for LegacyDmaMemory` in sys/dev/pv/virtio_native.rs (N7.3a): a legacy
