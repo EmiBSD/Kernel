@@ -49,9 +49,6 @@
 //! holds and `faulted` set, which is `EFAULT`.
 //!
 //! ## Deviations
-//! - The checkpoint is written before `pcb_onfault` is armed, both by the trampoline; the C
-//!   arms it in `efi_enter` and `setjmp`s after (`efivar.h`'s `efi_enter_check`), so a fault
-//!   between the two would `longjmp` to a stale `efi_jmpbuf`.
 //! - The firmware's tables are read with `kcopy` (its own `pcb_onfault`), so a fault while
 //!   reading the vendor string or the configuration table is `EFAULT` for that read; the C
 //!   reads them with plain loads under `efi_fault`, which would `longjmp` to whatever
@@ -72,6 +69,14 @@
 //!   no Rust code names; `hal::cpu::efi`'s lock makes one transaction at a time.
 //! - The trampoline takes the service's address, not its slot: the slot is read first, in the
 //!   same transaction, through `kcopy` (`hal::cpu::efi`), so a fault there is `EFAULT` too.
+//! - LZ's order corrected: LZ armed `pcb_onfault` in `efi_enter`, before its trampoline saved
+//!   the registers, so a fault between the two would have resumed with a stale `efi_jmpbuf`.
+//!   The C checkpoints first (`efivar.h`'s `efi_enter_check`, a `setjmp` before the call; the
+//!   arming in `efi_enter` precedes it, but nothing between them can fault), and here the
+//!   trampoline writes the checkpoint before it arms its fault target, both in one routine.
+//! - What the EFI pmap maps is `hal::cpu::efi::EfiRuntime::install`'s alone (the C's policy
+//!   over the firmware's runtime descriptors, refusing kernel memory, once): the SAFETY
+//!   arguments below rest on it, and on the firmware's memory map, trusted as the C trusts it.
 
 use core::arch::global_asm;
 use core::marker::PhantomData;
@@ -165,6 +170,17 @@ global_asm!(
     ".size hal_efi_rs_call, . - hal_efi_rs_call",
 );
 
+// SAFETY: the item names this file's routine above, `hal_efi_rs_call`, by its symbol, with the
+// AAPCS64 prototype it keeps: the four arguments in x0-x3 (`fn_va`, `time`, `a1`, `onfault`),
+// the two-word result in x0/x1 (`EfiCallResult`, 16 bytes of two integers). On both of its
+// paths out (the service's return, and the fault target reached through the trap's
+// `pcb_onfault` recovery) it hands back x19-x30 and sp as it found them: the return path does
+// not touch them but the frame it pops, the fault path reloads them from the checkpoint it
+// wrote on entry. d8-d15, callee-saved in the C convention, are not saved: the kernel is
+// softfloat and keeps nothing in the FP/SIMD registers across a call, and
+// `fpu::kernel_enter` saved the running thread's FP state before the transaction lets the
+// firmware use them. The caller-saved registers are dead across the call, as the declaration
+// says (an `extern "C"` call). The call site states what its arguments must be.
 unsafe extern "C" {
     /// The trampoline above: `fn_va(time, a1)` with the checkpoint taken and `onfault` armed.
     fn hal_efi_rs_call(
@@ -187,7 +203,10 @@ impl Inside {
         // lives (`transaction` loaded it, with interrupts masked, before making `self`, and
         // puts the CPU's pmap back only after its body returns; `self` cannot outlive the
         // body). What the EFI pmap maps there is the firmware's runtime memory, which no Rust
-        // object of the kernel lives in: memory foreign to the kernel as a user pmap's pages
+        // object of the kernel lives in: `EfiRuntime::install` is the only code that enters
+        // pages into it, once, from the firmware's runtime descriptors (trusted as the C trusts
+        // the firmware's memory map), and it refuses every frame the VM manages or the kernel
+        // image holds: memory foreign to the kernel as a user pmap's pages
         // are to `copyin`, read here as bytes. A page it does not map faults inside `kcopy`,
         // which recovers through its own `pcb_onfault` into `EFAULT`; `buf` is the caller's,
         // borrowed exclusively for the copy.
@@ -208,12 +227,18 @@ impl Inside {
             // held across it (`EfiLocked`), so this is the only call the trampoline runs on any
             // CPU: its checkpoint is this call's alone. `fn_va` lies below the EFI pmap's
             // limit (just checked), so the code it names is what the EFI pmap maps executable
-            // there, the firmware's runtime code (`efi_map_runtime` maps only
-            // `EfiRuntimeServicesCode` executable), never the kernel's. The trampoline saves
-            // the callee-saved registers and `sp` before it arms `onfault` (the running
-            // thread's own `pcb_onfault`, alive while it runs, or null for none), so a fault
-            // anywhere in the call resumes at its fault target with this frame's registers
-            // and returns `faulted`; the caller-saved registers the C convention lets a call
+            // there: only `EfiRuntime::install` enters pages into that pmap, once, executable
+            // only for `EfiRuntimeServicesCode` descriptors of the firmware's memory map and
+            // never a frame the VM manages or the kernel image holds, so it is the firmware's
+            // runtime code (the map trusted as the C trusts it), never the kernel's. The
+            // trampoline saves the callee-saved registers and `sp` before it arms `onfault`
+            // (the running thread's own `pcb_onfault`, alive while it runs, or null for none),
+            // so a fault anywhere in the call resumes at its fault target with this frame's
+            // registers and returns `faulted`. Such a fault's `do_el1h_sync` unmasks the CPU's
+            // interrupts (`PSTATE.I`, `trap.rs`) while it handles the abort: the runtime's lock,
+            // held at `IPL_HIGH`, keeps every device interrupt out meanwhile, so nothing else
+            // runs on this CPU before the fault target restores the frame (the `eret` puts the
+            // masked state back). The caller-saved registers the C convention lets a call
             // clobber are what the declaration says. The one pointer handed over is `time`,
             // an `EfiTime` the caller borrows exclusively for the call, of the size the
             // service reads or writes (16 bytes, `EFI_TIME`); the second argument is NULL.

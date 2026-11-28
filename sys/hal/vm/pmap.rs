@@ -1105,8 +1105,16 @@ pub fn create() -> Option<PmapRef> {
 /// the EFI runtime services; loaded and left by `hal::cpu::efi`'s transaction. `None` as
 /// for [`create`].
 #[cfg(target_arch = "aarch64")]
-pub fn create_efi() -> Option<PmapRef> {
+pub(crate) fn create_efi() -> Option<PmapRef> {
     create_with(Backend::create_efi)
+}
+
+/// Whether the frame of `pa` is kernel memory: a page the VM manages, or one of the kernel
+/// image (`map_device`'s refusal, for `hal::cpu::efi::EfiRuntime::install`'s map).
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn frame_is_kernel_memory(pa: Paddr) -> bool {
+    let pa = Paddr::new(pa.as_usize() & !crate::arch::current::param::PAGE_MASK);
+    kernel().pages().md_of(pa).is_some() || Backend::in_kernel_image(pa)
 }
 
 /// A user pmap whose machine part `make` builds, in the pool of user pmaps.

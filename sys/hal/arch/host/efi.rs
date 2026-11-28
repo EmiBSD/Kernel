@@ -138,7 +138,7 @@ impl Inside {
 
     /// The service at `fn_va` called with `time`.
     pub(crate) fn time_call(&self, fn_va: u64, time: &mut EfiTime) -> Result<EfiStatus, Errno> {
-        if !below(fn_va, 1, self.limit) {
+        if !below(fn_va, 4, self.limit) {
             return Err(Errno::EFAULT);
         }
         FIRMWARE.with(|f| {
