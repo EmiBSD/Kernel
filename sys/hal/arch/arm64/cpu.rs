@@ -167,4 +167,22 @@ pub(crate) fn intr_enable() {
 pub(crate) fn ncpus(attached: usize) -> usize {
     attached
 }
+
+/// `READ_SPECIALREG(mpidr_el1)`: the executing CPU's Multiprocessor Affinity Register, the
+/// identifier the device tree's `/cpus` nodes and ACPI's MADT give it (`hal::cpu::hwid`).
+#[inline]
+pub(crate) fn hwid() -> u64 {
+    let mpidr: u64;
+    // SAFETY: `mrs` of `MPIDR_EL1` reads a read-only identification register of the CPU that
+    // executes it, which the architecture makes readable at EL1 whatever the state of the MMU,
+    // the caches or `cpu_info` (the kernel runs at EL1 from its first instruction, `locore`):
+    // no memory operand, no stack, no flags, and no effect on any state, so it can violate no
+    // invariant any other code holds. A thread moved between the read and the use reads its
+    // old CPU's value, which is the C's `READ_SPECIALREG` too (its callers run on the boot CPU
+    // during autoconfiguration, or with the CPU fixed).
+    unsafe {
+        asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack, preserves_flags));
+    }
+    mpidr
+}
 /* </CODE> */

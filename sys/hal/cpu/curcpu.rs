@@ -395,6 +395,23 @@ pub fn ncpus() -> usize {
     machine::ncpus(NCORES.load(Ordering::Acquire)).clamp(1, MAXCPUS)
 }
 
+/// The identifier the firmware's tables use for the executing CPU, readable before its
+/// `cpu_info` exists: arm64's `MPIDR_EL1` (`READ_SPECIALREG(mpidr_el1)`, which mainbus
+/// compares with a `/cpus` node's `reg`), N10's local APIC id. The raw register: masking it
+/// (`MPIDR_AFF`) is the caller's. Machines whose trap code exists only (arm64; the host,
+/// where a test sets it per thread, [`set_hwid`]).
+#[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
+#[inline]
+pub fn hwid() -> u64 {
+    machine::hwid()
+}
+
+/// The host double's [`hwid`] for the calling thread from now on (tests only).
+#[cfg(not(target_os = "none"))]
+pub fn set_hwid(id: u64) {
+    machine::set_hwid(id);
+}
+
 /// `cpu_number()`: the running CPU's index (0 before [`set_current`]).
 #[inline]
 pub fn cpu_number() -> usize {
@@ -511,6 +528,21 @@ mod tests {
         assert_ne!(other, curcpu_word());
         assert!(!past_caring());
         assert_eq!(ncpus(), MAXCPUS);
+    }
+
+    #[test]
+    fn the_hardware_id_is_the_calling_threads() {
+        assert_eq!(thread::spawn(hwid).join().unwrap(), 0);
+        set_hwid(0x8000_0102);
+        assert_eq!(hwid(), 0x8000_0102);
+        let other = thread::spawn(|| {
+            set_hwid(3);
+            hwid()
+        })
+        .join()
+        .unwrap();
+        assert_eq!(other, 3);
+        assert_eq!(hwid(), 0x8000_0102);
     }
 
     #[test]
