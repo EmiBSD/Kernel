@@ -1141,16 +1141,11 @@ impl Autoconf for Machine {
 
     /// The tests' presenter: a [`HostTypedArgs`] lent as a [`HostLegacyArgs`] on the stack.
     #[cfg(test)]
-    fn present_aux(
-        aux: &(dyn core::any::Any + Send + Sync),
-        f: &mut dyn FnMut(*mut c_void),
-    ) -> bool {
-        let Some(t) = aux.downcast_ref::<HostTypedArgs>() else {
-            return false;
-        };
-        let mut legacy = HostLegacyArgs { pri: t.pri };
-        f(core::ptr::from_mut(&mut legacy).cast());
-        true
+    fn present_aux(aux: &(dyn core::any::Any + Send + Sync), f: &mut dyn FnMut(*mut c_void)) {
+        if let Some(t) = aux.downcast_ref::<HostTypedArgs>() {
+            let mut legacy = HostLegacyArgs { pri: t.pri };
+            f(core::ptr::from_mut(&mut legacy).cast());
+        }
     }
 
     fn pdevinit() -> &'static [crate::sys::device::Pdevinit] {

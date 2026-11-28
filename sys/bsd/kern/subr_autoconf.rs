@@ -125,7 +125,9 @@ use crate::kassert;
 use crate::kern::init_main::{BOOTHOWTO, rootvp};
 use crate::kern::kern_malloc::{free, malloc, mallocarray};
 use crate::kern::subr_prf::{Str, panic};
-use crate::machine::autoconf::{cfdata, cfroots, device_register, mainbus_cd, present_aux};
+use crate::machine::autoconf::{
+    cfdata, cfroots, device_register, mainbus_cd, present_aux as machine_present_aux,
+};
 use crate::sys::device::{
     CfMatch, Cfdata, Cfdriver, CfmatchT, CfprintT, CfscanT, DVF_ACTIVE, Devclass, Device,
     SoftcMatch,
@@ -210,8 +212,11 @@ fn header(ls: &LegacySoftc) -> &Device {
 /// A native node's shadow header: the legacy header written from the node, in a block of
 /// the header alone (`CFATTACH_NATIVE`'s `ca_devsize`), held by the node (`legacy_shadow`).
 /// Its row is the node's (`cfdata_of`: a native row is a `Cfdata`), its parent the parent's
-/// legacy header. The shim's callers run under the kernel lock, as every legacy driver's
-/// code: no second caller meets a header being made.
+/// legacy header. Two makers racing would both find the slot empty: the loser's `set` fails
+/// (its block freed with its `LegacySoftc`), and if its `get` falls in the winner's window
+/// between taking the slot and publishing it (`OnceStatic`'s BUSY), it answers `None` and the
+/// loser panics with "has no legacy header". The kernel lock rules the race out: every
+/// caller of the shim (autoconfiguration, the legacy drivers) runs under it.
 fn shadow(n: &Node) -> &LegacySoftc {
     let slot = n.legacy_shadow();
     if !slot.is_set() {
@@ -294,22 +299,40 @@ fn aux_of(aux: *mut c_void) -> Aux<'static> {
     Aux::Legacy(aux.expose_provenance())
 }
 
+/// The one door through which a native bus's typed argument reaches a legacy driver: `f`
+/// gets the legacy argument (a `void *` valid for the call), once, and the answer is whether
+/// it ran. The machine's presenter is tried first (`machine::autoconf::present_aux`: the
+/// FDT's, arm64's `FdtArgs` as `FdtAttachArgs`, N7.2b1b); a machine-independent bus's
+/// presenter (virtio N7.3a, scsibus N7.4a, pci N7.5) is added here, after it, in the slice
+/// that makes that bus native: a direct call, no registration, no list before its first
+/// entry. Scaffolding (docs/SCAFFOLDING.md).
+fn present_aux(aux: &(dyn Any + Send + Sync), f: &mut dyn FnMut(*mut c_void)) -> bool {
+    let mut ran = false;
+    machine_present_aux(aux, &mut |a| {
+        if !ran {
+            ran = true;
+            f(a);
+        }
+    });
+    ran
+}
+
 /// The kernel's `aux` lent to a legacy driver's function as its `void *`: a legacy bus's
-/// as it is, a native bus's typed argument through the machine's presenter
-/// (`machine::autoconf::present_aux`), valid for the call. `None` when no presenter knows
-/// the typed argument (the legacy row cannot be that bus's child).
+/// as it is, a native bus's typed argument through the shim's door ([`present_aux`]), valid
+/// for the call. `None` when no presenter lent it (the legacy row cannot be that bus's
+/// child).
 fn with_aux<R>(aux: &Aux<'_>, f: impl FnOnce(*mut c_void) -> R) -> Option<R> {
     match aux {
         Aux::Legacy(a) => Some(f(ptr::with_exposed_provenance_mut(*a))),
         Aux::Typed(t) => {
             let mut f = Some(f);
             let mut out = None;
-            let known = present_aux(*t, &mut |a| {
+            let lent = present_aux(*t, &mut |a| {
                 if let Some(f) = f.take() {
                     out = Some(f(a));
                 }
             });
-            if known { out } else { None }
+            if lent { out } else { None }
         }
     }
 }
@@ -361,16 +384,37 @@ pub(crate) fn node_of(dev: &Device) -> DevRef {
     )
 }
 
+/// A legacy softc's header: the block `make_softc` made for a legacy row, which a legacy
+/// caller may cast to its softc. `None` for a native node: its softc is its driver's, and
+/// its shadow header is a block of the header alone, no legacy softc.
+fn legacy_softc(d: &Node) -> Option<&Device> {
+    d.softc().downcast_ref::<LegacySoftc>().map(header)
+}
+
+/// [`legacy_softc`] for a preallocated softc handed to legacy code (an indirect bus's
+/// match): a native node's is refused. Only a legacy indirect bus makes one (isa, amd64's).
+fn claimed_softc<'a>(d: &'a Node, what: &str) -> &'a Device {
+    match legacy_softc(d) {
+        Some(dv) => dv,
+        None => panic(format_args!(
+            "autoconf: {}'s native softc for a legacy indirect bus's {what}",
+            d.xname()
+        )),
+    }
+}
+
 /// The legacy view of a match, lent to a legacy match function for the call.
 fn view(m: &Match) -> CfMatch {
     match m {
         Match::Row(row) => CfMatch::Cfdata(cfdata_of(*row)),
         Match::Softc(d) => {
-            let p = NonNull::from(legacy_device(d));
-            // SAFETY: `SoftcMatch::new`'s contract, that the softc outlives the value: the
-            // value is only lent (`&CfMatch`) to a legacy match function for the call, while
-            // `d` holds the node and its `dv_ref`; a `SoftcMatch` has no drop, so this view
-            // frees nothing when it goes.
+            let p = NonNull::from(claimed_softc(d, "match"));
+            // SAFETY: `SoftcMatch::new`'s contract, a live softc made by `config_make_softc`
+            // (`make_softc`'s block for a legacy row: `claimed_softc` refuses a native node,
+            // whose shadow header is no softc) that outlives the value: the value is only lent
+            // (`&CfMatch`) to a legacy match function for the call, while `d` holds the node
+            // and its `dv_ref`; a `SoftcMatch` has no drop, so this view frees nothing when
+            // it goes.
             CfMatch::Softc(unsafe { SoftcMatch::new(p) })
         }
     }
@@ -379,15 +423,7 @@ fn view(m: &Match) -> CfMatch {
 /// A preallocated softc handed to a legacy caller, who owns it from now on (it attaches it
 /// or `free`s it, as the C's): one `dv_ref` taken for the claim before the node's goes.
 fn release_softc(d: DevRef) -> SoftcMatch {
-    // A native driver's softc is the node's own, which a legacy caller cannot hold (only a
-    // legacy indirect bus makes one here: isa, amd64's).
-    if d.softc().downcast_ref::<LegacySoftc>().is_none() {
-        panic(format_args!(
-            "autoconf: {}'s native softc for a legacy indirect bus",
-            d.xname()
-        ));
-    }
-    let dv = legacy_device(&d);
+    let dv = claimed_softc(&d, "claim");
     device_ref(dv);
     let p = NonNull::from(dv);
     drop(d);
@@ -1156,10 +1192,12 @@ mod tests {
     }
 
     /// A native driver (a kernel `DriverOps`, as `Cfdata::native` names one) with its own
-    /// unit table: a root, which matches only without a parent.
+    /// unit table: a root, which matches only without a parent, or (`child`) a child, which
+    /// matches only below one.
     struct TestNative {
         name: &'static [u8],
         units: &'static UnitTable,
+        child: bool,
     }
 
     /// The native driver's softc: nothing the tests read.
@@ -1185,19 +1223,25 @@ mod tests {
             MArc::erase(sc.expect("a native softc"))
         }
         fn probe(&self, parent: Option<&DevRef>, _m: &Match, _aux: &Aux<'_>) -> i32 {
-            i32::from(parent.is_none())
+            i32::from(parent.is_some() == self.child)
         }
         fn attach(&self, parent: Option<&DevRef>, _dev: &DevRef, _aux: &Aux<'_>) {
-            assert!(parent.is_none());
+            assert_eq!(parent.is_some(), self.child);
             NATIVE_ATTACHED.fetch_add(1, Ordering::Relaxed);
         }
     }
 
-    /// A fresh native driver named `name`.
+    /// A fresh native root driver named `name`.
     fn native_driver(name: &'static [u8]) -> &'static TestNative {
+        native_kind(name, false)
+    }
+
+    /// A fresh native driver named `name`, a root or a child.
+    fn native_kind(name: &'static [u8], child: bool) -> &'static TestNative {
         Box::leak(Box::new(TestNative {
             name,
             units: Box::leak(Box::new(UnitTable::new())),
+            child,
         }))
     }
 
@@ -1623,6 +1667,101 @@ mod tests {
         // SAFETY: as above.
         unsafe { Machine::set_ioconf(&[], &[]) };
         assert!(ptr::eq(BSD_GLUE.mainbus(), &cd.cd_units));
+    }
+
+    #[test]
+    fn a_shadow_header_goes_with_its_node() {
+        let root_cd: &'static Cfdriver = Box::leak(Box::new(Cfdriver::new(b"troot", DV_DULL, 0)));
+        let (table, _, _) = native_ioconf(root_cd);
+        let _g = setup_with(table);
+
+        // A native node made and not attached: dropping it gives everything back.
+        let d = kac::config_make_softc(None, &table[0]);
+        let h = legacy_device(&d);
+        assert!(
+            legacy_softc(&d).is_none(),
+            "a shadow header is no softc for a legacy caller (view, release_softc)"
+        );
+        assert_eq!(
+            h.cfdata().cf_attach.ca_devsize,
+            size_of::<Device>(),
+            "the block is CFATTACH_NATIVE's, the size device_unref frees"
+        );
+        let p = NonNull::from(h);
+        device_ref(h);
+        drop(d);
+        // SAFETY: the reference taken above keeps the block.
+        let held = unsafe { p.as_ref() };
+        assert_eq!(
+            held.dv_ref.load(Ordering::Relaxed),
+            1,
+            "the node's went with it"
+        );
+        // SAFETY: the last reference; the block is freed and not used again.
+        unsafe { device_unref(p) };
+
+        // A legacy node's softc is its own block, which a legacy caller may hold.
+        let (legacy, _, _) = ioconf(0);
+        let l = kac::config_make_softc(None, &legacy[0]);
+        assert!(legacy_softc(&l).is_some_and(|dv| ptr::eq(dv, legacy_device(&l))));
+    }
+
+    #[test]
+    fn a_native_child_of_a_native_parent_chains_the_shadow_headers() {
+        /// A native bus's argument no presenter knows: the legacy row answers 0 for it.
+        struct Unknown;
+
+        let root_cd: &'static Cfdriver = Box::leak(Box::new(Cfdriver::new(b"troot", DV_DULL, 0)));
+        let nchild_cd: &'static Cfdriver =
+            Box::leak(Box::new(Cfdriver::new(b"tnchild", DV_DULL, 0)));
+        let (legacy, _, _) = ioconf(0);
+        let root = native_driver(b"troot");
+        let nchild = native_kind(b"tnchild", true);
+        let table: &'static [Cfdata] = Box::leak(Box::new([
+            Cfdata::new(
+                &CFATTACH_NATIVE,
+                root_cd,
+                0,
+                FSTATE_NOTFOUND,
+                &[],
+                0,
+                &[],
+                0,
+                0,
+            )
+            .native(root),
+            Cfdata::new(
+                &CFATTACH_NATIVE,
+                nchild_cd,
+                0,
+                FSTATE_STAR,
+                &[],
+                0,
+                &[0],
+                0,
+                0,
+            )
+            .native(nchild),
+            legacy[1].clone(),
+        ]));
+        let _g = setup_with(table);
+        config_rootfound(b"troot", ptr::null_mut()).expect("troot0");
+        let node = root.units.get(0).expect("troot0's node");
+
+        let c = kac::config_found(&node, &Aux::Typed(&Unknown), None).expect("tnchild0");
+        assert_eq!(c.xname(), "tnchild0");
+        assert_eq!(NATIVE_ATTACHED.load(Ordering::Relaxed), 2);
+        assert_eq!(CHILD_ATTACHED.load(Ordering::Relaxed), 0);
+        assert!(c.is_child_of(&node));
+
+        // The child's header names the parent's header, whose own parent is none.
+        let ch = legacy_device(&c);
+        let rh = legacy_device(&node);
+        assert!(ptr::eq(ch.parent().expect("a parent"), rh));
+        assert!(rh.parent().is_none());
+        assert_eq!(cstr(&ch.dv_xname.get()), b"tnchild0");
+        assert!(MArc::ptr_eq(&node_of(ch), &c));
+        assert!(MArc::ptr_eq(&node_of(rh), &node));
     }
 }
 /* </TESTS> */

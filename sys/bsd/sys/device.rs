@@ -175,13 +175,30 @@ impl Device {
 
     /// `(struct foo_softc *)self`: the softc this device is the head of.
     ///
+    /// A `T` larger than the block of the device's row (`ca_devsize`) is `panic(9)`, not a
+    /// read past it: a native node's shadow header (a block of the header alone,
+    /// [`CFATTACH_NATIVE`]) cast to a legacy parent's softc is the case it catches. A device
+    /// made by hand, without a row, is not checked (its maker made the block).
+    ///
     /// # Safety
     ///
     /// `self` was allocated by `config_make_softc` for a [`Cfattach`] whose `ca_devsize` is
-    /// at least `size_of::<T>()`, which is the case inside that attachment's own functions.
+    /// at least `size_of::<T>()`, which is the case inside that attachment's own functions,
+    /// or by hand as a `T`.
     pub unsafe fn softc<T: Softc>(&self) -> &T {
+        if let Some(cf) = self.dv_cfdata.get()
+            && size_of::<T>() > cf.cf_attach.ca_devsize
+        {
+            crate::kern::subr_prf::panic(format_args!(
+                "{}: a softc of {} bytes in a block of {}",
+                self.xname(),
+                size_of::<T>(),
+                cf.cf_attach.ca_devsize
+            ));
+        }
         // SAFETY: `T` is `#[repr(C)]` with the device first (the `Softc` contract), so the
-        // device's address is the softc's; the caller guarantees the allocation holds a `T`.
+        // device's address is the softc's; the caller guarantees the allocation holds a `T`,
+        // and for a device with a row the check above has made sure its block is that big.
         unsafe { &*core::ptr::from_ref(self).cast::<T>() }
     }
 
