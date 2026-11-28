@@ -27,9 +27,9 @@ Sources, all read live (nothing is typed in by hand):
     counts it as a module; the totals; the ratchet with its baseline; the pace.
     unsafe-report is the one parser of the Rust sources: this script reads none.
     The crate of a file (docs/ZERO_UNSAFE.md section 0) is derived here from its
-    path: sys/hal/, sys/kernel/, sys/abi/, lib (the leaf crates sys/lib/sysdefs/, libkern/,
-    libz/), the boot loaders (sys/boot/, with bsd's boot entry sys/bsd/stand/), and bsd (the LZ
-    tree, legacy) for the rest of sys/;
+    path: sys/hal/, sys/kernel/, sys/abi/, sys/entry/, lib (the leaf crates sys/lib/sysdefs/,
+    libkern/, libz/), the boot loaders (sys/boot/), and bsd (the LZ tree, legacy, with its boot
+    entry sys/bsd/stand/) for the rest of sys/, as unsafe-report's crates count them;
   - docs/ROADMAP.md: the milestone table (id, title, scope, exit criterion). A
     file belongs to the N row whose scope cell names its path in backticks: a
     directory (`sys/uvm/`), a file (`sys/sys/queue.rs`) or a glob
@@ -409,6 +409,7 @@ class Plan:
 
 
 CRATES = (("hal", "sys/hal/"), ("kernel", "sys/kernel/"), ("abi", "sys/abi/"),
+          ("entry", "sys/entry/"),
           ("lib", "sys/lib/sysdefs/"), ("lib", "sys/lib/libkern/"), ("lib", "sys/lib/libz/"),
           ("boot", "sys/stand/"), ("boot", "sys/lib/libsa/"))
 
@@ -416,9 +417,12 @@ CRATES = (("hal", "sys/hal/"), ("kernel", "sys/kernel/"), ("abi", "sys/abi/"),
 def crate_of(path: str) -> str:
     """The crate a file belongs to under docs/ZERO_UNSAFE.md section 0, by its path: hal,
     kernel, abi, lib (the leaf crates sysdefs, libkern, libz: forbid, decisions 54 and 55), boot
-    (the loaders, outside the four crates) or bsd (the LZ tree, legacy). The legacy tree and
-    the loaders are read as LZ lays them out (`lz_layout`), as xtask's crate_of_file does: so
-    sys/bsd/stand/ (bsd's boot entry) is counted with the loaders, as before the move."""
+    (the loaders, outside the crates), entry (decisions 56 and 58: one `unsafe` attribute) or
+    bsd (the LZ tree, legacy). The loaders are read as LZ lays them out (`lz_layout`), as
+    xtask's crate_of_file does; sys/bsd/stand/ (bsd's boot entry, LZ's sys/stand/ beside the
+    loaders) is bsd's since the Limine removal's S3, as unsafe-report counts it."""
+    if path.startswith("sys/bsd/stand/"):
+        return "bsd"
     path = lz_layout(path)
     for name, prefix in CRATES:
         if path.startswith(prefix):
@@ -498,7 +502,7 @@ def unsafe_report(root: Path, want: str | None, doc: dict, plan: Plan, modules: 
         d = agg[rid]["bsd_unsafe"] / per_day
         return "<0.1 d" if d < 0.1 else f"~{d:.1f} d"
 
-    crate_unsafe = {c: 0 for c in ("kernel", "abi", "hal", "lib", "bsd", "boot")}
+    crate_unsafe = {c: 0 for c in ("kernel", "abi", "entry", "hal", "lib", "bsd", "boot")}
     crate_files = {c: 0 for c in crate_unsafe}
     for f in files:
         crate_unsafe[f["crate"]] += f["unsafe"]
@@ -532,6 +536,7 @@ def unsafe_report(root: Path, want: str | None, doc: dict, plan: Plan, modules: 
     print()
     print(f"Crates: kernel {crate_unsafe['kernel']:,} unsafe in {crate_files['kernel']:,} files; "
           f"abi {crate_unsafe['abi']:,} in {crate_files['abi']:,}; "
+          f"entry {crate_unsafe['entry']:,} in {crate_files['entry']:,}; "
           f"hal {crate_unsafe['hal']:,} in {crate_files['hal']:,}"
           + (f" (ceiling {hal_ceiling:,})" if hal_ceiling is not None else "")
           + f"; lib {crate_unsafe['lib']:,} in {crate_files['lib']:,}"
@@ -556,7 +561,7 @@ def unsafe_report(root: Path, want: str | None, doc: dict, plan: Plan, modules: 
             print()
             print("| File | Status | Crate | Unsafe | LZ lines | Rust lines | LZ sources |")
             print("|---|---|---|---:|---:|---:|---|")
-            order = {"bsd": 0, "hal": 1, "kernel": 2, "abi": 3, "lib": 4, "boot": 5}
+            order = {"bsd": 0, "hal": 1, "kernel": 2, "abi": 3, "entry": 4, "lib": 5, "boot": 6}
             for f in sorted(sel, key=lambda f: (order[f["crate"]], -f["unsafe"], f["path"])):
                 srcs = by_path.get(f["path"], {}).get("lz", [])
                 vals = [lz_len.get(p) for p in srcs]
@@ -590,8 +595,8 @@ def unsafe_report(root: Path, want: str | None, doc: dict, plan: Plan, modules: 
     print()
     print("Method: one source, `cargo xtask unsafe-report --json`; this script reads no Rust. "
           "A file's crate comes from its path (docs/ZERO_UNSAFE.md section 0): sys/hal/, "
-          "sys/kernel/, sys/abi/, lib (the leaf crates sys/lib/sysdefs/, libkern/, libz/, forbid), the boot loaders (sys/boot/ and bsd's boot entry sys/bsd/stand/, outside the "
-          "plan), and bsd for everything else under sys/ (the LZ tree, legacy). A file belongs "
+          "sys/kernel/, sys/abi/, sys/entry/, lib (the leaf crates sys/lib/sysdefs/, libkern/, libz/, forbid), the boot loaders (sys/boot/, outside the "
+          "plan), and bsd for everything else under sys/ (the LZ tree, legacy, its boot entry sys/bsd/stand/ included). A file belongs "
           "to the N row whose scope cell names its path in backticks (a directory, a file or a "
           "glob), the most specific pattern winning; a row whose scope is prose resolves "
           "nothing; a parent row adds its lettered children's. Files in bsd and Unsafe in bsd "

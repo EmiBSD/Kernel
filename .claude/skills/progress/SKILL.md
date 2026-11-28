@@ -28,7 +28,7 @@ How to answer:
   `unsafe-budget.toml`, reads n/a until 5 active days have removed 100 or more (a smaller
   sample is noise), and promises nothing. The Crates line is the whole picture: kernel and abi
   are 0 by the compiler, hal has the only unsafe under its ceiling, bsd is what must reach 0
-  files, the boot loaders (sys/boot/, with bsd's boot entry sys/bsd/stand/) are outside the plan.
+  files (its boot entry sys/bsd/stand/ included), entry holds its one exported symbol's attribute, the boot loaders (sys/boot/) are outside the plan.
 - A `Warning:` line under the table names files in bsd no ROADMAP row claims: say so; they
   need an owner row.
 - With a milestone argument (`/progress N2`) the file list follows the table, bsd files first
