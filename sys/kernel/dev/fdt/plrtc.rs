@@ -286,6 +286,8 @@ mod tests {
 
     #[test]
     fn match_and_the_attach_s_two_failure_lines() {
+        // Memory first, then the tree: the order the other tree tests take the two locks in.
+        let _g = setup();
         let mut b = FdtBuilder::new();
         b.begin(b"");
         b.prop_cells(b"#address-cells", &[2]);
@@ -298,7 +300,6 @@ mod tests {
         b.end();
         b.end();
         let _t = install(b.finish());
-        let _g = setup();
         let bus = FdtBus::root();
         let fa = FdtArgs::of_node(OF_finddevice(b"/pl031@9010000"), &bus, 2, 2);
         assert_eq!(plrtc_match(&fa), 1);
