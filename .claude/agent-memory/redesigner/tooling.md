@@ -463,3 +463,6 @@ metadata:
 - clippy type_complexity fires on `Option<&dyn Fn(&Aux<'_>, Option<&[u8]>) -> i32>`: name it `kernel::dev::autoconf::Print<'_>` (and `Submatch` for the other); `just clippy` at the tip caught it after the commit (N7.2b1b).
 - `adapted_by` must name a `redesigned` module: `sys/hal/cpu/trap.rs` (CpuHooks, Debugger) is not one; name the redesigned module whose need forced the change instead (N7.2a2: the kernel's ampintc for cpu.rs's `halt`).
 - In docs' Markdown tables a closure in a code span (`unmasked(|| ..)`) needs `\|\|` (docs.md): N7.2a2 shipped one bare and fixed it a commit later.
+- The worktree guard refuses a heredoc that appends Rust to a file in the same call as `cargo`, and any heredoc run after a `cd` into `.claude/` ("too complex"): Write the text to the scratchpad and run a script by absolute path, cargo alone (N7.2a3).
+- clippy's too_many_arguments fires above 7 parameters (self counts): a 7-argument C signature needs no allow, so do not add one (N7.2a3 removed two).
+- lz check after deleting a bsd file lists every item only it held, including `const _` compile-time asserts (`path::_`): copy the assert into the native module rather than writing a dropped row (N7.2a3).
