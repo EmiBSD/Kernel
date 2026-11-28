@@ -67,13 +67,13 @@ use core::sync::atomic::Ordering;
 
 use alloc::boxed::Box;
 
-use crate::arch::arm64::arm64::intr::interrupt_controllers;
+use crate::arch::arm64::arm64::intr::{NativeIntrHandle, native_intr_handle};
 use crate::arch::arm64::dev::acpiiort::{
     acpiiort_smmu_map, acpiiort_smmu_reserve_region, acpiiort_table, iort_mapping, iort_read,
 };
 use crate::arch::arm64::include::bus::{BusDmamap, BusSpace};
 use crate::arch::arm64::include::cpu::CpuInfo;
-use crate::arch::arm64::include::intr::{InterruptController, MachineIntrHandle};
+use crate::arch::arm64::include::intr::MachineIntrHandle;
 use crate::dev::acpi::acpi::{acpi_find_pci, acpi_getsta, acpi_matchhids};
 use crate::dev::acpi::acpidev::STA_PRESENT;
 use crate::dev::acpi::acpireg::{
@@ -100,6 +100,7 @@ use crate::dev::pci::pcivar::{
 use crate::dev::pci::ppbreg::ppb_interrupt_swizzle;
 use crate::kassert;
 use crate::kern::kern_malloc::{free, malloc};
+use crate::kern::kern_sched::cpu_number_of;
 use crate::kern::subr_autoconf::config_found;
 use crate::kern::subr_extent::{extent_create, extent_free};
 use crate::kern::subr_prf::{Str, panic, printf, snprintf};
@@ -121,6 +122,8 @@ use crate::sys::extent::{EX_FILLED, EX_WAITOK, Extent};
 use crate::sys::malloc::{M_DEVBUF, M_WAITOK};
 use crate::sys::queue::{SlistEntry, SlistHead};
 use crate::sys::types::{Off, Paddr};
+use kernel::dev::arm64::intr::{self as core_intr, IcRef};
+use kernel::dev::intr::IntrHandler;
 
 /// `struct acpipci_mcfg`: an MCFG window, the configuration space of a segment's buses.
 pub struct AcpipciMcfg {
@@ -199,8 +202,9 @@ pub struct AcpipciSoftc {
     pub sc_bus: Cell<i32>,
     /// `sc_seg`.
     pub sc_seg: Cell<u32>,
-    /// `sc_msi_ic`: the first controller that establishes MSIs.
-    pub sc_msi_ic: Cell<*const InterruptController>,
+    /// `sc_msi_ic`: the first controller that establishes MSIs (`None`: the C's NULL), a
+    /// registration of the kernel's registry, never freed.
+    pub sc_msi_ic: Cell<Option<IcRef>>,
 }
 
 impl AcpipciSoftc {
@@ -237,15 +241,18 @@ impl AcpipciSoftc {
 }
 
 // SAFETY: `#[repr(C)]` with the device first; the other members are `Cell`s of null
-// pointers, `None` and 0, an unborrowed `RefCell` of `None`, zeroed byte arrays and
+// pointers, `None` (`sc_msi_ic`'s `Option<&IcReg>` among them, whose `None` is the null
+// pointer) and 0, an unborrowed `RefCell` of `None`, zeroed byte arrays and
 // `MaybeUninit`: all valid as zero bits.
 unsafe impl Softc for AcpipciSoftc {}
 
-/// `struct acpipci_intr_handle`: an MSI's handle; the controller's handle first.
+/// `struct acpipci_intr_handle`: an MSI's handle; the controller's handle first, as the
+/// adapter's native kind (`NativeIntrHandle`), so `acpipci_intr_disestablish` reads it back
+/// as the adapter's handle whatever the controller.
 #[repr(C)]
 pub struct AcpipciIntrHandle {
     /// `aih_ih`.
-    pub aih_ih: MachineIntrHandle,
+    pub(crate) aih_ih: NativeIntrHandle,
     /// `aih_dmat`.
     pub aih_dmat: BusDmaTag,
     /// `aih_map`: the doorbell's map.
@@ -419,10 +426,8 @@ pub fn acpipci_attach(parent: Option<&Device>, self_: &Device, aux: *mut c_void)
         });
     }
 
-    let ic = interrupt_controllers()
-        .iter()
-        .find(|ic| ic.ic_establish_msi.is_some());
-    sc.sc_msi_ic.set(ic.map_or(ptr::null(), ptr::from_ref));
+    sc.sc_msi_ic
+        .set(core_intr::controllers().find(|ic| ic.ops().has_msi()));
 
     let pc = pci_lookup_segment(sc.sc_seg.get() as i32, sc.sc_bus.get());
     sc.sc_pc.set(Some(pc));
@@ -452,7 +457,7 @@ pub fn acpipci_attach(parent: Option<&Device>, self_: &Device, aux: *mut c_void)
         pba_intrswiz: 0,
         pba_intrtag: 0,
     };
-    if !sc.sc_msi_ic.get().is_null() {
+    if sc.sc_msi_ic.get().is_some() {
         pba.pba_flags |= PCI_FLAGS_MSI_ENABLED;
         pba.pba_flags |= PCI_FLAGS_MSIVEC_ENABLED;
     }
@@ -892,31 +897,20 @@ pub fn acpipci_intr_establish(
     kassert!(ih.ih_type != PCI_NONE);
 
     if ih.ih_type != PCI_INTX {
-        // SAFETY: a registered interrupt controller, never freed.
-        let mut ic: &'static InterruptController = unsafe { sc.sc_msi_ic.get().as_ref() }?;
+        let mut ic: IcRef = sc.sc_msi_ic.get()?;
         let mut addr: u64 = 0;
 
         // Map Requester ID through IORT to get sideband data.
         let mut data = u64::from(acpipci_iort_map_msi(ih.ih_pc, ih.ih_tag, &mut ic));
-        let establish_msi = ic.ic_establish_msi?;
-        let cookie = establish_msi(
-            ic.ic_cookie.get(),
+        let cookie = ic.establish_msi(
             &mut addr,
             &mut data,
             level,
-            ci,
-            func,
-            arg,
+            ci.map(cpu_number_of),
+            IntrHandler::Raw(func, arg.expose_provenance()),
             name,
-        );
-        if cookie.is_null() {
-            return None;
-        }
-        let disestablish = |cookie| {
-            if let Some(dis) = ic.ic_disestablish {
-                dis(cookie);
-            }
-        };
+        )?;
+        let disestablish = core_intr::arm_intr_disestablish_fdt;
 
         let Some(aih) = malloc(size_of::<AcpipciIntrHandle>(), M_DEVBUF, M_WAITOK) else {
             disestablish(cookie);
@@ -952,10 +946,7 @@ pub fn acpipci_intr_establish(
         // SAFETY: a fresh allocation of the handle's size, written once before use.
         unsafe {
             aih.write(AcpipciIntrHandle {
-                aih_ih: MachineIntrHandle {
-                    ih_ic: ic,
-                    ih_ih: cookie,
-                },
+                aih_ih: NativeIntrHandle::new(cookie),
                 aih_dmat: dmat,
                 aih_map: map,
             });
@@ -992,19 +983,17 @@ pub fn acpipci_intr_establish(
 ///
 /// `cookie` came from `acpipci_intr_establish` and is not used afterwards.
 pub unsafe fn acpipci_intr_disestablish(_v: *mut c_void, cookie: NonNull<c_void>) {
-    // Both kinds of handle start with the controller's `struct machine_intr_handle`.
-    // SAFETY: the caller's guarantee.
-    let mih = unsafe { cookie.cast::<MachineIntrHandle>().as_ref() };
-    // SAFETY: an established handle names a registered controller, never freed.
-    let ic = unsafe { &*mih.ih_ic };
+    // Both kinds of handle start with an adapter's handle: an MSI's embeds a native one, an
+    // INTx one is `acpi_intr_establish`'s (either kind).
+    // SAFETY: the caller's guarantee: a live handle `acpipci_intr_establish` made.
+    let native = unsafe { native_intr_handle(cookie.cast::<MachineIntrHandle>()) };
 
-    if ic.ic_establish_msi.is_some() {
+    if let Some(ih) = native.filter(|ih| ih.controller().ops().has_msi()) {
         let aih = cookie.cast::<AcpipciIntrHandle>();
-        // SAFETY: an MSI handle `acpipci_intr_establish` wrote.
+        // SAFETY: an MSI handle `acpipci_intr_establish` wrote (its controller takes MSIs,
+        // which no INTx handle's GIC does).
         let h = unsafe { aih.as_ref() };
-        if let Some(dis) = ic.ic_disestablish {
-            dis(h.aih_ih.ih_ih);
-        }
+        core_intr::arm_intr_disestablish_fdt(ih);
         bus_dmamap_unload(h.aih_dmat, h.aih_map);
         // SAFETY: the doorbell's map, unloaded above and not used afterwards.
         unsafe { bus_dmamap_destroy(h.aih_dmat, NonNull::from(h.aih_map)) };
@@ -1128,12 +1117,7 @@ pub fn pci_lookup_segment(segment: i32, bus: i32) -> PciChipsetTag {
 // IORT support.
 
 /// `acpipci_iort_map_node(iort, node, id, ic)`: follows the node's mapping of `id`.
-pub fn acpipci_iort_map_node(
-    iort: &[u8],
-    offset: usize,
-    id: u32,
-    ic: &mut &'static InterruptController,
-) -> u32 {
+pub fn acpipci_iort_map_node(iort: &[u8], offset: usize, id: u32, ic: &mut IcRef) -> u32 {
     let Some(node) = iort_read::<AcpiIortNode>(iort, offset) else {
         return id;
     };
@@ -1160,12 +1144,7 @@ pub fn acpipci_iort_map_node(
 
 /// `acpipci_iort_map(iort, offset, id, ic)`: `id` through the node at `offset`; an ITS
 /// group picks the controller with its ID.
-pub fn acpipci_iort_map(
-    iort: &[u8],
-    offset: usize,
-    id: u32,
-    ic: &mut &'static InterruptController,
-) -> u32 {
+pub fn acpipci_iort_map(iort: &[u8], offset: usize, id: u32, ic: &mut IcRef) -> u32 {
     let Some(node) = iort_read::<AcpiIortNode>(iort, offset) else {
         return id;
     };
@@ -1176,16 +1155,15 @@ pub fn acpipci_iort_map(
             let Some(itsn) = iort_read::<AcpiIortItsNode>(iort, itsn_at) else {
                 return id;
             };
-            for icl in interrupt_controllers().iter() {
+            for icl in core_intr::controllers() {
                 for i in 0..itsn.number_of_itss as usize {
                     let Some(its_id) =
                         iort_read::<u32>(iort, itsn_at + size_of::<AcpiIortItsNode>() + 4 * i)
                     else {
                         break;
                     };
-                    if icl.ic_establish_msi.is_some() && icl.ic_gic_its_id.get() == its_id {
-                        // SAFETY: a registered controller, never freed.
-                        *ic = unsafe { &*ptr::from_ref(icl) };
+                    if icl.ops().has_msi() && icl.gic_its_id() == its_id {
+                        *ic = icl;
                         break;
                     }
                 }
@@ -1200,11 +1178,7 @@ pub fn acpipci_iort_map(
 
 /// `acpipci_iort_map_msi(pc, tag, ic)`: the MSI sideband data of a function: its requester
 /// ID through the IORT mapping of the bridge's root complex.
-pub fn acpipci_iort_map_msi(
-    pc: PciChipsetTag,
-    tag: Pcitag,
-    ic: &mut &'static InterruptController,
-) -> u32 {
+pub fn acpipci_iort_map_msi(pc: PciChipsetTag, tag: Pcitag, ic: &mut IcRef) -> u32 {
     let rid = u32::from(pci_requester_id(pc, tag));
     let Some(sc) = softc_of(pc.pc_intr_v) else {
         return rid;

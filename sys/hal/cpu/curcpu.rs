@@ -73,6 +73,14 @@
 //!   half is [`crate::cpu::intr`]'s), and the machine's interrupt mask is reached through
 //!   [`intr_disable`], a guard whose drop is `intr_restore` (LZ: `bsd`'s `intr_disable()`
 //!   and the `unsafe fn intr_restore(s)` it pairs with).
+//! - N7.2a2: [`intr_disable`] and [`intr_enable`] are public, for the interrupt controllers in
+//!   the kernel (`ampintc_setipl`'s section, `ampintc_attach`'s `intr_enable()`, and the IRQ
+//!   dispatch's pair through [`crate::cpu::intr::unmasked`]). No `// SAFETY:` of `hal` rests
+//!   on the mask staying up across a call out of `hal`: the lock sections that hold an
+//!   [`IntrGuard`] (the kernel lock's depth and ticket, the mutexes' parking lots) call
+//!   nothing outside `hal` under it, the soft interrupts' pass calls only the controller's
+//!   `setipl` (as the C's `arm_do_pending_intr`) and rests nothing on its guard, and a lifted
+//!   mask in any of them would cost a nested interrupt's deadlock, never memory safety.
 
 use core::marker::PhantomData;
 use core::sync::atomic::{
@@ -474,7 +482,7 @@ pub struct IntrGuard {
 /// `intr_disable()`: masks the machine's interrupts on this CPU (arm64: IRQ and FIQ) until
 /// the guard drops, which restores the state saved here.
 #[inline]
-pub(crate) fn intr_disable() -> IntrGuard {
+pub fn intr_disable() -> IntrGuard {
     IntrGuard {
         saved: machine::intr_disable(),
         _not_send: PhantomData,
@@ -486,6 +494,15 @@ impl Drop for IntrGuard {
     fn drop(&mut self) {
         machine::intr_restore(self.saved);
     }
+}
+
+/// `intr_enable()`: unmasks the machine's interrupts on this CPU (arm64: IRQ and FIQ): a
+/// controller's attach once its distributor is set up (`ampintc_attach`), the IRQ dispatch
+/// around its handlers ([`crate::cpu::intr::unmasked`]). A guard alive meanwhile restores
+/// the state it saved at its drop.
+#[inline]
+pub fn intr_enable() {
+    machine::intr_enable();
 }
 
 /// `s = intr_disable()` for a holder that keeps the state beyond one scope: the debugger's

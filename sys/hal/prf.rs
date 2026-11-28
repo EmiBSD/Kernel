@@ -55,6 +55,15 @@ pub trait Printf: Sync {
         let _ = level;
         self.printf(args);
     }
+
+    /// `splassert_fail(wantipl, haveipl, func)`: an `spl` assertion failed; the kernel's
+    /// `splassert_ctl` decides what follows (print, a stack trace, ddb, `panic(9)`). The
+    /// default prints the C's line.
+    fn splassert_fail(&self, wantipl: i32, haveipl: i32, func: &str) {
+        self.printf(format_args!(
+            "splassert: {func}: want {wantipl} have {haveipl}\n"
+        ));
+    }
 }
 
 /// `printf(9)`: `args` to the console and the message buffer; dropped (and counted) before
@@ -65,6 +74,14 @@ pub fn printf(args: fmt::Arguments<'_>) {
         None => {
             DROPPED.fetch_add(1, Ordering::Relaxed);
         }
+    }
+}
+
+/// `splassert_fail(wantipl, haveipl, func)` (`hal::cpu::intr::splassert_check`'s report),
+/// through the registered `printf`; nothing before it (no console yet).
+pub fn splassert_fail(wantipl: i32, haveipl: i32, func: &str) {
+    if let Some(p) = bridges::printf() {
+        p.splassert_fail(wantipl, haveipl, func);
     }
 }
 

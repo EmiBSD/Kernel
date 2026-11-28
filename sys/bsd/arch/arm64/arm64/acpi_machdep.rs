@@ -52,7 +52,7 @@
 use core::ffi::c_void;
 use core::ptr::{self, NonNull};
 
-use crate::arch::arm64::arm64::intr::interrupt_controllers;
+use crate::arch::arm64::arm64::intr::{arm_intr_disestablish_fdt, new_handle};
 use crate::arch::arm64::dev::acpiiort::acpiiort_device_map;
 use crate::arch::arm64::include::bus::{self, BUS_DMA_COHERENT};
 use crate::arch::arm64::include::fdt::FdtAttachArgs;
@@ -63,7 +63,7 @@ use crate::dev::acpi::acpivar::{AcpiMemMap, AcpiSoftc};
 use crate::dev::acpi::amltypes::AmlNodeRef;
 use crate::dev::acpi::dsdt::{LR_EXTIRQ_MODE, LR_EXTIRQ_POLARITY};
 use crate::dev::ofw::openfirm::OF_is_compatible;
-use crate::kern::kern_malloc::{free, malloc};
+use crate::kern::kern_malloc::malloc;
 use crate::kern::subr_prf::panic;
 use crate::kern::vm_bsd::{km_alloc, km_free};
 use crate::machine::bus::{
@@ -78,6 +78,8 @@ use crate::sys::mman::{PROT_READ, PROT_WRITE};
 use crate::sys::types::{Paddr, Vaddr, Vsize};
 use crate::unported;
 use hal::vm::param::{round_page, trunc_page};
+use kernel::dev::arm64::intr as core_intr;
+use kernel::dev::intr::IntrHandler;
 use kernel::vm::km::{KD_NOWAIT, KP_NONE, KV_ANY};
 
 /// `pwr_action`: what the power button does (1: power down).
@@ -216,7 +218,10 @@ pub fn acpi_attach_machdep(_sc: &'static AcpiSoftc) {
 }
 
 /// `acpi_intr_establish(irq, flags, level, func, arg, name)`: the GSI `irq` on the GIC
-/// (phandle 1), edge or level and its polarity from the `_CRS` flags.
+/// (phandle 1), edge or level and its polarity from the `_CRS` flags. The controller is the
+/// first of the kernel's registry with that phandle (`LIST_FOREACH` on
+/// `interrupt_controllers`, the registry's order: a real controller ahead of its node's
+/// pre-registration), and the handle the adapter's (`new_handle`).
 pub fn acpi_intr_establish(
     irq: i32,
     flags: i32,
@@ -225,9 +230,7 @@ pub fn acpi_intr_establish(
     arg: *mut c_void,
     name: &'static str,
 ) -> Option<NonNull<c_void>> {
-    let ic = interrupt_controllers()
-        .iter()
-        .find(|ic| ic.ic_phandle.get() == 1)?;
+    let ic = core_intr::controllers().find(|ic| ic.phandle() == 1)?;
 
     let mode = if flags & i32::from(LR_EXTIRQ_MODE) != 0 {
         // edge
@@ -246,41 +249,26 @@ pub fn acpi_intr_establish(
     };
     let interrupt: [u32; 3] = [0, (irq - 32) as u32, mode];
 
-    let establish = ic.ic_establish?;
-    let cookie = establish(ic.ic_cookie.get(), &interrupt, level, None, func, arg, name);
-    if cookie.is_null() {
-        return None;
-    }
-
-    let aih =
-        malloc(size_of::<MachineIntrHandle>(), M_DEVBUF, M_WAITOK)?.cast::<MachineIntrHandle>();
-    // SAFETY: a fresh allocation of a handle's size, written once before use.
-    unsafe {
-        aih.write(MachineIntrHandle {
-            ih_ic: ic,
-            ih_ih: cookie,
-        });
-    }
-
-    Some(aih.cast())
+    let ih = ic.establish(
+        &interrupt,
+        level,
+        None,
+        IntrHandler::Raw(func, arg.expose_provenance()),
+        name,
+    )?;
+    new_handle(ih).map(NonNull::cast)
 }
 
-/// `acpi_intr_disestablish(cookie)`.
+/// `acpi_intr_disestablish(cookie)`: through the controller that took it, the handle freed
+/// (`arm_intr_disestablish_fdt`, which knows both kinds of the adapter's handle).
 ///
 /// # Safety
 ///
 /// `cookie` came from `acpi_intr_establish` and is not used afterwards.
 pub unsafe fn acpi_intr_disestablish(cookie: NonNull<c_void>) {
-    let aih = cookie.cast::<MachineIntrHandle>();
-    // SAFETY: the caller's guarantee: a handle `acpi_intr_establish` wrote.
-    let h = unsafe { aih.as_ref() };
-    // SAFETY: an established handle names a registered controller, never freed.
-    let ic = unsafe { &*h.ih_ic };
-
-    if let Some(dis) = ic.ic_disestablish {
-        dis(h.ih_ih);
-    }
-    free(aih.cast(), M_DEVBUF, size_of::<MachineIntrHandle>());
+    // SAFETY: the caller's guarantee: a handle `acpi_intr_establish` took from `new_handle`,
+    // not used after this.
+    unsafe { arm_intr_disestablish_fdt(cookie.cast::<MachineIntrHandle>()) };
 }
 
 /// `acpi_iommu_device_map(node, dmat)`: through the IORT (`acpiiort_device_map`).

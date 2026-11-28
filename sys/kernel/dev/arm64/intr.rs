@@ -81,10 +81,9 @@
 //! ([`arm_intr_init_fdt`], from mainbus's attach): a handler established before its
 //! controller attaches is recorded, and established for real when the controller registers.
 //!
-//! `spl(9)` and the controller's `spl` table are `hal::cpu::intr`'s (N4.5c, the
-//! `IntrHardware` bridge until N7.2a3), the clock table and `delay(9)` are still `bsd`'s
-//! (`arch/arm64/arm64/intr.rs`, N7.2b2), and the IPIs follow with the first native controller
-//! (N7.2a2).
+//! `spl(9)` and the controller's `spl` table are `hal::cpu::intr`'s (N4.5c; the controller
+//! installs itself since N7.2a2), the clock table and `delay(9)` are still `bsd`'s
+//! (`arch/arm64/arm64/intr.rs`, N7.2b2), and the IPI sender is a slot here (N7.2a2).
 //!
 //! ## Deviations
 //! - A pre-registration's record is never freed: the C frees it when its handler is
@@ -130,6 +129,15 @@
 //! - LZ's empty-phandle step of the `interrupts-extended` walk did not count the empty entry
 //!   as an interrupt (a `while` whose `continue` skipped `i += 1`); the C's `for` counts it:
 //!   the C's is kept here.
+//! - N7.2a2: `intr_send_ipi_func`, a `StaticCell` of `bsd`'s written by the controller's
+//!   attach, -> a set-once slot here ([`intr_set_send_ipi`], one function, not a table, so
+//!   no trait), read by number of CPU through [`intr_send_ipi_func`] (`bsd`'s `arm_send_ipi`,
+//!   whose callers, `cpu.c` and ddb, are `bsd`'s).
+//! - N7.2a2: the callers that find a controller themselves and call its entry by hand
+//!   (`acpi_intr_establish`, `acpipci`'s MSIs, a GICv2m frame on its GIC: `ic->ic_establish`
+//!   then a `malloc`ed `machine_intr_handle` filled with `ic` and the answer) call
+//!   [`IcReg::establish`] and [`IcReg::establish_msi`], which make the handle; `ic_establish_msi
+//!   != NULL`, their test for an MSI controller, is [`InterruptController::has_msi`].
 
 use core::any::Any;
 use core::sync::atomic::{AtomicI32, Ordering};
@@ -259,6 +267,39 @@ impl IcReg {
     /// The controller's entry points.
     pub fn ops(&self) -> &'static dyn InterruptController {
         self.ops
+    }
+
+    /// `ic->ic_establish(ic->ic_cookie, cell, level, ci, func, arg, name)` and the handle
+    /// that names this controller with its answer: what a caller that found the controller
+    /// itself makes (`acpi_intr_establish`, a GICv2m frame on its GIC); a handle cannot name
+    /// another controller than the one whose cookie it holds.
+    pub fn establish(
+        &'static self,
+        cell: &[u32],
+        level: i32,
+        cpu: Option<usize>,
+        h: IntrHandler,
+        name: &'static str,
+    ) -> Option<IntrHandle> {
+        self.ops
+            .establish(cell, level, cpu, h, name)
+            .map(|ih| IntrHandle { ic: self, ih })
+    }
+
+    /// `ic->ic_establish_msi(ic->ic_cookie, addr, data, level, ci, func, arg, name)` and its
+    /// handle, as [`IcReg::establish`] (`acpipci`'s MSIs).
+    pub fn establish_msi(
+        &'static self,
+        addr: &mut u64,
+        data: &mut u64,
+        level: i32,
+        cpu: Option<usize>,
+        h: IntrHandler,
+        name: &'static str,
+    ) -> Option<IntrHandle> {
+        self.ops
+            .establish_msi(addr, data, level, cpu, h, name)
+            .map(|ih| IntrHandle { ic: self, ih })
     }
 
     /// `ic->ic_cells` as a count of cells, bounded by [`MAX_INTERRUPT_CELLS`] where the C
@@ -508,10 +549,7 @@ impl IntrRegistry {
             let c = ic?;
             let n = c.ncells();
             if i == idx && cell.len() >= n {
-                return c
-                    .ops
-                    .establish(&cell[..n], level, cpu, h, name)
-                    .map(|ih| IntrHandle { ic: c, ih });
+                return c.establish(&cell[..n], level, cpu, h, name);
             }
             cell = cell.get(n..)?;
             i += 1;
@@ -550,10 +588,7 @@ impl IntrRegistry {
             let n = ic.ncells();
             let entry = 5 + acells + n;
             if cell.len() >= entry && (0..4).all(|k| reg[k] & map_mask[k] == cell[k]) {
-                return ic
-                    .ops
-                    .establish(&cell[5 + acells..entry], level, cpu, h, name)
-                    .map(|ih| IntrHandle { ic, ih });
+                return ic.establish(&cell[5 + acells..entry], level, cpu, h, name);
             }
             cell = cell.get(entry..)?;
         }
@@ -573,10 +608,8 @@ impl IntrRegistry {
         name: &'static str,
     ) -> Option<IntrHandle> {
         let phandle = arm_intr_map_msi(node, data);
-        let ic = self.find_phandle(phandle)?;
-        ic.ops
+        self.find_phandle(phandle)?
             .establish_msi(addr, data, level, cpu, h, name)
-            .map(|ih| IntrHandle { ic, ih })
     }
 
     /// `arm_intr_parent_establish_fdt`: on the parent of `ic`'s node.
@@ -590,10 +623,7 @@ impl IntrRegistry {
         name: &'static str,
     ) -> Option<IntrHandle> {
         let parent = arm_intr_get_parent(ic.node);
-        let pic = self.find_node(parent)?;
-        pic.ops
-            .establish(cell, level, cpu, h, name)
-            .map(|ih| IntrHandle { ic: pic, ih })
+        self.find_node(parent)?.establish(cell, level, cpu, h, name)
     }
 }
 
@@ -605,6 +635,10 @@ impl Default for IntrRegistry {
 
 /// The kernel's registry.
 static INTR: IntrRegistry = IntrRegistry::new();
+
+/// `intr_send_ipi_func`: how the interrupt controller sends an IPI, set once by its attach
+/// (`ampintc_attach`) on the boot CPU before any application processor starts.
+static INTR_SEND_IPI_FUNC: OnceStatic<fn(usize, i32)> = OnceStatic::new();
 
 /// `struct interrupt_controller`'s entry points. A default method is the C's `NULL` entry:
 /// what the C's caller does when it finds one (nothing, or the `KASSERT` it makes).
@@ -636,6 +670,12 @@ pub trait InterruptController: Sync + 'static {
         _name: &'static str,
     ) -> Option<IcCookie> {
         None
+    }
+
+    /// `ic_establish_msi != NULL`: whether the controller takes MSIs (what `acpipci` looks
+    /// for, `acpipci.c:196-197,694,851`).
+    fn has_msi(&self) -> bool {
+        false
     }
 
     /// `ic_disestablish(ih)`.
@@ -1011,6 +1051,27 @@ pub fn intr_set_wakeup(ih: IntrHandle) {
 pub fn controllers() -> impl Iterator<Item = IcRef> {
     INTR.controllers.iter()
 }
+
+/// `intr_send_ipi_func = f`: the attaching controller's IPI sender (`f(cpu, id)`), once; a
+/// second is `panic(9)` (one controller sends the machine's IPIs).
+pub fn intr_set_send_ipi(f: fn(usize, i32)) {
+    if INTR_SEND_IPI_FUNC.set(f).is_err() {
+        kpanic(format_args!("intr_send_ipi_func: set twice"));
+    }
+}
+
+/// The controller's IPI sender, `None` before a native controller set one (`bsd`'s legacy
+/// GICv3 keeps its own slot until N7.2a3).
+pub fn intr_send_ipi_func() -> Option<fn(usize, i32)> {
+    INTR_SEND_IPI_FUNC.get().copied()
+}
+
+/// Tests of another module (a controller's): `desc` registered on a registry of its own, not
+/// the kernel's, so the registration is the test's alone.
+#[cfg(test)]
+pub(crate) fn test_register(desc: IcDesc) -> IcRef {
+    leak(IntrRegistry::new()).register_fdt(desc, |_| {})
+}
 /* </CODE> */
 
 /* <TESTS> */
@@ -1093,13 +1154,11 @@ mod tests {
             h: IntrHandler,
             name: &'static str,
         ) -> Option<IcCookie> {
-            self.push(Call::Establish(
-                cell.to_vec(),
-                level,
-                cpu,
-                h.raw_arg().addr(),
-                name,
-            ));
+            let arg = match h {
+                IntrHandler::Raw(_, arg) => arg,
+                _ => usize::MAX,
+            };
+            self.push(Call::Establish(cell.to_vec(), level, cpu, arg, name));
             self.answer()
         }
 
@@ -1379,6 +1438,38 @@ mod tests {
                 Call::Barrier(1),
             ]
         );
+    }
+
+    #[test]
+    fn a_controller_found_by_hand_establishes_on_itself() {
+        let _t = tree();
+        let r = registry();
+        let gic = Fake::new(false);
+        let ic = register(r, b"/intc@0", gic);
+        let ih = ic
+            .establish(&[0, 3, 4], 5, Some(1), h(0x40), "acpi")
+            .unwrap();
+        assert!(core::ptr::eq(ih.controller(), ic));
+        assert_eq!(word(ih.cookie()), 1);
+        let (mut addr, mut data) = (0, 2);
+        let im = ic
+            .establish_msi(&mut addr, &mut data, 5, None, h(0), "m")
+            .unwrap();
+        assert!(core::ptr::eq(im.controller(), ic));
+        assert_eq!((addr, data), (0x0802_0040, 0x1002));
+        assert!(
+            !ic.ops().has_msi(),
+            "the C's NULL ic_establish_msi is the default"
+        );
+        assert_eq!(
+            gic.calls(),
+            vec![
+                Call::Establish(vec![0, 3, 4], 5, Some(1), 0x40, "acpi"),
+                Call::Msi(0, 2, "m"),
+            ]
+        );
+        let refusing = register(r, b"/soc/sub@4", Fake::new(true));
+        assert!(refusing.establish(&[1], 5, None, h(0), "no").is_none());
     }
 
     #[test]

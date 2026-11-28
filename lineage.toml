@@ -1631,7 +1631,8 @@ status = "inherited"
 rust = "sys/bsd/arch/arm64/arm64/acpi_machdep.rs"
 lz = ["sys/arch/arm64/arm64/acpi_machdep.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/vm/pmap.rs", "sys/hal/vm/param.rs", "sys/bsd/kern/vm_bsd.rs", "sys/kernel/vm/km.rs"]
+adapted_by = ["sys/hal/vm/pmap.rs", "sys/hal/vm/param.rs", "sys/bsd/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/dev/arm64/intr.rs"]
+notes = "N7.2a2 (U12, the user's B): acpi_intr_establish finds the GIC (phandle 1) in the kernel's registry and establishes through IcReg::establish, its handle the adapter's (new_handle); acpi_intr_disestablish is arm_intr_disestablish_fdt"
 
 [[module]]
 rust = "sys/bsd/arch/arm64/arm64/autoconf.rs"
@@ -1663,7 +1664,7 @@ adapted_by = ["sys/kernel/base/log.rs", "sys/kernel/fs/fuse/fuse_device.rs"]
 rust = "sys/bsd/arch/arm64/arm64/cpu.rs"
 lz = ["sys/arch/arm64/arm64/cpu.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/arch/arm64/pmap/backend.rs", "sys/bsd/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc/mod.rs", "sys/bsd/kern/proc_glue.rs", "sys/hal/cpu/curcpu.rs", "sys/hal/cpu/thread.rs", "sys/kernel/sched/mod.rs", "sys/hal/cpu/intr.rs", "sys/kernel/base/sysctl.rs", "sys/kernel/time/clockintr.rs", "sys/hal/arch/arm64/trap.rs", "sys/hal/arch/arm64/exception.rs", "sys/kernel/trap.rs"]
+adapted_by = ["sys/hal/arch/arm64/pmap/backend.rs", "sys/bsd/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc/mod.rs", "sys/bsd/kern/proc_glue.rs", "sys/hal/cpu/curcpu.rs", "sys/hal/cpu/thread.rs", "sys/kernel/sched/mod.rs", "sys/hal/cpu/intr.rs", "sys/kernel/base/sysctl.rs", "sys/kernel/time/clockintr.rs", "sys/hal/arch/arm64/trap.rs", "sys/hal/arch/arm64/exception.rs", "sys/kernel/trap.rs", "sys/kernel/dev/arm64/ampintc.rs"]
 notes = "ahead of LZ since 94d0c9ed: cpu_init's SVE setup opens FP with SVE around its write of ZCR_EL1 (the fault is OpenBSD's own, cpu.c:1844-1856); LZ adopts the same change (its 6e1e27de, not on its main yet): the sync that brings it records it as already here"
 
 [[module]]
@@ -1690,7 +1691,7 @@ notes = "N3.1 commit 6 (redesigned at 6d): the C-named pmap_setttb entry cpuswit
 rust = "sys/bsd/arch/arm64/arm64/db_interface.rs"
 lz = ["sys/arch/arm64/arm64/db_interface.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/cpu/curcpu.rs", "sys/hal/arch/arm64/trap.rs"]
+adapted_by = ["sys/hal/cpu/curcpu.rs", "sys/hal/arch/arm64/trap.rs", "sys/kernel/dev/arm64/ampintc.rs"]
 notes = "M2: db_enter; M4: ddb_regs (StaticCell), db_ktrap (no db_recover, splhigh reported, db_active is a bool, the MDSCR single-step handling kept), db_enter = brk #0xf000; M11c: db_regs[] (db_reg_var! entries; x30 is tf_lr, the C's tf_x[30] is past the array), db_machine_command_table (empty: all of arm64's are MULTIPROCESSOR), db_machine_init (MULTIPROCESSOR body); db_validate_address, db_read_bytes/db_write_bytes and db_branch_taken are not ported; M11c (MULTIPROCESSOR): ddb_mp_mutex (DbMutex), ddb_state, ddb_active_cpu, db_switch_cpu (AtomicBool), db_switch_to_cpu, db_ktrap's db_enter_ddb loop (the body the C repeats is db_ktrap_inddb), db_enter_ddb, db_startcpu, db_stopcpu, the ARM_IPI_DDB sends, the MP commands (db_cpuinfo_cmd, db_startproc_cmd, db_stopproc_cmd, db_ddbproc_cmd: cpuinfo, startcpu, stopcpu, ddbcpu first in the table) and db_machine_init's body; splhigh/splx around db_trap; a fault while a command loop runs (db_recover) prints 'Faulted in DDB' and do_el1h_sync panics (no longjmp)"
 
 [[module]]
@@ -1710,8 +1711,8 @@ notes = "M5-b2: enodev, enxio, eopnotsupp, nullop, assertwaitok (SMR_ASSERT_NONC
 rust = "sys/bsd/arch/arm64/arm64/intr.rs"
 lz = ["sys/arch/arm64/arm64/intr.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/hal/cpu/intr.rs", "sys/hal/arch/arm64/trap.rs", "sys/kernel/dev/arm64/intr.rs"]
-notes = "N7.2a1: the adapter over kernel::dev::arm64::intr under LZ's names and signatures: LegacyIc (a driver's struct interrupt_controller as the kernel's trait), arm_intr_register_fdt registering it and linking the mirror list interrupt_controllers() serves (legacy structures only), handles as LZ's MachineIntrHandle on a legacy controller and a NativeIntrHandle (null ih_ic) on a native one, the pre-registration, cell parsing and lists gone; the clock table, the spl table and the IPI slot stay (N7.2b2, N7.2a3, N7.2a2). M2: arm_clock_func, arm_clock_register, arm_dflt_delay, delay, cpu_initclocks, cpu_startclock, setstatclockrate; M4: arm_dflt_irq/fiq, arm_irq/fiq_dispatch, arm_cpu_irq/fiq, arm_smask, arm_intr_func with the arm_dflt_* spl, arm_do_pending_intr, arm_set_intr_handler, arm_init_smask, splraise/spllower/splx/softintr, arm_splassert_check, intr_enable/disable_wakeup, arm_intr_get_parent, the pre-registration (arm_intr_prereg_*, arm_intr_init_fdt), arm_intr_register_fdt, arm_intr_establish_fdt/_cpu/_idx/_idx_cpu, arm_intr_disestablish_fdt, arm_intr_enable/disable, arm_intr_parent_establish/disestablish_fdt, arm_intr_route, arm_intr_cpu_enable, intr_barrier, intr_set_wakeup (lists behind a Sync wrapper, NonNull handles); the imap/msi variants and arm_intr_map_msi come with PCI (M5), the IPIs with MULTIPROCESSOR; M11a: the MULTIPROCESSOR IPI implementation: intr_send_ipi_func (a StaticCell set by the controller's attach), arm_send_ipi, arm_no_send_ipi; SOFTINTR_XCALL stays out (NXCALL 0 on arm64); ; M12: arm_intr_map_msi (msi-map with msi-map-mask and #msi-cells, else the first msi-parent up the tree), arm_intr_establish_fdt_imap/_imap_cpu (interrupt-map with interrupt-map-mask, the parent's #address-cells; reg as a 4-cell slice), arm_intr_establish_fdt_msi/_msi_cpu (through ic_establish_msi); interrupt_controllers() for ampintc.c's extern use of the list; N4.5c: gains ArmIntrHardware (hal::cpu::intr::IntrHardware over ARM_INTR_FUNC, registered by initarm); arm_smask, arm_init_smask, the arm_dflt_* bodies, arm_do_pending_intr and softintr forward to hal::cpu::intr (the table and ci_cpl/ci_ipending/ci_idepth are hal's)"
+adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/hal/cpu/intr.rs", "sys/hal/arch/arm64/trap.rs", "sys/kernel/dev/arm64/intr.rs", "sys/kernel/dev/intr.rs", "sys/kernel/dev/arm64/ampintc.rs"]
+notes = "N7.2a2 (U12): LegacyIc::has_msi (ic_establish_msi != NULL); new_handle, NativeIntrHandle::new and native_intr_handle lent (pub(crate)) to acpi_machdep and acpipci, whose walks are the kernel's registry. N7.2a1: the adapter over kernel::dev::arm64::intr under LZ's names and signatures: LegacyIc (a driver's struct interrupt_controller as the kernel's trait), arm_intr_register_fdt registering it and linking the mirror list interrupt_controllers() serves (legacy structures only), handles as LZ's MachineIntrHandle on a legacy controller and a NativeIntrHandle (null ih_ic) on a native one, the pre-registration, cell parsing and lists gone; the clock table, the spl table and the IPI slot stay (N7.2b2, N7.2a3, N7.2a2). M2: arm_clock_func, arm_clock_register, arm_dflt_delay, delay, cpu_initclocks, cpu_startclock, setstatclockrate; M4: arm_dflt_irq/fiq, arm_irq/fiq_dispatch, arm_cpu_irq/fiq, arm_smask, arm_intr_func with the arm_dflt_* spl, arm_do_pending_intr, arm_set_intr_handler, arm_init_smask, splraise/spllower/splx/softintr, arm_splassert_check, intr_enable/disable_wakeup, arm_intr_get_parent, the pre-registration (arm_intr_prereg_*, arm_intr_init_fdt), arm_intr_register_fdt, arm_intr_establish_fdt/_cpu/_idx/_idx_cpu, arm_intr_disestablish_fdt, arm_intr_enable/disable, arm_intr_parent_establish/disestablish_fdt, arm_intr_route, arm_intr_cpu_enable, intr_barrier, intr_set_wakeup (lists behind a Sync wrapper, NonNull handles); the imap/msi variants and arm_intr_map_msi come with PCI (M5), the IPIs with MULTIPROCESSOR; M11a: the MULTIPROCESSOR IPI implementation: intr_send_ipi_func (a StaticCell set by the controller's attach), arm_send_ipi, arm_no_send_ipi; SOFTINTR_XCALL stays out (NXCALL 0 on arm64); ; M12: arm_intr_map_msi (msi-map with msi-map-mask and #msi-cells, else the first msi-parent up the tree), arm_intr_establish_fdt_imap/_imap_cpu (interrupt-map with interrupt-map-mask, the parent's #address-cells; reg as a 4-cell slice), arm_intr_establish_fdt_msi/_msi_cpu (through ic_establish_msi); interrupt_controllers() for ampintc.c's extern use of the list; N4.5c: gains ArmIntrHardware (hal::cpu::intr::IntrHardware over ARM_INTR_FUNC, registered by initarm); arm_smask, arm_init_smask, the arm_dflt_* bodies, arm_do_pending_intr and softintr forward to hal::cpu::intr (the table and ci_cpl/ci_ipending/ci_idepth are hal's)"
 
 [[module]]
 rust = "sys/bsd/arch/arm64/arm64/locore.rs"
@@ -1758,7 +1759,9 @@ status = "inherited"
 [[module]]
 rust = "sys/bsd/arch/arm64/dev/acpipci.rs"
 lz = ["sys/arch/arm64/dev/acpipci.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/dev/arm64/intr.rs"]
+notes = "N7.2a2 (U12, the user's B): the three walks of interrupt_controllers are the kernel's registry (controllers(), InterruptController::has_msi, IcReg::gic_its_id); sc_msi_ic and the IORT walk's controller an IcRef; an MSI establishes through IcReg::establish_msi and its handle embeds the adapter's NativeIntrHandle first, told back by native_intr_handle at disestablish"
 
 [[module]]
 rust = "sys/bsd/arch/arm64/dev/agintc.rs"
@@ -1772,13 +1775,6 @@ lz = ["sys/arch/arm64/dev/agtimer.rs"]
 status = "adapted"
 adapted_by = ["sys/hal/arch/arm64/timer.rs", "sys/kernel/time/tc.rs", "sys/kernel/time/clockintr.rs", "sys/kernel/time/clock.rs"]
 notes = "N4.8a: the counter is AgtimerTc (kernel::time::tc::Timecounter) with its TcEntry, the interrupt clock AgtimerIntrclock (kernel::time::clockintr::Intrclock), the dispatch over the typed frame"
-
-[[module]]
-rust = "sys/bsd/arch/arm64/dev/ampintc.rs"
-lz = ["sys/arch/arm64/dev/ampintc.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/vm/pmap.rs", "sys/hal/cpu/intr.rs", "sys/kernel/dev/evcount.rs"]
-notes = "M4: the registers, ampintc_match/attach (from fdt_attach_args autoconf.rs builds; one static softc AMPINTC), init, set_priority, setipl, intr_enable/disable/config, calc_mask/calc_irq, splx/spllower/splraise, iack/eoi, route, cpuinit (the IPI EOI waits for MULTIPROCESSOR), route_irq, intr_barrier (sched_barrier reported, M5), run_handler, irq_handler, intr_establish_fdt, intr_establish, intr_disestablish; ampintc_activate (resume), the IPIs, the GICv2m MSI frame and simplebus_attach of the children are M5; M7b: ampintc_ca/ampintc_cd (ca_devsize is a bare struct device, the rest of the softc stays the static AMPINTC; no ampintc_activate yet), ampintc_match/ampintc_attach take the cfattach arguments and mainbus attaches the GIC (ampintc* at fdt? early 1), printing the C's ' nirq N, ncpu N'; M11a: the MULTIPROCESSOR side: ampintc_attach finds the IPI's SGI (the IPRn probe), establishes ampintc_ipi_handler at IPL_IPI|IPL_MPSAFE ('ipi 0' on the attach line) and installs ampintc_send_ipi as intr_send_ipi_func; ampintc_ipi_ddb (db_enter; M11c), ampintc_ipi_halt (cpu_halt), ampintc_ipi_handler (atomic swap of sc_ipi_reason), ampintc_send_ipi (ICD_SGIR to the target's mask); ampintc_cpuinit's IPI EOI (the APs' per-CPU init of their banked SGI/PPI registers and target mask); sc_cpu_mask/sc_ipi_reason atomics; ampintc_run_handler takes the kernel lock below IPL_SCHED unless the handler is IPL_MPSAFE (since M11e exactly the C's rule; M11a also locked IPL_MPSAFE handlers at or below IPL_MPFLOOR); SPIs stay routed to the boot CPU; ampintc_ipi_count (feature qemu, the self-check's IPI counter); ; M12: ampintc_attach ends with simplebus_attach for the GIC's children (ampintc_ca's ca_devsize is now the struct simplebus_softc that heads the C's softc), and the GICv2m frame: GICV2M_* registers, struct ampintc_msi_softc (repr(C); sc_ic an UnsafeCell written once before arm_intr_register_fdt; sc_spi Cell slots, the MSI cookie is the slot's address), ampintcmsi_ca/cd (ampintcmsi* at fdt? early 1), ampintc_msi_match/attach (pmap_extract of the mapping for the doorbell address, ' nspi N'), ampintc_intr_establish_msi (edge SPI on the parent GIC, addr = frame + GICV2M_SETSPI_NS, data = SPI), ampintc_intr_disestablish_msi, ampintc_intr_barrier_msi"
 
 [[module]]
 rust = "sys/bsd/arch/arm64/dev/efi_machdep.rs"
@@ -21159,7 +21155,7 @@ rust = "sys/kernel/dev/intr.rs"
 crate = "kernel"
 lz = ["sys/arch/arm64/include/intr.rs"]
 status = "redesigned"
-notes = "N7.2a1: the machine-independent interrupt handler: IntrFn (int (*)(void *)) and IntrHandler, the handler and its argument as one value (Raw: a bsd handler and its void * as an exposed address; the frame and counted-softc arms come with their first users, N7.2a2), IntrHandler::call applying the controllers' NULL-argument rule (the frame instead) once for both machines"
+notes = "N7.2a1: the machine-independent interrupt handler: IntrFn (int (*)(void *)) and IntrHandler, the handler and its argument as one value (Raw: a bsd handler and its void * as an exposed address; Frame for a native handler of the NULL argument and Shared for a native softc's counted handle since N7.2a2, raw_arg gone then), IntrHandler::call applying the controllers' NULL-argument rule (the frame instead) once for both machines"
 
 [[module]]
 rust = "sys/kernel/dev/arm64/intr.rs"
@@ -21280,6 +21276,22 @@ lz = "sys/arch/arm64/include/intr.rs::IPL_WAKEUP"
 native = ["sys/hal/cpu/intr.rs::IPL_WAKEUP"]
 kind = "moved"
 
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/intr.rs::IcHead"
+native = []
+kind = "dropped"
+reason = "bsd's mirror list of legacy structures (its Sync wrapper) went with its last walker, ampintc's GICv2m frames (N7.2a2): every walker reads the kernel's registry, controllers()"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/intr.rs::INTERRUPT_CONTROLLERS"
+native = ["IntrRegistry"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/arm64/intr.rs::interrupt_controllers"
+native = ["controllers"]
+kind = "renamed"
+
 [[module]]
 rust = "sys/kernel/dev/arm64/fdt.rs"
 crate = "kernel"
@@ -21345,6 +21357,105 @@ lz = "sys/arch/arm64/dev/mainbus.rs::ca_match"
 native = []
 kind = "dropped"
 reason = "(*cf->cf_attach->ca_match)(...) by hand: the submatch closures call the row driver's DriverOps::probe"
+
+[[module]]
+rust = "sys/kernel/dev/arm64/ampintc.rs"
+crate = "kernel"
+lz = ["sys/arch/arm64/dev/ampintc.rs"]
+status = "redesigned"
+notes = "N7.2a2: ampintc(4) and ampintcmsi as kernel DriverOps (AMPINTC_CA, AMPINTCMSI_CA; probe over the bus's FdtArgs). struct ampintc_softc built whole at attach as AmpintcSoftc (Mmio<Gicd>, Mmio<Gicc>, the queues an MArray of Intrq with atomics, masks and IPI reasons atomics, a Mutexed<()> serialising establish), kept in AMPINTC (OnceStatic<MArc>); it implements hal's IntrHardware (installed itself, the C's arm_set_intr_handler) and the core's InterruptController. struct intrhand (Intrhand) immutable, MBox::leak'ed at establish, linked on a hal List, never freed (P12: unlinked, counter detached, marked dead), walked by the dispatch with no lock; the handler an IntrHandler (the IPI's Shared over the softc's MArc). The GICv2m frame AmpintcMsiSoftc: a mutexed MArray of slots holding the parent's IntrHandle by value, the cookie the slot index, the parent found in the core's registry, the doorbell's address the bus's translation. ampintc_activate (DVACT_RESUME) not ported, as in LZ"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/ampintc.rs::AmpintcMsiSoftc::spi"
+native = ["AmpintcMsiSoftc::claim", "AmpintcMsiSoftc::set", "AmpintcMsiSoftc::taken"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/ampintc.rs::AMPINTC_CD"
+native = ["sys/bsd/arch/arm64/conf/ioconf.rs::AMPINTC_CD"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/ampintc.rs::AMPINTCMSI_CD"
+native = ["sys/bsd/arch/arm64/conf/ioconf.rs::AMPINTCMSI_CD"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/ampintc.rs::ATTACHED"
+native = []
+kind = "dropped"
+reason = "the C has none: ampintc != NULL is AMPINTC.get().is_some(), the softc static set by the attach"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/ampintc.rs::regs"
+native = ["AmpintcSoftc"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/ampintc.rs::handler"
+native = ["AmpintcSoftc::queue"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/ampintc.rs::ampintc_setipl"
+native = ["AmpintcSoftc::setipl"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/ampintc.rs::ampintc_splx"
+native = ["AmpintcSoftc::splx"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/ampintc.rs::ampintc_spllower"
+native = ["AmpintcSoftc::spllower"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/ampintc.rs::ampintc_splraise"
+native = ["AmpintcSoftc::splraise"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/ampintc.rs::ampintc_iack"
+native = ["ampintc_irq_handler"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/ampintc.rs::ampintc_eoi"
+native = ["ampintc_irq_handler", "ampintc_cpuinit"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/ampintc.rs::ampintc_intr_barrier"
+native = ["AmpintcSoftc::barrier"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/ampintc.rs::ampintc_intr_establish_msi"
+native = ["AmpintcMsiSoftc::establish_msi"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/ampintc.rs::msi_slot"
+native = ["slot"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/ampintc.rs::ampintc_intr_disestablish_msi"
+native = ["AmpintcMsiSoftc::disestablish"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/ampintc.rs::ampintc_intr_barrier_msi"
+native = ["AmpintcMsiSoftc::barrier"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/arch/arm64/dev/ampintc.rs::ampintc_attached"
+native = []
+kind = "dropped"
+reason = "no caller: AMPINTC.get().is_some() answers it"
 
 [[module]]
 rust = "sys/kernel/dev/arm64/simplebus.rs"

@@ -23,7 +23,8 @@
 //! M12 adds `simplebus` (the device tree's `simple-bus`, also the GIC's children) and
 //! `pci_machdep` (`arch/arm64/dev/pci_machdep.c`). The root bus, `mainbus`, is the kernel's
 //! since N7.2b1b (`kernel::dev::arm64::mainbus`), and so is the `simplebus*` row's driver;
-//! `simplebus` stays here for the legacy GICs until N7.2a3.
+//! `simplebus` stays here for the legacy GICv3 until N7.2a3. `ampintc` and its GICv2m frames
+//! are the kernel's since N7.2a2 (`kernel::dev::arm64::ampintc`).
 //! M14 adds arm64 ACPI's `acpiiort` (the IORT) and `acpipci` (the ACPI PCI host bridges).
 //! M16f adds `agintc`, the GICv3 interrupt controller with its ITS (`agintcmsi`), and `smmu`
 //! (the ARM System MMU, `smmureg`/`smmuvar` its headers) with its device-tree and IORT
@@ -33,7 +34,6 @@ pub mod acpiiort;
 pub mod acpipci;
 pub mod agintc;
 pub mod agtimer;
-pub mod ampintc;
 pub mod efi_machdep;
 pub mod pci_machdep;
 pub mod simplebus;
