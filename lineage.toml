@@ -22403,7 +22403,7 @@ kind = "renamed"
 lz = "sys/dev/pv/virtiovar.rs::VirtioIntrEstablishFn"
 native = []
 kind = "dropped"
-reason = "virtio_intr_establish's function type comes with its first caller, vio's per-queue vectors (N7.3b); no native child establishes its own interrupt"
+reason = "deferred to N7.3b: virtio_intr_establish's function type comes with its first caller, vio's per-queue vectors, with VirtioTransport's intr_establish; no native child establishes its own interrupt in N7.3a"
 
 [[module.fn]]
 lz = "sys/dev/pv/virtiovar.rs::VirtioOps"
@@ -22526,7 +22526,7 @@ kind = "merged"
 lz = "sys/dev/pv/virtiovar.rs::virtio_intr_establish"
 native = []
 kind = "dropped"
-reason = "comes with its first caller, vio's per-queue vectors (N7.3b); no native child establishes its own interrupt (bsd's legacy children keep the C's)"
+reason = "deferred to N7.3b: comes with its first caller, vio's per-queue vectors, as VirtioTransport's intr_establish; no native child establishes its own interrupt in N7.3a (bsd's legacy children keep the C's)"
 
 [[module.fn]]
 lz = "sys/dev/pv/virtiovar.rs::virtio_device_reset"

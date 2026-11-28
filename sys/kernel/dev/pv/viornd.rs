@@ -57,7 +57,9 @@
 //! - A failed `virtio_attach_finish` deletes the request timeout before the child is marked
 //!   failed; the C frees its buffer and destroys its map with the timeout still armed, which
 //!   one tick later syncs the destroyed map and enqueues it (`viornd.c:137-150`: a slip of
-//!   the C, for the user; nothing is reported upstream).
+//!   the C, for the user; nothing is reported upstream). Under a legacy transport the child's
+//!   state then stays alive (the transport's `sc_native` holds it, and nothing detaches a
+//!   virtio child), so its buffer is kept where the C `dma_free`s it.
 //! - A length of 2^31 or more in the used ring (negative as the C's `int`): the C's loop
 //!   `(i + 1) * sizeof(int) <= len` compares it as a huge `size_t` and reads past its 16
 //!   bytes; here, as in LZ, no word is read, and the next request is armed.
@@ -72,8 +74,16 @@
 //!   [`ViorndCore`], a counted block built whole at attach (P37) that the request timeout,
 //!   the transport's `ChildRef` and the node's softc ([`Viornd`]) hold: the transport
 //!   (`sc_virtio`, a `Box<dyn VirtioTransport>`), the interval, and the queue and the buffer
-//!   (`sc_vq`, `sc_buf` with `sc_dmamap`: a `DmaBuf`) in a `Mutexed` at `IPL_NET`, the C's
-//!   kernel lock and `splnet` (P33). The interrupt reads no set-once value.
+//!   (`sc_vq`, `sc_buf` with `sc_dmamap`: a `DmaBuf`) in a `Mutexed` at `IPL_NET`, where the
+//!   C has only the kernel lock (P33). The interrupt reads no set-once value.
+//! - The lock's cost against the C, as it is: the C's `viornd_tick` and `viornd_vq_done` take
+//!   no `spl` at all, only the kernel lock (`viornd.c:155-201`: the tick runs from softclock,
+//!   the interrupt at the transport's `sc_ipl`), so each `st.lock()` here adds one
+//!   `splraise`/`splx` pair (to `IPL_MPFLOOR`, `IPL_TTY`: under TCG an `ICC_PMR` write each
+//!   way) and two uncontended atomics (the owner word's compare-exchange and its release):
+//!   one section per request and one per interrupt. vioblk will copy this shape, where it is
+//!   four atomics a request; N7.4c measures it end to end (`benches/dev.rs`'s
+//!   `virtio.state-lock` is the section alone).
 //! - `viornd_ca`/`viornd_cd` -> [`VIORND`], a [`DriverOps`] whose probe reads the transport's
 //!   [`VirtioArgs`] back from [`Aux::Typed`]; `cfdata[]`'s row 71 names it (`Cfdata::native`)
 //!   with a stub `Cfdriver` of the name, `CD_COCOVM` (`bsd`'s `conf/ioconf.rs`).
@@ -132,7 +142,7 @@ pub struct ViorndCore {
     interval: u32,
     /// `sc_dev.dv_xname`, for the messages.
     xname: [u8; 16],
-    /// \[`IPL_NET`\] the queue and the buffer (the C's kernel lock and `splnet`).
+    /// \[`IPL_NET`\] the queue and the buffer (the C's kernel lock alone: see the redesign).
     st: Mutexed<ViorndState>,
     /// `sc_tick`: the next request.
     tick: MBox<Timeout>,
