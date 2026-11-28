@@ -27,6 +27,8 @@ extern crate std;
 
 use core::cell::Cell;
 
+use crate::cpu::intr::InIrq;
+
 /// The registers of the calling thread's CPU interface.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct IccRegs {
@@ -117,7 +119,7 @@ pub fn set_igrpen1(v: u64) {
 }
 
 /// `ICC_IAR1_EL1`: what the test said, once (then nothing pending).
-pub fn iar1() -> u64 {
+pub fn iar1(_irq: &InIrq) -> u64 {
     let mut r = regs();
     let v = r.iar1;
     r.iar1 = 1023;
@@ -126,7 +128,7 @@ pub fn iar1() -> u64 {
 }
 
 /// `ICC_EOIR1_EL1 = v`.
-pub fn eoir1(v: u64) {
+pub fn eoir1(_irq: &InIrq, v: u64) {
     let mut r = regs();
     r.eoir1 = v;
     set_regs(r);

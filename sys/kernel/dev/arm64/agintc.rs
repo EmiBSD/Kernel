@@ -147,7 +147,10 @@
 //!   `hal::ds::list::List` (`LIST_INSERT_HEAD`, walked as the C's `LIST_FOREACH`), its event
 //!   bits an atomic.
 //! - `ampintc_run_handler`'s `ih_arg ? ih_arg : frame` -> `IntrHandler::call`; the IPI
-//!   handler's softc argument is a counted handle (`IntrHandler::Shared`).
+//!   handler's softc argument is a counted handle (`IntrHandler::Shared`), and it gets the
+//!   dispatch's token (`InIrq`) too: the acknowledge and the end of interrupt ask for it
+//!   (`hal::cpu::icc::iar1`, `eoir1`), and `agintc_ipi_halt` ends its interrupt itself before
+//!   the CPU halts, inside the dispatch that runs it.
 //! - `intr_send_ipi_func = agintc_send_ipi` -> the kernel's IPI slot (`intr_set_send_ipi`);
 //!   `db_enter()` and `cpu_halt()` of the IPI reasons -> `hal::cpu::trap::db_enter` and
 //!   `cpu_halt`.
@@ -1838,13 +1841,13 @@ fn agintc_route(sc: &AgintcSoftc, irq: usize, _enable: bool, cpu: Option<usize>)
 /// `agintc_run_handler`: one handler, with its argument or the frame, under the kernel lock
 /// unless it is `IPL_MPSAFE` or the interrupted level is at least `IPL_SCHED`.
 #[inline]
-fn agintc_run_handler(ih: &Intrhand, frame: &ClockFrame, s: i32) {
+fn agintc_run_handler(ih: &Intrhand, frame: &ClockFrame, s: i32, irq: &InIrq) {
     let need_lock = ih.flags.load(Ordering::Relaxed) & IPL_MPSAFE == 0 && s < IPL_SCHED;
     if need_lock {
         hal::sync::klock::kernel_lock();
     }
 
-    if ih.h.call(frame) != 0 {
+    if ih.h.call(frame, irq) != 0 {
         ih.count.ec_count.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -1857,7 +1860,7 @@ fn agintc_run_handler(ih: &Intrhand, frame: &ClockFrame, s: i32) {
 /// interrupt's level, run its handlers with the machine's interrupts on, end it, restore. An
 /// LPI runs the handler its slot names.
 pub fn agintc_irq_handler(sc: &AgintcSoftc, frame: &ClockFrame, irq_: &InIrq) {
-    let irq = icc::iar1() as usize;
+    let irq = icc::iar1(irq_) as usize;
 
     // DEBUG_AGINTC: not configured.
 
@@ -1877,8 +1880,8 @@ pub fn agintc_irq_handler(sc: &AgintcSoftc, frame: &ClockFrame, irq_: &InIrq) {
         let ih = li.ih;
 
         let s = sc.splraise(ih.ipl);
-        hal::cpu::intr::unmasked(irq_, || agintc_run_handler(ih, frame, s));
-        icc::eoir1(irq as u64);
+        hal::cpu::intr::unmasked(irq_, || agintc_run_handler(ih, frame, s, irq_));
+        icc::eoir1(irq_, irq as u64);
 
         sc.splx(s);
         return;
@@ -1889,10 +1892,10 @@ pub fn agintc_irq_handler(sc: &AgintcSoftc, frame: &ClockFrame, irq_: &InIrq) {
     let s = sc.splraise(pri);
     hal::cpu::intr::unmasked(irq_, || {
         for ih in &iq.list {
-            agintc_run_handler(ih, frame, s);
+            agintc_run_handler(ih, frame, s, irq_);
         }
     });
-    icc::eoir1(irq as u64);
+    icc::eoir1(irq_, irq as u64);
 
     sc.splx(s);
 }
@@ -2146,11 +2149,11 @@ fn agintc_ipi_ddb() -> i32 {
 
 /// `agintc_ipi_halt`: stop this CPU: the IPI ended and the level dropped first, so the CPU
 /// halts with nothing masked, then both put back if it comes back.
-fn agintc_ipi_halt(sc: &AgintcSoftc) -> i32 {
+fn agintc_ipi_halt(sc: &AgintcSoftc, irq: &InIrq) -> i32 {
     let old = hal::cpu::curcpu().cpl();
 
     let psw = hal::cpu::intr_disable();
-    icc::eoir1(u64::from(sc.ipi_num.load(Ordering::Relaxed)));
+    icc::eoir1(irq, u64::from(sc.ipi_num.load(Ordering::Relaxed)));
     sc.setipl(IPL_NONE);
 
     hal::cpu::trap::cpu_halt();
@@ -2162,16 +2165,16 @@ fn agintc_ipi_halt(sc: &AgintcSoftc) -> i32 {
 
 /// `agintc_ipi_handler`: the IPI's interrupt handler, at `IPL_IPI`, without the kernel lock:
 /// runs the reasons posted for this CPU (`ARM_IPI_NOP` posts none). Its argument is the
-/// softc's counted handle.
-fn agintc_ipi_handler(v: &AnyArc) -> i32 {
+/// softc's counted handle, and the dispatch's token (a halt ends the IPI itself).
+fn agintc_ipi_handler(v: &AnyArc, irq: &InIrq) -> i32 {
     let Some(sc) = v.downcast_ref::<AgintcSoftc>() else {
         kpanic(format_args!("agintc_ipi_handler: not the softc"));
     };
-    agintc_ipi_run(sc, hal::cpu::cpu_number())
+    agintc_ipi_run(sc, hal::cpu::cpu_number(), irq)
 }
 
 /// [`agintc_ipi_handler`]'s work for CPU `cpu`: its reasons taken, each run.
-fn agintc_ipi_run(sc: &AgintcSoftc, cpu: usize) -> i32 {
+fn agintc_ipi_run(sc: &AgintcSoftc, cpu: usize, irq: &InIrq) -> i32 {
     if let Some(reason) = sc.ipi_reason.get(cpu)
         && reason.load(Ordering::Relaxed) != 0
     {
@@ -2180,7 +2183,7 @@ fn agintc_ipi_run(sc: &AgintcSoftc, cpu: usize) -> i32 {
             agintc_ipi_ddb();
         }
         if reasons & (1 << ARM_IPI_HALT) != 0 {
-            agintc_ipi_halt(sc);
+            agintc_ipi_halt(sc, irq);
         }
         // ARM_IPI_XCALL: NXCALL is 0 on arm64 (arm_cpu_xcall_dispatch).
     }
@@ -3498,10 +3501,10 @@ mod tests {
         assert_eq!(sc.ipi_reason[a].load(Ordering::Relaxed), 1 << ARM_IPI_XCALL);
         assert_eq!(icc::regs().sgi1r, agintc_sgi1r(a as u64, 3));
         // The handler takes the CPU's reasons (no ddb, no halt among them) and answers 1.
-        assert_eq!(agintc_ipi_run(&sc, a), 1);
+        assert_eq!(agintc_ipi_run(&sc, a, &InIrq::host()), 1);
         assert_eq!(sc.ipi_reason[a].load(Ordering::Relaxed), 0);
         let h = IntrHandler::Shared(agintc_ipi_handler, MArc::erase(sc.clone()));
-        assert_eq!(h.call(&ClockFrame::default()), 1);
+        assert_eq!(h.call(&ClockFrame::default(), &InIrq::host()), 1);
     }
 
     #[test]

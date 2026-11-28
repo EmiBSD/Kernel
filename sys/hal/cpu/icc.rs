@@ -19,7 +19,8 @@
 /* <CODE> */
 //! The GICv3 CPU interface of the executing CPU (`ICC_*_EL1`), for the kernel's `agintc(4)`:
 //! the system registers it reads and writes, each access one function with the C's barrier
-//! (arm64's `arch/arm64/icc.rs`), and the `dsb sy` after a table the GIC reads. On the host,
+//! (arm64's `arch/arm64/icc.rs`; the acknowledge and the end of an interrupt take the IRQ
+//! dispatch's token, `hal::cpu::intr::InIrq`), and the `dsb sy` after a table the GIC reads. On the host,
 //! one register file per test thread (`arch/host/icc.rs`), which a test reads and sets
 //! ([`regs`], [`set_regs`]). arm64 and the host only: amd64 has no GICv3.
 
@@ -44,9 +45,10 @@ mod tests {
         });
         set_pmr(0xbf);
         assert_eq!(pmr(), 0xb0, "only the implemented bits stick");
-        assert_eq!(iar1(), 27);
-        assert_eq!(iar1(), 1023, "then nothing is pending");
-        eoir1(27);
+        let irq = crate::cpu::intr::InIrq::host();
+        assert_eq!(iar1(&irq), 27);
+        assert_eq!(iar1(&irq), 1023, "then nothing is pending");
+        eoir1(&irq, 27);
         sgi1r(0x0100_0001);
         set_sre(0x7);
         set_bpr1(0);

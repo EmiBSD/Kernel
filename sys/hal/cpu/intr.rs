@@ -97,7 +97,8 @@
 //!   the report through `hal::prf::splassert_fail`), so every controller checks the same.
 //! - N7.2a3: the table's last two entries, `enable_wakeup` and `disable_wakeup`, are the
 //!   trait's ([`IntrHardware::enable_wakeup`], [`IntrHardware::disable_wakeup`], the C's NULL
-//!   as the default), so the GICv3 in the kernel fills the whole table; `bsd`'s copy of it
+//!   as the default), so the GICv3 in the kernel fills the whole table, and [`InIrq`] is also
+//!   what `hal::cpu::icc::iar1`/`eoir1` ask for; `bsd`'s copy of it
 //!   (`ArmIntrHardware` over `arm_intr_func`) is gone, and `hal::bridges` no longer forwards
 //!   a registration here.
 
@@ -327,7 +328,8 @@ pub trait IntrHardware: Sync {
 /// The IRQ dispatch under way on this CPU, with its interrupts masked by the exception entry:
 /// made only by `hal`'s IRQ entry ([`dispatch_irq`]) and lent to the controller's
 /// [`IntrHardware::dispatch_irq`] for the call, so [`unmasked`]'s premise (entered masked, in
-/// a dispatch) is a type. Not `Send`, not `Clone`, and a `'static` one cannot be had (it
+/// a dispatch) is a type; the GICv3's acknowledge and end of interrupt
+/// (`crate::cpu::icc::iar1`, `eoir1`) ask for it too, so neither is made outside a dispatch. Not `Send`, not `Clone`, and a `'static` one cannot be had (it
 /// lives on the entry's frame). The host double has no interrupts: its constructor is public
 /// there ([`InIrq::host`]), for the tests of a controller's dispatch.
 pub struct InIrq {

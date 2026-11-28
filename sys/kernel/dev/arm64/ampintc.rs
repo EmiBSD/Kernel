@@ -894,13 +894,13 @@ fn ampintc_route_irq(sc: &AmpintcSoftc, ih: &Intrhand, enable: bool, cpu: usize)
 /// `ampintc_run_handler`: one handler, with its argument or the frame, under the kernel
 /// lock unless it is `IPL_MPSAFE` or the interrupted level is at least `IPL_SCHED`.
 #[inline]
-fn ampintc_run_handler(ih: &Intrhand, frame: &ClockFrame, s: i32) {
+fn ampintc_run_handler(ih: &Intrhand, frame: &ClockFrame, s: i32, irq: &InIrq) {
     let need_lock = ih.flags & IPL_MPSAFE == 0 && s < IPL_SCHED;
     if need_lock {
         hal::sync::klock::kernel_lock();
     }
 
-    if ih.h.call(frame) != 0 {
+    if ih.h.call(frame, irq) != 0 {
         ih.count.ec_count.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -929,7 +929,7 @@ pub fn ampintc_irq_handler(sc: &AmpintcSoftc, frame: &ClockFrame, irq_: &InIrq) 
     let s = sc.splraise(pri);
     hal::cpu::intr::unmasked(irq_, || {
         for ih in &iq.list {
-            ampintc_run_handler(ih, frame, s);
+            ampintc_run_handler(ih, frame, s, irq_);
         }
     });
     sc.p.write(EOIR, iack_val);
@@ -1334,7 +1334,7 @@ fn ampintc_ipi_halt() -> i32 {
 /// `ampintc_ipi_handler`: the IPI's interrupt handler, at `IPL_IPI`, without the kernel lock:
 /// runs the reasons posted for this CPU (`ARM_IPI_NOP` posts none; the interrupt itself was
 /// the point). Its argument is the softc's counted handle.
-fn ampintc_ipi_handler(v: &AnyArc) -> i32 {
+fn ampintc_ipi_handler(v: &AnyArc, _irq: &InIrq) -> i32 {
     let Some(sc) = v.downcast_ref::<AmpintcSoftc>() else {
         kpanic(format_args!("ampintc_ipi_handler: not the softc"));
     };
@@ -1693,9 +1693,10 @@ mod tests {
         )
         .unwrap();
         let frame = ClockFrame::default();
-        ampintc_run_handler(ih, &frame, IPL_NONE);
-        ampintc_run_handler(safe, &frame, IPL_NONE);
-        ampintc_run_handler(ih, &frame, IPL_SCHED);
+        let irq = InIrq::host();
+        ampintc_run_handler(ih, &frame, IPL_NONE, &irq);
+        ampintc_run_handler(safe, &frame, IPL_NONE, &irq);
+        ampintc_run_handler(ih, &frame, IPL_SCHED, &irq);
         assert_eq!(*LOCKED.lock().unwrap(), vec![true, false, false]);
         assert_eq!(
             ih.count.ec_count.load(Ordering::Relaxed),
@@ -1734,7 +1735,7 @@ mod tests {
         assert_eq!(sc.ipi_reason[a].load(Ordering::Relaxed), 0);
         // Its argument is the softc's counted handle.
         let h = IntrHandler::Shared(ampintc_ipi_handler, MArc::erase(sc.clone()));
-        assert_eq!(h.call(&ClockFrame::default()), 1);
+        assert_eq!(h.call(&ClockFrame::default(), &InIrq::host()), 1);
     }
 
     #[test]

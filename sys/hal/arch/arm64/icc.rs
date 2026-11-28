@@ -58,6 +58,8 @@
 
 use core::arch::asm;
 
+use crate::cpu::intr::InIrq;
+
 /// The CPU interface's system registers, by the C's names, as `mrs`/`msr` operands.
 macro_rules! icc_reg {
     (ICC_PMR) => {
@@ -86,23 +88,26 @@ macro_rules! icc_reg {
     };
 }
 
-/// One function reading a CPU interface register (`mrs`), then the instructions `$post`.
+/// One function reading a CPU interface register (`mrs`), then the instructions `$post`; its
+/// parameters (`$arg: $ty`, none or the dispatch's token) are proofs the read asks of its
+/// caller and does not use.
 macro_rules! icc_read {
-    ($(#[$doc:meta])* $name:ident, $reg:ident $(, $post:literal)*) => {
+    ($(#[$doc:meta])* $name:ident($($arg:ident: $ty:ty),*), $reg:ident $(, $post:literal)*) => {
         $(#[$doc])*
         #[inline(always)]
-        pub fn $name() -> u64 {
+        pub fn $name($($arg: $ty),*) -> u64 {
             let val: u64;
             // SAFETY: `mrs` of a GICv3 CPU interface register (`icc_reg!`'s list: the
             // priority mask, the control register or the group 1 acknowledge) of the CPU
             // that executes it, followed only by barriers (`$post`). No memory operand, no
             // stack, no flags; the result is a plain integer, so no Rust value or invariant
-            // depends on the bits. The register is defined at EL1 once `ICC_SRE_EL1.SRE` is
-            // set (`set_sre`, the driver's attach, before any other access); before that
-            // the access is an undefined-instruction trap the kernel reports, not undefined
-            // behaviour. Reading `ICC_IAR1_EL1` acknowledges the highest pending interrupt:
-            // a change of the GIC's own state, which no Rust object holds, and which its
-            // only caller, the IRQ dispatch, ends with `eoir1`. No `nomem`: the access
+            // depends on the bits. Before `ICC_SRE_EL1.SRE` is set the access is an
+            // undefined-instruction trap, which the kernel reports: not undefined behaviour.
+            // Reading `ICC_IAR1_EL1` acknowledges the highest pending interrupt: a change of
+            // the GIC's own state, which no Rust object holds or reads, so neither the read
+            // nor an interrupt left unended can break a Rust invariant (that the dispatch
+            // ends it is the driver's protocol, not this block's premise; `iar1` asks for the
+            // dispatch's token, `InIrq`, so it is called inside one). No `nomem`: the access
             // stays ordered with the memory accesses around it (the level in `ci_cpl`, the
             // handler records), as the C's `volatile` asm.
             unsafe {
@@ -119,23 +124,24 @@ macro_rules! icc_read {
 }
 
 /// One function writing a CPU interface register (`msr`), between the instructions `$pre`
-/// and `$post`.
+/// and `$post`; its parameters before the value (`$arg: $ty`, none or the dispatch's token)
+/// are proofs the write asks of its caller and does not use.
 macro_rules! icc_write {
-    ($(#[$doc:meta])* $name:ident, $reg:ident, [$($pre:literal),*], [$($post:literal),*]) => {
+    ($(#[$doc:meta])* $name:ident($($arg:ident: $ty:ty),*), $reg:ident, [$($pre:literal),*], [$($post:literal),*]) => {
         $(#[$doc])*
         #[inline(always)]
-        pub fn $name(v: u64) {
+        pub fn $name($($arg: $ty,)* v: u64) {
             // SAFETY: `msr` of a GICv3 CPU interface register (`icc_reg!`'s list) of the CPU
             // that executes it, between barriers only (`$pre`, `$post`). No memory operand,
             // no stack, no flags. What a write changes is how interrupts reach this CPU (its
             // priority mask, binary point, group 1 enable, the system register enable), the
             // end of an interrupt it acknowledged, or an SGI raised at other CPUs, which take
             // it as an interrupt the kernel's dispatch handles: no memory and no Rust-visible
-            // state, whatever the value (reserved bits are ignored by the architecture). The
-            // register is defined at EL1 once `ICC_SRE_EL1.SRE` is set (`set_sre`, written
-            // first); before that a trap, not undefined behaviour. No soundness argument
-            // rests on the level or the mask this leaves: the caller's `spl` bookkeeping is
-            // the kernel's, as the C's `ci_cpl` is. No `nomem`, as `icc_read!`.
+            // state, whatever the value (reserved bits are ignored by the architecture).
+            // Before `ICC_SRE_EL1.SRE` is set the access is an undefined-instruction trap,
+            // which the kernel reports: not undefined behaviour. No soundness argument rests
+            // on the level or the mask this leaves: the caller's `spl` bookkeeping is the
+            // kernel's, as the C's `ci_cpl` is. No `nomem`, as `icc_read!`.
             unsafe {
                 asm!(
                     $($pre,)*
@@ -151,13 +157,13 @@ macro_rules! icc_write {
 
 icc_read!(
     /// `mrs ICC_CTLR_EL1`: the control register (its `PRIbits`, the priority bits implemented).
-    ctlr,
+    ctlr(),
     ICC_CTLR_EL1
 );
 
 icc_read!(
     /// `mrs ICC_PMR_EL1`: the priority mask.
-    pmr,
+    pmr(),
     ICC_PMR
 );
 
@@ -165,7 +171,7 @@ icc_write!(
     /// `msr ICC_PMR_EL1; isb`: the priority mask (`agintc_setipl`), in effect before the next
     /// instruction (the attach's probe and its reset to `0xff`, which the C writes without
     /// the `isb`, take it too: a barrier more, outside any hot path).
-    set_pmr,
+    set_pmr(),
     ICC_PMR,
     [],
     ["isb"]
@@ -173,7 +179,7 @@ icc_write!(
 
 icc_write!(
     /// `msr ICC_SRE_EL1; isb`: the system register interface enable (`ICC_SRE_EL1_EN`).
-    set_sre,
+    set_sre(),
     ICC_SRE_EL1,
     [],
     ["isb"]
@@ -181,7 +187,7 @@ icc_write!(
 
 icc_write!(
     /// `msr ICC_BPR1_EL1`: the group 1 binary point.
-    set_bpr1,
+    set_bpr1(),
     ICC_BPR1,
     [],
     []
@@ -189,7 +195,7 @@ icc_write!(
 
 icc_write!(
     /// `msr ICC_IGRPEN1_EL1`: the group 1 interrupt enable.
-    set_igrpen1,
+    set_igrpen1(),
     ICC_IGRPEN1,
     [],
     []
@@ -197,15 +203,17 @@ icc_write!(
 
 icc_read!(
     /// `mrs ICC_IAR1_EL1; dsb sy` (`agintc_iack`): acknowledges the highest pending group 1
-    /// interrupt and answers its number (1023: none).
-    iar1,
+    /// interrupt and answers its number (1023: none); inside an IRQ dispatch alone (its
+    /// token).
+    iar1(_irq: &InIrq),
     ICC_IAR1,
     "dsb sy"
 );
 
 icc_write!(
-    /// `msr ICC_EOIR1_EL1; isb` (`agintc_eoi`): ends the interrupt `iar1` answered.
-    eoir1,
+    /// `msr ICC_EOIR1_EL1; isb` (`agintc_eoi`): ends the interrupt `iar1` answered, inside the
+    /// same dispatch (its token).
+    eoir1(_irq: &InIrq),
     ICC_EOIR1,
     [],
     ["isb"]
@@ -214,7 +222,7 @@ icc_write!(
 icc_write!(
     /// `dsb ish; msr ICC_SGI1R_EL1; isb` (`agintc_send_ipi`): raises an SGI at the CPUs the
     /// value names, after every store before it (the posted IPI reason) is visible to them.
-    sgi1r,
+    sgi1r(),
     ICC_SGI1R,
     ["dsb ish"],
     ["isb"]
