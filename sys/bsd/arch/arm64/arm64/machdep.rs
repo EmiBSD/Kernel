@@ -86,8 +86,8 @@
 //!   reported as unported when reached (`vfs_shutdown` is real since M14; with no thread on
 //!   the CPU, which the C cannot have there, it is skipped).
 //! - The UEFI system table and memory map reach `initarm` through `BootInfo` (`getbootinfo`
-//!   reads efiboot's `openbsd,uefi-*` properties in `/chosen`); the system table's address is
-//!   kept in `SYSTEM_TABLE` (a local in C; efi(4) reads `/chosen` itself, as the C's), and the
+//!   reads efiboot's `openbsd,uefi-*` properties in `/chosen`); the system table's address,
+//!   a local in C, is not kept (efi(4) reads `/chosen` itself, as the C's), and the
 //!   memory map is relocated into a static buffer (`MMAP`) instead of stolen pages, handed down
 //!   to the kernel's efi(4) once (`efi_set_memory_map`, N7.2b2a).
 //! - The bootargs parsing (`-a -c -d -s`) is `BootInfo::boothowto` in `sys/machine/bootinfo.rs`,
@@ -336,9 +336,6 @@ pub static MMAP_SIZE: AtomicU32 = AtomicU32::new(0);
 pub static MMAP_DESC_SIZE: AtomicU32 = AtomicU32::new(0);
 /// `mmap_desc_ver`: the descriptors' version.
 pub static MMAP_DESC_VER: AtomicU32 = AtomicU32::new(0);
-/// `system_table`: the UEFI system table's physical address, 0 without UEFI (a local of
-/// `initarm` in C, read again from `/chosen` by `mainbus` and `efi_attach`).
-pub static SYSTEM_TABLE: AtomicU64 = AtomicU64::new(0);
 
 /// `mmap`, `mmap_size` bytes long: the relocated UEFI memory map (empty without UEFI).
 pub fn efi_mmap() -> &'static [u8] {
@@ -490,12 +487,9 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
         );
         let _ = unported!("dma_constraint from openbsd,dma-constraint");
     }
-    // The UEFI system table and memory map efiboot puts in /chosen (see the module's
-    // deviations).
-    if let Some(st) = boot.efi_system_table {
-        SYSTEM_TABLE.store(st.as_usize() as u64, Ordering::Relaxed);
-    }
-
+    // The memory map efiboot puts in /chosen (see the module's deviations); the system table's
+    // address, a local of `initarm` in C, is read again from `/chosen` by `mainbus` and
+    // `efi_attach`.
     // Relocate the EFI memory map too.
     if let Some(m) = boot.efi_memmap {
         let len = m.map.len();
