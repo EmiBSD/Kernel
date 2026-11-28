@@ -14,8 +14,8 @@ directly and owns the call convention (decisions 52, 53); `sysdefs` (54, 55); Li
 every boot through boot(8)/efiboot (57); the crate `entry` classifies every user trap behind
 one link-time symbol (56, 58; docs/ENTRY.md, closed 2026-11-27: `nullsys` +5.0 % debug).
 
-Next (N7): N7.2b1 (mainbus, simplebus: b1a the autoconf shim, b1b the buses), then N7.2a2,
-N7.2a3 (the GICs). The close after Limine and entry: `ci-full`'s recipes and `diff-openbsd` on
+Next (N7): N7.2b1b (mainbus, simplebus in the kernel; b1a, the mixed tree, is merged), then
+N7.2a2, N7.2a3 (the GICs). The close after Limine and entry: `ci-full`'s recipes and `diff-openbsd` on
 both CPU models green at `40597edd`. Open for the user: N7's decisions (DECISIONS-N7.md); 45
 adapted network files in `bsd` until N9; `nfs.timer.16q` bench row; N12's `nullsys` items.
 <!-- lz:begin -->
