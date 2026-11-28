@@ -264,6 +264,7 @@ use super::vp::{
     direct_unmap, pted_page, pv_insert, pv_unlink, set_direct_map, words, zero_frame,
 };
 use crate::assert::{hal_panic, kassert};
+use crate::cpu::IntrGuard;
 use crate::cpu::intr::{IPL_NONE, IPL_VM, splraise};
 use crate::dev::mmio::DevCache;
 use crate::mem::pool::{BoxPool, PR_NOWAIT, PoolArc};
@@ -1522,6 +1523,18 @@ fn refuse_kernel_exec(what: &str, va: Vaddr, prot: VmProt) {
             va.as_usize()
         ));
     }
+}
+
+/// `efi_enter`'s pmap half for `hal::cpu::efi`'s transaction (N7.2b2a): the EFI pmap `pm`
+/// (a panic for any other) with `T0SZ` for `EFI_SPACE_BITS`; interrupts are masked (`_off`).
+pub(crate) fn efi_enter(_off: &IntrGuard, pm: &Pmap) {
+    Backend::load_efi(pm);
+}
+
+/// `efi_leave`'s pmap half for `hal::cpu::efi`'s transaction (N7.2b2a): the pmap this CPU
+/// ran on before ([`asid::with_curpm`], `ci_curpm`) with `T0SZ` for `USER_SPACE_BITS`.
+pub(crate) fn efi_leave_current(off: &IntrGuard) {
+    asid::with_curpm(off, &KERNEL_PMAP, Backend::leave_efi);
 }
 
 /// The EFI pmap's and the user's half of `efi_enter`/`efi_leave`: the empty table, `T0SZ`

@@ -37,6 +37,9 @@
 
 pub mod copy;
 pub(crate) mod cpu;
+/// The UEFI runtime call's double: a per-thread fake firmware (`hal::cpu::efi`).
+#[cfg(target_arch = "aarch64")]
+pub(crate) mod efi;
 /// arm64's register names (`hal::syscall::Gpr`): the host double's machine has arm64's
 /// general registers, so the ABI's arm64 system call convention runs in its host tests
 /// (decision 53; amd64's names join at N10).

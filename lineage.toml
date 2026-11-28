@@ -1682,6 +1682,13 @@ status = "redesigned"
 notes = "N4.8b: the cache, TLB and idle instructions for the code outside the pmap, safe for any argument: cpu_wfi (its own asm), the four TLB flushes and cpu_dcache_wb_range, cpu_dcache_wbinv_range, cpu_icache_sync_range, cpu_idcache_wbinv_range over the pmap's copies (pmap/cpufunc.rs); bsd's duplicates deleted (its cpufunc.rs kept them until N4); N7.0: cpu_dcache_inv_dma, dc ivac over a hal::dev::dma::DmaBuf's own bytes (the range checked inside the buffer, whose mapping is page-aligned whole pages, so every line discarded is its own): 1 unsafe; bsd's cpu_dcache_inv_range stays for its bus_dma"
 
 [[module]]
+rust = "sys/hal/arch/arm64/efi.rs"
+crate = "hal"
+lz = ["sys/arch/arm64/dev/efi_machdep.rs"]
+status = "redesigned"
+notes = "N7.2b2a: efi_enter, efi_leave, efi_enter_check and efi_fault as one transaction under hal::cpu::efi's lock: IntrGuard, the EFI pmap (backend::efi_enter), the FPU, the body with an Inside (kcopy reads, the service call), then the FPU, the CPU's own pmap from asid.rs's record (efi_leave_current) and the interrupt state; the trampoline hal_efi_rs_call saves x19-x30 and sp in its own .bss checkpoint before it arms pcb_onfault (the C arms first), takes the service's address (read through kcopy in the same transaction) and the caller's EfiTime; every address below the EFI pmap's limit; 3 unsafe (the extern block, the call, kcopy_in) + 1 in asid.rs (the curpm record)"
+
+[[module]]
 rust = "sys/hal/arch/arm64/smccc.rs"
 crate = "hal"
 lz = ["sys/arch/arm64/arm64/cpufunc.rs"]
@@ -14197,6 +14204,11 @@ kind = "renamed"
 rust = "sys/hal/cpu/clock.rs"
 crate = "hal"
 reason = "hal runtime, written new (N4.8a): the clock frame as the kernel's clock callbacks read it (struct clockframe, CLKF_USERMODE, CLKF_PC, CLKF_INTR over the core's interrupt depth); the machine's frame type comes from arch/<machine>/timer.rs; bsd's include/cpu.rs keeps its CLKF_* for its own callers"
+
+[[extra]]
+rust = "sys/hal/cpu/efi.rs"
+crate = "hal"
+reason = "hal runtime, written new (N7.2b2a): the UEFI runtime services as one object (EfiRuntime: install once with the EFI pmap and the table's address; read, get_time, set_time, each one transaction under a Mutexed at IPL_HIGH, P50), the bound below the EFI pmap's limit, the EfiLocked proof the machine's transaction takes; the host's per-thread fake firmware"
 
 [[extra]]
 rust = "sys/hal/cpu/smccc.rs"

@@ -22,6 +22,8 @@
 // The user copies (N4.8b).
 pub(crate) mod copy;
 pub(crate) mod cpu;
+// The UEFI runtime call, `hal::cpu::efi`'s transaction (N7.2b2a).
+pub(crate) mod efi;
 // The cache, TLB and idle instructions for the code outside the pmap (N4.8b).
 pub mod cpufunc;
 // The exception entry, the trap handlers and the system call entry (N4.8b).
