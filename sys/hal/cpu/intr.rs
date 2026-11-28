@@ -69,6 +69,19 @@
 //! ## Deviations
 //! - amd64's `spl(9)` (`Xspllower`, `ci_isources`) is N10's (decision 44): this module is
 //!   arm64's and the host's, and amd64's `hal` has no `intr_disable` yet.
+//! - At the end of an IRQ dispatch the soft interrupts run with the machine's interrupts on
+//!   ([`do_pending_intr_in_irq`], the controller's `splx` there). The C's
+//!   `arm_do_pending_intr` restores the state it was called in around each soft interrupt,
+//!   and the dispatch calls it masked (`intr_disable(); eoi; splx(s)`), so a soft interrupt
+//!   at a dispatch's end runs masked: a non-`MPSAFE` one spinning there for the kernel lock
+//!   cannot take an IPI, and when the lock's holder sits in ddb (`sysctl ddb.trigger`
+//!   holds it from `sysctl_vslock`), `ARM_IPI_DDB` never stops that CPU and `machine
+//!   ddbcpu` waits for it for ever (smoke-ddbmp: 2 hangs in 600 runs under load, the
+//!   CPU in `softclock`'s `KERNEL_LOCK()` at `IPL_SOFTCLOCK` inside the timer's dispatch,
+//!   its DDB reason never taken). Each soft interrupt there runs between the dispatch's own
+//!   [`unmasked`] pair instead, at its soft level, and the final `setipl` stays masked, as
+//!   the C, so the dispatch returns masked and nesting stays bounded by the levels. Every
+//!   other caller keeps the C's rule (a masked caller's section stays masked).
 //!
 //! ## Redesign
 //! - `s = splraise(ipl); ...; splx(s)` -> `let _s = splraise(ipl);`, the guard restoring on
@@ -476,6 +489,21 @@ pub fn setipl(ipl: i32) {
 /// holds, as the C's: a soft interrupt a handler raises during the pass runs in the next
 /// one (a NET raised by a TTY handler after the pass's CLOCK).
 pub fn do_pending_intr(pcpl: i32) {
+    run_pending(pcpl, None);
+}
+
+/// [`do_pending_intr`] at the end of an IRQ dispatch (`irq`, after its end of interrupt, the
+/// machine's interrupts masked): each soft interrupt runs with them on (the dispatch's
+/// [`unmasked`] pair around it), so a CPU that waits there (for the kernel lock) still takes
+/// an IPI; the level is set and the soft interrupts are taken masked, and the dispatch gets
+/// its state back masked (the module's deviations).
+pub fn do_pending_intr_in_irq(irq: &InIrq, pcpl: i32) {
+    run_pending(pcpl, Some(irq));
+}
+
+/// The loop of [`do_pending_intr`]: each soft interrupt with the caller's interrupt state
+/// (`irq` `None`, the C's rule) or, inside a dispatch, with the machine's interrupts on.
+fn run_pending(pcpl: i32, irq: Option<&InIrq>) {
     let c = curcpu();
     let mut masked = Some(crate::cpu::intr_disable());
 
@@ -484,9 +512,15 @@ pub fn do_pending_intr(pcpl: i32) {
         for (si, ipl) in pass(ipending) {
             c.clear_pending(si_to_irqbit(si));
             setipl(ipl);
-            drop(masked.take());
-            crate::cpu::softintr::dispatch(si);
-            masked = Some(crate::cpu::intr_disable());
+            match irq {
+                // The guard keeps the dispatch's (masked) state for the end.
+                Some(irq) => unmasked(irq, || crate::cpu::softintr::dispatch(si)),
+                None => {
+                    drop(masked.take());
+                    crate::cpu::softintr::dispatch(si);
+                    masked = Some(crate::cpu::intr_disable());
+                }
+            }
         }
         // NXCALL > 0: SOFTINTR_XCALL; NXCALL is 0 on arm64 (no xcall(4) in GENERIC).
         if c.ipending() & smask(pcpl) == 0 {
@@ -749,6 +783,46 @@ mod tests {
         splx(IPL_NONE);
         assert_eq!(RAN.load(Ordering::Relaxed), before + 1);
         assert_eq!(curcpu().ipending() & si_to_irqbit(SOFTINTR_NET as usize), 0);
+        assert_eq!(level(), IPL_NONE);
+        splx(s);
+        assert_eq!(si.disestablish(), None);
+        si.release();
+    }
+
+    static RAN_IN_IRQ: AtomicU32 = AtomicU32::new(0);
+
+    fn count_in_irq(_arg: *mut core::ffi::c_void) {
+        RAN_IN_IRQ.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The dispatch's end runs what its level unmasks, as `do_pending_intr`, and leaves the
+    /// level it was given (the machine's interrupts on around the handler: the module's
+    /// deviations; the host double has no mask to watch).
+    #[test]
+    fn a_dispatch_end_runs_the_pending_soft_interrupts_and_sets_the_level() {
+        testutil::install();
+        init_smask();
+        let si = crate::cpu::softintr::establish(
+            IPL_SOFTCLOCK | IPL_MPSAFE,
+            count_in_irq,
+            core::ptr::null_mut(),
+        )
+        .unwrap();
+        let before = RAN_IN_IRQ.load(Ordering::Relaxed);
+        let s = splraise_raw(IPL_HIGH);
+        si.schedule();
+        let irq = InIrq::host();
+        // At IPL_SOFTCLOCK itself it stays pending.
+        do_pending_intr_in_irq(&irq, IPL_SOFTCLOCK);
+        assert_eq!(RAN_IN_IRQ.load(Ordering::Relaxed), before);
+        assert_eq!(level(), IPL_SOFTCLOCK);
+        // Below it: run once, gone, and the level is the one asked for.
+        do_pending_intr_in_irq(&irq, IPL_NONE);
+        assert_eq!(RAN_IN_IRQ.load(Ordering::Relaxed), before + 1);
+        assert_eq!(
+            curcpu().ipending() & si_to_irqbit(SOFTINTR_CLOCK as usize),
+            0
+        );
         assert_eq!(level(), IPL_NONE);
         splx(s);
         assert_eq!(si.disestablish(), None);
