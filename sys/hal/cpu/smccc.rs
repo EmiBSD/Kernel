@@ -37,13 +37,16 @@
 //!   SMC64 forms), which are refused before anything else;
 //! - a PSCI 0.1 firmware's own ids, which its device tree names (`arm,psci`) and psci(4)'s
 //!   attach records here ([`record_psci_0_1`]): its `system_off`, `system_reset` and `cpu_off`
-//!   are admitted, its `cpu_on` and `cpu_suspend` refused like their 1.x forms. The record is
-//!   sealed by the first record, the first [`call`] or [`seal_psci_0_1`], whichever comes
-//!   first: psci(4)'s attach records (`None` for a 1.x node) before its first call, and
-//!   mainbus seals it after its early passes whether or not a psci node attached, so once
-//!   autoconfiguration passes them no code can name an id of its choosing as one of these.
-//!   Before that seal the trust is the boot path's (decision 30's kind): nothing but psci(4)'s
-//!   attach records, which no check here can enforce.
+//!   are admitted, its `cpu_on` and `cpu_suspend` refused like their 1.x forms. Each attach
+//!   replaces the record (`None` for a 1.x node), so the last node wins as the C's `psci_sc =
+//!   sc` makes it, until mainbus seals it ([`seal_psci_0_1`]) after its early passes, whether
+//!   or not a psci node attached; a [`call`] before the seal reads the record as it is then
+//!   and leaves it open (psci(4)'s attach asks the firmware's version right after its
+//!   record). Once sealed the record never changes and a record fails, so once
+//!   autoconfiguration passes the early devices no code can name an id of its choosing as one
+//!   of these, nor widen what [`call`] admits. Before the seal the trust is the boot path's
+//!   (decision 30's kind): nothing but psci(4)'s attach records, which no check here can
+//!   enforce.
 //!
 //! Every other id (silicon provider, OEM, trusted OS, vendor hypervisor, a yielding call) is
 //! refused: the C's `smccc()` hands any id to the firmware, but its only other user, scmi(4),
@@ -55,12 +58,18 @@
 //! The instruction is the machine's (`hal::arch::arm64::smccc`); the host double answers from
 //! a per-thread fake firmware a test installs ([`set_firmware`]).
 //!
+//! The record is a seqlock of words (the idiom of `hal::sync::seqlock::StrSlot`): psci(4)'s
+//! attach and mainbus's seal are its writers, one at a time (autoconfiguration's thread; a
+//! second writer at once waits, so a record is never torn), and every call reads it
+//! without a lock or a level change, as the C reads `psci_sc`, before the seal and after it
+//! alike (after it the words never change).
+//!
 //! ## Deviations
 //! - Stricter than the C: an id outside the classes above answers `PSCI_NOT_SUPPORTED`
 //!   without reaching the firmware (psci.c's `smccc()` passes any). No caller at the pin
 //!   passes one.
 
-use crate::sync::once::OnceStatic;
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering, fence};
 
 pub use crate::arch::current::smccc::Conduit;
 #[cfg(not(target_os = "none"))]
@@ -112,35 +121,133 @@ pub struct Psci01Ids {
     pub cpu_suspend: u32,
 }
 
-/// The recorded PSCI 0.1 ids (`None`: a 1.x firmware, or no record before the first call),
-/// sealed by the first record or the first call.
-static PSCI_0_1: OnceStatic<Option<Psci01Ids>> = OnceStatic::new();
-
-/// Records a PSCI 0.1 firmware's ids into `cell`, unless it is sealed already.
-fn record_into(cell: &OnceStatic<Option<Psci01Ids>>, ids: Option<Psci01Ids>) -> bool {
-    cell.set(ids).is_ok()
+/// The PSCI 0.1 ids psci(4)'s attaches recorded (`None`: a 1.x firmware, or no record): open
+/// until [`Psci01Record::seal`], then fixed.
+///
+/// Invariant: the words (`present`, `ids`) and `sealed` are stored only by a writer, between
+/// the compare-and-swap that made `seq` odd and the store that makes it even again (the
+/// claim, which a second writer waits for); a writer stores the words only
+/// while `sealed` is clear, and `seal` sets it. So once a seal has run no word changes
+/// again, and a reader that loads the words between two loads of the same even `seq` has the
+/// words of one record, the last one stored.
+struct Psci01Record {
+    /// Odd while a writer stores.
+    seq: AtomicU32,
+    /// Set by the seal: no record after it.
+    sealed: AtomicBool,
+    /// Whether the record holds a 0.1 firmware's ids.
+    present: AtomicBool,
+    /// `system_off`, `system_reset`, `cpu_off`, `cpu_on`, `cpu_suspend`.
+    ids: [AtomicU32; 5],
 }
 
-/// The ids `cell` records, sealing it (with none) if nothing was recorded yet.
-fn recorded_from(cell: &OnceStatic<Option<Psci01Ids>>) -> Option<&Psci01Ids> {
-    if cell.get().is_none() {
-        let _ = cell.set(None);
+impl Psci01Record {
+    /// An open record, with no ids.
+    const fn new() -> Self {
+        Self {
+            seq: AtomicU32::new(0),
+            sealed: AtomicBool::new(false),
+            present: AtomicBool::new(false),
+            ids: [const { AtomicU32::new(0) }; 5],
+        }
     }
-    cell.get().and_then(Option::as_ref)
+
+    /// `f` as the one writer: `seq` made odd for its stores and even after; a writer that
+    /// finds another under way waits for it (writers run in thread context, never in an
+    /// interrupt handler, so the one it waits for is on another CPU and finishes).
+    fn write<R>(&self, f: impl FnOnce(&Self) -> R) -> R {
+        let mut g = self.seq.load(Ordering::Relaxed);
+        loop {
+            if g & 1 != 0 {
+                core::hint::spin_loop();
+                g = self.seq.load(Ordering::Relaxed);
+                continue;
+            }
+            match self.seq.compare_exchange_weak(
+                g,
+                g.wrapping_add(1),
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(now) => g = now,
+            }
+        }
+        fence(Ordering::Release);
+        let r = f(self);
+        self.seq.store(g.wrapping_add(2), Ordering::Release);
+        r
+    }
+
+    /// Replaces the record with `ids` while it is open; `false` (nothing changed) once it is
+    /// sealed.
+    fn record(&self, ids: Option<Psci01Ids>) -> bool {
+        self.write(|r| {
+            if r.sealed.load(Ordering::Relaxed) {
+                return false;
+            }
+            r.present.store(ids.is_some(), Ordering::Relaxed);
+            let ids = ids.unwrap_or_default();
+            let words = [
+                ids.system_off,
+                ids.system_reset,
+                ids.cpu_off,
+                ids.cpu_on,
+                ids.cpu_suspend,
+            ];
+            for (w, v) in r.ids.iter().zip(words) {
+                w.store(v, Ordering::Relaxed);
+            }
+            true
+        })
+    }
+
+    /// Seals the record as it is (a second seal changes nothing).
+    fn seal(&self) {
+        self.write(|r| r.sealed.store(true, Ordering::Relaxed));
+    }
+
+    /// The ids recorded now: a read, which leaves an open record open.
+    fn current(&self) -> Option<Psci01Ids> {
+        loop {
+            let g = self.seq.load(Ordering::Acquire);
+            if g & 1 != 0 {
+                core::hint::spin_loop();
+                continue;
+            }
+            let present = self.present.load(Ordering::Relaxed);
+            let [system_off, system_reset, cpu_off, cpu_on, cpu_suspend] =
+                [0, 1, 2, 3, 4].map(|i| self.ids[i].load(Ordering::Relaxed));
+            fence(Ordering::Acquire);
+            if self.seq.load(Ordering::Relaxed) != g {
+                continue;
+            }
+            return present.then_some(Psci01Ids {
+                system_off,
+                system_reset,
+                cpu_off,
+                cpu_on,
+                cpu_suspend,
+            });
+        }
+    }
 }
+
+/// The process's record of the PSCI 0.1 ids.
+static PSCI_0_1: Psci01Record = Psci01Record::new();
 
 /// Records the PSCI firmware's 0.1 ids (`None` for a 1.x node), psci(4)'s attach before its
-/// first call; `false` (nothing recorded) once the record is sealed: by an earlier record, by
-/// a [`call`] made before it or by [`seal_psci_0_1`].
+/// first call, replacing an earlier attach's (the last node wins, as in the C); `false`
+/// (nothing recorded) once [`seal_psci_0_1`] has sealed the record.
 pub fn record_psci_0_1(ids: Option<Psci01Ids>) -> bool {
-    record_into(&PSCI_0_1, ids)
+    PSCI_0_1.record(ids)
 }
 
-/// Seals the 0.1 record (with none if nothing was recorded): mainbus's call once its early
-/// passes are done, so a machine without a `/psci` node, or before it attaches, leaves no
-/// record open to later code.
+/// Seals the 0.1 record as the attaches left it (none if nothing was recorded): mainbus's
+/// call once its early passes are done, so a machine without a `/psci` node, or with one
+/// that attaches later, leaves no record open to later code.
 pub fn seal_psci_0_1() {
-    let _ = record_into(&PSCI_0_1, None);
+    PSCI_0_1.seal();
 }
 
 /// Whether `fid` is one of the standard entry-point functions, in either width.
@@ -173,9 +280,9 @@ fn admits_with(fid: u32, old: Option<&Psci01Ids>) -> bool {
         }
 }
 
-/// Whether [`call`] hands `fid` to the firmware (sealing the 0.1 record).
+/// Whether [`call`] hands `fid` to the firmware, given the 0.1 record as it is now.
 pub fn admits(fid: u32) -> bool {
-    admits_with(fid, recorded_from(&PSCI_0_1))
+    admits_with(fid, PSCI_0_1.current().as_ref())
 }
 
 /// An SMCCC call through `conduit` of the function `fid` with the value arguments `a1`..`a3`:
@@ -324,25 +431,46 @@ mod tests {
     }
 
     #[test]
-    fn the_record_is_sealed_by_the_first_record_or_the_first_call() {
+    fn before_the_seal_the_last_record_wins() {
+        let a = Psci01Ids {
+            system_off: 0x95c1_ba5e,
+            ..Psci01Ids::default()
+        };
+        let b = Psci01Ids {
+            system_off: 0x95c1_ba60,
+            ..Psci01Ids::default()
+        };
+        let r = Psci01Record::new();
+        assert_eq!(r.current(), None);
+        assert!(r.record(Some(a)));
+        assert_eq!(r.current(), Some(a));
+        // A second node's record replaces the first's, as the C's `psci_sc = sc`.
+        assert!(r.record(Some(b)));
+        assert_eq!(r.current(), Some(b));
+        assert!(!admits_with(a.system_off, r.current().as_ref()));
+        assert!(admits_with(b.system_off, r.current().as_ref()));
+        // A 1.x node after them clears it.
+        assert!(r.record(None));
+        assert_eq!(r.current(), None);
+        // The seal keeps the last.
+        assert!(r.record(Some(a)));
+        r.seal();
+        assert_eq!(r.current(), Some(a));
+    }
+
+    #[test]
+    fn a_call_before_the_seal_does_not_freeze_the_record() {
         let ids = Psci01Ids {
             system_off: 0x95c1_ba5e,
             ..Psci01Ids::default()
         };
-        // A second record fails, and the first stays.
-        let cell = OnceStatic::new();
-        assert!(record_into(&cell, Some(ids)));
-        assert!(!record_into(&cell, None));
-        assert_eq!(recorded_from(&cell), Some(&ids));
-        // A call (which reads the record) before any record seals it with none.
-        let cell = OnceStatic::new();
-        assert_eq!(recorded_from(&cell), None);
-        assert!(!record_into(&cell, Some(ids)));
-        assert_eq!(recorded_from(&cell), None);
-        // The process's own record: once a call ran, a record fails.
-        let _ = call(Conduit::Hvc, 0x8400_0000, 0, 0, 0);
-        assert!(!record_psci_0_1(Some(ids)));
-        assert!(!admits(0x95c1_ba5e));
+        // A read (what every call makes) before any record leaves the record open.
+        let r = Psci01Record::new();
+        assert_eq!(r.current(), None);
+        assert!(r.record(Some(ids)));
+        assert_eq!(r.current(), Some(ids));
+        assert!(r.record(None));
+        assert_eq!(r.current(), None);
     }
 
     #[test]
@@ -351,11 +479,22 @@ mod tests {
             system_off: 0x95c1_ba5e,
             ..Psci01Ids::default()
         };
-        let cell = OnceStatic::new();
-        let _ = record_into(&cell, None);
-        assert!(!record_into(&cell, Some(ids)));
-        assert_eq!(recorded_from(&cell), None);
-        // The process's own: sealed, a record fails and the SiP-looking id stays refused.
+        // Sealed with none: a record fails and nothing is admitted on its account.
+        let r = Psci01Record::new();
+        r.seal();
+        assert!(!r.record(Some(ids)));
+        assert_eq!(r.current(), None);
+        // Sealed with ids: a second seal or a record changes nothing.
+        let r = Psci01Record::new();
+        assert!(r.record(Some(ids)));
+        r.seal();
+        assert!(!r.record(None));
+        r.seal();
+        assert_eq!(r.current(), Some(ids));
+        // The process's own: a call before the seal, then the seal; a record after it fails
+        // and the SiP-looking id stays refused.
+        let _ = call(Conduit::Hvc, 0x8400_0000, 0, 0, 0);
+        assert!(!admits(0x95c1_ba5e));
         seal_psci_0_1();
         assert!(!record_psci_0_1(Some(ids)));
         assert!(!admits(0x95c1_ba5e));

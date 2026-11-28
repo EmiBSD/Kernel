@@ -58,14 +58,16 @@
 //!   that owns the entry point and the context (`bsd`'s `bootarg_mp_start`, an `unsafe fn`, with
 //!   `bsd`'s own `smc_call`/`hvc_call`), until N7.2c types the secondary start.
 //! - A PSCI 0.1 node's ids reach the firmware only as `hal::cpu::smccc` classifies them: its
-//!   `system_off`, `system_reset` and `cpu_off`, recorded at the first attach; every other
-//!   call is a fast call of the Arm architecture or of PSCI (stricter than the C's `smccc()`,
-//!   which passes any id; no caller at the pin passes another).
-//! - A second node that attaches prints its line, but the first node's softc and ids stay the
-//!   ones every call uses, where the C's `psci_sc` would name the last: the SMCCC call's record
-//!   of a 0.1 firmware's ids is sealed by the first call, which the first attach makes, so the
-//!   last node's could not be recorded. The machine's tree has one `/psci`, which mainbus
-//!   attaches in its own pass and the root's passes skip.
+//!   `system_off`, `system_reset` and `cpu_off`, recorded at its attach; every other call is
+//!   a fast call of the Arm architecture or of PSCI (stricter than the C's `smccc()`, which
+//!   passes any id; no caller at the pin passes another).
+//! - A node that attaches after mainbus has sealed the SMCCC call's 0.1 record (after its
+//!   early passes) cannot change that record, so it does not replace an earlier node's softc
+//!   either, where the C's `psci_sc` would name it: it prints its line and the earlier node
+//!   stays the one every call uses (the first such node, when none attached before, becomes
+//!   the softc, and a 0.1 one says its ids were not admitted). No tree reaches this: a psci
+//!   node is `fdt? early 1`, so `/psci` (mainbus's own pass) and any other node the root's
+//!   walk offers attach before the seal, where the last one wins as in the C.
 //!
 //! ## Redesign
 //! - `psci_ca`/`psci_cd` -> [`PSCI`], a [`DriverOps`] (decision 46) whose probe reads the bus's
@@ -73,9 +75,12 @@
 //!   with a stub `Cfdriver` of the name (`bsd`'s `conf/ioconf.rs`).
 //! - `struct psci_softc` (LZ: a `#[repr(C)]` softc of `Cell`s behind an `unsafe impl Softc`, and
 //!   `psci_sc` an `AtomicPtr` read back with an `unsafe` block) -> [`Psci`], built whole from
-//!   the node and set once in `PSCI_SC` (a `OnceStatic`) where the C assigns `psci_sc`; the
-//!   two members attach writes after (`sc_smccc_version`, `sc_system_suspend`) are atomics.
-//!   The device's softc is empty ([`PsciDev`]).
+//!   the node, kept for ever (`malloc(9)`, never freed, as the C's device softc) and named by
+//!   `PSCI_SC` (a `hal::ds::link::SyncLink`) where the C assigns `psci_sc`: each attach before
+//!   the seal points it at its own softc, so the last node wins, and a call holds the
+//!   `&'static` it read (`psci_install`); the two members attach writes after
+//!   (`sc_smccc_version`, `sc_system_suspend`) are atomics. The device's softc is empty
+//!   ([`PsciDev`]).
 //! - `sc_callfn` (a pointer to `hvc_call` or `smc_call`, which LZ reached through
 //!   `machine::fdt`'s `Fdt` trait) -> a `hal::cpu::smccc::Conduit` held by value; every call is
 //!   `hal::cpu::smccc::call`, the SMCCC value class (P44).
@@ -90,9 +95,9 @@ use core::fmt;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use hal::cpu::smccc::{self, Conduit, Psci01Ids};
-use hal::mem::malloc::{M_NOWAIT, MArc};
+use hal::ds::link::SyncLink;
+use hal::mem::malloc::{M_NOWAIT, M_WAITOK, MArc, MBox};
 use hal::mem::pool::AnyArc;
-use hal::sync::once::OnceStatic;
 
 use crate::assert::{kassert, kpanic};
 use crate::base::prf::{printf, unported};
@@ -379,8 +384,9 @@ pub static PSCI: PsciDriver = PsciDriver;
 /// `psci_cd`'s `cd_devs`.
 static PSCI_UNITS: UnitTable = UnitTable::new();
 
-/// `psci_sc`: the softc of the first attach (see the module's deviations), set once.
-static PSCI_SC: OnceStatic<Psci> = OnceStatic::new();
+/// `psci_sc`: the softc of the last attach before the SMCCC record's seal (see the module's
+/// deviations for one after it).
+static PSCI_SC: SyncLink<Psci> = SyncLink::new();
 
 /// `psci_sc`, if `psci_attach` has run.
 fn psci_sc() -> Option<&'static Psci> {
@@ -428,23 +434,37 @@ impl DriverOps for PsciDriver {
     }
 }
 
+/// `psci_sc = sc` into `slot`: `new`, kept for ever, becomes the softc the calls use when the
+/// SMCCC call's 0.1 record took its ids (`recorded`: the record was open, so it replaces any
+/// earlier attach's, the last node winning as in the C) or when no softc is there yet; else
+/// (a node after the seal while another's softc and record are in force: the module's
+/// deviations) `Err(new)`, and the slot keeps the earlier one.
+fn psci_install(slot: &SyncLink<Psci>, new: Psci, recorded: bool) -> Result<&'static Psci, Psci> {
+    if !recorded && !slot.is_none() {
+        return Err(new);
+    }
+    let sc = match MBox::new(M_DEVBUF, M_WAITOK, new) {
+        Some(b) => MBox::leak(b),
+        None => kpanic(format_args!("psci_attach: no memory for the softc")),
+    };
+    slot.set(Some(sc));
+    Ok(sc)
+}
+
 /// `psci_attach`: pick the conduit and the function ids, report the versions, and hook
 /// `boot(9)`'s power-off and reset.
 pub fn psci_attach(dev: &DevRef, fa: &FdtArgs) {
     let new = Psci::of_node(fa.node);
-    // The firmware's 0.1 ids, or none for the new specification: recorded before the first
-    // call, which seals the record (`hal::cpu::smccc`).
+    // The firmware's 0.1 ids, or none for the new specification: recorded before the calls,
+    // replacing an earlier node's until mainbus seals the record (`hal::cpu::smccc`).
     let ids = new.psci_0_1_ids();
     let recorded = smccc::record_psci_0_1(ids);
-    let sc = match PSCI_SC.set(new) {
-        Ok(()) => match psci_sc() {
-            Some(sc) => sc,
-            None => kpanic(format_args!("psci_attach: the softc went")),
-        },
-        Err(second) => {
-            // A second node: its line, as the C prints it; the first node stays the one the
-            // calls use (the module's deviations).
-            printf(format_args!("{}", second.probe_versions()));
+    let sc = match psci_install(&PSCI_SC, new, recorded) {
+        Ok(sc) => sc,
+        Err(late) => {
+            // A node after the seal: its line, as the C prints it; the earlier node stays the
+            // one the calls use (the module's deviations).
+            printf(format_args!("{}", late.probe_versions()));
             return;
         }
     };
@@ -840,6 +860,33 @@ mod tests {
         assert_eq!(sc.call_id(0, 0, 0, 0), PSCI_NOT_SUPPORTED);
         assert!(seen().is_empty());
         smccc::set_firmware(None);
+    }
+
+    #[test]
+    fn the_last_node_before_the_seal_is_the_softc() {
+        crate::testutil::install();
+        let slot: &'static SyncLink<Psci> = std::boxed::Box::leak(std::boxed::Box::default());
+        // Two nodes whose records the open SMCCC record took: the second replaces the first,
+        // as the C's `psci_sc = sc`.
+        let first = psci_install(slot, softc(b"arm,psci-1.0\0", Some(b"hvc\0"), false), true);
+        assert!(first.is_ok_and(|sc| sc.conduit == Some(Conduit::Hvc)));
+        let second = psci_install(slot, softc(b"arm,psci\0", Some(b"smc\0"), true), true);
+        assert!(second.is_ok());
+        let sc = slot.get().map(|sc| (sc.conduit, sc.old, sc.system_off));
+        assert_eq!(sc, Some((Some(Conduit::Smc), true, 0x8400_0108)));
+        // A node after the seal (the record refused its ids) leaves the last one in place.
+        let late = psci_install(slot, softc(b"arm,psci-1.0\0", Some(b"hvc\0"), false), false);
+        assert!(late.is_err_and(|l| l.conduit == Some(Conduit::Hvc)));
+        assert_eq!(slot.get().map(|sc| sc.conduit), Some(Some(Conduit::Smc)));
+        // The first node after the seal, with none before it, becomes the softc.
+        let empty: &'static SyncLink<Psci> = std::boxed::Box::leak(std::boxed::Box::default());
+        let only = psci_install(
+            empty,
+            softc(b"arm,psci-1.0\0", Some(b"hvc\0"), false),
+            false,
+        );
+        assert!(only.is_ok());
+        assert_eq!(empty.get().map(|sc| sc.method), Some(PSCI_METHOD_HVC));
     }
 
     #[test]
