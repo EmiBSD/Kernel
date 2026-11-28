@@ -110,15 +110,20 @@
 //!   (`kernel::dev::arm64::intr`) and the controllers after it.
 //! - N7.2a2: the controller's registration is this module's ([`install`], the C's
 //!   `arm_set_intr_handler`, the `cpu::trap::install` shape), made by the controller that
-//!   attaches (`kernel::dev::arm64::ampintc`, or `bsd`'s `arm_set_intr_handler` for a legacy
-//!   one) instead of by `initarm` over `bsd`'s table: before one attaches, the defaults run,
-//!   as the C's table starts. `hal::bridges::register_intr_hardware` forwards here until
-//!   N7.2a3. The dispatch takes the clock frame (`ClockFrame`, the machine's trap frame on
+//!   attaches (`kernel::dev::arm64::ampintc`; until N7.2a3 also `bsd`'s `arm_set_intr_handler`
+//!   for the legacy GICv3) instead of by `initarm` over `bsd`'s table: before one attaches, the
+//!   defaults run, as the C's table starts. The dispatch takes the clock frame (`ClockFrame`, the machine's trap frame on
 //!   arm64), which the kernel's handlers read; [`unmasked`] is the dispatch's
-//!   `intr_enable()`/`intr_disable()` pair around its handlers, its premise a type
-//!   ([`InIrq`], the dispatch's token). `arm_splassert_check` is this module's
+//!   `intr_enable()`/`intr_disable()` pair around its handlers, callable inside a dispatch
+//!   alone ([`InIrq`], the dispatch's token). `arm_splassert_check` is this module's
 //!   ([`splassert_check`], the trait's default and the check before a controller attaches;
 //!   the report through `hal::prf::splassert_fail`), so every controller checks the same.
+//! - N7.2a3: the table's last two entries, `enable_wakeup` and `disable_wakeup`, are the
+//!   trait's ([`IntrHardware::enable_wakeup`], [`IntrHardware::disable_wakeup`], the C's NULL
+//!   as the default), so the GICv3 in the kernel fills the whole table, and [`InIrq`] is also
+//!   what `hal::cpu::icc::iar1`/`eoir1` ask for; `bsd`'s copy of it
+//!   (`ArmIntrHardware` over `arm_intr_func`) is gone, and `hal::bridges` no longer forwards
+//!   a registration here.
 
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -291,9 +296,9 @@ static SMASK: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
 static HARDWARE: OnceStatic<&'static dyn IntrHardware> = OnceStatic::new();
 
 /// The machine's interrupt controller (`struct arm_intr_func` and `arm_set_intr_handler`'s
-/// table), as the controller's attach installs it ([`install`]: the kernel's GICv2 driver
-/// itself, or `bsd`'s table for a legacy one, `sys/arch/arm64/arm64/intr.rs`). Every
-/// method's default is the C's `arm_dflt_*`, what runs before a controller attaches.
+/// table), as the controller's attach installs it ([`install`]: the kernel's GIC driver
+/// itself, `kernel::dev::arm64::ampintc` or `agintc`). Every method's default is the C's
+/// `arm_dflt_*` (or its NULL entry), what runs before a controller attaches.
 pub trait IntrHardware: Sync {
     /// `splraise(ipl)`: raises this CPU's level to at least `ipl`; returns the old level.
     fn splraise(&self, ipl: i32) -> i32 {
@@ -319,6 +324,13 @@ pub trait IntrHardware: Sync {
     fn splassert(&self, wantipl: i32, func: &str) {
         splassert_check(wantipl, func);
     }
+    /// `intr_enable_wakeup()` (`arm_intr_func.enable_wakeup`): before the machine sleeps,
+    /// every interrupt no handler established with `IPL_WAKEUP` is masked; the default is the
+    /// C's NULL hook, nothing.
+    fn enable_wakeup(&self) {}
+    /// `intr_disable_wakeup()` (`arm_intr_func.disable_wakeup`): after the resume; the default
+    /// nothing.
+    fn disable_wakeup(&self) {}
     /// `(*arm_irq_dispatch)(frame)`: the controller's IRQ dispatch, which `arm_cpu_irq` (the
     /// machine's trap code) calls with `ci_idepth` raised and this CPU's interrupts masked
     /// (`irq`, the proof [`unmasked`] asks for); the default is `arm_dflt_irq`, whose
@@ -336,12 +348,17 @@ pub trait IntrHardware: Sync {
     }
 }
 
-/// The IRQ dispatch under way on this CPU, with its interrupts masked by the exception entry:
-/// made only by `hal`'s IRQ entry ([`dispatch_irq`]) and lent to the controller's
-/// [`IntrHardware::dispatch_irq`] for the call, so [`unmasked`]'s premise (entered masked, in
-/// a dispatch) is a type. Not `Send`, not `Clone`, and a `'static` one cannot be had (it
-/// lives on the entry's frame). The host double has no interrupts: its constructor is public
-/// there ([`InIrq::host`]), for the tests of a controller's dispatch.
+/// The IRQ dispatch under way on this CPU: made only by `hal`'s IRQ entry ([`dispatch_irq`])
+/// and lent to the controller's [`IntrHardware::dispatch_irq`] for the call (and, by the
+/// kernel's `IntrHandler::call`, to a shared handler the dispatch runs), so what asks for it
+/// ([`unmasked`], the GICv3's acknowledge and end of interrupt, `crate::cpu::icc::iar1` and
+/// `eoir1`) is called inside a dispatch. That is all the type proves. That the interrupts
+/// are masked when the dispatch calls [`unmasked`] is the dispatch's own protocol (the
+/// exception entry masks them, and the dispatch unmasks once, around its handlers): a
+/// handler that called [`unmasked`] itself would leave the rest of its list masked, which
+/// costs liveness, never memory safety. Not `Send`, not `Clone`, and a `'static` one cannot
+/// be had (it lives on the entry's frame). The host double has no interrupts: its
+/// constructor is public there ([`InIrq::host`]), for the tests of a controller's dispatch.
 pub struct InIrq {
     _not_send: PhantomData<*const ()>,
 }
@@ -383,11 +400,12 @@ pub fn hardware() -> Option<&'static dyn IntrHardware> {
 }
 
 /// `intr_enable(); f(); intr_disable();`: the IRQ dispatch's pair around its handlers
-/// (`ampintc_irq_handler`, `agintc_irq_handler`), inside a dispatch (`irq`), entered with
-/// this CPU's interrupts masked (the exception entry's state): unmasked while `f` runs (a
-/// higher-priority interrupt may nest), masked again after it, as the dispatch found them.
-/// Not a guard: a guard's drop would restore the state it saved, and the dispatch must
-/// return masked.
+/// (`ampintc_irq_handler`, `agintc_irq_handler`), inside a dispatch (`irq`): this CPU's
+/// interrupts unmasked while `f` runs (a higher-priority interrupt may nest), masked after
+/// it. The dispatch calls it once, with the interrupts masked as the exception entry left
+/// them (its own protocol, which the token does not prove), so it returns as the dispatch
+/// found them. Not a guard: a guard's drop would restore the state it saved, and the
+/// dispatch must return masked.
 #[inline]
 pub fn unmasked<R>(irq: &InIrq, f: impl FnOnce() -> R) -> R {
     let _ = irq;

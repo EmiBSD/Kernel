@@ -57,9 +57,10 @@
 //! N7.2a1: the levels are `hal::cpu::intr`'s (the owner of `spl(9)`'s numbers), the trigger
 //! types, `SOFTINTR_XCALL`, the IPI numbers and the handler type the kernel's
 //! (`kernel::dev::arm64::intr`, `kernel::dev::intr`), re-exported here under their names;
-//! `struct machine_intr_handle`, `struct arm_intr_func` and `struct interrupt_controller`
-//! stay for the drivers still in `bsd`, which the kernel reaches through `arm64/intr.rs`'s
-//! adapter.
+//! `struct machine_intr_handle` and `struct interrupt_controller` stay for the drivers still
+//! in `bsd`, which the kernel reaches through `arm64/intr.rs`'s adapter. N7.2a3: `struct
+//! arm_intr_func` went with the last legacy GIC: the controller implements
+//! `hal::cpu::intr::IntrHardware` itself.
 //!
 //! ## Deviations
 //! - `ic_establish`'s `char *name` is a `&'static str`; the controller's `ic_cookie` is the
@@ -85,22 +86,6 @@ pub struct MachineIntrHandle {
     pub ih_ic: *const InterruptController,
     /// `ih_ih`: the controller's own handle.
     pub ih_ih: *mut core::ffi::c_void,
-}
-
-/// `struct arm_intr_func`: the interrupt controller's `spl` implementation.
-pub struct ArmIntrFunc {
-    /// `raise`.
-    pub raise: fn(i32) -> i32,
-    /// `lower`.
-    pub lower: fn(i32) -> i32,
-    /// `x`.
-    pub x: fn(i32),
-    /// `setipl`.
-    pub setipl: fn(i32),
-    /// `enable_wakeup`.
-    pub enable_wakeup: Option<fn()>,
-    /// `disable_wakeup`.
-    pub disable_wakeup: Option<fn()>,
 }
 
 /// `ic_establish(cookie, cell, level, ci, func, arg, name)`.

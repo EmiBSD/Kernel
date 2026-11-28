@@ -83,6 +83,10 @@
 //!   the end of an IRQ dispatch keeps it alive across `softintr::dispatch` with the
 //!   interrupts on, its saved word only the dispatch's masked state to restore), and a lifted
 //!   mask in any of them would cost a nested interrupt's deadlock, never memory safety.
+//! - N7.2a3: `ci_mpidr` and `ci_midr` are the core's too ([`CpuCore::hwid`],
+//!   [`CpuCore::midr`]), recorded by `bsd`'s `cpu_attach` and `cpu_identify` beside their own
+//!   copies, for the kernel's GICv3 (its redistributors, routes and SGIs name a CPU by its
+//!   affinity) and the ITS's Oryon test.
 
 use core::marker::PhantomData;
 use core::sync::atomic::{
@@ -131,6 +135,12 @@ pub struct CpuCore {
     /// `VBAR_EL1`, the one of this CPU's Spectre-BHB mitigation (`exception.S`'s `return`
     /// reads it by offset); 0 before the machine chose one. Unused elsewhere.
     trampoline_vectors: AtomicUsize,
+    /// `ci_mpidr` (arm64; N10's local APIC id): the CPU's hardware id as the firmware's tables
+    /// name it, recorded by the machine's `cpu_attach` (0 before). Read by other CPUs (an
+    /// interrupt routed or an IPI sent to this one).
+    hwid: AtomicU64,
+    /// `ci_midr` (arm64): the CPU's model as its `cpu_identify` read it (0 before).
+    midr: AtomicU64,
 }
 
 impl CpuCore {
@@ -147,6 +157,8 @@ impl CpuCore {
             ipending: AtomicU64::new(0),
             idepth: AtomicU32::new(0),
             trampoline_vectors: AtomicUsize::new(0),
+            hwid: AtomicU64::new(0),
+            midr: AtomicU64::new(0),
         }
     }
 
@@ -306,6 +318,31 @@ impl CpuCore {
     #[inline]
     pub(crate) fn set_trampoline_vectors(&self, va: usize) {
         self.trampoline_vectors.store(va, Ordering::Relaxed);
+    }
+
+    /// `ci_mpidr`: the hardware id recorded for this CPU (the executing CPU's own register is
+    /// [`hwid`]); 0 before its `cpu_attach`.
+    #[inline]
+    pub fn hwid(&self) -> u64 {
+        self.hwid.load(Ordering::Relaxed)
+    }
+
+    /// `ci->ci_mpidr = id`: the machine's `cpu_attach`, before the CPU starts.
+    #[inline]
+    pub fn set_hwid(&self, id: u64) {
+        self.hwid.store(id, Ordering::Relaxed);
+    }
+
+    /// `ci_midr`: the model recorded for this CPU; 0 before its `cpu_identify`.
+    #[inline]
+    pub fn midr(&self) -> u64 {
+        self.midr.load(Ordering::Relaxed)
+    }
+
+    /// `ci->ci_midr = midr`: the machine's `cpu_identify`.
+    #[inline]
+    pub fn set_midr(&self, midr: u64) {
+        self.midr.store(midr, Ordering::Relaxed);
     }
 }
 

@@ -42,6 +42,7 @@ pub(crate) mod cpu;
 /// (decision 53; amd64's names join at N10).
 #[path = "../arm64/gpr.rs"]
 pub mod gpr;
+pub(crate) mod icc;
 pub(crate) mod klock;
 pub mod param;
 pub(crate) mod pmap;

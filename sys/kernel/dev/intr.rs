@@ -66,8 +66,13 @@
 //!   handler of the C's `NULL` argument, which reads the frame (its first user is the
 //!   generic timer, N7.2b2), and [`IntrHandler::Shared`], a native handler and its softc's
 //!   counted handle (first user: `ampintc`'s IPI handler), which the handler names back by
-//!   its type (`AnyArc::downcast_ref`). `raw_arg` went: a legacy controller takes the `Raw`
-//!   arm's two members itself and refuses the others.
+//!   its type (`AnyArc::downcast_ref`). `raw_arg` went: a legacy controller took the `Raw`
+//!   arm's two members itself and refused the others (`bsd`'s `LegacyIc`, gone at N7.2a3 with
+//!   the last legacy registration).
+//! - N7.2a3: [`IntrHandler::call`] takes the dispatch's token (`hal::cpu::intr::InIrq`) and
+//!   lends it to a [`IntrHandler::Shared`] handler: `agintc`'s IPI handler ends its interrupt
+//!   itself before it halts the CPU (`agintc_ipi_halt`), and the end of interrupt asks for the
+//!   token (`hal::cpu::icc::eoir1`). A `bsd` handler and a frame handler do not see it.
 //! - LZ's `IntrFn` (`sys/arch/arm64/include/intr.rs`, the same as `<machine/intr.h>`'s of
 //!   `sys/machine/intr.rs`) is this module's; `bsd`'s header re-exports it.
 
@@ -75,6 +80,7 @@ use core::ffi::c_void;
 use core::ptr;
 
 use hal::cpu::clock::ClockFrame;
+use hal::cpu::intr::InIrq;
 use hal::mem::pool::AnyArc;
 
 /// An interrupt handler, `int (*)(void *)`: nonzero when the interrupt was the device's.
@@ -89,19 +95,20 @@ pub enum IntrHandler {
     /// A native handler established with a `NULL` argument: it reads the frame.
     Frame(fn(&ClockFrame) -> i32),
     /// A native handler and its softc's counted handle, named back by its type.
-    Shared(fn(&AnyArc) -> i32, AnyArc),
+    Shared(fn(&AnyArc, &InIrq) -> i32, AnyArc),
 }
 
 impl IntrHandler {
-    /// Runs the handler for an interrupt taken with `frame`: `(*ih_func)(ih_arg ? ih_arg :
-    /// frame)`. Returns what the handler returned (nonzero: it was the device's).
+    /// Runs the handler for an interrupt taken with `frame`, inside the dispatch `irq`:
+    /// `(*ih_func)(ih_arg ? ih_arg : frame)`, a shared handler given the dispatch's token.
+    /// Returns what the handler returned (nonzero: it was the device's).
     #[inline]
-    pub fn call(&self, frame: &ClockFrame) -> i32 {
+    pub fn call(&self, frame: &ClockFrame, irq: &InIrq) -> i32 {
         match self {
             IntrHandler::Raw(func, 0) => func(ptr::from_ref(frame).cast_mut().cast::<c_void>()),
             IntrHandler::Raw(func, arg) => func(ptr::with_exposed_provenance_mut::<c_void>(*arg)),
             IntrHandler::Frame(func) => func(frame),
-            IntrHandler::Shared(func, arg) => func(arg),
+            IntrHandler::Shared(func, arg) => func(arg, irq),
         }
     }
 }
@@ -128,12 +135,13 @@ mod tests {
         let frame = ClockFrame::default();
         let at = ptr::from_ref(&frame).addr();
 
-        assert_eq!(IntrHandler::Raw(record, 0).call(&frame), 1);
+        let irq = InIrq::host();
+        assert_eq!(IntrHandler::Raw(record, 0).call(&frame, &irq), 1);
         assert_eq!(SEEN.load(Ordering::Relaxed), at);
 
         let softc = [0u64; 4];
         let arg = ptr::from_ref(&softc).expose_provenance();
-        assert_eq!(IntrHandler::Raw(record, arg).call(&frame), 1);
+        assert_eq!(IntrHandler::Raw(record, arg).call(&frame, &irq), 1);
         assert_eq!(SEEN.load(Ordering::Relaxed), arg);
     }
 
@@ -142,7 +150,7 @@ mod tests {
         2
     }
 
-    fn by_softc(arg: &AnyArc) -> i32 {
+    fn by_softc(arg: &AnyArc, _irq: &InIrq) -> i32 {
         match arg.downcast_ref::<u64>() {
             Some(v) => *v as i32,
             None => -1,
@@ -155,12 +163,13 @@ mod tests {
 
         crate::testutil::install();
         let frame = ClockFrame::default();
-        assert_eq!(IntrHandler::Frame(by_frame).call(&frame), 2);
+        let irq = InIrq::host();
+        assert_eq!(IntrHandler::Frame(by_frame).call(&frame, &irq), 2);
         let softc = MArc::erase(MArc::new(127, M_WAITOK, 7u64).unwrap());
         let h = IntrHandler::Shared(by_softc, softc);
-        assert_eq!(h.clone().call(&frame), 7);
+        assert_eq!(h.clone().call(&frame, &irq), 7);
         let other = MArc::erase(MArc::new(127, M_WAITOK, 7u32).unwrap());
-        assert_eq!(IntrHandler::Shared(by_softc, other).call(&frame), -1);
+        assert_eq!(IntrHandler::Shared(by_softc, other).call(&frame, &irq), -1);
     }
 }
 /* </TESTS> */
