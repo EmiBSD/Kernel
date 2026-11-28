@@ -57,13 +57,17 @@
 //!
 //! N7.2a1: the registry of interrupt controllers, the pre-registration and the device tree's
 //! interrupt specifiers are the kernel's (`kernel::dev::arm64::intr`); this file is the
-//! adapter `bsd`'s drivers keep calling under LZ's names and signatures: [`LegacyIc`] makes a
-//! driver's `struct interrupt_controller` the kernel's `InterruptController`,
-//! [`arm_intr_register_fdt`] registers it, and the handles stay `NonNull<MachineIntrHandle>`. The
-//! clock table is still here (N7.2b2). N7.2a3: both GICs are the kernel's
-//! (`kernel::dev::arm64::{ampintc, agintc}`), each installed as the machine's controller in
-//! `hal::cpu::intr` with the kernel's IPI slot set, so `arm_intr_func`, `arm_set_intr_handler`,
-//! the IRQ and FIQ dispatch slots and `bsd`'s own `intr_send_ipi_func` are gone.
+//! adapter `bsd`'s drivers keep calling under LZ's names and signatures, and the handles stay
+//! `NonNull<MachineIntrHandle>`. The clock table is still here (N7.2b2). N7.2a3: both GICs are
+//! the kernel's (`kernel::dev::arm64::{ampintc, agintc}`), each installed as the machine's
+//! controller in `hal::cpu::intr` with the kernel's IPI slot set, so `arm_intr_func`,
+//! `arm_set_intr_handler`, the IRQ and FIQ dispatch slots and `bsd`'s own
+//! `intr_send_ipi_func` are gone; and with bsd's agintc, the last driver that registered a
+//! `struct interrupt_controller`, the registration of a legacy controller went too
+//! (`LegacyIc`, the adapter that made such a structure the kernel's `InterruptController`,
+//! `arm_intr_register_fdt` and `arm_intr_parent_establish_fdt`/`_disestablish_fdt`, which
+//! found a legacy controller's registration: none has a caller, the kernel's own are the
+//! drivers'). The legacy table type stays for the handles `pciecam` makes by hand.
 //!
 //! ## Deviations
 //! - `arm_clock_func` is a [`StaticCell`], written by `arm_clock_register` during
@@ -75,16 +79,18 @@
 //!   (`kernel::dev::arm64::intr::intr_send_ipi_func`), which [`arm_send_ipi`] reads; `arm_smask`,
 //!   `ci_cpl`, `ci_ipending` and the `arm_dflt_*` bodies are `hal::cpu::intr`'s.
 //! - `interrupt_controllers` is the kernel's registry (`controllers()`, every registered
-//!   controller, legacy or native, and the pre-registrations, in the C's order) since N7.2a2:
+//!   controller and the pre-registrations, in the C's order) since N7.2a2:
 //!   `acpipci` and `acpi_machdep` walk it there, and `ampintc`'s GICv2m frames, its last
 //!   walker here, are the kernel's. `bsd`'s mirror list of the legacy structures is gone.
 //! - The `spl` functions (`splraise`, `spllower`, `splx`) and `arm_splassert_check`'s
 //!   `setipl` go through the installed controller (`hal::cpu::intr`): the controller's method,
 //!   one indirect call, as LZ's `arm_intr_func`.
-//! - A handle on a legacy controller is LZ's `MachineIntrHandle` (`ih_ic`, `ih_ih`, the size
-//!   `free` checks, as the handles `ampintc`'s MSI frames and `pciecam` make by hand); a
-//!   handle on a native controller has a null `ih_ic` and carries the kernel's `IntrHandle`
-//!   after it (`NativeIntrHandle`); every handle function takes the path its `ih_ic` says.
+//! - A handle a driver makes by hand around its own `struct interrupt_controller` is LZ's
+//!   `MachineIntrHandle` (`ih_ic`, `ih_ih`, the size `free` checks: `pciecam`'s, whose table
+//!   has only `ic_barrier`, the only kind left since N7.2a3); a handle on a registered
+//!   controller (the kernel's, all of them) has a null `ih_ic` and carries the kernel's
+//!   `IntrHandle` after it (`NativeIntrHandle`); every handle function takes the path its
+//!   `ih_ic` says.
 //!   `acpi_intr_establish` and `acpipci`'s MSIs establish on the controller they found with
 //!   the kernel's `IcReg::establish`/`establish_msi` and take their handle from the adapter
 //!   ([`new_handle`]; `acpipci` embeds a [`NativeIntrHandle`] first in its own and tells it
@@ -92,7 +98,6 @@
 //!   readers read only the handles they made.
 //! - `arm_intr_establish_fdt_imap*` take the child's four `reg` cells as a slice (the C's
 //!   `int *reg, int nreg`, `nreg` in bytes); `arm_intr_map_msi`'s `data` is a `&mut u64`.
-
 //! - `splassert` before a controller attaches: LZ's table was registered by `initarm`, so
 //!   the kernel's callers reached `arm_splassert_check` from the first `spl` on; since N7.2a2
 //!   `hal::cpu::intr::splassert` runs the same check itself until a controller installs
@@ -108,12 +113,12 @@ use crate::arch::arm64::include::cpu::{CpuInfo, curcpu};
 use crate::arch::arm64::include::intr::{IPL_NONE, InterruptController, IntrFn, MachineIntrHandle};
 use crate::kassert;
 use crate::kern::kern_malloc::{free, malloc};
-use crate::kern::kern_sched::{cpu_info_by_number, cpu_number_of};
+use crate::kern::kern_sched::cpu_number_of;
 use crate::kern::proc_glue::BsdProcGlue;
 use crate::kern::subr_prf::{panic, splassert_fail};
 use crate::sys::malloc::{M_DEVBUF, M_WAITOK};
 use crate::unported;
-use kernel::dev::arm64::intr::{self as core_intr, BarrierWait, IcCookie, IcDesc, IntrHandle};
+use kernel::dev::arm64::intr::{self as core_intr, IntrHandle};
 use kernel::dev::intr::IntrHandler;
 
 pub use kernel::dev::arm64::intr::{
@@ -255,8 +260,7 @@ pub fn arm_init_smask() {
 }
 
 /// `splraise`: through the installed controller (`hal::cpu::intr::splraise_raw`: the
-/// kernel's `ampintc` itself, or [`ArmIntrHardware`] over `arm_intr_func` for a legacy one;
-/// the defaults before either).
+/// kernel's `ampintc` or `agintc` itself; the defaults before either attaches).
 pub fn splraise(ipl: i32) -> i32 {
     hal::cpu::intr::splraise_raw(ipl)
 }
@@ -292,181 +296,14 @@ pub fn arm_splassert_check(wantipl: i32, func: &str) {
     }
 }
 
-/// A driver's `struct interrupt_controller` as the kernel's
-/// [`InterruptController`](kernel::dev::arm64::intr::InterruptController): its entry points
-/// called as LZ called them, a `NULL` entry doing what LZ did (nothing), its cookies words.
-pub struct LegacyIc(&'static InterruptController);
-
-// SAFETY: `LegacyIc` reads, through `&InterruptController`, the entry points (plain
-// `Option<fn>` fields, never written after the driver built the structure) and the `ic_cookie`
-// `Cell`, which the driver writes before it calls `arm_intr_register_fdt`, so before the kernel
-// publishes the registration holding this `LegacyIc` (`insert_head`, a release store that the
-// walkers' acquire loads pair with). Of the structure's other `Cell`s, `ic_node` and
-// `ic_gic_its_id` are never written after the driver registers the controller: they are read
-// by the registration and by the walkers of `interrupt_controllers` (ampintc's MSI frames read
-// `ic_node`, acpipci `ic_gic_its_id`); `ic_cells` and `ic_phandle` are written after the
-// publication, by the registration's `linked` hook on the registering CPU, but `LegacyIc`
-// never reads them, and their readers (the walkers of `interrupt_controllers`) reach the
-// structure only through that list, which links it after the writes, under `IcHead`'s
-// autoconf protocol. No `Cell` that `LegacyIc` reads is written once another CPU can reach
-// it, so sharing `&LegacyIc` cannot race.
-unsafe impl Sync for LegacyIc {}
-
 /// `ci` as the kernel's CPU number.
 fn cpu_of(ci: Option<&CpuInfo>) -> Option<usize> {
     ci.map(cpu_number_of)
 }
 
-/// The kernel's CPU number as `bsd`'s `cpu_info`.
-fn ci_of(cpu: Option<usize>) -> Option<&'static CpuInfo> {
-    cpu.and_then(cpu_info_by_number)
-}
-
 /// A handler of `bsd`'s as the kernel's: the function and its argument's address.
 fn raw(func: IntrFn, arg: *mut c_void) -> IntrHandler {
     IntrHandler::Raw(func, arg.expose_provenance())
-}
-
-/// A legacy controller's `void *` handle as the kernel's cookie (`NULL`: refused).
-fn word(ih: *mut c_void) -> Option<IcCookie> {
-    (!ih.is_null()).then(|| IcCookie::Word(ih.expose_provenance()))
-}
-
-/// The `void *` handle a legacy controller answered.
-fn legacy_cookie(ih: IcCookie) -> *mut c_void {
-    match ih {
-        IcCookie::Word(w) => ptr::with_exposed_provenance_mut(w),
-        IcCookie::Rec(_) => panic(format_args!("a legacy controller's cookie is a record")),
-    }
-}
-
-impl core_intr::InterruptController for LegacyIc {
-    fn establish(
-        &self,
-        cell: &[u32],
-        level: i32,
-        cpu: Option<usize>,
-        h: IntrHandler,
-        name: &'static str,
-    ) -> Option<IcCookie> {
-        let IntrHandler::Raw(func, arg) = h else {
-            panic(format_args!(
-                "a legacy interrupt controller takes bsd's handlers only"
-            ));
-        };
-        let establish = self.0.ic_establish?;
-        word(establish(
-            self.0.ic_cookie.get(),
-            cell,
-            level,
-            ci_of(cpu),
-            func,
-            ptr::with_exposed_provenance_mut(arg),
-            name,
-        ))
-    }
-
-    fn establish_msi(
-        &self,
-        addr: &mut u64,
-        data: &mut u64,
-        level: i32,
-        cpu: Option<usize>,
-        h: IntrHandler,
-        name: &'static str,
-    ) -> Option<IcCookie> {
-        let IntrHandler::Raw(func, arg) = h else {
-            panic(format_args!(
-                "a legacy interrupt controller takes bsd's handlers only"
-            ));
-        };
-        let establish_msi = self.0.ic_establish_msi?;
-        word(establish_msi(
-            self.0.ic_cookie.get(),
-            addr,
-            data,
-            level,
-            ci_of(cpu),
-            func,
-            ptr::with_exposed_provenance_mut(arg),
-            name,
-        ))
-    }
-
-    fn has_msi(&self) -> bool {
-        self.0.ic_establish_msi.is_some()
-    }
-
-    fn disestablish(&self, ih: IcCookie) {
-        if let Some(dis) = self.0.ic_disestablish {
-            dis(legacy_cookie(ih));
-        }
-    }
-
-    fn enable(&self, ih: IcCookie) {
-        kassert!(self.0.ic_enable.is_some());
-        if let Some(enable) = self.0.ic_enable {
-            enable(legacy_cookie(ih));
-        }
-    }
-
-    fn disable(&self, ih: IcCookie) {
-        kassert!(self.0.ic_disable.is_some());
-        if let Some(disable) = self.0.ic_disable {
-            disable(legacy_cookie(ih));
-        }
-    }
-
-    fn route(&self, ih: IcCookie, enable: bool, cpu: usize) {
-        if let (Some(route), Some(ci)) = (self.0.ic_route, cpu_info_by_number(cpu)) {
-            route(legacy_cookie(ih), enable, ci);
-        }
-    }
-
-    fn cpu_enable(&self) {
-        if let Some(cpu_enable) = self.0.ic_cpu_enable {
-            cpu_enable();
-        }
-    }
-
-    /// The driver's `ic_barrier` makes its own `sched_barrier`: nothing left to wait for.
-    /// Every registered legacy controller sets the entry (the C calls it unconditionally,
-    /// `intr.c:916-922`): `KASSERT`ed, and skipped without `DIAGNOSTIC` as LZ did.
-    fn barrier(&self, ih: IcCookie) -> BarrierWait {
-        kassert!(self.0.ic_barrier.is_some());
-        if let Some(barrier) = self.0.ic_barrier {
-            barrier(legacy_cookie(ih));
-        }
-        BarrierWait::Nothing
-    }
-
-    fn set_wakeup(&self, ih: IcCookie) {
-        if let Some(set_wakeup) = self.0.ic_set_wakeup {
-            set_wakeup(legacy_cookie(ih));
-        }
-    }
-
-    fn legacy(&self) -> Option<usize> {
-        Some(ptr::from_ref(self.0).expose_provenance())
-    }
-}
-
-/// `arm_intr_register_fdt`: a real controller registers with the kernel (its `ic_cells` and
-/// `ic_phandle` written back); the handlers pre-registered for its node are established on
-/// it now. `interrupt_controllers` is the kernel's registry (`controllers()`) since N7.2a2.
-pub fn arm_intr_register_fdt(ic: &'static InterruptController) {
-    let Some(ops) = hal::mem::malloc::MBox::new(M_DEVBUF, M_WAITOK, LegacyIc(ic)) else {
-        panic(format_args!("arm_intr_register_fdt: no malloc(9)"));
-    };
-    let desc = IcDesc {
-        node: ic.ic_node.get(),
-        gic_its_id: ic.ic_gic_its_id.get(),
-        ops: hal::mem::malloc::MBox::leak(ops),
-    };
-    core_intr::arm_intr_register_fdt_linked(desc, |reg| {
-        ic.ic_cells.set(reg.cells());
-        ic.ic_phandle.set(reg.phandle());
-    });
 }
 
 /// A handle on a native controller: `ih_ic` null, the kernel's handle after it. A caller
@@ -535,17 +372,11 @@ fn alloc<T>(v: T) -> Option<NonNull<T>> {
     Some(p)
 }
 
-/// The handle a driver gets for the kernel's `ih`: LZ's pair for a legacy controller, a
-/// [`NativeIntrHandle`] for a native one. What `acpi_intr_establish` hands back for the
+/// The handle a driver gets for the kernel's `ih`: a [`NativeIntrHandle`] (every registered
+/// controller is the kernel's since N7.2a3). What `acpi_intr_establish` hands back for the
 /// handle it made by hand (`malloc`, then `ih_ic` and `ih_ih` filled; scaffolding, N7.11).
 pub(crate) fn new_handle(ih: IntrHandle) -> Option<NonNull<MachineIntrHandle>> {
-    match ih.controller().ops().legacy() {
-        Some(ic) => alloc(MachineIntrHandle {
-            ih_ic: ptr::with_exposed_provenance(ic),
-            ih_ih: legacy_cookie(ih.cookie()),
-        }),
-        None => alloc(NativeIntrHandle::new(ih)).map(NonNull::cast),
-    }
+    alloc(NativeIntrHandle::new(ih)).map(NonNull::cast)
 }
 
 /// The kernel's handle behind `cookie` when it is a native one (`ih_ic` null), `None` for
@@ -555,8 +386,8 @@ pub(crate) fn new_handle(ih: IntrHandle) -> Option<NonNull<MachineIntrHandle>> {
 ///
 /// # Safety
 ///
-/// `cookie` must be a live handle: one `arm_intr_establish_fdt*`, [`new_handle`] or
-/// `arm_intr_parent_establish_fdt` made, a `MachineIntrHandle` a driver made by hand, or a
+/// `cookie` must be a live handle: one `arm_intr_establish_fdt*` or [`new_handle`] made, a
+/// `MachineIntrHandle` a driver made by hand, or a
 /// `#[repr(C)]` block whose first member is a [`NativeIntrHandle`].
 pub(crate) unsafe fn native_intr_handle(cookie: NonNull<MachineIntrHandle>) -> Option<IntrHandle> {
     match handle(cookie) {
@@ -741,36 +572,6 @@ pub fn arm_intr_disable(cookie: NonNull<MachineIntrHandle>) {
         }
         Handle::Native(ih) => core_intr::arm_intr_disable(ih),
     }
-}
-
-/// `arm_intr_parent_establish_fdt`: some interrupt controllers transparently forward
-/// interrupts to their parent. Such interrupt controllers can use this function to delegate
-/// the interrupt handler to their parent.
-pub fn arm_intr_parent_establish_fdt(
-    cookie: *const (),
-    cell: &[u32],
-    level: i32,
-    ci: Option<&'static CpuInfo>,
-    func: IntrFn,
-    arg: *mut c_void,
-    name: &'static str,
-) -> *mut c_void {
-    let me = cookie.addr();
-    let Some(ic) = core_intr::controllers().find(|ic| ic.ops().legacy() == Some(me)) else {
-        return ptr::null_mut();
-    };
-    core_intr::arm_intr_parent_establish_fdt(ic, cell, level, cpu_of(ci), raw(func, arg), name)
-        .and_then(new_handle)
-        .map_or(ptr::null_mut(), |ih| ih.as_ptr().cast::<c_void>())
-}
-
-/// `arm_intr_parent_disestablish_fdt`.
-pub fn arm_intr_parent_disestablish_fdt(cookie: *mut c_void) {
-    let Some(ih) = NonNull::new(cookie.cast::<MachineIntrHandle>()) else {
-        return;
-    };
-    // SAFETY: a handle from `arm_intr_parent_establish_fdt`, not used after this.
-    unsafe { arm_intr_disestablish_fdt(ih) };
 }
 
 /// `arm_intr_route`.

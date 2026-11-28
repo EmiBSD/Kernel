@@ -104,7 +104,7 @@
 //!   the controller is the trait object itself.
 //! - `ic_establish`'s `void *` result, which only its controller reads, -> [`IcCookie`]: a
 //!   record of the controller's that lives for ever (`Rec`, downcast by the controller alone)
-//!   or a word (`Word`, a slot's index, or a legacy controller's pointer).
+//!   or a word (`Word`, a slot's index; until N7.2a3 also a legacy controller's pointer).
 //! - `struct machine_intr_handle`, `malloc`ed at every establish, -> [`IntrHandle`], the
 //!   registration and the cookie by value (`Copy`): no allocation per handle, and a handle
 //!   cannot name a controller that is not registered.
@@ -138,6 +138,10 @@
 //!   then a `malloc`ed `machine_intr_handle` filled with `ic` and the answer) call
 //!   [`IcReg::establish`] and [`IcReg::establish_msi`], which make the handle; `ic_establish_msi
 //!   != NULL`, their test for an MSI controller, is [`InterruptController::has_msi`].
+//! - N7.2a3: the registration of a legacy controller goes with the last one (bsd's agintc):
+//!   `arm_intr_register_fdt_linked` (the hook that wrote `ic_cells` and `ic_phandle` back)
+//!   and `InterruptController::legacy` (the address behind `bsd`'s `LegacyIc`) had no other
+//!   user; every implementer of the trait is the kernel's.
 //! - N7.2a3: `intr_enable_wakeup` and `intr_disable_wakeup` (`arm_intr_func`'s wakeup entries,
 //!   `bsd`'s until its table went with the last legacy GIC) call the installed controller's
 //!   `hal::cpu::intr::IntrHardware` hooks ([`intr_enable_wakeup`], [`intr_disable_wakeup`]).
@@ -206,8 +210,7 @@ pub enum IcCookie {
     /// A record of the controller's, kept for ever (a handler, a pre-registration); the
     /// controller downcasts it to its own type.
     Rec(&'static (dyn Any + Send + Sync)),
-    /// A word: a slot's index (an MSI frame's), or a legacy controller's pointer as an exposed
-    /// address (scaffolding).
+    /// A word: a slot's index (an MSI frame's).
     Word(usize),
 }
 
@@ -712,12 +715,6 @@ pub trait InterruptController: Sync + 'static {
 
     /// `ic_set_wakeup(ih)`: the interrupt may wake the machine.
     fn set_wakeup(&self, _ih: IcCookie) {}
-
-    /// The address of `bsd`'s `struct interrupt_controller` behind an adapter (scaffolding,
-    /// `docs/SCAFFOLDING.md`); `None` for a native controller.
-    fn legacy(&self) -> Option<usize> {
-        None
-    }
 }
 
 /// A value of the kernel's for ever: `malloc(M_DEVBUF, M_WAITOK)`, never freed.
@@ -883,13 +880,6 @@ pub fn arm_intr_init_fdt() {
 /// node are established on it now.
 pub fn arm_intr_register_fdt(desc: IcDesc) -> IcRef {
     INTR.register_fdt(desc, |_| {})
-}
-
-/// [`arm_intr_register_fdt`] with `linked` run once the controller is on the list and before
-/// the pre-registered handlers are established: `bsd`'s adapter writes `ic_cells` and
-/// `ic_phandle` back into its legacy structure there and links its own list (scaffolding).
-pub fn arm_intr_register_fdt_linked(desc: IcDesc, linked: impl FnOnce(IcRef)) -> IcRef {
-    INTR.register_fdt(desc, linked)
 }
 
 /// `arm_intr_establish_fdt`: the first interrupt of `node`.
@@ -1361,7 +1351,6 @@ mod tests {
         assert_eq!((rb.cells(), rb.phandle()), (1, 4));
         let order: Vec<i32> = r.controllers.iter().map(IcReg::node).collect();
         assert_eq!(order, vec![rb.node(), ra.node()]);
-        assert!(ra.ops().legacy().is_none());
     }
 
     #[test]

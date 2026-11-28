@@ -66,8 +66,9 @@
 //!   handler of the C's `NULL` argument, which reads the frame (its first user is the
 //!   generic timer, N7.2b2), and [`IntrHandler::Shared`], a native handler and its softc's
 //!   counted handle (first user: `ampintc`'s IPI handler), which the handler names back by
-//!   its type (`AnyArc::downcast_ref`). `raw_arg` went: a legacy controller takes the `Raw`
-//!   arm's two members itself and refuses the others.
+//!   its type (`AnyArc::downcast_ref`). `raw_arg` went: a legacy controller took the `Raw`
+//!   arm's two members itself and refused the others (`bsd`'s `LegacyIc`, gone at N7.2a3 with
+//!   the last legacy registration).
 //! - N7.2a3: [`IntrHandler::call`] takes the dispatch's token (`hal::cpu::intr::InIrq`) and
 //!   lends it to a [`IntrHandler::Shared`] handler: `agintc`'s IPI handler ends its interrupt
 //!   itself before it halts the CPU (`agintc_ipi_halt`), and the end of interrupt asks for the

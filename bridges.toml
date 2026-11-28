@@ -29,14 +29,15 @@
 #             pays it, when one is meant, goes in the comment above the row
 # The comment above each row says what implements it today.
 
-# bsd: the interrupt controllers still in bsd (struct interrupt_controller: ic_establish,
+# The interrupt controllers' trait (struct interrupt_controller: ic_establish,
 # ic_establish_msi, ic_disestablish, ic_enable, ic_disable, ic_route, ic_cpu_enable,
-# ic_barrier, ic_set_wakeup), implemented by sys/bsd/arch/arm64/arm64/intr.rs (LegacyIc, one
-# per legacy struct that arm_intr_register_fdt registers) and received by the kernel as a value
-# (IcDesc::ops, N7.2a1). The kernel's own pre-registration (PreregIc) implements it too; the
-# trait stays as API. Paid when the last legacy table goes: the GICs (N7.2a2 ampintc, N7.2a3
-# agintc, both done), pciecam's barrier-only table (N7.5), acpipci's (N7.11): the row goes at
-# N7.11, with the last one.
+# ic_barrier, ic_set_wakeup), received by the kernel as a value (IcDesc::ops, N7.2a1). No bsd
+# implementer since N7.2a3: bsd's LegacyIc (one per legacy struct that arm_intr_register_fdt
+# registered) went with bsd's agintc, the last driver that registered one. Its implementers
+# are the kernel's (PreregIc, ampintc and its GICv2m frames, agintc and its ITS); the trait
+# stays as API. pciecam's barrier-only table (N7.5) and acpipci's handles (N7.11) never
+# registered: they reach their own tables through bsd's adapter (its Handle::Legacy), not
+# through this trait, so nothing of bsd's is left behind this row.
 # kernel::dev::arm64::intr::InterruptController
 [[bridge]]
 trait = "InterruptController"
@@ -103,7 +104,7 @@ paid_by = "N7"
 # implemented by sys/kern/hal_bridges.rs (BsdPrintf) and registered before main(); the kernel
 # crate's lines (kernel::base::prf: unported!, vm::page, vm::pmemrange, vm::km) go through it.
 # N7.2a2: splassert_fail (hal::cpu::intr::splassert_check's report, under bsd's
-# splassert_ctl), so the kernel's GICv2 checks splassert as the legacy GICv3's table does.
+# splassert_ctl), so the kernel's GICs check splassert as LZ's table did (both since N7.2a3).
 # subr_prf goes with the bsd crate.
 # hal::prf::Printf
 [[bridge]]
