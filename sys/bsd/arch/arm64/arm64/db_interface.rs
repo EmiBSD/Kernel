@@ -544,6 +544,11 @@ impl hal::cpu::trap::Debugger for DdbDebugger {
     fn ktrap(&self, kind: i32, frame: &mut DbRegs) -> bool {
         db_ktrap(kind, frame)
     }
+
+    /// `db_enter()`: the kernel's GICv2 takes `ARM_IPI_DDB` (N7.2a2).
+    fn enter(&self) {
+        db_enter();
+    }
 }
 
 /// The debugger `initarm` registers.

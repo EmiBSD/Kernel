@@ -2383,6 +2383,11 @@ impl hal::cpu::trap::CpuHooks for ArmCpuHooks {
         vsnprintf(buf, args);
         db_printf(format_args!("{}\n", Str(buf)));
     }
+
+    /// `cpu_halt()`: the kernel's GICv2 takes `ARM_IPI_HALT` (N7.2a2).
+    fn halt(&self) {
+        cpu_halt();
+    }
 }
 
 /// The hooks `initarm` registers.
@@ -3155,11 +3160,11 @@ mod selfcheck {
 
     use super::*;
     use crate::arch::arm64::dev::agintc::{agintc_attached, agintc_ipi_count};
-    use crate::arch::arm64::dev::ampintc::ampintc_ipi_count;
     use crate::machine::pmap::{pmap_extract, pmap_kenter_pa, pmap_kernel, pmap_kremove};
     use crate::sys::mman::{PROT_READ, PROT_WRITE};
     use crate::sys::param::PAGE_SIZE;
     use crate::sys::types::{Paddr, Vaddr, Vsize};
+    use kernel::dev::arm64::ampintc::ampintc_ipi_count;
     use kernel::vm::km::KP_NONE;
 
     /// The value of the page the window maps first.

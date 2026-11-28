@@ -78,7 +78,6 @@ use crate::arch::arm64::dev::acpiiort::{ACPIIORT_CA, ACPIIORT_CD};
 use crate::arch::arm64::dev::acpipci::{ACPIPCI_CA, ACPIPCI_CD};
 use crate::arch::arm64::dev::agintc::{AGINTC_CA, AGINTC_CD, AGINTCMSI_CA, AGINTCMSI_CD};
 use crate::arch::arm64::dev::agtimer::{AGTIMER_CA, AGTIMER_CD};
-use crate::arch::arm64::dev::ampintc::{AMPINTC_CA, AMPINTC_CD, AMPINTCMSI_CA, AMPINTCMSI_CD};
 use crate::arch::arm64::dev::efi_machdep::{EFI_CA, EFI_CD};
 use crate::arch::arm64::dev::simplebus::SIMPLEBUS_CD;
 use crate::arch::arm64::dev::smmu::SMMU_CD;
@@ -173,6 +172,7 @@ use crate::scsi::sd::{SD_CA, SD_CD};
 use crate::sys::device::{
     CFATTACH_NATIVE, Cfdata, Cfdriver, DV_DULL, FSTATE_NOTFOUND, FSTATE_STAR, Pdevinit,
 };
+use kernel::dev::arm64::ampintc::{AMPINTC_CA, AMPINTCMSI_CA};
 use kernel::dev::arm64::mainbus::MAINBUS;
 use kernel::dev::arm64::simplebus::SIMPLEBUS;
 #[cfg(feature = "fuse")]
@@ -183,6 +183,15 @@ use kernel::fs::fuse::fuse_device::{NFUSE, fuseattach};
 /// (`kernel::dev::arm64::mainbus::MAINBUS`, the row's `Cfdata::native`). Scaffolding
 /// (docs/SCAFFOLDING.md) until the machine's table is the kernel's (N9.1).
 pub static MAINBUS_CD: Cfdriver = Cfdriver::new(b"mainbus", DV_DULL, 0);
+
+/// `ampintc_cd` and `ampintcmsi_cd`: the names `cfdata[1]` and `cfdata[13]` print in UKC's
+/// listings; the drivers are the kernel's (`kernel::dev::arm64::ampintc`, the rows'
+/// `Cfdata::native`, N7.2a2). Scaffolding (docs/SCAFFOLDING.md) until the machine's table is
+/// the kernel's (N9.1).
+pub static AMPINTC_CD: Cfdriver = Cfdriver::new(b"ampintc", DV_DULL, 0);
+
+/// `ampintcmsi_cd`, as [`AMPINTC_CD`].
+pub static AMPINTCMSI_CD: Cfdriver = Cfdriver::new(b"ampintcmsi", DV_DULL, 0);
 
 /// `pv[]` for children of the `fdt` attribute: `mainbus0` (`cfdata[0]`), `ampintc*`
 /// (`cfdata[1]`), `simplebus*` (`cfdata[12]`) and `agintc*` (`cfdata[51]`).
@@ -365,9 +374,9 @@ pub static CFDATA: StaticCell<[Cfdata; NCFDATA + NFREE]> = StaticCell::new([
         0,
     )
     .native(&MAINBUS),
-    // 1: ampintc* at fdt? early 1
+    // 1: ampintc* at fdt? early 1 (the kernel's driver, N7.2a2)
     Cfdata::new(
-        &AMPINTC_CA,
+        &CFATTACH_NATIVE,
         &AMPINTC_CD,
         0,
         FSTATE_STAR,
@@ -376,7 +385,8 @@ pub static CFDATA: StaticCell<[Cfdata; NCFDATA + NFREE]> = StaticCell::new([
         PV_FDT,
         LN_FDT,
         0,
-    ),
+    )
+    .native(&AMPINTC_CA),
     // 2: agtimer* at fdt?
     Cfdata::new(
         &AGTIMER_CA,
@@ -502,9 +512,9 @@ pub static CFDATA: StaticCell<[Cfdata; NCFDATA + NFREE]> = StaticCell::new([
         0,
     )
     .native(&SIMPLEBUS),
-    // 13: ampintcmsi* at fdt? early 1
+    // 13: ampintcmsi* at fdt? early 1 (the kernel's driver, N7.2a2)
     Cfdata::new(
-        &AMPINTCMSI_CA,
+        &CFATTACH_NATIVE,
         &AMPINTCMSI_CD,
         0,
         FSTATE_STAR,
@@ -513,7 +523,8 @@ pub static CFDATA: StaticCell<[Cfdata; NCFDATA + NFREE]> = StaticCell::new([
         PV_FDT,
         LN_FDT,
         0,
-    ),
+    )
+    .native(&AMPINTCMSI_CA),
     // 14: pciecam* at fdt?
     Cfdata::new(
         &PCIECAM_CA,
