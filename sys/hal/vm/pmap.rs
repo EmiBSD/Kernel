@@ -1110,14 +1110,17 @@ pub(crate) fn create_efi() -> Option<PmapRef> {
 }
 
 /// How many loaded RAM segments [`note_loaded_ram`] keeps (the page system's `MAX_SEGS`).
+#[cfg(target_arch = "aarch64")]
 const LOADED_MAX: usize = 32;
 
 /// The RAM the boot path loaded into the page system, each segment as `uvm_page_physload`
 /// took it (before any `uvm_page_physsteal` moved its start): `[start, end)` physical
 /// addresses, a slot published by its `end` (0 for an empty slot).
+#[cfg(target_arch = "aarch64")]
 static LOADED: [(AtomicUsize, AtomicUsize); LOADED_MAX] =
     [const { (AtomicUsize::new(0), AtomicUsize::new(0)) }; LOADED_MAX];
 /// The slots claimed so far; past [`LOADED_MAX`], every frame counts as loaded RAM.
+#[cfg(target_arch = "aarch64")]
 static LOADED_N: AtomicUsize = AtomicUsize::new(0);
 
 /// `uvm_page_physload(start, end, ..)`'s record for [`frame_is_kernel_memory`]: the physical
@@ -1125,15 +1128,22 @@ static LOADED_N: AtomicUsize = AtomicUsize::new(0);
 /// (the root page tables, the page array) or hands out. Called by the page system's
 /// `uvm_page_physload`; a record only ever widens what is refused.
 pub fn note_loaded_ram(start: Paddr, end: Paddr) {
-    let i = LOADED_N.fetch_add(1, Ordering::AcqRel);
-    if let Some((s, e)) = LOADED.get(i) {
-        s.store(start.as_usize(), Ordering::Relaxed);
-        e.store(end.as_usize(), Ordering::Release);
+    // Read only by arm64's EFI runtime (`frame_is_kernel_memory`); nothing to keep elsewhere.
+    #[cfg(target_arch = "aarch64")]
+    {
+        let i = LOADED_N.fetch_add(1, Ordering::AcqRel);
+        if let Some((s, e)) = LOADED.get(i) {
+            s.store(start.as_usize(), Ordering::Relaxed);
+            e.store(end.as_usize(), Ordering::Release);
+        }
     }
+    #[cfg(not(target_arch = "aarch64"))]
+    let _ = (start, end);
 }
 
 /// Whether `pa` lies in a segment [`note_loaded_ram`] recorded (every frame when more were
 /// loaded than it keeps).
+#[cfg(target_arch = "aarch64")]
 fn in_loaded_ram(pa: usize) -> bool {
     if LOADED_N.load(Ordering::Acquire) > LOADED_MAX {
         return true;

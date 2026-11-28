@@ -505,7 +505,12 @@ pub unsafe fn initarm(boot: &BootInfo) -> Result<(), &'static str> {
             let _ = hal::cpu::efi::set_boot_memory_map(efi_mmap(), m.desc_size);
         } else {
             kprintf!("initarm: EFI memory map of {} bytes not relocated\n", len);
+            // No map for efi(4): the boot record closes empty.
+            let _ = hal::cpu::efi::set_boot_memory_map(&[], 0);
         }
+    } else {
+        // No UEFI memory map (a non-UEFI boot): the boot record closes empty.
+        let _ = hal::cpu::efi::set_boot_memory_map(&[], 0);
     }
 
     // The direct map is the bootloader's (see `hal::vm::pmap`'s arm64 backend).

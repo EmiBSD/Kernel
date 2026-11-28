@@ -424,17 +424,18 @@ impl DriverOps for PsciDriver {
         let Some(fa) = FdtArgs::of_aux(aux) else {
             kpanic(format_args!("{}: not a device-tree node", dev.xname()));
         };
-        psci_attach(fa);
+        psci_attach(dev, fa);
     }
 }
 
 /// `psci_attach`: pick the conduit and the function ids, report the versions, and hook
 /// `boot(9)`'s power-off and reset.
-pub fn psci_attach(fa: &FdtArgs) {
+pub fn psci_attach(dev: &DevRef, fa: &FdtArgs) {
     let new = Psci::of_node(fa.node);
     // The firmware's 0.1 ids, or none for the new specification: recorded before the first
     // call, which seals the record (`hal::cpu::smccc`).
-    let _ = smccc::record_psci_0_1(new.psci_0_1_ids());
+    let ids = new.psci_0_1_ids();
+    let recorded = smccc::record_psci_0_1(ids);
     let sc = match PSCI_SC.set(new) {
         Ok(()) => match psci_sc() {
             Some(sc) => sc,
@@ -449,6 +450,14 @@ pub fn psci_attach(fa: &FdtArgs) {
     };
 
     printf(format_args!("{}", sc.probe_versions()));
+    if ids.is_some() && !recorded {
+        // A 0.1 firmware whose ids came too late for the SMCCC call's record: its
+        // power-off and reset would answer NOT_SUPPORTED, so say so.
+        printf(format_args!(
+            "{}: PSCI 0.1 ids not admitted (the SMCCC record was sealed)\n",
+            dev.xname()
+        ));
+    }
 
     if sc.system_off != 0 {
         set_powerdownfn(psci_powerdown);

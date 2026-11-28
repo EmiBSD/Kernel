@@ -353,7 +353,7 @@ pub fn efi_map_runtime(dev: &DevRef, rs: u64) -> Option<&'static EfiRuntime> {
     match EfiRuntime::install(rs) {
         Ok(rt) => Some(rt),
         Err(Errno::EBUSY) => kpanic(format_args!(
-            "efi_map_runtime: the runtime services are mapped already"
+            "efi_map_runtime: the runtime services were installed, or refused, already"
         )),
         Err(Errno::EINVAL) => {
             printf(format_args!(

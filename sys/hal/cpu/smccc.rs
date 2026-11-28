@@ -28,7 +28,8 @@
 //! `PSCI_NOT_SUPPORTED` (-1) without trapping ([`admits`]):
 //! - fast calls of owning entity 0 (the Arm architecture: `SMCCC_VERSION`,
 //!   `SMCCC_ARCH_FEATURES`, the three Spectre workarounds), and of owning entity 4 (the
-//!   standard secure services) only PSCI's function numbers, 0x00 to 0x1F: the rest of entity
+//!   standard secure services) only PSCI's function numbers, 0x00 to 0x15 (PSCI 1.3's): the
+//!   rest of entity
 //!   4 holds SDEI (0x20-0x3F: `SDEI_EVENT_REGISTER` enters EL1 at an address it is given) and
 //!   FF-A (0x60-0xEF: `FFA_RXTX_MAP` maps buffers at addresses it is given), among others; bits
 //!   23:16 zero as the convention requires; minus the PSCI functions that take an entry point
@@ -37,9 +38,12 @@
 //! - a PSCI 0.1 firmware's own ids, which its device tree names (`arm,psci`) and psci(4)'s
 //!   attach records here ([`record_psci_0_1`]): its `system_off`, `system_reset` and `cpu_off`
 //!   are admitted, its `cpu_on` and `cpu_suspend` refused like their 1.x forms. The record is
-//!   sealed by the first record or by the first [`call`], whichever comes first: psci(4)'s
-//!   attach always records (`None` for a 1.x node) before its first call, so no later code can
-//!   name an id of its choosing as one of these.
+//!   sealed by the first record, the first [`call`] or [`seal_psci_0_1`], whichever comes
+//!   first: psci(4)'s attach records (`None` for a 1.x node) before its first call, and
+//!   mainbus seals it after its early passes whether or not a psci node attached, so once
+//!   autoconfiguration passes them no code can name an id of its choosing as one of these.
+//!   Before that seal the trust is the boot path's (decision 30's kind): nothing but psci(4)'s
+//!   attach records, which no check here can enforce.
 //!
 //! Every other id (silicon provider, OEM, trusted OS, vendor hypervisor, a yielding call) is
 //! refused: the C's `smccc()` hands any id to the firmware, but its only other user, scmi(4),
@@ -83,8 +87,10 @@ const OEN_ARCH: u32 = 0;
 /// The standard secure services' owning entity (PSCI, SDEI, TRNG, FF-A, ...).
 const OEN_STD_SECURE: u32 = 4;
 
-/// PSCI's last function number in the standard secure services (0x00 to 0x1F).
-const PSCI_LAST: u32 = 0x1f;
+/// PSCI's last function number in the standard secure services: 0x00 to 0x15, the
+/// functions PSCI 1.3 defines (the numbers above it up to 0x1F are reserved for PSCI and
+/// could one day take an address).
+const PSCI_LAST: u32 = 0x15;
 
 /// The PSCI functions whose arguments include an address the firmware runs at, by their
 /// SMC32 ids (PSCI 1.1, section 5.1): `CPU_SUSPEND`, `CPU_ON`, `CPU_DEFAULT_SUSPEND` and
@@ -124,10 +130,17 @@ fn recorded_from(cell: &OnceStatic<Option<Psci01Ids>>) -> Option<&Psci01Ids> {
 }
 
 /// Records the PSCI firmware's 0.1 ids (`None` for a 1.x node), psci(4)'s attach before its
-/// first call; `false` (nothing recorded) once the record is sealed: by an earlier record or
-/// by a [`call`] made before it.
+/// first call; `false` (nothing recorded) once the record is sealed: by an earlier record, by
+/// a [`call`] made before it or by [`seal_psci_0_1`].
 pub fn record_psci_0_1(ids: Option<Psci01Ids>) -> bool {
     record_into(&PSCI_0_1, ids)
+}
+
+/// Seals the 0.1 record (with none if nothing was recorded): mainbus's call once its early
+/// passes are done, so a machine without a `/psci` node, or before it attaches, leaves no
+/// record open to later code.
+pub fn seal_psci_0_1() {
+    let _ = record_into(&PSCI_0_1, None);
 }
 
 /// Whether `fid` is one of the standard entry-point functions, in either width.
@@ -269,7 +282,9 @@ mod tests {
             0x0400_0000,
             0x8401_0000,
             // SDEI_EVENT_REGISTER, SDEI_EVENT_COMPLETE_AND_RESUME and FFA_RXTX_MAP, of the
-            // standard secure services past PSCI's numbers; TRNG_VERSION beside them.
+            // standard secure services past PSCI's numbers; TRNG_VERSION beside them; 0x16,
+            // PSCI's first number past 1.3's.
+            0x8400_0016,
             0xc400_0021,
             0xc400_0026,
             0xc400_0066,
@@ -326,6 +341,22 @@ mod tests {
         assert_eq!(recorded_from(&cell), None);
         // The process's own record: once a call ran, a record fails.
         let _ = call(Conduit::Hvc, 0x8400_0000, 0, 0, 0);
+        assert!(!record_psci_0_1(Some(ids)));
+        assert!(!admits(0x95c1_ba5e));
+    }
+
+    #[test]
+    fn a_record_after_the_seal_fails() {
+        let ids = Psci01Ids {
+            system_off: 0x95c1_ba5e,
+            ..Psci01Ids::default()
+        };
+        let cell = OnceStatic::new();
+        let _ = record_into(&cell, None);
+        assert!(!record_into(&cell, Some(ids)));
+        assert_eq!(recorded_from(&cell), None);
+        // The process's own: sealed, a record fails and the SiP-looking id stays refused.
+        seal_psci_0_1();
         assert!(!record_psci_0_1(Some(ids)));
         assert!(!admits(0x95c1_ba5e));
     }

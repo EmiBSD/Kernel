@@ -62,7 +62,7 @@
 //! - LZ's `smc_call(a0, a1, a2, a3)`/`hvc_call` (two functions any caller could reach with any
 //!   id, psci(4)'s `sc_callfn` choosing between them) -> [`trap`] over a [`Conduit`] held by
 //!   value, behind `hal::cpu::smccc::call`, which admits only the Arm architecture's fast
-//!   calls and PSCI's (function numbers 0x00-0x1F of the standard secure services) that take
+//!   calls and PSCI's (function numbers 0x00-0x15 of the standard secure services) that take
 //!   no address, and a PSCI 0.1 firmware's recorded value ids, before the trap.
 //! - LZ's `asm!` declared `x0`..`x3` alone; the C's routine is a function call, across which
 //!   `x4`..`x17` are dead. Both blocks here say so (`clobber_abi("C")`), so no value the
@@ -91,11 +91,13 @@ pub(crate) fn trap(conduit: Conduit, fid: u32, a1: u64, a2: u64, a3: u64) -> u64
             // here, the rest `clobber_abi("C")` declares dead, as across the C's call) and
             // preserves `x18`..`x30` and `sp`. It touches no memory the kernel owns: `call`
             // reaches this trap only for an id it admits (`hal::cpu::smccc::admits`): a fast
-            // call of the Arm architecture, or one of PSCI's function numbers (0x00-0x1F of
-            // the standard secure services) that takes no entry point, or a PSCI 0.1
-            // firmware's `system_off`, `system_reset` or `cpu_off` as its device tree names
-            // them, recorded by psci(4)'s attach before any call and sealed then (trusted as
-            // the C trusts the firmware). So every argument is a value the firmware reads as a
+            // call of the Arm architecture, or one of PSCI's function numbers (0x00-0x15 of
+            // the standard secure services, PSCI 1.3's) that takes no entry point, or a PSCI
+            // 0.1 firmware's `system_off`, `system_reset` or `cpu_off` as its device tree
+            // names them. That record is sealed by the first call or by mainbus after its
+            // early passes; before the seal, only psci(4)'s attach records it, the boot
+            // path's trust (decision 30's kind), which no check here enforces (and the
+            // firmware is trusted as the C trusts it). So every argument is a value the firmware reads as a
             // number, never a pointer it follows or an entry it runs; SDEI's and FF-A's calls
             // (the rest of the standard secure services), and the silicon provider's, OEM's,
             // trusted OS's and hypervisor vendors' ids, which could take addresses, never get
